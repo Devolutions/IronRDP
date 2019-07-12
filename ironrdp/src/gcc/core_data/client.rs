@@ -9,7 +9,7 @@ use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive, ToPrimitive};
 
 use super::{CoreDataError, RdpVersion, VERSION_SIZE};
-use crate::{nego, utils, PduParsing};
+use crate::{nego, PduParsing};
 
 const DESKTOP_WIDTH_SIZE: usize = 2;
 const DESKTOP_HEIGHT_SIZE: usize = 2;
@@ -95,7 +95,7 @@ impl PduParsing for ClientCoreData {
 
         let mut client_name_buffer = [0; CLIENT_NAME_SIZE];
         buffer.read_exact(&mut client_name_buffer)?;
-        let client_name = utils::bytes_to_utf16_string(client_name_buffer.as_ref())
+        let client_name = sspi::utils::bytes_to_utf16_string(client_name_buffer.as_ref())
             .trim_end_matches('\u{0}')
             .into();
 
@@ -106,7 +106,7 @@ impl PduParsing for ClientCoreData {
 
         let mut ime_file_name_buffer = [0; IME_FILE_NAME_SIZE];
         buffer.read_exact(&mut ime_file_name_buffer)?;
-        let ime_file_name = utils::bytes_to_utf16_string(ime_file_name_buffer.as_ref())
+        let ime_file_name = sspi::utils::bytes_to_utf16_string(ime_file_name_buffer.as_ref())
             .trim_end_matches('\u{0}')
             .into();
 
@@ -130,9 +130,9 @@ impl PduParsing for ClientCoreData {
     }
 
     fn to_buffer(&self, mut buffer: impl io::Write) -> Result<(), Self::Error> {
-        let mut client_name_buffer = utils::string_to_utf16(self.client_name.as_ref());
+        let mut client_name_buffer = sspi::utils::string_to_utf16(self.client_name.as_ref());
         client_name_buffer.resize(CLIENT_NAME_SIZE - 2, 0);
-        let mut ime_file_name_buffer = utils::string_to_utf16(self.ime_file_name.as_ref());
+        let mut ime_file_name_buffer = sspi::utils::string_to_utf16(self.ime_file_name.as_ref());
         ime_file_name_buffer.resize(IME_FILE_NAME_SIZE - 2, 0);
 
         buffer.write_u32::<LittleEndian>(self.version.to_u32().unwrap())?;
@@ -238,7 +238,7 @@ impl PduParsing for ClientCoreOptionalData {
         let mut dig_product_id_buffer = [0; DIG_PRODUCT_ID_SIZE];
         try_read_optional!(buffer.read_exact(&mut dig_product_id_buffer), optional_data);
         optional_data.dig_product_id = Some(
-            utils::bytes_to_utf16_string(dig_product_id_buffer.as_ref())
+            sspi::utils::bytes_to_utf16_string(dig_product_id_buffer.as_ref())
                 .trim_end_matches('\u{0}')
                 .into(),
         );
@@ -306,7 +306,7 @@ impl PduParsing for ClientCoreOptionalData {
         );
 
         try_write_optional!(self.dig_product_id, |value: &str| {
-            let mut dig_product_id_buffer = utils::string_to_utf16(value);
+            let mut dig_product_id_buffer = sspi::utils::string_to_utf16(value);
             dig_product_id_buffer.resize(DIG_PRODUCT_ID_SIZE - 2, 0);
             dig_product_id_buffer.extend_from_slice([0; 2].as_ref()); // UTF-16 null terminator
 

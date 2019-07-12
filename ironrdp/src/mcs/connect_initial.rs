@@ -3,10 +3,10 @@ mod test;
 
 use std::io;
 
+use sspi::ber;
+
 use super::{McsError, RESULT_ENUM_LENGTH};
-use crate::ber::sizeof_integer;
 use crate::{
-    ber,
     gcc::{
         conference_create::{ConferenceCreateRequest, ConferenceCreateResponse},
         Channel,
@@ -118,7 +118,7 @@ impl ConnectResponse {
 
     fn fields_buffer_ber_length(&self) -> u16 {
         ber::SIZEOF_ENUMERATED
-            + sizeof_integer(self.called_connect_id)
+            + ber::sizeof_integer(self.called_connect_id)
             + self.domain_parameters.buffer_length() as u16
             + ber::sizeof_octet_string(self.conference_create_response.buffer_length() as u16)
     }

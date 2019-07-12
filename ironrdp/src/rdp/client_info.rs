@@ -9,7 +9,7 @@ use failure::Fail;
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive, ToPrimitive};
 
-use crate::{utils, Credentials, PduParsing};
+use crate::PduParsing;
 
 const RECONNECT_COOKIE_LEN: usize = 28;
 const TIMEZONE_INFO_NAME_LEN: usize = 64;
@@ -35,7 +35,7 @@ const SYSTEM_TIME_SIZE: usize = 16;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ClientInfo {
-    pub credentials: Credentials,
+    pub credentials: sspi::Credentials,
     pub code_page: u32,
     pub flags: ClientInfoFlags,
     pub compression_type: CompressionType,
@@ -80,7 +80,7 @@ impl PduParsing for ClientInfo {
         } else {
             Some(domain)
         };
-        let credentials = Credentials::new(user_name, password, domain);
+        let credentials = sspi::Credentials::new(user_name, password, domain);
 
         let alternate_shell = read_string(&mut stream, alternate_shell_size, character_set, true)?;
         let work_dir = read_string(&mut stream, work_dir_size, character_set, true)?;
@@ -380,14 +380,14 @@ impl PduParsing for TimezoneInfo {
     fn to_buffer(&self, mut stream: impl io::Write) -> Result<(), Self::Error> {
         stream.write_u32::<LittleEndian>(self.bias)?;
 
-        let mut standard_name = utils::string_to_utf16(self.standard_name.as_str());
+        let mut standard_name = sspi::utils::string_to_utf16(self.standard_name.as_str());
         standard_name.resize(TIMEZONE_INFO_NAME_LEN, 0);
         stream.write_all(standard_name.as_ref())?;
 
         self.standard_date.to_buffer(&mut stream)?;
         stream.write_u32::<LittleEndian>(self.standard_bias)?;
 
-        let mut daylight_name = utils::string_to_utf16(self.daylight_name.as_str());
+        let mut daylight_name = sspi::utils::string_to_utf16(self.daylight_name.as_str());
         daylight_name.resize(TIMEZONE_INFO_NAME_LEN, 0);
         stream.write_all(daylight_name.as_ref())?;
 
@@ -610,7 +610,7 @@ fn read_string(
     stream.read_exact(&mut buffer)?;
 
     let result = match character_set {
-        CharacterSet::Unicode => utils::bytes_to_utf16_string(buffer.as_slice()),
+        CharacterSet::Unicode => sspi::utils::bytes_to_utf16_string(buffer.as_slice()),
         CharacterSet::Ansi => String::from_utf8(buffer)?,
     };
 
@@ -624,7 +624,7 @@ fn write_string_with_null_terminator(
 ) -> io::Result<()> {
     match character_set {
         CharacterSet::Unicode => {
-            stream.write_all(utils::string_to_utf16(value).as_ref())?;
+            stream.write_all(sspi::utils::string_to_utf16(value).as_ref())?;
             stream.write_u16::<LittleEndian>(0)
         }
         CharacterSet::Ansi => {

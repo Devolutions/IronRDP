@@ -7,31 +7,20 @@
 #[macro_use]
 mod utils;
 
-pub mod ber;
 pub mod gcc;
 
-mod credssp;
-mod encryption;
 mod fast_path;
 mod mcs;
 mod nego;
-mod ntlm;
 mod per;
 mod rdp;
-mod sspi;
 mod tpdu;
 
 pub use crate::{
-    credssp::{
-        ts_request::TsRequest, CredSsp, CredSspClient, CredSspResult, CredSspServer,
-        CredentialsProxy, EarlyUserAuthResult, EARLY_USER_AUTH_RESULT_PDU_SIZE,
-    },
     fast_path::{parse_fast_path_header, FastPath, FastPathError},
     mcs::{ConnectInitial, ConnectResponse, McsError, McsPdu, SendDataContext},
     nego::*,
-    ntlm::NTLM_VERSION_SIZE,
     rdp::{ClientInfoPdu, ClientLicensePdu},
-    sspi::{Credentials, SspiError, SspiErrorType},
     tpdu::*,
 };
 
