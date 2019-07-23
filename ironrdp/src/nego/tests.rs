@@ -202,6 +202,20 @@ fn read_string_with_cr_lf_on_unterminated_message_results_in_error() {
 }
 
 #[test]
+fn read_string_with_cr_lf_on_unterminated_with_cr_message() {
+    let request = [
+        0x43, 0x6F, 0x6F, 0x6B, 0x69, 0x65, 0x3A, 0x20, 0x6D, 0x73, 0x74, 0x73, 0x68, 0x61, 0x73,
+        0x68, 0x3D, 0x0a,
+    ];
+
+    match read_string_with_cr_lf(&mut request.as_ref(), COOKIE_PREFIX) {
+        Err(ref e) if e.kind() == io::ErrorKind::UnexpectedEof => (),
+        Err(_e) => panic!("wrong error type"),
+        _ => panic!("error expected"),
+    }
+}
+
+#[test]
 fn negotiation_request_with_negotiation_data_is_parsed_correctly() {
     let expected_flags = NegotiationRequestFlags::RESTRICTED_ADMIN_MODE_REQUIRED
         | NegotiationRequestFlags::REDIRECTED_AUTHENTICATION_MODE_REQUIRED;
@@ -334,4 +348,18 @@ fn negotiation_error_is_written_correclty() {
     .unwrap();
 
     assert_eq!(buffer, expected);
+}
+
+#[test]
+fn parse_negotiation_request_correctly_handles_invalid_slice_length() {
+    let request = [
+        0x43, 0x6F, 0x6F, 0x6B, 0x69, 0x65, 0x3A, 0x20, 0x6D, 0x73, 0x74, 0x73, 0x68, 0x61, 0x73,
+        0x68, 0x3D, 0x0a, // failing cookie
+    ];
+
+    match parse_negotiation_request(X224TPDUType::ConnectionRequest, request.as_ref()) {
+        Err(ref e) if e.kind() == io::ErrorKind::InvalidData => (),
+        Err(_e) => panic!("wrong error type"),
+        _ => panic!("error expected"),
+    }
 }

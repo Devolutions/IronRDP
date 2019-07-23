@@ -383,6 +383,13 @@ impl<T: FromPrimitive + ToPrimitive> PduParsing for UserDataHeader<T> {
             T::from_u16(buffer.read_u16::<LittleEndian>()?).ok_or(GccError::InvalidGccType)?;
         let block_length = buffer.read_u16::<LittleEndian>()?;
 
+        if block_length <= USER_DATA_HEADER_SIZE as u16 {
+            return Err(GccError::IOError(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "invalid UserDataHeader length",
+            )));
+        }
+
         let mut block_data = vec![0; block_length as usize - USER_DATA_HEADER_SIZE];
         buffer.read_exact(&mut block_data)?;
 

@@ -355,3 +355,10 @@ fn buffer_length_is_correct_for_server_gcc_blocks_with_optional_data_blocks() {
 
     assert_eq!(expected_buffer_len, len);
 }
+
+#[test]
+fn from_buffer_correctly_handles_invalid_lengths_in_user_data_header() {
+    let buffer: [u8; 4] = [0x01, 0xc0, 0x00, 0x00];
+
+    assert!(UserDataHeader::<ClientGccType>::from_buffer(buffer.as_ref()).is_err());
+}
