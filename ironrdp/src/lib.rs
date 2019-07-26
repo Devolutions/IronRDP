@@ -2,13 +2,13 @@
 mod utils;
 
 pub mod gcc;
+pub mod nego;
 
 mod fast_path;
 mod mcs;
-mod nego;
 mod per;
 mod rdp;
-mod tpdu;
+mod x224;
 
 pub use crate::{
     fast_path::{parse_fast_path_header, FastPath, FastPathError},
@@ -19,7 +19,7 @@ pub use crate::{
         DemandActive, ServerDemandActive, ShareControlHeader, ShareControlPdu, ShareDataHeader,
         ShareDataPdu,
     },
-    tpdu::*,
+    x224::*,
 };
 
 pub trait PduParsing {
