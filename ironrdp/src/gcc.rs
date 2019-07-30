@@ -1,11 +1,11 @@
 pub mod conference_create;
+pub mod monitor_data;
 #[cfg(test)]
 pub mod test;
 
 mod cluster_data;
 mod core_data;
 mod message_channel_data;
-mod monitor_data;
 mod monitor_extended_data;
 mod multi_transport_channel_data;
 mod network_data;
@@ -13,7 +13,10 @@ mod security_data;
 
 pub use self::{
     conference_create::{ConferenceCreateRequest, ConferenceCreateResponse},
-    core_data::{client::ClientEarlyCapabilityFlags, RdpVersion},
+    core_data::{
+        client::{ClientEarlyCapabilityFlags, KeyboardType, IME_FILE_NAME_SIZE},
+        RdpVersion,
+    },
     network_data::Channel,
     security_data::EncryptionMethod,
 };

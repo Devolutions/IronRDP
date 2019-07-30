@@ -9,11 +9,11 @@ use failure::Fail;
 
 use crate::PduParsing;
 
-const MONITOR_COUNT_MAX: usize = 16;
+pub const MONITOR_COUNT_SIZE: usize = 4;
+pub const MONITOR_SIZE: usize = 20;
+pub const FLAGS_SIZE: usize = 4;
 
-const FLAGS_SIZE: usize = 4;
-const MONITOR_COUNT_SIZE: usize = 4;
-const MONITOR_SIZE: usize = 20;
+const MONITOR_COUNT_MAX: usize = 16;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ClientMonitorData {

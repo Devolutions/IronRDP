@@ -21,7 +21,7 @@ const CLIENT_NAME_SIZE: usize = 32;
 const KEYBOARD_TYPE_SIZE: usize = 4;
 const KEYBOARD_SUB_TYPE_SIZE: usize = 4;
 const KEYBOARD_FUNCTIONAL_KEYS_COUNT_SIZE: usize = 4;
-const IME_FILE_NAME_SIZE: usize = 64;
+pub const IME_FILE_NAME_SIZE: usize = 64;
 
 const POST_BETA_COLOR_DEPTH_SIZE: usize = 2;
 const CLIENT_PRODUCT_ID_SIZE: usize = 2;

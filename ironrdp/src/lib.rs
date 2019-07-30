@@ -14,7 +14,11 @@ pub use crate::{
     fast_path::{parse_fast_path_header, FastPath, FastPathError},
     mcs::{ConnectInitial, ConnectResponse, McsError, McsPdu, SendDataContext},
     nego::*,
-    rdp::{ClientInfoPdu, ClientLicensePdu},
+    rdp::{
+        CapabilitySet, ClientConfirmActive, ClientInfoPdu, ClientLicensePdu, ControlAction,
+        DemandActive, ServerDemandActive, ShareControlHeader, ShareControlPdu, ShareDataHeader,
+        ShareDataPdu,
+    },
     tpdu::*,
 };
 
