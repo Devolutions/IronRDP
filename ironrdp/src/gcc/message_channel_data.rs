@@ -11,7 +11,7 @@ const CLIENT_FLAGS_SIZE: usize = 4;
 const SERVER_MCS_MESSAGE_CHANNEL_ID_SIZE: usize = 2;
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct ClientMessageChannelData {}
+pub struct ClientMessageChannelData;
 
 impl PduParsing for ClientMessageChannelData {
     type Error = io::Error;

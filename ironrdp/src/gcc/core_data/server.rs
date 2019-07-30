@@ -45,8 +45,8 @@ impl PduParsing for ServerCoreData {
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct ServerCoreOptionalData {
-    client_requested_protocols: Option<nego::SecurityProtocol>,
-    early_capability_flags: Option<ServerEarlyCapabilityFlags>,
+    pub client_requested_protocols: Option<nego::SecurityProtocol>,
+    pub early_capability_flags: Option<ServerEarlyCapabilityFlags>,
 }
 
 impl PduParsing for ServerCoreOptionalData {

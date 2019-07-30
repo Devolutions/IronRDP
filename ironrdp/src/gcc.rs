@@ -1,5 +1,5 @@
 pub mod conference_create;
-pub mod monitor_data;
+pub(crate) mod monitor_data;
 #[cfg(test)]
 pub mod test;
 
@@ -12,13 +12,36 @@ mod network_data;
 mod security_data;
 
 pub use self::{
+    cluster_data::{ClientClusterData, ClusterDataError, RedirectionFlags, RedirectionVersion},
     conference_create::{ConferenceCreateRequest, ConferenceCreateResponse},
     core_data::{
-        client::{ClientEarlyCapabilityFlags, KeyboardType, IME_FILE_NAME_SIZE},
-        RdpVersion,
+        client::{
+            ClientColorDepth, ClientCoreData, ClientEarlyCapabilityFlags, ColorDepth,
+            ConnectionType, HighColorDepth, KeyboardType, SecureAccessSequence,
+            SupportedColorDepths, IME_FILE_NAME_SIZE,
+        },
+        server::{ServerCoreData, ServerEarlyCapabilityFlags},
+        CoreDataError, RdpVersion,
     },
-    network_data::Channel,
-    security_data::EncryptionMethod,
+    message_channel_data::{ClientMessageChannelData, ServerMessageChannelData},
+    monitor_data::{
+        ClientMonitorData, Monitor, MonitorDataError, MonitorFlags, MONITOR_COUNT_SIZE,
+        MONITOR_FLAGS_SIZE, MONITOR_SIZE,
+    },
+    monitor_extended_data::{
+        ClientMonitorExtendedData, ExtendedMonitorInfo, MonitorExtendedDataError,
+        MonitorOrientation,
+    },
+    multi_transport_channel_data::{
+        MultiTransportChannelData, MultiTransportChannelDataError, MultiTransportFlags,
+    },
+    network_data::{
+        Channel, ChannelOptions, ClientNetworkData, NetworkDataError, ServerNetworkData,
+    },
+    security_data::{
+        ClientSecurityData, EncryptionLevel, EncryptionMethod, SecurityDataError,
+        ServerSecurityData,
+    },
 };
 
 use std::io;
@@ -28,16 +51,6 @@ use failure::Fail;
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive, ToPrimitive};
 
-use self::{
-    cluster_data::{ClientClusterData, ClusterDataError},
-    core_data::{client::ClientCoreData, server::ServerCoreData, CoreDataError},
-    message_channel_data::{ClientMessageChannelData, ServerMessageChannelData},
-    monitor_data::{ClientMonitorData, MonitorDataError},
-    monitor_extended_data::{ClientMonitorExtendedData, MonitorExtendedDataError},
-    multi_transport_channel_data::{MultiTransportChannelData, MultiTransportChannelDataError},
-    network_data::{ClientNetworkData, NetworkDataError, ServerNetworkData},
-    security_data::{ClientSecurityData, SecurityDataError, ServerSecurityData},
-};
 use crate::PduParsing;
 
 macro_rules! user_header_try {

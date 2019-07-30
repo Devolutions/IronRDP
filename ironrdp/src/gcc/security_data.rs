@@ -60,6 +60,17 @@ pub struct ServerSecurityData {
     pub server_cert: Vec<u8>,
 }
 
+impl ServerSecurityData {
+    pub fn no_security() -> Self {
+        Self {
+            encryption_method: EncryptionMethod::empty(),
+            encryption_level: EncryptionLevel::None,
+            server_random: None,
+            server_cert: Vec::new(),
+        }
+    }
+}
+
 impl PduParsing for ServerSecurityData {
     type Error = SecurityDataError;
 

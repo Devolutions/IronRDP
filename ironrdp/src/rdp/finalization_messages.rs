@@ -6,7 +6,7 @@ use failure::Fail;
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive, ToPrimitive};
 
-use crate::{gcc::monitor_data, PduParsing};
+use crate::{gcc, PduParsing};
 
 const SYNCHRONIZE_PDU_SIZE: usize = 2 + 2;
 const CONTROL_PDU_SIZE: usize = 2 + 2 + 4;
@@ -122,7 +122,7 @@ impl PduParsing for FontPdu {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct MonitorLayoutPdu {
-    pub monitors: Vec<monitor_data::Monitor>,
+    pub monitors: Vec<gcc::Monitor>,
 }
 
 impl PduParsing for MonitorLayoutPdu {
@@ -133,7 +133,7 @@ impl PduParsing for MonitorLayoutPdu {
 
         let mut monitors = Vec::with_capacity(monitor_count as usize);
         for _ in 0..monitor_count {
-            monitors.push(monitor_data::Monitor::from_buffer(&mut stream)?);
+            monitors.push(gcc::Monitor::from_buffer(&mut stream)?);
         }
 
         Ok(Self { monitors })
@@ -150,7 +150,7 @@ impl PduParsing for MonitorLayoutPdu {
     }
 
     fn buffer_length(&self) -> usize {
-        monitor_data::MONITOR_COUNT_SIZE + self.monitors.len() * monitor_data::MONITOR_SIZE
+        gcc::MONITOR_COUNT_SIZE + self.monitors.len() * gcc::MONITOR_SIZE
     }
 }
 
@@ -175,7 +175,7 @@ pub enum FinalizationMessagesError {
     #[fail(display = "IO error: {}", _0)]
     IOError(#[fail(cause)] io::Error),
     #[fail(display = "Monitor Data error: {}", _0)]
-    MonitorDataError(#[fail(cause)] monitor_data::MonitorDataError),
+    MonitorDataError(#[fail(cause)] gcc::MonitorDataError),
     #[fail(display = "Invalid message type field in Synchronize PDU")]
     InvalidMessageType,
     #[fail(display = "Invalid control action field in Control PDU")]
@@ -194,7 +194,7 @@ impl_from_error!(
     FinalizationMessagesError::IOError
 );
 impl_from_error!(
-    monitor_data::MonitorDataError,
+    gcc::MonitorDataError,
     FinalizationMessagesError,
     FinalizationMessagesError::MonitorDataError
 );

@@ -2,7 +2,7 @@ use lazy_static::lazy_static;
 
 use super::{finalization_messages::*, headers::*, *};
 use crate::{
-    gcc::monitor_data,
+    gcc::{self, monitor_data},
     rdp::{
         capability_sets::test::{
             CLIENT_DEMAND_ACTIVE, CLIENT_DEMAND_ACTIVE_BUFFER, SERVER_DEMAND_ACTIVE,
@@ -255,7 +255,7 @@ lazy_static! {
     pub static ref MONITOR_LAYOUT_PDU: ShareControlHeader = ShareControlHeader {
         share_control_pdu: ShareControlPdu::Data(ShareDataHeader {
             share_data_pdu: ShareDataPdu::MonitorLayout(MonitorLayoutPdu {
-                monitors: monitor_data::test::MONITOR_DATA_WITH_MONITORS
+                monitors: gcc::monitor_data::test::MONITOR_DATA_WITH_MONITORS
                     .monitors
                     .clone(),
             }),
@@ -296,7 +296,7 @@ lazy_static! {
         buffer.extend(
             monitor_data::test::MONITOR_DATA_WITH_MONITORS_BUFFER
                 .to_vec()
-                .split_off(monitor_data::FLAGS_SIZE),
+                .split_off(gcc::MONITOR_FLAGS_SIZE),
         );
 
         buffer
