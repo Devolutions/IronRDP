@@ -7,9 +7,11 @@ use bitflags::bitflags;
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use num_traits::{FromPrimitive, ToPrimitive};
 
-use crate::gcc::{KeyboardType, IME_FILE_NAME_SIZE};
-use crate::rdp::CapabilitySetsError;
-use crate::PduParsing;
+use crate::{
+    gcc::{KeyboardType, IME_FILE_NAME_SIZE},
+    rdp::CapabilitySetsError,
+    PduParsing,
+};
 
 const INPUT_LENGTH: usize = 84;
 

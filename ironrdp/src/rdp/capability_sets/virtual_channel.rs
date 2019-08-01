@@ -6,8 +6,7 @@ use std::io;
 use bitflags::bitflags;
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 
-use crate::rdp::CapabilitySetsError;
-use crate::PduParsing;
+use crate::{rdp::CapabilitySetsError, PduParsing};
 
 const VIRTUAL_CHANNEL_LENGTH: usize = 8;
 
@@ -24,8 +23,8 @@ bitflags! {
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct VirtualChannel {
-    flags: VirtualChannelFlags,
-    chunk_size: u32,
+    pub flags: VirtualChannelFlags,
+    pub chunk_size: u32,
 }
 
 impl PduParsing for VirtualChannel {

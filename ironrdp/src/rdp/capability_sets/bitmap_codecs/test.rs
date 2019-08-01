@@ -169,8 +169,8 @@ const BITMAP_CODECS_BUFFER: [u8; 91] = [
 ];
 
 lazy_static! {
-    pub static ref GUID: Guid =
-        Guid(0xca8d1bb9, 0x000f, 0x154f, 0x58, 0x9f, 0xae, 0x2d, 0x1a, 0x87, 0xe2, 0xd6);
+    #[rustfmt::skip]
+    pub static ref GUID: Guid = Guid(0xca8d_1bb9, 0x000f, 0x154f, 0x58, 0x9f, 0xae, 0x2d, 0x1a, 0x87, 0xe2, 0xd6);
     pub static ref RFX_ICAP: RfxICap = RfxICap {
         flags: RfxICapFlags::CODEC_MODE,
         entropy_bits: EntropyBits::Rlgr3,
@@ -493,7 +493,7 @@ fn codec_with_invalid_property_length_handles_correctly() {
 
     match Codec::from_buffer(codec_buffer.as_ref()) {
         Err(CapabilitySetsError::InvalidPropertyLength) => (),
-        Err(_) => panic!("wrong error type"),
+        Err(_e) => panic!("wrong error type"),
         _ => panic!("error expected"),
     }
 }

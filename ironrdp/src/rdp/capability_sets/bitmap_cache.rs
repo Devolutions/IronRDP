@@ -6,8 +6,7 @@ use std::io;
 use bitflags::bitflags;
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 
-use crate::rdp::CapabilitySetsError;
-use crate::PduParsing;
+use crate::{rdp::CapabilitySetsError, PduParsing};
 
 const BITMAP_CACHE_LENGTH: usize = 36;
 const BITMAP_CACHE_REV2_LENGTH: usize = 36;
