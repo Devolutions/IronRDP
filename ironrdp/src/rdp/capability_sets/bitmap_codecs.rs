@@ -132,39 +132,46 @@ impl PduParsing for Codec {
         let guid = Guid::from_buffer(&mut buffer)?;
 
         let id = buffer.read_u8()?;
-        let codec_properties_len = buffer.read_u16::<LittleEndian>()?;
+        let codec_properties_len = usize::from(buffer.read_u16::<LittleEndian>()?);
 
-        if codec_properties_len == 0 {
+        let property = if codec_properties_len != 0 {
+            match guid {
+                GUID_NSCODEC => CodecProperty::NsCodec(NsCodec::from_buffer(&mut buffer)?),
+                GUID_REMOTEFX | GUID_IMAGE_REMOTEFX => {
+                    let mut property_buffer = vec![0u8; codec_properties_len];
+                    buffer.read_exact(&mut property_buffer)?;
+
+                    let property = if property_buffer[0] == 0 {
+                        RemoteFxContainer::ServerContainer(codec_properties_len)
+                    } else {
+                        RemoteFxContainer::ClientContainer(RfxClientCapsContainer::from_buffer(
+                            &mut property_buffer.as_slice(),
+                        )?)
+                    };
+
+                    match guid {
+                        GUID_REMOTEFX => CodecProperty::RemoteFx(property),
+                        GUID_IMAGE_REMOTEFX => CodecProperty::ImageRemoteFx(property),
+                        _ => unreachable!(),
+                    }
+                }
+                GUID_IGNORE => {
+                    buffer.read_exact(&mut vec![0u8; codec_properties_len])?;
+                    CodecProperty::Ignore
+                }
+                _ => {
+                    buffer.read_exact(&mut vec![0u8; codec_properties_len])?;
+                    CodecProperty::None
+                }
+            }
+        } else {
             match guid {
                 GUID_NSCODEC | GUID_REMOTEFX | GUID_IMAGE_REMOTEFX => {
                     return Err(CapabilitySetsError::InvalidPropertyLength)
                 }
-                _ => (),
+                GUID_IGNORE => CodecProperty::Ignore,
+                _ => CodecProperty::None,
             }
-        }
-
-        let property = match guid {
-            GUID_NSCODEC => CodecProperty::NsCodec(NsCodec::from_buffer(buffer)?),
-            GUID_REMOTEFX | GUID_IMAGE_REMOTEFX => {
-                let mut property_buffer = vec![0u8; codec_properties_len as usize];
-                buffer.read_exact(&mut property_buffer)?;
-
-                let property = if property_buffer[0] == 0 {
-                    RemoteFxContainer::ServerContainer(codec_properties_len as usize)
-                } else {
-                    RemoteFxContainer::ClientContainer(RfxClientCapsContainer::from_buffer(
-                        &mut property_buffer.as_slice(),
-                    )?)
-                };
-
-                match guid {
-                    GUID_REMOTEFX => CodecProperty::RemoteFx(property),
-                    GUID_IMAGE_REMOTEFX => CodecProperty::ImageRemoteFx(property),
-                    _ => unreachable!(),
-                }
-            }
-            GUID_IGNORE => CodecProperty::Ignore,
-            _ => CodecProperty::None,
         };
 
         Ok(Self { id, property })

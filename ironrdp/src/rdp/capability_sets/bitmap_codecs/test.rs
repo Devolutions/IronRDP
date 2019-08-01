@@ -513,3 +513,23 @@ fn codec_with_empty_property_length_and_ignore_guid_handles_correctly() {
 
     assert_eq!(codec, Codec::from_buffer(codec_buffer.as_ref()).unwrap());
 }
+
+#[test]
+fn codec_with_property_length_and_ignore_guid_handled_correctly() {
+    let codec_buffer = vec![
+        0xa6u8, 0x51, 0x43, 0x9c, 0x35, 0x35, 0xae, 0x42, 0x91, 0x0c, 0xcd, 0xfc, 0xe5, 0x76, 0x0b,
+        0x58, 0x00, // codec id
+        0x0f, 0x00, // codec properties len
+        0xa6, 0x51, 0x43, 0x9c, 0x35, 0x35, 0xae, 0x42, 0x91, 0x0c, 0xcd, 0xfc, 0xe5, 0x76, 0x0b,
+    ];
+
+    let codec = Codec {
+        id: 0,
+        property: CodecProperty::Ignore,
+    };
+
+    let mut slice = codec_buffer.as_slice();
+
+    assert_eq!(codec, Codec::from_buffer(&mut slice).unwrap());
+    assert!(slice.is_empty());
+}
