@@ -9,11 +9,11 @@ use failure::Fail;
 
 use crate::PduParsing;
 
-const MONITOR_COUNT_MAX: usize = 16;
+pub const MONITOR_COUNT_SIZE: usize = 4;
+pub const MONITOR_SIZE: usize = 20;
+pub const MONITOR_FLAGS_SIZE: usize = 4;
 
-const FLAGS_SIZE: usize = 4;
-const MONITOR_COUNT_SIZE: usize = 4;
-const MONITOR_SIZE: usize = 20;
+const MONITOR_COUNT_MAX: usize = 16;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ClientMonitorData {
@@ -50,17 +50,17 @@ impl PduParsing for ClientMonitorData {
     }
 
     fn buffer_length(&self) -> usize {
-        FLAGS_SIZE + MONITOR_COUNT_SIZE + self.monitors.len() * MONITOR_SIZE
+        MONITOR_FLAGS_SIZE + MONITOR_COUNT_SIZE + self.monitors.len() * MONITOR_SIZE
     }
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Monitor {
-    left: i32,
-    top: i32,
-    right: i32,
-    bottom: i32,
-    flags: MonitorFlags,
+    pub left: i32,
+    pub top: i32,
+    pub right: i32,
+    pub bottom: i32,
+    pub flags: MonitorFlags,
 }
 
 impl PduParsing for Monitor {

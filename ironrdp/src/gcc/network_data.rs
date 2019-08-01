@@ -130,7 +130,7 @@ impl PduParsing for ServerNetworkData {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Channel {
     pub name: String,
-    options: ChannelOptions,
+    pub options: ChannelOptions,
 }
 
 impl PduParsing for Channel {

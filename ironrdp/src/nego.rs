@@ -373,7 +373,15 @@ fn read_string_with_cr_lf(
                 ));
             }
         }
-        value.pop(); // cr
+        match value.pop() {
+            Some('\r') => (), // cr
+            _ => {
+                return Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "message is not terminated with cr",
+                ));
+            }
+        }
         let value_len = value.len();
 
         Ok((value, start.len() + value_len + 2))

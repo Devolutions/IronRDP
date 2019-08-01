@@ -1,0 +1,41 @@
+use lazy_static::lazy_static;
+
+use super::*;
+
+const POINTER_BUFFER: [u8; 6] = [
+    0x01, 0x00, // colorPointerFlag
+    0x14, 0x00, // colorPointerCacheSize
+    0x15, 0x00, // pointerCacheSize
+];
+
+lazy_static! {
+    pub static ref POINTER: Pointer = Pointer {
+        color_pointer_cache_size: 20,
+        pointer_cache_size: 21,
+    };
+}
+
+#[test]
+fn from_buffer_correctly_parses_pointer_capset() {
+    let buffer = POINTER_BUFFER.as_ref();
+
+    assert_eq!(*POINTER, Pointer::from_buffer(buffer).unwrap());
+}
+
+#[test]
+fn to_buffer_correctly_serializes_pointer_capset() {
+    let mut buffer: Vec<u8> = Vec::new();
+
+    let capset = &POINTER;
+
+    capset.to_buffer(&mut buffer).unwrap();
+
+    assert_eq!(buffer, POINTER_BUFFER.as_ref());
+}
+
+#[test]
+fn buffer_length_is_correct_for_pointer_capset() {
+    let correct_length = POINTER_BUFFER.len();
+
+    assert_eq!(correct_length, POINTER.buffer_length());
+}

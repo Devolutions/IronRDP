@@ -1,21 +1,47 @@
 pub mod conference_create;
+pub(crate) mod monitor_data;
 #[cfg(test)]
 pub mod test;
 
 mod cluster_data;
 mod core_data;
 mod message_channel_data;
-mod monitor_data;
 mod monitor_extended_data;
 mod multi_transport_channel_data;
 mod network_data;
 mod security_data;
 
 pub use self::{
+    cluster_data::{ClientClusterData, ClusterDataError, RedirectionFlags, RedirectionVersion},
     conference_create::{ConferenceCreateRequest, ConferenceCreateResponse},
-    core_data::{client::ClientEarlyCapabilityFlags, RdpVersion},
-    network_data::Channel,
-    security_data::EncryptionMethod,
+    core_data::{
+        client::{
+            ClientColorDepth, ClientCoreData, ClientEarlyCapabilityFlags, ColorDepth,
+            ConnectionType, HighColorDepth, KeyboardType, SecureAccessSequence,
+            SupportedColorDepths, IME_FILE_NAME_SIZE,
+        },
+        server::{ServerCoreData, ServerEarlyCapabilityFlags},
+        CoreDataError, RdpVersion,
+    },
+    message_channel_data::{ClientMessageChannelData, ServerMessageChannelData},
+    monitor_data::{
+        ClientMonitorData, Monitor, MonitorDataError, MonitorFlags, MONITOR_COUNT_SIZE,
+        MONITOR_FLAGS_SIZE, MONITOR_SIZE,
+    },
+    monitor_extended_data::{
+        ClientMonitorExtendedData, ExtendedMonitorInfo, MonitorExtendedDataError,
+        MonitorOrientation,
+    },
+    multi_transport_channel_data::{
+        MultiTransportChannelData, MultiTransportChannelDataError, MultiTransportFlags,
+    },
+    network_data::{
+        Channel, ChannelOptions, ClientNetworkData, NetworkDataError, ServerNetworkData,
+    },
+    security_data::{
+        ClientSecurityData, EncryptionLevel, EncryptionMethod, SecurityDataError,
+        ServerSecurityData,
+    },
 };
 
 use std::io;
@@ -25,16 +51,6 @@ use failure::Fail;
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive, ToPrimitive};
 
-use self::{
-    cluster_data::{ClientClusterData, ClusterDataError},
-    core_data::{client::ClientCoreData, server::ServerCoreData, CoreDataError},
-    message_channel_data::{ClientMessageChannelData, ServerMessageChannelData},
-    monitor_data::{ClientMonitorData, MonitorDataError},
-    monitor_extended_data::{ClientMonitorExtendedData, MonitorExtendedDataError},
-    multi_transport_channel_data::{MultiTransportChannelData, MultiTransportChannelDataError},
-    network_data::{ClientNetworkData, NetworkDataError, ServerNetworkData},
-    security_data::{ClientSecurityData, SecurityDataError, ServerSecurityData},
-};
 use crate::PduParsing;
 
 macro_rules! user_header_try {
@@ -379,6 +395,13 @@ impl<T: FromPrimitive + ToPrimitive> PduParsing for UserDataHeader<T> {
         let block_type =
             T::from_u16(buffer.read_u16::<LittleEndian>()?).ok_or(GccError::InvalidGccType)?;
         let block_length = buffer.read_u16::<LittleEndian>()?;
+
+        if block_length <= USER_DATA_HEADER_SIZE as u16 {
+            return Err(GccError::IOError(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "invalid UserDataHeader length",
+            )));
+        }
 
         let mut block_data = vec![0; block_length as usize - USER_DATA_HEADER_SIZE];
         buffer.read_exact(&mut block_data)?;

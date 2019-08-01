@@ -71,11 +71,11 @@ impl PduParsing for ClientMonitorExtendedData {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ExtendedMonitorInfo {
-    physical_width: u32,
-    physical_height: u32,
-    orientation: MonitorOrientation,
-    desktop_scale_factor: u32,
-    device_scale_factor: u32,
+    pub physical_width: u32,
+    pub physical_height: u32,
+    pub orientation: MonitorOrientation,
+    pub desktop_scale_factor: u32,
+    pub device_scale_factor: u32,
 }
 
 impl PduParsing for ExtendedMonitorInfo {

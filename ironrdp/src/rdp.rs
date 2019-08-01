@@ -1,22 +1,35 @@
 #[cfg(test)]
 pub mod test;
 
+mod capability_sets;
 mod client_info;
 mod client_license;
+mod finalization_messages;
+mod headers;
+
+pub use self::{
+    capability_sets::{
+        CapabilitySet, CapabilitySetsError, ClientConfirmActive, DemandActive, ServerDemandActive,
+    },
+    finalization_messages::ControlAction,
+    headers::{ShareControlHeader, ShareControlPdu, ShareDataHeader, ShareDataPdu},
+};
 
 use std::io;
 
-use bitflags::bitflags;
-use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use failure::Fail;
 
 use self::{
     client_info::{ClientInfo, ClientInfoError},
     client_license::{ClientLicense, ClientLicenseError},
+    finalization_messages::{
+        ControlPdu, FinalizationMessagesError, MonitorLayoutPdu, SynchronizePdu,
+    },
+    headers::{
+        BasicSecurityHeader, BasicSecurityHeaderFlags, ShareControlPduType, ShareDataPduType,
+    },
 };
 use crate::PduParsing;
-
-const BASIC_SECURITY_HEADER_SIZE: usize = 4;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ClientInfoPdu {
@@ -98,55 +111,6 @@ impl PduParsing for ClientLicensePdu {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct BasicSecurityHeader {
-    flags: BasicSecurityHeaderFlags,
-}
-
-impl PduParsing for BasicSecurityHeader {
-    type Error = RdpError;
-
-    fn from_buffer(mut stream: impl io::Read) -> Result<Self, Self::Error> {
-        let flags = BasicSecurityHeaderFlags::from_bits(stream.read_u16::<LittleEndian>()?)
-            .ok_or(RdpError::InvalidSecurityHeader)?;
-        let _flags_hi = stream.read_u16::<LittleEndian>()?; // unused
-
-        Ok(Self { flags })
-    }
-
-    fn to_buffer(&self, mut stream: impl io::Write) -> Result<(), Self::Error> {
-        stream.write_u16::<LittleEndian>(self.flags.bits())?;
-        stream.write_u16::<LittleEndian>(0)?; // flags_hi
-
-        Ok(())
-    }
-
-    fn buffer_length(&self) -> usize {
-        BASIC_SECURITY_HEADER_SIZE
-    }
-}
-
-bitflags! {
-    pub struct BasicSecurityHeaderFlags: u16 {
-        const EXCHANGE_PKT = 0x0001;
-        const TRANSPORT_REQ = 0x0002;
-        const TRANSPORT_RSP = 0x0004;
-        const ENCRYPT = 0x0008;
-        const RESET_SEQNO = 0x0010;
-        const IGNORE_SEQNO = 0x0020;
-        const INFO_PKT = 0x0040;
-        const LICENSE_PKT = 0x0080;
-        const LICENSE_ENCRYPT_CS = 0x0100;
-        const LICENSE_ENCRYPT_SC = 0x0200;
-        const REDIRECTION_PKT = 0x0400;
-        const SECURE_CHECKSUM = 0x0800;
-        const AUTODETECT_REQ = 0x1000;
-        const AUTODETECT_RSP = 0x2000;
-        const HEARTBEAT = 0x4000;
-        const FLAGSHI_VALID = 0x8000;
-    }
-}
-
 #[derive(Debug, Fail)]
 pub enum RdpError {
     #[fail(display = "IO error: {}", _0)]
@@ -155,15 +119,33 @@ pub enum RdpError {
     ClientInfoError(ClientInfoError),
     #[fail(display = "Client License PDU error: {}", _0)]
     ClientLicenseError(ClientLicenseError),
+    #[fail(display = "Capability sets error: {}", _0)]
+    CapabilitySetsError(CapabilitySetsError),
+    #[fail(display = "Finalization PDUs error: {}", _0)]
+    FinalizationMessagesError(FinalizationMessagesError),
     #[fail(display = "Invalid RDP security header")]
     InvalidSecurityHeader,
+    #[fail(display = "Invalid RDP Share Control Header: {}", _0)]
+    InvalidShareControlHeader(String),
+    #[fail(display = "Invalid RDP Share Data Header: {}", _0)]
+    InvalidShareDataHeader(String),
     #[fail(display = "Invalid RDP Connection Sequence PDU")]
     InvalidPdu(String),
+    #[fail(display = "Unexpected RDP Share Control Header PDU type: {:?}", _0)]
+    UnexpectedShareControlPdu(ShareControlPduType),
+    #[fail(display = "Unexpected RDP Share Data Header PDU type: {:?}", _0)]
+    UnexpectedShareDataPdu(ShareDataPduType),
 }
 
 impl_from_error!(io::Error, RdpError, RdpError::IOError);
 impl_from_error!(ClientInfoError, RdpError, RdpError::ClientInfoError);
 impl_from_error!(ClientLicenseError, RdpError, RdpError::ClientLicenseError);
+impl_from_error!(CapabilitySetsError, RdpError, RdpError::CapabilitySetsError);
+impl_from_error!(
+    FinalizationMessagesError,
+    RdpError,
+    RdpError::FinalizationMessagesError
+);
 
 impl From<RdpError> for io::Error {
     fn from(e: RdpError) -> io::Error {
