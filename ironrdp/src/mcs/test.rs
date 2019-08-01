@@ -40,10 +40,10 @@ const ERECT_DOMAIN_PDU: McsPdu = McsPdu::ErectDomainRequest(ErectDomainPdu {
 const ATTACH_USER_REQUEST_PDU: McsPdu = McsPdu::AttachUserRequest;
 const ATTACH_USER_CONFIRM_PDU: McsPdu = McsPdu::AttachUserConfirm(AttachUserConfirmPdu {
     result: 0,
-    user_id: 1007,
+    initiator_id: 1007,
 });
 const CHANNEL_JOIN_REQUEST_PDU: McsPdu = McsPdu::ChannelJoinRequest(ChannelJoinRequestPdu {
-    user_id: 1007,
+    initiator_id: 1007,
     channel_id: 1007,
 });
 const CHANNEL_JOIN_CONFIRM_PDU: McsPdu = McsPdu::ChannelJoinConfirm(ChannelJoinConfirmPdu {

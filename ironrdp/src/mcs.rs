@@ -2,7 +2,7 @@ mod connect_initial;
 #[cfg(test)]
 mod test;
 
-pub use self::connect_initial::{ConnectInitial, ConnectResponse};
+pub use self::connect_initial::{ConnectInitial, ConnectResponse, DomainParameters};
 
 use std::io;
 
@@ -158,8 +158,8 @@ enum DomainMcsPdu {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ErectDomainPdu {
-    sub_height: u32,
-    sub_interval: u32,
+    pub sub_height: u32,
+    pub sub_interval: u32,
 }
 
 impl PduParsing for ErectDomainPdu {
@@ -188,8 +188,8 @@ impl PduParsing for ErectDomainPdu {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct AttachUserConfirmPdu {
-    pub user_id: u16,
-    result: u8,
+    pub initiator_id: u16,
+    pub result: u8,
 }
 
 impl PduParsing for AttachUserConfirmPdu {
@@ -199,11 +199,14 @@ impl PduParsing for AttachUserConfirmPdu {
         let result = per::read_enum(&mut stream, RESULT_ENUM_LENGTH)?;
         let user_id = per::read_u16(&mut stream, BASE_CHANNEL_ID)?;
 
-        Ok(Self { result, user_id })
+        Ok(Self {
+            result,
+            initiator_id: user_id,
+        })
     }
     fn to_buffer(&self, mut stream: impl io::Write) -> Result<(), Self::Error> {
         per::write_enum(&mut stream, self.result)?;
-        per::write_u16(&mut stream, self.user_id, BASE_CHANNEL_ID)?;
+        per::write_u16(&mut stream, self.initiator_id, BASE_CHANNEL_ID)?;
 
         Ok(())
     }
@@ -214,8 +217,8 @@ impl PduParsing for AttachUserConfirmPdu {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ChannelJoinRequestPdu {
-    user_id: u16,
-    channel_id: u16,
+    pub initiator_id: u16,
+    pub channel_id: u16,
 }
 
 impl PduParsing for ChannelJoinRequestPdu {
@@ -226,12 +229,12 @@ impl PduParsing for ChannelJoinRequestPdu {
         let channel_id = per::read_u16(&mut stream, 0)?;
 
         Ok(Self {
-            user_id,
+            initiator_id: user_id,
             channel_id,
         })
     }
     fn to_buffer(&self, mut stream: impl io::Write) -> Result<(), Self::Error> {
-        per::write_u16(&mut stream, self.user_id, BASE_CHANNEL_ID)?;
+        per::write_u16(&mut stream, self.initiator_id, BASE_CHANNEL_ID)?;
         per::write_u16(&mut stream, self.channel_id, 0)?;
 
         Ok(())
@@ -244,9 +247,9 @@ impl PduParsing for ChannelJoinRequestPdu {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ChannelJoinConfirmPdu {
     pub channel_id: u16,
-    result: u8,
-    initiator_id: u16,
-    requested_channel_id: u16,
+    pub result: u8,
+    pub initiator_id: u16,
+    pub requested_channel_id: u16,
 }
 
 impl PduParsing for ChannelJoinConfirmPdu {

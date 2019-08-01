@@ -653,3 +653,17 @@ fn invalid_class_is_handeled_correctly() {
 
     assert!(Response::from_buffer(buffer.as_ref()).is_err());
 }
+
+#[test]
+fn parse_negotiation_request_correctly_handles_invalid_slice_length() {
+    let request = [
+        0x43, 0x6F, 0x6F, 0x6B, 0x69, 0x65, 0x3A, 0x20, 0x6D, 0x73, 0x74, 0x73, 0x68, 0x61, 0x73,
+        0x68, 0x3D, 0x0a, // failing cookie
+    ];
+
+    match Request::from_buffer(request.as_ref()) {
+        Err(NegotiationError::IOError(ref e)) if e.kind() == io::ErrorKind::InvalidData => (),
+        Err(_e) => panic!("wrong error type"),
+        _ => panic!("error expected"),
+    }
+}

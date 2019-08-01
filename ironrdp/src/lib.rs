@@ -2,12 +2,12 @@
 mod utils;
 
 pub mod gcc;
+pub mod mcs;
 pub mod nego;
+pub mod rdp;
 
 mod fast_path;
-mod mcs;
 mod per;
-mod rdp;
 mod x224;
 
 pub use crate::{

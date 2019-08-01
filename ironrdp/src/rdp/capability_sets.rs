@@ -18,11 +18,24 @@ mod virtual_channel;
 use std::io;
 
 pub use self::{
-    bitmap::Bitmap, bitmap_cache::BitmapCache, bitmap_cache::BitmapCacheRev2,
-    bitmap_codecs::BitmapCodecs, brush::Brush, general::General, glyph_cache::GlyphCache,
-    input::Input, offscreen_bitmap_cache::OffscreenBitmapCache, order::Order, pointer::Pointer,
-    sound::Sound, surface_commands::SurfaceCommands, virtual_channel::VirtualChannel,
+    bitmap::{Bitmap, BitmapDrawingFlags},
+    bitmap_cache::{BitmapCache, BitmapCacheRev2, CacheEntry, CacheFlags, CellInfo},
+    bitmap_codecs::{
+        BitmapCodecs, CaptureFlags, Codec, CodecProperty, EntropyBits, Guid, NsCodec,
+        RemoteFxContainer, RfxCaps, RfxCapset, RfxClientCapsContainer, RfxICap, RfxICapFlags,
+    },
+    brush::{Brush, SupportLevel},
+    general::{General, GeneralExtraFlags, MajorPlatformType, MinorPlatformType},
+    glyph_cache::{CacheDefinition, GlyphCache, GlyphSupportLevel},
+    input::{Input, InputFlags},
+    offscreen_bitmap_cache::OffscreenBitmapCache,
+    order::{Order, OrderFlags, OrderSupportExFlags, OrderSupportIndex},
+    pointer::Pointer,
+    sound::{Sound, SoundFlags},
+    surface_commands::{CmdFlags, SurfaceCommands},
+    virtual_channel::{VirtualChannel, VirtualChannelFlags},
 };
+
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use failure::Fail;
 use num_derive::{FromPrimitive, ToPrimitive};

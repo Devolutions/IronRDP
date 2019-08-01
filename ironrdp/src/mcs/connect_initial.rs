@@ -20,12 +20,12 @@ const MCS_TYPE_CONNECT_RESPONSE: u8 = 0x66;
 #[derive(Clone, Debug, PartialEq)]
 pub struct ConnectInitial {
     pub conference_create_request: ConferenceCreateRequest,
-    calling_domain_selector: Vec<u8>,
-    called_domain_selector: Vec<u8>,
-    upward_flag: bool,
-    target_parameters: DomainParameters,
-    min_parameters: DomainParameters,
-    max_parameters: DomainParameters,
+    pub calling_domain_selector: Vec<u8>,
+    pub called_domain_selector: Vec<u8>,
+    pub upward_flag: bool,
+    pub target_parameters: DomainParameters,
+    pub min_parameters: DomainParameters,
+    pub max_parameters: DomainParameters,
 }
 
 impl ConnectInitial {
@@ -102,8 +102,8 @@ impl PduParsing for ConnectInitial {
 #[derive(Clone, Debug, PartialEq)]
 pub struct ConnectResponse {
     pub conference_create_response: ConferenceCreateResponse,
-    called_connect_id: u32,
-    domain_parameters: DomainParameters,
+    pub called_connect_id: u32,
+    pub domain_parameters: DomainParameters,
 }
 
 impl ConnectResponse {
@@ -170,15 +170,15 @@ impl PduParsing for ConnectResponse {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-struct DomainParameters {
-    max_channel_ids: u32,
-    max_user_ids: u32,
-    max_token_ids: u32,
-    num_priorities: u32,
-    min_throughput: u32,
-    max_height: u32,
-    max_mcs_pdu_size: u32,
-    protocol_version: u32,
+pub struct DomainParameters {
+    pub max_channel_ids: u32,
+    pub max_user_ids: u32,
+    pub max_token_ids: u32,
+    pub num_priorities: u32,
+    pub min_throughput: u32,
+    pub max_height: u32,
+    pub max_mcs_pdu_size: u32,
+    pub protocol_version: u32,
 }
 
 impl DomainParameters {

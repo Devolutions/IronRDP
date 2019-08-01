@@ -175,10 +175,10 @@ impl PduParsing for ClientInfo {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ExtendedClientInfo {
-    address_family: AddressFamily,
-    address: String,
-    dir: String,
-    optional_data: ExtendedClientOptionalInfo,
+    pub address_family: AddressFamily,
+    pub address: String,
+    pub dir: String,
+    pub optional_data: ExtendedClientOptionalInfo,
 }
 
 impl ExtendedClientInfo {
@@ -244,10 +244,10 @@ impl ExtendedClientInfo {
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct ExtendedClientOptionalInfo {
-    timezone: Option<TimezoneInfo>,
-    session_id: Option<u32>,
-    performance_flags: Option<PerformanceFlags>,
-    reconnect_cookie: Option<[u8; RECONNECT_COOKIE_LEN]>,
+    pub timezone: Option<TimezoneInfo>,
+    pub session_id: Option<u32>,
+    pub performance_flags: Option<PerformanceFlags>,
+    pub reconnect_cookie: Option<[u8; RECONNECT_COOKIE_LEN]>,
     // other fields are read by RdpVersion::Ten+
 }
 
@@ -333,13 +333,13 @@ impl PduParsing for ExtendedClientOptionalInfo {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct TimezoneInfo {
-    bias: u32,
-    standard_name: String,
-    standard_date: SystemTime,
-    standard_bias: u32,
-    daylight_name: String,
-    daylight_date: SystemTime,
-    daylight_bias: u32,
+    pub bias: u32,
+    pub standard_name: String,
+    pub standard_date: SystemTime,
+    pub standard_bias: u32,
+    pub daylight_name: String,
+    pub daylight_date: SystemTime,
+    pub daylight_bias: u32,
 }
 
 impl PduParsing for TimezoneInfo {
@@ -410,13 +410,13 @@ impl PduParsing for TimezoneInfo {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct SystemTime {
-    month: Month,
-    day_of_week: DayOfWeek,
-    day: DayOfWeekOccurrence,
-    hour: u16,
-    minute: u16,
-    second: u16,
-    milliseconds: u16,
+    pub month: Month,
+    pub day_of_week: DayOfWeek,
+    pub day: DayOfWeekOccurrence,
+    pub hour: u16,
+    pub minute: u16,
+    pub second: u16,
+    pub milliseconds: u16,
 }
 
 impl PduParsing for SystemTime {
@@ -466,7 +466,7 @@ impl PduParsing for SystemTime {
 
 #[repr(u16)]
 #[derive(Debug, Clone, PartialEq, FromPrimitive, ToPrimitive)]
-enum Month {
+pub enum Month {
     January = 1,
     February = 2,
     March = 3,
@@ -483,7 +483,7 @@ enum Month {
 
 #[repr(u16)]
 #[derive(Debug, Clone, PartialEq, FromPrimitive, ToPrimitive)]
-enum DayOfWeek {
+pub enum DayOfWeek {
     Sunday = 0,
     Monday = 1,
     Tuesday = 2,
@@ -495,7 +495,7 @@ enum DayOfWeek {
 
 #[repr(u16)]
 #[derive(Debug, Clone, PartialEq, FromPrimitive, ToPrimitive)]
-enum DayOfWeekOccurrence {
+pub enum DayOfWeekOccurrence {
     First = 1,
     Second = 2,
     Third = 3,
@@ -504,7 +504,7 @@ enum DayOfWeekOccurrence {
 }
 
 bitflags! {
-    struct PerformanceFlags: u32 {
+    pub struct PerformanceFlags: u32 {
         const DISABLE_WALLPAPER = 0x0000_0001;
         const DISABLE_FULLWINDOWDRAG = 0x0000_0002;
         const DISABLE_MENUANIMATIONS = 0x0000_0004;
