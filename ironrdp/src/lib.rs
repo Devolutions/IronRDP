@@ -17,7 +17,7 @@ pub use crate::{
     rdp::{
         CapabilitySet, ClientConfirmActive, ClientInfoPdu, ClientLicensePdu, ControlAction,
         DemandActive, ServerDemandActive, ShareControlHeader, ShareControlPdu, ShareDataHeader,
-        ShareDataPdu,
+        ShareDataPdu, VirtualChannel,
     },
     x224::*,
 };

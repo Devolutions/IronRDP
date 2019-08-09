@@ -10,6 +10,7 @@ mod headers;
 pub use self::{
     capability_sets::{
         CapabilitySet, CapabilitySetsError, ClientConfirmActive, DemandActive, ServerDemandActive,
+        VirtualChannel,
     },
     finalization_messages::ControlAction,
     headers::{ShareControlHeader, ShareControlPdu, ShareDataHeader, ShareDataPdu},
