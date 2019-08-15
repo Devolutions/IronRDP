@@ -30,7 +30,7 @@ fn rdp_negotiation_data_is_not_written_if_rdp_security() {
         0x00, 0x22, // lenght in BE
 
         // tpdu
-        0x6, // length
+        0x1d, // length
         0xe0, // code
         0x00, 0x00, // dst_ref
         0x00, 0x00, // src_ref
@@ -63,7 +63,7 @@ fn negotiation_request_is_written_correclty() {
         0x00, 0x2a, // lenght in BE
 
         // tpdu
-        0x6, // length
+        0x25, // length
         0xe0, // code
         0x00, 0x00, // dst_ref
         0x00, 0x00, // src_ref
@@ -395,7 +395,7 @@ fn negotiation_response_is_written_correctly() {
         0x00, 0x13, // lenght in BE
 
         // tpdu
-        0x6, // length
+        0x0e, // length
         0xd0, // code
         0x00, 0x00, // dst_ref
         0x00, 0x00, // src_ref
@@ -435,7 +435,7 @@ fn negotiation_error_is_written_correclty() {
         0x00, 0x13, // lenght in BE
 
         // tpdu
-        0x6, // length
+        0x0e, // length
         0xd0, // code
         0x00, 0x00, // dst_ref
         0x00, 0x00, // src_ref

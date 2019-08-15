@@ -111,21 +111,7 @@ pub fn read_and_check_tpdu_header(
     mut stream: impl io::Read,
     required_code: X224TPDUType,
 ) -> Result<(), NegotiationError> {
-    let tpdu_length = usize::from(stream.read_u8()?);
-    if tpdu_length
-        != match required_code {
-            X224TPDUType::ConnectionConfirm
-            | X224TPDUType::ConnectionRequest
-            | X224TPDUType::DisconnectRequest => TPDU_REQUEST_HEADER_LENGTH,
-            X224TPDUType::Data => TPDU_DATA_HEADER_LENGTH,
-            X224TPDUType::Error => TPDU_ERROR_HEADER_LENGTH,
-        } - 1
-    {
-        return Err(NegotiationError::IOError(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "invalid tpdu length",
-        )));
-    }
+    let _tpdu_length = usize::from(stream.read_u8()?);
 
     let code = X224TPDUType::from_u8(stream.read_u8()?).ok_or_else(|| {
         NegotiationError::IOError(io::Error::new(

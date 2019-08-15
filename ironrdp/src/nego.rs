@@ -10,7 +10,7 @@ use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive, ToPrimitive};
 
 use crate::{
-    x224::{TpktHeader, X224TPDUType, TPDU_REQUEST_HEADER_LENGTH, TPDU_REQUEST_LENGTH},
+    x224::{TpktHeader, X224TPDUType, TPDU_REQUEST_LENGTH, TPKT_HEADER_LENGTH},
     PduParsing,
 };
 
@@ -184,7 +184,9 @@ impl PduParsing for Request {
     fn to_buffer(&self, mut stream: impl io::Write) -> Result<(), Self::Error> {
         TpktHeader::new(self.buffer_length()).to_buffer(&mut stream)?;
 
-        stream.write_u8((TPDU_REQUEST_HEADER_LENGTH - 1) as u8)?;
+        let tpdu_length = self.buffer_length() - TPKT_HEADER_LENGTH - 1;
+        stream.write_u8(tpdu_length as u8)?;
+
         stream.write_u8(X224TPDUType::ConnectionRequest.to_u8().unwrap())?;
         stream.write_u16::<LittleEndian>(0)?; // dst_ref
         stream.write_u16::<LittleEndian>(self.src_ref)?;
@@ -296,7 +298,9 @@ impl PduParsing for Response {
     fn to_buffer(&self, mut stream: impl io::Write) -> Result<(), Self::Error> {
         TpktHeader::new(self.buffer_length()).to_buffer(&mut stream)?;
 
-        stream.write_u8((TPDU_REQUEST_HEADER_LENGTH - 1) as u8)?;
+        let tpdu_length = self.buffer_length() - TPKT_HEADER_LENGTH - 1;
+        stream.write_u8(tpdu_length as u8)?;
+
         stream.write_u8(X224TPDUType::ConnectionConfirm.to_u8().unwrap())?;
         stream.write_u16::<LittleEndian>(self.dst_ref)?;
         stream.write_u16::<LittleEndian>(self.src_ref)?;
