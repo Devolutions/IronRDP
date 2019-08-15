@@ -5,8 +5,8 @@ pub mod rdp;
 
 mod fast_path;
 mod per;
-mod x224;
 mod utils;
+mod x224;
 
 pub use crate::{
     fast_path::{parse_fast_path_header, FastPath, FastPathError},

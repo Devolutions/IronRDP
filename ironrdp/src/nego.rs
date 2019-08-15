@@ -10,6 +10,7 @@ use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive, ToPrimitive};
 
 use crate::{
+    impl_from_error,
     x224::{TpktHeader, X224TPDUType, TPDU_REQUEST_LENGTH, TPKT_HEADER_LENGTH},
     PduParsing,
 };
