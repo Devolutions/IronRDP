@@ -251,3 +251,163 @@ impl Decoder for McsTransport {
         Ok(mcs_pdu)
     }
 }
+
+pub struct SendDataContextTransport {
+    mcs_transport: McsTransport,
+    initiator_id: u16,
+    global_channel_id: u16,
+}
+
+impl SendDataContextTransport {
+    pub fn new(initiator_id: u16, global_channel_id: u16) -> Self {
+        Self {
+            mcs_transport: McsTransport::default(),
+            initiator_id,
+            global_channel_id,
+        }
+    }
+}
+
+impl Encoder for SendDataContextTransport {
+    type Item = Vec<u8>;
+    type Error = RdpError;
+
+    fn encode(
+        &mut self,
+        send_data_context_pdu: Self::Item,
+        mut stream: impl io::Write,
+    ) -> RdpResult<()> {
+        let send_data_context = ironrdp::mcs::SendDataContext::new(
+            send_data_context_pdu,
+            self.initiator_id,
+            self.global_channel_id,
+        );
+        let send_data_request = ironrdp::McsPdu::SendDataRequest(send_data_context);
+
+        self.mcs_transport.encode(send_data_request, &mut stream)
+    }
+}
+
+impl Decoder for SendDataContextTransport {
+    type Item = Vec<u8>;
+    type Error = RdpError;
+
+    fn decode(&mut self, mut stream: impl io::Read) -> RdpResult<Self::Item> {
+        let mcs_pdu = self.mcs_transport.decode(&mut stream)?;
+
+        if let ironrdp::McsPdu::SendDataIndication(send_data_context) = mcs_pdu {
+            if send_data_context.channel_id == self.global_channel_id {
+                Ok(send_data_context.pdu)
+            } else {
+                Err(RdpError::InvalidResponse(format!(
+                    "Unexpected Send Data Context channel ID ({})",
+                    send_data_context.channel_id,
+                )))
+            }
+        } else {
+            Err(RdpError::UnexpectedPdu(format!(
+                "Expected Send Data Context PDU, got {:?}",
+                mcs_pdu.as_short_name()
+            )))
+        }
+    }
+}
+
+pub struct ShareControlHeaderTransport {
+    share_id: u32,
+    pdu_source: u16,
+    send_data_context_transport: SendDataContextTransport,
+}
+
+impl ShareControlHeaderTransport {
+    pub fn new(send_data_context_transport: SendDataContextTransport, pdu_source: u16) -> Self {
+        Self {
+            send_data_context_transport,
+            pdu_source,
+            share_id: 0,
+        }
+    }
+}
+
+impl Encoder for ShareControlHeaderTransport {
+    type Item = ironrdp::ShareControlPdu;
+    type Error = RdpError;
+
+    fn encode(
+        &mut self,
+        share_control_pdu: Self::Item,
+        mut stream: impl io::Write,
+    ) -> RdpResult<()> {
+        let share_control_header =
+            ironrdp::ShareControlHeader::new(share_control_pdu, self.pdu_source, self.share_id);
+
+        let mut pdu = Vec::with_capacity(share_control_header.buffer_length());
+        share_control_header
+            .to_buffer(&mut pdu)
+            .map_err(RdpError::ShareControlHeaderError)?;
+
+        self.send_data_context_transport.encode(pdu, &mut stream)
+    }
+}
+
+impl Decoder for ShareControlHeaderTransport {
+    type Item = ironrdp::ShareControlPdu;
+    type Error = RdpError;
+
+    fn decode(&mut self, mut stream: impl io::Read) -> RdpResult<Self::Item> {
+        let send_data_context = self.send_data_context_transport.decode(&mut stream)?;
+
+        let share_control_header =
+            ironrdp::ShareControlHeader::from_buffer(send_data_context.as_slice())
+                .map_err(RdpError::ShareControlHeaderError)?;
+        if share_control_header.pdu_source == SERVER_CHANNEL_ID {
+            self.share_id = share_control_header.share_id;
+
+            Ok(share_control_header.share_control_pdu)
+        } else {
+            Err(RdpError::InvalidResponse(format!(
+                "Invalid Share Control Header pdu source: {}",
+                share_control_header.pdu_source
+            )))
+        }
+    }
+}
+
+pub struct ShareDataHeaderTransport(pub ShareControlHeaderTransport);
+
+impl Encoder for ShareDataHeaderTransport {
+    type Item = ironrdp::ShareDataPdu;
+    type Error = RdpError;
+
+    fn encode(&mut self, share_data_pdu: Self::Item, mut stream: impl io::Write) -> RdpResult<()> {
+        let share_data_header = ironrdp::ShareDataHeader::new(
+            share_data_pdu,
+            ironrdp::rdp::StreamPriority::Medium,
+            ironrdp::rdp::CompressionFlags::empty(),
+            ironrdp::rdp::CompressionType::K8, // ignored if CompressionFlags::empty()
+        );
+
+        self.0.encode(
+            ironrdp::ShareControlPdu::Data(share_data_header),
+            &mut stream,
+        )
+    }
+}
+
+impl Decoder for ShareDataHeaderTransport {
+    type Item = ironrdp::ShareDataPdu;
+    type Error = RdpError;
+
+    fn decode(&mut self, mut stream: impl io::Read) -> RdpResult<Self::Item> {
+        let share_control_pdu = self.0.decode(&mut stream)?;
+
+        if let ironrdp::ShareControlPdu::Data(share_data_header) = share_control_pdu {
+            Ok(share_data_header.share_data_pdu)
+        } else {
+            Err(RdpError::UnexpectedPdu(format!(
+                "Expected Share Data Header, got: {:?}",
+                share_control_pdu.as_short_name()
+            )))
+        }
+    }
+}

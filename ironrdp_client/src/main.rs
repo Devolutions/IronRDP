@@ -94,6 +94,17 @@ fn run(config: Config) -> RdpResult<()> {
         .get(&*USER_CHANNEL_NAME)
         .expect("user channel must be added");
 
+    let mut transport = SendDataContextTransport::new(initiator_id, global_channel_id);
+
+    send_client_info(&mut transport, &mut tls_stream, &config)?;
+    process_server_license(&mut transport, &mut tls_stream)?;
+
+    let mut transport = ShareControlHeaderTransport::new(transport, initiator_id);
+    process_capability_sets(&mut transport, &mut tls_stream, &config)?;
+
+    let mut transport = ShareDataHeaderTransport(transport);
+    process_finalization(&mut transport, &mut tls_stream, initiator_id)?;
+
     Ok(())
 }
 

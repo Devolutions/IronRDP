@@ -235,3 +235,171 @@ where
 
     Ok(static_channels)
 }
+
+pub fn send_client_info<S>(
+    transport: &mut SendDataContextTransport,
+    mut stream: &mut S,
+    config: &Config,
+) -> RdpResult<()>
+where
+    S: io::Read + io::Write,
+{
+    let client_info_pdu = user_info::create_client_info_pdu(config)?;
+    debug!("Send Client Info PDU: {:?}", client_info_pdu);
+    let mut pdu = Vec::with_capacity(client_info_pdu.buffer_length());
+    client_info_pdu
+        .to_buffer(&mut pdu)
+        .map_err(RdpError::ServerLicenseError)?;
+
+    transport.encode(pdu, &mut stream)?;
+
+    Ok(())
+}
+
+pub fn process_server_license<S>(
+    transport: &mut SendDataContextTransport,
+    mut stream: &mut S,
+) -> RdpResult<()>
+where
+    S: io::Read + io::Write,
+{
+    let pdu = transport.decode(&mut stream)?;
+    let server_license_pdu = ironrdp::ServerLicensePdu::from_buffer(pdu.as_slice())
+        .map_err(RdpError::ServerLicenseError)?;
+    debug!("Got Server License PDU: {:?}", server_license_pdu);
+
+    let server_license = server_license_pdu.server_license;
+    if server_license.preamble.message_type == ironrdp::rdp::PreambleType::ErrorAlert
+        && server_license.error_message.state_transition
+            == ironrdp::rdp::LicensingStateTransition::NoTransition
+        && server_license.error_message.error_info.blob_type == ironrdp::rdp::BlobType::Error
+        && server_license.error_message.error_info.data.is_empty()
+    {
+        Ok(())
+    } else {
+        Err(RdpError::InvalidResponse(String::from(
+            "Invalid Server License PDU",
+        )))
+    }
+}
+
+pub fn process_capability_sets<S>(
+    transport: &mut ShareControlHeaderTransport,
+    mut stream: &mut S,
+    config: &Config,
+) -> RdpResult<()>
+where
+    S: io::Read + io::Write,
+{
+    let share_control_pdu = transport.decode(&mut stream)?;
+    let capability_sets =
+        if let ironrdp::ShareControlPdu::ServerDemandActive(server_demand_active) =
+            share_control_pdu
+        {
+            debug!(
+                "Got Server Demand Active PDU: {:?}",
+                server_demand_active.pdu
+            );
+
+            server_demand_active.pdu.capability_sets
+        } else {
+            return Err(RdpError::UnexpectedPdu(format!(
+                "Expected Server Demand Active PDU, got: {:?}",
+                share_control_pdu.as_short_name()
+            )));
+        };
+
+    let client_confirm_active = ironrdp::ShareControlPdu::ClientConfirmActive(
+        user_info::create_client_confirm_active(config, capability_sets)?,
+    );
+    debug!(
+        "Send Client Confirm Active PDU: {:?}",
+        client_confirm_active
+    );
+    transport.encode(client_confirm_active, &mut stream)?;
+
+    Ok(())
+}
+
+pub fn process_finalization<S>(
+    transport: &mut ShareDataHeaderTransport,
+    mut stream: &mut S,
+    initiator_id: u16,
+) -> RdpResult<()>
+where
+    S: io::Read + io::Write,
+{
+    use ironrdp::rdp::{
+        ControlAction, ControlPdu, FontPdu, SequenceFlags, ShareDataPdu, SynchronizePdu,
+    };
+
+    #[derive(Copy, Clone, PartialEq, Debug)]
+    enum FinalizationOrder {
+        Synchronize,
+        ControlCooperate,
+        RequestControl,
+        Font,
+        Finished,
+    }
+
+    let mut finalization_order = FinalizationOrder::Synchronize;
+    while finalization_order != FinalizationOrder::Finished {
+        let share_data_pdu = match finalization_order {
+            FinalizationOrder::Synchronize => {
+                ShareDataPdu::Synchronize(SynchronizePdu::new(initiator_id))
+            }
+            FinalizationOrder::ControlCooperate => {
+                ShareDataPdu::Control(ControlPdu::new(ControlAction::Cooperate, 0, 0))
+            }
+            FinalizationOrder::RequestControl => {
+                ShareDataPdu::Control(ControlPdu::new(ControlAction::RequestControl, 0, 0))
+            }
+            FinalizationOrder::Font => ShareDataPdu::FontList(FontPdu::new(
+                0,
+                0,
+                SequenceFlags::FIRST | SequenceFlags::LAST,
+                0x0032,
+            )),
+            FinalizationOrder::Finished => unreachable!(),
+        };
+        debug!("Send Finalization PDU: {:?}", share_data_pdu);
+        transport.encode(share_data_pdu, &mut stream)?;
+
+        let share_data_pdu = transport.decode(&mut stream)?;
+        debug!("Got Finalization PDU: {:?}", share_data_pdu);
+
+        finalization_order = match (finalization_order, share_data_pdu) {
+            (FinalizationOrder::Synchronize, ShareDataPdu::Synchronize(_)) => {
+                FinalizationOrder::ControlCooperate
+            }
+            (
+                FinalizationOrder::ControlCooperate,
+                ShareDataPdu::Control(ControlPdu {
+                    action: ironrdp::ControlAction::Cooperate,
+                    grant_id: 0,
+                    control_id: 0,
+                }),
+            ) => FinalizationOrder::RequestControl,
+            (
+                FinalizationOrder::RequestControl,
+                ShareDataPdu::Control(ControlPdu {
+                    action: ironrdp::ControlAction::GrantedControl,
+                    grant_id,
+                    control_id,
+                }),
+            ) if grant_id == initiator_id && control_id == u32::from(SERVER_CHANNEL_ID) => {
+                FinalizationOrder::Font
+            }
+            (FinalizationOrder::Font, ShareDataPdu::FontMap(_)) => FinalizationOrder::Finished,
+            (order, pdu) => {
+                return Err(RdpError::UnexpectedPdu(format!(
+                    "Expected Server {:?} PDU, got invalid PDU: {:?}",
+                    order,
+                    pdu.as_short_name()
+                )));
+            }
+        };
+    }
+
+    Ok(())
+}
