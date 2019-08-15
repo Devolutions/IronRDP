@@ -9,7 +9,7 @@ use failure::Fail;
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive, ToPrimitive};
 
-use crate::PduParsing;
+use crate::{impl_from_error, PduParsing};
 
 const PREAMBLE_SIZE: usize = 4;
 const ERROR_CODE_SIZE: usize = 4;
@@ -20,13 +20,13 @@ const BLOB_LENGTH_SIZE: usize = 2;
 const PROTOCOL_VERSION_MASK: u8 = 0x0F;
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct ClientLicense {
+pub struct ServerLicense {
     pub preamble: LicensePreamble,
     pub error_message: LicensingErrorMessage,
 }
 
-impl PduParsing for ClientLicense {
-    type Error = ClientLicenseError;
+impl PduParsing for ServerLicense {
+    type Error = ServerLicenseError;
 
     fn from_buffer(mut stream: impl io::Read) -> Result<Self, Self::Error> {
         let preamble = LicensePreamble::from_buffer(&mut stream)?;
@@ -59,19 +59,19 @@ pub struct LicensePreamble {
 }
 
 impl LicensePreamble {
-    fn from_buffer(mut stream: impl io::Read) -> Result<Self, ClientLicenseError> {
+    fn from_buffer(mut stream: impl io::Read) -> Result<Self, ServerLicenseError> {
         let message_type = PreambleType::from_u8(stream.read_u8()?)
-            .ok_or(ClientLicenseError::InvalidLicenseType)?;
+            .ok_or(ServerLicenseError::InvalidLicenseType)?;
         let flags_with_version = stream.read_u8()?;
         let _packet_size = stream.read_u16::<LittleEndian>()?;
 
         let flags = PreambleFlags::from_bits(flags_with_version & !PROTOCOL_VERSION_MASK)
             .ok_or_else(|| {
-                ClientLicenseError::InvalidPreamble(String::from("Got invalid flags field"))
+                ServerLicenseError::InvalidPreamble(String::from("Got invalid flags field"))
             })?;
         let version = PreambleVersion::from_u8((flags_with_version & PROTOCOL_VERSION_MASK) as u8)
             .ok_or_else(|| {
-                ClientLicenseError::InvalidPreamble(String::from(
+                ServerLicenseError::InvalidPreamble(String::from(
                     "Got invalid version in the flags field",
                 ))
             })?;
@@ -82,7 +82,7 @@ impl LicensePreamble {
                 flags,
                 version,
             }),
-            _ => Err(ClientLicenseError::InvalidPreamble(String::from(
+            _ => Err(ServerLicenseError::InvalidPreamble(String::from(
                 "Message type must be set to ERROR_ALERT",
             ))),
         }
@@ -92,7 +92,7 @@ impl LicensePreamble {
         &self,
         mut stream: impl io::Write,
         message_size: u16,
-    ) -> Result<(), ClientLicenseError> {
+    ) -> Result<(), ServerLicenseError> {
         let flags_with_version = self.flags.bits() | self.version.to_u8().unwrap();
 
         stream.write_u8(self.message_type.to_u8().unwrap())?;
@@ -115,14 +115,14 @@ pub struct LicensingErrorMessage {
 }
 
 impl PduParsing for LicensingErrorMessage {
-    type Error = ClientLicenseError;
+    type Error = ServerLicenseError;
 
     fn from_buffer(mut stream: impl io::Read) -> Result<Self, Self::Error> {
         let error_code = LicensingErrorCode::from_u32(stream.read_u32::<LittleEndian>()?)
-            .ok_or(ClientLicenseError::InvalidErrorCode)?;
+            .ok_or(ServerLicenseError::InvalidErrorCode)?;
         let state_transition =
             LicensingStateTransition::from_u32(stream.read_u32::<LittleEndian>()?)
-                .ok_or(ClientLicenseError::InvalidStateTransition)?;
+                .ok_or(ServerLicenseError::InvalidStateTransition)?;
         let error_info = LicensingBinaryBlob::from_buffer(&mut stream)?;
 
         Ok(Self {
@@ -152,11 +152,11 @@ pub struct LicensingBinaryBlob {
 }
 
 impl PduParsing for LicensingBinaryBlob {
-    type Error = ClientLicenseError;
+    type Error = ServerLicenseError;
 
     fn from_buffer(mut stream: impl io::Read) -> Result<Self, Self::Error> {
         let blob_type = BlobType::from_u16(stream.read_u16::<LittleEndian>()?)
-            .ok_or(ClientLicenseError::InvalidBlobType)?;
+            .ok_or(ServerLicenseError::InvalidBlobType)?;
         let blob_len = stream.read_u16::<LittleEndian>()? as usize;
 
         let mut data = vec![0; blob_len];
@@ -179,7 +179,7 @@ impl PduParsing for LicensingBinaryBlob {
 }
 
 #[repr(u8)]
-#[derive(Debug, Clone, PartialEq, FromPrimitive, ToPrimitive)]
+#[derive(Debug, Copy, Clone, PartialEq, FromPrimitive, ToPrimitive)]
 pub enum PreambleType {
     LicenseRequest = 0x01,
     PlatformChallenge = 0x02,
@@ -197,13 +197,13 @@ bitflags! {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, FromPrimitive, ToPrimitive)]
+#[derive(Debug, Copy, Clone, PartialEq, FromPrimitive, ToPrimitive)]
 pub enum PreambleVersion {
     V2 = 2, // RDP 4.0
     V3 = 3, // RDP 5.0, 5.1, 5.2, 6.0, 6.1, 7.0, 7.1, 8.0, 8.1, 10.0, 10.1, 10.2, 10.3, 10.4, and 10.5
 }
 
-#[derive(Debug, Clone, PartialEq, FromPrimitive, ToPrimitive)]
+#[derive(Debug, Copy, Clone, PartialEq, FromPrimitive, ToPrimitive)]
 pub enum LicensingErrorCode {
     InvalidServerCertificate = 0x01,
     NoLicense = 0x02,
@@ -216,7 +216,7 @@ pub enum LicensingErrorCode {
     InvalidMessageLen = 0x0c,
 }
 
-#[derive(Debug, Clone, PartialEq, FromPrimitive, ToPrimitive)]
+#[derive(Debug, Copy, Clone, PartialEq, FromPrimitive, ToPrimitive)]
 pub enum LicensingStateTransition {
     TotalAbort = 1,
     NoTransition = 2,
@@ -238,7 +238,7 @@ pub enum BlobType {
 }
 
 #[derive(Debug, Fail)]
-pub enum ClientLicenseError {
+pub enum ServerLicenseError {
     #[fail(display = "IO error: {}", _0)]
     IOError(#[fail(cause)] io::Error),
     #[fail(display = "Invalid preamble field: {}", _0)]
@@ -253,4 +253,4 @@ pub enum ClientLicenseError {
     InvalidBlobType,
 }
 
-impl_from_error!(io::Error, ClientLicenseError, ClientLicenseError::IOError);
+impl_from_error!(io::Error, ServerLicenseError, ServerLicenseError::IOError);

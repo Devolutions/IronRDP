@@ -7,7 +7,7 @@ use bitflags::bitflags;
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use failure::Fail;
 
-use crate::PduParsing;
+use crate::{impl_from_error, PduParsing};
 
 pub const MONITOR_COUNT_SIZE: usize = 4;
 pub const MONITOR_SIZE: usize = 20;

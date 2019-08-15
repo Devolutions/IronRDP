@@ -9,7 +9,8 @@ use num_traits::{FromPrimitive, ToPrimitive};
 
 use crate::{rdp::CapabilitySetsError, PduParsing};
 
-const GLYPH_CACHE_NUM: usize = 10;
+pub const GLYPH_CACHE_NUM: usize = 10;
+
 const GLYPH_CACHE_LENGTH: usize = 48;
 const CACHE_DEFINITION_LENGTH: usize = 4;
 

@@ -9,7 +9,7 @@ use failure::Fail;
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive, ToPrimitive};
 
-use crate::PduParsing;
+use crate::{impl_from_error, try_read_optional, try_write_optional, PduParsing};
 
 const RECONNECT_COOKIE_LEN: usize = 28;
 const TIMEZONE_INFO_NAME_LEN: usize = 64;
@@ -465,7 +465,7 @@ impl PduParsing for SystemTime {
 }
 
 #[repr(u16)]
-#[derive(Debug, Clone, PartialEq, FromPrimitive, ToPrimitive)]
+#[derive(Debug, Copy, Clone, PartialEq, FromPrimitive, ToPrimitive)]
 pub enum Month {
     January = 1,
     February = 2,
@@ -482,7 +482,7 @@ pub enum Month {
 }
 
 #[repr(u16)]
-#[derive(Debug, Clone, PartialEq, FromPrimitive, ToPrimitive)]
+#[derive(Debug, Copy, Clone, PartialEq, FromPrimitive, ToPrimitive)]
 pub enum DayOfWeek {
     Sunday = 0,
     Monday = 1,
@@ -494,7 +494,7 @@ pub enum DayOfWeek {
 }
 
 #[repr(u16)]
-#[derive(Debug, Clone, PartialEq, FromPrimitive, ToPrimitive)]
+#[derive(Debug, Copy, Clone, PartialEq, FromPrimitive, ToPrimitive)]
 pub enum DayOfWeekOccurrence {
     First = 1,
     Second = 2,
@@ -519,7 +519,7 @@ bitflags! {
 }
 
 #[repr(u16)]
-#[derive(Debug, Clone, PartialEq, FromPrimitive, ToPrimitive)]
+#[derive(Debug, Copy, Clone, PartialEq, FromPrimitive, ToPrimitive)]
 pub enum AddressFamily {
     INet = 0x0002,
     INet6 = 0x0017,
@@ -551,7 +551,7 @@ bitflags! {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, FromPrimitive, ToPrimitive)]
+#[derive(Debug, Copy, Clone, PartialEq, FromPrimitive, ToPrimitive)]
 pub enum CompressionType {
     K8 = 0,
     K64 = 1,

@@ -16,11 +16,11 @@ pub use self::{
     conference_create::{ConferenceCreateRequest, ConferenceCreateResponse},
     core_data::{
         client::{
-            ClientColorDepth, ClientCoreData, ClientEarlyCapabilityFlags, ColorDepth,
-            ConnectionType, HighColorDepth, KeyboardType, SecureAccessSequence,
+            ClientColorDepth, ClientCoreData, ClientCoreOptionalData, ClientEarlyCapabilityFlags,
+            ColorDepth, ConnectionType, HighColorDepth, KeyboardType, SecureAccessSequence,
             SupportedColorDepths, IME_FILE_NAME_SIZE,
         },
-        server::{ServerCoreData, ServerEarlyCapabilityFlags},
+        server::{ServerCoreData, ServerCoreOptionalData, ServerEarlyCapabilityFlags},
         CoreDataError, RdpVersion,
     },
     message_channel_data::{ClientMessageChannelData, ServerMessageChannelData},
@@ -51,7 +51,7 @@ use failure::Fail;
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive, ToPrimitive};
 
-use crate::PduParsing;
+use crate::{impl_from_error, PduParsing};
 
 macro_rules! user_header_try {
     ($e:expr) => {

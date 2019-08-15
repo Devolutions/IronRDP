@@ -9,7 +9,7 @@ use failure::Fail;
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive, ToPrimitive};
 
-use crate::PduParsing;
+use crate::{impl_from_error, PduParsing};
 
 const CLIENT_ENCRYPTION_METHODS_SIZE: usize = 4;
 const CLIENT_EXT_ENCRYPTION_METHODS_SIZE: usize = 4;
@@ -24,6 +24,15 @@ const SERVER_RANDOM_LEN: usize = 0x20;
 pub struct ClientSecurityData {
     pub encryption_methods: EncryptionMethod,
     pub ext_encryption_methods: u32,
+}
+
+impl ClientSecurityData {
+    pub fn no_security() -> Self {
+        Self {
+            encryption_methods: EncryptionMethod::empty(),
+            ext_encryption_methods: 0,
+        }
+    }
 }
 
 impl PduParsing for ClientSecurityData {
@@ -160,7 +169,7 @@ bitflags! {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, FromPrimitive, ToPrimitive)]
+#[derive(Debug, Copy, Clone, PartialEq, FromPrimitive, ToPrimitive)]
 pub enum EncryptionLevel {
     None = 0,
     Low = 1,

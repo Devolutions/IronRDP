@@ -11,7 +11,7 @@ use failure::Fail;
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive, ToPrimitive};
 
-use crate::{gcc::GccError, per, PduParsing};
+use crate::{gcc::GccError, impl_from_error, per, PduParsing};
 
 pub const RESULT_ENUM_LENGTH: u8 = 16;
 
@@ -68,7 +68,7 @@ impl PduParsing for McsPdu {
                 ChannelJoinConfirmPdu::from_buffer(&mut stream)?,
             )),
             DomainMcsPdu::DisconnectProviderUltimatum => Ok(McsPdu::DisconnectProviderUltimatum(
-                DisconnectUltimatumReason::from_buffer(&mut stream, choice)?,
+                DisconnectUltimatumReason::from_choice(&mut stream, choice)?,
             )),
             DomainMcsPdu::SendDataRequest => Ok(McsPdu::SendDataRequest(
                 SendDataContext::from_buffer(&mut stream)?,
@@ -144,7 +144,7 @@ impl PduParsing for McsPdu {
 }
 
 #[repr(u8)]
-#[derive(Debug, Clone, PartialEq, FromPrimitive, ToPrimitive)]
+#[derive(Debug, Copy, Clone, PartialEq, FromPrimitive, ToPrimitive)]
 enum DomainMcsPdu {
     ErectDomainRequest = 1,
     DisconnectProviderUltimatum = 8,
@@ -160,6 +160,15 @@ enum DomainMcsPdu {
 pub struct ErectDomainPdu {
     pub sub_height: u32,
     pub sub_interval: u32,
+}
+
+impl ErectDomainPdu {
+    pub fn new(sub_height: u32, sub_interval: u32) -> Self {
+        Self {
+            sub_height,
+            sub_interval,
+        }
+    }
 }
 
 impl PduParsing for ErectDomainPdu {
@@ -192,6 +201,15 @@ pub struct AttachUserConfirmPdu {
     pub result: u8,
 }
 
+impl AttachUserConfirmPdu {
+    pub fn new(initiator_id: u16, result: u8) -> Self {
+        Self {
+            initiator_id,
+            result,
+        }
+    }
+}
+
 impl PduParsing for AttachUserConfirmPdu {
     type Error = io::Error;
 
@@ -219,6 +237,15 @@ impl PduParsing for AttachUserConfirmPdu {
 pub struct ChannelJoinRequestPdu {
     pub initiator_id: u16,
     pub channel_id: u16,
+}
+
+impl ChannelJoinRequestPdu {
+    pub fn new(initiator_id: u16, channel_id: u16) -> Self {
+        Self {
+            initiator_id,
+            channel_id,
+        }
+    }
 }
 
 impl PduParsing for ChannelJoinRequestPdu {
@@ -250,6 +277,17 @@ pub struct ChannelJoinConfirmPdu {
     pub result: u8,
     pub initiator_id: u16,
     pub requested_channel_id: u16,
+}
+
+impl ChannelJoinConfirmPdu {
+    pub fn new(channel_id: u16, result: u8, initiator_id: u16, requested_channel_id: u16) -> Self {
+        Self {
+            channel_id,
+            result,
+            initiator_id,
+            requested_channel_id,
+        }
+    }
 }
 
 impl PduParsing for ChannelJoinConfirmPdu {
@@ -290,6 +328,16 @@ pub struct SendDataContext {
     pub channel_id: u16,
 }
 
+impl SendDataContext {
+    pub fn new(pdu: Vec<u8>, initiator_id: u16, channel_id: u16) -> Self {
+        Self {
+            pdu,
+            initiator_id,
+            channel_id,
+        }
+    }
+}
+
 impl PduParsing for SendDataContext {
     type Error = io::Error;
 
@@ -325,7 +373,7 @@ impl PduParsing for SendDataContext {
 
 /// The reason of [`DisconnectProviderUltimatum`](enum.RdpHeaderMessage.html).
 #[repr(u8)]
-#[derive(Debug, Clone, PartialEq, FromPrimitive, ToPrimitive)]
+#[derive(Debug, Copy, Clone, PartialEq, FromPrimitive, ToPrimitive)]
 pub enum DisconnectUltimatumReason {
     DomainDisconnected = 0,
     ProviderInitiated = 1,
@@ -335,14 +383,14 @@ pub enum DisconnectUltimatumReason {
 }
 
 impl DisconnectUltimatumReason {
-    fn from_buffer(mut stream: impl io::Read, choice: u8) -> Result<Self, McsError> {
+    fn from_choice(mut stream: impl io::Read, choice: u8) -> Result<Self, McsError> {
         let b = per::read_choice(&mut stream)?;
 
         Self::from_u8(((choice & 0x01) << 1) | (b >> 7))
             .ok_or(McsError::InvalidDisconnectProviderUltimatum)
     }
 
-    fn to_buffer(&self, mut stream: impl io::Write) -> Result<(), McsError> {
+    fn to_buffer(self, mut stream: impl io::Write) -> Result<(), McsError> {
         let enumerated = match self {
             DisconnectUltimatumReason::UserRequested
             | DisconnectUltimatumReason::ProviderInitiated => 0x80,
@@ -352,11 +400,11 @@ impl DisconnectUltimatumReason {
 
         Ok(())
     }
-    fn buffer_length(&self) -> usize {
+    fn buffer_length(self) -> usize {
         per::SIZEOF_CHOICE
     }
 
-    fn options(&self) -> u8 {
+    fn options(self) -> u8 {
         match self {
             DisconnectUltimatumReason::TokenPurged | DisconnectUltimatumReason::UserRequested => 1,
             _ => 0,

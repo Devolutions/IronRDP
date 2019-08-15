@@ -6,7 +6,7 @@ use std::io;
 use byteorder::ReadBytesExt;
 use failure::Fail;
 
-use crate::per;
+use crate::{impl_from_error, per};
 
 /// Implements the Fast-Path RDP message header PDU.
 #[derive(Debug)]

@@ -64,7 +64,7 @@ lazy_static! {
     };
     static ref SEND_DATA_INDICATION_PDU_BUFFER: Vec<u8> = {
         let mut result = SEND_DATA_INDICATION_PDU_BUFFER_PREFIX.to_vec();
-        result.extend(rdp::test::CLIENT_LICENSE_PDU_BUFFER.as_slice());
+        result.extend(rdp::test::SERVER_LICENSE_PDU_BUFFER.as_slice());
 
         result
     };
@@ -76,7 +76,7 @@ lazy_static! {
     static ref SEND_DATA_INDICATION_PDU: McsPdu = McsPdu::SendDataIndication(SendDataContext {
         initiator_id: 1002,
         channel_id: 1003,
-        pdu: rdp::test::CLIENT_LICENSE_PDU_BUFFER.clone(),
+        pdu: rdp::test::SERVER_LICENSE_PDU_BUFFER.clone(),
     });
 }
 

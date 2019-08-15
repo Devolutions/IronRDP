@@ -19,14 +19,16 @@ use std::io;
 
 pub use self::{
     bitmap::{Bitmap, BitmapDrawingFlags},
-    bitmap_cache::{BitmapCache, BitmapCacheRev2, CacheEntry, CacheFlags, CellInfo},
+    bitmap_cache::{
+        BitmapCache, BitmapCacheRev2, CacheEntry, CacheFlags, CellInfo, BITMAP_CACHE_ENTRIES_NUM,
+    },
     bitmap_codecs::{
         BitmapCodecs, CaptureFlags, Codec, CodecProperty, EntropyBits, Guid, NsCodec,
         RemoteFxContainer, RfxCaps, RfxCapset, RfxClientCapsContainer, RfxICap, RfxICapFlags,
     },
     brush::{Brush, SupportLevel},
     general::{General, GeneralExtraFlags, MajorPlatformType, MinorPlatformType},
-    glyph_cache::{CacheDefinition, GlyphCache, GlyphSupportLevel},
+    glyph_cache::{CacheDefinition, GlyphCache, GlyphSupportLevel, GLYPH_CACHE_NUM},
     input::{Input, InputFlags},
     offscreen_bitmap_cache::OffscreenBitmapCache,
     order::{Order, OrderFlags, OrderSupportExFlags, OrderSupportIndex},
@@ -41,7 +43,7 @@ use failure::Fail;
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive, ToPrimitive};
 
-use crate::PduParsing;
+use crate::{impl_from_error, PduParsing};
 
 const SOURCE_DESCRIPTOR_LENGTH_FIELD_SIZE: usize = 2;
 const COMBINED_CAPABILITIES_LENGTH_FIELD_SIZE: usize = 2;
@@ -87,6 +89,12 @@ pub struct ClientConfirmActive {
     pub pdu: DemandActive,
 }
 
+impl ClientConfirmActive {
+    pub fn new(pdu: DemandActive) -> Self {
+        Self { pdu }
+    }
+}
+
 impl PduParsing for ClientConfirmActive {
     type Error = CapabilitySetsError;
 
@@ -116,6 +124,15 @@ impl PduParsing for ClientConfirmActive {
 pub struct DemandActive {
     pub source_descriptor: String,
     pub capability_sets: Vec<CapabilitySet>,
+}
+
+impl DemandActive {
+    pub fn new(source_descriptor: String, capability_sets: Vec<CapabilitySet>) -> Self {
+        Self {
+            source_descriptor,
+            capability_sets,
+        }
+    }
 }
 
 impl PduParsing for DemandActive {

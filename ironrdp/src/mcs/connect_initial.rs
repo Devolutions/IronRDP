@@ -9,7 +9,7 @@ use super::{McsError, RESULT_ENUM_LENGTH};
 use crate::{
     gcc::{
         conference_create::{ConferenceCreateRequest, ConferenceCreateResponse},
-        Channel,
+        Channel, ClientGccBlocks,
     },
     PduParsing,
 };
@@ -29,6 +29,18 @@ pub struct ConnectInitial {
 }
 
 impl ConnectInitial {
+    pub fn with_gcc_blocks(gcc_blocks: ClientGccBlocks) -> Self {
+        Self {
+            conference_create_request: ConferenceCreateRequest::new(gcc_blocks),
+            calling_domain_selector: vec![0x01],
+            called_domain_selector: vec![0x01],
+            upward_flag: true,
+            target_parameters: DomainParameters::target(),
+            min_parameters: DomainParameters::min(),
+            max_parameters: DomainParameters::max(),
+        }
+    }
+
     pub fn channel_names(&self) -> Vec<Channel> {
         self.conference_create_request.gcc_blocks.channel_names()
     }
@@ -182,6 +194,45 @@ pub struct DomainParameters {
 }
 
 impl DomainParameters {
+    pub fn min() -> Self {
+        Self {
+            max_channel_ids: 1,
+            max_user_ids: 1,
+            max_token_ids: 1,
+            num_priorities: 1,
+            min_throughput: 0,
+            max_height: 1,
+            max_mcs_pdu_size: 1056,
+            protocol_version: 2,
+        }
+    }
+
+    pub fn target() -> Self {
+        Self {
+            max_channel_ids: 34,
+            max_user_ids: 2,
+            max_token_ids: 0,
+            num_priorities: 1,
+            min_throughput: 0,
+            max_height: 1,
+            max_mcs_pdu_size: 65535,
+            protocol_version: 2,
+        }
+    }
+
+    pub fn max() -> Self {
+        Self {
+            max_channel_ids: 65535,
+            max_user_ids: 65535,
+            max_token_ids: 65535,
+            num_priorities: 1,
+            min_throughput: 0,
+            max_height: 1,
+            max_mcs_pdu_size: 65535,
+            protocol_version: 2,
+        }
+    }
+
     fn fields_buffer_ber_length(&self) -> u16 {
         ber::sizeof_integer(self.max_channel_ids)
             + ber::sizeof_integer(self.max_user_ids)

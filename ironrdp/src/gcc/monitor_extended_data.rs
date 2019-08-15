@@ -8,7 +8,7 @@ use failure::Fail;
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive, ToPrimitive};
 
-use crate::PduParsing;
+use crate::{impl_from_error, PduParsing};
 
 const MONITOR_COUNT_MAX: usize = 16;
 const MONITOR_ATTRIBUTE_SIZE: u32 = 20;
@@ -111,7 +111,7 @@ impl PduParsing for ExtendedMonitorInfo {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, FromPrimitive, ToPrimitive)]
+#[derive(Debug, Copy, Clone, PartialEq, FromPrimitive, ToPrimitive)]
 pub enum MonitorOrientation {
     Landscape = 0,
     Portrait = 90,

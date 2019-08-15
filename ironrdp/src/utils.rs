@@ -1,3 +1,4 @@
+#[macro_export]
 macro_rules! try_read_optional {
     ($e:expr, $ret:expr) => {
         match $e {
@@ -10,6 +11,7 @@ macro_rules! try_read_optional {
     };
 }
 
+#[macro_export]
 macro_rules! try_write_optional {
     ($val:expr, $f:expr) => {
         if let Some(ref val) = $val {
@@ -20,6 +22,7 @@ macro_rules! try_write_optional {
     };
 }
 
+#[macro_export]
 macro_rules! impl_from_error {
     ($from_e:ty, $to_e:ty, $to_e_variant:expr) => {
         impl From<$from_e> for $to_e {

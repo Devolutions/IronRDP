@@ -488,7 +488,7 @@ impl PduParsing for RfxICap {
     }
 }
 
-#[derive(PartialEq, Debug, FromPrimitive, ToPrimitive, Clone)]
+#[derive(PartialEq, Debug, FromPrimitive, ToPrimitive, Copy, Clone)]
 pub enum EntropyBits {
     Rlgr1 = 1,
     Rlgr3 = 4,

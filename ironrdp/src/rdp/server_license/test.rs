@@ -8,7 +8,7 @@ pub const LICENSE_PACKET_BUFFER: [u8; LICENSE_PACKET_BUFFER_LEN] = [
 ];
 
 lazy_static! {
-    pub static ref LICENSE_PACKET: ClientLicense = ClientLicense {
+    pub static ref LICENSE_PACKET: ServerLicense = ServerLicense {
         preamble: LicensePreamble {
             message_type: PreambleType::ErrorAlert,
             flags: PreambleFlags::empty(),
@@ -26,15 +26,15 @@ lazy_static! {
 }
 
 #[test]
-fn from_buffer_correct_parses_client_license() {
+fn from_buffer_correct_parses_server_license() {
     assert_eq!(
         LICENSE_PACKET.clone(),
-        ClientLicense::from_buffer(LICENSE_PACKET_BUFFER.as_ref()).unwrap(),
+        ServerLicense::from_buffer(LICENSE_PACKET_BUFFER.as_ref()).unwrap(),
     );
 }
 
 #[test]
-fn to_buffer_correct_serializes_client_license() {
+fn to_buffer_correct_serializes_server_license() {
     let data = LICENSE_PACKET.clone();
 
     let mut buffer = Vec::new();
@@ -44,7 +44,7 @@ fn to_buffer_correct_serializes_client_license() {
 }
 
 #[test]
-fn buffer_length_is_correct_for_client_license() {
+fn buffer_length_is_correct_for_server_license() {
     let pdu = LICENSE_PACKET.clone();
     let expected_buf_len = LICENSE_PACKET_BUFFER.len();
 

@@ -7,7 +7,7 @@ use bitflags::bitflags;
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use failure::Fail;
 
-use crate::PduParsing;
+use crate::{impl_from_error, PduParsing};
 
 const FLAGS_SIZE: usize = 4;
 

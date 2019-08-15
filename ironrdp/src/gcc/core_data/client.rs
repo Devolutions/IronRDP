@@ -9,7 +9,7 @@ use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive, ToPrimitive};
 
 use super::{CoreDataError, RdpVersion, VERSION_SIZE};
-use crate::{nego, PduParsing};
+use crate::{nego, try_read_optional, try_write_optional, PduParsing};
 
 pub const IME_FILE_NAME_SIZE: usize = 64;
 
@@ -396,7 +396,7 @@ impl PduParsing for ClientCoreOptionalData {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Copy, Clone, PartialEq)]
 pub enum ClientColorDepth {
     Bpp4,
     Bpp8,
@@ -441,7 +441,7 @@ pub enum ColorDepth {
 }
 
 #[repr(u16)]
-#[derive(Debug, Copy, Clone, PartialEq, FromPrimitive, ToPrimitive)]
+#[derive(Debug, Copy, Clone, FromPrimitive, ToPrimitive, Eq, Ord, PartialEq, PartialOrd)]
 pub enum HighColorDepth {
     Bpp4 = 0x0004,
     Bpp8 = 0x0008,
@@ -451,12 +451,12 @@ pub enum HighColorDepth {
 }
 
 #[repr(u16)]
-#[derive(Debug, Clone, PartialEq, FromPrimitive, ToPrimitive)]
+#[derive(Debug, Copy, Clone, PartialEq, FromPrimitive, ToPrimitive)]
 pub enum SecureAccessSequence {
     Del = 0xAA03,
 }
 
-#[derive(Debug, Clone, PartialEq, FromPrimitive, ToPrimitive)]
+#[derive(Debug, Copy, Clone, PartialEq, FromPrimitive, ToPrimitive)]
 pub enum KeyboardType {
     IbmPcXt = 1,
     OlivettiIco = 2,
@@ -468,7 +468,7 @@ pub enum KeyboardType {
 }
 
 #[repr(u8)]
-#[derive(Debug, Clone, PartialEq, FromPrimitive, ToPrimitive)]
+#[derive(Debug, Copy, Clone, PartialEq, FromPrimitive, ToPrimitive)]
 pub enum ConnectionType {
     NotUsed = 0, // not used as ClientEarlyCapabilityFlags::VALID_CONNECTION_TYPE not set
     Modem = 1,

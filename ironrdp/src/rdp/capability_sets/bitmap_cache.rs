@@ -8,10 +8,11 @@ use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 
 use crate::{rdp::CapabilitySetsError, PduParsing};
 
+pub const BITMAP_CACHE_ENTRIES_NUM: usize = 3;
+
 const BITMAP_CACHE_LENGTH: usize = 36;
 const BITMAP_CACHE_REV2_LENGTH: usize = 36;
 const CELL_INFO_LENGTH: usize = 4;
-const BITMAP_CACHE_ENTRIES_NUM: usize = 3;
 const BITMAP_CACHE_REV2_CELL_INFO_NUM: usize = 5;
 const CACHE_ENTRY_LENGTH: usize = 4;
 

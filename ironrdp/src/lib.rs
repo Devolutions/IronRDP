@@ -1,6 +1,3 @@
-#[macro_use]
-mod utils;
-
 pub mod gcc;
 pub mod mcs;
 pub mod nego;
@@ -9,14 +6,15 @@ pub mod rdp;
 mod fast_path;
 mod per;
 mod x224;
+mod utils;
 
 pub use crate::{
     fast_path::{parse_fast_path_header, FastPath, FastPathError},
     mcs::{ConnectInitial, ConnectResponse, McsError, McsPdu, SendDataContext},
     nego::*,
     rdp::{
-        CapabilitySet, ClientConfirmActive, ClientInfoPdu, ClientLicensePdu, ControlAction,
-        DemandActive, ServerDemandActive, ShareControlHeader, ShareControlPdu, ShareDataHeader,
+        CapabilitySet, ClientConfirmActive, ClientInfoPdu, ControlAction, DemandActive,
+        ServerDemandActive, ServerLicensePdu, ShareControlHeader, ShareControlPdu, ShareDataHeader,
         ShareDataPdu, VirtualChannel,
     },
     x224::*,
