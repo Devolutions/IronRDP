@@ -5,6 +5,7 @@ mod utils;
 use std::{io, net::TcpStream};
 
 use failure::Fail;
+use ironrdp::nego;
 use log::{debug, error};
 use native_tls::TlsConnector;
 
@@ -55,8 +56,11 @@ fn run(config: Config) -> RdpResult<()> {
     let addr = utils::socket_addr_to_string(config.routing_addr);
     let mut stream = TcpStream::connect(addr.as_str()).map_err(RdpError::ConnectionError)?;
 
-    let (mut transport, selected_protocol) =
-        DataTransport::connect(&mut stream, config.input.security_protocol)?;
+    let (mut transport, selected_protocol) = DataTransport::connect(
+        &mut stream,
+        config.input.security_protocol,
+        config.input.credentials.username.clone(),
+    )?;
 
     let mut tls_stream = TlsConnector::builder()
         .danger_accept_invalid_certs(true)
@@ -64,12 +68,12 @@ fn run(config: Config) -> RdpResult<()> {
         .build()?
         .connect(addr.as_str(), stream)?;
 
-    if selected_protocol.contains(ironrdp::SecurityProtocol::HYBRID)
-        || selected_protocol.contains(ironrdp::SecurityProtocol::HYBRID_EX)
+    if selected_protocol.contains(nego::SecurityProtocol::HYBRID)
+        || selected_protocol.contains(nego::SecurityProtocol::HYBRID_EX)
     {
         process_cred_ssp(&mut tls_stream, config.input.credentials.clone())?;
 
-        if selected_protocol.contains(ironrdp::SecurityProtocol::HYBRID_EX) {
+        if selected_protocol.contains(nego::SecurityProtocol::HYBRID_EX) {
             if let sspi::EarlyUserAuthResult::AccessDenied =
                 EarlyUserAuthResult::read(&mut tls_stream)?
             {
@@ -114,7 +118,7 @@ pub enum RdpError {
     #[fail(display = "X.224 error: {}", _0)]
     X224Error(#[fail(cause)] io::Error),
     #[fail(display = "negotiation error: {}", _0)]
-    NegotiationError(#[fail(cause)] io::Error),
+    NegotiationError(#[fail(cause)] ironrdp::nego::NegotiationError),
     #[fail(display = "unexpected PDU: {}", _0)]
     UnexpectedPdu(String),
     #[fail(display = "invalid response: {}", _0)]
@@ -159,8 +163,20 @@ impl From<native_tls::Error> for RdpError {
     }
 }
 
+impl From<ironrdp::nego::NegotiationError> for RdpError {
+    fn from(e: ironrdp::nego::NegotiationError) -> Self {
+        RdpError::NegotiationError(e)
+    }
+}
+
 impl From<native_tls::HandshakeError<TcpStream>> for RdpError {
     fn from(e: native_tls::HandshakeError<TcpStream>) -> Self {
         RdpError::TlsHandshakeError(e)
+    }
+}
+
+impl From<ironrdp::McsError> for RdpError {
+    fn from(e: ironrdp::McsError) -> Self {
+        RdpError::McsError(e)
     }
 }

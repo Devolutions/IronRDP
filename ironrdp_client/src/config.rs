@@ -1,7 +1,7 @@
 use std::net::SocketAddr;
 
 use clap::{crate_name, crate_version, App, Arg};
-use ironrdp::SecurityProtocol;
+use ironrdp::nego::SecurityProtocol;
 use sspi::Credentials;
 
 pub struct Config {

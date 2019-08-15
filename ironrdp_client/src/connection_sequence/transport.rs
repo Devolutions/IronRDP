@@ -4,7 +4,7 @@ use bytes::BytesMut;
 use log::debug;
 
 use crate::{connection_sequence::SERVER_CHANNEL_ID, RdpError, RdpResult};
-use ironrdp::PduParsing;
+use ironrdp::{nego, PduParsing};
 
 pub trait Encoder {
     type Item;
@@ -25,9 +25,9 @@ fn read_tpkt_tpdu_buffer(mut stream: impl io::Read) -> io::Result<BytesMut> {
     buf.resize(ironrdp::TPKT_HEADER_LENGTH, 0x00);
     stream.read_exact(&mut buf)?;
 
-    let tpkt_header_length = ironrdp::read_tpkt_len(buf.as_ref())? as usize;
+    let tpkt_header = ironrdp::TpktHeader::from_buffer(buf.as_ref())?;
 
-    buf.resize(tpkt_header_length, 0x00);
+    buf.resize(tpkt_header.length, 0x00);
     stream.read_exact(&mut buf[ironrdp::TPKT_HEADER_LENGTH..])?;
 
     Ok(buf)
@@ -39,16 +39,18 @@ pub struct DataTransport;
 impl DataTransport {
     pub fn connect<S>(
         mut stream: &mut S,
-        security_protocol: ironrdp::SecurityProtocol,
-    ) -> RdpResult<(DataTransport, ironrdp::SecurityProtocol)>
+        security_protocol: nego::SecurityProtocol,
+        username: String,
+    ) -> RdpResult<(DataTransport, nego::SecurityProtocol)>
     where
         S: io::Read + io::Write,
     {
         let selected_protocol = process_negotiation(
             &mut stream,
-            None,
+            Some(nego::NegoData::Cookie(username)),
             security_protocol,
-            ironrdp::NegotiationRequestFlags::empty(),
+            nego::RequestFlags::empty(),
+            0,
         )?;
 
         Ok((Self, selected_protocol))
@@ -60,14 +62,8 @@ impl Encoder for DataTransport {
     type Error = RdpError;
 
     fn encode(&mut self, data: Self::Item, mut stream: impl io::Write) -> RdpResult<()> {
-        let tpdu_len = ironrdp::tpdu_header_length(ironrdp::X224TPDUType::Data);
-
-        let mut tpdu = BytesMut::with_capacity(tpdu_len);
-        tpdu.resize(tpdu_len, 0x00);
-        ironrdp::encode_x224(ironrdp::X224TPDUType::Data, data, &mut tpdu)
-            .map_err(RdpError::X224Error)?;
-
-        stream.write_all(tpdu.as_ref())?;
+        ironrdp::Data::new(data.len()).to_buffer(&mut stream)?;
+        stream.write_all(data.as_ref())?;
 
         Ok(())
     }
@@ -79,10 +75,10 @@ impl Decoder for DataTransport {
 
     fn decode(&mut self, mut stream: impl io::Read) -> RdpResult<Self::Item> {
         let mut tpkt_tpdu_buf = read_tpkt_tpdu_buffer(&mut stream)?;
-        let (_tpdu_type, data) =
-            ironrdp::decode_x224(&mut tpkt_tpdu_buf).map_err(RdpError::X224Error)?;
+        let data_pdu = ironrdp::Data::from_buffer(tpkt_tpdu_buf.as_ref())?;
+        tpkt_tpdu_buf.split_to(data_pdu.buffer_length() - data_pdu.data_length);
 
-        Ok(data)
+        Ok(tpkt_tpdu_buf)
     }
 }
 
@@ -138,37 +134,6 @@ impl EarlyUserAuthResult {
             .map_err(RdpError::EarlyUserAuthResultError)?;
 
         Ok(early_user_auth_result)
-    }
-}
-
-pub struct McsConnectInitial(pub ironrdp::ConnectInitial);
-
-impl McsConnectInitial {
-    pub fn write(
-        &self,
-        mut stream: impl io::Write,
-        transport: &mut DataTransport,
-    ) -> RdpResult<()> {
-        let mut connect_initial_buf = BytesMut::with_capacity(self.0.buffer_length() as usize);
-        connect_initial_buf.resize(self.0.buffer_length(), 0x00);
-        self.0
-            .to_buffer(connect_initial_buf.as_mut())
-            .map_err(RdpError::McsConnectError)?;
-
-        transport.encode(connect_initial_buf, &mut stream)
-    }
-}
-
-pub struct McsConnectResponse(pub ironrdp::ConnectResponse);
-
-impl McsConnectResponse {
-    pub fn read(mut stream: impl io::Read, transport: &mut DataTransport) -> RdpResult<Self> {
-        let data = transport.decode(&mut stream)?;
-
-        let connect_response = ironrdp::ConnectResponse::from_buffer(data.as_ref())
-            .map_err(RdpError::McsConnectError)?;
-
-        Ok(Self(connect_response))
     }
 }
 
@@ -374,105 +339,52 @@ impl Decoder for ShareDataHeaderTransport {
     }
 }
 
-#[derive(Debug)]
-struct ConnectionRequest {
-    nego_data: Option<ironrdp::NegoData>,
-    protocol: ironrdp::SecurityProtocol,
-    flags: ironrdp::NegotiationRequestFlags,
-}
-
-impl ConnectionRequest {
-    pub fn new(
-        nego_data: Option<ironrdp::NegoData>,
-        protocol: ironrdp::SecurityProtocol,
-        flags: ironrdp::NegotiationRequestFlags,
-    ) -> Self {
-        Self {
-            nego_data,
-            protocol,
-            flags,
-        }
-    }
-    pub fn write(&self, mut stream: impl io::Write) -> RdpResult<()> {
-        let cookie = if let Some(ironrdp::NegoData::Cookie(ref cookie)) = self.nego_data {
-            cookie
-        } else {
-            "" //TODO: remove
-        };
-
-        let mut negotiation_request =
-            BytesMut::with_capacity(ironrdp::NEGOTIATION_REQUEST_LEN + cookie.len());
-        negotiation_request.resize(ironrdp::NEGOTIATION_REQUEST_LEN + cookie.len(), 0x00);
-        ironrdp::write_negotiation_request(
-            negotiation_request.as_mut(),
-            cookie,
-            self.protocol,
-            self.flags,
-        )
-        .map_err(RdpError::NegotiationError)?;
-
-        let tpdu_len = ironrdp::tpdu_header_length(ironrdp::X224TPDUType::ConnectionRequest);
-
-        let mut tpdu_buf = BytesMut::with_capacity(tpdu_len);
-        tpdu_buf.resize(tpdu_len, 0x00);
-        ironrdp::encode_x224(
-            ironrdp::X224TPDUType::ConnectionRequest,
-            negotiation_request,
-            &mut tpdu_buf,
-        )
-        .map_err(RdpError::X224Error)?;
-
-        stream.write_all(tpdu_buf.as_ref())?;
-
-        Ok(())
-    }
-}
-
-#[derive(Debug)]
-struct ConnectionConfirm {
-    pub protocol: ironrdp::SecurityProtocol,
-    flags: ironrdp::NegotiationResponseFlags,
-}
-
-impl ConnectionConfirm {
-    pub fn read(mut stream: impl io::Read) -> RdpResult<Self> {
-        let mut tpkt_tpdu_buf = read_tpkt_tpdu_buffer(&mut stream)?;
-        let (tpdu_type, data) =
-            ironrdp::decode_x224(&mut tpkt_tpdu_buf).map_err(RdpError::NegotiationError)?;
-
-        let (protocol, flags) = ironrdp::parse_negotiation_response(tpdu_type, data.as_ref())
-            .map_err(|e| RdpError::NegotiationError(io::Error::new(io::ErrorKind::Other, e)))?;
-
-        Ok(Self { protocol, flags })
-    }
-}
-
-pub fn process_negotiation<S>(
+fn process_negotiation<S>(
     mut stream: &mut S,
-    nego_data: Option<ironrdp::NegoData>,
-    request_protocols: ironrdp::SecurityProtocol,
-    request_flags: ironrdp::NegotiationRequestFlags,
-) -> RdpResult<ironrdp::SecurityProtocol>
+    nego_data: Option<nego::NegoData>,
+    protocol: nego::SecurityProtocol,
+    flags: nego::RequestFlags,
+    src_ref: u16,
+) -> RdpResult<nego::SecurityProtocol>
 where
     S: io::Read + io::Write,
 {
-    let connection_request = ConnectionRequest::new(nego_data, request_protocols, request_flags);
+    let connection_request = nego::Request {
+        nego_data,
+        flags,
+        protocol,
+        src_ref,
+    };
     debug!(
         "Send X.224 Connection Request PDU: {:?}",
         connection_request
     );
-    connection_request.write(&mut stream)?;
+    connection_request.to_buffer(&mut stream)?;
 
-    let connection_confirm = ConnectionConfirm::read(&mut stream)?;
-    debug!("Got X.224 Connection Confirm PDU: {:?}", connection_confirm);
-    let selected_protocol = connection_confirm.protocol;
+    let tpkt_tpdu_buf = read_tpkt_tpdu_buffer(&mut stream)?;
+    let connection_response = nego::Response::from_buffer(tpkt_tpdu_buf.as_ref())?;
+    if let Some(nego::ResponseData::Response {
+        flags,
+        protocol: selected_protocol,
+    }) = connection_response.response
+    {
+        debug!(
+            "Got X.224 Connection Confirm PDU: selected protocol ({:?}), response flags ({:?})",
+            selected_protocol, flags
+        );
 
-    if request_protocols.contains(selected_protocol) {
-        Ok(selected_protocol)
+        if protocol.contains(selected_protocol) {
+            Ok(selected_protocol)
+        } else {
+            Err(RdpError::InvalidResponse(format!(
+                "Got unexpected security protocol: {:?} while was expected one of {:?}",
+                selected_protocol, protocol
+            )))
+        }
     } else {
         Err(RdpError::InvalidResponse(format!(
-            "Got unexpected security protocol: {:?} while was expected one of {:?}",
-            selected_protocol, request_protocols
+            "Got unexpected X.224 Connection Response: {:?}",
+            connection_response.response
         )))
     }
 }

@@ -7,6 +7,7 @@ use ironrdp::{
         ColorDepth, ConnectionType, HighColorDepth, RdpVersion, SecureAccessSequence,
         SupportedColorDepths,
     },
+    nego::SecurityProtocol,
     rdp::{
         capability_sets::{
             Bitmap, BitmapCache, BitmapDrawingFlags, Brush, CacheDefinition, CacheEntry, General,
@@ -17,7 +18,7 @@ use ironrdp::{
         AddressFamily, BasicSecurityHeader, BasicSecurityHeaderFlags, ClientInfo, ClientInfoFlags,
         ClientInfoPdu, CompressionType, ExtendedClientInfo, ExtendedClientOptionalInfo,
     },
-    CapabilitySet, ClientConfirmActive, SecurityProtocol,
+    CapabilitySet, ClientConfirmActive,
 };
 use num_traits::{FromPrimitive, ToPrimitive};
 

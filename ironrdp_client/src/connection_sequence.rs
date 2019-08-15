@@ -2,14 +2,14 @@ mod transport;
 mod user_info;
 
 pub use transport::{
-    DataTransport, EarlyUserAuthResult, McsConnectInitial, McsConnectResponse, McsTransport,
-    SendDataContextTransport, ShareControlHeaderTransport, ShareDataHeaderTransport,
-    TsRequestTransport,
+    DataTransport, EarlyUserAuthResult, McsTransport, SendDataContextTransport,
+    ShareControlHeaderTransport, ShareDataHeaderTransport, TsRequestTransport,
 };
 
 use std::{collections::HashMap, io, iter};
 
-use ironrdp::PduParsing;
+use bytes::BytesMut;
+use ironrdp::{nego, PduParsing};
 use lazy_static::lazy_static;
 use log::debug;
 use native_tls::TlsStream;
@@ -73,25 +73,30 @@ where
 
 pub fn process_mcs_connect<S>(
     mut stream: &mut S,
-    mut transport: &mut DataTransport,
+    transport: &mut DataTransport,
     config: &Config,
-    selected_protocol: ironrdp::SecurityProtocol,
+    selected_protocol: nego::SecurityProtocol,
 ) -> RdpResult<StaticChannels>
 where
     S: io::Read + io::Write,
 {
-    let connect_initial = McsConnectInitial(ironrdp::ConnectInitial::with_gcc_blocks(
-        user_info::create_gcc_blocks(&config, selected_protocol)?,
-    ));
-    debug!("Send MCS Connect Initial PDU: {:?}", connect_initial.0);
-    connect_initial.write(&mut stream, &mut transport)?;
+    let connect_initial = ironrdp::ConnectInitial::with_gcc_blocks(user_info::create_gcc_blocks(
+        &config,
+        selected_protocol,
+    )?);
+    debug!("Send MCS Connect Initial PDU: {:?}", connect_initial);
+    let mut connect_initial_buf = BytesMut::with_capacity(connect_initial.buffer_length());
+    connect_initial_buf.resize(connect_initial.buffer_length(), 0x00);
+    connect_initial.to_buffer(connect_initial_buf.as_mut())?;
+    transport.encode(connect_initial_buf, &mut stream)?;
 
-    let connect_response = McsConnectResponse::read(&mut stream, &mut transport)?;
-    debug!("Got MCS Connect Response PDU: {:?}", connect_response.0);
+    let data = transport.decode(&mut stream)?;
+    let connect_response =
+        ironrdp::ConnectResponse::from_buffer(data.as_ref()).map_err(RdpError::McsConnectError)?;
+    debug!("Got MCS Connect Response PDU: {:?}", connect_response);
 
-    let gcc_blocks = connect_response.0.conference_create_response.gcc_blocks;
+    let gcc_blocks = connect_response.conference_create_response.gcc_blocks;
     if connect_initial
-        .0
         .conference_create_request
         .gcc_blocks
         .security
@@ -113,7 +118,6 @@ where
     let global_channel_id = gcc_blocks.network.io_channel;
 
     let static_channels = connect_initial
-        .0
         .channel_names()
         .into_iter()
         .map(|channel| channel.name)
