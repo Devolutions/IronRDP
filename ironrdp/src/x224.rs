@@ -77,6 +77,12 @@ pub struct Data {
     pub data_length: usize,
 }
 
+impl Data {
+    pub fn new(data_length: usize) -> Self {
+        Self { data_length }
+    }
+}
+
 impl PduParsing for Data {
     type Error = NegotiationError;
 
