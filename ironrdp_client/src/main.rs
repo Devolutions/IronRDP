@@ -82,6 +82,18 @@ fn run(config: Config) -> RdpResult<()> {
         }
     }
 
+    let static_channels = process_mcs_connect(&mut tls_stream, &config, selected_protocol)?;
+
+    let joined_static_channels = process_mcs(&mut tls_stream, static_channels)?;
+    debug!("Joined static channels: {:?}", joined_static_channels);
+
+    let global_channel_id = *joined_static_channels
+        .get(&*GLOBAL_CHANNEL_NAME)
+        .expect("global channel must be added");
+    let initiator_id = *joined_static_channels
+        .get(&*USER_CHANNEL_NAME)
+        .expect("user channel must be added");
+
     Ok(())
 }
 

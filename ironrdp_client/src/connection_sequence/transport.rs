@@ -193,3 +193,61 @@ impl EarlyUserAuthResult {
         Ok(early_user_auth_result)
     }
 }
+
+pub struct McsConnectInitial(pub ironrdp::ConnectInitial);
+
+impl McsConnectInitial {
+    pub fn write(&self, mut stream: impl io::Write) -> RdpResult<()> {
+        let mut connect_initial_buf = BytesMut::with_capacity(self.0.buffer_length() as usize);
+        connect_initial_buf.resize(self.0.buffer_length(), 0x00);
+        self.0
+            .to_buffer(connect_initial_buf.as_mut())
+            .map_err(RdpError::McsConnectError)?;
+
+        DataTransport::default().encode(connect_initial_buf, &mut stream)
+    }
+}
+
+pub struct McsConnectResponse(pub ironrdp::ConnectResponse);
+
+impl McsConnectResponse {
+    pub fn read(mut stream: impl io::Read) -> RdpResult<Self> {
+        let data = DataTransport::default().decode(&mut stream)?;
+
+        let connect_response = ironrdp::ConnectResponse::from_buffer(data.as_ref())
+            .map_err(RdpError::McsConnectError)?;
+
+        Ok(Self(connect_response))
+    }
+}
+
+#[derive(Default)]
+pub struct McsTransport(DataTransport);
+
+impl Encoder for McsTransport {
+    type Item = ironrdp::McsPdu;
+    type Error = RdpError;
+
+    fn encode(&mut self, mcs_pdu: Self::Item, mut stream: impl io::Write) -> RdpResult<()> {
+        let mut mcs_pdu_buf = BytesMut::with_capacity(mcs_pdu.buffer_length() as usize);
+        mcs_pdu_buf.resize(mcs_pdu.buffer_length(), 0x00);
+        mcs_pdu
+            .to_buffer(mcs_pdu_buf.as_mut())
+            .map_err(RdpError::McsError)?;
+
+        self.0.encode(mcs_pdu_buf, &mut stream)
+    }
+}
+
+impl Decoder for McsTransport {
+    type Item = ironrdp::McsPdu;
+    type Error = RdpError;
+
+    fn decode(&mut self, mut stream: impl io::Read) -> RdpResult<Self::Item> {
+        let data = self.0.decode(&mut stream)?;
+
+        let mcs_pdu = ironrdp::McsPdu::from_buffer(data.as_ref()).map_err(RdpError::McsError)?;
+
+        Ok(mcs_pdu)
+    }
+}

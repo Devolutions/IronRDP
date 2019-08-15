@@ -104,3 +104,134 @@ where
 
     Ok(())
 }
+
+pub fn process_mcs_connect<S>(
+    mut stream: &mut S,
+    config: &Config,
+    selected_protocol: ironrdp::SecurityProtocol,
+) -> RdpResult<StaticChannels>
+where
+    S: io::Read + io::Write,
+{
+    let connect_initial = McsConnectInitial(ironrdp::ConnectInitial::with_gcc_blocks(
+        user_info::create_gcc_blocks(&config, selected_protocol)?,
+    ));
+    debug!("Send MCS Connect Initial PDU: {:?}", connect_initial.0);
+    connect_initial.write(&mut stream)?;
+
+    let connect_response = McsConnectResponse::read(&mut stream)?;
+    debug!("Got MCS Connect Response PDU: {:?}", connect_response.0);
+
+    let gcc_blocks = connect_response.0.conference_create_response.gcc_blocks;
+    if connect_initial
+        .0
+        .conference_create_request
+        .gcc_blocks
+        .security
+        == ironrdp::gcc::ClientSecurityData::no_security()
+        && gcc_blocks.security != ironrdp::gcc::ServerSecurityData::no_security()
+    {
+        return Err(RdpError::InvalidResponse(String::from(
+            "The server demands a security, while the client requested 'no security'",
+        )));
+    }
+
+    if gcc_blocks.message_channel.is_some() || gcc_blocks.multi_transport_channel.is_some() {
+        return Err(RdpError::InvalidResponse(String::from(
+            "The server demands additional channels",
+        )));
+    }
+
+    let static_channel_ids = gcc_blocks.network.channel_ids;
+    let global_channel_id = gcc_blocks.network.io_channel;
+
+    let static_channels = connect_initial
+        .0
+        .channel_names()
+        .into_iter()
+        .map(|channel| channel.name)
+        .zip(static_channel_ids.into_iter())
+        .chain(iter::once((
+            GLOBAL_CHANNEL_NAME.to_string(),
+            global_channel_id,
+        )))
+        .collect::<StaticChannels>();
+
+    Ok(static_channels)
+}
+
+pub fn process_mcs<S>(
+    mut stream: &mut S,
+    mut static_channels: StaticChannels,
+) -> RdpResult<StaticChannels>
+where
+    S: io::Read + io::Write,
+{
+    let mut transport = McsTransport::default();
+
+    let erect_domain_request = ironrdp::mcs::ErectDomainPdu::new(0, 0);
+
+    debug!(
+        "Send MCS Erect Domain Request PDU: {:?}",
+        erect_domain_request
+    );
+    transport.encode(
+        ironrdp::McsPdu::ErectDomainRequest(erect_domain_request),
+        &mut stream,
+    )?;
+    debug!("Send MCS Attach User Request PDU");
+    transport.encode(ironrdp::McsPdu::AttachUserRequest, &mut stream)?;
+
+    let mcs_pdu = transport.decode(&mut stream)?;
+    let initiator_id = if let ironrdp::McsPdu::AttachUserConfirm(attach_user_confirm) = mcs_pdu {
+        debug!("Got MCS Attach User Confirm PDU: {:?}", attach_user_confirm);
+
+        static_channels.insert(
+            USER_CHANNEL_NAME.to_string(),
+            attach_user_confirm.initiator_id,
+        );
+
+        attach_user_confirm.initiator_id
+    } else {
+        return Err(RdpError::UnexpectedPdu(format!(
+            "Expected MCS Attach User Confirm, got: {:?}",
+            mcs_pdu.as_short_name()
+        )));
+    };
+
+    for (_, id) in static_channels.iter() {
+        let channel_join_request = ironrdp::mcs::ChannelJoinRequestPdu::new(initiator_id, *id);
+        debug!(
+            "Send MCS Channel Join Request PDU: {:?}",
+            channel_join_request
+        );
+        transport.encode(
+            ironrdp::McsPdu::ChannelJoinRequest(channel_join_request),
+            &mut stream,
+        )?;
+
+        let mcs_pdu = transport.decode(&mut stream)?;
+        if let ironrdp::McsPdu::ChannelJoinConfirm(channel_join_confirm) = mcs_pdu {
+            debug!(
+                "Got MCS Channel Join Confirm PDU: {:?}",
+                channel_join_confirm
+            );
+
+            if channel_join_confirm.initiator_id != initiator_id
+                || channel_join_confirm.channel_id != channel_join_confirm.requested_channel_id
+                || channel_join_confirm.channel_id != *id
+            {
+                return Err(RdpError::InvalidResponse(String::from(
+                    "Invalid MCS Channel Join Confirm",
+                )));
+            }
+        } else {
+            return Err(RdpError::UnexpectedPdu(format!(
+                "Expected MCS Channel Join Confirm, got: {:?}",
+                mcs_pdu.as_short_name()
+            )));
+        }
+    }
+
+    Ok(static_channels)
+}
