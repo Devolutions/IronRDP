@@ -55,6 +55,33 @@ fn run(config: Config) -> RdpResult<()> {
     let addr = utils::socket_addr_to_string(config.routing_addr);
     let mut stream = TcpStream::connect(addr.as_str()).map_err(RdpError::ConnectionError)?;
 
+    let selected_protocol = process_negotiation(
+        &mut stream,
+        config.input.credentials.username.clone(),
+        config.input.security_protocol,
+        ironrdp::NegotiationRequestFlags::empty(),
+    )?;
+
+    let mut tls_stream = TlsConnector::builder()
+        .danger_accept_invalid_certs(true)
+        .danger_accept_invalid_hostnames(true)
+        .build()?
+        .connect(addr.as_str(), stream)?;
+
+    if selected_protocol.contains(ironrdp::SecurityProtocol::HYBRID)
+        || selected_protocol.contains(ironrdp::SecurityProtocol::HYBRID_EX)
+    {
+        process_cred_ssp(&mut tls_stream, config.input.credentials.clone())?;
+
+        if selected_protocol.contains(ironrdp::SecurityProtocol::HYBRID_EX) {
+            if let sspi::EarlyUserAuthResult::AccessDenied =
+                EarlyUserAuthResult::read(&mut tls_stream)?
+            {
+                return Err(RdpError::AccessDenied);
+            }
+        }
+    }
+
     Ok(())
 }
 
