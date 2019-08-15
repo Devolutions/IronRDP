@@ -20,25 +20,12 @@ pub trait Decoder {
     fn decode(&mut self, stream: impl io::Read) -> Result<Self::Item, Self::Error>;
 }
 
-fn read_tpkt_tpdu_buffer(mut stream: impl io::Read) -> io::Result<BytesMut> {
-    let mut buf = BytesMut::with_capacity(ironrdp::TPKT_HEADER_LENGTH);
-    buf.resize(ironrdp::TPKT_HEADER_LENGTH, 0x00);
-    stream.read_exact(&mut buf)?;
-
-    let tpkt_header = ironrdp::TpktHeader::from_buffer(buf.as_ref())?;
-
-    buf.resize(tpkt_header.length, 0x00);
-    stream.read_exact(&mut buf[ironrdp::TPKT_HEADER_LENGTH..])?;
-
-    Ok(buf)
-}
-
 #[derive(Default)]
 pub struct DataTransport;
 
 impl DataTransport {
     pub fn connect<S>(
-        mut stream: &mut S,
+        mut stream: &mut io::BufReader<S>,
         security_protocol: nego::SecurityProtocol,
         username: String,
     ) -> RdpResult<(DataTransport, nego::SecurityProtocol)>
@@ -74,11 +61,13 @@ impl Decoder for DataTransport {
     type Error = RdpError;
 
     fn decode(&mut self, mut stream: impl io::Read) -> RdpResult<Self::Item> {
-        let mut tpkt_tpdu_buf = read_tpkt_tpdu_buffer(&mut stream)?;
-        let data_pdu = ironrdp::Data::from_buffer(tpkt_tpdu_buf.as_ref())?;
-        tpkt_tpdu_buf.split_to(data_pdu.buffer_length() - data_pdu.data_length);
+        let data_pdu = ironrdp::Data::from_buffer(&mut stream)?;
 
-        Ok(tpkt_tpdu_buf)
+        let mut data = BytesMut::with_capacity(data_pdu.data_length);
+        data.resize(data_pdu.data_length, 0x00);
+        stream.read_exact(&mut data)?;
+
+        Ok(data)
     }
 }
 
@@ -340,7 +329,7 @@ impl Decoder for ShareDataHeaderTransport {
 }
 
 fn process_negotiation<S>(
-    mut stream: &mut S,
+    mut stream: &mut io::BufReader<S>,
     nego_data: Option<nego::NegoData>,
     protocol: nego::SecurityProtocol,
     flags: nego::RequestFlags,
@@ -359,10 +348,9 @@ where
         "Send X.224 Connection Request PDU: {:?}",
         connection_request
     );
-    connection_request.to_buffer(&mut stream)?;
+    connection_request.to_buffer(stream.get_mut())?;
 
-    let tpkt_tpdu_buf = read_tpkt_tpdu_buffer(&mut stream)?;
-    let connection_response = nego::Response::from_buffer(tpkt_tpdu_buf.as_ref())?;
+    let connection_response = nego::Response::from_buffer(&mut stream)?;
     if let Some(nego::ResponseData::Response {
         flags,
         protocol: selected_protocol,

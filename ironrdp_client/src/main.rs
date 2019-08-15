@@ -54,19 +54,22 @@ fn setup_logging(log_file: String) -> Result<(), fern::InitError> {
 
 fn run(config: Config) -> RdpResult<()> {
     let addr = utils::socket_addr_to_string(config.routing_addr);
-    let mut stream = TcpStream::connect(addr.as_str()).map_err(RdpError::ConnectionError)?;
+    let stream = TcpStream::connect(addr.as_str()).map_err(RdpError::ConnectionError)?;
+    let mut stream = io::BufReader::new(stream);
 
     let (mut transport, selected_protocol) = DataTransport::connect(
         &mut stream,
         config.input.security_protocol,
         config.input.credentials.username.clone(),
     )?;
+    let stream = stream.into_inner();
 
-    let mut tls_stream = TlsConnector::builder()
+    let tls_stream = TlsConnector::builder()
         .danger_accept_invalid_certs(true)
         .danger_accept_invalid_hostnames(true)
         .build()?
         .connect(addr.as_str(), stream)?;
+    let mut tls_stream = io::BufReader::new(tls_stream);
 
     if selected_protocol.contains(nego::SecurityProtocol::HYBRID)
         || selected_protocol.contains(nego::SecurityProtocol::HYBRID_EX)
@@ -97,14 +100,14 @@ fn run(config: Config) -> RdpResult<()> {
         .expect("user channel must be added");
 
     let mut transport = SendDataContextTransport::new(transport, initiator_id, global_channel_id);
-    send_client_info(&mut transport, &mut tls_stream, &config)?;
-    process_server_license(&mut transport, &mut tls_stream)?;
+    send_client_info(&mut tls_stream, &mut transport, &config)?;
+    process_server_license(&mut tls_stream, &mut transport)?;
 
     let mut transport = ShareControlHeaderTransport::new(transport, initiator_id);
-    process_capability_sets(&mut transport, &mut tls_stream, &config)?;
+    process_capability_sets(&mut tls_stream, &mut transport, &config)?;
 
     let mut transport = ShareDataHeaderTransport::new(transport);
-    process_finalization(&mut transport, &mut tls_stream, initiator_id)?;
+    process_finalization(&mut tls_stream, &mut transport, initiator_id)?;
 
     Ok(())
 }
