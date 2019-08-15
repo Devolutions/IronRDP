@@ -55,12 +55,8 @@ fn run(config: Config) -> RdpResult<()> {
     let addr = utils::socket_addr_to_string(config.routing_addr);
     let mut stream = TcpStream::connect(addr.as_str()).map_err(RdpError::ConnectionError)?;
 
-    let selected_protocol = process_negotiation(
-        &mut stream,
-        config.input.credentials.username.clone(),
-        config.input.security_protocol,
-        ironrdp::NegotiationRequestFlags::empty(),
-    )?;
+    let (mut transport, selected_protocol) =
+        DataTransport::connect(&mut stream, config.input.security_protocol)?;
 
     let mut tls_stream = TlsConnector::builder()
         .danger_accept_invalid_certs(true)
@@ -82,9 +78,11 @@ fn run(config: Config) -> RdpResult<()> {
         }
     }
 
-    let static_channels = process_mcs_connect(&mut tls_stream, &config, selected_protocol)?;
+    let static_channels =
+        process_mcs_connect(&mut tls_stream, &mut transport, &config, selected_protocol)?;
 
-    let joined_static_channels = process_mcs(&mut tls_stream, static_channels)?;
+    let mut transport = McsTransport::new(transport);
+    let joined_static_channels = process_mcs(&mut tls_stream, &mut transport, static_channels)?;
     debug!("Joined static channels: {:?}", joined_static_channels);
 
     let global_channel_id = *joined_static_channels
@@ -94,15 +92,14 @@ fn run(config: Config) -> RdpResult<()> {
         .get(&*USER_CHANNEL_NAME)
         .expect("user channel must be added");
 
-    let mut transport = SendDataContextTransport::new(initiator_id, global_channel_id);
-
+    let mut transport = SendDataContextTransport::new(transport, initiator_id, global_channel_id);
     send_client_info(&mut transport, &mut tls_stream, &config)?;
     process_server_license(&mut transport, &mut tls_stream)?;
 
     let mut transport = ShareControlHeaderTransport::new(transport, initiator_id);
     process_capability_sets(&mut transport, &mut tls_stream, &config)?;
 
-    let mut transport = ShareDataHeaderTransport(transport);
+    let mut transport = ShareDataHeaderTransport::new(transport);
     process_finalization(&mut transport, &mut tls_stream, initiator_id)?;
 
     Ok(())

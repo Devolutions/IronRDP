@@ -2,9 +2,9 @@ mod transport;
 mod user_info;
 
 pub use transport::{
-    ConnectionConfirm, ConnectionRequest, EarlyUserAuthResult, McsConnectInitial,
-    McsConnectResponse, McsTransport, SendDataContextTransport, ShareControlHeaderTransport,
-    ShareDataHeaderTransport, TsRequestTransport,
+    DataTransport, EarlyUserAuthResult, McsConnectInitial, McsConnectResponse, McsTransport,
+    SendDataContextTransport, ShareControlHeaderTransport, ShareDataHeaderTransport,
+    TsRequestTransport,
 };
 
 use std::{collections::HashMap, io, iter};
@@ -26,40 +26,6 @@ lazy_static! {
 }
 
 const SERVER_CHANNEL_ID: u16 = 0x03ea;
-
-pub fn process_negotiation<S>(
-    mut stream: &mut S,
-    cookie: String,
-    request_protocols: ironrdp::SecurityProtocol,
-    request_flags: ironrdp::NegotiationRequestFlags,
-) -> RdpResult<ironrdp::SecurityProtocol>
-where
-    S: io::Read + io::Write,
-{
-    let connection_request = ConnectionRequest::new(
-        Some(ironrdp::NegoData::Cookie(cookie)),
-        request_protocols,
-        request_flags,
-    );
-    debug!(
-        "Send X.224 Connection Request PDU: {:?}",
-        connection_request
-    );
-    connection_request.write(&mut stream)?;
-
-    let connection_confirm = ConnectionConfirm::read(&mut stream)?;
-    debug!("Got X.224 Connection Confirm PDU: {:?}", connection_confirm);
-    let selected_protocol = connection_confirm.protocol;
-
-    if request_protocols.contains(selected_protocol) {
-        Ok(selected_protocol)
-    } else {
-        Err(RdpError::InvalidResponse(format!(
-            "Got unexpected security protocol: {:?} while was expected one of {:?}",
-            selected_protocol, request_protocols
-        )))
-    }
-}
 
 pub fn process_cred_ssp<S>(
     mut tls_stream: &mut TlsStream<S>,
@@ -107,6 +73,7 @@ where
 
 pub fn process_mcs_connect<S>(
     mut stream: &mut S,
+    mut transport: &mut DataTransport,
     config: &Config,
     selected_protocol: ironrdp::SecurityProtocol,
 ) -> RdpResult<StaticChannels>
@@ -117,9 +84,9 @@ where
         user_info::create_gcc_blocks(&config, selected_protocol)?,
     ));
     debug!("Send MCS Connect Initial PDU: {:?}", connect_initial.0);
-    connect_initial.write(&mut stream)?;
+    connect_initial.write(&mut stream, &mut transport)?;
 
-    let connect_response = McsConnectResponse::read(&mut stream)?;
+    let connect_response = McsConnectResponse::read(&mut stream, &mut transport)?;
     debug!("Got MCS Connect Response PDU: {:?}", connect_response.0);
 
     let gcc_blocks = connect_response.0.conference_create_response.gcc_blocks;
@@ -162,13 +129,12 @@ where
 
 pub fn process_mcs<S>(
     mut stream: &mut S,
+    transport: &mut McsTransport,
     mut static_channels: StaticChannels,
 ) -> RdpResult<StaticChannels>
 where
     S: io::Read + io::Write,
 {
-    let mut transport = McsTransport::default();
-
     let erect_domain_request = ironrdp::mcs::ErectDomainPdu::new(0, 0);
 
     debug!(
