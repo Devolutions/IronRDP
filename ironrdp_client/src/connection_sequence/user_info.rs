@@ -283,7 +283,12 @@ fn get_color_depth(current_monitor: &winit::monitor::MonitorHandle) -> HighColor
     current_monitor
         .video_modes()
         .map(|video_mode| {
-            HighColorDepth::from_u16(video_mode.bit_depth()).unwrap_or(HighColorDepth::Bpp4)
+            let video_mode_bit_depth = video_mode.bit_depth();
+            match HighColorDepth::from_u16(video_mode_bit_depth) {
+                Some(bit_depth) => bit_depth,
+                None if video_mode_bit_depth == 32 => HighColorDepth::Bpp24,
+                _ => HighColorDepth::Bpp4,
+            }
         })
         .max()
         .unwrap_or(HighColorDepth::Bpp4)
