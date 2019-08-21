@@ -22,7 +22,7 @@ use ironrdp::{
 };
 use num_traits::{FromPrimitive, ToPrimitive};
 
-use crate::{config::Config, utils, RdpError, RdpResult};
+use crate::{config::Config, RdpError, RdpResult};
 
 const SOURCE_DESCRIPTOR: &str = "IRONRDP";
 
@@ -56,7 +56,7 @@ pub fn create_client_info_pdu(config: &Config) -> RdpResult<ClientInfoPdu> {
                 net::SocketAddr::V4(_) => AddressFamily::INet,
                 net::SocketAddr::V6(_) => AddressFamily::INet6,
             },
-            address: utils::socket_addr_to_string(config.routing_addr),
+            address: config.routing_addr.ip().to_string(),
             dir: env::current_dir()
                 .map_err(|e| {
                     RdpError::UserInfoError(format!(
