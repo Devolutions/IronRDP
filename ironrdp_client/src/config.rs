@@ -163,7 +163,7 @@ impl Input {
                 .multiple(true),
         ]
     }
-    fn from_matches(matches: &clap::ArgMatches) -> Self {
+    fn from_matches(matches: &clap::ArgMatches<'_>) -> Self {
         let username = matches
             .value_of("username")
             .map(String::from)

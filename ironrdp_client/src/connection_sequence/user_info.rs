@@ -261,7 +261,7 @@ fn create_offscreen_bitmap_cache_capability_set() -> CapabilitySet {
 fn create_virtual_channel_capability_set() -> CapabilitySet {
     CapabilitySet::VirtualChannel(VirtualChannel {
         flags: VirtualChannelFlags::NO_COMPRESSION,
-        chunk_size: 0, // ignored
+        chunk_size: Some(0), // ignored
     })
 }
 
