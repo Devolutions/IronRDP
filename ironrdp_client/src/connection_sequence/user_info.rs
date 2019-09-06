@@ -33,7 +33,7 @@ pub fn create_gcc_blocks(
     Ok(ClientGccBlocks {
         core: create_core_data(config, selected_protocol)?,
         security: create_security_data(),
-        network: create_network_data(config),
+        network: Some(create_network_data(config)),
         cluster: None,
         monitor: None,
         message_channel: None,

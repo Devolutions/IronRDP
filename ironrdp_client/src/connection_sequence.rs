@@ -119,6 +119,7 @@ where
 
     let static_channels = connect_initial
         .channel_names()
+        .unwrap_or_default()
         .into_iter()
         .map(|channel| channel.name)
         .zip(static_channel_ids.into_iter())

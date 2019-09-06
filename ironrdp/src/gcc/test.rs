@@ -67,7 +67,7 @@ lazy_static! {
         core: core_data::client::test::CLIENT_OPTIONAL_CORE_DATA_TO_SERVER_SELECTED_PROTOCOL
             .clone(),
         security: security_data::test::CLIENT_SECURITY_DATA.clone(),
-        network: network_data::test::CLIENT_NETOWORK_DATA_WITH_CHANNELS.clone(),
+        network: Some(network_data::test::CLIENT_NETOWORK_DATA_WITH_CHANNELS.clone()),
         cluster: None,
         monitor: None,
         message_channel: None,

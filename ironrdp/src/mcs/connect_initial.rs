@@ -41,7 +41,7 @@ impl ConnectInitial {
         }
     }
 
-    pub fn channel_names(&self) -> Vec<Channel> {
+    pub fn channel_names(&self) -> Option<Vec<Channel>> {
         self.conference_create_request.gcc_blocks.channel_names()
     }
 

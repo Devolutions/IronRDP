@@ -70,7 +70,12 @@ const USER_DATA_HEADER_SIZE: usize = 4;
 pub struct ClientGccBlocks {
     pub core: ClientCoreData,
     pub security: ClientSecurityData,
-    pub network: ClientNetworkData,
+    /// According to [MSDN](https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/c1bea8bd-069c-4437-9769-db5d27935225),
+    /// the Client GCC blocks MUST contain Core, Security, Network GCC blocks.
+    /// But the FreeRDP does not send the Network GCC block if it does not have channels to join,
+    /// and what is surprising - Windows RDP server accepts this GCC block.
+    /// Because of this, the Network GCC block is made optional in IronRDP.
+    pub network: Option<ClientNetworkData>,
     pub cluster: Option<ClientClusterData>,
     pub monitor: Option<ClientMonitorData>,
     pub message_channel: Option<ClientMessageChannelData>,
@@ -79,8 +84,12 @@ pub struct ClientGccBlocks {
 }
 
 impl ClientGccBlocks {
-    pub fn channel_names(&self) -> Vec<network_data::Channel> {
-        self.network.channels.clone()
+    pub fn channel_names(&self) -> Option<Vec<network_data::Channel>> {
+        if let Some(network) = &self.network {
+            Some(network.channels.clone())
+        } else {
+            None
+        }
     }
 }
 
@@ -152,9 +161,7 @@ impl PduParsing for ClientGccBlocks {
             security: security.ok_or(GccError::RequiredClientDataBlockIsAbsent(
                 ClientGccType::SecurityData,
             ))?,
-            network: network.ok_or(GccError::RequiredClientDataBlockIsAbsent(
-                ClientGccType::NetworkData,
-            ))?,
+            network,
             cluster,
             monitor,
             message_channel,
@@ -168,9 +175,11 @@ impl PduParsing for ClientGccBlocks {
             .to_buffer(&mut buffer)?;
         UserDataHeader::from_gcc_block(ClientGccType::SecurityData, &self.security)?
             .to_buffer(&mut buffer)?;
-        UserDataHeader::from_gcc_block(ClientGccType::NetworkData, &self.network)?
-            .to_buffer(&mut buffer)?;
 
+        if let Some(ref network) = self.network {
+            UserDataHeader::from_gcc_block(ClientGccType::NetworkData, network)?
+                .to_buffer(&mut buffer)?;
+        }
         if let Some(ref cluster) = self.cluster {
             UserDataHeader::from_gcc_block(ClientGccType::ClusterData, cluster)?
                 .to_buffer(&mut buffer)?;
@@ -199,11 +208,12 @@ impl PduParsing for ClientGccBlocks {
     }
 
     fn buffer_length(&self) -> usize {
-        let mut size = self.core.buffer_length()
-            + self.security.buffer_length()
-            + self.network.buffer_length()
-            + USER_DATA_HEADER_SIZE * 3;
+        let mut size =
+            self.core.buffer_length() + self.security.buffer_length() + USER_DATA_HEADER_SIZE * 2;
 
+        if let Some(ref network) = self.network {
+            size += network.buffer_length() + USER_DATA_HEADER_SIZE;
+        }
         if let Some(ref cluster) = self.cluster {
             size += cluster.buffer_length() + USER_DATA_HEADER_SIZE;
         }
