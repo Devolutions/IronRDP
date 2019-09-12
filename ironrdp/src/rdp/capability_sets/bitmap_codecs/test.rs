@@ -533,3 +533,57 @@ fn codec_with_property_length_and_ignore_guid_handled_correctly() {
     assert_eq!(codec, Codec::from_buffer(&mut slice).unwrap());
     assert!(slice.is_empty());
 }
+
+#[test]
+fn ns_codec_with_too_high_color_loss_level_handled_correctly() {
+    let codec_buffer = vec![
+        0xb9, 0x1b, 0x8d, 0xca, 0x0f, 0x00, 0x4f, 0x15, 0x58, 0x9F, 0xAE, 0x2D, 0x1A, 0x87, 0xE2,
+        0xd6, // guid
+        0x00, // codec id
+        0x03, 0x00, // codec properties len
+        0x01, // allow dynamic fidelity
+        0x01, // allow subsampling
+        0xff, // color loss level
+    ];
+
+    let codec = Codec {
+        id: 0,
+        property: CodecProperty::NsCodec(NsCodec {
+            is_dynamic_fidelity_allowed: true,
+            is_subsampling_allowed: true,
+            color_loss_level: 7,
+        }),
+    };
+
+    assert_eq!(
+        codec,
+        Codec::from_buffer(&mut codec_buffer.as_slice()).unwrap()
+    );
+}
+
+#[test]
+fn ns_codec_with_too_low_color_loss_level_handled_correctly() {
+    let codec_buffer = vec![
+        0xb9, 0x1b, 0x8d, 0xca, 0x0f, 0x00, 0x4f, 0x15, 0x58, 0x9F, 0xAE, 0x2D, 0x1A, 0x87, 0xE2,
+        0xd6, // guid
+        0x00, // codec id
+        0x03, 0x00, // codec properties len
+        0x01, // allow dynamic fidelity
+        0x01, // allow subsampling
+        0x00, // color loss level
+    ];
+
+    let codec = Codec {
+        id: 0,
+        property: CodecProperty::NsCodec(NsCodec {
+            is_dynamic_fidelity_allowed: true,
+            is_subsampling_allowed: true,
+            color_loss_level: 1,
+        }),
+    };
+
+    assert_eq!(
+        codec,
+        Codec::from_buffer(&mut codec_buffer.as_slice()).unwrap()
+    );
+}

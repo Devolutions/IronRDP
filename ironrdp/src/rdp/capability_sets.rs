@@ -631,8 +631,6 @@ pub enum CapabilitySetsError {
     InvalidRfxCapsBockLength,
     #[fail(display = "Invalid number of capability sets in RemoteFX capabilities")]
     InvalidRfxCapsNumCapsets,
-    #[fail(display = "Invalid color loss level field")]
-    InvalidColorLossLevel,
     #[fail(display = "Invalid codec property field")]
     InvalidCodecProperty,
     #[fail(display = "Invalid codec ID")]

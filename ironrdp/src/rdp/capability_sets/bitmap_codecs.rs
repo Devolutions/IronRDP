@@ -134,12 +134,14 @@ impl PduParsing for Codec {
         let codec_properties_len = usize::from(buffer.read_u16::<LittleEndian>()?);
 
         let property = if codec_properties_len != 0 {
-            match guid {
-                GUID_NSCODEC => CodecProperty::NsCodec(NsCodec::from_buffer(&mut buffer)?),
-                GUID_REMOTEFX | GUID_IMAGE_REMOTEFX => {
-                    let mut property_buffer = vec![0u8; codec_properties_len];
-                    buffer.read_exact(&mut property_buffer)?;
+            let mut property_buffer = vec![0u8; codec_properties_len];
+            buffer.read_exact(&mut property_buffer)?;
 
+            match guid {
+                GUID_NSCODEC => {
+                    CodecProperty::NsCodec(NsCodec::from_buffer(&mut property_buffer.as_slice())?)
+                }
+                GUID_REMOTEFX | GUID_IMAGE_REMOTEFX => {
                     let property = if property_buffer[0] == 0 {
                         RemoteFxContainer::ServerContainer(codec_properties_len)
                     } else {
@@ -154,14 +156,8 @@ impl PduParsing for Codec {
                         _ => unreachable!(),
                     }
                 }
-                GUID_IGNORE => {
-                    buffer.read_exact(&mut vec![0u8; codec_properties_len])?;
-                    CodecProperty::Ignore
-                }
-                _ => {
-                    buffer.read_exact(&mut vec![0u8; codec_properties_len])?;
-                    CodecProperty::None
-                }
+                GUID_IGNORE => CodecProperty::Ignore,
+                _ => CodecProperty::None,
             }
         } else {
             match guid {
@@ -273,10 +269,7 @@ impl PduParsing for NsCodec {
         let is_dynamic_fidelity_allowed = buffer.read_u8()? != 0;
         let is_subsampling_allowed = buffer.read_u8()? != 0;
 
-        let color_loss_level = buffer.read_u8()?;
-        if color_loss_level < 1 || color_loss_level > 7 {
-            return Err(CapabilitySetsError::InvalidColorLossLevel);
-        }
+        let color_loss_level = buffer.read_u8()?.max(1).min(7);
 
         Ok(Self {
             is_dynamic_fidelity_allowed,
