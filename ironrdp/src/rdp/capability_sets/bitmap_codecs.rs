@@ -255,6 +255,19 @@ pub enum CodecProperty {
     None,
 }
 
+/// The NsCodec structure advertises properties of the NSCodec Bitmap Codec.
+///
+/// # Fields
+///
+/// * `is_dynamic_fidelity_allowed` - indicates support for lossy bitmap compression by reducing color fidelity
+/// * `is_subsampling_allowed` - indicates support for chroma subsampling
+/// * `color_loss_level` - indicates the maximum supported Color Loss Level
+///
+/// If received Color Loss Level value is lesser than 1 or greater than 7, it assigns to 1 or 7 respectively. This was made for compatibility with FreeRDP server.
+///
+/// # MSDN
+///
+/// * [NSCodec Capability Set](https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpnsc/0eac0ba8-7bdd-4300-ab8d-9bc784c0a669)
 #[derive(Debug, PartialEq, Clone)]
 pub struct NsCodec {
     pub is_dynamic_fidelity_allowed: bool,
