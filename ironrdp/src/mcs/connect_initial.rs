@@ -3,10 +3,9 @@ mod test;
 
 use std::io;
 
-use sspi::ber;
-
 use super::{McsError, RESULT_ENUM_LENGTH};
 use crate::{
+    ber,
     gcc::{
         conference_create::{ConferenceCreateRequest, ConferenceCreateResponse},
         Channel, ClientGccBlocks,

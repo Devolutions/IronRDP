@@ -20,4 +20,4 @@ lazy_static = "1.2"
 bytes = "0.4"
 num-integer = "0.1"
 failure = "0.1"
-sspi = "0.2"
+

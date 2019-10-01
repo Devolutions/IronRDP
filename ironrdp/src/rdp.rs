@@ -13,8 +13,8 @@ pub use self::{
         VirtualChannel,
     },
     client_info::{
-        AddressFamily, CharacterSet, ClientInfo, ClientInfoFlags, CompressionType, DayOfWeek,
-        DayOfWeekOccurrence, ExtendedClientInfo, ExtendedClientOptionalInfo, Month,
+        AddressFamily, CharacterSet, ClientInfo, ClientInfoFlags, CompressionType, Credentials,
+        DayOfWeek, DayOfWeekOccurrence, ExtendedClientInfo, ExtendedClientOptionalInfo, Month,
         PerformanceFlags, SystemTime, TimezoneInfo,
     },
     finalization_messages::{
