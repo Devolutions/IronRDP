@@ -14,8 +14,11 @@ use lazy_static::lazy_static;
 use log::debug;
 use rustls::{internal::msgs::handshake::CertificatePayload, Session};
 
-use crate::connection_sequence::transport::{Decoder, Encoder};
-use crate::{config::Config, utils, RdpError, RdpResult};
+use crate::{
+    config::Config,
+    connection_sequence::transport::{Decoder, Encoder},
+    utils, RdpError, RdpResult,
+};
 
 pub type StaticChannels = HashMap<String, u16>;
 
@@ -28,7 +31,7 @@ const SERVER_CHANNEL_ID: u16 = 0x03ea;
 
 pub fn process_cred_ssp<'a, S, T>(
     mut tls_stream: &mut rustls::Stream<'a, S, T>,
-    credentials: sspi::Credentials,
+    credentials: sspi::AuthIdentity,
 ) -> RdpResult<()>
 where
     S: 'a + Session + Sized,
@@ -43,13 +46,13 @@ where
 
     let mut transport = TsRequestTransport::default();
 
-    let mut cred_ssp_client = sspi::CredSspClient::new(
+    let mut cred_ssp_client = sspi::internal::CredSspClient::new(
         server_tls_pubkey,
         credentials,
-        sspi::CredSspMode::WithCredentials,
+        sspi::internal::CredSspMode::WithCredentials,
     )
     .map_err(RdpError::CredSspError)?;
-    let mut next_ts_request = sspi::TsRequest::default();
+    let mut next_ts_request = sspi::internal::TsRequest::default();
 
     loop {
         let result = cred_ssp_client
@@ -58,13 +61,13 @@ where
         debug!("Got CredSSP TSRequest: {:x?}", result);
 
         match result {
-            sspi::CredSspResult::ReplyNeeded(ts_request) => {
+            sspi::internal::CredSspResult::ReplyNeeded(ts_request) => {
                 debug!("Send CredSSP TSRequest: {:x?}", ts_request);
                 transport.encode(ts_request, &mut tls_stream)?;
 
                 next_ts_request = transport.decode(&mut tls_stream)?;
             }
-            sspi::CredSspResult::FinalMessage(ts_request) => {
+            sspi::internal::CredSspResult::FinalMessage(ts_request) => {
                 debug!("Send CredSSP TSRequest: {:x?}", ts_request);
                 transport.encode(ts_request, &mut tls_stream)?;
 

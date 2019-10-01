@@ -101,7 +101,7 @@ fn run(config: Config) -> RdpResult<()> {
         process_cred_ssp(&mut tls_stream, config.input.credentials.clone())?;
 
         if selected_protocol.contains(nego::SecurityProtocol::HYBRID_EX) {
-            if let sspi::EarlyUserAuthResult::AccessDenied =
+            if let sspi::internal::EarlyUserAuthResult::AccessDenied =
                 EarlyUserAuthResult::read(&mut tls_stream)?
             {
                 return Err(RdpError::AccessDenied);
@@ -157,7 +157,7 @@ pub enum RdpError {
     #[fail(display = "TLS handshake error: {}", _0)]
     TlsHandshakeError(rustls::TLSError),
     #[fail(display = "CredSSP error: {}", _0)]
-    CredSspError(#[fail(cause)] sspi::SspiError),
+    CredSspError(#[fail(cause)] sspi::Error),
     #[fail(display = "CredSSP TSRequest error: {}", _0)]
     TsRequestError(#[fail(cause)] io::Error),
     #[fail(display = "early User Authentication Result error: {}", _0)]

@@ -16,7 +16,8 @@ use ironrdp::{
             VirtualChannel, VirtualChannelFlags, BITMAP_CACHE_ENTRIES_NUM, GLYPH_CACHE_NUM,
         },
         AddressFamily, BasicSecurityHeader, BasicSecurityHeaderFlags, ClientInfo, ClientInfoFlags,
-        ClientInfoPdu, CompressionType, ExtendedClientInfo, ExtendedClientOptionalInfo,
+        ClientInfoPdu, CompressionType, Credentials, ExtendedClientInfo,
+        ExtendedClientOptionalInfo,
     },
     CapabilitySet, ClientConfirmActive,
 };
@@ -45,7 +46,7 @@ pub fn create_gcc_blocks(
 pub fn create_client_info_pdu(config: &Config) -> RdpResult<ClientInfoPdu> {
     let security_header = BasicSecurityHeader::new(BasicSecurityHeaderFlags::INFO_PKT);
     let client_info = ClientInfo {
-        credentials: config.input.credentials.clone(),
+        credentials: auth_identity_to_credentials(config.input.credentials.clone()),
         code_page: 0, // ignored if the keyboardLayout field of the Client Core Data is set to zero
         flags: ClientInfoFlags::UNICODE,
         compression_type: CompressionType::K8, // ignored if ClientInfoFlags::COMPRESSION is not set
@@ -292,4 +293,12 @@ fn get_color_depth(current_monitor: &winit::monitor::MonitorHandle) -> HighColor
         })
         .max()
         .unwrap_or(HighColorDepth::Bpp4)
+}
+
+fn auth_identity_to_credentials(auth_identity: sspi::AuthIdentity) -> Credentials {
+    Credentials {
+        username: auth_identity.username,
+        password: auth_identity.password,
+        domain: auth_identity.domain,
+    }
 }

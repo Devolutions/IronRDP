@@ -12,7 +12,7 @@ keywords = ["rdp", "client", "remote", "desktop", "protocol"]
 
 [dependencies]
 ironrdp = { path = "../ironrdp" }
-sspi = "0.2"
+sspi = { path = "../../sspi-rs" }
 clap = "2.33"
 bytes = "0.4"
 failure = "0.1"

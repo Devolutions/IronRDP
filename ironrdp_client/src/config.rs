@@ -2,7 +2,7 @@ use std::net::SocketAddr;
 
 use clap::{crate_name, crate_version, App, Arg};
 use ironrdp::nego::SecurityProtocol;
-use sspi::Credentials;
+use sspi::AuthIdentity;
 
 pub struct Config {
     pub log_file: String,
@@ -67,7 +67,7 @@ impl Config {
 }
 
 pub struct Input {
-    pub credentials: Credentials,
+    pub credentials: AuthIdentity,
     pub security_protocol: SecurityProtocol,
     pub keyboard_type: ironrdp::gcc::KeyboardType,
     pub keyboard_subtype: u32,
@@ -173,7 +173,11 @@ impl Input {
             .value_of("password")
             .map(String::from)
             .expect("password must be specified");
-        let credentials = Credentials::new(username, password, domain);
+        let credentials = AuthIdentity {
+            username,
+            password,
+            domain,
+        };
 
         let security_protocol = matches
             .values_of("security-protocol")
