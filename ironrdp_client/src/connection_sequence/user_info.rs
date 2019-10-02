@@ -141,12 +141,15 @@ fn create_optional_core_data(
         supported_color_depths: Some(
             current_monitor
                 .video_modes()
-                .map(|video_mode| match video_mode.bit_depth() {
-                    15 => SupportedColorDepths::BPP15,
-                    16 => SupportedColorDepths::BPP16,
-                    24 => SupportedColorDepths::BPP24,
-                    32 => SupportedColorDepths::BPP32,
-                    _ => SupportedColorDepths::empty(),
+                .map(|video_mode| {
+                    let supported_color_depth = SupportedColorDepths::BPP15
+                        | SupportedColorDepths::BPP16
+                        | SupportedColorDepths::BPP24;
+                    match video_mode.bit_depth() {
+                        15 | 16 | 24 => supported_color_depth,
+                        32 => supported_color_depth | SupportedColorDepths::BPP32,
+                        _ => SupportedColorDepths::empty(),
+                    }
                 })
                 .collect(),
         ),

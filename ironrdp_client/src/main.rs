@@ -74,7 +74,7 @@ fn setup_logging(log_file: String) -> Result<(), fern::InitError> {
 fn run(config: Config) -> RdpResult<()> {
     let addr = utils::socket_addr_to_string(config.routing_addr);
     let stream = TcpStream::connect(addr.as_str()).map_err(RdpError::ConnectionError)?;
-    let mut stream = io::BufReader::new(stream);
+    let mut stream = utils::StreamWrapper::new(stream);
 
     let (mut transport, selected_protocol) = DataTransport::connect(
         &mut stream,
@@ -95,6 +95,8 @@ fn run(config: Config) -> RdpResult<()> {
     // handshake
     tls_stream.flush()?;
 
+    let mut tls_stream = utils::StreamWrapper::new(tls_stream);
+
     if selected_protocol.contains(nego::SecurityProtocol::HYBRID)
         || selected_protocol.contains(nego::SecurityProtocol::HYBRID_EX)
     {
@@ -102,14 +104,12 @@ fn run(config: Config) -> RdpResult<()> {
 
         if selected_protocol.contains(nego::SecurityProtocol::HYBRID_EX) {
             if let sspi::internal::EarlyUserAuthResult::AccessDenied =
-                EarlyUserAuthResult::read(&mut tls_stream)?
+                EarlyUserAuthResult::read(tls_stream.get_reader())?
             {
                 return Err(RdpError::AccessDenied);
             }
         }
     }
-
-    let mut tls_stream = io::BufReader::new(tls_stream);
 
     let static_channels =
         process_mcs_connect(&mut tls_stream, &mut transport, &config, selected_protocol)?;
@@ -127,7 +127,7 @@ fn run(config: Config) -> RdpResult<()> {
 
     let mut transport = SendDataContextTransport::new(transport, initiator_id, global_channel_id);
     send_client_info(&mut tls_stream, &mut transport, &config)?;
-    process_server_license(&mut tls_stream, &mut transport)?;
+    process_server_license(&mut tls_stream.get_reader(), &mut transport)?;
 
     let mut transport = ShareControlHeaderTransport::new(transport, initiator_id);
     process_capability_sets(&mut tls_stream, &mut transport, &config)?;

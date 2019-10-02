@@ -24,6 +24,32 @@ macro_rules! try_ready {
     };
 }
 
+pub struct StreamWrapper<T: io::Write + io::Read> {
+    stream: T,
+}
+
+impl<T: io::Write + io::Read> StreamWrapper<T> {
+    pub fn new(stream: T) -> StreamWrapper<T> {
+        StreamWrapper { stream }
+    }
+
+    pub fn into_inner(self) -> T {
+        self.stream
+    }
+
+    pub fn get_ref(&self) -> &T {
+        &self.stream
+    }
+
+    pub fn get_reader(&mut self) -> io::BufReader<&mut T> {
+        io::BufReader::new(&mut self.stream)
+    }
+
+    pub fn get_writer(&mut self) -> io::BufWriter<&mut T> {
+        io::BufWriter::new(&mut self.stream)
+    }
+}
+
 pub fn socket_addr_to_string(socket_addr: std::net::SocketAddr) -> String {
     format!("{}:{}", socket_addr.ip(), socket_addr.port())
 }
