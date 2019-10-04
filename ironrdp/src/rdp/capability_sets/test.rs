@@ -293,6 +293,7 @@ lazy_static! {
     };
     pub static ref CLIENT_DEMAND_ACTIVE_WITH_INCOMPLETE_CAPABILITY_SET: ClientConfirmActive =
         ClientConfirmActive {
+            originator_id: SERVER_CHANNEL_ID,
             pdu: DemandActive {
                 source_descriptor: String::from("MSTSC"),
                 capability_sets: vec![
@@ -357,6 +358,7 @@ lazy_static! {
             }
         };
     pub static ref CLIENT_DEMAND_ACTIVE: ClientConfirmActive = ClientConfirmActive {
+        originator_id: SERVER_CHANNEL_ID,
         pdu: DemandActive {
             source_descriptor: String::from("MSTSC"),
             capability_sets: vec![

@@ -45,6 +45,8 @@ use num_traits::{FromPrimitive, ToPrimitive};
 
 use crate::{impl_from_error, PduParsing};
 
+pub const SERVER_CHANNEL_ID: u16 = 0x03ea;
+
 const SOURCE_DESCRIPTOR_LENGTH_FIELD_SIZE: usize = 2;
 const COMBINED_CAPABILITIES_LENGTH_FIELD_SIZE: usize = 2;
 const NUMBER_CAPABILITIES_FIELD_SIZE: usize = 2;
@@ -55,7 +57,6 @@ const CAPABILITY_SET_LENGTH_FIELD_SIZE: usize = 2;
 const ORIGINATOR_ID_FIELD_SIZE: usize = 2;
 
 const NULL_TERMINATOR: &str = "\0";
-const SERVER_CHANNEL_ID: u16 = 0x03ea;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ServerDemandActive {
@@ -86,13 +87,14 @@ impl PduParsing for ServerDemandActive {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ClientConfirmActive {
+    /// According to [MSDN](https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/4e9722c3-ad83-43f5-af5a-529f73d88b48),
+    /// this field MUST be set to [SERVER_CHANNEL_ID](constant.SERVER_CHANNEL_ID.html).
+    /// However, the Microsoft RDP client takes this value from a server's
+    /// [PduSource](https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/73d01865-2eae-407f-9b2c-87e31daac471)
+    /// field of the [Server Demand Active PDU](https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/bd612af5-cb54-43a2-9646-438bc3ecf5db).
+    /// Therefore, checking the `originator_id` field is the responsibility of the user of the library.
+    pub originator_id: u16,
     pub pdu: DemandActive,
-}
-
-impl ClientConfirmActive {
-    pub fn new(pdu: DemandActive) -> Self {
-        Self { pdu }
-    }
 }
 
 impl PduParsing for ClientConfirmActive {
@@ -100,17 +102,13 @@ impl PduParsing for ClientConfirmActive {
 
     fn from_buffer(mut stream: impl io::Read) -> Result<Self, Self::Error> {
         let originator_id = stream.read_u16::<LittleEndian>()?;
-        if originator_id == SERVER_CHANNEL_ID {
-            Ok(Self {
-                pdu: DemandActive::from_buffer(&mut stream)?,
-            })
-        } else {
-            Err(CapabilitySetsError::InvalidOriginatorId)
-        }
+        let pdu = DemandActive::from_buffer(&mut stream)?;
+
+        Ok(Self { originator_id, pdu })
     }
 
     fn to_buffer(&self, mut stream: impl io::Write) -> Result<(), Self::Error> {
-        stream.write_u16::<LittleEndian>(SERVER_CHANNEL_ID)?;
+        stream.write_u16::<LittleEndian>(self.originator_id)?;
 
         self.pdu.to_buffer(&mut stream)
     }
@@ -587,8 +585,6 @@ pub enum CapabilitySetsError {
     Utf8Error(#[fail(cause)] std::string::FromUtf8Error),
     #[fail(display = "Invalid type field")]
     InvalidType,
-    #[fail(display = "Invalid originator ID field")]
-    InvalidOriginatorId,
     #[fail(display = "Invalid bitmap compression field")]
     InvalidCompressionFlag,
     #[fail(display = "Invalid multiple rectangle support field")]

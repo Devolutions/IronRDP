@@ -10,7 +10,7 @@ mod server_license;
 pub use self::{
     capability_sets::{
         CapabilitySet, CapabilitySetsError, ClientConfirmActive, DemandActive, ServerDemandActive,
-        VirtualChannel,
+        VirtualChannel, SERVER_CHANNEL_ID,
     },
     client_info::{
         AddressFamily, CharacterSet, ClientInfo, ClientInfoFlags, CompressionType, Credentials,
