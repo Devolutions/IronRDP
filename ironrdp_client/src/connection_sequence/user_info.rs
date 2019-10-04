@@ -17,7 +17,7 @@ use ironrdp::{
         },
         AddressFamily, BasicSecurityHeader, BasicSecurityHeaderFlags, ClientInfo, ClientInfoFlags,
         ClientInfoPdu, CompressionType, Credentials, ExtendedClientInfo,
-        ExtendedClientOptionalInfo,
+        ExtendedClientOptionalInfo, SERVER_CHANNEL_ID,
     },
     CapabilitySet, ClientConfirmActive,
 };
@@ -97,10 +97,10 @@ pub fn create_client_confirm_active(
         create_sound_capability_set(),
     ]);
 
-    Ok(ClientConfirmActive::new(ironrdp::DemandActive::new(
-        SOURCE_DESCRIPTOR.to_string(),
-        server_capability_sets,
-    )))
+    Ok(ClientConfirmActive {
+        originator_id: SERVER_CHANNEL_ID,
+        pdu: ironrdp::DemandActive::new(SOURCE_DESCRIPTOR.to_string(), server_capability_sets),
+    })
 }
 
 fn create_core_data(

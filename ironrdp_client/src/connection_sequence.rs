@@ -9,7 +9,7 @@ pub use transport::{
 use std::{collections::HashMap, io, iter};
 
 use bytes::BytesMut;
-use ironrdp::{nego, PduParsing};
+use ironrdp::{nego, rdp::SERVER_CHANNEL_ID, PduParsing};
 use lazy_static::lazy_static;
 use log::debug;
 use rustls::{internal::msgs::handshake::CertificatePayload, Session};
@@ -26,8 +26,6 @@ lazy_static! {
     pub static ref GLOBAL_CHANNEL_NAME: String = String::from("GLOBAL");
     pub static ref USER_CHANNEL_NAME: String = String::from("USER");
 }
-
-const SERVER_CHANNEL_ID: u16 = 0x03ea;
 
 pub fn process_cred_ssp<'a, S, T>(
     mut tls_stream: &mut rustls::Stream<'a, S, T>,
