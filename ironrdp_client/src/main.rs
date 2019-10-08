@@ -2,16 +2,35 @@ mod config;
 mod connection_sequence;
 mod utils;
 
-use std::{io, net::TcpStream};
+use std::{
+    io::{self, Write},
+    net::TcpStream,
+    sync::Arc,
+};
 
 use failure::Fail;
 use ironrdp::nego;
 use log::{debug, error};
-use native_tls::TlsConnector;
 
 use self::{config::Config, connection_sequence::*};
 
 pub type RdpResult<T> = Result<T, RdpError>;
+
+mod danger {
+    pub struct NoCertificateVerification {}
+
+    impl rustls::ServerCertVerifier for NoCertificateVerification {
+        fn verify_server_cert(
+            &self,
+            _roots: &rustls::RootCertStore,
+            _presented_certs: &[rustls::Certificate],
+            _dns_name: webpki::DNSNameRef<'_>,
+            _ocsp: &[u8],
+        ) -> Result<rustls::ServerCertVerified, rustls::TLSError> {
+            Ok(rustls::ServerCertVerified::assertion())
+        }
+    }
+}
 
 fn main() {
     let config = Config::parse_args();
@@ -62,14 +81,19 @@ fn run(config: Config) -> RdpResult<()> {
         config.input.security_protocol,
         config.input.credentials.username.clone(),
     )?;
-    let stream = stream.into_inner();
+    let mut stream = stream.into_inner();
 
-    let tls_stream = TlsConnector::builder()
-        .danger_accept_invalid_certs(true)
-        .danger_accept_invalid_hostnames(true)
-        .build()?
-        .connect(addr.as_str(), stream)?;
-    let mut tls_stream = io::BufReader::new(tls_stream);
+    let mut client_config = rustls::ClientConfig::default();
+    client_config
+        .dangerous()
+        .set_certificate_verifier(Arc::new(danger::NoCertificateVerification {}));
+    let config_ref = Arc::new(client_config);
+    let dns_name = webpki::DNSNameRef::try_from_ascii_str("stub_string").unwrap();
+    let mut tls_session = rustls::ClientSession::new(&config_ref, dns_name);
+
+    let mut tls_stream = rustls::Stream::new(&mut tls_session, &mut stream);
+    // handshake
+    tls_stream.flush()?;
 
     if selected_protocol.contains(nego::SecurityProtocol::HYBRID)
         || selected_protocol.contains(nego::SecurityProtocol::HYBRID_EX)
@@ -84,6 +108,8 @@ fn run(config: Config) -> RdpResult<()> {
             }
         }
     }
+
+    let mut tls_stream = io::BufReader::new(tls_stream);
 
     let static_channels =
         process_mcs_connect(&mut tls_stream, &mut transport, &config, selected_protocol)?;
@@ -127,9 +153,9 @@ pub enum RdpError {
     #[fail(display = "invalid response: {}", _0)]
     InvalidResponse(String),
     #[fail(display = "TLS connector error: {}", _0)]
-    TlsConnectorError(#[fail(cause)] native_tls::Error),
+    TlsConnectorError(rustls::TLSError),
     #[fail(display = "TLS handshake error: {}", _0)]
-    TlsHandshakeError(#[fail(cause)] native_tls::HandshakeError<TcpStream>),
+    TlsHandshakeError(rustls::TLSError),
     #[fail(display = "CredSSP error: {}", _0)]
     CredSspError(#[fail(cause)] sspi::SspiError),
     #[fail(display = "CredSSP TSRequest error: {}", _0)]
@@ -160,21 +186,19 @@ impl From<io::Error> for RdpError {
     }
 }
 
-impl From<native_tls::Error> for RdpError {
-    fn from(e: native_tls::Error) -> Self {
-        RdpError::TlsConnectorError(e)
+impl From<rustls::TLSError> for RdpError {
+    fn from(e: rustls::TLSError) -> Self {
+        match e {
+            rustls::TLSError::InappropriateHandshakeMessage { .. }
+            | rustls::TLSError::HandshakeNotComplete => RdpError::TlsHandshakeError(e),
+            _ => RdpError::TlsConnectorError(e),
+        }
     }
 }
 
 impl From<ironrdp::nego::NegotiationError> for RdpError {
     fn from(e: ironrdp::nego::NegotiationError) -> Self {
         RdpError::NegotiationError(e)
-    }
-}
-
-impl From<native_tls::HandshakeError<TcpStream>> for RdpError {
-    fn from(e: native_tls::HandshakeError<TcpStream>) -> Self {
-        RdpError::TlsHandshakeError(e)
     }
 }
 

@@ -12,8 +12,7 @@ use bytes::BytesMut;
 use ironrdp::{nego, PduParsing};
 use lazy_static::lazy_static;
 use log::debug;
-use native_tls::TlsStream;
-use sspi::CredSsp;
+use rustls::{internal::msgs::handshake::CertificatePayload, Session};
 
 use crate::connection_sequence::transport::{Decoder, Encoder};
 use crate::{config::Config, utils, RdpError, RdpResult};
@@ -27,17 +26,24 @@ lazy_static! {
 
 const SERVER_CHANNEL_ID: u16 = 0x03ea;
 
-pub fn process_cred_ssp<S>(
-    mut tls_stream: &mut io::BufReader<TlsStream<S>>,
+pub fn process_cred_ssp<'a, S, T>(
+    mut tls_stream: &mut rustls::Stream<'a, S, T>,
     credentials: sspi::Credentials,
 ) -> RdpResult<()>
 where
-    S: io::Read + io::Write,
+    S: 'a + Session + Sized,
+    T: 'a + io::Read + io::Write + Sized,
 {
-    let server_tls_pubkey = utils::get_tls_peer_pubkey(tls_stream.get_ref())?;
+    let cert: CertificatePayload = tls_stream
+        .sess
+        .get_peer_certificates()
+        .ok_or_else(|| RdpError::TlsConnectorError(rustls::TLSError::NoCertificatesPresented))?;
+
+    let server_tls_pubkey = utils::get_tls_peer_pubkey(cert[0].as_ref().to_vec())?;
+
     let mut transport = TsRequestTransport::default();
 
-    let mut cred_ssp_client = sspi::CredSspClient::with_default_version(
+    let mut cred_ssp_client = sspi::CredSspClient::new(
         server_tls_pubkey,
         credentials,
         sspi::CredSspMode::WithCredentials,
@@ -54,13 +60,13 @@ where
         match result {
             sspi::CredSspResult::ReplyNeeded(ts_request) => {
                 debug!("Send CredSSP TSRequest: {:x?}", ts_request);
-                transport.encode(ts_request, tls_stream.get_mut())?;
+                transport.encode(ts_request, &mut tls_stream)?;
 
                 next_ts_request = transport.decode(&mut tls_stream)?;
             }
             sspi::CredSspResult::FinalMessage(ts_request) => {
                 debug!("Send CredSSP TSRequest: {:x?}", ts_request);
-                transport.encode(ts_request, tls_stream.get_mut())?;
+                transport.encode(ts_request, &mut tls_stream)?;
 
                 break;
             }
