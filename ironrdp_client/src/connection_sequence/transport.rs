@@ -2,7 +2,7 @@ use std::io;
 
 use bytes::BytesMut;
 use ironrdp::{nego, PduParsing};
-use log::debug;
+use log::{debug, warn};
 
 use crate::{connection_sequence::SERVER_CHANNEL_ID, utils, RdpError, RdpResult};
 
@@ -274,16 +274,16 @@ impl Decoder for ShareControlHeaderTransport {
         let share_control_header =
             ironrdp::ShareControlHeader::from_buffer(send_data_context.as_slice())
                 .map_err(RdpError::ShareControlHeaderError)?;
-        if share_control_header.pdu_source == SERVER_CHANNEL_ID {
-            self.share_id = share_control_header.share_id;
+        self.share_id = share_control_header.share_id;
 
-            Ok(share_control_header.share_control_pdu)
-        } else {
-            Err(RdpError::InvalidResponse(format!(
-                "Invalid Share Control Header pdu source: {}",
-                share_control_header.pdu_source
-            )))
+        if share_control_header.pdu_source != SERVER_CHANNEL_ID {
+            warn!(
+                "Invalid Share Control Header pdu source: expected ({}) != actual ({})",
+                SERVER_CHANNEL_ID, share_control_header.pdu_source
+            );
         }
+
+        Ok(share_control_header.share_control_pdu)
     }
 }
 
