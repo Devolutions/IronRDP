@@ -11,6 +11,7 @@ use std::{
 use failure::Fail;
 use ironrdp::nego;
 use log::{debug, error};
+use sspi::internal::credssp;
 
 use self::{config::Config, connection_sequence::*};
 
@@ -103,7 +104,7 @@ fn run(config: Config) -> RdpResult<()> {
         process_cred_ssp(&mut tls_stream, config.input.credentials.clone())?;
 
         if selected_protocol.contains(nego::SecurityProtocol::HYBRID_EX) {
-            if let sspi::internal::EarlyUserAuthResult::AccessDenied =
+            if let credssp::EarlyUserAuthResult::AccessDenied =
                 EarlyUserAuthResult::read(&mut tls_stream)?
             {
                 return Err(RdpError::AccessDenied);

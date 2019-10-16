@@ -13,6 +13,7 @@ use ironrdp::{nego, rdp::SERVER_CHANNEL_ID, PduParsing};
 use lazy_static::lazy_static;
 use log::debug;
 use rustls::{internal::msgs::handshake::CertificatePayload, Session};
+use sspi::internal::credssp;
 
 use crate::{
     config::Config,
@@ -45,13 +46,13 @@ where
 
     let mut transport = TsRequestTransport::default();
 
-    let mut cred_ssp_client = sspi::internal::CredSspClient::new(
+    let mut cred_ssp_client = credssp::CredSspClient::new(
         server_tls_pubkey,
         credentials,
-        sspi::internal::CredSspMode::WithCredentials,
+        credssp::CredSspMode::WithCredentials,
     )
     .map_err(RdpError::CredSspError)?;
-    let mut next_ts_request = sspi::internal::TsRequest::default();
+    let mut next_ts_request = credssp::TsRequest::default();
 
     loop {
         let result = cred_ssp_client
@@ -60,17 +61,16 @@ where
         debug!("Got CredSSP TSRequest: {:x?}", result);
 
         match result {
-            sspi::internal::CredSspResult::ReplyNeeded(ts_request) => {
+            credssp::ClientState::ReplyNeeded(ts_request) => {
                 debug!("Send CredSSP TSRequest: {:x?}", ts_request);
                 transport.encode(ts_request, &mut tls_stream)?;
                 next_ts_request = transport.decode(&mut tls_stream)?;
             }
-            sspi::internal::CredSspResult::FinalMessage(ts_request) => {
+            credssp::ClientState::FinalMessage(ts_request) => {
                 debug!("Send CredSSP TSRequest: {:x?}", ts_request);
                 transport.encode(ts_request, &mut tls_stream)?;
                 break;
             }
-            _ => unreachable!(),
         }
     }
 

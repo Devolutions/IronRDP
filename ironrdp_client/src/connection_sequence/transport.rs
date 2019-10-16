@@ -3,6 +3,7 @@ use std::io;
 use bytes::BytesMut;
 use ironrdp::{nego, PduParsing};
 use log::{debug, warn};
+use sspi::internal::credssp;
 
 use crate::{connection_sequence::SERVER_CHANNEL_ID, RdpError, RdpResult};
 
@@ -75,7 +76,7 @@ impl Decoder for DataTransport {
 pub struct TsRequestTransport;
 
 impl Encoder for TsRequestTransport {
-    type Item = sspi::internal::TsRequest;
+    type Item = credssp::TsRequest;
     type Error = RdpError;
 
     fn encode(&mut self, ts_request: Self::Item, mut stream: impl io::Write) -> RdpResult<()> {
@@ -94,7 +95,7 @@ impl Encoder for TsRequestTransport {
 }
 
 impl Decoder for TsRequestTransport {
-    type Item = sspi::internal::TsRequest;
+    type Item = credssp::TsRequest;
     type Error = RdpError;
 
     fn decode(&mut self, mut stream: impl io::Read) -> RdpResult<Self::Item> {
@@ -102,12 +103,12 @@ impl Decoder for TsRequestTransport {
         buf.resize(MAX_TS_REQUEST_LENGTH_BUFFER_SIZE, 0x00);
         stream.read_exact(&mut buf)?;
 
-        let ts_request_buffer_length = sspi::internal::TsRequest::read_length(buf.as_ref())?;
+        let ts_request_buffer_length = credssp::TsRequest::read_length(buf.as_ref())?;
         buf.resize(ts_request_buffer_length, 0x00);
         stream.read_exact(&mut buf[MAX_TS_REQUEST_LENGTH_BUFFER_SIZE..])?;
 
-        let ts_request = sspi::internal::TsRequest::from_buffer(buf.as_ref())
-            .map_err(RdpError::TsRequestError)?;
+        let ts_request =
+            credssp::TsRequest::from_buffer(buf.as_ref()).map_err(RdpError::TsRequestError)?;
 
         Ok(ts_request)
     }
@@ -116,11 +117,11 @@ impl Decoder for TsRequestTransport {
 pub struct EarlyUserAuthResult;
 
 impl EarlyUserAuthResult {
-    pub fn read(mut stream: impl io::Read) -> RdpResult<sspi::internal::EarlyUserAuthResult> {
-        let mut buf = BytesMut::with_capacity(sspi::internal::EARLY_USER_AUTH_RESULT_PDU_SIZE);
-        buf.resize(sspi::internal::EARLY_USER_AUTH_RESULT_PDU_SIZE, 0x00);
+    pub fn read(mut stream: impl io::Read) -> RdpResult<credssp::EarlyUserAuthResult> {
+        let mut buf = BytesMut::with_capacity(credssp::EARLY_USER_AUTH_RESULT_PDU_SIZE);
+        buf.resize(credssp::EARLY_USER_AUTH_RESULT_PDU_SIZE, 0x00);
         stream.read_exact(&mut buf)?;
-        let early_user_auth_result = sspi::internal::EarlyUserAuthResult::from_buffer(buf.as_ref())
+        let early_user_auth_result = credssp::EarlyUserAuthResult::from_buffer(buf.as_ref())
             .map_err(RdpError::EarlyUserAuthResultError)?;
 
         Ok(early_user_auth_result)
