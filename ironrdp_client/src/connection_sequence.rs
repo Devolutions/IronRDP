@@ -28,7 +28,7 @@ lazy_static! {
 }
 
 pub fn process_cred_ssp<'a, S, T>(
-    tls_stream: &mut utils::StreamWrapper<rustls::Stream<'a, S, T>>,
+    mut tls_stream: &mut bufstream::BufStream<rustls::Stream<'a, S, T>>,
     credentials: sspi::AuthIdentity,
 ) -> RdpResult<()>
 where
@@ -62,12 +62,12 @@ where
         match result {
             sspi::internal::CredSspResult::ReplyNeeded(ts_request) => {
                 debug!("Send CredSSP TSRequest: {:x?}", ts_request);
-                transport.encode(ts_request, tls_stream.get_writer())?;
-                next_ts_request = transport.decode(tls_stream.get_reader())?;
+                transport.encode(ts_request, &mut tls_stream)?;
+                next_ts_request = transport.decode(&mut tls_stream)?;
             }
             sspi::internal::CredSspResult::FinalMessage(ts_request) => {
                 debug!("Send CredSSP TSRequest: {:x?}", ts_request);
-                transport.encode(ts_request, tls_stream.get_writer())?;
+                transport.encode(ts_request, &mut tls_stream)?;
                 break;
             }
             _ => unreachable!(),
@@ -77,15 +77,12 @@ where
     Ok(())
 }
 
-pub fn process_mcs_connect<S>(
-    stream: &mut utils::StreamWrapper<S>,
+pub fn process_mcs_connect(
+    mut stream: impl io::BufRead + io::Write,
     transport: &mut DataTransport,
     config: &Config,
     selected_protocol: nego::SecurityProtocol,
-) -> RdpResult<StaticChannels>
-where
-    S: io::Read + io::Write,
-{
+) -> RdpResult<StaticChannels> {
     let connect_initial = ironrdp::ConnectInitial::with_gcc_blocks(user_info::create_gcc_blocks(
         &config,
         selected_protocol,
@@ -94,9 +91,9 @@ where
     let mut connect_initial_buf = BytesMut::with_capacity(connect_initial.buffer_length());
     connect_initial_buf.resize(connect_initial.buffer_length(), 0x00);
     connect_initial.to_buffer(connect_initial_buf.as_mut())?;
-    transport.encode(connect_initial_buf, stream.get_writer())?;
+    transport.encode(connect_initial_buf, &mut stream)?;
 
-    let data = transport.decode(stream.get_reader())?;
+    let data = transport.decode(&mut stream)?;
     let connect_response =
         ironrdp::ConnectResponse::from_buffer(data.as_ref()).map_err(RdpError::McsConnectError)?;
     debug!("Got MCS Connect Response PDU: {:?}", connect_response);
@@ -138,14 +135,11 @@ where
     Ok(static_channels)
 }
 
-pub fn process_mcs<S>(
-    stream: &mut utils::StreamWrapper<S>,
+pub fn process_mcs(
+    mut stream: impl io::BufRead + io::Write,
     transport: &mut McsTransport,
     mut static_channels: StaticChannels,
-) -> RdpResult<StaticChannels>
-where
-    S: io::Read + io::Write,
-{
+) -> RdpResult<StaticChannels> {
     let erect_domain_request = ironrdp::mcs::ErectDomainPdu::new(0, 0);
 
     debug!(
@@ -154,12 +148,12 @@ where
     );
     transport.encode(
         ironrdp::McsPdu::ErectDomainRequest(erect_domain_request),
-        stream.get_writer(),
+        &mut stream,
     )?;
     debug!("Send MCS Attach User Request PDU");
-    transport.encode(ironrdp::McsPdu::AttachUserRequest, stream.get_writer())?;
+    transport.encode(ironrdp::McsPdu::AttachUserRequest, &mut stream)?;
 
-    let mcs_pdu = transport.decode(stream.get_reader())?;
+    let mcs_pdu = transport.decode(&mut stream)?;
     let initiator_id = if let ironrdp::McsPdu::AttachUserConfirm(attach_user_confirm) = mcs_pdu {
         debug!("Got MCS Attach User Confirm PDU: {:?}", attach_user_confirm);
 
@@ -184,10 +178,10 @@ where
         );
         transport.encode(
             ironrdp::McsPdu::ChannelJoinRequest(channel_join_request),
-            stream.get_writer(),
+            &mut stream,
         )?;
 
-        let mcs_pdu = transport.decode(stream.get_reader())?;
+        let mcs_pdu = transport.decode(&mut stream)?;
         if let ironrdp::McsPdu::ChannelJoinConfirm(channel_join_confirm) = mcs_pdu {
             debug!(
                 "Got MCS Channel Join Confirm PDU: {:?}",
@@ -213,32 +207,26 @@ where
     Ok(static_channels)
 }
 
-pub fn send_client_info<S>(
-    stream: &mut utils::StreamWrapper<S>,
+pub fn send_client_info(
+    stream: impl io::BufRead + io::Write,
     transport: &mut SendDataContextTransport,
     config: &Config,
-) -> RdpResult<()>
-where
-    S: io::Read + io::Write,
-{
+) -> RdpResult<()> {
     let client_info_pdu = user_info::create_client_info_pdu(config)?;
     debug!("Send Client Info PDU: {:?}", client_info_pdu);
     let mut pdu = Vec::with_capacity(client_info_pdu.buffer_length());
     client_info_pdu
         .to_buffer(&mut pdu)
         .map_err(RdpError::ServerLicenseError)?;
-    transport.encode(pdu, stream.get_writer())?;
+    transport.encode(pdu, stream)?;
 
     Ok(())
 }
 
-pub fn process_server_license<S>(
-    mut stream: &mut io::BufReader<S>,
+pub fn process_server_license(
+    mut stream: impl io::BufRead,
     transport: &mut SendDataContextTransport,
-) -> RdpResult<()>
-where
-    S: io::Read,
-{
+) -> RdpResult<()> {
     let pdu = transport.decode(&mut stream)?;
     let server_license_pdu = ironrdp::ServerLicensePdu::from_buffer(pdu.as_slice())
         .map_err(RdpError::ServerLicenseError)?;
@@ -259,15 +247,12 @@ where
     }
 }
 
-pub fn process_capability_sets<S>(
-    stream: &mut utils::StreamWrapper<S>,
+pub fn process_capability_sets(
+    mut stream: impl io::BufRead + io::Write,
     transport: &mut ShareControlHeaderTransport,
     config: &Config,
-) -> RdpResult<()>
-where
-    S: io::Read + io::Write,
-{
-    let share_control_pdu = transport.decode(stream.get_reader())?;
+) -> RdpResult<()> {
+    let share_control_pdu = transport.decode(&mut stream)?;
     let capability_sets =
         if let ironrdp::ShareControlPdu::ServerDemandActive(server_demand_active) =
             share_control_pdu
@@ -292,19 +277,16 @@ where
         "Send Client Confirm Active PDU: {:?}",
         client_confirm_active
     );
-    transport.encode(client_confirm_active, stream.get_writer())?;
+    transport.encode(client_confirm_active, &mut stream)?;
 
     Ok(())
 }
 
-pub fn process_finalization<S>(
-    stream: &mut utils::StreamWrapper<S>,
+pub fn process_finalization(
+    mut stream: impl io::BufRead + io::Write,
     transport: &mut ShareDataHeaderTransport,
     initiator_id: u16,
-) -> RdpResult<()>
-where
-    S: io::Read + io::Write,
-{
+) -> RdpResult<()> {
     use ironrdp::rdp::{
         ControlAction, ControlPdu, FontPdu, SequenceFlags, ShareDataPdu, SynchronizePdu,
     };
@@ -339,9 +321,9 @@ where
             FinalizationOrder::Finished => unreachable!(),
         };
         debug!("Send Finalization PDU: {:?}", share_data_pdu);
-        transport.encode(share_data_pdu, stream.get_writer())?;
+        transport.encode(share_data_pdu, &mut stream)?;
 
-        let share_data_pdu = transport.decode(stream.get_reader())?;
+        let share_data_pdu = transport.decode(&mut stream)?;
         debug!("Got Finalization PDU: {:?}", share_data_pdu);
 
         finalization_order = match (finalization_order, share_data_pdu) {

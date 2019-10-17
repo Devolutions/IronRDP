@@ -4,7 +4,7 @@ use bytes::BytesMut;
 use ironrdp::{nego, PduParsing};
 use log::{debug, warn};
 
-use crate::{connection_sequence::SERVER_CHANNEL_ID, utils, RdpError, RdpResult};
+use crate::{connection_sequence::SERVER_CHANNEL_ID, RdpError, RdpResult};
 
 const MAX_TS_REQUEST_LENGTH_BUFFER_SIZE: usize = 4;
 
@@ -26,14 +26,11 @@ pub trait Decoder {
 pub struct DataTransport;
 
 impl DataTransport {
-    pub fn connect<S>(
-        mut stream: &mut utils::StreamWrapper<S>,
+    pub fn connect(
+        mut stream: impl io::BufRead + io::Write,
         security_protocol: nego::SecurityProtocol,
         username: String,
-    ) -> RdpResult<(DataTransport, nego::SecurityProtocol)>
-    where
-        S: io::Read + io::Write,
-    {
+    ) -> RdpResult<(DataTransport, nego::SecurityProtocol)> {
         let selected_protocol = process_negotiation(
             &mut stream,
             Some(nego::NegoData::Cookie(username)),
@@ -332,16 +329,13 @@ impl Decoder for ShareDataHeaderTransport {
     }
 }
 
-fn process_negotiation<S>(
-    stream: &mut utils::StreamWrapper<S>,
+fn process_negotiation(
+    mut stream: impl io::BufRead + io::Write,
     nego_data: Option<nego::NegoData>,
     protocol: nego::SecurityProtocol,
     flags: nego::RequestFlags,
     src_ref: u16,
-) -> RdpResult<nego::SecurityProtocol>
-where
-    S: io::Read + io::Write,
-{
+) -> RdpResult<nego::SecurityProtocol> {
     let connection_request = nego::Request {
         nego_data,
         flags,
@@ -352,9 +346,10 @@ where
         "Send X.224 Connection Request PDU: {:?}",
         connection_request
     );
-    connection_request.to_buffer(stream.get_writer())?;
+    connection_request.to_buffer(&mut stream)?;
+    stream.flush()?;
 
-    let connection_response = nego::Response::from_buffer(stream.get_reader())?;
+    let connection_response = nego::Response::from_buffer(&mut stream)?;
     if let Some(nego::ResponseData::Response {
         flags,
         protocol: selected_protocol,
