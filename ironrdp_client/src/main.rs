@@ -34,7 +34,7 @@ mod danger {
 
 fn main() {
     let config = Config::parse_args();
-    setup_logging(config.log_file.clone()).expect("failed to initialize logging");
+    setup_logging(config.log_file.as_str()).expect("failed to initialize logging");
 
     match run(config) {
         Ok(_) => {
@@ -55,7 +55,7 @@ fn main() {
     }
 }
 
-fn setup_logging(log_file: String) -> Result<(), fern::InitError> {
+fn setup_logging(log_file: &str) -> Result<(), fern::InitError> {
     fern::Dispatch::new()
         .format(|out, message, record| {
             out.finish(format_args!(

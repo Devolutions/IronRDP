@@ -55,7 +55,7 @@ where
 
     loop {
         let result = cred_ssp_client
-            .process(next_ts_request.clone())
+            .process(next_ts_request)
             .map_err(RdpError::CredSspError)?;
         debug!("Got CredSSP TSRequest: {:x?}", result);
 
