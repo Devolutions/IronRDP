@@ -35,3 +35,7 @@ path = "fuzz_targets/fuzz_tpdu.rs"
 [[bin]]
 name = "fuzz_gcc"
 path = "fuzz_targets/fuzz_gcc.rs"
+
+[[bin]]
+name = "fuzz_capability_sets"
+path = "fuzz_targets/fuzz_capability_sets.rs"
