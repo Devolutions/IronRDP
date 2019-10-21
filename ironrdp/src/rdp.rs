@@ -1,18 +1,34 @@
 #[cfg(test)]
 pub mod test;
 
-mod capability_sets;
+pub mod capability_sets;
 mod client_info;
-mod client_license;
 mod finalization_messages;
 mod headers;
+mod server_license;
 
 pub use self::{
     capability_sets::{
         CapabilitySet, CapabilitySetsError, ClientConfirmActive, DemandActive, ServerDemandActive,
+        VirtualChannel, SERVER_CHANNEL_ID,
     },
-    finalization_messages::ControlAction,
-    headers::{ShareControlHeader, ShareControlPdu, ShareDataHeader, ShareDataPdu},
+    client_info::{
+        AddressFamily, CharacterSet, ClientInfo, ClientInfoFlags, CompressionType, Credentials,
+        DayOfWeek, DayOfWeekOccurrence, ExtendedClientInfo, ExtendedClientOptionalInfo, Month,
+        PerformanceFlags, SystemTime, TimezoneInfo,
+    },
+    finalization_messages::{
+        ControlAction, ControlPdu, FontPdu, MonitorLayoutPdu, SequenceFlags, SynchronizePdu,
+    },
+    headers::{
+        BasicSecurityHeader, BasicSecurityHeaderFlags, CompressionFlags, ShareControlHeader,
+        ShareControlPdu, ShareControlPduType, ShareDataHeader, ShareDataPdu, ShareDataPduType,
+        StreamPriority,
+    },
+    server_license::{
+        BlobType, LicensePreamble, LicensingBinaryBlob, LicensingErrorCode, LicensingErrorMessage,
+        LicensingStateTransition, PreambleFlags, PreambleType, PreambleVersion, ServerLicense,
+    },
 };
 
 use std::io;
@@ -20,21 +36,24 @@ use std::io;
 use failure::Fail;
 
 use self::{
-    client_info::{ClientInfo, ClientInfoError},
-    client_license::{ClientLicense, ClientLicenseError},
-    finalization_messages::{
-        ControlPdu, FinalizationMessagesError, MonitorLayoutPdu, SynchronizePdu,
-    },
-    headers::{
-        BasicSecurityHeader, BasicSecurityHeaderFlags, ShareControlPduType, ShareDataPduType,
-    },
+    client_info::ClientInfoError, finalization_messages::FinalizationMessagesError,
+    server_license::ServerLicenseError,
 };
-use crate::PduParsing;
+use crate::{impl_from_error, PduParsing};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ClientInfoPdu {
     pub security_header: BasicSecurityHeader,
     pub client_info: ClientInfo,
+}
+
+impl ClientInfoPdu {
+    pub fn new(security_header: BasicSecurityHeader, client_info: ClientInfo) -> Self {
+        Self {
+            security_header,
+            client_info,
+        }
+    }
 }
 
 impl PduParsing for ClientInfoPdu {
@@ -72,12 +91,12 @@ impl PduParsing for ClientInfoPdu {
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct ClientLicensePdu {
+pub struct ServerLicensePdu {
     pub security_header: BasicSecurityHeader,
-    pub client_license: ClientLicense,
+    pub server_license: ServerLicense,
 }
 
-impl PduParsing for ClientLicensePdu {
+impl PduParsing for ServerLicensePdu {
     type Error = RdpError;
 
     fn from_buffer(mut stream: impl io::Read) -> Result<Self, Self::Error> {
@@ -86,28 +105,28 @@ impl PduParsing for ClientLicensePdu {
             .flags
             .contains(BasicSecurityHeaderFlags::LICENSE_PKT)
         {
-            let client_license = ClientLicense::from_buffer(&mut stream)?;
+            let server_license = ServerLicense::from_buffer(&mut stream)?;
 
             Ok(Self {
                 security_header,
-                client_license,
+                server_license,
             })
         } else {
             Err(RdpError::InvalidPdu(String::from(
-                "Expected ClientLicense PDU, got invalid SecurityHeader flags",
+                "Expected Server License PDU, got invalid SecurityHeader flags",
             )))
         }
     }
 
     fn to_buffer(&self, mut stream: impl io::Write) -> Result<(), Self::Error> {
         self.security_header.to_buffer(&mut stream)?;
-        self.client_license.to_buffer(&mut stream)?;
+        self.server_license.to_buffer(&mut stream)?;
 
         Ok(())
     }
 
     fn buffer_length(&self) -> usize {
-        self.security_header.buffer_length() + self.client_license.buffer_length()
+        self.security_header.buffer_length() + self.server_license.buffer_length()
     }
 }
 
@@ -117,8 +136,8 @@ pub enum RdpError {
     IOError(#[fail(cause)] io::Error),
     #[fail(display = "Client Info PDU error: {}", _0)]
     ClientInfoError(ClientInfoError),
-    #[fail(display = "Client License PDU error: {}", _0)]
-    ClientLicenseError(ClientLicenseError),
+    #[fail(display = "Server License PDU error: {}", _0)]
+    ServerLicenseError(ServerLicenseError),
     #[fail(display = "Capability sets error: {}", _0)]
     CapabilitySetsError(CapabilitySetsError),
     #[fail(display = "Finalization PDUs error: {}", _0)]
@@ -139,7 +158,7 @@ pub enum RdpError {
 
 impl_from_error!(io::Error, RdpError, RdpError::IOError);
 impl_from_error!(ClientInfoError, RdpError, RdpError::ClientInfoError);
-impl_from_error!(ClientLicenseError, RdpError, RdpError::ClientLicenseError);
+impl_from_error!(ServerLicenseError, RdpError, RdpError::ServerLicenseError);
 impl_from_error!(CapabilitySetsError, RdpError, RdpError::CapabilitySetsError);
 impl_from_error!(
     FinalizationMessagesError,

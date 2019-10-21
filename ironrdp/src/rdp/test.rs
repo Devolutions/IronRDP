@@ -9,7 +9,7 @@ use crate::{
             SERVER_DEMAND_ACTIVE_BUFFER,
         },
         client_info::test::{CLIENT_INFO_BUFFER_UNICODE, CLIENT_INFO_UNICODE},
-        client_license::test::{LICENSE_PACKET, LICENSE_PACKET_BUFFER},
+        server_license::test::{LICENSE_PACKET, LICENSE_PACKET_BUFFER},
     },
 };
 
@@ -17,7 +17,7 @@ const CLIENT_INFO_PDU_SECURITY_HEADER_BUFFER: [u8; 4] = [
     0x40, 0x00, // flags
     0x00, 0x00, // flagsHi
 ];
-const CLIENT_LICENSE_PDU_SECURITY_HEADER_BUFFER: [u8; 4] = [
+const SERVER_LICENSE_PDU_SECURITY_HEADER_BUFFER: [u8; 4] = [
     0x80, 0x00, // flags
     0x00, 0x00, // flagsHi
 ];
@@ -144,21 +144,21 @@ lazy_static! {
         },
         client_info: CLIENT_INFO_UNICODE.clone(),
     };
-    pub static ref CLIENT_LICENSE_PDU: ClientLicensePdu = ClientLicensePdu {
+    pub static ref SERVER_LICENSE_PDU: ServerLicensePdu = ServerLicensePdu {
         security_header: BasicSecurityHeader {
             flags: BasicSecurityHeaderFlags::LICENSE_PKT,
         },
-        client_license: LICENSE_PACKET.clone(),
+        server_license: LICENSE_PACKET.clone(),
     };
     pub static ref SERVER_DEMAND_ACTIVE_PDU: ShareControlHeader = ShareControlHeader {
         share_control_pdu: ShareControlPdu::ServerDemandActive(SERVER_DEMAND_ACTIVE.clone()),
-        pdu_version: 16,
+
         pdu_source: 1002,
         share_id: 66_538,
     };
     pub static ref CLIENT_DEMAND_ACTIVE_PDU: ShareControlHeader = ShareControlHeader {
         share_control_pdu: ShareControlPdu::ClientConfirmActive(CLIENT_DEMAND_ACTIVE.clone()),
-        pdu_version: 16,
+
         pdu_source: 1007,
         share_id: 66_538,
     };
@@ -171,7 +171,7 @@ lazy_static! {
             compression_flags: CompressionFlags::empty(),
             compression_type: client_info::CompressionType::K8,
         }),
-        pdu_version: 16,
+
         pdu_source: 1007,
         share_id: 66_538,
     };
@@ -186,7 +186,7 @@ lazy_static! {
             compression_flags: CompressionFlags::empty(),
             compression_type: client_info::CompressionType::K8,
         }),
-        pdu_version: 16,
+
         pdu_source: 1007,
         share_id: 66_538,
     };
@@ -201,7 +201,7 @@ lazy_static! {
             compression_flags: CompressionFlags::empty(),
             compression_type: client_info::CompressionType::K8,
         }),
-        pdu_version: 16,
+
         pdu_source: 1007,
         share_id: 66_538,
     };
@@ -216,7 +216,7 @@ lazy_static! {
             compression_flags: CompressionFlags::empty(),
             compression_type: client_info::CompressionType::K8,
         }),
-        pdu_version: 16,
+
         pdu_source: 1002,
         share_id: 66_538,
     };
@@ -232,7 +232,7 @@ lazy_static! {
             compression_flags: CompressionFlags::empty(),
             compression_type: client_info::CompressionType::K8,
         }),
-        pdu_version: 16,
+
         pdu_source: 1007,
         share_id: 66_538,
     };
@@ -248,7 +248,7 @@ lazy_static! {
             compression_flags: CompressionFlags::empty(),
             compression_type: client_info::CompressionType::K8,
         }),
-        pdu_version: 16,
+
         pdu_source: 1002,
         share_id: 66_538,
     };
@@ -263,7 +263,7 @@ lazy_static! {
             compression_flags: CompressionFlags::empty(),
             compression_type: client_info::CompressionType::K8,
         }),
-        pdu_version: 16,
+
         pdu_source: 1007,
         share_id: 66_538,
     };
@@ -273,8 +273,8 @@ lazy_static! {
 
         buffer
     };
-    pub static ref CLIENT_LICENSE_PDU_BUFFER: Vec<u8> = {
-        let mut buffer = CLIENT_LICENSE_PDU_SECURITY_HEADER_BUFFER.to_vec();
+    pub static ref SERVER_LICENSE_PDU_BUFFER: Vec<u8> = {
+        let mut buffer = SERVER_LICENSE_PDU_SECURITY_HEADER_BUFFER.to_vec();
         buffer.extend(LICENSE_PACKET_BUFFER.as_ref());
 
         buffer
@@ -314,12 +314,12 @@ fn from_buffer_correct_parses_rdp_pdu_client_info() {
 }
 
 #[test]
-fn from_buffer_correct_parses_rdp_pdu_client_license() {
-    let buf = CLIENT_LICENSE_PDU_BUFFER.clone();
+fn from_buffer_correct_parses_rdp_pdu_server_license() {
+    let buf = SERVER_LICENSE_PDU_BUFFER.clone();
 
     assert_eq!(
-        CLIENT_LICENSE_PDU.clone(),
-        ClientLicensePdu::from_buffer(buf.as_slice()).unwrap()
+        SERVER_LICENSE_PDU.clone(),
+        ServerLicensePdu::from_buffer(buf.as_slice()).unwrap()
     );
 }
 
@@ -425,9 +425,9 @@ fn to_buffer_correct_serializes_rdp_pdu_client_info() {
 }
 
 #[test]
-fn to_buffer_correct_serializes_rdp_pdu_client_license() {
-    let pdu = CLIENT_LICENSE_PDU.clone();
-    let expected_buf = CLIENT_LICENSE_PDU_BUFFER.clone();
+fn to_buffer_correct_serializes_rdp_pdu_server_license() {
+    let pdu = SERVER_LICENSE_PDU.clone();
+    let expected_buf = SERVER_LICENSE_PDU_BUFFER.clone();
 
     let mut buf = Vec::new();
     pdu.to_buffer(&mut buf).unwrap();
@@ -545,9 +545,9 @@ fn buffer_length_is_correct_for_rdp_pdu_client_info() {
 }
 
 #[test]
-fn buffer_length_is_correct_for_rdp_pdu_client_license() {
-    let pdu = CLIENT_LICENSE_PDU.clone();
-    let expected_buf_len = CLIENT_LICENSE_PDU_BUFFER.len();
+fn buffer_length_is_correct_for_rdp_pdu_server_license() {
+    let pdu = SERVER_LICENSE_PDU.clone();
+    let expected_buf_len = SERVER_LICENSE_PDU_BUFFER.len();
 
     let len = pdu.buffer_length();
 

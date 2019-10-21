@@ -11,7 +11,7 @@ use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use failure::Fail;
 use num_integer::Integer;
 
-use crate::PduParsing;
+use crate::{impl_from_error, try_read_optional, PduParsing};
 
 const CHANNELS_MAX: usize = 31;
 
@@ -131,6 +131,12 @@ impl PduParsing for ServerNetworkData {
 pub struct Channel {
     pub name: String,
     pub options: ChannelOptions,
+}
+
+impl Channel {
+    pub fn new(name: String, options: ChannelOptions) -> Self {
+        Self { name, options }
+    }
 }
 
 impl PduParsing for Channel {

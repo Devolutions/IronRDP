@@ -8,7 +8,7 @@ use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use num_traits::{FromPrimitive, ToPrimitive};
 
 use super::{CoreDataError, RdpVersion, VERSION_SIZE};
-use crate::{nego, PduParsing};
+use crate::{nego, try_read_optional, try_write_optional, PduParsing};
 
 const CLIENT_REQUESTED_PROTOCOL_SIZE: usize = 4;
 const EARLY_CAPABILITY_FLAGS_SIZE: usize = 4;

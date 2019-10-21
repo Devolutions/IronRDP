@@ -6,6 +6,8 @@ use std::io;
 use failure::Fail;
 use num_derive::{FromPrimitive, ToPrimitive};
 
+use crate::impl_from_error;
+
 const VERSION_SIZE: usize = 4;
 
 #[derive(Copy, Clone, Debug, PartialEq, FromPrimitive, ToPrimitive)]

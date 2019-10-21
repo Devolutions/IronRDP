@@ -7,8 +7,7 @@ use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive, ToPrimitive};
 
-use crate::rdp::CapabilitySetsError;
-use crate::PduParsing;
+use crate::{rdp::CapabilitySetsError, PduParsing};
 
 const BRUSH_LENGTH: usize = 4;
 

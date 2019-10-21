@@ -9,7 +9,7 @@ use failure::Fail;
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive, ToPrimitive};
 
-use crate::PduParsing;
+use crate::{impl_from_error, PduParsing};
 
 const REDIRECTION_VERSION_MASK: u32 = 0x0000_003C;
 

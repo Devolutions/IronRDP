@@ -7,9 +7,11 @@ use bitflags::bitflags;
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use num_traits::{FromPrimitive, ToPrimitive};
 
-use crate::gcc::{KeyboardType, IME_FILE_NAME_SIZE};
-use crate::rdp::CapabilitySetsError;
-use crate::PduParsing;
+use crate::{
+    gcc::{KeyboardType, IME_FILE_NAME_SIZE},
+    rdp::CapabilitySetsError,
+    utils, PduParsing,
+};
 
 const INPUT_LENGTH: usize = 84;
 
@@ -52,7 +54,7 @@ impl PduParsing for Input {
 
         let mut ime_buffer = [0; IME_FILE_NAME_SIZE];
         buffer.read_exact(&mut ime_buffer)?;
-        let keyboard_ime_filename = sspi::utils::bytes_to_utf16_string(ime_buffer.as_ref())
+        let keyboard_ime_filename = utils::bytes_to_utf16_string(ime_buffer.as_ref())
             .trim_end_matches('\u{0}')
             .into();
 
@@ -84,7 +86,7 @@ impl PduParsing for Input {
         buffer.write_u32::<LittleEndian>(self.keyboard_function_key)?;
 
         let mut keyboard_ime_file_name_buffer =
-            sspi::utils::string_to_utf16(self.keyboard_ime_filename.as_ref());
+            utils::string_to_utf16(self.keyboard_ime_filename.as_ref());
         keyboard_ime_file_name_buffer.resize(IME_FILE_NAME_SIZE - 2, 0);
         buffer.write_all(keyboard_ime_file_name_buffer.as_ref())?;
         buffer.write_u16::<LittleEndian>(0)?; // ime file name null terminator

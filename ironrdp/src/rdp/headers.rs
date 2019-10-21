@@ -17,6 +17,8 @@ const SHARE_CONTROL_HEADER_MASK: u16 = 0xf;
 const SHARE_DATA_HEADER_MASK: u8 = 0xf;
 const SHARE_CONTROL_HEADER_SIZE: usize = 2 * 3 + 4;
 
+const PROTOCOL_VERSION: u16 = 0x10;
+
 // ShareDataHeader
 const PADDING_FIELD_SIZE: usize = 1;
 const STREAM_ID_FIELD_SIZE: usize = 1;
@@ -28,6 +30,12 @@ const COMPRESSED_LENGTH_FIELD_SIZE: usize = 2;
 #[derive(Debug, Clone, PartialEq)]
 pub struct BasicSecurityHeader {
     pub flags: BasicSecurityHeaderFlags,
+}
+
+impl BasicSecurityHeader {
+    pub fn new(flags: BasicSecurityHeaderFlags) -> Self {
+        Self { flags }
+    }
 }
 
 impl PduParsing for BasicSecurityHeader {
@@ -56,9 +64,18 @@ impl PduParsing for BasicSecurityHeader {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ShareControlHeader {
     pub share_control_pdu: ShareControlPdu,
-    pub pdu_version: u16,
     pub pdu_source: u16,
     pub share_id: u32,
+}
+
+impl ShareControlHeader {
+    pub fn new(share_control_pdu: ShareControlPdu, pdu_source: u16, share_id: u32) -> Self {
+        Self {
+            share_control_pdu,
+            pdu_source,
+            share_id,
+        }
+    }
 }
 
 impl PduParsing for ShareControlHeader {
@@ -76,19 +93,24 @@ impl PduParsing for ShareControlHeader {
                     RdpError::InvalidShareControlHeader(String::from("Invalid pdu type"))
                 })?;
         let pdu_version = pdu_type_with_version & !SHARE_CONTROL_HEADER_MASK;
+        if pdu_version != PROTOCOL_VERSION {
+            return Err(RdpError::InvalidShareControlHeader(format!(
+                "Invalid PDU version: {}",
+                pdu_version
+            )));
+        }
 
         let share_pdu = ShareControlPdu::from_type(&mut stream, pdu_type)?;
 
         Ok(Self {
             share_control_pdu: share_pdu,
-            pdu_version,
             pdu_source,
             share_id,
         })
     }
     fn to_buffer(&self, mut stream: impl io::Write) -> Result<(), Self::Error> {
         let pdu_type_with_version =
-            self.pdu_version | self.share_control_pdu.share_header_type().to_u16().unwrap();
+            PROTOCOL_VERSION | self.share_control_pdu.share_header_type().to_u16().unwrap();
 
         stream.write_u16::<LittleEndian>(
             (self.share_control_pdu.buffer_length() + SHARE_CONTROL_HEADER_SIZE) as u16,
@@ -174,6 +196,22 @@ pub struct ShareDataHeader {
     pub compression_type: client_info::CompressionType,
 }
 
+impl ShareDataHeader {
+    pub fn new(
+        share_data_pdu: ShareDataPdu,
+        stream_priority: StreamPriority,
+        compression_flags: CompressionFlags,
+        compression_type: client_info::CompressionType,
+    ) -> Self {
+        Self {
+            share_data_pdu,
+            stream_priority,
+            compression_flags,
+            compression_type,
+        }
+    }
+}
+
 impl PduParsing for ShareDataHeader {
     type Error = RdpError;
 
@@ -251,6 +289,18 @@ pub enum ShareDataPdu {
     FontList(FontPdu),
     FontMap(FontPdu),
     MonitorLayout(MonitorLayoutPdu),
+}
+
+impl ShareDataPdu {
+    pub fn as_short_name(&self) -> &str {
+        match self {
+            ShareDataPdu::Synchronize(_) => "Synchronize PDU",
+            ShareDataPdu::Control(_) => "Control PDU",
+            ShareDataPdu::FontList(_) => "FontList PDU",
+            ShareDataPdu::FontMap(_) => "Font Map PDU",
+            ShareDataPdu::MonitorLayout(_) => "Monitor Layout PDU",
+        }
+    }
 }
 
 impl ShareDataPdu {
@@ -345,7 +395,7 @@ bitflags! {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, FromPrimitive, ToPrimitive)]
+#[derive(Debug, Copy, Clone, PartialEq, FromPrimitive, ToPrimitive)]
 pub enum StreamPriority {
     Undefined = 0,
     Low = 1,
@@ -353,7 +403,7 @@ pub enum StreamPriority {
     High = 4,
 }
 
-#[derive(Debug, Clone, PartialEq, FromPrimitive, ToPrimitive)]
+#[derive(Debug, Copy, Clone, PartialEq, FromPrimitive, ToPrimitive)]
 pub enum ShareControlPduType {
     DemandActivePdu = 0x1,
     ConfirmActivePdu = 0x3,
@@ -362,7 +412,7 @@ pub enum ShareControlPduType {
     ServerRedirect = 0xa,
 }
 
-#[derive(Debug, Clone, PartialEq, FromPrimitive, ToPrimitive)]
+#[derive(Debug, Copy, Clone, PartialEq, FromPrimitive, ToPrimitive)]
 #[repr(u8)]
 pub enum ShareDataPduType {
     Update = 0x02,

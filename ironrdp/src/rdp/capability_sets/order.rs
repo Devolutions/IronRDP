@@ -6,8 +6,7 @@ use std::io;
 use bitflags::bitflags;
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 
-use crate::rdp::CapabilitySetsError;
-use crate::PduParsing;
+use crate::{rdp::CapabilitySetsError, PduParsing};
 
 const ORDER_LENGTH: usize = 84;
 const ORD_LEVEL_1_ORDERS: u16 = 1;
@@ -66,6 +65,21 @@ pub struct Order {
 }
 
 impl Order {
+    pub fn new(
+        order_flags: OrderFlags,
+        order_support_ex_flags: OrderSupportExFlags,
+        desktop_save_size: u32,
+        text_ansi_code_page: u16,
+    ) -> Self {
+        Self {
+            order_flags,
+            order_support: [0; SUPPORT_ARRAY_LEN],
+            order_support_ex_flags,
+            desktop_save_size,
+            text_ansi_code_page,
+        }
+    }
+
     pub fn set_support_flag(&mut self, flag: OrderSupportIndex, value: bool) {
         self.order_support[flag as usize] = u8::from(value)
     }

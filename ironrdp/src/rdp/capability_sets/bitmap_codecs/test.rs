@@ -169,8 +169,8 @@ const BITMAP_CODECS_BUFFER: [u8; 91] = [
 ];
 
 lazy_static! {
-    pub static ref GUID: Guid =
-        Guid(0xca8d1bb9, 0x000f, 0x154f, 0x58, 0x9f, 0xae, 0x2d, 0x1a, 0x87, 0xe2, 0xd6);
+    #[rustfmt::skip]
+    pub static ref GUID: Guid = Guid(0xca8d_1bb9, 0x000f, 0x154f, 0x58, 0x9f, 0xae, 0x2d, 0x1a, 0x87, 0xe2, 0xd6);
     pub static ref RFX_ICAP: RfxICap = RfxICap {
         flags: RfxICapFlags::CODEC_MODE,
         entropy_bits: EntropyBits::Rlgr3,
@@ -493,7 +493,7 @@ fn codec_with_invalid_property_length_handles_correctly() {
 
     match Codec::from_buffer(codec_buffer.as_ref()) {
         Err(CapabilitySetsError::InvalidPropertyLength) => (),
-        Err(_) => panic!("wrong error type"),
+        Err(_e) => panic!("wrong error type"),
         _ => panic!("error expected"),
     }
 }
@@ -532,4 +532,58 @@ fn codec_with_property_length_and_ignore_guid_handled_correctly() {
 
     assert_eq!(codec, Codec::from_buffer(&mut slice).unwrap());
     assert!(slice.is_empty());
+}
+
+#[test]
+fn ns_codec_with_too_high_color_loss_level_handled_correctly() {
+    let codec_buffer = vec![
+        0xb9, 0x1b, 0x8d, 0xca, 0x0f, 0x00, 0x4f, 0x15, 0x58, 0x9F, 0xAE, 0x2D, 0x1A, 0x87, 0xE2,
+        0xd6, // guid
+        0x00, // codec id
+        0x03, 0x00, // codec properties len
+        0x01, // allow dynamic fidelity
+        0x01, // allow subsampling
+        0xff, // color loss level
+    ];
+
+    let codec = Codec {
+        id: 0,
+        property: CodecProperty::NsCodec(NsCodec {
+            is_dynamic_fidelity_allowed: true,
+            is_subsampling_allowed: true,
+            color_loss_level: 7,
+        }),
+    };
+
+    assert_eq!(
+        codec,
+        Codec::from_buffer(&mut codec_buffer.as_slice()).unwrap()
+    );
+}
+
+#[test]
+fn ns_codec_with_too_low_color_loss_level_handled_correctly() {
+    let codec_buffer = vec![
+        0xb9, 0x1b, 0x8d, 0xca, 0x0f, 0x00, 0x4f, 0x15, 0x58, 0x9F, 0xAE, 0x2D, 0x1A, 0x87, 0xE2,
+        0xd6, // guid
+        0x00, // codec id
+        0x03, 0x00, // codec properties len
+        0x01, // allow dynamic fidelity
+        0x01, // allow subsampling
+        0x00, // color loss level
+    ];
+
+    let codec = Codec {
+        id: 0,
+        property: CodecProperty::NsCodec(NsCodec {
+            is_dynamic_fidelity_allowed: true,
+            is_subsampling_allowed: true,
+            color_loss_level: 1,
+        }),
+    };
+
+    assert_eq!(
+        codec,
+        Codec::from_buffer(&mut codec_buffer.as_slice()).unwrap()
+    );
 }

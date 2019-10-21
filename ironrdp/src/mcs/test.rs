@@ -40,10 +40,10 @@ const ERECT_DOMAIN_PDU: McsPdu = McsPdu::ErectDomainRequest(ErectDomainPdu {
 const ATTACH_USER_REQUEST_PDU: McsPdu = McsPdu::AttachUserRequest;
 const ATTACH_USER_CONFIRM_PDU: McsPdu = McsPdu::AttachUserConfirm(AttachUserConfirmPdu {
     result: 0,
-    user_id: 1007,
+    initiator_id: 1007,
 });
 const CHANNEL_JOIN_REQUEST_PDU: McsPdu = McsPdu::ChannelJoinRequest(ChannelJoinRequestPdu {
-    user_id: 1007,
+    initiator_id: 1007,
     channel_id: 1007,
 });
 const CHANNEL_JOIN_CONFIRM_PDU: McsPdu = McsPdu::ChannelJoinConfirm(ChannelJoinConfirmPdu {
@@ -64,7 +64,7 @@ lazy_static! {
     };
     static ref SEND_DATA_INDICATION_PDU_BUFFER: Vec<u8> = {
         let mut result = SEND_DATA_INDICATION_PDU_BUFFER_PREFIX.to_vec();
-        result.extend(rdp::test::CLIENT_LICENSE_PDU_BUFFER.as_slice());
+        result.extend(rdp::test::SERVER_LICENSE_PDU_BUFFER.as_slice());
 
         result
     };
@@ -76,7 +76,7 @@ lazy_static! {
     static ref SEND_DATA_INDICATION_PDU: McsPdu = McsPdu::SendDataIndication(SendDataContext {
         initiator_id: 1002,
         channel_id: 1003,
-        pdu: rdp::test::CLIENT_LICENSE_PDU_BUFFER.clone(),
+        pdu: rdp::test::SERVER_LICENSE_PDU_BUFFER.clone(),
     });
 }
 

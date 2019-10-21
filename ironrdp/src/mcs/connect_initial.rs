@@ -3,13 +3,12 @@ mod test;
 
 use std::io;
 
-use sspi::ber;
-
 use super::{McsError, RESULT_ENUM_LENGTH};
 use crate::{
+    ber,
     gcc::{
         conference_create::{ConferenceCreateRequest, ConferenceCreateResponse},
-        Channel,
+        Channel, ClientGccBlocks,
     },
     PduParsing,
 };
@@ -20,16 +19,28 @@ const MCS_TYPE_CONNECT_RESPONSE: u8 = 0x66;
 #[derive(Clone, Debug, PartialEq)]
 pub struct ConnectInitial {
     pub conference_create_request: ConferenceCreateRequest,
-    calling_domain_selector: Vec<u8>,
-    called_domain_selector: Vec<u8>,
-    upward_flag: bool,
-    target_parameters: DomainParameters,
-    min_parameters: DomainParameters,
-    max_parameters: DomainParameters,
+    pub calling_domain_selector: Vec<u8>,
+    pub called_domain_selector: Vec<u8>,
+    pub upward_flag: bool,
+    pub target_parameters: DomainParameters,
+    pub min_parameters: DomainParameters,
+    pub max_parameters: DomainParameters,
 }
 
 impl ConnectInitial {
-    pub fn channel_names(&self) -> Vec<Channel> {
+    pub fn with_gcc_blocks(gcc_blocks: ClientGccBlocks) -> Self {
+        Self {
+            conference_create_request: ConferenceCreateRequest::new(gcc_blocks),
+            calling_domain_selector: vec![0x01],
+            called_domain_selector: vec![0x01],
+            upward_flag: true,
+            target_parameters: DomainParameters::target(),
+            min_parameters: DomainParameters::min(),
+            max_parameters: DomainParameters::max(),
+        }
+    }
+
+    pub fn channel_names(&self) -> Option<Vec<Channel>> {
         self.conference_create_request.gcc_blocks.channel_names()
     }
 
@@ -102,8 +113,8 @@ impl PduParsing for ConnectInitial {
 #[derive(Clone, Debug, PartialEq)]
 pub struct ConnectResponse {
     pub conference_create_response: ConferenceCreateResponse,
-    called_connect_id: u32,
-    domain_parameters: DomainParameters,
+    pub called_connect_id: u32,
+    pub domain_parameters: DomainParameters,
 }
 
 impl ConnectResponse {
@@ -170,18 +181,57 @@ impl PduParsing for ConnectResponse {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-struct DomainParameters {
-    max_channel_ids: u32,
-    max_user_ids: u32,
-    max_token_ids: u32,
-    num_priorities: u32,
-    min_throughput: u32,
-    max_height: u32,
-    max_mcs_pdu_size: u32,
-    protocol_version: u32,
+pub struct DomainParameters {
+    pub max_channel_ids: u32,
+    pub max_user_ids: u32,
+    pub max_token_ids: u32,
+    pub num_priorities: u32,
+    pub min_throughput: u32,
+    pub max_height: u32,
+    pub max_mcs_pdu_size: u32,
+    pub protocol_version: u32,
 }
 
 impl DomainParameters {
+    pub fn min() -> Self {
+        Self {
+            max_channel_ids: 1,
+            max_user_ids: 1,
+            max_token_ids: 1,
+            num_priorities: 1,
+            min_throughput: 0,
+            max_height: 1,
+            max_mcs_pdu_size: 1056,
+            protocol_version: 2,
+        }
+    }
+
+    pub fn target() -> Self {
+        Self {
+            max_channel_ids: 34,
+            max_user_ids: 2,
+            max_token_ids: 0,
+            num_priorities: 1,
+            min_throughput: 0,
+            max_height: 1,
+            max_mcs_pdu_size: 65535,
+            protocol_version: 2,
+        }
+    }
+
+    pub fn max() -> Self {
+        Self {
+            max_channel_ids: 65535,
+            max_user_ids: 65535,
+            max_token_ids: 65535,
+            num_priorities: 1,
+            min_throughput: 0,
+            max_height: 1,
+            max_mcs_pdu_size: 65535,
+            protocol_version: 2,
+        }
+    }
+
     fn fields_buffer_ber_length(&self) -> u16 {
         ber::sizeof_integer(self.max_channel_ids)
             + ber::sizeof_integer(self.max_user_ids)

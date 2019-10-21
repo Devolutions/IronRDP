@@ -9,7 +9,7 @@ use failure::Fail;
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive, ToPrimitive};
 
-use crate::PduParsing;
+use crate::{impl_from_error, try_read_optional, try_write_optional, utils, PduParsing};
 
 const RECONNECT_COOKIE_LEN: usize = 28;
 const TIMEZONE_INFO_NAME_LEN: usize = 64;
@@ -35,7 +35,7 @@ const SYSTEM_TIME_SIZE: usize = 16;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ClientInfo {
-    pub credentials: sspi::Credentials,
+    pub credentials: Credentials,
     pub code_page: u32,
     pub flags: ClientInfoFlags,
     pub compression_type: CompressionType,
@@ -72,7 +72,7 @@ impl PduParsing for ClientInfo {
         let work_dir_size = stream.read_u16::<LittleEndian>()? as usize;
 
         let domain = read_string(&mut stream, domain_size, character_set, true)?;
-        let user_name = read_string(&mut stream, user_name_size, character_set, true)?;
+        let username = read_string(&mut stream, user_name_size, character_set, true)?;
         let password = read_string(&mut stream, password_size, character_set, true)?;
 
         let domain = if domain.is_empty() {
@@ -80,7 +80,11 @@ impl PduParsing for ClientInfo {
         } else {
             Some(domain)
         };
-        let credentials = sspi::Credentials::new(user_name, password, domain);
+        let credentials = Credentials {
+            username,
+            password,
+            domain,
+        };
 
         let alternate_shell = read_string(&mut stream, alternate_shell_size, character_set, true)?;
         let work_dir = read_string(&mut stream, work_dir_size, character_set, true)?;
@@ -174,11 +178,18 @@ impl PduParsing for ClientInfo {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub struct Credentials {
+    pub username: String,
+    pub password: String,
+    pub domain: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct ExtendedClientInfo {
-    address_family: AddressFamily,
-    address: String,
-    dir: String,
-    optional_data: ExtendedClientOptionalInfo,
+    pub address_family: AddressFamily,
+    pub address: String,
+    pub dir: String,
+    pub optional_data: ExtendedClientOptionalInfo,
 }
 
 impl ExtendedClientInfo {
@@ -244,10 +255,10 @@ impl ExtendedClientInfo {
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct ExtendedClientOptionalInfo {
-    timezone: Option<TimezoneInfo>,
-    session_id: Option<u32>,
-    performance_flags: Option<PerformanceFlags>,
-    reconnect_cookie: Option<[u8; RECONNECT_COOKIE_LEN]>,
+    pub timezone: Option<TimezoneInfo>,
+    pub session_id: Option<u32>,
+    pub performance_flags: Option<PerformanceFlags>,
+    pub reconnect_cookie: Option<[u8; RECONNECT_COOKIE_LEN]>,
     // other fields are read by RdpVersion::Ten+
 }
 
@@ -333,13 +344,13 @@ impl PduParsing for ExtendedClientOptionalInfo {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct TimezoneInfo {
-    bias: u32,
-    standard_name: String,
-    standard_date: SystemTime,
-    standard_bias: u32,
-    daylight_name: String,
-    daylight_date: SystemTime,
-    daylight_bias: u32,
+    pub bias: u32,
+    pub standard_name: String,
+    pub standard_date: SystemTime,
+    pub standard_bias: u32,
+    pub daylight_name: String,
+    pub daylight_date: SystemTime,
+    pub daylight_bias: u32,
 }
 
 impl PduParsing for TimezoneInfo {
@@ -380,14 +391,14 @@ impl PduParsing for TimezoneInfo {
     fn to_buffer(&self, mut stream: impl io::Write) -> Result<(), Self::Error> {
         stream.write_u32::<LittleEndian>(self.bias)?;
 
-        let mut standard_name = sspi::utils::string_to_utf16(self.standard_name.as_str());
+        let mut standard_name = utils::string_to_utf16(self.standard_name.as_str());
         standard_name.resize(TIMEZONE_INFO_NAME_LEN, 0);
         stream.write_all(standard_name.as_ref())?;
 
         self.standard_date.to_buffer(&mut stream)?;
         stream.write_u32::<LittleEndian>(self.standard_bias)?;
 
-        let mut daylight_name = sspi::utils::string_to_utf16(self.daylight_name.as_str());
+        let mut daylight_name = utils::string_to_utf16(self.daylight_name.as_str());
         daylight_name.resize(TIMEZONE_INFO_NAME_LEN, 0);
         stream.write_all(daylight_name.as_ref())?;
 
@@ -410,13 +421,13 @@ impl PduParsing for TimezoneInfo {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct SystemTime {
-    month: Month,
-    day_of_week: DayOfWeek,
-    day: DayOfWeekOccurrence,
-    hour: u16,
-    minute: u16,
-    second: u16,
-    milliseconds: u16,
+    pub month: Month,
+    pub day_of_week: DayOfWeek,
+    pub day: DayOfWeekOccurrence,
+    pub hour: u16,
+    pub minute: u16,
+    pub second: u16,
+    pub milliseconds: u16,
 }
 
 impl PduParsing for SystemTime {
@@ -465,8 +476,8 @@ impl PduParsing for SystemTime {
 }
 
 #[repr(u16)]
-#[derive(Debug, Clone, PartialEq, FromPrimitive, ToPrimitive)]
-enum Month {
+#[derive(Debug, Copy, Clone, PartialEq, FromPrimitive, ToPrimitive)]
+pub enum Month {
     January = 1,
     February = 2,
     March = 3,
@@ -482,8 +493,8 @@ enum Month {
 }
 
 #[repr(u16)]
-#[derive(Debug, Clone, PartialEq, FromPrimitive, ToPrimitive)]
-enum DayOfWeek {
+#[derive(Debug, Copy, Clone, PartialEq, FromPrimitive, ToPrimitive)]
+pub enum DayOfWeek {
     Sunday = 0,
     Monday = 1,
     Tuesday = 2,
@@ -494,8 +505,8 @@ enum DayOfWeek {
 }
 
 #[repr(u16)]
-#[derive(Debug, Clone, PartialEq, FromPrimitive, ToPrimitive)]
-enum DayOfWeekOccurrence {
+#[derive(Debug, Copy, Clone, PartialEq, FromPrimitive, ToPrimitive)]
+pub enum DayOfWeekOccurrence {
     First = 1,
     Second = 2,
     Third = 3,
@@ -504,7 +515,7 @@ enum DayOfWeekOccurrence {
 }
 
 bitflags! {
-    struct PerformanceFlags: u32 {
+    pub struct PerformanceFlags: u32 {
         const DISABLE_WALLPAPER = 0x0000_0001;
         const DISABLE_FULLWINDOWDRAG = 0x0000_0002;
         const DISABLE_MENUANIMATIONS = 0x0000_0004;
@@ -519,7 +530,7 @@ bitflags! {
 }
 
 #[repr(u16)]
-#[derive(Debug, Clone, PartialEq, FromPrimitive, ToPrimitive)]
+#[derive(Debug, Copy, Clone, PartialEq, FromPrimitive, ToPrimitive)]
 pub enum AddressFamily {
     INet = 0x0002,
     INet6 = 0x0017,
@@ -551,7 +562,7 @@ bitflags! {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, FromPrimitive, ToPrimitive)]
+#[derive(Debug, Copy, Clone, PartialEq, FromPrimitive, ToPrimitive)]
 pub enum CompressionType {
     K8 = 0,
     K64 = 1,
@@ -610,7 +621,7 @@ fn read_string(
     stream.read_exact(&mut buffer)?;
 
     let result = match character_set {
-        CharacterSet::Unicode => sspi::utils::bytes_to_utf16_string(buffer.as_slice()),
+        CharacterSet::Unicode => utils::bytes_to_utf16_string(buffer.as_slice()),
         CharacterSet::Ansi => String::from_utf8(buffer)?,
     };
 
@@ -624,7 +635,7 @@ fn write_string_with_null_terminator(
 ) -> io::Result<()> {
     match character_set {
         CharacterSet::Unicode => {
-            stream.write_all(sspi::utils::string_to_utf16(value).as_ref())?;
+            stream.write_all(utils::string_to_utf16(value).as_ref())?;
             stream.write_u16::<LittleEndian>(0)
         }
         CharacterSet::Ansi => {

@@ -18,17 +18,34 @@ mod virtual_channel;
 use std::io;
 
 pub use self::{
-    bitmap::Bitmap, bitmap_cache::BitmapCache, bitmap_cache::BitmapCacheRev2,
-    bitmap_codecs::BitmapCodecs, brush::Brush, general::General, glyph_cache::GlyphCache,
-    input::Input, offscreen_bitmap_cache::OffscreenBitmapCache, order::Order, pointer::Pointer,
-    sound::Sound, surface_commands::SurfaceCommands, virtual_channel::VirtualChannel,
+    bitmap::{Bitmap, BitmapDrawingFlags},
+    bitmap_cache::{
+        BitmapCache, BitmapCacheRev2, CacheEntry, CacheFlags, CellInfo, BITMAP_CACHE_ENTRIES_NUM,
+    },
+    bitmap_codecs::{
+        BitmapCodecs, CaptureFlags, Codec, CodecProperty, EntropyBits, Guid, NsCodec,
+        RemoteFxContainer, RfxCaps, RfxCapset, RfxClientCapsContainer, RfxICap, RfxICapFlags,
+    },
+    brush::{Brush, SupportLevel},
+    general::{General, GeneralExtraFlags, MajorPlatformType, MinorPlatformType},
+    glyph_cache::{CacheDefinition, GlyphCache, GlyphSupportLevel, GLYPH_CACHE_NUM},
+    input::{Input, InputFlags},
+    offscreen_bitmap_cache::OffscreenBitmapCache,
+    order::{Order, OrderFlags, OrderSupportExFlags, OrderSupportIndex},
+    pointer::Pointer,
+    sound::{Sound, SoundFlags},
+    surface_commands::{CmdFlags, SurfaceCommands},
+    virtual_channel::{VirtualChannel, VirtualChannelFlags},
 };
+
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use failure::Fail;
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive, ToPrimitive};
 
-use crate::PduParsing;
+use crate::{impl_from_error, PduParsing};
+
+pub const SERVER_CHANNEL_ID: u16 = 0x03ea;
 
 const SOURCE_DESCRIPTOR_LENGTH_FIELD_SIZE: usize = 2;
 const COMBINED_CAPABILITIES_LENGTH_FIELD_SIZE: usize = 2;
@@ -40,7 +57,6 @@ const CAPABILITY_SET_LENGTH_FIELD_SIZE: usize = 2;
 const ORIGINATOR_ID_FIELD_SIZE: usize = 2;
 
 const NULL_TERMINATOR: &str = "\0";
-const SERVER_CHANNEL_ID: u16 = 0x03ea;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ServerDemandActive {
@@ -71,6 +87,13 @@ impl PduParsing for ServerDemandActive {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ClientConfirmActive {
+    /// According to [MSDN](https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/4e9722c3-ad83-43f5-af5a-529f73d88b48),
+    /// this field MUST be set to [SERVER_CHANNEL_ID](constant.SERVER_CHANNEL_ID.html).
+    /// However, the Microsoft RDP client takes this value from a server's
+    /// [PduSource](https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/73d01865-2eae-407f-9b2c-87e31daac471)
+    /// field of the [Server Demand Active PDU](https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/bd612af5-cb54-43a2-9646-438bc3ecf5db).
+    /// Therefore, checking the `originator_id` field is the responsibility of the user of the library.
+    pub originator_id: u16,
     pub pdu: DemandActive,
 }
 
@@ -79,17 +102,13 @@ impl PduParsing for ClientConfirmActive {
 
     fn from_buffer(mut stream: impl io::Read) -> Result<Self, Self::Error> {
         let originator_id = stream.read_u16::<LittleEndian>()?;
-        if originator_id == SERVER_CHANNEL_ID {
-            Ok(Self {
-                pdu: DemandActive::from_buffer(&mut stream)?,
-            })
-        } else {
-            Err(CapabilitySetsError::InvalidOriginatorId)
-        }
+        let pdu = DemandActive::from_buffer(&mut stream)?;
+
+        Ok(Self { originator_id, pdu })
     }
 
     fn to_buffer(&self, mut stream: impl io::Write) -> Result<(), Self::Error> {
-        stream.write_u16::<LittleEndian>(SERVER_CHANNEL_ID)?;
+        stream.write_u16::<LittleEndian>(self.originator_id)?;
 
         self.pdu.to_buffer(&mut stream)
     }
@@ -103,6 +122,15 @@ impl PduParsing for ClientConfirmActive {
 pub struct DemandActive {
     pub source_descriptor: String,
     pub capability_sets: Vec<CapabilitySet>,
+}
+
+impl DemandActive {
+    pub fn new(source_descriptor: String, capability_sets: Vec<CapabilitySet>) -> Self {
+        Self {
+            source_descriptor,
+            capability_sets,
+        }
+    }
 }
 
 impl PduParsing for DemandActive {
@@ -219,83 +247,80 @@ impl PduParsing for CapabilitySet {
         let buffer_length = stream.read_u16::<LittleEndian>()? as usize
             - CAPABILITY_SET_TYPE_FIELD_SIZE
             - CAPABILITY_SET_LENGTH_FIELD_SIZE;
+        let mut capability_set_buffer = vec![0; buffer_length];
+        stream.read_exact(capability_set_buffer.as_mut())?;
 
         match capability_set_type {
-            CapabilitySetType::General => {
-                Ok(CapabilitySet::General(General::from_buffer(&mut stream)?))
-            }
-            CapabilitySetType::Bitmap => {
-                Ok(CapabilitySet::Bitmap(Bitmap::from_buffer(&mut stream)?))
-            }
-            CapabilitySetType::Order => Ok(CapabilitySet::Order(Order::from_buffer(&mut stream)?)),
+            CapabilitySetType::General => Ok(CapabilitySet::General(General::from_buffer(
+                &mut capability_set_buffer.as_slice(),
+            )?)),
+            CapabilitySetType::Bitmap => Ok(CapabilitySet::Bitmap(Bitmap::from_buffer(
+                &mut capability_set_buffer.as_slice(),
+            )?)),
+            CapabilitySetType::Order => Ok(CapabilitySet::Order(Order::from_buffer(
+                &mut capability_set_buffer.as_slice(),
+            )?)),
             CapabilitySetType::BitmapCache => Ok(CapabilitySet::BitmapCache(
-                BitmapCache::from_buffer(&mut stream)?,
+                BitmapCache::from_buffer(&mut capability_set_buffer.as_slice())?,
             )),
             CapabilitySetType::BitmapCacheRev2 => Ok(CapabilitySet::BitmapCacheRev2(
-                BitmapCacheRev2::from_buffer(&mut stream)?,
+                BitmapCacheRev2::from_buffer(&mut capability_set_buffer.as_slice())?,
             )),
-            CapabilitySetType::Pointer => {
-                Ok(CapabilitySet::Pointer(Pointer::from_buffer(&mut stream)?))
-            }
-            CapabilitySetType::Sound => Ok(CapabilitySet::Sound(Sound::from_buffer(&mut stream)?)),
-            CapabilitySetType::Input => Ok(CapabilitySet::Input(Input::from_buffer(&mut stream)?)),
-            CapabilitySetType::Brush => Ok(CapabilitySet::Brush(Brush::from_buffer(&mut stream)?)),
+            CapabilitySetType::Pointer => Ok(CapabilitySet::Pointer(Pointer::from_buffer(
+                &mut capability_set_buffer.as_slice(),
+            )?)),
+            CapabilitySetType::Sound => Ok(CapabilitySet::Sound(Sound::from_buffer(
+                &mut capability_set_buffer.as_slice(),
+            )?)),
+            CapabilitySetType::Input => Ok(CapabilitySet::Input(Input::from_buffer(
+                &mut capability_set_buffer.as_slice(),
+            )?)),
+            CapabilitySetType::Brush => Ok(CapabilitySet::Brush(Brush::from_buffer(
+                &mut capability_set_buffer.as_slice(),
+            )?)),
             CapabilitySetType::GlyphCache => Ok(CapabilitySet::GlyphCache(
-                GlyphCache::from_buffer(&mut stream)?,
+                GlyphCache::from_buffer(&mut capability_set_buffer.as_slice())?,
             )),
             CapabilitySetType::OffscreenBitmapCache => Ok(CapabilitySet::OffscreenBitmapCache(
-                OffscreenBitmapCache::from_buffer(&mut stream)?,
+                OffscreenBitmapCache::from_buffer(&mut capability_set_buffer.as_slice())?,
             )),
             CapabilitySetType::VirtualChannel => Ok(CapabilitySet::VirtualChannel(
-                VirtualChannel::from_buffer(&mut stream)?,
+                VirtualChannel::from_buffer(&mut capability_set_buffer.as_slice())?,
             )),
             CapabilitySetType::SurfaceCommands => Ok(CapabilitySet::SurfaceCommands(
-                SurfaceCommands::from_buffer(&mut stream)?,
+                SurfaceCommands::from_buffer(&mut capability_set_buffer.as_slice())?,
             )),
             CapabilitySetType::BitmapCodecs => Ok(CapabilitySet::BitmapCodecs(
-                BitmapCodecs::from_buffer(&mut stream)?,
+                BitmapCodecs::from_buffer(&mut capability_set_buffer.as_slice())?,
             )),
-            _ => {
-                let mut capability_set_buffer = vec![0; buffer_length];
-                stream.read_exact(capability_set_buffer.as_mut())?;
 
-                match capability_set_type {
-                    CapabilitySetType::Control => Ok(CapabilitySet::Control(capability_set_buffer)),
-                    CapabilitySetType::WindowActivation => {
-                        Ok(CapabilitySet::WindowActivation(capability_set_buffer))
-                    }
-                    CapabilitySetType::Share => Ok(CapabilitySet::Share(capability_set_buffer)),
-                    CapabilitySetType::Font => Ok(CapabilitySet::Font(capability_set_buffer)),
-                    CapabilitySetType::BitmapCacheHostSupport => {
-                        Ok(CapabilitySet::BitmapCacheHostSupport(capability_set_buffer))
-                    }
-                    CapabilitySetType::DesktopComposition => {
-                        Ok(CapabilitySet::DesktopComposition(capability_set_buffer))
-                    }
-                    CapabilitySetType::MultiFragmentUpdate => {
-                        Ok(CapabilitySet::MultiFragmentUpdate(capability_set_buffer))
-                    }
-                    CapabilitySetType::LargePointer => {
-                        Ok(CapabilitySet::LargePointer(capability_set_buffer))
-                    }
-                    CapabilitySetType::ColorCache => {
-                        Ok(CapabilitySet::ColorCache(capability_set_buffer))
-                    }
-                    CapabilitySetType::DrawNineGridCache => {
-                        Ok(CapabilitySet::DrawNineGridCache(capability_set_buffer))
-                    }
-                    CapabilitySetType::DrawGdiPlus => {
-                        Ok(CapabilitySet::DrawGdiPlus(capability_set_buffer))
-                    }
-                    CapabilitySetType::Rail => Ok(CapabilitySet::Rail(capability_set_buffer)),
-                    CapabilitySetType::WindowList => {
-                        Ok(CapabilitySet::WindowList(capability_set_buffer))
-                    }
-                    CapabilitySetType::FrameAcknowledge => {
-                        Ok(CapabilitySet::FrameAcknowledge(capability_set_buffer))
-                    }
-                    _ => unreachable!(),
-                }
+            CapabilitySetType::Control => Ok(CapabilitySet::Control(capability_set_buffer)),
+            CapabilitySetType::WindowActivation => {
+                Ok(CapabilitySet::WindowActivation(capability_set_buffer))
+            }
+            CapabilitySetType::Share => Ok(CapabilitySet::Share(capability_set_buffer)),
+            CapabilitySetType::Font => Ok(CapabilitySet::Font(capability_set_buffer)),
+            CapabilitySetType::BitmapCacheHostSupport => {
+                Ok(CapabilitySet::BitmapCacheHostSupport(capability_set_buffer))
+            }
+            CapabilitySetType::DesktopComposition => {
+                Ok(CapabilitySet::DesktopComposition(capability_set_buffer))
+            }
+            CapabilitySetType::MultiFragmentUpdate => {
+                Ok(CapabilitySet::MultiFragmentUpdate(capability_set_buffer))
+            }
+            CapabilitySetType::LargePointer => {
+                Ok(CapabilitySet::LargePointer(capability_set_buffer))
+            }
+            CapabilitySetType::ColorCache => Ok(CapabilitySet::ColorCache(capability_set_buffer)),
+            CapabilitySetType::DrawNineGridCache => {
+                Ok(CapabilitySet::DrawNineGridCache(capability_set_buffer))
+            }
+            CapabilitySetType::DrawGdiPlus => Ok(CapabilitySet::DrawGdiPlus(capability_set_buffer)),
+            CapabilitySetType::Rail => Ok(CapabilitySet::Rail(capability_set_buffer)),
+            CapabilitySetType::WindowList => Ok(CapabilitySet::WindowList(capability_set_buffer)),
+            CapabilitySetType::FrameAcknowledge => {
+                Ok(CapabilitySet::FrameAcknowledge(capability_set_buffer))
             }
         }
     }
@@ -560,8 +585,6 @@ pub enum CapabilitySetsError {
     Utf8Error(#[fail(cause)] std::string::FromUtf8Error),
     #[fail(display = "Invalid type field")]
     InvalidType,
-    #[fail(display = "Invalid originator ID field")]
-    InvalidOriginatorId,
     #[fail(display = "Invalid bitmap compression field")]
     InvalidCompressionFlag,
     #[fail(display = "Invalid multiple rectangle support field")]
@@ -604,8 +627,6 @@ pub enum CapabilitySetsError {
     InvalidRfxCapsBockLength,
     #[fail(display = "Invalid number of capability sets in RemoteFX capabilities")]
     InvalidRfxCapsNumCapsets,
-    #[fail(display = "Invalid color loss level field")]
-    InvalidColorLossLevel,
     #[fail(display = "Invalid codec property field")]
     InvalidCodecProperty,
     #[fail(display = "Invalid codec ID")]

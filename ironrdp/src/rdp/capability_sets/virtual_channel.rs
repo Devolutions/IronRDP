@@ -6,13 +6,10 @@ use std::io;
 use bitflags::bitflags;
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 
-use crate::rdp::CapabilitySetsError;
-use crate::PduParsing;
+use crate::{rdp::CapabilitySetsError, try_read_optional, try_write_optional, PduParsing};
 
-const VIRTUAL_CHANNEL_LENGTH: usize = 8;
-
-const CHANNEL_CHUNK_LENGTH: u32 = 1600;
-const CHUNK_SIZE_VALID_VALUE: u32 = 16256;
+const FLAGS_FIELD_SIZE: usize = 4;
+const CHUNK_SIZE_FIELD_SIZE: usize = 4;
 
 bitflags! {
     pub struct VirtualChannelFlags: u32 {
@@ -22,10 +19,21 @@ bitflags! {
     }
 }
 
+/// The VirtualChannel structure is used to advertise virtual channel support characteristics. This capability is sent by both client and server.
+///
+/// # Fields
+///
+/// * `flags` - virtual channel compression flags
+/// * `chunk_size` - when sent from server to client, this field contains the maximum allowed size of a virtual channel chunk and MUST be greater than or equal to 1600 and less than or equal to 16256.
+/// When sent from client to server, the value in this field is ignored by the server. This value is not verified in IronRDP and MUST be verified on the caller's side
+///
+/// # MSDN
+///
+/// * [Virtual Channel Capability Set](https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/a8593178-80c0-4b80-876c-cb77e62cecfc)
 #[derive(Debug, PartialEq, Clone)]
 pub struct VirtualChannel {
-    flags: VirtualChannelFlags,
-    chunk_size: u32,
+    pub flags: VirtualChannelFlags,
+    pub chunk_size: Option<u32>,
 }
 
 impl PduParsing for VirtualChannel {
@@ -34,22 +42,30 @@ impl PduParsing for VirtualChannel {
     fn from_buffer(mut buffer: impl io::Read) -> Result<Self, Self::Error> {
         let flags = VirtualChannelFlags::from_bits_truncate(buffer.read_u32::<LittleEndian>()?);
 
-        let chunk_size = buffer.read_u32::<LittleEndian>()?;
-        if chunk_size > CHUNK_SIZE_VALID_VALUE || chunk_size < CHANNEL_CHUNK_LENGTH {
-            return Err(CapabilitySetsError::InvalidChunkSize);
-        }
+        let mut virtual_channel_pdu = Self {
+            flags,
+            chunk_size: None,
+        };
 
-        Ok(VirtualChannel { flags, chunk_size })
+        virtual_channel_pdu.chunk_size = Some(try_read_optional!(
+            buffer.read_u32::<LittleEndian>(),
+            virtual_channel_pdu
+        ));
+
+        Ok(virtual_channel_pdu)
     }
 
     fn to_buffer(&self, mut buffer: impl io::Write) -> Result<(), Self::Error> {
         buffer.write_u32::<LittleEndian>(self.flags.bits())?;
-        buffer.write_u32::<LittleEndian>(self.chunk_size)?;
+
+        try_write_optional!(self.chunk_size, |value: &u32| {
+            buffer.write_u32::<LittleEndian>(*value)
+        });
 
         Ok(())
     }
 
     fn buffer_length(&self) -> usize {
-        VIRTUAL_CHANNEL_LENGTH
+        FLAGS_FIELD_SIZE + self.chunk_size.map(|_| CHUNK_SIZE_FIELD_SIZE).unwrap_or(0)
     }
 }

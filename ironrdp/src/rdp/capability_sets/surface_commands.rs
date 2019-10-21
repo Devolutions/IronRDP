@@ -6,8 +6,7 @@ use std::io;
 use bitflags::bitflags;
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 
-use crate::rdp::CapabilitySetsError;
-use crate::PduParsing;
+use crate::{rdp::CapabilitySetsError, PduParsing};
 
 const SURFACE_COMMANDS_LENGTH: usize = 8;
 
@@ -21,7 +20,7 @@ bitflags! {
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct SurfaceCommands {
-    flags: CmdFlags,
+    pub flags: CmdFlags,
 }
 
 impl PduParsing for SurfaceCommands {

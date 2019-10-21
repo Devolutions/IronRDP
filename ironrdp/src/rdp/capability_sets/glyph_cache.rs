@@ -7,10 +7,10 @@ use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive, ToPrimitive};
 
-use crate::rdp::CapabilitySetsError;
-use crate::PduParsing;
+use crate::{rdp::CapabilitySetsError, PduParsing};
 
-const GLYPH_CACHE_NUM: usize = 10;
+pub const GLYPH_CACHE_NUM: usize = 10;
+
 const GLYPH_CACHE_LENGTH: usize = 48;
 const CACHE_DEFINITION_LENGTH: usize = 4;
 

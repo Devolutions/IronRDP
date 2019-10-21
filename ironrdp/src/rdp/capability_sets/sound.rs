@@ -6,8 +6,7 @@ use std::io;
 use bitflags::bitflags;
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 
-use crate::rdp::CapabilitySetsError;
-use crate::PduParsing;
+use crate::{rdp::CapabilitySetsError, PduParsing};
 
 const SOUND_LENGTH: usize = 4;
 
@@ -19,7 +18,7 @@ bitflags! {
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct Sound {
-    flags: SoundFlags,
+    pub flags: SoundFlags,
 }
 
 impl PduParsing for Sound {

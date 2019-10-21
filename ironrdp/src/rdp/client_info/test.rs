@@ -99,11 +99,11 @@ lazy_static! {
             | ClientInfoFlags::ENABLE_WINDOWS_KEY
             | ClientInfoFlags::FORCE_ENCRYPTED_CS_PDU,
         compression_type: CompressionType::K64,
-        credentials: sspi::Credentials::new(
-            String::from("eltons"),
-            String::from(""),
-            Some(String::from("NTDEV"))
-        ),
+        credentials: Credentials {
+            username: String::from("eltons"),
+            password: String::from(""),
+            domain: Some(String::from("NTDEV"))
+        },
         alternate_shell: String::from(""),
         work_dir: String::from(""),
         extra_info: ExtendedClientInfo {

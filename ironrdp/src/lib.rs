@@ -1,25 +1,24 @@
-#[macro_use]
-mod utils;
-
 pub mod gcc;
+pub mod mcs;
+pub mod nego;
+pub mod rdp;
 
+mod ber;
 mod fast_path;
-mod mcs;
-mod nego;
 mod per;
-mod rdp;
-mod tpdu;
+mod utils;
+mod x224;
 
 pub use crate::{
     fast_path::{parse_fast_path_header, FastPath, FastPathError},
     mcs::{ConnectInitial, ConnectResponse, McsError, McsPdu, SendDataContext},
     nego::*,
     rdp::{
-        CapabilitySet, ClientConfirmActive, ClientInfoPdu, ClientLicensePdu, ControlAction,
-        DemandActive, ServerDemandActive, ShareControlHeader, ShareControlPdu, ShareDataHeader,
-        ShareDataPdu,
+        CapabilitySet, ClientConfirmActive, ClientInfoPdu, ControlAction, DemandActive,
+        ServerDemandActive, ServerLicensePdu, ShareControlHeader, ShareControlPdu, ShareDataHeader,
+        ShareDataPdu, VirtualChannel,
     },
-    tpdu::*,
+    x224::*,
 };
 
 pub trait PduParsing {
@@ -27,7 +26,7 @@ pub trait PduParsing {
 
     fn from_buffer(stream: impl std::io::Read) -> Result<Self, Self::Error>
     where
-        Self: std::marker::Sized;
+        Self: Sized;
     fn to_buffer(&self, stream: impl std::io::Write) -> Result<(), Self::Error>;
     fn buffer_length(&self) -> usize;
 }
