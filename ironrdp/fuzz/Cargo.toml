@@ -21,16 +21,8 @@ git = "https://github.com/rust-fuzz/libfuzzer-sys.git"
 members = ["."]
 
 [[bin]]
-name = "fuzz_mcs"
-path = "fuzz_targets/fuzz_mcs.rs"
-
-[[bin]]
-name = "fuzz_nego"
-path = "fuzz_targets/fuzz_nego.rs"
-
-[[bin]]
-name = "fuzz_tpdu"
-path = "fuzz_targets/fuzz_tpdu.rs"
+name = "fuzz_pdu"
+path = "fuzz_targets/fuzz_pdu.rs"
 
 [[bin]]
 name = "fuzz_gcc"
