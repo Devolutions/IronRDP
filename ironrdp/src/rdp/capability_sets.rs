@@ -244,16 +244,15 @@ impl PduParsing for CapabilitySet {
     fn from_buffer(mut stream: impl io::Read) -> Result<Self, Self::Error> {
         let capability_set_type = CapabilitySetType::from_u16(stream.read_u16::<LittleEndian>()?)
             .ok_or(CapabilitySetsError::InvalidType)?;
-        
+
         let length = stream.read_u16::<LittleEndian>()? as usize;
-        
+
         if length < CAPABILITY_SET_TYPE_FIELD_SIZE + CAPABILITY_SET_LENGTH_FIELD_SIZE {
             return Err(CapabilitySetsError::InvalidLength);
         }
-        
-        let buffer_length = length
-            - CAPABILITY_SET_TYPE_FIELD_SIZE
-            - CAPABILITY_SET_LENGTH_FIELD_SIZE;
+
+        let buffer_length =
+            length - CAPABILITY_SET_TYPE_FIELD_SIZE - CAPABILITY_SET_LENGTH_FIELD_SIZE;
         let mut capability_set_buffer = vec![0; buffer_length];
         stream.read_exact(capability_set_buffer.as_mut())?;
 
