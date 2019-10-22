@@ -86,8 +86,8 @@ impl PduParsing for ServerSecurityData {
     fn from_buffer(mut buffer: impl io::Read) -> Result<Self, Self::Error> {
         let encryption_method = EncryptionMethod::from_bits(buffer.read_u32::<LittleEndian>()?)
             .ok_or(SecurityDataError::InvalidEncryptionMethod)?;
-        let encryption_level =
-            EncryptionLevel::from_u32(buffer.read_u32::<LittleEndian>()?).unwrap();
+        let encryption_level = EncryptionLevel::from_u32(buffer.read_u32::<LittleEndian>()?)
+            .ok_or(SecurityDataError::InvalidEncryptionLevel)?;
 
         let (server_random, server_cert) =
             if encryption_method.is_empty() && encryption_level == EncryptionLevel::None {
@@ -184,6 +184,8 @@ pub enum SecurityDataError {
     IOError(#[fail(cause)] io::Error),
     #[fail(display = "Invalid encryption methods field")]
     InvalidEncryptionMethod,
+    #[fail(display = "Invalid encryption level field")]
+    InvalidEncryptionLevel,
     #[fail(display = "Invalid server random length field")]
     InvalidServerRandomLen,
     #[fail(display = "Invalid input: {}", _0)]
