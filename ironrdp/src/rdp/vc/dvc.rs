@@ -1,3 +1,5 @@
+pub mod gfx;
+
 #[cfg(test)]
 mod tests;
 
