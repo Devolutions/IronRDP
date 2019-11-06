@@ -1,14 +1,12 @@
 #[cfg(test)]
 pub mod test;
-
 pub mod capability_sets;
 pub mod server_license;
+pub mod vc;
 
 mod client_info;
 mod finalization_messages;
 mod headers;
-mod server_license;
-mod vc;
 
 pub use self::{
     capability_sets::{

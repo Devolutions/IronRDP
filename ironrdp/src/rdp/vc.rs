@@ -1,11 +1,7 @@
-mod dvc;
+pub mod dvc;
+
 #[cfg(test)]
 mod test;
-
-pub use self::dvc::{
-    DvcCapabilitiesRequestPdu, DvcCapabilitiesResponsePdu, DvcCreateRequestPdu,
-    DvcCreateResponsePdu, DvcPdu, DynamicVirtualChannelHeader,
-};
 
 use std::io;
 
@@ -19,7 +15,7 @@ const CHANNEL_PDU_HEADER_SIZE: usize = 8;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ChannelPduHeader {
-    // The total length in bytes of the uncompressed channel data, excluding this header
+    /// The total length in bytes of the uncompressed channel data, excluding this header
     pub total_length: u32,
     pub flags: ChannelControlFlags,
 }
@@ -38,8 +34,7 @@ impl PduParsing for ChannelPduHeader {
 
     fn from_buffer(mut stream: impl io::Read) -> Result<Self, Self::Error> {
         let total_length = stream.read_u32::<LittleEndian>()?;
-        let flags = ChannelControlFlags::from_bits(stream.read_u32::<LittleEndian>()?)
-            .ok_or(ChannelError::InvalidChannelPduHeader)?;
+        let flags = ChannelControlFlags::from_bits_truncate(stream.read_u32::<LittleEndian>()?);
 
         Ok(Self {
             total_length,
@@ -56,93 +51,6 @@ impl PduParsing for ChannelPduHeader {
 
     fn buffer_length(&self) -> usize {
         CHANNEL_PDU_HEADER_SIZE
-    }
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum VirtualChannelData {
-    ChannelData(Vec<u8>),
-    DynamicVCPdu(DvcPdu),
-}
-
-impl VirtualChannelData {
-    pub fn as_short_name(&self) -> &str {
-        match self {
-            VirtualChannelData::ChannelData(_) => "Virtual channel data",
-            VirtualChannelData::DynamicVCPdu(_) => "Dynamic virtual channel PDU",
-        }
-    }
-}
-
-impl PduParsing for VirtualChannelData {
-    type Error = ChannelError;
-
-    fn from_buffer(mut stream: impl io::Read) -> Result<Self, Self::Error> {
-        let mut vc_data = Vec::new();
-        stream.read_to_end(&mut vc_data)?;
-
-        Ok(VirtualChannelData::ChannelData(vc_data))
-    }
-
-    fn to_buffer(&self, mut stream: impl io::Write) -> Result<(), Self::Error> {
-        match self {
-            VirtualChannelData::DynamicVCPdu(dvc_pdu) => {
-                match dvc_pdu {
-                    DvcPdu::CapabilitiesRequest(pdu) => pdu.to_buffer(&mut stream)?,
-                    DvcPdu::CapabilitiesResponse(pdu) => pdu.to_buffer(&mut stream)?,
-                    DvcPdu::CreateRequest(pdu) => pdu.to_buffer(&mut stream)?,
-                    DvcPdu::CreateResponse(pdu) => pdu.to_buffer(&mut stream)?,
-                };
-            }
-            VirtualChannelData::ChannelData(data) => stream.write_all(data.as_ref())?,
-        };
-
-        Ok(())
-    }
-
-    fn buffer_length(&self) -> usize {
-        match self {
-            VirtualChannelData::ChannelData(data) => data.len(),
-            VirtualChannelData::DynamicVCPdu(dvc_pdu) => match dvc_pdu {
-                DvcPdu::CapabilitiesRequest(pdu) => pdu.buffer_length(),
-                DvcPdu::CapabilitiesResponse(pdu) => pdu.buffer_length(),
-                DvcPdu::CreateRequest(pdu) => pdu.buffer_length(),
-                DvcPdu::CreateResponse(pdu) => pdu.buffer_length(),
-            },
-        }
-    }
-}
-
-pub struct VirtualChannelPdu {
-    pub vc_header: ChannelPduHeader,
-    pub vc_data: VirtualChannelData,
-}
-
-impl VirtualChannelPdu {
-    pub fn new(vc_header: ChannelPduHeader, vc_data: VirtualChannelData) -> Self {
-        Self { vc_header, vc_data }
-    }
-}
-
-impl PduParsing for VirtualChannelPdu {
-    type Error = ChannelError;
-
-    fn from_buffer(mut stream: impl io::Read) -> Result<Self, Self::Error> {
-        let vc_header = ChannelPduHeader::from_buffer(&mut stream)?;
-        let vc_data = VirtualChannelData::from_buffer(&mut stream)?;
-
-        Ok(Self { vc_header, vc_data })
-    }
-
-    fn to_buffer(&self, mut stream: impl io::Write) -> Result<(), Self::Error> {
-        self.vc_header.to_buffer(&mut stream)?;
-        self.vc_data.to_buffer(&mut stream)?;
-
-        Ok(())
-    }
-
-    fn buffer_length(&self) -> usize {
-        self.vc_header.buffer_length() + self.vc_data.buffer_length()
     }
 }
 
@@ -167,10 +75,18 @@ pub enum ChannelError {
     IOError(#[fail(cause)] io::Error),
     #[fail(display = "Utf8 error: {}", _0)]
     Utf8Error(#[fail(cause)] std::string::FromUtf8Error),
-    #[fail(display = "Invalid сhannel pdu header")]
+    #[fail(display = "Invalid channel PDU header")]
     InvalidChannelPduHeader,
-    #[fail(display = "Invalid dynamic virtual сhannel id size")]
-    InvalidDVChannelIdSize,
+    #[fail(display = "Invalid DVC PDU type")]
+    InvalidDvcPduType,
+    #[fail(display = "Invalid DVC id length value")]
+    InvalidDVChannelIdLength,
+    #[fail(display = "Invalid DVC data length value")]
+    InvalidDvcDataLength,
+    #[fail(display = "Invalid DVC capabilities version")]
+    InvalidDvcCapabilitiesVersion,
+    #[fail(display = "Invalid DVC message size")]
+    InvalidDvcMessageSize,
 }
 
 impl_from_error!(io::Error, ChannelError, ChannelError::IOError);
