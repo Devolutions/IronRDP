@@ -7,6 +7,8 @@ pub mod server_license;
 mod client_info;
 mod finalization_messages;
 mod headers;
+mod server_license;
+mod vc;
 
 pub use self::{
     capability_sets::{
