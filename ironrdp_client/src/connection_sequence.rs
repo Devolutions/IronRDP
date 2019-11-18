@@ -9,9 +9,21 @@ pub use transport::{
 use std::{collections::HashMap, io, iter};
 
 use bytes::BytesMut;
-use ironrdp::{nego, rdp::SERVER_CHANNEL_ID, PduParsing};
+use ironrdp::{
+    nego, rdp,
+    rdp::{
+        server_license::{
+            ClientNewLicenseRequest, ClientPlatformChallengeResponse, InitialMessageType,
+            InitialServerLicenseMessage, ServerPlatformChallenge, ServerUpgradeLicense,
+            PREMASTER_SECRET_SIZE, RANDOM_NUMBER_SIZE,
+        },
+        SERVER_CHANNEL_ID,
+    },
+    PduParsing,
+};
 use lazy_static::lazy_static;
-use log::debug;
+use log::{debug, info, trace};
+use ring::rand::SecureRandom;
 use rustls::{internal::msgs::handshake::CertificatePayload, Session};
 use sspi::internal::credssp;
 
@@ -223,28 +235,138 @@ pub fn send_client_info(
     Ok(())
 }
 
-pub fn process_server_license(
-    mut stream: impl io::BufRead,
+pub fn process_server_license_exchange(
+    mut stream: impl io::BufRead + io::Write,
     transport: &mut SendDataContextTransport,
+    config: &Config,
 ) -> RdpResult<()> {
     let pdu = transport.decode(&mut stream)?;
-    let server_license_pdu = ironrdp::ServerLicensePdu::from_buffer(pdu.as_slice())
-        .map_err(RdpError::ServerLicenseError)?;
-    debug!("Got Server License PDU: {:?}", server_license_pdu);
+    let initial_license_message = InitialServerLicenseMessage::from_buffer(pdu.as_slice())
+        .map_err(|err| RdpError::ServerLicenseError(rdp::RdpError::ServerLicenseError(err)))?;
 
-    let server_license = server_license_pdu.server_license;
-    if server_license.preamble.message_type == ironrdp::rdp::PreambleType::ErrorAlert
-        && server_license.error_message.state_transition
-            == ironrdp::rdp::LicensingStateTransition::NoTransition
-        && server_license.error_message.error_info.blob_type == ironrdp::rdp::BlobType::Error
-        && server_license.error_message.error_info.data.is_empty()
-    {
-        Ok(())
-    } else {
-        Err(RdpError::InvalidResponse(String::from(
-            "Invalid Server License PDU",
+    debug!("Received Initial License Message PDU");
+    trace!("{:?}", initial_license_message);
+
+    let (new_license_request, encryption_data) = match initial_license_message.message_type {
+        InitialMessageType::LicenseRequest(license_request) => {
+            let mut client_random = vec![0u8; RANDOM_NUMBER_SIZE];
+
+            let rand = ring::rand::SystemRandom::new();
+            rand.fill(&mut client_random).map_err(|err| {
+                RdpError::IOError(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("{}", err),
+                ))
+            })?;
+
+            let mut premaster_secret = vec![0u8; PREMASTER_SECRET_SIZE];
+            rand.fill(&mut premaster_secret).map_err(|err| {
+                RdpError::IOError(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("{}", err),
+                ))
+            })?;
+
+            ClientNewLicenseRequest::from_server_license_request(
+                &license_request,
+                client_random.as_slice(),
+                premaster_secret.as_slice(),
+                &config.input.credentials.username,
+                &config.input.credentials.domain.as_ref().map(|s| s.as_str()).unwrap_or(""),
+            )
+            .map_err(|err| {
+                RdpError::IOError(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "Unable to generate Client New License Request from Server License Request: {}",
+                        err
+                    ),
+                ))
+            })?
+        }
+        InitialMessageType::StatusValidClient(_) => {
+            info!("The server has not initiated license exchange");
+
+            return Ok(());
+        }
+    };
+
+    debug!("Successfully generated Client New License Request");
+    trace!("{:?}", new_license_request);
+    trace!("{:?}", encryption_data);
+
+    let mut new_pdu_buffer = Vec::with_capacity(new_license_request.buffer_length());
+    new_license_request
+        .to_buffer(&mut new_pdu_buffer)
+        .map_err(|err| {
+            RdpError::IOError(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("Unable to write to buffer: {}", err),
+            ))
+        })?;
+    transport.encode(new_pdu_buffer, &mut stream)?;
+
+    let pdu = transport.decode(&mut stream)?;
+    let challenge = ServerPlatformChallenge::from_buffer(pdu.as_slice())
+        .map_err(|err| RdpError::ServerLicenseError(rdp::RdpError::ServerLicenseError(err)))?;
+
+    debug!("Received Server Platform Challenge PDU");
+    trace!("{:?}", challenge);
+
+    let challenge_response = ClientPlatformChallengeResponse::from_server_platform_challenge(
+        &challenge,
+        &config
+            .input
+            .credentials
+            .domain
+            .as_ref()
+            .map(|s| s.as_str())
+            .unwrap_or(""),
+        &encryption_data,
+    )
+    .map_err(|err| {
+        RdpError::ServerLicenseError(rdp::RdpError::IOError(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!(
+                "Unable to generate Client Platform Challenge Response {}",
+                err
+            ),
         )))
-    }
+    })?;
+
+    debug!("Successfully generated Client Platform Challenge Response");
+    trace!("{:?}", challenge_response);
+
+    let mut new_pdu_buffer = Vec::with_capacity(challenge_response.buffer_length());
+    challenge_response
+        .to_buffer(&mut new_pdu_buffer)
+        .map_err(|err| {
+            RdpError::IOError(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("Unable to write to buffer: {}", err),
+            ))
+        })?;
+    transport.encode(new_pdu_buffer, &mut stream)?;
+
+    let pdu = transport.decode(&mut stream)?;
+    let upgrade_license = ServerUpgradeLicense::from_buffer(pdu.as_slice())
+        .map_err(|err| RdpError::ServerLicenseError(rdp::RdpError::ServerLicenseError(err)))?;
+
+    debug!("Received Server Upgrade License PDU");
+    trace!("{:?}", upgrade_license);
+
+    upgrade_license
+        .verify_server_license(&encryption_data)
+        .map_err(|err| {
+            RdpError::ServerLicenseError(rdp::RdpError::IOError(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("License verification failed: {:?}", err),
+            )))
+        })?;
+
+    debug!("Successfully verified the license");
+
+    Ok(())
 }
 
 pub fn process_capability_sets(
