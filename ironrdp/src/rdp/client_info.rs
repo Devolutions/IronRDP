@@ -9,12 +9,13 @@ use failure::Fail;
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive, ToPrimitive};
 
-use crate::{impl_from_error, try_read_optional, try_write_optional, utils, PduParsing};
+use crate::{
+    impl_from_error, try_read_optional, try_write_optional, utils, utils::CharacterSet, PduParsing,
+};
 
 const RECONNECT_COOKIE_LEN: usize = 28;
 const TIMEZONE_INFO_NAME_LEN: usize = 64;
 const COMPRESSION_TYPE_MASK: u32 = 0x0000_1E00;
-const NULL_TERMINATOR: char = '\u{0}';
 
 const CODE_PAGE_SIZE: usize = 4;
 const FLAGS_SIZE: usize = 4;
@@ -71,9 +72,9 @@ impl PduParsing for ClientInfo {
         let alternate_shell_size = stream.read_u16::<LittleEndian>()? as usize;
         let work_dir_size = stream.read_u16::<LittleEndian>()? as usize;
 
-        let domain = read_string(&mut stream, domain_size, character_set, true)?;
-        let username = read_string(&mut stream, user_name_size, character_set, true)?;
-        let password = read_string(&mut stream, password_size, character_set, true)?;
+        let domain = utils::read_string(&mut stream, domain_size, character_set, true)?;
+        let username = utils::read_string(&mut stream, user_name_size, character_set, true)?;
+        let password = utils::read_string(&mut stream, password_size, character_set, true)?;
 
         let domain = if domain.is_empty() {
             None
@@ -86,8 +87,9 @@ impl PduParsing for ClientInfo {
             domain,
         };
 
-        let alternate_shell = read_string(&mut stream, alternate_shell_size, character_set, true)?;
-        let work_dir = read_string(&mut stream, work_dir_size, character_set, true)?;
+        let alternate_shell =
+            utils::read_string(&mut stream, alternate_shell_size, character_set, true)?;
+        let work_dir = utils::read_string(&mut stream, work_dir_size, character_set, true)?;
 
         let extra_info = ExtendedClientInfo::from_buffer(&mut stream, character_set)?;
 
@@ -129,23 +131,27 @@ impl PduParsing for ClientInfo {
             .write_u16::<LittleEndian>(string_len(self.alternate_shell.as_str(), character_set))?;
         stream.write_u16::<LittleEndian>(string_len(self.work_dir.as_str(), character_set))?;
 
-        write_string_with_null_terminator(&mut stream, domain.as_str(), character_set)?;
-        write_string_with_null_terminator(
+        utils::write_string_with_null_terminator(&mut stream, domain.as_str(), character_set)?;
+        utils::write_string_with_null_terminator(
             &mut stream,
             self.credentials.username.as_str(),
             character_set,
         )?;
-        write_string_with_null_terminator(
+        utils::write_string_with_null_terminator(
             &mut stream,
             self.credentials.password.as_str(),
             character_set,
         )?;
-        write_string_with_null_terminator(
+        utils::write_string_with_null_terminator(
             &mut stream,
             self.alternate_shell.as_str(),
             character_set,
         )?;
-        write_string_with_null_terminator(&mut stream, self.work_dir.as_str(), character_set)?;
+        utils::write_string_with_null_terminator(
+            &mut stream,
+            self.work_dir.as_str(),
+            character_set,
+        )?;
 
         self.extra_info.to_buffer(&mut stream, character_set)?;
 
@@ -202,11 +208,11 @@ impl ExtendedClientInfo {
 
         // This size includes the length of the mandatory null terminator.
         let address_size = stream.read_u16::<LittleEndian>()? as usize;
-        let address = read_string(&mut stream, address_size, character_set, false)?;
+        let address = utils::read_string(&mut stream, address_size, character_set, false)?;
 
         // This size includes the length of the mandatory null terminator.
         let dir_size = stream.read_u16::<LittleEndian>()? as usize;
-        let dir = read_string(&mut stream, dir_size, character_set, false)?;
+        let dir = utils::read_string(&mut stream, dir_size, character_set, false)?;
 
         let optional_data = ExtendedClientOptionalInfo::from_buffer(&mut stream)?;
 
@@ -229,12 +235,16 @@ impl ExtendedClientInfo {
         stream.write_u16::<LittleEndian>(
             string_len(self.address.as_str(), character_set) + character_set.to_u16().unwrap(),
         )?;
-        write_string_with_null_terminator(&mut stream, self.address.as_str(), character_set)?;
+        utils::write_string_with_null_terminator(
+            &mut stream,
+            self.address.as_str(),
+            character_set,
+        )?;
 
         stream.write_u16::<LittleEndian>(
             string_len(self.dir.as_str(), character_set) + character_set.to_u16().unwrap(),
         )?;
-        write_string_with_null_terminator(&mut stream, self.dir.as_str(), character_set)?;
+        utils::write_string_with_null_terminator(&mut stream, self.dir.as_str(), character_set)?;
 
         self.optional_data.to_buffer(&mut stream)?;
 
@@ -359,7 +369,7 @@ impl PduParsing for TimezoneInfo {
     fn from_buffer(mut stream: impl io::Read) -> Result<Self, Self::Error> {
         let bias = stream.read_u32::<LittleEndian>()?;
 
-        let standard_name = read_string(
+        let standard_name = utils::read_string(
             &mut stream,
             TIMEZONE_INFO_NAME_LEN,
             CharacterSet::Unicode,
@@ -368,7 +378,7 @@ impl PduParsing for TimezoneInfo {
         let standard_date = SystemTime::from_buffer(&mut stream)?;
         let standard_bias = stream.read_u32::<LittleEndian>()?;
 
-        let daylight_name = read_string(
+        let daylight_name = utils::read_string(
             &mut stream,
             TIMEZONE_INFO_NAME_LEN,
             CharacterSet::Unicode,
@@ -570,12 +580,6 @@ pub enum CompressionType {
     Rdp61 = 3,
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, FromPrimitive, ToPrimitive)]
-pub enum CharacterSet {
-    Ansi = 1,
-    Unicode = 2,
-}
-
 #[derive(Debug, Fail)]
 pub enum ClientInfoError {
     #[fail(display = "IO error: {}", _0)]
@@ -603,44 +607,4 @@ impl_from_error!(
 
 fn string_len(value: &str, character_set: CharacterSet) -> u16 {
     value.len() as u16 * character_set.to_u16().unwrap()
-}
-
-fn read_string(
-    mut stream: impl io::Read,
-    size: usize,
-    character_set: CharacterSet,
-    read_null_terminator: bool,
-) -> Result<String, ClientInfoError> {
-    let size = size
-        + if read_null_terminator {
-            character_set.to_usize().unwrap()
-        } else {
-            0
-        };
-    let mut buffer = vec![0; size];
-    stream.read_exact(&mut buffer)?;
-
-    let result = match character_set {
-        CharacterSet::Unicode => utils::bytes_to_utf16_string(buffer.as_slice()),
-        CharacterSet::Ansi => String::from_utf8(buffer)?,
-    };
-
-    Ok(result.trim_end_matches(NULL_TERMINATOR).into())
-}
-
-fn write_string_with_null_terminator(
-    mut stream: impl io::Write,
-    value: &str,
-    character_set: CharacterSet,
-) -> io::Result<()> {
-    match character_set {
-        CharacterSet::Unicode => {
-            stream.write_all(utils::string_to_utf16(value).as_ref())?;
-            stream.write_u16::<LittleEndian>(0)
-        }
-        CharacterSet::Ansi => {
-            stream.write_all(value.as_bytes())?;
-            stream.write_u8(0)
-        }
-    }
 }

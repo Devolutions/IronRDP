@@ -2,10 +2,11 @@
 pub mod test;
 
 pub mod capability_sets;
+pub mod server_license;
+
 mod client_info;
 mod finalization_messages;
 mod headers;
-mod server_license;
 
 pub use self::{
     capability_sets::{
@@ -13,8 +14,8 @@ pub use self::{
         VirtualChannel, SERVER_CHANNEL_ID,
     },
     client_info::{
-        AddressFamily, CharacterSet, ClientInfo, ClientInfoFlags, CompressionType, Credentials,
-        DayOfWeek, DayOfWeekOccurrence, ExtendedClientInfo, ExtendedClientOptionalInfo, Month,
+        AddressFamily, ClientInfo, ClientInfoFlags, CompressionType, Credentials, DayOfWeek,
+        DayOfWeekOccurrence, ExtendedClientInfo, ExtendedClientOptionalInfo, Month,
         PerformanceFlags, SystemTime, TimezoneInfo,
     },
     finalization_messages::{
@@ -23,11 +24,7 @@ pub use self::{
     headers::{
         BasicSecurityHeader, BasicSecurityHeaderFlags, CompressionFlags, ShareControlHeader,
         ShareControlPdu, ShareControlPduType, ShareDataHeader, ShareDataPdu, ShareDataPduType,
-        StreamPriority,
-    },
-    server_license::{
-        BlobType, LicensePreamble, LicensingBinaryBlob, LicensingErrorCode, LicensingErrorMessage,
-        LicensingStateTransition, PreambleFlags, PreambleType, PreambleVersion, ServerLicense,
+        StreamPriority, BASIC_SECURITY_HEADER_SIZE,
     },
 };
 
@@ -87,46 +84,6 @@ impl PduParsing for ClientInfoPdu {
 
     fn buffer_length(&self) -> usize {
         self.security_header.buffer_length() + self.client_info.buffer_length()
-    }
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct ServerLicensePdu {
-    pub security_header: BasicSecurityHeader,
-    pub server_license: ServerLicense,
-}
-
-impl PduParsing for ServerLicensePdu {
-    type Error = RdpError;
-
-    fn from_buffer(mut stream: impl io::Read) -> Result<Self, Self::Error> {
-        let security_header = BasicSecurityHeader::from_buffer(&mut stream)?;
-        if security_header
-            .flags
-            .contains(BasicSecurityHeaderFlags::LICENSE_PKT)
-        {
-            let server_license = ServerLicense::from_buffer(&mut stream)?;
-
-            Ok(Self {
-                security_header,
-                server_license,
-            })
-        } else {
-            Err(RdpError::InvalidPdu(String::from(
-                "Expected Server License PDU, got invalid SecurityHeader flags",
-            )))
-        }
-    }
-
-    fn to_buffer(&self, mut stream: impl io::Write) -> Result<(), Self::Error> {
-        self.security_header.to_buffer(&mut stream)?;
-        self.server_license.to_buffer(&mut stream)?;
-
-        Ok(())
-    }
-
-    fn buffer_length(&self) -> usize {
-        self.security_header.buffer_length() + self.server_license.buffer_length()
     }
 }
 

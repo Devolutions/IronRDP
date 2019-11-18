@@ -1,4 +1,11 @@
-use byteorder::{LittleEndian, ReadBytesExt};
+pub mod rc4;
+pub mod rsa;
+
+use std::io;
+
+use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
+use num_derive::{FromPrimitive, ToPrimitive};
+use num_traits::ToPrimitive;
 
 #[macro_export]
 macro_rules! try_read_optional {
@@ -49,4 +56,55 @@ pub fn bytes_to_utf16_string(mut value: &[u8]) -> String {
         .expect("read_u16_into cannot fail at this point");
 
     String::from_utf16_lossy(value_u16.as_ref())
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, FromPrimitive, ToPrimitive)]
+pub enum CharacterSet {
+    Ansi = 1,
+    Unicode = 2,
+}
+
+pub fn read_string(
+    mut stream: impl io::Read,
+    size: usize,
+    character_set: CharacterSet,
+    read_null_terminator: bool,
+) -> io::Result<String> {
+    let size = size
+        + if read_null_terminator {
+            character_set.to_usize().unwrap()
+        } else {
+            0
+        };
+    let mut buffer = vec![0; size];
+    stream.read_exact(&mut buffer)?;
+
+    let result = match character_set {
+        CharacterSet::Unicode => bytes_to_utf16_string(buffer.as_slice()),
+        CharacterSet::Ansi => String::from_utf8(buffer).map_err(|e| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("the string is not utf8: {}", e),
+            )
+        })?,
+    };
+
+    Ok(result.trim_end_matches('\0').into())
+}
+
+pub fn write_string_with_null_terminator(
+    mut stream: impl io::Write,
+    value: &str,
+    character_set: CharacterSet,
+) -> io::Result<()> {
+    match character_set {
+        CharacterSet::Unicode => {
+            stream.write_all(string_to_utf16(value).as_ref())?;
+            stream.write_u16::<LittleEndian>(0)
+        }
+        CharacterSet::Ansi => {
+            stream.write_all(value.as_bytes())?;
+            stream.write_u8(0)
+        }
+    }
 }
