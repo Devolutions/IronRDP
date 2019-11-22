@@ -15,8 +15,8 @@ pub use crate::{
     nego::*,
     rdp::{
         CapabilitySet, ClientConfirmActive, ClientInfoPdu, ControlAction, DemandActive,
-        ServerDemandActive, ServerLicensePdu, ShareControlHeader, ShareControlPdu, ShareDataHeader,
-        ShareDataPdu, VirtualChannel,
+        ServerDemandActive, ShareControlHeader, ShareControlPdu, ShareDataHeader, ShareDataPdu,
+        VirtualChannel,
     },
     x224::*,
 };

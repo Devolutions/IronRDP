@@ -12,7 +12,7 @@ use super::{
 use crate::rdp::finalization_messages::FontPdu;
 use crate::PduParsing;
 
-const BASIC_SECURITY_HEADER_SIZE: usize = 4;
+pub const BASIC_SECURITY_HEADER_SIZE: usize = 4;
 const SHARE_CONTROL_HEADER_MASK: u16 = 0xf;
 const SHARE_DATA_HEADER_MASK: u8 = 0xf;
 const SHARE_CONTROL_HEADER_SIZE: usize = 2 * 3 + 4;

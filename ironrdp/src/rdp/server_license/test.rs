@@ -2,53 +2,177 @@ use lazy_static::lazy_static;
 
 use super::*;
 
-pub const LICENSE_PACKET_BUFFER_LEN: usize = 16;
-pub const LICENSE_PACKET_BUFFER: [u8; LICENSE_PACKET_BUFFER_LEN] = [
+const LICENSE_HEADER_BUFFER: [u8; 8] = [
+    0x80, 0x00, // flags
+    0x00, 0x00, // flagsHi
+    0xff, 0x03, 0x10, 0x00,
+];
+
+const BLOB_BUFFER: [u8; 76] = [
+    0x08, 0x00, // sig blob type
+    0x48, 0x00, // sig blob len
+    0xe9, 0xe1, 0xd6, 0x28, 0x46, 0x8b, 0x4e, 0xf5, 0x0a, 0xdf, 0xfd, 0xee, 0x21, 0x99, 0xac, 0xb4,
+    0xe1, 0x8f, 0x5f, 0x81, 0x57, 0x82, 0xef, 0x9d, 0x96, 0x52, 0x63, 0x27, 0x18, 0x29, 0xdb, 0xb3,
+    0x4a, 0xfd, 0x9a, 0xda, 0x42, 0xad, 0xb5, 0x69, 0x21, 0x89, 0x0e, 0x1d, 0xc0, 0x4c, 0x1a, 0xa8,
+    0xaa, 0x71, 0x3e, 0x0f, 0x54, 0xb9, 0x9a, 0xe4, 0x99, 0x68, 0x3f, 0x6c, 0xd6, 0x76, 0x84, 0x61,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // blob data
+];
+
+const PLATFORM_CHALLENGE_BUFFER: [u8; 42] = [
+    0x80, 0x00, // flags
+    0x00, 0x00, // flagsHi
+    0x02, 0x03, 0x26, 0x00, // preamble
+    0x00, 0x00, 0x00, 0x00, // connect flags
+    0x00, 0x00, // ignored
+    0x0a, 0x00, // blob len
+    0x46, 0x37, 0x85, 0x54, 0x8e, 0xc5, 0x91, 0x34, 0x97, 0x5d, // challenge
+    0x38, 0x23, 0x62, 0x5d, 0x10, 0x8b, 0x93, 0xc3, 0xf1, 0xe4, 0x67, 0x1f, 0x4a, 0xb6, 0x00,
+    0x0a, // mac data
+];
+
+pub const STATUS_VALID_CLIENT_BUFFER: [u8; 20] = [
+    0x80, 0x00, // flags
+    0x00, 0x00, // flagsHi
     0xff, 0x03, 0x10, 0x00, 0x07, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00,
 ];
 
+pub const UNEXPECTED_ERROR_BUFFER: [u8; 20] = [
+    0x80, 0x00, // flags
+    0x00, 0x00, // flagsHi
+    0xff, 0x03, 0x10, 0x00, 0x0b, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00,
+];
+
 lazy_static! {
-    pub static ref LICENSE_PACKET: ServerLicense = ServerLicense {
-        preamble: LicensePreamble {
-            message_type: PreambleType::ErrorAlert,
-            flags: PreambleFlags::empty(),
-            version: PreambleVersion::V3,
+    pub static ref LICENSE_HEADER: LicenseHeader = LicenseHeader {
+        security_header: BasicSecurityHeader {
+            flags: BasicSecurityHeaderFlags::LICENSE_PKT,
         },
-        error_message: LicensingErrorMessage {
-            error_code: LicensingErrorCode::StatusValidClient,
-            state_transition: LicensingStateTransition::NoTransition,
-            error_info: LicensingBinaryBlob {
-                blob_type: BlobType::Error,
-                data: Vec::new(),
-            },
-        },
+        preamble_message_type: PreambleType::ErrorAlert,
+        preamble_flags: PreambleFlags::empty(),
+        preamble_version: PreambleVersion::V3,
+        preamble_message_size: 0x10,
     };
 }
 
 #[test]
-fn from_buffer_correct_parses_server_license() {
+fn read_blob_header_handles_wrong_type_correctly() {
+    match BlobHeader::read_from_buffer(BlobType::Certificate, &mut BLOB_BUFFER.as_ref()) {
+        Err(ServerLicenseError::InvalidBlobType) => (),
+        Err(err) => panic!(
+            "expected {}, found {}",
+            ServerLicenseError::InvalidBlobType,
+            err
+        ),
+        Ok(_) => panic!("expected error, found Ok"),
+    }
+}
+
+#[test]
+fn read_blob_header_handles_invalid_type_correctly() {
+    let invalid_blob_buffer: [u8; 76] = [
+        0x99, 0x00, // sig blob type
+        0x48, 0x00, // sig blob len
+        0xe9, 0xe1, 0xd6, 0x28, 0x46, 0x8b, 0x4e, 0xf5, 0x0a, 0xdf, 0xfd, 0xee, 0x21, 0x99, 0xac,
+        0xb4, 0xe1, 0x8f, 0x5f, 0x81, 0x57, 0x82, 0xef, 0x9d, 0x96, 0x52, 0x63, 0x27, 0x18, 0x29,
+        0xdb, 0xb3, 0x4a, 0xfd, 0x9a, 0xda, 0x42, 0xad, 0xb5, 0x69, 0x21, 0x89, 0x0e, 0x1d, 0xc0,
+        0x4c, 0x1a, 0xa8, 0xaa, 0x71, 0x3e, 0x0f, 0x54, 0xb9, 0x9a, 0xe4, 0x99, 0x68, 0x3f, 0x6c,
+        0xd6, 0x76, 0x84, 0x61, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // blob data
+    ];
+
+    match BlobHeader::read_from_buffer(BlobType::Certificate, invalid_blob_buffer.as_ref()) {
+        Err(ServerLicenseError::InvalidBlobType) => (),
+        Err(err) => panic!(
+            "expected error {}, found {}",
+            ServerLicenseError::InvalidBlobType,
+            err
+        ),
+        Ok(_) => panic!("expected error, found Ok"),
+    }
+}
+
+#[test]
+fn read_blob_header_reads_blob_correctly() {
+    let blob =
+        BlobHeader::read_from_buffer(BlobType::RsaSignature, &mut BLOB_BUFFER.as_ref()).unwrap();
+    assert_eq!(blob.length, BLOB_BUFFER.len() - 4);
+}
+
+#[test]
+fn write_blob_header_writes_blob_header_correctly() {
+    let correct_blob_header = &BLOB_BUFFER[..4];
+    let blob_data = &BLOB_BUFFER[4..];
+
+    let mut buffer = Vec::new();
+    BlobHeader::new(BlobType::RsaSignature, blob_data.len())
+        .write_to_buffer(&mut buffer)
+        .unwrap();
+
+    assert_eq!(correct_blob_header.as_ref(), buffer.as_slice());
+}
+
+#[test]
+fn mac_data_computes_correctly() {
+    let mac_salt_key: [u8; 16] = [
+        0x68, 0x1f, 0x7b, 0x26, 0x7e, 0x76, 0xa, 0x24, 0x2d, 0x98, 0x7, 0xd6, 0x6b, 0x56, 0xc5, 0x1,
+    ];
+
+    let server_mac_data: [u8; 16] = [
+        0x58, 0xaf, 0x1f, 0x30, 0xd6, 0x4e, 0xe8, 0x6, 0xfc, 0xf9, 0xe6, 0x68, 0x21, 0x64, 0x25,
+        0x3d,
+    ];
+
+    let decrypted_server_challenge: [u8; 10] =
+        [0x54, 0x0, 0x45, 0x0, 0x53, 0x0, 0x54, 0x0, 0x0, 0x0];
+
     assert_eq!(
-        LICENSE_PACKET.clone(),
-        ServerLicense::from_buffer(LICENSE_PACKET_BUFFER.as_ref()).unwrap(),
+        compute_mac_data(mac_salt_key.as_ref(), decrypted_server_challenge.as_ref()),
+        server_mac_data.as_ref()
     );
 }
 
 #[test]
-fn to_buffer_correct_serializes_server_license() {
-    let data = LICENSE_PACKET.clone();
-
-    let mut buffer = Vec::new();
-    data.to_buffer(&mut buffer).unwrap();
-
-    assert_eq!(LICENSE_PACKET_BUFFER.as_ref(), buffer.as_slice());
+fn from_buffer_correctly_parses_license_header() {
+    assert_eq!(
+        LicenseHeader::from_buffer(LICENSE_HEADER_BUFFER.as_ref()).unwrap(),
+        *LICENSE_HEADER
+    );
 }
 
 #[test]
-fn buffer_length_is_correct_for_server_license() {
-    let pdu = LICENSE_PACKET.clone();
-    let expected_buf_len = LICENSE_PACKET_BUFFER.len();
+fn to_buffer_correctly_serializes_license_header() {
+    let mut buffer = Vec::new();
+    LICENSE_HEADER.to_buffer(&mut buffer).unwrap();
 
-    let len = pdu.buffer_length();
+    assert_eq!(buffer, LICENSE_HEADER_BUFFER.as_ref());
+}
 
-    assert_eq!(expected_buf_len, len);
+#[test]
+fn buffer_length_is_correct_for_license_header() {
+    assert_eq!(
+        LICENSE_HEADER.buffer_length(),
+        PREAMBLE_SIZE + BASIC_SECURITY_HEADER_SIZE
+    );
+}
+
+#[test]
+fn read_license_header_reads_correctly() {
+    ServerPlatformChallenge::from_buffer(PLATFORM_CHALLENGE_BUFFER.as_ref()).unwrap();
+}
+
+#[test]
+fn read_license_header_handles_valid_client_correctly() {
+    match ServerPlatformChallenge::from_buffer(STATUS_VALID_CLIENT_BUFFER.as_ref()) {
+        Err(ServerLicenseError::UnexpectedValidClientError(_)) => (),
+        _ => panic!("The function has return an invalid error"),
+    }
+}
+
+#[test]
+fn read_license_header_handles_unexpected_error_correctly() {
+    match ServerPlatformChallenge::from_buffer(UNEXPECTED_ERROR_BUFFER.as_ref()) {
+        Err(ServerLicenseError::UnexpectedServerError(error)) => {
+            assert_ne!(error.error_code, LicenseErrorCode::StatusValidClient);
+        }
+        _ => panic!("The function has return an invalid error"),
+    }
 }

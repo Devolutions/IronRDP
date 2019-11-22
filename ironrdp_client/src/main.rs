@@ -9,8 +9,8 @@ use std::{
 };
 
 use failure::Fail;
-use ironrdp::nego;
-use log::{debug, error};
+use ironrdp::{nego, rdp};
+use log::{debug, error, warn};
 use sspi::internal::credssp;
 
 use self::{config::Config, connection_sequence::*};
@@ -128,7 +128,15 @@ fn run(config: Config) -> RdpResult<()> {
 
     let mut transport = SendDataContextTransport::new(transport, initiator_id, global_channel_id);
     send_client_info(&mut tls_stream, &mut transport, &config)?;
-    process_server_license(&mut tls_stream, &mut transport)?;
+    match process_server_license_exchange(&mut tls_stream, &mut transport, &config) {
+        Err(RdpError::ServerLicenseError(rdp::RdpError::ServerLicenseError(
+            rdp::server_license::ServerLicenseError::UnexpectedValidClientError(_),
+        ))) => {
+            warn!("The server has returned STATUS_VALID_CLIENT unexpectedly");
+        }
+        Err(error) => return Err(error),
+        Ok(_) => (),
+    }
 
     let mut transport = ShareControlHeaderTransport::new(transport, initiator_id);
     process_capability_sets(&mut tls_stream, &mut transport, &config)?;

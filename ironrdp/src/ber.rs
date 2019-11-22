@@ -149,7 +149,7 @@ pub fn read_enumerated(mut stream: impl io::Read, count: u8) -> io::Result<u8> {
     }
 
     let enumerated = stream.read_u8()?;
-    if enumerated == std::u8::MAX ||  enumerated + 1 > count {
+    if enumerated == std::u8::MAX || enumerated + 1 > count {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "invalid enumerated value",

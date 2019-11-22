@@ -1,6 +1,6 @@
 use lazy_static::lazy_static;
 
-use super::{finalization_messages::*, headers::*, *};
+use super::{finalization_messages::*, headers::*, server_license::*, *};
 use crate::{
     gcc::{self, monitor_data},
     rdp::{
@@ -9,16 +9,11 @@ use crate::{
             SERVER_DEMAND_ACTIVE_BUFFER,
         },
         client_info::test::{CLIENT_INFO_BUFFER_UNICODE, CLIENT_INFO_UNICODE},
-        server_license::test::{LICENSE_PACKET, LICENSE_PACKET_BUFFER},
     },
 };
 
 const CLIENT_INFO_PDU_SECURITY_HEADER_BUFFER: [u8; 4] = [
     0x40, 0x00, // flags
-    0x00, 0x00, // flagsHi
-];
-const SERVER_LICENSE_PDU_SECURITY_HEADER_BUFFER: [u8; 4] = [
-    0x80, 0x00, // flags
     0x00, 0x00, // flagsHi
 ];
 const SERVER_DEMAND_ACTIVE_PDU_HEADERS_BUFFER: [u8; 10] = [
@@ -137,6 +132,12 @@ const SERVER_FONT_MAP_BUFFER: [u8; 26] = [
     0x04, 0x00, // entry size
 ];
 
+pub const SERVER_LICENSE_BUFFER: [u8; 20] = [
+    0x80, 0x00, // flags
+    0x00, 0x00, // flagsHi
+    0xff, 0x03, 0x10, 0x00, 0x07, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00,
+];
+
 lazy_static! {
     pub static ref CLIENT_INFO_PDU: ClientInfoPdu = ClientInfoPdu {
         security_header: BasicSecurityHeader {
@@ -144,11 +145,22 @@ lazy_static! {
         },
         client_info: CLIENT_INFO_UNICODE.clone(),
     };
-    pub static ref SERVER_LICENSE_PDU: ServerLicensePdu = ServerLicensePdu {
-        security_header: BasicSecurityHeader {
-            flags: BasicSecurityHeaderFlags::LICENSE_PKT,
+    pub static ref SERVER_LICENSE_PDU: InitialServerLicenseMessage = InitialServerLicenseMessage {
+        license_header: LicenseHeader {
+            security_header: BasicSecurityHeader {
+                flags: BasicSecurityHeaderFlags::LICENSE_PKT,
+            },
+            preamble_message_type: PreambleType::ErrorAlert,
+            preamble_flags: PreambleFlags::empty(),
+            preamble_version: PreambleVersion::V3,
+            preamble_message_size: (SERVER_LICENSE_BUFFER.len() - BASIC_SECURITY_HEADER_SIZE)
+                as u16
         },
-        server_license: LICENSE_PACKET.clone(),
+        message_type: InitialMessageType::StatusValidClient(LicensingErrorMessage {
+            error_code: LicenseErrorCode::StatusValidClient,
+            state_transition: LicensingStateTransition::NoTransition,
+            error_info: Vec::new(),
+        })
     };
     pub static ref SERVER_DEMAND_ACTIVE_PDU: ShareControlHeader = ShareControlHeader {
         share_control_pdu: ShareControlPdu::ServerDemandActive(SERVER_DEMAND_ACTIVE.clone()),
@@ -273,12 +285,6 @@ lazy_static! {
 
         buffer
     };
-    pub static ref SERVER_LICENSE_PDU_BUFFER: Vec<u8> = {
-        let mut buffer = SERVER_LICENSE_PDU_SECURITY_HEADER_BUFFER.to_vec();
-        buffer.extend(LICENSE_PACKET_BUFFER.as_ref());
-
-        buffer
-    };
     pub static ref SERVER_DEMAND_ACTIVE_PDU_BUFFER: Vec<u8> = {
         let mut buffer = SERVER_DEMAND_ACTIVE_PDU_HEADERS_BUFFER.to_vec();
         buffer.extend(SERVER_DEMAND_ACTIVE_BUFFER.as_ref());
@@ -304,7 +310,7 @@ lazy_static! {
 }
 
 #[test]
-fn from_buffer_correct_parses_rdp_pdu_client_info() {
+fn from_buffer_correctly_parses_rdp_pdu_client_info() {
     let buf = CLIENT_INFO_PDU_BUFFER.clone();
 
     assert_eq!(
@@ -314,17 +320,15 @@ fn from_buffer_correct_parses_rdp_pdu_client_info() {
 }
 
 #[test]
-fn from_buffer_correct_parses_rdp_pdu_server_license() {
-    let buf = SERVER_LICENSE_PDU_BUFFER.clone();
-
+fn from_buffer_correctly_parses_rdp_pdu_server_license() {
     assert_eq!(
-        SERVER_LICENSE_PDU.clone(),
-        ServerLicensePdu::from_buffer(buf.as_slice()).unwrap()
+        *SERVER_LICENSE_PDU,
+        InitialServerLicenseMessage::from_buffer(SERVER_LICENSE_BUFFER.as_ref()).unwrap()
     );
 }
 
 #[test]
-fn from_buffer_correct_parses_rdp_pdu_server_demand_active() {
+fn from_buffer_correctly_parses_rdp_pdu_server_demand_active() {
     let buf = SERVER_DEMAND_ACTIVE_PDU_BUFFER.clone();
 
     assert_eq!(
@@ -334,7 +338,7 @@ fn from_buffer_correct_parses_rdp_pdu_server_demand_active() {
 }
 
 #[test]
-fn from_buffer_correct_parses_rdp_pdu_client_demand_active() {
+fn from_buffer_correctly_parses_rdp_pdu_client_demand_active() {
     let buf = CLIENT_DEMAND_ACTIVE_PDU_BUFFER.clone();
 
     assert_eq!(
@@ -344,7 +348,7 @@ fn from_buffer_correct_parses_rdp_pdu_client_demand_active() {
 }
 
 #[test]
-fn from_buffer_correct_parses_rdp_pdu_client_synchronize() {
+fn from_buffer_correctly_parses_rdp_pdu_client_synchronize() {
     let buf = CLIENT_SYNCHRONIZE_BUFFER.as_ref();
 
     assert_eq!(
@@ -354,7 +358,7 @@ fn from_buffer_correct_parses_rdp_pdu_client_synchronize() {
 }
 
 #[test]
-fn from_buffer_correct_parses_rdp_pdu_client_control_cooperate() {
+fn from_buffer_correctly_parses_rdp_pdu_client_control_cooperate() {
     let buf = CONTROL_COOPERATE_BUFFER.as_ref();
 
     assert_eq!(
@@ -364,7 +368,7 @@ fn from_buffer_correct_parses_rdp_pdu_client_control_cooperate() {
 }
 
 #[test]
-fn from_buffer_correct_parses_rdp_pdu_client_control_request_control() {
+fn from_buffer_correctly_parses_rdp_pdu_client_control_request_control() {
     let buf = CONTROL_REQUEST_CONTROL_BUFFER.as_ref();
 
     assert_eq!(
@@ -374,7 +378,7 @@ fn from_buffer_correct_parses_rdp_pdu_client_control_request_control() {
 }
 
 #[test]
-fn from_buffer_correct_parses_rdp_pdu_server_control_granted_control() {
+fn from_buffer_correctly_parses_rdp_pdu_server_control_granted_control() {
     let buf = SERVER_GRANTED_CONTROL_BUFFER.as_ref();
 
     assert_eq!(
@@ -384,7 +388,7 @@ fn from_buffer_correct_parses_rdp_pdu_server_control_granted_control() {
 }
 
 #[test]
-fn from_buffer_correct_parses_rdp_pdu_client_font_list() {
+fn from_buffer_correctly_parses_rdp_pdu_client_font_list() {
     let buf = CLIENT_FONT_LIST_BUFFER.as_ref();
 
     assert_eq!(
@@ -394,7 +398,7 @@ fn from_buffer_correct_parses_rdp_pdu_client_font_list() {
 }
 
 #[test]
-fn from_buffer_correct_parses_rdp_pdu_server_font_map() {
+fn from_buffer_correctly_parses_rdp_pdu_server_font_map() {
     let buf = SERVER_FONT_MAP_BUFFER.as_ref();
 
     assert_eq!(
@@ -404,7 +408,7 @@ fn from_buffer_correct_parses_rdp_pdu_server_font_map() {
 }
 
 #[test]
-fn from_buffer_correct_parses_rdp_pdu_server_monitor_layout() {
+fn from_buffer_correctly_parses_rdp_pdu_server_monitor_layout() {
     let buf = MONITOR_LAYOUT_PDU_BUFFER.clone();
 
     assert_eq!(
@@ -414,7 +418,7 @@ fn from_buffer_correct_parses_rdp_pdu_server_monitor_layout() {
 }
 
 #[test]
-fn to_buffer_correct_serializes_rdp_pdu_client_info() {
+fn to_buffer_correctly_serializes_rdp_pdu_client_info() {
     let pdu = CLIENT_INFO_PDU.clone();
     let expected_buf = CLIENT_INFO_PDU_BUFFER.clone();
 
@@ -425,18 +429,15 @@ fn to_buffer_correct_serializes_rdp_pdu_client_info() {
 }
 
 #[test]
-fn to_buffer_correct_serializes_rdp_pdu_server_license() {
-    let pdu = SERVER_LICENSE_PDU.clone();
-    let expected_buf = SERVER_LICENSE_PDU_BUFFER.clone();
-
+fn to_buffer_correctly_serializes_rdp_pdu_server_license() {
     let mut buf = Vec::new();
-    pdu.to_buffer(&mut buf).unwrap();
+    SERVER_LICENSE_PDU.to_buffer(&mut buf).unwrap();
 
-    assert_eq!(expected_buf, buf);
+    assert_eq!(SERVER_LICENSE_BUFFER.as_ref(), buf.as_slice());
 }
 
 #[test]
-fn to_buffer_correct_serializes_rdp_pdu_server_demand_active() {
+fn to_buffer_correctly_serializes_rdp_pdu_server_demand_active() {
     let pdu = SERVER_DEMAND_ACTIVE_PDU.clone();
     let expected_buf = SERVER_DEMAND_ACTIVE_PDU_BUFFER.clone();
 
@@ -447,7 +448,7 @@ fn to_buffer_correct_serializes_rdp_pdu_server_demand_active() {
 }
 
 #[test]
-fn to_buffer_correct_serializes_rdp_pdu_client_demand_active() {
+fn to_buffer_correctly_serializes_rdp_pdu_client_demand_active() {
     let pdu = CLIENT_DEMAND_ACTIVE_PDU.clone();
     let expected_buf = CLIENT_DEMAND_ACTIVE_PDU_BUFFER.clone();
 
@@ -458,7 +459,7 @@ fn to_buffer_correct_serializes_rdp_pdu_client_demand_active() {
 }
 
 #[test]
-fn to_buffer_correct_serializes_rdp_pdu_client_synchronize() {
+fn to_buffer_correctly_serializes_rdp_pdu_client_synchronize() {
     let pdu = CLIENT_SYNCHRONIZE.clone();
     let expected_buf = CLIENT_SYNCHRONIZE_BUFFER.to_vec();
 
@@ -469,7 +470,7 @@ fn to_buffer_correct_serializes_rdp_pdu_client_synchronize() {
 }
 
 #[test]
-fn to_buffer_correct_serializes_rdp_pdu_client_control_cooperate() {
+fn to_buffer_correctly_serializes_rdp_pdu_client_control_cooperate() {
     let pdu = CONTROL_COOPERATE.clone();
     let expected_buf = CONTROL_COOPERATE_BUFFER.to_vec();
 
@@ -480,7 +481,7 @@ fn to_buffer_correct_serializes_rdp_pdu_client_control_cooperate() {
 }
 
 #[test]
-fn to_buffer_correct_serializes_rdp_pdu_client_control_request_control() {
+fn to_buffer_correctly_serializes_rdp_pdu_client_control_request_control() {
     let pdu = CONTROL_REQUEST_CONTROL.clone();
     let expected_buf = CONTROL_REQUEST_CONTROL_BUFFER.to_vec();
 
@@ -491,7 +492,7 @@ fn to_buffer_correct_serializes_rdp_pdu_client_control_request_control() {
 }
 
 #[test]
-fn to_buffer_correct_serializes_rdp_pdu_server_control_granted_control() {
+fn to_buffer_correctly_serializes_rdp_pdu_server_control_granted_control() {
     let pdu = SERVER_GRANTED_CONTROL.clone();
     let expected_buf = SERVER_GRANTED_CONTROL_BUFFER.to_vec();
 
@@ -502,7 +503,7 @@ fn to_buffer_correct_serializes_rdp_pdu_server_control_granted_control() {
 }
 
 #[test]
-fn to_buffer_correct_serializes_rdp_pdu_client_font_list() {
+fn to_buffer_correctly_serializes_rdp_pdu_client_font_list() {
     let pdu = CLIENT_FONT_LIST.clone();
     let expected_buf = CLIENT_FONT_LIST_BUFFER.to_vec();
 
@@ -513,7 +514,7 @@ fn to_buffer_correct_serializes_rdp_pdu_client_font_list() {
 }
 
 #[test]
-fn to_buffer_correct_serializes_rdp_pdu_server_font_map() {
+fn to_buffer_correctly_serializes_rdp_pdu_server_font_map() {
     let pdu = SERVER_FONT_MAP.clone();
     let expected_buf = SERVER_FONT_MAP_BUFFER.to_vec();
 
@@ -524,7 +525,7 @@ fn to_buffer_correct_serializes_rdp_pdu_server_font_map() {
 }
 
 #[test]
-fn to_buffer_correct_serializes_rdp_pdu_server_monitor_layout() {
+fn to_buffer_correctly_serializes_rdp_pdu_server_monitor_layout() {
     let pdu = MONITOR_LAYOUT_PDU.clone();
     let expected_buf = MONITOR_LAYOUT_PDU_BUFFER.to_vec();
 
@@ -546,12 +547,9 @@ fn buffer_length_is_correct_for_rdp_pdu_client_info() {
 
 #[test]
 fn buffer_length_is_correct_for_rdp_pdu_server_license() {
-    let pdu = SERVER_LICENSE_PDU.clone();
-    let expected_buf_len = SERVER_LICENSE_PDU_BUFFER.len();
+    let len = SERVER_LICENSE_PDU.buffer_length();
 
-    let len = pdu.buffer_length();
-
-    assert_eq!(expected_buf_len, len);
+    assert_eq!(SERVER_LICENSE_BUFFER.len(), len);
 }
 
 #[test]
