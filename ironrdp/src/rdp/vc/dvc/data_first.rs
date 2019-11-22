@@ -1,5 +1,5 @@
 #[cfg(test)]
-mod test;
+mod tests;
 
 use std::io;
 
@@ -25,6 +25,10 @@ impl DataFirstPdu {
         let data_length = data_length_type.read_buffer_according_to_type(&mut stream)?;
         let mut dvc_data = Vec::new();
         stream.read_to_end(&mut dvc_data)?;
+
+        if dvc_data.len() >= data_length as usize {
+            return Err(ChannelError::InvalidDvcTotalMessageSize);
+        }
 
         let expected_max_data_size = PDU_WITH_DATA_MAX_SIZE
             - (HEADER_SIZE + channel_id_type.get_type_size() + data_length_type.get_type_size());

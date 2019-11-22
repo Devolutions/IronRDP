@@ -1,5 +1,5 @@
 #[cfg(test)]
-mod test;
+mod tests;
 
 mod capabilities;
 mod close;
@@ -10,12 +10,12 @@ mod data_first;
 pub use self::{
     capabilities::{CapabilitiesRequestPdu, CapabilitiesResponsePdu, CapsVersion},
     close::ClosePdu,
-    create::{CreateRequestPdu, CreateResponsePdu},
+    create::{CreateRequestPdu, CreateResponsePdu, DVC_CREATION_STATUS_OK},
     data::DataPdu,
     data_first::DataFirstPdu,
 };
 
-use std::{io, mem};
+use std::{collections::HashMap, io, mem};
 
 use bit_field::BitField;
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
@@ -29,6 +29,8 @@ const HEADER_SIZE: usize = 1;
 const PDU_WITH_DATA_MAX_SIZE: usize = 1600;
 
 const UNUSED_U8: u8 = 0;
+
+pub type DynamicChannels = HashMap<u32, String>;
 
 #[repr(u8)]
 #[derive(Debug, Copy, Clone, PartialEq, FromPrimitive, ToPrimitive)]

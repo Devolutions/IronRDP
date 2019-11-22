@@ -231,6 +231,7 @@ impl Input {
                 String::from("rdpdr"),
                 String::from("rdpsnd"),
                 String::from("cliprdr"),
+                String::from("drdynvc"),
             ]
         };
 

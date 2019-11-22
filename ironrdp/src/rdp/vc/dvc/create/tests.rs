@@ -3,7 +3,6 @@ use lazy_static::lazy_static;
 use super::*;
 
 const DVC_TEST_CHANNEL_ID: u32 = 0x0000_0003;
-const DVC_CREATION_STATUS: u32 = 0x0000_0000;
 
 const DVC_CREATE_REQUEST_BUFFER_SIZE: usize = 10;
 const DVC_CREATE_REQUEST_BUFFER: [u8; DVC_CREATE_REQUEST_BUFFER_SIZE] =
@@ -22,7 +21,7 @@ lazy_static! {
     static ref DVC_CREATE_RESPONSE: CreateResponsePdu = CreateResponsePdu {
         channel_id_type: FieldType::U8,
         channel_id: DVC_TEST_CHANNEL_ID,
-        creation_status: DVC_CREATION_STATUS
+        creation_status: DVC_CREATION_STATUS_OK
     };
 }
 

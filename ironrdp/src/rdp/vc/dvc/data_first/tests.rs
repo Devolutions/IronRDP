@@ -9,6 +9,8 @@ const DVC_DATA_FIRST_BUFFER_SIZE: usize = 16;
 const DVC_DATA_FIRST_BUFFER: [u8; DVC_DATA_FIRST_BUFFER_SIZE] = [
     0x24, 0x03, 0x7b, 0x0c, 0x71, 0x71, 0x71, 0x71, 0x71, 0x71, 0x71, 0x71, 0x71, 0x71, 0x71, 0x71,
 ];
+const DVC_DATA_FIRST_WITH_INVALID_TOTAL_MESSAGE_SIZE_BUFFER: [u8; 6] =
+    [0x03, 0x03, 0x71, 0x71, 0x71, 0x71];
 
 const DVC_TEST_DATA_BUFFER_SIZE: usize = 12;
 const DVC_TEST_DATA_BUFFER: [u8; DVC_TEST_DATA_BUFFER_SIZE] = [
@@ -37,6 +39,18 @@ fn from_buffer_parsing_for_dvc_data_first_pdu_with_invalid_message_size_fails() 
     ) {
         Err(ChannelError::InvalidDvcMessageSize) => (),
         res => panic!("Expected InvalidDvcMessageSize error, got: {:?}", res),
+    };
+}
+
+#[test]
+fn from_buffer_parsing_for_dvc_data_first_pdu_with_invalid_total_message_size_fails() {
+    match DataFirstPdu::from_buffer(
+        DVC_DATA_FIRST_WITH_INVALID_TOTAL_MESSAGE_SIZE_BUFFER.as_ref(),
+        FieldType::U8,
+        FieldType::U8,
+    ) {
+        Err(ChannelError::InvalidDvcTotalMessageSize) => (),
+        res => panic!("Expected InvalidDvcTotalMessageSize error, got: {:?}", res),
     };
 }
 

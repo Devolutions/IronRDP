@@ -1,10 +1,4 @@
-mod transport;
 mod user_info;
-
-pub use transport::{
-    DataTransport, EarlyUserAuthResult, McsTransport, SendDataContextTransport,
-    ShareControlHeaderTransport, ShareDataHeaderTransport, TsRequestTransport,
-};
 
 use std::{collections::HashMap, io, iter};
 
@@ -27,11 +21,7 @@ use ring::rand::SecureRandom;
 use rustls::{internal::msgs::handshake::CertificatePayload, Session};
 use sspi::internal::credssp;
 
-use crate::{
-    config::Config,
-    connection_sequence::transport::{Decoder, Encoder},
-    utils, RdpError, RdpResult,
-};
+use crate::{config::Config, transport::*, utils, RdpError, RdpResult};
 
 pub type StaticChannels = HashMap<String, u16>;
 
@@ -239,8 +229,16 @@ pub fn process_server_license_exchange(
     mut stream: impl io::BufRead + io::Write,
     transport: &mut SendDataContextTransport,
     config: &Config,
+    global_channel_id: u16,
 ) -> RdpResult<()> {
-    let pdu = transport.decode(&mut stream)?;
+    let (channel_ids, pdu) = transport.decode(&mut stream)?;
+    if channel_ids.channel_id != global_channel_id {
+        return Err(RdpError::InvalidResponse(format!(
+            "Unexpected Send Data Context channel ID ({})",
+            channel_ids.channel_id,
+        )));
+    }
+    
     let initial_license_message = InitialServerLicenseMessage::from_buffer(pdu.as_slice())
         .map_err(|err| RdpError::ServerLicenseError(rdp::RdpError::ServerLicenseError(err)))?;
 

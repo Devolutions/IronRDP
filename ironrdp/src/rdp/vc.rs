@@ -1,7 +1,7 @@
 pub mod dvc;
 
 #[cfg(test)]
-mod test;
+mod tests;
 
 use std::io;
 
@@ -11,6 +11,8 @@ use failure::Fail;
 
 use crate::{impl_from_error, PduParsing};
 
+pub const DRDYNVC_CHANNEL_NAME: &str = "drdynvc";
+
 const CHANNEL_PDU_HEADER_SIZE: usize = 8;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -18,15 +20,6 @@ pub struct ChannelPduHeader {
     /// The total length in bytes of the uncompressed channel data, excluding this header
     pub total_length: u32,
     pub flags: ChannelControlFlags,
-}
-
-impl ChannelPduHeader {
-    pub fn new(total_length: u32, flags: ChannelControlFlags) -> Self {
-        Self {
-            total_length,
-            flags,
-        }
-    }
 }
 
 impl PduParsing for ChannelPduHeader {
@@ -77,6 +70,8 @@ pub enum ChannelError {
     Utf8Error(#[fail(cause)] std::string::FromUtf8Error),
     #[fail(display = "Invalid channel PDU header")]
     InvalidChannelPduHeader,
+    #[fail(display = "Invalid channel total data length")]
+    InvalidChannelTotalDataLength,
     #[fail(display = "Invalid DVC PDU type")]
     InvalidDvcPduType,
     #[fail(display = "Invalid DVC id length value")]
@@ -87,6 +82,8 @@ pub enum ChannelError {
     InvalidDvcCapabilitiesVersion,
     #[fail(display = "Invalid DVC message size")]
     InvalidDvcMessageSize,
+    #[fail(display = "Invalid DVC total message size")]
+    InvalidDvcTotalMessageSize,
 }
 
 impl_from_error!(io::Error, ChannelError, ChannelError::IOError);

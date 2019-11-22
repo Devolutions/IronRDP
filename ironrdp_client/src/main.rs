@@ -1,5 +1,7 @@
+mod channels;
 mod config;
 mod connection_sequence;
+mod transport;
 mod utils;
 
 use std::{
@@ -9,11 +11,23 @@ use std::{
 };
 
 use failure::Fail;
-use ironrdp::{nego, rdp};
+use ironrdp::{nego, rdp::{self, vc}};
 use log::{debug, error, warn};
 use sspi::internal::credssp;
 
-use self::{config::Config, connection_sequence::*};
+use self::{
+    channels::process_dvc_messages_exchange,
+    config::Config,
+    connection_sequence::{
+        process_capability_sets, process_cred_ssp, process_finalization, process_mcs,
+        process_mcs_connect, process_server_license, send_client_info, StaticChannels,
+        GLOBAL_CHANNEL_NAME, USER_CHANNEL_NAME,
+    },
+    transport::{
+        connect, EarlyUserAuthResult, McsTransport, SendDataContextTransport,
+        ShareControlHeaderTransport, ShareDataHeaderTransport,
+    },
+};
 
 pub type RdpResult<T> = Result<T, RdpError>;
 
@@ -39,7 +53,6 @@ fn main() {
 
     match run(config) {
         Ok(_) => {
-            println!("RDP connection sequence finished");
             std::process::exit(exitcode::OK);
         }
         Err(e) => {
@@ -77,11 +90,12 @@ fn run(config: Config) -> RdpResult<()> {
     let stream = TcpStream::connect(addr.as_str()).map_err(RdpError::ConnectionError)?;
     let mut stream = bufstream::BufStream::new(stream);
 
-    let (mut transport, selected_protocol) = DataTransport::connect(
+    let (mut transport, selected_protocol) = connect(
         &mut stream,
         config.input.security_protocol,
         config.input.credentials.username.clone(),
     )?;
+
     let mut stream = stream.into_inner().map_err(io::Error::from)?;
 
     let mut client_config = rustls::ClientConfig::default();
@@ -128,7 +142,8 @@ fn run(config: Config) -> RdpResult<()> {
 
     let mut transport = SendDataContextTransport::new(transport, initiator_id, global_channel_id);
     send_client_info(&mut tls_stream, &mut transport, &config)?;
-    match process_server_license_exchange(&mut tls_stream, &mut transport, &config) {
+
+    match process_server_license_exchange(&mut tls_stream, &mut transport, &config, global_channel_id) {
         Err(RdpError::ServerLicenseError(rdp::RdpError::ServerLicenseError(
             rdp::server_license::ServerLicenseError::UnexpectedValidClientError(_),
         ))) => {
@@ -138,11 +153,18 @@ fn run(config: Config) -> RdpResult<()> {
         Ok(_) => (),
     }
 
-    let mut transport = ShareControlHeaderTransport::new(transport, initiator_id);
+    let mut transport =
+        ShareControlHeaderTransport::new(transport, initiator_id, global_channel_id);
     process_capability_sets(&mut tls_stream, &mut transport, &config)?;
 
     let mut transport = ShareDataHeaderTransport::new(transport);
     process_finalization(&mut tls_stream, &mut transport, initiator_id)?;
+    println!("RDP connection sequence finished");
+
+    if joined_static_channels.contains_key(vc::DRDYNVC_CHANNEL_NAME) {
+        process_dvc_messages_exchange(&mut tls_stream, joined_static_channels)?;
+        println!("RDP DVC messages exchange finished");
+    }
 
     Ok(())
 }
@@ -187,6 +209,8 @@ pub enum RdpError {
     ShareControlHeaderError(ironrdp::rdp::RdpError),
     #[fail(display = "capability sets error: {}", _0)]
     CapabilitySetsError(ironrdp::rdp::RdpError),
+    #[fail(display = "Virtual channel error: {}", _0)]
+    VirtualChannelError(ironrdp::rdp::vc::ChannelError),
 }
 
 impl From<io::Error> for RdpError {
@@ -214,5 +238,11 @@ impl From<ironrdp::nego::NegotiationError> for RdpError {
 impl From<ironrdp::McsError> for RdpError {
     fn from(e: ironrdp::McsError) -> Self {
         RdpError::McsError(e)
+    }
+}
+
+impl From<ironrdp::rdp::vc::ChannelError> for RdpError {
+    fn from(e: ironrdp::rdp::vc::ChannelError) -> Self {
+        RdpError::VirtualChannelError(e)
     }
 }
