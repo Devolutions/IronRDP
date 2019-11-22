@@ -362,14 +362,24 @@ impl PduParsing for ProductInfo {
         let version = stream.read_u32::<LittleEndian>()?;
 
         let company_name_len = stream.read_u32::<LittleEndian>()?;
+        if company_name_len < 2 {
+            return Err(ServerLicenseError::InvalidProductInfoStringField);
+        }
+
         let mut company_name = vec![0u8; company_name_len as usize];
         stream.read_exact(&mut company_name)?;
+
         company_name.resize((company_name_len - 2) as usize, 0);
         let company_name = utils::bytes_to_utf16_string(&company_name.as_slice());
 
         let product_id_len = stream.read_u32::<LittleEndian>()?;
+        if product_id_len < 2 {
+            return Err(ServerLicenseError::InvalidProductInfoStringField);
+        }
+
         let mut product_id = vec![0u8; product_id_len as usize];
         stream.read_exact(&mut product_id)?;
+
         product_id.resize((product_id_len - 2) as usize, 0);
         let product_id = utils::bytes_to_utf16_string(&product_id.as_slice());
 

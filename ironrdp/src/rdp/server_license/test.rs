@@ -55,10 +55,39 @@ lazy_static! {
 }
 
 #[test]
-fn read_blob_header_handles_error_correctly() {
-    assert!(
-        BlobHeader::read_from_buffer(BlobType::Certificate, &mut BLOB_BUFFER.as_ref()).is_err()
-    );
+fn read_blob_header_handles_wrong_type_correctly() {
+    match BlobHeader::read_from_buffer(BlobType::Certificate, &mut BLOB_BUFFER.as_ref()) {
+        Err(ServerLicenseError::InvalidBlobType) => (),
+        Err(err) => panic!(
+            "expected {}, found {}",
+            ServerLicenseError::InvalidBlobType,
+            err
+        ),
+        Ok(_) => panic!("expected error, found Ok"),
+    }
+}
+
+#[test]
+fn read_blob_header_handles_invalid_type_correctly() {
+    let invalid_blob_buffer: [u8; 76] = [
+        0x99, 0x00, // sig blob type
+        0x48, 0x00, // sig blob len
+        0xe9, 0xe1, 0xd6, 0x28, 0x46, 0x8b, 0x4e, 0xf5, 0x0a, 0xdf, 0xfd, 0xee, 0x21, 0x99, 0xac,
+        0xb4, 0xe1, 0x8f, 0x5f, 0x81, 0x57, 0x82, 0xef, 0x9d, 0x96, 0x52, 0x63, 0x27, 0x18, 0x29,
+        0xdb, 0xb3, 0x4a, 0xfd, 0x9a, 0xda, 0x42, 0xad, 0xb5, 0x69, 0x21, 0x89, 0x0e, 0x1d, 0xc0,
+        0x4c, 0x1a, 0xa8, 0xaa, 0x71, 0x3e, 0x0f, 0x54, 0xb9, 0x9a, 0xe4, 0x99, 0x68, 0x3f, 0x6c,
+        0xd6, 0x76, 0x84, 0x61, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // blob data
+    ];
+
+    match BlobHeader::read_from_buffer(BlobType::Certificate, invalid_blob_buffer.as_ref()) {
+        Err(ServerLicenseError::InvalidBlobType) => (),
+        Err(err) => panic!(
+            "expected error {}, found {}",
+            ServerLicenseError::InvalidBlobType,
+            err
+        ),
+        Ok(_) => panic!("expected error, found Ok"),
+    }
 }
 
 #[test]

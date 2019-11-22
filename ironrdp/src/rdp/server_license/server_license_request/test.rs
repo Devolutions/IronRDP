@@ -501,6 +501,19 @@ fn from_buffer_correctly_parses_product_information() {
 }
 
 #[test]
+fn from_buffer_product_info_handles_invalid_strings_correctly() {
+    let product_info_buffer: [u8; 13] = [
+        0x00, 0x00, 0x06, 0x00, // version
+        0x01, 0x00, 0x00, 0x00, // company name len
+        0x00, // company name
+        0x00, 0x00, 0x00, 0x00, // product id len
+              // product id
+    ];
+
+    assert!(ProductInfo::from_buffer(product_info_buffer.as_ref()).is_err());
+}
+
+#[test]
 fn to_buffer_correctly_serializes_product_information() {
     let mut buffer = Vec::new();
     PRODUCT_INFO.to_buffer(&mut buffer).unwrap();
