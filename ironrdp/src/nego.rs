@@ -102,9 +102,17 @@ pub enum NegotiationError {
     /// May indicate about a negotiation error recieved from a server.
     #[fail(display = "Received negotiation error from server, code={:?}", 0)]
     ResponseFailure(FailureCode),
+    #[fail(display = "Invalid tpkt header version")]
+    TpktVersionError,
 }
 
 impl_from_error!(io::Error, NegotiationError, NegotiationError::IOError);
+
+impl From<NegotiationError> for io::Error {
+    fn from(e: NegotiationError) -> io::Error {
+        io::Error::new(io::ErrorKind::Other, format!("Negotiation error: {}", e))
+    }
+}
 
 #[derive(Copy, Clone, Debug, PartialEq, FromPrimitive, ToPrimitive)]
 enum Message {

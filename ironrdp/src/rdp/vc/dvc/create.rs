@@ -9,6 +9,8 @@ use super::{FieldType, Header, PduType, HEADER_SIZE, UNUSED_U8};
 use crate::{rdp::vc::ChannelError, PduParsing};
 
 pub const DVC_CREATION_STATUS_OK: u32 = 0x0000_0000;
+pub const DVC_CREATION_STATUS_NO_LISTENER: u32 = 0xC000_0001;
+
 const DVC_CREATION_STATUS_SIZE: usize = 4;
 
 #[derive(Debug, Clone, PartialEq)]

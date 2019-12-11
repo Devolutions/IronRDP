@@ -10,7 +10,10 @@ mod data_first;
 pub use self::{
     capabilities::{CapabilitiesRequestPdu, CapabilitiesResponsePdu, CapsVersion},
     close::ClosePdu,
-    create::{CreateRequestPdu, CreateResponsePdu, DVC_CREATION_STATUS_OK},
+    create::{
+        CreateRequestPdu, CreateResponsePdu, DVC_CREATION_STATUS_NO_LISTENER,
+        DVC_CREATION_STATUS_OK,
+    },
     data::DataPdu,
     data_first::DataFirstPdu,
 };

@@ -153,7 +153,7 @@ fn create_optional_core_data(
                 })
                 .collect(),
         ),
-        early_capability_flags: Some(ClientEarlyCapabilityFlags::empty()),
+        early_capability_flags: Some(ClientEarlyCapabilityFlags::SUPPORT_DYN_VC_GFX_PROTOCOL),
         dig_product_id: Some(config.input.dig_product_id.clone()),
         connection_type: Some(ConnectionType::NotUsed),
         server_selected_protocol: Some(selected_protocol),
@@ -191,7 +191,7 @@ fn create_general_capability_set() -> CapabilitySet {
             _ => MajorPlatformType::Unspecified,
         },
         minor_platform_type: MinorPlatformType::Unspecified,
-        extra_flags: GeneralExtraFlags::empty(),
+        extra_flags: GeneralExtraFlags::FASTPATH_OUTPUT_SUPPORTED,
         refresh_rect_support: false,
         suppress_output_support: false,
     })

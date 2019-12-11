@@ -233,7 +233,7 @@ const SCOPE_BUFFER: [u8; 18] = [
 lazy_static! {
     pub static ref PROPRIETARY_CERTIFICATE: ProprietaryCertificate = ProprietaryCertificate {
         public_key: RsaPublicKey {
-            public_exponent: 0x00010001,
+            public_exponent: 0x0001_0001,
             modulus: Vec::from(MODULUS.as_ref()),
         },
         signature: Vec::from(SIGNATURE.as_ref()),
@@ -244,7 +244,7 @@ lazy_static! {
         product_id: "A02".to_string(),
     };
     pub static ref PUBLIC_KEY: RsaPublicKey = RsaPublicKey {
-        public_exponent: 0x00010001,
+        public_exponent: 0x0001_0001,
         modulus: Vec::from(MODULUS.as_ref()),
     };
     pub static ref SERVER_LICENSE_REQUEST: ServerLicenseRequest = ServerLicenseRequest {

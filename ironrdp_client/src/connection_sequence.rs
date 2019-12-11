@@ -232,13 +232,8 @@ pub fn process_server_license_exchange(
     global_channel_id: u16,
 ) -> RdpResult<()> {
     let (channel_ids, pdu) = transport.decode(&mut stream)?;
-    if channel_ids.channel_id != global_channel_id {
-        return Err(RdpError::InvalidResponse(format!(
-            "Unexpected Send Data Context channel ID ({})",
-            channel_ids.channel_id,
-        )));
-    }
-    
+    check_global_id(channel_ids, global_channel_id)?;
+
     let initial_license_message = InitialServerLicenseMessage::from_buffer(pdu.as_slice())
         .map_err(|err| RdpError::ServerLicenseError(rdp::RdpError::ServerLicenseError(err)))?;
 
@@ -304,7 +299,9 @@ pub fn process_server_license_exchange(
         })?;
     transport.encode(new_pdu_buffer, &mut stream)?;
 
-    let pdu = transport.decode(&mut stream)?;
+    let (channel_ids, pdu) = transport.decode(&mut stream)?;
+    check_global_id(channel_ids, global_channel_id)?;
+
     let challenge = ServerPlatformChallenge::from_buffer(pdu.as_slice())
         .map_err(|err| RdpError::ServerLicenseError(rdp::RdpError::ServerLicenseError(err)))?;
 
@@ -346,7 +343,9 @@ pub fn process_server_license_exchange(
         })?;
     transport.encode(new_pdu_buffer, &mut stream)?;
 
-    let pdu = transport.decode(&mut stream)?;
+    let (channel_ids, pdu) = transport.decode(&mut stream)?;
+    check_global_id(channel_ids, global_channel_id)?;
+
     let upgrade_license = ServerUpgradeLicense::from_buffer(pdu.as_slice())
         .map_err(|err| RdpError::ServerLicenseError(rdp::RdpError::ServerLicenseError(err)))?;
 
@@ -480,4 +479,15 @@ pub fn process_finalization(
     }
 
     Ok(())
+}
+
+fn check_global_id(channel_ids: ChannelIdentificators, id: u16) -> Result<(), RdpError> {
+    if channel_ids.channel_id != id {
+        Err(RdpError::InvalidResponse(format!(
+            "Unexpected Send Data Context channel ID ({})",
+            channel_ids.channel_id,
+        )))
+    } else {
+        Ok(())
+    }
 }

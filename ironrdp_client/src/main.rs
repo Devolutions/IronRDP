@@ -11,7 +11,7 @@ use std::{
 };
 
 use failure::Fail;
-use ironrdp::{nego, rdp::{self, vc}};
+use ironrdp::{nego, rdp};
 use log::{debug, error, warn};
 use sspi::internal::credssp;
 
@@ -20,7 +20,7 @@ use self::{
     config::Config,
     connection_sequence::{
         process_capability_sets, process_cred_ssp, process_finalization, process_mcs,
-        process_mcs_connect, process_server_license, send_client_info, StaticChannels,
+        process_mcs_connect, process_server_license_exchange, send_client_info, StaticChannels,
         GLOBAL_CHANNEL_NAME, USER_CHANNEL_NAME,
     },
     transport::{
@@ -53,6 +53,7 @@ fn main() {
 
     match run(config) {
         Ok(_) => {
+            println!("RDP connection sequence and DVC messages exchange finished");
             std::process::exit(exitcode::OK);
         }
         Err(e) => {
@@ -143,7 +144,12 @@ fn run(config: Config) -> RdpResult<()> {
     let mut transport = SendDataContextTransport::new(transport, initiator_id, global_channel_id);
     send_client_info(&mut tls_stream, &mut transport, &config)?;
 
-    match process_server_license_exchange(&mut tls_stream, &mut transport, &config, global_channel_id) {
+    match process_server_license_exchange(
+        &mut tls_stream,
+        &mut transport,
+        &config,
+        global_channel_id,
+    ) {
         Err(RdpError::ServerLicenseError(rdp::RdpError::ServerLicenseError(
             rdp::server_license::ServerLicenseError::UnexpectedValidClientError(_),
         ))) => {
@@ -159,12 +165,8 @@ fn run(config: Config) -> RdpResult<()> {
 
     let mut transport = ShareDataHeaderTransport::new(transport);
     process_finalization(&mut tls_stream, &mut transport, initiator_id)?;
-    println!("RDP connection sequence finished");
 
-    if joined_static_channels.contains_key(vc::DRDYNVC_CHANNEL_NAME) {
-        process_dvc_messages_exchange(&mut tls_stream, joined_static_channels)?;
-        println!("RDP DVC messages exchange finished");
-    }
+    process_dvc_messages_exchange(&mut tls_stream, joined_static_channels)?;
 
     Ok(())
 }
@@ -211,6 +213,8 @@ pub enum RdpError {
     CapabilitySetsError(ironrdp::rdp::RdpError),
     #[fail(display = "Virtual channel error: {}", _0)]
     VirtualChannelError(ironrdp::rdp::vc::ChannelError),
+    #[fail(display = "Invalid channel id error: {}", _0)]
+    InvalidChannelIdError(String),
 }
 
 impl From<io::Error> for RdpError {

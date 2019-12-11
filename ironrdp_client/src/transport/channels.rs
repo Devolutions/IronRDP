@@ -75,11 +75,17 @@ impl Decoder for StaticVirtualChannelTransport {
     }
 }
 
-pub struct DynamicVirtualChannelTransport(StaticVirtualChannelTransport);
+pub struct DynamicVirtualChannelTransport {
+    transport: StaticVirtualChannelTransport,
+    drdynvc_id: u16,
+}
 
 impl DynamicVirtualChannelTransport {
-    pub fn new(svc_transport: StaticVirtualChannelTransport) -> Self {
-        Self(svc_transport)
+    pub fn new(transport: StaticVirtualChannelTransport, drdynvc_id: u16) -> Self {
+        Self {
+            transport,
+            drdynvc_id,
+        }
     }
 }
 
@@ -91,7 +97,7 @@ impl Encoder for DynamicVirtualChannelTransport {
         let mut dvc_clien_pdu_buf = Vec::with_capacity(dvc_clien_pdu.buffer_length());
         dvc_clien_pdu.to_buffer(&mut dvc_clien_pdu_buf)?;
 
-        self.0.encode(dvc_clien_pdu_buf, &mut stream)
+        self.transport.encode(dvc_clien_pdu_buf, &mut stream)
     }
 }
 
@@ -100,7 +106,14 @@ impl Decoder for DynamicVirtualChannelTransport {
     type Error = RdpError;
 
     fn decode(&mut self, mut stream: impl io::Read) -> RdpResult<Self::Item> {
-        let (_channel_id, channel_data_buffer) = self.0.decode(&mut stream)?;
+        let (channel_id, channel_data_buffer) = self.transport.decode(&mut stream)?;
+        if self.drdynvc_id != channel_id {
+            return Err(RdpError::InvalidChannelIdError(format!(
+                "Expected drdynvc {} ID, got: {} ID",
+                self.drdynvc_id, channel_id,
+            )));
+        }
+
         let dvc_server_pdu = vc::dvc::ServerPdu::from_buffer(channel_data_buffer.as_slice())?;
 
         Ok(dvc_server_pdu)
