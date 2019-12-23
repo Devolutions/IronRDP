@@ -1,3 +1,5 @@
+pub mod zgfx;
+
 mod graphics_messages;
 #[cfg(test)]
 mod test;

@@ -26,3 +26,5 @@ md-5 = "0.8.0"
 num-bigint = "0.2.0"
 der-parser = "3.0.0"
 bit_field = "0.10"
+bitvec = { git = "https://github.com/myrrlyn/bitvec.git", rev = "3e79e6d53b2f7d01f5b139c67310e7918332905c" }
+hex-literal = "0.2"
