@@ -3,6 +3,7 @@ pub mod test;
 
 pub mod capability_sets;
 pub mod server_license;
+pub mod session_info;
 pub mod vc;
 
 mod client_info;
@@ -112,6 +113,8 @@ pub enum RdpError {
     UnexpectedShareControlPdu(ShareControlPduType),
     #[fail(display = "Unexpected RDP Share Data Header PDU type: {:?}", _0)]
     UnexpectedShareDataPdu(ShareDataPduType),
+    #[fail(display = "Save session info PDU error: {}", _0)]
+    SaveSessionInfoError(session_info::SessionError),
 }
 
 impl_from_error!(io::Error, RdpError, RdpError::IOError);
@@ -122,6 +125,11 @@ impl_from_error!(
     FinalizationMessagesError,
     RdpError,
     RdpError::FinalizationMessagesError
+);
+impl_from_error!(
+    session_info::SessionError,
+    RdpError,
+    RdpError::SaveSessionInfoError
 );
 
 impl From<RdpError> for io::Error {

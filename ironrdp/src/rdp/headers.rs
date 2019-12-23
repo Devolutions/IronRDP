@@ -9,7 +9,7 @@ use super::{
     client_info, ClientConfirmActive, ControlPdu, MonitorLayoutPdu, RdpError, ServerDemandActive,
     SynchronizePdu,
 };
-use crate::rdp::finalization_messages::FontPdu;
+use crate::rdp::{finalization_messages::FontPdu, session_info::SaveSessionInfoPdu};
 use crate::PduParsing;
 
 pub const BASIC_SECURITY_HEADER_SIZE: usize = 4;
@@ -289,6 +289,7 @@ pub enum ShareDataPdu {
     FontList(FontPdu),
     FontMap(FontPdu),
     MonitorLayout(MonitorLayoutPdu),
+    SaveSessionInfo(SaveSessionInfoPdu),
 }
 
 impl ShareDataPdu {
@@ -299,6 +300,7 @@ impl ShareDataPdu {
             ShareDataPdu::FontList(_) => "FontList PDU",
             ShareDataPdu::FontMap(_) => "Font Map PDU",
             ShareDataPdu::MonitorLayout(_) => "Monitor Layout PDU",
+            ShareDataPdu::SaveSessionInfo(_) => "Save session info PDU",
         }
     }
 }
@@ -324,6 +326,9 @@ impl ShareDataPdu {
             ShareDataPduType::MonitorLayoutPdu => Ok(ShareDataPdu::MonitorLayout(
                 MonitorLayoutPdu::from_buffer(&mut stream)?,
             )),
+            ShareDataPduType::SaveSessionInfo => Ok(ShareDataPdu::SaveSessionInfo(
+                SaveSessionInfoPdu::from_buffer(&mut stream)?,
+            )),
             ShareDataPduType::Update
             | ShareDataPduType::Pointer
             | ShareDataPduType::Input
@@ -332,7 +337,6 @@ impl ShareDataPdu {
             | ShareDataPduType::SuppressOutput
             | ShareDataPduType::ShutdownRequest
             | ShareDataPduType::ShutdownDenied
-            | ShareDataPduType::SaveSessionInfo
             | ShareDataPduType::SetKeyboardIndicators
             | ShareDataPduType::BitmapCachePersistentList
             | ShareDataPduType::BitmapCacheErrorPdu
@@ -353,6 +357,9 @@ impl ShareDataPdu {
                 pdu.to_buffer(&mut stream).map_err(RdpError::from)
             }
             ShareDataPdu::MonitorLayout(pdu) => pdu.to_buffer(&mut stream).map_err(RdpError::from),
+            ShareDataPdu::SaveSessionInfo(pdu) => {
+                pdu.to_buffer(&mut stream).map_err(RdpError::from)
+            }
         }
     }
     pub fn buffer_length(&self) -> usize {
@@ -361,6 +368,7 @@ impl ShareDataPdu {
             ShareDataPdu::Control(pdu) => pdu.buffer_length(),
             ShareDataPdu::FontList(pdu) | ShareDataPdu::FontMap(pdu) => pdu.buffer_length(),
             ShareDataPdu::MonitorLayout(pdu) => pdu.buffer_length(),
+            ShareDataPdu::SaveSessionInfo(pdu) => pdu.buffer_length(),
         }
     }
     pub fn share_header_type(&self) -> ShareDataPduType {
@@ -370,6 +378,7 @@ impl ShareDataPdu {
             ShareDataPdu::FontList(_) => ShareDataPduType::FontList,
             ShareDataPdu::FontMap(_) => ShareDataPduType::FontMap,
             ShareDataPdu::MonitorLayout(_) => ShareDataPduType::MonitorLayoutPdu,
+            ShareDataPdu::SaveSessionInfo(_) => ShareDataPduType::SaveSessionInfo,
         }
     }
 }
