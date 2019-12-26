@@ -16,7 +16,7 @@ use log::{debug, error, warn};
 use sspi::internal::credssp;
 
 use self::{
-    channels::process_dvc_messages_exchange,
+    channels::process_active_connection_messages,
     config::Config,
     connection_sequence::{
         process_capability_sets, process_cred_ssp, process_finalization, process_mcs,
@@ -135,10 +135,10 @@ fn run(config: Config) -> RdpResult<()> {
     debug!("Joined static channels: {:?}", joined_static_channels);
 
     let global_channel_id = *joined_static_channels
-        .get(&*GLOBAL_CHANNEL_NAME)
+        .get(GLOBAL_CHANNEL_NAME)
         .expect("global channel must be added");
     let initiator_id = *joined_static_channels
-        .get(&*USER_CHANNEL_NAME)
+        .get(USER_CHANNEL_NAME)
         .expect("user channel must be added");
 
     let mut transport = SendDataContextTransport::new(transport, initiator_id, global_channel_id);
@@ -166,7 +166,7 @@ fn run(config: Config) -> RdpResult<()> {
     let mut transport = ShareDataHeaderTransport::new(transport);
     process_finalization(&mut tls_stream, &mut transport, initiator_id)?;
 
-    process_dvc_messages_exchange(&mut tls_stream, joined_static_channels)?;
+    process_active_connection_messages(&mut tls_stream, joined_static_channels)?;
 
     Ok(())
 }

@@ -11,7 +11,7 @@ pub use self::{
     },
 };
 
-use std::io;
+use std::{io, mem};
 
 use bytes::BytesMut;
 use ironrdp::PduParsing;
@@ -100,10 +100,12 @@ impl Decoder for McsTransport {
     }
 }
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Clone, Debug)]
 pub struct SendDataContextTransport {
     mcs_transport: McsTransport,
+    state: SendDataContextTransportState,
     channel_ids: ChannelIdentificators,
+    send_data_context_pdu: Vec<u8>,
 }
 
 impl SendDataContextTransport {
@@ -114,11 +116,38 @@ impl SendDataContextTransport {
                 initiator_id,
                 channel_id,
             },
+            state: SendDataContextTransportState::ToDecode,
+            send_data_context_pdu: Vec::new(),
         }
     }
 
-    pub fn set_channel_ids(&mut self, initiator_ids: ChannelIdentificators) {
-        self.channel_ids = initiator_ids;
+    pub fn set_channel_ids(&mut self, channel_ids: ChannelIdentificators) {
+        self.channel_ids = channel_ids;
+    }
+
+    pub fn set_decoded_context(
+        &mut self,
+        channel_ids: ChannelIdentificators,
+        send_data_context_pdu: Vec<u8>,
+    ) {
+        self.set_channel_ids(channel_ids);
+
+        self.send_data_context_pdu = send_data_context_pdu;
+        self.state = SendDataContextTransportState::Decoded;
+    }
+}
+
+impl Default for SendDataContextTransport {
+    fn default() -> Self {
+        Self {
+            mcs_transport: McsTransport::new(DataTransport),
+            channel_ids: ChannelIdentificators {
+                initiator_id: 0,
+                channel_id: 0,
+            },
+            state: SendDataContextTransportState::ToDecode,
+            send_data_context_pdu: Vec::new(),
+        }
     }
 }
 
@@ -147,20 +176,35 @@ impl Decoder for SendDataContextTransport {
     type Error = RdpError;
 
     fn decode(&mut self, mut stream: impl io::Read) -> RdpResult<Self::Item> {
-        let mcs_pdu = self.mcs_transport.decode(&mut stream)?;
-        if let ironrdp::McsPdu::SendDataIndication(send_data_context) = mcs_pdu {
-            Ok((
-                ChannelIdentificators {
-                    initiator_id: send_data_context.initiator_id,
-                    channel_id: send_data_context.channel_id,
-                },
-                send_data_context.pdu,
-            ))
-        } else {
-            Err(RdpError::UnexpectedPdu(format!(
-                "Expected Send Data Context PDU, got {:?}",
-                mcs_pdu.as_short_name()
-            )))
+        match self.state {
+            SendDataContextTransportState::ToDecode => {
+                let mcs_pdu = self.mcs_transport.decode(&mut stream)?;
+
+                if let ironrdp::McsPdu::SendDataIndication(send_data_context) = mcs_pdu {
+                    Ok((
+                        ChannelIdentificators {
+                            initiator_id: send_data_context.initiator_id,
+                            channel_id: send_data_context.channel_id,
+                        },
+                        send_data_context.pdu,
+                    ))
+                } else {
+                    Err(RdpError::UnexpectedPdu(format!(
+                        "Expected Send Data Context PDU, got {:?}",
+                        mcs_pdu.as_short_name()
+                    )))
+                }
+            }
+            SendDataContextTransportState::Decoded => Ok((
+                self.channel_ids,
+                mem::replace(&mut self.send_data_context_pdu, Vec::new()),
+            )),
         }
     }
+}
+
+#[derive(Copy, Clone, Debug)]
+pub enum SendDataContextTransportState {
+    ToDecode,
+    Decoded,
 }

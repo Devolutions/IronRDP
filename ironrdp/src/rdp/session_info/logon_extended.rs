@@ -8,6 +8,8 @@ use num_traits::{FromPrimitive, ToPrimitive};
 use super::SessionError;
 use crate::PduParsing;
 
+const LOGON_EX_LENGTH_FIELD_SIZE: usize = 2;
+const LOGON_EX_FLAGS_FIELD_SIZE: usize = 4;
 const LOGON_EX_PADDING_SIZE: usize = 570;
 const LOGON_EX_PADDING_BUFFER: [u8; LOGON_EX_PADDING_SIZE] = [0; LOGON_EX_PADDING_SIZE];
 
@@ -19,35 +21,53 @@ const LOGON_ERRORS_INFO_SIZE: usize = 8;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct LogonInfoExtended {
-    pub self_length: u16,
     pub present_fields_flags: LogonExFlags,
     pub auto_reconnect: Option<ServerAutoReconnect>,
     pub errors_info: Option<LogonErrorsInfo>,
+}
+
+impl LogonInfoExtended {
+    fn get_internal_size(&self) -> usize {
+        let reconnect_size = self
+            .auto_reconnect
+            .as_ref()
+            .map(|r| r.buffer_length())
+            .unwrap_or(0);
+
+        let errors_size = self
+            .errors_info
+            .as_ref()
+            .map(|r| r.buffer_length())
+            .unwrap_or(0);
+
+        LOGON_EX_LENGTH_FIELD_SIZE + LOGON_EX_FLAGS_FIELD_SIZE + reconnect_size + errors_size
+    }
 }
 
 impl PduParsing for LogonInfoExtended {
     type Error = SessionError;
 
     fn from_buffer(mut stream: impl io::Read) -> Result<Self, Self::Error> {
-        let self_length = stream.read_u16::<LittleEndian>()?;
+        let _self_length = stream.read_u16::<LittleEndian>()?;
         let present_fields_flags =
             LogonExFlags::from_bits_truncate(stream.read_u32::<LittleEndian>()?);
-        let mut auto_reconnect = None;
-        let mut errors_info = None;
 
-        if present_fields_flags.contains(LogonExFlags::AUTO_RECONNECT_COOKIE) {
-            auto_reconnect = Some(ServerAutoReconnect::from_buffer(&mut stream)?);
-        }
+        let auto_reconnect = if present_fields_flags.contains(LogonExFlags::AUTO_RECONNECT_COOKIE) {
+            Some(ServerAutoReconnect::from_buffer(&mut stream)?)
+        } else {
+            None
+        };
 
-        if present_fields_flags.contains(LogonExFlags::LOGON_ERRORS) {
-            errors_info = Some(LogonErrorsInfo::from_buffer(&mut stream)?);
-        }
+        let errors_info = if present_fields_flags.contains(LogonExFlags::LOGON_ERRORS) {
+            Some(LogonErrorsInfo::from_buffer(&mut stream)?)
+        } else {
+            None
+        };
 
         let mut padding_buffer = [0; LOGON_EX_PADDING_SIZE];
         stream.read_exact(&mut padding_buffer)?;
 
         Ok(Self {
-            self_length,
             present_fields_flags,
             auto_reconnect,
             errors_info,
@@ -55,7 +75,7 @@ impl PduParsing for LogonInfoExtended {
     }
 
     fn to_buffer(&self, mut stream: impl io::Write) -> Result<(), Self::Error> {
-        stream.write_u16::<LittleEndian>(self.self_length)?;
+        stream.write_u16::<LittleEndian>(self.get_internal_size() as u16)?;
         stream.write_u32::<LittleEndian>(self.present_fields_flags.bits())?;
 
         if let Some(ref reconnect) = self.auto_reconnect {
@@ -71,13 +91,12 @@ impl PduParsing for LogonInfoExtended {
     }
 
     fn buffer_length(&self) -> usize {
-        self.self_length as usize + LOGON_EX_PADDING_SIZE
+        self.get_internal_size() + LOGON_EX_PADDING_SIZE
     }
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ServerAutoReconnect {
-    pub data_length: u32,
     pub logon_id: u32,
     pub random_bits: [u8; AUTO_RECONNECT_RANDOM_BITS_SIZE],
 }
@@ -86,7 +105,7 @@ impl PduParsing for ServerAutoReconnect {
     type Error = SessionError;
 
     fn from_buffer(mut stream: impl io::Read) -> Result<Self, Self::Error> {
-        let data_length = stream.read_u32::<LittleEndian>()?;
+        let _data_length = stream.read_u32::<LittleEndian>()?;
         let packet_length = stream.read_u32::<LittleEndian>()?;
         if packet_length != AUTO_RECONNECT_PACKET_SIZE as u32 {
             return Err(SessionError::InvalidAutoReconnectPacketSize);
@@ -102,14 +121,13 @@ impl PduParsing for ServerAutoReconnect {
         stream.read_exact(&mut random_bits)?;
 
         Ok(Self {
-            data_length,
             logon_id,
             random_bits,
         })
     }
 
     fn to_buffer(&self, mut stream: impl io::Write) -> Result<(), Self::Error> {
-        stream.write_u32::<LittleEndian>(self.data_length)?;
+        stream.write_u32::<LittleEndian>(AUTO_RECONNECT_PACKET_SIZE as u32)?;
         stream.write_u32::<LittleEndian>(AUTO_RECONNECT_PACKET_SIZE as u32)?;
         stream.write_u32::<LittleEndian>(AUTO_RECONNECT_VERSION_1)?;
         stream.write_u32::<LittleEndian>(self.logon_id)?;
@@ -125,7 +143,6 @@ impl PduParsing for ServerAutoReconnect {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct LogonErrorsInfo {
-    pub data_length: u32,
     pub error_type: LogonErrorNotificationType,
     pub error_data: LogonErrorNotificationData,
 }
@@ -134,21 +151,20 @@ impl PduParsing for LogonErrorsInfo {
     type Error = SessionError;
 
     fn from_buffer(mut stream: impl io::Read) -> Result<Self, Self::Error> {
-        let data_length = stream.read_u32::<LittleEndian>()?;
+        let _data_length = stream.read_u32::<LittleEndian>()?;
         let error_type = LogonErrorNotificationType::from_u32(stream.read_u32::<LittleEndian>()?)
             .ok_or(SessionError::InvalidLogonErrorType)?;
         let error_data = LogonErrorNotificationData::from_u32(stream.read_u32::<LittleEndian>()?)
             .ok_or(SessionError::InvalidLogonErrorData)?;
 
         Ok(Self {
-            data_length,
             error_type,
             error_data,
         })
     }
 
     fn to_buffer(&self, mut stream: impl io::Write) -> Result<(), Self::Error> {
-        stream.write_u32::<LittleEndian>(self.data_length)?;
+        stream.write_u32::<LittleEndian>(LOGON_ERRORS_INFO_SIZE as u32)?;
         stream.write_u32::<LittleEndian>(self.error_type.to_u32().unwrap())?;
         stream.write_u32::<LittleEndian>(self.error_data.to_u32().unwrap())?;
 

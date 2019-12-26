@@ -203,10 +203,6 @@ const DOMAIN_NAME: &str = "NTDEV";
 const USER_NAME: &str = "eltons";
 const SESSION_ID: u32 = 0x02;
 
-const LOGON_INFO_EXTENDED_LENGTH: u16 = 50;
-const AUTO_RECONNECT_DATA_LENGTH: u32 = 28;
-const ERRORS_INFO_DATA_LENGTH: u32 = 8;
-
 lazy_static! {
     static ref LOGON_INFO_V1: LogonInfoVersion1 = LogonInfoVersion1 {
         logon_info: LogonInfo {
@@ -223,10 +219,8 @@ lazy_static! {
         },
     };
     static ref LOGON_EXTENDED: LogonInfoExtended = LogonInfoExtended {
-        self_length: LOGON_INFO_EXTENDED_LENGTH,
         present_fields_flags: LogonExFlags::AUTO_RECONNECT_COOKIE | LogonExFlags::LOGON_ERRORS,
         auto_reconnect: Some(ServerAutoReconnect {
-            data_length: AUTO_RECONNECT_DATA_LENGTH,
             logon_id: SESSION_ID,
             random_bits: [
                 0xa8, 0x02, 0xe7, 0x25, 0xe2, 0x4c, 0x82, 0xb7, 0x52, 0xa5, 0x53, 0x50, 0x34, 0x98,
@@ -234,7 +228,6 @@ lazy_static! {
             ],
         }),
         errors_info: Some(LogonErrorsInfo {
-            data_length: ERRORS_INFO_DATA_LENGTH,
             error_type: LogonErrorNotificationType::NoPermission,
             error_data: LogonErrorNotificationData::FailedOther,
         }),

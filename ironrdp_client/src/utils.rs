@@ -1,4 +1,4 @@
-use std::io;
+use std::{collections::HashMap, hash::Hash, io};
 use x509_parser::parse_x509_der;
 
 #[macro_export]
@@ -34,4 +34,16 @@ pub fn get_tls_peer_pubkey(cert: Vec<u8>) -> io::Result<Vec<u8>> {
     let public_key = res.1.tbs_certificate.subject_pki.subject_public_key;
 
     Ok(public_key.data.to_vec())
+}
+
+pub fn swap_hashmap_kv<K, V>(hm: HashMap<K, V>) -> HashMap<V, K>
+where
+    V: Hash + Eq,
+{
+    let mut result = HashMap::with_capacity(hm.len());
+    for (k, v) in hm {
+        result.insert(v, k);
+    }
+
+    result
 }

@@ -2,7 +2,7 @@ use std::io;
 
 use ironrdp::{rdp::vc, PduParsing};
 
-use super::{DataTransport, Decoder, Encoder, McsTransport, SendDataContextTransport};
+use super::{Decoder, Encoder, SendDataContextTransport};
 use crate::{RdpError, RdpResult};
 
 #[derive(Copy, Clone, Debug)]
@@ -11,24 +11,20 @@ pub struct ChannelIdentificators {
     pub channel_id: u16,
 }
 
-#[derive(Copy, Clone, Debug)]
+#[derive(Clone, Debug)]
 pub struct StaticVirtualChannelTransport {
     channel_ids: ChannelIdentificators,
-    send_data_context_transport: SendDataContextTransport,
+    transport: SendDataContextTransport,
 }
 
 impl StaticVirtualChannelTransport {
-    pub fn new() -> Self {
+    pub fn new(transport: SendDataContextTransport) -> Self {
         Self {
             channel_ids: ChannelIdentificators {
                 channel_id: 0,
                 initiator_id: 0,
             },
-            send_data_context_transport: SendDataContextTransport::new(
-                McsTransport::new(DataTransport),
-                0,
-                0,
-            ),
+            transport,
         }
     }
 }
@@ -52,11 +48,8 @@ impl Encoder for StaticVirtualChannelTransport {
         channel_header.to_buffer(&mut channel_buffer)?;
         channel_buffer.append(&mut channel_data_buffer);
 
-        self.send_data_context_transport
-            .set_channel_ids(self.channel_ids);
-
-        self.send_data_context_transport
-            .encode(channel_buffer, &mut stream)
+        self.transport.set_channel_ids(self.channel_ids);
+        self.transport.encode(channel_buffer, &mut stream)
     }
 }
 
@@ -65,8 +58,7 @@ impl Decoder for StaticVirtualChannelTransport {
     type Error = RdpError;
 
     fn decode(&mut self, mut stream: impl io::Read) -> RdpResult<Self::Item> {
-        let (channel_ids, mut channel_data_buffer) =
-            self.send_data_context_transport.decode(&mut stream)?;
+        let (channel_ids, mut channel_data_buffer) = self.transport.decode(&mut stream)?;
         self.channel_ids = channel_ids;
         let channel_header = vc::ChannelPduHeader::from_buffer(channel_data_buffer.as_slice())?;
 

@@ -15,7 +15,6 @@ use ironrdp::{
     },
     PduParsing,
 };
-use lazy_static::lazy_static;
 use log::{debug, info, trace};
 use ring::rand::SecureRandom;
 use rustls::{internal::msgs::handshake::CertificatePayload, Session};
@@ -25,10 +24,8 @@ use crate::{config::Config, transport::*, utils, RdpError, RdpResult};
 
 pub type StaticChannels = HashMap<String, u16>;
 
-lazy_static! {
-    pub static ref GLOBAL_CHANNEL_NAME: String = String::from("GLOBAL");
-    pub static ref USER_CHANNEL_NAME: String = String::from("USER");
-}
+pub const GLOBAL_CHANNEL_NAME: &str = "GLOBAL";
+pub const USER_CHANNEL_NAME: &str = "USER";
 
 pub fn process_cred_ssp<'a, S, T>(
     mut tls_stream: &mut bufstream::BufStream<rustls::Stream<'a, S, T>>,
