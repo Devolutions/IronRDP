@@ -190,7 +190,7 @@ fn create_general_capability_set() -> CapabilitySet {
             _ => MajorPlatformType::Unspecified,
         },
         minor_platform_type: MinorPlatformType::Unspecified,
-        extra_flags: GeneralExtraFlags::FASTPATH_OUTPUT_SUPPORTED,
+        extra_flags: GeneralExtraFlags::empty(),
         refresh_rect_support: false,
         suppress_output_support: false,
     })

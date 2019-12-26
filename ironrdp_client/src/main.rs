@@ -11,7 +11,7 @@ use std::{
 };
 
 use failure::Fail;
-use ironrdp::{nego, rdp};
+use ironrdp::{dvc::gfx, nego, rdp};
 use log::{debug, error, warn};
 use sspi::internal::credssp;
 
@@ -183,6 +183,8 @@ pub enum RdpError {
     NegotiationError(#[fail(cause)] ironrdp::nego::NegotiationError),
     #[fail(display = "unexpected PDU: {}", _0)]
     UnexpectedPdu(String),
+    #[fail(display = "Unexpected disconnection: {}", _0)]
+    UnexpectedDisconnection(String),
     #[fail(display = "invalid response: {}", _0)]
     InvalidResponse(String),
     #[fail(display = "TLS connector error: {}", _0)]
@@ -215,6 +217,12 @@ pub enum RdpError {
     VirtualChannelError(ironrdp::rdp::vc::ChannelError),
     #[fail(display = "Invalid channel id error: {}", _0)]
     InvalidChannelIdError(String),
+    #[fail(display = "Graphics pipeline protocol error: {}", _0)]
+    GraphicsPipelineError(gfx::GraphicsPipelineError),
+    #[fail(display = "ZGFX error: {}", _0)]
+    ZgfxError(#[fail(cause)] gfx::zgfx::ZgfxError),
+    #[fail(display = "Access to the non-existing channel: {}", _0)]
+    AccessToNonExistingChannel(u32),
 }
 
 impl From<io::Error> for RdpError {
@@ -248,5 +256,17 @@ impl From<ironrdp::McsError> for RdpError {
 impl From<ironrdp::rdp::vc::ChannelError> for RdpError {
     fn from(e: ironrdp::rdp::vc::ChannelError) -> Self {
         RdpError::VirtualChannelError(e)
+    }
+}
+
+impl From<gfx::GraphicsPipelineError> for RdpError {
+    fn from(e: gfx::GraphicsPipelineError) -> Self {
+        RdpError::GraphicsPipelineError(e)
+    }
+}
+
+impl From<gfx::zgfx::ZgfxError> for RdpError {
+    fn from(e: gfx::zgfx::ZgfxError) -> Self {
+        RdpError::ZgfxError(e)
     }
 }

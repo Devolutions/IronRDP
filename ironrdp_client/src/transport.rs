@@ -180,19 +180,24 @@ impl Decoder for SendDataContextTransport {
             SendDataContextTransportState::ToDecode => {
                 let mcs_pdu = self.mcs_transport.decode(&mut stream)?;
 
-                if let ironrdp::McsPdu::SendDataIndication(send_data_context) = mcs_pdu {
-                    Ok((
+                match mcs_pdu {
+                    ironrdp::McsPdu::SendDataIndication(send_data_context) => Ok((
                         ChannelIdentificators {
                             initiator_id: send_data_context.initiator_id,
                             channel_id: send_data_context.channel_id,
                         },
                         send_data_context.pdu,
-                    ))
-                } else {
-                    Err(RdpError::UnexpectedPdu(format!(
+                    )),
+                    ironrdp::McsPdu::DisconnectProviderUltimatum(disconnect_reason) => {
+                        Err(RdpError::UnexpectedDisconnection(format!(
+                            "Server disconnection reason - {:?}",
+                            disconnect_reason
+                        )))
+                    }
+                    _ => Err(RdpError::UnexpectedPdu(format!(
                         "Expected Send Data Context PDU, got {:?}",
                         mcs_pdu.as_short_name()
-                    )))
+                    ))),
                 }
             }
             SendDataContextTransportState::Decoded => Ok((
