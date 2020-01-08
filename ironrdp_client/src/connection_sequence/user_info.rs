@@ -111,8 +111,8 @@ fn create_core_data(
 
     Ok(ClientCoreData {
         version: RdpVersion::V5Plus,
-        desktop_width: current_monitor.size().width.round() as u16,
-        desktop_height: current_monitor.size().height.round() as u16,
+        desktop_width: current_monitor.size().width as u16,
+        desktop_height: current_monitor.size().height as u16,
         color_depth: ColorDepth::Bpp4, // ignored
         sec_access_sequence: SecureAccessSequence::Del,
         keyboard_layout: 0, // the server SHOULD use the default active input locale identifier
@@ -199,8 +199,8 @@ fn create_general_capability_set() -> CapabilitySet {
 fn create_bitmap_capability_set(current_monitor: &winit::monitor::MonitorHandle) -> CapabilitySet {
     CapabilitySet::Bitmap(Bitmap {
         pref_bits_per_pix: get_color_depth(current_monitor).to_u16().unwrap(),
-        desktop_width: current_monitor.size().width.round() as u16,
-        desktop_height: current_monitor.size().height.round() as u16,
+        desktop_width: current_monitor.size().width as u16,
+        desktop_height: current_monitor.size().height as u16,
         desktop_resize_flag: false,
         drawing_flags: BitmapDrawingFlags::empty(),
     })
