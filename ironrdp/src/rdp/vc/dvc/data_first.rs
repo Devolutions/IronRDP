@@ -26,8 +26,11 @@ impl DataFirstPdu {
         let mut dvc_data = Vec::new();
         stream.read_to_end(&mut dvc_data)?;
 
-        if dvc_data.len() >= data_length as usize {
-            return Err(ChannelError::InvalidDvcTotalMessageSize);
+        if dvc_data.len() > data_length as usize {
+            return Err(ChannelError::InvalidDvcTotalMessageSize {
+                actual: dvc_data.len(),
+                expected: data_length as usize,
+            });
         }
 
         let expected_max_data_size = PDU_WITH_DATA_MAX_SIZE

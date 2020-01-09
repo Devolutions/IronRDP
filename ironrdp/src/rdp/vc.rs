@@ -82,8 +82,11 @@ pub enum ChannelError {
     InvalidDvcCapabilitiesVersion,
     #[fail(display = "Invalid DVC message size")]
     InvalidDvcMessageSize,
-    #[fail(display = "Invalid DVC total message size")]
-    InvalidDvcTotalMessageSize,
+    #[fail(
+        display = "Invalid DVC total message size: actual ({}) > expected ({})",
+        actual, expected
+    )]
+    InvalidDvcTotalMessageSize { actual: usize, expected: usize },
 }
 
 impl_from_error!(io::Error, ChannelError, ChannelError::IOError);
