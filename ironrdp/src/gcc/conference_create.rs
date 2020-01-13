@@ -29,12 +29,6 @@ pub struct ConferenceCreateRequest {
     pub gcc_blocks: ClientGccBlocks,
 }
 
-impl ConferenceCreateRequest {
-    pub fn new(gcc_blocks: ClientGccBlocks) -> Self {
-        Self { gcc_blocks }
-    }
-}
-
 impl PduParsing for ConferenceCreateRequest {
     type Error = GccError;
 

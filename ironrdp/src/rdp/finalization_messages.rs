@@ -18,12 +18,6 @@ pub struct SynchronizePdu {
     pub target_user_id: u16,
 }
 
-impl SynchronizePdu {
-    pub fn new(target_user_id: u16) -> Self {
-        Self { target_user_id }
-    }
-}
-
 impl PduParsing for SynchronizePdu {
     type Error = FinalizationMessagesError;
 
@@ -55,16 +49,6 @@ pub struct ControlPdu {
     pub action: ControlAction,
     pub grant_id: u16,
     pub control_id: u32,
-}
-
-impl ControlPdu {
-    pub fn new(action: ControlAction, grant_id: u16, control_id: u32) -> Self {
-        Self {
-            action,
-            grant_id,
-            control_id,
-        }
-    }
 }
 
 impl PduParsing for ControlPdu {
@@ -104,17 +88,6 @@ pub struct FontPdu {
     pub entry_size: u16,
 }
 
-impl FontPdu {
-    pub fn new(number: u16, total_number: u16, flags: SequenceFlags, entry_size: u16) -> Self {
-        Self {
-            number,
-            total_number,
-            flags,
-            entry_size,
-        }
-    }
-}
-
 impl PduParsing for FontPdu {
     type Error = FinalizationMessagesError;
 
@@ -150,12 +123,6 @@ impl PduParsing for FontPdu {
 #[derive(Debug, Clone, PartialEq)]
 pub struct MonitorLayoutPdu {
     pub monitors: Vec<gcc::Monitor>,
-}
-
-impl MonitorLayoutPdu {
-    pub fn new(monitors: Vec<gcc::Monitor>) -> Self {
-        Self { monitors }
-    }
 }
 
 impl PduParsing for MonitorLayoutPdu {

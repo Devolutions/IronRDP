@@ -3,7 +3,7 @@ pub mod dvc;
 #[cfg(test)]
 mod tests;
 
-use std::io;
+use std::{io, str};
 
 use bitflags::bitflags;
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
@@ -66,8 +66,8 @@ bitflags! {
 pub enum ChannelError {
     #[fail(display = "IO error: {}", _0)]
     IOError(#[fail(cause)] io::Error),
-    #[fail(display = "Utf8 error: {}", _0)]
-    Utf8Error(#[fail(cause)] std::string::FromUtf8Error),
+    #[fail(display = "From UTF8 error: {}", _0)]
+    FromUtf8Error(#[fail(cause)] std::string::FromUtf8Error),
     #[fail(display = "Invalid channel PDU header")]
     InvalidChannelPduHeader,
     #[fail(display = "Invalid channel total data length")]
@@ -93,7 +93,7 @@ impl_from_error!(io::Error, ChannelError, ChannelError::IOError);
 impl_from_error!(
     std::string::FromUtf8Error,
     ChannelError,
-    ChannelError::Utf8Error
+    ChannelError::FromUtf8Error
 );
 
 impl From<ChannelError> for io::Error {

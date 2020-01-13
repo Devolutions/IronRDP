@@ -32,12 +32,6 @@ pub struct BasicSecurityHeader {
     pub flags: BasicSecurityHeaderFlags,
 }
 
-impl BasicSecurityHeader {
-    pub fn new(flags: BasicSecurityHeaderFlags) -> Self {
-        Self { flags }
-    }
-}
-
 impl PduParsing for BasicSecurityHeader {
     type Error = RdpError;
 
@@ -66,16 +60,6 @@ pub struct ShareControlHeader {
     pub share_control_pdu: ShareControlPdu,
     pub pdu_source: u16,
     pub share_id: u32,
-}
-
-impl ShareControlHeader {
-    pub fn new(share_control_pdu: ShareControlPdu, pdu_source: u16, share_id: u32) -> Self {
-        Self {
-            share_control_pdu,
-            pdu_source,
-            share_id,
-        }
-    }
 }
 
 impl PduParsing for ShareControlHeader {
@@ -194,22 +178,6 @@ pub struct ShareDataHeader {
     pub stream_priority: StreamPriority,
     pub compression_flags: CompressionFlags,
     pub compression_type: client_info::CompressionType,
-}
-
-impl ShareDataHeader {
-    pub fn new(
-        share_data_pdu: ShareDataPdu,
-        stream_priority: StreamPriority,
-        compression_flags: CompressionFlags,
-        compression_type: client_info::CompressionType,
-    ) -> Self {
-        Self {
-            share_data_pdu,
-            stream_priority,
-            compression_flags,
-            compression_type,
-        }
-    }
 }
 
 impl PduParsing for ShareDataHeader {

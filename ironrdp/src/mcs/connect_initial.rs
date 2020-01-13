@@ -30,7 +30,7 @@ pub struct ConnectInitial {
 impl ConnectInitial {
     pub fn with_gcc_blocks(gcc_blocks: ClientGccBlocks) -> Self {
         Self {
-            conference_create_request: ConferenceCreateRequest::new(gcc_blocks),
+            conference_create_request: ConferenceCreateRequest { gcc_blocks },
             calling_domain_selector: vec![0x01],
             called_domain_selector: vec![0x01],
             upward_flag: true,

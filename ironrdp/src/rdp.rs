@@ -46,15 +46,6 @@ pub struct ClientInfoPdu {
     pub client_info: ClientInfo,
 }
 
-impl ClientInfoPdu {
-    pub fn new(security_header: BasicSecurityHeader, client_info: ClientInfo) -> Self {
-        Self {
-            security_header,
-            client_info,
-        }
-    }
-}
-
 impl PduParsing for ClientInfoPdu {
     type Error = RdpError;
 

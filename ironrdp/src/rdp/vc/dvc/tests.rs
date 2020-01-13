@@ -55,7 +55,10 @@ fn buffer_length_is_correct_for_dvc_header() {
 
 #[test]
 fn from_buffer_parsing_for_client_dvc_pdu_with_invalid_id_length_type_fails() {
-    match ClientPdu::from_buffer(DVC_HEADER_WITH_INVALID_ID_LENGTH_TYPE_BUFFER.as_ref()) {
+    match ClientPdu::from_buffer(
+        DVC_HEADER_WITH_INVALID_ID_LENGTH_TYPE_BUFFER.as_ref(),
+        HEADER_SIZE,
+    ) {
         Err(ChannelError::InvalidDVChannelIdLength) => (),
         res => panic!("Expected InvalidDVChannelIdLength error, got: {:?}", res),
     };
@@ -63,7 +66,10 @@ fn from_buffer_parsing_for_client_dvc_pdu_with_invalid_id_length_type_fails() {
 
 #[test]
 fn from_buffer_parsing_for_server_dvc_pdu_with_invalid_id_length_type_fails() {
-    match ServerPdu::from_buffer(DVC_HEADER_WITH_INVALID_ID_LENGTH_TYPE_BUFFER.as_ref()) {
+    match ServerPdu::from_buffer(
+        DVC_HEADER_WITH_INVALID_ID_LENGTH_TYPE_BUFFER.as_ref(),
+        HEADER_SIZE,
+    ) {
         Err(ChannelError::InvalidDVChannelIdLength) => (),
         res => panic!("Expected InvalidDVChannelIdLength error, got: {:?}", res),
     };

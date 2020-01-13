@@ -2,7 +2,7 @@ use lazy_static::lazy_static;
 
 use super::*;
 
-const DVC_TEST_CHANNEL_ID: u32 = 0x0000_0003;
+const TEST_CHANNEL_ID: u32 = 0x0000_0003;
 
 const DVC_CREATE_REQUEST_BUFFER_SIZE: usize = 10;
 const DVC_CREATE_REQUEST_BUFFER: [u8; DVC_CREATE_REQUEST_BUFFER_SIZE] =
@@ -12,15 +12,17 @@ const DVC_CREATE_RESPONSE_BUFFER_SIZE: usize = 6;
 const DVC_CREATE_RESPONSE_BUFFER: [u8; DVC_CREATE_RESPONSE_BUFFER_SIZE] =
     [0x10, 0x03, 0x00, 0x00, 0x00, 0x00];
 
+const DVC_TEST_HEADER_SIZE: usize = 0x01;
+
 lazy_static! {
     static ref DVC_CREATE_REQUEST: CreateRequestPdu = CreateRequestPdu {
         channel_id_type: FieldType::U8,
-        channel_id: DVC_TEST_CHANNEL_ID,
+        channel_id: TEST_CHANNEL_ID,
         channel_name: String::from("testdvc")
     };
     static ref DVC_CREATE_RESPONSE: CreateResponsePdu = CreateResponsePdu {
         channel_id_type: FieldType::U8,
-        channel_id: DVC_TEST_CHANNEL_ID,
+        channel_id: TEST_CHANNEL_ID,
         creation_status: DVC_CREATION_STATUS_OK
     };
 }
@@ -29,7 +31,12 @@ lazy_static! {
 fn from_buffer_correct_parses_dvc_create_request_pdu() {
     assert_eq!(
         DVC_CREATE_REQUEST.clone(),
-        CreateRequestPdu::from_buffer(&DVC_CREATE_REQUEST_BUFFER[1..], FieldType::U8).unwrap(),
+        CreateRequestPdu::from_buffer(
+            &DVC_CREATE_REQUEST_BUFFER[1..],
+            FieldType::U8,
+            DVC_CREATE_REQUEST_BUFFER_SIZE - DVC_TEST_HEADER_SIZE
+        )
+        .unwrap(),
     );
 }
 

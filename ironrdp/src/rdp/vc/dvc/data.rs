@@ -10,28 +10,28 @@ use crate::{rdp::vc::ChannelError, PduParsing};
 pub struct DataPdu {
     pub channel_id_type: FieldType,
     pub channel_id: u32,
-    pub dvc_data: Vec<u8>,
+    pub data_size: usize,
 }
 
 impl DataPdu {
     pub fn from_buffer(
         mut stream: impl io::Read,
         channel_id_type: FieldType,
+        mut data_size: usize,
     ) -> Result<Self, ChannelError> {
         let channel_id = channel_id_type.read_buffer_according_to_type(&mut stream)?;
-        let mut dvc_data = Vec::new();
-        stream.read_to_end(&mut dvc_data)?;
+        data_size -= channel_id_type.get_type_size();
 
         let expected_max_data_size =
             PDU_WITH_DATA_MAX_SIZE - (HEADER_SIZE + channel_id_type.get_type_size());
 
-        if dvc_data.len() > expected_max_data_size {
+        if data_size > expected_max_data_size {
             Err(ChannelError::InvalidDvcMessageSize)
         } else {
             Ok(Self {
                 channel_id_type,
                 channel_id,
-                dvc_data,
+                data_size,
             })
         }
     }
@@ -45,12 +45,11 @@ impl DataPdu {
         dvc_header.to_buffer(&mut stream)?;
         self.channel_id_type
             .to_buffer_according_to_type(&mut stream, self.channel_id)?;
-        stream.write_all(self.dvc_data.as_ref())?;
 
         Ok(())
     }
 
     pub fn buffer_length(&self) -> usize {
-        HEADER_SIZE + self.channel_id_type.get_type_size() + self.dvc_data.len()
+        HEADER_SIZE + self.channel_id_type.get_type_size()
     }
 }

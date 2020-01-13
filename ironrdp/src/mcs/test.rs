@@ -71,12 +71,12 @@ lazy_static! {
     static ref SEND_DATA_REQUEST_PDU: McsPdu = McsPdu::SendDataRequest(SendDataContext {
         initiator_id: 1007,
         channel_id: 1003,
-        pdu: rdp::test::CLIENT_INFO_PDU_BUFFER.clone(),
+        pdu_length: rdp::test::CLIENT_INFO_PDU_BUFFER.len(),
     });
     static ref SEND_DATA_INDICATION_PDU: McsPdu = McsPdu::SendDataIndication(SendDataContext {
         initiator_id: 1002,
         channel_id: 1003,
-        pdu: Vec::from(rdp::test::SERVER_LICENSE_BUFFER.as_ref()),
+        pdu_length: rdp::test::SERVER_LICENSE_BUFFER.len(),
     });
 }
 
@@ -288,7 +288,7 @@ fn from_buffer_correct_parses_send_data_request() {
 #[test]
 fn to_buffer_correct_serializes_send_data_request() {
     let pdu = SEND_DATA_REQUEST_PDU.clone();
-    let expected_buf = SEND_DATA_REQUEST_PDU_BUFFER.clone();
+    let expected_buf = SEND_DATA_REQUEST_PDU_BUFFER_PREFIX.to_vec();
 
     let mut buf = Vec::new();
     pdu.to_buffer(&mut buf).unwrap();
@@ -299,7 +299,7 @@ fn to_buffer_correct_serializes_send_data_request() {
 #[test]
 fn buffer_length_is_correct_for_send_data_request() {
     let pdu = SEND_DATA_REQUEST_PDU.clone();
-    let expected_buf_len = SEND_DATA_REQUEST_PDU_BUFFER.len();
+    let expected_buf_len = SEND_DATA_REQUEST_PDU_BUFFER_PREFIX.len();
 
     let len = pdu.buffer_length();
 
@@ -319,7 +319,7 @@ fn from_buffer_correct_parses_send_data_indication() {
 #[test]
 fn to_buffer_correct_serializes_send_data_indication() {
     let pdu = SEND_DATA_INDICATION_PDU.clone();
-    let expected_buf = SEND_DATA_INDICATION_PDU_BUFFER.to_vec();
+    let expected_buf = SEND_DATA_INDICATION_PDU_BUFFER_PREFIX.to_vec();
 
     let mut buf = Vec::new();
     pdu.to_buffer(&mut buf).unwrap();
@@ -330,7 +330,7 @@ fn to_buffer_correct_serializes_send_data_indication() {
 #[test]
 fn buffer_length_is_correct_for_send_data_indication() {
     let pdu = SEND_DATA_INDICATION_PDU.clone();
-    let expected_buf_len = SEND_DATA_INDICATION_PDU_BUFFER.len();
+    let expected_buf_len = SEND_DATA_INDICATION_PDU_BUFFER_PREFIX.len();
 
     let len = pdu.buffer_length();
 
