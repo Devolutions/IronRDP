@@ -11,7 +11,7 @@ pub use self::{
     },
 };
 
-use std::{io, mem};
+use std::io;
 
 use bytes::BytesMut;
 use ironrdp::PduParsing;
@@ -49,17 +49,13 @@ impl Encoder for DataTransport {
 }
 
 impl Decoder for DataTransport {
-    type Item = BytesMut;
+    type Item = usize;
     type Error = RdpError;
 
     fn decode(&mut self, mut stream: impl io::Read) -> RdpResult<Self::Item> {
         let data_pdu = ironrdp::Data::from_buffer(&mut stream)?;
 
-        let mut data = BytesMut::with_capacity(data_pdu.data_length);
-        data.resize(data_pdu.data_length, 0x00);
-        stream.read_exact(&mut data)?;
-
-        Ok(data)
+        Ok(data_pdu.data_length)
     }
 }
 
@@ -70,20 +66,31 @@ impl McsTransport {
     pub fn new(transport: DataTransport) -> Self {
         Self(transport)
     }
+
+    pub fn prepare_data_to_encode(
+        mcs_pdu: ironrdp::McsPdu,
+        extra_data: Option<Vec<u8>>,
+    ) -> RdpResult<BytesMut> {
+        let mut mcs_pdu_buff = BytesMut::with_capacity(mcs_pdu.buffer_length());
+        mcs_pdu_buff.resize(mcs_pdu.buffer_length(), 0x00);
+        mcs_pdu
+            .to_buffer(mcs_pdu_buff.as_mut())
+            .map_err(RdpError::McsError)?;
+
+        if let Some(data) = extra_data {
+            mcs_pdu_buff.extend_from_slice(&data);
+        }
+
+        Ok(mcs_pdu_buff)
+    }
 }
 
 impl Encoder for McsTransport {
-    type Item = ironrdp::McsPdu;
+    type Item = BytesMut;
     type Error = RdpError;
 
-    fn encode(&mut self, mcs_pdu: Self::Item, mut stream: impl io::Write) -> RdpResult<()> {
-        let mut mcs_pdu_buf = BytesMut::with_capacity(mcs_pdu.buffer_length() as usize);
-        mcs_pdu_buf.resize(mcs_pdu.buffer_length(), 0x00);
-        mcs_pdu
-            .to_buffer(mcs_pdu_buf.as_mut())
-            .map_err(RdpError::McsError)?;
-
-        self.0.encode(mcs_pdu_buf, &mut stream)
+    fn encode(&mut self, mcs_pdu_buff: Self::Item, mut stream: impl io::Write) -> RdpResult<()> {
+        self.0.encode(mcs_pdu_buff, &mut stream)
     }
 }
 
@@ -92,9 +99,8 @@ impl Decoder for McsTransport {
     type Error = RdpError;
 
     fn decode(&mut self, mut stream: impl io::Read) -> RdpResult<Self::Item> {
-        let data = self.0.decode(&mut stream)?;
-
-        let mcs_pdu = ironrdp::McsPdu::from_buffer(data.as_ref()).map_err(RdpError::McsError)?;
+        self.0.decode(&mut stream)?;
+        let mcs_pdu = ironrdp::McsPdu::from_buffer(&mut stream).map_err(RdpError::McsError)?;
 
         Ok(mcs_pdu)
     }
@@ -105,7 +111,6 @@ pub struct SendDataContextTransport {
     mcs_transport: McsTransport,
     state: SendDataContextTransportState,
     channel_ids: ChannelIdentificators,
-    send_data_context_pdu: Vec<u8>,
 }
 
 impl SendDataContextTransport {
@@ -117,7 +122,6 @@ impl SendDataContextTransport {
                 channel_id,
             },
             state: SendDataContextTransportState::ToDecode,
-            send_data_context_pdu: Vec::new(),
         }
     }
 
@@ -125,14 +129,8 @@ impl SendDataContextTransport {
         self.channel_ids = channel_ids;
     }
 
-    pub fn set_decoded_context(
-        &mut self,
-        channel_ids: ChannelIdentificators,
-        send_data_context_pdu: Vec<u8>,
-    ) {
+    pub fn set_decoded_context(&mut self, channel_ids: ChannelIdentificators) {
         self.set_channel_ids(channel_ids);
-
-        self.send_data_context_pdu = send_data_context_pdu;
         self.state = SendDataContextTransportState::Decoded;
     }
 }
@@ -146,7 +144,6 @@ impl Default for SendDataContextTransport {
                 channel_id: 0,
             },
             state: SendDataContextTransportState::ToDecode,
-            send_data_context_pdu: Vec::new(),
         }
     }
 }
@@ -160,19 +157,24 @@ impl Encoder for SendDataContextTransport {
         send_data_context_pdu: Self::Item,
         mut stream: impl io::Write,
     ) -> RdpResult<()> {
-        let send_data_context = ironrdp::mcs::SendDataContext::new(
-            send_data_context_pdu,
-            self.channel_ids.initiator_id,
-            self.channel_ids.channel_id,
-        );
+        let send_data_context = ironrdp::mcs::SendDataContext {
+            channel_id: self.channel_ids.channel_id,
+            initiator_id: self.channel_ids.initiator_id,
+            pdu_length: send_data_context_pdu.len(),
+        };
 
-        let send_data_request = ironrdp::McsPdu::SendDataRequest(send_data_context);
-        self.mcs_transport.encode(send_data_request, &mut stream)
+        self.mcs_transport.encode(
+            McsTransport::prepare_data_to_encode(
+                ironrdp::McsPdu::SendDataRequest(send_data_context),
+                Some(send_data_context_pdu),
+            )?,
+            &mut stream,
+        )
     }
 }
 
 impl Decoder for SendDataContextTransport {
-    type Item = (ChannelIdentificators, Vec<u8>);
+    type Item = ChannelIdentificators;
     type Error = RdpError;
 
     fn decode(&mut self, mut stream: impl io::Read) -> RdpResult<Self::Item> {
@@ -181,13 +183,12 @@ impl Decoder for SendDataContextTransport {
                 let mcs_pdu = self.mcs_transport.decode(&mut stream)?;
 
                 match mcs_pdu {
-                    ironrdp::McsPdu::SendDataIndication(send_data_context) => Ok((
-                        ChannelIdentificators {
+                    ironrdp::McsPdu::SendDataIndication(send_data_context) => {
+                        Ok(ChannelIdentificators {
                             initiator_id: send_data_context.initiator_id,
                             channel_id: send_data_context.channel_id,
-                        },
-                        send_data_context.pdu,
-                    )),
+                        })
+                    }
                     ironrdp::McsPdu::DisconnectProviderUltimatum(disconnect_reason) => {
                         Err(RdpError::UnexpectedDisconnection(format!(
                             "Server disconnection reason - {:?}",
@@ -200,10 +201,7 @@ impl Decoder for SendDataContextTransport {
                     ))),
                 }
             }
-            SendDataContextTransportState::Decoded => Ok((
-                self.channel_ids,
-                mem::replace(&mut self.send_data_context_pdu, Vec::new()),
-            )),
+            SendDataContextTransportState::Decoded => Ok(self.channel_ids),
         }
     }
 }

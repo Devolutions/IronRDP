@@ -97,8 +97,11 @@ impl Encoder for ShareControlHeaderTransport {
         share_control_pdu: Self::Item,
         mut stream: impl io::Write,
     ) -> RdpResult<()> {
-        let share_control_header =
-            ironrdp::ShareControlHeader::new(share_control_pdu, self.pdu_source, self.share_id);
+        let share_control_header = ironrdp::ShareControlHeader {
+            share_control_pdu,
+            pdu_source: self.pdu_source,
+            share_id: self.share_id,
+        };
 
         let mut pdu = Vec::with_capacity(share_control_header.buffer_length());
         share_control_header
@@ -114,8 +117,7 @@ impl Decoder for ShareControlHeaderTransport {
     type Error = RdpError;
 
     fn decode(&mut self, mut stream: impl io::Read) -> RdpResult<Self::Item> {
-        let (channel_ids, send_data_context) =
-            self.send_data_context_transport.decode(&mut stream)?;
+        let channel_ids = self.send_data_context_transport.decode(&mut stream)?;
         if channel_ids.channel_id != self.global_channel_id {
             return Err(RdpError::InvalidResponse(format!(
                 "Unexpected Send Data Context channel ID ({})",
@@ -123,9 +125,8 @@ impl Decoder for ShareControlHeaderTransport {
             )));
         }
 
-        let share_control_header =
-            ironrdp::ShareControlHeader::from_buffer(send_data_context.as_slice())
-                .map_err(RdpError::ShareControlHeaderError)?;
+        let share_control_header = ironrdp::ShareControlHeader::from_buffer(&mut stream)
+            .map_err(RdpError::ShareControlHeaderError)?;
         self.share_id = share_control_header.share_id;
 
         if share_control_header.pdu_source != SERVER_CHANNEL_ID {
@@ -152,12 +153,12 @@ impl Encoder for ShareDataHeaderTransport {
     type Error = RdpError;
 
     fn encode(&mut self, share_data_pdu: Self::Item, mut stream: impl io::Write) -> RdpResult<()> {
-        let share_data_header = ironrdp::ShareDataHeader::new(
+        let share_data_header = ironrdp::ShareDataHeader {
             share_data_pdu,
-            ironrdp::rdp::StreamPriority::Medium,
-            ironrdp::rdp::CompressionFlags::empty(),
-            ironrdp::rdp::CompressionType::K8, // ignored if CompressionFlags::empty()
-        );
+            stream_priority: ironrdp::rdp::StreamPriority::Medium,
+            compression_flags: ironrdp::rdp::CompressionFlags::empty(),
+            compression_type: ironrdp::rdp::CompressionType::K8, // ignored if CompressionFlags::empty()
+        };
 
         self.0.encode(
             ironrdp::ShareControlPdu::Data(share_data_header),

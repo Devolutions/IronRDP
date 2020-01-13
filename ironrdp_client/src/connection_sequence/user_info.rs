@@ -44,7 +44,9 @@ pub fn create_gcc_blocks(
 }
 
 pub fn create_client_info_pdu(config: &Config) -> RdpResult<ClientInfoPdu> {
-    let security_header = BasicSecurityHeader::new(BasicSecurityHeaderFlags::INFO_PKT);
+    let security_header = BasicSecurityHeader {
+        flags: BasicSecurityHeaderFlags::INFO_PKT,
+    };
     let client_info = ClientInfo {
         credentials: auth_identity_to_credentials(config.input.credentials.clone()),
         code_page: 0, // ignored if the keyboardLayout field of the Client Core Data is set to zero
@@ -71,7 +73,10 @@ pub fn create_client_info_pdu(config: &Config) -> RdpResult<ClientInfoPdu> {
         },
     };
 
-    Ok(ClientInfoPdu::new(security_header, client_info))
+    Ok(ClientInfoPdu {
+        security_header,
+        client_info,
+    })
 }
 
 pub fn create_client_confirm_active(
@@ -99,7 +104,10 @@ pub fn create_client_confirm_active(
 
     Ok(ClientConfirmActive {
         originator_id: SERVER_CHANNEL_ID,
-        pdu: ironrdp::DemandActive::new(SOURCE_DESCRIPTOR.to_string(), server_capability_sets),
+        pdu: ironrdp::DemandActive {
+            source_descriptor: SOURCE_DESCRIPTOR.to_string(),
+            capability_sets: server_capability_sets,
+        },
     })
 }
 
@@ -174,7 +182,10 @@ fn create_network_data(config: &Config) -> ClientNetworkData {
             .input
             .static_channels
             .iter()
-            .map(|name| Channel::new(name.to_string(), ChannelOptions::INITIALIZED))
+            .map(|name| Channel {
+                name: name.to_string(),
+                options: ChannelOptions::INITIALIZED,
+            })
             .collect(),
     }
 }

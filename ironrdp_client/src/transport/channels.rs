@@ -54,16 +54,15 @@ impl Encoder for StaticVirtualChannelTransport {
 }
 
 impl Decoder for StaticVirtualChannelTransport {
-    type Item = (u16, Vec<u8>);
+    type Item = (u16, usize);
     type Error = RdpError;
 
     fn decode(&mut self, mut stream: impl io::Read) -> RdpResult<Self::Item> {
-        let (channel_ids, mut channel_data_buffer) = self.transport.decode(&mut stream)?;
+        let channel_ids = self.transport.decode(&mut stream)?;
         self.channel_ids = channel_ids;
-        let channel_header = vc::ChannelPduHeader::from_buffer(channel_data_buffer.as_slice())?;
+        let channel_header = vc::ChannelPduHeader::from_buffer(&mut stream)?;
 
-        channel_data_buffer.drain(..channel_header.buffer_length());
-        Ok((channel_ids.channel_id, channel_data_buffer))
+        Ok((channel_ids.channel_id, channel_header.total_length as usize))
     }
 }
 
@@ -79,17 +78,28 @@ impl DynamicVirtualChannelTransport {
             drdynvc_id,
         }
     }
+
+    pub fn prepare_data_to_encode(
+        dvc_pdu: vc::dvc::ClientPdu,
+        extra_data: Option<Vec<u8>>,
+    ) -> RdpResult<Vec<u8>> {
+        let mut full_data_buff = Vec::with_capacity(dvc_pdu.buffer_length());
+        dvc_pdu.to_buffer(&mut full_data_buff)?;
+
+        if let Some(mut extra_data) = extra_data {
+            full_data_buff.append(&mut extra_data);
+        }
+
+        Ok(full_data_buff)
+    }
 }
 
 impl Encoder for DynamicVirtualChannelTransport {
-    type Item = vc::dvc::ClientPdu;
+    type Item = Vec<u8>;
     type Error = RdpError;
 
-    fn encode(&mut self, dvc_clien_pdu: Self::Item, mut stream: impl io::Write) -> RdpResult<()> {
-        let mut dvc_clien_pdu_buf = Vec::with_capacity(dvc_clien_pdu.buffer_length());
-        dvc_clien_pdu.to_buffer(&mut dvc_clien_pdu_buf)?;
-
-        self.transport.encode(dvc_clien_pdu_buf, &mut stream)
+    fn encode(&mut self, client_pdu_buff: Self::Item, mut stream: impl io::Write) -> RdpResult<()> {
+        self.transport.encode(client_pdu_buff, &mut stream)
     }
 }
 
@@ -98,7 +108,7 @@ impl Decoder for DynamicVirtualChannelTransport {
     type Error = RdpError;
 
     fn decode(&mut self, mut stream: impl io::Read) -> RdpResult<Self::Item> {
-        let (channel_id, channel_data_buffer) = self.transport.decode(&mut stream)?;
+        let (channel_id, dvc_data_size) = self.transport.decode(&mut stream)?;
         if self.drdynvc_id != channel_id {
             return Err(RdpError::InvalidChannelIdError(format!(
                 "Expected drdynvc {} ID, got: {} ID",
@@ -106,7 +116,7 @@ impl Decoder for DynamicVirtualChannelTransport {
             )));
         }
 
-        let dvc_server_pdu = vc::dvc::ServerPdu::from_buffer(channel_data_buffer.as_slice())?;
+        let dvc_server_pdu = vc::dvc::ServerPdu::from_buffer(&mut stream, dvc_data_size)?;
 
         Ok(dvc_server_pdu)
     }
