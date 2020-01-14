@@ -299,12 +299,18 @@ impl CompleteData {
     fn process_data_first_pdu(&mut self, total_data_size: usize, data: Vec<u8>) -> Option<Vec<u8>> {
         if self.total_size != 0 || !self.data.is_empty() {
             error!("Incomplete DVC message, it will be skipped");
+
             self.data.clear();
         }
-        self.total_size = total_data_size;
-        self.data = data;
 
-        None
+        if total_data_size == data.len() {
+            Some(data)
+        } else {
+            self.total_size = total_data_size;
+            self.data = data;
+
+            None
+        }
     }
 
     fn process_data_pdu(&mut self, mut data: Vec<u8>) -> Option<Vec<u8>> {
