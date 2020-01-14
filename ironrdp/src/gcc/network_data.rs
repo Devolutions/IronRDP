@@ -133,12 +133,6 @@ pub struct Channel {
     pub options: ChannelOptions,
 }
 
-impl Channel {
-    pub fn new(name: String, options: ChannelOptions) -> Self {
-        Self { name, options }
-    }
-}
-
 impl PduParsing for Channel {
     type Error = NetworkDataError;
 

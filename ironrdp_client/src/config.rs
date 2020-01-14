@@ -227,11 +227,7 @@ impl Input {
         let static_channels = if let Some(values) = matches.values_of("static-channels") {
             values.map(String::from).collect::<Vec<_>>()
         } else {
-            vec![
-                String::from("rdpdr"),
-                String::from("rdpsnd"),
-                String::from("cliprdr"),
-            ]
+            vec![String::from("drdynvc")]
         };
 
         Self {

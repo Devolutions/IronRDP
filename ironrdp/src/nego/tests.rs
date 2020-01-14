@@ -662,7 +662,7 @@ fn parse_negotiation_request_correctly_handles_invalid_slice_length() {
     ];
 
     match Request::from_buffer(request.as_ref()) {
-        Err(NegotiationError::IOError(ref e)) if e.kind() == io::ErrorKind::InvalidData => (),
+        Err(NegotiationError::TpktVersionError) => (),
         Err(_e) => panic!("wrong error type"),
         _ => panic!("error expected"),
     }

@@ -3,6 +3,8 @@ pub mod test;
 
 pub mod capability_sets;
 pub mod server_license;
+pub mod session_info;
+pub mod vc;
 
 mod client_info;
 mod finalization_messages;
@@ -42,15 +44,6 @@ use crate::{impl_from_error, PduParsing};
 pub struct ClientInfoPdu {
     pub security_header: BasicSecurityHeader,
     pub client_info: ClientInfo,
-}
-
-impl ClientInfoPdu {
-    pub fn new(security_header: BasicSecurityHeader, client_info: ClientInfo) -> Self {
-        Self {
-            security_header,
-            client_info,
-        }
-    }
 }
 
 impl PduParsing for ClientInfoPdu {
@@ -111,6 +104,8 @@ pub enum RdpError {
     UnexpectedShareControlPdu(ShareControlPduType),
     #[fail(display = "Unexpected RDP Share Data Header PDU type: {:?}", _0)]
     UnexpectedShareDataPdu(ShareDataPduType),
+    #[fail(display = "Save session info PDU error: {}", _0)]
+    SaveSessionInfoError(session_info::SessionError),
 }
 
 impl_from_error!(io::Error, RdpError, RdpError::IOError);
@@ -121,6 +116,11 @@ impl_from_error!(
     FinalizationMessagesError,
     RdpError,
     RdpError::FinalizationMessagesError
+);
+impl_from_error!(
+    session_info::SessionError,
+    RdpError,
+    RdpError::SaveSessionInfoError
 );
 
 impl From<RdpError> for io::Error {

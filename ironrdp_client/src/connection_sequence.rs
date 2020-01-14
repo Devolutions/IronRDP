@@ -1,10 +1,4 @@
-mod transport;
 mod user_info;
-
-pub use transport::{
-    DataTransport, EarlyUserAuthResult, McsTransport, SendDataContextTransport,
-    ShareControlHeaderTransport, ShareDataHeaderTransport, TsRequestTransport,
-};
 
 use std::{collections::HashMap, io, iter};
 
@@ -21,24 +15,17 @@ use ironrdp::{
     },
     PduParsing,
 };
-use lazy_static::lazy_static;
 use log::{debug, info, trace};
 use ring::rand::SecureRandom;
 use rustls::{internal::msgs::handshake::CertificatePayload, Session};
 use sspi::internal::credssp;
 
-use crate::{
-    config::Config,
-    connection_sequence::transport::{Decoder, Encoder},
-    utils, RdpError, RdpResult,
-};
+use crate::{config::Config, transport::*, utils, RdpError, RdpResult};
 
 pub type StaticChannels = HashMap<String, u16>;
 
-lazy_static! {
-    pub static ref GLOBAL_CHANNEL_NAME: String = String::from("GLOBAL");
-    pub static ref USER_CHANNEL_NAME: String = String::from("USER");
-}
+pub const GLOBAL_CHANNEL_NAME: &str = "GLOBAL";
+pub const USER_CHANNEL_NAME: &str = "USER";
 
 pub fn process_cred_ssp<'a, S, T>(
     mut tls_stream: &mut bufstream::BufStream<rustls::Stream<'a, S, T>>,
@@ -105,7 +92,11 @@ pub fn process_mcs_connect(
     connect_initial.to_buffer(connect_initial_buf.as_mut())?;
     transport.encode(connect_initial_buf, &mut stream)?;
 
-    let data = transport.decode(&mut stream)?;
+    let data_length = transport.decode(&mut stream)?;
+    let mut data = BytesMut::with_capacity(data_length);
+    data.resize(data_length, 0x00);
+    stream.read_exact(&mut data)?;
+
     let connect_response =
         ironrdp::ConnectResponse::from_buffer(data.as_ref()).map_err(RdpError::McsConnectError)?;
     debug!("Got MCS Connect Response PDU: {:?}", connect_response);
@@ -152,18 +143,29 @@ pub fn process_mcs(
     transport: &mut McsTransport,
     mut static_channels: StaticChannels,
 ) -> RdpResult<StaticChannels> {
-    let erect_domain_request = ironrdp::mcs::ErectDomainPdu::new(0, 0);
+    let erect_domain_request = ironrdp::mcs::ErectDomainPdu {
+        sub_height: 0,
+        sub_interval: 0,
+    };
 
     debug!(
         "Send MCS Erect Domain Request PDU: {:?}",
         erect_domain_request
     );
+
     transport.encode(
-        ironrdp::McsPdu::ErectDomainRequest(erect_domain_request),
+        McsTransport::prepare_data_to_encode(
+            ironrdp::McsPdu::ErectDomainRequest(erect_domain_request),
+            None,
+        )?,
         &mut stream,
     )?;
+
     debug!("Send MCS Attach User Request PDU");
-    transport.encode(ironrdp::McsPdu::AttachUserRequest, &mut stream)?;
+    transport.encode(
+        McsTransport::prepare_data_to_encode(ironrdp::McsPdu::AttachUserRequest, None)?,
+        &mut stream,
+    )?;
 
     let mcs_pdu = transport.decode(&mut stream)?;
     let initiator_id = if let ironrdp::McsPdu::AttachUserConfirm(attach_user_confirm) = mcs_pdu {
@@ -183,13 +185,19 @@ pub fn process_mcs(
     };
 
     for (_, id) in static_channels.iter() {
-        let channel_join_request = ironrdp::mcs::ChannelJoinRequestPdu::new(initiator_id, *id);
+        let channel_join_request = ironrdp::mcs::ChannelJoinRequestPdu {
+            initiator_id,
+            channel_id: *id,
+        };
         debug!(
             "Send MCS Channel Join Request PDU: {:?}",
             channel_join_request
         );
         transport.encode(
-            ironrdp::McsPdu::ChannelJoinRequest(channel_join_request),
+            McsTransport::prepare_data_to_encode(
+                ironrdp::McsPdu::ChannelJoinRequest(channel_join_request),
+                None,
+            )?,
             &mut stream,
         )?;
 
@@ -239,9 +247,12 @@ pub fn process_server_license_exchange(
     mut stream: impl io::BufRead + io::Write,
     transport: &mut SendDataContextTransport,
     config: &Config,
+    global_channel_id: u16,
 ) -> RdpResult<()> {
-    let pdu = transport.decode(&mut stream)?;
-    let initial_license_message = InitialServerLicenseMessage::from_buffer(pdu.as_slice())
+    let channel_ids = transport.decode(&mut stream)?;
+    check_global_id(channel_ids, global_channel_id)?;
+
+    let initial_license_message = InitialServerLicenseMessage::from_buffer(&mut stream)
         .map_err(|err| RdpError::ServerLicenseError(rdp::RdpError::ServerLicenseError(err)))?;
 
     debug!("Received Initial License Message PDU");
@@ -306,8 +317,10 @@ pub fn process_server_license_exchange(
         })?;
     transport.encode(new_pdu_buffer, &mut stream)?;
 
-    let pdu = transport.decode(&mut stream)?;
-    let challenge = ServerPlatformChallenge::from_buffer(pdu.as_slice())
+    let channel_ids = transport.decode(&mut stream)?;
+    check_global_id(channel_ids, global_channel_id)?;
+
+    let challenge = ServerPlatformChallenge::from_buffer(&mut stream)
         .map_err(|err| RdpError::ServerLicenseError(rdp::RdpError::ServerLicenseError(err)))?;
 
     debug!("Received Server Platform Challenge PDU");
@@ -348,8 +361,10 @@ pub fn process_server_license_exchange(
         })?;
     transport.encode(new_pdu_buffer, &mut stream)?;
 
-    let pdu = transport.decode(&mut stream)?;
-    let upgrade_license = ServerUpgradeLicense::from_buffer(pdu.as_slice())
+    let channel_ids = transport.decode(&mut stream)?;
+    check_global_id(channel_ids, global_channel_id)?;
+
+    let upgrade_license = ServerUpgradeLicense::from_buffer(&mut stream)
         .map_err(|err| RdpError::ServerLicenseError(rdp::RdpError::ServerLicenseError(err)))?;
 
     debug!("Received Server Upgrade License PDU");
@@ -425,21 +440,25 @@ pub fn process_finalization(
     let mut finalization_order = FinalizationOrder::Synchronize;
     while finalization_order != FinalizationOrder::Finished {
         let share_data_pdu = match finalization_order {
-            FinalizationOrder::Synchronize => {
-                ShareDataPdu::Synchronize(SynchronizePdu::new(initiator_id))
-            }
-            FinalizationOrder::ControlCooperate => {
-                ShareDataPdu::Control(ControlPdu::new(ControlAction::Cooperate, 0, 0))
-            }
-            FinalizationOrder::RequestControl => {
-                ShareDataPdu::Control(ControlPdu::new(ControlAction::RequestControl, 0, 0))
-            }
-            FinalizationOrder::Font => ShareDataPdu::FontList(FontPdu::new(
-                0,
-                0,
-                SequenceFlags::FIRST | SequenceFlags::LAST,
-                0x0032,
-            )),
+            FinalizationOrder::Synchronize => ShareDataPdu::Synchronize(SynchronizePdu {
+                target_user_id: initiator_id,
+            }),
+            FinalizationOrder::ControlCooperate => ShareDataPdu::Control(ControlPdu {
+                action: ControlAction::Cooperate,
+                grant_id: 0,
+                control_id: 0,
+            }),
+            FinalizationOrder::RequestControl => ShareDataPdu::Control(ControlPdu {
+                action: ControlAction::RequestControl,
+                grant_id: 0,
+                control_id: 0,
+            }),
+            FinalizationOrder::Font => ShareDataPdu::FontList(FontPdu {
+                number: 0,
+                total_number: 0,
+                flags: SequenceFlags::FIRST | SequenceFlags::LAST,
+                entry_size: 0x0032,
+            }),
             FinalizationOrder::Finished => unreachable!(),
         };
         debug!("Send Finalization PDU: {:?}", share_data_pdu);
@@ -482,4 +501,15 @@ pub fn process_finalization(
     }
 
     Ok(())
+}
+
+fn check_global_id(channel_ids: ChannelIdentificators, id: u16) -> Result<(), RdpError> {
+    if channel_ids.channel_id != id {
+        Err(RdpError::InvalidResponse(format!(
+            "Unexpected Send Data Context channel ID ({})",
+            channel_ids.channel_id,
+        )))
+    } else {
+        Ok(())
+    }
 }

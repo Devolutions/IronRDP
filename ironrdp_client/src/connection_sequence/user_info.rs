@@ -44,7 +44,9 @@ pub fn create_gcc_blocks(
 }
 
 pub fn create_client_info_pdu(config: &Config) -> RdpResult<ClientInfoPdu> {
-    let security_header = BasicSecurityHeader::new(BasicSecurityHeaderFlags::INFO_PKT);
+    let security_header = BasicSecurityHeader {
+        flags: BasicSecurityHeaderFlags::INFO_PKT,
+    };
     let client_info = ClientInfo {
         credentials: auth_identity_to_credentials(config.input.credentials.clone()),
         code_page: 0, // ignored if the keyboardLayout field of the Client Core Data is set to zero
@@ -71,7 +73,10 @@ pub fn create_client_info_pdu(config: &Config) -> RdpResult<ClientInfoPdu> {
         },
     };
 
-    Ok(ClientInfoPdu::new(security_header, client_info))
+    Ok(ClientInfoPdu {
+        security_header,
+        client_info,
+    })
 }
 
 pub fn create_client_confirm_active(
@@ -99,7 +104,10 @@ pub fn create_client_confirm_active(
 
     Ok(ClientConfirmActive {
         originator_id: SERVER_CHANNEL_ID,
-        pdu: ironrdp::DemandActive::new(SOURCE_DESCRIPTOR.to_string(), server_capability_sets),
+        pdu: ironrdp::DemandActive {
+            source_descriptor: SOURCE_DESCRIPTOR.to_string(),
+            capability_sets: server_capability_sets,
+        },
     })
 }
 
@@ -111,8 +119,8 @@ fn create_core_data(
 
     Ok(ClientCoreData {
         version: RdpVersion::V5Plus,
-        desktop_width: current_monitor.size().width.round() as u16,
-        desktop_height: current_monitor.size().height.round() as u16,
+        desktop_width: current_monitor.size().width as u16,
+        desktop_height: current_monitor.size().height as u16,
         color_depth: ColorDepth::Bpp4, // ignored
         sec_access_sequence: SecureAccessSequence::Del,
         keyboard_layout: 0, // the server SHOULD use the default active input locale identifier
@@ -141,19 +149,18 @@ fn create_optional_core_data(
         supported_color_depths: Some(
             current_monitor
                 .video_modes()
-                .map(|video_mode| {
-                    let supported_color_depth = SupportedColorDepths::BPP15
-                        | SupportedColorDepths::BPP16
-                        | SupportedColorDepths::BPP24;
-                    match video_mode.bit_depth() {
-                        15 | 16 | 24 => supported_color_depth,
-                        32 => supported_color_depth | SupportedColorDepths::BPP32,
-                        _ => SupportedColorDepths::empty(),
+                .map(|video_mode| match video_mode.bit_depth() {
+                    15 | 16 | 24 | 32 => {
+                        SupportedColorDepths::BPP15
+                            | SupportedColorDepths::BPP16
+                            | SupportedColorDepths::BPP24
+                            | SupportedColorDepths::BPP32
                     }
+                    _ => SupportedColorDepths::empty(),
                 })
                 .collect(),
         ),
-        early_capability_flags: Some(ClientEarlyCapabilityFlags::empty()),
+        early_capability_flags: Some(ClientEarlyCapabilityFlags::SUPPORT_DYN_VC_GFX_PROTOCOL),
         dig_product_id: Some(config.input.dig_product_id.clone()),
         connection_type: Some(ConnectionType::NotUsed),
         server_selected_protocol: Some(selected_protocol),
@@ -175,7 +182,10 @@ fn create_network_data(config: &Config) -> ClientNetworkData {
             .input
             .static_channels
             .iter()
-            .map(|name| Channel::new(name.to_string(), ChannelOptions::INITIALIZED))
+            .map(|name| Channel {
+                name: name.to_string(),
+                options: ChannelOptions::INITIALIZED,
+            })
             .collect(),
     }
 }
@@ -200,8 +210,8 @@ fn create_general_capability_set() -> CapabilitySet {
 fn create_bitmap_capability_set(current_monitor: &winit::monitor::MonitorHandle) -> CapabilitySet {
     CapabilitySet::Bitmap(Bitmap {
         pref_bits_per_pix: get_color_depth(current_monitor).to_u16().unwrap(),
-        desktop_width: current_monitor.size().width.round() as u16,
-        desktop_height: current_monitor.size().height.round() as u16,
+        desktop_width: current_monitor.size().width as u16,
+        desktop_height: current_monitor.size().height as u16,
         desktop_resize_flag: false,
         drawing_flags: BitmapDrawingFlags::empty(),
     })

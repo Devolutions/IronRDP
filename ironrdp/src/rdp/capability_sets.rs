@@ -124,15 +124,6 @@ pub struct DemandActive {
     pub capability_sets: Vec<CapabilitySet>,
 }
 
-impl DemandActive {
-    pub fn new(source_descriptor: String, capability_sets: Vec<CapabilitySet>) -> Self {
-        Self {
-            source_descriptor,
-            capability_sets,
-        }
-    }
-}
-
 impl PduParsing for DemandActive {
     type Error = CapabilitySetsError;
 

@@ -114,13 +114,12 @@ lazy_static! {
 
         let preamble_size_field = (buf.len() + PREAMBLE_SIZE) as u16;
 
-        let buf = [
+        [
             LICENSE_HEADER_BUFFER_NO_SIZE.as_ref(),
             &preamble_size_field.to_le_bytes(),
             buf.as_slice()
-        ].concat();
-
-        buf
+        ]
+        .concat()
     };
 
     pub static ref SERVER_LICENSE_REQUEST: ServerLicenseRequest = ServerLicenseRequest {

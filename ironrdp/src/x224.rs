@@ -42,15 +42,12 @@ impl TpktHeader {
 }
 
 impl PduParsing for TpktHeader {
-    type Error = io::Error;
+    type Error = NegotiationError;
 
     fn from_buffer(mut stream: impl io::Read) -> Result<Self, Self::Error> {
         let version = stream.read_u8()?;
         if version != TPKT_VERSION {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "invalid tpkt header version",
-            ));
+            return Err(NegotiationError::TpktVersionError);
         }
 
         let _reserved = stream.read_u8()?;

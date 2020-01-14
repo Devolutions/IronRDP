@@ -107,7 +107,7 @@ fn write_blob_header_writes_blob_header_correctly() {
         .write_to_buffer(&mut buffer)
         .unwrap();
 
-    assert_eq!(correct_blob_header.as_ref(), buffer.as_slice());
+    assert_eq!(correct_blob_header, buffer.as_slice());
 }
 
 #[test]

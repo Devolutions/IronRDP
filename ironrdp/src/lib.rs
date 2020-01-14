@@ -14,7 +14,7 @@ pub use crate::{
     mcs::{ConnectInitial, ConnectResponse, McsError, McsPdu, SendDataContext},
     nego::*,
     rdp::{
-        CapabilitySet, ClientConfirmActive, ClientInfoPdu, ControlAction, DemandActive,
+        vc::dvc, CapabilitySet, ClientConfirmActive, ClientInfoPdu, ControlAction, DemandActive,
         ServerDemandActive, ShareControlHeader, ShareControlPdu, ShareDataHeader, ShareDataPdu,
         VirtualChannel,
     },

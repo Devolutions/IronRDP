@@ -162,15 +162,6 @@ pub struct ErectDomainPdu {
     pub sub_interval: u32,
 }
 
-impl ErectDomainPdu {
-    pub fn new(sub_height: u32, sub_interval: u32) -> Self {
-        Self {
-            sub_height,
-            sub_interval,
-        }
-    }
-}
-
 impl PduParsing for ErectDomainPdu {
     type Error = io::Error;
 
@@ -199,15 +190,6 @@ impl PduParsing for ErectDomainPdu {
 pub struct AttachUserConfirmPdu {
     pub initiator_id: u16,
     pub result: u8,
-}
-
-impl AttachUserConfirmPdu {
-    pub fn new(initiator_id: u16, result: u8) -> Self {
-        Self {
-            initiator_id,
-            result,
-        }
-    }
 }
 
 impl PduParsing for AttachUserConfirmPdu {
@@ -239,15 +221,6 @@ pub struct ChannelJoinRequestPdu {
     pub channel_id: u16,
 }
 
-impl ChannelJoinRequestPdu {
-    pub fn new(initiator_id: u16, channel_id: u16) -> Self {
-        Self {
-            initiator_id,
-            channel_id,
-        }
-    }
-}
-
 impl PduParsing for ChannelJoinRequestPdu {
     type Error = io::Error;
 
@@ -277,17 +250,6 @@ pub struct ChannelJoinConfirmPdu {
     pub result: u8,
     pub initiator_id: u16,
     pub requested_channel_id: u16,
-}
-
-impl ChannelJoinConfirmPdu {
-    pub fn new(channel_id: u16, result: u8, initiator_id: u16, requested_channel_id: u16) -> Self {
-        Self {
-            channel_id,
-            result,
-            initiator_id,
-            requested_channel_id,
-        }
-    }
 }
 
 impl PduParsing for ChannelJoinConfirmPdu {
@@ -323,19 +285,9 @@ impl PduParsing for ChannelJoinConfirmPdu {
 /// [`RdpHeaderMessage`](enum.RdpHeaderMessage.html).
 #[derive(Debug, Clone, PartialEq)]
 pub struct SendDataContext {
-    pub pdu: Vec<u8>,
     pub initiator_id: u16,
     pub channel_id: u16,
-}
-
-impl SendDataContext {
-    pub fn new(pdu: Vec<u8>, initiator_id: u16, channel_id: u16) -> Self {
-        Self {
-            pdu,
-            initiator_id,
-            channel_id,
-        }
-    }
+    pub pdu_length: usize,
 }
 
 impl PduParsing for SendDataContext {
@@ -345,15 +297,12 @@ impl PduParsing for SendDataContext {
         let initiator_id = per::read_u16(&mut stream, BASE_CHANNEL_ID)?;
         let channel_id = per::read_u16(&mut stream, 0)?;
         let _data_priority_and_segmentation = stream.read_u8()?;
-        let (length, _) = per::read_length(&mut stream)?;
-
-        let mut pdu = vec![0; length as usize];
-        stream.read_exact(&mut pdu)?;
+        let (pdu_length, _) = per::read_length(&mut stream)?;
 
         Ok(Self {
-            pdu,
             initiator_id,
             channel_id,
+            pdu_length: pdu_length as usize,
         })
     }
 
@@ -361,13 +310,13 @@ impl PduParsing for SendDataContext {
         per::write_u16(&mut stream, self.initiator_id, BASE_CHANNEL_ID)?;
         per::write_u16(&mut stream, self.channel_id, 0)?;
         stream.write_u8(SEND_DATA_PDU_DATA_PRIORITY_AND_SEGMENTATION)?;
-        per::write_length(&mut stream, self.pdu.len() as u16)?;
-        stream.write_all(self.pdu.as_ref())?;
+        per::write_length(&mut stream, self.pdu_length as u16)?;
 
         Ok(())
     }
+
     fn buffer_length(&self) -> usize {
-        per::SIZEOF_U16 * 2 + 1 + per::sizeof_length(self.pdu.len() as u16) + self.pdu.len()
+        per::SIZEOF_U16 * 2 + 1 + per::sizeof_length(self.pdu_length as u16)
     }
 }
 

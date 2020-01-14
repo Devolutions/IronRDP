@@ -1,5 +1,7 @@
+mod channels;
 mod config;
 mod connection_sequence;
+mod transport;
 mod utils;
 
 use std::{
@@ -9,11 +11,23 @@ use std::{
 };
 
 use failure::Fail;
-use ironrdp::{nego, rdp};
+use ironrdp::{dvc::gfx, nego, rdp};
 use log::{debug, error, warn};
 use sspi::internal::credssp;
 
-use self::{config::Config, connection_sequence::*};
+use self::{
+    channels::process_active_connection_messages,
+    config::Config,
+    connection_sequence::{
+        process_capability_sets, process_cred_ssp, process_finalization, process_mcs,
+        process_mcs_connect, process_server_license_exchange, send_client_info, StaticChannels,
+        GLOBAL_CHANNEL_NAME, USER_CHANNEL_NAME,
+    },
+    transport::{
+        connect, EarlyUserAuthResult, McsTransport, SendDataContextTransport,
+        ShareControlHeaderTransport, ShareDataHeaderTransport,
+    },
+};
 
 pub type RdpResult<T> = Result<T, RdpError>;
 
@@ -39,7 +53,7 @@ fn main() {
 
     match run(config) {
         Ok(_) => {
-            println!("RDP connection sequence finished");
+            println!("RDP connection sequence and DVC messages exchange finished");
             std::process::exit(exitcode::OK);
         }
         Err(e) => {
@@ -77,11 +91,12 @@ fn run(config: Config) -> RdpResult<()> {
     let stream = TcpStream::connect(addr.as_str()).map_err(RdpError::ConnectionError)?;
     let mut stream = bufstream::BufStream::new(stream);
 
-    let (mut transport, selected_protocol) = DataTransport::connect(
+    let (mut transport, selected_protocol) = connect(
         &mut stream,
         config.input.security_protocol,
         config.input.credentials.username.clone(),
     )?;
+
     let mut stream = stream.into_inner().map_err(io::Error::from)?;
 
     let mut client_config = rustls::ClientConfig::default();
@@ -120,15 +135,21 @@ fn run(config: Config) -> RdpResult<()> {
     debug!("Joined static channels: {:?}", joined_static_channels);
 
     let global_channel_id = *joined_static_channels
-        .get(&*GLOBAL_CHANNEL_NAME)
+        .get(GLOBAL_CHANNEL_NAME)
         .expect("global channel must be added");
     let initiator_id = *joined_static_channels
-        .get(&*USER_CHANNEL_NAME)
+        .get(USER_CHANNEL_NAME)
         .expect("user channel must be added");
 
     let mut transport = SendDataContextTransport::new(transport, initiator_id, global_channel_id);
     send_client_info(&mut tls_stream, &mut transport, &config)?;
-    match process_server_license_exchange(&mut tls_stream, &mut transport, &config) {
+
+    match process_server_license_exchange(
+        &mut tls_stream,
+        &mut transport,
+        &config,
+        global_channel_id,
+    ) {
         Err(RdpError::ServerLicenseError(rdp::RdpError::ServerLicenseError(
             rdp::server_license::ServerLicenseError::UnexpectedValidClientError(_),
         ))) => {
@@ -138,11 +159,14 @@ fn run(config: Config) -> RdpResult<()> {
         Ok(_) => (),
     }
 
-    let mut transport = ShareControlHeaderTransport::new(transport, initiator_id);
+    let mut transport =
+        ShareControlHeaderTransport::new(transport, initiator_id, global_channel_id);
     process_capability_sets(&mut tls_stream, &mut transport, &config)?;
 
     let mut transport = ShareDataHeaderTransport::new(transport);
     process_finalization(&mut tls_stream, &mut transport, initiator_id)?;
+
+    process_active_connection_messages(&mut tls_stream, joined_static_channels)?;
 
     Ok(())
 }
@@ -159,6 +183,8 @@ pub enum RdpError {
     NegotiationError(#[fail(cause)] ironrdp::nego::NegotiationError),
     #[fail(display = "unexpected PDU: {}", _0)]
     UnexpectedPdu(String),
+    #[fail(display = "Unexpected disconnection: {}", _0)]
+    UnexpectedDisconnection(String),
     #[fail(display = "invalid response: {}", _0)]
     InvalidResponse(String),
     #[fail(display = "TLS connector error: {}", _0)]
@@ -187,6 +213,16 @@ pub enum RdpError {
     ShareControlHeaderError(ironrdp::rdp::RdpError),
     #[fail(display = "capability sets error: {}", _0)]
     CapabilitySetsError(ironrdp::rdp::RdpError),
+    #[fail(display = "Virtual channel error: {}", _0)]
+    VirtualChannelError(ironrdp::rdp::vc::ChannelError),
+    #[fail(display = "Invalid channel id error: {}", _0)]
+    InvalidChannelIdError(String),
+    #[fail(display = "Graphics pipeline protocol error: {}", _0)]
+    GraphicsPipelineError(gfx::GraphicsPipelineError),
+    #[fail(display = "ZGFX error: {}", _0)]
+    ZgfxError(#[fail(cause)] gfx::zgfx::ZgfxError),
+    #[fail(display = "Access to the non-existing channel: {}", _0)]
+    AccessToNonExistingChannel(u32),
 }
 
 impl From<io::Error> for RdpError {
@@ -214,5 +250,23 @@ impl From<ironrdp::nego::NegotiationError> for RdpError {
 impl From<ironrdp::McsError> for RdpError {
     fn from(e: ironrdp::McsError) -> Self {
         RdpError::McsError(e)
+    }
+}
+
+impl From<ironrdp::rdp::vc::ChannelError> for RdpError {
+    fn from(e: ironrdp::rdp::vc::ChannelError) -> Self {
+        RdpError::VirtualChannelError(e)
+    }
+}
+
+impl From<gfx::GraphicsPipelineError> for RdpError {
+    fn from(e: gfx::GraphicsPipelineError) -> Self {
+        RdpError::GraphicsPipelineError(e)
+    }
+}
+
+impl From<gfx::zgfx::ZgfxError> for RdpError {
+    fn from(e: gfx::zgfx::ZgfxError) -> Self {
+        RdpError::ZgfxError(e)
     }
 }
