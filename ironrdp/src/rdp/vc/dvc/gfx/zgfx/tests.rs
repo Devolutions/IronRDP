@@ -228,15 +228,3 @@ fn zgfx_decopresses_unencoded_block_without_padding() {
         .unwrap();
     assert_eq!(decompressed, expected);
 }
-
-#[test]
-fn complete_to_u32_fills_zeros_for_less_then_one_byte_bits_buffer() {
-    let bits: BitVec<BigEndian, u8> = slice_to_bitvec(&[0, 0, 1, 0, 1, 1, 0]);
-    let expected: BitVec<BigEndian, u8> = slice_to_bitvec(&[
-        0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1,
-        1, 0,
-    ]);
-    let bits = complete_to_u32(bits.as_bitslice());
-
-    assert_eq!(bits, expected);
-}
