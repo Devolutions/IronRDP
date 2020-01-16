@@ -151,7 +151,7 @@ fn from_buffer_server_security_data_fails_with_invalid_server_random_length() {
     let buffer = SERVER_SECURITY_DATA_WITH_INVALID_SERVER_RANDOM_BUFFER.clone();
 
     match ServerSecurityData::from_buffer(buffer.as_slice()) {
-        Err(SecurityDataError::InvalidServerRandomLen) => (),
+        Err(SecurityDataError::InvalidServerRandomLen(_)) => (),
         res => panic!(
             "Expected the invalid server random length error, got: {:?}",
             res

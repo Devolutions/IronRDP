@@ -130,6 +130,11 @@ impl PduParsing for MonitorLayoutPdu {
 
     fn from_buffer(mut stream: impl io::Read) -> Result<Self, Self::Error> {
         let monitor_count = stream.read_u32::<LittleEndian>()?;
+        if monitor_count > 64 {
+            return Err(FinalizationMessagesError::InvalidMonitorCount(
+                monitor_count,
+            ));
+        }
 
         let mut monitors = Vec::with_capacity(monitor_count as usize);
         for _ in 0..monitor_count {
@@ -186,6 +191,8 @@ pub enum FinalizationMessagesError {
     InvalidControlId,
     #[fail(display = "Invalid list flags field in Font List PDU")]
     InvalidListFlags,
+    #[fail(display = "Invalid monitor count field: {}", _0)]
+    InvalidMonitorCount(u32),
 }
 
 impl_from_error!(

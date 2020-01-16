@@ -176,6 +176,10 @@ impl PduParsing for ServerLicenseRequest {
         };
 
         let scope_count = stream.read_u32::<LittleEndian>()?;
+        if scope_count > 256 {
+            return Err(ServerLicenseError::InvalidScopeCount(scope_count));
+        }
+
         let mut scope_list = Vec::with_capacity(scope_count as usize);
 
         for _ in 0..scope_count {
@@ -362,8 +366,10 @@ impl PduParsing for ProductInfo {
         let version = stream.read_u32::<LittleEndian>()?;
 
         let company_name_len = stream.read_u32::<LittleEndian>()?;
-        if company_name_len < 2 {
-            return Err(ServerLicenseError::InvalidProductInfoStringField);
+        if company_name_len < 2 || company_name_len > 1024 {
+            return Err(ServerLicenseError::InvalidCompanyNameLength(
+                company_name_len,
+            ));
         }
 
         let mut company_name = vec![0u8; company_name_len as usize];
@@ -373,8 +379,8 @@ impl PduParsing for ProductInfo {
         let company_name = utils::bytes_to_utf16_string(&company_name.as_slice());
 
         let product_id_len = stream.read_u32::<LittleEndian>()?;
-        if product_id_len < 2 {
-            return Err(ServerLicenseError::InvalidProductInfoStringField);
+        if product_id_len < 2 || product_id_len > 1024 {
+            return Err(ServerLicenseError::InvalidProductIdLength(product_id_len));
         }
 
         let mut product_id = vec![0u8; product_id_len as usize];
