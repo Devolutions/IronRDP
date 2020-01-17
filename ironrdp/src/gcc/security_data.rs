@@ -19,6 +19,7 @@ const SERVER_ENCRYPTION_LEVEL_SIZE: usize = 4;
 const SERVER_RANDOM_LEN_SIZE: usize = 4;
 const SERVER_CERT_LEN_SIZE: usize = 4;
 const SERVER_RANDOM_LEN: usize = 0x20;
+const MAX_SERVER_CERT_LEN: u32 = 1024;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ClientSecurityData {
@@ -100,7 +101,7 @@ impl PduParsing for ServerSecurityData {
 
                 let server_cert_len = buffer.read_u32::<LittleEndian>()?;
 
-                if server_cert_len > 1024 {
+                if server_cert_len > MAX_SERVER_CERT_LEN {
                     return Err(SecurityDataError::InvalidServerCertificateLen(
                         server_cert_len,
                     ));

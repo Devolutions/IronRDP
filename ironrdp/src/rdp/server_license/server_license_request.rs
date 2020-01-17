@@ -24,6 +24,9 @@ const SCOPE_ARRAY_SIZE_FIELD_SIZE: usize = 4;
 const PRODUCT_INFO_STATIC_FIELDS_SIZE: usize = 12;
 const CERT_CHAIN_VERSION_MASK: u32 = 0x7FFF_FFFF;
 const CERT_CHAIN_ISSUED_MASK: u32 = 0x8000_0000;
+const MAX_SCOPE_COUNT: u32 = 256;
+const MAX_COMPANY_NAME_LEN: u32 = 1024;
+const MAX_PRODUCT_ID_LEN: u32 = 1024;
 
 const RSA_EXCHANGE_ALGORITHM: u32 = 1;
 
@@ -176,7 +179,7 @@ impl PduParsing for ServerLicenseRequest {
         };
 
         let scope_count = stream.read_u32::<LittleEndian>()?;
-        if scope_count > 256 {
+        if scope_count > MAX_SCOPE_COUNT {
             return Err(ServerLicenseError::InvalidScopeCount(scope_count));
         }
 
@@ -366,7 +369,7 @@ impl PduParsing for ProductInfo {
         let version = stream.read_u32::<LittleEndian>()?;
 
         let company_name_len = stream.read_u32::<LittleEndian>()?;
-        if company_name_len < 2 || company_name_len > 1024 {
+        if company_name_len < 2 || company_name_len > MAX_COMPANY_NAME_LEN {
             return Err(ServerLicenseError::InvalidCompanyNameLength(
                 company_name_len,
             ));
@@ -379,7 +382,7 @@ impl PduParsing for ProductInfo {
         let company_name = utils::bytes_to_utf16_string(&company_name.as_slice());
 
         let product_id_len = stream.read_u32::<LittleEndian>()?;
-        if product_id_len < 2 || product_id_len > 1024 {
+        if product_id_len < 2 || product_id_len > MAX_PRODUCT_ID_LEN {
             return Err(ServerLicenseError::InvalidProductIdLength(product_id_len));
         }
 
