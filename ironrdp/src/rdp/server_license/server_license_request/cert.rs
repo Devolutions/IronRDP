@@ -16,6 +16,7 @@ pub const RSA_KEY_SIZE_WITHOUT_MODULUS: usize = 20;
 
 const MIN_CERTIFICATE_AMOUNT: u32 = 2;
 const MAX_CERTIFICATE_AMOUNT: u32 = 200;
+const MAX_CERTIFICATE_LEN: u32 = 1024;
 
 #[derive(Debug, PartialEq)]
 pub enum CertificateType {
@@ -40,8 +41,15 @@ impl PduParsing for X509CertificateChain {
         let certificate_array: Vec<_> = (0..certificate_count)
             .map(|_| {
                 let certificate_len = stream.read_u32::<LittleEndian>()?;
+                if certificate_len > MAX_CERTIFICATE_LEN {
+                    return Err(ServerLicenseError::InvalidCertificateLength(
+                        certificate_len,
+                    ));
+                }
+
                 let mut certificate = vec![0u8; certificate_len as usize];
                 stream.read_exact(&mut certificate)?;
+
                 Ok(certificate)
             })
             .collect::<Result<_, Self::Error>>()?;

@@ -247,6 +247,8 @@ pub enum ServerLicenseError {
     InvalidProductIdLength(u32),
     #[fail(display = "Received invalid scope count field: {}", _0)]
     InvalidScopeCount(u32),
+    #[fail(display = "Received invalid sertificate length: {}", _0)]
+    InvalidCertificateLength(u32),
 }
 
 impl_from_error!(io::Error, ServerLicenseError, ServerLicenseError::IOError);
