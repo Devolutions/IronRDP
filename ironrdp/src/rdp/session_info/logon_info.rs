@@ -16,6 +16,8 @@ const LOGON_INFO_V2_SIZE: usize = 18;
 const LOGON_INFO_V2_PADDING_SIZE: usize = 558;
 const LOGON_INFO_V2_PADDING_BUFFER: [u8; LOGON_INFO_V2_PADDING_SIZE] =
     [0; LOGON_INFO_V2_PADDING_SIZE];
+const DOMAIN_NAME_SIZE_V2: usize = 52;
+const USER_NAME_SIZE_V2: usize = 512;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct LogonInfoVersion1 {
@@ -108,7 +110,14 @@ impl PduParsing for LogonInfoVersion2 {
 
         let session_id = stream.read_u32::<LittleEndian>()?;
         let domain_name_size = stream.read_u32::<LittleEndian>()?;
+        if domain_name_size > DOMAIN_NAME_SIZE_V2 as u32 {
+            return Err(SessionError::InvalidDomainNameSize);
+        }
+
         let user_name_size = stream.read_u32::<LittleEndian>()?;
+        if user_name_size > USER_NAME_SIZE_V2 as u32 {
+            return Err(SessionError::InvalidUserNameSize);
+        }
 
         let mut padding_buffer = [0; LOGON_INFO_V2_PADDING_SIZE];
         stream.read_exact(&mut padding_buffer)?;

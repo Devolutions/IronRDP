@@ -19,6 +19,7 @@ const SERVER_ENCRYPTION_LEVEL_SIZE: usize = 4;
 const SERVER_RANDOM_LEN_SIZE: usize = 4;
 const SERVER_CERT_LEN_SIZE: usize = 4;
 const SERVER_RANDOM_LEN: usize = 0x20;
+const MAX_SERVER_CERT_LEN: u32 = 1024;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ClientSecurityData {
@@ -95,10 +96,16 @@ impl PduParsing for ServerSecurityData {
             } else {
                 let server_random_len = buffer.read_u32::<LittleEndian>()?;
                 if server_random_len != SERVER_RANDOM_LEN as u32 {
-                    return Err(SecurityDataError::InvalidServerRandomLen);
+                    return Err(SecurityDataError::InvalidServerRandomLen(server_random_len));
                 }
 
                 let server_cert_len = buffer.read_u32::<LittleEndian>()?;
+
+                if server_cert_len > MAX_SERVER_CERT_LEN {
+                    return Err(SecurityDataError::InvalidServerCertificateLen(
+                        server_cert_len,
+                    ));
+                }
 
                 let mut server_random = [0; SERVER_RANDOM_LEN];
                 buffer.read_exact(&mut server_random)?;
@@ -186,10 +193,12 @@ pub enum SecurityDataError {
     InvalidEncryptionMethod,
     #[fail(display = "Invalid encryption level field")]
     InvalidEncryptionLevel,
-    #[fail(display = "Invalid server random length field")]
-    InvalidServerRandomLen,
+    #[fail(display = "Invalid server random length field: {}", _0)]
+    InvalidServerRandomLen(u32),
     #[fail(display = "Invalid input: {}", _0)]
     InvalidInput(String),
+    #[fail(display = "Invalid server certificate length: {}", _0)]
+    InvalidServerCertificateLen(u32),
 }
 
 impl_from_error!(io::Error, SecurityDataError, SecurityDataError::IOError);

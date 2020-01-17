@@ -235,8 +235,20 @@ pub enum ServerLicenseError {
     UnexpectedValidClientError(LicensingErrorMessage),
     #[fail(display = "Invalid Key Exchange List field")]
     InvalidKeyExchangeAlgorithm,
-    #[fail(display = "Received invalid UTF-16 string of Product Information")]
-    InvalidProductInfoStringField,
+    #[fail(
+        display = "Received invalid company name length (Product Information): {}",
+        _0
+    )]
+    InvalidCompanyNameLength(u32),
+    #[fail(
+        display = "Received invalid product ID length (Product Information): {}",
+        _0
+    )]
+    InvalidProductIdLength(u32),
+    #[fail(display = "Received invalid scope count field: {}", _0)]
+    InvalidScopeCount(u32),
+    #[fail(display = "Received invalid sertificate length: {}", _0)]
+    InvalidCertificateLength(u32),
 }
 
 impl_from_error!(io::Error, ServerLicenseError, ServerLicenseError::IOError);
