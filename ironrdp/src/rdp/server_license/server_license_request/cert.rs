@@ -16,7 +16,7 @@ pub const RSA_KEY_SIZE_WITHOUT_MODULUS: usize = 20;
 
 const MIN_CERTIFICATE_AMOUNT: u32 = 2;
 const MAX_CERTIFICATE_AMOUNT: u32 = 200;
-const MAX_CERTIFICATE_LEN: u32 = 1024;
+const MAX_CERTIFICATE_LEN: u32 = 4096;
 
 #[derive(Debug, PartialEq)]
 pub enum CertificateType {
