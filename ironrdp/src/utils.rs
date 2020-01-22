@@ -42,6 +42,27 @@ macro_rules! impl_from_error {
     };
 }
 
+#[macro_export]
+macro_rules! from_buffer {
+    ($t:ty, $b:ident) => {
+        <$t>::from_buffer($b).and_then(|v| {
+            $b = &$b[v.buffer_length()..];
+
+            Ok(v)
+        })
+    };
+}
+
+#[macro_export]
+macro_rules! to_buffer {
+    ($p:ident, $b:ident) => {{
+        let r = $p.to_buffer(&mut $b);
+        $b = &mut $b[$p.buffer_length()..];
+
+        r
+    }};
+}
+
 pub fn string_to_utf16(value: &str) -> Vec<u8> {
     value
         .encode_utf16()

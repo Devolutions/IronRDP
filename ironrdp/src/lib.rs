@@ -1,3 +1,4 @@
+pub mod codecs;
 pub mod gcc;
 pub mod mcs;
 pub mod nego;
@@ -28,5 +29,13 @@ pub trait PduParsing {
     where
         Self: Sized;
     fn to_buffer(&self, stream: impl std::io::Write) -> Result<(), Self::Error>;
+    fn buffer_length(&self) -> usize;
+}
+
+pub trait PduBufferParsing: Sized {
+    type Error;
+
+    fn from_buffer(buffer: &[u8]) -> Result<Self, Self::Error>;
+    fn to_buffer(&self, buffer: &mut [u8]) -> Result<(), Self::Error>;
     fn buffer_length(&self) -> usize;
 }
