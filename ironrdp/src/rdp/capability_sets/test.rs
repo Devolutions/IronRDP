@@ -351,7 +351,10 @@ lazy_static! {
                     ),
                     CapabilitySet::DrawGdiPlus(CLIENT_DRAW_GDI_PLUS_CAPABILITY_SET.to_vec()),
                     CapabilitySet::MultiFragmentUpdate(
-                        CLIENT_MULTI_FRAGMENT_UPDATE_CAPABILITY_SET.to_vec()
+                        MultifragmentUpdate::from_buffer(
+                            CLIENT_MULTI_FRAGMENT_UPDATE_CAPABILITY_SET.as_ref()
+                        )
+                        .unwrap()
                     ),
                     CapabilitySet::WindowList(CLIENT_WINDOW_LIST_CAPABILITY_SET.to_vec()),
                 ],

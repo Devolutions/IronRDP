@@ -328,7 +328,7 @@ impl<'a> TileSetPdu<'a> {
 
         let mut tiles_buffer = &buffer[..tiles_data_size];
         let tiles = (0..number_of_tiles)
-            .map(|_| from_buffer!(Tile, tiles_buffer))
+            .map(|_| from_buffer!(Tile<'_>, tiles_buffer))
             .collect::<Result<Vec<_>, _>>()?;
 
         Ok(Self {
