@@ -1,3 +1,10 @@
+pub mod color_conversion;
+pub mod dwt;
+pub mod quantization;
+pub mod rectangles_processing;
+pub mod rlgr;
+pub mod subband_reconstruction;
+
 mod data_messages;
 mod header_messages;
 #[cfg(test)]
