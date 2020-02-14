@@ -153,7 +153,7 @@ impl PduParsing for SolidFillPdu {
         let rectangles_count = stream.read_u16::<LittleEndian>()?;
 
         let rectangles = (0..rectangles_count)
-            .map(|_| Rectangle::from_buffer(&mut stream))
+            .map(|_| Rectangle::from_buffer(&mut stream).map_err(GraphicsMessagesError::from))
             .collect::<Result<Vec<_>, Self::Error>>()?;
 
         Ok(Self {

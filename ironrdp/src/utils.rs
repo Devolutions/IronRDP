@@ -1,11 +1,17 @@
 pub mod rc4;
 pub mod rsa;
 
-use std::io;
+use std::{
+    cmp::{max, min},
+    io, ops,
+};
 
+use bitvec::prelude::{BitSlice, Msb0};
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::ToPrimitive;
+
+use crate::PduParsing;
 
 #[macro_export]
 macro_rules! try_read_optional {
@@ -43,23 +49,12 @@ macro_rules! impl_from_error {
 }
 
 #[macro_export]
-macro_rules! from_buffer {
-    ($t:ty, $b:ident) => {
-        <$t>::from_buffer($b).and_then(|v| {
-            $b = &$b[v.buffer_length()..];
+macro_rules! split_to {
+    ($buffer:expr, $n:expr) => {{
+        let splitted = &$buffer[..$n];
+        $buffer = &$buffer[$n..];
 
-            Ok(v)
-        })
-    };
-}
-
-#[macro_export]
-macro_rules! to_buffer {
-    ($p:ident, $b:ident) => {{
-        let r = $p.to_buffer(&mut $b);
-        $b = &mut $b[$p.buffer_length()..];
-
-        r
+        splitted
     }};
 }
 
@@ -127,5 +122,37 @@ pub fn write_string_with_null_terminator(
             stream.write_all(value.as_bytes())?;
             stream.write_u8(0)
         }
+    }
+}
+
+pub struct Bits<'a> {
+    bits_slice: &'a BitSlice<Msb0, u8>,
+    remaining_bits_of_last_byte: usize,
+}
+
+impl<'a> Bits<'a> {
+    pub fn new(bits_slice: &'a BitSlice<Msb0, u8>) -> Self {
+        Self {
+            bits_slice,
+            remaining_bits_of_last_byte: 0,
+        }
+    }
+    pub fn split_to(&mut self, at: usize) -> &'a BitSlice<Msb0, u8> {
+        let (value, new_bits) = self.bits_slice.split_at(at);
+        self.bits_slice = new_bits;
+        self.remaining_bits_of_last_byte = (self.remaining_bits_of_last_byte + at) % 8;
+
+        value
+    }
+    pub fn remaining_bits_of_last_byte(&self) -> usize {
+        self.remaining_bits_of_last_byte
+    }
+}
+
+impl<'a> ops::Deref for Bits<'a> {
+    type Target = BitSlice<Msb0, u8>;
+
+    fn deref(&self) -> &Self::Target {
+        self.bits_slice
     }
 }

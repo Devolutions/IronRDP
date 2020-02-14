@@ -35,7 +35,10 @@ pub trait PduParsing {
 pub trait PduBufferParsing: Sized {
     type Error;
 
-    fn from_buffer(buffer: &[u8]) -> Result<Self, Self::Error>;
-    fn to_buffer(&self, buffer: &mut [u8]) -> Result<(), Self::Error>;
+    fn from_buffer(mut buffer: &[u8]) -> Result<Self, Self::Error> {
+        Self::from_buffer_consume(&mut buffer)
+    }
+    fn from_buffer_consume(buffer: &mut &[u8]) -> Result<Self, Self::Error>;
+    fn to_buffer_consume(&self, buffer: &mut &mut [u8]) -> Result<(), Self::Error>;
     fn buffer_length(&self) -> usize;
 }

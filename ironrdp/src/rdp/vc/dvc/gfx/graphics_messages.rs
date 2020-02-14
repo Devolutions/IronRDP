@@ -21,7 +21,7 @@ use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive, ToPrimitive};
 
 use super::RDP_GFX_HEADER_SIZE;
-use crate::{gcc::MonitorDataError, impl_from_error, PduParsing};
+use crate::{gcc::MonitorDataError, impl_from_error, utils::Rectangle, PduParsing};
 
 const CAPABILITY_SET_HEADER_SIZE: usize = 8;
 
@@ -154,45 +154,6 @@ impl PduParsing for CapabilitySet {
                 CapabilitySet::V10_1 { .. } => 16,
                 CapabilitySet::Unknown(data) => data.len(),
             }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub struct Rectangle {
-    pub left: u16,
-    pub top: u16,
-    pub right: u16,
-    pub bottom: u16,
-}
-
-impl PduParsing for Rectangle {
-    type Error = GraphicsMessagesError;
-
-    fn from_buffer(mut stream: impl io::Read) -> Result<Self, Self::Error> {
-        let left = stream.read_u16::<LittleEndian>()?;
-        let top = stream.read_u16::<LittleEndian>()?;
-        let right = stream.read_u16::<LittleEndian>()?;
-        let bottom = stream.read_u16::<LittleEndian>()?;
-
-        Ok(Self {
-            left,
-            top,
-            right,
-            bottom,
-        })
-    }
-
-    fn to_buffer(&self, mut stream: impl io::Write) -> Result<(), Self::Error> {
-        stream.write_u16::<LittleEndian>(self.left)?;
-        stream.write_u16::<LittleEndian>(self.top)?;
-        stream.write_u16::<LittleEndian>(self.right)?;
-        stream.write_u16::<LittleEndian>(self.bottom)?;
-
-        Ok(())
-    }
-
-    fn buffer_length(&self) -> usize {
-        8
     }
 }
 

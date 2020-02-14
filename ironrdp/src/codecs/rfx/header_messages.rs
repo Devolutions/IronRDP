@@ -1,7 +1,7 @@
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 
 use super::{BlockHeader, BlockType, RfxError, BLOCK_HEADER_SIZE};
-use crate::{from_buffer, to_buffer, PduBufferParsing};
+use crate::{split_to, PduBufferParsing};
 
 const SYNC_MAGIC: u32 = 0xCACC_ACCA;
 const SYNC_VERSION: u16 = 0x0100;
@@ -18,9 +18,9 @@ pub struct SyncPdu;
 impl PduBufferParsing for SyncPdu {
     type Error = RfxError;
 
-    fn from_buffer(mut buffer: &[u8]) -> Result<Self, Self::Error> {
-        let header = BlockHeader::from_buffer_with_type(buffer, BlockType::Sync)?;
-        buffer = &buffer[header.buffer_length()..header.buffer_length() + header.data_length];
+    fn from_buffer_consume(buffer: &mut &[u8]) -> Result<Self, Self::Error> {
+        let header = BlockHeader::from_buffer_consume_with_type(buffer, BlockType::Sync)?;
+        let mut buffer = split_to!(*buffer, header.data_length);
 
         let magic = buffer.read_u32::<LittleEndian>()?;
         if magic != SYNC_MAGIC {
@@ -34,13 +34,13 @@ impl PduBufferParsing for SyncPdu {
         }
     }
 
-    fn to_buffer(&self, mut buffer: &mut [u8]) -> Result<(), Self::Error> {
+    fn to_buffer_consume(&self, buffer: &mut &mut [u8]) -> Result<(), Self::Error> {
         let header = BlockHeader {
             ty: BlockType::Sync,
             data_length: self.buffer_length() - BLOCK_HEADER_SIZE,
         };
 
-        to_buffer!(header, buffer)?;
+        header.to_buffer_consume(buffer)?;
         buffer.write_u32::<LittleEndian>(SYNC_MAGIC)?;
         buffer.write_u16::<LittleEndian>(SYNC_VERSION)?;
 
@@ -58,9 +58,9 @@ pub struct CodecVersionsPdu;
 impl PduBufferParsing for CodecVersionsPdu {
     type Error = RfxError;
 
-    fn from_buffer(mut buffer: &[u8]) -> Result<Self, Self::Error> {
-        let header = BlockHeader::from_buffer_with_type(buffer, BlockType::CodecVersions)?;
-        buffer = &buffer[header.buffer_length()..header.buffer_length() + header.data_length];
+    fn from_buffer_consume(buffer: &mut &[u8]) -> Result<Self, Self::Error> {
+        let header = BlockHeader::from_buffer_consume_with_type(buffer, BlockType::CodecVersions)?;
+        let mut buffer = split_to!(*buffer, header.data_length);
 
         let codecs_number = buffer.read_u8()?;
         if codecs_number != CODECS_NUMBER {
@@ -72,16 +72,16 @@ impl PduBufferParsing for CodecVersionsPdu {
         Ok(Self)
     }
 
-    fn to_buffer(&self, mut buffer: &mut [u8]) -> Result<(), Self::Error> {
+    fn to_buffer_consume(&self, buffer: &mut &mut [u8]) -> Result<(), Self::Error> {
         let header = BlockHeader {
             ty: BlockType::CodecVersions,
             data_length: self.buffer_length() - BLOCK_HEADER_SIZE,
         };
 
-        to_buffer!(header, buffer)?;
+        header.to_buffer_consume(buffer)?;
         buffer.write_u8(CODECS_NUMBER)?;
 
-        CodecVersion.to_buffer(&mut buffer)
+        CodecVersion.to_buffer_consume(buffer)
     }
 
     fn buffer_length(&self) -> usize {
@@ -95,9 +95,9 @@ pub struct ChannelsPdu(pub Vec<Channel>);
 impl PduBufferParsing for ChannelsPdu {
     type Error = RfxError;
 
-    fn from_buffer(mut buffer: &[u8]) -> Result<Self, Self::Error> {
-        let header = BlockHeader::from_buffer_with_type(buffer, BlockType::Channels)?;
-        buffer = &buffer[header.buffer_length()..header.buffer_length() + header.data_length];
+    fn from_buffer_consume(buffer: &mut &[u8]) -> Result<Self, Self::Error> {
+        let header = BlockHeader::from_buffer_consume_with_type(buffer, BlockType::Channels)?;
+        let mut buffer = split_to!(*buffer, header.data_length);
 
         let channels_number = buffer.read_u8()? as usize;
 
@@ -109,23 +109,23 @@ impl PduBufferParsing for ChannelsPdu {
         }
 
         let channels = (0..channels_number)
-            .map(|_| from_buffer!(Channel, buffer))
+            .map(|_| Channel::from_buffer_consume(&mut buffer))
             .collect::<Result<Vec<_>, _>>()?;
 
         Ok(Self(channels))
     }
 
-    fn to_buffer(&self, mut buffer: &mut [u8]) -> Result<(), Self::Error> {
+    fn to_buffer_consume(&self, buffer: &mut &mut [u8]) -> Result<(), Self::Error> {
         let header = BlockHeader {
             ty: BlockType::Channels,
             data_length: self.buffer_length() - BLOCK_HEADER_SIZE,
         };
 
-        to_buffer!(header, buffer)?;
+        header.to_buffer_consume(buffer)?;
         buffer.write_u8(self.0.len() as u8)?;
 
         for channel in self.0.iter() {
-            to_buffer!(channel, buffer)?;
+            channel.to_buffer_consume(buffer)?;
         }
 
         Ok(())
@@ -151,7 +151,7 @@ pub struct Channel {
 impl PduBufferParsing for Channel {
     type Error = RfxError;
 
-    fn from_buffer(mut buffer: &[u8]) -> Result<Self, Self::Error> {
+    fn from_buffer_consume(buffer: &mut &[u8]) -> Result<Self, Self::Error> {
         let id = buffer.read_u8()?;
         if id != CHANNEL_ID {
             return Err(RfxError::InvalidChannelId(id));
@@ -163,7 +163,7 @@ impl PduBufferParsing for Channel {
         Ok(Self { width, height })
     }
 
-    fn to_buffer(&self, mut buffer: &mut [u8]) -> Result<(), Self::Error> {
+    fn to_buffer_consume(&self, buffer: &mut &mut [u8]) -> Result<(), Self::Error> {
         buffer.write_u8(CHANNEL_ID)?;
         buffer.write_i16::<LittleEndian>(self.width)?;
         buffer.write_i16::<LittleEndian>(self.height)?;
@@ -182,7 +182,7 @@ struct CodecVersion;
 impl PduBufferParsing for CodecVersion {
     type Error = RfxError;
 
-    fn from_buffer(mut buffer: &[u8]) -> Result<Self, Self::Error> {
+    fn from_buffer_consume(buffer: &mut &[u8]) -> Result<Self, Self::Error> {
         let id = buffer.read_u8()?;
         if id != CODEC_ID {
             return Err(RfxError::InvalidCodecId(id));
@@ -196,7 +196,7 @@ impl PduBufferParsing for CodecVersion {
         }
     }
 
-    fn to_buffer(&self, mut buffer: &mut [u8]) -> Result<(), Self::Error> {
+    fn to_buffer_consume(&self, buffer: &mut &mut [u8]) -> Result<(), Self::Error> {
         buffer.write_u8(CODEC_ID)?;
         buffer.write_u16::<LittleEndian>(CODEC_VERSION)?;
 

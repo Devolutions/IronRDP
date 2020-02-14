@@ -9,6 +9,7 @@ pub use self::{
         Tile, TileSetPdu,
     },
     header_messages::{Channel, ChannelsPdu, CodecVersionsPdu, SyncPdu},
+    rlgr::RlgrError,
 };
 
 use std::io;
@@ -34,8 +35,8 @@ struct BlockHeader {
 }
 
 impl BlockHeader {
-    fn from_buffer_with_type(
-        mut buffer: &[u8],
+    fn from_buffer_consume_with_type(
+        buffer: &mut &[u8],
         expected_type: BlockType,
     ) -> Result<Self, RfxError> {
         let ty = BlockType::from_u16(buffer.read_u16::<LittleEndian>()?)
@@ -63,7 +64,7 @@ impl BlockHeader {
         Ok(Self { ty, data_length })
     }
 
-    fn to_buffer(&self, mut buffer: &mut [u8]) -> Result<(), RfxError> {
+    fn to_buffer_consume(&self, buffer: &mut &mut [u8]) -> Result<(), RfxError> {
         buffer.write_u16::<LittleEndian>(self.ty.to_u16().unwrap())?;
         buffer.write_u32::<LittleEndian>((self.buffer_length() + self.data_length) as u32)?;
 
@@ -82,8 +83,8 @@ struct CodecChannelHeader {
 }
 
 impl CodecChannelHeader {
-    fn from_buffer_with_type(
-        mut buffer: &[u8],
+    fn from_buffer_consume_with_type(
+        buffer: &mut &[u8],
         expected_type: CodecChannelType,
     ) -> Result<Self, RfxError> {
         let ty = CodecChannelType::from_u16(buffer.read_u16::<LittleEndian>()?)
@@ -125,7 +126,7 @@ impl CodecChannelHeader {
         Ok(Self { ty, data_length })
     }
 
-    fn to_buffer(&self, mut buffer: &mut [u8]) -> Result<(), RfxError> {
+    fn to_buffer_consume(&self, buffer: &mut &mut [u8]) -> Result<(), RfxError> {
         buffer.write_u16::<LittleEndian>(self.ty.to_u16().unwrap())?;
         buffer.write_u32::<LittleEndian>((self.buffer_length() + self.data_length) as u32)?;
         buffer.write_u8(CODEC_ID)?;
