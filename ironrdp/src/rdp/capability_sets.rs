@@ -8,6 +8,8 @@ mod brush;
 mod general;
 mod glyph_cache;
 mod input;
+mod large_pointer;
+mod multifragment_update;
 mod offscreen_bitmap_cache;
 mod order;
 mod pointer;
@@ -30,6 +32,8 @@ pub use self::{
     general::{General, GeneralExtraFlags, MajorPlatformType, MinorPlatformType},
     glyph_cache::{CacheDefinition, GlyphCache, GlyphSupportLevel, GLYPH_CACHE_NUM},
     input::{Input, InputFlags},
+    large_pointer::{LargePointer, LargePointerSupportFlags},
+    multifragment_update::MultifragmentUpdate,
     offscreen_bitmap_cache::OffscreenBitmapCache,
     order::{Order, OrderFlags, OrderSupportExFlags, OrderSupportIndex},
     pointer::Pointer,
@@ -215,8 +219,8 @@ pub enum CapabilitySet {
     Font(Vec<u8>),
     BitmapCacheHostSupport(Vec<u8>),
     DesktopComposition(Vec<u8>),
-    MultiFragmentUpdate(Vec<u8>),
-    LargePointer(Vec<u8>),
+    MultiFragmentUpdate(MultifragmentUpdate),
+    LargePointer(LargePointer),
     SurfaceCommands(SurfaceCommands),
     BitmapCodecs(BitmapCodecs),
 
@@ -303,12 +307,12 @@ impl PduParsing for CapabilitySet {
             CapabilitySetType::DesktopComposition => {
                 Ok(CapabilitySet::DesktopComposition(capability_set_buffer))
             }
-            CapabilitySetType::MultiFragmentUpdate => {
-                Ok(CapabilitySet::MultiFragmentUpdate(capability_set_buffer))
-            }
-            CapabilitySetType::LargePointer => {
-                Ok(CapabilitySet::LargePointer(capability_set_buffer))
-            }
+            CapabilitySetType::MultiFragmentUpdate => Ok(CapabilitySet::MultiFragmentUpdate(
+                MultifragmentUpdate::from_buffer(&mut capability_set_buffer.as_slice())?,
+            )),
+            CapabilitySetType::LargePointer => Ok(CapabilitySet::LargePointer(
+                LargePointer::from_buffer(&mut capability_set_buffer.as_slice())?,
+            )),
             CapabilitySetType::ColorCache => Ok(CapabilitySet::ColorCache(capability_set_buffer)),
             CapabilitySetType::DrawNineGridCache => {
                 Ok(CapabilitySet::DrawNineGridCache(capability_set_buffer))
@@ -461,6 +465,27 @@ impl PduParsing for CapabilitySet {
                 )?;
                 capset.to_buffer(&mut stream)?;
             }
+            CapabilitySet::MultiFragmentUpdate(capset) => {
+                stream.write_u16::<LittleEndian>(
+                    CapabilitySetType::MultiFragmentUpdate.to_u16().unwrap(),
+                )?;
+                stream.write_u16::<LittleEndian>(
+                    (capset.buffer_length()
+                        + CAPABILITY_SET_TYPE_FIELD_SIZE
+                        + CAPABILITY_SET_LENGTH_FIELD_SIZE) as u16,
+                )?;
+                capset.to_buffer(&mut stream)?;
+            }
+            CapabilitySet::LargePointer(capset) => {
+                stream
+                    .write_u16::<LittleEndian>(CapabilitySetType::LargePointer.to_u16().unwrap())?;
+                stream.write_u16::<LittleEndian>(
+                    (capset.buffer_length()
+                        + CAPABILITY_SET_TYPE_FIELD_SIZE
+                        + CAPABILITY_SET_LENGTH_FIELD_SIZE) as u16,
+                )?;
+                capset.to_buffer(&mut stream)?;
+            }
             _ => {
                 let (capability_set_type, capability_set_buffer) = match self {
                     CapabilitySet::Control(buffer) => (CapabilitySetType::Control, buffer),
@@ -474,12 +499,6 @@ impl PduParsing for CapabilitySet {
                     }
                     CapabilitySet::DesktopComposition(buffer) => {
                         (CapabilitySetType::DesktopComposition, buffer)
-                    }
-                    CapabilitySet::MultiFragmentUpdate(buffer) => {
-                        (CapabilitySetType::MultiFragmentUpdate, buffer)
-                    }
-                    CapabilitySet::LargePointer(buffer) => {
-                        (CapabilitySetType::LargePointer, buffer)
                     }
                     CapabilitySet::ColorCache(buffer) => (CapabilitySetType::ColorCache, buffer),
                     CapabilitySet::DrawNineGridCache(buffer) => {
@@ -524,14 +543,14 @@ impl PduParsing for CapabilitySet {
                 CapabilitySet::VirtualChannel(capset) => capset.buffer_length(),
                 CapabilitySet::SurfaceCommands(capset) => capset.buffer_length(),
                 CapabilitySet::BitmapCodecs(capset) => capset.buffer_length(),
+                CapabilitySet::MultiFragmentUpdate(capset) => capset.buffer_length(),
+                CapabilitySet::LargePointer(capset) => capset.buffer_length(),
                 CapabilitySet::Control(buffer)
                 | CapabilitySet::WindowActivation(buffer)
                 | CapabilitySet::Share(buffer)
                 | CapabilitySet::Font(buffer)
                 | CapabilitySet::BitmapCacheHostSupport(buffer)
                 | CapabilitySet::DesktopComposition(buffer)
-                | CapabilitySet::MultiFragmentUpdate(buffer)
-                | CapabilitySet::LargePointer(buffer)
                 | CapabilitySet::ColorCache(buffer)
                 | CapabilitySet::DrawNineGridCache(buffer)
                 | CapabilitySet::DrawGdiPlus(buffer)

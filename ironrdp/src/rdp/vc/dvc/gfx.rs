@@ -9,9 +9,9 @@ pub use graphics_messages::{
     CapabilitiesV103Flags, CapabilitiesV104Flags, CapabilitiesV10Flags, CapabilitiesV81Flags,
     CapabilitiesV8Flags, CapabilitySet, Codec1Type, Codec2Type, CreateSurfacePdu,
     DeleteEncodingContextPdu, DeleteSurfacePdu, EndFramePdu, EvictCacheEntryPdu,
-    FrameAcknowledgePdu, MapSurfaceToOutputPdu, PixelFormat, QueueDepth, Rectangle,
-    ResetGraphicsPdu, SolidFillPdu, StartFramePdu, SurfaceToCachePdu, SurfaceToSurfacePdu,
-    WireToSurface1Pdu, WireToSurface2Pdu,
+    FrameAcknowledgePdu, MapSurfaceToOutputPdu, PixelFormat, QueueDepth, ResetGraphicsPdu,
+    SolidFillPdu, StartFramePdu, SurfaceToCachePdu, SurfaceToSurfacePdu, WireToSurface1Pdu,
+    WireToSurface2Pdu,
 };
 
 use std::io;

@@ -3,17 +3,14 @@ mod control_messages;
 #[cfg(test)]
 mod tests;
 
-use std::{
-    io::{self, Write},
-    ops,
-};
+use std::io::{self, Write};
 
 use bitvec::prelude::{bits, BitField, BitSlice, Msb0};
 use byteorder::WriteBytesExt;
 use failure::Fail;
 use lazy_static::lazy_static;
 
-use crate::impl_from_error;
+use crate::{impl_from_error, utils::Bits};
 use circular_buffer::FixedCircularBuffer;
 use control_messages::{BulkEncodedData, CompressionFlags, SegmentedDataPdu};
 
@@ -142,38 +139,6 @@ impl Decompressor {
 impl Default for Decompressor {
     fn default() -> Self {
         Self::new()
-    }
-}
-
-struct Bits<'a> {
-    bits_slice: &'a BitSlice<Msb0, u8>,
-    remaining_bits_of_last_byte: usize,
-}
-
-impl<'a> Bits<'a> {
-    pub fn new(bits_slice: &'a BitSlice<Msb0, u8>) -> Self {
-        Self {
-            bits_slice,
-            remaining_bits_of_last_byte: 0,
-        }
-    }
-    pub fn split_to(&mut self, at: usize) -> &'a BitSlice<Msb0, u8> {
-        let (value, new_bits) = self.bits_slice.split_at(at);
-        self.bits_slice = new_bits;
-        self.remaining_bits_of_last_byte = (self.remaining_bits_of_last_byte + at) % 8;
-
-        value
-    }
-    pub fn remaining_bits_of_last_byte(&self) -> usize {
-        self.remaining_bits_of_last_byte
-    }
-}
-
-impl<'a> ops::Deref for Bits<'a> {
-    type Target = BitSlice<Msb0, u8>;
-
-    fn deref(&self) -> &Self::Target {
-        self.bits_slice
     }
 }
 
