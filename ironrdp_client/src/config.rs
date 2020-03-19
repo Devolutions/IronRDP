@@ -1,12 +1,18 @@
-use std::net::SocketAddr;
+use std::{net::SocketAddr, path};
 
 use clap::{crate_name, crate_version, App, Arg};
 use ironrdp::nego::SecurityProtocol;
 use sspi::AuthIdentity;
 
+const DEFAULT_WIDTH: u16 = 1920;
+const DEFAULT_HEIGHT: u16 = 1080;
+
 pub struct Config {
     pub log_file: String,
+    pub images_path: String,
     pub routing_addr: SocketAddr,
+    pub width: u16,
+    pub height: u16,
     pub input: Input,
 }
 
@@ -20,13 +26,22 @@ impl Config {
             .about("Devolutions-IronRDP client")
             .arg(
                 Arg::with_name("log-file")
-                    .short("l")
-                    .long("log_file")
+                    .long("log-file")
                     .value_name("LOG_FILE")
                     .help("A file with IronRDP client logs")
                     .takes_value(true)
                     .empty_values(false)
                     .default_value(&log_file_name),
+            )
+            .arg(
+                Arg::with_name("images-path")
+                    .long("images-path")
+                    .value_name("IMAGES_PATH")
+                    .help("A path to the folder with graphical updates received from a server")
+                    .takes_value(true)
+                    .empty_values(false)
+                    .default_value(&"./")
+                    .validator(is_folder),
             )
             .arg(
                 Arg::with_name("addr")
@@ -51,6 +66,11 @@ impl Config {
             .map(String::from)
             .expect("log file must be at least the default");
 
+        let images_path = matches
+            .value_of("images-path")
+            .map(String::from)
+            .expect("images file must be at least the default");
+
         let routing_addr = matches
             .value_of("addr")
             .map(|u| u.parse().unwrap())
@@ -60,7 +80,10 @@ impl Config {
 
         Self {
             log_file,
+            images_path,
             routing_addr,
+            width: DEFAULT_WIDTH,
+            height: DEFAULT_HEIGHT,
             input,
         }
     }
@@ -74,11 +97,10 @@ pub struct Input {
     pub keyboard_functional_keys_count: u32,
     pub ime_file_name: String,
     pub dig_product_id: String,
-    pub static_channels: Vec<String>,
 }
 
 impl Input {
-    fn args<'a, 'b>() -> [Arg<'a, 'b>; 10] {
+    fn args<'a, 'b>() -> [Arg<'a, 'b>; 9] {
         [
             Arg::with_name("username")
                 .short("u")
@@ -103,8 +125,7 @@ impl Input {
                 .takes_value(true)
                 .required(true),
             Arg::with_name("security-protocol")
-                .short("s")
-                .long("security_protocol")
+                .long("security-protocol")
                 .value_name("SECURITY_PROTOCOL")
                 .help("Specify the security protocols to use")
                 .takes_value(true)
@@ -113,7 +134,7 @@ impl Input {
                 .default_value(&"hybrid_ex")
                 .required(true),
             Arg::with_name("keyboard-type")
-                .long("keyboard_type")
+                .long("keyboard-type")
                 .value_name("KEYBOARD_TYPE")
                 .help("The keyboard type")
                 .takes_value(true)
@@ -128,7 +149,7 @@ impl Input {
                 ])
                 .default_value(&"ibm_enhanced"),
             Arg::with_name("keyboard-subtype")
-                .long("keyboard_subtype")
+                .long("keyboard-subtype")
                 .value_name("KEYBOARD_SUBTYPE")
                 .help(
                     "The keyboard subtype (an original equipment manufacturer-dependent value)",
@@ -137,31 +158,25 @@ impl Input {
                 .default_value(&"0")
                 .validator(is_uint),
             Arg::with_name("keyboard-functional-keys-count")
-                .long("keyboard_functional_keys_count")
+                .long("keyboard-functional-keys-count")
                 .value_name("KEYBOARD_FUNCTIONAL_KEYS_COUNT")
                 .help("The number of function keys on the keyboard")
                 .takes_value(true)
                 .default_value(&"12")
                 .validator(is_uint),
             Arg::with_name("ime-file-name")
-                .long("ime_file-name")
+                .long("ime-file-name")
                 .value_name("IME_FILENAME")
                 .help("The input method editor (IME) file name associated with the active input locale")
                 .takes_value(true)
                 .default_value(&""),
             Arg::with_name("dig-product-id")
-                .long("dig_product_id")
+                .long("dig-product-id")
                 .value_name("DIG_PRODUCT_ID")
                 .help("Contains a value that uniquely identifies the client")
                 .takes_value(true)
                 .default_value(&""),
-            Arg::with_name("static-channels")
-                .long("static_channel")
-                .value_name("STATIC_CHANNEL")
-                .help("Unique static channel name")
-                .takes_value(true)
-                .multiple(true),
-        ]
+]
     }
     fn from_matches(matches: &clap::ArgMatches<'_>) -> Self {
         let username = matches
@@ -224,12 +239,6 @@ impl Input {
             .map(String::from)
             .expect("DIG product ID must be at least the default");
 
-        let static_channels = if let Some(values) = matches.values_of("static-channels") {
-            values.map(String::from).collect::<Vec<_>>()
-        } else {
-            vec![String::from("drdynvc")]
-        };
-
         Self {
             credentials,
             security_protocol,
@@ -238,7 +247,6 @@ impl Input {
             keyboard_functional_keys_count,
             ime_file_name,
             dig_product_id,
-            static_channels,
         }
     }
 }
@@ -247,5 +255,13 @@ fn is_uint(s: String) -> Result<(), String> {
     match s.parse::<usize>() {
         Ok(_) => Ok(()),
         Err(_) => Err(String::from("The value is not numeric")),
+    }
+}
+
+fn is_folder(s: String) -> Result<(), String> {
+    if path::PathBuf::from(s).is_dir() {
+        Ok(())
+    } else {
+        Err(String::from("The folder does not exist or is invalid"))
     }
 }

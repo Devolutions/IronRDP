@@ -6,6 +6,7 @@ use bytes::BytesMut;
 use ironrdp::{
     nego, rdp,
     rdp::{
+        capability_sets::CapabilitySet,
         server_license::{
             ClientNewLicenseRequest, ClientPlatformChallengeResponse, InitialMessageType,
             InitialServerLicenseMessage, ServerPlatformChallenge, ServerUpgradeLicense,
@@ -26,6 +27,11 @@ pub type StaticChannels = HashMap<String, u16>;
 
 pub const GLOBAL_CHANNEL_NAME: &str = "GLOBAL";
 pub const USER_CHANNEL_NAME: &str = "USER";
+
+pub struct DesktopSizes {
+    pub width: u16,
+    pub height: u16,
+}
 
 pub fn process_cred_ssp<'a, S, T>(
     mut tls_stream: &mut bufstream::BufStream<rustls::Stream<'a, S, T>>,
@@ -116,7 +122,7 @@ pub fn process_mcs_connect(
 
     if gcc_blocks.message_channel.is_some() || gcc_blocks.multi_transport_channel.is_some() {
         return Err(RdpError::InvalidResponse(String::from(
-            "The server demands additional channels",
+            "The server demands additional active_session",
         )));
     }
 
@@ -283,7 +289,7 @@ pub fn process_server_license_exchange(
                 client_random.as_slice(),
                 premaster_secret.as_slice(),
                 &config.input.credentials.username,
-                &config.input.credentials.domain.as_ref().map(|s| s.as_str()).unwrap_or(""),
+                &config.input.credentials.domain.as_deref().unwrap_or(""),
             )
             .map_err(|err| {
                 RdpError::IOError(io::Error::new(
@@ -328,13 +334,7 @@ pub fn process_server_license_exchange(
 
     let challenge_response = ClientPlatformChallengeResponse::from_server_platform_challenge(
         &challenge,
-        &config
-            .input
-            .credentials
-            .domain
-            .as_ref()
-            .map(|s| s.as_str())
-            .unwrap_or(""),
+        &config.input.credentials.domain.as_deref().unwrap_or(""),
         &encryption_data,
     )
     .map_err(|err| {
@@ -388,7 +388,7 @@ pub fn process_capability_sets(
     mut stream: impl io::BufRead + io::Write,
     transport: &mut ShareControlHeaderTransport,
     config: &Config,
-) -> RdpResult<()> {
+) -> RdpResult<DesktopSizes> {
     let share_control_pdu = transport.decode(&mut stream)?;
     let capability_sets =
         if let ironrdp::ShareControlPdu::ServerDemandActive(server_demand_active) =
@@ -406,6 +406,23 @@ pub fn process_capability_sets(
                 share_control_pdu.as_short_name()
             )));
         };
+    let desktop_sizes = capability_sets
+        .iter()
+        .find(|c| match c {
+            CapabilitySet::Bitmap(_) => true,
+            _ => false,
+        })
+        .map(|c| match c {
+            CapabilitySet::Bitmap(b) => DesktopSizes {
+                width: b.desktop_width,
+                height: b.desktop_height,
+            },
+            _ => unreachable!(),
+        })
+        .unwrap_or(DesktopSizes {
+            width: config.width,
+            height: config.height,
+        });
 
     let client_confirm_active = ironrdp::ShareControlPdu::ClientConfirmActive(
         user_info::create_client_confirm_active(config, capability_sets)?,
@@ -416,7 +433,7 @@ pub fn process_capability_sets(
     );
     transport.encode(client_confirm_active, &mut stream)?;
 
-    Ok(())
+    Ok(desktop_sizes)
 }
 
 pub fn process_finalization(

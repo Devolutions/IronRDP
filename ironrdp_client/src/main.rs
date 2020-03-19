@@ -1,4 +1,4 @@
-mod channels;
+mod active_session;
 mod config;
 mod connection_sequence;
 mod transport;
@@ -11,12 +11,12 @@ use std::{
 };
 
 use failure::Fail;
-use ironrdp::{dvc::gfx, nego, rdp};
+use ironrdp::{dvc::gfx, fast_path::FastPathError, nego, rdp};
 use log::{debug, error, warn};
 use sspi::internal::credssp;
 
 use self::{
-    channels::process_active_connection_messages,
+    active_session::process_active_stage,
     config::Config,
     connection_sequence::{
         process_capability_sets, process_cred_ssp, process_finalization, process_mcs,
@@ -30,6 +30,8 @@ use self::{
 };
 
 pub type RdpResult<T> = Result<T, RdpError>;
+
+const BUF_READER_SIZE: usize = 32 * 1024;
 
 mod danger {
     pub struct NoCertificateVerification {}
@@ -53,7 +55,7 @@ fn main() {
 
     match run(config) {
         Ok(_) => {
-            println!("RDP connection sequence and DVC messages exchange finished");
+            println!("RDP successfully finished");
             std::process::exit(exitcode::OK);
         }
         Err(e) => {
@@ -111,7 +113,8 @@ fn run(config: Config) -> RdpResult<()> {
     // handshake
     tls_stream.flush()?;
 
-    let mut tls_stream = bufstream::BufStream::new(tls_stream);
+    let mut tls_stream =
+        bufstream::BufStream::with_capacities(BUF_READER_SIZE, BUF_READER_SIZE, tls_stream);
 
     if selected_protocol.contains(nego::SecurityProtocol::HYBRID)
         || selected_protocol.contains(nego::SecurityProtocol::HYBRID_EX)
@@ -132,7 +135,7 @@ fn run(config: Config) -> RdpResult<()> {
 
     let mut transport = McsTransport::new(transport);
     let joined_static_channels = process_mcs(&mut tls_stream, &mut transport, static_channels)?;
-    debug!("Joined static channels: {:?}", joined_static_channels);
+    debug!("Joined static active_session: {:?}", joined_static_channels);
 
     let global_channel_id = *joined_static_channels
         .get(GLOBAL_CHANNEL_NAME)
@@ -161,12 +164,19 @@ fn run(config: Config) -> RdpResult<()> {
 
     let mut transport =
         ShareControlHeaderTransport::new(transport, initiator_id, global_channel_id);
-    process_capability_sets(&mut tls_stream, &mut transport, &config)?;
+    let desktop_sizes = process_capability_sets(&mut tls_stream, &mut transport, &config)?;
 
     let mut transport = ShareDataHeaderTransport::new(transport);
     process_finalization(&mut tls_stream, &mut transport, initiator_id)?;
 
-    process_active_connection_messages(&mut tls_stream, joined_static_channels)?;
+    process_active_stage(
+        &mut tls_stream,
+        &config,
+        joined_static_channels,
+        global_channel_id,
+        initiator_id,
+        desktop_sizes,
+    )?;
 
     Ok(())
 }
@@ -221,8 +231,26 @@ pub enum RdpError {
     GraphicsPipelineError(gfx::GraphicsPipelineError),
     #[fail(display = "ZGFX error: {}", _0)]
     ZgfxError(#[fail(cause)] gfx::zgfx::ZgfxError),
-    #[fail(display = "Access to the non-existing channel: {}", _0)]
+    #[fail(display = "Fast-Path error: {}", _0)]
+    FastPathError(#[fail(cause)] FastPathError),
+    #[fail(display = "RDP error: {}", _0)]
+    RdpError(#[fail(cause)] ironrdp::RdpError),
+    #[fail(display = "access to the non-existing channel: {}", _0)]
     AccessToNonExistingChannel(u32),
+    #[fail(display = "data in unexpected channel: {}", _0)]
+    UnexpectedChannel(u16),
+    #[fail(display = "unexpected Surface Command codec ID: {}", _0)]
+    UnexpectedCodecId(u8),
+    #[fail(display = "RDP error: {}", _0)]
+    RfxError(#[fail(cause)] ironrdp::codecs::rfx::RfxError),
+    #[fail(display = "absence of mandatory Fast-Path header")]
+    MandatoryHeaderIsAbsent,
+    #[fail(display = "RLGR error: {}", _0)]
+    RlgrError(#[fail(cause)] ironrdp::codecs::rfx::rlgr::RlgrError),
+    #[fail(display = "RLGR error: {}", _0)]
+    ImageError(#[fail(cause)] image::ImageError),
+    #[fail(display = "absence of RFX channels")]
+    NoRfxChannelsAnnounced,
 }
 
 impl From<io::Error> for RdpError {
@@ -268,5 +296,35 @@ impl From<gfx::GraphicsPipelineError> for RdpError {
 impl From<gfx::zgfx::ZgfxError> for RdpError {
     fn from(e: gfx::zgfx::ZgfxError) -> Self {
         RdpError::ZgfxError(e)
+    }
+}
+
+impl From<FastPathError> for RdpError {
+    fn from(e: FastPathError) -> Self {
+        RdpError::FastPathError(e)
+    }
+}
+
+impl From<ironrdp::RdpError> for RdpError {
+    fn from(e: ironrdp::RdpError) -> Self {
+        RdpError::RdpError(e)
+    }
+}
+
+impl From<ironrdp::codecs::rfx::RfxError> for RdpError {
+    fn from(e: ironrdp::codecs::rfx::RfxError) -> Self {
+        RdpError::RfxError(e)
+    }
+}
+
+impl From<ironrdp::codecs::rfx::rlgr::RlgrError> for RdpError {
+    fn from(e: ironrdp::codecs::rfx::rlgr::RlgrError) -> Self {
+        RdpError::RlgrError(e)
+    }
+}
+
+impl From<image::ImageError> for RdpError {
+    fn from(e: image::ImageError) -> Self {
+        RdpError::ImageError(e)
     }
 }

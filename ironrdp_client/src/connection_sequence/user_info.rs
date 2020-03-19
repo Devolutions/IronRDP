@@ -2,18 +2,22 @@ use std::{env, net};
 
 use ironrdp::{
     gcc::{
-        Channel, ChannelOptions, ClientCoreData, ClientCoreOptionalData,
-        ClientEarlyCapabilityFlags, ClientGccBlocks, ClientNetworkData, ClientSecurityData,
-        ColorDepth, ConnectionType, HighColorDepth, RdpVersion, SecureAccessSequence,
-        SupportedColorDepths,
+        ClientCoreData, ClientCoreOptionalData, ClientEarlyCapabilityFlags, ClientGccBlocks,
+        ClientNetworkData, ClientSecurityData, ColorDepth, ConnectionType, HighColorDepth,
+        RdpVersion, SecureAccessSequence, SupportedColorDepths,
     },
     nego::SecurityProtocol,
     rdp::{
         capability_sets::{
-            Bitmap, BitmapCache, BitmapDrawingFlags, Brush, CacheDefinition, CacheEntry, General,
-            GeneralExtraFlags, GlyphCache, GlyphSupportLevel, Input, InputFlags, MajorPlatformType,
-            MinorPlatformType, OffscreenBitmapCache, Pointer, Sound, SoundFlags, SupportLevel,
-            VirtualChannel, VirtualChannelFlags, BITMAP_CACHE_ENTRIES_NUM, GLYPH_CACHE_NUM,
+            Bitmap, BitmapCache, BitmapCodecs, BitmapDrawingFlags, Brush, CacheDefinition,
+            CacheEntry, CaptureFlags, CmdFlags, Codec, CodecProperty, EntropyBits,
+            FrameAcknowledge, General, GeneralExtraFlags, GlyphCache, GlyphSupportLevel, Input,
+            InputFlags, LargePointer, LargePointerSupportFlags, MajorPlatformType,
+            MinorPlatformType, MultifragmentUpdate, OffscreenBitmapCache, Order, OrderFlags,
+            OrderSupportExFlags, Pointer, RemoteFxContainer, RfxCaps, RfxCapset,
+            RfxClientCapsContainer, RfxICap, RfxICapFlags, Sound, SoundFlags, SupportLevel,
+            SurfaceCommands, VirtualChannel, VirtualChannelFlags, BITMAP_CACHE_ENTRIES_NUM,
+            GLYPH_CACHE_NUM,
         },
         AddressFamily, BasicSecurityHeader, BasicSecurityHeaderFlags, ClientInfo, ClientInfoFlags,
         ClientInfoPdu, CompressionType, Credentials, ExtendedClientInfo,
@@ -21,9 +25,9 @@ use ironrdp::{
     },
     CapabilitySet, ClientConfirmActive,
 };
-use num_traits::{FromPrimitive, ToPrimitive};
+use num_traits::ToPrimitive;
 
-use crate::{config::Config, RdpError, RdpResult};
+use crate::{config::Config, utils::CodecId, RdpError, RdpResult};
 
 const SOURCE_DESCRIPTOR: &str = "IRONRDP";
 
@@ -34,7 +38,7 @@ pub fn create_gcc_blocks(
     Ok(ClientGccBlocks {
         core: create_core_data(config, selected_protocol)?,
         security: create_security_data(),
-        network: Some(create_network_data(config)),
+        network: Some(create_network_data()),
         cluster: None,
         monitor: None,
         message_channel: None,
@@ -50,7 +54,12 @@ pub fn create_client_info_pdu(config: &Config) -> RdpResult<ClientInfoPdu> {
     let client_info = ClientInfo {
         credentials: auth_identity_to_credentials(config.input.credentials.clone()),
         code_page: 0, // ignored if the keyboardLayout field of the Client Core Data is set to zero
-        flags: ClientInfoFlags::UNICODE,
+        flags: ClientInfoFlags::UNICODE
+            | ClientInfoFlags::DISABLE_CTRL_ALT_DEL
+            | ClientInfoFlags::LOGON_NOTIFY
+            | ClientInfoFlags::LOGON_ERRORS
+            | ClientInfoFlags::NO_AUDIO_PLAYBACK
+            | ClientInfoFlags::VIDEO_DISABLE,
         compression_type: CompressionType::K8, // ignored if ClientInfoFlags::COMPRESSION is not set
         alternate_shell: String::new(),
         work_dir: String::new(),
@@ -83,15 +92,14 @@ pub fn create_client_confirm_active(
     config: &Config,
     mut server_capability_sets: Vec<CapabilitySet>,
 ) -> RdpResult<ClientConfirmActive> {
-    let current_monitor = get_current_monitor()?;
-
     server_capability_sets.retain(|capability_set| match capability_set {
-        CapabilitySet::Order(_) => true,
+        CapabilitySet::MultiFragmentUpdate(_) => true,
         _ => false,
     });
     server_capability_sets.extend_from_slice(&[
         create_general_capability_set(),
-        create_bitmap_capability_set(&current_monitor),
+        create_bitmap_capability_set(config),
+        create_orders_capability_set(),
         create_bitmap_cache_capability_set(),
         create_input_capability_set(config),
         create_pointer_capability_set(),
@@ -100,7 +108,24 @@ pub fn create_client_confirm_active(
         create_offscreen_bitmap_cache_capability_set(),
         create_virtual_channel_capability_set(),
         create_sound_capability_set(),
+        create_large_pointer_capability_set(),
+        create_surface_commands_capability_set(),
+        create_bitmap_codes_capability_set(),
+        CapabilitySet::FrameAcknowledge(FrameAcknowledge {
+            max_unacknowledged_frame_count: 2,
+        }),
     ]);
+
+    if server_capability_sets
+        .iter()
+        .find(|c| match c {
+            CapabilitySet::MultiFragmentUpdate(_) => true,
+            _ => false,
+        })
+        .is_none()
+    {
+        server_capability_sets.push(create_multi_fragment_update_capability_set());
+    }
 
     Ok(ClientConfirmActive {
         originator_id: SERVER_CHANNEL_ID,
@@ -115,12 +140,10 @@ fn create_core_data(
     config: &Config,
     selected_protocol: SecurityProtocol,
 ) -> RdpResult<ClientCoreData> {
-    let current_monitor = get_current_monitor()?;
-
     Ok(ClientCoreData {
         version: RdpVersion::V5Plus,
-        desktop_width: current_monitor.size().width as u16,
-        desktop_height: current_monitor.size().height as u16,
+        desktop_width: config.width,
+        desktop_height: config.height,
         color_depth: ColorDepth::Bpp4, // ignored
         sec_access_sequence: SecureAccessSequence::Del,
         keyboard_layout: 0, // the server SHOULD use the default active input locale identifier
@@ -132,37 +155,26 @@ fn create_core_data(
         keyboard_subtype: config.input.keyboard_subtype,
         keyboard_functional_keys_count: config.input.keyboard_functional_keys_count,
         ime_file_name: config.input.ime_file_name.clone(),
-        optional_data: create_optional_core_data(config, selected_protocol, current_monitor)?,
+        optional_data: create_optional_core_data(config, selected_protocol)?,
     })
 }
 
 fn create_optional_core_data(
     config: &Config,
     selected_protocol: SecurityProtocol,
-    current_monitor: winit::monitor::MonitorHandle,
 ) -> RdpResult<ClientCoreOptionalData> {
     Ok(ClientCoreOptionalData {
         post_beta_color_depth: Some(ColorDepth::Bpp4), // ignored
         client_product_id: Some(1),
         serial_number: Some(0),
-        high_color_depth: Some(get_color_depth(&current_monitor)),
-        supported_color_depths: Some(
-            current_monitor
-                .video_modes()
-                .map(|video_mode| match video_mode.bit_depth() {
-                    15 | 16 | 24 | 32 => {
-                        SupportedColorDepths::BPP15
-                            | SupportedColorDepths::BPP16
-                            | SupportedColorDepths::BPP24
-                            | SupportedColorDepths::BPP32
-                    }
-                    _ => SupportedColorDepths::empty(),
-                })
-                .collect(),
+        high_color_depth: Some(HighColorDepth::Bpp24),
+        supported_color_depths: Some(SupportedColorDepths::all()),
+        early_capability_flags: Some(
+            ClientEarlyCapabilityFlags::VALID_CONNECTION_TYPE
+                | ClientEarlyCapabilityFlags::WANT_32_BPP_SESSION,
         ),
-        early_capability_flags: Some(ClientEarlyCapabilityFlags::SUPPORT_DYN_VC_GFX_PROTOCOL),
         dig_product_id: Some(config.input.dig_product_id.clone()),
-        connection_type: Some(ConnectionType::NotUsed),
+        connection_type: Some(ConnectionType::Lan),
         server_selected_protocol: Some(selected_protocol),
         desktop_physical_width: None,
         desktop_physical_height: None,
@@ -176,17 +188,9 @@ fn create_security_data() -> ClientSecurityData {
     ClientSecurityData::no_security()
 }
 
-fn create_network_data(config: &Config) -> ClientNetworkData {
+fn create_network_data() -> ClientNetworkData {
     ClientNetworkData {
-        channels: config
-            .input
-            .static_channels
-            .iter()
-            .map(|name| Channel {
-                name: name.to_string(),
-                options: ChannelOptions::INITIALIZED,
-            })
-            .collect(),
+        channels: Vec::new(),
     }
 }
 
@@ -201,20 +205,30 @@ fn create_general_capability_set() -> CapabilitySet {
             _ => MajorPlatformType::Unspecified,
         },
         minor_platform_type: MinorPlatformType::Unspecified,
-        extra_flags: GeneralExtraFlags::empty(),
+        extra_flags: GeneralExtraFlags::FASTPATH_OUTPUT_SUPPORTED
+            | GeneralExtraFlags::NO_BITMAP_COMPRESSION_HDR,
         refresh_rect_support: false,
         suppress_output_support: false,
     })
 }
 
-fn create_bitmap_capability_set(current_monitor: &winit::monitor::MonitorHandle) -> CapabilitySet {
+fn create_bitmap_capability_set(config: &Config) -> CapabilitySet {
     CapabilitySet::Bitmap(Bitmap {
-        pref_bits_per_pix: get_color_depth(current_monitor).to_u16().unwrap(),
-        desktop_width: current_monitor.size().width as u16,
-        desktop_height: current_monitor.size().height as u16,
+        pref_bits_per_pix: 32,
+        desktop_width: config.width,
+        desktop_height: config.height,
         desktop_resize_flag: false,
         drawing_flags: BitmapDrawingFlags::empty(),
     })
+}
+
+fn create_orders_capability_set() -> CapabilitySet {
+    CapabilitySet::Order(Order::new(
+        OrderFlags::NEGOTIATE_ORDER_SUPPORT | OrderFlags::ZERO_BOUNDS_DELTAS_SUPPORT,
+        OrderSupportExFlags::empty(),
+        0,
+        0,
+    ))
 }
 
 fn create_bitmap_cache_capability_set() -> CapabilitySet {
@@ -285,27 +299,37 @@ fn create_sound_capability_set() -> CapabilitySet {
     })
 }
 
-fn get_current_monitor() -> RdpResult<winit::monitor::MonitorHandle> {
-    Ok(
-        winit::window::Window::new(&winit::event_loop::EventLoop::new())
-            .map_err(|e| RdpError::UserInfoError(format!("Failed to create window: {:?}", e)))?
-            .current_monitor(),
-    )
+fn create_multi_fragment_update_capability_set() -> CapabilitySet {
+    CapabilitySet::MultiFragmentUpdate(MultifragmentUpdate {
+        max_request_size: 1024,
+    })
 }
 
-fn get_color_depth(current_monitor: &winit::monitor::MonitorHandle) -> HighColorDepth {
-    current_monitor
-        .video_modes()
-        .map(|video_mode| {
-            let video_mode_bit_depth = video_mode.bit_depth();
-            match HighColorDepth::from_u16(video_mode_bit_depth) {
-                Some(bit_depth) => bit_depth,
-                None if video_mode_bit_depth == 32 => HighColorDepth::Bpp24,
-                _ => HighColorDepth::Bpp4,
-            }
-        })
-        .max()
-        .unwrap_or(HighColorDepth::Bpp4)
+fn create_large_pointer_capability_set() -> CapabilitySet {
+    CapabilitySet::LargePointer(LargePointer {
+        flags: LargePointerSupportFlags::UP_TO_96X96_PIXELS,
+    })
+}
+
+fn create_surface_commands_capability_set() -> CapabilitySet {
+    CapabilitySet::SurfaceCommands(SurfaceCommands {
+        flags: CmdFlags::SET_SURFACE_BITS | CmdFlags::STREAM_SURFACE_BITS | CmdFlags::FRAME_MARKER,
+    })
+}
+
+fn create_bitmap_codes_capability_set() -> CapabilitySet {
+    CapabilitySet::BitmapCodecs(BitmapCodecs(vec![Codec {
+        id: CodecId::RemoteFx.to_u8().unwrap(),
+        property: CodecProperty::RemoteFx(RemoteFxContainer::ClientContainer(
+            RfxClientCapsContainer {
+                capture_flags: CaptureFlags::empty(),
+                caps_data: RfxCaps(RfxCapset(vec![RfxICap {
+                    flags: RfxICapFlags::empty(),
+                    entropy_bits: EntropyBits::Rlgr3,
+                }])),
+            },
+        )),
+    }]))
 }
 
 fn auth_identity_to_credentials(auth_identity: sspi::AuthIdentity) -> Credentials {

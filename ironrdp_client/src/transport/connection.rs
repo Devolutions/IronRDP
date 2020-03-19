@@ -1,11 +1,11 @@
 use std::io;
 
 use bytes::BytesMut;
-use ironrdp::{nego, rdp::SERVER_CHANNEL_ID, PduParsing};
-use log::{debug, warn};
+use ironrdp::{nego, PduParsing};
+use log::debug;
 use sspi::internal::credssp;
 
-use super::{DataTransport, Decoder, Encoder, SendDataContextTransport};
+use super::{DataTransport, Decoder, Encoder};
 use crate::{RdpError, RdpResult};
 
 const MAX_TS_REQUEST_LENGTH_BUFFER_SIZE: usize = 4;
@@ -66,125 +66,6 @@ impl EarlyUserAuthResult {
     }
 }
 
-pub struct ShareControlHeaderTransport {
-    global_channel_id: u16,
-    share_id: u32,
-    pdu_source: u16,
-    send_data_context_transport: SendDataContextTransport,
-}
-
-impl ShareControlHeaderTransport {
-    pub fn new(
-        send_data_context_transport: SendDataContextTransport,
-        pdu_source: u16,
-        global_channel_id: u16,
-    ) -> Self {
-        Self {
-            global_channel_id,
-            send_data_context_transport,
-            pdu_source,
-            share_id: 0,
-        }
-    }
-}
-
-impl Encoder for ShareControlHeaderTransport {
-    type Item = ironrdp::ShareControlPdu;
-    type Error = RdpError;
-
-    fn encode(
-        &mut self,
-        share_control_pdu: Self::Item,
-        mut stream: impl io::Write,
-    ) -> RdpResult<()> {
-        let share_control_header = ironrdp::ShareControlHeader {
-            share_control_pdu,
-            pdu_source: self.pdu_source,
-            share_id: self.share_id,
-        };
-
-        let mut pdu = Vec::with_capacity(share_control_header.buffer_length());
-        share_control_header
-            .to_buffer(&mut pdu)
-            .map_err(RdpError::ShareControlHeaderError)?;
-
-        self.send_data_context_transport.encode(pdu, &mut stream)
-    }
-}
-
-impl Decoder for ShareControlHeaderTransport {
-    type Item = ironrdp::ShareControlPdu;
-    type Error = RdpError;
-
-    fn decode(&mut self, mut stream: impl io::Read) -> RdpResult<Self::Item> {
-        let channel_ids = self.send_data_context_transport.decode(&mut stream)?;
-        if channel_ids.channel_id != self.global_channel_id {
-            return Err(RdpError::InvalidResponse(format!(
-                "Unexpected Send Data Context channel ID ({})",
-                channel_ids.channel_id,
-            )));
-        }
-
-        let share_control_header = ironrdp::ShareControlHeader::from_buffer(&mut stream)
-            .map_err(RdpError::ShareControlHeaderError)?;
-        self.share_id = share_control_header.share_id;
-
-        if share_control_header.pdu_source != SERVER_CHANNEL_ID {
-            warn!(
-                "Invalid Share Control Header pdu source: expected ({}) != actual ({})",
-                SERVER_CHANNEL_ID, share_control_header.pdu_source
-            );
-        }
-
-        Ok(share_control_header.share_control_pdu)
-    }
-}
-
-pub struct ShareDataHeaderTransport(ShareControlHeaderTransport);
-
-impl ShareDataHeaderTransport {
-    pub fn new(transport: ShareControlHeaderTransport) -> Self {
-        Self(transport)
-    }
-}
-
-impl Encoder for ShareDataHeaderTransport {
-    type Item = ironrdp::ShareDataPdu;
-    type Error = RdpError;
-
-    fn encode(&mut self, share_data_pdu: Self::Item, mut stream: impl io::Write) -> RdpResult<()> {
-        let share_data_header = ironrdp::ShareDataHeader {
-            share_data_pdu,
-            stream_priority: ironrdp::rdp::StreamPriority::Medium,
-            compression_flags: ironrdp::rdp::CompressionFlags::empty(),
-            compression_type: ironrdp::rdp::CompressionType::K8, // ignored if CompressionFlags::empty()
-        };
-
-        self.0.encode(
-            ironrdp::ShareControlPdu::Data(share_data_header),
-            &mut stream,
-        )
-    }
-}
-
-impl Decoder for ShareDataHeaderTransport {
-    type Item = ironrdp::ShareDataPdu;
-    type Error = RdpError;
-
-    fn decode(&mut self, mut stream: impl io::Read) -> RdpResult<Self::Item> {
-        let share_control_pdu = self.0.decode(&mut stream)?;
-
-        if let ironrdp::ShareControlPdu::Data(share_data_header) = share_control_pdu {
-            Ok(share_data_header.share_data_pdu)
-        } else {
-            Err(RdpError::UnexpectedPdu(format!(
-                "Expected Share Data Header, got: {:?}",
-                share_control_pdu.as_short_name()
-            )))
-        }
-    }
-}
-
 pub fn connect(
     mut stream: impl io::BufRead + io::Write,
     security_protocol: nego::SecurityProtocol,
@@ -198,7 +79,7 @@ pub fn connect(
         0,
     )?;
 
-    Ok((DataTransport, selected_protocol))
+    Ok((DataTransport::default(), selected_protocol))
 }
 
 fn process_negotiation(
