@@ -7,7 +7,7 @@ const THIRD_LEVEL_SIZE: usize = 64;
 const FISRT_LEVEL_SUBBANDS_COUNT: usize = 3;
 const SECOND_LEVEL_SUBBANDS_COUNT: usize = 3;
 
-pub fn decode(buffer: &mut [i16], quant: Quant) {
+pub fn decode(buffer: &mut [i16], quant: &Quant) {
     let (first_level, buffer) = buffer.split_at_mut(FISRT_LEVEL_SUBBANDS_COUNT * FIRST_LEVEL_SIZE);
     let (second_level, third_level) =
         buffer.split_at_mut(SECOND_LEVEL_SUBBANDS_COUNT * SECOND_LEVEL_SIZE);
@@ -59,7 +59,7 @@ mod tests {
             hh1: 0,
         };
 
-        decode(&mut buffer, quant);
+        decode(&mut buffer, &quant);
         assert_eq!(expected.as_ref(), buffer.as_ref());
     }
 
@@ -80,7 +80,7 @@ mod tests {
             hh1: 9,
         };
 
-        decode(&mut buffer, quant);
+        decode(&mut buffer, &quant);
         assert_eq!(expected, buffer.as_ref());
     }
 

@@ -4,14 +4,14 @@ pub mod mcs;
 pub mod nego;
 pub mod rdp;
 
+mod basic_output;
 mod ber;
-mod fast_path;
 mod per;
 mod utils;
 mod x224;
 
 pub use crate::{
-    fast_path::{parse_fast_path_header, FastPath, FastPathError},
+    basic_output::{fast_path, surface_commands},
     mcs::{ConnectInitial, ConnectResponse, McsError, McsPdu, SendDataContext},
     nego::*,
     rdp::{
@@ -19,6 +19,7 @@ pub use crate::{
         ServerDemandActive, ShareControlHeader, ShareControlPdu, ShareDataHeader, ShareDataPdu,
         VirtualChannel,
     },
+    utils::Rectangle,
     x224::*,
 };
 
@@ -32,13 +33,78 @@ pub trait PduParsing {
     fn buffer_length(&self) -> usize;
 }
 
-pub trait PduBufferParsing: Sized {
+pub trait PduBufferParsing<'a>: Sized {
     type Error;
 
-    fn from_buffer(mut buffer: &[u8]) -> Result<Self, Self::Error> {
+    fn from_buffer(mut buffer: &'a [u8]) -> Result<Self, Self::Error> {
         Self::from_buffer_consume(&mut buffer)
     }
-    fn from_buffer_consume(buffer: &mut &[u8]) -> Result<Self, Self::Error>;
+    fn from_buffer_consume(buffer: &mut &'a [u8]) -> Result<Self, Self::Error>;
     fn to_buffer_consume(&self, buffer: &mut &mut [u8]) -> Result<(), Self::Error>;
     fn buffer_length(&self) -> usize;
+}
+
+pub enum RdpPdu {
+    X224(x224::Data),
+    FastPath(fast_path::FastPathHeader),
+}
+
+impl PduParsing for RdpPdu {
+    type Error = RdpError;
+
+    fn from_buffer(mut stream: impl std::io::Read) -> Result<Self, Self::Error> {
+        use bit_field::BitField;
+        use byteorder::ReadBytesExt;
+        use num_traits::FromPrimitive;
+
+        let header = stream.read_u8()?;
+        let action = header.get_bits(0..2);
+        let action = Action::from_u8(action).ok_or(RdpError::InvalidActionCode(action))?;
+
+        match action {
+            Action::X224 => Ok(Self::X224(x224::Data::from_buffer_with_version(
+                &mut stream,
+                header,
+            )?)),
+            Action::FastPath => Ok(Self::FastPath(
+                fast_path::FastPathHeader::from_buffer_with_header(&mut stream, header)?,
+            )),
+        }
+    }
+
+    fn to_buffer(&self, stream: impl std::io::Write) -> Result<(), Self::Error> {
+        match self {
+            Self::X224(x224) => x224.to_buffer(stream).map_err(RdpError::from),
+            Self::FastPath(fast_path) => fast_path.to_buffer(stream).map_err(RdpError::from),
+        }
+    }
+
+    fn buffer_length(&self) -> usize {
+        match self {
+            Self::X224(x224) => x224.buffer_length(),
+            Self::FastPath(fast_path) => fast_path.buffer_length(),
+        }
+    }
+}
+
+#[derive(Debug, failure::Fail)]
+pub enum RdpError {
+    #[fail(display = "IO error: {}", _0)]
+    IOError(#[fail(cause)] std::io::Error),
+    #[fail(display = "X224 error: {}", _0)]
+    X224Error(#[fail(cause)] nego::NegotiationError),
+    #[fail(display = "Surface Commands error: {}", _0)]
+    FastPathError(#[fail(cause)] fast_path::FastPathError),
+    #[fail(display = "Received invalid action code: {}", _0)]
+    InvalidActionCode(u8),
+}
+
+impl_from_error!(std::io::Error, RdpError, RdpError::IOError);
+impl_from_error!(nego::NegotiationError, RdpError, RdpError::X224Error);
+impl_from_error!(fast_path::FastPathError, RdpError, RdpError::FastPathError);
+
+#[derive(Debug, Copy, Clone, PartialEq, num_derive::FromPrimitive, num_derive::ToPrimitive)]
+enum Action {
+    FastPath = 0x0,
+    X224 = 0x3,
 }

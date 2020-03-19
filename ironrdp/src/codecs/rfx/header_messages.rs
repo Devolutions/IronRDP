@@ -1,7 +1,8 @@
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 
 use super::{BlockHeader, BlockType, RfxError, BLOCK_HEADER_SIZE};
-use crate::{split_to, PduBufferParsing};
+use crate::utils::SplitTo;
+use crate::PduBufferParsing;
 
 const SYNC_MAGIC: u32 = 0xCACC_ACCA;
 const SYNC_VERSION: u16 = 0x0100;
@@ -15,12 +16,12 @@ const CHANNEL_SIZE: usize = 5;
 #[derive(Debug, Clone, PartialEq)]
 pub struct SyncPdu;
 
-impl PduBufferParsing for SyncPdu {
+impl<'a> PduBufferParsing<'a> for SyncPdu {
     type Error = RfxError;
 
     fn from_buffer_consume(buffer: &mut &[u8]) -> Result<Self, Self::Error> {
-        let header = BlockHeader::from_buffer_consume_with_type(buffer, BlockType::Sync)?;
-        let mut buffer = split_to!(*buffer, header.data_length);
+        let header = BlockHeader::from_buffer_consume_with_expected_type(buffer, BlockType::Sync)?;
+        let mut buffer = buffer.split_to(header.data_length);
 
         let magic = buffer.read_u32::<LittleEndian>()?;
         if magic != SYNC_MAGIC {
@@ -55,12 +56,12 @@ impl PduBufferParsing for SyncPdu {
 #[derive(Debug, Clone, PartialEq)]
 pub struct CodecVersionsPdu;
 
-impl PduBufferParsing for CodecVersionsPdu {
-    type Error = RfxError;
-
-    fn from_buffer_consume(buffer: &mut &[u8]) -> Result<Self, Self::Error> {
-        let header = BlockHeader::from_buffer_consume_with_type(buffer, BlockType::CodecVersions)?;
-        let mut buffer = split_to!(*buffer, header.data_length);
+impl CodecVersionsPdu {
+    pub fn from_buffer_consume_with_header(
+        buffer: &mut &[u8],
+        header: BlockHeader,
+    ) -> Result<Self, RfxError> {
+        let mut buffer = buffer.split_to(header.data_length);
 
         let codecs_number = buffer.read_u8()?;
         if codecs_number != CODECS_NUMBER {
@@ -70,6 +71,17 @@ impl PduBufferParsing for CodecVersionsPdu {
         let _codec_version = CodecVersion::from_buffer(buffer)?;
 
         Ok(Self)
+    }
+}
+
+impl<'a> PduBufferParsing<'a> for CodecVersionsPdu {
+    type Error = RfxError;
+
+    fn from_buffer_consume(buffer: &mut &[u8]) -> Result<Self, Self::Error> {
+        let header =
+            BlockHeader::from_buffer_consume_with_expected_type(buffer, BlockType::CodecVersions)?;
+
+        Self::from_buffer_consume_with_header(buffer, header)
     }
 
     fn to_buffer_consume(&self, buffer: &mut &mut [u8]) -> Result<(), Self::Error> {
@@ -92,14 +104,14 @@ impl PduBufferParsing for CodecVersionsPdu {
 #[derive(Debug, Clone, PartialEq)]
 pub struct ChannelsPdu(pub Vec<Channel>);
 
-impl PduBufferParsing for ChannelsPdu {
-    type Error = RfxError;
+impl ChannelsPdu {
+    pub fn from_buffer_consume_with_header(
+        buffer: &mut &[u8],
+        header: BlockHeader,
+    ) -> Result<Self, RfxError> {
+        let mut buffer = buffer.split_to(header.data_length);
 
-    fn from_buffer_consume(buffer: &mut &[u8]) -> Result<Self, Self::Error> {
-        let header = BlockHeader::from_buffer_consume_with_type(buffer, BlockType::Channels)?;
-        let mut buffer = split_to!(*buffer, header.data_length);
-
-        let channels_number = buffer.read_u8()? as usize;
+        let channels_number = usize::from(buffer.read_u8()?);
 
         if buffer.len() < channels_number * CHANNEL_SIZE {
             return Err(RfxError::InvalidDataLength {
@@ -113,6 +125,17 @@ impl PduBufferParsing for ChannelsPdu {
             .collect::<Result<Vec<_>, _>>()?;
 
         Ok(Self(channels))
+    }
+}
+
+impl<'a> PduBufferParsing<'a> for ChannelsPdu {
+    type Error = RfxError;
+
+    fn from_buffer_consume(buffer: &mut &[u8]) -> Result<Self, Self::Error> {
+        let header =
+            BlockHeader::from_buffer_consume_with_expected_type(buffer, BlockType::Channels)?;
+
+        Self::from_buffer_consume_with_header(buffer, header)
     }
 
     fn to_buffer_consume(&self, buffer: &mut &mut [u8]) -> Result<(), Self::Error> {
@@ -148,7 +171,7 @@ pub struct Channel {
     pub height: i16,
 }
 
-impl PduBufferParsing for Channel {
+impl<'a> PduBufferParsing<'a> for Channel {
     type Error = RfxError;
 
     fn from_buffer_consume(buffer: &mut &[u8]) -> Result<Self, Self::Error> {
@@ -179,7 +202,7 @@ impl PduBufferParsing for Channel {
 #[derive(Debug, Clone, PartialEq)]
 struct CodecVersion;
 
-impl PduBufferParsing for CodecVersion {
+impl<'a> PduBufferParsing<'a> for CodecVersion {
     type Error = RfxError;
 
     fn from_buffer_consume(buffer: &mut &[u8]) -> Result<Self, Self::Error> {
