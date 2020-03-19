@@ -3,7 +3,7 @@ pub mod rsa;
 
 use std::{
     cmp::{max, min},
-    io, ops,
+    io, mem, ops,
 };
 
 use bitvec::prelude::{BitSlice, Msb0};
@@ -46,16 +46,6 @@ macro_rules! impl_from_error {
             }
         }
     };
-}
-
-#[macro_export]
-macro_rules! split_to {
-    ($buffer:expr, $n:expr) => {{
-        let splitted = &$buffer[..$n];
-        $buffer = &$buffer[$n..];
-
-        splitted
-    }};
 }
 
 pub fn string_to_utf16(value: &str) -> Vec<u8> {
@@ -175,6 +165,14 @@ impl Rectangle {
         }
     }
 
+    pub fn width(&self) -> u16 {
+        self.right - self.left
+    }
+
+    pub fn height(&self) -> u16 {
+        self.bottom - self.top
+    }
+
     pub fn union_all(rectangles: &[Self]) -> Self {
         Self {
             left: rectangles.iter().map(|r| r.left).min().unwrap_or(0),
@@ -237,5 +235,31 @@ impl PduParsing for Rectangle {
 
     fn buffer_length(&self) -> usize {
         8
+    }
+}
+
+pub trait SplitTo {
+    fn split_to(&mut self, n: usize) -> Self;
+}
+
+impl<T> SplitTo for &[T] {
+    fn split_to(&mut self, n: usize) -> Self {
+        assert!(n <= self.len());
+
+        let (a, b) = self.split_at(n);
+        *self = b;
+
+        a
+    }
+}
+
+impl<T> SplitTo for &mut [T] {
+    fn split_to(&mut self, n: usize) -> Self {
+        assert!(n <= self.len());
+
+        let (a, b) = mem::replace(self, &mut []).split_at_mut(n);
+        *self = b;
+
+        a
     }
 }

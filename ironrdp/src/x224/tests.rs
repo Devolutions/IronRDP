@@ -84,7 +84,6 @@ fn buffer_length_is_correct_for_data() {
     let buffer = [
         0x03u8, 0x00, 0x00, 0x0c, // tpkt
         0x02, 0xf0, 0x80, // data tpdu
-        0x04, 0x01, 0x00, 0x01, 0x00,
     ];
 
     let data_header = Data { data_length: 5 };

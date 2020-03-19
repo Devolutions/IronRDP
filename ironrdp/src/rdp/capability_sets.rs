@@ -5,6 +5,7 @@ mod bitmap;
 mod bitmap_cache;
 mod bitmap_codecs;
 mod brush;
+mod frame_acknowledge;
 mod general;
 mod glyph_cache;
 mod input;
@@ -29,6 +30,7 @@ pub use self::{
         RemoteFxContainer, RfxCaps, RfxCapset, RfxClientCapsContainer, RfxICap, RfxICapFlags,
     },
     brush::{Brush, SupportLevel},
+    frame_acknowledge::FrameAcknowledge,
     general::{General, GeneralExtraFlags, MajorPlatformType, MinorPlatformType},
     glyph_cache::{CacheDefinition, GlyphCache, GlyphSupportLevel, GLYPH_CACHE_NUM},
     input::{Input, InputFlags},
@@ -230,7 +232,7 @@ pub enum CapabilitySet {
     DrawGdiPlus(Vec<u8>),
     Rail(Vec<u8>),
     WindowList(Vec<u8>),
-    FrameAcknowledge(Vec<u8>),
+    FrameAcknowledge(FrameAcknowledge),
 }
 
 impl PduParsing for CapabilitySet {
@@ -320,9 +322,9 @@ impl PduParsing for CapabilitySet {
             CapabilitySetType::DrawGdiPlus => Ok(CapabilitySet::DrawGdiPlus(capability_set_buffer)),
             CapabilitySetType::Rail => Ok(CapabilitySet::Rail(capability_set_buffer)),
             CapabilitySetType::WindowList => Ok(CapabilitySet::WindowList(capability_set_buffer)),
-            CapabilitySetType::FrameAcknowledge => {
-                Ok(CapabilitySet::FrameAcknowledge(capability_set_buffer))
-            }
+            CapabilitySetType::FrameAcknowledge => Ok(CapabilitySet::FrameAcknowledge(
+                FrameAcknowledge::from_buffer(&mut capability_set_buffer.as_slice())?,
+            )),
         }
     }
 
@@ -486,6 +488,17 @@ impl PduParsing for CapabilitySet {
                 )?;
                 capset.to_buffer(&mut stream)?;
             }
+            CapabilitySet::FrameAcknowledge(capset) => {
+                stream.write_u16::<LittleEndian>(
+                    CapabilitySetType::FrameAcknowledge.to_u16().unwrap(),
+                )?;
+                stream.write_u16::<LittleEndian>(
+                    (capset.buffer_length()
+                        + CAPABILITY_SET_TYPE_FIELD_SIZE
+                        + CAPABILITY_SET_LENGTH_FIELD_SIZE) as u16,
+                )?;
+                capset.to_buffer(&mut stream)?;
+            }
             _ => {
                 let (capability_set_type, capability_set_buffer) = match self {
                     CapabilitySet::Control(buffer) => (CapabilitySetType::Control, buffer),
@@ -507,9 +520,6 @@ impl PduParsing for CapabilitySet {
                     CapabilitySet::DrawGdiPlus(buffer) => (CapabilitySetType::DrawGdiPlus, buffer),
                     CapabilitySet::Rail(buffer) => (CapabilitySetType::Rail, buffer),
                     CapabilitySet::WindowList(buffer) => (CapabilitySetType::WindowList, buffer),
-                    CapabilitySet::FrameAcknowledge(buffer) => {
-                        (CapabilitySetType::FrameAcknowledge, buffer)
-                    }
                     _ => unreachable!(),
                 };
 
@@ -545,6 +555,7 @@ impl PduParsing for CapabilitySet {
                 CapabilitySet::BitmapCodecs(capset) => capset.buffer_length(),
                 CapabilitySet::MultiFragmentUpdate(capset) => capset.buffer_length(),
                 CapabilitySet::LargePointer(capset) => capset.buffer_length(),
+                CapabilitySet::FrameAcknowledge(capset) => capset.buffer_length(),
                 CapabilitySet::Control(buffer)
                 | CapabilitySet::WindowActivation(buffer)
                 | CapabilitySet::Share(buffer)
@@ -555,8 +566,7 @@ impl PduParsing for CapabilitySet {
                 | CapabilitySet::DrawNineGridCache(buffer)
                 | CapabilitySet::DrawGdiPlus(buffer)
                 | CapabilitySet::Rail(buffer)
-                | CapabilitySet::WindowList(buffer)
-                | CapabilitySet::FrameAcknowledge(buffer) => buffer.len(),
+                | CapabilitySet::WindowList(buffer) => buffer.len(),
             }
     }
 }

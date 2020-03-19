@@ -149,7 +149,7 @@ fn wrong_message_code_in_negotiation_response_results_in_error() {
 
     match Response::from_buffer(buffer.as_ref()) {
         Err(NegotiationError::IOError(ref e)) if e.kind() == io::ErrorKind::InvalidData => (),
-        Err(_e) => panic!("wrong error type"),
+        Err(e) => panic!("wrong error type: {}", e),
         _ => panic!("error expected"),
     }
 }
@@ -179,7 +179,7 @@ fn negotiation_failure_in_response_results_in_error() {
     match Response::from_buffer(buffer.as_ref()) {
         Err(NegotiationError::ResponseFailure(e))
             if e == FailureCode::SSLWithUserAuthRequiredByServer => {}
-        Err(_e) => panic!("wrong error type"),
+        Err(e) => panic!("wrong error type: {}", e),
         _ => panic!("error expected"),
     }
 }
@@ -224,7 +224,7 @@ fn read_string_with_cr_lf_on_non_value_results_in_error() {
 
     match read_string_with_cr_lf(&mut request.as_ref(), COOKIE_PREFIX) {
         Err(ref e) if e.kind() == io::ErrorKind::InvalidData => (),
-        Err(_e) => panic!("wrong error type"),
+        Err(e) => panic!("wrong error type: {}", e),
         _ => panic!("error expected"),
     }
 }
@@ -238,7 +238,7 @@ fn read_string_with_cr_lf_on_unterminated_message_results_in_error() {
 
     match read_string_with_cr_lf(&mut request.as_ref(), COOKIE_PREFIX) {
         Err(ref e) if e.kind() == io::ErrorKind::UnexpectedEof => (),
-        Err(_e) => panic!("wrong error type"),
+        Err(e) => panic!("wrong error type: {}", e),
         _ => panic!("error expected"),
     }
 }
@@ -252,7 +252,7 @@ fn read_string_with_cr_lf_on_unterminated_with_cr_message() {
 
     match read_string_with_cr_lf(&mut request.as_ref(), COOKIE_PREFIX) {
         Err(ref e) if e.kind() == io::ErrorKind::UnexpectedEof => (),
-        Err(_e) => panic!("wrong error type"),
+        Err(e) => panic!("wrong error type: {}", e),
         _ => panic!("error expected"),
     }
 }
@@ -378,7 +378,7 @@ fn negotiation_request_with_invalid_negotiation_code_results_in_error() {
 
     match Request::from_buffer(request.as_ref()) {
         Err(NegotiationError::IOError(ref e)) if e.kind() == io::ErrorKind::InvalidData => (),
-        Err(_e) => panic!("wrong error type"),
+        Err(e) => panic!("wrong error type: {}", e),
         _ => panic!("error expected"),
     }
 }
@@ -563,7 +563,7 @@ fn from_buffer_correctly_parses_negotiation_failure() {
 
     match Response::from_buffer(expected.as_ref()) {
         Err(NegotiationError::ResponseFailure(_)) => (),
-        Err(_e) => panic!("invalid error type"),
+        Err(e) => panic!("invalid error type: {}", e),
         Ok(_) => panic!("error expected"),
     }
 }
@@ -663,7 +663,7 @@ fn parse_negotiation_request_correctly_handles_invalid_slice_length() {
 
     match Request::from_buffer(request.as_ref()) {
         Err(NegotiationError::TpktVersionError) => (),
-        Err(_e) => panic!("wrong error type"),
+        Err(e) => panic!("wrong error type: {}", e),
         _ => panic!("error expected"),
     }
 }

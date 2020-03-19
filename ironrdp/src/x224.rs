@@ -40,12 +40,11 @@ impl TpktHeader {
         Self { length }
     }
 }
-
-impl PduParsing for TpktHeader {
-    type Error = NegotiationError;
-
-    fn from_buffer(mut stream: impl io::Read) -> Result<Self, Self::Error> {
-        let version = stream.read_u8()?;
+impl TpktHeader {
+    pub fn from_buffer_with_version(
+        mut stream: impl io::Read,
+        version: u8,
+    ) -> Result<Self, NegotiationError> {
         if version != TPKT_VERSION {
             return Err(NegotiationError::TpktVersionError);
         }
@@ -54,6 +53,16 @@ impl PduParsing for TpktHeader {
         let length = usize::from(stream.read_u16::<BigEndian>()?);
 
         Ok(Self { length })
+    }
+}
+
+impl PduParsing for TpktHeader {
+    type Error = NegotiationError;
+
+    fn from_buffer(mut stream: impl io::Read) -> Result<Self, Self::Error> {
+        let version = stream.read_u8()?;
+
+        Self::from_buffer_with_version(stream, version)
     }
 
     fn to_buffer(&self, mut stream: impl io::Write) -> Result<(), Self::Error> {
@@ -78,14 +87,20 @@ impl Data {
     pub fn new(data_length: usize) -> Self {
         Self { data_length }
     }
-}
 
-impl PduParsing for Data {
-    type Error = NegotiationError;
+    pub fn from_buffer_with_version(
+        mut stream: impl io::Read,
+        version: u8,
+    ) -> Result<Self, NegotiationError> {
+        let tpkt = TpktHeader::from_buffer_with_version(&mut stream, version)?;
 
-    fn from_buffer(mut stream: impl io::Read) -> Result<Self, Self::Error> {
-        let tpkt = TpktHeader::from_buffer(&mut stream)?;
+        Self::from_buffer_with_tpkt_header(&mut stream, tpkt)
+    }
 
+    fn from_buffer_with_tpkt_header(
+        mut stream: impl io::Read,
+        tpkt: TpktHeader,
+    ) -> Result<Self, NegotiationError> {
         read_and_check_tpdu_header(&mut stream, X224TPDUType::Data)?;
 
         let _eof = stream.read_u8()?;
@@ -94,9 +109,19 @@ impl PduParsing for Data {
 
         Ok(Self { data_length })
     }
+}
+
+impl PduParsing for Data {
+    type Error = NegotiationError;
+
+    fn from_buffer(mut stream: impl io::Read) -> Result<Self, Self::Error> {
+        let tpkt = TpktHeader::from_buffer(&mut stream)?;
+
+        Self::from_buffer_with_tpkt_header(&mut stream, tpkt)
+    }
 
     fn to_buffer(&self, mut stream: impl std::io::Write) -> Result<(), Self::Error> {
-        TpktHeader::new(self.buffer_length()).to_buffer(&mut stream)?;
+        TpktHeader::new(self.buffer_length() + self.data_length).to_buffer(&mut stream)?;
 
         stream.write_u8(TPDU_DATA_HEADER_LENGTH as u8 - 1)?;
         stream.write_u8(X224TPDUType::Data.to_u8().unwrap())?;
@@ -106,7 +131,7 @@ impl PduParsing for Data {
     }
 
     fn buffer_length(&self) -> usize {
-        TPKT_HEADER_LENGTH + TPDU_DATA_HEADER_LENGTH + self.data_length
+        TPKT_HEADER_LENGTH + TPDU_DATA_HEADER_LENGTH
     }
 }
 
