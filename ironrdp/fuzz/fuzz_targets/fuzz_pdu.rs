@@ -3,8 +3,8 @@
 extern crate libfuzzer_sys;
 extern crate ironrdp;
 
-use ironrdp::*;
 use ironrdp::rdp::*;
+use ironrdp::*;
 
 fuzz_target!(|data: &[u8]| {
     let _ = Request::from_buffer(data);
@@ -30,4 +30,32 @@ fuzz_target!(|data: &[u8]| {
     let _ = server_license::ServerPlatformChallenge::from_buffer(data);
 
     let _ = vc::ChannelPduHeader::from_buffer(data);
+
+    let _ = fast_path::FastPathHeader::from_buffer(data);
+    let _ = fast_path::FastPathUpdatePdu::from_buffer(data);
+    let _ = fast_path::FastPathUpdate::from_buffer_with_code(
+        data,
+        fast_path::UpdateCode::SurfaceCommands,
+    );
+
+    let _ = surface_commands::SurfaceCommand::from_buffer(data);
+    let _ = surface_commands::SurfaceBitsPdu::from_buffer(data);
+    let _ = surface_commands::FrameMarkerPdu::from_buffer(data);
+    let _ = surface_commands::ExtendedBitmapDataPdu::from_buffer(data);
+    let _ = surface_commands::BitmapDataHeader::from_buffer(data);
+
+    let _ = codecs::rfx::Headers::from_buffer(data);
+    let _ = codecs::rfx::FrameAcknowledgePdu::from_buffer(data);
+    let _ = codecs::rfx::ContextPdu::from_buffer(data);
+    let _ = codecs::rfx::FrameBeginPdu::from_buffer(data);
+    let _ = codecs::rfx::FrameEndPdu::from_buffer(data);
+    let _ = codecs::rfx::RegionPdu::from_buffer(data);
+    let _ = codecs::rfx::TileSetPdu::from_buffer(data);
+    let _ = codecs::rfx::RfxRectangle::from_buffer(data);
+    let _ = codecs::rfx::Quant::from_buffer(data);
+    let _ = codecs::rfx::Tile::from_buffer(data);
+    let _ = codecs::rfx::SyncPdu::from_buffer(data);
+    let _ = codecs::rfx::CodecVersionsPdu::from_buffer(data);
+    let _ = codecs::rfx::ChannelsPdu::from_buffer(data);
+    let _ = codecs::rfx::Channel::from_buffer(data);
 });

@@ -1,7 +1,7 @@
 #[cfg(test)]
 mod tests;
 
-use crate::split_to;
+use crate::utils::SplitTo;
 
 pub fn decode(buffer: &mut [i16], temp_buffer: &mut [i16]) {
     decode_block(&mut buffer[3840..], temp_buffer, 8);
@@ -22,9 +22,9 @@ fn inverse_horizontal(mut buffer: &[i16], temp_buffer: &mut [i16], subband_width
     let total_width = subband_width * 2;
     let squared_subband_width = subband_width.pow(2);
 
-    let mut hl = split_to!(buffer, squared_subband_width);
-    let mut lh = split_to!(buffer, squared_subband_width);
-    let mut hh = split_to!(buffer, squared_subband_width);
+    let mut hl = buffer.split_to(squared_subband_width);
+    let mut lh = buffer.split_to(squared_subband_width);
+    let mut hh = buffer.split_to(squared_subband_width);
     let mut ll = buffer;
 
     let (mut l_dst, mut h_dst) = temp_buffer.split_at_mut(squared_subband_width * 2);

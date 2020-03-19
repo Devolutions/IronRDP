@@ -1,5 +1,6 @@
 pub mod color_conversion;
 pub mod dwt;
+pub mod image_processing;
 pub mod quantization;
 pub mod rectangles_processing;
 pub mod rlgr;
@@ -13,7 +14,7 @@ mod tests;
 pub use self::{
     data_messages::{
         ContextPdu, EntropyAlgorithm, FrameBeginPdu, FrameEndPdu, OperatingMode, Quant, RegionPdu,
-        Tile, TileSetPdu,
+        RfxRectangle, Tile, TileSetPdu,
     },
     header_messages::{Channel, ChannelsPdu, CodecVersionsPdu, SyncPdu},
     rlgr::RlgrError,
@@ -26,28 +27,91 @@ use failure::Fail;
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive, ToPrimitive};
 
-use crate::impl_from_error;
+use crate::{impl_from_error, PduBufferParsing, PduParsing};
 
 const BLOCK_HEADER_SIZE: usize = 6;
-const CODEC_CHANNEL_HEADER_SIZE: usize = 8;
+const CODEC_CHANNEL_HEADER_SIZE: usize = 2;
 
 const CODEC_ID: u8 = 1;
 const CHANNEL_ID_FOR_CONTEXT: u8 = 0xFF;
 const CHANNEL_ID_FOR_OTHER_VALUES: u8 = 0x00;
 
 #[derive(Debug, Clone, PartialEq)]
-struct BlockHeader {
+pub enum Headers {
+    CodecVersions(CodecVersionsPdu),
+    Channels(ChannelsPdu),
+    Context(ContextPdu),
+}
+
+impl<'a> PduBufferParsing<'a> for Headers {
+    type Error = RfxError;
+
+    fn from_buffer_consume(buffer: &mut &'a [u8]) -> Result<Self, Self::Error> {
+        let mut temp = *buffer;
+        let ty = temp.read_u16::<LittleEndian>()?;
+        let ty = BlockType::from_u16(ty).ok_or(RfxError::InvalidBlockType(ty))?;
+
+        match ty {
+            BlockType::CodecVersions => Ok(Self::CodecVersions(
+                CodecVersionsPdu::from_buffer_consume(buffer)?,
+            )),
+            BlockType::Channels => Ok(Self::Channels(ChannelsPdu::from_buffer_consume(buffer)?)),
+            BlockType::Context => Ok(Self::Context(ContextPdu::from_buffer_consume(buffer)?)),
+            _ => Err(RfxError::InvalidHeaderBlockType(ty)),
+        }
+    }
+
+    fn to_buffer_consume(&self, buffer: &mut &mut [u8]) -> Result<(), Self::Error> {
+        match self {
+            Self::CodecVersions(pdu) => pdu.to_buffer_consume(buffer),
+            Self::Channels(pdu) => pdu.to_buffer_consume(buffer),
+            Self::Context(pdu) => pdu.to_buffer_consume(buffer),
+        }
+    }
+
+    fn buffer_length(&self) -> usize {
+        match self {
+            Self::CodecVersions(pdu) => pdu.buffer_length(),
+            Self::Channels(pdu) => pdu.buffer_length(),
+            Self::Context(pdu) => pdu.buffer_length(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct BlockHeader {
     pub ty: BlockType,
     pub data_length: usize,
 }
 
 impl BlockHeader {
-    fn from_buffer_consume_with_type(
+    fn from_buffer_consume_with_type(buffer: &mut &[u8], ty: BlockType) -> Result<Self, RfxError> {
+        let block_length = buffer.read_u32::<LittleEndian>()? as usize;
+
+        let block_length_without_header = block_length
+            .checked_sub(BLOCK_HEADER_SIZE)
+            .ok_or(RfxError::InvalidBlockLength(block_length))?;
+
+        if buffer.len() < block_length_without_header {
+            return Err(RfxError::InvalidDataLength {
+                expected: block_length_without_header,
+                actual: buffer.len(),
+            });
+        }
+
+        let data_length = block_length
+            .checked_sub(headers_length(ty))
+            .ok_or(RfxError::InvalidBlockLength(block_length))?;
+
+        Ok(Self { ty, data_length })
+    }
+
+    fn from_buffer_consume_with_expected_type(
         buffer: &mut &[u8],
         expected_type: BlockType,
     ) -> Result<Self, RfxError> {
-        let ty = BlockType::from_u16(buffer.read_u16::<LittleEndian>()?)
-            .ok_or(RfxError::InvalidBlockType)?;
+        let ty = buffer.read_u16::<LittleEndian>()?;
+        let ty = BlockType::from_u16(ty).ok_or(RfxError::InvalidBlockType(ty))?;
         if ty != expected_type {
             return Err(RfxError::UnexpectedBlockType {
                 expected: expected_type,
@@ -55,60 +119,22 @@ impl BlockHeader {
             });
         }
 
-        let block_length = buffer.read_u32::<LittleEndian>()? as usize;
-
-        let data_length = block_length
-            .checked_sub(BLOCK_HEADER_SIZE)
-            .ok_or(RfxError::InvalidBlockLength(block_length))?;
-
-        if buffer.len() < data_length {
-            return Err(RfxError::InvalidDataLength {
-                expected: data_length,
-                actual: buffer.len(),
-            });
-        }
-
-        Ok(Self { ty, data_length })
+        Self::from_buffer_consume_with_type(buffer, ty)
     }
 
     fn to_buffer_consume(&self, buffer: &mut &mut [u8]) -> Result<(), RfxError> {
         buffer.write_u16::<LittleEndian>(self.ty.to_u16().unwrap())?;
-        buffer.write_u32::<LittleEndian>((self.buffer_length() + self.data_length) as u32)?;
+        buffer.write_u32::<LittleEndian>((headers_length(self.ty) + self.data_length) as u32)?;
 
         Ok(())
-    }
-
-    fn buffer_length(&self) -> usize {
-        BLOCK_HEADER_SIZE
     }
 }
 
 #[derive(Debug, Clone, PartialEq)]
-struct CodecChannelHeader {
-    pub ty: CodecChannelType,
-    pub data_length: usize,
-}
+pub struct CodecChannelHeader;
 
 impl CodecChannelHeader {
-    fn from_buffer_consume_with_type(
-        buffer: &mut &[u8],
-        expected_type: CodecChannelType,
-    ) -> Result<Self, RfxError> {
-        let ty = CodecChannelType::from_u16(buffer.read_u16::<LittleEndian>()?)
-            .ok_or(RfxError::InvalidCodecChannelType)?;
-        if ty != expected_type {
-            return Err(RfxError::UnexpectedCodecChannelType {
-                expected: expected_type,
-                actual: ty,
-            });
-        }
-
-        let block_length = buffer.read_u32::<LittleEndian>()? as usize;
-
-        let data_length = block_length
-            .checked_sub(CODEC_CHANNEL_HEADER_SIZE)
-            .ok_or(RfxError::InvalidBlockLength(block_length))?;
-
+    fn from_buffer_consume_with_type(buffer: &mut &[u8], ty: BlockType) -> Result<Self, RfxError> {
         let codec_id = buffer.read_u8()?;
         if codec_id != CODEC_ID {
             return Err(RfxError::InvalidCodecId(codec_id));
@@ -116,39 +142,67 @@ impl CodecChannelHeader {
 
         let channel_id = buffer.read_u8()?;
         let expected_channel_id = match ty {
-            CodecChannelType::Context => CHANNEL_ID_FOR_CONTEXT,
+            BlockType::Context => CHANNEL_ID_FOR_CONTEXT,
             _ => CHANNEL_ID_FOR_OTHER_VALUES,
         };
         if channel_id != expected_channel_id {
             return Err(RfxError::InvalidChannelId(channel_id));
         }
 
-        if buffer.len() < data_length {
-            return Err(RfxError::InvalidDataLength {
-                expected: data_length,
-                actual: buffer.len(),
-            });
-        }
-
-        Ok(Self { ty, data_length })
+        Ok(Self)
     }
 
-    fn to_buffer_consume(&self, buffer: &mut &mut [u8]) -> Result<(), RfxError> {
-        buffer.write_u16::<LittleEndian>(self.ty.to_u16().unwrap())?;
-        buffer.write_u32::<LittleEndian>((self.buffer_length() + self.data_length) as u32)?;
+    fn to_buffer_consume_with_type(
+        &self,
+        buffer: &mut &mut [u8],
+        ty: BlockType,
+    ) -> Result<(), RfxError> {
         buffer.write_u8(CODEC_ID)?;
 
-        let channel_id = match self.ty {
-            CodecChannelType::Context => CHANNEL_ID_FOR_CONTEXT,
+        let channel_id = match ty {
+            BlockType::Context => CHANNEL_ID_FOR_CONTEXT,
             _ => CHANNEL_ID_FOR_OTHER_VALUES,
         };
         buffer.write_u8(channel_id)?;
 
         Ok(())
     }
+}
+
+fn headers_length(ty: BlockType) -> usize {
+    BLOCK_HEADER_SIZE
+        + match ty {
+            BlockType::Context
+            | BlockType::FrameBegin
+            | BlockType::FrameEnd
+            | BlockType::Region
+            | BlockType::Extension => CODEC_CHANNEL_HEADER_SIZE,
+            _ => 0,
+        }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct FrameAcknowledgePdu {
+    pub frame_id: u32,
+}
+
+impl PduParsing for FrameAcknowledgePdu {
+    type Error = io::Error;
+
+    fn from_buffer(mut stream: impl io::Read) -> Result<Self, Self::Error> {
+        let frame_id = stream.read_u32::<LittleEndian>()?;
+
+        Ok(Self { frame_id })
+    }
+
+    fn to_buffer(&self, mut stream: impl io::Write) -> Result<(), Self::Error> {
+        stream.write_u32::<LittleEndian>(self.frame_id)?;
+
+        Ok(())
+    }
 
     fn buffer_length(&self) -> usize {
-        CODEC_CHANNEL_HEADER_SIZE
+        4
     }
 }
 
@@ -161,11 +215,6 @@ pub enum BlockType {
     Sync = 0xCCC0,
     CodecVersions = 0xCCC1,
     Channels = 0xCCC2,
-}
-
-#[derive(Debug, Copy, Clone, PartialEq, FromPrimitive, ToPrimitive)]
-#[repr(u16)]
-pub enum CodecChannelType {
     Context = 0xCCC3,
     FrameBegin = 0xCCC4,
     FrameEnd = 0xCCC5,
@@ -177,8 +226,8 @@ pub enum CodecChannelType {
 pub enum RfxError {
     #[fail(display = "IO error: {}", _0)]
     IoError(#[fail(cause)] io::Error),
-    #[fail(display = "Got invalid block type")]
-    InvalidBlockType,
+    #[fail(display = "Got invalid block type: {}", _0)]
+    InvalidBlockType(u16),
     #[fail(
         display = "Got unexpected Block type: expected ({:?}) != actual({:?})",
         expected, actual
@@ -187,6 +236,11 @@ pub enum RfxError {
         expected: BlockType,
         actual: BlockType,
     },
+    #[fail(
+        display = "Got unexpected Block type ({:?}) while was expected header message",
+        _0
+    )]
+    InvalidHeaderBlockType(BlockType),
     #[fail(display = "Got invalid block length: {}", _0)]
     InvalidBlockLength(usize),
     #[fail(display = "Got invalid Sync magic number: {}", _0)]
@@ -213,16 +267,6 @@ pub enum RfxError {
     InvalidEntropyAlgorithm(u16),
     #[fail(display = "Got invalid quantization type: {}", _0)]
     InvalidQuantizationType(u16),
-    #[fail(display = "Got invalid codec channel type")]
-    InvalidCodecChannelType,
-    #[fail(
-        display = "Got unexpected codec channel type: expected ({:?}) != actual ({:?})",
-        expected, actual
-    )]
-    UnexpectedCodecChannelType {
-        expected: CodecChannelType,
-        actual: CodecChannelType,
-    },
     #[fail(
         display = "Input buffer is shorter then the data length: {} < {}",
         actual, expected

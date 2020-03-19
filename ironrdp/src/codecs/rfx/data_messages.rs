@@ -7,10 +7,11 @@ use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive, ToPrimitive};
 
 use super::{
-    BlockHeader, BlockType, CodecChannelHeader, CodecChannelType, RfxError, BLOCK_HEADER_SIZE,
+    BlockHeader, BlockType, CodecChannelHeader, RfxError, BLOCK_HEADER_SIZE,
     CODEC_CHANNEL_HEADER_SIZE,
 };
-use crate::{split_to, PduBufferParsing};
+use crate::utils::SplitTo;
+use crate::PduBufferParsing;
 
 const CONTEXT_ID: u8 = 0;
 const TILE_SIZE: u16 = 0x0040;
@@ -32,13 +33,13 @@ pub struct ContextPdu {
     pub entropy_algorithm: EntropyAlgorithm,
 }
 
-impl PduBufferParsing for ContextPdu {
-    type Error = RfxError;
-
-    fn from_buffer_consume(buffer: &mut &[u8]) -> Result<Self, Self::Error> {
-        let header =
-            CodecChannelHeader::from_buffer_consume_with_type(buffer, CodecChannelType::Context)?;
-        let mut buffer = split_to!(*buffer, header.data_length);
+impl ContextPdu {
+    pub fn from_buffer_consume_with_header(
+        buffer: &mut &[u8],
+        header: BlockHeader,
+    ) -> Result<Self, RfxError> {
+        CodecChannelHeader::from_buffer_consume_with_type(buffer, BlockType::Context)?;
+        let mut buffer = buffer.split_to(header.data_length);
 
         let id = buffer.read_u8()?;
         if id != CONTEXT_ID {
@@ -80,14 +81,28 @@ impl PduBufferParsing for ContextPdu {
             entropy_algorithm,
         })
     }
+}
+
+impl<'a> PduBufferParsing<'a> for ContextPdu {
+    type Error = RfxError;
+
+    fn from_buffer_consume(buffer: &mut &[u8]) -> Result<Self, Self::Error> {
+        let header =
+            BlockHeader::from_buffer_consume_with_expected_type(buffer, BlockType::Context)?;
+
+        Self::from_buffer_consume_with_header(buffer, header)
+    }
 
     fn to_buffer_consume(&self, buffer: &mut &mut [u8]) -> Result<(), Self::Error> {
-        let header = CodecChannelHeader {
-            ty: CodecChannelType::Context,
-            data_length: self.buffer_length() - CODEC_CHANNEL_HEADER_SIZE,
+        let header = BlockHeader {
+            ty: BlockType::Context,
+            data_length: self.buffer_length() - BLOCK_HEADER_SIZE - CODEC_CHANNEL_HEADER_SIZE,
         };
+        let codec_header = CodecChannelHeader;
 
         header.to_buffer_consume(buffer)?;
+        codec_header.to_buffer_consume_with_type(buffer, BlockType::Context)?;
+
         buffer.write_u8(CONTEXT_ID)?;
         buffer.write_u16::<LittleEndian>(TILE_SIZE)?;
 
@@ -104,7 +119,7 @@ impl PduBufferParsing for ContextPdu {
     }
 
     fn buffer_length(&self) -> usize {
-        CODEC_CHANNEL_HEADER_SIZE + 5
+        BLOCK_HEADER_SIZE + CODEC_CHANNEL_HEADER_SIZE + 5
     }
 }
 
@@ -114,15 +129,14 @@ pub struct FrameBeginPdu {
     pub number_of_regions: i16,
 }
 
-impl PduBufferParsing for FrameBeginPdu {
+impl<'a> PduBufferParsing<'a> for FrameBeginPdu {
     type Error = RfxError;
 
     fn from_buffer_consume(buffer: &mut &[u8]) -> Result<Self, Self::Error> {
-        let header = CodecChannelHeader::from_buffer_consume_with_type(
-            buffer,
-            CodecChannelType::FrameBegin,
-        )?;
-        let mut buffer = split_to!(*buffer, header.data_length);
+        let header =
+            BlockHeader::from_buffer_consume_with_expected_type(buffer, BlockType::FrameBegin)?;
+        CodecChannelHeader::from_buffer_consume_with_type(buffer, BlockType::FrameBegin)?;
+        let mut buffer = buffer.split_to(header.data_length);
 
         let index = buffer.read_u32::<LittleEndian>()?;
         let number_of_regions = buffer.read_i16::<LittleEndian>()?;
@@ -134,12 +148,15 @@ impl PduBufferParsing for FrameBeginPdu {
     }
 
     fn to_buffer_consume(&self, buffer: &mut &mut [u8]) -> Result<(), Self::Error> {
-        let header = CodecChannelHeader {
-            ty: CodecChannelType::FrameBegin,
-            data_length: self.buffer_length() - CODEC_CHANNEL_HEADER_SIZE,
+        let header = BlockHeader {
+            ty: BlockType::FrameBegin,
+            data_length: self.buffer_length() - BLOCK_HEADER_SIZE - CODEC_CHANNEL_HEADER_SIZE,
         };
+        let codec_header = CodecChannelHeader;
 
         header.to_buffer_consume(buffer)?;
+        codec_header.to_buffer_consume_with_type(buffer, BlockType::FrameBegin)?;
+
         buffer.write_u32::<LittleEndian>(self.index)?;
         buffer.write_i16::<LittleEndian>(self.number_of_regions)?;
 
@@ -147,33 +164,39 @@ impl PduBufferParsing for FrameBeginPdu {
     }
 
     fn buffer_length(&self) -> usize {
-        CODEC_CHANNEL_HEADER_SIZE + 6
+        BLOCK_HEADER_SIZE + CODEC_CHANNEL_HEADER_SIZE + 6
     }
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct FrameEndPdu;
 
-impl PduBufferParsing for FrameEndPdu {
+impl<'a> PduBufferParsing<'a> for FrameEndPdu {
     type Error = RfxError;
 
     fn from_buffer_consume(buffer: &mut &[u8]) -> Result<Self, Self::Error> {
         let _header =
-            CodecChannelHeader::from_buffer_consume_with_type(buffer, CodecChannelType::FrameEnd);
+            BlockHeader::from_buffer_consume_with_expected_type(buffer, BlockType::FrameEnd)?;
+        CodecChannelHeader::from_buffer_consume_with_type(buffer, BlockType::FrameEnd)?;
 
         Ok(Self)
     }
 
     fn to_buffer_consume(&self, buffer: &mut &mut [u8]) -> Result<(), Self::Error> {
-        CodecChannelHeader {
-            ty: CodecChannelType::FrameEnd,
-            data_length: self.buffer_length() - CODEC_CHANNEL_HEADER_SIZE,
-        }
-        .to_buffer_consume(buffer)
+        let header = BlockHeader {
+            ty: BlockType::FrameEnd,
+            data_length: self.buffer_length() - BLOCK_HEADER_SIZE - CODEC_CHANNEL_HEADER_SIZE,
+        };
+        let codec_header = CodecChannelHeader;
+
+        header.to_buffer_consume(buffer)?;
+        codec_header.to_buffer_consume_with_type(buffer, BlockType::FrameEnd)?;
+
+        Ok(())
     }
 
     fn buffer_length(&self) -> usize {
-        CODEC_CHANNEL_HEADER_SIZE
+        BLOCK_HEADER_SIZE + CODEC_CHANNEL_HEADER_SIZE
     }
 }
 
@@ -182,13 +205,14 @@ pub struct RegionPdu {
     pub rectangles: Vec<RfxRectangle>,
 }
 
-impl PduBufferParsing for RegionPdu {
+impl<'a> PduBufferParsing<'a> for RegionPdu {
     type Error = RfxError;
 
     fn from_buffer_consume(buffer: &mut &[u8]) -> Result<Self, Self::Error> {
         let header =
-            CodecChannelHeader::from_buffer_consume_with_type(buffer, CodecChannelType::Region)?;
-        let mut buffer = split_to!(*buffer, header.data_length);
+            BlockHeader::from_buffer_consume_with_expected_type(buffer, BlockType::Region)?;
+        CodecChannelHeader::from_buffer_consume_with_type(buffer, BlockType::Region)?;
+        let mut buffer = buffer.split_to(header.data_length);
 
         let region_flags = buffer.read_u8()?;
         let lrf = region_flags.get_bit(0);
@@ -196,7 +220,7 @@ impl PduBufferParsing for RegionPdu {
             return Err(RfxError::InvalidLrf(lrf));
         }
 
-        let number_of_rectangles = buffer.read_u16::<LittleEndian>()? as usize;
+        let number_of_rectangles = usize::from(buffer.read_u16::<LittleEndian>()?);
         if buffer.len() < number_of_rectangles * RECTANGLE_SIZE {
             return Err(RfxError::InvalidDataLength {
                 expected: number_of_rectangles * RECTANGLE_SIZE,
@@ -222,12 +246,14 @@ impl PduBufferParsing for RegionPdu {
     }
 
     fn to_buffer_consume(&self, buffer: &mut &mut [u8]) -> Result<(), Self::Error> {
-        let header = CodecChannelHeader {
-            ty: CodecChannelType::Region,
-            data_length: self.buffer_length() - CODEC_CHANNEL_HEADER_SIZE,
+        let header = BlockHeader {
+            ty: BlockType::Region,
+            data_length: self.buffer_length() - BLOCK_HEADER_SIZE - CODEC_CHANNEL_HEADER_SIZE,
         };
+        let codec_header = CodecChannelHeader;
 
         header.to_buffer_consume(buffer)?;
+        codec_header.to_buffer_consume_with_type(buffer, BlockType::Region)?;
 
         let mut region_flags = 0;
         region_flags.set_bit(0, LRF);
@@ -245,7 +271,8 @@ impl PduBufferParsing for RegionPdu {
     }
 
     fn buffer_length(&self) -> usize {
-        CODEC_CHANNEL_HEADER_SIZE
+        BLOCK_HEADER_SIZE
+            + CODEC_CHANNEL_HEADER_SIZE
             + 7
             + self
                 .rectangles
@@ -262,11 +289,14 @@ pub struct TileSetPdu<'a> {
     pub tiles: Vec<Tile<'a>>,
 }
 
-impl<'a> TileSetPdu<'a> {
-    pub fn from_buffer_consume(buffer: &mut &'a [u8]) -> Result<Self, RfxError> {
+impl<'a> PduBufferParsing<'a> for TileSetPdu<'a> {
+    type Error = RfxError;
+
+    fn from_buffer_consume(buffer: &mut &'a [u8]) -> Result<Self, Self::Error> {
         let header =
-            CodecChannelHeader::from_buffer_consume_with_type(buffer, CodecChannelType::Extension)?;
-        let mut buffer = split_to!(*buffer, header.data_length);
+            BlockHeader::from_buffer_consume_with_expected_type(buffer, BlockType::Extension)?;
+        CodecChannelHeader::from_buffer_consume_with_type(buffer, BlockType::Extension)?;
+        let mut buffer = buffer.split_to(header.data_length);
 
         let subtype = buffer.read_u16::<LittleEndian>()?;
         if subtype != CBT_TILESET {
@@ -310,7 +340,7 @@ impl<'a> TileSetPdu<'a> {
             return Err(RfxError::InvalidQuantizationType(quantization_type));
         }
 
-        let number_of_quants = buffer.read_u8()? as usize;
+        let number_of_quants = usize::from(buffer.read_u8()?);
 
         let tile_size = u16::from(buffer.read_u8()?);
         if tile_size != TILE_SIZE {
@@ -343,13 +373,16 @@ impl<'a> TileSetPdu<'a> {
         })
     }
 
-    pub fn to_buffer_consume(&self, buffer: &mut &mut [u8]) -> Result<(), RfxError> {
-        let header = CodecChannelHeader {
-            ty: CodecChannelType::Extension,
-            data_length: self.buffer_length() - CODEC_CHANNEL_HEADER_SIZE,
+    fn to_buffer_consume(&self, buffer: &mut &mut [u8]) -> Result<(), RfxError> {
+        let header = BlockHeader {
+            ty: BlockType::Extension,
+            data_length: self.buffer_length() - BLOCK_HEADER_SIZE - CODEC_CHANNEL_HEADER_SIZE,
         };
+        let codec_header = CodecChannelHeader;
 
         header.to_buffer_consume(buffer)?;
+        codec_header.to_buffer_consume_with_type(buffer, BlockType::Extension)?;
+
         buffer.write_u16::<LittleEndian>(CBT_TILESET)?;
         buffer.write_u16::<LittleEndian>(IDX)?;
 
@@ -380,8 +413,9 @@ impl<'a> TileSetPdu<'a> {
         Ok(())
     }
 
-    pub fn buffer_length(&self) -> usize {
-        CODEC_CHANNEL_HEADER_SIZE
+    fn buffer_length(&self) -> usize {
+        BLOCK_HEADER_SIZE
+            + CODEC_CHANNEL_HEADER_SIZE
             + 14
             + self
                 .quants
@@ -400,7 +434,7 @@ pub struct RfxRectangle {
     pub height: u16,
 }
 
-impl PduBufferParsing for RfxRectangle {
+impl<'a> PduBufferParsing<'a> for RfxRectangle {
     type Error = RfxError;
 
     fn from_buffer_consume(buffer: &mut &[u8]) -> Result<Self, Self::Error> {
@@ -445,7 +479,7 @@ pub struct Quant {
     pub hh1: u8,
 }
 
-impl PduBufferParsing for Quant {
+impl<'a> PduBufferParsing<'a> for Quant {
     type Error = RfxError;
 
     fn from_buffer_consume(buffer: &mut &[u8]) -> Result<Self, Self::Error> {
@@ -522,10 +556,12 @@ pub struct Tile<'a> {
     pub cr_data: &'a [u8],
 }
 
-impl<'a> Tile<'a> {
-    pub fn from_buffer_consume(buffer: &mut &'a [u8]) -> Result<Self, RfxError> {
-        let header = BlockHeader::from_buffer_consume_with_type(buffer, BlockType::Tile)?;
-        let mut buffer = split_to!(*buffer, header.data_length);
+impl<'a> PduBufferParsing<'a> for Tile<'a> {
+    type Error = RfxError;
+
+    fn from_buffer_consume(buffer: &mut &'a [u8]) -> Result<Self, Self::Error> {
+        let header = BlockHeader::from_buffer_consume_with_expected_type(buffer, BlockType::Tile)?;
+        let mut buffer = buffer.split_to(header.data_length);
 
         let y_quant_index = buffer.read_u8()?;
         let cb_quant_index = buffer.read_u8()?;
@@ -534,9 +570,9 @@ impl<'a> Tile<'a> {
         let x = buffer.read_u16::<LittleEndian>()?;
         let y = buffer.read_u16::<LittleEndian>()?;
 
-        let y_component_length = buffer.read_u16::<LittleEndian>()? as usize;
-        let cb_component_length = buffer.read_u16::<LittleEndian>()? as usize;
-        let cr_component_length = buffer.read_u16::<LittleEndian>()? as usize;
+        let y_component_length = usize::from(buffer.read_u16::<LittleEndian>()?);
+        let cb_component_length = usize::from(buffer.read_u16::<LittleEndian>()?);
+        let cr_component_length = usize::from(buffer.read_u16::<LittleEndian>()?);
 
         if buffer.len() < y_component_length + cb_component_length + cr_component_length {
             return Err(RfxError::InvalidDataLength {
@@ -567,7 +603,7 @@ impl<'a> Tile<'a> {
         })
     }
 
-    pub fn to_buffer_consume(&self, buffer: &mut &mut [u8]) -> Result<(), RfxError> {
+    fn to_buffer_consume(&self, buffer: &mut &mut [u8]) -> Result<(), RfxError> {
         let header = BlockHeader {
             ty: BlockType::Tile,
             data_length: self.buffer_length() - BLOCK_HEADER_SIZE,
@@ -592,7 +628,7 @@ impl<'a> Tile<'a> {
         Ok(())
     }
 
-    pub fn buffer_length(&self) -> usize {
+    fn buffer_length(&self) -> usize {
         BLOCK_HEADER_SIZE + 13 + self.y_data.len() + self.cb_data.len() + self.cr_data.len()
     }
 }

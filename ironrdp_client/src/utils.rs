@@ -1,4 +1,6 @@
 use std::{collections::HashMap, hash::Hash, io};
+
+use num_derive::{FromPrimitive, ToPrimitive};
 use x509_parser::parse_x509_der;
 
 #[macro_export]
@@ -46,4 +48,9 @@ where
     }
 
     result
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, FromPrimitive, ToPrimitive)]
+pub enum CodecId {
+    RemoteFx = 0x3,
 }

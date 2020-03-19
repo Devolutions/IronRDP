@@ -19,6 +19,14 @@ impl Region {
         }
     }
 
+    pub fn rectangles(&self) -> &[Rectangle] {
+        self.rectangles.as_slice()
+    }
+
+    pub fn extents(&self) -> &Rectangle {
+        &self.extents
+    }
+
     pub fn union_rectangle(&mut self, rectangle: Rectangle) {
         if self.rectangles.is_empty() {
             *self = Self::from(rectangle);
@@ -82,8 +90,7 @@ impl Region {
                     .iter()
                     .take_while(|r| r.top < rectangle.bottom)
                     .map(|r| r.intersect(&rectangle))
-                    .filter(Option::is_some)
-                    .map(|r| r.unwrap())
+                    .filter_map(|v| v)
                     .collect::<Vec<_>>();
                 let extents = Rectangle::union_all(rectangles.as_slice());
 

@@ -9,8 +9,11 @@ use super::{
     client_info, ClientConfirmActive, ControlPdu, MonitorLayoutPdu, RdpError, ServerDemandActive,
     SynchronizePdu,
 };
-use crate::rdp::{finalization_messages::FontPdu, session_info::SaveSessionInfoPdu};
-use crate::PduParsing;
+use crate::{
+    codecs::rfx::FrameAcknowledgePdu,
+    rdp::{finalization_messages::FontPdu, session_info::SaveSessionInfoPdu},
+    PduParsing,
+};
 
 pub const BASIC_SECURITY_HEADER_SIZE: usize = 4;
 const SHARE_CONTROL_HEADER_MASK: u16 = 0xf;
@@ -258,6 +261,7 @@ pub enum ShareDataPdu {
     FontMap(FontPdu),
     MonitorLayout(MonitorLayoutPdu),
     SaveSessionInfo(SaveSessionInfoPdu),
+    FrameAcknowledge(FrameAcknowledgePdu),
 }
 
 impl ShareDataPdu {
@@ -269,6 +273,7 @@ impl ShareDataPdu {
             ShareDataPdu::FontMap(_) => "Font Map PDU",
             ShareDataPdu::MonitorLayout(_) => "Monitor Layout PDU",
             ShareDataPdu::SaveSessionInfo(_) => "Save session info PDU",
+            ShareDataPdu::FrameAcknowledge(_) => "Frame Acknowledge PDU",
         }
     }
 }
@@ -296,6 +301,9 @@ impl ShareDataPdu {
             )),
             ShareDataPduType::SaveSessionInfo => Ok(ShareDataPdu::SaveSessionInfo(
                 SaveSessionInfoPdu::from_buffer(&mut stream)?,
+            )),
+            ShareDataPduType::FrameAcknowledgePdu => Ok(ShareDataPdu::FrameAcknowledge(
+                FrameAcknowledgePdu::from_buffer(&mut stream)?,
             )),
             ShareDataPduType::Update
             | ShareDataPduType::Pointer
@@ -328,6 +336,9 @@ impl ShareDataPdu {
             ShareDataPdu::SaveSessionInfo(pdu) => {
                 pdu.to_buffer(&mut stream).map_err(RdpError::from)
             }
+            ShareDataPdu::FrameAcknowledge(pdu) => {
+                pdu.to_buffer(&mut stream).map_err(RdpError::from)
+            }
         }
     }
     pub fn buffer_length(&self) -> usize {
@@ -337,6 +348,7 @@ impl ShareDataPdu {
             ShareDataPdu::FontList(pdu) | ShareDataPdu::FontMap(pdu) => pdu.buffer_length(),
             ShareDataPdu::MonitorLayout(pdu) => pdu.buffer_length(),
             ShareDataPdu::SaveSessionInfo(pdu) => pdu.buffer_length(),
+            ShareDataPdu::FrameAcknowledge(pdu) => pdu.buffer_length(),
         }
     }
     pub fn share_header_type(&self) -> ShareDataPduType {
@@ -347,6 +359,7 @@ impl ShareDataPdu {
             ShareDataPdu::FontMap(_) => ShareDataPduType::FontMap,
             ShareDataPdu::MonitorLayout(_) => ShareDataPduType::MonitorLayoutPdu,
             ShareDataPdu::SaveSessionInfo(_) => ShareDataPduType::SaveSessionInfo,
+            ShareDataPdu::FrameAcknowledge(_) => ShareDataPduType::FrameAcknowledgePdu,
         }
     }
 }
@@ -416,6 +429,7 @@ pub enum ShareDataPduType {
     ArcStatusPdu = 0x32,
     StatusInfoPdu = 0x36,
     MonitorLayoutPdu = 0x37,
+    FrameAcknowledgePdu = 0x38,
 }
 
 bitflags! {

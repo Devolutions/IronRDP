@@ -21,6 +21,11 @@ const SYNC_PDU_BUFFER_WITH_BIG_DATA_LENGTH: [u8; 12] = [
     0xca, 0xac, 0xcc, 0xca, // TS_RFX_SYNC::magic = WF_MAGIC
     0x00, 0x01, // TS_RFX_SYNC::version = 0x0100
 ];
+const SYNC_PDU_BUFFER_WITH_SMALL_BUFFER: [u8; 10] = [
+    0xc6, 0xcc, // TS_RFX_SYNC::BlockT::blockType = WBT_REGION
+    0x0c, 0x00, 0x00, 0x00, // TS_RFX_SYNC::BlockT::blockLen = 0x0c
+    0x01, 0x00, 0x00, 0x00,
+];
 const CODEC_VERSIONS_PDU_BUFFER: [u8; 10] = [
     0xc1, 0xcc, // TS_RFX_CODEC_VERSIONS::BlockT::blockType = WBT_CODEC_VERSION
     0x0a, 0x00, 0x00, 0x00, // TS_RFX_CODEC_VERSIONS::BlockT::blockLen = 10
@@ -307,6 +312,11 @@ fn from_buffer_for_block_header_returns_error_on_zero_data_length() {
 #[test]
 fn from_buffer_for_block_header_returns_error_on_data_length_greater_then_available_data() {
     assert!(SyncPdu::from_buffer(SYNC_PDU_BUFFER_WITH_BIG_DATA_LENGTH.as_ref()).is_err(),);
+}
+
+#[test]
+fn from_buffer_for_pdu_with_codec_channel_header_returns_error_on_small_buffer() {
+    assert!(RegionPdu::from_buffer(SYNC_PDU_BUFFER_WITH_SMALL_BUFFER.as_ref()).is_err());
 }
 
 #[test]
