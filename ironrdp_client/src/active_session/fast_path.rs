@@ -11,7 +11,7 @@ use ironrdp::{
     surface_commands::{FrameAction, SurfaceCommand},
     PduBufferParsing, ShareDataPdu,
 };
-use log::{debug, error, info, warn};
+use log::{debug, info, warn};
 use num_traits::FromPrimitive;
 
 use super::{codecs::rfx, DecodedImage, DESTINATION_PIXEL_FORMAT};
@@ -98,7 +98,6 @@ impl Processor {
                                     self.decoded_image.clone(),
                                 )?;
                             }
-                            self.frame.image_updated();
                         }
                     }
                 }
@@ -128,11 +127,7 @@ impl ProcessorBuilder {
             complete_data: CompleteData::new(),
             rfx_handler: rfx::DecodingContext::new(DESTINATION_PIXEL_FORMAT),
             decoded_image: self.decoded_image.clone(),
-            frame: Frame::new(
-                self.decoded_image,
-                self.initiator_id,
-                self.global_channel_id,
-            ),
+            frame: Frame::new(self.initiator_id, self.global_channel_id),
         }
     }
 }
@@ -206,18 +201,11 @@ impl CompleteData {
 
 struct Frame {
     transport: ShareDataHeaderTransport,
-    decoded_image: Arc<Mutex<DecodedImage>>,
-    image_updated: bool,
 }
 
 impl Frame {
-    fn new(
-        decoded_image: Arc<Mutex<DecodedImage>>,
-        initiator_id: u16,
-        global_channel_id: u16,
-    ) -> Self {
+    fn new(initiator_id: u16, global_channel_id: u16) -> Self {
         Self {
-            decoded_image,
             transport: ShareDataHeaderTransport::new(ShareControlHeaderTransport::new(
                 SendDataContextTransport::new(
                     McsTransport::new(DataTransport::default()),
@@ -227,11 +215,7 @@ impl Frame {
                 initiator_id,
                 global_channel_id,
             )),
-            image_updated: false,
         }
-    }
-    fn image_updated(&mut self) {
-        self.image_updated = true;
     }
 
     fn process_marker(
@@ -240,25 +224,13 @@ impl Frame {
         mut output: impl io::Write,
     ) -> RdpResult<()> {
         match marker.frame_action {
-            FrameAction::Begin => {
-                self.image_updated = false;
-
-                Ok(())
-            }
-            FrameAction::End => {
-                if self.image_updated {
-                    if let Err(e) = self.decoded_image.lock().unwrap().save() {
-                        error!("Failed to save frame: {}", e);
-                    }
-                }
-
-                self.transport.encode(
-                    ShareDataPdu::FrameAcknowledge(FrameAcknowledgePdu {
-                        frame_id: marker.frame_id,
-                    }),
-                    &mut output,
-                )
-            }
+            FrameAction::Begin => Ok(()),
+            FrameAction::End => self.transport.encode(
+                ShareDataPdu::FrameAcknowledge(FrameAcknowledgePdu {
+                    frame_id: marker.frame_id,
+                }),
+                &mut output,
+            ),
         }
     }
 }

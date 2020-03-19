@@ -171,7 +171,6 @@ fn run(config: Config) -> RdpResult<()> {
 
     process_active_stage(
         &mut tls_stream,
-        &config,
         joined_static_channels,
         global_channel_id,
         initiator_id,
@@ -247,8 +246,6 @@ pub enum RdpError {
     MandatoryHeaderIsAbsent,
     #[fail(display = "RLGR error: {}", _0)]
     RlgrError(#[fail(cause)] ironrdp::codecs::rfx::rlgr::RlgrError),
-    #[fail(display = "RLGR error: {}", _0)]
-    ImageError(#[fail(cause)] image::ImageError),
     #[fail(display = "absence of RFX channels")]
     NoRfxChannelsAnnounced,
 }
@@ -320,11 +317,5 @@ impl From<ironrdp::codecs::rfx::RfxError> for RdpError {
 impl From<ironrdp::codecs::rfx::rlgr::RlgrError> for RdpError {
     fn from(e: ironrdp::codecs::rfx::rlgr::RlgrError) -> Self {
         RdpError::RlgrError(e)
-    }
-}
-
-impl From<image::ImageError> for RdpError {
-    fn from(e: image::ImageError) -> Self {
-        RdpError::ImageError(e)
     }
 }

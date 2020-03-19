@@ -1,4 +1,4 @@
-use std::{net::SocketAddr, path};
+use std::net::SocketAddr;
 
 use clap::{crate_name, crate_version, App, Arg};
 use ironrdp::nego::SecurityProtocol;
@@ -9,7 +9,6 @@ const DEFAULT_HEIGHT: u16 = 1080;
 
 pub struct Config {
     pub log_file: String,
-    pub images_path: String,
     pub routing_addr: SocketAddr,
     pub width: u16,
     pub height: u16,
@@ -34,16 +33,6 @@ impl Config {
                     .default_value(&log_file_name),
             )
             .arg(
-                Arg::with_name("images-path")
-                    .long("images-path")
-                    .value_name("IMAGES_PATH")
-                    .help("A path to the folder with graphical updates received from a server")
-                    .takes_value(true)
-                    .empty_values(false)
-                    .default_value(&"./")
-                    .validator(is_folder),
-            )
-            .arg(
                 Arg::with_name("addr")
                     .value_name("ADDR")
                     .help("An address on which the client will connect. Format: <ip>:<port>")
@@ -66,11 +55,6 @@ impl Config {
             .map(String::from)
             .expect("log file must be at least the default");
 
-        let images_path = matches
-            .value_of("images-path")
-            .map(String::from)
-            .expect("images file must be at least the default");
-
         let routing_addr = matches
             .value_of("addr")
             .map(|u| u.parse().unwrap())
@@ -80,7 +64,6 @@ impl Config {
 
         Self {
             log_file,
-            images_path,
             routing_addr,
             width: DEFAULT_WIDTH,
             height: DEFAULT_HEIGHT,
@@ -255,13 +238,5 @@ fn is_uint(s: String) -> Result<(), String> {
     match s.parse::<usize>() {
         Ok(_) => Ok(()),
         Err(_) => Err(String::from("The value is not numeric")),
-    }
-}
-
-fn is_folder(s: String) -> Result<(), String> {
-    if path::PathBuf::from(s).is_dir() {
-        Ok(())
-    } else {
-        Err(String::from("The folder does not exist or is invalid"))
     }
 }

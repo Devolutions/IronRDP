@@ -17,14 +17,13 @@ use log::warn;
 use crate::{
     connection_sequence::DesktopSizes,
     transport::{Decoder, RdpTransport},
-    utils, Config, RdpError, RdpResult, StaticChannels,
+    utils, RdpError, RdpResult, StaticChannels,
 };
 
 const DESTINATION_PIXEL_FORMAT: PixelFormat = PixelFormat::RgbA32;
 
 pub fn process_active_stage(
     mut stream: impl io::BufRead + io::Write,
-    config: &Config,
     static_channels: StaticChannels,
     global_channel_id: u16,
     initiator_id: u16,
@@ -34,7 +33,6 @@ pub fn process_active_stage(
         u32::from(desktop_sizes.width),
         u32::from(desktop_sizes.height),
         DESTINATION_PIXEL_FORMAT,
-        Some(config.images_path.clone()),
     )));
     let mut x224_processor = x224::Processor::new(utils::swap_hashmap_kv(static_channels));
     let mut fast_path_processor = fast_path::ProcessorBuilder {
@@ -93,49 +91,17 @@ pub fn process_active_stage(
 }
 
 pub struct DecodedImage {
-    width: u32,
-    height: u32,
     data: Vec<u8>,
-    images_path: Option<String>,
-    frame_counter: u32,
 }
 
 impl DecodedImage {
-    fn new(
-        width: u32,
-        height: u32,
-        pixel_format: PixelFormat,
-        images_path: Option<String>,
-    ) -> Self {
+    fn new(width: u32, height: u32, pixel_format: PixelFormat) -> Self {
         Self {
-            width,
-            height,
             data: vec![0; (width * height * u32::from(pixel_format.bytes_per_pixel())) as usize],
-            images_path,
-            frame_counter: 0,
         }
     }
 
     fn get_mut(&mut self) -> &mut [u8] {
         self.data.as_mut_slice()
-    }
-
-    fn save(&mut self) -> image::ImageResult<()> {
-        if let Some(images_path) = self.images_path.as_ref() {
-            let image_buffer = image::ImageBuffer::<image::Rgba<u8>, _>::from_raw(
-                self.width,
-                self.height,
-                self.data.as_slice(),
-            )
-            .expect("Container must be large enough");
-
-            image_buffer.save_with_format(
-                format!("{}/update#{:010}.png", images_path, self.frame_counter),
-                image::ImageFormat::Png,
-            )?;
-            self.frame_counter += 1;
-        }
-
-        Ok(())
     }
 }

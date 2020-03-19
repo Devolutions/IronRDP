@@ -20,7 +20,6 @@ fn decode_decodes_valid_sequence_of_messages() {
         IMAGE_WIDTH as u32,
         IMAGE_HEIGHT as u32,
         PixelFormat::BgrX32,
-        None,
     )));
 
     let mut handler = DecodingContext::new(PixelFormat::BgrX32);
