@@ -256,6 +256,11 @@ pub enum RdpError {
     RlgrError(#[fail(cause)] ironrdp::codecs::rfx::rlgr::RlgrError),
     #[fail(display = "absence of RFX channels")]
     NoRfxChannelsAnnounced,
+    #[fail(
+        display = "the server that started working using the inconsistent protocol: {:?}",
+        _0
+    )]
+    UnexpectedFastPathUpdate(ironrdp::fast_path::UpdateCode),
 }
 
 impl From<io::Error> for RdpError {
