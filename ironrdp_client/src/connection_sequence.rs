@@ -1,6 +1,6 @@
 mod user_info;
 
-use std::{collections::HashMap, io, iter};
+use std::{collections::HashMap, io, iter, net::SocketAddr};
 
 use bytes::BytesMut;
 use ironrdp::{
@@ -21,12 +21,9 @@ use ring::rand::SecureRandom;
 use rustls::{internal::msgs::handshake::CertificatePayload, Session};
 use sspi::internal::credssp;
 
-use crate::{config::Config, transport::*, utils, RdpError, RdpResult};
+use crate::{transport::*, utils, InputConfig, RdpError};
 
 pub type StaticChannels = HashMap<String, u16>;
-
-pub const GLOBAL_CHANNEL_NAME: &str = "GLOBAL";
-pub const USER_CHANNEL_NAME: &str = "USER";
 
 pub struct DesktopSizes {
     pub width: u16,
@@ -36,7 +33,7 @@ pub struct DesktopSizes {
 pub fn process_cred_ssp<'a, S, T>(
     mut tls_stream: &mut bufstream::BufStream<rustls::Stream<'a, S, T>>,
     credentials: sspi::AuthIdentity,
-) -> RdpResult<()>
+) -> Result<(), RdpError>
 where
     S: 'a + Session + Sized,
     T: 'a + io::Read + io::Write + Sized,
@@ -85,9 +82,9 @@ where
 pub fn process_mcs_connect(
     mut stream: impl io::BufRead + io::Write,
     transport: &mut DataTransport,
-    config: &Config,
+    config: &InputConfig,
     selected_protocol: nego::SecurityProtocol,
-) -> RdpResult<StaticChannels> {
+) -> Result<StaticChannels, RdpError> {
     let connect_initial = ironrdp::ConnectInitial::with_gcc_blocks(user_info::create_gcc_blocks(
         &config,
         selected_protocol,
@@ -136,7 +133,7 @@ pub fn process_mcs_connect(
         .map(|channel| channel.name)
         .zip(static_channel_ids.into_iter())
         .chain(iter::once((
-            GLOBAL_CHANNEL_NAME.to_string(),
+            config.global_channel_name.clone(),
             global_channel_id,
         )))
         .collect::<StaticChannels>();
@@ -148,7 +145,8 @@ pub fn process_mcs(
     mut stream: impl io::BufRead + io::Write,
     transport: &mut McsTransport,
     mut static_channels: StaticChannels,
-) -> RdpResult<StaticChannels> {
+    config: &InputConfig,
+) -> Result<StaticChannels, RdpError> {
     let erect_domain_request = ironrdp::mcs::ErectDomainPdu {
         sub_height: 0,
         sub_interval: 0,
@@ -178,7 +176,7 @@ pub fn process_mcs(
         debug!("Got MCS Attach User Confirm PDU: {:?}", attach_user_confirm);
 
         static_channels.insert(
-            USER_CHANNEL_NAME.to_string(),
+            config.user_channel_name.clone(),
             attach_user_confirm.initiator_id,
         );
 
@@ -236,9 +234,10 @@ pub fn process_mcs(
 pub fn send_client_info(
     stream: impl io::BufRead + io::Write,
     transport: &mut SendDataContextTransport,
-    config: &Config,
-) -> RdpResult<()> {
-    let client_info_pdu = user_info::create_client_info_pdu(config)?;
+    config: &InputConfig,
+    routing_addr: &SocketAddr,
+) -> Result<(), RdpError> {
+    let client_info_pdu = user_info::create_client_info_pdu(config, routing_addr)?;
     debug!("Send Client Info PDU: {:?}", client_info_pdu);
     let mut pdu = Vec::with_capacity(client_info_pdu.buffer_length());
     client_info_pdu
@@ -252,9 +251,9 @@ pub fn send_client_info(
 pub fn process_server_license_exchange(
     mut stream: impl io::BufRead + io::Write,
     transport: &mut SendDataContextTransport,
-    config: &Config,
+    config: &InputConfig,
     global_channel_id: u16,
-) -> RdpResult<()> {
+) -> Result<(), RdpError> {
     let channel_ids = transport.decode(&mut stream)?;
     check_global_id(channel_ids, global_channel_id)?;
 
@@ -288,8 +287,8 @@ pub fn process_server_license_exchange(
                 &license_request,
                 client_random.as_slice(),
                 premaster_secret.as_slice(),
-                &config.input.credentials.username,
-                &config.input.credentials.domain.as_deref().unwrap_or(""),
+                &config.credentials.username,
+                &config.credentials.domain.as_deref().unwrap_or(""),
             )
             .map_err(|err| {
                 RdpError::IOError(io::Error::new(
@@ -334,7 +333,7 @@ pub fn process_server_license_exchange(
 
     let challenge_response = ClientPlatformChallengeResponse::from_server_platform_challenge(
         &challenge,
-        &config.input.credentials.domain.as_deref().unwrap_or(""),
+        &config.credentials.domain.as_deref().unwrap_or(""),
         &encryption_data,
     )
     .map_err(|err| {
@@ -387,8 +386,8 @@ pub fn process_server_license_exchange(
 pub fn process_capability_sets(
     mut stream: impl io::BufRead + io::Write,
     transport: &mut ShareControlHeaderTransport,
-    config: &Config,
-) -> RdpResult<DesktopSizes> {
+    config: &InputConfig,
+) -> Result<DesktopSizes, RdpError> {
     let share_control_pdu = transport.decode(&mut stream)?;
     let capability_sets =
         if let ironrdp::ShareControlPdu::ServerDemandActive(server_demand_active) =
@@ -440,7 +439,7 @@ pub fn process_finalization(
     mut stream: impl io::BufRead + io::Write,
     transport: &mut ShareDataHeaderTransport,
     initiator_id: u16,
-) -> RdpResult<()> {
+) -> Result<(), RdpError> {
     use ironrdp::rdp::{
         ControlAction, ControlPdu, FontPdu, SequenceFlags, ShareDataPdu, SynchronizePdu,
     };

@@ -21,7 +21,7 @@ use crate::{
         ShareControlHeaderTransport, ShareDataHeaderTransport,
     },
     utils::CodecId,
-    RdpError, RdpResult,
+    RdpError,
 };
 use ironrdp::surface_commands::FrameMarkerPdu;
 
@@ -37,7 +37,7 @@ impl Processor {
         &mut self,
         header: &FastPathHeader,
         mut stream: impl io::BufRead + io::Write,
-    ) -> RdpResult<()> {
+    ) -> Result<(), RdpError> {
         debug!("Got Fast-Path Header: {:?}", header);
 
         let input_buffer = &stream.fill_buf()?[..header.data_length];
@@ -91,7 +91,7 @@ impl Processor {
         &mut self,
         mut output: impl io::Write,
         surface_commands: Vec<SurfaceCommand<'_>>,
-    ) -> RdpResult<()> {
+    ) -> Result<(), RdpError> {
         for command in surface_commands {
             match command {
                 SurfaceCommand::SetSurfaceBits(bits) | SurfaceCommand::StreamSurfaceBits(bits) => {
@@ -230,7 +230,7 @@ impl Frame {
         &mut self,
         marker: &FrameMarkerPdu,
         mut output: impl io::Write,
-    ) -> RdpResult<()> {
+    ) -> Result<(), RdpError> {
         match marker.frame_action {
             FrameAction::Begin => Ok(()),
             FrameAction::End => self.transport.encode(

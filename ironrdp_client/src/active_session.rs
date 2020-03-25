@@ -15,9 +15,9 @@ use ironrdp::{
 use log::warn;
 
 use crate::{
-    connection_sequence::DesktopSizes,
+    connection_sequence::{DesktopSizes, StaticChannels},
     transport::{Decoder, RdpTransport},
-    utils, RdpError, RdpResult, StaticChannels,
+    utils, InputConfig, RdpError,
 };
 
 const DESTINATION_PIXEL_FORMAT: PixelFormat = PixelFormat::RgbA32;
@@ -28,13 +28,17 @@ pub fn process_active_stage(
     global_channel_id: u16,
     initiator_id: u16,
     desktop_sizes: DesktopSizes,
-) -> RdpResult<()> {
+    config: InputConfig,
+) -> Result<(), RdpError> {
     let decoded_image = Arc::new(Mutex::new(DecodedImage::new(
         u32::from(desktop_sizes.width),
         u32::from(desktop_sizes.height),
         DESTINATION_PIXEL_FORMAT,
     )));
-    let mut x224_processor = x224::Processor::new(utils::swap_hashmap_kv(static_channels));
+    let mut x224_processor = x224::Processor::new(
+        utils::swap_hashmap_kv(static_channels),
+        config.global_channel_name.as_str(),
+    );
     let mut fast_path_processor = fast_path::ProcessorBuilder {
         decoded_image,
         global_channel_id,

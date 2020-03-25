@@ -21,7 +21,7 @@ use ironrdp::{
 use lazy_static::lazy_static;
 use log::debug;
 
-use crate::{active_session::DecodedImage, RdpError, RdpResult};
+use crate::{active_session::DecodedImage, RdpError};
 
 const TILE_SIZE: u16 = 64;
 const SOURCE_PIXEL_FORMAT: PixelFormat = PixelFormat::BgrX32;
@@ -74,7 +74,7 @@ impl DecodingContext {
         }
     }
 
-    fn process_headers(&mut self, input: &mut &[u8]) -> RdpResult<()> {
+    fn process_headers(&mut self, input: &mut &[u8]) -> Result<(), RdpError> {
         let _sync = rfx::SyncPdu::from_buffer_consume(input)?;
 
         let mut context = None;
@@ -107,7 +107,7 @@ impl DecodingContext {
         destination: &Rectangle,
         input: &mut &[u8],
         image: Arc<Mutex<DecodedImage>>,
-    ) -> RdpResult<FrameId> {
+    ) -> Result<FrameId, RdpError> {
         let width = self.channels.0.first().unwrap().width as u16;
         let height = self.channels.0.first().unwrap().height as u16;
         let entropy_algorithm = self.context.entropy_algorithm;
@@ -178,7 +178,7 @@ fn process_decoded_tile(
     width: u16,
     destination_pixel_format: PixelFormat,
     image: &Arc<Mutex<DecodedImage>>,
-) -> RdpResult<()> {
+) -> Result<(), RdpError> {
     debug!("Tile: {:?}", update_rectangle);
 
     let update_region = clipping_rectangles.intersect_rectangle(&update_rectangle);
@@ -239,7 +239,7 @@ fn decode_tile(
     output: &mut [u8],
     ycbcr_temp: &mut [Vec<i16>],
     temp: &mut [i16],
-) -> RdpResult<()> {
+) -> Result<(), RdpError> {
     for ((quant, data), ycbcr_buffer) in tile
         .quants
         .iter()
@@ -272,7 +272,7 @@ fn decode_component(
     data: &[u8],
     output: &mut [i16],
     temp: &mut [i16],
-) -> RdpResult<()> {
+) -> Result<(), RdpError> {
     rlgr::decode(entropy_algorithm, data, output)?;
     subband_reconstruction::decode(&mut output[4032..]);
     quantization::decode(output, quant);

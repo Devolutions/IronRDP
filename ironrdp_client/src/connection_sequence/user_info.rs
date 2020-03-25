@@ -27,14 +27,14 @@ use ironrdp::{
 };
 use num_traits::ToPrimitive;
 
-use crate::{config::Config, utils::CodecId, RdpError, RdpResult};
+use crate::{utils::CodecId, InputConfig, RdpError};
 
 const SOURCE_DESCRIPTOR: &str = "IRONRDP";
 
 pub fn create_gcc_blocks(
-    config: &Config,
+    config: &InputConfig,
     selected_protocol: SecurityProtocol,
-) -> RdpResult<ClientGccBlocks> {
+) -> Result<ClientGccBlocks, RdpError> {
     Ok(ClientGccBlocks {
         core: create_core_data(config, selected_protocol)?,
         security: create_security_data(),
@@ -47,12 +47,15 @@ pub fn create_gcc_blocks(
     })
 }
 
-pub fn create_client_info_pdu(config: &Config) -> RdpResult<ClientInfoPdu> {
+pub fn create_client_info_pdu(
+    config: &InputConfig,
+    routing_addr: &net::SocketAddr,
+) -> Result<ClientInfoPdu, RdpError> {
     let security_header = BasicSecurityHeader {
         flags: BasicSecurityHeaderFlags::INFO_PKT,
     };
     let client_info = ClientInfo {
-        credentials: auth_identity_to_credentials(config.input.credentials.clone()),
+        credentials: auth_identity_to_credentials(config.credentials.clone()),
         code_page: 0, // ignored if the keyboardLayout field of the Client Core Data is set to zero
         flags: ClientInfoFlags::UNICODE
             | ClientInfoFlags::DISABLE_CTRL_ALT_DEL
@@ -64,11 +67,11 @@ pub fn create_client_info_pdu(config: &Config) -> RdpResult<ClientInfoPdu> {
         alternate_shell: String::new(),
         work_dir: String::new(),
         extra_info: ExtendedClientInfo {
-            address_family: match config.routing_addr {
+            address_family: match routing_addr {
                 net::SocketAddr::V4(_) => AddressFamily::INet,
                 net::SocketAddr::V6(_) => AddressFamily::INet6,
             },
-            address: config.routing_addr.ip().to_string(),
+            address: routing_addr.ip().to_string(),
             dir: env::current_dir()
                 .map_err(|e| {
                     RdpError::UserInfoError(format!(
@@ -89,9 +92,9 @@ pub fn create_client_info_pdu(config: &Config) -> RdpResult<ClientInfoPdu> {
 }
 
 pub fn create_client_confirm_active(
-    config: &Config,
+    config: &InputConfig,
     mut server_capability_sets: Vec<CapabilitySet>,
-) -> RdpResult<ClientConfirmActive> {
+) -> Result<ClientConfirmActive, RdpError> {
     server_capability_sets.retain(|capability_set| match capability_set {
         CapabilitySet::MultiFragmentUpdate(_) => true,
         _ => false,
@@ -137,9 +140,9 @@ pub fn create_client_confirm_active(
 }
 
 fn create_core_data(
-    config: &Config,
+    config: &InputConfig,
     selected_protocol: SecurityProtocol,
-) -> RdpResult<ClientCoreData> {
+) -> Result<ClientCoreData, RdpError> {
     Ok(ClientCoreData {
         version: RdpVersion::V5Plus,
         desktop_width: config.width,
@@ -151,18 +154,18 @@ fn create_core_data(
             .map(|version| version.major * 100 + version.minor * 10 + version.patch)
             .unwrap_or(0) as u32,
         client_name: whoami::hostname(),
-        keyboard_type: config.input.keyboard_type,
-        keyboard_subtype: config.input.keyboard_subtype,
-        keyboard_functional_keys_count: config.input.keyboard_functional_keys_count,
-        ime_file_name: config.input.ime_file_name.clone(),
+        keyboard_type: config.keyboard_type,
+        keyboard_subtype: config.keyboard_subtype,
+        keyboard_functional_keys_count: config.keyboard_functional_keys_count,
+        ime_file_name: config.ime_file_name.clone(),
         optional_data: create_optional_core_data(config, selected_protocol)?,
     })
 }
 
 fn create_optional_core_data(
-    config: &Config,
+    config: &InputConfig,
     selected_protocol: SecurityProtocol,
-) -> RdpResult<ClientCoreOptionalData> {
+) -> Result<ClientCoreOptionalData, RdpError> {
     Ok(ClientCoreOptionalData {
         post_beta_color_depth: Some(ColorDepth::Bpp4), // ignored
         client_product_id: Some(1),
@@ -173,7 +176,7 @@ fn create_optional_core_data(
             ClientEarlyCapabilityFlags::VALID_CONNECTION_TYPE
                 | ClientEarlyCapabilityFlags::WANT_32_BPP_SESSION,
         ),
-        dig_product_id: Some(config.input.dig_product_id.clone()),
+        dig_product_id: Some(config.dig_product_id.clone()),
         connection_type: Some(ConnectionType::Lan),
         server_selected_protocol: Some(selected_protocol),
         desktop_physical_width: None,
@@ -212,7 +215,7 @@ fn create_general_capability_set() -> CapabilitySet {
     })
 }
 
-fn create_bitmap_capability_set(config: &Config) -> CapabilitySet {
+fn create_bitmap_capability_set(config: &InputConfig) -> CapabilitySet {
     CapabilitySet::Bitmap(Bitmap {
         pref_bits_per_pix: 32,
         desktop_width: config.width,
@@ -247,14 +250,14 @@ fn create_pointer_capability_set() -> CapabilitySet {
     })
 }
 
-fn create_input_capability_set(config: &Config) -> CapabilitySet {
+fn create_input_capability_set(config: &InputConfig) -> CapabilitySet {
     CapabilitySet::Input(Input {
         input_flags: InputFlags::SCANCODES,
         keyboard_layout: 0,
-        keyboard_type: Some(config.input.keyboard_type),
-        keyboard_subtype: config.input.keyboard_subtype,
-        keyboard_function_key: config.input.keyboard_functional_keys_count,
-        keyboard_ime_filename: config.input.ime_file_name.clone(),
+        keyboard_type: Some(config.keyboard_type),
+        keyboard_subtype: config.keyboard_subtype,
+        keyboard_function_key: config.keyboard_functional_keys_count,
+        keyboard_ime_filename: config.ime_file_name.clone(),
     })
 }
 
