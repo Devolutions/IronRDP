@@ -53,23 +53,31 @@ fn main() {
     let config = Config::parse_args();
     setup_logging(config.log_file.as_str()).expect("failed to initialize logging");
 
-    match run(config) {
+    let exit_code = match run(config) {
         Ok(_) => {
             println!("RDP successfully finished");
-            std::process::exit(exitcode::OK);
+
+            exitcode::OK
         }
-        Err(e) => {
+        Err(RdpError::IOError(e)) if e.kind() == io::ErrorKind::UnexpectedEof => {
+            error!("{}", e);
+            println!("The server has terminated the RDP session");
+
+            exitcode::NOHOST
+        }
+        Err(ref e) => {
             error!("{}", e);
             println!("RDP failed because of {}", e);
 
-            let code = match e {
+            match e {
                 RdpError::IOError(_) => exitcode::IOERR,
                 RdpError::ConnectionError(_) => exitcode::NOHOST,
                 _ => exitcode::PROTOCOL,
-            };
-            std::process::exit(code);
+            }
         }
-    }
+    };
+
+    std::process::exit(exit_code);
 }
 
 fn setup_logging(log_file: &str) -> Result<(), fern::InitError> {
@@ -248,6 +256,11 @@ pub enum RdpError {
     RlgrError(#[fail(cause)] ironrdp::codecs::rfx::rlgr::RlgrError),
     #[fail(display = "absence of RFX channels")]
     NoRfxChannelsAnnounced,
+    #[fail(
+        display = "the server that started working using the inconsistent protocol: {:?}",
+        _0
+    )]
+    UnexpectedFastPathUpdate(ironrdp::fast_path::UpdateCode),
 }
 
 impl From<io::Error> for RdpError {

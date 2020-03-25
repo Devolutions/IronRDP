@@ -40,7 +40,7 @@ impl Processor {
     ) -> RdpResult<()> {
         debug!("Got Fast-Path Header: {:?}", header);
 
-        let input_buffer = stream.fill_buf()?;
+        let input_buffer = &stream.fill_buf()?[..header.data_length];
 
         let update_pdu = FastPathUpdatePdu::from_buffer(input_buffer)?;
         let update_pdu_length = update_pdu.buffer_length();
@@ -50,17 +50,30 @@ impl Processor {
             update_pdu.fragmentation
         );
 
-        let processed_complete_data = self.complete_data.process_pdu(update_pdu);
+        let processed_complete_data = self
+            .complete_data
+            .process_data(update_pdu.data, update_pdu.fragmentation);
+        let update_code = update_pdu.update_code;
         stream.consume(update_pdu_length);
 
-        if let Some((update_code, data)) = processed_complete_data {
-            let update =
-                FastPathUpdate::from_buffer_consume_with_code(&mut data.as_slice(), update_code);
-            info!("Got Fast-Path Update: {:?}", update_code);
+        if let Some(data) = processed_complete_data {
+            let update = FastPathUpdate::from_buffer_with_code(data.as_slice(), update_code);
 
             match update {
                 Ok(FastPathUpdate::SurfaceCommands(surface_commands)) => {
+                    info!(
+                        "Received Surface Commands: {} pieces",
+                        surface_commands.len()
+                    );
+
                     self.process_surface_commands(&mut stream, surface_commands)?;
+                }
+                Err(FastPathError::UnsupportedFastPathUpdate(code))
+                    if code == UpdateCode::Orders
+                        || code == UpdateCode::Bitmap
+                        || code == UpdateCode::Palette =>
+                {
+                    return Err(RdpError::UnexpectedFastPathUpdate(code));
                 }
                 Err(FastPathError::UnsupportedFastPathUpdate(update_code)) => {
                     warn!("Received unsupported Fast-Path update: {:?}", update_code)
@@ -104,7 +117,8 @@ impl Processor {
                 SurfaceCommand::FrameMarker(marker) => {
                     info!(
                         "Frame marker: action {:?} with ID #{}",
-                        marker.frame_action, marker.frame_id
+                        marker.frame_action,
+                        marker.frame_id.unwrap_or(0)
                     );
                     self.frame.process_marker(&marker, &mut output)?;
                 }
@@ -134,67 +148,61 @@ impl ProcessorBuilder {
 
 #[derive(Debug, PartialEq)]
 struct CompleteData {
-    fast_path_pdu: Option<UpdateCode>,
-    data: Option<Vec<u8>>,
+    fragmented_data: Option<Vec<u8>>,
 }
 
 impl CompleteData {
     fn new() -> Self {
         Self {
-            fast_path_pdu: None,
-            data: None,
+            fragmented_data: None,
         }
     }
 
-    fn process_pdu(
-        &mut self,
-        fast_path_pdu: FastPathUpdatePdu<'_>,
-    ) -> Option<(UpdateCode, Vec<u8>)> {
-        match fast_path_pdu.fragmentation {
+    fn process_data(&mut self, data: &[u8], fragmentation: Fragmentation) -> Option<Vec<u8>> {
+        match fragmentation {
             Fragmentation::Single => {
                 self.check_data_is_empty();
 
-                Some((fast_path_pdu.update_code, fast_path_pdu.data.to_vec()))
+                Some(data.to_vec())
             }
             Fragmentation::First => {
                 self.check_data_is_empty();
 
-                self.data = Some(fast_path_pdu.data.to_vec());
-                self.fast_path_pdu = Some(fast_path_pdu.update_code);
+                self.fragmented_data = Some(data.to_vec());
 
                 None
             }
             Fragmentation::Next => {
-                self.append_data(fast_path_pdu.data);
+                self.append_data(data);
 
                 None
             }
             Fragmentation::Last => {
-                self.append_data(fast_path_pdu.data);
+                self.append_data(data);
 
-                let update_code = self.fast_path_pdu.take().unwrap();
-                let data = self.data.take().unwrap();
+                let complete_data = self.fragmented_data.take().unwrap();
 
-                Some((update_code, data))
+                Some(complete_data)
             }
         }
     }
 
     fn check_data_is_empty(&mut self) {
-        if self.data.is_some() && self.fast_path_pdu.is_some() {
+        if self.fragmented_data.is_some() {
             warn!("Skipping pending Fast-Path Update internal multiple elements data");
-            self.data = None;
-            self.fast_path_pdu = None;
+            self.fragmented_data = None;
         }
     }
 
     fn append_data(&mut self, data: &[u8]) {
-        if self.data.is_none() && self.fast_path_pdu.is_none() {
+        if self.fragmented_data.is_none() {
             warn!("Got unexpected Next fragmentation PDU without prior First fragmentation PDU");
-            self.data = None;
-            self.fast_path_pdu = None;
+            self.fragmented_data = None;
         } else {
-            self.data.as_mut().unwrap().extend_from_slice(data);
+            self.fragmented_data
+                .as_mut()
+                .unwrap()
+                .extend_from_slice(data);
         }
     }
 }
@@ -227,7 +235,7 @@ impl Frame {
             FrameAction::Begin => Ok(()),
             FrameAction::End => self.transport.encode(
                 ShareDataPdu::FrameAcknowledge(FrameAcknowledgePdu {
-                    frame_id: marker.frame_id,
+                    frame_id: marker.frame_id.unwrap_or(0),
                 }),
                 &mut output,
             ),
