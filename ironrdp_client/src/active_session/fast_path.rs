@@ -117,7 +117,8 @@ impl Processor {
                 SurfaceCommand::FrameMarker(marker) => {
                     info!(
                         "Frame marker: action {:?} with ID #{}",
-                        marker.frame_action, marker.frame_id
+                        marker.frame_action,
+                        marker.frame_id.unwrap_or(0)
                     );
                     self.frame.process_marker(&marker, &mut output)?;
                 }
@@ -234,7 +235,7 @@ impl Frame {
             FrameAction::Begin => Ok(()),
             FrameAction::End => self.transport.encode(
                 ShareDataPdu::FrameAcknowledge(FrameAcknowledgePdu {
-                    frame_id: marker.frame_id,
+                    frame_id: marker.frame_id.unwrap_or(0),
                 }),
                 &mut output,
             ),
