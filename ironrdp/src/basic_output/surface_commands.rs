@@ -96,7 +96,7 @@ impl<'a> PduBufferParsing<'a> for SurfaceBitsPdu<'a> {
 #[derive(Debug, Clone, PartialEq)]
 pub struct FrameMarkerPdu {
     pub frame_action: FrameAction,
-    pub frame_id: u32,
+    pub frame_id: Option<u32>,
 }
 
 impl<'a> PduBufferParsing<'a> for FrameMarkerPdu {
@@ -106,7 +106,15 @@ impl<'a> PduBufferParsing<'a> for FrameMarkerPdu {
         let frame_action = buffer.read_u16::<LittleEndian>()?;
         let frame_action = FrameAction::from_u16(frame_action)
             .ok_or(SurfaceCommandsError::InvalidFrameAction(frame_action))?;
-        let frame_id = buffer.read_u32::<LittleEndian>()?;
+
+        let frame_id = if buffer.is_empty() {
+            // Sometimes Windows 10 RDP server sends not complete FrameMarker PDU (without frame ID),
+            // so we made frame ID field as optional (not officially)
+
+            None
+        } else {
+            Some(buffer.read_u32::<LittleEndian>()?)
+        };
 
         Ok(Self {
             frame_action,
@@ -116,7 +124,7 @@ impl<'a> PduBufferParsing<'a> for FrameMarkerPdu {
 
     fn to_buffer_consume(&self, buffer: &mut &mut [u8]) -> Result<(), Self::Error> {
         buffer.write_u16::<LittleEndian>(self.frame_action.to_u16().unwrap())?;
-        buffer.write_u32::<LittleEndian>(self.frame_id)?;
+        buffer.write_u32::<LittleEndian>(self.frame_id.unwrap_or(0))?;
 
         Ok(())
     }
