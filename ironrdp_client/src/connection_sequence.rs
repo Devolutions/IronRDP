@@ -18,10 +18,9 @@ use ironrdp::{
 };
 use log::{debug, info, trace};
 use ring::rand::SecureRandom;
-use rustls::{internal::msgs::handshake::CertificatePayload, Session};
 use sspi::internal::credssp;
 
-use crate::{transport::*, utils, InputConfig, RdpError};
+use crate::{transport::*, InputConfig, RdpError};
 
 pub type StaticChannels = HashMap<String, u16>;
 
@@ -30,26 +29,15 @@ pub struct DesktopSizes {
     pub height: u16,
 }
 
-pub fn process_cred_ssp<'a, S, T>(
-    mut tls_stream: &mut bufstream::BufStream<rustls::Stream<'a, S, T>>,
+pub fn process_cred_ssp(
+    mut tls_stream: impl io::Read + io::Write,
     credentials: sspi::AuthIdentity,
-) -> Result<(), RdpError>
-where
-    S: 'a + Session + Sized,
-    T: 'a + io::Read + io::Write + Sized,
-{
-    let cert: CertificatePayload = tls_stream
-        .get_ref()
-        .sess
-        .get_peer_certificates()
-        .ok_or_else(|| RdpError::TlsConnectorError(rustls::TLSError::NoCertificatesPresented))?;
-
-    let server_tls_pubkey = utils::get_tls_peer_pubkey(cert[0].as_ref().to_vec())?;
-
+    server_public_key: Vec<u8>,
+) -> Result<(), RdpError> {
     let mut transport = TsRequestTransport::default();
 
     let mut cred_ssp_client = credssp::CredSspClient::new(
-        server_tls_pubkey,
+        server_public_key,
         credentials,
         credssp::CredSspMode::WithCredentials,
     )
@@ -80,7 +68,7 @@ where
 }
 
 pub fn process_mcs_connect(
-    mut stream: impl io::BufRead + io::Write,
+    mut stream: impl io::Read + io::Write,
     transport: &mut DataTransport,
     config: &InputConfig,
     selected_protocol: nego::SecurityProtocol,
@@ -142,7 +130,7 @@ pub fn process_mcs_connect(
 }
 
 pub fn process_mcs(
-    mut stream: impl io::BufRead + io::Write,
+    mut stream: impl io::Read + io::Write,
     transport: &mut McsTransport,
     mut static_channels: StaticChannels,
     config: &InputConfig,
@@ -232,7 +220,7 @@ pub fn process_mcs(
 }
 
 pub fn send_client_info(
-    stream: impl io::BufRead + io::Write,
+    stream: impl io::Read + io::Write,
     transport: &mut SendDataContextTransport,
     config: &InputConfig,
     routing_addr: &SocketAddr,
@@ -249,7 +237,7 @@ pub fn send_client_info(
 }
 
 pub fn process_server_license_exchange(
-    mut stream: impl io::BufRead + io::Write,
+    mut stream: impl io::Read + io::Write,
     transport: &mut SendDataContextTransport,
     config: &InputConfig,
     global_channel_id: u16,
@@ -384,7 +372,7 @@ pub fn process_server_license_exchange(
 }
 
 pub fn process_capability_sets(
-    mut stream: impl io::BufRead + io::Write,
+    mut stream: impl io::Read + io::Write,
     transport: &mut ShareControlHeaderTransport,
     config: &InputConfig,
 ) -> Result<DesktopSizes, RdpError> {
@@ -436,7 +424,7 @@ pub fn process_capability_sets(
 }
 
 pub fn process_finalization(
-    mut stream: impl io::BufRead + io::Write,
+    mut stream: impl io::Read + io::Write,
     transport: &mut ShareDataHeaderTransport,
     initiator_id: u16,
 ) -> Result<(), RdpError> {

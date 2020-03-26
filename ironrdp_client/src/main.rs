@@ -8,6 +8,7 @@ use std::{
 
 use ironrdp::{nego, rdp};
 use log::{debug, error, warn};
+use rustls::Session;
 use sspi::internal::credssp;
 
 use self::config::Config;
@@ -120,7 +121,19 @@ fn run(config: Config) -> Result<(), RdpError> {
     if selected_protocol.contains(nego::SecurityProtocol::HYBRID)
         || selected_protocol.contains(nego::SecurityProtocol::HYBRID_EX)
     {
-        process_cred_ssp(&mut tls_stream, config.input.credentials.clone())?;
+        let cert = tls_stream
+            .get_ref()
+            .sess
+            .get_peer_certificates()
+            .ok_or_else(|| {
+                RdpError::TlsConnectorError(rustls::TLSError::NoCertificatesPresented)
+            })?;
+        let server_public_key = get_tls_peer_pubkey(cert[0].as_ref().to_vec())?;
+        process_cred_ssp(
+            &mut tls_stream,
+            config.input.credentials.clone(),
+            server_public_key,
+        )?;
 
         if selected_protocol.contains(nego::SecurityProtocol::HYBRID_EX) {
             if let credssp::EarlyUserAuthResult::AccessDenied =
@@ -198,4 +211,12 @@ fn run(config: Config) -> Result<(), RdpError> {
 
 pub fn socket_addr_to_string(socket_addr: std::net::SocketAddr) -> String {
     format!("{}:{}", socket_addr.ip(), socket_addr.port())
+}
+
+pub fn get_tls_peer_pubkey(cert: Vec<u8>) -> io::Result<Vec<u8>> {
+    let res = x509_parser::parse_x509_der(&cert[..])
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "Invalid der certificate."))?;
+    let public_key = res.1.tbs_certificate.subject_pki.subject_public_key;
+
+    Ok(public_key.data.to_vec())
 }

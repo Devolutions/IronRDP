@@ -1,4 +1,4 @@
-use std::{collections::HashMap, hash::Hash, io};
+use std::{collections::HashMap, hash::Hash};
 
 use num_derive::{FromPrimitive, ToPrimitive};
 
@@ -40,12 +40,4 @@ where
 #[derive(Debug, Copy, Clone, PartialEq, FromPrimitive, ToPrimitive)]
 pub enum CodecId {
     RemoteFx = 0x3,
-}
-
-pub fn get_tls_peer_pubkey(cert: Vec<u8>) -> io::Result<Vec<u8>> {
-    let res = x509_parser::parse_x509_der(&cert[..])
-        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "Invalid der certificate."))?;
-    let public_key = res.1.tbs_certificate.subject_pki.subject_public_key;
-
-    Ok(public_key.data.to_vec())
 }
