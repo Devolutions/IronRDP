@@ -84,7 +84,7 @@ const SURFACE_BITS_BUFFER: [u8; 1217] = [
 
 const FRAME_MARKER_PDU: SurfaceCommand<'_> = SurfaceCommand::FrameMarker(FrameMarkerPdu {
     frame_action: FrameAction::Begin,
-    frame_id: 5,
+    frame_id: Some(5),
 });
 
 lazy_static! {
