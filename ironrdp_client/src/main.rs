@@ -6,26 +6,11 @@ use std::{
     sync::Arc,
 };
 
-use ironrdp::{nego, rdp};
-use log::{debug, error, warn};
+use log::error;
 use rustls::Session;
-use sspi::internal::credssp;
 
 use self::config::Config;
-use ironrdp_client::{
-    active_session::process_active_stage,
-    connection_sequence::{
-        process_capability_sets, process_cred_ssp, process_finalization, process_mcs,
-        process_mcs_connect, process_server_license_exchange, send_client_info,
-    },
-    transport::{
-        connect, EarlyUserAuthResult, McsTransport, SendDataContextTransport,
-        ShareControlHeaderTransport, ShareDataHeaderTransport,
-    },
-    RdpError,
-};
-
-const BUF_READER_SIZE: usize = 32 * 1024;
+use ironrdp_client::{process_active_stage, process_connection_sequence, RdpError, UpgradedStream};
 
 mod danger {
     pub struct NoCertificateVerification {}
@@ -92,121 +77,45 @@ fn setup_logging(log_file: &str) -> Result<(), fern::InitError> {
 
 fn run(config: Config) -> Result<(), RdpError> {
     let addr = socket_addr_to_string(config.routing_addr);
-    let stream = TcpStream::connect(addr.as_str()).map_err(RdpError::ConnectionError)?;
-    let mut stream = bufstream::BufStream::new(stream);
+    let mut stream = TcpStream::connect(addr.as_str()).map_err(RdpError::ConnectionError)?;
 
-    let (mut transport, selected_protocol) = connect(
+    let (connection_sequence_result, mut stream) = process_connection_sequence(
         &mut stream,
-        config.input.security_protocol,
-        config.input.credentials.username.clone(),
+        &config.routing_addr,
+        &config.input,
+        establish_tls,
     )?;
 
-    let mut stream = stream.into_inner().map_err(io::Error::from)?;
+    process_active_stage(&mut stream, config.input, connection_sequence_result)?;
 
+    Ok(())
+}
+
+fn establish_tls(
+    stream: impl io::Read + io::Write,
+) -> Result<UpgradedStream<impl io::Read + io::Write>, RdpError> {
     let mut client_config = rustls::ClientConfig::default();
+
     client_config
         .dangerous()
         .set_certificate_verifier(Arc::new(danger::NoCertificateVerification {}));
     let config_ref = Arc::new(client_config);
     let dns_name = webpki::DNSNameRef::try_from_ascii_str("stub_string").unwrap();
-    let mut tls_session = rustls::ClientSession::new(&config_ref, dns_name);
-
-    let mut tls_stream = rustls::Stream::new(&mut tls_session, &mut stream);
+    let tls_session = rustls::ClientSession::new(&config_ref, dns_name);
+    let mut tls_stream = rustls::StreamOwned::new(tls_session, stream);
     // handshake
     tls_stream.flush()?;
 
-    let mut tls_stream =
-        bufstream::BufStream::with_capacities(BUF_READER_SIZE, BUF_READER_SIZE, tls_stream);
+    let cert = tls_stream
+        .sess
+        .get_peer_certificates()
+        .ok_or_else(|| RdpError::TlsConnectorError(rustls::TLSError::NoCertificatesPresented))?;
+    let server_public_key = get_tls_peer_pubkey(cert[0].as_ref().to_vec())?;
 
-    if selected_protocol.contains(nego::SecurityProtocol::HYBRID)
-        || selected_protocol.contains(nego::SecurityProtocol::HYBRID_EX)
-    {
-        let cert = tls_stream
-            .get_ref()
-            .sess
-            .get_peer_certificates()
-            .ok_or_else(|| {
-                RdpError::TlsConnectorError(rustls::TLSError::NoCertificatesPresented)
-            })?;
-        let server_public_key = get_tls_peer_pubkey(cert[0].as_ref().to_vec())?;
-        process_cred_ssp(
-            &mut tls_stream,
-            config.input.credentials.clone(),
-            server_public_key,
-        )?;
-
-        if selected_protocol.contains(nego::SecurityProtocol::HYBRID_EX) {
-            if let credssp::EarlyUserAuthResult::AccessDenied =
-                EarlyUserAuthResult::read(&mut tls_stream)?
-            {
-                return Err(RdpError::AccessDenied);
-            }
-        }
-    }
-
-    let static_channels = process_mcs_connect(
-        &mut tls_stream,
-        &mut transport,
-        &config.input,
-        selected_protocol,
-    )?;
-
-    let mut transport = McsTransport::new(transport);
-    let joined_static_channels = process_mcs(
-        &mut tls_stream,
-        &mut transport,
-        static_channels,
-        &config.input,
-    )?;
-    debug!("Joined static active_session: {:?}", joined_static_channels);
-
-    let global_channel_id = *joined_static_channels
-        .get(config.input.global_channel_name.as_str())
-        .expect("global channel must be added");
-    let initiator_id = *joined_static_channels
-        .get(config.input.user_channel_name.as_str())
-        .expect("user channel must be added");
-
-    let mut transport = SendDataContextTransport::new(transport, initiator_id, global_channel_id);
-    send_client_info(
-        &mut tls_stream,
-        &mut transport,
-        &config.input,
-        &config.routing_addr,
-    )?;
-
-    match process_server_license_exchange(
-        &mut tls_stream,
-        &mut transport,
-        &config.input,
-        global_channel_id,
-    ) {
-        Err(RdpError::ServerLicenseError(rdp::RdpError::ServerLicenseError(
-            rdp::server_license::ServerLicenseError::UnexpectedValidClientError(_),
-        ))) => {
-            warn!("The server has returned STATUS_VALID_CLIENT unexpectedly");
-        }
-        Err(error) => return Err(error),
-        Ok(_) => (),
-    }
-
-    let mut transport =
-        ShareControlHeaderTransport::new(transport, initiator_id, global_channel_id);
-    let desktop_sizes = process_capability_sets(&mut tls_stream, &mut transport, &config.input)?;
-
-    let mut transport = ShareDataHeaderTransport::new(transport);
-    process_finalization(&mut tls_stream, &mut transport, initiator_id)?;
-
-    process_active_stage(
-        &mut tls_stream,
-        joined_static_channels,
-        global_channel_id,
-        initiator_id,
-        desktop_sizes,
-        config.input,
-    )?;
-
-    Ok(())
+    Ok(UpgradedStream {
+        stream: tls_stream,
+        server_public_key,
+    })
 }
 
 pub fn socket_addr_to_string(socket_addr: std::net::SocketAddr) -> String {

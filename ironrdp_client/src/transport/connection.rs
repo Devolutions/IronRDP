@@ -71,7 +71,7 @@ impl EarlyUserAuthResult {
 }
 
 pub fn connect(
-    mut stream: impl io::BufRead + io::Write,
+    mut stream: impl io::Read + io::Write,
     security_protocol: nego::SecurityProtocol,
     username: String,
 ) -> Result<(DataTransport, nego::SecurityProtocol), RdpError> {
@@ -87,7 +87,7 @@ pub fn connect(
 }
 
 fn process_negotiation(
-    mut stream: impl io::BufRead + io::Write,
+    mut stream: impl io::Read + io::Write,
     nego_data: Option<nego::NegoData>,
     protocol: nego::SecurityProtocol,
     flags: nego::RequestFlags,

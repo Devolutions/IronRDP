@@ -1,7 +1,13 @@
 mod user_info;
 
-use std::{collections::HashMap, io, iter, net::SocketAddr};
+use std::{
+    collections::HashMap,
+    io::{self},
+    iter,
+    net::SocketAddr,
+};
 
+use bufstream::BufStream;
 use bytes::BytesMut;
 use ironrdp::{
     nego, rdp,
@@ -16,17 +22,118 @@ use ironrdp::{
     },
     PduParsing,
 };
-use log::{debug, info, trace};
+use log::{debug, info, trace, warn};
 use ring::rand::SecureRandom;
 use sspi::internal::credssp;
 
-use crate::{transport::*, InputConfig, RdpError};
+use crate::{transport::*, InputConfig, RdpError, BUF_STREAM_SIZE};
 
 pub type StaticChannels = HashMap<String, u16>;
 
 pub struct DesktopSizes {
     pub width: u16,
     pub height: u16,
+}
+
+pub struct ConnectionSequenceResult {
+    pub desktop_sizes: DesktopSizes,
+    pub joined_static_channels: StaticChannels,
+    pub global_channel_id: u16,
+    pub initiator_id: u16,
+}
+
+pub struct UpgradedStream<S>
+where
+    S: io::Read + io::Write,
+{
+    pub stream: S,
+    pub server_public_key: Vec<u8>,
+}
+
+pub fn process_connection_sequence<F, S, US>(
+    stream: S,
+    routing_addr: &SocketAddr,
+    config: &InputConfig,
+    upgrade_stream: F,
+) -> Result<(ConnectionSequenceResult, BufStream<US>), RdpError>
+where
+    S: io::Read + io::Write,
+    US: io::Read + io::Write,
+    F: FnOnce(S) -> Result<UpgradedStream<US>, RdpError>,
+{
+    let mut stream = BufStream::new(stream);
+
+    let (mut transport, selected_protocol) = connect(
+        &mut stream,
+        config.security_protocol,
+        config.credentials.username.clone(),
+    )?;
+
+    let stream = stream.into_inner().map_err(io::Error::from)?;
+    let UpgradedStream {
+        stream,
+        server_public_key,
+    } = upgrade_stream(stream)?;
+    let mut stream = BufStream::with_capacities(BUF_STREAM_SIZE, BUF_STREAM_SIZE, stream);
+
+    if selected_protocol.contains(nego::SecurityProtocol::HYBRID)
+        || selected_protocol.contains(nego::SecurityProtocol::HYBRID_EX)
+    {
+        process_cred_ssp(&mut stream, config.credentials.clone(), server_public_key)?;
+
+        if selected_protocol.contains(nego::SecurityProtocol::HYBRID_EX) {
+            if let credssp::EarlyUserAuthResult::AccessDenied =
+                EarlyUserAuthResult::read(&mut stream)?
+            {
+                return Err(RdpError::AccessDenied);
+            }
+        }
+    }
+
+    let static_channels =
+        process_mcs_connect(&mut stream, &mut transport, &config, selected_protocol)?;
+
+    let mut transport = McsTransport::new(transport);
+    let joined_static_channels =
+        process_mcs(&mut stream, &mut transport, static_channels, &config)?;
+    debug!("Joined static active_session: {:?}", joined_static_channels);
+
+    let global_channel_id = *joined_static_channels
+        .get(config.global_channel_name.as_str())
+        .expect("global channel must be added");
+    let initiator_id = *joined_static_channels
+        .get(config.user_channel_name.as_str())
+        .expect("user channel must be added");
+
+    let mut transport = SendDataContextTransport::new(transport, initiator_id, global_channel_id);
+    send_client_info(&mut stream, &mut transport, &config, &routing_addr)?;
+
+    match process_server_license_exchange(&mut stream, &mut transport, &config, global_channel_id) {
+        Err(RdpError::ServerLicenseError(rdp::RdpError::ServerLicenseError(
+            rdp::server_license::ServerLicenseError::UnexpectedValidClientError(_),
+        ))) => {
+            warn!("The server has returned STATUS_VALID_CLIENT unexpectedly");
+        }
+        Err(error) => return Err(error),
+        Ok(_) => (),
+    }
+
+    let mut transport =
+        ShareControlHeaderTransport::new(transport, initiator_id, global_channel_id);
+    let desktop_sizes = process_capability_sets(&mut stream, &mut transport, &config)?;
+
+    let mut transport = ShareDataHeaderTransport::new(transport);
+    process_finalization(&mut stream, &mut transport, initiator_id)?;
+
+    Ok((
+        ConnectionSequenceResult {
+            desktop_sizes,
+            joined_static_channels,
+            global_channel_id,
+            initiator_id,
+        },
+        stream,
+    ))
 }
 
 pub fn process_cred_ssp(

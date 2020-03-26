@@ -5,9 +5,15 @@ pub mod transport;
 mod errors;
 mod utils;
 
-pub use errors::RdpError;
+pub use self::{
+    active_session::process_active_stage,
+    connection_sequence::{process_connection_sequence, ConnectionSequenceResult, UpgradedStream},
+    errors::RdpError,
+};
 
 use ironrdp::{gcc, nego};
+
+const BUF_STREAM_SIZE: usize = 32 * 1024;
 
 pub struct InputConfig {
     pub credentials: sspi::AuthIdentity,

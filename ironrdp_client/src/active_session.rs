@@ -15,7 +15,7 @@ use ironrdp::{
 use log::warn;
 
 use crate::{
-    connection_sequence::{DesktopSizes, StaticChannels},
+    connection_sequence::ConnectionSequenceResult,
     transport::{Decoder, RdpTransport},
     utils, InputConfig, RdpError,
 };
@@ -24,25 +24,22 @@ const DESTINATION_PIXEL_FORMAT: PixelFormat = PixelFormat::RgbA32;
 
 pub fn process_active_stage(
     mut stream: impl io::BufRead + io::Write,
-    static_channels: StaticChannels,
-    global_channel_id: u16,
-    initiator_id: u16,
-    desktop_sizes: DesktopSizes,
     config: InputConfig,
+    connection_sequence_result: ConnectionSequenceResult,
 ) -> Result<(), RdpError> {
     let decoded_image = Arc::new(Mutex::new(DecodedImage::new(
-        u32::from(desktop_sizes.width),
-        u32::from(desktop_sizes.height),
+        u32::from(connection_sequence_result.desktop_sizes.width),
+        u32::from(connection_sequence_result.desktop_sizes.height),
         DESTINATION_PIXEL_FORMAT,
     )));
     let mut x224_processor = x224::Processor::new(
-        utils::swap_hashmap_kv(static_channels),
+        utils::swap_hashmap_kv(connection_sequence_result.joined_static_channels),
         config.global_channel_name.as_str(),
     );
     let mut fast_path_processor = fast_path::ProcessorBuilder {
         decoded_image,
-        global_channel_id,
-        initiator_id,
+        global_channel_id: connection_sequence_result.global_channel_id,
+        initiator_id: connection_sequence_result.initiator_id,
     }
     .build();
     let mut rdp_transport = RdpTransport::default();
