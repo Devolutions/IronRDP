@@ -7,6 +7,7 @@ pub mod rdp;
 mod basic_output;
 mod ber;
 mod per;
+mod preconnection;
 mod utils;
 mod x224;
 
@@ -14,6 +15,7 @@ pub use crate::{
     basic_output::{fast_path, surface_commands},
     mcs::{ConnectInitial, ConnectResponse, McsError, McsPdu, SendDataContext},
     nego::*,
+    preconnection::{PreconnectionPdu, PreconnectionPduError},
     rdp::{
         vc::dvc, CapabilitySet, ClientConfirmActive, ClientInfoPdu, ControlAction, DemandActive,
         ServerDemandActive, ShareControlHeader, ShareControlPdu, ShareDataHeader, ShareDataPdu,
