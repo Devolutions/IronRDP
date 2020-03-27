@@ -6,7 +6,7 @@ use log::debug;
 use sspi::internal::credssp;
 
 use super::{DataTransport, Decoder, Encoder};
-use crate::{RdpError, RdpResult};
+use crate::RdpError;
 
 const MAX_TS_REQUEST_LENGTH_BUFFER_SIZE: usize = 4;
 
@@ -17,7 +17,11 @@ impl Encoder for TsRequestTransport {
     type Item = credssp::TsRequest;
     type Error = RdpError;
 
-    fn encode(&mut self, ts_request: Self::Item, mut stream: impl io::Write) -> RdpResult<()> {
+    fn encode(
+        &mut self,
+        ts_request: Self::Item,
+        mut stream: impl io::Write,
+    ) -> Result<(), RdpError> {
         let mut buf = BytesMut::with_capacity(ts_request.buffer_len() as usize);
         buf.resize(ts_request.buffer_len() as usize, 0x00);
 
@@ -36,7 +40,7 @@ impl Decoder for TsRequestTransport {
     type Item = credssp::TsRequest;
     type Error = RdpError;
 
-    fn decode(&mut self, mut stream: impl io::Read) -> RdpResult<Self::Item> {
+    fn decode(&mut self, mut stream: impl io::Read) -> Result<Self::Item, RdpError> {
         let mut buf = BytesMut::with_capacity(MAX_TS_REQUEST_LENGTH_BUFFER_SIZE);
         buf.resize(MAX_TS_REQUEST_LENGTH_BUFFER_SIZE, 0x00);
         stream.read_exact(&mut buf)?;
@@ -55,7 +59,7 @@ impl Decoder for TsRequestTransport {
 pub struct EarlyUserAuthResult;
 
 impl EarlyUserAuthResult {
-    pub fn read(mut stream: impl io::Read) -> RdpResult<credssp::EarlyUserAuthResult> {
+    pub fn read(mut stream: impl io::Read) -> Result<credssp::EarlyUserAuthResult, RdpError> {
         let mut buf = BytesMut::with_capacity(credssp::EARLY_USER_AUTH_RESULT_PDU_SIZE);
         buf.resize(credssp::EARLY_USER_AUTH_RESULT_PDU_SIZE, 0x00);
         stream.read_exact(&mut buf)?;
@@ -67,10 +71,10 @@ impl EarlyUserAuthResult {
 }
 
 pub fn connect(
-    mut stream: impl io::BufRead + io::Write,
+    mut stream: impl io::Read + io::Write,
     security_protocol: nego::SecurityProtocol,
     username: String,
-) -> RdpResult<(DataTransport, nego::SecurityProtocol)> {
+) -> Result<(DataTransport, nego::SecurityProtocol), RdpError> {
     let selected_protocol = process_negotiation(
         &mut stream,
         Some(nego::NegoData::Cookie(username)),
@@ -83,12 +87,12 @@ pub fn connect(
 }
 
 fn process_negotiation(
-    mut stream: impl io::BufRead + io::Write,
+    mut stream: impl io::Read + io::Write,
     nego_data: Option<nego::NegoData>,
     protocol: nego::SecurityProtocol,
     flags: nego::RequestFlags,
     src_ref: u16,
-) -> RdpResult<nego::SecurityProtocol> {
+) -> Result<nego::SecurityProtocol, RdpError> {
     let connection_request = nego::Request {
         nego_data,
         flags,

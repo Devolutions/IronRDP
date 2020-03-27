@@ -1,7 +1,13 @@
 mod user_info;
 
-use std::{collections::HashMap, io, iter};
+use std::{
+    collections::HashMap,
+    io::{self},
+    iter,
+    net::SocketAddr,
+};
 
+use bufstream::BufStream;
 use bytes::BytesMut;
 use ironrdp::{
     nego, rdp,
@@ -16,43 +22,129 @@ use ironrdp::{
     },
     PduParsing,
 };
-use log::{debug, info, trace};
+use log::{debug, info, trace, warn};
 use ring::rand::SecureRandom;
-use rustls::{internal::msgs::handshake::CertificatePayload, Session};
 use sspi::internal::credssp;
 
-use crate::{config::Config, transport::*, utils, RdpError, RdpResult};
+use crate::{transport::*, InputConfig, RdpError, BUF_STREAM_SIZE};
 
 pub type StaticChannels = HashMap<String, u16>;
-
-pub const GLOBAL_CHANNEL_NAME: &str = "GLOBAL";
-pub const USER_CHANNEL_NAME: &str = "USER";
 
 pub struct DesktopSizes {
     pub width: u16,
     pub height: u16,
 }
 
-pub fn process_cred_ssp<'a, S, T>(
-    mut tls_stream: &mut bufstream::BufStream<rustls::Stream<'a, S, T>>,
-    credentials: sspi::AuthIdentity,
-) -> RdpResult<()>
+pub struct ConnectionSequenceResult {
+    pub desktop_sizes: DesktopSizes,
+    pub joined_static_channels: StaticChannels,
+    pub global_channel_id: u16,
+    pub initiator_id: u16,
+}
+
+pub struct UpgradedStream<S>
 where
-    S: 'a + Session + Sized,
-    T: 'a + io::Read + io::Write + Sized,
+    S: io::Read + io::Write,
 {
-    let cert: CertificatePayload = tls_stream
-        .get_ref()
-        .sess
-        .get_peer_certificates()
-        .ok_or_else(|| RdpError::TlsConnectorError(rustls::TLSError::NoCertificatesPresented))?;
+    pub stream: S,
+    pub server_public_key: Vec<u8>,
+}
 
-    let server_tls_pubkey = utils::get_tls_peer_pubkey(cert[0].as_ref().to_vec())?;
+pub fn process_connection_sequence<F, S, US>(
+    stream: S,
+    routing_addr: &SocketAddr,
+    config: &InputConfig,
+    upgrade_stream: F,
+) -> Result<(ConnectionSequenceResult, BufStream<US>), RdpError>
+where
+    S: io::Read + io::Write,
+    US: io::Read + io::Write,
+    F: FnOnce(S) -> Result<UpgradedStream<US>, RdpError>,
+{
+    let mut stream = BufStream::new(stream);
 
+    let (mut transport, selected_protocol) = connect(
+        &mut stream,
+        config.security_protocol,
+        config.credentials.username.clone(),
+    )?;
+
+    let stream = stream.into_inner().map_err(io::Error::from)?;
+    let UpgradedStream {
+        stream,
+        server_public_key,
+    } = upgrade_stream(stream)?;
+    let mut stream = BufStream::with_capacities(BUF_STREAM_SIZE, BUF_STREAM_SIZE, stream);
+
+    if selected_protocol.contains(nego::SecurityProtocol::HYBRID)
+        || selected_protocol.contains(nego::SecurityProtocol::HYBRID_EX)
+    {
+        process_cred_ssp(&mut stream, config.credentials.clone(), server_public_key)?;
+
+        if selected_protocol.contains(nego::SecurityProtocol::HYBRID_EX) {
+            if let credssp::EarlyUserAuthResult::AccessDenied =
+                EarlyUserAuthResult::read(&mut stream)?
+            {
+                return Err(RdpError::AccessDenied);
+            }
+        }
+    }
+
+    let static_channels =
+        process_mcs_connect(&mut stream, &mut transport, &config, selected_protocol)?;
+
+    let mut transport = McsTransport::new(transport);
+    let joined_static_channels =
+        process_mcs(&mut stream, &mut transport, static_channels, &config)?;
+    debug!("Joined static active_session: {:?}", joined_static_channels);
+
+    let global_channel_id = *joined_static_channels
+        .get(config.global_channel_name.as_str())
+        .expect("global channel must be added");
+    let initiator_id = *joined_static_channels
+        .get(config.user_channel_name.as_str())
+        .expect("user channel must be added");
+
+    let mut transport = SendDataContextTransport::new(transport, initiator_id, global_channel_id);
+    send_client_info(&mut stream, &mut transport, &config, &routing_addr)?;
+
+    match process_server_license_exchange(&mut stream, &mut transport, &config, global_channel_id) {
+        Err(RdpError::ServerLicenseError(rdp::RdpError::ServerLicenseError(
+            rdp::server_license::ServerLicenseError::UnexpectedValidClientError(_),
+        ))) => {
+            warn!("The server has returned STATUS_VALID_CLIENT unexpectedly");
+        }
+        Err(error) => return Err(error),
+        Ok(_) => (),
+    }
+
+    let mut transport =
+        ShareControlHeaderTransport::new(transport, initiator_id, global_channel_id);
+    let desktop_sizes = process_capability_sets(&mut stream, &mut transport, &config)?;
+
+    let mut transport = ShareDataHeaderTransport::new(transport);
+    process_finalization(&mut stream, &mut transport, initiator_id)?;
+
+    Ok((
+        ConnectionSequenceResult {
+            desktop_sizes,
+            joined_static_channels,
+            global_channel_id,
+            initiator_id,
+        },
+        stream,
+    ))
+}
+
+pub fn process_cred_ssp(
+    mut tls_stream: impl io::Read + io::Write,
+    credentials: sspi::AuthIdentity,
+    server_public_key: Vec<u8>,
+) -> Result<(), RdpError> {
     let mut transport = TsRequestTransport::default();
 
     let mut cred_ssp_client = credssp::CredSspClient::new(
-        server_tls_pubkey,
+        server_public_key,
         credentials,
         credssp::CredSspMode::WithCredentials,
     )
@@ -83,11 +175,11 @@ where
 }
 
 pub fn process_mcs_connect(
-    mut stream: impl io::BufRead + io::Write,
+    mut stream: impl io::Read + io::Write,
     transport: &mut DataTransport,
-    config: &Config,
+    config: &InputConfig,
     selected_protocol: nego::SecurityProtocol,
-) -> RdpResult<StaticChannels> {
+) -> Result<StaticChannels, RdpError> {
     let connect_initial = ironrdp::ConnectInitial::with_gcc_blocks(user_info::create_gcc_blocks(
         &config,
         selected_protocol,
@@ -136,7 +228,7 @@ pub fn process_mcs_connect(
         .map(|channel| channel.name)
         .zip(static_channel_ids.into_iter())
         .chain(iter::once((
-            GLOBAL_CHANNEL_NAME.to_string(),
+            config.global_channel_name.clone(),
             global_channel_id,
         )))
         .collect::<StaticChannels>();
@@ -145,10 +237,11 @@ pub fn process_mcs_connect(
 }
 
 pub fn process_mcs(
-    mut stream: impl io::BufRead + io::Write,
+    mut stream: impl io::Read + io::Write,
     transport: &mut McsTransport,
     mut static_channels: StaticChannels,
-) -> RdpResult<StaticChannels> {
+    config: &InputConfig,
+) -> Result<StaticChannels, RdpError> {
     let erect_domain_request = ironrdp::mcs::ErectDomainPdu {
         sub_height: 0,
         sub_interval: 0,
@@ -178,7 +271,7 @@ pub fn process_mcs(
         debug!("Got MCS Attach User Confirm PDU: {:?}", attach_user_confirm);
 
         static_channels.insert(
-            USER_CHANNEL_NAME.to_string(),
+            config.user_channel_name.clone(),
             attach_user_confirm.initiator_id,
         );
 
@@ -234,11 +327,12 @@ pub fn process_mcs(
 }
 
 pub fn send_client_info(
-    stream: impl io::BufRead + io::Write,
+    stream: impl io::Read + io::Write,
     transport: &mut SendDataContextTransport,
-    config: &Config,
-) -> RdpResult<()> {
-    let client_info_pdu = user_info::create_client_info_pdu(config)?;
+    config: &InputConfig,
+    routing_addr: &SocketAddr,
+) -> Result<(), RdpError> {
+    let client_info_pdu = user_info::create_client_info_pdu(config, routing_addr)?;
     debug!("Send Client Info PDU: {:?}", client_info_pdu);
     let mut pdu = Vec::with_capacity(client_info_pdu.buffer_length());
     client_info_pdu
@@ -250,11 +344,11 @@ pub fn send_client_info(
 }
 
 pub fn process_server_license_exchange(
-    mut stream: impl io::BufRead + io::Write,
+    mut stream: impl io::Read + io::Write,
     transport: &mut SendDataContextTransport,
-    config: &Config,
+    config: &InputConfig,
     global_channel_id: u16,
-) -> RdpResult<()> {
+) -> Result<(), RdpError> {
     let channel_ids = transport.decode(&mut stream)?;
     check_global_id(channel_ids, global_channel_id)?;
 
@@ -288,8 +382,8 @@ pub fn process_server_license_exchange(
                 &license_request,
                 client_random.as_slice(),
                 premaster_secret.as_slice(),
-                &config.input.credentials.username,
-                &config.input.credentials.domain.as_deref().unwrap_or(""),
+                &config.credentials.username,
+                &config.credentials.domain.as_deref().unwrap_or(""),
             )
             .map_err(|err| {
                 RdpError::IOError(io::Error::new(
@@ -334,7 +428,7 @@ pub fn process_server_license_exchange(
 
     let challenge_response = ClientPlatformChallengeResponse::from_server_platform_challenge(
         &challenge,
-        &config.input.credentials.domain.as_deref().unwrap_or(""),
+        &config.credentials.domain.as_deref().unwrap_or(""),
         &encryption_data,
     )
     .map_err(|err| {
@@ -385,10 +479,10 @@ pub fn process_server_license_exchange(
 }
 
 pub fn process_capability_sets(
-    mut stream: impl io::BufRead + io::Write,
+    mut stream: impl io::Read + io::Write,
     transport: &mut ShareControlHeaderTransport,
-    config: &Config,
-) -> RdpResult<DesktopSizes> {
+    config: &InputConfig,
+) -> Result<DesktopSizes, RdpError> {
     let share_control_pdu = transport.decode(&mut stream)?;
     let capability_sets =
         if let ironrdp::ShareControlPdu::ServerDemandActive(server_demand_active) =
@@ -437,10 +531,10 @@ pub fn process_capability_sets(
 }
 
 pub fn process_finalization(
-    mut stream: impl io::BufRead + io::Write,
+    mut stream: impl io::Read + io::Write,
     transport: &mut ShareDataHeaderTransport,
     initiator_id: u16,
-) -> RdpResult<()> {
+) -> Result<(), RdpError> {
     use ironrdp::rdp::{
         ControlAction, ControlPdu, FontPdu, SequenceFlags, ShareDataPdu, SynchronizePdu,
     };

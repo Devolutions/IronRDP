@@ -13,21 +13,23 @@ use crate::{
         Decoder, DynamicVirtualChannelTransport, Encoder, SendDataContextTransport,
         ShareControlHeaderTransport, ShareDataHeaderTransport, StaticVirtualChannelTransport,
     },
-    RdpError, RdpResult, GLOBAL_CHANNEL_NAME,
+    RdpError,
 };
 
 const RDP8_GRAPHICS_PIPELINE_NAME: &str = "Microsoft::Windows::RDS::Graphics";
 
-pub struct Processor {
+pub struct Processor<'a> {
     static_channels: HashMap<u16, String>,
     dynamic_channels: HashMap<u32, DynamicChannel>,
+    global_channel_name: &'a str,
 }
 
-impl Processor {
-    pub fn new(static_channels: HashMap<u16, String>) -> Self {
+impl<'a> Processor<'a> {
+    pub fn new(static_channels: HashMap<u16, String>, global_channel_name: &'a str) -> Self {
         Self {
             static_channels,
             dynamic_channels: HashMap::new(),
+            global_channel_name,
         }
     }
 
@@ -35,7 +37,7 @@ impl Processor {
         &mut self,
         mut stream: impl io::BufRead + io::Write,
         data: Data,
-    ) -> RdpResult<()> {
+    ) -> Result<(), RdpError> {
         let mut transport = SendDataContextTransport::default();
         transport
             .mcs_transport
@@ -58,7 +60,7 @@ impl Processor {
 
                 self.process_dvc_message(&mut stream, transport)
             }
-            Some(GLOBAL_CHANNEL_NAME) => {
+            Some(name) if name == self.global_channel_name => {
                 let transport = ShareDataHeaderTransport::new(ShareControlHeaderTransport::new(
                     transport,
                     channel_ids.initiator_id,
@@ -76,7 +78,7 @@ impl Processor {
         &mut self,
         mut stream: impl io::BufRead + io::Write,
         mut transport: DynamicVirtualChannelTransport,
-    ) -> RdpResult<()> {
+    ) -> Result<(), RdpError> {
         match transport.decode(&mut stream)? {
             dvc::ServerPdu::CapabilitiesRequest(caps_request) => {
                 debug!("Got DVC Capabilities Request PDU: {:?}", caps_request);
@@ -198,7 +200,7 @@ impl Processor {
 fn process_session_info(
     mut stream: impl io::BufRead + io::Write,
     mut transport: ShareDataHeaderTransport,
-) -> RdpResult<()> {
+) -> Result<(), RdpError> {
     let share_data_pdu = transport.decode(&mut stream)?;
 
     if let ShareDataPdu::SaveSessionInfo(session_info) = share_data_pdu {

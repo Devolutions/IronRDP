@@ -8,7 +8,15 @@ homepage = "https://github.com/Devolutions/IronRDP"
 repository = "https://github.com/Devolutions/IronRDP"
 authors = ["Marc-André Moreau <mamoreau@devolutions.net>",
            "Vladyslav Hordiienko <hord.vlad@gmail.com"]
-keywords = ["rdp", "client", "remote", "desktop", "protocol"]
+keywords = ["rdp", "client", "remote", "desktop", "protocol", "gfx", "rfx"]
+
+[lib]
+name = "ironrdp_client"
+path = "src/lib.rs"
+
+[[bin]]
+name = "ironrdp_client_app"
+path = "src/main.rs"
 
 [dependencies]
 ironrdp = { path = "../ironrdp" }
