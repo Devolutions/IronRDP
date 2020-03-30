@@ -174,7 +174,8 @@ fn create_optional_core_data(
         supported_color_depths: Some(SupportedColorDepths::all()),
         early_capability_flags: Some(
             ClientEarlyCapabilityFlags::VALID_CONNECTION_TYPE
-                | ClientEarlyCapabilityFlags::WANT_32_BPP_SESSION,
+                | ClientEarlyCapabilityFlags::WANT_32_BPP_SESSION
+                | ClientEarlyCapabilityFlags::SUPPORT_ERR_INFO_PDU,
         ),
         dig_product_id: Some(config.dig_product_id.clone()),
         connection_type: Some(ConnectionType::Lan),

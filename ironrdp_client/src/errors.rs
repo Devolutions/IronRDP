@@ -76,6 +76,8 @@ pub enum RdpError {
         _0
     )]
     UnexpectedFastPathUpdate(ironrdp::fast_path::UpdateCode),
+    #[fail(display = "server error: {}", _0)]
+    ServerError(String),
 }
 
 impl From<io::Error> for RdpError {

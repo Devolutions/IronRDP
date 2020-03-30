@@ -18,7 +18,7 @@ use ironrdp::{
             InitialServerLicenseMessage, ServerPlatformChallenge, ServerUpgradeLicense,
             PREMASTER_SECRET_SIZE, RANDOM_NUMBER_SIZE,
         },
-        SERVER_CHANNEL_ID,
+        ErrorInfo, ServerSetErrorInfoPdu, SERVER_CHANNEL_ID,
     },
     PduParsing,
 };
@@ -27,6 +27,7 @@ use ring::rand::SecureRandom;
 use sspi::internal::credssp;
 
 use crate::{transport::*, InputConfig, RdpError, BUF_STREAM_SIZE};
+use ironrdp::rdp::ProtocolIndependentCode;
 
 pub type StaticChannels = HashMap<String, u16>;
 
@@ -601,6 +602,15 @@ pub fn process_finalization(
                 FinalizationOrder::Font
             }
             (FinalizationOrder::Font, ShareDataPdu::FontMap(_)) => FinalizationOrder::Finished,
+            (
+                order,
+                ShareDataPdu::ServerSetErrorInfo(ServerSetErrorInfoPdu(
+                    ErrorInfo::ProtocolIndependentCode(ProtocolIndependentCode::None),
+                )),
+            ) => order,
+            (_, ShareDataPdu::ServerSetErrorInfo(ServerSetErrorInfoPdu(e))) => {
+                return Err(RdpError::ServerError(e.description()));
+            }
             (order, pdu) => {
                 return Err(RdpError::UnexpectedPdu(format!(
                     "Expected Server {:?} PDU, got invalid PDU: {:?}",
