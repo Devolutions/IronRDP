@@ -9,6 +9,7 @@ pub mod vc;
 mod client_info;
 mod finalization_messages;
 mod headers;
+mod server_error_info;
 
 pub use self::{
     capability_sets::{
@@ -27,6 +28,11 @@ pub use self::{
         BasicSecurityHeader, BasicSecurityHeaderFlags, CompressionFlags, ShareControlHeader,
         ShareControlPdu, ShareControlPduType, ShareDataHeader, ShareDataPdu, ShareDataPduType,
         StreamPriority, BASIC_SECURITY_HEADER_SIZE,
+    },
+    server_error_info::{
+        ErrorInfo, ProtocolIndependentCode, ProtocolIndependentConnectionBrokerCode,
+        ProtocolIndependentLicensingCode, RdpSpecificCode, ServerSetErrorInfoError,
+        ServerSetErrorInfoPdu,
     },
 };
 
@@ -106,6 +112,8 @@ pub enum RdpError {
     UnexpectedShareDataPdu(ShareDataPduType),
     #[fail(display = "Save session info PDU error: {}", _0)]
     SaveSessionInfoError(session_info::SessionError),
+    #[fail(display = "Server set error info PDU error: {}", _0)]
+    ServerSetErrorInfoError(ServerSetErrorInfoError),
 }
 
 impl_from_error!(io::Error, RdpError, RdpError::IOError);
@@ -121,6 +129,11 @@ impl_from_error!(
     session_info::SessionError,
     RdpError,
     RdpError::SaveSessionInfoError
+);
+impl_from_error!(
+    ServerSetErrorInfoError,
+    RdpError,
+    RdpError::ServerSetErrorInfoError
 );
 
 impl From<RdpError> for io::Error {

@@ -16,6 +16,7 @@ fuzz_target!(|data: &[u8]| {
     let _ = CapabilitySet::from_buffer(data);
     let _ = ShareControlHeader::from_buffer(data);
     let _ = PreconnectionPdu::from_buffer(data);
+    let _ = ServerSetErrorInfoPdu::from_buffer(data);
 
     let _ = gcc::ClientGccBlocks::from_buffer(data);
     let _ = gcc::ServerGccBlocks::from_buffer(data);
