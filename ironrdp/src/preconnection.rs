@@ -53,6 +53,13 @@ impl PduBufferParsing<'_> for PreconnectionPdu {
             Version::V1 => None,
             Version::V2 => {
                 let size = buffer.read_u16::<LittleEndian>()? as usize;
+                if buffer.len() < size * 2 {
+                    return Err(PreconnectionPduError::InvalidDataLength {
+                        expected: size * 2,
+                        actual: buffer.len(),
+                    });
+                }
+
                 let payload_bytes = buffer.split_to(size * 2);
                 let payload = utils::bytes_to_utf16_string(payload_bytes)
                     .trim_end_matches('\0')
@@ -154,6 +161,15 @@ mod tests {
         0x01, 0x00, 0x00, 0x00, // -> RDP_PRECONNECTION_PDU_V1::Version = 1
         0xeb, 0x99, 0xc6, 0xee, // -> RDP_PRECONNECTION_PDU_V1::Id = 0xEEC699EB = 4005992939
     ];
+    const PRECONNECTION_PDU_V2_LARGE_PAYLOAD_SIZE_BUFFER: [u8; 32] = [
+        0x20, 0x00, 0x00, 0x00, // -> RDP_PRECONNECTION_PDU_V1::cbSize = 0x20 = 32 bytes
+        0x00, 0x00, 0x00, 0x00, // -> RDP_PRECONNECTION_PDU_V1::Flags = 0
+        0x02, 0x00, 0x00, 0x00, // -> RDP_PRECONNECTION_PDU_V1::Version = 2
+        0x00, 0x00, 0x00, 0x00, // -> RDP_PRECONNECTION_PDU_V1::Id = 0
+        0xff, 0x00, //       -> RDP_PRECONNECTION_PDU_V2::cchPCB = 0xff
+        0x54, 0x00, 0x65, 0x00, 0x73, 0x00, 0x74, 0x00, 0x56, 0x00, 0x4d, 0x00, 0x00,
+        0x00, // -> RDP_PRECONNECTION_PDU_V2::wszPCB -> "TestVM" (including null terminator)
+    ];
     const PRECONNECTION_PDU_V2_BUFFER: [u8; 32] = [
         0x20, 0x00, 0x00, 0x00, // -> RDP_PRECONNECTION_PDU_V1::cbSize = 0x20 = 32 bytes
         0x00, 0x00, 0x00, 0x00, // -> RDP_PRECONNECTION_PDU_V1::Flags = 0
@@ -217,6 +233,15 @@ mod tests {
             PRECONNECTION_PDU_V1_BUFFER.len(),
             PRECONNECTION_PDU_V1.buffer_length()
         );
+    }
+
+    #[test]
+    fn from_buffer_for_preconnection_pdu_v2_returns_error_on_payload_size_greater_then_available_data(
+    ) {
+        assert!(PreconnectionPdu::from_buffer(
+            PRECONNECTION_PDU_V2_LARGE_PAYLOAD_SIZE_BUFFER.as_ref()
+        )
+        .is_err());
     }
 
     #[test]
