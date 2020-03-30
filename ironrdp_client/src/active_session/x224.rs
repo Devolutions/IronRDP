@@ -3,7 +3,10 @@ mod gfx;
 use std::{cmp, collections::HashMap, io};
 
 use ironrdp::{
-    rdp::vc::{self, dvc},
+    rdp::{
+        vc::{self, dvc},
+        ErrorInfo, ProtocolIndependentCode, ServerSetErrorInfoPdu,
+    },
     Data, ShareDataPdu,
 };
 use log::{debug, error};
@@ -67,7 +70,7 @@ impl<'a> Processor<'a> {
                     channel_ids.channel_id,
                 ));
 
-                process_session_info(&mut stream, transport)
+                process_global_channel_pdu(&mut stream, transport)
             }
             Some(_) => Err(RdpError::UnexpectedChannel(channel_ids.channel_id)),
             None => panic!("Channel with {} ID must be added", channel_ids.channel_id),
@@ -197,20 +200,32 @@ impl<'a> Processor<'a> {
     }
 }
 
-fn process_session_info(
+fn process_global_channel_pdu(
     mut stream: impl io::BufRead + io::Write,
     mut transport: ShareDataHeaderTransport,
 ) -> Result<(), RdpError> {
     let share_data_pdu = transport.decode(&mut stream)?;
 
-    if let ShareDataPdu::SaveSessionInfo(session_info) = share_data_pdu {
-        debug!("Got Session Save Info PDU: {:?}", session_info);
-        Ok(())
-    } else {
-        Err(RdpError::UnexpectedPdu(format!(
+    match share_data_pdu {
+        ShareDataPdu::SaveSessionInfo(session_info) => {
+            debug!("Got Session Save Info PDU: {:?}", session_info);
+
+            Ok(())
+        }
+        ShareDataPdu::ServerSetErrorInfo(ServerSetErrorInfoPdu(
+            ErrorInfo::ProtocolIndependentCode(ProtocolIndependentCode::None),
+        )) => {
+            debug!("Received None server error");
+
+            Ok(())
+        }
+        ShareDataPdu::ServerSetErrorInfo(ServerSetErrorInfoPdu(e)) => {
+            Err(RdpError::ServerError(e.description()))
+        }
+        _ => Err(RdpError::UnexpectedPdu(format!(
             "Expected Session Save Info PDU, got: {:?}",
             share_data_pdu.as_short_name()
-        )))
+        ))),
     }
 }
 

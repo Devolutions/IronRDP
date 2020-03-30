@@ -7,7 +7,7 @@ use num_traits::{FromPrimitive, ToPrimitive};
 
 use super::{
     client_info, ClientConfirmActive, ControlPdu, MonitorLayoutPdu, RdpError, ServerDemandActive,
-    SynchronizePdu,
+    ServerSetErrorInfoPdu, SynchronizePdu,
 };
 use crate::{
     codecs::rfx::FrameAcknowledgePdu,
@@ -262,6 +262,7 @@ pub enum ShareDataPdu {
     MonitorLayout(MonitorLayoutPdu),
     SaveSessionInfo(SaveSessionInfoPdu),
     FrameAcknowledge(FrameAcknowledgePdu),
+    ServerSetErrorInfo(ServerSetErrorInfoPdu),
 }
 
 impl ShareDataPdu {
@@ -274,6 +275,7 @@ impl ShareDataPdu {
             ShareDataPdu::MonitorLayout(_) => "Monitor Layout PDU",
             ShareDataPdu::SaveSessionInfo(_) => "Save session info PDU",
             ShareDataPdu::FrameAcknowledge(_) => "Frame Acknowledge PDU",
+            ShareDataPdu::ServerSetErrorInfo(_) => "Server Set Error Info PDU",
         }
     }
 }
@@ -305,6 +307,9 @@ impl ShareDataPdu {
             ShareDataPduType::FrameAcknowledgePdu => Ok(ShareDataPdu::FrameAcknowledge(
                 FrameAcknowledgePdu::from_buffer(&mut stream)?,
             )),
+            ShareDataPduType::SetErrorInfoPdu => Ok(ShareDataPdu::ServerSetErrorInfo(
+                ServerSetErrorInfoPdu::from_buffer(&mut stream)?,
+            )),
             ShareDataPduType::Update
             | ShareDataPduType::Pointer
             | ShareDataPduType::Input
@@ -318,7 +323,6 @@ impl ShareDataPdu {
             | ShareDataPduType::BitmapCacheErrorPdu
             | ShareDataPduType::SetKeyboardImeStatus
             | ShareDataPduType::OffscreenCacheErrorPdu
-            | ShareDataPduType::SetErrorInfoPdu
             | ShareDataPduType::DrawNineGridErrorPdu
             | ShareDataPduType::DrawGdiPusErrorPdu
             | ShareDataPduType::ArcStatusPdu
@@ -339,6 +343,9 @@ impl ShareDataPdu {
             ShareDataPdu::FrameAcknowledge(pdu) => {
                 pdu.to_buffer(&mut stream).map_err(RdpError::from)
             }
+            ShareDataPdu::ServerSetErrorInfo(pdu) => {
+                pdu.to_buffer(&mut stream).map_err(RdpError::from)
+            }
         }
     }
     pub fn buffer_length(&self) -> usize {
@@ -349,6 +356,7 @@ impl ShareDataPdu {
             ShareDataPdu::MonitorLayout(pdu) => pdu.buffer_length(),
             ShareDataPdu::SaveSessionInfo(pdu) => pdu.buffer_length(),
             ShareDataPdu::FrameAcknowledge(pdu) => pdu.buffer_length(),
+            ShareDataPdu::ServerSetErrorInfo(pdu) => pdu.buffer_length(),
         }
     }
     pub fn share_header_type(&self) -> ShareDataPduType {
@@ -360,6 +368,7 @@ impl ShareDataPdu {
             ShareDataPdu::MonitorLayout(_) => ShareDataPduType::MonitorLayoutPdu,
             ShareDataPdu::SaveSessionInfo(_) => ShareDataPduType::SaveSessionInfo,
             ShareDataPdu::FrameAcknowledge(_) => ShareDataPduType::FrameAcknowledgePdu,
+            ShareDataPdu::ServerSetErrorInfo(_) => ShareDataPduType::SetErrorInfoPdu,
         }
     }
 }
