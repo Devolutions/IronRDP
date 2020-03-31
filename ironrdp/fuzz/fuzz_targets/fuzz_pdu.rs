@@ -60,4 +60,7 @@ fuzz_target!(|data: &[u8]| {
     let _ = codecs::rfx::CodecVersionsPdu::from_buffer(data);
     let _ = codecs::rfx::ChannelsPdu::from_buffer(data);
     let _ = codecs::rfx::Channel::from_buffer(data);
+
+    let _ = input::InputEventPdu::from_buffer(data);
+    let _ = input::InputEvent::from_buffer(data);
 });
