@@ -25,22 +25,18 @@ impl PduBufferParsing<'_> for PreconnectionPdu {
     type Error = PreconnectionPduError;
 
     fn from_buffer_consume(buffer: &mut &[u8]) -> Result<Self, Self::Error> {
+        if buffer.len() < PRECONNECTION_PDU_V1_SIZE {
+            return Err(PreconnectionPduError::IoError(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "More data required to parse Preconnection PDU header",
+            )));
+        }
+
         let size = buffer.read_u32::<LittleEndian>()? as usize;
 
-        let expected = size
-            .checked_sub(4)
-            .ok_or(PreconnectionPduError::InvalidDataLength {
-                expected: PRECONNECTION_PDU_V1_SIZE,
-                actual: size,
-            })?;
-
-        if buffer.len() < expected {
-            return Err(PreconnectionPduError::InvalidDataLength {
-                expected,
-                actual: buffer.len(),
-            });
+        if (size % 2 != 0) || (size < PRECONNECTION_PDU_V1_SIZE) {
+            return Err(PreconnectionPduError::InvalidHeader);
         }
-        let mut buffer = buffer.split_to(expected);
 
         buffer.read_u32::<LittleEndian>()?; // flags
         let version = buffer.read_u32::<LittleEndian>()?;
@@ -48,6 +44,17 @@ impl PduBufferParsing<'_> for PreconnectionPdu {
             Version::from_u32(version).ok_or(PreconnectionPduError::UnexpectedVersion(version))?;
 
         let id = buffer.read_u32::<LittleEndian>()?;
+
+        let remaining_size = size - PRECONNECTION_PDU_V1_SIZE;
+
+        if buffer.len() < remaining_size {
+            return Err(PreconnectionPduError::IoError(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "More data required to parse Preconnection PDU payload",
+            )));
+        }
+
+        let mut buffer = buffer.split_to(remaining_size);
 
         let payload = match version {
             Version::V1 => None,
@@ -122,11 +129,8 @@ impl From<&PreconnectionPdu> for Version {
 pub enum PreconnectionPduError {
     #[fail(display = "IO error: {}", _0)]
     IoError(#[fail(cause)] io::Error),
-    #[fail(
-        display = "Input buffer is shorter then the data length: {} < {}",
-        actual, expected
-    )]
-    InvalidDataLength { expected: usize, actual: usize },
+    #[fail(display = "Provided data is not an valid preconnection Pdu")]
+    InvalidHeader,
     #[fail(display = "Unexpected version: {}", _0)]
     UnexpectedVersion(u32),
 }
