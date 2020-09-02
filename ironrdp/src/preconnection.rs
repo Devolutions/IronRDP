@@ -16,6 +16,7 @@ const PRECONNECTION_PDU_V1_SIZE: usize = 16;
 #[derive(Debug, Clone, PartialEq)]
 pub struct PreconnectionPdu {
     pub id: u32,
+    pub cch_pcb: u16,
     pub payload: Option<String>,
 }
 
@@ -56,27 +57,24 @@ impl PduBufferParsing<'_> for PreconnectionPdu {
 
         let mut buffer = buffer.split_to(remaining_size);
 
-        let payload = match version {
-            Version::V1 => None,
+        let (cch_pcb, payload) = match version {
+            Version::V1 => (0, None),
             Version::V2 => {
-                let size = buffer.read_u16::<LittleEndian>()? as usize;
-                if buffer.len() < size * 2 {
-                    return Err(PreconnectionPduError::InvalidDataLength {
-                        expected: size * 2,
-                        actual: buffer.len(),
-                    });
+                let cch_pcb = buffer.read_u16::<LittleEndian>()?;
+                if buffer.len() < usize::from(cch_pcb) * 2 {
+                    return Err(PreconnectionPduError::InvalidHeader);
                 }
 
-                let payload_bytes = buffer.split_to(size * 2);
+                let payload_bytes = buffer.split_to(usize::from(cch_pcb) * 2);
                 let payload = utils::bytes_to_utf16_string(payload_bytes)
                     .trim_end_matches('\0')
                     .into();
 
-                Some(payload)
+                (cch_pcb, Some(payload))
             }
         };
 
-        Ok(Self { id, payload })
+        Ok(Self { id, cch_pcb, payload })
     }
 
     fn to_buffer_consume(&self, buffer: &mut &mut [u8]) -> Result<(), Self::Error> {
@@ -100,12 +98,18 @@ impl PduBufferParsing<'_> for PreconnectionPdu {
     }
 
     fn buffer_length(&self) -> usize {
-        PRECONNECTION_PDU_V1_SIZE
-            + self
-                .payload
-                .as_ref()
-                .map(|p| 2 + (p.len() + 1) * 2)
-                .unwrap_or(0)
+        let cch_pcb = if self.cch_pcb > 0 {
+            self.cch_pcb as usize
+        } else {
+            self.payload.as_ref().map(|p| (p.len() + 1)).unwrap_or(0)
+        };
+
+        let version: Version = self.into();
+
+        match version {
+            Version::V1 => PRECONNECTION_PDU_V1_SIZE,
+            Version::V2 => PRECONNECTION_PDU_V1_SIZE + 2 + (cch_pcb * 2)
+        }
     }
 }
 
@@ -186,12 +190,14 @@ mod tests {
 
     const PRECONNECTION_PDU_V1: PreconnectionPdu = PreconnectionPdu {
         id: 4_005_992_939,
+        cch_pcb: 0,
         payload: None,
     };
 
     lazy_static! {
         static ref PRECONNECTION_PDU_V2: PreconnectionPdu = PreconnectionPdu {
             id: 0,
+            cch_pcb: 7,
             payload: Some(String::from("TestVM")),
         };
     }
