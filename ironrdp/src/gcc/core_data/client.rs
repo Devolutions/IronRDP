@@ -83,7 +83,7 @@ impl PduParsing for ClientCoreData {
 
     fn from_buffer(mut buffer: impl io::Read) -> Result<Self, Self::Error> {
         let version = RdpVersion::from_u32(buffer.read_u32::<LittleEndian>()?)
-            .ok_or(CoreDataError::InvalidVersion)?;
+            .unwrap_or(RdpVersion::VUnknown);
         let desktop_width = buffer.read_u16::<LittleEndian>()?;
         let desktop_height = buffer.read_u16::<LittleEndian>()?;
         let color_depth = ColorDepth::from_u16(buffer.read_u16::<LittleEndian>()?)

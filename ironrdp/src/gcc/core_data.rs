@@ -22,6 +22,14 @@ pub enum RdpVersion {
     V10_5 = 0x0008_000A,
     V10_6 = 0x0008_000B,
     V10_7 = 0x0008_000C,
+    V10_8 = 0x0008_000D,
+
+    // future proofing
+    V10_9 = 0x0008_000E,
+    V10_10 = 0x0008_000F,
+    V10_11 = 0x0008_0010,
+    V10_12 = 0x0008_0011,
+    VUnknown = 0x0000_0000,
 }
 
 #[derive(Debug, Fail)]
