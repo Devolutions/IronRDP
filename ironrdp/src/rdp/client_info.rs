@@ -356,10 +356,10 @@ impl PduParsing for ExtendedClientOptionalInfo {
 pub struct TimezoneInfo {
     pub bias: u32,
     pub standard_name: String,
-    pub standard_date: SystemTime,
+    pub standard_date: Option<SystemTime>,
     pub standard_bias: u32,
     pub daylight_name: String,
-    pub daylight_date: SystemTime,
+    pub daylight_date: Option<SystemTime>,
     pub daylight_bias: u32,
 }
 
@@ -375,7 +375,7 @@ impl PduParsing for TimezoneInfo {
             CharacterSet::Unicode,
             false,
         )?;
-        let standard_date = SystemTime::from_buffer(&mut stream)?;
+        let standard_date = Option::<SystemTime>::from_buffer(&mut stream)?;
         let standard_bias = stream.read_u32::<LittleEndian>()?;
 
         let daylight_name = utils::read_string(
@@ -384,7 +384,7 @@ impl PduParsing for TimezoneInfo {
             CharacterSet::Unicode,
             false,
         )?;
-        let daylight_date = SystemTime::from_buffer(&mut stream)?;
+        let daylight_date = Option::<SystemTime>::from_buffer(&mut stream)?;
         let daylight_bias = stream.read_u32::<LittleEndian>()?;
 
         Ok(Self {
@@ -440,42 +440,61 @@ pub struct SystemTime {
     pub milliseconds: u16,
 }
 
-impl PduParsing for SystemTime {
+impl PduParsing for Option<SystemTime> {
     type Error = ClientInfoError;
 
     fn from_buffer(mut stream: impl io::Read) -> Result<Self, Self::Error> {
         let _year = stream.read_u16::<LittleEndian>()?; // This field MUST be set to zero.
-        let month = Month::from_u16(stream.read_u16::<LittleEndian>()?)
-            .ok_or(ClientInfoError::InvalidSystemTime)?;
-        let day_of_week = DayOfWeek::from_u16(stream.read_u16::<LittleEndian>()?)
-            .ok_or(ClientInfoError::InvalidSystemTime)?;
-        let day = DayOfWeekOccurrence::from_u16(stream.read_u16::<LittleEndian>()?)
-            .ok_or(ClientInfoError::InvalidSystemTime)?;
+        let month = stream.read_u16::<LittleEndian>()?;
+        let day_of_week = stream.read_u16::<LittleEndian>()?;
+        let day = stream.read_u16::<LittleEndian>()?;
         let hour = stream.read_u16::<LittleEndian>()?;
         let minute = stream.read_u16::<LittleEndian>()?;
         let second = stream.read_u16::<LittleEndian>()?;
         let milliseconds = stream.read_u16::<LittleEndian>()?;
 
-        Ok(Self {
-            month,
-            day_of_week,
-            day,
-            hour,
-            minute,
-            second,
-            milliseconds,
-        })
+        match (
+            Month::from_u16(month),
+            DayOfWeek::from_u16(day_of_week),
+            DayOfWeekOccurrence::from_u16(day),
+        ) {
+            (Some(month), Some(day_of_week), Some(day)) => {
+                Ok(Some(SystemTime {
+                    month,
+                    day_of_week,
+                    day,
+                    hour,
+                    minute,
+                    second,
+                    milliseconds,
+                }))
+            }
+            _ => Ok(None),
+        }
     }
 
     fn to_buffer(&self, mut stream: impl io::Write) -> Result<(), Self::Error> {
         stream.write_u16::<LittleEndian>(0)?; // year
-        stream.write_u16::<LittleEndian>(self.month.to_u16().unwrap())?;
-        stream.write_u16::<LittleEndian>(self.day_of_week.to_u16().unwrap())?;
-        stream.write_u16::<LittleEndian>(self.day.to_u16().unwrap())?;
-        stream.write_u16::<LittleEndian>(self.hour)?;
-        stream.write_u16::<LittleEndian>(self.minute)?;
-        stream.write_u16::<LittleEndian>(self.second)?;
-        stream.write_u16::<LittleEndian>(self.milliseconds)?;
+        match *self {
+            Some(SystemTime { month, day_of_week, day, hour, minute, second, milliseconds }) => {
+                stream.write_u16::<LittleEndian>(month.to_u16().unwrap())?;
+                stream.write_u16::<LittleEndian>(day_of_week.to_u16().unwrap())?;
+                stream.write_u16::<LittleEndian>(day.to_u16().unwrap())?;
+                stream.write_u16::<LittleEndian>(hour)?;
+                stream.write_u16::<LittleEndian>(minute)?;
+                stream.write_u16::<LittleEndian>(second)?;
+                stream.write_u16::<LittleEndian>(milliseconds)?;
+            }
+            None => {
+                stream.write_u16::<LittleEndian>(0)?;
+                stream.write_u16::<LittleEndian>(0)?;
+                stream.write_u16::<LittleEndian>(0)?;
+                stream.write_u16::<LittleEndian>(0)?;
+                stream.write_u16::<LittleEndian>(0)?;
+                stream.write_u16::<LittleEndian>(0)?;
+                stream.write_u16::<LittleEndian>(0)?;
+            }
+        }
 
         Ok(())
     }
@@ -594,8 +613,6 @@ pub enum ClientInfoError {
     InvalidPerformanceFlags,
     #[fail(display = "Invalid reconnect cookie field")]
     InvalidReconnectCookie,
-    #[fail(display = "Invalid system time field")]
-    InvalidSystemTime,
 }
 
 impl_from_error!(io::Error, ClientInfoError, ClientInfoError::IOError);
