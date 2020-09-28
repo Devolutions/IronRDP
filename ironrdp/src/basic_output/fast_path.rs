@@ -10,7 +10,11 @@ use failure::Fail;
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive, ToPrimitive};
 
-use super::surface_commands::{SurfaceCommand, SurfaceCommandsError, SURFACE_COMMAND_HEADER_SIZE};
+use super::{
+    bitmap::{Bitmap, BitmapError},
+    surface_commands::{SurfaceCommand, SurfaceCommandsError, SURFACE_COMMAND_HEADER_SIZE},
+};
+
 use crate::{impl_from_error, per, utils::SplitTo, PduBufferParsing, PduParsing};
 
 /// Implements the Fast-Path RDP message header PDU.
@@ -148,6 +152,7 @@ impl<'a> PduBufferParsing<'a> for FastPathUpdatePdu<'a> {
 #[derive(Debug, Clone, PartialEq)]
 pub enum FastPathUpdate<'a> {
     SurfaceCommands(Vec<SurfaceCommand<'a>>),
+    Bitmap(Bitmap<'a>),
 }
 
 impl<'a> FastPathUpdate<'a> {
@@ -171,6 +176,10 @@ impl<'a> FastPathUpdate<'a> {
 
                 Ok(Self::SurfaceCommands(commands))
             }
+            UpdateCode::Bitmap => {
+                let bitmap = Bitmap::from_buffer_consume(buffer)?;
+                Ok(Self::Bitmap(bitmap))
+            }
             _ => Err(FastPathError::UnsupportedFastPathUpdate(code)),
         }
     }
@@ -182,6 +191,9 @@ impl<'a> FastPathUpdate<'a> {
                     command.to_buffer_consume(buffer)?;
                 }
             }
+            Self::Bitmap(ref bitmap) => {
+                bitmap.to_buffer_consume(buffer)?;
+            }
         }
 
         Ok(())
@@ -192,12 +204,14 @@ impl<'a> FastPathUpdate<'a> {
             Self::SurfaceCommands(commands) => {
                 commands.iter().map(|c| c.buffer_length()).sum::<usize>()
             }
+            Self::Bitmap(bitmap) => bitmap.buffer_length(),
         }
     }
 
     pub fn as_short_name(&self) -> &str {
         match self {
             Self::SurfaceCommands(_) => "Surface Commands",
+            Self::Bitmap(_) => "Bitmap",
         }
     }
 }
@@ -222,6 +236,7 @@ impl<'a> From<&FastPathUpdate<'a>> for UpdateCode {
     fn from(update: &FastPathUpdate<'_>) -> Self {
         match update {
             FastPathUpdate::SurfaceCommands(_) => Self::SurfaceCommands,
+            FastPathUpdate::Bitmap(_) => Self::Bitmap,
         }
     }
 }
@@ -255,6 +270,8 @@ pub enum FastPathError {
     IOError(#[fail(cause)] io::Error),
     #[fail(display = "Surface Commands error: {}", _0)]
     SurfaceCommandsError(#[fail(cause)] SurfaceCommandsError),
+    #[fail(display = "Bitmap error: {}", _0)]
+    BitmapError(#[fail(cause)] BitmapError),
     /// Used in the length-related error during Fast-Path parsing.
     #[fail(display = "Received invalid Fast-Path package with 0 length")]
     NullLength { bytes_read: usize },
@@ -279,3 +296,4 @@ impl_from_error!(
     FastPathError,
     FastPathError::SurfaceCommandsError
 );
+impl_from_error!(BitmapError, FastPathError, FastPathError::BitmapError);
