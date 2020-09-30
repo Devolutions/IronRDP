@@ -191,10 +191,10 @@ impl PduParsing for PlatformChallengeResponseData {
         }
 
         let client_type = ClientType::from_u16(stream.read_u16::<LittleEndian>()?)
-            .ok_or_else(|| ServerLicenseError::InvalidChallengeResponseDataClientType)?;
+            .ok_or(ServerLicenseError::InvalidChallengeResponseDataClientType)?;
 
         let license_detail_level = LicenseDetailLevel::from_u16(stream.read_u16::<LittleEndian>()?)
-            .ok_or_else(|| ServerLicenseError::InvalidChallengeResponseDataLicenseDetail)?;
+            .ok_or(ServerLicenseError::InvalidChallengeResponseDataLicenseDetail)?;
 
         let challenge_len = stream.read_u16::<LittleEndian>()?;
         let mut challenge = vec![0u8; challenge_len as usize];

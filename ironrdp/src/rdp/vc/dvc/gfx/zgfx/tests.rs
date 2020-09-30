@@ -33,7 +33,7 @@ lazy_static! {
 //         let mut zgfx = Decompressor::new();
 //         for encode in ENCODED_ZGFX_SINGLE.iter() {
 //             zgfx.decompress(encode.as_ref(), &mut decompressed).unwrap();
-//             decompressed.resize(0, 0);
+//             decompressed.clean();
 //         }
 //     });
 // }
@@ -51,7 +51,7 @@ fn zgfx_decopresses_multiple_single_pdus() {
             "Failed to decompress encoded PDU #{}",
             i
         );
-        decompressed.resize(0, 0);
+        decompressed.clear();
     }
 }
 

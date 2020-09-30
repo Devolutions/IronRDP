@@ -503,10 +503,7 @@ pub fn process_capability_sets(
         };
     let desktop_sizes = capability_sets
         .iter()
-        .find(|c| match c {
-            CapabilitySet::Bitmap(_) => true,
-            _ => false,
-        })
+        .find(|c| matches!(c, CapabilitySet::Bitmap(_)))
         .map(|c| match c {
             CapabilitySet::Bitmap(b) => DesktopSizes {
                 width: b.desktop_width,

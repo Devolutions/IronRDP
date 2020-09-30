@@ -31,7 +31,7 @@ impl DynamicChannelDataHandler for Handler {
         &mut self,
         complete_data: Vec<u8>,
     ) -> Result<Option<Vec<u8>>, RdpError> {
-        self.decompressed_buffer.resize(0, 0);
+        self.decompressed_buffer.clear();
         self.decompressor
             .decompress(complete_data.as_slice(), &mut self.decompressed_buffer)?;
         let gfx_pdu = ServerPdu::from_buffer(self.decompressed_buffer.as_slice())?;
