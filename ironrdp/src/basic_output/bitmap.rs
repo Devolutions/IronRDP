@@ -15,6 +15,8 @@ use crate::{
 };
 
 pub const COMPRESSED_DATA_HEADER_SIZE: usize = 8;
+pub const BITMAP_DATA_MAIN_DATA_SIZE: usize = 12;
+pub const FIRST_ROW_SIZE_VALUE: u16 = 0;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Bitmap<'a> {
@@ -134,13 +136,28 @@ impl<'a> PduBufferParsing<'a> for BitmapData<'a> {
     }
 
     fn buffer_length(&self) -> usize {
-        12 + self.bitmap_data_length
+        BITMAP_DATA_MAIN_DATA_SIZE + self.bitmap_data_length
     }
 }
 impl<'a> Debug for BitmapData<'a> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "BitmapData:[{:?}, width - {}, height - {}, bits_per_pixel - {}, compression_flagss - ({:?}),{:?}\nReceived Bitmap data buffer with length - {}\n]", self.rectangle, self.width, self.height, 
-            self.bits_per_pixel, self.compression_flags, self.compressed_data_header, self.bitmap_data.len())
+        write!(
+            f,
+            "BitmapData:[{:?}, 
+            width - {}, 
+            height - {}, 
+            bits_per_pixel - {}, 
+            compression_flagss - ({:?}), 
+            compressed_data_header - {:?}
+            \nReceived Bitmap data buffer with length - {}\n]",
+            self.rectangle,
+            self.width,
+            self.height,
+            self.bits_per_pixel,
+            self.compression_flags,
+            self.compressed_data_header,
+            self.bitmap_data.len()
+        )
     }
 }
 
@@ -155,15 +172,15 @@ impl<'a> PduBufferParsing<'a> for CompressedDataHeader {
     type Error = BitmapError;
 
     fn from_buffer_consume(buffer: &mut &[u8]) -> Result<Self, Self::Error> {
-        match buffer.read_u16::<LittleEndian>()? {
-            size if size != 0 => return Err(BitmapError::InvalidFirstRowSize(size as usize)),
-            _ => {}
-        };
+        let size = buffer.read_u16::<LittleEndian>()?;
+        if size != FIRST_ROW_SIZE_VALUE {
+            return Err(BitmapError::InvalidFirstRowSize(size as usize));
+        }
 
         let main_body_size = buffer.read_u16::<LittleEndian>()?;
         let scan_width = buffer.read_u16::<LittleEndian>()?;
-        if scan_width.rem_euclid(4) != 0 {
-            return Err(BitmapError::NotDivisibleByFour);
+        if scan_width % 4 != 0 {
+            return Err(BitmapError::InvalidScanWidth);
         }
         let uncompressed_size = buffer.read_u16::<LittleEndian>()?;
 
@@ -175,7 +192,7 @@ impl<'a> PduBufferParsing<'a> for CompressedDataHeader {
     }
 
     fn to_buffer_consume(&self, buffer: &mut &mut [u8]) -> Result<(), Self::Error> {
-        buffer.write_u16::<LittleEndian>(0)?; // / FirstRowSize, must be set to 0x0000 = 0
+        buffer.write_u16::<LittleEndian>(FIRST_ROW_SIZE_VALUE)?;
         buffer.write_u16::<LittleEndian>(self.main_body_size)?;
         buffer.write_u16::<LittleEndian>(self.scan_width)?;
         buffer.write_u16::<LittleEndian>(self.uncompressed_size)?;
@@ -214,10 +231,10 @@ pub enum BitmapError {
     InvalidDataLength { actual: usize, expected: usize },
     #[fail(display = "Compression is not suppported for Bitmap data")]
     NotSupportedCompression,
-    #[fail(display = "Invalid first row size, must be 0< but got: {}", _0)]
+    #[fail(display = "Invalid first row size, must be 0, but got: {}", _0)]
     InvalidFirstRowSize(usize),
     #[fail(display = "The witdh of the bitmap must be divisible by 4")]
-    NotDivisibleByFour,
+    InvalidScanWidth,
 }
 
 impl_from_error!(io::Error, BitmapError, BitmapError::IOError);

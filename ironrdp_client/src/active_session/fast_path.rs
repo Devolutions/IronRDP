@@ -62,14 +62,14 @@ impl Processor {
             match update {
                 Ok(FastPathUpdate::SurfaceCommands(surface_commands)) => {
                     info!(
-                        "Received Surface Commands: {} pieces",
+                        "Recieved Surface Commands: {} pieces",
                         surface_commands.len()
                     );
 
                     self.process_surface_commands(&mut stream, surface_commands)?;
                 }
                 Ok(FastPathUpdate::Bitmap(bitmap)) => {
-                    info!("Recevide Bitmap: {:?}", bitmap);
+                    info!("Received Bitmap: {:?}", bitmap);
                 }
                 Err(FastPathError::UnsupportedFastPathUpdate(code))
                     if code == UpdateCode::Orders || code == UpdateCode::Palette =>
