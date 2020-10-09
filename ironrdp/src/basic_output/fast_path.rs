@@ -18,6 +18,7 @@ use crate::{impl_from_error, per, utils::SplitTo, PduBufferParsing, PduParsing};
 pub struct FastPathHeader {
     pub flags: EncryptionFlags,
     pub data_length: usize,
+    forced_long_length: bool,
 }
 
 impl FastPathHeader {
@@ -34,8 +35,14 @@ impl FastPathHeader {
             });
         }
         let data_length = length as usize - sizeof_length - 1;
+        // Detect case, when received packet has non-optimal packet length packing
+        let forced_long_length = per::sizeof_length(length as u16) != sizeof_length;
 
-        Ok(FastPathHeader { flags, data_length })
+        Ok(FastPathHeader { flags, data_length, forced_long_length })
+    }
+
+    fn minimal_buffer_length(&self) -> usize {
+        1 + per::sizeof_length(self.data_length as u16)
     }
 }
 
@@ -54,13 +61,25 @@ impl PduParsing for FastPathHeader {
         header.set_bits(6..8, self.flags.bits());
         stream.write_u8(header)?;
 
-        per::write_length(stream, (self.data_length + self.buffer_length()) as u16)?;
+        if self.forced_long_length {
+            // Preserve same layout for header as received
+            per::write_long_length(
+                stream,
+                (self.data_length + self.buffer_length()) as u16
+            )?;
+        } else {
+            per::write_length(stream, (self.data_length + self.minimal_buffer_length()) as u16)?;
+        }
 
         Ok(())
     }
 
     fn buffer_length(&self) -> usize {
-        1 + per::sizeof_length(self.data_length as u16)
+        if self.forced_long_length {
+            1 + per::SIZEOF_U16
+        } else {
+            self.minimal_buffer_length()
+        }
     }
 }
 
