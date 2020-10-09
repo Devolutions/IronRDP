@@ -38,7 +38,11 @@ impl FastPathHeader {
         // Detect case, when received packet has non-optimal packet length packing
         let forced_long_length = per::sizeof_length(length as u16) != sizeof_length;
 
-        Ok(FastPathHeader { flags, data_length, forced_long_length })
+        Ok(FastPathHeader {
+            flags,
+            data_length,
+            forced_long_length,
+        })
     }
 
     fn minimal_buffer_length(&self) -> usize {
@@ -63,12 +67,12 @@ impl PduParsing for FastPathHeader {
 
         if self.forced_long_length {
             // Preserve same layout for header as received
-            per::write_long_length(
-                stream,
-                (self.data_length + self.buffer_length()) as u16
-            )?;
+            per::write_long_length(stream, (self.data_length + self.buffer_length()) as u16)?;
         } else {
-            per::write_length(stream, (self.data_length + self.minimal_buffer_length()) as u16)?;
+            per::write_length(
+                stream,
+                (self.data_length + self.minimal_buffer_length()) as u16,
+            )?;
         }
 
         Ok(())

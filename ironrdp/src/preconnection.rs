@@ -74,7 +74,11 @@ impl PduBufferParsing<'_> for PreconnectionPdu {
             }
         };
 
-        Ok(Self { id, cch_pcb, payload })
+        Ok(Self {
+            id,
+            cch_pcb,
+            payload,
+        })
     }
 
     fn to_buffer_consume(&self, buffer: &mut &mut [u8]) -> Result<(), Self::Error> {
@@ -108,7 +112,7 @@ impl PduBufferParsing<'_> for PreconnectionPdu {
 
         match version {
             Version::V1 => PRECONNECTION_PDU_V1_SIZE,
-            Version::V2 => PRECONNECTION_PDU_V1_SIZE + 2 + (cch_pcb * 2)
+            Version::V2 => PRECONNECTION_PDU_V1_SIZE + 2 + (cch_pcb * 2),
         }
     }
 }
