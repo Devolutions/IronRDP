@@ -62,7 +62,7 @@ impl Processor {
             match update {
                 Ok(FastPathUpdate::SurfaceCommands(surface_commands)) => {
                     info!(
-                        "Recieved Surface Commands: {} pieces",
+                        "Received Surface Commands: {} pieces",
                         surface_commands.len()
                     );
 

@@ -4,25 +4,28 @@ use super::*;
 
 const BITMAP_BUFFER: [u8; 114] = [
     0x01, 0x00, // Bitmap update type = must be PDATETYPE_BITMAP (0x0001)
-    0x01, 0x00, // numbers of rectangles = 1
-    // rectangle
+    0x01, 0x00, // Number of rectangles = 1
+    // Rectangle
     0x00, 0x07, // Left bound of the rectangle = 1792
-    0x00, 0x04, // Top bound of the rectangl = 1024
+    0x00, 0x04, // Top bound of the rectangle = 1024
     0x3f, 0x07, // Right bound of the rectangle = 1855
     0x37, 0x04, // Bottom bound of the rectangle = 1079
     0x40, 0x00, // The width of the rectangle = 64
     0x38, 0x00, // The height of the rectangle = 56
-    0x10, 0x00, // The color depth of the rectangle data in bits-per-pixe = 16
+    0x10, 0x00, // The color depth of the rectangle data in bits-per-pixel = 16
     0x01,
-    0x00, // The flag describing the format of the bitmap data = BITMAP_COMPRESSION | !NO_BITMAP_COMPRESSION_HDR => bitmapComprHdr is present
-    0x5c, 0x00, // The size in bytes of the data in CompressedDataHeader and bitmap_data = 92
-    //CompressedDataHeader
+    // The flag which describes the format of the bitmap data:
+    // BITMAP_COMPRESSION | !NO_BITMAP_COMPRESSION_HDR => bitmapComprHdr is present
+    0x00,
+    // The size in bytes of the data in CompressedDataHeader and bitmap_data = 92
+    0x5c, 0x00,
+    // CompressedDataHeader
     0x00, 0x00, // FirstRowSize, must be set to 0x0000 = 0
     0x50, 0x00, // MainBodySize - size in bytes of the compressed bitmap data = 80
     0x1c, 0x00, // ScanWidth - width of the bitmap in pixels(must be divisible by 4) = 28
-    0x04,
-    0x00, // UncompressedSize - size in bytes of the bitmap data after it has been decompressed = 4
-    //bitmap data
+    // UncompressedSize - size in bytes of the bitmap data after it has been decompressed = 4
+    0x04, 0x00,
+    // Bitmap data
     0x21, 0x00, 0x21, 0x00, 0x01, 0x00, 0x20, 0x09, 0x84, 0x21, 0x00, 0x21, 0x00, 0x21, 0x00, 0x12,
     0x00, 0x10, 0xd8, 0x20, 0x00, 0x0b, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x60, 0x1e, 0x21,
     0x00, 0x00, 0xa8, 0x83, 0x21, 0x00, 0x55, 0xad, 0xff, 0xff, 0x45, 0x29, 0x7a, 0xce, 0xa3, 0x10,
