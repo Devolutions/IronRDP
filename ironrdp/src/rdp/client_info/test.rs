@@ -116,7 +116,7 @@ lazy_static! {
                 timezone: Some(TimezoneInfo {
                     bias: 0x01e0,
                     standard_name: String::from("Pacific Standard Time"),
-                    standard_date: SystemTime {
+                    standard_date: Some(SystemTime {
                         month: Month::October,
                         day_of_week: DayOfWeek::Sunday,
                         day: DayOfWeekOccurrence::Last,
@@ -124,10 +124,10 @@ lazy_static! {
                         minute: 0,
                         second: 0,
                         milliseconds: 0,
-                    },
+                    }),
                     standard_bias: 0,
                     daylight_name: String::from("Pacific Daylight Time"),
-                    daylight_date: SystemTime {
+                    daylight_date: Some(SystemTime {
                         month: Month::April,
                         day_of_week: DayOfWeek::Sunday,
                         day: DayOfWeekOccurrence::First,
@@ -135,7 +135,7 @@ lazy_static! {
                         minute: 0,
                         second: 0,
                         milliseconds: 0,
-                    },
+                    }),
                     daylight_bias: 0xffff_ffc4,
                 }),
                 session_id: Some(0),

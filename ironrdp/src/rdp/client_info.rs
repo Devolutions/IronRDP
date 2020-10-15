@@ -458,17 +458,15 @@ impl PduParsing for Option<SystemTime> {
             DayOfWeek::from_u16(day_of_week),
             DayOfWeekOccurrence::from_u16(day),
         ) {
-            (Some(month), Some(day_of_week), Some(day)) => {
-                Ok(Some(SystemTime {
-                    month,
-                    day_of_week,
-                    day,
-                    hour,
-                    minute,
-                    second,
-                    milliseconds,
-                }))
-            }
+            (Some(month), Some(day_of_week), Some(day)) => Ok(Some(SystemTime {
+                month,
+                day_of_week,
+                day,
+                hour,
+                minute,
+                second,
+                milliseconds,
+            })),
             _ => Ok(None),
         }
     }
@@ -476,7 +474,15 @@ impl PduParsing for Option<SystemTime> {
     fn to_buffer(&self, mut stream: impl io::Write) -> Result<(), Self::Error> {
         stream.write_u16::<LittleEndian>(0)?; // year
         match *self {
-            Some(SystemTime { month, day_of_week, day, hour, minute, second, milliseconds }) => {
+            Some(SystemTime {
+                month,
+                day_of_week,
+                day,
+                hour,
+                minute,
+                second,
+                milliseconds,
+            }) => {
                 stream.write_u16::<LittleEndian>(month.to_u16().unwrap())?;
                 stream.write_u16::<LittleEndian>(day_of_week.to_u16().unwrap())?;
                 stream.write_u16::<LittleEndian>(day.to_u16().unwrap())?;
