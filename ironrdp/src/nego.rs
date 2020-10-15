@@ -222,11 +222,10 @@ impl PduParsing for Request {
     fn buffer_length(&self) -> usize {
         TPDU_REQUEST_LENGTH
             + match &self.nego_data {
-                Some(NegoData::Cookie(s)) => s.len() + COOKIE_PREFIX.len(),
-                Some(NegoData::RoutingToken(s)) => s.len() + ROUTING_TOKEN_PREFIX.len(),
+                Some(NegoData::Cookie(s)) => s.len() + COOKIE_PREFIX.len() + CR_LF_SEQ_LENGTH,
+                Some(NegoData::RoutingToken(s)) => s.len() + ROUTING_TOKEN_PREFIX.len() + CR_LF_SEQ_LENGTH,
                 None => 0,
             }
-            + CR_LF_SEQ_LENGTH
             + if self.protocol.bits() > SecurityProtocol::RDP.bits() {
                 usize::from(RDP_NEG_DATA_LENGTH)
             } else {
