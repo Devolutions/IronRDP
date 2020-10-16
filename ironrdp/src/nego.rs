@@ -223,7 +223,9 @@ impl PduParsing for Request {
         TPDU_REQUEST_LENGTH
             + match &self.nego_data {
                 Some(NegoData::Cookie(s)) => s.len() + COOKIE_PREFIX.len() + CR_LF_SEQ_LENGTH,
-                Some(NegoData::RoutingToken(s)) => s.len() + ROUTING_TOKEN_PREFIX.len() + CR_LF_SEQ_LENGTH,
+                Some(NegoData::RoutingToken(s)) => {
+                    s.len() + ROUTING_TOKEN_PREFIX.len() + CR_LF_SEQ_LENGTH
+                }
                 None => 0,
             }
             + if self.protocol.bits() > SecurityProtocol::RDP.bits() {
