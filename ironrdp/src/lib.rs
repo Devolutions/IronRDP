@@ -13,7 +13,7 @@ mod utils;
 mod x224;
 
 pub use crate::{
-    basic_output::{fast_path, surface_commands},
+    basic_output::{bitmap, fast_path, surface_commands},
     mcs::{ConnectInitial, ConnectResponse, McsError, McsPdu, SendDataContext},
     nego::*,
     preconnection::{PreconnectionPdu, PreconnectionPduError},

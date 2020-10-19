@@ -96,7 +96,7 @@ impl Decompressor {
             let token = TOKEN_TABLE
                 .iter()
                 .find(|token| token.prefix == bits[..token.prefix.len()])
-                .ok_or_else(|| ZgfxError::TokenBitsNotFound)?;
+                .ok_or(ZgfxError::TokenBitsNotFound)?;
             let _prefix = bits.split_to(token.prefix.len());
 
             match token.ty {

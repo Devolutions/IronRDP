@@ -24,15 +24,21 @@ pub fn read_length(mut stream: impl io::Read) -> io::Result<(u16, usize)> {
     }
 }
 
-pub fn write_length(mut stream: impl io::Write, length: u16) -> io::Result<usize> {
+pub fn write_long_length(mut stream: impl io::Write, length: u16) -> io::Result<usize> {
+    stream.write_u16::<BigEndian>(length | 0x8000)?;
+    Ok(2)
+}
+
+pub fn write_short_length(mut stream: impl io::Write, length: u16) -> io::Result<usize> {
+    stream.write_u8(length as u8)?;
+    Ok(1)
+}
+
+pub fn write_length(stream: impl io::Write, length: u16) -> io::Result<usize> {
     if length > 0x7f {
-        stream.write_u16::<BigEndian>(length | 0x8000)?;
-
-        Ok(2)
+        write_long_length(stream, length)
     } else {
-        stream.write_u8(length as u8)?;
-
-        Ok(1)
+        write_short_length(stream, length)
     }
 }
 

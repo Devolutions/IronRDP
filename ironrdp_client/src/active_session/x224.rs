@@ -149,7 +149,7 @@ impl<'a> Processor<'a> {
                 if let Some(dvc_data) = self
                     .dynamic_channels
                     .get_mut(&data.channel_id)
-                    .ok_or_else(|| RdpError::AccessToNonExistingChannel(data.channel_id))?
+                    .ok_or(RdpError::AccessToNonExistingChannel(data.channel_id))?
                     .process_data_first_pdu(data.total_data_size as usize, data_buff)?
                 {
                     let client_data = dvc::ClientPdu::Data(dvc::DataPdu {
@@ -176,7 +176,7 @@ impl<'a> Processor<'a> {
                 if let Some(dvc_data) = self
                     .dynamic_channels
                     .get_mut(&data.channel_id)
-                    .ok_or_else(|| RdpError::AccessToNonExistingChannel(data.channel_id))?
+                    .ok_or(RdpError::AccessToNonExistingChannel(data.channel_id))?
                     .process_data_pdu(data_buff)?
                 {
                     let client_data = dvc::ClientPdu::Data(dvc::DataPdu {

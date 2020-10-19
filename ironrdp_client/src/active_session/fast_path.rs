@@ -68,10 +68,11 @@ impl Processor {
 
                     self.process_surface_commands(&mut stream, surface_commands)?;
                 }
+                Ok(FastPathUpdate::Bitmap(bitmap)) => {
+                    info!("Received Bitmap: {:?}", bitmap);
+                }
                 Err(FastPathError::UnsupportedFastPathUpdate(code))
-                    if code == UpdateCode::Orders
-                        || code == UpdateCode::Bitmap
-                        || code == UpdateCode::Palette =>
+                    if code == UpdateCode::Orders || code == UpdateCode::Palette =>
                 {
                     return Err(RdpError::UnexpectedFastPathUpdate(code));
                 }

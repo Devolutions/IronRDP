@@ -109,7 +109,9 @@ fn establish_tls(
     let cert = tls_stream
         .sess
         .get_peer_certificates()
-        .ok_or_else(|| RdpError::TlsConnectorError(rustls::TLSError::NoCertificatesPresented))?;
+        .ok_or(RdpError::TlsConnectorError(
+            rustls::TLSError::NoCertificatesPresented,
+        ))?;
     let server_public_key = get_tls_peer_pubkey(cert[0].as_ref().to_vec())?;
 
     Ok(UpgradedStream {

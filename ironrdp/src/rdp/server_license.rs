@@ -268,8 +268,7 @@ impl BlobHeader {
         mut stream: impl io::Read,
     ) -> Result<Self, ServerLicenseError> {
         let blob_type = stream.read_u16::<LittleEndian>()?;
-        let blob_type =
-            BlobType::from_u16(blob_type).ok_or_else(|| ServerLicenseError::InvalidBlobType)?;
+        let blob_type = BlobType::from_u16(blob_type).ok_or(ServerLicenseError::InvalidBlobType)?;
 
         if blob_type != required_blob_type {
             return Err(ServerLicenseError::InvalidBlobType);

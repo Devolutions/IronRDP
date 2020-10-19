@@ -95,10 +95,8 @@ pub fn create_client_confirm_active(
     config: &InputConfig,
     mut server_capability_sets: Vec<CapabilitySet>,
 ) -> Result<ClientConfirmActive, RdpError> {
-    server_capability_sets.retain(|capability_set| match capability_set {
-        CapabilitySet::MultiFragmentUpdate(_) => true,
-        _ => false,
-    });
+    server_capability_sets
+        .retain(|capability_set| matches!(capability_set, CapabilitySet::MultiFragmentUpdate(_)));
     server_capability_sets.extend_from_slice(&[
         create_general_capability_set(),
         create_bitmap_capability_set(config),
@@ -121,10 +119,7 @@ pub fn create_client_confirm_active(
 
     if server_capability_sets
         .iter()
-        .find(|c| match c {
-            CapabilitySet::MultiFragmentUpdate(_) => true,
-            _ => false,
-        })
+        .find(|c| matches!(c, CapabilitySet::MultiFragmentUpdate(_)))
         .is_none()
     {
         server_capability_sets.push(create_multi_fragment_update_capability_set());

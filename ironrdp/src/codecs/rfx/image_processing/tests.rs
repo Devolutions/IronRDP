@@ -12,7 +12,7 @@ fn image_region_correctly_writes_image_with_different_formats_with_same_sizes() 
         },
         step: 256,
         pixel_format: PixelFormat::BgrX32,
-        data: &mut SOURCE_IN_RGBX_BUFFER,
+        data: &SOURCE_IN_RGBX_BUFFER,
     };
     let mut destination_region = ImageRegionMut {
         region: Rectangle {
@@ -45,7 +45,7 @@ fn image_region_correctly_writes_image_with_same_formats_and_different_sizes() {
         },
         step: 256,
         pixel_format: PixelFormat::BgrX32,
-        data: &mut SOURCE_IN_RGBX_BUFFER,
+        data: &SOURCE_IN_RGBX_BUFFER,
     };
     let mut destination_region = ImageRegionMut {
         region: Rectangle {
