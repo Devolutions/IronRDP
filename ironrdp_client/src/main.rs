@@ -7,6 +7,7 @@ use ironrdp_client::{process_active_stage, process_connection_sequence, RdpError
 use log::error;
 #[cfg(all(feature = "native-tls", not(feature = "rustls")))]
 use native_tls::{HandshakeError, TlsConnector};
+use x509_parser::prelude::{FromDer, X509Certificate};
 
 use self::config::Config;
 
@@ -160,7 +161,7 @@ pub fn socket_addr_to_string(socket_addr: std::net::SocketAddr) -> String {
 }
 
 pub fn get_tls_peer_pubkey(cert: Vec<u8>) -> io::Result<Vec<u8>> {
-    let res = x509_parser::parse_x509_der(&cert[..])
+    let res = X509Certificate::from_der(&cert[..])
         .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "Invalid der certificate."))?;
     let public_key = res.1.tbs_certificate.subject_pki.subject_public_key;
 

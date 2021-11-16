@@ -1,7 +1,7 @@
-use std::net::SocketAddr;
+use std::{net::SocketAddr, num::ParseIntError};
 
 use clap::{clap_derive::ValueEnum, crate_name, Parser};
-use ironrdp_client::InputConfig;
+use ironrdp_client::{GraphicsConfig, InputConfig};
 use sspi::AuthIdentity;
 
 const DEFAULT_WIDTH: u16 = 1920;
@@ -57,6 +57,13 @@ impl KeyboardType {
     }
 }
 
+fn parse_hex(input: &str) -> Result<u32, ParseIntError> {
+    if input.starts_with("0x") {
+        u32::from_str_radix(input.get(2..).unwrap_or(""), 16)
+    } else {
+        input.parse::<u32>()
+    }
+}
 /// Devolutions IronRDP client
 #[derive(Parser, Debug)]
 #[clap(author = "Devolutions", about = "Devolutions-IronRDP client")]
@@ -105,6 +112,27 @@ struct Args {
     /// Contains a value that uniquely identifies the client
     #[clap(long, value_parser, default_value_t = String::from(""))]
     dig_product_id: String,
+
+    /// Enable AVC444
+    #[clap(long, group = "avc")]
+    avc444: bool,
+
+    /// Enable H264
+    #[clap(long, group = "avc")]
+    h264: bool,
+
+    /// Enable thin client
+    #[clap(long)]
+    thin_client: bool,
+
+    /// Enable small cache
+    #[clap(long)]
+    small_cache: bool,
+
+    /// Enabled capability versions. Each bit represents enabling a capability version
+    /// starting from V8 to V10_7
+    #[clap(long, value_parser = parse_hex, default_value_t = 0)]
+    capabilities: u32,
 }
 
 fn is_socket_address(s: &str) -> Result<SocketAddr, String> {
@@ -115,6 +143,18 @@ fn is_socket_address(s: &str) -> Result<SocketAddr, String> {
 impl Config {
     pub fn parse_args() -> Self {
         let args = Args::parse();
+
+        let graphics_config = if args.avc444 || args.h264 {
+            Some(GraphicsConfig {
+                avc444: args.avc444,
+                h264: args.h264,
+                thin_client: args.thin_client,
+                small_cache: args.small_cache,
+                capabilities: args.capabilities,
+            })
+        } else {
+            None
+        };
 
         let input = InputConfig {
             credentials: AuthIdentity {
@@ -132,6 +172,7 @@ impl Config {
             height: DEFAULT_HEIGHT,
             global_channel_name: GLOBAL_CHANNEL_NAME.to_string(),
             user_channel_name: USER_CHANNEL_NAME.to_string(),
+            graphics_config,
         };
 
         Self {

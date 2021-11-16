@@ -132,13 +132,13 @@ fn write_bool_false_is_correct() {
 #[test]
 fn read_bool_true_is_correct() {
     let buf = vec![0x01, 0x01, 0xFF];
-    assert_eq!(read_bool(&mut buf.as_slice()).unwrap(), true);
+    assert!(read_bool(&mut buf.as_slice()).unwrap());
 }
 
 #[test]
 fn read_bool_false_is_correct() {
     let buf = vec![0x01, 0x01, 0x00];
-    assert_eq!(read_bool(&mut buf.as_slice()).unwrap(), false);
+    assert!(!read_bool(&mut buf.as_slice()).unwrap());
 }
 
 #[test]

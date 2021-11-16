@@ -27,16 +27,16 @@ native-tls = ["dep:native-tls"]
 ironrdp = { path = "../ironrdp" }
 sspi = { version = "0.4.0", features = ["network_client"] }
 clap = { version = "4.0", features = ["derive", "cargo"] }
-bytes = "0.5"
+bytes = "1"
 failure = "0.1"
 chrono = "0.4"
 fern = "0.6"
 log = "0.4"
-x509-parser = "0.6.0"
-whoami = "0.8"
+x509-parser = "0.14"
+whoami = "1"
 num-traits = "0.2"
 num-derive = "0.3"
-semver = "0.9"
+semver = "1"
 lazy_static = "1.4"
 exitcode = "1.1"
 bufstream = "0.1"
@@ -44,3 +44,4 @@ ring = "0.16.0"
 native-tls = { version = "0.2", optional = true }
 rustls = { version = "0.20", features = ["dangerous_configuration"], optional = true }
 dns-lookup = "1.0.8"
+bitflags = "1"

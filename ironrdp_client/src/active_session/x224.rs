@@ -1,8 +1,10 @@
+mod display;
 mod gfx;
 
 use std::collections::HashMap;
 use std::{cmp, io};
 
+use ironrdp::dvc::FieldType;
 use ironrdp::rdp::vc::{self, dvc};
 use ironrdp::rdp::{ErrorInfo, ProtocolIndependentCode, ServerSetErrorInfoPdu};
 use ironrdp::{Data, ShareDataPdu};
@@ -12,22 +14,35 @@ use crate::transport::{
     Decoder, DynamicVirtualChannelTransport, Encoder, SendDataContextTransport, ShareControlHeaderTransport,
     ShareDataHeaderTransport, StaticVirtualChannelTransport,
 };
-use crate::RdpError;
+use crate::{GraphicsConfig, RdpError};
 
 const RDP8_GRAPHICS_PIPELINE_NAME: &str = "Microsoft::Windows::RDS::Graphics";
+const RDP8_DISPLAY_PIPELINE_NAME: &str = "Microsoft::Windows::RDS::DisplayControl";
 
 pub struct Processor<'a> {
     static_channels: HashMap<u16, String>,
+    channel_map: HashMap<String, u32>,
     dynamic_channels: HashMap<u32, DynamicChannel>,
     global_channel_name: &'a str,
+    drdynvc_transport: Option<DynamicVirtualChannelTransport>,
+    static_transport: Option<ShareDataHeaderTransport>,
+    graphics_config: Option<GraphicsConfig>,
 }
 
 impl<'a> Processor<'a> {
-    pub fn new(static_channels: HashMap<u16, String>, global_channel_name: &'a str) -> Self {
+    pub fn new(
+        static_channels: HashMap<u16, String>,
+        global_channel_name: &'a str,
+        graphics_config: Option<GraphicsConfig>,
+    ) -> Self {
         Self {
             static_channels,
             dynamic_channels: HashMap::new(),
+            channel_map: HashMap::new(),
             global_channel_name,
+            drdynvc_transport: None,
+            static_transport: None,
+            graphics_config,
         }
     }
 
@@ -38,34 +53,88 @@ impl<'a> Processor<'a> {
         let channel_ids = transport.decode(&mut stream)?;
         transport.set_decoded_context(channel_ids);
 
-        match self.static_channels.get(&channel_ids.channel_id).map(String::as_str) {
-            Some(vc::DRDYNVC_CHANNEL_NAME) => {
-                let transport = DynamicVirtualChannelTransport::new(
-                    StaticVirtualChannelTransport::new(transport),
-                    channel_ids.channel_id,
-                );
-
-                self.process_dvc_message(&mut stream, transport)
-            }
+        let channel_id = channel_ids.channel_id;
+        let initiator_id = channel_ids.initiator_id;
+        match self.static_channels.get(&channel_id).map(String::as_str) {
+            Some(vc::DRDYNVC_CHANNEL_NAME) => self.process_dvc_message(&mut stream, transport, channel_id),
             Some(name) if name == self.global_channel_name => {
-                let transport = ShareDataHeaderTransport::new(ShareControlHeaderTransport::new(
-                    transport,
-                    channel_ids.initiator_id,
-                    channel_ids.channel_id,
-                ));
+                if self.static_transport.is_none() {
+                    self.static_transport = Some(ShareDataHeaderTransport::new(ShareControlHeaderTransport::new(
+                        transport,
+                        initiator_id,
+                        channel_id,
+                    )));
+                }
+                let transport = self.static_transport.as_mut().unwrap();
 
                 process_global_channel_pdu(&mut stream, transport)
             }
-            Some(_) => Err(RdpError::UnexpectedChannel(channel_ids.channel_id)),
-            None => panic!("Channel with {} ID must be added", channel_ids.channel_id),
+            Some(_) => Err(RdpError::UnexpectedChannel(channel_id)),
+            None => panic!("Channel with {} ID must be added", channel_id),
         }
+    }
+
+    /// Sends a PDU on the dynamic channel. The upper layers are responsible for encoding the PDU and converting them to message
+    #[allow(dead_code)]
+    pub fn send_dynamic(
+        &mut self,
+        mut stream: impl io::Write,
+        channel_name: &str,
+        message: Vec<u8>,
+    ) -> Result<(), RdpError> {
+        if let Some(transport) = self.drdynvc_transport.as_mut() {
+            let channel_id = self
+                .channel_map
+                .get(channel_name)
+                .ok_or_else(|| RdpError::AccessToNonExistingChannelName(channel_name.to_string()))?;
+            let channel = self
+                .dynamic_channels
+                .get_mut(channel_id)
+                .ok_or(RdpError::AccessToNonExistingChannel(*channel_id))?;
+            let client_data = dvc::ClientPdu::Data(dvc::DataPdu {
+                channel_id_type: channel.channel_id_type,
+                channel_id: channel.channel_id,
+                data_size: message.len(),
+            });
+
+            transport.encode(
+                DynamicVirtualChannelTransport::prepare_data_to_encode(client_data, Some(message))?,
+                &mut stream,
+            )?;
+        } else {
+            return Err(RdpError::DynamicVirtualChannelNotConnected);
+        };
+
+        Ok(())
+    }
+
+    /// Send a pdu on the static global channel. Typically used to send input events
+    #[allow(dead_code)]
+    pub fn send_static(&mut self, mut stream: impl io::Write, message: ShareDataPdu) -> Result<(), RdpError> {
+        if let Some(transport) = self.static_transport.as_mut() {
+            transport.encode(message, &mut stream)?;
+        } else {
+            return Err(RdpError::StaticChannelNotConnected);
+        };
+
+        Ok(())
     }
 
     fn process_dvc_message(
         &mut self,
         mut stream: impl io::BufRead + io::Write,
-        mut transport: DynamicVirtualChannelTransport,
+        transport: SendDataContextTransport,
+        channel_id: u16,
     ) -> Result<(), RdpError> {
+        if self.drdynvc_transport.is_none() {
+            self.drdynvc_transport = Some(DynamicVirtualChannelTransport::new(
+                StaticVirtualChannelTransport::new(transport),
+                channel_id,
+            ));
+        }
+
+        let transport = self.drdynvc_transport.as_mut().unwrap();
+
         match transport.decode(&mut stream)? {
             dvc::ServerPdu::CapabilitiesRequest(caps_request) => {
                 debug!("Got DVC Capabilities Request PDU: {:?}", caps_request);
@@ -82,9 +151,15 @@ impl<'a> Processor<'a> {
             dvc::ServerPdu::CreateRequest(create_request) => {
                 debug!("Got DVC Create Request PDU: {:?}", create_request);
 
-                let creation_status = if let Some(dyncamic_channel) = create_dvc(create_request.channel_name.as_str()) {
+                let creation_status = if let Some(dyncamic_channel) = create_dvc(
+                    create_request.channel_name.as_str(),
+                    create_request.channel_id,
+                    create_request.channel_id_type,
+                ) {
                     self.dynamic_channels
                         .insert(create_request.channel_id, dyncamic_channel);
+                    self.channel_map
+                        .insert(create_request.channel_name.clone(), create_request.channel_id);
 
                     dvc::DVC_CREATION_STATUS_OK
                 } else {
@@ -103,7 +178,7 @@ impl<'a> Processor<'a> {
                     &mut stream,
                 )?;
 
-                negotiate_dvc(&create_request, transport, &mut stream)?;
+                negotiate_dvc(&create_request, transport, &mut stream, &self.graphics_config)?;
             }
             dvc::ServerPdu::CloseRequest(close_request) => {
                 debug!("Got DVC Close Request PDU: {:?}", close_request);
@@ -177,7 +252,7 @@ impl<'a> Processor<'a> {
 
 fn process_global_channel_pdu(
     mut stream: impl io::BufRead + io::Write,
-    mut transport: ShareDataHeaderTransport,
+    transport: &mut ShareDataHeaderTransport,
 ) -> Result<(), RdpError> {
     let share_data_pdu = transport.decode(&mut stream)?;
 
@@ -202,20 +277,33 @@ fn process_global_channel_pdu(
     }
 }
 
-fn create_dvc(channel_name: &str) -> Option<DynamicChannel> {
+fn create_dvc(channel_name: &str, channel_id: u32, channel_id_type: FieldType) -> Option<DynamicChannel> {
     match channel_name {
-        RDP8_GRAPHICS_PIPELINE_NAME => Some(DynamicChannel::new(Box::new(gfx::Handler::new()))),
-        _ => None,
+        RDP8_GRAPHICS_PIPELINE_NAME => Some(DynamicChannel::new(
+            Box::new(gfx::Handler::new()),
+            channel_id,
+            channel_id_type,
+        )),
+        RDP8_DISPLAY_PIPELINE_NAME => Some(DynamicChannel::new(
+            Box::new(display::Handler::new()),
+            channel_id,
+            channel_id_type,
+        )),
+        _ => {
+            error!("Unknown channel name: {}", channel_name);
+            None
+        }
     }
 }
 
 fn negotiate_dvc(
     create_request: &dvc::CreateRequestPdu,
-    mut transport: DynamicVirtualChannelTransport,
+    transport: &mut DynamicVirtualChannelTransport,
     mut stream: impl io::Write,
+    graphics_config: &Option<GraphicsConfig>,
 ) -> Result<(), RdpError> {
     if create_request.channel_name == RDP8_GRAPHICS_PIPELINE_NAME {
-        let dvc_data = gfx::create_capabilities_advertise()?;
+        let dvc_data = gfx::create_capabilities_advertise(graphics_config)?;
         let client_data = dvc::ClientPdu::Data(dvc::DataPdu {
             channel_id_type: create_request.channel_id_type,
             channel_id: create_request.channel_id,
@@ -238,14 +326,18 @@ trait DynamicChannelDataHandler {
 
 pub struct DynamicChannel {
     data: CompleteData,
+    channel_id_type: FieldType,
+    channel_id: u32,
     handler: Box<dyn DynamicChannelDataHandler>,
 }
 
 impl DynamicChannel {
-    fn new(handler: Box<dyn DynamicChannelDataHandler>) -> Self {
+    fn new(handler: Box<dyn DynamicChannelDataHandler>, channel_id: u32, channel_id_type: FieldType) -> Self {
         Self {
             data: CompleteData::new(),
             handler,
+            channel_id_type,
+            channel_id,
         }
     }
 

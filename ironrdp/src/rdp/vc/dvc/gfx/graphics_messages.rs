@@ -13,9 +13,9 @@ use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive, ToPrimitive};
 pub use server::{
     CacheToSurfacePdu, CapabilitiesConfirmPdu, Codec1Type, Codec2Type, CreateSurfacePdu, DeleteEncodingContextPdu,
-    DeleteSurfacePdu, EndFramePdu, EvictCacheEntryPdu, MapSurfaceToOutputPdu, PixelFormat, ResetGraphicsPdu,
-    SolidFillPdu, StartFramePdu, SurfaceToCachePdu, SurfaceToSurfacePdu, Timestamp, WireToSurface1Pdu,
-    WireToSurface2Pdu, RESET_GRAPHICS_PDU_SIZE,
+    DeleteSurfacePdu, EndFramePdu, EvictCacheEntryPdu, MapSurfaceToOutputPdu, MapSurfaceToScaledOutputPdu,
+    MapSurfaceToScaledWindowPdu, PixelFormat, ResetGraphicsPdu, SolidFillPdu, StartFramePdu, SurfaceToCachePdu,
+    SurfaceToSurfacePdu, Timestamp, WireToSurface1Pdu, WireToSurface2Pdu, RESET_GRAPHICS_PDU_SIZE,
 };
 
 use super::RDP_GFX_HEADER_SIZE;
@@ -38,6 +38,8 @@ pub enum CapabilitySet {
     V10_4 { flags: CapabilitiesV104Flags },
     V10_5 { flags: CapabilitiesV104Flags },
     V10_6 { flags: CapabilitiesV104Flags },
+    V10_6Err { flags: CapabilitiesV104Flags },
+    V10_7 { flags: CapabilitiesV107Flags },
     Unknown(Vec<u8>),
 }
 
@@ -53,6 +55,8 @@ impl CapabilitySet {
             CapabilitySet::V10_4 { .. } => CapabilityVersion::V10_4,
             CapabilitySet::V10_5 { .. } => CapabilityVersion::V10_5,
             CapabilitySet::V10_6 { .. } => CapabilityVersion::V10_6,
+            CapabilitySet::V10_6Err { .. } => CapabilityVersion::V10_6Err,
+            CapabilitySet::V10_7 { .. } => CapabilityVersion::V10_7,
             CapabilitySet::Unknown { .. } => CapabilityVersion::Unknown,
         }
     }
@@ -99,6 +103,12 @@ impl PduParsing for CapabilitySet {
             CapabilityVersion::V10_6 => Ok(CapabilitySet::V10_6 {
                 flags: CapabilitiesV104Flags::from_bits_truncate(data.as_slice().read_u32::<LittleEndian>()?),
             }),
+            CapabilityVersion::V10_6Err => Ok(CapabilitySet::V10_6Err {
+                flags: CapabilitiesV104Flags::from_bits_truncate(data.as_slice().read_u32::<LittleEndian>()?),
+            }),
+            CapabilityVersion::V10_7 => Ok(CapabilitySet::V10_7 {
+                flags: CapabilitiesV107Flags::from_bits_truncate(data.as_slice().read_u32::<LittleEndian>()?),
+            }),
             CapabilityVersion::Unknown => Ok(CapabilitySet::Unknown(data)),
         }
     }
@@ -117,6 +127,8 @@ impl PduParsing for CapabilitySet {
             CapabilitySet::V10_4 { flags } => stream.write_u32::<LittleEndian>(flags.bits())?,
             CapabilitySet::V10_5 { flags } => stream.write_u32::<LittleEndian>(flags.bits())?,
             CapabilitySet::V10_6 { flags } => stream.write_u32::<LittleEndian>(flags.bits())?,
+            CapabilitySet::V10_6Err { flags } => stream.write_u32::<LittleEndian>(flags.bits())?,
+            CapabilitySet::V10_7 { flags } => stream.write_u32::<LittleEndian>(flags.bits())?,
             CapabilitySet::Unknown(data) => stream.write_all(data)?,
         }
 
@@ -132,7 +144,9 @@ impl PduParsing for CapabilitySet {
                 | CapabilitySet::V10_3 { .. }
                 | CapabilitySet::V10_4 { .. }
                 | CapabilitySet::V10_5 { .. }
-                | CapabilitySet::V10_6 { .. } => 4,
+                | CapabilitySet::V10_6 { .. }
+                | CapabilitySet::V10_6Err { .. }
+                | CapabilitySet::V10_7 { .. } => 4,
                 CapabilitySet::V10_1 { .. } => 16,
                 CapabilitySet::Unknown(data) => data.len(),
             }
@@ -212,8 +226,10 @@ pub enum CapabilityVersion {
     V10_3 = 0xa_0301,
     V10_4 = 0xa_0400,
     V10_5 = 0xa_0502,
-    V10_6 = 0xa_0601,
-    Unknown = 0xa_0600,
+    V10_6 = 0xa_0600,    // [MS-RDPEGFX-errata]
+    V10_6Err = 0xa_0601, // defined similar to FreeRDP to maintain best compatibility
+    V10_7 = 0xa_0701,
+    Unknown = 0xa_0702,
 }
 
 bitflags! {
@@ -250,6 +266,15 @@ bitflags! {
         const SMALL_CACHE = 0x02;
         const AVC_DISABLED = 0x20;
         const AVC_THIN_CLIENT = 0x40;
+    }
+}
+
+bitflags! {
+    pub struct CapabilitiesV107Flags: u32  {
+        const SMALL_CACHE = 0x02;
+        const AVC_DISABLED = 0x20;
+        const AVC_THIN_CLIENT = 0x40;
+        const SCALEDMAP_DISABLE = 0x80;
     }
 }
 
