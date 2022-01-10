@@ -229,11 +229,11 @@ pub enum BitmapError {
         actual, expected
     )]
     InvalidDataLength { actual: usize, expected: usize },
-    #[fail(display = "Compression is not suppported for Bitmap data")]
+    #[fail(display = "Compression is not supported for Bitmap data")]
     NotSupportedCompression,
     #[fail(display = "Invalid first row size, must be 0, but got: {}", _0)]
     InvalidFirstRowSize(usize),
-    #[fail(display = "The witdh of the bitmap must be divisible by 4")]
+    #[fail(display = "The width of the bitmap must be divisible by 4")]
     InvalidScanWidth,
 }
 
