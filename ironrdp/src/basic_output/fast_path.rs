@@ -177,13 +177,8 @@ impl<'a> FastPathUpdate<'a> {
                 Ok(Self::SurfaceCommands(commands))
             }
             UpdateCode::Bitmap => {
-                let bitmap = Bitmap::from_buffer_consume(buffer);
-                match bitmap {
-                    Ok(bitmap) => Ok(Self::Bitmap(bitmap)),
-                    Err(error) => { // Wrap bitmap error in a FastPathError and propagate
-                        Err(FastPathError::BitmapError(error))
-                    }
-                }
+                let bitmap = Bitmap::from_buffer_consume(buffer).map_err(|error| FastPathError::BitmapError(error))?;
+                Ok(Self::Bitmap(bitmap))
             }
             _ => Err(FastPathError::UnsupportedFastPathUpdate(code)),
         }
