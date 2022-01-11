@@ -97,7 +97,13 @@ impl<'a> PduBufferParsing<'a> for BitmapData<'a> {
         }
 
         let compressed_data_header = if !compression_flags.contains(Compression::NOT_COMPRESSED) {
-            Some(CompressedDataHeader::from_buffer_consume(buffer)?)
+            let consumed_buffer = CompressedDataHeader::from_buffer_consume(buffer);
+            match consumed_buffer {
+                Ok(buffer) => Some(buffer),
+                Err(error) => {
+                    return Err(error);
+                },
+            }
         } else {
             None
         };
@@ -174,7 +180,10 @@ impl<'a> PduBufferParsing<'a> for CompressedDataHeader {
     fn from_buffer_consume(buffer: &mut &[u8]) -> Result<Self, Self::Error> {
         let size = buffer.read_u16::<LittleEndian>()?;
         if size != FIRST_ROW_SIZE_VALUE {
-            return Err(BitmapError::InvalidFirstRowSize(size as usize));
+            return Err(BitmapError::InvalidFirstRowSize {
+                actual: size as usize,
+                expected: FIRST_ROW_SIZE_VALUE as usize,
+            });
         }
 
         let main_body_size = buffer.read_u16::<LittleEndian>()?;
@@ -225,14 +234,17 @@ pub enum BitmapError {
     #[fail(display = "Invalid update type for Bitmap Update")]
     InvalidUpdateType,
     #[fail(
-        display = "Input buffer len is shorten than the data length: {} < {}",
+        display = "Input buffer len is shorter than the data length: {} < {}",
         actual, expected
     )]
     InvalidDataLength { actual: usize, expected: usize },
     #[fail(display = "Compression is not supported for Bitmap data")]
     NotSupportedCompression,
-    #[fail(display = "Invalid first row size, must be 0, but got: {}", _0)]
-    InvalidFirstRowSize(usize),
+    #[fail(
+        display = "Invalid first row size, expected: {}, but got: {}",
+        actual, expected
+    )]
+    InvalidFirstRowSize { actual: usize, expected: usize },
     #[fail(display = "The width of the bitmap must be divisible by 4")]
     InvalidScanWidth,
 }
