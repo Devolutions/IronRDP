@@ -97,13 +97,7 @@ impl<'a> PduBufferParsing<'a> for BitmapData<'a> {
         }
 
         let compressed_data_header = if !compression_flags.contains(Compression::NOT_COMPRESSED) {
-            let consumed_buffer = CompressedDataHeader::from_buffer_consume(buffer);
-            match consumed_buffer {
-                Ok(buffer) => Some(buffer),
-                Err(error) => {
-                    return Err(error);
-                },
-            }
+            Some(CompressedDataHeader::from_buffer_consume(buffer)?)
         } else {
             None
         };

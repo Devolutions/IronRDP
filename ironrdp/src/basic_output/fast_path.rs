@@ -180,9 +180,8 @@ impl<'a> FastPathUpdate<'a> {
                 let bitmap = Bitmap::from_buffer_consume(buffer);
                 match bitmap {
                     Ok(bitmap) => Ok(Self::Bitmap(bitmap)),
-                    Err(error) => {
-                        println!("Invalid bitmap: {:?}", error);
-                        Err(FastPathError::UnsupportedFastPathUpdate(code))
+                    Err(error) => { // Wrap bitmap error in a FastPathError and propagate
+                        Err(FastPathError::BitmapError(error))
                     }
                 }
             }

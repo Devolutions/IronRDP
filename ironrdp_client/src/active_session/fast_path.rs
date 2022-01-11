@@ -79,6 +79,9 @@ impl Processor {
                 Err(FastPathError::UnsupportedFastPathUpdate(update_code)) => {
                     warn!("Received unsupported Fast-Path update: {:?}", update_code)
                 }
+                Err(FastPathError::BitmapError(error)) => {
+                    warn!("Received invalid bitmap: {:?}", error)
+                }
                 Err(e) => {
                     return Err(RdpError::from(e));
                 }
