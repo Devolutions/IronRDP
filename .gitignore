@@ -1,2 +1,8 @@
 Cargo.lock
 target/
+ironrdp_client.log
+
+# Editor/IDE files
+*~
+tags
+.idea/
