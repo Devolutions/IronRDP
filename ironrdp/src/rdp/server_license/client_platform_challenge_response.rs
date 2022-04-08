@@ -58,8 +58,8 @@ impl ClientPlatformChallengeResponse {
 
         let mut hardware_id = Vec::with_capacity(CLIENT_HARDWARE_IDENTIFICATION_SIZE);
         let mut md5 = md5::Md5::new();
-        md5.input(hostname.as_bytes());
-        let hardware_data = &md5.result();
+        md5.update(hostname.as_bytes());
+        let hardware_data = &md5.finalize();
 
         hardware_id.write_u32::<LittleEndian>(PLATFORM_ID)?;
         hardware_id.write_all(hardware_data)?;

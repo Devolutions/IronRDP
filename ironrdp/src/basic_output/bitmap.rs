@@ -147,7 +147,7 @@ impl<'a> Debug for BitmapData<'a> {
             width - {}, 
             height - {}, 
             bits_per_pixel - {}, 
-            compression_flagss - ({:?}), 
+            compression_flags - ({:?}),
             compressed_data_header - {:?}
             \nReceived Bitmap data buffer with length - {}\n]",
             self.rectangle,

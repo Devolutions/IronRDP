@@ -1,7 +1,7 @@
 # IronRDP client
 
 A command-line RDP client, which performs connection to an RDP server and decodes RFX graphical updates.
-If IronRDP client will encounter an error, then will return `error` exit code and print what caused
+If IronRDP client encounters an error, then will return `error` exit code and print what caused
 an error.
 
 ## Prerequisites

@@ -3,27 +3,29 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+use log::{debug, info, warn};
+use num_traits::FromPrimitive;
+
 use ironrdp::{
     codecs::rfx::FrameAcknowledgePdu,
     fast_path::{
         FastPathError, FastPathHeader, FastPathUpdate, FastPathUpdatePdu, Fragmentation, UpdateCode,
     },
-    surface_commands::{FrameAction, SurfaceCommand},
-    PduBufferParsing, ShareDataPdu,
+    PduBufferParsing,
+    ShareDataPdu, surface_commands::{FrameAction, SurfaceCommand},
 };
-use log::{debug, info, warn};
-use num_traits::FromPrimitive;
+use ironrdp::surface_commands::FrameMarkerPdu;
 
-use super::{codecs::rfx, DecodedImage, DESTINATION_PIXEL_FORMAT};
 use crate::{
+    RdpError,
     transport::{
         DataTransport, Encoder, McsTransport, SendDataContextTransport,
         ShareControlHeaderTransport, ShareDataHeaderTransport,
     },
     utils::CodecId,
-    RdpError,
 };
-use ironrdp::surface_commands::FrameMarkerPdu;
+
+use super::{codecs::rfx, DecodedImage, DESTINATION_PIXEL_FORMAT};
 
 pub struct Processor {
     complete_data: CompleteData,
