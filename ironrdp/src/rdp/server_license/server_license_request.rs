@@ -5,7 +5,7 @@ pub mod test;
 use std::io;
 
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
-use x509_parser::parse_x509_der;
+use x509_parser::parse_x509_certificate;
 
 use cert::{CertificateType, ProprietaryCertificate, X509CertificateChain};
 
@@ -289,7 +289,7 @@ impl ServerCertificate {
                 Ok(public_key_buffer)
             }
             CertificateType::X509(certificate) => {
-                if let Ok((_, tbs)) = parse_x509_der(
+                if let Ok((_, tbs)) = parse_x509_certificate(
                     &certificate.certificate_array[certificate.certificate_array.len() - 1]
                         .as_slice(),
                 ) {

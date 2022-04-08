@@ -74,7 +74,7 @@ impl ClientNewLicenseRequest {
         let mac_salt_key = &session_key_blob[..16];
 
         let mut md5 = md5::Md5::new();
-        md5.input(
+        md5.update(
             [
                 &session_key_blob[16..32],
                 client_random,
@@ -83,7 +83,7 @@ impl ClientNewLicenseRequest {
             .concat()
             .as_slice(),
         );
-        let license_key = Vec::from(md5.result().as_ref());
+        let license_key = md5.finalize().to_vec();
 
         let license_header = LicenseHeader {
             security_header: BasicSecurityHeader {
@@ -229,9 +229,9 @@ fn salted_hash(salt: &[u8], salt_first: &[u8], salt_second: &[u8], input: &[u8])
     );
 
     let mut md5 = md5::Md5::new();
-    md5.input([salt, sha_result.as_ref()].concat().as_slice());
+    md5.update([salt, sha_result.as_ref()].concat().as_slice());
 
-    md5.result().to_vec()
+    md5.finalize().to_vec()
 }
 
 // According to https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpele/88061224-4a2f-4a28-a52e-e896b75ed2d3

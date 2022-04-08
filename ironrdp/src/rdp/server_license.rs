@@ -325,13 +325,13 @@ fn compute_mac_data(mac_salt_key: &[u8], data: &[u8]) -> Vec<u8> {
     let pad_two: [u8; 48] = [0x5c; 48];
 
     let mut md5 = md5::Md5::new();
-    md5.input(
+    md5.update(
         [mac_salt_key, pad_two.as_ref(), sha_result.as_ref()]
             .concat()
             .as_slice(),
     );
 
-    md5.result().to_vec()
+    md5.finalize().to_vec()
 }
 
 fn read_license_header(
