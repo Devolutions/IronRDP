@@ -213,8 +213,8 @@ fn challenge_response_creates_from_server_challenge_and_encryption_data_correctl
 
     let mut hardware_id = Vec::with_capacity(CLIENT_HARDWARE_IDENTIFICATION_SIZE);
     let mut md5 = md5::Md5::new();
-    md5.input(b"sample-hostname");
-    let hardware_data = &md5.result();
+    md5.update(b"sample-hostname");
+    let hardware_data = &md5.finalize();
 
     hardware_id.write_u32::<LittleEndian>(PLATFORM_ID).unwrap();
     hardware_id.write_all(hardware_data).unwrap();
