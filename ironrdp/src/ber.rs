@@ -54,11 +54,11 @@ pub fn sizeof_octet_string(length: u16) -> u16 {
 }
 
 pub fn sizeof_integer(value: u32) -> u16 {
-    if value < 0x80 {
+    if value < 0x0000_0080 {
         3
-    } else if value < 0x8000 {
+    } else if value < 0x0000_8000 {
         4
-    } else if value < 0x800_000 {
+    } else if value < 0x0080_0000 {
         5
     } else {
         6
@@ -162,17 +162,17 @@ pub fn read_enumerated(mut stream: impl io::Read, count: u8) -> io::Result<u8> {
 pub fn write_integer(mut stream: impl io::Write, value: u32) -> io::Result<usize> {
     write_universal_tag(&mut stream, Tag::Integer, Pc::Primitive)?;
 
-    if value < 0x80 {
+    if value < 0x0000_0080 {
         write_length(&mut stream, 1)?;
         stream.write_u8(value as u8)?;
 
         Ok(3)
-    } else if value < 0x8000 {
+    } else if value < 0x0000_8000 {
         write_length(&mut stream, 2)?;
         stream.write_u16::<BigEndian>(value as u16)?;
 
         Ok(4)
-    } else if value < 0x800_000 {
+    } else if value < 0x0080_0000 {
         write_length(&mut stream, 3)?;
         stream.write_u8((value >> 16) as u8)?;
         stream.write_u16::<BigEndian>((value & 0xFFFF) as u16)?;

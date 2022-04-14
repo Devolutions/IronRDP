@@ -1,11 +1,15 @@
 mod circular_buffer;
 mod control_messages;
+
 #[cfg(test)]
 mod tests;
 
 use std::io::{self, Write};
 
-use bitvec::prelude::{bits, BitField, BitSlice, Msb0};
+use bitvec::bits;
+use bitvec::field::BitField as _;
+use bitvec::order::Msb0;
+use bitvec::slice::BitSlice;
 use byteorder::WriteBytesExt;
 use failure::Fail;
 use lazy_static::lazy_static;
@@ -178,7 +182,9 @@ fn read_unencoded_bytes(
 
     let unencoded_bits = bits.split_to(length * 8);
 
-    let unencoded_bytes = unencoded_bits.as_slice();
+    // FIXME: not very efficient, but we need to rework the `Bits` helper and refactor a bit otherwise
+    let unencoded_bits = unencoded_bits.to_bitvec();
+    let unencoded_bytes = unencoded_bits.as_raw_slice();
     history.write_all(unencoded_bytes)?;
     output.extend_from_slice(unencoded_bytes);
 
@@ -195,7 +201,7 @@ fn read_encoded_bytes(
     // how many additional bits will be needed to get the full length
     // (the number of bytes to be copied).
 
-    let length_token_size = bits.iter().take_while(|&&v| v).map(|_| 1).sum::<usize>();
+    let length_token_size = bits.leading_ones();
     bits.split_to(length_token_size + 1); // length token + zero bit
 
     let length = if length_token_size == 0 {
@@ -220,7 +226,7 @@ fn read_encoded_bytes(
 }
 
 struct Token {
-    pub prefix: &'static BitSlice<Msb0, u8>,
+    pub prefix: &'static BitSlice<u8, Msb0>,
     pub ty: TokenType,
 }
 
@@ -238,252 +244,252 @@ enum TokenType {
 lazy_static! {
     static ref TOKEN_TABLE: [Token; 40] = [
         Token {
-            prefix: bits![Msb0, u8; 0],
+            prefix: bits![static u8, Msb0; 0],
             ty: TokenType::NullLiteral,
         },
         Token {
-            prefix: bits![Msb0, u8; 1, 1, 0, 0, 0],
+            prefix: bits![static u8, Msb0; 1, 1, 0, 0, 0],
             ty: TokenType::Literal {
                 literal_value: 0x00
             },
         },
         Token {
-            prefix: bits![Msb0, u8; 1, 1, 0, 0, 1],
+            prefix: bits![static u8, Msb0; 1, 1, 0, 0, 1],
             ty: TokenType::Literal {
                 literal_value: 0x01
             },
         },
         Token {
-            prefix: bits![Msb0, u8; 1, 1, 0, 1, 0, 0],
+            prefix: bits![static u8, Msb0; 1, 1, 0, 1, 0, 0],
             ty: TokenType::Literal {
                 literal_value: 0x02
             },
         },
         Token {
-            prefix: bits![Msb0, u8; 1, 1, 0, 1, 0, 1],
+            prefix: bits![static u8, Msb0; 1, 1, 0, 1, 0, 1],
             ty: TokenType::Literal {
                 literal_value: 0x03
             },
         },
         Token {
-            prefix: bits![Msb0, u8; 1, 1, 0, 1, 1, 0],
+            prefix: bits![static u8, Msb0; 1, 1, 0, 1, 1, 0],
             ty: TokenType::Literal {
                 literal_value: 0x0ff
             },
         },
         Token {
-            prefix: bits![Msb0, u8; 1, 1, 0, 1, 1, 1, 0],
+            prefix: bits![static u8, Msb0; 1, 1, 0, 1, 1, 1, 0],
             ty: TokenType::Literal {
                 literal_value: 0x04
             },
         },
         Token {
-            prefix: bits![Msb0, u8; 1, 1, 0, 1, 1, 1, 1],
+            prefix: bits![static u8, Msb0; 1, 1, 0, 1, 1, 1, 1],
             ty: TokenType::Literal {
                 literal_value: 0x05
             },
         },
         Token {
-            prefix: bits![Msb0, u8; 1, 1, 1, 0, 0, 0, 0],
+            prefix: bits![static u8, Msb0; 1, 1, 1, 0, 0, 0, 0],
             ty: TokenType::Literal {
                 literal_value: 0x06
             },
         },
         Token {
-            prefix: bits![Msb0, u8; 1, 1, 1, 0, 0, 0, 1],
+            prefix: bits![static u8, Msb0; 1, 1, 1, 0, 0, 0, 1],
             ty: TokenType::Literal {
                 literal_value: 0x07
             },
         },
         Token {
-            prefix: bits![Msb0, u8; 1, 1, 1, 0, 0, 1, 0],
+            prefix: bits![static u8, Msb0; 1, 1, 1, 0, 0, 1, 0],
             ty: TokenType::Literal {
                 literal_value: 0x08
             },
         },
         Token {
-            prefix: bits![Msb0, u8; 1, 1, 1, 0, 0, 1, 1],
+            prefix: bits![static u8, Msb0; 1, 1, 1, 0, 0, 1, 1],
             ty: TokenType::Literal {
                 literal_value: 0x09
             },
         },
         Token {
-            prefix: bits![Msb0, u8; 1, 1, 1, 0, 1, 0, 0],
+            prefix: bits![static u8, Msb0; 1, 1, 1, 0, 1, 0, 0],
             ty: TokenType::Literal {
                 literal_value: 0x0a
             },
         },
         Token {
-            prefix: bits![Msb0, u8; 1, 1, 1, 0, 1, 0, 1],
+            prefix: bits![static u8, Msb0; 1, 1, 1, 0, 1, 0, 1],
             ty: TokenType::Literal {
                 literal_value: 0x0b
             },
         },
         Token {
-            prefix: bits![Msb0, u8; 1, 1, 1, 0, 1, 1, 0],
+            prefix: bits![static u8, Msb0; 1, 1, 1, 0, 1, 1, 0],
             ty: TokenType::Literal {
                 literal_value: 0x3a
             },
         },
         Token {
-            prefix: bits![Msb0, u8; 1, 1, 1, 0, 1, 1, 1],
+            prefix: bits![static u8, Msb0; 1, 1, 1, 0, 1, 1, 1],
             ty: TokenType::Literal {
                 literal_value: 0x3b
             },
         },
         Token {
-            prefix: bits![Msb0, u8; 1, 1, 1, 1, 0, 0, 0],
+            prefix: bits![static u8, Msb0; 1, 1, 1, 1, 0, 0, 0],
             ty: TokenType::Literal {
                 literal_value: 0x3c
             },
         },
         Token {
-            prefix: bits![Msb0, u8; 1, 1, 1, 1, 0, 0, 1],
+            prefix: bits![static u8, Msb0; 1, 1, 1, 1, 0, 0, 1],
             ty: TokenType::Literal {
                 literal_value: 0x3d
             },
         },
         Token {
-            prefix: bits![Msb0, u8; 1, 1, 1, 1, 0, 1, 0],
+            prefix: bits![static u8, Msb0; 1, 1, 1, 1, 0, 1, 0],
             ty: TokenType::Literal {
                 literal_value: 0x3e
             },
         },
         Token {
-            prefix: bits![Msb0, u8; 1, 1, 1, 1, 0, 1, 1],
+            prefix: bits![static u8, Msb0; 1, 1, 1, 1, 0, 1, 1],
             ty: TokenType::Literal {
                 literal_value: 0x3f
             },
         },
         Token {
-            prefix: bits![Msb0, u8; 1, 1, 1, 1, 1, 0, 0],
+            prefix: bits![static u8, Msb0; 1, 1, 1, 1, 1, 0, 0],
             ty: TokenType::Literal {
                 literal_value: 0x40
             },
         },
         Token {
-            prefix: bits![Msb0, u8; 1, 1, 1, 1, 1, 0, 1],
+            prefix: bits![static u8, Msb0; 1, 1, 1, 1, 1, 0, 1],
             ty: TokenType::Literal {
                 literal_value: 0x80
             },
         },
         Token {
-            prefix: bits![Msb0, u8; 1, 1, 1, 1, 1, 1, 0, 0],
+            prefix: bits![static u8, Msb0; 1, 1, 1, 1, 1, 1, 0, 0],
             ty: TokenType::Literal {
                 literal_value: 0x0c
             },
         },
         Token {
-            prefix: bits![Msb0, u8; 1, 1, 1, 1, 1, 1, 0, 1],
+            prefix: bits![static u8, Msb0; 1, 1, 1, 1, 1, 1, 0, 1],
             ty: TokenType::Literal {
                 literal_value: 0x38
             },
         },
         Token {
-            prefix: bits![Msb0, u8; 1, 1, 1, 1, 1, 1, 1, 0],
+            prefix: bits![static u8, Msb0; 1, 1, 1, 1, 1, 1, 1, 0],
             ty: TokenType::Literal {
                 literal_value: 0x39
             },
         },
         Token {
-            prefix: bits![Msb0, u8; 1, 1, 1, 1, 1, 1, 1, 1],
+            prefix: bits![static u8, Msb0; 1, 1, 1, 1, 1, 1, 1, 1],
             ty: TokenType::Literal {
                 literal_value: 0x66
             },
         },
         Token {
-            prefix: bits![Msb0, u8; 1, 0, 0, 0, 1],
+            prefix: bits![static u8, Msb0; 1, 0, 0, 0, 1],
             ty: TokenType::Match {
                 distance_value_size: 5,
                 distance_base: 0
             },
         },
         Token {
-            prefix: bits![Msb0, u8; 1, 0, 0, 1, 0],
+            prefix: bits![static u8, Msb0; 1, 0, 0, 1, 0],
             ty: TokenType::Match {
                 distance_value_size: 7,
                 distance_base: 32
             },
         },
         Token {
-            prefix: bits![Msb0, u8; 1, 0, 0, 1, 1],
+            prefix: bits![static u8, Msb0; 1, 0, 0, 1, 1],
             ty: TokenType::Match {
                 distance_value_size: 9,
                 distance_base: 160
             },
         },
         Token {
-            prefix: bits![Msb0, u8; 1, 0, 1, 0, 0],
+            prefix: bits![static u8, Msb0; 1, 0, 1, 0, 0],
             ty: TokenType::Match {
                 distance_value_size: 10,
                 distance_base: 672,
             },
         },
         Token {
-            prefix: bits![Msb0, u8; 1, 0, 1, 0, 1],
+            prefix: bits![static u8, Msb0; 1, 0, 1, 0, 1],
             ty: TokenType::Match {
                 distance_value_size: 12,
                 distance_base: 1_696,
             },
         },
         Token {
-            prefix: bits![Msb0, u8; 1, 0, 1, 1, 0, 0],
+            prefix: bits![static u8, Msb0; 1, 0, 1, 1, 0, 0],
             ty: TokenType::Match {
                 distance_value_size: 14,
                 distance_base: 5_792,
             },
         },
         Token {
-            prefix: bits![Msb0, u8; 1, 0, 1, 1, 0, 1],
+            prefix: bits![static u8, Msb0; 1, 0, 1, 1, 0, 1],
             ty: TokenType::Match {
                 distance_value_size: 15,
                 distance_base: 22_176,
             },
         },
         Token {
-            prefix: bits![Msb0, u8; 1, 0, 1, 1, 1, 0, 0],
+            prefix: bits![static u8, Msb0; 1, 0, 1, 1, 1, 0, 0],
             ty: TokenType::Match {
                 distance_value_size: 18,
                 distance_base: 54_944,
             },
         },
         Token {
-            prefix: bits![Msb0, u8; 1, 0, 1, 1, 1, 0, 1],
+            prefix: bits![static u8, Msb0; 1, 0, 1, 1, 1, 0, 1],
             ty: TokenType::Match {
                 distance_value_size: 20,
                 distance_base: 317_088,
             },
         },
         Token {
-            prefix: bits![Msb0, u8; 1, 0, 1, 1, 1, 1, 0, 0],
+            prefix: bits![static u8, Msb0; 1, 0, 1, 1, 1, 1, 0, 0],
             ty: TokenType::Match {
                 distance_value_size: 20,
                 distance_base: 1_365_664,
             },
         },
         Token {
-            prefix: bits![Msb0, u8; 1, 0, 1, 1, 1, 1, 0, 1],
+            prefix: bits![static u8, Msb0; 1, 0, 1, 1, 1, 1, 0, 1],
             ty: TokenType::Match {
                 distance_value_size: 21,
                 distance_base: 2_414_240,
             },
         },
         Token {
-            prefix: bits![Msb0, u8; 1, 0, 1, 1, 1, 1, 1, 0, 0],
+            prefix: bits![static u8, Msb0; 1, 0, 1, 1, 1, 1, 1, 0, 0],
             ty: TokenType::Match {
                 distance_value_size: 22,
                 distance_base: 4_511_392,
             },
         },
         Token {
-            prefix: bits![Msb0, u8; 1, 0, 1, 1, 1, 1, 1, 0, 1],
+            prefix: bits![static u8, Msb0; 1, 0, 1, 1, 1, 1, 1, 0, 1],
             ty: TokenType::Match {
                 distance_value_size: 23,
                 distance_base: 8_705_696,
             },
         },
         Token {
-            prefix: bits![Msb0, u8; 1, 0, 1, 1, 1, 1, 1, 1, 0],
+            prefix: bits![static u8, Msb0; 1, 0, 1, 1, 1, 1, 1, 1, 0],
             ty: TokenType::Match {
                 distance_value_size: 24,
                 distance_base: 17_094_304,

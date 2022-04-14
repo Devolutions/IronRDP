@@ -3,7 +3,9 @@ mod tests;
 
 use std::{cmp::min, io};
 
-use bitvec::prelude::{BitField, BitSlice, BitStore, Msb0};
+use bitvec::field::BitField as _;
+use bitvec::order::Msb0;
+use bitvec::slice::BitSlice;
 use failure::Fail;
 
 use super::EntropyAlgorithm;
@@ -56,17 +58,17 @@ pub fn decode(
     while !bits.is_empty() && !output.is_empty() {
         match CompressionMode::from(k) {
             CompressionMode::RunLength => {
-                let number_of_zeros = count_number_of_leading_value(&mut bits, false);
+                let number_of_zeros = truncate_leading_value(&mut bits, false);
                 try_split_bits!(bits, 1);
                 let run = count_run(number_of_zeros, &mut k, &mut kp)
-                    + load_be::<u32>(try_split_bits!(bits, k as usize));
+                    + load_be_u32(try_split_bits!(bits, k as usize));
 
                 let sign_bit = try_split_bits!(bits, 1).load_be::<u8>();
 
-                let number_of_ones = count_number_of_leading_value(&mut bits, true);
+                let number_of_ones = truncate_leading_value(&mut bits, true);
                 try_split_bits!(bits, 1);
 
-                let code_remainder = load_be::<u32>(try_split_bits!(bits, kr as usize))
+                let code_remainder = load_be_u32(try_split_bits!(bits, kr as usize))
                     + ((number_of_ones as u32) << kr);
 
                 update_parameters_according_to_number_of_ones(number_of_ones, &mut kr, &mut krp);
@@ -81,10 +83,10 @@ pub fn decode(
                 write_byte!(output, magnitude);
             }
             CompressionMode::GolombRice => {
-                let number_of_ones = count_number_of_leading_value(&mut bits, true);
+                let number_of_ones = truncate_leading_value(&mut bits, true);
                 try_split_bits!(bits, 1);
 
-                let code_remainder = load_be::<u32>(try_split_bits!(bits, kr as usize))
+                let code_remainder = load_be_u32(try_split_bits!(bits, kr as usize))
                     + ((number_of_ones as u32) << kr);
 
                 update_parameters_according_to_number_of_ones(number_of_ones, &mut kr, &mut krp);
@@ -97,7 +99,7 @@ pub fn decode(
                     EntropyAlgorithm::Rlgr3 => {
                         let n_index = compute_n_index(code_remainder);
 
-                        let val1 = load_be::<u32>(try_split_bits!(bits, n_index));
+                        let val1 = load_be_u32(try_split_bits!(bits, n_index));
                         let val2 = code_remainder - val1;
                         if val1 != 0 && val2 != 0 {
                             kp = kp.saturating_sub(2 * DQ_GR);
@@ -130,26 +132,23 @@ fn fill(buffer: &mut [i16], value: i16) {
     }
 }
 
-fn load_be<U>(s: &BitSlice<Msb0, u8>) -> U
-where
-    U: BitStore,
-{
+fn load_be_u32(s: &BitSlice<u8, Msb0>) -> u32 {
     if s.is_empty() {
-        U::from(0)
+        0
     } else {
-        s.load_be::<U>()
+        s.load_be::<u32>()
     }
 }
 
-fn count_number_of_leading_value(bits: &mut Bits<'_>, value: bool) -> usize {
-    let number_of_zeros = bits
-        .iter()
-        .take_while(|&&v| v == value)
-        .map(|_| 1)
-        .sum::<usize>();
-    bits.split_to(number_of_zeros);
-
-    number_of_zeros
+// Returns number of truncated bits
+fn truncate_leading_value(bits: &mut Bits<'_>, value: bool) -> usize {
+    let leading_values = if value {
+        bits.leading_ones()
+    } else {
+        bits.leading_zeros()
+    };
+    bits.split_to(leading_values);
+    leading_values
 }
 
 fn count_run(number_of_zeros: usize, k: &mut u32, kp: &mut u32) -> u32 {
@@ -199,19 +198,15 @@ fn compute_rlgr3_magnitude(val: u32) -> i16 {
 }
 
 fn compute_n_index(code_remainder: u32) -> usize {
-    if code_remainder != 0 {
-        let code_bytes = code_remainder.to_be_bytes();
-        let code_bits = BitSlice::<Msb0, u8>::from_slice(code_bytes.as_ref());
-        let number_of_zeros = code_bits
-            .iter()
-            .take_while(|&&v| !v)
-            .map(|_| 1)
-            .sum::<usize>();
-
-        32 - number_of_zeros
-    } else {
-        0
+    if code_remainder == 0 {
+        return 0;
     }
+
+    let code_bytes = code_remainder.to_be_bytes();
+    let code_bits = BitSlice::<u8, Msb0>::from_slice(code_bytes.as_ref());
+    let leading_zeros = code_bits.leading_zeros();
+
+    32 - leading_zeros
 }
 
 fn update_parameters_according_to_number_of_ones(
