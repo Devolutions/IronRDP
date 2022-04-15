@@ -70,7 +70,7 @@ impl PduParsing for X509CertificateChain {
 
         let padding_len = (8 + 4 * self.certificate_array.len()) as usize; // MSDN: A byte array of the length 8 + 4*NumCertBlobs
         let padding = vec![0u8; padding_len];
-        stream.write_all(&padding.as_slice())?;
+        stream.write_all(padding.as_slice())?;
 
         Ok(())
     }

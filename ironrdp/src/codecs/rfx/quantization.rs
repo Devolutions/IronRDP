@@ -12,7 +12,7 @@ pub fn decode(buffer: &mut [i16], quant: &Quant) {
     let (second_level, third_level) =
         buffer.split_at_mut(SECOND_LEVEL_SUBBANDS_COUNT * SECOND_LEVEL_SIZE);
 
-    let decode_chunk = |mut a: (&mut [i16], u8)| decode_block(&mut a.0, a.1 as i16 - 1);
+    let decode_chunk = |a: (&mut [i16], u8)| decode_block(a.0, a.1 as i16 - 1);
 
     first_level
         .chunks_mut(FIRST_LEVEL_SIZE)

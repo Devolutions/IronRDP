@@ -6,7 +6,7 @@ use crate::utils::SplitTo;
 pub fn decode(buffer: &mut [i16], temp_buffer: &mut [i16]) {
     decode_block(&mut buffer[3840..], temp_buffer, 8);
     decode_block(&mut buffer[3072..], temp_buffer, 16);
-    decode_block(&mut buffer[..], temp_buffer, 32);
+    decode_block(&mut *buffer, temp_buffer, 32);
 }
 
 fn decode_block(buffer: &mut [i16], temp_buffer: &mut [i16], subband_width: usize) {
@@ -74,10 +74,10 @@ fn inverse_vertical(mut buffer: &mut [i16], mut temp_buffer: &[i16], subband_wid
             - ((i32::from(temp_buffer[subband_width * total_width]) * 2 + 1) >> 1))
             as i16;
 
-        let mut l = &temp_buffer[..];
+        let mut l = temp_buffer;
         let mut lh = &temp_buffer[(subband_width - 1) * total_width..];
         let mut h = &temp_buffer[subband_width * total_width..];
-        let mut dst = &mut buffer[..];
+        let mut dst = &mut *buffer;
 
         for _ in 1..subband_width {
             l = &l[total_width..];

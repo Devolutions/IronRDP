@@ -4,7 +4,7 @@ use der_parser::parse_der;
 use num_bigint::BigUint;
 
 pub fn encrypt_with_public_key(message: &[u8], public_key_der: &[u8]) -> io::Result<Vec<u8>> {
-    let (_, der_object) = parse_der(&public_key_der).map_err(|err| {
+    let (_, der_object) = parse_der(public_key_der).map_err(|err| {
         io::Error::new(
             io::ErrorKind::InvalidData,
             format!("Unable to parse public key from der: {:?}", err),
@@ -48,9 +48,9 @@ pub fn encrypt_with_public_key(message: &[u8], public_key_der: &[u8]) -> io::Res
         )
     })?;
 
-    let n = BigUint::from_bytes_be(&n);
-    let e = BigUint::from_bytes_be(&e);
-    let m = BigUint::from_bytes_le(&message);
+    let n = BigUint::from_bytes_be(n);
+    let e = BigUint::from_bytes_be(e);
+    let m = BigUint::from_bytes_le(message);
     let c = m.modpow(&e, &n);
 
     let mut result = c.to_bytes_le();

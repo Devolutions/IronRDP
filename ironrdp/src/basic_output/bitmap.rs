@@ -49,7 +49,7 @@ impl<'a> PduBufferParsing<'a> for Bitmap<'a> {
     fn to_buffer_consume(&self, buffer: &mut &mut [u8]) -> Result<(), Self::Error> {
         buffer.write_u16::<LittleEndian>(BitmapFlags::BITMAP_UPDATE_TYPE.bits())?;
         buffer.write_u16::<LittleEndian>(self.rectangles_number as u16)?;
-        for ref bitmap_data in self.rectangles.iter() {
+        for bitmap_data in self.rectangles.iter() {
             bitmap_data.to_buffer_consume(buffer)?;
         }
 

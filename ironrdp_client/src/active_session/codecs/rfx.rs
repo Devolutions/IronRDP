@@ -66,7 +66,7 @@ impl DecodingContext {
                     self.process_headers(input)?;
                 }
                 SequenceState::DataMessages => {
-                    let frame_id = self.process_data_messages(&destination, input, image)?;
+                    let frame_id = self.process_data_messages(destination, input, image)?;
 
                     return Ok(frame_id);
                 }
@@ -135,12 +135,12 @@ impl DecodingContext {
         debug!("Region: {:?}", region);
 
         let clipping_rectangles =
-            clipping_rectangles(region.rectangles.as_slice(), &destination, width, height);
+            clipping_rectangles(region.rectangles.as_slice(), destination, width, height);
         debug!("Clipping rectangles: {:?}", clipping_rectangles);
         let clipping_rectangles_ref = &clipping_rectangles;
 
         for (update_rectangle, tile_data) in
-            tiles_to_rectangles(tile_set.tiles.as_slice(), &destination).zip(map_tiles_data(
+            tiles_to_rectangles(tile_set.tiles.as_slice(), destination).zip(map_tiles_data(
                 tile_set.tiles.as_slice(),
                 tile_set.quants.as_slice(),
             ))
@@ -181,7 +181,7 @@ fn process_decoded_tile(
 ) -> Result<(), RdpError> {
     debug!("Tile: {:?}", update_rectangle);
 
-    let update_region = clipping_rectangles.intersect_rectangle(&update_rectangle);
+    let update_region = clipping_rectangles.intersect_rectangle(update_rectangle);
     for region_rectangle in update_region.rectangles() {
         let source_x = region_rectangle.left - update_rectangle.left;
         let source_y = region_rectangle.top - update_rectangle.top;

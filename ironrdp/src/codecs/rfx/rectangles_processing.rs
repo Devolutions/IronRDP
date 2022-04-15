@@ -81,16 +81,14 @@ impl Region {
             0 => Self::new(),
             1 => self
                 .extents
-                .intersect(&rectangle)
+                .intersect(rectangle)
                 .map(Self::from)
                 .unwrap_or_default(),
             _ => {
                 let rectangles = self
                     .rectangles
                     .iter()
-                    .take_while(|r| r.top < rectangle.bottom)
-                    .map(|r| r.intersect(&rectangle))
-                    .filter_map(|v| v)
+                    .take_while(|r| r.top < rectangle.bottom).filter_map(|r| r.intersect(rectangle))
                     .collect::<Vec<_>>();
                 let extents = Rectangle::union_all(rectangles.as_slice());
 
@@ -240,7 +238,7 @@ fn handle_rectangle_that_overlaps_band(
         dst,
         max(rectangle.top, band_top),
         min(rectangle.bottom, band_bottom),
-        &rectangle,
+        rectangle,
     );
 
     // split current band by the `rectangle.bottom` and the current band bottom (case 1, 4)

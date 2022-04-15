@@ -57,8 +57,7 @@ fn zgfx_decopresses_multiple_single_pdus() {
 
 #[test]
 fn zgfx_decopresses_only_one_literal() {
-    #[allow(clippy::inconsistent_digit_grouping)]
-    let buffer = [0b11001_000, 0x03];
+    let buffer = [0b1100_1000, 0x03];
     let expected = vec![0x01];
 
     let mut zgfx = Decompressor::new();
@@ -70,8 +69,7 @@ fn zgfx_decopresses_only_one_literal() {
 
 #[test]
 fn zgfx_decopresses_one_literal_with_null_prefix() {
-    #[allow(clippy::inconsistent_digit_grouping)]
-    let buffer = [0b0_0110010, 0b1_0000000, 0x07];
+    let buffer = [0b0011_0010, 0b1000_0000, 0x07];
     let expected = vec![0x65];
 
     let mut zgfx = Decompressor::new();
@@ -83,8 +81,7 @@ fn zgfx_decopresses_one_literal_with_null_prefix() {
 
 #[test]
 fn zgfx_decopresses_only_multiple_literals() {
-    #[allow(clippy::inconsistent_digit_grouping)]
-    let buffer = [0b11001_110, 0b100_11011, 0b0_0_011001, 0b01_000000, 0x06];
+    let buffer = [0b1100_1110, 0b1001_1011, 0b0001_1001, 0b0100_0000, 0x06];
     let expected = vec![0x01, 0x02, 0xff, 0x65];
 
     let mut zgfx = Decompressor::new();
@@ -96,8 +93,7 @@ fn zgfx_decopresses_only_multiple_literals() {
 
 #[test]
 fn zgfx_decopresses_one_literal_with_one_match_distance_1() {
-    #[allow(clippy::inconsistent_digit_grouping)]
-    let buffer = [0b0_0110010, 0b1_10001_00, 0b001_10_00_0, 0x1];
+    let buffer = [0b0011_0010, 0b1100_0100, 0b0011_0000, 0x1];
     let expected = vec![0x65; 1 + 4]; // literal (1) + match repeated 4 (length) + 0 times
 
     let mut zgfx = Decompressor::new();
@@ -109,14 +105,13 @@ fn zgfx_decopresses_one_literal_with_one_match_distance_1() {
 
 #[test]
 fn zgfx_decopresses_three_literals_with_one_match_distance_3_length_57() {
-    #[allow(clippy::inconsistent_digit_grouping)]
     let buffer = [
-        0b0_0100000,
-        0b1_0_010000,
-        0b10_0_01000,
-        0b011_10001,
-        0b_00011_111,
-        0b10_11001_0,
+        0b0010_0000,
+        0b1001_0000,
+        0b1000_1000,
+        0b0111_0001,
+        0b0001_1111,
+        0b1011_0010,
         0x1,
     ];
     let expected = "ABC".repeat(20);
@@ -132,8 +127,7 @@ fn zgfx_decopresses_three_literals_with_one_match_distance_3_length_57() {
 #[test]
 fn zgfx_decopresses_one_match_with_match_unencoded_bytes() {
     let expected = "The quick brown fox jumps over the lazy dog".as_bytes();
-    #[allow(clippy::inconsistent_digit_grouping, clippy::unreadable_literal)]
-    let mut buffer = vec![0b10001_000, 0b00_000000, 0b00010101, 0b1_0000000];
+    let mut buffer = vec![0b1000_1000, 0b0000_0000, 0b00010101, 0b1000_0000];
     buffer.extend_from_slice(expected);
     buffer.extend_from_slice(&[0x00]); // no bits unused
 
@@ -211,13 +205,12 @@ fn zgfx_decopresses_single_match_unencoded_block() {
 
 #[test]
 fn zgfx_decopresses_unencoded_block_without_padding() {
-    #[allow(clippy::inconsistent_digit_grouping, clippy::unreadable_literal)]
     let buffer = [
-        0b1110010_1,
+        0b1110_0101,
         0b0001_0000,
-        0b0_0000000,
+        0b0000_0000,
         0b00000001,
-        0b_11110000,
+        0b1111_0000,
         0x0,
     ];
     let expected = vec![0x08, 0xf0];

@@ -290,7 +290,7 @@ impl ServerCertificate {
             }
             CertificateType::X509(certificate) => {
                 if let Ok((_, tbs)) = parse_x509_certificate(
-                    &certificate.certificate_array[certificate.certificate_array.len() - 1]
+                    certificate.certificate_array[certificate.certificate_array.len() - 1]
                         .as_slice(),
                 ) {
                     Ok(Vec::from(
@@ -369,7 +369,7 @@ impl PduParsing for ProductInfo {
         let version = stream.read_u32::<LittleEndian>()?;
 
         let company_name_len = stream.read_u32::<LittleEndian>()?;
-        if company_name_len < 2 || company_name_len > MAX_COMPANY_NAME_LEN {
+        if !(2..=MAX_COMPANY_NAME_LEN).contains(&company_name_len) {
             return Err(ServerLicenseError::InvalidCompanyNameLength(
                 company_name_len,
             ));
@@ -379,10 +379,10 @@ impl PduParsing for ProductInfo {
         stream.read_exact(&mut company_name)?;
 
         company_name.resize((company_name_len - 2) as usize, 0);
-        let company_name = utils::bytes_to_utf16_string(&company_name.as_slice());
+        let company_name = utils::bytes_to_utf16_string(company_name.as_slice());
 
         let product_id_len = stream.read_u32::<LittleEndian>()?;
-        if product_id_len < 2 || product_id_len > MAX_PRODUCT_ID_LEN {
+        if !(2..=MAX_PRODUCT_ID_LEN).contains(&product_id_len) {
             return Err(ServerLicenseError::InvalidProductIdLength(product_id_len));
         }
 
@@ -390,7 +390,7 @@ impl PduParsing for ProductInfo {
         stream.read_exact(&mut product_id)?;
 
         product_id.resize((product_id_len - 2) as usize, 0);
-        let product_id = utils::bytes_to_utf16_string(&product_id.as_slice());
+        let product_id = utils::bytes_to_utf16_string(product_id.as_slice());
 
         Ok(Self {
             version,

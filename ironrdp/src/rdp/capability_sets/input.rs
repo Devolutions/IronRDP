@@ -74,10 +74,7 @@ impl PduParsing for Input {
         buffer.write_u32::<LittleEndian>(self.keyboard_layout)?;
 
         let type_buffer = match self.keyboard_type.as_ref() {
-            Some(value) => match value.to_u32() {
-                Some(n) => n,
-                None => 0,
-            },
+            Some(value) => value.to_u32().unwrap_or(0),
             None => 0,
         };
         buffer.write_u32::<LittleEndian>(type_buffer)?;

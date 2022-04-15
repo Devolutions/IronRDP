@@ -34,19 +34,19 @@ impl Decompressor {
     pub fn decompress(
         &mut self,
         input: &[u8],
-        mut output: &mut Vec<u8>,
+        output: &mut Vec<u8>,
     ) -> Result<usize, ZgfxError> {
         let segmented_data = SegmentedDataPdu::from_buffer(input)?;
 
         match segmented_data {
-            SegmentedDataPdu::Single(segment) => self.handle_segment(&segment, &mut output),
+            SegmentedDataPdu::Single(segment) => self.handle_segment(&segment, output),
             SegmentedDataPdu::Multipart {
                 uncompressed_size,
                 segments,
             } => {
                 let mut bytes_written = 0;
                 for segment in segments {
-                    let written = self.handle_segment(&segment, &mut output)?;
+                    let written = self.handle_segment(&segment, output)?;
                     bytes_written += written;
                 }
 
@@ -65,14 +65,14 @@ impl Decompressor {
     fn handle_segment(
         &mut self,
         segment: &BulkEncodedData<'_>,
-        mut output: &mut Vec<u8>,
+        output: &mut Vec<u8>,
     ) -> Result<usize, ZgfxError> {
         if !segment.data.is_empty() {
             if segment
                 .compression_flags
                 .contains(CompressionFlags::COMPRESSED)
             {
-                self.decompress_segment(segment.data, &mut output)
+                self.decompress_segment(segment.data, output)
             } else {
                 self.history.write_all(segment.data)?;
                 output.extend_from_slice(segment.data);
@@ -87,13 +87,13 @@ impl Decompressor {
     fn decompress_segment(
         &mut self,
         encoded_data: &[u8],
-        mut output: &mut Vec<u8>,
+        output: &mut Vec<u8>,
     ) -> Result<usize, ZgfxError> {
         let mut bits = BitSlice::from_slice(encoded_data);
 
         // The value of the last byte indicates the number of unused bits in the final byte
         bits = &bits[..8 * (encoded_data.len() - 1) - *encoded_data.last().unwrap() as usize];
-        let mut bits = Bits::new(&bits);
+        let mut bits = Bits::new(bits);
         let mut bytes_written = 0;
 
         while !bits.is_empty() {
@@ -129,7 +129,7 @@ impl Decompressor {
                         distance_value_size,
                         distance_base,
                         &mut self.history,
-                        &mut output,
+                        output,
                     )?;
                     bytes_written += written;
                 }
@@ -151,7 +151,7 @@ fn handle_match(
     distance_value_size: usize,
     distance_base: u32,
     history: &mut FixedCircularBuffer,
-    mut output: &mut Vec<u8>,
+    output: &mut Vec<u8>,
 ) -> io::Result<usize> {
     // Each token has been assigned a different base distance
     // and number of additional value bits to be added to compute the full distance.
@@ -159,9 +159,9 @@ fn handle_match(
     let distance = (distance_base + bits.split_to(distance_value_size).load_be::<u32>()) as usize;
 
     if distance == 0 {
-        read_unencoded_bytes(bits, history, &mut output)
+        read_unencoded_bytes(bits, history, output)
     } else {
-        read_encoded_bytes(bits, distance, history, &mut output)
+        read_encoded_bytes(bits, distance, history, output)
     }
 }
 

@@ -30,7 +30,7 @@ fn decode_works_with_rlgr3() {
 #[test]
 fn decode_correctly_decodes_rl_without_leading_zeros_and_ones() {
     #[allow(clippy::inconsistent_digit_grouping)]
-    let input = [0b11000_000];
+    let input = [0b1100_0000];
     let expected = [0, 1];
     let mode = EntropyAlgorithm::Rlgr3;
 
@@ -42,7 +42,7 @@ fn decode_correctly_decodes_rl_without_leading_zeros_and_ones() {
 #[test]
 fn decode_correctly_decodes_rl_with_not_null_sign_bit() {
     #[allow(clippy::inconsistent_digit_grouping)]
-    let input = [0b11100_000];
+    let input = [0b1110_0000];
     let expected = [0, -1];
     let mode = EntropyAlgorithm::Rlgr3;
 

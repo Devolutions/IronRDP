@@ -82,7 +82,7 @@ impl PduParsing for Guid {
     }
 
     fn buffer_length(&self) -> usize {
-        16 as usize
+        16_usize
     }
 }
 
