@@ -1,7 +1,17 @@
-pub mod conference_create;
-pub(crate) mod monitor_data;
+use std::io;
+
+use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
+use failure::Fail;
+use num_derive::{FromPrimitive, ToPrimitive};
+use num_traits::{FromPrimitive, ToPrimitive};
+
+use crate::{impl_from_error, PduParsing};
+
 #[cfg(test)]
 pub mod test;
+
+pub mod conference_create;
+pub(crate) mod monitor_data;
 
 mod cluster_data;
 mod core_data;
@@ -10,13 +20,6 @@ mod monitor_extended_data;
 mod multi_transport_channel_data;
 mod network_data;
 mod security_data;
-
-use std::io;
-
-use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
-use failure::Fail;
-use num_derive::{FromPrimitive, ToPrimitive};
-use num_traits::{FromPrimitive, ToPrimitive};
 
 pub use self::cluster_data::{ClientClusterData, ClusterDataError, RedirectionFlags, RedirectionVersion};
 pub use self::conference_create::{ConferenceCreateRequest, ConferenceCreateResponse};
@@ -40,7 +43,6 @@ pub use self::network_data::{Channel, ChannelOptions, ClientNetworkData, Network
 pub use self::security_data::{
     ClientSecurityData, EncryptionLevel, EncryptionMethod, SecurityDataError, ServerSecurityData,
 };
-use crate::{impl_from_error, PduParsing};
 
 macro_rules! user_header_try {
     ($e:expr) => {

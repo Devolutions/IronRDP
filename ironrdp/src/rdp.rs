@@ -1,3 +1,12 @@
+use std::io;
+
+use failure::Fail;
+
+use self::client_info::ClientInfoError;
+use self::finalization_messages::FinalizationMessagesError;
+use self::server_license::ServerLicenseError;
+use crate::{impl_from_error, PduParsing};
+
 #[cfg(test)]
 pub mod test;
 
@@ -11,20 +20,14 @@ mod finalization_messages;
 mod headers;
 mod server_error_info;
 
-use std::io;
-
-use failure::Fail;
-
 pub use self::capability_sets::{
     CapabilitySet, CapabilitySetsError, ClientConfirmActive, DemandActive, ServerDemandActive, VirtualChannel,
     SERVER_CHANNEL_ID,
 };
-use self::client_info::ClientInfoError;
 pub use self::client_info::{
     AddressFamily, ClientInfo, ClientInfoFlags, CompressionType, Credentials, DayOfWeek, DayOfWeekOccurrence,
     ExtendedClientInfo, ExtendedClientOptionalInfo, Month, PerformanceFlags, SystemTime, TimezoneInfo,
 };
-use self::finalization_messages::FinalizationMessagesError;
 pub use self::finalization_messages::{
     ControlAction, ControlPdu, FontPdu, MonitorLayoutPdu, SequenceFlags, SynchronizePdu,
 };
@@ -36,8 +39,6 @@ pub use self::server_error_info::{
     ErrorInfo, ProtocolIndependentCode, ProtocolIndependentConnectionBrokerCode, ProtocolIndependentLicensingCode,
     RdpSpecificCode, ServerSetErrorInfoError, ServerSetErrorInfoPdu,
 };
-use self::server_license::ServerLicenseError;
-use crate::{impl_from_error, PduParsing};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ClientInfoPdu {

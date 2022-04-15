@@ -1,11 +1,3 @@
-pub mod color_conversion;
-pub mod dwt;
-pub mod image_processing;
-pub mod quantization;
-pub mod rectangles_processing;
-pub mod rlgr;
-pub mod subband_reconstruction;
-
 mod data_messages;
 mod header_messages;
 #[cfg(test)]
@@ -18,13 +10,22 @@ use failure::Fail;
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive, ToPrimitive};
 
+use crate::{impl_from_error, PduBufferParsing, PduParsing};
+
+pub mod color_conversion;
+pub mod dwt;
+pub mod image_processing;
+pub mod quantization;
+pub mod rectangles_processing;
+pub mod rlgr;
+pub mod subband_reconstruction;
+
 pub use self::data_messages::{
     ContextPdu, EntropyAlgorithm, FrameBeginPdu, FrameEndPdu, OperatingMode, Quant, RegionPdu, RfxRectangle, Tile,
     TileSetPdu,
 };
 pub use self::header_messages::{Channel, ChannelsPdu, CodecVersionsPdu, SyncPdu};
 pub use self::rlgr::RlgrError;
-use crate::{impl_from_error, PduBufferParsing, PduParsing};
 
 const BLOCK_HEADER_SIZE: usize = 6;
 const CODEC_CHANNEL_HEADER_SIZE: usize = 2;

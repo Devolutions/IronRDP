@@ -1,7 +1,3 @@
-mod connect_initial;
-#[cfg(test)]
-mod test;
-
 use std::io;
 
 use byteorder::{ReadBytesExt, WriteBytesExt};
@@ -9,9 +5,15 @@ use failure::Fail;
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive, ToPrimitive};
 
-pub use self::connect_initial::{ConnectInitial, ConnectResponse, DomainParameters};
 use crate::gcc::GccError;
 use crate::{impl_from_error, per, PduParsing};
+
+#[cfg(test)]
+mod test;
+
+mod connect_initial;
+
+pub use self::connect_initial::{ConnectInitial, ConnectResponse, DomainParameters};
 
 pub const RESULT_ENUM_LENGTH: u8 = 16;
 

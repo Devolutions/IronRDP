@@ -1,9 +1,3 @@
-#[cfg(test)]
-mod tests;
-
-mod logon_extended;
-mod logon_info;
-
 use std::io;
 
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
@@ -11,12 +5,19 @@ use failure::Fail;
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive, ToPrimitive};
 
+use crate::{impl_from_error, PduParsing};
+
+#[cfg(test)]
+mod tests;
+
+mod logon_extended;
+mod logon_info;
+
 pub use self::logon_extended::{
     LogonErrorNotificationData, LogonErrorNotificationType, LogonErrorsInfo, LogonExFlags, LogonInfoExtended,
     ServerAutoReconnect,
 };
 pub use self::logon_info::{LogonInfo, LogonInfoVersion1, LogonInfoVersion2};
-use crate::{impl_from_error, PduParsing};
 
 const INFO_TYPE_FIELD_SIZE: usize = 4;
 const PLAIN_NOTIFY_PADDING_SIZE: usize = 576;

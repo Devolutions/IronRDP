@@ -66,7 +66,7 @@ lazy_static! {
     pub static ref CLIENT_GCC_WITHOUT_OPTIONAL_FIELDS: ClientGccBlocks = ClientGccBlocks {
         core: core_data::client::test::CLIENT_OPTIONAL_CORE_DATA_TO_SERVER_SELECTED_PROTOCOL.clone(),
         security: security_data::test::CLIENT_SECURITY_DATA.clone(),
-        network: Some(network_data::test::CLIENT_NETOWORK_DATA_WITH_CHANNELS.clone()),
+        network: Some(network_data::test::CLIENT_NETWORK_DATA_WITH_CHANNELS.clone()),
         cluster: None,
         monitor: None,
         message_channel: None,
@@ -88,7 +88,7 @@ lazy_static! {
     };
     pub static ref SERVER_GCC_WITHOUT_OPTIONAL_FIELDS: ServerGccBlocks = ServerGccBlocks {
         core: core_data::server::test::SERVER_CORE_DATA_TO_FLAGS.clone(),
-        network: network_data::test::SERVER_NETOWORK_DATA_WITH_CHANNELS_ID.clone(),
+        network: network_data::test::SERVER_NETWORK_DATA_WITH_CHANNELS_ID.clone(),
         security: security_data::test::SERVER_SECURITY_DATA_WITH_OPTIONAL_FIELDS.clone(),
         message_channel: None,
         multi_transport_channel: None,

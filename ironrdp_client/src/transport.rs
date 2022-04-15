@@ -1,6 +1,3 @@
-mod channels;
-mod connection;
-
 use std::io;
 
 use bytes::BytesMut;
@@ -8,9 +5,13 @@ use ironrdp::rdp::SERVER_CHANNEL_ID;
 use ironrdp::{PduParsing, RdpPdu};
 use log::warn;
 
+use crate::RdpError;
+
+mod channels;
+mod connection;
+
 pub use self::channels::{ChannelIdentificators, DynamicVirtualChannelTransport, StaticVirtualChannelTransport};
 pub use self::connection::{connect, EarlyUserAuthResult, TsRequestTransport};
-use crate::RdpError;
 
 pub trait Encoder {
     type Item;

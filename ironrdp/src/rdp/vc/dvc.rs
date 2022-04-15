@@ -1,14 +1,3 @@
-pub mod gfx;
-
-#[cfg(test)]
-mod tests;
-
-mod capabilities;
-mod close;
-mod create;
-mod data;
-mod data_first;
-
 use std::collections::HashMap;
 use std::{io, mem};
 
@@ -17,13 +6,25 @@ use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive, ToPrimitive};
 
+use super::ChannelError;
+use crate::PduParsing;
+
+#[cfg(test)]
+mod tests;
+
+pub mod gfx;
+
+mod capabilities;
+mod close;
+mod create;
+mod data;
+mod data_first;
+
 pub use self::capabilities::{CapabilitiesRequestPdu, CapabilitiesResponsePdu, CapsVersion};
 pub use self::close::ClosePdu;
 pub use self::create::{CreateRequestPdu, CreateResponsePdu, DVC_CREATION_STATUS_NO_LISTENER, DVC_CREATION_STATUS_OK};
 pub use self::data::DataPdu;
 pub use self::data_first::DataFirstPdu;
-use super::ChannelError;
-use crate::PduParsing;
 
 const HEADER_SIZE: usize = 1;
 const PDU_WITH_DATA_MAX_SIZE: usize = 1600;
