@@ -5,11 +5,8 @@ use failure::Fail;
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive, ToPrimitive};
 
-use crate::{
-    impl_from_error,
-    utils::{self, SplitTo},
-    PduBufferParsing,
-};
+use crate::utils::{self, SplitTo};
+use crate::{impl_from_error, PduBufferParsing};
 
 const PRECONNECTION_PDU_V1_SIZE: usize = 16;
 
@@ -41,8 +38,7 @@ impl PduBufferParsing<'_> for PreconnectionPdu {
 
         buffer.read_u32::<LittleEndian>()?; // flags
         let version = buffer.read_u32::<LittleEndian>()?;
-        let version =
-            Version::from_u32(version).ok_or(PreconnectionPduError::UnexpectedVersion(version))?;
+        let version = Version::from_u32(version).ok_or(PreconnectionPduError::UnexpectedVersion(version))?;
 
         let id = buffer.read_u32::<LittleEndian>()?;
 
@@ -74,11 +70,7 @@ impl PduBufferParsing<'_> for PreconnectionPdu {
             }
         };
 
-        Ok(Self {
-            id,
-            cch_pcb,
-            payload,
-        })
+        Ok(Self { id, cch_pcb, payload })
     }
 
     fn to_buffer_consume(&self, buffer: &mut &mut [u8]) -> Result<(), Self::Error> {
@@ -91,11 +83,7 @@ impl PduBufferParsing<'_> for PreconnectionPdu {
 
         if let Some(ref payload) = self.payload {
             buffer.write_u16::<LittleEndian>(payload.len() as u16 + 1)?; // + null terminator
-            utils::write_string_with_null_terminator(
-                buffer,
-                payload.as_str(),
-                utils::CharacterSet::Unicode,
-            )?;
+            utils::write_string_with_null_terminator(buffer, payload.as_str(), utils::CharacterSet::Unicode)?;
         }
 
         Ok(())
@@ -143,11 +131,7 @@ pub enum PreconnectionPduError {
     UnexpectedVersion(u32),
 }
 
-impl_from_error!(
-    io::Error,
-    PreconnectionPduError,
-    PreconnectionPduError::IoError
-);
+impl_from_error!(io::Error, PreconnectionPduError, PreconnectionPduError::IoError);
 
 #[cfg(test)]
 mod tests {
@@ -208,18 +192,12 @@ mod tests {
 
     #[test]
     fn from_buffer_for_preconnection_pdu_returns_error_on_empty_size() {
-        assert!(
-            PreconnectionPdu::from_buffer(PRECONNECTION_PDU_V1_EMPTY_SIZE_BUFFER.as_ref()).is_err()
-        );
+        assert!(PreconnectionPdu::from_buffer(PRECONNECTION_PDU_V1_EMPTY_SIZE_BUFFER.as_ref()).is_err());
     }
 
     #[test]
-    fn from_buffer_for_preconnection_pdu_returns_error_on_data_length_greater_then_available_data()
-    {
-        assert!(PreconnectionPdu::from_buffer(
-            PRECONNECTION_PDU_V1_LARGE_DATA_LENGTH_BUFFER.as_ref()
-        )
-        .is_err());
+    fn from_buffer_for_preconnection_pdu_returns_error_on_data_length_greater_then_available_data() {
+        assert!(PreconnectionPdu::from_buffer(PRECONNECTION_PDU_V1_LARGE_DATA_LENGTH_BUFFER.as_ref()).is_err());
     }
 
     #[test]
@@ -243,19 +221,12 @@ mod tests {
 
     #[test]
     fn buffer_length_is_correct_for_preconnection_pdu_v1() {
-        assert_eq!(
-            PRECONNECTION_PDU_V1_BUFFER.len(),
-            PRECONNECTION_PDU_V1.buffer_length()
-        );
+        assert_eq!(PRECONNECTION_PDU_V1_BUFFER.len(), PRECONNECTION_PDU_V1.buffer_length());
     }
 
     #[test]
-    fn from_buffer_for_preconnection_pdu_v2_returns_error_on_payload_size_greater_then_available_data(
-    ) {
-        assert!(PreconnectionPdu::from_buffer(
-            PRECONNECTION_PDU_V2_LARGE_PAYLOAD_SIZE_BUFFER.as_ref()
-        )
-        .is_err());
+    fn from_buffer_for_preconnection_pdu_v2_returns_error_on_payload_size_greater_then_available_data() {
+        assert!(PreconnectionPdu::from_buffer(PRECONNECTION_PDU_V2_LARGE_PAYLOAD_SIZE_BUFFER.as_ref()).is_err());
     }
 
     #[test]
@@ -279,9 +250,6 @@ mod tests {
 
     #[test]
     fn buffer_length_is_correct_for_preconnection_pdu_v2() {
-        assert_eq!(
-            PRECONNECTION_PDU_V2_BUFFER.len(),
-            PRECONNECTION_PDU_V2.buffer_length()
-        );
+        assert_eq!(PRECONNECTION_PDU_V2_BUFFER.len(), PRECONNECTION_PDU_V2.buffer_length());
     }
 }

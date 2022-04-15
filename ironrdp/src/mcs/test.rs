@@ -10,20 +10,17 @@ const ATTACH_USER_REQUEST_PDU_BUFFER_LEN: usize = 1;
 const ATTACH_USER_REQUEST_PDU_BUFFER: [u8; ATTACH_USER_REQUEST_PDU_BUFFER_LEN] = [0x28];
 
 const ATTACH_USER_CONFIRM_PDU_BUFFER_LEN: usize = 4;
-const ATTACH_USER_CONFIRM_PDU_BUFFER: [u8; ATTACH_USER_CONFIRM_PDU_BUFFER_LEN] =
-    [0x2e, 0x00, 0x00, 0x06];
+const ATTACH_USER_CONFIRM_PDU_BUFFER: [u8; ATTACH_USER_CONFIRM_PDU_BUFFER_LEN] = [0x2e, 0x00, 0x00, 0x06];
 
 const CHANNEL_JOIN_REQUEST_PDU_BUFFER_LEN: usize = 5;
-const CHANNEL_JOIN_REQUEST_PDU_BUFFER: [u8; CHANNEL_JOIN_REQUEST_PDU_BUFFER_LEN] =
-    [0x38, 0x00, 0x06, 0x03, 0xef];
+const CHANNEL_JOIN_REQUEST_PDU_BUFFER: [u8; CHANNEL_JOIN_REQUEST_PDU_BUFFER_LEN] = [0x38, 0x00, 0x06, 0x03, 0xef];
 
 const CHANNEL_JOIN_CONFIRM_PDU_BUFFER_LEN: usize = 8;
 const CHANNEL_JOIN_CONFIRM_PDU_BUFFER: [u8; CHANNEL_JOIN_CONFIRM_PDU_BUFFER_LEN] =
     [0x3e, 0x00, 0x00, 0x06, 0x03, 0xef, 0x03, 0xef];
 
 const DISCONNECT_PROVIDER_ULTIMATUM_PDU_BUFFER_LEN: usize = 2;
-const DISCONNECT_PROVIDER_ULTIMATUM_PDU_BUFFER: [u8; DISCONNECT_PROVIDER_ULTIMATUM_PDU_BUFFER_LEN] =
-    [0x21, 0x80];
+const DISCONNECT_PROVIDER_ULTIMATUM_PDU_BUFFER: [u8; DISCONNECT_PROVIDER_ULTIMATUM_PDU_BUFFER_LEN] = [0x21, 0x80];
 
 const SEND_DATA_REQUEST_PDU_BUFFER_PREFIX_LEN: usize = 8;
 const SEND_DATA_REQUEST_PDU_BUFFER_PREFIX: [u8; SEND_DATA_REQUEST_PDU_BUFFER_PREFIX_LEN] =
@@ -82,9 +79,7 @@ lazy_static! {
 
 #[test]
 fn from_buffer_returns_error_with_invalid_domain_mcs_pdu() {
-    let buf = vec![
-        0x48, 0x00, 0x00, 0x00, 0x70, 0x00, 0x01, 0x03, 0xEB, 0x70, 0x14,
-    ];
+    let buf = vec![0x48, 0x00, 0x00, 0x00, 0x70, 0x00, 0x01, 0x03, 0xEB, 0x70, 0x14];
 
     match McsPdu::from_buffer(&mut buf.as_slice()) {
         Err(McsError::InvalidDomainMcsPdu) => (),
@@ -124,10 +119,7 @@ fn buffer_length_is_correct_for_erect_domain_request() {
 fn from_buffer_correct_parses_attach_user_request() {
     let buf = ATTACH_USER_REQUEST_PDU_BUFFER;
 
-    assert_eq!(
-        ATTACH_USER_REQUEST_PDU,
-        McsPdu::from_buffer(buf.as_ref()).unwrap()
-    );
+    assert_eq!(ATTACH_USER_REQUEST_PDU, McsPdu::from_buffer(buf.as_ref()).unwrap());
 }
 
 #[test]
@@ -155,10 +147,7 @@ fn buffer_length_is_correct_for_attach_user_request() {
 fn from_buffer_correct_parses_attach_user_confirm() {
     let buf = ATTACH_USER_CONFIRM_PDU_BUFFER;
 
-    assert_eq!(
-        ATTACH_USER_CONFIRM_PDU,
-        McsPdu::from_buffer(buf.as_ref()).unwrap()
-    );
+    assert_eq!(ATTACH_USER_CONFIRM_PDU, McsPdu::from_buffer(buf.as_ref()).unwrap());
 }
 
 #[test]
@@ -186,10 +175,7 @@ fn buffer_length_is_correct_for_attach_user_confirm() {
 fn from_buffer_correct_parses_channel_join_request() {
     let buf = CHANNEL_JOIN_REQUEST_PDU_BUFFER;
 
-    assert_eq!(
-        CHANNEL_JOIN_REQUEST_PDU,
-        McsPdu::from_buffer(buf.as_ref()).unwrap()
-    );
+    assert_eq!(CHANNEL_JOIN_REQUEST_PDU, McsPdu::from_buffer(buf.as_ref()).unwrap());
 }
 
 #[test]
@@ -217,10 +203,7 @@ fn buffer_length_is_correct_for_channel_join_request() {
 fn from_buffer_correct_parses_channel_join_confirm() {
     let buf = CHANNEL_JOIN_CONFIRM_PDU_BUFFER;
 
-    assert_eq!(
-        CHANNEL_JOIN_CONFIRM_PDU,
-        McsPdu::from_buffer(buf.as_ref()).unwrap()
-    );
+    assert_eq!(CHANNEL_JOIN_CONFIRM_PDU, McsPdu::from_buffer(buf.as_ref()).unwrap());
 }
 
 #[test]

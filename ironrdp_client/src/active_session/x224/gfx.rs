@@ -1,10 +1,8 @@
-use ironrdp::{
-    dvc::gfx::{
-        zgfx, CapabilitiesAdvertisePdu, CapabilitiesV8Flags, CapabilitySet, ClientPdu,
-        FrameAcknowledgePdu, QueueDepth, ServerPdu,
-    },
-    PduParsing,
+use ironrdp::dvc::gfx::{
+    zgfx, CapabilitiesAdvertisePdu, CapabilitiesV8Flags, CapabilitySet, ClientPdu, FrameAcknowledgePdu, QueueDepth,
+    ServerPdu,
 };
+use ironrdp::PduParsing;
 use log::debug;
 
 use super::DynamicChannelDataHandler;
@@ -27,10 +25,7 @@ impl Handler {
 }
 
 impl DynamicChannelDataHandler for Handler {
-    fn process_complete_data(
-        &mut self,
-        complete_data: Vec<u8>,
-    ) -> Result<Option<Vec<u8>>, RdpError> {
+    fn process_complete_data(&mut self, complete_data: Vec<u8>) -> Result<Option<Vec<u8>>, RdpError> {
         self.decompressed_buffer.clear();
         self.decompressor
             .decompress(complete_data.as_slice(), &mut self.decompressed_buffer)?;
@@ -57,12 +52,10 @@ impl DynamicChannelDataHandler for Handler {
 }
 
 pub fn create_capabilities_advertise() -> Result<Vec<u8>, RdpError> {
-    let capabilities_advertise =
-        ClientPdu::CapabilitiesAdvertise(CapabilitiesAdvertisePdu(vec![CapabilitySet::V8 {
-            flags: CapabilitiesV8Flags::empty(),
-        }]));
-    let mut capabilities_advertise_buffer =
-        Vec::with_capacity(capabilities_advertise.buffer_length());
+    let capabilities_advertise = ClientPdu::CapabilitiesAdvertise(CapabilitiesAdvertisePdu(vec![CapabilitySet::V8 {
+        flags: CapabilitiesV8Flags::empty(),
+    }]));
+    let mut capabilities_advertise_buffer = Vec::with_capacity(capabilities_advertise.buffer_length());
     capabilities_advertise.to_buffer(&mut capabilities_advertise_buffer)?;
 
     Ok(capabilities_advertise_buffer)

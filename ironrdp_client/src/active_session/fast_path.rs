@@ -1,31 +1,21 @@
-use std::{
-    io,
-    sync::{Arc, Mutex},
-};
+use std::io;
+use std::sync::{Arc, Mutex};
 
+use ironrdp::codecs::rfx::FrameAcknowledgePdu;
+use ironrdp::fast_path::{FastPathError, FastPathHeader, FastPathUpdate, FastPathUpdatePdu, Fragmentation, UpdateCode};
+use ironrdp::surface_commands::{FrameAction, FrameMarkerPdu, SurfaceCommand};
+use ironrdp::{PduBufferParsing, ShareDataPdu};
 use log::{debug, info, warn};
 use num_traits::FromPrimitive;
 
-use ironrdp::{
-    codecs::rfx::FrameAcknowledgePdu,
-    fast_path::{
-        FastPathError, FastPathHeader, FastPathUpdate, FastPathUpdatePdu, Fragmentation, UpdateCode,
-    },
-    PduBufferParsing,
-    ShareDataPdu, surface_commands::{FrameAction, SurfaceCommand},
+use super::codecs::rfx;
+use super::{DecodedImage, DESTINATION_PIXEL_FORMAT};
+use crate::transport::{
+    DataTransport, Encoder, McsTransport, SendDataContextTransport, ShareControlHeaderTransport,
+    ShareDataHeaderTransport,
 };
-use ironrdp::surface_commands::FrameMarkerPdu;
-
-use crate::{
-    RdpError,
-    transport::{
-        DataTransport, Encoder, McsTransport, SendDataContextTransport,
-        ShareControlHeaderTransport, ShareDataHeaderTransport,
-    },
-    utils::CodecId,
-};
-
-use super::{codecs::rfx, DecodedImage, DESTINATION_PIXEL_FORMAT};
+use crate::utils::CodecId;
+use crate::RdpError;
 
 pub struct Processor {
     complete_data: CompleteData,
@@ -47,10 +37,7 @@ impl Processor {
         let update_pdu = FastPathUpdatePdu::from_buffer(input_buffer)?;
         let update_pdu_length = update_pdu.buffer_length();
 
-        debug!(
-            "Fast-Path Update fragmentation: {:?}",
-            update_pdu.fragmentation
-        );
+        debug!("Fast-Path Update fragmentation: {:?}", update_pdu.fragmentation);
 
         let processed_complete_data = self
             .complete_data
@@ -63,10 +50,7 @@ impl Processor {
 
             match update {
                 Ok(FastPathUpdate::SurfaceCommands(surface_commands)) => {
-                    info!(
-                        "Received Surface Commands: {} pieces",
-                        surface_commands.len()
-                    );
+                    info!("Received Surface Commands: {} pieces", surface_commands.len());
 
                     self.process_surface_commands(&mut stream, surface_commands)?;
                 }
@@ -102,20 +86,16 @@ impl Processor {
             match command {
                 SurfaceCommand::SetSurfaceBits(bits) | SurfaceCommand::StreamSurfaceBits(bits) => {
                     info!("Surface bits");
-                    let codec_id = CodecId::from_u8(bits.extended_bitmap_data.codec_id).ok_or(
-                        RdpError::UnexpectedCodecId(bits.extended_bitmap_data.codec_id),
-                    )?;
+                    let codec_id = CodecId::from_u8(bits.extended_bitmap_data.codec_id)
+                        .ok_or(RdpError::UnexpectedCodecId(bits.extended_bitmap_data.codec_id))?;
                     match codec_id {
                         CodecId::RemoteFx => {
                             let destination = bits.destination;
                             let mut data = bits.extended_bitmap_data.data;
 
                             while !data.is_empty() {
-                                self.rfx_handler.decode(
-                                    &destination,
-                                    &mut data,
-                                    self.decoded_image.clone(),
-                                )?;
+                                self.rfx_handler
+                                    .decode(&destination, &mut data, self.decoded_image.clone())?;
                             }
                         }
                     }
@@ -159,9 +139,7 @@ struct CompleteData {
 
 impl CompleteData {
     fn new() -> Self {
-        Self {
-            fragmented_data: None,
-        }
+        Self { fragmented_data: None }
     }
 
     fn process_data(&mut self, data: &[u8], fragmentation: Fragmentation) -> Option<Vec<u8>> {
@@ -205,10 +183,7 @@ impl CompleteData {
             warn!("Got unexpected Next fragmentation PDU without prior First fragmentation PDU");
             self.fragmented_data = None;
         } else {
-            self.fragmented_data
-                .as_mut()
-                .unwrap()
-                .extend_from_slice(data);
+            self.fragmented_data.as_mut().unwrap().extend_from_slice(data);
         }
     }
 }
@@ -232,11 +207,7 @@ impl Frame {
         }
     }
 
-    fn process_marker(
-        &mut self,
-        marker: &FrameMarkerPdu,
-        mut output: impl io::Write,
-    ) -> Result<(), RdpError> {
+    fn process_marker(&mut self, marker: &FrameMarkerPdu, mut output: impl io::Write) -> Result<(), RdpError> {
         match marker.frame_action {
             FrameAction::Begin => Ok(()),
             FrameAction::End => self.transport.encode(

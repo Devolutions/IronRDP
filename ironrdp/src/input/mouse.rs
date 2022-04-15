@@ -51,8 +51,7 @@ impl PduParsing for MousePdu {
         } else {
             WheelEvents::empty()
         };
-        let number_of_wheel_rotations =
-            self.number_of_wheel_rotations as u16 & !WHEEL_ROTATION_MASK;
+        let number_of_wheel_rotations = self.number_of_wheel_rotations as u16 & !WHEEL_ROTATION_MASK;
 
         let flags = self.wheel_events.bits()
             | self.movement_events.bits()

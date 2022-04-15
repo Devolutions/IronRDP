@@ -1,23 +1,18 @@
 mod gfx;
 
-use std::{cmp, collections::HashMap, io};
+use std::collections::HashMap;
+use std::{cmp, io};
 
-use ironrdp::{
-    rdp::{
-        vc::{self, dvc},
-        ErrorInfo, ProtocolIndependentCode, ServerSetErrorInfoPdu,
-    },
-    Data, ShareDataPdu,
-};
+use ironrdp::rdp::vc::{self, dvc};
+use ironrdp::rdp::{ErrorInfo, ProtocolIndependentCode, ServerSetErrorInfoPdu};
+use ironrdp::{Data, ShareDataPdu};
 use log::{debug, error};
 
-use crate::{
-    transport::{
-        Decoder, DynamicVirtualChannelTransport, Encoder, SendDataContextTransport,
-        ShareControlHeaderTransport, ShareDataHeaderTransport, StaticVirtualChannelTransport,
-    },
-    RdpError,
+use crate::transport::{
+    Decoder, DynamicVirtualChannelTransport, Encoder, SendDataContextTransport, ShareControlHeaderTransport,
+    ShareDataHeaderTransport, StaticVirtualChannelTransport,
 };
+use crate::RdpError;
 
 const RDP8_GRAPHICS_PIPELINE_NAME: &str = "Microsoft::Windows::RDS::Graphics";
 
@@ -36,25 +31,14 @@ impl<'a> Processor<'a> {
         }
     }
 
-    pub fn process(
-        &mut self,
-        mut stream: impl io::BufRead + io::Write,
-        data: Data,
-    ) -> Result<(), RdpError> {
+    pub fn process(&mut self, mut stream: impl io::BufRead + io::Write, data: Data) -> Result<(), RdpError> {
         let mut transport = SendDataContextTransport::default();
-        transport
-            .mcs_transport
-            .0
-            .set_decoded_context(data.data_length);
+        transport.mcs_transport.0.set_decoded_context(data.data_length);
 
         let channel_ids = transport.decode(&mut stream)?;
         transport.set_decoded_context(channel_ids);
 
-        match self
-            .static_channels
-            .get(&channel_ids.channel_id)
-            .map(String::as_str)
-        {
+        match self.static_channels.get(&channel_ids.channel_id).map(String::as_str) {
             Some(vc::DRDYNVC_CHANNEL_NAME) => {
                 let transport = DynamicVirtualChannelTransport::new(
                     StaticVirtualChannelTransport::new(transport),
@@ -85,10 +69,9 @@ impl<'a> Processor<'a> {
         match transport.decode(&mut stream)? {
             dvc::ServerPdu::CapabilitiesRequest(caps_request) => {
                 debug!("Got DVC Capabilities Request PDU: {:?}", caps_request);
-                let caps_response =
-                    dvc::ClientPdu::CapabilitiesResponse(dvc::CapabilitiesResponsePdu {
-                        version: dvc::CapsVersion::V1,
-                    });
+                let caps_response = dvc::ClientPdu::CapabilitiesResponse(dvc::CapabilitiesResponsePdu {
+                    version: dvc::CapsVersion::V1,
+                });
 
                 debug!("Send DVC Capabilities Response PDU: {:?}", caps_response);
                 transport.encode(
@@ -99,9 +82,7 @@ impl<'a> Processor<'a> {
             dvc::ServerPdu::CreateRequest(create_request) => {
                 debug!("Got DVC Create Request PDU: {:?}", create_request);
 
-                let creation_status = if let Some(dyncamic_channel) =
-                    create_dvc(create_request.channel_name.as_str())
-                {
+                let creation_status = if let Some(dyncamic_channel) = create_dvc(create_request.channel_name.as_str()) {
                     self.dynamic_channels
                         .insert(create_request.channel_id, dyncamic_channel);
 
@@ -159,10 +140,7 @@ impl<'a> Processor<'a> {
                     });
 
                     transport.encode(
-                        DynamicVirtualChannelTransport::prepare_data_to_encode(
-                            client_data,
-                            Some(dvc_data),
-                        )?,
+                        DynamicVirtualChannelTransport::prepare_data_to_encode(client_data, Some(dvc_data))?,
                         &mut stream,
                     )?;
                 }
@@ -186,10 +164,7 @@ impl<'a> Processor<'a> {
                     });
 
                     transport.encode(
-                        DynamicVirtualChannelTransport::prepare_data_to_encode(
-                            client_data,
-                            Some(dvc_data),
-                        )?,
+                        DynamicVirtualChannelTransport::prepare_data_to_encode(client_data, Some(dvc_data))?,
                         &mut stream,
                     )?;
                 }
@@ -212,16 +187,14 @@ fn process_global_channel_pdu(
 
             Ok(())
         }
-        ShareDataPdu::ServerSetErrorInfo(ServerSetErrorInfoPdu(
-            ErrorInfo::ProtocolIndependentCode(ProtocolIndependentCode::None),
-        )) => {
+        ShareDataPdu::ServerSetErrorInfo(ServerSetErrorInfoPdu(ErrorInfo::ProtocolIndependentCode(
+            ProtocolIndependentCode::None,
+        ))) => {
             debug!("Received None server error");
 
             Ok(())
         }
-        ShareDataPdu::ServerSetErrorInfo(ServerSetErrorInfoPdu(e)) => {
-            Err(RdpError::ServerError(e.description()))
-        }
+        ShareDataPdu::ServerSetErrorInfo(ServerSetErrorInfoPdu(e)) => Err(RdpError::ServerError(e.description())),
         _ => Err(RdpError::UnexpectedPdu(format!(
             "Expected Session Save Info PDU, got: {:?}",
             share_data_pdu.as_short_name()
@@ -260,10 +233,7 @@ fn negotiate_dvc(
 }
 
 trait DynamicChannelDataHandler {
-    fn process_complete_data(
-        &mut self,
-        complete_data: Vec<u8>,
-    ) -> Result<Option<Vec<u8>>, RdpError>;
+    fn process_complete_data(&mut self, complete_data: Vec<u8>) -> Result<Option<Vec<u8>>, RdpError>;
 }
 
 pub struct DynamicChannel {
@@ -279,11 +249,7 @@ impl DynamicChannel {
         }
     }
 
-    fn process_data_first_pdu(
-        &mut self,
-        total_data_size: usize,
-        data: Vec<u8>,
-    ) -> Result<Option<Vec<u8>>, RdpError> {
+    fn process_data_first_pdu(&mut self, total_data_size: usize, data: Vec<u8>) -> Result<Option<Vec<u8>>, RdpError> {
         if let Some(complete_data) = self.data.process_data_first_pdu(total_data_size, data) {
             self.handler.process_complete_data(complete_data)
         } else {
@@ -352,9 +318,7 @@ impl CompleteData {
                     Some(self.data.drain(..).collect())
                 }
                 cmp::Ordering::Greater => {
-                    error!(
-                        "Actual DVC message size is grater than expected total DVC message size"
-                    );
+                    error!("Actual DVC message size is grater than expected total DVC message size");
                     self.total_size = 0;
                     self.data.clear();
 

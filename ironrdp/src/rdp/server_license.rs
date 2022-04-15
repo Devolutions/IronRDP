@@ -18,16 +18,12 @@ use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive, ToPrimitive};
 use ring::digest;
 
-pub use self::{
-    client_new_license_request::{ClientNewLicenseRequest, PLATFORM_ID},
-    client_platform_challenge_response::ClientPlatformChallengeResponse,
-    licensing_error_message::{LicenseErrorCode, LicensingErrorMessage, LicensingStateTransition},
-    server_license_request::{
-        InitialMessageType, InitialServerLicenseMessage, ServerLicenseRequest,
-    },
-    server_platform_challenge::ServerPlatformChallenge,
-    server_upgrade_license::ServerUpgradeLicense,
-};
+pub use self::client_new_license_request::{ClientNewLicenseRequest, PLATFORM_ID};
+pub use self::client_platform_challenge_response::ClientPlatformChallengeResponse;
+pub use self::licensing_error_message::{LicenseErrorCode, LicensingErrorMessage, LicensingStateTransition};
+pub use self::server_license_request::{InitialMessageType, InitialServerLicenseMessage, ServerLicenseRequest};
+pub use self::server_platform_challenge::ServerPlatformChallenge;
+pub use self::server_upgrade_license::ServerUpgradeLicense;
 use crate::rdp::{BasicSecurityHeader, BasicSecurityHeaderFlags, BASIC_SECURITY_HEADER_SIZE};
 use crate::{impl_from_error, PduParsing};
 
@@ -74,31 +70,23 @@ impl PduParsing for LicenseHeader {
             ))
         })?;
 
-        if !security_header
-            .flags
-            .contains(BasicSecurityHeaderFlags::LICENSE_PKT)
-        {
+        if !security_header.flags.contains(BasicSecurityHeaderFlags::LICENSE_PKT) {
             return Err(ServerLicenseError::InvalidSecurityFlags);
         }
 
-        let preamble_message_type = PreambleType::from_u8(stream.read_u8()?)
-            .ok_or(ServerLicenseError::InvalidLicenseType)?;
+        let preamble_message_type =
+            PreambleType::from_u8(stream.read_u8()?).ok_or(ServerLicenseError::InvalidLicenseType)?;
 
         let flags_with_version = stream.read_u8()?;
         let preamble_message_size = stream.read_u16::<LittleEndian>()?;
 
         let preamble_flags = PreambleFlags::from_bits(flags_with_version & !PROTOCOL_VERSION_MASK)
-            .ok_or_else(|| {
-                ServerLicenseError::InvalidPreamble(String::from("Got invalid flags field"))
-            })?;
+            .ok_or_else(|| ServerLicenseError::InvalidPreamble(String::from("Got invalid flags field")))?;
 
-        let preamble_version =
-            PreambleVersion::from_u8((flags_with_version & PROTOCOL_VERSION_MASK) as u8)
-                .ok_or_else(|| {
-                    ServerLicenseError::InvalidPreamble(String::from(
-                        "Got invalid version in the flags field",
-                    ))
-                })?;
+        let preamble_version = PreambleVersion::from_u8((flags_with_version & PROTOCOL_VERSION_MASK) as u8)
+            .ok_or_else(|| {
+                ServerLicenseError::InvalidPreamble(String::from("Got invalid version in the flags field"))
+            })?;
 
         Ok(Self {
             security_header,
@@ -117,8 +105,7 @@ impl PduParsing for LicenseHeader {
             ))
         })?;
 
-        let flags_with_version =
-            self.preamble_flags.bits() | self.preamble_version.to_u8().unwrap();
+        let flags_with_version = self.preamble_flags.bits() | self.preamble_version.to_u8().unwrap();
 
         stream.write_u8(self.preamble_message_type.to_u8().unwrap())?;
         stream.write_u8(flags_with_version)?;
@@ -197,9 +184,7 @@ pub enum ServerLicenseError {
     RsaKeyEncryptionError,
     #[fail(display = "Invalid License Request key exchange algorithm value")]
     InvalidKeyExchangeValue,
-    #[fail(
-        display = "MAC checksum generated over decrypted data does not match the server's checksum"
-    )]
+    #[fail(display = "MAC checksum generated over decrypted data does not match the server's checksum")]
     InvalidMacData,
     #[fail(display = "Invalid platform challenge response data version")]
     InvalidChallengeResponseDataVersion,
@@ -235,15 +220,9 @@ pub enum ServerLicenseError {
     UnexpectedValidClientError(LicensingErrorMessage),
     #[fail(display = "Invalid Key Exchange List field")]
     InvalidKeyExchangeAlgorithm,
-    #[fail(
-        display = "Received invalid company name length (Product Information): {}",
-        _0
-    )]
+    #[fail(display = "Received invalid company name length (Product Information): {}", _0)]
     InvalidCompanyNameLength(u32),
-    #[fail(
-        display = "Received invalid product ID length (Product Information): {}",
-        _0
-    )]
+    #[fail(display = "Received invalid product ID length (Product Information): {}", _0)]
     InvalidProductIdLength(u32),
     #[fail(display = "Received invalid scope count field: {}", _0)]
     InvalidScopeCount(u32),
@@ -279,9 +258,7 @@ impl BlobHeader {
         Ok(Self { blob_type, length })
     }
 
-    pub fn read_any_blob_from_buffer(
-        mut stream: impl io::Read,
-    ) -> Result<Self, ServerLicenseError> {
+    pub fn read_any_blob_from_buffer(mut stream: impl io::Read) -> Result<Self, ServerLicenseError> {
         let _blob_type = stream.read_u16::<LittleEndian>()?;
         let length = stream.read_u16::<LittleEndian>()? as usize;
 
@@ -312,14 +289,9 @@ fn compute_mac_data(mac_salt_key: &[u8], data: &[u8]) -> Vec<u8> {
 
     let sha_result = digest::digest(
         &digest::SHA1_FOR_LEGACY_USE_ONLY,
-        [
-            mac_salt_key,
-            pad_one.as_ref(),
-            data_len_buffer.as_ref(),
-            data,
-        ]
-        .concat()
-        .as_slice(),
+        [mac_salt_key, pad_one.as_ref(), data_len_buffer.as_ref(), data]
+            .concat()
+            .as_slice(),
     );
 
     let pad_two: [u8; 48] = [0x5c; 48];
@@ -347,9 +319,7 @@ fn read_license_header(
             if license_error.error_code == LicenseErrorCode::StatusValidClient
                 && license_error.state_transition == LicensingStateTransition::NoTransition
             {
-                return Err(ServerLicenseError::UnexpectedValidClientError(
-                    license_error,
-                ));
+                return Err(ServerLicenseError::UnexpectedValidClientError(license_error));
             } else {
                 return Err(ServerLicenseError::UnexpectedServerError(license_error));
             }

@@ -1,9 +1,8 @@
 use lazy_static::lazy_static;
 
-use crate::{
-    gcc::core_data::{client::*, *},
-    nego,
-};
+use crate::gcc::core_data::client::*;
+use crate::gcc::core_data::*;
+use crate::nego;
 
 const CLIENT_CORE_DATA_BUFFER: [u8; 128] = [
     0x04, 0x00, 0x08, 0x00, // version
@@ -13,17 +12,15 @@ const CLIENT_CORE_DATA_BUFFER: [u8; 128] = [
     0x03, 0xaa, // sas sequence
     0x09, 0x04, 0x00, 0x00, // keyboard layout
     0xce, 0x0e, 0x00, 0x00, // client build
-    0x45, 0x00, 0x4c, 0x00, 0x54, 0x00, 0x4f, 0x00, 0x4e, 0x00, 0x53, 0x00, 0x2d, 0x00, 0x44, 0x00,
-    0x45, 0x00, 0x56, 0x00, 0x32, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, // client name
+    0x45, 0x00, 0x4c, 0x00, 0x54, 0x00, 0x4f, 0x00, 0x4e, 0x00, 0x53, 0x00, 0x2d, 0x00, 0x44, 0x00, 0x45, 0x00, 0x56,
+    0x00, 0x32, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // client name
     0x04, 0x00, 0x00, 0x00, // keyboard type
     0x00, 0x00, 0x00, 0x00, // keyboard subtype
     0x0c, 0x00, 0x00, 0x00, // keyboard function key
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, // ime file name
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // ime file name
 ];
 const CLIENT_OPTIONAL_CORE_DATA_TO_HIGH_COLOR_DEPTH_BUFFER: [u8; 8] = [
     0x01, 0xca, // post beta color depth
@@ -37,18 +34,16 @@ const CLIENT_OPTIONAL_CORE_DATA_FROM_HIGH_COLOR_DEPTH_TO_SERVER_SELECTED_PROTOCO
     0x18, 0x00, // high color depth
     0x07, 0x00, // supported color depths
     0x01, 0x00, // early capability flags
-    0x36, 0x00, 0x39, 0x00, 0x37, 0x00, 0x31, 0x00, 0x32, 0x00, 0x2d, 0x00, 0x37, 0x00, 0x38, 0x00,
-    0x33, 0x00, 0x2d, 0x00, 0x30, 0x00, 0x33, 0x00, 0x35, 0x00, 0x37, 0x00, 0x39, 0x00, 0x37, 0x00,
-    0x34, 0x00, 0x2d, 0x00, 0x34, 0x00, 0x32, 0x00, 0x37, 0x00, 0x31, 0x00, 0x34, 0x00, 0x00, 0x00,
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-    0x00, // client dig product id
+    0x36, 0x00, 0x39, 0x00, 0x37, 0x00, 0x31, 0x00, 0x32, 0x00, 0x2d, 0x00, 0x37, 0x00, 0x38, 0x00, 0x33, 0x00, 0x2d,
+    0x00, 0x30, 0x00, 0x33, 0x00, 0x35, 0x00, 0x37, 0x00, 0x39, 0x00, 0x37, 0x00, 0x34, 0x00, 0x2d, 0x00, 0x34, 0x00,
+    0x32, 0x00, 0x37, 0x00, 0x31, 0x00, 0x34, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // client dig product id
     0x00, // connection type
     0x00, // padding
     0x00, 0x00, 0x00, 0x00, // server selected protocol
 ];
 
-const CLIENT_OPTIONAL_CORE_DATA_FROM_DESKTOP_PHYSICAL_WIDTH_TO_DEVICE_SCALE_FACTOR_BUFFER: [u8;
-    18] = [
+const CLIENT_OPTIONAL_CORE_DATA_FROM_DESKTOP_PHYSICAL_WIDTH_TO_DEVICE_SCALE_FACTOR_BUFFER: [u8; 18] = [
     0x88, 0x13, 0x00, 0x00, // desktop physical width
     0xb8, 0x0b, 0x00, 0x00, //desktop physical height
     0x5a, 0x00, // desktop orientation
@@ -84,11 +79,9 @@ lazy_static! {
     pub static ref CLIENT_OPTIONAL_CORE_DATA_TO_SERVER_SELECTED_PROTOCOL: ClientCoreData = {
         let mut data = CLIENT_OPTIONAL_CORE_DATA_TO_HIGH_COLOR_DEPTH.clone();
         data.optional_data.high_color_depth = Some(HighColorDepth::Bpp24);
-        data.optional_data.supported_color_depths = Some(
-            SupportedColorDepths::BPP24 | SupportedColorDepths::BPP16 | SupportedColorDepths::BPP15,
-        );
-        data.optional_data.early_capability_flags =
-            Some(ClientEarlyCapabilityFlags::SUPPORT_ERR_INFO_PDU);
+        data.optional_data.supported_color_depths =
+            Some(SupportedColorDepths::BPP24 | SupportedColorDepths::BPP16 | SupportedColorDepths::BPP15);
+        data.optional_data.early_capability_flags = Some(ClientEarlyCapabilityFlags::SUPPORT_ERR_INFO_PDU);
         data.optional_data.dig_product_id = Some(String::from("69712-783-0357974-42714"));
         data.optional_data.connection_type = Some(ConnectionType::NotUsed);
         data.optional_data.server_selected_protocol = Some(nego::SecurityProtocol::RDP);
@@ -107,8 +100,7 @@ lazy_static! {
     };
     pub static ref CLIENT_CORE_DATA_WITH_ALL_OPTIONAL_FIELDS_WITH_WANT_32_BPP_EARLY_FLAG: ClientCoreData = {
         let mut data = CLIENT_CORE_DATA_WITH_ALL_OPTIONAL_FIELDS.clone();
-        data.optional_data.early_capability_flags =
-            Some(ClientEarlyCapabilityFlags::WANT_32_BPP_SESSION);
+        data.optional_data.early_capability_flags = Some(ClientEarlyCapabilityFlags::WANT_32_BPP_SESSION);
 
         data
     };
@@ -120,39 +112,28 @@ lazy_static! {
     };
     pub static ref CLIENT_OPTIONAL_CORE_DATA_TO_SERVER_SELECTED_PROTOCOL_BUFFER: Vec<u8> = {
         let mut buffer = CLIENT_OPTIONAL_CORE_DATA_TO_HIGH_COLOR_DEPTH_BUFFER_BUFFER.to_vec();
-        buffer.extend(
-            CLIENT_OPTIONAL_CORE_DATA_FROM_HIGH_COLOR_DEPTH_TO_SERVER_SELECTED_PROTOCOL_BUFFER
-                .as_ref(),
-        );
+        buffer.extend(CLIENT_OPTIONAL_CORE_DATA_FROM_HIGH_COLOR_DEPTH_TO_SERVER_SELECTED_PROTOCOL_BUFFER.as_ref());
 
         buffer
     };
     pub static ref CLIENT_OPTIONAL_CORE_DATA_WITH_ALL_OPTIONAL_FIELDS_BUFFER: Vec<u8> = {
         let mut buffer = CLIENT_OPTIONAL_CORE_DATA_TO_SERVER_SELECTED_PROTOCOL_BUFFER.to_vec();
-        buffer.extend(
-            CLIENT_OPTIONAL_CORE_DATA_FROM_DESKTOP_PHYSICAL_WIDTH_TO_DEVICE_SCALE_FACTOR_BUFFER
-                .as_ref(),
-        );
+        buffer.extend(CLIENT_OPTIONAL_CORE_DATA_FROM_DESKTOP_PHYSICAL_WIDTH_TO_DEVICE_SCALE_FACTOR_BUFFER.as_ref());
 
         buffer
     };
     pub static ref CLIENT_CORE_DATA_WITH_ALL_OPTIONAL_FIELDS_WITH_WANT_32_BPP_EARLY_FLAG_BUFFER: Vec<u8> = {
-        let early_capability_flags = ClientEarlyCapabilityFlags::WANT_32_BPP_SESSION
-            .bits()
-            .to_le_bytes();
+        let early_capability_flags = ClientEarlyCapabilityFlags::WANT_32_BPP_SESSION.bits().to_le_bytes();
 
         let mut from_high_color_to_server_protocol =
             CLIENT_OPTIONAL_CORE_DATA_FROM_HIGH_COLOR_DEPTH_TO_SERVER_SELECTED_PROTOCOL_BUFFER;
-        from_high_color_to_server_protocol[EARLY_CAPABILITY_FLAGS_START
-            ..EARLY_CAPABILITY_FLAGS_START + EARLY_CAPABILITY_FLAGS_LENGTH]
+        from_high_color_to_server_protocol
+            [EARLY_CAPABILITY_FLAGS_START..EARLY_CAPABILITY_FLAGS_START + EARLY_CAPABILITY_FLAGS_LENGTH]
             .clone_from_slice(early_capability_flags.as_ref());
 
         let mut buffer = CLIENT_OPTIONAL_CORE_DATA_TO_HIGH_COLOR_DEPTH_BUFFER_BUFFER.to_vec();
         buffer.extend(from_high_color_to_server_protocol.as_ref());
-        buffer.extend(
-            CLIENT_OPTIONAL_CORE_DATA_FROM_DESKTOP_PHYSICAL_WIDTH_TO_DEVICE_SCALE_FACTOR_BUFFER
-                .as_ref(),
-        );
+        buffer.extend(CLIENT_OPTIONAL_CORE_DATA_FROM_DESKTOP_PHYSICAL_WIDTH_TO_DEVICE_SCALE_FACTOR_BUFFER.as_ref());
 
         buffer
     };
@@ -277,18 +258,15 @@ fn client_color_depth_is_high_color_depth_if_want_32_bpp_flag_is_absent() {
     let buffer = CLIENT_OPTIONAL_CORE_DATA_WITH_ALL_OPTIONAL_FIELDS_BUFFER.clone();
 
     let core_data = ClientCoreData::from_buffer(buffer.as_slice()).unwrap();
-    let expected_client_color_depth: ClientColorDepth =
-        From::from(core_data.optional_data.high_color_depth.unwrap());
+    let expected_client_color_depth: ClientColorDepth = From::from(core_data.optional_data.high_color_depth.unwrap());
 
     assert_eq!(expected_client_color_depth, core_data.client_color_depth());
 }
 
 #[test]
 fn client_color_depth_is_32_bpp_if_want_32_bpp_flag_is_set() {
-    let buffer =
-        CLIENT_CORE_DATA_WITH_ALL_OPTIONAL_FIELDS_WITH_WANT_32_BPP_EARLY_FLAG_BUFFER.clone();
-    let expected_core_data =
-        CLIENT_CORE_DATA_WITH_ALL_OPTIONAL_FIELDS_WITH_WANT_32_BPP_EARLY_FLAG.clone();
+    let buffer = CLIENT_CORE_DATA_WITH_ALL_OPTIONAL_FIELDS_WITH_WANT_32_BPP_EARLY_FLAG_BUFFER.clone();
+    let expected_core_data = CLIENT_CORE_DATA_WITH_ALL_OPTIONAL_FIELDS_WITH_WANT_32_BPP_EARLY_FLAG.clone();
     let expected_client_color_depth = ClientColorDepth::Bpp32;
 
     let core_data = ClientCoreData::from_buffer(buffer.as_slice()).unwrap();

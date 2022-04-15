@@ -3,8 +3,8 @@ use num_traits::{FromPrimitive, ToPrimitive};
 
 use super::*;
 use crate::gcc::{
-    cluster_data, core_data, message_channel_data, monitor_data, monitor_extended_data,
-    multi_transport_channel_data, network_data, security_data,
+    cluster_data, core_data, message_channel_data, monitor_data, monitor_extended_data, multi_transport_channel_data,
+    network_data, security_data,
 };
 
 const USER_HEADER_LEN: usize = 4;
@@ -64,8 +64,7 @@ lazy_static! {
         buffer
     };
     pub static ref CLIENT_GCC_WITHOUT_OPTIONAL_FIELDS: ClientGccBlocks = ClientGccBlocks {
-        core: core_data::client::test::CLIENT_OPTIONAL_CORE_DATA_TO_SERVER_SELECTED_PROTOCOL
-            .clone(),
+        core: core_data::client::test::CLIENT_OPTIONAL_CORE_DATA_TO_SERVER_SELECTED_PROTOCOL.clone(),
         security: security_data::test::CLIENT_SECURITY_DATA.clone(),
         network: Some(network_data::test::CLIENT_NETOWORK_DATA_WITH_CHANNELS.clone()),
         cluster: None,
@@ -83,8 +82,7 @@ lazy_static! {
     pub static ref CLIENT_GCC_WITH_ALL_OPTIONAL_FIELDS: ClientGccBlocks = {
         let mut data = CLIENT_GCC_WITH_CLUSTER_OPTIONAL_FIELD.clone();
         data.monitor = Some(monitor_data::test::MONITOR_DATA_WITH_MONITORS.clone());
-        data.monitor_extended =
-            Some(monitor_extended_data::test::MONITOR_DATA_WITH_MONITORS.clone());
+        data.monitor_extended = Some(monitor_extended_data::test::MONITOR_DATA_WITH_MONITORS.clone());
 
         data
     };
@@ -98,16 +96,14 @@ lazy_static! {
     pub static ref SERVER_GCC_WITH_OPTIONAL_FIELDS: ServerGccBlocks = {
         let mut data = SERVER_GCC_WITHOUT_OPTIONAL_FIELDS.clone();
         data.message_channel = Some(message_channel_data::test::SERVER_GCC_MESSAGE_CHANNEL_BLOCK);
-        data.multi_transport_channel = Some(
-            multi_transport_channel_data::test::SERVER_GCC_MULTI_TRANSPORT_CHANNEL_BLOCK.clone(),
-        );
+        data.multi_transport_channel =
+            Some(multi_transport_channel_data::test::SERVER_GCC_MULTI_TRANSPORT_CHANNEL_BLOCK.clone());
 
         data
     };
     pub static ref CLIENT_GCC_CORE_BLOCK_BUFFER: Vec<u8> = make_gcc_block_buffer(
         ClientGccType::CoreData,
-        core_data::client::test::CLIENT_OPTIONAL_CORE_DATA_TO_SERVER_SELECTED_PROTOCOL_BUFFER
-            .as_ref(),
+        core_data::client::test::CLIENT_OPTIONAL_CORE_DATA_TO_SERVER_SELECTED_PROTOCOL_BUFFER.as_ref(),
     );
     pub static ref CLIENT_GCC_SECURITY_BLOCK_BUFFER: Vec<u8> = make_gcc_block_buffer(
         ClientGccType::SecurityData,
@@ -147,19 +143,14 @@ lazy_static! {
     );
     pub static ref SERVER_GCC_MULTI_TRANSPORT_CHANNEL_BLOCK_BUFFER: Vec<u8> = make_gcc_block_buffer(
         ServerGccType::MultiTransportChannelData,
-        multi_transport_channel_data::test::SERVER_GCC_MULTI_TRANSPORT_CHANNEL_BLOCK_BUFFER
-            .as_ref(),
+        multi_transport_channel_data::test::SERVER_GCC_MULTI_TRANSPORT_CHANNEL_BLOCK_BUFFER.as_ref(),
     );
 }
 
 fn make_gcc_block_buffer<T: FromPrimitive + ToPrimitive>(data_type: T, buffer: &[u8]) -> Vec<u8> {
     let mut result = Vec::new();
     result.extend(data_type.to_u16().unwrap().to_le_bytes().as_ref());
-    result.extend(
-        ((buffer.len() + USER_HEADER_LEN) as u16)
-            .to_le_bytes()
-            .as_ref(),
-    );
+    result.extend(((buffer.len() + USER_HEADER_LEN) as u16).to_le_bytes().as_ref());
     result.extend(buffer.as_ref());
 
     result

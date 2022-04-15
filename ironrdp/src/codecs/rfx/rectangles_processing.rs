@@ -57,13 +57,7 @@ impl Region {
 
                 if !bands.is_empty() {
                     let next_band = bands[0];
-                    handle_rectangle_between_bands(
-                        &rectangle,
-                        band,
-                        next_band,
-                        &mut dst,
-                        top_inter_band,
-                    );
+                    handle_rectangle_between_bands(&rectangle, band, next_band, &mut dst, top_inter_band);
                 }
             }
 
@@ -79,23 +73,17 @@ impl Region {
     pub fn intersect_rectangle(&self, rectangle: &Rectangle) -> Self {
         match self.rectangles.len() {
             0 => Self::new(),
-            1 => self
-                .extents
-                .intersect(rectangle)
-                .map(Self::from)
-                .unwrap_or_default(),
+            1 => self.extents.intersect(rectangle).map(Self::from).unwrap_or_default(),
             _ => {
                 let rectangles = self
                     .rectangles
                     .iter()
-                    .take_while(|r| r.top < rectangle.bottom).filter_map(|r| r.intersect(rectangle))
+                    .take_while(|r| r.top < rectangle.bottom)
+                    .filter_map(|r| r.intersect(rectangle))
                     .collect::<Vec<_>>();
                 let extents = Rectangle::union_all(rectangles.as_slice());
 
-                let mut region = Self {
-                    rectangles,
-                    extents,
-                };
+                let mut region = Self { rectangles, extents };
                 region.simplify();
 
                 region
@@ -126,19 +114,14 @@ impl Region {
                 < self.rectangles.len()
         {
             let current_band = get_current_band(&self.rectangles[current_band_start..]);
-            let next_band =
-                get_current_band(&self.rectangles[current_band_start + current_band.len()..]);
+            let next_band = get_current_band(&self.rectangles[current_band_start + current_band.len()..]);
 
-            if current_band[0].bottom == next_band[0].top
-                && bands_internals_equal(current_band, next_band)
-            {
+            if current_band[0].bottom == next_band[0].top && bands_internals_equal(current_band, next_band) {
                 let first_band_len = current_band.len();
                 let second_band_len = next_band.len();
                 let second_band_bottom = next_band[0].bottom;
-                self.rectangles.drain(
-                    current_band_start + first_band_len
-                        ..current_band_start + first_band_len + second_band_len,
-                );
+                self.rectangles
+                    .drain(current_band_start + first_band_len..current_band_start + first_band_len + second_band_len);
                 self.rectangles
                     .iter_mut()
                     .skip(current_band_start)
@@ -166,11 +149,7 @@ impl From<Rectangle> for Region {
     }
 }
 
-fn handle_rectangle_higher_relative_to_extents(
-    rectangle: &Rectangle,
-    extents: &Rectangle,
-    dst: &mut Vec<Rectangle>,
-) {
+fn handle_rectangle_higher_relative_to_extents(rectangle: &Rectangle, extents: &Rectangle, dst: &mut Vec<Rectangle>) {
     if rectangle.top < extents.top {
         dst.push(Rectangle {
             top: rectangle.top,
@@ -181,11 +160,7 @@ fn handle_rectangle_higher_relative_to_extents(
     }
 }
 
-fn handle_rectangle_lower_relative_to_extents(
-    rectangle: &Rectangle,
-    extents: &Rectangle,
-    dst: &mut Vec<Rectangle>,
-) {
+fn handle_rectangle_lower_relative_to_extents(rectangle: &Rectangle, extents: &Rectangle, dst: &mut Vec<Rectangle>) {
     if extents.bottom < rectangle.bottom {
         dst.push(Rectangle {
             top: max(extents.bottom, rectangle.top),
@@ -196,11 +171,7 @@ fn handle_rectangle_lower_relative_to_extents(
     }
 }
 
-fn handle_rectangle_that_overlaps_band(
-    rectangle: &Rectangle,
-    band: &[Rectangle],
-    dst: &mut Vec<Rectangle>,
-) {
+fn handle_rectangle_that_overlaps_band(rectangle: &Rectangle, band: &[Rectangle], dst: &mut Vec<Rectangle>) {
     /* rect overlaps the band:
                          |    |  |    |
        ====^=================|    |==|    |=========================== band
@@ -273,10 +244,7 @@ fn handle_rectangle_between_bands(
     let band_bottom = band[0].bottom;
 
     let next_band_top = next_band[0].top;
-    if next_band_top != band_bottom
-        && band_bottom < rectangle.bottom
-        && rectangle.top < next_band_top
-    {
+    if next_band_top != band_bottom && band_bottom < rectangle.bottom && rectangle.top < next_band_top {
         dst.push(Rectangle {
             top: top_inter_band,
             bottom: min(next_band_top, rectangle.bottom),
@@ -348,10 +316,7 @@ fn copy_band_with_union(
             right: r.right,
         })
         .take_while(|r| r.right < union_rectangle.left);
-    let items_before_union_rectangle_len = items_before_union_rectangle
-        .clone()
-        .map(|_| 1)
-        .sum::<usize>();
+    let items_before_union_rectangle_len = items_before_union_rectangle.clone().map(|_| 1).sum::<usize>();
     dst.extend(items_before_union_rectangle);
     band = &band[items_before_union_rectangle_len..];
 
@@ -420,9 +385,7 @@ fn bands_internals_equal(first_band: &[Rectangle], second_band: &[Rectangle]) ->
     }
 
     for (first_band_rect, second_band_rect) in first_band.iter().zip(second_band.iter()) {
-        if first_band_rect.left != second_band_rect.left
-            || first_band_rect.right != second_band_rect.right
-        {
+        if first_band_rect.left != second_band_rect.left || first_band_rect.right != second_band_rect.right {
             return false;
         }
     }

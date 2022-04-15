@@ -32,8 +32,5 @@ fn to_buffer_correctly_serializes_surface_commands_capset() {
 
 #[test]
 fn buffer_length_is_correct_for_surface_commands_capset() {
-    assert_eq!(
-        SURFACE_COMMANDS_BUFFER.len(),
-        SURFACE_COMMANDS.buffer_length()
-    );
+    assert_eq!(SURFACE_COMMANDS_BUFFER.len(), SURFACE_COMMANDS.buffer_length());
 }

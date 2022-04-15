@@ -11,39 +11,32 @@ mod finalization_messages;
 mod headers;
 mod server_error_info;
 
-pub use self::{
-    capability_sets::{
-        CapabilitySet, CapabilitySetsError, ClientConfirmActive, DemandActive, ServerDemandActive,
-        VirtualChannel, SERVER_CHANNEL_ID,
-    },
-    client_info::{
-        AddressFamily, ClientInfo, ClientInfoFlags, CompressionType, Credentials, DayOfWeek,
-        DayOfWeekOccurrence, ExtendedClientInfo, ExtendedClientOptionalInfo, Month,
-        PerformanceFlags, SystemTime, TimezoneInfo,
-    },
-    finalization_messages::{
-        ControlAction, ControlPdu, FontPdu, MonitorLayoutPdu, SequenceFlags, SynchronizePdu,
-    },
-    headers::{
-        BasicSecurityHeader, BasicSecurityHeaderFlags, CompressionFlags, ShareControlHeader,
-        ShareControlPdu, ShareControlPduType, ShareDataHeader, ShareDataPdu, ShareDataPduType,
-        StreamPriority, BASIC_SECURITY_HEADER_SIZE,
-    },
-    server_error_info::{
-        ErrorInfo, ProtocolIndependentCode, ProtocolIndependentConnectionBrokerCode,
-        ProtocolIndependentLicensingCode, RdpSpecificCode, ServerSetErrorInfoError,
-        ServerSetErrorInfoPdu,
-    },
-};
-
 use std::io;
 
 use failure::Fail;
 
-use self::{
-    client_info::ClientInfoError, finalization_messages::FinalizationMessagesError,
-    server_license::ServerLicenseError,
+pub use self::capability_sets::{
+    CapabilitySet, CapabilitySetsError, ClientConfirmActive, DemandActive, ServerDemandActive, VirtualChannel,
+    SERVER_CHANNEL_ID,
 };
+use self::client_info::ClientInfoError;
+pub use self::client_info::{
+    AddressFamily, ClientInfo, ClientInfoFlags, CompressionType, Credentials, DayOfWeek, DayOfWeekOccurrence,
+    ExtendedClientInfo, ExtendedClientOptionalInfo, Month, PerformanceFlags, SystemTime, TimezoneInfo,
+};
+use self::finalization_messages::FinalizationMessagesError;
+pub use self::finalization_messages::{
+    ControlAction, ControlPdu, FontPdu, MonitorLayoutPdu, SequenceFlags, SynchronizePdu,
+};
+pub use self::headers::{
+    BasicSecurityHeader, BasicSecurityHeaderFlags, CompressionFlags, ShareControlHeader, ShareControlPdu,
+    ShareControlPduType, ShareDataHeader, ShareDataPdu, ShareDataPduType, StreamPriority, BASIC_SECURITY_HEADER_SIZE,
+};
+pub use self::server_error_info::{
+    ErrorInfo, ProtocolIndependentCode, ProtocolIndependentConnectionBrokerCode, ProtocolIndependentLicensingCode,
+    RdpSpecificCode, ServerSetErrorInfoError, ServerSetErrorInfoPdu,
+};
+use self::server_license::ServerLicenseError;
 use crate::{impl_from_error, PduParsing};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -57,10 +50,7 @@ impl PduParsing for ClientInfoPdu {
 
     fn from_buffer(mut stream: impl io::Read) -> Result<Self, Self::Error> {
         let security_header = BasicSecurityHeader::from_buffer(&mut stream)?;
-        if security_header
-            .flags
-            .contains(BasicSecurityHeaderFlags::INFO_PKT)
-        {
+        if security_header.flags.contains(BasicSecurityHeaderFlags::INFO_PKT) {
             let client_info = ClientInfo::from_buffer(&mut stream)?;
 
             Ok(Self {
@@ -120,27 +110,12 @@ impl_from_error!(io::Error, RdpError, RdpError::IOError);
 impl_from_error!(ClientInfoError, RdpError, RdpError::ClientInfoError);
 impl_from_error!(ServerLicenseError, RdpError, RdpError::ServerLicenseError);
 impl_from_error!(CapabilitySetsError, RdpError, RdpError::CapabilitySetsError);
-impl_from_error!(
-    FinalizationMessagesError,
-    RdpError,
-    RdpError::FinalizationMessagesError
-);
-impl_from_error!(
-    session_info::SessionError,
-    RdpError,
-    RdpError::SaveSessionInfoError
-);
-impl_from_error!(
-    ServerSetErrorInfoError,
-    RdpError,
-    RdpError::ServerSetErrorInfoError
-);
+impl_from_error!(FinalizationMessagesError, RdpError, RdpError::FinalizationMessagesError);
+impl_from_error!(session_info::SessionError, RdpError, RdpError::SaveSessionInfoError);
+impl_from_error!(ServerSetErrorInfoError, RdpError, RdpError::ServerSetErrorInfoError);
 
 impl From<RdpError> for io::Error {
     fn from(e: RdpError) -> io::Error {
-        io::Error::new(
-            io::ErrorKind::Other,
-            format!("RDP Connection Sequence error: {}", e),
-        )
+        io::Error::new(io::ErrorKind::Other, format!("RDP Connection Sequence error: {}", e))
     }
 }

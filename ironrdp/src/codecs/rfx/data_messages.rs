@@ -6,10 +6,7 @@ use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive, ToPrimitive};
 
-use super::{
-    BlockHeader, BlockType, CodecChannelHeader, RfxError, BLOCK_HEADER_SIZE,
-    CODEC_CHANNEL_HEADER_SIZE,
-};
+use super::{BlockHeader, BlockType, CodecChannelHeader, RfxError, BLOCK_HEADER_SIZE, CODEC_CHANNEL_HEADER_SIZE};
 use crate::utils::SplitTo;
 use crate::PduBufferParsing;
 
@@ -34,10 +31,7 @@ pub struct ContextPdu {
 }
 
 impl ContextPdu {
-    pub fn from_buffer_consume_with_header(
-        buffer: &mut &[u8],
-        header: BlockHeader,
-    ) -> Result<Self, RfxError> {
+    pub fn from_buffer_consume_with_header(buffer: &mut &[u8], header: BlockHeader) -> Result<Self, RfxError> {
         CodecChannelHeader::from_buffer_consume_with_type(buffer, BlockType::Context)?;
         let mut buffer = buffer.split_to(header.data_length);
 
@@ -55,9 +49,7 @@ impl ContextPdu {
         let flags = OperatingMode::from_bits_truncate(properties.get_bits(0..3));
         let color_conversion_transform = properties.get_bits(3..5);
         if color_conversion_transform != COLOR_CONVERSION_ICT {
-            return Err(RfxError::InvalidColorConversionTransform(
-                color_conversion_transform,
-            ));
+            return Err(RfxError::InvalidColorConversionTransform(color_conversion_transform));
         }
 
         let dwt = properties.get_bits(5..9);
@@ -87,8 +79,7 @@ impl<'a> PduBufferParsing<'a> for ContextPdu {
     type Error = RfxError;
 
     fn from_buffer_consume(buffer: &mut &[u8]) -> Result<Self, Self::Error> {
-        let header =
-            BlockHeader::from_buffer_consume_with_expected_type(buffer, BlockType::Context)?;
+        let header = BlockHeader::from_buffer_consume_with_expected_type(buffer, BlockType::Context)?;
 
         Self::from_buffer_consume_with_header(buffer, header)
     }
@@ -133,8 +124,7 @@ impl<'a> PduBufferParsing<'a> for FrameBeginPdu {
     type Error = RfxError;
 
     fn from_buffer_consume(buffer: &mut &[u8]) -> Result<Self, Self::Error> {
-        let header =
-            BlockHeader::from_buffer_consume_with_expected_type(buffer, BlockType::FrameBegin)?;
+        let header = BlockHeader::from_buffer_consume_with_expected_type(buffer, BlockType::FrameBegin)?;
         CodecChannelHeader::from_buffer_consume_with_type(buffer, BlockType::FrameBegin)?;
         let mut buffer = buffer.split_to(header.data_length);
 
@@ -175,8 +165,7 @@ impl<'a> PduBufferParsing<'a> for FrameEndPdu {
     type Error = RfxError;
 
     fn from_buffer_consume(buffer: &mut &[u8]) -> Result<Self, Self::Error> {
-        let _header =
-            BlockHeader::from_buffer_consume_with_expected_type(buffer, BlockType::FrameEnd)?;
+        let _header = BlockHeader::from_buffer_consume_with_expected_type(buffer, BlockType::FrameEnd)?;
         CodecChannelHeader::from_buffer_consume_with_type(buffer, BlockType::FrameEnd)?;
 
         Ok(Self)
@@ -209,8 +198,7 @@ impl<'a> PduBufferParsing<'a> for RegionPdu {
     type Error = RfxError;
 
     fn from_buffer_consume(buffer: &mut &[u8]) -> Result<Self, Self::Error> {
-        let header =
-            BlockHeader::from_buffer_consume_with_expected_type(buffer, BlockType::Region)?;
+        let header = BlockHeader::from_buffer_consume_with_expected_type(buffer, BlockType::Region)?;
         CodecChannelHeader::from_buffer_consume_with_type(buffer, BlockType::Region)?;
         let mut buffer = buffer.split_to(header.data_length);
 
@@ -293,8 +281,7 @@ impl<'a> PduBufferParsing<'a> for TileSetPdu<'a> {
     type Error = RfxError;
 
     fn from_buffer_consume(buffer: &mut &'a [u8]) -> Result<Self, Self::Error> {
-        let header =
-            BlockHeader::from_buffer_consume_with_expected_type(buffer, BlockType::Extension)?;
+        let header = BlockHeader::from_buffer_consume_with_expected_type(buffer, BlockType::Extension)?;
         CodecChannelHeader::from_buffer_consume_with_type(buffer, BlockType::Extension)?;
         let mut buffer = buffer.split_to(header.data_length);
 
@@ -321,9 +308,7 @@ impl<'a> PduBufferParsing<'a> for TileSetPdu<'a> {
 
         let color_conversion_transform = properties.get_bits(4..6);
         if color_conversion_transform != COLOR_CONVERSION_ICT {
-            return Err(RfxError::InvalidColorConversionTransform(
-                color_conversion_transform,
-            ));
+            return Err(RfxError::InvalidColorConversionTransform(color_conversion_transform));
         }
 
         let dwt = properties.get_bits(6..10);
@@ -417,11 +402,7 @@ impl<'a> PduBufferParsing<'a> for TileSetPdu<'a> {
         BLOCK_HEADER_SIZE
             + CODEC_CHANNEL_HEADER_SIZE
             + 14
-            + self
-                .quants
-                .iter()
-                .map(PduBufferParsing::buffer_length)
-                .sum::<usize>()
+            + self.quants.iter().map(PduBufferParsing::buffer_length).sum::<usize>()
             + self.tiles.iter().map(|t| t.buffer_length()).sum::<usize>()
     }
 }
@@ -443,12 +424,7 @@ impl<'a> PduBufferParsing<'a> for RfxRectangle {
         let width = buffer.read_u16::<LittleEndian>()?;
         let height = buffer.read_u16::<LittleEndian>()?;
 
-        Ok(Self {
-            x,
-            y,
-            width,
-            height,
-        })
+        Ok(Self { x, y, width, height })
     }
 
     fn to_buffer_consume(&self, buffer: &mut &mut [u8]) -> Result<(), Self::Error> {

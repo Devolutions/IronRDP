@@ -42,9 +42,7 @@ impl PduParsing for X509CertificateChain {
             .map(|_| {
                 let certificate_len = stream.read_u32::<LittleEndian>()?;
                 if certificate_len > MAX_CERTIFICATE_LEN {
-                    return Err(ServerLicenseError::InvalidCertificateLength(
-                        certificate_len,
-                    ));
+                    return Err(ServerLicenseError::InvalidCertificateLength(certificate_len));
                 }
 
                 let mut certificate = vec![0u8; certificate_len as usize];
@@ -113,32 +111,24 @@ impl PduParsing for ProprietaryCertificate {
         let mut signature = vec![0u8; sig_blob_header.length];
         stream.read_exact(&mut signature)?;
 
-        Ok(Self {
-            public_key,
-            signature,
-        })
+        Ok(Self { public_key, signature })
     }
 
     fn to_buffer(&self, mut stream: impl io::Write) -> Result<(), Self::Error> {
         stream.write_u32::<LittleEndian>(SIGNATURE_ALGORITHM_RSA as u32)?;
         stream.write_u32::<LittleEndian>(KEY_EXCHANGE_ALGORITHM_RSA as u32)?;
 
-        BlobHeader::new(BlobType::RsaKey, self.public_key.buffer_length())
-            .write_to_buffer(&mut stream)?;
+        BlobHeader::new(BlobType::RsaKey, self.public_key.buffer_length()).write_to_buffer(&mut stream)?;
         self.public_key.to_buffer(&mut stream)?;
 
-        BlobHeader::new(BlobType::RsaSignature, self.signature.len())
-            .write_to_buffer(&mut stream)?;
+        BlobHeader::new(BlobType::RsaSignature, self.signature.len()).write_to_buffer(&mut stream)?;
         stream.write_all(&self.signature)?;
 
         Ok(())
     }
 
     fn buffer_length(&self) -> usize {
-        PROP_CERT_BLOBS_HEADERS_SIZE
-            + PROP_CERT_NO_BLOBS_SIZE
-            + self.public_key.buffer_length()
-            + self.signature.len()
+        PROP_CERT_BLOBS_HEADERS_SIZE + PROP_CERT_NO_BLOBS_SIZE + self.public_key.buffer_length() + self.signature.len()
     }
 }
 

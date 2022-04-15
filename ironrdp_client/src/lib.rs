@@ -5,13 +5,11 @@ pub mod transport;
 mod errors;
 mod utils;
 
-pub use self::{
-    active_session::process_active_stage,
-    connection_sequence::{process_connection_sequence, ConnectionSequenceResult, UpgradedStream},
-    errors::RdpError,
-};
-
 use ironrdp::{gcc, nego};
+
+pub use self::active_session::process_active_stage;
+pub use self::connection_sequence::{process_connection_sequence, ConnectionSequenceResult, UpgradedStream};
+pub use self::errors::RdpError;
 
 const BUF_STREAM_SIZE: usize = 32 * 1024;
 

@@ -8,7 +8,8 @@ use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive, ToPrimitive};
 
-use crate::{rdp::CapabilitySetsError, PduParsing};
+use crate::rdp::CapabilitySetsError;
+use crate::PduParsing;
 
 const RFX_ICAP_VERSION: u16 = 0x0100;
 const RFX_ICAP_TILE_SIZE: u16 = 0x40;
@@ -138,9 +139,7 @@ impl PduParsing for Codec {
             buffer.read_exact(&mut property_buffer)?;
 
             match guid {
-                GUID_NSCODEC => {
-                    CodecProperty::NsCodec(NsCodec::from_buffer(&mut property_buffer.as_slice())?)
-                }
+                GUID_NSCODEC => CodecProperty::NsCodec(NsCodec::from_buffer(&mut property_buffer.as_slice())?),
                 GUID_REMOTEFX | GUID_IMAGE_REMOTEFX => {
                     let property = if property_buffer[0] == 0 {
                         RemoteFxContainer::ServerContainer(codec_properties_len)
@@ -417,9 +416,7 @@ impl PduParsing for RfxCapset {
 
     fn to_buffer(&self, mut buffer: impl io::Write) -> Result<(), Self::Error> {
         buffer.write_u16::<LittleEndian>(RFX_CAPSET_BLOCK_TYPE)?;
-        buffer.write_u32::<LittleEndian>(
-            (RFX_CAPSET_STATIC_DATA_LENGTH + self.0.len() * RFX_ICAP_LENGTH) as u32,
-        )?;
+        buffer.write_u32::<LittleEndian>((RFX_CAPSET_STATIC_DATA_LENGTH + self.0.len() * RFX_ICAP_LENGTH) as u32)?;
         buffer.write_u8(1)?; // codec id
         buffer.write_u16::<LittleEndian>(RFX_CAPSET_TYPE)?;
         buffer.write_u16::<LittleEndian>(self.0.len() as u16)?;
@@ -469,13 +466,10 @@ impl PduParsing for RfxICap {
             return Err(CapabilitySetsError::InvalidRfxICapTransformBits);
         }
 
-        let entropy_bits = EntropyBits::from_u8(buffer.read_u8()?)
-            .ok_or(CapabilitySetsError::InvalidRfxICapEntropyBits)?;
+        let entropy_bits =
+            EntropyBits::from_u8(buffer.read_u8()?).ok_or(CapabilitySetsError::InvalidRfxICapEntropyBits)?;
 
-        Ok(RfxICap {
-            flags,
-            entropy_bits,
-        })
+        Ok(RfxICap { flags, entropy_bits })
     }
 
     fn to_buffer(&self, mut buffer: impl io::Write) -> Result<(), Self::Error> {

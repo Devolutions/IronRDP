@@ -94,8 +94,7 @@ const NSCODEC_BUFFER: [u8; 3] = [
 ];
 
 const CODEC_BUFFER: [u8; 68] = [
-    0x12, 0x2f, 0x77, 0x76, 0x72, 0xbd, 0x63, 0x44, 0xAF, 0xB3, 0xB7, 0x3C, 0x9C, 0x6F, 0x78,
-    0x86, // guid
+    0x12, 0x2f, 0x77, 0x76, 0x72, 0xbd, 0x63, 0x44, 0xAF, 0xB3, 0xB7, 0x3C, 0x9C, 0x6F, 0x78, 0x86, // guid
     0x03, // codec id
     0x31, 0x00, // codec properties len
     0x31, 0x00, 0x00, 0x00, // length
@@ -284,10 +283,7 @@ fn buffer_length_is_correct_for_guid() {
 
 #[test]
 fn from_buffer_correctly_parses_rfx_icap() {
-    assert_eq!(
-        *RFX_ICAP,
-        RfxICap::from_buffer(RFX_ICAP_BUFFER.as_ref()).unwrap()
-    );
+    assert_eq!(*RFX_ICAP, RfxICap::from_buffer(RFX_ICAP_BUFFER.as_ref()).unwrap());
 }
 
 #[test]
@@ -306,10 +302,7 @@ fn buffer_length_is_correct_for_rfx_icap() {
 
 #[test]
 fn from_buffer_correctly_parses_rfx_capset() {
-    assert_eq!(
-        *RFX_CAPSET,
-        RfxCapset::from_buffer(RFX_CAPSET_BUFFER.as_ref()).unwrap()
-    );
+    assert_eq!(*RFX_CAPSET, RfxCapset::from_buffer(RFX_CAPSET_BUFFER.as_ref()).unwrap());
 }
 
 #[test]
@@ -328,10 +321,7 @@ fn buffer_length_is_correct_for_rfx_capset() {
 
 #[test]
 fn from_buffer_correctly_parses_rfx_caps() {
-    assert_eq!(
-        *RFX_CAPS,
-        RfxCaps::from_buffer(RFX_CAPS_BUFFER.as_ref()).unwrap()
-    );
+    assert_eq!(*RFX_CAPS, RfxCaps::from_buffer(RFX_CAPS_BUFFER.as_ref()).unwrap());
 }
 
 #[test]
@@ -375,10 +365,7 @@ fn buffer_length_is_correct_for_rfx_client_caps_container() {
 
 #[test]
 fn from_buffer_correctly_parses_nscodec() {
-    assert_eq!(
-        *NSCODEC,
-        NsCodec::from_buffer(NSCODEC_BUFFER.as_ref()).unwrap()
-    );
+    assert_eq!(*NSCODEC, NsCodec::from_buffer(NSCODEC_BUFFER.as_ref()).unwrap());
 }
 
 #[test]
@@ -461,8 +448,7 @@ fn buffer_length_is_correct_for_bitmap_codec() {
 #[test]
 fn codec_with_invalid_property_length_handles_correctly() {
     let codec_buffer: [u8; 68] = [
-        0x12, 0x2f, 0x77, 0x76, 0x72, 0xbd, 0x63, 0x44, 0xAF, 0xB3, 0xB7, 0x3C, 0x9C, 0x6F, 0x78,
-        0x86, // guid
+        0x12, 0x2f, 0x77, 0x76, 0x72, 0xbd, 0x63, 0x44, 0xAF, 0xB3, 0xB7, 0x3C, 0x9C, 0x6F, 0x78, 0x86, // guid
         0x03, // codec id
         0x00, 0x00, // codec properties len
         0x31, 0x00, 0x00, 0x00, // length
@@ -501,8 +487,8 @@ fn codec_with_invalid_property_length_handles_correctly() {
 #[test]
 fn codec_with_empty_property_length_and_ignore_guid_handles_correctly() {
     let codec_buffer: [u8; 19] = [
-        0xa6, 0x51, 0x43, 0x9c, 0x35, 0x35, 0xae, 0x42, 0x91, 0x0c, 0xcd, 0xfc, 0xe5, 0x76, 0x0b,
-        0x58, 0x00, // codec id
+        0xa6, 0x51, 0x43, 0x9c, 0x35, 0x35, 0xae, 0x42, 0x91, 0x0c, 0xcd, 0xfc, 0xe5, 0x76, 0x0b, 0x58,
+        0x00, // codec id
         0x00, 0x00, // codec properties len
     ];
 
@@ -517,8 +503,8 @@ fn codec_with_empty_property_length_and_ignore_guid_handles_correctly() {
 #[test]
 fn codec_with_property_length_and_ignore_guid_handled_correctly() {
     let codec_buffer = vec![
-        0xa6u8, 0x51, 0x43, 0x9c, 0x35, 0x35, 0xae, 0x42, 0x91, 0x0c, 0xcd, 0xfc, 0xe5, 0x76, 0x0b,
-        0x58, 0x00, // codec id
+        0xa6u8, 0x51, 0x43, 0x9c, 0x35, 0x35, 0xae, 0x42, 0x91, 0x0c, 0xcd, 0xfc, 0xe5, 0x76, 0x0b, 0x58,
+        0x00, // codec id
         0x0f, 0x00, // codec properties len
         0xa6, 0x51, 0x43, 0x9c, 0x35, 0x35, 0xae, 0x42, 0x91, 0x0c, 0xcd, 0xfc, 0xe5, 0x76, 0x0b,
     ];
@@ -537,8 +523,7 @@ fn codec_with_property_length_and_ignore_guid_handled_correctly() {
 #[test]
 fn ns_codec_with_too_high_color_loss_level_handled_correctly() {
     let codec_buffer = vec![
-        0xb9, 0x1b, 0x8d, 0xca, 0x0f, 0x00, 0x4f, 0x15, 0x58, 0x9F, 0xAE, 0x2D, 0x1A, 0x87, 0xE2,
-        0xd6, // guid
+        0xb9, 0x1b, 0x8d, 0xca, 0x0f, 0x00, 0x4f, 0x15, 0x58, 0x9F, 0xAE, 0x2D, 0x1A, 0x87, 0xE2, 0xd6, // guid
         0x00, // codec id
         0x03, 0x00, // codec properties len
         0x01, // allow dynamic fidelity
@@ -555,17 +540,13 @@ fn ns_codec_with_too_high_color_loss_level_handled_correctly() {
         }),
     };
 
-    assert_eq!(
-        codec,
-        Codec::from_buffer(&mut codec_buffer.as_slice()).unwrap()
-    );
+    assert_eq!(codec, Codec::from_buffer(&mut codec_buffer.as_slice()).unwrap());
 }
 
 #[test]
 fn ns_codec_with_too_low_color_loss_level_handled_correctly() {
     let codec_buffer = vec![
-        0xb9, 0x1b, 0x8d, 0xca, 0x0f, 0x00, 0x4f, 0x15, 0x58, 0x9F, 0xAE, 0x2D, 0x1A, 0x87, 0xE2,
-        0xd6, // guid
+        0xb9, 0x1b, 0x8d, 0xca, 0x0f, 0x00, 0x4f, 0x15, 0x58, 0x9F, 0xAE, 0x2D, 0x1A, 0x87, 0xE2, 0xd6, // guid
         0x00, // codec id
         0x03, 0x00, // codec properties len
         0x01, // allow dynamic fidelity
@@ -582,8 +563,5 @@ fn ns_codec_with_too_low_color_loss_level_handled_correctly() {
         }),
     };
 
-    assert_eq!(
-        codec,
-        Codec::from_buffer(&mut codec_buffer.as_slice()).unwrap()
-    );
+    assert_eq!(codec, Codec::from_buffer(&mut codec_buffer.as_slice()).unwrap());
 }

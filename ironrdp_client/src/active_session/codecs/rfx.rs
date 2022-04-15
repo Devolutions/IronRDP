@@ -1,27 +1,22 @@
 #[cfg(test)]
 mod tests;
 
-use std::{
-    cmp::min,
-    sync::{Arc, Mutex},
-};
+use std::cmp::min;
+use std::sync::{Arc, Mutex};
 
-use ironrdp::{
-    codecs::rfx::{
-        self, color_conversion,
-        color_conversion::YCbCrBuffer,
-        dwt,
-        image_processing::{ImageRegion, ImageRegionMut, PixelFormat},
-        quantization,
-        rectangles_processing::Region,
-        rlgr, subband_reconstruction, EntropyAlgorithm, Headers, Quant, RfxRectangle, Tile,
-    },
-    PduBufferParsing, Rectangle,
+use ironrdp::codecs::rfx::color_conversion::YCbCrBuffer;
+use ironrdp::codecs::rfx::image_processing::{ImageRegion, ImageRegionMut, PixelFormat};
+use ironrdp::codecs::rfx::rectangles_processing::Region;
+use ironrdp::codecs::rfx::{
+    self, color_conversion, dwt, quantization, rlgr, subband_reconstruction, EntropyAlgorithm, Headers, Quant,
+    RfxRectangle, Tile,
 };
+use ironrdp::{PduBufferParsing, Rectangle};
 use lazy_static::lazy_static;
 use log::debug;
 
-use crate::{active_session::DecodedImage, RdpError};
+use crate::active_session::DecodedImage;
+use crate::RdpError;
 
 const TILE_SIZE: u16 = 64;
 const SOURCE_PIXEL_FORMAT: PixelFormat = PixelFormat::BgrX32;
@@ -134,16 +129,12 @@ impl DecodingContext {
         debug!("Channels: {:?}", self.channels);
         debug!("Region: {:?}", region);
 
-        let clipping_rectangles =
-            clipping_rectangles(region.rectangles.as_slice(), destination, width, height);
+        let clipping_rectangles = clipping_rectangles(region.rectangles.as_slice(), destination, width, height);
         debug!("Clipping rectangles: {:?}", clipping_rectangles);
         let clipping_rectangles_ref = &clipping_rectangles;
 
-        for (update_rectangle, tile_data) in
-            tiles_to_rectangles(tile_set.tiles.as_slice(), destination).zip(map_tiles_data(
-                tile_set.tiles.as_slice(),
-                tile_set.quants.as_slice(),
-            ))
+        for (update_rectangle, tile_data) in tiles_to_rectangles(tile_set.tiles.as_slice(), destination)
+            .zip(map_tiles_data(tile_set.tiles.as_slice(), tile_set.quants.as_slice()))
         {
             decode_tile(
                 &tile_data,
@@ -205,10 +196,7 @@ fn process_decoded_tile(
             data: output.get_mut(),
         };
         debug!("Source image region: {:?}", source_image_region.region);
-        debug!(
-            "Destination image region: {:?}",
-            destination_image_region.region
-        );
+        debug!("Destination image region: {:?}", destination_image_region.region);
 
         source_image_region.copy_to(&mut destination_image_region)?;
     }
@@ -240,19 +228,8 @@ fn decode_tile(
     ycbcr_temp: &mut [Vec<i16>],
     temp: &mut [i16],
 ) -> Result<(), RdpError> {
-    for ((quant, data), ycbcr_buffer) in tile
-        .quants
-        .iter()
-        .zip(tile.data.iter())
-        .zip(ycbcr_temp.iter_mut())
-    {
-        decode_component(
-            quant,
-            entropy_algorithm,
-            data,
-            ycbcr_buffer.as_mut_slice(),
-            temp,
-        )?;
+    for ((quant, data), ycbcr_buffer) in tile.quants.iter().zip(tile.data.iter()).zip(ycbcr_temp.iter_mut()) {
+        decode_component(quant, entropy_algorithm, data, ycbcr_buffer.as_mut_slice(), temp)?;
     }
 
     let ycbcr_buffer = YCbCrBuffer {
@@ -281,12 +258,7 @@ fn decode_component(
     Ok(())
 }
 
-fn clipping_rectangles(
-    rectangles: &[RfxRectangle],
-    destination: &Rectangle,
-    width: u16,
-    height: u16,
-) -> Region {
+fn clipping_rectangles(rectangles: &[RfxRectangle], destination: &Rectangle, width: u16, height: u16) -> Region {
     let mut clipping_rectangles = Region::new();
 
     rectangles
@@ -302,10 +274,7 @@ fn clipping_rectangles(
     clipping_rectangles
 }
 
-fn tiles_to_rectangles<'a>(
-    tiles: &'a [Tile<'_>],
-    destination: &'a Rectangle,
-) -> impl Iterator<Item = Rectangle> + 'a {
+fn tiles_to_rectangles<'a>(tiles: &'a [Tile<'_>], destination: &'a Rectangle) -> impl Iterator<Item = Rectangle> + 'a {
     tiles.iter().map(move |t| Rectangle {
         left: destination.left + t.x * TILE_SIZE,
         top: destination.top + t.y * TILE_SIZE,

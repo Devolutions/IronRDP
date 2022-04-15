@@ -1,33 +1,28 @@
 use std::{env, net};
 
-use ironrdp::{
-    gcc::{
-        ClientCoreData, ClientCoreOptionalData, ClientEarlyCapabilityFlags, ClientGccBlocks,
-        ClientNetworkData, ClientSecurityData, ColorDepth, ConnectionType, HighColorDepth,
-        RdpVersion, SecureAccessSequence, SupportedColorDepths,
-    },
-    nego::SecurityProtocol,
-    rdp::{
-        capability_sets::{
-            Bitmap, BitmapCache, BitmapCodecs, BitmapDrawingFlags, Brush, CacheDefinition,
-            CacheEntry, CaptureFlags, CmdFlags, Codec, CodecProperty, EntropyBits,
-            FrameAcknowledge, General, GeneralExtraFlags, GlyphCache, GlyphSupportLevel, Input,
-            InputFlags, LargePointer, LargePointerSupportFlags, MajorPlatformType,
-            MinorPlatformType, MultifragmentUpdate, OffscreenBitmapCache, Order, OrderFlags,
-            OrderSupportExFlags, Pointer, RemoteFxContainer, RfxCaps, RfxCapset,
-            RfxClientCapsContainer, RfxICap, RfxICapFlags, Sound, SoundFlags, SupportLevel,
-            SurfaceCommands, VirtualChannel, VirtualChannelFlags, BITMAP_CACHE_ENTRIES_NUM,
-            GLYPH_CACHE_NUM,
-        },
-        AddressFamily, BasicSecurityHeader, BasicSecurityHeaderFlags, ClientInfo, ClientInfoFlags,
-        ClientInfoPdu, CompressionType, Credentials, ExtendedClientInfo,
-        ExtendedClientOptionalInfo, SERVER_CHANNEL_ID,
-    },
-    CapabilitySet, ClientConfirmActive,
+use ironrdp::gcc::{
+    ClientCoreData, ClientCoreOptionalData, ClientEarlyCapabilityFlags, ClientGccBlocks, ClientNetworkData,
+    ClientSecurityData, ColorDepth, ConnectionType, HighColorDepth, RdpVersion, SecureAccessSequence,
+    SupportedColorDepths,
 };
+use ironrdp::nego::SecurityProtocol;
+use ironrdp::rdp::capability_sets::{
+    Bitmap, BitmapCache, BitmapCodecs, BitmapDrawingFlags, Brush, CacheDefinition, CacheEntry, CaptureFlags, CmdFlags,
+    Codec, CodecProperty, EntropyBits, FrameAcknowledge, General, GeneralExtraFlags, GlyphCache, GlyphSupportLevel,
+    Input, InputFlags, LargePointer, LargePointerSupportFlags, MajorPlatformType, MinorPlatformType,
+    MultifragmentUpdate, OffscreenBitmapCache, Order, OrderFlags, OrderSupportExFlags, Pointer, RemoteFxContainer,
+    RfxCaps, RfxCapset, RfxClientCapsContainer, RfxICap, RfxICapFlags, Sound, SoundFlags, SupportLevel,
+    SurfaceCommands, VirtualChannel, VirtualChannelFlags, BITMAP_CACHE_ENTRIES_NUM, GLYPH_CACHE_NUM,
+};
+use ironrdp::rdp::{
+    AddressFamily, BasicSecurityHeader, BasicSecurityHeaderFlags, ClientInfo, ClientInfoFlags, ClientInfoPdu,
+    CompressionType, Credentials, ExtendedClientInfo, ExtendedClientOptionalInfo, SERVER_CHANNEL_ID,
+};
+use ironrdp::{CapabilitySet, ClientConfirmActive};
 use num_traits::ToPrimitive;
 
-use crate::{utils::CodecId, InputConfig, RdpError};
+use crate::utils::CodecId;
+use crate::{InputConfig, RdpError};
 
 const SOURCE_DESCRIPTOR: &str = "IRONRDP";
 
@@ -47,10 +42,7 @@ pub fn create_gcc_blocks(
     })
 }
 
-pub fn create_client_info_pdu(
-    config: &InputConfig,
-    routing_addr: &net::SocketAddr,
-) -> Result<ClientInfoPdu, RdpError> {
+pub fn create_client_info_pdu(config: &InputConfig, routing_addr: &net::SocketAddr) -> Result<ClientInfoPdu, RdpError> {
     let security_header = BasicSecurityHeader {
         flags: BasicSecurityHeaderFlags::INFO_PKT,
     };
@@ -73,12 +65,7 @@ pub fn create_client_info_pdu(
             },
             address: routing_addr.ip().to_string(),
             dir: env::current_dir()
-                .map_err(|e| {
-                    RdpError::UserInfoError(format!(
-                        "Failed to get current directory path: {:?}",
-                        e
-                    ))
-                })?
+                .map_err(|e| RdpError::UserInfoError(format!("Failed to get current directory path: {:?}", e)))?
                 .to_string_lossy()
                 .to_string(),
             optional_data: ExtendedClientOptionalInfo::default(),
@@ -95,8 +82,7 @@ pub fn create_client_confirm_active(
     config: &InputConfig,
     mut server_capability_sets: Vec<CapabilitySet>,
 ) -> Result<ClientConfirmActive, RdpError> {
-    server_capability_sets
-        .retain(|capability_set| matches!(capability_set, CapabilitySet::MultiFragmentUpdate(_)));
+    server_capability_sets.retain(|capability_set| matches!(capability_set, CapabilitySet::MultiFragmentUpdate(_)));
     server_capability_sets.extend_from_slice(&[
         create_general_capability_set(),
         create_bitmap_capability_set(config),
@@ -133,10 +119,7 @@ pub fn create_client_confirm_active(
     })
 }
 
-fn create_core_data(
-    config: &InputConfig,
-    selected_protocol: SecurityProtocol,
-) -> Result<ClientCoreData, RdpError> {
+fn create_core_data(config: &InputConfig, selected_protocol: SecurityProtocol) -> Result<ClientCoreData, RdpError> {
     Ok(ClientCoreData {
         version: RdpVersion::V5Plus,
         desktop_width: config.width,
@@ -187,9 +170,7 @@ fn create_security_data() -> ClientSecurityData {
 }
 
 fn create_network_data() -> ClientNetworkData {
-    ClientNetworkData {
-        channels: Vec::new(),
-    }
+    ClientNetworkData { channels: Vec::new() }
 }
 
 fn create_general_capability_set() -> CapabilitySet {
@@ -203,8 +184,7 @@ fn create_general_capability_set() -> CapabilitySet {
             _ => MajorPlatformType::Unspecified,
         },
         minor_platform_type: MinorPlatformType::Unspecified,
-        extra_flags: GeneralExtraFlags::FASTPATH_OUTPUT_SUPPORTED
-            | GeneralExtraFlags::NO_BITMAP_COMPRESSION_HDR,
+        extra_flags: GeneralExtraFlags::FASTPATH_OUTPUT_SUPPORTED | GeneralExtraFlags::NO_BITMAP_COMPRESSION_HDR,
         refresh_rect_support: false,
         suppress_output_support: false,
     })
@@ -298,9 +278,7 @@ fn create_sound_capability_set() -> CapabilitySet {
 }
 
 fn create_multi_fragment_update_capability_set() -> CapabilitySet {
-    CapabilitySet::MultiFragmentUpdate(MultifragmentUpdate {
-        max_request_size: 1024,
-    })
+    CapabilitySet::MultiFragmentUpdate(MultifragmentUpdate { max_request_size: 1024 })
 }
 
 fn create_large_pointer_capability_set() -> CapabilitySet {
@@ -318,15 +296,13 @@ fn create_surface_commands_capability_set() -> CapabilitySet {
 fn create_bitmap_codes_capability_set() -> CapabilitySet {
     CapabilitySet::BitmapCodecs(BitmapCodecs(vec![Codec {
         id: CodecId::RemoteFx.to_u8().unwrap(),
-        property: CodecProperty::RemoteFx(RemoteFxContainer::ClientContainer(
-            RfxClientCapsContainer {
-                capture_flags: CaptureFlags::empty(),
-                caps_data: RfxCaps(RfxCapset(vec![RfxICap {
-                    flags: RfxICapFlags::empty(),
-                    entropy_bits: EntropyBits::Rlgr3,
-                }])),
-            },
-        )),
+        property: CodecProperty::RemoteFx(RemoteFxContainer::ClientContainer(RfxClientCapsContainer {
+            capture_flags: CaptureFlags::empty(),
+            caps_data: RfxCaps(RfxCapset(vec![RfxICap {
+                flags: RfxICapFlags::empty(),
+                entropy_bits: EntropyBits::Rlgr3,
+            }])),
+        })),
     }]))
 }
 

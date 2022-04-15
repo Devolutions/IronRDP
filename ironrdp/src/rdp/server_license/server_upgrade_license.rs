@@ -6,15 +6,12 @@ use std::io;
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 
 use super::{
-    read_license_header, BlobHeader, BlobType, LicenseEncryptionData, LicenseHeader, PreambleType,
-    ServerLicenseError, BLOB_LENGTH_SIZE, BLOB_TYPE_SIZE, MAC_SIZE, UTF16_NULL_TERMINATOR_SIZE,
-    UTF8_NULL_TERMINATOR_SIZE,
+    read_license_header, BlobHeader, BlobType, LicenseEncryptionData, LicenseHeader, PreambleType, ServerLicenseError,
+    BLOB_LENGTH_SIZE, BLOB_TYPE_SIZE, MAC_SIZE, UTF16_NULL_TERMINATOR_SIZE, UTF8_NULL_TERMINATOR_SIZE,
 };
-use crate::{
-    utils,
-    utils::{rc4::Rc4, CharacterSet},
-    PduParsing,
-};
+use crate::utils::rc4::Rc4;
+use crate::utils::CharacterSet;
+use crate::{utils, PduParsing};
 
 const NEW_LICENSE_INFO_STATIC_FIELDS_SIZE: usize = 20;
 
@@ -26,16 +23,11 @@ pub struct ServerUpgradeLicense {
 }
 
 impl ServerUpgradeLicense {
-    pub fn verify_server_license(
-        &self,
-        encryption_data: &LicenseEncryptionData,
-    ) -> Result<(), ServerLicenseError> {
+    pub fn verify_server_license(&self, encryption_data: &LicenseEncryptionData) -> Result<(), ServerLicenseError> {
         let mut rc4 = Rc4::new(encryption_data.license_key.as_slice());
         let decrypted_license_info = rc4.process(self.encrypted_license_info.as_slice());
-        let mac_data = super::compute_mac_data(
-            encryption_data.mac_salt_key.as_slice(),
-            decrypted_license_info.as_ref(),
-        );
+        let mac_data =
+            super::compute_mac_data(encryption_data.mac_salt_key.as_slice(), decrypted_license_info.as_ref());
 
         if mac_data != self.mac_data {
             return Err(ServerLicenseError::InvalidMacData);
@@ -62,8 +54,7 @@ impl PduParsing for ServerUpgradeLicense {
             )));
         }
 
-        let encrypted_license_info_blob =
-            BlobHeader::read_from_buffer(BlobType::EncryptedData, &mut stream)?;
+        let encrypted_license_info_blob = BlobHeader::read_from_buffer(BlobType::EncryptedData, &mut stream)?;
 
         let mut encrypted_license_info = vec![0u8; encrypted_license_info_blob.length as usize];
         stream.read_exact(&mut encrypted_license_info)?;
@@ -81,8 +72,7 @@ impl PduParsing for ServerUpgradeLicense {
     fn to_buffer(&self, mut stream: impl io::Write) -> Result<(), Self::Error> {
         self.license_header.to_buffer(&mut stream)?;
 
-        BlobHeader::new(BlobType::EncryptedData, self.encrypted_license_info.len())
-            .write_to_buffer(&mut stream)?;
+        BlobHeader::new(BlobType::EncryptedData, self.encrypted_license_info.len()).write_to_buffer(&mut stream)?;
         stream.write_all(&self.encrypted_license_info)?;
 
         stream.write_all(&self.mac_data)?;
@@ -157,23 +147,11 @@ impl PduParsing for NewLicenseInformation {
         stream.write_u32::<LittleEndian>((self.scope.len() + UTF8_NULL_TERMINATOR_SIZE) as u32)?;
         utils::write_string_with_null_terminator(&mut stream, &self.scope, CharacterSet::Ansi)?;
 
-        stream.write_u32::<LittleEndian>(
-            (self.company_name.len() * 2 + UTF16_NULL_TERMINATOR_SIZE) as u32,
-        )?;
-        utils::write_string_with_null_terminator(
-            &mut stream,
-            &self.company_name,
-            CharacterSet::Unicode,
-        )?;
+        stream.write_u32::<LittleEndian>((self.company_name.len() * 2 + UTF16_NULL_TERMINATOR_SIZE) as u32)?;
+        utils::write_string_with_null_terminator(&mut stream, &self.company_name, CharacterSet::Unicode)?;
 
-        stream.write_u32::<LittleEndian>(
-            (self.product_id.len() * 2 + UTF16_NULL_TERMINATOR_SIZE) as u32,
-        )?;
-        utils::write_string_with_null_terminator(
-            &mut stream,
-            &self.product_id,
-            CharacterSet::Unicode,
-        )?;
+        stream.write_u32::<LittleEndian>((self.product_id.len() * 2 + UTF16_NULL_TERMINATOR_SIZE) as u32)?;
+        utils::write_string_with_null_terminator(&mut stream, &self.product_id, CharacterSet::Unicode)?;
 
         stream.write_u32::<LittleEndian>(self.license_info.len() as u32)?;
         stream.write_all(self.license_info.as_slice())?;

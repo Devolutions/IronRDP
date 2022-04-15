@@ -9,9 +9,8 @@ use failure::Fail;
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive, ToPrimitive};
 
-use crate::{
-    impl_from_error, try_read_optional, try_write_optional, utils, utils::CharacterSet, PduParsing,
-};
+use crate::utils::CharacterSet;
+use crate::{impl_from_error, try_read_optional, try_write_optional, utils, PduParsing};
 
 const RECONNECT_COOKIE_LEN: usize = 28;
 const TIMEZONE_INFO_NAME_LEN: usize = 64;
@@ -52,13 +51,11 @@ impl PduParsing for ClientInfo {
         let code_page = stream.read_u32::<LittleEndian>()?;
         let flags_with_compression_type = stream.read_u32::<LittleEndian>()?;
 
-        let flags =
-            ClientInfoFlags::from_bits(flags_with_compression_type & !COMPRESSION_TYPE_MASK)
+        let flags = ClientInfoFlags::from_bits(flags_with_compression_type & !COMPRESSION_TYPE_MASK)
+            .ok_or(ClientInfoError::InvalidClientInfoFlags)?;
+        let compression_type =
+            CompressionType::from_u8(((flags_with_compression_type & COMPRESSION_TYPE_MASK) >> 9) as u8)
                 .ok_or(ClientInfoError::InvalidClientInfoFlags)?;
-        let compression_type = CompressionType::from_u8(
-            ((flags_with_compression_type & COMPRESSION_TYPE_MASK) >> 9) as u8,
-        )
-        .ok_or(ClientInfoError::InvalidClientInfoFlags)?;
         let character_set = if flags.contains(ClientInfoFlags::UNICODE) {
             CharacterSet::Unicode
         } else {
@@ -76,19 +73,14 @@ impl PduParsing for ClientInfo {
         let username = utils::read_string(&mut stream, user_name_size, character_set, true)?;
         let password = utils::read_string(&mut stream, password_size, character_set, true)?;
 
-        let domain = if domain.is_empty() {
-            None
-        } else {
-            Some(domain)
-        };
+        let domain = if domain.is_empty() { None } else { Some(domain) };
         let credentials = Credentials {
             username,
             password,
             domain,
         };
 
-        let alternate_shell =
-            utils::read_string(&mut stream, alternate_shell_size, character_set, true)?;
+        let alternate_shell = utils::read_string(&mut stream, alternate_shell_size, character_set, true)?;
         let work_dir = utils::read_string(&mut stream, work_dir_size, character_set, true)?;
 
         let extra_info = ExtendedClientInfo::from_buffer(&mut stream, character_set)?;
@@ -113,45 +105,21 @@ impl PduParsing for ClientInfo {
 
         stream.write_u32::<LittleEndian>(self.code_page)?;
 
-        let flags_with_compression_type =
-            self.flags.bits() | (self.compression_type.to_u32().unwrap() << 9);
+        let flags_with_compression_type = self.flags.bits() | (self.compression_type.to_u32().unwrap() << 9);
         stream.write_u32::<LittleEndian>(flags_with_compression_type)?;
 
         let domain = self.credentials.domain.clone().unwrap_or_default();
         stream.write_u16::<LittleEndian>(string_len(domain.as_str(), character_set))?;
-        stream.write_u16::<LittleEndian>(string_len(
-            self.credentials.username.as_str(),
-            character_set,
-        ))?;
-        stream.write_u16::<LittleEndian>(string_len(
-            self.credentials.password.as_str(),
-            character_set,
-        ))?;
-        stream
-            .write_u16::<LittleEndian>(string_len(self.alternate_shell.as_str(), character_set))?;
+        stream.write_u16::<LittleEndian>(string_len(self.credentials.username.as_str(), character_set))?;
+        stream.write_u16::<LittleEndian>(string_len(self.credentials.password.as_str(), character_set))?;
+        stream.write_u16::<LittleEndian>(string_len(self.alternate_shell.as_str(), character_set))?;
         stream.write_u16::<LittleEndian>(string_len(self.work_dir.as_str(), character_set))?;
 
         utils::write_string_with_null_terminator(&mut stream, domain.as_str(), character_set)?;
-        utils::write_string_with_null_terminator(
-            &mut stream,
-            self.credentials.username.as_str(),
-            character_set,
-        )?;
-        utils::write_string_with_null_terminator(
-            &mut stream,
-            self.credentials.password.as_str(),
-            character_set,
-        )?;
-        utils::write_string_with_null_terminator(
-            &mut stream,
-            self.alternate_shell.as_str(),
-            character_set,
-        )?;
-        utils::write_string_with_null_terminator(
-            &mut stream,
-            self.work_dir.as_str(),
-            character_set,
-        )?;
+        utils::write_string_with_null_terminator(&mut stream, self.credentials.username.as_str(), character_set)?;
+        utils::write_string_with_null_terminator(&mut stream, self.credentials.password.as_str(), character_set)?;
+        utils::write_string_with_null_terminator(&mut stream, self.alternate_shell.as_str(), character_set)?;
+        utils::write_string_with_null_terminator(&mut stream, self.work_dir.as_str(), character_set)?;
 
         self.extra_info.to_buffer(&mut stream, character_set)?;
 
@@ -199,12 +167,9 @@ pub struct ExtendedClientInfo {
 }
 
 impl ExtendedClientInfo {
-    fn from_buffer(
-        mut stream: impl io::Read,
-        character_set: CharacterSet,
-    ) -> Result<Self, ClientInfoError> {
-        let address_family = AddressFamily::from_u16(stream.read_u16::<LittleEndian>()?)
-            .ok_or(ClientInfoError::InvalidAddressFamily)?;
+    fn from_buffer(mut stream: impl io::Read, character_set: CharacterSet) -> Result<Self, ClientInfoError> {
+        let address_family =
+            AddressFamily::from_u16(stream.read_u16::<LittleEndian>()?).ok_or(ClientInfoError::InvalidAddressFamily)?;
 
         // This size includes the length of the mandatory null terminator.
         let address_size = stream.read_u16::<LittleEndian>()? as usize;
@@ -224,22 +189,14 @@ impl ExtendedClientInfo {
         })
     }
 
-    fn to_buffer(
-        &self,
-        mut stream: impl io::Write,
-        character_set: CharacterSet,
-    ) -> Result<(), ClientInfoError> {
+    fn to_buffer(&self, mut stream: impl io::Write, character_set: CharacterSet) -> Result<(), ClientInfoError> {
         stream.write_u16::<LittleEndian>(self.address_family.to_u16().unwrap())?;
 
         // + size of null terminator, which will write in the write_string function
         stream.write_u16::<LittleEndian>(
             string_len(self.address.as_str(), character_set) + character_set.to_u16().unwrap(),
         )?;
-        utils::write_string_with_null_terminator(
-            &mut stream,
-            self.address.as_str(),
-            character_set,
-        )?;
+        utils::write_string_with_null_terminator(&mut stream, self.address.as_str(), character_set)?;
 
         stream.write_u16::<LittleEndian>(
             string_len(self.dir.as_str(), character_set) + character_set.to_u16().unwrap(),
@@ -285,20 +242,13 @@ impl PduParsing for ExtendedClientOptionalInfo {
             }
             Err(e) => return Err(e),
         };
-        optional_data.session_id = Some(try_read_optional!(
-            stream.read_u32::<LittleEndian>(),
-            optional_data
-        ));
+        optional_data.session_id = Some(try_read_optional!(stream.read_u32::<LittleEndian>(), optional_data));
         optional_data.performance_flags = Some(
-            PerformanceFlags::from_bits(try_read_optional!(
-                stream.read_u32::<LittleEndian>(),
-                optional_data
-            ))
-            .ok_or(ClientInfoError::InvalidPerformanceFlags)?,
+            PerformanceFlags::from_bits(try_read_optional!(stream.read_u32::<LittleEndian>(), optional_data))
+                .ok_or(ClientInfoError::InvalidPerformanceFlags)?,
         );
 
-        let reconnect_cookie_size =
-            try_read_optional!(stream.read_u16::<LittleEndian>(), optional_data);
+        let reconnect_cookie_size = try_read_optional!(stream.read_u16::<LittleEndian>(), optional_data);
         if reconnect_cookie_size != RECONNECT_COOKIE_LEN as u16 && reconnect_cookie_size != 0 {
             return Err(ClientInfoError::InvalidReconnectCookie);
         }
@@ -317,10 +267,8 @@ impl PduParsing for ExtendedClientOptionalInfo {
     }
 
     fn to_buffer(&self, mut stream: impl io::Write) -> Result<(), Self::Error> {
-        try_write_optional!(self.timezone, |value: &TimezoneInfo| value
-            .to_buffer(&mut stream));
-        try_write_optional!(self.session_id, |value: &u32| stream
-            .write_u32::<LittleEndian>(*value));
+        try_write_optional!(self.timezone, |value: &TimezoneInfo| value.to_buffer(&mut stream));
+        try_write_optional!(self.session_id, |value: &u32| stream.write_u32::<LittleEndian>(*value));
         try_write_optional!(self.performance_flags, |value: &PerformanceFlags| {
             stream.write_u32::<LittleEndian>(value.bits())
         });
@@ -369,21 +317,11 @@ impl PduParsing for TimezoneInfo {
     fn from_buffer(mut stream: impl io::Read) -> Result<Self, Self::Error> {
         let bias = stream.read_u32::<LittleEndian>()?;
 
-        let standard_name = utils::read_string(
-            &mut stream,
-            TIMEZONE_INFO_NAME_LEN,
-            CharacterSet::Unicode,
-            false,
-        )?;
+        let standard_name = utils::read_string(&mut stream, TIMEZONE_INFO_NAME_LEN, CharacterSet::Unicode, false)?;
         let standard_date = Option::<SystemTime>::from_buffer(&mut stream)?;
         let standard_bias = stream.read_u32::<LittleEndian>()?;
 
-        let daylight_name = utils::read_string(
-            &mut stream,
-            TIMEZONE_INFO_NAME_LEN,
-            CharacterSet::Unicode,
-            false,
-        )?;
+        let daylight_name = utils::read_string(&mut stream, TIMEZONE_INFO_NAME_LEN, CharacterSet::Unicode, false)?;
         let daylight_date = Option::<SystemTime>::from_buffer(&mut stream)?;
         let daylight_bias = stream.read_u32::<LittleEndian>()?;
 
@@ -622,11 +560,7 @@ pub enum ClientInfoError {
 }
 
 impl_from_error!(io::Error, ClientInfoError, ClientInfoError::IOError);
-impl_from_error!(
-    std::string::FromUtf8Error,
-    ClientInfoError,
-    ClientInfoError::Utf8Error
-);
+impl_from_error!(std::string::FromUtf8Error, ClientInfoError, ClientInfoError::Utf8Error);
 
 fn string_len(value: &str, character_set: CharacterSet) -> u16 {
     value.len() as u16 * character_set.to_u16().unwrap()

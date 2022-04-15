@@ -434,8 +434,7 @@ fn union_rectangle_inserts_new_rectangle_in_band_of_3_rectangles_without_merging
 }
 
 #[test]
-fn union_rectangle_inserts_new_rectangle_in_band_of_3_rectangles_with_merging_with_side_rectangles()
-{
+fn union_rectangle_inserts_new_rectangle_in_band_of_3_rectangles_with_merging_with_side_rectangles() {
     let mut region = Region {
         extents: Rectangle {
             left: 2,
@@ -499,8 +498,7 @@ fn union_rectangle_inserts_new_rectangle_in_band_of_3_rectangles_with_merging_wi
 }
 
 #[test]
-fn union_rectangle_inserts_new_rectangle_in_band_of_3_rectangles_with_merging_with_side_rectangles_on_board(
-) {
+fn union_rectangle_inserts_new_rectangle_in_band_of_3_rectangles_with_merging_with_side_rectangles_on_board() {
     let mut region = Region {
         extents: Rectangle {
             left: 2,

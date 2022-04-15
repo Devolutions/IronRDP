@@ -43,9 +43,7 @@ impl PduParsing for ServerMessageChannelData {
     fn from_buffer(mut buffer: impl io::Read) -> Result<Self, Self::Error> {
         let mcs_message_channel_id = buffer.read_u16::<LittleEndian>()?;
 
-        Ok(Self {
-            mcs_message_channel_id,
-        })
+        Ok(Self { mcs_message_channel_id })
     }
     fn to_buffer(&self, mut buffer: impl io::Write) -> Result<(), Self::Error> {
         buffer.write_u16::<LittleEndian>(self.mcs_message_channel_id)?;

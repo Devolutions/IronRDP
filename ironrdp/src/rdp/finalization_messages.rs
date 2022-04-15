@@ -132,9 +132,7 @@ impl PduParsing for MonitorLayoutPdu {
     fn from_buffer(mut stream: impl io::Read) -> Result<Self, Self::Error> {
         let monitor_count = stream.read_u32::<LittleEndian>()?;
         if monitor_count > MAX_MONITOR_COUNT {
-            return Err(FinalizationMessagesError::InvalidMonitorCount(
-                monitor_count,
-            ));
+            return Err(FinalizationMessagesError::InvalidMonitorCount(monitor_count));
         }
 
         let mut monitors = Vec::with_capacity(monitor_count as usize);
@@ -196,11 +194,7 @@ pub enum FinalizationMessagesError {
     InvalidMonitorCount(u32),
 }
 
-impl_from_error!(
-    io::Error,
-    FinalizationMessagesError,
-    FinalizationMessagesError::IOError
-);
+impl_from_error!(io::Error, FinalizationMessagesError, FinalizationMessagesError::IOError);
 impl_from_error!(
     gcc::MonitorDataError,
     FinalizationMessagesError,

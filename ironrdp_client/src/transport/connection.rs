@@ -17,11 +17,7 @@ impl Encoder for TsRequestTransport {
     type Item = credssp::TsRequest;
     type Error = RdpError;
 
-    fn encode(
-        &mut self,
-        ts_request: Self::Item,
-        mut stream: impl io::Write,
-    ) -> Result<(), RdpError> {
+    fn encode(&mut self, ts_request: Self::Item, mut stream: impl io::Write) -> Result<(), RdpError> {
         let mut buf = BytesMut::with_capacity(ts_request.buffer_len() as usize);
         buf.resize(ts_request.buffer_len() as usize, 0x00);
 
@@ -49,8 +45,7 @@ impl Decoder for TsRequestTransport {
         buf.resize(ts_request_buffer_length, 0x00);
         stream.read_exact(&mut buf[MAX_TS_REQUEST_LENGTH_BUFFER_SIZE..])?;
 
-        let ts_request =
-            credssp::TsRequest::from_buffer(buf.as_ref()).map_err(RdpError::TsRequestError)?;
+        let ts_request = credssp::TsRequest::from_buffer(buf.as_ref()).map_err(RdpError::TsRequestError)?;
 
         Ok(ts_request)
     }
@@ -63,8 +58,8 @@ impl EarlyUserAuthResult {
         let mut buf = BytesMut::with_capacity(credssp::EARLY_USER_AUTH_RESULT_PDU_SIZE);
         buf.resize(credssp::EARLY_USER_AUTH_RESULT_PDU_SIZE, 0x00);
         stream.read_exact(&mut buf)?;
-        let early_user_auth_result = credssp::EarlyUserAuthResult::from_buffer(buf.as_ref())
-            .map_err(RdpError::EarlyUserAuthResultError)?;
+        let early_user_auth_result =
+            credssp::EarlyUserAuthResult::from_buffer(buf.as_ref()).map_err(RdpError::EarlyUserAuthResultError)?;
 
         Ok(early_user_auth_result)
     }
@@ -99,10 +94,7 @@ fn process_negotiation(
         protocol,
         src_ref,
     };
-    debug!(
-        "Send X.224 Connection Request PDU: {:?}",
-        connection_request
-    );
+    debug!("Send X.224 Connection Request PDU: {:?}", connection_request);
     connection_request.to_buffer(&mut stream)?;
     stream.flush()?;
 

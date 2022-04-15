@@ -4,7 +4,8 @@ mod tests;
 use std::io;
 
 use super::{FieldType, Header, PduType, HEADER_SIZE, PDU_WITH_DATA_MAX_SIZE, UNUSED_U8};
-use crate::{rdp::vc::ChannelError, PduParsing};
+use crate::rdp::vc::ChannelError;
+use crate::PduParsing;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct DataPdu {
@@ -22,8 +23,7 @@ impl DataPdu {
         let channel_id = channel_id_type.read_buffer_according_to_type(&mut stream)?;
         data_size -= channel_id_type.get_type_size();
 
-        let expected_max_data_size =
-            PDU_WITH_DATA_MAX_SIZE - (HEADER_SIZE + channel_id_type.get_type_size());
+        let expected_max_data_size = PDU_WITH_DATA_MAX_SIZE - (HEADER_SIZE + channel_id_type.get_type_size());
 
         if data_size > expected_max_data_size {
             Err(ChannelError::InvalidDvcMessageSize)

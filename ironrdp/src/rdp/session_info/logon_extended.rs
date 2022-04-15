@@ -28,17 +28,9 @@ pub struct LogonInfoExtended {
 
 impl LogonInfoExtended {
     fn get_internal_size(&self) -> usize {
-        let reconnect_size = self
-            .auto_reconnect
-            .as_ref()
-            .map(|r| r.buffer_length())
-            .unwrap_or(0);
+        let reconnect_size = self.auto_reconnect.as_ref().map(|r| r.buffer_length()).unwrap_or(0);
 
-        let errors_size = self
-            .errors_info
-            .as_ref()
-            .map(|r| r.buffer_length())
-            .unwrap_or(0);
+        let errors_size = self.errors_info.as_ref().map(|r| r.buffer_length()).unwrap_or(0);
 
         LOGON_EX_LENGTH_FIELD_SIZE + LOGON_EX_FLAGS_FIELD_SIZE + reconnect_size + errors_size
     }
@@ -49,8 +41,7 @@ impl PduParsing for LogonInfoExtended {
 
     fn from_buffer(mut stream: impl io::Read) -> Result<Self, Self::Error> {
         let _self_length = stream.read_u16::<LittleEndian>()?;
-        let present_fields_flags =
-            LogonExFlags::from_bits_truncate(stream.read_u32::<LittleEndian>()?);
+        let present_fields_flags = LogonExFlags::from_bits_truncate(stream.read_u32::<LittleEndian>()?);
 
         let auto_reconnect = if present_fields_flags.contains(LogonExFlags::AUTO_RECONNECT_COOKIE) {
             Some(ServerAutoReconnect::from_buffer(&mut stream)?)
@@ -120,10 +111,7 @@ impl PduParsing for ServerAutoReconnect {
         let mut random_bits = [0; AUTO_RECONNECT_RANDOM_BITS_SIZE];
         stream.read_exact(&mut random_bits)?;
 
-        Ok(Self {
-            logon_id,
-            random_bits,
-        })
+        Ok(Self { logon_id, random_bits })
     }
 
     fn to_buffer(&self, mut stream: impl io::Write) -> Result<(), Self::Error> {
@@ -157,10 +145,7 @@ impl PduParsing for LogonErrorsInfo {
         let error_data = LogonErrorNotificationData::from_u32(stream.read_u32::<LittleEndian>()?)
             .ok_or(SessionError::InvalidLogonErrorData)?;
 
-        Ok(Self {
-            error_type,
-            error_data,
-        })
+        Ok(Self { error_type, error_data })
     }
 
     fn to_buffer(&self, mut stream: impl io::Write) -> Result<(), Self::Error> {

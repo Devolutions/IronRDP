@@ -1,4 +1,5 @@
-use std::{collections::HashMap, hash::Hash};
+use std::collections::HashMap;
+use std::hash::Hash;
 
 use num_derive::{FromPrimitive, ToPrimitive};
 

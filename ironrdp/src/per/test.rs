@@ -220,10 +220,7 @@ fn write_numeric_string_is_correct() {
 #[test]
 fn read_octet_string_returns_ok() {
     let buf = [0x00, 0x44, 0x75, 0x63, 0x61];
-    assert_eq!(
-        b"Duca".as_ref(),
-        read_octet_string(buf.as_ref(), 4).unwrap().as_slice()
-    );
+    assert_eq!(b"Duca".as_ref(), read_octet_string(buf.as_ref(), 4).unwrap().as_slice());
 }
 
 #[test]

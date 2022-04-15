@@ -6,7 +6,8 @@ use std::io;
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 
 use super::{FieldType, Header, PduType, HEADER_SIZE, UNUSED_U8};
-use crate::{rdp::vc::ChannelError, utils, PduParsing};
+use crate::rdp::vc::ChannelError;
+use crate::{utils, PduParsing};
 
 pub const DVC_CREATION_STATUS_OK: u32 = 0x0000_0000;
 pub const DVC_CREATION_STATUS_NO_LISTENER: u32 = 0xC000_0001;
@@ -29,8 +30,7 @@ impl CreateRequestPdu {
         let channel_id = channel_id_type.read_buffer_according_to_type(&mut stream)?;
 
         data_size -= channel_id_type.get_type_size();
-        let channel_name =
-            utils::read_string(&mut stream, data_size, utils::CharacterSet::Ansi, false)?;
+        let channel_name = utils::read_string(&mut stream, data_size, utils::CharacterSet::Ansi, false)?;
 
         Ok(Self {
             channel_id_type,
@@ -67,10 +67,7 @@ pub struct CreateResponsePdu {
 }
 
 impl CreateResponsePdu {
-    pub fn from_buffer(
-        mut stream: impl io::Read,
-        channel_id_type: FieldType,
-    ) -> Result<Self, ChannelError> {
+    pub fn from_buffer(mut stream: impl io::Read, channel_id_type: FieldType) -> Result<Self, ChannelError> {
         let channel_id = channel_id_type.read_buffer_according_to_type(&mut stream)?;
         let creation_status = stream.read_u32::<LittleEndian>()?;
 

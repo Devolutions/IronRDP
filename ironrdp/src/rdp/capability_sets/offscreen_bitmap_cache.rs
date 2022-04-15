@@ -5,7 +5,8 @@ use std::io;
 
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 
-use crate::{rdp::CapabilitySetsError, PduParsing};
+use crate::rdp::CapabilitySetsError;
+use crate::PduParsing;
 
 const OFFSCREEN_BITMAP_CACHE_LENGTH: usize = 8;
 

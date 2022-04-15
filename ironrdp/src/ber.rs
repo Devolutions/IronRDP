@@ -73,8 +73,7 @@ pub fn write_sequence_tag(mut stream: impl io::Write, length: u16) -> io::Result
 pub fn read_sequence_tag(mut stream: impl io::Read) -> io::Result<u16> {
     let identifier = stream.read_u8()?;
 
-    if identifier != Class::Universal as u8 | Pc::Construct as u8 | (TAG_MASK & Tag::Sequence as u8)
-    {
+    if identifier != Class::Universal as u8 | Pc::Construct as u8 | (TAG_MASK & Tag::Sequence as u8) {
         Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "invalid sequence tag identifier",
@@ -84,11 +83,7 @@ pub fn read_sequence_tag(mut stream: impl io::Read) -> io::Result<u16> {
     }
 }
 
-pub fn write_application_tag(
-    mut stream: impl io::Write,
-    tagnum: u8,
-    length: u16,
-) -> io::Result<usize> {
+pub fn write_application_tag(mut stream: impl io::Write, tagnum: u8, length: u16) -> io::Result<usize> {
     let taglen = if tagnum > 0x1E {
         stream.write_u8(Class::Application as u8 | Pc::Construct as u8 | TAG_MASK)?;
         stream.write_u8(tagnum)?;
@@ -142,18 +137,12 @@ pub fn read_enumerated(mut stream: impl io::Read, count: u8) -> io::Result<u8> {
 
     let length = read_length(&mut stream)?;
     if length != 1 {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "invalid enumerated len",
-        ));
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "invalid enumerated len"));
     }
 
     let enumerated = stream.read_u8()?;
     if enumerated == std::u8::MAX || enumerated + 1 > count {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "invalid enumerated value",
-        ));
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "invalid enumerated value"));
     }
 
     Ok(enumerated)
@@ -204,10 +193,7 @@ pub fn read_integer(mut stream: impl io::Read) -> io::Result<u64> {
     } else if length == 8 {
         stream.read_u64::<BigEndian>()
     } else {
-        Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "invalid integer len",
-        ))
+        Err(io::Error::new(io::ErrorKind::InvalidData, "invalid integer len"))
     }
 }
 
@@ -226,10 +212,7 @@ pub fn read_bool(mut stream: impl io::Read) -> io::Result<bool> {
     let length = read_length(&mut stream)?;
 
     if length != 1 {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "invalid integer len",
-        ));
+        return Err(io::Error::new(io::ErrorKind::InvalidData, "invalid integer len"));
     }
 
     Ok(stream.read_u8()? != 0)

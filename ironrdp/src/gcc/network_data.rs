@@ -1,10 +1,8 @@
 #[cfg(test)]
 pub mod test;
 
-use std::{
-    io::{self, Write},
-    str,
-};
+use std::io::{self, Write};
+use std::str;
 
 use bitflags::bitflags;
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
@@ -120,10 +118,7 @@ impl PduParsing for ServerNetworkData {
     fn buffer_length(&self) -> usize {
         let padding_size = if self.write_padding() { 2 } else { 0 };
 
-        SERVER_IO_CHANNEL_SIZE
-            + SERVER_CHANNEL_COUNT_SIZE
-            + self.channel_ids.len() * SERVER_CHANNEL_SIZE
-            + padding_size
+        SERVER_IO_CHANNEL_SIZE + SERVER_CHANNEL_COUNT_SIZE + self.channel_ids.len() * SERVER_CHANNEL_SIZE + padding_size
     }
 }
 
@@ -194,8 +189,4 @@ pub enum NetworkDataError {
 }
 
 impl_from_error!(io::Error, NetworkDataError, NetworkDataError::IOError);
-impl_from_error!(
-    str::Utf8Error,
-    NetworkDataError,
-    NetworkDataError::Utf8Error
-);
+impl_from_error!(str::Utf8Error, NetworkDataError, NetworkDataError::Utf8Error);

@@ -57,10 +57,7 @@ impl<'a> PduBufferParsing<'a> for SyncPdu {
 pub struct CodecVersionsPdu;
 
 impl CodecVersionsPdu {
-    pub fn from_buffer_consume_with_header(
-        buffer: &mut &[u8],
-        header: BlockHeader,
-    ) -> Result<Self, RfxError> {
+    pub fn from_buffer_consume_with_header(buffer: &mut &[u8], header: BlockHeader) -> Result<Self, RfxError> {
         let mut buffer = buffer.split_to(header.data_length);
 
         let codecs_number = buffer.read_u8()?;
@@ -78,8 +75,7 @@ impl<'a> PduBufferParsing<'a> for CodecVersionsPdu {
     type Error = RfxError;
 
     fn from_buffer_consume(buffer: &mut &[u8]) -> Result<Self, Self::Error> {
-        let header =
-            BlockHeader::from_buffer_consume_with_expected_type(buffer, BlockType::CodecVersions)?;
+        let header = BlockHeader::from_buffer_consume_with_expected_type(buffer, BlockType::CodecVersions)?;
 
         Self::from_buffer_consume_with_header(buffer, header)
     }
@@ -105,10 +101,7 @@ impl<'a> PduBufferParsing<'a> for CodecVersionsPdu {
 pub struct ChannelsPdu(pub Vec<Channel>);
 
 impl ChannelsPdu {
-    pub fn from_buffer_consume_with_header(
-        buffer: &mut &[u8],
-        header: BlockHeader,
-    ) -> Result<Self, RfxError> {
+    pub fn from_buffer_consume_with_header(buffer: &mut &[u8], header: BlockHeader) -> Result<Self, RfxError> {
         let mut buffer = buffer.split_to(header.data_length);
 
         let channels_number = usize::from(buffer.read_u8()?);
@@ -132,8 +125,7 @@ impl<'a> PduBufferParsing<'a> for ChannelsPdu {
     type Error = RfxError;
 
     fn from_buffer_consume(buffer: &mut &[u8]) -> Result<Self, Self::Error> {
-        let header =
-            BlockHeader::from_buffer_consume_with_expected_type(buffer, BlockType::Channels)?;
+        let header = BlockHeader::from_buffer_consume_with_expected_type(buffer, BlockType::Channels)?;
 
         Self::from_buffer_consume_with_header(buffer, header)
     }
@@ -155,13 +147,7 @@ impl<'a> PduBufferParsing<'a> for ChannelsPdu {
     }
 
     fn buffer_length(&self) -> usize {
-        BLOCK_HEADER_SIZE
-            + 1
-            + self
-                .0
-                .iter()
-                .map(PduBufferParsing::buffer_length)
-                .sum::<usize>()
+        BLOCK_HEADER_SIZE + 1 + self.0.iter().map(PduBufferParsing::buffer_length).sum::<usize>()
     }
 }
 

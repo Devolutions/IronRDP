@@ -71,8 +71,8 @@ impl PduParsing for Monitor {
         let top = buffer.read_i32::<LittleEndian>()?;
         let right = buffer.read_i32::<LittleEndian>()?;
         let bottom = buffer.read_i32::<LittleEndian>()?;
-        let flags = MonitorFlags::from_bits(buffer.read_u32::<LittleEndian>()?)
-            .ok_or(MonitorDataError::InvalidMonitorFlags)?;
+        let flags =
+            MonitorFlags::from_bits(buffer.read_u32::<LittleEndian>()?).ok_or(MonitorDataError::InvalidMonitorFlags)?;
 
         Ok(Self {
             left,

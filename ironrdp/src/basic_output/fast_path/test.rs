@@ -127,9 +127,7 @@ fn from_buffer_correctly_parses_fast_path_update() {
 
 #[test]
 fn from_buffer_returns_error_on_long_length_for_fast_path_update() {
-    assert!(
-        FastPathUpdatePdu::from_buffer(FAST_PATH_UPDATE_PDU_WITH_LONG_LEN_BUFFER.as_ref()).is_err()
-    );
+    assert!(FastPathUpdatePdu::from_buffer(FAST_PATH_UPDATE_PDU_WITH_LONG_LEN_BUFFER.as_ref()).is_err());
 }
 
 #[test]
@@ -145,8 +143,5 @@ fn to_buffer_correctly_serializes_fast_path_update() {
 
 #[test]
 fn buffer_length_is_correct_for_fast_path_update() {
-    assert_eq!(
-        FAST_PATH_UPDATE_PDU_BUFFER.len(),
-        FAST_PATH_UPDATE_PDU.buffer_length()
-    );
+    assert_eq!(FAST_PATH_UPDATE_PDU_BUFFER.len(), FAST_PATH_UPDATE_PDU.buffer_length());
 }

@@ -1,7 +1,9 @@
 use std::io;
 
 use failure::Fail;
-use ironrdp::{codecs, dvc::gfx, fast_path::FastPathError, nego, rdp, McsError};
+use ironrdp::dvc::gfx;
+use ironrdp::fast_path::FastPathError;
+use ironrdp::{codecs, nego, rdp, McsError};
 
 #[derive(Debug, Fail)]
 pub enum RdpError {
@@ -89,8 +91,9 @@ impl From<io::Error> for RdpError {
 impl From<rustls::TLSError> for RdpError {
     fn from(e: rustls::TLSError) -> Self {
         match e {
-            rustls::TLSError::InappropriateHandshakeMessage { .. }
-            | rustls::TLSError::HandshakeNotComplete => RdpError::TlsHandshakeError(e),
+            rustls::TLSError::InappropriateHandshakeMessage { .. } | rustls::TLSError::HandshakeNotComplete => {
+                RdpError::TlsHandshakeError(e)
+            }
             _ => RdpError::TlsConnectorError(e),
         }
     }

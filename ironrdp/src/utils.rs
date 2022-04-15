@@ -1,10 +1,8 @@
 pub mod rc4;
 pub mod rsa;
 
-use std::{
-    cmp::{max, min},
-    io, ops,
-};
+use std::cmp::{max, min};
+use std::{io, ops};
 
 use bitvec::prelude::{BitSlice, Msb0};
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
@@ -87,12 +85,8 @@ pub fn read_string(
 
     let result = match character_set {
         CharacterSet::Unicode => bytes_to_utf16_string(buffer.as_slice()),
-        CharacterSet::Ansi => String::from_utf8(buffer).map_err(|e| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("the string is not utf8: {}", e),
-            )
-        })?,
+        CharacterSet::Ansi => String::from_utf8(buffer)
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("the string is not utf8: {}", e)))?,
     };
 
     Ok(result.trim_end_matches('\0').into())

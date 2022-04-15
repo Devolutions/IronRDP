@@ -210,10 +210,7 @@ impl PduParsing for ConferenceCreateResponse {
         let (_gcc_blocks_buffer_length, _) = per::read_length(&mut stream)?;
         let gcc_blocks = ServerGccBlocks::from_buffer(&mut stream)?;
 
-        Ok(Self {
-            user_id,
-            gcc_blocks,
-        })
+        Ok(Self { user_id, gcc_blocks })
     }
 
     fn to_buffer(&self, mut stream: impl io::Write) -> Result<(), Self::Error> {

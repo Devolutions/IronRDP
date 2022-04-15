@@ -20,10 +20,7 @@ impl PduParsing for UnicodePdu {
         let unicode_code = stream.read_u16::<LittleEndian>()?;
         let _padding = stream.read_u16::<LittleEndian>()?;
 
-        Ok(Self {
-            flags,
-            unicode_code,
-        })
+        Ok(Self { flags, unicode_code })
     }
 
     fn to_buffer(&self, mut stream: impl io::Write) -> Result<(), Self::Error> {

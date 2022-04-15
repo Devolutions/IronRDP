@@ -1,9 +1,8 @@
 use lazy_static::lazy_static;
 
-use crate::{
-    gcc::core_data::{server::*, *},
-    nego,
-};
+use crate::gcc::core_data::server::*;
+use crate::gcc::core_data::*;
+use crate::nego;
 
 const SERVER_CORE_DATA_BUFFER: [u8; 4] = [
     0x04, 0x00, 0x08, 0x00, // version
@@ -55,10 +54,7 @@ lazy_static! {
 fn from_buffer_correctly_parses_server_core_data_without_optional_fields() {
     let buffer = SERVER_CORE_DATA_BUFFER.as_ref();
 
-    assert_eq!(
-        *SERVER_CORE_DATA,
-        ServerCoreData::from_buffer(buffer).unwrap()
-    );
+    assert_eq!(*SERVER_CORE_DATA, ServerCoreData::from_buffer(buffer).unwrap());
 }
 
 #[test]

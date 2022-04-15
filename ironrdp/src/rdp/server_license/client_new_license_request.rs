@@ -3,20 +3,19 @@ pub mod test;
 
 use std::io;
 
-use crate::utils::rsa::encrypt_with_public_key;
 use bitflags::bitflags;
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use md5::Digest;
-
 use ring::digest;
 
 use super::{
-    BasicSecurityHeader, BasicSecurityHeaderFlags, BlobHeader, BlobType, LicenseEncryptionData,
-    LicenseHeader, PreambleFlags, PreambleType, PreambleVersion, ServerLicenseError,
-    ServerLicenseRequest, KEY_EXCHANGE_ALGORITHM_RSA, PREAMBLE_SIZE, RANDOM_NUMBER_SIZE,
-    UTF8_NULL_TERMINATOR_SIZE,
+    BasicSecurityHeader, BasicSecurityHeaderFlags, BlobHeader, BlobType, LicenseEncryptionData, LicenseHeader,
+    PreambleFlags, PreambleType, PreambleVersion, ServerLicenseError, ServerLicenseRequest, KEY_EXCHANGE_ALGORITHM_RSA,
+    PREAMBLE_SIZE, RANDOM_NUMBER_SIZE, UTF8_NULL_TERMINATOR_SIZE,
 };
-use crate::{utils, utils::CharacterSet, PduParsing};
+use crate::utils::rsa::encrypt_with_public_key;
+use crate::utils::CharacterSet;
+use crate::{utils, PduParsing};
 
 const LICENSE_REQUEST_STATIC_FIELDS_SIZE: usize = 20;
 
@@ -142,28 +141,15 @@ impl PduParsing for ClientNewLicenseRequest {
         let mut client_random = vec![0u8; RANDOM_NUMBER_SIZE];
         stream.read_exact(&mut client_random)?;
 
-        let premaster_secret_blob_header =
-            BlobHeader::read_from_buffer(BlobType::Random, &mut stream)?;
+        let premaster_secret_blob_header = BlobHeader::read_from_buffer(BlobType::Random, &mut stream)?;
         let mut encrypted_premaster_secret = vec![0u8; premaster_secret_blob_header.length];
         stream.read_exact(&mut encrypted_premaster_secret)?;
 
-        let username_blob_header =
-            BlobHeader::read_from_buffer(BlobType::ClientUserName, &mut stream)?;
-        let client_username = utils::read_string(
-            &mut stream,
-            username_blob_header.length,
-            CharacterSet::Ansi,
-            false,
-        )?;
+        let username_blob_header = BlobHeader::read_from_buffer(BlobType::ClientUserName, &mut stream)?;
+        let client_username = utils::read_string(&mut stream, username_blob_header.length, CharacterSet::Ansi, false)?;
 
-        let machine_name_blob =
-            BlobHeader::read_from_buffer(BlobType::ClientMachineNameBlob, &mut stream)?;
-        let client_machine_name = utils::read_string(
-            &mut stream,
-            machine_name_blob.length,
-            CharacterSet::Ansi,
-            false,
-        )?;
+        let machine_name_blob = BlobHeader::read_from_buffer(BlobType::ClientMachineNameBlob, &mut stream)?;
+        let client_machine_name = utils::read_string(&mut stream, machine_name_blob.length, CharacterSet::Ansi, false)?;
 
         Ok(Self {
             license_header,
@@ -181,8 +167,7 @@ impl PduParsing for ClientNewLicenseRequest {
         stream.write_u32::<LittleEndian>(PLATFORM_ID)?;
         stream.write_all(&self.client_random)?;
 
-        BlobHeader::new(BlobType::Random, self.encrypted_premaster_secret.len())
-            .write_to_buffer(&mut stream)?;
+        BlobHeader::new(BlobType::Random, self.encrypted_premaster_secret.len()).write_to_buffer(&mut stream)?;
         stream.write_all(&self.encrypted_premaster_secret)?;
 
         BlobHeader::new(
@@ -190,22 +175,14 @@ impl PduParsing for ClientNewLicenseRequest {
             self.client_username.len() + UTF8_NULL_TERMINATOR_SIZE,
         )
         .write_to_buffer(&mut stream)?;
-        utils::write_string_with_null_terminator(
-            &mut stream,
-            &self.client_username,
-            CharacterSet::Ansi,
-        )?;
+        utils::write_string_with_null_terminator(&mut stream, &self.client_username, CharacterSet::Ansi)?;
 
         BlobHeader::new(
             BlobType::ClientMachineNameBlob,
             self.client_machine_name.len() + UTF8_NULL_TERMINATOR_SIZE,
         )
         .write_to_buffer(&mut stream)?;
-        utils::write_string_with_null_terminator(
-            &mut stream,
-            &self.client_machine_name,
-            CharacterSet::Ansi,
-        )?;
+        utils::write_string_with_null_terminator(&mut stream, &self.client_machine_name, CharacterSet::Ansi)?;
 
         Ok(())
     }
@@ -235,11 +212,7 @@ fn salted_hash(salt: &[u8], salt_first: &[u8], salt_second: &[u8], input: &[u8])
 }
 
 // According to https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpele/88061224-4a2f-4a28-a52e-e896b75ed2d3
-fn compute_master_secret(
-    premaster_secret: &[u8],
-    client_random: &[u8],
-    server_random: &[u8],
-) -> Vec<u8> {
+fn compute_master_secret(premaster_secret: &[u8], client_random: &[u8], server_random: &[u8]) -> Vec<u8> {
     [
         salted_hash(premaster_secret, client_random, server_random, b"A"),
         salted_hash(premaster_secret, client_random, server_random, b"BB"),
@@ -249,11 +222,7 @@ fn compute_master_secret(
 }
 
 // According to https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpele/88061224-4a2f-4a28-a52e-e896b75ed2d3
-fn compute_session_key_blob(
-    master_secret: &[u8],
-    client_random: &[u8],
-    server_random: &[u8],
-) -> Vec<u8> {
+fn compute_session_key_blob(master_secret: &[u8], client_random: &[u8], server_random: &[u8]) -> Vec<u8> {
     [
         salted_hash(master_secret, server_random, client_random, b"A"),
         salted_hash(master_secret, server_random, client_random, b"BB"),

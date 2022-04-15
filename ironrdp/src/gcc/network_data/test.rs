@@ -51,9 +51,7 @@ lazy_static! {
         io_channel: 1003,
         channel_ids: vec![1004, 1005, 1006],
     };
-    static ref CLIENT_NETOWORK_DATA_WITHOUT_CHANNELS: ClientNetworkData = ClientNetworkData {
-        channels: Vec::new()
-    };
+    static ref CLIENT_NETOWORK_DATA_WITHOUT_CHANNELS: ClientNetworkData = ClientNetworkData { channels: Vec::new() };
     static ref SERVER_NETOWORK_DATA_WITHOUT_CHANNELS_ID: ServerNetworkData = ServerNetworkData {
         io_channel: 1003,
         channel_ids: Vec::new(),
