@@ -7,6 +7,7 @@ use bitflags::bitflags;
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive, ToPrimitive};
+use tap::Pipe as _;
 
 use super::{CoreDataError, RdpVersion, VERSION_SIZE};
 use crate::{nego, try_read_optional, try_write_optional, utils, PduParsing};
@@ -81,12 +82,16 @@ impl PduParsing for ClientCoreData {
     type Error = CoreDataError;
 
     fn from_buffer(mut buffer: impl io::Read) -> Result<Self, Self::Error> {
-        let version = RdpVersion::from_u32(buffer.read_u32::<LittleEndian>()?).unwrap_or(RdpVersion::VUnknown);
+        let version = buffer.read_u32::<LittleEndian>()?.pipe(RdpVersion);
         let desktop_width = buffer.read_u16::<LittleEndian>()?;
         let desktop_height = buffer.read_u16::<LittleEndian>()?;
-        let color_depth =
-            ColorDepth::from_u16(buffer.read_u16::<LittleEndian>()?).ok_or(CoreDataError::InvalidColorDepth)?;
-        let sec_access_sequence = SecureAccessSequence::from_u16(buffer.read_u16::<LittleEndian>()?)
+        let color_depth = buffer
+            .read_u16::<LittleEndian>()?
+            .pipe(ColorDepth::from_u16)
+            .ok_or(CoreDataError::InvalidColorDepth)?;
+        let sec_access_sequence = buffer
+            .read_u16::<LittleEndian>()?
+            .pipe(SecureAccessSequence::from_u16)
             .ok_or(CoreDataError::InvalidSecureAccessSequence)?;
         let keyboard_layout = buffer.read_u32::<LittleEndian>()?;
         let client_build = buffer.read_u32::<LittleEndian>()?;
@@ -97,8 +102,10 @@ impl PduParsing for ClientCoreData {
             .trim_end_matches('\u{0}')
             .into();
 
-        let keyboard_type =
-            KeyboardType::from_u32(buffer.read_u32::<LittleEndian>()?).ok_or(CoreDataError::InvalidKeyboardType)?;
+        let keyboard_type = buffer
+            .read_u32::<LittleEndian>()?
+            .pipe(KeyboardType::from_u32)
+            .ok_or(CoreDataError::InvalidKeyboardType)?;
         let keyboard_subtype = buffer.read_u32::<LittleEndian>()?;
         let keyboard_functional_keys_count = buffer.read_u32::<LittleEndian>()?;
 
@@ -133,7 +140,7 @@ impl PduParsing for ClientCoreData {
         let mut ime_file_name_buffer = utils::string_to_utf16(self.ime_file_name.as_ref());
         ime_file_name_buffer.resize(IME_FILE_NAME_SIZE - 2, 0);
 
-        buffer.write_u32::<LittleEndian>(self.version.to_u32().unwrap())?;
+        buffer.write_u32::<LittleEndian>(self.version.0)?;
         buffer.write_u16::<LittleEndian>(self.desktop_width)?;
         buffer.write_u16::<LittleEndian>(self.desktop_height)?;
         buffer.write_u16::<LittleEndian>(self.color_depth.to_u16().unwrap())?;

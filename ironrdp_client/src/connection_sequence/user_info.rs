@@ -121,7 +121,7 @@ pub fn create_client_confirm_active(
 
 fn create_core_data(config: &InputConfig, selected_protocol: SecurityProtocol) -> Result<ClientCoreData, RdpError> {
     Ok(ClientCoreData {
-        version: RdpVersion::V5Plus,
+        version: RdpVersion::V5_PLUS,
         desktop_width: config.width,
         desktop_height: config.height,
         color_depth: ColorDepth::Bpp4, // ignored

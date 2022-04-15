@@ -5,7 +5,7 @@ use std::io;
 
 use bitflags::bitflags;
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
-use num_traits::{FromPrimitive, ToPrimitive};
+use tap::Pipe as _;
 
 use super::{CoreDataError, RdpVersion, VERSION_SIZE};
 use crate::{nego, try_read_optional, try_write_optional, PduParsing};
@@ -23,14 +23,14 @@ impl PduParsing for ServerCoreData {
     type Error = CoreDataError;
 
     fn from_buffer(mut buffer: impl io::Read) -> Result<Self, Self::Error> {
-        let version = RdpVersion::from_u32(buffer.read_u32::<LittleEndian>()?).unwrap_or(RdpVersion::VUnknown);
+        let version = buffer.read_u32::<LittleEndian>()?.pipe(RdpVersion);
         let optional_data = ServerCoreOptionalData::from_buffer(&mut buffer)?;
 
         Ok(Self { version, optional_data })
     }
 
     fn to_buffer(&self, mut buffer: impl io::Write) -> Result<(), Self::Error> {
-        buffer.write_u32::<LittleEndian>(self.version.to_u32().unwrap())?;
+        buffer.write_u32::<LittleEndian>(self.version.0)?;
         self.optional_data.to_buffer(&mut buffer)
     }
 
