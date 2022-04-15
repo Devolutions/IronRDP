@@ -16,6 +16,8 @@ jobs:
     steps:
       - uses: actions/checkout@v2
 
+      - run: rustup component add rustfmt
+
       - name: Check formatting
         shell: pwsh
         run: |
