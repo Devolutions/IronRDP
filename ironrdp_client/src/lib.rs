@@ -1,11 +1,11 @@
-pub mod active_session;
-pub mod connection_sequence;
-pub mod transport;
-
 mod errors;
 mod utils;
 
 use ironrdp::{gcc, nego};
+
+pub mod active_session;
+pub mod connection_sequence;
+pub mod transport;
 
 pub use self::active_session::process_active_stage;
 pub use self::connection_sequence::{process_connection_sequence, ConnectionSequenceResult, UpgradedStream};

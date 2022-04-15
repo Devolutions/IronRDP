@@ -28,7 +28,7 @@ const SERVER_NETWORK_DATA_WITHOUT_CHANNELS_ID_BUFFER: [u8; 4] = [
 ];
 
 lazy_static! {
-    pub static ref CLIENT_NETOWORK_DATA_WITH_CHANNELS: ClientNetworkData = ClientNetworkData {
+    pub static ref CLIENT_NETWORK_DATA_WITH_CHANNELS: ClientNetworkData = ClientNetworkData {
         channels: vec![
             Channel {
                 name: String::from("rdpdr"),
@@ -47,12 +47,12 @@ lazy_static! {
             },
         ],
     };
-    pub static ref SERVER_NETOWORK_DATA_WITH_CHANNELS_ID: ServerNetworkData = ServerNetworkData {
+    pub static ref SERVER_NETWORK_DATA_WITH_CHANNELS_ID: ServerNetworkData = ServerNetworkData {
         io_channel: 1003,
         channel_ids: vec![1004, 1005, 1006],
     };
-    static ref CLIENT_NETOWORK_DATA_WITHOUT_CHANNELS: ClientNetworkData = ClientNetworkData { channels: Vec::new() };
-    static ref SERVER_NETOWORK_DATA_WITHOUT_CHANNELS_ID: ServerNetworkData = ServerNetworkData {
+    static ref CLIENT_NETWORK_DATA_WITHOUT_CHANNELS: ClientNetworkData = ClientNetworkData { channels: Vec::new() };
+    static ref SERVER_NETWORK_DATA_WITHOUT_CHANNELS_ID: ServerNetworkData = ServerNetworkData {
         io_channel: 1003,
         channel_ids: Vec::new(),
     };
@@ -63,7 +63,7 @@ fn from_buffer_correctly_parses_client_network_data_without_channels() {
     let buffer = CLIENT_NETWORK_DATA_WITHOUT_CHANNELS_BUFFER.as_ref();
 
     assert_eq!(
-        *CLIENT_NETOWORK_DATA_WITHOUT_CHANNELS,
+        *CLIENT_NETWORK_DATA_WITHOUT_CHANNELS,
         ClientNetworkData::from_buffer(buffer).unwrap()
     );
 }
@@ -73,14 +73,14 @@ fn from_buffer_correctly_parses_client_network_data_with_channels() {
     let buffer = CLIENT_NETWORK_DATA_WITH_CHANNELS_BUFFER.as_ref();
 
     assert_eq!(
-        *CLIENT_NETOWORK_DATA_WITH_CHANNELS,
+        *CLIENT_NETWORK_DATA_WITH_CHANNELS,
         ClientNetworkData::from_buffer(buffer).unwrap()
     );
 }
 
 #[test]
 fn to_buffer_correctly_serializes_client_network_data_without_channels() {
-    let data = CLIENT_NETOWORK_DATA_WITHOUT_CHANNELS.clone();
+    let data = CLIENT_NETWORK_DATA_WITHOUT_CHANNELS.clone();
     let expected_buffer = CLIENT_NETWORK_DATA_WITHOUT_CHANNELS_BUFFER;
 
     let mut buff = Vec::new();
@@ -91,7 +91,7 @@ fn to_buffer_correctly_serializes_client_network_data_without_channels() {
 
 #[test]
 fn to_buffer_correctly_serializes_client_network_data_with_channels() {
-    let data = CLIENT_NETOWORK_DATA_WITH_CHANNELS.clone();
+    let data = CLIENT_NETWORK_DATA_WITH_CHANNELS.clone();
     let expected_buffer = CLIENT_NETWORK_DATA_WITH_CHANNELS_BUFFER;
 
     let mut buff = Vec::new();
@@ -102,7 +102,7 @@ fn to_buffer_correctly_serializes_client_network_data_with_channels() {
 
 #[test]
 fn buffer_length_is_correct_for_client_network_data_without_channels() {
-    let data = CLIENT_NETOWORK_DATA_WITHOUT_CHANNELS.clone();
+    let data = CLIENT_NETWORK_DATA_WITHOUT_CHANNELS.clone();
     let expected_buffer_len = CLIENT_NETWORK_DATA_WITHOUT_CHANNELS_BUFFER.len();
 
     let len = data.buffer_length();
@@ -112,7 +112,7 @@ fn buffer_length_is_correct_for_client_network_data_without_channels() {
 
 #[test]
 fn buffer_length_is_correct_for_client_network_data_with_channels() {
-    let data = CLIENT_NETOWORK_DATA_WITH_CHANNELS.clone();
+    let data = CLIENT_NETWORK_DATA_WITH_CHANNELS.clone();
     let expected_buffer_len = CLIENT_NETWORK_DATA_WITH_CHANNELS_BUFFER.len();
 
     let len = data.buffer_length();
@@ -125,7 +125,7 @@ fn from_buffer_correctly_parses_server_network_data_without_channels_id() {
     let buffer = SERVER_NETWORK_DATA_WITHOUT_CHANNELS_ID_BUFFER.as_ref();
 
     assert_eq!(
-        *SERVER_NETOWORK_DATA_WITHOUT_CHANNELS_ID,
+        *SERVER_NETWORK_DATA_WITHOUT_CHANNELS_ID,
         ServerNetworkData::from_buffer(buffer).unwrap()
     );
 }
@@ -135,14 +135,14 @@ fn from_buffer_correctly_parses_server_network_data_with_channels_id() {
     let buffer = SERVER_NETWORK_DATA_WITH_CHANNELS_ID_BUFFER.as_ref();
 
     assert_eq!(
-        *SERVER_NETOWORK_DATA_WITH_CHANNELS_ID,
+        *SERVER_NETWORK_DATA_WITH_CHANNELS_ID,
         ServerNetworkData::from_buffer(buffer).unwrap()
     );
 }
 
 #[test]
 fn to_buffer_correctly_serializes_server_network_data_without_channels_id() {
-    let data = SERVER_NETOWORK_DATA_WITHOUT_CHANNELS_ID.clone();
+    let data = SERVER_NETWORK_DATA_WITHOUT_CHANNELS_ID.clone();
     let expected_buffer = SERVER_NETWORK_DATA_WITHOUT_CHANNELS_ID_BUFFER;
 
     let mut buff = Vec::new();
@@ -153,7 +153,7 @@ fn to_buffer_correctly_serializes_server_network_data_without_channels_id() {
 
 #[test]
 fn to_buffer_correctly_serializes_server_network_data_with_channels_id() {
-    let data = SERVER_NETOWORK_DATA_WITH_CHANNELS_ID.clone();
+    let data = SERVER_NETWORK_DATA_WITH_CHANNELS_ID.clone();
     let expected_buffer = SERVER_NETWORK_DATA_WITH_CHANNELS_ID_BUFFER;
 
     let mut buff = Vec::new();
@@ -164,7 +164,7 @@ fn to_buffer_correctly_serializes_server_network_data_with_channels_id() {
 
 #[test]
 fn buffer_length_is_correct_for_server_network_data_without_channels_id() {
-    let data = SERVER_NETOWORK_DATA_WITHOUT_CHANNELS_ID.clone();
+    let data = SERVER_NETWORK_DATA_WITHOUT_CHANNELS_ID.clone();
     let expected_buffer_len = SERVER_NETWORK_DATA_WITHOUT_CHANNELS_ID_BUFFER.len();
 
     let len = data.buffer_length();
@@ -174,7 +174,7 @@ fn buffer_length_is_correct_for_server_network_data_without_channels_id() {
 
 #[test]
 fn buffer_length_is_correct_for_server_network_data_with_channels_id() {
-    let data = SERVER_NETOWORK_DATA_WITH_CHANNELS_ID.clone();
+    let data = SERVER_NETWORK_DATA_WITH_CHANNELS_ID.clone();
     let expected_buffer_len = SERVER_NETWORK_DATA_WITH_CHANNELS_ID_BUFFER.len();
 
     let len = data.buffer_length();

@@ -43,8 +43,8 @@ mod tests {
 
     #[test]
     fn decode_does_not_change_buffer_with_null_quant_values() {
-        let mut buffer = QUANTIZIED_BUFFER;
-        let expected = QUANTIZIED_BUFFER;
+        let mut buffer = QUANTIZED_BUFFER;
+        let expected = QUANTIZED_BUFFER;
         let quant = Quant {
             ll3: 0,
             lh3: 0,
@@ -64,7 +64,7 @@ mod tests {
 
     #[test]
     fn decode_works_with_not_empty_quant_values() {
-        let mut buffer = QUANTIZIED_BUFFER;
+        let mut buffer = QUANTIZED_BUFFER;
         let expected = DEQUANTIZED_BUFFER.as_ref();
         let quant = Quant {
             ll3: 6,
@@ -83,7 +83,7 @@ mod tests {
         assert_eq!(expected, buffer.as_ref());
     }
 
-    const QUANTIZIED_BUFFER: [i16; 4096] = [
+    const QUANTIZED_BUFFER: [i16; 4096] = [
         0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
         0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
         0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 2, 0, 0, 0, 0, -1, 0, 0, 0, 0, 0, 0, 0,

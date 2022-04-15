@@ -1,3 +1,12 @@
+use std::io;
+
+use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
+use failure::Fail;
+use num_derive::{FromPrimitive, ToPrimitive};
+use num_traits::{FromPrimitive, ToPrimitive};
+
+use crate::{impl_from_error, PduParsing};
+
 #[cfg(test)]
 pub mod test;
 
@@ -17,13 +26,6 @@ mod pointer;
 mod sound;
 mod surface_commands;
 mod virtual_channel;
-
-use std::io;
-
-use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
-use failure::Fail;
-use num_derive::{FromPrimitive, ToPrimitive};
-use num_traits::{FromPrimitive, ToPrimitive};
 
 pub use self::bitmap::{Bitmap, BitmapDrawingFlags};
 pub use self::bitmap_cache::{
@@ -46,7 +48,6 @@ pub use self::pointer::Pointer;
 pub use self::sound::{Sound, SoundFlags};
 pub use self::surface_commands::{CmdFlags, SurfaceCommands};
 pub use self::virtual_channel::{VirtualChannel, VirtualChannelFlags};
-use crate::{impl_from_error, PduParsing};
 
 pub const SERVER_CHANNEL_ID: u16 = 0x03ea;
 

@@ -1,12 +1,3 @@
-pub mod mouse;
-pub mod mouse_x;
-pub mod scan_code;
-pub mod sync;
-#[cfg(test)]
-mod tests;
-pub mod unicode;
-pub mod unused;
-
 use std::io;
 
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
@@ -14,13 +5,24 @@ use failure::Fail;
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive, ToPrimitive};
 
+use crate::{impl_from_error, PduParsing};
+
+#[cfg(test)]
+mod tests;
+
+pub mod mouse;
+pub mod mouse_x;
+pub mod scan_code;
+pub mod sync;
+pub mod unicode;
+pub mod unused;
+
 pub use self::mouse::MousePdu;
 pub use self::mouse_x::MouseXPdu;
 pub use self::scan_code::ScanCodePdu;
 pub use self::sync::SyncPdu;
 pub use self::unicode::UnicodePdu;
 pub use self::unused::UnusedPdu;
-use crate::{impl_from_error, PduParsing};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct InputEventPdu(pub Vec<InputEvent>);
