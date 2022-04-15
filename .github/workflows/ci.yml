@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+    types: [ opened, synchronize, reopened ]
+  workflow_dispatch:
+
+jobs:
+  formatting:
+    name: Check formatting
+    runs-on: ubuntu-18.04
+
+    steps:
+      - uses: actions/checkout@v2
+
+      - name: Check formatting
+        shell: pwsh
+        run: |
+          Write-Host "Check formatting"
+          cargo fmt --all -- --check
+
+          if ($LastExitCode -eq 1) {   
+            throw "Bad formatting, please run 'cargo +stable fmt --all'"
+          }
+  
+  lints:
+    name: Lints
+    runs-on: ubuntu-18.04
+    needs: formatting
+
+    steps:
+      - uses: actions/checkout@v2
+
+      - run: rustup component add clippy
+      
+      - name: Check clippy
+        run: cargo clippy --workspace --all-features
+
+  tests:
+    name: Tests [${{ matrix.os }}]
+    runs-on: ${{ matrix.runner }}
+    needs: formatting
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ windows, linux ]
+        include:
+          - os: windows
+            runner: windows-2019
+          - os: linux
+            runner: ubuntu-18.04
+
+    steps:
+      - uses: actions/checkout@v2
+
+      - name: Test [${{ matrix.os }}]
+        run: cargo test --workspace --all-features
