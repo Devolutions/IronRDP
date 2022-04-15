@@ -14,7 +14,7 @@ jobs:
     runs-on: ubuntu-18.04
 
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v3
 
       - run: rustup component add rustfmt
 
@@ -34,7 +34,7 @@ jobs:
     needs: formatting
 
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v3
 
       - run: rustup component add clippy
       
@@ -56,7 +56,7 @@ jobs:
             runner: ubuntu-18.04
 
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v3
 
       - name: Test [${{ matrix.os }}]
         run: cargo test --workspace --all-features
