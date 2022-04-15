@@ -16,21 +16,21 @@ const FLAGS_BUFFER: [u8; 4] = [
 
 lazy_static! {
     pub static ref SERVER_CORE_DATA: ServerCoreData = ServerCoreData {
-        version: RdpVersion::V5Plus,
+        version: RdpVersion::V5_PLUS,
         optional_data: ServerCoreOptionalData {
             client_requested_protocols: None,
             early_capability_flags: None,
         },
     };
     pub static ref SERVER_CORE_DATA_TO_FLAGS: ServerCoreData = ServerCoreData {
-        version: RdpVersion::V5Plus,
+        version: RdpVersion::V5_PLUS,
         optional_data: ServerCoreOptionalData {
             client_requested_protocols: Some(nego::SecurityProtocol::RDP),
             early_capability_flags: None,
         },
     };
     pub static ref SERVER_CORE_DATA_WITH_ALL_OPTIONAL_FIELDS: ServerCoreData = ServerCoreData {
-        version: RdpVersion::V5Plus,
+        version: RdpVersion::V5_PLUS,
         optional_data: ServerCoreOptionalData {
             client_requested_protocols: Some(nego::SecurityProtocol::RDP),
             early_capability_flags: Some(ServerEarlyCapabilityFlags::EDGE_ACTIONS_SUPPORTED_V1),

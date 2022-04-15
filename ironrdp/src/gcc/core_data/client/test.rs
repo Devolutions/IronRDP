@@ -53,7 +53,7 @@ const CLIENT_OPTIONAL_CORE_DATA_FROM_DESKTOP_PHYSICAL_WIDTH_TO_DEVICE_SCALE_FACT
 
 lazy_static! {
     pub static ref CLIENT_CORE_DATA_WITHOUT_OPTIONAL_FIELDS: ClientCoreData = ClientCoreData {
-        version: RdpVersion::V5Plus,
+        version: RdpVersion::V5_PLUS,
         desktop_width: 1280,
         desktop_height: 1024,
         color_depth: ColorDepth::Bpp4,

@@ -4,32 +4,43 @@ pub mod server;
 use std::io;
 
 use failure::Fail;
-use num_derive::{FromPrimitive, ToPrimitive};
 
 use crate::impl_from_error;
 
 const VERSION_SIZE: usize = 4;
 
-#[derive(Copy, Clone, Debug, PartialEq, FromPrimitive, ToPrimitive)]
-pub enum RdpVersion {
-    V4 = 0x0008_0001,
-    V5Plus = 0x0008_0004,
-    V10 = 0x0008_0005,
-    V10_1 = 0x0008_0006,
-    V10_2 = 0x0008_0007,
-    V10_3 = 0x0008_0008,
-    V10_4 = 0x0008_0009,
-    V10_5 = 0x0008_000A,
-    V10_6 = 0x0008_000B,
-    V10_7 = 0x0008_000C,
-    V10_8 = 0x0008_000D,
+#[repr(transparent)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RdpVersion(pub u32);
 
-    // future proofing
-    V10_9 = 0x0008_000E,
-    V10_10 = 0x0008_000F,
-    V10_11 = 0x0008_0010,
-    V10_12 = 0x0008_0011,
-    VUnknown = 0x0000_0000,
+impl From<u32> for RdpVersion {
+    fn from(value: u32) -> Self {
+        Self(value)
+    }
+}
+
+impl From<RdpVersion> for u32 {
+    fn from(version: RdpVersion) -> Self {
+        version.0
+    }
+}
+
+impl RdpVersion {
+    pub const V4: Self = Self(0x0008_0001);
+    pub const V5_PLUS: Self = Self(0x0008_0004);
+    pub const V10: Self = Self(0x0008_0005);
+    pub const V10_1: Self = Self(0x0008_0006);
+    pub const V10_2: Self = Self(0x0008_0007);
+    pub const V10_3: Self = Self(0x0008_0008);
+    pub const V10_4: Self = Self(0x0008_0009);
+    pub const V10_5: Self = Self(0x0008_000A);
+    pub const V10_6: Self = Self(0x0008_000B);
+    pub const V10_7: Self = Self(0x0008_000C);
+    pub const V10_8: Self = Self(0x0008_000D);
+    pub const V10_9: Self = Self(0x0008_000E);
+    pub const V10_10: Self = Self(0x0008_000F);
+    pub const V10_11: Self = Self(0x0008_0010);
+    pub const V10_12: Self = Self(0x0008_0011);
 }
 
 #[derive(Debug, Fail)]
