@@ -117,10 +117,9 @@ pub fn create_client_confirm_active(
         }),
     ]);
 
-    if server_capability_sets
+    if !server_capability_sets
         .iter()
-        .find(|c| matches!(c, CapabilitySet::MultiFragmentUpdate(_)))
-        .is_none()
+        .any(|c| matches!(&c, CapabilitySet::MultiFragmentUpdate(_)))
     {
         server_capability_sets.push(create_multi_fragment_update_capability_set());
     }

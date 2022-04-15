@@ -59,7 +59,7 @@ impl ClientNewLicenseRequest {
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData,
                 "attempted to retrieve the server public key from a server license request message that does not have a certificate"))?;
 
-        let encrypted_premaster_secret = encrypt_with_public_key(&premaster_secret, &public_key)?;
+        let encrypted_premaster_secret = encrypt_with_public_key(premaster_secret, &public_key)?;
 
         let master_secret = compute_master_secret(
             premaster_secret,

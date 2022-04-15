@@ -103,7 +103,7 @@ fn input_args<'a, 'b>() -> [Arg<'a, 'b>; 9] {
             .takes_value(true)
             .multiple(true)
             .possible_values(&["ssl", "hybrid", "hybrid_ex"])
-            .default_value(&"hybrid_ex")
+            .default_value("hybrid_ex")
             .required(true),
         Arg::with_name("keyboard-type")
             .long("keyboard-type")
@@ -119,33 +119,33 @@ fn input_args<'a, 'b>() -> [Arg<'a, 'b>; 9] {
                 "nokia9140",
                 "japanese",
             ])
-            .default_value(&"ibm_enhanced"),
+            .default_value("ibm_enhanced"),
         Arg::with_name("keyboard-subtype")
             .long("keyboard-subtype")
             .value_name("KEYBOARD_SUBTYPE")
             .help("The keyboard subtype (an original equipment manufacturer-dependent value)")
             .takes_value(true)
-            .default_value(&"0")
+            .default_value("0")
             .validator(is_uint),
         Arg::with_name("keyboard-functional-keys-count")
             .long("keyboard-functional-keys-count")
             .value_name("KEYBOARD_FUNCTIONAL_KEYS_COUNT")
             .help("The number of function keys on the keyboard")
             .takes_value(true)
-            .default_value(&"12")
+            .default_value("12")
             .validator(is_uint),
         Arg::with_name("ime-file-name")
             .long("ime-file-name")
             .value_name("IME_FILENAME")
             .help("The input method editor (IME) file name associated with the active input locale")
             .takes_value(true)
-            .default_value(&""),
+            .default_value(""),
         Arg::with_name("dig-product-id")
             .long("dig-product-id")
             .value_name("DIG_PRODUCT_ID")
             .help("Contains a value that uniquely identifies the client")
             .takes_value(true)
-            .default_value(&""),
+            .default_value(""),
     ]
 }
 

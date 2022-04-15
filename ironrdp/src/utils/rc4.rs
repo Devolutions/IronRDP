@@ -79,7 +79,7 @@ mod test {
         let message = "message".to_string();
         let expected = [0x66, 0x09, 0x47, 0x9E, 0x45, 0xE8, 0x1E];
         assert_eq!(
-            Rc4::new(&key.as_bytes()).process(&message.as_bytes())[..],
+            Rc4::new(key.as_bytes()).process(message.as_bytes())[..],
             expected
         );
     }
@@ -90,7 +90,7 @@ mod test {
         let message = "message".to_string();
         let expected = [0xE5, 0x1A, 0xD5, 0xF3, 0xA2, 0x1C, 0xB1];
         assert_eq!(
-            Rc4::new(&key.as_bytes()).process(&message.as_bytes())[..],
+            Rc4::new(key.as_bytes()).process(message.as_bytes())[..],
             expected
         );
     }
@@ -101,7 +101,7 @@ mod test {
         let message = "0".to_string();
         let expected = [0xb8];
         assert_eq!(
-            Rc4::new(&key.as_bytes()).process(&message.as_bytes())[..],
+            Rc4::new(key.as_bytes()).process(message.as_bytes())[..],
             expected
         );
     }
@@ -112,7 +112,7 @@ mod test {
         let message = "a".to_string();
         let expected = [0xe9];
         assert_eq!(
-            Rc4::new(&key.as_bytes()).process(&message.as_bytes())[..],
+            Rc4::new(key.as_bytes()).process(message.as_bytes())[..],
             expected
         );
     }
@@ -123,7 +123,7 @@ mod test {
         let message = "".to_string();
         let expected = [];
         assert_eq!(
-            Rc4::new(&key.as_bytes()).process(&message.as_bytes())[..],
+            Rc4::new(key.as_bytes()).process(message.as_bytes())[..],
             expected
         );
     }
@@ -135,7 +135,7 @@ mod test {
         let message = "message".to_string();
         let expected = [0xBE, 0x74, 0xEB, 0x88, 0x64, 0x8E, 0x6A];
         assert_eq!(
-            Rc4::new(&key.as_bytes()).process(&message.as_bytes())[..],
+            Rc4::new(key.as_bytes()).process(message.as_bytes())[..],
             expected
         );
     }
@@ -155,7 +155,7 @@ mod test {
             0xB5, 0x98, 0x57, 0x1C, 0x13, 0x6D, 0x35, 0x0C, 0xDE,
         ];
         assert_eq!(
-            Rc4::new(&key.as_bytes()).process(&message.as_bytes())[..],
+            Rc4::new(key.as_bytes()).process(message.as_bytes())[..],
             expected[..]
         );
     }
@@ -176,7 +176,7 @@ mod test {
             0xCC, 0xA6, 0x4D, 0xBD, 0xEE, 0x31, 0x32, 0x2A, 0x2F,
         ];
         assert_eq!(
-            Rc4::new(&key.as_bytes()).process(&message.as_bytes())[..],
+            Rc4::new(key.as_bytes()).process(message.as_bytes())[..],
             expected[..]
         );
     }

@@ -92,11 +92,11 @@ where
     }
 
     let static_channels =
-        process_mcs_connect(&mut stream, &mut transport, &config, selected_protocol)?;
+        process_mcs_connect(&mut stream, &mut transport, config, selected_protocol)?;
 
     let mut transport = McsTransport::new(transport);
     let joined_static_channels =
-        process_mcs(&mut stream, &mut transport, static_channels, &config)?;
+        process_mcs(&mut stream, &mut transport, static_channels, config)?;
     debug!("Joined static active_session: {:?}", joined_static_channels);
 
     let global_channel_id = *joined_static_channels
@@ -107,9 +107,9 @@ where
         .expect("user channel must be added");
 
     let mut transport = SendDataContextTransport::new(transport, initiator_id, global_channel_id);
-    send_client_info(&mut stream, &mut transport, &config, &routing_addr)?;
+    send_client_info(&mut stream, &mut transport, config, routing_addr)?;
 
-    match process_server_license_exchange(&mut stream, &mut transport, &config, global_channel_id) {
+    match process_server_license_exchange(&mut stream, &mut transport, config, global_channel_id) {
         Err(RdpError::ServerLicenseError(rdp::RdpError::ServerLicenseError(
             rdp::server_license::ServerLicenseError::UnexpectedValidClientError(_),
         ))) => {
@@ -121,7 +121,7 @@ where
 
     let mut transport =
         ShareControlHeaderTransport::new(transport, initiator_id, global_channel_id);
-    let desktop_sizes = process_capability_sets(&mut stream, &mut transport, &config)?;
+    let desktop_sizes = process_capability_sets(&mut stream, &mut transport, config)?;
 
     let mut transport = ShareDataHeaderTransport::new(transport);
     process_finalization(&mut stream, &mut transport, initiator_id)?;
@@ -182,7 +182,7 @@ pub fn process_mcs_connect(
     selected_protocol: nego::SecurityProtocol,
 ) -> Result<StaticChannels, RdpError> {
     let connect_initial = ironrdp::ConnectInitial::with_gcc_blocks(user_info::create_gcc_blocks(
-        &config,
+        config,
         selected_protocol,
     )?);
     debug!("Send MCS Connect Initial PDU: {:?}", connect_initial);
@@ -384,7 +384,7 @@ pub fn process_server_license_exchange(
                 client_random.as_slice(),
                 premaster_secret.as_slice(),
                 &config.credentials.username,
-                &config.credentials.domain.as_deref().unwrap_or(""),
+                config.credentials.domain.as_deref().unwrap_or(""),
             )
             .map_err(|err| {
                 RdpError::IOError(io::Error::new(
@@ -429,7 +429,7 @@ pub fn process_server_license_exchange(
 
     let challenge_response = ClientPlatformChallengeResponse::from_server_platform_challenge(
         &challenge,
-        &config.credentials.domain.as_deref().unwrap_or(""),
+        config.credentials.domain.as_deref().unwrap_or(""),
         &encryption_data,
     )
     .map_err(|err| {

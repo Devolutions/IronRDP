@@ -85,11 +85,7 @@ pub struct ClientGccBlocks {
 
 impl ClientGccBlocks {
     pub fn channel_names(&self) -> Option<Vec<network_data::Channel>> {
-        if let Some(network) = &self.network {
-            Some(network.channels.clone())
-        } else {
-            None
-        }
+        self.network.as_ref().map(|network| network.channels.clone())
     }
 }
 

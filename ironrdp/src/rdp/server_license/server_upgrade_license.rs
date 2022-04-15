@@ -176,7 +176,7 @@ impl PduParsing for NewLicenseInformation {
         )?;
 
         stream.write_u32::<LittleEndian>(self.license_info.len() as u32)?;
-        stream.write_all(&self.license_info.as_slice())?;
+        stream.write_all(self.license_info.as_slice())?;
 
         Ok(())
     }

@@ -3,7 +3,7 @@ pub mod rsa;
 
 use std::{
     cmp::{max, min},
-    io, mem, ops,
+    io, ops,
 };
 
 use bitvec::prelude::{BitSlice, Msb0};
@@ -258,7 +258,7 @@ impl<T> SplitTo for &mut [T] {
     fn split_to(&mut self, n: usize) -> Self {
         assert!(n <= self.len());
 
-        let (a, b) = mem::replace(self, &mut []).split_at_mut(n);
+        let (a, b) = std::mem::take(self).split_at_mut(n);
         *self = b;
 
         a
