@@ -7,7 +7,8 @@ use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive, ToPrimitive};
 
-use crate::{nego::NegotiationError, PduParsing};
+use crate::nego::NegotiationError;
+use crate::PduParsing;
 
 pub const TPKT_HEADER_LENGTH: usize = 4;
 pub const TPDU_DATA_HEADER_LENGTH: usize = 3;
@@ -41,10 +42,7 @@ impl TpktHeader {
     }
 }
 impl TpktHeader {
-    pub fn from_buffer_with_version(
-        mut stream: impl io::Read,
-        version: u8,
-    ) -> Result<Self, NegotiationError> {
+    pub fn from_buffer_with_version(mut stream: impl io::Read, version: u8) -> Result<Self, NegotiationError> {
         if version != TPKT_VERSION {
             return Err(NegotiationError::TpktVersionError);
         }
@@ -88,19 +86,13 @@ impl Data {
         Self { data_length }
     }
 
-    pub fn from_buffer_with_version(
-        mut stream: impl io::Read,
-        version: u8,
-    ) -> Result<Self, NegotiationError> {
+    pub fn from_buffer_with_version(mut stream: impl io::Read, version: u8) -> Result<Self, NegotiationError> {
         let tpkt = TpktHeader::from_buffer_with_version(&mut stream, version)?;
 
         Self::from_buffer_with_tpkt_header(&mut stream, tpkt)
     }
 
-    fn from_buffer_with_tpkt_header(
-        mut stream: impl io::Read,
-        tpkt: TpktHeader,
-    ) -> Result<Self, NegotiationError> {
+    fn from_buffer_with_tpkt_header(mut stream: impl io::Read, tpkt: TpktHeader) -> Result<Self, NegotiationError> {
         read_and_check_tpdu_header(&mut stream, X224TPDUType::Data)?;
 
         let _eof = stream.read_u8()?;
@@ -141,12 +133,8 @@ pub fn read_and_check_tpdu_header(
 ) -> Result<(), NegotiationError> {
     let _tpdu_length = usize::from(stream.read_u8()?);
 
-    let code = X224TPDUType::from_u8(stream.read_u8()?).ok_or_else(|| {
-        NegotiationError::IOError(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "invalid tpdu code",
-        ))
-    })?;
+    let code = X224TPDUType::from_u8(stream.read_u8()?)
+        .ok_or_else(|| NegotiationError::IOError(io::Error::new(io::ErrorKind::InvalidData, "invalid tpdu code")))?;
 
     if code != required_code {
         return Err(NegotiationError::IOError(io::Error::new(

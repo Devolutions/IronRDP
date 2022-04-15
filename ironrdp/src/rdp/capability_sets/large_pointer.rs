@@ -3,7 +3,8 @@ use std::io;
 use bitflags::bitflags;
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 
-use crate::{rdp::CapabilitySetsError, PduParsing};
+use crate::rdp::CapabilitySetsError;
+use crate::PduParsing;
 
 #[derive(Debug, PartialEq, Clone)]
 pub struct LargePointer {
@@ -14,8 +15,7 @@ impl PduParsing for LargePointer {
     type Error = CapabilitySetsError;
 
     fn from_buffer(mut buffer: impl io::Read) -> Result<Self, Self::Error> {
-        let flags =
-            LargePointerSupportFlags::from_bits_truncate(buffer.read_u16::<LittleEndian>()?);
+        let flags = LargePointerSupportFlags::from_bits_truncate(buffer.read_u16::<LittleEndian>()?);
 
         Ok(Self { flags })
     }
@@ -66,9 +66,6 @@ mod test {
 
     #[test]
     fn buffer_length_is_correct_for_large_pointer() {
-        assert_eq!(
-            LARGE_POINTER_PDU_BUFFER.len(),
-            LARGE_POINTER_PDU.buffer_length()
-        );
+        assert_eq!(LARGE_POINTER_PDU_BUFFER.len(), LARGE_POINTER_PDU.buffer_length());
     }
 }

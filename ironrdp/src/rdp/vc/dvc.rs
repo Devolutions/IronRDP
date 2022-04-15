@@ -9,24 +9,19 @@ mod create;
 mod data;
 mod data_first;
 
-pub use self::{
-    capabilities::{CapabilitiesRequestPdu, CapabilitiesResponsePdu, CapsVersion},
-    close::ClosePdu,
-    create::{
-        CreateRequestPdu, CreateResponsePdu, DVC_CREATION_STATUS_NO_LISTENER,
-        DVC_CREATION_STATUS_OK,
-    },
-    data::DataPdu,
-    data_first::DataFirstPdu,
-};
-
-use std::{collections::HashMap, io, mem};
+use std::collections::HashMap;
+use std::{io, mem};
 
 use bit_field::BitField;
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive, ToPrimitive};
 
+pub use self::capabilities::{CapabilitiesRequestPdu, CapabilitiesResponsePdu, CapsVersion};
+pub use self::close::ClosePdu;
+pub use self::create::{CreateRequestPdu, CreateResponsePdu, DVC_CREATION_STATUS_NO_LISTENER, DVC_CREATION_STATUS_OK};
+pub use self::data::DataPdu;
+pub use self::data_first::DataFirstPdu;
 use super::ChannelError;
 use crate::PduParsing;
 
@@ -57,28 +52,25 @@ pub enum ServerPdu {
 }
 
 impl ServerPdu {
-    pub fn from_buffer(
-        mut stream: impl io::Read,
-        mut dvc_data_size: usize,
-    ) -> Result<Self, ChannelError> {
+    pub fn from_buffer(mut stream: impl io::Read, mut dvc_data_size: usize) -> Result<Self, ChannelError> {
         let dvc_header = Header::from_buffer(&mut stream)?;
-        let channel_id_type = FieldType::from_u8(dvc_header.channel_id_type)
-            .ok_or(ChannelError::InvalidDVChannelIdLength)?;
+        let channel_id_type =
+            FieldType::from_u8(dvc_header.channel_id_type).ok_or(ChannelError::InvalidDVChannelIdLength)?;
 
         dvc_data_size -= HEADER_SIZE;
 
         match dvc_header.pdu_type {
-            PduType::Capabilities => Ok(ServerPdu::CapabilitiesRequest(
-                CapabilitiesRequestPdu::from_buffer(&mut stream)?,
-            )),
+            PduType::Capabilities => Ok(ServerPdu::CapabilitiesRequest(CapabilitiesRequestPdu::from_buffer(
+                &mut stream,
+            )?)),
             PduType::Create => Ok(ServerPdu::CreateRequest(CreateRequestPdu::from_buffer(
                 &mut stream,
                 channel_id_type,
                 dvc_data_size,
             )?)),
             PduType::DataFirst => {
-                let data_length_type = FieldType::from_u8(dvc_header.pdu_dependent)
-                    .ok_or(ChannelError::InvalidDvcDataLength)?;
+                let data_length_type =
+                    FieldType::from_u8(dvc_header.pdu_dependent).ok_or(ChannelError::InvalidDvcDataLength)?;
 
                 Ok(ServerPdu::DataFirst(DataFirstPdu::from_buffer(
                     &mut stream,
@@ -142,27 +134,24 @@ pub enum ClientPdu {
 }
 
 impl ClientPdu {
-    pub fn from_buffer(
-        mut stream: impl io::Read,
-        mut dvc_data_size: usize,
-    ) -> Result<Self, ChannelError> {
+    pub fn from_buffer(mut stream: impl io::Read, mut dvc_data_size: usize) -> Result<Self, ChannelError> {
         let dvc_header = Header::from_buffer(&mut stream)?;
-        let channel_id_type = FieldType::from_u8(dvc_header.channel_id_type)
-            .ok_or(ChannelError::InvalidDVChannelIdLength)?;
+        let channel_id_type =
+            FieldType::from_u8(dvc_header.channel_id_type).ok_or(ChannelError::InvalidDVChannelIdLength)?;
 
         dvc_data_size -= HEADER_SIZE;
 
         match dvc_header.pdu_type {
-            PduType::Capabilities => Ok(ClientPdu::CapabilitiesResponse(
-                CapabilitiesResponsePdu::from_buffer(&mut stream)?,
-            )),
+            PduType::Capabilities => Ok(ClientPdu::CapabilitiesResponse(CapabilitiesResponsePdu::from_buffer(
+                &mut stream,
+            )?)),
             PduType::Create => Ok(ClientPdu::CreateResponse(CreateResponsePdu::from_buffer(
                 &mut stream,
                 channel_id_type,
             )?)),
             PduType::DataFirst => {
-                let data_length_type = FieldType::from_u8(dvc_header.pdu_dependent)
-                    .ok_or(ChannelError::InvalidDvcDataLength)?;
+                let data_length_type =
+                    FieldType::from_u8(dvc_header.pdu_dependent).ok_or(ChannelError::InvalidDvcDataLength)?;
 
                 Ok(ClientPdu::DataFirst(DataFirstPdu::from_buffer(
                     &mut stream,
@@ -225,10 +214,7 @@ pub enum FieldType {
 }
 
 impl FieldType {
-    pub fn read_buffer_according_to_type(
-        self,
-        mut stream: impl io::Read,
-    ) -> Result<u32, io::Error> {
+    pub fn read_buffer_according_to_type(self, mut stream: impl io::Read) -> Result<u32, io::Error> {
         let value = match self {
             FieldType::U8 => u32::from(stream.read_u8()?),
             FieldType::U16 => u32::from(stream.read_u16::<LittleEndian>()?),
@@ -238,11 +224,7 @@ impl FieldType {
         Ok(value)
     }
 
-    pub fn to_buffer_according_to_type(
-        self,
-        mut stream: impl io::Write,
-        value: u32,
-    ) -> Result<(), io::Error> {
+    pub fn to_buffer_according_to_type(self, mut stream: impl io::Write, value: u32) -> Result<(), io::Error> {
         match self {
             FieldType::U8 => stream.write_u8(value as u8)?,
             FieldType::U16 => stream.write_u16::<LittleEndian>(value as u16)?,
@@ -275,8 +257,7 @@ impl PduParsing for Header {
         let dvc_header = stream.read_u8()?;
         let channel_id_type = dvc_header.get_bits(0..2);
         let pdu_dependent = dvc_header.get_bits(2..4);
-        let pdu_type =
-            PduType::from_u8(dvc_header.get_bits(4..8)).ok_or(ChannelError::InvalidDvcPduType)?;
+        let pdu_type = PduType::from_u8(dvc_header.get_bits(4..8)).ok_or(ChannelError::InvalidDvcPduType)?;
 
         Ok(Self {
             channel_id_type,

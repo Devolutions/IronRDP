@@ -1,6 +1,7 @@
 use lazy_static::lazy_static;
 
-use super::{data_messages::*, header_messages::*};
+use super::data_messages::*;
+use super::header_messages::*;
 use crate::PduBufferParsing;
 
 const SYNC_PDU_BUFFER: [u8; 12] = [
@@ -233,14 +234,8 @@ const FRAME_END_PDU: FrameEndPdu = FrameEndPdu;
 
 lazy_static! {
     static ref CHANNELS_PDU: ChannelsPdu = ChannelsPdu(vec![
-        Channel {
-            width: 64,
-            height: 64,
-        },
-        Channel {
-            width: 32,
-            height: 32,
-        }
+        Channel { width: 64, height: 64 },
+        Channel { width: 32, height: 32 }
     ]);
     static ref REGION_PDU: RegionPdu = RegionPdu {
         rectangles: vec![
@@ -321,10 +316,7 @@ fn from_buffer_for_pdu_with_codec_channel_header_returns_error_on_small_buffer()
 
 #[test]
 fn from_buffer_correctly_parses_sync_pdu() {
-    assert_eq!(
-        SYNC_PDU,
-        SyncPdu::from_buffer(SYNC_PDU_BUFFER.as_ref()).unwrap()
-    );
+    assert_eq!(SYNC_PDU, SyncPdu::from_buffer(SYNC_PDU_BUFFER.as_ref()).unwrap());
 }
 
 #[test]
@@ -332,9 +324,7 @@ fn to_buffer_correctly_serializes_sync_pdu() {
     let expected = SYNC_PDU_BUFFER.as_ref();
     let mut buffer = vec![0; expected.len()];
 
-    SYNC_PDU
-        .to_buffer_consume(&mut buffer.as_mut_slice())
-        .unwrap();
+    SYNC_PDU.to_buffer_consume(&mut buffer.as_mut_slice()).unwrap();
     assert_eq!(expected, buffer.as_slice());
 }
 
@@ -364,10 +354,7 @@ fn to_buffer_correctly_serializes_codec_versions_pdu() {
 
 #[test]
 fn buffer_length_is_correct_for_codec_versions_pdu() {
-    assert_eq!(
-        CODEC_VERSIONS_PDU_BUFFER.len(),
-        CODEC_VERSIONS_PDU.buffer_length()
-    );
+    assert_eq!(CODEC_VERSIONS_PDU_BUFFER.len(), CODEC_VERSIONS_PDU.buffer_length());
 }
 
 #[test]
@@ -383,17 +370,13 @@ fn to_buffer_correctly_serializes_channels_pdu() {
     let expected = CHANNELS_PDU_BUFFER.as_ref();
     let mut buffer = vec![0; expected.len()];
 
-    CHANNELS_PDU
-        .to_buffer_consume(&mut buffer.as_mut_slice())
-        .unwrap();
+    CHANNELS_PDU.to_buffer_consume(&mut buffer.as_mut_slice()).unwrap();
     assert_eq!(expected, buffer.as_slice());
 }
 
 #[test]
 fn from_buffer_returns_error_on_invalid_data_length_for_channels_pdu() {
-    assert!(
-        ChannelsPdu::from_buffer(CHANNELS_PDU_BUFFER_WITH_INVALID_DATA_LENGTH.as_ref()).is_err()
-    );
+    assert!(ChannelsPdu::from_buffer(CHANNELS_PDU_BUFFER_WITH_INVALID_DATA_LENGTH.as_ref()).is_err());
 }
 
 #[test]
@@ -424,9 +407,7 @@ fn to_buffer_correctly_serializes_context_pdu() {
     let expected = CONTEXT_PDU_BUFFER.as_ref();
     let mut buffer = vec![0; expected.len()];
 
-    CONTEXT_PDU
-        .to_buffer_consume(&mut buffer.as_mut_slice())
-        .unwrap();
+    CONTEXT_PDU.to_buffer_consume(&mut buffer.as_mut_slice()).unwrap();
     assert_eq!(expected, buffer.as_slice());
 }
 
@@ -448,18 +429,13 @@ fn to_buffer_correctly_serializes_frame_begin_pdu() {
     let expected = FRAME_BEGIN_PDU_BUFFER.as_ref();
     let mut buffer = vec![0; expected.len()];
 
-    FRAME_BEGIN_PDU
-        .to_buffer_consume(&mut buffer.as_mut_slice())
-        .unwrap();
+    FRAME_BEGIN_PDU.to_buffer_consume(&mut buffer.as_mut_slice()).unwrap();
     assert_eq!(expected, buffer.as_slice());
 }
 
 #[test]
 fn buffer_length_is_correct_for_frame_begin_pdu() {
-    assert_eq!(
-        FRAME_BEGIN_PDU_BUFFER.len(),
-        FRAME_BEGIN_PDU.buffer_length()
-    );
+    assert_eq!(FRAME_BEGIN_PDU_BUFFER.len(), FRAME_BEGIN_PDU.buffer_length());
 }
 
 #[test]
@@ -475,9 +451,7 @@ fn to_buffer_correctly_serializes_frame_end_pdu() {
     let expected = FRAME_END_PDU_BUFFER.as_ref();
     let mut buffer = vec![0; expected.len()];
 
-    FRAME_END_PDU
-        .to_buffer_consume(&mut buffer.as_mut_slice())
-        .unwrap();
+    FRAME_END_PDU.to_buffer_consume(&mut buffer.as_mut_slice()).unwrap();
     assert_eq!(expected, buffer.as_slice());
 }
 
@@ -488,10 +462,7 @@ fn buffer_length_is_correct_for_frame_end_pdu() {
 
 #[test]
 fn from_buffer_correctly_parses_region_pdu() {
-    assert_eq!(
-        *REGION_PDU,
-        RegionPdu::from_buffer(REGION_PDU_BUFFER.as_ref()).unwrap()
-    );
+    assert_eq!(*REGION_PDU, RegionPdu::from_buffer(REGION_PDU_BUFFER.as_ref()).unwrap());
 }
 
 #[test]
@@ -499,9 +470,7 @@ fn to_buffer_correctly_serializes_region_pdu() {
     let expected = REGION_PDU_BUFFER.as_ref();
     let mut buffer = vec![0; expected.len()];
 
-    REGION_PDU
-        .to_buffer_consume(&mut buffer.as_mut_slice())
-        .unwrap();
+    REGION_PDU.to_buffer_consume(&mut buffer.as_mut_slice()).unwrap();
     assert_eq!(expected, buffer.as_slice());
 }
 
@@ -512,18 +481,12 @@ fn buffer_length_is_correct_for_region_pdu() {
 
 #[test]
 fn from_buffer_returns_error_on_invalid_number_of_quants_for_tile_set_pdu() {
-    assert!(TileSetPdu::from_buffer_consume(
-        &mut TILESET_PDU_BUFFER_WITH_INVALID_NUMBER_OF_QUANTS.as_ref()
-    )
-    .is_err());
+    assert!(TileSetPdu::from_buffer_consume(&mut TILESET_PDU_BUFFER_WITH_INVALID_NUMBER_OF_QUANTS.as_ref()).is_err());
 }
 
 #[test]
 fn from_buffer_returns_error_on_invalid_tiles_data_size_for_tile_set_pdu() {
-    assert!(TileSetPdu::from_buffer_consume(
-        &mut TILESET_PDU_BUFFER_WITH_INVALID_TILES_DATA_SIZE.as_ref()
-    )
-    .is_err());
+    assert!(TileSetPdu::from_buffer_consume(&mut TILESET_PDU_BUFFER_WITH_INVALID_TILES_DATA_SIZE.as_ref()).is_err());
 }
 
 #[test]
@@ -539,9 +502,7 @@ fn to_buffer_correctly_serializes_tile_set_pdu() {
     let expected = TILESET_PDU_BUFFER.as_ref();
     let mut buffer = vec![0; expected.len()];
 
-    TILESET_PDU
-        .to_buffer_consume(&mut buffer.as_mut_slice())
-        .unwrap();
+    TILESET_PDU.to_buffer_consume(&mut buffer.as_mut_slice()).unwrap();
     assert_eq!(expected, buffer.as_slice());
 }
 

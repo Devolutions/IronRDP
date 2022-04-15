@@ -2,23 +2,18 @@ mod codecs;
 mod fast_path;
 mod x224;
 
-use std::{
-    io,
-    sync::{Arc, Mutex},
-    thread,
-    time::Duration,
-};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+use std::{io, thread};
 
-use ironrdp::{
-    codecs::rfx::image_processing::PixelFormat, fast_path::FastPathError, PduParsing, RdpPdu,
-};
+use ironrdp::codecs::rfx::image_processing::PixelFormat;
+use ironrdp::fast_path::FastPathError;
+use ironrdp::{PduParsing, RdpPdu};
 use log::warn;
 
-use crate::{
-    connection_sequence::ConnectionSequenceResult,
-    transport::{Decoder, RdpTransport},
-    utils, InputConfig, RdpError,
-};
+use crate::connection_sequence::ConnectionSequenceResult;
+use crate::transport::{Decoder, RdpTransport};
+use crate::{utils, InputConfig, RdpError};
 
 const DESTINATION_PIXEL_FORMAT: PixelFormat = PixelFormat::RgbA32;
 

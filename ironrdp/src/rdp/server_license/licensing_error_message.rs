@@ -8,7 +8,6 @@ use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive, ToPrimitive};
 
 use super::{BlobHeader, BlobType, ServerLicenseError, BLOB_LENGTH_SIZE, BLOB_TYPE_SIZE};
-
 use crate::PduParsing;
 
 const ERROR_CODE_SIZE: usize = 4;
@@ -27,9 +26,8 @@ impl PduParsing for LicensingErrorMessage {
     fn from_buffer(mut stream: impl io::Read) -> Result<Self, Self::Error> {
         let error_code = LicenseErrorCode::from_u32(stream.read_u32::<LittleEndian>()?)
             .ok_or(ServerLicenseError::InvalidErrorCode)?;
-        let state_transition =
-            LicensingStateTransition::from_u32(stream.read_u32::<LittleEndian>()?)
-                .ok_or(ServerLicenseError::InvalidStateTransition)?;
+        let state_transition = LicensingStateTransition::from_u32(stream.read_u32::<LittleEndian>()?)
+            .ok_or(ServerLicenseError::InvalidStateTransition)?;
 
         let error_info_blob = BlobHeader::read_from_buffer(BlobType::Error, &mut stream)?;
         let error_info = vec![0u8; error_info_blob.length];
@@ -52,11 +50,7 @@ impl PduParsing for LicensingErrorMessage {
     }
 
     fn buffer_length(&self) -> usize {
-        ERROR_CODE_SIZE
-            + STATE_TRANSITION_SIZE
-            + self.error_info.len()
-            + BLOB_LENGTH_SIZE
-            + BLOB_TYPE_SIZE
+        ERROR_CODE_SIZE + STATE_TRANSITION_SIZE + self.error_info.len() + BLOB_LENGTH_SIZE + BLOB_TYPE_SIZE
     }
 }
 

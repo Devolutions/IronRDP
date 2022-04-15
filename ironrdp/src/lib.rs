@@ -12,19 +12,17 @@ mod preconnection;
 mod utils;
 mod x224;
 
-pub use crate::{
-    basic_output::{bitmap, fast_path, surface_commands},
-    mcs::{ConnectInitial, ConnectResponse, McsError, McsPdu, SendDataContext},
-    nego::*,
-    preconnection::{PreconnectionPdu, PreconnectionPduError},
-    rdp::{
-        vc::dvc, CapabilitySet, ClientConfirmActive, ClientInfoPdu, ControlAction, DemandActive,
-        ServerDemandActive, ShareControlHeader, ShareControlPdu, ShareDataHeader, ShareDataPdu,
-        VirtualChannel,
-    },
-    utils::Rectangle,
-    x224::*,
+pub use crate::basic_output::{bitmap, fast_path, surface_commands};
+pub use crate::mcs::{ConnectInitial, ConnectResponse, McsError, McsPdu, SendDataContext};
+pub use crate::nego::*;
+pub use crate::preconnection::{PreconnectionPdu, PreconnectionPduError};
+pub use crate::rdp::vc::dvc;
+pub use crate::rdp::{
+    CapabilitySet, ClientConfirmActive, ClientInfoPdu, ControlAction, DemandActive, ServerDemandActive,
+    ShareControlHeader, ShareControlPdu, ShareDataHeader, ShareDataPdu, VirtualChannel,
 };
+pub use crate::utils::Rectangle;
+pub use crate::x224::*;
 
 pub trait PduParsing {
     type Error;
@@ -65,13 +63,11 @@ impl PduParsing for RdpPdu {
         let action = Action::from_u8(action).ok_or(RdpError::InvalidActionCode(action))?;
 
         match action {
-            Action::X224 => Ok(Self::X224(x224::Data::from_buffer_with_version(
+            Action::X224 => Ok(Self::X224(x224::Data::from_buffer_with_version(&mut stream, header)?)),
+            Action::FastPath => Ok(Self::FastPath(fast_path::FastPathHeader::from_buffer_with_header(
                 &mut stream,
                 header,
             )?)),
-            Action::FastPath => Ok(Self::FastPath(
-                fast_path::FastPathHeader::from_buffer_with_header(&mut stream, header)?,
-            )),
         }
     }
 

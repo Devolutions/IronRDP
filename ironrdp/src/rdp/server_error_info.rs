@@ -15,8 +15,8 @@ impl PduParsing for ServerSetErrorInfoPdu {
 
     fn from_buffer(mut buffer: impl io::Read) -> Result<Self, Self::Error> {
         let error_info = buffer.read_u32::<LittleEndian>()?;
-        let error_info = ErrorInfo::from_u32(error_info)
-            .ok_or(ServerSetErrorInfoError::UnexpectedInfoCode(error_info))?;
+        let error_info =
+            ErrorInfo::from_u32(error_info).ok_or(ServerSetErrorInfoError::UnexpectedInfoCode(error_info))?;
 
         Ok(Self(error_info))
     }
@@ -49,10 +49,9 @@ impl ErrorInfo {
             Self::ProtocolIndependentLicensingCode(c) => {
                 format!("[Protocol independent licensing error] {}", c.description())
             }
-            Self::ProtocolIndependentConnectionBrokerCode(c) => format!(
-                "[Protocol independent connection broker error] {}",
-                c.description()
-            ),
+            Self::ProtocolIndependentConnectionBrokerCode(c) => {
+                format!("[Protocol independent connection broker error] {}", c.description())
+            }
             Self::RdpSpecificCode(c) => format!("[RDP specific code]: {}", c.description()),
         }
     }
@@ -169,35 +168,19 @@ pub enum ProtocolIndependentLicensingCode {
 impl ProtocolIndependentLicensingCode {
     pub fn description(&self) -> &str {
         match self {
-            Self::Internal => {
-                "An internal error has occurred in the Terminal Services licensing component"
-            }
-            Self::NoLicenseServer => {
-                "A Remote Desktop License Server could not be found to provide a license"
-            }
-            Self::NoLicense => {
-                "There are no Client Access Licenses available for the target remote computer"
-            }
-            Self::BadClientMsg => {
-                "The remote computer received an invalid licensing message from the client"
-            }
-            Self::HwidDoesntMatchLicense => {
-                "The Client Access License stored by the client has been modified"
-            }
-            Self::BadClientLicense => {
-                "The Client Access License stored by the client is in an invalid format"
-            }
-            Self::CantFinishProtocol => {
-                "Network problems have caused the licensing protocol to be terminated"
-            }
+            Self::Internal => "An internal error has occurred in the Terminal Services licensing component",
+            Self::NoLicenseServer => "A Remote Desktop License Server could not be found to provide a license",
+            Self::NoLicense => "There are no Client Access Licenses available for the target remote computer",
+            Self::BadClientMsg => "The remote computer received an invalid licensing message from the client",
+            Self::HwidDoesntMatchLicense => "The Client Access License stored by the client has been modified",
+            Self::BadClientLicense => "The Client Access License stored by the client is in an invalid format",
+            Self::CantFinishProtocol => "Network problems have caused the licensing protocol to be terminated",
             Self::ClientEndedProtocol => "The client prematurely ended the licensing protocol",
             Self::BadClientEncryption => "A licensing message was incorrectly encrypted",
             Self::CantUpgradeLicense => {
                 "The Client Access License stored by the client could not be upgraded or renewed"
             }
-            Self::NoRemoteConnections => {
-                "The remote computer is not licensed to accept remote connections"
-            }
+            Self::NoRemoteConnections => "The remote computer is not licensed to accept remote connections",
         }
     }
 }
@@ -410,11 +393,7 @@ pub enum ServerSetErrorInfoError {
     UnexpectedInfoCode(u32),
 }
 
-impl_from_error!(
-    io::Error,
-    ServerSetErrorInfoError,
-    ServerSetErrorInfoError::IoError
-);
+impl_from_error!(io::Error, ServerSetErrorInfoError, ServerSetErrorInfoError::IoError);
 
 #[cfg(test)]
 mod tests {
@@ -439,9 +418,7 @@ mod tests {
         let expected = SERVER_SET_ERROR_INFO_BUFFER.as_ref();
         let mut buffer = vec![0; expected.len()];
 
-        SERVER_SET_ERROR_INFO
-            .to_buffer(&mut buffer.as_mut_slice())
-            .unwrap();
+        SERVER_SET_ERROR_INFO.to_buffer(&mut buffer.as_mut_slice()).unwrap();
         assert_eq!(expected, buffer.as_slice());
     }
 

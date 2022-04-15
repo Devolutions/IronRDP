@@ -32,8 +32,5 @@ fn to_buffer_correctly_serializes_licensing_error_message() {
 
 #[test]
 fn buffer_length_is_correct_for_licensing_error_message() {
-    assert_eq!(
-        LICENSE_MESSAGE_BUFFER.len(),
-        LICENSING_ERROR_MESSAGE.buffer_length()
-    );
+    assert_eq!(LICENSE_MESSAGE_BUFFER.len(), LICENSING_ERROR_MESSAGE.buffer_length());
 }

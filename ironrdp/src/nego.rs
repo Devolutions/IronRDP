@@ -1,7 +1,8 @@
 #[cfg(test)]
 mod tests;
 
-use std::io::{self, prelude::*};
+use std::io::prelude::*;
+use std::io::{self};
 
 use bitflags::bitflags;
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
@@ -9,11 +10,8 @@ use failure::Fail;
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive, ToPrimitive};
 
-use crate::{
-    impl_from_error,
-    x224::{TpktHeader, X224TPDUType, TPDU_REQUEST_LENGTH, TPKT_HEADER_LENGTH},
-    PduParsing,
-};
+use crate::x224::{TpktHeader, X224TPDUType, TPDU_REQUEST_LENGTH, TPKT_HEADER_LENGTH};
+use crate::{impl_from_error, PduParsing};
 
 const COOKIE_PREFIX: &str = "Cookie: mstshash=";
 const ROUTING_TOKEN_PREFIX: &str = "Cookie: msts=";
@@ -203,9 +201,7 @@ impl PduParsing for Request {
 
         match &self.nego_data {
             Some(NegoData::Cookie(s)) => writeln!(&mut stream, "{}{}\r", COOKIE_PREFIX, s)?,
-            Some(NegoData::RoutingToken(s)) => {
-                writeln!(&mut stream, "{}{}\r", ROUTING_TOKEN_PREFIX, s)?
-            }
+            Some(NegoData::RoutingToken(s)) => writeln!(&mut stream, "{}{}\r", ROUTING_TOKEN_PREFIX, s)?,
             None => (),
         }
 
@@ -223,9 +219,7 @@ impl PduParsing for Request {
         TPDU_REQUEST_LENGTH
             + match &self.nego_data {
                 Some(NegoData::Cookie(s)) => s.len() + COOKIE_PREFIX.len() + CR_LF_SEQ_LENGTH,
-                Some(NegoData::RoutingToken(s)) => {
-                    s.len() + ROUTING_TOKEN_PREFIX.len() + CR_LF_SEQ_LENGTH
-                }
+                Some(NegoData::RoutingToken(s)) => s.len() + ROUTING_TOKEN_PREFIX.len() + CR_LF_SEQ_LENGTH,
                 None => 0,
             }
             + if self.protocol.bits() > SecurityProtocol::RDP.bits() {
@@ -278,8 +272,7 @@ impl PduParsing for Response {
 
         match neg_resp {
             Message::Response => {
-                let protocol =
-                    SecurityProtocol::from_bits_truncate(stream.read_u32::<LittleEndian>()?);
+                let protocol = SecurityProtocol::from_bits_truncate(stream.read_u32::<LittleEndian>()?);
 
                 Ok(Self {
                     response: Some(ResponseData::Response { flags, protocol }),
@@ -288,13 +281,12 @@ impl PduParsing for Response {
                 })
             }
             Message::Failure => {
-                let error =
-                    FailureCode::from_u32(stream.read_u32::<LittleEndian>()?).ok_or_else(|| {
-                        NegotiationError::IOError(io::Error::new(
-                            io::ErrorKind::InvalidData,
-                            "invalid negotiation failure code",
-                        ))
-                    })?;
+                let error = FailureCode::from_u32(stream.read_u32::<LittleEndian>()?).ok_or_else(|| {
+                    NegotiationError::IOError(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "invalid negotiation failure code",
+                    ))
+                })?;
 
                 Err(NegotiationError::ResponseFailure(error))
             }
@@ -350,10 +342,7 @@ fn read_nego_data(stream: &[u8]) -> Option<(NegoData, usize)> {
     }
 }
 
-fn read_string_with_cr_lf(
-    mut stream: impl io::BufRead,
-    start: &str,
-) -> io::Result<(String, usize)> {
+fn read_string_with_cr_lf(mut stream: impl io::BufRead, start: &str) -> io::Result<(String, usize)> {
     let mut read_start = String::new();
     stream
         .by_ref()
@@ -392,10 +381,7 @@ fn read_string_with_cr_lf(
     }
 }
 
-fn read_and_check_class(
-    mut stream: impl io::Read,
-    required_class: u8,
-) -> Result<(), NegotiationError> {
+fn read_and_check_class(mut stream: impl io::Read, required_class: u8) -> Result<(), NegotiationError> {
     let class = stream.read_u8()?;
 
     if class != required_class {

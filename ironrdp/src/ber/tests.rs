@@ -39,28 +39,20 @@ fn write_application_tag_is_correct_with_short_tag() {
 #[test]
 fn read_application_tag_is_correct_with_long_tag() {
     let buf = vec![0x7F, 0x1F, 0x0F];
-    assert_eq!(
-        read_application_tag(&mut buf.as_slice(), 0x1F).unwrap(),
-        0x0F
-    );
+    assert_eq!(read_application_tag(&mut buf.as_slice(), 0x1F).unwrap(), 0x0F);
 }
 
 #[test]
 fn read_application_tag_is_correct_with_short_tag() {
     let buf = vec![0x68, 0x82, 0x01, 0x00];
-    assert_eq!(
-        read_application_tag(&mut buf.as_slice(), 0x08).unwrap(),
-        0x100
-    );
+    assert_eq!(read_application_tag(&mut buf.as_slice(), 0x08).unwrap(), 0x100);
 }
 
 #[test]
 fn read_application_tag_returns_error_on_invalid_long_tag() {
     let buf = vec![0x68, 0x1B, 0x0F];
     assert_eq!(
-        read_application_tag(&mut buf.as_slice(), 0x1F)
-            .unwrap_err()
-            .kind(),
+        read_application_tag(&mut buf.as_slice(), 0x1F).unwrap_err().kind(),
         io::ErrorKind::InvalidData
     );
 }
@@ -69,9 +61,7 @@ fn read_application_tag_returns_error_on_invalid_long_tag() {
 fn read_application_tag_returns_error_on_invalid_long_tag_value() {
     let buf = vec![0x7F, 0x1B, 0x0F];
     assert_eq!(
-        read_application_tag(&mut buf.as_slice(), 0x1F)
-            .unwrap_err()
-            .kind(),
+        read_application_tag(&mut buf.as_slice(), 0x1F).unwrap_err().kind(),
         io::ErrorKind::InvalidData
     );
 }
@@ -80,9 +70,7 @@ fn read_application_tag_returns_error_on_invalid_long_tag_value() {
 fn read_application_tag_returns_error_on_invalid_short_tag() {
     let buf = vec![0x67, 0x0F];
     assert_eq!(
-        read_application_tag(&mut buf.as_slice(), 0x08)
-            .unwrap_err()
-            .kind(),
+        read_application_tag(&mut buf.as_slice(), 0x08).unwrap_err().kind(),
         io::ErrorKind::InvalidData
     );
 }
@@ -104,9 +92,7 @@ fn read_enumerated_is_correct() {
 fn read_enumerated_returns_error_on_wrong_tag() {
     let buf = vec![0x0B, 0x01, 0x0F];
     assert_eq!(
-        read_enumerated(&mut buf.as_slice(), 0x10)
-            .unwrap_err()
-            .kind(),
+        read_enumerated(&mut buf.as_slice(), 0x10).unwrap_err().kind(),
         io::ErrorKind::InvalidData
     );
 }
@@ -115,9 +101,7 @@ fn read_enumerated_returns_error_on_wrong_tag() {
 fn read_enumerated_returns_error_on_invalid_len() {
     let buf = vec![0x0A, 0x02, 0x0F];
     assert_eq!(
-        read_enumerated(&mut buf.as_slice(), 0x10)
-            .unwrap_err()
-            .kind(),
+        read_enumerated(&mut buf.as_slice(), 0x10).unwrap_err().kind(),
         io::ErrorKind::InvalidData
     );
 }
@@ -126,9 +110,7 @@ fn read_enumerated_returns_error_on_invalid_len() {
 fn read_enumerated_returns_error_on_invalid_variant() {
     let buf = vec![0x0A, 0x01, 0x0F];
     assert_eq!(
-        read_enumerated(&mut buf.as_slice(), 0x05)
-            .unwrap_err()
-            .kind(),
+        read_enumerated(&mut buf.as_slice(), 0x05).unwrap_err().kind(),
         io::ErrorKind::InvalidData
     );
 }
@@ -194,9 +176,7 @@ fn read_octet_string_tag_is_correct() {
 fn read_octet_string_tag_returns_error_on_wrong_tag() {
     let buf = vec![0x05, 0x0F];
     assert_eq!(
-        read_octet_string_tag(&mut buf.as_slice())
-            .unwrap_err()
-            .kind(),
+        read_octet_string_tag(&mut buf.as_slice()).unwrap_err().kind(),
         io::ErrorKind::InvalidData
     );
 }
@@ -213,10 +193,7 @@ fn write_octet_string_is_correct() {
 #[test]
 fn read_octet_string_is_correct() {
     let buf = vec![0x04, 0x03, 0x00, 0x01, 0x02];
-    assert_eq!(
-        read_octet_string(&mut buf.as_slice()).unwrap(),
-        vec![0x00, 0x01, 0x02]
-    );
+    assert_eq!(read_octet_string(&mut buf.as_slice()).unwrap(), vec![0x00, 0x01, 0x02]);
 }
 
 #[test]
@@ -298,10 +275,7 @@ fn write_integer_is_correct_with_1_byte_integer() {
 #[test]
 fn read_integer_is_correct_with_8_byte_integer() {
     let buf = vec![0x02, 0x08, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
-    assert_eq!(
-        read_integer(&mut buf.as_slice()).unwrap(),
-        0x0080_0000_0000_0000
-    );
+    assert_eq!(read_integer(&mut buf.as_slice()).unwrap(), 0x0080_0000_0000_0000);
 }
 
 #[test]
@@ -340,10 +314,7 @@ fn read_integer_returns_error_on_incorrect_len() {
 #[test]
 fn write_universal_tag_primitive_integer_is_correct() {
     let mut buf = Vec::new();
-    assert_eq!(
-        write_universal_tag(&mut buf, Tag::Integer, Pc::Primitive).unwrap(),
-        1
-    );
+    assert_eq!(write_universal_tag(&mut buf, Tag::Integer, Pc::Primitive).unwrap(), 1);
     assert_eq!(buf, vec![0x02]);
 }
 

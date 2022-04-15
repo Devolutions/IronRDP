@@ -23,14 +23,10 @@ impl PduParsing for ServerCoreData {
     type Error = CoreDataError;
 
     fn from_buffer(mut buffer: impl io::Read) -> Result<Self, Self::Error> {
-        let version = RdpVersion::from_u32(buffer.read_u32::<LittleEndian>()?)
-            .unwrap_or(RdpVersion::VUnknown);
+        let version = RdpVersion::from_u32(buffer.read_u32::<LittleEndian>()?).unwrap_or(RdpVersion::VUnknown);
         let optional_data = ServerCoreOptionalData::from_buffer(&mut buffer)?;
 
-        Ok(Self {
-            version,
-            optional_data,
-        })
+        Ok(Self { version, optional_data })
     }
 
     fn to_buffer(&self, mut buffer: impl io::Write) -> Result<(), Self::Error> {
@@ -56,34 +52,25 @@ impl PduParsing for ServerCoreOptionalData {
         let mut optional_data = Self::default();
 
         optional_data.client_requested_protocols = Some(
-            nego::SecurityProtocol::from_bits(try_read_optional!(
-                buffer.read_u32::<LittleEndian>(),
-                optional_data
-            ))
-            .ok_or(CoreDataError::InvalidServerSecurityProtocol)?,
+            nego::SecurityProtocol::from_bits(try_read_optional!(buffer.read_u32::<LittleEndian>(), optional_data))
+                .ok_or(CoreDataError::InvalidServerSecurityProtocol)?,
         );
 
         optional_data.early_capability_flags = Some(
-            ServerEarlyCapabilityFlags::from_bits(try_read_optional!(
-                buffer.read_u32::<LittleEndian>(),
-                optional_data
-            ))
-            .ok_or(CoreDataError::InvalidEarlyCapabilityFlags)?,
+            ServerEarlyCapabilityFlags::from_bits(try_read_optional!(buffer.read_u32::<LittleEndian>(), optional_data))
+                .ok_or(CoreDataError::InvalidEarlyCapabilityFlags)?,
         );
 
         Ok(optional_data)
     }
 
     fn to_buffer(&self, mut buffer: impl io::Write) -> Result<(), Self::Error> {
-        try_write_optional!(
-            self.client_requested_protocols,
-            |value: &nego::SecurityProtocol| { buffer.write_u32::<LittleEndian>(value.bits()) }
-        );
+        try_write_optional!(self.client_requested_protocols, |value: &nego::SecurityProtocol| {
+            buffer.write_u32::<LittleEndian>(value.bits())
+        });
 
-        try_write_optional!(
-            self.early_capability_flags,
-            |value: &ServerEarlyCapabilityFlags| buffer.write_u32::<LittleEndian>(value.bits())
-        );
+        try_write_optional!(self.early_capability_flags, |value: &ServerEarlyCapabilityFlags| buffer
+            .write_u32::<LittleEndian>(value.bits()));
 
         Ok(())
     }

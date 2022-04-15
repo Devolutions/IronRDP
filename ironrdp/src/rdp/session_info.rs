@@ -4,14 +4,6 @@ mod tests;
 mod logon_extended;
 mod logon_info;
 
-pub use self::{
-    logon_extended::{
-        LogonErrorNotificationData, LogonErrorNotificationType, LogonErrorsInfo, LogonExFlags,
-        LogonInfoExtended, ServerAutoReconnect,
-    },
-    logon_info::{LogonInfo, LogonInfoVersion1, LogonInfoVersion2},
-};
-
 use std::io;
 
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
@@ -19,6 +11,11 @@ use failure::Fail;
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive, ToPrimitive};
 
+pub use self::logon_extended::{
+    LogonErrorNotificationData, LogonErrorNotificationType, LogonErrorsInfo, LogonExFlags, LogonInfoExtended,
+    ServerAutoReconnect,
+};
+pub use self::logon_info::{LogonInfo, LogonInfoVersion1, LogonInfoVersion2};
 use crate::{impl_from_error, PduParsing};
 
 const INFO_TYPE_FIELD_SIZE: usize = 4;
@@ -35,29 +32,22 @@ impl PduParsing for SaveSessionInfoPdu {
     type Error = SessionError;
 
     fn from_buffer(mut stream: impl io::Read) -> Result<Self, Self::Error> {
-        let info_type = InfoType::from_u32(stream.read_u32::<LittleEndian>()?)
-            .ok_or(SessionError::InvalidSaveSessionInfoType)?;
+        let info_type =
+            InfoType::from_u32(stream.read_u32::<LittleEndian>()?).ok_or(SessionError::InvalidSaveSessionInfoType)?;
 
         let info_data = match info_type {
             InfoType::Logon => InfoData::LogonInfoV1(LogonInfoVersion1::from_buffer(&mut stream)?),
-            InfoType::LogonLong => {
-                InfoData::LogonInfoV2(LogonInfoVersion2::from_buffer(&mut stream)?)
-            }
+            InfoType::LogonLong => InfoData::LogonInfoV2(LogonInfoVersion2::from_buffer(&mut stream)?),
             InfoType::PlainNotify => {
                 let mut padding_buffer = [0; PLAIN_NOTIFY_PADDING_SIZE];
                 stream.read_exact(&mut padding_buffer)?;
 
                 InfoData::PlainNotify
             }
-            InfoType::LogonExtended => {
-                InfoData::LogonExtended(LogonInfoExtended::from_buffer(&mut stream)?)
-            }
+            InfoType::LogonExtended => InfoData::LogonExtended(LogonInfoExtended::from_buffer(&mut stream)?),
         };
 
-        Ok(Self {
-            info_type,
-            info_data,
-        })
+        Ok(Self { info_type, info_data })
     }
 
     fn to_buffer(&self, mut stream: impl io::Write) -> Result<(), Self::Error> {

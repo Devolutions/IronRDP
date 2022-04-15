@@ -4,25 +4,22 @@ mod graphics_messages;
 #[cfg(test)]
 mod test;
 
-pub use graphics_messages::{
-    CacheImportReplyPdu, CacheToSurfacePdu, CapabilitiesAdvertisePdu, CapabilitiesConfirmPdu,
-    CapabilitiesV103Flags, CapabilitiesV104Flags, CapabilitiesV10Flags, CapabilitiesV81Flags,
-    CapabilitiesV8Flags, CapabilitySet, Codec1Type, Codec2Type, CreateSurfacePdu,
-    DeleteEncodingContextPdu, DeleteSurfacePdu, EndFramePdu, EvictCacheEntryPdu,
-    FrameAcknowledgePdu, MapSurfaceToOutputPdu, PixelFormat, QueueDepth, ResetGraphicsPdu,
-    SolidFillPdu, StartFramePdu, SurfaceToCachePdu, SurfaceToSurfacePdu, WireToSurface1Pdu,
-    WireToSurface2Pdu,
-};
-
 use std::io;
 
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use failure::Fail;
+use graphics_messages::RESET_GRAPHICS_PDU_SIZE;
+pub use graphics_messages::{
+    CacheImportReplyPdu, CacheToSurfacePdu, CapabilitiesAdvertisePdu, CapabilitiesConfirmPdu, CapabilitiesV103Flags,
+    CapabilitiesV104Flags, CapabilitiesV10Flags, CapabilitiesV81Flags, CapabilitiesV8Flags, CapabilitySet, Codec1Type,
+    Codec2Type, CreateSurfacePdu, DeleteEncodingContextPdu, DeleteSurfacePdu, EndFramePdu, EvictCacheEntryPdu,
+    FrameAcknowledgePdu, MapSurfaceToOutputPdu, PixelFormat, QueueDepth, ResetGraphicsPdu, SolidFillPdu, StartFramePdu,
+    SurfaceToCachePdu, SurfaceToSurfacePdu, WireToSurface1Pdu, WireToSurface2Pdu,
+};
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive, ToPrimitive};
 
 use crate::{impl_from_error, PduParsing};
-use graphics_messages::RESET_GRAPHICS_PDU_SIZE;
 
 const RDP_GFX_HEADER_SIZE: usize = 8;
 
@@ -50,8 +47,8 @@ impl PduParsing for ServerPdu {
     type Error = GraphicsPipelineError;
 
     fn from_buffer(mut stream: impl io::Read) -> Result<Self, Self::Error> {
-        let pdu_type = ServerPduType::from_u16(stream.read_u16::<LittleEndian>()?)
-            .ok_or(GraphicsPipelineError::InvalidCmdId)?;
+        let pdu_type =
+            ServerPduType::from_u16(stream.read_u16::<LittleEndian>()?).ok_or(GraphicsPipelineError::InvalidCmdId)?;
         let _flags = stream.read_u16::<LittleEndian>()?;
         let pdu_length = stream.read_u32::<LittleEndian>()? as usize;
 
@@ -85,12 +82,10 @@ impl PduParsing for ServerPdu {
             }
             _ => {
                 let pdu = match pdu_type {
-                    ServerPduType::DeleteEncodingContext => ServerPdu::DeleteEncodingContext(
-                        DeleteEncodingContextPdu::from_buffer(&mut stream)?,
-                    ),
-                    ServerPduType::SolidFill => {
-                        ServerPdu::SolidFill(SolidFillPdu::from_buffer(&mut stream)?)
+                    ServerPduType::DeleteEncodingContext => {
+                        ServerPdu::DeleteEncodingContext(DeleteEncodingContextPdu::from_buffer(&mut stream)?)
                     }
+                    ServerPduType::SolidFill => ServerPdu::SolidFill(SolidFillPdu::from_buffer(&mut stream)?),
                     ServerPduType::SurfaceToSurface => {
                         ServerPdu::SurfaceToSurface(SurfaceToSurfacePdu::from_buffer(&mut stream)?)
                     }
@@ -109,21 +104,17 @@ impl PduParsing for ServerPdu {
                     ServerPduType::DeleteSurface => {
                         ServerPdu::DeleteSurface(DeleteSurfacePdu::from_buffer(&mut stream)?)
                     }
-                    ServerPduType::StartFrame => {
-                        ServerPdu::StartFrame(StartFramePdu::from_buffer(&mut stream)?)
-                    }
-                    ServerPduType::EndFrame => {
-                        ServerPdu::EndFrame(EndFramePdu::from_buffer(&mut stream)?)
-                    }
+                    ServerPduType::StartFrame => ServerPdu::StartFrame(StartFramePdu::from_buffer(&mut stream)?),
+                    ServerPduType::EndFrame => ServerPdu::EndFrame(EndFramePdu::from_buffer(&mut stream)?),
                     ServerPduType::ResetGraphics => {
                         ServerPdu::ResetGraphics(ResetGraphicsPdu::from_buffer(&mut stream)?)
                     }
-                    ServerPduType::MapSurfaceToOutput => ServerPdu::MapSurfaceToOutput(
-                        MapSurfaceToOutputPdu::from_buffer(&mut stream)?,
-                    ),
-                    ServerPduType::CapabilitiesConfirm => ServerPdu::CapabilitiesConfirm(
-                        CapabilitiesConfirmPdu::from_buffer(&mut stream)?,
-                    ),
+                    ServerPduType::MapSurfaceToOutput => {
+                        ServerPdu::MapSurfaceToOutput(MapSurfaceToOutputPdu::from_buffer(&mut stream)?)
+                    }
+                    ServerPduType::CapabilitiesConfirm => {
+                        ServerPdu::CapabilitiesConfirm(CapabilitiesConfirmPdu::from_buffer(&mut stream)?)
+                    }
                     ServerPduType::CacheImportReply => {
                         ServerPdu::CacheImportReply(CacheImportReplyPdu::from_buffer(&mut stream)?)
                     }
@@ -158,54 +149,22 @@ impl PduParsing for ServerPdu {
         stream.write_u32::<LittleEndian>(buffer_length as u32)?;
 
         match self {
-            ServerPdu::WireToSurface1(pdu) => pdu
-                .to_buffer(&mut stream)
-                .map_err(GraphicsPipelineError::from),
-            ServerPdu::WireToSurface2(pdu) => pdu
-                .to_buffer(&mut stream)
-                .map_err(GraphicsPipelineError::from),
-            ServerPdu::DeleteEncodingContext(pdu) => pdu
-                .to_buffer(&mut stream)
-                .map_err(GraphicsPipelineError::from),
-            ServerPdu::SolidFill(pdu) => pdu
-                .to_buffer(&mut stream)
-                .map_err(GraphicsPipelineError::from),
-            ServerPdu::SurfaceToSurface(pdu) => pdu
-                .to_buffer(&mut stream)
-                .map_err(GraphicsPipelineError::from),
-            ServerPdu::SurfaceToCache(pdu) => pdu
-                .to_buffer(&mut stream)
-                .map_err(GraphicsPipelineError::from),
-            ServerPdu::CacheToSurface(pdu) => pdu
-                .to_buffer(&mut stream)
-                .map_err(GraphicsPipelineError::from),
-            ServerPdu::CreateSurface(pdu) => pdu
-                .to_buffer(&mut stream)
-                .map_err(GraphicsPipelineError::from),
-            ServerPdu::DeleteSurface(pdu) => pdu
-                .to_buffer(&mut stream)
-                .map_err(GraphicsPipelineError::from),
-            ServerPdu::ResetGraphics(pdu) => pdu
-                .to_buffer(&mut stream)
-                .map_err(GraphicsPipelineError::from),
-            ServerPdu::MapSurfaceToOutput(pdu) => pdu
-                .to_buffer(&mut stream)
-                .map_err(GraphicsPipelineError::from),
-            ServerPdu::StartFrame(pdu) => pdu
-                .to_buffer(&mut stream)
-                .map_err(GraphicsPipelineError::from),
-            ServerPdu::EndFrame(pdu) => pdu
-                .to_buffer(&mut stream)
-                .map_err(GraphicsPipelineError::from),
-            ServerPdu::EvictCacheEntry(pdu) => pdu
-                .to_buffer(&mut stream)
-                .map_err(GraphicsPipelineError::from),
-            ServerPdu::CapabilitiesConfirm(pdu) => pdu
-                .to_buffer(&mut stream)
-                .map_err(GraphicsPipelineError::from),
-            ServerPdu::CacheImportReply(pdu) => pdu
-                .to_buffer(&mut stream)
-                .map_err(GraphicsPipelineError::from),
+            ServerPdu::WireToSurface1(pdu) => pdu.to_buffer(&mut stream).map_err(GraphicsPipelineError::from),
+            ServerPdu::WireToSurface2(pdu) => pdu.to_buffer(&mut stream).map_err(GraphicsPipelineError::from),
+            ServerPdu::DeleteEncodingContext(pdu) => pdu.to_buffer(&mut stream).map_err(GraphicsPipelineError::from),
+            ServerPdu::SolidFill(pdu) => pdu.to_buffer(&mut stream).map_err(GraphicsPipelineError::from),
+            ServerPdu::SurfaceToSurface(pdu) => pdu.to_buffer(&mut stream).map_err(GraphicsPipelineError::from),
+            ServerPdu::SurfaceToCache(pdu) => pdu.to_buffer(&mut stream).map_err(GraphicsPipelineError::from),
+            ServerPdu::CacheToSurface(pdu) => pdu.to_buffer(&mut stream).map_err(GraphicsPipelineError::from),
+            ServerPdu::CreateSurface(pdu) => pdu.to_buffer(&mut stream).map_err(GraphicsPipelineError::from),
+            ServerPdu::DeleteSurface(pdu) => pdu.to_buffer(&mut stream).map_err(GraphicsPipelineError::from),
+            ServerPdu::ResetGraphics(pdu) => pdu.to_buffer(&mut stream).map_err(GraphicsPipelineError::from),
+            ServerPdu::MapSurfaceToOutput(pdu) => pdu.to_buffer(&mut stream).map_err(GraphicsPipelineError::from),
+            ServerPdu::StartFrame(pdu) => pdu.to_buffer(&mut stream).map_err(GraphicsPipelineError::from),
+            ServerPdu::EndFrame(pdu) => pdu.to_buffer(&mut stream).map_err(GraphicsPipelineError::from),
+            ServerPdu::EvictCacheEntry(pdu) => pdu.to_buffer(&mut stream).map_err(GraphicsPipelineError::from),
+            ServerPdu::CapabilitiesConfirm(pdu) => pdu.to_buffer(&mut stream).map_err(GraphicsPipelineError::from),
+            ServerPdu::CacheImportReply(pdu) => pdu.to_buffer(&mut stream).map_err(GraphicsPipelineError::from),
         }
     }
 
@@ -242,8 +201,8 @@ impl PduParsing for ClientPdu {
     type Error = GraphicsPipelineError;
 
     fn from_buffer(mut stream: impl io::Read) -> Result<Self, Self::Error> {
-        let pdu_type = ClientPduType::from_u16(stream.read_u16::<LittleEndian>()?)
-            .ok_or(GraphicsPipelineError::InvalidCmdId)?;
+        let pdu_type =
+            ClientPduType::from_u16(stream.read_u16::<LittleEndian>()?).ok_or(GraphicsPipelineError::InvalidCmdId)?;
         let _flags = stream.read_u16::<LittleEndian>()?;
         let pdu_length = stream.read_u32::<LittleEndian>()? as usize;
 
@@ -251,9 +210,9 @@ impl PduParsing for ClientPdu {
             ClientPduType::FrameAcknowledge => {
                 ClientPdu::FrameAcknowledge(FrameAcknowledgePdu::from_buffer(&mut stream)?)
             }
-            ClientPduType::CapabilitiesAdvertise => ClientPdu::CapabilitiesAdvertise(
-                CapabilitiesAdvertisePdu::from_buffer(&mut stream)?,
-            ),
+            ClientPduType::CapabilitiesAdvertise => {
+                ClientPdu::CapabilitiesAdvertise(CapabilitiesAdvertisePdu::from_buffer(&mut stream)?)
+            }
             _ => return Err(GraphicsPipelineError::UnexpectedClientPduType(pdu_type)),
         };
 
@@ -273,12 +232,8 @@ impl PduParsing for ClientPdu {
         stream.write_u32::<LittleEndian>(self.buffer_length() as u32)?;
 
         match self {
-            ClientPdu::FrameAcknowledge(pdu) => pdu
-                .to_buffer(&mut stream)
-                .map_err(GraphicsPipelineError::from),
-            ClientPdu::CapabilitiesAdvertise(pdu) => pdu
-                .to_buffer(&mut stream)
-                .map_err(GraphicsPipelineError::from),
+            ClientPdu::FrameAcknowledge(pdu) => pdu.to_buffer(&mut stream).map_err(GraphicsPipelineError::from),
+            ClientPdu::CapabilitiesAdvertise(pdu) => pdu.to_buffer(&mut stream).map_err(GraphicsPipelineError::from),
         }
     }
 
@@ -371,18 +326,11 @@ pub enum GraphicsPipelineError {
         expected, actual
     )]
     InvalidResetGraphicsPduSize { expected: usize, actual: usize },
-    #[fail(
-        display = "Invalid PDU length: expected ({}) != actual ({})",
-        expected, actual
-    )]
+    #[fail(display = "Invalid PDU length: expected ({}) != actual ({})", expected, actual)]
     InvalidPduLength { expected: usize, actual: usize },
 }
 
-impl_from_error!(
-    io::Error,
-    GraphicsPipelineError,
-    GraphicsPipelineError::IOError
-);
+impl_from_error!(io::Error, GraphicsPipelineError, GraphicsPipelineError::IOError);
 
 impl_from_error!(
     graphics_messages::GraphicsMessagesError,

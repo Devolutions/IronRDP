@@ -3,25 +3,25 @@ mod server;
 #[cfg(test)]
 pub mod test;
 
-pub use client::{CacheImportReplyPdu, CapabilitiesAdvertisePdu, FrameAcknowledgePdu, QueueDepth};
-pub use server::{
-    CacheToSurfacePdu, CapabilitiesConfirmPdu, Codec1Type, Codec2Type, CreateSurfacePdu,
-    DeleteEncodingContextPdu, DeleteSurfacePdu, EndFramePdu, EvictCacheEntryPdu,
-    MapSurfaceToOutputPdu, PixelFormat, ResetGraphicsPdu, SolidFillPdu, StartFramePdu,
-    SurfaceToCachePdu, SurfaceToSurfacePdu, Timestamp, WireToSurface1Pdu, WireToSurface2Pdu,
-    RESET_GRAPHICS_PDU_SIZE,
-};
-
 use std::io;
 
 use bitflags::bitflags;
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
+pub use client::{CacheImportReplyPdu, CapabilitiesAdvertisePdu, FrameAcknowledgePdu, QueueDepth};
 use failure::Fail;
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive, ToPrimitive};
+pub use server::{
+    CacheToSurfacePdu, CapabilitiesConfirmPdu, Codec1Type, Codec2Type, CreateSurfacePdu, DeleteEncodingContextPdu,
+    DeleteSurfacePdu, EndFramePdu, EvictCacheEntryPdu, MapSurfaceToOutputPdu, PixelFormat, ResetGraphicsPdu,
+    SolidFillPdu, StartFramePdu, SurfaceToCachePdu, SurfaceToSurfacePdu, Timestamp, WireToSurface1Pdu,
+    WireToSurface2Pdu, RESET_GRAPHICS_PDU_SIZE,
+};
 
 use super::RDP_GFX_HEADER_SIZE;
-use crate::{gcc::MonitorDataError, impl_from_error, utils::Rectangle, PduParsing};
+use crate::gcc::MonitorDataError;
+use crate::utils::Rectangle;
+use crate::{impl_from_error, PduParsing};
 
 const CAPABILITY_SET_HEADER_SIZE: usize = 8;
 
@@ -71,19 +71,13 @@ impl PduParsing for CapabilitySet {
 
         match version {
             CapabilityVersion::V8 => Ok(CapabilitySet::V8 {
-                flags: CapabilitiesV8Flags::from_bits_truncate(
-                    data.as_slice().read_u32::<LittleEndian>()?,
-                ),
+                flags: CapabilitiesV8Flags::from_bits_truncate(data.as_slice().read_u32::<LittleEndian>()?),
             }),
             CapabilityVersion::V8_1 => Ok(CapabilitySet::V8_1 {
-                flags: CapabilitiesV81Flags::from_bits_truncate(
-                    data.as_slice().read_u32::<LittleEndian>()?,
-                ),
+                flags: CapabilitiesV81Flags::from_bits_truncate(data.as_slice().read_u32::<LittleEndian>()?),
             }),
             CapabilityVersion::V10 => Ok(CapabilitySet::V10 {
-                flags: CapabilitiesV10Flags::from_bits_truncate(
-                    data.as_slice().read_u32::<LittleEndian>()?,
-                ),
+                flags: CapabilitiesV10Flags::from_bits_truncate(data.as_slice().read_u32::<LittleEndian>()?),
             }),
             CapabilityVersion::V10_1 => {
                 data.as_slice().read_u128::<LittleEndian>()?;
@@ -91,29 +85,19 @@ impl PduParsing for CapabilitySet {
                 Ok(CapabilitySet::V10_1)
             }
             CapabilityVersion::V10_2 => Ok(CapabilitySet::V10_2 {
-                flags: CapabilitiesV10Flags::from_bits_truncate(
-                    data.as_slice().read_u32::<LittleEndian>()?,
-                ),
+                flags: CapabilitiesV10Flags::from_bits_truncate(data.as_slice().read_u32::<LittleEndian>()?),
             }),
             CapabilityVersion::V10_3 => Ok(CapabilitySet::V10_3 {
-                flags: CapabilitiesV103Flags::from_bits_truncate(
-                    data.as_slice().read_u32::<LittleEndian>()?,
-                ),
+                flags: CapabilitiesV103Flags::from_bits_truncate(data.as_slice().read_u32::<LittleEndian>()?),
             }),
             CapabilityVersion::V10_4 => Ok(CapabilitySet::V10_4 {
-                flags: CapabilitiesV104Flags::from_bits_truncate(
-                    data.as_slice().read_u32::<LittleEndian>()?,
-                ),
+                flags: CapabilitiesV104Flags::from_bits_truncate(data.as_slice().read_u32::<LittleEndian>()?),
             }),
             CapabilityVersion::V10_5 => Ok(CapabilitySet::V10_5 {
-                flags: CapabilitiesV104Flags::from_bits_truncate(
-                    data.as_slice().read_u32::<LittleEndian>()?,
-                ),
+                flags: CapabilitiesV104Flags::from_bits_truncate(data.as_slice().read_u32::<LittleEndian>()?),
             }),
             CapabilityVersion::V10_6 => Ok(CapabilitySet::V10_6 {
-                flags: CapabilitiesV104Flags::from_bits_truncate(
-                    data.as_slice().read_u32::<LittleEndian>()?,
-                ),
+                flags: CapabilitiesV104Flags::from_bits_truncate(data.as_slice().read_u32::<LittleEndian>()?),
             }),
             CapabilityVersion::Unknown => Ok(CapabilitySet::Unknown(data)),
         }
@@ -121,9 +105,7 @@ impl PduParsing for CapabilitySet {
 
     fn to_buffer(&self, mut stream: impl io::Write) -> Result<(), GraphicsMessagesError> {
         stream.write_u32::<LittleEndian>(self.version().to_u32().unwrap())?;
-        stream.write_u32::<LittleEndian>(
-            (self.buffer_length() - CAPABILITY_SET_HEADER_SIZE) as u32,
-        )?;
+        stream.write_u32::<LittleEndian>((self.buffer_length() - CAPABILITY_SET_HEADER_SIZE) as u32)?;
 
         match self {
             CapabilitySet::V8 { flags } => stream.write_u32::<LittleEndian>(flags.bits())?,
@@ -283,30 +265,17 @@ pub enum GraphicsMessagesError {
     InvalidFixelFormat,
     #[fail(display = "Monitor error: {}", _0)]
     MonitorError(#[fail(cause)] MonitorDataError),
-    #[fail(
-        display = "Invalid ResetGraphics PDU width: {} > MAX ({})",
-        actual, max
-    )]
+    #[fail(display = "Invalid ResetGraphics PDU width: {} > MAX ({})", actual, max)]
     InvalidResetGraphicsPduWidth { actual: u32, max: u32 },
-    #[fail(
-        display = "Invalid ResetGraphics PDU height: {} > MAX ({})",
-        actual, max
-    )]
+    #[fail(display = "Invalid ResetGraphics PDU height: {} > MAX ({})", actual, max)]
     InvalidResetGraphicsPduHeight { actual: u32, max: u32 },
-    #[fail(
-        display = "Invalid ResetGraphics PDU monitors count: {} > MAX ({})",
-        actual, max
-    )]
+    #[fail(display = "Invalid ResetGraphics PDU monitors count: {} > MAX ({})", actual, max)]
     InvalidResetGraphicsPduMonitorsCount { actual: u32, max: u32 },
     #[fail(display = "Invalid capabilities version")]
     InvalidCapabilitiesVersion,
 }
 
-impl_from_error!(
-    io::Error,
-    GraphicsMessagesError,
-    GraphicsMessagesError::IOError
-);
+impl_from_error!(io::Error, GraphicsMessagesError, GraphicsMessagesError::IOError);
 
 impl_from_error!(
     MonitorDataError,

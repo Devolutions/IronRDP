@@ -90,31 +90,29 @@ impl PduParsing for ServerSecurityData {
         let encryption_level = EncryptionLevel::from_u32(buffer.read_u32::<LittleEndian>()?)
             .ok_or(SecurityDataError::InvalidEncryptionLevel)?;
 
-        let (server_random, server_cert) =
-            if encryption_method.is_empty() && encryption_level == EncryptionLevel::None {
-                (None, Vec::new())
-            } else {
-                let server_random_len = buffer.read_u32::<LittleEndian>()?;
-                if server_random_len != SERVER_RANDOM_LEN as u32 {
-                    return Err(SecurityDataError::InvalidServerRandomLen(server_random_len));
-                }
+        let (server_random, server_cert) = if encryption_method.is_empty() && encryption_level == EncryptionLevel::None
+        {
+            (None, Vec::new())
+        } else {
+            let server_random_len = buffer.read_u32::<LittleEndian>()?;
+            if server_random_len != SERVER_RANDOM_LEN as u32 {
+                return Err(SecurityDataError::InvalidServerRandomLen(server_random_len));
+            }
 
-                let server_cert_len = buffer.read_u32::<LittleEndian>()?;
+            let server_cert_len = buffer.read_u32::<LittleEndian>()?;
 
-                if server_cert_len > MAX_SERVER_CERT_LEN {
-                    return Err(SecurityDataError::InvalidServerCertificateLen(
-                        server_cert_len,
-                    ));
-                }
+            if server_cert_len > MAX_SERVER_CERT_LEN {
+                return Err(SecurityDataError::InvalidServerCertificateLen(server_cert_len));
+            }
 
-                let mut server_random = [0; SERVER_RANDOM_LEN];
-                buffer.read_exact(&mut server_random)?;
+            let mut server_random = [0; SERVER_RANDOM_LEN];
+            buffer.read_exact(&mut server_random)?;
 
-                let mut server_cert = vec![0; server_cert_len as usize];
-                buffer.read_exact(&mut server_cert)?;
+            let mut server_cert = vec![0; server_cert_len as usize];
+            buffer.read_exact(&mut server_cert)?;
 
-                (Some(server_random), server_cert)
-            };
+            (Some(server_random), server_cert)
+        };
 
         Ok(Self {
             encryption_method,

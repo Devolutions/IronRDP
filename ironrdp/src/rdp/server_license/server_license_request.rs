@@ -5,16 +5,14 @@ pub mod test;
 use std::io;
 
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
+use cert::{CertificateType, ProprietaryCertificate, X509CertificateChain};
 use x509_parser::parse_x509_certificate;
 
-use cert::{CertificateType, ProprietaryCertificate, X509CertificateChain};
-
 use super::{
-    BasicSecurityHeader, BasicSecurityHeaderFlags, BlobHeader, BlobType, LicenseErrorCode,
-    LicenseHeader, LicensingErrorMessage, LicensingStateTransition, PreambleFlags, PreambleType,
-    PreambleVersion, ServerLicenseError, BLOB_LENGTH_SIZE, BLOB_TYPE_SIZE,
-    KEY_EXCHANGE_ALGORITHM_RSA, PREAMBLE_SIZE, RANDOM_NUMBER_SIZE, UTF16_NULL_TERMINATOR_SIZE,
-    UTF8_NULL_TERMINATOR_SIZE,
+    BasicSecurityHeader, BasicSecurityHeaderFlags, BlobHeader, BlobType, LicenseErrorCode, LicenseHeader,
+    LicensingErrorMessage, LicensingStateTransition, PreambleFlags, PreambleType, PreambleVersion, ServerLicenseError,
+    BLOB_LENGTH_SIZE, BLOB_TYPE_SIZE, KEY_EXCHANGE_ALGORITHM_RSA, PREAMBLE_SIZE, RANDOM_NUMBER_SIZE,
+    UTF16_NULL_TERMINATOR_SIZE, UTF8_NULL_TERMINATOR_SIZE,
 };
 use crate::{utils, PduParsing};
 
@@ -58,8 +56,7 @@ impl InitialServerLicenseMessage {
                 preamble_message_type: PreambleType::ErrorAlert,
                 preamble_flags: PreambleFlags::empty(),
                 preamble_version: PreambleVersion::V3,
-                preamble_message_size: (PREAMBLE_SIZE + valid_client_message.buffer_length())
-                    as u16,
+                preamble_message_size: (PREAMBLE_SIZE + valid_client_message.buffer_length()) as u16,
             },
             message_type: InitialMessageType::StatusValidClient(valid_client_message),
         }
@@ -127,9 +124,7 @@ impl PduParsing for InitialServerLicenseMessage {
     fn buffer_length(&self) -> usize {
         self.license_header.buffer_length()
             + match &self.message_type {
-                InitialMessageType::LicenseRequest(license_request) => {
-                    license_request.buffer_length()
-                }
+                InitialMessageType::LicenseRequest(license_request) => license_request.buffer_length(),
                 InitialMessageType::StatusValidClient(valid_client) => valid_client.buffer_length(),
             }
     }
@@ -145,10 +140,7 @@ pub struct ServerLicenseRequest {
 
 impl ServerLicenseRequest {
     pub fn get_public_key(&self) -> Result<Option<Vec<u8>>, ServerLicenseError> {
-        self.server_certificate
-            .as_ref()
-            .map(|c| c.get_public_key())
-            .transpose()
+        self.server_certificate.as_ref().map(|c| c.get_public_key()).transpose()
     }
 }
 
@@ -161,8 +153,7 @@ impl PduParsing for ServerLicenseRequest {
 
         let product_info = ProductInfo::from_buffer(&mut stream)?;
 
-        let _key_exchange_algorithm_blob =
-            BlobHeader::read_from_buffer(BlobType::KeyExchangeAlgorithm, &mut stream)?;
+        let _key_exchange_algorithm_blob = BlobHeader::read_from_buffer(BlobType::KeyExchangeAlgorithm, &mut stream)?;
 
         let key_exchange_algorithm = stream.read_u32::<LittleEndian>()?;
         if key_exchange_algorithm != RSA_EXCHANGE_ALGORITHM {
@@ -201,15 +192,10 @@ impl PduParsing for ServerLicenseRequest {
         stream.write_all(&self.server_random)?;
         self.product_info.to_buffer(&mut stream)?;
 
-        BlobHeader::new(BlobType::KeyExchangeAlgorithm, KEY_EXCHANGE_FIELD_SIZE)
-            .write_to_buffer(&mut stream)?;
+        BlobHeader::new(BlobType::KeyExchangeAlgorithm, KEY_EXCHANGE_FIELD_SIZE).write_to_buffer(&mut stream)?;
         stream.write_u32::<LittleEndian>(KEY_EXCHANGE_ALGORITHM_RSA)?;
 
-        let cert_size = self
-            .server_certificate
-            .as_ref()
-            .map(|v| v.buffer_length())
-            .unwrap_or(0);
+        let cert_size = self.server_certificate.as_ref().map(|v| v.buffer_length()).unwrap_or(0);
         BlobHeader::new(BlobType::Certificate, cert_size).write_to_buffer(&mut stream)?;
 
         if let Some(cert) = &self.server_certificate {
@@ -283,19 +269,15 @@ impl ServerCertificate {
     pub fn get_public_key(&self) -> Result<Vec<u8>, ServerLicenseError> {
         match &self.certificate {
             CertificateType::Proprietary(certificate) => {
-                let mut public_key_buffer =
-                    Vec::with_capacity(certificate.public_key.buffer_length());
+                let mut public_key_buffer = Vec::with_capacity(certificate.public_key.buffer_length());
                 certificate.public_key.to_buffer(&mut public_key_buffer)?;
                 Ok(public_key_buffer)
             }
             CertificateType::X509(certificate) => {
                 if let Ok((_, tbs)) = parse_x509_certificate(
-                    certificate.certificate_array[certificate.certificate_array.len() - 1]
-                        .as_slice(),
+                    certificate.certificate_array[certificate.certificate_array.len() - 1].as_slice(),
                 ) {
-                    Ok(Vec::from(
-                        tbs.tbs_certificate.subject_pki.subject_public_key.data,
-                    ))
+                    Ok(Vec::from(tbs.tbs_certificate.subject_pki.subject_public_key.data))
                 } else {
                     Err(ServerLicenseError::InvalidX509Certificate)
                 }
@@ -370,9 +352,7 @@ impl PduParsing for ProductInfo {
 
         let company_name_len = stream.read_u32::<LittleEndian>()?;
         if !(2..=MAX_COMPANY_NAME_LEN).contains(&company_name_len) {
-            return Err(ServerLicenseError::InvalidCompanyNameLength(
-                company_name_len,
-            ));
+            return Err(ServerLicenseError::InvalidCompanyNameLength(company_name_len));
         }
 
         let mut company_name = vec![0u8; company_name_len as usize];

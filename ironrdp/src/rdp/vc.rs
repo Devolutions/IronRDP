@@ -29,10 +29,7 @@ impl PduParsing for ChannelPduHeader {
         let total_length = stream.read_u32::<LittleEndian>()?;
         let flags = ChannelControlFlags::from_bits_truncate(stream.read_u32::<LittleEndian>()?);
 
-        Ok(Self {
-            total_length,
-            flags,
-        })
+        Ok(Self { total_length, flags })
     }
 
     fn to_buffer(&self, mut stream: impl io::Write) -> Result<(), Self::Error> {
@@ -90,17 +87,10 @@ pub enum ChannelError {
 }
 
 impl_from_error!(io::Error, ChannelError, ChannelError::IOError);
-impl_from_error!(
-    std::string::FromUtf8Error,
-    ChannelError,
-    ChannelError::FromUtf8Error
-);
+impl_from_error!(std::string::FromUtf8Error, ChannelError, ChannelError::FromUtf8Error);
 
 impl From<ChannelError> for io::Error {
     fn from(e: ChannelError) -> io::Error {
-        io::Error::new(
-            io::ErrorKind::Other,
-            format!("Virtual channel error: {}", e),
-        )
+        io::Error::new(io::ErrorKind::Other, format!("Virtual channel error: {}", e))
     }
 }

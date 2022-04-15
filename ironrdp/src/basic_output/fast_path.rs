@@ -10,12 +10,10 @@ use failure::Fail;
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive, ToPrimitive};
 
-use super::{
-    bitmap::{Bitmap, BitmapError},
-    surface_commands::{SurfaceCommand, SurfaceCommandsError, SURFACE_COMMAND_HEADER_SIZE},
-};
-
-use crate::{impl_from_error, per, utils::SplitTo, PduBufferParsing, PduParsing};
+use super::bitmap::{Bitmap, BitmapError};
+use super::surface_commands::{SurfaceCommand, SurfaceCommandsError, SURFACE_COMMAND_HEADER_SIZE};
+use crate::utils::SplitTo;
+use crate::{impl_from_error, per, PduBufferParsing, PduParsing};
 
 /// Implements the Fast-Path RDP message header PDU.
 #[derive(Debug, Clone, PartialEq)]
@@ -26,10 +24,7 @@ pub struct FastPathHeader {
 }
 
 impl FastPathHeader {
-    pub fn from_buffer_with_header(
-        mut stream: impl io::Read,
-        header: u8,
-    ) -> Result<Self, FastPathError> {
+    pub fn from_buffer_with_header(mut stream: impl io::Read, header: u8) -> Result<Self, FastPathError> {
         let flags = EncryptionFlags::from_bits_truncate(header.get_bits(6..8));
 
         let (length, sizeof_length) = per::read_length(&mut stream)?;
@@ -73,10 +68,7 @@ impl PduParsing for FastPathHeader {
             // Preserve same layout for header as received
             per::write_long_length(stream, (self.data_length + self.buffer_length()) as u16)?;
         } else {
-            per::write_length(
-                stream,
-                (self.data_length + self.minimal_buffer_length()) as u16,
-            )?;
+            per::write_length(stream, (self.data_length + self.minimal_buffer_length()) as u16)?;
         }
 
         Ok(())
@@ -105,12 +97,11 @@ impl<'a> PduBufferParsing<'a> for FastPathUpdatePdu<'a> {
         let header = buffer.read_u8()?;
 
         let update_code = header.get_bits(0..4);
-        let update_code = UpdateCode::from_u8(update_code)
-            .ok_or(FastPathError::InvalidUpdateCode(update_code))?;
+        let update_code = UpdateCode::from_u8(update_code).ok_or(FastPathError::InvalidUpdateCode(update_code))?;
 
         let fragmentation = header.get_bits(4..6);
-        let fragmentation = Fragmentation::from_u8(fragmentation)
-            .ok_or(FastPathError::InvalidFragmentation(fragmentation))?;
+        let fragmentation =
+            Fragmentation::from_u8(fragmentation).ok_or(FastPathError::InvalidFragmentation(fragmentation))?;
 
         let compression = Compression::from_bits_truncate(header.get_bits(6..8));
         if compression.contains(Compression::COMPRESSION_USED) {
@@ -156,17 +147,11 @@ pub enum FastPathUpdate<'a> {
 }
 
 impl<'a> FastPathUpdate<'a> {
-    pub fn from_buffer_with_code(
-        mut buffer: &'a [u8],
-        code: UpdateCode,
-    ) -> Result<Self, FastPathError> {
+    pub fn from_buffer_with_code(mut buffer: &'a [u8], code: UpdateCode) -> Result<Self, FastPathError> {
         Self::from_buffer_consume_with_code(&mut buffer, code)
     }
 
-    pub fn from_buffer_consume_with_code(
-        buffer: &mut &'a [u8],
-        code: UpdateCode,
-    ) -> Result<Self, FastPathError> {
+    pub fn from_buffer_consume_with_code(buffer: &mut &'a [u8], code: UpdateCode) -> Result<Self, FastPathError> {
         match code {
             UpdateCode::SurfaceCommands => {
                 let mut commands = Vec::with_capacity(1);
@@ -201,9 +186,7 @@ impl<'a> FastPathUpdate<'a> {
 
     pub fn buffer_length(&self) -> usize {
         match self {
-            Self::SurfaceCommands(commands) => {
-                commands.iter().map(|c| c.buffer_length()).sum::<usize>()
-            }
+            Self::SurfaceCommands(commands) => commands.iter().map(|c| c.buffer_length()).sum::<usize>(),
             Self::Bitmap(bitmap) => bitmap.buffer_length(),
         }
     }
@@ -281,19 +264,12 @@ pub enum FastPathError {
     InvalidFragmentation(u8),
     #[fail(display = "Received compressed Fast-Path package")]
     CompressionNotSupported,
-    #[fail(
-        display = "Input buffer is shorter then the data length: {} < {}",
-        actual, expected
-    )]
+    #[fail(display = "Input buffer is shorter then the data length: {} < {}", actual, expected)]
     InvalidDataLength { expected: usize, actual: usize },
     #[fail(display = "Received unsupported Fast-Path Update: {:?}", _0)]
     UnsupportedFastPathUpdate(UpdateCode),
 }
 
 impl_from_error!(io::Error, FastPathError, FastPathError::IOError);
-impl_from_error!(
-    SurfaceCommandsError,
-    FastPathError,
-    FastPathError::SurfaceCommandsError
-);
+impl_from_error!(SurfaceCommandsError, FastPathError, FastPathError::SurfaceCommandsError);
 impl_from_error!(BitmapError, FastPathError, FastPathError::BitmapError);

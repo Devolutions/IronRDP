@@ -6,10 +6,8 @@ use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive, ToPrimitive};
 
 use super::{CapabilitySet, Color, GraphicsMessagesError, Point, Rectangle, RDP_GFX_HEADER_SIZE};
-use crate::{
-    gcc::{Monitor, MonitorDataError},
-    PduParsing,
-};
+use crate::gcc::{Monitor, MonitorDataError};
+use crate::PduParsing;
 
 pub const RESET_GRAPHICS_PDU_SIZE: usize = 340;
 
@@ -30,10 +28,9 @@ impl PduParsing for WireToSurface1Pdu {
 
     fn from_buffer(mut stream: impl io::Read) -> Result<Self, Self::Error> {
         let surface_id = stream.read_u16::<LittleEndian>()?;
-        let codec_id = Codec1Type::from_u16(stream.read_u16::<LittleEndian>()?)
-            .ok_or(GraphicsMessagesError::InvalidCodec1Id)?;
-        let pixel_format = PixelFormat::from_u8(stream.read_u8()?)
-            .ok_or(GraphicsMessagesError::InvalidFixelFormat)?;
+        let codec_id =
+            Codec1Type::from_u16(stream.read_u16::<LittleEndian>()?).ok_or(GraphicsMessagesError::InvalidCodec1Id)?;
+        let pixel_format = PixelFormat::from_u8(stream.read_u8()?).ok_or(GraphicsMessagesError::InvalidFixelFormat)?;
         let destination_rectangle = Rectangle::from_buffer(&mut stream)?;
         let bitmap_data_length = stream.read_u32::<LittleEndian>()? as usize;
 
@@ -75,11 +72,10 @@ impl PduParsing for WireToSurface2Pdu {
 
     fn from_buffer(mut stream: impl io::Read) -> Result<Self, Self::Error> {
         let surface_id = stream.read_u16::<LittleEndian>()?;
-        let codec_id = Codec2Type::from_u16(stream.read_u16::<LittleEndian>()?)
-            .ok_or(GraphicsMessagesError::InvalidCodec2Id)?;
+        let codec_id =
+            Codec2Type::from_u16(stream.read_u16::<LittleEndian>()?).ok_or(GraphicsMessagesError::InvalidCodec2Id)?;
         let codec_context_id = stream.read_u32::<LittleEndian>()?;
-        let pixel_format = PixelFormat::from_u8(stream.read_u8()?)
-            .ok_or(GraphicsMessagesError::InvalidFixelFormat)?;
+        let pixel_format = PixelFormat::from_u8(stream.read_u8()?).ok_or(GraphicsMessagesError::InvalidFixelFormat)?;
         let bitmap_data_length = stream.read_u32::<LittleEndian>()? as usize;
 
         Ok(Self {
@@ -175,11 +171,7 @@ impl PduParsing for SolidFillPdu {
     }
 
     fn buffer_length(&self) -> usize {
-        8 + self
-            .rectangles
-            .iter()
-            .map(|r| r.buffer_length())
-            .sum::<usize>()
+        8 + self.rectangles.iter().map(|r| r.buffer_length()).sum::<usize>()
     }
 }
 
@@ -227,11 +219,7 @@ impl PduParsing for SurfaceToSurfacePdu {
 
     fn buffer_length(&self) -> usize {
         6 + self.source_rectangle.buffer_length()
-            + self
-                .destination_points
-                .iter()
-                .map(|r| r.buffer_length())
-                .sum::<usize>()
+            + self.destination_points.iter().map(|r| r.buffer_length()).sum::<usize>()
     }
 }
 
@@ -312,11 +300,7 @@ impl PduParsing for CacheToSurfacePdu {
     }
 
     fn buffer_length(&self) -> usize {
-        6 + self
-            .destination_points
-            .iter()
-            .map(|p| p.buffer_length())
-            .sum::<usize>()
+        6 + self.destination_points.iter().map(|p| p.buffer_length()).sum::<usize>()
     }
 }
 
@@ -335,8 +319,7 @@ impl PduParsing for CreateSurfacePdu {
         let surface_id = stream.read_u16::<LittleEndian>()?;
         let width = stream.read_u16::<LittleEndian>()?;
         let height = stream.read_u16::<LittleEndian>()?;
-        let pixel_format = PixelFormat::from_u8(stream.read_u8()?)
-            .ok_or(GraphicsMessagesError::InvalidFixelFormat)?;
+        let pixel_format = PixelFormat::from_u8(stream.read_u8()?).ok_or(GraphicsMessagesError::InvalidFixelFormat)?;
 
         Ok(Self {
             surface_id,
@@ -397,11 +380,7 @@ impl ResetGraphicsPdu {
         RESET_GRAPHICS_PDU_SIZE
             - RDP_GFX_HEADER_SIZE
             - 12
-            - self
-                .monitors
-                .iter()
-                .map(|m| m.buffer_length())
-                .sum::<usize>()
+            - self.monitors.iter().map(|m| m.buffer_length()).sum::<usize>()
     }
 }
 
@@ -427,12 +406,10 @@ impl PduParsing for ResetGraphicsPdu {
 
         let monitor_count = stream.read_u32::<LittleEndian>()?;
         if monitor_count > MONITOR_COUNT_MAX {
-            return Err(
-                GraphicsMessagesError::InvalidResetGraphicsPduMonitorsCount {
-                    actual: monitor_count,
-                    max: MAX_RESET_GRAPHICS_WIDTH_HEIGHT,
-                },
-            );
+            return Err(GraphicsMessagesError::InvalidResetGraphicsPduMonitorsCount {
+                actual: monitor_count,
+                max: MAX_RESET_GRAPHICS_WIDTH_HEIGHT,
+            });
         }
 
         let monitors = (0..monitor_count)
@@ -546,10 +523,7 @@ impl PduParsing for StartFramePdu {
         let timestamp = Timestamp::from_buffer(&mut stream)?;
         let frame_id = stream.read_u32::<LittleEndian>()?;
 
-        Ok(Self {
-            timestamp,
-            frame_id,
-        })
+        Ok(Self { timestamp, frame_id })
     }
 
     fn to_buffer(&self, mut stream: impl io::Write) -> Result<(), Self::Error> {

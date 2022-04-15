@@ -8,7 +8,8 @@ use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive, ToPrimitive};
 
 use super::{Header, PduType, HEADER_SIZE, UNUSED_U8};
-use crate::{rdp::vc::ChannelError, PduParsing};
+use crate::rdp::vc::ChannelError;
+use crate::PduParsing;
 
 const DVC_CAPABILITIES_PAD_SIZE: usize = 1;
 const DVC_CAPABILITIES_VERSION_SIZE: usize = 2;
@@ -67,9 +68,7 @@ impl PduParsing for CapabilitiesRequestPdu {
         stream.write_u8(UNUSED_U8)?;
 
         match self {
-            CapabilitiesRequestPdu::V1 => {
-                stream.write_u16::<LittleEndian>(CapsVersion::V1.to_u16().unwrap())?
-            }
+            CapabilitiesRequestPdu::V1 => stream.write_u16::<LittleEndian>(CapsVersion::V1.to_u16().unwrap())?,
             CapabilitiesRequestPdu::V2 { charges } => {
                 stream.write_u16::<LittleEndian>(CapsVersion::V2.to_u16().unwrap())?;
                 for charge in charges.iter() {

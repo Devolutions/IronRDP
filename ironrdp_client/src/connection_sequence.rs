@@ -1,33 +1,25 @@
 mod user_info;
 
-use std::{
-    collections::HashMap,
-    io::{self},
-    iter,
-    net::SocketAddr,
-};
+use std::collections::HashMap;
+use std::io::{self};
+use std::iter;
+use std::net::SocketAddr;
 
 use bufstream::BufStream;
 use bytes::BytesMut;
-use ironrdp::{
-    nego, rdp,
-    rdp::{
-        capability_sets::CapabilitySet,
-        server_license::{
-            ClientNewLicenseRequest, ClientPlatformChallengeResponse, InitialMessageType,
-            InitialServerLicenseMessage, ServerPlatformChallenge, ServerUpgradeLicense,
-            PREMASTER_SECRET_SIZE, RANDOM_NUMBER_SIZE,
-        },
-        ErrorInfo, ServerSetErrorInfoPdu, SERVER_CHANNEL_ID,
-    },
-    PduParsing,
+use ironrdp::rdp::capability_sets::CapabilitySet;
+use ironrdp::rdp::server_license::{
+    ClientNewLicenseRequest, ClientPlatformChallengeResponse, InitialMessageType, InitialServerLicenseMessage,
+    ServerPlatformChallenge, ServerUpgradeLicense, PREMASTER_SECRET_SIZE, RANDOM_NUMBER_SIZE,
 };
+use ironrdp::rdp::{ErrorInfo, ProtocolIndependentCode, ServerSetErrorInfoPdu, SERVER_CHANNEL_ID};
+use ironrdp::{nego, rdp, PduParsing};
 use log::{debug, info, trace, warn};
 use ring::rand::SecureRandom;
 use sspi::internal::credssp;
 
-use crate::{transport::*, InputConfig, RdpError, BUF_STREAM_SIZE};
-use ironrdp::rdp::ProtocolIndependentCode;
+use crate::transport::*;
+use crate::{InputConfig, RdpError, BUF_STREAM_SIZE};
 
 pub type StaticChannels = HashMap<String, u16>;
 
@@ -83,20 +75,16 @@ where
         process_cred_ssp(&mut stream, config.credentials.clone(), server_public_key)?;
 
         if selected_protocol.contains(nego::SecurityProtocol::HYBRID_EX) {
-            if let credssp::EarlyUserAuthResult::AccessDenied =
-                EarlyUserAuthResult::read(&mut stream)?
-            {
+            if let credssp::EarlyUserAuthResult::AccessDenied = EarlyUserAuthResult::read(&mut stream)? {
                 return Err(RdpError::AccessDenied);
             }
         }
     }
 
-    let static_channels =
-        process_mcs_connect(&mut stream, &mut transport, config, selected_protocol)?;
+    let static_channels = process_mcs_connect(&mut stream, &mut transport, config, selected_protocol)?;
 
     let mut transport = McsTransport::new(transport);
-    let joined_static_channels =
-        process_mcs(&mut stream, &mut transport, static_channels, config)?;
+    let joined_static_channels = process_mcs(&mut stream, &mut transport, static_channels, config)?;
     debug!("Joined static active_session: {:?}", joined_static_channels);
 
     let global_channel_id = *joined_static_channels
@@ -119,8 +107,7 @@ where
         Ok(_) => (),
     }
 
-    let mut transport =
-        ShareControlHeaderTransport::new(transport, initiator_id, global_channel_id);
+    let mut transport = ShareControlHeaderTransport::new(transport, initiator_id, global_channel_id);
     let desktop_sizes = process_capability_sets(&mut stream, &mut transport, config)?;
 
     let mut transport = ShareDataHeaderTransport::new(transport);
@@ -144,12 +131,9 @@ pub fn process_cred_ssp(
 ) -> Result<(), RdpError> {
     let mut transport = TsRequestTransport::default();
 
-    let mut cred_ssp_client = credssp::CredSspClient::new(
-        server_public_key,
-        credentials,
-        credssp::CredSspMode::WithCredentials,
-    )
-    .map_err(RdpError::CredSspError)?;
+    let mut cred_ssp_client =
+        credssp::CredSspClient::new(server_public_key, credentials, credssp::CredSspMode::WithCredentials)
+            .map_err(RdpError::CredSspError)?;
     let mut next_ts_request = credssp::TsRequest::default();
 
     loop {
@@ -181,10 +165,8 @@ pub fn process_mcs_connect(
     config: &InputConfig,
     selected_protocol: nego::SecurityProtocol,
 ) -> Result<StaticChannels, RdpError> {
-    let connect_initial = ironrdp::ConnectInitial::with_gcc_blocks(user_info::create_gcc_blocks(
-        config,
-        selected_protocol,
-    )?);
+    let connect_initial =
+        ironrdp::ConnectInitial::with_gcc_blocks(user_info::create_gcc_blocks(config, selected_protocol)?);
     debug!("Send MCS Connect Initial PDU: {:?}", connect_initial);
     let mut connect_initial_buf = BytesMut::with_capacity(connect_initial.buffer_length());
     connect_initial_buf.resize(connect_initial.buffer_length(), 0x00);
@@ -196,16 +178,11 @@ pub fn process_mcs_connect(
     data.resize(data_length, 0x00);
     stream.read_exact(&mut data)?;
 
-    let connect_response =
-        ironrdp::ConnectResponse::from_buffer(data.as_ref()).map_err(RdpError::McsConnectError)?;
+    let connect_response = ironrdp::ConnectResponse::from_buffer(data.as_ref()).map_err(RdpError::McsConnectError)?;
     debug!("Got MCS Connect Response PDU: {:?}", connect_response);
 
     let gcc_blocks = connect_response.conference_create_response.gcc_blocks;
-    if connect_initial
-        .conference_create_request
-        .gcc_blocks
-        .security
-        == ironrdp::gcc::ClientSecurityData::no_security()
+    if connect_initial.conference_create_request.gcc_blocks.security == ironrdp::gcc::ClientSecurityData::no_security()
         && gcc_blocks.security != ironrdp::gcc::ServerSecurityData::no_security()
     {
         return Err(RdpError::InvalidResponse(String::from(
@@ -228,10 +205,7 @@ pub fn process_mcs_connect(
         .into_iter()
         .map(|channel| channel.name)
         .zip(static_channel_ids.into_iter())
-        .chain(iter::once((
-            config.global_channel_name.clone(),
-            global_channel_id,
-        )))
+        .chain(iter::once((config.global_channel_name.clone(), global_channel_id)))
         .collect::<StaticChannels>();
 
     Ok(static_channels)
@@ -248,16 +222,10 @@ pub fn process_mcs(
         sub_interval: 0,
     };
 
-    debug!(
-        "Send MCS Erect Domain Request PDU: {:?}",
-        erect_domain_request
-    );
+    debug!("Send MCS Erect Domain Request PDU: {:?}", erect_domain_request);
 
     transport.encode(
-        McsTransport::prepare_data_to_encode(
-            ironrdp::McsPdu::ErectDomainRequest(erect_domain_request),
-            None,
-        )?,
+        McsTransport::prepare_data_to_encode(ironrdp::McsPdu::ErectDomainRequest(erect_domain_request), None)?,
         &mut stream,
     )?;
 
@@ -271,10 +239,7 @@ pub fn process_mcs(
     let initiator_id = if let ironrdp::McsPdu::AttachUserConfirm(attach_user_confirm) = mcs_pdu {
         debug!("Got MCS Attach User Confirm PDU: {:?}", attach_user_confirm);
 
-        static_channels.insert(
-            config.user_channel_name.clone(),
-            attach_user_confirm.initiator_id,
-        );
+        static_channels.insert(config.user_channel_name.clone(), attach_user_confirm.initiator_id);
 
         attach_user_confirm.initiator_id
     } else {
@@ -289,24 +254,15 @@ pub fn process_mcs(
             initiator_id,
             channel_id: *id,
         };
-        debug!(
-            "Send MCS Channel Join Request PDU: {:?}",
-            channel_join_request
-        );
+        debug!("Send MCS Channel Join Request PDU: {:?}", channel_join_request);
         transport.encode(
-            McsTransport::prepare_data_to_encode(
-                ironrdp::McsPdu::ChannelJoinRequest(channel_join_request),
-                None,
-            )?,
+            McsTransport::prepare_data_to_encode(ironrdp::McsPdu::ChannelJoinRequest(channel_join_request), None)?,
             &mut stream,
         )?;
 
         let mcs_pdu = transport.decode(&mut stream)?;
         if let ironrdp::McsPdu::ChannelJoinConfirm(channel_join_confirm) = mcs_pdu {
-            debug!(
-                "Got MCS Channel Join Confirm PDU: {:?}",
-                channel_join_confirm
-            );
+            debug!("Got MCS Channel Join Confirm PDU: {:?}", channel_join_confirm);
 
             if channel_join_confirm.initiator_id != initiator_id
                 || channel_join_confirm.channel_id != channel_join_confirm.requested_channel_id
@@ -364,20 +320,12 @@ pub fn process_server_license_exchange(
             let mut client_random = vec![0u8; RANDOM_NUMBER_SIZE];
 
             let rand = ring::rand::SystemRandom::new();
-            rand.fill(&mut client_random).map_err(|err| {
-                RdpError::IOError(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!("{}", err),
-                ))
-            })?;
+            rand.fill(&mut client_random)
+                .map_err(|err| RdpError::IOError(io::Error::new(io::ErrorKind::InvalidData, format!("{}", err))))?;
 
             let mut premaster_secret = vec![0u8; PREMASTER_SECRET_SIZE];
-            rand.fill(&mut premaster_secret).map_err(|err| {
-                RdpError::IOError(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!("{}", err),
-                ))
-            })?;
+            rand.fill(&mut premaster_secret)
+                .map_err(|err| RdpError::IOError(io::Error::new(io::ErrorKind::InvalidData, format!("{}", err))))?;
 
             ClientNewLicenseRequest::from_server_license_request(
                 &license_request,
@@ -408,14 +356,12 @@ pub fn process_server_license_exchange(
     trace!("{:?}", encryption_data);
 
     let mut new_pdu_buffer = Vec::with_capacity(new_license_request.buffer_length());
-    new_license_request
-        .to_buffer(&mut new_pdu_buffer)
-        .map_err(|err| {
-            RdpError::IOError(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("Unable to write to buffer: {}", err),
-            ))
-        })?;
+    new_license_request.to_buffer(&mut new_pdu_buffer).map_err(|err| {
+        RdpError::IOError(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("Unable to write to buffer: {}", err),
+        ))
+    })?;
     transport.encode(new_pdu_buffer, &mut stream)?;
 
     let channel_ids = transport.decode(&mut stream)?;
@@ -435,10 +381,7 @@ pub fn process_server_license_exchange(
     .map_err(|err| {
         RdpError::ServerLicenseError(rdp::RdpError::IOError(io::Error::new(
             io::ErrorKind::InvalidData,
-            format!(
-                "Unable to generate Client Platform Challenge Response {}",
-                err
-            ),
+            format!("Unable to generate Client Platform Challenge Response {}", err),
         )))
     })?;
 
@@ -446,14 +389,12 @@ pub fn process_server_license_exchange(
     trace!("{:?}", challenge_response);
 
     let mut new_pdu_buffer = Vec::with_capacity(challenge_response.buffer_length());
-    challenge_response
-        .to_buffer(&mut new_pdu_buffer)
-        .map_err(|err| {
-            RdpError::IOError(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("Unable to write to buffer: {}", err),
-            ))
-        })?;
+    challenge_response.to_buffer(&mut new_pdu_buffer).map_err(|err| {
+        RdpError::IOError(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("Unable to write to buffer: {}", err),
+        ))
+    })?;
     transport.encode(new_pdu_buffer, &mut stream)?;
 
     let channel_ids = transport.decode(&mut stream)?;
@@ -465,14 +406,12 @@ pub fn process_server_license_exchange(
     debug!("Received Server Upgrade License PDU");
     trace!("{:?}", upgrade_license);
 
-    upgrade_license
-        .verify_server_license(&encryption_data)
-        .map_err(|err| {
-            RdpError::ServerLicenseError(rdp::RdpError::IOError(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("License verification failed: {:?}", err),
-            )))
-        })?;
+    upgrade_license.verify_server_license(&encryption_data).map_err(|err| {
+        RdpError::ServerLicenseError(rdp::RdpError::IOError(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("License verification failed: {:?}", err),
+        )))
+    })?;
 
     debug!("Successfully verified the license");
 
@@ -485,22 +424,17 @@ pub fn process_capability_sets(
     config: &InputConfig,
 ) -> Result<DesktopSizes, RdpError> {
     let share_control_pdu = transport.decode(&mut stream)?;
-    let capability_sets =
-        if let ironrdp::ShareControlPdu::ServerDemandActive(server_demand_active) =
-            share_control_pdu
-        {
-            debug!(
-                "Got Server Demand Active PDU: {:?}",
-                server_demand_active.pdu
-            );
+    let capability_sets = if let ironrdp::ShareControlPdu::ServerDemandActive(server_demand_active) = share_control_pdu
+    {
+        debug!("Got Server Demand Active PDU: {:?}", server_demand_active.pdu);
 
-            server_demand_active.pdu.capability_sets
-        } else {
-            return Err(RdpError::UnexpectedPdu(format!(
-                "Expected Server Demand Active PDU, got: {:?}",
-                share_control_pdu.as_short_name()
-            )));
-        };
+        server_demand_active.pdu.capability_sets
+    } else {
+        return Err(RdpError::UnexpectedPdu(format!(
+            "Expected Server Demand Active PDU, got: {:?}",
+            share_control_pdu.as_short_name()
+        )));
+    };
     let desktop_sizes = capability_sets
         .iter()
         .find(|c| matches!(c, CapabilitySet::Bitmap(_)))
@@ -516,13 +450,11 @@ pub fn process_capability_sets(
             height: config.height,
         });
 
-    let client_confirm_active = ironrdp::ShareControlPdu::ClientConfirmActive(
-        user_info::create_client_confirm_active(config, capability_sets)?,
-    );
-    debug!(
-        "Send Client Confirm Active PDU: {:?}",
-        client_confirm_active
-    );
+    let client_confirm_active = ironrdp::ShareControlPdu::ClientConfirmActive(user_info::create_client_confirm_active(
+        config,
+        capability_sets,
+    )?);
+    debug!("Send Client Confirm Active PDU: {:?}", client_confirm_active);
     transport.encode(client_confirm_active, &mut stream)?;
 
     Ok(desktop_sizes)
@@ -533,9 +465,7 @@ pub fn process_finalization(
     transport: &mut ShareDataHeaderTransport,
     initiator_id: u16,
 ) -> Result<(), RdpError> {
-    use ironrdp::rdp::{
-        ControlAction, ControlPdu, FontPdu, SequenceFlags, ShareDataPdu, SynchronizePdu,
-    };
+    use ironrdp::rdp::{ControlAction, ControlPdu, FontPdu, SequenceFlags, ShareDataPdu, SynchronizePdu};
 
     #[derive(Copy, Clone, PartialEq, Debug)]
     enum FinalizationOrder {
@@ -577,9 +507,7 @@ pub fn process_finalization(
         debug!("Got Finalization PDU: {:?}", share_data_pdu);
 
         finalization_order = match (finalization_order, share_data_pdu) {
-            (FinalizationOrder::Synchronize, ShareDataPdu::Synchronize(_)) => {
-                FinalizationOrder::ControlCooperate
-            }
+            (FinalizationOrder::Synchronize, ShareDataPdu::Synchronize(_)) => FinalizationOrder::ControlCooperate,
             (
                 FinalizationOrder::ControlCooperate,
                 ShareDataPdu::Control(ControlPdu {
@@ -595,15 +523,13 @@ pub fn process_finalization(
                     grant_id,
                     control_id,
                 }),
-            ) if grant_id == initiator_id && control_id == u32::from(SERVER_CHANNEL_ID) => {
-                FinalizationOrder::Font
-            }
+            ) if grant_id == initiator_id && control_id == u32::from(SERVER_CHANNEL_ID) => FinalizationOrder::Font,
             (FinalizationOrder::Font, ShareDataPdu::FontMap(_)) => FinalizationOrder::Finished,
             (
                 order,
-                ShareDataPdu::ServerSetErrorInfo(ServerSetErrorInfoPdu(
-                    ErrorInfo::ProtocolIndependentCode(ProtocolIndependentCode::None),
-                )),
+                ShareDataPdu::ServerSetErrorInfo(ServerSetErrorInfoPdu(ErrorInfo::ProtocolIndependentCode(
+                    ProtocolIndependentCode::None,
+                ))),
             ) => order,
             (_, ShareDataPdu::ServerSetErrorInfo(ServerSetErrorInfoPdu(e))) => {
                 return Err(RdpError::ServerError(e.description()));

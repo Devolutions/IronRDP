@@ -66,8 +66,5 @@ fn buffer_length_is_correct_for_virtual_channel_incomplete_capset() {
 
 #[test]
 fn buffer_length_is_correct_for_virtual_channel_capset() {
-    assert_eq!(
-        VIRTUAL_CHANNEL_BUFFER.len(),
-        VIRTUAL_CHANNEL.buffer_length()
-    );
+    assert_eq!(VIRTUAL_CHANNEL_BUFFER.len(), VIRTUAL_CHANNEL.buffer_length());
 }

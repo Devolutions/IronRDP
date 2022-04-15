@@ -2,9 +2,8 @@ use std::net::SocketAddr;
 
 use clap::{crate_name, crate_version, App, Arg};
 use ironrdp::nego::SecurityProtocol;
-use sspi::AuthIdentity;
-
 use ironrdp_client::InputConfig;
+use sspi::AuthIdentity;
 
 const DEFAULT_WIDTH: u16 = 1920;
 const DEFAULT_HEIGHT: u16 = 1080;
@@ -44,9 +43,7 @@ impl Config {
                     .index(1)
                     .validator(|u| match u.parse::<SocketAddr>() {
                         Ok(_) => Ok(()),
-                        Err(_) => Err(String::from(
-                            "The address does not match the format: <ip>:<port>",
-                        )),
+                        Err(_) => Err(String::from("The address does not match the format: <ip>:<port>")),
                     }),
             )
             .args(&input_args());

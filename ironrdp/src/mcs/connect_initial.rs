@@ -4,14 +4,9 @@ mod test;
 use std::io;
 
 use super::{McsError, RESULT_ENUM_LENGTH};
-use crate::{
-    ber,
-    gcc::{
-        conference_create::{ConferenceCreateRequest, ConferenceCreateResponse},
-        Channel, ClientGccBlocks,
-    },
-    PduParsing,
-};
+use crate::gcc::conference_create::{ConferenceCreateRequest, ConferenceCreateResponse};
+use crate::gcc::{Channel, ClientGccBlocks};
+use crate::{ber, PduParsing};
 
 const MCS_TYPE_CONNECT_INITIAL: u8 = 0x65;
 const MCS_TYPE_CONNECT_RESPONSE: u8 = 0x66;
@@ -81,21 +76,14 @@ impl PduParsing for ConnectInitial {
     }
 
     fn to_buffer(&self, mut stream: impl io::Write) -> Result<(), McsError> {
-        ber::write_application_tag(
-            &mut stream,
-            MCS_TYPE_CONNECT_INITIAL,
-            self.fields_buffer_ber_length(),
-        )?;
+        ber::write_application_tag(&mut stream, MCS_TYPE_CONNECT_INITIAL, self.fields_buffer_ber_length())?;
         ber::write_octet_string(&mut stream, self.calling_domain_selector.as_ref())?;
         ber::write_octet_string(&mut stream, self.called_domain_selector.as_ref())?;
         ber::write_bool(&mut stream, self.upward_flag)?;
         self.target_parameters.to_buffer(&mut stream)?;
         self.min_parameters.to_buffer(&mut stream)?;
         self.max_parameters.to_buffer(&mut stream)?;
-        ber::write_octet_string_tag(
-            &mut stream,
-            self.conference_create_request.buffer_length() as u16,
-        )?;
+        ber::write_octet_string_tag(&mut stream, self.conference_create_request.buffer_length() as u16)?;
         self.conference_create_request.to_buffer(&mut stream)?;
 
         Ok(())
@@ -104,8 +92,7 @@ impl PduParsing for ConnectInitial {
     fn buffer_length(&self) -> usize {
         let fields_buffer_ber_length = self.fields_buffer_ber_length();
 
-        (fields_buffer_ber_length
-            + ber::sizeof_application_tag(MCS_TYPE_CONNECT_INITIAL, fields_buffer_ber_length))
+        (fields_buffer_ber_length + ber::sizeof_application_tag(MCS_TYPE_CONNECT_INITIAL, fields_buffer_ber_length))
             as usize
     }
 }
@@ -122,9 +109,7 @@ impl ConnectResponse {
         self.conference_create_response.gcc_blocks.channel_ids()
     }
     pub fn global_channel_id(&self) -> u16 {
-        self.conference_create_response
-            .gcc_blocks
-            .global_channel_id()
+        self.conference_create_response.gcc_blocks.global_channel_id()
     }
 
     fn fields_buffer_ber_length(&self) -> u16 {
@@ -154,18 +139,11 @@ impl PduParsing for ConnectResponse {
     }
 
     fn to_buffer(&self, mut stream: impl io::Write) -> Result<(), McsError> {
-        ber::write_application_tag(
-            &mut stream,
-            MCS_TYPE_CONNECT_RESPONSE,
-            self.fields_buffer_ber_length(),
-        )?;
+        ber::write_application_tag(&mut stream, MCS_TYPE_CONNECT_RESPONSE, self.fields_buffer_ber_length())?;
         ber::write_enumerated(&mut stream, 0)?;
         ber::write_integer(&mut stream, self.called_connect_id)?;
         self.domain_parameters.to_buffer(&mut stream)?;
-        ber::write_octet_string_tag(
-            &mut stream,
-            self.conference_create_response.buffer_length() as u16,
-        )?;
+        ber::write_octet_string_tag(&mut stream, self.conference_create_response.buffer_length() as u16)?;
         self.conference_create_response.to_buffer(&mut stream)?;
 
         Ok(())
@@ -174,8 +152,7 @@ impl PduParsing for ConnectResponse {
     fn buffer_length(&self) -> usize {
         let fields_buffer_ber_length = self.fields_buffer_ber_length();
 
-        (fields_buffer_ber_length
-            + ber::sizeof_application_tag(MCS_TYPE_CONNECT_RESPONSE, fields_buffer_ber_length))
+        (fields_buffer_ber_length + ber::sizeof_application_tag(MCS_TYPE_CONNECT_RESPONSE, fields_buffer_ber_length))
             as usize
     }
 }

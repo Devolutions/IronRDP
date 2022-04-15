@@ -1,16 +1,14 @@
 use lazy_static::lazy_static;
 
-use super::{finalization_messages::*, headers::*, server_license::*, *};
-use crate::{
-    gcc::{self, monitor_data},
-    rdp::{
-        capability_sets::test::{
-            CLIENT_DEMAND_ACTIVE, CLIENT_DEMAND_ACTIVE_BUFFER, SERVER_DEMAND_ACTIVE,
-            SERVER_DEMAND_ACTIVE_BUFFER,
-        },
-        client_info::test::{CLIENT_INFO_BUFFER_UNICODE, CLIENT_INFO_UNICODE},
-    },
+use super::finalization_messages::*;
+use super::headers::*;
+use super::server_license::*;
+use super::*;
+use crate::gcc::{self, monitor_data};
+use crate::rdp::capability_sets::test::{
+    CLIENT_DEMAND_ACTIVE, CLIENT_DEMAND_ACTIVE_BUFFER, SERVER_DEMAND_ACTIVE, SERVER_DEMAND_ACTIVE_BUFFER,
 };
+use crate::rdp::client_info::test::{CLIENT_INFO_BUFFER_UNICODE, CLIENT_INFO_UNICODE};
 
 const CLIENT_INFO_PDU_SECURITY_HEADER_BUFFER: [u8; 4] = [
     0x40, 0x00, // flags
@@ -153,8 +151,7 @@ lazy_static! {
             preamble_message_type: PreambleType::ErrorAlert,
             preamble_flags: PreambleFlags::empty(),
             preamble_version: PreambleVersion::V3,
-            preamble_message_size: (SERVER_LICENSE_BUFFER.len() - BASIC_SECURITY_HEADER_SIZE)
-                as u16
+            preamble_message_size: (SERVER_LICENSE_BUFFER.len() - BASIC_SECURITY_HEADER_SIZE) as u16
         },
         message_type: InitialMessageType::StatusValidClient(LicensingErrorMessage {
             error_code: LicenseErrorCode::StatusValidClient,
@@ -176,9 +173,7 @@ lazy_static! {
     };
     pub static ref CLIENT_SYNCHRONIZE: ShareControlHeader = ShareControlHeader {
         share_control_pdu: ShareControlPdu::Data(ShareDataHeader {
-            share_data_pdu: ShareDataPdu::Synchronize(SynchronizePdu {
-                target_user_id: 0x03ea
-            }),
+            share_data_pdu: ShareDataPdu::Synchronize(SynchronizePdu { target_user_id: 0x03ea }),
             stream_priority: StreamPriority::Low,
             compression_flags: CompressionFlags::empty(),
             compression_type: client_info::CompressionType::K8,
@@ -267,9 +262,7 @@ lazy_static! {
     pub static ref MONITOR_LAYOUT_PDU: ShareControlHeader = ShareControlHeader {
         share_control_pdu: ShareControlPdu::Data(ShareDataHeader {
             share_data_pdu: ShareDataPdu::MonitorLayout(MonitorLayoutPdu {
-                monitors: gcc::monitor_data::test::MONITOR_DATA_WITH_MONITORS
-                    .monitors
-                    .clone(),
+                monitors: gcc::monitor_data::test::MONITOR_DATA_WITH_MONITORS.monitors.clone(),
             }),
             stream_priority: StreamPriority::Low,
             compression_flags: CompressionFlags::empty(),
@@ -361,10 +354,7 @@ fn from_buffer_correctly_parses_rdp_pdu_client_synchronize() {
 fn from_buffer_correctly_parses_rdp_pdu_client_control_cooperate() {
     let buf = CONTROL_COOPERATE_BUFFER.as_ref();
 
-    assert_eq!(
-        CONTROL_COOPERATE.clone(),
-        ShareControlHeader::from_buffer(buf).unwrap()
-    );
+    assert_eq!(CONTROL_COOPERATE.clone(), ShareControlHeader::from_buffer(buf).unwrap());
 }
 
 #[test]
@@ -391,20 +381,14 @@ fn from_buffer_correctly_parses_rdp_pdu_server_control_granted_control() {
 fn from_buffer_correctly_parses_rdp_pdu_client_font_list() {
     let buf = CLIENT_FONT_LIST_BUFFER.as_ref();
 
-    assert_eq!(
-        CLIENT_FONT_LIST.clone(),
-        ShareControlHeader::from_buffer(buf).unwrap()
-    );
+    assert_eq!(CLIENT_FONT_LIST.clone(), ShareControlHeader::from_buffer(buf).unwrap());
 }
 
 #[test]
 fn from_buffer_correctly_parses_rdp_pdu_server_font_map() {
     let buf = SERVER_FONT_MAP_BUFFER.as_ref();
 
-    assert_eq!(
-        SERVER_FONT_MAP.clone(),
-        ShareControlHeader::from_buffer(buf).unwrap()
-    );
+    assert_eq!(SERVER_FONT_MAP.clone(), ShareControlHeader::from_buffer(buf).unwrap());
 }
 
 #[test]

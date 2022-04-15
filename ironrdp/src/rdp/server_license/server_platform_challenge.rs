@@ -6,8 +6,8 @@ use std::io;
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 
 use super::{
-    read_license_header, BlobHeader, BlobType, LicenseHeader, PreambleType, ServerLicenseError,
-    BLOB_LENGTH_SIZE, BLOB_TYPE_SIZE, MAC_SIZE,
+    read_license_header, BlobHeader, BlobType, LicenseHeader, PreambleType, ServerLicenseError, BLOB_LENGTH_SIZE,
+    BLOB_TYPE_SIZE, MAC_SIZE,
 };
 use crate::PduParsing;
 
@@ -48,8 +48,7 @@ impl PduParsing for ServerPlatformChallenge {
 
         stream.write_u32::<LittleEndian>(0)?; // connect_flags, ignored
 
-        BlobHeader::new(BlobType::Any, self.encrypted_platform_challenge.len())
-            .write_to_buffer(&mut stream)?;
+        BlobHeader::new(BlobType::Any, self.encrypted_platform_challenge.len()).write_to_buffer(&mut stream)?;
         stream.write_all(&self.encrypted_platform_challenge)?;
 
         stream.write_all(&self.mac_data)?;

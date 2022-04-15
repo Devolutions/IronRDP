@@ -26,10 +26,7 @@ fn tpkt_header_is_read_correctly() {
 
     let correct_tpkt_header = TpktHeader::new(0x542);
 
-    assert_eq!(
-        correct_tpkt_header,
-        TpktHeader::from_buffer(stream.as_ref()).unwrap()
-    );
+    assert_eq!(correct_tpkt_header, TpktHeader::from_buffer(stream.as_ref()).unwrap());
 }
 
 #[test]

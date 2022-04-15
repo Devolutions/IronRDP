@@ -1,21 +1,15 @@
 mod channels;
 mod connection;
 
-use ironrdp::rdp::SERVER_CHANNEL_ID;
-
-pub use self::{
-    channels::{
-        ChannelIdentificators, DynamicVirtualChannelTransport, StaticVirtualChannelTransport,
-    },
-    connection::{connect, EarlyUserAuthResult, TsRequestTransport},
-};
-
 use std::io;
 
 use bytes::BytesMut;
+use ironrdp::rdp::SERVER_CHANNEL_ID;
 use ironrdp::{PduParsing, RdpPdu};
 use log::warn;
 
+pub use self::channels::{ChannelIdentificators, DynamicVirtualChannelTransport, StaticVirtualChannelTransport};
+pub use self::connection::{connect, EarlyUserAuthResult, TsRequestTransport};
 use crate::RdpError;
 
 pub trait Encoder {
@@ -95,15 +89,10 @@ impl McsTransport {
         Self(transport)
     }
 
-    pub fn prepare_data_to_encode(
-        mcs_pdu: ironrdp::McsPdu,
-        extra_data: Option<Vec<u8>>,
-    ) -> Result<BytesMut, RdpError> {
+    pub fn prepare_data_to_encode(mcs_pdu: ironrdp::McsPdu, extra_data: Option<Vec<u8>>) -> Result<BytesMut, RdpError> {
         let mut mcs_pdu_buff = BytesMut::with_capacity(mcs_pdu.buffer_length());
         mcs_pdu_buff.resize(mcs_pdu.buffer_length(), 0x00);
-        mcs_pdu
-            .to_buffer(mcs_pdu_buff.as_mut())
-            .map_err(RdpError::McsError)?;
+        mcs_pdu.to_buffer(mcs_pdu_buff.as_mut()).map_err(RdpError::McsError)?;
 
         if let Some(data) = extra_data {
             mcs_pdu_buff.extend_from_slice(&data);
@@ -117,11 +106,7 @@ impl Encoder for McsTransport {
     type Item = BytesMut;
     type Error = RdpError;
 
-    fn encode(
-        &mut self,
-        mcs_pdu_buff: Self::Item,
-        mut stream: impl io::Write,
-    ) -> Result<(), RdpError> {
+    fn encode(&mut self, mcs_pdu_buff: Self::Item, mut stream: impl io::Write) -> Result<(), RdpError> {
         self.0.encode(mcs_pdu_buff, &mut stream)
     }
 }
@@ -184,11 +169,7 @@ impl Encoder for SendDataContextTransport {
     type Item = Vec<u8>;
     type Error = RdpError;
 
-    fn encode(
-        &mut self,
-        send_data_context_pdu: Self::Item,
-        mut stream: impl io::Write,
-    ) -> Result<(), RdpError> {
+    fn encode(&mut self, send_data_context_pdu: Self::Item, mut stream: impl io::Write) -> Result<(), RdpError> {
         let send_data_context = ironrdp::mcs::SendDataContext {
             channel_id: self.channel_ids.channel_id,
             initiator_id: self.channel_ids.initiator_id,
@@ -215,12 +196,10 @@ impl Decoder for SendDataContextTransport {
                 let mcs_pdu = self.mcs_transport.decode(&mut stream)?;
 
                 match mcs_pdu {
-                    ironrdp::McsPdu::SendDataIndication(send_data_context) => {
-                        Ok(ChannelIdentificators {
-                            initiator_id: send_data_context.initiator_id,
-                            channel_id: send_data_context.channel_id,
-                        })
-                    }
+                    ironrdp::McsPdu::SendDataIndication(send_data_context) => Ok(ChannelIdentificators {
+                        initiator_id: send_data_context.initiator_id,
+                        channel_id: send_data_context.channel_id,
+                    }),
                     ironrdp::McsPdu::DisconnectProviderUltimatum(disconnect_reason) => {
                         Err(RdpError::UnexpectedDisconnection(format!(
                             "Server disconnection reason - {:?}",
@@ -246,11 +225,7 @@ pub struct ShareControlHeaderTransport {
 }
 
 impl ShareControlHeaderTransport {
-    pub fn new(
-        send_data_context_transport: SendDataContextTransport,
-        pdu_source: u16,
-        global_channel_id: u16,
-    ) -> Self {
+    pub fn new(send_data_context_transport: SendDataContextTransport, pdu_source: u16, global_channel_id: u16) -> Self {
         Self {
             global_channel_id,
             send_data_context_transport,
@@ -264,11 +239,7 @@ impl Encoder for ShareControlHeaderTransport {
     type Item = ironrdp::ShareControlPdu;
     type Error = RdpError;
 
-    fn encode(
-        &mut self,
-        share_control_pdu: Self::Item,
-        mut stream: impl io::Write,
-    ) -> Result<(), RdpError> {
+    fn encode(&mut self, share_control_pdu: Self::Item, mut stream: impl io::Write) -> Result<(), RdpError> {
         let share_control_header = ironrdp::ShareControlHeader {
             share_control_pdu,
             pdu_source: self.pdu_source,
@@ -297,8 +268,8 @@ impl Decoder for ShareControlHeaderTransport {
             )));
         }
 
-        let share_control_header = ironrdp::ShareControlHeader::from_buffer(&mut stream)
-            .map_err(RdpError::ShareControlHeaderError)?;
+        let share_control_header =
+            ironrdp::ShareControlHeader::from_buffer(&mut stream).map_err(RdpError::ShareControlHeaderError)?;
         self.share_id = share_control_header.share_id;
 
         if share_control_header.pdu_source != SERVER_CHANNEL_ID {
@@ -324,11 +295,7 @@ impl Encoder for ShareDataHeaderTransport {
     type Item = ironrdp::ShareDataPdu;
     type Error = RdpError;
 
-    fn encode(
-        &mut self,
-        share_data_pdu: Self::Item,
-        mut stream: impl io::Write,
-    ) -> Result<(), RdpError> {
+    fn encode(&mut self, share_data_pdu: Self::Item, mut stream: impl io::Write) -> Result<(), RdpError> {
         let share_data_header = ironrdp::ShareDataHeader {
             share_data_pdu,
             stream_priority: ironrdp::rdp::StreamPriority::Medium,
@@ -336,10 +303,8 @@ impl Encoder for ShareDataHeaderTransport {
             compression_type: ironrdp::rdp::CompressionType::K8, // ignored if CompressionFlags::empty()
         };
 
-        self.0.encode(
-            ironrdp::ShareControlPdu::Data(share_data_header),
-            &mut stream,
-        )
+        self.0
+            .encode(ironrdp::ShareControlPdu::Data(share_data_header), &mut stream)
     }
 }
 
@@ -383,11 +348,7 @@ impl Encoder for RdpTransport {
     type Item = (RdpPdu, BytesMut);
     type Error = RdpError;
 
-    fn encode(
-        &mut self,
-        (item, data): Self::Item,
-        mut stream: impl io::Write,
-    ) -> Result<(), Self::Error> {
+    fn encode(&mut self, (item, data): Self::Item, mut stream: impl io::Write) -> Result<(), Self::Error> {
         match item {
             RdpPdu::X224(data) => {
                 data.to_buffer(&mut stream)?;

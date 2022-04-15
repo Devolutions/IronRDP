@@ -6,7 +6,8 @@ use std::io;
 use bitflags::bitflags;
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 
-use crate::{rdp::CapabilitySetsError, PduParsing};
+use crate::rdp::CapabilitySetsError;
+use crate::PduParsing;
 
 pub const BITMAP_CACHE_ENTRIES_NUM: usize = 3;
 
@@ -74,10 +75,7 @@ impl PduParsing for CacheEntry {
         let entries = buffer.read_u16::<LittleEndian>()?;
         let max_cell_size = buffer.read_u16::<LittleEndian>()?;
 
-        Ok(CacheEntry {
-            entries,
-            max_cell_size,
-        })
+        Ok(CacheEntry { entries, max_cell_size })
     }
 
     fn to_buffer(&self, mut buffer: impl io::Write) -> Result<(), Self::Error> {

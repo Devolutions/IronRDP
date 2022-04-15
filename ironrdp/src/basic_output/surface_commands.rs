@@ -9,7 +9,8 @@ use failure::Fail;
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive, ToPrimitive};
 
-use crate::{impl_from_error, utils::Rectangle, utils::SplitTo, PduBufferParsing, PduParsing};
+use crate::utils::{Rectangle, SplitTo};
+use crate::{impl_from_error, PduBufferParsing, PduParsing};
 
 pub const SURFACE_COMMAND_HEADER_SIZE: usize = 2;
 
@@ -25,19 +26,17 @@ impl<'a> PduBufferParsing<'a> for SurfaceCommand<'a> {
 
     fn from_buffer_consume(buffer: &mut &'a [u8]) -> Result<Self, Self::Error> {
         let cmd_type = buffer.read_u16::<LittleEndian>()?;
-        let cmd_type = SurfaceCommandType::from_u16(cmd_type)
-            .ok_or(SurfaceCommandsError::InvalidSurfaceCommandType(cmd_type))?;
+        let cmd_type =
+            SurfaceCommandType::from_u16(cmd_type).ok_or(SurfaceCommandsError::InvalidSurfaceCommandType(cmd_type))?;
 
         match cmd_type {
-            SurfaceCommandType::SetSurfaceBits => Ok(Self::SetSurfaceBits(
-                SurfaceBitsPdu::from_buffer_consume(buffer)?,
-            )),
-            SurfaceCommandType::FrameMarker => Ok(Self::FrameMarker(
-                FrameMarkerPdu::from_buffer_consume(buffer)?,
-            )),
-            SurfaceCommandType::StreamSurfaceBits => Ok(Self::StreamSurfaceBits(
-                SurfaceBitsPdu::from_buffer_consume(buffer)?,
-            )),
+            SurfaceCommandType::SetSurfaceBits => {
+                Ok(Self::SetSurfaceBits(SurfaceBitsPdu::from_buffer_consume(buffer)?))
+            }
+            SurfaceCommandType::FrameMarker => Ok(Self::FrameMarker(FrameMarkerPdu::from_buffer_consume(buffer)?)),
+            SurfaceCommandType::StreamSurfaceBits => {
+                Ok(Self::StreamSurfaceBits(SurfaceBitsPdu::from_buffer_consume(buffer)?))
+            }
         }
     }
 
@@ -46,9 +45,7 @@ impl<'a> PduBufferParsing<'a> for SurfaceCommand<'a> {
         buffer.write_u16::<LittleEndian>(cmd_type.to_u16().unwrap())?;
 
         match self {
-            Self::SetSurfaceBits(pdu) | Self::StreamSurfaceBits(pdu) => {
-                pdu.to_buffer_consume(buffer)
-            }
+            Self::SetSurfaceBits(pdu) | Self::StreamSurfaceBits(pdu) => pdu.to_buffer_consume(buffer),
             Self::FrameMarker(pdu) => pdu.to_buffer_consume(buffer),
         }
     }
@@ -104,8 +101,8 @@ impl<'a> PduBufferParsing<'a> for FrameMarkerPdu {
 
     fn from_buffer_consume(buffer: &mut &[u8]) -> Result<Self, Self::Error> {
         let frame_action = buffer.read_u16::<LittleEndian>()?;
-        let frame_action = FrameAction::from_u16(frame_action)
-            .ok_or(SurfaceCommandsError::InvalidFrameAction(frame_action))?;
+        let frame_action =
+            FrameAction::from_u16(frame_action).ok_or(SurfaceCommandsError::InvalidFrameAction(frame_action))?;
 
         let frame_id = if buffer.is_empty() {
             // Sometimes Windows 10 RDP server sends not complete FrameMarker PDU (without frame ID),
@@ -116,10 +113,7 @@ impl<'a> PduBufferParsing<'a> for FrameMarkerPdu {
             Some(buffer.read_u32::<LittleEndian>()?)
         };
 
-        Ok(Self {
-            frame_action,
-            frame_id,
-        })
+        Ok(Self { frame_action, frame_id })
     }
 
     fn to_buffer_consume(&self, buffer: &mut &mut [u8]) -> Result<(), Self::Error> {
@@ -202,12 +196,7 @@ impl<'a> PduBufferParsing<'a> for ExtendedBitmapDataPdu<'a> {
     }
 
     fn buffer_length(&self) -> usize {
-        12 + self
-            .header
-            .as_ref()
-            .map(PduBufferParsing::buffer_length)
-            .unwrap_or(0)
-            + self.data.len()
+        12 + self.header.as_ref().map(PduBufferParsing::buffer_length).unwrap_or(0) + self.data.len()
     }
 }
 
@@ -289,15 +278,8 @@ pub enum SurfaceCommandsError {
     InvalidSurfaceCommandType(u16),
     #[fail(display = "Invalid Frame Marker action: {}", _0)]
     InvalidFrameAction(u16),
-    #[fail(
-        display = "Input buffer is shorter then the data length: {} < {}",
-        actual, expected
-    )]
+    #[fail(display = "Input buffer is shorter then the data length: {} < {}", actual, expected)]
     InvalidDataLength { expected: usize, actual: usize },
 }
 
-impl_from_error!(
-    io::Error,
-    SurfaceCommandsError,
-    SurfaceCommandsError::IOError
-);
+impl_from_error!(io::Error, SurfaceCommandsError, SurfaceCommandsError::IOError);

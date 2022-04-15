@@ -45,9 +45,7 @@ impl PduParsing for ClientMonitorExtendedData {
             extended_monitors_info.push(ExtendedMonitorInfo::from_buffer(&mut buffer)?);
         }
 
-        Ok(Self {
-            extended_monitors_info,
-        })
+        Ok(Self { extended_monitors_info })
     }
     fn to_buffer(&self, mut buffer: impl io::Write) -> Result<(), Self::Error> {
         buffer.write_u32::<LittleEndian>(0)?; // flags
@@ -131,8 +129,4 @@ pub enum MonitorExtendedDataError {
     InvalidMonitorCount,
 }
 
-impl_from_error!(
-    io::Error,
-    MonitorExtendedDataError,
-    MonitorExtendedDataError::IOError
-);
+impl_from_error!(io::Error, MonitorExtendedDataError, MonitorExtendedDataError::IOError);

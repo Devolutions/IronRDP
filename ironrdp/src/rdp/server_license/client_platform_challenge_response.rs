@@ -1,7 +1,8 @@
 #[cfg(test)]
 mod test;
 
-use std::{io, io::Write};
+use std::io;
+use std::io::Write;
 
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use md5::Digest;
@@ -9,12 +10,12 @@ use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive, ToPrimitive};
 
 use super::{
-    BasicSecurityHeader, BasicSecurityHeaderFlags, BlobHeader, BlobType, LicenseEncryptionData,
-    LicenseHeader, PreambleFlags, PreambleType, PreambleVersion, ServerLicenseError,
-    ServerPlatformChallenge, BLOB_LENGTH_SIZE, BLOB_TYPE_SIZE, MAC_SIZE, PLATFORM_ID,
-    PREAMBLE_SIZE,
+    BasicSecurityHeader, BasicSecurityHeaderFlags, BlobHeader, BlobType, LicenseEncryptionData, LicenseHeader,
+    PreambleFlags, PreambleType, PreambleVersion, ServerLicenseError, ServerPlatformChallenge, BLOB_LENGTH_SIZE,
+    BLOB_TYPE_SIZE, MAC_SIZE, PLATFORM_ID, PREAMBLE_SIZE,
 };
-use crate::{utils::rc4::Rc4, PduParsing};
+use crate::utils::rc4::Rc4;
+use crate::PduParsing;
 
 const RESPONSE_DATA_VERSION: u16 = 0x100;
 const RESPONSE_DATA_STATIC_FIELDS_SIZE: usize = 8;
@@ -36,13 +37,10 @@ impl ClientPlatformChallengeResponse {
         encryption_data: &LicenseEncryptionData,
     ) -> Result<Self, ServerLicenseError> {
         let mut rc4 = Rc4::new(&encryption_data.license_key);
-        let decrypted_challenge =
-            rc4.process(platform_challenge.encrypted_platform_challenge.as_slice());
+        let decrypted_challenge = rc4.process(platform_challenge.encrypted_platform_challenge.as_slice());
 
-        let decrypted_challenge_mac = super::compute_mac_data(
-            encryption_data.mac_salt_key.as_slice(),
-            decrypted_challenge.as_slice(),
-        );
+        let decrypted_challenge_mac =
+            super::compute_mac_data(encryption_data.mac_salt_key.as_slice(), decrypted_challenge.as_slice());
 
         if decrypted_challenge_mac != platform_challenge.mac_data {
             return Err(ServerLicenseError::InvalidMacData);
@@ -51,8 +49,7 @@ impl ClientPlatformChallengeResponse {
         let mut challenge_response_data = vec![0u8; RESPONSE_DATA_STATIC_FIELDS_SIZE];
         challenge_response_data.write_u16::<LittleEndian>(RESPONSE_DATA_VERSION)?;
         challenge_response_data.write_u16::<LittleEndian>(ClientType::Other.to_u16().unwrap())?;
-        challenge_response_data
-            .write_u16::<LittleEndian>(LicenseDetailLevel::Detail.to_u16().unwrap())?;
+        challenge_response_data.write_u16::<LittleEndian>(LicenseDetailLevel::Detail.to_u16().unwrap())?;
         challenge_response_data.write_u16::<LittleEndian>(decrypted_challenge.len() as u16)?;
         challenge_response_data.write_all(&decrypted_challenge)?;
 
@@ -111,14 +108,12 @@ impl PduParsing for ClientPlatformChallengeResponse {
             )));
         }
 
-        let encrypted_challenge_blob =
-            BlobHeader::read_from_buffer(BlobType::EncryptedData, &mut stream)?;
+        let encrypted_challenge_blob = BlobHeader::read_from_buffer(BlobType::EncryptedData, &mut stream)?;
 
         let mut encrypted_challenge_response_data = vec![0u8; encrypted_challenge_blob.length];
         stream.read_exact(&mut encrypted_challenge_response_data)?;
 
-        let encrypted_hwid_blob =
-            BlobHeader::read_from_buffer(BlobType::EncryptedData, &mut stream)?;
+        let encrypted_hwid_blob = BlobHeader::read_from_buffer(BlobType::EncryptedData, &mut stream)?;
         let mut encrypted_hwid = vec![0u8; encrypted_hwid_blob.length];
         stream.read_exact(&mut encrypted_hwid)?;
 
@@ -136,15 +131,11 @@ impl PduParsing for ClientPlatformChallengeResponse {
     fn to_buffer(&self, mut stream: impl io::Write) -> Result<(), Self::Error> {
         self.license_header.to_buffer(&mut stream)?;
 
-        BlobHeader::new(
-            BlobType::EncryptedData,
-            self.encrypted_challenge_response_data.len(),
-        )
-        .write_to_buffer(&mut stream)?;
+        BlobHeader::new(BlobType::EncryptedData, self.encrypted_challenge_response_data.len())
+            .write_to_buffer(&mut stream)?;
         stream.write_all(&self.encrypted_challenge_response_data)?;
 
-        BlobHeader::new(BlobType::EncryptedData, self.encrypted_hwid.len())
-            .write_to_buffer(&mut stream)?;
+        BlobHeader::new(BlobType::EncryptedData, self.encrypted_hwid.len()).write_to_buffer(&mut stream)?;
         stream.write_all(&self.encrypted_hwid)?;
 
         stream.write_all(&self.mac_data)?;

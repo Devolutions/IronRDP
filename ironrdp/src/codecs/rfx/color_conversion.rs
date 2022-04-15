@@ -1,10 +1,8 @@
 #[cfg(test)]
 mod tests;
 
-use std::{
-    cmp::{max, min},
-    io::{self, Write},
-};
+use std::cmp::{max, min};
+use std::io::{self, Write};
 
 const DIVISOR: f32 = (1 << 16) as f32;
 const ALPHA: u8 = 255;

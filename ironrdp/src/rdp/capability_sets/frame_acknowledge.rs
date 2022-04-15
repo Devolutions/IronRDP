@@ -2,7 +2,8 @@ use std::io;
 
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 
-use crate::{rdp::CapabilitySetsError, PduParsing};
+use crate::rdp::CapabilitySetsError;
+use crate::PduParsing;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct FrameAcknowledge {

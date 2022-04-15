@@ -2,8 +2,6 @@ mod connect_initial;
 #[cfg(test)]
 mod test;
 
-pub use self::connect_initial::{ConnectInitial, ConnectResponse, DomainParameters};
-
 use std::io;
 
 use byteorder::{ReadBytesExt, WriteBytesExt};
@@ -11,7 +9,9 @@ use failure::Fail;
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive, ToPrimitive};
 
-use crate::{gcc::GccError, impl_from_error, per, PduParsing};
+pub use self::connect_initial::{ConnectInitial, ConnectResponse, DomainParameters};
+use crate::gcc::GccError;
+use crate::{impl_from_error, per, PduParsing};
 
 pub const RESULT_ENUM_LENGTH: u8 = 16;
 
@@ -54,28 +54,26 @@ impl PduParsing for McsPdu {
         let mcs_pdu = DomainMcsPdu::from_u8(choice >> 2).ok_or(McsError::InvalidDomainMcsPdu)?;
 
         match mcs_pdu {
-            DomainMcsPdu::ErectDomainRequest => Ok(McsPdu::ErectDomainRequest(
-                ErectDomainPdu::from_buffer(&mut stream)?,
-            )),
+            DomainMcsPdu::ErectDomainRequest => {
+                Ok(McsPdu::ErectDomainRequest(ErectDomainPdu::from_buffer(&mut stream)?))
+            }
             DomainMcsPdu::AttachUserRequest => Ok(McsPdu::AttachUserRequest),
-            DomainMcsPdu::AttachUserConfirm => Ok(McsPdu::AttachUserConfirm(
-                AttachUserConfirmPdu::from_buffer(&mut stream)?,
-            )),
-            DomainMcsPdu::ChannelJoinRequest => Ok(McsPdu::ChannelJoinRequest(
-                ChannelJoinRequestPdu::from_buffer(&mut stream)?,
-            )),
-            DomainMcsPdu::ChannelJoinConfirm => Ok(McsPdu::ChannelJoinConfirm(
-                ChannelJoinConfirmPdu::from_buffer(&mut stream)?,
-            )),
+            DomainMcsPdu::AttachUserConfirm => Ok(McsPdu::AttachUserConfirm(AttachUserConfirmPdu::from_buffer(
+                &mut stream,
+            )?)),
+            DomainMcsPdu::ChannelJoinRequest => Ok(McsPdu::ChannelJoinRequest(ChannelJoinRequestPdu::from_buffer(
+                &mut stream,
+            )?)),
+            DomainMcsPdu::ChannelJoinConfirm => Ok(McsPdu::ChannelJoinConfirm(ChannelJoinConfirmPdu::from_buffer(
+                &mut stream,
+            )?)),
             DomainMcsPdu::DisconnectProviderUltimatum => Ok(McsPdu::DisconnectProviderUltimatum(
                 DisconnectUltimatumReason::from_choice(&mut stream, choice)?,
             )),
-            DomainMcsPdu::SendDataRequest => Ok(McsPdu::SendDataRequest(
-                SendDataContext::from_buffer(&mut stream)?,
-            )),
-            DomainMcsPdu::SendDataIndication => Ok(McsPdu::SendDataIndication(
-                SendDataContext::from_buffer(&mut stream)?,
-            )),
+            DomainMcsPdu::SendDataRequest => Ok(McsPdu::SendDataRequest(SendDataContext::from_buffer(&mut stream)?)),
+            DomainMcsPdu::SendDataIndication => {
+                Ok(McsPdu::SendDataIndication(SendDataContext::from_buffer(&mut stream)?))
+            }
         }
     }
 
@@ -92,25 +90,14 @@ impl PduParsing for McsPdu {
             McsPdu::SendDataRequest(_) => (DomainMcsPdu::SendDataRequest, 0),
             McsPdu::SendDataIndication(_) => (DomainMcsPdu::SendDataIndication, 0),
         };
-        per::write_choice(
-            &mut stream,
-            (domain_mcs_pdu.to_u8().unwrap() << 2) | options,
-        )?;
+        per::write_choice(&mut stream, (domain_mcs_pdu.to_u8().unwrap() << 2) | options)?;
 
         match self {
-            McsPdu::ErectDomainRequest(erect_domain_request) => {
-                erect_domain_request.to_buffer(&mut stream)?
-            }
+            McsPdu::ErectDomainRequest(erect_domain_request) => erect_domain_request.to_buffer(&mut stream)?,
             McsPdu::AttachUserRequest => (),
-            McsPdu::AttachUserConfirm(attach_user_confirm_pdu) => {
-                attach_user_confirm_pdu.to_buffer(&mut stream)?
-            }
-            McsPdu::ChannelJoinRequest(channel_join_request_pdu) => {
-                channel_join_request_pdu.to_buffer(&mut stream)?
-            }
-            McsPdu::ChannelJoinConfirm(channel_join_confirm_pdu) => {
-                channel_join_confirm_pdu.to_buffer(&mut stream)?
-            }
+            McsPdu::AttachUserConfirm(attach_user_confirm_pdu) => attach_user_confirm_pdu.to_buffer(&mut stream)?,
+            McsPdu::ChannelJoinRequest(channel_join_request_pdu) => channel_join_request_pdu.to_buffer(&mut stream)?,
+            McsPdu::ChannelJoinConfirm(channel_join_confirm_pdu) => channel_join_confirm_pdu.to_buffer(&mut stream)?,
             McsPdu::DisconnectProviderUltimatum(reason) => reason.to_buffer(&mut stream)?,
             McsPdu::SendDataRequest(send_data) => send_data.to_buffer(&mut stream)?,
             McsPdu::SendDataIndication(send_data) => send_data.to_buffer(&mut stream)?,
@@ -121,19 +108,11 @@ impl PduParsing for McsPdu {
 
     fn buffer_length(&self) -> usize {
         let pdu_length = match self {
-            McsPdu::ErectDomainRequest(erect_domain_request) => {
-                erect_domain_request.buffer_length()
-            }
+            McsPdu::ErectDomainRequest(erect_domain_request) => erect_domain_request.buffer_length(),
             McsPdu::AttachUserRequest => 0,
-            McsPdu::AttachUserConfirm(attach_user_confirm_pdu) => {
-                attach_user_confirm_pdu.buffer_length()
-            }
-            McsPdu::ChannelJoinRequest(channel_join_request_pdu) => {
-                channel_join_request_pdu.buffer_length()
-            }
-            McsPdu::ChannelJoinConfirm(channel_join_confirm_pdu) => {
-                channel_join_confirm_pdu.buffer_length()
-            }
+            McsPdu::AttachUserConfirm(attach_user_confirm_pdu) => attach_user_confirm_pdu.buffer_length(),
+            McsPdu::ChannelJoinRequest(channel_join_request_pdu) => channel_join_request_pdu.buffer_length(),
+            McsPdu::ChannelJoinConfirm(channel_join_confirm_pdu) => channel_join_confirm_pdu.buffer_length(),
             McsPdu::DisconnectProviderUltimatum(reason) => reason.buffer_length(),
             McsPdu::SendDataRequest(send_data) => send_data.buffer_length(),
             McsPdu::SendDataIndication(send_data) => send_data.buffer_length(),
@@ -335,14 +314,12 @@ impl DisconnectUltimatumReason {
     fn from_choice(mut stream: impl io::Read, choice: u8) -> Result<Self, McsError> {
         let b = per::read_choice(&mut stream)?;
 
-        Self::from_u8(((choice & 0x01) << 1) | (b >> 7))
-            .ok_or(McsError::InvalidDisconnectProviderUltimatum)
+        Self::from_u8(((choice & 0x01) << 1) | (b >> 7)).ok_or(McsError::InvalidDisconnectProviderUltimatum)
     }
 
     fn to_buffer(self, mut stream: impl io::Write) -> Result<(), McsError> {
         let enumerated = match self {
-            DisconnectUltimatumReason::UserRequested
-            | DisconnectUltimatumReason::ProviderInitiated => 0x80,
+            DisconnectUltimatumReason::UserRequested | DisconnectUltimatumReason::ProviderInitiated => 0x80,
             _ => 0x40,
         };
         per::write_enum(&mut stream, enumerated)?;
@@ -382,9 +359,6 @@ impl_from_error!(GccError, McsError, McsError::GccError);
 
 impl From<McsError> for io::Error {
     fn from(e: McsError) -> io::Error {
-        io::Error::new(
-            io::ErrorKind::Other,
-            format!("MCS Connection Sequence error: {}", e),
-        )
+        io::Error::new(io::ErrorKind::Other, format!("MCS Connection Sequence error: {}", e))
     }
 }

@@ -1,16 +1,14 @@
 mod config;
 
-use std::{
-    io::{self, Write},
-    net::TcpStream,
-    sync::Arc,
-};
+use std::io::{self, Write};
+use std::net::TcpStream;
+use std::sync::Arc;
 
+use ironrdp_client::{process_active_stage, process_connection_sequence, RdpError, UpgradedStream};
 use log::error;
 use rustls::Session;
 
 use self::config::Config;
-use ironrdp_client::{process_active_stage, process_connection_sequence, RdpError, UpgradedStream};
 
 mod danger {
     pub struct NoCertificateVerification {}
@@ -79,21 +77,15 @@ fn run(config: Config) -> Result<(), RdpError> {
     let addr = socket_addr_to_string(config.routing_addr);
     let mut stream = TcpStream::connect(addr.as_str()).map_err(RdpError::ConnectionError)?;
 
-    let (connection_sequence_result, mut stream) = process_connection_sequence(
-        &mut stream,
-        &config.routing_addr,
-        &config.input,
-        establish_tls,
-    )?;
+    let (connection_sequence_result, mut stream) =
+        process_connection_sequence(&mut stream, &config.routing_addr, &config.input, establish_tls)?;
 
     process_active_stage(&mut stream, config.input, connection_sequence_result)?;
 
     Ok(())
 }
 
-fn establish_tls(
-    stream: impl io::Read + io::Write,
-) -> Result<UpgradedStream<impl io::Read + io::Write>, RdpError> {
+fn establish_tls(stream: impl io::Read + io::Write) -> Result<UpgradedStream<impl io::Read + io::Write>, RdpError> {
     let mut client_config = rustls::ClientConfig::default();
 
     client_config
@@ -109,9 +101,7 @@ fn establish_tls(
     let cert = tls_stream
         .sess
         .get_peer_certificates()
-        .ok_or(RdpError::TlsConnectorError(
-            rustls::TLSError::NoCertificatesPresented,
-        ))?;
+        .ok_or(RdpError::TlsConnectorError(rustls::TLSError::NoCertificatesPresented))?;
     let server_public_key = get_tls_peer_pubkey(cert[0].as_ref().to_vec())?;
 
     Ok(UpgradedStream {

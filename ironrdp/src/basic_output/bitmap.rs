@@ -1,18 +1,15 @@
 #[cfg(test)]
 mod tests;
 
+use std::fmt::{self, Debug};
 use std::io::{self, Write};
 
 use bitflags::bitflags;
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use failure::Fail;
-use std::fmt::{self, Debug};
 
-use crate::{
-    impl_from_error,
-    utils::{Rectangle, SplitTo},
-    PduBufferParsing, PduParsing,
-};
+use crate::utils::{Rectangle, SplitTo};
+use crate::{impl_from_error, PduBufferParsing, PduParsing};
 
 pub const COMPRESSED_DATA_HEADER_SIZE: usize = 8;
 pub const BITMAP_DATA_MAIN_DATA_SIZE: usize = 12;
@@ -57,10 +54,7 @@ impl<'a> PduBufferParsing<'a> for Bitmap<'a> {
     }
 
     fn buffer_length(&self) -> usize {
-        self.rectangles
-            .iter()
-            .map(|b| b.buffer_length())
-            .sum::<usize>()
+        self.rectangles.iter().map(|b| b.buffer_length()).sum::<usize>()
     }
 }
 
@@ -234,10 +228,7 @@ pub enum BitmapError {
     InvalidDataLength { actual: usize, expected: usize },
     #[fail(display = "Compression is not supported for Bitmap data")]
     NotSupportedCompression,
-    #[fail(
-        display = "Invalid first row size, expected: {}, but got: {}",
-        actual, expected
-    )]
+    #[fail(display = "Invalid first row size, expected: {}, but got: {}", actual, expected)]
     InvalidFirstRowSize { actual: usize, expected: usize },
     #[fail(display = "The width of the bitmap must be divisible by 4")]
     InvalidScanWidth,

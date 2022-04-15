@@ -3,8 +3,7 @@ use lazy_static::lazy_static;
 use super::*;
 
 const CHANNEL_CHUNK_LENGTH_DEFAULT: u32 = 1600;
-const CHANNEL_PDU_HEADER_BUFFER: [u8; CHANNEL_PDU_HEADER_SIZE] =
-    [0x40, 0x06, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00];
+const CHANNEL_PDU_HEADER_BUFFER: [u8; CHANNEL_PDU_HEADER_SIZE] = [0x40, 0x06, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00];
 
 lazy_static! {
     static ref CHANNEL_PDU_HEADER: ChannelPduHeader = ChannelPduHeader {

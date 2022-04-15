@@ -5,7 +5,8 @@ use std::io;
 
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 
-use crate::{rdp::CapabilitySetsError, PduParsing};
+use crate::rdp::CapabilitySetsError;
+use crate::PduParsing;
 
 const POINTER_LENGTH: usize = 6;
 

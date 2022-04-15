@@ -16,10 +16,7 @@ lazy_static! {
 fn from_buffer_correctly_parses_client_cluster_data() {
     let buffer = CLUSTER_DATA_BUFFER.as_ref();
 
-    assert_eq!(
-        *CLUSTER_DATA,
-        ClientClusterData::from_buffer(buffer).unwrap()
-    );
+    assert_eq!(*CLUSTER_DATA, ClientClusterData::from_buffer(buffer).unwrap());
 }
 
 #[test]

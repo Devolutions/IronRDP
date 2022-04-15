@@ -7,11 +7,6 @@ mod tests;
 pub mod unicode;
 pub mod unused;
 
-pub use self::{
-    mouse::MousePdu, mouse_x::MouseXPdu, scan_code::ScanCodePdu, sync::SyncPdu,
-    unicode::UnicodePdu, unused::UnusedPdu,
-};
-
 use std::io;
 
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
@@ -19,6 +14,12 @@ use failure::Fail;
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive, ToPrimitive};
 
+pub use self::mouse::MousePdu;
+pub use self::mouse_x::MouseXPdu;
+pub use self::scan_code::ScanCodePdu;
+pub use self::sync::SyncPdu;
+pub use self::unicode::UnicodePdu;
+pub use self::unused::UnusedPdu;
 use crate::{impl_from_error, PduParsing};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -70,8 +71,8 @@ impl PduParsing for InputEvent {
     fn from_buffer(mut stream: impl io::Read) -> Result<Self, Self::Error> {
         let _event_time = stream.read_u32::<LittleEndian>()?; // ignored by a server
         let event_type = stream.read_u16::<LittleEndian>()?;
-        let event_type = InputEventType::from_u16(event_type)
-            .ok_or(InputEventError::InvalidInputEventType(event_type))?;
+        let event_type =
+            InputEventType::from_u16(event_type).ok_or(InputEventError::InvalidInputEventType(event_type))?;
 
         match event_type {
             InputEventType::Sync => Ok(Self::Sync(SyncPdu::from_buffer(&mut stream)?)),

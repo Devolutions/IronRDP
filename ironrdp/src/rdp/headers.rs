@@ -9,11 +9,10 @@ use super::{
     client_info, ClientConfirmActive, ControlPdu, MonitorLayoutPdu, RdpError, ServerDemandActive,
     ServerSetErrorInfoPdu, SynchronizePdu,
 };
-use crate::{
-    codecs::rfx::FrameAcknowledgePdu,
-    rdp::{finalization_messages::FontPdu, session_info::SaveSessionInfoPdu},
-    PduParsing,
-};
+use crate::codecs::rfx::FrameAcknowledgePdu;
+use crate::rdp::finalization_messages::FontPdu;
+use crate::rdp::session_info::SaveSessionInfoPdu;
+use crate::PduParsing;
 
 pub const BASIC_SECURITY_HEADER_SIZE: usize = 4;
 const SHARE_CONTROL_HEADER_MASK: u16 = 0xf;
@@ -74,11 +73,8 @@ impl PduParsing for ShareControlHeader {
         let pdu_source = stream.read_u16::<LittleEndian>()?;
         let share_id = stream.read_u32::<LittleEndian>()?;
 
-        let pdu_type =
-            ShareControlPduType::from_u16(pdu_type_with_version & SHARE_CONTROL_HEADER_MASK)
-                .ok_or_else(|| {
-                    RdpError::InvalidShareControlHeader(String::from("Invalid pdu type"))
-                })?;
+        let pdu_type = ShareControlPduType::from_u16(pdu_type_with_version & SHARE_CONTROL_HEADER_MASK)
+            .ok_or_else(|| RdpError::InvalidShareControlHeader(String::from("Invalid pdu type")))?;
         let pdu_version = pdu_type_with_version & !SHARE_CONTROL_HEADER_MASK;
         if pdu_version != PROTOCOL_VERSION {
             return Err(RdpError::InvalidShareControlHeader(format!(
@@ -96,12 +92,10 @@ impl PduParsing for ShareControlHeader {
         })
     }
     fn to_buffer(&self, mut stream: impl io::Write) -> Result<(), Self::Error> {
-        let pdu_type_with_version =
-            PROTOCOL_VERSION | self.share_control_pdu.share_header_type().to_u16().unwrap();
+        let pdu_type_with_version = PROTOCOL_VERSION | self.share_control_pdu.share_header_type().to_u16().unwrap();
 
-        stream.write_u16::<LittleEndian>(
-            (self.share_control_pdu.buffer_length() + SHARE_CONTROL_HEADER_SIZE) as u16,
-        )?;
+        stream
+            .write_u16::<LittleEndian>((self.share_control_pdu.buffer_length() + SHARE_CONTROL_HEADER_SIZE) as u16)?;
         stream.write_u16::<LittleEndian>(pdu_type_with_version)?;
         stream.write_u16::<LittleEndian>(self.pdu_source)?;
         stream.write_u32::<LittleEndian>(self.share_id)?;
@@ -131,10 +125,7 @@ impl ShareControlPdu {
 }
 
 impl ShareControlPdu {
-    pub fn from_type(
-        mut stream: impl io::Read,
-        share_type: ShareControlPduType,
-    ) -> Result<Self, RdpError> {
+    pub fn from_type(mut stream: impl io::Read, share_type: ShareControlPduType) -> Result<Self, RdpError> {
         match share_type {
             ShareControlPduType::DemandActivePdu => Ok(ShareControlPdu::ServerDemandActive(
                 ServerDemandActive::from_buffer(&mut stream)?,
@@ -142,20 +133,14 @@ impl ShareControlPdu {
             ShareControlPduType::ConfirmActivePdu => Ok(ShareControlPdu::ClientConfirmActive(
                 ClientConfirmActive::from_buffer(&mut stream)?,
             )),
-            ShareControlPduType::DataPdu => Ok(ShareControlPdu::Data(
-                ShareDataHeader::from_buffer(&mut stream)?,
-            )),
+            ShareControlPduType::DataPdu => Ok(ShareControlPdu::Data(ShareDataHeader::from_buffer(&mut stream)?)),
             _ => Err(RdpError::UnexpectedShareControlPdu(share_type)),
         }
     }
     pub fn to_buffer(&self, mut stream: impl io::Write) -> Result<(), RdpError> {
         match self {
-            ShareControlPdu::ServerDemandActive(pdu) => {
-                pdu.to_buffer(&mut stream).map_err(RdpError::from)
-            }
-            ShareControlPdu::ClientConfirmActive(pdu) => {
-                pdu.to_buffer(&mut stream).map_err(RdpError::from)
-            }
+            ShareControlPdu::ServerDemandActive(pdu) => pdu.to_buffer(&mut stream).map_err(RdpError::from),
+            ShareControlPdu::ClientConfirmActive(pdu) => pdu.to_buffer(&mut stream).map_err(RdpError::from),
             ShareControlPdu::Data(share_data_header) => share_data_header.to_buffer(&mut stream),
         }
     }
@@ -188,23 +173,18 @@ impl PduParsing for ShareDataHeader {
 
     fn from_buffer(mut stream: impl io::Read) -> Result<Self, Self::Error> {
         let _padding = stream.read_u8()?;
-        let stream_priority = StreamPriority::from_u8(stream.read_u8()?).ok_or_else(|| {
-            RdpError::InvalidShareDataHeader(String::from("Invalid stream priority"))
-        })?;
+        let stream_priority = StreamPriority::from_u8(stream.read_u8()?)
+            .ok_or_else(|| RdpError::InvalidShareDataHeader(String::from("Invalid stream priority")))?;
         let _uncompressed_length = stream.read_u16::<LittleEndian>()?;
         let pdu_type = ShareDataPduType::from_u8(stream.read_u8()?)
             .ok_or_else(|| RdpError::InvalidShareDataHeader(String::from("Invalid pdu type")))?;
         let compression_flags_with_type = stream.read_u8()?;
 
-        let compression_flags = CompressionFlags::from_bits_truncate(
-            compression_flags_with_type & SHARE_DATA_HEADER_MASK,
-        );
-        let compression_type = client_info::CompressionType::from_u8(
-            compression_flags_with_type & !SHARE_DATA_HEADER_MASK,
-        )
-        .ok_or_else(|| {
-            RdpError::InvalidShareDataHeader(String::from("Invalid compression type"))
-        })?;
+        let compression_flags =
+            CompressionFlags::from_bits_truncate(compression_flags_with_type & SHARE_DATA_HEADER_MASK);
+        let compression_type =
+            client_info::CompressionType::from_u8(compression_flags_with_type & !SHARE_DATA_HEADER_MASK)
+                .ok_or_else(|| RdpError::InvalidShareDataHeader(String::from("Invalid compression type")))?;
         let _compressed_length = stream.read_u16::<LittleEndian>()?;
 
         let share_data_pdu = ShareDataPdu::from_type(&mut stream, pdu_type)?;
@@ -219,8 +199,7 @@ impl PduParsing for ShareDataHeader {
 
     fn to_buffer(&self, mut stream: impl io::Write) -> Result<(), Self::Error> {
         if self.compression_flags.is_empty() {
-            let compression_flags_with_type =
-                self.compression_flags.bits() | self.compression_type.to_u8().unwrap();
+            let compression_flags_with_type = self.compression_flags.bits() | self.compression_type.to_u8().unwrap();
 
             stream.write_u8(0)?; // padding
             stream.write_u8(self.stream_priority.to_u8().unwrap())?;
@@ -281,29 +260,18 @@ impl ShareDataPdu {
 }
 
 impl ShareDataPdu {
-    pub fn from_type(
-        mut stream: impl io::Read,
-        share_type: ShareDataPduType,
-    ) -> Result<Self, RdpError> {
+    pub fn from_type(mut stream: impl io::Read, share_type: ShareDataPduType) -> Result<Self, RdpError> {
         match share_type {
-            ShareDataPduType::Synchronize => Ok(ShareDataPdu::Synchronize(
-                SynchronizePdu::from_buffer(&mut stream)?,
-            )),
-            ShareDataPduType::Control => {
-                Ok(ShareDataPdu::Control(ControlPdu::from_buffer(&mut stream)?))
+            ShareDataPduType::Synchronize => Ok(ShareDataPdu::Synchronize(SynchronizePdu::from_buffer(&mut stream)?)),
+            ShareDataPduType::Control => Ok(ShareDataPdu::Control(ControlPdu::from_buffer(&mut stream)?)),
+            ShareDataPduType::FontList => Ok(ShareDataPdu::FontList(FontPdu::from_buffer(&mut stream)?)),
+            ShareDataPduType::FontMap => Ok(ShareDataPdu::FontMap(FontPdu::from_buffer(&mut stream)?)),
+            ShareDataPduType::MonitorLayoutPdu => {
+                Ok(ShareDataPdu::MonitorLayout(MonitorLayoutPdu::from_buffer(&mut stream)?))
             }
-            ShareDataPduType::FontList => {
-                Ok(ShareDataPdu::FontList(FontPdu::from_buffer(&mut stream)?))
-            }
-            ShareDataPduType::FontMap => {
-                Ok(ShareDataPdu::FontMap(FontPdu::from_buffer(&mut stream)?))
-            }
-            ShareDataPduType::MonitorLayoutPdu => Ok(ShareDataPdu::MonitorLayout(
-                MonitorLayoutPdu::from_buffer(&mut stream)?,
-            )),
-            ShareDataPduType::SaveSessionInfo => Ok(ShareDataPdu::SaveSessionInfo(
-                SaveSessionInfoPdu::from_buffer(&mut stream)?,
-            )),
+            ShareDataPduType::SaveSessionInfo => Ok(ShareDataPdu::SaveSessionInfo(SaveSessionInfoPdu::from_buffer(
+                &mut stream,
+            )?)),
             ShareDataPduType::FrameAcknowledgePdu => Ok(ShareDataPdu::FrameAcknowledge(
                 FrameAcknowledgePdu::from_buffer(&mut stream)?,
             )),
@@ -337,15 +305,9 @@ impl ShareDataPdu {
                 pdu.to_buffer(&mut stream).map_err(RdpError::from)
             }
             ShareDataPdu::MonitorLayout(pdu) => pdu.to_buffer(&mut stream).map_err(RdpError::from),
-            ShareDataPdu::SaveSessionInfo(pdu) => {
-                pdu.to_buffer(&mut stream).map_err(RdpError::from)
-            }
-            ShareDataPdu::FrameAcknowledge(pdu) => {
-                pdu.to_buffer(&mut stream).map_err(RdpError::from)
-            }
-            ShareDataPdu::ServerSetErrorInfo(pdu) => {
-                pdu.to_buffer(&mut stream).map_err(RdpError::from)
-            }
+            ShareDataPdu::SaveSessionInfo(pdu) => pdu.to_buffer(&mut stream).map_err(RdpError::from),
+            ShareDataPdu::FrameAcknowledge(pdu) => pdu.to_buffer(&mut stream).map_err(RdpError::from),
+            ShareDataPdu::ServerSetErrorInfo(pdu) => pdu.to_buffer(&mut stream).map_err(RdpError::from),
         }
     }
     pub fn buffer_length(&self) -> usize {

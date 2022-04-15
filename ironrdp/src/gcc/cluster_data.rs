@@ -32,10 +32,9 @@ impl PduParsing for ClientClusterData {
 
         let flags = RedirectionFlags::from_bits(flags_with_version & !REDIRECTION_VERSION_MASK)
             .ok_or(ClusterDataError::InvalidRedirectionFlags)?;
-        let redirection_version = RedirectionVersion::from_u8(
-            ((flags_with_version & REDIRECTION_VERSION_MASK) >> 2) as u8,
-        )
-        .ok_or(ClusterDataError::InvalidRedirectionFlags)?;
+        let redirection_version =
+            RedirectionVersion::from_u8(((flags_with_version & REDIRECTION_VERSION_MASK) >> 2) as u8)
+                .ok_or(ClusterDataError::InvalidRedirectionFlags)?;
 
         Ok(Self {
             flags,
@@ -45,8 +44,7 @@ impl PduParsing for ClientClusterData {
     }
 
     fn to_buffer(&self, mut buffer: impl io::Write) -> Result<(), Self::Error> {
-        let flags_with_version =
-            self.flags.bits() | (self.redirection_version.to_u32().unwrap() << 2);
+        let flags_with_version = self.flags.bits() | (self.redirection_version.to_u32().unwrap() << 2);
 
         buffer.write_u32::<LittleEndian>(flags_with_version)?;
         buffer.write_u32::<LittleEndian>(self.redirected_session_id)?;

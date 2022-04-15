@@ -61,8 +61,7 @@ impl ClientCoreData {
     pub fn client_color_depth(&self) -> ClientColorDepth {
         if let Some(high_color_depth) = self.optional_data.high_color_depth {
             if let Some(early_capability_flags) = self.optional_data.early_capability_flags {
-                if early_capability_flags.contains(ClientEarlyCapabilityFlags::WANT_32_BPP_SESSION)
-                {
+                if early_capability_flags.contains(ClientEarlyCapabilityFlags::WANT_32_BPP_SESSION) {
                     ClientColorDepth::Bpp32
                 } else {
                     From::from(high_color_depth)
@@ -82,15 +81,13 @@ impl PduParsing for ClientCoreData {
     type Error = CoreDataError;
 
     fn from_buffer(mut buffer: impl io::Read) -> Result<Self, Self::Error> {
-        let version = RdpVersion::from_u32(buffer.read_u32::<LittleEndian>()?)
-            .unwrap_or(RdpVersion::VUnknown);
+        let version = RdpVersion::from_u32(buffer.read_u32::<LittleEndian>()?).unwrap_or(RdpVersion::VUnknown);
         let desktop_width = buffer.read_u16::<LittleEndian>()?;
         let desktop_height = buffer.read_u16::<LittleEndian>()?;
-        let color_depth = ColorDepth::from_u16(buffer.read_u16::<LittleEndian>()?)
-            .ok_or(CoreDataError::InvalidColorDepth)?;
-        let sec_access_sequence =
-            SecureAccessSequence::from_u16(buffer.read_u16::<LittleEndian>()?)
-                .ok_or(CoreDataError::InvalidSecureAccessSequence)?;
+        let color_depth =
+            ColorDepth::from_u16(buffer.read_u16::<LittleEndian>()?).ok_or(CoreDataError::InvalidColorDepth)?;
+        let sec_access_sequence = SecureAccessSequence::from_u16(buffer.read_u16::<LittleEndian>()?)
+            .ok_or(CoreDataError::InvalidSecureAccessSequence)?;
         let keyboard_layout = buffer.read_u32::<LittleEndian>()?;
         let client_build = buffer.read_u32::<LittleEndian>()?;
 
@@ -100,8 +97,8 @@ impl PduParsing for ClientCoreData {
             .trim_end_matches('\u{0}')
             .into();
 
-        let keyboard_type = KeyboardType::from_u32(buffer.read_u32::<LittleEndian>()?)
-            .ok_or(CoreDataError::InvalidKeyboardType)?;
+        let keyboard_type =
+            KeyboardType::from_u32(buffer.read_u32::<LittleEndian>()?).ok_or(CoreDataError::InvalidKeyboardType)?;
         let keyboard_subtype = buffer.read_u32::<LittleEndian>()?;
         let keyboard_functional_keys_count = buffer.read_u32::<LittleEndian>()?;
 
@@ -196,44 +193,26 @@ impl PduParsing for ClientCoreOptionalData {
         let mut optional_data = Self::default();
 
         optional_data.post_beta_color_depth = Some(
-            ColorDepth::from_u16(try_read_optional!(
-                buffer.read_u16::<LittleEndian>(),
-                optional_data
-            ))
-            .ok_or(CoreDataError::InvalidPostBetaColorDepth)?,
+            ColorDepth::from_u16(try_read_optional!(buffer.read_u16::<LittleEndian>(), optional_data))
+                .ok_or(CoreDataError::InvalidPostBetaColorDepth)?,
         );
 
-        optional_data.client_product_id = Some(try_read_optional!(
-            buffer.read_u16::<LittleEndian>(),
-            optional_data
-        ));
-        optional_data.serial_number = Some(try_read_optional!(
-            buffer.read_u32::<LittleEndian>(),
-            optional_data
-        ));
+        optional_data.client_product_id = Some(try_read_optional!(buffer.read_u16::<LittleEndian>(), optional_data));
+        optional_data.serial_number = Some(try_read_optional!(buffer.read_u32::<LittleEndian>(), optional_data));
 
         optional_data.high_color_depth = Some(
-            HighColorDepth::from_u16(try_read_optional!(
-                buffer.read_u16::<LittleEndian>(),
-                optional_data
-            ))
-            .ok_or(CoreDataError::InvalidHighColorDepth)?,
+            HighColorDepth::from_u16(try_read_optional!(buffer.read_u16::<LittleEndian>(), optional_data))
+                .ok_or(CoreDataError::InvalidHighColorDepth)?,
         );
 
         optional_data.supported_color_depths = Some(
-            SupportedColorDepths::from_bits(try_read_optional!(
-                buffer.read_u16::<LittleEndian>(),
-                optional_data
-            ))
-            .ok_or(CoreDataError::InvalidSupportedColorDepths)?,
+            SupportedColorDepths::from_bits(try_read_optional!(buffer.read_u16::<LittleEndian>(), optional_data))
+                .ok_or(CoreDataError::InvalidSupportedColorDepths)?,
         );
 
         optional_data.early_capability_flags = Some(
-            ClientEarlyCapabilityFlags::from_bits(try_read_optional!(
-                buffer.read_u16::<LittleEndian>(),
-                optional_data
-            ))
-            .ok_or(CoreDataError::InvalidEarlyCapabilityFlags)?,
+            ClientEarlyCapabilityFlags::from_bits(try_read_optional!(buffer.read_u16::<LittleEndian>(), optional_data))
+                .ok_or(CoreDataError::InvalidEarlyCapabilityFlags)?,
         );
 
         let mut dig_product_id_buffer = [0; DIG_PRODUCT_ID_SIZE];
@@ -252,28 +231,17 @@ impl PduParsing for ClientCoreOptionalData {
         try_read_optional!(buffer.read_u8(), optional_data); // pad1octet
 
         optional_data.server_selected_protocol = Some(
-            nego::SecurityProtocol::from_bits(try_read_optional!(
-                buffer.read_u32::<LittleEndian>(),
-                optional_data
-            ))
-            .ok_or(CoreDataError::InvalidServerSecurityProtocol)?,
+            nego::SecurityProtocol::from_bits(try_read_optional!(buffer.read_u32::<LittleEndian>(), optional_data))
+                .ok_or(CoreDataError::InvalidServerSecurityProtocol)?,
         );
 
-        optional_data.desktop_physical_width = Some(try_read_optional!(
-            buffer.read_u32::<LittleEndian>(),
-            optional_data
-        ));
+        optional_data.desktop_physical_width =
+            Some(try_read_optional!(buffer.read_u32::<LittleEndian>(), optional_data));
         // physical height must be present, if the physical width is present
         optional_data.desktop_physical_height = Some(buffer.read_u32::<LittleEndian>()?);
 
-        optional_data.desktop_orientation = Some(try_read_optional!(
-            buffer.read_u16::<LittleEndian>(),
-            optional_data
-        ));
-        optional_data.desktop_scale_factor = Some(try_read_optional!(
-            buffer.read_u32::<LittleEndian>(),
-            optional_data
-        ));
+        optional_data.desktop_orientation = Some(try_read_optional!(buffer.read_u16::<LittleEndian>(), optional_data));
+        optional_data.desktop_scale_factor = Some(try_read_optional!(buffer.read_u32::<LittleEndian>(), optional_data));
         // device scale factor must be present, if the desktop scale factor is present
         optional_data.device_scale_factor = Some(buffer.read_u32::<LittleEndian>()?);
 
@@ -292,19 +260,15 @@ impl PduParsing for ClientCoreOptionalData {
             .write_u32::<LittleEndian>(*value));
 
         try_write_optional!(self.high_color_depth, |value: &HighColorDepth| buffer
+            .write_u16::<LittleEndian>(value.to_u16().unwrap()));
+
+        try_write_optional!(self.supported_color_depths, |value: &SupportedColorDepths| buffer
             .write_u16::<LittleEndian>(
-            value.to_u16().unwrap()
+            value.bits()
         ));
 
-        try_write_optional!(
-            self.supported_color_depths,
-            |value: &SupportedColorDepths| buffer.write_u16::<LittleEndian>(value.bits())
-        );
-
-        try_write_optional!(
-            self.early_capability_flags,
-            |value: &ClientEarlyCapabilityFlags| buffer.write_u16::<LittleEndian>(value.bits())
-        );
+        try_write_optional!(self.early_capability_flags, |value: &ClientEarlyCapabilityFlags| buffer
+            .write_u16::<LittleEndian>(value.bits()));
 
         try_write_optional!(self.dig_product_id, |value: &str| {
             let mut dig_product_id_buffer = utils::string_to_utf16(value);
@@ -319,20 +283,15 @@ impl PduParsing for ClientCoreOptionalData {
 
         buffer.write_u8(0)?; // pad1octet
 
-        try_write_optional!(
-            self.server_selected_protocol,
-            |value: &nego::SecurityProtocol| { buffer.write_u32::<LittleEndian>(value.bits()) }
-        );
+        try_write_optional!(self.server_selected_protocol, |value: &nego::SecurityProtocol| {
+            buffer.write_u32::<LittleEndian>(value.bits())
+        });
 
         try_write_optional!(self.desktop_physical_width, |value: &u32| buffer
-            .write_u32::<LittleEndian>(
-            *value
-        ));
+            .write_u32::<LittleEndian>(*value));
 
         try_write_optional!(self.desktop_physical_height, |value: &u32| buffer
-            .write_u32::<LittleEndian>(
-            *value
-        ));
+            .write_u32::<LittleEndian>(*value));
 
         try_write_optional!(self.desktop_orientation, |value: &u16| buffer
             .write_u16::<LittleEndian>(*value));

@@ -46,11 +46,7 @@ fn zgfx_decopresses_multiple_single_pdus() {
     for (i, (encode, decode)) in pairs.enumerate() {
         let bytes_written = zgfx.decompress(encode.as_ref(), &mut decompressed).unwrap();
         assert_eq!(decode.len(), bytes_written);
-        assert_eq!(
-            decompressed, *decode,
-            "Failed to decompress encoded PDU #{}",
-            i
-        );
+        assert_eq!(decompressed, *decode, "Failed to decompress encoded PDU #{}", i);
         decompressed.clear();
     }
 }
@@ -62,8 +58,7 @@ fn zgfx_decopresses_only_one_literal() {
 
     let mut zgfx = Decompressor::new();
     let mut decompressed = Vec::with_capacity(expected.len());
-    zgfx.decompress_segment(buffer.as_ref(), &mut decompressed)
-        .unwrap();
+    zgfx.decompress_segment(buffer.as_ref(), &mut decompressed).unwrap();
     assert_eq!(decompressed, expected);
 }
 
@@ -74,8 +69,7 @@ fn zgfx_decopresses_one_literal_with_null_prefix() {
 
     let mut zgfx = Decompressor::new();
     let mut decompressed = Vec::with_capacity(expected.len());
-    zgfx.decompress_segment(buffer.as_ref(), &mut decompressed)
-        .unwrap();
+    zgfx.decompress_segment(buffer.as_ref(), &mut decompressed).unwrap();
     assert_eq!(decompressed, expected);
 }
 
@@ -86,8 +80,7 @@ fn zgfx_decopresses_only_multiple_literals() {
 
     let mut zgfx = Decompressor::new();
     let mut decompressed = Vec::with_capacity(expected.len());
-    zgfx.decompress_segment(buffer.as_ref(), &mut decompressed)
-        .unwrap();
+    zgfx.decompress_segment(buffer.as_ref(), &mut decompressed).unwrap();
     assert_eq!(decompressed, expected);
 }
 
@@ -98,8 +91,7 @@ fn zgfx_decopresses_one_literal_with_one_match_distance_1() {
 
     let mut zgfx = Decompressor::new();
     let mut decompressed = Vec::with_capacity(expected.len());
-    zgfx.decompress_segment(buffer.as_ref(), &mut decompressed)
-        .unwrap();
+    zgfx.decompress_segment(buffer.as_ref(), &mut decompressed).unwrap();
     assert_eq!(decompressed, expected);
 }
 
@@ -119,8 +111,7 @@ fn zgfx_decopresses_three_literals_with_one_match_distance_3_length_57() {
 
     let mut zgfx = Decompressor::new();
     let mut decompressed = Vec::with_capacity(expected.len());
-    zgfx.decompress_segment(buffer.as_ref(), &mut decompressed)
-        .unwrap();
+    zgfx.decompress_segment(buffer.as_ref(), &mut decompressed).unwrap();
     assert_eq!(decompressed, expected);
 }
 
@@ -133,8 +124,7 @@ fn zgfx_decopresses_one_match_with_match_unencoded_bytes() {
 
     let mut zgfx = Decompressor::new();
     let mut decompressed = Vec::with_capacity(expected.len());
-    zgfx.decompress_segment(buffer.as_ref(), &mut decompressed)
-        .unwrap();
+    zgfx.decompress_segment(buffer.as_ref(), &mut decompressed).unwrap();
     assert_eq!(decompressed, expected);
 }
 
@@ -150,12 +140,10 @@ fn zgfx_decopresses_multiple_literals_with_match_in_center_with_not_compressed()
         0x20, // "The quick brown "
         0x0E, 0x00, 0x00, 0x00, // second segment is the next 14 bytes:
         0x04, // type 4, not PACKET_COMPRESSED
-        0x66, 0x6F, 0x78, 0x20, 0x6A, 0x75, 0x6D, 0x70, 0x73, 0x20, 0x6F, 0x76,
-        0x65, // "fox jumps ove"
+        0x66, 0x6F, 0x78, 0x20, 0x6A, 0x75, 0x6D, 0x70, 0x73, 0x20, 0x6F, 0x76, 0x65, // "fox jumps ove"
         0x10, 0x00, 0x00, 0x00, // third segment is the next 16 bytes
         0x24, // type 4 + PACKET_COMPRESSED
-        0x39, 0x08, 0x0E, 0x91, 0xF8, 0xD8, 0x61, 0x3D, 0x1E, 0x44, 0x06, 0x43, 0x79,
-        0x9C, // encoded:
+        0x39, 0x08, 0x0E, 0x91, 0xF8, 0xD8, 0x61, 0x3D, 0x1E, 0x44, 0x06, 0x43, 0x79, 0x9C, // encoded:
         // 0 01110010 = literal 0x72 = "r"
         // 0 00100000 = literal 0x20 = " "
         // 0 01110100 = literal 0x74 = "t"
@@ -178,22 +166,18 @@ fn zgfx_decopresses_multiple_literals_with_match_in_center_with_not_compressed()
     let mut decompressed = Vec::with_capacity(expected.len());
     let bytes_written = zgfx.decompress(buffer.as_ref(), &mut decompressed).unwrap();
     assert_eq!(expected.len(), bytes_written);
-    assert_eq!(
-        decompressed, expected,
-        "\n{:x?} != \n{:x?}",
-        decompressed, expected
-    );
+    assert_eq!(decompressed, expected, "\n{:x?} != \n{:x?}", decompressed, expected);
 }
 
 #[test]
 fn zgfx_decopresses_single_match_unencoded_block() {
     let buffer = [
-        0xe0, 0x04, 0x13, 0x00, 0x00, 0x00, 0x14, 0x00, 0x00, 0x00, 0x01, 0x06, 0x0a, 0x00, 0x04,
-        0x00, 0x00, 0x00, 0x20, 0x00, 0x00, 0x00,
+        0xe0, 0x04, 0x13, 0x00, 0x00, 0x00, 0x14, 0x00, 0x00, 0x00, 0x01, 0x06, 0x0a, 0x00, 0x04, 0x00, 0x00, 0x00,
+        0x20, 0x00, 0x00, 0x00,
     ];
     let expected = vec![
-        0x13, 0x00, 0x00, 0x00, 0x14, 0x00, 0x00, 0x00, 0x01, 0x06, 0x0a, 0x00, 0x04, 0x00, 0x00,
-        0x00, 0x20, 0x00, 0x00, 0x00,
+        0x13, 0x00, 0x00, 0x00, 0x14, 0x00, 0x00, 0x00, 0x01, 0x06, 0x0a, 0x00, 0x04, 0x00, 0x00, 0x00, 0x20, 0x00,
+        0x00, 0x00,
     ];
 
     let mut zgfx = Decompressor::new();
@@ -205,19 +189,11 @@ fn zgfx_decopresses_single_match_unencoded_block() {
 
 #[test]
 fn zgfx_decopresses_unencoded_block_without_padding() {
-    let buffer = [
-        0b1110_0101,
-        0b0001_0000,
-        0b0000_0000,
-        0b00000001,
-        0b1111_0000,
-        0x0,
-    ];
+    let buffer = [0b1110_0101, 0b0001_0000, 0b0000_0000, 0b00000001, 0b1111_0000, 0x0];
     let expected = vec![0x08, 0xf0];
 
     let mut zgfx = Decompressor::new();
     let mut decompressed = Vec::with_capacity(expected.len());
-    zgfx.decompress_segment(buffer.as_ref(), &mut decompressed)
-        .unwrap();
+    zgfx.decompress_segment(buffer.as_ref(), &mut decompressed).unwrap();
     assert_eq!(decompressed, expected);
 }

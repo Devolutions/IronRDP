@@ -162,10 +162,7 @@ pub fn read_enum(mut stream: impl io::Read, count: u8) -> io::Result<u8> {
     if u16::from(enumerated) + 1 > u16::from(count) {
         Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            format!(
-                "Enumerated value ({}) does not fall within expected range",
-                enumerated
-            ),
+            format!("Enumerated value ({}) does not fall within expected range", enumerated),
         ))
     } else {
         Ok(enumerated)
@@ -199,10 +196,7 @@ pub fn read_object_id(mut stream: impl io::Read) -> io::Result<[u8; OBJECT_ID_LE
     Ok(read_object_ids)
 }
 
-pub fn write_object_id(
-    mut stream: impl io::Write,
-    object_ids: [u8; OBJECT_ID_LEN],
-) -> io::Result<usize> {
+pub fn write_object_id(mut stream: impl io::Write, object_ids: [u8; OBJECT_ID_LEN]) -> io::Result<usize> {
     let size = write_length(&mut stream, OBJECT_ID_LEN as u16 - 1)?;
 
     let first_two_tuples = object_ids[0] * 40 + object_ids[1];
@@ -224,11 +218,7 @@ pub fn read_octet_string(mut stream: impl io::Read, min: usize) -> io::Result<Ve
     Ok(read_octet_string)
 }
 
-pub fn write_octet_string(
-    mut stream: impl io::Write,
-    octet_string: &[u8],
-    min: usize,
-) -> io::Result<usize> {
+pub fn write_octet_string(mut stream: impl io::Write, octet_string: &[u8], min: usize) -> io::Result<usize> {
     let length = if octet_string.len() >= min {
         octet_string.len() - min
     } else {
@@ -252,16 +242,8 @@ pub fn read_numeric_string(mut stream: impl io::Read, min: u16) -> io::Result<()
     Ok(())
 }
 
-pub fn write_numeric_string(
-    mut stream: impl io::Write,
-    num_str: &[u8],
-    min: usize,
-) -> io::Result<usize> {
-    let length = if num_str.len() >= min {
-        num_str.len() - min
-    } else {
-        min
-    };
+pub fn write_numeric_string(mut stream: impl io::Write, num_str: &[u8], min: usize) -> io::Result<usize> {
+    let length = if num_str.len() >= min { num_str.len() - min } else { min };
 
     let mut size = write_length(&mut stream, length as u16)?;
 

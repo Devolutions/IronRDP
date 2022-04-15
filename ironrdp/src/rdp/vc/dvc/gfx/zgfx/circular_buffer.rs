@@ -1,4 +1,5 @@
-use std::{cmp::min, io};
+use std::cmp::min;
+use std::io;
 
 pub struct FixedCircularBuffer {
     buffer: Vec<u8>,
@@ -13,12 +14,7 @@ impl FixedCircularBuffer {
         }
     }
 
-    pub fn read_with_offset(
-        &self,
-        offset: usize,
-        length: usize,
-        mut output: impl io::Write,
-    ) -> io::Result<()> {
+    pub fn read_with_offset(&self, offset: usize, length: usize, mut output: impl io::Write) -> io::Result<()> {
         let position = (self.buffer.len() + self.position - offset) % self.buffer.len();
 
         // will take the offset if the destination length is greater then the offset,
@@ -142,8 +138,7 @@ mod tests {
     }
 
     #[test]
-    fn fixed_circular_buffer_correctly_writes_buffer_bigger_then_internal_buffer_size_with_position_at_end(
-    ) {
+    fn fixed_circular_buffer_correctly_writes_buffer_bigger_then_internal_buffer_size_with_position_at_end() {
         let size = 8;
         let mut circular_buffer = FixedCircularBuffer::new(size);
         circular_buffer.position = 6;
@@ -208,8 +203,7 @@ mod tests {
     }
 
     #[test]
-    fn fixed_circular_buffer_correctly_reads_buffer_with_repeating_multiple_bytes_from_end_to_start(
-    ) {
+    fn fixed_circular_buffer_correctly_reads_buffer_with_repeating_multiple_bytes_from_end_to_start() {
         let circular_buffer = FixedCircularBuffer {
             buffer: vec![11, 12, 3, 4, 5, 6, 7, 8, 9, 10],
             position: 2,

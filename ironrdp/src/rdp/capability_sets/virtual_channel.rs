@@ -6,7 +6,8 @@ use std::io;
 use bitflags::bitflags;
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 
-use crate::{rdp::CapabilitySetsError, try_read_optional, try_write_optional, PduParsing};
+use crate::rdp::CapabilitySetsError;
+use crate::{try_read_optional, try_write_optional, PduParsing};
 
 const FLAGS_FIELD_SIZE: usize = 4;
 const CHUNK_SIZE_FIELD_SIZE: usize = 4;

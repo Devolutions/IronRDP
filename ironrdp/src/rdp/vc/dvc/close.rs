@@ -4,7 +4,8 @@ mod tests;
 use std::io;
 
 use super::{FieldType, Header, PduType, HEADER_SIZE, UNUSED_U8};
-use crate::{rdp::vc::ChannelError, PduParsing};
+use crate::rdp::vc::ChannelError;
+use crate::PduParsing;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ClosePdu {
@@ -13,10 +14,7 @@ pub struct ClosePdu {
 }
 
 impl ClosePdu {
-    pub fn from_buffer(
-        mut stream: impl io::Read,
-        channel_id_type: FieldType,
-    ) -> Result<Self, ChannelError> {
+    pub fn from_buffer(mut stream: impl io::Read, channel_id_type: FieldType) -> Result<Self, ChannelError> {
         let channel_id = channel_id_type.read_buffer_according_to_type(&mut stream)?;
 
         Ok(Self {

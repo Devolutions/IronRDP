@@ -52,8 +52,7 @@ lazy_static! {
         ],
     };
     pub static ref BITMAP_CACHE_REV2: BitmapCacheRev2 = BitmapCacheRev2 {
-        cache_flags: CacheFlags::PERSISTENT_KEYS_EXPECTED_FLAG
-            | CacheFlags::ALLOW_CACHE_WAITING_LIST_FLAG,
+        cache_flags: CacheFlags::PERSISTENT_KEYS_EXPECTED_FLAG | CacheFlags::ALLOW_CACHE_WAITING_LIST_FLAG,
         num_cell_caches: 3,
         cache_cell_info: [
             CellInfo {
@@ -112,10 +111,7 @@ fn buffer_length_is_correct_for_bitmap_cache_capset() {
 fn from_buffer_correctly_parses_bitmap_cache_rev2_capset() {
     let buffer = BITMAP_CACHE_REV2_BUFFER.as_ref();
 
-    assert_eq!(
-        *BITMAP_CACHE_REV2,
-        BitmapCacheRev2::from_buffer(buffer).unwrap()
-    );
+    assert_eq!(*BITMAP_CACHE_REV2, BitmapCacheRev2::from_buffer(buffer).unwrap());
 }
 
 #[test]
@@ -128,18 +124,12 @@ fn to_buffer_correctly_serializes_bitmap_cache_rev2_capset() {
 
 #[test]
 fn buffer_length_is_correct_for_bitmap_cache_rev2_capset() {
-    assert_eq!(
-        BITMAP_CACHE_REV2_BUFFER.len(),
-        BITMAP_CACHE_REV2.buffer_length()
-    );
+    assert_eq!(BITMAP_CACHE_REV2_BUFFER.len(), BITMAP_CACHE_REV2.buffer_length());
 }
 
 #[test]
 fn from_buffer_correctly_parses_cell_info() {
-    assert_eq!(
-        *CELL_INFO,
-        CellInfo::from_buffer(CELL_INFO_BUFFER.as_ref()).unwrap()
-    );
+    assert_eq!(*CELL_INFO, CellInfo::from_buffer(CELL_INFO_BUFFER.as_ref()).unwrap());
 }
 
 #[test]

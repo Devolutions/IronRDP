@@ -11,12 +11,13 @@ use bitvec::field::BitField as _;
 use bitvec::order::Msb0;
 use bitvec::slice::BitSlice;
 use byteorder::WriteBytesExt;
+use circular_buffer::FixedCircularBuffer;
+use control_messages::{BulkEncodedData, CompressionFlags, SegmentedDataPdu};
 use failure::Fail;
 use lazy_static::lazy_static;
 
-use crate::{impl_from_error, utils::Bits};
-use circular_buffer::FixedCircularBuffer;
-use control_messages::{BulkEncodedData, CompressionFlags, SegmentedDataPdu};
+use crate::impl_from_error;
+use crate::utils::Bits;
 
 const HISTORY_SIZE: usize = 2_500_000;
 
@@ -31,11 +32,7 @@ impl Decompressor {
         }
     }
 
-    pub fn decompress(
-        &mut self,
-        input: &[u8],
-        output: &mut Vec<u8>,
-    ) -> Result<usize, ZgfxError> {
+    pub fn decompress(&mut self, input: &[u8], output: &mut Vec<u8>) -> Result<usize, ZgfxError> {
         let segmented_data = SegmentedDataPdu::from_buffer(input)?;
 
         match segmented_data {
@@ -62,16 +59,9 @@ impl Decompressor {
         }
     }
 
-    fn handle_segment(
-        &mut self,
-        segment: &BulkEncodedData<'_>,
-        output: &mut Vec<u8>,
-    ) -> Result<usize, ZgfxError> {
+    fn handle_segment(&mut self, segment: &BulkEncodedData<'_>, output: &mut Vec<u8>) -> Result<usize, ZgfxError> {
         if !segment.data.is_empty() {
-            if segment
-                .compression_flags
-                .contains(CompressionFlags::COMPRESSED)
-            {
+            if segment.compression_flags.contains(CompressionFlags::COMPRESSED) {
                 self.decompress_segment(segment.data, output)
             } else {
                 self.history.write_all(segment.data)?;
@@ -84,11 +74,7 @@ impl Decompressor {
         }
     }
 
-    fn decompress_segment(
-        &mut self,
-        encoded_data: &[u8],
-        output: &mut Vec<u8>,
-    ) -> Result<usize, ZgfxError> {
+    fn decompress_segment(&mut self, encoded_data: &[u8], output: &mut Vec<u8>) -> Result<usize, ZgfxError> {
         let mut bits = BitSlice::from_slice(encoded_data);
 
         // The value of the last byte indicates the number of unused bits in the final byte
@@ -124,13 +110,8 @@ impl Decompressor {
                     distance_value_size,
                     distance_base,
                 } => {
-                    let written = handle_match(
-                        &mut bits,
-                        distance_value_size,
-                        distance_base,
-                        &mut self.history,
-                        output,
-                    )?;
+                    let written =
+                        handle_match(&mut bits, distance_value_size, distance_base, &mut self.history, output)?;
                     bytes_written += written;
                 }
             }
@@ -249,153 +230,103 @@ lazy_static! {
         },
         Token {
             prefix: bits![static u8, Msb0; 1, 1, 0, 0, 0],
-            ty: TokenType::Literal {
-                literal_value: 0x00
-            },
+            ty: TokenType::Literal { literal_value: 0x00 },
         },
         Token {
             prefix: bits![static u8, Msb0; 1, 1, 0, 0, 1],
-            ty: TokenType::Literal {
-                literal_value: 0x01
-            },
+            ty: TokenType::Literal { literal_value: 0x01 },
         },
         Token {
             prefix: bits![static u8, Msb0; 1, 1, 0, 1, 0, 0],
-            ty: TokenType::Literal {
-                literal_value: 0x02
-            },
+            ty: TokenType::Literal { literal_value: 0x02 },
         },
         Token {
             prefix: bits![static u8, Msb0; 1, 1, 0, 1, 0, 1],
-            ty: TokenType::Literal {
-                literal_value: 0x03
-            },
+            ty: TokenType::Literal { literal_value: 0x03 },
         },
         Token {
             prefix: bits![static u8, Msb0; 1, 1, 0, 1, 1, 0],
-            ty: TokenType::Literal {
-                literal_value: 0x0ff
-            },
+            ty: TokenType::Literal { literal_value: 0x0ff },
         },
         Token {
             prefix: bits![static u8, Msb0; 1, 1, 0, 1, 1, 1, 0],
-            ty: TokenType::Literal {
-                literal_value: 0x04
-            },
+            ty: TokenType::Literal { literal_value: 0x04 },
         },
         Token {
             prefix: bits![static u8, Msb0; 1, 1, 0, 1, 1, 1, 1],
-            ty: TokenType::Literal {
-                literal_value: 0x05
-            },
+            ty: TokenType::Literal { literal_value: 0x05 },
         },
         Token {
             prefix: bits![static u8, Msb0; 1, 1, 1, 0, 0, 0, 0],
-            ty: TokenType::Literal {
-                literal_value: 0x06
-            },
+            ty: TokenType::Literal { literal_value: 0x06 },
         },
         Token {
             prefix: bits![static u8, Msb0; 1, 1, 1, 0, 0, 0, 1],
-            ty: TokenType::Literal {
-                literal_value: 0x07
-            },
+            ty: TokenType::Literal { literal_value: 0x07 },
         },
         Token {
             prefix: bits![static u8, Msb0; 1, 1, 1, 0, 0, 1, 0],
-            ty: TokenType::Literal {
-                literal_value: 0x08
-            },
+            ty: TokenType::Literal { literal_value: 0x08 },
         },
         Token {
             prefix: bits![static u8, Msb0; 1, 1, 1, 0, 0, 1, 1],
-            ty: TokenType::Literal {
-                literal_value: 0x09
-            },
+            ty: TokenType::Literal { literal_value: 0x09 },
         },
         Token {
             prefix: bits![static u8, Msb0; 1, 1, 1, 0, 1, 0, 0],
-            ty: TokenType::Literal {
-                literal_value: 0x0a
-            },
+            ty: TokenType::Literal { literal_value: 0x0a },
         },
         Token {
             prefix: bits![static u8, Msb0; 1, 1, 1, 0, 1, 0, 1],
-            ty: TokenType::Literal {
-                literal_value: 0x0b
-            },
+            ty: TokenType::Literal { literal_value: 0x0b },
         },
         Token {
             prefix: bits![static u8, Msb0; 1, 1, 1, 0, 1, 1, 0],
-            ty: TokenType::Literal {
-                literal_value: 0x3a
-            },
+            ty: TokenType::Literal { literal_value: 0x3a },
         },
         Token {
             prefix: bits![static u8, Msb0; 1, 1, 1, 0, 1, 1, 1],
-            ty: TokenType::Literal {
-                literal_value: 0x3b
-            },
+            ty: TokenType::Literal { literal_value: 0x3b },
         },
         Token {
             prefix: bits![static u8, Msb0; 1, 1, 1, 1, 0, 0, 0],
-            ty: TokenType::Literal {
-                literal_value: 0x3c
-            },
+            ty: TokenType::Literal { literal_value: 0x3c },
         },
         Token {
             prefix: bits![static u8, Msb0; 1, 1, 1, 1, 0, 0, 1],
-            ty: TokenType::Literal {
-                literal_value: 0x3d
-            },
+            ty: TokenType::Literal { literal_value: 0x3d },
         },
         Token {
             prefix: bits![static u8, Msb0; 1, 1, 1, 1, 0, 1, 0],
-            ty: TokenType::Literal {
-                literal_value: 0x3e
-            },
+            ty: TokenType::Literal { literal_value: 0x3e },
         },
         Token {
             prefix: bits![static u8, Msb0; 1, 1, 1, 1, 0, 1, 1],
-            ty: TokenType::Literal {
-                literal_value: 0x3f
-            },
+            ty: TokenType::Literal { literal_value: 0x3f },
         },
         Token {
             prefix: bits![static u8, Msb0; 1, 1, 1, 1, 1, 0, 0],
-            ty: TokenType::Literal {
-                literal_value: 0x40
-            },
+            ty: TokenType::Literal { literal_value: 0x40 },
         },
         Token {
             prefix: bits![static u8, Msb0; 1, 1, 1, 1, 1, 0, 1],
-            ty: TokenType::Literal {
-                literal_value: 0x80
-            },
+            ty: TokenType::Literal { literal_value: 0x80 },
         },
         Token {
             prefix: bits![static u8, Msb0; 1, 1, 1, 1, 1, 1, 0, 0],
-            ty: TokenType::Literal {
-                literal_value: 0x0c
-            },
+            ty: TokenType::Literal { literal_value: 0x0c },
         },
         Token {
             prefix: bits![static u8, Msb0; 1, 1, 1, 1, 1, 1, 0, 1],
-            ty: TokenType::Literal {
-                literal_value: 0x38
-            },
+            ty: TokenType::Literal { literal_value: 0x38 },
         },
         Token {
             prefix: bits![static u8, Msb0; 1, 1, 1, 1, 1, 1, 1, 0],
-            ty: TokenType::Literal {
-                literal_value: 0x39
-            },
+            ty: TokenType::Literal { literal_value: 0x39 },
         },
         Token {
             prefix: bits![static u8, Msb0; 1, 1, 1, 1, 1, 1, 1, 1],
-            ty: TokenType::Literal {
-                literal_value: 0x66
-            },
+            ty: TokenType::Literal { literal_value: 0x66 },
         },
         Token {
             prefix: bits![static u8, Msb0; 1, 0, 0, 0, 1],

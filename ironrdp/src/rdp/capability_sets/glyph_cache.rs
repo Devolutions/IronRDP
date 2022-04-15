@@ -7,7 +7,8 @@ use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive, ToPrimitive};
 
-use crate::{rdp::CapabilitySetsError, PduParsing};
+use crate::rdp::CapabilitySetsError;
+use crate::PduParsing;
 
 pub const GLYPH_CACHE_NUM: usize = 10;
 
@@ -35,10 +36,7 @@ impl PduParsing for CacheDefinition {
         let entries = buffer.read_u16::<LittleEndian>()?;
         let max_cell_size = buffer.read_u16::<LittleEndian>()?;
 
-        Ok(CacheDefinition {
-            entries,
-            max_cell_size,
-        })
+        Ok(CacheDefinition { entries, max_cell_size })
     }
 
     fn to_buffer(&self, mut buffer: impl io::Write) -> Result<(), Self::Error> {

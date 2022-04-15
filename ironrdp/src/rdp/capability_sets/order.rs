@@ -6,7 +6,8 @@ use std::io;
 use bitflags::bitflags;
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 
-use crate::{rdp::CapabilitySetsError, PduParsing};
+use crate::rdp::CapabilitySetsError;
+use crate::PduParsing;
 
 const ORDER_LENGTH: usize = 84;
 const ORD_LEVEL_1_ORDERS: u16 = 1;
@@ -108,8 +109,7 @@ impl PduParsing for Order {
 
         let _text_flags = buffer.read_u16::<LittleEndian>()?;
 
-        let order_support_ex_flags =
-            OrderSupportExFlags::from_bits_truncate(buffer.read_u16::<LittleEndian>()?);
+        let order_support_ex_flags = OrderSupportExFlags::from_bits_truncate(buffer.read_u16::<LittleEndian>()?);
 
         let _padding = buffer.read_u32::<LittleEndian>()?;
         let desktop_save_size = buffer.read_u32::<LittleEndian>()?;
