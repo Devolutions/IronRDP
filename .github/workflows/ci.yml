@@ -16,8 +16,6 @@ jobs:
     steps:
       - uses: actions/checkout@v3
 
-      - run: rustup component add rustfmt
-
       - name: Check formatting
         shell: pwsh
         run: |
@@ -36,10 +34,8 @@ jobs:
     steps:
       - uses: actions/checkout@v3
 
-      - run: rustup component add clippy
-      
       - name: Check clippy
-        run: cargo clippy --workspace --all-features
+        run: cargo clippy --workspace --all-features -- -D warnings
 
   tests:
     name: Tests [${{ matrix.os }}]
