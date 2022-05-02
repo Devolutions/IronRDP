@@ -7,7 +7,7 @@ use std::{
 
 use ironrdp_client::{process_active_stage, process_connection_sequence, RdpError, UpgradedStream};
 use log::error;
-use native_tls::TlsConnector;
+use native_tls::{TlsConnector, HandshakeError};
 
 use self::config::Config;
 
@@ -53,8 +53,6 @@ fn setup_logging(log_file: &str) -> Result<(), fern::InitError> {
             ))
         })
         .chain(fern::log_file(log_file)?)
-        .chain(std::io::stdout())
-        .level(log::LevelFilter::Debug)
         .apply()?;
 
     Ok(())
@@ -72,28 +70,35 @@ fn run(config: Config) -> Result<(), RdpError> {
     Ok(())
 }
 
-fn establish_tls(
-    stream: impl io::Read + io::Write,
-) -> Result<UpgradedStream<impl io::Read + io::Write>, RdpError> {
+fn establish_tls(stream: impl io::Read + io::Write) -> Result<UpgradedStream<impl io::Read + io::Write>, RdpError> {
     let mut builder = TlsConnector::builder();
     builder.danger_accept_invalid_certs(true);
     builder.use_sni(false);
 
     let connector = builder.build().unwrap();
 
+    // domain is an empty string because client accepts IP address in the cli
     let mut tls_stream = match connector.connect("", stream) {
-        Ok(s) => s,
-        Err(_) => panic!("on tls connect"),
+        Ok(tls) => tls,
+        Err(HandshakeError::Failure(err)) => return Err(RdpError::TlsHandshakeError(err)),
+        Err(HandshakeError::WouldBlock(mut mid_stream)) => {
+            loop {
+                match mid_stream.handshake() {
+                    Ok(tls) => break tls,
+                    Err(HandshakeError::Failure(err)) => return Err(RdpError::TlsHandshakeError(err)),
+                    Err(HandshakeError::WouldBlock(mid)) => mid_stream = mid,
+                };
+            }
+        },
     };
 
-    // handshake
     tls_stream.flush()?;
 
     let cert = tls_stream
         .peer_certificate()
-        .map_err(|err| RdpError::TlsConnectorError(err))?
+        .map_err(RdpError::TlsConnectorError)?
         .ok_or(RdpError::MissingPeerCertificate)?;
-    let server_public_key = get_tls_peer_pubkey(cert.to_der().unwrap())?;
+    let server_public_key = get_tls_peer_pubkey(cert.to_der().map_err(RdpError::DerEncode)?)?;
 
     Ok(UpgradedStream {
         stream: tls_stream,

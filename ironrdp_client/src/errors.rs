@@ -82,6 +82,8 @@ pub enum RdpError {
     ServerError(String),
     #[fail(display = "Missing peer certificate")]
     MissingPeerCertificate,
+    #[fail(display = "Invalid DER structure: {}", _0)]
+    DerEncode(#[fail(cause)] native_tls::Error),
 }
 
 impl From<io::Error> for RdpError {
