@@ -144,12 +144,12 @@ pub fn process_cred_ssp(
 
         match result {
             credssp::ClientState::ReplyNeeded(ts_request) => {
-                debug!("Send CredSSP TSRequest: {:x?}", ts_request);
+                debug!("Send CredSSP TSRequest (reply needed): {:x?}", ts_request);
                 transport.encode(ts_request, &mut tls_stream)?;
                 next_ts_request = transport.decode(&mut tls_stream)?;
             }
             credssp::ClientState::FinalMessage(ts_request) => {
-                debug!("Send CredSSP TSRequest: {:x?}", ts_request);
+                debug!("Send CredSSP TSRequest (final): {:x?}", ts_request);
                 transport.encode(ts_request, &mut tls_stream)?;
                 break;
             }

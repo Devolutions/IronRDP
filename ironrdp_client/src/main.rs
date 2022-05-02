@@ -1,30 +1,15 @@
 mod config;
 
-use std::io::{self, Write};
-use std::net::TcpStream;
-use std::sync::Arc;
+use std::{
+    io::{self, Write},
+    net::TcpStream,
+};
 
 use ironrdp_client::{process_active_stage, process_connection_sequence, RdpError, UpgradedStream};
 use log::error;
-use rustls::Session;
+use native_tls::TlsConnector;
 
 use self::config::Config;
-
-mod danger {
-    pub struct NoCertificateVerification {}
-
-    impl rustls::ServerCertVerifier for NoCertificateVerification {
-        fn verify_server_cert(
-            &self,
-            _roots: &rustls::RootCertStore,
-            _presented_certs: &[rustls::Certificate],
-            _dns_name: webpki::DNSNameRef<'_>,
-            _ocsp: &[u8],
-        ) -> Result<rustls::ServerCertVerified, rustls::TLSError> {
-            Ok(rustls::ServerCertVerified::assertion())
-        }
-    }
-}
 
 fn main() {
     let config = Config::parse_args();
@@ -68,6 +53,8 @@ fn setup_logging(log_file: &str) -> Result<(), fern::InitError> {
             ))
         })
         .chain(fern::log_file(log_file)?)
+        .chain(std::io::stdout())
+        .level(log::LevelFilter::Debug)
         .apply()?;
 
     Ok(())
@@ -85,24 +72,28 @@ fn run(config: Config) -> Result<(), RdpError> {
     Ok(())
 }
 
-fn establish_tls(stream: impl io::Read + io::Write) -> Result<UpgradedStream<impl io::Read + io::Write>, RdpError> {
-    let mut client_config = rustls::ClientConfig::default();
+fn establish_tls(
+    stream: impl io::Read + io::Write,
+) -> Result<UpgradedStream<impl io::Read + io::Write>, RdpError> {
+    let mut builder = TlsConnector::builder();
+    builder.danger_accept_invalid_certs(true);
+    builder.use_sni(false);
 
-    client_config
-        .dangerous()
-        .set_certificate_verifier(Arc::new(danger::NoCertificateVerification {}));
-    let config_ref = Arc::new(client_config);
-    let dns_name = webpki::DNSNameRef::try_from_ascii_str("stub_string").unwrap();
-    let tls_session = rustls::ClientSession::new(&config_ref, dns_name);
-    let mut tls_stream = rustls::StreamOwned::new(tls_session, stream);
+    let connector = builder.build().unwrap();
+
+    let mut tls_stream = match connector.connect("", stream) {
+        Ok(s) => s,
+        Err(_) => panic!("on tls connect"),
+    };
+
     // handshake
     tls_stream.flush()?;
 
     let cert = tls_stream
-        .sess
-        .get_peer_certificates()
-        .ok_or(RdpError::TlsConnectorError(rustls::TLSError::NoCertificatesPresented))?;
-    let server_public_key = get_tls_peer_pubkey(cert[0].as_ref().to_vec())?;
+        .peer_certificate()
+        .map_err(|err| RdpError::TlsConnectorError(err))?
+        .ok_or(RdpError::MissingPeerCertificate)?;
+    let server_public_key = get_tls_peer_pubkey(cert.to_der().unwrap())?;
 
     Ok(UpgradedStream {
         stream: tls_stream,

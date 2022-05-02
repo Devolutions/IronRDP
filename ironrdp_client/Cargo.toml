@@ -20,14 +20,13 @@ path = "src/main.rs"
 
 [dependencies]
 ironrdp = { path = "../ironrdp" }
-sspi = "0.3.0"
+sspi = { path = "../../sspi-rs" }
 clap = "2.33"
 bytes = "0.5"
 failure = "0.1"
 chrono = "0.4"
 fern = "0.6"
 log = "0.4"
-rustls = { version = "0.16.0", features = ["dangerous_configuration"] }
 x509-parser = "0.6.0"
 whoami = "0.8"
 num-traits = "0.2"
@@ -35,6 +34,7 @@ num-derive = "0.3"
 semver = "0.9"
 lazy_static = "1.4"
 exitcode = "1.1"
-webpki = "0.21.0"
+webpki = "0.22.0"
 bufstream = "0.1"
 ring = "0.16.0"
+native-tls = "0.2.10"

@@ -22,9 +22,9 @@ pub enum RdpError {
     #[fail(display = "invalid response: {}", _0)]
     InvalidResponse(String),
     #[fail(display = "TLS connector error: {}", _0)]
-    TlsConnectorError(rustls::TLSError),
+    TlsConnectorError(native_tls::Error),
     #[fail(display = "TLS handshake error: {}", _0)]
-    TlsHandshakeError(rustls::TLSError),
+    TlsHandshakeError(native_tls::Error),
     #[fail(display = "CredSSP error: {}", _0)]
     CredSspError(#[fail(cause)] sspi::Error),
     #[fail(display = "CredSSP TSRequest error: {}", _0)]
@@ -80,22 +80,13 @@ pub enum RdpError {
     UnexpectedFastPathUpdate(ironrdp::fast_path::UpdateCode),
     #[fail(display = "server error: {}", _0)]
     ServerError(String),
+    #[fail(display = "Missing peer certificate")]
+    MissingPeerCertificate,
 }
 
 impl From<io::Error> for RdpError {
     fn from(e: io::Error) -> Self {
         RdpError::IOError(e)
-    }
-}
-
-impl From<rustls::TLSError> for RdpError {
-    fn from(e: rustls::TLSError) -> Self {
-        match e {
-            rustls::TLSError::InappropriateHandshakeMessage { .. } | rustls::TLSError::HandshakeNotComplete => {
-                RdpError::TlsHandshakeError(e)
-            }
-            _ => RdpError::TlsConnectorError(e),
-        }
     }
 }
 
