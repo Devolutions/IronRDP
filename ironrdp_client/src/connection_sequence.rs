@@ -17,6 +17,7 @@ use ironrdp::{nego, rdp, PduParsing};
 use log::{debug, info, trace, warn};
 use ring::rand::SecureRandom;
 use sspi::internal::credssp;
+use sspi::KerberosConfig;
 
 use crate::transport::*;
 use crate::{InputConfig, RdpError, BUF_STREAM_SIZE};
@@ -131,9 +132,13 @@ pub fn process_cred_ssp(
 ) -> Result<(), RdpError> {
     let mut transport = TsRequestTransport::default();
 
-    let mut cred_ssp_client =
-        credssp::CredSspClient::new(server_public_key, credentials, credssp::CredSspMode::WithCredentials)
-            .map_err(RdpError::CredSspError)?;
+    let mut cred_ssp_client = credssp::CredSspClient::new(
+        server_public_key,
+        credentials,
+        credssp::CredSspMode::WithCredentials,
+        credssp::ClientMode::Kerberos(KerberosConfig::from_env()),
+    )
+    .map_err(RdpError::CredSspError)?;
     let mut next_ts_request = credssp::TsRequest::default();
 
     loop {

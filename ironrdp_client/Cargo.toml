@@ -20,7 +20,7 @@ path = "src/main.rs"
 
 [dependencies]
 ironrdp = { path = "../ironrdp" }
-sspi = { path = "../../sspi-rs" }
+sspi = { git = "https://github.com/Devolutions/sspi-rs.git", branch = "portable-kerberos", features = ["with_reqwest_network_client"] }
 clap = "2.33"
 bytes = "0.5"
 failure = "0.1"

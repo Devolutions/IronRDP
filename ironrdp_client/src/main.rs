@@ -7,7 +7,7 @@ use std::{
 
 use ironrdp_client::{process_active_stage, process_connection_sequence, RdpError, UpgradedStream};
 use log::error;
-use native_tls::{TlsConnector, HandshakeError};
+use native_tls::{HandshakeError, TlsConnector};
 
 use self::config::Config;
 
@@ -81,14 +81,12 @@ fn establish_tls(stream: impl io::Read + io::Write) -> Result<UpgradedStream<imp
     let mut tls_stream = match connector.connect("", stream) {
         Ok(tls) => tls,
         Err(HandshakeError::Failure(err)) => return Err(RdpError::TlsHandshakeError(err)),
-        Err(HandshakeError::WouldBlock(mut mid_stream)) => {
-            loop {
-                match mid_stream.handshake() {
-                    Ok(tls) => break tls,
-                    Err(HandshakeError::Failure(err)) => return Err(RdpError::TlsHandshakeError(err)),
-                    Err(HandshakeError::WouldBlock(mid)) => mid_stream = mid,
-                };
-            }
+        Err(HandshakeError::WouldBlock(mut mid_stream)) => loop {
+            match mid_stream.handshake() {
+                Ok(tls) => break tls,
+                Err(HandshakeError::Failure(err)) => return Err(RdpError::TlsHandshakeError(err)),
+                Err(HandshakeError::WouldBlock(mid)) => mid_stream = mid,
+            };
         },
     };
 
