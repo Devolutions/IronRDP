@@ -21,10 +21,18 @@ pub enum RdpError {
     UnexpectedDisconnection(String),
     #[fail(display = "invalid response: {}", _0)]
     InvalidResponse(String),
+    #[cfg(feature = "native-tls")]
     #[fail(display = "TLS connector error: {}", _0)]
     TlsConnectorError(native_tls::Error),
+    #[cfg(feature = "native-tls")]
     #[fail(display = "TLS handshake error: {}", _0)]
     TlsHandshakeError(native_tls::Error),
+    #[cfg(all(feature = "rustls", not(feature = "native-tls")))]
+    #[fail(display = "TLS connector error: {}", _0)]
+    TlsConnectorError(rustls::Error),
+    #[cfg(all(feature = "rustls", not(feature = "native-tls")))]
+    #[fail(display = "TLS handshake error: {}", _0)]
+    TlsHandshakeError(rustls::Error),
     #[fail(display = "CredSSP error: {}", _0)]
     CredSspError(#[fail(cause)] sspi::Error),
     #[fail(display = "CredSSP TSRequest error: {}", _0)]
@@ -82,6 +90,7 @@ pub enum RdpError {
     ServerError(String),
     #[fail(display = "Missing peer certificate")]
     MissingPeerCertificate,
+    #[cfg(feature = "native-tls")]
     #[fail(display = "Invalid DER structure: {}", _0)]
     DerEncode(#[fail(cause)] native_tls::Error),
 }
@@ -89,6 +98,18 @@ pub enum RdpError {
 impl From<io::Error> for RdpError {
     fn from(e: io::Error) -> Self {
         RdpError::IOError(e)
+    }
+}
+
+#[cfg(all(feature = "rustls", not(feature = "native-tls")))]
+impl From<rustls::Error> for RdpError {
+    fn from(e: rustls::Error) -> Self {
+        match e {
+            rustls::Error::InappropriateHandshakeMessage { .. } | rustls::Error::HandshakeNotComplete => {
+                RdpError::TlsHandshakeError(e)
+            }
+            _ => RdpError::TlsConnectorError(e),
+        }
     }
 }
 

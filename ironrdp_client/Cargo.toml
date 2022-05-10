@@ -18,6 +18,11 @@ path = "src/lib.rs"
 name = "ironrdp_client_app"
 path = "src/main.rs"
 
+[features]
+default = ["native-tls"]
+rustls = ["dep:rustls"]
+native-tls = ["dep:native-tls"]
+
 [dependencies]
 ironrdp = { path = "../ironrdp" }
 sspi = { git = "https://github.com/Devolutions/sspi-rs.git", branch = "portable-kerberos", features = ["with_reqwest_network_client"] }
@@ -34,9 +39,9 @@ num-derive = "0.3"
 semver = "0.9"
 lazy_static = "1.4"
 exitcode = "1.1"
-webpki = "0.22.0"
 bufstream = "0.1"
 ring = "0.16.0"
 # native-tls is preferred over rustls
 # rustls set 1.0 in the client hello request header for TLS 1.2 and windows RDP server rejects such requests
-native-tls = "0.2.10"
+native-tls = { version = "0.2", optional = true }
+rustls = { version = "0.20", features = ["dangerous_configuration"], optional = true }
