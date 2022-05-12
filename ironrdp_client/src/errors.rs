@@ -21,16 +21,16 @@ pub enum RdpError {
     UnexpectedDisconnection(String),
     #[fail(display = "invalid response: {}", _0)]
     InvalidResponse(String),
-    #[cfg(feature = "native-tls")]
+    #[cfg(all(feature = "native-tls", not(feature = "rustls")))]
     #[fail(display = "TLS connector error: {}", _0)]
     TlsConnectorError(native_tls::Error),
-    #[cfg(feature = "native-tls")]
+    #[cfg(all(feature = "native-tls", not(feature = "rustls")))]
     #[fail(display = "TLS handshake error: {}", _0)]
     TlsHandshakeError(native_tls::Error),
-    #[cfg(all(feature = "rustls", not(feature = "native-tls")))]
+    #[cfg(feature = "rustls")]
     #[fail(display = "TLS connector error: {}", _0)]
     TlsConnectorError(rustls::Error),
-    #[cfg(all(feature = "rustls", not(feature = "native-tls")))]
+    #[cfg(feature = "rustls")]
     #[fail(display = "TLS handshake error: {}", _0)]
     TlsHandshakeError(rustls::Error),
     #[fail(display = "CredSSP error: {}", _0)]
@@ -90,7 +90,7 @@ pub enum RdpError {
     ServerError(String),
     #[fail(display = "Missing peer certificate")]
     MissingPeerCertificate,
-    #[cfg(feature = "native-tls")]
+    #[cfg(all(feature = "native-tls", not(feature = "rustls")))]
     #[fail(display = "Invalid DER structure: {}", _0)]
     DerEncode(#[fail(cause)] native_tls::Error),
 }
@@ -101,7 +101,7 @@ impl From<io::Error> for RdpError {
     }
 }
 
-#[cfg(all(feature = "rustls", not(feature = "native-tls")))]
+#[cfg(feature = "rustls")]
 impl From<rustls::Error> for RdpError {
     fn from(e: rustls::Error) -> Self {
         match e {

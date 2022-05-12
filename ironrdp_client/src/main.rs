@@ -7,12 +7,12 @@ use std::{
 
 use ironrdp_client::{process_active_stage, process_connection_sequence, RdpError, UpgradedStream};
 use log::error;
-#[cfg(feature = "native-tls")]
+#[cfg(all(feature = "native-tls", not(feature = "rustls")))]
 use native_tls::{HandshakeError, TlsConnector};
 
 use self::config::Config;
 
-#[cfg(all(feature = "rustls", not(feature = "native-tls")))]
+#[cfg(feature = "rustls")]
 mod danger {
     use rustls::client::ServerCertVerified;
     use rustls::{Certificate, Error, ServerName};
@@ -95,7 +95,7 @@ fn run(config: Config) -> Result<(), RdpError> {
 }
 
 fn establish_tls(stream: impl io::Read + io::Write) -> Result<UpgradedStream<impl io::Read + io::Write>, RdpError> {
-    #[cfg(feature = "native-tls")]
+    #[cfg(all(feature = "native-tls", not(feature = "rustls")))]
     let mut tls_stream = {
         let mut builder = TlsConnector::builder();
         builder.danger_accept_invalid_certs(true);
@@ -117,7 +117,7 @@ fn establish_tls(stream: impl io::Read + io::Write) -> Result<UpgradedStream<imp
         }
     };
 
-    #[cfg(all(feature = "rustls", not(feature = "native-tls")))]
+    #[cfg(feature = "rustls")]
     let mut tls_stream = {
         let client_config = rustls::client::ClientConfig::builder()
             .with_safe_defaults()
@@ -131,7 +131,7 @@ fn establish_tls(stream: impl io::Read + io::Write) -> Result<UpgradedStream<imp
 
     tls_stream.flush()?;
 
-    #[cfg(feature = "native-tls")]
+    #[cfg(all(feature = "native-tls", not(feature = "rustls")))]
     let server_public_key = {
         let cert = tls_stream
             .peer_certificate()
@@ -140,7 +140,7 @@ fn establish_tls(stream: impl io::Read + io::Write) -> Result<UpgradedStream<imp
         get_tls_peer_pubkey(cert.to_der().map_err(RdpError::DerEncode)?)?
     };
 
-    #[cfg(all(feature = "rustls", not(feature = "native-tls")))]
+    #[cfg(feature = "rustls")]
     let server_public_key = {
         let cert = tls_stream
             .conn

@@ -19,7 +19,7 @@ name = "ironrdp_client_app"
 path = "src/main.rs"
 
 [features]
-default = ["native-tls"]
+default = ["rustls"]
 rustls = ["dep:rustls"]
 native-tls = ["dep:native-tls"]
 
