@@ -25,7 +25,7 @@ native-tls = ["dep:native-tls"]
 
 [dependencies]
 ironrdp = { path = "../ironrdp" }
-sspi = { git = "https://github.com/Devolutions/sspi-rs.git", branch = "portable-kerberos", features = ["with_reqwest_network_client"] }
+sspi = { git = "https://github.com/Devolutions/sspi-rs.git", branch = "portable-kerberos", features = ["network_client"] }
 clap = "2.33"
 bytes = "0.5"
 failure = "0.1"
