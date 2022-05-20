@@ -21,10 +21,18 @@ pub enum RdpError {
     UnexpectedDisconnection(String),
     #[fail(display = "invalid response: {}", _0)]
     InvalidResponse(String),
+    #[cfg(all(feature = "native-tls", not(feature = "rustls")))]
     #[fail(display = "TLS connector error: {}", _0)]
-    TlsConnectorError(rustls::TLSError),
+    TlsConnectorError(native_tls::Error),
+    #[cfg(all(feature = "native-tls", not(feature = "rustls")))]
     #[fail(display = "TLS handshake error: {}", _0)]
-    TlsHandshakeError(rustls::TLSError),
+    TlsHandshakeError(native_tls::Error),
+    #[cfg(feature = "rustls")]
+    #[fail(display = "TLS connector error: {}", _0)]
+    TlsConnectorError(rustls::Error),
+    #[cfg(feature = "rustls")]
+    #[fail(display = "TLS handshake error: {}", _0)]
+    TlsHandshakeError(rustls::Error),
     #[fail(display = "CredSSP error: {}", _0)]
     CredSspError(#[fail(cause)] sspi::Error),
     #[fail(display = "CredSSP TSRequest error: {}", _0)]
@@ -80,6 +88,11 @@ pub enum RdpError {
     UnexpectedFastPathUpdate(ironrdp::fast_path::UpdateCode),
     #[fail(display = "server error: {}", _0)]
     ServerError(String),
+    #[fail(display = "Missing peer certificate")]
+    MissingPeerCertificate,
+    #[cfg(all(feature = "native-tls", not(feature = "rustls")))]
+    #[fail(display = "Invalid DER structure: {}", _0)]
+    DerEncode(#[fail(cause)] native_tls::Error),
 }
 
 impl From<io::Error> for RdpError {
@@ -88,10 +101,11 @@ impl From<io::Error> for RdpError {
     }
 }
 
-impl From<rustls::TLSError> for RdpError {
-    fn from(e: rustls::TLSError) -> Self {
+#[cfg(feature = "rustls")]
+impl From<rustls::Error> for RdpError {
+    fn from(e: rustls::Error) -> Self {
         match e {
-            rustls::TLSError::InappropriateHandshakeMessage { .. } | rustls::TLSError::HandshakeNotComplete => {
+            rustls::Error::InappropriateHandshakeMessage { .. } | rustls::Error::HandshakeNotComplete => {
                 RdpError::TlsHandshakeError(e)
             }
             _ => RdpError::TlsConnectorError(e),

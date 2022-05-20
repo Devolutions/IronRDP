@@ -1,27 +1,36 @@
 mod config;
 
-use std::io::{self, Write};
-use std::net::TcpStream;
-use std::sync::Arc;
+use std::{
+    io::{self, Write},
+    net::TcpStream,
+};
 
 use ironrdp_client::{process_active_stage, process_connection_sequence, RdpError, UpgradedStream};
 use log::error;
-use rustls::Session;
+#[cfg(all(feature = "native-tls", not(feature = "rustls")))]
+use native_tls::{HandshakeError, TlsConnector};
 
 use self::config::Config;
 
+#[cfg(feature = "rustls")]
 mod danger {
-    pub struct NoCertificateVerification {}
+    use rustls::client::ServerCertVerified;
+    use rustls::{Certificate, Error, ServerName};
+    use std::time::SystemTime;
 
-    impl rustls::ServerCertVerifier for NoCertificateVerification {
+    pub struct NoCertificateVerification;
+
+    impl rustls::client::ServerCertVerifier for NoCertificateVerification {
         fn verify_server_cert(
             &self,
-            _roots: &rustls::RootCertStore,
-            _presented_certs: &[rustls::Certificate],
-            _dns_name: webpki::DNSNameRef<'_>,
-            _ocsp: &[u8],
-        ) -> Result<rustls::ServerCertVerified, rustls::TLSError> {
-            Ok(rustls::ServerCertVerified::assertion())
+            _end_entity: &Certificate,
+            _intermediates: &[Certificate],
+            _server_name: &ServerName,
+            _scts: &mut dyn Iterator<Item = &[u8]>,
+            _ocsp_response: &[u8],
+            _now: SystemTime,
+        ) -> Result<ServerCertVerified, Error> {
+            Ok(rustls::client::ServerCertVerified::assertion())
         }
     }
 }
@@ -86,23 +95,60 @@ fn run(config: Config) -> Result<(), RdpError> {
 }
 
 fn establish_tls(stream: impl io::Read + io::Write) -> Result<UpgradedStream<impl io::Read + io::Write>, RdpError> {
-    let mut client_config = rustls::ClientConfig::default();
+    #[cfg(all(feature = "native-tls", not(feature = "rustls")))]
+    let mut tls_stream = {
+        let mut builder = TlsConnector::builder();
+        builder.danger_accept_invalid_certs(true);
+        builder.use_sni(false);
 
-    client_config
-        .dangerous()
-        .set_certificate_verifier(Arc::new(danger::NoCertificateVerification {}));
-    let config_ref = Arc::new(client_config);
-    let dns_name = webpki::DNSNameRef::try_from_ascii_str("stub_string").unwrap();
-    let tls_session = rustls::ClientSession::new(&config_ref, dns_name);
-    let mut tls_stream = rustls::StreamOwned::new(tls_session, stream);
-    // handshake
+        let connector = builder.build().unwrap();
+
+        // domain is an empty string because client accepts IP address in the cli
+        match connector.connect("", stream) {
+            Ok(tls) => tls,
+            Err(HandshakeError::Failure(err)) => return Err(RdpError::TlsHandshakeError(err)),
+            Err(HandshakeError::WouldBlock(mut mid_stream)) => loop {
+                match mid_stream.handshake() {
+                    Ok(tls) => break tls,
+                    Err(HandshakeError::Failure(err)) => return Err(RdpError::TlsHandshakeError(err)),
+                    Err(HandshakeError::WouldBlock(mid)) => mid_stream = mid,
+                };
+            },
+        }
+    };
+
+    #[cfg(feature = "rustls")]
+    let mut tls_stream = {
+        let client_config = rustls::client::ClientConfig::builder()
+            .with_safe_defaults()
+            .with_custom_certificate_verifier(std::sync::Arc::new(danger::NoCertificateVerification))
+            .with_no_client_auth();
+        let rc_config = std::sync::Arc::new(client_config);
+        let example_com = "stub_string".try_into().unwrap();
+        let client = rustls::ClientConnection::new(rc_config, example_com)?;
+        rustls::StreamOwned::new(client, stream)
+    };
+
     tls_stream.flush()?;
 
-    let cert = tls_stream
-        .sess
-        .get_peer_certificates()
-        .ok_or(RdpError::TlsConnectorError(rustls::TLSError::NoCertificatesPresented))?;
-    let server_public_key = get_tls_peer_pubkey(cert[0].as_ref().to_vec())?;
+    #[cfg(all(feature = "native-tls", not(feature = "rustls")))]
+    let server_public_key = {
+        let cert = tls_stream
+            .peer_certificate()
+            .map_err(RdpError::TlsConnectorError)?
+            .ok_or(RdpError::MissingPeerCertificate)?;
+        get_tls_peer_pubkey(cert.to_der().map_err(RdpError::DerEncode)?)?
+    };
+
+    #[cfg(feature = "rustls")]
+    let server_public_key = {
+        let cert = tls_stream
+            .conn
+            .peer_certificates()
+            .ok_or(RdpError::MissingPeerCertificate)?[0]
+            .as_ref();
+        get_tls_peer_pubkey(cert.to_vec())?
+    };
 
     Ok(UpgradedStream {
         stream: tls_stream,
