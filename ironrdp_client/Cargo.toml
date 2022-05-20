@@ -41,7 +41,5 @@ lazy_static = "1.4"
 exitcode = "1.1"
 bufstream = "0.1"
 ring = "0.16.0"
-# native-tls is preferred over rustls
-# rustls set 1.0 in the client hello request header for TLS 1.2 and windows RDP server rejects such requests
 native-tls = { version = "0.2", optional = true }
 rustls = { version = "0.20", features = ["dangerous_configuration"], optional = true }
