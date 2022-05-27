@@ -7,6 +7,7 @@ use std::net::SocketAddr;
 
 use bufstream::BufStream;
 use bytes::BytesMut;
+use dns_lookup::lookup_addr;
 use ironrdp::rdp::capability_sets::CapabilitySet;
 use ironrdp::rdp::server_license::{
     ClientNewLicenseRequest, ClientPlatformChallengeResponse, InitialMessageType, InitialServerLicenseMessage,
@@ -73,7 +74,7 @@ where
     if selected_protocol.contains(nego::SecurityProtocol::HYBRID)
         || selected_protocol.contains(nego::SecurityProtocol::HYBRID_EX)
     {
-        process_cred_ssp(&mut stream, config.credentials.clone(), server_public_key)?;
+        process_cred_ssp(&mut stream, config.credentials.clone(), server_public_key, routing_addr)?;
 
         if selected_protocol.contains(nego::SecurityProtocol::HYBRID_EX) {
             if let credssp::EarlyUserAuthResult::AccessDenied = EarlyUserAuthResult::read(&mut stream)? {
@@ -129,14 +130,21 @@ pub fn process_cred_ssp(
     mut tls_stream: impl io::Read + io::Write,
     credentials: sspi::AuthIdentity,
     server_public_key: Vec<u8>,
+    routing_addr: &SocketAddr,
 ) -> Result<(), RdpError> {
     let mut transport = TsRequestTransport::default();
+
+    let destination_host = lookup_addr(&routing_addr.ip())
+        .map_err(|err| RdpError::UserInfoError(format!("unable to query destination host name: {:?}", err)))?;
+    // sspi-rs expects null-terminated string
+    let service_principal_name = format!("TERMSRV/{}\0", destination_host);
 
     let mut cred_ssp_client = credssp::CredSspClient::new(
         server_public_key,
         credentials,
         credssp::CredSspMode::WithCredentials,
         credssp::ClientMode::Kerberos(KerberosConfig::from_env()),
+        service_principal_name,
     )
     .map_err(RdpError::CredSspError)?;
     let mut next_ts_request = credssp::TsRequest::default();

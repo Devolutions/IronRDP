@@ -1,9 +1,7 @@
 mod config;
 
-use std::{
-    io::{self, Write},
-    net::TcpStream,
-};
+use std::io::{self, Write};
+use std::net::TcpStream;
 
 use ironrdp_client::{process_active_stage, process_connection_sequence, RdpError, UpgradedStream};
 use log::error;
@@ -14,9 +12,10 @@ use self::config::Config;
 
 #[cfg(feature = "rustls")]
 mod danger {
+    use std::time::SystemTime;
+
     use rustls::client::ServerCertVerified;
     use rustls::{Certificate, Error, ServerName};
-    use std::time::SystemTime;
 
     pub struct NoCertificateVerification;
 
