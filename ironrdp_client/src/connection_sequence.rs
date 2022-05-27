@@ -136,8 +136,7 @@ pub fn process_cred_ssp(
 
     let destination_host = lookup_addr(&routing_addr.ip())
         .map_err(|err| RdpError::UserInfoError(format!("unable to query destination host name: {:?}", err)))?;
-    // sspi-rs expects null-terminated string
-    let service_principal_name = format!("TERMSRV/{}\0", destination_host);
+    let service_principal_name = format!("TERMSRV/{}", destination_host);
 
     let mut cred_ssp_client = credssp::CredSspClient::new(
         server_public_key,
