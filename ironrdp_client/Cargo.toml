@@ -25,7 +25,7 @@ native-tls = ["dep:native-tls"]
 
 [dependencies]
 ironrdp = { path = "../ironrdp" }
-sspi = { git = "https://github.com/Devolutions/sspi-rs.git", rev = "ea6e60b7a4e730b1fe25a30b13b7b673bd549799",  features = ["network_client"] }
+sspi = { version = "0.3.6", features = ["network_client"] }
 clap = "2.33"
 bytes = "0.5"
 failure = "0.1"
