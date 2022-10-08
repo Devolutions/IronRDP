@@ -142,8 +142,8 @@ fn create_optional_core_data(
     config: &InputConfig,
     selected_protocol: SecurityProtocol,
 ) -> Result<ClientCoreOptionalData, RdpError> {
-    let mut early_capability_flags = ClientEarlyCapabilityFlags::VALID_CONNECTION_TYPE
-        | ClientEarlyCapabilityFlags::SUPPORT_ERR_INFO_PDU;
+    let mut early_capability_flags =
+        ClientEarlyCapabilityFlags::VALID_CONNECTION_TYPE | ClientEarlyCapabilityFlags::SUPPORT_ERR_INFO_PDU;
 
     if config.graphics_config.is_some() {
         early_capability_flags |= ClientEarlyCapabilityFlags::SUPPORT_DYN_VC_GFX_PROTOCOL;
