@@ -34,8 +34,7 @@ lazy_static! {
     static ref BITMAP: Bitmap<'static> = Bitmap {
         rectangles_number: 1,
         rectangles: {
-            let mut vec = Vec::new();
-            vec.push(BitmapData {
+            let vec = vec![BitmapData {
                 rectangle: Rectangle {
                     left: 1792,
                     top: 1024,
@@ -53,7 +52,7 @@ lazy_static! {
                     uncompressed_size: 4,
                 }),
                 bitmap_data: &BITMAP_BUFFER[30..],
-            });
+            }];
             vec
         }
     };

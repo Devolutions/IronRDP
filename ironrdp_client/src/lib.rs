@@ -13,6 +13,14 @@ pub use self::errors::RdpError;
 
 const BUF_STREAM_SIZE: usize = 32 * 1024;
 
+pub struct GraphicsConfig {
+    pub avc444: bool,
+    pub h264: bool,
+    pub thin_client: bool,
+    pub small_cache: bool,
+    pub capabilities: u32,
+}
+
 pub struct InputConfig {
     pub credentials: sspi::AuthIdentity,
     pub security_protocol: nego::SecurityProtocol,
@@ -25,4 +33,5 @@ pub struct InputConfig {
     pub height: u16,
     pub global_channel_name: String,
     pub user_channel_name: String,
+    pub graphics_config: Option<GraphicsConfig>,
 }

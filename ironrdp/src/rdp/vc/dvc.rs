@@ -12,6 +12,7 @@ use crate::PduParsing;
 #[cfg(test)]
 mod tests;
 
+pub mod display;
 pub mod gfx;
 
 mod capabilities;

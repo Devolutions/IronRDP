@@ -10,6 +10,7 @@ use super::{
     ServerSetErrorInfoPdu, SynchronizePdu,
 };
 use crate::codecs::rfx::FrameAcknowledgePdu;
+use crate::input::InputEventPdu;
 use crate::rdp::finalization_messages::FontPdu;
 use crate::rdp::session_info::SaveSessionInfoPdu;
 use crate::PduParsing;
@@ -68,7 +69,7 @@ impl PduParsing for ShareControlHeader {
     type Error = RdpError;
 
     fn from_buffer(mut stream: impl io::Read) -> Result<Self, Self::Error> {
-        let _total_length = stream.read_u16::<LittleEndian>()?;
+        let total_length = stream.read_u16::<LittleEndian>()? as usize;
         let pdu_type_with_version = stream.read_u16::<LittleEndian>()?;
         let pdu_source = stream.read_u16::<LittleEndian>()?;
         let share_id = stream.read_u32::<LittleEndian>()?;
@@ -84,12 +85,24 @@ impl PduParsing for ShareControlHeader {
         }
 
         let share_pdu = ShareControlPdu::from_type(&mut stream, pdu_type)?;
-
-        Ok(Self {
+        let header = Self {
             share_control_pdu: share_pdu,
             pdu_source,
             share_id,
-        })
+        };
+        if pdu_type == ShareControlPduType::DataPdu {
+            // Some windows version have an issue where PDU
+            // there is some padding not part of the inner unit.
+            // Consume that data
+            let header_length = header.buffer_length();
+            if header_length != total_length {
+                let padding = total_length - header_length;
+                let mut data = vec![0u8; padding];
+                stream.read_exact(data.as_mut())?;
+            }
+        }
+
+        Ok(header)
     }
     fn to_buffer(&self, mut stream: impl io::Write) -> Result<(), Self::Error> {
         let pdu_type_with_version = PROTOCOL_VERSION | self.share_control_pdu.share_header_type().to_u16().unwrap();
@@ -242,6 +255,7 @@ pub enum ShareDataPdu {
     SaveSessionInfo(SaveSessionInfoPdu),
     FrameAcknowledge(FrameAcknowledgePdu),
     ServerSetErrorInfo(ServerSetErrorInfoPdu),
+    Input(InputEventPdu),
 }
 
 impl ShareDataPdu {
@@ -255,6 +269,7 @@ impl ShareDataPdu {
             ShareDataPdu::SaveSessionInfo(_) => "Save session info PDU",
             ShareDataPdu::FrameAcknowledge(_) => "Frame Acknowledge PDU",
             ShareDataPdu::ServerSetErrorInfo(_) => "Server Set Error Info PDU",
+            ShareDataPdu::Input(_) => "Server Input PDU",
         }
     }
 }
@@ -278,9 +293,9 @@ impl ShareDataPdu {
             ShareDataPduType::SetErrorInfoPdu => Ok(ShareDataPdu::ServerSetErrorInfo(
                 ServerSetErrorInfoPdu::from_buffer(&mut stream)?,
             )),
+            ShareDataPduType::Input => Ok(ShareDataPdu::Input(InputEventPdu::from_buffer(&mut stream)?)),
             ShareDataPduType::Update
             | ShareDataPduType::Pointer
-            | ShareDataPduType::Input
             | ShareDataPduType::RefreshRectangle
             | ShareDataPduType::PlaySound
             | ShareDataPduType::SuppressOutput
@@ -308,6 +323,7 @@ impl ShareDataPdu {
             ShareDataPdu::SaveSessionInfo(pdu) => pdu.to_buffer(&mut stream).map_err(RdpError::from),
             ShareDataPdu::FrameAcknowledge(pdu) => pdu.to_buffer(&mut stream).map_err(RdpError::from),
             ShareDataPdu::ServerSetErrorInfo(pdu) => pdu.to_buffer(&mut stream).map_err(RdpError::from),
+            ShareDataPdu::Input(pdu) => pdu.to_buffer(&mut stream).map_err(RdpError::from),
         }
     }
     pub fn buffer_length(&self) -> usize {
@@ -319,6 +335,7 @@ impl ShareDataPdu {
             ShareDataPdu::SaveSessionInfo(pdu) => pdu.buffer_length(),
             ShareDataPdu::FrameAcknowledge(pdu) => pdu.buffer_length(),
             ShareDataPdu::ServerSetErrorInfo(pdu) => pdu.buffer_length(),
+            ShareDataPdu::Input(pdu) => pdu.buffer_length(),
         }
     }
     pub fn share_header_type(&self) -> ShareDataPduType {
@@ -331,6 +348,7 @@ impl ShareDataPdu {
             ShareDataPdu::SaveSessionInfo(_) => ShareDataPduType::SaveSessionInfo,
             ShareDataPdu::FrameAcknowledge(_) => ShareDataPduType::FrameAcknowledgePdu,
             ShareDataPdu::ServerSetErrorInfo(_) => ShareDataPduType::SetErrorInfoPdu,
+            ShareDataPdu::Input(_) => ShareDataPduType::Input,
         }
     }
 }

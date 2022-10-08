@@ -1,9 +1,9 @@
-use std::{env, net};
+use std::{env, net, str::FromStr};
 
 use ironrdp::gcc::{
-    ClientCoreData, ClientCoreOptionalData, ClientEarlyCapabilityFlags, ClientGccBlocks, ClientNetworkData,
-    ClientSecurityData, ColorDepth, ConnectionType, HighColorDepth, RdpVersion, SecureAccessSequence,
-    SupportedColorDepths,
+    Channel, ChannelOptions, ClientCoreData, ClientCoreOptionalData, ClientEarlyCapabilityFlags, ClientGccBlocks,
+    ClientNetworkData, ClientSecurityData, ColorDepth, ConnectionType, HighColorDepth, RdpVersion,
+    SecureAccessSequence, SupportedColorDepths,
 };
 use ironrdp::nego::SecurityProtocol;
 use ironrdp::rdp::capability_sets::{
@@ -33,7 +33,7 @@ pub fn create_gcc_blocks(
     Ok(ClientGccBlocks {
         core: create_core_data(config, selected_protocol)?,
         security: create_security_data(),
-        network: Some(create_network_data()),
+        network: Some(create_network_data(config)),
         cluster: None,
         monitor: None,
         message_channel: None,
@@ -138,22 +138,24 @@ fn create_core_data(config: &InputConfig, selected_protocol: SecurityProtocol) -
         optional_data: create_optional_core_data(config, selected_protocol)?,
     })
 }
-
 fn create_optional_core_data(
     config: &InputConfig,
     selected_protocol: SecurityProtocol,
 ) -> Result<ClientCoreOptionalData, RdpError> {
+    let mut early_capability_flags =
+        ClientEarlyCapabilityFlags::VALID_CONNECTION_TYPE | ClientEarlyCapabilityFlags::SUPPORT_ERR_INFO_PDU;
+
+    if config.graphics_config.is_some() {
+        early_capability_flags |= ClientEarlyCapabilityFlags::SUPPORT_DYN_VC_GFX_PROTOCOL;
+    }
+
     Ok(ClientCoreOptionalData {
         post_beta_color_depth: Some(ColorDepth::Bpp4), // ignored
         client_product_id: Some(1),
         serial_number: Some(0),
         high_color_depth: Some(HighColorDepth::Bpp24),
         supported_color_depths: Some(SupportedColorDepths::all()),
-        early_capability_flags: Some(
-            ClientEarlyCapabilityFlags::VALID_CONNECTION_TYPE
-                | ClientEarlyCapabilityFlags::WANT_32_BPP_SESSION
-                | ClientEarlyCapabilityFlags::SUPPORT_ERR_INFO_PDU,
-        ),
+        early_capability_flags: Some(early_capability_flags),
         dig_product_id: Some(config.dig_product_id.clone()),
         connection_type: Some(ConnectionType::Lan),
         server_selected_protocol: Some(selected_protocol),
@@ -169,8 +171,17 @@ fn create_security_data() -> ClientSecurityData {
     ClientSecurityData::no_security()
 }
 
-fn create_network_data() -> ClientNetworkData {
-    ClientNetworkData { channels: Vec::new() }
+fn create_network_data(config: &InputConfig) -> ClientNetworkData {
+    if config.graphics_config.is_some() {
+        ClientNetworkData {
+            channels: vec![Channel {
+                name: String::from_str("drdynvc").unwrap(),
+                options: ChannelOptions::COMPRESS_RDP,
+            }],
+        }
+    } else {
+        ClientNetworkData { channels: Vec::new() }
+    }
 }
 
 fn create_general_capability_set() -> CapabilitySet {
