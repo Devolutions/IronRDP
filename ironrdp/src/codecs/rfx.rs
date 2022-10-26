@@ -11,7 +11,6 @@ use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive, ToPrimitive};
 
 use crate::{impl_from_error, PduBufferParsing, PduParsing};
-
 pub mod color_conversion;
 pub mod dwt;
 pub mod image_processing;

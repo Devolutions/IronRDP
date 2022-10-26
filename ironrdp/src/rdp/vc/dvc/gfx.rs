@@ -10,12 +10,13 @@ use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use failure::Fail;
 use graphics_messages::RESET_GRAPHICS_PDU_SIZE;
 pub use graphics_messages::{
-    CacheImportReplyPdu, CacheToSurfacePdu, CapabilitiesAdvertisePdu, CapabilitiesConfirmPdu, CapabilitiesV103Flags,
-    CapabilitiesV104Flags, CapabilitiesV107Flags, CapabilitiesV10Flags, CapabilitiesV81Flags, CapabilitiesV8Flags,
-    CapabilitySet, Codec1Type, Codec2Type, CreateSurfacePdu, DeleteEncodingContextPdu, DeleteSurfacePdu, EndFramePdu,
-    EvictCacheEntryPdu, FrameAcknowledgePdu, MapSurfaceToOutputPdu, MapSurfaceToScaledOutputPdu,
-    MapSurfaceToScaledWindowPdu, PixelFormat, QueueDepth, ResetGraphicsPdu, SolidFillPdu, StartFramePdu,
-    SurfaceToCachePdu, SurfaceToSurfacePdu, WireToSurface1Pdu, WireToSurface2Pdu,
+    Avc420BitmapStream, Avc444BitmapStream, CacheImportReplyPdu, CacheToSurfacePdu, CapabilitiesAdvertisePdu,
+    CapabilitiesConfirmPdu, CapabilitiesV103Flags, CapabilitiesV104Flags, CapabilitiesV107Flags, CapabilitiesV10Flags,
+    CapabilitiesV81Flags, CapabilitiesV8Flags, CapabilitySet, Codec1Type, Codec2Type, CreateSurfacePdu,
+    DeleteEncodingContextPdu, DeleteSurfacePdu, Encoding, EndFramePdu, EvictCacheEntryPdu, FrameAcknowledgePdu,
+    MapSurfaceToOutputPdu, MapSurfaceToScaledOutputPdu, MapSurfaceToScaledWindowPdu, PixelFormat, QuantQuality,
+    QueueDepth, ResetGraphicsPdu, SolidFillPdu, StartFramePdu, SurfaceToCachePdu, SurfaceToSurfacePdu, Timestamp,
+    WireToSurface1Pdu, WireToSurface2Pdu,
 };
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive, ToPrimitive};

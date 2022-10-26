@@ -4,7 +4,7 @@ mod server;
 pub mod test;
 
 use std::io;
-
+mod avc_messages;
 use bitflags::bitflags;
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 pub use client::{CacheImportReplyPdu, CapabilitiesAdvertisePdu, FrameAcknowledgePdu, QueueDepth};
@@ -22,6 +22,7 @@ use super::RDP_GFX_HEADER_SIZE;
 use crate::gcc::MonitorDataError;
 use crate::utils::Rectangle;
 use crate::{impl_from_error, PduParsing};
+pub use avc_messages::{Avc420BitmapStream, Avc444BitmapStream, Encoding, QuantQuality};
 
 const CAPABILITY_SET_HEADER_SIZE: usize = 8;
 
@@ -298,6 +299,8 @@ pub enum GraphicsMessagesError {
     InvalidResetGraphicsPduMonitorsCount { actual: u32, max: u32 },
     #[fail(display = "Invalid capabilities version")]
     InvalidCapabilitiesVersion,
+    #[fail(display = "Both luma and chroma packets specified but length is missing")]
+    InvalidAvcEncoding,
 }
 
 impl_from_error!(io::Error, GraphicsMessagesError, GraphicsMessagesError::IOError);
