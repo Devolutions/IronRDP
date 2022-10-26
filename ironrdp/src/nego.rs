@@ -131,7 +131,7 @@ impl PduParsing for Request {
     type Error = NegotiationError;
 
     fn from_buffer(mut stream: impl io::Read) -> Result<Self, Self::Error> {
-        let _tpkt = TpktHeader::from_buffer(&mut stream)?;
+        let tpkt = TpktHeader::from_buffer(&mut stream)?;
 
         crate::x224::read_and_check_tpdu_header(&mut stream, X224TPDUType::ConnectionRequest)?;
 
@@ -140,10 +140,9 @@ impl PduParsing for Request {
 
         read_and_check_class(&mut stream, 0)?;
 
-        let mut stream = io::BufReader::new(stream);
-        let mut buffer = Vec::new();
+        let mut buffer = vec![0u8; tpkt.length - TPDU_REQUEST_LENGTH];
 
-        stream.read_to_end(&mut buffer)?;
+        stream.read_exact(buffer.as_mut_slice())?;
         let mut stream = buffer.as_slice();
 
         let nego_data = if let Some((nego_data, read_len)) = read_nego_data(stream) {

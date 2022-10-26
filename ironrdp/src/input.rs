@@ -10,6 +10,7 @@ use crate::{impl_from_error, PduParsing};
 #[cfg(test)]
 mod tests;
 
+pub mod fast_path;
 pub mod mouse;
 pub mod mouse_x;
 pub mod scan_code;
@@ -142,6 +143,14 @@ pub enum InputEventError {
     IOError(#[fail(cause)] io::Error),
     #[fail(display = "Invalid Input Event type: {}", _0)]
     InvalidInputEventType(u16),
+    #[fail(display = "Encryption not supported")]
+    EncryptionNotSupported,
+    #[fail(display = "Event code not supported {}", _0)]
+    EventCodeUnsupported(u8),
+    #[fail(display = "Keyboard flags not supported {}", _0)]
+    KeyboardFlagsUnsupported(u8),
+    #[fail(display = "Synchronize flags not supported {}", _0)]
+    SynchronizeFlagsUnsupported(u8),
 }
 
 impl_from_error!(io::Error, InputEventError, InputEventError::IOError);
