@@ -344,6 +344,8 @@ impl DisconnectUltimatumReason {
 pub enum McsError {
     #[fail(display = "IO error: {}", _0)]
     IOError(#[fail(cause)] io::Error),
+    #[fail(display = "RDP error: {}", _0)]
+    RdpError(#[fail(cause)] crate::RdpError),
     #[fail(display = "GCC block error: {}", _0)]
     GccError(#[fail(cause)] GccError),
     #[fail(display = "Invalid disconnect provider ultimatum")]
@@ -357,6 +359,7 @@ pub enum McsError {
 }
 
 impl_from_error!(io::Error, McsError, McsError::IOError);
+impl_from_error!(crate::RdpError, McsError, McsError::RdpError);
 impl_from_error!(GccError, McsError, McsError::GccError);
 
 impl From<McsError> for io::Error {

@@ -1,12 +1,10 @@
 mod config;
 
-use std::io::{self, Write};
-use std::net::TcpStream;
+use std::io::{self};
 
 use ironrdp_client::{process_active_stage, process_connection_sequence, RdpError, UpgradedStream};
 use log::error;
-#[cfg(all(feature = "native-tls", not(feature = "rustls")))]
-use native_tls::{HandshakeError, TlsConnector};
+use tokio::{io::AsyncWriteExt, net::TcpStream};
 use x509_parser::prelude::{FromDer, X509Certificate};
 
 use self::config::Config;
@@ -35,11 +33,12 @@ mod danger {
     }
 }
 
-fn main() {
+#[tokio::main]
+async fn main() {
     let config = Config::parse_args();
     setup_logging(config.log_file.as_str()).expect("failed to initialize logging");
 
-    let exit_code = match run(config) {
+    let exit_code = match run(config).await {
         Ok(_) => {
             println!("RDP successfully finished");
 
@@ -82,54 +81,48 @@ fn setup_logging(log_file: &str) -> Result<(), fern::InitError> {
     Ok(())
 }
 
-fn run(config: Config) -> Result<(), RdpError> {
+async fn run(config: Config) -> Result<(), RdpError> {
     let addr = socket_addr_to_string(config.routing_addr);
-    let mut stream = TcpStream::connect(addr.as_str()).map_err(RdpError::ConnectionError)?;
+    let stream = TcpStream::connect(addr.as_str())
+        .await
+        .map_err(RdpError::ConnectionError)?;
 
-    let (connection_sequence_result, mut stream) =
-        process_connection_sequence(&mut stream, &config.routing_addr, &config.input, establish_tls)?;
+    let (connection_sequence_result, stream) =
+        process_connection_sequence(stream, &config.routing_addr, &config.input, establish_tls).await?;
 
-    process_active_stage(&mut stream, config.input, connection_sequence_result)?;
+    process_active_stage(stream, config.input, connection_sequence_result).await?;
 
     Ok(())
 }
 
-fn establish_tls(stream: impl io::Read + io::Write) -> Result<UpgradedStream<impl io::Read + io::Write>, RdpError> {
+async fn establish_tls(stream: TcpStream) -> Result<UpgradedStream, RdpError> {
     #[cfg(all(feature = "native-tls", not(feature = "rustls")))]
     let mut tls_stream = {
-        let mut builder = TlsConnector::builder();
-        builder.danger_accept_invalid_certs(true);
-        builder.use_sni(false);
-
-        let connector = builder.build().unwrap();
+        let connector = async_native_tls::TlsConnector::new()
+            .danger_accept_invalid_certs(true)
+            .use_sni(false);
 
         // domain is an empty string because client accepts IP address in the cli
-        match connector.connect("", stream) {
+        match connector.connect("", stream).await {
             Ok(tls) => tls,
-            Err(HandshakeError::Failure(err)) => return Err(RdpError::TlsHandshakeError(err)),
-            Err(HandshakeError::WouldBlock(mut mid_stream)) => loop {
-                match mid_stream.handshake() {
-                    Ok(tls) => break tls,
-                    Err(HandshakeError::Failure(err)) => return Err(RdpError::TlsHandshakeError(err)),
-                    Err(HandshakeError::WouldBlock(mid)) => mid_stream = mid,
-                };
-            },
+            Err(err) => return Err(RdpError::TlsHandshakeError(err)),
         }
     };
 
     #[cfg(feature = "rustls")]
     let mut tls_stream = {
-        let client_config = rustls::client::ClientConfig::builder()
+        let mut client_config = rustls::client::ClientConfig::builder()
             .with_safe_defaults()
             .with_custom_certificate_verifier(std::sync::Arc::new(danger::NoCertificateVerification))
             .with_no_client_auth();
+        client_config.key_log = std::sync::Arc::new(rustls::KeyLogFile::new());
         let rc_config = std::sync::Arc::new(client_config);
         let example_com = "stub_string".try_into().unwrap();
-        let client = rustls::ClientConnection::new(rc_config, example_com)?;
-        rustls::StreamOwned::new(client, stream)
+        let connector = tokio_rustls::TlsConnector::from(rc_config);
+        connector.connect(example_com, stream).await?
     };
 
-    tls_stream.flush()?;
+    tls_stream.flush().await?;
 
     #[cfg(all(feature = "native-tls", not(feature = "rustls")))]
     let server_public_key = {
@@ -143,7 +136,8 @@ fn establish_tls(stream: impl io::Read + io::Write) -> Result<UpgradedStream<imp
     #[cfg(feature = "rustls")]
     let server_public_key = {
         let cert = tls_stream
-            .conn
+            .get_ref()
+            .1
             .peer_certificates()
             .ok_or(RdpError::MissingPeerCertificate)?[0]
             .as_ref();

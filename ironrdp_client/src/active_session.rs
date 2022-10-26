@@ -3,22 +3,23 @@ mod fast_path;
 mod x224;
 
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
-use std::{io, thread};
 
+use futures::{SinkExt, StreamExt};
 use ironrdp::codecs::rfx::image_processing::PixelFormat;
 use ironrdp::fast_path::FastPathError;
-use ironrdp::{PduParsing, RdpPdu};
+use ironrdp::RdpPdu;
 use log::warn;
+use tokio_util::codec::Framed;
 
+use crate::codecs::RdpFrameCodec;
 use crate::connection_sequence::ConnectionSequenceResult;
 use crate::transport::{Decoder, RdpTransport};
-use crate::{utils, InputConfig, RdpError};
+use crate::{utils, InputConfig, RdpError, TlsStreamType};
 
 const DESTINATION_PIXEL_FORMAT: PixelFormat = PixelFormat::RgbA32;
 
-pub fn process_active_stage(
-    mut stream: impl io::BufRead + io::Write,
+pub async fn process_active_stage(
+    mut stream: Framed<TlsStreamType, RdpFrameCodec>,
     config: InputConfig,
     connection_sequence_result: ConnectionSequenceResult,
 ) -> Result<(), RdpError> {
@@ -39,15 +40,14 @@ pub fn process_active_stage(
     }
     .build();
     let mut rdp_transport = RdpTransport::default();
-
+    let mut output_buffer = Vec::new();
     loop {
-        let mut input_buffer = stream.fill_buf()?;
-        let input_buffer_length = input_buffer.len();
-        match rdp_transport.decode(&mut input_buffer) {
-            Ok(RdpPdu::X224(data)) if input_buffer.len() >= data.data_length => {
-                stream.consume(data.buffer_length());
-
-                if let Err(error) = x224_processor.process(&mut stream, data) {
+        output_buffer.clear();
+        let frame = stream.next().await.ok_or(RdpError::AccessDenied)??;
+        let mut frame = frame.as_ref();
+        match rdp_transport.decode(&mut frame) {
+            Ok(RdpPdu::X224(data)) => {
+                if let Err(error) = x224_processor.process(&mut frame, &mut output_buffer, data) {
                     match error {
                         RdpError::UnexpectedDisconnection(message) => {
                             warn!("User-Initiated disconnection on Server: {}", message);
@@ -63,24 +63,21 @@ pub fn process_active_stage(
                     }
                 }
             }
-            Ok(RdpPdu::FastPath(header)) if input_buffer.len() >= header.data_length => {
+            Ok(RdpPdu::FastPath(header)) => {
                 // skip header bytes in such way because here is possible
                 // that data length was written in the not right way,
                 // so we should skip only what has been actually read
-                let bytes_read = input_buffer_length - input_buffer.len();
-                stream.consume(bytes_read);
 
-                fast_path_processor.process(&header, &mut stream)?;
+                fast_path_processor.process(&header, frame, &mut output_buffer)?;
             }
-            Err(RdpError::FastPathError(FastPathError::NullLength { bytes_read })) => {
+            Err(RdpError::FastPathError(FastPathError::NullLength { bytes_read: _ })) => {
                 warn!("Received null-length Fast-Path packet, dropping it");
-                stream.consume(bytes_read);
-            }
-            Ok(_) => {
-                warn!("Received not complete packet, waiting for remaining data");
-                thread::sleep(Duration::from_millis(10));
             }
             Err(e) => return Err(e),
+        }
+
+        if !output_buffer.is_empty() {
+            stream.send(output_buffer.as_slice()).await?;
         }
     }
 

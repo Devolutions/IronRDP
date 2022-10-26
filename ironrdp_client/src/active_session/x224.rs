@@ -46,7 +46,12 @@ impl<'a> Processor<'a> {
         }
     }
 
-    pub fn process(&mut self, mut stream: impl io::BufRead + io::Write, data: Data) -> Result<(), RdpError> {
+    pub fn process(
+        &mut self,
+        mut stream: impl io::Read,
+        mut output: impl io::Write,
+        data: Data,
+    ) -> Result<(), RdpError> {
         let mut transport = SendDataContextTransport::default();
         transport.mcs_transport.0.set_decoded_context(data.data_length);
 
@@ -56,7 +61,7 @@ impl<'a> Processor<'a> {
         let channel_id = channel_ids.channel_id;
         let initiator_id = channel_ids.initiator_id;
         match self.static_channels.get(&channel_id).map(String::as_str) {
-            Some(vc::DRDYNVC_CHANNEL_NAME) => self.process_dvc_message(&mut stream, transport, channel_id),
+            Some(vc::DRDYNVC_CHANNEL_NAME) => self.process_dvc_message(&mut stream, &mut output, transport, channel_id),
             Some(name) if name == self.global_channel_name => {
                 if self.static_transport.is_none() {
                     self.static_transport = Some(ShareDataHeaderTransport::new(ShareControlHeaderTransport::new(
@@ -122,7 +127,8 @@ impl<'a> Processor<'a> {
 
     fn process_dvc_message(
         &mut self,
-        mut stream: impl io::BufRead + io::Write,
+        mut stream: impl io::Read,
+        mut output: impl io::Write,
         transport: SendDataContextTransport,
         channel_id: u16,
     ) -> Result<(), RdpError> {
@@ -145,7 +151,7 @@ impl<'a> Processor<'a> {
                 debug!("Send DVC Capabilities Response PDU: {:?}", caps_response);
                 transport.encode(
                     DynamicVirtualChannelTransport::prepare_data_to_encode(caps_response, None)?,
-                    &mut stream,
+                    &mut output,
                 )?;
             }
             dvc::ServerPdu::CreateRequest(create_request) => {
@@ -175,10 +181,10 @@ impl<'a> Processor<'a> {
                 debug!("Send DVC Create Response PDU: {:?}", create_response);
                 transport.encode(
                     DynamicVirtualChannelTransport::prepare_data_to_encode(create_response, None)?,
-                    &mut stream,
+                    &mut output,
                 )?;
 
-                negotiate_dvc(&create_request, transport, &mut stream, &self.graphics_config)?;
+                negotiate_dvc(&create_request, transport, &mut output, &self.graphics_config)?;
             }
             dvc::ServerPdu::CloseRequest(close_request) => {
                 debug!("Got DVC Close Request PDU: {:?}", close_request);
@@ -191,7 +197,7 @@ impl<'a> Processor<'a> {
                 debug!("Send DVC Close Response PDU: {:?}", close_response);
                 transport.encode(
                     DynamicVirtualChannelTransport::prepare_data_to_encode(close_response, None)?,
-                    &mut stream,
+                    &mut output,
                 )?;
 
                 self.dynamic_channels.remove(&close_request.channel_id);
@@ -216,7 +222,7 @@ impl<'a> Processor<'a> {
 
                     transport.encode(
                         DynamicVirtualChannelTransport::prepare_data_to_encode(client_data, Some(dvc_data))?,
-                        &mut stream,
+                        &mut output,
                     )?;
                 }
             }
@@ -240,7 +246,7 @@ impl<'a> Processor<'a> {
 
                     transport.encode(
                         DynamicVirtualChannelTransport::prepare_data_to_encode(client_data, Some(dvc_data))?,
-                        &mut stream,
+                        &mut output,
                     )?;
                 }
             }
@@ -251,7 +257,7 @@ impl<'a> Processor<'a> {
 }
 
 fn process_global_channel_pdu(
-    mut stream: impl io::BufRead + io::Write,
+    mut stream: impl io::Read,
     transport: &mut ShareDataHeaderTransport,
 ) -> Result<(), RdpError> {
     let share_data_pdu = transport.decode(&mut stream)?;

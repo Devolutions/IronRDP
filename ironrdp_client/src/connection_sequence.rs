@@ -1,27 +1,30 @@
 mod user_info;
 
 use std::collections::HashMap;
+use std::future::Future;
 use std::io::{self};
 use std::iter;
 use std::net::SocketAddr;
 
-use bufstream::BufStream;
-use bytes::BytesMut;
 use dns_lookup::lookup_addr;
+use futures::{SinkExt, StreamExt};
 use ironrdp::rdp::capability_sets::CapabilitySet;
 use ironrdp::rdp::server_license::{
     ClientNewLicenseRequest, ClientPlatformChallengeResponse, InitialMessageType, InitialServerLicenseMessage,
     ServerPlatformChallenge, ServerUpgradeLicense, PREMASTER_SECRET_SIZE, RANDOM_NUMBER_SIZE,
 };
 use ironrdp::rdp::{ErrorInfo, ProtocolIndependentCode, ServerSetErrorInfoPdu, SERVER_CHANNEL_ID};
-use ironrdp::{nego, rdp, PduParsing};
+use ironrdp::{nego, rdp, ConnectInitial, ConnectResponse, McsPdu, PduParsing};
 use log::{debug, info, trace, warn};
 use ring::rand::SecureRandom;
 use sspi::internal::credssp;
 use sspi::NegotiateConfig;
+use tokio::net::TcpStream;
+use tokio_util::codec::Framed;
 
-use crate::transport::*;
-use crate::{InputConfig, RdpError, BUF_STREAM_SIZE};
+use crate::codecs::{RdpFrameCodec, TrasnportCodec};
+use crate::{transport::*, TlsStreamType};
+use crate::{InputConfig, RdpError};
 
 pub type StaticChannels = HashMap<String, u16>;
 
@@ -37,56 +40,51 @@ pub struct ConnectionSequenceResult {
     pub initiator_id: u16,
 }
 
-pub struct UpgradedStream<S>
-where
-    S: io::Read + io::Write,
-{
-    pub stream: S,
+pub struct UpgradedStream {
+    pub stream: TlsStreamType,
     pub server_public_key: Vec<u8>,
 }
 
-pub fn process_connection_sequence<F, S, US>(
-    stream: S,
+pub async fn process_connection_sequence<'a, F, FnRes>(
+    mut stream: TcpStream,
     routing_addr: &SocketAddr,
     config: &InputConfig,
     upgrade_stream: F,
-) -> Result<(ConnectionSequenceResult, BufStream<US>), RdpError>
+) -> Result<(ConnectionSequenceResult, Framed<TlsStreamType, RdpFrameCodec>), RdpError>
 where
-    S: io::Read + io::Write,
-    US: io::Read + io::Write,
-    F: FnOnce(S) -> Result<UpgradedStream<US>, RdpError>,
+    F: FnOnce(TcpStream) -> FnRes,
+    FnRes: Future<Output = Result<UpgradedStream, RdpError>>,
 {
-    let mut stream = BufStream::new(stream);
-
-    let (mut transport, selected_protocol) = connect(
+    let selected_protocol = connect(
         &mut stream,
         config.security_protocol,
         config.credentials.username.clone(),
-    )?;
+    )
+    .await?;
 
-    let stream = stream.into_inner().map_err(io::Error::from)?;
     let UpgradedStream {
-        stream,
+        mut stream,
         server_public_key,
-    } = upgrade_stream(stream)?;
-    let mut stream = BufStream::with_capacities(BUF_STREAM_SIZE, BUF_STREAM_SIZE, stream);
+    } = upgrade_stream(stream).await?;
 
     if selected_protocol.contains(nego::SecurityProtocol::HYBRID)
         || selected_protocol.contains(nego::SecurityProtocol::HYBRID_EX)
     {
-        process_cred_ssp(&mut stream, config.credentials.clone(), server_public_key, routing_addr)?;
+        process_cred_ssp(&mut stream, config.credentials.clone(), server_public_key, routing_addr).await?;
 
         if selected_protocol.contains(nego::SecurityProtocol::HYBRID_EX) {
-            if let credssp::EarlyUserAuthResult::AccessDenied = EarlyUserAuthResult::read(&mut stream)? {
+            let data = EarlyUserAuthResult::read(&mut stream).await?;
+            if let credssp::EarlyUserAuthResult::AccessDenied = data {
                 return Err(RdpError::AccessDenied);
             }
         }
     }
 
-    let static_channels = process_mcs_connect(&mut stream, &mut transport, config, selected_protocol)?;
+    let stream = Framed::new(stream, RdpFrameCodec::default());
 
-    let mut transport = McsTransport::new(transport);
-    let joined_static_channels = process_mcs(&mut stream, &mut transport, static_channels, config)?;
+    let (static_channels, stream) = process_mcs_connect(stream, config, selected_protocol).await?;
+
+    let (joined_static_channels, stream) = process_mcs(stream, static_channels, config).await?;
     debug!("Joined static active_session: {:?}", joined_static_channels);
 
     let global_channel_id = *joined_static_channels
@@ -96,24 +94,22 @@ where
         .get(config.user_channel_name.as_str())
         .expect("user channel must be added");
 
-    let mut transport = SendDataContextTransport::new(transport, initiator_id, global_channel_id);
-    send_client_info(&mut stream, &mut transport, config, routing_addr)?;
+    let transport =
+        SendDataContextTransport::new(McsTransport::new(DataTransport::new()), initiator_id, global_channel_id);
+    let stream = send_client_info(stream, transport, config, routing_addr).await?;
 
-    match process_server_license_exchange(&mut stream, &mut transport, config, global_channel_id) {
-        Err(RdpError::ServerLicenseError(rdp::RdpError::ServerLicenseError(
-            rdp::server_license::ServerLicenseError::UnexpectedValidClientError(_),
-        ))) => {
-            warn!("The server has returned STATUS_VALID_CLIENT unexpectedly");
-        }
-        Err(error) => return Err(error),
-        Ok(_) => (),
-    }
+    let stream = process_server_license_exchange(stream, config, global_channel_id).await?;
 
-    let mut transport = ShareControlHeaderTransport::new(transport, initiator_id, global_channel_id);
-    let desktop_sizes = process_capability_sets(&mut stream, &mut transport, config)?;
+    let transport =
+        SendDataContextTransport::new(McsTransport::new(DataTransport::new()), initiator_id, global_channel_id);
+    let transport = ShareControlHeaderTransport::new(transport, initiator_id, global_channel_id);
+    let (desktop_sizes, stream) = process_capability_sets(stream, transport, config).await?;
 
-    let mut transport = ShareDataHeaderTransport::new(transport);
-    process_finalization(&mut stream, &mut transport, initiator_id)?;
+    let transport =
+        SendDataContextTransport::new(McsTransport::new(DataTransport::new()), initiator_id, global_channel_id);
+    let transport = ShareControlHeaderTransport::new(transport, initiator_id, global_channel_id);
+    let transport = ShareDataHeaderTransport::new(transport);
+    let stream = process_finalization(stream, transport, initiator_id).await?;
 
     Ok((
         ConnectionSequenceResult {
@@ -126,8 +122,8 @@ where
     ))
 }
 
-pub fn process_cred_ssp(
-    mut tls_stream: impl io::Read + io::Write,
+pub async fn process_cred_ssp(
+    mut tls_stream: &mut TlsStreamType,
     credentials: sspi::AuthIdentity,
     server_public_key: Vec<u8>,
     routing_addr: &SocketAddr,
@@ -157,12 +153,12 @@ pub fn process_cred_ssp(
         match result {
             credssp::ClientState::ReplyNeeded(ts_request) => {
                 debug!("Send CredSSP TSRequest (reply needed): {:x?}", ts_request);
-                transport.encode(ts_request, &mut tls_stream)?;
-                next_ts_request = transport.decode(&mut tls_stream)?;
+                transport.encode(ts_request, &mut tls_stream).await?;
+                next_ts_request = transport.decode(&mut tls_stream).await?;
             }
             credssp::ClientState::FinalMessage(ts_request) => {
                 debug!("Send CredSSP TSRequest (final): {:x?}", ts_request);
-                transport.encode(ts_request, &mut tls_stream)?;
+                transport.encode(ts_request, &mut tls_stream).await?;
                 break;
             }
         }
@@ -171,26 +167,24 @@ pub fn process_cred_ssp(
     Ok(())
 }
 
-pub fn process_mcs_connect(
-    mut stream: impl io::Read + io::Write,
-    transport: &mut DataTransport,
+pub async fn process_mcs_connect<C>(
+    stream: Framed<TlsStreamType, C>,
     config: &InputConfig,
     selected_protocol: nego::SecurityProtocol,
-) -> Result<StaticChannels, RdpError> {
+) -> Result<
+    (
+        StaticChannels,
+        Framed<TlsStreamType, TrasnportCodec<X224DataTransport<ConnectInitial, ConnectResponse>>>,
+    ),
+    RdpError,
+> {
     let connect_initial =
         ironrdp::ConnectInitial::with_gcc_blocks(user_info::create_gcc_blocks(config, selected_protocol)?);
     debug!("Send MCS Connect Initial PDU: {:?}", connect_initial);
-    let mut connect_initial_buf = BytesMut::with_capacity(connect_initial.buffer_length());
-    connect_initial_buf.resize(connect_initial.buffer_length(), 0x00);
-    connect_initial.to_buffer(connect_initial_buf.as_mut())?;
-    transport.encode(connect_initial_buf, &mut stream)?;
-
-    let data_length = transport.decode(&mut stream)?;
-    let mut data = BytesMut::with_capacity(data_length);
-    data.resize(data_length, 0x00);
-    stream.read_exact(&mut data)?;
-
-    let connect_response = ironrdp::ConnectResponse::from_buffer(data.as_ref()).map_err(RdpError::McsConnectError)?;
+    let mut stream = stream.map_codec(|_| TrasnportCodec::new(X224DataTransport::default()));
+    stream.send(connect_initial.clone()).await?;
+    let connect_response: ironrdp::ConnectResponse =
+        stream.next().await.ok_or(RdpError::UnexpectedStreamTermination)??;
     debug!("Got MCS Connect Response PDU: {:?}", connect_response);
 
     let gcc_blocks = connect_response.conference_create_response.gcc_blocks;
@@ -220,34 +214,36 @@ pub fn process_mcs_connect(
         .chain(iter::once((config.global_channel_name.clone(), global_channel_id)))
         .collect::<StaticChannels>();
 
-    Ok(static_channels)
+    Ok((static_channels, stream))
 }
 
-pub fn process_mcs(
-    mut stream: impl io::Read + io::Write,
-    transport: &mut McsTransport,
+pub async fn process_mcs<C>(
+    stream: Framed<TlsStreamType, C>,
     mut static_channels: StaticChannels,
     config: &InputConfig,
-) -> Result<StaticChannels, RdpError> {
+) -> Result<
+    (
+        StaticChannels,
+        Framed<TlsStreamType, TrasnportCodec<X224DataTransport<McsPdu>>>,
+    ),
+    RdpError,
+> {
     let erect_domain_request = ironrdp::mcs::ErectDomainPdu {
         sub_height: 0,
         sub_interval: 0,
     };
 
+    let mut stream = stream.map_codec(|_| TrasnportCodec::new(X224DataTransport::default()));
     debug!("Send MCS Erect Domain Request PDU: {:?}", erect_domain_request);
-
-    transport.encode(
-        McsTransport::prepare_data_to_encode(ironrdp::McsPdu::ErectDomainRequest(erect_domain_request), None)?,
-        &mut stream,
-    )?;
+    stream
+        .send(ironrdp::McsPdu::ErectDomainRequest(erect_domain_request))
+        .await?;
 
     debug!("Send MCS Attach User Request PDU");
-    transport.encode(
-        McsTransport::prepare_data_to_encode(ironrdp::McsPdu::AttachUserRequest, None)?,
-        &mut stream,
-    )?;
 
-    let mcs_pdu = transport.decode(&mut stream)?;
+    stream.send(ironrdp::McsPdu::AttachUserRequest).await?;
+
+    let mcs_pdu = stream.next().await.ok_or(RdpError::UnexpectedStreamTermination)??;
     let initiator_id = if let ironrdp::McsPdu::AttachUserConfirm(attach_user_confirm) = mcs_pdu {
         debug!("Got MCS Attach User Confirm PDU: {:?}", attach_user_confirm);
 
@@ -267,12 +263,12 @@ pub fn process_mcs(
             channel_id: *id,
         };
         debug!("Send MCS Channel Join Request PDU: {:?}", channel_join_request);
-        transport.encode(
-            McsTransport::prepare_data_to_encode(ironrdp::McsPdu::ChannelJoinRequest(channel_join_request), None)?,
-            &mut stream,
-        )?;
 
-        let mcs_pdu = transport.decode(&mut stream)?;
+        stream
+            .send(ironrdp::McsPdu::ChannelJoinRequest(channel_join_request))
+            .await?;
+
+        let mcs_pdu = stream.next().await.ok_or(RdpError::UnexpectedStreamTermination)??;
         if let ironrdp::McsPdu::ChannelJoinConfirm(channel_join_confirm) = mcs_pdu {
             debug!("Got MCS Channel Join Confirm PDU: {:?}", channel_join_confirm);
 
@@ -292,37 +288,38 @@ pub fn process_mcs(
         }
     }
 
-    Ok(static_channels)
+    Ok((static_channels, stream))
 }
 
-pub fn send_client_info(
-    stream: impl io::Read + io::Write,
-    transport: &mut SendDataContextTransport,
+pub async fn send_client_info<C>(
+    stream: Framed<TlsStreamType, C>,
+    transport: SendDataContextTransport,
     config: &InputConfig,
     routing_addr: &SocketAddr,
-) -> Result<(), RdpError> {
+) -> Result<Framed<TlsStreamType, TrasnportCodec<SendDataContextTransport>>, RdpError> {
+    let mut stream = stream.map_codec(|_| TrasnportCodec::new(transport));
+
     let client_info_pdu = user_info::create_client_info_pdu(config, routing_addr)?;
     debug!("Send Client Info PDU: {:?}", client_info_pdu);
     let mut pdu = Vec::with_capacity(client_info_pdu.buffer_length());
     client_info_pdu
         .to_buffer(&mut pdu)
         .map_err(RdpError::ServerLicenseError)?;
-    transport.encode(pdu, stream)?;
-
-    Ok(())
+    stream.send(pdu).await?;
+    Ok(stream)
 }
 
-pub fn process_server_license_exchange(
-    mut stream: impl io::Read + io::Write,
-    transport: &mut SendDataContextTransport,
+pub async fn process_server_license_exchange<C>(
+    stream: Framed<TlsStreamType, C>,
     config: &InputConfig,
     global_channel_id: u16,
-) -> Result<(), RdpError> {
-    let channel_ids = transport.decode(&mut stream)?;
-    check_global_id(channel_ids, global_channel_id)?;
+) -> Result<Framed<TlsStreamType, RdpFrameCodec>, RdpError> {
+    let transp = SendPduDataContextTransport::<ClientNewLicenseRequest, InitialServerLicenseMessage>::default();
+    let codec = TrasnportCodec::new(transp);
+    let mut stream = stream.map_codec(|_| codec);
+    let (channel_ids, initial_license_message) = stream.next().await.ok_or(RdpError::UnexpectedStreamTermination)??;
 
-    let initial_license_message = InitialServerLicenseMessage::from_buffer(&mut stream)
-        .map_err(|err| RdpError::ServerLicenseError(rdp::RdpError::ServerLicenseError(err)))?;
+    check_global_id(channel_ids, global_channel_id)?;
 
     debug!("Received Initial License Message PDU");
     trace!("{:?}", initial_license_message);
@@ -359,7 +356,7 @@ pub fn process_server_license_exchange(
         InitialMessageType::StatusValidClient(_) => {
             info!("The server has not initiated license exchange");
 
-            return Ok(());
+            return Ok(stream.map_codec(|_| RdpFrameCodec::default()));
         }
     };
 
@@ -367,23 +364,13 @@ pub fn process_server_license_exchange(
     trace!("{:?}", new_license_request);
     trace!("{:?}", encryption_data);
 
-    let mut new_pdu_buffer = Vec::with_capacity(new_license_request.buffer_length());
-    new_license_request.to_buffer(&mut new_pdu_buffer).map_err(|err| {
-        RdpError::IOError(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("Unable to write to buffer: {}", err),
-        ))
-    })?;
-    transport.encode(new_pdu_buffer, &mut stream)?;
+    stream.send(new_license_request).await?;
 
-    let channel_ids = transport.decode(&mut stream)?;
+    let transp = SendPduDataContextTransport::<ClientPlatformChallengeResponse, ServerPlatformChallenge>::default();
+    let codec = TrasnportCodec::new(transp);
+    let mut stream = stream.map_codec(|_| codec);
+    let (channel_ids, challenge) = stream.next().await.ok_or(RdpError::UnexpectedStreamTermination)??;
     check_global_id(channel_ids, global_channel_id)?;
-
-    let challenge = ServerPlatformChallenge::from_buffer(&mut stream)
-        .map_err(|err| RdpError::ServerLicenseError(rdp::RdpError::ServerLicenseError(err)))?;
-
-    debug!("Received Server Platform Challenge PDU");
-    trace!("{:?}", challenge);
 
     let challenge_response = ClientPlatformChallengeResponse::from_server_platform_challenge(
         &challenge,
@@ -399,21 +386,24 @@ pub fn process_server_license_exchange(
 
     debug!("Successfully generated Client Platform Challenge Response");
     trace!("{:?}", challenge_response);
+    stream.send(challenge_response).await?;
 
-    let mut new_pdu_buffer = Vec::with_capacity(challenge_response.buffer_length());
-    challenge_response.to_buffer(&mut new_pdu_buffer).map_err(|err| {
-        RdpError::IOError(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("Unable to write to buffer: {}", err),
-        ))
-    })?;
-    transport.encode(new_pdu_buffer, &mut stream)?;
-
-    let channel_ids = transport.decode(&mut stream)?;
+    let transp = SendPduDataContextTransport::<ServerUpgradeLicense>::default();
+    let codec = TrasnportCodec::new(transp);
+    let mut stream = stream.map_codec(|_| codec);
+    let (channel_ids, upgrade_license) = match stream.next().await.ok_or(RdpError::UnexpectedStreamTermination)? {
+        Err(RdpError::ServerLicenseError(rdp::RdpError::ServerLicenseError(
+            rdp::server_license::ServerLicenseError::UnexpectedValidClientError(_),
+        ))) => {
+            warn!("The server has returned STATUS_VALID_CLIENT unexpectedly");
+            return Ok(stream.map_codec(|_| RdpFrameCodec::default()));
+        }
+        Ok(data) => data,
+        Err(err) => {
+            return Err(err);
+        }
+    };
     check_global_id(channel_ids, global_channel_id)?;
-
-    let upgrade_license = ServerUpgradeLicense::from_buffer(&mut stream)
-        .map_err(|err| RdpError::ServerLicenseError(rdp::RdpError::ServerLicenseError(err)))?;
 
     debug!("Received Server Upgrade License PDU");
     trace!("{:?}", upgrade_license);
@@ -427,15 +417,16 @@ pub fn process_server_license_exchange(
 
     debug!("Successfully verified the license");
 
-    Ok(())
+    Ok(stream.map_codec(|_| RdpFrameCodec::default()))
 }
 
-pub fn process_capability_sets(
-    mut stream: impl io::Read + io::Write,
-    transport: &mut ShareControlHeaderTransport,
+pub async fn process_capability_sets<C>(
+    stream: Framed<TlsStreamType, C>,
+    transport: ShareControlHeaderTransport,
     config: &InputConfig,
-) -> Result<DesktopSizes, RdpError> {
-    let share_control_pdu = transport.decode(&mut stream)?;
+) -> Result<(DesktopSizes, Framed<TlsStreamType, RdpFrameCodec>), RdpError> {
+    let mut stream = stream.map_codec(|_| TrasnportCodec::new(transport));
+    let share_control_pdu = stream.next().await.ok_or(RdpError::UnexpectedStreamTermination)??;
     let capability_sets = if let ironrdp::ShareControlPdu::ServerDemandActive(server_demand_active) = share_control_pdu
     {
         debug!("Got Server Demand Active PDU: {:?}", server_demand_active.pdu);
@@ -467,16 +458,15 @@ pub fn process_capability_sets(
         capability_sets,
     )?);
     debug!("Send Client Confirm Active PDU: {:?}", client_confirm_active);
-    transport.encode(client_confirm_active, &mut stream)?;
-
-    Ok(desktop_sizes)
+    stream.send(client_confirm_active).await?;
+    Ok((desktop_sizes, stream.map_codec(|_| RdpFrameCodec::default())))
 }
 
-pub fn process_finalization(
-    mut stream: impl io::Read + io::Write,
-    transport: &mut ShareDataHeaderTransport,
+pub async fn process_finalization<C>(
+    stream: Framed<TlsStreamType, C>,
+    transport: ShareDataHeaderTransport,
     initiator_id: u16,
-) -> Result<(), RdpError> {
+) -> Result<Framed<TlsStreamType, RdpFrameCodec>, RdpError> {
     use ironrdp::rdp::{ControlAction, ControlPdu, FontPdu, SequenceFlags, ShareDataPdu, SynchronizePdu};
 
     #[derive(Copy, Clone, PartialEq, Debug)]
@@ -488,6 +478,7 @@ pub fn process_finalization(
         Finished,
     }
 
+    let mut stream = stream.map_codec(|_| TrasnportCodec::new(transport));
     let mut finalization_order = FinalizationOrder::Synchronize;
     while finalization_order != FinalizationOrder::Finished {
         let share_data_pdu = match finalization_order {
@@ -513,9 +504,8 @@ pub fn process_finalization(
             FinalizationOrder::Finished => unreachable!(),
         };
         debug!("Send Finalization PDU: {:?}", share_data_pdu);
-        transport.encode(share_data_pdu, &mut stream)?;
-
-        let share_data_pdu = transport.decode(&mut stream)?;
+        stream.send(share_data_pdu).await?;
+        let share_data_pdu = stream.next().await.ok_or(RdpError::UnexpectedStreamTermination)??;
         debug!("Got Finalization PDU: {:?}", share_data_pdu);
 
         finalization_order = match (finalization_order, share_data_pdu) {
@@ -556,7 +546,8 @@ pub fn process_finalization(
         };
     }
 
-    Ok(())
+    let mapped = stream.map_codec(|_| RdpFrameCodec::default());
+    Ok(mapped)
 }
 
 fn check_global_id(channel_ids: ChannelIdentificators, id: u16) -> Result<(), RdpError> {
