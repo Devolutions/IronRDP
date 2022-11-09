@@ -21,7 +21,7 @@ const SERVER_CERT_LEN_SIZE: usize = 4;
 const SERVER_RANDOM_LEN: usize = 0x20;
 const MAX_SERVER_CERT_LEN: u32 = 1024;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClientSecurityData {
     pub encryption_methods: EncryptionMethod,
     pub ext_encryption_methods: u32,
@@ -62,7 +62,7 @@ impl PduParsing for ClientSecurityData {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServerSecurityData {
     pub encryption_method: EncryptionMethod,
     pub encryption_level: EncryptionLevel,
@@ -174,7 +174,7 @@ bitflags! {
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, FromPrimitive, ToPrimitive)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive, ToPrimitive)]
 pub enum EncryptionLevel {
     None = 0,
     Low = 1,

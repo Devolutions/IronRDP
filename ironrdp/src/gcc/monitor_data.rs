@@ -15,7 +15,7 @@ pub const MONITOR_FLAGS_SIZE: usize = 4;
 
 const MONITOR_COUNT_MAX: usize = 16;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClientMonitorData {
     pub monitors: Vec<Monitor>,
 }
@@ -54,7 +54,7 @@ impl PduParsing for ClientMonitorData {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Monitor {
     pub left: i32,
     pub top: i32,

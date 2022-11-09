@@ -11,7 +11,7 @@ use crate::{ber, PduParsing};
 const MCS_TYPE_CONNECT_INITIAL: u8 = 0x65;
 const MCS_TYPE_CONNECT_RESPONSE: u8 = 0x66;
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ConnectInitial {
     pub conference_create_request: ConferenceCreateRequest,
     pub calling_domain_selector: Vec<u8>,
@@ -97,7 +97,7 @@ impl PduParsing for ConnectInitial {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ConnectResponse {
     pub conference_create_response: ConferenceCreateResponse,
     pub called_connect_id: u32,
@@ -157,7 +157,7 @@ impl PduParsing for ConnectResponse {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DomainParameters {
     pub max_channel_ids: u32,
     pub max_user_ids: u32,

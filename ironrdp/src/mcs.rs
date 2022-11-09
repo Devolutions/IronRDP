@@ -21,7 +21,7 @@ const BASE_CHANNEL_ID: u16 = 1001;
 const SEND_DATA_PDU_DATA_PRIORITY_AND_SEGMENTATION: u8 = 0x70;
 
 /// The kind of the RDP header message that may carry additional data.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum McsPdu {
     ErectDomainRequest(ErectDomainPdu),
     AttachUserRequest,
@@ -137,7 +137,7 @@ enum DomainMcsPdu {
     SendDataIndication = 26,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ErectDomainPdu {
     pub sub_height: u32,
     pub sub_interval: u32,
@@ -167,7 +167,7 @@ impl PduParsing for ErectDomainPdu {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AttachUserConfirmPdu {
     pub initiator_id: u16,
     pub result: u8,
@@ -196,7 +196,7 @@ impl PduParsing for AttachUserConfirmPdu {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChannelJoinRequestPdu {
     pub initiator_id: u16,
     pub channel_id: u16,
@@ -225,7 +225,7 @@ impl PduParsing for ChannelJoinRequestPdu {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChannelJoinConfirmPdu {
     pub channel_id: u16,
     pub result: u8,
@@ -264,7 +264,7 @@ impl PduParsing for ChannelJoinConfirmPdu {
 
 /// Contains the channel ID and the length of the data. This structure is a part of the
 /// [`RdpHeaderMessage`](enum.RdpHeaderMessage.html).
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SendDataContext {
     pub initiator_id: u16,
     pub channel_id: u16,
@@ -303,7 +303,7 @@ impl PduParsing for SendDataContext {
 
 /// The reason of [`DisconnectProviderUltimatum`](enum.RdpHeaderMessage.html).
 #[repr(u8)]
-#[derive(Debug, Copy, Clone, PartialEq, FromPrimitive, ToPrimitive)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive, ToPrimitive)]
 pub enum DisconnectUltimatumReason {
     DomainDisconnected = 0,
     ProviderInitiated = 1,

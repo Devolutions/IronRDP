@@ -62,7 +62,7 @@ pub fn bytes_to_utf16_string(mut value: &[u8]) -> String {
     String::from_utf16_lossy(value_u16.as_ref())
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, FromPrimitive, ToPrimitive)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive, ToPrimitive)]
 pub enum CharacterSet {
     Ansi = 1,
     Unicode = 2,
@@ -142,7 +142,7 @@ impl<'a> ops::Deref for Bits<'a> {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Rectangle {
     pub left: u16,
     pub top: u16,

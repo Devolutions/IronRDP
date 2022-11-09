@@ -28,13 +28,13 @@ const MAX_PRODUCT_ID_LEN: u32 = 1024;
 
 const RSA_EXCHANGE_ALGORITHM: u32 = 1;
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum InitialMessageType {
     LicenseRequest(ServerLicenseRequest),
     StatusValidClient(LicensingErrorMessage),
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct InitialServerLicenseMessage {
     pub license_header: LicenseHeader,
     pub message_type: InitialMessageType,
@@ -130,7 +130,7 @@ impl PduParsing for InitialServerLicenseMessage {
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct ServerLicenseRequest {
     pub server_random: Vec<u8>,
     pub product_info: ProductInfo,
@@ -223,7 +223,7 @@ impl PduParsing for ServerLicenseRequest {
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct Scope(pub String);
 
 impl PduParsing for Scope {
@@ -259,7 +259,7 @@ impl PduParsing for Scope {
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct ServerCertificate {
     pub issued_permanently: bool,
     pub certificate: CertificateType,
@@ -337,7 +337,7 @@ impl PduParsing for ServerCertificate {
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct ProductInfo {
     pub version: u32,
     pub company_name: String,

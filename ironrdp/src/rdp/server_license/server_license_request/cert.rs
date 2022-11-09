@@ -18,13 +18,13 @@ const MIN_CERTIFICATE_AMOUNT: u32 = 2;
 const MAX_CERTIFICATE_AMOUNT: u32 = 200;
 const MAX_CERTIFICATE_LEN: u32 = 4096;
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub enum CertificateType {
     Proprietary(ProprietaryCertificate),
     X509(X509CertificateChain),
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct X509CertificateChain {
     pub certificate_array: Vec<Vec<u8>>,
 }
@@ -84,7 +84,7 @@ impl PduParsing for X509CertificateChain {
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct ProprietaryCertificate {
     pub public_key: RsaPublicKey,
     pub signature: Vec<u8>,
@@ -132,7 +132,7 @@ impl PduParsing for ProprietaryCertificate {
     }
 }
 
-#[derive(PartialEq, Debug, Clone)]
+#[derive(PartialEq, Eq, Debug, Clone)]
 pub struct RsaPublicKey {
     pub public_exponent: u32,
     pub modulus: Vec<u8>,

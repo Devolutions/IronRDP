@@ -6,7 +6,7 @@ use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use super::InputEventError;
 use crate::PduParsing;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MouseXPdu {
     pub flags: PointerFlags,
     pub x_position: u16,

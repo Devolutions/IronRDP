@@ -28,7 +28,7 @@ const CAPABILITY_SET_HEADER_SIZE: usize = 8;
 
 const V10_1_RESERVED: u128 = 0;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CapabilitySet {
     V8 { flags: CapabilitiesV8Flags },
     V8_1 { flags: CapabilitiesV81Flags },
@@ -154,7 +154,7 @@ impl PduParsing for CapabilitySet {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Color {
     b: u8,
     g: u8,
@@ -188,7 +188,7 @@ impl PduParsing for Color {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Point {
     x: u16,
     y: u16,
@@ -217,7 +217,7 @@ impl PduParsing for Point {
 }
 
 #[repr(u32)]
-#[derive(Debug, Copy, Clone, PartialEq, FromPrimitive, ToPrimitive)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive, ToPrimitive)]
 pub enum CapabilityVersion {
     V8 = 0x8_0004,
     V8_1 = 0x8_0105,

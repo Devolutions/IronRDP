@@ -16,7 +16,7 @@ const REDIRECTION_VERSION_MASK: u32 = 0x0000_003C;
 const FLAGS_SIZE: usize = 4;
 const REDIRECTED_SESSION_ID_SIZE: usize = 4;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClientClusterData {
     pub flags: RedirectionFlags,
     pub redirection_version: RedirectionVersion,
@@ -65,7 +65,7 @@ bitflags! {
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, FromPrimitive, ToPrimitive)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive, ToPrimitive)]
 pub enum RedirectionVersion {
     V1 = 0,
     V2 = 1,

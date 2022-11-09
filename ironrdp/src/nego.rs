@@ -67,7 +67,7 @@ bitflags! {
 
 /// The type of the negotiation error. May be contained in
 /// [`ResponseData`](enum.ResponseData.html).
-#[derive(Copy, Clone, Debug, PartialEq, FromPrimitive, ToPrimitive)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, FromPrimitive, ToPrimitive)]
 pub enum FailureCode {
     SSLRequiredByServer = 1,
     SSLNotAllowedByServer = 2,
@@ -84,7 +84,7 @@ pub enum FailureCode {
 /// # MSDN
 ///
 /// * [Client X.224 Connection Request PDU](https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/18a27ef9-6f9a-4501-b000-94b1fe3c2c10)
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NegoData {
     RoutingToken(String),
     Cookie(String),
@@ -119,7 +119,7 @@ enum Message {
     Failure = 3,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Request {
     pub nego_data: Option<NegoData>,
     pub flags: RequestFlags,
@@ -229,7 +229,7 @@ impl PduParsing for Request {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ResponseData {
     Response {
         flags: ResponseFlags,
@@ -240,7 +240,7 @@ pub enum ResponseData {
     },
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Response {
     pub response: Option<ResponseData>,
     pub dst_ref: u16,

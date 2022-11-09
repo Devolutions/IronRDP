@@ -44,14 +44,14 @@ const KEY_EXCHANGE_ALGORITHM_RSA: u32 = 1;
 
 const MAC_SIZE: usize = 16;
 
-#[derive(Debug, PartialEq, Clone, Default)]
+#[derive(Debug, PartialEq, Eq, Clone, Default)]
 pub struct LicenseEncryptionData {
     pub premaster_secret: Vec<u8>,
     pub mac_salt_key: Vec<u8>,
     pub license_key: Vec<u8>,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct LicenseHeader {
     pub security_header: BasicSecurityHeader,
     pub preamble_message_type: PreambleType,
@@ -121,7 +121,7 @@ impl PduParsing for LicenseHeader {
 }
 
 #[repr(u8)]
-#[derive(Debug, PartialEq, FromPrimitive, ToPrimitive)]
+#[derive(Debug, PartialEq, Eq, FromPrimitive, ToPrimitive)]
 pub enum PreambleType {
     LicenseRequest = 0x01,
     PlatformChallenge = 0x02,
@@ -139,13 +139,13 @@ bitflags! {
     }
 }
 
-#[derive(Debug, PartialEq, FromPrimitive, ToPrimitive)]
+#[derive(Debug, PartialEq, Eq, FromPrimitive, ToPrimitive)]
 pub enum PreambleVersion {
     V2 = 2, // RDP 4.0
     V3 = 3, // RDP 5.0, 5.1, 5.2, 6.0, 6.1, 7.0, 7.1, 8.0, 8.1, 10.0, 10.1, 10.2, 10.3, 10.4, and 10.5
 }
 
-#[derive(Debug, PartialEq, FromPrimitive, ToPrimitive)]
+#[derive(Debug, PartialEq, Eq, FromPrimitive, ToPrimitive)]
 pub enum BlobType {
     Any = 0x00,
     Data = 0x01,

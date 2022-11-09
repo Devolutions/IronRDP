@@ -38,7 +38,7 @@ where
     result
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, FromPrimitive, ToPrimitive)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive, ToPrimitive)]
 pub enum CodecId {
     RemoteFx = 0x3,
 }

@@ -24,7 +24,7 @@ const IS_LAST_TILESET_FLAG: bool = true;
 const QUANT_SIZE: usize = 5;
 const RECTANGLE_SIZE: usize = 8;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ContextPdu {
     pub flags: OperatingMode,
     pub entropy_algorithm: EntropyAlgorithm,
@@ -114,7 +114,7 @@ impl<'a> PduBufferParsing<'a> for ContextPdu {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FrameBeginPdu {
     pub index: u32,
     pub number_of_regions: i16,
@@ -158,7 +158,7 @@ impl<'a> PduBufferParsing<'a> for FrameBeginPdu {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FrameEndPdu;
 
 impl<'a> PduBufferParsing<'a> for FrameEndPdu {
@@ -189,7 +189,7 @@ impl<'a> PduBufferParsing<'a> for FrameEndPdu {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RegionPdu {
     pub rectangles: Vec<RfxRectangle>,
 }
@@ -270,7 +270,7 @@ impl<'a> PduBufferParsing<'a> for RegionPdu {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TileSetPdu<'a> {
     pub entropy_algorithm: EntropyAlgorithm,
     pub quants: Vec<Quant>,
@@ -407,7 +407,7 @@ impl<'a> PduBufferParsing<'a> for TileSetPdu<'a> {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RfxRectangle {
     pub x: u16,
     pub y: u16,
@@ -441,7 +441,7 @@ impl<'a> PduBufferParsing<'a> for RfxRectangle {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Quant {
     pub ll3: u8,
     pub lh3: u8,
@@ -518,7 +518,7 @@ impl<'a> PduBufferParsing<'a> for Quant {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Tile<'a> {
     pub y_quant_index: u8,
     pub cb_quant_index: u8,
@@ -609,7 +609,7 @@ impl<'a> PduBufferParsing<'a> for Tile<'a> {
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, FromPrimitive, ToPrimitive)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive, ToPrimitive)]
 #[repr(u16)]
 pub enum EntropyAlgorithm {
     Rlgr1 = 0x01,

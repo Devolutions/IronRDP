@@ -6,7 +6,7 @@ use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use super::InputEventError;
 use crate::PduParsing;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UnicodePdu {
     pub flags: KeyboardFlags,
     pub unicode_code: u16,

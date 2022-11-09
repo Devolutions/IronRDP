@@ -57,7 +57,7 @@ macro_rules! user_header_try {
 const GCC_TYPE_SIZE: usize = 2;
 const USER_DATA_HEADER_SIZE: usize = 4;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClientGccBlocks {
     pub core: ClientCoreData,
     pub security: ClientSecurityData,
@@ -195,7 +195,7 @@ impl PduParsing for ClientGccBlocks {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServerGccBlocks {
     pub core: ServerCoreData,
     pub network: ServerNetworkData,

@@ -56,7 +56,7 @@ bitflags! {
     }
 }
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub struct Order {
     pub order_flags: OrderFlags,
     order_support: [u8; SUPPORT_ARRAY_LEN],

@@ -41,7 +41,7 @@ const DESKTOP_ORIENTATION_SIZE: usize = 2;
 const DESKTOP_SCALE_FACTOR_SIZE: usize = 4;
 const DEVICE_SCALE_FACTOR_SIZE: usize = 4;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClientCoreData {
     pub version: RdpVersion,
     pub desktop_width: u16,
@@ -175,7 +175,7 @@ impl PduParsing for ClientCoreData {
     }
 }
 
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ClientCoreOptionalData {
     pub post_beta_color_depth: Option<ColorDepth>,
     pub client_product_id: Option<u16>,
@@ -362,7 +362,7 @@ impl PduParsing for ClientCoreOptionalData {
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum ClientColorDepth {
     Bpp4,
     Bpp8,
@@ -397,7 +397,7 @@ impl From<HighColorDepth> for ClientColorDepth {
 }
 
 #[repr(u16)]
-#[derive(Debug, Copy, Clone, PartialEq, FromPrimitive, ToPrimitive)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive, ToPrimitive)]
 pub enum ColorDepth {
     Bpp4 = 0xCA00,
     Bpp8 = 0xCA01,
@@ -417,12 +417,12 @@ pub enum HighColorDepth {
 }
 
 #[repr(u16)]
-#[derive(Debug, Copy, Clone, PartialEq, FromPrimitive, ToPrimitive)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive, ToPrimitive)]
 pub enum SecureAccessSequence {
     Del = 0xAA03,
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, FromPrimitive, ToPrimitive)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive, ToPrimitive)]
 pub enum KeyboardType {
     IbmPcXt = 1,
     OlivettiIco = 2,
@@ -434,7 +434,7 @@ pub enum KeyboardType {
 }
 
 #[repr(u8)]
-#[derive(Debug, Copy, Clone, PartialEq, FromPrimitive, ToPrimitive)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive, ToPrimitive)]
 pub enum ConnectionType {
     NotUsed = 0, // not used as ClientEarlyCapabilityFlags::VALID_CONNECTION_TYPE not set
     Modem = 1,

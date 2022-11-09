@@ -18,7 +18,7 @@ const MONITOR_ATTRIBUTE_SIZE_FIELD_SIZE: usize = 4;
 const MONITOR_COUNT: usize = 4;
 const MONITOR_SIZE: usize = 20;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClientMonitorExtendedData {
     pub extended_monitors_info: Vec<ExtendedMonitorInfo>,
 }
@@ -67,7 +67,7 @@ impl PduParsing for ClientMonitorExtendedData {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExtendedMonitorInfo {
     pub physical_width: u32,
     pub physical_height: u32,
@@ -109,7 +109,7 @@ impl PduParsing for ExtendedMonitorInfo {
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, FromPrimitive, ToPrimitive)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive, ToPrimitive)]
 pub enum MonitorOrientation {
     Landscape = 0,
     Portrait = 90,

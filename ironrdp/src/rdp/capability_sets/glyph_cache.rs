@@ -15,7 +15,7 @@ pub const GLYPH_CACHE_NUM: usize = 10;
 const GLYPH_CACHE_LENGTH: usize = 48;
 const CACHE_DEFINITION_LENGTH: usize = 4;
 
-#[derive(Copy, Clone, Debug, PartialEq, FromPrimitive, ToPrimitive)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, FromPrimitive, ToPrimitive)]
 pub enum GlyphSupportLevel {
     None = 0,
     Partial = 1,
@@ -23,7 +23,7 @@ pub enum GlyphSupportLevel {
     Encode = 3,
 }
 
-#[derive(Debug, PartialEq, Copy, Clone, Default)]
+#[derive(Debug, PartialEq, Eq, Copy, Clone, Default)]
 pub struct CacheDefinition {
     pub entries: u16,
     pub max_cell_size: u16,
@@ -51,7 +51,7 @@ impl PduParsing for CacheDefinition {
     }
 }
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub struct GlyphCache {
     pub glyph_cache: [CacheDefinition; GLYPH_CACHE_NUM],
     pub frag_cache: CacheDefinition,

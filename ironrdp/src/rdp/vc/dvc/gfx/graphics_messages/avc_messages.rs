@@ -6,7 +6,7 @@ use bit_field::BitField;
 use bitflags::bitflags;
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QuantQuality {
     pub quantization_parameter: u8,
     pub progressive: bool,
@@ -45,7 +45,7 @@ impl PduParsing for QuantQuality {
     }
 }
 
-#[derive(Clone, PartialEq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct Avc420BitmapStream<'a> {
     pub rectangles: Vec<Rectangle>,
     pub quant_qual_vals: Vec<QuantQuality>,
@@ -111,7 +111,7 @@ bitflags! {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Avc444BitmapStream<'a> {
     pub encoding: Encoding,
     pub stream1: Avc420BitmapStream<'a>,

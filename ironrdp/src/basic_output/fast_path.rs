@@ -16,7 +16,7 @@ use crate::utils::SplitTo;
 use crate::{impl_from_error, per, PduBufferParsing, PduParsing};
 
 /// Implements the Fast-Path RDP message header PDU.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FastPathHeader {
     pub flags: EncryptionFlags,
     pub data_length: usize,
@@ -83,7 +83,7 @@ impl PduParsing for FastPathHeader {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FastPathUpdatePdu<'a> {
     pub fragmentation: Fragmentation,
     pub update_code: UpdateCode,
@@ -140,7 +140,7 @@ impl<'a> PduBufferParsing<'a> for FastPathUpdatePdu<'a> {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FastPathUpdate<'a> {
     SurfaceCommands(Vec<SurfaceCommand<'a>>),
     Bitmap(Bitmap<'a>),
@@ -199,7 +199,7 @@ impl<'a> FastPathUpdate<'a> {
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, FromPrimitive, ToPrimitive)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive, ToPrimitive)]
 pub enum UpdateCode {
     Orders = 0x0,
     Bitmap = 0x1,
@@ -224,7 +224,7 @@ impl<'a> From<&FastPathUpdate<'a>> for UpdateCode {
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, FromPrimitive, ToPrimitive)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive, ToPrimitive)]
 pub enum Fragmentation {
     Single = 0x0,
     Last = 0x1,

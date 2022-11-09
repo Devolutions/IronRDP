@@ -62,7 +62,7 @@ const ORIGINATOR_ID_FIELD_SIZE: usize = 2;
 
 const NULL_TERMINATOR: &str = "\0";
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServerDemandActive {
     pub pdu: DemandActive,
 }
@@ -89,7 +89,7 @@ impl PduParsing for ServerDemandActive {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClientConfirmActive {
     /// According to [MSDN](https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/4e9722c3-ad83-43f5-af5a-529f73d88b48),
     /// this field MUST be set to [SERVER_CHANNEL_ID](constant.SERVER_CHANNEL_ID.html).
@@ -122,7 +122,7 @@ impl PduParsing for ClientConfirmActive {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DemandActive {
     pub source_descriptor: String,
     pub capability_sets: Vec<CapabilitySet>,
@@ -194,7 +194,7 @@ impl PduParsing for DemandActive {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CapabilitySet {
     // mandatory
     General(General),

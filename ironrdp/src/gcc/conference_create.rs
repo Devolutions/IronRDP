@@ -24,7 +24,7 @@ const CONFERENCE_RESPONSE_RESULT: u8 = 0;
 const H221_NON_STANDARD_MIN_LENGTH: usize = 4;
 const CONFERENCE_NAME: &[u8] = b"1";
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ConferenceCreateRequest {
     pub gcc_blocks: ClientGccBlocks,
 }
@@ -144,7 +144,7 @@ impl PduParsing for ConferenceCreateRequest {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ConferenceCreateResponse {
     pub user_id: u16,
     pub gcc_blocks: ServerGccBlocks,

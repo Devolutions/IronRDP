@@ -14,7 +14,7 @@ use crate::PduParsing;
 const GENERAL_LENGTH: usize = 20;
 const PROTOCOL_VER: u16 = 0x0200;
 
-#[derive(Copy, Clone, Debug, PartialEq, FromPrimitive, ToPrimitive)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, FromPrimitive, ToPrimitive)]
 pub enum MajorPlatformType {
     Unspecified = 0,
     Windows = 1,
@@ -27,7 +27,7 @@ pub enum MajorPlatformType {
     ChromeOs = 8,
 }
 
-#[derive(Copy, Clone, Debug, PartialEq, FromPrimitive, ToPrimitive)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, FromPrimitive, ToPrimitive)]
 pub enum MinorPlatformType {
     Unspecified = 0,
     Windows31X = 1,
@@ -51,7 +51,7 @@ bitflags! {
     }
 }
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub struct General {
     pub major_platform_type: MajorPlatformType,
     pub minor_platform_type: MinorPlatformType,

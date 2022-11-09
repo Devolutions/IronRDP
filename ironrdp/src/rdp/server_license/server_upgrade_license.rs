@@ -15,7 +15,7 @@ use crate::{utils, PduParsing};
 
 const NEW_LICENSE_INFO_STATIC_FIELDS_SIZE: usize = 20;
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct ServerUpgradeLicense {
     pub license_header: LicenseHeader,
     pub encrypted_license_info: Vec<u8>,
@@ -89,7 +89,7 @@ impl PduParsing for ServerUpgradeLicense {
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct NewLicenseInformation {
     pub version: u32,
     pub scope: String,

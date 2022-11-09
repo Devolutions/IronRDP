@@ -25,7 +25,7 @@ pub use self::sync::SyncPdu;
 pub use self::unicode::UnicodePdu;
 pub use self::unused::UnusedPdu;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InputEventPdu(pub Vec<InputEvent>);
 
 impl PduParsing for InputEventPdu {
@@ -58,7 +58,7 @@ impl PduParsing for InputEventPdu {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InputEvent {
     Sync(SyncPdu),
     Unused(UnusedPdu),

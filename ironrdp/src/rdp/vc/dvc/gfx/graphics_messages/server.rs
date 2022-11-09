@@ -14,7 +14,7 @@ pub const RESET_GRAPHICS_PDU_SIZE: usize = 340;
 const MAX_RESET_GRAPHICS_WIDTH_HEIGHT: u32 = 32_766;
 const MONITOR_COUNT_MAX: u32 = 16;
 
-#[derive(Clone, PartialEq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct WireToSurface1Pdu {
     pub surface_id: u16,
     pub codec_id: Codec1Type,
@@ -71,7 +71,7 @@ impl PduParsing for WireToSurface1Pdu {
     }
 }
 
-#[derive(Clone, PartialEq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct WireToSurface2Pdu {
     pub surface_id: u16,
     pub codec_id: Codec2Type,
@@ -130,7 +130,7 @@ impl PduParsing for WireToSurface2Pdu {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeleteEncodingContextPdu {
     pub surface_id: u16,
     pub codec_context_id: u32,
@@ -161,7 +161,7 @@ impl PduParsing for DeleteEncodingContextPdu {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SolidFillPdu {
     pub surface_id: u16,
     pub fill_pixel: Color,
@@ -203,7 +203,7 @@ impl PduParsing for SolidFillPdu {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SurfaceToSurfacePdu {
     pub source_surface_id: u16,
     pub destination_surface_id: u16,
@@ -251,7 +251,7 @@ impl PduParsing for SurfaceToSurfacePdu {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SurfaceToCachePdu {
     pub surface_id: u16,
     pub cache_key: u64,
@@ -290,7 +290,7 @@ impl PduParsing for SurfaceToCachePdu {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CacheToSurfacePdu {
     pub cache_slot: u16,
     pub surface_id: u16,
@@ -332,7 +332,7 @@ impl PduParsing for CacheToSurfacePdu {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CreateSurfacePdu {
     pub surface_id: u16,
     pub width: u16,
@@ -371,7 +371,7 @@ impl PduParsing for CreateSurfacePdu {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DeleteSurfacePdu {
     pub surface_id: u16,
 }
@@ -396,7 +396,7 @@ impl PduParsing for DeleteSurfacePdu {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ResetGraphicsPdu {
     pub width: u32,
     pub height: u32,
@@ -476,7 +476,7 @@ impl PduParsing for ResetGraphicsPdu {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MapSurfaceToOutputPdu {
     pub surface_id: u16,
     pub output_origin_x: u32,
@@ -513,7 +513,7 @@ impl PduParsing for MapSurfaceToOutputPdu {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MapSurfaceToScaledOutputPdu {
     pub surface_id: u16,
     pub output_origin_x: u32,
@@ -558,7 +558,7 @@ impl PduParsing for MapSurfaceToScaledOutputPdu {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MapSurfaceToScaledWindowPdu {
     pub surface_id: u16,
     pub window_id: u64,
@@ -605,7 +605,7 @@ impl PduParsing for MapSurfaceToScaledWindowPdu {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EvictCacheEntryPdu {
     pub cache_slot: u16,
 }
@@ -630,7 +630,7 @@ impl PduParsing for EvictCacheEntryPdu {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StartFramePdu {
     pub timestamp: Timestamp,
     pub frame_id: u32,
@@ -658,7 +658,7 @@ impl PduParsing for StartFramePdu {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EndFramePdu {
     pub frame_id: u32,
 }
@@ -683,7 +683,7 @@ impl PduParsing for EndFramePdu {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CapabilitiesConfirmPdu(pub CapabilitySet);
 
 impl PduParsing for CapabilitiesConfirmPdu {
@@ -705,7 +705,7 @@ impl PduParsing for CapabilitiesConfirmPdu {
 }
 
 #[repr(u16)]
-#[derive(Debug, Copy, Clone, PartialEq, FromPrimitive, ToPrimitive)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive, ToPrimitive)]
 pub enum Codec1Type {
     Uncompressed = 0x0,
     RemoteFx = 0x3,
@@ -718,19 +718,19 @@ pub enum Codec1Type {
 }
 
 #[repr(u16)]
-#[derive(Debug, Copy, Clone, PartialEq, FromPrimitive, ToPrimitive)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive, ToPrimitive)]
 pub enum Codec2Type {
     RemoteFxProgressive = 0x9,
 }
 
 #[repr(u8)]
-#[derive(Debug, Copy, Clone, PartialEq, FromPrimitive, ToPrimitive)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive, ToPrimitive)]
 pub enum PixelFormat {
     XRgb = 0x20,
     ARgb = 0x21,
 }
 
-#[derive(Debug, Copy, Clone, PartialEq)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub struct Timestamp {
     pub milliseconds: u16,
     pub seconds: u8,

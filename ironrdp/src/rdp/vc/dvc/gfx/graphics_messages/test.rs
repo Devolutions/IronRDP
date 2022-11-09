@@ -240,17 +240,17 @@ lazy_static! {
             right: 939,
             bottom: 743,
         },
-        bitmap_data: (&WIRE_TO_SURFACE_1_BUFFER[17..]).to_vec(),
+        bitmap_data: WIRE_TO_SURFACE_1_BUFFER[17..].to_vec(),
     };
-    pub static ref WIRE_TO_SURFACE_1_BITMAP_DATA: Vec<u8> = (&WIRE_TO_SURFACE_1_BUFFER[17..]).to_vec();
+    pub static ref WIRE_TO_SURFACE_1_BITMAP_DATA: Vec<u8> = WIRE_TO_SURFACE_1_BUFFER[17..].to_vec();
     pub static ref WIRE_TO_SURFACE_2: WireToSurface2Pdu = WireToSurface2Pdu {
         surface_id: 0,
         codec_id: Codec2Type::RemoteFxProgressive,
         codec_context_id: 4,
         pixel_format: PixelFormat::XRgb,
-        bitmap_data: (&WIRE_TO_SURFACE_2_BUFFER[13..]).to_vec(),
+        bitmap_data: WIRE_TO_SURFACE_2_BUFFER[13..].to_vec(),
     };
-    pub static ref WIRE_TO_SURFACE_2_BITMAP_DATA: Vec<u8> = (&WIRE_TO_SURFACE_2_BUFFER[13..]).to_vec();
+    pub static ref WIRE_TO_SURFACE_2_BITMAP_DATA: Vec<u8> = WIRE_TO_SURFACE_2_BUFFER[13..].to_vec();
     pub static ref DELETE_ENCODING_CONTEXT: DeleteEncodingContextPdu = DeleteEncodingContextPdu {
         surface_id: 0,
         codec_context_id: 1,

@@ -39,7 +39,7 @@ pub use self::server_error_info::{
     ErrorInfo, ProtocolIndependentCode, ProtocolIndependentConnectionBrokerCode, ProtocolIndependentLicensingCode,
     RdpSpecificCode, ServerSetErrorInfoError, ServerSetErrorInfoPdu,
 };
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClientInfoPdu {
     pub security_header: BasicSecurityHeader,
     pub client_info: ClientInfo,

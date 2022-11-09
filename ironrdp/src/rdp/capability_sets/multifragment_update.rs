@@ -5,7 +5,7 @@ use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use crate::rdp::CapabilitySetsError;
 use crate::PduParsing;
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub struct MultifragmentUpdate {
     pub max_request_size: u32,
 }

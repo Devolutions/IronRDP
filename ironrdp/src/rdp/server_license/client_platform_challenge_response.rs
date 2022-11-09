@@ -22,7 +22,7 @@ const RESPONSE_DATA_STATIC_FIELDS_SIZE: usize = 8;
 
 const CLIENT_HARDWARE_IDENTIFICATION_SIZE: usize = 20;
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct ClientPlatformChallengeResponse {
     pub license_header: LicenseHeader,
     pub encrypted_challenge_response_data: Vec<u8>,
@@ -213,7 +213,7 @@ impl PduParsing for PlatformChallengeResponseData {
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct ClientHardwareIdentification {
     pub platform_id: u32,
     pub data: Vec<u8>,

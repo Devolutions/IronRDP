@@ -10,7 +10,7 @@ use crate::{impl_from_error, PduBufferParsing};
 
 const PRECONNECTION_PDU_V1_SIZE: usize = 16;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PreconnectionPdu {
     pub id: u32,
     pub cch_pcb: u16,

@@ -13,7 +13,7 @@ use crate::PduParsing;
 const ERROR_CODE_SIZE: usize = 4;
 const STATE_TRANSITION_SIZE: usize = 4;
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct LicensingErrorMessage {
     pub error_code: LicenseErrorCode,
     pub state_transition: LicensingStateTransition,
@@ -54,7 +54,7 @@ impl PduParsing for LicensingErrorMessage {
     }
 }
 
-#[derive(Debug, PartialEq, FromPrimitive, ToPrimitive)]
+#[derive(Debug, PartialEq, Eq, FromPrimitive, ToPrimitive)]
 pub enum LicenseErrorCode {
     InvalidServerCertificate = 0x01,
     NoLicense = 0x02,
@@ -67,7 +67,7 @@ pub enum LicenseErrorCode {
     InvalidMessageLen = 0x0c,
 }
 
-#[derive(Debug, PartialEq, FromPrimitive, ToPrimitive)]
+#[derive(Debug, PartialEq, Eq, FromPrimitive, ToPrimitive)]
 pub enum LicensingStateTransition {
     TotalAbort = 1,
     NoTransition = 2,

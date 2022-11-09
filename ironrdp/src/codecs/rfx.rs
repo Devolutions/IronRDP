@@ -33,7 +33,7 @@ const CODEC_ID: u8 = 1;
 const CHANNEL_ID_FOR_CONTEXT: u8 = 0xFF;
 const CHANNEL_ID_FOR_OTHER_VALUES: u8 = 0x00;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Headers {
     CodecVersions(CodecVersionsPdu),
     Channels(ChannelsPdu),
@@ -73,7 +73,7 @@ impl<'a> PduBufferParsing<'a> for Headers {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BlockHeader {
     pub ty: BlockType,
     pub data_length: usize,
@@ -122,7 +122,7 @@ impl BlockHeader {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CodecChannelHeader;
 
 impl CodecChannelHeader {
@@ -169,7 +169,7 @@ fn headers_length(ty: BlockType) -> usize {
         }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FrameAcknowledgePdu {
     pub frame_id: u32,
 }
@@ -194,7 +194,7 @@ impl PduParsing for FrameAcknowledgePdu {
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, FromPrimitive, ToPrimitive)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive, ToPrimitive)]
 #[repr(u16)]
 pub enum BlockType {
     Tile = 0xCAC3,
