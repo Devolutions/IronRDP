@@ -1,4 +1,5 @@
-use std::io;
+use std::io::{self};
+use std::marker::PhantomData;
 
 use bytes::BytesMut;
 use ironrdp::rdp::SERVER_CHANNEL_ID;
@@ -79,6 +80,60 @@ impl Decoder for DataTransport {
             }
             TransportState::Decoded => Ok(self.data_length),
         }
+    }
+}
+
+pub struct X224DataTransport<E, D = E> {
+    _marker1: PhantomData<E>,
+    _marker2: PhantomData<D>,
+}
+
+impl<E, D> Default for X224DataTransport<E, D> {
+    fn default() -> Self {
+        Self {
+            _marker1: PhantomData::default(),
+            _marker2: PhantomData::default(),
+        }
+    }
+}
+
+impl<E, D> Encoder for X224DataTransport<E, D>
+where
+    E: PduParsing,
+    <E as PduParsing>::Error: From<std::io::Error>,
+    <E as PduParsing>::Error: From<ironrdp::RdpError>,
+{
+    type Item = E;
+    type Error = <E as PduParsing>::Error;
+
+    fn encode(&mut self, data: Self::Item, mut stream: impl io::Write) -> Result<(), Self::Error> {
+        ironrdp::Data::new(data.buffer_length())
+            .to_buffer(&mut stream)
+            .map_err(ironrdp::RdpError::X224Error)?;
+        data.to_buffer(&mut stream)?;
+        Ok(())
+    }
+}
+
+impl<E, D> Decoder for X224DataTransport<E, D>
+where
+    D: PduParsing,
+    <D as PduParsing>::Error: From<std::io::Error>,
+    <D as PduParsing>::Error: From<ironrdp::RdpError>,
+{
+    type Item = D;
+    type Error = <D as PduParsing>::Error;
+
+    fn decode(&mut self, mut stream: impl io::Read) -> Result<Self::Item, Self::Error> {
+        let data = ironrdp::Data::from_buffer(&mut stream).map_err(ironrdp::RdpError::X224Error)?;
+        let length = data.data_length;
+        let item = D::from_buffer(&mut stream)?;
+        let remaining = length - item.buffer_length();
+        if remaining > 0 {
+            let mut remaining = vec![0u8; remaining];
+            stream.read_exact(&mut remaining)?;
+        }
+        Ok(item)
     }
 }
 
@@ -363,5 +418,115 @@ impl Encoder for RdpTransport {
         stream.flush()?;
 
         Ok(())
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct SendPduDataContextTransport<E, D = E> {
+    pub mcs_transport: McsTransport,
+    channel_ids: Option<ChannelIdentificators>,
+    _marker1: PhantomData<E>,
+    _marker2: PhantomData<D>,
+}
+
+impl<E, D> SendPduDataContextTransport<E, D> {
+    pub fn new(mcs_transport: McsTransport, channel_ids: Option<ChannelIdentificators>) -> Self {
+        Self {
+            mcs_transport,
+            channel_ids,
+            _marker1: PhantomData::default(),
+            _marker2: PhantomData::default(),
+        }
+    }
+
+    pub fn set_channel_ids(&mut self, channel_ids: ChannelIdentificators) {
+        self.channel_ids = Some(channel_ids);
+    }
+
+    pub fn set_decoded_context(&mut self, channel_ids: ChannelIdentificators) {
+        self.set_channel_ids(channel_ids);
+    }
+
+    pub fn map_context<U, V>(self) -> SendPduDataContextTransport<U, V>
+    where
+        U: PduParsing,
+        V: PduParsing,
+    {
+        SendPduDataContextTransport::new(self.mcs_transport, self.channel_ids)
+    }
+}
+
+impl<E, D> Default for SendPduDataContextTransport<E, D> {
+    fn default() -> Self {
+        Self {
+            mcs_transport: McsTransport::new(DataTransport::default()),
+            channel_ids: None,
+            _marker1: PhantomData::default(),
+            _marker2: PhantomData::default(),
+        }
+    }
+}
+
+impl<E, D> Encoder for SendPduDataContextTransport<E, D>
+where
+    E: PduParsing,
+    RdpError: From<<E as PduParsing>::Error>,
+{
+    type Item = E;
+    type Error = RdpError;
+
+    fn encode(&mut self, send_data_context_pdu: Self::Item, mut stream: impl io::Write) -> Result<(), Self::Error> {
+        if let Some(channel_ids) = self.channel_ids.as_ref() {
+            let mut pdu_data = Vec::new();
+            send_data_context_pdu.to_buffer(&mut pdu_data)?;
+
+            let send_data_context = ironrdp::mcs::SendDataContext {
+                channel_id: channel_ids.channel_id,
+                initiator_id: channel_ids.initiator_id,
+                pdu_length: pdu_data.len(),
+            };
+
+            self.mcs_transport.encode(
+                McsTransport::prepare_data_to_encode(
+                    ironrdp::McsPdu::SendDataRequest(send_data_context),
+                    Some(pdu_data),
+                )?,
+                &mut stream,
+            )
+        } else {
+            Err(RdpError::AccessToNonExistingChannelName(
+                "Channel not connected".to_string(),
+            ))
+        }
+    }
+}
+
+impl<E, D> Decoder for SendPduDataContextTransport<E, D>
+where
+    D: PduParsing,
+    RdpError: From<<D as PduParsing>::Error>,
+{
+    type Item = (ChannelIdentificators, D);
+    type Error = RdpError;
+
+    fn decode(&mut self, mut stream: impl io::Read) -> Result<Self::Item, Self::Error> {
+        let mcs_pdu = self.mcs_transport.decode(&mut stream)?;
+
+        let channel_ids = match mcs_pdu {
+            ironrdp::McsPdu::SendDataIndication(send_data_context) => Ok(ChannelIdentificators {
+                initiator_id: send_data_context.initiator_id,
+                channel_id: send_data_context.channel_id,
+            }),
+            ironrdp::McsPdu::DisconnectProviderUltimatum(disconnect_reason) => Err(RdpError::UnexpectedDisconnection(
+                format!("Server disconnection reason - {:?}", disconnect_reason),
+            )),
+            _ => Err(RdpError::UnexpectedPdu(format!(
+                "Expected Send Data Context PDU, got {:?}",
+                mcs_pdu.as_short_name()
+            ))),
+        }?;
+
+        let data = D::from_buffer(&mut stream)?;
+        Ok((channel_ids, data))
     }
 }

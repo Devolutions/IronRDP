@@ -20,8 +20,8 @@ path = "src/main.rs"
 
 [features]
 default = ["rustls"]
-rustls = ["dep:rustls"]
-native-tls = ["dep:native-tls"]
+rustls = ["dep:rustls", "dep:tokio-rustls"]
+native-tls = ["dep:native-tls", "dep:async-native-tls"]
 
 [dependencies]
 ironrdp = { path = "../ironrdp" }
@@ -42,6 +42,13 @@ exitcode = "1.1"
 bufstream = "0.1"
 ring = "0.16.0"
 native-tls = { version = "0.2", optional = true }
+async-native-tls = { version = "0.4", default-features = false, features = [ "runtime-tokio" ], optional = true }
 rustls = { version = "0.20", features = ["dangerous_configuration"], optional = true }
 dns-lookup = "1.0.8"
 bitflags = "1"
+tokio = { version = "1", features = ["full"]}
+tokio-rustls =  { version = "0.23", optional = true }
+bit_field = "0.10.1"
+tokio-util = { version = "0.7", features = ["full"] }
+byteorder = "1.4.3"
+futures = "0.3"

@@ -5,7 +5,9 @@ use ironrdp::{
     codecs,
     dvc::{display, gfx},
     fast_path::FastPathError,
-    nego, rdp, McsError,
+    nego,
+    rdp::{self, server_license::ServerLicenseError},
+    McsError,
 };
 
 #[derive(Debug, Fail)]
@@ -103,6 +105,8 @@ pub enum RdpError {
     StaticChannelNotConnected,
     #[fail(display = "Invalid Capabilities mask provided. Mask: {:X}", _0)]
     InvalidCapabilitiesMask(u32),
+    #[fail(display = "Stream terminated while waiting for some data")]
+    UnexpectedStreamTermination,
     #[cfg(all(feature = "native-tls", not(feature = "rustls")))]
     #[fail(display = "Invalid DER structure: {}", _0)]
     DerEncode(#[fail(cause)] native_tls::Error),
@@ -183,5 +187,11 @@ impl From<codecs::rfx::RfxError> for RdpError {
 impl From<codecs::rfx::rlgr::RlgrError> for RdpError {
     fn from(e: codecs::rfx::rlgr::RlgrError) -> Self {
         RdpError::RlgrError(e)
+    }
+}
+
+impl From<ServerLicenseError> for RdpError {
+    fn from(e: ServerLicenseError) -> Self {
+        RdpError::ServerLicenseError(rdp::RdpError::ServerLicenseError(e))
     }
 }

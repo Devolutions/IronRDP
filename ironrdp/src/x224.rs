@@ -17,7 +17,7 @@ pub const TPDU_REQUEST_LENGTH: usize = TPKT_HEADER_LENGTH + TPDU_REQUEST_HEADER_
 pub const TPDU_REQUEST_HEADER_LENGTH: usize = 7;
 pub const TPDU_ERROR_HEADER_LENGTH: usize = 5;
 
-const TPKT_VERSION: u8 = 3;
+pub const TPKT_VERSION: u8 = 3;
 
 const EOF: u8 = 0x80;
 

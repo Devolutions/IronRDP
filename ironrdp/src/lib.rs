@@ -102,8 +102,8 @@ impl_from_error!(std::io::Error, RdpError, RdpError::IOError);
 impl_from_error!(nego::NegotiationError, RdpError, RdpError::X224Error);
 impl_from_error!(fast_path::FastPathError, RdpError, RdpError::FastPathError);
 
-#[derive(Debug, Copy, Clone, PartialEq, num_derive::FromPrimitive, num_derive::ToPrimitive)]
-enum Action {
+#[derive(Debug, Copy, Clone, PartialEq, Eq, num_derive::FromPrimitive, num_derive::ToPrimitive)]
+pub enum Action {
     FastPath = 0x0,
     X224 = 0x3,
 }
