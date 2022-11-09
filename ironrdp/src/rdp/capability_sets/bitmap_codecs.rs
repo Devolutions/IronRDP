@@ -87,7 +87,7 @@ impl PduParsing for Guid {
     }
 }
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub struct BitmapCodecs(pub Vec<Codec>);
 
 impl PduParsing for BitmapCodecs {
@@ -119,7 +119,7 @@ impl PduParsing for BitmapCodecs {
     }
 }
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub struct Codec {
     pub id: u8,
     pub property: CodecProperty,
@@ -239,13 +239,13 @@ impl PduParsing for Codec {
     }
 }
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub enum RemoteFxContainer {
     ClientContainer(RfxClientCapsContainer),
     ServerContainer(usize),
 }
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub enum CodecProperty {
     NsCodec(NsCodec),
     RemoteFx(RemoteFxContainer),
@@ -267,7 +267,7 @@ pub enum CodecProperty {
 /// # MSDN
 ///
 /// * [NSCodec Capability Set](https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpnsc/0eac0ba8-7bdd-4300-ab8d-9bc784c0a669)
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub struct NsCodec {
     pub is_dynamic_fidelity_allowed: bool,
     pub is_subsampling_allowed: bool,
@@ -303,7 +303,7 @@ impl PduParsing for NsCodec {
     }
 }
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub struct RfxClientCapsContainer {
     pub capture_flags: CaptureFlags,
     pub caps_data: RfxCaps,
@@ -338,7 +338,7 @@ impl PduParsing for RfxClientCapsContainer {
     }
 }
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub struct RfxCaps(pub RfxCapset);
 
 impl PduParsing for RfxCaps {
@@ -379,7 +379,7 @@ impl PduParsing for RfxCaps {
     }
 }
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub struct RfxCapset(pub Vec<RfxICap>);
 
 impl PduParsing for RfxCapset {
@@ -434,7 +434,7 @@ impl PduParsing for RfxCapset {
     }
 }
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub struct RfxICap {
     pub flags: RfxICapFlags,
     pub entropy_bits: EntropyBits,
@@ -488,7 +488,7 @@ impl PduParsing for RfxICap {
     }
 }
 
-#[derive(PartialEq, Debug, FromPrimitive, ToPrimitive, Copy, Clone)]
+#[derive(PartialEq, Eq, Debug, FromPrimitive, ToPrimitive, Copy, Clone)]
 pub enum EntropyBits {
     Rlgr1 = 1,
     Rlgr3 = 4,

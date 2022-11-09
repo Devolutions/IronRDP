@@ -5,7 +5,7 @@ use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use super::{CapabilitySet, GraphicsMessagesError};
 use crate::PduParsing;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CapabilitiesAdvertisePdu(pub Vec<CapabilitySet>);
 
 impl PduParsing for CapabilitiesAdvertisePdu {
@@ -36,7 +36,7 @@ impl PduParsing for CapabilitiesAdvertisePdu {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FrameAcknowledgePdu {
     pub queue_depth: QueueDepth,
     pub frame_id: u32,
@@ -71,7 +71,7 @@ impl PduParsing for FrameAcknowledgePdu {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CacheImportReplyPdu {
     pub cache_slots: Vec<u16>,
 }
@@ -105,7 +105,7 @@ impl PduParsing for CacheImportReplyPdu {
 }
 
 #[repr(u32)]
-#[derive(Debug, Copy, Clone, PartialEq)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum QueueDepth {
     Unavailable,
     AvailableBytes(u32),

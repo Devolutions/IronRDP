@@ -23,7 +23,7 @@ const SERVER_IO_CHANNEL_SIZE: usize = 2;
 const SERVER_CHANNEL_COUNT_SIZE: usize = 2;
 const SERVER_CHANNEL_SIZE: usize = 2;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClientNetworkData {
     pub channels: Vec<Channel>,
 }
@@ -61,7 +61,7 @@ impl PduParsing for ClientNetworkData {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServerNetworkData {
     pub channel_ids: Vec<u16>,
     pub io_channel: u16,
@@ -122,7 +122,7 @@ impl PduParsing for ServerNetworkData {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Channel {
     pub name: String,
     pub options: ChannelOptions,

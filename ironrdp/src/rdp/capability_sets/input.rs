@@ -27,7 +27,7 @@ bitflags! {
     }
 }
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub struct Input {
     pub input_flags: InputFlags,
     pub keyboard_layout: u32,

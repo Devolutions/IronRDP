@@ -30,7 +30,7 @@ const PDU_TYPE_FIELD_SIZE: usize = 1;
 const COMPRESSION_TYPE_FIELD_SIZE: usize = 1;
 const COMPRESSED_LENGTH_FIELD_SIZE: usize = 2;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BasicSecurityHeader {
     pub flags: BasicSecurityHeaderFlags,
 }
@@ -58,7 +58,7 @@ impl PduParsing for BasicSecurityHeader {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ShareControlHeader {
     pub share_control_pdu: ShareControlPdu,
     pub pdu_source: u16,
@@ -120,7 +120,7 @@ impl PduParsing for ShareControlHeader {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ShareControlPdu {
     ServerDemandActive(ServerDemandActive),
     ClientConfirmActive(ClientConfirmActive),
@@ -173,7 +173,7 @@ impl ShareControlPdu {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ShareDataHeader {
     pub share_data_pdu: ShareDataPdu,
     pub stream_priority: StreamPriority,
@@ -245,7 +245,7 @@ impl PduParsing for ShareDataHeader {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ShareDataPdu {
     Synchronize(SynchronizePdu),
     Control(ControlPdu),
@@ -374,7 +374,7 @@ bitflags! {
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, FromPrimitive, ToPrimitive)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive, ToPrimitive)]
 pub enum StreamPriority {
     Undefined = 0,
     Low = 1,
@@ -382,7 +382,7 @@ pub enum StreamPriority {
     High = 4,
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, FromPrimitive, ToPrimitive)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive, ToPrimitive)]
 pub enum ShareControlPduType {
     DemandActivePdu = 0x1,
     ConfirmActivePdu = 0x3,
@@ -391,7 +391,7 @@ pub enum ShareControlPduType {
     ServerRedirect = 0xa,
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, FromPrimitive, ToPrimitive)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive, ToPrimitive)]
 #[repr(u8)]
 pub enum ShareDataPduType {
     Update = 0x02,

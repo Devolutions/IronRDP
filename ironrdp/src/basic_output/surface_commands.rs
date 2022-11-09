@@ -14,7 +14,7 @@ use crate::{impl_from_error, PduBufferParsing, PduParsing};
 
 pub const SURFACE_COMMAND_HEADER_SIZE: usize = 2;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SurfaceCommand<'a> {
     SetSurfaceBits(SurfaceBitsPdu<'a>),
     FrameMarker(FrameMarkerPdu),
@@ -59,7 +59,7 @@ impl<'a> PduBufferParsing<'a> for SurfaceCommand<'a> {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SurfaceBitsPdu<'a> {
     pub destination: Rectangle,
     pub extended_bitmap_data: ExtendedBitmapDataPdu<'a>,
@@ -90,7 +90,7 @@ impl<'a> PduBufferParsing<'a> for SurfaceBitsPdu<'a> {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FrameMarkerPdu {
     pub frame_action: FrameAction,
     pub frame_id: Option<u32>,
@@ -128,7 +128,7 @@ impl<'a> PduBufferParsing<'a> for FrameMarkerPdu {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExtendedBitmapDataPdu<'a> {
     pub bpp: u8,
     pub codec_id: u8,
@@ -200,7 +200,7 @@ impl<'a> PduBufferParsing<'a> for ExtendedBitmapDataPdu<'a> {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BitmapDataHeader {
     pub high_unique_id: u32,
     pub low_unique_id: u32,
@@ -257,7 +257,7 @@ impl<'a> From<&SurfaceCommand<'a>> for SurfaceCommandType {
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, FromPrimitive, ToPrimitive)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive, ToPrimitive)]
 #[repr(u16)]
 pub enum FrameAction {
     Begin = 0x00,

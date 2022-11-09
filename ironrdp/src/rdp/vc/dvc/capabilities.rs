@@ -17,14 +17,14 @@ const DVC_CAPABILITIES_CHARGE_SIZE: usize = 2;
 const DVC_CAPABILITIES_CHARGE_COUNT: usize = 4;
 
 #[repr(u16)]
-#[derive(Debug, Copy, Clone, PartialEq, FromPrimitive, ToPrimitive)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive, ToPrimitive)]
 pub enum CapsVersion {
     V1 = 0x0001,
     V2 = 0x0002,
     V3 = 0x0003,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CapabilitiesRequestPdu {
     V1,
     V2 {
@@ -98,7 +98,7 @@ impl PduParsing for CapabilitiesRequestPdu {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CapabilitiesResponsePdu {
     pub version: CapsVersion,
 }

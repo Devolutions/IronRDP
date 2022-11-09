@@ -15,7 +15,7 @@ pub const DRDYNVC_CHANNEL_NAME: &str = "drdynvc";
 
 const CHANNEL_PDU_HEADER_SIZE: usize = 8;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChannelPduHeader {
     /// The total length in bytes of the uncompressed channel data, excluding this header
     pub total_length: u32,

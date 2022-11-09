@@ -10,7 +10,7 @@ use crate::PduParsing;
 
 const POINTER_LENGTH: usize = 6;
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub struct Pointer {
     pub color_pointer_cache_size: u16,
     pub pointer_cache_size: u16,

@@ -18,7 +18,7 @@ const LOGON_INFO_V2_PADDING_BUFFER: [u8; LOGON_INFO_V2_PADDING_SIZE] = [0; LOGON
 const DOMAIN_NAME_SIZE_V2: usize = 52;
 const USER_NAME_SIZE_V2: usize = 512;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LogonInfoVersion1 {
     pub logon_info: LogonInfo,
 }
@@ -78,7 +78,7 @@ impl PduParsing for LogonInfoVersion1 {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LogonInfoVersion2 {
     pub logon_info: LogonInfo,
 }
@@ -163,7 +163,7 @@ impl PduParsing for LogonInfoVersion2 {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LogonInfo {
     pub session_id: u32,
     pub user_name: String,

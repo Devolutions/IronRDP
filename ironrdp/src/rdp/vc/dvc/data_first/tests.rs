@@ -110,7 +110,7 @@ const DVC_TEST_HEADER_SIZE: usize = 0x01;
 lazy_static! {
     static ref DVC_FULL_DATA_FIRST_BUFFER: Vec<u8> = {
         let mut result = DVC_DATA_FIRST_PREFIX.to_vec();
-        result.extend(&DVC_DATA_FIRST_BUFFER);
+        result.extend(DVC_DATA_FIRST_BUFFER);
 
         result
     };

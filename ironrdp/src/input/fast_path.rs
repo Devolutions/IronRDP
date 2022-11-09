@@ -12,7 +12,7 @@ use crate::input::{InputEventError, MousePdu, MouseXPdu};
 use crate::{per, PduParsing};
 
 /// Implements the Fast-Path RDP message header PDU.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FastPathInputHeader {
     pub flags: EncryptionFlags,
     pub data_length: usize,
@@ -71,7 +71,7 @@ impl PduParsing for FastPathInputHeader {
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, FromPrimitive, ToPrimitive)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive, ToPrimitive)]
 #[repr(u8)]
 pub enum FastpathInputEventType {
     ScanCode = 0x0000,
@@ -82,7 +82,7 @@ pub enum FastpathInputEventType {
     QoeTimestamp = 0x0006,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FastPathInputEvent {
     KeyboardEvent(KeyboardFlags, u8),
     UnicodeKeyboardEvent(KeyboardFlags, u16),
@@ -196,7 +196,7 @@ bitflags! {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FastPathInput(pub Vec<FastPathInputEvent>);
 
 impl PduParsing for FastPathInput {

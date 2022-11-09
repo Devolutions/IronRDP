@@ -22,7 +22,7 @@ const TPKT_VERSION: u8 = 3;
 const EOF: u8 = 0x80;
 
 /// The PDU type of the X.224 negotiation phase.
-#[derive(Copy, Clone, Debug, PartialEq, FromPrimitive, ToPrimitive)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, FromPrimitive, ToPrimitive)]
 pub enum X224TPDUType {
     ConnectionRequest = 0xE0,
     ConnectionConfirm = 0xD0,
@@ -31,7 +31,7 @@ pub enum X224TPDUType {
     Error = 0x70,
 }
 
-#[derive(PartialEq, Debug)]
+#[derive(PartialEq, Eq, Debug)]
 pub struct TpktHeader {
     pub length: usize,
 }
@@ -76,7 +76,7 @@ impl PduParsing for TpktHeader {
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct Data {
     pub data_length: usize,
 }

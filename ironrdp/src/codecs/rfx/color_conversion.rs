@@ -48,14 +48,14 @@ impl Iterator for YCbCrBuffer<'_> {
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub struct YCbCr {
     pub y: i16,
     pub cb: i16,
     pub cr: i16,
 }
 
-#[derive(Debug, Copy, Clone, PartialEq)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub struct Rgb {
     pub r: u8,
     pub g: u8,

@@ -25,7 +25,7 @@ use crate::{impl_from_error, PduParsing};
 
 const RDP_GFX_HEADER_SIZE: usize = 8;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ServerPdu {
     WireToSurface1(WireToSurface1Pdu),
     WireToSurface2(WireToSurface2Pdu),
@@ -180,7 +180,7 @@ impl PduParsing for ServerPdu {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ClientPdu {
     FrameAcknowledge(FrameAcknowledgePdu),
     CapabilitiesAdvertise(CapabilitiesAdvertisePdu),
@@ -235,7 +235,7 @@ impl PduParsing for ClientPdu {
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, FromPrimitive, ToPrimitive)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive, ToPrimitive)]
 pub enum ClientPduType {
     FrameAcknowledge = 0x0d,
     CacheImportOffer = 0x10,
@@ -252,7 +252,7 @@ impl<'a> From<&'a ClientPdu> for ClientPduType {
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, FromPrimitive, ToPrimitive)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive, ToPrimitive)]
 pub enum ServerPduType {
     WireToSurface1 = 0x01,
     WireToSurface2 = 0x02,

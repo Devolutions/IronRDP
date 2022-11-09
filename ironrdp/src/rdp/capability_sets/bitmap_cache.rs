@@ -17,7 +17,7 @@ const CELL_INFO_LENGTH: usize = 4;
 const BITMAP_CACHE_REV2_CELL_INFO_NUM: usize = 5;
 const CACHE_ENTRY_LENGTH: usize = 4;
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub struct BitmapCache {
     pub caches: [CacheEntry; BITMAP_CACHE_ENTRIES_NUM],
 }
@@ -62,7 +62,7 @@ impl PduParsing for BitmapCache {
     }
 }
 
-#[derive(Debug, PartialEq, Copy, Clone, Default)]
+#[derive(Debug, PartialEq, Eq, Copy, Clone, Default)]
 pub struct CacheEntry {
     pub entries: u16,
     pub max_cell_size: u16,
@@ -97,7 +97,7 @@ bitflags! {
     }
 }
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub struct BitmapCacheRev2 {
     pub cache_flags: CacheFlags,
     pub num_cell_caches: u8,
@@ -150,7 +150,7 @@ impl PduParsing for BitmapCacheRev2 {
     }
 }
 
-#[derive(Debug, PartialEq, Copy, Clone, Default)]
+#[derive(Debug, PartialEq, Eq, Copy, Clone, Default)]
 pub struct CellInfo {
     pub num_entries: u32,
     pub is_cache_persistent: bool,

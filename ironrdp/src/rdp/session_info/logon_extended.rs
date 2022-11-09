@@ -19,7 +19,7 @@ const AUTO_RECONNECT_PACKET_SIZE: usize = 28;
 const AUTO_RECONNECT_RANDOM_BITS_SIZE: usize = 16;
 const LOGON_ERRORS_INFO_SIZE: usize = 8;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LogonInfoExtended {
     pub present_fields_flags: LogonExFlags,
     pub auto_reconnect: Option<ServerAutoReconnect>,
@@ -86,7 +86,7 @@ impl PduParsing for LogonInfoExtended {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServerAutoReconnect {
     pub logon_id: u32,
     pub random_bits: [u8; AUTO_RECONNECT_RANDOM_BITS_SIZE],
@@ -129,7 +129,7 @@ impl PduParsing for ServerAutoReconnect {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LogonErrorsInfo {
     pub error_type: LogonErrorNotificationType,
     pub error_data: LogonErrorNotificationData,
@@ -169,7 +169,7 @@ bitflags! {
 }
 
 #[repr(u32)]
-#[derive(Debug, Clone, PartialEq, FromPrimitive, ToPrimitive)]
+#[derive(Debug, Clone, PartialEq, Eq, FromPrimitive, ToPrimitive)]
 pub enum LogonErrorNotificationType {
     DisconnectRefuse = 0xFFFF_FFF9,
     NoPermission = 0xFFFF_FFFA,
@@ -180,7 +180,7 @@ pub enum LogonErrorNotificationType {
 }
 
 #[repr(u32)]
-#[derive(Debug, Clone, PartialEq, FromPrimitive, ToPrimitive)]
+#[derive(Debug, Clone, PartialEq, Eq, FromPrimitive, ToPrimitive)]
 pub enum LogonErrorNotificationData {
     FailedBadPassword = 0x0000_0000,
     FailedUpdatePassword = 0x0000_0001,

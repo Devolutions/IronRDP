@@ -14,7 +14,7 @@ pub const DVC_CREATION_STATUS_NO_LISTENER: u32 = 0xC000_0001;
 
 const DVC_CREATION_STATUS_SIZE: usize = 4;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CreateRequestPdu {
     pub channel_id_type: FieldType,
     pub channel_id: u32,
@@ -59,7 +59,7 @@ impl CreateRequestPdu {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CreateResponsePdu {
     pub channel_id_type: FieldType,
     pub channel_id: u32,

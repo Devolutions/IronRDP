@@ -12,7 +12,7 @@ use crate::{impl_from_error, PduParsing};
 use bitflags::bitflags;
 const RDP_DISPLAY_HEADER_SIZE: usize = 8;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DisplayControlCapsPdu {
     pub max_num_monitors: u32,
     pub max_monitor_area_factora: u32,
@@ -53,7 +53,7 @@ bitflags! {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, FromPrimitive, ToPrimitive)]
+#[derive(Debug, Clone, PartialEq, Eq, FromPrimitive, ToPrimitive)]
 pub enum Orientation {
     Landscape = 0,
     Portrait = 90,
@@ -61,7 +61,7 @@ pub enum Orientation {
     PortraitFlipped = 270,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Monitor {
     pub flags: MonitorFlags,
     pub left: u32,
@@ -129,7 +129,7 @@ impl PduParsing for Monitor {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MonitorLayoutPdu {
     pub monitors: Vec<Monitor>,
 }
@@ -163,7 +163,7 @@ impl PduParsing for MonitorLayoutPdu {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ServerPdu {
     DisplayControlCaps(DisplayControlCapsPdu),
 }
@@ -212,7 +212,7 @@ impl PduParsing for ServerPdu {
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, FromPrimitive, ToPrimitive)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive, ToPrimitive)]
 pub enum ServerPduType {
     DisplayControlCaps = 0x05,
 }
@@ -225,7 +225,7 @@ impl<'a> From<&'a ServerPdu> for ServerPduType {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ClientPdu {
     DisplayControlMonitorLayout(MonitorLayoutPdu),
 }
@@ -276,7 +276,7 @@ impl PduParsing for ClientPdu {
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, FromPrimitive, ToPrimitive)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive, ToPrimitive)]
 pub enum ClientPduType {
     DisplayControlMonitorLayout = 0x02,
 }

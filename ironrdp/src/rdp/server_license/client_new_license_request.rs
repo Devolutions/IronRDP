@@ -37,7 +37,7 @@ bitflags! {
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct ClientNewLicenseRequest {
     pub license_header: LicenseHeader,
     pub client_random: Vec<u8>,

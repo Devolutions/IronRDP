@@ -10,7 +10,7 @@ use crate::PduParsing;
 const CLIENT_FLAGS_SIZE: usize = 4;
 const SERVER_MCS_MESSAGE_CHANNEL_ID_SIZE: usize = 2;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClientMessageChannelData;
 
 impl PduParsing for ClientMessageChannelData {
@@ -32,7 +32,7 @@ impl PduParsing for ClientMessageChannelData {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServerMessageChannelData {
     pub mcs_message_channel_id: u16,
 }

@@ -35,7 +35,7 @@ const UNUSED_U8: u8 = 0;
 pub type DynamicChannels = HashMap<u32, String>;
 
 #[repr(u8)]
-#[derive(Debug, Copy, Clone, PartialEq, FromPrimitive, ToPrimitive)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive, ToPrimitive)]
 pub enum PduType {
     Create = 0x01,
     DataFirst = 0x02,
@@ -44,7 +44,7 @@ pub enum PduType {
     Capabilities = 0x05,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ServerPdu {
     CapabilitiesRequest(CapabilitiesRequestPdu),
     CreateRequest(CreateRequestPdu),
@@ -126,7 +126,7 @@ impl ServerPdu {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ClientPdu {
     CapabilitiesResponse(CapabilitiesResponsePdu),
     CreateResponse(CreateResponsePdu),
@@ -208,7 +208,7 @@ impl ClientPdu {
 }
 
 #[repr(u8)]
-#[derive(Debug, Copy, Clone, PartialEq, FromPrimitive, ToPrimitive)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive, ToPrimitive)]
 pub enum FieldType {
     U8 = 0x00,
     U16 = 0x01,

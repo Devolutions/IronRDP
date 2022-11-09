@@ -14,7 +14,7 @@ const FONT_PDU_SIZE: usize = 2 * 4;
 const SYNCHRONIZE_MESSAGE_TYPE: u16 = 1;
 const MAX_MONITOR_COUNT: u32 = 64;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SynchronizePdu {
     pub target_user_id: u16,
 }
@@ -45,7 +45,7 @@ impl PduParsing for SynchronizePdu {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ControlPdu {
     pub action: ControlAction,
     pub grant_id: u16,
@@ -81,7 +81,7 @@ impl PduParsing for ControlPdu {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FontPdu {
     pub number: u16,
     pub total_number: u16,
@@ -121,7 +121,7 @@ impl PduParsing for FontPdu {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MonitorLayoutPdu {
     pub monitors: Vec<gcc::Monitor>,
 }
@@ -159,7 +159,7 @@ impl PduParsing for MonitorLayoutPdu {
 }
 
 #[repr(u16)]
-#[derive(Debug, Clone, PartialEq, FromPrimitive, ToPrimitive)]
+#[derive(Debug, Clone, PartialEq, Eq, FromPrimitive, ToPrimitive)]
 pub enum ControlAction {
     RequestControl = 1,
     GrantedControl = 2,

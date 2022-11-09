@@ -80,7 +80,7 @@ impl<'a> ImageRegion<'a> {
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, ToPrimitive)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, ToPrimitive)]
 pub enum PixelFormat {
     ARgb32 = 536_971_400,
     XRgb32 = 536_938_632,

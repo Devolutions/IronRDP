@@ -11,7 +11,7 @@ use crate::{impl_from_error, PduParsing};
 
 const FLAGS_SIZE: usize = 4;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MultiTransportChannelData {
     pub flags: MultiTransportFlags,
 }

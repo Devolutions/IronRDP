@@ -23,7 +23,7 @@ const INFO_TYPE_FIELD_SIZE: usize = 4;
 const PLAIN_NOTIFY_PADDING_SIZE: usize = 576;
 const PLAIN_NOTIFY_PADDING_BUFFER: [u8; PLAIN_NOTIFY_PADDING_SIZE] = [0; PLAIN_NOTIFY_PADDING_SIZE];
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SaveSessionInfoPdu {
     pub info_type: InfoType,
     pub info_data: InfoData,
@@ -84,7 +84,7 @@ impl PduParsing for SaveSessionInfoPdu {
 }
 
 #[repr(u32)]
-#[derive(Debug, Clone, PartialEq, FromPrimitive, ToPrimitive)]
+#[derive(Debug, Clone, PartialEq, Eq, FromPrimitive, ToPrimitive)]
 pub enum InfoType {
     Logon = 0x0000_0000,
     LogonLong = 0x0000_0001,
@@ -92,7 +92,7 @@ pub enum InfoType {
     LogonExtended = 0x0000_0003,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InfoData {
     LogonInfoV1(LogonInfoVersion1),
     LogonInfoV2(LogonInfoVersion2),

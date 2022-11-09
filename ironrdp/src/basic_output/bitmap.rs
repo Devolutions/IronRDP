@@ -15,7 +15,7 @@ pub const COMPRESSED_DATA_HEADER_SIZE: usize = 8;
 pub const BITMAP_DATA_MAIN_DATA_SIZE: usize = 12;
 pub const FIRST_ROW_SIZE_VALUE: u16 = 0;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Bitmap<'a> {
     pub rectangles_number: usize,
     pub rectangles: Vec<BitmapData<'a>>,
@@ -58,7 +58,7 @@ impl<'a> PduBufferParsing<'a> for Bitmap<'a> {
     }
 }
 
-#[derive(Clone, PartialEq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct BitmapData<'a> {
     pub rectangle: Rectangle,
     pub width: u16,
@@ -155,7 +155,7 @@ impl<'a> Debug for BitmapData<'a> {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CompressedDataHeader {
     pub main_body_size: u16,
     pub scan_width: u16,

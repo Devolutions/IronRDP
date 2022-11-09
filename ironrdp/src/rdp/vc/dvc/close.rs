@@ -7,7 +7,7 @@ use super::{FieldType, Header, PduType, HEADER_SIZE, UNUSED_U8};
 use crate::rdp::vc::ChannelError;
 use crate::PduParsing;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClosePdu {
     pub channel_id_type: FieldType,
     pub channel_id: u32,

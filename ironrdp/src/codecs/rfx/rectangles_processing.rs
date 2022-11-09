@@ -5,7 +5,7 @@ use std::cmp::{max, min};
 
 use crate::utils::Rectangle;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Region {
     extents: Rectangle,
     rectangles: Vec<Rectangle>,

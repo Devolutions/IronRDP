@@ -20,7 +20,7 @@ bitflags! {
     }
 }
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub struct Bitmap {
     pub pref_bits_per_pix: u16,
     pub desktop_width: u16,

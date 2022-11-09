@@ -12,14 +12,14 @@ use crate::PduParsing;
 
 const BRUSH_LENGTH: usize = 4;
 
-#[derive(Copy, Clone, Debug, PartialEq, FromPrimitive, ToPrimitive)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, FromPrimitive, ToPrimitive)]
 pub enum SupportLevel {
     Default = 0,
     Color8x8 = 1,
     ColorFull = 2,
 }
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub struct Brush {
     pub support_level: SupportLevel,
 }

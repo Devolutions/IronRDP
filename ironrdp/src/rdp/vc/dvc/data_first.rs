@@ -7,7 +7,7 @@ use super::{FieldType, Header, PduType, HEADER_SIZE, PDU_WITH_DATA_MAX_SIZE};
 use crate::rdp::vc::ChannelError;
 use crate::PduParsing;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DataFirstPdu {
     pub channel_id_type: FieldType,
     pub channel_id: u32,

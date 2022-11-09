@@ -8,7 +8,7 @@ use crate::PduParsing;
 
 const WHEEL_ROTATION_MASK: u16 = 0x00FF;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MousePdu {
     pub wheel_events: WheelEvents,
     pub movement_events: MovementEvents,

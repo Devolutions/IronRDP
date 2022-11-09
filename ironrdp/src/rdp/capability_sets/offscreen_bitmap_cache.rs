@@ -10,7 +10,7 @@ use crate::PduParsing;
 
 const OFFSCREEN_BITMAP_CACHE_LENGTH: usize = 8;
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub struct OffscreenBitmapCache {
     pub is_supported: bool,
     pub cache_size: u16,

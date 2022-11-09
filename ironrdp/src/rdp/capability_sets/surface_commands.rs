@@ -19,7 +19,7 @@ bitflags! {
     }
 }
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub struct SurfaceCommands {
     pub flags: CmdFlags,
 }

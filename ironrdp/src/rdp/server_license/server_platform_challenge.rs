@@ -13,7 +13,7 @@ use crate::PduParsing;
 
 const CONNECT_FLAGS_FIELD_SIZE: usize = 4;
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq)]
 pub struct ServerPlatformChallenge {
     pub license_header: LicenseHeader,
     pub encrypted_platform_challenge: Vec<u8>,

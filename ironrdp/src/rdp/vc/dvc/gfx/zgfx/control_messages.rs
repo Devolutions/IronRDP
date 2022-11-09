@@ -6,7 +6,7 @@ use num_traits::FromPrimitive;
 
 use super::ZgfxError;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SegmentedDataPdu<'a> {
     Single(BulkEncodedData<'a>),
     Multipart {
@@ -44,7 +44,7 @@ impl<'a> SegmentedDataPdu<'a> {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BulkEncodedData<'a> {
     pub compression_flags: CompressionFlags,
     pub data: &'a [u8],

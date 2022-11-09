@@ -13,7 +13,7 @@ const CHANNEL_ID: u8 = 0;
 
 const CHANNEL_SIZE: usize = 5;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SyncPdu;
 
 impl<'a> PduBufferParsing<'a> for SyncPdu {
@@ -53,7 +53,7 @@ impl<'a> PduBufferParsing<'a> for SyncPdu {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CodecVersionsPdu;
 
 impl CodecVersionsPdu {
@@ -97,7 +97,7 @@ impl<'a> PduBufferParsing<'a> for CodecVersionsPdu {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChannelsPdu(pub Vec<Channel>);
 
 impl ChannelsPdu {
@@ -151,7 +151,7 @@ impl<'a> PduBufferParsing<'a> for ChannelsPdu {
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub struct Channel {
     pub width: i16,
     pub height: i16,

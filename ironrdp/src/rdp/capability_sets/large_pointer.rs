@@ -6,7 +6,7 @@ use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use crate::rdp::CapabilitySetsError;
 use crate::PduParsing;
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub struct LargePointer {
     pub flags: LargePointerSupportFlags,
 }

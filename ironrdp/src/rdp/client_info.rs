@@ -33,7 +33,7 @@ const RECONNECT_COOKIE_LENGTH_SIZE: usize = 2;
 const BIAS_SIZE: usize = 4;
 const SYSTEM_TIME_SIZE: usize = 16;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClientInfo {
     pub credentials: Credentials,
     pub code_page: u32,
@@ -151,14 +151,14 @@ impl PduParsing for ClientInfo {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Credentials {
     pub username: String,
     pub password: String,
     pub domain: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExtendedClientInfo {
     pub address_family: AddressFamily,
     pub address: String,
@@ -220,7 +220,7 @@ impl ExtendedClientInfo {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ExtendedClientOptionalInfo {
     pub timezone: Option<TimezoneInfo>,
     pub session_id: Option<u32>,
@@ -300,7 +300,7 @@ impl PduParsing for ExtendedClientOptionalInfo {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TimezoneInfo {
     pub bias: u32,
     pub standard_name: String,
@@ -367,7 +367,7 @@ impl PduParsing for TimezoneInfo {
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SystemTime {
     pub month: Month,
     pub day_of_week: DayOfWeek,
@@ -449,7 +449,7 @@ impl PduParsing for Option<SystemTime> {
 }
 
 #[repr(u16)]
-#[derive(Debug, Copy, Clone, PartialEq, FromPrimitive, ToPrimitive)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive, ToPrimitive)]
 pub enum Month {
     January = 1,
     February = 2,
@@ -466,7 +466,7 @@ pub enum Month {
 }
 
 #[repr(u16)]
-#[derive(Debug, Copy, Clone, PartialEq, FromPrimitive, ToPrimitive)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive, ToPrimitive)]
 pub enum DayOfWeek {
     Sunday = 0,
     Monday = 1,
@@ -478,7 +478,7 @@ pub enum DayOfWeek {
 }
 
 #[repr(u16)]
-#[derive(Debug, Copy, Clone, PartialEq, FromPrimitive, ToPrimitive)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive, ToPrimitive)]
 pub enum DayOfWeekOccurrence {
     First = 1,
     Second = 2,
@@ -503,7 +503,7 @@ bitflags! {
 }
 
 #[repr(u16)]
-#[derive(Debug, Copy, Clone, PartialEq, FromPrimitive, ToPrimitive)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive, ToPrimitive)]
 pub enum AddressFamily {
     INet = 0x0002,
     INet6 = 0x0017,
@@ -535,7 +535,7 @@ bitflags! {
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, FromPrimitive, ToPrimitive)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive, ToPrimitive)]
 pub enum CompressionType {
     K8 = 0,
     K64 = 1,

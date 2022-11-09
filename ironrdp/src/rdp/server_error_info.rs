@@ -7,7 +7,7 @@ use num_traits::{FromPrimitive, ToPrimitive};
 
 use crate::{impl_from_error, PduParsing};
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServerSetErrorInfoPdu(pub ErrorInfo);
 
 impl PduParsing for ServerSetErrorInfoPdu {
@@ -32,7 +32,7 @@ impl PduParsing for ServerSetErrorInfoPdu {
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum ErrorInfo {
     ProtocolIndependentCode(ProtocolIndependentCode),
     ProtocolIndependentLicensingCode(ProtocolIndependentLicensingCode),
@@ -103,7 +103,7 @@ impl ToPrimitive for ErrorInfo {
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, FromPrimitive, ToPrimitive)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive, ToPrimitive)]
 pub enum ProtocolIndependentCode {
     None = 0x0000_0000,
     RpcInitiatedDisconnect = 0x0000_0001,
@@ -150,7 +150,7 @@ impl ProtocolIndependentCode {
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, FromPrimitive, ToPrimitive)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive, ToPrimitive)]
 pub enum ProtocolIndependentLicensingCode {
     Internal = 0x0000_0100,
     NoLicenseServer = 0x0000_0101,
@@ -185,7 +185,7 @@ impl ProtocolIndependentLicensingCode {
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, FromPrimitive, ToPrimitive)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive, ToPrimitive)]
 pub enum ProtocolIndependentConnectionBrokerCode {
     DestinationNotFound = 0x0000_0400,
     LoadingDestination = 0x0000_0402,
@@ -218,7 +218,7 @@ impl ProtocolIndependentConnectionBrokerCode {
     }
 }
 
-#[derive(Debug, Copy, Clone, PartialEq, FromPrimitive, ToPrimitive)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive, ToPrimitive)]
 pub enum RdpSpecificCode {
     UnknownPduType2 = 0x0000_10C9,
     UnknownPduType = 0x0000_10CA,
