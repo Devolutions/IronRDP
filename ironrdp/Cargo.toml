@@ -6,8 +6,7 @@ readme = "../README.md"
 license = "MIT/Apache-2.0"
 homepage = "https://github.com/Devolutions/IronRDP"
 repository = "https://github.com/Devolutions/IronRDP"
-authors = ["Marc-André Moreau <mamoreau@devolutions.net>",
-           "Vlad Aleksashyn <vlad.al.dp@gmail.com"]
+authors = ["Devolutions Inc. <infos@devolutions.net>"]
 description = "A Rust implementation of the Microsoft Remote Desktop Protocol"
 keywords = ["rdp", "remote", "desktop", "protocol"]
 
@@ -29,3 +28,6 @@ num-traits = "0.2.14"
 ring = "0.16.20"
 x509-parser = "0.14"
 tap = "1.0.1"
+
+[dev-dependencies]
+proptest = "1.0.0"

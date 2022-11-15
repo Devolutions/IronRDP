@@ -1,7 +1,7 @@
 #[cfg(test)]
 mod tests;
 
-use std::io::{self};
+use std::io;
 
 use byteorder::WriteBytesExt;
 use num_derive::ToPrimitive;
@@ -93,7 +93,7 @@ pub enum PixelFormat {
 }
 
 impl PixelFormat {
-    pub fn bytes_per_pixel(self) -> u8 {
+    pub const fn bytes_per_pixel(self) -> u8 {
         match self {
             Self::ARgb32
             | Self::XRgb32

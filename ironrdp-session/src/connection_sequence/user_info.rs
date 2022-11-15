@@ -127,7 +127,7 @@ fn create_core_data(config: &InputConfig, selected_protocol: SecurityProtocol) -
         color_depth: ColorDepth::Bpp4, // ignored
         sec_access_sequence: SecureAccessSequence::Del,
         keyboard_layout: 0, // the server SHOULD use the default active input locale identifier
-        client_build: semver::Version::parse(clap::crate_version!())
+        client_build: semver::Version::parse(env!("CARGO_PKG_VERSION"))
             .map(|version| version.major * 100 + version.minor * 10 + version.patch)
             .unwrap_or(0) as u32,
         client_name: whoami::hostname(),
@@ -138,6 +138,7 @@ fn create_core_data(config: &InputConfig, selected_protocol: SecurityProtocol) -
         optional_data: create_optional_core_data(config, selected_protocol)?,
     })
 }
+
 fn create_optional_core_data(
     config: &InputConfig,
     selected_protocol: SecurityProtocol,

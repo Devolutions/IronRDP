@@ -16,17 +16,13 @@ fn decode_decodes_valid_sequence_of_messages() {
     let mut data = ENCODED_MESSAGES.as_ref();
     let expected = DECODED_IMAGE.as_ref();
 
-    let image = Arc::new(Mutex::new(DecodedImage::new(
-        IMAGE_WIDTH as u32,
-        IMAGE_HEIGHT as u32,
-        PixelFormat::BgrX32,
-    )));
+    let mut image = DecodedImage::new(PixelFormat::BgrX32, IMAGE_WIDTH as u32, IMAGE_HEIGHT as u32);
 
-    let mut handler = DecodingContext::new(PixelFormat::BgrX32);
+    let mut handler = DecodingContext::default();
 
-    handler.decode(&destination, &mut data, image.clone()).unwrap();
+    handler.decode(&mut image, &destination, &mut data).unwrap();
 
-    assert_eq!(expected, image.lock().unwrap().data.as_slice());
+    assert_eq!(expected, image.data());
 }
 
 const ENCODED_MESSAGES: [u8; 2970] = [

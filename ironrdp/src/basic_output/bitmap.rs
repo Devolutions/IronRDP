@@ -133,14 +133,15 @@ impl<'a> PduBufferParsing<'a> for BitmapData<'a> {
         BITMAP_DATA_MAIN_DATA_SIZE + self.bitmap_data_length
     }
 }
-impl<'a> Debug for BitmapData<'a> {
+
+impl Debug for BitmapData<'_> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         write!(
             f,
-            "BitmapData:[{:?}, 
-            width - {}, 
-            height - {}, 
-            bits_per_pixel - {}, 
+            "BitmapData:[{:?},
+            width - {},
+            height - {},
+            bits_per_pixel - {},
             compression_flags - ({:?}),
             compressed_data_header - {:?}
             \nReceived Bitmap data buffer with length - {}\n]",

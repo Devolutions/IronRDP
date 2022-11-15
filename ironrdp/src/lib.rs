@@ -25,7 +25,7 @@ pub use crate::utils::Rectangle;
 pub use crate::x224::*;
 
 pub trait PduParsing {
-    type Error;
+    type Error; // FIXME: this bound type should probably be removed for the sake of simplicity
 
     fn from_buffer(stream: impl std::io::Read) -> Result<Self, Self::Error>
     where
@@ -35,7 +35,7 @@ pub trait PduParsing {
 }
 
 pub trait PduBufferParsing<'a>: Sized {
-    type Error;
+    type Error; // FIXME: this bound type should probably be removed for the sake of simplicity
 
     fn from_buffer(mut buffer: &'a [u8]) -> Result<Self, Self::Error> {
         Self::from_buffer_consume(&mut buffer)

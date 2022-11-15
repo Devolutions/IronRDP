@@ -7,8 +7,8 @@ use crate::utils::Rectangle;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Region {
-    extents: Rectangle,
-    rectangles: Vec<Rectangle>,
+    pub extents: Rectangle,
+    pub rectangles: Vec<Rectangle>,
 }
 
 impl Region {
@@ -17,14 +17,6 @@ impl Region {
             extents: Rectangle::empty(),
             rectangles: Vec::new(),
         }
-    }
-
-    pub fn rectangles(&self) -> &[Rectangle] {
-        self.rectangles.as_slice()
-    }
-
-    pub fn extents(&self) -> &Rectangle {
-        &self.extents
     }
 
     pub fn union_rectangle(&mut self, rectangle: Rectangle) {

@@ -1,18 +1,21 @@
+#[macro_use]
+extern crate log;
+
+mod codecs;
 mod errors;
 mod utils;
 
-use ironrdp::{gcc, nego};
-use tokio::net::TcpStream;
-
 pub mod active_session;
 pub mod connection_sequence;
+pub mod image;
 pub mod transport;
 
-pub use self::active_session::process_active_stage;
-pub use self::connection_sequence::{process_connection_sequence, ConnectionSequenceResult, UpgradedStream};
-pub use self::errors::RdpError;
+use ironrdp::{gcc, nego};
 
-mod codecs;
+pub use crate::active_session::{ActiveStageOutput, ActiveStageProcessor};
+pub use crate::codecs::{ErasedWriter, FramedReader};
+pub use crate::connection_sequence::{process_connection_sequence, ConnectionSequenceResult, UpgradedStream};
+pub use crate::errors::RdpError;
 
 pub struct GraphicsConfig {
     pub avc444: bool,
@@ -31,17 +34,8 @@ pub struct InputConfig {
     pub ime_file_name: String,
     pub dig_product_id: String,
     pub width: u16,
-
     pub height: u16,
     pub global_channel_name: String,
     pub user_channel_name: String,
     pub graphics_config: Option<GraphicsConfig>,
 }
-
-#[cfg(all(feature = "native-tls", not(feature = "rustls")))]
-use async_native_tls::TlsStream;
-
-#[cfg(feature = "rustls")]
-use tokio_rustls::client::TlsStream;
-
-pub type TlsStreamType = TlsStream<TcpStream>;

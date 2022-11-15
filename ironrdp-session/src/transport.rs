@@ -1,32 +1,33 @@
-use std::io::{self};
+mod channels;
+mod connection;
+
+use std::io;
 use std::marker::PhantomData;
 
 use bytes::BytesMut;
 use ironrdp::rdp::SERVER_CHANNEL_ID;
 use ironrdp::{PduParsing, RdpPdu};
-use log::warn;
 
 use crate::RdpError;
-
-mod channels;
-mod connection;
 
 pub use self::channels::{ChannelIdentificators, DynamicVirtualChannelTransport, StaticVirtualChannelTransport};
 pub use self::connection::{connect, EarlyUserAuthResult, TsRequestTransport};
 
 pub trait Encoder {
     type Item;
-    type Error;
+    type Error; // FIXME: this bound type should probably be removed for the sake of simplicity
 
     fn encode(&mut self, item: Self::Item, stream: impl io::Write) -> Result<(), Self::Error>;
 }
 
 pub trait Decoder {
     type Item;
-    type Error;
+    type Error; // FIXME: this bound type should probably be removed for the sake of simplicity
 
     fn decode(&mut self, stream: impl io::Read) -> Result<Self::Item, Self::Error>;
 }
+
+// FIXME: is "transport" a good naming for these structs?
 
 #[derive(Copy, Clone, Debug)]
 pub struct DataTransport {
@@ -388,7 +389,7 @@ pub enum TransportState {
     Decoded,
 }
 
-#[derive(Debug, Copy, Clone, Default)]
+#[derive(Debug, Copy, Clone)]
 pub struct RdpTransport;
 
 impl Decoder for RdpTransport {

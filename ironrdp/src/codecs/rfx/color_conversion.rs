@@ -4,10 +4,12 @@ mod tests;
 use std::cmp::{max, min};
 use std::io::{self, Write};
 
+// TODO: extract in an auxiliary crate? ironrdp-utils? Try to keep core small
+
 const DIVISOR: f32 = (1 << 16) as f32;
 const ALPHA: u8 = 255;
 
-pub fn ycbcr_to_rgb(input: YCbCrBuffer<'_>, mut output: &mut [u8]) -> io::Result<()> {
+pub fn ycbcr_to_bgra(input: YCbCrBuffer<'_>, mut output: &mut [u8]) -> io::Result<()> {
     for ycbcr in input {
         let pixel = Rgb::from(ycbcr);
 
