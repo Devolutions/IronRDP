@@ -1,0 +1,45 @@
+import {Injectable} from "@angular/core";
+import {NewSessionInfo, ServerBridgeService} from "./server-bridge.service";
+import * as IronWasm from "../../assets/pkg/ironrdp";
+import {Observable, of, Subject} from "rxjs";
+
+@Injectable()
+export class WasmBridgeService implements ServerBridgeService {
+  private wasmBridge = IronWasm;
+
+  private _resize: Subject<any> = new Subject<any>();
+  private _updateImage: Subject<any> = new Subject<any>();
+
+  resize: Observable<any>;
+  updateImage: Observable<any>;
+
+  constructor() {
+    this.resize = this._resize.asObservable();
+    this.updateImage = this._updateImage.asObservable();
+  }
+
+  init(): void {
+    this.wasmBridge.init();
+  }
+
+  // connect(username: string, password: string, address: string): Observable<number> {
+  //   this.wasmBridge.connect(username, password, address);
+  //   return of(0);
+  // }
+
+  updateMouse(mouse_x: number, mouse_y: number, click_state: number): void {
+  }
+
+  connect(username: string, password: string, address: string): Observable<NewSessionInfo> {
+    this.wasmBridge.connect(username, password, address);
+    return of({
+      session_id: 0,
+      initial_desktop_size: {
+        height: 0,
+        width: 0
+      },
+      websocket_port: 0
+    });
+    ;
+  }
+}
