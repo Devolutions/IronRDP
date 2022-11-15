@@ -19,20 +19,20 @@ use crate::{GraphicsConfig, RdpError};
 const RDP8_GRAPHICS_PIPELINE_NAME: &str = "Microsoft::Windows::RDS::Graphics";
 const RDP8_DISPLAY_PIPELINE_NAME: &str = "Microsoft::Windows::RDS::DisplayControl";
 
-pub struct Processor<'a> {
+pub struct Processor {
     static_channels: HashMap<u16, String>,
     channel_map: HashMap<String, u32>,
     dynamic_channels: HashMap<u32, DynamicChannel>,
-    global_channel_name: &'a str,
+    global_channel_name: String,
     drdynvc_transport: Option<DynamicVirtualChannelTransport>,
     static_transport: Option<ShareDataHeaderTransport>,
     graphics_config: Option<GraphicsConfig>,
 }
 
-impl<'a> Processor<'a> {
+impl Processor {
     pub fn new(
         static_channels: HashMap<u16, String>,
-        global_channel_name: &'a str,
+        global_channel_name: String,
         graphics_config: Option<GraphicsConfig>,
     ) -> Self {
         Self {
@@ -334,11 +334,11 @@ pub struct DynamicChannel {
     data: CompleteData,
     channel_id_type: FieldType,
     channel_id: u32,
-    handler: Box<dyn DynamicChannelDataHandler>,
+    handler: Box<dyn DynamicChannelDataHandler + Send>,
 }
 
 impl DynamicChannel {
-    fn new(handler: Box<dyn DynamicChannelDataHandler>, channel_id: u32, channel_id_type: FieldType) -> Self {
+    fn new(handler: Box<dyn DynamicChannelDataHandler + Send>, channel_id: u32, channel_id_type: FieldType) -> Self {
         Self {
             data: CompleteData::new(),
             handler,

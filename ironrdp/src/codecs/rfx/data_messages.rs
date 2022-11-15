@@ -274,6 +274,7 @@ impl<'a> PduBufferParsing<'a> for RegionPdu {
 pub struct TileSetPdu<'a> {
     pub entropy_algorithm: EntropyAlgorithm,
     pub quants: Vec<Quant>,
+    // TODO: improve ergonomic and performance (no copy). Hint: use the `bytes` crate.
     pub tiles: Vec<Tile<'a>>,
 }
 
@@ -558,12 +559,13 @@ impl<'a> PduBufferParsing<'a> for Tile<'a> {
         }
 
         let y_start = 0;
-        let cb_start = y_component_length;
-        let cr_start = y_component_length + cb_component_length;
+        let cb_start = y_start + y_component_length;
+        let cr_start = cb_start + cb_component_length;
+        let cr_end = cr_start + cr_component_length;
 
-        let y_data = &buffer[y_start..y_component_length];
-        let cb_data = &buffer[cb_start..cb_start + cb_component_length];
-        let cr_data = &buffer[cr_start..cr_start + cr_component_length];
+        let y_data = &buffer[y_start..cb_start];
+        let cb_data = &buffer[cb_start..cr_start];
+        let cr_data = &buffer[cr_start..cr_end];
 
         Ok(Self {
             y_quant_index,

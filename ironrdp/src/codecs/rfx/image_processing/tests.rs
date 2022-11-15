@@ -1,4 +1,56 @@
+use proptest::prelude::*;
+
 use super::*;
+
+fn bgra_to_rgba(input: &[u8], mut output: &mut [u8]) -> io::Result<()> {
+    use std::io::Write as _;
+
+    for chunk in input.chunks(4) {
+        let b = chunk[0];
+        let g = chunk[1];
+        let r = chunk[2];
+        let a = chunk[3];
+        output.write_all(&[r, g, b, a])?;
+    }
+
+    Ok(())
+}
+
+#[test]
+fn image_region_copy_bgra32_to_rgba32() {
+    proptest!(|(source_buffer in proptest::collection::vec(any::<u8>(), 8 * 8 * 4))| {
+        let source_region = ImageRegion {
+            region: Rectangle {
+                left: 0,
+                top: 0,
+                right: 8,
+                bottom: 8,
+            },
+            step: 32,
+            pixel_format: PixelFormat::BgrA32,
+            data: &source_buffer,
+        };
+
+        let mut destination_buffer = vec![0; 8 * 8 * 4];
+        let mut destination_region = ImageRegionMut {
+            region: Rectangle {
+                left: 0,
+                top: 0,
+                right: 8,
+                bottom: 8,
+            },
+            step: 32,
+            pixel_format: PixelFormat::RgbA32,
+            data: &mut destination_buffer,
+        };
+        source_region.copy_to(&mut destination_region).unwrap();
+
+        let mut expected = vec![0; 8 * 8 * 4];
+        bgra_to_rgba(&source_buffer, &mut expected).unwrap();
+
+        prop_assert_eq!(destination_buffer, expected);
+    })
+}
 
 #[test]
 fn image_region_correctly_writes_image_with_different_formats_with_same_sizes() {

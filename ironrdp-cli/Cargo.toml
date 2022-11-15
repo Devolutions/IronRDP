@@ -1,22 +1,13 @@
 [package]
-name = "ironrdp_client"
+name = "ironrdp-cli"
 version = "0.4.2"
 edition = "2021"
 readme = "README.md"
 license = "MIT/Apache-2.0"
 homepage = "https://github.com/Devolutions/IronRDP"
 repository = "https://github.com/Devolutions/IronRDP"
-authors = ["Marc-André Moreau <mamoreau@devolutions.net>",
-           "Vladyslav Hordiienko <hord.vlad@gmail.com"]
+authors = ["Devolutions Inc. <infos@devolutions.net>"]
 keywords = ["rdp", "client", "remote", "desktop", "protocol", "gfx", "rfx"]
-
-[lib]
-name = "ironrdp_client"
-path = "src/lib.rs"
-
-[[bin]]
-name = "ironrdp_client_app"
-path = "src/main.rs"
 
 [features]
 default = ["rustls"]
@@ -24,31 +15,32 @@ rustls = ["dep:rustls", "dep:tokio-rustls"]
 native-tls = ["dep:native-tls", "dep:async-native-tls"]
 
 [dependencies]
+
+# Protocol
 ironrdp = { path = "../ironrdp" }
-sspi = { version = "0.5.1", features = ["network_client"] }
+ironrdp-session = { path = "../ironrdp-session" }
+sspi = "0.4.0"
+
+# CLI
 clap = { version = "4.0", features = ["derive", "cargo"] }
-bytes = "1"
-failure = "0.1"
-chrono = "0.4"
-fern = "0.6"
+exitcode = "1.1.2"
+
+# logging
 log = "0.4"
+fern = "0.6"
+
+# SSL
 x509-parser = "0.14"
-whoami = "1"
-num-traits = "0.2"
-num-derive = "0.3"
-semver = "1"
-lazy_static = "1.4"
-exitcode = "1.1"
-bufstream = "0.1"
-ring = "0.16.0"
 native-tls = { version = "0.2", optional = true }
-async-native-tls = { version = "0.4", default-features = false, features = [ "runtime-tokio" ], optional = true }
 rustls = { version = "0.20", features = ["dangerous_configuration"], optional = true }
-dns-lookup = "1.0.8"
-bitflags = "1"
+
+# async, futures
 tokio = { version = "1", features = ["full"]}
+async-native-tls = { version = "0.4", default-features = false, features = [ "runtime-tokio" ], optional = true }
 tokio-rustls =  { version = "0.23", optional = true }
-bit_field = "0.10.1"
-tokio-util = { version = "0.7", features = ["full"] }
-byteorder = "1.4.3"
-futures = "0.3"
+tokio-util = { version = "0.7.4", features = ["compat"] }
+futures-util = "0.3"
+
+# Utils
+chrono = "0.4.22"
+image = "0.24.4"

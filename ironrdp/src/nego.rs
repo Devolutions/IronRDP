@@ -1,8 +1,8 @@
 #[cfg(test)]
 mod tests;
 
+use std::io;
 use std::io::prelude::*;
-use std::io::{self};
 
 use bitflags::bitflags;
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};

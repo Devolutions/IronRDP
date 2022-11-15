@@ -1,12 +1,10 @@
 use bytes::BytesMut;
-use futures::StreamExt;
+use futures_util::{AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _};
 use ironrdp::{nego, PduParsing};
 use log::debug;
 use sspi::internal::credssp;
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
-use tokio_util::codec::Framed;
 
-use crate::{codecs::RdpFrameCodec, RdpError};
+use crate::{codecs::FramedReader, RdpError};
 
 const MAX_TS_REQUEST_LENGTH_BUFFER_SIZE: usize = 4;
 
@@ -61,25 +59,26 @@ impl EarlyUserAuthResult {
     }
 }
 
-pub async fn connect(
-    mut stream: impl AsyncRead + AsyncWrite + Unpin,
+pub async fn connect<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
+    reader: &mut FramedReader<R>,
+    writer: W,
     security_protocol: nego::SecurityProtocol,
     username: String,
 ) -> Result<nego::SecurityProtocol, RdpError> {
-    let selected_protocol = process_negotiation(
-        &mut stream,
+    process_negotiation(
+        reader,
+        writer,
         Some(nego::NegoData::Cookie(username)),
         security_protocol,
         nego::RequestFlags::empty(),
         0,
     )
-    .await?;
-
-    Ok(selected_protocol)
+    .await
 }
 
-async fn process_negotiation(
-    mut stream: impl AsyncRead + AsyncWrite + Unpin,
+async fn process_negotiation<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
+    reader: &mut FramedReader<R>,
+    mut writer: W,
     nego_data: Option<nego::NegoData>,
     protocol: nego::SecurityProtocol,
     flags: nego::RequestFlags,
@@ -94,12 +93,10 @@ async fn process_negotiation(
     debug!("Send X.224 Connection Request PDU: {:?}", connection_request);
     let mut buffer = Vec::new();
     connection_request.to_buffer(&mut buffer)?;
-    stream.write_all(buffer.as_slice()).await?;
-    stream.flush().await?;
+    writer.write_all(&buffer).await?;
+    writer.flush().await?;
 
-    let mut framed = Framed::new(&mut stream, RdpFrameCodec::default());
-
-    let data = framed.next().await.ok_or(RdpError::AccessDenied)??;
+    let data = reader.read_frame().await?.ok_or(RdpError::AccessDenied)?;
     let connection_response = nego::Response::from_buffer(data.as_ref())?;
     if let Some(nego::ResponseData::Response {
         flags,

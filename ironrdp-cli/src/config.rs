@@ -1,7 +1,7 @@
 use std::{net::SocketAddr, num::ParseIntError};
 
 use clap::{clap_derive::ValueEnum, crate_name, Parser};
-use ironrdp_client::{GraphicsConfig, InputConfig};
+use ironrdp_session::{GraphicsConfig, InputConfig};
 use sspi::AuthIdentity;
 
 const DEFAULT_WIDTH: u16 = 1920;

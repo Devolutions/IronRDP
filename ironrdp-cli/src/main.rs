@@ -1,13 +1,25 @@
+#[macro_use]
+extern crate log;
+
 mod config;
 
-use std::io::{self};
+use std::io;
 
-use ironrdp_client::{process_active_stage, process_connection_sequence, RdpError, UpgradedStream};
-use log::error;
-use tokio::{io::AsyncWriteExt, net::TcpStream};
-use x509_parser::prelude::{FromDer, X509Certificate};
+use crate::config::Config;
+use futures_util::io::AsyncWriteExt as _;
+use ironrdp::codecs::rfx::image_processing::PixelFormat;
+use ironrdp_session::image::DecodedImage;
+use ironrdp_session::{process_connection_sequence, ActiveStageOutput, ActiveStageProcessor, RdpError, UpgradedStream};
+use tokio::io::AsyncWriteExt as _;
+use tokio::net::TcpStream;
+use tokio_util::compat::TokioAsyncReadCompatExt as _;
+use x509_parser::prelude::{FromDer as _, X509Certificate};
 
-use self::config::Config;
+#[cfg(feature = "rustls")]
+type TlsStream = tokio_util::compat::Compat<tokio_rustls::client::TlsStream<TcpStream>>;
+
+#[cfg(all(feature = "native-tls", not(feature = "rustls")))]
+type TlsStream = tokio_util::compat::Compat<async_native_tls::TlsStream<TcpStream>>;
 
 #[cfg(feature = "rustls")]
 mod danger {
@@ -41,13 +53,11 @@ async fn main() {
     let exit_code = match run(config).await {
         Ok(_) => {
             println!("RDP successfully finished");
-
             exitcode::OK
         }
         Err(RdpError::IOError(e)) if e.kind() == io::ErrorKind::UnexpectedEof => {
             error!("{}", e);
             println!("The server has terminated the RDP session");
-
             exitcode::NOHOST
         }
         Err(ref e) => {
@@ -82,20 +92,46 @@ fn setup_logging(log_file: &str) -> Result<(), fern::InitError> {
 }
 
 async fn run(config: Config) -> Result<(), RdpError> {
-    let addr = socket_addr_to_string(config.routing_addr);
-    let stream = TcpStream::connect(addr.as_str())
+    let stream = TcpStream::connect(config.routing_addr)
         .await
         .map_err(RdpError::ConnectionError)?;
 
-    let (connection_sequence_result, stream) =
-        process_connection_sequence(stream, &config.routing_addr, &config.input, establish_tls).await?;
+    let (connection_sequence_result, mut reader, mut writer) =
+        process_connection_sequence(stream.compat(), &config.routing_addr, &config.input, establish_tls).await?;
 
-    process_active_stage(stream, config.input, connection_sequence_result).await?;
+    let mut image = DecodedImage::new(
+        PixelFormat::RgbA32,
+        u32::from(connection_sequence_result.desktop_size.width),
+        u32::from(connection_sequence_result.desktop_size.height),
+    );
+
+    let mut active_stage = ActiveStageProcessor::new(config.input, connection_sequence_result);
+    let mut frame_id = 0;
+
+    'outer: loop {
+        let frame = reader.read_frame().await?.ok_or(RdpError::AccessDenied)?;
+        let outputs = active_stage.process(&mut image, frame).await?;
+        for out in outputs {
+            match out {
+                ActiveStageOutput::ResponseFrame(frame) => writer.write_all(&frame).await?,
+                ActiveStageOutput::GraphicsUpdate(_region) => {
+                    // TODO: control this with CLI argument
+                    dump_image(&image, frame_id);
+
+                    frame_id += 1;
+                }
+                ActiveStageOutput::Terminate => break 'outer,
+            }
+        }
+    }
 
     Ok(())
 }
 
-async fn establish_tls(stream: TcpStream) -> Result<UpgradedStream, RdpError> {
+// TODO: this can be refactored into a separate `ironrdp-tls` crate (all native clients will do the same TLS dance)
+async fn establish_tls(stream: tokio_util::compat::Compat<TcpStream>) -> Result<UpgradedStream<TlsStream>, RdpError> {
+    let stream = stream.into_inner();
+
     #[cfg(all(feature = "native-tls", not(feature = "rustls")))]
     let mut tls_stream = {
         let connector = async_native_tls::TlsConnector::new()
@@ -115,6 +151,7 @@ async fn establish_tls(stream: TcpStream) -> Result<UpgradedStream, RdpError> {
             .with_safe_defaults()
             .with_custom_certificate_verifier(std::sync::Arc::new(danger::NoCertificateVerification))
             .with_no_client_auth();
+        // This adds support for the SSLKEYLOGFILE env variable (https://wiki.wireshark.org/TLS#using-the-pre-master-secret)
         client_config.key_log = std::sync::Arc::new(rustls::KeyLogFile::new());
         let rc_config = std::sync::Arc::new(client_config);
         let example_com = "stub_string".try_into().unwrap();
@@ -145,13 +182,9 @@ async fn establish_tls(stream: TcpStream) -> Result<UpgradedStream, RdpError> {
     };
 
     Ok(UpgradedStream {
-        stream: tls_stream,
+        stream: tls_stream.compat(),
         server_public_key,
     })
-}
-
-pub fn socket_addr_to_string(socket_addr: std::net::SocketAddr) -> String {
-    format!("{}:{}", socket_addr.ip(), socket_addr.port())
 }
 
 pub fn get_tls_peer_pubkey(cert: Vec<u8>) -> io::Result<Vec<u8>> {
@@ -160,4 +193,13 @@ pub fn get_tls_peer_pubkey(cert: Vec<u8>) -> io::Result<Vec<u8>> {
     let public_key = res.1.tbs_certificate.subject_pki.subject_public_key;
 
     Ok(public_key.data.to_vec())
+}
+
+pub fn dump_image(image: &DecodedImage, frame_id: usize) {
+    debug_assert_eq!(image.pixel_format(), PixelFormat::RgbA32);
+
+    image::RgbaImage::from_raw(image.width(), image.height(), image.data().to_vec())
+        .unwrap()
+        .save(format!("frame.{frame_id}.jpg"))
+        .unwrap();
 }

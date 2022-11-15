@@ -2,10 +2,9 @@
 mod tests;
 
 use std::cmp::min;
-use std::sync::{Arc, Mutex};
 
 use ironrdp::codecs::rfx::color_conversion::YCbCrBuffer;
-use ironrdp::codecs::rfx::image_processing::{ImageRegion, ImageRegionMut, PixelFormat};
+use ironrdp::codecs::rfx::image_processing::PixelFormat;
 use ironrdp::codecs::rfx::rectangles_processing::Region;
 use ironrdp::codecs::rfx::{
     self, color_conversion, dwt, quantization, rlgr, subband_reconstruction, EntropyAlgorithm, Headers, Quant,
@@ -15,7 +14,7 @@ use ironrdp::{PduBufferParsing, Rectangle};
 use lazy_static::lazy_static;
 use log::debug;
 
-use crate::active_session::DecodedImage;
+use crate::image::DecodedImage;
 use crate::RdpError;
 
 const TILE_SIZE: u16 = 64;
@@ -31,12 +30,11 @@ pub struct DecodingContext {
     state: SequenceState,
     context: rfx::ContextPdu,
     channels: rfx::ChannelsPdu,
-    destination_pixel_format: PixelFormat,
     decoding_tiles: DecodingTileContext,
 }
 
-impl DecodingContext {
-    pub fn new(destination_pixel_format: PixelFormat) -> Self {
+impl Default for DecodingContext {
+    fn default() -> Self {
         Self {
             state: SequenceState::HeaderMessages,
             context: rfx::ContextPdu {
@@ -44,26 +42,29 @@ impl DecodingContext {
                 entropy_algorithm: rfx::EntropyAlgorithm::Rlgr1,
             },
             channels: rfx::ChannelsPdu(vec![]),
-            destination_pixel_format,
             decoding_tiles: DecodingTileContext::new(),
         }
+    }
+}
+
+impl DecodingContext {
+    pub fn new() -> Self {
+        Self::default()
     }
 
     pub fn decode(
         &mut self,
+        image: &mut DecodedImage,
         destination: &Rectangle,
         input: &mut &[u8],
-        image: Arc<Mutex<DecodedImage>>,
-    ) -> Result<FrameId, RdpError> {
+    ) -> Result<(FrameId, Rectangle), RdpError> {
         loop {
             match self.state {
                 SequenceState::HeaderMessages => {
                     self.process_headers(input)?;
                 }
                 SequenceState::DataMessages => {
-                    let frame_id = self.process_data_messages(destination, input, image)?;
-
-                    return Ok(frame_id);
+                    return self.process_data_messages(image, destination, input);
                 }
             }
         }
@@ -99,10 +100,10 @@ impl DecodingContext {
 
     fn process_data_messages(
         &mut self,
+        image: &mut DecodedImage,
         destination: &Rectangle,
         input: &mut &[u8],
-        image: Arc<Mutex<DecodedImage>>,
-    ) -> Result<FrameId, RdpError> {
+    ) -> Result<(FrameId, Rectangle), RdpError> {
         let width = self.channels.0.first().unwrap().width as u16;
         let height = self.channels.0.first().unwrap().height as u16;
         let entropy_algorithm = self.context.entropy_algorithm;
@@ -131,7 +132,6 @@ impl DecodingContext {
 
         let clipping_rectangles = clipping_rectangles(region.rectangles.as_slice(), destination, width, height);
         debug!("Clipping rectangles: {:?}", clipping_rectangles);
-        let clipping_rectangles_ref = &clipping_rectangles;
 
         for (update_rectangle, tile_data) in tiles_to_rectangles(tile_set.tiles.as_slice(), destination)
             .zip(map_tiles_data(tile_set.tiles.as_slice(), tile_set.quants.as_slice()))
@@ -144,13 +144,11 @@ impl DecodingContext {
                 self.decoding_tiles.ycbcr_temp_buffer.as_mut(),
             )?;
 
-            process_decoded_tile(
-                self.decoding_tiles.tile_output.as_slice(),
-                clipping_rectangles_ref,
+            image.apply_tile(
+                &self.decoding_tiles.tile_output,
+                &clipping_rectangles,
                 &update_rectangle,
                 width,
-                self.destination_pixel_format,
-                &image,
             )?;
         }
 
@@ -158,50 +156,8 @@ impl DecodingContext {
             self.state = SequenceState::HeaderMessages;
         }
 
-        Ok(frame_begin.index)
+        Ok((frame_begin.index, clipping_rectangles.extents))
     }
-}
-
-fn process_decoded_tile(
-    tile_output: &[u8],
-    clipping_rectangles: &Region,
-    update_rectangle: &Rectangle,
-    width: u16,
-    destination_pixel_format: PixelFormat,
-    image: &Arc<Mutex<DecodedImage>>,
-) -> Result<(), RdpError> {
-    debug!("Tile: {:?}", update_rectangle);
-
-    let update_region = clipping_rectangles.intersect_rectangle(update_rectangle);
-    for region_rectangle in update_region.rectangles() {
-        let source_x = region_rectangle.left - update_rectangle.left;
-        let source_y = region_rectangle.top - update_rectangle.top;
-        let source_image_region = ImageRegion {
-            region: Rectangle {
-                left: source_x,
-                top: source_y,
-                right: source_x + region_rectangle.width(),
-                bottom: source_y + region_rectangle.height(),
-            },
-            step: *SOURCE_STRIDE,
-            pixel_format: SOURCE_PIXEL_FORMAT,
-            data: tile_output,
-        };
-
-        let mut output = image.lock().unwrap();
-        let mut destination_image_region = ImageRegionMut {
-            region: region_rectangle.clone(),
-            step: width * u16::from(SOURCE_PIXEL_FORMAT.bytes_per_pixel()),
-            pixel_format: destination_pixel_format,
-            data: output.get_mut(),
-        };
-        debug!("Source image region: {:?}", source_image_region.region);
-        debug!("Destination image region: {:?}", destination_image_region.region);
-
-        source_image_region.copy_to(&mut destination_image_region)?;
-    }
-
-    Ok(())
 }
 
 #[derive(Debug, Clone)]
@@ -238,7 +194,7 @@ fn decode_tile(
         cr: ycbcr_temp[2].as_slice(),
     };
 
-    color_conversion::ycbcr_to_rgb(ycbcr_buffer, output)?;
+    color_conversion::ycbcr_to_bgra(ycbcr_buffer, output)?;
 
     Ok(())
 }
@@ -275,7 +231,7 @@ fn clipping_rectangles(rectangles: &[RfxRectangle], destination: &Rectangle, wid
 }
 
 fn tiles_to_rectangles<'a>(tiles: &'a [Tile<'_>], destination: &'a Rectangle) -> impl Iterator<Item = Rectangle> + 'a {
-    tiles.iter().map(move |t| Rectangle {
+    tiles.iter().map(|t| Rectangle {
         left: destination.left + t.x * TILE_SIZE,
         top: destination.top + t.y * TILE_SIZE,
         right: destination.left + t.x * TILE_SIZE + TILE_SIZE,
@@ -286,7 +242,7 @@ fn tiles_to_rectangles<'a>(tiles: &'a [Tile<'_>], destination: &'a Rectangle) ->
 fn map_tiles_data<'a>(tiles: &'_ [Tile<'a>], quants: &'_ [Quant]) -> Vec<TileData<'a>> {
     tiles
         .iter()
-        .map(move |t| TileData {
+        .map(|t| TileData {
             quants: [
                 quants[usize::from(t.y_quant_index)].clone(),
                 quants[usize::from(t.cb_quant_index)].clone(),

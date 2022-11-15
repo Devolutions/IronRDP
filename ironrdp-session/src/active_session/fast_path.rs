@@ -1,15 +1,14 @@
 use std::io;
-use std::sync::{Arc, Mutex};
 
 use ironrdp::codecs::rfx::FrameAcknowledgePdu;
 use ironrdp::fast_path::{FastPathError, FastPathHeader, FastPathUpdate, FastPathUpdatePdu, Fragmentation, UpdateCode};
 use ironrdp::surface_commands::{FrameAction, FrameMarkerPdu, SurfaceCommand};
-use ironrdp::{PduBufferParsing, ShareDataPdu};
+use ironrdp::{PduBufferParsing, Rectangle, ShareDataPdu};
 use log::{debug, info, warn};
 use num_traits::FromPrimitive;
 
 use super::codecs::rfx;
-use super::{DecodedImage, DESTINATION_PIXEL_FORMAT};
+use crate::image::DecodedImage;
 use crate::transport::{
     DataTransport, Encoder, McsTransport, SendDataContextTransport, ShareControlHeaderTransport,
     ShareDataHeaderTransport,
@@ -20,20 +19,21 @@ use crate::RdpError;
 pub struct Processor {
     complete_data: CompleteData,
     rfx_handler: rfx::DecodingContext,
-    decoded_image: Arc<Mutex<DecodedImage>>,
     frame: Frame,
 }
 
 impl Processor {
+    // Returns true if image buffer was updated, false otherwise
     pub fn process(
         &mut self,
+        image: &mut DecodedImage,
         header: &FastPathHeader,
-        stream: &[u8],
+        input: &[u8],
         mut output: impl io::Write,
-    ) -> Result<(), RdpError> {
+    ) -> Result<Option<Rectangle>, RdpError> {
         debug!("Got Fast-Path Header: {:?}", header);
 
-        let update_pdu = FastPathUpdatePdu::from_buffer(stream)?;
+        let update_pdu = FastPathUpdatePdu::from_buffer(input)?;
         debug!("Fast-Path Update fragmentation: {:?}", update_pdu.fragmentation);
 
         let processed_complete_data = self
@@ -41,43 +41,47 @@ impl Processor {
             .process_data(update_pdu.data, update_pdu.fragmentation);
         let update_code = update_pdu.update_code;
 
-        if let Some(data) = processed_complete_data {
-            let update = FastPathUpdate::from_buffer_with_code(data.as_slice(), update_code);
+        let Some(data) = processed_complete_data else {
+            return Ok(None);
+        };
 
-            match update {
-                Ok(FastPathUpdate::SurfaceCommands(surface_commands)) => {
-                    info!("Received Surface Commands: {} pieces", surface_commands.len());
+        let update = FastPathUpdate::from_buffer_with_code(data.as_slice(), update_code);
 
-                    self.process_surface_commands(&mut output, surface_commands)?;
-                }
-                Ok(FastPathUpdate::Bitmap(bitmap)) => {
-                    info!("Received Bitmap: {:?}", bitmap);
-                }
-                Err(FastPathError::UnsupportedFastPathUpdate(code))
-                    if code == UpdateCode::Orders || code == UpdateCode::Palette =>
-                {
-                    return Err(RdpError::UnexpectedFastPathUpdate(code));
-                }
-                Err(FastPathError::UnsupportedFastPathUpdate(update_code)) => {
-                    warn!("Received unsupported Fast-Path update: {:?}", update_code)
-                }
-                Err(FastPathError::BitmapError(error)) => {
-                    warn!("Received invalid bitmap: {:?}", error)
-                }
-                Err(e) => {
-                    return Err(RdpError::from(e));
-                }
+        match update {
+            Ok(FastPathUpdate::SurfaceCommands(surface_commands)) => {
+                info!("Received Surface Commands: {} pieces", surface_commands.len());
+                let update_region = self.process_surface_commands(image, &mut output, surface_commands)?;
+                Ok(Some(update_region))
             }
+            Ok(FastPathUpdate::Bitmap(bitmap)) => {
+                info!("Received Bitmap: {:?}", bitmap);
+                Ok(None)
+            }
+            Err(FastPathError::UnsupportedFastPathUpdate(code))
+                if code == UpdateCode::Orders || code == UpdateCode::Palette =>
+            {
+                Err(RdpError::UnexpectedFastPathUpdate(code))
+            }
+            Err(FastPathError::UnsupportedFastPathUpdate(update_code)) => {
+                warn!("Received unsupported Fast-Path update: {:?}", update_code);
+                Ok(None)
+            }
+            Err(FastPathError::BitmapError(error)) => {
+                warn!("Received invalid bitmap: {:?}", error);
+                Ok(None)
+            }
+            Err(e) => Err(RdpError::from(e)),
         }
-
-        Ok(())
     }
 
     fn process_surface_commands(
         &mut self,
+        image: &mut DecodedImage,
         mut output: impl io::Write,
         surface_commands: Vec<SurfaceCommand<'_>>,
-    ) -> Result<(), RdpError> {
+    ) -> Result<Rectangle, RdpError> {
+        let mut update_rectangle = Rectangle::empty();
+
         for command in surface_commands {
             match command {
                 SurfaceCommand::SetSurfaceBits(bits) | SurfaceCommand::StreamSurfaceBits(bits) => {
@@ -90,8 +94,8 @@ impl Processor {
                             let mut data = bits.extended_bitmap_data.data;
 
                             while !data.is_empty() {
-                                self.rfx_handler
-                                    .decode(&destination, &mut data, self.decoded_image.clone())?;
+                                let (_frame_id, rectangle) = self.rfx_handler.decode(image, &destination, &mut data)?;
+                                update_rectangle = update_rectangle.union(&rectangle);
                             }
                         }
                     }
@@ -107,12 +111,11 @@ impl Processor {
             }
         }
 
-        Ok(())
+        Ok(update_rectangle)
     }
 }
 
 pub struct ProcessorBuilder {
-    pub decoded_image: Arc<Mutex<DecodedImage>>,
     pub global_channel_id: u16,
     pub initiator_id: u16,
 }
@@ -121,8 +124,7 @@ impl ProcessorBuilder {
     pub fn build(self) -> Processor {
         Processor {
             complete_data: CompleteData::new(),
-            rfx_handler: rfx::DecodingContext::new(DESTINATION_PIXEL_FORMAT),
-            decoded_image: self.decoded_image.clone(),
+            rfx_handler: rfx::DecodingContext::new(),
             frame: Frame::new(self.initiator_id, self.global_channel_id),
         }
     }
@@ -175,11 +177,10 @@ impl CompleteData {
     }
 
     fn append_data(&mut self, data: &[u8]) {
-        if self.fragmented_data.is_none() {
-            warn!("Got unexpected Next fragmentation PDU without prior First fragmentation PDU");
-            self.fragmented_data = None;
+        if let Some(fragmented_data) = self.fragmented_data.as_mut() {
+            fragmented_data.extend_from_slice(data);
         } else {
-            self.fragmented_data.as_mut().unwrap().extend_from_slice(data);
+            warn!("Got unexpected Next fragmentation PDU without prior First fragmentation PDU");
         }
     }
 }

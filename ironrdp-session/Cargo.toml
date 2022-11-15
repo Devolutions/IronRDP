@@ -1,0 +1,27 @@
+[package]
+name = "ironrdp-session"
+version = "0.1.0"
+edition = "2021"
+license = "MIT/Apache-2.0"
+homepage = "https://github.com/Devolutions/IronRDP"
+repository = "https://github.com/Devolutions/IronRDP"
+authors = ["Devolutions Inc. <infos@devolutions.net>"]
+
+[dependencies]
+ironrdp = { path = "../ironrdp" }
+sspi = { version = "0.4.0", features = ["network_client"] }
+bytes = "1"
+chrono = "0.4"
+failure = "0.1.8"
+log = "0.4"
+whoami = "1"
+semver = "1"
+num-derive = "0.3.3"
+num-traits = "0.2.14"
+lazy_static = "1.4"
+dns-lookup = "1.0.8"
+bitflags = "1"
+bit_field = "0.10.1"
+byteorder = "1.4.3"
+futures-util = "0.3"
+ring = "0.16.20" # for ring::rand::SystemRandom, we might consider using another crate at some point for portability

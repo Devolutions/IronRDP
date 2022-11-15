@@ -60,7 +60,7 @@ fn ycbcr_to_rgb_converts_one_element_buffer() {
     let expected = [128, 127, 128, 255];
 
     let mut actual = vec![0; 4];
-    ycbcr_to_rgb(ycbcr, actual.as_mut()).unwrap();
+    ycbcr_to_bgra(ycbcr, actual.as_mut()).unwrap();
     assert_eq!(expected.as_ref(), actual.as_slice());
 }
 
@@ -74,7 +74,7 @@ fn ycbcr_to_rgb_converts_large_buffer() {
     let expected = RGB_BUFFER.as_ref();
 
     let mut output = vec![0; 4 * 64 * 64];
-    ycbcr_to_rgb(ycbcr, output.as_mut()).unwrap();
+    ycbcr_to_bgra(ycbcr, output.as_mut()).unwrap();
     assert_eq!(expected, output.as_slice());
 }
 
