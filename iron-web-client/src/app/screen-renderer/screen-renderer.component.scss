@@ -1,0 +1,25 @@
+$screen-padding: 30px;
+
+.screen-wrapper {
+  position: relative;
+  width: calc(100% - #{$screen-padding * 2});
+  height: calc(100% - #{$screen-padding * 2});
+  padding-left: $screen-padding;
+  padding-top: $screen-padding;
+  max-height: 100%;
+
+  &.scale-fit {
+    canvas {
+      width: 100%;
+    }
+  }
+
+  .screen-viewer {
+    width: 100%;
+    height: 100%;
+    overflow: auto;
+    text-align: center;
+  }
+}
+
+

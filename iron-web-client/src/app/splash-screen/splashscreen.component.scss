@@ -1,0 +1,26 @@
+:host {
+  display: block;
+  height: 100%;
+  width: 100%;
+  background: rgb(255,255,255);
+  background: radial-gradient(circle, rgba(255,255,255,1) 0%, rgba(158,158,158,1) 45%, rgba(125,125,125,1) 100%);
+}
+
+img {
+  max-width: 300px;
+  margin-bottom: 15px;
+}
+
+.splash {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translateX(-50%) translateY(-50%);
+}
+
+.title {
+  text-align: center;
+  line-height: 55px;
+  font-size: 55px;
+  margin-top: 15px;
+}
