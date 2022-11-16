@@ -1,12 +1,11 @@
 use bitflags::bitflags;
-use ironrdp::{
-    dvc::gfx::{
-        zgfx, CapabilitiesAdvertisePdu, CapabilitiesV103Flags, CapabilitiesV104Flags, CapabilitiesV107Flags,
-        CapabilitiesV10Flags, CapabilitiesV81Flags, CapabilitiesV8Flags, CapabilitySet, ClientPdu, FrameAcknowledgePdu,
-        QueueDepth, ServerPdu,
-    },
-    PduParsing,
+use ironrdp_core::dvc::gfx::{
+    CapabilitiesAdvertisePdu, CapabilitiesV103Flags, CapabilitiesV104Flags, CapabilitiesV107Flags,
+    CapabilitiesV10Flags, CapabilitiesV81Flags, CapabilitiesV8Flags, CapabilitySet, ClientPdu, FrameAcknowledgePdu,
+    QueueDepth, ServerPdu,
 };
+use ironrdp_core::PduParsing;
+use ironrdp_graphics::zgfx;
 use log::debug;
 
 use super::DynamicChannelDataHandler;

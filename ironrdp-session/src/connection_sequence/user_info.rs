@@ -1,12 +1,13 @@
-use std::{env, net, str::FromStr};
+use std::str::FromStr;
+use std::{env, net};
 
-use ironrdp::gcc::{
+use ironrdp_core::gcc::{
     Channel, ChannelOptions, ClientCoreData, ClientCoreOptionalData, ClientEarlyCapabilityFlags, ClientGccBlocks,
     ClientNetworkData, ClientSecurityData, ColorDepth, ConnectionType, HighColorDepth, RdpVersion,
     SecureAccessSequence, SupportedColorDepths,
 };
-use ironrdp::nego::SecurityProtocol;
-use ironrdp::rdp::capability_sets::{
+use ironrdp_core::nego::SecurityProtocol;
+use ironrdp_core::rdp::capability_sets::{
     Bitmap, BitmapCache, BitmapCodecs, BitmapDrawingFlags, Brush, CacheDefinition, CacheEntry, CaptureFlags, CmdFlags,
     Codec, CodecProperty, EntropyBits, FrameAcknowledge, General, GeneralExtraFlags, GlyphCache, GlyphSupportLevel,
     Input, InputFlags, LargePointer, LargePointerSupportFlags, MajorPlatformType, MinorPlatformType,
@@ -14,11 +15,11 @@ use ironrdp::rdp::capability_sets::{
     RfxCaps, RfxCapset, RfxClientCapsContainer, RfxICap, RfxICapFlags, Sound, SoundFlags, SupportLevel,
     SurfaceCommands, VirtualChannel, VirtualChannelFlags, BITMAP_CACHE_ENTRIES_NUM, GLYPH_CACHE_NUM,
 };
-use ironrdp::rdp::{
+use ironrdp_core::rdp::{
     AddressFamily, BasicSecurityHeader, BasicSecurityHeaderFlags, ClientInfo, ClientInfoFlags, ClientInfoPdu,
     CompressionType, Credentials, ExtendedClientInfo, ExtendedClientOptionalInfo, SERVER_CHANNEL_ID,
 };
-use ironrdp::{CapabilitySet, ClientConfirmActive};
+use ironrdp_core::{CapabilitySet, ClientConfirmActive};
 use num_traits::ToPrimitive;
 
 use crate::utils::CodecId;
@@ -112,7 +113,7 @@ pub fn create_client_confirm_active(
 
     Ok(ClientConfirmActive {
         originator_id: SERVER_CHANNEL_ID,
-        pdu: ironrdp::DemandActive {
+        pdu: ironrdp_core::DemandActive {
             source_descriptor: SOURCE_DESCRIPTOR.to_string(),
             capability_sets: server_capability_sets,
         },

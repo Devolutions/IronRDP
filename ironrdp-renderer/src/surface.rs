@@ -1,17 +1,19 @@
-use std::{collections::HashMap, fmt::Debug, sync::Arc};
+use std::collections::HashMap;
+use std::fmt::Debug;
+use std::sync::Arc;
 
 use glow::Context;
-use ironrdp::{
-    dvc::gfx::{
-        Avc420BitmapStream, Avc444BitmapStream, Codec1Type, CreateSurfacePdu, Encoding, GraphicsPipelineError,
-        PixelFormat, WireToSurface1Pdu,
-    },
-    PduBufferParsing, Rectangle,
+use ironrdp::core::dvc::gfx::{
+    Avc420BitmapStream, Avc444BitmapStream, Codec1Type, CreateSurfacePdu, Encoding, GraphicsPipelineError, PixelFormat,
+    WireToSurface1Pdu,
 };
+use ironrdp::core::PduBufferParsing;
+use ironrdp::geometry::Rectangle;
 use log::error;
 use openh264::decoder::{DecodedYUV, Decoder};
 
-use crate::{draw::DrawingContext, renderer::RendererError};
+use crate::draw::DrawingContext;
+use crate::renderer::RendererError;
 
 type Result<T> = std::result::Result<T, RendererError>;
 

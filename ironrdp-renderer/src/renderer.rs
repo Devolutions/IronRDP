@@ -1,33 +1,20 @@
 use std::fmt::Debug;
 use std::fs::File;
-
 use std::path::PathBuf;
-use std::sync::mpsc::Receiver;
-use std::sync::mpsc::RecvError;
-use std::sync::mpsc::SendError;
-use std::sync::mpsc::Sender;
-
-use std::sync::PoisonError;
-use std::sync::{mpsc, Arc};
+use std::sync::mpsc::{Receiver, RecvError, SendError, Sender};
+use std::sync::{mpsc, Arc, PoisonError};
 use std::thread;
 use std::thread::JoinHandle;
 
-use failure::Fail;
 use glutin::dpi::PhysicalSize;
-use ironrdp::PduParsing;
-
 use ironrdp::dvc::gfx;
-use ironrdp::dvc::gfx::Codec1Type;
-use ironrdp::dvc::gfx::ServerPdu;
-
-use ironrdp::impl_from_error;
-use ironrdp::Rectangle;
+use ironrdp::dvc::gfx::{Codec1Type, ServerPdu};
+use ironrdp::geometry::Rectangle;
+use ironrdp::PduParsing;
 use log::info;
+use thiserror::Error;
 
-use crate::surface::DataBuffer;
-
-use crate::surface::SurfaceDecoders;
-use crate::surface::Surfaces;
+use crate::surface::{DataBuffer, SurfaceDecoders, Surfaces};
 
 #[derive(Debug)]
 enum RenderEvent {
@@ -180,33 +167,25 @@ impl Renderer {
     }
 }
 
-#[derive(Debug, Fail)]
+#[derive(Debug, Error)]
 pub enum RendererError {
-    #[fail(display = "Unable to send message on channel {}", _0)]
+    #[error("Unable to send message on channel {0}")]
     SendError(String),
-    #[fail(display = "Unable to recieve message on channel {}", _0)]
+    #[error("Unable to recieve message on channel {0}")]
     RecieveError(String),
-    #[fail(display = "Failed to decode openh264 stream {}", _0)]
-    OpenH264Error(openh264::Error),
-    #[fail(display = "Graphics pipeline protocol error: {}", _0)]
-    GraphicsPipelineError(gfx::GraphicsPipelineError),
-    #[fail(display = "Invalid surface id: {}", _0)]
+    #[error("errored to decode openh264 stream {0}")]
+    OpenH264Error(#[from] openh264::Error),
+    #[error("Graphics pipeline protocol error: {0}")]
+    GraphicsPipelineError(#[from] gfx::GraphicsPipelineError),
+    #[error("Invalid surface id: {0}")]
     InvalidSurfaceId(u16),
-    #[fail(display = "Codec not supported: {:?}", _0)]
+    #[error("Codec not supported: {0:?}")]
     UnsupportedCodec(Codec1Type),
-    #[fail(display = "Failed to decode rdp data")]
+    #[error("errored to decode rdp data")]
     DecodeError,
-    #[fail(display = "Lock poisoned")]
+    #[error("Lock poisoned")]
     LockPoisonedError,
 }
-
-impl_from_error!(
-    gfx::GraphicsPipelineError,
-    RendererError,
-    RendererError::GraphicsPipelineError
-);
-
-impl_from_error!(openh264::Error, RendererError, RendererError::OpenH264Error);
 
 impl<T> From<SendError<T>> for RendererError {
     fn from(e: SendError<T>) -> Self {

@@ -1,7 +1,8 @@
+use ironrdp_core::geometry::Rectangle;
+use ironrdp_graphics::image_processing::{ImageRegion, ImageRegionMut, PixelFormat};
+use ironrdp_graphics::rectangle_processing::Region;
+
 use crate::RdpError;
-use ironrdp::codecs::rfx::image_processing::{ImageRegion, ImageRegionMut, PixelFormat};
-use ironrdp::codecs::rfx::rectangles_processing::Region;
-use ironrdp::Rectangle;
 
 const TILE_SIZE: u16 = 64;
 const SOURCE_PIXEL_FORMAT: PixelFormat = PixelFormat::BgrX32;

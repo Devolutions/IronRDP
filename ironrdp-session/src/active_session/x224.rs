@@ -4,19 +4,17 @@ mod gfx;
 use std::collections::HashMap;
 use std::{cmp, io};
 
-use ironrdp::dvc::FieldType;
-use ironrdp::rdp::vc::{self, dvc};
-use ironrdp::rdp::{ErrorInfo, ProtocolIndependentCode, ServerSetErrorInfoPdu};
-use ironrdp::{Data, ShareDataPdu};
-use log::{debug, error};
+use ironrdp_core::dvc::FieldType;
+use ironrdp_core::rdp::vc::{self, dvc};
+use ironrdp_core::rdp::{ErrorInfo, ProtocolIndependentCode, ServerSetErrorInfoPdu};
+use ironrdp_core::{Data, ShareDataPdu};
 
+pub use self::gfx::GfxHandler;
 use crate::transport::{
     Decoder, DynamicVirtualChannelTransport, Encoder, SendDataContextTransport, ShareControlHeaderTransport,
     ShareDataHeaderTransport, StaticVirtualChannelTransport,
 };
 use crate::{GraphicsConfig, RdpError};
-
-pub use self::gfx::GfxHandler;
 
 pub const RDP8_GRAPHICS_PIPELINE_NAME: &str = "Microsoft::Windows::RDS::Graphics";
 pub const RDP8_DISPLAY_PIPELINE_NAME: &str = "Microsoft::Windows::RDS::DisplayControl";

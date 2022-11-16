@@ -1,7 +1,7 @@
 use std::io;
 
-use ironrdp::rdp::vc;
-use ironrdp::PduParsing;
+use ironrdp_core::rdp::vc;
+use ironrdp_core::PduParsing;
 
 use super::{Decoder, Encoder, SendDataContextTransport};
 use crate::RdpError;

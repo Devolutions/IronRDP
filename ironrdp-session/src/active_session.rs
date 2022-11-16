@@ -3,16 +3,15 @@ mod fast_path;
 mod x224;
 
 use bytes::{BufMut as _, BytesMut};
-use ironrdp::fast_path::FastPathError;
-use ironrdp::{RdpPdu, Rectangle};
-use log::warn;
+use ironrdp_core::fast_path::FastPathError;
+use ironrdp_core::geometry::Rectangle;
+use ironrdp_core::RdpPdu;
 
+pub use self::x224::GfxHandler;
 use crate::connection_sequence::ConnectionSequenceResult;
 use crate::image::DecodedImage;
 use crate::transport::{Decoder, RdpTransport};
 use crate::{utils, InputConfig, RdpError};
-
-pub use self::x224::GfxHandler;
 
 pub struct ActiveStageProcessor {
     x224_processor: x224::Processor,
@@ -43,6 +42,8 @@ impl ActiveStageProcessor {
             fast_path_processor,
         }
     }
+
+    // TODO: the async part should be extracted to `ironrdp-session-async`
 
     pub async fn process(
         &mut self,

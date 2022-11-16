@@ -10,7 +10,7 @@ pub mod image;
 pub mod transport;
 pub mod utils;
 
-use ironrdp::{gcc, nego};
+use ironrdp_core::{gcc, nego};
 
 pub use crate::active_session::{ActiveStageOutput, ActiveStageProcessor, GfxHandler};
 pub use crate::codecs::{ErasedWriter, FramedReader};

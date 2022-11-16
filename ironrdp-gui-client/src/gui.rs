@@ -1,23 +1,18 @@
 use std::fmt::Debug;
-
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, SyncSender};
-
 use std::sync::{self, Arc};
 
 use glutin::dpi::PhysicalPosition;
-
 use glutin::event::{Event, WindowEvent};
 use glutin::event_loop::ControlFlow;
-
 use ironrdp::dvc::gfx::ServerPdu;
 use ironrdp_renderer::renderer::Renderer;
 use ironrdp_session::{ErasedWriter, GfxHandler};
 use tokio::sync::Mutex;
 
-use crate::RdpError;
-
 use self::input::{handle_input_events, translate_input_event};
+use crate::RdpError;
 
 mod input;
 

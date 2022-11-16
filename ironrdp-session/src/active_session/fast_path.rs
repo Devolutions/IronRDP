@@ -1,9 +1,12 @@
 use std::io;
 
-use ironrdp::codecs::rfx::FrameAcknowledgePdu;
-use ironrdp::fast_path::{FastPathError, FastPathHeader, FastPathUpdate, FastPathUpdatePdu, Fragmentation, UpdateCode};
-use ironrdp::surface_commands::{FrameAction, FrameMarkerPdu, SurfaceCommand};
-use ironrdp::{PduBufferParsing, Rectangle, ShareDataPdu};
+use ironrdp_core::codecs::rfx::FrameAcknowledgePdu;
+use ironrdp_core::fast_path::{
+    FastPathError, FastPathHeader, FastPathUpdate, FastPathUpdatePdu, Fragmentation, UpdateCode,
+};
+use ironrdp_core::geometry::Rectangle;
+use ironrdp_core::surface_commands::{FrameAction, FrameMarkerPdu, SurfaceCommand};
+use ironrdp_core::{PduBufferParsing, ShareDataPdu};
 use log::{debug, info, warn};
 use num_traits::FromPrimitive;
 

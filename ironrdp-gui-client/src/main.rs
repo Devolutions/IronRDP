@@ -3,24 +3,25 @@ extern crate log;
 
 mod config;
 
-use std::io;
+use std::sync::mpsc::sync_channel;
 use std::sync::Arc;
+use std::{io, process};
 
-use crate::config::Config;
 use futures_util::io::AsyncWriteExt as _;
 use gui::MessagePassingGfxHandler;
-use ironrdp::codecs::rfx::image_processing::PixelFormat;
 use ironrdp::dvc::gfx::ServerPdu;
+use ironrdp::graphics::image_processing::PixelFormat;
 use ironrdp_session::image::DecodedImage;
 use ironrdp_session::{
     process_connection_sequence, ActiveStageOutput, ActiveStageProcessor, ErasedWriter, RdpError, UpgradedStream,
 };
-use std::{process, sync::mpsc::sync_channel};
 use tokio::io::AsyncWriteExt as _;
 use tokio::net::TcpStream;
 use tokio::sync::Mutex;
 use tokio_util::compat::TokioAsyncReadCompatExt as _;
 use x509_parser::prelude::{FromDer as _, X509Certificate};
+
+use crate::config::Config;
 
 #[cfg(feature = "rustls")]
 type TlsStream = tokio_util::compat::Compat<tokio_rustls::client::TlsStream<TcpStream>>;

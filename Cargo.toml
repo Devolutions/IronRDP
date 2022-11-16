@@ -1,9 +1,15 @@
 [workspace]
 members = [
     "ironrdp",
+    "ironrdp-core",
+    "ironrdp-graphics",
+    "ironrdp-input",
     "ironrdp-session",
-    "ironrdp-gui-client",
-    "ironrdp-cli",
+    "ironrdp-session-async",
+    "ironrdp-tls",
+    "ironrdp-devolutions-gateway",
     "ironrdp-renderer",
+    "ironrdp-cli",
+    "ironrdp-gui-client",
     "ironrdp-replay-client",
 ]
