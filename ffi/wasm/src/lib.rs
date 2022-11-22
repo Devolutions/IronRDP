@@ -3,7 +3,7 @@ mod utils;
 use wasm_bindgen::prelude::*;
 
 #[wasm_bindgen]
-async fn update_mouse(
+pub async fn update_mouse(
     session_id: usize,
     mouse_x: u16,
     mouse_y: u16,
@@ -13,9 +13,8 @@ async fn update_mouse(
     let _ = mouse_x; // TODO
     let _ = mouse_y; // TODO
     let _ = left_click; // TODO
-    let _ = session_manager; // TODO
 
-    Err("Unimplemented")
+    Err("Unimplemented".to_string())
 }
 
 #[wasm_bindgen]
