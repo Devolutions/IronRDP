@@ -10,7 +10,7 @@ import {SessionService} from "../services/session.service";
   templateUrl: './login.component.html',
   styleUrls: ['./login.component.scss']
 })
-export class LoginComponent implements OnInit {
+export class LoginComponent {
 
   currentSession: Session;
 
@@ -22,12 +22,6 @@ export class LoginComponent implements OnInit {
 
   constructor(private snackBar: MatSnackBar, private serverBridge: ServerBridgeService, private sessionService: SessionService) {
     this.sessionService.currentSession$.subscribe(session => this.currentSession = session);
-  }
-
-  ngOnInit(): void {
-    this.form.get('username')?.setValue('Administrator');
-    this.form.get('password')?.setValue('DevoLabs123!');
-    this.form.get('host')?.setValue('10.10.0.3:3389');
   }
 
   connect() {
