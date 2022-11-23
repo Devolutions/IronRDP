@@ -12,6 +12,8 @@
 
 ### Steps
 
+- run `wasm-pack build` in `./ffi/wasm` folder
+- copy `pkg` folder from `./ffi/wasm` to `./iron-web-client/src/assets`
 - run `npm install` in `./iron-web-client` folder
 - run `npm install` in `./iron-tauri-client` folder
 - finally, run `npm run tauri dev` in `./iron-tauri-client` folder
