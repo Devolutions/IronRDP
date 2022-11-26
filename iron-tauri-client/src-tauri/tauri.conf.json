@@ -1,10 +1,10 @@
 {
   "$schema": "../node_modules/@tauri-apps/cli/schema.json",
   "build": {
-    "beforeBuildCommand": "npm --prefix ../iron-web-client run build-tauri",
-    "beforeDevCommand": "npm --prefix ../iron-web-client run start-tauri",
-    "devPath": "http://localhost:4200",
-    "distDir": "../../iron-web-client/dist/iron-tauri-client"
+    "beforeBuildCommand": "npm --prefix ../iron-svelte-client run build-tauri",
+    "beforeDevCommand": "npm --prefix ../iron-svelte-client run dev-tauri",
+    "devPath": "http://localhost:5173",
+    "distDir": "../../iron-svelte-client/build/tauri"
   },
   "package": {
     "productName": "iron-gui",
