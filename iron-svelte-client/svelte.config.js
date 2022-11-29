@@ -9,7 +9,7 @@ const config = {
 
 	kit: {
 		adapter: adapter(),
-		appDir: process.env.system === "tauri" ? "tauri" : "_app"
+		// appDir: process.env.MODE === "tauri" ? "tauri" : "_app",
 	}
 };
 

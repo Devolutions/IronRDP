@@ -4,9 +4,9 @@
 	"private": true,
 	"scripts": {
 		"dev": "vite dev",
-		"dev-tauri": "cross-env SYSTEM=tauri npm run dev",
+		"dev-tauri": "cross-env MODE=tauri npm run dev",
 		"build": "vite build",
-		"build-tauri": "cross-env SYSTEM=tauri npm run build",
+		"build-tauri": "cross-env MODE=tauri npm run build",
 		"preview": "vite preview",
 		"check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
 		"check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
@@ -15,9 +15,11 @@
 	},
 	"devDependencies": {
 		"@material-design-icons/font": "^0.14.2",
+		"@rollup/plugin-replace": "^5.0.1",
 		"@sveltejs/adapter-auto": "next",
 		"@sveltejs/adapter-static": "^1.0.0-next.48",
 		"@sveltejs/kit": "next",
+		"@tauri-apps/api": "^1.2.0",
 		"@typescript-eslint/eslint-plugin": "^5.27.0",
 		"@typescript-eslint/parser": "^5.27.0",
 		"beercss": "^2.3.0",
@@ -27,12 +29,15 @@
 		"eslint-plugin-svelte3": "^4.0.0",
 		"prettier": "^2.6.2",
 		"prettier-plugin-svelte": "^2.7.0",
+		"rxjs": "^7.5.7",
 		"svelte": "^3.44.0",
 		"svelte-check": "^2.7.1",
 		"svelte-preprocess": "^4.10.6",
 		"tslib": "^2.3.1",
 		"typescript": "^4.7.4",
-		"vite": "^3.1.0"
+		"vite": "^3.1.0",
+		"vite-plugin-top-level-await": "^1.2.2",
+		"vite-plugin-wasm": "^3.1.0"
 	},
 	"type": "module"
 }
