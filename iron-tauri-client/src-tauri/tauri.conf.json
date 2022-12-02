@@ -4,7 +4,7 @@
     "beforeBuildCommand": "npm --prefix ../iron-svelte-client run build-tauri",
     "beforeDevCommand": "npm --prefix ../iron-svelte-client run dev-tauri",
     "devPath": "http://localhost:5173",
-    "distDir": "../../iron-svelte-client/build"
+    "distDir": "../../iron-svelte-client/build/tauri"
   },
   "package": {
     "productName": "iron-gui",

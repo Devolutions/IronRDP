@@ -8,7 +8,15 @@ const config = {
 	preprocess: preprocess(),
 
 	kit: {
-		adapter: adapter(),
+		adapter: adapter({
+			// default options are shown. On some platforms
+			// these options are set automatically — see below
+			pages: process.env.MODE === "tauri" ? "build/tauri" : 'build/browser',
+			assets: process.env.MODE === "tauri" ? "build/tauri" : 'build/browser',
+			fallback: null,
+			precompress: false,
+			strict: true
+		  })
 		// appDir: process.env.MODE === "tauri" ? "tauri" : "_app",
 	}
 };

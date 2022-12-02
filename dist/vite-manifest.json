@@ -1,0 +1,72 @@
+{
+  ".svelte-kit/build/index.js": {
+    "file": "index.js",
+    "src": ".svelte-kit/build/index.js",
+    "isEntry": true,
+    "imports": [
+      "_index.js"
+    ],
+    "dynamicImports": [
+      ".svelte-kit/build/hooks.js"
+    ]
+  },
+  "node_modules/@sveltejs/kit/src/runtime/components/layout.svelte": {
+    "file": "entries/fallbacks/layout.svelte.js",
+    "src": "node_modules/@sveltejs/kit/src/runtime/components/layout.svelte",
+    "isEntry": true,
+    "imports": [
+      "_index.js"
+    ]
+  },
+  "src/routes/+layout.ts": {
+    "file": "entries/pages/_layout.ts.js",
+    "src": "src/routes/+layout.ts",
+    "isEntry": true
+  },
+  "node_modules/@sveltejs/kit/src/runtime/components/error.svelte": {
+    "file": "entries/fallbacks/error.svelte.js",
+    "src": "node_modules/@sveltejs/kit/src/runtime/components/error.svelte",
+    "isEntry": true,
+    "imports": [
+      "_index.js"
+    ]
+  },
+  "src/routes/+page.svelte": {
+    "file": "entries/pages/_page.svelte.js",
+    "src": "src/routes/+page.svelte",
+    "isEntry": true,
+    "imports": [
+      "_index.js"
+    ]
+  },
+  "src/routes/session/+page.svelte": {
+    "file": "entries/pages/session/_page.svelte.js",
+    "src": "src/routes/session/+page.svelte",
+    "isEntry": true,
+    "imports": [
+      "_index.js"
+    ],
+    "dynamicImports": [
+      "src/services/wasm-bridge.service.ts"
+    ],
+    "css": [
+      "_app/immutable/assets/_page-143e5bba.css"
+    ]
+  },
+  "_index.js": {
+    "file": "chunks/index.js"
+  },
+  ".svelte-kit/build/hooks.js": {
+    "file": "chunks/hooks.js",
+    "src": ".svelte-kit/build/hooks.js",
+    "isDynamicEntry": true
+  },
+  "src/services/wasm-bridge.service.ts": {
+    "file": "chunks/wasm-bridge.service.js",
+    "src": "src/services/wasm-bridge.service.ts",
+    "isDynamicEntry": true,
+    "assets": [
+      "_app/immutable/assets/ironrdp_bg-a36fbe54.wasm"
+    ]
+  }
+}

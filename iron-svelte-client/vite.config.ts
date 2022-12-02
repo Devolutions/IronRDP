@@ -6,9 +6,6 @@ import topLevelAwait from 'vite-plugin-top-level-await';
 const config: UserConfig = {
 	mode: process.env.MODE || 'development',
 	plugins: [sveltekit(), wasm(), topLevelAwait()],
-	// build: {
-	// 	outDir: process.env.MODE === 'tauri' ? 'build-tauri' : 'build-web'
-	// }
 };
 
 export default config;
