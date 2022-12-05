@@ -239,7 +239,7 @@ fn create_pointer_capability_set() -> CapabilitySet {
 
 fn create_input_capability_set(config: &InputConfig) -> CapabilitySet {
     CapabilitySet::Input(Input {
-        input_flags: InputFlags::SCANCODES,
+        input_flags: InputFlags::all(),
         keyboard_layout: 0,
         keyboard_type: Some(config.keyboard_type),
         keyboard_subtype: config.keyboard_subtype,

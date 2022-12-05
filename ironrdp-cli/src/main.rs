@@ -4,14 +4,18 @@ extern crate log;
 mod config;
 
 use std::io;
+use std::sync::Arc;
 
 use crate::config::Config;
 use futures_util::io::AsyncWriteExt as _;
 use ironrdp::codecs::rfx::image_processing::PixelFormat;
 use ironrdp_session::image::DecodedImage;
-use ironrdp_session::{process_connection_sequence, ActiveStageOutput, ActiveStageProcessor, RdpError, UpgradedStream};
+use ironrdp_session::{
+    process_connection_sequence, ActiveStageOutput, ActiveStageProcessor, ErasedWriter, RdpError, UpgradedStream,
+};
 use tokio::io::AsyncWriteExt as _;
 use tokio::net::TcpStream;
+use tokio::sync::Mutex;
 use tokio_util::compat::TokioAsyncReadCompatExt as _;
 use x509_parser::prelude::{FromDer as _, X509Certificate};
 
@@ -20,6 +24,9 @@ type TlsStream = tokio_util::compat::Compat<tokio_rustls::client::TlsStream<TcpS
 
 #[cfg(all(feature = "native-tls", not(feature = "rustls")))]
 type TlsStream = tokio_util::compat::Compat<async_native_tls::TlsStream<TcpStream>>;
+
+#[cfg(feature = "gui")]
+mod gui;
 
 #[cfg(feature = "rustls")]
 mod danger {
@@ -96,24 +103,82 @@ async fn run(config: Config) -> Result<(), RdpError> {
         .await
         .map_err(RdpError::ConnectionError)?;
 
-    let (connection_sequence_result, mut reader, mut writer) =
+    let (connection_sequence_result, reader, writer) =
         process_connection_sequence(stream.compat(), &config.routing_addr, &config.input, establish_tls).await?;
 
-    let mut image = DecodedImage::new(
+    let writer = Arc::new(Mutex::new(writer));
+    let image = DecodedImage::new(
         PixelFormat::RgbA32,
         u32::from(connection_sequence_result.desktop_size.width),
         u32::from(connection_sequence_result.desktop_size.height),
     );
 
-    let mut active_stage = ActiveStageProcessor::new(config.input, connection_sequence_result);
-    let mut frame_id = 0;
+    launch_client(config, connection_sequence_result, image, reader, writer).await
+}
 
-    'outer: loop {
+#[cfg(feature = "gui")]
+async fn launch_client(
+    config: Config,
+    connection_sequence_result: ironrdp_session::ConnectionSequenceResult,
+    image: DecodedImage,
+    reader: ironrdp_session::FramedReader,
+    writer: Arc<Mutex<ErasedWriter>>,
+) -> Result<(), RdpError> {
+    use gui::{MessagePassingGfxHandler, SimpleHandlerFactory};
+    use ironrdp::dvc::gfx::ServerPdu;
+    use std::{process, sync::mpsc::sync_channel};
+
+    let (sender, receiver) = sync_channel::<ServerPdu>(1);
+    let factory = SimpleHandlerFactory::new(MessagePassingGfxHandler::new(sender));
+    let active_stage = ActiveStageProcessor::new(
+        config.input.clone(),
+        Some(Box::new(factory)),
+        connection_sequence_result,
+    );
+    let config = config.input;
+    let gui = gui::UiContext::new(config.width, config.height);
+
+    let active_stage_writer = writer.clone();
+    let active_stage_handle = tokio::spawn(async move {
+        let result = process_active_stage(reader, active_stage, image, active_stage_writer).await;
+        if result.is_err() {
+            log::error!("Active stage failed: {:?}", result);
+            process::exit(-1);
+        }
+        result
+    });
+    gui::launch_gui(gui, config.gfx_dump_file, receiver, writer.clone())?;
+    active_stage_handle.await.map_err(|e| RdpError::IOError(e.into()))?
+}
+
+#[cfg(not(feature = "gui"))]
+async fn launch_client(
+    config: Config,
+    connection_sequence_result: ironrdp_session::ConnectionSequenceResult,
+    image: DecodedImage,
+    reader: ironrdp_session::FramedReader,
+    writer: Arc<Mutex<ErasedWriter>>,
+) -> Result<(), RdpError> {
+    let active_stage = ActiveStageProcessor::new(config.input, None, connection_sequence_result);
+    process_active_stage(reader, active_stage, image, writer).await
+}
+
+async fn process_active_stage(
+    mut reader: ironrdp_session::FramedReader,
+    mut active_stage: ActiveStageProcessor,
+    mut image: DecodedImage,
+    writer: Arc<Mutex<ErasedWriter>>,
+) -> Result<(), RdpError> {
+    let mut frame_id = 0;
+    Ok('outer: loop {
         let frame = reader.read_frame().await?.ok_or(RdpError::AccessDenied)?;
         let outputs = active_stage.process(&mut image, frame).await?;
         for out in outputs {
             match out {
-                ActiveStageOutput::ResponseFrame(frame) => writer.write_all(&frame).await?,
+                ActiveStageOutput::ResponseFrame(frame) => {
+                    let mut writer = writer.lock().await;
+                    writer.write_all(&frame).await?
+                }
                 ActiveStageOutput::GraphicsUpdate(_region) => {
                     // TODO: control this with CLI argument
                     dump_image(&image, frame_id);
@@ -123,9 +188,7 @@ async fn run(config: Config) -> Result<(), RdpError> {
                 ActiveStageOutput::Terminate => break 'outer,
             }
         }
-    }
-
-    Ok(())
+    })
 }
 
 // TODO: this can be refactored into a separate `ironrdp-tls` crate (all native clients will do the same TLS dance)

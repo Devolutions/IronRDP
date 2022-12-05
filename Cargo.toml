@@ -2,5 +2,7 @@
 members = [
     "ironrdp",
     "ironrdp-session",
-    "ironrdp-cli"
+    "ironrdp-cli",
+    "ui_core",
+    "replay_client",
 ]

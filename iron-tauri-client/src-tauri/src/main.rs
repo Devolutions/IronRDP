@@ -363,7 +363,7 @@ async fn rdp_session_task(
         u32::from(connection_sequence_result.desktop_size.height),
     );
 
-    let mut active_stage = ActiveStageProcessor::new(input_config, connection_sequence_result);
+    let mut active_stage = ActiveStageProcessor::new(input_config, None, connection_sequence_result);
     let mut frame_id = 0;
 
     'outer: loop {

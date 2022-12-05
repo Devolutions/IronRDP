@@ -16,8 +16,14 @@ use crate::transport::{
 };
 use crate::{GraphicsConfig, RdpError};
 
-const RDP8_GRAPHICS_PIPELINE_NAME: &str = "Microsoft::Windows::RDS::Graphics";
-const RDP8_DISPLAY_PIPELINE_NAME: &str = "Microsoft::Windows::RDS::DisplayControl";
+pub use self::gfx::GfxHandler;
+
+pub const RDP8_GRAPHICS_PIPELINE_NAME: &str = "Microsoft::Windows::RDS::Graphics";
+pub const RDP8_DISPLAY_PIPELINE_NAME: &str = "Microsoft::Windows::RDS::DisplayControl";
+
+pub trait DvcHandlerFactory {
+    fn graphics_handler(&self) -> Option<Box<dyn GfxHandler + Send>>;
+}
 
 pub struct Processor {
     static_channels: HashMap<u16, String>,
@@ -27,6 +33,7 @@ pub struct Processor {
     drdynvc_transport: Option<DynamicVirtualChannelTransport>,
     static_transport: Option<ShareDataHeaderTransport>,
     graphics_config: Option<GraphicsConfig>,
+    dvc_handler_factory: Option<Box<dyn DvcHandlerFactory + Send>>,
 }
 
 impl Processor {
@@ -34,6 +41,7 @@ impl Processor {
         static_channels: HashMap<u16, String>,
         global_channel_name: String,
         graphics_config: Option<GraphicsConfig>,
+        dvc_handler_factory: Option<Box<dyn DvcHandlerFactory + Send>>,
     ) -> Self {
         Self {
             static_channels,
@@ -43,6 +51,7 @@ impl Processor {
             drdynvc_transport: None,
             static_transport: None,
             graphics_config,
+            dvc_handler_factory,
         }
     }
 
@@ -161,6 +170,7 @@ impl Processor {
                     create_request.channel_name.as_str(),
                     create_request.channel_id,
                     create_request.channel_id_type,
+                    &self.dvc_handler_factory,
                 ) {
                     self.dynamic_channels
                         .insert(create_request.channel_id, dyncamic_channel);
@@ -283,13 +293,24 @@ fn process_global_channel_pdu(
     }
 }
 
-fn create_dvc(channel_name: &str, channel_id: u32, channel_id_type: FieldType) -> Option<DynamicChannel> {
+fn create_dvc(
+    channel_name: &str,
+    channel_id: u32,
+    channel_id_type: FieldType,
+    dvc_handler_factory: &Option<Box<dyn DvcHandlerFactory + Send>>,
+) -> Option<DynamicChannel> {
     match channel_name {
-        RDP8_GRAPHICS_PIPELINE_NAME => Some(DynamicChannel::new(
-            Box::new(gfx::Handler::new()),
-            channel_id,
-            channel_id_type,
-        )),
+        RDP8_GRAPHICS_PIPELINE_NAME => {
+            let handler = match dvc_handler_factory {
+                Some(factory) => factory.graphics_handler(),
+                None => None,
+            };
+            Some(DynamicChannel::new(
+                Box::new(gfx::Handler::new(handler)),
+                channel_id,
+                channel_id_type,
+            ))
+        }
         RDP8_DISPLAY_PIPELINE_NAME => Some(DynamicChannel::new(
             Box::new(display::Handler::new()),
             channel_id,

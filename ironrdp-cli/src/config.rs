@@ -1,4 +1,4 @@
-use std::{net::SocketAddr, num::ParseIntError};
+use std::{net::SocketAddr, num::ParseIntError, path::PathBuf};
 
 use clap::{clap_derive::ValueEnum, crate_name, Parser};
 use ironrdp_session::{GraphicsConfig, InputConfig};
@@ -133,6 +133,10 @@ struct Args {
     /// starting from V8 to V10_7
     #[clap(long, value_parser = parse_hex, default_value_t = 0)]
     capabilities: u32,
+
+    /// Enables dumping the gfx stream to a file location
+    #[clap(long, value_parser)]
+    gfx_dump_file: Option<PathBuf>,
 }
 
 fn is_socket_address(s: &str) -> Result<SocketAddr, String> {
@@ -173,6 +177,7 @@ impl Config {
             global_channel_name: GLOBAL_CHANNEL_NAME.to_string(),
             user_channel_name: USER_CHANNEL_NAME.to_string(),
             graphics_config,
+            gfx_dump_file: args.gfx_dump_file,
         };
 
         Self {
