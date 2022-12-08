@@ -54,7 +54,7 @@ impl SurfaceDecoders {
         let decoder = self
             .decoders
             .get_mut(&pdu.surface_id)
-            .ok_or_else(|| RendererError::InvalidSurfaceId(pdu.surface_id))?;
+            .ok_or(RendererError::InvalidSurfaceId(pdu.surface_id))?;
         match pdu.codec_id {
             ironrdp::dvc::gfx::Codec1Type::Avc420 => {
                 let packet = Avc420BitmapStream::from_buffer_consume(&mut pdu.bitmap_data.as_slice())
@@ -266,7 +266,7 @@ impl Surfaces {
     fn get_surface(&mut self, id: u16) -> Result<&mut Surface> {
         self.surfaces
             .get_mut(&id)
-            .ok_or_else(|| RendererError::InvalidSurfaceId(id))
+            .ok_or(RendererError::InvalidSurfaceId(id))
     }
 
     pub(crate) fn create_surface(

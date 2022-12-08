@@ -170,7 +170,7 @@ async fn process_active_stage(
     writer: Arc<Mutex<ErasedWriter>>,
 ) -> Result<(), RdpError> {
     let mut frame_id = 0;
-    Ok('outer: loop {
+    'outer: loop {
         let frame = reader.read_frame().await?.ok_or(RdpError::AccessDenied)?;
         let outputs = active_stage.process(&mut image, frame).await?;
         for out in outputs {
@@ -188,7 +188,8 @@ async fn process_active_stage(
                 ActiveStageOutput::Terminate => break 'outer,
             }
         }
-    })
+    };
+    Ok(())
 }
 
 // TODO: this can be refactored into a separate `ironrdp-tls` crate (all native clients will do the same TLS dance)

@@ -33,6 +33,9 @@ impl DrawingTexture {
         }
     }
 
+    /// # Safety
+    ///
+    /// TODO: Safety notes
     pub unsafe fn bind_texture(&self, gl: &Context, pixels: &[u8], stride: i32) {
         gl.bind_texture(TEXTURE_2D, Some(self.texture));
         gl.tex_image_2d(
@@ -67,6 +70,9 @@ pub struct DrawingTextures {
 }
 
 impl DrawingTextures {
+    /// # Safety
+    ///
+    /// TODO: Safety notes
     pub unsafe fn new(
         gl_ref: Arc<Context>,
         program: Program,
@@ -83,6 +89,9 @@ impl DrawingTextures {
         DrawingTextures { y, u, v, height, index }
     }
 
+    /// # Safety
+    ///
+    /// TODO: Safety notes
     pub unsafe fn bind(&self, gl: &Context, data: &[u8], stride_0: usize, stride_1: usize) {
         let luma = stride_0 * self.height as usize;
         let chroma = stride_1 * (self.height as usize / 2);
@@ -468,6 +477,9 @@ impl AvcShaderProgram {
         })
     }
 
+    /// # Safety
+    ///
+    /// TODO: Safety notes
     pub unsafe fn draw(
         &self,
         main: &[u8],
@@ -512,6 +524,9 @@ pub struct DrawingContext {
 }
 
 impl DrawingContext {
+    /// # Safety
+    ///
+    /// TODO: Safety notes
     pub unsafe fn new(
         gl_ref: Arc<Context>,
         shader_version: &str,
@@ -553,6 +568,9 @@ impl DrawingContext {
         })
     }
 
+    /// # Safety
+    ///
+    /// TODO: Safety notes
     pub unsafe fn draw(
         &self,
         main: &[u8],
@@ -569,6 +587,9 @@ impl DrawingContext {
         self.offscreen_buffer.deactivate();
     }
 
+    /// # Safety
+    ///
+    /// TODO: Safety notes
     pub unsafe fn draw_cached(&self, location: Rectangle) {
         self.texture_shader.set_location(location);
         self.texture_shader.draw_texture(self.offscreen_buffer.texture);
