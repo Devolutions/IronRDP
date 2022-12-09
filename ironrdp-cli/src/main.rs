@@ -188,7 +188,7 @@ async fn process_active_stage(
                 ActiveStageOutput::Terminate => break 'outer,
             }
         }
-    };
+    }
     Ok(())
 }
 

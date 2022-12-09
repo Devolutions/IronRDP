@@ -264,9 +264,7 @@ impl Surfaces {
     }
 
     fn get_surface(&mut self, id: u16) -> Result<&mut Surface> {
-        self.surfaces
-            .get_mut(&id)
-            .ok_or(RendererError::InvalidSurfaceId(id))
+        self.surfaces.get_mut(&id).ok_or(RendererError::InvalidSurfaceId(id))
     }
 
     pub(crate) fn create_surface(
