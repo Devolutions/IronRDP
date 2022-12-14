@@ -13,8 +13,8 @@ use ironrdp::{
 };
 use log::LevelFilter;
 
+use ironrdp_renderer::renderer::Renderer;
 use simplelog::{Config, SimpleLogger};
-use ui_core::renderer::Renderer;
 
 pub type Error = Box<dyn std::error::Error + Send + Sync + 'static>;
 

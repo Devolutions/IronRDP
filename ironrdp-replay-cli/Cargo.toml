@@ -1,5 +1,5 @@
 [package]
-name = "replay_client"
+name = "ironrdp-replay-cli"
 version = "0.4.2"
 edition = "2021"
 readme = "README.md"
@@ -12,6 +12,6 @@ keywords = ["rdp", "client", "remote", "desktop", "protocol", "gfx", "rfx"]
 ironrdp = { path = "../ironrdp" }
 clap = { version = "4.0", features = ["derive", "cargo"] }
 glutin = { version = "0.29" }
-ui-core = { path = "../ui_core" }
+ironrdp-renderer = { path = "../ironrdp-renderer" }
 simplelog = "0.12"
 log = "0.4"

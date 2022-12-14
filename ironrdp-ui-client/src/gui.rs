@@ -11,9 +11,9 @@ use glutin::event::{Event, WindowEvent};
 use glutin::event_loop::ControlFlow;
 
 use ironrdp::dvc::gfx::ServerPdu;
+use ironrdp_renderer::renderer::Renderer;
 use ironrdp_session::{ErasedWriter, GfxHandler};
 use tokio::sync::Mutex;
-use ui_core::renderer::Renderer;
 
 use crate::RdpError;
 

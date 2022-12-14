@@ -14,7 +14,7 @@ pub mod utils;
 
 use ironrdp::{gcc, nego};
 
-pub use crate::active_session::{ActiveStageOutput, ActiveStageProcessor, DvcHandlerFactory, GfxHandler};
+pub use crate::active_session::{ActiveStageOutput, ActiveStageProcessor, GfxHandler};
 pub use crate::codecs::{ErasedWriter, FramedReader};
 pub use crate::connection_sequence::{process_connection_sequence, ConnectionSequenceResult, UpgradedStream};
 pub use crate::errors::RdpError;

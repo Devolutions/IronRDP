@@ -12,7 +12,7 @@ use crate::image::DecodedImage;
 use crate::transport::{Decoder, RdpTransport};
 use crate::{utils, InputConfig, RdpError};
 
-pub use self::x224::{DvcHandlerFactory, GfxHandler};
+pub use self::x224::GfxHandler;
 
 pub struct ActiveStageProcessor {
     x224_processor: x224::Processor,
@@ -22,14 +22,14 @@ pub struct ActiveStageProcessor {
 impl ActiveStageProcessor {
     pub fn new(
         config: InputConfig,
-        dvc_handler_factory: Option<Box<dyn DvcHandlerFactory + Send>>,
+        graphics_handler: Option<Box<dyn GfxHandler + Send>>,
         connection_sequence_result: ConnectionSequenceResult,
     ) -> Self {
         let x224_processor = x224::Processor::new(
             utils::swap_hashmap_kv(connection_sequence_result.joined_static_channels),
             config.global_channel_name,
             config.graphics_config,
-            dvc_handler_factory,
+            graphics_handler,
         );
 
         let fast_path_processor = fast_path::ProcessorBuilder {

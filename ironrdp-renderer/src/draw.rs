@@ -594,8 +594,6 @@ impl DrawingContext {
         self.texture_shader.set_location(location);
         self.texture_shader.draw_texture(self.offscreen_buffer.texture);
     }
-
-    pub fn info(&self) {}
 }
 
 impl Drop for DrawingContext {

@@ -1,5 +1,5 @@
 [package]
-name = "ironrdp-cli"
+name = "ironrdp-ui-cli"
 version = "0.4.2"
 edition = "2021"
 readme = "README.md"
@@ -44,3 +44,8 @@ futures-util = "0.3"
 # Utils
 chrono = "0.4.22"
 image = "0.24.4"
+
+# Gui
+glow = { version ="0.11.0" }
+glutin = { version = "0.29" }
+ironrdp-renderer = { path = "../ironrdp-renderer"}

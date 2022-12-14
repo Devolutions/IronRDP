@@ -316,7 +316,7 @@ impl Surfaces {
 }
 
 /// Convert the decoded data to a buffer. OpenH264 documentation says that if
-/// the data is not immideately used it should be copied out.
+/// the data is not immediately used it should be copied out.
 fn convert_to_buffer(yuv: DecodedYUV) -> Vec<u8> {
     let y = yuv.y_with_stride();
     let u = yuv.u_with_stride();
