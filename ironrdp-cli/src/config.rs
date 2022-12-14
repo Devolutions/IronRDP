@@ -173,7 +173,6 @@ impl Config {
             global_channel_name: GLOBAL_CHANNEL_NAME.to_string(),
             user_channel_name: USER_CHANNEL_NAME.to_string(),
             graphics_config,
-            gfx_dump_file: None,
         };
 
         Self {

@@ -1,5 +1,5 @@
 [package]
-name = "ironrdp-replay-cli"
+name = "ironrdp-replay-client"
 version = "0.4.2"
 edition = "2021"
 readme = "README.md"

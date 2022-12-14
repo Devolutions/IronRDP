@@ -132,8 +132,7 @@ async fn launch_client(
         Some(Box::new(handler)),
         connection_sequence_result,
     );
-    let config = config.input;
-    let gui = gui::UiContext::new(config.width, config.height);
+    let gui = gui::UiContext::new(config.input.width, config.input.height);
 
     let active_stage_writer = writer.clone();
     let active_stage_handle = tokio::spawn(async move {

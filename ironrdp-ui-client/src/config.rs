@@ -13,6 +13,7 @@ pub struct Config {
     pub log_file: String,
     pub routing_addr: SocketAddr,
     pub input: InputConfig,
+    pub gfx_dump_file: Option<PathBuf>,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
@@ -177,13 +178,13 @@ impl Config {
             global_channel_name: GLOBAL_CHANNEL_NAME.to_string(),
             user_channel_name: USER_CHANNEL_NAME.to_string(),
             graphics_config,
-            gfx_dump_file: args.gfx_dump_file,
         };
 
         Self {
             log_file: args.log_file,
             routing_addr: args.addr,
             input,
+            gfx_dump_file: args.gfx_dump_file,
         }
     }
 }

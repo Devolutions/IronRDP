@@ -5,5 +5,5 @@ members = [
     "ironrdp-ui-client",
     "ironrdp-cli",
     "ironrdp-renderer",
-    "ironrdp-replay-cli",
+    "ironrdp-replay-client",
 ]

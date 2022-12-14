@@ -1,5 +1,5 @@
 [package]
-name = "ironrdp-ui-cli"
+name = "ironrdp-ui-client"
 version = "0.4.2"
 edition = "2021"
 readme = "README.md"

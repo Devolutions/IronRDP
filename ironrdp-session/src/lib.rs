@@ -4,8 +4,6 @@ extern crate log;
 mod codecs;
 mod errors;
 
-use std::path::PathBuf;
-
 pub mod active_session;
 pub mod connection_sequence;
 pub mod image;
@@ -42,5 +40,4 @@ pub struct InputConfig {
     pub global_channel_name: String,
     pub user_channel_name: String,
     pub graphics_config: Option<GraphicsConfig>,
-    pub gfx_dump_file: Option<PathBuf>,
 }
