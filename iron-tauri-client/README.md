@@ -12,8 +12,16 @@
 
 ### Steps
 
+#### Dev
+
 - run `wasm-pack build` in `./ffi/wasm` folder
-- copy `pkg` folder from `./ffi/wasm` to `./iron-web-client/src/assets`
-- run `npm install` in `./iron-web-client` folder
+- run `npm install` in `./iron-svelte-client` folder
+- run `npm run build-tauri` in `./iron-svelte-client` folder
 - run `npm install` in `./iron-tauri-client` folder
 - finally, run `npm run tauri dev` in `./iron-tauri-client` folder
+
+#### Build executable
+
+To build the executable, run the step detailed in Dev section then, instead the last one, 
+- run `npm run tauri build`. 
+- You can execute the application directly from `./iron-tauri-client/src-tauri/target/release` or you can install it on your computer by executing the msi file from `./iron-tauri-client/src-tauri/target/release/bundle/msi`
