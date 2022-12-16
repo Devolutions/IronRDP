@@ -12,18 +12,24 @@ use log::debug;
 use super::DynamicChannelDataHandler;
 use crate::{GraphicsConfig, RdpError};
 
+pub trait GfxHandler {
+    fn on_message(&self, message: ServerPdu) -> Result<Option<ClientPdu>, RdpError>;
+}
+
 pub struct Handler {
     decompressor: zgfx::Decompressor,
     decompressed_buffer: Vec<u8>,
     frames_decoded: u32,
+    gfx_handler: Option<Box<dyn GfxHandler + Send>>,
 }
 
 impl Handler {
-    pub fn new() -> Self {
+    pub fn new(gfx_handler: Option<Box<dyn GfxHandler + Send>>) -> Self {
         Self {
             decompressor: zgfx::Decompressor::new(),
             decompressed_buffer: Vec::with_capacity(1024 * 16),
             frames_decoded: 0,
+            gfx_handler,
         }
     }
 }
@@ -39,7 +45,7 @@ impl DynamicChannelDataHandler for Handler {
             let gfx_pdu = ServerPdu::from_buffer(&mut slice)?;
             debug!("Got GFX PDU: {:?}", gfx_pdu);
 
-            if let ServerPdu::EndFrame(end_frame_pdu) = gfx_pdu {
+            if let ServerPdu::EndFrame(end_frame_pdu) = &gfx_pdu {
                 self.frames_decoded += 1;
                 // Enqueue an acknowledge for every end frame
                 let client_pdu = ClientPdu::FrameAcknowledge(FrameAcknowledgePdu {
@@ -52,6 +58,17 @@ impl DynamicChannelDataHandler for Handler {
                 client_pdu.to_buffer(&mut client_pdu_buffer)?;
             } else {
                 // Handle the normal PDU
+            }
+
+            // If there is a listener send all the data to the listener
+            if let Some(handler) = self.gfx_handler.as_mut() {
+                // Handle the normal PDU
+                let client_pdu = handler.on_message(gfx_pdu)?;
+
+                if let Some(client_pdu) = client_pdu {
+                    client_pdu_buffer.reserve(client_pdu_buffer.len() + client_pdu.buffer_length());
+                    client_pdu.to_buffer(&mut client_pdu_buffer)?;
+                }
             }
         }
 

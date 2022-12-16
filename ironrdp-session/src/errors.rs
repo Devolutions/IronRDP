@@ -1,4 +1,10 @@
-use std::io;
+use std::{
+    io,
+    sync::{
+        mpsc::{RecvError, SendError},
+        PoisonError,
+    },
+};
 
 use failure::Fail;
 use ironrdp::{
@@ -107,6 +113,12 @@ pub enum RdpError {
     InvalidCapabilitiesMask(u32),
     #[fail(display = "Stream terminated while waiting for some data")]
     UnexpectedStreamTermination,
+    #[fail(display = "Unable to send message on channel {}", _0)]
+    SendError(String),
+    #[fail(display = "Unable to recieve message on channel {}", _0)]
+    RecieveError(String),
+    #[fail(display = "Lock poisoned")]
+    LockPoisonedError,
     #[cfg(all(feature = "native-tls", not(feature = "rustls")))]
     #[fail(display = "Invalid DER structure: {}", _0)]
     DerEncode(#[fail(cause)] native_tls::Error),
@@ -127,6 +139,24 @@ impl From<rustls::Error> for RdpError {
             }
             _ => RdpError::TlsConnectorError(e),
         }
+    }
+}
+
+impl<T> From<SendError<T>> for RdpError {
+    fn from(e: SendError<T>) -> Self {
+        RdpError::SendError(e.to_string())
+    }
+}
+
+impl From<RecvError> for RdpError {
+    fn from(e: RecvError) -> Self {
+        RdpError::RecieveError(e.to_string())
+    }
+}
+
+impl<T> From<PoisonError<T>> for RdpError {
+    fn from(_e: PoisonError<T>) -> Self {
+        RdpError::LockPoisonedError
     }
 }
 

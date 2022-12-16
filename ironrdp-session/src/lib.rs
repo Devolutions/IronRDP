@@ -3,20 +3,21 @@ extern crate log;
 
 mod codecs;
 mod errors;
-mod utils;
 
 pub mod active_session;
 pub mod connection_sequence;
 pub mod image;
 pub mod transport;
+pub mod utils;
 
 use ironrdp::{gcc, nego};
 
-pub use crate::active_session::{ActiveStageOutput, ActiveStageProcessor};
+pub use crate::active_session::{ActiveStageOutput, ActiveStageProcessor, GfxHandler};
 pub use crate::codecs::{ErasedWriter, FramedReader};
 pub use crate::connection_sequence::{process_connection_sequence, ConnectionSequenceResult, UpgradedStream};
 pub use crate::errors::RdpError;
 
+#[derive(Debug, Clone)]
 pub struct GraphicsConfig {
     pub avc444: bool,
     pub h264: bool,
@@ -25,6 +26,7 @@ pub struct GraphicsConfig {
     pub capabilities: u32,
 }
 
+#[derive(Debug, Clone)]
 pub struct InputConfig {
     pub credentials: sspi::AuthIdentity,
     pub security_protocol: nego::SecurityProtocol,
