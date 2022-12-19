@@ -1,6 +1,6 @@
 use std::io;
 
-use ironrdp::geometry::Rectangle;
+use ironrdp_core::geometry::Rectangle;
 use ironrdp_graphics::image_processing::*;
 use proptest::prelude::*;
 

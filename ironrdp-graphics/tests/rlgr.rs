@@ -1,4 +1,4 @@
-use ironrdp::codecs::rfx::EntropyAlgorithm;
+use ironrdp_core::codecs::rfx::EntropyAlgorithm;
 use ironrdp_graphics::rlgr::*;
 
 #[test]
