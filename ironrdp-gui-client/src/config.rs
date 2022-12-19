@@ -1,6 +1,9 @@
-use std::{net::SocketAddr, num::ParseIntError, path::PathBuf};
+use std::net::SocketAddr;
+use std::num::ParseIntError;
+use std::path::PathBuf;
 
-use clap::{clap_derive::ValueEnum, crate_name, Parser};
+use clap::clap_derive::ValueEnum;
+use clap::{crate_name, Parser};
 use ironrdp_session::{GraphicsConfig, InputConfig};
 use sspi::AuthIdentity;
 

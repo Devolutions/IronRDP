@@ -2,34 +2,26 @@ mod user_info;
 
 use std::collections::HashMap;
 use std::future::Future;
-use std::io;
-use std::iter;
 use std::net::SocketAddr;
+use std::{io, iter};
 
 use dns_lookup::lookup_addr;
-use futures_util::AsyncRead;
-use futures_util::AsyncReadExt as _;
-use futures_util::AsyncWrite;
-use ironrdp::rdp::capability_sets::CapabilitySet;
-use ironrdp::rdp::server_license::{
+use futures_util::{AsyncRead, AsyncReadExt as _, AsyncWrite};
+use ironrdp_core::rdp::capability_sets::CapabilitySet;
+use ironrdp_core::rdp::server_license::{
     ClientNewLicenseRequest, ClientPlatformChallengeResponse, InitialMessageType, InitialServerLicenseMessage,
     ServerPlatformChallenge, ServerUpgradeLicense, PREMASTER_SECRET_SIZE, RANDOM_NUMBER_SIZE,
 };
-use ironrdp::rdp::{ErrorInfo, ProtocolIndependentCode, ServerSetErrorInfoPdu, SERVER_CHANNEL_ID};
-use ironrdp::{nego, rdp, PduParsing};
+use ironrdp_core::rdp::{ErrorInfo, ProtocolIndependentCode, ServerSetErrorInfoPdu, SERVER_CHANNEL_ID};
+use ironrdp_core::{nego, rdp, PduParsing};
 use ring::rand::SecureRandom as _;
 use sspi::internal::credssp;
 use sspi::NegotiateConfig;
 
-use crate::codecs::encode_next_frame;
-use crate::codecs::ErasedWriter;
-use crate::codecs::FramedReader;
-use crate::transport::ChannelIdentificators;
-use crate::transport::SendPduDataContextTransport;
-use crate::transport::ShareControlHeaderTransport;
-use crate::transport::TsRequestTransport;
+use crate::codecs::{encode_next_frame, ErasedWriter, FramedReader};
 use crate::transport::{
-    connect, DataTransport, EarlyUserAuthResult, McsTransport, SendDataContextTransport, ShareDataHeaderTransport,
+    connect, ChannelIdentificators, DataTransport, EarlyUserAuthResult, McsTransport, SendDataContextTransport,
+    SendPduDataContextTransport, ShareControlHeaderTransport, ShareDataHeaderTransport, TsRequestTransport,
     X224DataTransport,
 };
 use crate::{InputConfig, RdpError};
@@ -52,6 +44,8 @@ pub struct UpgradedStream<S> {
     pub stream: S,
     pub server_public_key: Vec<u8>,
 }
+
+// TODO: the async part should be extracted to `ironrdp-session-async`
 
 pub async fn process_connection_sequence<S, UpgradeFn, FnRes, UpgradedS>(
     stream: S,
@@ -197,16 +191,17 @@ pub async fn process_mcs_connect(
     selected_protocol: nego::SecurityProtocol,
 ) -> Result<StaticChannels, RdpError> {
     let connect_initial =
-        ironrdp::ConnectInitial::with_gcc_blocks(user_info::create_gcc_blocks(config, selected_protocol)?);
+        ironrdp_core::ConnectInitial::with_gcc_blocks(user_info::create_gcc_blocks(config, selected_protocol)?);
     debug!("Send MCS Connect Initial PDU: {:?}", connect_initial);
     let mut codec = X224DataTransport::default();
     encode_next_frame(writer, &mut codec, connect_initial.clone()).await?;
-    let connect_response: ironrdp::ConnectResponse = reader.decode_next_frame(&mut codec).await?;
+    let connect_response: ironrdp_core::ConnectResponse = reader.decode_next_frame(&mut codec).await?;
     debug!("Got MCS Connect Response PDU: {:?}", connect_response);
 
     let gcc_blocks = connect_response.conference_create_response.gcc_blocks;
-    if connect_initial.conference_create_request.gcc_blocks.security == ironrdp::gcc::ClientSecurityData::no_security()
-        && gcc_blocks.security != ironrdp::gcc::ServerSecurityData::no_security()
+    if connect_initial.conference_create_request.gcc_blocks.security
+        == ironrdp_core::gcc::ClientSecurityData::no_security()
+        && gcc_blocks.security != ironrdp_core::gcc::ServerSecurityData::no_security()
     {
         return Err(RdpError::InvalidResponse(String::from(
             "The server demands a security, while the client requested 'no security'",
@@ -240,7 +235,7 @@ pub async fn process_mcs(
     mut static_channels: StaticChannels,
     config: &InputConfig,
 ) -> Result<StaticChannels, RdpError> {
-    let erect_domain_request = ironrdp::mcs::ErectDomainPdu {
+    let erect_domain_request = ironrdp_core::mcs::ErectDomainPdu {
         sub_height: 0,
         sub_interval: 0,
     };
@@ -251,15 +246,15 @@ pub async fn process_mcs(
     encode_next_frame(
         writer,
         &mut codec,
-        ironrdp::McsPdu::ErectDomainRequest(erect_domain_request),
+        ironrdp_core::McsPdu::ErectDomainRequest(erect_domain_request),
     )
     .await?;
 
     debug!("Send MCS Attach User Request PDU");
-    encode_next_frame(writer, &mut codec, ironrdp::McsPdu::AttachUserRequest).await?;
+    encode_next_frame(writer, &mut codec, ironrdp_core::McsPdu::AttachUserRequest).await?;
 
     let mcs_pdu = stream.decode_next_frame(&mut codec).await?;
-    let initiator_id = if let ironrdp::McsPdu::AttachUserConfirm(attach_user_confirm) = mcs_pdu {
+    let initiator_id = if let ironrdp_core::McsPdu::AttachUserConfirm(attach_user_confirm) = mcs_pdu {
         debug!("Got MCS Attach User Confirm PDU: {:?}", attach_user_confirm);
 
         static_channels.insert(config.user_channel_name.clone(), attach_user_confirm.initiator_id);
@@ -273,7 +268,7 @@ pub async fn process_mcs(
     };
 
     for (_, id) in static_channels.iter() {
-        let channel_join_request = ironrdp::mcs::ChannelJoinRequestPdu {
+        let channel_join_request = ironrdp_core::mcs::ChannelJoinRequestPdu {
             initiator_id,
             channel_id: *id,
         };
@@ -281,12 +276,12 @@ pub async fn process_mcs(
         encode_next_frame(
             writer,
             &mut codec,
-            ironrdp::McsPdu::ChannelJoinRequest(channel_join_request),
+            ironrdp_core::McsPdu::ChannelJoinRequest(channel_join_request),
         )
         .await?;
 
         let mcs_pdu = stream.decode_next_frame(&mut codec).await?;
-        if let ironrdp::McsPdu::ChannelJoinConfirm(channel_join_confirm) = mcs_pdu {
+        if let ironrdp_core::McsPdu::ChannelJoinConfirm(channel_join_confirm) = mcs_pdu {
             debug!("Got MCS Channel Join Confirm PDU: {:?}", channel_join_confirm);
 
             if channel_join_confirm.initiator_id != initiator_id
@@ -437,16 +432,16 @@ pub async fn process_capability_sets(
     config: &InputConfig,
 ) -> Result<DesktopSize, RdpError> {
     let share_control_pdu = reader.decode_next_frame(&mut codec).await?;
-    let capability_sets = if let ironrdp::ShareControlPdu::ServerDemandActive(server_demand_active) = share_control_pdu
-    {
-        debug!("Got Server Demand Active PDU: {:?}", server_demand_active.pdu);
-        server_demand_active.pdu.capability_sets
-    } else {
-        return Err(RdpError::UnexpectedPdu(format!(
-            "Expected Server Demand Active PDU, got: {:?}",
-            share_control_pdu.as_short_name()
-        )));
-    };
+    let capability_sets =
+        if let ironrdp_core::ShareControlPdu::ServerDemandActive(server_demand_active) = share_control_pdu {
+            debug!("Got Server Demand Active PDU: {:?}", server_demand_active.pdu);
+            server_demand_active.pdu.capability_sets
+        } else {
+            return Err(RdpError::UnexpectedPdu(format!(
+                "Expected Server Demand Active PDU, got: {:?}",
+                share_control_pdu.as_short_name()
+            )));
+        };
     let desktop_size = capability_sets
         .iter()
         .find(|c| matches!(c, CapabilitySet::Bitmap(_)))
@@ -462,10 +457,9 @@ pub async fn process_capability_sets(
             height: config.height,
         });
 
-    let client_confirm_active = ironrdp::ShareControlPdu::ClientConfirmActive(user_info::create_client_confirm_active(
-        config,
-        capability_sets,
-    )?);
+    let client_confirm_active = ironrdp_core::ShareControlPdu::ClientConfirmActive(
+        user_info::create_client_confirm_active(config, capability_sets)?,
+    );
     debug!("Send Client Confirm Active PDU: {:?}", client_confirm_active);
     encode_next_frame(writer, &mut codec, client_confirm_active).await?;
     Ok(desktop_size)
@@ -477,7 +471,7 @@ pub async fn process_finalization(
     mut codec: ShareDataHeaderTransport,
     initiator_id: u16,
 ) -> Result<(), RdpError> {
-    use ironrdp::rdp::{ControlAction, ControlPdu, FontPdu, SequenceFlags, ShareDataPdu, SynchronizePdu};
+    use ironrdp_core::rdp::{ControlAction, ControlPdu, FontPdu, SequenceFlags, ShareDataPdu, SynchronizePdu};
 
     #[derive(Copy, Clone, PartialEq, Debug)]
     enum FinalizationOrder {
@@ -522,7 +516,7 @@ pub async fn process_finalization(
             (
                 FinalizationOrder::ControlCooperate,
                 ShareDataPdu::Control(ControlPdu {
-                    action: ironrdp::ControlAction::Cooperate,
+                    action: ironrdp_core::ControlAction::Cooperate,
                     grant_id: 0,
                     control_id: 0,
                 }),
@@ -530,7 +524,7 @@ pub async fn process_finalization(
             (
                 FinalizationOrder::RequestControl,
                 ShareDataPdu::Control(ControlPdu {
-                    action: ironrdp::ControlAction::GrantedControl,
+                    action: ironrdp_core::ControlAction::GrantedControl,
                     grant_id,
                     control_id,
                 }),

@@ -1,19 +1,19 @@
-use std::{fs::File, io::ErrorKind, path::PathBuf, process::exit, sync::mpsc::sync_channel, thread, time::Duration};
+use std::fs::File;
+use std::io::ErrorKind;
+use std::path::PathBuf;
+use std::process::exit;
+use std::sync::mpsc::sync_channel;
+use std::thread;
+use std::time::Duration;
 
 use clap::Parser;
-
-use glutin::{
-    dpi::PhysicalSize,
-    event::{Event, WindowEvent},
-    event_loop::ControlFlow,
-};
-use ironrdp::{
-    dvc::gfx::{GraphicsPipelineError, ServerPdu},
-    PduParsing,
-};
-use log::LevelFilter;
-
+use glutin::dpi::PhysicalSize;
+use glutin::event::{Event, WindowEvent};
+use glutin::event_loop::ControlFlow;
+use ironrdp::dvc::gfx::{GraphicsPipelineError, ServerPdu};
+use ironrdp::PduParsing;
 use ironrdp_renderer::renderer::Renderer;
+use log::LevelFilter;
 use simplelog::{Config, SimpleLogger};
 
 pub type Error = Box<dyn std::error::Error + Send + Sync + 'static>;

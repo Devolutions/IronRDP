@@ -5,7 +5,7 @@ use bit_field::BitField;
 use byteorder::{BigEndian, ReadBytesExt};
 use bytes::{BufMut, BytesMut};
 use futures_util::{AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _};
-use ironrdp::Action;
+use ironrdp_core::Action;
 use num_traits::FromPrimitive;
 
 use crate::transport::{Decoder as TransportDecoder, Encoder as TransportEncoder};
@@ -44,7 +44,7 @@ where
         (self.reader, self.buf)
     }
 
-    pub async fn read_frame(&mut self) -> Result<Option<BytesMut>, ironrdp::RdpError>
+    pub async fn read_frame(&mut self) -> Result<Option<BytesMut>, ironrdp_core::RdpError>
     where
         R: Unpin,
     {
@@ -98,7 +98,7 @@ where
 }
 
 /// Function to call when there are no more bytes available to be read from the underlying I/O.
-fn decode_frame_eof(buf: &mut BytesMut) -> Result<Option<BytesMut>, ironrdp::RdpError> {
+fn decode_frame_eof(buf: &mut BytesMut) -> Result<Option<BytesMut>, ironrdp_core::RdpError> {
     match decode_frame(buf)? {
         Some(frame) => Ok(Some(frame)),
         None => {
@@ -112,14 +112,14 @@ fn decode_frame_eof(buf: &mut BytesMut) -> Result<Option<BytesMut>, ironrdp::Rdp
 }
 
 /// Attempts to decode a frame from the provided buffer of bytes.
-fn decode_frame(buf: &mut BytesMut) -> Result<Option<BytesMut>, ironrdp::RdpError> {
+fn decode_frame(buf: &mut BytesMut) -> Result<Option<BytesMut>, ironrdp_core::RdpError> {
     let mut stream = buf.as_ref();
     if stream.is_empty() {
         return Ok(None);
     }
     let header = stream.read_u8()?;
     let action = header.get_bits(0..2);
-    let action = Action::from_u8(action).ok_or(ironrdp::RdpError::InvalidActionCode(action))?;
+    let action = Action::from_u8(action).ok_or(ironrdp_core::RdpError::InvalidActionCode(action))?;
 
     let length = match action {
         Action::X224 if stream.len() >= 3 => {

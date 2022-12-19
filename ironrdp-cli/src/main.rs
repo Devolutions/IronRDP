@@ -5,15 +5,18 @@ mod config;
 
 use std::io;
 
-use crate::config::Config;
 use futures_util::io::AsyncWriteExt as _;
-use ironrdp::codecs::rfx::image_processing::PixelFormat;
-use ironrdp_session::image::DecodedImage;
-use ironrdp_session::{process_connection_sequence, ActiveStageOutput, ActiveStageProcessor, RdpError, UpgradedStream};
+use ironrdp::graphics::image_processing::PixelFormat;
+use ironrdp::session::image::DecodedImage;
+use ironrdp::session::{
+    process_connection_sequence, ActiveStageOutput, ActiveStageProcessor, RdpError, UpgradedStream,
+};
 use tokio::io::AsyncWriteExt as _;
 use tokio::net::TcpStream;
 use tokio_util::compat::TokioAsyncReadCompatExt as _;
 use x509_parser::prelude::{FromDer as _, X509Certificate};
+
+use crate::config::Config;
 
 #[cfg(feature = "rustls")]
 type TlsStream = tokio_util::compat::Compat<tokio_rustls::client::TlsStream<TcpStream>>;

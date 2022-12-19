@@ -3,14 +3,13 @@ mod tests;
 
 use std::cmp::min;
 
-use ironrdp::codecs::rfx::color_conversion::YCbCrBuffer;
-use ironrdp::codecs::rfx::image_processing::PixelFormat;
-use ironrdp::codecs::rfx::rectangles_processing::Region;
-use ironrdp::codecs::rfx::{
-    self, color_conversion, dwt, quantization, rlgr, subband_reconstruction, EntropyAlgorithm, Headers, Quant,
-    RfxRectangle, Tile,
-};
-use ironrdp::{PduBufferParsing, Rectangle};
+use ironrdp_core::codecs::rfx::{self, EntropyAlgorithm, Headers, Quant, RfxRectangle, Tile};
+use ironrdp_core::geometry::Rectangle;
+use ironrdp_core::PduBufferParsing;
+use ironrdp_graphics::color_conversion::{self, YCbCrBuffer};
+use ironrdp_graphics::image_processing::PixelFormat;
+use ironrdp_graphics::rectangle_processing::Region;
+use ironrdp_graphics::{dwt, quantization, rlgr, subband_reconstruction};
 use lazy_static::lazy_static;
 use log::debug;
 

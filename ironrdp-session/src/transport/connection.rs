@@ -1,10 +1,11 @@
 use bytes::BytesMut;
 use futures_util::{AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _};
-use ironrdp::{nego, PduParsing};
+use ironrdp_core::{nego, PduParsing};
 use log::debug;
 use sspi::internal::credssp;
 
-use crate::{codecs::FramedReader, RdpError};
+use crate::codecs::FramedReader;
+use crate::RdpError;
 
 const MAX_TS_REQUEST_LENGTH_BUFFER_SIZE: usize = 4;
 

@@ -5,13 +5,12 @@ use std::io;
 use std::marker::PhantomData;
 
 use bytes::BytesMut;
-use ironrdp::rdp::SERVER_CHANNEL_ID;
-use ironrdp::{PduParsing, RdpPdu};
-
-use crate::RdpError;
+use ironrdp_core::rdp::SERVER_CHANNEL_ID;
+use ironrdp_core::{PduParsing, RdpPdu};
 
 pub use self::channels::{ChannelIdentificators, DynamicVirtualChannelTransport, StaticVirtualChannelTransport};
 pub use self::connection::{connect, EarlyUserAuthResult, TsRequestTransport};
+use crate::RdpError;
 
 pub trait Encoder {
     type Item;
@@ -60,7 +59,7 @@ impl Encoder for DataTransport {
     type Error = RdpError;
 
     fn encode(&mut self, data: Self::Item, mut stream: impl io::Write) -> Result<(), RdpError> {
-        ironrdp::Data::new(data.len()).to_buffer(&mut stream)?;
+        ironrdp_core::Data::new(data.len()).to_buffer(&mut stream)?;
         stream.write_all(data.as_ref())?;
         stream.flush()?;
 
@@ -75,7 +74,7 @@ impl Decoder for DataTransport {
     fn decode(&mut self, mut stream: impl io::Read) -> Result<Self::Item, RdpError> {
         match self.state {
             TransportState::ToDecode => {
-                let data_pdu = ironrdp::Data::from_buffer(&mut stream)?;
+                let data_pdu = ironrdp_core::Data::from_buffer(&mut stream)?;
 
                 Ok(data_pdu.data_length)
             }
@@ -102,15 +101,15 @@ impl<E, D> Encoder for X224DataTransport<E, D>
 where
     E: PduParsing,
     <E as PduParsing>::Error: From<std::io::Error>,
-    <E as PduParsing>::Error: From<ironrdp::RdpError>,
+    <E as PduParsing>::Error: From<ironrdp_core::RdpError>,
 {
     type Item = E;
     type Error = <E as PduParsing>::Error;
 
     fn encode(&mut self, data: Self::Item, mut stream: impl io::Write) -> Result<(), Self::Error> {
-        ironrdp::Data::new(data.buffer_length())
+        ironrdp_core::Data::new(data.buffer_length())
             .to_buffer(&mut stream)
-            .map_err(ironrdp::RdpError::X224Error)?;
+            .map_err(ironrdp_core::RdpError::X224Error)?;
         data.to_buffer(&mut stream)?;
         Ok(())
     }
@@ -120,13 +119,13 @@ impl<E, D> Decoder for X224DataTransport<E, D>
 where
     D: PduParsing,
     <D as PduParsing>::Error: From<std::io::Error>,
-    <D as PduParsing>::Error: From<ironrdp::RdpError>,
+    <D as PduParsing>::Error: From<ironrdp_core::RdpError>,
 {
     type Item = D;
     type Error = <D as PduParsing>::Error;
 
     fn decode(&mut self, mut stream: impl io::Read) -> Result<Self::Item, Self::Error> {
-        let data = ironrdp::Data::from_buffer(&mut stream).map_err(ironrdp::RdpError::X224Error)?;
+        let data = ironrdp_core::Data::from_buffer(&mut stream).map_err(ironrdp_core::RdpError::X224Error)?;
         let length = data.data_length;
         let item = D::from_buffer(&mut stream)?;
         let remaining = length - item.buffer_length();
@@ -146,7 +145,10 @@ impl McsTransport {
         Self(transport)
     }
 
-    pub fn prepare_data_to_encode(mcs_pdu: ironrdp::McsPdu, extra_data: Option<Vec<u8>>) -> Result<BytesMut, RdpError> {
+    pub fn prepare_data_to_encode(
+        mcs_pdu: ironrdp_core::McsPdu,
+        extra_data: Option<Vec<u8>>,
+    ) -> Result<BytesMut, RdpError> {
         let mut mcs_pdu_buff = BytesMut::with_capacity(mcs_pdu.buffer_length());
         mcs_pdu_buff.resize(mcs_pdu.buffer_length(), 0x00);
         mcs_pdu.to_buffer(mcs_pdu_buff.as_mut()).map_err(RdpError::McsError)?;
@@ -169,12 +171,12 @@ impl Encoder for McsTransport {
 }
 
 impl Decoder for McsTransport {
-    type Item = ironrdp::McsPdu;
+    type Item = ironrdp_core::McsPdu;
     type Error = RdpError;
 
     fn decode(&mut self, mut stream: impl io::Read) -> Result<Self::Item, RdpError> {
         self.0.decode(&mut stream)?;
-        let mcs_pdu = ironrdp::McsPdu::from_buffer(&mut stream).map_err(RdpError::McsError)?;
+        let mcs_pdu = ironrdp_core::McsPdu::from_buffer(&mut stream).map_err(RdpError::McsError)?;
 
         Ok(mcs_pdu)
     }
@@ -227,7 +229,7 @@ impl Encoder for SendDataContextTransport {
     type Error = RdpError;
 
     fn encode(&mut self, send_data_context_pdu: Self::Item, mut stream: impl io::Write) -> Result<(), RdpError> {
-        let send_data_context = ironrdp::mcs::SendDataContext {
+        let send_data_context = ironrdp_core::mcs::SendDataContext {
             channel_id: self.channel_ids.channel_id,
             initiator_id: self.channel_ids.initiator_id,
             pdu_length: send_data_context_pdu.len(),
@@ -235,7 +237,7 @@ impl Encoder for SendDataContextTransport {
 
         self.mcs_transport.encode(
             McsTransport::prepare_data_to_encode(
-                ironrdp::McsPdu::SendDataRequest(send_data_context),
+                ironrdp_core::McsPdu::SendDataRequest(send_data_context),
                 Some(send_data_context_pdu),
             )?,
             &mut stream,
@@ -253,11 +255,11 @@ impl Decoder for SendDataContextTransport {
                 let mcs_pdu = self.mcs_transport.decode(&mut stream)?;
 
                 match mcs_pdu {
-                    ironrdp::McsPdu::SendDataIndication(send_data_context) => Ok(ChannelIdentificators {
+                    ironrdp_core::McsPdu::SendDataIndication(send_data_context) => Ok(ChannelIdentificators {
                         initiator_id: send_data_context.initiator_id,
                         channel_id: send_data_context.channel_id,
                     }),
-                    ironrdp::McsPdu::DisconnectProviderUltimatum(disconnect_reason) => {
+                    ironrdp_core::McsPdu::DisconnectProviderUltimatum(disconnect_reason) => {
                         Err(RdpError::UnexpectedDisconnection(format!(
                             "Server disconnection reason - {:?}",
                             disconnect_reason
@@ -293,11 +295,11 @@ impl ShareControlHeaderTransport {
 }
 
 impl Encoder for ShareControlHeaderTransport {
-    type Item = ironrdp::ShareControlPdu;
+    type Item = ironrdp_core::ShareControlPdu;
     type Error = RdpError;
 
     fn encode(&mut self, share_control_pdu: Self::Item, mut stream: impl io::Write) -> Result<(), RdpError> {
-        let share_control_header = ironrdp::ShareControlHeader {
+        let share_control_header = ironrdp_core::ShareControlHeader {
             share_control_pdu,
             pdu_source: self.pdu_source,
             share_id: self.share_id,
@@ -313,7 +315,7 @@ impl Encoder for ShareControlHeaderTransport {
 }
 
 impl Decoder for ShareControlHeaderTransport {
-    type Item = ironrdp::ShareControlPdu;
+    type Item = ironrdp_core::ShareControlPdu;
     type Error = RdpError;
 
     fn decode(&mut self, mut stream: impl io::Read) -> Result<Self::Item, RdpError> {
@@ -326,7 +328,7 @@ impl Decoder for ShareControlHeaderTransport {
         }
 
         let share_control_header =
-            ironrdp::ShareControlHeader::from_buffer(&mut stream).map_err(RdpError::ShareControlHeaderError)?;
+            ironrdp_core::ShareControlHeader::from_buffer(&mut stream).map_err(RdpError::ShareControlHeaderError)?;
         self.share_id = share_control_header.share_id;
 
         if share_control_header.pdu_source != SERVER_CHANNEL_ID {
@@ -349,30 +351,30 @@ impl ShareDataHeaderTransport {
 }
 
 impl Encoder for ShareDataHeaderTransport {
-    type Item = ironrdp::ShareDataPdu;
+    type Item = ironrdp_core::ShareDataPdu;
     type Error = RdpError;
 
     fn encode(&mut self, share_data_pdu: Self::Item, mut stream: impl io::Write) -> Result<(), RdpError> {
-        let share_data_header = ironrdp::ShareDataHeader {
+        let share_data_header = ironrdp_core::ShareDataHeader {
             share_data_pdu,
-            stream_priority: ironrdp::rdp::StreamPriority::Medium,
-            compression_flags: ironrdp::rdp::CompressionFlags::empty(),
-            compression_type: ironrdp::rdp::CompressionType::K8, // ignored if CompressionFlags::empty()
+            stream_priority: ironrdp_core::rdp::StreamPriority::Medium,
+            compression_flags: ironrdp_core::rdp::CompressionFlags::empty(),
+            compression_type: ironrdp_core::rdp::CompressionType::K8, // ignored if CompressionFlags::empty()
         };
 
         self.0
-            .encode(ironrdp::ShareControlPdu::Data(share_data_header), &mut stream)
+            .encode(ironrdp_core::ShareControlPdu::Data(share_data_header), &mut stream)
     }
 }
 
 impl Decoder for ShareDataHeaderTransport {
-    type Item = ironrdp::ShareDataPdu;
+    type Item = ironrdp_core::ShareDataPdu;
     type Error = RdpError;
 
     fn decode(&mut self, mut stream: impl io::Read) -> Result<Self::Item, RdpError> {
         let share_control_pdu = self.0.decode(&mut stream)?;
 
-        if let ironrdp::ShareControlPdu::Data(share_data_header) = share_control_pdu {
+        if let ironrdp_core::ShareControlPdu::Data(share_data_header) = share_control_pdu {
             Ok(share_data_header.share_data_pdu)
         } else {
             Err(RdpError::UnexpectedPdu(format!(
@@ -481,7 +483,7 @@ where
             let mut pdu_data = Vec::new();
             send_data_context_pdu.to_buffer(&mut pdu_data)?;
 
-            let send_data_context = ironrdp::mcs::SendDataContext {
+            let send_data_context = ironrdp_core::mcs::SendDataContext {
                 channel_id: channel_ids.channel_id,
                 initiator_id: channel_ids.initiator_id,
                 pdu_length: pdu_data.len(),
@@ -489,7 +491,7 @@ where
 
             self.mcs_transport.encode(
                 McsTransport::prepare_data_to_encode(
-                    ironrdp::McsPdu::SendDataRequest(send_data_context),
+                    ironrdp_core::McsPdu::SendDataRequest(send_data_context),
                     Some(pdu_data),
                 )?,
                 &mut stream,
@@ -514,13 +516,13 @@ where
         let mcs_pdu = self.mcs_transport.decode(&mut stream)?;
 
         let channel_ids = match mcs_pdu {
-            ironrdp::McsPdu::SendDataIndication(send_data_context) => Ok(ChannelIdentificators {
+            ironrdp_core::McsPdu::SendDataIndication(send_data_context) => Ok(ChannelIdentificators {
                 initiator_id: send_data_context.initiator_id,
                 channel_id: send_data_context.channel_id,
             }),
-            ironrdp::McsPdu::DisconnectProviderUltimatum(disconnect_reason) => Err(RdpError::UnexpectedDisconnection(
-                format!("Server disconnection reason - {:?}", disconnect_reason),
-            )),
+            ironrdp_core::McsPdu::DisconnectProviderUltimatum(disconnect_reason) => Err(
+                RdpError::UnexpectedDisconnection(format!("Server disconnection reason - {:?}", disconnect_reason)),
+            ),
             _ => Err(RdpError::UnexpectedPdu(format!(
                 "Expected Send Data Context PDU, got {:?}",
                 mcs_pdu.as_short_name()

@@ -1,7 +1,10 @@
-use glow::*;
-use ironrdp::Rectangle;
+use std::iter::FromIterator;
+use std::mem::size_of;
+use std::slice::from_raw_parts;
+use std::sync::Arc;
 
-use std::{iter::FromIterator, mem::size_of, slice::from_raw_parts, sync::Arc};
+use glow::*;
+use ironrdp::geometry::Rectangle;
 
 fn cast_as_bytes<T>(input: &[T]) -> &[u8] {
     unsafe { from_raw_parts(input.as_ptr() as *const u8, input.len() * size_of::<T>()) }

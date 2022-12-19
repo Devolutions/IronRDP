@@ -1,24 +1,23 @@
 #![cfg_attr(all(not(debug_assertions), target_os = "windows"), windows_subsystem = "windows")]
 
-use anyhow::Context as _;
-use ironrdp_session::image::DecodedImage;
-use ironrdp::codecs::rfx::image_processing::PixelFormat;
-use bytes::BytesMut;
 use core::future::Future;
-use ironrdp::input::fast_path::FastPathInput;
-use ironrdp_session::{ErasedWriter, FramedReader};
-use ironrdp_session::ConnectionSequenceResult;
-use ironrdp_session::InputConfig;
-use ironrdp::Rectangle;
-use ironrdp_session::{process_connection_sequence, ActiveStageOutput, ActiveStageProcessor, RdpError, UpgradedStream};
-use serde::Serialize;
-use sspi::AuthIdentity;
 use std::collections::HashMap;
 use std::io;
 use std::net::SocketAddr;
 use std::str::FromStr;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
+
+use anyhow::Context as _;
+use bytes::BytesMut;
+use ironrdp::graphics::image_processing::PixelFormat;
+use ironrdp::input::fast_path::FastPathInput;
+use ironrdp::session::image::DecodedImage;
+use ironrdp::session::{ConnectionSequenceResult, ErasedWriter, FramedReader, InputConfig};
+use ironrdp::geometry::Rectangle;
+use ironrdp::session::{process_connection_sequence, ActiveStageOutput, ActiveStageProcessor, RdpError, UpgradedStream};
+use serde::Serialize;
+use sspi::AuthIdentity;
 use tauri::{Manager as _, State};
 use tokio::io::AsyncWriteExt as _;
 use tokio::net::{TcpListener, TcpStream};

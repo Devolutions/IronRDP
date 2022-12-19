@@ -1,7 +1,12 @@
 [package]
 name = "ironrdp-renderer"
 version = "0.1.0"
-edition = "2018"
+edition = "2021"
+readme = "README.md"
+license = "MIT/Apache-2.0"
+homepage = "https://github.com/Devolutions/IronRDP"
+repository = "https://github.com/Devolutions/IronRDP"
+authors = ["Devolutions Inc. <infos@devolutions.net>"]
 
 [lib]
 path = "src/lib.rs"
@@ -10,7 +15,7 @@ path = "src/lib.rs"
 glow = "0.11"
 log = "0.4"
 futures = "0.3.17"
-failure = "0.1"
+thiserror = "1.0.38"
 byteorder = "1.3"
 ironrdp = { path = "../ironrdp" }
 glutin = { version = "0.29" }

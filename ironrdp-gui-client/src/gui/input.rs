@@ -3,12 +3,10 @@ use std::sync::Arc;
 
 use futures_util::AsyncWriteExt;
 use glutin::dpi::PhysicalPosition;
-use glutin::event::ElementState;
-use glutin::event::{Event, WindowEvent};
-
-use ironrdp::input::fast_path::{FastPathInput, FastPathInputEvent, KeyboardFlags};
-use ironrdp::input::mouse::{ButtonEvents, MovementEvents, WheelEvents};
-use ironrdp::input::MousePdu;
+use glutin::event::{ElementState, Event, WindowEvent};
+use ironrdp::core::input::fast_path::{FastPathInput, FastPathInputEvent, KeyboardFlags};
+use ironrdp::core::input::mouse::{ButtonEvents, MovementEvents, WheelEvents};
+use ironrdp::core::input::MousePdu;
 use ironrdp::PduParsing;
 use ironrdp_session::ErasedWriter;
 use tokio::sync::Mutex;
