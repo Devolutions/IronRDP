@@ -11,7 +11,7 @@ use std::sync::Mutex;
 use anyhow::Context as _;
 use bytes::BytesMut;
 use ironrdp::graphics::image_processing::PixelFormat;
-use ironrdp::input::fast_path::FastPathInput;
+use ironrdp::core::input::fast_path::FastPathInput;
 use ironrdp::session::image::DecodedImage;
 use ironrdp::session::{ConnectionSequenceResult, ErasedWriter, FramedReader, InputConfig};
 use ironrdp::geometry::Rectangle;
@@ -168,9 +168,9 @@ async fn update_mouse(
     leftClick: bool,
     session_manager: State<'_, SessionManager>,
 ) -> Result<(), String> {
-    use ironrdp::input::fast_path::FastPathInputEvent;
-    use ironrdp::input::mouse::{ButtonEvents, MovementEvents, WheelEvents};
-    use ironrdp::input::MousePdu;
+    use ironrdp::core::input::fast_path::FastPathInputEvent;
+    use ironrdp::core::input::mouse::{ButtonEvents, MovementEvents, WheelEvents};
+    use ironrdp::core::input::MousePdu;
 
     let session_id = sessionId;
     let mouse_x = mouseX;
