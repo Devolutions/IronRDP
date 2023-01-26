@@ -7,7 +7,7 @@ use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive, ToPrimitive};
 
-use crate::nego::NegotiationError;
+use crate::connection_initiation::NegotiationError;
 use crate::PduParsing;
 
 pub const TPKT_HEADER_LENGTH: usize = 4;
@@ -40,8 +40,7 @@ impl TpktHeader {
     pub fn new(length: usize) -> Self {
         Self { length }
     }
-}
-impl TpktHeader {
+
     pub fn from_buffer_with_version(mut stream: impl io::Read, version: u8) -> Result<Self, NegotiationError> {
         if version != TPKT_VERSION {
             return Err(NegotiationError::TpktVersionError);
@@ -77,11 +76,11 @@ impl PduParsing for TpktHeader {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-pub struct Data {
+pub struct DataHeader {
     pub data_length: usize,
 }
 
-impl Data {
+impl DataHeader {
     pub fn new(data_length: usize) -> Self {
         Self { data_length }
     }
@@ -103,7 +102,7 @@ impl Data {
     }
 }
 
-impl PduParsing for Data {
+impl PduParsing for DataHeader {
     type Error = NegotiationError;
 
     fn from_buffer(mut stream: impl io::Read) -> Result<Self, Self::Error> {

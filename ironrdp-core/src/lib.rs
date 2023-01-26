@@ -6,7 +6,6 @@ pub mod gcc;
 pub mod geometry;
 pub mod input;
 pub mod mcs;
-pub mod nego;
 pub mod rdp;
 pub mod utils;
 
@@ -17,11 +16,13 @@ pub(crate) mod per;
 pub(crate) mod preconnection;
 pub(crate) mod x224;
 
+mod connection_initiation;
+
 use thiserror::Error;
 
 pub use crate::basic_output::{bitmap, fast_path, surface_commands};
+pub use crate::connection_initiation::*;
 pub use crate::mcs::{ConnectInitial, ConnectResponse, McsError, McsPdu, SendDataContext};
-pub use crate::nego::*;
 pub use crate::preconnection::{PreconnectionPdu, PreconnectionPduError};
 pub use crate::rdp::vc::dvc;
 pub use crate::rdp::{
@@ -51,25 +52,28 @@ pub trait PduBufferParsing<'a>: Sized {
     fn buffer_length(&self) -> usize;
 }
 
-pub enum RdpPdu {
-    X224(x224::Data),
+pub enum PduHeader {
+    X224(x224::DataHeader),
     FastPath(fast_path::FastPathHeader),
 }
 
-impl PduParsing for RdpPdu {
+impl PduParsing for PduHeader {
     type Error = RdpError;
 
     fn from_buffer(mut stream: impl std::io::Read) -> Result<Self, Self::Error> {
-        use bit_field::BitField;
-        use byteorder::ReadBytesExt;
-        use num_traits::FromPrimitive;
+        use bit_field::BitField as _;
+        use byteorder::ReadBytesExt as _;
+        use num_traits::FromPrimitive as _;
 
         let header = stream.read_u8()?;
         let action = header.get_bits(0..2);
         let action = Action::from_u8(action).ok_or(RdpError::InvalidActionCode(action))?;
 
         match action {
-            Action::X224 => Ok(Self::X224(x224::Data::from_buffer_with_version(&mut stream, header)?)),
+            Action::X224 => Ok(Self::X224(x224::DataHeader::from_buffer_with_version(
+                &mut stream,
+                header,
+            )?)),
             Action::FastPath => Ok(Self::FastPath(fast_path::FastPathHeader::from_buffer_with_header(
                 &mut stream,
                 header,
@@ -97,7 +101,7 @@ pub enum RdpError {
     #[error("IO error")]
     IOError(#[from] std::io::Error),
     #[error("X224 error")]
-    X224Error(#[from] nego::NegotiationError),
+    X224Error(#[from] connection_initiation::NegotiationError),
     #[error("Surface Commands error")]
     FastPathError(#[from] fast_path::FastPathError),
     #[error("Received invalid action code: {0}")]

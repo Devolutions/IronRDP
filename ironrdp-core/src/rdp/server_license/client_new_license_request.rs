@@ -6,7 +6,6 @@ use std::io;
 use bitflags::bitflags;
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use md5::Digest;
-use ring::digest;
 
 use super::{
     BasicSecurityHeader, BasicSecurityHeaderFlags, BlobHeader, BlobType, LicenseEncryptionData, LicenseHeader,
@@ -200,10 +199,9 @@ impl PduParsing for ClientNewLicenseRequest {
 }
 
 fn salted_hash(salt: &[u8], salt_first: &[u8], salt_second: &[u8], input: &[u8]) -> Vec<u8> {
-    let sha_result = digest::digest(
-        &digest::SHA1_FOR_LEGACY_USE_ONLY,
-        [input, salt, salt_first, salt_second].concat().as_slice(),
-    );
+    let mut hasher = sha1::Sha1::new();
+    hasher.update([input, salt, salt_first, salt_second].concat().as_slice());
+    let sha_result = hasher.finalize();
 
     let mut md5 = md5::Md5::new();
     md5.update([salt, sha_result.as_ref()].concat().as_slice());

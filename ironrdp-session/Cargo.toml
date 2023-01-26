@@ -11,20 +11,19 @@ authors = ["Devolutions Inc. <infos@devolutions.net>"]
 [dependencies]
 ironrdp-core = { path = "../ironrdp-core" }
 ironrdp-graphics = { path = "../ironrdp-graphics" }
-sspi = { version = "0.4", features = ["network_client"] }
+ironrdp-devolutions-gateway = { path = "../ironrdp-devolutions-gateway" } # FIXME: Quick and dirty approach, this should not be here
+sspi = "0.6"
 bytes = "1"
-chrono = "0.4"
-failure = "0.1.8"
 log = "0.4"
 whoami = "1"
 semver = "1"
 num-derive = "0.3.3"
-num-traits = "0.2.14"
+num-traits = "0.2.15"
 lazy_static = "1.4"
-dns-lookup = "1.0.8"
 bitflags = "1"
-bit_field = "0.10.1"
+bit_field = "0.10.1" # TODO: will be unused once the framed module is moved
 byteorder = "1.4.3"
 futures-util = "0.3"
 thiserror = "1.0.37"
-ring = "0.16.20" # for ring::rand::SystemRandom, TODO: we might consider using `rand` instead
+rand_core = "0.6.4"
+x509-cert = "0.1.0" # TODO: consider removing dependency on this one in `ironrdp-session`

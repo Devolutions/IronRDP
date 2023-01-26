@@ -6,7 +6,6 @@ use ironrdp_core::gcc::{
     ClientNetworkData, ClientSecurityData, ColorDepth, ConnectionType, HighColorDepth, RdpVersion,
     SecureAccessSequence, SupportedColorDepths,
 };
-use ironrdp_core::nego::SecurityProtocol;
 use ironrdp_core::rdp::capability_sets::{
     Bitmap, BitmapCache, BitmapCodecs, BitmapDrawingFlags, Brush, CacheDefinition, CacheEntry, CaptureFlags, CmdFlags,
     Codec, CodecProperty, EntropyBits, FrameAcknowledge, General, GeneralExtraFlags, GlyphCache, GlyphSupportLevel,
@@ -19,7 +18,7 @@ use ironrdp_core::rdp::{
     AddressFamily, BasicSecurityHeader, BasicSecurityHeaderFlags, ClientInfo, ClientInfoFlags, ClientInfoPdu,
     CompressionType, Credentials, ExtendedClientInfo, ExtendedClientOptionalInfo, SERVER_CHANNEL_ID,
 };
-use ironrdp_core::{CapabilitySet, ClientConfirmActive};
+use ironrdp_core::{CapabilitySet, ClientConfirmActive, SecurityProtocol};
 use num_traits::ToPrimitive;
 
 use crate::utils::CodecId;
@@ -47,6 +46,14 @@ pub fn create_client_info_pdu(config: &InputConfig, routing_addr: &net::SocketAd
     let security_header = BasicSecurityHeader {
         flags: BasicSecurityHeaderFlags::INFO_PKT,
     };
+
+    // FIXME: dependency injection
+    // let dir = env::current_dir()
+    //     .map_err(|e| RdpError::UserInfoError(format!("Failed to get current directory path: {:?}", e)))?
+    //     .to_string_lossy()
+    //     .to_string();
+    let dir = "C:\\Users".to_owned();
+
     let client_info = ClientInfo {
         credentials: auth_identity_to_credentials(config.credentials.clone()),
         code_page: 0, // ignored if the keyboardLayout field of the Client Core Data is set to zero
@@ -65,10 +72,7 @@ pub fn create_client_info_pdu(config: &InputConfig, routing_addr: &net::SocketAd
                 net::SocketAddr::V6(_) => AddressFamily::INet6,
             },
             address: routing_addr.ip().to_string(),
-            dir: env::current_dir()
-                .map_err(|e| RdpError::UserInfoError(format!("Failed to get current directory path: {:?}", e)))?
-                .to_string_lossy()
-                .to_string(),
+            dir,
             optional_data: ExtendedClientOptionalInfo::default(),
         },
     };
@@ -131,7 +135,7 @@ fn create_core_data(config: &InputConfig, selected_protocol: SecurityProtocol) -
         client_build: semver::Version::parse(env!("CARGO_PKG_VERSION"))
             .map(|version| version.major * 100 + version.minor * 10 + version.patch)
             .unwrap_or(0) as u32,
-        client_name: whoami::hostname(),
+        client_name: whoami::hostname(), // FIXME: probably not wasm-friendly
         keyboard_type: config.keyboard_type,
         keyboard_subtype: config.keyboard_subtype,
         keyboard_functional_keys_count: config.keyboard_functional_keys_count,

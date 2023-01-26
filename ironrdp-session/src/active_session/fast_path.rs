@@ -11,18 +11,15 @@ use log::{debug, info, warn};
 use num_traits::FromPrimitive;
 
 use super::codecs::rfx;
+use crate::frame::{Frame as _, ShareDataFrame};
 use crate::image::DecodedImage;
-use crate::transport::{
-    DataTransport, Encoder, McsTransport, SendDataContextTransport, ShareControlHeaderTransport,
-    ShareDataHeaderTransport,
-};
 use crate::utils::CodecId;
-use crate::RdpError;
+use crate::{ChannelIdentificators, RdpError};
 
 pub struct Processor {
     complete_data: CompleteData,
     rfx_handler: rfx::DecodingContext,
-    frame: Frame,
+    marker_processor: FrameMarkerProcessor,
 }
 
 impl Processor {
@@ -109,7 +106,7 @@ impl Processor {
                         marker.frame_action,
                         marker.frame_id.unwrap_or(0)
                     );
-                    self.frame.process_marker(&marker, &mut output)?;
+                    self.marker_processor.process(&marker, &mut output)?;
                 }
             }
         }
@@ -128,7 +125,7 @@ impl ProcessorBuilder {
         Processor {
             complete_data: CompleteData::new(),
             rfx_handler: rfx::DecodingContext::new(),
-            frame: Frame::new(self.initiator_id, self.global_channel_id),
+            marker_processor: FrameMarkerProcessor::new(self.initiator_id, self.global_channel_id),
         }
     }
 }
@@ -188,34 +185,34 @@ impl CompleteData {
     }
 }
 
-struct Frame {
-    transport: ShareDataHeaderTransport,
+struct FrameMarkerProcessor {
+    initiator_id: u16,
+    global_channel_id: u16,
 }
 
-impl Frame {
+impl FrameMarkerProcessor {
     fn new(initiator_id: u16, global_channel_id: u16) -> Self {
         Self {
-            transport: ShareDataHeaderTransport::new(ShareControlHeaderTransport::new(
-                SendDataContextTransport::new(
-                    McsTransport::new(DataTransport::default()),
-                    initiator_id,
-                    global_channel_id,
-                ),
-                initiator_id,
-                global_channel_id,
-            )),
+            initiator_id,
+            global_channel_id,
         }
     }
 
-    fn process_marker(&mut self, marker: &FrameMarkerPdu, mut output: impl io::Write) -> Result<(), RdpError> {
+    fn process(&mut self, marker: &FrameMarkerPdu, output: impl io::Write) -> Result<(), RdpError> {
         match marker.frame_action {
             FrameAction::Begin => Ok(()),
-            FrameAction::End => self.transport.encode(
-                ShareDataPdu::FrameAcknowledge(FrameAcknowledgePdu {
+            FrameAction::End => ShareDataFrame {
+                channel_ids: ChannelIdentificators {
+                    initiator_id: self.initiator_id,
+                    channel_id: self.global_channel_id,
+                },
+                share_id: 0,
+                pdu_source: self.initiator_id,
+                pdu: ShareDataPdu::FrameAcknowledge(FrameAcknowledgePdu {
                     frame_id: marker.frame_id.unwrap_or(0),
                 }),
-                &mut output,
-            ),
+            }
+            .encode(output),
         }
     }
 }

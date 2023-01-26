@@ -11,14 +11,14 @@ keywords = ["rdp", "client", "remote", "desktop", "protocol", "gfx", "rfx"]
 
 [features]
 default = ["rustls"]
-rustls = ["dep:rustls", "dep:tokio-rustls"]
-native-tls = ["dep:native-tls", "dep:async-native-tls"]
+rustls = ["dep:tokio-rustls"]
+native-tls = ["dep:async-native-tls"]
 
 [dependencies]
 
 # Protocol
 ironrdp = { path = "../ironrdp" }
-sspi = "0.4"
+sspi = { version = "0.6", features = ["network_client"] } # TODO: enable dns_resolver at some point
 
 # CLI
 clap = { version = "4.0", features = ["derive", "cargo"] }
@@ -30,16 +30,16 @@ fern = "0.6"
 
 # SSL
 x509-parser = "0.14"
-native-tls = { version = "0.2", optional = true }
-rustls = { version = "0.20", features = ["dangerous_configuration"], optional = true }
+async-native-tls = { version = "0.4", default-features = false, features = [ "runtime-tokio" ], optional = true }
+tokio-rustls =  { version = "0.23", features = ["dangerous_configuration"], optional = true }
 
 # async, futures
 tokio = { version = "1", features = ["full"]}
-async-native-tls = { version = "0.4", default-features = false, features = [ "runtime-tokio" ], optional = true }
-tokio-rustls =  { version = "0.23", optional = true }
 tokio-util = { version = "0.7.4", features = ["compat"] }
 futures-util = "0.3"
 
 # Utils
-chrono = "0.4.22"
-image = "0.24.4"
+chrono = "0.4.23"
+whoami = "1.2.3"
+image = "0.24.5"
+anyhow = "1.0.68"
