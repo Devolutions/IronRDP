@@ -11,10 +11,10 @@ use futures_util::io::AsyncWriteExt as _;
 use gui::MessagePassingGfxHandler;
 use ironrdp::dvc::gfx::ServerPdu;
 use ironrdp::graphics::image_processing::PixelFormat;
-use ironrdp_session::image::DecodedImage;
-use ironrdp_session::{
-    process_connection_sequence, ActiveStageOutput, ActiveStageProcessor, ErasedWriter, RdpError, UpgradedStream,
-};
+use ironrdp::session::connection_sequence::{process_connection_sequence, UpgradedStream};
+use ironrdp::session::image::DecodedImage;
+use ironrdp::session::{ActiveStageOutput, ActiveStageProcessor, ErasedWriter, RdpError};
+use sspi::network_client::reqwest_network_client::RequestClientFactory;
 use tokio::io::AsyncWriteExt as _;
 use tokio::net::TcpStream;
 use tokio::sync::Mutex;
@@ -35,12 +35,12 @@ mod gui;
 mod danger {
     use std::time::SystemTime;
 
-    use rustls::client::ServerCertVerified;
-    use rustls::{Certificate, Error, ServerName};
+    use tokio_rustls::rustls::client::ServerCertVerified;
+    use tokio_rustls::rustls::{Certificate, Error, ServerName};
 
     pub struct NoCertificateVerification;
 
-    impl rustls::client::ServerCertVerifier for NoCertificateVerification {
+    impl tokio_rustls::rustls::client::ServerCertVerifier for NoCertificateVerification {
         fn verify_server_cert(
             &self,
             _end_entity: &Certificate,
@@ -50,7 +50,7 @@ mod danger {
             _ocsp_response: &[u8],
             _now: SystemTime,
         ) -> Result<ServerCertVerified, Error> {
-            Ok(rustls::client::ServerCertVerified::assertion())
+            Ok(tokio_rustls::rustls::client::ServerCertVerified::assertion())
         }
     }
 }
@@ -102,12 +102,18 @@ fn setup_logging(log_file: &str) -> Result<(), fern::InitError> {
 }
 
 async fn run(config: Config) -> Result<(), RdpError> {
-    let stream = TcpStream::connect(config.routing_addr)
-        .await
-        .map_err(RdpError::ConnectionError)?;
+    let addr = ironrdp::session::connection_sequence::Address::lookup_addr(config.addr.clone())?;
 
-    let (connection_sequence_result, reader, writer) =
-        process_connection_sequence(stream.compat(), &config.routing_addr, &config.input, establish_tls).await?;
+    let stream = TcpStream::connect(addr.sock).await.map_err(RdpError::ConnectionError)?;
+
+    let (connection_sequence_result, reader, writer) = process_connection_sequence(
+        stream.compat(),
+        &addr,
+        &config.input,
+        establish_tls,
+        Box::new(RequestClientFactory),
+    )
+    .await?;
 
     let writer = Arc::new(Mutex::new(writer));
     let image = DecodedImage::new(
@@ -121,9 +127,9 @@ async fn run(config: Config) -> Result<(), RdpError> {
 
 async fn launch_client(
     config: Config,
-    connection_sequence_result: ironrdp_session::ConnectionSequenceResult,
+    connection_sequence_result: ironrdp::session::connection_sequence::ConnectionSequenceResult,
     image: DecodedImage,
-    reader: ironrdp_session::FramedReader,
+    reader: ironrdp::session::FramedReader,
     writer: Arc<Mutex<ErasedWriter>>,
 ) -> Result<(), RdpError> {
     let (sender, receiver) = sync_channel::<ServerPdu>(1);
@@ -149,15 +155,15 @@ async fn launch_client(
 }
 
 async fn process_active_stage(
-    mut reader: ironrdp_session::FramedReader,
+    mut reader: ironrdp::session::FramedReader,
     mut active_stage: ActiveStageProcessor,
     mut image: DecodedImage,
     writer: Arc<Mutex<ErasedWriter>>,
 ) -> Result<(), RdpError> {
     let mut frame_id = 0;
     'outer: loop {
-        let frame = reader.read_frame().await?.ok_or(RdpError::AccessDenied)?;
-        let outputs = active_stage.process(&mut image, frame).await?;
+        let frame = reader.read_frame().await?.ok_or(RdpError::AccessDenied)?.freeze();
+        let outputs = active_stage.process(&mut image, frame)?;
         for out in outputs {
             match out {
                 ActiveStageOutput::ResponseFrame(frame) => {
@@ -196,12 +202,12 @@ async fn establish_tls(stream: tokio_util::compat::Compat<TcpStream>) -> Result<
 
     #[cfg(feature = "rustls")]
     let mut tls_stream = {
-        let mut client_config = rustls::client::ClientConfig::builder()
+        let mut client_config = tokio_rustls::rustls::client::ClientConfig::builder()
             .with_safe_defaults()
             .with_custom_certificate_verifier(std::sync::Arc::new(danger::NoCertificateVerification))
             .with_no_client_auth();
         // This adds support for the SSLKEYLOGFILE env variable (https://wiki.wireshark.org/TLS#using-the-pre-master-secret)
-        client_config.key_log = std::sync::Arc::new(rustls::KeyLogFile::new());
+        client_config.key_log = std::sync::Arc::new(tokio_rustls::rustls::KeyLogFile::new());
         let rc_config = std::sync::Arc::new(client_config);
         let example_com = "stub_string".try_into().unwrap();
         let connector = tokio_rustls::TlsConnector::from(rc_config);

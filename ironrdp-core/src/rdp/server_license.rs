@@ -5,7 +5,6 @@ use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use md5::Digest;
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive, ToPrimitive};
-use ring::digest;
 use thiserror::Error;
 
 use crate::rdp::{BasicSecurityHeader, BasicSecurityHeaderFlags, BASIC_SECURITY_HEADER_SIZE};
@@ -280,12 +279,13 @@ fn compute_mac_data(mac_salt_key: &[u8], data: &[u8]) -> Vec<u8> {
 
     let pad_one: [u8; 40] = [0x36; 40];
 
-    let sha_result = digest::digest(
-        &digest::SHA1_FOR_LEGACY_USE_ONLY,
+    let mut hasher = sha1::Sha1::new();
+    hasher.update(
         [mac_salt_key, pad_one.as_ref(), data_len_buffer.as_ref(), data]
             .concat()
             .as_slice(),
     );
+    let sha_result = hasher.finalize();
 
     let pad_two: [u8; 48] = [0x5c; 48];
 

@@ -53,9 +53,9 @@ fn from_buffer_correctly_parses_data() {
 
     let mut buffer_slice = &buffer[..];
 
-    let data_header = Data { data_length: 5 };
+    let data_header = DataHeader { data_length: 5 };
 
-    assert_eq!(data_header, Data::from_buffer(&mut buffer_slice).unwrap());
+    assert_eq!(data_header, DataHeader::from_buffer(&mut buffer_slice).unwrap());
     assert_eq!(5, buffer_slice.len());
 }
 
@@ -67,7 +67,7 @@ fn to_buffer_correctly_serializes_data() {
         0x02, 0xf0, 0x80, // data tpdu
     ];
 
-    let data_header = Data { data_length: 5 };
+    let data_header = DataHeader { data_length: 5 };
 
     let mut buffer = Vec::new();
     data_header.to_buffer(&mut buffer).unwrap();
@@ -83,7 +83,7 @@ fn buffer_length_is_correct_for_data() {
         0x02, 0xf0, 0x80, // data tpdu
     ];
 
-    let data_header = Data { data_length: 5 };
+    let data_header = DataHeader { data_length: 5 };
 
     assert_eq!(buffer.len(), data_header.buffer_length());
 }

@@ -8,7 +8,7 @@ use futures_util::{AsyncRead, AsyncReadExt as _, AsyncWrite, AsyncWriteExt as _}
 use ironrdp_core::Action;
 use num_traits::FromPrimitive;
 
-use crate::transport::{Decoder as TransportDecoder, Encoder as TransportEncoder};
+use crate::frame::Frame;
 
 pub type ErasedWriter = Pin<Box<dyn AsyncWrite + Send>>;
 
@@ -44,6 +44,20 @@ where
         (self.reader, self.buf)
     }
 
+    pub fn into_inner_no_leftover(self) -> R {
+        let (reader, leftover) = self.into_inner();
+        debug_assert_eq!(leftover.len(), 0, "unexpected leftover");
+        reader
+    }
+
+    pub fn get_inner(&self) -> (&R, &BytesMut) {
+        (&self.reader, &self.buf)
+    }
+
+    pub fn get_inner_mut(&mut self) -> (&mut R, &mut BytesMut) {
+        (&mut self.reader, &mut self.buf)
+    }
+
     pub async fn read_frame(&mut self) -> Result<Option<BytesMut>, ironrdp_core::RdpError>
     where
         R: Unpin,
@@ -67,10 +81,9 @@ where
         }
     }
 
-    pub async fn decode_next_frame<D>(&mut self, decoder: &mut D) -> Result<D::Item, crate::RdpError>
+    pub(crate) async fn decode_next_frame<F>(&mut self) -> Result<F, crate::RdpError>
     where
-        D: TransportDecoder,
-        D::Error: Into<crate::RdpError>,
+        F: Frame,
         R: Unpin,
     {
         let frame = self
@@ -78,22 +91,22 @@ where
             .await?
             .ok_or(crate::RdpError::UnexpectedStreamTermination)?;
 
-        let item = decoder.decode(&frame[..]).map_err(Into::into)?;
+        let item = F::decode(&frame[..])?;
 
         Ok(item)
     }
 }
 
-pub async fn encode_next_frame<W, E>(writer: &mut W, encoder: &mut E, item: E::Item) -> Result<(), crate::RdpError>
+pub(crate) async fn encode_next_frame<W, F>(writer: &mut W, frame: F) -> Result<(), crate::RdpError>
 where
     W: AsyncWrite + Unpin,
-    E: TransportEncoder,
-    E::Error: Into<crate::RdpError>,
+    F: Frame,
 {
     let mut buf = BytesMut::new();
     let buf_writer = (&mut buf).writer();
-    encoder.encode(item, buf_writer).map_err(Into::into)?;
+    frame.encode(buf_writer)?;
     writer.write_all(&buf).await?;
+    writer.flush().await?;
     Ok(())
 }
 
@@ -112,6 +125,7 @@ fn decode_frame_eof(buf: &mut BytesMut) -> Result<Option<BytesMut>, ironrdp_core
 }
 
 /// Attempts to decode a frame from the provided buffer of bytes.
+// TODO: try `&mut Bytes`
 fn decode_frame(buf: &mut BytesMut) -> Result<Option<BytesMut>, ironrdp_core::RdpError> {
     let mut stream = buf.as_ref();
     if stream.is_empty() {

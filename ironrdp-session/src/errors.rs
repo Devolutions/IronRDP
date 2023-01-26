@@ -5,7 +5,7 @@ use std::sync::PoisonError;
 use ironrdp_core::dvc::{display, gfx};
 use ironrdp_core::fast_path::FastPathError;
 use ironrdp_core::rdp::server_license::ServerLicenseError;
-use ironrdp_core::{codecs, nego, rdp, McsError};
+use ironrdp_core::{codecs, rdp, McsError};
 use ironrdp_graphics::{rlgr, zgfx};
 use thiserror::Error;
 
@@ -18,7 +18,7 @@ pub enum RdpError {
     #[error("X.224 error")]
     X224Error(#[source] io::Error),
     #[error("negotiation error")]
-    NegotiationError(#[from] nego::NegotiationError),
+    NegotiationError(#[from] ironrdp_core::NegotiationError),
     #[error("unexpected PDU: {0}")]
     UnexpectedPdu(String),
     #[error("Unexpected disconnection: {0}")]
@@ -97,8 +97,6 @@ pub enum RdpError {
     MissingPeerCertificate,
     #[error("Dynamic virtual channel not connected")]
     DynamicVirtualChannelNotConnected,
-    #[error("Static global channel not connected")]
-    StaticChannelNotConnected,
     #[error("Invalid Capabilities mask provided. Mask: {0:X}")]
     InvalidCapabilitiesMask(u32),
     #[error("Stream terminated while waiting for some data")]

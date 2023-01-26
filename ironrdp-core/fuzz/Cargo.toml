@@ -1,25 +1,20 @@
-
 [package]
 name = "ironrdp-fuzz"
 version = "0.0.1"
 authors = ["Automatically generated"]
 publish = false
 
+[[bin]]
+name = "fuzz_pdu"
+path = "fuzz_targets/fuzz_pdu.rs"
+
 [package.metadata]
 cargo-fuzz = true
-
-[dependencies]
-bytes = "0.4"
-
-[dependencies.ironrdp]
-path = ".."
-[dependencies.libfuzzer-sys]
-git = "https://github.com/rust-fuzz/libfuzzer-sys.git"
 
 # Prevent this from interfering with workspaces
 [workspace]
 members = ["."]
 
-[[bin]]
-name = "fuzz_pdu"
-path = "fuzz_targets/fuzz_pdu.rs"
+[dependencies]
+ironrdp = { path = ".." }
+libfuzzer-sys = { git = "https://github.com/rust-fuzz/libfuzzer-sys.git" }

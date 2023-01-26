@@ -3,20 +3,19 @@
 use core::future::Future;
 use std::collections::HashMap;
 use std::io;
-use std::net::SocketAddr;
-use std::str::FromStr;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
 
 use anyhow::Context as _;
 use bytes::BytesMut;
-use ironrdp::graphics::image_processing::PixelFormat;
 use ironrdp::core::input::fast_path::FastPathInput;
-use ironrdp::session::image::DecodedImage;
-use ironrdp::session::{ConnectionSequenceResult, ErasedWriter, FramedReader, InputConfig};
 use ironrdp::geometry::Rectangle;
-use ironrdp::session::{process_connection_sequence, ActiveStageOutput, ActiveStageProcessor, RdpError, UpgradedStream};
+use ironrdp::graphics::image_processing::PixelFormat;
+use ironrdp::session::connection_sequence::{process_connection_sequence, ConnectionSequenceResult, UpgradedStream};
+use ironrdp::session::image::DecodedImage;
+use ironrdp::session::{ActiveStageOutput, ActiveStageProcessor, ErasedWriter, FramedReader, InputConfig, RdpError};
 use serde::Serialize;
+use sspi::network_client::reqwest_network_client::RequestClientFactory;
 use sspi::AuthIdentity;
 use tauri::{Manager as _, State};
 use tokio::io::AsyncWriteExt as _;
@@ -234,19 +233,24 @@ async fn connect(
 ) -> Result<NewSessionInfo, String> {
     let input_config = build_input_config(username, password, None);
 
-    let address = SocketAddr::from_str(&address).unwrap();
+    let addr = ironrdp::session::connection_sequence::Address::lookup_addr(address).map_err(|e| e.to_string())?;
 
     println!("Connect to RDP host");
 
-    let tcp_stream = TcpStream::connect(&address)
+    let tcp_stream = TcpStream::connect(addr.sock)
         .await
         .map_err(RdpError::ConnectionError)
         .map_err(|e| e.to_string())?;
 
-    let (connection_sequence_result, rdp_reader, rdp_writer) =
-        process_connection_sequence(tcp_stream.compat(), &address, &input_config, establish_tls)
-            .await
-            .map_err(|e| e.to_string())?;
+    let (connection_sequence_result, rdp_reader, rdp_writer) = process_connection_sequence(
+        tcp_stream.compat(),
+        &addr,
+        &input_config,
+        establish_tls,
+        Box::new(RequestClientFactory),
+    )
+    .await
+    .map_err(|e| e.to_string())?;
 
     let desktop_width = connection_sequence_result.desktop_size.width;
     let desktop_height = connection_sequence_result.desktop_size.height;
@@ -288,7 +292,7 @@ fn build_input_config(username: String, password: String, domain: Option<String>
             password,
             domain,
         },
-        security_protocol: ironrdp::nego::SecurityProtocol::HYBRID_EX,
+        security_protocol: ironrdp::SecurityProtocol::HYBRID_EX,
         keyboard_type: ironrdp::gcc::KeyboardType::IbmEnhanced,
         keyboard_subtype: 0,
         keyboard_functional_keys_count: 12,
@@ -372,8 +376,9 @@ async fn rdp_session_task(
             .await
             .unwrap()
             .ok_or(RdpError::AccessDenied)
-            .unwrap();
-        let outputs = active_stage.process(&mut image, frame).await.unwrap();
+            .unwrap()
+            .freeze();
+        let outputs = active_stage.process(&mut image, frame).unwrap();
 
         for out in outputs {
             match out {

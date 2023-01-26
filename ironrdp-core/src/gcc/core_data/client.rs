@@ -10,7 +10,7 @@ use num_traits::{FromPrimitive, ToPrimitive};
 use tap::Pipe as _;
 
 use super::{CoreDataError, RdpVersion, VERSION_SIZE};
-use crate::{nego, try_read_optional, try_write_optional, utils, PduParsing};
+use crate::{connection_initiation, try_read_optional, try_write_optional, utils, PduParsing};
 
 pub const IME_FILE_NAME_SIZE: usize = 64;
 
@@ -185,7 +185,7 @@ pub struct ClientCoreOptionalData {
     pub early_capability_flags: Option<ClientEarlyCapabilityFlags>,
     pub dig_product_id: Option<String>,
     pub connection_type: Option<ConnectionType>,
-    pub server_selected_protocol: Option<nego::SecurityProtocol>,
+    pub server_selected_protocol: Option<connection_initiation::SecurityProtocol>,
     pub desktop_physical_width: Option<u32>,
     pub desktop_physical_height: Option<u32>,
     pub desktop_orientation: Option<u16>,
@@ -238,8 +238,11 @@ impl PduParsing for ClientCoreOptionalData {
         try_read_optional!(buffer.read_u8(), optional_data); // pad1octet
 
         optional_data.server_selected_protocol = Some(
-            nego::SecurityProtocol::from_bits(try_read_optional!(buffer.read_u32::<LittleEndian>(), optional_data))
-                .ok_or(CoreDataError::InvalidServerSecurityProtocol)?,
+            connection_initiation::SecurityProtocol::from_bits(try_read_optional!(
+                buffer.read_u32::<LittleEndian>(),
+                optional_data
+            ))
+            .ok_or(CoreDataError::InvalidServerSecurityProtocol)?,
         );
 
         optional_data.desktop_physical_width =
@@ -290,9 +293,10 @@ impl PduParsing for ClientCoreOptionalData {
 
         buffer.write_u8(0)?; // pad1octet
 
-        try_write_optional!(self.server_selected_protocol, |value: &nego::SecurityProtocol| {
-            buffer.write_u32::<LittleEndian>(value.bits())
-        });
+        try_write_optional!(
+            self.server_selected_protocol,
+            |value: &connection_initiation::SecurityProtocol| { buffer.write_u32::<LittleEndian>(value.bits()) }
+        );
 
         try_write_optional!(self.desktop_physical_width, |value: &u32| buffer
             .write_u32::<LittleEndian>(*value));

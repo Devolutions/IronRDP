@@ -1,4 +1,3 @@
-use std::net::SocketAddr;
 use std::num::ParseIntError;
 
 use clap::clap_derive::ValueEnum;
@@ -13,7 +12,7 @@ const USER_CHANNEL_NAME: &str = "USER";
 
 pub struct Config {
     pub log_file: String,
-    pub routing_addr: SocketAddr,
+    pub addr: String,
     pub input: InputConfig,
 }
 
@@ -25,11 +24,11 @@ enum SecurityProtocol {
 }
 
 impl SecurityProtocol {
-    fn parse(security_protocol: SecurityProtocol) -> ironrdp::nego::SecurityProtocol {
+    fn parse(security_protocol: SecurityProtocol) -> ironrdp::core::SecurityProtocol {
         match security_protocol {
-            SecurityProtocol::Ssl => ironrdp::nego::SecurityProtocol::SSL,
-            SecurityProtocol::Hybrid => ironrdp::nego::SecurityProtocol::HYBRID,
-            SecurityProtocol::HybridEx => ironrdp::nego::SecurityProtocol::HYBRID_EX,
+            SecurityProtocol::Ssl => ironrdp::core::SecurityProtocol::SSL,
+            SecurityProtocol::Hybrid => ironrdp::core::SecurityProtocol::HYBRID,
+            SecurityProtocol::HybridEx => ironrdp::core::SecurityProtocol::HYBRID_EX,
         }
     }
 }
@@ -66,6 +65,7 @@ fn parse_hex(input: &str) -> Result<u32, ParseIntError> {
         input.parse::<u32>()
     }
 }
+
 /// Devolutions IronRDP client
 #[derive(Parser, Debug)]
 #[clap(author = "Devolutions", about = "Devolutions-IronRDP client")]
@@ -75,9 +75,8 @@ struct Args {
     #[clap(short, long, value_parser, default_value_t = format!("{}.log", crate_name!()))]
     log_file: String,
 
-    /// An address on which the client will connect. Format: <ip>:<port>
-    #[clap(value_parser = is_socket_address)]
-    addr: SocketAddr,
+    /// An address on which the client will connect.
+    addr: String,
 
     /// A target RDP server user name
     #[clap(short, long, value_parser)]
@@ -137,11 +136,6 @@ struct Args {
     capabilities: u32,
 }
 
-fn is_socket_address(s: &str) -> Result<SocketAddr, String> {
-    s.parse::<SocketAddr>()
-        .map_err(|_| String::from("The address does not match the format: <ip>:<port>"))
-}
-
 impl Config {
     pub fn parse_args() -> Self {
         let args = Args::parse();
@@ -179,7 +173,7 @@ impl Config {
 
         Self {
             log_file: args.log_file,
-            routing_addr: args.addr,
+            addr: args.addr,
             input,
         }
     }

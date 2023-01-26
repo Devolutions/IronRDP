@@ -1,21 +1,20 @@
 #[macro_use]
 extern crate log;
 
-mod codecs;
-mod errors;
-
 pub mod active_session;
 pub mod connection_sequence;
+pub mod frame;
 pub mod image;
-pub mod transport;
 pub mod utils;
 
-use ironrdp_core::{gcc, nego};
+mod errors;
+mod framed;
+
+use ironrdp_core::gcc;
 
 pub use crate::active_session::{ActiveStageOutput, ActiveStageProcessor, GfxHandler};
-pub use crate::codecs::{ErasedWriter, FramedReader};
-pub use crate::connection_sequence::{process_connection_sequence, ConnectionSequenceResult, UpgradedStream};
 pub use crate::errors::RdpError;
+pub use crate::framed::{ErasedWriter, FramedReader};
 
 #[derive(Debug, Clone)]
 pub struct GraphicsConfig {
@@ -29,7 +28,7 @@ pub struct GraphicsConfig {
 #[derive(Debug, Clone)]
 pub struct InputConfig {
     pub credentials: sspi::AuthIdentity,
-    pub security_protocol: nego::SecurityProtocol,
+    pub security_protocol: ironrdp_core::SecurityProtocol,
     pub keyboard_type: gcc::KeyboardType,
     pub keyboard_subtype: u32,
     pub keyboard_functional_keys_count: u32,
@@ -37,7 +36,13 @@ pub struct InputConfig {
     pub dig_product_id: String,
     pub width: u16,
     pub height: u16,
-    pub global_channel_name: String,
-    pub user_channel_name: String,
+    pub global_channel_name: String, // FIXME: <- should be removed (no stringified name actually exist in the spec)
+    pub user_channel_name: String,   // FIXME: <- should be removed (no stringified name actually exist in the spec)
     pub graphics_config: Option<GraphicsConfig>,
+}
+
+#[derive(Copy, Clone, Debug)]
+pub struct ChannelIdentificators {
+    pub initiator_id: u16,
+    pub channel_id: u16,
 }

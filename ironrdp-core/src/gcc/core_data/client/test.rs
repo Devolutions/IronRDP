@@ -1,8 +1,8 @@
 use lazy_static::lazy_static;
 
+use crate::connection_initiation;
 use crate::gcc::core_data::client::*;
 use crate::gcc::core_data::*;
-use crate::nego;
 
 const CLIENT_CORE_DATA_BUFFER: [u8; 128] = [
     0x04, 0x00, 0x08, 0x00, // version
@@ -84,7 +84,7 @@ lazy_static! {
         data.optional_data.early_capability_flags = Some(ClientEarlyCapabilityFlags::SUPPORT_ERR_INFO_PDU);
         data.optional_data.dig_product_id = Some(String::from("69712-783-0357974-42714"));
         data.optional_data.connection_type = Some(ConnectionType::NotUsed);
-        data.optional_data.server_selected_protocol = Some(nego::SecurityProtocol::RDP);
+        data.optional_data.server_selected_protocol = Some(connection_initiation::SecurityProtocol::RDP);
 
         data
     };

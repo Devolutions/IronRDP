@@ -7,8 +7,8 @@ use glutin::dpi::PhysicalPosition;
 use glutin::event::{Event, WindowEvent};
 use glutin::event_loop::ControlFlow;
 use ironrdp::dvc::gfx::ServerPdu;
+use ironrdp::session::{ErasedWriter, GfxHandler};
 use ironrdp_renderer::renderer::Renderer;
-use ironrdp_session::{ErasedWriter, GfxHandler};
 use tokio::sync::Mutex;
 
 use self::input::{handle_input_events, translate_input_event};

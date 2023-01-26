@@ -8,7 +8,7 @@ use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use tap::Pipe as _;
 
 use super::{CoreDataError, RdpVersion, VERSION_SIZE};
-use crate::{nego, try_read_optional, try_write_optional, PduParsing};
+use crate::{connection_initiation, try_read_optional, try_write_optional, PduParsing};
 
 const CLIENT_REQUESTED_PROTOCOL_SIZE: usize = 4;
 const EARLY_CAPABILITY_FLAGS_SIZE: usize = 4;
@@ -41,7 +41,7 @@ impl PduParsing for ServerCoreData {
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ServerCoreOptionalData {
-    pub client_requested_protocols: Option<nego::SecurityProtocol>,
+    pub client_requested_protocols: Option<connection_initiation::SecurityProtocol>,
     pub early_capability_flags: Option<ServerEarlyCapabilityFlags>,
 }
 
@@ -52,8 +52,11 @@ impl PduParsing for ServerCoreOptionalData {
         let mut optional_data = Self::default();
 
         optional_data.client_requested_protocols = Some(
-            nego::SecurityProtocol::from_bits(try_read_optional!(buffer.read_u32::<LittleEndian>(), optional_data))
-                .ok_or(CoreDataError::InvalidServerSecurityProtocol)?,
+            connection_initiation::SecurityProtocol::from_bits(try_read_optional!(
+                buffer.read_u32::<LittleEndian>(),
+                optional_data
+            ))
+            .ok_or(CoreDataError::InvalidServerSecurityProtocol)?,
         );
 
         optional_data.early_capability_flags = Some(
@@ -65,9 +68,10 @@ impl PduParsing for ServerCoreOptionalData {
     }
 
     fn to_buffer(&self, mut buffer: impl io::Write) -> Result<(), Self::Error> {
-        try_write_optional!(self.client_requested_protocols, |value: &nego::SecurityProtocol| {
-            buffer.write_u32::<LittleEndian>(value.bits())
-        });
+        try_write_optional!(
+            self.client_requested_protocols,
+            |value: &connection_initiation::SecurityProtocol| { buffer.write_u32::<LittleEndian>(value.bits()) }
+        );
 
         try_write_optional!(self.early_capability_flags, |value: &ServerEarlyCapabilityFlags| buffer
             .write_u32::<LittleEndian>(value.bits()));
