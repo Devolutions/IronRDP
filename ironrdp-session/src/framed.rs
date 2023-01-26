@@ -10,9 +10,15 @@ use num_traits::FromPrimitive;
 
 use crate::frame::Frame;
 
+#[cfg(not(feature = "dgw_ext"))]
 pub type ErasedWriter = Pin<Box<dyn AsyncWrite + Send>>;
+#[cfg(feature = "dgw_ext")]
+pub type ErasedWriter = Pin<Box<dyn AsyncWrite>>;
 
+#[cfg(not(feature = "dgw_ext"))]
 pub type ErasedReader = Pin<Box<dyn AsyncRead + Send>>;
+#[cfg(feature = "dgw_ext")]
+pub type ErasedReader = Pin<Box<dyn AsyncRead>>;
 
 pub struct FramedReader<R = ErasedReader> {
     reader: R,
@@ -30,9 +36,21 @@ where
         }
     }
 
+    #[cfg(not(feature = "dgw_ext"))]
     pub fn into_erased(self) -> FramedReader<ErasedReader>
     where
         R: Send + 'static,
+    {
+        FramedReader {
+            reader: Box::pin(self.reader),
+            buf: self.buf,
+        }
+    }
+
+    #[cfg(feature = "dgw_ext")]
+    pub fn into_erased(self) -> FramedReader<ErasedReader>
+    where
+        R: 'static,
     {
         FramedReader {
             reader: Box::pin(self.reader),

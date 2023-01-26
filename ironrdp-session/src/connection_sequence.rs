@@ -60,12 +60,15 @@ impl Address {
 }
 
 // TODO: convert to a state machine and wrap into a future in ironrdp-session-async
+// The ultimate goal is to remove the `dgw_ext` feature flag.
 
 pub async fn process_connection_sequence<S, UpgradeFn, FnRes, UpgradedS>(
     stream: S,
-    addr: &Address,
+    #[cfg(not(feature = "dgw_ext"))] addr: &Address,
+    #[cfg(feature = "dgw_ext")] fqdn: &str,
+    #[cfg(feature = "dgw_ext")] proxy_auth_token: String,
     config: &InputConfig,
-    upgrade_stream: UpgradeFn,
+    #[cfg(not(feature = "dgw_ext"))] upgrade_stream: UpgradeFn,
     network_client_factory: Box<dyn NetworkClientFactory>,
 ) -> Result<(ConnectionSequenceResult, FramedReader, ErasedWriter), RdpError>
 where
@@ -77,55 +80,103 @@ where
     let (reader, mut writer) = stream.split();
     let mut reader = FramedReader::new(reader);
 
-    //== Connection Initiation ==//
-    // Exchange supported security protocols and a few other connection flags.
+    #[cfg(not(feature = "dgw_ext"))]
+    let (selected_protocol, mut reader, mut writer, server_addr) = {
+        //== Connection Initiation ==//
+        // Exchange supported security protocols and a few other connection flags.
 
-    trace!("Connection Initiation");
+        trace!("Connection Initiation");
 
-    let selected_protocol = connection_initiation(
-        &mut reader,
-        &mut writer,
-        config.security_protocol,
-        config.credentials.username.clone(),
-    )
-    .await?;
-
-    info!("Selected security protocol: {selected_protocol:?}");
-
-    //== Upgrade to Enhanced RDP Security ==//
-    // NOTE: we assume the selected protocol is never the standard RDP security (RC4).
-
-    let reader = reader.into_inner_no_leftover();
-    let stream = reader.reunite(writer).unwrap();
-
-    let UpgradedStream {
-        mut stream,
-        server_public_key,
-    } = upgrade_stream(stream).await?;
-
-    if selected_protocol.contains(ironrdp_core::SecurityProtocol::HYBRID)
-        || selected_protocol.contains(ironrdp_core::SecurityProtocol::HYBRID_EX)
-    {
-        process_cred_ssp(
-            &mut stream,
-            config.credentials.clone(),
-            server_public_key,
-            &addr.hostname,
-            network_client_factory,
+        let selected_protocol = connection_initiation(
+            &mut reader,
+            &mut writer,
+            config.security_protocol,
+            config.credentials.username.clone(),
         )
         .await?;
 
-        if selected_protocol.contains(ironrdp_core::SecurityProtocol::HYBRID_EX) {
-            let data = read_early_user_auth_result(&mut stream).await?;
-            if let credssp::EarlyUserAuthResult::AccessDenied = data {
-                return Err(RdpError::AccessDenied);
+        info!("Selected security protocol: {selected_protocol:?}");
+
+        //== Upgrade to Enhanced RDP Security ==//
+        // NOTE: we assume the selected protocol is never the standard RDP security (RC4).
+
+        let reader = reader.into_inner_no_leftover();
+        let stream = reader.reunite(writer).unwrap();
+
+        let UpgradedStream {
+            mut stream,
+            server_public_key,
+        } = upgrade_stream(stream).await?;
+
+        if selected_protocol.contains(ironrdp_core::SecurityProtocol::HYBRID)
+            || selected_protocol.contains(ironrdp_core::SecurityProtocol::HYBRID_EX)
+        {
+            process_cred_ssp(
+                &mut stream,
+                config.credentials.clone(),
+                server_public_key,
+                &addr.hostname,
+                network_client_factory,
+            )
+            .await?;
+
+            if selected_protocol.contains(ironrdp_core::SecurityProtocol::HYBRID_EX) {
+                let data = read_early_user_auth_result(&mut stream).await?;
+                if let credssp::EarlyUserAuthResult::AccessDenied = data {
+                    return Err(RdpError::AccessDenied);
+                }
             }
         }
-    }
 
-    let (reader, writer) = stream.split();
-    let mut reader = FramedReader::new(reader).into_erased();
-    let mut writer = Box::pin(writer) as ErasedWriter;
+        let (reader, writer) = stream.split();
+        let reader = FramedReader::new(reader).into_erased();
+        let writer = Box::pin(writer) as ErasedWriter;
+
+        (selected_protocol, reader, writer, addr.sock)
+    };
+
+    #[cfg(feature = "dgw_ext")]
+    let (selected_protocol, mut reader, mut writer, server_addr) = {
+        let (selected_protocol, server_public_key, server_addr) = connection_initiation(
+            &mut reader,
+            &mut writer,
+            proxy_auth_token,
+            config.security_protocol,
+            config.credentials.username.clone(),
+        )
+        .await?;
+
+        let (reader, leftover) = reader.into_inner();
+        debug_assert_eq!(leftover.len(), 0, "no leftover is expected after connection initiation");
+
+        let mut stream = reader.reunite(writer).unwrap();
+
+        if selected_protocol.contains(ironrdp_core::SecurityProtocol::HYBRID)
+            || selected_protocol.contains(ironrdp_core::SecurityProtocol::HYBRID_EX)
+        {
+            process_cred_ssp(
+                &mut stream,
+                config.credentials.clone(),
+                server_public_key,
+                fqdn,
+                network_client_factory,
+            )
+            .await?;
+
+            if selected_protocol.contains(ironrdp_core::SecurityProtocol::HYBRID_EX) {
+                let data = read_early_user_auth_result(&mut stream).await?;
+                if let credssp::EarlyUserAuthResult::AccessDenied = data {
+                    return Err(RdpError::AccessDenied);
+                }
+            }
+        }
+
+        let (reader, writer) = stream.split();
+        let reader = FramedReader::new(reader).into_erased();
+        let writer = Box::pin(writer) as ErasedWriter;
+
+        (selected_protocol, reader, writer, server_addr)
+    };
 
     //== Basic Settings Exchange ==//
     // Exchange basic settings including Core Data, Security Data and Network Data.
@@ -169,7 +220,7 @@ where
         initiator_id,
         channel_id: global_channel_id,
     };
-    settings_exchange(&mut writer, global_channel_ids, config, &addr.sock).await?;
+    settings_exchange(&mut writer, global_channel_ids, config, &server_addr).await?;
 
     //== Optional Connect-Time Auto-Detection ==//
     // NOTE: IronRDP is not expecting the Auto-Detect Request PDU from server.
@@ -744,6 +795,7 @@ pub async fn read_early_user_auth_result(
     Ok(early_user_auth_result)
 }
 
+#[cfg(not(feature = "dgw_ext"))]
 pub async fn connection_initiation<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
     reader: &mut FramedReader<R>,
     mut writer: W,
@@ -771,6 +823,121 @@ pub async fn connection_initiation<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
 
         if security_protocol.contains(selected_protocol) {
             Ok(selected_protocol)
+        } else {
+            Err(RdpError::InvalidResponse(format!(
+                "Got unexpected security protocol: {:?} while was expected one of {:?}",
+                selected_protocol, security_protocol
+            )))
+        }
+    } else {
+        Err(RdpError::InvalidResponse(format!(
+            "Got unexpected X.224 Connection Response: {:?}",
+            connection_response.response
+        )))
+    }
+}
+
+// FIXME: extract this function into another crate later
+// TODO: clarify output type (currently the Vec<u8> is the server public key only)
+// TODO: returns the whole certification chain in final version
+#[cfg(feature = "dgw_ext")]
+pub async fn connection_initiation<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
+    reader: &mut FramedReader<R>,
+    mut writer: W,
+    proxy_auth_token: String,
+    security_protocol: ironrdp_core::SecurityProtocol,
+    username: String,
+) -> Result<(ironrdp_core::SecurityProtocol, Vec<u8>, std::net::SocketAddr), RdpError> {
+    use ironrdp_devolutions_gateway::RDCleanPathPdu;
+    use x509_cert::der::Decode as _;
+
+    let connection_request = build_connection_request_with_username(security_protocol, username);
+
+    let mut x224_pdu = Vec::new();
+    connection_request.to_buffer(&mut x224_pdu)?;
+
+    // FIXME: replace "10.10.0.6" by the actual destination host (found in the proxy auth token)
+    let rdp_clean_path = RDCleanPathPdu::new_request(x224_pdu, "10.10.0.6".into(), proxy_auth_token, None)
+        .map_err(|e| RdpError::ServerError(e.to_string()))?;
+    debug!("Send RDCleanPath PDU request: {:?}", connection_request);
+
+    let request_bytes = rdp_clean_path.to_der().map_err(|e| {
+        RdpError::ConnectionError(io::Error::new(
+            io::ErrorKind::Other,
+            format!("couldn’t encode cleanpath request into der: {}", e),
+        ))
+    })?;
+    writer.write_all(&request_bytes).await?;
+
+    writer.flush().await?;
+
+    let (reader, buf) = reader.get_inner_mut();
+
+    let cleanpath_pdu = loop {
+        if let Some(pdu) = RDCleanPathPdu::decode(buf).map_err(|e| RdpError::ServerError(e.to_string()))? {
+            break pdu;
+        }
+
+        let mut read_bytes = [0u8; 1024];
+        let len = reader.read(&mut read_bytes[..]).await?;
+        buf.extend_from_slice(&read_bytes[..len]);
+
+        if len == 0 {
+            return Err(RdpError::InvalidResponse("EOF when reading RDCleanPathPdu".to_owned()));
+        }
+    };
+
+    debug!("Received RDCleanPath PDU response: {:?}", cleanpath_pdu);
+
+    let x224_pdu = cleanpath_pdu.x224_connection_pdu.ok_or(RdpError::AccessDenied)?;
+    let connection_response = ironrdp_core::Response::from_buffer(x224_pdu.as_bytes())?;
+    if let Some(ironrdp_core::ResponseData::Confirm {
+        flags,
+        protocol: selected_protocol,
+    }) = connection_response.response
+    {
+        debug!(
+            "Got X.224 Connection Confirm PDU: selected protocol ({:?}), response flags ({:?})",
+            selected_protocol, flags
+        );
+
+        if security_protocol.contains(selected_protocol) {
+            let cert_der = cleanpath_pdu
+                .server_cert_chain
+                .and_then(|chain| chain.into_iter().next())
+                .ok_or_else(|| {
+                    RdpError::ConnectionError(io::Error::new(
+                        io::ErrorKind::Other,
+                        "cleanpath response is missing the server cert chain",
+                    ))
+                })?;
+
+            let cert = x509_cert::Certificate::from_der(cert_der.as_bytes()).map_err(|e| {
+                RdpError::ConnectionError(io::Error::new(
+                    io::ErrorKind::Other,
+                    format!("couldn’t decode x509 certificate sent by Devolutions Gateway: {}", e),
+                ))
+            })?;
+
+            let server_public_key = cert.tbs_certificate.subject_public_key_info.subject_public_key.to_vec();
+
+            let server_addr = cleanpath_pdu
+                .server_addr
+                .ok_or_else(|| {
+                    RdpError::ConnectionError(io::Error::new(
+                        io::ErrorKind::Other,
+                        "cleanpath response is missing the server address",
+                    ))
+                })?
+                .parse()
+                .map_err(|e| {
+                    RdpError::ConnectionError(io::Error::new(
+                        io::ErrorKind::Other,
+                        format!("couldn’t parse server address sent by Devolutions Gateway: {}", e),
+                    ))
+                })?;
+
+            Ok((selected_protocol, server_public_key, server_addr))
         } else {
             Err(RdpError::InvalidResponse(format!(
                 "Got unexpected security protocol: {:?} while was expected one of {:?}",

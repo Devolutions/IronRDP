@@ -8,6 +8,10 @@ homepage = "https://github.com/Devolutions/IronRDP"
 repository = "https://github.com/Devolutions/IronRDP"
 authors = ["Devolutions Inc. <infos@devolutions.net>"]
 
+[features]
+default = []
+dgw_ext = []
+
 [dependencies]
 ironrdp-core = { path = "../ironrdp-core" }
 ironrdp-graphics = { path = "../ironrdp-graphics" }
