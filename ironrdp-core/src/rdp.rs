@@ -111,6 +111,6 @@ pub enum RdpError {
 
 impl From<RdpError> for io::Error {
     fn from(e: RdpError) -> io::Error {
-        io::Error::new(io::ErrorKind::Other, format!("RDP Connection Sequence error: {}", e))
+        io::Error::new(io::ErrorKind::Other, format!("RDP Connection Sequence error: {e}"))
     }
 }

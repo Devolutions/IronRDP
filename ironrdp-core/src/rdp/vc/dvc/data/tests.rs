@@ -34,7 +34,7 @@ fn from_buffer_parsing_for_dvc_data_pdu_with_invalid_message_size_fails() {
         PDU_WITH_DATA_MAX_SIZE,
     ) {
         Err(ChannelError::InvalidDvcMessageSize) => (),
-        res => panic!("Expected InvalidDvcMessageSize error, got: {:?}", res),
+        res => panic!("Expected InvalidDvcMessageSize error, got: {res:?}"),
     };
 }
 

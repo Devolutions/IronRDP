@@ -35,7 +35,7 @@ impl FastPathHeader {
         }
         let data_length = length as usize - sizeof_length - 1;
         // Detect case, when received packet has non-optimal packet length packing
-        let forced_long_length = per::sizeof_length(length as u16) != sizeof_length;
+        let forced_long_length = per::sizeof_length(length) != sizeof_length;
 
         Ok(FastPathHeader {
             flags,

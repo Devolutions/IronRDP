@@ -72,7 +72,7 @@ async fn main() {
         }
         Err(ref e) => {
             error!("{}", e);
-            println!("RDP failed because of {}", e);
+            println!("RDP failed because of {e}");
 
             match e {
                 RdpError::IOError(_) => exitcode::IOERR,

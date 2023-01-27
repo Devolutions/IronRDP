@@ -23,7 +23,7 @@ pub struct ImageRegion<'a> {
 }
 
 impl<'a> ImageRegion<'a> {
-    pub fn copy_to<'b>(&self, other: &mut ImageRegionMut<'b>) -> io::Result<()> {
+    pub fn copy_to(&self, other: &mut ImageRegionMut<'_>) -> io::Result<()> {
         let width = usize::from(other.region.width());
         let height = usize::from(other.region.height());
 

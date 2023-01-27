@@ -359,7 +359,7 @@ pub async fn process_cred_ssp(
 ) -> Result<(), RdpError> {
     use sspi::ntlm::NtlmConfig;
 
-    let service_principal_name = format!("TERMSRV/{}", addr);
+    let service_principal_name = format!("TERMSRV/{addr}");
 
     let mut cred_ssp_client = credssp::CredSspClient::new(
         server_public_key,
@@ -576,10 +576,7 @@ pub async fn server_licensing_exchange(
             .map_err(|err| {
                 RdpError::IOError(io::Error::new(
                     io::ErrorKind::InvalidData,
-                    format!(
-                        "Unable to generate Client New License Request from Server License Request: {}",
-                        err
-                    ),
+                    format!("Unable to generate Client New License Request from Server License Request: {err}"),
                 ))
             })?
         }
@@ -618,7 +615,7 @@ pub async fn server_licensing_exchange(
     .map_err(|err| {
         RdpError::ServerLicenseError(rdp::RdpError::IOError(io::Error::new(
             io::ErrorKind::InvalidData,
-            format!("Unable to generate Client Platform Challenge Response {}", err),
+            format!("Unable to generate Client Platform Challenge Response {err}"),
         )))
     })?;
 
@@ -659,7 +656,7 @@ pub async fn server_licensing_exchange(
     upgrade_license.verify_server_license(&encryption_data).map_err(|err| {
         RdpError::ServerLicenseError(rdp::RdpError::IOError(io::Error::new(
             io::ErrorKind::InvalidData,
-            format!("License verification failed: {:?}", err),
+            format!("License verification failed: {err:?}"),
         )))
     })?;
 
@@ -912,8 +909,7 @@ pub async fn connection_initiation<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
             Ok(selected_protocol)
         } else {
             Err(RdpError::InvalidResponse(format!(
-                "Got unexpected security protocol: {:?} while was expected one of {:?}",
-                selected_protocol, security_protocol
+                "Got unexpected security protocol: {selected_protocol:?} while was expected one of {security_protocol:?}"
             )))
         }
     } else {
@@ -951,7 +947,7 @@ pub async fn connection_initiation<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
     let request_bytes = rdp_clean_path.to_der().map_err(|e| {
         RdpError::ConnectionError(io::Error::new(
             io::ErrorKind::Other,
-            format!("couldn’t encode cleanpath request into der: {}", e),
+            format!("couldn’t encode cleanpath request into der: {e}"),
         ))
     })?;
     writer.write_all(&request_bytes).await?;
@@ -1002,7 +998,7 @@ pub async fn connection_initiation<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
             let cert = x509_cert::Certificate::from_der(cert_der.as_bytes()).map_err(|e| {
                 RdpError::ConnectionError(io::Error::new(
                     io::ErrorKind::Other,
-                    format!("couldn’t decode x509 certificate sent by Devolutions Gateway: {}", e),
+                    format!("couldn’t decode x509 certificate sent by Devolutions Gateway: {e}"),
                 ))
             })?;
 
@@ -1020,15 +1016,14 @@ pub async fn connection_initiation<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
                 .map_err(|e| {
                     RdpError::ConnectionError(io::Error::new(
                         io::ErrorKind::Other,
-                        format!("couldn’t parse server address sent by Devolutions Gateway: {}", e),
+                        format!("couldn’t parse server address sent by Devolutions Gateway: {e}"),
                     ))
                 })?;
 
             Ok((selected_protocol, server_public_key, server_addr))
         } else {
             Err(RdpError::InvalidResponse(format!(
-                "Got unexpected security protocol: {:?} while was expected one of {:?}",
-                selected_protocol, security_protocol
+                "Got unexpected security protocol: {selected_protocol:?} while was expected one of {security_protocol:?}"
             )))
         }
     } else {

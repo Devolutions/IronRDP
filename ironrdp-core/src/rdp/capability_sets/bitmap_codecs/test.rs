@@ -479,7 +479,7 @@ fn codec_with_invalid_property_length_handles_correctly() {
 
     match Codec::from_buffer(codec_buffer.as_ref()) {
         Err(CapabilitySetsError::InvalidPropertyLength) => (),
-        Err(e) => panic!("wrong error type: {}", e),
+        Err(e) => panic!("wrong error type: {e}"),
         _ => panic!("error expected"),
     }
 }

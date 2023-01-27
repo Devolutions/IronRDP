@@ -489,7 +489,7 @@ fn send_update_rectangle(
 
     let _ret = update_callback
         .call2(callback_context, &update_rect, &js_array)
-        .map_err(|e| anyhow::Error::msg(format!("update callback failed: {:?}", e)))?;
+        .map_err(|e| anyhow::Error::msg(format!("update callback failed: {e:?}")))?;
 
     Ok(())
 }

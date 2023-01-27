@@ -66,7 +66,7 @@ impl PduParsing for LicenseHeader {
         let security_header = BasicSecurityHeader::from_buffer(&mut stream).map_err(|err| {
             ServerLicenseError::IOError(io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!("Unable to read License Header from buffer. Error: {}", err),
+                format!("Unable to read License Header from buffer. Error: {err}"),
             ))
         })?;
 
@@ -83,8 +83,8 @@ impl PduParsing for LicenseHeader {
         let preamble_flags = PreambleFlags::from_bits(flags_with_version & !PROTOCOL_VERSION_MASK)
             .ok_or_else(|| ServerLicenseError::InvalidPreamble(String::from("Got invalid flags field")))?;
 
-        let preamble_version = PreambleVersion::from_u8((flags_with_version & PROTOCOL_VERSION_MASK) as u8)
-            .ok_or_else(|| {
+        let preamble_version =
+            PreambleVersion::from_u8(flags_with_version & PROTOCOL_VERSION_MASK).ok_or_else(|| {
                 ServerLicenseError::InvalidPreamble(String::from("Got invalid version in the flags field"))
             })?;
 
@@ -101,7 +101,7 @@ impl PduParsing for LicenseHeader {
         self.security_header.to_buffer(&mut stream).map_err(|err| {
             ServerLicenseError::IOError(io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!("Unable to write License Header to buffer. Error: {}", err),
+                format!("Unable to write License Header to buffer. Error: {err}"),
             ))
         })?;
 

@@ -145,8 +145,8 @@ fn count_run(number_of_zeros: usize, k: &mut u32, kp: &mut u32) -> u32 {
     (0..number_of_zeros)
         .map(|_| {
             let run = 1 << *k;
-            *kp = min(*kp + UP_GR as u32, KP_MAX as u32);
-            *k = (*kp >> LS_GR as u32) as u32;
+            *kp = min(*kp + UP_GR, KP_MAX);
+            *k = *kp >> LS_GR;
 
             run
         })
@@ -163,13 +163,13 @@ fn compute_rl_magnitude(sign_bit: u8, code_remainder: u32) -> i16 {
 
 fn compute_rlgr1_magnitude(code_remainder: u32, k: &mut u32, kp: &mut u32) -> i16 {
     if code_remainder == 0 {
-        *kp = min(*kp + UQ_GR as u32, KP_MAX as u32);
-        *k = (*kp >> LS_GR as u32) as u32;
+        *kp = min(*kp + UQ_GR, KP_MAX);
+        *k = *kp >> LS_GR;
 
         0
     } else {
-        *kp = kp.saturating_sub(DQ_GR as u32);
-        *k = (*kp >> LS_GR as u32) as u32;
+        *kp = kp.saturating_sub(DQ_GR);
+        *k = *kp >> LS_GR;
 
         if code_remainder % 2 != 0 {
             -(((code_remainder + 1) >> 1) as i16)

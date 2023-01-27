@@ -106,7 +106,7 @@ pub enum NegotiationError {
 
 impl From<NegotiationError> for io::Error {
     fn from(e: NegotiationError) -> io::Error {
-        io::Error::new(io::ErrorKind::Other, format!("Negotiation error: {}", e))
+        io::Error::new(io::ErrorKind::Other, format!("Negotiation error: {e}"))
     }
 }
 
@@ -197,15 +197,15 @@ impl PduParsing for Request {
         stream.write_u8(0)?; // class
 
         match &self.nego_data {
-            Some(NegoData::Cookie(s)) => writeln!(&mut stream, "{}{}\r", COOKIE_PREFIX, s)?,
-            Some(NegoData::RoutingToken(s)) => writeln!(&mut stream, "{}{}\r", ROUTING_TOKEN_PREFIX, s)?,
+            Some(NegoData::Cookie(s)) => writeln!(&mut stream, "{COOKIE_PREFIX}{s}\r")?,
+            Some(NegoData::RoutingToken(s)) => writeln!(&mut stream, "{ROUTING_TOKEN_PREFIX}{s}\r")?,
             None => (),
         }
 
         if self.protocol.bits() > SecurityProtocol::RDP.bits() {
             stream.write_u8(Message::Request.to_u8().unwrap())?;
             stream.write_u8(self.flags.bits())?;
-            stream.write_u16::<LittleEndian>(RDP_NEG_DATA_LENGTH as u16)?;
+            stream.write_u16::<LittleEndian>(RDP_NEG_DATA_LENGTH)?;
             stream.write_u32::<LittleEndian>(self.protocol.bits())?;
         }
 
@@ -541,7 +541,7 @@ mod tests {
 
         match Response::from_buffer(buffer.as_ref()) {
             Err(NegotiationError::IOError(ref e)) if e.kind() == io::ErrorKind::InvalidData => (),
-            Err(e) => panic!("wrong error type: {}", e),
+            Err(e) => panic!("wrong error type: {e}"),
             _ => panic!("error expected"),
         }
     }
@@ -570,7 +570,7 @@ mod tests {
 
         match Response::from_buffer(buffer.as_ref()) {
             Err(NegotiationError::ResponseFailure(e)) if e == FailureCode::SSLWithUserAuthRequiredByServer => {}
-            Err(e) => panic!("wrong error type: {}", e),
+            Err(e) => panic!("wrong error type: {e}"),
             _ => panic!("error expected"),
         }
     }
@@ -615,7 +615,7 @@ mod tests {
 
         match read_string_with_cr_lf(&mut request.as_ref(), COOKIE_PREFIX) {
             Err(ref e) if e.kind() == io::ErrorKind::InvalidData => (),
-            Err(e) => panic!("wrong error type: {}", e),
+            Err(e) => panic!("wrong error type: {e}"),
             _ => panic!("error expected"),
         }
     }
@@ -629,7 +629,7 @@ mod tests {
 
         match read_string_with_cr_lf(&mut request.as_ref(), COOKIE_PREFIX) {
             Err(ref e) if e.kind() == io::ErrorKind::UnexpectedEof => (),
-            Err(e) => panic!("wrong error type: {}", e),
+            Err(e) => panic!("wrong error type: {e}"),
             _ => panic!("error expected"),
         }
     }
@@ -642,7 +642,7 @@ mod tests {
 
         match read_string_with_cr_lf(&mut request.as_ref(), COOKIE_PREFIX) {
             Err(ref e) if e.kind() == io::ErrorKind::UnexpectedEof => (),
-            Err(e) => panic!("wrong error type: {}", e),
+            Err(e) => panic!("wrong error type: {e}"),
             _ => panic!("error expected"),
         }
     }
@@ -768,7 +768,7 @@ mod tests {
 
         match Request::from_buffer(request.as_ref()) {
             Err(NegotiationError::IOError(ref e)) if e.kind() == io::ErrorKind::InvalidData => (),
-            Err(e) => panic!("wrong error type: {}", e),
+            Err(e) => panic!("wrong error type: {e}"),
             _ => panic!("error expected"),
         }
     }
@@ -953,7 +953,7 @@ mod tests {
 
         match Response::from_buffer(expected.as_ref()) {
             Err(NegotiationError::ResponseFailure(_)) => (),
-            Err(e) => panic!("invalid error type: {}", e),
+            Err(e) => panic!("invalid error type: {e}"),
             Ok(_) => panic!("error expected"),
         }
     }
@@ -1052,7 +1052,7 @@ mod tests {
 
         match Request::from_buffer(request.as_ref()) {
             Err(NegotiationError::TpktVersionError) => (),
-            Err(e) => panic!("wrong error type: {}", e),
+            Err(e) => panic!("wrong error type: {e}"),
             _ => panic!("error expected"),
         }
     }

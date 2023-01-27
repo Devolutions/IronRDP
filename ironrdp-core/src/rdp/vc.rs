@@ -85,6 +85,6 @@ pub enum ChannelError {
 
 impl From<ChannelError> for io::Error {
     fn from(e: ChannelError) -> io::Error {
-        io::Error::new(io::ErrorKind::Other, format!("Virtual channel error: {}", e))
+        io::Error::new(io::ErrorKind::Other, format!("Virtual channel error: {e}"))
     }
 }

@@ -180,7 +180,7 @@ impl ShaderType {
 
         for (shader_type, shader_source) in shader_sources.iter() {
             let shader = gl.create_shader(*shader_type)?;
-            gl.shader_source(shader, &format!("{}\n{}", shader_version, shader_source));
+            gl.shader_source(shader, &format!("{shader_version}\n{shader_source}"));
             gl.compile_shader(shader);
             if !gl.get_shader_compile_status(shader) {
                 return Err(crate::Error::from(gl.get_shader_info_log(shader)));
@@ -298,8 +298,8 @@ impl TextureShaderProgram {
         gl.bind_vertex_array(Some(vertex_array));
         gl.bind_buffer(ARRAY_BUFFER, Some(vertex_buffer));
 
-        gl.enable_vertex_attrib_array(a_tex_coord as u32);
-        gl.enable_vertex_attrib_array(a_position as u32);
+        gl.enable_vertex_attrib_array(a_tex_coord);
+        gl.enable_vertex_attrib_array(a_position);
 
         gl.buffer_data_u8_slice(ARRAY_BUFFER, cast_as_bytes(data.as_ref()), DYNAMIC_DRAW);
         gl.vertex_attrib_pointer_f32(a_position, 2, FLOAT, false, 16, 0);
@@ -394,7 +394,7 @@ impl AvcShaderProgram {
 
         gl.bind_buffer(ARRAY_BUFFER, Some(self.vertex_buffer));
         gl.bind_vertex_array(Some(self.vertex_array));
-        gl.enable_vertex_attrib_array(self.a_position as u32);
+        gl.enable_vertex_attrib_array(self.a_position);
         gl.buffer_data_u8_slice(ARRAY_BUFFER, cast_as_bytes(data.as_ref()), DYNAMIC_DRAW);
         gl.vertex_attrib_pointer_f32(self.a_position, 2, FLOAT, false, 8, 0);
 

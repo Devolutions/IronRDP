@@ -56,7 +56,7 @@ impl PduParsing for ServerUpgradeLicense {
 
         let encrypted_license_info_blob = BlobHeader::read_from_buffer(BlobType::EncryptedData, &mut stream)?;
 
-        let mut encrypted_license_info = vec![0u8; encrypted_license_info_blob.length as usize];
+        let mut encrypted_license_info = vec![0u8; encrypted_license_info_blob.length];
         stream.read_exact(&mut encrypted_license_info)?;
 
         let mut mac_data = vec![0u8; MAC_SIZE];

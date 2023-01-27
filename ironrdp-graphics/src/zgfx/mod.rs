@@ -497,7 +497,7 @@ mod tests {
         for (i, (encode, decode)) in pairs.enumerate() {
             let bytes_written = zgfx.decompress(encode.as_ref(), &mut decompressed).unwrap();
             assert_eq!(decode.len(), bytes_written);
-            assert_eq!(decompressed, *decode, "Failed to decompress encoded PDU #{}", i);
+            assert_eq!(decompressed, *decode, "Failed to decompress encoded PDU #{i}");
             decompressed.clear();
         }
     }
@@ -617,7 +617,7 @@ mod tests {
         let mut decompressed = Vec::with_capacity(expected.len());
         let bytes_written = zgfx.decompress(buffer.as_ref(), &mut decompressed).unwrap();
         assert_eq!(expected.len(), bytes_written);
-        assert_eq!(decompressed, expected, "\n{:x?} != \n{:x?}", decompressed, expected);
+        assert_eq!(decompressed, expected, "\n{decompressed:x?} != \n{expected:x?}");
     }
 
     #[test]
