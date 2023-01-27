@@ -7,7 +7,7 @@ const CHANNEL_PDU_HEADER_BUFFER: [u8; CHANNEL_PDU_HEADER_SIZE] = [0x40, 0x06, 0x
 
 lazy_static! {
     static ref CHANNEL_PDU_HEADER: ChannelPduHeader = ChannelPduHeader {
-        total_length: CHANNEL_CHUNK_LENGTH_DEFAULT as u32,
+        total_length: CHANNEL_CHUNK_LENGTH_DEFAULT,
         flags: ChannelControlFlags::FLAG_FIRST,
     };
 }

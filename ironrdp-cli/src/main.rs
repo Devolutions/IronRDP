@@ -66,7 +66,7 @@ async fn main() {
             error!("{:#}", e);
 
             println!("The server has terminated the RDP session");
-            println!("{:?}", e);
+            println!("{e:?}");
 
             exitcode::NOHOST
         }
@@ -79,7 +79,7 @@ async fn main() {
 
             let e = anyhow::Error::from(e);
             error!("{:#}", e);
-            println!("{:?}", e);
+            println!("{e:?}");
 
             exit_code
         }

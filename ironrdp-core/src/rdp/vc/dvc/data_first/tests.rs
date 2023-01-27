@@ -145,7 +145,7 @@ fn from_buffer_parsing_for_dvc_data_first_pdu_with_invalid_message_size_fails() 
         PDU_WITH_DATA_MAX_SIZE,
     ) {
         Err(ChannelError::InvalidDvcMessageSize) => (),
-        res => panic!("Expected InvalidDvcMessageSize error, got: {:?}", res),
+        res => panic!("Expected InvalidDvcMessageSize error, got: {res:?}"),
     };
 }
 
@@ -158,7 +158,7 @@ fn from_buffer_parsing_for_dvc_data_first_pdu_with_invalid_total_message_size_fa
         DVC_DATA_FIRST_WITH_INVALID_TOTAL_MESSAGE_SIZE_BUFFER_SIZE,
     ) {
         Err(ChannelError::InvalidDvcTotalMessageSize { .. }) => (),
-        res => panic!("Expected InvalidDvcTotalMessageSize error, got: {:?}", res),
+        res => panic!("Expected InvalidDvcTotalMessageSize error, got: {res:?}"),
     };
 }
 

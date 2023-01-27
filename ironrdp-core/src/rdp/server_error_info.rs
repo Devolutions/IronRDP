@@ -416,7 +416,7 @@ mod tests {
         let expected = SERVER_SET_ERROR_INFO_BUFFER.as_ref();
         let mut buffer = vec![0; expected.len()];
 
-        SERVER_SET_ERROR_INFO.to_buffer(&mut buffer.as_mut_slice()).unwrap();
+        SERVER_SET_ERROR_INFO.to_buffer(buffer.as_mut_slice()).unwrap();
         assert_eq!(expected, buffer.as_slice());
     }
 

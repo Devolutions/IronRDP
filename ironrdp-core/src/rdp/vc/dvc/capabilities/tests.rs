@@ -27,7 +27,7 @@ fn from_buffer_parsing_for_dvc_caps_request_pdu_with_invalid_caps_version_fails(
     let buffer_with_invalid_caps_version = vec![0x00, 0x01, 0x01];
     match CapabilitiesRequestPdu::from_buffer(buffer_with_invalid_caps_version.as_slice()) {
         Err(ChannelError::InvalidDvcCapabilitiesVersion) => (),
-        res => panic!("Expected InvalidDvcCapabilitiesVersion error, got: {:?}", res),
+        res => panic!("Expected InvalidDvcCapabilitiesVersion error, got: {res:?}"),
     };
 }
 
@@ -92,7 +92,7 @@ fn from_buffer_parsing_for_dvc_caps_response_pdu_with_invalid_caps_version_fails
     let buffer_with_invalid_caps_version = vec![0x00, 0x01, 0x01];
     match CapabilitiesResponsePdu::from_buffer(buffer_with_invalid_caps_version.as_slice()) {
         Err(ChannelError::InvalidDvcCapabilitiesVersion) => (),
-        res => panic!("Expected InvalidDvcCapabilitiesVersion error, got: {:?}", res),
+        res => panic!("Expected InvalidDvcCapabilitiesVersion error, got: {res:?}"),
     };
 }
 

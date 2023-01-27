@@ -131,7 +131,7 @@ impl Frame for SendDataInfoFrame {
                 data: mcs_frame.data,
             }),
             ironrdp_core::McsPdu::DisconnectProviderUltimatum(disconnect_reason) => Err(
-                RdpError::UnexpectedDisconnection(format!("Server disconnection reason - {:?}", disconnect_reason)),
+                RdpError::UnexpectedDisconnection(format!("Server disconnection reason - {disconnect_reason:?}")),
             ),
             _ => Err(RdpError::UnexpectedPdu(format!(
                 "Expected Send Data Context PDU, got {:?}",
@@ -289,8 +289,7 @@ where
             },
             ironrdp_core::McsPdu::DisconnectProviderUltimatum(disconnect_reason) => {
                 return Err(RdpError::UnexpectedDisconnection(format!(
-                    "Server disconnection reason - {:?}",
-                    disconnect_reason
+                    "Server disconnection reason - {disconnect_reason:?}"
                 )))
             }
             _ => {

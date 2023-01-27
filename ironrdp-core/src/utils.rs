@@ -44,7 +44,7 @@ pub(crate) fn read_string(
     let result = match character_set {
         CharacterSet::Unicode => from_utf16_bytes(buffer.as_slice()),
         CharacterSet::Ansi => String::from_utf8(buffer)
-            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("the string is not utf8: {}", e)))?,
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, format!("the string is not utf8: {e}")))?,
     };
 
     Ok(result.trim_end_matches('\0').into())

@@ -79,8 +79,7 @@ impl PduParsing for ShareControlHeader {
         let pdu_version = pdu_type_with_version & !SHARE_CONTROL_HEADER_MASK;
         if pdu_version != PROTOCOL_VERSION {
             return Err(RdpError::InvalidShareControlHeader(format!(
-                "Invalid PDU version: {}",
-                pdu_version
+                "Invalid PDU version: {pdu_version}"
             )));
         }
 

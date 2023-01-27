@@ -31,7 +31,7 @@ impl Rc4 {
             self.j = (self.j + self.state[self.i] as usize) % 256;
             self.state.swap(self.i, self.j);
             let idx_k = (self.state[self.i] as usize + self.state[self.j] as usize) % 256;
-            let k = self.state[idx_k as usize];
+            let k = self.state[idx_k];
             let idx_msg = output.len();
             output.push(k ^ message[idx_msg]);
         }

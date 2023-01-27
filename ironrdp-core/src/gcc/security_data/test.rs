@@ -145,7 +145,7 @@ fn from_buffer_server_security_data_fails_with_invalid_server_random_length() {
 
     match ServerSecurityData::from_buffer(buffer.as_slice()) {
         Err(SecurityDataError::InvalidServerRandomLen(_)) => (),
-        res => panic!("Expected the invalid server random length error, got: {:?}", res),
+        res => panic!("Expected the invalid server random length error, got: {res:?}"),
     };
 }
 
@@ -178,7 +178,7 @@ fn to_buffer_server_security_data_fails_on_mismatch_of_required_and_optional_fie
     let mut buff = Vec::new();
     match security_data.to_buffer(&mut buff) {
         Err(SecurityDataError::InvalidInput(_)) => (),
-        res => panic!("Expected the invalid input error, got: {:?}", res),
+        res => panic!("Expected the invalid input error, got: {res:?}"),
     };
 }
 

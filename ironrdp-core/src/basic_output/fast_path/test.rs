@@ -50,7 +50,7 @@ fn to_buffer_correctly_serializes_fast_path_header_with_short_length() {
     let mut buffer = vec![0; expected.len()];
 
     FAST_PATH_HEADER_WITH_SHORT_LEN_PDU
-        .to_buffer(&mut buffer.as_mut_slice())
+        .to_buffer(buffer.as_mut_slice())
         .unwrap();
     assert_eq!(expected, buffer.as_slice());
 }
@@ -77,7 +77,7 @@ fn to_buffer_correctly_serializes_fast_path_header_with_long_length() {
     let mut buffer = vec![0; expected.len()];
 
     FAST_PATH_HEADER_WITH_LONG_LEN_PDU
-        .to_buffer(&mut buffer.as_mut_slice())
+        .to_buffer(buffer.as_mut_slice())
         .unwrap();
     assert_eq!(expected, buffer.as_slice());
 }
@@ -104,7 +104,7 @@ fn to_buffer_correctly_serializes_fast_path_header_with_forced_long_length() {
     let mut buffer = vec![0; expected.len()];
 
     FAST_PATH_HEADER_WITH_FORCED_LONG_LEN_PDU
-        .to_buffer(&mut buffer.as_mut_slice())
+        .to_buffer(buffer.as_mut_slice())
         .unwrap();
     assert_eq!(expected, buffer.as_slice());
 }

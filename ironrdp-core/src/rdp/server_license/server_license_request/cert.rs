@@ -66,7 +66,7 @@ impl PduParsing for X509CertificateChain {
             stream.write_all(certificate)?;
         }
 
-        let padding_len = (8 + 4 * self.certificate_array.len()) as usize; // MSDN: A byte array of the length 8 + 4*NumCertBlobs
+        let padding_len = 8 + 4 * self.certificate_array.len(); // MSDN: A byte array of the length 8 + 4*NumCertBlobs
         let padding = vec![0u8; padding_len];
         stream.write_all(padding.as_slice())?;
 
@@ -115,8 +115,8 @@ impl PduParsing for ProprietaryCertificate {
     }
 
     fn to_buffer(&self, mut stream: impl io::Write) -> Result<(), Self::Error> {
-        stream.write_u32::<LittleEndian>(SIGNATURE_ALGORITHM_RSA as u32)?;
-        stream.write_u32::<LittleEndian>(KEY_EXCHANGE_ALGORITHM_RSA as u32)?;
+        stream.write_u32::<LittleEndian>(SIGNATURE_ALGORITHM_RSA)?;
+        stream.write_u32::<LittleEndian>(KEY_EXCHANGE_ALGORITHM_RSA)?;
 
         BlobHeader::new(BlobType::RsaKey, self.public_key.buffer_length()).write_to_buffer(&mut stream)?;
         self.public_key.to_buffer(&mut stream)?;

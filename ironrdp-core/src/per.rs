@@ -114,7 +114,7 @@ pub fn read_u32(mut stream: impl io::Read) -> io::Result<u32> {
         4 => stream.read_u32::<BigEndian>(),
         _ => Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            format!("Invalid PER length: {}", length),
+            format!("Invalid PER length: {length}"),
         )),
     }
 }
@@ -162,7 +162,7 @@ pub fn read_enum(mut stream: impl io::Read, count: u8) -> io::Result<u8> {
     if u16::from(enumerated) + 1 > u16::from(count) {
         Err(io::Error::new(
             io::ErrorKind::InvalidData,
-            format!("Enumerated value ({}) does not fall within expected range", enumerated),
+            format!("Enumerated value ({enumerated}) does not fall within expected range"),
         ))
     } else {
         Ok(enumerated)

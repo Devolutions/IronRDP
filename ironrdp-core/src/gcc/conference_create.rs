@@ -241,7 +241,7 @@ impl PduParsing for ConferenceCreateResponse {
         per::write_octet_string(
             &mut stream,
             CONFERENCE_REQUEST_SERVER_TO_CLIENT_H221_NON_STANDARD,
-            H221_NON_STANDARD_MIN_LENGTH as usize,
+            H221_NON_STANDARD_MIN_LENGTH,
         )?;
         // H221NonStandardIdentifier (octet string)
         per::write_length(&mut stream, gcc_blocks_buffer_length as u16)?;

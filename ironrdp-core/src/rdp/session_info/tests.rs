@@ -330,7 +330,7 @@ fn buffer_length_is_correct_for_extended_info() {
 fn from_buffer_parsing_with_invalid_session_info_type_fails() {
     match SaveSessionInfoPdu::from_buffer(INVALID_SESSION_INFO_TYPE_BUFFER.as_ref()) {
         Err(SessionError::InvalidSaveSessionInfoType) => (),
-        res => panic!("Expected InvalidSaveSessionInfoType error, got: {:?}", res),
+        res => panic!("Expected InvalidSaveSessionInfoType error, got: {res:?}"),
     };
 }
 
@@ -338,7 +338,7 @@ fn from_buffer_parsing_with_invalid_session_info_type_fails() {
 fn from_buffer_parsing_with_invalid_domain_size_fails() {
     match LogonInfoVersion1::from_buffer(LOGON_INFO_V1_WITH_INVALID_DOMAIN_SIZE_BUFFER.as_ref()) {
         Err(SessionError::InvalidDomainNameSize) => (),
-        res => panic!("Expected InvalidDomainNameSize error, got: {:?}", res),
+        res => panic!("Expected InvalidDomainNameSize error, got: {res:?}"),
     };
 }
 
@@ -346,7 +346,7 @@ fn from_buffer_parsing_with_invalid_domain_size_fails() {
 fn from_buffer_parsing_with_invalid_user_name_size_fails() {
     match LogonInfoVersion1::from_buffer(LOGON_INFO_V1_WITH_INVALID_USER_NAME_SIZE_BUFFER.as_ref()) {
         Err(SessionError::InvalidUserNameSize) => (),
-        res => panic!("Expected InvalidUserNameSize error, got: {:?}", res),
+        res => panic!("Expected InvalidUserNameSize error, got: {res:?}"),
     };
 }
 
@@ -354,7 +354,7 @@ fn from_buffer_parsing_with_invalid_user_name_size_fails() {
 fn from_buffer_parsing_with_invalid_logon_version_fails() {
     match LogonInfoVersion2::from_buffer(LOGON_INFO_V2_WITH_INVALID_LOGON_VERSION_BUFFER.as_ref()) {
         Err(SessionError::InvalidLogonVersion2) => (),
-        res => panic!("Expected InvalidLogonVersion2 error, got: {:?}", res),
+        res => panic!("Expected InvalidLogonVersion2 error, got: {res:?}"),
     };
 }
 
@@ -362,7 +362,7 @@ fn from_buffer_parsing_with_invalid_logon_version_fails() {
 fn from_buffer_parsing_with_invalid_logon_infov2_size_fails() {
     match LogonInfoVersion2::from_buffer(LOGON_INFO_V2_WITH_INVALID_LOGON_INFO_V2_SIZE_BUFFER.as_ref()) {
         Err(SessionError::InvalidLogonVersion2Size) => (),
-        res => panic!("Expected InvalidLogonVersion2Size error, got: {:?}", res),
+        res => panic!("Expected InvalidLogonVersion2Size error, got: {res:?}"),
     };
 }
 
@@ -370,7 +370,7 @@ fn from_buffer_parsing_with_invalid_logon_infov2_size_fails() {
 fn from_buffer_parsing_with_invalid_reconnect_packet_size_fails() {
     match LogonInfoExtended::from_buffer(LOGON_EXTENDED_WITH_INVALID_RECONNECT_PACKET_SIZE_BUFFER.as_ref()) {
         Err(SessionError::InvalidAutoReconnectPacketSize) => (),
-        res => panic!("Expected InvalidAutoReconnectPacketSize error, got: {:?}", res),
+        res => panic!("Expected InvalidAutoReconnectPacketSize error, got: {res:?}"),
     };
 }
 
@@ -378,7 +378,7 @@ fn from_buffer_parsing_with_invalid_reconnect_packet_size_fails() {
 fn from_buffer_parsing_with_invalid_reconnect_version_fails() {
     match LogonInfoExtended::from_buffer(LOGON_EXTENDED_WITH_INVALID_RECONNECT_VERSION_BUFFER.as_ref()) {
         Err(SessionError::InvalidAutoReconnectVersion) => (),
-        res => panic!("Expected InvalidAutoReconnectVersion error, got: {:?}", res),
+        res => panic!("Expected InvalidAutoReconnectVersion error, got: {res:?}"),
     };
 }
 
@@ -386,7 +386,7 @@ fn from_buffer_parsing_with_invalid_reconnect_version_fails() {
 fn from_buffer_parsing_with_invalid_logon_error_type_fails() {
     match LogonInfoExtended::from_buffer(LOGON_EXTENDED_WITH_INVALID_LOGON_ERROR_TYPE_BUFFER.as_ref()) {
         Err(SessionError::InvalidLogonErrorType) => (),
-        res => panic!("Expected InvalidLogonErrorType error, got: {:?}", res),
+        res => panic!("Expected InvalidLogonErrorType error, got: {res:?}"),
     };
 }
 
@@ -394,6 +394,6 @@ fn from_buffer_parsing_with_invalid_logon_error_type_fails() {
 fn from_buffer_parsing_with_invalid_logon_error_data_fails() {
     match LogonInfoExtended::from_buffer(LOGON_EXTENDED_WITH_INVALID_LOGON_ERROR_DATA_BUFFER.as_ref()) {
         Err(SessionError::InvalidLogonErrorData) => (),
-        res => panic!("Expected InvalidLogonErrorData error, got: {:?}", res),
+        res => panic!("Expected InvalidLogonErrorData error, got: {res:?}"),
     };
 }
