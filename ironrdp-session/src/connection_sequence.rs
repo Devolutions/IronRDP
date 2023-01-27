@@ -1,7 +1,6 @@
 mod user_info;
 
 use std::collections::HashMap;
-use std::future::Future;
 use std::net::SocketAddr;
 use std::{io, iter};
 
@@ -62,121 +61,209 @@ impl Address {
 // TODO: convert to a state machine and wrap into a future in ironrdp-session-async
 // The ultimate goal is to remove the `dgw_ext` feature flag.
 
+#[cfg(not(feature = "dgw_ext"))]
 pub async fn process_connection_sequence<S, UpgradeFn, FnRes, UpgradedS>(
     stream: S,
-    #[cfg(not(feature = "dgw_ext"))] addr: &Address,
-    #[cfg(feature = "dgw_ext")] fqdn: &str,
-    #[cfg(feature = "dgw_ext")] proxy_auth_token: String,
+    addr: &Address,
     config: &InputConfig,
-    #[cfg(not(feature = "dgw_ext"))] upgrade_stream: UpgradeFn,
+    upgrade_stream: UpgradeFn,
     network_client_factory: Box<dyn NetworkClientFactory>,
 ) -> Result<(ConnectionSequenceResult, FramedReader, ErasedWriter), RdpError>
 where
     S: AsyncRead + AsyncWrite + Unpin + 'static,
     UpgradeFn: FnOnce(S) -> FnRes,
-    FnRes: Future<Output = Result<UpgradedStream<UpgradedS>, RdpError>>,
+    FnRes: std::future::Future<Output = Result<UpgradedStream<UpgradedS>, RdpError>>,
     UpgradedS: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
     let (reader, mut writer) = stream.split();
     let mut reader = FramedReader::new(reader);
 
-    #[cfg(not(feature = "dgw_ext"))]
-    let (selected_protocol, mut reader, mut writer, server_addr) = {
-        //== Connection Initiation ==//
-        // Exchange supported security protocols and a few other connection flags.
+    //== Connection Initiation ==//
+    // Exchange supported security protocols and a few other connection flags.
 
-        trace!("Connection Initiation");
+    trace!("Connection Initiation");
 
-        let selected_protocol = connection_initiation(
-            &mut reader,
-            &mut writer,
-            config.security_protocol,
-            config.credentials.username.clone(),
-        )
-        .await?;
+    let selected_protocol = connection_initiation(
+        &mut reader,
+        &mut writer,
+        config.security_protocol,
+        config.credentials.username.clone(),
+    )
+    .await?;
 
-        info!("Selected security protocol: {selected_protocol:?}");
+    info!("Selected security protocol: {selected_protocol:?}");
 
-        //== Upgrade to Enhanced RDP Security ==//
-        // NOTE: we assume the selected protocol is never the standard RDP security (RC4).
+    //== Upgrade to Enhanced RDP Security ==//
+    // NOTE: we assume the selected protocol is never the standard RDP security (RC4).
 
-        let reader = reader.into_inner_no_leftover();
-        let stream = reader.reunite(writer).unwrap();
+    let reader = reader.into_inner_no_leftover();
+    let stream = reader.reunite(writer).unwrap();
 
-        let UpgradedStream {
-            mut stream,
+    let UpgradedStream {
+        mut stream,
+        server_public_key,
+    } = upgrade_stream(stream).await?;
+
+    if selected_protocol.contains(ironrdp_core::SecurityProtocol::HYBRID)
+        || selected_protocol.contains(ironrdp_core::SecurityProtocol::HYBRID_EX)
+    {
+        process_cred_ssp(
+            &mut stream,
+            config.credentials.clone(),
             server_public_key,
-        } = upgrade_stream(stream).await?;
-
-        if selected_protocol.contains(ironrdp_core::SecurityProtocol::HYBRID)
-            || selected_protocol.contains(ironrdp_core::SecurityProtocol::HYBRID_EX)
-        {
-            process_cred_ssp(
-                &mut stream,
-                config.credentials.clone(),
-                server_public_key,
-                &addr.hostname,
-                network_client_factory,
-            )
-            .await?;
-
-            if selected_protocol.contains(ironrdp_core::SecurityProtocol::HYBRID_EX) {
-                let data = read_early_user_auth_result(&mut stream).await?;
-                if let credssp::EarlyUserAuthResult::AccessDenied = data {
-                    return Err(RdpError::AccessDenied);
-                }
-            }
-        }
-
-        let (reader, writer) = stream.split();
-        let reader = FramedReader::new(reader).into_erased();
-        let writer = Box::pin(writer) as ErasedWriter;
-
-        (selected_protocol, reader, writer, addr.sock)
-    };
-
-    #[cfg(feature = "dgw_ext")]
-    let (selected_protocol, mut reader, mut writer, server_addr) = {
-        let (selected_protocol, server_public_key, server_addr) = connection_initiation(
-            &mut reader,
-            &mut writer,
-            proxy_auth_token,
-            config.security_protocol,
-            config.credentials.username.clone(),
+            &addr.hostname,
+            network_client_factory,
         )
         .await?;
 
-        let (reader, leftover) = reader.into_inner();
-        debug_assert_eq!(leftover.len(), 0, "no leftover is expected after connection initiation");
-
-        let mut stream = reader.reunite(writer).unwrap();
-
-        if selected_protocol.contains(ironrdp_core::SecurityProtocol::HYBRID)
-            || selected_protocol.contains(ironrdp_core::SecurityProtocol::HYBRID_EX)
-        {
-            process_cred_ssp(
-                &mut stream,
-                config.credentials.clone(),
-                server_public_key,
-                fqdn,
-                network_client_factory,
-            )
-            .await?;
-
-            if selected_protocol.contains(ironrdp_core::SecurityProtocol::HYBRID_EX) {
-                let data = read_early_user_auth_result(&mut stream).await?;
-                if let credssp::EarlyUserAuthResult::AccessDenied = data {
-                    return Err(RdpError::AccessDenied);
-                }
+        if selected_protocol.contains(ironrdp_core::SecurityProtocol::HYBRID_EX) {
+            let data = read_early_user_auth_result(&mut stream).await?;
+            if let credssp::EarlyUserAuthResult::AccessDenied = data {
+                return Err(RdpError::AccessDenied);
             }
         }
+    }
 
-        let (reader, writer) = stream.split();
-        let reader = FramedReader::new(reader).into_erased();
-        let writer = Box::pin(writer) as ErasedWriter;
+    let (reader, writer) = stream.split();
+    let mut reader = FramedReader::new(reader).into_erased();
+    let mut writer = Box::pin(writer) as ErasedWriter;
 
-        (selected_protocol, reader, writer, server_addr)
+    //== Basic Settings Exchange ==//
+    // Exchange basic settings including Core Data, Security Data and Network Data.
+
+    trace!("Basic Settings Exchange");
+
+    let static_channels = basic_settings_exchange(&mut reader, &mut writer, config, selected_protocol).await?;
+
+    //== Channel Connection ==//
+    // Connect every individual channel.
+
+    trace!("Channel Connection");
+
+    let joined_static_channels = channel_connection(&mut reader, &mut writer, static_channels, config).await?;
+    debug!("Joined static active_session: {:?}", joined_static_channels);
+
+    let global_channel_id = *joined_static_channels
+        .get(config.global_channel_name.as_str())
+        .expect("global channel must be added");
+    let initiator_id = *joined_static_channels
+        .get(config.user_channel_name.as_str())
+        .expect("user channel must be added");
+
+    //== RDP Security Commencement ==//
+    // When using standard RDP security (RC4), a Security Exchange PDU is sent at this point.
+    // NOTE: IronRDP is only supporting extended security (TLS…).
+
+    if selected_protocol == ironrdp_core::SecurityProtocol::RDP {
+        return Err(RdpError::ConnectionError(io::Error::new(
+            io::ErrorKind::Other,
+            "Standard RDP Security (RC4 encryption) is not supported",
+        )));
+    }
+
+    //== Secure Settings Exchange ==//
+    // Send Client Info PDU (information about supported types of compression, username, password, etc).
+
+    trace!("Secure Settings Exchange");
+
+    let global_channel_ids = ChannelIdentificators {
+        initiator_id,
+        channel_id: global_channel_id,
     };
+    settings_exchange(&mut writer, global_channel_ids, config, &addr.sock).await?;
+
+    //== Optional Connect-Time Auto-Detection ==//
+    // NOTE: IronRDP is not expecting the Auto-Detect Request PDU from server.
+
+    //== Licensing ==//
+    // Server is sending information regarding licensing.
+    // Typically useful when support for more than two simultaneous connections is required (terminal server).
+
+    trace!("Licensing");
+
+    server_licensing_exchange(&mut reader, &mut writer, config, global_channel_id).await?;
+
+    //== Optional Multitransport Bootstrapping ==//
+    // NOTE: our implemention is not expecting the Auto-Detect Request PDU from server
+
+    //== Capabilities Exchange ==/
+    // The server sends the set of capabilities it supports to the client.
+
+    trace!("Capabilities Exchange");
+
+    let desktop_size = capabilities_exchange(&mut reader, &mut writer, global_channel_ids, config).await?;
+
+    //== Connection Finalization ==//
+    // Client and server exchange a few PDUs in order to finalize the connection.
+    // Client may send PDUs one after the other without waiting for a response in order to speed up the process.
+
+    trace!("Connection finalization");
+
+    connection_finalization(&mut reader, &mut writer, global_channel_ids).await?;
+
+    Ok((
+        ConnectionSequenceResult {
+            desktop_size,
+            joined_static_channels,
+            global_channel_id,
+            initiator_id,
+        },
+        reader,
+        writer,
+    ))
+}
+
+#[cfg(feature = "dgw_ext")]
+pub async fn process_connection_sequence<S>(
+    stream: S,
+    fqdn: &str,
+    proxy_auth_token: String,
+    config: &InputConfig,
+    network_client_factory: Box<dyn NetworkClientFactory>,
+) -> Result<(ConnectionSequenceResult, FramedReader, ErasedWriter), RdpError>
+where
+    S: AsyncRead + AsyncWrite + Unpin + 'static,
+{
+    let (reader, mut writer) = stream.split();
+    let mut reader = FramedReader::new(reader);
+
+    let (selected_protocol, server_public_key, server_addr) = connection_initiation(
+        &mut reader,
+        &mut writer,
+        proxy_auth_token,
+        config.security_protocol,
+        config.credentials.username.clone(),
+    )
+    .await?;
+
+    let (reader, leftover) = reader.into_inner();
+    debug_assert_eq!(leftover.len(), 0, "no leftover is expected after connection initiation");
+
+    let mut stream = reader.reunite(writer).unwrap();
+
+    if selected_protocol.contains(ironrdp_core::SecurityProtocol::HYBRID)
+        || selected_protocol.contains(ironrdp_core::SecurityProtocol::HYBRID_EX)
+    {
+        process_cred_ssp(
+            &mut stream,
+            config.credentials.clone(),
+            server_public_key,
+            fqdn,
+            network_client_factory,
+        )
+        .await?;
+
+        if selected_protocol.contains(ironrdp_core::SecurityProtocol::HYBRID_EX) {
+            let data = read_early_user_auth_result(&mut stream).await?;
+            if let credssp::EarlyUserAuthResult::AccessDenied = data {
+                return Err(RdpError::AccessDenied);
+            }
+        }
+    }
+
+    let (reader, writer) = stream.split();
+    let mut reader = FramedReader::new(reader).into_erased();
+    let mut writer = Box::pin(writer) as ErasedWriter;
 
     //== Basic Settings Exchange ==//
     // Exchange basic settings including Core Data, Security Data and Network Data.
