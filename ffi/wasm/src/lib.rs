@@ -284,15 +284,21 @@ impl Session {
                         writer.write_all(&frame).await.map_err(|e| e.to_string())?;
                         writer.flush().await.map_err(|e| e.to_string())?;
                     }
-                    ActiveStageOutput::GraphicsUpdate(updated_region) => {
-                        let partial_image = extract_partial_image(&image, &updated_region);
+                    ActiveStageOutput::GraphicsUpdate(_updated_region) => {
+                        // FIXME: atm sending a partial is not working
+                        // let partial_image = extract_partial_image(&image, &updated_region);
 
                         send_update_rectangle(
                             &self.update_callback,
                             &self.update_callback_context,
                             frame_id,
-                            updated_region,
-                            partial_image,
+                            Rectangle {
+                                left: 0,
+                                top: 0,
+                                right: image.width() as u16,
+                                bottom: image.height() as u16,
+                            },
+                            image.data().to_vec(),
                         )
                         .context("Failed to send update rectangle")
                         .map_err(|e| e.to_string())?;
@@ -412,6 +418,8 @@ fn build_input_config(username: String, password: String, domain: Option<String>
     }
 }
 
+// FIXME: is it broken? Investigate again
+#[allow(dead_code)]
 fn extract_partial_image(image: &DecodedImage, region: &Rectangle) -> Vec<u8> {
     let pixel_size = usize::from(image.pixel_format().bytes_per_pixel());
 

@@ -103,8 +103,9 @@ impl DecodingContext {
         destination: &Rectangle,
         input: &mut &[u8],
     ) -> Result<(FrameId, Rectangle), RdpError> {
-        let width = self.channels.0.first().unwrap().width as u16;
-        let height = self.channels.0.first().unwrap().height as u16;
+        let channel = self.channels.0.first().unwrap();
+        let width = channel.width as u16;
+        let height = channel.height as u16;
         let entropy_algorithm = self.context.entropy_algorithm;
 
         let frame_begin = rfx::FrameBeginPdu::from_buffer_consume(input)?;
@@ -113,7 +114,6 @@ impl DecodingContext {
         let _frame_end = rfx::FrameEndPdu::from_buffer_consume(input)?;
 
         if region.rectangles.is_empty() {
-            let channel = self.channels.0.first().unwrap();
             region.rectangles = vec![RfxRectangle {
                 x: 0,
                 y: 0,
