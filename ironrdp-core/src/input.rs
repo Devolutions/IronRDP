@@ -151,4 +151,6 @@ pub enum InputEventError {
     KeyboardFlagsUnsupported(u8),
     #[error("Synchronize flags not supported {0}")]
     SynchronizeFlagsUnsupported(u8),
+    #[error("FastPathInput PDU is empty")]
+    EmptyFastPathInput,
 }

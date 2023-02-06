@@ -211,6 +211,10 @@ impl PduParsing for FastPathInput {
     }
 
     fn to_buffer(&self, mut stream: impl io::Write) -> Result<(), Self::Error> {
+        if self.0.is_empty() {
+            return Err(InputEventError::EmptyFastPathInput);
+        }
+
         let data_length = self.0.iter().map(PduParsing::buffer_length).sum::<usize>();
         let header = FastPathInputHeader {
             num_events: self.0.len() as u8,

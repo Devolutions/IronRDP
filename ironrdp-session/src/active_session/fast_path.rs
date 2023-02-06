@@ -49,7 +49,7 @@ impl Processor {
 
         match update {
             Ok(FastPathUpdate::SurfaceCommands(surface_commands)) => {
-                info!("Received Surface Commands: {} pieces", surface_commands.len());
+                trace!("Received Surface Commands: {} pieces", surface_commands.len());
                 let update_region = self.process_surface_commands(image, &mut output, surface_commands)?;
                 Ok(Some(update_region))
             }
@@ -85,7 +85,7 @@ impl Processor {
         for command in surface_commands {
             match command {
                 SurfaceCommand::SetSurfaceBits(bits) | SurfaceCommand::StreamSurfaceBits(bits) => {
-                    info!("Surface bits");
+                    trace!("Surface bits");
                     let codec_id = CodecId::from_u8(bits.extended_bitmap_data.codec_id)
                         .ok_or(RdpError::UnexpectedCodecId(bits.extended_bitmap_data.codec_id))?;
                     match codec_id {
@@ -101,7 +101,7 @@ impl Processor {
                     }
                 }
                 SurfaceCommand::FrameMarker(marker) => {
-                    info!(
+                    trace!(
                         "Frame marker: action {:?} with ID #{}",
                         marker.frame_action,
                         marker.frame_id.unwrap_or(0)

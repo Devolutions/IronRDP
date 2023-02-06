@@ -1,0 +1,49 @@
+use ironrdp::geometry::Rectangle;
+use ironrdp::session::image::DecodedImage;
+use wasm_bindgen::prelude::*;
+
+#[wasm_bindgen]
+pub struct RectInfo {
+    pub frame_id: usize,
+    pub top: u16,
+    pub left: u16,
+    pub right: u16,
+    pub bottom: u16,
+    pub width: u16,
+    pub height: u16,
+}
+
+// FIXME: is it broken? Investigate again
+#[allow(dead_code)]
+fn extract_partial_image(image: &DecodedImage, region: &Rectangle) -> Vec<u8> {
+    let pixel_size = usize::from(image.pixel_format().bytes_per_pixel());
+
+    let image_width = usize::try_from(image.width()).unwrap();
+
+    let region_top = usize::from(region.top);
+    let region_left = usize::from(region.left);
+    let region_width = usize::from(region.width());
+    let region_height = usize::from(region.height());
+
+    let dst_buf_size = region_width * region_height * pixel_size;
+    let mut dst = vec![0; dst_buf_size];
+
+    let src = image.data();
+
+    let image_stride = image_width * pixel_size;
+    let region_stride = region_width * pixel_size;
+
+    for row in 0..region_height {
+        let src_begin = image_stride * (region_top + row) + region_left * pixel_size;
+        let src_end = src_begin + region_stride;
+        let src_slice = &src[src_begin..src_end];
+
+        let target_begin = region_stride * row;
+        let target_end = target_begin + region_stride;
+        let target_slice = &mut dst[target_begin..target_end];
+
+        target_slice.copy_from_slice(src_slice);
+    }
+
+    dst
+}
