@@ -91,6 +91,5 @@ bitflags! {
         const LEFT_BUTTON = 0x1000;
         const RIGHT_BUTTON = 0x2000;
         const MIDDLE_BUTTON_OR_WHEEL = 0x4000;
-
     }
 }

@@ -124,13 +124,13 @@ impl DecodingContext {
         let region = region;
 
         debug!("Frame #{}: ", frame_begin.index);
-        debug!("Destination rectangle: {:?}", destination);
-        debug!("Context: {:?}", self.context);
-        debug!("Channels: {:?}", self.channels);
-        debug!("Region: {:?}", region);
+        trace!("Destination rectangle: {:?}", destination);
+        trace!("Context: {:?}", self.context);
+        trace!("Channels: {:?}", self.channels);
+        trace!("Region: {:?}", region);
 
         let clipping_rectangles = clipping_rectangles(region.rectangles.as_slice(), destination, width, height);
-        debug!("Clipping rectangles: {:?}", clipping_rectangles);
+        trace!("Clipping rectangles: {:?}", clipping_rectangles);
 
         for (update_rectangle, tile_data) in tiles_to_rectangles(tile_set.tiles.as_slice(), destination)
             .zip(map_tiles_data(tile_set.tiles.as_slice(), tile_set.quants.as_slice()))

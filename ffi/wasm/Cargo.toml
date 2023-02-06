@@ -26,7 +26,8 @@ opt-level = "s"
 
 # RDP protocol
 ironrdp = { path = "../../ironrdp" }
-ironrdp-session = { path = "../../ironrdp-session", features = ["dgw_ext"] } # TODO: secret feature until session state machine is done
+ironrdp-session = { path = "../../ironrdp-session", features = ["dgw_ext"] } # FIXME: secret feature until session state machine is done
+ironrdp-input = { path = "../../ironrdp-input" }
 sspi = "0.6"
 
 # Wasm
@@ -55,3 +56,4 @@ log = "0.4.17"
 # Utils
 anyhow = "1"
 parking_lot = "0.12.1"
+smallvec = "1.10.0"

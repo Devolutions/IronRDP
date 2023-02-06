@@ -1,12 +1,10 @@
 use std::io;
 
 use bytes::{Buf as _, BufMut as _, Bytes, BytesMut};
-use ironrdp_core::rdp::vc;
-use ironrdp_core::rdp::SERVER_CHANNEL_ID;
+use ironrdp_core::rdp::{vc, SERVER_CHANNEL_ID};
 use ironrdp_core::PduParsing;
 
-use crate::ChannelIdentificators;
-use crate::RdpError;
+use crate::{ChannelIdentificators, RdpError};
 
 pub(crate) trait Frame {
     fn encode(self, stream: impl io::Write) -> Result<(), RdpError>;
