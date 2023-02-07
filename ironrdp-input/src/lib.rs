@@ -277,6 +277,54 @@ impl Database {
 
         events
     }
+
+    /// Releases all keys and buttons. Returns a list of RDP input events to send.
+    pub fn release_all(&mut self) -> SmallVec<[FastPathInputEvent; 2]> {
+        let mut events = SmallVec::new();
+
+        for idx in self.mouse_buttons.iter_ones() {
+            let button_id = u8::try_from(idx).unwrap();
+
+            let event = match MouseButtonFlags::from(MouseButton::from(button_id)) {
+                MouseButtonFlags::Button(flags) => FastPathInputEvent::MouseEvent(MousePdu {
+                    wheel_events: WheelEvents::empty(),
+                    movement_events: MovementEvents::empty(),
+                    button_events: flags,
+                    number_of_wheel_rotations: 0,
+                    x_position: self.mouse_position.x,
+                    y_position: self.mouse_position.y,
+                }),
+                MouseButtonFlags::Pointer(flags) => FastPathInputEvent::MouseEventEx(MouseXPdu {
+                    flags,
+                    x_position: self.mouse_position.x,
+                    y_position: self.mouse_position.y,
+                }),
+            };
+
+            events.push(event)
+        }
+
+        for idx in self.keyboard.iter_ones() {
+            let (scancode, extended) = if idx >= 256 {
+                (u8::try_from(idx - 256).unwrap(), true)
+            } else {
+                (u8::try_from(idx).unwrap(), false)
+            };
+
+            let mut flags = KeyboardFlags::FASTPATH_INPUT_KBDFLAGS_RELEASE;
+
+            if extended {
+                flags |= KeyboardFlags::FASTPATH_INPUT_KBDFLAGS_EXTENDED
+            };
+
+            events.push(FastPathInputEvent::KeyboardEvent(flags, u8::from(scancode)));
+        }
+
+        self.mouse_buttons = BitArray::ZERO;
+        self.keyboard = BitArray::ZERO;
+
+        events
+    }
 }
 
 enum MouseButtonFlags {
