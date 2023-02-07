@@ -29,8 +29,12 @@ impl MouseButton {
     pub const X1: Self = Self(Self::X1_VAL);
     pub const X2: Self = Self(Self::X2_VAL);
 
-    pub fn is_unknown(&self) -> bool {
+    pub fn is_unknown(self) -> bool {
         self.0 > Self::X2.0
+    }
+
+    pub fn as_idx(self) -> usize {
+        usize::from(self.0)
     }
 }
 
@@ -46,31 +50,50 @@ impl From<MouseButton> for u8 {
     }
 }
 
-impl From<MouseButton> for usize {
-    fn from(value: MouseButton) -> Self {
-        usize::from(value.0)
+/// Keyboard scan code.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Scancode {
+    code: u8,
+    extended: bool,
+}
+
+impl Scancode {
+    pub fn as_idx(self) -> usize {
+        if self.extended {
+            usize::from(self.code) + 256
+        } else {
+            usize::from(self.code)
+        }
     }
 }
 
-/// Keyboard scan code.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct Scancode(u8);
+impl From<(u8, bool)> for Scancode {
+    fn from((code, extended): (u8, bool)) -> Self {
+        Self { code, extended }
+    }
+}
 
-impl From<u8> for Scancode {
-    fn from(value: u8) -> Self {
-        Self(value)
+impl From<u16> for Scancode {
+    fn from(code: u16) -> Self {
+        let extended = code & 0xE000 == 0xE000;
+        let code = code as u8;
+        Self { code, extended }
     }
 }
 
 impl From<Scancode> for u8 {
     fn from(value: Scancode) -> Self {
-        value.0
+        value.code
     }
 }
 
-impl From<Scancode> for usize {
+impl From<Scancode> for u16 {
     fn from(value: Scancode) -> Self {
-        usize::from(value.0)
+        if value.extended {
+            u16::from(value.code) | 0xE000
+        } else {
+            u16::from(value.code)
+        }
     }
 }
 
@@ -90,7 +113,7 @@ pub enum Operation {
     KeyReleased(Scancode),
 }
 
-pub type KeyboardState = BitArr!(for 256);
+pub type KeyboardState = BitArr!(for 512);
 pub type MouseButtonsState = BitArr!(for 5);
 
 /// In-memory database for maintaining the current keyboard and mouse state.
@@ -115,17 +138,17 @@ impl Database {
         }
     }
 
-    pub fn is_key_pressed(&self, code: Scancode) -> bool {
+    pub fn is_key_pressed(&self, scancode: Scancode) -> bool {
         self.keyboard
-            .get(usize::from(code))
+            .get(scancode.as_idx())
             .as_deref()
             .copied()
             .unwrap_or(false)
     }
 
-    pub fn is_mouse_button_pressed(&self, code: MouseButton) -> bool {
+    pub fn is_mouse_button_pressed(&self, button: MouseButton) -> bool {
         self.mouse_buttons
-            .get(usize::from(code))
+            .get(button.as_idx())
             .as_deref()
             .copied()
             .unwrap_or(false)
@@ -156,7 +179,7 @@ impl Database {
                         continue;
                     }
 
-                    let was_pressed = self.mouse_buttons.replace(usize::from(button), true);
+                    let was_pressed = self.mouse_buttons.replace(button.as_idx(), true);
 
                     if !was_pressed {
                         let event = match MouseButtonFlags::from(button) {
@@ -183,7 +206,7 @@ impl Database {
                         continue;
                     }
 
-                    let was_pressed = self.mouse_buttons.replace(usize::from(button), false);
+                    let was_pressed = self.mouse_buttons.replace(button.as_idx(), false);
 
                     if was_pressed {
                         let event = match MouseButtonFlags::from(button) {
@@ -219,23 +242,34 @@ impl Database {
                     }
                 }
                 Operation::KeyPressed(scancode) => {
-                    let was_pressed = self.keyboard.replace(usize::from(scancode), true);
+                    let was_pressed = self.keyboard.replace(scancode.as_idx(), true);
 
-                    if !was_pressed {
-                        events.push(FastPathInputEvent::KeyboardEvent(
-                            KeyboardFlags::empty(),
-                            u8::from(scancode),
-                        ));
-                    }
-                }
-                Operation::KeyReleased(scancode) => {
-                    let was_pressed = self.keyboard.replace(usize::from(scancode), false);
+                    let mut flags = KeyboardFlags::empty();
+
+                    if scancode.extended {
+                        flags |= KeyboardFlags::FASTPATH_INPUT_KBDFLAGS_EXTENDED
+                    };
 
                     if was_pressed {
                         events.push(FastPathInputEvent::KeyboardEvent(
-                            KeyboardFlags::FASTPATH_INPUT_KBDFLAGS_RELEASE,
+                            flags | KeyboardFlags::FASTPATH_INPUT_KBDFLAGS_RELEASE,
                             u8::from(scancode),
                         ));
+                    }
+
+                    events.push(FastPathInputEvent::KeyboardEvent(flags, u8::from(scancode)));
+                }
+                Operation::KeyReleased(scancode) => {
+                    let was_pressed = self.keyboard.replace(scancode.as_idx(), false);
+
+                    let mut flags = KeyboardFlags::FASTPATH_INPUT_KBDFLAGS_RELEASE;
+
+                    if scancode.extended {
+                        flags |= KeyboardFlags::FASTPATH_INPUT_KBDFLAGS_EXTENDED
+                    };
+
+                    if was_pressed {
+                        events.push(FastPathInputEvent::KeyboardEvent(flags, u8::from(scancode)));
                     }
                 }
             }

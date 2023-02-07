@@ -72,20 +72,20 @@ fn keyboard() {
 
     {
         let to_press = [
-            Operation::KeyPressed(Scancode::from(0)),
-            Operation::KeyPressed(Scancode::from(23)),
-            Operation::KeyPressed(Scancode::from(39)),
-            Operation::KeyPressed(Scancode::from(19)),
-            Operation::KeyPressed(Scancode::from(20)),
-            Operation::KeyPressed(Scancode::from(90)),
+            Operation::KeyPressed(Scancode::from((0, false))),
+            Operation::KeyPressed(Scancode::from((23, false))),
+            Operation::KeyPressed(Scancode::from((39, false))),
+            Operation::KeyPressed(Scancode::from((19, true))),
+            Operation::KeyPressed(Scancode::from((20, true))),
+            Operation::KeyPressed(Scancode::from((90, false))),
         ];
 
         let expected_inputs = [
             FastPathInputEvent::KeyboardEvent(KeyboardFlags::empty(), 0),
             FastPathInputEvent::KeyboardEvent(KeyboardFlags::empty(), 23),
             FastPathInputEvent::KeyboardEvent(KeyboardFlags::empty(), 39),
-            FastPathInputEvent::KeyboardEvent(KeyboardFlags::empty(), 19),
-            FastPathInputEvent::KeyboardEvent(KeyboardFlags::empty(), 20),
+            FastPathInputEvent::KeyboardEvent(KeyboardFlags::FASTPATH_INPUT_KBDFLAGS_EXTENDED, 19),
+            FastPathInputEvent::KeyboardEvent(KeyboardFlags::FASTPATH_INPUT_KBDFLAGS_EXTENDED, 20),
             FastPathInputEvent::KeyboardEvent(KeyboardFlags::empty(), 90),
         ];
 
@@ -93,8 +93,8 @@ fn keyboard() {
         expected_keyboard_state.set(0, true);
         expected_keyboard_state.set(23, true);
         expected_keyboard_state.set(39, true);
-        expected_keyboard_state.set(19, true);
-        expected_keyboard_state.set(20, true);
+        expected_keyboard_state.set(256 + 19, true);
+        expected_keyboard_state.set(256 + 20, true);
         expected_keyboard_state.set(90, true);
 
         let actual_inputs = db.apply(to_press);
@@ -106,18 +106,24 @@ fn keyboard() {
 
     {
         let to_press = [
-            Operation::KeyReleased(Scancode::from(0)),
-            Operation::KeyReleased(Scancode::from(2)),
-            Operation::KeyReleased(Scancode::from(3)),
-            Operation::KeyReleased(Scancode::from(19)),
-            Operation::KeyReleased(Scancode::from(20)),
-            Operation::KeyReleased(Scancode::from(100)),
+            Operation::KeyReleased(Scancode::from((0, false))),
+            Operation::KeyReleased(Scancode::from((2, false))),
+            Operation::KeyReleased(Scancode::from((3, false))),
+            Operation::KeyReleased(Scancode::from((19, true))),
+            Operation::KeyReleased(Scancode::from((20, true))),
+            Operation::KeyReleased(Scancode::from((100, false))),
         ];
 
         let expected_inputs = [
             FastPathInputEvent::KeyboardEvent(KeyboardFlags::FASTPATH_INPUT_KBDFLAGS_RELEASE, 0),
-            FastPathInputEvent::KeyboardEvent(KeyboardFlags::FASTPATH_INPUT_KBDFLAGS_RELEASE, 19),
-            FastPathInputEvent::KeyboardEvent(KeyboardFlags::FASTPATH_INPUT_KBDFLAGS_RELEASE, 20),
+            FastPathInputEvent::KeyboardEvent(
+                KeyboardFlags::FASTPATH_INPUT_KBDFLAGS_RELEASE | KeyboardFlags::FASTPATH_INPUT_KBDFLAGS_EXTENDED,
+                19,
+            ),
+            FastPathInputEvent::KeyboardEvent(
+                KeyboardFlags::FASTPATH_INPUT_KBDFLAGS_RELEASE | KeyboardFlags::FASTPATH_INPUT_KBDFLAGS_EXTENDED,
+                20,
+            ),
         ];
 
         let mut expected_keyboard_state = KeyboardState::ZERO;
@@ -134,22 +140,60 @@ fn keyboard() {
 }
 
 #[test]
-fn no_duplicate() {
+fn keyboard_repeat() {
     let mut db = Database::default();
 
     let to_press = [
-        Operation::KeyPressed(Scancode::from(0)),
-        Operation::KeyPressed(Scancode::from(0)),
-        Operation::MouseButtonPressed(MouseButton::LEFT),
-        Operation::KeyPressed(Scancode::from(0)),
-        Operation::KeyPressed(Scancode::from(20)),
-        Operation::KeyPressed(Scancode::from(90)),
-        Operation::KeyPressed(Scancode::from(90)),
-        Operation::MouseButtonPressed(MouseButton::LEFT),
+        Operation::KeyPressed(Scancode::from((0, false))),
+        Operation::KeyPressed(Scancode::from((0, false))),
+        Operation::KeyPressed(Scancode::from((0, false))),
+        Operation::KeyPressed(Scancode::from((20, false))),
+        Operation::KeyPressed(Scancode::from((90, false))),
+        Operation::KeyPressed(Scancode::from((90, false))),
+        Operation::KeyReleased(Scancode::from((90, false))),
+        Operation::KeyReleased(Scancode::from((90, false))),
+        Operation::KeyPressed(Scancode::from((20, false))),
+        Operation::KeyReleased(Scancode::from((120, false))),
+        Operation::KeyReleased(Scancode::from((90, false))),
     ];
 
     let expected_inputs = [
         FastPathInputEvent::KeyboardEvent(KeyboardFlags::empty(), 0),
+        FastPathInputEvent::KeyboardEvent(KeyboardFlags::FASTPATH_INPUT_KBDFLAGS_RELEASE, 0),
+        FastPathInputEvent::KeyboardEvent(KeyboardFlags::empty(), 0),
+        FastPathInputEvent::KeyboardEvent(KeyboardFlags::FASTPATH_INPUT_KBDFLAGS_RELEASE, 0),
+        FastPathInputEvent::KeyboardEvent(KeyboardFlags::empty(), 0),
+        FastPathInputEvent::KeyboardEvent(KeyboardFlags::empty(), 20),
+        FastPathInputEvent::KeyboardEvent(KeyboardFlags::empty(), 90),
+        FastPathInputEvent::KeyboardEvent(KeyboardFlags::FASTPATH_INPUT_KBDFLAGS_RELEASE, 90),
+        FastPathInputEvent::KeyboardEvent(KeyboardFlags::empty(), 90),
+        FastPathInputEvent::KeyboardEvent(KeyboardFlags::FASTPATH_INPUT_KBDFLAGS_RELEASE, 90),
+        FastPathInputEvent::KeyboardEvent(KeyboardFlags::FASTPATH_INPUT_KBDFLAGS_RELEASE, 20),
+        FastPathInputEvent::KeyboardEvent(KeyboardFlags::empty(), 20),
+    ];
+
+    let actual_inputs = db.apply(to_press);
+
+    assert_eq!(actual_inputs.as_slice(), expected_inputs.as_slice());
+}
+
+#[test]
+fn mouse_button_no_duplicate() {
+    let mut db = Database::default();
+
+    let to_press = [
+        Operation::MouseButtonPressed(MouseButton::LEFT),
+        Operation::MouseButtonPressed(MouseButton::LEFT),
+        Operation::MouseButtonPressed(MouseButton::RIGHT),
+        Operation::MouseButtonPressed(MouseButton::LEFT),
+        Operation::MouseButtonPressed(MouseButton::LEFT),
+        Operation::MouseButtonPressed(MouseButton::RIGHT),
+        Operation::MouseButtonPressed(MouseButton::LEFT),
+        Operation::MouseButtonReleased(MouseButton::RIGHT),
+        Operation::MouseButtonPressed(MouseButton::RIGHT),
+    ];
+
+    let expected_inputs = [
         FastPathInputEvent::MouseEvent(MousePdu {
             wheel_events: WheelEvents::empty(),
             movement_events: MovementEvents::empty(),
@@ -158,8 +202,30 @@ fn no_duplicate() {
             x_position: 0,
             y_position: 0,
         }),
-        FastPathInputEvent::KeyboardEvent(KeyboardFlags::empty(), 20),
-        FastPathInputEvent::KeyboardEvent(KeyboardFlags::empty(), 90),
+        FastPathInputEvent::MouseEvent(MousePdu {
+            wheel_events: WheelEvents::empty(),
+            movement_events: MovementEvents::empty(),
+            button_events: ButtonEvents::RIGHT_BUTTON | ButtonEvents::DOWN,
+            number_of_wheel_rotations: 0,
+            x_position: 0,
+            y_position: 0,
+        }),
+        FastPathInputEvent::MouseEvent(MousePdu {
+            wheel_events: WheelEvents::empty(),
+            movement_events: MovementEvents::empty(),
+            button_events: ButtonEvents::RIGHT_BUTTON,
+            number_of_wheel_rotations: 0,
+            x_position: 0,
+            y_position: 0,
+        }),
+        FastPathInputEvent::MouseEvent(MousePdu {
+            wheel_events: WheelEvents::empty(),
+            movement_events: MovementEvents::empty(),
+            button_events: ButtonEvents::RIGHT_BUTTON | ButtonEvents::DOWN,
+            number_of_wheel_rotations: 0,
+            x_position: 0,
+            y_position: 0,
+        }),
     ];
 
     let actual_inputs = db.apply(to_press);
