@@ -20,11 +20,11 @@ impl DeviceEvent {
         Self(Operation::MouseMove(MousePosition { x, y }))
     }
 
-    pub fn new_key_pressed(scancode: u8) -> Self {
+    pub fn new_key_pressed(scancode: u16) -> Self {
         Self(Operation::KeyPressed(Scancode::from(scancode)))
     }
 
-    pub fn new_key_released(scancode: u8) -> Self {
+    pub fn new_key_released(scancode: u16) -> Self {
         Self(Operation::KeyReleased(Scancode::from(scancode)))
     }
 }

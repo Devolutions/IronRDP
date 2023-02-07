@@ -17,7 +17,7 @@ fn mouse_button_op() -> impl Strategy<Value = Operation> {
 }
 
 fn scancode() -> impl Strategy<Value = Scancode> {
-    any::<u8>().prop_map(Scancode::from)
+    (any::<u8>(), any::<bool>()).prop_map(Scancode::from)
 }
 
 fn key_op() -> impl Strategy<Value = Operation> {
@@ -84,28 +84,52 @@ fn smoke_keyboard() {
 
         for op in ops {
             let packets = db.apply(std::iter::once(op.clone()));
-            let packet = packets.into_iter().next();
 
             match op {
-                Operation::KeyPressed(key) => {
-                    ensure!(db.is_key_pressed(key));
+                Operation::KeyPressed(scancode) => {
+                    ensure!(packets.len() <= 2);
+                    ensure!(db.is_key_pressed(scancode));
 
-                    if let Some(packet) = packet {
-                        if let FastPathInputEvent::KeyboardEvent(flags, scancode) = packet {
-                            ensure!(!flags.contains(KeyboardFlags::FASTPATH_INPUT_KBDFLAGS_RELEASE));
-                            ensure!(scancode == u8::from(key))
-                        } else {
-                            bail!("unexpected packet emitted");
+                    let mut packets = packets.into_iter();
+
+                    match (packets.next(), packets.next()) {
+                        (None, None) => {}
+                        (None, Some(_)) => unreachable!(),
+                        (Some(pressed_packet), None) => {
+                            if let FastPathInputEvent::KeyboardEvent(flags, scancode) = pressed_packet {
+                                ensure!(!flags.contains(KeyboardFlags::FASTPATH_INPUT_KBDFLAGS_RELEASE));
+                                ensure!(scancode == u8::from(scancode))
+                            } else {
+                                bail!("unexpected packet emitted");
+                            }
+                        }
+                        (Some(released_packet), Some(pressed_packet)) => {
+                            if let FastPathInputEvent::KeyboardEvent(flags, scancode) = released_packet {
+                                ensure!(flags.contains(KeyboardFlags::FASTPATH_INPUT_KBDFLAGS_RELEASE));
+                                ensure!(scancode == u8::from(scancode))
+                            } else {
+                                bail!("unexpected packet emitted");
+                            }
+
+                            if let FastPathInputEvent::KeyboardEvent(flags, scancode) = pressed_packet {
+                                ensure!(!flags.contains(KeyboardFlags::FASTPATH_INPUT_KBDFLAGS_RELEASE));
+                                ensure!(scancode == u8::from(scancode))
+                            } else {
+                                bail!("unexpected packet emitted");
+                            }
                         }
                     }
                 }
-                Operation::KeyReleased(key) => {
-                    ensure!(!db.is_key_pressed(key));
+                Operation::KeyReleased(scancode) => {
+                    ensure!(packets.len() <= 1);
+                    ensure!(!db.is_key_pressed(scancode));
+
+                    let packet = packets.into_iter().next();
 
                     if let Some(packet) = packet {
                         if let FastPathInputEvent::KeyboardEvent(flags, scancode) = packet {
                             ensure!(flags.contains(KeyboardFlags::FASTPATH_INPUT_KBDFLAGS_RELEASE));
-                            ensure!(scancode == u8::from(key))
+                            ensure!(scancode == u8::from(scancode))
                         } else {
                             bail!("unexpected packet emitted");
                         }
