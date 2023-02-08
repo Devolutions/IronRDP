@@ -30,7 +30,7 @@
         serverBridgeListeners();
         userInteractionListeners();
         
-        window.addEventListener('keypress', keyboardEvent, false);
+        window.addEventListener('keydown', keyboardEvent, false);
         window.addEventListener('keyup', keyboardEvent, false);
     }
 
