@@ -7,14 +7,24 @@ import {catchError, filter, map} from "rxjs/operators";
 import {userInteractionService} from "./user-interaction-service";
 import {scanCode} from '../lib/scancodes';
 import {LogType} from '../enums/LogType';
+import {OS} from '../enums/OS';
 
-const modifierKey = {
-    SHIFT: 16,
-    CTRL: 17,
-    ALT: 18,
-    META: 91
+enum ModifierKey {
+    CTRL_LEFT = "ControlLeft",
+    SHIFT_LEFT = "ShiftLeft",
+    SHIFT_RIGHT = "ShiftRight",
+    ALT_LEFT = "AltLeft",
+    CAPS_LOCK = "CapsLock",
+    CTRL_RIGHT = "ControlRight",
+    ALT_RIGHT = "AltRight",
+    "ControlLeft" = CTRL_LEFT,
+    "ShiftLeft" = SHIFT_LEFT,
+    "ShiftRight" = SHIFT_RIGHT,
+    "AltLeft" = ALT_LEFT,
+    "CapsLock" = CAPS_LOCK,
+    "ControlRight" = CTRL_RIGHT,
+    "AltRight" = ALT_RIGHT,
 };
-const modifierKeyArray = [modifierKey.ALT, modifierKey.CTRL, modifierKey.ALT, modifierKey.META];
 
 export class WasmBridgeService implements ServerBridgeService {
     private _resize: Subject<ResizeEvent> = new Subject<any>();
@@ -24,6 +34,8 @@ export class WasmBridgeService implements ServerBridgeService {
     updateImage: Observable<any>;
 
     session?: Session;
+
+    modifierKeyPressed: ModifierKey[] = [];
 
     constructor() {
         this.resize = this._resize.asObservable();
@@ -37,7 +49,7 @@ export class WasmBridgeService implements ServerBridgeService {
         loggingService.info('Initializing IronRDP.');
         ironrdp_init(LogType[debug]);
     }
-    
+
     releaseAllInputs() {
         this.session?.release_all_inputs();
     }
@@ -46,16 +58,16 @@ export class WasmBridgeService implements ServerBridgeService {
         let mouseFnc = state === MouseButtonState.MOUSE_DOWN ? DeviceEvent.new_mouse_button_pressed : DeviceEvent.new_mouse_button_released;
         this.doTransactionFromDeviceEvents([mouseFnc(mouse_button)]);
     }
-    
+
     updateMousePosition(mouse_x: number, mouse_y: number) {
         this.doTransactionFromDeviceEvents([DeviceEvent.new_mouse_move(mouse_x, mouse_y)]);
     }
 
     sendKeyboard(evt: KeyboardEvent) {
         evt.preventDefault();
-        
+
         let keyEvent;
-        
+
         if (evt.type === 'keydown') {
             keyEvent = DeviceEvent.new_key_pressed;
         } else if (evt.type === 'keyup') {
@@ -64,23 +76,22 @@ export class WasmBridgeService implements ServerBridgeService {
 
         if (keyEvent) {
             const deviceEvents = [];
+            const scancode = scanCode(evt.code, OS.WINDOWS);
 
-            // NOTE: There is no keypress event for alt, ctrl, shift and meta keys, so we check manually.
-            // TODO: Support for right side
-            // TODO: Support for meta key (also called os key)
-            if (evt.altKey && evt.code !== "AltLeft") {
-                deviceEvents.push(DeviceEvent.new_key_pressed(0x38));
-            }
-            if (evt.ctrlKey && evt.code !== "ControlLeft") {
-                deviceEvents.push(DeviceEvent.new_key_pressed(0x1D));
-            }
-            if (evt.shiftKey && evt.code !== "ShiftLeft") {
-                deviceEvents.push(DeviceEvent.new_key_pressed(0x2A));
+            if (ModifierKey[evt.code]) {
+                if (this.modifierKeyPressed.indexOf(ModifierKey[evt.code]) === -1) {
+                    this.modifierKeyPressed.push(ModifierKey[evt.code]);
+                    deviceEvents.push(keyEvent(scancode));
+                } else if (evt.type === 'keyup') {
+                    this.modifierKeyPressed.splice(this.modifierKeyPressed.indexOf(ModifierKey[evt.code]), 1);
+                    deviceEvents.push(keyEvent(scancode));
+                }
             }
 
-            const scancode = scanCode(evt.code);
-            deviceEvents.push(keyEvent(scancode));
-            
+            if (!ModifierKey[evt.code]) {
+                deviceEvents.push(keyEvent(scancode));
+            }
+
             this.doTransactionFromDeviceEvents(deviceEvents);
         }
     }
@@ -134,7 +145,7 @@ export class WasmBridgeService implements ServerBridgeService {
             }),
         );
     }
-    
+
     private doTransactionFromDeviceEvents(deviceEvents: DeviceEvent[]) {
         const transaction = InputTransaction.new();
         deviceEvents.forEach(event => transaction.add_event(event));

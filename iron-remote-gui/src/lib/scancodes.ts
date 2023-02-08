@@ -1,5 +1,9 @@
 ﻿import UAParser from 'ua-parser-js';
-import {scan} from 'rxjs/operators';
+import type {OS} from '../enums/OS';
+
+/*
+    Scancode found on: https://developer.mozilla.org/en-US/docs/Web/API/UI_Events/Keyboard_event_code_values
+ */
 
 export let ScanCodeToCode = {
     windows: {
@@ -1680,15 +1684,14 @@ mapList.forEach(maps => {
 
 let parser = new UAParser();
 let parsedUA = parser.getResult();
-let system = parsedUA.os.name.toLowerCase();
 let engine = parsedUA.engine.name.toLowerCase();
 
-export let scanCode = function (code: string) {
-    let map = CodeToScanCode[system][engine] || CodeToScanCode.linux.gecko;
+export let scanCode = function (code: string, targetOs: OS) {
+    let map = CodeToScanCode[targetOs][engine] || CodeToScanCode.linux.gecko;
     return map[code];
 }
 
-export let code = function (scanCode: string) {
-    let map = ScanCodeToCode[system][engine] || CodeToScanCode.linux.gecko;
+export let code = function (scanCode: string, targetOs: OS) {
+    let map = ScanCodeToCode[targetOs][engine] || CodeToScanCode.linux.gecko;
     return map[scanCode];
 }
