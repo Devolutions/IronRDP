@@ -20,6 +20,6 @@
         <button on:click={() => uiService.setScale(2)}>Full</button>
         <button on:click={() => uiService.setScale(3)}>Real</button>
     </div>
-    <iron-remote-gui debugwasm="false" verbose="false" scale="fit" flexcenter="true"
+    <iron-remote-gui debugwasm="INFO" verbose="false" scale="fit" flexcenter="true"
                      targetplatform="{import.meta.env.MODE}"/>
 </div>

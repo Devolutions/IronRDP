@@ -12,7 +12,7 @@
     export let scale = 'real';
     export let targetplatform: 'web' | 'native' = 'web';
     export let verbose = 'false';
-    export let debugwasm = 'false';
+    export let debugwasm: "OFF" | "ERROR" | "WARN" | "INFO" | "DEBUG" | "TRACE" = 'INFO';
     export let flexcenter = 'true';
 
     let isVisible = false;
@@ -251,7 +251,7 @@
         canvas.width = 800;
         canvas.height = 600;
 
-        await initServerBridge(targetplatform, debugwasm === 'true');
+        await initServerBridge(targetplatform, debugwasm);
 
         userInteractionService.setServerBridge(serverBridge);
         userInteractionService.setCanvas(canvas);

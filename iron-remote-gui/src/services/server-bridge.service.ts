@@ -41,7 +41,7 @@ export enum MouseButtonState {
 }
 
 export abstract class ServerBridgeService {
-    abstract init(debug: boolean): void;
+    abstract init(debug: "OFF" | "ERROR" | "WARN" | "INFO" | "DEBUG" | "TRACE"): void;
 
     abstract connect(username: string, password: string, address: string, authToken?: string): Observable<NewSessionInfo>;
 

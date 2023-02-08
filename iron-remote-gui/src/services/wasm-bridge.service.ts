@@ -29,7 +29,7 @@ export class WasmBridgeService implements ServerBridgeService {
         loggingService.info('Web bridge initialized.');
     }
 
-    async init(debug: boolean) {
+    async init(debug: "OFF" | "ERROR" | "WARN" | "INFO" | "DEBUG" | "TRACE") {
         loggingService.info('Loading wasm file.');
         await init();
         loggingService.info('Initializing IronRDP.');
