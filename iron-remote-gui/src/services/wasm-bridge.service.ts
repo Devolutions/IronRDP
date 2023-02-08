@@ -184,10 +184,9 @@ export class WasmBridgeService implements ServerBridgeService {
     
     private sendMeta() { 
         // Use scancode directly because of the difference between browser
-        let deviceEvent = DeviceEvent.new_key_pressed(0xE05B);
-        this.doTransactionFromDeviceEvents([deviceEvent]);
-        deviceEvent = DeviceEvent.new_key_released(0xE05B);
-        this.doTransactionFromDeviceEvents([deviceEvent]);
+        let deviceEvent1 = DeviceEvent.new_key_pressed(0xE05B);
+        let deviceEvent2 = DeviceEvent.new_key_released(0xE05B);
+        this.doTransactionFromDeviceEvents([deviceEvent1, deviceEvent2]);
     }
 
 }

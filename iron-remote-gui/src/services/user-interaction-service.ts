@@ -74,6 +74,7 @@ export class UserInteractionService {
     
     mouseOut() {
         this.keyboardActive = false;
+        this.serverBridge?.releaseAllInputs();
     }
 
     setMousePosition(position: MousePosition) {
