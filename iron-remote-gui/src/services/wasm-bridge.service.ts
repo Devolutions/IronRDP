@@ -1,9 +1,9 @@
 import type {NewSessionInfo, ResizeEvent, ServerBridgeService} from './server-bridge.service';
-import {MouseButton, MouseButtonState} from './server-bridge.service';
+import {MouseButton, MouseButtonState, SpecialCombination} from './server-bridge.service';
 import {from, Observable, of, Subject} from 'rxjs';
 import init, {DeviceEvent, InputTransaction, ironrdp_init, Session, SessionBuilder} from "../../../ffi/wasm/pkg/ironrdp";
 import {loggingService} from "./logging.service";
-import {catchError, filter, map} from "rxjs/operators";
+import {catchError, filter, map, scan} from "rxjs/operators";
 import {userInteractionService} from "./user-interaction-service";
 import {scanCode} from '../lib/scancodes';
 import {LogType} from '../enums/LogType';
@@ -145,10 +145,49 @@ export class WasmBridgeService implements ServerBridgeService {
             }),
         );
     }
+    
+    sendSpecialCombination(specialCombination: SpecialCombination): void {
+        switch (specialCombination) {
+            case SpecialCombination.CTRL_ALT_DEL:
+                this.ctrlAltDel();
+                break;
+            case SpecialCombination.META:
+                this.sendMeta();
+                break;
+        }
+    }
 
     private doTransactionFromDeviceEvents(deviceEvents: DeviceEvent[]) {
         const transaction = InputTransaction.new();
         deviceEvents.forEach(event => transaction.add_event(event));
         this.session?.apply_inputs(transaction);
     }
+    
+    private ctrlAltDel() {
+        let deviceEvents = [];
+        
+        const ctrl = scanCode("ControlLeft", OS.WINDOWS);
+        const alt = scanCode("AltLeft", OS.WINDOWS);
+        const suppr = scanCode("Delete", OS.WINDOWS);
+        
+        deviceEvents.push(DeviceEvent.new_key_pressed(ctrl));
+        deviceEvents.push(DeviceEvent.new_key_pressed(alt));
+        deviceEvents.push(DeviceEvent.new_key_pressed(suppr));
+        this.doTransactionFromDeviceEvents(deviceEvents);
+        
+        deviceEvents = [];
+        deviceEvents.push(DeviceEvent.new_key_released(ctrl));
+        deviceEvents.push(DeviceEvent.new_key_released(alt));
+        deviceEvents.push(DeviceEvent.new_key_released(suppr));
+        this.doTransactionFromDeviceEvents(deviceEvents); 
+    }
+    
+    private sendMeta() { 
+        // Use scancode directly because of the difference between browser
+        let deviceEvent = DeviceEvent.new_key_pressed(0xE05B);
+        this.doTransactionFromDeviceEvents([deviceEvent]);
+        deviceEvent = DeviceEvent.new_key_released(0xE05B);
+        this.doTransactionFromDeviceEvents([deviceEvent]);
+    }
+
 }

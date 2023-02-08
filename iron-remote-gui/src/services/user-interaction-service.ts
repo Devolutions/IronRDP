@@ -1,6 +1,6 @@
 import {BehaviorSubject, Observable, Subject} from 'rxjs';
 import type {NewSessionInfo, ServerBridgeService} from "./server-bridge.service";
-import {MouseButton, MouseButtonState} from './server-bridge.service';
+import {MouseButtonState, SpecialCombination} from './server-bridge.service';
 import {loggingService} from "./logging.service";
 
 
@@ -25,6 +25,10 @@ export interface IRGUserInteraction {
     setScale(scale: ScreenScale);
 
     connect(username: string, password: string, host: string, authtoken: string): Observable<NewSessionInfo>;
+
+    ctrlAltDel();
+    
+    metaKey();
 
     sessionListener: Observable<any>;
 }
@@ -66,12 +70,10 @@ export class UserInteractionService {
     
     mouseIn() {
         this.keyboardActive = true;
-        console.log("mouse in");
     }
     
     mouseOut() {
         this.keyboardActive = false;
-        console.log("mouse out");
     }
 
     setMousePosition(position: MousePosition) {
@@ -91,6 +93,18 @@ export class UserInteractionService {
         if (this.keyboardActive) {
             this.serverBridge.sendKeyboard(evt);
         }
+    }
+    
+    ctrlAltDel() {
+        this.sendSpecialCombination(SpecialCombination.CTRL_ALT_DEL);
+    }
+    
+    metaKey() {
+        this.sendSpecialCombination(SpecialCombination.META);
+    }
+    
+    private sendSpecialCombination(combination: SpecialCombination) {
+        this.serverBridge.sendSpecialCombination(combination);
     }
 
     setVisibility(state: boolean) {
@@ -112,7 +126,9 @@ export class UserInteractionService {
         setVisibility: this.setVisibility.bind(this),
         connect: this.connect.bind(this),
         setScale: this.setScale.bind(this),
-        sessionListener: this.sessionObserver
+        sessionListener: this.sessionObserver,
+        ctrlAltDel: this.ctrlAltDel.bind(this),
+        metaKey: this.metaKey.bind(this)
     }
 }
 

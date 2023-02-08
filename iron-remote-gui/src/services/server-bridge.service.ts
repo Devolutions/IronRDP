@@ -41,6 +41,11 @@ export enum MouseButtonState {
     MOUSE_UP
 }
 
+export enum SpecialCombination {
+    CTRL_ALT_DEL,
+    META
+}
+
 export abstract class ServerBridgeService {
     abstract init(debug: LogType): void;
 
@@ -57,5 +62,7 @@ export abstract class ServerBridgeService {
     abstract sendKeyboard(evt: any): void;
     
     abstract releaseAllInputs():void;
+    
+    abstract sendSpecialCombination(specialCombination: SpecialCombination):void;
 }
 
