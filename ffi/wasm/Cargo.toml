@@ -48,6 +48,7 @@ console_error_panic_hook = { version = "0.1.7", optional = true }
 
 # Async
 futures-util = { version = "0.3", features = ["sink", "io"] }
+futures-channel = "0.3"
 
 # Logging
 console_log = "0.2.0"
@@ -55,5 +56,4 @@ log = "0.4.17"
 
 # Utils
 anyhow = "1"
-parking_lot = "0.12.1"
 smallvec = "1.10.0"

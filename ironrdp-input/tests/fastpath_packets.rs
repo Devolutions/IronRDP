@@ -232,3 +232,62 @@ fn mouse_button_no_duplicate() {
 
     assert_eq!(actual_inputs.as_slice(), expected_inputs.as_slice());
 }
+
+#[test]
+fn release_all() {
+    let mut db = Database::default();
+
+    let ops = [
+        Operation::KeyPressed(Scancode::from((0, false))),
+        Operation::KeyPressed(Scancode::from((23, false))),
+        Operation::KeyPressed(Scancode::from((39, false))),
+        Operation::KeyPressed(Scancode::from((19, true))),
+        Operation::KeyPressed(Scancode::from((20, true))),
+        Operation::KeyPressed(Scancode::from((90, false))),
+        Operation::MouseButtonPressed(MouseButton::LEFT),
+        Operation::MouseButtonPressed(MouseButton::LEFT),
+        Operation::MouseButtonPressed(MouseButton::RIGHT),
+        Operation::MouseButtonPressed(MouseButton::LEFT),
+        Operation::MouseButtonPressed(MouseButton::MIDDLE),
+        Operation::MouseButtonPressed(MouseButton::RIGHT),
+        Operation::MouseButtonPressed(MouseButton::LEFT),
+        Operation::MouseButtonReleased(MouseButton::RIGHT),
+    ];
+
+    let _ = db.apply(ops);
+
+    let expected_inputs = [
+        FastPathInputEvent::MouseEvent(MousePdu {
+            wheel_events: WheelEvents::empty(),
+            movement_events: MovementEvents::empty(),
+            button_events: ButtonEvents::LEFT_BUTTON,
+            number_of_wheel_rotations: 0,
+            x_position: 0,
+            y_position: 0,
+        }),
+        FastPathInputEvent::MouseEvent(MousePdu {
+            wheel_events: WheelEvents::empty(),
+            movement_events: MovementEvents::empty(),
+            button_events: ButtonEvents::MIDDLE_BUTTON_OR_WHEEL,
+            number_of_wheel_rotations: 0,
+            x_position: 0,
+            y_position: 0,
+        }),
+        FastPathInputEvent::KeyboardEvent(KeyboardFlags::FASTPATH_INPUT_KBDFLAGS_RELEASE, 0),
+        FastPathInputEvent::KeyboardEvent(KeyboardFlags::FASTPATH_INPUT_KBDFLAGS_RELEASE, 23),
+        FastPathInputEvent::KeyboardEvent(KeyboardFlags::FASTPATH_INPUT_KBDFLAGS_RELEASE, 39),
+        FastPathInputEvent::KeyboardEvent(KeyboardFlags::FASTPATH_INPUT_KBDFLAGS_RELEASE, 90),
+        FastPathInputEvent::KeyboardEvent(
+            KeyboardFlags::FASTPATH_INPUT_KBDFLAGS_RELEASE | KeyboardFlags::FASTPATH_INPUT_KBDFLAGS_EXTENDED,
+            19,
+        ),
+        FastPathInputEvent::KeyboardEvent(
+            KeyboardFlags::FASTPATH_INPUT_KBDFLAGS_RELEASE | KeyboardFlags::FASTPATH_INPUT_KBDFLAGS_EXTENDED,
+            20,
+        ),
+    ];
+
+    let actual_inputs = db.release_all();
+
+    assert_eq!(actual_inputs.as_slice(), expected_inputs.as_slice());
+}

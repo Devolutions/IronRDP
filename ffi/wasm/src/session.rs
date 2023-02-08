@@ -2,22 +2,23 @@ use core::cell::RefCell;
 use std::rc::Rc;
 
 use anyhow::Context as _;
-use futures_util::{AsyncWriteExt};
+use futures_channel::mpsc;
+use futures_util::{AsyncWriteExt as _, StreamExt as _};
 use gloo_net::websocket::futures::WebSocket;
 use ironrdp::geometry::Rectangle;
 use ironrdp::graphics::image_processing::PixelFormat;
 use ironrdp::session::connection_sequence::{process_connection_sequence, ConnectionSequenceResult};
 use ironrdp::session::image::DecodedImage;
 use ironrdp::session::{ActiveStageOutput, ActiveStageProcessor, ErasedWriter, FramedReader, InputConfig, RdpError};
-use parking_lot::Mutex;
 use sspi::AuthIdentity;
 use wasm_bindgen::prelude::*;
+use wasm_bindgen_futures::spawn_local;
 
-use crate::network_client::PlaceholderNetworkClientFactory;
-use crate::DesktopSize;
 use crate::image::RectInfo;
-use crate::websocket::WebSocketCompat;
 use crate::input::InputTransaction;
+use crate::network_client::PlaceholderNetworkClientFactory;
+use crate::websocket::WebSocketCompat;
+use crate::DesktopSize;
 
 #[wasm_bindgen]
 #[derive(Clone, Default)]
@@ -100,14 +101,18 @@ impl SessionBuilder {
 
         info!("Connected!");
 
+        let (writer_tx, writer_rx) = mpsc::unbounded();
+
+        spawn_local(writer_task(writer_rx, rdp_writer));
+
         Ok(Session {
             input_config,
             connection_sequence_result,
             update_callback,
             update_callback_context,
-            input_database: Mutex::new(ironrdp_input::Database::new()),
-            rdp_reader: Mutex::new(rdp_reader),
-            rdp_writer: Mutex::new(rdp_writer),
+            input_database: RefCell::new(ironrdp_input::Database::new()),
+            rdp_reader: RefCell::new(Some(rdp_reader)),
+            writer_tx,
         })
     }
 }
@@ -118,15 +123,20 @@ pub struct Session {
     connection_sequence_result: ConnectionSequenceResult,
     update_callback: js_sys::Function,
     update_callback_context: JsValue,
-    input_database: Mutex<ironrdp_input::Database>,
-    rdp_reader: Mutex<FramedReader>,
-    rdp_writer: Mutex<ErasedWriter>,
+    input_database: RefCell<ironrdp_input::Database>,
+    rdp_reader: RefCell<Option<FramedReader>>,
+    writer_tx: mpsc::UnboundedSender<Vec<u8>>,
 }
 
 #[wasm_bindgen]
 impl Session {
-    #[allow(clippy::await_holding_lock)] // exclusive access to the writer until frame is fully written is desirable (we also assume the future is run to completion)
     pub async fn run(&self) -> Result<(), String> {
+        let mut rdp_reader = self
+            .rdp_reader
+            .borrow_mut()
+            .take()
+            .ok_or_else(|| "RDP session can be started only once".to_owned())?;
+
         info!("Start RDP session");
 
         let mut image = DecodedImage::new(
@@ -141,9 +151,7 @@ impl Session {
 
         'outer: loop {
             let outputs = {
-                let frame = self
-                    .rdp_reader
-                    .lock()
+                let frame = rdp_reader
                     .read_frame()
                     .await
                     .map_err(|e| e.to_string())?
@@ -156,9 +164,10 @@ impl Session {
             for out in outputs {
                 match out {
                     ActiveStageOutput::ResponseFrame(frame) => {
-                        let mut writer = self.rdp_writer.lock();
-                        writer.write_all(&frame).await.map_err(|e| e.to_string())?;
-                        writer.flush().await.map_err(|e| e.to_string())?;
+                        // PERF: unnecessary copy
+                        self.writer_tx
+                            .unbounded_send(frame.to_vec())
+                            .map_err(|e| e.to_string())?;
                     }
                     ActiveStageOutput::GraphicsUpdate(_updated_region) => {
                         // FIXME: atm sending a partial is not working
@@ -201,24 +210,31 @@ impl Session {
         }
     }
 
-    #[allow(clippy::await_holding_lock)] // exclusive access to the writer until frame is fully written is desirable (we also assume the future is run to completion)
-    pub async fn apply_inputs(&self, transaction: InputTransaction) -> Result<(), String> {
-        use ironrdp::core::input::fast_path::FastPathInput;
-        use ironrdp::core::PduParsing as _; 
+    pub fn apply_inputs(&self, transaction: InputTransaction) -> Result<(), String> {
+        let inputs = self.input_database.borrow_mut().apply(transaction);
+        self.h_send_inputs(inputs)
+    }
 
-        info!("transaction: {:?}", transaction.0);
-        let inputs = self.input_database.lock().apply(transaction);
-        info!("inputs: {inputs:?}");
+    pub fn release_all_inputs(&self) -> Result<(), String> {
+        let inputs = self.input_database.borrow_mut().release_all();
+        self.h_send_inputs(inputs)
+    }
+
+    fn h_send_inputs(
+        &self,
+        inputs: smallvec::SmallVec<[ironrdp::core::input::fast_path::FastPathInputEvent; 2]>,
+    ) -> Result<(), String> {
+        use ironrdp::core::input::fast_path::FastPathInput;
+        use ironrdp::core::PduParsing as _;
 
         if !inputs.is_empty() {
-            let fastpath_input = FastPathInput(inputs.into_vec()); // PERF: unnecessary copy
+            // PERF: unnecessary copy
+            let fastpath_input = FastPathInput(inputs.into_vec());
 
             let mut frame = Vec::new();
             fastpath_input.to_buffer(&mut frame).map_err(|e| e.to_string())?;
 
-            let mut writer = self.rdp_writer.lock();
-            writer.write_all(&frame).await.map_err(|e| e.to_string())?;
-            writer.flush().await.map_err(|e| e.to_string())?;
+            self.writer_tx.unbounded_send(frame).map_err(|e| e.to_string())?;
         }
 
         Ok(())
@@ -249,7 +265,6 @@ fn build_input_config(username: String, password: String, domain: Option<String>
         user_channel_name: USER_CHANNEL_NAME.to_owned(),
         graphics_config: None,
     }
-
 }
 
 fn send_update_rectangle(
@@ -288,4 +303,22 @@ fn send_update_rectangle(
         .map_err(|e| anyhow::Error::msg(format!("update callback failed: {e:?}")))?;
 
     Ok(())
+}
+
+async fn writer_task(rx: mpsc::UnboundedReceiver<Vec<u8>>, rdp_writer: ErasedWriter) {
+    debug!("writer task started");
+
+    async fn inner(mut rx: mpsc::UnboundedReceiver<Vec<u8>>, mut rdp_writer: ErasedWriter) -> anyhow::Result<()> {
+        while let Some(frame) = rx.next().await {
+            rdp_writer.write_all(&frame).await.context("Couldn’t write frame")?;
+            rdp_writer.flush().await.context("Couldn’t flush")?;
+        }
+
+        Ok(())
+    }
+
+    match inner(rx, rdp_writer).await {
+        Ok(()) => debug!("writer task ended gracefully"),
+        Err(e) => error!("writer task ended unexpectedly: {e:#}"),
+    }
 }
