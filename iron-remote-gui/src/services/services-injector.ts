@@ -1,5 +1,6 @@
 import type {ServerBridgeService} from './server-bridge.service';
 import {loggingService} from "./logging.service";
+import {LogType} from '../enums/LogType';
 
 export let serverBridge: ServerBridgeService;
 
@@ -13,7 +14,7 @@ export async function initServerBridge(mode: 'native' | 'web' = 'web', debug: "O
             loggingService.info('Initialize web bridge');
             const module = await import("./wasm-bridge.service");
             serverBridge = new module.WasmBridgeService();
-            await serverBridge.init(debug || 'INFO');
+            await serverBridge.init(LogType[debug] || LogType.INFO);
         }
     }
 }

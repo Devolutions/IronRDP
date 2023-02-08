@@ -71,4 +71,7 @@ export class TauriBridgeService implements ServerBridgeService {
 
     updateMousePosition(mouse_x: number, mouse_y: number): void {
     }
+
+    releaseAllInputs(): void {
+    }
 }

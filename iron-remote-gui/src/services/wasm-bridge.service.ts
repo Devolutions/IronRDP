@@ -6,6 +6,7 @@ import {loggingService} from "./logging.service";
 import {catchError, filter, map} from "rxjs/operators";
 import {userInteractionService} from "./user-interaction-service";
 import {scanCode} from '../lib/scancodes';
+import {LogType} from '../enums/LogType';
 
 const modifierKey = {
     SHIFT: 16,
@@ -30,32 +31,30 @@ export class WasmBridgeService implements ServerBridgeService {
         loggingService.info('Web bridge initialized.');
     }
 
-    async init(debug: "OFF" | "ERROR" | "WARN" | "INFO" | "DEBUG" | "TRACE") {
+    async init(debug: LogType) {
         loggingService.info('Loading wasm file.');
         await init();
         loggingService.info('Initializing IronRDP.');
-        ironrdp_init(debug);
+        ironrdp_init(LogType[debug]);
+    }
+    
+    releaseAllInputs() {
+        this.session?.release_all_inputs();
     }
 
     mouseButtonState(mouse_button: MouseButton, state: MouseButtonState) {
-        const transaction = InputTransaction.new();
         let mouseFnc = state === MouseButtonState.MOUSE_DOWN ? DeviceEvent.new_mouse_button_pressed : DeviceEvent.new_mouse_button_released;
-        transaction.add_event(mouseFnc(mouse_button));
-        this.session?.apply_inputs(transaction);
+        this.doTransactionFromDeviceEvents([mouseFnc(mouse_button)]);
     }
     
     updateMousePosition(mouse_x: number, mouse_y: number) {
-        const transaction = InputTransaction.new();
-        transaction.add_event(DeviceEvent.new_mouse_move(mouse_x, mouse_y));
-        this.session?.apply_inputs(transaction);
+        this.doTransactionFromDeviceEvents([DeviceEvent.new_mouse_move(mouse_x, mouse_y)]);
     }
 
     sendKeyboard(evt: KeyboardEvent) {
         evt.preventDefault();
         
         let keyEvent;
-        
-        console.log(evt.type);
         
         if (evt.type === 'keydown') {
             keyEvent = DeviceEvent.new_key_pressed;
@@ -64,25 +63,25 @@ export class WasmBridgeService implements ServerBridgeService {
         }
 
         if (keyEvent) {
-            const transaction = InputTransaction.new();
+            const deviceEvents = [];
 
             // NOTE: There is no keypress event for alt, ctrl, shift and meta keys, so we check manually.
             // TODO: Support for right side
             // TODO: Support for meta key (also called os key)
             if (evt.altKey && evt.code !== "AltLeft") {
-                transaction.add_event(DeviceEvent.new_key_pressed(0x38));
+                deviceEvents.push(DeviceEvent.new_key_pressed(0x38));
             }
             if (evt.ctrlKey && evt.code !== "ControlLeft") {
-                transaction.add_event(DeviceEvent.new_key_pressed(0x1D));
+                deviceEvents.push(DeviceEvent.new_key_pressed(0x1D));
             }
             if (evt.shiftKey && evt.code !== "ShiftLeft") {
-                transaction.add_event(DeviceEvent.new_key_pressed(0x2A));
+                deviceEvents.push(DeviceEvent.new_key_pressed(0x2A));
             }
 
             const scancode = scanCode(evt.code);
-            transaction.add_event(keyEvent(scancode));
+            deviceEvents.push(keyEvent(scancode));
             
-            this.session?.apply_inputs(transaction);
+            this.doTransactionFromDeviceEvents(deviceEvents);
         }
     }
 
@@ -134,5 +133,11 @@ export class WasmBridgeService implements ServerBridgeService {
                 }
             }),
         );
+    }
+    
+    private doTransactionFromDeviceEvents(deviceEvents: DeviceEvent[]) {
+        const transaction = InputTransaction.new();
+        deviceEvents.forEach(event => transaction.add_event(event));
+        this.session?.apply_inputs(transaction);
     }
 }

@@ -1,4 +1,5 @@
 import type {Observable} from "rxjs";
+import type {LogType} from '../enums/LogType';
 
 export interface ServerRect {
     free(): void;
@@ -41,7 +42,7 @@ export enum MouseButtonState {
 }
 
 export abstract class ServerBridgeService {
-    abstract init(debug: "OFF" | "ERROR" | "WARN" | "INFO" | "DEBUG" | "TRACE"): void;
+    abstract init(debug: LogType): void;
 
     abstract connect(username: string, password: string, address: string, authToken?: string): Observable<NewSessionInfo>;
 
@@ -54,5 +55,7 @@ export abstract class ServerBridgeService {
     abstract updateMousePosition(mouse_x: number, mouse_y: number): void;
     
     abstract sendKeyboard(evt: any): void;
+    
+    abstract releaseAllInputs():void;
 }
 
