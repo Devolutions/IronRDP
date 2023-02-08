@@ -317,7 +317,7 @@ impl Database {
                 flags |= KeyboardFlags::FASTPATH_INPUT_KBDFLAGS_EXTENDED
             };
 
-            events.push(FastPathInputEvent::KeyboardEvent(flags, u8::from(scancode)));
+            events.push(FastPathInputEvent::KeyboardEvent(flags, scancode));
         }
 
         self.mouse_buttons = BitArray::ZERO;
