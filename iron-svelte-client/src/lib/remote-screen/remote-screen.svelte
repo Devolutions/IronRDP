@@ -14,8 +14,8 @@
         });
     });
 </script>
-<div style="display: flex; height: 100%; flex-direction: column">
-    <div>
+<div style="display: flex; height: 100%; flex-direction: column; background-color: #2e2e2e;">
+    <div style="text-align: center; padding: 10px; background: black;">
         <button on:click={() => uiService.setScale(1)}>Fit</button>
         <button on:click={() => uiService.setScale(2)}>Full</button>
         <button on:click={() => uiService.setScale(3)}>Real</button>

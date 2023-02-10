@@ -60,9 +60,6 @@ export class WasmBridgeService implements ServerBridgeService {
         }
 
         if (keyEvent) {
-            const deviceEvents = [];
-            const scancode = scanCode(evt.code, OS.WINDOWS);
-
             if (ModifierKey[evt.code]) {
                 this.updateModifierKeyState(evt);
             }
@@ -71,9 +68,9 @@ export class WasmBridgeService implements ServerBridgeService {
                 this.updateLockKeyState(evt);
             }
 
-            deviceEvents.push(keyEvent(scancode));
-
-            this.doTransactionFromDeviceEvents(deviceEvents);
+            if (!evt.repeat || (!ModifierKey[evt.code] && !LockKey[evt.code])) {
+                this.doTransactionFromDeviceEvents([keyEvent(scanCode(evt.code, OS.WINDOWS))]);
+            }
         }
     }
 
@@ -179,7 +176,7 @@ export class WasmBridgeService implements ServerBridgeService {
 
         this.doTransactionFromDeviceEvents(events);
     }
-    
+
     private updateModifierKeyState(evt) {
         if (this.modifierKeyPressed.indexOf(ModifierKey[evt.code]) === -1) {
             this.modifierKeyPressed.push(ModifierKey[evt.code]);
@@ -195,7 +192,7 @@ export class WasmBridgeService implements ServerBridgeService {
             this.lockKeyPressed.splice(this.lockKeyPressed.indexOf(LockKey[evt.code]), 1);
         }
     }
-    
+
     private doTransactionFromDeviceEvents(deviceEvents: DeviceEvent[]) {
         const transaction = InputTransaction.new();
         deviceEvents.forEach(event => transaction.add_event(event));
@@ -217,7 +214,7 @@ export class WasmBridgeService implements ServerBridgeService {
         ]);
     }
 
-    private sendMeta() { 
+    private sendMeta() {
         const ctrl = scanCode("ControlLeft", OS.WINDOWS);
         const escape = scanCode("Escape", OS.WINDOWS);
 
