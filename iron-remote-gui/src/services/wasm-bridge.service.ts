@@ -203,25 +203,29 @@ export class WasmBridgeService implements ServerBridgeService {
     }
 
     private ctrlAltDel() {
-        let deviceEvents = [];
-
         const ctrl = scanCode("ControlLeft", OS.WINDOWS);
         const alt = scanCode("AltLeft", OS.WINDOWS);
         const suppr = scanCode("Delete", OS.WINDOWS);
 
-        deviceEvents.push(DeviceEvent.new_key_pressed(ctrl));
-        deviceEvents.push(DeviceEvent.new_key_pressed(alt));
-        deviceEvents.push(DeviceEvent.new_key_pressed(suppr));
-        this.doTransactionFromDeviceEvents(deviceEvents);
-
-        deviceEvents = [];
-        deviceEvents.push(DeviceEvent.new_key_released(ctrl));
-        deviceEvents.push(DeviceEvent.new_key_released(alt));
-        deviceEvents.push(DeviceEvent.new_key_released(suppr));
-        this.doTransactionFromDeviceEvents(deviceEvents);
+        this.doTransactionFromDeviceEvents([
+            DeviceEvent.new_key_pressed(ctrl),
+            DeviceEvent.new_key_pressed(alt),
+            DeviceEvent.new_key_pressed(suppr),
+            DeviceEvent.new_key_released(ctrl),
+            DeviceEvent.new_key_released(alt),
+            DeviceEvent.new_key_released(suppr),
+        ]);
     }
 
-    private sendMeta() {
-        // Not yet implemented
+    private sendMeta() { 
+        const ctrl = scanCode("ControlLeft", OS.WINDOWS);
+        const escape = scanCode("Escape", OS.WINDOWS);
+
+        this.doTransactionFromDeviceEvents([
+            DeviceEvent.new_key_pressed(ctrl),
+            DeviceEvent.new_key_pressed(escape),
+            DeviceEvent.new_key_released(ctrl),
+            DeviceEvent.new_key_released(escape),
+        ]);
     }
 }
