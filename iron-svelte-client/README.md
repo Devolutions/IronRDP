@@ -65,7 +65,7 @@ For convenience, modify the freshly generated `gateway.json` like so:
 
 That way, you can later reuse the same token multiple times (convenient at development time).
 
-Notice that the configuration file refer to a public (provisioner) key file called `provisioner.pem`.
+Notice that the configuration file refers to a public (provisioner) key file called `provisioner.pem`.
 We need to generate this file.
 
 You can an RSA key pair using `openssl` by running the following commands:
