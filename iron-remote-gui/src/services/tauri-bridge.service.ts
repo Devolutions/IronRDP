@@ -1,4 +1,4 @@
-import type {NewSessionInfo, ServerBridgeService} from "./server-bridge.service";
+import type {NewSessionInfo, ServerBridgeService, SpecialCombination} from "./server-bridge.service";
 import {invoke} from "@tauri-apps/api";
 import {from, Observable, Subject} from "rxjs";
 import {listen} from "@tauri-apps/api/event";
@@ -22,6 +22,10 @@ export class TauriBridgeService implements ServerBridgeService {
 
         this.initTauriListener();
         loggingService.info('Native bridge initialized.');
+    }
+
+    sendSpecialCombination(specialCombination: SpecialCombination): void {
+        throw new Error("Method not implemented.");
     }
 
     init(): void {
@@ -70,5 +74,11 @@ export class TauriBridgeService implements ServerBridgeService {
     }
 
     updateMousePosition(mouse_x: number, mouse_y: number): void {
+    }
+
+    releaseAllInputs(): void {
+    }
+
+    syncModifier(evt: any): void {
     }
 }

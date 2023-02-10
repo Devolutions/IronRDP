@@ -1,18 +1,15 @@
 import type {NewSessionInfo, ResizeEvent, ServerBridgeService} from './server-bridge.service';
-import {MouseButton, MouseButtonState} from './server-bridge.service';
+import {MouseButton, MouseButtonState, SpecialCombination} from './server-bridge.service';
 import {from, Observable, of, Subject} from 'rxjs';
 import init, {DeviceEvent, InputTransaction, ironrdp_init, Session, SessionBuilder} from "../../../ffi/wasm/pkg/ironrdp";
 import {loggingService} from "./logging.service";
 import {catchError, filter, map} from "rxjs/operators";
 import {userInteractionService} from "./user-interaction-service";
-
-const modifierKey = {
-    SHIFT: 16,
-    CTRL: 17,
-    ALT: 18,
-    META: 91
-};
-const modifierKeyArray = [modifierKey.ALT, modifierKey.CTRL, modifierKey.ALT, modifierKey.META];
+import {scanCode} from '../lib/scancodes';
+import {LogType} from '../enums/LogType';
+import {OS} from '../enums/OS';
+import {ModifierKey} from '../enums/ModifierKey';
+import {LockKey} from '../enums/LockKey';
 
 export class WasmBridgeService implements ServerBridgeService {
     private _resize: Subject<ResizeEvent> = new Subject<any>();
@@ -20,8 +17,10 @@ export class WasmBridgeService implements ServerBridgeService {
 
     resize: Observable<ResizeEvent>;
     updateImage: Observable<any>;
-
     session?: Session;
+
+    modifierKeyPressed: ModifierKey[] = [];
+    lockKeyPressed: LockKey[] = [];
 
     constructor() {
         this.resize = this._resize.asObservable();
@@ -29,209 +28,49 @@ export class WasmBridgeService implements ServerBridgeService {
         loggingService.info('Web bridge initialized.');
     }
 
-    async init(debug: boolean) {
+    async init(debug: LogType) {
         loggingService.info('Loading wasm file.');
         await init();
         loggingService.info('Initializing IronRDP.');
-        ironrdp_init(debug);
+        ironrdp_init(LogType[debug]);
+    }
+
+    releaseAllInputs() {
+        this.session?.release_all_inputs();
     }
 
     mouseButtonState(mouse_button: MouseButton, state: MouseButtonState) {
-        const transaction = InputTransaction.new();
         let mouseFnc = state === MouseButtonState.MOUSE_DOWN ? DeviceEvent.new_mouse_button_pressed : DeviceEvent.new_mouse_button_released;
-        transaction.add_event(mouseFnc(mouse_button));
-        this.session?.apply_inputs(transaction);
+        this.doTransactionFromDeviceEvents([mouseFnc(mouse_button)]);
     }
-    
+
     updateMousePosition(mouse_x: number, mouse_y: number) {
-        const transaction = InputTransaction.new();
-        transaction.add_event(DeviceEvent.new_mouse_move(mouse_x, mouse_y));
-        this.session?.apply_inputs(transaction);
+        this.doTransactionFromDeviceEvents([DeviceEvent.new_mouse_move(mouse_x, mouse_y)]);
     }
 
     sendKeyboard(evt: KeyboardEvent) {
+        evt.preventDefault();
+
         let keyEvent;
-        
-        if (evt.type === 'keypress') {
+
+        if (evt.type === 'keydown') {
             keyEvent = DeviceEvent.new_key_pressed;
         } else if (evt.type === 'keyup') {
             keyEvent = DeviceEvent.new_key_released;
         }
 
         if (keyEvent) {
-            const transaction = InputTransaction.new();
-
-            // NOTE: There is no keypress event for alt, ctrl, shift and meta keys, so we check manually.
-            // TODO: Support for right side
-            // TODO: Support for meta key (also called os key)
-            if (evt.altKey && evt.code !== "AltLeft") {
-                transaction.add_event(DeviceEvent.new_key_pressed(0x38));
-            }
-            if (evt.ctrlKey && evt.code !== "ControlLeft") {
-                transaction.add_event(DeviceEvent.new_key_pressed(0x1D));
-            }
-            if (evt.shiftKey && evt.code !== "ShiftLeft") {
-                transaction.add_event(DeviceEvent.new_key_pressed(0x2A));
+            if (ModifierKey[evt.code]) {
+                this.updateModifierKeyState(evt);
             }
 
-            // NOTE: We only receive a keyup event for Backspace
-            if (evt.code === "Backspace") {
-                transaction.add_event(DeviceEvent.new_key_pressed(0x0E));
+            if (LockKey[evt.code]) {
+                this.updateLockKeyState(evt);
             }
 
-            const scancode = this.convertToScancode(evt.code);
-            transaction.add_event(keyEvent(scancode));
-            
-            this.session?.apply_inputs(transaction);
-        }
-    }
-
-    // Temporary workaround for scancode
-    convertToScancode(code: string): number {
-        // From: https://developer.mozilla.org/en-US/docs/Web/API/UI_Events/Keyboard_event_code_values
-        switch (code) {
-            case "Escape":
-                return 0x01;
-            case "Digit1":
-                return 0x02;
-            case "Digit2":
-                return 0x03;
-            case "Digit3":
-                return 0x04;
-            case "Digit4":
-                return 0x05;
-            case "Digit5":
-                return 0x06;
-            case "Digit6":
-                return 0x07;
-            case "Digit7":
-                return 0x08;
-            case "Digit8":
-                return 0x09;
-            case "Digit9":
-                return 0x0A;
-            case "Digit0":
-                return 0x0B;
-            case "Minus":
-                return 0x0C;
-            case "Equal":
-                return 0x0D;
-            case "Backspace":
-                return 0x0E;
-            case "Tab":
-                return 0x0F;
-            case "KeyQ":
-                return 0x10;
-            case "KeyW":
-                return 0x11;
-            case "KeyE":
-                return 0x12;
-            case "KeyR":
-                return 0x13;
-            case "KeyT":
-                return 0x14;
-            case "KeyY":
-                return 0x15;
-            case "KeyU":
-                return 0x16;
-            case "KeyI":
-                return 0x17;
-            case "KeyO":
-                return 0x18;
-            case "KeyP":
-                return 0x19;
-            case "BracketLeft":
-                return 0x1A;
-            case "BracketRight":
-                return 0x1B;
-            case "Enter":
-                return 0x1C;
-            case "ControlLeft":
-                return 0x1D;
-            case "KeyA":
-                return 0x1E;
-            case "KeyS":
-                return 0x1F;
-            case "KeyD":
-                return 0x20;
-            case "KeyF":
-                return 0x21;
-            case "KeyG":
-                return 0x22;
-            case "KeyH":
-                return 0x23;
-            case "KeyJ":
-                return 0x24;
-            case "KeyK":
-                return 0x25;
-            case "KeyL":
-                return 0x26;
-            case "Semicolon":
-                return 0x27;
-            case "Quote":
-                return 0x28;
-            case "Backquote":
-                return 0x29;
-            case "ShiftLeft":
-                return 0x2A;
-            case "Backslash":
-                return 0x2B;
-            case "KeyZ":
-                return 0x2C;
-            case "KeyX":
-                return 0x2D;
-            case "KeyC":
-                return 0x2E;
-            case "KeyV":
-                return 0x2F;
-            case "KeyB":
-                return 0x30;
-            case "KeyN":
-                return 0x31;
-            case "KeyM":
-                return 0x32;
-            case "Comma":
-                return 0x33;
-            case "Period":
-                return 0x34;
-            case "Slash":
-                return 0x35;
-            case "ShiftRight":
-                return 0x36;
-            case "NumpadMultiply":
-                return 0x37;
-            case "AltLeft":
-                return 0x38;
-            case "Space":
-                return 0x39;
-            case "CapsLock":
-                return 0x3A;
-            case "F1":
-                return 0x3B;
-            case "F2":
-                return 0x3C;
-            case "F3":
-                return 0x3D;
-            case "F4":
-                return 0x3E;
-            case "F5":
-                return 0x3F;
-            case "F6":
-                return 0x40;
-            case "F7":
-                return 0x41;
-            case "F8":
-                return 0x42;
-            case "F9":
-                return 0x43;
-            case "F10":
-                return 0x44;
-            case "Pause":
-                return 0x45;
-            case "ScrollLock":
-                return 0x46;
-            default:
-                return 0x00;
+            if (!evt.repeat || (!ModifierKey[evt.code] && !LockKey[evt.code])) {
+                this.doTransactionFromDeviceEvents([keyEvent(scanCode(evt.code, OS.WINDOWS))]);
+            }
         }
     }
 
@@ -283,5 +122,107 @@ export class WasmBridgeService implements ServerBridgeService {
                 }
             }),
         );
+    }
+
+    sendSpecialCombination(specialCombination: SpecialCombination): void {
+        switch (specialCombination) {
+            case SpecialCombination.CTRL_ALT_DEL:
+                this.ctrlAltDel();
+                break;
+            case SpecialCombination.META:
+                this.sendMeta();
+                break;
+        }
+    }
+
+    syncModifier(evt: any): void {
+        const mouseEvent = evt as MouseEvent;
+        const events = [];
+
+        let syncCapsLock_On = mouseEvent.getModifierState(LockKey.CAPS_LOCK) && this.lockKeyPressed.indexOf(LockKey.CAPS_LOCK) === -1;
+        let syncCapsLock_Off = !mouseEvent.getModifierState(LockKey.CAPS_LOCK) && this.lockKeyPressed.indexOf(LockKey.CAPS_LOCK) > -1;
+        let syncNumsLock_On = mouseEvent.getModifierState(LockKey.NUMS_LOCK) && this.lockKeyPressed.indexOf(LockKey.NUMS_LOCK) === -1;
+        let syncNumsLock_Off = !mouseEvent.getModifierState(LockKey.NUMS_LOCK) && this.lockKeyPressed.indexOf(LockKey.NUMS_LOCK) > -1;
+        let syncScrollLock_On = mouseEvent.getModifierState(LockKey.SCROLL_LOCK) && this.lockKeyPressed.indexOf(LockKey.SCROLL_LOCK) === -1;
+        let syncScrollLock_Off = !mouseEvent.getModifierState(LockKey.SCROLL_LOCK) && this.lockKeyPressed.indexOf(LockKey.SCROLL_LOCK) > -1;
+
+        if (syncCapsLock_On || syncCapsLock_Off) {
+            events.push(DeviceEvent.new_key_pressed(scanCode(LockKey.CAPS_LOCK, OS.WINDOWS)));
+            events.push(DeviceEvent.new_key_released(scanCode(LockKey.CAPS_LOCK, OS.WINDOWS)));
+            if (syncCapsLock_On) {
+                this.lockKeyPressed.push(LockKey.CAPS_LOCK);
+            } else {
+                this.lockKeyPressed.splice(this.lockKeyPressed.indexOf(LockKey.CAPS_LOCK), 1);
+            }
+        }
+        if (syncNumsLock_On || syncNumsLock_Off) {
+            events.push(DeviceEvent.new_key_pressed(scanCode(LockKey.NUMS_LOCK, OS.WINDOWS)));
+            events.push(DeviceEvent.new_key_released(scanCode(LockKey.NUMS_LOCK, OS.WINDOWS)));
+            if (syncNumsLock_On) {
+                this.lockKeyPressed.push(LockKey.NUMS_LOCK);
+            } else {
+                this.lockKeyPressed.splice(this.lockKeyPressed.indexOf(LockKey.NUMS_LOCK), 1);
+            }
+        }
+        if (syncScrollLock_On || syncScrollLock_Off) {
+            events.push(DeviceEvent.new_key_pressed(scanCode(LockKey.SCROLL_LOCK, OS.WINDOWS)));
+            events.push(DeviceEvent.new_key_released(scanCode(LockKey.SCROLL_LOCK, OS.WINDOWS)));
+            if (syncScrollLock_On) {
+                this.lockKeyPressed.push(LockKey.SCROLL_LOCK);
+            } else {
+                this.lockKeyPressed.splice(this.lockKeyPressed.indexOf(LockKey.SCROLL_LOCK), 1);
+            }
+        }
+
+        this.doTransactionFromDeviceEvents(events);
+    }
+
+    private updateModifierKeyState(evt) {
+        if (this.modifierKeyPressed.indexOf(ModifierKey[evt.code]) === -1) {
+            this.modifierKeyPressed.push(ModifierKey[evt.code]);
+        } else if (evt.type === 'keyup') {
+            this.modifierKeyPressed.splice(this.modifierKeyPressed.indexOf(ModifierKey[evt.code]), 1);
+        }
+    }
+
+    private updateLockKeyState(evt) {
+        if (this.lockKeyPressed.indexOf(LockKey[evt.code]) === -1) {
+            this.lockKeyPressed.push(LockKey[evt.code]);
+        } else if (evt.type === 'keyup' && !evt.getModifierState(evt.code)) {
+            this.lockKeyPressed.splice(this.lockKeyPressed.indexOf(LockKey[evt.code]), 1);
+        }
+    }
+
+    private doTransactionFromDeviceEvents(deviceEvents: DeviceEvent[]) {
+        const transaction = InputTransaction.new();
+        deviceEvents.forEach(event => transaction.add_event(event));
+        this.session?.apply_inputs(transaction);
+    }
+
+    private ctrlAltDel() {
+        const ctrl = scanCode("ControlLeft", OS.WINDOWS);
+        const alt = scanCode("AltLeft", OS.WINDOWS);
+        const suppr = scanCode("Delete", OS.WINDOWS);
+
+        this.doTransactionFromDeviceEvents([
+            DeviceEvent.new_key_pressed(ctrl),
+            DeviceEvent.new_key_pressed(alt),
+            DeviceEvent.new_key_pressed(suppr),
+            DeviceEvent.new_key_released(ctrl),
+            DeviceEvent.new_key_released(alt),
+            DeviceEvent.new_key_released(suppr),
+        ]);
+    }
+
+    private sendMeta() {
+        const ctrl = scanCode("ControlLeft", OS.WINDOWS);
+        const escape = scanCode("Escape", OS.WINDOWS);
+
+        this.doTransactionFromDeviceEvents([
+            DeviceEvent.new_key_pressed(ctrl),
+            DeviceEvent.new_key_pressed(escape),
+            DeviceEvent.new_key_released(ctrl),
+            DeviceEvent.new_key_released(escape),
+        ]);
     }
 }

@@ -2,7 +2,10 @@
   "name": "@devolutions/iron-remote-gui",
   "author": "Nicolas Girot",
   "email": "ngirot@devolutions.net",
-  "contributors": ["Benoit Cortier", "Zacharia Ellaham"],
+  "contributors": [
+    "Benoit Cortier",
+    "Zacharia Ellaham"
+  ],
   "description": "Web Component providing agnostic implementation for Iron Wasm base client.",
   "version": "0.1.0",
   "type": "module",
@@ -28,5 +31,9 @@
     "vite-plugin-dts": "^1.7.1",
     "vite-plugin-top-level-await": "^1.2.2",
     "vite-plugin-wasm": "^3.1.0"
+  },
+  "dependencies": {
+    "@types/ua-parser-js": "^0.7.36",
+    "ua-parser-js": "^1.0.33"
   }
 }

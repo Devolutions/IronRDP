@@ -12,7 +12,7 @@
     export let scale = 'real';
     export let targetplatform: 'web' | 'native' = 'web';
     export let verbose = 'false';
-    export let debugwasm = 'false';
+    export let debugwasm: "OFF" | "ERROR" | "WARN" | "INFO" | "DEBUG" | "TRACE" = 'INFO';
     export let flexcenter = 'true';
 
     let isVisible = false;
@@ -30,7 +30,7 @@
         serverBridgeListeners();
         userInteractionListeners();
         
-        window.addEventListener('keypress', keyboardEvent, false);
+        window.addEventListener('keydown', keyboardEvent, false);
         window.addEventListener('keyup', keyboardEvent, false);
     }
 
@@ -208,12 +208,12 @@
         userInteractionService.setMouseButtonState(state, isDown);
     }
     
-    function setMouseIn() {
-        userInteractionService.mouseIn();
+    function setMouseIn(evt) {
+        userInteractionService.mouseIn(evt);
     }
 
-    function setMouseOut() {
-        userInteractionService.mouseOut();
+    function setMouseOut(evt) {
+        userInteractionService.mouseOut(evt);
     }
     
     function keyboardEvent(evt) {
@@ -251,7 +251,7 @@
         canvas.width = 800;
         canvas.height = 600;
 
-        await initServerBridge(targetplatform, debugwasm === 'true');
+        await initServerBridge(targetplatform, debugwasm);
 
         userInteractionService.setServerBridge(serverBridge);
         userInteractionService.setCanvas(canvas);
@@ -282,11 +282,11 @@
                 on:mouseup={(event) => setMouseButtonState(event, false)}
                 on:mouseleave={(event) => {
                         setMouseButtonState(event, false);
-                        setMouseOut();
+                        setMouseOut(event);
                     }
                 }
                 on:mouseenter={(event) => {
-                        setMouseIn();
+                        setMouseIn(event);
                     }
                 }
                 on:contextmenu={(event) => event.preventDefault()}

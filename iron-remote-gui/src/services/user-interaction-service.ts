@@ -1,6 +1,6 @@
 import {BehaviorSubject, Observable, Subject} from 'rxjs';
 import type {NewSessionInfo, ServerBridgeService} from "./server-bridge.service";
-import {MouseButton, MouseButtonState} from './server-bridge.service';
+import {MouseButtonState, SpecialCombination} from './server-bridge.service';
 import {loggingService} from "./logging.service";
 
 
@@ -25,6 +25,10 @@ export interface IRGUserInteraction {
     setScale(scale: ScreenScale);
 
     connect(username: string, password: string, host: string, authtoken: string): Observable<NewSessionInfo>;
+
+    ctrlAltDel();
+    
+    metaKey();
 
     sessionListener: Observable<any>;
 }
@@ -64,14 +68,14 @@ export class UserInteractionService {
         return this.serverBridge.connect(username, password, host, authtoken);
     }
     
-    mouseIn() {
+    mouseIn(event: MouseEvent) {
+        this.serverBridge.syncModifier(event);
         this.keyboardActive = true;
-        console.log("mouse in");
     }
     
-    mouseOut() {
+    mouseOut(event: MouseEvent) {
         this.keyboardActive = false;
-        console.log("mouse out");
+        this.serverBridge?.releaseAllInputs();
     }
 
     setMousePosition(position: MousePosition) {
@@ -92,6 +96,18 @@ export class UserInteractionService {
             this.serverBridge.sendKeyboard(evt);
         }
     }
+    
+    ctrlAltDel() {
+        this.sendSpecialCombination(SpecialCombination.CTRL_ALT_DEL);
+    }
+    
+    metaKey() {
+        this.sendSpecialCombination(SpecialCombination.META);
+    }
+    
+    private sendSpecialCombination(combination: SpecialCombination) {
+        this.serverBridge.sendSpecialCombination(combination);
+    }
 
     setVisibility(state: boolean) {
         loggingService.info(`Change component visibility to: ${state}`);
@@ -105,14 +121,16 @@ export class UserInteractionService {
     raiseSessionEvent(event: any) {
         this.sessionEvent.next(event);
     }
-
+    
     exposedFunctions: IRGUserInteraction = {
         setMousePosition: this.setMousePosition.bind(this),
         setMouseButtonState: this.setMouseButtonState.bind(this),
         setVisibility: this.setVisibility.bind(this),
         connect: this.connect.bind(this),
         setScale: this.setScale.bind(this),
-        sessionListener: this.sessionObserver
+        sessionListener: this.sessionObserver,
+        ctrlAltDel: this.ctrlAltDel.bind(this),
+        metaKey: this.metaKey.bind(this)
     }
 }
 
