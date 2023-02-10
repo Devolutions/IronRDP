@@ -16,6 +16,7 @@ A Rust implementation of the Microsoft Remote Desktop Protocol, with a focus on 
 - `ironrdp-cli`: basic command-line client mostly for debugging purposes.
 - `ironrdp-gui-client`: basic GUI client for IronRDP.
 - `ironrdp-replay-client`: utility tool to replay RDP graphics pipeline for debugging purposes.
+- `iron-remote-gui`: core frontend ui used by both, iron-svelte-client and iron-tauri-client.
 - `iron-svelte-client`: web-based frontend using `Svelte` and `Material` frameworks).
 - `iron-tauri-client`: a native client built with Tauri. Frontend is using the `iron-web-client`/`iron-svelte-client` component.
 - `ffi/wasm`: WebAssembly high-level bindings targeting web browsers.
