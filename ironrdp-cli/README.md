@@ -6,17 +6,7 @@ an error.
 
 ## Prerequisites
 
-Before connection to a Windows 10 RDP server please enable RFX feature:
-
-1. Run  `gpedit.msc`.
-
-2. Enable `Computer Configuration/Administrative Templates/Windows Components/Remote Desktop Services/Remote Desktop Session Host/Remote Session Environment/RemoteFX for Windows Server 2008 R2/Configure RemoteFX`
-
-3. Enable `Computer Configuration/Administrative Templates/Windows Components/Remote Desktop Services/Remote Desktop Session Host/Remote Session Environment/Enable RemoteFX encoding for RemoteFX clients designed for Windows Server 2008 R2 SP1`
-
-4. Enable `Computer Configuration/Administrative Templates/Windows Components/Remote Desktop Services/Remote Desktop Session Host/Remote Session Environment/Limit maximum color depth`
-
-5. Reboot.
+You need to enable RemoteFX on the target machine (see top-level [README](../README.md)).
 
 ## Command-line Interface
 
