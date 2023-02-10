@@ -3,28 +3,13 @@ import {MouseButton, MouseButtonState, SpecialCombination} from './server-bridge
 import {from, Observable, of, Subject} from 'rxjs';
 import init, {DeviceEvent, InputTransaction, ironrdp_init, Session, SessionBuilder} from "../../../ffi/wasm/pkg/ironrdp";
 import {loggingService} from "./logging.service";
-import {catchError, filter, map, scan} from "rxjs/operators";
+import {catchError, filter, map} from "rxjs/operators";
 import {userInteractionService} from "./user-interaction-service";
 import {scanCode} from '../lib/scancodes';
 import {LogType} from '../enums/LogType';
 import {OS} from '../enums/OS';
-
-enum ModifierKey {
-    CTRL_LEFT = "ControlLeft",
-    SHIFT_LEFT = "ShiftLeft",
-    SHIFT_RIGHT = "ShiftRight",
-    ALT_LEFT = "AltLeft",
-    CAPS_LOCK = "CapsLock",
-    CTRL_RIGHT = "ControlRight",
-    ALT_RIGHT = "AltRight",
-    "ControlLeft" = CTRL_LEFT,
-    "ShiftLeft" = SHIFT_LEFT,
-    "ShiftRight" = SHIFT_RIGHT,
-    "AltLeft" = ALT_LEFT,
-    "CapsLock" = CAPS_LOCK,
-    "ControlRight" = CTRL_RIGHT,
-    "AltRight" = ALT_RIGHT,
-};
+import {ModifierKey} from '../enums/ModifierKey';
+import {LockKey} from '../enums/LockKey';
 
 export class WasmBridgeService implements ServerBridgeService {
     private _resize: Subject<ResizeEvent> = new Subject<any>();
@@ -32,10 +17,10 @@ export class WasmBridgeService implements ServerBridgeService {
 
     resize: Observable<ResizeEvent>;
     updateImage: Observable<any>;
-
     session?: Session;
 
     modifierKeyPressed: ModifierKey[] = [];
+    lockKeyPressed: LockKey[] = [];
 
     constructor() {
         this.resize = this._resize.asObservable();
@@ -79,18 +64,14 @@ export class WasmBridgeService implements ServerBridgeService {
             const scancode = scanCode(evt.code, OS.WINDOWS);
 
             if (ModifierKey[evt.code]) {
-                if (this.modifierKeyPressed.indexOf(ModifierKey[evt.code]) === -1) {
-                    this.modifierKeyPressed.push(ModifierKey[evt.code]);
-                    deviceEvents.push(keyEvent(scancode));
-                } else if (evt.type === 'keyup') {
-                    this.modifierKeyPressed.splice(this.modifierKeyPressed.indexOf(ModifierKey[evt.code]), 1);
-                    deviceEvents.push(keyEvent(scancode));
-                }
+                this.updateModifierKeyState(evt);
             }
 
-            if (!ModifierKey[evt.code]) {
-                deviceEvents.push(keyEvent(scancode));
+            if (LockKey[evt.code]) {
+                this.updateLockKeyState(evt);
             }
+
+            deviceEvents.push(keyEvent(scancode));
 
             this.doTransactionFromDeviceEvents(deviceEvents);
         }
@@ -145,7 +126,7 @@ export class WasmBridgeService implements ServerBridgeService {
             }),
         );
     }
-    
+
     sendSpecialCombination(specialCombination: SpecialCombination): void {
         switch (specialCombination) {
             case SpecialCombination.CTRL_ALT_DEL:
@@ -157,36 +138,90 @@ export class WasmBridgeService implements ServerBridgeService {
         }
     }
 
+    syncModifier(evt: any): void {
+        const mouseEvent = evt as MouseEvent;
+        const events = [];
+
+        let syncCapsLock_On = mouseEvent.getModifierState(LockKey.CAPS_LOCK) && this.lockKeyPressed.indexOf(LockKey.CAPS_LOCK) === -1;
+        let syncCapsLock_Off = !mouseEvent.getModifierState(LockKey.CAPS_LOCK) && this.lockKeyPressed.indexOf(LockKey.CAPS_LOCK) > -1;
+        let syncNumsLock_On = mouseEvent.getModifierState(LockKey.NUMS_LOCK) && this.lockKeyPressed.indexOf(LockKey.NUMS_LOCK) === -1;
+        let syncNumsLock_Off = !mouseEvent.getModifierState(LockKey.NUMS_LOCK) && this.lockKeyPressed.indexOf(LockKey.NUMS_LOCK) > -1;
+        let syncScrollLock_On = mouseEvent.getModifierState(LockKey.SCROLL_LOCK) && this.lockKeyPressed.indexOf(LockKey.SCROLL_LOCK) === -1;
+        let syncScrollLock_Off = !mouseEvent.getModifierState(LockKey.SCROLL_LOCK) && this.lockKeyPressed.indexOf(LockKey.SCROLL_LOCK) > -1;
+
+        if (syncCapsLock_On || syncCapsLock_Off) {
+            events.push(DeviceEvent.new_key_pressed(scanCode(LockKey.CAPS_LOCK, OS.WINDOWS)));
+            events.push(DeviceEvent.new_key_released(scanCode(LockKey.CAPS_LOCK, OS.WINDOWS)));
+            if (syncCapsLock_On) {
+                this.lockKeyPressed.push(LockKey.CAPS_LOCK);
+            } else {
+                this.lockKeyPressed.splice(this.lockKeyPressed.indexOf(LockKey.CAPS_LOCK), 1);
+            }
+        }
+        if (syncNumsLock_On || syncNumsLock_Off) {
+            events.push(DeviceEvent.new_key_pressed(scanCode(LockKey.NUMS_LOCK, OS.WINDOWS)));
+            events.push(DeviceEvent.new_key_released(scanCode(LockKey.NUMS_LOCK, OS.WINDOWS)));
+            if (syncNumsLock_On) {
+                this.lockKeyPressed.push(LockKey.NUMS_LOCK);
+            } else {
+                this.lockKeyPressed.splice(this.lockKeyPressed.indexOf(LockKey.NUMS_LOCK), 1);
+            }
+        }
+        if (syncScrollLock_On || syncScrollLock_Off) {
+            events.push(DeviceEvent.new_key_pressed(scanCode(LockKey.SCROLL_LOCK, OS.WINDOWS)));
+            events.push(DeviceEvent.new_key_released(scanCode(LockKey.SCROLL_LOCK, OS.WINDOWS)));
+            if (syncScrollLock_On) {
+                this.lockKeyPressed.push(LockKey.SCROLL_LOCK);
+            } else {
+                this.lockKeyPressed.splice(this.lockKeyPressed.indexOf(LockKey.SCROLL_LOCK), 1);
+            }
+        }
+
+        this.doTransactionFromDeviceEvents(events);
+    }
+    
+    private updateModifierKeyState(evt) {
+        if (this.modifierKeyPressed.indexOf(ModifierKey[evt.code]) === -1) {
+            this.modifierKeyPressed.push(ModifierKey[evt.code]);
+        } else if (evt.type === 'keyup') {
+            this.modifierKeyPressed.splice(this.modifierKeyPressed.indexOf(ModifierKey[evt.code]), 1);
+        }
+    }
+
+    private updateLockKeyState(evt) {
+        if (this.lockKeyPressed.indexOf(LockKey[evt.code]) === -1) {
+            this.lockKeyPressed.push(LockKey[evt.code]);
+        } else if (evt.type === 'keyup' && !evt.getModifierState(evt.code)) {
+            this.lockKeyPressed.splice(this.lockKeyPressed.indexOf(LockKey[evt.code]), 1);
+        }
+    }
+    
     private doTransactionFromDeviceEvents(deviceEvents: DeviceEvent[]) {
         const transaction = InputTransaction.new();
         deviceEvents.forEach(event => transaction.add_event(event));
         this.session?.apply_inputs(transaction);
     }
-    
+
     private ctrlAltDel() {
         let deviceEvents = [];
-        
+
         const ctrl = scanCode("ControlLeft", OS.WINDOWS);
         const alt = scanCode("AltLeft", OS.WINDOWS);
         const suppr = scanCode("Delete", OS.WINDOWS);
-        
+
         deviceEvents.push(DeviceEvent.new_key_pressed(ctrl));
         deviceEvents.push(DeviceEvent.new_key_pressed(alt));
         deviceEvents.push(DeviceEvent.new_key_pressed(suppr));
         this.doTransactionFromDeviceEvents(deviceEvents);
-        
+
         deviceEvents = [];
         deviceEvents.push(DeviceEvent.new_key_released(ctrl));
         deviceEvents.push(DeviceEvent.new_key_released(alt));
         deviceEvents.push(DeviceEvent.new_key_released(suppr));
-        this.doTransactionFromDeviceEvents(deviceEvents); 
-    }
-    
-    private sendMeta() { 
-        // Use scancode directly because of the difference between browser
-        let deviceEvent1 = DeviceEvent.new_key_pressed(0xE05B);
-        let deviceEvent2 = DeviceEvent.new_key_released(0xE05B);
-        this.doTransactionFromDeviceEvents([deviceEvent1, deviceEvent2]);
+        this.doTransactionFromDeviceEvents(deviceEvents);
     }
 
+    private sendMeta() {
+        // Not yet implemented
+    }
 }

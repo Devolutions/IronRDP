@@ -208,12 +208,12 @@
         userInteractionService.setMouseButtonState(state, isDown);
     }
     
-    function setMouseIn() {
-        userInteractionService.mouseIn();
+    function setMouseIn(evt) {
+        userInteractionService.mouseIn(evt);
     }
 
-    function setMouseOut() {
-        userInteractionService.mouseOut();
+    function setMouseOut(evt) {
+        userInteractionService.mouseOut(evt);
     }
     
     function keyboardEvent(evt) {
@@ -282,11 +282,11 @@
                 on:mouseup={(event) => setMouseButtonState(event, false)}
                 on:mouseleave={(event) => {
                         setMouseButtonState(event, false);
-                        setMouseOut();
+                        setMouseOut(event);
                     }
                 }
                 on:mouseenter={(event) => {
-                        setMouseIn();
+                        setMouseIn(event);
                     }
                 }
                 on:contextmenu={(event) => event.preventDefault()}

@@ -78,4 +78,7 @@ export class TauriBridgeService implements ServerBridgeService {
 
     releaseAllInputs(): void {
     }
+
+    syncModifier(evt: any): void {
+    }
 }

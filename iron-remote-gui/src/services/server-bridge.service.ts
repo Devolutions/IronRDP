@@ -64,5 +64,7 @@ export abstract class ServerBridgeService {
     abstract releaseAllInputs():void;
     
     abstract sendSpecialCombination(specialCombination: SpecialCombination):void;
+    
+    abstract syncModifier(evt: any): void;
 }
 

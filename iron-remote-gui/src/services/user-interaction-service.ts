@@ -68,11 +68,12 @@ export class UserInteractionService {
         return this.serverBridge.connect(username, password, host, authtoken);
     }
     
-    mouseIn() {
+    mouseIn(event: MouseEvent) {
+        this.serverBridge.syncModifier(event);
         this.keyboardActive = true;
     }
     
-    mouseOut() {
+    mouseOut(event: MouseEvent) {
         this.keyboardActive = false;
         this.serverBridge?.releaseAllInputs();
     }
@@ -120,7 +121,7 @@ export class UserInteractionService {
     raiseSessionEvent(event: any) {
         this.sessionEvent.next(event);
     }
-
+    
     exposedFunctions: IRGUserInteraction = {
         setMousePosition: this.setMousePosition.bind(this),
         setMouseButtonState: this.setMouseButtonState.bind(this),
