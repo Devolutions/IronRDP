@@ -68,7 +68,7 @@ That way, you can later reuse the same token multiple times (convenient at devel
 Notice that the configuration file refers to a public (provisioner) key file called `provisioner.pem`.
 We need to generate this file.
 
-You can an RSA key pair using `openssl` by running the following commands:
+You can generate an RSA key pair using `openssl` by running the following commands:
 
 ```shell
 $ openssl genrsa -out provisioner.key 2048
