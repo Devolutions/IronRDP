@@ -45,7 +45,7 @@ pub fn translate_input_event(
 
                 let flags = match input.state {
                     ElementState::Pressed => KeyboardFlags::empty(),
-                    ElementState::Released => KeyboardFlags::FASTPATH_INPUT_KBDFLAGS_RELEASE,
+                    ElementState::Released => KeyboardFlags::RELEASE,
                 };
                 Some(FastPathInputEvent::KeyboardEvent(flags, scan_code as u8))
             }

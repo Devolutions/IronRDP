@@ -239,6 +239,27 @@ impl Session {
 
         Ok(())
     }
+
+    pub fn synchronize_lock_keys(
+        &self,
+        scroll_lock: bool,
+        num_lock: bool,
+        caps_lock: bool,
+        kana_lock: bool,
+    ) -> Result<(), String> {
+        use ironrdp::core::input::fast_path::FastPathInput;
+        use ironrdp::core::PduParsing as _;
+
+        let event = ironrdp_input::synchronize_event(scroll_lock, num_lock, caps_lock, kana_lock);
+        let fastpath_input = FastPathInput(vec![event]);
+
+        let mut frame = Vec::new();
+        fastpath_input.to_buffer(&mut frame).map_err(|e| e.to_string())?;
+
+        self.writer_tx.unbounded_send(frame).map_err(|e| e.to_string())?;
+
+        Ok(())
+    }
 }
 
 fn build_input_config(username: String, password: String, domain: Option<String>) -> InputConfig {

@@ -6,8 +6,8 @@ use ironrdp_core::input::mouse_x::PointerFlags;
 use ironrdp_core::input::{MousePdu, MouseXPdu};
 use smallvec::SmallVec;
 
-// TODO: sync event
 // TODO: mouse wheel
+// TODO: unicode keyboard event support
 
 /// Number associated to a mouse button.
 ///
@@ -247,12 +247,12 @@ impl Database {
                     let mut flags = KeyboardFlags::empty();
 
                     if scancode.extended {
-                        flags |= KeyboardFlags::FASTPATH_INPUT_KBDFLAGS_EXTENDED
+                        flags |= KeyboardFlags::EXTENDED
                     };
 
                     if was_pressed {
                         events.push(FastPathInputEvent::KeyboardEvent(
-                            flags | KeyboardFlags::FASTPATH_INPUT_KBDFLAGS_RELEASE,
+                            flags | KeyboardFlags::RELEASE,
                             u8::from(scancode),
                         ));
                     }
@@ -262,10 +262,10 @@ impl Database {
                 Operation::KeyReleased(scancode) => {
                     let was_pressed = self.keyboard.replace(scancode.as_idx(), false);
 
-                    let mut flags = KeyboardFlags::FASTPATH_INPUT_KBDFLAGS_RELEASE;
+                    let mut flags = KeyboardFlags::RELEASE;
 
                     if scancode.extended {
-                        flags |= KeyboardFlags::FASTPATH_INPUT_KBDFLAGS_EXTENDED
+                        flags |= KeyboardFlags::EXTENDED
                     };
 
                     if was_pressed {
@@ -311,10 +311,10 @@ impl Database {
                 (u8::try_from(idx).unwrap(), false)
             };
 
-            let mut flags = KeyboardFlags::FASTPATH_INPUT_KBDFLAGS_RELEASE;
+            let mut flags = KeyboardFlags::RELEASE;
 
             if extended {
-                flags |= KeyboardFlags::FASTPATH_INPUT_KBDFLAGS_EXTENDED
+                flags |= KeyboardFlags::EXTENDED
             };
 
             events.push(FastPathInputEvent::KeyboardEvent(flags, scancode));
@@ -325,6 +325,31 @@ impl Database {
 
         events
     }
+}
+
+/// Returns the RDP input event to send in order to synchronize lock keys.
+pub fn synchronize_event(scroll_lock: bool, num_lock: bool, caps_lock: bool, kana_lock: bool) -> FastPathInputEvent {
+    use ironrdp_core::input::fast_path::SynchronizeFlags;
+
+    let mut flags = SynchronizeFlags::empty();
+
+    if scroll_lock {
+        flags |= SynchronizeFlags::SCROLL_LOCK;
+    }
+
+    if num_lock {
+        flags |= SynchronizeFlags::NUM_LOCK;
+    }
+
+    if caps_lock {
+        flags |= SynchronizeFlags::CAPS_LOCK;
+    }
+
+    if kana_lock {
+        flags |= SynchronizeFlags::KANA_LOCK;
+    }
+
+    FastPathInputEvent::SyncEvent(flags)
 }
 
 enum MouseButtonFlags {

@@ -180,18 +180,18 @@ impl PduParsing for FastPathInputEvent {
 
 bitflags! {
     pub struct KeyboardFlags: u8 {
-        const FASTPATH_INPUT_KBDFLAGS_RELEASE = 0x01;
-        const FASTPATH_INPUT_KBDFLAGS_EXTENDED = 0x02;
-        const FASTPATH_INPUT_KBDFLAGS_EXTENDED1 = 0x04;
+        const RELEASE = 0x01;
+        const EXTENDED = 0x02;
+        const EXTENDED1 = 0x04;
     }
 }
 
 bitflags! {
     pub struct SynchronizeFlags: u8 {
-        const FASTPATH_INPUT_SYNC_SCROLL_LOCK = 0x01;
-        const FASTPATH_INPUT_SYNC_NUM_LOCK = 0x02;
-        const FASTPATH_INPUT_SYNC_CAPS_LOCK = 0x04;
-        const FASTPATH_INPUT_SYNC_KANA_LOCK = 0x08;
+        const SCROLL_LOCK = 0x01;
+        const NUM_LOCK = 0x02;
+        const CAPS_LOCK = 0x04;
+        const KANA_LOCK = 0x08;
     }
 }
 

@@ -97,7 +97,7 @@ fn smoke_keyboard() {
                         (None, Some(_)) => unreachable!(),
                         (Some(pressed_packet), None) => {
                             if let FastPathInputEvent::KeyboardEvent(flags, scancode) = pressed_packet {
-                                ensure!(!flags.contains(KeyboardFlags::FASTPATH_INPUT_KBDFLAGS_RELEASE));
+                                ensure!(!flags.contains(KeyboardFlags::RELEASE));
                                 ensure!(scancode == u8::from(scancode))
                             } else {
                                 bail!("unexpected packet emitted");
@@ -105,14 +105,14 @@ fn smoke_keyboard() {
                         }
                         (Some(released_packet), Some(pressed_packet)) => {
                             if let FastPathInputEvent::KeyboardEvent(flags, scancode) = released_packet {
-                                ensure!(flags.contains(KeyboardFlags::FASTPATH_INPUT_KBDFLAGS_RELEASE));
+                                ensure!(flags.contains(KeyboardFlags::RELEASE));
                                 ensure!(scancode == u8::from(scancode))
                             } else {
                                 bail!("unexpected packet emitted");
                             }
 
                             if let FastPathInputEvent::KeyboardEvent(flags, scancode) = pressed_packet {
-                                ensure!(!flags.contains(KeyboardFlags::FASTPATH_INPUT_KBDFLAGS_RELEASE));
+                                ensure!(!flags.contains(KeyboardFlags::RELEASE));
                                 ensure!(scancode == u8::from(scancode))
                             } else {
                                 bail!("unexpected packet emitted");
@@ -128,7 +128,7 @@ fn smoke_keyboard() {
 
                     if let Some(packet) = packet {
                         if let FastPathInputEvent::KeyboardEvent(flags, scancode) = packet {
-                            ensure!(flags.contains(KeyboardFlags::FASTPATH_INPUT_KBDFLAGS_RELEASE));
+                            ensure!(flags.contains(KeyboardFlags::RELEASE));
                             ensure!(scancode == u8::from(scancode))
                         } else {
                             bail!("unexpected packet emitted");
