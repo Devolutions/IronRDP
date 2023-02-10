@@ -240,7 +240,7 @@ impl Session {
         Ok(())
     }
 
-    pub fn syncronize_lock_keys(
+    pub fn synchronize_lock_keys(
         &self,
         scroll_lock: bool,
         num_lock: bool,
