@@ -1,4 +1,4 @@
-use ironrdp_core::input::fast_path::{FastPathInputEvent, KeyboardFlags};
+use ironrdp_core::input::fast_path::{FastPathInputEvent, KeyboardFlags, SynchronizeFlags};
 use ironrdp_core::input::mouse::{ButtonEvents, MovementEvents, WheelEvents};
 use ironrdp_core::input::mouse_x::PointerFlags;
 use ironrdp_core::input::{MousePdu, MouseXPdu};
@@ -84,8 +84,8 @@ fn keyboard() {
             FastPathInputEvent::KeyboardEvent(KeyboardFlags::empty(), 0),
             FastPathInputEvent::KeyboardEvent(KeyboardFlags::empty(), 23),
             FastPathInputEvent::KeyboardEvent(KeyboardFlags::empty(), 39),
-            FastPathInputEvent::KeyboardEvent(KeyboardFlags::FASTPATH_INPUT_KBDFLAGS_EXTENDED, 19),
-            FastPathInputEvent::KeyboardEvent(KeyboardFlags::FASTPATH_INPUT_KBDFLAGS_EXTENDED, 20),
+            FastPathInputEvent::KeyboardEvent(KeyboardFlags::EXTENDED, 19),
+            FastPathInputEvent::KeyboardEvent(KeyboardFlags::EXTENDED, 20),
             FastPathInputEvent::KeyboardEvent(KeyboardFlags::empty(), 90),
         ];
 
@@ -115,15 +115,9 @@ fn keyboard() {
         ];
 
         let expected_inputs = [
-            FastPathInputEvent::KeyboardEvent(KeyboardFlags::FASTPATH_INPUT_KBDFLAGS_RELEASE, 0),
-            FastPathInputEvent::KeyboardEvent(
-                KeyboardFlags::FASTPATH_INPUT_KBDFLAGS_RELEASE | KeyboardFlags::FASTPATH_INPUT_KBDFLAGS_EXTENDED,
-                19,
-            ),
-            FastPathInputEvent::KeyboardEvent(
-                KeyboardFlags::FASTPATH_INPUT_KBDFLAGS_RELEASE | KeyboardFlags::FASTPATH_INPUT_KBDFLAGS_EXTENDED,
-                20,
-            ),
+            FastPathInputEvent::KeyboardEvent(KeyboardFlags::RELEASE, 0),
+            FastPathInputEvent::KeyboardEvent(KeyboardFlags::RELEASE | KeyboardFlags::EXTENDED, 19),
+            FastPathInputEvent::KeyboardEvent(KeyboardFlags::RELEASE | KeyboardFlags::EXTENDED, 20),
         ];
 
         let mut expected_keyboard_state = KeyboardState::ZERO;
@@ -159,16 +153,16 @@ fn keyboard_repeat() {
 
     let expected_inputs = [
         FastPathInputEvent::KeyboardEvent(KeyboardFlags::empty(), 0),
-        FastPathInputEvent::KeyboardEvent(KeyboardFlags::FASTPATH_INPUT_KBDFLAGS_RELEASE, 0),
+        FastPathInputEvent::KeyboardEvent(KeyboardFlags::RELEASE, 0),
         FastPathInputEvent::KeyboardEvent(KeyboardFlags::empty(), 0),
-        FastPathInputEvent::KeyboardEvent(KeyboardFlags::FASTPATH_INPUT_KBDFLAGS_RELEASE, 0),
+        FastPathInputEvent::KeyboardEvent(KeyboardFlags::RELEASE, 0),
         FastPathInputEvent::KeyboardEvent(KeyboardFlags::empty(), 0),
         FastPathInputEvent::KeyboardEvent(KeyboardFlags::empty(), 20),
         FastPathInputEvent::KeyboardEvent(KeyboardFlags::empty(), 90),
-        FastPathInputEvent::KeyboardEvent(KeyboardFlags::FASTPATH_INPUT_KBDFLAGS_RELEASE, 90),
+        FastPathInputEvent::KeyboardEvent(KeyboardFlags::RELEASE, 90),
         FastPathInputEvent::KeyboardEvent(KeyboardFlags::empty(), 90),
-        FastPathInputEvent::KeyboardEvent(KeyboardFlags::FASTPATH_INPUT_KBDFLAGS_RELEASE, 90),
-        FastPathInputEvent::KeyboardEvent(KeyboardFlags::FASTPATH_INPUT_KBDFLAGS_RELEASE, 20),
+        FastPathInputEvent::KeyboardEvent(KeyboardFlags::RELEASE, 90),
+        FastPathInputEvent::KeyboardEvent(KeyboardFlags::RELEASE, 20),
         FastPathInputEvent::KeyboardEvent(KeyboardFlags::empty(), 20),
     ];
 
@@ -273,21 +267,35 @@ fn release_all() {
             x_position: 0,
             y_position: 0,
         }),
-        FastPathInputEvent::KeyboardEvent(KeyboardFlags::FASTPATH_INPUT_KBDFLAGS_RELEASE, 0),
-        FastPathInputEvent::KeyboardEvent(KeyboardFlags::FASTPATH_INPUT_KBDFLAGS_RELEASE, 23),
-        FastPathInputEvent::KeyboardEvent(KeyboardFlags::FASTPATH_INPUT_KBDFLAGS_RELEASE, 39),
-        FastPathInputEvent::KeyboardEvent(KeyboardFlags::FASTPATH_INPUT_KBDFLAGS_RELEASE, 90),
-        FastPathInputEvent::KeyboardEvent(
-            KeyboardFlags::FASTPATH_INPUT_KBDFLAGS_RELEASE | KeyboardFlags::FASTPATH_INPUT_KBDFLAGS_EXTENDED,
-            19,
-        ),
-        FastPathInputEvent::KeyboardEvent(
-            KeyboardFlags::FASTPATH_INPUT_KBDFLAGS_RELEASE | KeyboardFlags::FASTPATH_INPUT_KBDFLAGS_EXTENDED,
-            20,
-        ),
+        FastPathInputEvent::KeyboardEvent(KeyboardFlags::RELEASE, 0),
+        FastPathInputEvent::KeyboardEvent(KeyboardFlags::RELEASE, 23),
+        FastPathInputEvent::KeyboardEvent(KeyboardFlags::RELEASE, 39),
+        FastPathInputEvent::KeyboardEvent(KeyboardFlags::RELEASE, 90),
+        FastPathInputEvent::KeyboardEvent(KeyboardFlags::RELEASE | KeyboardFlags::EXTENDED, 19),
+        FastPathInputEvent::KeyboardEvent(KeyboardFlags::RELEASE | KeyboardFlags::EXTENDED, 20),
     ];
 
     let actual_inputs = db.release_all();
 
     assert_eq!(actual_inputs.as_slice(), expected_inputs.as_slice());
+}
+
+#[rstest]
+#[case(true, false, true, false, SynchronizeFlags::SCROLL_LOCK | SynchronizeFlags::CAPS_LOCK)]
+#[case(true, true, true, false, SynchronizeFlags::SCROLL_LOCK | SynchronizeFlags::NUM_LOCK | SynchronizeFlags::CAPS_LOCK)]
+#[case(false, false, false, true, SynchronizeFlags::KANA_LOCK)]
+fn sync_lock_keys(
+    #[case] scroll_lock: bool,
+    #[case] num_lock: bool,
+    #[case] caps_lock: bool,
+    #[case] kana_lock: bool,
+    #[case] expected_flags: SynchronizeFlags,
+) {
+    let event = synchronize_event(scroll_lock, num_lock, caps_lock, kana_lock);
+
+    let FastPathInputEvent::SyncEvent(actual_flags) = event else {
+        panic!("Unexpected fast path input event");
+    };
+
+    assert_eq!(actual_flags, expected_flags);
 }
