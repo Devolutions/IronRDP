@@ -21,6 +21,23 @@ A Rust implementation of the Microsoft Remote Desktop Protocol, with a focus on 
 - `iron-tauri-client`: a native client built with Tauri. Frontend is using the `iron-web-client`/`iron-svelte-client` component.
 - `ffi/wasm`: WebAssembly high-level bindings targeting web browsers.
 
+## Video Codec Support
+
+Currently, only Microsoft RemoteFX (RFX) is supported.
+
+In order to enable RemoteFX:
+
+1. Run `gpedit.msc`.
+
+2. Enable `Computer Configuration/Administrative Templates/Windows Components/Remote Desktop Services/Remote Desktop Session Host/Remote Session Environment/RemoteFX for Windows Server 2008 R2/Configure RemoteFX`
+
+3. Enable `Computer Configuration/Administrative Templates/Windows Components/Remote Desktop Services/Remote Desktop Session Host/Remote Session Environment/Enable RemoteFX encoding for RemoteFX clients designed for Windows Server 2008 R2 SP1`
+
+4. Enable `Computer Configuration/Administrative Templates/Windows Components/Remote Desktop Services/Remote Desktop Session Host/Remote Session Environment/Limit maximum color depth`
+
+5. Reboot.
+
+
 ## Demonstration
 
 https://user-images.githubusercontent.com/3809077/202049929-76f42471-aeb0-41da-9118-0dc6ea491bd2.mp4

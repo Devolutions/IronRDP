@@ -1,6 +1,6 @@
-# Iron Remote Gui
+# Iron Remote GUI
 
-This is the core of the web client. Written with Svelte and build as Web-component.
+This is the core of the web client written on top of Svelte and built as a reusable Web Component.
 
 ## Development
 
@@ -12,55 +12,67 @@ Run `npm run build`
 
 ## Usage
 
-As Devolutions team member, you can import the web-component as an Artifactory package. Just run `npm install @devolutions/iron-remote-gui`.
-Otherwise you can make an npm install targeting the /dist folder.
+As member of the Devolutions organization, you can import the Web Component from JFrog Artifactory by running the following npm command:
 
-Import the `iron-remote-gui.umd.cjs` from node_modules folder.
+```shell
+$ npm install @devolutions/iron-remote-gui 
+```
 
-Then use the html tag `<iron-remote-gui/>` in your page.
+Otherwise, you can run `npm install` targeting the `dist/` folder directly.
 
-In your code add a listener on the `ready` event on the iron-remote-gui html element.
-Get `evt.detail.irgUserInteraction` from the promise. This object is of type `UserInteractionService`.
-After that you need to call, at least, `connect` from the `UserInteractionService`.
+Import the `iron-remote-gui.umd.cjs` from `node_modules/` folder.
+
+Then use the HTML tag `<iron-remote-gui/>` in your page.
+
+In your code add a listener for the `ready` event on the `iron-remote-gui` HTML element.
+Get `evt.detail.irgUserInteraction` from the `Promise`, a property whose type is `UserInteractionService`.
+Call the `connect` method on this object.
 
 ## Limitations
 
 For now, we didn't make the enums used by some method directly available (I didn't find the good way to export them directly with the component.).
-You need to recreate them on your application for now (it will be improve in futur version);
+You need to recreate them on your application for now (it will be improved in future version);
 
-Also even if the connection to RDP work there is still a lot of improvement to do. 
-At now you can expect, mouse movement and click (4 buttons) - no scroll, Keyboard for at least the standard. Windows and CTRL+ALT+DEL can be called by method on UserInteractionService. 
+Also, even if the connection to RDP work there is still a lot of improvement to do. 
+As of now, you can expect, mouse movement and click (4 buttons) - no scroll, Keyboard for at least the standard.
+Windows and CTRL+ALT+DEL can be called by method on `UserInteractionService`. 
 Lock keys (like caps lock), have a partial support. 
 Other advanced functionalities (sharing / copy past...) are not implemented yet.
 
-## IronRemoteGui parameters
+## Component parameters
 
-You can add some parameters for default initialisation on the component <iron-remote-gui />.
-> Note that due to a limitation of the framework all parameters need to be in minuscule
-- `scale`: The scaling behavior of the distant screen. Can be 'fit', 'real' or 'full'. Default is 'real';
-- `targetplatform`: Can be 'web' or 'native'. Default is 'web'.
-- `verbose`: Show logs from iron-remote-gui. 'true' or 'false'. Default is 'false'.
-- `debugwasm`: Show debug info from web assembly. Can be "OFF", "ERROR", "WARN", "INFO", "DEBUG", "TRACE". Default is 'OFF'.
-- `flexcentre`: Helper to force iron-remote-gui a flex and centering the content automatically. Otherwise you need to manage manually. Default is 'true'.
+You can add some parameters for default initialization on the component `<iron-remote-gui />`.
 
-## UserInteractionService methods
->`connect(username: string, password: string, host: string, authtoken: string): Observable<NewSessionInfo>`
+> Note that due to a limitation of the framework all parameters need to be lower-cased.
+
+- `scale`: The scaling behavior of the distant screen. Can be `fit`, `real` or `full`. Default is `real`;
+- `targetplatform`: Can be `web` or `native`. Default is `web`.
+- `verbose`: Show logs from `iron-remote-gui`. `true` or `false`. Default is `false`.
+- `debugwasm`: Show debug info from web assembly. Can be `"OFF"`, `"ERROR"`, `"WARN"`, `"INFO"`, `"DEBUG"`, `"TRACE"`. Default is `"OFF"`.
+- `flexcentre`: Helper to force `iron-remote-gui` a flex and centering the content automatically. Otherwise, you need to manage manually. Default is `true`.
+
+## `UserInteractionService` methods
+
+> `connect(username: string, password: string, host: string, authtoken: string): Observable<NewSessionInfo>`
 >
-> username and password are the credentials use to connect on the remote. Host is the jet server of the gateway. Authtoken is the gateway token.
+> `username` and `password` are the credentials to use on the remote host.
+> `host` refers to the Devolutions Gateway hostname and port.
+> `authtoken` is the authentication token to send to the Devolutions Gateway.
 
 > `ctrlAltDel()`
 > 
-> Send the ctrl+alt+del key to server.
+> Sends the ctrl+alt+del key to server.
 
 > `metaKey()`
 > 
-> Send the metakey to server (like windows key).
+> Sends the meta key event to remote host (i.e.: Windows key).
 
 > `setVisibility(value: bool)`
 > 
-> Show or Hide canvas.
+> Shows or hides rendering canvas.
 
 > `setScale(scale: ScreenScale)`
 > 
-> Set the scale behavior of the canvas. (please take a look on the [ScreenScale](src/services/user-interaction-service.ts) enum)
+> Sets the scale behavior of the canvas.
+> See the [ScreenScale](src/services/user-interaction-service.ts) enum for possible values.
 
