@@ -158,7 +158,7 @@ impl Frame for ShareControlFrame {
         let mut buf_writer = BytesMut::with_capacity(share_control_header.buffer_length()).writer();
         share_control_header
             .to_buffer(&mut buf_writer)
-            .map_err(RdpError::ShareControlHeaderError)?;
+            .map_err(RdpError::ShareControlHeader)?;
         let mut buf = buf_writer.into_inner();
         buf.extend_from_slice(&self.data);
 
@@ -176,7 +176,7 @@ impl Frame for ShareControlFrame {
         let mut remaining_reader = info_frame.data.reader();
 
         let share_control_header = ironrdp_core::ShareControlHeader::from_buffer(&mut remaining_reader)
-            .map_err(RdpError::ShareControlHeaderError)?;
+            .map_err(RdpError::ShareControlHeader)?;
         let pdu = share_control_header.share_control_pdu;
         let pdu_source = share_control_header.pdu_source;
         let share_id = share_control_header.share_id;

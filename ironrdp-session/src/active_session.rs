@@ -92,7 +92,7 @@ impl ActiveStageProcessor {
                 )?;
                 output_writer.into_inner()
             }
-            Err(RdpError::FastPathError(FastPathError::NullLength { bytes_read: _ })) => {
+            Err(RdpError::FastPath(FastPathError::NullLength { bytes_read: _ })) => {
                 warn!("Received null-length Fast-Path packet, dropping it");
                 BytesMut::new()
             }

@@ -4,6 +4,7 @@
 #[macro_use]
 extern crate log;
 
+mod error;
 mod image;
 mod input;
 mod network_client;

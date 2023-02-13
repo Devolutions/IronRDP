@@ -65,7 +65,7 @@ async fn main() {
             println!("RDP successfully finished");
             exitcode::OK
         }
-        Err(RdpError::IOError(e)) if e.kind() == io::ErrorKind::UnexpectedEof => {
+        Err(RdpError::Io(e)) if e.kind() == io::ErrorKind::UnexpectedEof => {
             error!("{}", e);
             println!("The server has terminated the RDP session");
             exitcode::NOHOST
@@ -75,8 +75,8 @@ async fn main() {
             println!("RDP failed because of {e}");
 
             match e {
-                RdpError::IOError(_) => exitcode::IOERR,
-                RdpError::ConnectionError(_) => exitcode::NOHOST,
+                RdpError::Io(_) => exitcode::IOERR,
+                RdpError::Connection(_) => exitcode::NOHOST,
                 _ => exitcode::PROTOCOL,
             }
         }
@@ -104,7 +104,7 @@ fn setup_logging(log_file: &str) -> Result<(), fern::InitError> {
 async fn run(config: Config) -> Result<(), RdpError> {
     let addr = ironrdp::session::connection_sequence::Address::lookup_addr(config.addr.clone())?;
 
-    let stream = TcpStream::connect(addr.sock).await.map_err(RdpError::ConnectionError)?;
+    let stream = TcpStream::connect(addr.sock).await.map_err(RdpError::Connection)?;
 
     let (connection_sequence_result, reader, writer) = process_connection_sequence(
         stream.compat(),
@@ -151,7 +151,7 @@ async fn launch_client(
         result
     });
     gui::launch_gui(gui, config.gfx_dump_file, receiver, writer.clone())?;
-    active_stage_handle.await.map_err(|e| RdpError::IOError(e.into()))?
+    active_stage_handle.await.map_err(|e| RdpError::Io(e.into()))?
 }
 
 async fn process_active_stage(

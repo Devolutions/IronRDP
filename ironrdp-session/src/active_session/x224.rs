@@ -151,7 +151,7 @@ impl Processor {
                 debug!("Received None server error");
                 Ok(())
             }
-            ShareDataPdu::ServerSetErrorInfo(ServerSetErrorInfoPdu(e)) => Err(RdpError::ServerError(e.description())),
+            ShareDataPdu::ServerSetErrorInfo(ServerSetErrorInfoPdu(e)) => Err(RdpError::Server(e.description())),
             _ => Err(RdpError::UnexpectedPdu(format!(
                 "Expected Session Save Info PDU, got: {:?}",
                 share_data_frame.pdu.as_short_name()
