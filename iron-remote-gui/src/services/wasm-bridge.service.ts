@@ -10,6 +10,7 @@ import {LogType} from '../enums/LogType';
 import {OS} from '../enums/OS';
 import {ModifierKey} from '../enums/ModifierKey';
 import {LockKey} from '../enums/LockKey';
+import {SessionEventType} from '../enums/SessionEventType';
 
 export class WasmBridgeService implements ServerBridgeService {
     private _resize: Subject<ResizeEvent> = new Subject<any>();
@@ -92,27 +93,40 @@ export class WasmBridgeService implements ServerBridgeService {
         return from(sessionBuilder.connect()).pipe(
             catchError(err => {
                 loggingService.error("error:", err);
-                userInteractionService.raiseSessionEvent(err);
+                userInteractionService.raiseSessionEvent({
+                    type: SessionEventType.ERROR,
+                    data: err
+                });
                 return of(err);
             }),
             filter(result => result instanceof Session),
             map((session: Session) => {
                 from(session.run()).pipe(
                     catchError(err => {
-                        userInteractionService.raiseSessionEvent(err);
+                        userInteractionService.raiseSessionEvent({
+                            type: SessionEventType.ERROR,
+                            data: err
+                        });
                         return of(err);
                     })
                 ).subscribe(() => {
-                    userInteractionService.raiseSessionEvent("Session was terminated.");
+                    userInteractionService.raiseSessionEvent({
+                        type: SessionEventType.TERMINATED,
+                        data: "Session was terminated."
+                    });
                 });
                 return session;
             }),
             map((session: Session) => {
-                loggingService.info('Session started.')
+                loggingService.info('Session started.');
                 this.session = session;
                 this._resize.next({
                     desktop_size: session.desktop_size(),
                     session_id: 0
+                });
+                userInteractionService.raiseSessionEvent({
+                    type: SessionEventType.STARTED,
+                    data: 'Session started'
                 });
                 return {
                     session_id: 0,
@@ -136,13 +150,17 @@ export class WasmBridgeService implements ServerBridgeService {
 
     syncModifier(evt: any): void {
         const mouseEvent = evt as MouseEvent;
-        
+
         let syncCapsLockActive = mouseEvent.getModifierState(LockKey.CAPS_LOCK);
         let syncNumsLockActive = mouseEvent.getModifierState(LockKey.NUM_LOCK);
         let syncScrollLockActive = mouseEvent.getModifierState(LockKey.SCROLL_LOCK);
         let syncKanaModeActive = mouseEvent.getModifierState(LockKey.KANA_MODE);
-        
+
         this.session.synchronize_lock_keys(syncScrollLockActive, syncNumsLockActive, syncCapsLockActive, syncKanaModeActive);
+    }
+
+    mouseWheel(vertical: boolean, rotation: number) {
+        this.doTransactionFromDeviceEvents([DeviceEvent.new_wheel_rotations(vertical, rotation)]);
     }
 
     private updateModifierKeyState(evt) {

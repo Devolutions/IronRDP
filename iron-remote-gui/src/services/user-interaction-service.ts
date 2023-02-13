@@ -2,7 +2,7 @@ import {BehaviorSubject, Observable, Subject} from 'rxjs';
 import type {NewSessionInfo, ServerBridgeService} from "./server-bridge.service";
 import {MouseButtonState, SpecialCombination} from './server-bridge.service';
 import {loggingService} from "./logging.service";
-
+import type {SessionEvent} from '../interfaces/session-event.model';
 
 export interface MousePosition {
     x: number;
@@ -43,8 +43,8 @@ export class UserInteractionService {
     private changeVisibility: Subject<boolean> = new Subject();
     changeVisibilityObservable: Observable<boolean> = this.changeVisibility.asObservable();
     
-    private sessionEvent: Subject<any> = new Subject();
-    sessionObserver: Observable<any> = this.sessionEvent.asObservable();
+    private sessionEvent: Subject<SessionEvent> = new Subject();
+    sessionObserver: Observable<SessionEvent> = this.sessionEvent.asObservable();
 
     private serverBridge: ServerBridgeService;
     
@@ -118,8 +118,14 @@ export class UserInteractionService {
         this.scale.next(scale);
     }
 
-    raiseSessionEvent(event: any) {
+    raiseSessionEvent(event: SessionEvent) {
         this.sessionEvent.next(event);
+    }
+    
+    mouseWheel(event) {
+        let vertical = event.deltaY !== 0;
+        let rotations = vertical ? event.deltaY : event.deltaX;
+        this.serverBridge.mouseWheel(vertical, -rotations);
     }
     
     exposedFunctions: IRGUserInteraction = {

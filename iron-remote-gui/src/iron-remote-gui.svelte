@@ -16,6 +16,7 @@
     export let flexcenter = 'true';
 
     let isVisible = false;
+    let capturingInputs = false;
     let currentComponent = get_current_component();
     let canvas;
     let canvasCtx;
@@ -208,11 +209,17 @@
         userInteractionService.setMouseButtonState(state, isDown);
     }
     
+    function mouseWheel(evt) {
+        userInteractionService.mouseWheel(evt);
+    }
+    
     function setMouseIn(evt) {
+        capturingInputs = true;
         userInteractionService.mouseIn(evt);
     }
 
     function setMouseOut(evt) {
+        capturingInputs = false;
         userInteractionService.mouseOut(evt);
     }
     
@@ -273,7 +280,7 @@
     });
 </script>
 
-<div bind:this={wrapper} class="screen-wrapper scale-{scale}" class:hidden="{!isVisible}"
+<div bind:this={wrapper} class="screen-wrapper scale-{scale}" class:hidden="{!isVisible}" class:capturing-inputs="{capturingInputs}"
      style="{wrapperStyle}">
     <div bind:this={viewer} class="screen-viewer" style="{viewerStyle}">
         <canvas
@@ -290,6 +297,7 @@
                     }
                 }
                 on:contextmenu={(event) => event.preventDefault()}
+                on:wheel={mouseWheel}
                 id="renderer"
         />
     </div>
@@ -298,6 +306,10 @@
 <style>
     .screen-wrapper {
         position: relative;
+    }
+    
+    .capturing-inputs {
+        border: solid rgba(0,97,166,.7) 1px;
     }
 
     canvas {

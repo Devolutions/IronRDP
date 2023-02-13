@@ -1,10 +1,19 @@
-<script>
+<script lang="ts">
     import {onMount} from 'svelte';
     import {userInteractionService} from '../../services/session.service';
 
     let uiService;
 
-    userInteractionService.subscribe(uis => uiService = uis);
+    userInteractionService.subscribe(uis => {
+        if (uis) {
+            uiService = uis
+            uiService.sessionListener.subscribe(event => {
+                if (event.type === 0) {
+                    uiService.setVisibility(true);
+                }
+            })
+        }
+    });
 
     onMount(async () => {
         let el = document.querySelector('iron-remote-gui');

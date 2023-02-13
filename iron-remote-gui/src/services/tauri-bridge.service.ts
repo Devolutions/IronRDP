@@ -24,6 +24,10 @@ export class TauriBridgeService implements ServerBridgeService {
         loggingService.info('Native bridge initialized.');
     }
 
+    mouseWheel(vertical: boolean, rotation: number): void {
+        throw new Error("Method not implemented.");
+    }
+
     sendSpecialCombination(specialCombination: SpecialCombination): void {
         throw new Error("Method not implemented.");
     }

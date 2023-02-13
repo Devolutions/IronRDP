@@ -21,9 +21,9 @@
     });
 
     const initListeners = () => {
-        userInteraction.sessionListener.subscribe(error => {
-            console.error(`Iron-Remote-Gui Error: `, error);
-            toastMessage = error;
+        userInteraction.sessionListener.subscribe(event => {
+            console.error(`Iron-Remote-Gui Error: `, event);
+            toastMessage = event.data;
             ui('#toast-error');
         });
     }
@@ -33,7 +33,8 @@
         userInteraction.connect(username, password, host, authtoken)
             .pipe(
                 catchError(err => {
-                    console.error(err);
+                    toastMessage = err;
+                    ui('#toast');
                     return of(null);
                 }),
                 filter(result => !!result)
@@ -48,7 +49,6 @@
                         desktopSize: start_info.initial_desktop_size,
                         active: true
                     }));
-                    userInteraction.setVisibility(true);
                 } else if (start_info.initial_desktop_size !== null) { //Browser
                     toastMessage = 'Success';
                     ui('#toast');
@@ -57,7 +57,6 @@
                         desktopSize: start_info.initial_desktop_size,
                         active: true
                     }));
-                    userInteraction.setVisibility(true);
                 } else {
                     toastMessage = 'Failure';
                     ui('#toast');
