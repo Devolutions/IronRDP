@@ -48,7 +48,6 @@
                         desktopSize: start_info.initial_desktop_size,
                         active: true
                     }));
-                    userInteraction.setVisibility(true);
                 } else if (start_info.initial_desktop_size !== null) { //Browser
                     toastMessage = 'Success';
                     ui('#toast');
@@ -57,7 +56,6 @@
                         desktopSize: start_info.initial_desktop_size,
                         active: true
                     }));
-                    userInteraction.setVisibility(true);
                 } else {
                     toastMessage = 'Failure';
                     ui('#toast');
