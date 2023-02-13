@@ -227,6 +227,8 @@ impl Session {
         use ironrdp::core::input::fast_path::FastPathInput;
         use ironrdp::core::PduParsing as _;
 
+        trace!("Inputs: {inputs:?}");
+
         if !inputs.is_empty() {
             // PERF: unnecessary copy
             let fastpath_input = FastPathInput(inputs.into_vec());

@@ -5,7 +5,7 @@ use futures_util::AsyncWriteExt;
 use glutin::dpi::PhysicalPosition;
 use glutin::event::{ElementState, Event, WindowEvent};
 use ironrdp::core::input::fast_path::{FastPathInput, FastPathInputEvent, KeyboardFlags};
-use ironrdp::core::input::mouse::{ButtonEvents, MovementEvents, WheelEvents};
+use ironrdp::core::input::mouse::PointerFlags;
 use ironrdp::core::input::MousePdu;
 use ironrdp::core::PduParsing;
 use ironrdp::session::ErasedWriter;
@@ -52,22 +52,20 @@ pub fn translate_input_event(
             WindowEvent::MouseInput { state, button, .. } => {
                 if let Some(position) = last_position.as_ref() {
                     let button = match button {
-                        glutin::event::MouseButton::Left => ButtonEvents::LEFT_BUTTON,
-                        glutin::event::MouseButton::Right => ButtonEvents::RIGHT_BUTTON,
-                        glutin::event::MouseButton::Middle => ButtonEvents::MIDDLE_BUTTON_OR_WHEEL,
-                        glutin::event::MouseButton::Other(_) => ButtonEvents::empty(),
+                        glutin::event::MouseButton::Left => PointerFlags::LEFT_BUTTON,
+                        glutin::event::MouseButton::Right => PointerFlags::RIGHT_BUTTON,
+                        glutin::event::MouseButton::Middle => PointerFlags::MIDDLE_BUTTON_OR_WHEEL,
+                        glutin::event::MouseButton::Other(_) => PointerFlags::empty(),
                     };
                     let button_events = button
                         | match state {
-                            ElementState::Pressed => ButtonEvents::DOWN,
-                            ElementState::Released => ButtonEvents::empty(),
+                            ElementState::Pressed => PointerFlags::DOWN,
+                            ElementState::Released => PointerFlags::empty(),
                         };
                     let pdu = MousePdu {
                         x_position: position.x as u16,
                         y_position: position.y as u16,
-                        wheel_events: WheelEvents::empty(),
-                        movement_events: MovementEvents::empty(),
-                        button_events,
+                        flags: button_events,
                         number_of_wheel_rotation_units: 0,
                     };
 
@@ -82,9 +80,7 @@ pub fn translate_input_event(
                 let pdu = MousePdu {
                     x_position: position.x as u16,
                     y_position: position.y as u16,
-                    wheel_events: WheelEvents::empty(),
-                    movement_events: MovementEvents::MOVE,
-                    button_events: ButtonEvents::empty(),
+                    flags: PointerFlags::MOVE,
                     number_of_wheel_rotation_units: 0,
                 };
 

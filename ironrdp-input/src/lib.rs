@@ -1,8 +1,8 @@
 use bitvec::array::BitArray;
 use bitvec::BitArr;
 use ironrdp_core::input::fast_path::{FastPathInputEvent, KeyboardFlags};
-use ironrdp_core::input::mouse::{ButtonEvents, MovementEvents, WheelEvents};
-use ironrdp_core::input::mouse_x::PointerFlags;
+use ironrdp_core::input::mouse::PointerFlags;
+use ironrdp_core::input::mouse_x::PointerXFlags;
 use ironrdp_core::input::{MousePdu, MouseXPdu};
 use smallvec::SmallVec;
 
@@ -107,7 +107,7 @@ pub struct MousePosition {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct WheelRotations {
     pub is_vertical: bool,
-    pub rotation_units: i16, // NOTE: max value is 0x01FF
+    pub rotation_units: i16,
 }
 
 #[derive(Debug, Clone)]
@@ -191,15 +191,13 @@ impl Database {
                     if !was_pressed {
                         let event = match MouseButtonFlags::from(button) {
                             MouseButtonFlags::Button(flags) => FastPathInputEvent::MouseEvent(MousePdu {
-                                wheel_events: WheelEvents::empty(),
-                                movement_events: MovementEvents::empty(),
-                                button_events: ButtonEvents::DOWN | flags,
+                                flags: PointerFlags::DOWN | flags,
                                 number_of_wheel_rotation_units: 0,
                                 x_position: self.mouse_position.x,
                                 y_position: self.mouse_position.y,
                             }),
                             MouseButtonFlags::Pointer(flags) => FastPathInputEvent::MouseEventEx(MouseXPdu {
-                                flags: PointerFlags::DOWN | flags,
+                                flags: PointerXFlags::DOWN | flags,
                                 x_position: self.mouse_position.x,
                                 y_position: self.mouse_position.y,
                             }),
@@ -218,9 +216,7 @@ impl Database {
                     if was_pressed {
                         let event = match MouseButtonFlags::from(button) {
                             MouseButtonFlags::Button(flags) => FastPathInputEvent::MouseEvent(MousePdu {
-                                wheel_events: WheelEvents::empty(),
-                                movement_events: MovementEvents::empty(),
-                                button_events: flags,
+                                flags,
                                 number_of_wheel_rotation_units: 0,
                                 x_position: self.mouse_position.x,
                                 y_position: self.mouse_position.y,
@@ -239,9 +235,7 @@ impl Database {
                     if position != self.mouse_position {
                         self.mouse_position = position;
                         events.push(FastPathInputEvent::MouseEvent(MousePdu {
-                            wheel_events: WheelEvents::empty(),
-                            movement_events: MovementEvents::MOVE,
-                            button_events: ButtonEvents::empty(),
+                            flags: PointerFlags::MOVE,
                             number_of_wheel_rotation_units: 0,
                             x_position: position.x,
                             y_position: position.y,
@@ -249,13 +243,11 @@ impl Database {
                     }
                 }
                 Operation::WheelRotations(rotations) => events.push(FastPathInputEvent::MouseEvent(MousePdu {
-                    wheel_events: if rotations.is_vertical {
-                        WheelEvents::VERTICAL_WHEEL
+                    flags: if rotations.is_vertical {
+                        PointerFlags::VERTICAL_WHEEL
                     } else {
-                        WheelEvents::HORIZONTAL_WHEEL
+                        PointerFlags::HORIZONTAL_WHEEL
                     },
-                    movement_events: MovementEvents::empty(),
-                    button_events: ButtonEvents::empty(),
                     number_of_wheel_rotation_units: rotations.rotation_units,
                     x_position: self.mouse_position.x,
                     y_position: self.mouse_position.y,
@@ -306,9 +298,7 @@ impl Database {
 
             let event = match MouseButtonFlags::from(MouseButton::from(button_id)) {
                 MouseButtonFlags::Button(flags) => FastPathInputEvent::MouseEvent(MousePdu {
-                    wheel_events: WheelEvents::empty(),
-                    movement_events: MovementEvents::empty(),
-                    button_events: flags,
+                    flags,
                     number_of_wheel_rotation_units: 0,
                     x_position: self.mouse_position.x,
                     y_position: self.mouse_position.y,
@@ -372,19 +362,19 @@ pub fn synchronize_event(scroll_lock: bool, num_lock: bool, caps_lock: bool, kan
 }
 
 enum MouseButtonFlags {
-    Button(ButtonEvents),
-    Pointer(PointerFlags),
+    Button(PointerFlags),
+    Pointer(PointerXFlags),
 }
 
 impl From<MouseButton> for MouseButtonFlags {
     fn from(value: MouseButton) -> Self {
         match value.0 {
-            MouseButton::LEFT_VAL => Self::Button(ButtonEvents::LEFT_BUTTON),
-            MouseButton::MIDDLE_VAL => Self::Button(ButtonEvents::MIDDLE_BUTTON_OR_WHEEL),
-            MouseButton::RIGHT_VAL => Self::Button(ButtonEvents::RIGHT_BUTTON),
-            MouseButton::X1_VAL => Self::Pointer(PointerFlags::BUTTON1),
-            MouseButton::X2_VAL => Self::Pointer(PointerFlags::BUTTON2),
-            _ => Self::Button(ButtonEvents::empty()),
+            MouseButton::LEFT_VAL => Self::Button(PointerFlags::LEFT_BUTTON),
+            MouseButton::MIDDLE_VAL => Self::Button(PointerFlags::MIDDLE_BUTTON_OR_WHEEL),
+            MouseButton::RIGHT_VAL => Self::Button(PointerFlags::RIGHT_BUTTON),
+            MouseButton::X1_VAL => Self::Pointer(PointerXFlags::BUTTON1),
+            MouseButton::X2_VAL => Self::Pointer(PointerXFlags::BUTTON2),
+            _ => Self::Button(PointerFlags::empty()),
         }
     }
 }

@@ -1,7 +1,7 @@
 use lazy_static::lazy_static;
 
 use super::fast_path::{FastPathInput, FastPathInputEvent};
-use crate::input::mouse::{ButtonEvents, MovementEvents, WheelEvents};
+use crate::input::mouse::PointerFlags;
 use crate::input::MousePdu;
 use crate::PduParsing;
 
@@ -14,49 +14,37 @@ const FASTPATH_INPUT_MESSAGE: [u8; 44] = [
 lazy_static! {
     pub static ref FASTPATH_INPUT: FastPathInput = FastPathInput(vec![
         FastPathInputEvent::MouseEvent(MousePdu {
-            wheel_events: WheelEvents::empty(),
-            movement_events: MovementEvents::empty(),
-            button_events: ButtonEvents::DOWN | ButtonEvents::LEFT_BUTTON,
+            flags: PointerFlags::DOWN | PointerFlags::LEFT_BUTTON,
             number_of_wheel_rotation_units: 0,
             x_position: 26,
             y_position: 1062
         }),
         FastPathInputEvent::MouseEvent(MousePdu {
-            wheel_events: WheelEvents::empty(),
-            movement_events: MovementEvents::MOVE,
-            button_events: ButtonEvents::empty(),
+            flags: PointerFlags::MOVE,
             number_of_wheel_rotation_units: 0,
             x_position: 27,
             y_position: 1062
         }),
         FastPathInputEvent::MouseEvent(MousePdu {
-            wheel_events: WheelEvents::empty(),
-            movement_events: MovementEvents::empty(),
-            button_events: ButtonEvents::LEFT_BUTTON,
+            flags: PointerFlags::LEFT_BUTTON,
             number_of_wheel_rotation_units: 0,
             x_position: 27,
             y_position: 1062
         }),
         FastPathInputEvent::MouseEvent(MousePdu {
-            wheel_events: WheelEvents::empty(),
-            movement_events: MovementEvents::MOVE,
-            button_events: ButtonEvents::empty(),
+            flags: PointerFlags::MOVE,
             number_of_wheel_rotation_units: 0,
             x_position: 26,
             y_position: 1063
         }),
         FastPathInputEvent::MouseEvent(MousePdu {
-            wheel_events: WheelEvents::empty(),
-            movement_events: MovementEvents::MOVE,
-            button_events: ButtonEvents::empty(),
+            flags: PointerFlags::MOVE,
             number_of_wheel_rotation_units: 0,
             x_position: 25,
             y_position: 1063
         }),
         FastPathInputEvent::MouseEvent(MousePdu {
-            wheel_events: WheelEvents::empty(),
-            movement_events: MovementEvents::MOVE,
-            button_events: ButtonEvents::empty(),
+            flags: PointerFlags::MOVE,
             number_of_wheel_rotation_units: 0,
             x_position: 25,
             y_position: 1064
