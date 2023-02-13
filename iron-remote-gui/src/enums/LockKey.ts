@@ -1,8 +1,10 @@
 ﻿export enum LockKey {
     CAPS_LOCK = "CapsLock",
-    NUMS_LOCK = "NumsLock",
+    NUM_LOCK = "NumLock",
     SCROLL_LOCK = "ScrollLock",
+    KANA_MODE = "KanaMode",
     "CapsLock" = CAPS_LOCK,
     "ScrollLock" = SCROLL_LOCK,
-    "NumsLock" = NUMS_LOCK,
+    "NumLock" = NUM_LOCK,
+    "KanaMode" = KANA_MODE
 }

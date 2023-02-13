@@ -20,7 +20,6 @@ export class WasmBridgeService implements ServerBridgeService {
     session?: Session;
 
     modifierKeyPressed: ModifierKey[] = [];
-    lockKeyPressed: LockKey[] = [];
 
     constructor() {
         this.resize = this._resize.asObservable();
@@ -65,7 +64,7 @@ export class WasmBridgeService implements ServerBridgeService {
             }
 
             if (LockKey[evt.code]) {
-                this.updateLockKeyState(evt);
+                this.syncModifier(evt);
             }
 
             if (!evt.repeat || (!ModifierKey[evt.code] && !LockKey[evt.code])) {
@@ -137,44 +136,13 @@ export class WasmBridgeService implements ServerBridgeService {
 
     syncModifier(evt: any): void {
         const mouseEvent = evt as MouseEvent;
-        const events = [];
-
-        let syncCapsLock_On = mouseEvent.getModifierState(LockKey.CAPS_LOCK) && this.lockKeyPressed.indexOf(LockKey.CAPS_LOCK) === -1;
-        let syncCapsLock_Off = !mouseEvent.getModifierState(LockKey.CAPS_LOCK) && this.lockKeyPressed.indexOf(LockKey.CAPS_LOCK) > -1;
-        let syncNumsLock_On = mouseEvent.getModifierState(LockKey.NUMS_LOCK) && this.lockKeyPressed.indexOf(LockKey.NUMS_LOCK) === -1;
-        let syncNumsLock_Off = !mouseEvent.getModifierState(LockKey.NUMS_LOCK) && this.lockKeyPressed.indexOf(LockKey.NUMS_LOCK) > -1;
-        let syncScrollLock_On = mouseEvent.getModifierState(LockKey.SCROLL_LOCK) && this.lockKeyPressed.indexOf(LockKey.SCROLL_LOCK) === -1;
-        let syncScrollLock_Off = !mouseEvent.getModifierState(LockKey.SCROLL_LOCK) && this.lockKeyPressed.indexOf(LockKey.SCROLL_LOCK) > -1;
-
-        if (syncCapsLock_On || syncCapsLock_Off) {
-            events.push(DeviceEvent.new_key_pressed(scanCode(LockKey.CAPS_LOCK, OS.WINDOWS)));
-            events.push(DeviceEvent.new_key_released(scanCode(LockKey.CAPS_LOCK, OS.WINDOWS)));
-            if (syncCapsLock_On) {
-                this.lockKeyPressed.push(LockKey.CAPS_LOCK);
-            } else {
-                this.lockKeyPressed.splice(this.lockKeyPressed.indexOf(LockKey.CAPS_LOCK), 1);
-            }
-        }
-        if (syncNumsLock_On || syncNumsLock_Off) {
-            events.push(DeviceEvent.new_key_pressed(scanCode(LockKey.NUMS_LOCK, OS.WINDOWS)));
-            events.push(DeviceEvent.new_key_released(scanCode(LockKey.NUMS_LOCK, OS.WINDOWS)));
-            if (syncNumsLock_On) {
-                this.lockKeyPressed.push(LockKey.NUMS_LOCK);
-            } else {
-                this.lockKeyPressed.splice(this.lockKeyPressed.indexOf(LockKey.NUMS_LOCK), 1);
-            }
-        }
-        if (syncScrollLock_On || syncScrollLock_Off) {
-            events.push(DeviceEvent.new_key_pressed(scanCode(LockKey.SCROLL_LOCK, OS.WINDOWS)));
-            events.push(DeviceEvent.new_key_released(scanCode(LockKey.SCROLL_LOCK, OS.WINDOWS)));
-            if (syncScrollLock_On) {
-                this.lockKeyPressed.push(LockKey.SCROLL_LOCK);
-            } else {
-                this.lockKeyPressed.splice(this.lockKeyPressed.indexOf(LockKey.SCROLL_LOCK), 1);
-            }
-        }
-
-        this.doTransactionFromDeviceEvents(events);
+        
+        let syncCapsLockActive = mouseEvent.getModifierState(LockKey.CAPS_LOCK);
+        let syncNumsLockActive = mouseEvent.getModifierState(LockKey.NUM_LOCK);
+        let syncScrollLockActive = mouseEvent.getModifierState(LockKey.SCROLL_LOCK);
+        let syncKanaModeActive = mouseEvent.getModifierState(LockKey.KANA_MODE);
+        
+        this.session.synchronize_lock_keys(syncScrollLockActive, syncNumsLockActive, syncCapsLockActive, syncKanaModeActive);
     }
 
     private updateModifierKeyState(evt) {
@@ -182,14 +150,6 @@ export class WasmBridgeService implements ServerBridgeService {
             this.modifierKeyPressed.push(ModifierKey[evt.code]);
         } else if (evt.type === 'keyup') {
             this.modifierKeyPressed.splice(this.modifierKeyPressed.indexOf(ModifierKey[evt.code]), 1);
-        }
-    }
-
-    private updateLockKeyState(evt) {
-        if (this.lockKeyPressed.indexOf(LockKey[evt.code]) === -1) {
-            this.lockKeyPressed.push(LockKey[evt.code]);
-        } else if (evt.type === 'keyup' && !evt.getModifierState(evt.code)) {
-            this.lockKeyPressed.splice(this.lockKeyPressed.indexOf(LockKey[evt.code]), 1);
         }
     }
 
