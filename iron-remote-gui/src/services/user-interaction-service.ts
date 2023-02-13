@@ -124,8 +124,8 @@ export class UserInteractionService {
     
     mouseWheel(event) {
         let vertical = event.deltaY !== 0;
-        let rotations = vertical ? Math.sign(event.deltaY) : Math.sign(event.deltaX);
-        this.serverBridge.mouseWheel(vertical, rotations);
+        let rotations = vertical ? event.deltaY : event.deltaX;
+        this.serverBridge.mouseWheel(vertical, -rotations);
     }
     
     exposedFunctions: IRGUserInteraction = {
