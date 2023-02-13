@@ -208,6 +208,10 @@
         userInteractionService.setMouseButtonState(state, isDown);
     }
     
+    function mouseWheel(evt) {
+        userInteractionService.mouseWheel(evt);
+    }
+    
     function setMouseIn(evt) {
         userInteractionService.mouseIn(evt);
     }
@@ -290,6 +294,7 @@
                     }
                 }
                 on:contextmenu={(event) => event.preventDefault()}
+                on:wheel={mouseWheel}
                 id="renderer"
         />
     </div>

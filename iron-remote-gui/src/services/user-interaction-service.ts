@@ -122,6 +122,12 @@ export class UserInteractionService {
         this.sessionEvent.next(event);
     }
     
+    mouseWheel(event) {
+        let vertical = event.deltaY !== 0;
+        let rotations = vertical ? Math.sign(event.deltaY) : Math.sign(event.deltaX);
+        this.serverBridge.mouseWheel(vertical, rotations);
+    }
+    
     exposedFunctions: IRGUserInteraction = {
         setMousePosition: this.setMousePosition.bind(this),
         setMouseButtonState: this.setMouseButtonState.bind(this),

@@ -144,6 +144,10 @@ export class WasmBridgeService implements ServerBridgeService {
         
         this.session.synchronize_lock_keys(syncScrollLockActive, syncNumsLockActive, syncCapsLockActive, syncKanaModeActive);
     }
+    
+    mouseWheel(vertical: boolean, rotation: number) {
+        this.doTransactionFromDeviceEvents([DeviceEvent.new_wheel_rotations(vertical, rotation)]);
+    }
 
     private updateModifierKeyState(evt) {
         if (this.modifierKeyPressed.indexOf(ModifierKey[evt.code]) === -1) {

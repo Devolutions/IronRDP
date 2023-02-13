@@ -66,5 +66,7 @@ export abstract class ServerBridgeService {
     abstract sendSpecialCombination(specialCombination: SpecialCombination):void;
     
     abstract syncModifier(evt: any): void;
+    
+    abstract mouseWheel(vertical: boolean, rotation: number): void;
 }
 
