@@ -28,7 +28,7 @@ fn mouse_buttons(#[case] button: MouseButton, #[case] expected_flag: MouseFlags)
                 wheel_events: WheelEvents::empty(),
                 movement_events: MovementEvents::empty(),
                 button_events: flags | ButtonEvents::DOWN,
-                number_of_wheel_rotations: 0,
+                number_of_wheel_rotation_units: 0,
                 x_position: 0,
                 y_position: 0,
             }),
@@ -51,7 +51,7 @@ fn mouse_buttons(#[case] button: MouseButton, #[case] expected_flag: MouseFlags)
                 wheel_events: WheelEvents::empty(),
                 movement_events: MovementEvents::empty(),
                 button_events: flags,
-                number_of_wheel_rotations: 0,
+                number_of_wheel_rotation_units: 0,
                 x_position: 0,
                 y_position: 0,
             }),
@@ -192,7 +192,7 @@ fn mouse_button_no_duplicate() {
             wheel_events: WheelEvents::empty(),
             movement_events: MovementEvents::empty(),
             button_events: ButtonEvents::LEFT_BUTTON | ButtonEvents::DOWN,
-            number_of_wheel_rotations: 0,
+            number_of_wheel_rotation_units: 0,
             x_position: 0,
             y_position: 0,
         }),
@@ -200,7 +200,7 @@ fn mouse_button_no_duplicate() {
             wheel_events: WheelEvents::empty(),
             movement_events: MovementEvents::empty(),
             button_events: ButtonEvents::RIGHT_BUTTON | ButtonEvents::DOWN,
-            number_of_wheel_rotations: 0,
+            number_of_wheel_rotation_units: 0,
             x_position: 0,
             y_position: 0,
         }),
@@ -208,7 +208,7 @@ fn mouse_button_no_duplicate() {
             wheel_events: WheelEvents::empty(),
             movement_events: MovementEvents::empty(),
             button_events: ButtonEvents::RIGHT_BUTTON,
-            number_of_wheel_rotations: 0,
+            number_of_wheel_rotation_units: 0,
             x_position: 0,
             y_position: 0,
         }),
@@ -216,7 +216,7 @@ fn mouse_button_no_duplicate() {
             wheel_events: WheelEvents::empty(),
             movement_events: MovementEvents::empty(),
             button_events: ButtonEvents::RIGHT_BUTTON | ButtonEvents::DOWN,
-            number_of_wheel_rotations: 0,
+            number_of_wheel_rotation_units: 0,
             x_position: 0,
             y_position: 0,
         }),
@@ -255,7 +255,7 @@ fn release_all() {
             wheel_events: WheelEvents::empty(),
             movement_events: MovementEvents::empty(),
             button_events: ButtonEvents::LEFT_BUTTON,
-            number_of_wheel_rotations: 0,
+            number_of_wheel_rotation_units: 0,
             x_position: 0,
             y_position: 0,
         }),
@@ -263,7 +263,7 @@ fn release_all() {
             wheel_events: WheelEvents::empty(),
             movement_events: MovementEvents::empty(),
             button_events: ButtonEvents::MIDDLE_BUTTON_OR_WHEEL,
-            number_of_wheel_rotations: 0,
+            number_of_wheel_rotation_units: 0,
             x_position: 0,
             y_position: 0,
         }),
@@ -298,4 +298,55 @@ fn sync_lock_keys(
     };
 
     assert_eq!(actual_flags, expected_flags);
+}
+
+#[test]
+fn wheel_rotations() {
+    let mut db = Database::default();
+
+    let ops = [
+        Operation::WheelRotations(WheelRotations {
+            is_vertical: false,
+            rotation_units: 2,
+        }),
+        Operation::WheelRotations(WheelRotations {
+            is_vertical: true,
+            rotation_units: -1,
+        }),
+        Operation::WheelRotations(WheelRotations {
+            is_vertical: false,
+            rotation_units: -1,
+        }),
+    ];
+
+    let actual_inputs = db.apply(ops);
+
+    let expected_inputs = [
+        FastPathInputEvent::MouseEvent(MousePdu {
+            wheel_events: WheelEvents::HORIZONTAL_WHEEL,
+            movement_events: MovementEvents::empty(),
+            button_events: ButtonEvents::empty(),
+            number_of_wheel_rotation_units: 2,
+            x_position: 0,
+            y_position: 0,
+        }),
+        FastPathInputEvent::MouseEvent(MousePdu {
+            wheel_events: WheelEvents::VERTICAL_WHEEL,
+            movement_events: MovementEvents::empty(),
+            button_events: ButtonEvents::empty(),
+            number_of_wheel_rotation_units: -1,
+            x_position: 0,
+            y_position: 0,
+        }),
+        FastPathInputEvent::MouseEvent(MousePdu {
+            wheel_events: WheelEvents::HORIZONTAL_WHEEL,
+            movement_events: MovementEvents::empty(),
+            button_events: ButtonEvents::empty(),
+            number_of_wheel_rotation_units: -1,
+            x_position: 0,
+            y_position: 0,
+        }),
+    ];
+
+    assert_eq!(actual_inputs.as_slice(), expected_inputs.as_slice());
 }

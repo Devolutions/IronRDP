@@ -17,7 +17,7 @@ lazy_static! {
             wheel_events: WheelEvents::empty(),
             movement_events: MovementEvents::empty(),
             button_events: ButtonEvents::DOWN | ButtonEvents::LEFT_BUTTON,
-            number_of_wheel_rotations: 0,
+            number_of_wheel_rotation_units: 0,
             x_position: 26,
             y_position: 1062
         }),
@@ -25,7 +25,7 @@ lazy_static! {
             wheel_events: WheelEvents::empty(),
             movement_events: MovementEvents::MOVE,
             button_events: ButtonEvents::empty(),
-            number_of_wheel_rotations: 0,
+            number_of_wheel_rotation_units: 0,
             x_position: 27,
             y_position: 1062
         }),
@@ -33,7 +33,7 @@ lazy_static! {
             wheel_events: WheelEvents::empty(),
             movement_events: MovementEvents::empty(),
             button_events: ButtonEvents::LEFT_BUTTON,
-            number_of_wheel_rotations: 0,
+            number_of_wheel_rotation_units: 0,
             x_position: 27,
             y_position: 1062
         }),
@@ -41,7 +41,7 @@ lazy_static! {
             wheel_events: WheelEvents::empty(),
             movement_events: MovementEvents::MOVE,
             button_events: ButtonEvents::empty(),
-            number_of_wheel_rotations: 0,
+            number_of_wheel_rotation_units: 0,
             x_position: 26,
             y_position: 1063
         }),
@@ -49,7 +49,7 @@ lazy_static! {
             wheel_events: WheelEvents::empty(),
             movement_events: MovementEvents::MOVE,
             button_events: ButtonEvents::empty(),
-            number_of_wheel_rotations: 0,
+            number_of_wheel_rotation_units: 0,
             x_position: 25,
             y_position: 1063
         }),
@@ -57,7 +57,7 @@ lazy_static! {
             wheel_events: WheelEvents::empty(),
             movement_events: MovementEvents::MOVE,
             button_events: ButtonEvents::empty(),
-            number_of_wheel_rotations: 0,
+            number_of_wheel_rotation_units: 0,
             x_position: 25,
             y_position: 1064
         })

@@ -13,7 +13,7 @@ pub struct MousePdu {
     pub wheel_events: WheelEvents,
     pub movement_events: MovementEvents,
     pub button_events: ButtonEvents,
-    pub number_of_wheel_rotations: i16,
+    pub number_of_wheel_rotation_units: i16,
     pub x_position: u16,
     pub y_position: u16,
 }
@@ -27,9 +27,10 @@ impl PduParsing for MousePdu {
         let wheel_events = WheelEvents::from_bits_truncate(pointer_flags);
         let movement_events = MovementEvents::from_bits_truncate(pointer_flags);
         let button_events = ButtonEvents::from_bits_truncate(pointer_flags);
-        let mut number_of_wheel_rotations = (pointer_flags & WHEEL_ROTATION_MASK) as i16;
+
+        let mut number_of_wheel_rotation_units = i16::try_from(pointer_flags & WHEEL_ROTATION_MASK).unwrap();
         if wheel_events.contains(WheelEvents::WHEEL_NEGATIVE) {
-            number_of_wheel_rotations *= -1;
+            number_of_wheel_rotation_units *= -1;
         }
 
         let x_position = stream.read_u16::<LittleEndian>()?;
@@ -39,25 +40,25 @@ impl PduParsing for MousePdu {
             wheel_events,
             movement_events,
             button_events,
-            number_of_wheel_rotations,
+            number_of_wheel_rotation_units,
             x_position,
             y_position,
         })
     }
 
     fn to_buffer(&self, mut stream: impl io::Write) -> Result<(), Self::Error> {
-        let wheel_negative_flag = if self.number_of_wheel_rotations < 0 {
+        let wheel_negative_flag = if self.number_of_wheel_rotation_units < 0 {
             WheelEvents::WHEEL_NEGATIVE
         } else {
             WheelEvents::empty()
         };
-        let number_of_wheel_rotations = self.number_of_wheel_rotations as u16 & !WHEEL_ROTATION_MASK;
+        let number_of_wheel_rotation_units = self.number_of_wheel_rotation_units as u16 & !WHEEL_ROTATION_MASK;
 
         let flags = self.wheel_events.bits()
             | self.movement_events.bits()
             | self.button_events.bits()
             | wheel_negative_flag.bits()
-            | number_of_wheel_rotations;
+            | number_of_wheel_rotation_units;
 
         stream.write_u16::<LittleEndian>(flags)?;
         stream.write_u16::<LittleEndian>(self.x_position)?;

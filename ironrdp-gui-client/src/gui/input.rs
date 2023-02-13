@@ -68,7 +68,7 @@ pub fn translate_input_event(
                         wheel_events: WheelEvents::empty(),
                         movement_events: MovementEvents::empty(),
                         button_events,
-                        number_of_wheel_rotations: 0,
+                        number_of_wheel_rotation_units: 0,
                     };
 
                     Some(FastPathInputEvent::MouseEvent(pdu))
@@ -85,7 +85,7 @@ pub fn translate_input_event(
                     wheel_events: WheelEvents::empty(),
                     movement_events: MovementEvents::MOVE,
                     button_events: ButtonEvents::empty(),
-                    number_of_wheel_rotations: 0,
+                    number_of_wheel_rotation_units: 0,
                 };
 
                 Some(FastPathInputEvent::MouseEvent(pdu))

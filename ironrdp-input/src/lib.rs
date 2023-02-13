@@ -6,7 +6,6 @@ use ironrdp_core::input::mouse_x::PointerFlags;
 use ironrdp_core::input::{MousePdu, MouseXPdu};
 use smallvec::SmallVec;
 
-// TODO: mouse wheel
 // TODO: unicode keyboard event support
 
 /// Number associated to a mouse button.
@@ -104,11 +103,19 @@ pub struct MousePosition {
     pub y: u16,
 }
 
+/// Mouse wheel rotations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct WheelRotations {
+    pub is_vertical: bool,
+    pub rotation_units: i16, // NOTE: max value is 0x01FF
+}
+
 #[derive(Debug, Clone)]
 pub enum Operation {
     MouseButtonPressed(MouseButton),
     MouseButtonReleased(MouseButton),
     MouseMove(MousePosition),
+    WheelRotations(WheelRotations),
     KeyPressed(Scancode),
     KeyReleased(Scancode),
 }
@@ -187,7 +194,7 @@ impl Database {
                                 wheel_events: WheelEvents::empty(),
                                 movement_events: MovementEvents::empty(),
                                 button_events: ButtonEvents::DOWN | flags,
-                                number_of_wheel_rotations: 0,
+                                number_of_wheel_rotation_units: 0,
                                 x_position: self.mouse_position.x,
                                 y_position: self.mouse_position.y,
                             }),
@@ -214,7 +221,7 @@ impl Database {
                                 wheel_events: WheelEvents::empty(),
                                 movement_events: MovementEvents::empty(),
                                 button_events: flags,
-                                number_of_wheel_rotations: 0,
+                                number_of_wheel_rotation_units: 0,
                                 x_position: self.mouse_position.x,
                                 y_position: self.mouse_position.y,
                             }),
@@ -235,12 +242,24 @@ impl Database {
                             wheel_events: WheelEvents::empty(),
                             movement_events: MovementEvents::MOVE,
                             button_events: ButtonEvents::empty(),
-                            number_of_wheel_rotations: 0,
+                            number_of_wheel_rotation_units: 0,
                             x_position: position.x,
                             y_position: position.y,
                         }))
                     }
                 }
+                Operation::WheelRotations(rotations) => events.push(FastPathInputEvent::MouseEvent(MousePdu {
+                    wheel_events: if rotations.is_vertical {
+                        WheelEvents::VERTICAL_WHEEL
+                    } else {
+                        WheelEvents::HORIZONTAL_WHEEL
+                    },
+                    movement_events: MovementEvents::empty(),
+                    button_events: ButtonEvents::empty(),
+                    number_of_wheel_rotation_units: rotations.rotation_units,
+                    x_position: self.mouse_position.x,
+                    y_position: self.mouse_position.y,
+                })),
                 Operation::KeyPressed(scancode) => {
                     let was_pressed = self.keyboard.replace(scancode.as_idx(), true);
 
@@ -290,7 +309,7 @@ impl Database {
                     wheel_events: WheelEvents::empty(),
                     movement_events: MovementEvents::empty(),
                     button_events: flags,
-                    number_of_wheel_rotations: 0,
+                    number_of_wheel_rotation_units: 0,
                     x_position: self.mouse_position.x,
                     y_position: self.mouse_position.y,
                 }),
