@@ -20,11 +20,13 @@ The core of the web client is to be found in `iron-remote-gui` folder provided a
 
 #### Devolutions Gateway setup
 
-Web client is using a special extension to RDP protocol that is only supported in the latest Devolutions Gateway builds.
+Web client is using a special extension to RDP protocol.
+This extension is available starting Devolutions Gateway v2023.1.1.
+However, this version not yet officially published.
 
-You can either:
+Therefore, you need to either:
 
-- Download a binary prebuilt from master such as [this one](https://devolutions.sharepoint.com/:f:/s/Prereleases/Ei4GzG25BWhKtmrJiurIjDEBkd8j1VWy4fzaWR42ew4f8g?e=H3bFFM).
+- Download a binary prebuilt from master such as [this one](https://devolutions.sharepoint.com/:f:/s/Prereleases/En3Y3T3OIuFFpYknTZYZfIYBXo_OpCubXBKd8wpjZ7Qrtg?e=MBVz53).
 - Build [master](https://github.com/Devolutions/devolutions-gateway/tree/master) yourself.
   Simply [install the Rust toolchain](https://rustup.rs/) and run `cargo build --release`. Binary will be found in the `./target/release` folder.
 
