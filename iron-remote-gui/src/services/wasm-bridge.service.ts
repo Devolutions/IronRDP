@@ -103,7 +103,10 @@ export class WasmBridgeService implements ServerBridgeService {
             map((session: Session) => {
                 from(session.run()).pipe(
                     catchError(err => {
-                        userInteractionService.raiseSessionEvent(err);
+                        userInteractionService.raiseSessionEvent({
+                            type: SessionEventType.ERROR,
+                            data: err
+                        });
                         return of(err);
                     })
                 ).subscribe(() => {
