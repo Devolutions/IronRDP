@@ -1,21 +1,21 @@
 use ironrdp_core::input::fast_path::{FastPathInputEvent, KeyboardFlags, SynchronizeFlags};
-use ironrdp_core::input::mouse::{ButtonEvents, MovementEvents, WheelEvents};
-use ironrdp_core::input::mouse_x::PointerFlags;
+use ironrdp_core::input::mouse::PointerFlags;
+use ironrdp_core::input::mouse_x::PointerXFlags;
 use ironrdp_core::input::{MousePdu, MouseXPdu};
 use ironrdp_input::*;
 use rstest::rstest;
 
 enum MouseFlags {
-    Button(ButtonEvents),
-    Pointer(PointerFlags),
+    Button(PointerFlags),
+    Pointer(PointerXFlags),
 }
 
 #[rstest]
-#[case::left(MouseButton::LEFT, MouseFlags::Button(ButtonEvents::LEFT_BUTTON))]
-#[case::middle(MouseButton::MIDDLE, MouseFlags::Button(ButtonEvents::MIDDLE_BUTTON_OR_WHEEL))]
-#[case::right(MouseButton::RIGHT, MouseFlags::Button(ButtonEvents::RIGHT_BUTTON))]
-#[case::x1(MouseButton::X1, MouseFlags::Pointer(PointerFlags::BUTTON1))]
-#[case::x2(MouseButton::X2, MouseFlags::Pointer(PointerFlags::BUTTON2))]
+#[case::left(MouseButton::LEFT, MouseFlags::Button(PointerFlags::LEFT_BUTTON))]
+#[case::middle(MouseButton::MIDDLE, MouseFlags::Button(PointerFlags::MIDDLE_BUTTON_OR_WHEEL))]
+#[case::right(MouseButton::RIGHT, MouseFlags::Button(PointerFlags::RIGHT_BUTTON))]
+#[case::x1(MouseButton::X1, MouseFlags::Pointer(PointerXFlags::BUTTON1))]
+#[case::x2(MouseButton::X2, MouseFlags::Pointer(PointerXFlags::BUTTON2))]
 fn mouse_buttons(#[case] button: MouseButton, #[case] expected_flag: MouseFlags) {
     let mut db = Database::default();
 
@@ -25,15 +25,13 @@ fn mouse_buttons(#[case] button: MouseButton, #[case] expected_flag: MouseFlags)
 
         let expected_input_event = match expected_flag {
             MouseFlags::Button(flags) => FastPathInputEvent::MouseEvent(MousePdu {
-                wheel_events: WheelEvents::empty(),
-                movement_events: MovementEvents::empty(),
-                button_events: flags | ButtonEvents::DOWN,
+                flags: flags | PointerFlags::DOWN,
                 number_of_wheel_rotation_units: 0,
                 x_position: 0,
                 y_position: 0,
             }),
             MouseFlags::Pointer(flags) => FastPathInputEvent::MouseEventEx(MouseXPdu {
-                flags: flags | PointerFlags::DOWN,
+                flags: flags | PointerXFlags::DOWN,
                 x_position: 0,
                 y_position: 0,
             }),
@@ -48,9 +46,7 @@ fn mouse_buttons(#[case] button: MouseButton, #[case] expected_flag: MouseFlags)
 
         let expected_input_event = match expected_flag {
             MouseFlags::Button(flags) => FastPathInputEvent::MouseEvent(MousePdu {
-                wheel_events: WheelEvents::empty(),
-                movement_events: MovementEvents::empty(),
-                button_events: flags,
+                flags,
                 number_of_wheel_rotation_units: 0,
                 x_position: 0,
                 y_position: 0,
@@ -189,33 +185,25 @@ fn mouse_button_no_duplicate() {
 
     let expected_inputs = [
         FastPathInputEvent::MouseEvent(MousePdu {
-            wheel_events: WheelEvents::empty(),
-            movement_events: MovementEvents::empty(),
-            button_events: ButtonEvents::LEFT_BUTTON | ButtonEvents::DOWN,
+            flags: PointerFlags::LEFT_BUTTON | PointerFlags::DOWN,
             number_of_wheel_rotation_units: 0,
             x_position: 0,
             y_position: 0,
         }),
         FastPathInputEvent::MouseEvent(MousePdu {
-            wheel_events: WheelEvents::empty(),
-            movement_events: MovementEvents::empty(),
-            button_events: ButtonEvents::RIGHT_BUTTON | ButtonEvents::DOWN,
+            flags: PointerFlags::RIGHT_BUTTON | PointerFlags::DOWN,
             number_of_wheel_rotation_units: 0,
             x_position: 0,
             y_position: 0,
         }),
         FastPathInputEvent::MouseEvent(MousePdu {
-            wheel_events: WheelEvents::empty(),
-            movement_events: MovementEvents::empty(),
-            button_events: ButtonEvents::RIGHT_BUTTON,
+            flags: PointerFlags::RIGHT_BUTTON,
             number_of_wheel_rotation_units: 0,
             x_position: 0,
             y_position: 0,
         }),
         FastPathInputEvent::MouseEvent(MousePdu {
-            wheel_events: WheelEvents::empty(),
-            movement_events: MovementEvents::empty(),
-            button_events: ButtonEvents::RIGHT_BUTTON | ButtonEvents::DOWN,
+            flags: PointerFlags::RIGHT_BUTTON | PointerFlags::DOWN,
             number_of_wheel_rotation_units: 0,
             x_position: 0,
             y_position: 0,
@@ -252,17 +240,13 @@ fn release_all() {
 
     let expected_inputs = [
         FastPathInputEvent::MouseEvent(MousePdu {
-            wheel_events: WheelEvents::empty(),
-            movement_events: MovementEvents::empty(),
-            button_events: ButtonEvents::LEFT_BUTTON,
+            flags: PointerFlags::LEFT_BUTTON,
             number_of_wheel_rotation_units: 0,
             x_position: 0,
             y_position: 0,
         }),
         FastPathInputEvent::MouseEvent(MousePdu {
-            wheel_events: WheelEvents::empty(),
-            movement_events: MovementEvents::empty(),
-            button_events: ButtonEvents::MIDDLE_BUTTON_OR_WHEEL,
+            flags: PointerFlags::MIDDLE_BUTTON_OR_WHEEL,
             number_of_wheel_rotation_units: 0,
             x_position: 0,
             y_position: 0,
@@ -323,25 +307,19 @@ fn wheel_rotations() {
 
     let expected_inputs = [
         FastPathInputEvent::MouseEvent(MousePdu {
-            wheel_events: WheelEvents::HORIZONTAL_WHEEL,
-            movement_events: MovementEvents::empty(),
-            button_events: ButtonEvents::empty(),
+            flags: PointerFlags::HORIZONTAL_WHEEL,
             number_of_wheel_rotation_units: 2,
             x_position: 0,
             y_position: 0,
         }),
         FastPathInputEvent::MouseEvent(MousePdu {
-            wheel_events: WheelEvents::VERTICAL_WHEEL,
-            movement_events: MovementEvents::empty(),
-            button_events: ButtonEvents::empty(),
+            flags: PointerFlags::VERTICAL_WHEEL,
             number_of_wheel_rotation_units: -1,
             x_position: 0,
             y_position: 0,
         }),
         FastPathInputEvent::MouseEvent(MousePdu {
-            wheel_events: WheelEvents::HORIZONTAL_WHEEL,
-            movement_events: MovementEvents::empty(),
-            button_events: ButtonEvents::empty(),
+            flags: PointerFlags::HORIZONTAL_WHEEL,
             number_of_wheel_rotation_units: -1,
             x_position: 0,
             y_position: 0,
