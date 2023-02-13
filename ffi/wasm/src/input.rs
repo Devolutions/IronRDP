@@ -1,4 +1,4 @@
-use ironrdp_input::{MouseButton, MousePosition, Operation, Scancode};
+use ironrdp_input::{MouseButton, MousePosition, Operation, Scancode, WheelRotations};
 use smallvec::SmallVec;
 use wasm_bindgen::prelude::*;
 
@@ -18,6 +18,13 @@ impl DeviceEvent {
 
     pub fn new_mouse_move(x: u16, y: u16) -> Self {
         Self(Operation::MouseMove(MousePosition { x, y }))
+    }
+
+    pub fn new_wheel_rotations(vertical: bool, rotation_units: i16) -> Self {
+        Self(Operation::WheelRotations(WheelRotations {
+            is_vertical: vertical,
+            rotation_units,
+        }))
     }
 
     pub fn new_key_pressed(scancode: u16) -> Self {
