@@ -14,6 +14,7 @@ use sspi::AuthIdentity;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::spawn_local;
 
+use crate::error::IronRdpError;
 use crate::image::RectInfo;
 use crate::input::InputTransaction;
 use crate::network_client::PlaceholderNetworkClientFactory;
@@ -70,7 +71,7 @@ impl SessionBuilder {
         self.clone()
     }
 
-    pub async fn connect(&self) -> Result<Session, String> {
+    pub async fn connect(&self) -> Result<Session, IronRdpError> {
         let (username, password, address, auth_token, update_callback, update_callback_context);
 
         {
@@ -87,7 +88,7 @@ impl SessionBuilder {
 
         let input_config = build_input_config(username, password, None);
 
-        let ws = WebSocketCompat::new(WebSocket::open(&address).map_err(|e| e.to_string())?);
+        let ws = WebSocketCompat::new(WebSocket::open(&address).context("Couldn’t open WebSocket")?);
 
         let (connection_sequence_result, rdp_reader, rdp_writer) = process_connection_sequence(
             ws,
@@ -96,8 +97,7 @@ impl SessionBuilder {
             &input_config,
             Box::new(PlaceholderNetworkClientFactory),
         )
-        .await
-        .map_err(|e| anyhow::Error::new(e).to_string())?;
+        .await?;
 
         info!("Connected!");
 
@@ -130,12 +130,12 @@ pub struct Session {
 
 #[wasm_bindgen]
 impl Session {
-    pub async fn run(&self) -> Result<(), String> {
+    pub async fn run(&self) -> Result<(), IronRdpError> {
         let mut rdp_reader = self
             .rdp_reader
             .borrow_mut()
             .take()
-            .ok_or_else(|| "RDP session can be started only once".to_owned())?;
+            .context("RDP session can be started only once")?;
 
         info!("Start RDP session");
 
@@ -154,11 +154,13 @@ impl Session {
                 let frame = rdp_reader
                     .read_frame()
                     .await
-                    .map_err(|e| e.to_string())?
-                    .ok_or_else(|| RdpError::AccessDenied.to_string())?
+                    .context("Read next frame")?
+                    .ok_or_else(|| RdpError::AccessDenied)?
                     .freeze();
 
-                active_stage.process(&mut image, frame).map_err(|e| e.to_string())?
+                active_stage
+                    .process(&mut image, frame)
+                    .context("Active stage processing")?
             };
 
             for out in outputs {
@@ -167,7 +169,7 @@ impl Session {
                         // PERF: unnecessary copy
                         self.writer_tx
                             .unbounded_send(frame.to_vec())
-                            .map_err(|e| e.to_string())?;
+                            .context("Send frame to writer task")?;
                     }
                     ActiveStageOutput::GraphicsUpdate(_updated_region) => {
                         // FIXME: atm sending a partial is not working
@@ -185,8 +187,7 @@ impl Session {
                             },
                             image.data().to_vec(),
                         )
-                        .context("Failed to send update rectangle")
-                        .map_err(|e| e.to_string())?;
+                        .context("Failed to send update rectangle")?;
 
                         frame_id += 1;
                     }
@@ -210,12 +211,12 @@ impl Session {
         }
     }
 
-    pub fn apply_inputs(&self, transaction: InputTransaction) -> Result<(), String> {
+    pub fn apply_inputs(&self, transaction: InputTransaction) -> Result<(), IronRdpError> {
         let inputs = self.input_database.borrow_mut().apply(transaction);
         self.h_send_inputs(inputs)
     }
 
-    pub fn release_all_inputs(&self) -> Result<(), String> {
+    pub fn release_all_inputs(&self) -> Result<(), IronRdpError> {
         let inputs = self.input_database.borrow_mut().release_all();
         self.h_send_inputs(inputs)
     }
@@ -223,7 +224,7 @@ impl Session {
     fn h_send_inputs(
         &self,
         inputs: smallvec::SmallVec<[ironrdp::core::input::fast_path::FastPathInputEvent; 2]>,
-    ) -> Result<(), String> {
+    ) -> Result<(), IronRdpError> {
         use ironrdp::core::input::fast_path::FastPathInput;
         use ironrdp::core::PduParsing as _;
 
@@ -234,9 +235,11 @@ impl Session {
             let fastpath_input = FastPathInput(inputs.into_vec());
 
             let mut frame = Vec::new();
-            fastpath_input.to_buffer(&mut frame).map_err(|e| e.to_string())?;
+            fastpath_input.to_buffer(&mut frame).context("FastPathInput encoding")?;
 
-            self.writer_tx.unbounded_send(frame).map_err(|e| e.to_string())?;
+            self.writer_tx
+                .unbounded_send(frame)
+                .context("Send frame to writer task")?;
         }
 
         Ok(())
@@ -248,7 +251,7 @@ impl Session {
         num_lock: bool,
         caps_lock: bool,
         kana_lock: bool,
-    ) -> Result<(), String> {
+    ) -> Result<(), IronRdpError> {
         use ironrdp::core::input::fast_path::FastPathInput;
         use ironrdp::core::PduParsing as _;
 
@@ -256,9 +259,11 @@ impl Session {
         let fastpath_input = FastPathInput(vec![event]);
 
         let mut frame = Vec::new();
-        fastpath_input.to_buffer(&mut frame).map_err(|e| e.to_string())?;
+        fastpath_input.to_buffer(&mut frame).context("FastPathInput encoding")?;
 
-        self.writer_tx.unbounded_send(frame).map_err(|e| e.to_string())?;
+        self.writer_tx
+            .unbounded_send(frame)
+            .context("Send frame to writer task")?;
 
         Ok(())
     }

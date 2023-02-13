@@ -155,7 +155,7 @@ where
     // NOTE: IronRDP is only supporting extended security (TLS…).
 
     if selected_protocol == ironrdp_core::SecurityProtocol::RDP {
-        return Err(RdpError::ConnectionError(io::Error::new(
+        return Err(RdpError::Connection(io::Error::new(
             io::ErrorKind::Other,
             "Standard RDP Security (RC4 encryption) is not supported",
         )));
@@ -292,7 +292,7 @@ where
     // NOTE: IronRDP is only supporting extended security (TLS…).
 
     if selected_protocol == ironrdp_core::SecurityProtocol::RDP {
-        return Err(RdpError::ConnectionError(io::Error::new(
+        return Err(RdpError::Connection(io::Error::new(
             io::ErrorKind::Other,
             "Standard RDP Security (RC4 encryption) is not supported",
         )));
@@ -373,14 +373,12 @@ pub async fn process_cred_ssp(
         }),
         service_principal_name,
     )
-    .map_err(RdpError::CredSspError)?;
+    .map_err(RdpError::CredSsp)?;
 
     let mut next_ts_request = credssp::TsRequest::default();
 
     loop {
-        let result = cred_ssp_client
-            .process(next_ts_request)
-            .map_err(RdpError::CredSspError)?;
+        let result = cred_ssp_client.process(next_ts_request).map_err(RdpError::CredSsp)?;
         debug!("Got CredSSP TSRequest: {:x?}", result);
 
         match result {
@@ -526,7 +524,7 @@ pub async fn settings_exchange(
     let mut buf_writer = BytesMut::with_capacity(client_info_pdu.buffer_length()).writer();
     client_info_pdu
         .to_buffer(&mut buf_writer)
-        .map_err(RdpError::ServerLicenseError)?;
+        .map_err(RdpError::ServerLicense)?;
     let buf = buf_writer.into_inner();
 
     encode_next_frame(
@@ -574,7 +572,7 @@ pub async fn server_licensing_exchange(
                 config.credentials.domain.as_deref().unwrap_or(""),
             )
             .map_err(|err| {
-                RdpError::IOError(io::Error::new(
+                RdpError::Io(io::Error::new(
                     io::ErrorKind::InvalidData,
                     format!("Unable to generate Client New License Request from Server License Request: {err}"),
                 ))
@@ -613,7 +611,7 @@ pub async fn server_licensing_exchange(
         &encryption_data,
     )
     .map_err(|err| {
-        RdpError::ServerLicenseError(rdp::RdpError::IOError(io::Error::new(
+        RdpError::ServerLicense(rdp::RdpError::IOError(io::Error::new(
             io::ErrorKind::InvalidData,
             format!("Unable to generate Client Platform Challenge Response {err}"),
         )))
@@ -637,7 +635,7 @@ pub async fn server_licensing_exchange(
         .decode_next_frame::<SendPduDataFrame<ServerUpgradeLicense>>()
         .await
     {
-        Err(RdpError::ServerLicenseError(rdp::RdpError::ServerLicenseError(
+        Err(RdpError::ServerLicense(rdp::RdpError::ServerLicenseError(
             rdp::server_license::ServerLicenseError::UnexpectedValidClientError(_),
         ))) => {
             warn!("The server has returned STATUS_VALID_CLIENT unexpectedly");
@@ -654,7 +652,7 @@ pub async fn server_licensing_exchange(
     trace!("{:?}", upgrade_license);
 
     upgrade_license.verify_server_license(&encryption_data).map_err(|err| {
-        RdpError::ServerLicenseError(rdp::RdpError::IOError(io::Error::new(
+        RdpError::ServerLicense(rdp::RdpError::IOError(io::Error::new(
             io::ErrorKind::InvalidData,
             format!("License verification failed: {err:?}"),
         )))
@@ -808,7 +806,7 @@ pub async fn connection_finalization(
                 ))),
             ) => order,
             (_, ShareDataPdu::ServerSetErrorInfo(ServerSetErrorInfoPdu(e))) => {
-                return Err(RdpError::ServerError(e.description()));
+                return Err(RdpError::Server(e.description()));
             }
             (order, pdu) => {
                 return Err(RdpError::UnexpectedPdu(format!(
@@ -843,7 +841,7 @@ pub async fn write_credssp_ts_request(
 
     ts_request
         .encode_ts_request(buf.as_mut())
-        .map_err(RdpError::TsRequestError)?;
+        .map_err(RdpError::TsRequest)?;
 
     stream.write_all(buf.as_ref()).await?;
     stream.flush().await?;
@@ -862,7 +860,7 @@ pub async fn read_credssp_ts_request(mut stream: impl AsyncRead + Unpin) -> Resu
     buf.resize(ts_request_buffer_length, 0x00);
     stream.read_exact(&mut buf[MAX_TS_REQUEST_LENGTH_BUFFER_SIZE..]).await?;
 
-    let ts_request = credssp::TsRequest::from_buffer(buf.as_ref()).map_err(RdpError::TsRequestError)?;
+    let ts_request = credssp::TsRequest::from_buffer(buf.as_ref()).map_err(RdpError::TsRequest)?;
 
     Ok(ts_request)
 }
@@ -874,7 +872,7 @@ pub async fn read_early_user_auth_result(
     buf.resize(credssp::EARLY_USER_AUTH_RESULT_PDU_SIZE, 0x00);
     stream.read_exact(&mut buf).await?;
     let early_user_auth_result =
-        credssp::EarlyUserAuthResult::from_buffer(buf.as_ref()).map_err(RdpError::EarlyUserAuthResultError)?;
+        credssp::EarlyUserAuthResult::from_buffer(buf.as_ref()).map_err(RdpError::EarlyUserAuthResult)?;
 
     Ok(early_user_auth_result)
 }
@@ -941,11 +939,11 @@ pub async fn connection_initiation<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
 
     // FIXME: replace "10.10.0.6" by the actual destination host (found in the proxy auth token)
     let rdp_clean_path = RDCleanPathPdu::new_request(x224_pdu, "10.10.0.6".into(), proxy_auth_token, None)
-        .map_err(|e| RdpError::ServerError(e.to_string()))?;
+        .map_err(|e| RdpError::Server(e.to_string()))?;
     debug!("Send RDCleanPath PDU request: {:?}", connection_request);
 
     let request_bytes = rdp_clean_path.to_der().map_err(|e| {
-        RdpError::ConnectionError(io::Error::new(
+        RdpError::Connection(io::Error::new(
             io::ErrorKind::Other,
             format!("couldn’t encode cleanpath request into der: {e}"),
         ))
@@ -957,7 +955,7 @@ pub async fn connection_initiation<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
     let (reader, buf) = reader.get_inner_mut();
 
     let cleanpath_pdu = loop {
-        if let Some(pdu) = RDCleanPathPdu::decode(buf).map_err(|e| RdpError::ServerError(e.to_string()))? {
+        if let Some(pdu) = RDCleanPathPdu::decode(buf).map_err(|e| RdpError::Server(e.to_string()))? {
             break pdu;
         }
 
@@ -989,14 +987,14 @@ pub async fn connection_initiation<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
                 .server_cert_chain
                 .and_then(|chain| chain.into_iter().next())
                 .ok_or_else(|| {
-                    RdpError::ConnectionError(io::Error::new(
+                    RdpError::Connection(io::Error::new(
                         io::ErrorKind::Other,
                         "cleanpath response is missing the server cert chain",
                     ))
                 })?;
 
             let cert = x509_cert::Certificate::from_der(cert_der.as_bytes()).map_err(|e| {
-                RdpError::ConnectionError(io::Error::new(
+                RdpError::Connection(io::Error::new(
                     io::ErrorKind::Other,
                     format!("couldn’t decode x509 certificate sent by Devolutions Gateway: {e}"),
                 ))
@@ -1007,14 +1005,14 @@ pub async fn connection_initiation<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
             let server_addr = cleanpath_pdu
                 .server_addr
                 .ok_or_else(|| {
-                    RdpError::ConnectionError(io::Error::new(
+                    RdpError::Connection(io::Error::new(
                         io::ErrorKind::Other,
                         "cleanpath response is missing the server address",
                     ))
                 })?
                 .parse()
                 .map_err(|e| {
-                    RdpError::ConnectionError(io::Error::new(
+                    RdpError::Connection(io::Error::new(
                         io::ErrorKind::Other,
                         format!("couldn’t parse server address sent by Devolutions Gateway: {e}"),
                     ))

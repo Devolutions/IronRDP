@@ -29,9 +29,7 @@ impl MessagePassingGfxHandler {
 
 impl GfxHandler for MessagePassingGfxHandler {
     fn on_message(&self, message: ServerPdu) -> Result<Option<ironrdp::dvc::gfx::ClientPdu>, RdpError> {
-        self.channel
-            .send(message)
-            .map_err(|e| RdpError::SendError(e.to_string()))?;
+        self.channel.send(message).map_err(|e| RdpError::Send(e.to_string()))?;
         Ok(None)
     }
 }
