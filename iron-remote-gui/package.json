@@ -7,7 +7,7 @@
     "Zacharia Ellaham"
   ],
   "description": "Web Component providing agnostic implementation for Iron Wasm base client.",
-  "version": "0.1.0",
+  "version": "0.3.0",
   "type": "module",
   "private": true,
   "scripts": {
