@@ -3,6 +3,8 @@
     import {catchError, filter} from "rxjs/operators";
     import type {IRGUserInteraction, NewSessionInfo} from '../../../static/iron-remote-gui';
     import {of} from 'rxjs';
+    import {toast} from '$lib/messages/message-store';
+    import {showLogin} from '$lib/login/login-store';
 
     let username = "Administrator";
     let password = "DevoLabs123!";
@@ -22,19 +24,25 @@
 
     const initListeners = () => {
         userInteraction.sessionListener.subscribe(event => {
-            console.error(`Iron-Remote-Gui Error: `, event);
-            toastMessage = event.data;
-            ui('#toast-error');
+            console.error(`Iron-Remote-Gui: `, event);
+            toast.set({
+                type: 'error',
+                message: event.data
+            });
         });
     }
     const StartSession = () => {
-        toastMessage = 'Connection in progress...';
-        ui('#toast');
+        toast.set({
+            type: 'info',
+            message: 'Connection in progress...'
+        });
         userInteraction.connect(username, password, host, authtoken)
             .pipe(
                 catchError(err => {
-                    toastMessage = err;
-                    ui('#toast');
+                    toast.set({
+                        type: 'info',
+                        message: err
+                    });
                     return of(null);
                 }),
                 filter(result => !!result)
@@ -42,24 +50,32 @@
             .subscribe((start_info: NewSessionInfo) => {
 
                 if (import.meta.env.MODE === 'tauri' && start_info.websocket_port && start_info.websocket_port > 0) { //Tauri only
-                    toastMessage = 'Success';
-                    ui('#toast');
+                    toast.set({
+                        type: 'info',
+                        message: 'Success'
+                    });
                     currentSession.update(session => Object.assign(session, {
                         sessionId: start_info.session_id,
                         desktopSize: start_info.initial_desktop_size,
                         active: true
                     }));
+                    showLogin.set(false);
                 } else if (start_info.initial_desktop_size !== null) { //Browser
-                    toastMessage = 'Success';
-                    ui('#toast');
+                    toast.set({
+                        type: 'info',
+                        message: 'Success'
+                    });
                     currentSession.update(session => Object.assign(session, {
                         sessionId: start_info.session_id,
                         desktopSize: start_info.initial_desktop_size,
                         active: true
                     }));
+                    showLogin.set(false);
                 } else {
-                    toastMessage = 'Failure';
-                    ui('#toast');
+                    toast.set({
+                        type: 'error',
+                        message: 'Failure'
+                    });
                 }
             });
     };
@@ -100,15 +116,6 @@
     </div>
 </main>
 
-<div id="toast" class="toast blue white-text">
-    <i>info</i>
-    <span>{toastMessage}</span>
-</div>
-
-<div id="toast-error" class="toast red white-text">
-    <i>Error</i>
-    <span>{toastMessage}</span>
-</div>
 
 <style>
     @import './login.css';

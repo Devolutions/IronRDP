@@ -1,9 +1,9 @@
 import type {NewSessionInfo, ResizeEvent, ServerBridgeService} from './server-bridge.service';
 import {MouseButton, MouseButtonState, SpecialCombination} from './server-bridge.service';
 import {from, Observable, of, Subject} from 'rxjs';
-import init, {DeviceEvent, InputTransaction, ironrdp_init, Session, SessionBuilder} from "../../../ffi/wasm/pkg/ironrdp";
+import init, {DeviceEvent, InputTransaction, ironrdp_init, IronRdpError, IronRdpErrorKind, Session, SessionBuilder} from "../../../ffi/wasm/pkg/ironrdp";
 import {loggingService} from "./logging.service";
-import {catchError, filter, map} from "rxjs/operators";
+import {catchError, filter, finalize, map} from "rxjs/operators";
 import {userInteractionService} from "./user-interaction-service";
 import {scanCode} from '../lib/scancodes';
 import {LogType} from '../enums/LogType';
@@ -91,8 +91,9 @@ export class WasmBridgeService implements ServerBridgeService {
         sessionBuilder.update_callback(this.updateImageCallback);
 
         return from(sessionBuilder.connect()).pipe(
-            catchError(err => {
-                loggingService.error("error:", err);
+            catchError((err: IronRdpError) => {
+                loggingService.error("error:", IronRdpErrorKind[err.kind()]);
+                loggingService.error("error:", err.backtrace());
                 userInteractionService.raiseSessionEvent({
                     type: SessionEventType.ERROR,
                     data: err
@@ -103,18 +104,18 @@ export class WasmBridgeService implements ServerBridgeService {
             map((session: Session) => {
                 from(session.run()).pipe(
                     catchError(err => {
+                        userInteractionService.setVisibility(false);
                         userInteractionService.raiseSessionEvent({
                             type: SessionEventType.ERROR,
-                            data: err
+                            data: err.backtrace()
+                        });
+                        userInteractionService.raiseSessionEvent({
+                            type: SessionEventType.TERMINATED,
+                            data: "Session was terminated."
                         });
                         return of(err);
-                    })
-                ).subscribe(() => {
-                    userInteractionService.raiseSessionEvent({
-                        type: SessionEventType.TERMINATED,
-                        data: "Session was terminated."
-                    });
-                });
+                    }),
+                ).subscribe();
                 return session;
             }),
             map((session: Session) => {
