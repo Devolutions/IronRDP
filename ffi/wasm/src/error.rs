@@ -9,14 +9,18 @@ pub enum IronRdpErrorKind {
 
 #[wasm_bindgen]
 pub struct IronRdpError {
-    pub kind: IronRdpErrorKind,
+    kind: IronRdpErrorKind,
     source: anyhow::Error,
 }
 
 #[wasm_bindgen]
 impl IronRdpError {
-    pub fn stacktrace(&self) -> String {
+    pub fn backtrace(&self) -> String {
         format!("{:?}", self.source)
+    }
+    
+    pub fn kind(&self) -> IronRdpErrorKind {
+        self.kind
     }
 }
 
@@ -29,6 +33,7 @@ impl From<ironrdp_session::RdpError> for IronRdpError {
                 sspi::ErrorKind::UnknownCredentials => IronRdpErrorKind::InvalidCredentials,
                 sspi::ErrorKind::NoCredentials => IronRdpErrorKind::InvalidCredentials,
                 sspi::ErrorKind::IncompleteCredentials => IronRdpErrorKind::InvalidCredentials,
+                sspi::ErrorKind::InvalidToken => IronRdpErrorKind::InvalidCredentials,
 
                 _ => IronRdpErrorKind::General,
             },

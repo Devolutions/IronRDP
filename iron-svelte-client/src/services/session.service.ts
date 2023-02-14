@@ -5,22 +5,38 @@ import {Session} from "../models/session";
 import type {IRGUserInteraction} from '../../static/iron-remote-gui';
 
 export const userInteractionService: Writable<IRGUserInteraction> = writable();
-export const currentSession = writable(new Session('New Session'));
+export const currentSession: Writable<Session> = writable();
+
+let _currentSession: Session = new Session('NewSession');
 let sessions: Session[] = new Array<Session>();
 let sessionCounter = 0;
 
+addSession('NewSession');
+
 function setCurrentSession(session: Session) {
     currentSession.set(session);
+    _currentSession = session;
 }
 
-function setCurrentSessionById(id: Guid) {
+export function getCurrentSession(): Session {
+    return _currentSession;
+}
+
+export function setCurrentSessionActive(active: boolean) {
+   currentSession.update(session => {
+       session.active = true;
+       return session;
+   }); 
+}
+
+export function setCurrentSessionById(id: Guid) {
     const session = sessions.find(session => session.id.equals(id));
     if (session) {
         setCurrentSession(session);
     }
 }
 
-function addSession(name: string) {
+export function addSession(name: string) {
     sessionCounter++;
     const newSession = new Session(name);
     sessions.push(newSession);
@@ -29,7 +45,7 @@ function addSession(name: string) {
     }
 }
 
-function closeSession(id: Guid) {
+export function closeSession(id: Guid) {
     sessionCounter--;
     sessions = sessions.filter(session => !session.id.equals(id));
     if (sessionCounter == 1) {
