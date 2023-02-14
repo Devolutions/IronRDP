@@ -24,10 +24,9 @@
 
     const initListeners = () => {
         userInteraction.sessionListener.subscribe(event => {
-            console.error(`Iron-Remote-Gui: `, event);
             toast.set({
                 type: 'error',
-                message: event.data
+                message: event.data.backtrace()
             });
         });
     }
@@ -41,7 +40,7 @@
                 catchError(err => {
                     toast.set({
                         type: 'info',
-                        message: err
+                        message: err.backtrace()
                     });
                     return of(null);
                 }),

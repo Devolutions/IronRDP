@@ -17,7 +17,6 @@
                 } else if (event.type === 1) {
                     setCurrentSessionActive(false);
                     showLogin.set(true);
-                    console.log("Session terminated");
                 }
             })
         }
@@ -26,7 +25,6 @@
     onMount(async () => {
         let el = document.querySelector('iron-remote-gui');
         el.addEventListener('ready', (e) => {
-            console.log("ready");
             userInteractionService.set(e.detail.irgUserInteraction);
         });
     });

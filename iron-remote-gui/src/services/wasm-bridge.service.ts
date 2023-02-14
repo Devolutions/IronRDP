@@ -92,8 +92,6 @@ export class WasmBridgeService implements ServerBridgeService {
 
         return from(sessionBuilder.connect()).pipe(
             catchError((err: IronRdpError) => {
-                loggingService.error("error:", IronRdpErrorKind[err.kind()]);
-                loggingService.error("error:", err.backtrace());
                 userInteractionService.raiseSessionEvent({
                     type: SessionEventType.ERROR,
                     data: err
