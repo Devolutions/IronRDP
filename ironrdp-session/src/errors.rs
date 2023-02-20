@@ -27,16 +27,16 @@ pub enum RdpError {
     InvalidResponse(String),
     #[cfg(all(feature = "native-tls", not(feature = "rustls")))]
     #[error("TLS connector error")]
-    TlsConnector(#[source] native_tls::Error),
+    TlsConnector(#[source] async_native_tls::Error),
     #[cfg(all(feature = "native-tls", not(feature = "rustls")))]
     #[error("TLS handshake error")]
-    TlsHandshake(#[source] native_tls::Error),
+    TlsHandshake(#[source] async_native_tls::Error),
     #[cfg(feature = "rustls")]
     #[error("TLS connector error")]
-    TlsConnector(#[source] rustls::Error),
+    TlsConnector(#[source] tokio_rustls::rustls::Error),
     #[cfg(feature = "rustls")]
     #[error("TLS handshake error")]
-    TlsHandshake(#[source] rustls::Error),
+    TlsHandshake(#[source] tokio_rustls::rustls::Error),
     #[error("CredSSP error")]
     CredSsp(#[from] sspi::Error),
     #[error("CredSSP TSRequest error")]
@@ -109,17 +109,17 @@ pub enum RdpError {
     LockPoisoned,
     #[cfg(all(feature = "native-tls", not(feature = "rustls")))]
     #[error("Invalid DER structure")]
-    DerEncode(#[source] native_tls::Error),
+    DerEncode(#[source] async_native_tls::Error),
 }
 
 #[cfg(feature = "rustls")]
-impl From<rustls::Error> for RdpError {
-    fn from(e: rustls::Error) -> Self {
+impl From<tokio_rustls::rustls::Error> for RdpError {
+    fn from(e: tokio_rustls::rustls::Error) -> Self {
         match e {
-            rustls::Error::InappropriateHandshakeMessage { .. } | rustls::Error::HandshakeNotComplete => {
-                RdpError::TlsHandshakeError(e)
+            tokio_rustls::rustls::Error::InappropriateHandshakeMessage { .. } | tokio_rustls::rustls::Error::HandshakeNotComplete => {
+                RdpError::TlsHandshake(e)
             }
-            _ => RdpError::TlsConnectorError(e),
+            _ => RdpError::TlsConnector(e),
         }
     }
 }

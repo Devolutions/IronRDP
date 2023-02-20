@@ -10,6 +10,11 @@ authors = ["Devolutions Inc. <infos@devolutions.net>"]
 description = "A Rust implementation of the Microsoft Remote Desktop Protocol"
 keywords = ["rdp", "remote", "desktop", "protocol"]
 
+[features]
+default = []
+rustls = ["ironrdp-session/rustls"]
+native-tls = ["ironrdp-session/native-tls"]
+
 [dependencies]
 ironrdp-core = { path = "../ironrdp-core" }
 ironrdp-session = { path = "../ironrdp-session" }
