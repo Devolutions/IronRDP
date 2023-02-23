@@ -129,13 +129,13 @@ fn create_core_data(config: &InputConfig, selected_protocol: SecurityProtocol) -
         version: RdpVersion::V5_PLUS,
         desktop_width: config.width,
         desktop_height: config.height,
-        color_depth: ColorDepth::Bpp4, // ignored
+        color_depth: ColorDepth::Bpp4, // ignored because we use the optional core data below
         sec_access_sequence: SecureAccessSequence::Del,
         keyboard_layout: 0, // the server SHOULD use the default active input locale identifier
         client_build: semver::Version::parse(env!("CARGO_PKG_VERSION"))
             .map(|version| version.major * 100 + version.minor * 10 + version.patch)
             .unwrap_or(0) as u32,
-        client_name: whoami::hostname(), // FIXME: probably not wasm-friendly
+        client_name: whoami::hostname(), // FIXME: not wasm-friendly
         keyboard_type: config.keyboard_type,
         keyboard_subtype: config.keyboard_subtype,
         keyboard_functional_keys_count: config.keyboard_functional_keys_count,
@@ -156,11 +156,11 @@ fn create_optional_core_data(
     }
 
     Ok(ClientCoreOptionalData {
-        post_beta_color_depth: Some(ColorDepth::Bpp4), // ignored
+        post_beta2_color_depth: Some(ColorDepth::Bpp4), // ignored because we set high_color_depth
         client_product_id: Some(1),
         serial_number: Some(0),
         high_color_depth: Some(HighColorDepth::Bpp24),
-        supported_color_depths: Some(SupportedColorDepths::all()),
+        supported_color_depths: Some(SupportedColorDepths::BPP16),
         early_capability_flags: Some(early_capability_flags),
         dig_product_id: Some(config.dig_product_id.clone()),
         connection_type: Some(ConnectionType::Lan),

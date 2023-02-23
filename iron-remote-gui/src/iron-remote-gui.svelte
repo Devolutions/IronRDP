@@ -78,7 +78,7 @@
             canvas.height = evt.desktop_size.height;
             scaleSession(scale);
         });
-        serverBridge.updateImage.pipe(throttleTime(1000 / 60)).subscribe(({pixels, infos}) => {
+        serverBridge.updateImage.subscribe(({pixels, infos}) => {
             draw(pixels, infos);
         });
     }

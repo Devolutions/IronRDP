@@ -1,5 +1,6 @@
 use std::io;
 
+use bytes::BytesMut;
 use ironrdp_core::codecs::rfx::FrameAcknowledgePdu;
 use ironrdp_core::fast_path::{
     FastPathError, FastPathHeader, FastPathUpdate, FastPathUpdatePdu, Fragmentation, UpdateCode,
@@ -7,7 +8,6 @@ use ironrdp_core::fast_path::{
 use ironrdp_core::geometry::Rectangle;
 use ironrdp_core::surface_commands::{FrameAction, FrameMarkerPdu, SurfaceCommand};
 use ironrdp_core::{PduBufferParsing, ShareDataPdu};
-use log::{debug, info, warn};
 use num_traits::FromPrimitive;
 
 use super::codecs::rfx;
@@ -53,9 +53,63 @@ impl Processor {
                 let update_region = self.process_surface_commands(image, &mut output, surface_commands)?;
                 Ok(Some(update_region))
             }
-            Ok(FastPathUpdate::Bitmap(bitmap)) => {
-                info!("Received Bitmap: {:?}", bitmap);
-                Ok(None)
+            Ok(FastPathUpdate::Bitmap(bitmap_update)) => {
+                trace!("Received bitmap update");
+
+                let mut buf = BytesMut::new();
+                let mut update_rectangle: Option<Rectangle> = None;
+
+                for update in bitmap_update.rectangles {
+                    trace!("{update:?}");
+                    buf.clear();
+
+                    // Bitmap data is either compressed or uncompressed, depending
+                    // on whether the BITMAP_COMPRESSION flag is present in the
+                    // flags field.
+                    if update
+                        .compression_flags
+                        .contains(ironrdp_core::bitmap::Compression::BITMAP_COMPRESSION)
+                    {
+                        if update.bits_per_pixel == 32 {
+                            // Compressed bitmaps at a color depth of 32 bpp are compressed using RDP 6.0
+                            // Bitmap Compression and stored inside an RDP 6.0 Bitmap Compressed Stream
+                            // structure ([MS-RDPEGDI] section 2.2.2.5.1).
+                            trace!("32 bpp compressed RDP6_BITMAP_STREAM");
+                            warn!("RDP6_BITMAP_STREAM is not yet supported");
+                        } else {
+                            // Compressed bitmaps not in 32 bpp format are compressed using Interleaved
+                            // RLE and encapsulated in an RLE Compressed Bitmap Stream structure (section
+                            // 2.2.9.1.1.3.1.2.4).
+                            trace!("Non-32 bpp compressed RLE_BITMAP_STREAM");
+
+                            ironrdp_graphics::rle::decompress(
+                                update.bitmap_data,
+                                &mut buf,
+                                update.width,
+                                update.height,
+                                update.bits_per_pixel,
+                            );
+
+                            // TODO: support other pixel formats…
+                            image.apply_rgb16_bitmap(&buf, &update.rectangle);
+                        }
+                    } else {
+                        // Uncompressed bitmap data is formatted as a bottom-up, left-to-right series of
+                        // pixels. Each pixel is a whole number of bytes. Each row contains a multiple of
+                        // four bytes (including up to three bytes of padding, as necessary).
+                        trace!("Uncompressed raw bitmap");
+
+                        // TODO: support other pixel formats…
+                        image.apply_rgb16_bitmap(&update.bitmap_data, &update.rectangle);
+                    }
+
+                    match update_rectangle {
+                        Some(current) => update_rectangle = Some(current.union(&update.rectangle)),
+                        None => update_rectangle = Some(update.rectangle),
+                    }
+                }
+
+                Ok(update_rectangle)
             }
             Err(FastPathError::UnsupportedFastPathUpdate(code))
                 if code == UpdateCode::Orders || code == UpdateCode::Palette =>
@@ -63,7 +117,7 @@ impl Processor {
                 Err(RdpError::UnexpectedFastPathUpdate(code))
             }
             Err(FastPathError::UnsupportedFastPathUpdate(update_code)) => {
-                warn!("Received unsupported Fast-Path update: {:?}", update_code);
+                debug!("Received unsupported Fast-Path update: {:?}", update_code);
                 Ok(None)
             }
             Err(FastPathError::BitmapError(error)) => {

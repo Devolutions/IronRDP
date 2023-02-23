@@ -16,13 +16,13 @@ pub const COMPRESSED_DATA_HEADER_SIZE: usize = 8;
 pub const BITMAP_DATA_MAIN_DATA_SIZE: usize = 12;
 pub const FIRST_ROW_SIZE_VALUE: u16 = 0;
 
+/// TS_UPDATE_BITMAP_DATA
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Bitmap<'a> {
-    pub rectangles_number: usize,
+pub struct BitmapUpdateData<'a> {
     pub rectangles: Vec<BitmapData<'a>>,
 }
 
-impl<'a> PduBufferParsing<'a> for Bitmap<'a> {
+impl<'a> PduBufferParsing<'a> for BitmapUpdateData<'a> {
     type Error = BitmapError;
 
     fn from_buffer_consume(buffer: &mut &'a [u8]) -> Result<Self, Self::Error> {
@@ -38,15 +38,12 @@ impl<'a> PduBufferParsing<'a> for Bitmap<'a> {
             rectangles.push(BitmapData::from_buffer_consume(buffer)?);
         }
 
-        Ok(Bitmap {
-            rectangles_number,
-            rectangles,
-        })
+        Ok(BitmapUpdateData { rectangles })
     }
 
     fn to_buffer_consume(&self, buffer: &mut &mut [u8]) -> Result<(), Self::Error> {
         buffer.write_u16::<LittleEndian>(BitmapFlags::BITMAP_UPDATE_TYPE.bits())?;
-        buffer.write_u16::<LittleEndian>(self.rectangles_number as u16)?;
+        buffer.write_u16::<LittleEndian>(u16::try_from(self.rectangles.len()).unwrap())?;
         for bitmap_data in self.rectangles.iter() {
             bitmap_data.to_buffer_consume(buffer)?;
         }
@@ -59,6 +56,7 @@ impl<'a> PduBufferParsing<'a> for Bitmap<'a> {
     }
 }
 
+/// TS_BITMAP_DATA
 #[derive(Clone, PartialEq, Eq)]
 pub struct BitmapData<'a> {
     pub rectangle: Rectangle,
@@ -81,7 +79,11 @@ impl<'a> PduBufferParsing<'a> for BitmapData<'a> {
         let height = buffer.read_u16::<LittleEndian>()?;
 
         let bits_per_pixel = buffer.read_u16::<LittleEndian>()?;
-        let compression_flags = Compression::from_bits_truncate(buffer.read_u16::<LittleEndian>()?);
+
+        let flags = buffer.read_u16::<LittleEndian>()?;
+        let compression_flags = Compression::from_bits_truncate(flags);
+
+        // A 16-bit, unsigned integer. The size in bytes of the data in the bitmapComprHdr and bitmapDataStream fields.
         let bitmap_data_length = buffer.read_u16::<LittleEndian>()? as usize;
 
         if buffer.len() < bitmap_data_length {
@@ -91,17 +93,21 @@ impl<'a> PduBufferParsing<'a> for BitmapData<'a> {
             });
         }
 
-        let compressed_data_header = if !compression_flags.contains(Compression::NOT_COMPRESSED) {
+        let compressed_data_header = if compression_flags.contains(Compression::BITMAP_COMPRESSION)
+            && !compression_flags.contains(Compression::NO_BITMAP_COMPRESSION_HDR)
+        {
             Some(CompressedDataHeader::from_buffer_consume(buffer)?)
         } else {
             None
         };
 
-        let bitmap_data = if compressed_data_header.is_some() {
-            buffer.split_to(bitmap_data_length - COMPRESSED_DATA_HEADER_SIZE)
+        let rest_length = if compressed_data_header.is_some() {
+            bitmap_data_length - COMPRESSED_DATA_HEADER_SIZE
         } else {
-            buffer.split_to(bitmap_data_length)
+            bitmap_data_length
         };
+
+        let bitmap_data = buffer.split_to(rest_length);
 
         Ok(BitmapData {
             rectangle,
@@ -137,26 +143,19 @@ impl<'a> PduBufferParsing<'a> for BitmapData<'a> {
 
 impl Debug for BitmapData<'_> {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(
-            f,
-            "BitmapData:[{:?},
-            width - {},
-            height - {},
-            bits_per_pixel - {},
-            compression_flags - ({:?}),
-            compressed_data_header - {:?}
-            \nReceived Bitmap data buffer with length - {}\n]",
-            self.rectangle,
-            self.width,
-            self.height,
-            self.bits_per_pixel,
-            self.compression_flags,
-            self.compressed_data_header,
-            self.bitmap_data.len()
-        )
+        f.debug_struct("BitmapData")
+            .field("rectangle", &self.rectangle)
+            .field("width", &self.width)
+            .field("height", &self.height)
+            .field("bits_per_pixel", &self.bits_per_pixel)
+            .field("compression_flags", &self.compression_flags)
+            .field("compressed_data_header", &self.compressed_data_header)
+            .field("bitmap_data.len()", &self.bitmap_data.len())
+            .finish()
     }
 }
 
+/// TS_CD_HEADER
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CompressedDataHeader {
     pub main_body_size: u16,
@@ -212,8 +211,8 @@ bitflags! {
 
 bitflags! {
     pub struct Compression: u16 {
-       const COMPRESSED_HDR = 0x0001;
-       const NOT_COMPRESSED = 0x0400;
+       const BITMAP_COMPRESSION = 0x0001;
+       const NO_BITMAP_COMPRESSION_HDR = 0x0400;
     }
 }
 

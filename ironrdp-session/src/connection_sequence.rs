@@ -407,7 +407,7 @@ pub async fn basic_settings_exchange(
     let connect_initial =
         ironrdp_core::ConnectInitial::with_gcc_blocks(user_info::create_gcc_blocks(config, selected_protocol)?);
     debug!("Send MCS Connect Initial PDU: {:?}", connect_initial);
-    encode_next_frame(writer, X224Frame(connect_initial.clone())).await?;
+    encode_next_frame(writer, X224Frame(&connect_initial)).await?;
     let connect_response: ironrdp_core::ConnectResponse = reader.decode_next_frame::<X224Frame<_>>().await?.0;
     debug!("Got MCS Connect Response PDU: {:?}", connect_response);
 

@@ -10,7 +10,7 @@ use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive, ToPrimitive};
 use thiserror::Error;
 
-use super::bitmap::{Bitmap, BitmapError};
+use super::bitmap::{BitmapError, BitmapUpdateData};
 use super::surface_commands::{SurfaceCommand, SurfaceCommandsError, SURFACE_COMMAND_HEADER_SIZE};
 use crate::utils::SplitTo;
 use crate::{per, PduBufferParsing, PduParsing};
@@ -143,7 +143,7 @@ impl<'a> PduBufferParsing<'a> for FastPathUpdatePdu<'a> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FastPathUpdate<'a> {
     SurfaceCommands(Vec<SurfaceCommand<'a>>),
-    Bitmap(Bitmap<'a>),
+    Bitmap(BitmapUpdateData<'a>),
 }
 
 impl<'a> FastPathUpdate<'a> {
@@ -162,7 +162,7 @@ impl<'a> FastPathUpdate<'a> {
                 Ok(Self::SurfaceCommands(commands))
             }
             UpdateCode::Bitmap => {
-                let bitmap = Bitmap::from_buffer_consume(buffer).map_err(FastPathError::BitmapError)?;
+                let bitmap = BitmapUpdateData::from_buffer_consume(buffer).map_err(FastPathError::BitmapError)?;
                 Ok(Self::Bitmap(bitmap))
             }
             _ => Err(FastPathError::UnsupportedFastPathUpdate(code)),

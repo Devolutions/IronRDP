@@ -70,7 +70,7 @@ lazy_static! {
     };
     pub static ref CLIENT_OPTIONAL_CORE_DATA_TO_HIGH_COLOR_DEPTH: ClientCoreData = {
         let mut data = CLIENT_CORE_DATA_WITHOUT_OPTIONAL_FIELDS.clone();
-        data.optional_data.post_beta_color_depth = Some(ColorDepth::Bpp8);
+        data.optional_data.post_beta2_color_depth = Some(ColorDepth::Bpp8);
         data.optional_data.client_product_id = Some(1);
         data.optional_data.serial_number = Some(0);
 
@@ -248,7 +248,7 @@ fn client_color_depth_is_post_beta_color_depth_if_high_color_depth_is_absent() {
 
     let core_data = ClientCoreData::from_buffer(buffer.as_slice()).unwrap();
     let expected_client_color_depth: ClientColorDepth =
-        From::from(core_data.optional_data.post_beta_color_depth.unwrap());
+        From::from(core_data.optional_data.post_beta2_color_depth.unwrap());
 
     assert_eq!(expected_client_color_depth, core_data.client_color_depth());
 }

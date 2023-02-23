@@ -85,4 +85,32 @@ impl DecodedImage {
 
         Ok(())
     }
+
+    pub(crate) fn apply_rgb16_bitmap(&mut self, rgb16: &[u8], update_rectangle: &Rectangle) {
+        const SRC_COLOR_DEPTH: usize = 2;
+        const DST_COLOR_DEPTH: usize = 4;
+
+        let image_width = self.width as usize;
+        let rectangle_width = usize::from(update_rectangle.width()) + 1;
+        let top = usize::from(update_rectangle.top);
+        let left = usize::from(update_rectangle.left);
+
+        rgb16
+            .chunks_exact(rectangle_width * SRC_COLOR_DEPTH)
+            .rev()
+            .enumerate()
+            .for_each(|(row_idx, row)| {
+                row.chunks_exact(SRC_COLOR_DEPTH)
+                    .enumerate()
+                    .for_each(|(col_idx, src_pixel)| {
+                        let rgb16_value = u16::from_le_bytes(src_pixel.try_into().unwrap());
+                        let dst_idx = ((top + row_idx) * image_width + left + col_idx) * DST_COLOR_DEPTH;
+
+                        self.data[dst_idx] = (((((rgb16_value >> 11) & 0x1f) * 527) + 23) >> 6) as u8;
+                        self.data[dst_idx + 1] = (((((rgb16_value >> 5) & 0x3f) * 259) + 33) >> 6) as u8;
+                        self.data[dst_idx + 2] = ((((rgb16_value & 0x1f) * 527) + 23) >> 6) as u8;
+                        self.data[dst_idx + 3] = 0xff;
+                    })
+            });
+    }
 }
