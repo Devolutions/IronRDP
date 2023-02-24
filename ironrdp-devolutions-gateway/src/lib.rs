@@ -1,6 +1,5 @@
 // Re-export der crate for convenience
 pub use der;
-
 use der::asn1::OctetString;
 
 pub const BASE_VERSION: u64 = 3389;

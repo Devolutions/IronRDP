@@ -116,9 +116,8 @@ pub enum RdpError {
 impl From<tokio_rustls::rustls::Error> for RdpError {
     fn from(e: tokio_rustls::rustls::Error) -> Self {
         match e {
-            tokio_rustls::rustls::Error::InappropriateHandshakeMessage { .. } | tokio_rustls::rustls::Error::HandshakeNotComplete => {
-                RdpError::TlsHandshake(e)
-            }
+            tokio_rustls::rustls::Error::InappropriateHandshakeMessage { .. }
+            | tokio_rustls::rustls::Error::HandshakeNotComplete => RdpError::TlsHandshake(e),
             _ => RdpError::TlsConnector(e),
         }
     }
