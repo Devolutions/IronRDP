@@ -11,8 +11,8 @@ keywords = ["rdp", "client", "remote", "desktop", "protocol", "gfx", "rfx"]
 
 [features]
 default = ["rustls"]
-rustls = ["dep:tokio-rustls"]
-native-tls = ["dep:async-native-tls"]
+rustls = ["dep:tokio-rustls", "ironrdp/rustls"]
+native-tls = ["dep:async-native-tls", "ironrdp/native-tls"]
 
 [dependencies]
 

@@ -160,7 +160,7 @@ async fn establish_tls(stream: tokio_util::compat::Compat<TcpStream>) -> Result<
         // domain is an empty string because client accepts IP address in the cli
         match connector.connect("", stream).await {
             Ok(tls) => tls,
-            Err(err) => return Err(RdpError::TlsHandshakeError(err)),
+            Err(err) => return Err(RdpError::TlsHandshake(err)),
         }
     };
 
@@ -184,7 +184,7 @@ async fn establish_tls(stream: tokio_util::compat::Compat<TcpStream>) -> Result<
     let server_public_key = {
         let cert = tls_stream
             .peer_certificate()
-            .map_err(RdpError::TlsConnectorError)?
+            .map_err(RdpError::TlsConnector)?
             .ok_or(RdpError::MissingPeerCertificate)?;
         get_tls_peer_pubkey(cert.to_der().map_err(RdpError::DerEncode)?)?
     };
