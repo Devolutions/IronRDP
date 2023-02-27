@@ -41,11 +41,13 @@ const DESKTOP_ORIENTATION_SIZE: usize = 2;
 const DESKTOP_SCALE_FACTOR_SIZE: usize = 4;
 const DEVICE_SCALE_FACTOR_SIZE: usize = 4;
 
+/// TS_UD_CS_CORE (required part)
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClientCoreData {
     pub version: RdpVersion,
     pub desktop_width: u16,
     pub desktop_height: u16,
+    /// The requested color depth. Values in this field MUST be ignored if the postBeta2ColorDepth field is present.
     pub color_depth: ColorDepth,
     pub sec_access_sequence: SecureAccessSequence,
     pub keyboard_layout: u32,
@@ -70,7 +72,7 @@ impl ClientCoreData {
             } else {
                 From::from(high_color_depth)
             }
-        } else if let Some(post_beta_color_depth) = self.optional_data.post_beta_color_depth {
+        } else if let Some(post_beta_color_depth) = self.optional_data.post_beta2_color_depth {
             From::from(post_beta_color_depth)
         } else {
             From::from(self.color_depth)
@@ -175,12 +177,16 @@ impl PduParsing for ClientCoreData {
     }
 }
 
+/// TS_UD_CS_CORE (optional part)
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ClientCoreOptionalData {
-    pub post_beta_color_depth: Option<ColorDepth>,
+    /// The requested color depth. Values in this field MUST be ignored if the highColorDepth field is present.
+    pub post_beta2_color_depth: Option<ColorDepth>,
     pub client_product_id: Option<u16>,
     pub serial_number: Option<u32>,
+    /// The requested color depth.
     pub high_color_depth: Option<HighColorDepth>,
+    /// Specifies the high color depths that the client is capable of supporting.
     pub supported_color_depths: Option<SupportedColorDepths>,
     pub early_capability_flags: Option<ClientEarlyCapabilityFlags>,
     pub dig_product_id: Option<String>,
@@ -199,7 +205,7 @@ impl PduParsing for ClientCoreOptionalData {
     fn from_buffer(mut buffer: impl io::Read) -> Result<Self, Self::Error> {
         let mut optional_data = Self::default();
 
-        optional_data.post_beta_color_depth = Some(
+        optional_data.post_beta2_color_depth = Some(
             ColorDepth::from_u16(try_read_optional!(buffer.read_u16::<LittleEndian>(), optional_data))
                 .ok_or(CoreDataError::InvalidPostBetaColorDepth)?,
         );
@@ -259,7 +265,7 @@ impl PduParsing for ClientCoreOptionalData {
     }
 
     fn to_buffer(&self, mut buffer: impl io::Write) -> Result<(), Self::Error> {
-        try_write_optional!(self.post_beta_color_depth, |value: &ColorDepth| {
+        try_write_optional!(self.post_beta2_color_depth, |value: &ColorDepth| {
             buffer.write_u16::<LittleEndian>(value.to_u16().unwrap())
         });
 
@@ -319,7 +325,7 @@ impl PduParsing for ClientCoreOptionalData {
     fn buffer_length(&self) -> usize {
         let mut size = 0;
 
-        if self.post_beta_color_depth.is_some() {
+        if self.post_beta2_color_depth.is_some() {
             size += POST_BETA_COLOR_DEPTH_SIZE;
         }
         if self.client_product_id.is_some() {
