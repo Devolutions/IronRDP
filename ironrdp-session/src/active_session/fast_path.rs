@@ -100,7 +100,7 @@ impl Processor {
                         trace!("Uncompressed raw bitmap");
 
                         // TODO: support other pixel formats…
-                        image.apply_rgb16_bitmap(&update.bitmap_data, &update.rectangle);
+                        image.apply_rgb16_bitmap(update.bitmap_data, &update.rectangle);
                     }
 
                     match update_rectangle {
