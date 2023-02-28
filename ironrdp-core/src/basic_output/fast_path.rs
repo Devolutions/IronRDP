@@ -87,6 +87,7 @@ impl PduParsing for FastPathHeader {
 pub struct FastPathUpdatePdu<'a> {
     pub fragmentation: Fragmentation,
     pub update_code: UpdateCode,
+    pub compression: Compression,
     pub data: &'a [u8],
 }
 
@@ -104,9 +105,6 @@ impl<'a> PduBufferParsing<'a> for FastPathUpdatePdu<'a> {
             Fragmentation::from_u8(fragmentation).ok_or(FastPathError::InvalidFragmentation(fragmentation))?;
 
         let compression = Compression::from_bits_truncate(header.get_bits(6..8));
-        if compression.contains(Compression::COMPRESSION_USED) {
-            return Err(FastPathError::CompressionNotSupported);
-        }
 
         let data_length = usize::from(buffer.read_u16::<LittleEndian>()?);
         if buffer.len() < data_length {
@@ -120,6 +118,7 @@ impl<'a> PduBufferParsing<'a> for FastPathUpdatePdu<'a> {
         Ok(Self {
             fragmentation,
             update_code,
+            compression,
             data,
         })
     }
@@ -128,6 +127,7 @@ impl<'a> PduBufferParsing<'a> for FastPathUpdatePdu<'a> {
         let mut header = 0u8;
         header.set_bits(0..4, self.update_code.to_u8().unwrap());
         header.set_bits(4..6, self.fragmentation.to_u8().unwrap());
+        header.set_bits(6..8, self.compression.bits);
         buffer.write_u8(header)?;
         buffer.write_u16::<LittleEndian>(self.data.len() as u16)?;
         buffer.write_all(self.data)?;
