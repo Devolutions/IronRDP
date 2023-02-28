@@ -32,7 +32,8 @@ lazy_static! {
     static ref FAST_PATH_UPDATE_PDU: FastPathUpdatePdu<'static> = FastPathUpdatePdu {
         fragmentation: Fragmentation::Single,
         update_code: UpdateCode::SurfaceCommands,
-        compression: Compression::empty(),
+        compression_flags: None,
+        compression_type: None,
         data: &FAST_PATH_UPDATE_PDU_BUFFER[3..],
     };
 }

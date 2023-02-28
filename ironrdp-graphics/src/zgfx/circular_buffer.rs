@@ -17,8 +17,8 @@ impl FixedCircularBuffer {
     pub fn read_with_offset(&self, offset: usize, length: usize, mut output: impl io::Write) -> io::Result<()> {
         let position = (self.buffer.len() + self.position - offset) % self.buffer.len();
 
-        // will take the offset if the destination length is greater then the offset,
-        // i.e. greater then the current buffer position.
+        // will take the offset if the destination length is greater than the offset,
+        // i.e. greater than the current buffer position.
         let dst_length = min(offset, length);
         let mut written = 0;
 

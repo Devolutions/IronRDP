@@ -80,7 +80,10 @@ impl Processor {
                             // Compressed bitmaps not in 32 bpp format are compressed using Interleaved
                             // RLE and encapsulated in an RLE Compressed Bitmap Stream structure (section
                             // 2.2.9.1.1.3.1.2.4).
-                            trace!("Non-32 bpp compressed RLE_BITMAP_STREAM");
+                            trace!(
+                                "Non-32 bpp compressed RLE_BITMAP_STREAM (bpp: {})",
+                                update.bits_per_pixel
+                            );
 
                             ironrdp_graphics::rle::decompress(
                                 update.bitmap_data,
@@ -114,7 +117,8 @@ impl Processor {
             Err(FastPathError::UnsupportedFastPathUpdate(code))
                 if code == UpdateCode::Orders || code == UpdateCode::Palette =>
             {
-                Err(RdpError::UnexpectedFastPathUpdate(code))
+                warn!("Received unsupported Fast-Path update: {code:?}");
+                Ok(None)
             }
             Err(FastPathError::UnsupportedFastPathUpdate(update_code)) => {
                 debug!("Received unsupported Fast-Path update: {:?}", update_code);

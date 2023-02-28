@@ -238,7 +238,7 @@ pub enum RfxError {
     InvalidEntropyAlgorithm(u16),
     #[error("Got invalid quantization type: {0}")]
     InvalidQuantizationType(u16),
-    #[error("Input buffer is shorter then the data length: {actual} < {expected}")]
+    #[error("Input buffer is shorter than the data length: {actual} < {expected}")]
     InvalidDataLength { expected: usize, actual: usize },
     #[error("Got invalid Region LRF: {0}")]
     InvalidLrf(bool),

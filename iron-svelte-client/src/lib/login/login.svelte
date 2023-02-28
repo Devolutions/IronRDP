@@ -24,12 +24,22 @@
 
     const initListeners = () => {
         userInteraction.sessionListener.subscribe(event => {
-            toast.set({
-                type: 'error',
-                message: event.data.backtrace()
-            });
+            if (event.type === 2) {
+                console.log("Error event", event.data);
+
+                toast.set({
+                    type: 'error',
+                    message: event.data,
+                });
+            } else {
+                toast.set({
+                    type: 'info',
+                    message: event.data || "No info",
+                });
+            }
         });
     }
+
     const StartSession = () => {
         toast.set({
             type: 'info',
@@ -62,18 +72,18 @@
                 } else if (start_info.initial_desktop_size !== null) { //Browser
                     toast.set({
                         type: 'info',
-                        message: 'Success'
+                        message: 'Success',
                     });
                     currentSession.update(session => Object.assign(session, {
                         sessionId: start_info.session_id,
                         desktopSize: start_info.initial_desktop_size,
-                        active: true
+                        active: true,
                     }));
                     showLogin.set(false);
                 } else {
                     toast.set({
                         type: 'error',
-                        message: 'Failure'
+                        message: 'Failure',
                     });
                 }
             });
