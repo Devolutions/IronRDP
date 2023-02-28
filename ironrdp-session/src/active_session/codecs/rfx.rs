@@ -219,10 +219,10 @@ fn clipping_rectangles(rectangles: &[RfxRectangle], destination: &Rectangle, wid
     rectangles
         .iter()
         .map(|r| Rectangle {
-            left: min(destination.left + r.x, width),
-            top: min(destination.top + r.y, height),
-            right: min(destination.left + r.x + r.width, width),
-            bottom: min(destination.top + r.y + r.height, height),
+            left: min(destination.left + r.x, width - 1),
+            top: min(destination.top + r.y, height - 1),
+            right: min(destination.left + r.x + r.width, width - 1),
+            bottom: min(destination.top + r.y + r.height, height - 1),
         })
         .for_each(|r| clipping_rectangles.union_rectangle(r));
 

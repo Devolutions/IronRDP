@@ -91,7 +91,7 @@ impl DecodedImage {
         const DST_COLOR_DEPTH: usize = 4;
 
         let image_width = self.width as usize;
-        let rectangle_width = usize::from(update_rectangle.width()) + 1;
+        let rectangle_width = usize::from(update_rectangle.width());
         let top = usize::from(update_rectangle.top);
         let left = usize::from(update_rectangle.left);
 

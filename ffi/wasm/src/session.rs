@@ -14,6 +14,7 @@ use sspi::AuthIdentity;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::spawn_local;
 
+use crate::image::extract_partial_image;
 use crate::error::IronRdpError;
 use crate::image::RectInfo;
 use crate::input::InputTransaction;
@@ -171,21 +172,15 @@ impl Session {
                             .unbounded_send(frame.to_vec())
                             .context("Send frame to writer task")?;
                     }
-                    ActiveStageOutput::GraphicsUpdate(_updated_region) => {
-                        // FIXME: atm sending a partial is not working
-                        // let partial_image = extract_partial_image(&image, &updated_region);
+                    ActiveStageOutput::GraphicsUpdate(updated_region) => {
+                        let (partial_image_rectangle, partial_image) = extract_partial_image(&image, updated_region);
 
                         send_update_rectangle(
                             &self.update_callback,
                             &self.update_callback_context,
                             frame_id,
-                            Rectangle {
-                                left: 0,
-                                top: 0,
-                                right: image.width() as u16,
-                                bottom: image.height() as u16,
-                            },
-                            image.data().to_vec(),
+                            partial_image_rectangle,
+                            partial_image,
                         )
                         .context("Failed to send update rectangle")?;
 

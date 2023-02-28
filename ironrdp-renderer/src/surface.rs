@@ -242,8 +242,8 @@ impl Surface {
                 Rectangle {
                     top: 0,
                     left: 0,
-                    right: self.width,
-                    bottom: self.height,
+                    right: self.width - 1,
+                    bottom: self.height - 1,
                 }
             };
 

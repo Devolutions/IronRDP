@@ -243,13 +243,13 @@ lazy_static! {
                 x: 0,
                 y: 0,
                 width: 64,
-                height: 64
+                height: 64,
             },
             RfxRectangle {
                 x: 64,
                 y: 64,
                 width: 0xff,
-                height: 0xff
+                height: 0xff,
             },
         ]
     };

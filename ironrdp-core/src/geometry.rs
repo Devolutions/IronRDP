@@ -22,11 +22,11 @@ impl Rectangle {
     }
 
     pub fn width(&self) -> u16 {
-        self.right - self.left
+        self.right - self.left + 1
     }
 
     pub fn height(&self) -> u16 {
-        self.bottom - self.top
+        self.bottom - self.top + 1
     }
 
     pub fn union_all(rectangles: &[Self]) -> Self {

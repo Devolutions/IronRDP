@@ -434,12 +434,12 @@ lazy_static! {
                 left: 1792,
                 top: 1056,
                 right: 1808,
-                bottom: 1072
+                bottom: 1072,
             }],
             quant_qual_vals: vec![QuantQuality {
                 quantization_parameter: 22,
                 progressive: false,
-                quality: 100
+                quality: 100,
             }],
             data: &AVC_444_MESSAGE_CORRECT_LEN[18..]
         },
