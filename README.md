@@ -23,9 +23,22 @@ A Rust implementation of the Microsoft Remote Desktop Protocol, with a focus on 
 
 ## Video Codec Support
 
-Currently, only Microsoft RemoteFX (RFX) is supported.
+Supported codecs:
 
-In order to enable RemoteFX:
+- Uncompressed raw bitmap
+- Interleaved Run-Length Encoding (RLE) Bitmap Codec
+- Microsoft RemoteFX (RFX)
+
+### How to enable RemoteFX on server
+
+Run the following PowerShell commands, and reboot.
+
+```pwsh
+Set-ItemProperty -Path 'HKLM:\Software\Policies\Microsoft\Windows NT\Terminal Services' -Name 'ColorDepth' -Type DWORD -Value 5
+Set-ItemProperty -Path 'HKLM:\Software\Policies\Microsoft\Windows NT\Terminal Services' -Name 'fEnableVirtualizedGraphics' -Type DWORD -Value 1
+```
+
+Alternatively, you may change a few group policies using `gpedit.msc`:
 
 1. Run `gpedit.msc`.
 
@@ -36,7 +49,6 @@ In order to enable RemoteFX:
 4. Enable `Computer Configuration/Administrative Templates/Windows Components/Remote Desktop Services/Remote Desktop Session Host/Remote Session Environment/Limit maximum color depth`
 
 5. Reboot.
-
 
 ## Demonstration
 
