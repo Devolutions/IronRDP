@@ -13,25 +13,32 @@ pub struct RectInfo {
     pub height: u16,
 }
 
-// FIXME: is it broken? Investigate again
-#[allow(dead_code)]
-fn extract_partial_image(image: &DecodedImage, region: &Rectangle) -> Vec<u8> {
+pub fn extract_partial_image(image: &DecodedImage, region: Rectangle) -> (Rectangle, Vec<u8>) {
+    // PERF: needs actual benchmark to find a better heuristic
+    if region.height() > 64 || region.width() > 512 {
+        extract_whole_rows(image, region)
+    } else {
+        extract_smallest_rectangle(image, region)
+    }
+}
+
+// Faster for low-height and smaller images
+fn extract_smallest_rectangle(image: &DecodedImage, region: Rectangle) -> (Rectangle, Vec<u8>) {
     let pixel_size = usize::from(image.pixel_format().bytes_per_pixel());
 
     let image_width = usize::try_from(image.width()).unwrap();
+    let image_stride = image_width * pixel_size;
 
     let region_top = usize::from(region.top);
     let region_left = usize::from(region.left);
     let region_width = usize::from(region.width());
     let region_height = usize::from(region.height());
+    let region_stride = region_width * pixel_size;
 
     let dst_buf_size = region_width * region_height * pixel_size;
     let mut dst = vec![0; dst_buf_size];
 
     let src = image.data();
-
-    let image_stride = image_width * pixel_size;
-    let region_stride = region_width * pixel_size;
 
     for row in 0..region_height {
         let src_begin = image_stride * (region_top + row) + region_left * pixel_size;
@@ -45,5 +52,32 @@ fn extract_partial_image(image: &DecodedImage, region: &Rectangle) -> Vec<u8> {
         target_slice.copy_from_slice(src_slice);
     }
 
-    dst
+    (region, dst)
+}
+
+// Faster for high-height and bigger images
+fn extract_whole_rows(image: &DecodedImage, region: Rectangle) -> (Rectangle, Vec<u8>) {
+    let pixel_size = usize::from(image.pixel_format().bytes_per_pixel());
+
+    let image_width = usize::try_from(image.width()).unwrap();
+    let image_stride = image_width * pixel_size;
+
+    let region_top = usize::from(region.top);
+    let region_bottom = usize::from(region.bottom);
+
+    let src = image.data();
+
+    let src_begin = region_top * image_stride;
+    let src_end = (region_bottom + 1) * image_stride;
+
+    let dst = src[src_begin..src_end].to_vec();
+
+    let wider_region = Rectangle {
+        left: 0,
+        top: region.top,
+        right: u16::try_from(image.width() - 1).unwrap(),
+        bottom: region.bottom,
+    };
+
+    (wider_region, dst)
 }
