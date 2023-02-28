@@ -16,8 +16,8 @@ use crate::rdp::session_info::SaveSessionInfoPdu;
 use crate::PduParsing;
 
 pub const BASIC_SECURITY_HEADER_SIZE: usize = 4;
+pub const SHARE_DATA_HEADER_MASK: u8 = 0xf;
 const SHARE_CONTROL_HEADER_MASK: u16 = 0xf;
-const SHARE_DATA_HEADER_MASK: u8 = 0xf;
 const SHARE_CONTROL_HEADER_SIZE: usize = 2 * 3 + 4;
 
 const PROTOCOL_VERSION: u16 = 0x10;
@@ -311,6 +311,7 @@ impl ShareDataPdu {
             | ShareDataPduType::StatusInfoPdu => Err(RdpError::UnexpectedShareDataPdu(share_type)),
         }
     }
+
     pub fn to_buffer(&self, mut stream: impl io::Write) -> Result<(), RdpError> {
         match self {
             ShareDataPdu::Synchronize(pdu) => pdu.to_buffer(&mut stream).map_err(RdpError::from),
@@ -325,6 +326,7 @@ impl ShareDataPdu {
             ShareDataPdu::Input(pdu) => pdu.to_buffer(&mut stream).map_err(RdpError::from),
         }
     }
+
     pub fn buffer_length(&self) -> usize {
         match self {
             ShareDataPdu::Synchronize(pdu) => pdu.buffer_length(),

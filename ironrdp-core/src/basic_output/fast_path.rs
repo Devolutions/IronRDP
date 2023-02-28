@@ -12,6 +12,7 @@ use thiserror::Error;
 
 use super::bitmap::{BitmapError, BitmapUpdateData};
 use super::surface_commands::{SurfaceCommand, SurfaceCommandsError, SURFACE_COMMAND_HEADER_SIZE};
+use crate::rdp::{CompressionFlags, CompressionType, SHARE_DATA_HEADER_MASK};
 use crate::utils::SplitTo;
 use crate::{per, PduBufferParsing, PduParsing};
 
@@ -87,7 +88,9 @@ impl PduParsing for FastPathHeader {
 pub struct FastPathUpdatePdu<'a> {
     pub fragmentation: Fragmentation,
     pub update_code: UpdateCode,
-    pub compression: Compression,
+    pub compression_flags: Option<CompressionFlags>,
+    // NOTE: always Some when compression flags is Some
+    pub compression_type: Option<CompressionType>,
     pub data: &'a [u8],
 }
 
@@ -104,7 +107,18 @@ impl<'a> PduBufferParsing<'a> for FastPathUpdatePdu<'a> {
         let fragmentation =
             Fragmentation::from_u8(fragmentation).ok_or(FastPathError::InvalidFragmentation(fragmentation))?;
 
-        let compression = Compression::from_bits_truncate(header.get_bits(6..8));
+        let (compression_flags, compression_type) =
+            if Compression::from_bits_truncate(header.get_bits(6..8)).contains(Compression::COMPRESSION_USED) {
+                let compression_flags_with_type = buffer.read_u8()?;
+                let compression_flags =
+                    CompressionFlags::from_bits_truncate(compression_flags_with_type & SHARE_DATA_HEADER_MASK);
+                let compression_type = CompressionType::from_u8(compression_flags_with_type & !SHARE_DATA_HEADER_MASK)
+                    .ok_or_else(|| FastPathError::InvalidShareDataHeader(String::from("Invalid compression type")))?;
+
+                (Some(compression_flags), Some(compression_type))
+            } else {
+                (None, None)
+            };
 
         let data_length = usize::from(buffer.read_u16::<LittleEndian>()?);
         if buffer.len() < data_length {
@@ -118,7 +132,8 @@ impl<'a> PduBufferParsing<'a> for FastPathUpdatePdu<'a> {
         Ok(Self {
             fragmentation,
             update_code,
-            compression,
+            compression_flags,
+            compression_type,
             data,
         })
     }
@@ -127,7 +142,12 @@ impl<'a> PduBufferParsing<'a> for FastPathUpdatePdu<'a> {
         let mut header = 0u8;
         header.set_bits(0..4, self.update_code.to_u8().unwrap());
         header.set_bits(4..6, self.fragmentation.to_u8().unwrap());
-        header.set_bits(6..8, self.compression.bits);
+
+        if self.compression_flags.is_some() {
+            header.set_bits(6..8, Compression::COMPRESSION_USED.bits);
+            todo!("encode compressionFlags (optional)"); // TODO: compressionFlags encoding
+        }
+
         buffer.write_u8(header)?;
         buffer.write_u16::<LittleEndian>(self.data.len() as u16)?;
         buffer.write_all(self.data)?;
@@ -262,10 +282,10 @@ pub enum FastPathError {
     InvalidUpdateCode(u8),
     #[error("Received invalid fragmentation: {0}")]
     InvalidFragmentation(u8),
-    #[error("Received compressed Fast-Path package")]
-    CompressionNotSupported,
-    #[error("Input buffer is shorter then the data length: {} < {}", actual, expected)]
+    #[error("Input buffer is shorter than the data length: {} < {}", actual, expected)]
     InvalidDataLength { expected: usize, actual: usize },
     #[error("Received unsupported Fast-Path Update: {0:?}")]
     UnsupportedFastPathUpdate(UpdateCode),
+    #[error("Invalid RDP Share Data Header: {0}")]
+    InvalidShareDataHeader(String),
 }
