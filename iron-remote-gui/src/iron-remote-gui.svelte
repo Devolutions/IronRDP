@@ -151,7 +151,7 @@
         setViewerStyle(`${height}px`, `${width}px`, true);
     }
 
-    function fitResize() {
+    function fitResize(realSizeLimit = false) {
         const windowSize = getWindowSize();
         const wrapperBoundingBox = wrapper.getBoundingClientRect();
 
@@ -161,7 +161,7 @@
         let width = canvas.width;
         let height = canvas.height;
 
-        if (containerWidth < canvas.width || containerHeight < canvas.height) {
+        if (!realSizeLimit || containerWidth < canvas.width || containerHeight < canvas.height) {
             const ratio = Math.min(containerWidth / canvas.width, containerHeight / canvas.height);
             width = width * ratio;
             height = height * ratio;
@@ -309,7 +309,8 @@
     }
     
     .capturing-inputs {
-        border: solid rgba(0,97,166,.7) 1px;
+        outline: 1px solid rgba(0,97,166,.7);
+        outline-offset: -1px;
     }
 
     canvas {
