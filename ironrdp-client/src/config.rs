@@ -1,5 +1,6 @@
 use std::num::ParseIntError;
 
+use anyhow::Context as _;
 use clap::clap_derive::ValueEnum;
 use clap::{crate_name, Parser};
 use ironrdp::session::{GraphicsConfig, InputConfig};
@@ -10,6 +11,7 @@ const DEFAULT_HEIGHT: u16 = 1080;
 const GLOBAL_CHANNEL_NAME: &str = "GLOBAL";
 const USER_CHANNEL_NAME: &str = "USER";
 
+#[derive(Clone)]
 pub struct Config {
     pub log_file: String,
     pub addr: String,
@@ -76,11 +78,11 @@ struct Args {
     log_file: String,
 
     /// An address on which the client will connect.
-    addr: String,
+    addr: Option<String>,
 
     /// A target RDP server user name
     #[clap(short, long, value_parser)]
-    username: String,
+    username: Option<String>,
 
     /// An optional target RDP server domain name
     #[clap(short, long, value_parser)]
@@ -88,7 +90,7 @@ struct Args {
 
     /// A target RDP server user password
     #[clap(short, long, value_parser)]
-    password: String,
+    password: Option<String>,
 
     /// Specify the security protocols to use
     #[clap(long, value_enum, value_parser, default_value_t = SecurityProtocol::HybridEx)]
@@ -137,8 +139,31 @@ struct Args {
 }
 
 impl Config {
-    pub fn parse_args() -> Self {
+    pub fn parse_args() -> anyhow::Result<Self> {
         let args = Args::parse();
+
+        let addr = if let Some(addr) = args.addr {
+            addr
+        } else {
+            inquire::Text::new("Server address:")
+                .prompt()
+                .context("Address prompt")?
+        };
+
+        let username = if let Some(username) = args.username {
+            username
+        } else {
+            inquire::Text::new("Username:").prompt().context("Username prompt")?
+        };
+
+        let password = if let Some(password) = args.password {
+            password
+        } else {
+            inquire::Password::new("Password:")
+                .without_confirmation()
+                .prompt()
+                .context("Password prompt")?
+        };
 
         let graphics_config = if args.avc444 || args.h264 {
             Some(GraphicsConfig {
@@ -154,8 +179,8 @@ impl Config {
 
         let input = InputConfig {
             credentials: AuthIdentity {
-                username: args.username,
-                password: args.password.into(),
+                username,
+                password: password.into(),
                 domain: args.domain,
             },
             security_protocol: SecurityProtocol::parse(args.security_protocol),
@@ -171,10 +196,10 @@ impl Config {
             graphics_config,
         };
 
-        Self {
+        Ok(Self {
             log_file: args.log_file,
-            addr: args.addr,
+            addr,
             input,
-        }
+        })
     }
 }

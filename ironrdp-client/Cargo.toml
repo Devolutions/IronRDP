@@ -1,5 +1,5 @@
 [package]
-name = "ironrdp-cli"
+name = "ironrdp-client"
 version = "0.4.2"
 edition = "2021"
 readme = "README.md"
@@ -18,11 +18,17 @@ native-tls = ["dep:async-native-tls", "ironrdp/native-tls"]
 
 # Protocol
 ironrdp = { path = "../ironrdp" }
+ironrdp-input = { path = "../ironrdp-input" }
 sspi = { version = "0.7", features = ["network_client"] } # TODO: enable dns_resolver at some point
+
+# GUI
+softbuffer = "0.2.0"
+winit = "0.28.2"
 
 # CLI
 clap = { version = "4.0", features = ["derive", "cargo"] }
 exitcode = "1.1.2"
+inquire = "0.5.3"
 
 # logging
 log = "0.4"
@@ -41,5 +47,5 @@ futures-util = "0.3"
 # Utils
 chrono = "0.4.23"
 whoami = "1.2.3"
-image = "0.24.5"
 anyhow = "1.0.68"
+smallvec = "1.10.0"

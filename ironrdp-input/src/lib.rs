@@ -8,44 +8,55 @@ use smallvec::SmallVec;
 
 // TODO: unicode keyboard event support
 
-/// Number associated to a mouse button.
-///
-/// Based on the MouseEvent.button property found in browsers APIs:
-/// https://developer.mozilla.org/en-US/docs/Web/API/MouseEvent/button#value
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct MouseButton(u8);
+#[repr(u8)]
+pub enum MouseButton {
+    Left = 0,
+    Middle = 1,
+    Right = 2,
+    /// Typically Browser Back button
+    X1 = 3,
+    /// Typically Browser Forward button
+    X2 = 4,
+}
 
 impl MouseButton {
-    const LEFT_VAL: u8 = 0;
-    const MIDDLE_VAL: u8 = 1;
-    const RIGHT_VAL: u8 = 2;
-    const X1_VAL: u8 = 3;
-    const X2_VAL: u8 = 4;
-
-    pub const LEFT: Self = Self(Self::LEFT_VAL);
-    pub const MIDDLE: Self = Self(Self::MIDDLE_VAL);
-    pub const RIGHT: Self = Self(Self::RIGHT_VAL);
-    pub const X1: Self = Self(Self::X1_VAL);
-    pub const X2: Self = Self(Self::X2_VAL);
-
-    pub fn is_unknown(self) -> bool {
-        self.0 > Self::X2.0
-    }
-
     pub fn as_idx(self) -> usize {
-        usize::from(self.0)
+        self as usize
     }
-}
 
-impl From<u8> for MouseButton {
-    fn from(value: u8) -> Self {
-        Self(value)
+    pub fn from_idx(idx: usize) -> Option<Self> {
+        match idx {
+            0 => Some(Self::Left),
+            1 => Some(Self::Middle),
+            2 => Some(Self::Right),
+            3 => Some(Self::X1),
+            4 => Some(Self::X2),
+            _ => None,
+        }
     }
-}
 
-impl From<MouseButton> for u8 {
-    fn from(value: MouseButton) -> Self {
-        value.0
+    pub fn from_web_button(value: u8) -> Option<Self> {
+        // https://developer.mozilla.org/en-US/docs/Web/API/MouseEvent/button#value
+        match value {
+            0 => Some(Self::Left),
+            1 => Some(Self::Middle),
+            2 => Some(Self::Right),
+            3 => Some(Self::X1),
+            4 => Some(Self::X2),
+            _ => None,
+        }
+    }
+
+    pub fn from_native_button(value: u16) -> Option<Self> {
+        match value {
+            1 => Some(Self::Left),
+            2 => Some(Self::Middle),
+            3 => Some(Self::Right),
+            8 => Some(Self::X1),
+            9 => Some(Self::X2),
+            _ => None,
+        }
     }
 }
 
@@ -57,6 +68,16 @@ pub struct Scancode {
 }
 
 impl Scancode {
+    pub const fn from_u8(extended: bool, code: u8) -> Self {
+        Self { code, extended }
+    }
+
+    pub const fn from_u16(scancode: u16) -> Self {
+        let extended = scancode & 0xE000 == 0xE000;
+        let code = scancode as u8;
+        Self { code, extended }
+    }
+
     pub fn as_idx(self) -> usize {
         if self.extended {
             usize::from(self.code) + 256
@@ -64,35 +85,29 @@ impl Scancode {
             usize::from(self.code)
         }
     }
+
+    pub fn as_u8(self) -> (bool, u8) {
+        (self.extended, self.code)
+    }
+
+    pub fn as_u16(self) -> u16 {
+        if self.extended {
+            u16::from(self.code) | 0xE000
+        } else {
+            u16::from(self.code)
+        }
+    }
 }
 
-impl From<(u8, bool)> for Scancode {
-    fn from((code, extended): (u8, bool)) -> Self {
-        Self { code, extended }
+impl From<(bool, u8)> for Scancode {
+    fn from((extended, code): (bool, u8)) -> Self {
+        Self::from_u8(extended, code)
     }
 }
 
 impl From<u16> for Scancode {
     fn from(code: u16) -> Self {
-        let extended = code & 0xE000 == 0xE000;
-        let code = code as u8;
-        Self { code, extended }
-    }
-}
-
-impl From<Scancode> for u8 {
-    fn from(value: Scancode) -> Self {
-        value.code
-    }
-}
-
-impl From<Scancode> for u16 {
-    fn from(value: Scancode) -> Self {
-        if value.extended {
-            u16::from(value.code) | 0xE000
-        } else {
-            u16::from(value.code)
-        }
+        Self::from_u16(code)
     }
 }
 
@@ -182,10 +197,6 @@ impl Database {
         for operation in transaction {
             match operation {
                 Operation::MouseButtonPressed(button) => {
-                    if button.is_unknown() {
-                        continue;
-                    }
-
                     let was_pressed = self.mouse_buttons.replace(button.as_idx(), true);
 
                     if !was_pressed {
@@ -207,10 +218,6 @@ impl Database {
                     }
                 }
                 Operation::MouseButtonReleased(button) => {
-                    if button.is_unknown() {
-                        continue;
-                    }
-
                     let was_pressed = self.mouse_buttons.replace(button.as_idx(), false);
 
                     if was_pressed {
@@ -264,11 +271,11 @@ impl Database {
                     if was_pressed {
                         events.push(FastPathInputEvent::KeyboardEvent(
                             flags | KeyboardFlags::RELEASE,
-                            u8::from(scancode),
+                            scancode.code,
                         ));
                     }
 
-                    events.push(FastPathInputEvent::KeyboardEvent(flags, u8::from(scancode)));
+                    events.push(FastPathInputEvent::KeyboardEvent(flags, scancode.code));
                 }
                 Operation::KeyReleased(scancode) => {
                     let was_pressed = self.keyboard.replace(scancode.as_idx(), false);
@@ -280,7 +287,7 @@ impl Database {
                     };
 
                     if was_pressed {
-                        events.push(FastPathInputEvent::KeyboardEvent(flags, u8::from(scancode)));
+                        events.push(FastPathInputEvent::KeyboardEvent(flags, scancode.code));
                     }
                 }
             }
@@ -294,9 +301,9 @@ impl Database {
         let mut events = SmallVec::new();
 
         for idx in self.mouse_buttons.iter_ones() {
-            let button_id = u8::try_from(idx).unwrap();
+            let button = MouseButton::from_idx(idx).expect("in-range index");
 
-            let event = match MouseButtonFlags::from(MouseButton::from(button_id)) {
+            let event = match MouseButtonFlags::from(button) {
                 MouseButtonFlags::Button(flags) => FastPathInputEvent::MouseEvent(MousePdu {
                     flags,
                     number_of_wheel_rotation_units: 0,
@@ -368,13 +375,12 @@ enum MouseButtonFlags {
 
 impl From<MouseButton> for MouseButtonFlags {
     fn from(value: MouseButton) -> Self {
-        match value.0 {
-            MouseButton::LEFT_VAL => Self::Button(PointerFlags::LEFT_BUTTON),
-            MouseButton::MIDDLE_VAL => Self::Button(PointerFlags::MIDDLE_BUTTON_OR_WHEEL),
-            MouseButton::RIGHT_VAL => Self::Button(PointerFlags::RIGHT_BUTTON),
-            MouseButton::X1_VAL => Self::Pointer(PointerXFlags::BUTTON1),
-            MouseButton::X2_VAL => Self::Pointer(PointerXFlags::BUTTON2),
-            _ => Self::Button(PointerFlags::empty()),
+        match value {
+            MouseButton::Left => Self::Button(PointerFlags::LEFT_BUTTON),
+            MouseButton::Middle => Self::Button(PointerFlags::MIDDLE_BUTTON_OR_WHEEL),
+            MouseButton::Right => Self::Button(PointerFlags::RIGHT_BUTTON),
+            MouseButton::X1 => Self::Pointer(PointerXFlags::BUTTON1),
+            MouseButton::X2 => Self::Pointer(PointerXFlags::BUTTON2),
         }
     }
 }

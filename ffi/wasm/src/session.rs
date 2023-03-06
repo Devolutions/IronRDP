@@ -142,8 +142,8 @@ impl Session {
 
         let mut image = DecodedImage::new(
             PixelFormat::RgbA32,
-            u32::from(self.connection_sequence_result.desktop_size.width),
-            u32::from(self.connection_sequence_result.desktop_size.height),
+            self.connection_sequence_result.desktop_size.width,
+            self.connection_sequence_result.desktop_size.height,
         );
 
         let mut active_stage =

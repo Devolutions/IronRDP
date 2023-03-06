@@ -9,11 +9,23 @@ pub struct DeviceEvent(pub(crate) Operation);
 #[wasm_bindgen]
 impl DeviceEvent {
     pub fn new_mouse_button_pressed(button: u8) -> Self {
-        Self(Operation::MouseButtonPressed(MouseButton::from(button)))
+        match MouseButton::from_web_button(button) {
+            Some(button) => Self(Operation::MouseButtonPressed(button)),
+            None => {
+                warn!("Unknown mouse button ID: {button}");
+                Self(Operation::MouseButtonPressed(MouseButton::Left))
+            }
+        }
     }
 
     pub fn new_mouse_button_released(button: u8) -> Self {
-        Self(Operation::MouseButtonReleased(MouseButton::from(button)))
+        match MouseButton::from_web_button(button) {
+            Some(button) => Self(Operation::MouseButtonReleased(button)),
+            None => {
+                warn!("Unknown mouse button ID: {button}");
+                Self(Operation::MouseButtonReleased(MouseButton::Left))
+            }
+        }
     }
 
     pub fn new_mouse_move(x: u16, y: u16) -> Self {
@@ -28,11 +40,11 @@ impl DeviceEvent {
     }
 
     pub fn new_key_pressed(scancode: u16) -> Self {
-        Self(Operation::KeyPressed(Scancode::from(scancode)))
+        Self(Operation::KeyPressed(Scancode::from_u16(scancode)))
     }
 
     pub fn new_key_released(scancode: u16) -> Self {
-        Self(Operation::KeyReleased(Scancode::from(scancode)))
+        Self(Operation::KeyReleased(Scancode::from_u16(scancode)))
     }
 }
 

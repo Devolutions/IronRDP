@@ -5,8 +5,13 @@ use proptest::collection::vec;
 use proptest::prelude::*;
 
 fn mouse_button() -> impl Strategy<Value = MouseButton> {
-    // Generate a few "out of bounds" buttons
-    (0..10u8).prop_map(MouseButton::from)
+    prop_oneof![
+        Just(MouseButton::Left),
+        Just(MouseButton::Middle),
+        Just(MouseButton::Right),
+        Just(MouseButton::X1),
+        Just(MouseButton::X2),
+    ]
 }
 
 fn mouse_button_op() -> impl Strategy<Value = Operation> {
@@ -17,7 +22,7 @@ fn mouse_button_op() -> impl Strategy<Value = Operation> {
 }
 
 fn scancode() -> impl Strategy<Value = Scancode> {
-    (any::<u8>(), any::<bool>()).prop_map(Scancode::from)
+    (any::<bool>(), any::<u8>()).prop_map(Scancode::from)
 }
 
 fn key_op() -> impl Strategy<Value = Operation> {
@@ -40,11 +45,8 @@ fn smoke_mouse_buttons() {
             db.apply(std::iter::once(op.clone()));
 
             match op {
-                Operation::MouseButtonPressed(button) if !button.is_unknown() => {
+                Operation::MouseButtonPressed(button) => {
                     ensure!(db.is_mouse_button_pressed(button))
-                }
-                Operation::MouseButtonPressed(button) if button.is_unknown() => {
-                    ensure!(!db.is_mouse_button_pressed(button))
                 }
                 Operation::MouseButtonReleased(button) => ensure!(!db.is_mouse_button_pressed(button)),
                 _ => bail!("unexpected case"),
