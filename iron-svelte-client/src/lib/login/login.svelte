@@ -29,7 +29,7 @@
 
                 toast.set({
                     type: 'error',
-                    message: event.data,
+                    message: event.data.backtrace ? event.data.backtrace() : event.data,
                 });
             } else {
                 toast.set({
