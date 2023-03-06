@@ -13,8 +13,8 @@ A Rust implementation of the Microsoft Remote Desktop Protocol, with a focus on 
 - `ironrdp-tls`: TLS boilerplate common with most IronRDP clients.
 - `ironrdp-devolutions-gateway`: Devolutions Gateway extensions.
 - `ironrdp-renderer`: `glutin` primitives for OpenGL rendering.
-- `ironrdp-cli`: basic command-line client mostly for debugging purposes.
-- `ironrdp-gui-client`: basic GUI client for IronRDP.
+- `ironrdp-client`: Portable RDP client without GPU acceleration using softbuffer and winit for windowing.
+- `ironrdp-client-glutin`: GPU-accelerated RDP client using glutin.
 - `ironrdp-replay-client`: utility tool to replay RDP graphics pipeline for debugging purposes.
 - `iron-remote-gui`: core frontend ui used by both, iron-svelte-client and iron-tauri-client.
 - `iron-svelte-client`: web-based frontend using `Svelte` and `Material` frameworks).

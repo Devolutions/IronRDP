@@ -9,7 +9,7 @@ members = [
     "ironrdp-tls",
     "ironrdp-devolutions-gateway",
     "ironrdp-renderer",
-    "ironrdp-cli",
-    "ironrdp-gui-client",
+    "ironrdp-client",
+    "ironrdp-client-glutin",
     "ironrdp-replay-client",
 ]

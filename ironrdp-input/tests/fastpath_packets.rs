@@ -11,9 +11,9 @@ enum MouseFlags {
 }
 
 #[rstest]
-#[case::left(MouseButton::LEFT, MouseFlags::Button(PointerFlags::LEFT_BUTTON))]
-#[case::middle(MouseButton::MIDDLE, MouseFlags::Button(PointerFlags::MIDDLE_BUTTON_OR_WHEEL))]
-#[case::right(MouseButton::RIGHT, MouseFlags::Button(PointerFlags::RIGHT_BUTTON))]
+#[case::left(MouseButton::Left, MouseFlags::Button(PointerFlags::LEFT_BUTTON))]
+#[case::middle(MouseButton::Middle, MouseFlags::Button(PointerFlags::MIDDLE_BUTTON_OR_WHEEL))]
+#[case::right(MouseButton::Right, MouseFlags::Button(PointerFlags::RIGHT_BUTTON))]
 #[case::x1(MouseButton::X1, MouseFlags::Pointer(PointerXFlags::BUTTON1))]
 #[case::x2(MouseButton::X2, MouseFlags::Pointer(PointerXFlags::BUTTON2))]
 fn mouse_buttons(#[case] button: MouseButton, #[case] expected_flag: MouseFlags) {
@@ -68,12 +68,12 @@ fn keyboard() {
 
     {
         let to_press = [
-            Operation::KeyPressed(Scancode::from((0, false))),
-            Operation::KeyPressed(Scancode::from((23, false))),
-            Operation::KeyPressed(Scancode::from((39, false))),
-            Operation::KeyPressed(Scancode::from((19, true))),
-            Operation::KeyPressed(Scancode::from((20, true))),
-            Operation::KeyPressed(Scancode::from((90, false))),
+            Operation::KeyPressed(Scancode::from_u8(false, 0)),
+            Operation::KeyPressed(Scancode::from_u8(false, 23)),
+            Operation::KeyPressed(Scancode::from_u8(false, 39)),
+            Operation::KeyPressed(Scancode::from_u8(true, 19)),
+            Operation::KeyPressed(Scancode::from_u8(true, 20)),
+            Operation::KeyPressed(Scancode::from_u8(false, 90)),
         ];
 
         let expected_inputs = [
@@ -102,12 +102,12 @@ fn keyboard() {
 
     {
         let to_press = [
-            Operation::KeyReleased(Scancode::from((0, false))),
-            Operation::KeyReleased(Scancode::from((2, false))),
-            Operation::KeyReleased(Scancode::from((3, false))),
-            Operation::KeyReleased(Scancode::from((19, true))),
-            Operation::KeyReleased(Scancode::from((20, true))),
-            Operation::KeyReleased(Scancode::from((100, false))),
+            Operation::KeyReleased(Scancode::from_u8(false, 0)),
+            Operation::KeyReleased(Scancode::from_u8(false, 2)),
+            Operation::KeyReleased(Scancode::from_u8(false, 3)),
+            Operation::KeyReleased(Scancode::from_u8(true, 19)),
+            Operation::KeyReleased(Scancode::from_u8(true, 20)),
+            Operation::KeyReleased(Scancode::from_u8(false, 100)),
         ];
 
         let expected_inputs = [
@@ -134,17 +134,17 @@ fn keyboard_repeat() {
     let mut db = Database::default();
 
     let to_press = [
-        Operation::KeyPressed(Scancode::from((0, false))),
-        Operation::KeyPressed(Scancode::from((0, false))),
-        Operation::KeyPressed(Scancode::from((0, false))),
-        Operation::KeyPressed(Scancode::from((20, false))),
-        Operation::KeyPressed(Scancode::from((90, false))),
-        Operation::KeyPressed(Scancode::from((90, false))),
-        Operation::KeyReleased(Scancode::from((90, false))),
-        Operation::KeyReleased(Scancode::from((90, false))),
-        Operation::KeyPressed(Scancode::from((20, false))),
-        Operation::KeyReleased(Scancode::from((120, false))),
-        Operation::KeyReleased(Scancode::from((90, false))),
+        Operation::KeyPressed(Scancode::from_u8(false, 0)),
+        Operation::KeyPressed(Scancode::from_u8(false, 0)),
+        Operation::KeyPressed(Scancode::from_u8(false, 0)),
+        Operation::KeyPressed(Scancode::from_u8(false, 20)),
+        Operation::KeyPressed(Scancode::from_u8(false, 90)),
+        Operation::KeyPressed(Scancode::from_u8(false, 90)),
+        Operation::KeyReleased(Scancode::from_u8(false, 90)),
+        Operation::KeyReleased(Scancode::from_u8(false, 90)),
+        Operation::KeyPressed(Scancode::from_u8(false, 20)),
+        Operation::KeyReleased(Scancode::from_u8(false, 120)),
+        Operation::KeyReleased(Scancode::from_u8(false, 90)),
     ];
 
     let expected_inputs = [
@@ -172,15 +172,15 @@ fn mouse_button_no_duplicate() {
     let mut db = Database::default();
 
     let to_press = [
-        Operation::MouseButtonPressed(MouseButton::LEFT),
-        Operation::MouseButtonPressed(MouseButton::LEFT),
-        Operation::MouseButtonPressed(MouseButton::RIGHT),
-        Operation::MouseButtonPressed(MouseButton::LEFT),
-        Operation::MouseButtonPressed(MouseButton::LEFT),
-        Operation::MouseButtonPressed(MouseButton::RIGHT),
-        Operation::MouseButtonPressed(MouseButton::LEFT),
-        Operation::MouseButtonReleased(MouseButton::RIGHT),
-        Operation::MouseButtonPressed(MouseButton::RIGHT),
+        Operation::MouseButtonPressed(MouseButton::Left),
+        Operation::MouseButtonPressed(MouseButton::Left),
+        Operation::MouseButtonPressed(MouseButton::Right),
+        Operation::MouseButtonPressed(MouseButton::Left),
+        Operation::MouseButtonPressed(MouseButton::Left),
+        Operation::MouseButtonPressed(MouseButton::Right),
+        Operation::MouseButtonPressed(MouseButton::Left),
+        Operation::MouseButtonReleased(MouseButton::Right),
+        Operation::MouseButtonPressed(MouseButton::Right),
     ];
 
     let expected_inputs = [
@@ -220,20 +220,20 @@ fn release_all() {
     let mut db = Database::default();
 
     let ops = [
-        Operation::KeyPressed(Scancode::from((0, false))),
-        Operation::KeyPressed(Scancode::from((23, false))),
-        Operation::KeyPressed(Scancode::from((39, false))),
-        Operation::KeyPressed(Scancode::from((19, true))),
-        Operation::KeyPressed(Scancode::from((20, true))),
-        Operation::KeyPressed(Scancode::from((90, false))),
-        Operation::MouseButtonPressed(MouseButton::LEFT),
-        Operation::MouseButtonPressed(MouseButton::LEFT),
-        Operation::MouseButtonPressed(MouseButton::RIGHT),
-        Operation::MouseButtonPressed(MouseButton::LEFT),
-        Operation::MouseButtonPressed(MouseButton::MIDDLE),
-        Operation::MouseButtonPressed(MouseButton::RIGHT),
-        Operation::MouseButtonPressed(MouseButton::LEFT),
-        Operation::MouseButtonReleased(MouseButton::RIGHT),
+        Operation::KeyPressed(Scancode::from_u8(false, 0)),
+        Operation::KeyPressed(Scancode::from_u8(false, 23)),
+        Operation::KeyPressed(Scancode::from_u8(false, 39)),
+        Operation::KeyPressed(Scancode::from_u8(true, 19)),
+        Operation::KeyPressed(Scancode::from_u8(true, 20)),
+        Operation::KeyPressed(Scancode::from_u8(false, 90)),
+        Operation::MouseButtonPressed(MouseButton::Left),
+        Operation::MouseButtonPressed(MouseButton::Left),
+        Operation::MouseButtonPressed(MouseButton::Right),
+        Operation::MouseButtonPressed(MouseButton::Left),
+        Operation::MouseButtonPressed(MouseButton::Middle),
+        Operation::MouseButtonPressed(MouseButton::Right),
+        Operation::MouseButtonPressed(MouseButton::Left),
+        Operation::MouseButtonReleased(MouseButton::Right),
     ];
 
     let _ = db.apply(ops);

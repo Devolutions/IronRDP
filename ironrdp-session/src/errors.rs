@@ -103,8 +103,8 @@ pub enum RdpError {
     UnexpectedStreamTermination,
     #[error("Unable to send message on channel {0}")]
     Send(String),
-    #[error("Unable to recieve message on channel {0}")]
-    Recieve(String),
+    #[error("Unable to receive message on channel {0}")]
+    Receive(String),
     #[error("Lock poisoned")]
     LockPoisoned,
     #[cfg(all(feature = "native-tls", not(feature = "rustls")))]
@@ -131,7 +131,7 @@ impl<T> From<SendError<T>> for RdpError {
 
 impl From<RecvError> for RdpError {
     fn from(e: RecvError) -> Self {
-        RdpError::Recieve(e.to_string())
+        RdpError::Receive(e.to_string())
     }
 }
 

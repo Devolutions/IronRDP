@@ -16,7 +16,11 @@ fn decode_decodes_valid_sequence_of_messages() {
     let mut data = ENCODED_MESSAGES.as_ref();
     let expected = DECODED_IMAGE.as_ref();
 
-    let mut image = DecodedImage::new(PixelFormat::BgrX32, IMAGE_WIDTH as u32, IMAGE_HEIGHT as u32);
+    let mut image = DecodedImage::new(
+        PixelFormat::BgrX32,
+        IMAGE_WIDTH.try_into().unwrap(),
+        IMAGE_HEIGHT.try_into().unwrap(),
+    );
 
     let mut handler = DecodingContext::default();
 

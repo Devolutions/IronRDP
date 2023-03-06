@@ -11,15 +11,13 @@ const SOURCE_STRIDE: u16 = TILE_SIZE * SOURCE_PIXEL_FORMAT.bytes_per_pixel() as 
 pub struct DecodedImage {
     pixel_format: PixelFormat,
     data: Vec<u8>,
-    width: u32,
-    height: u32,
+    width: u16,
+    height: u16,
 }
 
 impl DecodedImage {
-    pub fn new(pixel_format: PixelFormat, width: u32, height: u32) -> Self {
-        let len = usize::try_from(width).unwrap()
-            * usize::try_from(height).unwrap()
-            * usize::from(pixel_format.bytes_per_pixel());
+    pub fn new(pixel_format: PixelFormat, width: u16, height: u16) -> Self {
+        let len = usize::from(width) * usize::from(height) * usize::from(pixel_format.bytes_per_pixel());
 
         Self {
             pixel_format,
@@ -37,11 +35,11 @@ impl DecodedImage {
         &self.data
     }
 
-    pub fn width(&self) -> u32 {
+    pub fn width(&self) -> u16 {
         self.width
     }
 
-    pub fn height(&self) -> u32 {
+    pub fn height(&self) -> u16 {
         self.height
     }
 
@@ -86,6 +84,7 @@ impl DecodedImage {
         Ok(())
     }
 
+    // FIXME: this assumes PixelFormat::RgbA32
     pub(crate) fn apply_rgb16_bitmap(&mut self, rgb16: &[u8], update_rectangle: &Rectangle) {
         const SRC_COLOR_DEPTH: usize = 2;
         const DST_COLOR_DEPTH: usize = 4;

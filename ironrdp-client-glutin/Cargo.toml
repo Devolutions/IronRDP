@@ -40,7 +40,6 @@ futures-util = "0.3"
 
 # Utils
 chrono = "0.4.23"
-image = "0.24.5"
 
 # GUI
 glutin = "0.29"
