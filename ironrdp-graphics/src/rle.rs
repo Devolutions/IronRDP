@@ -14,7 +14,13 @@ use bytes::BytesMut;
 use core::fmt;
 use std::ops::BitXor;
 
-// TODO: error handling
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RlePixelFormat {
+    Rgb24,
+    Rgb16,
+    Rgb15,
+    Rgb8,
+}
 
 /// Decompress an RLE compressed bitmap.
 ///
@@ -29,13 +35,13 @@ pub fn decompress(
     width: impl Into<usize>,
     height: impl Into<usize>,
     bpp: impl Into<usize>,
-) {
+) -> Result<RlePixelFormat, RleError> {
     match bpp.into() {
         Mode24Bpp::BPP => decompress_24_bpp(src, dst, width, height),
         Mode16Bpp::BPP => decompress_16_bpp(src, dst, width, height),
         Mode15Bpp::BPP => decompress_15_bpp(src, dst, width, height),
         Mode8Bpp::BPP => decompress_8_bpp(src, dst, width, height),
-        _ => todo!("return error"),
+        invalid => Err(RleError::InvalidBpp { bpp: invalid }),
     }
 }
 
@@ -45,7 +51,12 @@ pub fn decompress(
 /// `dst`: destination buffer
 /// `width`: decompressed bitmap width
 /// `height`: decompressed bitmap height
-pub fn decompress_24_bpp(src: &[u8], dst: &mut BytesMut, width: impl Into<usize>, height: impl Into<usize>) {
+pub fn decompress_24_bpp(
+    src: &[u8],
+    dst: &mut BytesMut,
+    width: impl Into<usize>,
+    height: impl Into<usize>,
+) -> Result<RlePixelFormat, RleError> {
     decompress_helper::<Mode24Bpp>(src, dst, width.into(), height.into())
 }
 
@@ -55,7 +66,12 @@ pub fn decompress_24_bpp(src: &[u8], dst: &mut BytesMut, width: impl Into<usize>
 /// `dst`: destination buffer
 /// `width`: decompressed bitmap width
 /// `height`: decompressed bitmap height
-pub fn decompress_16_bpp(src: &[u8], dst: &mut BytesMut, width: impl Into<usize>, height: impl Into<usize>) {
+pub fn decompress_16_bpp(
+    src: &[u8],
+    dst: &mut BytesMut,
+    width: impl Into<usize>,
+    height: impl Into<usize>,
+) -> Result<RlePixelFormat, RleError> {
     decompress_helper::<Mode16Bpp>(src, dst, width.into(), height.into())
 }
 
@@ -65,7 +81,12 @@ pub fn decompress_16_bpp(src: &[u8], dst: &mut BytesMut, width: impl Into<usize>
 /// `dst`: destination buffer
 /// `width`: decompressed bitmap width
 /// `height`: decompressed bitmap height
-pub fn decompress_15_bpp(src: &[u8], dst: &mut BytesMut, width: impl Into<usize>, height: impl Into<usize>) {
+pub fn decompress_15_bpp(
+    src: &[u8],
+    dst: &mut BytesMut,
+    width: impl Into<usize>,
+    height: impl Into<usize>,
+) -> Result<RlePixelFormat, RleError> {
     decompress_helper::<Mode15Bpp>(src, dst, width.into(), height.into())
 }
 
@@ -75,14 +96,91 @@ pub fn decompress_15_bpp(src: &[u8], dst: &mut BytesMut, width: impl Into<usize>
 /// `dst`: destination buffer
 /// `width`: decompressed bitmap width
 /// `height`: decompressed bitmap height
-pub fn decompress_8_bpp(src: &[u8], dst: &mut BytesMut, width: impl Into<usize>, height: impl Into<usize>) {
+pub fn decompress_8_bpp(
+    src: &[u8],
+    dst: &mut BytesMut,
+    width: impl Into<usize>,
+    height: impl Into<usize>,
+) -> Result<RlePixelFormat, RleError> {
     decompress_helper::<Mode8Bpp>(src, dst, width.into(), height.into())
 }
 
-fn decompress_helper<Mode: DepthMode>(src: &[u8], dst: &mut BytesMut, width: usize, height: usize) {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RleError {
+    InvalidBpp {
+        bpp: usize,
+    },
+    BadOrderCode,
+    NotEnoughBytes {
+        expected: usize,
+        actual: usize,
+    },
+    InvalidImageSize {
+        maximum_additional: usize,
+        required_additional: usize,
+    },
+    EmptyImage,
+    UnexpectedZeroLength,
+}
+
+impl fmt::Display for RleError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            RleError::InvalidBpp { bpp } => write!(f, "invalid bytes per pixel: {bpp}"),
+            RleError::BadOrderCode => write!(f, "bad RLE order code"),
+            RleError::NotEnoughBytes { expected, actual } => {
+                write!(f, "not enough bytes: expected {expected} bytes, but got {actual}")
+            }
+            RleError::InvalidImageSize {
+                maximum_additional,
+                required_additional,
+            } => {
+                write!(
+                    f,
+                    "invalid image size advertised: output buffer can only receive at most {maximum_additional} additional bytes, but {required_additional} bytes are required"
+                )
+            }
+            RleError::EmptyImage => write!(f, "height or width is zero"),
+            RleError::UnexpectedZeroLength => write!(f, "unexpected zero-length"),
+        }
+    }
+}
+
+fn decompress_helper<Mode: DepthMode>(
+    src: &[u8],
+    dst: &mut BytesMut,
+    width: usize,
+    height: usize,
+) -> Result<RlePixelFormat, RleError> {
+    if width == 0 || height == 0 {
+        return Err(RleError::EmptyImage);
+    }
+
     let row_delta = Mode::COLOR_DEPTH * width;
     dst.resize(row_delta * height, 0);
-    decompress_impl::<Mode>(src, dst, row_delta);
+    decompress_impl::<Mode>(src, dst, row_delta)?;
+
+    Ok(Mode::PIXEL_FORMAT)
+}
+
+macro_rules! ensure_size {
+    (from: $buf:ident, size: $expected:expr) => {{
+        let actual = $buf.remaining_len();
+        let expected = $expected;
+        if expected > actual {
+            return Err(RleError::NotEnoughBytes { expected, actual });
+        }
+    }};
+    (into: $buf:ident, size: $required_additional:expr) => {{
+        let maximum_additional = $buf.remaining_len();
+        let required_additional = $required_additional;
+        if required_additional > maximum_additional {
+            return Err(RleError::InvalidImageSize {
+                maximum_additional,
+                required_additional,
+            });
+        }
+    }};
 }
 
 /// RLE decompression implementation
@@ -90,9 +188,7 @@ fn decompress_helper<Mode: DepthMode>(src: &[u8], dst: &mut BytesMut, width: usi
 /// `src`: source buffer containing compressed bitmap
 /// `dst`: destination buffer
 /// `row_delta`: scanline length in bytes
-fn decompress_impl<Mode: DepthMode>(src: &[u8], dst: &mut [u8], row_delta: usize) {
-    // FIXME: some bounds checks should be inserted
-
+fn decompress_impl<Mode: DepthMode>(src: &[u8], dst: &mut [u8], row_delta: usize) -> Result<(), RleError> {
     let mut src = Buf::new(src);
     let mut dst = BufMut::new(dst);
 
@@ -107,16 +203,20 @@ fn decompress_impl<Mode: DepthMode>(src: &[u8], dst: &mut [u8], row_delta: usize
             insert_fg_pel = false;
         }
 
+        ensure_size!(from: src, size: 1);
+
         let header = src.read_u8();
 
         // Extract the compression order code ID from the compression order header.
         let code = Code::decode(header);
 
         // Extract run length
-        let run_length = code.extract_run_length(header, &mut src);
+        let run_length = code.extract_run_length(header, &mut src)?;
 
         // Handle Background Run Orders.
         if code == Code::REGULAR_BG_RUN || code == Code::MEGA_MEGA_BG_RUN {
+            ensure_size!(into: dst, size: run_length * Mode::COLOR_DEPTH);
+
             if is_first_line {
                 let num_iterations = if insert_fg_pel {
                     Mode::write_pixel(&mut dst, fg_pel);
@@ -161,14 +261,20 @@ fn decompress_impl<Mode: DepthMode>(src: &[u8], dst: &mut [u8], row_delta: usize
         {
             // Handle Foreground Run Orders.
 
+            ensure_size!(from: src, size: Mode::COLOR_DEPTH);
+
             if code == Code::LITE_SET_FG_FG_RUN || code == Code::MEGA_MEGA_SET_FG_RUN {
                 fg_pel = Mode::read_pixel(&mut src);
             }
 
-            for _ in 0..run_length {
-                if is_first_line {
+            ensure_size!(into: dst, size: run_length * Mode::COLOR_DEPTH);
+
+            if is_first_line {
+                for _ in 0..run_length {
                     Mode::write_pixel(&mut dst, fg_pel);
-                } else {
+                }
+            } else {
+                for _ in 0..run_length {
                     let pixel_above = dst.read_pixel_above::<Mode>(row_delta);
                     let xored = pixel_above ^ fg_pel;
                     Mode::write_pixel(&mut dst, xored);
@@ -177,8 +283,12 @@ fn decompress_impl<Mode: DepthMode>(src: &[u8], dst: &mut [u8], row_delta: usize
         } else if code == Code::LITE_DITHERED_RUN || code == Code::MEGA_MEGA_DITHERED_RUN {
             // Handle Dithered Run Orders.
 
+            ensure_size!(from: src, size: 2 * Mode::COLOR_DEPTH);
+
             let pixel_a = Mode::read_pixel(&mut src);
             let pixel_b = Mode::read_pixel(&mut src);
+
+            ensure_size!(into: dst, size: run_length * 2 * Mode::COLOR_DEPTH);
 
             for _ in 0..run_length {
                 Mode::write_pixel(&mut dst, pixel_a);
@@ -187,7 +297,11 @@ fn decompress_impl<Mode: DepthMode>(src: &[u8], dst: &mut [u8], row_delta: usize
         } else if code == Code::REGULAR_COLOR_RUN || code == Code::MEGA_MEGA_COLOR_RUN {
             // Handle Color Run Orders.
 
+            ensure_size!(from: src, size: Mode::COLOR_DEPTH);
+
             let pixel = Mode::read_pixel(&mut src);
+
+            ensure_size!(into: dst, size: run_length * Mode::COLOR_DEPTH);
 
             for _ in 0..run_length {
                 Mode::write_pixel(&mut dst, pixel);
@@ -200,6 +314,7 @@ fn decompress_impl<Mode: DepthMode>(src: &[u8], dst: &mut [u8], row_delta: usize
             // Handle Foreground/Background Image Orders.
 
             if code == Code::LITE_SET_FG_FGBG_IMAGE || code == Code::MEGA_MEGA_SET_FGBG_IMAGE {
+                ensure_size!(from: src, size: Mode::COLOR_DEPTH);
                 fg_pel = Mode::read_pixel(&mut src);
             }
 
@@ -208,12 +323,13 @@ fn decompress_impl<Mode: DepthMode>(src: &[u8], dst: &mut [u8], row_delta: usize
             while number_to_read > 0 {
                 let c_bits = std::cmp::min(8, number_to_read);
 
+                ensure_size!(from: src, size: 1);
                 let bitmask = src.read_u8();
 
                 if is_first_line {
-                    write_first_line_fg_bg_image::<Mode>(&mut dst, bitmask, fg_pel, c_bits);
+                    write_first_line_fg_bg_image::<Mode>(&mut dst, bitmask, fg_pel, c_bits)?;
                 } else {
-                    write_fg_bg_image::<Mode>(&mut dst, row_delta, bitmask, fg_pel, c_bits);
+                    write_fg_bg_image::<Mode>(&mut dst, row_delta, bitmask, fg_pel, c_bits)?;
                 }
 
                 number_to_read -= c_bits;
@@ -222,6 +338,9 @@ fn decompress_impl<Mode: DepthMode>(src: &[u8], dst: &mut [u8], row_delta: usize
             // Handle Color Image Orders.
 
             let byte_count = run_length * Mode::COLOR_DEPTH;
+
+            ensure_size!(from: src, size: byte_count);
+            ensure_size!(into: dst, size: byte_count);
 
             for _ in 0..byte_count {
                 dst.write_u8(src.read_u8());
@@ -232,9 +351,9 @@ fn decompress_impl<Mode: DepthMode>(src: &[u8], dst: &mut [u8], row_delta: usize
             const MASK_SPECIAL_FG_BG_1: u8 = 0x03;
 
             if is_first_line {
-                write_first_line_fg_bg_image::<Mode>(&mut dst, MASK_SPECIAL_FG_BG_1, fg_pel, 8);
+                write_first_line_fg_bg_image::<Mode>(&mut dst, MASK_SPECIAL_FG_BG_1, fg_pel, 8)?;
             } else {
-                write_fg_bg_image::<Mode>(&mut dst, row_delta, MASK_SPECIAL_FG_BG_1, fg_pel, 8);
+                write_fg_bg_image::<Mode>(&mut dst, row_delta, MASK_SPECIAL_FG_BG_1, fg_pel, 8)?;
             }
         } else if code == Code::SPECIAL_FGBG_2 {
             // Handle Special Order 2.
@@ -242,22 +361,28 @@ fn decompress_impl<Mode: DepthMode>(src: &[u8], dst: &mut [u8], row_delta: usize
             const MASK_SPECIAL_FG_BG_2: u8 = 0x05;
 
             if is_first_line {
-                write_first_line_fg_bg_image::<Mode>(&mut dst, MASK_SPECIAL_FG_BG_2, fg_pel, 8);
+                write_first_line_fg_bg_image::<Mode>(&mut dst, MASK_SPECIAL_FG_BG_2, fg_pel, 8)?;
             } else {
-                write_fg_bg_image::<Mode>(&mut dst, row_delta, MASK_SPECIAL_FG_BG_2, fg_pel, 8);
+                write_fg_bg_image::<Mode>(&mut dst, row_delta, MASK_SPECIAL_FG_BG_2, fg_pel, 8)?;
             }
         } else if code == Code::SPECIAL_WHITE {
             // Handle White Order.
+
+            ensure_size!(into: dst, size: Mode::COLOR_DEPTH);
 
             Mode::write_pixel(&mut dst, Mode::WHITE_PIXEL);
         } else if code == Code::SPECIAL_BLACK {
             // Handle Black Order.
 
+            ensure_size!(into: dst, size: Mode::COLOR_DEPTH);
+
             Mode::write_pixel(&mut dst, Mode::BLACK_PIXEL);
         } else {
-            todo!("return unknown order error");
+            return Err(RleError::BadOrderCode);
         }
     }
+
+    Ok(())
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -338,11 +463,11 @@ impl Code {
     }
 
     /// Extract the run length of a compression order.
-    pub fn extract_run_length(self, header: u8, src: &mut Buf) -> usize {
+    pub fn extract_run_length(self, header: u8, src: &mut Buf) -> Result<usize, RleError> {
         match self {
-            Self::REGULAR_FGBG_IMAGE => extract_run_length_regular_fg_bg(header, src),
+            Self::REGULAR_FGBG_IMAGE => extract_run_length_fg_bg(header, MASK_REGULAR_RUN_LENGTH, src),
 
-            Self::LITE_SET_FG_FGBG_IMAGE => extract_run_length_lite_fg_bg(header, src),
+            Self::LITE_SET_FG_FGBG_IMAGE => extract_run_length_fg_bg(header, MASK_LITE_RUN_LENGTH, src),
 
             Self::REGULAR_BG_RUN | Self::REGULAR_FG_RUN | Self::REGULAR_COLOR_RUN | Self::REGULAR_COLOR_IMAGE => {
                 extract_run_length_regular(header, src)
@@ -359,9 +484,9 @@ impl Code {
             | Self::MEGA_MEGA_SET_FGBG_IMAGE
             | Self::MEGA_MEGA_COLOR_IMAGE => extract_run_length_mega_mega(src),
 
-            Self::SPECIAL_FGBG_1 | Self::SPECIAL_FGBG_2 | Self::SPECIAL_WHITE | Self::SPECIAL_BLACK => 0,
+            Self::SPECIAL_FGBG_1 | Self::SPECIAL_FGBG_2 | Self::SPECIAL_WHITE | Self::SPECIAL_BLACK => Ok(0),
 
-            _ => 0,
+            _ => Ok(0),
         }
     }
 }
@@ -369,41 +494,50 @@ impl Code {
 const MASK_REGULAR_RUN_LENGTH: u8 = 0x1F;
 const MASK_LITE_RUN_LENGTH: u8 = 0x0F;
 
-/// Extract the run length of a Regular-Form Foreground/Background Image Order
-fn extract_run_length_regular_fg_bg(header: u8, src: &mut Buf) -> usize {
-    match header & MASK_REGULAR_RUN_LENGTH {
-        0 => usize::from(src.read_u8()) + 1,
-        run_length => usize::from(run_length) * 8,
-    }
-}
-
-/// Extract the run length of a Lite-Form Foreground/Background Image Order.
-fn extract_run_length_lite_fg_bg(header: u8, src: &mut Buf) -> usize {
-    match header & MASK_LITE_RUN_LENGTH {
-        0 => usize::from(src.read_u8()) + 1,
-        run_length => usize::from(run_length) * 8,
+/// Extract the run length of a Foreground/Background Image Order.
+fn extract_run_length_fg_bg(header: u8, length_mask: u8, src: &mut Buf) -> Result<usize, RleError> {
+    match header & length_mask {
+        0 => {
+            ensure_size!(from: src, size: 1);
+            Ok(usize::from(src.read_u8()) + 1)
+        }
+        run_length => Ok(usize::from(run_length) * 8),
     }
 }
 
 /// Extract the run length of a regular-form compression order.
-fn extract_run_length_regular(header: u8, src: &mut Buf) -> usize {
+fn extract_run_length_regular(header: u8, src: &mut Buf) -> Result<usize, RleError> {
     match header & MASK_REGULAR_RUN_LENGTH {
-        // An extended (MEGA) run.
-        0 => usize::from(src.read_u8()) + 32,
-        run_length => usize::from(run_length),
+        0 => {
+            // An extended (MEGA) run.
+            ensure_size!(from: src, size: 1);
+            Ok(usize::from(src.read_u8()) + 32)
+        }
+        run_length => Ok(usize::from(run_length)),
     }
 }
 
-fn extract_run_length_lite(header: u8, src: &mut Buf) -> usize {
+fn extract_run_length_lite(header: u8, src: &mut Buf) -> Result<usize, RleError> {
     match header & MASK_LITE_RUN_LENGTH {
-        // An extended (MEGA) run.
-        0 => usize::from(src.read_u8()) + 16,
-        run_length => usize::from(run_length),
+        0 => {
+            // An extended (MEGA) run.
+            ensure_size!(from: src, size: 1);
+            Ok(usize::from(src.read_u8()) + 16)
+        }
+        run_length => Ok(usize::from(run_length)),
     }
 }
 
-fn extract_run_length_mega_mega(src: &mut Buf) -> usize {
-    usize::from(src.read_u16())
+fn extract_run_length_mega_mega(src: &mut Buf) -> Result<usize, RleError> {
+    ensure_size!(from: src, size: 2);
+
+    let run_length = usize::from(src.read_u16());
+
+    if run_length == 0 {
+        Err(RleError::UnexpectedZeroLength)
+    } else {
+        Ok(run_length)
+    }
 }
 
 struct Buf<'a> {
@@ -414,6 +548,10 @@ struct Buf<'a> {
 impl<'a> Buf<'a> {
     fn new(bytes: &'a [u8]) -> Self {
         Self { inner: bytes, pos: 0 }
+    }
+
+    fn remaining_len(&self) -> usize {
+        self.inner.len() - self.pos
     }
 
     fn read<const N: usize>(&mut self) -> [u8; N] {
@@ -457,6 +595,10 @@ impl<'a> BufMut<'a> {
         Self { inner: bytes, pos: 0 }
     }
 
+    fn remaining_len(&self) -> usize {
+        self.inner.len() - self.pos
+    }
+
     fn write(&mut self, bytes: &[u8]) {
         self.inner[self.pos..self.pos + bytes.len()].copy_from_slice(bytes);
         self.pos += bytes.len();
@@ -493,6 +635,9 @@ trait DepthMode {
     /// Bits per pixel
     const BPP: usize;
 
+    /// Pixel format for this depth mode
+    const PIXEL_FORMAT: RlePixelFormat;
+
     /// The black pixel value
     const BLACK_PIXEL: Self::Pixel;
 
@@ -515,6 +660,8 @@ impl DepthMode for Mode8Bpp {
 
     const BPP: usize = 8;
 
+    const PIXEL_FORMAT: RlePixelFormat = RlePixelFormat::Rgb8;
+
     const BLACK_PIXEL: Self::Pixel = 0x00;
 
     const WHITE_PIXEL: Self::Pixel = 0xFF;
@@ -536,6 +683,8 @@ impl DepthMode for Mode15Bpp {
     const COLOR_DEPTH: usize = 2;
 
     const BPP: usize = 15;
+
+    const PIXEL_FORMAT: RlePixelFormat = RlePixelFormat::Rgb15;
 
     const BLACK_PIXEL: Self::Pixel = 0x0000;
 
@@ -561,6 +710,8 @@ impl DepthMode for Mode16Bpp {
 
     const BPP: usize = 16;
 
+    const PIXEL_FORMAT: RlePixelFormat = RlePixelFormat::Rgb16;
+
     const BLACK_PIXEL: Self::Pixel = 0x0000;
 
     // 5 bits for red, 6 bits for green, 5 bits for green:
@@ -585,6 +736,8 @@ impl DepthMode for Mode24Bpp {
 
     const BPP: usize = 24;
 
+    const PIXEL_FORMAT: RlePixelFormat = RlePixelFormat::Rgb24;
+
     const BLACK_PIXEL: Self::Pixel = 0x000000;
 
     // 8 bits per RGB component:
@@ -607,7 +760,9 @@ fn write_fg_bg_image<Mode: DepthMode>(
     bitmask: u8,
     fg_pel: Mode::Pixel,
     mut c_bits: usize,
-) {
+) -> Result<(), RleError> {
+    ensure_size!(into: dst, size: c_bits * Mode::COLOR_DEPTH);
+
     let mut mask = 0x01;
 
     repeat::<8>(|| {
@@ -623,7 +778,9 @@ fn write_fg_bg_image<Mode: DepthMode>(
         mask <<= 1;
 
         c_bits == 0
-    })
+    });
+
+    Ok(())
 }
 
 /// Writes a foreground/background image to a destination buffer
@@ -632,7 +789,9 @@ fn write_first_line_fg_bg_image<Mode: DepthMode>(
     bitmask: u8,
     fg_pel: Mode::Pixel,
     mut c_bits: usize,
-) {
+) -> Result<(), RleError> {
+    ensure_size!(into: dst, size: c_bits * Mode::COLOR_DEPTH);
+
     let mut mask = 0x01;
 
     repeat::<8>(|| {
@@ -646,7 +805,9 @@ fn write_first_line_fg_bg_image<Mode: DepthMode>(
         mask <<= 1;
 
         c_bits == 0
-    })
+    });
+
+    Ok(())
 }
 
 fn repeat<const N: usize>(mut op: impl FnMut() -> bool) {

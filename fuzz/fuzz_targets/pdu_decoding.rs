@@ -1,10 +1,8 @@
 #![no_main]
-#[macro_use]
-extern crate libfuzzer_sys;
-extern crate ironrdp;
 
-use ironrdp::rdp::*;
-use ironrdp::*;
+use ironrdp_core::rdp::*;
+use ironrdp_core::*;
+use libfuzzer_sys::fuzz_target;
 
 fuzz_target!(|data: &[u8]| {
     let _ = Request::from_buffer(data);
@@ -35,10 +33,7 @@ fuzz_target!(|data: &[u8]| {
 
     let _ = fast_path::FastPathHeader::from_buffer(data);
     let _ = fast_path::FastPathUpdatePdu::from_buffer(data);
-    let _ = fast_path::FastPathUpdate::from_buffer_with_code(
-        data,
-        fast_path::UpdateCode::SurfaceCommands,
-    );
+    let _ = fast_path::FastPathUpdate::from_buffer_with_code(data, fast_path::UpdateCode::SurfaceCommands);
 
     let _ = surface_commands::SurfaceCommand::from_buffer(data);
     let _ = surface_commands::SurfaceBitsPdu::from_buffer(data);

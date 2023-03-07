@@ -228,6 +228,8 @@ pub enum ServerLicenseError {
     InvalidScopeCount(u32),
     #[error("Received invalid sertificate length: {0}")]
     InvalidCertificateLength(u32),
+    #[error("Blob too small")]
+    BlobTooSmall,
 }
 
 pub struct BlobHeader {

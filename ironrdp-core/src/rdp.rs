@@ -108,6 +108,8 @@ pub enum RdpError {
     ServerSetErrorInfoError(#[from] ServerSetErrorInfoError),
     #[error("Input event PDU error")]
     InputEventError(#[from] InputEventError),
+    #[error("Not enough bytes")]
+    NotEnoughBytes,
 }
 
 impl From<RdpError> for io::Error {

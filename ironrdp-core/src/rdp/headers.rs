@@ -89,12 +89,18 @@ impl PduParsing for ShareControlHeader {
             pdu_source,
             share_id,
         };
+
         if pdu_type == ShareControlPduType::DataPdu {
             // Some windows version have an issue where PDU
             // there is some padding not part of the inner unit.
             // Consume that data
             let header_length = header.buffer_length();
+
             if header_length != total_length {
+                if total_length < header_length {
+                    return Err(RdpError::NotEnoughBytes);
+                }
+
                 let padding = total_length - header_length;
                 let mut data = vec![0u8; padding];
                 stream.read_exact(data.as_mut())?;
@@ -103,6 +109,7 @@ impl PduParsing for ShareControlHeader {
 
         Ok(header)
     }
+
     fn to_buffer(&self, mut stream: impl io::Write) -> Result<(), Self::Error> {
         let pdu_type_with_version = PROTOCOL_VERSION | self.share_control_pdu.share_header_type().to_u16().unwrap();
 
@@ -114,6 +121,7 @@ impl PduParsing for ShareControlHeader {
 
         self.share_control_pdu.to_buffer(&mut stream)
     }
+
     fn buffer_length(&self) -> usize {
         SHARE_CONTROL_HEADER_SIZE + self.share_control_pdu.buffer_length()
     }

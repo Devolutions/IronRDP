@@ -34,6 +34,15 @@ jobs:
     steps:
       - uses: actions/checkout@v3
 
+      - name: Cache
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cargo/registry/
+            ~/.cargo/git/
+            ./target/
+          key: ${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+
       - name: Check clippy
         run: cargo clippy --workspace -- -D warnings
 
@@ -44,6 +53,15 @@ jobs:
 
     steps:
       - uses: actions/checkout@v3
+
+      - name: Cache
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cargo/registry/
+            ~/.cargo/git/
+            ./ffi/wasm/target/
+          key: ${{ runner.os }}-wasm-${{ hashFiles('Cargo.lock') }}
 
       - name: Prepare runner
         run: sudo apt install wabt
@@ -69,5 +87,48 @@ jobs:
     steps:
       - uses: actions/checkout@v3
 
+      - name: Cache
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cargo/registry/
+            ~/.cargo/git/
+            ./target/
+          key: ${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+
       - name: Test [${{ matrix.os }}]
         run: cargo test --workspace
+
+  fuzz:
+    name: Fuzzing
+    runs-on: ubuntu-20.04
+    needs: formatting
+
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Fuzz build cache
+        uses: actions/cache@v3
+        with:
+          path: |
+            ./fuzz/target/
+            ./artifacts/
+          key: ${{ runner.os }}-fuzz-${{ hashFiles('./fuzz/Cargo.lock') }}
+
+      - name: Fuzz corpus cache
+        uses: actions/cache@v3
+        with:
+          path: |
+            ./fuzz/corpus/
+          key: fuzz-corpus-cache
+
+      - name: Prepare runner
+        run: |
+          cd ./fuzz/
+          cargo install cargo-fuzz
+          rustup install nightly --profile=minimal
+
+      - name: Fuzz
+        run: |
+          rustup run nightly cargo fuzz run pdu_decoding -- -max_total_time=3s
+          rustup run nightly cargo fuzz run rle_decompression -- -max_total_time=3s

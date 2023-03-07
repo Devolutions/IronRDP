@@ -102,6 +102,8 @@ pub enum NegotiationError {
     ResponseFailure(FailureCode),
     #[error("Invalid tpkt header version")]
     TpktVersionError,
+    #[error("Not enough bytes")]
+    NotEnoughBytes,
 }
 
 impl From<NegotiationError> for io::Error {
@@ -137,6 +139,10 @@ impl PduParsing for Request {
         let src_ref = stream.read_u16::<LittleEndian>()?;
 
         read_and_check_class(&mut stream, 0)?;
+
+        if tpkt.length < TPDU_REQUEST_LENGTH {
+            return Err(NegotiationError::NotEnoughBytes);
+        }
 
         let mut buffer = vec![0u8; tpkt.length - TPDU_REQUEST_LENGTH];
 
