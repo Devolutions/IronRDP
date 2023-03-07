@@ -8,6 +8,7 @@ use ironrdp_core::fast_path::{
 use ironrdp_core::geometry::Rectangle;
 use ironrdp_core::surface_commands::{FrameAction, FrameMarkerPdu, SurfaceCommand};
 use ironrdp_core::{PduBufferParsing, ShareDataPdu};
+use ironrdp_graphics::rle::RlePixelFormat;
 use num_traits::FromPrimitive;
 
 use super::codecs::rfx;
@@ -85,16 +86,24 @@ impl Processor {
                                 update.bits_per_pixel
                             );
 
-                            ironrdp_graphics::rle::decompress(
+                            match ironrdp_graphics::rle::decompress(
                                 update.bitmap_data,
                                 &mut buf,
                                 update.width,
                                 update.height,
                                 update.bits_per_pixel,
-                            );
+                            ) {
+                                Ok(RlePixelFormat::Rgb16) => {
+                                    image.apply_rgb16_bitmap(&buf, &update.rectangle);
+                                }
 
-                            // TODO: support other pixel formats…
-                            image.apply_rgb16_bitmap(&buf, &update.rectangle);
+                                // TODO: support other pixel formats…
+                                Ok(format @ (RlePixelFormat::Rgb8 | RlePixelFormat::Rgb15 | RlePixelFormat::Rgb24)) => {
+                                    warn!("Received RLE-compressed bitmap with unsupported color depth: {format:?}");
+                                }
+
+                                Err(e) => warn!("Invalid RLE-compressed bitmap: {e}"),
+                            }
                         }
                     } else {
                         // Uncompressed bitmap data is formatted as a bottom-up, left-to-right series of
@@ -102,8 +111,11 @@ impl Processor {
                         // four bytes (including up to three bytes of padding, as necessary).
                         trace!("Uncompressed raw bitmap");
 
-                        // TODO: support other pixel formats…
-                        image.apply_rgb16_bitmap(update.bitmap_data, &update.rectangle);
+                        match update.bits_per_pixel {
+                            16 => image.apply_rgb16_bitmap(update.bitmap_data, &update.rectangle),
+                            // TODO: support other pixel formats…
+                            unsupported => warn!("Invalid raw bitmap with {unsupported} bytes per pixels"),
+                        }
                     }
 
                     match update_rectangle {

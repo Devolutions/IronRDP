@@ -1,0 +1,29 @@
+[package]
+name = "ironrdp-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[workspace]
+members = ["."]
+
+[profile.release]
+debug = 1
+
+[dependencies]
+ironrdp-core = { path = "../ironrdp-core" }
+ironrdp-graphics = { path = "../ironrdp-graphics" }
+libfuzzer-sys = "0.4"
+arbitrary = { version = "1", features = ["derive"] }
+bytes = "1.4.0"
+
+[[bin]]
+name = "pdu_decoding"
+path = "fuzz_targets/pdu_decoding.rs"
+
+[[bin]]
+name = "rle_decompression"
+path = "fuzz_targets/rle_decompression.rs"

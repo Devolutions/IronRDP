@@ -231,6 +231,9 @@ impl PduParsing for Scope {
 
     fn from_buffer(mut stream: impl io::Read) -> Result<Self, Self::Error> {
         let blob_header = BlobHeader::read_from_buffer(BlobType::Scope, &mut stream)?;
+        if blob_header.length < UTF8_NULL_TERMINATOR_SIZE {
+            return Err(ServerLicenseError::BlobTooSmall);
+        }
         let mut blob_data = vec![0u8; blob_header.length];
         stream.read_exact(&mut blob_data)?;
         blob_data.resize(blob_data.len() - UTF8_NULL_TERMINATOR_SIZE, 0);

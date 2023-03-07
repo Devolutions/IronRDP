@@ -37,7 +37,7 @@ fn decompress_bpp_16(#[case] src: &[u8]) {
         // IronRDP
 
         let mut ironrdp_out = bytes::BytesMut::new();
-        ironrdp_graphics::rle::decompress_16_bpp(src, &mut ironrdp_out, WIDTH, HEIGHT);
+        ironrdp_graphics::rle::decompress_16_bpp(src, &mut ironrdp_out, WIDTH, HEIGHT).expect("ironrdp decompress");
 
         ironrdp_out.freeze()
     };
