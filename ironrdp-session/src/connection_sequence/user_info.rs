@@ -326,7 +326,7 @@ fn create_bitmap_codes_capability_set() -> CapabilitySet {
 fn auth_identity_to_credentials(auth_identity: sspi::AuthIdentity) -> Credentials {
     Credentials {
         username: auth_identity.username,
-        password: auth_identity.password,
+        password: auth_identity.password.as_ref().clone(),
         domain: auth_identity.domain,
     }
 }
