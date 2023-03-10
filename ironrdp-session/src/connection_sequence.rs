@@ -366,7 +366,7 @@ pub async fn process_cred_ssp(
         credentials,
         credssp::CredSspMode::WithCredentials,
         credssp::ClientMode::Negotiate(NegotiateConfig {
-            protocol_config: Box::new(NtlmConfig::default()),
+            protocol_config: Box::<NtlmConfig>::default(),
             package_list: None,
             hostname: addr.to_owned(),
             network_client_factory,
