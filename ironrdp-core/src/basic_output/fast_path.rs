@@ -12,7 +12,7 @@ use thiserror::Error;
 
 use super::bitmap::{BitmapError, BitmapUpdateData};
 use super::surface_commands::{SurfaceCommand, SurfaceCommandsError, SURFACE_COMMAND_HEADER_SIZE};
-use crate::rdp::{CompressionFlags, CompressionType, SHARE_DATA_HEADER_MASK};
+use crate::rdp::{CompressionFlags, CompressionType, SHARE_DATA_HEADER_COMPRESSION_MASK};
 use crate::utils::SplitTo;
 use crate::{per, PduBufferParsing, PduParsing};
 
@@ -107,18 +107,20 @@ impl<'a> PduBufferParsing<'a> for FastPathUpdatePdu<'a> {
         let fragmentation =
             Fragmentation::from_u8(fragmentation).ok_or(FastPathError::InvalidFragmentation(fragmentation))?;
 
-        let (compression_flags, compression_type) =
-            if Compression::from_bits_truncate(header.get_bits(6..8)).contains(Compression::COMPRESSION_USED) {
-                let compression_flags_with_type = buffer.read_u8()?;
-                let compression_flags =
-                    CompressionFlags::from_bits_truncate(compression_flags_with_type & SHARE_DATA_HEADER_MASK);
-                let compression_type = CompressionType::from_u8(compression_flags_with_type & !SHARE_DATA_HEADER_MASK)
+        let (compression_flags, compression_type) = if Compression::from_bits_truncate(header.get_bits(6..8))
+            .contains(Compression::COMPRESSION_USED)
+        {
+            let compression_flags_with_type = buffer.read_u8()?;
+            let compression_flags =
+                CompressionFlags::from_bits_truncate(compression_flags_with_type & !SHARE_DATA_HEADER_COMPRESSION_MASK);
+            let compression_type =
+                CompressionType::from_u8(compression_flags_with_type & SHARE_DATA_HEADER_COMPRESSION_MASK)
                     .ok_or_else(|| FastPathError::InvalidShareDataHeader(String::from("Invalid compression type")))?;
 
-                (Some(compression_flags), Some(compression_type))
-            } else {
-                (None, None)
-            };
+            (Some(compression_flags), Some(compression_type))
+        } else {
+            (None, None)
+        };
 
         let data_length = usize::from(buffer.read_u16::<LittleEndian>()?);
         if buffer.len() < data_length {

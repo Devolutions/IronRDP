@@ -35,7 +35,7 @@ pub use self::finalization_messages::{
 pub use self::headers::{
     BasicSecurityHeader, BasicSecurityHeaderFlags, CompressionFlags, ShareControlHeader, ShareControlPdu,
     ShareControlPduType, ShareDataHeader, ShareDataPdu, ShareDataPduType, StreamPriority, BASIC_SECURITY_HEADER_SIZE,
-    SHARE_DATA_HEADER_MASK,
+    SHARE_DATA_HEADER_COMPRESSION_MASK,
 };
 pub use self::server_error_info::{
     ErrorInfo, ProtocolIndependentCode, ProtocolIndependentConnectionBrokerCode, ProtocolIndependentLicensingCode,
