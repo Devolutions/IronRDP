@@ -155,7 +155,7 @@ impl Config {
         let input = InputConfig {
             credentials: AuthIdentity {
                 username: args.username,
-                password: args.password,
+                password: args.password.into(),
                 domain: args.domain,
             },
             security_protocol: SecurityProtocol::parse(args.security_protocol),

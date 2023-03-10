@@ -273,7 +273,7 @@ fn build_input_config(username: String, password: String, domain: Option<String>
     InputConfig {
         credentials: AuthIdentity {
             username,
-            password,
+            password: password.into(),
             domain,
         },
         security_protocol: ironrdp::SecurityProtocol::HYBRID_EX,

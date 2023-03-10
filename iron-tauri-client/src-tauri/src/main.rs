@@ -239,7 +239,7 @@ async fn connect(
 
     let tcp_stream = TcpStream::connect(addr.sock)
         .await
-        .map_err(RdpError::ConnectionError)
+        .map_err(RdpError::Connection)
         .map_err(|e| e.to_string())?;
 
     let (connection_sequence_result, rdp_reader, rdp_writer) = process_connection_sequence(
@@ -289,7 +289,7 @@ fn build_input_config(username: String, password: String, domain: Option<String>
     InputConfig {
         credentials: AuthIdentity {
             username,
-            password,
+            password: password.into(),
             domain,
         },
         security_protocol: ironrdp::SecurityProtocol::HYBRID_EX,
