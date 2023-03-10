@@ -1,8 +1,7 @@
-Cargo.lock
-target/
+/target
 *.log
 
 # Editor/IDE files
 *~
-tags
-.idea/
+/tags
+/.idea

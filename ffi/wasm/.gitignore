@@ -1,3 +1,4 @@
-bin/
-pkg/
-wasm-pack.log
+/target
+/bin
+/pkg
+/wasm-pack.log
