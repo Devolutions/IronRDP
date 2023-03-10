@@ -132,8 +132,8 @@ jobs:
         shell: pwsh
         run: |
           if (-Not (Test-Path -Path ~/.cargo/bin/cargo-fuzz -PathType Leaf)) {
-            # Installed in debug because it's faster to compile and we don't need execution speed anyway
-            cargo +stable install --debug --locked cargo-fuzz
+            # Install in debug because it's faster to compile and we don't need execution speed anyway
+            cargo install --debug --locked cargo-fuzz
           }
 
           rustup install nightly --profile=minimal
