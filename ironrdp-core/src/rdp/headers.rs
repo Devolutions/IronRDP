@@ -16,8 +16,8 @@ use crate::rdp::session_info::SaveSessionInfoPdu;
 use crate::PduParsing;
 
 pub const BASIC_SECURITY_HEADER_SIZE: usize = 4;
-pub const SHARE_DATA_HEADER_MASK: u8 = 0xf;
-const SHARE_CONTROL_HEADER_MASK: u16 = 0xf;
+pub const SHARE_DATA_HEADER_COMPRESSION_MASK: u8 = 0xF;
+const SHARE_CONTROL_HEADER_MASK: u16 = 0xF;
 const SHARE_CONTROL_HEADER_SIZE: usize = 2 * 3 + 4;
 
 const PROTOCOL_VERSION: u16 = 0x10;
@@ -200,10 +200,12 @@ impl PduParsing for ShareDataHeader {
             .ok_or_else(|| RdpError::InvalidShareDataHeader(String::from("Invalid pdu type")))?;
         let compression_flags_with_type = stream.read_u8()?;
 
+        log::info!("{compression_flags_with_type:02X}");
+
         let compression_flags =
-            CompressionFlags::from_bits_truncate(compression_flags_with_type & SHARE_DATA_HEADER_MASK);
+            CompressionFlags::from_bits_truncate(compression_flags_with_type & !SHARE_DATA_HEADER_COMPRESSION_MASK);
         let compression_type =
-            client_info::CompressionType::from_u8(compression_flags_with_type & !SHARE_DATA_HEADER_MASK)
+            client_info::CompressionType::from_u8(compression_flags_with_type & SHARE_DATA_HEADER_COMPRESSION_MASK)
                 .ok_or_else(|| RdpError::InvalidShareDataHeader(String::from("Invalid compression type")))?;
         let _compressed_length = stream.read_u16::<LittleEndian>()?;
 
