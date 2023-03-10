@@ -8,6 +8,9 @@ on:
     types: [ opened, synchronize, reopened ]
   workflow_dispatch:
 
+env:
+  CARGO_REGISTRIES_CRATES_IO_PROTOCOL: sparse
+
 jobs:
   formatting:
     name: Check formatting
@@ -41,7 +44,7 @@ jobs:
             ~/.cargo/registry/
             ~/.cargo/git/
             ./target/
-          key: ${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          key: ${{ runner.os }}-lints-${{ hashFiles('Cargo.lock') }}
 
       - name: Check clippy
         run: cargo clippy --workspace -- -D warnings
@@ -61,7 +64,7 @@ jobs:
             ~/.cargo/registry/
             ~/.cargo/git/
             ./ffi/wasm/target/
-          key: ${{ runner.os }}-wasm-${{ hashFiles('Cargo.lock') }}
+          key: ${{ runner.os }}-wasm-${{ hashFiles('ffi/wasm/Cargo.lock') }}
 
       - name: Prepare runner
         run: sudo apt install wabt
@@ -94,7 +97,7 @@ jobs:
             ~/.cargo/registry/
             ~/.cargo/git/
             ./target/
-          key: ${{ runner.os }}-${{ hashFiles('Cargo.lock') }}
+          key: ${{ runner.os }}-tests-${{ hashFiles('Cargo.lock') }}
 
       - name: Test [${{ matrix.os }}]
         run: cargo test --workspace
@@ -103,6 +106,8 @@ jobs:
     name: Fuzzing
     runs-on: ubuntu-20.04
     needs: formatting
+    env:
+      AZURE_STORAGE_KEY: ${{ secrets.CORPUS_AZURE_STORAGE_KEY }}
 
     steps:
       - uses: actions/checkout@v3
@@ -111,24 +116,45 @@ jobs:
         uses: actions/cache@v3
         with:
           path: |
+            ~/.cargo/registry/
+            ~/.cargo/git/
+            ~/.cargo/bin/
             ./fuzz/target/
-            ./artifacts/
-          key: ${{ runner.os }}-fuzz-${{ hashFiles('./fuzz/Cargo.lock') }}
+          key: ${{ runner.os }}-fuzz-${{ hashFiles('fuzz/Cargo.lock') }}
 
-      - name: Fuzz corpus cache
+      - name: Fuzz subcommand installation cache
         uses: actions/cache@v3
         with:
-          path: |
-            ./fuzz/corpus/
-          key: fuzz-corpus-cache
+          path: ~/.cargo/bin/cargo-fuzz
+          key: ${{ runner.os }}-binary-cargo-fuzz
 
       - name: Prepare runner
+        shell: pwsh
         run: |
-          cd ./fuzz/
-          cargo install cargo-fuzz
+          if (-Not (Test-Path -Path ~/.cargo/bin/cargo-fuzz -PathType Leaf)) {
+            # Installed in debug because it's faster to compile and we don't need execution speed anyway
+            cargo +stable install --debug --locked cargo-fuzz
+          }
+
           rustup install nightly --profile=minimal
+
+          Set-Location -Path ./fuzz/
+
+      - name: Download fuzzing corpus
+        run: |
+          az storage blob download-batch --account-name fuzzingcorpus --source ironrdp --destination fuzz --output none
 
       - name: Fuzz
         run: |
-          rustup run nightly cargo fuzz run pdu_decoding -- -max_total_time=3s
-          rustup run nightly cargo fuzz run rle_decompression -- -max_total_time=3s
+          rustup run nightly cargo fuzz run pdu_decoding -- -max_total_time=5s
+          rustup run nightly cargo fuzz run rle_decompression -- -max_total_time=5s
+
+      - name: Minimize corpus
+        run: |
+          rustup run nightly cargo fuzz cmin pdu_decoding
+          rustup run nightly cargo fuzz cmin rle_decompression
+
+      - name: Upload fuzzing corpus
+        run: |
+          az storage blob sync --account-name fuzzingcorpus --container ironrdp --source fuzz/corpus --destination corpus --delete-destination true --output none
+          az storage blob sync --account-name fuzzingcorpus --container ironrdp --source fuzz/artifacts --destination artifacts --delete-destination true --output none
