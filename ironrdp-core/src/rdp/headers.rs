@@ -200,8 +200,6 @@ impl PduParsing for ShareDataHeader {
             .ok_or_else(|| RdpError::InvalidShareDataHeader(String::from("Invalid pdu type")))?;
         let compression_flags_with_type = stream.read_u8()?;
 
-        log::info!("{compression_flags_with_type:02X}");
-
         let compression_flags =
             CompressionFlags::from_bits_truncate(compression_flags_with_type & !SHARE_DATA_HEADER_COMPRESSION_MASK);
         let compression_type =
