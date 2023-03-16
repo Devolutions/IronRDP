@@ -118,8 +118,8 @@ async fn run(config: Config) -> Result<(), RdpError> {
     let writer = Arc::new(Mutex::new(writer));
     let image = DecodedImage::new(
         PixelFormat::RgbA32,
-        u32::from(connection_sequence_result.desktop_size.width),
-        u32::from(connection_sequence_result.desktop_size.height),
+        connection_sequence_result.desktop_size.width,
+        connection_sequence_result.desktop_size.height,
     );
 
     launch_client(config, connection_sequence_result, image, reader, writer).await
@@ -160,7 +160,6 @@ async fn process_active_stage(
     mut image: DecodedImage,
     writer: Arc<Mutex<ErasedWriter>>,
 ) -> Result<(), RdpError> {
-    let mut frame_id = 0;
     'outer: loop {
         let frame = reader.read_frame().await?.ok_or(RdpError::AccessDenied)?.freeze();
         let outputs = active_stage.process(&mut image, frame)?;
@@ -170,12 +169,7 @@ async fn process_active_stage(
                     let mut writer = writer.lock().await;
                     writer.write_all(&frame).await?
                 }
-                ActiveStageOutput::GraphicsUpdate(_region) => {
-                    // TODO: control this with CLI argument
-                    dump_image(&image, frame_id);
-
-                    frame_id += 1;
-                }
+                ActiveStageOutput::GraphicsUpdate(_region) => {}
                 ActiveStageOutput::Terminate => break 'outer,
             }
         }
@@ -248,13 +242,4 @@ pub fn get_tls_peer_pubkey(cert: Vec<u8>) -> io::Result<Vec<u8>> {
     let public_key = res.1.tbs_certificate.subject_pki.subject_public_key;
 
     Ok(public_key.data.to_vec())
-}
-
-pub fn dump_image(image: &DecodedImage, frame_id: usize) {
-    debug_assert_eq!(image.pixel_format(), PixelFormat::RgbA32);
-
-    image::RgbaImage::from_raw(image.width(), image.height(), image.data().to_vec())
-        .unwrap()
-        .save(format!("frame.{frame_id}.jpg"))
-        .unwrap();
 }
