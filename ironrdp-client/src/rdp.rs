@@ -24,6 +24,7 @@ pub enum RdpOutputEvent {
 pub enum RdpInputEvent {
     Resize { width: u16, height: u16 },
     FastPath(SmallVec<[FastPathInputEvent; 2]>),
+    Close,
 }
 
 impl RdpInputEvent {
@@ -48,9 +49,11 @@ impl RdpClient {
                 }
                 Ok(RdpControlFlow::TerminatedGracefully) => {
                     let _ = self.event_loop_proxy.send_event(RdpOutputEvent::Terminated(Ok(())));
+                    break;
                 }
                 Err(e) => {
                     let _ = self.event_loop_proxy.send_event(RdpOutputEvent::Terminated(Err(e)));
+                    break;
                 }
             }
         }
@@ -67,7 +70,7 @@ async fn run_impl(
     event_loop_proxy: &EventLoopProxy<RdpOutputEvent>,
     input_event_receiver: &mut mpsc::UnboundedReceiver<RdpInputEvent>,
 ) -> Result<RdpControlFlow, RdpError> {
-    let addr = Address::lookup_addr(config.addr.clone())?;
+    let addr = Address::lookup_addr(&config.addr)?;
 
     let stream = TcpStream::connect(addr.sock).await.map_err(RdpError::Connection)?;
 
@@ -154,6 +157,10 @@ async fn run_impl(
                             .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, format!("Unable to encode FastPathInput: {e}")))?;
 
                         writer.write_all(&frame).await?;
+                    }
+                    RdpInputEvent::Close => {
+                        // TODO: should we send a connection close to server?
+                        break 'outer;
                     }
                 }
             }

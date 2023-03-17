@@ -102,7 +102,7 @@ fn setup_logging(log_file: &str) -> Result<(), fern::InitError> {
 }
 
 async fn run(config: Config) -> Result<(), RdpError> {
-    let addr = ironrdp::session::connection_sequence::Address::lookup_addr(config.addr.clone())?;
+    let addr = ironrdp::session::connection_sequence::Address::lookup_addr(&config.addr)?;
 
     let stream = TcpStream::connect(addr.sock).await.map_err(RdpError::Connection)?;
 
