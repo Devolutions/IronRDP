@@ -251,7 +251,7 @@ where
             &mut stream,
             config.credentials.clone(),
             server_public_key,
-            fqdn,
+            fqdn.to_owned(),
             network_client_factory,
         )
         .await?;
