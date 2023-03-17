@@ -142,13 +142,17 @@ impl Config {
     pub fn parse_args() -> anyhow::Result<Self> {
         let args = Args::parse();
 
-        let addr = if let Some(addr) = args.addr {
+        let mut addr = if let Some(addr) = args.addr {
             addr
         } else {
             inquire::Text::new("Server address:")
                 .prompt()
                 .context("Address prompt")?
         };
+
+        if addr.find(':').is_none() {
+            addr.push_str(":3389");
+        }
 
         let username = if let Some(username) = args.username {
             username

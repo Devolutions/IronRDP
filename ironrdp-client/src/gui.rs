@@ -232,6 +232,11 @@ impl GuiContext {
 
                     control_flow.set_exit_with_code(exit_code);
                 }
+                Event::LoopDestroyed => {
+                    input_event_sender
+                        .send(RdpInputEvent::Close)
+                        .expect("at least one GUI event listener");
+                }
                 _ => {}
             }
         })

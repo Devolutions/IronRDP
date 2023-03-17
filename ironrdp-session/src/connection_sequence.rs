@@ -48,9 +48,12 @@ pub struct Address {
 }
 
 impl Address {
-    pub fn lookup_addr(hostname: String) -> io::Result<Self> {
+    // TODO: use a custom type holding a hostname and a port explicitely similar to a (String, u16) tuple
+    pub fn lookup_addr(addr: &str) -> io::Result<Self> {
         use std::net::ToSocketAddrs as _;
-        let sockaddr = hostname.to_socket_addrs()?.next().unwrap();
+        let sockaddr = addr.to_socket_addrs()?.next().unwrap();
+        let port_segment_idx = addr.rfind(':').unwrap(); // there must be a port
+        let hostname = addr[..port_segment_idx].to_owned();
         Ok(Self {
             hostname,
             sock: sockaddr,
@@ -111,7 +114,7 @@ where
             &mut stream,
             config.credentials.clone(),
             server_public_key,
-            &addr.hostname,
+            addr.hostname.clone(),
             network_client_factory,
         )
         .await?;
@@ -354,12 +357,12 @@ pub async fn process_cred_ssp(
     mut stream: impl AsyncRead + AsyncWrite + Unpin,
     credentials: sspi::AuthIdentity,
     server_public_key: Vec<u8>,
-    addr: &str,
+    hostname: String,
     network_client_factory: Box<dyn NetworkClientFactory>,
 ) -> Result<(), RdpError> {
     use sspi::ntlm::NtlmConfig;
 
-    let service_principal_name = format!("TERMSRV/{addr}");
+    let service_principal_name = format!("TERMSRV/{hostname}");
 
     let mut cred_ssp_client = credssp::CredSspClient::new(
         server_public_key,
@@ -368,7 +371,7 @@ pub async fn process_cred_ssp(
         credssp::ClientMode::Negotiate(NegotiateConfig {
             protocol_config: Box::<NtlmConfig>::default(),
             package_list: None,
-            hostname: addr.to_owned(),
+            hostname,
             network_client_factory,
         }),
         service_principal_name,
