@@ -219,7 +219,7 @@ where
 #[cfg(feature = "dgw_ext")]
 pub async fn process_connection_sequence<S>(
     stream: S,
-    fqdn: &str,
+    target_hostname: String,
     proxy_auth_token: String,
     config: &InputConfig,
     network_client_factory: Box<dyn NetworkClientFactory>,
@@ -251,7 +251,7 @@ where
             &mut stream,
             config.credentials.clone(),
             server_public_key,
-            fqdn.to_owned(),
+            target_hostname,
             network_client_factory,
         )
         .await?;
