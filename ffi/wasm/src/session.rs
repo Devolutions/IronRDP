@@ -29,8 +29,10 @@ pub struct SessionBuilder(Rc<RefCell<SessionBuilderInner>>);
 #[derive(Default)]
 struct SessionBuilderInner {
     username: Option<String>,
+    hostname: Option<String>,
+    domain: Option<String>,
     password: Option<String>,
-    address: Option<String>,
+    gateway_address: Option<String>,
     auth_token: Option<String>,
     update_callback: Option<js_sys::Function>,
     update_callback_context: Option<JsValue>,
@@ -47,13 +49,23 @@ impl SessionBuilder {
         self.clone()
     }
 
+    pub fn hostname(&self, hostname: String) -> SessionBuilder {
+        self.0.borrow_mut().hostname = Some(hostname);
+        self.clone()
+    }
+
+    pub fn domain(&self, domain: String) -> SessionBuilder {
+        self.0.borrow_mut().domain = Some(domain);
+        self.clone()
+    }
+
     pub fn password(&self, password: String) -> SessionBuilder {
         self.0.borrow_mut().password = Some(password);
         self.clone()
     }
 
-    pub fn address(&self, address: String) -> SessionBuilder {
-        self.0.borrow_mut().address = Some(address);
+    pub fn gateway_address(&self, address: String) -> SessionBuilder {
+        self.0.borrow_mut().gateway_address = Some(address);
         self.clone()
     }
 
@@ -73,13 +85,15 @@ impl SessionBuilder {
     }
 
     pub async fn connect(&self) -> Result<Session, IronRdpError> {
-        let (username, password, address, auth_token, update_callback, update_callback_context);
+        let (username, hostname, domain, password, gateway_address, auth_token, update_callback, update_callback_context);
 
         {
             let inner = self.0.borrow();
             username = inner.username.clone().expect("username");
+            hostname = inner.hostname.clone().expect("hostname");
+            domain = inner.domain.clone();
             password = inner.password.clone().expect("password");
-            address = inner.address.clone().expect("address");
+            gateway_address = inner.gateway_address.clone().expect("gateway_address");
             auth_token = inner.auth_token.clone().expect("auth_token");
             update_callback = inner.update_callback.clone().expect("update_callback");
             update_callback_context = inner.update_callback_context.clone().expect("update_callback_context");
@@ -87,13 +101,13 @@ impl SessionBuilder {
 
         info!("Connect to RDP host");
 
-        let input_config = build_input_config(username, password, None);
+        let input_config = build_input_config(username, password, domain);
 
-        let ws = WebSocketCompat::new(WebSocket::open(&address).context("Couldn’t open WebSocket")?);
+        let ws = WebSocketCompat::new(WebSocket::open(&gateway_address).context("Couldn’t open WebSocket")?);
 
         let (connection_sequence_result, rdp_reader, rdp_writer) = process_connection_sequence(
             ws,
-            "MY-FQDN",
+            hostname,
             auth_token,
             &input_config,
             Box::new(PlaceholderNetworkClientFactory),

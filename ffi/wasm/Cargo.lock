@@ -730,7 +730,6 @@ dependencies = [
  "byteorder",
  "der-parser",
  "lazy_static",
- "log",
  "md-5 0.10.5",
  "num-bigint",
  "num-derive 0.3.3",
