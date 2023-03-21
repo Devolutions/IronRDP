@@ -124,7 +124,7 @@ async fn run_impl(
                 }
             }
             input_event = input_event_receiver.recv() => {
-                let input_event = input_event.ok_or_else(|| RdpError::Receive("gui_event_receiver".to_owned()))?;
+                let input_event = input_event.ok_or_else(|| RdpError::Receive("input_event_receiver".to_owned()))?;
 
                 match input_event {
                     RdpInputEvent::Resize { mut width, mut height } => {
