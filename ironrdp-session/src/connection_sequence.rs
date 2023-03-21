@@ -236,6 +236,7 @@ where
         proxy_auth_token,
         config.security_protocol,
         config.credentials.username.clone(),
+        target_hostname.clone(),
     )
     .await?;
 
@@ -931,8 +932,9 @@ pub async fn connection_initiation<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
     proxy_auth_token: String,
     security_protocol: ironrdp_core::SecurityProtocol,
     username: String,
+    hostname: String,
 ) -> Result<(ironrdp_core::SecurityProtocol, Vec<u8>, std::net::SocketAddr), RdpError> {
-    use ironrdp_devolutions_gateway::RDCleanPathPdu;
+    use ironrdp_rdcleanpath::{RDCleanPath, RDCleanPathPdu};
     use x509_cert::der::Decode as _;
 
     let connection_request = build_connection_request_with_username(security_protocol, username);
@@ -940,8 +942,7 @@ pub async fn connection_initiation<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
     let mut x224_pdu = Vec::new();
     connection_request.to_buffer(&mut x224_pdu)?;
 
-    // FIXME: replace "10.10.0.6" by the actual destination host (found in the proxy auth token)
-    let rdp_clean_path = RDCleanPathPdu::new_request(x224_pdu, "10.10.0.6".into(), proxy_auth_token, None)
+    let rdp_clean_path = RDCleanPathPdu::new_request(x224_pdu, hostname, proxy_auth_token, None)
         .map_err(|e| RdpError::Server(e.to_string()))?;
     debug!("Send RDCleanPath PDU request: {:?}", connection_request);
 
@@ -967,14 +968,35 @@ pub async fn connection_initiation<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
         buf.extend_from_slice(&read_bytes[..len]);
 
         if len == 0 {
-            return Err(RdpError::InvalidResponse("EOF when reading RDCleanPathPdu".to_owned()));
+            return Err(RdpError::InvalidResponse("EOF when reading RDCleanPath PDU".to_owned()));
         }
     };
 
-    debug!("Received RDCleanPath PDU response: {:?}", cleanpath_pdu);
+    debug!("Received RDCleanPath PDU: {:?}", cleanpath_pdu);
 
-    let x224_pdu = cleanpath_pdu.x224_connection_pdu.ok_or(RdpError::AccessDenied)?;
-    let connection_response = ironrdp_core::Response::from_buffer(x224_pdu.as_bytes())?;
+    let (x224_connection_response, server_cert_chain, server_addr) = match cleanpath_pdu
+        .into_enum()
+        .map_err(|e| RdpError::InvalidResponse(format!("Invalid RDCleanPath: {e}")))?
+    {
+        RDCleanPath::Request { .. } => {
+            return Err(RdpError::InvalidResponse(
+                "Received an unexpected RDCleanPath request".to_owned(),
+            ));
+        }
+        RDCleanPath::Response {
+            x224_connection_response,
+            server_cert_chain,
+            server_addr,
+        } => (x224_connection_response, server_cert_chain, server_addr),
+        RDCleanPath::Err(error) => {
+            return Err(RdpError::InvalidResponse(format!(
+                "Received an RDCleanPath error: {error}"
+            )));
+        }
+    };
+
+    let connection_response = ironrdp_core::Response::from_buffer(x224_connection_response.as_bytes())?;
+
     if let Some(ironrdp_core::ResponseData::Confirm {
         flags,
         protocol: selected_protocol,
@@ -986,17 +1008,14 @@ pub async fn connection_initiation<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
         );
 
         if security_protocol.contains(selected_protocol) {
-            let cert_der = cleanpath_pdu
-                .server_cert_chain
-                .and_then(|chain| chain.into_iter().next())
-                .ok_or_else(|| {
-                    RdpError::Connection(io::Error::new(
-                        io::ErrorKind::Other,
-                        "cleanpath response is missing the server cert chain",
-                    ))
-                })?;
+            let server_cert = server_cert_chain.into_iter().next().ok_or_else(|| {
+                RdpError::Connection(io::Error::new(
+                    io::ErrorKind::Other,
+                    "cleanpath response is missing the server cert chain",
+                ))
+            })?;
 
-            let cert = x509_cert::Certificate::from_der(cert_der.as_bytes()).map_err(|e| {
+            let cert = x509_cert::Certificate::from_der(server_cert.as_bytes()).map_err(|e| {
                 RdpError::Connection(io::Error::new(
                     io::ErrorKind::Other,
                     format!("couldn’t decode x509 certificate sent by Devolutions Gateway: {e}"),
@@ -1005,21 +1024,12 @@ pub async fn connection_initiation<R: AsyncRead + Unpin, W: AsyncWrite + Unpin>(
 
             let server_public_key = cert.tbs_certificate.subject_public_key_info.subject_public_key.to_vec();
 
-            let server_addr = cleanpath_pdu
-                .server_addr
-                .ok_or_else(|| {
-                    RdpError::Connection(io::Error::new(
-                        io::ErrorKind::Other,
-                        "cleanpath response is missing the server address",
-                    ))
-                })?
-                .parse()
-                .map_err(|e| {
-                    RdpError::Connection(io::Error::new(
-                        io::ErrorKind::Other,
-                        format!("couldn’t parse server address sent by Devolutions Gateway: {e}"),
-                    ))
-                })?;
+            let server_addr = server_addr.parse().map_err(|e| {
+                RdpError::Connection(io::Error::new(
+                    io::ErrorKind::Other,
+                    format!("couldn’t parse server address sent by Devolutions Gateway: {e}"),
+                ))
+            })?;
 
             Ok((selected_protocol, server_public_key, server_addr))
         } else {

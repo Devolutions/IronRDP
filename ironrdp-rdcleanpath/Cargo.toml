@@ -1,5 +1,5 @@
 [package]
-name = "ironrdp-devolutions-gateway"
+name = "ironrdp-rdcleanpath"
 version = "0.1.0"
 edition = "2021"
 readme = "README.md"

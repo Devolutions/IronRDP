@@ -1678,17 +1678,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ironrdp-devolutions-gateway"
-version = "0.1.0"
-dependencies = [
- "bytes",
- "der 0.6.1",
- "hex",
- "pretty_assertions",
- "rstest 0.15.0",
-]
-
-[[package]]
 name = "ironrdp-graphics"
 version = "0.1.0"
 dependencies = [
@@ -1742,6 +1731,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "ironrdp-rdcleanpath"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "der 0.6.1",
+ "hex",
+ "pretty_assertions",
+ "rstest 0.15.0",
+]
+
+[[package]]
 name = "ironrdp-renderer"
 version = "0.1.0"
 dependencies = [
@@ -1776,8 +1776,8 @@ dependencies = [
  "bytes",
  "futures-util",
  "ironrdp-core",
- "ironrdp-devolutions-gateway",
  "ironrdp-graphics",
+ "ironrdp-rdcleanpath",
  "lazy_static",
  "log",
  "num-derive 0.3.3",
