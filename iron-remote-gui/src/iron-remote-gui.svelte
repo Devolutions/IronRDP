@@ -7,7 +7,6 @@
     import {ScreenScale, userInteractionService} from "./services/user-interaction-service";
     import {loggingService} from "./services/logging.service";
     import type {ResizeEvent} from "./services/server-bridge.service";
-    import {throttleTime} from "rxjs/operators";
 
     export let scale = 'real';
     export let targetplatform: 'web' | 'native' = 'web';
@@ -30,7 +29,7 @@
     function initListeners() {
         serverBridgeListeners();
         userInteractionListeners();
-        
+
         window.addEventListener('keydown', keyboardEvent, false);
         window.addEventListener('keyup', keyboardEvent, false);
     }
@@ -208,11 +207,11 @@
     function setMouseButtonState(state, isDown) {
         userInteractionService.setMouseButtonState(state, isDown);
     }
-    
+
     function mouseWheel(evt) {
         userInteractionService.mouseWheel(evt);
     }
-    
+
     function setMouseIn(evt) {
         capturingInputs = true;
         userInteractionService.mouseIn(evt);
@@ -222,7 +221,7 @@
         capturingInputs = false;
         userInteractionService.mouseOut(evt);
     }
-    
+
     function keyboardEvent(evt) {
         userInteractionService.sendKeyboardEvent(evt);
     }
@@ -280,7 +279,8 @@
     });
 </script>
 
-<div bind:this={wrapper} class="screen-wrapper scale-{scale}" class:hidden="{!isVisible}" class:capturing-inputs="{capturingInputs}"
+<div bind:this={wrapper} class="screen-wrapper scale-{scale}" class:hidden="{!isVisible}"
+     class:capturing-inputs="{capturingInputs}"
      style="{wrapperStyle}">
     <div bind:this={viewer} class="screen-viewer" style="{viewerStyle}">
         <canvas
@@ -307,9 +307,9 @@
     .screen-wrapper {
         position: relative;
     }
-    
+
     .capturing-inputs {
-        outline: 1px solid rgba(0,97,166,.7);
+        outline: 1px solid rgba(0, 97, 166, .7);
         outline-offset: -1px;
     }
 

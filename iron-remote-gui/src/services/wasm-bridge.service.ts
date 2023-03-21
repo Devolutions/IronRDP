@@ -81,9 +81,11 @@ export class WasmBridgeService implements ServerBridgeService {
         });
     }
 
-    connect(username: string, password: string, address: string, authToken: string): Observable<NewSessionInfo> {
+    connect(username: string, password: string, hostname: string, gatewayAddress: string, domain: string, authToken: string): Observable<NewSessionInfo> {
         const sessionBuilder = SessionBuilder.new();
-        sessionBuilder.address(address);
+        sessionBuilder.gateway_address(gatewayAddress);
+        sessionBuilder.hostname(hostname);
+        sessionBuilder.domain(domain);
         sessionBuilder.password(password);
         sessionBuilder.auth_token(authToken);
         sessionBuilder.username(username);
