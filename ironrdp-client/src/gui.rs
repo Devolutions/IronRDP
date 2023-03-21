@@ -63,12 +63,10 @@ impl GuiContext {
             match event {
                 Event::WindowEvent { window_id, event } if window_id == window.id() => match event {
                     WindowEvent::Resized(size) => {
-                        input_event_sender
-                            .send(RdpInputEvent::Resize {
-                                width: u16::try_from(size.width).unwrap(),
-                                height: u16::try_from(size.height).unwrap(),
-                            })
-                            .expect("at least one GUI event listener");
+                        let _ = input_event_sender.send(RdpInputEvent::Resize {
+                            width: u16::try_from(size.width).unwrap(),
+                            height: u16::try_from(size.height).unwrap(),
+                        });
                     }
                     WindowEvent::CloseRequested => {
                         control_flow.set_exit();
@@ -233,11 +231,13 @@ impl GuiContext {
                     control_flow.set_exit_with_code(exit_code);
                 }
                 Event::LoopDestroyed => {
-                    input_event_sender
-                        .send(RdpInputEvent::Close)
-                        .expect("at least one GUI event listener");
+                    let _ = input_event_sender.send(RdpInputEvent::Close);
                 }
                 _ => {}
+            }
+
+            if input_event_sender.is_closed() {
+                control_flow.set_exit();
             }
         })
     }
@@ -248,8 +248,6 @@ fn send_fast_path_events(
     input_events: smallvec::SmallVec<[ironrdp::core::input::fast_path::FastPathInputEvent; 2]>,
 ) {
     if !input_events.is_empty() {
-        input_event_sender
-            .send(RdpInputEvent::FastPath(input_events))
-            .expect("at least one GUI event listener");
+        let _ = input_event_sender.send(RdpInputEvent::FastPath(input_events));
     }
 }
