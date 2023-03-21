@@ -55,7 +55,11 @@ impl SessionBuilder {
     }
 
     pub fn domain(&self, domain: String) -> SessionBuilder {
-        self.0.borrow_mut().domain = Some(domain);
+        self.0.borrow_mut().domain = if domain.is_empty() {
+            None
+        } else {
+            Some(domain)  
+        };
         self.clone()
     }
 
