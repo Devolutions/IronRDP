@@ -7,7 +7,7 @@ members = [
     "ironrdp-session",
     "ironrdp-session-async",
     "ironrdp-tls",
-    "ironrdp-devolutions-gateway",
+    "ironrdp-rdcleanpath",
     "ironrdp-renderer",
     "ironrdp-client",
     "ironrdp-client-glutin",

@@ -17,7 +17,7 @@ dgw_ext = []
 [dependencies]
 ironrdp-core = { path = "../ironrdp-core" }
 ironrdp-graphics = { path = "../ironrdp-graphics" }
-ironrdp-devolutions-gateway = { path = "../ironrdp-devolutions-gateway" } # FIXME: Quick and dirty approach, this should not be here
+ironrdp-rdcleanpath = { path = "../ironrdp-rdcleanpath" } # FIXME: Quick and dirty approach, this should not be here
 sspi = "0.7"
 bytes = "1"
 log = "0.4"
