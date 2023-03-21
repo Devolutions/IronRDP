@@ -167,12 +167,6 @@ const LOGON_EXTENDED_WITH_INVALID_LOGON_ERROR_TYPE_BUFFER: [u8; 46] = [
     0x08, 0x00, 0x00, 0x00, 0xf0, 0xff, 0xff, 0xff,
 ];
 
-const LOGON_EXTENDED_WITH_INVALID_LOGON_ERROR_DATA_BUFFER: [u8; 50] = [
-    0x32, 0x00, 0x03, 0x00, 0x00, 0x00, 0x1c, 0x00, 0x00, 0x00, 0x1c, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x02,
-    0x00, 0x00, 0x00, 0xa8, 0x02, 0xe7, 0x25, 0xe2, 0x4c, 0x82, 0xb7, 0x52, 0xa5, 0x53, 0x50, 0x34, 0x98, 0xa1, 0xa8,
-    0x08, 0x00, 0x00, 0x00, 0xfa, 0xff, 0xff, 0xff, 0x04, 0x00, 0x00, 0x00,
-];
-
 const DOMAIN_NAME: &str = "NTDEV";
 const USER_NAME: &str = "eltons";
 const SESSION_ID: u32 = 0x02;
@@ -202,7 +196,7 @@ lazy_static! {
         }),
         errors_info: Some(LogonErrorsInfo {
             error_type: LogonErrorNotificationType::NoPermission,
-            error_data: LogonErrorNotificationData::FailedOther,
+            error_data: LogonErrorNotificationData::ErrorCode(LogonErrorNotificationDataErrorCode::FailedOther),
         }),
     };
     static ref SESSION_PLAIN_NOTIFY: SaveSessionInfoPdu = SaveSessionInfoPdu {
@@ -387,13 +381,5 @@ fn from_buffer_parsing_with_invalid_logon_error_type_fails() {
     match LogonInfoExtended::from_buffer(LOGON_EXTENDED_WITH_INVALID_LOGON_ERROR_TYPE_BUFFER.as_ref()) {
         Err(SessionError::InvalidLogonErrorType) => (),
         res => panic!("Expected InvalidLogonErrorType error, got: {res:?}"),
-    };
-}
-
-#[test]
-fn from_buffer_parsing_with_invalid_logon_error_data_fails() {
-    match LogonInfoExtended::from_buffer(LOGON_EXTENDED_WITH_INVALID_LOGON_ERROR_DATA_BUFFER.as_ref()) {
-        Err(SessionError::InvalidLogonErrorData) => (),
-        res => panic!("Expected InvalidLogonErrorData error, got: {res:?}"),
     };
 }
