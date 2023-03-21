@@ -21,25 +21,47 @@ pub struct RDCleanPathErr {
 #[derive(Clone, Debug, Eq, PartialEq, der::Sequence)]
 #[asn1(tag_mode = "EXPLICIT")]
 pub struct RDCleanPathPdu {
+    /// RDCleanPathPdu packet version.
     #[asn1(context_specific = "0")]
     pub version: u64,
+    /// The proxy error.
+    ///
+    /// From proxy to client only.
     #[asn1(context_specific = "1", optional = "true")]
     pub error: Option<RDCleanPathErr>,
+    /// The RDP server address itself.
+    ///
+    /// From client to proxy only.
     #[asn1(context_specific = "2", optional = "true")]
     pub destination: Option<String>,
+    /// Arbitrary string for authorization on proxy side.
+    ///
+    /// From client to proxy only.
     #[asn1(context_specific = "3", optional = "true")]
     pub proxy_auth: Option<String>,
+    /// Currently unused. Could be used by a custom RDP server eventually.
     #[asn1(context_specific = "4", optional = "true")]
     pub server_auth: Option<String>,
+    /// The RDP PCB forwarded by the proxy to the RDP server.
+    ///
+    /// From client to proxy only.
     #[asn1(context_specific = "5", optional = "true")]
     pub preconnection_blob: Option<String>,
+    /// Either the client handshake or the server handshake response.
+    ///
+    /// Both client and proxy will set this field.
     #[asn1(context_specific = "6", optional = "true")]
     pub x224_connection_pdu: Option<OctetString>,
+    /// The RDP server TLS chain.
+    ///
+    /// From proxy to client only.
     #[asn1(context_specific = "7", optional = "true")]
     pub server_cert_chain: Option<Vec<OctetString>>,
-    //#[asn1(context_specific = "8", optional = "true")]
-    //pub ocsp_response: Option<String>,
-    /// IPv4 or IPv6 address of the server resolved by the Devolutions Gateway
+    // #[asn1(context_specific = "8", optional = "true")]
+    // pub ocsp_response: Option<String>,
+    /// IPv4 or IPv6 address of the server found by resolving the destination field on proxy side.
+    ///
+    /// Sent from proxy to client only.
     #[asn1(context_specific = "9", optional = "true")]
     pub server_addr: Option<String>,
 }
