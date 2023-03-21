@@ -49,24 +49,24 @@ export enum SpecialCombination {
 export abstract class ServerBridgeService {
     abstract init(debug: LogType): void;
 
-    abstract connect(username: string, password: string, address: string, authToken?: string): Observable<NewSessionInfo>;
+    abstract connect(username: string, password: string, hostname: string, gatewayAddress: string, domain: string, authToken: string): Observable<NewSessionInfo>;
 
     abstract resize: Observable<ResizeEvent>;
 
     abstract updateImage: Observable<any>;
 
     abstract mouseButtonState(mouse_button: MouseButton, state: MouseButtonState): void;
-    
+
     abstract updateMousePosition(mouse_x: number, mouse_y: number): void;
-    
+
     abstract sendKeyboard(evt: any): void;
-    
-    abstract releaseAllInputs():void;
-    
-    abstract sendSpecialCombination(specialCombination: SpecialCombination):void;
-    
+
+    abstract releaseAllInputs(): void;
+
+    abstract sendSpecialCombination(specialCombination: SpecialCombination): void;
+
     abstract syncModifier(evt: any): void;
-    
+
     abstract mouseWheel(vertical: boolean, rotation: number): void;
 }
 

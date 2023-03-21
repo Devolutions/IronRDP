@@ -8,7 +8,9 @@
 
     let username = "Administrator";
     let password = "DevoLabs123!";
-    let host = "ws://localhost:7172/jet/rdp"; //"10.10.0.3:3389";
+    let gatewayAddress = "ws://localhost:7172/jet/rdp";
+    let hostname = "10.10.0.3:3389";
+    let domain = "";
     let authtoken = "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCIsImN0eSI6IkFTU09DSUFUSU9OIn0.eyJkc3RfaHN0IjoiMTAuMTAuMC4zIiwiZXhwIjoxNjcxMTIwNjE0LCJqZXRfYWlkIjoiOWMwODAwNTktMDMzOS00MjJhLTgxODgtODEzNGJjOTc3MzczIiwiamV0X2FwIjoicmRwIiwiamV0X2NtIjoiZndkIiwianRpIjoiOTAzMDNlMDUtMzg5MC00OGQ3LTgxMTYtYWJmYzAwYWNlMTUxIiwibmJmIjoxNjcxMTE5NzE0fQ.JdT4KSyB2Zf3OcEA44Hmmc59cqx6KApXrFoJf_gIQwU8VqYWMnSMqENMyYw4CLDKj31tgUlSjWkHLj2wELZCOWFtsbONJqTWIc8mkCpnlbGVWIaNm7MISZXAS2p1LF1nsv9kzCJNvWK2AgfjsiZ4TBIUrhLa1dCRfuLsNaABotjcTJFvVCZUaadejeFDA6S2YbvQQHOjztIKJsg3zKkvTOpB_cZvRv9yDSgW09wXS0MOsnLqzmiLMd-9IPEkkwQ4oe9e6-AJI3OXZogkJDTcE0xdHlMSUG6JVwowt9FHervTn1n3nuN1ZKARvDbEsHJsLxPI1w2eqlZvPkqfKw5oqA";
 
     let toastMessage: string;
@@ -45,7 +47,7 @@
             type: 'info',
             message: 'Connection in progress...'
         });
-        userInteraction.connect(username, password, host, authtoken)
+        userInteraction.connect(username, password, hostname, gatewayAddress, domain, authtoken)
             .pipe(
                 catchError(err => {
                     toast.set({
@@ -100,8 +102,12 @@
                 <div class="medium-space"/>
                 <div>
                     <div class="field label border">
-                        <input id="host" type="text" bind:value={host}/>
-                        <label for="host">Host</label>
+                        <input id="hostname" type="text" bind:value={hostname}/>
+                        <label for="hostname">Hostname</label>
+                    </div>
+                    <div class="field label border">
+                        <input id="domain" type="text" bind:value={domain}/>
+                        <label for="domain">Domain</label>
                     </div>
                     <div class="field label border">
                         <input id="username" type="text" bind:value={username}/>
@@ -110,6 +116,10 @@
                     <div class="field label border">
                         <input id="password" type="password" bind:value={password}/>
                         <label for="password">Password</label>
+                    </div>
+                    <div class="field label border">
+                        <input id="gatewayAddress" type="text" bind:value={gatewayAddress}/>
+                        <label for="gatewayAddress">Gateway Address</label>
                     </div>
                     <div class="field label border">
                         <input id="authtoken" type="text" bind:value={authtoken}/>

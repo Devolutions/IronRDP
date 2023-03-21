@@ -21,13 +21,13 @@ export interface IRGUserInteraction {
     setMouseButtonState(event: MouseEvent, isDown: boolean);
 
     setVisibility(state: boolean);
-    
+
     setScale(scale: ScreenScale);
 
-    connect(username: string, password: string, host: string, authtoken: string): Observable<NewSessionInfo>;
+    connect(username: string, password: string, hostname: string, gatewayAddress: string, domain: string, authToken: string): Observable<NewSessionInfo>;
 
     ctrlAltDel();
-    
+
     metaKey();
 
     sessionListener: Observable<any>;
@@ -42,37 +42,37 @@ export class UserInteractionService {
 
     private changeVisibility: Subject<boolean> = new Subject();
     changeVisibilityObservable: Observable<boolean> = this.changeVisibility.asObservable();
-    
+
     private sessionEvent: Subject<SessionEvent> = new Subject();
     sessionObserver: Observable<SessionEvent> = this.sessionEvent.asObservable();
 
     private serverBridge: ServerBridgeService;
-    
+
     private scale: BehaviorSubject<ScreenScale> = new BehaviorSubject(ScreenScale.Fit);
     scaleObserver: Observable<ScreenScale> = this.scale.asObservable();
-    
+
     private canvas: HTMLCanvasElement;
-    
+
     private keyboardActive: boolean;
 
     setServerBridge(serverBridge: ServerBridgeService) {
         this.serverBridge = serverBridge;
     }
-    
+
     setCanvas(canvas: HTMLCanvasElement) {
         this.canvas = canvas;
     }
-    
-    connect(username: string, password: string, host: string, authtoken: string): Observable<NewSessionInfo> {
+
+    connect(username: string, password: string, hostname: string, gatewayAddress: string, domain: string, authToken: string): Observable<NewSessionInfo> {
         loggingService.info('Initializing connection.');
-        return this.serverBridge.connect(username, password, host, authtoken);
+        return this.serverBridge.connect(username, password, hostname, gatewayAddress, domain, authToken);
     }
-    
+
     mouseIn(event: MouseEvent) {
         this.serverBridge.syncModifier(event);
         this.keyboardActive = true;
     }
-    
+
     mouseOut(event: MouseEvent) {
         this.keyboardActive = false;
         this.serverBridge?.releaseAllInputs();
@@ -96,15 +96,15 @@ export class UserInteractionService {
             this.serverBridge.sendKeyboard(evt);
         }
     }
-    
+
     ctrlAltDel() {
         this.sendSpecialCombination(SpecialCombination.CTRL_ALT_DEL);
     }
-    
+
     metaKey() {
         this.sendSpecialCombination(SpecialCombination.META);
     }
-    
+
     private sendSpecialCombination(combination: SpecialCombination) {
         this.serverBridge.sendSpecialCombination(combination);
     }
@@ -121,13 +121,13 @@ export class UserInteractionService {
     raiseSessionEvent(event: SessionEvent) {
         this.sessionEvent.next(event);
     }
-    
+
     mouseWheel(event) {
         let vertical = event.deltaY !== 0;
         let rotations = vertical ? event.deltaY : event.deltaX;
         this.serverBridge.mouseWheel(vertical, -rotations);
     }
-    
+
     exposedFunctions: IRGUserInteraction = {
         setMousePosition: this.setMousePosition.bind(this),
         setMouseButtonState: this.setMouseButtonState.bind(this),
