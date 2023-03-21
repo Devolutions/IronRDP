@@ -129,6 +129,9 @@ impl PduParsing for ServerAutoReconnect {
     }
 }
 
+/// TS_LOGON_ERRORS_INFO
+///
+/// [Doc](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/845eb789-6edf-453a-8b0e-c976823d1f72)
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LogonErrorsInfo {
     pub error_type: LogonErrorNotificationType,
@@ -142,8 +145,11 @@ impl PduParsing for LogonErrorsInfo {
         let _data_length = stream.read_u32::<LittleEndian>()?;
         let error_type = LogonErrorNotificationType::from_u32(stream.read_u32::<LittleEndian>()?)
             .ok_or(SessionError::InvalidLogonErrorType)?;
-        let error_data = LogonErrorNotificationData::from_u32(stream.read_u32::<LittleEndian>()?)
-            .ok_or(SessionError::InvalidLogonErrorData)?;
+
+        let error_notification_data = stream.read_u32::<LittleEndian>()?;
+        let error_data = LogonErrorNotificationDataErrorCode::from_u32(error_notification_data)
+            .map(LogonErrorNotificationData::ErrorCode)
+            .unwrap_or(LogonErrorNotificationData::SessionId(error_notification_data));
 
         Ok(Self { error_type, error_data })
     }
@@ -151,7 +157,7 @@ impl PduParsing for LogonErrorsInfo {
     fn to_buffer(&self, mut stream: impl io::Write) -> Result<(), Self::Error> {
         stream.write_u32::<LittleEndian>(LOGON_ERRORS_INFO_SIZE as u32)?;
         stream.write_u32::<LittleEndian>(self.error_type.to_u32().unwrap())?;
-        stream.write_u32::<LittleEndian>(self.error_data.to_u32().unwrap())?;
+        stream.write_u32::<LittleEndian>(self.error_data.to_u32())?;
 
         Ok(())
     }
@@ -171,19 +177,36 @@ bitflags! {
 #[repr(u32)]
 #[derive(Debug, Clone, PartialEq, Eq, FromPrimitive, ToPrimitive)]
 pub enum LogonErrorNotificationType {
-    DisconnectRefuse = 0xFFFF_FFF9,
+    SessionBusyOptions = 0xFFFF_FFF8,
+    DisconnectRefused = 0xFFFF_FFF9,
     NoPermission = 0xFFFF_FFFA,
     BumpOptions = 0xFFFF_FFFB,
     ReconnectOptions = 0xFFFF_FFFC,
     SessionTerminate = 0xFFFF_FFFD,
     SessionContinue = 0xFFFF_FFFE,
+    AccessDenied = 0xFFFF_FFFF,
 }
 
 #[repr(u32)]
 #[derive(Debug, Clone, PartialEq, Eq, FromPrimitive, ToPrimitive)]
-pub enum LogonErrorNotificationData {
+pub enum LogonErrorNotificationDataErrorCode {
     FailedBadPassword = 0x0000_0000,
     FailedUpdatePassword = 0x0000_0001,
     FailedOther = 0x0000_0002,
     Warning = 0x0000_0003,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LogonErrorNotificationData {
+    ErrorCode(LogonErrorNotificationDataErrorCode),
+    SessionId(u32),
+}
+
+impl LogonErrorNotificationData {
+    pub fn to_u32(&self) -> u32 {
+        match self {
+            LogonErrorNotificationData::ErrorCode(code) => code.to_u32().unwrap(),
+            LogonErrorNotificationData::SessionId(id) => *id,
+        }
+    }
 }

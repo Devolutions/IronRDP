@@ -14,8 +14,8 @@ mod logon_extended;
 mod logon_info;
 
 pub use self::logon_extended::{
-    LogonErrorNotificationData, LogonErrorNotificationType, LogonErrorsInfo, LogonExFlags, LogonInfoExtended,
-    ServerAutoReconnect,
+    LogonErrorNotificationData, LogonErrorNotificationDataErrorCode, LogonErrorNotificationType, LogonErrorsInfo,
+    LogonExFlags, LogonInfoExtended, ServerAutoReconnect,
 };
 pub use self::logon_info::{LogonInfo, LogonInfoVersion1, LogonInfoVersion2};
 
