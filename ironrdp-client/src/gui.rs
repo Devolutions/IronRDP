@@ -153,7 +153,7 @@ impl GuiContext {
                                     operations.push(ironrdp_input::Operation::WheelRotations(
                                         ironrdp_input::WheelRotations {
                                             is_vertical: false,
-                                            rotation_units: delta_x as i16,
+                                            rotation_units: delta.x as i16,
                                         },
                                     ));
                                 }
@@ -162,7 +162,7 @@ impl GuiContext {
                                     operations.push(ironrdp_input::Operation::WheelRotations(
                                         ironrdp_input::WheelRotations {
                                             is_vertical: true,
-                                            rotation_units: delta_y as i16,
+                                            rotation_units: delta.y as i16,
                                         },
                                     ));
                                 }
