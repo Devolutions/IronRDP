@@ -1,24 +1,15 @@
 # SvelteKit UI for IronRDP
 
-The UI is used both for Tauri Desktop App and Browser App.
+Web-based frontend using [`SvelteKit`](https://kit.svelte.dev/) and [`Material`](https://material.io) frameworks.
+This is a simple wrapper around the `iron-remote-gui` Web Component demonstrating how to use the API.
 
-## Tauri
-
-Please read the [README](../iron-tauri-client/) from `iron-tauri-client`
-
-## Web client
-
-Web client is built on top of [SvelteKit](https://kit.svelte.dev/). 
-It's a simple wrapper around `iron-remote-gui` demonstrating how to use the API.
-The core of the web client is to be found in `iron-remote-gui` folder provided as a Web Component.
-
-### Requirements
+## Requirements
 
 - A remote machine ready to receive RDP connections using RemoteFX (see top-level [README](../README.md) on that matter).
 - A Devolutions Gateway with network access to this machine up and running
 - A token signed using the provisioner key the Devolutions Gateway is expecting
 
-#### Devolutions Gateway setup
+### Devolutions Gateway setup
 
 Web client is using a special extension to RDP protocol.
 This extension is available starting Devolutions Gateway v2023.1.1.
@@ -87,7 +78,7 @@ $ ./DevolutionsGateway # Linux / macOS
 $ ./DevolutionsGateway.exe # Windows
 ```
 
-#### Token generation
+### Token generation
 
 The most straightforward way of generating a token if you don’t have a Rust toolchain installed is
 the PowerShell package.
@@ -102,7 +93,7 @@ You can then run the following:
 $ New-DGatewayToken -Type ASSOCIATION -PrivateKeyFile <PRIVATE KEY PATH> -DestinationHost <TARGET HOST> -ApplicationProtocol rdp
 ```
 
-### Run in dev mode
+## Run in dev mode
 
 First, run `npm install` in the [iron-remote-gui](../iron-remote-gui/) folder,
 and then `npm install` in [iron-svelte-client](./) folder.

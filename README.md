@@ -1,25 +1,10 @@
 # IronRDP
 
-A Rust implementation of the Microsoft Remote Desktop Protocol, with a focus on security.
+A collection of Rust crates providing an implementation of the Microsoft Remote Desktop Protocol, with a focus on security.
 
-## Architecture (Work In Progress…)
+## Demonstration
 
-- `ironrdp`: meta crate re-exporting important crates
-- `ironrdp-core`: core, RDP protocol packets encoding and decoding.
-- `ironrdp-graphics`: image processing primitives and algorithms (ZGFX, DWT…).
-- `ironrdp-input`: helpers to build FastPathInput packets.
-- `ironrdp-session`: abstract state machine on top of `ironrdp-graphics`.
-- `ironrdp-session-async`: `Future`s built on top of `ironrdp-session`.
-- `ironrdp-tls`: TLS boilerplate common with most IronRDP clients.
-- `ironrdp-devolutions-gateway`: Devolutions Gateway extensions.
-- `ironrdp-renderer`: `glutin` primitives for OpenGL rendering.
-- `ironrdp-client`: Portable RDP client without GPU acceleration using softbuffer and winit for windowing.
-- `ironrdp-client-glutin`: GPU-accelerated RDP client using glutin.
-- `ironrdp-replay-client`: utility tool to replay RDP graphics pipeline for debugging purposes.
-- `iron-remote-gui`: core frontend ui used by both, iron-svelte-client and iron-tauri-client.
-- `iron-svelte-client`: web-based frontend using `Svelte` and `Material` frameworks).
-- `iron-tauri-client`: a native client built with Tauri. Frontend is using the `iron-web-client`/`iron-svelte-client` component.
-- `ffi/wasm`: WebAssembly high-level bindings targeting web browsers.
+https://user-images.githubusercontent.com/3809077/202049929-76f42471-aeb0-41da-9118-0dc6ea491bd2.mp4
 
 ## Video Codec Support
 
@@ -50,7 +35,39 @@ Alternatively, you may change a few group policies using `gpedit.msc`:
 
 5. Reboot.
 
-## Demonstration
+## Architecture (Work In Progress…)
 
-https://user-images.githubusercontent.com/3809077/202049929-76f42471-aeb0-41da-9118-0dc6ea491bd2.mp4
+- `ironrdp` (root package): meta crate re-exporting important crates,
+- `ironrdp-pdu` (`crates/pdu`): PDU encoding and decoding (no I/O, trivial to fuzz),
+- `ironrdp-graphics` (`crates/graphics`): image processing primitives (no I/O, trivial to fuzz),
+- `ironrdp-session` (`crates/session`): state machine to drive a complete VNC session (no I/O, not _too_ hard to fuzz),
+- `ironrdp-input` (`crates/input`): utilities to manage and build input packets (no I/O),
+- `ironrdp-session-async` (`crates/session-async`): provides `Future`s wrapping the session state machine conveniently,
+- `ironrdp-tls` (`crates/tls`): TLS boilerplate common with most IronRDP clients,
+- `ironrdp-rdcleanpath` (`crates/rdcleanpath`): RDCleanPath PDU structure used by IronRDP web client and Devolutions Gateway,
+- `ironrdp-client` (`crates/client`): Portable RDP client without GPU acceleration using softbuffer and winit for windowing,
+- `ironrdp-web` (`crates/web`): WebAssembly high-level bindings targeting web browsers,
+- `ironrdp-glutin-renderer` (`crates/glutin-renderer`): `glutin` primitives for OpenGL rendering,
+- `ironrdp-client-glutin` (`crates/client-glutin`): GPU-accelerated RDP client using glutin,
+- `ironrdp-replay-client` (`crates/replay-client`): utility tool to replay RDP graphics pipeline for debugging purposes,
+- `ironrdp-pdu-generators` (`crates/pdu-generators`): `proptest` generators for `ironrdp-pdu` types,
+- `ironrdp-session-generators` (`crates/session-generators`): `proptest` generators for `ironrdp-session` types,
+- `iron-remote-gui`: core frontend UI used by `iron-svelte-client` as a Web Component,
+- `iron-svelte-client`: web-based frontend using `Svelte` and `Material` frameworks,
+- and finally, `ironrdp-fuzz` (`fuzz`): fuzz targets for core crates.
 
+## General design
+
+- Avoid I/O wherever possible
+- Dependency injection when runtime information is necessary in core crates (no system call such as `gethostname`)
+- Keep non-portable code out of core crates
+- Make crate `no_std`-compatible wherever possible
+- Facilitate fuzzing
+- In libraries, provide concrete error types either hand-crafted or using `thiserror` crate
+- In binaries, use the convenient catch-all error type `anyhow::Error`
+- Free-form automation a-la `make` following [`cargo xtask`](https://github.com/matklad/cargo-xtask) specification
+
+## Continuous integration
+
+We use GitHub action and our workflows simply run `cargo xtask`.
+The expectation is that, if `cargo xtask ci` passes locally, the CI will be green as well.

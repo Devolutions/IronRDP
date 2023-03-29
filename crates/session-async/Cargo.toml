@@ -1,0 +1,25 @@
+[package]
+name = "ironrdp-session-async"
+version = "0.1.0"
+edition = "2021"
+readme = "README.md"
+license = "MIT/Apache-2.0"
+homepage = "https://github.com/Devolutions/IronRDP"
+repository = "https://github.com/Devolutions/IronRDP"
+authors = ["Devolutions Inc. <infos@devolutions.net>"]
+
+[features]
+default = ["tokio"]
+tokio = ["dep:tokio", "dep:tokio-util"]
+futures = ["dep:futures-util"]
+
+[dependencies]
+ironrdp-pdu = { path = "../pdu" }
+ironrdp-session = { path = "../session" }
+bytes = "1"
+num-traits = "0.2.15"
+bit_field = "0.10.1"
+byteorder = "1.4.3"
+tokio = { version = "1.25.0", features = ["io-util"], optional = true }
+tokio-util = { version = "0.7.7", features = ["codec"], optional = true }
+futures-util = { version = "0.3.26", features = ["io"], optional = true }

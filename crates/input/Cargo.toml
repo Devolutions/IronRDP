@@ -1,0 +1,19 @@
+[package]
+name = "ironrdp-input"
+version = "0.1.0"
+edition = "2021"
+readme = "README.md"
+license = "MIT/Apache-2.0"
+homepage = "https://github.com/Devolutions/IronRDP"
+repository = "https://github.com/Devolutions/IronRDP"
+authors = ["Devolutions Inc. <infos@devolutions.net>"]
+
+[dependencies]
+ironrdp-pdu = { path = "../pdu" }
+bitvec = "1.0.1"
+smallvec = "1.10.0"
+
+[dev-dependencies]
+proptest = "1.1.0"
+anyhow = "1"
+rstest = "0.16.0"

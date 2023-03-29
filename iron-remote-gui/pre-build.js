@@ -1,4 +1,4 @@
-﻿import {spawn} from "child_process";
+import {spawn} from "child_process";
 
 let run = async function (command, cwd) {
     return new Promise(resolve => {
@@ -19,4 +19,4 @@ let run = async function (command, cwd) {
     })
 }
 
-await run('wasm-pack build --target web', '../ffi/wasm');
+await run('wasm-pack build --target web', '../crates/web');

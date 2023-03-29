@@ -1,7 +1,7 @@
 import type {NewSessionInfo, ResizeEvent, ServerBridgeService} from './server-bridge.service';
 import {MouseButton, MouseButtonState, SpecialCombination} from './server-bridge.service';
 import {from, Observable, of, Subject} from 'rxjs';
-import init, {DeviceEvent, InputTransaction, ironrdp_init, IronRdpError, IronRdpErrorKind, Session, SessionBuilder} from "../../../ffi/wasm/pkg/ironrdp";
+import init, {DeviceEvent, InputTransaction, ironrdp_init, IronRdpError, IronRdpErrorKind, Session, SessionBuilder} from "../../../crates/web/pkg/ironrdp_web";
 import {loggingService} from "./logging.service";
 import {catchError, filter, finalize, map} from "rxjs/operators";
 import {userInteractionService} from "./user-interaction-service";

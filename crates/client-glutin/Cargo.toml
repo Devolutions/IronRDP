@@ -1,0 +1,47 @@
+[package]
+name = "ironrdp-client-glutin"
+version = "0.4.2"
+edition = "2021"
+readme = "README.md"
+license = "MIT/Apache-2.0"
+homepage = "https://github.com/Devolutions/IronRDP"
+repository = "https://github.com/Devolutions/IronRDP"
+authors = ["Devolutions Inc. <infos@devolutions.net>"]
+keywords = ["rdp", "client", "remote", "desktop", "protocol", "gfx", "rfx"]
+
+[features]
+default = ["rustls"]
+rustls = ["dep:tokio-rustls", "ironrdp-session/rustls"]
+native-tls = ["dep:async-native-tls", "ironrdp-session/native-tls"]
+
+[dependencies]
+
+# Protocols
+ironrdp = { path = "../.." }
+ironrdp-session = { path = "../session" }
+sspi = { version = "0.8", features = ["network_client"] }
+
+# CLI
+clap = { version = "4.0", features = ["derive", "cargo"] }
+exitcode = "1.1.2"
+
+# logging
+log = "0.4"
+fern = "0.6"
+
+# SSL
+x509-parser = "0.14"
+async-native-tls = { version = "0.4", default-features = false, features = [ "runtime-tokio" ], optional = true }
+tokio-rustls =  { version = "0.23", features = ["dangerous_configuration"], optional = true }
+
+# async, futures
+tokio = { version = "1", features = ["full"]}
+tokio-util = { version = "0.7.4", features = ["compat"] }
+futures-util = "0.3"
+
+# Utils
+chrono = "0.4.23"
+
+# GUI
+glutin = "0.29"
+ironrdp-glutin-renderer = { path = "../glutin-renderer"}

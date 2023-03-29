@@ -1,5 +1,5 @@
 import type { NewSessionInfo, ServerBridgeService } from './server-bridge.service';
-import * as IronWasm from '../../../ffi/wasm/pkg/ironrdp';
+import * as IronWasm from '../../../ffi/wasm/pkg/ironrdp_web';
 import { Observable, of, Subject } from 'rxjs';
 
 export class WasmBridgeService implements ServerBridgeService {

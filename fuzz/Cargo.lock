@@ -210,34 +210,13 @@ dependencies = [
 ]
 
 [[package]]
-name = "ironrdp-core"
-version = "0.1.0"
-dependencies = [
- "bit_field",
- "bitflags",
- "byteorder",
- "der-parser",
- "lazy_static",
- "log",
- "md-5",
- "num-bigint",
- "num-derive",
- "num-integer",
- "num-traits",
- "sha1",
- "tap",
- "thiserror",
- "x509-parser",
-]
-
-[[package]]
 name = "ironrdp-fuzz"
 version = "0.0.0"
 dependencies = [
  "arbitrary",
  "bytes",
- "ironrdp-core",
  "ironrdp-graphics",
+ "ironrdp-pdu",
  "libfuzzer-sys",
 ]
 
@@ -250,11 +229,31 @@ dependencies = [
  "bitvec",
  "byteorder",
  "bytes",
- "ironrdp-core",
+ "ironrdp-pdu",
  "lazy_static",
  "num-derive",
  "num-traits",
  "thiserror",
+]
+
+[[package]]
+name = "ironrdp-pdu"
+version = "0.1.0"
+dependencies = [
+ "bit_field",
+ "bitflags",
+ "byteorder",
+ "der-parser",
+ "lazy_static",
+ "md-5",
+ "num-bigint",
+ "num-derive",
+ "num-integer",
+ "num-traits",
+ "sha1",
+ "tap",
+ "thiserror",
+ "x509-parser",
 ]
 
 [[package]]
@@ -293,15 +292,6 @@ dependencies = [
  "arbitrary",
  "cc",
  "once_cell",
-]
-
-[[package]]
-name = "log"
-version = "0.4.17"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "abb12e687cfb44aa40f41fc3978ef76448f9b6038cad6aef4259d3c095a2382e"
-dependencies = [
- "cfg-if",
 ]
 
 [[package]]
