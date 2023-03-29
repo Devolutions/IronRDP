@@ -19,4 +19,4 @@ let run = async function (command, cwd) {
     })
 }
 
-await run('wasm-pack build --target web', '../crates/web');
+await run('wasm-pack build --target web', '../../crates/web');

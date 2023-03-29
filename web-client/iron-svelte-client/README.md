@@ -5,7 +5,7 @@ This is a simple wrapper around the `iron-remote-gui` Web Component demonstratin
 
 ## Requirements
 
-- A remote machine ready to receive RDP connections using RemoteFX (see top-level [README](../README.md) on that matter).
+- A remote machine ready to receive RDP connections using RemoteFX (see top-level [README](../../README.md) on that matter).
 - A Devolutions Gateway with network access to this machine up and running
 - A token signed using the provisioner key the Devolutions Gateway is expecting
 

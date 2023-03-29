@@ -74,5 +74,5 @@ You can add some parameters for default initialization on the component `<iron-r
 > `setScale(scale: ScreenScale)`
 > 
 > Sets the scale behavior of the canvas.
-> See the [ScreenScale](src/services/user-interaction-service.ts) enum for possible values.
+> See the [ScreenScale](./src/services/user-interaction-service.ts) enum for possible values.
 

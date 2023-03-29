@@ -52,8 +52,8 @@ Alternatively, you may change a few group policies using `gpedit.msc`:
 - `ironrdp-replay-client` (`crates/replay-client`): utility tool to replay RDP graphics pipeline for debugging purposes,
 - `ironrdp-pdu-generators` (`crates/pdu-generators`): `proptest` generators for `ironrdp-pdu` types,
 - `ironrdp-session-generators` (`crates/session-generators`): `proptest` generators for `ironrdp-session` types,
-- `iron-remote-gui`: core frontend UI used by `iron-svelte-client` as a Web Component,
-- `iron-svelte-client`: web-based frontend using `Svelte` and `Material` frameworks,
+- `iron-remote-gui` (`web-client/iron-remote-gui`): core frontend UI used by `iron-svelte-client` as a Web Component,
+- `iron-svelte-client` (`web-client/iron-svelte-client`): web-based frontend using `Svelte` and `Material` frameworks,
 - and finally, `ironrdp-fuzz` (`fuzz`): fuzz targets for core crates.
 
 ## General design

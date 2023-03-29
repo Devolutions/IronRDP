@@ -125,14 +125,12 @@ pub fn svelte_run(sh: &Shell) -> anyhow::Result<()> {
     let _s = Section::new("SVELTE-RUN");
 
     {
-        let _guard = sh.push_dir("./iron-remote-gui");
-
+        let _guard = sh.push_dir("./web-client/iron-remote-gui");
         cmd!(sh, "npm install").run()?;
     }
 
     {
-        let _guard = sh.push_dir("./iron-svelte-client");
-
+        let _guard = sh.push_dir("./web-client/iron-svelte-client");
         cmd!(sh, "npm install").run()?;
         cmd!(sh, "npm run dev-all").run()?;
     }
