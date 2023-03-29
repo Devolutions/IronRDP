@@ -7,6 +7,7 @@ edition = "2021"
 [package.metadata]
 cargo-fuzz = true
 
+# Prevent this from interfering with workspaces
 [workspace]
 members = ["."]
 
@@ -14,16 +15,20 @@ members = ["."]
 debug = 1
 
 [dependencies]
-ironrdp-core = { path = "../ironrdp-core" }
-ironrdp-graphics = { path = "../ironrdp-graphics" }
+ironrdp-pdu = { path = "../crates/pdu" }
+ironrdp-graphics = { path = "../crates/graphics" }
+bytes = "1.4.0"
 libfuzzer-sys = "0.4"
 arbitrary = { version = "1", features = ["derive"] }
-bytes = "1.4.0"
 
 [[bin]]
 name = "pdu_decoding"
 path = "fuzz_targets/pdu_decoding.rs"
+test = false
+doc = false
 
 [[bin]]
 name = "rle_decompression"
 path = "fuzz_targets/rle_decompression.rs"
+test = false
+doc = false

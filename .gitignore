@@ -1,5 +1,11 @@
+# Build artifacts
 /target
+
+# Log files
 *.log
+
+# Coverage
+/docs
 
 # Editor/IDE files
 *~

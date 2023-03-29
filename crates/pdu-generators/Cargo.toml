@@ -1,0 +1,9 @@
+[package]
+name = "ironrdp-pdu-generators"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+ironrdp-pdu = { path = "../pdu" }
+proptest = "1.1.0"

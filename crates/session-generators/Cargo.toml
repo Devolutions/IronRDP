@@ -1,0 +1,10 @@
+[package]
+name = "ironrdp-session-generators"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+ironrdp-session = { path = "../session" }
+ironrdp-pdu-generators = { path = "../pdu-generators" }
+proptest = "1.1.0"

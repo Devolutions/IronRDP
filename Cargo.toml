@@ -1,15 +1,43 @@
+[package]
+name = "ironrdp"
+version = "0.5.0"
+edition = "2021"
+readme = "README.md"
+license = "MIT/Apache-2.0"
+homepage = "https://github.com/Devolutions/IronRDP"
+repository = "https://github.com/Devolutions/IronRDP"
+authors = ["Devolutions Inc. <infos@devolutions.net>"]
+description = "A Rust implementation of the Microsoft Remote Desktop Protocol (RDP)"
+keywords = ["rdp", "remote", "desktop", "protocol"]
+
 [workspace]
 members = [
-    "ironrdp",
-    "ironrdp-core",
-    "ironrdp-graphics",
-    "ironrdp-input",
-    "ironrdp-session",
-    "ironrdp-session-async",
-    "ironrdp-tls",
-    "ironrdp-rdcleanpath",
-    "ironrdp-renderer",
-    "ironrdp-client",
-    "ironrdp-client-glutin",
-    "ironrdp-replay-client",
+  "crates/*",
+  "xtask",
 ]
+default-members = [
+  "crates/pdu",
+  "crates/session",
+  "crates/graphics",
+  "crates/input",
+  "crates/session-async",
+  "crates/client",
+]
+
+[profile.production]
+inherits = "release"
+lto = true
+
+[profile.production-wasm]
+inherits = "release"
+opt-level = "s"
+lto = true
+
+[features]
+default = []
+
+[dependencies]
+ironrdp-pdu = { path = "crates/pdu" }
+ironrdp-session = { path = "crates/session" }
+ironrdp-graphics = { path = "crates/graphics" }
+ironrdp-input = { path = "crates/input" }
