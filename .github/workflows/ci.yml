@@ -20,14 +20,7 @@ jobs:
       - uses: actions/checkout@v3
 
       - name: Check formatting
-        shell: pwsh
-        run: |
-          Write-Host "Check formatting"
-          cargo fmt --all -- --check
-
-          if ($LastExitCode -eq 1) {   
-            throw "Bad formatting, please run 'cargo +stable fmt --all'"
-          }
+        run: cargo xtask check fmt
 
   lints:
     name: Lints
@@ -47,8 +40,7 @@ jobs:
           key: ${{ runner.os }}-lints-${{ hashFiles('Cargo.lock') }}
 
       - name: Check clippy
-        # FIXME: run: cargo clippy --workspace -- -D warnings
-        run: cargo clippy -- -D warnings
+        run: cargo xtask check lints
 
   wasm:
     name: WASM target
@@ -100,8 +92,7 @@ jobs:
           key: ${{ runner.os }}-tests-${{ hashFiles('Cargo.lock') }}
 
       - name: Test [${{ matrix.os }}]
-        # FIXME: run: cargo test --workspace
-        run: cargo test
+        run: cargo xtask check tests
 
   fuzz:
     name: Fuzzing
@@ -119,7 +110,7 @@ jobs:
           path: |
             ~/.cargo/registry/
             ~/.cargo/git/
-            ~/.cargo/bin/
+            ./target/
             ./fuzz/target/
           key: ${{ runner.os }}-fuzz-${{ hashFiles('fuzz/Cargo.lock') }}
 
@@ -139,23 +130,14 @@ jobs:
 
           rustup install nightly --profile=minimal
 
-          Set-Location -Path ./fuzz/
-
       - name: Download fuzzing corpus
-        run: |
-          az storage blob download-batch --account-name fuzzingcorpus --source ironrdp --destination fuzz --output none
+        run: cargo xtask fuzz corpus-fetch
 
       - name: Fuzz
-        run: |
-          rustup run nightly cargo fuzz run pdu_decoding -- -max_total_time=5s
-          rustup run nightly cargo fuzz run rle_decompression -- -max_total_time=5s
+        run: cargo xtask fuzz run
 
-      - name: Minimize corpus
-        run: |
-          rustup run nightly cargo fuzz cmin pdu_decoding
-          rustup run nightly cargo fuzz cmin rle_decompression
+      - name: Minify fuzzing corpus
+        run: cargo xtask fuzz corpus-min
 
       - name: Upload fuzzing corpus
-        run: |
-          az storage blob sync --account-name fuzzingcorpus --container ironrdp --source fuzz/corpus --destination corpus --delete-destination true --output none
-          az storage blob sync --account-name fuzzingcorpus --container ironrdp --source fuzz/artifacts --destination artifacts --delete-destination true --output none
+        run: cargo xtask fuzz corpus-push
