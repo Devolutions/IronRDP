@@ -19,7 +19,7 @@ native-tls = ["dep:async-native-tls", "ironrdp/native-tls"]
 # Protocol
 ironrdp = { path = "../ironrdp" }
 ironrdp-input = { path = "../ironrdp-input" }
-sspi = { path = "../../sspi-rs", features = ["network_client"] } # TODO: enable dns_resolver at some point
+sspi = { version = "0.8.0", features = ["network_client"] } # TODO: enable dns_resolver at some point
 
 # GUI
 softbuffer = "0.2.0"

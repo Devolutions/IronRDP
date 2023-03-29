@@ -28,7 +28,7 @@ opt-level = "s"
 ironrdp = { path = "../../ironrdp" }
 ironrdp-session = { path = "../../ironrdp-session", features = ["dgw_ext"] } # FIXME: secret feature until session state machine is done
 ironrdp-input = { path = "../../ironrdp-input" }
-sspi = "0.7"
+sspi = "0.8"
 
 # Wasm
 wasm-bindgen = "0.2.83"

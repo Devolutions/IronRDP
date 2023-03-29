@@ -18,7 +18,7 @@ dgw_ext = []
 ironrdp-core = { path = "../ironrdp-core" }
 ironrdp-graphics = { path = "../ironrdp-graphics" }
 ironrdp-rdcleanpath = { path = "../ironrdp-rdcleanpath" } # FIXME: Quick and dirty approach, this should not be here
-sspi = "0.7"
+sspi = "0.8"
 bytes = "1"
 log = "0.4"
 whoami = "1"
