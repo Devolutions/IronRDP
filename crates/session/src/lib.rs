@@ -1,5 +1,5 @@
 #[macro_use]
-extern crate log;
+extern crate tracing;
 
 pub mod active_session;
 pub mod connection_sequence;

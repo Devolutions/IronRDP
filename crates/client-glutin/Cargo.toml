@@ -26,8 +26,8 @@ clap = { version = "4.0", features = ["derive", "cargo"] }
 exitcode = "1.1.2"
 
 # logging
-log = "0.4"
-fern = "0.6"
+tracing = "0.1.37"
+tracing-subscriber = { version = "0.3.16", features = ["env-filter"] }
 
 # SSL
 x509-parser = "0.14"
@@ -41,6 +41,7 @@ futures-util = "0.3"
 
 # Utils
 chrono = "0.4.23"
+anyhow = "1.0.68"
 
 # GUI
 glutin = "0.29"

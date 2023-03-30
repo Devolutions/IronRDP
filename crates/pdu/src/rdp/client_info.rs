@@ -1,6 +1,7 @@
 #[cfg(test)]
 pub mod test;
 
+use core::fmt;
 use std::io;
 
 use bitflags::bitflags;
@@ -151,11 +152,21 @@ impl PduParsing for ClientInfo {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct Credentials {
     pub username: String,
     pub password: String,
     pub domain: Option<String>,
+}
+
+impl fmt::Debug for Credentials {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // NOTE: do not show secret (user password)
+        f.debug_struct("Credentials")
+            .field("username", &self.username)
+            .field("domain", &self.domain)
+            .finish_non_exhaustive()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

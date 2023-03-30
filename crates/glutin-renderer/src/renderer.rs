@@ -11,7 +11,6 @@ use ironrdp::pdu::dvc::gfx;
 use ironrdp::pdu::dvc::gfx::{Codec1Type, ServerPdu};
 use ironrdp::pdu::geometry::Rectangle;
 use ironrdp::pdu::PduParsing;
-use log::info;
 use thiserror::Error;
 
 use crate::surface::{DataBuffer, SurfaceDecoders, Surfaces};
@@ -87,13 +86,13 @@ fn handle_draw(
     let mut surfaces = Surfaces::new();
     loop {
         let message = rx.recv()?;
-        log::info!("Got user event {:?}", message);
+        info!("Got user event {:?}", message);
         match message {
             RenderEvent::Repaint => {
                 surfaces.flush_output();
                 let result = window.swap_buffers();
                 if result.is_err() {
-                    log::error!("Swap buffers error: {:?}", result);
+                    error!("Swap buffers error: {:?}", result);
                 }
             }
             RenderEvent::Paint((surface_id, data)) => {
@@ -119,7 +118,7 @@ fn handle_draw(
                     });
                 }
                 _ => {
-                    log::info!("Ignore message: {:?}", pdu);
+                    info!("Ignore message: {:?}", pdu);
                 }
             },
         }

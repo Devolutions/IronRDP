@@ -91,7 +91,7 @@ pub fn launch_gui(
             Event::RedrawRequested(_) => {
                 let res = renderer.repaint();
                 if res.is_err() {
-                    log::error!("Repaint send error: {:?}", res);
+                    error!("Repaint send error: {:?}", res);
                 }
             }
             Event::WindowEvent { ref event, .. } => match event {
@@ -123,9 +123,9 @@ pub fn launch_gui(
                     //     let result =
                     //         x224_processor.send_dynamic(&mut *stream, x224::RDP8_DISPLAY_PIPELINE_NAME, data_buffer);
                     //     if result.is_err() {
-                    //         log::error!("Monitor layour {:?}", result);
+                    //         error!("Monitor layour {:?}", result);
                     //     } else {
-                    //         log::error!("Monitor layour success");
+                    //         error!("Monitor layour success");
                     //     }
                     // }
                 }
@@ -135,7 +135,7 @@ pub fn launch_gui(
                     if let Some(event) = translate_input_event(main_event, &mut last_position) {
                         let result = sender.send(event);
                         if result.is_err() {
-                            log::error!("Send of event failed: {:?}", result);
+                            error!("Send of event failed: {:?}", result);
                         }
                     }
                 }

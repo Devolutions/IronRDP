@@ -1,3 +1,6 @@
+#[macro_use]
+extern crate tracing;
+
 use std::fs::File;
 use std::io::ErrorKind;
 use std::path::PathBuf;
@@ -13,8 +16,6 @@ use glutin::event_loop::ControlFlow;
 use ironrdp::pdu::dvc::gfx::{GraphicsPipelineError, ServerPdu};
 use ironrdp::pdu::PduParsing;
 use ironrdp_glutin_renderer::renderer::Renderer;
-use log::LevelFilter;
-use simplelog::{Config, SimpleLogger};
 
 pub type Error = Box<dyn std::error::Error + Send + Sync + 'static>;
 
@@ -54,7 +55,8 @@ fn create_ui_context() -> (
 }
 
 pub fn main() -> Result<(), Error> {
-    let _ = SimpleLogger::init(LevelFilter::Debug, Config::default());
+    tracing_subscriber::fmt().compact().init();
+
     let args = Args::parse();
 
     let (sender, receiver) = sync_channel(1);
@@ -64,7 +66,7 @@ pub fn main() -> Result<(), Error> {
 
     thread::spawn(move || {
         let result = handle_file(sender, args);
-        log::info!("Result: {:?}", result);
+        info!("Result: {:?}", result);
     });
 
     event_loop.run(move |main_event, _, control_flow| {
@@ -75,13 +77,13 @@ pub fn main() -> Result<(), Error> {
             Event::RedrawRequested(_) => {
                 let res = renderer.repaint();
                 if res.is_err() {
-                    log::error!("Repaint send error: {:?}", res);
+                    error!("Repaint send error: {:?}", res);
                 }
             }
             Event::WindowEvent { ref event, .. } => match event {
                 WindowEvent::CloseRequested => *control_flow = ControlFlow::Exit,
                 WindowEvent::Resized(size) => {
-                    log::info!("Window resized {:?}", size);
+                    info!("Window resized {:?}", size);
                 }
                 _ => {}
             },
@@ -111,7 +113,7 @@ fn handle_file(sender: std::sync::mpsc::SyncSender<ServerPdu>, args: Args) -> Re
             };
 
             if !ignorable {
-                log::error!("Error: {:?}", packet);
+                error!("Error: {:?}", packet);
             }
 
             if args.close {
