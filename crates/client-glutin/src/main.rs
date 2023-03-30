@@ -1,5 +1,5 @@
 #[macro_use]
-extern crate log;
+extern crate tracing;
 
 mod config;
 
@@ -7,6 +7,7 @@ use std::sync::mpsc::sync_channel;
 use std::sync::Arc;
 use std::{io, process};
 
+use anyhow::Context as _;
 use futures_util::io::AsyncWriteExt as _;
 use gui::MessagePassingGfxHandler;
 use ironrdp::graphics::image_processing::PixelFormat;
@@ -85,18 +86,32 @@ async fn main() {
     std::process::exit(exit_code);
 }
 
-fn setup_logging(log_file: &str) -> Result<(), fern::InitError> {
-    fern::Dispatch::new()
-        .format(|out, message, record| {
-            out.finish(format_args!(
-                "{}[{}] {}",
-                chrono::Local::now().format("[%Y-%m-%d][%H:%M:%S:%6f]"),
-                record.level(),
-                message
-            ))
-        })
-        .chain(fern::log_file(log_file)?)
-        .apply()?;
+fn setup_logging(log_file: &str) -> anyhow::Result<()> {
+    use std::fs::OpenOptions;
+
+    use tracing::metadata::LevelFilter;
+    use tracing_subscriber::prelude::*;
+    use tracing_subscriber::EnvFilter;
+
+    let file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(log_file)
+        .with_context(|| format!("Couldn’t open {log_file}"))?;
+
+    let fmt_layer = tracing_subscriber::fmt::layer()
+        .compact()
+        .with_ansi(false)
+        .with_writer(file);
+
+    let env_filter = EnvFilter::builder()
+        .with_default_directive(LevelFilter::WARN.into())
+        .with_env_var("IRONRDP_LOG_LEVEL")
+        .from_env_lossy();
+
+    let reg = tracing_subscriber::registry().with(fmt_layer).with(env_filter);
+
+    tracing::subscriber::set_global_default(reg).context("Failed to set tracing global subscriber")?;
 
     Ok(())
 }
@@ -143,12 +158,13 @@ async fn launch_client(
 
     let active_stage_writer = writer.clone();
     let active_stage_handle = tokio::spawn(async move {
-        let result = process_active_stage(reader, active_stage, image, active_stage_writer).await;
-        if result.is_err() {
-            log::error!("Active stage failed: {:?}", result);
-            process::exit(-1);
+        match process_active_stage(reader, active_stage, image, active_stage_writer).await {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                error!(?error, "Active stage failed");
+                process::exit(-1);
+            }
         }
-        result
     });
     gui::launch_gui(gui, config.gfx_dump_file, receiver, writer.clone())?;
     active_stage_handle.await.map_err(|e| RdpError::Io(e.into()))?

@@ -9,7 +9,6 @@ use ironrdp::pdu::dvc::gfx::{
 };
 use ironrdp::pdu::geometry::Rectangle;
 use ironrdp::pdu::PduBufferParsing;
-use log::error;
 use openh264::decoder::{DecodedYUV, Decoder};
 
 use crate::draw::DrawingContext;

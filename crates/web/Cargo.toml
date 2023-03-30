@@ -28,10 +28,12 @@ wasm-bindgen = "0.2.83"
 wasm-bindgen-futures = "0.4.33"
 js-sys = "0.3.60"
 gloo-net = "0.2.4"
+tracing-web = "0.1.2"
 
 # Enable WebAssembly support for a few crates
-getrandom = { version = "*", features = ["js"] }
-chrono = { version = "*", features = ["wasmbind"] }
+getrandom = { version = "0.2", features = ["js"] }
+chrono = { version = "0.4", features = ["wasmbind"] }
+time = { version = "0.3", features = ["wasm-bindgen"] }
 
 # The `console_error_panic_hook` crate provides better debugging of panics by
 # logging them with `console.error`. This is great for development, but requires
@@ -44,8 +46,8 @@ futures-util = { version = "0.3", features = ["sink", "io"] }
 futures-channel = "0.3"
 
 # Logging
-console_log = "0.2.0"
-log = "0.4.17"
+tracing = "0.1.37"
+tracing-subscriber = { version = "0.3.16", features = ["time"] }
 
 # Utils
 anyhow = "1"

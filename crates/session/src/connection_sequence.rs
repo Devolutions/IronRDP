@@ -523,7 +523,7 @@ pub async fn settings_exchange(
     routing_addr: &SocketAddr,
 ) -> Result<(), RdpError> {
     let client_info_pdu = user_info::create_client_info_pdu(config, routing_addr)?;
-    debug!("Send Client Info PDU: {:?}", client_info_pdu);
+    debug!(pdu = ?client_info_pdu, "Send Client Info PDU");
 
     let mut buf_writer = BytesMut::with_capacity(client_info_pdu.buffer_length()).writer();
     client_info_pdu
@@ -557,8 +557,7 @@ pub async fn server_licensing_exchange(
 
     check_global_id(channel_ids, global_channel_id)?;
 
-    debug!("Received Initial License Message PDU");
-    trace!("{:?}", initial_license_message);
+    debug!(pdu = ?initial_license_message, "Received Initial License Message PDU");
 
     let (new_license_request, encryption_data) = match initial_license_message.message_type {
         InitialMessageType::LicenseRequest(license_request) => {

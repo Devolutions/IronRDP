@@ -1,5 +1,5 @@
 #[macro_use]
-extern crate log;
+extern crate tracing;
 
 use anyhow::Context as _;
 use ironrdp_client::config::Config;
@@ -44,48 +44,34 @@ fn main() -> anyhow::Result<()> {
     gui.run(input_event_sender);
 }
 
-fn setup_logging(log_file: &str) -> Result<(), fern::InitError> {
-    fern::Dispatch::new()
-        .format(|out, message, record| {
-            out.finish(format_args!(
-                "{}[{}] {}",
-                chrono::Local::now().format("[%Y-%m-%d][%H:%M:%S:%6f]"),
-                record.level(),
-                message
-            ))
-        })
-        .chain(fern::log_file(log_file)?)
-        .apply()?;
+fn setup_logging(log_file: &str) -> anyhow::Result<()> {
+    use std::fs::OpenOptions;
 
-    // sspi-rs logging
-    if let Ok(path) = std::env::var("SSPI_LOG_FILE") {
-        use std::fs::OpenOptions;
+    use tracing::metadata::LevelFilter;
+    use tracing_subscriber::prelude::*;
+    use tracing_subscriber::EnvFilter;
 
-        use tracing_subscriber::prelude::*;
-        use tracing_subscriber::EnvFilter;
+    let file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(log_file)
+        .with_context(|| format!("Couldn’t open {log_file}"))?;
 
-        let file = match OpenOptions::new().read(true).append(true).open(path) {
-            Ok(file) => file,
-            Err(e) => {
-                warn!("Can not open sspi-rs log file: {:?}", e);
+    let fmt_layer = tracing_subscriber::fmt::layer()
+        .compact()
+        .with_ansi(false)
+        .with_writer(file);
 
-                return Ok(());
-            }
-        };
+    let env_filter = EnvFilter::builder()
+        .with_default_directive(LevelFilter::WARN.into())
+        .with_env_var("IRONRDP_LOG_LEVEL")
+        .from_env_lossy();
 
-        let fmt_layer = tracing_subscriber::fmt::layer()
-            .pretty()
-            .with_thread_names(true)
-            .with_writer(file);
-
-        let reg = tracing_subscriber::registry()
-            .with(fmt_layer)
-            .with(EnvFilter::from_env("SSPI_LOG_LEVEL"));
-
-        if let Err(err) = tracing::subscriber::set_global_default(reg) {
-            warn!("Can not set sspi-rs logger: {:?}", err);
-        }
-    }
+    tracing_subscriber::registry()
+        .with(fmt_layer)
+        .with(env_filter)
+        .try_init()
+        .context("Failed to set tracing global subscriber")?;
 
     Ok(())
 }

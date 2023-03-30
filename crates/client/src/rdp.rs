@@ -146,7 +146,7 @@ async fn run_impl(
                         use ironrdp::pdu::input::fast_path::FastPathInput;
                         use ironrdp::pdu::PduParsing as _;
 
-                        trace!("Inputs: {events:?}");
+                        trace!(?events);
 
                         // PERF: unnecessary copy
                         let fastpath_input = FastPathInput(events.into_vec());

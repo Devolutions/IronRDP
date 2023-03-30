@@ -11,7 +11,6 @@ use ironrdp_pdu::codecs::rfx::{self, EntropyAlgorithm, Headers, Quant, RfxRectan
 use ironrdp_pdu::geometry::Rectangle;
 use ironrdp_pdu::PduBufferParsing;
 use lazy_static::lazy_static;
-use log::debug;
 
 use crate::image::DecodedImage;
 use crate::RdpError;
@@ -97,6 +96,7 @@ impl DecodingContext {
         Ok(())
     }
 
+    #[instrument(skip_all)]
     fn process_data_messages(
         &mut self,
         image: &mut DecodedImage,
@@ -123,11 +123,11 @@ impl DecodingContext {
         }
         let region = region;
 
-        debug!("Frame #{}: ", frame_begin.index);
-        trace!("Destination rectangle: {:?}", destination);
-        trace!("Context: {:?}", self.context);
-        trace!("Channels: {:?}", self.channels);
-        trace!("Region: {:?}", region);
+        debug!(frame_index = frame_begin.index);
+        trace!(destination_rectangle = ?destination);
+        trace!(context = ?self.context);
+        trace!(channels = ?self.channels);
+        trace!(?region);
 
         let clipping_rectangles = clipping_rectangles(region.rectangles.as_slice(), destination, width, height);
         trace!("Clipping rectangles: {:?}", clipping_rectangles);

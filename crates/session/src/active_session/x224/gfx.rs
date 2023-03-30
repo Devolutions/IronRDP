@@ -6,7 +6,6 @@ use ironrdp_pdu::dvc::gfx::{
     QueueDepth, ServerPdu,
 };
 use ironrdp_pdu::PduParsing;
-use log::debug;
 
 use super::DynamicChannelDataHandler;
 use crate::{GraphicsConfig, RdpError};
@@ -192,7 +191,7 @@ pub fn create_capabilities_advertise(graphics_config: &Option<GraphicsConfig>) -
             }
         }
     }
-    log::info!("Capabilities: {:?}", capabilities);
+    info!(?capabilities);
     let capabilities_advertise = ClientPdu::CapabilitiesAdvertise(CapabilitiesAdvertisePdu(capabilities));
     let mut capabilities_advertise_buffer = Vec::with_capacity(capabilities_advertise.buffer_length());
     capabilities_advertise.to_buffer(&mut capabilities_advertise_buffer)?;

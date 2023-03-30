@@ -32,10 +32,10 @@ impl Processor {
         input: &[u8],
         mut output: impl io::Write,
     ) -> Result<Option<Rectangle>, RdpError> {
-        debug!("Got Fast-Path Header: {:?}", header);
+        debug!(fast_path_header = ?header, "Received Fast-Path packet");
 
         let update_pdu = FastPathUpdatePdu::from_buffer(input)?;
-        debug!("Fast-Path Update fragmentation: {:?}", update_pdu.fragmentation);
+        trace!(fast_path_update_fragmentation = ?update_pdu.fragmentation);
 
         let processed_complete_data = self
             .complete_data
@@ -81,10 +81,7 @@ impl Processor {
                             // Compressed bitmaps not in 32 bpp format are compressed using Interleaved
                             // RLE and encapsulated in an RLE Compressed Bitmap Stream structure (section
                             // 2.2.9.1.1.3.1.2.4).
-                            trace!(
-                                "Non-32 bpp compressed RLE_BITMAP_STREAM (bpp: {})",
-                                update.bits_per_pixel
-                            );
+                            trace!(bpp = update.bits_per_pixel, "Non-32 bpp compressed RLE_BITMAP_STREAM",);
 
                             match ironrdp_graphics::rle::decompress(
                                 update.bitmap_data,
@@ -129,15 +126,15 @@ impl Processor {
             Err(FastPathError::UnsupportedFastPathUpdate(code))
                 if code == UpdateCode::Orders || code == UpdateCode::Palette =>
             {
-                warn!("Received unsupported Fast-Path update: {code:?}");
+                warn!(?code, "Received unsupported Fast-Path update");
                 Ok(None)
             }
-            Err(FastPathError::UnsupportedFastPathUpdate(update_code)) => {
-                debug!("Received unsupported Fast-Path update: {:?}", update_code);
+            Err(FastPathError::UnsupportedFastPathUpdate(code)) => {
+                debug!(?code, "Received unsupported Fast-Path update");
                 Ok(None)
             }
             Err(FastPathError::BitmapError(error)) => {
-                warn!("Received invalid bitmap: {:?}", error);
+                warn!(?error, "Received invalid bitmap");
                 Ok(None)
             }
             Err(e) => Err(RdpError::from(e)),
