@@ -252,7 +252,7 @@ impl RDCleanPathPdu {
     }
 
     pub fn to_der(&self) -> der::Result<Vec<u8>> {
-        der::Encode::to_vec(self)
+        der::Encode::to_der(self)
     }
 
     pub fn into_enum(self) -> Result<RDCleanPath, MissingRDCleanPathField> {

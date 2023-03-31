@@ -24,7 +24,7 @@ ironrdp-session.workspace = true
 sspi = { workspace = true, features = ["network_client"] }
 
 # CLI
-clap = { version = "4.0", features = ["derive", "cargo"] }
+clap = { version = "4.2", features = ["derive", "cargo"] }
 exitcode = "1.1.2"
 
 # logging
@@ -32,19 +32,19 @@ tracing = "0.1.37"
 tracing-subscriber = { version = "0.3.16", features = ["env-filter"] }
 
 # SSL
-x509-parser = "0.14"
-async-native-tls = { version = "0.4", default-features = false, features = [ "runtime-tokio" ], optional = true }
-tokio-rustls =  { version = "0.23", features = ["dangerous_configuration"], optional = true }
+x509-parser = "0.15"
+async-native-tls = { version = "0.5", default-features = false, features = [ "runtime-tokio" ], optional = true }
+tokio-rustls =  { version = "0.24", features = ["dangerous_configuration"], optional = true }
 
 # async, futures
 tokio = { version = "1", features = ["full"]}
-tokio-util = { version = "0.7.4", features = ["compat"] }
+tokio-util = { version = "0.7.7", features = ["compat"] }
 futures-util = "0.3"
 
 # Utils
-chrono = "0.4.23"
-anyhow = "1.0.68"
+chrono = "0.4.24"
+anyhow = "1.0.70"
 
 # GUI
-glutin = "0.29"
+glutin = "0.30"
 ironrdp-glutin-renderer = { path = "../glutin-renderer"}
