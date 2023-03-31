@@ -1,15 +1,18 @@
 [package]
 name = "ironrdp-replay-client"
-version = "0.4.2"
-edition = "2021"
+version = "0.1.0"
 readme = "README.md"
-license = "MIT/Apache-2.0"
-homepage = "https://github.com/Devolutions/IronRDP"
-repository = "https://github.com/Devolutions/IronRDP"
-keywords = ["rdp", "client", "remote", "desktop", "protocol", "gfx", "rfx"]
+description = "Utility tool to replay RDP graphics pipeline for debugging purposes"
+edition.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
 
 [dependencies]
-ironrdp = { path = "../.." }
+ironrdp.workspace = true
 ironrdp-glutin-renderer = { path = "../glutin-renderer" }
 clap = { version = "4.0", features = ["derive", "cargo"] }
 glutin = { version = "0.29" }

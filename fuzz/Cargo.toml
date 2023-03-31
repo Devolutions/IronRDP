@@ -7,7 +7,6 @@ edition = "2021"
 [package.metadata]
 cargo-fuzz = true
 
-# Prevent this from interfering with workspaces
 [workspace]
 members = ["."]
 

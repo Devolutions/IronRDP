@@ -1669,7 +1669,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-client"
-version = "0.4.2"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-native-tls",
@@ -1697,7 +1697,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-client-glutin"
-version = "0.4.2"
+version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-native-tls",
@@ -1803,7 +1803,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-replay-client"
-version = "0.4.2"
+version = "0.1.0"
 dependencies = [
  "clap",
  "glutin",

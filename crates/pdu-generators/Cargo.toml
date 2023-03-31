@@ -2,8 +2,9 @@
 name = "ironrdp-pdu-generators"
 version = "0.0.0"
 edition = "2021"
+description = "`proptest` generators for `ironrdp-pdu` types"
 publish = false
 
 [dependencies]
-ironrdp-pdu = { path = "../pdu" }
-proptest = "1.1.0"
+ironrdp-pdu.workspace = true
+proptest.workspace = true

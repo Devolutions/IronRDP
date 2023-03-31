@@ -1,14 +1,15 @@
 [package]
 name = "ironrdp-pdu"
 version = "0.1.0"
-edition = "2021"
 readme = "README.md"
-license = "MIT/Apache-2.0"
-homepage = "https://github.com/Devolutions/IronRDP"
-repository = "https://github.com/Devolutions/IronRDP"
-authors = ["Devolutions Inc. <infos@devolutions.net>"]
-description = "A Rust implementation of the Microsoft Remote Desktop Protocol"
-keywords = ["rdp", "remote", "desktop", "protocol"]
+description = "RDP PDU encoding and decoding"
+edition.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
 
 [dependencies]
 bit_field = "0.10.1"
