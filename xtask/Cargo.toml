@@ -5,6 +5,6 @@ edition = "2021"
 publish = false
 
 [dependencies]
-anyhow = "1.0.68"
+anyhow = "1"
 pico-args = "0.5.0"
 xshell = "0.2.3"

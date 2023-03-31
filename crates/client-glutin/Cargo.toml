@@ -1,13 +1,15 @@
 [package]
 name = "ironrdp-client-glutin"
-version = "0.4.2"
-edition = "2021"
+version = "0.1.0"
 readme = "README.md"
-license = "MIT/Apache-2.0"
-homepage = "https://github.com/Devolutions/IronRDP"
-repository = "https://github.com/Devolutions/IronRDP"
-authors = ["Devolutions Inc. <infos@devolutions.net>"]
-keywords = ["rdp", "client", "remote", "desktop", "protocol", "gfx", "rfx"]
+description = "GPU-accelerated RDP client using glutin"
+edition.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
 
 [features]
 default = ["rustls"]
@@ -17,9 +19,9 @@ native-tls = ["dep:async-native-tls", "ironrdp-session/native-tls"]
 [dependencies]
 
 # Protocols
-ironrdp = { path = "../.." }
-ironrdp-session = { path = "../session" }
-sspi = { version = "0.8", features = ["network_client"] }
+ironrdp.workspace = true
+ironrdp-session.workspace = true
+sspi = { workspace = true, features = ["network_client"] }
 
 # CLI
 clap = { version = "4.0", features = ["derive", "cargo"] }

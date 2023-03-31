@@ -1,14 +1,24 @@
 [package]
 name = "ironrdp"
 version = "0.5.0"
-edition = "2021"
 readme = "README.md"
-license = "MIT/Apache-2.0"
-homepage = "https://github.com/Devolutions/IronRDP"
-repository = "https://github.com/Devolutions/IronRDP"
-authors = ["Devolutions Inc. <infos@devolutions.net>"]
 description = "A Rust implementation of the Microsoft Remote Desktop Protocol (RDP)"
-keywords = ["rdp", "remote", "desktop", "protocol"]
+edition.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[features]
+default = []
+
+[dependencies]
+ironrdp-pdu = { path = "crates/pdu" }
+ironrdp-session = { path = "crates/session" }
+ironrdp-graphics = { path = "crates/graphics" }
+ironrdp-input = { path = "crates/input" }
 
 [workspace]
 members = [
@@ -24,6 +34,34 @@ default-members = [
   "crates/client",
 ]
 
+[workspace.package]
+edition = "2021"
+license = "MIT/Apache-2.0"
+homepage = "https://github.com/Devolutions/IronRDP"
+repository = "https://github.com/Devolutions/IronRDP"
+authors = ["Devolutions Inc. <infos@devolutions.net>"]
+keywords = ["rdp", "remote-desktop", "network", "client", "protocol"]
+categories = ["network-programming"]
+
+[workspace.dependencies]
+ironrdp = { version = "0.5", path = "." }
+ironrdp-pdu = { version = "0.1", path = "crates/pdu" }
+ironrdp-graphics = { version = "0.1", path = "crates/graphics" }
+ironrdp-session = { version = "0.1", path = "crates/session" }
+ironrdp-input = { version = "0.1", path = "crates/input" }
+ironrdp-session-async = { version = "0.1", path = "crates/session-async" }
+ironrdp-tls = { version = "0.1", path = "crates/tls" }
+ironrdp-rdcleanpath = { version = "0.1", path = "crates/rdcleanpath" }
+ironrdp-pdu-generators = { path = "crates/pdu-generators" }
+ironrdp-session-generators = { path = "crates/pdu-generators" }
+sspi = "0.8"
+tracing = "0.1.37"
+proptest = "1.1.0"
+rstest = "0.16.0"
+
+[profile.dev]
+opt-level = 1
+
 [profile.production]
 inherits = "release"
 lto = true
@@ -32,12 +70,3 @@ lto = true
 inherits = "release"
 opt-level = "s"
 lto = true
-
-[features]
-default = []
-
-[dependencies]
-ironrdp-pdu = { path = "crates/pdu" }
-ironrdp-session = { path = "crates/session" }
-ironrdp-graphics = { path = "crates/graphics" }
-ironrdp-input = { path = "crates/input" }

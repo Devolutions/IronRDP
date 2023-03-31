@@ -1,12 +1,15 @@
 [package]
 name = "ironrdp-session-async"
 version = "0.1.0"
-edition = "2021"
 readme = "README.md"
-license = "MIT/Apache-2.0"
-homepage = "https://github.com/Devolutions/IronRDP"
-repository = "https://github.com/Devolutions/IronRDP"
-authors = ["Devolutions Inc. <infos@devolutions.net>"]
+description = "Provides `Future`s wrapping the RDP session state machines conveniently"
+edition.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
 
 [features]
 default = ["tokio"]
@@ -14,8 +17,8 @@ tokio = ["dep:tokio", "dep:tokio-util"]
 futures = ["dep:futures-util"]
 
 [dependencies]
-ironrdp-pdu = { path = "../pdu" }
-ironrdp-session = { path = "../session" }
+ironrdp-pdu.workspace = true
+ironrdp-session.workspace = true
 bytes = "1"
 num-traits = "0.2.15"
 bit_field = "0.10.1"

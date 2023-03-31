@@ -2,9 +2,10 @@
 name = "ironrdp-session-generators"
 version = "0.0.0"
 edition = "2021"
+description = "`proptest` generators for `ironrdp-session` types"
 publish = false
 
 [dependencies]
-ironrdp-session = { path = "../session" }
-ironrdp-pdu-generators = { path = "../pdu-generators" }
-proptest = "1.1.0"
+ironrdp-session.workspace = true
+ironrdp-pdu-generators.workspace = true
+proptest.workspace = true

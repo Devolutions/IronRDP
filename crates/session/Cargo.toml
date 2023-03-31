@@ -1,12 +1,15 @@
 [package]
 name = "ironrdp-session"
 version = "0.1.0"
-edition = "2021"
 readme = "README.md"
-license = "MIT/Apache-2.0"
-homepage = "https://github.com/Devolutions/IronRDP"
-repository = "https://github.com/Devolutions/IronRDP"
-authors = ["Devolutions Inc. <infos@devolutions.net>"]
+description = "State machines to drive an RDP session"
+edition.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
 
 [features]
 default = []
@@ -15,12 +18,12 @@ native-tls = ["dep:async-native-tls"]
 dgw_ext = []
 
 [dependencies]
-ironrdp-pdu = { path = "../pdu" }
-ironrdp-graphics = { path = "../graphics" }
-ironrdp-rdcleanpath = { path = "../rdcleanpath" } # FIXME: Quick and dirty approach, this should not be here
-sspi = "0.8"
+ironrdp-pdu.workspace = true
+ironrdp-graphics.workspace = true
+ironrdp-rdcleanpath.workspace = true # FIXME: Quick and dirty approach, this should not be here
+sspi.workspace = true
+tracing.workspace = true
 bytes = "1"
-tracing = "0.1.37"
 whoami = "1"
 semver = "1"
 num-derive = "0.3.3"

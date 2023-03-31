@@ -1,19 +1,22 @@
 [package]
 name = "ironrdp-input"
 version = "0.1.0"
-edition = "2021"
 readme = "README.md"
-license = "MIT/Apache-2.0"
-homepage = "https://github.com/Devolutions/IronRDP"
-repository = "https://github.com/Devolutions/IronRDP"
-authors = ["Devolutions Inc. <infos@devolutions.net>"]
+description = "Utilities to manage and build RDP input packets"
+edition.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
 
 [dependencies]
-ironrdp-pdu = { path = "../pdu" }
+ironrdp-pdu.workspace = true
 bitvec = "1.0.1"
 smallvec = "1.10.0"
 
 [dev-dependencies]
-proptest = "1.1.0"
+proptest.workspace = true
+rstest.workspace = true
 anyhow = "1"
-rstest = "0.16.0"
