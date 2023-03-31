@@ -27,10 +27,10 @@ ironrdp-session = { workspace = true, features = ["dgw_ext"] } # FIXME: secret f
 sspi.workspace = true
 
 # WASM
-wasm-bindgen = "0.2.83"
-wasm-bindgen-futures = "0.4.33"
-js-sys = "0.3.60"
-gloo-net = "0.2.4"
+wasm-bindgen = "0.2.84"
+wasm-bindgen-futures = "0.4.34"
+js-sys = "0.3.61"
+gloo-net = "0.2.6"
 tracing-web = "0.1.2"
 
 # Enable WebAssembly support for a few crates

@@ -30,11 +30,11 @@ num-derive = "0.3.3"
 num-traits = "0.2.15"
 lazy_static = "1.4"
 bitflags = "1"
-bit_field = "0.10.1" # TODO: will be unused once the framed module is moved
+bit_field = "0.10.2" # TODO: will be unused once the framed module is moved
 byteorder = "1.4.3"
 futures-util = { version = "0.3", features = ["sink", "io"] }
-thiserror = "1.0.37"
+thiserror = "1.0.40"
 rand_core = "0.6.4"
-x509-cert = "0.1.0" # TODO: consider removing dependency on this one in `ironrdp-session`
-async-native-tls = { version = "0.4", features = ["runtime-tokio"], default-features = false, optional = true }
-tokio-rustls =  { version = "0.23", default-features = false, optional = true }
+x509-cert = "0.2.1" # TODO: consider removing dependency on this one in `ironrdp-session`
+async-native-tls = { version = "0.5", features = ["runtime-tokio"], default-features = false, optional = true }
+tokio-rustls =  { version = "0.24", default-features = false, optional = true }
