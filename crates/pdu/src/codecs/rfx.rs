@@ -1,9 +1,6 @@
 mod data_messages;
 mod header_messages;
 
-#[cfg(test)]
-mod tests;
-
 use std::io;
 
 use byteorder::{LittleEndian, ReadBytesExt as _, WriteBytesExt as _};

@@ -1,6 +1,5 @@
 #![no_main]
 
-use bytes::BytesMut;
 use libfuzzer_sys::fuzz_target;
 
 #[derive(arbitrary::Arbitrary, Debug)]
@@ -11,7 +10,7 @@ struct Input<'a> {
 }
 
 fuzz_target!(|input: Input<'_>| {
-    let mut out = BytesMut::new();
+    let mut out = Vec::new();
 
     let _ = ironrdp_graphics::rle::decompress_24_bpp(input.src, &mut out, input.width, input.height);
     let _ = ironrdp_graphics::rle::decompress_16_bpp(input.src, &mut out, input.width, input.height);

@@ -11,30 +11,10 @@ authors.workspace = true
 keywords.workspace = true
 categories.workspace = true
 
-[features]
-default = []
-rustls = ["dep:tokio-rustls"]
-native-tls = ["dep:async-native-tls"]
-dgw_ext = []
-
 [dependencies]
 ironrdp-pdu.workspace = true
+ironrdp-connector.workspace = true # TODO: at some point, this dependency could be removed (good for compilation speed)
 ironrdp-graphics.workspace = true
-ironrdp-rdcleanpath.workspace = true # FIXME: Quick and dirty approach, this should not be here
 sspi.workspace = true
 tracing.workspace = true
-bytes = "1"
-whoami = "1"
-semver = "1"
-num-derive = "0.3.3"
-num-traits = "0.2.15"
-lazy_static = "1.4"
-bitflags = "1"
-bit_field = "0.10.2" # TODO: will be unused once the framed module is moved
-byteorder = "1.4.3"
-futures-util = { version = "0.3", features = ["sink", "io"] }
-thiserror = "1.0.40"
-rand_core = "0.6.4"
-x509-cert = "0.2.1" # TODO: consider removing dependency on this one in `ironrdp-session`
-async-native-tls = { version = "0.5", features = ["runtime-tokio"], default-features = false, optional = true }
-tokio-rustls =  { version = "0.24", default-features = false, optional = true }
+bitflags = "2" # TODO: investigate usage in this crate

@@ -204,12 +204,14 @@ impl<'a> PduBufferParsing<'a> for CompressedDataHeader {
 }
 
 bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
     pub struct BitmapFlags: u16{
         const BITMAP_UPDATE_TYPE = 0x0001;
     }
 }
 
 bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
     pub struct Compression: u16 {
        const BITMAP_COMPRESSION = 0x0001;
        const NO_BITMAP_COMPRESSION_HDR = 0x0400;

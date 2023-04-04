@@ -12,13 +12,19 @@ keywords.workspace = true
 categories.workspace = true
 
 [features]
-default = []
+default = ["pdu", "connector", "session"]
+pdu = ["dep:ironrdp-pdu"]
+connector = ["dep:ironrdp-connector"]
+session = ["dep:ironrdp-session"]
+graphics = ["dep:ironrdp-graphics"]
+input = ["dep:ironrdp-input"]
 
 [dependencies]
-ironrdp-pdu = { path = "crates/pdu" }
-ironrdp-session = { path = "crates/session" }
-ironrdp-graphics = { path = "crates/graphics" }
-ironrdp-input = { path = "crates/input" }
+ironrdp-pdu = { workspace = true, optional = true }
+ironrdp-connector = { workspace = true, optional = true }
+ironrdp-session = { workspace = true, optional = true }
+ironrdp-graphics = { workspace = true, optional = true }
+ironrdp-input = { workspace = true, optional = true }
 
 [workspace]
 members = [
@@ -27,11 +33,20 @@ members = [
 ]
 default-members = [
   "crates/pdu",
+  "crates/connector",
   "crates/session",
   "crates/graphics",
   "crates/input",
-  "crates/session-async",
+  "crates/async",
   "crates/client",
+  "crates/web",
+]
+
+# FIXME: fix compilation
+exclude = [
+  "crates/client-glutin",
+  "crates/glutin-renderer",
+  "crates/replay-client",
 ]
 
 [workspace.package]
@@ -46,15 +61,17 @@ categories = ["network-programming"]
 [workspace.dependencies]
 ironrdp = { version = "0.5", path = "." }
 ironrdp-pdu = { version = "0.1", path = "crates/pdu" }
-ironrdp-graphics = { version = "0.1", path = "crates/graphics" }
+ironrdp-connector = { version = "0.1", path = "crates/connector" }
 ironrdp-session = { version = "0.1", path = "crates/session" }
+ironrdp-graphics = { version = "0.1", path = "crates/graphics" }
 ironrdp-input = { version = "0.1", path = "crates/input" }
-ironrdp-session-async = { version = "0.1", path = "crates/session-async" }
+ironrdp-async = { version = "0.1", path = "crates/async" }
 ironrdp-tls = { version = "0.1", path = "crates/tls" }
 ironrdp-rdcleanpath = { version = "0.1", path = "crates/rdcleanpath" }
+ironrdp-pdu-samples = { path = "crates/pdu-samples" }
 ironrdp-pdu-generators = { path = "crates/pdu-generators" }
-ironrdp-session-generators = { path = "crates/pdu-generators" }
-sspi = "0.8"
+ironrdp-session-generators = { path = "crates/session-generators" }
+sspi = "0.8.1"
 tracing = "0.1.37"
 proptest = "1.1.0"
 rstest = "0.17.0"

@@ -11,4 +11,12 @@ authors.workspace = true
 keywords.workspace = true
 categories.workspace = true
 
+[features]
+rustls = ["dep:tokio-rustls"]
+native-tls = ["dep:tokio-native-tls"]
+
 [dependencies]
+x509-parser = "0.15"
+tokio = { version = "1.27", features = ["io-util"] }
+tokio-native-tls = { version = "0.3", optional = true }
+tokio-rustls =  { version = "0.24", features = ["dangerous_configuration"], optional = true }

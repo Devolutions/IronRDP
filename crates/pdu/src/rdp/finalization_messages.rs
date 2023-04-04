@@ -168,6 +168,7 @@ pub enum ControlAction {
 }
 
 bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
     pub struct SequenceFlags: u16 {
         const FIRST = 1;
         const LAST = 2;

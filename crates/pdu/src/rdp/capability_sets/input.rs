@@ -1,5 +1,5 @@
 #[cfg(test)]
-mod test;
+mod tests;
 
 use std::io;
 
@@ -8,12 +8,13 @@ use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use num_traits::{FromPrimitive, ToPrimitive};
 
 use crate::gcc::{KeyboardType, IME_FILE_NAME_SIZE};
-use crate::rdp::CapabilitySetsError;
+use crate::rdp::capability_sets::CapabilitySetsError;
 use crate::{utils, PduParsing};
 
 const INPUT_LENGTH: usize = 84;
 
 bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
     pub struct InputFlags: u16 {
         const SCANCODES = 0x0001;
         const MOUSEX = 0x0004;

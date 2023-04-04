@@ -1,17 +1,18 @@
 #[cfg(test)]
-mod test;
+mod tests;
 
 use std::io;
 
 use bitflags::bitflags;
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 
-use crate::rdp::CapabilitySetsError;
+use crate::rdp::capability_sets::CapabilitySetsError;
 use crate::PduParsing;
 
 const BITMAP_LENGTH: usize = 24;
 
 bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
     pub struct BitmapDrawingFlags: u8 {
         const ALLOW_DYNAMIC_COLOR_FIDELITY = 0x02;
         const ALLOW_COLOR_SUBSAMPLING = 0x04;

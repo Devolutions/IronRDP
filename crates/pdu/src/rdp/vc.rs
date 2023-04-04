@@ -18,7 +18,10 @@ const CHANNEL_PDU_HEADER_SIZE: usize = 8;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChannelPduHeader {
     /// The total length in bytes of the uncompressed channel data, excluding this header
-    pub total_length: u32,
+    ///
+    /// The data can span multiple Virtual Channel PDUs and the individual chunks will need to be
+    /// reassembled in that case (section 3.1.5.2.2 of MS-RDPBCGR).
+    pub length: u32,
     pub flags: ChannelControlFlags,
 }
 
@@ -29,11 +32,14 @@ impl PduParsing for ChannelPduHeader {
         let total_length = stream.read_u32::<LittleEndian>()?;
         let flags = ChannelControlFlags::from_bits_truncate(stream.read_u32::<LittleEndian>()?);
 
-        Ok(Self { total_length, flags })
+        Ok(Self {
+            length: total_length,
+            flags,
+        })
     }
 
     fn to_buffer(&self, mut stream: impl io::Write) -> Result<(), Self::Error> {
-        stream.write_u32::<LittleEndian>(self.total_length)?;
+        stream.write_u32::<LittleEndian>(self.length)?;
         stream.write_u32::<LittleEndian>(self.flags.bits())?;
 
         Ok(())
@@ -45,6 +51,7 @@ impl PduParsing for ChannelPduHeader {
 }
 
 bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
     pub struct ChannelControlFlags: u32 {
         const FLAG_FIRST = 0x0000_0001;
         const FLAG_LAST = 0x0000_0002;

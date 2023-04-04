@@ -1,17 +1,18 @@
 #[cfg(test)]
-mod test;
+mod tests;
 
 use std::io;
 
 use bitflags::bitflags;
 use byteorder::{LittleEndian, ReadBytesExt as _, WriteBytesExt as _};
 
-use crate::rdp::CapabilitySetsError;
+use crate::rdp::capability_sets::CapabilitySetsError;
 use crate::PduParsing;
 
 const SURFACE_COMMANDS_LENGTH: usize = 8;
 
 bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
     pub struct CmdFlags: u32 {
         const SET_SURFACE_BITS = 0x02;
         const FRAME_MARKER = 0x10;

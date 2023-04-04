@@ -46,6 +46,7 @@ impl PduParsing for DisplayControlCapsPdu {
 }
 
 bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
     pub struct MonitorFlags: u32 {
         const PRIMARY = 1;
     }

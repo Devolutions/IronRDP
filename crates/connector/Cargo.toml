@@ -1,0 +1,22 @@
+[package]
+name = "ironrdp-connector"
+version = "0.1.0"
+readme = "README.md"
+description = "State machines to drive an RDP connection sequence"
+edition.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[features]
+arbitrary = ["dep:arbitrary"]
+
+[dependencies]
+ironrdp-pdu.workspace = true
+tracing.workspace = true
+sspi.workspace = true
+rand_core = { version = "0.6.4", features = ["std"] } # TODO: dependency injection?
+arbitrary = { version = "1", features = ["derive"], optional = true }

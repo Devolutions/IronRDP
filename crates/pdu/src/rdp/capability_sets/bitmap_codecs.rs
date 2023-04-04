@@ -1,5 +1,5 @@
 #[cfg(test)]
-mod test;
+mod tests;
 
 use std::io;
 
@@ -8,7 +8,7 @@ use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive, ToPrimitive};
 
-use crate::rdp::CapabilitySetsError;
+use crate::rdp::capability_sets::CapabilitySetsError;
 use crate::PduParsing;
 
 const RFX_ICAP_VERSION: u16 = 0x0100;
@@ -32,7 +32,6 @@ const NSCODEC_LENGTH: usize = 3;
 const CODEC_STATIC_DATA_LENGTH: usize = 19;
 const BITMAP_CODECS_STATIC_DATA: usize = 1;
 
-// TO DO: Make it enum when #[repr(u128)] becomes stable
 #[rustfmt::skip]
 const GUID_NSCODEC: Guid = Guid(0xca8d_1bb9, 0x000f, 0x154f, 0x58, 0x9f, 0xae, 0x2d, 0x1a, 0x87, 0xe2, 0xd6);
 #[rustfmt::skip]
@@ -495,12 +494,14 @@ pub enum EntropyBits {
 }
 
 bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
     pub struct CaptureFlags: u32 {
         const CARDP_CAPS_CAPTURE_NON_CAC = 1;
     }
 }
 
 bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
     pub struct RfxICapFlags: u8 {
         const CODEC_MODE = 2;
     }

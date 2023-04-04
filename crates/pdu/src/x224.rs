@@ -1,146 +1,139 @@
-#[cfg(test)]
-mod tests;
+use std::borrow::Cow;
 
-use std::io;
+use crate::cursor::{ReadCursor, WriteCursor};
+use crate::tpdu::{TpduCode, TpduHeader};
+use crate::tpkt::TpktHeader;
+use crate::{IntoOwnedPdu, Pdu, PduDecode, PduEncode, Result};
 
-use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
-use num_derive::{FromPrimitive, ToPrimitive};
-use num_traits::{FromPrimitive, ToPrimitive};
+pub trait X224Pdu<'de>: Sized {
+    const X224_NAME: &'static str;
 
-use crate::connection_initiation::NegotiationError;
-use crate::PduParsing;
+    const TPDU_CODE: TpduCode;
 
-pub const TPKT_HEADER_LENGTH: usize = 4;
-pub const TPDU_DATA_HEADER_LENGTH: usize = 3;
+    fn x224_body_encode(&self, dst: &mut WriteCursor<'_>) -> Result<()>;
 
-pub const TPDU_REQUEST_LENGTH: usize = TPKT_HEADER_LENGTH + TPDU_REQUEST_HEADER_LENGTH;
-pub const TPDU_REQUEST_HEADER_LENGTH: usize = 7;
-pub const TPDU_ERROR_HEADER_LENGTH: usize = 5;
+    fn x224_body_decode(src: &mut ReadCursor<'de>, tpkt: &TpktHeader, tpdu: &TpduHeader) -> Result<Self>;
 
-pub const TPKT_VERSION: u8 = 3;
+    fn tpdu_header_variable_part_size(&self) -> usize;
 
-const EOF: u8 = 0x80;
-
-/// The PDU type of the X.224 negotiation phase.
-#[derive(Copy, Clone, Debug, PartialEq, Eq, FromPrimitive, ToPrimitive)]
-pub enum X224TPDUType {
-    ConnectionRequest = 0xE0,
-    ConnectionConfirm = 0xD0,
-    DisconnectRequest = 0x80,
-    Data = 0xF0,
-    Error = 0x70,
+    fn tpdu_user_data_size(&self) -> usize;
 }
 
-#[derive(PartialEq, Eq, Debug)]
-pub struct TpktHeader {
-    pub length: usize,
+impl<'de, T> Pdu for T
+where
+    T: X224Pdu<'de>,
+{
+    const NAME: &'static str = T::X224_NAME;
 }
 
-impl TpktHeader {
-    pub fn new(length: usize) -> Self {
-        Self { length }
+impl<'de, T> PduEncode for T
+where
+    T: X224Pdu<'de>,
+{
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> Result<()> {
+        let packet_length = self.size();
+
+        ensure_size!(in: dst, size: packet_length);
+
+        TpktHeader {
+            packet_length: u16::try_from(packet_length).unwrap(),
+        }
+        .write(dst)?;
+
+        TpduHeader {
+            li: u8::try_from(T::TPDU_CODE.header_fixed_part_size() + self.tpdu_header_variable_part_size() - 1)
+                .unwrap(),
+            code: T::TPDU_CODE,
+        }
+        .write(dst)?;
+
+        self.x224_body_encode(dst)
     }
 
-    pub fn from_buffer_with_version(mut stream: impl io::Read, version: u8) -> Result<Self, NegotiationError> {
-        if version != TPKT_VERSION {
-            return Err(NegotiationError::TpktVersionError);
+    fn name(&self) -> &'static str {
+        T::X224_NAME
+    }
+
+    fn size(&self) -> usize {
+        TpktHeader::SIZE
+            + T::TPDU_CODE.header_fixed_part_size()
+            + self.tpdu_header_variable_part_size()
+            + self.tpdu_user_data_size()
+    }
+}
+
+impl<'de, T> PduDecode<'de> for T
+where
+    T: X224Pdu<'de>,
+{
+    fn decode(src: &mut ReadCursor<'de>) -> Result<Self> {
+        let tpkt = TpktHeader::read(src)?;
+
+        ensure_size!(in: src, size: tpkt.packet_length().saturating_sub(TpktHeader::SIZE));
+
+        let tpdu = TpduHeader::read(src, &tpkt)?;
+        tpdu.code.check_expected(T::TPDU_CODE)?;
+
+        if tpdu.size() < tpdu.fixed_part_size() {
+            return Err(crate::Error::InvalidMessage {
+                name: "TpduHeader",
+                field: "li",
+                reason: "fixed part bigger than total header size",
+            });
         }
 
-        let _reserved = stream.read_u8()?;
-        let length = usize::from(stream.read_u16::<BigEndian>()?);
-
-        Ok(Self { length })
+        T::x224_body_decode(src, &tpkt, &tpdu)
     }
 }
 
-impl PduParsing for TpktHeader {
-    type Error = NegotiationError;
+pub struct X224Data<'a> {
+    pub data: Cow<'a, [u8]>,
+}
 
-    fn from_buffer(mut stream: impl io::Read) -> Result<Self, Self::Error> {
-        let version = stream.read_u8()?;
+impl_pdu_borrowing!(X224Data, OwnedX224Data);
 
-        Self::from_buffer_with_version(stream, version)
+impl IntoOwnedPdu for X224Data<'_> {
+    type Owned = OwnedX224Data;
+
+    fn into_owned_pdu(self) -> Self::Owned {
+        X224Data {
+            data: Cow::Owned(self.data.into_owned()),
+        }
     }
+}
 
-    fn to_buffer(&self, mut stream: impl io::Write) -> Result<(), Self::Error> {
-        stream.write_u8(TPKT_VERSION)?;
-        stream.write_u8(0)?; // reserved
-        stream.write_u16::<BigEndian>(self.length as u16)?;
+impl<'de> X224Pdu<'de> for X224Data<'de> {
+    const X224_NAME: &'static str = "X.224 Data";
+
+    const TPDU_CODE: TpduCode = TpduCode::DATA;
+
+    fn x224_body_encode(&self, dst: &mut WriteCursor<'_>) -> Result<()> {
+        ensure_size!(in: dst, size: self.data.len());
+        dst.write_slice(&self.data);
 
         Ok(())
     }
 
-    fn buffer_length(&self) -> usize {
-        TPKT_HEADER_LENGTH
+    fn x224_body_decode(src: &mut ReadCursor<'de>, tpkt: &TpktHeader, tpdu: &TpduHeader) -> Result<Self> {
+        let user_data_size = user_data_size(tpkt, tpdu);
+
+        ensure_size!(in: src, size: user_data_size);
+        let data = src.read_slice(user_data_size);
+
+        Ok(Self {
+            data: Cow::Borrowed(data),
+        })
+    }
+
+    fn tpdu_header_variable_part_size(&self) -> usize {
+        0
+    }
+
+    fn tpdu_user_data_size(&self) -> usize {
+        self.data.len()
     }
 }
 
-#[derive(Debug, PartialEq, Eq)]
-pub struct DataHeader {
-    pub data_length: usize,
-}
-
-impl DataHeader {
-    pub fn new(data_length: usize) -> Self {
-        Self { data_length }
-    }
-
-    pub fn from_buffer_with_version(mut stream: impl io::Read, version: u8) -> Result<Self, NegotiationError> {
-        let tpkt = TpktHeader::from_buffer_with_version(&mut stream, version)?;
-
-        Self::from_buffer_with_tpkt_header(&mut stream, tpkt)
-    }
-
-    fn from_buffer_with_tpkt_header(mut stream: impl io::Read, tpkt: TpktHeader) -> Result<Self, NegotiationError> {
-        read_and_check_tpdu_header(&mut stream, X224TPDUType::Data)?;
-
-        let _eof = stream.read_u8()?;
-
-        let data_length = tpkt.length - tpkt.buffer_length() - TPDU_DATA_HEADER_LENGTH;
-
-        Ok(Self { data_length })
-    }
-}
-
-impl PduParsing for DataHeader {
-    type Error = NegotiationError;
-
-    fn from_buffer(mut stream: impl io::Read) -> Result<Self, Self::Error> {
-        let tpkt = TpktHeader::from_buffer(&mut stream)?;
-
-        Self::from_buffer_with_tpkt_header(&mut stream, tpkt)
-    }
-
-    fn to_buffer(&self, mut stream: impl std::io::Write) -> Result<(), Self::Error> {
-        TpktHeader::new(self.buffer_length() + self.data_length).to_buffer(&mut stream)?;
-
-        stream.write_u8(TPDU_DATA_HEADER_LENGTH as u8 - 1)?;
-        stream.write_u8(X224TPDUType::Data.to_u8().unwrap())?;
-        stream.write_u8(EOF)?;
-
-        Ok(())
-    }
-
-    fn buffer_length(&self) -> usize {
-        TPKT_HEADER_LENGTH + TPDU_DATA_HEADER_LENGTH
-    }
-}
-
-pub fn read_and_check_tpdu_header(
-    mut stream: impl io::Read,
-    required_code: X224TPDUType,
-) -> Result<(), NegotiationError> {
-    let _tpdu_length = usize::from(stream.read_u8()?);
-
-    let code = X224TPDUType::from_u8(stream.read_u8()?)
-        .ok_or_else(|| NegotiationError::IOError(io::Error::new(io::ErrorKind::InvalidData, "invalid tpdu code")))?;
-
-    if code != required_code {
-        return Err(NegotiationError::IOError(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "unexpected tpdu code",
-        )));
-    }
-
-    Ok(())
+pub fn user_data_size(tpkt: &TpktHeader, tpdu: &TpduHeader) -> usize {
+    tpkt.packet_length() - TpktHeader::SIZE - tpdu.size()
 }

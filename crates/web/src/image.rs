@@ -75,7 +75,7 @@ fn extract_whole_rows(image: &DecodedImage, region: Rectangle) -> (Rectangle, Ve
     let wider_region = Rectangle {
         left: 0,
         top: region.top,
-        right: u16::try_from(image.width() - 1).unwrap(),
+        right: image.width() - 1,
         bottom: region.bottom,
     };
 

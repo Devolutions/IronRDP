@@ -266,6 +266,7 @@ pub enum FrameAction {
 }
 
 bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
     struct BitmapDataFlags: u8 {
         const COMPRESSED_BITMAP_HEADER_PRESENT = 0x01;
     }

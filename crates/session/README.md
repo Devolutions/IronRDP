@@ -1,3 +1,3 @@
 # IronRDP Session
 
-Abstract state machine on top of `ironrdp-graphics` crate.
+Abstract state machine to drive an RDP session.

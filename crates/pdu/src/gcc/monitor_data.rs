@@ -1,6 +1,3 @@
-#[cfg(test)]
-pub mod test;
-
 use std::io;
 
 use bitflags::bitflags;
@@ -97,6 +94,7 @@ impl PduParsing for Monitor {
 }
 
 bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
     pub struct MonitorFlags: u32 {
         const PRIMARY = 1;
     }

@@ -1,18 +1,19 @@
 #[cfg(test)]
-mod test;
+mod tests;
 
 use std::io;
 
 use bitflags::bitflags;
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 
-use crate::rdp::CapabilitySetsError;
+use crate::rdp::capability_sets::CapabilitySetsError;
 use crate::{try_read_optional, try_write_optional, PduParsing};
 
 const FLAGS_FIELD_SIZE: usize = 4;
 const CHUNK_SIZE_FIELD_SIZE: usize = 4;
 
 bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
     pub struct VirtualChannelFlags: u32 {
         const NO_COMPRESSION = 0;
         const COMPRESSION_SERVER_TO_CLIENT = 1;

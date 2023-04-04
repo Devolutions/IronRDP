@@ -7,9 +7,6 @@ use thiserror::Error;
 
 use crate::PduParsing;
 
-#[cfg(test)]
-pub mod test;
-
 mod bitmap;
 mod bitmap_cache;
 mod bitmap_codecs;

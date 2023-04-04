@@ -25,7 +25,7 @@ impl PduParsing for FastPathInputHeader {
         let header = stream.read_u8()?;
         let flags = EncryptionFlags::from_bits_truncate(header.get_bits(6..8));
         let mut num_events = header.get_bits(2..6);
-        let (length, sizeof_length) = per::read_length(&mut stream)?;
+        let (length, sizeof_length) = per::legacy::read_length(&mut stream)?;
 
         if !flags.is_empty() {
             return Err(InputEventError::EncryptionNotSupported);
@@ -56,7 +56,7 @@ impl PduParsing for FastPathInputHeader {
         header.set_bits(6..8, self.flags.bits());
         stream.write_u8(header)?;
 
-        per::write_length(&mut stream, (self.data_length + self.buffer_length()) as u16)?;
+        per::legacy::write_length(&mut stream, (self.data_length + self.buffer_length()) as u16)?;
         if self.num_events > 15 {
             stream.write_u8(self.num_events)?;
         }
@@ -179,6 +179,7 @@ impl PduParsing for FastPathInputEvent {
 }
 
 bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
     pub struct KeyboardFlags: u8 {
         const RELEASE = 0x01;
         const EXTENDED = 0x02;
@@ -187,6 +188,7 @@ bitflags! {
 }
 
 bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
     pub struct SynchronizeFlags: u8 {
         const SCROLL_LOCK = 0x01;
         const NUM_LOCK = 0x02;

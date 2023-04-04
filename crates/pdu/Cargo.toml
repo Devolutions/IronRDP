@@ -11,13 +11,19 @@ authors.workspace = true
 keywords.workspace = true
 categories.workspace = true
 
+[features]
+default = []
+std = []
+
 [dependencies]
+bitflags = "2"
+tap = "1.0.1"
+
+# TODO: get rid of these dependencies (related code should probably go into another crate)
 bit_field = "0.10.2"
-bitflags = "1"
 byteorder = "1.4.3"
 der-parser = "8.2.0"
 thiserror = "1.0.40"
-lazy_static = "1.4.0"
 md5 = { package = "md-5", version = "0.10.5" }
 num-bigint = "0.4.3"
 num-derive = "0.3.3"
@@ -25,4 +31,7 @@ num-integer = "0.1.45"
 num-traits = "0.2.15"
 sha1 = "0.10.5"
 x509-parser = "0.15"
-tap = "1.0.1"
+
+[dev-dependencies]
+ironrdp-pdu-samples.workspace = true
+lazy_static = "1.4.0"

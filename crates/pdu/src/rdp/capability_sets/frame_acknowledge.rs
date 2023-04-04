@@ -2,7 +2,7 @@ use std::io;
 
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 
-use crate::rdp::CapabilitySetsError;
+use crate::rdp::capability_sets::CapabilitySetsError;
 use crate::PduParsing;
 
 #[derive(Debug, Clone, PartialEq, Eq)]

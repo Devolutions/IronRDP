@@ -16,7 +16,6 @@ debug = 1
 [dependencies]
 ironrdp-pdu = { path = "../crates/pdu" }
 ironrdp-graphics = { path = "../crates/graphics" }
-bytes = "1.4.0"
 libfuzzer-sys = "0.4"
 arbitrary = { version = "1", features = ["derive"] }
 

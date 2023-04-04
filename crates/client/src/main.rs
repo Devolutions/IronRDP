@@ -17,8 +17,8 @@ fn main() -> anyhow::Result<()> {
     debug!("GUI context initialized");
 
     let window_size = gui.window.inner_size();
-    config.input.width = u16::try_from(window_size.width).unwrap();
-    config.input.height = u16::try_from(window_size.height).unwrap();
+    config.connector.desktop_size.width = u16::try_from(window_size.width).unwrap();
+    config.connector.desktop_size.height = u16::try_from(window_size.height).unwrap();
 
     let event_loop_proxy = gui.event_loop.create_proxy();
 

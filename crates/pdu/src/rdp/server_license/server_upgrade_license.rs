@@ -1,5 +1,5 @@
 #[cfg(test)]
-pub mod test;
+mod tests;
 
 use std::io;
 

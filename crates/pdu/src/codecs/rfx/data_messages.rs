@@ -274,7 +274,6 @@ impl<'a> PduBufferParsing<'a> for RegionPdu {
 pub struct TileSetPdu<'a> {
     pub entropy_algorithm: EntropyAlgorithm,
     pub quants: Vec<Quant>,
-    // TODO: improve ergonomic and performance (no copy). Hint: use the `bytes` crate.
     pub tiles: Vec<Tile<'a>>,
 }
 
@@ -619,6 +618,7 @@ pub enum EntropyAlgorithm {
 }
 
 bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
     pub struct OperatingMode: u16 {
         const IMAGE_MODE = 0x02; // if not set, the codec is operating in video mode
     }

@@ -3,19 +3,18 @@ use std::num::ParseIntError;
 use anyhow::Context as _;
 use clap::clap_derive::ValueEnum;
 use clap::{crate_name, Parser};
-use ironrdp::session::{GraphicsConfig, InputConfig};
-use sspi::AuthIdentity;
+use ironrdp::pdu::rdp::capability_sets::MajorPlatformType;
+use ironrdp::{connector, pdu};
+use tap::prelude::*;
 
 const DEFAULT_WIDTH: u16 = 1920;
 const DEFAULT_HEIGHT: u16 = 1080;
-const GLOBAL_CHANNEL_NAME: &str = "GLOBAL";
-const USER_CHANNEL_NAME: &str = "USER";
 
 #[derive(Clone)]
 pub struct Config {
     pub log_file: String,
     pub addr: String,
-    pub input: InputConfig,
+    pub connector: connector::Config,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
@@ -26,11 +25,11 @@ enum SecurityProtocol {
 }
 
 impl SecurityProtocol {
-    fn parse(security_protocol: SecurityProtocol) -> ironrdp::pdu::SecurityProtocol {
+    fn parse(security_protocol: SecurityProtocol) -> pdu::nego::SecurityProtocol {
         match security_protocol {
-            SecurityProtocol::Ssl => ironrdp::pdu::SecurityProtocol::SSL,
-            SecurityProtocol::Hybrid => ironrdp::pdu::SecurityProtocol::HYBRID,
-            SecurityProtocol::HybridEx => ironrdp::pdu::SecurityProtocol::HYBRID_EX,
+            SecurityProtocol::Ssl => pdu::nego::SecurityProtocol::SSL,
+            SecurityProtocol::Hybrid => pdu::nego::SecurityProtocol::HYBRID,
+            SecurityProtocol::HybridEx => pdu::nego::SecurityProtocol::HYBRID_EX,
         }
     }
 }
@@ -169,8 +168,8 @@ impl Config {
                 .context("Password prompt")?
         };
 
-        let graphics_config = if args.avc444 || args.h264 {
-            Some(GraphicsConfig {
+        let graphics = if args.avc444 || args.h264 {
+            Some(connector::GraphicsConfig {
                 avc444: args.avc444,
                 h264: args.h264,
                 thin_client: args.thin_client,
@@ -181,29 +180,45 @@ impl Config {
             None
         };
 
-        let input = InputConfig {
-            credentials: AuthIdentity {
-                username,
-                password: password.into(),
-                domain: args.domain,
-            },
+        let connector = connector::Config {
+            username,
+            password,
+            domain: args.domain,
             security_protocol: SecurityProtocol::parse(args.security_protocol),
             keyboard_type: KeyboardType::parse(args.keyboard_type),
             keyboard_subtype: args.keyboard_subtype,
             keyboard_functional_keys_count: args.keyboard_functional_keys_count,
             ime_file_name: args.ime_file_name,
             dig_product_id: args.dig_product_id,
-            width: DEFAULT_WIDTH,
-            height: DEFAULT_HEIGHT,
-            global_channel_name: GLOBAL_CHANNEL_NAME.to_string(),
-            user_channel_name: USER_CHANNEL_NAME.to_string(),
-            graphics_config,
+            desktop_size: connector::DesktopSize {
+                width: DEFAULT_WIDTH,
+                height: DEFAULT_HEIGHT,
+            },
+            graphics,
+            client_build: semver::Version::parse(env!("CARGO_PKG_VERSION"))
+                .map(|version| version.major * 100 + version.minor * 10 + version.patch)
+                .unwrap_or(0)
+                .pipe(u32::try_from)
+                .unwrap(),
+            client_name: whoami::hostname(),
+            client_dir: std::env::current_dir()
+                .expect("current directory")
+                .to_string_lossy()
+                .into_owned(),
+            platform: match whoami::platform() {
+                whoami::Platform::Windows => MajorPlatformType::Windows,
+                whoami::Platform::Linux => MajorPlatformType::Unix,
+                whoami::Platform::MacOS => MajorPlatformType::Macintosh,
+                whoami::Platform::Ios => MajorPlatformType::IOs,
+                whoami::Platform::Android => MajorPlatformType::Android,
+                _ => MajorPlatformType::Unspecified,
+            },
         };
 
         Ok(Self {
             log_file: args.log_file,
             addr,
-            input,
+            connector,
         })
     }
 }

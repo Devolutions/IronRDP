@@ -1,0 +1,35 @@
+[package]
+name = "ironrdp-async"
+version = "0.1.0"
+readme = "README.md"
+description = "Provides `Future`s wrapping the IronRDP state machines conveniently"
+edition.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[features]
+default = ["tokio"]
+tokio = ["dep:tokio", "dep:tokio-util"]
+futures = ["dep:futures-util"]
+
+[dependencies]
+# Protocols
+ironrdp-pdu.workspace = true
+ironrdp-connector.workspace = true
+# ironrdp-session.workspace = true
+
+# Logging
+tracing.workspace = true
+
+# Utils
+bytes = "1.4.0"
+tap = "1.0.1"
+
+# Async
+tokio = { version = "1.25.0", features = ["io-util"], optional = true }
+tokio-util = { version = "0.7.7", features = ["codec"], optional = true }
+futures-util = { version = "0.3.26", features = ["io"], optional = true }
