@@ -1,5 +1,5 @@
 #[cfg(test)]
-mod test;
+mod tests;
 
 use std::io;
 
@@ -7,7 +7,7 @@ use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive, ToPrimitive};
 
-use crate::rdp::CapabilitySetsError;
+use crate::rdp::capability_sets::CapabilitySetsError;
 use crate::PduParsing;
 
 pub const GLYPH_CACHE_NUM: usize = 10;

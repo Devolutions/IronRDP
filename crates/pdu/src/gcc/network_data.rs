@@ -1,6 +1,3 @@
-#[cfg(test)]
-pub mod test;
-
 use std::io::{self, Write};
 use std::str;
 
@@ -161,6 +158,7 @@ impl PduParsing for Channel {
 }
 
 bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
     pub struct ChannelOptions: u32 {
         const INITIALIZED = 0x8000_0000;
         const ENCRYPT_RDP = 0x4000_0000;

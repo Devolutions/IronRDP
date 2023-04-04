@@ -13,8 +13,6 @@
 use core::fmt;
 use std::ops::BitXor;
 
-use bytes::BytesMut;
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RlePixelFormat {
     Rgb24,
@@ -32,7 +30,7 @@ pub enum RlePixelFormat {
 /// `bpp`: bits per pixel
 pub fn decompress(
     src: &[u8],
-    dst: &mut BytesMut,
+    dst: &mut Vec<u8>,
     width: impl Into<usize>,
     height: impl Into<usize>,
     bpp: impl Into<usize>,
@@ -54,7 +52,7 @@ pub fn decompress(
 /// `height`: decompressed bitmap height
 pub fn decompress_24_bpp(
     src: &[u8],
-    dst: &mut BytesMut,
+    dst: &mut Vec<u8>,
     width: impl Into<usize>,
     height: impl Into<usize>,
 ) -> Result<RlePixelFormat, RleError> {
@@ -69,7 +67,7 @@ pub fn decompress_24_bpp(
 /// `height`: decompressed bitmap height
 pub fn decompress_16_bpp(
     src: &[u8],
-    dst: &mut BytesMut,
+    dst: &mut Vec<u8>,
     width: impl Into<usize>,
     height: impl Into<usize>,
 ) -> Result<RlePixelFormat, RleError> {
@@ -84,7 +82,7 @@ pub fn decompress_16_bpp(
 /// `height`: decompressed bitmap height
 pub fn decompress_15_bpp(
     src: &[u8],
-    dst: &mut BytesMut,
+    dst: &mut Vec<u8>,
     width: impl Into<usize>,
     height: impl Into<usize>,
 ) -> Result<RlePixelFormat, RleError> {
@@ -99,7 +97,7 @@ pub fn decompress_15_bpp(
 /// `height`: decompressed bitmap height
 pub fn decompress_8_bpp(
     src: &[u8],
-    dst: &mut BytesMut,
+    dst: &mut Vec<u8>,
     width: impl Into<usize>,
     height: impl Into<usize>,
 ) -> Result<RlePixelFormat, RleError> {
@@ -149,7 +147,7 @@ impl fmt::Display for RleError {
 
 fn decompress_helper<Mode: DepthMode>(
     src: &[u8],
-    dst: &mut BytesMut,
+    dst: &mut Vec<u8>,
     width: usize,
     height: usize,
 ) -> Result<RlePixelFormat, RleError> {

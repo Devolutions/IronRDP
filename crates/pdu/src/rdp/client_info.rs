@@ -1,6 +1,3 @@
-#[cfg(test)]
-pub mod test;
-
 use core::fmt;
 use std::io;
 
@@ -499,6 +496,7 @@ pub enum DayOfWeekOccurrence {
 }
 
 bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
     pub struct PerformanceFlags: u32 {
         const DISABLE_WALLPAPER = 0x0000_0001;
         const DISABLE_FULLWINDOWDRAG = 0x0000_0002;
@@ -521,6 +519,7 @@ pub enum AddressFamily {
 }
 
 bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
     pub struct ClientInfoFlags: u32 {
         const MOUSE = 0x0000_0001;
         const DISABLE_CTRL_ALT_DEL = 0x0000_0002;

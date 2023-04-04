@@ -1,17 +1,18 @@
 #[cfg(test)]
-mod test;
+mod tests;
 
 use std::io;
 
 use bitflags::bitflags;
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 
-use crate::rdp::CapabilitySetsError;
+use crate::rdp::capability_sets::CapabilitySetsError;
 use crate::PduParsing;
 
 const SOUND_LENGTH: usize = 4;
 
 bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
     pub struct SoundFlags: u16 {
         const BEEPS = 1;
     }

@@ -5,14 +5,13 @@ use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive, ToPrimitive};
 
-use super::{
-    client_info, ClientConfirmActive, ControlPdu, MonitorLayoutPdu, RdpError, ServerDemandActive,
-    ServerSetErrorInfoPdu, SynchronizePdu,
-};
 use crate::codecs::rfx::FrameAcknowledgePdu;
 use crate::input::InputEventPdu;
-use crate::rdp::finalization_messages::FontPdu;
+use crate::rdp::capability_sets::{ClientConfirmActive, ServerDemandActive};
+use crate::rdp::finalization_messages::{ControlPdu, FontPdu, MonitorLayoutPdu, SynchronizePdu};
+use crate::rdp::server_error_info::ServerSetErrorInfoPdu;
 use crate::rdp::session_info::SaveSessionInfoPdu;
+use crate::rdp::{client_info, RdpError};
 use crate::PduParsing;
 
 pub const BASIC_SECURITY_HEADER_SIZE: usize = 4;
@@ -91,7 +90,7 @@ impl PduParsing for ShareControlHeader {
         };
 
         if pdu_type == ShareControlPduType::DataPdu {
-            // Some windows version have an issue where PDU
+            // Some windows version have an issue where
             // there is some padding not part of the inner unit.
             // Consume that data
             let header_length = header.buffer_length();
@@ -363,6 +362,7 @@ impl ShareDataPdu {
 }
 
 bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
     pub struct BasicSecurityHeaderFlags: u16 {
         const EXCHANGE_PKT = 0x0001;
         const TRANSPORT_REQ = 0x0002;
@@ -431,6 +431,7 @@ pub enum ShareDataPduType {
 }
 
 bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
     pub struct CompressionFlags: u8 {
         const COMPRESSED = 0x20;
         const AT_FRONT = 0x40;

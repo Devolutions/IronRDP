@@ -1,12 +1,12 @@
 #[cfg(test)]
-mod test;
+mod tests;
 
 use std::io;
 
 use bitflags::bitflags;
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 
-use crate::rdp::CapabilitySetsError;
+use crate::rdp::capability_sets::CapabilitySetsError;
 use crate::PduParsing;
 
 const ORDER_LENGTH: usize = 84;
@@ -40,6 +40,7 @@ pub enum OrderSupportIndex {
 }
 
 bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
     pub struct OrderFlags: u16 {
         const NEGOTIATE_ORDER_SUPPORT = 0x0002;
         const ZERO_BOUNDS_DELTAS_SUPPORT = 0x0008;
@@ -50,6 +51,7 @@ bitflags! {
 }
 
 bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
     pub struct OrderSupportExFlags: u16 {
         const CACHE_BITMAP_REV3_SUPPORT = 2;
         const ALTSEC_FRAME_MARKER_SUPPORT = 4;

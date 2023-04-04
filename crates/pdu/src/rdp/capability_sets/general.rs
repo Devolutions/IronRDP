@@ -1,5 +1,5 @@
 #[cfg(test)]
-mod test;
+mod tests;
 
 use std::io;
 
@@ -8,7 +8,7 @@ use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive, ToPrimitive};
 
-use crate::rdp::CapabilitySetsError;
+use crate::rdp::capability_sets::CapabilitySetsError;
 use crate::PduParsing;
 
 const GENERAL_LENGTH: usize = 20;
@@ -42,6 +42,7 @@ pub enum MinorPlatformType {
 }
 
 bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
     pub struct GeneralExtraFlags: u16 {
         const FASTPATH_OUTPUT_SUPPORTED = 0x0001;
         const NO_BITMAP_COMPRESSION_HDR = 0x0400;

@@ -1,7 +1,5 @@
 mod client;
 mod server;
-#[cfg(test)]
-pub mod test;
 
 use std::io;
 mod avc_messages;
@@ -156,10 +154,10 @@ impl PduParsing for CapabilitySet {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Color {
-    b: u8,
-    g: u8,
-    r: u8,
-    xa: u8,
+    pub b: u8,
+    pub g: u8,
+    pub r: u8,
+    pub xa: u8,
 }
 
 impl PduParsing for Color {
@@ -190,8 +188,8 @@ impl PduParsing for Color {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Point {
-    x: u16,
-    y: u16,
+    pub x: u16,
+    pub y: u16,
 }
 
 impl PduParsing for Point {
@@ -234,6 +232,7 @@ pub enum CapabilityVersion {
 }
 
 bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
     pub struct CapabilitiesV8Flags: u32  {
         const THIN_CLIENT = 0x1;
         const SMALL_CACHE = 0x2;
@@ -241,6 +240,7 @@ bitflags! {
 }
 
 bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
     pub struct CapabilitiesV81Flags: u32  {
         const THIN_CLIENT = 0x01;
         const SMALL_CACHE = 0x02;
@@ -249,6 +249,7 @@ bitflags! {
 }
 
 bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
     pub struct CapabilitiesV10Flags: u32 {
         const SMALL_CACHE = 0x02;
         const AVC_DISABLED = 0x20;
@@ -256,6 +257,7 @@ bitflags! {
 }
 
 bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
     pub struct CapabilitiesV103Flags: u32  {
         const AVC_DISABLED = 0x20;
         const AVC_THIN_CLIENT = 0x40;
@@ -263,6 +265,7 @@ bitflags! {
 }
 
 bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
     pub struct CapabilitiesV104Flags: u32  {
         const SMALL_CACHE = 0x02;
         const AVC_DISABLED = 0x20;
@@ -271,6 +274,7 @@ bitflags! {
 }
 
 bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
     pub struct CapabilitiesV107Flags: u32  {
         const SMALL_CACHE = 0x02;
         const AVC_DISABLED = 0x20;

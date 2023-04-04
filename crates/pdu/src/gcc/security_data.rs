@@ -1,6 +1,3 @@
-#[cfg(test)]
-pub mod test;
-
 use std::io;
 
 use bitflags::bitflags;
@@ -166,6 +163,7 @@ impl PduParsing for ServerSecurityData {
 }
 
 bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
     pub struct EncryptionMethod: u32 {
         const BIT_40 = 0x0000_0001;
         const BIT_128 = 0x0000_0002;

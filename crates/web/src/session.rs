@@ -3,18 +3,19 @@ use std::rc::Rc;
 
 use anyhow::Context as _;
 use futures_channel::mpsc;
-use futures_util::{AsyncWriteExt as _, StreamExt as _};
+use futures_util::io::{ReadHalf, WriteHalf};
+use futures_util::{AsyncReadExt as _, AsyncWriteExt as _, StreamExt as _};
 use gloo_net::websocket::futures::WebSocket;
+use ironrdp::connector::{self, ClientConnector};
 use ironrdp::graphics::image_processing::PixelFormat;
 use ironrdp::pdu::geometry::Rectangle;
-use ironrdp::session::connection_sequence::{process_connection_sequence, ConnectionSequenceResult};
 use ironrdp::session::image::DecodedImage;
-use ironrdp::session::{ActiveStageOutput, ActiveStageProcessor, ErasedWriter, FramedReader, InputConfig, RdpError};
-use sspi::AuthIdentity;
+use ironrdp::session::{ActiveStage, ActiveStageOutput};
+use tap::prelude::*;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::spawn_local;
 
-use crate::error::IronRdpError;
+use crate::error::{IronRdpError, IronRdpErrorKind};
 use crate::image::{extract_partial_image, RectInfo};
 use crate::input::InputTransaction;
 use crate::network_client::PlaceholderNetworkClientFactory;
@@ -28,11 +29,12 @@ pub struct SessionBuilder(Rc<RefCell<SessionBuilderInner>>);
 #[derive(Default)]
 struct SessionBuilderInner {
     username: Option<String>,
-    hostname: Option<String>,
-    domain: Option<String>,
+    server_name: Option<String>,
+    server_domain: Option<String>,
     password: Option<String>,
-    gateway_address: Option<String>,
+    proxy_address: Option<String>,
     auth_token: Option<String>,
+    pcb: Option<String>,
     update_callback: Option<js_sys::Function>,
     update_callback_context: Option<JsValue>,
 }
@@ -48,13 +50,17 @@ impl SessionBuilder {
         self.clone()
     }
 
-    pub fn hostname(&self, hostname: String) -> SessionBuilder {
-        self.0.borrow_mut().hostname = Some(hostname);
+    pub fn server_name(&self, server_name: String) -> SessionBuilder {
+        self.0.borrow_mut().server_name = Some(server_name);
         self.clone()
     }
 
-    pub fn domain(&self, domain: String) -> SessionBuilder {
-        self.0.borrow_mut().domain = if domain.is_empty() { None } else { Some(domain) };
+    pub fn server_domain(&self, server_domain: String) -> SessionBuilder {
+        self.0.borrow_mut().server_domain = if server_domain.is_empty() {
+            None
+        } else {
+            Some(server_domain)
+        };
         self.clone()
     }
 
@@ -63,13 +69,18 @@ impl SessionBuilder {
         self.clone()
     }
 
-    pub fn gateway_address(&self, address: String) -> SessionBuilder {
-        self.0.borrow_mut().gateway_address = Some(address);
+    pub fn proxy_address(&self, address: String) -> SessionBuilder {
+        self.0.borrow_mut().proxy_address = Some(address);
         self.clone()
     }
 
     pub fn auth_token(&self, token: String) -> SessionBuilder {
         self.0.borrow_mut().auth_token = Some(token);
+        self.clone()
+    }
+
+    pub fn pcb(&self, pcb: String) -> SessionBuilder {
+        self.0.borrow_mut().pcb = Some(pcb);
         self.clone()
     }
 
@@ -86,11 +97,12 @@ impl SessionBuilder {
     pub async fn connect(&self) -> Result<Session, IronRdpError> {
         let (
             username,
-            hostname,
-            domain,
+            server_name,
+            server_domain,
             password,
-            gateway_address,
+            proxy_address,
             auth_token,
+            pcb,
             update_callback,
             update_callback_context,
         );
@@ -98,39 +110,34 @@ impl SessionBuilder {
         {
             let inner = self.0.borrow();
             username = inner.username.clone().expect("username");
-            hostname = inner.hostname.clone().expect("hostname");
-            domain = inner.domain.clone();
+            server_name = inner.server_name.clone().expect("server_name");
+            server_domain = inner.server_domain.clone();
             password = inner.password.clone().expect("password");
-            gateway_address = inner.gateway_address.clone().expect("gateway_address");
+            proxy_address = inner.proxy_address.clone().expect("proxy_address");
             auth_token = inner.auth_token.clone().expect("auth_token");
+            pcb = inner.pcb.clone();
             update_callback = inner.update_callback.clone().expect("update_callback");
             update_callback_context = inner.update_callback_context.clone().expect("update_callback_context");
         }
 
         info!("Connect to RDP host");
 
-        let input_config = build_input_config(username, password, domain);
+        let config = build_config(username, password, server_domain);
 
-        let ws = WebSocketCompat::new(WebSocket::open(&gateway_address).context("Couldn’t open WebSocket")?);
+        let ws = WebSocketCompat::new(WebSocket::open(&proxy_address).context("Couldn’t open WebSocket")?);
 
-        let (connection_sequence_result, rdp_reader, rdp_writer) = process_connection_sequence(
-            ws,
-            hostname,
-            auth_token,
-            &input_config,
-            Box::new(PlaceholderNetworkClientFactory),
-        )
-        .await?;
+        let (connection_result, ws) = connect(ws, config, auth_token, server_name, pcb).await?;
 
         info!("Connected!");
+
+        let (rdp_reader, rdp_writer) = ws.split();
 
         let (writer_tx, writer_rx) = mpsc::unbounded();
 
         spawn_local(writer_task(writer_rx, rdp_writer));
 
         Ok(Session {
-            input_config,
-            connection_sequence_result,
+            connection_result,
             update_callback,
             update_callback_context,
             input_database: RefCell::new(ironrdp::input::Database::new()),
@@ -142,47 +149,42 @@ impl SessionBuilder {
 
 #[wasm_bindgen]
 pub struct Session {
-    input_config: InputConfig,
-    connection_sequence_result: ConnectionSequenceResult,
+    connection_result: connector::ConnectionResult,
     update_callback: js_sys::Function,
     update_callback_context: JsValue,
     input_database: RefCell<ironrdp::input::Database>,
-    rdp_reader: RefCell<Option<FramedReader>>,
+    rdp_reader: RefCell<Option<ReadHalf<WebSocketCompat>>>,
     writer_tx: mpsc::UnboundedSender<Vec<u8>>,
 }
 
 #[wasm_bindgen]
 impl Session {
     pub async fn run(&self) -> Result<(), IronRdpError> {
-        let mut rdp_reader = self
+        let rdp_reader = self
             .rdp_reader
             .borrow_mut()
             .take()
             .context("RDP session can be started only once")?;
 
+        let mut framed = ironrdp_async::Framed::futures_new(rdp_reader);
+
         info!("Start RDP session");
 
         let mut image = DecodedImage::new(
             PixelFormat::RgbA32,
-            self.connection_sequence_result.desktop_size.width,
-            self.connection_sequence_result.desktop_size.height,
+            self.connection_result.desktop_size.width,
+            self.connection_result.desktop_size.height,
         );
 
-        let mut active_stage =
-            ActiveStageProcessor::new(self.input_config.clone(), None, self.connection_sequence_result.clone());
+        let mut active_stage = ActiveStage::new(self.connection_result.clone(), None);
         let mut frame_id = 0;
 
         'outer: loop {
             let outputs = {
-                let frame = rdp_reader
-                    .read_frame()
-                    .await
-                    .context("Read next frame")?
-                    .ok_or_else(|| RdpError::AccessDenied)?
-                    .freeze();
+                let (action, frame) = framed.read_pdu().await.context("read next frame")?;
 
                 active_stage
-                    .process(&mut image, frame)
+                    .process(&mut image, action, &frame)
                     .context("Active stage processing")?
             };
 
@@ -219,8 +221,8 @@ impl Session {
     }
 
     pub fn desktop_size(&self) -> DesktopSize {
-        let desktop_width = self.connection_sequence_result.desktop_size.width;
-        let desktop_height = self.connection_sequence_result.desktop_size.height;
+        let desktop_width = self.connection_result.desktop_size.width;
+        let desktop_height = self.connection_result.desktop_size.height;
 
         DesktopSize {
             width: desktop_width,
@@ -286,29 +288,36 @@ impl Session {
     }
 }
 
-fn build_input_config(username: String, password: String, domain: Option<String>) -> InputConfig {
+fn build_config(username: String, password: String, domain: Option<String>) -> connector::Config {
     const DEFAULT_WIDTH: u16 = 1280;
     const DEFAULT_HEIGHT: u16 = 720;
-    const GLOBAL_CHANNEL_NAME: &str = "GLOBAL";
-    const USER_CHANNEL_NAME: &str = "USER";
 
-    InputConfig {
-        credentials: AuthIdentity {
-            username,
-            password: password.into(),
-            domain,
-        },
-        security_protocol: ironrdp::pdu::SecurityProtocol::HYBRID_EX,
+    connector::Config {
+        username,
+        password,
+        domain,
+        security_protocol: ironrdp::pdu::nego::SecurityProtocol::HYBRID_EX,
         keyboard_type: ironrdp::pdu::gcc::KeyboardType::IbmEnhanced,
         keyboard_subtype: 0,
         keyboard_functional_keys_count: 12,
         ime_file_name: String::new(),
         dig_product_id: String::new(),
-        width: DEFAULT_WIDTH,
-        height: DEFAULT_HEIGHT,
-        global_channel_name: GLOBAL_CHANNEL_NAME.to_owned(),
-        user_channel_name: USER_CHANNEL_NAME.to_owned(),
-        graphics_config: None,
+        desktop_size: connector::DesktopSize {
+            width: DEFAULT_WIDTH,
+            height: DEFAULT_HEIGHT,
+        },
+        graphics: None,
+        client_build: semver::Version::parse(env!("CARGO_PKG_VERSION"))
+            .map(|version| version.major * 100 + version.minor * 10 + version.patch)
+            .unwrap_or(0)
+            .pipe(u32::try_from)
+            .unwrap(),
+        client_name: "IronRDP Web".to_owned(), // FIXME: in native clients, this is the client machine hostname
+        client_dir: std::env::current_dir()
+            .expect("current directory")
+            .to_string_lossy()
+            .into_owned(),
+        platform: ironrdp::pdu::rdp::capability_sets::MajorPlatformType::Unspecified,
     }
 }
 
@@ -350,10 +359,13 @@ fn send_update_rectangle(
     Ok(())
 }
 
-async fn writer_task(rx: mpsc::UnboundedReceiver<Vec<u8>>, rdp_writer: ErasedWriter) {
+async fn writer_task(rx: mpsc::UnboundedReceiver<Vec<u8>>, rdp_writer: WriteHalf<WebSocketCompat>) {
     debug!("writer task started");
 
-    async fn inner(mut rx: mpsc::UnboundedReceiver<Vec<u8>>, mut rdp_writer: ErasedWriter) -> anyhow::Result<()> {
+    async fn inner(
+        mut rx: mpsc::UnboundedReceiver<Vec<u8>>,
+        mut rdp_writer: WriteHalf<WebSocketCompat>,
+    ) -> anyhow::Result<()> {
         while let Some(frame) = rx.next().await {
             rdp_writer.write_all(&frame).await.context("Couldn’t write frame")?;
             rdp_writer.flush().await.context("Couldn’t flush")?;
@@ -365,5 +377,160 @@ async fn writer_task(rx: mpsc::UnboundedReceiver<Vec<u8>>, rdp_writer: ErasedWri
     match inner(rx, rdp_writer).await {
         Ok(()) => debug!("writer task ended gracefully"),
         Err(e) => error!("writer task ended unexpectedly: {e:#}"),
+    }
+}
+
+async fn connect(
+    ws: WebSocketCompat,
+    config: connector::Config,
+    proxy_auth_token: String,
+    server_name: String,
+    pcb: Option<String>,
+) -> Result<(connector::ConnectionResult, WebSocketCompat), IronRdpError> {
+    let mut framed = ironrdp_async::Framed::futures_new(ws);
+
+    let mut connector = connector::ClientConnector::new(config)
+        .with_server_name(&server_name)
+        .with_credssp_client_factory(Box::new(PlaceholderNetworkClientFactory));
+
+    let upgraded = connect_rdcleanpath(&mut framed, &mut connector, server_name, proxy_auth_token, pcb).await?;
+
+    let connection_result = ironrdp_async::connect_finalize(upgraded, &mut framed, connector).await?;
+
+    let ws = framed.futures_into_inner_no_leftover();
+
+    Ok((connection_result, ws))
+}
+
+async fn connect_rdcleanpath<S>(
+    framed: &mut ironrdp_async::Framed<S>,
+    connector: &mut ClientConnector,
+    server_name: String,
+    proxy_auth_token: String,
+    pcb: Option<String>,
+) -> Result<ironrdp_async::Upgraded, IronRdpError>
+where
+    S: ironrdp_async::FramedRead + ironrdp_async::FramedWrite,
+{
+    use ironrdp::connector::Sequence as _;
+    use x509_cert::der::Decode as _;
+    use x509_cert::der::Encode as _;
+
+    #[derive(Clone, Copy, Debug)]
+    pub struct RDCleanPathHint;
+
+    pub const RDCLEANPATH_HINT: RDCleanPathHint = RDCleanPathHint;
+
+    impl ironrdp::pdu::PduHint for RDCleanPathHint {
+        fn find_size(&self, bytes: &[u8]) -> ironrdp::pdu::Result<Option<usize>> {
+            match ironrdp_rdcleanpath::RDCleanPathPdu::detect(bytes) {
+                ironrdp_rdcleanpath::DetectionResult::Detected { total_length, .. } => Ok(Some(total_length)),
+                ironrdp_rdcleanpath::DetectionResult::NotEnoughBytes => Ok(None),
+                ironrdp_rdcleanpath::DetectionResult::Failed => Err(ironrdp::pdu::Error::Other {
+                    context: "RDCleanPathHint",
+                    reason: "detection failed (invalid PDU)",
+                }),
+            }
+        }
+    }
+
+    let mut buf = Vec::new();
+
+    info!("Begin connection procedure");
+
+    {
+        // RDCleanPath request
+
+        let ironrdp::connector::ClientConnectorState::ConnectionInitiationSendRequest = connector.state else {
+            return Err(anyhow::Error::msg("invalid connector state (send request)").into());
+        };
+
+        debug_assert!(connector.next_pdu_hint().is_none());
+
+        let written = connector.step_no_input(&mut buf)?;
+        let x224_pdu_len = written.size().expect("written size");
+        let x224_pdu = buf[..x224_pdu_len].to_vec();
+
+        let rdcleanpath_req =
+            ironrdp_rdcleanpath::RDCleanPathPdu::new_request(x224_pdu, server_name, proxy_auth_token, pcb)
+                .context("new RDCleanPath request")?;
+        debug!(message = ?rdcleanpath_req, "Send RDCleanPath request");
+        let rdcleanpath_req = rdcleanpath_req.to_der().context("RDCleanPath request encode")?;
+
+        framed
+            .write_all(&rdcleanpath_req)
+            .await
+            .context("couldn’t write RDCleanPath request")?;
+    }
+
+    {
+        // RDCleanPath response
+
+        let rdcleanpath_res = framed
+            .read_by_hint(&RDCLEANPATH_HINT)
+            .await
+            .context("read RDCleanPath request")?;
+
+        let rdcleanpath_res =
+            ironrdp_rdcleanpath::RDCleanPathPdu::from_der(&rdcleanpath_res).context("RDCleanPath response decode")?;
+
+        debug!(message = ?rdcleanpath_res, "Received RDCleanPath PDU");
+
+        let (x224_connection_response, server_cert_chain, server_addr) =
+            match rdcleanpath_res.into_enum().context("invalid RDCleanPath PDU")? {
+                ironrdp_rdcleanpath::RDCleanPath::Request { .. } => {
+                    return Err(anyhow::Error::msg("received an unexpected RDCleanPath type (request)").into());
+                }
+                ironrdp_rdcleanpath::RDCleanPath::Response {
+                    x224_connection_response,
+                    server_cert_chain,
+                    server_addr,
+                } => (x224_connection_response, server_cert_chain, server_addr),
+                ironrdp_rdcleanpath::RDCleanPath::Err(error) => {
+                    return Err(
+                        IronRdpError::from(anyhow::anyhow!("received an RDCleanPath error: {error}"))
+                            .with_kind(IronRdpErrorKind::RDCleanPath),
+                    );
+                }
+            };
+
+        let server_addr = server_addr
+            .parse()
+            .context("failed to parse server address sent by proxy")?;
+
+        connector.attach_server_addr(server_addr);
+
+        let ironrdp::connector::ClientConnectorState::ConnectionInitiationWaitConfirm = connector.state else {
+            return Err(anyhow::Error::msg("invalid connector state (wait confirm)").into());
+        };
+
+        debug_assert!(connector.next_pdu_hint().is_some());
+
+        let written = connector.step(x224_connection_response.as_bytes(), &mut buf)?;
+
+        debug_assert!(written.is_nothing());
+
+        let server_cert = server_cert_chain
+            .into_iter()
+            .next()
+            .context("server cert chain missing from rdcleanpath response")?;
+
+        let cert = x509_cert::Certificate::from_der(server_cert.as_bytes())
+            .context("failed to decode x509 certificate sent by proxy")?;
+
+        let server_public_key = cert
+            .tbs_certificate
+            .subject_public_key_info
+            .subject_public_key
+            .to_der()
+            .context("subject public key DER encode")?;
+
+        let should_upgrade = ironrdp_async::skip_connect_begin(connector);
+
+        // At this point, proxy established the TLS session
+
+        let upgraded = ironrdp_async::mark_as_upgraded(should_upgrade, connector, server_public_key);
+
+        Ok(upgraded)
     }
 }

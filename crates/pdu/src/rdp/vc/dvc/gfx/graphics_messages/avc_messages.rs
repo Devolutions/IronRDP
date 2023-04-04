@@ -106,7 +106,7 @@ impl<'a> PduBufferParsing<'a> for Avc420BitmapStream<'a> {
 }
 
 bitflags! {
-    #[derive(Default)]
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
     pub struct Encoding: u8 {
         const LUMA_AND_CHROMA = 0x00;
         const LUMA = 0x01;

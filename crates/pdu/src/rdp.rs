@@ -2,45 +2,24 @@ use std::io;
 
 use thiserror::Error;
 
-use self::client_info::ClientInfoError;
-use self::finalization_messages::FinalizationMessagesError;
-use self::server_license::ServerLicenseError;
 use crate::input::InputEventError;
+use crate::rdp::capability_sets::CapabilitySetsError;
+use crate::rdp::client_info::{ClientInfo, ClientInfoError};
+use crate::rdp::finalization_messages::FinalizationMessagesError;
+use crate::rdp::headers::{BasicSecurityHeader, BasicSecurityHeaderFlags, ShareControlPduType, ShareDataPduType};
+use crate::rdp::server_error_info::ServerSetErrorInfoError;
+use crate::rdp::server_license::ServerLicenseError;
 use crate::PduParsing;
 
-#[cfg(test)]
-pub mod test;
-
 pub mod capability_sets;
+pub mod client_info;
+pub mod finalization_messages;
+pub mod headers;
+pub mod server_error_info;
 pub mod server_license;
 pub mod session_info;
 pub mod vc;
 
-mod client_info;
-mod finalization_messages;
-mod headers;
-mod server_error_info;
-
-pub use self::capability_sets::{
-    CapabilitySet, CapabilitySetsError, ClientConfirmActive, DemandActive, ServerDemandActive, VirtualChannel,
-    SERVER_CHANNEL_ID,
-};
-pub use self::client_info::{
-    AddressFamily, ClientInfo, ClientInfoFlags, CompressionType, Credentials, DayOfWeek, DayOfWeekOccurrence,
-    ExtendedClientInfo, ExtendedClientOptionalInfo, Month, PerformanceFlags, SystemTime, TimezoneInfo,
-};
-pub use self::finalization_messages::{
-    ControlAction, ControlPdu, FontPdu, MonitorLayoutPdu, SequenceFlags, SynchronizePdu,
-};
-pub use self::headers::{
-    BasicSecurityHeader, BasicSecurityHeaderFlags, CompressionFlags, ShareControlHeader, ShareControlPdu,
-    ShareControlPduType, ShareDataHeader, ShareDataPdu, ShareDataPduType, StreamPriority, BASIC_SECURITY_HEADER_SIZE,
-    SHARE_DATA_HEADER_COMPRESSION_MASK,
-};
-pub use self::server_error_info::{
-    ErrorInfo, ProtocolIndependentCode, ProtocolIndependentConnectionBrokerCode, ProtocolIndependentLicensingCode,
-    RdpSpecificCode, ServerSetErrorInfoError, ServerSetErrorInfoPdu,
-};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClientInfoPdu {
     pub security_header: BasicSecurityHeader,

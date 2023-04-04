@@ -30,16 +30,15 @@ fn decompress_bpp_16(#[case] src: &[u8]) {
         out.chunks_exact(WIDTH)
             .rev()
             .flat_map(|row| row.iter().flat_map(|pixel| pixel.to_le_bytes()))
-            .collect::<bytes::Bytes>()
+            .collect::<Vec<u8>>()
     };
 
     let ironrdp_out = {
         // IronRDP
 
-        let mut ironrdp_out = bytes::BytesMut::new();
+        let mut ironrdp_out = Vec::new();
         ironrdp_graphics::rle::decompress_16_bpp(src, &mut ironrdp_out, WIDTH, HEIGHT).expect("ironrdp decompress");
-
-        ironrdp_out.freeze()
+        ironrdp_out
     };
 
     assert_eq!(ironrdp_out, rdp_rs_out);

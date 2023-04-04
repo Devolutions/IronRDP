@@ -34,6 +34,7 @@ impl PduParsing for SyncPdu {
 }
 
 bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
     pub struct SyncToggleFlags: u32 {
         const SCROLL_LOCK = 0x1;
         const NUM_LOCK = 0x2;

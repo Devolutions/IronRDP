@@ -42,6 +42,7 @@ impl PduParsing for MouseXPdu {
 }
 
 bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
     pub struct PointerXFlags: u16 {
         const DOWN = 0x8000;
         const BUTTON1 = 0x0001;

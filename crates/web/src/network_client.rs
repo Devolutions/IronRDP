@@ -1,4 +1,4 @@
-use sspi::network_client::{NetworkClient, NetworkClientFactory};
+use ironrdp::connector::sspi::network_client::{NetworkClient, NetworkClientFactory};
 
 #[derive(Debug, Clone)]
 pub(crate) struct PlaceholderNetworkClientFactory;

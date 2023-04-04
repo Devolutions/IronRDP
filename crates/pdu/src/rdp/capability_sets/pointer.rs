@@ -1,11 +1,11 @@
 #[cfg(test)]
-mod test;
+mod tests;
 
 use std::io;
 
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 
-use crate::rdp::CapabilitySetsError;
+use crate::rdp::capability_sets::CapabilitySetsError;
 use crate::PduParsing;
 
 const POINTER_LENGTH: usize = 6;

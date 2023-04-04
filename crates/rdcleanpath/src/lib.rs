@@ -109,58 +109,85 @@ impl Default for RDCleanPathPdu {
     }
 }
 
+#[derive(Debug, Clone, PartialEq)]
 pub enum DetectionResult {
-    Detected(u64),
+    Detected { version: u64, total_length: usize },
     NotEnoughBytes,
     Failed,
 }
 
 impl RDCleanPathPdu {
+    /// Attempts to decode a RDCleanPath PDU from the provided buffer of bytes.
+    pub fn from_der(src: &[u8]) -> der::Result<Self> {
+        der::Decode::from_der(src)
+    }
+
     /// Try to parse first few bytes in order to detect a RDCleanPath PDU
     pub fn detect(src: &[u8]) -> DetectionResult {
-        use der::Decode as _;
+        use der::{Decode as _, Encode as _};
 
-        #[derive(der::Sequence)]
-        #[asn1(tag_mode = "EXPLICIT")]
-        pub struct PartialRDCleanPathPdu {
-            #[asn1(context_specific = "0")]
-            pub version: u64,
-        }
+        let Ok(mut reader) = der::SliceReader::new(src) else {
+            return DetectionResult::Failed
+        };
 
-        match PartialRDCleanPathPdu::from_der(src) {
-            Ok(pdu) => match pdu.version {
-                VERSION_1 => DetectionResult::Detected(pdu.version),
-                _ => DetectionResult::Failed,
+        let header = match der::Header::decode(&mut reader) {
+            Ok(header) => header,
+            Err(e) => match dbg!(e.kind()) {
+                der::ErrorKind::Incomplete { .. } => return DetectionResult::NotEnoughBytes,
+                _ => return DetectionResult::Failed,
             },
-            Err(e) => match e.kind() {
+        };
+
+        let (Ok(header_encoded_len), Ok(body_length)) = (header.encoded_len().and_then(usize::try_from), usize::try_from(header.length)) else {
+            return DetectionResult::Failed;
+        };
+
+        let total_length = header_encoded_len + body_length;
+
+        match dbg!(der::asn1::ContextSpecific::<u64>::decode_explicit(
+            &mut reader,
+            der::TagNumber::N0
+        )) {
+            Ok(Some(version)) if version.value == VERSION_1 => DetectionResult::Detected {
+                version: VERSION_1,
+                total_length,
+            },
+            Ok(Some(_)) => DetectionResult::Failed,
+            Ok(None) => DetectionResult::NotEnoughBytes,
+            Err(e) => match dbg!(e.kind()) {
                 der::ErrorKind::Incomplete { .. } => DetectionResult::NotEnoughBytes,
                 _ => DetectionResult::Failed,
             },
         }
     }
 
-    /// Attempts to decode a RDCleanPath PDU from the provided buffer of bytes.
-    pub fn decode(src: &mut bytes::BytesMut) -> der::Result<Option<Self>> {
-        use bytes::Buf as _;
-        use der::{Decode as _, Encode as _};
+    pub fn into_enum(self) -> Result<RDCleanPath, MissingRDCleanPathField> {
+        RDCleanPath::try_from(self)
+    }
 
-        match RDCleanPathPdu::from_der(src) {
-            Ok(pdu) => {
-                let len = usize::try_from(pdu.encoded_len()?).expect("u32 to usize conversion");
-                src.advance(len);
-                Ok(Some(pdu))
-            }
-            Err(e) => match e.kind() {
-                der::ErrorKind::Incomplete {
-                    expected_len,
-                    actual_len: _,
-                } => {
-                    let expected_len = usize::try_from(expected_len).expect("u32 to usize conversion");
-                    src.reserve(expected_len - src.len());
-                    Ok(None)
-                }
-                _ => Err(e),
-            },
+    pub fn new_general_error() -> Self {
+        Self {
+            version: VERSION_1,
+            error: Some(RDCleanPathErr {
+                error_code: GENERAL_ERROR_CODE,
+                http_status_code: None,
+                wsa_last_error: None,
+                tls_alert_code: None,
+            }),
+            ..Self::default()
+        }
+    }
+
+    pub fn new_http_error(status_code: u16) -> Self {
+        Self {
+            version: VERSION_1,
+            error: Some(RDCleanPathErr {
+                error_code: GENERAL_ERROR_CODE,
+                http_status_code: Some(status_code),
+                wsa_last_error: None,
+                tls_alert_code: None,
+            }),
+            ..Self::default()
         }
     }
 
@@ -199,27 +226,14 @@ impl RDCleanPathPdu {
         })
     }
 
-    pub fn new_general_error() -> Self {
+    pub fn new_tls_error(alert_code: u8) -> Self {
         Self {
             version: VERSION_1,
             error: Some(RDCleanPathErr {
                 error_code: GENERAL_ERROR_CODE,
                 http_status_code: None,
                 wsa_last_error: None,
-                tls_alert_code: None,
-            }),
-            ..Self::default()
-        }
-    }
-
-    pub fn new_http_error(status_code: u16) -> Self {
-        Self {
-            version: VERSION_1,
-            error: Some(RDCleanPathErr {
-                error_code: GENERAL_ERROR_CODE,
-                http_status_code: Some(status_code),
-                wsa_last_error: None,
-                tls_alert_code: None,
+                tls_alert_code: Some(alert_code),
             }),
             ..Self::default()
         }
@@ -238,25 +252,8 @@ impl RDCleanPathPdu {
         }
     }
 
-    pub fn new_tls_error(alert_code: u8) -> Self {
-        Self {
-            version: VERSION_1,
-            error: Some(RDCleanPathErr {
-                error_code: GENERAL_ERROR_CODE,
-                http_status_code: None,
-                wsa_last_error: None,
-                tls_alert_code: Some(alert_code),
-            }),
-            ..Self::default()
-        }
-    }
-
     pub fn to_der(&self) -> der::Result<Vec<u8>> {
         der::Encode::to_der(self)
-    }
-
-    pub fn into_enum(self) -> Result<RDCleanPath, MissingRDCleanPathField> {
-        RDCleanPath::try_from(self)
     }
 }
 
@@ -367,7 +364,6 @@ impl From<RDCleanPath> for RDCleanPathPdu {
 
 #[cfg(test)]
 mod tests {
-    use der::Decode as _;
     use rstest::rstest;
 
     use super::*;
@@ -459,5 +455,35 @@ mod tests {
     fn serialization(#[case] message: RDCleanPathPdu, #[case] expected_der: &[u8]) {
         let encoded = message.to_der().unwrap();
         assert_serialization!(encoded, expected_der);
+    }
+
+    #[rstest]
+    #[case(REQUEST_DER)]
+    #[case(RESPONSE_SUCCESS_DER)]
+    #[case(RESPONSE_HTTP_ERROR_DER)]
+    #[case(RESPONSE_TLS_ERROR_DER)]
+    fn detect(#[case] der: &[u8]) {
+        let result = RDCleanPathPdu::detect(der);
+
+        let DetectionResult::Detected { version: detected_version, total_length: detected_length } = result else {
+            panic!("unexpected result: {result:?}");
+        };
+
+        assert_eq!(detected_version, VERSION_1);
+        assert_eq!(detected_length, der.len());
+    }
+
+    #[rstest]
+    #[case(&[])]
+    #[case(&[0x30])]
+    #[case(&[0x30, 0x15])]
+    #[case(&[0x30, 0x15, 0xA0])]
+    #[case(&[0x30, 0x32, 0xA0, 0x4])]
+    #[case(&[0x30, 0x32, 0xA0, 0x4, 0x2])]
+    #[case(&[0x30, 0x32, 0xA0, 0x4, 0x2, 0x2])]
+    #[case(&[0x30, 0x32, 0xA0, 0x4, 0x2, 0x2, 0xD])]
+    fn detect_not_enough(#[case] payload: &[u8]) {
+        let result = RDCleanPathPdu::detect(payload);
+        assert_eq!(result, DetectionResult::NotEnoughBytes);
     }
 }

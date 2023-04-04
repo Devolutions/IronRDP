@@ -168,6 +168,7 @@ impl PduParsing for LogonErrorsInfo {
 }
 
 bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
     pub struct LogonExFlags: u32 {
         const AUTO_RECONNECT_COOKIE = 0x0000_0001;
         const LOGON_ERRORS = 0x0000_0002;

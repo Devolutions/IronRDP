@@ -1,8 +1,5 @@
 mod graphics_messages;
 
-#[cfg(test)]
-mod test;
-
 use std::io;
 
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
@@ -10,9 +7,9 @@ use graphics_messages::RESET_GRAPHICS_PDU_SIZE;
 pub use graphics_messages::{
     Avc420BitmapStream, Avc444BitmapStream, CacheImportReplyPdu, CacheToSurfacePdu, CapabilitiesAdvertisePdu,
     CapabilitiesConfirmPdu, CapabilitiesV103Flags, CapabilitiesV104Flags, CapabilitiesV107Flags, CapabilitiesV10Flags,
-    CapabilitiesV81Flags, CapabilitiesV8Flags, CapabilitySet, Codec1Type, Codec2Type, CreateSurfacePdu,
+    CapabilitiesV81Flags, CapabilitiesV8Flags, CapabilitySet, Codec1Type, Codec2Type, Color, CreateSurfacePdu,
     DeleteEncodingContextPdu, DeleteSurfacePdu, Encoding, EndFramePdu, EvictCacheEntryPdu, FrameAcknowledgePdu,
-    MapSurfaceToOutputPdu, MapSurfaceToScaledOutputPdu, MapSurfaceToScaledWindowPdu, PixelFormat, QuantQuality,
+    MapSurfaceToOutputPdu, MapSurfaceToScaledOutputPdu, MapSurfaceToScaledWindowPdu, PixelFormat, Point, QuantQuality,
     QueueDepth, ResetGraphicsPdu, SolidFillPdu, StartFramePdu, SurfaceToCachePdu, SurfaceToSurfacePdu, Timestamp,
     WireToSurface1Pdu, WireToSurface2Pdu,
 };

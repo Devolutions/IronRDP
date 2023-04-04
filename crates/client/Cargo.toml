@@ -13,15 +13,15 @@ categories.workspace = true
 
 [features]
 default = ["rustls"]
-rustls = ["dep:tokio-rustls", "ironrdp-session/rustls"]
-native-tls = ["dep:async-native-tls", "ironrdp-session/native-tls"]
+rustls = ["ironrdp-tls/rustls"]
+native-tls = ["ironrdp-tls/native-tls"]
 
 [dependencies]
 
 # Protocols
-ironrdp.workspace = true
-ironrdp-input.workspace = true
-ironrdp-session.workspace = true
+ironrdp = { workspace = true, features = ["input", "graphics"] }
+ironrdp-tls.workspace = true
+ironrdp-async = { workspace = true, features = ["tokio"] }
 sspi = { workspace = true, features = ["network_client"] } # TODO: enable dns_resolver at some point
 
 # GUI
@@ -37,11 +37,6 @@ inquire = "0.6.0"
 tracing.workspace = true
 tracing-subscriber = { version = "0.3.16", features = ["env-filter"] }
 
-# SSL
-x509-parser = "0.15"
-async-native-tls = { version = "0.5", default-features = false, features = [ "runtime-tokio" ], optional = true }
-tokio-rustls =  { version = "0.24", features = ["dangerous_configuration"], optional = true }
-
 # Async, futures
 tokio = { version = "1", features = ["full"]}
 tokio-util = { version = "0.7.7", features = ["compat"] }
@@ -53,3 +48,4 @@ whoami = "1.4.0"
 anyhow = "1.0.70"
 smallvec = "1.10.0"
 tap = "1.0.1"
+semver = "1"

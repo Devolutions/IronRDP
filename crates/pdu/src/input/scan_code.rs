@@ -37,6 +37,7 @@ impl PduParsing for ScanCodePdu {
 }
 
 bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
     pub struct KeyboardFlags: u16 {
         const EXTENDED = 0x0100;
         const EXTENDED_1 = 0x0200;

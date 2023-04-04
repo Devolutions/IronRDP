@@ -1,6 +1,3 @@
-#[cfg(test)]
-pub mod test;
-
 use std::io;
 
 use bitflags::bitflags;
@@ -58,6 +55,7 @@ impl PduParsing for ClientClusterData {
 }
 
 bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
     pub struct RedirectionFlags: u32 {
         const REDIRECTION_SUPPORTED = 0x0000_0001;
         const REDIRECTED_SESSION_FIELD_VALID = 0x0000_0002;

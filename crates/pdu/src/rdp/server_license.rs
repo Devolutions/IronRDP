@@ -7,11 +7,11 @@ use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive, ToPrimitive};
 use thiserror::Error;
 
-use crate::rdp::{BasicSecurityHeader, BasicSecurityHeaderFlags, BASIC_SECURITY_HEADER_SIZE};
+use crate::rdp::headers::{BasicSecurityHeader, BasicSecurityHeaderFlags, BASIC_SECURITY_HEADER_SIZE};
 use crate::PduParsing;
 
 #[cfg(test)]
-pub mod test;
+mod tests;
 
 mod client_new_license_request;
 mod client_platform_challenge_response;
@@ -133,6 +133,7 @@ pub enum PreambleType {
 }
 
 bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
     pub struct PreambleFlags: u8 {
         const EXTENDED_ERROR_MSG_SUPPORTED = 0x80;
     }

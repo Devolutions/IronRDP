@@ -1,5 +1,5 @@
 #[cfg(test)]
-mod test;
+mod tests;
 
 use std::io::{self, Write};
 
@@ -12,7 +12,8 @@ use thiserror::Error;
 
 use super::bitmap::{BitmapError, BitmapUpdateData};
 use super::surface_commands::{SurfaceCommand, SurfaceCommandsError, SURFACE_COMMAND_HEADER_SIZE};
-use crate::rdp::{CompressionFlags, CompressionType, SHARE_DATA_HEADER_COMPRESSION_MASK};
+use crate::rdp::client_info::CompressionType;
+use crate::rdp::headers::{CompressionFlags, SHARE_DATA_HEADER_COMPRESSION_MASK};
 use crate::utils::SplitTo;
 use crate::{per, PduBufferParsing, PduParsing};
 
@@ -25,10 +26,20 @@ pub struct FastPathHeader {
 }
 
 impl FastPathHeader {
-    pub fn from_buffer_with_header(mut stream: impl io::Read, header: u8) -> Result<Self, FastPathError> {
+    fn minimal_buffer_length(&self) -> usize {
+        1 + per::sizeof_length(self.data_length as u16)
+    }
+}
+
+impl PduParsing for FastPathHeader {
+    type Error = FastPathError;
+
+    fn from_buffer(mut stream: impl io::Read) -> Result<Self, Self::Error> {
+        let header = stream.read_u8()?;
+
         let flags = EncryptionFlags::from_bits_truncate(header.get_bits(6..8));
 
-        let (length, sizeof_length) = per::read_length(&mut stream)?;
+        let (length, sizeof_length) = per::legacy::read_length(&mut stream)?;
         if length < sizeof_length as u16 + 1 {
             return Err(FastPathError::NullLength {
                 bytes_read: sizeof_length + 1,
@@ -45,20 +56,6 @@ impl FastPathHeader {
         })
     }
 
-    fn minimal_buffer_length(&self) -> usize {
-        1 + per::sizeof_length(self.data_length as u16)
-    }
-}
-
-impl PduParsing for FastPathHeader {
-    type Error = FastPathError;
-
-    fn from_buffer(mut stream: impl io::Read) -> Result<Self, Self::Error> {
-        let header = stream.read_u8()?;
-
-        Self::from_buffer_with_header(&mut stream, header)
-    }
-
     fn to_buffer(&self, mut stream: impl io::Write) -> Result<(), Self::Error> {
         let mut header = 0u8;
         header.set_bits(0..2, 0); // fast-path action
@@ -67,9 +64,9 @@ impl PduParsing for FastPathHeader {
 
         if self.forced_long_length {
             // Preserve same layout for header as received
-            per::write_long_length(stream, (self.data_length + self.buffer_length()) as u16)?;
+            per::legacy::write_long_length(stream, (self.data_length + self.buffer_length()) as u16)?;
         } else {
-            per::write_length(stream, (self.data_length + self.minimal_buffer_length()) as u16)?;
+            per::legacy::write_length(stream, (self.data_length + self.minimal_buffer_length()) as u16)?;
         }
 
         Ok(())
@@ -77,7 +74,7 @@ impl PduParsing for FastPathHeader {
 
     fn buffer_length(&self) -> usize {
         if self.forced_long_length {
-            1 + per::SIZEOF_U16
+            1 + per::U16_SIZE
         } else {
             self.minimal_buffer_length()
         }
@@ -146,7 +143,7 @@ impl<'a> PduBufferParsing<'a> for FastPathUpdatePdu<'a> {
         header.set_bits(4..6, self.fragmentation.to_u8().unwrap());
 
         if self.compression_flags.is_some() {
-            header.set_bits(6..8, Compression::COMPRESSION_USED.bits);
+            header.set_bits(6..8, Compression::COMPRESSION_USED.bits());
             todo!("encode compressionFlags (optional)"); // TODO: compressionFlags encoding
         }
 
@@ -255,6 +252,7 @@ pub enum Fragmentation {
 }
 
 bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
     pub struct EncryptionFlags: u8 {
         const SECURE_CHECKSUM = 0x1;
         const ENCRYPTED = 0x2;
@@ -262,6 +260,7 @@ bitflags! {
 }
 
 bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
     pub struct Compression: u8 {
         const COMPRESSION_USED = 0x2;
     }

@@ -12,8 +12,6 @@ mod websocket;
 
 use wasm_bindgen::prelude::*;
 
-// TODO: proper error reporting
-
 // NOTE: #[wasm_bindgen(start)] didn’t work last time I tried
 #[wasm_bindgen]
 pub fn ironrdp_init(log_level: &str) {

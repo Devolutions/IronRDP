@@ -1,5 +1,4 @@
 use anyhow::Context as _;
-use ironrdp::session::RdpError;
 use softbuffer::GraphicsContext;
 use tokio::sync::mpsc;
 use winit::event::{self, Event, WindowEvent};
@@ -34,8 +33,6 @@ impl GuiContext {
     }
 
     pub fn run(self, input_event_sender: mpsc::UnboundedSender<RdpInputEvent>) -> ! {
-        use std::io;
-
         let Self {
             window,
             event_loop,
@@ -51,7 +48,7 @@ impl GuiContext {
         };
         let mut image_buffer = vec![0; usize::from(image_width) * usize::from(image_height)];
 
-        let mut input_database = ironrdp_input::Database::new();
+        let mut input_database = ironrdp::input::Database::new();
 
         event_loop.run(move |event, _, control_flow| {
             *control_flow = ControlFlow::Wait;
@@ -78,11 +75,11 @@ impl GuiContext {
                         // TODO: Unicode mode
                     }
                     WindowEvent::KeyboardInput { input, .. } => {
-                        let scancode = ironrdp_input::Scancode::from_u16(u16::try_from(input.scancode).unwrap());
+                        let scancode = ironrdp::input::Scancode::from_u16(u16::try_from(input.scancode).unwrap());
 
                         let operation = match input.state {
-                            event::ElementState::Pressed => ironrdp_input::Operation::KeyPressed(scancode),
-                            event::ElementState::Released => ironrdp_input::Operation::KeyReleased(scancode),
+                            event::ElementState::Pressed => ironrdp::input::Operation::KeyPressed(scancode),
+                            event::ElementState::Released => ironrdp::input::Operation::KeyReleased(scancode),
                         };
 
                         let input_events = input_database.apply(std::iter::once(operation));
@@ -90,18 +87,18 @@ impl GuiContext {
                         send_fast_path_events(&input_event_sender, input_events);
                     }
                     WindowEvent::ModifiersChanged(state) => {
-                        const SHIFT_LEFT: ironrdp_input::Scancode = ironrdp_input::Scancode::from_u8(false, 0x2A);
-                        const CONTROL_LEFT: ironrdp_input::Scancode = ironrdp_input::Scancode::from_u8(false, 0x1D);
-                        const ALT_LEFT: ironrdp_input::Scancode = ironrdp_input::Scancode::from_u8(false, 0x38);
-                        const LOGO_LEFT: ironrdp_input::Scancode = ironrdp_input::Scancode::from_u8(true, 0x5B);
+                        const SHIFT_LEFT: ironrdp::input::Scancode = ironrdp::input::Scancode::from_u8(false, 0x2A);
+                        const CONTROL_LEFT: ironrdp::input::Scancode = ironrdp::input::Scancode::from_u8(false, 0x1D);
+                        const ALT_LEFT: ironrdp::input::Scancode = ironrdp::input::Scancode::from_u8(false, 0x38);
+                        const LOGO_LEFT: ironrdp::input::Scancode = ironrdp::input::Scancode::from_u8(true, 0x5B);
 
-                        let mut operations = smallvec::SmallVec::<[ironrdp_input::Operation; 4]>::new();
+                        let mut operations = smallvec::SmallVec::<[ironrdp::input::Operation; 4]>::new();
 
-                        let mut add_operation = |pressed: bool, scancode: ironrdp_input::Scancode| {
+                        let mut add_operation = |pressed: bool, scancode: ironrdp::input::Scancode| {
                             let operation = if pressed {
-                                ironrdp_input::Operation::KeyPressed(scancode)
+                                ironrdp::input::Operation::KeyPressed(scancode)
                             } else {
-                                ironrdp_input::Operation::KeyReleased(scancode)
+                                ironrdp::input::Operation::KeyReleased(scancode)
                             };
                             operations.push(operation);
                         };
@@ -116,7 +113,7 @@ impl GuiContext {
                         send_fast_path_events(&input_event_sender, input_events);
                     }
                     WindowEvent::CursorMoved { position, .. } => {
-                        let operation = ironrdp_input::Operation::MouseMove(ironrdp_input::MousePosition {
+                        let operation = ironrdp::input::Operation::MouseMove(ironrdp::input::MousePosition {
                             x: position.x as u16,
                             y: position.y as u16,
                         });
@@ -126,13 +123,13 @@ impl GuiContext {
                         send_fast_path_events(&input_event_sender, input_events);
                     }
                     WindowEvent::MouseWheel { delta, .. } => {
-                        let mut operations = smallvec::SmallVec::<[ironrdp_input::Operation; 2]>::new();
+                        let mut operations = smallvec::SmallVec::<[ironrdp::input::Operation; 2]>::new();
 
                         match delta {
                             event::MouseScrollDelta::LineDelta(delta_x, delta_y) => {
                                 if delta_x.abs() > 0.001 {
-                                    operations.push(ironrdp_input::Operation::WheelRotations(
-                                        ironrdp_input::WheelRotations {
+                                    operations.push(ironrdp::input::Operation::WheelRotations(
+                                        ironrdp::input::WheelRotations {
                                             is_vertical: false,
                                             rotation_units: (delta_x * 100.) as i16,
                                         },
@@ -140,8 +137,8 @@ impl GuiContext {
                                 }
 
                                 if delta_y.abs() > 0.001 {
-                                    operations.push(ironrdp_input::Operation::WheelRotations(
-                                        ironrdp_input::WheelRotations {
+                                    operations.push(ironrdp::input::Operation::WheelRotations(
+                                        ironrdp::input::WheelRotations {
                                             is_vertical: true,
                                             rotation_units: (delta_y * 100.) as i16,
                                         },
@@ -150,8 +147,8 @@ impl GuiContext {
                             }
                             event::MouseScrollDelta::PixelDelta(delta) => {
                                 if delta.x.abs() > 0.001 {
-                                    operations.push(ironrdp_input::Operation::WheelRotations(
-                                        ironrdp_input::WheelRotations {
+                                    operations.push(ironrdp::input::Operation::WheelRotations(
+                                        ironrdp::input::WheelRotations {
                                             is_vertical: false,
                                             rotation_units: delta.x as i16,
                                         },
@@ -159,8 +156,8 @@ impl GuiContext {
                                 }
 
                                 if delta.y.abs() > 0.001 {
-                                    operations.push(ironrdp_input::Operation::WheelRotations(
-                                        ironrdp_input::WheelRotations {
+                                    operations.push(ironrdp::input::Operation::WheelRotations(
+                                        ironrdp::input::WheelRotations {
                                             is_vertical: true,
                                             rotation_units: delta.y as i16,
                                         },
@@ -175,11 +172,11 @@ impl GuiContext {
                     }
                     WindowEvent::MouseInput { state, button, .. } => {
                         let mouse_button = match button {
-                            event::MouseButton::Left => ironrdp_input::MouseButton::Left,
-                            event::MouseButton::Right => ironrdp_input::MouseButton::Right,
-                            event::MouseButton::Middle => ironrdp_input::MouseButton::Middle,
+                            event::MouseButton::Left => ironrdp::input::MouseButton::Left,
+                            event::MouseButton::Right => ironrdp::input::MouseButton::Right,
+                            event::MouseButton::Middle => ironrdp::input::MouseButton::Middle,
                             event::MouseButton::Other(native_button) => {
-                                if let Some(button) = ironrdp_input::MouseButton::from_native_button(native_button) {
+                                if let Some(button) = ironrdp::input::MouseButton::from_native_button(native_button) {
                                     button
                                 } else {
                                     return;
@@ -188,9 +185,9 @@ impl GuiContext {
                         };
 
                         let operation = match state {
-                            event::ElementState::Pressed => ironrdp_input::Operation::MouseButtonPressed(mouse_button),
+                            event::ElementState::Pressed => ironrdp::input::Operation::MouseButtonPressed(mouse_button),
                             event::ElementState::Released => {
-                                ironrdp_input::Operation::MouseButtonReleased(mouse_button)
+                                ironrdp::input::Operation::MouseButtonReleased(mouse_button)
                             }
                         };
 
@@ -210,37 +207,21 @@ impl GuiContext {
 
                     graphics_context.set_buffer(image_buffer, width, height);
                 }
+                Event::UserEvent(RdpOutputEvent::ConnectionFailure(error)) => {
+                    error!(%error);
+                    println!("Connection error: {error:#}");
+                    control_flow.set_exit_with_code(exitcode::PROTOCOL);
+                }
                 Event::UserEvent(RdpOutputEvent::Terminated(result)) => {
                     let exit_code = match result {
                         Ok(()) => {
                             println!("RDP successfully finished");
                             exitcode::OK
                         }
-                        Err(RdpError::Io(e))
-                            if e.kind() == io::ErrorKind::UnexpectedEof
-                                || e.kind() == io::ErrorKind::ConnectionReset =>
-                        {
-                            let e = anyhow::Error::from(e);
-
-                            error!("{:#}", e);
-
-                            println!("The server has terminated the RDP session");
-                            println!("{e:?}");
-
-                            exitcode::NOHOST
-                        }
-                        Err(e) => {
-                            let exit_code = match e {
-                                RdpError::Io(_) => exitcode::IOERR,
-                                RdpError::Connection(_) => exitcode::NOHOST,
-                                _ => exitcode::PROTOCOL,
-                            };
-
-                            let e = anyhow::Error::from(e);
-                            error!("{:#}", e);
-                            println!("{e:?}");
-
-                            exit_code
+                        Err(error) => {
+                            error!(error = format!("{error:#}"));
+                            println!("Active session error: {error:#}");
+                            exitcode::PROTOCOL
                         }
                     };
 

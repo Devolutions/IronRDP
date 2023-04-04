@@ -1,6 +1,3 @@
-#[cfg(test)]
-pub mod test;
-
 use std::io;
 
 use bitflags::bitflags;
@@ -37,6 +34,7 @@ impl PduParsing for MultiTransportChannelData {
 }
 
 bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
     pub struct MultiTransportFlags: u32 {
         const TRANSPORT_TYPE_UDP_FECR = 0x01;
         const TRANSPORT_TYPE_UDP_FECL = 0x04;

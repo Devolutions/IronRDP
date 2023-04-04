@@ -1,16 +1,28 @@
+use ironrdp::connector;
+use ironrdp::connector::sspi;
 use wasm_bindgen::prelude::*;
 
 #[wasm_bindgen]
 #[derive(Clone, Copy)]
 pub enum IronRdpErrorKind {
-    InvalidCredentials,
     General,
+    WrongPassword,
+    LogonFailure,
+    AccessDenied,
+    RDCleanPath,
 }
 
 #[wasm_bindgen]
 pub struct IronRdpError {
     kind: IronRdpErrorKind,
     source: anyhow::Error,
+}
+
+impl IronRdpError {
+    pub fn with_kind(mut self, kind: IronRdpErrorKind) -> Self {
+        self.kind = kind;
+        self
+    }
 }
 
 #[wasm_bindgen]
@@ -24,24 +36,34 @@ impl IronRdpError {
     }
 }
 
-impl From<ironrdp_session::RdpError> for IronRdpError {
-    fn from(e: ironrdp_session::RdpError) -> Self {
-        let kind = match &e {
-            ironrdp_session::RdpError::CredSsp(e) => match e.error_type {
-                // NOTE: this is a quick & dirty solution, needs a LOT of refinements
-                sspi::ErrorKind::LogonDenied => IronRdpErrorKind::InvalidCredentials,
-                sspi::ErrorKind::UnknownCredentials => IronRdpErrorKind::InvalidCredentials,
-                sspi::ErrorKind::NoCredentials => IronRdpErrorKind::InvalidCredentials,
-                sspi::ErrorKind::IncompleteCredentials => IronRdpErrorKind::InvalidCredentials,
-                sspi::ErrorKind::InvalidToken => IronRdpErrorKind::InvalidCredentials,
+impl From<connector::Error> for IronRdpError {
+    fn from(e: connector::Error) -> Self {
+        use sspi::credssp::NStatusCode;
 
-                _ => IronRdpErrorKind::General,
-            },
+        let kind = match e.kind {
+            connector::ErrorKind::Credssp(sspi::Error {
+                nstatus: Some(NStatusCode::WRONG_PASSWORD),
+                ..
+            }) => IronRdpErrorKind::WrongPassword,
+            connector::ErrorKind::Credssp(sspi::Error {
+                nstatus: Some(NStatusCode::LOGON_FAILURE),
+                ..
+            }) => IronRdpErrorKind::LogonFailure,
+            connector::ErrorKind::AccessDenied => IronRdpErrorKind::AccessDenied,
             _ => IronRdpErrorKind::General,
         };
 
         Self {
             kind,
+            source: anyhow::Error::new(e),
+        }
+    }
+}
+
+impl From<ironrdp::session::Error> for IronRdpError {
+    fn from(e: ironrdp::session::Error) -> Self {
+        Self {
+            kind: IronRdpErrorKind::General,
             source: anyhow::Error::new(e),
         }
     }

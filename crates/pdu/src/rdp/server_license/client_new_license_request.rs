@@ -1,5 +1,5 @@
 #[cfg(test)]
-pub mod test;
+mod tests;
 
 use std::io;
 
@@ -21,6 +21,7 @@ const LICENSE_REQUEST_STATIC_FIELDS_SIZE: usize = 20;
 pub const PLATFORM_ID: u32 = ClientOsType::NT_POST_52.bits() | Isv::MICROSOFT.bits();
 
 bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
     pub struct ClientOsType: u32 {
         const NT_351 = 0x100_0000;
         const NT_40 = 0x200_0000;
@@ -30,6 +31,7 @@ bitflags! {
 }
 
 bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
     pub struct Isv: u32 {
         const MICROSOFT = 0x10000;
         const CITRIX = 0x20000;

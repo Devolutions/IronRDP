@@ -1,12 +1,12 @@
 #[cfg(test)]
-mod test;
+mod tests;
 
 use std::io;
 
 use bitflags::bitflags;
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 
-use crate::rdp::CapabilitySetsError;
+use crate::rdp::capability_sets::CapabilitySetsError;
 use crate::PduParsing;
 
 pub const BITMAP_CACHE_ENTRIES_NUM: usize = 3;
@@ -91,6 +91,7 @@ impl PduParsing for CacheEntry {
 }
 
 bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
     pub struct CacheFlags: u16 {
         const PERSISTENT_KEYS_EXPECTED_FLAG = 1;
         const ALLOW_CACHE_WAITING_LIST_FLAG = 2;

@@ -1,6 +1,3 @@
-#[cfg(test)]
-pub mod test;
-
 use std::io;
 
 use bitflags::bitflags;
@@ -8,7 +5,8 @@ use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use tap::Pipe as _;
 
 use super::{CoreDataError, RdpVersion, VERSION_SIZE};
-use crate::{connection_initiation, try_read_optional, try_write_optional, PduParsing};
+use crate::nego::SecurityProtocol;
+use crate::PduParsing;
 
 const CLIENT_REQUESTED_PROTOCOL_SIZE: usize = 4;
 const EARLY_CAPABILITY_FLAGS_SIZE: usize = 4;
@@ -41,7 +39,7 @@ impl PduParsing for ServerCoreData {
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ServerCoreOptionalData {
-    pub client_requested_protocols: Option<connection_initiation::SecurityProtocol>,
+    pub client_requested_protocols: Option<SecurityProtocol>,
     pub early_capability_flags: Option<ServerEarlyCapabilityFlags>,
 }
 
@@ -52,11 +50,8 @@ impl PduParsing for ServerCoreOptionalData {
         let mut optional_data = Self::default();
 
         optional_data.client_requested_protocols = Some(
-            connection_initiation::SecurityProtocol::from_bits(try_read_optional!(
-                buffer.read_u32::<LittleEndian>(),
-                optional_data
-            ))
-            .ok_or(CoreDataError::InvalidServerSecurityProtocol)?,
+            SecurityProtocol::from_bits(try_read_optional!(buffer.read_u32::<LittleEndian>(), optional_data))
+                .ok_or(CoreDataError::InvalidServerSecurityProtocol)?,
         );
 
         optional_data.early_capability_flags = Some(
@@ -68,10 +63,9 @@ impl PduParsing for ServerCoreOptionalData {
     }
 
     fn to_buffer(&self, mut buffer: impl io::Write) -> Result<(), Self::Error> {
-        try_write_optional!(
-            self.client_requested_protocols,
-            |value: &connection_initiation::SecurityProtocol| { buffer.write_u32::<LittleEndian>(value.bits()) }
-        );
+        try_write_optional!(self.client_requested_protocols, |value: &SecurityProtocol| {
+            buffer.write_u32::<LittleEndian>(value.bits())
+        });
 
         try_write_optional!(self.early_capability_flags, |value: &ServerEarlyCapabilityFlags| buffer
             .write_u32::<LittleEndian>(value.bits()));
@@ -94,6 +88,7 @@ impl PduParsing for ServerCoreOptionalData {
 }
 
 bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
     pub struct ServerEarlyCapabilityFlags: u32 {
         const EDGE_ACTIONS_SUPPORTED_V1 = 0x0000_0001;
         const DYNAMIC_DST_SUPPORTED = 0x0000_0002;

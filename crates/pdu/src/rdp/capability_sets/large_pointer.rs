@@ -3,7 +3,7 @@ use std::io;
 use bitflags::bitflags;
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 
-use crate::rdp::CapabilitySetsError;
+use crate::rdp::capability_sets::CapabilitySetsError;
 use crate::PduParsing;
 
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -32,6 +32,7 @@ impl PduParsing for LargePointer {
 }
 
 bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
     pub struct LargePointerSupportFlags: u16 {
         const UP_TO_96X96_PIXELS = 1;
         const UP_TO_384X384_PIXELS = 2;

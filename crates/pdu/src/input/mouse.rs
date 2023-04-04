@@ -65,6 +65,7 @@ impl PduParsing for MousePdu {
 }
 
 bitflags! {
+    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
     pub struct PointerFlags: u16 {
         const WHEEL_NEGATIVE = 0x0100;
         const VERTICAL_WHEEL = 0x0200;

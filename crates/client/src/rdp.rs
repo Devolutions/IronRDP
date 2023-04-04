@@ -1,23 +1,25 @@
-use futures_util::io::AsyncWriteExt as _;
+use std::io;
+use std::net::SocketAddr;
+
+use ironrdp::connector;
 use ironrdp::graphics::image_processing::PixelFormat;
 use ironrdp::pdu::input::fast_path::FastPathInputEvent;
-use ironrdp::session::connection_sequence::{process_connection_sequence, Address};
+use ironrdp::session;
 use ironrdp::session::image::DecodedImage;
-use ironrdp::session::{ActiveStageOutput, ActiveStageProcessor, RdpError};
+use ironrdp::session::{ActiveStage, ActiveStageOutput};
 use smallvec::SmallVec;
 use sspi::network_client::reqwest_network_client::RequestClientFactory;
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
-use tokio_util::compat::TokioAsyncReadCompatExt as _;
 use winit::event_loop::EventLoopProxy;
 
 use crate::config::Config;
-use crate::tls::establish_tls;
 
 #[derive(Debug)]
 pub enum RdpOutputEvent {
     Image { buffer: Vec<u32>, width: u16, height: u16 },
-    Terminated(Result<(), RdpError>),
+    ConnectionFailure(connector::Error),
+    Terminated(session::Result<()>),
 }
 
 #[derive(Debug)]
@@ -42,10 +44,25 @@ pub struct RdpClient {
 impl RdpClient {
     pub async fn run(mut self) {
         loop {
-            match run_impl(&self.config, &self.event_loop_proxy, &mut self.input_event_receiver).await {
+            let (connection_result, framed) = match connect(&self.config).await {
+                Ok(result) => result,
+                Err(e) => {
+                    let _ = self.event_loop_proxy.send_event(RdpOutputEvent::ConnectionFailure(e));
+                    break;
+                }
+            };
+
+            match active_session(
+                framed,
+                connection_result,
+                &self.event_loop_proxy,
+                &mut self.input_event_receiver,
+            )
+            .await
+            {
                 Ok(RdpControlFlow::ReconnectWithNewSize { width, height }) => {
-                    self.config.input.width = width;
-                    self.config.input.height = height;
+                    self.config.connector.desktop_size.width = width;
+                    self.config.connector.desktop_size.height = height;
                 }
                 Ok(RdpControlFlow::TerminatedGracefully) => {
                     let _ = self.event_loop_proxy.send_event(RdpOutputEvent::Terminated(Ok(())));
@@ -65,40 +82,81 @@ enum RdpControlFlow {
     TerminatedGracefully,
 }
 
-async fn run_impl(
-    config: &Config,
+fn lookup_addr(addr: &str) -> io::Result<(&str, SocketAddr)> {
+    use std::net::ToSocketAddrs as _;
+
+    let sockaddr = addr.to_socket_addrs()?.next().unwrap();
+
+    // there must be a port in the provided address string
+    let port_segment_idx = addr.rfind(':').expect("port segment");
+
+    let hostname = &addr[..port_segment_idx];
+
+    Ok((hostname, sockaddr))
+}
+
+type UpgradedFramed = ironrdp_async::Framed<ironrdp_async::TokioCompat<ironrdp_tls::TlsStream<TcpStream>>>;
+
+async fn connect(config: &Config) -> connector::Result<(connector::ConnectionResult, UpgradedFramed)> {
+    let (server_name, server_addr) =
+        lookup_addr(&config.addr).map_err(|e| connector::Error::new("lookup addr").with_custom(e))?;
+
+    let stream = TcpStream::connect(&server_addr)
+        .await
+        .map_err(|e| connector::Error::new("TCP connect").with_custom(e))?;
+
+    let mut framed = ironrdp_async::Framed::tokio_new(stream);
+
+    let mut connector = connector::ClientConnector::new(config.connector.clone())
+        .with_server_addr(server_addr)
+        .with_server_name(server_name)
+        .with_credssp_client_factory(Box::new(RequestClientFactory));
+
+    let should_upgrade = ironrdp_async::connect_begin(&mut framed, &mut connector).await?;
+
+    debug!("TLS upgrade");
+
+    // Ensure there is no leftover
+    let initial_stream = framed.tokio_into_inner_no_leftover();
+
+    let (upgraded_stream, server_public_key) = ironrdp_tls::upgrade(initial_stream, server_name)
+        .await
+        .map_err(|e| connector::Error::new("TLS upgrade").with_custom(e))?;
+
+    let upgraded = ironrdp_async::mark_as_upgraded(should_upgrade, &mut connector, server_public_key);
+
+    let mut upgraded_framed = ironrdp_async::Framed::tokio_new(upgraded_stream);
+
+    let connection_result = ironrdp_async::connect_finalize(upgraded, &mut upgraded_framed, connector).await?;
+
+    Ok((connection_result, upgraded_framed))
+}
+
+async fn active_session(
+    mut framed: UpgradedFramed,
+    connection_result: connector::ConnectionResult,
     event_loop_proxy: &EventLoopProxy<RdpOutputEvent>,
     input_event_receiver: &mut mpsc::UnboundedReceiver<RdpInputEvent>,
-) -> Result<RdpControlFlow, RdpError> {
-    let addr = Address::lookup_addr(&config.addr)?;
-
-    let stream = TcpStream::connect(addr.sock).await.map_err(RdpError::Connection)?;
-
-    let (connection_sequence_result, mut reader, mut writer) = process_connection_sequence(
-        stream.compat(),
-        &addr,
-        &config.input,
-        establish_tls,
-        Box::new(RequestClientFactory),
-    )
-    .await?;
-
+) -> session::Result<RdpControlFlow> {
     let mut image = DecodedImage::new(
         PixelFormat::RgbA32,
-        connection_sequence_result.desktop_size.width,
-        connection_sequence_result.desktop_size.height,
+        connection_result.desktop_size.width,
+        connection_result.desktop_size.height,
     );
 
-    let mut active_stage = ActiveStageProcessor::new(config.input.clone(), None, connection_sequence_result);
+    let mut active_stage = ActiveStage::new(connection_result, None);
 
     'outer: loop {
         tokio::select! {
-            frame = reader.read_frame() => {
-                let frame = frame?.ok_or(RdpError::AccessDenied)?.freeze();
-                let outputs = active_stage.process(&mut image, frame)?;
+            frame = framed.read_pdu() => {
+                let (action, payload) = frame.map_err(|e| session::Error::new("read frame").with_custom(e))?;
+                trace!(?action, frame_length = payload.len(), "Frame received");
+
+                let outputs = active_stage.process(&mut image, action, &payload)?;
+
                 for out in outputs {
                     match out {
-                        ActiveStageOutput::ResponseFrame(frame) => writer.write_all(&frame).await?,
+                        ActiveStageOutput::ResponseFrame(frame) => framed.write_all(&frame).await.map_err(|e| session::Error::new("write response").with_custom(e))?,
                         ActiveStageOutput::GraphicsUpdate(_region) => {
                             let buffer: Vec<u32> = image
                                 .data()
@@ -117,14 +175,14 @@ async fn run_impl(
                                     width: image.width(),
                                     height: image.height(),
                                 })
-                                .map_err(|_| RdpError::Send("event_loop_proxy".to_owned()))?;
+                                .map_err(|e| session::Error::new("event_loop_proxy").with_custom(e))?;
                         }
                         ActiveStageOutput::Terminate => break 'outer,
                     }
                 }
             }
             input_event = input_event_receiver.recv() => {
-                let input_event = input_event.ok_or_else(|| RdpError::Receive("input_event_receiver".to_owned()))?;
+                let input_event = input_event.ok_or(session::Error::new("GUI is stopped"))?;
 
                 match input_event {
                     RdpInputEvent::Resize { mut width, mut height } => {
@@ -140,6 +198,10 @@ async fn run_impl(
                             }
                         }
 
+                        // TODO: use the "auto-reconnect cookie": https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/15b0d1c9-2891-4adb-a45e-deb4aeeeab7c
+
+                        info!(width, height, "resize event");
+
                         return Ok(RdpControlFlow::ReconnectWithNewSize { width, height })
                     },
                     RdpInputEvent::FastPath(events) => {
@@ -154,9 +216,9 @@ async fn run_impl(
                         let mut frame = Vec::new();
                         fastpath_input
                             .to_buffer(&mut frame)
-                            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, format!("Unable to encode FastPathInput: {e}")))?;
+                            .map_err(|e| session::Error::new("FastPathInput encode").with_custom(e))?;
 
-                        writer.write_all(&frame).await?;
+                        framed.write_all(&frame).await.map_err(|e| session::Error::new("write FastPathInput PDU").with_custom(e))?;
                     }
                     RdpInputEvent::Close => {
                         // TODO: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/27915739-8f77-487e-9927-55008af7fd68
