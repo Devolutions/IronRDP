@@ -2,14 +2,15 @@
 
 <script lang="ts">
     import {onMount} from 'svelte';
-    import {initServerBridge, serverBridge} from './services/services-injector';
     import {get_current_component} from "svelte/internal";
-    import {ScreenScale, userInteractionService} from "./services/user-interaction-service";
     import {loggingService} from "./services/logging.service";
-    import type {ResizeEvent} from "./services/server-bridge.service";
+    import {WasmBridgeService} from './services/wasm-bridge.service';
+    import {LogType} from './enums/LogType';
+    import type {ResizeEvent} from './interfaces/ResizeEvent';
+    import {PublicAPI} from './services/PublicAPI';
+    import {ScreenScale} from './enums/ScreenScale';
 
     export let scale = 'real';
-    export let targetplatform: 'web' | 'native' = 'web';
     export let verbose = 'false';
     export let debugwasm: "OFF" | "ERROR" | "WARN" | "INFO" | "DEBUG" | "TRACE" = 'INFO';
     export let flexcenter = 'true';
@@ -25,6 +26,9 @@
 
     let viewerStyle;
     let wrapperStyle;
+    
+    let wasmService = new WasmBridgeService();
+    let publicAPI = new PublicAPI(wasmService);
 
     function initListeners() {
         serverBridgeListeners();
@@ -71,13 +75,13 @@
     }
 
     function serverBridgeListeners() {
-        serverBridge.resize.subscribe((evt: ResizeEvent) => {
+        wasmService.resize.subscribe((evt: ResizeEvent) => {
             loggingService.info(`Resize canvas to: ${evt.desktop_size.width}x${evt.desktop_size.height}`);
             canvas.width = evt.desktop_size.width;
             canvas.height = evt.desktop_size.height;
             scaleSession(scale);
         });
-        serverBridge.updateImage.subscribe(({pixels, infos}) => {
+        wasmService.updateImage.subscribe(({pixels, infos}) => {
             draw(pixels, infos);
         });
     }
@@ -87,12 +91,12 @@
             scaleSession(scale);
         });
 
-        userInteractionService.scaleObserver.subscribe(s => {
+        wasmService.scaleObserver.subscribe(s => {
             loggingService.info("Change scale!");
             scaleSession(s);
         });
 
-        userInteractionService.changeVisibilityObservable.subscribe(val => {
+        wasmService.changeVisibilityObservable.subscribe(val => {
             isVisible = val;
             if (val) {
                 //Enforce first scaling and delay the call to scaleSession to ensure Dom is ready.
@@ -201,29 +205,29 @@
             y: Math.round((evt.clientY - rect.top) * scaleY)
         };
 
-        userInteractionService.setMousePosition(coord);
+        wasmService.updateMousePosition(coord);
     }
 
     function setMouseButtonState(state, isDown) {
-        userInteractionService.setMouseButtonState(state, isDown);
+        wasmService.mouseButtonState(state, isDown);
     }
 
     function mouseWheel(evt) {
-        userInteractionService.mouseWheel(evt);
+        wasmService.mouseWheel(evt);
     }
 
     function setMouseIn(evt) {
         capturingInputs = true;
-        userInteractionService.mouseIn(evt);
+        wasmService.mouseIn(evt);
     }
 
     function setMouseOut(evt) {
         capturingInputs = false;
-        userInteractionService.mouseOut(evt);
+        wasmService.mouseOut(evt);
     }
 
     function keyboardEvent(evt) {
-        userInteractionService.sendKeyboardEvent(evt);
+        wasmService.sendKeyboardEvent(evt);
     }
 
     function getWindowSize() {
@@ -257,15 +261,13 @@
         canvas.width = 800;
         canvas.height = 600;
 
-        await initServerBridge(targetplatform, debugwasm);
-
-        userInteractionService.setServerBridge(serverBridge);
-        userInteractionService.setCanvas(canvas);
+        await wasmService.init(LogType[debugwasm] || LogType.INFO);
+        wasmService.setCanvas(canvas);
 
         initListeners();
 
         let result = {
-            irgUserInteraction: userInteractionService.exposedFunctions
+            irgUserInteraction: publicAPI.getExposedFunctions()
         };
 
         loggingService.info('Component ready');
