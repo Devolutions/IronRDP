@@ -2,7 +2,7 @@ import {loggingService} from './logging.service';
 import type {NewSessionInfo} from '../interfaces/NewSessionInfo';
 import {SpecialCombination} from '../enums/SpecialCombination';
 import type {WasmBridgeService} from './wasm-bridge.service';
-import type {IRGUserInteraction} from '../interfaces/IRGUserInteraction';
+import type {UserInteraction} from '../interfaces/UserInteraction';
 import type {ScreenScale} from '../enums/ScreenScale';
 import type {Observable} from 'rxjs';
 
@@ -35,7 +35,7 @@ export class PublicAPI {
         this.wasmService.setScale(scale);
     }
 
-    getExposedFunctions(): IRGUserInteraction {
+    getExposedFunctions(): UserInteraction {
         return {
             setVisibility: this.setVisibility.bind(this),
             connect: this.connect.bind(this),

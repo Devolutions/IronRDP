@@ -2,7 +2,7 @@
 import type {Observable} from 'rxjs';
 import type {NewSessionInfo} from './NewSessionInfo';
 
-export interface IRGUserInteraction {
+export interface UserInteraction {
     setVisibility(state: boolean);
 
     setScale(scale: ScreenScale);

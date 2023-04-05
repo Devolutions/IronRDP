@@ -1,6 +1,6 @@
 import IronRemoteGui from './iron-remote-gui.svelte';
 
-export type {IRGUserInteraction} from './interfaces/IRGUserInteraction';
+export type {UserInteraction} from './interfaces/UserInteraction';
 export type {ResizeEvent} from './interfaces/ResizeEvent';
 export type {NewSessionInfo} from './interfaces/NewSessionInfo';
 export type {ServerRect} from './interfaces/ServerRect';
