@@ -7,7 +7,7 @@
     "Zacharia Ellaham"
   ],
   "description": "Web Component providing agnostic implementation for Iron Wasm base client.",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "type": "module",
   "private": true,
   "scripts": {
@@ -20,7 +20,6 @@
   },
   "devDependencies": {
     "@sveltejs/vite-plugin-svelte": "^2.0.0",
-    "@tauri-apps/api": "^1.2.0",
     "@tsconfig/svelte": "^3.0.0",
     "rxjs": "^6.6.7",
     "svelte": "^3.54.0",
