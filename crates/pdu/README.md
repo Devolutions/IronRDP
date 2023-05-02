@@ -1,3 +1,3 @@
-# IronRDP Core
+# IronRDP PDU
 
-IronRDP core primitives: mostly RDP protocol packets encoding and decoding.
+RDP PDU encoding and decoding.
