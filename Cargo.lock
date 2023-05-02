@@ -160,7 +160,6 @@ dependencies = [
  "num-traits",
  "rusticata-macros 4.1.0",
  "thiserror",
- "time 0.3.20",
 ]
 
 [[package]]
@@ -772,12 +771,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "data-encoding"
-version = "2.3.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "23d8666cb01533c39dde32bcbab8e227b4ed6679b2c925eba05feabea39508fb"
-
-[[package]]
 name = "der"
 version = "0.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -820,7 +813,6 @@ dependencies = [
  "asn1-rs",
  "displaydoc",
  "nom 7.1.3",
- "num-bigint 0.4.3",
  "num-traits",
  "rusticata-macros 4.1.0",
 ]
@@ -1593,7 +1585,7 @@ dependencies = [
  "sha1",
  "tap",
  "thiserror",
- "x509-parser 0.15.0",
+ "x509-cert",
 ]
 
 [[package]]
@@ -1652,7 +1644,7 @@ dependencies = [
  "tokio",
  "tokio-native-tls",
  "tokio-rustls 0.24.0",
- "x509-parser 0.15.0",
+ "x509-cert",
 ]
 
 [[package]]
@@ -2275,15 +2267,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "oid-registry"
-version = "0.6.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9bedf36ffb6ba96c2eb7144ef6270557b52e54b20c0a8e1eb2ff99a6c6959bff"
-dependencies = [
- "asn1-rs",
-]
-
-[[package]]
 name = "once_cell"
 version = "1.17.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2874,7 +2857,7 @@ dependencies = [
  "num-bigint 0.2.6",
  "num_enum 0.4.3",
  "rand 0.7.3",
- "x509-parser 0.6.5",
+ "x509-parser",
  "yasna",
 ]
 
@@ -4581,23 +4564,6 @@ dependencies = [
  "num-bigint 0.2.6",
  "rusticata-macros 2.1.0",
  "time 0.1.45",
-]
-
-[[package]]
-name = "x509-parser"
-version = "0.15.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bab0c2f54ae1d92f4fcb99c0b7ccf0b1e3451cbd395e5f115ccbdbcb18d4f634"
-dependencies = [
- "asn1-rs",
- "data-encoding",
- "der-parser 8.2.0",
- "lazy_static",
- "nom 7.1.3",
- "oid-registry",
- "rusticata-macros 4.1.0",
- "thiserror",
- "time 0.3.20",
 ]
 
 [[package]]

@@ -1,7 +1,6 @@
 use std::io;
 
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt as _};
-use x509_parser::prelude::{FromDer as _, X509Certificate};
 
 #[cfg(feature = "rustls")]
 pub type TlsStream<S> = tokio_rustls::client::TlsStream<S>;
@@ -61,7 +60,7 @@ where
             .peer_certificates()
             .and_then(|certificates| certificates.first())
             .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "peer certificate is missing"))?;
-        get_tls_peer_pubkey(&cert.0)?
+        extract_tls_server_public_key(&cert.0)?
     };
 
     #[cfg(all(feature = "native-tls", not(feature = "rustls")))]
@@ -72,18 +71,25 @@ where
             .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?
             .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "peer certificate is missing"))?;
         let cert = cert.to_der().map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
-        get_tls_peer_pubkey(&cert)?
+        extract_tls_server_public_key(&cert)?
     };
 
     Ok((tls_stream, server_public_key))
 }
 
-fn get_tls_peer_pubkey(cert: &[u8]) -> io::Result<Vec<u8>> {
-    let res = X509Certificate::from_der(cert)
-        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "Invalid der certificate."))?;
-    let public_key = res.1.tbs_certificate.subject_pki.subject_public_key;
+fn extract_tls_server_public_key(cert: &[u8]) -> io::Result<Vec<u8>> {
+    use x509_cert::der::Decode as _;
 
-    Ok(public_key.data.to_vec())
+    let cert = x509_cert::Certificate::from_der(cert).map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+
+    let server_public_key = cert
+        .tbs_certificate
+        .subject_public_key_info
+        .subject_public_key
+        .raw_bytes()
+        .to_owned();
+
+    Ok(server_public_key)
 }
 
 #[cfg(feature = "rustls")]

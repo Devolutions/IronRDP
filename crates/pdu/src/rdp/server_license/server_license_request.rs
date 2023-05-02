@@ -6,7 +6,6 @@ use std::io;
 
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use cert::{CertificateType, ProprietaryCertificate, X509CertificateChain};
-use x509_parser::parse_x509_certificate;
 
 use super::{
     BasicSecurityHeader, BasicSecurityHeaderFlags, BlobHeader, BlobType, LicenseErrorCode, LicenseHeader,
@@ -270,6 +269,8 @@ pub struct ServerCertificate {
 
 impl ServerCertificate {
     pub fn get_public_key(&self) -> Result<Vec<u8>, ServerLicenseError> {
+        use x509_cert::der::Decode as _;
+
         match &self.certificate {
             CertificateType::Proprietary(certificate) => {
                 let mut public_key_buffer = Vec::with_capacity(certificate.public_key.buffer_length());
@@ -277,13 +278,22 @@ impl ServerCertificate {
                 Ok(public_key_buffer)
             }
             CertificateType::X509(certificate) => {
-                if let Ok((_, tbs)) = parse_x509_certificate(
-                    certificate.certificate_array[certificate.certificate_array.len() - 1].as_slice(),
-                ) {
-                    Ok(Vec::from(tbs.tbs_certificate.subject_pki.subject_public_key.data))
-                } else {
-                    Err(ServerLicenseError::InvalidX509Certificate)
-                }
+                let der = certificate
+                    .certificate_array
+                    .last()
+                    .ok_or_else(|| ServerLicenseError::InvalidX509CertificatesAmount)?;
+
+                let cert =
+                    x509_cert::Certificate::from_der(der).map_err(|_| ServerLicenseError::InvalidX509Certificate)?;
+
+                let public_key = cert
+                    .tbs_certificate
+                    .subject_public_key_info
+                    .subject_public_key
+                    .raw_bytes()
+                    .to_owned();
+
+                Ok(public_key)
             }
         }
     }
