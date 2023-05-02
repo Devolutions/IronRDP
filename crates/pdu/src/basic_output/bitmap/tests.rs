@@ -64,7 +64,7 @@ fn from_buffer_bitmap_data_parsses_correctly() {
 }
 
 #[test]
-fn to_buffer_bitmap_data_serializes_correcly() {
+fn to_buffer_bitmap_data_serializes_correctly() {
     let expected = BITMAP_BUFFER.as_ref();
     let mut buffer = vec![0; expected.len()];
     BITMAP.to_buffer_consume(&mut buffer.as_mut_slice()).unwrap();

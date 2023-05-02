@@ -5,7 +5,7 @@ use crate::section::Section;
 
 const CARGO: &str = env!("CARGO");
 const WASM_PACKAGES: &[&str] = &["ironrdp-web"];
-const FUZZ_TARGETS: &[&str] = &["pdu_decoding", "rle_decompression"];
+const FUZZ_TARGETS: &[&str] = &["pdu_decoding", "rle_decompression", "bitmap_stream"];
 
 pub fn check_formatting(sh: &Shell) -> anyhow::Result<()> {
     let _s = Section::new("FORMATTING");

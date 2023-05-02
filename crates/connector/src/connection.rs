@@ -781,6 +781,18 @@ impl Sequence for ClientConnector {
 fn create_gcc_blocks(config: &Config, selected_protocol: nego::SecurityProtocol) -> gcc::ClientGccBlocks {
     use ironrdp_pdu::gcc::*;
 
+    let color_depth = config
+        .bitmap
+        .as_ref()
+        .map(|bitmap| match bitmap.color_depth {
+            15 => SupportedColorDepths::BPP15,
+            16 => SupportedColorDepths::BPP16,
+            24 => SupportedColorDepths::BPP24,
+            32 => SupportedColorDepths::BPP32,
+            _ => panic!("Unsupported color depth: {}", bitmap.color_depth),
+        })
+        .unwrap_or(SupportedColorDepths::BPP16);
+
     ClientGccBlocks {
         core: ClientCoreData {
             version: RdpVersion::V5_PLUS,
@@ -800,7 +812,7 @@ fn create_gcc_blocks(config: &Config, selected_protocol: nego::SecurityProtocol)
                 client_product_id: Some(1),
                 serial_number: Some(0),
                 high_color_depth: Some(HighColorDepth::Bpp24),
-                supported_color_depths: Some(SupportedColorDepths::BPP16),
+                supported_color_depths: Some(color_depth),
                 early_capability_flags: {
                     let mut early_capability_flags = ClientEarlyCapabilityFlags::VALID_CONNECTION_TYPE
                         | ClientEarlyCapabilityFlags::SUPPORT_ERR_INFO_PDU;
@@ -893,6 +905,20 @@ fn create_client_confirm_active(
 
     server_capability_sets.retain(|capability_set| matches!(capability_set, CapabilitySet::MultiFragmentUpdate(_)));
 
+    let lossy_bitmap_compression = config
+        .bitmap
+        .as_ref()
+        .map(|bitmap| bitmap.lossy_compression)
+        .unwrap_or(false);
+
+    let drawing_flags = if lossy_bitmap_compression {
+        BitmapDrawingFlags::ALLOW_SKIP_ALPHA
+            | BitmapDrawingFlags::ALLOW_DYNAMIC_COLOR_FIDELITY
+            | BitmapDrawingFlags::ALLOW_COLOR_SUBSAMPLING
+    } else {
+        BitmapDrawingFlags::ALLOW_SKIP_ALPHA
+    };
+
     server_capability_sets.extend_from_slice(&[
         CapabilitySet::General(General {
             major_platform_type: config.platform,
@@ -906,7 +932,7 @@ fn create_client_confirm_active(
             desktop_width: config.desktop_size.width,
             desktop_height: config.desktop_size.height,
             desktop_resize_flag: false,
-            drawing_flags: BitmapDrawingFlags::empty(),
+            drawing_flags,
         }),
         CapabilitySet::Order(Order::new(
             OrderFlags::NEGOTIATE_ORDER_SUPPORT | OrderFlags::ZERO_BOUNDS_DELTAS_SUPPORT,

@@ -18,6 +18,10 @@ fn clip(v: i32) -> u8 {
     min(max(v, 0), 255) as u8
 }
 
+fn clip_i16(v: i16) -> u8 {
+    min(max(v, 0), 255) as u8
+}
+
 #[derive(Debug)]
 pub struct YCbCrBuffer<'a> {
     pub y: &'a [i16],
@@ -53,6 +57,13 @@ pub struct YCbCr {
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub struct YCoCg {
+    pub y: u8,
+    pub co: i8,
+    pub cg: i8,
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub struct Rgb {
     pub r: u8,
     pub g: u8,
@@ -75,6 +86,22 @@ impl From<YCbCr> for Rgb {
         let r = clip((yy.overflowing_add(cr_r).0) >> 21);
         let g = clip((yy.overflowing_sub(cb_g).0.overflowing_sub(cr_g).0) >> 21);
         let b = clip((yy.overflowing_add(cb_b).0.overflowing_add(cr_b).0) >> 21);
+
+        Self { r, g, b }
+    }
+}
+
+impl From<YCoCg> for Rgb {
+    fn from(YCoCg { y, co, cg }: YCoCg) -> Self {
+        let y = i16::from(y);
+        let co = i16::from(co);
+        let cg = i16::from(cg);
+
+        let t = y - cg / 2;
+
+        let r = clip_i16(t + co / 2);
+        let g = clip_i16(y + cg / 2);
+        let b = clip_i16(t - co / 2);
 
         Self { r, g, b }
     }

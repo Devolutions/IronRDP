@@ -307,6 +307,7 @@ fn build_config(username: String, password: String, domain: Option<String>) -> c
             height: DEFAULT_HEIGHT,
         },
         graphics: None,
+        bitmap: None,
         client_build: semver::Version::parse(env!("CARGO_PKG_VERSION"))
             .map(|version| version.major * 100 + version.minor * 10 + version.patch)
             .unwrap_or(0)

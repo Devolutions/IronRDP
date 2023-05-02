@@ -41,6 +41,13 @@ pub struct GraphicsConfig {
 
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
+pub struct BitmapConfig {
+    pub lossy_compression: bool,
+    pub color_depth: u32,
+}
+
+#[derive(Debug, Clone)]
+#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct Config {
     pub desktop_size: DesktopSize,
     pub security_protocol: nego::SecurityProtocol,
@@ -56,6 +63,7 @@ pub struct Config {
     pub keyboard_functional_keys_count: u32,
     pub ime_file_name: String,
     pub graphics: Option<GraphicsConfig>,
+    pub bitmap: Option<BitmapConfig>,
     pub dig_product_id: String,
     pub client_dir: String,
     pub platform: capability_sets::MajorPlatformType,

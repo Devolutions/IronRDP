@@ -348,6 +348,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "bmp"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "69985ff4f58085ac696454692d0b646a66ad1f9cc9be294c91dc51bb5df511ae"
+dependencies = [
+ "byteorder",
+]
+
+[[package]]
 name = "bufstream"
 version = "0.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -921,6 +930,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "dissimilar"
+version = "1.0.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "210ec60ae7d710bed8683e333e9d2855a8a56a3e9892b38bad3bb0d4d29b0d5e"
+
+[[package]]
 name = "dlib"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -976,6 +991,16 @@ name = "exitcode"
 version = "1.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "de853764b47027c2e862a995c34978ffa63c1501f2e15f987ba11bd4f9bba193"
+
+[[package]]
+name = "expect-test"
+version = "1.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "30d9eafeadd538e68fb28016364c9732d78e420b9ff8853fa5e4058861e9f8d3"
+dependencies = [
+ "dissimilar",
+ "once_cell",
+]
 
 [[package]]
 name = "fake-simd"
@@ -1551,7 +1576,9 @@ dependencies = [
  "bit_field",
  "bitflags 2.0.2",
  "bitvec",
+ "bmp",
  "byteorder",
+ "expect-test",
  "hex-literal",
  "ironrdp-pdu",
  "lazy_static",
@@ -1583,6 +1610,7 @@ dependencies = [
  "bitflags 2.0.2",
  "byteorder",
  "der-parser 8.2.0",
+ "expect-test",
  "ironrdp-pdu-samples",
  "lazy_static",
  "md-5 0.10.5",

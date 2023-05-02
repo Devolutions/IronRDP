@@ -9,7 +9,6 @@
 //! - FreeRDP:
 //!   - [interleaved.c](https://github.com/FreeRDP/FreeRDP/blob/db98f16e5bce003c898e8c85eb7af964f22a16a8/libfreerdp/codec/interleaved.c#L3)
 //!   - [bitmap.c](https://github.com/FreeRDP/FreeRDP/blob/3a8dce07ea0262b240025bd68b63801578ca63f0/libfreerdp/codec/include/bitmap.c)
-
 use core::fmt;
 use std::ops::BitXor;
 
@@ -545,30 +544,30 @@ struct Buf<'a> {
 }
 
 impl<'a> Buf<'a> {
-    fn new(bytes: &'a [u8]) -> Self {
+    pub fn new(bytes: &'a [u8]) -> Self {
         Self { inner: bytes, pos: 0 }
     }
 
-    fn remaining_len(&self) -> usize {
+    pub fn remaining_len(&self) -> usize {
         self.inner.len() - self.pos
     }
 
-    fn read<const N: usize>(&mut self) -> [u8; N] {
+    fn read_fixed<const N: usize>(&mut self) -> [u8; N] {
         let bytes = &self.inner[self.pos..self.pos + N];
         self.pos += N;
         bytes.try_into().expect("N-elements array")
     }
 
     fn read_u8(&mut self) -> u8 {
-        u8::from_le_bytes(self.read::<1>())
+        u8::from_le_bytes(self.read_fixed::<1>())
     }
 
     fn read_u16(&mut self) -> u16 {
-        u16::from_le_bytes(self.read::<2>())
+        u16::from_le_bytes(self.read_fixed::<2>())
     }
 
     fn read_u24(&mut self) -> u32 {
-        let bytes = self.read::<3>();
+        let bytes = self.read_fixed::<3>();
         u32::from_le_bytes([bytes[0], bytes[1], bytes[2], 0])
     }
 
