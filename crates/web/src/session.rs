@@ -286,6 +286,11 @@ impl Session {
 
         Ok(())
     }
+
+    pub fn shutdown(&self) -> Result<(), IronRdpError> {
+        // TODO: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/27915739-8f77-487e-9927-55008af7fd68
+        Ok(())
+    }
 }
 
 fn build_config(username: String, password: String, domain: Option<String>) -> connector::Config {
@@ -414,7 +419,6 @@ where
 {
     use ironrdp::connector::Sequence as _;
     use x509_cert::der::Decode as _;
-    use x509_cert::der::Encode as _;
 
     #[derive(Clone, Copy, Debug)]
     pub struct RDCleanPathHint;
@@ -522,8 +526,8 @@ where
             .tbs_certificate
             .subject_public_key_info
             .subject_public_key
-            .to_der()
-            .context("subject public key DER encode")?;
+            .raw_bytes()
+            .to_owned();
 
         let should_upgrade = ironrdp_async::skip_connect_begin(connector);
 
