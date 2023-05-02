@@ -13,6 +13,7 @@ pub mod input;
 pub mod mcs;
 pub mod nego;
 pub mod padding;
+pub mod pcb;
 pub mod rdp;
 pub mod tpdu;
 pub mod tpkt;
@@ -23,10 +24,8 @@ pub(crate) mod basic_output;
 pub(crate) mod ber;
 pub(crate) mod crypto;
 pub(crate) mod per;
-pub(crate) mod preconnection;
 
 pub use crate::basic_output::{bitmap, fast_path, surface_commands};
-pub use crate::preconnection::{PreconnectionPdu, PreconnectionPduError};
 pub use crate::rdp::vc::dvc;
 
 pub type Result<T> = core::result::Result<T, Error>;
