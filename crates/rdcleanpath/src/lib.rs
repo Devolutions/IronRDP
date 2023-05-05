@@ -132,7 +132,7 @@ impl RDCleanPathPdu {
 
         let header = match der::Header::decode(&mut reader) {
             Ok(header) => header,
-            Err(e) => match dbg!(e.kind()) {
+            Err(e) => match e.kind() {
                 der::ErrorKind::Incomplete { .. } => return DetectionResult::NotEnoughBytes,
                 _ => return DetectionResult::Failed,
             },
@@ -144,17 +144,14 @@ impl RDCleanPathPdu {
 
         let total_length = header_encoded_len + body_length;
 
-        match dbg!(der::asn1::ContextSpecific::<u64>::decode_explicit(
-            &mut reader,
-            der::TagNumber::N0
-        )) {
+        match der::asn1::ContextSpecific::<u64>::decode_explicit(&mut reader, der::TagNumber::N0) {
             Ok(Some(version)) if version.value == VERSION_1 => DetectionResult::Detected {
                 version: VERSION_1,
                 total_length,
             },
             Ok(Some(_)) => DetectionResult::Failed,
             Ok(None) => DetectionResult::NotEnoughBytes,
-            Err(e) => match dbg!(e.kind()) {
+            Err(e) => match e.kind() {
                 der::ErrorKind::Incomplete { .. } => DetectionResult::NotEnoughBytes,
                 _ => DetectionResult::Failed,
             },
