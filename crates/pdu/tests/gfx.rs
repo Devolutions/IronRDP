@@ -1,6 +1,5 @@
 use ironrdp_pdu::rdp::vc::dvc::gfx::*;
-use ironrdp_pdu::PduBufferParsing;
-use ironrdp_pdu::PduParsing;
+use ironrdp_pdu::{PduBufferParsing, PduParsing};
 use ironrdp_pdu_samples::gfx::*;
 use ironrdp_pdu_samples::graphics_messages::*;
 

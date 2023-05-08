@@ -29,7 +29,7 @@ pub struct SessionBuilder(Rc<RefCell<SessionBuilderInner>>);
 #[derive(Default)]
 struct SessionBuilderInner {
     username: Option<String>,
-    server_name: Option<String>,
+    destination: Option<String>,
     server_domain: Option<String>,
     password: Option<String>,
     proxy_address: Option<String>,
@@ -50,8 +50,8 @@ impl SessionBuilder {
         self.clone()
     }
 
-    pub fn server_name(&self, server_name: String) -> SessionBuilder {
-        self.0.borrow_mut().server_name = Some(server_name);
+    pub fn destination(&self, destination: String) -> SessionBuilder {
+        self.0.borrow_mut().destination = Some(destination);
         self.clone()
     }
 
@@ -97,7 +97,7 @@ impl SessionBuilder {
     pub async fn connect(&self) -> Result<Session, IronRdpError> {
         let (
             username,
-            server_name,
+            destination,
             server_domain,
             password,
             proxy_address,
@@ -110,7 +110,7 @@ impl SessionBuilder {
         {
             let inner = self.0.borrow();
             username = inner.username.clone().expect("username");
-            server_name = inner.server_name.clone().expect("server_name");
+            destination = inner.destination.clone().expect("destination");
             server_domain = inner.server_domain.clone();
             password = inner.password.clone().expect("password");
             proxy_address = inner.proxy_address.clone().expect("proxy_address");
@@ -126,7 +126,7 @@ impl SessionBuilder {
 
         let ws = WebSocketCompat::new(WebSocket::open(&proxy_address).context("Couldn’t open WebSocket")?);
 
-        let (connection_result, ws) = connect(ws, config, auth_token, server_name, pcb).await?;
+        let (connection_result, ws) = connect(ws, config, auth_token, destination, pcb).await?;
 
         info!("Connected!");
 
@@ -389,16 +389,16 @@ async fn connect(
     ws: WebSocketCompat,
     config: connector::Config,
     proxy_auth_token: String,
-    server_name: String,
+    destination: String,
     pcb: Option<String>,
 ) -> Result<(connector::ConnectionResult, WebSocketCompat), IronRdpError> {
     let mut framed = ironrdp_async::Framed::futures_new(ws);
 
     let mut connector = connector::ClientConnector::new(config)
-        .with_server_name(&server_name)
+        .with_server_name(&destination)
         .with_credssp_client_factory(Box::new(PlaceholderNetworkClientFactory));
 
-    let upgraded = connect_rdcleanpath(&mut framed, &mut connector, server_name, proxy_auth_token, pcb).await?;
+    let upgraded = connect_rdcleanpath(&mut framed, &mut connector, destination, proxy_auth_token, pcb).await?;
 
     let connection_result = ironrdp_async::connect_finalize(upgraded, &mut framed, connector).await?;
 
@@ -410,7 +410,7 @@ async fn connect(
 async fn connect_rdcleanpath<S>(
     framed: &mut ironrdp_async::Framed<S>,
     connector: &mut ClientConnector,
-    server_name: String,
+    destination: String,
     proxy_auth_token: String,
     pcb: Option<String>,
 ) -> Result<ironrdp_async::Upgraded, IronRdpError>
@@ -456,7 +456,7 @@ where
         let x224_pdu = buf[..x224_pdu_len].to_vec();
 
         let rdcleanpath_req =
-            ironrdp_rdcleanpath::RDCleanPathPdu::new_request(x224_pdu, server_name, proxy_auth_token, pcb)
+            ironrdp_rdcleanpath::RDCleanPathPdu::new_request(x224_pdu, destination, proxy_auth_token, pcb)
                 .context("new RDCleanPath request")?;
         debug!(message = ?rdcleanpath_req, "Send RDCleanPath request");
         let rdcleanpath_req = rdcleanpath_req.to_der().context("RDCleanPath request encode")?;

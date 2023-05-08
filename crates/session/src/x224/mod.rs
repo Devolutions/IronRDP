@@ -11,9 +11,8 @@ use ironrdp_pdu::rdp::headers::ShareDataPdu;
 use ironrdp_pdu::rdp::server_error_info::{ErrorInfo, ProtocolIndependentCode, ServerSetErrorInfoPdu};
 use ironrdp_pdu::rdp::vc::{self, dvc};
 
-use crate::{Error, Result};
-
 pub use self::gfx::GfxHandler;
+use crate::{Error, Result};
 
 pub const RDP8_GRAPHICS_PIPELINE_NAME: &str = "Microsoft::Windows::RDS::Graphics";
 pub const RDP8_DISPLAY_PIPELINE_NAME: &str = "Microsoft::Windows::RDS::DisplayControl";

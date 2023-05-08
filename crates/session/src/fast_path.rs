@@ -10,8 +10,7 @@ use ironrdp_pdu::PduBufferParsing;
 
 use crate::image::DecodedImage;
 use crate::utils::CodecId;
-use crate::Result;
-use crate::{rfx, Error};
+use crate::{rfx, Error, Result};
 
 pub struct Processor {
     complete_data: CompleteData,

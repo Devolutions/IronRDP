@@ -1,6 +1,8 @@
 //! This module contains the RDP_PRECONNECTION_PDU_V1 and RDP_PRECONNECTION_PDU_V2 structures.
 
-use crate::{cursor::ReadCursor, padding::Padding, Error, Pdu, PduDecode, PduEncode, Result};
+use crate::cursor::ReadCursor;
+use crate::padding::Padding;
+use crate::{Error, Pdu, PduDecode, PduEncode, Result};
 
 /// Preconnection PDU version
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

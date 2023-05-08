@@ -8,7 +8,7 @@ use sspi::credssp;
 use crate::channel_connection::{ChannelConnectionSequence, ChannelConnectionState};
 use crate::connection_finalization::ConnectionFinalizationSequence;
 use crate::license_exchange::LicenseExchangeSequence;
-use crate::{legacy, Config, DesktopSize, Error, Result, Sequence, State, StaticChannels, Written};
+use crate::{legacy, Config, DesktopSize, Error, Result, Sequence, ServerName, State, StaticChannels, Written};
 
 #[derive(Clone, Copy, Debug)]
 pub struct CredsspTsRequestHint;
@@ -165,7 +165,7 @@ pub struct ClientConnector {
     pub config: Config,
     pub state: ClientConnectorState,
     pub server_addr: Option<std::net::SocketAddr>,
-    pub server_name: Option<String>,
+    pub server_name: Option<ServerName>,
     pub network_client_factory: Option<Box<dyn sspi::network_client::NetworkClientFactory>>,
     pub server_public_key: Option<Vec<u8>>,
 }
@@ -194,13 +194,13 @@ impl ClientConnector {
     }
 
     /// Must be set to the actual target server hostname (as opposed to the proxy)
-    pub fn with_server_name(mut self, name: impl Into<String>) -> Self {
+    pub fn with_server_name(mut self, name: impl Into<ServerName>) -> Self {
         self.server_name = Some(name.into());
         self
     }
 
     /// Must be set to the actual target server hostname (as opposed to the proxy)
-    pub fn attach_server_hostname(&mut self, name: impl Into<String>) {
+    pub fn attach_server_name(&mut self, name: impl Into<ServerName>) {
         self.server_name = Some(name.into());
     }
 
@@ -362,7 +362,8 @@ impl Sequence for ClientConnector {
                 let server_name = self
                     .server_name
                     .take()
-                    .ok_or(Error::new("server hostname is missing"))?;
+                    .ok_or(Error::new("server name is missing"))?
+                    .into_inner();
 
                 let service_principal_name = format!("TERMSRV/{server_name}");
 

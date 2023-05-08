@@ -1,12 +1,8 @@
-use std::io;
-use std::net::SocketAddr;
-
-use ironrdp::connector;
 use ironrdp::graphics::image_processing::PixelFormat;
 use ironrdp::pdu::input::fast_path::FastPathInputEvent;
-use ironrdp::session;
 use ironrdp::session::image::DecodedImage;
 use ironrdp::session::{ActiveStage, ActiveStageOutput};
+use ironrdp::{connector, session};
 use smallvec::SmallVec;
 use sspi::network_client::reqwest_network_client::RequestClientFactory;
 use tokio::net::TcpStream;
@@ -82,24 +78,13 @@ enum RdpControlFlow {
     TerminatedGracefully,
 }
 
-fn lookup_addr(addr: &str) -> io::Result<(&str, SocketAddr)> {
-    use std::net::ToSocketAddrs as _;
-
-    let sockaddr = addr.to_socket_addrs()?.next().unwrap();
-
-    // there must be a port in the provided address string
-    let port_segment_idx = addr.rfind(':').expect("port segment");
-
-    let hostname = &addr[..port_segment_idx];
-
-    Ok((hostname, sockaddr))
-}
-
 type UpgradedFramed = ironrdp_async::Framed<ironrdp_async::TokioCompat<ironrdp_tls::TlsStream<TcpStream>>>;
 
 async fn connect(config: &Config) -> connector::Result<(connector::ConnectionResult, UpgradedFramed)> {
-    let (server_name, server_addr) =
-        lookup_addr(&config.addr).map_err(|e| connector::Error::new("lookup addr").with_custom(e))?;
+    let server_addr = config
+        .destination
+        .lookup_addr()
+        .map_err(|e| connector::Error::new("lookup addr").with_custom(e))?;
 
     let stream = TcpStream::connect(&server_addr)
         .await
@@ -109,7 +94,7 @@ async fn connect(config: &Config) -> connector::Result<(connector::ConnectionRes
 
     let mut connector = connector::ClientConnector::new(config.connector.clone())
         .with_server_addr(server_addr)
-        .with_server_name(server_name)
+        .with_server_name(&config.destination)
         .with_credssp_client_factory(Box::new(RequestClientFactory));
 
     let should_upgrade = ironrdp_async::connect_begin(&mut framed, &mut connector).await?;
@@ -119,7 +104,7 @@ async fn connect(config: &Config) -> connector::Result<(connector::ConnectionRes
     // Ensure there is no leftover
     let initial_stream = framed.tokio_into_inner_no_leftover();
 
-    let (upgraded_stream, server_public_key) = ironrdp_tls::upgrade(initial_stream, server_name)
+    let (upgraded_stream, server_public_key) = ironrdp_tls::upgrade(initial_stream, config.destination.name())
         .await
         .map_err(|e| connector::Error::new("TLS upgrade").with_custom(e))?;
 

@@ -1,6 +1,5 @@
 use ironrdp_pdu::mcs::*;
-use ironrdp_pdu::Error;
-use ironrdp_pdu::PduParsing as _;
+use ironrdp_pdu::{Error, PduParsing as _};
 use ironrdp_pdu_samples::mcs::*;
 use ironrdp_pdu_samples::mcs_encode_decode_test;
 

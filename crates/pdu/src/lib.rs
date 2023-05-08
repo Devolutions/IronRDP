@@ -1,6 +1,8 @@
-use crate::cursor::ReadCursor;
 use core::fmt;
+
 use cursor::WriteCursor;
+
+use crate::cursor::ReadCursor;
 
 #[macro_use]
 mod macros;

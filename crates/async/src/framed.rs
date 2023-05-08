@@ -1,7 +1,7 @@
-use std::{io, pin::Pin};
+use std::io;
+use std::pin::Pin;
 
 use bytes::{Bytes, BytesMut};
-
 use ironrdp_pdu::PduHint;
 
 // TODO: use static async fn / return position impl trait in traits where stabiziled (https://github.com/rust-lang/rust/issues/91611)

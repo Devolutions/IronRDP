@@ -1532,6 +1532,7 @@ dependencies = [
  "arbitrary",
  "ironrdp-pdu",
  "rand_core 0.6.4",
+ "rstest",
  "sspi",
  "tracing",
 ]

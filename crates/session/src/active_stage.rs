@@ -3,10 +3,8 @@ use ironrdp_pdu::geometry::Rectangle;
 use ironrdp_pdu::Action;
 
 use crate::image::DecodedImage;
-use crate::utils;
 use crate::x224::GfxHandler;
-use crate::Result;
-use crate::{fast_path, x224};
+use crate::{fast_path, utils, x224, Result};
 
 pub struct ActiveStage {
     x224_processor: x224::Processor,

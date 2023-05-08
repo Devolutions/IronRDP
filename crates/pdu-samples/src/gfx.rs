@@ -1,7 +1,8 @@
+use ironrdp_pdu::rdp::vc::dvc::gfx::*;
+
 use crate::graphics_messages::{
     FRAME_ACKNOWLEDGE, FRAME_ACKNOWLEDGE_BUFFER, WIRE_TO_SURFACE_1, WIRE_TO_SURFACE_1_BUFFER,
 };
-use ironrdp_pdu::rdp::vc::dvc::gfx::*;
 
 pub const WIRE_TO_SURFACE_1_HEADER_BUFFER: [u8; 8] = [0x01, 0x00, 0x00, 0x00, 0xe2, 0x00, 0x00, 0x00];
 pub const FRAME_ACKNOWLEDGE_HEADER_BUFFER: [u8; 8] = [0x0d, 0x00, 0x00, 0x00, 0x14, 0x00, 0x00, 0x00];
