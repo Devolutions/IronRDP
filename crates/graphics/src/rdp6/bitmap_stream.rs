@@ -4,7 +4,7 @@ use crate::{
 };
 use ironrdp_pdu::{
     bitmap::rdp6::{BitmapStream as BitmapStreamPdu, ColorPlanes},
-    Error as PduError,
+    decode, Error as PduError,
 };
 use thiserror::Error;
 
@@ -233,7 +233,7 @@ impl BitmapStreamDecoder {
         image_width: usize,
         image_height: usize,
     ) -> Result<(), BitmapDecodeError> {
-        let bitmap = BitmapStreamPdu::decode_buffer(bitmap_data)?;
+        let bitmap = decode::<BitmapStreamPdu>(bitmap_data)?;
 
         let decoder = BitmapStreamDecoderImpl::init(bitmap, image_width, image_height);
 
