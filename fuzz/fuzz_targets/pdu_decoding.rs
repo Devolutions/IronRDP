@@ -61,5 +61,5 @@ fuzz_target!(|data: &[u8]| {
     let _ = input::InputEventPdu::from_buffer(data);
     let _ = input::InputEvent::from_buffer(data);
 
-    let _ = decode::<BitmapStream>(data);
+    let _ = decode::<bitmap::rdp6::BitmapStream>(data);
 });
