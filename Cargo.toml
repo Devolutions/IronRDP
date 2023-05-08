@@ -59,22 +59,23 @@ keywords = ["rdp", "remote-desktop", "network", "client", "protocol"]
 categories = ["network-programming"]
 
 [workspace.dependencies]
+expect-test = "1"
 ironrdp = { version = "0.5", path = "." }
-ironrdp-pdu = { version = "0.1", path = "crates/pdu" }
+ironrdp-async = { version = "0.1", path = "crates/async" }
 ironrdp-connector = { version = "0.1", path = "crates/connector" }
-ironrdp-session = { version = "0.1", path = "crates/session" }
 ironrdp-graphics = { version = "0.1", path = "crates/graphics" }
 ironrdp-input = { version = "0.1", path = "crates/input" }
-ironrdp-async = { version = "0.1", path = "crates/async" }
-ironrdp-tls = { version = "0.1", path = "crates/tls" }
-ironrdp-rdcleanpath = { version = "0.1", path = "crates/rdcleanpath" }
-ironrdp-pdu-samples = { path = "crates/pdu-samples" }
+ironrdp-pdu = { version = "0.1", path = "crates/pdu" }
 ironrdp-pdu-generators = { path = "crates/pdu-generators" }
+ironrdp-pdu-samples = { path = "crates/pdu-samples" }
+ironrdp-rdcleanpath = { version = "0.1", path = "crates/rdcleanpath" }
+ironrdp-session = { version = "0.1", path = "crates/session" }
 ironrdp-session-generators = { path = "crates/session-generators" }
-sspi = "0.8.1"
-tracing = "0.1.37"
+ironrdp-tls = { version = "0.1", path = "crates/tls" }
 proptest = "1.1.0"
 rstest = "0.17.0"
+sspi = "0.8.1"
+tracing = "0.1.37"
 
 [profile.dev]
 opt-level = 1

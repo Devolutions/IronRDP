@@ -1,4 +1,4 @@
-use ironrdp_graphics::rle::RlePixelFormat;
+use ironrdp_graphics::{rdp6::BitmapStreamDecoder, rle::RlePixelFormat};
 use ironrdp_pdu::codecs::rfx::FrameAcknowledgePdu;
 use ironrdp_pdu::fast_path::{
     FastPathError, FastPathHeader, FastPathUpdate, FastPathUpdatePdu, Fragmentation, UpdateCode,
@@ -17,6 +17,7 @@ pub struct Processor {
     complete_data: CompleteData,
     rfx_handler: rfx::DecodingContext,
     marker_processor: FrameMarkerProcessor,
+    bitmap_stream_decoder: BitmapStreamDecoder,
 }
 
 impl Processor {
@@ -75,7 +76,20 @@ impl Processor {
                             // Bitmap Compression and stored inside an RDP 6.0 Bitmap Compressed Stream
                             // structure ([MS-RDPEGDI] section 2.2.2.5.1).
                             trace!("32 bpp compressed RDP6_BITMAP_STREAM");
-                            warn!("RDP6_BITMAP_STREAM is not yet supported"); // TODO: RDP6 32bpp
+
+                            match self.bitmap_stream_decoder.decode_bitmap_stream_to_rgb24(
+                                update.bitmap_data,
+                                &mut buf,
+                                update.width as usize,
+                                update.height as usize,
+                            ) {
+                                Ok(()) => {
+                                    image.apply_rgb24_bitmap(&buf, &update.rectangle);
+                                }
+                                Err(err) => {
+                                    warn!("Invalid RDP6_BITMAP_STREAM: {err}");
+                                }
+                            }
                         } else {
                             // Compressed bitmaps not in 32 bpp format are compressed using Interleaved
                             // RLE and encapsulated in an RLE Compressed Bitmap Stream structure (section
@@ -196,6 +210,7 @@ impl ProcessorBuilder {
             complete_data: CompleteData::new(),
             rfx_handler: rfx::DecodingContext::new(),
             marker_processor: FrameMarkerProcessor::new(self.user_channel_id, self.io_channel_id),
+            bitmap_stream_decoder: BitmapStreamDecoder::default(),
         }
     }
 }

@@ -1,6 +1,8 @@
 #[cfg(test)]
 mod tests;
 
+pub mod rdp6;
+
 use std::fmt::{self, Debug};
 use std::io::{self, Write};
 

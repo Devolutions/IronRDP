@@ -131,6 +131,15 @@ struct Args {
     #[clap(long)]
     small_cache: bool,
 
+    /// Enable RDP6 lossy bitmap compression algorithm. Please note that lossy compression
+    /// only works with 32 bit color depth
+    #[clap(long)]
+    lossy_bitmap_compression: bool,
+
+    /// Set required color depth. Currently only 32 and 16 bit color depths are supported
+    #[clap(long)]
+    color_depth: Option<u32>,
+
     /// Enabled capability versions. Each bit represents enabling a capability version
     /// starting from V8 to V10_7
     #[clap(long, value_parser = parse_hex, default_value_t = 0)]
@@ -168,6 +177,23 @@ impl Config {
                 .context("Password prompt")?
         };
 
+        let bitmap = if let Some(color_depth) = args.color_depth {
+            if color_depth != 16 && color_depth != 32 {
+                anyhow::bail!("Invalid color depth. Only 16 and 32 bit color depths are supported.");
+            }
+
+            if color_depth != 32 && args.lossy_bitmap_compression {
+                anyhow::bail!("Lossy bitmap compression only works with 32 bit color depth.");
+            }
+
+            Some(connector::BitmapConfig {
+                color_depth,
+                lossy_compression: args.lossy_bitmap_compression,
+            })
+        } else {
+            None
+        };
+
         let graphics = if args.avc444 || args.h264 {
             Some(connector::GraphicsConfig {
                 avc444: args.avc444,
@@ -195,6 +221,7 @@ impl Config {
                 height: DEFAULT_HEIGHT,
             },
             graphics,
+            bitmap,
             client_build: semver::Version::parse(env!("CARGO_PKG_VERSION"))
                 .map(|version| version.major * 100 + version.minor * 10 + version.patch)
                 .unwrap_or(0)

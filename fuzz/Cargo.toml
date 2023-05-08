@@ -30,3 +30,9 @@ name = "rle_decompression"
 path = "fuzz_targets/rle_decompression.rs"
 test = false
 doc = false
+
+[[bin]]
+name = "bitmap_stream"
+path = "fuzz_targets/bitmap_stream.rs"
+test = false
+doc = false

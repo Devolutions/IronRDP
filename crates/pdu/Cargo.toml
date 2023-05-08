@@ -33,5 +33,6 @@ sha1 = "0.10.5"
 x509-cert = { version = "0.2.1", default-features = false, features = ["std"] }
 
 [dev-dependencies]
+expect-test.workspace = true
 ironrdp-pdu-samples.workspace = true
 lazy_static = "1.4.0"
