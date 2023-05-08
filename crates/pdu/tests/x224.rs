@@ -12,7 +12,7 @@ use ironrdp_pdu_samples::encode_decode_test;
 const SAMPLE_TPKT_HEADER_BINARY: [u8; 4] = [
     0x3, // version
     0x0, // reserved
-    0x5, 0x42, // lenght in BE
+    0x5, 0x42, // length in BE
 ];
 
 const SAMPLE_TPKT_HEADER: TpktHeader = TpktHeader { packet_length: 0x542 };
@@ -84,7 +84,7 @@ encode_decode_test! {
             // tpkt header
             0x03, // version
             0x00, // reserved
-            0x00, 0x22, // lenght in BE
+            0x00, 0x22, // length in BE
             // tpdu header
             0x1D, // length
             0xE0, // code
@@ -106,7 +106,7 @@ encode_decode_test! {
             // tpkt header
             0x03, // version
             0x00, // reserved
-            0x00, 0x2A, // lenght in BE
+            0x00, 0x2A, // length in BE
             // tpdu header
             0x25, // length
             0xE0, // code
@@ -129,7 +129,7 @@ encode_decode_test! {
             // tpkt header
             0x03, // version
             0x00, // reserved
-            0x00, 0x2A, // lenght in BE
+            0x00, 0x2A, // length in BE
             // tpdu header
             0x25, // length
             0xE0, // code
@@ -155,7 +155,7 @@ encode_decode_test! {
             // tpkt header
             0x03, // version
             0x00, // reserved
-            0x00, 0x13, // lenght in BE
+            0x00, 0x13, // length in BE
             // tpdu header
             0x0E, // length
             0xD0, // code
@@ -177,7 +177,7 @@ encode_decode_test! {
             // tpkt header
             0x03, // version
             0x00, // reserved
-            0x00, 0x13, // lenght in BE
+            0x00, 0x13, // length in BE
             // tpdu header
             0x0E,  // length
             0xD0, // code
@@ -198,7 +198,7 @@ fn nego_request_unexpected_rdp_msg_type() {
         // tpkt header
         0x03, // version
         0x00, // reserved
-        0x00, 0x2A, // lenght in BE
+        0x00, 0x2A, // length in BE
         // tpdu header
         0x25, // length
         0xE0, // code
@@ -231,7 +231,7 @@ fn nego_confirm_unexpected_rdp_msg_type() {
         // tpkt header
         0x03, // version
         0x00, // reserved
-        0x00, 0x13, // lenght in BE
+        0x00, 0x13, // length in BE
         // tpdu header
         0x0E, // length
         0xD0, // code

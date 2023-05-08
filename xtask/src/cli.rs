@@ -31,6 +31,7 @@ pub enum Action {
     ShowHelp,
     CheckAll,
     CheckFmt,
+    CheckTypos,
     CheckTests,
     CheckLints,
     CheckWasm,
@@ -53,6 +54,7 @@ pub fn parse_args() -> anyhow::Result<Action> {
             Some("ci") => Action::CheckAll,
             Some("check") => match args.subcommand()?.as_deref() {
                 Some("fmt") => Action::CheckFmt,
+                Some("typos") => Action::CheckTypos,
                 Some("tests") => Action::CheckTests,
                 Some("lints") => Action::CheckLints,
                 Some("wasm") => Action::CheckWasm,

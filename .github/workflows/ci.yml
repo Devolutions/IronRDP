@@ -22,6 +22,15 @@ jobs:
       - name: Check formatting
         run: cargo xtask check fmt
 
+  typos:
+    name: Check typos
+    runs-on: ubuntu-20.04
+
+    steps:
+      - uses: actions/checkout@v3
+      - name: Check typos
+        uses: crate-ci/typos@master
+
   lints:
     name: Lints
     runs-on: ubuntu-20.04

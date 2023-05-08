@@ -151,7 +151,7 @@ fn to_buffer_correctly_serializes_client_platform_challenge_response() {
 }
 
 #[test]
-fn buffer_length_is_correct_for_client_platform_challege_response() {
+fn buffer_length_is_correct_for_client_platform_challenge_response() {
     assert_eq!(
         CLIENT_PLATFORM_CHALLENGE_RESPONSE_BUFFER.len(),
         CLIENT_PLATFORM_CHALLENGE_RESPONSE.buffer_length()

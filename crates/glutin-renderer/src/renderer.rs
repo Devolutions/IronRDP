@@ -48,7 +48,7 @@ fn handle_gfx_pdu(
     loop {
         let message = graphic_receiver
             .recv()
-            .map_err(|e| RendererError::RecieveError(e.to_string()))?;
+            .map_err(|e| RendererError::ReceiveError(e.to_string()))?;
 
         if let Some(file) = file.as_mut() {
             let _result = message.to_buffer(file);
@@ -170,8 +170,8 @@ impl Renderer {
 pub enum RendererError {
     #[error("Unable to send message on channel {0}")]
     SendError(String),
-    #[error("Unable to recieve message on channel {0}")]
-    RecieveError(String),
+    #[error("Unable to receive message on channel {0}")]
+    ReceiveError(String),
     #[error("errored to decode openh264 stream {0}")]
     OpenH264Error(#[from] openh264::Error),
     #[error("Graphics pipeline protocol error: {0}")]
@@ -194,7 +194,7 @@ impl<T> From<SendError<T>> for RendererError {
 
 impl From<RecvError> for RendererError {
     fn from(e: RecvError) -> Self {
-        RendererError::RecieveError(e.to_string())
+        RendererError::ReceiveError(e.to_string())
     }
 }
 

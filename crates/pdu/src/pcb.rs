@@ -81,7 +81,7 @@ impl<'de> PduDecode<'de> for PreconnectionBlob {
 
             let wsz_pcb_utf16 = src.read_slice(cb_pcb);
 
-            let mut trimed_pcb_utf16: Vec<u16> = Vec::with_capacity(cch_pcb);
+            let mut trimmed_pcb_utf16: Vec<u16> = Vec::with_capacity(cch_pcb);
 
             for chunk in wsz_pcb_utf16.chunks_exact(2) {
                 let code_unit = u16::from_le_bytes([chunk[0], chunk[1]]);
@@ -91,10 +91,10 @@ impl<'de> PduDecode<'de> for PreconnectionBlob {
                     break;
                 }
 
-                trimed_pcb_utf16.push(code_unit);
+                trimmed_pcb_utf16.push(code_unit);
             }
 
-            let payload = String::from_utf16(&trimed_pcb_utf16).map_err(|_| Error::InvalidMessage {
+            let payload = String::from_utf16(&trimmed_pcb_utf16).map_err(|_| Error::InvalidMessage {
                 name: Self::NAME,
                 field: "wszPCB",
                 reason: "invalid UTF-16",

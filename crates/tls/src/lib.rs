@@ -14,7 +14,7 @@ where
 {
     #[cfg(feature = "rustls")]
     let mut tls_stream = {
-        // FIXME: disable TLS session resume just to be safe (not uspported by CredSSP server)
+        // FIXME: disable TLS session resume just to be safe (not unsupported by CredSSP server)
         // https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-cssp/385a7489-d46b-464c-b224-f7340e308a5c
         // Option is available starting rustls 0.21
 

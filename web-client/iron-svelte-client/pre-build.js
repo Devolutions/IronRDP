@@ -43,7 +43,7 @@ let copyCoreFiles = async function () {
 
         fs.copy(source, destination, function (err) {
             if (err) {
-                console.log('An error occured while copying folder.');
+                console.log('An error occurred while copying folder.');
                 return console.error(err);
             }
             console.log('Core files was copied successfully');

@@ -4,11 +4,11 @@ const FIRST_LEVEL_SIZE: usize = 1024;
 const SECOND_LEVEL_SIZE: usize = 256;
 const THIRD_LEVEL_SIZE: usize = 64;
 
-const FISRT_LEVEL_SUBBANDS_COUNT: usize = 3;
+const FIRST_LEVEL_SUBBANDS_COUNT: usize = 3;
 const SECOND_LEVEL_SUBBANDS_COUNT: usize = 3;
 
 pub fn decode(buffer: &mut [i16], quant: &Quant) {
-    let (first_level, buffer) = buffer.split_at_mut(FISRT_LEVEL_SUBBANDS_COUNT * FIRST_LEVEL_SIZE);
+    let (first_level, buffer) = buffer.split_at_mut(FIRST_LEVEL_SUBBANDS_COUNT * FIRST_LEVEL_SIZE);
     let (second_level, third_level) = buffer.split_at_mut(SECOND_LEVEL_SUBBANDS_COUNT * SECOND_LEVEL_SIZE);
 
     let decode_chunk = |a: (&mut [i16], u8)| decode_block(a.0, a.1 as i16 - 1);
