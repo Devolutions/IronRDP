@@ -2,9 +2,9 @@ use crate::{
     color_conversion::{Rgb, YCoCg},
     rdp6::rle::{decompress_8bpp_plane, RleError},
 };
-use ironrdp_pdu::bitmap::{
-    rdp6::{BitmapStream as BitmapStreamPdu, ColorPlanes},
-    BitmapError as PduError,
+use ironrdp_pdu::{
+    bitmap::rdp6::{BitmapStream as BitmapStreamPdu, ColorPlanes},
+    Error as PduError,
 };
 use thiserror::Error;
 
@@ -228,12 +228,12 @@ impl BitmapStreamDecoder {
     /// image to `dst` buffer.
     pub fn decode_bitmap_stream_to_rgb24(
         &mut self,
-        mut bitmap_data: &[u8],
+        bitmap_data: &[u8],
         dst: &mut Vec<u8>,
         image_width: usize,
         image_height: usize,
     ) -> Result<(), BitmapDecodeError> {
-        let bitmap = BitmapStreamPdu::from_buffer_consume(&mut bitmap_data)?;
+        let bitmap = BitmapStreamPdu::decode_buffer(bitmap_data)?;
 
         let decoder = BitmapStreamDecoderImpl::init(bitmap, image_width, image_height);
 

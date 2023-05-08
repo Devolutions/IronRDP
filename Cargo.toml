@@ -59,7 +59,6 @@ keywords = ["rdp", "remote-desktop", "network", "client", "protocol"]
 categories = ["network-programming"]
 
 [workspace.dependencies]
-bmp = "0.5"
 expect-test = "1"
 ironrdp = { version = "0.5", path = "." }
 ironrdp-async = { version = "0.1", path = "crates/async" }

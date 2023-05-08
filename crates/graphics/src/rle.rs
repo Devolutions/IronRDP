@@ -544,30 +544,30 @@ struct Buf<'a> {
 }
 
 impl<'a> Buf<'a> {
-    pub fn new(bytes: &'a [u8]) -> Self {
+    fn new(bytes: &'a [u8]) -> Self {
         Self { inner: bytes, pos: 0 }
     }
 
-    pub fn remaining_len(&self) -> usize {
+    fn remaining_len(&self) -> usize {
         self.inner.len() - self.pos
     }
 
-    fn read_fixed<const N: usize>(&mut self) -> [u8; N] {
+    fn read<const N: usize>(&mut self) -> [u8; N] {
         let bytes = &self.inner[self.pos..self.pos + N];
         self.pos += N;
         bytes.try_into().expect("N-elements array")
     }
 
     fn read_u8(&mut self) -> u8 {
-        u8::from_le_bytes(self.read_fixed::<1>())
+        u8::from_le_bytes(self.read::<1>())
     }
 
     fn read_u16(&mut self) -> u16 {
-        u16::from_le_bytes(self.read_fixed::<2>())
+        u16::from_le_bytes(self.read::<2>())
     }
 
     fn read_u24(&mut self) -> u32 {
-        let bytes = self.read_fixed::<3>();
+        let bytes = self.read::<3>();
         u32::from_le_bytes([bytes[0], bytes[1], bytes[2], 0])
     }
 

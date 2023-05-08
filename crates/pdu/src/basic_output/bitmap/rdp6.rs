@@ -1,6 +1,6 @@
-use crate::{bitmap::BitmapError, utils::SplitTo};
-use byteorder::{ReadBytesExt, WriteBytesExt};
-use std::io::Write;
+use crate::{Error as PduError, ReadCursor, Result as PduResult, WriteCursor};
+
+const NON_RLE_PADDING_SIZE: usize = 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ColorPlanes<'a> {
@@ -23,27 +23,37 @@ pub struct BitmapStream<'a> {
 }
 
 impl<'a> BitmapStream<'a> {
-    pub fn from_buffer(mut buffer: &'a [u8]) -> Result<Self, BitmapError> {
-        Self::from_buffer_consume(&mut buffer)
+    pub const NAME: &'static str = "Rdp6BitmapStream";
+    const FIXED_PART_SIZE: usize = 1;
+
+    pub fn decode_buffer(buffer: &'a [u8]) -> PduResult<Self> {
+        let mut cursor = ReadCursor::new(buffer);
+        Self::decode_cursor(&mut cursor)
     }
 
-    pub fn from_buffer_consume(buffer: &mut &'a [u8]) -> Result<Self, BitmapError> {
-        let header = buffer.read_u8()?;
+    pub fn decode_cursor(buffer: &mut ReadCursor<'a>) -> PduResult<Self> {
+        ensure_fixed_part_size!(in: buffer);
+        let header = buffer.read_u8();
 
         let color_loss_level = header & 0x07;
         let use_chroma_subsampling = (header & 0x08) != 0;
         let enable_rle_compression = (header & 0x10) != 0;
         let use_alpha = (header & 0x20) == 0;
 
-        let color_planes_data = if !enable_rle_compression {
+        let color_planes_size = if !enable_rle_compression {
             // Cut padding field if RLE flags is set to 0
             if buffer.is_empty() {
-                return Err(BitmapError::MissingPaddingNonRle);
+                return Err(PduError::Other {
+                    context: Self::NAME,
+                    reason: "Missing padding byte from zero-size Non-RLE bitmap data",
+                });
             }
-            buffer.split_to(buffer.len() - 1)
+            buffer.len() - NON_RLE_PADDING_SIZE
         } else {
-            buffer
+            buffer.len()
         };
+
+        let color_planes_data = buffer.peek_slice(color_planes_size);
 
         let color_planes = match color_loss_level {
             0 => {
@@ -66,7 +76,7 @@ impl<'a> BitmapStream<'a> {
         })
     }
 
-    pub fn to_buffer_consume(&self, buffer: &mut &mut [u8]) -> Result<(), BitmapError> {
+    pub fn encode_cursor(&self, buffer: &mut WriteCursor<'a>) -> PduResult<()> {
         let mut header = ((self.enable_rle_compression as u8) << 4) | ((!self.use_alpha as u8) << 5);
 
         match self.color_planes {
@@ -83,28 +93,31 @@ impl<'a> BitmapStream<'a> {
             }
         }
 
-        buffer.write_u8(header)?;
-        buffer.write_all(self.color_panes_data())?;
+        ensure_size!(in: buffer, size: self.encoded_size());
+
+        buffer.write_u8(header);
+        buffer.write_slice(self.color_panes_data());
 
         // Write padding
         if !self.enable_rle_compression {
-            buffer.write_u8(0)?;
+            buffer.write_u8(0);
         }
 
         Ok(())
     }
 
-    pub fn to_vec(&self) -> Result<Vec<u8>, BitmapError> {
+    pub fn to_vec(&self) -> PduResult<Vec<u8>> {
         let mut buffer = vec![0u8; self.encoded_size()];
-        self.to_buffer_consume(&mut buffer.as_mut_slice())?;
+        let mut cursor = WriteCursor::new(&mut buffer);
+        self.encode_cursor(&mut cursor)?;
         Ok(buffer)
     }
 
     pub fn encoded_size(&self) -> usize {
         if self.enable_rle_compression {
-            1 + self.color_panes_data().len()
+            Self::FIXED_PART_SIZE + self.color_panes_data().len()
         } else {
-            2 + self.color_panes_data().len()
+            Self::FIXED_PART_SIZE + NON_RLE_PADDING_SIZE + self.color_panes_data().len()
         }
     }
 
@@ -131,14 +144,14 @@ mod tests {
     use expect_test::{expect, Expect};
 
     fn assert_roundtrip(buffer: &[u8], expected: Expect) {
-        let pdu = BitmapStream::from_buffer(buffer).unwrap();
+        let pdu = BitmapStream::decode_buffer(buffer).unwrap();
         expected.assert_debug_eq(&pdu);
         assert_eq!(pdu.encoded_size(), buffer.len());
         assert_eq!(pdu.to_vec().unwrap(), buffer);
     }
 
     fn assert_parsing_failure(buffer: &[u8], expected: Expect) {
-        let error = BitmapStream::from_buffer(buffer).err().unwrap();
+        let error = BitmapStream::decode_buffer(buffer).err().unwrap();
         expected.assert_debug_eq(&error);
     }
 
@@ -237,12 +250,11 @@ mod tests {
         assert_parsing_failure(
             &[],
             expect![[r#"
-                IOError(
-                    Error {
-                        kind: UnexpectedEof,
-                        message: "failed to fill whole buffer",
-                    },
-                )
+                NotEnoughBytes {
+                    name: "Rdp6BitmapStream",
+                    received: 0,
+                    expected: 1,
+                }
             "#]],
         );
 
@@ -250,7 +262,10 @@ mod tests {
         assert_parsing_failure(
             &[0x20],
             expect![[r#"
-                MissingPaddingNonRle
+                Other {
+                    context: "Rdp6BitmapStream",
+                    reason: "Missing padding byte from zero-size Non-RLE bitmap data",
+                }
             "#]],
         );
     }

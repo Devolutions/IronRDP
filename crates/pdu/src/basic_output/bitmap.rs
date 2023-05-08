@@ -234,6 +234,4 @@ pub enum BitmapError {
     InvalidFirstRowSize { actual: usize, expected: usize },
     #[error("The width of the bitmap must be divisible by 4")]
     InvalidScanWidth,
-    #[error("Missing padding byte from zero-size Non-RLE bitmap data")]
-    MissingPaddingNonRle,
 }
