@@ -1,0 +1,45 @@
+name: Fuzz
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '12 3 * * 0,1,6' # At 03:12 AM UTC on Sunday, Monday, and Saturday.
+
+env:
+  CARGO_REGISTRIES_CRATES_IO_PROTOCOL: sparse
+
+jobs:
+  fuzz:
+    name: Fuzzing
+    runs-on: ubuntu-20.04
+    needs: formatting
+    env:
+      AZURE_STORAGE_KEY: ${{ secrets.CORPUS_AZURE_STORAGE_KEY }}
+
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Fuzz build cache
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cargo/registry/
+            ~/.cargo/git/
+            ./target/
+            ./fuzz/target/
+          key: ${{ runner.os }}-fuzz-${{ hashFiles('fuzz/Cargo.lock') }}
+
+      - name: Prepare runner
+        run: cargo xtask fuzz install
+
+      - name: Download fuzzing corpus
+        run: cargo xtask fuzz corpus-fetch
+
+      - name: Fuzz
+        run: cargo xtask fuzz run
+
+      - name: Minify fuzzing corpus
+        run: cargo xtask fuzz corpus-min
+
+      - name: Upload fuzzing corpus
+        run: cargo xtask fuzz corpus-push

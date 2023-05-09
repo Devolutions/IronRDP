@@ -8,19 +8,21 @@ FLAGS:
   -h, --help      Prints help information
 
 TASKS:
-  ci                Runs all checks required on CI
   check [all]       Runs all checks
   check fmt         Checks formatting
-  check tests       Runs tests
   check lints       Checks lints
+  check tests       Runs tests
   check wasm        Ensures wasm module is compatible for the web
-  fuzz run          Fuzz all targets for a few seconds
-  fuzz corpus-min   Minify fuzzing corpus
-  fuzz corpus-fetch Minify fuzzing corpus
-  fuzz corpus-push  Minify fuzzing corpus
-  svelte-run        Runs SvelteKit-based standalone Web Client
-  coverage          Generate code-coverage data using tests and fuzz targets
+  ci                Runs all checks required on CI
   clean             Clean workspace
+  coverage          Generate code-coverage data using tests and fuzz targets
+  fuzz corpus-fetch Minify fuzzing corpus
+  fuzz corpus-min   Minify fuzzing corpus
+  fuzz corpus-push  Minify fuzzing corpus
+  fuzz install      Install dependencies required for fuzzing
+  fuzz run          Fuzz all targets for a few seconds
+  svelte-run        Runs SvelteKit-based standalone Web Client
+  wasm install      Install dependencies required to build the wasm target
 ";
 
 pub fn print_help() {
@@ -28,19 +30,21 @@ pub fn print_help() {
 }
 
 pub enum Action {
-    ShowHelp,
     CheckAll,
     CheckFmt,
-    CheckTests,
     CheckLints,
+    CheckTests,
     CheckWasm,
-    FuzzRun,
-    FuzzCorpusMin,
-    FuzzCorpusFetch,
-    FuzzCorpusPush,
-    SvelteRun,
-    Coverage,
     Clean,
+    Coverage,
+    FuzzCorpusFetch,
+    FuzzCorpusMin,
+    FuzzCorpusPush,
+    FuzzInstall,
+    FuzzRun, // TODO: add option to choose the target and run duration so we can optimize CI further
+    ShowHelp,
+    SvelteRun,
+    WasmInstall,
 }
 
 pub fn parse_args() -> anyhow::Result<Action> {
@@ -52,23 +56,29 @@ pub fn parse_args() -> anyhow::Result<Action> {
         match args.subcommand()?.as_deref() {
             Some("ci") => Action::CheckAll,
             Some("check") => match args.subcommand()?.as_deref() {
-                Some("fmt") => Action::CheckFmt,
-                Some("tests") => Action::CheckTests,
-                Some("lints") => Action::CheckLints,
-                Some("wasm") => Action::CheckWasm,
                 Some("all") | None => Action::CheckAll,
+                Some("fmt") => Action::CheckFmt,
+                Some("lints") => Action::CheckLints,
+                Some("tests") => Action::CheckTests,
+                Some("wasm") => Action::CheckWasm,
                 Some(_) => anyhow::bail!("Unknown check action"),
             },
+            Some("clean") => Action::Clean,
+            Some("coverage") => Action::Coverage,
             Some("fuzz") => match args.subcommand()?.as_deref() {
-                Some("run") | None => Action::FuzzRun,
-                Some("corpus-min") => Action::FuzzCorpusMin,
                 Some("corpus-fetch") => Action::FuzzCorpusFetch,
+                Some("corpus-min") => Action::FuzzCorpusMin,
                 Some("corpus-push") => Action::FuzzCorpusPush,
+                Some("run") | None => Action::FuzzRun,
+                Some("install") => Action::FuzzInstall,
                 Some(_) => anyhow::bail!("Unknown fuzz action"),
             },
-            Some("clean") => Action::Clean,
             Some("svelte-run") => Action::SvelteRun,
-            Some("coverage") => Action::Coverage,
+            Some("wasm") => match args.subcommand()?.as_deref() {
+                Some("install") => Action::WasmInstall,
+                Some(_) => anyhow::bail!("Unknown wasm action"),
+                None => Action::ShowHelp,
+            },
             None | Some(_) => Action::ShowHelp,
         }
     };
