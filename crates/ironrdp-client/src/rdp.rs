@@ -78,7 +78,7 @@ enum RdpControlFlow {
     TerminatedGracefully,
 }
 
-type UpgradedFramed = ironrdp_async::Framed<ironrdp_async::TokioCompat<ironrdp_tls::TlsStream<TcpStream>>>;
+type UpgradedFramed = ironrdp_tokio::TokioFramed<ironrdp_tls::TlsStream<TcpStream>>;
 
 async fn connect(config: &Config) -> connector::Result<(connector::ConnectionResult, UpgradedFramed)> {
     let server_addr = config
@@ -90,29 +90,29 @@ async fn connect(config: &Config) -> connector::Result<(connector::ConnectionRes
         .await
         .map_err(|e| connector::Error::new("TCP connect").with_custom(e))?;
 
-    let mut framed = ironrdp_async::Framed::tokio_new(stream);
+    let mut framed = ironrdp_tokio::TokioFramed::new(stream);
 
     let mut connector = connector::ClientConnector::new(config.connector.clone())
         .with_server_addr(server_addr)
         .with_server_name(&config.destination)
         .with_credssp_client_factory(Box::new(RequestClientFactory));
 
-    let should_upgrade = ironrdp_async::connect_begin(&mut framed, &mut connector).await?;
+    let should_upgrade = ironrdp_tokio::connect_begin(&mut framed, &mut connector).await?;
 
     debug!("TLS upgrade");
 
     // Ensure there is no leftover
-    let initial_stream = framed.tokio_into_inner_no_leftover();
+    let initial_stream = framed.into_inner_no_leftover();
 
     let (upgraded_stream, server_public_key) = ironrdp_tls::upgrade(initial_stream, config.destination.name())
         .await
         .map_err(|e| connector::Error::new("TLS upgrade").with_custom(e))?;
 
-    let upgraded = ironrdp_async::mark_as_upgraded(should_upgrade, &mut connector, server_public_key);
+    let upgraded = ironrdp_tokio::mark_as_upgraded(should_upgrade, &mut connector, server_public_key);
 
-    let mut upgraded_framed = ironrdp_async::Framed::tokio_new(upgraded_stream);
+    let mut upgraded_framed = ironrdp_tokio::TokioFramed::new(upgraded_stream);
 
-    let connection_result = ironrdp_async::connect_finalize(upgraded, &mut upgraded_framed, connector).await?;
+    let connection_result = ironrdp_tokio::connect_finalize(upgraded, &mut upgraded_framed, connector).await?;
 
     Ok((connection_result, upgraded_framed))
 }

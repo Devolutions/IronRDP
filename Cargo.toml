@@ -3,16 +3,6 @@ members = [
   "crates/*",
   "xtask",
 ]
-default-members = [
-  "crates/ironrdp-pdu",
-  "crates/ironrdp-connector",
-  "crates/ironrdp-session",
-  "crates/ironrdp-graphics",
-  "crates/ironrdp-input",
-  "crates/ironrdp-async",
-  "crates/ironrdp-client",
-  "crates/ironrdp-web",
-]
 
 # FIXME: fix compilation
 exclude = [
@@ -34,6 +24,7 @@ categories = ["network-programming"]
 expect-test = "1"
 ironrdp-async = { version = "0.1", path = "crates/ironrdp-async" }
 ironrdp-connector = { version = "0.1", path = "crates/ironrdp-connector" }
+ironrdp-futures = { version = "0.1", path = "crates/ironrdp-futures" }
 ironrdp-graphics = { version = "0.1", path = "crates/ironrdp-graphics" }
 ironrdp-input = { version = "0.1", path = "crates/ironrdp-input" }
 ironrdp-pdu-generators = { path = "crates/ironrdp-pdu-generators" }
@@ -43,6 +34,7 @@ ironrdp-rdcleanpath = { version = "0.1", path = "crates/ironrdp-rdcleanpath" }
 ironrdp-session-generators = { path = "crates/ironrdp-session-generators" }
 ironrdp-session = { version = "0.1", path = "crates/ironrdp-session" }
 ironrdp-tls = { version = "0.1", path = "crates/ironrdp-tls" }
+ironrdp-tokio = { version = "0.1", path = "crates/ironrdp-tokio" }
 ironrdp = { version = "0.5", path = "crates/ironrdp" }
 proptest = "1.1.0"
 rstest = "0.17.0"

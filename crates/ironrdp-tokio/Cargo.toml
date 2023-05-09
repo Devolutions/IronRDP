@@ -1,8 +1,8 @@
 [package]
-name = "ironrdp-async"
+name = "ironrdp-tokio"
 version = "0.1.0"
 readme = "README.md"
-description = "Provides `Future`s wrapping the IronRDP state machines conveniently"
+description = "`Framed*` traits implementation above Tokio’s traits"
 edition.workspace = true
 license.workspace = true
 homepage.workspace = true
@@ -13,8 +13,6 @@ categories.workspace = true
 
 [dependencies]
 bytes = "1"
-ironrdp-connector.workspace = true
-ironrdp-pdu.workspace = true
-# ironrdp-session.workspace = true
-tap = "1"
-tracing.workspace = true
+ironrdp-async.workspace = true
+tokio-util = { version = "0.7.7", features = ["codec"] }
+tokio = { version = "1", features = ["io-util"] }

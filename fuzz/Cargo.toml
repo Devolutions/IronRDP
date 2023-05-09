@@ -14,8 +14,8 @@ members = ["."]
 debug = 1
 
 [dependencies]
-ironrdp-pdu = { path = "../crates/pdu" }
-ironrdp-graphics = { path = "../crates/graphics" }
+ironrdp-pdu = { path = "../crates/ironrdp-pdu" }
+ironrdp-graphics = { path = "../crates/ironrdp-graphics" }
 libfuzzer-sys = "0.4"
 arbitrary = { version = "1", features = ["derive"] }
 

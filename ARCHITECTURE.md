@@ -25,6 +25,8 @@ This section talks briefly about various important directories and data structur
 ### Utility Crates
 
 - `crates/ironrdp-async`: provides `Future`s wrapping the state machines conveniently.
+- `crates/ironrdp-tokio`: `Framed*` traits implementation above `tokio`’s traits.
+- `crates/ironrdp-futures`: `Framed*` traits implementation above `futures`’s traits.
 - `crates/ironrdp-tls`: TLS boilerplate common with most IronRDP clients.
 
 ### Client Crates

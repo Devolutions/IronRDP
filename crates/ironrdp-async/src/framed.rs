@@ -4,9 +4,9 @@ use std::pin::Pin;
 use bytes::{Bytes, BytesMut};
 use ironrdp_pdu::PduHint;
 
-// TODO: use static async fn / return position impl trait in traits where stabiziled (https://github.com/rust-lang/rust/issues/91611)
+// TODO: use static async fn / return position impl trait in traits when stabiziled (https://github.com/rust-lang/rust/issues/91611)
 
-pub trait FramedRead: private::Sealed {
+pub trait FramedRead {
     /// Reads from stream and fills internal buffer
     fn read<'a>(
         &'a mut self,
@@ -16,11 +16,23 @@ pub trait FramedRead: private::Sealed {
         Self: 'a;
 }
 
-pub trait FramedWrite: private::Sealed {
+pub trait FramedWrite {
     /// Writes an entire buffer into this stream.
     fn write_all<'a>(&'a mut self, buf: &'a [u8]) -> Pin<Box<dyn std::future::Future<Output = io::Result<()>> + 'a>>
     where
         Self: 'a;
+}
+
+pub trait StreamWrapper: Sized {
+    type InnerStream;
+
+    fn from_inner(stream: Self::InnerStream) -> Self;
+
+    fn into_inner(self) -> Self::InnerStream;
+
+    fn get_inner(&self) -> &Self::InnerStream;
+
+    fn get_inner_mut(&mut self) -> &mut Self::InnerStream;
 }
 
 pub struct Framed<S> {
@@ -29,89 +41,38 @@ pub struct Framed<S> {
 }
 
 impl<S> Framed<S> {
-    pub fn new(stream: S) -> Self {
-        Self {
-            stream,
-            buf: BytesMut::new(),
-        }
-    }
-
-    pub fn into_inner(self) -> (S, BytesMut) {
-        (self.stream, self.buf)
-    }
-
-    pub fn into_inner_no_leftover(self) -> S {
-        let (stream, leftover) = self.into_inner();
-        debug_assert_eq!(leftover.len(), 0, "unexpected leftover");
-        stream
-    }
-
-    pub fn get_inner(&self) -> (&S, &BytesMut) {
-        (&self.stream, &self.buf)
-    }
-
-    pub fn get_inner_mut(&mut self) -> (&mut S, &mut BytesMut) {
-        (&mut self.stream, &mut self.buf)
-    }
-
     pub fn peek(&self) -> &[u8] {
         &self.buf
     }
 }
 
-#[cfg(feature = "tokio")]
-impl<S> Framed<TokioCompat<S>> {
-    pub fn tokio_new(stream: S) -> Self {
+impl<S> Framed<S>
+where
+    S: StreamWrapper,
+{
+    pub fn new(stream: S::InnerStream) -> Self {
         Self {
-            stream: TokioCompat { inner: stream },
+            stream: S::from_inner(stream),
             buf: BytesMut::new(),
         }
     }
 
-    pub fn tokio_into_inner(self) -> (S, BytesMut) {
-        (self.stream.inner, self.buf)
+    pub fn into_inner(self) -> (S::InnerStream, BytesMut) {
+        (self.stream.into_inner(), self.buf)
     }
 
-    pub fn tokio_into_inner_no_leftover(self) -> S {
-        let (stream, leftover) = self.tokio_into_inner();
-        assert_eq!(leftover.len(), 0, "unexpected leftover");
-        stream
-    }
-
-    pub fn tokio_get_inner(&self) -> (&S, &BytesMut) {
-        (&self.stream.inner, &self.buf)
-    }
-
-    pub fn tokio_get_inner_mut(&mut self) -> (&mut S, &mut BytesMut) {
-        (&mut self.stream.inner, &mut self.buf)
-    }
-}
-
-#[cfg(feature = "futures")]
-impl<S> Framed<FuturesCompat<S>> {
-    pub fn futures_new(stream: S) -> Self {
-        Self {
-            stream: FuturesCompat { inner: stream },
-            buf: BytesMut::new(),
-        }
-    }
-
-    pub fn futures_into_inner(self) -> (S, BytesMut) {
-        (self.stream.inner, self.buf)
-    }
-
-    pub fn futures_into_inner_no_leftover(self) -> S {
-        let (stream, leftover) = self.futures_into_inner();
+    pub fn into_inner_no_leftover(self) -> S::InnerStream {
+        let (stream, leftover) = self.into_inner();
         debug_assert_eq!(leftover.len(), 0, "unexpected leftover");
         stream
     }
 
-    pub fn futures_get_inner(&self) -> (&S, &BytesMut) {
-        (&self.stream.inner, &self.buf)
+    pub fn get_inner(&self) -> (&S::InnerStream, &BytesMut) {
+        (self.stream.get_inner(), &self.buf)
     }
 
-    pub fn futures_get_inner_mut(&mut self) -> (&mut S, &mut BytesMut) {
-        (&mut self.stream.inner, &mut self.buf)
+    pub fn get_inner_mut(&mut self) -> (&mut S::InnerStream, &mut BytesMut) {
+        (self.stream.get_inner_mut(), &mut self.buf)
     }
 }
 
@@ -193,115 +154,4 @@ where
     pub async fn write_all(&mut self, buf: &[u8]) -> io::Result<()> {
         self.stream.write_all(buf).await
     }
-}
-
-#[cfg(feature = "tokio")]
-pub struct TokioCompat<S> {
-    inner: S,
-}
-
-#[cfg(feature = "tokio")]
-mod tokio_impl {
-    use tokio::io::{AsyncRead, AsyncWrite};
-
-    use super::*;
-
-    impl<S> private::Sealed for TokioCompat<S> {}
-
-    impl<S> FramedRead for TokioCompat<S>
-    where
-        S: Unpin + AsyncRead,
-    {
-        fn read<'a>(
-            &'a mut self,
-            buf: &'a mut BytesMut,
-        ) -> Pin<Box<dyn std::future::Future<Output = io::Result<usize>> + 'a>>
-        where
-            Self: 'a,
-        {
-            use tokio::io::AsyncReadExt as _;
-
-            Box::pin(async { self.inner.read_buf(buf).await })
-        }
-    }
-
-    impl<S> FramedWrite for TokioCompat<S>
-    where
-        S: Unpin + AsyncWrite,
-    {
-        fn write_all<'a>(&'a mut self, buf: &'a [u8]) -> Pin<Box<dyn std::future::Future<Output = io::Result<()>> + 'a>>
-        where
-            Self: 'a,
-        {
-            use tokio::io::AsyncWriteExt as _;
-
-            Box::pin(async {
-                self.inner.write_all(buf).await?;
-                self.inner.flush().await?;
-
-                Ok(())
-            })
-        }
-    }
-}
-
-#[cfg(feature = "futures")]
-pub struct FuturesCompat<S> {
-    pub(super) inner: S,
-}
-
-#[cfg(feature = "futures")]
-mod futures_impl {
-    pub use futures_util::io::{AsyncRead, AsyncWrite};
-
-    use super::*;
-
-    impl<S> private::Sealed for FuturesCompat<S> {}
-
-    impl<S> FramedRead for FuturesCompat<S>
-    where
-        S: Unpin + AsyncRead,
-    {
-        fn read<'a>(
-            &'a mut self,
-            buf: &'a mut BytesMut,
-        ) -> Pin<Box<dyn std::future::Future<Output = io::Result<usize>> + 'a>>
-        where
-            Self: 'a,
-        {
-            use futures_util::io::AsyncReadExt as _;
-
-            Box::pin(async {
-                // NOTE(perf): tokio implementation is more efficient
-                let mut read_bytes = [0u8; 1024];
-                let len = self.inner.read(&mut read_bytes[..]).await?;
-                buf.extend_from_slice(&read_bytes[..len]);
-
-                Ok(len)
-            })
-        }
-    }
-
-    impl<S> FramedWrite for FuturesCompat<S>
-    where
-        S: Unpin + AsyncWrite,
-    {
-        fn write_all<'a>(&'a mut self, buf: &'a [u8]) -> Pin<Box<dyn std::future::Future<Output = io::Result<()>> + 'a>>
-        where
-            Self: 'a,
-        {
-            use futures_util::io::AsyncWriteExt as _;
-
-            Box::pin(async {
-                self.inner.write_all(buf).await?;
-                self.inner.flush().await?;
-
-                Ok(())
-            })
-        }
-    }
-}
-
-mod private {
-    pub trait Sealed {}
 }
