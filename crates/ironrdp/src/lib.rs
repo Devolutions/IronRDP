@@ -2,10 +2,6 @@
 //!
 //! This is a meta crate re-exporting other ironrdp crates for convenience.
 
-#[cfg(feature = "tokio")]
-pub use ironrdp_async as tokio;
-#[cfg(feature = "futures")]
-pub use ironrdp_async as futures;
 #[cfg(feature = "connector")]
 pub use ironrdp_connector as connector;
 #[cfg(feature = "graphics")]

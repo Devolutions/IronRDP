@@ -1,52 +1,24 @@
-[package]
-name = "ironrdp"
-version = "0.5.0"
-readme = "README.md"
-description = "A Rust implementation of the Microsoft Remote Desktop Protocol (RDP)"
-edition.workspace = true
-license.workspace = true
-homepage.workspace = true
-repository.workspace = true
-authors.workspace = true
-keywords.workspace = true
-categories.workspace = true
-
-[features]
-default = ["pdu", "connector", "session"]
-pdu = ["dep:ironrdp-pdu"]
-connector = ["dep:ironrdp-connector"]
-session = ["dep:ironrdp-session"]
-graphics = ["dep:ironrdp-graphics"]
-input = ["dep:ironrdp-input"]
-
-[dependencies]
-ironrdp-pdu = { workspace = true, optional = true }
-ironrdp-connector = { workspace = true, optional = true }
-ironrdp-session = { workspace = true, optional = true }
-ironrdp-graphics = { workspace = true, optional = true }
-ironrdp-input = { workspace = true, optional = true }
-
 [workspace]
 members = [
   "crates/*",
   "xtask",
 ]
 default-members = [
-  "crates/pdu",
-  "crates/connector",
-  "crates/session",
-  "crates/graphics",
-  "crates/input",
-  "crates/async",
-  "crates/client",
-  "crates/web",
+  "crates/ironrdp-pdu",
+  "crates/ironrdp-connector",
+  "crates/ironrdp-session",
+  "crates/ironrdp-graphics",
+  "crates/ironrdp-input",
+  "crates/ironrdp-async",
+  "crates/ironrdp-client",
+  "crates/ironrdp-web",
 ]
 
 # FIXME: fix compilation
 exclude = [
-  "crates/client-glutin",
-  "crates/glutin-renderer",
-  "crates/replay-client",
+  "crates/ironrdp-client-glutin",
+  "crates/ironrdp-glutin-renderer",
+  "crates/ironrdp-replay-client",
 ]
 
 [workspace.package]
@@ -60,18 +32,18 @@ categories = ["network-programming"]
 
 [workspace.dependencies]
 expect-test = "1"
-ironrdp = { version = "0.5", path = "." }
-ironrdp-async = { version = "0.1", path = "crates/async" }
-ironrdp-connector = { version = "0.1", path = "crates/connector" }
-ironrdp-graphics = { version = "0.1", path = "crates/graphics" }
-ironrdp-input = { version = "0.1", path = "crates/input" }
-ironrdp-pdu = { version = "0.1", path = "crates/pdu" }
-ironrdp-pdu-generators = { path = "crates/pdu-generators" }
-ironrdp-pdu-samples = { path = "crates/pdu-samples" }
-ironrdp-rdcleanpath = { version = "0.1", path = "crates/rdcleanpath" }
-ironrdp-session = { version = "0.1", path = "crates/session" }
-ironrdp-session-generators = { path = "crates/session-generators" }
-ironrdp-tls = { version = "0.1", path = "crates/tls" }
+ironrdp-async = { version = "0.1", path = "crates/ironrdp-async" }
+ironrdp-connector = { version = "0.1", path = "crates/ironrdp-connector" }
+ironrdp-graphics = { version = "0.1", path = "crates/ironrdp-graphics" }
+ironrdp-input = { version = "0.1", path = "crates/ironrdp-input" }
+ironrdp-pdu-generators = { path = "crates/ironrdp-pdu-generators" }
+ironrdp-pdu-samples = { path = "crates/ironrdp-pdu-samples" }
+ironrdp-pdu = { version = "0.1", path = "crates/ironrdp-pdu" }
+ironrdp-rdcleanpath = { version = "0.1", path = "crates/ironrdp-rdcleanpath" }
+ironrdp-session-generators = { path = "crates/ironrdp-session-generators" }
+ironrdp-session = { version = "0.1", path = "crates/ironrdp-session" }
+ironrdp-tls = { version = "0.1", path = "crates/ironrdp-tls" }
+ironrdp = { version = "0.5", path = "crates/ironrdp" }
 proptest = "1.1.0"
 rstest = "0.17.0"
 sspi = "0.8.1"
