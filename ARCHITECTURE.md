@@ -77,4 +77,34 @@ be the case that a successful `cargo xtask ci` run implies a successful CI workf
 
 ### Testing
 
-TODO
+#### Fuzzing
+
+See [`fuzz/README.md`](../fuzz/README.md).
+
+#### Readability
+
+Do not include huge binary chunks directly in source files (`*.rs`). Place these in separate files (`*.bin`, `*.bmp`)
+and include them using macros such as `include_bytes!` or `include_str!`.
+
+#### Use `expect-test` for snapshot testing
+
+When comparing structured data (e.g.: error results, decoded PDUs), use `expect-test`. It is both easy to create
+and maintain such tests. When something affecting the representation is changed, simply run the test again with
+`UPDATE_EXPECT=1` env variable to magically update the code.
+
+See:
+- <https://matklad.github.io/2021/05/31/how-to-test.html#Expect-Tests>
+- <https://docs.rs/expect-test/latest/expect_test/>
+
+TODO: take further inspiration from rust-analyzer
+- https://github.com/rust-lang/rust-analyzer/blob/d7c99931d05e3723d878bea5dc26766791fa4e69/docs/dev/architecture.md#testing
+- https://matklad.github.io/2021/05/31/how-to-test.html
+
+#### Use `rstest` for fixture-based testing
+
+When a test can be generalized for multiple inputs, use [`rstest`](https://github.com/la10736/rstest) to avoid code duplication.
+
+#### Use `proptest` for property testing
+
+It allows to test that certain properties of your code hold for arbitrary inputs, and if a failure
+is found, automatically finds the minimal test case to reproduce the problem.
