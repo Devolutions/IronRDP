@@ -227,7 +227,7 @@ pub enum ServerLicenseError {
     InvalidProductIdLength(u32),
     #[error("Received invalid scope count field: {0}")]
     InvalidScopeCount(u32),
-    #[error("Received invalid sertificate length: {0}")]
+    #[error("Received invalid certificate length: {0}")]
     InvalidCertificateLength(u32),
     #[error("Blob too small")]
     BlobTooSmall,

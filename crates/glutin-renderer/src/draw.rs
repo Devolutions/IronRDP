@@ -460,7 +460,7 @@ impl AvcShaderProgram {
             ShaderType::Avc420 => None,
             ShaderType::TextureShader => unreachable!(),
         };
-        // Set parameters that are not going to change accross different programs.
+        // Set parameters that are not going to change across different programs.
         // All shaders within a context share parameters and must be of the same type
         // The paraemters here are going to remain constant
 
@@ -514,7 +514,7 @@ impl AvcShaderProgram {
         if stride_1 != stride_0 / 2 {
             panic!("Program cannot handle stride mismatch");
         }
-        // Each region is 6 verticies (two triangles)
+        // Each region is 6 vertices (two triangles)
         gl.draw_arrays(glow::TRIANGLES, 0, regions.len() as i32 * 6);
     }
 }

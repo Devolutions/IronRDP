@@ -119,13 +119,13 @@ pub fn launch_gui(
                     // layout_pdu.to_buffer(&mut data_buffer)?;
                     // if let (Some(x224_processor), Some(stream)) = (x224_processor.as_ref(), stream.as_mut()) {
                     //     let mut x224_processor = x224_processor.lock()?;
-                    //     // Ignorable eror in case of display channel is not connected
+                    //     // Ignorable error in case of display channel is not connected
                     //     let result =
                     //         x224_processor.send_dynamic(&mut *stream, x224::RDP8_DISPLAY_PIPELINE_NAME, data_buffer);
                     //     if result.is_err() {
-                    //         error!("Monitor layour {:?}", result);
+                    //         error!("Monitor layout {:?}", result);
                     //     } else {
-                    //         error!("Monitor layour success");
+                    //         error!("Monitor layout success");
                     //     }
                     // }
                 }

@@ -200,7 +200,7 @@ pub fn decode_cursor<'de, T: PduDecode<'de>>(src: &mut ReadCursor<'de>) -> Resul
     T::decode(src)
 }
 
-/// Similar to `PduDecode` but unconditionnaly returns an owned type.
+/// Similar to `PduDecode` but unconditionally returns an owned type.
 pub trait PduDecodeOwned: Sized {
     fn decode_owned(src: &mut ReadCursor<'_>) -> Result<Self>;
 }

@@ -37,7 +37,7 @@ pub enum MinorPlatformType {
     PowerPc = 5,
     Macintosh = 6,
     NativeXServer = 7,
-    PseudeXServer = 8,
+    PseudoXServer = 8,
     WindowsRt = 9,
 }
 

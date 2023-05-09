@@ -652,7 +652,7 @@ impl Sequence for ClientConnector {
             }
 
             //== Optional Multitransport Bootstrapping ==//
-            // NOTE: our implemention is not expecting the Auto-Detect Request PDU from server
+            // NOTE: our implementation is not expecting the Auto-Detect Request PDU from server
             ClientConnectorState::MultitransportBootstrapping {
                 io_channel_id,
                 user_channel_id,

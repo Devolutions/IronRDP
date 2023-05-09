@@ -175,13 +175,13 @@ fn handle_rectangle_that_overlaps_band(rectangle: &Rectangle, band: &[Rectangle]
                                  |    |  |    |
 
         possible cases:
-        1) no top split, merge zone then a bottom split. The band will be splitted
+        1) no top split, merge zone then a bottom split. The band will be split
            in two
-        2) not band split, only the merge zone, band merged with rect but not splitted
+        2) not band split, only the merge zone, band merged with rect but not split
         3) a top split, the merge zone and no bottom split. The band will be split
            in two
         4) a top split, the merge zone and also a bottom split. The band will be
-           splitted in 3, but the coalesce algorithm may merge the created bands
+           split in 3, but the coalesce algorithm may merge the created bands
     */
 
     let band_top = band[0].top;
@@ -289,7 +289,7 @@ fn copy_band_with_union(
      *
      *  We first copy as-is items that are before Item2, the first overlapping
      *  item.
-     *  Then we find the last one that overlap unionRect to agregate Item2, Item3
+     *  Then we find the last one that overlap unionRect to aggregate Item2, Item3
      *  and Item4 to create Item2.
      *  Finally Item5 is copied as Item3.
      *

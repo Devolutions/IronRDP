@@ -1,0 +1,10 @@
+[files]
+extend-exclude = ["*.bin", "*.bmp"]
+
+[default]
+extend-ignore-re = [
+   # Ignore false-positives for auth tokens in the following file:
+   # - web-client\iron-svelte-client\src\lib\login\login.svelte
+   "(?m)let authtoken =.+;\\s?$",
+]
+extend-identifiers.lastImageInformations = "lastImageInformations"
