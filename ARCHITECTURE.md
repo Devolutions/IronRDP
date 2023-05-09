@@ -29,7 +29,7 @@ This section talks briefly about various important directories and data structur
 
 ### Client Crates
 
-- `crates/ironrdp-client`: Portable RDP client without GPU acceleration using softbuffer and winit for windowing.
+- `crates/ironrdp-client`: portable RDP client without GPU acceleration using softbuffer and winit for windowing.
 - `crates/ironrdp-web`: WebAssembly high-level bindings targeting web browsers.
 - `crates/ironrdp-glutin-renderer`: `glutin` primitives for OpenGL rendering.
 - `crates/ironrdp-client-glutin`: GPU-accelerated RDP client using glutin.
