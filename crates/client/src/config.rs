@@ -1,4 +1,6 @@
+use std::io;
 use std::num::ParseIntError;
+use std::str::FromStr;
 
 use anyhow::Context as _;
 use clap::clap_derive::ValueEnum;
@@ -13,7 +15,7 @@ const DEFAULT_HEIGHT: u16 = 1080;
 #[derive(Clone)]
 pub struct Config {
     pub log_file: String,
-    pub addr: String,
+    pub destination: Destination,
     pub connector: connector::Config,
 }
 
@@ -67,6 +69,80 @@ fn parse_hex(input: &str) -> Result<u32, ParseIntError> {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Destination {
+    name: String,
+    port: u16,
+}
+
+impl Destination {
+    pub fn new(addr: impl Into<String>) -> anyhow::Result<Self> {
+        const RDP_DEFAULT_PORT: u16 = 3389;
+
+        let addr = addr.into();
+
+        if let Some(idx) = addr.rfind(':') {
+            if let Ok(sock_addr) = addr.parse::<std::net::SocketAddr>() {
+                Ok(Self {
+                    name: sock_addr.ip().to_string(),
+                    port: sock_addr.port(),
+                })
+            } else if addr.parse::<std::net::Ipv6Addr>().is_ok() {
+                Ok(Self {
+                    name: addr,
+                    port: RDP_DEFAULT_PORT,
+                })
+            } else {
+                Ok(Self {
+                    name: addr[..idx].to_owned(),
+                    port: addr[idx + 1..].parse().context("invalid port")?,
+                })
+            }
+        } else {
+            Ok(Self {
+                name: addr,
+                port: RDP_DEFAULT_PORT,
+            })
+        }
+    }
+
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub fn port(&self) -> u16 {
+        self.port
+    }
+
+    pub fn lookup_addr(&self) -> io::Result<std::net::SocketAddr> {
+        use std::net::ToSocketAddrs as _;
+
+        let sockaddr = (self.name.as_str(), self.port).to_socket_addrs()?.next().unwrap();
+
+        Ok(sockaddr)
+    }
+}
+
+impl FromStr for Destination {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        Self::new(s)
+    }
+}
+
+impl From<Destination> for connector::ServerName {
+    fn from(value: Destination) -> Self {
+        Self::new(value.name)
+    }
+}
+
+impl From<&Destination> for connector::ServerName {
+    fn from(value: &Destination) -> Self {
+        Self::new(&value.name)
+    }
+}
+
 /// Devolutions IronRDP client
 #[derive(Parser, Debug)]
 #[clap(author = "Devolutions", about = "Devolutions-IronRDP client")]
@@ -77,7 +153,7 @@ struct Args {
     log_file: String,
 
     /// An address on which the client will connect.
-    addr: Option<String>,
+    destination: Option<Destination>,
 
     /// A target RDP server user name
     #[clap(short, long, value_parser)]
@@ -150,17 +226,14 @@ impl Config {
     pub fn parse_args() -> anyhow::Result<Self> {
         let args = Args::parse();
 
-        let mut addr = if let Some(addr) = args.addr {
-            addr
+        let destination = if let Some(destination) = args.destination {
+            destination
         } else {
             inquire::Text::new("Server address:")
                 .prompt()
                 .context("Address prompt")?
+                .pipe(Destination::new)?
         };
-
-        if addr.find(':').is_none() {
-            addr.push_str(":3389");
-        }
 
         let username = if let Some(username) = args.username {
             username
@@ -244,7 +317,7 @@ impl Config {
 
         Ok(Self {
             log_file: args.log_file,
-            addr,
+            destination,
             connector,
         })
     }

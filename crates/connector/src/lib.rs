@@ -7,6 +7,7 @@ mod channel_connection;
 mod connection;
 mod connection_finalization;
 mod license_exchange;
+mod server_name;
 
 use core::any::Any;
 use core::fmt;
@@ -20,6 +21,7 @@ pub use channel_connection::{ChannelConnectionSequence, ChannelConnectionState};
 pub use connection::{ClientConnector, ClientConnectorState, ConnectionResult};
 pub use connection_finalization::{ConnectionFinalizationSequence, ConnectionFinalizationState};
 pub use license_exchange::{LicenseExchangeSequence, LicenseExchangeState};
+pub use server_name::ServerName;
 pub use sspi;
 
 #[derive(Debug, Clone)]

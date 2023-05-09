@@ -2,8 +2,7 @@
 
 use std::borrow::Cow;
 
-use ironrdp_pdu::rdp;
-use ironrdp_pdu::{x224, PduParsing};
+use ironrdp_pdu::{rdp, x224, PduParsing};
 
 pub fn encode_x224_packet<T: PduParsing>(x224_msg: &T, buf: &mut Vec<u8>) -> crate::Result<usize>
 where

@@ -1,13 +1,14 @@
-use crate::capsets::{
-    CLIENT_DEMAND_ACTIVE, CLIENT_DEMAND_ACTIVE_BUFFER, SERVER_DEMAND_ACTIVE, SERVER_DEMAND_ACTIVE_BUFFER,
-};
-use crate::client_info::{CLIENT_INFO_BUFFER_UNICODE, CLIENT_INFO_UNICODE};
-use crate::monitor_data::MONITOR_DATA_WITH_MONITORS_BUFFER;
 use ironrdp_pdu::gcc;
 use ironrdp_pdu::rdp::finalization_messages::*;
 use ironrdp_pdu::rdp::headers::*;
 use ironrdp_pdu::rdp::server_license::*;
 use ironrdp_pdu::rdp::*;
+
+use crate::capsets::{
+    CLIENT_DEMAND_ACTIVE, CLIENT_DEMAND_ACTIVE_BUFFER, SERVER_DEMAND_ACTIVE, SERVER_DEMAND_ACTIVE_BUFFER,
+};
+use crate::client_info::{CLIENT_INFO_BUFFER_UNICODE, CLIENT_INFO_UNICODE};
+use crate::monitor_data::MONITOR_DATA_WITH_MONITORS_BUFFER;
 
 pub const CLIENT_INFO_PDU_SECURITY_HEADER_BUFFER: [u8; 4] = [
     0x40, 0x00, // flags
