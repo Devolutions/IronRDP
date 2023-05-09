@@ -1,0 +1,27 @@
+[package]
+name = "ironrdp"
+version = "0.5.0"
+readme = "README.md"
+description = "A Rust implementation of the Microsoft Remote Desktop Protocol (RDP)"
+edition.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[features]
+default = ["pdu", "connector", "session"]
+pdu = ["dep:ironrdp-pdu"]
+connector = ["dep:ironrdp-connector"]
+session = ["dep:ironrdp-session"]
+graphics = ["dep:ironrdp-graphics"]
+input = ["dep:ironrdp-input"]
+
+[dependencies]
+ironrdp-pdu = { workspace = true, optional = true }
+ironrdp-connector = { workspace = true, optional = true }
+ironrdp-session = { workspace = true, optional = true }
+ironrdp-graphics = { workspace = true, optional = true }
+ironrdp-input = { workspace = true, optional = true }

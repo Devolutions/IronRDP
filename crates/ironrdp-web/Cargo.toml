@@ -23,7 +23,7 @@ panic_hook = ["dep:console_error_panic_hook"]
 
 # Protocols
 ironrdp = { workspace = true, features = ["input", "graphics"] }
-ironrdp-async = { workspace = true, features = ["futures"] }
+ironrdp-futures.workspace = true
 ironrdp-rdcleanpath.workspace = true
 
 # WASM

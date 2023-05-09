@@ -21,7 +21,7 @@ native-tls = ["ironrdp-tls/native-tls"]
 # Protocols
 ironrdp = { workspace = true, features = ["input", "graphics"] }
 ironrdp-tls.workspace = true
-ironrdp-async = { workspace = true, features = ["tokio"] }
+ironrdp-tokio.workspace = true
 sspi = { workspace = true, features = ["network_client"] } # TODO: enable dns_resolver at some point
 
 # GUI
@@ -39,8 +39,6 @@ tracing-subscriber = { version = "0.3.16", features = ["env-filter"] }
 
 # Async, futures
 tokio = { version = "1", features = ["full"]}
-tokio-util = { version = "0.7.7", features = ["compat"] }
-futures-util = "0.3"
 
 # Utils
 chrono = "0.4.24"

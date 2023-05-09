@@ -1509,12 +1509,9 @@ name = "ironrdp-async"
 version = "0.1.0"
 dependencies = [
  "bytes",
- "futures-util",
  "ironrdp-connector",
  "ironrdp-pdu",
  "tap",
- "tokio",
- "tokio-util",
  "tracing",
 ]
 
@@ -1526,18 +1523,16 @@ dependencies = [
  "chrono",
  "clap",
  "exitcode",
- "futures-util",
  "inquire",
  "ironrdp",
- "ironrdp-async",
  "ironrdp-tls",
+ "ironrdp-tokio",
  "semver",
  "smallvec",
  "softbuffer",
  "sspi",
  "tap",
  "tokio",
- "tokio-util",
  "tracing",
  "tracing-subscriber",
  "whoami",
@@ -1554,6 +1549,15 @@ dependencies = [
  "rstest",
  "sspi",
  "tracing",
+]
+
+[[package]]
+name = "ironrdp-futures"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "futures-util",
+ "ironrdp-async",
 ]
 
 [[package]]
@@ -1670,6 +1674,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "ironrdp-tokio"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "ironrdp-async",
+ "tokio",
+ "tokio-util",
+]
+
+[[package]]
 name = "ironrdp-web"
 version = "0.1.0"
 dependencies = [
@@ -1681,7 +1695,7 @@ dependencies = [
  "getrandom 0.2.8",
  "gloo-net",
  "ironrdp",
- "ironrdp-async",
+ "ironrdp-futures",
  "ironrdp-rdcleanpath",
  "js-sys",
  "semver",
@@ -3798,7 +3812,6 @@ checksum = "5427d89453009325de0d8f342c9490009f76e999cb7672d77e46267448f7e6b2"
 dependencies = [
  "bytes",
  "futures-core",
- "futures-io",
  "futures-sink",
  "pin-project-lite",
  "tokio",

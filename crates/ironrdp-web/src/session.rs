@@ -196,7 +196,7 @@ impl Session {
             .take()
             .context("RDP session can be started only once")?;
 
-        let mut framed = ironrdp_async::Framed::futures_new(rdp_reader);
+        let mut framed = ironrdp_futures::FuturesFramed::new(rdp_reader);
 
         info!("Start RDP session");
 
@@ -425,7 +425,7 @@ async fn connect(
     destination: String,
     pcb: Option<String>,
 ) -> Result<(connector::ConnectionResult, WebSocketCompat), IronRdpError> {
-    let mut framed = ironrdp_async::Framed::futures_new(ws);
+    let mut framed = ironrdp_futures::FuturesFramed::new(ws);
 
     let mut connector = connector::ClientConnector::new(config)
         .with_server_name(&destination)
@@ -433,22 +433,22 @@ async fn connect(
 
     let upgraded = connect_rdcleanpath(&mut framed, &mut connector, destination, proxy_auth_token, pcb).await?;
 
-    let connection_result = ironrdp_async::connect_finalize(upgraded, &mut framed, connector).await?;
+    let connection_result = ironrdp_futures::connect_finalize(upgraded, &mut framed, connector).await?;
 
-    let ws = framed.futures_into_inner_no_leftover();
+    let ws = framed.into_inner_no_leftover();
 
     Ok((connection_result, ws))
 }
 
 async fn connect_rdcleanpath<S>(
-    framed: &mut ironrdp_async::Framed<S>,
+    framed: &mut ironrdp_futures::Framed<S>,
     connector: &mut ClientConnector,
     destination: String,
     proxy_auth_token: String,
     pcb: Option<String>,
-) -> Result<ironrdp_async::Upgraded, IronRdpError>
+) -> Result<ironrdp_futures::Upgraded, IronRdpError>
 where
-    S: ironrdp_async::FramedRead + ironrdp_async::FramedWrite,
+    S: ironrdp_futures::FramedRead + ironrdp_futures::FramedWrite,
 {
     use ironrdp::connector::Sequence as _;
     use x509_cert::der::Decode as _;
@@ -559,14 +559,15 @@ where
             .tbs_certificate
             .subject_public_key_info
             .subject_public_key
-            .raw_bytes()
+            .as_bytes()
+            .context("subject public key BIT STRING is not aligned")?
             .to_owned();
 
-        let should_upgrade = ironrdp_async::skip_connect_begin(connector);
+        let should_upgrade = ironrdp_futures::skip_connect_begin(connector);
 
         // At this point, proxy established the TLS session
 
-        let upgraded = ironrdp_async::mark_as_upgraded(should_upgrade, connector, server_public_key);
+        let upgraded = ironrdp_futures::mark_as_upgraded(should_upgrade, connector, server_public_key);
 
         Ok(upgraded)
     }

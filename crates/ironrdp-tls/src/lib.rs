@@ -86,7 +86,8 @@ fn extract_tls_server_public_key(cert: &[u8]) -> io::Result<Vec<u8>> {
         .tbs_certificate
         .subject_public_key_info
         .subject_public_key
-        .raw_bytes()
+        .as_bytes()
+        .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "subject public key BIT STRING is not aligned"))?
         .to_owned();
 
     Ok(server_public_key)

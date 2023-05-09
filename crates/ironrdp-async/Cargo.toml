@@ -11,25 +11,10 @@ authors.workspace = true
 keywords.workspace = true
 categories.workspace = true
 
-[features]
-default = ["tokio"]
-tokio = ["dep:tokio", "dep:tokio-util"]
-futures = ["dep:futures-util"]
-
 [dependencies]
-# Protocols
-ironrdp-pdu.workspace = true
+bytes = "1"
 ironrdp-connector.workspace = true
+ironrdp-pdu.workspace = true
 # ironrdp-session.workspace = true
-
-# Logging
+tap = "1"
 tracing.workspace = true
-
-# Utils
-bytes = "1.4.0"
-tap = "1.0.1"
-
-# Async
-tokio = { version = "1.25.0", features = ["io-util"], optional = true }
-tokio-util = { version = "0.7.7", features = ["codec"], optional = true }
-futures-util = { version = "0.3.26", features = ["io"], optional = true }
