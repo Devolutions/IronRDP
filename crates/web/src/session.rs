@@ -22,11 +22,13 @@ use crate::network_client::PlaceholderNetworkClientFactory;
 use crate::websocket::WebSocketCompat;
 use crate::DesktopSize;
 
+const DEFAULT_WIDTH: u16 = 1280;
+const DEFAULT_HEIGHT: u16 = 720;
+
 #[wasm_bindgen]
 #[derive(Clone, Default)]
 pub struct SessionBuilder(Rc<RefCell<SessionBuilderInner>>);
 
-#[derive(Default)]
 struct SessionBuilderInner {
     username: Option<String>,
     destination: Option<String>,
@@ -35,8 +37,29 @@ struct SessionBuilderInner {
     proxy_address: Option<String>,
     auth_token: Option<String>,
     pcb: Option<String>,
+    desktop_size: DesktopSize,
     update_callback: Option<js_sys::Function>,
     update_callback_context: Option<JsValue>,
+}
+
+impl Default for SessionBuilderInner {
+    fn default() -> Self {
+        Self {
+            username: None,
+            destination: None,
+            server_domain: None,
+            password: None,
+            proxy_address: None,
+            auth_token: None,
+            pcb: None,
+            desktop_size: DesktopSize {
+                width: DEFAULT_WIDTH,
+                height: DEFAULT_HEIGHT,
+            },
+            update_callback: None,
+            update_callback_context: None,
+        }
+    }
 }
 
 #[wasm_bindgen]
@@ -84,6 +107,11 @@ impl SessionBuilder {
         self.clone()
     }
 
+    pub fn desktop_size(&self, desktop_size: DesktopSize) -> SessionBuilder {
+        self.0.borrow_mut().desktop_size = desktop_size;
+        self.clone()
+    }
+
     pub fn update_callback(&self, callback: js_sys::Function) -> SessionBuilder {
         self.0.borrow_mut().update_callback = Some(callback);
         self.clone()
@@ -103,6 +131,7 @@ impl SessionBuilder {
             proxy_address,
             auth_token,
             pcb,
+            desktop_size,
             update_callback,
             update_callback_context,
         );
@@ -116,13 +145,14 @@ impl SessionBuilder {
             proxy_address = inner.proxy_address.clone().expect("proxy_address");
             auth_token = inner.auth_token.clone().expect("auth_token");
             pcb = inner.pcb.clone();
+            desktop_size = inner.desktop_size.clone();
             update_callback = inner.update_callback.clone().expect("update_callback");
             update_callback_context = inner.update_callback_context.clone().expect("update_callback_context");
         }
 
         info!("Connect to RDP host");
 
-        let config = build_config(username, password, server_domain);
+        let config = build_config(username, password, server_domain, desktop_size);
 
         let ws = WebSocketCompat::new(WebSocket::open(&proxy_address).context("Couldn’t open WebSocket")?);
 
@@ -293,10 +323,12 @@ impl Session {
     }
 }
 
-fn build_config(username: String, password: String, domain: Option<String>) -> connector::Config {
-    const DEFAULT_WIDTH: u16 = 1280;
-    const DEFAULT_HEIGHT: u16 = 720;
-
+fn build_config(
+    username: String,
+    password: String,
+    domain: Option<String>,
+    desktop_size: DesktopSize,
+) -> connector::Config {
     connector::Config {
         username,
         password,
@@ -308,8 +340,8 @@ fn build_config(username: String, password: String, domain: Option<String>) -> c
         ime_file_name: String::new(),
         dig_product_id: String::new(),
         desktop_size: connector::DesktopSize {
-            width: DEFAULT_WIDTH,
-            height: DEFAULT_HEIGHT,
+            width: desktop_size.width,
+            height: desktop_size.height,
         },
         graphics: None,
         bitmap: None,
