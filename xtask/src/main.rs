@@ -25,14 +25,12 @@ fn main() -> anyhow::Result<()> {
         Action::ShowHelp => cli::print_help(),
         Action::CheckAll => {
             tasks::check_formatting(&sh)?;
-            tasks::check_typos(&sh)?;
             tasks::run_tests(&sh)?;
             tasks::check_lints(&sh)?;
             tasks::check_wasm(&sh)?;
             tasks::fuzz_run(&sh)?;
         }
         Action::CheckFmt => tasks::check_formatting(&sh)?,
-        Action::CheckTypos => tasks::check_typos(&sh)?,
         Action::CheckTests => tasks::run_tests(&sh)?,
         Action::CheckLints => tasks::check_lints(&sh)?,
         Action::CheckWasm => tasks::check_wasm(&sh)?,

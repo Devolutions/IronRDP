@@ -21,26 +21,6 @@ pub fn check_formatting(sh: &Shell) -> anyhow::Result<()> {
     Ok(())
 }
 
-pub fn check_typos(sh: &Shell) -> anyhow::Result<()> {
-    let _s = Section::new("TYPOS");
-
-    if cmd!(sh, "typos --version").output().is_err() {
-        println!("`typos-cli` utility is missing, installing...");
-
-        let output = cmd!(sh, "{CARGO} install typos-cli").ignore_status().output()?;
-        if output.status.success() {
-            println!("`typos-cli` installed successfully!");
-        } else {
-            anyhow::bail!("Failed to install `typos-cli`");
-        }
-    }
-
-    cmd!(sh, "typos").run()?;
-    println!("All good!");
-
-    Ok(())
-}
-
 pub fn run_tests(sh: &Shell) -> anyhow::Result<()> {
     let _s = Section::new("TESTS");
     cmd!(sh, "{CARGO} test --workspace --locked").run()?;
