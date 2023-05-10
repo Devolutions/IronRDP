@@ -12,6 +12,7 @@ Supported codecs:
 
 - Uncompressed raw bitmap
 - Interleaved Run-Length Encoding (RLE) Bitmap Codec
+- RDP 6.0 Bitmap Compression
 - Microsoft RemoteFX (RFX)
 
 ### How to enable RemoteFX on server
