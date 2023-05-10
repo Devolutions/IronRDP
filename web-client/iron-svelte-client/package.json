@@ -6,7 +6,7 @@
     "pre-build": "node ./pre-build.js",
     "pre-build-no-wasm": "node ./pre-build.js no-wasm",
     "dev": "vite dev",
-    "dev-all": "npm run pre-build && vite dev",
+    "dev-all": "npm run pre-build && vite dev --host",
     "dev-no-wasm": "npm run pre-build-no-wasm && vite dev",
     "build": "npm run pre-build && vite build",
     "preview": "vite preview",

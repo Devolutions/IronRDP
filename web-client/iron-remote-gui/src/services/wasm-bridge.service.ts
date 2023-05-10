@@ -1,5 +1,5 @@
 import {BehaviorSubject, from, Observable, of, Subject} from 'rxjs';
-import init, {DeviceEvent, InputTransaction, ironrdp_init, IronRdpError, Session, SessionBuilder} from '../../../../crates/web/pkg/ironrdp_web';
+import init, {DeviceEvent, InputTransaction, ironrdp_init, IronRdpError, Session, SessionBuilder} from '../../../../crates/ironrdp-web/pkg/ironrdp_web';
 import {loggingService} from './logging.service';
 import {catchError, filter, map} from 'rxjs/operators';
 import {scanCode} from '../lib/scancodes';
@@ -84,9 +84,6 @@ export class WasmBridgeService {
 
     connect(username: string, password: string, hostname: string, gatewayAddress: string, domain: string, authToken: string): Observable<NewSessionInfo> {
         const sessionBuilder = SessionBuilder.new();
-        sessionBuilder.gateway_address(gatewayAddress);
-        sessionBuilder.hostname(hostname);
-        sessionBuilder.domain(domain);
         sessionBuilder.password(password);
         sessionBuilder.auth_token(authToken);
         sessionBuilder.username(username);
