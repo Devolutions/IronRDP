@@ -11,6 +11,10 @@ authors.workspace = true
 keywords.workspace = true
 categories.workspace = true
 
+[lib]
+doctest = false
+test = false
+
 [dependencies]
 bytes = "1"
 futures-util = { version = "0.3.26", features = ["io"] }

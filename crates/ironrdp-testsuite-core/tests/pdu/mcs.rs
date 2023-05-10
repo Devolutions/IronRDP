@@ -1,7 +1,7 @@
 use ironrdp_pdu::mcs::*;
 use ironrdp_pdu::{Error, PduParsing as _};
-use ironrdp_pdu_samples::mcs::*;
-use ironrdp_pdu_samples::mcs_encode_decode_test;
+use ironrdp_testsuite_core::mcs::*;
+use ironrdp_testsuite_core::mcs_encode_decode_test;
 
 fn mcs_decode<'de, T: McsPdu<'de>>(src: &'de [u8]) -> ironrdp_pdu::Result<T> {
     let mut cursor = ironrdp_pdu::cursor::ReadCursor::new(src);

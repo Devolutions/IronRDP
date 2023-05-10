@@ -4,6 +4,7 @@ use std::pin::Pin;
 use bytes::BytesMut;
 use futures_util::io::{AsyncRead, AsyncWrite};
 
+#[rustfmt::skip] // do not re-order this pub use
 pub use ironrdp_async::*;
 
 pub type FuturesFramed<S> = Framed<FuturesStream<S>>;

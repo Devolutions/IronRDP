@@ -4,6 +4,10 @@ version = "0.0.0"
 edition = "2021"
 publish = false
 
+[[bin]]
+name = "xtask"
+test = false
+
 [dependencies]
 anyhow = "1"
 pico-args = "0.5.0"

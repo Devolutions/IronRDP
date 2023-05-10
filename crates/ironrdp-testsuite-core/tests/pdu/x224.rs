@@ -7,7 +7,7 @@ use ironrdp_pdu::tpdu::{TpduCode, TpduHeader};
 use ironrdp_pdu::tpkt::TpktHeader;
 use ironrdp_pdu::x224::user_data_size;
 use ironrdp_pdu::Error;
-use ironrdp_pdu_samples::encode_decode_test;
+use ironrdp_testsuite_core::encode_decode_test;
 
 const SAMPLE_TPKT_HEADER_BINARY: [u8; 4] = [
     0x3, // version

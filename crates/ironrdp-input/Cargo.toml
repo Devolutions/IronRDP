@@ -11,12 +11,11 @@ authors.workspace = true
 keywords.workspace = true
 categories.workspace = true
 
+[lib]
+doctest = false
+test = false
+
 [dependencies]
 ironrdp-pdu.workspace = true
 bitvec = "1.0.1"
 smallvec = "1.10.0"
-
-[dev-dependencies]
-proptest.workspace = true
-rstest.workspace = true
-anyhow = "1"

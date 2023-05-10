@@ -1,12 +1,12 @@
 use ironrdp_pdu::gcc::conference_create::*;
 use ironrdp_pdu::gcc::*;
 use ironrdp_pdu::PduParsing as _;
-use ironrdp_pdu_samples::cluster_data::*;
-use ironrdp_pdu_samples::conference_create::*;
-use ironrdp_pdu_samples::core_data::*;
-use ironrdp_pdu_samples::gcc::*;
-use ironrdp_pdu_samples::network_data::*;
-use ironrdp_pdu_samples::security_data::*;
+use ironrdp_testsuite_core::cluster_data::*;
+use ironrdp_testsuite_core::conference_create::*;
+use ironrdp_testsuite_core::core_data::*;
+use ironrdp_testsuite_core::gcc::*;
+use ironrdp_testsuite_core::network_data::*;
+use ironrdp_testsuite_core::security_data::*;
 
 #[test]
 fn from_buffer_correctly_parses_client_gcc_blocks_without_optional_data_blocks() {
@@ -462,18 +462,18 @@ fn buffer_length_is_correct_for_server_core_data_with_all_optional_fields() {
 
 #[test]
 fn from_buffer_correctly_parses_server_message_channel_data() {
-    let buffer = ironrdp_pdu_samples::message_channel_data::SERVER_GCC_MESSAGE_CHANNEL_BLOCK_BUFFER.as_ref();
+    let buffer = ironrdp_testsuite_core::message_channel_data::SERVER_GCC_MESSAGE_CHANNEL_BLOCK_BUFFER.as_ref();
 
     assert_eq!(
-        ironrdp_pdu_samples::message_channel_data::SERVER_GCC_MESSAGE_CHANNEL_BLOCK,
+        ironrdp_testsuite_core::message_channel_data::SERVER_GCC_MESSAGE_CHANNEL_BLOCK,
         ServerMessageChannelData::from_buffer(buffer).unwrap()
     );
 }
 
 #[test]
 fn to_buffer_correctly_serializes_server_message_channel_data() {
-    let data = ironrdp_pdu_samples::message_channel_data::SERVER_GCC_MESSAGE_CHANNEL_BLOCK.clone();
-    let expected_buffer = ironrdp_pdu_samples::message_channel_data::SERVER_GCC_MESSAGE_CHANNEL_BLOCK_BUFFER;
+    let data = ironrdp_testsuite_core::message_channel_data::SERVER_GCC_MESSAGE_CHANNEL_BLOCK.clone();
+    let expected_buffer = ironrdp_testsuite_core::message_channel_data::SERVER_GCC_MESSAGE_CHANNEL_BLOCK_BUFFER;
 
     let mut buf = Vec::new();
     data.to_buffer(&mut buf).unwrap();
@@ -483,8 +483,9 @@ fn to_buffer_correctly_serializes_server_message_channel_data() {
 
 #[test]
 fn buffer_length_is_correct_for_server_message_channel_data() {
-    let data = ironrdp_pdu_samples::message_channel_data::SERVER_GCC_MESSAGE_CHANNEL_BLOCK.clone();
-    let expected_buffer_len = ironrdp_pdu_samples::message_channel_data::SERVER_GCC_MESSAGE_CHANNEL_BLOCK_BUFFER.len();
+    let data = ironrdp_testsuite_core::message_channel_data::SERVER_GCC_MESSAGE_CHANNEL_BLOCK.clone();
+    let expected_buffer_len =
+        ironrdp_testsuite_core::message_channel_data::SERVER_GCC_MESSAGE_CHANNEL_BLOCK_BUFFER.len();
 
     let len = data.buffer_length();
 
@@ -493,28 +494,28 @@ fn buffer_length_is_correct_for_server_message_channel_data() {
 
 #[test]
 fn from_buffer_correctly_parses_client_monitor_data_without_monitors() {
-    let buffer = ironrdp_pdu_samples::monitor_data::MONITOR_DATA_WITHOUT_MONITORS_BUFFER.as_ref();
+    let buffer = ironrdp_testsuite_core::monitor_data::MONITOR_DATA_WITHOUT_MONITORS_BUFFER.as_ref();
 
     assert_eq!(
-        *ironrdp_pdu_samples::monitor_data::MONITOR_DATA_WITHOUT_MONITORS,
+        *ironrdp_testsuite_core::monitor_data::MONITOR_DATA_WITHOUT_MONITORS,
         ClientMonitorData::from_buffer(buffer).unwrap()
     );
 }
 
 #[test]
 fn from_buffer_correctly_parses_client_monitor_data_with_monitors() {
-    let buffer = ironrdp_pdu_samples::monitor_data::MONITOR_DATA_WITH_MONITORS_BUFFER.as_ref();
+    let buffer = ironrdp_testsuite_core::monitor_data::MONITOR_DATA_WITH_MONITORS_BUFFER.as_ref();
 
     assert_eq!(
-        *ironrdp_pdu_samples::monitor_data::MONITOR_DATA_WITH_MONITORS,
+        *ironrdp_testsuite_core::monitor_data::MONITOR_DATA_WITH_MONITORS,
         ClientMonitorData::from_buffer(buffer).unwrap()
     );
 }
 
 #[test]
 fn to_buffer_correctly_serializes_client_monitor_data_without_monitors() {
-    let data = ironrdp_pdu_samples::monitor_data::MONITOR_DATA_WITHOUT_MONITORS.clone();
-    let expected_buffer = ironrdp_pdu_samples::monitor_data::MONITOR_DATA_WITHOUT_MONITORS_BUFFER;
+    let data = ironrdp_testsuite_core::monitor_data::MONITOR_DATA_WITHOUT_MONITORS.clone();
+    let expected_buffer = ironrdp_testsuite_core::monitor_data::MONITOR_DATA_WITHOUT_MONITORS_BUFFER;
 
     let mut buf = Vec::new();
     data.to_buffer(&mut buf).unwrap();
@@ -524,8 +525,8 @@ fn to_buffer_correctly_serializes_client_monitor_data_without_monitors() {
 
 #[test]
 fn to_buffer_correctly_serializes_client_monitor_data_with_monitors() {
-    let data = ironrdp_pdu_samples::monitor_data::MONITOR_DATA_WITH_MONITORS.clone();
-    let expected_buffer = ironrdp_pdu_samples::monitor_data::MONITOR_DATA_WITH_MONITORS_BUFFER;
+    let data = ironrdp_testsuite_core::monitor_data::MONITOR_DATA_WITH_MONITORS.clone();
+    let expected_buffer = ironrdp_testsuite_core::monitor_data::MONITOR_DATA_WITH_MONITORS_BUFFER;
 
     let mut buf = Vec::new();
     data.to_buffer(&mut buf).unwrap();
@@ -535,8 +536,8 @@ fn to_buffer_correctly_serializes_client_monitor_data_with_monitors() {
 
 #[test]
 fn buffer_length_is_correct_for_client_monitor_data_without_monitors() {
-    let data = ironrdp_pdu_samples::monitor_data::MONITOR_DATA_WITHOUT_MONITORS.clone();
-    let expected_buffer_len = ironrdp_pdu_samples::monitor_data::MONITOR_DATA_WITHOUT_MONITORS_BUFFER.len();
+    let data = ironrdp_testsuite_core::monitor_data::MONITOR_DATA_WITHOUT_MONITORS.clone();
+    let expected_buffer_len = ironrdp_testsuite_core::monitor_data::MONITOR_DATA_WITHOUT_MONITORS_BUFFER.len();
 
     let len = data.buffer_length();
 
@@ -545,8 +546,8 @@ fn buffer_length_is_correct_for_client_monitor_data_without_monitors() {
 
 #[test]
 fn buffer_length_is_correct_for_client_monitor_data_with_monitors() {
-    let data = ironrdp_pdu_samples::monitor_data::MONITOR_DATA_WITH_MONITORS.clone();
-    let expected_buffer_len = ironrdp_pdu_samples::monitor_data::MONITOR_DATA_WITH_MONITORS_BUFFER.len();
+    let data = ironrdp_testsuite_core::monitor_data::MONITOR_DATA_WITH_MONITORS.clone();
+    let expected_buffer_len = ironrdp_testsuite_core::monitor_data::MONITOR_DATA_WITH_MONITORS_BUFFER.len();
 
     let len = data.buffer_length();
 
@@ -555,28 +556,28 @@ fn buffer_length_is_correct_for_client_monitor_data_with_monitors() {
 
 #[test]
 fn from_buffer_correctly_parses_client_monitor_extended_data_without_monitors() {
-    let buffer = ironrdp_pdu_samples::monitor_extended_data::MONITOR_DATA_WITHOUT_MONITORS_BUFFER.as_ref();
+    let buffer = ironrdp_testsuite_core::monitor_extended_data::MONITOR_DATA_WITHOUT_MONITORS_BUFFER.as_ref();
 
     assert_eq!(
-        *ironrdp_pdu_samples::monitor_extended_data::MONITOR_DATA_WITHOUT_MONITORS,
+        *ironrdp_testsuite_core::monitor_extended_data::MONITOR_DATA_WITHOUT_MONITORS,
         ClientMonitorExtendedData::from_buffer(buffer).unwrap()
     );
 }
 
 #[test]
 fn from_buffer_correctly_parses_client_monitor_extended_data_with_monitors() {
-    let buffer = ironrdp_pdu_samples::monitor_extended_data::MONITOR_DATA_WITH_MONITORS_BUFFER.as_ref();
+    let buffer = ironrdp_testsuite_core::monitor_extended_data::MONITOR_DATA_WITH_MONITORS_BUFFER.as_ref();
 
     assert_eq!(
-        *ironrdp_pdu_samples::monitor_extended_data::MONITOR_DATA_WITH_MONITORS,
+        *ironrdp_testsuite_core::monitor_extended_data::MONITOR_DATA_WITH_MONITORS,
         ClientMonitorExtendedData::from_buffer(buffer).unwrap()
     );
 }
 
 #[test]
 fn to_buffer_correctly_serializes_client_monitor_extended_data_without_monitors() {
-    let data = ironrdp_pdu_samples::monitor_extended_data::MONITOR_DATA_WITHOUT_MONITORS.clone();
-    let expected_buffer = ironrdp_pdu_samples::monitor_extended_data::MONITOR_DATA_WITHOUT_MONITORS_BUFFER;
+    let data = ironrdp_testsuite_core::monitor_extended_data::MONITOR_DATA_WITHOUT_MONITORS.clone();
+    let expected_buffer = ironrdp_testsuite_core::monitor_extended_data::MONITOR_DATA_WITHOUT_MONITORS_BUFFER;
 
     let mut buf = Vec::new();
     data.to_buffer(&mut buf).unwrap();
@@ -586,8 +587,8 @@ fn to_buffer_correctly_serializes_client_monitor_extended_data_without_monitors(
 
 #[test]
 fn to_buffer_correctly_serializes_client_monitor_extended_data_with_monitors() {
-    let data = ironrdp_pdu_samples::monitor_extended_data::MONITOR_DATA_WITH_MONITORS.clone();
-    let expected_buffer = ironrdp_pdu_samples::monitor_extended_data::MONITOR_DATA_WITH_MONITORS_BUFFER;
+    let data = ironrdp_testsuite_core::monitor_extended_data::MONITOR_DATA_WITH_MONITORS.clone();
+    let expected_buffer = ironrdp_testsuite_core::monitor_extended_data::MONITOR_DATA_WITH_MONITORS_BUFFER;
 
     let mut buf = Vec::new();
     data.to_buffer(&mut buf).unwrap();
@@ -597,8 +598,8 @@ fn to_buffer_correctly_serializes_client_monitor_extended_data_with_monitors() {
 
 #[test]
 fn buffer_length_is_correct_for_client_monitor_extended_data_without_monitors() {
-    let data = ironrdp_pdu_samples::monitor_extended_data::MONITOR_DATA_WITHOUT_MONITORS.clone();
-    let expected_buffer_len = ironrdp_pdu_samples::monitor_extended_data::MONITOR_DATA_WITHOUT_MONITORS_BUFFER.len();
+    let data = ironrdp_testsuite_core::monitor_extended_data::MONITOR_DATA_WITHOUT_MONITORS.clone();
+    let expected_buffer_len = ironrdp_testsuite_core::monitor_extended_data::MONITOR_DATA_WITHOUT_MONITORS_BUFFER.len();
 
     let len = data.buffer_length();
 
@@ -607,8 +608,8 @@ fn buffer_length_is_correct_for_client_monitor_extended_data_without_monitors() 
 
 #[test]
 fn buffer_length_is_correct_for_client_monitor_extended_data_with_monitors() {
-    let data = ironrdp_pdu_samples::monitor_extended_data::MONITOR_DATA_WITH_MONITORS.clone();
-    let expected_buffer_len = ironrdp_pdu_samples::monitor_extended_data::MONITOR_DATA_WITH_MONITORS_BUFFER.len();
+    let data = ironrdp_testsuite_core::monitor_extended_data::MONITOR_DATA_WITH_MONITORS.clone();
+    let expected_buffer_len = ironrdp_testsuite_core::monitor_extended_data::MONITOR_DATA_WITH_MONITORS_BUFFER.len();
 
     let len = data.buffer_length();
 
@@ -618,19 +619,19 @@ fn buffer_length_is_correct_for_client_monitor_extended_data_with_monitors() {
 #[test]
 fn from_buffer_correctly_parses_server_multi_transport_channel_data() {
     let buffer =
-        ironrdp_pdu_samples::multi_transport_channel_data::SERVER_GCC_MULTI_TRANSPORT_CHANNEL_BLOCK_BUFFER.as_ref();
+        ironrdp_testsuite_core::multi_transport_channel_data::SERVER_GCC_MULTI_TRANSPORT_CHANNEL_BLOCK_BUFFER.as_ref();
 
     assert_eq!(
-        *ironrdp_pdu_samples::multi_transport_channel_data::SERVER_GCC_MULTI_TRANSPORT_CHANNEL_BLOCK,
+        *ironrdp_testsuite_core::multi_transport_channel_data::SERVER_GCC_MULTI_TRANSPORT_CHANNEL_BLOCK,
         MultiTransportChannelData::from_buffer(buffer).unwrap()
     );
 }
 
 #[test]
 fn to_buffer_correctly_serializes_server_multi_transport_channel_data() {
-    let data = ironrdp_pdu_samples::multi_transport_channel_data::SERVER_GCC_MULTI_TRANSPORT_CHANNEL_BLOCK.clone();
+    let data = ironrdp_testsuite_core::multi_transport_channel_data::SERVER_GCC_MULTI_TRANSPORT_CHANNEL_BLOCK.clone();
     let expected_buffer =
-        ironrdp_pdu_samples::multi_transport_channel_data::SERVER_GCC_MULTI_TRANSPORT_CHANNEL_BLOCK_BUFFER;
+        ironrdp_testsuite_core::multi_transport_channel_data::SERVER_GCC_MULTI_TRANSPORT_CHANNEL_BLOCK_BUFFER;
 
     let mut buf = Vec::new();
     data.to_buffer(&mut buf).unwrap();
@@ -640,9 +641,9 @@ fn to_buffer_correctly_serializes_server_multi_transport_channel_data() {
 
 #[test]
 fn buffer_length_is_correct_for_server_multi_transport_channel_data() {
-    let data = ironrdp_pdu_samples::multi_transport_channel_data::SERVER_GCC_MULTI_TRANSPORT_CHANNEL_BLOCK.clone();
+    let data = ironrdp_testsuite_core::multi_transport_channel_data::SERVER_GCC_MULTI_TRANSPORT_CHANNEL_BLOCK.clone();
     let expected_buffer_len =
-        ironrdp_pdu_samples::multi_transport_channel_data::SERVER_GCC_MULTI_TRANSPORT_CHANNEL_BLOCK_BUFFER.len();
+        ironrdp_testsuite_core::multi_transport_channel_data::SERVER_GCC_MULTI_TRANSPORT_CHANNEL_BLOCK_BUFFER.len();
 
     let len = data.buffer_length();
 

@@ -11,6 +11,10 @@ authors.workspace = true
 keywords.workspace = true
 categories.workspace = true
 
+[lib]
+doctest = false
+# test = false
+
 [dependencies]
 ironrdp-pdu.workspace = true
 num-traits = "0.2.15"
@@ -25,6 +29,3 @@ lazy_static = "1.4.0"
 [dev-dependencies]
 bmp = "0.5"
 expect-test.workspace = true
-proptest = "1.1.0"
-rdp-rs = { git = "https://github.com/citronneur/rdp-rs", rev = "7ac880d7efb7f05efef3c84476f7c24f4053e0ea" }
-rstest = "0.17.0"

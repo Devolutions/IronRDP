@@ -52,32 +52,3 @@ fn sanitize_server_name(name: impl Into<String>) -> String {
         name
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use rstest::rstest;
-
-    use super::*;
-
-    #[rstest]
-    #[case("somehostname:2345", "somehostname")]
-    #[case("192.168.56.101:2345", "192.168.56.101")]
-    #[case("[2001:db8::8a2e:370:7334]:7171", "2001:db8::8a2e:370:7334")]
-    #[case("[2001:0db8:0000:0000:0000:8a2e:0370:7334]:433", "2001:db8::8a2e:370:7334")]
-    #[case("[::1]:2222", "::1")]
-    fn input_with_port(#[case] input: &str, #[case] expected: &str) {
-        let result = sanitize_server_name(input);
-        assert_eq!(result, expected);
-    }
-
-    #[rstest]
-    #[case("somehostname")]
-    #[case("192.168.56.101")]
-    #[case("2001:db8::8a2e:370:7334")]
-    #[case("2001:0db8:0000:0000:0000:8a2e:0370:7334")]
-    #[case("::1")]
-    fn input_without_port(#[case] input: &str) {
-        let result = sanitize_server_name(input);
-        assert_eq!(result, input);
-    }
-}

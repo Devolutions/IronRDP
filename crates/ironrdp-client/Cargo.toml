@@ -12,6 +12,14 @@ keywords.workspace = true
 categories.workspace = true
 default-run = "ironrdp-client"
 
+[lib]
+doctest = false
+test = false
+
+[[bin]]
+name = "ironrdp-client"
+test = false
+
 [features]
 default = ["rustls"]
 rustls = ["ironrdp-tls/rustls"]

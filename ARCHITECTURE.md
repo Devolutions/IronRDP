@@ -12,41 +12,71 @@ This document describes the high-level architecture of IronRDP.
 
 This section talks briefly about various important directories and data structures.
 
-### Core Crates
+### Core Tier
+
+Set of foundational libraries for which strict quality standards must be observed.
+Pay attention to the "**Architecture Invariant**" sections.
 
 - `crates/ironrdp`: meta crate re-exporting important crates.
-- `crates/ironrdp-pdu`: PDU encoding and decoding (no I/O, trivial to fuzz). <!-- TODO: important types and traits (PduDecode, PduEncode…) -->
-- `crates/ironrdp-graphics`: image processing primitives (no I/O, trivial to fuzz).
-- `crates/ironrdp-connector`: state machines to drive an RDP connection sequence (no I/O, not _too_ hard to fuzz).
-- `crates/ironrdp-session`: state machines to drive an RDP session (no I/O, not _too_ hard to fuzz).
-- `crates/ironrdp-input`: utilities to manage and build input packets (no I/O).
+- `crates/ironrdp-pdu`: PDU encoding and decoding. (TODO: talk about important types and traits such as PduDecode, PduEncode…)
+- `crates/ironrdp-graphics`: image processing primitives.
+- `crates/ironrdp-connector`: state machines to drive an RDP connection sequence.
+- `crates/ironrdp-session`: state machines to drive an RDP session.
+- `crates/ironrdp-input`: utilities to manage and build input packets.
 - `crates/ironrdp-rdcleanpath`: RDCleanPath PDU structure used by IronRDP web client and Devolutions Gateway.
 
-### Utility Crates
+**Architectural Invariant**: doing I/O is not allowed for these crates.
+
+**Architectural Invariant**: all these crates must be fuzzed.
+
+**Architectural Invariant**: no non-essential dependency is allowed.
+
+**Architectural Invariant**: must be `#[no_std]`-compatible (eventually using the `alloc` crate). Usage of the standard
+library must be opt-in through a feature flag called `std` that is enabled by default. When the `alloc` crate is optional,
+a feature flag called `alloc` must exist to enable its use.
+
+### Extra Tier
+
+Higher level libraries and binaries built on top of the core tier.
+Guidelines and constraints are relaxed to some extent.
 
 - `crates/ironrdp-async`: provides `Future`s wrapping the state machines conveniently.
 - `crates/ironrdp-tokio`: `Framed*` traits implementation above `tokio`’s traits.
 - `crates/ironrdp-futures`: `Framed*` traits implementation above `futures`’s traits.
 - `crates/ironrdp-tls`: TLS boilerplate common with most IronRDP clients.
-
-### Client Crates
-
 - `crates/ironrdp-client`: portable RDP client without GPU acceleration using softbuffer and winit for windowing.
 - `crates/ironrdp-web`: WebAssembly high-level bindings targeting web browsers.
-- `crates/ironrdp-glutin-renderer`: `glutin` primitives for OpenGL rendering.
-- `crates/ironrdp-client-glutin`: GPU-accelerated RDP client using glutin.
-- `crates/ironrdp-replay-client`: utility tool to replay RDP graphics pipeline for debugging purposes.
 - `web-client/iron-remote-gui`: core frontend UI used by `iron-svelte-client` as a Web Component.
 - `web-client/iron-svelte-client`: web-based frontend using `Svelte` and `Material` frameworks.
 
-### Private Crates
+### Internal Tier
 
 Crates that are only used inside the IronRDP project, not meant to be published.
+This is mostly test case generators, fuzzing oracles, build tools, and so on.
 
 - `crates/ironrdp-pdu-generators`: `proptest` generators for `ironrdp-pdu` types.
 - `crates/ironrdp-session-generators`: `proptest` generators for `ironrdp-session` types.
-- `fuzz`: fuzz targets for core crates.
+- `crates/ironrdp-testsuite-core`: contains all integration tests for code living in the core tier, in a single binary,
+  organized in modules. **Architectural Invariant**: no dependency from another tier is allowed.
+  It must be the case that compiling and running the core test suite does not require building any library from
+  the extra tier. This is to keep iteration time short.
+- `crates/ironrdp-testsuite-extra`: contains all integration tests for code living in the extra tier, in a single binary,
+  organized in modules. (WIP: this crate does not exist yet.)
+- `crates/ironrdp-fuzzing`: provides test case generators and oracles for use with fuzzing.
+- `fuzz`: fuzz targets for code in core tier.
 - `xtask`: IronRDP’s free-form automation using Rust code.
+
+**Architecture Invariant**: these crates are not, and will never be, an **API Boundary**.
+
+### Community Tier
+
+Crates provided and maintained by the community.
+Core maintainers will not invest a lot of time into these.
+One or several community maintainers are associated to each one 
+
+- `crates/ironrdp-glutin-renderer` (no maintainer): `glutin` primitives for OpenGL rendering.
+- `crates/ironrdp-client-glutin` (no maintainer): GPU-accelerated RDP client using glutin.
+- `crates/ironrdp-replay-client` (no maintainer): utility tool to replay RDP graphics pipeline for debugging purposes.
 
 ## Cross-Cutting Concerns
 
@@ -54,8 +84,8 @@ This section talks about the things which are everywhere and nowhere in particul
 
 ### General
 
-- Dependency injection when runtime information is necessary in core crates (no system call such as `gethostname`)
-- Keep non-portable code out of core crates
+- Dependency injection when runtime information is necessary in core tier crates (no system call such as `gethostname`)
+- Keep non-portable code out of core tier crates
 - Make crate `no_std`-compatible wherever possible
 - Facilitate fuzzing
 - In libraries, provide concrete error types either hand-crafted or using `thiserror` crate
@@ -64,7 +94,7 @@ This section talks about the things which are everywhere and nowhere in particul
 
 ### Avoid I/O wherever possible
 
-**Architecture Invariant**: core crates must never interact with the outside world. Only client and utility crates
+**Architecture Invariant**: core tier crates must never interact with the outside world. Only extra tier crates
 such as `ironrdp-client`, `ironrdp-web` or `ironrdp-async` are allowed to do I/O.
 
 ### Continuous integration
@@ -76,6 +106,15 @@ The expectation is that, if `cargo xtask ci` passes locally, the CI will be gree
 be the case that a successful `cargo xtask ci` run implies a successful CI workflow run and vice versa.
 
 ### Testing
+
+#### Test at the boundaries (test features, not code)
+
+We should focus on testing the public API of libraries (keyword: **API boundary**).
+That’s why most (if not all) tests should go into the `ironrdp-testsuite-core` and `ironrdp-testsuite-extra` crates.
+
+#### Do not depend on external resources
+
+**Architecture Invariant**: tests do not depend on any kind of external resources, they are perfectly reproducible.
 
 #### Fuzzing
 

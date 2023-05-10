@@ -1,4 +1,5 @@
-use ironrdp_graphics::{rdp6::BitmapStreamDecoder, rle::RlePixelFormat};
+use ironrdp_graphics::rdp6::BitmapStreamDecoder;
+use ironrdp_graphics::rle::RlePixelFormat;
 use ironrdp_pdu::codecs::rfx::FrameAcknowledgePdu;
 use ironrdp_pdu::fast_path::{
     FastPathError, FastPathHeader, FastPathUpdate, FastPathUpdatePdu, Fragmentation, UpdateCode,
