@@ -2,9 +2,8 @@ use std::io;
 use std::pin::Pin;
 
 use bytes::BytesMut;
-use tokio::io::{AsyncRead, AsyncWrite};
-
 pub use ironrdp_async::*;
+use tokio::io::{AsyncRead, AsyncWrite};
 
 pub type TokioFramed<S> = Framed<TokioStream<S>>;
 

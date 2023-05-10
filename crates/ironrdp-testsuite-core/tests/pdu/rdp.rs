@@ -4,9 +4,9 @@ use ironrdp_pdu::rdp::headers::*;
 use ironrdp_pdu::rdp::server_license::*;
 use ironrdp_pdu::rdp::*;
 use ironrdp_pdu::PduParsing as _;
-use ironrdp_pdu_samples::capsets::*;
-use ironrdp_pdu_samples::client_info::*;
-use ironrdp_pdu_samples::rdp::*;
+use ironrdp_testsuite_core::capsets::*;
+use ironrdp_testsuite_core::client_info::*;
+use ironrdp_testsuite_core::rdp::*;
 
 #[test]
 fn from_buffer_correctly_parses_rdp_pdu_client_info() {

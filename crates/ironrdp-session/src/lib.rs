@@ -3,10 +3,10 @@ extern crate tracing;
 
 pub mod image;
 pub mod legacy;
+pub mod rfx; // FIXME: maybe this module should not be in this crate
 
 mod active_stage;
 mod fast_path;
-mod rfx;
 mod utils;
 mod x224;
 

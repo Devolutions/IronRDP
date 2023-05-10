@@ -1574,9 +1574,6 @@ dependencies = [
  "lazy_static",
  "num-derive 0.3.3",
  "num-traits",
- "proptest",
- "rdp-rs",
- "rstest",
  "thiserror",
 ]
 
@@ -1584,11 +1581,8 @@ dependencies = [
 name = "ironrdp-input"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "bitvec",
  "ironrdp-pdu",
- "proptest",
- "rstest",
  "smallvec",
 ]
 
@@ -1601,7 +1595,7 @@ dependencies = [
  "byteorder",
  "der-parser 8.2.0",
  "expect-test",
- "ironrdp-pdu-samples",
+ "ironrdp-testsuite-core",
  "lazy_static",
  "md-5 0.10.5",
  "num-bigint 0.4.3",
@@ -1623,23 +1617,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "ironrdp-pdu-samples"
-version = "0.0.0"
-dependencies = [
- "array-concat",
- "ironrdp-pdu",
- "lazy_static",
- "paste",
-]
-
-[[package]]
 name = "ironrdp-rdcleanpath"
 version = "0.1.0"
 dependencies = [
  "der 0.7.5",
- "hex",
- "pretty_assertions",
- "rstest",
 ]
 
 [[package]]
@@ -1661,6 +1642,28 @@ dependencies = [
  "ironrdp-pdu-generators",
  "ironrdp-session",
  "proptest",
+]
+
+[[package]]
+name = "ironrdp-testsuite-core"
+version = "0.0.0"
+dependencies = [
+ "anyhow",
+ "arbitrary",
+ "array-concat",
+ "hex",
+ "ironrdp-connector",
+ "ironrdp-graphics",
+ "ironrdp-input",
+ "ironrdp-pdu",
+ "ironrdp-rdcleanpath",
+ "ironrdp-session",
+ "lazy_static",
+ "paste",
+ "pretty_assertions",
+ "proptest",
+ "rdp-rs",
+ "rstest",
 ]
 
 [[package]]

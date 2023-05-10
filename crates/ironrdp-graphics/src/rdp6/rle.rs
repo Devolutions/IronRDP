@@ -1,5 +1,6 @@
-use byteorder::ReadBytesExt;
 use std::io::{Read, Write};
+
+use byteorder::ReadBytesExt;
 use thiserror::Error;
 
 /// Maximum possible segment size is 47 (run_length = 2, raw_bytes_count = 15), which is treated as
@@ -160,9 +161,9 @@ pub fn decompress_8bpp_plane(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     use expect_test::expect;
+
+    use super::*;
 
     /// Performs decompression of 8bpp color plane into vector. Vector will be resized to fit decompressed data.
     pub fn decompress(

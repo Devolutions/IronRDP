@@ -5,6 +5,10 @@ edition = "2021"
 description = "`proptest` generators for `ironrdp-session` types"
 publish = false
 
+[lib]
+doctest = false
+test = false
+
 [dependencies]
 ironrdp-session.workspace = true
 ironrdp-pdu-generators.workspace = true

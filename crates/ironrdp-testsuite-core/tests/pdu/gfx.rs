@@ -1,7 +1,7 @@
 use ironrdp_pdu::rdp::vc::dvc::gfx::*;
 use ironrdp_pdu::{PduBufferParsing, PduParsing};
-use ironrdp_pdu_samples::gfx::*;
-use ironrdp_pdu_samples::graphics_messages::*;
+use ironrdp_testsuite_core::gfx::*;
+use ironrdp_testsuite_core::graphics_messages::*;
 
 #[test]
 fn from_buffer_correctly_parses_server_pdu() {

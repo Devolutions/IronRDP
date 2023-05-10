@@ -11,6 +11,10 @@ authors.workspace = true
 keywords.workspace = true
 categories.workspace = true
 
+[lib]
+doctest = false
+test = false
+
 [dependencies]
 ironrdp-pdu.workspace = true
 ironrdp-connector.workspace = true # TODO: at some point, this dependency could be removed (good for compilation speed)

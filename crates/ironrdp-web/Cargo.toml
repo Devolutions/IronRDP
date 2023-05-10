@@ -13,6 +13,8 @@ keywords.workspace = true
 categories.workspace = true
 
 [lib]
+doctest = false
+test = false
 crate-type = ["cdylib", "rlib"]
 
 [features]

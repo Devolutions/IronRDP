@@ -136,9 +136,10 @@ impl<'a> PduEncode for BitmapStream<'a> {
 
 #[cfg(test)]
 mod tests {
+    use expect_test::{expect, Expect};
+
     use super::*;
     use crate::{decode, encode_buf, PduEncode};
-    use expect_test::{expect, Expect};
 
     fn assert_roundtrip(buffer: &[u8], expected: Expect) {
         let pdu = decode::<BitmapStream>(buffer).unwrap();

@@ -1,12 +1,9 @@
-use crate::{
-    color_conversion::{Rgb, YCoCg},
-    rdp6::rle::{decompress_8bpp_plane, RleError},
-};
-use ironrdp_pdu::{
-    bitmap::rdp6::{BitmapStream as BitmapStreamPdu, ColorPlanes},
-    decode, Error as PduError,
-};
+use ironrdp_pdu::bitmap::rdp6::{BitmapStream as BitmapStreamPdu, ColorPlanes};
+use ironrdp_pdu::{decode, Error as PduError};
 use thiserror::Error;
+
+use crate::color_conversion::{Rgb, YCoCg};
+use crate::rdp6::rle::{decompress_8bpp_plane, RleError};
 
 #[derive(Debug, Error)]
 pub enum BitmapDecodeError {
