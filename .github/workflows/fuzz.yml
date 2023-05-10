@@ -9,14 +9,51 @@ env:
   CARGO_REGISTRIES_CRATES_IO_PROTOCOL: sparse
 
 jobs:
-  fuzz:
-    name: Fuzzing
+  corpus-download:
+    name: Download corpus
     runs-on: ubuntu-20.04
     env:
       AZURE_STORAGE_KEY: ${{ secrets.CORPUS_AZURE_STORAGE_KEY }}
 
     steps:
       - uses: actions/checkout@v3
+
+      - name: Download fuzzing corpus
+        run: cargo xtask fuzz corpus-fetch
+
+      - name: Save corpus
+        uses: actions/cache/save@v3
+        with:
+          path: |
+            ./fuzz/corpus
+            ./fuzz/artifacts
+          key: fuzz-corpus-${{ github.run_id }}
+
+  fuzz:
+    name: Fuzzing ${{ matrix.target }}
+    runs-on: ubuntu-20.04
+    needs: corpus-download
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [ pdu_decoding, rle_decompression, bitmap_stream ]
+
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Download corpus
+        uses: actions/cache/restore@v3
+        with:
+          fail-on-cache-miss: true
+          path: |
+            ./fuzz/corpus
+            ./fuzz/artifacts
+          key: fuzz-corpus-${{ github.run_id }}
+
+      - name: Print corpus
+        run: |
+          tree ./fuzz/corpus
+          tree ./fuzz/artifacts
 
       - name: Fuzz build cache
         uses: actions/cache@v3
@@ -26,19 +63,74 @@ jobs:
             ~/.cargo/git/
             ./target/
             ./fuzz/target/
+            ./.cargo/local_root/
           key: ${{ runner.os }}-fuzz-${{ hashFiles('fuzz/Cargo.lock') }}
 
       - name: Prepare runner
         run: cargo xtask fuzz install
 
-      - name: Download fuzzing corpus
-        run: cargo xtask fuzz corpus-fetch
-
       - name: Fuzz
-        run: cargo xtask fuzz run
+        run: cargo xtask fuzz run --duration 1000 --target ${{ matrix.target }}
 
       - name: Minify fuzzing corpus
+        if: ${{ always() && !cancelled() }}
         run: cargo xtask fuzz corpus-min
+
+      # Use GitHub artifacts instead of cache for the updated corpus
+      # because same cache can’t be used by multiple jobs at the same time.
+      # Also, we can’t dynamically create a unique cache keys for all
+      # the targets, because then we can’t easily retrieve this cache
+      # without hardcoding a step for each one. It’s not good for maintenance.
+
+      - name: Prepare minified corpus upload
+        # We want to upload artifacts even if fuzzing "fails" (so we can retrieve the artifact causing the crash)
+        if: ${{ always() && !cancelled() }}
+        run: |
+          mkdir ${{ runner.temp }}/corpus/
+          cp -r ./fuzz/corpus/${{ matrix.target }} ${{ runner.temp }}/corpus
+          mkdir ${{ runner.temp }}/artifacts/
+          cp -r ./fuzz/artifacts/${{ matrix.target }} ${{ runner.temp }}/artifacts
+
+      - name: Upload minified corpus
+        if: ${{ always() && !cancelled() }}
+        uses: actions/upload-artifact@v3
+        with:
+          retention-days: 5
+          name: minified-corpus
+          path: |
+            ${{ runner.temp }}/corpus
+            ${{ runner.temp }}/artifacts
+
+  corpus-upload:
+    name: Upload corpus
+    runs-on: ubuntu-20.04
+    needs: fuzz
+    if: ${{ always() && !cancelled() }}
+    env:
+      AZURE_STORAGE_KEY: ${{ secrets.CORPUS_AZURE_STORAGE_KEY }}
+
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Download updated corpus
+        uses: actions/download-artifact@v3
+        with:
+          name: minified-corpus
+          path: ./fuzz/
+
+      - name: Print corpus
+        run: |
+          tree ./fuzz/corpus
+          tree ./fuzz/artifacts
 
       - name: Upload fuzzing corpus
         run: cargo xtask fuzz corpus-push
+
+      - name: Clean corpus cache
+        run: |
+          curl -L \
+            -X DELETE \
+            -H "Accept: application/vnd.github+json" \
+            -H "Authorization: Bearer ${{ github.token }}"\
+            -H "X-GitHub-Api-Version: 2022-11-28" \
+            "${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}/actions/caches?key=fuzz-corpus-${{ github.run_id }}"
