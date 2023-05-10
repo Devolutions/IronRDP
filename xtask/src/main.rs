@@ -31,16 +31,18 @@ fn main() -> anyhow::Result<()> {
             tasks::fuzz_run(&sh)?;
         }
         Action::CheckFmt => tasks::check_formatting(&sh)?,
-        Action::CheckTests => tasks::run_tests(&sh)?,
         Action::CheckLints => tasks::check_lints(&sh)?,
+        Action::CheckTests => tasks::run_tests(&sh)?,
         Action::CheckWasm => tasks::check_wasm(&sh)?,
-        Action::FuzzRun => tasks::fuzz_run(&sh)?,
-        Action::FuzzCorpusMin => tasks::fuzz_corpus_minify(&sh)?,
-        Action::FuzzCorpusFetch => tasks::fuzz_corpus_fetch(&sh)?,
-        Action::FuzzCorpusPush => tasks::fuzz_corpus_push(&sh)?,
-        Action::SvelteRun => tasks::svelte_run(&sh)?,
-        Action::Coverage => tasks::report_code_coverage(&sh)?,
         Action::Clean => tasks::clean_workspace(&sh)?,
+        Action::Coverage => tasks::report_code_coverage(&sh)?,
+        Action::FuzzCorpusFetch => tasks::fuzz_corpus_fetch(&sh)?,
+        Action::FuzzCorpusMin => tasks::fuzz_corpus_minify(&sh)?,
+        Action::FuzzCorpusPush => tasks::fuzz_corpus_push(&sh)?,
+        Action::FuzzInstall => tasks::fuzz_install(&sh)?,
+        Action::FuzzRun => tasks::fuzz_run(&sh)?,
+        Action::SvelteRun => tasks::svelte_run(&sh)?,
+        Action::WasmInstall => tasks::wasm_install(&sh)?,
     }
 
     Ok(())

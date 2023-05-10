@@ -60,7 +60,9 @@ jobs:
           key: ${{ runner.os }}-wasm-${{ hashFiles('ffi/wasm/Cargo.lock') }}
 
       - name: Prepare runner
-        run: sudo apt install wabt
+        run: |
+          sudo apt install wabt
+          cargo xtask wasm install
 
       - name: Check
         run: cargo xtask check wasm
@@ -114,30 +116,9 @@ jobs:
             ./fuzz/target/
           key: ${{ runner.os }}-fuzz-${{ hashFiles('fuzz/Cargo.lock') }}
 
-      - name: Fuzz subcommand installation cache
-        uses: actions/cache@v3
-        with:
-          path: ~/.cargo/bin/cargo-fuzz
-          key: ${{ runner.os }}-binary-cargo-fuzz
-
       - name: Prepare runner
-        shell: pwsh
-        run: |
-          if (-Not (Test-Path -Path ~/.cargo/bin/cargo-fuzz -PathType Leaf)) {
-            # Install in debug because it's faster to compile and we don't need execution speed anyway
-            cargo install --debug --locked cargo-fuzz
-          }
+        run: cargo xtask fuzz install
 
-          rustup install nightly --profile=minimal
-
-      - name: Download fuzzing corpus
-        run: cargo xtask fuzz corpus-fetch
-
+      # Simply run all fuzz targets for a few seconds, just making there is nothing obviously wrong at a quick glance
       - name: Fuzz
         run: cargo xtask fuzz run
-
-      - name: Minify fuzzing corpus
-        run: cargo xtask fuzz corpus-min
-
-      - name: Upload fuzzing corpus
-        run: cargo xtask fuzz corpus-push

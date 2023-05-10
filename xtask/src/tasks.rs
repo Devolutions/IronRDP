@@ -4,6 +4,8 @@ use xshell::{cmd, Shell};
 use crate::section::Section;
 
 const CARGO: &str = env!("CARGO");
+const CARGO_FUZZ_VERSION: &str = "0.11.2";
+const LOCAL_CARGO_ROOT: &str = "./target/local_root/";
 const WASM_PACKAGES: &[&str] = &["ironrdp-web"];
 const FUZZ_TARGETS: &[&str] = &["pdu_decoding", "rle_decompression", "bitmap_stream"];
 
@@ -38,8 +40,6 @@ pub fn check_lints(sh: &Shell) -> anyhow::Result<()> {
 pub fn check_wasm(sh: &Shell) -> anyhow::Result<()> {
     let _s = Section::new("WASM-CHECK");
 
-    cmd!(sh, "rustup target add wasm32-unknown-unknown").run()?;
-
     for package in WASM_PACKAGES {
         println!("Check {package}");
 
@@ -71,7 +71,12 @@ pub fn fuzz_run(sh: &Shell) -> anyhow::Result<()> {
     let _guard = sh.push_dir("./fuzz");
 
     for target in FUZZ_TARGETS {
-        cmd!(sh, "rustup run nightly cargo fuzz run {target} -- -max_total_time=5s").run()?;
+        cmd!(
+            sh,
+            "../target/local_root/bin/cargo-fuzz run {target} -- -max_total_time=5s"
+        )
+        .env("RUSTUP_TOOLCHAIN", "nightly")
+        .run()?;
     }
 
     println!("All good!");
@@ -117,6 +122,26 @@ pub fn fuzz_corpus_push(sh: &Shell) -> anyhow::Result<()> {
         "az storage blob sync --account-name fuzzingcorpus --container ironrdp --source fuzz/artifacts --destination artifacts --delete-destination true --output none"
     )
     .run()?;
+
+    Ok(())
+}
+
+pub fn fuzz_install(sh: &Shell) -> anyhow::Result<()> {
+    let _s = Section::new("FUZZ-INSTALL");
+
+    let cargo_fuzz_path: std::path::PathBuf = [LOCAL_CARGO_ROOT, "bin", "cargo-fuzz"].iter().collect();
+
+    if !sh.path_exists(cargo_fuzz_path) {
+        // Install in debug because it's faster to compile and we don't need execution speed anyway.
+        // cargo-fuzz version is pinned so we don’t get different versions without intervention.
+        cmd!(
+            sh,
+            "{CARGO} install --debug --locked --root {LOCAL_CARGO_ROOT} cargo-fuzz@{CARGO_FUZZ_VERSION}"
+        )
+        .run()?;
+    }
+
+    cmd!(sh, "rustup install nightly --profile=minimal").run()?;
 
     Ok(())
 }
@@ -229,5 +254,13 @@ pub fn report_code_coverage(sh: &Shell) -> anyhow::Result<()> {
 pub fn clean_workspace(sh: &Shell) -> anyhow::Result<()> {
     let _s = Section::new("CLEAN");
     cmd!(sh, "{CARGO} clean").run()?;
+    Ok(())
+}
+
+pub fn wasm_install(sh: &Shell) -> anyhow::Result<()> {
+    let _s = Section::new("WASM-INSTALL");
+
+    cmd!(sh, "rustup target add wasm32-unknown-unknown").run()?;
+
     Ok(())
 }
