@@ -37,7 +37,8 @@ jobs:
             ~/.cargo/registry/
             ~/.cargo/git/
             ./target/
-          key: ${{ runner.os }}-lints-${{ hashFiles('Cargo.lock') }}
+            ./.cargo/local_root/
+          key: ${{ runner.os }}-${{ github.job }}-${{ hashFiles('Cargo.lock') }}
 
       - name: Check clippy
         run: cargo xtask check lints
@@ -57,7 +58,8 @@ jobs:
             ~/.cargo/registry/
             ~/.cargo/git/
             ./target/
-          key: ${{ runner.os }}-wasm-${{ hashFiles('ffi/wasm/Cargo.lock') }}
+            ./.cargo/local_root/
+          key: ${{ runner.os }}-${{ github.job }}-${{ hashFiles('Cargo.lock') }}
 
       - name: Prepare runner
         run: |
@@ -91,7 +93,8 @@ jobs:
             ~/.cargo/registry/
             ~/.cargo/git/
             ./target/
-          key: ${{ runner.os }}-tests-${{ hashFiles('Cargo.lock') }}
+            ./.cargo/local_root/
+          key: ${{ runner.os }}-${{ github.job }}-${{ hashFiles('Cargo.lock') }}
 
       - name: Test [${{ matrix.os }}]
         run: cargo xtask check tests
@@ -112,7 +115,8 @@ jobs:
             ~/.cargo/git/
             ./target/
             ./fuzz/target/
-          key: ${{ runner.os }}-fuzz-${{ hashFiles('fuzz/Cargo.lock') }}
+            ./.cargo/local_root/
+          key: ${{ runner.os }}-${{ github.job }}-${{ hashFiles('fuzz/Cargo.lock') }}
 
       - name: Prepare runner
         run: cargo xtask fuzz install
