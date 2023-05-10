@@ -12,7 +12,6 @@ jobs:
   fuzz:
     name: Fuzzing
     runs-on: ubuntu-20.04
-    needs: formatting
     env:
       AZURE_STORAGE_KEY: ${{ secrets.CORPUS_AZURE_STORAGE_KEY }}
 
