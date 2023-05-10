@@ -5,7 +5,8 @@ use crate::section::Section;
 
 const CARGO: &str = env!("CARGO");
 const CARGO_FUZZ_VERSION: &str = "0.11.2";
-const LOCAL_CARGO_ROOT: &str = "./target/local_root/";
+const GRCOV_VERSION: &str = "0.8.18";
+const LOCAL_CARGO_ROOT: &str = ".cargo/local_root/";
 const WASM_PACKAGES: &[&str] = &["ironrdp-web"];
 const FUZZ_TARGETS: &[&str] = &["pdu_decoding", "rle_decompression", "bitmap_stream"];
 
@@ -65,15 +66,24 @@ pub fn check_wasm(sh: &Shell) -> anyhow::Result<()> {
     Ok(())
 }
 
-pub fn fuzz_run(sh: &Shell) -> anyhow::Result<()> {
+pub fn fuzz_run(sh: &Shell, duration: Option<u32>, target: Option<String>) -> anyhow::Result<()> {
     let _s = Section::new("FUZZ-RUN");
 
     let _guard = sh.push_dir("./fuzz");
 
-    for target in FUZZ_TARGETS {
+    let duration = duration.unwrap_or(5).to_string();
+    let target_from_user = target.as_deref().map(|value| [value]);
+
+    let targets = if let Some(targets) = &target_from_user {
+        targets
+    } else {
+        FUZZ_TARGETS
+    };
+
+    for target in targets {
         cmd!(
             sh,
-            "../target/local_root/bin/cargo-fuzz run {target} -- -max_total_time=5s"
+            "../{LOCAL_CARGO_ROOT}/bin/cargo-fuzz run {target} -- -max_total_time={duration}"
         )
         .env("RUSTUP_TOOLCHAIN", "nightly")
         .run()?;
@@ -90,7 +100,9 @@ pub fn fuzz_corpus_minify(sh: &Shell) -> anyhow::Result<()> {
     let _guard = sh.push_dir("./fuzz");
 
     for target in FUZZ_TARGETS {
-        cmd!(sh, "rustup run nightly cargo fuzz cmin {target}").run()?;
+        cmd!(sh, "../{LOCAL_CARGO_ROOT}/bin/cargo-fuzz cmin {target}")
+            .env("RUSTUP_TOOLCHAIN", "nightly")
+            .run()?;
     }
 
     Ok(())
@@ -163,8 +175,30 @@ pub fn svelte_run(sh: &Shell) -> anyhow::Result<()> {
     Ok(())
 }
 
-pub fn report_code_coverage(sh: &Shell) -> anyhow::Result<()> {
-    let _s = Section::new("COVERAGE");
+pub fn coverage_install(sh: &Shell) -> anyhow::Result<()> {
+    let _s = Section::new("COVERAGE-INSTALL");
+
+    cmd!(sh, "rustup install nightly --profile=minimal").run()?;
+    cmd!(sh, "rustup component add --toolchain nightly llvm-tools-preview").run()?;
+    cmd!(sh, "rustup component add llvm-tools-preview").run()?;
+
+    cmd!(
+        sh,
+        "{CARGO} install --debug --locked --root {LOCAL_CARGO_ROOT} cargo-fuzz@{CARGO_FUZZ_VERSION}"
+    )
+    .run()?;
+
+    cmd!(
+        sh,
+        "{CARGO} install --debug --locked --root {LOCAL_CARGO_ROOT} grcov@{GRCOV_VERSION}"
+    )
+    .run()?;
+
+    Ok(())
+}
+
+pub fn coverage_report(sh: &Shell) -> anyhow::Result<()> {
+    let _s = Section::new("COVERAGE-REPORT");
 
     println!("Remove leftovers");
     sh.remove_path("./fuzz/coverage/")?;
@@ -180,7 +214,9 @@ pub fn report_code_coverage(sh: &Shell) -> anyhow::Result<()> {
         cmd!(sh, "{CARGO} clean").run()?;
 
         for target in FUZZ_TARGETS {
-            cmd!(sh, "rustup run nightly cargo fuzz coverage {target}").run()?;
+            cmd!(sh, "../{LOCAL_CARGO_ROOT}/bin/cargo-fuzz coverage {target}")
+                .env("RUSTUP_TOOLCHAIN", "nightly")
+                .run()?;
         }
 
         cmd!(sh, "cp -r ./target ../coverage/binaries/").run()?;
@@ -204,7 +240,7 @@ pub fn report_code_coverage(sh: &Shell) -> anyhow::Result<()> {
 
     cmd!(
         sh,
-        "grcov . ./fuzz
+        "./{LOCAL_CARGO_ROOT}/bin/grcov . ./fuzz
         --source-dir .
         --binary-path ./coverage/binaries/
         --output-type html

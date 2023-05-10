@@ -1,6 +1,9 @@
 # Build artifacts
 /target
 
+# Local cargo root
+/.cargo/local_root
+
 # Log files
 *.log
 
