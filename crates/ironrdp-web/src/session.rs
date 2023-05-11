@@ -350,11 +350,10 @@ fn build_config(
             .unwrap_or(0)
             .pipe(u32::try_from)
             .unwrap(),
-        client_name: "IronRDP Web".to_owned(), // FIXME: in native clients, this is the client machine hostname
-        client_dir: std::env::current_dir()
-            .expect("current directory")
-            .to_string_lossy()
-            .into_owned(),
+        client_name: "IronRDP Web".to_owned(), // FIXME: in native clients, this is the client machine hostname. Should we use the browser user agent here?
+        // NOTE: hardcode this value like in freerdp
+        // https://github.com/FreeRDP/FreeRDP/blob/4e24b966c86fdf494a782f0dfcfc43a057a2ea60/libfreerdp/core/settings.c#LL49C34-L49C70
+        client_dir: "C:\\Windows\\System32\\mstscax.dll".to_owned(),
         platform: ironrdp::pdu::rdp::capability_sets::MajorPlatformType::Unspecified,
     }
 }
