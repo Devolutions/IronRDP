@@ -1,0 +1,15 @@
+[package]
+name = "ironrdp-fuzzing"
+version = "0.0.0"
+edition = "2021"
+description = "Provides test case generators and oracles for use with IronRDP fuzzing"
+publish = false
+
+[lib]
+doctest = false
+test = false
+
+[dependencies]
+arbitrary = { version = "1", features = ["derive"] }
+ironrdp-graphics.workspace = true
+ironrdp-pdu.workspace = true

@@ -25,6 +25,7 @@ expect-test = "1"
 ironrdp-async = { version = "0.1", path = "crates/ironrdp-async" }
 ironrdp-connector = { version = "0.1", path = "crates/ironrdp-connector" }
 ironrdp-futures = { version = "0.1", path = "crates/ironrdp-futures" }
+ironrdp-fuzzing = { path = "crates/ironrdp-fuzzing" }
 ironrdp-graphics = { version = "0.1", path = "crates/ironrdp-graphics" }
 ironrdp-input = { version = "0.1", path = "crates/ironrdp-input" }
 ironrdp-pdu-generators = { path = "crates/ironrdp-pdu-generators" }

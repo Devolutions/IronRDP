@@ -1561,6 +1561,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "ironrdp-fuzzing"
+version = "0.0.0"
+dependencies = [
+ "arbitrary",
+ "ironrdp-graphics",
+ "ironrdp-pdu",
+]
+
+[[package]]
 name = "ironrdp-graphics"
 version = "0.1.0"
 dependencies = [
@@ -1649,10 +1658,10 @@ name = "ironrdp-testsuite-core"
 version = "0.0.0"
 dependencies = [
  "anyhow",
- "arbitrary",
  "array-concat",
  "hex",
  "ironrdp-connector",
+ "ironrdp-fuzzing",
  "ironrdp-graphics",
  "ironrdp-input",
  "ironrdp-pdu",
