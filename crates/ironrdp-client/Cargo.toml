@@ -10,6 +10,7 @@ repository.workspace = true
 authors.workspace = true
 keywords.workspace = true
 categories.workspace = true
+default-run = "ironrdp-client"
 
 [features]
 default = ["rustls"]
