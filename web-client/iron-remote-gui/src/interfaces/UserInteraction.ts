@@ -7,7 +7,7 @@ export interface UserInteraction {
 
     setScale(scale: ScreenScale);
 
-    connect(username: string, password: string, hostname: string, gatewayAddress: string, domain: string, authToken: string): Observable<NewSessionInfo>;
+    connect(username: string, password: string, destination: string, proxyAddress: string, serverDomain: string, authToken: string): Observable<NewSessionInfo>;
 
     ctrlAltDel();
 

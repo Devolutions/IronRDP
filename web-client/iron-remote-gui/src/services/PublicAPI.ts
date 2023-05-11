@@ -13,9 +13,9 @@ export class PublicAPI {
         this.wasmService = wasmService;
     }
 
-    private connect(username: string, password: string, hostname: string, gatewayAddress: string, domain: string, authToken: string): Observable<NewSessionInfo> {
+    private connect(username: string, password: string, destination: string, proxyAddress: string, serverDomain: string, authToken: string): Observable<NewSessionInfo> {
         loggingService.info('Initializing connection.');
-        return this.wasmService.connect(username, password, hostname, gatewayAddress, domain, authToken);
+        return this.wasmService.connect(username, password, destination, proxyAddress, serverDomain, authToken);
     }
 
     private ctrlAltDel() {

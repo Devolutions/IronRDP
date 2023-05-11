@@ -82,8 +82,11 @@ export class WasmBridgeService {
     }
 
 
-    connect(username: string, password: string, hostname: string, gatewayAddress: string, domain: string, authToken: string): Observable<NewSessionInfo> {
+    connect(username: string, password: string, destination: string, proxyAddress: string, serverDomain: string, authToken: string): Observable<NewSessionInfo> {
         const sessionBuilder = SessionBuilder.new();
+        sessionBuilder.proxy_address(proxyAddress);
+        sessionBuilder.destination(destination);
+        sessionBuilder.server_domain(serverDomain);
         sessionBuilder.password(password);
         sessionBuilder.auth_token(authToken);
         sessionBuilder.username(username);
