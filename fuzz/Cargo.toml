@@ -1,8 +1,8 @@
 [package]
 name = "ironrdp-fuzz"
 version = "0.0.0"
-publish = false
 edition = "2021"
+publish = false
 
 [package.metadata]
 cargo-fuzz = true
@@ -14,10 +14,8 @@ members = ["."]
 debug = 1
 
 [dependencies]
-ironrdp-pdu = { path = "../crates/ironrdp-pdu" }
-ironrdp-graphics = { path = "../crates/ironrdp-graphics" }
+ironrdp-fuzzing = { path = "../crates/ironrdp-fuzzing" }
 libfuzzer-sys = "0.4"
-arbitrary = { version = "1", features = ["derive"] }
 
 [[bin]]
 name = "pdu_decoding"
