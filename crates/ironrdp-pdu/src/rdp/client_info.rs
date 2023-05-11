@@ -570,5 +570,12 @@ pub enum ClientInfoError {
 }
 
 fn string_len(value: &str, character_set: CharacterSet) -> u16 {
+    // FIXME: this is not the right way to compute the number of bytes for unicode strings.
+    // This is a time bomb: both UTF-8 and UTF-16 are using a variable-length encoding and code points may be encoded
+    // using multiple code units. The thing is, UTF-16 uses one or two 16-bit code units and
+    // UTF-8 uses between one and four 8-bit code units. It’s really not always the case that a code point
+    // in UTF-16 is twice as big as the same code point in UTF-8.
+    // Refer to `ironrdp_pdu::pcb` module for a correct implementation.
+    // Something like that: value.encode_utf16().count() * 2 (+2 if we need to insert a null terminator: 0x0000)
     value.len() as u16 * character_set.to_u16().unwrap()
 }
