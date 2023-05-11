@@ -225,6 +225,7 @@ impl DomainMcsPdu {
 }
 
 fn read_mcspdu_header(src: &mut ReadCursor<'_>, name: &'static str) -> crate::Result<DomainMcsPdu> {
+    ensure_size!(name: name, in: src, size: 1);
     let choice = src.read_u8();
 
     DomainMcsPdu::from_choice(choice).ok_or(crate::Error::InvalidMessage {
@@ -235,6 +236,7 @@ fn read_mcspdu_header(src: &mut ReadCursor<'_>, name: &'static str) -> crate::Re
 }
 
 fn peek_mcspdu_header(src: &mut ReadCursor<'_>, name: &'static str) -> crate::Result<DomainMcsPdu> {
+    ensure_size!(name: name, in: src, size: 1);
     let choice = src.peek_u8();
 
     DomainMcsPdu::from_choice(choice).ok_or(crate::Error::InvalidMessage {
@@ -580,6 +582,8 @@ impl<'de> McsPdu<'de> for SendDataRequest<'de> {
     }
 
     fn mcs_body_decode(src: &mut ReadCursor<'de>, tpdu_user_data_size: usize) -> Result<Self> {
+        let src_len_before = src.len();
+
         read_mcspdu_header(src, Self::MCS_NAME)?.check_expected(Self::MCS_NAME, DomainMcsPdu::SendDataRequest)?;
 
         let initiator_id = per::read_u16(src, BASE_CHANNEL_ID)?;
@@ -587,9 +591,21 @@ impl<'de> McsPdu<'de> for SendDataRequest<'de> {
 
         let _data_priority_and_segmentation = src.read_u8();
 
-        let (length, _) = per::read_length(src);
-        debug_assert!(usize::from(length) <= tpdu_user_data_size - 7);
-        let user_data = Cow::Borrowed(src.read_slice(usize::from(length)));
+        let (length, _) = per::read_length(src)?;
+        let length = usize::from(length);
+
+        let src_len_after = src.len();
+
+        if length > tpdu_user_data_size.saturating_sub(src_len_before - src_len_after) {
+            return Err(crate::Error::InvalidMessage {
+                name: Self::MCS_NAME,
+                field: "user-data-length",
+                reason: "inconsistent with user data size advertised in TPDU",
+            });
+        }
+
+        ensure_size!(name: Self::MCS_NAME, in: src, size: length);
+        let user_data = Cow::Borrowed(src.read_slice(length));
 
         Ok(Self {
             initiator_id,
@@ -645,6 +661,8 @@ impl<'de> McsPdu<'de> for SendDataIndication<'de> {
     }
 
     fn mcs_body_decode(src: &mut ReadCursor<'de>, tpdu_user_data_size: usize) -> Result<Self> {
+        let src_len_before = src.len();
+
         read_mcspdu_header(src, Self::MCS_NAME)?.check_expected(Self::MCS_NAME, DomainMcsPdu::SendDataIndication)?;
 
         let initiator_id = per::read_u16(src, BASE_CHANNEL_ID)?;
@@ -652,9 +670,21 @@ impl<'de> McsPdu<'de> for SendDataIndication<'de> {
 
         let _data_priority_and_segmentation = src.read_u8();
 
-        let (length, _) = per::read_length(src);
-        debug_assert!(usize::from(length) <= tpdu_user_data_size - 7);
-        let user_data = Cow::Borrowed(src.read_slice(usize::from(length)));
+        let (length, _) = per::read_length(src)?;
+        let length = usize::from(length);
+
+        let src_len_after = src.len();
+
+        if length > tpdu_user_data_size.saturating_sub(src_len_before - src_len_after) {
+            return Err(crate::Error::InvalidMessage {
+                name: Self::MCS_NAME,
+                field: "user-data-length",
+                reason: "inconsistent with user data size advertised in TPDU",
+            });
+        }
+
+        ensure_size!(name: Self::MCS_NAME, in: src, size: length);
+        let user_data = Cow::Borrowed(src.read_slice(length));
 
         Ok(Self {
             initiator_id,
