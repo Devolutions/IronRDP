@@ -107,8 +107,8 @@ impl DecodingContext {
             region.rectangles = vec![RfxRectangle {
                 x: 0,
                 y: 0,
-                width: channel.width as u16,
-                height: channel.height as u16,
+                width,
+                height,
             }];
         }
         let region = region;
@@ -211,8 +211,8 @@ fn clipping_rectangles(rectangles: &[RfxRectangle], destination: &Rectangle, wid
         .map(|r| Rectangle {
             left: min(destination.left + r.x, width - 1),
             top: min(destination.top + r.y, height - 1),
-            right: min(destination.left + r.x + r.width, width - 1),
-            bottom: min(destination.top + r.y + r.height, height - 1),
+            right: min(destination.left + r.x + r.width - 1, width - 1),
+            bottom: min(destination.top + r.y + r.height - 1, height - 1),
         })
         .for_each(|r| clipping_rectangles.union_rectangle(r));
 
@@ -223,8 +223,8 @@ fn tiles_to_rectangles<'a>(tiles: &'a [Tile<'_>], destination: &'a Rectangle) ->
     tiles.iter().map(|t| Rectangle {
         left: destination.left + t.x * TILE_SIZE,
         top: destination.top + t.y * TILE_SIZE,
-        right: destination.left + t.x * TILE_SIZE + TILE_SIZE,
-        bottom: destination.top + t.y * TILE_SIZE + TILE_SIZE,
+        right: destination.left + t.x * TILE_SIZE + TILE_SIZE - 1,
+        bottom: destination.top + t.y * TILE_SIZE + TILE_SIZE - 1,
     })
 }
 

@@ -3,6 +3,10 @@ use std::io;
 
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 
+/// An **inclusive** rectangle.
+///
+/// This struct is defined as an **inclusive** rectangle.
+/// That is, the pixel at coordinate (right, bottom) is included in the rectangle.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Rectangle {
     pub left: u16,
@@ -60,6 +64,43 @@ impl Rectangle {
             right: max(self.right, other.right),
             bottom: max(self.bottom, other.bottom),
         }
+    }
+
+    // TODO: clarify code related to rectangles (inclusive vs exclusive bounds, …)
+    // See for instance:
+    // https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/84a3d4d2-5523-4e49-9a48-33952c559485
+    // https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/776dbdaf-7619-45fd-9a90-ebfd07802b24
+    // Rename / new structs "InclusiveRect" / "ExclusiveRect"…
+    // Also, avoid / audit mixed usage of "Rectangle" with "RfxRectangle"
+    // We should be careful when manipulating structs with slight nuances like this.
+
+    pub fn from_buffer_exclusive(mut stream: impl io::Read) -> Result<Self, io::Error> {
+        let left = stream.read_u16::<LittleEndian>()?;
+        let top = stream.read_u16::<LittleEndian>()?;
+        let right = stream
+            .read_u16::<LittleEndian>()?
+            .checked_sub(1)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "invalid exclusive right bound"))?;
+        let bottom = stream
+            .read_u16::<LittleEndian>()?
+            .checked_sub(1)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "invalid exclusive bottom bound"))?;
+
+        Ok(Self {
+            left,
+            top,
+            right,
+            bottom,
+        })
+    }
+
+    pub fn to_buffer_exclusive(&self, mut stream: impl io::Write) -> Result<(), io::Error> {
+        stream.write_u16::<LittleEndian>(self.left)?;
+        stream.write_u16::<LittleEndian>(self.top)?;
+        stream.write_u16::<LittleEndian>(self.right + 1)?;
+        stream.write_u16::<LittleEndian>(self.bottom + 1)?;
+
+        Ok(())
     }
 }
 

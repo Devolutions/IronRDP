@@ -156,9 +156,9 @@ impl PduEncode for PreconnectionBlob {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     use expect_test::expect;
+
+    use super::*;
 
     const PRECONNECTION_PDU_V1_NULL_SIZE_BUF: [u8; 16] = [
         0x00, 0x00, 0x00, 0x00, // -> RDP_PRECONNECTION_PDU_V1::cbSize = 0x00 = 0 bytes

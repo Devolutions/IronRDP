@@ -60,8 +60,8 @@ impl DecodedImage {
                 region: Rectangle {
                     left: source_x,
                     top: source_y,
-                    right: source_x + region_rectangle.width(),
-                    bottom: source_y + region_rectangle.height(),
+                    right: source_x + region_rectangle.width() - 1,
+                    bottom: source_y + region_rectangle.height() - 1,
                 },
                 step: SOURCE_STRIDE,
                 pixel_format: SOURCE_PIXEL_FORMAT,

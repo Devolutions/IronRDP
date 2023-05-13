@@ -168,7 +168,7 @@ struct Args {
     password: Option<String>,
 
     /// Specify the security protocols to use
-    #[clap(long, value_enum, value_parser, default_value_t = SecurityProtocol::HybridEx)]
+    #[clap(long, value_enum, value_parser, default_value_t = SecurityProtocol::Hybrid)]
     security_protocol: SecurityProtocol,
 
     /// The keyboard type
@@ -206,11 +206,6 @@ struct Args {
     /// Enable small cache
     #[clap(long)]
     small_cache: bool,
-
-    /// Enable RDP6 lossy bitmap compression algorithm. Please note that lossy compression
-    /// only works with 32 bit color depth
-    #[clap(long)]
-    lossy_bitmap_compression: bool,
 
     /// Set required color depth. Currently only 32 and 16 bit color depths are supported
     #[clap(long)]
@@ -255,13 +250,9 @@ impl Config {
                 anyhow::bail!("Invalid color depth. Only 16 and 32 bit color depths are supported.");
             }
 
-            if color_depth != 32 && args.lossy_bitmap_compression {
-                anyhow::bail!("Lossy bitmap compression only works with 32 bit color depth.");
-            }
-
             Some(connector::BitmapConfig {
                 color_depth,
-                lossy_compression: args.lossy_bitmap_compression,
+                lossy_compression: true,
             })
         } else {
             None

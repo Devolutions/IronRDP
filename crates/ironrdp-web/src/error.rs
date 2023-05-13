@@ -1,5 +1,4 @@
-use ironrdp::connector::sspi;
-use ironrdp::connector::{self, ConnectorErrorKind};
+use ironrdp::connector::{self, sspi, ConnectorErrorKind};
 use wasm_bindgen::prelude::*;
 
 #[wasm_bindgen]

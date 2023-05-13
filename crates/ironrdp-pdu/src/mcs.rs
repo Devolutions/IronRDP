@@ -905,7 +905,7 @@ impl DomainParameters {
     pub fn max() -> Self {
         Self {
             max_channel_ids: 65535,
-            max_user_ids: 65535,
+            max_user_ids: 64535,
             max_token_ids: 65535,
             num_priorities: 1,
             min_throughput: 0,

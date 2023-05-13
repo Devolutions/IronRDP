@@ -225,7 +225,8 @@ fn nego_request_unexpected_rdp_msg_type() {
             },
             source: None,
         }
-    "#]].assert_debug_eq(&e);
+    "#]]
+    .assert_debug_eq(&e);
 }
 
 #[test]
@@ -258,7 +259,8 @@ fn nego_confirm_unexpected_rdp_msg_type() {
             },
             source: None,
         }
-    "#]].assert_debug_eq(&e);
+    "#]]
+    .assert_debug_eq(&e);
 }
 
 #[test]
@@ -320,5 +322,6 @@ fn cookie_without_cr_lf_error_decode() {
             },
             source: None,
         }
-    "#]].assert_debug_eq(&e);
+    "#]]
+    .assert_debug_eq(&e);
 }

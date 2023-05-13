@@ -11,7 +11,7 @@ use thiserror::Error;
 
 use crate::geometry::Rectangle;
 use crate::utils::SplitTo;
-use crate::{PduBufferParsing, PduParsing};
+use crate::PduBufferParsing;
 
 pub const SURFACE_COMMAND_HEADER_SIZE: usize = 2;
 
@@ -70,7 +70,7 @@ impl<'a> PduBufferParsing<'a> for SurfaceBitsPdu<'a> {
     type Error = SurfaceCommandsError;
 
     fn from_buffer_consume(mut buffer: &mut &'a [u8]) -> Result<Self, Self::Error> {
-        let destination = Rectangle::from_buffer(&mut buffer)?;
+        let destination = Rectangle::from_buffer_exclusive(&mut buffer)?;
         let extended_bitmap_data = ExtendedBitmapDataPdu::from_buffer_consume(buffer)?;
 
         Ok(Self {
@@ -80,7 +80,7 @@ impl<'a> PduBufferParsing<'a> for SurfaceBitsPdu<'a> {
     }
 
     fn to_buffer_consume(&self, mut buffer: &mut &mut [u8]) -> Result<(), Self::Error> {
-        self.destination.to_buffer(&mut buffer)?;
+        self.destination.to_buffer_exclusive(&mut buffer)?;
         self.extended_bitmap_data.to_buffer_consume(buffer)?;
 
         Ok(())
