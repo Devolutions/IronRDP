@@ -208,8 +208,8 @@ impl GuiContext {
                     graphics_context.set_buffer(image_buffer, width, height);
                 }
                 Event::UserEvent(RdpOutputEvent::ConnectionFailure(error)) => {
-                    error!(%error);
-                    println!("Connection error: {error:#}");
+                    error!(?error);
+                    println!("Connection error: {}", error.report());
                     control_flow.set_exit_with_code(exitcode::PROTOCOL);
                 }
                 Event::UserEvent(RdpOutputEvent::Terminated(result)) => {
@@ -219,8 +219,8 @@ impl GuiContext {
                             exitcode::OK
                         }
                         Err(error) => {
-                            error!(error = format!("{error:#}"));
-                            println!("Active session error: {error:#}");
+                            error!(?error);
+                            println!("Active session error: {}", error.report());
                             exitcode::PROTOCOL
                         }
                     };

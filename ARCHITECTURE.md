@@ -24,6 +24,8 @@ Pay attention to the "**Architecture Invariant**" sections.
 - `crates/ironrdp-session`: state machines to drive an RDP session.
 - `crates/ironrdp-input`: utilities to manage and build input packets.
 - `crates/ironrdp-rdcleanpath`: RDCleanPath PDU structure used by IronRDP web client and Devolutions Gateway.
+- `crates/ironrdp-error`: lightweight and `no_std`-compatible generic `Error` and `Report` types.
+  The `Error` type wraps a custom consumer-defined type for domain-specific details (such as `PduErrorKind`).
 
 **Architectural Invariant**: doing I/O is not allowed for these crates.
 

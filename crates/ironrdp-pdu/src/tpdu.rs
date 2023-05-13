@@ -1,6 +1,7 @@
 use crate::cursor::{ReadCursor, WriteCursor};
 use crate::padding::Padding;
 use crate::tpkt::TpktHeader;
+use crate::{PduError, PduErrorExt as _, PduResult};
 
 /// TPDU type used during X.224 messages exchange
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -23,14 +24,11 @@ impl TpduCode {
         }
     }
 
-    pub fn check_expected(self, expected: TpduCode) -> crate::Result<()> {
+    pub fn check_expected(self, expected: TpduCode) -> PduResult<()> {
         if self == expected {
             Ok(())
         } else {
-            Err(crate::Error::UnexpectedMessageType {
-                name: TpduHeader::NAME,
-                got: self.0,
-            })
+            Err(PduError::unexpected_message_type(TpduHeader::NAME, self.0))
         }
     }
 }
@@ -117,27 +115,27 @@ impl TpduHeader {
 
     const FIXED_PART_SIZE: usize = Self::DATA_FIXED_PART_SIZE;
 
-    pub fn read(src: &mut ReadCursor<'_>, tpkt: &TpktHeader) -> crate::Result<Self> {
+    pub fn read(src: &mut ReadCursor<'_>, tpkt: &TpktHeader) -> PduResult<Self> {
         ensure_fixed_part_size!(in: src);
 
         let li = src.read_u8(); // LI
         let code = TpduCode::from(src.read_u8()); // Code
 
         if usize::from(li) + 1 + TpktHeader::SIZE > usize::from(tpkt.packet_length) {
-            return Err(crate::Error::InvalidMessage {
-                name: Self::NAME,
-                field: "li",
-                reason: "tpdu length greater than tpkt length",
-            });
+            return Err(PduError::invalid_message(
+                Self::NAME,
+                "li",
+                "tpdu length greater than tpkt length",
+            ));
         }
 
         // The value 255 (1111 1111) is reserved for possible extensions.
         if li == 0b1111_1111 {
-            return Err(crate::Error::InvalidMessage {
-                name: Self::NAME,
-                field: "li",
-                reason: "unsupported X.224 extension (suggested by LI field set to 255)",
-            });
+            return Err(PduError::invalid_message(
+                Self::NAME,
+                "li",
+                "unsupported X.224 extension (suggested by LI field set to 255)",
+            ));
         }
 
         if code == TpduCode::DATA {
@@ -150,7 +148,7 @@ impl TpduHeader {
         Ok(Self { li, code })
     }
 
-    pub fn write(&self, dst: &mut WriteCursor<'_>) -> crate::Result<()> {
+    pub fn write(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
         const EOT_BYTE: u8 = 0x80;
 
         ensure_fixed_part_size!(in: dst);

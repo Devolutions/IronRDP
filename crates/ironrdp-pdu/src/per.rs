@@ -1,5 +1,7 @@
 #![allow(dead_code)]
 
+use core::fmt;
+
 use crate::cursor::{ReadCursor, WriteCursor};
 
 pub(crate) const CHOICE_SIZE: usize = 1;
@@ -8,13 +10,89 @@ pub(crate) const U16_SIZE: usize = 2;
 
 const OBJECT_ID_SIZE: usize = 6;
 
-pub(crate) fn read_length(src: &mut ReadCursor<'_>) -> crate::Result<(u16, usize)> {
-    ensure_size!(name: "PER LENGTH", in: src, size: 1);
-    let a = src.read_u8();
+#[derive(Clone, Debug)]
+pub(crate) enum PerError {
+    NotEnoughBytes { available: usize, required: usize },
+    InvalidLength { reason: &'static str },
+    Overflow,
+    Underflow,
+    UnexpectedEnumVariant,
+    OctetStringTooSmall,
+    OctetStringTooBig,
+    NumericStringTooSmall,
+    NumericStringTooBig,
+}
+
+impl std::error::Error for PerError {}
+
+impl fmt::Display for PerError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            PerError::NotEnoughBytes { available, required } => write!(
+                f,
+                "not enough bytes to read PEM element: {available} bytes availables, required {required} bytes"
+            ),
+            PerError::InvalidLength { reason } => write!(f, "invalid length: {reason}"),
+            PerError::Overflow => write!(f, "overflow"),
+            PerError::Underflow => write!(f, "underflow"),
+            PerError::UnexpectedEnumVariant => write!(f, "enumerated value does not fall within the expected range"),
+            PerError::OctetStringTooSmall => write!(f, "octet string too small"),
+            PerError::OctetStringTooBig => write!(f, "octet string too big"),
+            PerError::NumericStringTooSmall => write!(f, "numeric string too small"),
+            PerError::NumericStringTooBig => write!(f, "numeric string too big"),
+        }
+    }
+}
+
+fn try_read_u8(src: &mut ReadCursor<'_>) -> Result<u8, PerError> {
+    if src.is_empty() {
+        Err(PerError::NotEnoughBytes {
+            available: src.len(),
+            required: 1,
+        })
+    } else {
+        Ok(src.read_u8())
+    }
+}
+
+fn try_read_u16_be(src: &mut ReadCursor<'_>) -> Result<u16, PerError> {
+    if src.len() >= 2 {
+        Ok(src.read_u16_be())
+    } else {
+        Err(PerError::NotEnoughBytes {
+            available: src.len(),
+            required: 2,
+        })
+    }
+}
+
+fn try_read_u32_be(src: &mut ReadCursor<'_>) -> Result<u32, PerError> {
+    if src.len() >= 4 {
+        Ok(src.read_u32_be())
+    } else {
+        Err(PerError::NotEnoughBytes {
+            available: src.len(),
+            required: 4,
+        })
+    }
+}
+
+fn try_read_slice<'a>(src: &mut ReadCursor<'a>, n: usize) -> Result<&'a [u8], PerError> {
+    if src.len() >= n {
+        Ok(src.read_slice(n))
+    } else {
+        Err(PerError::NotEnoughBytes {
+            available: src.len(),
+            required: n,
+        })
+    }
+}
+
+pub(crate) fn read_length(src: &mut ReadCursor<'_>) -> Result<(u16, usize), PerError> {
+    let a = try_read_u8(src)?;
 
     if a & 0x80 != 0 {
-        ensure_size!(name: "PER LENGTH", in: src, size: 1);
-        let b = src.read_u8();
+        let b = try_read_u8(src)?;
         let length = ((u16::from(a) & !0x80) << 8) + u16::from(b);
 
         Ok((length, 2))
@@ -83,26 +161,16 @@ pub(crate) fn write_padding(dst: &mut WriteCursor<'_>, padding_length: usize) {
     }
 }
 
-pub(crate) fn read_u32(src: &mut ReadCursor<'_>) -> crate::Result<u32> {
+pub(crate) fn read_u32(src: &mut ReadCursor<'_>) -> Result<u32, PerError> {
     let (length, _) = read_length(src)?;
 
     match length {
         0 => Ok(0),
-        1 => {
-            ensure_size!(name: "PER U32", in: src, size: 1);
-            Ok(u32::from(src.read_u8()))
-        }
-        2 => {
-            ensure_size!(name: "PER U32", in: src, size: 2);
-            Ok(u32::from(src.read_u16_be()))
-        }
-        4 => {
-            ensure_size!(name: "PER U32", in: src, size: 4);
-            Ok(src.read_u32_be())
-        }
-        _ => Err(crate::Error::Other {
-            context: "PER",
-            reason: "invalid length for u32",
+        1 => Ok(u32::from(try_read_u8(src)?)),
+        2 => Ok(u32::from(try_read_u16_be(src)?)),
+        4 => Ok(try_read_u32_be(src)?),
+        _ => Err(PerError::InvalidLength {
+            reason: "U32 with length greater than 4 bytes",
         }),
     }
 }
@@ -120,35 +188,21 @@ pub(crate) fn write_u32(dst: &mut WriteCursor<'_>, value: u32) {
     }
 }
 
-pub(crate) fn read_u16(src: &mut ReadCursor<'_>, min: u16) -> crate::Result<u16> {
-    ensure_size!(name: "PER U16", in: src, size: 2);
-    min.checked_add(src.read_u16_be()).ok_or(crate::Error::Other {
-        context: "PER",
-        reason: "invalid u16",
-    })
+pub(crate) fn read_u16(src: &mut ReadCursor<'_>, min: u16) -> Result<u16, PerError> {
+    let value = try_read_u16_be(src)?;
+    min.checked_add(value).ok_or(PerError::Overflow)
 }
 
-pub(crate) fn write_u16(dst: &mut WriteCursor<'_>, value: u16, min: u16) -> crate::Result<()> {
-    if value < min {
-        Err(crate::Error::Other {
-            context: "PER",
-            reason: "u16 value greater than specified minimum",
-        })
-    } else {
-        dst.write_u16_be(value - min);
-        Ok(())
-    }
+pub(crate) fn write_u16(dst: &mut WriteCursor<'_>, value: u16, min: u16) -> Result<(), PerError> {
+    dst.write_u16_be(value.checked_sub(min).ok_or(PerError::Underflow)?);
+    Ok(())
 }
 
-pub(crate) fn read_enum(src: &mut ReadCursor<'_>, count: u8) -> crate::Result<u8> {
-    ensure_size!(name: "PER ENUM", in: src, size: 1);
-    let enumerated = src.read_u8();
+pub(crate) fn read_enum(src: &mut ReadCursor<'_>, count: u8) -> Result<u8, PerError> {
+    let enumerated = try_read_u8(src)?;
 
-    if u16::from(enumerated) + 1 > u16::from(count) {
-        Err(crate::Error::Other {
-            context: "PER",
-            reason: "enumerated value does not fall within expected range",
-        })
+    if enumerated >= count {
+        Err(PerError::UnexpectedEnumVariant)
     } else {
         Ok(enumerated)
     }
@@ -158,25 +212,22 @@ pub(crate) fn write_enum(dst: &mut WriteCursor<'_>, enumerated: u8) {
     dst.write_u8(enumerated);
 }
 
-pub(crate) fn read_object_id(src: &mut ReadCursor<'_>) -> crate::Result<[u8; OBJECT_ID_SIZE]> {
+pub(crate) fn read_object_id(src: &mut ReadCursor<'_>) -> Result<[u8; OBJECT_ID_SIZE], PerError> {
     let (length, _) = read_length(src)?;
 
     if length != 5 {
-        return Err(crate::Error::Other {
-            context: "PER",
-            reason: "invalid object id length",
+        return Err(PerError::InvalidLength {
+            reason: "invalid OID length advertised",
         });
     }
 
-    ensure_size!(name: "PER OID", in: src, size: 5);
-
-    let first_two_tuples = src.read_u8();
+    let first_two_tuples = try_read_u8(src)?;
 
     let mut read_object_ids = [0u8; OBJECT_ID_SIZE];
     read_object_ids[0] = first_two_tuples / 40;
     read_object_ids[1] = first_two_tuples % 40;
     for read_object_id in read_object_ids.iter_mut().skip(2) {
-        *read_object_id = src.read_u8();
+        *read_object_id = try_read_u8(src)?;
     }
 
     Ok(read_object_ids)
@@ -193,36 +244,51 @@ pub(crate) fn write_object_id(dst: &mut WriteCursor<'_>, object_ids: [u8; OBJECT
     }
 }
 
-pub(crate) fn read_octet_string(src: &mut ReadCursor<'_>, min: usize) -> crate::Result<Vec<u8>> {
+pub(crate) fn read_octet_string<'a>(src: &mut ReadCursor<'a>, min: usize) -> Result<&'a [u8], PerError> {
     let (length, _) = read_length(src)?;
     let read_len = min + usize::from(length);
-    ensure_size!(name: "PER OCTET_STRING", in: src, size: read_len);
-    Ok(src.read_slice(read_len).to_owned())
+    let octet_string = try_read_slice(src, read_len)?;
+    Ok(octet_string)
 }
 
-pub(crate) fn write_octet_string(dst: &mut WriteCursor<'_>, octet_string: &[u8], min: usize) {
-    let length = if octet_string.len() >= min {
-        octet_string.len() - min
-    } else {
-        min
-    };
+pub(crate) fn write_octet_string(dst: &mut WriteCursor<'_>, octet_string: &[u8], min: usize) -> Result<(), PerError> {
+    if octet_string.len() < min {
+        return Err(PerError::OctetStringTooSmall);
+    }
 
-    write_length(dst, length as u16);
+    let length = octet_string.len() - min;
+    let length = u16::try_from(length).map_err(|_| PerError::OctetStringTooBig)?;
+    write_length(dst, length);
+
     dst.write_slice(octet_string);
-}
 
-pub(crate) fn read_numeric_string(src: &mut ReadCursor<'_>, min: u16) -> crate::Result<()> {
-    let (length, _) = read_length(src)?;
-    let length = usize::from((length + min + 1) / 2);
-    ensure_size!(name: "PER NUMERIC_STRING", in: src, size: length);
-    src.advance(length);
     Ok(())
 }
 
-pub(crate) fn write_numeric_string(dst: &mut WriteCursor<'_>, num_str: &[u8], min: usize) {
-    let length = if num_str.len() >= min { num_str.len() - min } else { min };
+pub(crate) fn read_numeric_string(src: &mut ReadCursor<'_>, min: u16) -> Result<(), PerError> {
+    let (length, _) = read_length(src)?;
+    let length = usize::from((length + min + 1) / 2);
 
-    write_length(dst, u16::try_from(length).unwrap());
+    if src.len() < length {
+        Err(PerError::NotEnoughBytes {
+            available: src.len(),
+            required: length,
+        })
+    } else {
+        src.advance(length);
+        Ok(())
+    }
+}
+
+pub(crate) fn write_numeric_string(dst: &mut WriteCursor<'_>, num_str: &[u8], min: usize) -> Result<(), PerError> {
+    if num_str.len() < min {
+        return Err(PerError::NumericStringTooSmall);
+    }
+
+    let length = num_str.len() - min;
+    let length = u16::try_from(length).map_err(|_| PerError::NumericStringTooBig)?;
+
+    write_length(dst, length);
 
     let magic_transform = |elem| (elem - 0x30) % 10;
 
@@ -234,6 +300,8 @@ pub(crate) fn write_numeric_string(dst: &mut WriteCursor<'_>, num_str: &[u8], mi
 
         dst.write_u8(num);
     }
+
+    Ok(())
 }
 
 pub(crate) mod legacy {
@@ -481,6 +549,8 @@ pub(crate) mod legacy {
 mod tests {
     use super::*;
 
+    use expect_test::expect;
+
     #[test]
     fn read_length_is_correct_length() {
         let mut src = ReadCursor::new(&[0x05]);
@@ -632,12 +702,11 @@ mod tests {
         let buf = [0xff, 0xff];
         let mut src = ReadCursor::new(&buf);
 
-        match read_u16(&mut src, 1) {
-            Err(crate::Error::Other { reason, .. }) => {
-                assert_eq!(reason, "invalid u16");
-            }
-            _ => panic!("Unexpected result"),
-        };
+        let e = read_u16(&mut src, 1).err().unwrap();
+
+        expect![[r#"
+            Overflow
+        "#]].assert_debug_eq(&e)
     }
 
     #[test]
@@ -659,12 +728,9 @@ mod tests {
 
         let e = write_u16(&mut dst, 1000, 1001).err().unwrap();
 
-        if let crate::Error::Other { context, reason } = e {
-            assert_eq!(context, "PER");
-            assert_eq!(reason, "u16 value greater than specified minimum");
-        } else {
-            panic!("unexpected error: {e}");
-        }
+        expect![[r#"
+            Underflow
+        "#]].assert_debug_eq(&e);
     }
 
     #[test]
@@ -691,12 +757,11 @@ mod tests {
         let buf = [0x05];
         let mut src = ReadCursor::new(&buf);
 
-        match read_enum(&mut src, 1) {
-            Err(crate::Error::Other { reason, .. }) => {
-                assert_eq!(reason, "enumerated value does not fall within expected range");
-            }
-            _ => panic!("Unexpected result"),
-        };
+        let e = read_enum(&mut src, 1).err().unwrap();
+
+        expect![[r#"
+            UnexpectedEnumVariant
+        "#]].assert_debug_eq(&e);
     }
 
     #[test]
@@ -712,12 +777,11 @@ mod tests {
         let buf = [0xff];
         let mut src = ReadCursor::new(&buf);
 
-        match read_enum(&mut src, 0xff) {
-            Err(crate::Error::Other { reason, .. }) => {
-                assert_eq!(reason, "enumerated value does not fall within expected range");
-            }
-            _ => panic!("Unexpected result"),
-        };
+        let e = read_enum(&mut src, 0xff).err().unwrap();
+
+        expect![[r#"
+            UnexpectedEnumVariant
+        "#]].assert_debug_eq(&e);
     }
 
     #[test]
@@ -736,7 +800,7 @@ mod tests {
         let mut buf = [0; 2];
         let mut dst = WriteCursor::new(&mut buf);
 
-        write_numeric_string(&mut dst, octet_string, 1);
+        write_numeric_string(&mut dst, octet_string, 1).unwrap();
 
         assert_eq!(dst.len(), 0);
         assert_eq!(buf, expected_buf);
@@ -747,7 +811,7 @@ mod tests {
         let buf = [0x00, 0x44, 0x75, 0x63, 0x61];
         let mut src = ReadCursor::new(&buf);
 
-        assert_eq!(b"Duca", read_octet_string(&mut src, 4).unwrap().as_slice());
+        assert_eq!(b"Duca", read_octet_string(&mut src, 4).unwrap());
     }
 
     #[test]
@@ -758,7 +822,7 @@ mod tests {
         let mut buf = [0; 5];
         let mut dst = WriteCursor::new(&mut buf);
 
-        write_octet_string(&mut dst, octet_string, 4);
+        write_octet_string(&mut dst, octet_string, 4).unwrap();
 
         assert_eq!(dst.len(), 0);
         assert_eq!(buf, expected_buf);

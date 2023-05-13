@@ -250,3 +250,9 @@ pub enum RfxError {
     #[error("Got invalid IT flag of TileSet: {0}")]
     InvalidItFlag(bool),
 }
+
+impl ironrdp_error::legacy::ErrorContext for RfxError {
+    fn context(&self) -> &'static str {
+        "RFX"
+    }
+}

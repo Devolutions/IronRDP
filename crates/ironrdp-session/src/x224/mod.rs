@@ -12,7 +12,7 @@ use ironrdp_pdu::rdp::server_error_info::{ErrorInfo, ProtocolIndependentCode, Se
 use ironrdp_pdu::rdp::vc::{self, dvc};
 
 pub use self::gfx::GfxHandler;
-use crate::{Error, Result};
+use crate::SessionResult;
 
 pub const RDP8_GRAPHICS_PIPELINE_NAME: &str = "Microsoft::Windows::RDS::Graphics";
 pub const RDP8_DISPLAY_PIPELINE_NAME: &str = "Microsoft::Windows::RDS::DisplayControl";
@@ -54,8 +54,9 @@ impl Processor {
         }
     }
 
-    pub fn process(&mut self, frame: &[u8]) -> Result<Vec<u8>> {
-        let data_ctx = ironrdp_connector::legacy::decode_send_data_indication(frame)?;
+    pub fn process(&mut self, frame: &[u8]) -> SessionResult<Vec<u8>> {
+        let data_ctx =
+            ironrdp_connector::legacy::decode_send_data_indication(frame).map_err(crate::legacy::map_error)?;
         let channel_id = data_ctx.channel_id;
 
         if channel_id == self.io_channel_id {
@@ -64,15 +65,15 @@ impl Processor {
         } else {
             match self.drdynvc_channel_id {
                 Some(dyvc_id) if channel_id == dyvc_id => self.process_dyvc(data_ctx),
-                _ => Err(Error::new("unexpected channel").with_reason(format!("received ID {channel_id}"))),
+                _ => Err(reason_err!("X224", "unexpected channel received: ID {channel_id}")),
             }
         }
     }
 
-    fn process_io_channel(&self, data_ctx: SendDataIndicationCtx<'_>) -> Result<()> {
+    fn process_io_channel(&self, data_ctx: SendDataIndicationCtx<'_>) -> SessionResult<()> {
         debug_assert_eq!(data_ctx.channel_id, self.io_channel_id);
 
-        let ctx = ironrdp_connector::legacy::decode_share_data(data_ctx)?;
+        let ctx = ironrdp_connector::legacy::decode_share_data(data_ctx).map_err(crate::legacy::map_error)?;
 
         match ctx.pdu {
             ShareDataPdu::SaveSessionInfo(session_info) => {
@@ -86,16 +87,17 @@ impl Processor {
                 Ok(())
             }
             ShareDataPdu::ServerSetErrorInfo(ServerSetErrorInfoPdu(e)) => {
-                Err(Error::new("ServerSetErrorInfo").with_reason(e.description()))
+                Err(reason_err!("ServerSetErrorInfo", "{}", e.description()))
             }
-            _ => Err(Error::new("unexpected PDU").with_reason(format!(
-                "Expected Session Save Info PDU, got: {:?}",
+            _ => Err(reason_err!(
+                "IO channel",
+                "unexpected PDU: expected Session Save Info PDU, got: {:?}",
                 ctx.pdu.as_short_name()
-            ))),
+            )),
         }
     }
 
-    fn process_dyvc(&mut self, data_ctx: SendDataIndicationCtx<'_>) -> Result<Vec<u8>> {
+    fn process_dyvc(&mut self, data_ctx: SendDataIndicationCtx<'_>) -> SessionResult<Vec<u8>> {
         debug_assert_eq!(Some(data_ctx.channel_id), self.drdynvc_channel_id);
 
         let dvc_ctx = crate::legacy::decode_dvc_message(data_ctx)?;
@@ -188,9 +190,7 @@ impl Processor {
                 if let Some(dvc_data) = self
                     .dynamic_channels
                     .get_mut(&data.channel_id)
-                    .ok_or_else(|| {
-                        Error::new("access to non existing channel").with_reason(data.channel_id.to_string())
-                    })?
+                    .ok_or_else(|| reason_err!("DVC", "access to non existing channel: {}", data.channel_id))?
                     .process_data_first_pdu(data.total_data_size as usize, dvc_data.to_vec())?
                 {
                     let client_data = dvc::ClientPdu::Data(dvc::DataPdu {
@@ -218,9 +218,7 @@ impl Processor {
                 if let Some(dvc_data) = self
                     .dynamic_channels
                     .get_mut(&data.channel_id)
-                    .ok_or_else(|| {
-                        Error::new("access to non existing channel").with_reason(data.channel_id.to_string())
-                    })?
+                    .ok_or_else(|| reason_err!("DVC", "access to non existing channel: {}", data.channel_id))?
                     .process_data_pdu(dvc_data.to_vec())?
                 {
                     let client_data = dvc::ClientPdu::Data(dvc::DataPdu {
@@ -244,20 +242,20 @@ impl Processor {
     }
 
     /// Sends a PDU on the dynamic channel.
-    pub fn encode_dynamic(&self, output: &mut Vec<u8>, channel_name: &str, dvc_data: &[u8]) -> Result<usize> {
+    pub fn encode_dynamic(&self, output: &mut Vec<u8>, channel_name: &str, dvc_data: &[u8]) -> SessionResult<usize> {
         let drdynvc_channel_id = self
             .drdynvc_channel_id
-            .ok_or(Error::new("dynamic virtual channel not connected"))?;
+            .ok_or_else(|| general_err!("dynamic virtual channel not connected"))?;
 
         let dvc_channel_id = self
             .channel_map
             .get(channel_name)
-            .ok_or_else(|| Error::new("access to non existing channel name").with_reason(channel_name))?;
+            .ok_or_else(|| reason_err!("DVC", "access to non existing channel name: {}", channel_name))?;
 
         let dvc_channel = self
             .dynamic_channels
             .get(dvc_channel_id)
-            .ok_or_else(|| Error::new("access to non existing channel").with_reason(dvc_channel_id.to_string()))?;
+            .ok_or_else(|| reason_err!("DVC", "access to non existing channel: {}", dvc_channel_id))?;
 
         let dvc_client_data = dvc::ClientPdu::Data(dvc::DataPdu {
             channel_id_type: dvc_channel.channel_id_type,
@@ -277,9 +275,10 @@ impl Processor {
     }
 
     /// Send a pdu on the static global channel. Typically used to send input events
-    pub fn encode_static(&self, output: &mut Vec<u8>, pdu: ShareDataPdu) -> Result<usize> {
+    pub fn encode_static(&self, output: &mut Vec<u8>, pdu: ShareDataPdu) -> SessionResult<usize> {
         let written =
-            ironrdp_connector::legacy::encode_share_data(self.user_channel_id, self.io_channel_id, 0, pdu, output)?;
+            ironrdp_connector::legacy::encode_share_data(self.user_channel_id, self.io_channel_id, 0, pdu, output)
+                .map_err(crate::legacy::map_error)?;
         Ok(written)
     }
 }
@@ -317,7 +316,7 @@ fn negotiate_dvc(
     channel_id: u16,
     mut stream: impl io::Write,
     graphics_config: &Option<GraphicsConfig>,
-) -> Result<()> {
+) -> SessionResult<()> {
     if create_request.channel_name == RDP8_GRAPHICS_PIPELINE_NAME {
         let dvc_data = gfx::create_capabilities_advertise(graphics_config)?;
         let dvc_pdu = dvc::ClientPdu::Data(dvc::DataPdu {
@@ -329,16 +328,14 @@ fn negotiate_dvc(
         debug!("Send GFX Capabilities Advertise PDU");
         let mut buf = Vec::new();
         crate::legacy::encode_dvc_message(initiator_id, channel_id, dvc_pdu, &dvc_data, &mut buf)?;
-        stream
-            .write_all(&buf)
-            .map_err(|e| Error::new("write negotiation dvc").with_custom(e))?;
+        stream.write_all(&buf).map_err(|e| custom_err!("DVC write", e))?;
     }
 
     Ok(())
 }
 
 trait DynamicChannelDataHandler {
-    fn process_complete_data(&mut self, complete_data: Vec<u8>) -> Result<Option<Vec<u8>>>;
+    fn process_complete_data(&mut self, complete_data: Vec<u8>) -> SessionResult<Option<Vec<u8>>>;
 }
 
 pub struct DynamicChannel {
@@ -358,7 +355,7 @@ impl DynamicChannel {
         }
     }
 
-    fn process_data_first_pdu(&mut self, total_data_size: usize, data: Vec<u8>) -> Result<Option<Vec<u8>>> {
+    fn process_data_first_pdu(&mut self, total_data_size: usize, data: Vec<u8>) -> SessionResult<Option<Vec<u8>>> {
         if let Some(complete_data) = self.data.process_data_first_pdu(total_data_size, data) {
             self.handler.process_complete_data(complete_data)
         } else {
@@ -366,7 +363,7 @@ impl DynamicChannel {
         }
     }
 
-    fn process_data_pdu(&mut self, data: Vec<u8>) -> Result<Option<Vec<u8>>> {
+    fn process_data_pdu(&mut self, data: Vec<u8>) -> SessionResult<Option<Vec<u8>>> {
         if let Some(complete_data) = self.data.process_data_pdu(data) {
             self.handler.process_complete_data(complete_data)
         } else {

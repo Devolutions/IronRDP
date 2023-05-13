@@ -8,7 +8,10 @@ use sspi::credssp;
 use crate::channel_connection::{ChannelConnectionSequence, ChannelConnectionState};
 use crate::connection_finalization::ConnectionFinalizationSequence;
 use crate::license_exchange::LicenseExchangeSequence;
-use crate::{legacy, Config, DesktopSize, Error, Result, Sequence, ServerName, State, StaticChannels, Written};
+use crate::{
+    legacy, Config, ConnectorError, ConnectorErrorExt as _, ConnectorErrorKind, ConnectorResult, DesktopSize, Sequence,
+    ServerName, State, StaticChannels, Written,
+};
 
 #[derive(Clone, Copy, Debug)]
 pub struct CredsspTsRequestHint;
@@ -16,11 +19,11 @@ pub struct CredsspTsRequestHint;
 pub const CREDSSP_TS_REQUEST_HINT: CredsspTsRequestHint = CredsspTsRequestHint;
 
 impl PduHint for CredsspTsRequestHint {
-    fn find_size(&self, bytes: &[u8]) -> ironrdp_pdu::Result<Option<usize>> {
+    fn find_size(&self, bytes: &[u8]) -> ironrdp_pdu::PduResult<Option<usize>> {
         match sspi::credssp::TsRequest::read_length(bytes) {
             Ok(length) => Ok(Some(length)),
             Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => Ok(None),
-            Err(e) => Err(ironrdp_pdu::Error::custom(e)),
+            Err(e) => Err(ironrdp_pdu::custom_err!("CredsspTsRequestHint", e)),
         }
     }
 }
@@ -31,7 +34,7 @@ pub struct CredsspEarlyUserAuthResultHint;
 pub const CREDSSP_EARLY_USER_AUTH_RESULT_HINT: CredsspEarlyUserAuthResultHint = CredsspEarlyUserAuthResultHint;
 
 impl PduHint for CredsspEarlyUserAuthResultHint {
-    fn find_size(&self, _: &[u8]) -> ironrdp_pdu::Result<Option<usize>> {
+    fn find_size(&self, _: &[u8]) -> ironrdp_pdu::PduResult<Option<usize>> {
         Ok(Some(sspi::credssp::EARLY_USER_AUTH_RESULT_PDU_SIZE))
     }
 }
@@ -274,11 +277,11 @@ impl Sequence for ClientConnector {
         &self.state
     }
 
-    fn step(&mut self, input: &[u8], output: &mut Vec<u8>) -> Result<Written> {
+    fn step(&mut self, input: &[u8], output: &mut Vec<u8>) -> ConnectorResult<Written> {
         let (written, next_state) = match mem::take(&mut self.state) {
             // Invalid state
             ClientConnectorState::Consumed => {
-                return Err(Error::new("connector sequence state is consumed (this is a bug)"))
+                return Err(general_err!("connector sequence state is consumed (this is a bug)",))
             }
 
             //== Connection Initiation ==//
@@ -292,7 +295,7 @@ impl Sequence for ClientConnector {
 
                 debug!(message = ?connection_request, "Send");
 
-                let written = ironrdp_pdu::encode_buf(&connection_request, output)?;
+                let written = ironrdp_pdu::encode_buf(&connection_request, output).map_err(ConnectorError::pdu)?;
 
                 (
                     Written::from_size(written)?,
@@ -300,7 +303,8 @@ impl Sequence for ClientConnector {
                 )
             }
             ClientConnectorState::ConnectionInitiationWaitConfirm => {
-                let connection_confirm = ironrdp_pdu::decode::<nego::ConnectionConfirm>(input)?;
+                let connection_confirm =
+                    ironrdp_pdu::decode::<nego::ConnectionConfirm>(input).map_err(ConnectorError::pdu)?;
 
                 debug!(message = ?connection_confirm, "Received");
 
@@ -308,14 +312,14 @@ impl Sequence for ClientConnector {
                     nego::ConnectionConfirm::Response { flags, protocol } => (flags, protocol),
                     nego::ConnectionConfirm::Failure { code } => {
                         error!(?code, "Received connection failure code");
-                        return Err(Error::new("connection failed"));
+                        return Err(general_err!("connection failed"));
                     }
                 };
 
                 info!(?selected_protocol, ?flags, "Server confirmed connection");
 
                 if !self.config.security_protocol.contains(selected_protocol) {
-                    return Err(Error::new(
+                    return Err(general_err!(
                         "server selected a security protocol that is unsupported by this client",
                     ));
                 }
@@ -352,17 +356,17 @@ impl Sequence for ClientConnector {
                 let server_public_key = self
                     .server_public_key
                     .take()
-                    .ok_or(Error::new("server public key is missing"))?;
+                    .ok_or_else(|| general_err!("server public key is missing"))?;
 
                 let network_client_factory = self
                     .network_client_factory
                     .take()
-                    .ok_or(Error::new("CredSSP network client factory is missing"))?;
+                    .ok_or_else(|| general_err!("CredSSP network client factory is missing"))?;
 
                 let server_name = self
                     .server_name
                     .take()
-                    .ok_or(Error::new("server name is missing"))?
+                    .ok_or_else(|| general_err!("server name is missing"))?
                     .into_inner();
 
                 let service_principal_name = format!("TERMSRV/{server_name}");
@@ -378,11 +382,14 @@ impl Sequence for ClientConnector {
                         network_client_factory,
                     }),
                     service_principal_name,
-                )?;
+                )
+                .map_err(|e| ConnectorError::new("CredSSP", ConnectorErrorKind::Credssp(e)))?;
 
                 let initial_ts_request = credssp::TsRequest::default();
 
-                let result = credssp_client.process(initial_ts_request)?;
+                let result = credssp_client
+                    .process(initial_ts_request)
+                    .map_err(|e| ConnectorError::new("CredSSP", ConnectorErrorKind::Credssp(e)))?;
 
                 let (ts_request_from_client, next_state) = match result {
                     credssp::ClientState::ReplyNeeded(ts_request) => (
@@ -409,9 +416,11 @@ impl Sequence for ClientConnector {
                 mut credssp_client,
             } => {
                 let ts_request_from_server = credssp::TsRequest::from_buffer(input)
-                    .map_err(|e| Error::new("CredSSP").with_reason(format!("TsRequest decode: {e}")))?;
+                    .map_err(|e| reason_err!("CredSSP", "TsRequest decode: {e}"))?;
 
-                let result = credssp_client.process(ts_request_from_server)?;
+                let result = credssp_client
+                    .process(ts_request_from_server)
+                    .map_err(|e| ConnectorError::new("CredSSP", ConnectorErrorKind::Credssp(e)))?;
 
                 let (ts_request_from_client, next_state) = match result {
                     credssp::ClientState::ReplyNeeded(ts_request) => (
@@ -439,10 +448,10 @@ impl Sequence for ClientConnector {
             }
             ClientConnectorState::CredsspEarlyUserAuthResult { selected_protocol } => {
                 let early_user_auth_result = credssp::EarlyUserAuthResult::from_buffer(input)
-                    .map_err(|e| Error::new("CredSSP").with_reason(format!("EarlyUserAuthResult decode: {e}")))?;
+                    .map_err(|e| custom_err!("credssp::EarlyUserAuthResult", e))?;
 
                 let credssp::EarlyUserAuthResult::Success = early_user_auth_result else {
-                    return Err(Error::new("CredSSP").with_kind(crate::ErrorKind::AccessDenied));
+                    return Err(ConnectorError::new("CredSSP", ConnectorErrorKind::AccessDenied));
                 };
 
                 (
@@ -484,7 +493,7 @@ impl Sequence for ClientConnector {
                 if client_gcc_blocks.security == gcc::ClientSecurityData::no_security()
                     && server_gcc_blocks.security != gcc::ServerSecurityData::no_security()
                 {
-                    return Err(Error::new("can’t satisfy server security settings"));
+                    return Err(general_err!("can’t satisfy server security settings"));
                 }
 
                 if server_gcc_blocks.message_channel.is_some() {
@@ -561,7 +570,7 @@ impl Sequence for ClientConnector {
                 static_channels,
             } => {
                 if selected_protocol == nego::SecurityProtocol::RDP {
-                    return Err(Error::new("standard RDP Security (RC4 encryption) is not supported"));
+                    return Err(general_err!("standard RDP Security (RC4 encryption) is not supported"));
                 }
 
                 (
@@ -584,7 +593,7 @@ impl Sequence for ClientConnector {
                 let routing_addr = self
                     .server_addr
                     .as_ref()
-                    .ok_or(Error::new("server address is missing"))?;
+                    .ok_or_else(|| general_err!("server address is missing"))?;
 
                 let client_info = create_client_info_pdu(&self.config, routing_addr);
 
@@ -690,7 +699,9 @@ impl Sequence for ClientConnector {
                 {
                     server_demand_active.pdu.capability_sets
                 } else {
-                    return Err(Error::new("unexpected Share Control Pdu (expected ServerDemandActive)"));
+                    return Err(general_err!(
+                        "unexpected Share Control Pdu (expected ServerDemandActive)",
+                    ));
                 };
 
                 let desktop_size = capability_sets
@@ -770,7 +781,7 @@ impl Sequence for ClientConnector {
 
             //== Connected ==//
             // The client connector job is done.
-            ClientConnectorState::Connected { .. } => return Err(Error::new("already connected")),
+            ClientConnectorState::Connected { .. } => return Err(general_err!("already connected")),
         };
 
         self.state = next_state;
@@ -1024,7 +1035,7 @@ fn create_client_confirm_active(
     }
 }
 
-fn write_credssp_request(ts_request: credssp::TsRequest, output: &mut Vec<u8>) -> crate::Result<usize> {
+fn write_credssp_request(ts_request: credssp::TsRequest, output: &mut Vec<u8>) -> crate::ConnectorResult<usize> {
     let length = usize::from(ts_request.buffer_len());
 
     if output.len() < length {
@@ -1033,7 +1044,7 @@ fn write_credssp_request(ts_request: credssp::TsRequest, output: &mut Vec<u8>) -
 
     ts_request
         .encode_ts_request(output.as_mut_slice())
-        .map_err(|e| Error::new("CredSSP").with_reason(format!("TsRequest encode: {e}")))?;
+        .map_err(|e| reason_err!("CredSSP", "TsRequest encode: {e}"))?;
 
     Ok(length)
 }

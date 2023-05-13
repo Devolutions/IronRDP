@@ -1,0 +1,17 @@
+[package]
+name = "ironrdp-error"
+version = "0.1.0"
+readme = "README.md"
+description = "IronPDU generic error definition"
+edition.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[features]
+default = []
+std = ["alloc"]
+alloc = []

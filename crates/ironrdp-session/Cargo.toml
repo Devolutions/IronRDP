@@ -16,9 +16,10 @@ doctest = false
 test = false
 
 [dependencies]
-ironrdp-pdu.workspace = true
+bitflags = "2" # TODO: investigate usage in this crate
 ironrdp-connector.workspace = true # TODO: at some point, this dependency could be removed (good for compilation speed)
+ironrdp-error.workspace = true
 ironrdp-graphics.workspace = true
+ironrdp-pdu.workspace = true
 sspi.workspace = true
 tracing.workspace = true
-bitflags = "2" # TODO: investigate usage in this crate

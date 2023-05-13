@@ -96,3 +96,9 @@ impl From<RdpError> for io::Error {
         io::Error::new(io::ErrorKind::Other, format!("RDP Connection Sequence error: {e}"))
     }
 }
+
+impl ironrdp_error::legacy::ErrorContext for RdpError {
+    fn context(&self) -> &'static str {
+        "RDP"
+    }
+}

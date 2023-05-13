@@ -1,6 +1,9 @@
 #[macro_use]
 extern crate tracing;
 
+#[macro_use]
+mod macros;
+
 pub mod legacy;
 
 mod channel_connection;
@@ -109,10 +112,10 @@ pub enum Written {
 
 impl Written {
     #[inline]
-    pub fn from_size(value: usize) -> Result<Self> {
+    pub fn from_size(value: usize) -> ConnectorResult<Self> {
         core::num::NonZeroUsize::new(value)
             .map(Self::Size)
-            .ok_or(Error::new("invalid written length (can’t be zero)"))
+            .ok_or(ConnectorError::general("invalid written length (can’t be zero)"))
     }
 
     #[inline]
@@ -135,150 +138,94 @@ pub trait Sequence: Send + Sync {
 
     fn state(&self) -> &dyn State;
 
-    fn step(&mut self, input: &[u8], output: &mut Vec<u8>) -> Result<Written>;
+    fn step(&mut self, input: &[u8], output: &mut Vec<u8>) -> ConnectorResult<Written>;
 
-    fn step_no_input(&mut self, output: &mut Vec<u8>) -> Result<Written> {
+    fn step_no_input(&mut self, output: &mut Vec<u8>) -> ConnectorResult<Written> {
         self.step(&[], output)
     }
 }
 
 ironrdp_pdu::assert_obj_safe!(Sequence);
 
-pub type Result<T> = std::result::Result<T, Error>;
+pub type ConnectorResult<T> = std::result::Result<T, ConnectorError>;
 
 #[non_exhaustive]
 #[derive(Debug)]
-pub enum ErrorKind {
-    Pdu(ironrdp_pdu::Error),
+pub enum ConnectorErrorKind {
+    Pdu(ironrdp_pdu::PduError),
     Credssp(sspi::Error),
+    Reason(String),
     AccessDenied,
-    Custom(Box<dyn std::error::Error + Sync + Send + 'static>),
     General,
+    Custom,
 }
 
-#[derive(Debug)]
-pub struct Error {
-    pub context: &'static str,
-    pub kind: ErrorKind,
-    pub reason: Option<String>,
-}
-
-impl Error {
-    pub fn new(context: &'static str) -> Self {
-        Self {
-            context,
-            kind: ErrorKind::General,
-            reason: None,
+impl fmt::Display for ConnectorErrorKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &self {
+            ConnectorErrorKind::Pdu(_) => write!(f, "PDU error"),
+            ConnectorErrorKind::Credssp(_) => write!(f, "CredSSP"),
+            ConnectorErrorKind::Reason(description) => write!(f, "reason: {description}"),
+            ConnectorErrorKind::AccessDenied => write!(f, "access denied"),
+            ConnectorErrorKind::General => write!(f, "general"),
+            ConnectorErrorKind::Custom => write!(f, "custom"),
         }
     }
+}
 
-    pub fn with_kind(mut self, kind: ErrorKind) -> Self {
-        self.kind = kind;
-        self
+impl std::error::Error for ConnectorErrorKind {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match &self {
+            ConnectorErrorKind::Pdu(e) => Some(e),
+            ConnectorErrorKind::Credssp(e) => Some(e),
+            ConnectorErrorKind::Reason(_) => None,
+            ConnectorErrorKind::AccessDenied => None,
+            ConnectorErrorKind::Custom => None,
+            ConnectorErrorKind::General => None,
+        }
+    }
+}
+
+pub type ConnectorError = ironrdp_error::Error<ConnectorErrorKind>;
+
+pub trait ConnectorErrorExt {
+    fn pdu(error: ironrdp_pdu::PduError) -> Self;
+    fn general(context: &'static str) -> Self;
+    fn reason(context: &'static str, reason: impl Into<String>) -> Self;
+    fn custom<E>(context: &'static str, e: E) -> Self
+    where
+        E: std::error::Error + Sync + Send + 'static;
+}
+
+impl ConnectorErrorExt for ConnectorError {
+    fn pdu(error: ironrdp_pdu::PduError) -> Self {
+        Self::new("invalid payload", ConnectorErrorKind::Pdu(error))
     }
 
-    pub fn with_custom<E>(mut self, custom_error: E) -> Self
+    fn general(context: &'static str) -> Self {
+        Self::new(context, ConnectorErrorKind::General)
+    }
+
+    fn reason(context: &'static str, reason: impl Into<String>) -> Self {
+        Self::new(context, ConnectorErrorKind::Reason(reason.into()))
+    }
+
+    fn custom<E>(context: &'static str, e: E) -> Self
     where
         E: std::error::Error + Sync + Send + 'static,
     {
-        self.kind = ErrorKind::Custom(Box::new(custom_error));
-        self
-    }
-
-    pub fn with_reason(mut self, reason: impl Into<String>) -> Self {
-        self.reason = Some(reason.into());
-        self
-    }
-}
-
-impl std::error::Error for Error {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match &self.kind {
-            ErrorKind::Pdu(e) => Some(e),
-            ErrorKind::Credssp(e) => Some(e),
-            ErrorKind::AccessDenied => None,
-            ErrorKind::Custom(e) => Some(e.as_ref()),
-            ErrorKind::General => None,
-        }
-    }
-}
-
-impl From<Error> for std::io::Error {
-    fn from(error: Error) -> Self {
-        std::io::Error::new(std::io::ErrorKind::Other, error)
-    }
-}
-
-impl From<ironrdp_pdu::Error> for Error {
-    fn from(value: ironrdp_pdu::Error) -> Self {
-        Self {
-            context: "invalid payload",
-            kind: ErrorKind::Pdu(value),
-            reason: None,
-        }
-    }
-}
-
-impl From<sspi::Error> for Error {
-    fn from(value: sspi::Error) -> Self {
-        Self {
-            context: "CredSSP",
-            kind: ErrorKind::Credssp(value),
-            reason: None,
-        }
-    }
-}
-
-impl fmt::Display for Error {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.context)?;
-
-        match &self.kind {
-            ErrorKind::Pdu(e) => {
-                if f.alternate() {
-                    write!(f, ": {e}")?;
-                }
-            }
-            ErrorKind::Credssp(e) => {
-                if f.alternate() {
-                    write!(f, ": {e}")?;
-                }
-            }
-            ErrorKind::AccessDenied => {
-                write!(f, ": access denied")?;
-            }
-            ErrorKind::Custom(e) => {
-                if f.alternate() {
-                    write!(f, ": {e}")?;
-
-                    let mut next_source = e.source();
-                    while let Some(e) = next_source {
-                        write!(f, ", caused by: {e}")?;
-                        next_source = e.source();
-                    }
-                }
-            }
-            ErrorKind::General => {}
-        }
-
-        if let Some(reason) = &self.reason {
-            write!(f, " ({reason})")?;
-        }
-
-        Ok(())
+        Self::new(context, ConnectorErrorKind::Custom).with_source(e)
     }
 }
 
 pub trait ConnectorResultExt {
     fn with_context(self, context: &'static str) -> Self;
-    fn with_kind(self, kind: ErrorKind) -> Self;
-    fn with_custom<E>(self, custom_error: E) -> Self
+    fn with_source<E>(self, source: E) -> Self
     where
         E: std::error::Error + Sync + Send + 'static;
-    fn with_reason(self, reason: impl Into<String>) -> Self;
 }
 
-impl<T> ConnectorResultExt for Result<T> {
+impl<T> ConnectorResultExt for ConnectorResult<T> {
     fn with_context(self, context: &'static str) -> Self {
         self.map_err(|mut e| {
             e.context = context;
@@ -286,27 +233,10 @@ impl<T> ConnectorResultExt for Result<T> {
         })
     }
 
-    fn with_kind(self, kind: ErrorKind) -> Self {
-        self.map_err(|mut e| {
-            e.kind = kind;
-            e
-        })
-    }
-
-    fn with_custom<E>(self, custom_error: E) -> Self
+    fn with_source<E>(self, source: E) -> Self
     where
         E: std::error::Error + Sync + Send + 'static,
     {
-        self.map_err(|mut e| {
-            e.kind = ErrorKind::Custom(Box::new(custom_error));
-            e
-        })
-    }
-
-    fn with_reason(self, reason: impl Into<String>) -> Self {
-        self.map_err(|mut e| {
-            e.reason = Some(reason.into());
-            e
-        })
+        self.map_err(|e| e.with_source(source))
     }
 }

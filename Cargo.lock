@@ -1544,12 +1544,17 @@ name = "ironrdp-connector"
 version = "0.1.0"
 dependencies = [
  "arbitrary",
+ "ironrdp-error",
  "ironrdp-pdu",
  "rand_core 0.6.4",
  "rstest",
  "sspi",
  "tracing",
 ]
+
+[[package]]
+name = "ironrdp-error"
+version = "0.1.0"
 
 [[package]]
 name = "ironrdp-futures"
@@ -1579,6 +1584,7 @@ dependencies = [
  "bmp",
  "byteorder",
  "expect-test",
+ "ironrdp-error",
  "ironrdp-pdu",
  "lazy_static",
  "num-derive 0.3.3",
@@ -1604,6 +1610,7 @@ dependencies = [
  "byteorder",
  "der-parser 8.2.0",
  "expect-test",
+ "ironrdp-error",
  "ironrdp-testsuite-core",
  "lazy_static",
  "md-5 0.10.5",
@@ -1638,6 +1645,7 @@ version = "0.1.0"
 dependencies = [
  "bitflags 2.0.2",
  "ironrdp-connector",
+ "ironrdp-error",
  "ironrdp-graphics",
  "ironrdp-pdu",
  "sspi",
@@ -1659,6 +1667,7 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "array-concat",
+ "expect-test",
  "hex",
  "ironrdp-connector",
  "ironrdp-fuzzing",

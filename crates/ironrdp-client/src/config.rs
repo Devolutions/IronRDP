@@ -301,10 +301,9 @@ impl Config {
                 .pipe(u32::try_from)
                 .unwrap(),
             client_name: whoami::hostname(),
-            client_dir: std::env::current_dir()
-                .expect("current directory")
-                .to_string_lossy()
-                .into_owned(),
+            // NOTE: hardcode this value like in freerdp
+            // https://github.com/FreeRDP/FreeRDP/blob/4e24b966c86fdf494a782f0dfcfc43a057a2ea60/libfreerdp/core/settings.c#LL49C34-L49C70
+            client_dir: "C:\\Windows\\System32\\mstscax.dll".to_owned(),
             platform: match whoami::platform() {
                 whoami::Platform::Windows => MajorPlatformType::Windows,
                 whoami::Platform::Linux => MajorPlatformType::Unix,

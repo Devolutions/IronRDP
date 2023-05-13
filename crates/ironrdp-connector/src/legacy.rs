@@ -4,10 +4,12 @@ use std::borrow::Cow;
 
 use ironrdp_pdu::{rdp, x224, PduParsing};
 
-pub fn encode_x224_packet<T: PduParsing>(x224_msg: &T, buf: &mut Vec<u8>) -> crate::Result<usize>
+use crate::{ConnectorError, ConnectorErrorExt as _, ConnectorResult};
+
+pub fn encode_x224_packet<T: PduParsing>(x224_msg: &T, buf: &mut Vec<u8>) -> ConnectorResult<usize>
 where
     T: PduParsing,
-    crate::Error: From<T::Error>,
+    ConnectorError: From<T::Error>,
 {
     let x224_msg_len = x224_msg.buffer_length();
     let mut x224_msg_buf = Vec::with_capacity(x224_msg_len);
@@ -18,17 +20,17 @@ where
         data: Cow::Owned(x224_msg_buf),
     };
 
-    let written = ironrdp_pdu::encode_buf(&pdu, buf)?;
+    let written = ironrdp_pdu::encode_buf(&pdu, buf).map_err(ConnectorError::pdu)?;
 
     Ok(written)
 }
 
-pub fn decode_x224_packet<T>(src: &[u8]) -> crate::Result<T>
+pub fn decode_x224_packet<T>(src: &[u8]) -> ConnectorResult<T>
 where
     T: PduParsing,
-    crate::Error: From<T::Error>,
+    ConnectorError: From<T::Error>,
 {
-    let x224_payload = ironrdp_pdu::decode::<x224::X224Data>(src)?;
+    let x224_payload = ironrdp_pdu::decode::<x224::X224Data>(src).map_err(ConnectorError::pdu)?;
     let x224_msg = T::from_buffer(x224_payload.data.as_ref())?;
     Ok(x224_msg)
 }
@@ -38,10 +40,10 @@ pub fn encode_send_data_request<T>(
     channel_id: u16,
     user_msg: &T,
     buf: &mut Vec<u8>,
-) -> crate::Result<usize>
+) -> ConnectorResult<usize>
 where
     T: PduParsing,
-    crate::Error: From<T::Error>,
+    ConnectorError: From<T::Error>,
 {
     let user_data_len = user_msg.buffer_length();
     let mut user_data = Vec::with_capacity(user_data_len);
@@ -54,7 +56,7 @@ where
         user_data: Cow::Owned(user_data),
     };
 
-    let written = ironrdp_pdu::encode_buf(&pdu, buf)?;
+    let written = ironrdp_pdu::encode_buf(&pdu, buf).map_err(ConnectorError::pdu)?;
 
     Ok(written)
 }
@@ -67,20 +69,20 @@ pub struct SendDataIndicationCtx<'a> {
 }
 
 impl SendDataIndicationCtx<'_> {
-    pub fn decode_user_data<T>(&self) -> crate::Result<T>
+    pub fn decode_user_data<T>(&self) -> ConnectorResult<T>
     where
         T: PduParsing,
-        crate::Error: From<T::Error>,
+        ConnectorError: From<T::Error>,
     {
         let msg = T::from_buffer(self.user_data)?;
         Ok(msg)
     }
 }
 
-pub fn decode_send_data_indication(src: &[u8]) -> crate::Result<SendDataIndicationCtx<'_>> {
+pub fn decode_send_data_indication(src: &[u8]) -> ConnectorResult<SendDataIndicationCtx<'_>> {
     use ironrdp_pdu::mcs::McsMessage;
 
-    let mcs_msg = ironrdp_pdu::decode::<McsMessage>(src)?;
+    let mcs_msg = ironrdp_pdu::decode::<McsMessage>(src).map_err(ConnectorError::pdu)?;
 
     match mcs_msg {
         McsMessage::SendDataIndication(msg) => {
@@ -94,10 +96,16 @@ pub fn decode_send_data_indication(src: &[u8]) -> crate::Result<SendDataIndicati
                 user_data,
             })
         }
-        McsMessage::DisconnectProviderUltimatum(msg) => {
-            Err(crate::Error::new("received disconnect provider ultimatum").with_reason(format!("{:?}", msg.reason)))
-        }
-        unexpected => Err(crate::Error::new("unexpected MCS message").with_reason(ironrdp_pdu::name(&unexpected))),
+        McsMessage::DisconnectProviderUltimatum(msg) => Err(reason_err!(
+            "decode_send_data_indication",
+            "received disconnect provider ultimatum: {:?}",
+            msg.reason
+        )),
+        unexpected => Err(reason_err!(
+            "decode_send_data_indication",
+            "unexpected MCS message: {}",
+            ironrdp_pdu::name(&unexpected)
+        )),
     }
 }
 
@@ -107,7 +115,7 @@ pub fn encode_share_control(
     share_id: u32,
     pdu: rdp::headers::ShareControlPdu,
     buf: &mut Vec<u8>,
-) -> crate::Result<usize> {
+) -> ConnectorResult<usize> {
     let pdu_source = initiator_id;
 
     let share_control_header = rdp::headers::ShareControlHeader {
@@ -128,7 +136,7 @@ pub struct ShareControlCtx {
     pub pdu: rdp::headers::ShareControlPdu,
 }
 
-pub fn decode_share_control(ctx: SendDataIndicationCtx<'_>) -> crate::Result<ShareControlCtx> {
+pub fn decode_share_control(ctx: SendDataIndicationCtx<'_>) -> ConnectorResult<ShareControlCtx> {
     let user_msg = ctx.decode_user_data::<rdp::headers::ShareControlHeader>()?;
 
     Ok(ShareControlCtx {
@@ -146,7 +154,7 @@ pub fn encode_share_data(
     share_id: u32,
     pdu: rdp::headers::ShareDataPdu,
     buf: &mut Vec<u8>,
-) -> crate::Result<usize> {
+) -> ConnectorResult<usize> {
     let share_data_header = rdp::headers::ShareDataHeader {
         share_data_pdu: pdu,
         stream_priority: rdp::headers::StreamPriority::Medium,
@@ -168,11 +176,11 @@ pub struct ShareDataCtx {
     pub pdu: rdp::headers::ShareDataPdu,
 }
 
-pub fn decode_share_data(ctx: SendDataIndicationCtx<'_>) -> crate::Result<ShareDataCtx> {
+pub fn decode_share_data(ctx: SendDataIndicationCtx<'_>) -> ConnectorResult<ShareDataCtx> {
     let ctx = decode_share_control(ctx)?;
 
     let rdp::headers::ShareControlPdu::Data(share_data_header) = ctx.pdu else {
-        return Err(crate::Error::new("received unexpected Share Control Pdu (expected SHare Data Header)"));
+        return Err(general_err!("received unexpected Share Control Pdu (expected SHare Data Header)"));
     };
 
     Ok(ShareDataCtx {
@@ -184,26 +192,6 @@ pub fn decode_share_data(ctx: SendDataIndicationCtx<'_>) -> crate::Result<ShareD
     })
 }
 
-impl From<ironrdp_pdu::mcs::McsError> for crate::Error {
-    fn from(e: ironrdp_pdu::mcs::McsError) -> Self {
-        Self::new("MCS").with_reason(e.to_string())
-    }
-}
-
-impl From<ironrdp_pdu::rdp::server_license::ServerLicenseError> for crate::Error {
-    fn from(e: ironrdp_pdu::rdp::server_license::ServerLicenseError) -> Self {
-        Self::new("server license").with_reason(e.to_string())
-    }
-}
-
-impl From<ironrdp_pdu::rdp::RdpError> for crate::Error {
-    fn from(e: ironrdp_pdu::rdp::RdpError) -> Self {
-        Self::new("RDP").with_reason(e.to_string())
-    }
-}
-
-impl From<ironrdp_pdu::rdp::vc::ChannelError> for crate::Error {
-    fn from(e: ironrdp_pdu::rdp::vc::ChannelError) -> Self {
-        Self::new("virtual channel").with_reason(e.to_string())
-    }
+impl ironrdp_error::legacy::CatchAllKind for crate::ConnectorErrorKind {
+    const CATCH_ALL_VALUE: Self = crate::ConnectorErrorKind::General;
 }

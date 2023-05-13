@@ -1,4 +1,6 @@
-use ironrdp_connector::{ClientConnector, ClientConnectorState, ConnectionResult, Sequence as _, State as _};
+use ironrdp_connector::{
+    ClientConnector, ClientConnectorState, ConnectionResult, ConnectorResult, Sequence as _, State as _,
+};
 
 use crate::framed::{Framed, FramedRead, FramedWrite};
 
@@ -7,10 +9,7 @@ pub struct ShouldUpgrade {
 }
 
 #[instrument(skip_all)]
-pub async fn connect_begin<S>(
-    framed: &mut Framed<S>,
-    connector: &mut ClientConnector,
-) -> ironrdp_connector::Result<ShouldUpgrade>
+pub async fn connect_begin<S>(framed: &mut Framed<S>, connector: &mut ClientConnector) -> ConnectorResult<ShouldUpgrade>
 where
     S: Sync + FramedRead + FramedWrite,
 {
@@ -47,7 +46,7 @@ pub async fn connect_finalize<S>(
     _: Upgraded,
     framed: &mut Framed<S>,
     mut connector: ClientConnector,
-) -> ironrdp_connector::Result<ConnectionResult>
+) -> ConnectorResult<ConnectionResult>
 where
     S: FramedRead + FramedWrite,
 {
@@ -78,7 +77,7 @@ pub async fn single_connect_step<S>(
     framed: &mut Framed<S>,
     connector: &mut ClientConnector,
     buf: &mut Vec<u8>,
-) -> ironrdp_connector::Result<ironrdp_connector::Written>
+) -> ConnectorResult<ironrdp_connector::Written>
 where
     S: FramedWrite + FramedRead,
 {
@@ -92,7 +91,7 @@ where
         let pdu = framed
             .read_by_hint(next_pdu_hint)
             .await
-            .map_err(|e| ironrdp_connector::Error::new("read frame by hint").with_custom(e))?;
+            .map_err(|e| ironrdp_connector::custom_err!("read frame by hint", e))?;
 
         trace!(length = pdu.len(), "PDU received");
 
@@ -107,7 +106,7 @@ where
         framed
             .write_all(response)
             .await
-            .map_err(|e| ironrdp_connector::Error::new("write all").with_custom(e))?;
+            .map_err(|e| ironrdp_connector::custom_err!("write all", e))?;
     }
 
     Ok(written)

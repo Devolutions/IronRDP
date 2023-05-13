@@ -1,5 +1,6 @@
 use crate::cursor::{ReadCursor, WriteCursor};
 use crate::padding::Padding;
+use crate::{PduError, PduErrorExt as _, PduResult};
 
 /// TPKT header
 ///
@@ -47,16 +48,13 @@ impl TpktHeader {
 
     const FIXED_PART_SIZE: usize = Self::SIZE;
 
-    pub fn read(src: &mut ReadCursor<'_>) -> crate::Result<Self> {
+    pub fn read(src: &mut ReadCursor<'_>) -> PduResult<Self> {
         ensure_fixed_part_size!(in: src);
 
         let version = src.read_u8();
 
         if version != Self::VERSION {
-            return Err(crate::Error::UnsupportedVersion {
-                name: "TPKT version",
-                got: version,
-            });
+            return Err(PduError::unsupported_version("TPKT version", version));
         }
 
         Padding::<1>::read(src);
@@ -66,7 +64,7 @@ impl TpktHeader {
         Ok(Self { packet_length })
     }
 
-    pub fn write(&self, dst: &mut WriteCursor<'_>) -> crate::Result<()> {
+    pub fn write(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
         ensure_fixed_part_size!(in: dst);
 
         dst.write_u8(Self::VERSION);

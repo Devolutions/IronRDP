@@ -2,7 +2,7 @@ use ironrdp_graphics::image_processing::{ImageRegion, ImageRegionMut, PixelForma
 use ironrdp_graphics::rectangle_processing::Region;
 use ironrdp_pdu::geometry::Rectangle;
 
-use crate::{Error, Result};
+use crate::SessionResult;
 
 const TILE_SIZE: u16 = 64;
 const SOURCE_PIXEL_FORMAT: PixelFormat = PixelFormat::BgrX32;
@@ -49,7 +49,7 @@ impl DecodedImage {
         clipping_rectangles: &Region,
         update_rectangle: &Rectangle,
         width: u16,
-    ) -> Result<()> {
+    ) -> SessionResult<()> {
         debug!("Tile: {:?}", update_rectangle);
 
         let update_region = clipping_rectangles.intersect_rectangle(update_rectangle);
@@ -80,7 +80,7 @@ impl DecodedImage {
 
             source_image_region
                 .copy_to(&mut destination_image_region)
-                .map_err(|e| Error::new("copy_to").with_custom(e))?;
+                .map_err(|e| custom_err!("copy_to", e))?;
         }
 
         Ok(())

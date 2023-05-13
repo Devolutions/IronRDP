@@ -2,42 +2,156 @@
 //!
 //! Some are exported and available to external crates
 
+/// Creates a `PduError` with `NotEnoughBytes` kind
+///
+/// Shorthand for
+/// ```rust
+/// <crate::PduError as crate::PduErrorExt>::not_enough_bytes(context, received, expected)
+/// ```
+/// and
+/// ```rust
+/// <crate::PduError as crate::PduErrorExt>::not_enough_bytes(Self::NAME, received, expected)
+/// ```
+#[macro_export]
+macro_rules! not_enough_bytes_err {
+    ( $context:expr, $received:expr , $expected:expr $(,)? ) => {{
+        <$crate::PduError as $crate::PduErrorExt>::not_enough_bytes($context, $received, $expected)
+    }};
+    ( $received:expr , $expected:expr $(,)? ) => {{
+        not_enough_bytes_err!(Self::NAME, $received, $expected)
+    }};
+}
+
+/// Creates a `PduError` with `InvalidMessage` kind
+///
+/// Shorthand for
+/// ```rust
+/// <crate::PduError as crate::PduErrorExt>::invalid_message(context, field, reason)
+/// ```
+/// and
+/// ```rust
+/// <crate::PduError as crate::PduErrorExt>::invalid_message(Self::NAME, field, reason)
+/// ```
+#[macro_export]
+macro_rules! invalid_message_err {
+    ( $context:expr, $field:expr , $reason:expr $(,)? ) => {{
+        <$crate::PduError as $crate::PduErrorExt>::invalid_message($context, $field, $reason)
+    }};
+    ( $field:expr , $reason:expr $(,)? ) => {{
+        invalid_message_err!(Self::NAME, $field, $reason)
+    }};
+}
+
+/// Creates a `PduError` with `UnexpectedMessageType` kind
+///
+/// Shorthand for
+/// ```rust
+/// <crate::PduError as crate::PduErrorExt>::unexpected_message_type(context, got)
+/// ```
+/// and
+/// ```rust
+/// <crate::PduError as crate::PduErrorExt>::unexpected_message_type(Self::NAME, got)
+/// ```
+#[macro_export]
+macro_rules! unexpected_message_type_err {
+    ( $context:expr, $got:expr $(,)? ) => {{
+        <$crate::PduError as $crate::PduErrorExt>::unexpected_message_type($context, $got)
+    }};
+    ( $got:expr $(,)? ) => {{
+        unexpected_message_type_err!(Self::NAME, $got)
+    }};
+}
+
+/// Creates a `PduError` with `UnsupportedVersion` kind
+///
+/// Shorthand for
+/// ```rust
+/// <crate::PduError as crate::PduErrorExt>::unsupported_version(context, got)
+/// ```
+/// and
+/// ```rust
+/// <crate::PduError as crate::PduErrorExt>::unsupported_version(Self::NAME, got)
+/// ```
+#[macro_export]
+macro_rules! unsupported_version_err {
+    ( $context:expr, $got:expr $(,)? ) => {{
+        <$crate::PduError as $crate::PduErrorExt>::unsupported_version($context, $got)
+    }};
+    ( $got:expr $(,)? ) => {{
+        unsupported_version_err!(Self::NAME, $got)
+    }};
+}
+
+/// Creates a `PduError` with `Other` kind
+///
+/// Shorthand for
+/// ```rust
+/// <crate::PduError as crate::PduErrorExt>::other(context, description)
+/// ```
+/// and
+/// ```rust
+/// <crate::PduError as crate::PduErrorExt>::other(Self::NAME, description)
+/// ```
+#[macro_export]
+macro_rules! other_err {
+    ( $context:expr, $description:expr $(,)? ) => {{
+        <$crate::PduError as $crate::PduErrorExt>::other($context, $description)
+    }};
+    ( $description:expr $(,)? ) => {{
+        other_err!(Self::NAME, $description)
+    }};
+}
+
+/// Creates a `PduError` with `Custom` kind and a source error attached to it
+///
+/// Shorthand for
+/// ```rust
+/// <crate::PduError as crate::PduErrorExt>::custom(context, source)
+/// ```
+/// and
+/// ```rust
+/// <crate::PduError as crate::PduErrorExt>::custom(Self::NAME, source)
+/// ```
+#[macro_export]
+macro_rules! custom_err {
+    ( $context:expr, $source:expr $(,)? ) => {{
+        <$crate::PduError as $crate::PduErrorExt>::custom($context, $source)
+    }};
+    ( $source:expr $(,)? ) => {{
+        custom_err!(Self::NAME, $source)
+    }};
+}
+
 #[macro_export]
 macro_rules! ensure_size {
-    (name: $name:expr, in: $buf:ident, size: $expected:expr) => {{
+    (ctx: $ctx:expr, in: $buf:ident, size: $expected:expr) => {{
         let received = $buf.len();
         let expected = $expected;
         if !(received >= expected) {
-            return Err($crate::Error::NotEnoughBytes {
-                name: $name,
-                received,
-                expected,
-            });
+            return Err(<$crate::PduError as $crate::PduErrorExt>::not_enough_bytes($ctx, received, expected));
         }
     }};
     (in: $buf:ident, size: $expected:expr) => {{
-        $crate::ensure_size!(name: Self::NAME, in: $buf, size: $expected)
+        $crate::ensure_size!(ctx: Self::NAME, in: $buf, size: $expected)
     }};
 }
 
 #[macro_export]
 macro_rules! ensure_fixed_part_size {
     (in: $buf:ident) => {{
-        $crate::ensure_size!(name: Self::NAME, in: $buf, size: Self::FIXED_PART_SIZE)
+        $crate::ensure_size!(ctx: Self::NAME, in: $buf, size: Self::FIXED_PART_SIZE)
     }};
 }
 
 #[macro_export]
 macro_rules! cast_length {
-    ($len:expr, $name:expr, $field:expr) => {{
-        $len.try_into().map_err(|_| $crate::Error::InvalidMessage {
-            name: $name,
-            field: $field,
-            reason: "too many elements",
+    ($ctx:expr, $field:expr, $len:expr) => {{
+        $len.try_into().map_err(|e| {
+            <$crate::PduError as $crate::PduErrorExt>::invalid_message($ctx, $field, "too many elements").with_source(e)
         })
     }};
-    ($len:expr, $field:expr) => {{
-        $crate::cast_length!($len, <Self as $crate::Pdu>::NAME, $field)
+    ($field:expr, $len:expr) => {{
+        $crate::cast_length!(<Self as $crate::Pdu>::NAME, $field, $len)
     }};
 }
 
@@ -64,7 +178,7 @@ macro_rules! impl_pdu_pod {
         }
 
         impl $crate::PduDecodeOwned for $pdu_ty {
-            fn decode_owned(src: &mut $crate::cursor::ReadCursor<'_>) -> $crate::Result<Self> {
+            fn decode_owned(src: &mut $crate::cursor::ReadCursor<'_>) -> $crate::PduResult<Self> {
                 <Self as $crate::PduDecode>::decode(src)
             }
         }
@@ -78,7 +192,7 @@ macro_rules! impl_pdu_borrowing {
         pub type $owned_ty = $pdu_ty<'static>;
 
         impl $crate::PduDecodeOwned for $owned_ty {
-            fn decode_owned(src: &mut $crate::cursor::ReadCursor<'_>) -> $crate::Result<Self> {
+            fn decode_owned(src: &mut $crate::cursor::ReadCursor<'_>) -> $crate::PduResult<Self> {
                 let pdu = <$pdu_ty as $crate::PduDecode>::decode(src)?;
                 Ok($crate::IntoOwnedPdu::into_owned_pdu(pdu))
             }

@@ -1,3 +1,4 @@
+use expect_test::expect;
 use ironrdp_pdu::cursor::{ReadCursor, WriteCursor};
 use ironrdp_pdu::nego::{
     ConnectionConfirm, ConnectionRequest, Cookie, FailureCode, NegoRequestData, RequestFlags, ResponseFlags,
@@ -6,7 +7,6 @@ use ironrdp_pdu::nego::{
 use ironrdp_pdu::tpdu::{TpduCode, TpduHeader};
 use ironrdp_pdu::tpkt::TpktHeader;
 use ironrdp_pdu::x224::user_data_size;
-use ironrdp_pdu::Error;
 use ironrdp_testsuite_core::encode_decode_test;
 
 const SAMPLE_TPKT_HEADER_BINARY: [u8; 4] = [
@@ -217,12 +217,15 @@ fn nego_request_unexpected_rdp_msg_type() {
 
     let e = ironrdp_pdu::decode::<ConnectionRequest>(&payload).err().unwrap();
 
-    if let Error::UnexpectedMessageType { name, got } = e {
-        assert_eq!(name, "Client X.224 Connection Request");
-        assert_eq!(got, 0x03);
-    } else {
-        panic!("unexpected error: {e}");
-    }
+    expect![[r#"
+        Error {
+            context: "Client X.224 Connection Request",
+            kind: UnexpectedMessageType {
+                got: 3,
+            },
+            source: None,
+        }
+    "#]].assert_debug_eq(&e);
 }
 
 #[test]
@@ -247,12 +250,15 @@ fn nego_confirm_unexpected_rdp_msg_type() {
 
     let e = ironrdp_pdu::decode::<ConnectionConfirm>(&payload).err().unwrap();
 
-    if let Error::UnexpectedMessageType { name, got } = e {
-        assert_eq!(name, "Server X.224 Connection Confirm");
-        assert_eq!(got, 0xAF);
-    } else {
-        panic!("unexpected error: {e}");
-    }
+    expect![[r#"
+        Error {
+            context: "Server X.224 Connection Confirm",
+            kind: UnexpectedMessageType {
+                got: 175,
+            },
+            source: None,
+        }
+    "#]].assert_debug_eq(&e);
 }
 
 #[test]
@@ -305,16 +311,14 @@ fn cookie_without_cr_lf_error_decode() {
 
     let e = Cookie::read(&mut ReadCursor::new(&payload)).err().unwrap();
 
-    if let Error::NotEnoughBytes {
-        name,
-        received,
-        expected,
-    } = e
-    {
-        assert_eq!(name, "Cookie");
-        assert_eq!(received, 1);
-        assert_eq!(expected, 2);
-    } else {
-        panic!("unexpected error: {e}");
-    }
+    expect![[r#"
+        Error {
+            context: "Cookie",
+            kind: NotEnoughBytes {
+                received: 1,
+                expected: 2,
+            },
+            source: None,
+        }
+    "#]].assert_debug_eq(&e);
 }

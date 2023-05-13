@@ -1,7 +1,8 @@
+use ironrdp::connector::{ConnectionResult, ConnectorResult};
 use ironrdp::graphics::image_processing::PixelFormat;
 use ironrdp::pdu::input::fast_path::FastPathInputEvent;
 use ironrdp::session::image::DecodedImage;
-use ironrdp::session::{ActiveStage, ActiveStageOutput};
+use ironrdp::session::{ActiveStage, ActiveStageOutput, SessionResult};
 use ironrdp::{connector, session};
 use smallvec::SmallVec;
 use sspi::network_client::reqwest_network_client::RequestClientFactory;
@@ -14,8 +15,8 @@ use crate::config::Config;
 #[derive(Debug)]
 pub enum RdpOutputEvent {
     Image { buffer: Vec<u32>, width: u16, height: u16 },
-    ConnectionFailure(connector::Error),
-    Terminated(session::Result<()>),
+    ConnectionFailure(connector::ConnectorError),
+    Terminated(SessionResult<()>),
 }
 
 #[derive(Debug)]
@@ -80,15 +81,15 @@ enum RdpControlFlow {
 
 type UpgradedFramed = ironrdp_tokio::TokioFramed<ironrdp_tls::TlsStream<TcpStream>>;
 
-async fn connect(config: &Config) -> connector::Result<(connector::ConnectionResult, UpgradedFramed)> {
+async fn connect(config: &Config) -> ConnectorResult<(ConnectionResult, UpgradedFramed)> {
     let server_addr = config
         .destination
         .lookup_addr()
-        .map_err(|e| connector::Error::new("lookup addr").with_custom(e))?;
+        .map_err(|e| connector::custom_err!("lookup addr", e))?;
 
     let stream = TcpStream::connect(&server_addr)
         .await
-        .map_err(|e| connector::Error::new("TCP connect").with_custom(e))?;
+        .map_err(|e| connector::custom_err!("TCP connect", e))?;
 
     let mut framed = ironrdp_tokio::TokioFramed::new(stream);
 
@@ -106,7 +107,7 @@ async fn connect(config: &Config) -> connector::Result<(connector::ConnectionRes
 
     let (upgraded_stream, server_public_key) = ironrdp_tls::upgrade(initial_stream, config.destination.name())
         .await
-        .map_err(|e| connector::Error::new("TLS upgrade").with_custom(e))?;
+        .map_err(|e| connector::custom_err!("TLS upgrade", e))?;
 
     let upgraded = ironrdp_tokio::mark_as_upgraded(should_upgrade, &mut connector, server_public_key);
 
@@ -119,10 +120,10 @@ async fn connect(config: &Config) -> connector::Result<(connector::ConnectionRes
 
 async fn active_session(
     mut framed: UpgradedFramed,
-    connection_result: connector::ConnectionResult,
+    connection_result: ConnectionResult,
     event_loop_proxy: &EventLoopProxy<RdpOutputEvent>,
     input_event_receiver: &mut mpsc::UnboundedReceiver<RdpInputEvent>,
-) -> session::Result<RdpControlFlow> {
+) -> SessionResult<RdpControlFlow> {
     let mut image = DecodedImage::new(
         PixelFormat::RgbA32,
         connection_result.desktop_size.width,
@@ -134,14 +135,14 @@ async fn active_session(
     'outer: loop {
         tokio::select! {
             frame = framed.read_pdu() => {
-                let (action, payload) = frame.map_err(|e| session::Error::new("read frame").with_custom(e))?;
+                let (action, payload) = frame.map_err(|e| session::custom_err!("read frame", e))?;
                 trace!(?action, frame_length = payload.len(), "Frame received");
 
                 let outputs = active_stage.process(&mut image, action, &payload)?;
 
                 for out in outputs {
                     match out {
-                        ActiveStageOutput::ResponseFrame(frame) => framed.write_all(&frame).await.map_err(|e| session::Error::new("write response").with_custom(e))?,
+                        ActiveStageOutput::ResponseFrame(frame) => framed.write_all(&frame).await.map_err(|e| session::custom_err!("write response", e))?,
                         ActiveStageOutput::GraphicsUpdate(_region) => {
                             let buffer: Vec<u32> = image
                                 .data()
@@ -160,14 +161,14 @@ async fn active_session(
                                     width: image.width(),
                                     height: image.height(),
                                 })
-                                .map_err(|e| session::Error::new("event_loop_proxy").with_custom(e))?;
+                                .map_err(|e| session::custom_err!("event_loop_proxy", e))?;
                         }
                         ActiveStageOutput::Terminate => break 'outer,
                     }
                 }
             }
             input_event = input_event_receiver.recv() => {
-                let input_event = input_event.ok_or(session::Error::new("GUI is stopped"))?;
+                let input_event = input_event.ok_or_else(|| session::general_err!("GUI is stopped"))?;
 
                 match input_event {
                     RdpInputEvent::Resize { mut width, mut height } => {
@@ -201,9 +202,9 @@ async fn active_session(
                         let mut frame = Vec::new();
                         fastpath_input
                             .to_buffer(&mut frame)
-                            .map_err(|e| session::Error::new("FastPathInput encode").with_custom(e))?;
+                            .map_err(|e| session::custom_err!("FastPathInput encode", e))?;
 
-                        framed.write_all(&frame).await.map_err(|e| session::Error::new("write FastPathInput PDU").with_custom(e))?;
+                        framed.write_all(&frame).await.map_err(|e| session::custom_err!("write FastPathInput PDU", e))?;
                     }
                     RdpInputEvent::Close => {
                         // TODO: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/27915739-8f77-487e-9927-55008af7fd68

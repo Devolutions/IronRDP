@@ -2,7 +2,7 @@
 
 use crate::cursor::ReadCursor;
 use crate::padding::Padding;
-use crate::{Error, Pdu, PduDecode, PduEncode, Result};
+use crate::{Pdu, PduDecode, PduEncode, PduError, PduErrorExt as _, PduResult};
 
 /// Preconnection PDU version
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -43,17 +43,17 @@ impl Pdu for PreconnectionBlob {
 }
 
 impl<'de> PduDecode<'de> for PreconnectionBlob {
-    fn decode(src: &mut ReadCursor<'de>) -> Result<Self> {
+    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
         ensure_fixed_part_size!(in: src);
 
-        let pcb_size: usize = cast_length!(src.read_u32(), "cbSize")?;
+        let pcb_size: usize = cast_length!("cbSize", src.read_u32())?;
 
         if pcb_size < Self::FIXED_PART_SIZE {
-            return Err(Error::InvalidMessage {
-                name: Self::NAME,
-                field: "cbSize",
-                reason: "advertised size too small for Preconnection PDU V1",
-            });
+            return Err(PduError::invalid_message(
+                Self::NAME,
+                "cbSize",
+                "advertised size too small for Preconnection PDU V1",
+            ));
         }
 
         Padding::<4>::read(src); // flags
@@ -74,33 +74,17 @@ impl<'de> PduDecode<'de> for PreconnectionBlob {
             let cb_pcb = cch_pcb * 2;
 
             if remaining_size - 2 < cb_pcb {
-                return Err(Error::InvalidMessage {
-                    name: Self::NAME,
-                    field: "cchPCB",
-                    reason: "PCB string bigger than advertised size",
-                });
+                return Err(PduError::invalid_message(
+                    Self::NAME,
+                    "cchPCB",
+                    "PCB string bigger than advertised size",
+                ));
             }
 
             let wsz_pcb_utf16 = src.read_slice(cb_pcb);
 
-            let mut trimmed_pcb_utf16: Vec<u16> = Vec::with_capacity(cch_pcb);
-
-            for chunk in wsz_pcb_utf16.chunks_exact(2) {
-                let code_unit = u16::from_le_bytes([chunk[0], chunk[1]]);
-
-                // Stop reading at the null terminator
-                if code_unit == 0 {
-                    break;
-                }
-
-                trimmed_pcb_utf16.push(code_unit);
-            }
-
-            let payload = String::from_utf16(&trimmed_pcb_utf16).map_err(|_| Error::InvalidMessage {
-                name: Self::NAME,
-                field: "wszPCB",
-                reason: "invalid UTF-16",
-            })?;
+            let payload = crate::utf16::read_utf16_string(wsz_pcb_utf16, Some(cch_pcb))
+                .map_err(|e| PduError::invalid_message(Self::NAME, "wszPCB", "bad UTF-16 string").with_source(e))?;
 
             let leftover_size = remaining_size - 2 - cb_pcb;
             src.advance(leftover_size); // Consume (unused) leftover data
@@ -121,28 +105,28 @@ impl<'de> PduDecode<'de> for PreconnectionBlob {
 }
 
 impl PduEncode for PreconnectionBlob {
-    fn encode(&self, dst: &mut crate::cursor::WriteCursor<'_>) -> Result<()> {
+    fn encode(&self, dst: &mut crate::cursor::WriteCursor<'_>) -> PduResult<()> {
         if self.v2_payload.is_some() && self.version == PcbVersion::V1 {
-            return Err(Error::InvalidMessage {
-                name: Self::NAME,
-                field: "version",
-                reason: "there is no string payload in Preconnection PDU V1",
-            });
+            return Err(PduError::invalid_message(
+                Self::NAME,
+                "version",
+                "there is no string payload in Preconnection PDU V1",
+            ));
         }
 
         let pcb_size = self.size();
 
         ensure_size!(in: dst, size: pcb_size);
 
-        dst.write_u32(cast_length!(pcb_size, "cbSize")?); // cbSize
+        dst.write_u32(cast_length!("cbSize", pcb_size)?); // cbSize
         Padding::<4>::write(dst); // flags
         dst.write_u32(self.version.0); // version
         dst.write_u32(self.id); // id
 
         if let Some(v2_payload) = &self.v2_payload {
             // cchPCB
-            let utf16_character_count = v2_payload.encode_utf16().count() + 1; // +1 for null terminator
-            dst.write_u16(cast_length!(utf16_character_count, "cchPCB")?);
+            let utf16_character_count = v2_payload.chars().count() + 1; // +1 for null terminator
+            dst.write_u16(cast_length!("cchPCB", utf16_character_count)?);
 
             // wszPCB
             v2_payload.encode_utf16().for_each(|c| dst.write_u16(c));
@@ -160,8 +144,8 @@ impl PduEncode for PreconnectionBlob {
         let fixed_part_size = Self::FIXED_PART_SIZE;
 
         let variable_part = if let Some(v2_payload) = &self.v2_payload {
-            let utf16_character_count = v2_payload.encode_utf16().count() + 1; // +1 for null terminator
-            2 + utf16_character_count * 2
+            let utf16_encoded_len = crate::utf16::null_terminated_utf16_encoded_len(v2_payload);
+            2 + utf16_encoded_len
         } else {
             0
         };
@@ -173,6 +157,8 @@ impl PduEncode for PreconnectionBlob {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use expect_test::expect;
 
     const PRECONNECTION_PDU_V1_NULL_SIZE_BUF: [u8; 16] = [
         0x00, 0x00, 0x00, 0x00, // -> RDP_PRECONNECTION_PDU_V1::cbSize = 0x00 = 0 bytes
@@ -231,12 +217,17 @@ mod tests {
             .err()
             .unwrap();
 
-        if let Error::InvalidMessage { field, reason, .. } = e {
-            assert_eq!(field, "cbSize");
-            assert_eq!(reason, "advertised size too small for Preconnection PDU V1");
-        } else {
-            panic!("unexpected error: {e}");
-        }
+        expect![[r#"
+            Error {
+                context: "PreconnectionBlob",
+                kind: InvalidMessage {
+                    field: "cbSize",
+                    reason: "advertised size too small for Preconnection PDU V1",
+                },
+                source: None,
+            }
+        "#]]
+        .assert_debug_eq(&e);
     }
 
     #[test]
@@ -245,12 +236,17 @@ mod tests {
             .err()
             .unwrap();
 
-        if let Error::NotEnoughBytes { received, expected, .. } = e {
-            assert_eq!(received, 0);
-            assert_eq!(expected, 239);
-        } else {
-            panic!("unexpected error: {e}");
-        }
+        expect![[r#"
+            Error {
+                context: "PreconnectionBlob",
+                kind: NotEnoughBytes {
+                    received: 0,
+                    expected: 239,
+                },
+                source: None,
+            }
+        "#]]
+        .assert_debug_eq(&e);
     }
 
     #[test]
@@ -277,12 +273,17 @@ mod tests {
             .err()
             .unwrap();
 
-        if let Error::InvalidMessage { field, reason, .. } = e {
-            assert_eq!(field, "cchPCB");
-            assert_eq!(reason, "PCB string bigger than advertised size");
-        } else {
-            panic!("unexpected error: {e}");
-        }
+        expect![[r#"
+            Error {
+                context: "PreconnectionBlob",
+                kind: InvalidMessage {
+                    field: "cchPCB",
+                    reason: "PCB string bigger than advertised size",
+                },
+                source: None,
+            }
+        "#]]
+        .assert_debug_eq(&e);
     }
 
     #[test]

@@ -19,6 +19,7 @@ pub mod pcb;
 pub mod rdp;
 pub mod tpdu;
 pub mod tpkt;
+pub mod utf16;
 pub mod utils;
 pub mod x224;
 
@@ -30,100 +31,86 @@ pub(crate) mod per;
 pub use crate::basic_output::{bitmap, fast_path, surface_commands};
 pub use crate::rdp::vc::dvc;
 
-pub type Result<T> = core::result::Result<T, Error>;
+pub type PduResult<T> = core::result::Result<T, PduError>;
+
+pub type PduError = ironrdp_error::Error<PduErrorKind>;
 
 #[non_exhaustive]
-#[derive(Debug)]
-pub enum Error {
-    NotEnoughBytes {
-        name: &'static str,
-        received: usize,
-        expected: usize,
-    },
-    InvalidMessage {
-        name: &'static str,
-        field: &'static str,
-        reason: &'static str,
-    },
-    UnexpectedMessageType {
-        name: &'static str,
-        got: u8,
-    },
-    UnsupportedVersion {
-        name: &'static str,
-        got: u8,
-    },
-    Other {
-        context: &'static str,
-        reason: &'static str,
-    },
-    Custom(Box<dyn std::error::Error + Sync + Send + 'static>),
+#[derive(Clone, Debug)]
+pub enum PduErrorKind {
+    NotEnoughBytes { received: usize, expected: usize },
+    InvalidMessage { field: &'static str, reason: &'static str },
+    UnexpectedMessageType { got: u8 },
+    UnsupportedVersion { got: u8 },
+    Other { description: &'static str },
+    Custom,
 }
 
-impl std::error::Error for Error {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        if let Error::Custom(e) = &self {
-            Some(e.as_ref())
-        } else {
-            None
-        }
-    }
-}
+impl std::error::Error for PduErrorKind {}
 
-impl From<Error> for std::io::Error {
-    fn from(error: Error) -> Self {
-        std::io::Error::new(std::io::ErrorKind::Other, error)
-    }
-}
-
-impl fmt::Display for Error {
+impl fmt::Display for PduErrorKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Error::NotEnoughBytes {
-                name,
-                received,
-                expected,
-            } => write!(
+            Self::NotEnoughBytes { received, expected } => write!(
                 f,
-                "not enough bytes provided to decode {name}: received {received} bytes, expected {expected} bytes"
+                "not enough bytes provided to decode: received {received} bytes, expected {expected} bytes"
             ),
-            Error::InvalidMessage { name, field, reason } => {
-                write!(f, "invalid `{field}` in {name}: {reason}")
+            Self::InvalidMessage { field, reason } => {
+                write!(f, "invalid `{field}`: {reason}")
             }
-            Error::UnexpectedMessageType { name, got } => {
-                write!(f, "invalid message type ({got}) for {name}")
+            Self::UnexpectedMessageType { got } => {
+                write!(f, "invalid message type ({got})")
             }
-            Error::UnsupportedVersion { name, got } => {
-                write!(f, "unsupported version ({got}) for {name}")
+            Self::UnsupportedVersion { got } => {
+                write!(f, "unsupported version ({got})")
             }
-            Error::Other { context, reason } => {
-                write!(f, "{reason} ({context})")
+            Self::Other { description } => {
+                write!(f, "{description}")
             }
-            Error::Custom(e) => {
-                if f.alternate() {
-                    write!(f, "{e}")?;
-
-                    let mut next_source = e.source();
-                    while let Some(e) = next_source {
-                        write!(f, ", caused by: {e}")?;
-                        next_source = e.source();
-                    }
-                } else {
-                    write!(f, "custom")?;
-                }
-
-                Ok(())
+            Self::Custom => {
+                write!(f, "custom")
             }
         }
     }
 }
 
-impl Error {
-    pub fn custom<E>(e: E) -> Self
+pub trait PduErrorExt {
+    fn not_enough_bytes(context: &'static str, received: usize, expected: usize) -> Self;
+    fn invalid_message(context: &'static str, field: &'static str, reason: &'static str) -> Self;
+    fn unexpected_message_type(context: &'static str, got: u8) -> Self;
+    fn unsupported_version(context: &'static str, got: u8) -> Self;
+    fn other(context: &'static str, description: &'static str) -> Self;
+    fn custom<E>(context: &'static str, e: E) -> Self
+    where
+        E: std::error::Error + Sync + Send + 'static;
+}
+
+impl PduErrorExt for PduError {
+    fn not_enough_bytes(context: &'static str, received: usize, expected: usize) -> Self {
+        Self::new(context, PduErrorKind::NotEnoughBytes { received, expected })
+    }
+
+    fn invalid_message(context: &'static str, field: &'static str, reason: &'static str) -> Self {
+        Self::new(context, PduErrorKind::InvalidMessage { field, reason })
+    }
+
+    fn unexpected_message_type(context: &'static str, got: u8) -> Self {
+        Self::new(context, PduErrorKind::UnexpectedMessageType { got })
+    }
+
+    fn unsupported_version(context: &'static str, got: u8) -> Self {
+        Self::new(context, PduErrorKind::UnsupportedVersion { got })
+    }
+
+    fn other(context: &'static str, description: &'static str) -> Self {
+        Self::new(context, PduErrorKind::Other { description })
+    }
+
+    fn custom<E>(context: &'static str, e: E) -> Self
     where
         E: std::error::Error + Sync + Send + 'static,
     {
-        Self::Custom(Box::new(e))
+        Self::new(context, PduErrorKind::Custom).with_source(e)
     }
 }
 
@@ -140,7 +127,7 @@ pub trait Pdu {
 /// This trait is object-safe and may be used in a dynamic context.
 pub trait PduEncode {
     /// Encodes this PDU in-place using the provided `WriteCursor`.
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> Result<()>;
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()>;
 
     /// Returns the associated PDU name associated.
     fn name(&self) -> &'static str;
@@ -152,14 +139,14 @@ pub trait PduEncode {
 assert_obj_safe!(PduEncode);
 
 /// Encodes the given PDU in-place into the provided buffer and returns the number of bytes written.
-pub fn encode<T: PduEncode>(pdu: &T, dst: &mut [u8]) -> Result<usize> {
+pub fn encode<T: PduEncode>(pdu: &T, dst: &mut [u8]) -> PduResult<usize> {
     let mut cursor = WriteCursor::new(dst);
     encode_cursor(pdu, &mut cursor)?;
     Ok(cursor.pos())
 }
 
 /// Same as `encode_pdu` but resizes the buffer when it is too small to fit the PDU.
-pub fn encode_buf<T: PduEncode>(pdu: &T, buf: &mut Vec<u8>) -> Result<usize> {
+pub fn encode_buf<T: PduEncode>(pdu: &T, buf: &mut Vec<u8>) -> PduResult<usize> {
     let pdu_size = pdu.size();
 
     if buf.len() < pdu_size {
@@ -170,7 +157,7 @@ pub fn encode_buf<T: PduEncode>(pdu: &T, buf: &mut Vec<u8>) -> Result<usize> {
 }
 
 /// Encodes the given PDU in-place using the provided `WriteCursor`.
-pub fn encode_cursor<T: PduEncode>(pdu: &T, dst: &mut WriteCursor<'_>) -> Result<()> {
+pub fn encode_cursor<T: PduEncode>(pdu: &T, dst: &mut WriteCursor<'_>) -> PduResult<()> {
     pdu.encode(dst)
 }
 
@@ -188,29 +175,29 @@ pub fn size<T: PduEncode>(pdu: &T) -> usize {
 ///
 /// The binary payload must be a full PDU, not some subset of it.
 pub trait PduDecode<'de>: Sized {
-    fn decode(src: &mut ReadCursor<'de>) -> Result<Self>;
+    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self>;
 }
 
-pub fn decode<'de, T: PduDecode<'de>>(src: &'de [u8]) -> Result<T> {
+pub fn decode<'de, T: PduDecode<'de>>(src: &'de [u8]) -> PduResult<T> {
     let mut cursor = ReadCursor::new(src);
     T::decode(&mut cursor)
 }
 
-pub fn decode_cursor<'de, T: PduDecode<'de>>(src: &mut ReadCursor<'de>) -> Result<T> {
+pub fn decode_cursor<'de, T: PduDecode<'de>>(src: &mut ReadCursor<'de>) -> PduResult<T> {
     T::decode(src)
 }
 
 /// Similar to `PduDecode` but unconditionally returns an owned type.
 pub trait PduDecodeOwned: Sized {
-    fn decode_owned(src: &mut ReadCursor<'_>) -> Result<Self>;
+    fn decode_owned(src: &mut ReadCursor<'_>) -> PduResult<Self>;
 }
 
-pub fn decode_owned<T: PduDecodeOwned>(src: &[u8]) -> Result<T> {
+pub fn decode_owned<T: PduDecodeOwned>(src: &[u8]) -> PduResult<T> {
     let mut cursor = ReadCursor::new(src);
     T::decode_owned(&mut cursor)
 }
 
-pub fn decode_owned_cursor<T: PduDecodeOwned>(src: &mut ReadCursor<'_>) -> Result<T> {
+pub fn decode_owned_cursor<T: PduDecodeOwned>(src: &mut ReadCursor<'_>) -> PduResult<T> {
     T::decode_owned(src)
 }
 
@@ -249,7 +236,7 @@ pub struct PduInfo {
 }
 
 /// Finds next RDP PDU size by reading the next few bytes.
-pub fn find_size(bytes: &[u8]) -> Result<Option<PduInfo>> {
+pub fn find_size(bytes: &[u8]) -> PduResult<Option<PduInfo>> {
     macro_rules! ensure_enough {
         ($bytes:expr, $len:expr) => {
             if $bytes.len() < $len {
@@ -261,11 +248,8 @@ pub fn find_size(bytes: &[u8]) -> Result<Option<PduInfo>> {
     ensure_enough!(bytes, 1);
     let fp_output_header = bytes[0];
 
-    let action =
-        Action::from_fp_output_header(fp_output_header).map_err(|unknown_action| Error::UnexpectedMessageType {
-            name: "fpOutputHeader",
-            got: unknown_action,
-        })?;
+    let action = Action::from_fp_output_header(fp_output_header)
+        .map_err(|unknown_action| PduError::unexpected_message_type("fpOutputHeader", unknown_action))?;
 
     match action {
         Action::X224 => {
@@ -299,7 +283,7 @@ pub fn find_size(bytes: &[u8]) -> Result<Option<PduInfo>> {
 
 pub trait PduHint: core::fmt::Debug {
     /// Finds next PDU size by reading the next few bytes.
-    fn find_size(&self, bytes: &[u8]) -> Result<Option<usize>>;
+    fn find_size(&self, bytes: &[u8]) -> PduResult<Option<usize>>;
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -308,7 +292,7 @@ pub struct X224Hint;
 pub const X224_HINT: X224Hint = X224Hint;
 
 impl PduHint for X224Hint {
-    fn find_size(&self, bytes: &[u8]) -> Result<Option<usize>> {
+    fn find_size(&self, bytes: &[u8]) -> PduResult<Option<usize>> {
         match find_size(bytes)? {
             Some(pdu_info) => {
                 debug_assert_eq!(pdu_info.action, Action::X224);
@@ -325,7 +309,7 @@ pub struct FastPathHint;
 pub const FAST_PATH_HINT: FastPathHint = FastPathHint;
 
 impl PduHint for FastPathHint {
-    fn find_size(&self, bytes: &[u8]) -> Result<Option<usize>> {
+    fn find_size(&self, bytes: &[u8]) -> PduResult<Option<usize>> {
         match find_size(bytes)? {
             Some(pdu_info) => {
                 debug_assert_eq!(pdu_info.action, Action::FastPath);

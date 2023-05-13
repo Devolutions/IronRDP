@@ -11,7 +11,7 @@ use ironrdp_pdu::PduBufferParsing;
 
 use crate::image::DecodedImage;
 use crate::utils::CodecId;
-use crate::{rfx, Error, Result};
+use crate::{rfx, SessionResult};
 
 pub struct Processor {
     complete_data: CompleteData,
@@ -27,7 +27,7 @@ impl Processor {
         image: &mut DecodedImage,
         mut input: &[u8],
         output: &mut Vec<u8>,
-    ) -> Result<Option<Rectangle>> {
+    ) -> SessionResult<Option<Rectangle>> {
         use ironrdp_pdu::PduParsing as _;
 
         let header = FastPathHeader::from_buffer(&mut input)?;
@@ -150,7 +150,7 @@ impl Processor {
                 warn!(?error, "Received invalid bitmap");
                 Ok(None)
             }
-            Err(e) => Err(Error::new("Fast-Path").with_custom(e)),
+            Err(e) => Err(custom_err!("Fast-Path", e)),
         }
     }
 
@@ -159,7 +159,7 @@ impl Processor {
         image: &mut DecodedImage,
         output: &mut Vec<u8>,
         surface_commands: Vec<SurfaceCommand<'_>>,
-    ) -> Result<Rectangle> {
+    ) -> SessionResult<Rectangle> {
         let mut update_rectangle = Rectangle::empty();
 
         for command in surface_commands {
@@ -168,8 +168,11 @@ impl Processor {
                     trace!("Surface bits");
 
                     let codec_id = CodecId::from_u8(bits.extended_bitmap_data.codec_id).ok_or_else(|| {
-                        Error::new("unexpected codec ID")
-                            .with_reason(format!("{:x}", bits.extended_bitmap_data.codec_id))
+                        reason_err!(
+                            "Fast-Path",
+                            "unexpected codec ID: {:x}",
+                            bits.extended_bitmap_data.codec_id
+                        )
                     })?;
 
                     match codec_id {
@@ -283,7 +286,7 @@ impl FrameMarkerProcessor {
         }
     }
 
-    fn process(&mut self, marker: &FrameMarkerPdu, output: &mut Vec<u8>) -> Result<()> {
+    fn process(&mut self, marker: &FrameMarkerPdu, output: &mut Vec<u8>) -> SessionResult<()> {
         match marker.frame_action {
             FrameAction::Begin => Ok(()),
             FrameAction::End => {
@@ -295,7 +298,8 @@ impl FrameMarkerProcessor {
                         frame_id: marker.frame_id.unwrap_or(0),
                     }),
                     output,
-                )?;
+                )
+                .map_err(crate::legacy::map_error)?;
 
                 output.truncate(written);
 

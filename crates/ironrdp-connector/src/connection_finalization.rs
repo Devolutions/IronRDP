@@ -5,7 +5,7 @@ use ironrdp_pdu::rdp::headers::ShareDataPdu;
 use ironrdp_pdu::rdp::{finalization_messages, server_error_info};
 use ironrdp_pdu::PduHint;
 
-use crate::{legacy, Error, Result, Sequence, State, Written};
+use crate::{legacy, ConnectorResult, Sequence, State, Written};
 
 #[derive(Default, Debug)]
 #[non_exhaustive]
@@ -81,10 +81,10 @@ impl Sequence for ConnectionFinalizationSequence {
         &self.state
     }
 
-    fn step(&mut self, input: &[u8], output: &mut Vec<u8>) -> Result<Written> {
+    fn step(&mut self, input: &[u8], output: &mut Vec<u8>) -> ConnectorResult<Written> {
         let (written, next_state) = match mem::take(&mut self.state) {
             ConnectionFinalizationState::Consumed => {
-                return Err(Error::new(
+                return Err(general_err!(
                     "connection finalization sequence state is consumed (this is a bug)",
                 ))
             }
@@ -170,7 +170,7 @@ impl Sequence for ConnectionFinalizationSequence {
                                 debug!("Server Control (Cooperate)");
                                 ConnectionFinalizationState::WaitForResponse
                             } else {
-                                return Err(Error::new("invalid Control Cooperate PDU"));
+                                return Err(general_err!("invalid Control Cooperate PDU"));
                             }
                         }
                         finalization_messages::ControlAction::GrantedControl => {
@@ -187,10 +187,10 @@ impl Sequence for ConnectionFinalizationSequence {
                                 debug!("Server Control (Granted Control)");
                                 ConnectionFinalizationState::WaitForResponse
                             } else {
-                                return Err(Error::new("invalid Granted Control PDU"));
+                                return Err(general_err!("invalid Granted Control PDU"));
                             }
                         }
-                        _ => return Err(Error::new("unexpected control action")),
+                        _ => return Err(general_err!("unexpected control action")),
                     },
                     ShareDataPdu::ServerSetErrorInfo(server_error_info::ServerSetErrorInfoPdu(error_info)) => {
                         match error_info {
@@ -198,9 +198,11 @@ impl Sequence for ConnectionFinalizationSequence {
                                 server_error_info::ProtocolIndependentCode::None,
                             ) => ConnectionFinalizationState::WaitForResponse,
                             _ => {
-                                return Err(
-                                    Error::new("server returned error info").with_reason(error_info.description())
-                                )
+                                return Err(reason_err!(
+                                    "ServerSetErrorInfo",
+                                    "server returned error info: {}",
+                                    error_info.description()
+                                ));
                             }
                         }
                     }
@@ -214,13 +216,13 @@ impl Sequence for ConnectionFinalizationSequence {
 
                         ConnectionFinalizationState::Finished
                     }
-                    _ => return Err(Error::new("unexpected server message")),
+                    _ => return Err(general_err!("unexpected server message")),
                 };
 
                 (Written::Nothing, next_state)
             }
 
-            ConnectionFinalizationState::Finished => return Err(Error::new("finalization already finished")),
+            ConnectionFinalizationState::Finished => return Err(general_err!("finalization already finished")),
         };
 
         self.state = next_state;

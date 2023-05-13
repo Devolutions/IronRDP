@@ -1,4 +1,4 @@
-use crate::{Error as PduError, PduDecode, PduEncode, ReadCursor, Result as PduResult, WriteCursor};
+use crate::{PduDecode, PduEncode, PduResult, ReadCursor, WriteCursor};
 
 const NON_RLE_PADDING_SIZE: usize = 1;
 
@@ -56,10 +56,10 @@ impl<'a> PduDecode<'a> for BitmapStream<'a> {
         let color_planes_size = if !enable_rle_compression {
             // Cut padding field if RLE flags is set to 0
             if src.is_empty() {
-                return Err(PduError::Other {
-                    context: Self::NAME,
-                    reason: "Missing padding byte from zero-size Non-RLE bitmap data",
-                });
+                return Err(invalid_message_err!(
+                    "padding",
+                    "missing padding byte from zero-sized non-RLE bitmap data",
+                ));
             }
             src.len() - NON_RLE_PADDING_SIZE
         } else {
@@ -250,10 +250,13 @@ mod tests {
         assert_parsing_failure(
             &[],
             expect![[r#"
-                NotEnoughBytes {
-                    name: "Rdp6BitmapStream",
-                    received: 0,
-                    expected: 1,
+                Error {
+                    context: "Rdp6BitmapStream",
+                    kind: NotEnoughBytes {
+                        received: 0,
+                        expected: 1,
+                    },
+                    source: None,
                 }
             "#]],
         );
@@ -262,9 +265,13 @@ mod tests {
         assert_parsing_failure(
             &[0x20],
             expect![[r#"
-                Other {
+                Error {
                     context: "Rdp6BitmapStream",
-                    reason: "Missing padding byte from zero-size Non-RLE bitmap data",
+                    kind: InvalidMessage {
+                        field: "padding",
+                        reason: "missing padding byte from zero-size Non-RLE bitmap data",
+                    },
+                    source: None,
                 }
             "#]],
         );
