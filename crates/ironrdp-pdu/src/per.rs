@@ -547,9 +547,9 @@ pub(crate) mod legacy {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     use expect_test::expect;
+
+    use super::*;
 
     #[test]
     fn read_length_is_correct_length() {
@@ -706,7 +706,8 @@ mod tests {
 
         expect![[r#"
             Overflow
-        "#]].assert_debug_eq(&e)
+        "#]]
+        .assert_debug_eq(&e)
     }
 
     #[test]
@@ -730,7 +731,8 @@ mod tests {
 
         expect![[r#"
             Underflow
-        "#]].assert_debug_eq(&e);
+        "#]]
+        .assert_debug_eq(&e);
     }
 
     #[test]
@@ -761,7 +763,8 @@ mod tests {
 
         expect![[r#"
             UnexpectedEnumVariant
-        "#]].assert_debug_eq(&e);
+        "#]]
+        .assert_debug_eq(&e);
     }
 
     #[test]
@@ -781,7 +784,8 @@ mod tests {
 
         expect![[r#"
             UnexpectedEnumVariant
-        "#]].assert_debug_eq(&e);
+        "#]]
+        .assert_debug_eq(&e);
     }
 
     #[test]

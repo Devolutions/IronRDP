@@ -121,7 +121,7 @@ impl PixelFormat {
                 if buffer.len() < 4 {
                     Err(io::Error::new(
                         io::ErrorKind::InvalidInput,
-                        "The input buffer is not large enough",
+                        "input buffer is not large enough (this is a bug)",
                     ))
                 } else {
                     let color = &buffer[..4];

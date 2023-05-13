@@ -333,7 +333,7 @@ fn build_config(
         username,
         password,
         domain,
-        security_protocol: ironrdp::pdu::nego::SecurityProtocol::HYBRID_EX,
+        security_protocol: ironrdp::pdu::nego::SecurityProtocol::HYBRID,
         keyboard_type: ironrdp::pdu::gcc::KeyboardType::IbmEnhanced,
         keyboard_subtype: 0,
         keyboard_functional_keys_count: 12,

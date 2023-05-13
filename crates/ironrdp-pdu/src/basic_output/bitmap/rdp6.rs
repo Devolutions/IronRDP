@@ -269,7 +269,7 @@ mod tests {
                     context: "Rdp6BitmapStream",
                     kind: InvalidMessage {
                         field: "padding",
-                        reason: "missing padding byte from zero-size Non-RLE bitmap data",
+                        reason: "missing padding byte from zero-sized non-RLE bitmap data",
                     },
                     source: None,
                 }

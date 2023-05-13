@@ -793,24 +793,22 @@ impl Sequence for ClientConnector {
 fn create_gcc_blocks(config: &Config, selected_protocol: nego::SecurityProtocol) -> gcc::ClientGccBlocks {
     use ironrdp_pdu::gcc::*;
 
-    let color_depth = config
-        .bitmap
-        .as_ref()
-        .map(|bitmap| match bitmap.color_depth {
-            15 => SupportedColorDepths::BPP15,
-            16 => SupportedColorDepths::BPP16,
-            24 => SupportedColorDepths::BPP24,
-            32 => SupportedColorDepths::BPP32,
-            _ => panic!("Unsupported color depth: {}", bitmap.color_depth),
-        })
-        .unwrap_or(SupportedColorDepths::BPP16);
+    let max_color_depth = config.bitmap.as_ref().map(|bitmap| bitmap.color_depth).unwrap_or(32);
+
+    let supported_color_depths = match max_color_depth {
+        15 => SupportedColorDepths::BPP15,
+        16 => SupportedColorDepths::BPP16,
+        24 => SupportedColorDepths::BPP24,
+        32 => SupportedColorDepths::BPP32 | SupportedColorDepths::BPP16,
+        _ => panic!("Unsupported color depth: {}", max_color_depth),
+    };
 
     ClientGccBlocks {
         core: ClientCoreData {
             version: RdpVersion::V5_PLUS,
             desktop_width: config.desktop_size.width,
             desktop_height: config.desktop_size.height,
-            color_depth: ColorDepth::Bpp4, // ignored because we use the optional core data below
+            color_depth: ColorDepth::Bpp8, // ignored because we use the optional core data below
             sec_access_sequence: SecureAccessSequence::Del,
             keyboard_layout: 0, // the server SHOULD use the default active input locale identifier
             client_build: config.client_build,
@@ -820,17 +818,23 @@ fn create_gcc_blocks(config: &Config, selected_protocol: nego::SecurityProtocol)
             keyboard_functional_keys_count: config.keyboard_functional_keys_count,
             ime_file_name: config.ime_file_name.clone(),
             optional_data: ClientCoreOptionalData {
-                post_beta2_color_depth: Some(ColorDepth::Bpp4), // ignored because we set high_color_depth
+                post_beta2_color_depth: Some(ColorDepth::Bpp8), // ignored because we set high_color_depth
                 client_product_id: Some(1),
                 serial_number: Some(0),
                 high_color_depth: Some(HighColorDepth::Bpp24),
-                supported_color_depths: Some(color_depth),
+                supported_color_depths: Some(supported_color_depths),
                 early_capability_flags: {
                     let mut early_capability_flags = ClientEarlyCapabilityFlags::VALID_CONNECTION_TYPE
-                        | ClientEarlyCapabilityFlags::SUPPORT_ERR_INFO_PDU;
+                        | ClientEarlyCapabilityFlags::SUPPORT_ERR_INFO_PDU
+                        | ClientEarlyCapabilityFlags::SUPPORT_STATUS_INFO_PDU
+                        | ClientEarlyCapabilityFlags::STRONG_ASYMMETRIC_KEYS;
 
                     if config.graphics.is_some() {
                         early_capability_flags |= ClientEarlyCapabilityFlags::SUPPORT_DYN_VC_GFX_PROTOCOL;
+                    }
+
+                    if max_color_depth == 32 {
+                        early_capability_flags |= ClientEarlyCapabilityFlags::WANT_32_BPP_SESSION;
                     }
 
                     Some(early_capability_flags)
@@ -845,7 +849,10 @@ fn create_gcc_blocks(config: &Config, selected_protocol: nego::SecurityProtocol)
                 device_scale_factor: None,
             },
         },
-        security: ClientSecurityData::no_security(),
+        security: ClientSecurityData {
+            encryption_methods: EncryptionMethod::empty(),
+            ext_encryption_methods: 0,
+        },
         network: if config.graphics.is_some() {
             Some(ClientNetworkData {
                 channels: vec![Channel {
@@ -856,10 +863,16 @@ fn create_gcc_blocks(config: &Config, selected_protocol: nego::SecurityProtocol)
         } else {
             Some(ClientNetworkData { channels: Vec::new() })
         },
-        cluster: None,
+        cluster: Some(ClientClusterData {
+            flags: RedirectionFlags::REDIRECTION_SUPPORTED,
+            redirection_version: RedirectionVersion::V4,
+            redirected_session_id: 0,
+        }),
         monitor: None,
-        message_channel: None,
-        multi_transport_channel: None,
+        message_channel: Some(ClientMessageChannelData {}),
+        multi_transport_channel: Some(MultiTransportChannelData {
+            flags: MultiTransportFlags::empty(),
+        }),
         monitor_extended: None,
     }
 }
