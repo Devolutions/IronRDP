@@ -5,7 +5,7 @@ use ironrdp_pdu::PduHint;
 use rand_core::{OsRng, RngCore as _};
 
 use super::legacy;
-use crate::{Error, Result, Sequence, State, Written};
+use crate::{ConnectorResult, Sequence, State, Written};
 
 #[derive(Default, Debug)]
 #[non_exhaustive]
@@ -79,10 +79,10 @@ impl Sequence for LicenseExchangeSequence {
         &self.state
     }
 
-    fn step(&mut self, input: &[u8], output: &mut Vec<u8>) -> Result<Written> {
+    fn step(&mut self, input: &[u8], output: &mut Vec<u8>) -> ConnectorResult<Written> {
         let (written, next_state) = match mem::take(&mut self.state) {
             LicenseExchangeState::Consumed => {
-                return Err(Error::new(
+                return Err(general_err!(
                     "license exchange sequence state is consumed (this is a bug)",
                 ))
             }
@@ -110,9 +110,7 @@ impl Sequence for LicenseExchangeSequence {
                                 &self.username,
                                 self.domain.as_deref().unwrap_or(""),
                             )
-                            .map_err(|e| {
-                                Error::new("unable to generate Client New License Request").with_reason(e.to_string())
-                            })?;
+                            .map_err(|e| custom_err!("ClientNewLicenseRequest", e))?;
 
                         trace!(?encryption_data, "Successfully generated Client New License Request");
                         info!(message = ?new_license_request, "Send");
@@ -150,9 +148,7 @@ impl Sequence for LicenseExchangeSequence {
                         self.domain.as_deref().unwrap_or(""),
                         &encryption_data,
                     )
-                    .map_err(|e| {
-                        Error::new("unable to generate Client Platform Challenge Response").with_reason(e.to_string())
-                    })?;
+                    .map_err(|e| custom_err!("ClientPlatformChallengeResponse", e))?;
 
                 debug!(message = ?challenge_response, "Send");
 
@@ -178,14 +174,14 @@ impl Sequence for LicenseExchangeSequence {
 
                 upgrade_license
                     .verify_server_license(&encryption_data)
-                    .map_err(|e| Error::new("license verification failed").with_reason(e.to_string()))?;
+                    .map_err(|e| custom_err!("license verification", e))?;
 
                 debug!("License verified with success");
 
                 (Written::Nothing, LicenseExchangeState::LicenseExchanged)
             }
 
-            LicenseExchangeState::LicenseExchanged => return Err(Error::new("license already exchanged")),
+            LicenseExchangeState::LicenseExchanged => return Err(general_err!("license already exchanged")),
         };
 
         self.state = next_state;

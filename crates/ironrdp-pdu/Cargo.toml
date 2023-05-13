@@ -16,11 +16,13 @@ doctest = false
 # test = false
 
 [features]
-default = []
-std = []
+default = ["std"]
+std = ["alloc", "ironrdp-error/std"]
+alloc = ["ironrdp-error/alloc"]
 
 [dependencies]
 bitflags = "2"
+ironrdp-error.workspace = true
 tap = "1.0.1"
 
 # TODO: get rid of these dependencies (related code should probably go into another crate)

@@ -297,3 +297,9 @@ pub enum DisplayPipelineError {
     #[error("Invalid PDU length: expected ({expected}) != actual ({actual})")]
     InvalidPduLength { expected: usize, actual: usize },
 }
+
+impl ironrdp_error::legacy::ErrorContext for DisplayPipelineError {
+    fn context(&self) -> &'static str {
+        "display pipeline"
+    }
+}

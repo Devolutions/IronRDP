@@ -8,7 +8,7 @@ use ironrdp_pdu::geometry::Rectangle;
 use ironrdp_pdu::PduBufferParsing;
 
 use crate::image::DecodedImage;
-use crate::{Error, Result};
+use crate::SessionResult;
 
 const TILE_SIZE: u16 = 64;
 
@@ -45,7 +45,7 @@ impl DecodingContext {
         image: &mut DecodedImage,
         destination: &Rectangle,
         input: &mut &[u8],
-    ) -> Result<(FrameId, Rectangle)> {
+    ) -> SessionResult<(FrameId, Rectangle)> {
         loop {
             match self.state {
                 SequenceState::HeaderMessages => {
@@ -58,7 +58,7 @@ impl DecodingContext {
         }
     }
 
-    fn process_headers(&mut self, input: &mut &[u8]) -> Result<()> {
+    fn process_headers(&mut self, input: &mut &[u8]) -> SessionResult<()> {
         let _sync = rfx::SyncPdu::from_buffer_consume(input)?;
 
         let mut context = None;
@@ -72,11 +72,11 @@ impl DecodingContext {
                 Headers::CodecVersions(_) => (),
             }
         }
-        let context = context.ok_or(Error::new("context header is missing"))?;
-        let channels = channels.ok_or(Error::new("channels header is missing"))?;
+        let context = context.ok_or(general_err!("context header is missing"))?;
+        let channels = channels.ok_or(general_err!("channels header is missing"))?;
 
         if channels.0.is_empty() {
-            return Err(Error::new("no RFX channel announced"));
+            return Err(general_err!("no RFX channel annouced"));
         }
 
         self.context = context;
@@ -92,7 +92,7 @@ impl DecodingContext {
         image: &mut DecodedImage,
         destination: &Rectangle,
         input: &mut &[u8],
-    ) -> Result<(FrameId, Rectangle)> {
+    ) -> SessionResult<(FrameId, Rectangle)> {
         let channel = self.channels.0.first().unwrap();
         let width = channel.width as u16;
         let height = channel.height as u16;
@@ -172,7 +172,7 @@ fn decode_tile(
     output: &mut [u8],
     ycbcr_temp: &mut [Vec<i16>],
     temp: &mut [i16],
-) -> Result<()> {
+) -> SessionResult<()> {
     for ((quant, data), ycbcr_buffer) in tile.quants.iter().zip(tile.data.iter()).zip(ycbcr_temp.iter_mut()) {
         decode_component(quant, entropy_algorithm, data, ycbcr_buffer.as_mut_slice(), temp)?;
     }
@@ -183,7 +183,7 @@ fn decode_tile(
         cr: ycbcr_temp[2].as_slice(),
     };
 
-    color_conversion::ycbcr_to_bgra(ycbcr_buffer, output).map_err(|e| Error::new("decode_tile").with_custom(e))?;
+    color_conversion::ycbcr_to_bgra(ycbcr_buffer, output).map_err(|e| custom_err!("decode_tile", e))?;
 
     Ok(())
 }
@@ -194,8 +194,8 @@ fn decode_component(
     data: &[u8],
     output: &mut [i16],
     temp: &mut [i16],
-) -> Result<()> {
-    rlgr::decode(entropy_algorithm, data, output).map_err(|e| Error::new("decode_component").with_custom(e))?;
+) -> SessionResult<()> {
+    rlgr::decode(entropy_algorithm, data, output).map_err(|e| custom_err!("decode_component", e))?;
     subband_reconstruction::decode(&mut output[4032..]);
     quantization::decode(output, quant);
     dwt::decode(output, temp);

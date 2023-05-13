@@ -290,3 +290,9 @@ pub enum FastPathError {
     #[error("Invalid RDP Share Data Header: {0}")]
     InvalidShareDataHeader(String),
 }
+
+impl ironrdp_error::legacy::ErrorContext for FastPathError {
+    fn context(&self) -> &'static str {
+        "Fast-Path"
+    }
+}

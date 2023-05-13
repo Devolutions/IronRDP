@@ -233,6 +233,12 @@ pub enum ServerLicenseError {
     BlobTooSmall,
 }
 
+impl ironrdp_error::legacy::ErrorContext for ServerLicenseError {
+    fn context(&self) -> &'static str {
+        "server license"
+    }
+}
+
 pub struct BlobHeader {
     pub blob_type: BlobType,
     pub length: usize,

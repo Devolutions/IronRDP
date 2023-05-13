@@ -1,6 +1,9 @@
 #[macro_use]
 extern crate tracing;
 
+#[macro_use]
+mod macros;
+
 pub mod image;
 pub mod legacy;
 pub mod rfx; // FIXME: maybe this module should not be in this crate
@@ -14,119 +17,79 @@ use core::fmt;
 
 pub use active_stage::{ActiveStage, ActiveStageOutput};
 
-pub type Result<T> = std::result::Result<T, Error>;
+pub type SessionResult<T> = std::result::Result<T, SessionError>;
 
 #[non_exhaustive]
 #[derive(Debug)]
-pub enum ErrorKind {
-    Pdu(ironrdp_pdu::Error),
-    Custom(Box<dyn std::error::Error + Sync + Send + 'static>),
+pub enum SessionErrorKind {
+    Pdu(ironrdp_pdu::PduError),
+    Reason(String),
     General,
+    Custom,
 }
 
-#[derive(Debug)]
-pub struct Error {
-    pub context: &'static str,
-    pub kind: ErrorKind,
-    pub reason: Option<String>,
-}
-
-impl Error {
-    pub const fn new(context: &'static str) -> Self {
-        Self {
-            context,
-            kind: ErrorKind::General,
-            reason: None,
+impl fmt::Display for SessionErrorKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &self {
+            SessionErrorKind::Pdu(_) => write!(f, "PDU error"),
+            SessionErrorKind::Reason(description) => write!(f, "reason: {description}"),
+            SessionErrorKind::General => write!(f, "general"),
+            SessionErrorKind::Custom => write!(f, "custom"),
         }
     }
+}
 
-    pub fn with_kind(mut self, kind: ErrorKind) -> Self {
-        self.kind = kind;
-        self
+impl std::error::Error for SessionErrorKind {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match &self {
+            SessionErrorKind::Pdu(e) => Some(e),
+            SessionErrorKind::Reason(_) => None,
+            SessionErrorKind::General => None,
+            SessionErrorKind::Custom => None,
+        }
+    }
+}
+
+pub type SessionError = ironrdp_error::Error<SessionErrorKind>;
+
+pub trait SessionErrorExt {
+    fn pdu(error: ironrdp_pdu::PduError) -> Self;
+    fn general(context: &'static str) -> Self;
+    fn reason(context: &'static str, reason: impl Into<String>) -> Self;
+    fn custom<E>(context: &'static str, e: E) -> Self
+    where
+        E: std::error::Error + Sync + Send + 'static;
+}
+
+impl SessionErrorExt for SessionError {
+    fn pdu(error: ironrdp_pdu::PduError) -> Self {
+        Self::new("invalid payload", SessionErrorKind::Pdu(error))
     }
 
-    pub fn with_custom<E>(mut self, custom_error: E) -> Self
+    fn general(context: &'static str) -> Self {
+        Self::new(context, SessionErrorKind::General)
+    }
+
+    fn reason(context: &'static str, reason: impl Into<String>) -> Self {
+        Self::new(context, SessionErrorKind::Reason(reason.into()))
+    }
+
+    fn custom<E>(context: &'static str, e: E) -> Self
     where
         E: std::error::Error + Sync + Send + 'static,
     {
-        self.kind = ErrorKind::Custom(Box::new(custom_error));
-        self
-    }
-
-    pub fn with_reason(mut self, reason: impl Into<String>) -> Self {
-        self.reason = Some(reason.into());
-        self
-    }
-}
-
-impl std::error::Error for Error {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match &self.kind {
-            ErrorKind::Pdu(e) => Some(e),
-            ErrorKind::Custom(e) => Some(e.as_ref()),
-            ErrorKind::General => None,
-        }
-    }
-}
-
-impl From<Error> for std::io::Error {
-    fn from(error: Error) -> Self {
-        std::io::Error::new(std::io::ErrorKind::Other, error)
-    }
-}
-
-impl From<ironrdp_pdu::Error> for Error {
-    fn from(value: ironrdp_pdu::Error) -> Self {
-        Self {
-            context: "invalid payload",
-            kind: ErrorKind::Pdu(value),
-            reason: None,
-        }
-    }
-}
-
-impl fmt::Display for Error {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.context)?;
-
-        match &self.kind {
-            ErrorKind::Pdu(e) => {
-                if f.alternate() {
-                    write!(f, ": {e}")?;
-                }
-            }
-            ErrorKind::Custom(e) => {
-                if f.alternate() {
-                    write!(f, ": {e}")?;
-
-                    let mut next_source = e.source();
-                    while let Some(e) = next_source {
-                        write!(f, ", caused by: {e}")?;
-                        next_source = e.source();
-                    }
-                }
-            }
-            ErrorKind::General => {}
-        }
-
-        if let Some(reason) = &self.reason {
-            write!(f, " ({reason})")?;
-        }
-
-        Ok(())
+        Self::new(context, SessionErrorKind::Custom).with_source(e)
     }
 }
 
 pub trait SessionResultExt {
     fn with_context(self, context: &'static str) -> Self;
-    fn with_kind(self, kind: ErrorKind) -> Self;
-    fn with_custom<E>(self, custom_error: E) -> Self
+    fn with_source<E>(self, source: E) -> Self
     where
         E: std::error::Error + Sync + Send + 'static;
-    fn with_reason(self, reason: impl Into<String>) -> Self;
 }
 
-impl<T> SessionResultExt for Result<T> {
+impl<T> SessionResultExt for SessionResult<T> {
     fn with_context(self, context: &'static str) -> Self {
         self.map_err(|mut e| {
             e.context = context;
@@ -134,27 +97,10 @@ impl<T> SessionResultExt for Result<T> {
         })
     }
 
-    fn with_kind(self, kind: ErrorKind) -> Self {
-        self.map_err(|mut e| {
-            e.kind = kind;
-            e
-        })
-    }
-
-    fn with_custom<E>(self, custom_error: E) -> Self
+    fn with_source<E>(self, source: E) -> Self
     where
         E: std::error::Error + Sync + Send + 'static,
     {
-        self.map_err(|mut e| {
-            e.kind = ErrorKind::Custom(Box::new(custom_error));
-            e
-        })
-    }
-
-    fn with_reason(self, reason: impl Into<String>) -> Self {
-        self.map_err(|mut e| {
-            e.reason = Some(reason.into());
-            e
-        })
+        self.map_err(|e| e.with_source(source))
     }
 }

@@ -9,10 +9,10 @@ use ironrdp_pdu::dvc::gfx::{
 use ironrdp_pdu::PduParsing;
 
 use crate::x224::DynamicChannelDataHandler;
-use crate::{Error, Result};
+use crate::SessionResult;
 
 pub trait GfxHandler {
-    fn on_message(&self, message: ServerPdu) -> Result<Option<ClientPdu>>;
+    fn on_message(&self, message: ServerPdu) -> SessionResult<Option<ClientPdu>>;
 }
 
 pub struct Handler {
@@ -34,7 +34,7 @@ impl Handler {
 }
 
 impl DynamicChannelDataHandler for Handler {
-    fn process_complete_data(&mut self, complete_data: Vec<u8>) -> Result<Option<Vec<u8>>> {
+    fn process_complete_data(&mut self, complete_data: Vec<u8>) -> SessionResult<Option<Vec<u8>>> {
         let mut client_pdu_buffer: Vec<u8> = vec![];
         self.decompressed_buffer.clear();
         self.decompressor
@@ -96,13 +96,12 @@ bitflags! {
     }
 }
 
-pub fn create_capabilities_advertise(graphics_config: &Option<GraphicsConfig>) -> Result<Vec<u8>> {
+pub fn create_capabilities_advertise(graphics_config: &Option<GraphicsConfig>) -> SessionResult<Vec<u8>> {
     let mut capabilities = vec![];
 
     if let Some(config) = graphics_config {
-        let capability_version = CapabilityVersion::from_bits(config.capabilities).ok_or_else(|| {
-            Error::new("invalid capabilities mask provided").with_reason(format!("received: {:x}", config.capabilities))
-        })?;
+        let capability_version = CapabilityVersion::from_bits(config.capabilities)
+            .ok_or_else(|| reason_err!("GFX", "invalid capabilities mask: {:x}", config.capabilities))?;
 
         if capability_version.contains(CapabilityVersion::V8) {
             let flags = if config.thin_client {

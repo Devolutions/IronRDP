@@ -2,7 +2,7 @@ use std::mem;
 
 use ironrdp_pdu::{mcs, PduHint};
 
-use crate::{Error, Result, Sequence, State, Written};
+use crate::{ConnectorError, ConnectorErrorExt as _, ConnectorResult, Sequence, State, Written};
 
 #[derive(Default, Debug)]
 #[non_exhaustive]
@@ -81,10 +81,10 @@ impl Sequence for ChannelConnectionSequence {
         }
     }
 
-    fn step(&mut self, input: &[u8], output: &mut Vec<u8>) -> Result<Written> {
+    fn step(&mut self, input: &[u8], output: &mut Vec<u8>) -> ConnectorResult<Written> {
         let (written, next_state) = match mem::take(&mut self.state) {
             ChannelConnectionState::Consumed => {
-                return Err(Error::new(
+                return Err(general_err!(
                     "channel connection sequence state is consumed (this is a bug)",
                 ))
             }
@@ -97,7 +97,7 @@ impl Sequence for ChannelConnectionSequence {
 
                 debug!(message = ?erect_domain_request, "Send");
 
-                let written = ironrdp_pdu::encode_buf(&erect_domain_request, output)?;
+                let written = ironrdp_pdu::encode_buf(&erect_domain_request, output).map_err(ConnectorError::pdu)?;
 
                 (
                     Written::from_size(written)?,
@@ -110,7 +110,7 @@ impl Sequence for ChannelConnectionSequence {
 
                 debug!(message = ?attach_user_request, "Send");
 
-                let written = ironrdp_pdu::encode_buf(&attach_user_request, output)?;
+                let written = ironrdp_pdu::encode_buf(&attach_user_request, output).map_err(ConnectorError::pdu)?;
 
                 (
                     Written::from_size(written)?,
@@ -119,7 +119,8 @@ impl Sequence for ChannelConnectionSequence {
             }
 
             ChannelConnectionState::WaitAttachUserConfirm => {
-                let attach_user_confirm = ironrdp_pdu::decode::<mcs::AttachUserConfirm>(input)?;
+                let attach_user_confirm =
+                    ironrdp_pdu::decode::<mcs::AttachUserConfirm>(input).map_err(ConnectorError::pdu)?;
 
                 let user_channel_id = attach_user_confirm.initiator_id;
 
@@ -152,7 +153,7 @@ impl Sequence for ChannelConnectionSequence {
 
                 debug!(message = ?channel_join_request, "Send");
 
-                let written = ironrdp_pdu::encode_buf(&channel_join_request, output)?;
+                let written = ironrdp_pdu::encode_buf(&channel_join_request, output).map_err(ConnectorError::pdu)?;
 
                 (
                     Written::from_size(written)?,
@@ -163,7 +164,8 @@ impl Sequence for ChannelConnectionSequence {
             ChannelConnectionState::WaitChannelJoinConfirm { user_channel_id, index } => {
                 let channel_id = self.channel_ids[index];
 
-                let channel_join_confirm = ironrdp_pdu::decode::<mcs::ChannelJoinConfirm>(input)?;
+                let channel_join_confirm =
+                    ironrdp_pdu::decode::<mcs::ChannelJoinConfirm>(input).map_err(ConnectorError::pdu)?;
 
                 debug!(message = ?channel_join_confirm, "Received");
 
@@ -171,7 +173,7 @@ impl Sequence for ChannelConnectionSequence {
                     || channel_join_confirm.channel_id != channel_join_confirm.requested_channel_id
                     || channel_join_confirm.channel_id != channel_id
                 {
-                    return Err(Error::new("received bad MCS Channel Join Confirm"));
+                    return Err(general_err!("received bad MCS Channel Join Confirm"));
                 }
 
                 let next_index = index + 1;
@@ -188,7 +190,7 @@ impl Sequence for ChannelConnectionSequence {
                 (Written::Nothing, next_state)
             }
 
-            ChannelConnectionState::AllJoined { .. } => return Err(Error::new("all channels are already joined")),
+            ChannelConnectionState::AllJoined { .. } => return Err(general_err!("all channels are already joined")),
         };
 
         self.state = next_state;

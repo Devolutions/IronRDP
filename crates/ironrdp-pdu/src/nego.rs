@@ -7,7 +7,7 @@ use crate::cursor::{ReadCursor, WriteCursor};
 use crate::tpdu::{TpduCode, TpduHeader};
 use crate::tpkt::TpktHeader;
 use crate::x224::X224Pdu;
-use crate::{Error, Pdu as _, Result};
+use crate::{Pdu as _, PduError, PduErrorExt as _, PduResult};
 
 bitflags! {
     /// A 32-bit, unsigned integer that contains flags indicating the supported
@@ -104,14 +104,14 @@ impl NegoRequestData {
         Self::Cookie(Cookie(value))
     }
 
-    pub fn read(src: &mut ReadCursor<'_>) -> Result<Option<Self>> {
+    pub fn read(src: &mut ReadCursor<'_>) -> PduResult<Option<Self>> {
         match RoutingToken::read(src)? {
             Some(token) => Ok(Some(Self::RoutingToken(token))),
             None => Cookie::read(src)?.map(Self::Cookie).pipe(Ok),
         }
     }
 
-    pub fn write(&self, dst: &mut WriteCursor<'_>) -> Result<()> {
+    pub fn write(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
         match self {
             NegoRequestData::RoutingToken(token) => token.write(dst),
             NegoRequestData::Cookie(cookie) => cookie.write(dst),
@@ -132,11 +132,11 @@ pub struct Cookie(pub String);
 impl Cookie {
     const PREFIX: &str = "Cookie: mstshash=";
 
-    pub fn read(src: &mut ReadCursor<'_>) -> Result<Option<Self>> {
+    pub fn read(src: &mut ReadCursor<'_>) -> PduResult<Option<Self>> {
         read_nego_data(src, "Cookie", Self::PREFIX)?.map(Self).pipe(Ok)
     }
 
-    pub fn write(&self, dst: &mut WriteCursor<'_>) -> Result<()> {
+    pub fn write(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
         write_nego_data(dst, "Cookie", Self::PREFIX, &self.0)
     }
 
@@ -151,11 +151,11 @@ pub struct RoutingToken(pub String);
 impl RoutingToken {
     const PREFIX: &str = "Cookie: msts=";
 
-    pub fn read(src: &mut ReadCursor<'_>) -> Result<Option<Self>> {
+    pub fn read(src: &mut ReadCursor<'_>) -> PduResult<Option<Self>> {
         read_nego_data(src, "RoutingToken", Self::PREFIX)?.map(Self).pipe(Ok)
     }
 
-    pub fn write(&self, dst: &mut WriteCursor<'_>) -> Result<()> {
+    pub fn write(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
         write_nego_data(dst, "RoutingToken", Self::PREFIX, &self.0)
     }
 
@@ -203,7 +203,7 @@ impl<'de> X224Pdu<'de> for ConnectionRequest {
 
     const TPDU_CODE: TpduCode = TpduCode::CONNECTION_REQUEST;
 
-    fn x224_body_encode(&self, dst: &mut WriteCursor<'_>) -> Result<()> {
+    fn x224_body_encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
         if let Some(nego_data) = &self.nego_data {
             nego_data.write(dst)?;
         }
@@ -218,7 +218,7 @@ impl<'de> X224Pdu<'de> for ConnectionRequest {
         Ok(())
     }
 
-    fn x224_body_decode(src: &mut ReadCursor<'de>, _: &TpktHeader, tpdu: &TpduHeader) -> Result<Self> {
+    fn x224_body_decode(src: &mut ReadCursor<'de>, _: &TpktHeader, tpdu: &TpduHeader) -> PduResult<Self> {
         let variable_part_size = tpdu.variable_part_size();
 
         ensure_size!(in: src, size: variable_part_size);
@@ -226,28 +226,25 @@ impl<'de> X224Pdu<'de> for ConnectionRequest {
         let nego_data = NegoRequestData::read(src)?;
 
         let Some(variable_part_rest_size) = variable_part_size.checked_sub(nego_data.as_ref().map(|data| data.size()).unwrap_or(0)) else {
-            return Err(Error::InvalidMessage { name: Self::NAME, field: "TPDU header variable part", reason: "advertised size too small" })
+            return Err(PduError::invalid_message(Self::NAME, "TPDU header variable part", "advertised size too small"));
         };
 
         if variable_part_rest_size >= usize::from(Self::RDP_NEG_REQ_SIZE) {
             let msg_type = NegoMsgType::from(src.read_u8());
 
             if msg_type != NegoMsgType::REQUEST {
-                return Err(Error::UnexpectedMessageType {
-                    name: Self::NAME,
-                    got: u8::from(msg_type),
-                });
+                return Err(PduError::unexpected_message_type(Self::NAME, u8::from(msg_type)));
             }
 
             let flags = RequestFlags::from_bits_truncate(src.read_u8());
 
             if flags.contains(RequestFlags::CORRELATION_INFO_PRESENT) {
                 // TODO: support for RDP_NEG_CORRELATION_INFO
-                return Err(Error::InvalidMessage {
-                    name: Self::NAME,
-                    field: "flags",
-                    reason: "CORRECTION_INFO_PRESENT flag is set, but not supported by IronRDP",
-                });
+                return Err(PduError::invalid_message(
+                    Self::NAME,
+                    "flags",
+                    "CORRECTION_INFO_PRESENT flag is set, but not supported by IronRDP",
+                ));
             }
 
             let _length = src.read_u16();
@@ -309,7 +306,7 @@ impl<'de> X224Pdu<'de> for ConnectionConfirm {
 
     const TPDU_CODE: TpduCode = TpduCode::CONNECTION_CONFIRM;
 
-    fn x224_body_encode(&self, dst: &mut WriteCursor<'_>) -> Result<()> {
+    fn x224_body_encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
         match self {
             ConnectionConfirm::Response { flags, protocol } => {
                 dst.write_u8(u8::from(NegoMsgType::RESPONSE));
@@ -328,7 +325,7 @@ impl<'de> X224Pdu<'de> for ConnectionConfirm {
         Ok(())
     }
 
-    fn x224_body_decode(src: &mut ReadCursor<'de>, _: &TpktHeader, tpdu: &TpduHeader) -> Result<Self> {
+    fn x224_body_decode(src: &mut ReadCursor<'de>, _: &TpktHeader, tpdu: &TpduHeader) -> PduResult<Self> {
         let variable_part_size = tpdu.variable_part_size();
 
         ensure_size!(in: src, size: variable_part_size);
@@ -349,10 +346,7 @@ impl<'de> X224Pdu<'de> for ConnectionConfirm {
 
                     Ok(Self::Failure { code })
                 }
-                unexpected => Err(Error::UnexpectedMessageType {
-                    name: Self::X224_NAME,
-                    got: u8::from(unexpected),
-                }),
+                unexpected => Err(PduError::unexpected_message_type(Self::X224_NAME, u8::from(unexpected))),
             }
         } else {
             Ok(Self::Response {
@@ -374,8 +368,8 @@ impl<'de> X224Pdu<'de> for ConnectionConfirm {
     }
 }
 
-fn read_nego_data(src: &mut ReadCursor<'_>, name: &'static str, prefix: &str) -> Result<Option<String>> {
-    ensure_size!(name: name, in: src, size: prefix.len() + 2);
+fn read_nego_data(src: &mut ReadCursor<'_>, name: &'static str, prefix: &str) -> PduResult<Option<String>> {
+    ensure_size!(ctx: name, in: src, size: prefix.len() + 2);
 
     if src.peek_slice(prefix.len()) != prefix.as_bytes() {
         return Ok(None);
@@ -387,7 +381,7 @@ fn read_nego_data(src: &mut ReadCursor<'_>, name: &'static str, prefix: &str) ->
 
     while src.peek_u16() != 0x0A0D {
         src.advance(1);
-        ensure_size!(name: name, in: src, size: 2);
+        ensure_size!(ctx: name, in: src, size: 2);
     }
 
     let identifier_end = src.pos();
@@ -395,18 +389,14 @@ fn read_nego_data(src: &mut ReadCursor<'_>, name: &'static str, prefix: &str) ->
     src.advance(2);
 
     let data = core::str::from_utf8(&src.inner()[identifier_start..identifier_end])
-        .map_err(|_| Error::InvalidMessage {
-            name,
-            field: "identifier",
-            reason: "not valid UTF-8",
-        })?
+        .map_err(|_| PduError::invalid_message(name, "identifier", "not valid UTF-8"))?
         .to_owned();
 
     Ok(Some(data))
 }
 
-fn write_nego_data(dst: &mut WriteCursor<'_>, name: &'static str, prefix: &str, value: &str) -> Result<()> {
-    ensure_size!(name: name, in: dst, size: prefix.len() + value.len() + 2);
+fn write_nego_data(dst: &mut WriteCursor<'_>, name: &'static str, prefix: &str, value: &str) -> PduResult<()> {
+    ensure_size!(ctx: name, in: dst, size: prefix.len() + value.len() + 2);
 
     dst.write_slice(prefix.as_bytes());
     dst.write_slice(value.as_bytes());

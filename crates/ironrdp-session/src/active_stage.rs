@@ -4,7 +4,7 @@ use ironrdp_pdu::Action;
 
 use crate::image::DecodedImage;
 use crate::x224::GfxHandler;
-use crate::{fast_path, utils, x224, Result};
+use crate::{fast_path, utils, x224, SessionResult};
 
 pub struct ActiveStage {
     x224_processor: x224::Processor,
@@ -38,7 +38,7 @@ impl ActiveStage {
         image: &mut DecodedImage,
         action: Action,
         frame: &[u8],
-    ) -> Result<Vec<ActiveStageOutput>> {
+    ) -> SessionResult<Vec<ActiveStageOutput>> {
         let mut graphics_update_region = None;
 
         let output = match action {
@@ -64,12 +64,16 @@ impl ActiveStage {
     }
 
     /// Sends a PDU on the dynamic channel.
-    pub fn encode_dynamic(&self, output: &mut Vec<u8>, channel_name: &str, dvc_data: &[u8]) -> Result<usize> {
+    pub fn encode_dynamic(&self, output: &mut Vec<u8>, channel_name: &str, dvc_data: &[u8]) -> SessionResult<usize> {
         self.x224_processor.encode_dynamic(output, channel_name, dvc_data)
     }
 
     /// Send a pdu on the static global channel. Typically used to send input events
-    pub fn encode_static(&self, output: &mut Vec<u8>, pdu: ironrdp_pdu::rdp::headers::ShareDataPdu) -> Result<usize> {
+    pub fn encode_static(
+        &self,
+        output: &mut Vec<u8>,
+        pdu: ironrdp_pdu::rdp::headers::ShareDataPdu,
+    ) -> SessionResult<usize> {
         self.x224_processor.encode_static(output, pdu)
     }
 }

@@ -19,9 +19,10 @@ test = false
 arbitrary = ["dep:arbitrary"]
 
 [dependencies]
-ironrdp-pdu.workspace = true
-tracing.workspace = true
-sspi.workspace = true
-rstest.workspace = true
-rand_core = { version = "0.6.4", features = ["std"] } # TODO: dependency injection?
 arbitrary = { version = "1", features = ["derive"], optional = true }
+ironrdp-error.workspace = true
+ironrdp-pdu.workspace = true
+rand_core = { version = "0.6.4", features = ["std"] } # TODO: dependency injection?
+rstest.workspace = true
+sspi.workspace = true
+tracing.workspace = true

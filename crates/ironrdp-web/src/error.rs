@@ -1,5 +1,5 @@
-use ironrdp::connector;
 use ironrdp::connector::sspi;
+use ironrdp::connector::{self, ConnectorErrorKind};
 use wasm_bindgen::prelude::*;
 
 #[wasm_bindgen]
@@ -36,20 +36,20 @@ impl IronRdpError {
     }
 }
 
-impl From<connector::Error> for IronRdpError {
-    fn from(e: connector::Error) -> Self {
+impl From<connector::ConnectorError> for IronRdpError {
+    fn from(e: connector::ConnectorError) -> Self {
         use sspi::credssp::NStatusCode;
 
         let kind = match e.kind {
-            connector::ErrorKind::Credssp(sspi::Error {
+            ConnectorErrorKind::Credssp(sspi::Error {
                 nstatus: Some(NStatusCode::WRONG_PASSWORD),
                 ..
             }) => IronRdpErrorKind::WrongPassword,
-            connector::ErrorKind::Credssp(sspi::Error {
+            ConnectorErrorKind::Credssp(sspi::Error {
                 nstatus: Some(NStatusCode::LOGON_FAILURE),
                 ..
             }) => IronRdpErrorKind::LogonFailure,
-            connector::ErrorKind::AccessDenied => IronRdpErrorKind::AccessDenied,
+            ConnectorErrorKind::AccessDenied => IronRdpErrorKind::AccessDenied,
             _ => IronRdpErrorKind::General,
         };
 
@@ -60,8 +60,8 @@ impl From<connector::Error> for IronRdpError {
     }
 }
 
-impl From<ironrdp::session::Error> for IronRdpError {
-    fn from(e: ironrdp::session::Error) -> Self {
+impl From<ironrdp::session::SessionError> for IronRdpError {
+    fn from(e: ironrdp::session::SessionError) -> Self {
         Self {
             kind: IronRdpErrorKind::General,
             source: anyhow::Error::new(e),
