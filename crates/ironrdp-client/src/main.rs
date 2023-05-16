@@ -10,10 +10,10 @@ use tokio::runtime;
 fn main() -> anyhow::Result<()> {
     let mut config = Config::parse_args().context("CLI arguments parsing")?;
 
-    setup_logging(config.log_file.as_str()).context("Unable to initialize logging")?;
+    setup_logging(config.log_file.as_str()).context("unable to initialize logging")?;
 
     debug!("Initialize GUI context");
-    let gui = GuiContext::init().context("Unable to initialize GUI context")?;
+    let gui = GuiContext::init().context("unable to initialize GUI context")?;
     debug!("GUI context initialized");
 
     let window_size = gui.window.inner_size();
@@ -25,7 +25,7 @@ fn main() -> anyhow::Result<()> {
     let rt = runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
-        .context("Unable to create tokio runtime")?;
+        .context("unable to create tokio runtime")?;
 
     let (input_event_sender, input_event_receiver) = RdpInputEvent::create_channel();
 
@@ -55,7 +55,7 @@ fn setup_logging(log_file: &str) -> anyhow::Result<()> {
         .create(true)
         .append(true)
         .open(log_file)
-        .with_context(|| format!("Couldn’t open {log_file}"))?;
+        .with_context(|| format!("couldn’t open {log_file}"))?;
 
     let fmt_layer = tracing_subscriber::fmt::layer()
         .compact()
@@ -71,7 +71,7 @@ fn setup_logging(log_file: &str) -> anyhow::Result<()> {
         .with(fmt_layer)
         .with(env_filter)
         .try_init()
-        .context("Failed to set tracing global subscriber")?;
+        .context("failed to set tracing global subscriber")?;
 
     Ok(())
 }

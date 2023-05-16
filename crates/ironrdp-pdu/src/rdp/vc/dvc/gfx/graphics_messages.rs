@@ -19,7 +19,6 @@ use thiserror::Error;
 
 use super::RDP_GFX_HEADER_SIZE;
 use crate::gcc::MonitorDataError;
-use crate::geometry::Rectangle;
 use crate::PduParsing;
 
 const CAPABILITY_SET_HEADER_SIZE: usize = 8;

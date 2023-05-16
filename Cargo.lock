@@ -1618,6 +1618,7 @@ dependencies = [
  "num-derive 0.3.3",
  "num-integer",
  "num-traits",
+ "pkcs1 0.7.5",
  "sha1",
  "tap",
  "thiserror",
@@ -2628,6 +2629,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "pkcs1"
+version = "0.7.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c8ffb9f10fa047879315e6625af03c164b16962a5368d724ed16323b68ace47f"
+dependencies = [
+ "der 0.7.5",
+ "spki 0.7.1",
+]
+
+[[package]]
 name = "pkcs8"
 version = "0.8.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3027,7 +3038,7 @@ dependencies = [
  "num-integer",
  "num-iter",
  "num-traits",
- "pkcs1",
+ "pkcs1 0.3.3",
  "pkcs8",
  "rand_core 0.6.4",
  "smallvec",

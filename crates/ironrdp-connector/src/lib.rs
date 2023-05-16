@@ -167,8 +167,8 @@ impl fmt::Display for ConnectorErrorKind {
             ConnectorErrorKind::Credssp(_) => write!(f, "CredSSP"),
             ConnectorErrorKind::Reason(description) => write!(f, "reason: {description}"),
             ConnectorErrorKind::AccessDenied => write!(f, "access denied"),
-            ConnectorErrorKind::General => write!(f, "general"),
-            ConnectorErrorKind::Custom => write!(f, "custom"),
+            ConnectorErrorKind::General => write!(f, "general error"),
+            ConnectorErrorKind::Custom => write!(f, "custom error"),
         }
     }
 }

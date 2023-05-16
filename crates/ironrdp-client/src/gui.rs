@@ -209,18 +209,18 @@ impl GuiContext {
                 }
                 Event::UserEvent(RdpOutputEvent::ConnectionFailure(error)) => {
                     error!(?error);
-                    println!("Connection error: {}", error.report());
+                    eprintln!("Connection error: {}", error.report());
                     control_flow.set_exit_with_code(exitcode::PROTOCOL);
                 }
                 Event::UserEvent(RdpOutputEvent::Terminated(result)) => {
                     let exit_code = match result {
                         Ok(()) => {
-                            println!("RDP successfully finished");
+                            println!("Terminated gracefully");
                             exitcode::OK
                         }
                         Err(error) => {
                             error!(?error);
-                            println!("Active session error: {}", error.report());
+                            eprintln!("Active session error: {}", error.report());
                             exitcode::PROTOCOL
                         }
                     };

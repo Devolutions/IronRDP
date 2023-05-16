@@ -5,8 +5,9 @@ use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive, ToPrimitive};
 
-use super::{CapabilitySet, Color, GraphicsMessagesError, Point, Rectangle, RDP_GFX_HEADER_SIZE};
+use super::{CapabilitySet, Color, GraphicsMessagesError, Point, RDP_GFX_HEADER_SIZE};
 use crate::gcc::{Monitor, MonitorDataError};
+use crate::geometry::Rectangle;
 use crate::PduParsing;
 
 pub const RESET_GRAPHICS_PDU_SIZE: usize = 340;

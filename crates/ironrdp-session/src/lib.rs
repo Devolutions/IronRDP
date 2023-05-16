@@ -33,8 +33,8 @@ impl fmt::Display for SessionErrorKind {
         match &self {
             SessionErrorKind::Pdu(_) => write!(f, "PDU error"),
             SessionErrorKind::Reason(description) => write!(f, "reason: {description}"),
-            SessionErrorKind::General => write!(f, "general"),
-            SessionErrorKind::Custom => write!(f, "custom"),
+            SessionErrorKind::General => write!(f, "general error"),
+            SessionErrorKind::Custom => write!(f, "custom error"),
         }
     }
 }

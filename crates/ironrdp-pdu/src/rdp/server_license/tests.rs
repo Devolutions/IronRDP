@@ -149,7 +149,7 @@ fn read_license_header_reads_correctly() {
 #[test]
 fn read_license_header_handles_valid_client_correctly() {
     match ServerPlatformChallenge::from_buffer(STATUS_VALID_CLIENT_BUFFER.as_ref()) {
-        Err(ServerLicenseError::UnexpectedValidClientError(_)) => (),
+        Err(ServerLicenseError::ValidClientStatus(_)) => (),
         _ => panic!("The function has return an invalid error"),
     }
 }

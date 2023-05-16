@@ -137,32 +137,52 @@ impl Sequence for LicenseExchangeSequence {
 
             LicenseExchangeState::PlatformChallenge { encryption_data } => {
                 let send_data_indication_ctx = legacy::decode_send_data_indication(input)?;
-                let challenge =
-                    send_data_indication_ctx.decode_user_data::<server_license::ServerPlatformChallenge>()?;
 
-                debug!(message = ?challenge, "Received");
+                match send_data_indication_ctx.decode_user_data::<server_license::ServerPlatformChallenge>() {
+                    Ok(challenge) => {
+                        debug!(message = ?challenge, "Received");
 
-                let challenge_response =
-                    server_license::ClientPlatformChallengeResponse::from_server_platform_challenge(
-                        &challenge,
-                        self.domain.as_deref().unwrap_or(""),
-                        &encryption_data,
-                    )
-                    .map_err(|e| custom_err!("ClientPlatformChallengeResponse", e))?;
+                        let challenge_response =
+                            server_license::ClientPlatformChallengeResponse::from_server_platform_challenge(
+                                &challenge,
+                                self.domain.as_deref().unwrap_or(""),
+                                &encryption_data,
+                            )
+                            .map_err(|e| custom_err!("ClientPlatformChallengeResponse", e))?;
 
-                debug!(message = ?challenge_response, "Send");
+                        debug!(message = ?challenge_response, "Send");
 
-                let written = legacy::encode_send_data_request(
-                    send_data_indication_ctx.initiator_id,
-                    send_data_indication_ctx.channel_id,
-                    &challenge_response,
-                    output,
-                )?;
+                        let written = legacy::encode_send_data_request(
+                            send_data_indication_ctx.initiator_id,
+                            send_data_indication_ctx.channel_id,
+                            &challenge_response,
+                            output,
+                        )?;
 
-                (
-                    Written::from_size(written)?,
-                    LicenseExchangeState::UpgradeLicense { encryption_data },
-                )
+                        (
+                            Written::from_size(written)?,
+                            LicenseExchangeState::UpgradeLicense { encryption_data },
+                        )
+                    }
+                    Err(error) => {
+                        // In some cases, server does not send a platform challenge and a ServerLicenseError PDU
+                        // with the VALID_CLIENT_STATUS flag is received.
+                        if let Some(source) = std::error::Error::source(&error) {
+                            match source.downcast_ref::<server_license::ServerLicenseError>() {
+                                Some(server_license::ServerLicenseError::ValidClientStatus(
+                                    licensing_error_message,
+                                )) => {
+                                    debug!(message = ?licensing_error_message, "Received");
+
+                                    (Written::Nothing, LicenseExchangeState::LicenseExchanged)
+                                }
+                                _ => return Err(error),
+                            }
+                        } else {
+                            return Err(error);
+                        }
+                    }
+                }
             }
 
             LicenseExchangeState::UpgradeLicense { encryption_data } => {

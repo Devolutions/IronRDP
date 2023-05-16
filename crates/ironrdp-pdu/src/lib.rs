@@ -68,7 +68,7 @@ impl fmt::Display for PduErrorKind {
                 write!(f, "{description}")
             }
             Self::Custom => {
-                write!(f, "custom")
+                write!(f, "custom error")
             }
         }
     }

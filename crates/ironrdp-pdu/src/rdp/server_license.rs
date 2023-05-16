@@ -217,8 +217,8 @@ pub enum ServerLicenseError {
     UnexpectedLicenseMessage,
     #[error("The server has returned an unexpected error")]
     UnexpectedServerError(LicensingErrorMessage),
-    #[error("The server has returned STATUS_VALID_CLIENT unexpectedly")]
-    UnexpectedValidClientError(LicensingErrorMessage),
+    #[error("The server has returned STATUS_VALID_CLIENT (not an error)")]
+    ValidClientStatus(LicensingErrorMessage),
     #[error("Invalid Key Exchange List field")]
     InvalidKeyExchangeAlgorithm,
     #[error("Received invalid company name length (Product Information): {0}")]
@@ -321,7 +321,7 @@ fn read_license_header(
             if license_error.error_code == LicenseErrorCode::StatusValidClient
                 && license_error.state_transition == LicensingStateTransition::NoTransition
             {
-                return Err(ServerLicenseError::UnexpectedValidClientError(license_error));
+                return Err(ServerLicenseError::ValidClientStatus(license_error));
             } else {
                 return Err(ServerLicenseError::UnexpectedServerError(license_error));
             }
