@@ -825,10 +825,10 @@ fn create_gcc_blocks(config: &Config, selected_protocol: nego::SecurityProtocol)
                 supported_color_depths: Some(supported_color_depths),
                 early_capability_flags: {
                     let mut early_capability_flags = ClientEarlyCapabilityFlags::VALID_CONNECTION_TYPE
-                        | ClientEarlyCapabilityFlags::SUPPORT_ERR_INFO_PDU;
+                        | ClientEarlyCapabilityFlags::SUPPORT_ERR_INFO_PDU
+                        | ClientEarlyCapabilityFlags::STRONG_ASYMMETRIC_KEYS;
 
                     // TODO: support for ClientEarlyCapabilityFlags::SUPPORT_STATUS_INFO_PDU
-                    // TODO: support for ClientEarlyCapabilityFlags::STRONG_ASYMMETRIC_KEYS
 
                     if config.graphics.is_some() {
                         early_capability_flags |= ClientEarlyCapabilityFlags::SUPPORT_DYN_VC_GFX_PROTOCOL;
