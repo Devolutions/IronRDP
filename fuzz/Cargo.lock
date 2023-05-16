@@ -232,6 +232,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "ironrdp-error"
+version = "0.1.0"
+
+[[package]]
 name = "ironrdp-fuzz"
 version = "0.0.0"
 dependencies = [
@@ -256,6 +260,7 @@ dependencies = [
  "bitflags",
  "bitvec",
  "byteorder",
+ "ironrdp-error",
  "ironrdp-pdu",
  "lazy_static",
  "num-derive",
@@ -271,6 +276,7 @@ dependencies = [
  "bitflags",
  "byteorder",
  "der-parser",
+ "ironrdp-error",
  "md-5",
  "num-bigint",
  "num-derive",

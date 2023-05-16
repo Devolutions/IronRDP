@@ -5,19 +5,19 @@ pub struct ReadCursor<'a> {
 }
 
 impl<'a> ReadCursor<'a> {
-    pub fn new(bytes: &'a [u8]) -> Self {
+    pub const fn new(bytes: &'a [u8]) -> Self {
         Self { inner: bytes, pos: 0 }
     }
 
-    pub fn len(&self) -> usize {
+    pub const fn len(&self) -> usize {
         self.inner.len() - self.pos
     }
 
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.len() == 0
     }
 
-    pub fn eof(&self) -> bool {
+    pub const fn eof(&self) -> bool {
         self.is_empty()
     }
 
@@ -25,11 +25,11 @@ impl<'a> ReadCursor<'a> {
         &self.inner[self.pos..]
     }
 
-    pub fn inner(&self) -> &[u8] {
+    pub const fn inner(&self) -> &[u8] {
         self.inner
     }
 
-    pub fn pos(&self) -> usize {
+    pub const fn pos(&self) -> usize {
         self.pos
     }
 
@@ -65,6 +65,14 @@ impl<'a> ReadCursor<'a> {
         u32::from_be_bytes(self.read_array::<4>())
     }
 
+    pub fn read_u64(&mut self) -> u64 {
+        u64::from_le_bytes(self.read_array::<8>())
+    }
+
+    pub fn read_u64_be(&mut self) -> u64 {
+        u64::from_be_bytes(self.read_array::<8>())
+    }
+
     pub fn peek<const N: usize>(&mut self) -> [u8; N] {
         self.inner[self.pos..self.pos + N].try_into().expect("N-elements array")
     }
@@ -97,7 +105,7 @@ impl<'a> ReadCursor<'a> {
         self.pos += len;
     }
 
-    pub fn advanced(&'a self, len: usize) -> ReadCursor<'a> {
+    pub const fn advanced(&'a self, len: usize) -> ReadCursor<'a> {
         ReadCursor {
             inner: self.inner,
             pos: self.pos + len,
@@ -108,7 +116,7 @@ impl<'a> ReadCursor<'a> {
         self.pos -= len;
     }
 
-    pub fn rewinded(&'a self, len: usize) -> ReadCursor<'a> {
+    pub const fn rewinded(&'a self, len: usize) -> ReadCursor<'a> {
         ReadCursor {
             inner: self.inner,
             pos: self.pos - len,
@@ -127,15 +135,15 @@ impl<'a> WriteCursor<'a> {
         Self { inner: bytes, pos: 0 }
     }
 
-    pub fn len(&self) -> usize {
+    pub const fn len(&self) -> usize {
         self.inner.len() - self.pos
     }
 
-    pub fn is_empty(&self) -> bool {
+    pub const fn is_empty(&self) -> bool {
         self.len() == 0
     }
 
-    pub fn eof(&self) -> bool {
+    pub const fn eof(&self) -> bool {
         self.is_empty()
     }
 
@@ -147,7 +155,7 @@ impl<'a> WriteCursor<'a> {
         &mut self.inner[self.pos..]
     }
 
-    pub fn inner(&self) -> &[u8] {
+    pub const fn inner(&self) -> &[u8] {
         self.inner
     }
 
@@ -155,7 +163,7 @@ impl<'a> WriteCursor<'a> {
         self.inner
     }
 
-    pub fn pos(&self) -> usize {
+    pub const fn pos(&self) -> usize {
         self.pos
     }
 
@@ -187,6 +195,14 @@ impl<'a> WriteCursor<'a> {
     }
 
     pub fn write_u32_be(&mut self, value: u32) {
+        self.write_array(value.to_be_bytes())
+    }
+
+    pub fn write_u64(&mut self, value: u64) {
+        self.write_array(value.to_le_bytes())
+    }
+
+    pub fn write_u64_be(&mut self, value: u64) {
         self.write_array(value.to_be_bytes())
     }
 

@@ -1,5 +1,4 @@
 use crate::cursor::{ReadCursor, WriteCursor};
-use crate::padding::Padding;
 use crate::{PduError, PduErrorExt as _, PduResult};
 
 /// TPKT header
@@ -57,7 +56,7 @@ impl TpktHeader {
             return Err(PduError::unsupported_version("TPKT version", version));
         }
 
-        Padding::<1>::read(src);
+        crate::padding::read(src, 1);
 
         let packet_length = src.read_u16_be();
 
@@ -69,7 +68,7 @@ impl TpktHeader {
 
         dst.write_u8(Self::VERSION);
 
-        Padding::<1>::write(dst);
+        crate::padding::write(dst, 1);
 
         dst.write_u16_be(self.packet_length);
 

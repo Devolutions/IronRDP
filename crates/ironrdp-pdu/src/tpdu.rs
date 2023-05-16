@@ -1,5 +1,4 @@
 use crate::cursor::{ReadCursor, WriteCursor};
-use crate::padding::Padding;
 use crate::tpkt::TpktHeader;
 use crate::{PduError, PduErrorExt as _, PduResult};
 
@@ -139,10 +138,10 @@ impl TpduHeader {
         }
 
         if code == TpduCode::DATA {
-            Padding::<1>::read(src); // EOT
+            crate::padding::read(src, 1); // EOT
         } else {
             ensure_size!(in: src, size: 5);
-            Padding::<5>::read(src); // DST-REF, SRC-REF, Class 0
+            crate::padding::read(src, 5); // DST-REF, SRC-REF, Class 0
         }
 
         Ok(Self { li, code })

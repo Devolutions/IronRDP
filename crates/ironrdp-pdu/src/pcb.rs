@@ -1,7 +1,6 @@
 //! This module contains the RDP_PRECONNECTION_PDU_V1 and RDP_PRECONNECTION_PDU_V2 structures.
 
 use crate::cursor::ReadCursor;
-use crate::padding::Padding;
 use crate::{Pdu, PduDecode, PduEncode, PduError, PduErrorExt as _, PduResult};
 
 /// Preconnection PDU version
@@ -56,7 +55,7 @@ impl<'de> PduDecode<'de> for PreconnectionBlob {
             ));
         }
 
-        Padding::<4>::read(src); // flags
+        crate::padding::read(src, 4); // flags
 
         // The version field SHOULD be initialized by the client and SHOULD be ignored by the server,
         // as specified in sections 3.1.5.1 and 3.2.5.1.
@@ -119,7 +118,7 @@ impl PduEncode for PreconnectionBlob {
         ensure_size!(in: dst, size: pcb_size);
 
         dst.write_u32(cast_length!("cbSize", pcb_size)?); // cbSize
-        Padding::<4>::write(dst); // flags
+        crate::padding::write(dst, 4); // flags
         dst.write_u32(self.version.0); // version
         dst.write_u32(self.id); // id
 

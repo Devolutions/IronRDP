@@ -1,20 +1,37 @@
+//! Padding handling helpers
+//!
+//! For maximum compatibility, messages should be generated with padding set to zero,
+//! and message recipients should not assume padding has any particular
+//! value.
+
 use crate::cursor::{ReadCursor, WriteCursor};
 
-/// Use this when handling padding
-pub struct Padding<const N: usize>();
-
-impl<const N: usize> Padding<N> {
-    //= https://www.rfc-editor.org/rfc/rfc6143.html#section-7
-    //# For maximum
-    //# compatibility, messages should be generated with padding set to zero,
-    //# but message recipients should not assume padding has any particular
-    //# value.
-
-    pub fn write(dst: &mut WriteCursor<'_>) {
-        dst.write_array([0; N]);
+/// Writes zeroes using as few `write_u*` calls as possible.
+pub fn write(dst: &mut WriteCursor<'_>, mut n: usize) {
+    loop {
+        match n {
+            0 => break,
+            1 => {
+                dst.write_u8(0);
+                n -= 1;
+            }
+            2..=3 => {
+                dst.write_u16(0);
+                n -= 2;
+            }
+            4..=7 => {
+                dst.write_u32(0);
+                n -= 4;
+            }
+            _ => {
+                dst.write_u64(0);
+                n -= 8;
+            }
+        }
     }
+}
 
-    pub fn read(src: &mut ReadCursor<'_>) {
-        src.advance(N);
-    }
+/// Moves read cursor, ignoring padding bytes.
+pub fn read(src: &mut ReadCursor<'_>, n: usize) {
+    src.advance(n);
 }
