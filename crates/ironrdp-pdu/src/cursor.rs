@@ -1,3 +1,5 @@
+use crate::PduResult;
+
 #[derive(Debug)]
 pub struct ReadCursor<'a> {
     inner: &'a [u8],
@@ -49,12 +51,27 @@ impl<'a> ReadCursor<'a> {
         self.read_array::<1>()[0]
     }
 
+    pub fn try_read_u8(&mut self, ctx: &'static str) -> PduResult<u8> {
+        ensure_size!(ctx: ctx, in: self, size: 1);
+        Ok(self.read_array::<1>()[0])
+    }
+
     pub fn read_u16(&mut self) -> u16 {
         u16::from_le_bytes(self.read_array::<2>())
     }
 
     pub fn read_u16_be(&mut self) -> u16 {
         u16::from_be_bytes(self.read_array::<2>())
+    }
+
+    pub fn try_read_u16(&mut self, ctx: &'static str) -> PduResult<u16> {
+        ensure_size!(ctx: ctx, in: self, size: 2);
+        Ok(u16::from_le_bytes(self.read_array::<2>()))
+    }
+
+    pub fn try_read_u16_be(&mut self, ctx: &'static str) -> PduResult<u16> {
+        ensure_size!(ctx: ctx, in: self, size: 2);
+        Ok(u16::from_be_bytes(self.read_array::<2>()))
     }
 
     pub fn read_u32(&mut self) -> u32 {
@@ -65,12 +82,32 @@ impl<'a> ReadCursor<'a> {
         u32::from_be_bytes(self.read_array::<4>())
     }
 
+    pub fn try_read_u32(&mut self, ctx: &'static str) -> PduResult<u32> {
+        ensure_size!(ctx: ctx, in: self, size: 4);
+        Ok(u32::from_le_bytes(self.read_array::<4>()))
+    }
+
+    pub fn try_read_u32_be(&mut self, ctx: &'static str) -> PduResult<u32> {
+        ensure_size!(ctx: ctx, in: self, size: 4);
+        Ok(u32::from_be_bytes(self.read_array::<4>()))
+    }
+
     pub fn read_u64(&mut self) -> u64 {
         u64::from_le_bytes(self.read_array::<8>())
     }
 
     pub fn read_u64_be(&mut self) -> u64 {
         u64::from_be_bytes(self.read_array::<8>())
+    }
+
+    pub fn try_read_u64(&mut self, ctx: &'static str) -> PduResult<u64> {
+        ensure_size!(ctx: ctx, in: self, size: 8);
+        Ok(u64::from_le_bytes(self.read_array::<8>()))
+    }
+
+    pub fn try_read_u64_be(&mut self, ctx: &'static str) -> PduResult<u64> {
+        ensure_size!(ctx: ctx, in: self, size: 8);
+        Ok(u64::from_be_bytes(self.read_array::<8>()))
     }
 
     pub fn peek<const N: usize>(&mut self) -> [u8; N] {
@@ -85,6 +122,11 @@ impl<'a> ReadCursor<'a> {
         self.peek::<1>()[0]
     }
 
+    pub fn try_peek_u8(&mut self, ctx: &'static str) -> PduResult<u8> {
+        ensure_size!(ctx: ctx, in: self, size: 1);
+        Ok(self.peek::<1>()[0])
+    }
+
     pub fn peek_u16(&mut self) -> u16 {
         u16::from_le_bytes(self.peek::<2>())
     }
@@ -93,12 +135,50 @@ impl<'a> ReadCursor<'a> {
         u16::from_be_bytes(self.peek::<2>())
     }
 
+    pub fn try_peek_u16(&mut self, ctx: &'static str) -> PduResult<u16> {
+        ensure_size!(ctx: ctx, in: self, size: 2);
+        Ok(u16::from_le_bytes(self.peek::<2>()))
+    }
+
+    pub fn try_peek_u16_be(&mut self, ctx: &'static str) -> PduResult<u16> {
+        ensure_size!(ctx: ctx, in: self, size: 2);
+        Ok(u16::from_be_bytes(self.peek::<2>()))
+    }
+
     pub fn peek_u32(&mut self) -> u32 {
         u32::from_le_bytes(self.peek::<4>())
     }
 
     pub fn peek_u32_be(&mut self) -> u32 {
         u32::from_be_bytes(self.peek::<4>())
+    }
+
+    pub fn try_peek_u32(&mut self, ctx: &'static str) -> PduResult<u32> {
+        ensure_size!(ctx: ctx, in: self, size: 4);
+        Ok(u32::from_le_bytes(self.peek::<4>()))
+    }
+
+    pub fn try_peek_u32_be(&mut self, ctx: &'static str) -> PduResult<u32> {
+        ensure_size!(ctx: ctx, in: self, size: 4);
+        Ok(u32::from_be_bytes(self.peek::<4>()))
+    }
+
+    pub fn peek_u64(&mut self) -> u64 {
+        u64::from_le_bytes(self.peek::<8>())
+    }
+
+    pub fn peek_u64_be(&mut self) -> u64 {
+        u64::from_be_bytes(self.peek::<8>())
+    }
+
+    pub fn try_peek_u64(&mut self, ctx: &'static str) -> PduResult<u64> {
+        ensure_size!(ctx: ctx, in: self, size: 8);
+        Ok(u64::from_le_bytes(self.peek::<8>()))
+    }
+
+    pub fn try_peek_u64_be(&mut self, ctx: &'static str) -> PduResult<u64> {
+        ensure_size!(ctx: ctx, in: self, size: 8);
+        Ok(u64::from_be_bytes(self.peek::<8>()))
     }
 
     pub fn advance(&mut self, len: usize) {
