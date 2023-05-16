@@ -236,23 +236,21 @@ impl DomainMcsPdu {
     }
 }
 
-fn read_mcspdu_header(src: &mut ReadCursor<'_>, name: &'static str) -> PduResult<DomainMcsPdu> {
-    ensure_size!(ctx: name, in: src, size: 1);
-    let choice = src.read_u8();
+fn read_mcspdu_header(src: &mut ReadCursor<'_>, ctx: &'static str) -> PduResult<DomainMcsPdu> {
+    let choice = src.try_read_u8(ctx)?;
 
     DomainMcsPdu::from_choice(choice).ok_or(PduError::invalid_message(
-        name,
+        ctx,
         "domain-mcspdu",
         "unexpected application tag for CHOICE",
     ))
 }
 
-fn peek_mcspdu_header(src: &mut ReadCursor<'_>, name: &'static str) -> PduResult<DomainMcsPdu> {
-    ensure_size!(ctx: name, in: src, size: 1);
-    let choice = src.peek_u8();
+fn peek_mcspdu_header(src: &mut ReadCursor<'_>, ctx: &'static str) -> PduResult<DomainMcsPdu> {
+    let choice = src.try_peek_u8(ctx)?;
 
     DomainMcsPdu::from_choice(choice).ok_or(PduError::invalid_message(
-        name,
+        ctx,
         "domain-mcspdu",
         "unexpected application tag for CHOICE",
     ))
@@ -682,7 +680,9 @@ impl<'de> McsPdu<'de> for SendDataIndication<'de> {
         let initiator_id = per::read_u16(src, BASE_CHANNEL_ID).map_err(per_field_err!("initiator"))?;
         let channel_id = per::read_u16(src, 0).map_err(per_field_err!("channelId"))?;
 
-        let _data_priority_and_segmentation = src.read_u8();
+        // dataPriority + segmentation
+        ensure_size!(ctx: Self::MCS_NAME, in: src, size: 1);
+        crate::padding::read(src, 1);
 
         let (length, _) = per::read_length(src).map_err(per_field_err!("userDataLength"))?;
         let length = usize::from(length);
@@ -751,6 +751,12 @@ pub struct DisconnectProviderUltimatum {
 
 impl_pdu_pod!(DisconnectProviderUltimatum);
 
+impl DisconnectProviderUltimatum {
+    pub const NAME: &str = "DisconnectProviderUltimatum";
+
+    pub const FIXED_PART_SIZE: usize = 2;
+}
+
 impl<'de> McsPdu<'de> for DisconnectProviderUltimatum {
     const MCS_NAME: &'static str = "DisconnectProviderUltimatum";
 
@@ -791,6 +797,8 @@ impl<'de> McsPdu<'de> for DisconnectProviderUltimatum {
         // 0 - padding
         // 0 - padding
         // 0 - padding
+
+        ensure_fixed_part_size!(in: src);
 
         let [b1, b2] = src.read_array();
 
