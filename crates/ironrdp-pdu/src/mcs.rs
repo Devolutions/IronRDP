@@ -601,7 +601,9 @@ impl<'de> McsPdu<'de> for SendDataRequest<'de> {
         let initiator_id = per::read_u16(src, BASE_CHANNEL_ID).map_err(per_field_err!("initiator"))?;
         let channel_id = per::read_u16(src, 0).map_err(per_field_err!("channelId"))?;
 
-        let _data_priority_and_segmentation = src.read_u8();
+        // dataPriority + segmentation
+        ensure_size!(ctx: Self::MCS_NAME, in: src, size: 1);
+        crate::padding::read(src, 1);
 
         let (length, _) = per::read_length(src).map_err(per_field_err!("userDataLength"))?;
         let length = usize::from(length);
