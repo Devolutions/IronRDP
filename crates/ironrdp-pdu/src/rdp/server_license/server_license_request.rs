@@ -273,9 +273,16 @@ impl ServerCertificate {
 
         match &self.certificate {
             CertificateType::Proprietary(certificate) => {
-                let mut public_key_buffer = Vec::with_capacity(certificate.public_key.buffer_length());
-                certificate.public_key.to_buffer(&mut public_key_buffer)?;
-                Ok(public_key_buffer)
+                let public_exponent = certificate.public_key.public_exponent.to_le_bytes();
+
+                let rsa_public_key = pkcs1::RsaPublicKey {
+                    modulus: pkcs1::UintRef::new(&certificate.public_key.modulus).unwrap(),
+                    public_exponent: pkcs1::UintRef::new(&public_exponent).unwrap(),
+                };
+
+                let public_key = pkcs1::der::Encode::to_der(&rsa_public_key).unwrap();
+
+                Ok(public_key)
             }
             CertificateType::X509(certificate) => {
                 let der = certificate

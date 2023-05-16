@@ -825,9 +825,10 @@ fn create_gcc_blocks(config: &Config, selected_protocol: nego::SecurityProtocol)
                 supported_color_depths: Some(supported_color_depths),
                 early_capability_flags: {
                     let mut early_capability_flags = ClientEarlyCapabilityFlags::VALID_CONNECTION_TYPE
-                        | ClientEarlyCapabilityFlags::SUPPORT_ERR_INFO_PDU
-                        | ClientEarlyCapabilityFlags::SUPPORT_STATUS_INFO_PDU
-                        | ClientEarlyCapabilityFlags::STRONG_ASYMMETRIC_KEYS;
+                        | ClientEarlyCapabilityFlags::SUPPORT_ERR_INFO_PDU;
+
+                    // TODO: support for ClientEarlyCapabilityFlags::SUPPORT_STATUS_INFO_PDU
+                    // TODO: support for ClientEarlyCapabilityFlags::STRONG_ASYMMETRIC_KEYS
 
                     if config.graphics.is_some() {
                         early_capability_flags |= ClientEarlyCapabilityFlags::SUPPORT_DYN_VC_GFX_PROTOCOL;
@@ -863,16 +864,12 @@ fn create_gcc_blocks(config: &Config, selected_protocol: nego::SecurityProtocol)
         } else {
             Some(ClientNetworkData { channels: Vec::new() })
         },
-        cluster: Some(ClientClusterData {
-            flags: RedirectionFlags::REDIRECTION_SUPPORTED,
-            redirection_version: RedirectionVersion::V4,
-            redirected_session_id: 0,
-        }),
+        // TODO: support for Some(ClientClusterData { flags: RedirectionFlags::REDIRECTION_SUPPORTED, redirection_version: RedirectionVersion::V4, redirected_session_id: 0, }),
+        cluster: None,
         monitor: None,
-        message_channel: Some(ClientMessageChannelData {}),
-        multi_transport_channel: Some(MultiTransportChannelData {
-            flags: MultiTransportFlags::empty(),
-        }),
+        message_channel: Some(ClientMessageChannelData),
+        // TODO: support for Some(MultiTransportChannelData { flags: MultiTransportFlags::empty(), })
+        multi_transport_channel: None,
         monitor_extended: None,
     }
 }
