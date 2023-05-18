@@ -37,6 +37,7 @@ struct SessionBuilderInner {
     proxy_address: Option<String>,
     auth_token: Option<String>,
     pcb: Option<String>,
+    client_name: String,
     desktop_size: DesktopSize,
     update_callback: Option<js_sys::Function>,
     update_callback_context: Option<JsValue>,
@@ -52,6 +53,7 @@ impl Default for SessionBuilderInner {
             proxy_address: None,
             auth_token: None,
             pcb: None,
+            client_name: "ironrdp-web".to_owned(),
             desktop_size: DesktopSize {
                 width: DEFAULT_WIDTH,
                 height: DEFAULT_HEIGHT,
@@ -68,16 +70,19 @@ impl SessionBuilder {
         Self(Rc::new(RefCell::new(SessionBuilderInner::default())))
     }
 
+    /// Required
     pub fn username(&self, username: String) -> SessionBuilder {
         self.0.borrow_mut().username = Some(username);
         self.clone()
     }
 
+    /// Required
     pub fn destination(&self, destination: String) -> SessionBuilder {
         self.0.borrow_mut().destination = Some(destination);
         self.clone()
     }
 
+    /// Optional
     pub fn server_domain(&self, server_domain: String) -> SessionBuilder {
         self.0.borrow_mut().server_domain = if server_domain.is_empty() {
             None
@@ -87,36 +92,43 @@ impl SessionBuilder {
         self.clone()
     }
 
+    /// Required
     pub fn password(&self, password: String) -> SessionBuilder {
         self.0.borrow_mut().password = Some(password);
         self.clone()
     }
 
+    /// Required
     pub fn proxy_address(&self, address: String) -> SessionBuilder {
         self.0.borrow_mut().proxy_address = Some(address);
         self.clone()
     }
 
+    /// Required
     pub fn auth_token(&self, token: String) -> SessionBuilder {
         self.0.borrow_mut().auth_token = Some(token);
         self.clone()
     }
 
+    /// Optional
     pub fn pcb(&self, pcb: String) -> SessionBuilder {
         self.0.borrow_mut().pcb = Some(pcb);
         self.clone()
     }
 
+    /// Optional
     pub fn desktop_size(&self, desktop_size: DesktopSize) -> SessionBuilder {
         self.0.borrow_mut().desktop_size = desktop_size;
         self.clone()
     }
 
+    /// Required
     pub fn update_callback(&self, callback: js_sys::Function) -> SessionBuilder {
         self.0.borrow_mut().update_callback = Some(callback);
         self.clone()
     }
 
+    /// Required
     pub fn update_callback_context(&self, context: JsValue) -> SessionBuilder {
         self.0.borrow_mut().update_callback_context = Some(context);
         self.clone()
@@ -131,6 +143,7 @@ impl SessionBuilder {
             proxy_address,
             auth_token,
             pcb,
+            client_name,
             desktop_size,
             update_callback,
             update_callback_context,
@@ -145,6 +158,7 @@ impl SessionBuilder {
             proxy_address = inner.proxy_address.clone().expect("proxy_address");
             auth_token = inner.auth_token.clone().expect("auth_token");
             pcb = inner.pcb.clone();
+            client_name = inner.client_name.clone();
             desktop_size = inner.desktop_size.clone();
             update_callback = inner.update_callback.clone().expect("update_callback");
             update_callback_context = inner.update_callback_context.clone().expect("update_callback_context");
@@ -152,7 +166,7 @@ impl SessionBuilder {
 
         info!("Connect to RDP host");
 
-        let config = build_config(username, password, server_domain, desktop_size);
+        let config = build_config(username, password, server_domain, client_name, desktop_size);
 
         let ws = WebSocketCompat::new(WebSocket::open(&proxy_address).context("Couldn’t open WebSocket")?);
 
@@ -327,6 +341,7 @@ fn build_config(
     username: String,
     password: String,
     domain: Option<String>,
+    client_name: String,
     desktop_size: DesktopSize,
 ) -> connector::Config {
     connector::Config {
@@ -344,13 +359,16 @@ fn build_config(
             height: desktop_size.height,
         },
         graphics: None,
-        bitmap: None,
+        bitmap: Some(connector::BitmapConfig {
+            color_depth: 16,
+            lossy_compression: true,
+        }),
         client_build: semver::Version::parse(env!("CARGO_PKG_VERSION"))
             .map(|version| version.major * 100 + version.minor * 10 + version.patch)
             .unwrap_or(0)
             .pipe(u32::try_from)
             .unwrap(),
-        client_name: "IronRDP Web".to_owned(), // FIXME: in native clients, this is the client machine hostname. Should we use the browser user agent here?
+        client_name,
         // NOTE: hardcode this value like in freerdp
         // https://github.com/FreeRDP/FreeRDP/blob/4e24b966c86fdf494a782f0dfcfc43a057a2ea60/libfreerdp/core/settings.c#LL49C34-L49C70
         client_dir: "C:\\Windows\\System32\\mstscax.dll".to_owned(),
