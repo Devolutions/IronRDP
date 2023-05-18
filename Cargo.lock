@@ -1502,6 +1502,8 @@ dependencies = [
  "ironrdp-input",
  "ironrdp-pdu",
  "ironrdp-session",
+ "ironrdp-tls",
+ "ironrdp-tokio",
 ]
 
 [[package]]

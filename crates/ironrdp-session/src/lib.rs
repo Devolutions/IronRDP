@@ -4,14 +4,14 @@ extern crate tracing;
 #[macro_use]
 mod macros;
 
+pub mod fast_path;
 pub mod image;
 pub mod legacy;
 pub mod rfx; // FIXME: maybe this module should not be in this crate
+pub mod utils;
+pub mod x224;
 
 mod active_stage;
-mod fast_path;
-mod utils;
-mod x224;
 
 use core::fmt;
 
