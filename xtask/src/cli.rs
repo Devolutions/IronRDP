@@ -8,22 +8,25 @@ FLAGS:
   -h, --help      Prints help information
 
 TASKS:
-  check [all]                      Runs all checks
-  check fmt                        Checks formatting
-  check lints                      Checks lints
-  check tests                      Runs tests
-  check wasm                       Ensures wasm module is compatible for the web
-  ci                               Runs all checks required on CI
-  clean                            Clean workspace
-  coverage install                 Install dependencies required to generate the coverage report
-  coverage report                  Generate code-coverage data using tests and fuzz targets
-  fuzz corpus-fetch                Minify fuzzing corpus
-  fuzz corpus-min                  Minify fuzzing corpus
-  fuzz corpus-push                 Minify fuzzing corpus
-  fuzz install                     Install dependencies required for fuzzing
-  fuzz run [--duration] [--target] Fuzz a specific target if any or all targets for a limited duration (default is 5s)
-  svelte-run                       Runs SvelteKit-based standalone Web Client
-  wasm install                     Install dependencies required to build the wasm target
+  check fmt               Check formatting
+  check lints             Check lints
+  check tests [--no-run]  Compile tests and, unless specified otherwise, run them
+  check wasm              Ensure WASM module is compatible for the web
+  ci                      Run all checks required on CI
+  clean                   Clean workspace
+  coverage install        Install dependencies required to generate the coverage report
+  coverage report         Generate code-coverage data using tests and fuzz targets
+  fuzz corpus-fetch       Fetch fuzzing corpus from Azure storage
+  fuzz corpus-min         Minify fuzzing corpus
+  fuzz corpus-push        Push fuzzing corpus to Azure storage
+  fuzz install            Install dependencies required for fuzzing
+  fuzz run [--duration <SECONDS>] [--target <NAME>]
+                          Fuzz a specific target if any or all targets for a limited duration (default is 5s)
+  wasm check              Ensure WASM module is compatible for the web
+  wasm install            Install dependencies required to build the WASM target
+  web check               Ensure Web Client is building without error
+  web install             Install dependencies required to build and run Web Client
+  web run                 Run SvelteKit-based standalone Web Client
 ";
 
 pub fn print_help() {
@@ -31,14 +34,16 @@ pub fn print_help() {
 }
 
 pub enum Action {
-    CheckAll,
+    ShowHelp,
     CheckFmt,
     CheckLints,
-    CheckTests,
-    CheckWasm,
+    CheckTests {
+        no_run: bool,
+    },
+    Ci,
     Clean,
-    CoverageInstall,
-    CoverageReport,
+    CovInstall,
+    CovReport,
     FuzzCorpusFetch,
     FuzzCorpusMin,
     FuzzCorpusPush,
@@ -47,9 +52,11 @@ pub enum Action {
         duration: Option<u32>,
         target: Option<String>,
     },
-    ShowHelp,
-    SvelteRun,
+    WasmCheck,
     WasmInstall,
+    WebCheck,
+    WebInstall,
+    WebRun,
 }
 
 pub fn parse_args() -> anyhow::Result<Action> {
@@ -59,26 +66,28 @@ pub fn parse_args() -> anyhow::Result<Action> {
         Action::ShowHelp
     } else {
         match args.subcommand()?.as_deref() {
-            Some("ci") => Action::CheckAll,
             Some("check") => match args.subcommand()?.as_deref() {
-                Some("all") | None => Action::CheckAll,
                 Some("fmt") => Action::CheckFmt,
                 Some("lints") => Action::CheckLints,
-                Some("tests") => Action::CheckTests,
-                Some("wasm") => Action::CheckWasm,
-                Some(_) => anyhow::bail!("unknown check action"),
+                Some("tests") => Action::CheckTests {
+                    no_run: args.contains("--no-run"),
+                },
+                Some(unknown) => anyhow::bail!("unknown check action: {unknown}"),
+                None => Action::ShowHelp,
             },
+            Some("ci") => Action::Ci,
             Some("clean") => Action::Clean,
-            Some("coverage") => match args.subcommand()?.as_deref() {
-                Some("install") => Action::CoverageInstall,
-                Some("report") => Action::CoverageReport,
-                Some(_) => anyhow::bail!("unknown coverage action"),
+            Some("cov") => match args.subcommand()?.as_deref() {
+                Some("install") => Action::CovInstall,
+                Some("report") => Action::CovReport,
+                Some(unknown) => anyhow::bail!("unknown coverage action: {unknown}"),
                 None => Action::ShowHelp,
             },
             Some("fuzz") => match args.subcommand()?.as_deref() {
                 Some("corpus-fetch") => Action::FuzzCorpusFetch,
                 Some("corpus-min") => Action::FuzzCorpusMin,
                 Some("corpus-push") => Action::FuzzCorpusPush,
+                Some("install") => Action::FuzzInstall,
                 Some("run") => Action::FuzzRun {
                     duration: args.opt_value_from_str("--duration")?,
                     target: args.opt_value_from_str("--target")?,
@@ -87,13 +96,19 @@ pub fn parse_args() -> anyhow::Result<Action> {
                     duration: None,
                     target: None,
                 },
-                Some("install") => Action::FuzzInstall,
-                Some(_) => anyhow::bail!("unknown fuzz action"),
+                Some(unknown) => anyhow::bail!("unknown fuzz action: {unknown}"),
             },
-            Some("svelte-run") => Action::SvelteRun,
             Some("wasm") => match args.subcommand()?.as_deref() {
+                Some("check") => Action::WasmCheck,
                 Some("install") => Action::WasmInstall,
-                Some(_) => anyhow::bail!("unknown wasm action"),
+                Some(unknown) => anyhow::bail!("unknown wasm action: {unknown}"),
+                None => Action::ShowHelp,
+            },
+            Some("web") => match args.subcommand()?.as_deref() {
+                Some("check") => Action::WebCheck,
+                Some("install") => Action::WebInstall,
+                Some("run") => Action::WebRun,
+                Some(unknown) => anyhow::bail!("unknown web action: {unknown}"),
                 None => Action::ShowHelp,
             },
             None | Some(_) => Action::ShowHelp,

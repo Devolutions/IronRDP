@@ -1,6 +1,12 @@
+mod check;
+mod clean;
 mod cli;
+mod cov;
+mod fuzz;
+mod prelude;
 mod section;
-mod tasks;
+mod wasm;
+mod web;
 
 use std::path::{Path, PathBuf};
 
@@ -23,27 +29,38 @@ fn main() -> anyhow::Result<()> {
 
     match action {
         Action::ShowHelp => cli::print_help(),
-        Action::CheckAll => {
-            tasks::check_formatting(&sh)?;
-            tasks::run_tests(&sh)?;
-            tasks::check_lints(&sh)?;
-            tasks::check_wasm(&sh)?;
-            tasks::fuzz_run(&sh, None, None)?;
+        Action::CheckFmt => check::fmt(&sh)?,
+        Action::CheckLints => check::lints(&sh)?,
+        Action::CheckTests { no_run } => {
+            if no_run {
+                check::tests_compile(&sh)?;
+            } else {
+                check::tests_run(&sh)?;
+            }
         }
-        Action::CheckFmt => tasks::check_formatting(&sh)?,
-        Action::CheckLints => tasks::check_lints(&sh)?,
-        Action::CheckTests => tasks::run_tests(&sh)?,
-        Action::CheckWasm => tasks::check_wasm(&sh)?,
-        Action::Clean => tasks::clean_workspace(&sh)?,
-        Action::CoverageInstall => tasks::coverage_install(&sh)?,
-        Action::CoverageReport => tasks::coverage_report(&sh)?,
-        Action::FuzzCorpusFetch => tasks::fuzz_corpus_fetch(&sh)?,
-        Action::FuzzCorpusMin => tasks::fuzz_corpus_minify(&sh)?,
-        Action::FuzzCorpusPush => tasks::fuzz_corpus_push(&sh)?,
-        Action::FuzzInstall => tasks::fuzz_install(&sh)?,
-        Action::FuzzRun { duration, target } => tasks::fuzz_run(&sh, duration, target)?,
-        Action::SvelteRun => tasks::svelte_run(&sh)?,
-        Action::WasmInstall => tasks::wasm_install(&sh)?,
+        Action::Ci => {
+            check::fmt(&sh)?;
+            check::tests_compile(&sh)?;
+            check::tests_run(&sh)?;
+            check::lints(&sh)?;
+            wasm::check(&sh)?;
+            fuzz::run(&sh, None, None)?;
+            web::install(&sh)?;
+            web::check(&sh)?;
+        }
+        Action::Clean => clean::workspace(&sh)?,
+        Action::CovInstall => cov::install(&sh)?,
+        Action::CovReport => cov::report(&sh)?,
+        Action::FuzzCorpusFetch => fuzz::corpus_fetch(&sh)?,
+        Action::FuzzCorpusMin => fuzz::corpus_minify(&sh)?,
+        Action::FuzzCorpusPush => fuzz::corpus_push(&sh)?,
+        Action::FuzzInstall => fuzz::install(&sh)?,
+        Action::FuzzRun { duration, target } => fuzz::run(&sh, duration, target)?,
+        Action::WasmCheck => wasm::check(&sh)?,
+        Action::WasmInstall => wasm::install(&sh)?,
+        Action::WebCheck => web::check(&sh)?,
+        Action::WebInstall => web::install(&sh)?,
+        Action::WebRun => web::run(&sh)?,
     }
 
     Ok(())

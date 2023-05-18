@@ -33,7 +33,7 @@ Pay attention to the "**Architecture Invariant**" sections.
 
 **Architectural Invariant**: no non-essential dependency is allowed.
 
-**Architectural Invariant**: must be `#[no_std]`-compatible (eventually using the `alloc` crate). Usage of the standard
+**Architectural Invariant**: must be `#[no_std]`-compatible (optionally using the `alloc` crate). Usage of the standard
 library must be opt-in through a feature flag called `std` that is enabled by default. When the `alloc` crate is optional,
 a feature flag called `alloc` must exist to enable its use.
 

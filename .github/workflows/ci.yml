@@ -67,7 +67,7 @@ jobs:
           cargo xtask wasm install
 
       - name: Check
-        run: cargo xtask check wasm
+        run: cargo xtask wasm check
 
   tests:
     name: Tests [${{ matrix.os }}]
@@ -124,3 +124,27 @@ jobs:
       # Simply run all fuzz targets for a few seconds, just making there is nothing obviously wrong at a quick glance
       - name: Fuzz
         run: cargo xtask fuzz run
+
+  web:
+    name: Web Client
+    runs-on: ubuntu-20.04
+    needs: formatting
+
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Cache
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cargo/registry/
+            ~/.cargo/git/
+            ./target/
+            ./.cargo/local_root/
+          key: ${{ runner.os }}-${{ github.job }}-${{ hashFiles('fuzz/Cargo.lock') }}
+
+      - name: Prepare runner
+        run: cargo xtask web install
+
+      - name: Check
+        run: cargo xtask web check
