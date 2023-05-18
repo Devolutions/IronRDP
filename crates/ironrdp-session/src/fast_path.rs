@@ -75,7 +75,7 @@ impl Processor {
                             // Compressed bitmaps at a color depth of 32 bpp are compressed using RDP 6.0
                             // Bitmap Compression and stored inside an RDP 6.0 Bitmap Compressed Stream
                             // structure ([MS-RDPEGDI] section 2.2.2.5.1).
-                            trace!("32 bpp compressed RDP6_BITMAP_STREAM");
+                            debug!("32 bpp compressed RDP6_BITMAP_STREAM");
 
                             match self.bitmap_stream_decoder.decode_bitmap_stream_to_rgb24(
                                 update.bitmap_data,
@@ -94,7 +94,7 @@ impl Processor {
                             // Compressed bitmaps not in 32 bpp format are compressed using Interleaved
                             // RLE and encapsulated in an RLE Compressed Bitmap Stream structure (section
                             // 2.2.9.1.1.3.1.2.4).
-                            trace!(bpp = update.bits_per_pixel, "Non-32 bpp compressed RLE_BITMAP_STREAM",);
+                            debug!(bpp = update.bits_per_pixel, "Non-32 bpp compressed RLE_BITMAP_STREAM",);
 
                             match ironrdp_graphics::rle::decompress(
                                 update.bitmap_data,
