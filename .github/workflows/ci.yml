@@ -9,7 +9,20 @@ on:
   workflow_dispatch:
 
 env:
+  # Disable incremental compilation. CI builds are often closer to from-scratch builds, as changes
+  # are typically bigger than from a local edit-compile cycle.
+  # Incremental compilation also significantly increases the amount of IO and the size of ./target
+  # folder, which makes caching less effective.
+  CARGO_INCREMENTAL: 0
+  CARGO_NET_RETRY: 10
+  RUSTUP_MAX_RETRIES: 10
+  RUST_BACKTRACE: short
   CARGO_REGISTRIES_CRATES_IO_PROTOCOL: sparse
+  # Cache should never takes more than a few seconds to get downloaded.
+  # If it does, let’s just rebuild from scratch instead of hanging "forever".
+  SEGMENT_DOWNLOAD_TIMEOUT_MINS: 1
+  # Disabling debug info so compilation is faster and ./target folder is smaller.
+  CARGO_PROFILE_DEV_DEBUG: 0
 
 jobs:
   formatting:
@@ -22,55 +35,8 @@ jobs:
       - name: Check formatting
         run: cargo xtask check fmt
 
-  lints:
-    name: Lints
-    runs-on: ubuntu-20.04
-    needs: formatting
-
-    steps:
-      - uses: actions/checkout@v3
-
-      - name: Cache
-        uses: actions/cache@v3
-        with:
-          path: |
-            ~/.cargo/registry/
-            ~/.cargo/git/
-            ./target/
-            ./.cargo/local_root/
-          key: ${{ runner.os }}-${{ github.job }}-${{ hashFiles('Cargo.lock') }}
-
-      - name: Check clippy
-        run: cargo xtask check lints
-
-  wasm:
-    name: WASM target
-    runs-on: ubuntu-latest
-    needs: formatting
-
-    steps:
-      - uses: actions/checkout@v3
-
-      - name: Cache
-        uses: actions/cache@v3
-        with:
-          path: |
-            ~/.cargo/registry/
-            ~/.cargo/git/
-            ./target/
-            ./.cargo/local_root/
-          key: ${{ runner.os }}-${{ github.job }}-${{ hashFiles('Cargo.lock') }}
-
-      - name: Prepare runner
-        run: |
-          sudo apt install wabt
-          cargo xtask wasm install
-
-      - name: Check
-        run: cargo xtask wasm check
-
-  tests:
-    name: Tests [${{ matrix.os }}]
+  checks:
+    name: Checks [${{ matrix.os }}]
     runs-on: ${{ matrix.runner }}
     needs: formatting
     strategy:
@@ -86,18 +52,39 @@ jobs:
     steps:
       - uses: actions/checkout@v3
 
-      - name: Cache
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2.3.0
+
+      # Compilation is separated from execution so we know exactly the time for each step.
+
+      - name: Tests (compile)
+        run: cargo xtask check tests --no-run
+
+      - name: Tests (run)
+        run: cargo xtask check tests
+
+      - name: Lints
+        run: cargo xtask check lints
+
+      # Linux-only section
+
+      - name: Binary cache
+        if: matrix.os == 'linux'
         uses: actions/cache@v3
         with:
-          path: |
-            ~/.cargo/registry/
-            ~/.cargo/git/
-            ./target/
-            ./.cargo/local_root/
-          key: ${{ runner.os }}-${{ github.job }}-${{ hashFiles('Cargo.lock') }}
+          path: ./.cargo/local_root/bin
+          key: ${{ runner.os }}-bin-${{ github.job }}-${{ hashFiles('xtask/src/bin_version.rs') }}
+          restore-keys: ${{ runner.os }}-bin-
 
-      - name: Test [${{ matrix.os }}]
-        run: cargo xtask check tests
+      - name: WASM (prepare)
+        if: matrix.os == 'linux'
+        run: |
+          sudo apt install wabt
+          cargo xtask wasm install
+
+      - name: WASM (check)
+        if: matrix.os == 'linux'
+        run: cargo xtask wasm check
 
   fuzz:
     name: Fuzzing
@@ -107,21 +94,22 @@ jobs:
     steps:
       - uses: actions/checkout@v3
 
-      - name: Fuzz build cache
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2.3.0
+        with:
+          workspaces: fuzz -> target
+
+      - name: Binary cache
         uses: actions/cache@v3
         with:
-          path: |
-            ~/.cargo/registry/
-            ~/.cargo/git/
-            ./target/
-            ./fuzz/target/
-            ./.cargo/local_root/
-          key: ${{ runner.os }}-${{ github.job }}-${{ hashFiles('fuzz/Cargo.lock') }}
+          path: ./.cargo/local_root/bin
+          key: ${{ runner.os }}-bin-${{ github.job }}-${{ hashFiles('xtask/src/bin_version.rs') }}
+          restore-keys: ${{ runner.os }}-bin-
 
-      - name: Prepare runner
+      - name: Prepare
         run: cargo xtask fuzz install
 
-      # Simply run all fuzz targets for a few seconds, just making there is nothing obviously wrong at a quick glance
+      # Simply run all fuzz targets for a few seconds, just checking there is nothing obviously wrong at a quick glance
       - name: Fuzz
         run: cargo xtask fuzz run
 
@@ -133,17 +121,17 @@ jobs:
     steps:
       - uses: actions/checkout@v3
 
-      - name: Cache
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2.3.0
+
+      - name: Binary cache
         uses: actions/cache@v3
         with:
-          path: |
-            ~/.cargo/registry/
-            ~/.cargo/git/
-            ./target/
-            ./.cargo/local_root/
-          key: ${{ runner.os }}-${{ github.job }}-${{ hashFiles('fuzz/Cargo.lock') }}
+          path: ./.cargo/local_root/bin
+          key: ${{ runner.os }}-bin-${{ github.job }}-${{ hashFiles('xtask/src/bin_version.rs') }}
+          restore-keys: ${{ runner.os }}-bin-
 
-      - name: Prepare runner
+      - name: Prepare
         run: cargo xtask web install
 
       - name: Check
