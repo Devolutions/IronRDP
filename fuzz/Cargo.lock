@@ -282,6 +282,7 @@ dependencies = [
  "num-derive",
  "num-integer",
  "num-traits",
+ "pkcs1",
  "sha1",
  "tap",
  "thiserror",
@@ -397,6 +398,16 @@ name = "once_cell"
 version = "1.17.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b7e5500299e16ebb147ae15a00a942af264cf3688f47923b8fc2cd5858f23ad3"
+
+[[package]]
+name = "pkcs1"
+version = "0.7.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c8ffb9f10fa047879315e6625af03c164b16962a5368d724ed16323b68ace47f"
+dependencies = [
+ "der",
+ "spki",
+]
 
 [[package]]
 name = "proc-macro-error"

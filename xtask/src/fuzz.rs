@@ -1,0 +1,93 @@
+use crate::prelude::*;
+
+pub fn corpus_minify(sh: &Shell) -> anyhow::Result<()> {
+    let _s = Section::new("FUZZ-CORPUS-MINIFY");
+
+    let _guard = sh.push_dir("./fuzz");
+
+    for target in FUZZ_TARGETS {
+        cmd!(sh, "../{LOCAL_CARGO_ROOT}/bin/cargo-fuzz cmin {target}")
+            .env("RUSTUP_TOOLCHAIN", "nightly")
+            .run()?;
+    }
+
+    Ok(())
+}
+
+pub fn corpus_fetch(sh: &Shell) -> anyhow::Result<()> {
+    let _s = Section::new("FUZZ-CORPUS-FETCH");
+
+    cmd!(
+        sh,
+        "az storage blob download-batch --account-name fuzzingcorpus --source ironrdp --destination fuzz --output none"
+    )
+    .run()?;
+
+    Ok(())
+}
+
+pub fn corpus_push(sh: &Shell) -> anyhow::Result<()> {
+    let _s = Section::new("FUZZ-CORPUS-PUSH");
+
+    cmd!(
+        sh,
+        "az storage blob sync --account-name fuzzingcorpus --container ironrdp --source fuzz/corpus --destination corpus --delete-destination true --output none"
+    )
+    .run()?;
+
+    cmd!(
+        sh,
+        "az storage blob sync --account-name fuzzingcorpus --container ironrdp --source fuzz/artifacts --destination artifacts --delete-destination true --output none"
+    )
+    .run()?;
+
+    Ok(())
+}
+
+pub fn install(sh: &Shell) -> anyhow::Result<()> {
+    let _s = Section::new("FUZZ-INSTALL");
+
+    let cargo_fuzz_path: std::path::PathBuf = [LOCAL_CARGO_ROOT, "bin", "cargo-fuzz"].iter().collect();
+
+    if !sh.path_exists(cargo_fuzz_path) {
+        // Install in debug because it's faster to compile and we don't need execution speed anyway.
+        // cargo-fuzz version is pinned so we don’t get different versions without intervention.
+        cmd!(
+            sh,
+            "{CARGO} install --debug --locked --root {LOCAL_CARGO_ROOT} cargo-fuzz@{CARGO_FUZZ_VERSION}"
+        )
+        .run()?;
+    }
+
+    cmd!(sh, "rustup install nightly --profile=minimal").run()?;
+
+    Ok(())
+}
+
+pub fn run(sh: &Shell, duration: Option<u32>, target: Option<String>) -> anyhow::Result<()> {
+    let _s = Section::new("FUZZ-RUN");
+
+    let _guard = sh.push_dir("./fuzz");
+
+    let duration = duration.unwrap_or(5).to_string();
+    let target_from_user = target.as_deref().map(|value| [value]);
+
+    let targets = if let Some(targets) = &target_from_user {
+        targets
+    } else {
+        FUZZ_TARGETS
+    };
+
+    for target in targets {
+        cmd!(
+            sh,
+            "../{LOCAL_CARGO_ROOT}/bin/cargo-fuzz run {target} -- -max_total_time={duration}"
+        )
+        .env("RUSTUP_TOOLCHAIN", "nightly")
+        .run()?;
+    }
+
+    println!("All good!");
+
+    Ok(())
+}
