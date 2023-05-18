@@ -6,7 +6,12 @@ on:
     - cron: '12 3 * * 0,1,6' # At 03:12 AM UTC on Sunday, Monday, and Saturday.
 
 env:
+  CARGO_INCREMENTAL: 0
+  CARGO_NET_RETRY: 10
+  RUSTUP_MAX_RETRIES: 10
+  RUST_BACKTRACE: short
   CARGO_REGISTRIES_CRATES_IO_PROTOCOL: sparse
+  SEGMENT_DOWNLOAD_TIMEOUT_MINS: 1
 
 jobs:
   corpus-download:

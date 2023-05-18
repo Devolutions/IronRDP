@@ -1,3 +1,4 @@
+mod bin_version;
 mod check;
 mod clean;
 mod cli;
