@@ -16,6 +16,7 @@ doctest = false
 test = false
 
 [features]
+default = ["rustls"]
 rustls = ["dep:tokio-rustls"]
 native-tls = ["dep:tokio-native-tls"]
 
