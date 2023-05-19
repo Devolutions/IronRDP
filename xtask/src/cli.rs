@@ -11,11 +11,14 @@ TASKS:
   check fmt               Check formatting
   check lints             Check lints
   check tests [--no-run]  Compile tests and, unless specified otherwise, run them
-  check wasm              Ensure WASM module is compatible for the web
   ci                      Run all checks required on CI
   clean                   Clean workspace
-  coverage install        Install dependencies required to generate the coverage report
-  coverage report         Generate code-coverage data using tests and fuzz targets
+  cov grcov               Generate a nice HTML report using code-coverage data from tests and fuzz targets
+  cov install             Install cargo-llvm-cov in cargo local root
+  cov report-gh --repo <REPO_NAME> --pr <PR_ID>
+                          Generate a coverage report, posting a comment in GitHub PR
+  cov report [--html]     Generate a coverage report (optionally, a HTML report)
+  cov update              Update coverage data in the cov-data branch
   fuzz corpus-fetch       Fetch fuzzing corpus from Azure storage
   fuzz corpus-min         Minify fuzzing corpus
   fuzz corpus-push        Push fuzzing corpus to Azure storage
@@ -42,8 +45,16 @@ pub enum Action {
     },
     Ci,
     Clean,
+    CovGrcov,
     CovInstall,
-    CovReport,
+    CovReportGitHub {
+        repo: String,
+        pr: u32,
+    },
+    CovReport {
+        html_report: bool,
+    },
+    CovUpdate,
     FuzzCorpusFetch,
     FuzzCorpusMin,
     FuzzCorpusPush,
@@ -78,10 +89,17 @@ pub fn parse_args() -> anyhow::Result<Action> {
             Some("ci") => Action::Ci,
             Some("clean") => Action::Clean,
             Some("cov") => match args.subcommand()?.as_deref() {
+                Some("grcov") => Action::CovGrcov,
                 Some("install") => Action::CovInstall,
-                Some("report") => Action::CovReport,
-                Some(unknown) => anyhow::bail!("unknown coverage action: {unknown}"),
-                None => Action::ShowHelp,
+                Some("report-gh") => Action::CovReportGitHub {
+                    repo: args.value_from_str("--repo")?,
+                    pr: args.value_from_str("--pr")?,
+                },
+                Some("report") => Action::CovReport {
+                    html_report: args.contains("--html"),
+                },
+                Some("update") => Action::CovUpdate,
+                None | Some(_) => anyhow::bail!("Unknown cov action"),
             },
             Some("fuzz") => match args.subcommand()?.as_deref() {
                 Some("corpus-fetch") => Action::FuzzCorpusFetch,

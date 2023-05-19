@@ -1,0 +1,44 @@
+name: Coverage
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+    types: [ opened, synchronize, reopened ]
+  workflow_dispatch:
+
+env:
+  CARGO_REGISTRIES_CRATES_IO_PROTOCOL: sparse
+
+jobs:
+  coverage:
+    name: Coverage Report
+    runs-on: ubuntu-20.04
+
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2.3.0
+
+      - name: Prepare runner
+        run: cargo xtask cov install
+
+      - name: Generate PR report
+        if: github.event.number != ''
+        env:
+          GH_TOKEN: ${{ secrets.DEVOLUTIONSBOT_TOKEN }}
+        run: cargo xtask cov report-gh --repo "${{ github.repository }}" --pr "${{ github.event.number }}"
+
+      - name: Configure Git Identity
+        if: github.ref == 'refs/heads/master'
+        run: |
+          git config --local user.name "github-actions[bot]"
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Update coverage data
+        if: github.ref == 'refs/heads/master'
+        env:
+          GH_TOKEN: ${{ secrets.DEVOLUTIONSBOT_TOKEN }}
+        run: cargo xtask cov update

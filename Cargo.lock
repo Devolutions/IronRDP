@@ -3761,6 +3761,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "tinyjson"
+version = "2.5.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9ab95735ea2c8fd51154d01e39cf13912a78071c2d89abc49a7ef102a7dd725a"
+
+[[package]]
 name = "tinyvec"
 version = "1.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4669,6 +4675,7 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "pico-args",
+ "tinyjson",
  "xshell",
 ]
 
