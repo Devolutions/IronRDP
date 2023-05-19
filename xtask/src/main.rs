@@ -50,8 +50,11 @@ fn main() -> anyhow::Result<()> {
             web::check(&sh)?;
         }
         Action::Clean => clean::workspace(&sh)?,
+        Action::CovGrcov => cov::grcov(&sh)?,
         Action::CovInstall => cov::install(&sh)?,
-        Action::CovReport => cov::report(&sh)?,
+        Action::CovReportGitHub { repo, pr } => cov::report_github(&sh, &repo, pr)?,
+        Action::CovReport { html_report } => cov::report(&sh, html_report)?,
+        Action::CovUpdate => cov::update(&sh)?,
         Action::FuzzCorpusFetch => fuzz::corpus_fetch(&sh)?,
         Action::FuzzCorpusMin => fuzz::corpus_minify(&sh)?,
         Action::FuzzCorpusPush => fuzz::corpus_push(&sh)?,
