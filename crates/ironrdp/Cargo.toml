@@ -22,8 +22,6 @@ connector = ["dep:ironrdp-connector"]
 session = ["dep:ironrdp-session"]
 graphics = ["dep:ironrdp-graphics"]
 input = ["dep:ironrdp-input"]
-tokio = ["dep:ironrdp-tokio"]
-tls = ["dep:ironrdp-tls"]
 
 [dependencies]
 ironrdp-pdu = { workspace = true, optional = true }
@@ -31,5 +29,3 @@ ironrdp-connector = { workspace = true, optional = true }
 ironrdp-session = { workspace = true, optional = true }
 ironrdp-graphics = { workspace = true, optional = true }
 ironrdp-input = { workspace = true, optional = true }
-ironrdp-tokio = { workspace = true, optional = true }
-ironrdp-tls = { workspace = true, features = ["rustls"], optional = true }

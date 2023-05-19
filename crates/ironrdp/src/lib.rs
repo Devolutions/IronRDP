@@ -12,7 +12,3 @@ pub use ironrdp_input as input;
 pub use ironrdp_pdu as pdu;
 #[cfg(feature = "session")]
 pub use ironrdp_session as session;
-#[cfg(feature = "tls")]
-pub use ironrdp_tls as tls;
-#[cfg(feature = "tokio")]
-pub use ironrdp_tokio as tokio;
