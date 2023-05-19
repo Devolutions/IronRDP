@@ -85,10 +85,10 @@ where
         self.stream.read(&mut self.buf).await
     }
 
-    pub async fn read_exact(&mut self, length: usize) -> io::Result<Bytes> {
+    pub async fn read_exact(&mut self, length: usize) -> io::Result<BytesMut> {
         loop {
             if self.buf.len() >= length {
-                return Ok(self.buf.split_to(length).freeze());
+                return Ok(self.buf.split_to(length));
             } else {
                 self.buf.reserve(length - self.buf.len());
             }
@@ -102,7 +102,7 @@ where
         }
     }
 
-    pub async fn read_pdu(&mut self) -> io::Result<(ironrdp_pdu::Action, Bytes)> {
+    pub async fn read_pdu(&mut self) -> io::Result<(ironrdp_pdu::Action, BytesMut)> {
         loop {
             // Try decoding and see if a frame has been received already
             match ironrdp_pdu::find_size(self.peek()) {
@@ -131,7 +131,7 @@ where
                 .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?
             {
                 Some(length) => {
-                    return self.read_exact(length).await;
+                    return Ok(self.read_exact(length).await?.freeze());
                 }
                 None => {
                     let len = self.read().await?;
