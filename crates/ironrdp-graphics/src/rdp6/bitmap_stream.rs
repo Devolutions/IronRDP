@@ -2,7 +2,7 @@ use ironrdp_pdu::bitmap::rdp6::{BitmapStream as BitmapStreamPdu, ColorPlanes};
 use ironrdp_pdu::{decode, PduError};
 use thiserror::Error;
 
-use crate::color_conversion::{Rgb, YCoCg};
+use crate::color_conversion::Rgb;
 use crate::rdp6::rle::{decompress_8bpp_plane, RleError};
 
 #[derive(Debug, Error)]
@@ -158,8 +158,6 @@ impl<'a> BitmapStreamDecoderImpl<'a> {
     }
 
     fn write_aycocg_planes_to_rgb24(&self, params: AYCoCgParams, planes: &[u8], dst: &mut Vec<u8>) {
-        // For AYCoCg we need to take color loss level and subsampling into account
-        let chroma_shift = (params.color_loss_level - 1) as usize;
         let sample_shift = params.chroma_subsampling as usize;
 
         let (y_offset, co_offset, cg_offset) = (
@@ -177,10 +175,10 @@ impl<'a> BitmapStreamDecoderImpl<'a> {
             let chroma_col = (idx % self.image_width) >> sample_shift;
             let chroma_idx = chroma_row * self.chroma_width + chroma_col;
 
-            let co = (co_plane[chroma_idx] << chroma_shift) as i8;
-            let cg = (cg_plane[chroma_idx] << chroma_shift) as i8;
+            let co = co_plane[chroma_idx];
+            let cg = cg_plane[chroma_idx];
 
-            let Rgb { r, g, b } = YCoCg { y, co, cg }.into();
+            let Rgb { r, g, b } = ycocg_with_cll_to_rgb(params.color_loss_level, y, co, cg);
 
             // As described in 3.1.9.1.2 [MS-RDPEGDI], R and B channels are swapped for
             // AYCoCg when 24-bit image is used (no alpha). We swap them back here
@@ -206,7 +204,7 @@ impl<'a> BitmapStreamDecoderImpl<'a> {
                 use_chroma_subsampling,
                 ..
             } => {
-                let params = AYCoCgParams {
+                let params: AYCoCgParams = AYCoCgParams {
                     color_loss_level,
                     chroma_subsampling: use_chroma_subsampling,
                     alpha: self.bitmap.use_alpha,
@@ -218,6 +216,32 @@ impl<'a> BitmapStreamDecoderImpl<'a> {
 
         Ok(())
     }
+}
+
+/// Perform YCoCg -> RGB conversion with color loss redution (CLL) correction.
+fn ycocg_with_cll_to_rgb(cll: u8, y: u8, co: u8, cg: u8) -> Rgb {
+    // We decrease CLL by 1 to skip division by 2 for co & cg components during computation of
+    // the following color conversion matrix:
+    // |R|   |1   1/2   -1/2|   |Y |
+    // |G| = |1    0     1/2| * |Co|
+    // |B|   |1  -1/2   -1/2|   |Cg|
+    let chroma_shift = (cll - 1) as usize;
+
+    let clip_i16 = |v: i16| v.max(0).min(255) as u8;
+
+    let co_signed = (co << chroma_shift) as i8;
+    let cg_signed = (cg << chroma_shift) as i8;
+
+    let y = i16::from(y);
+    let co = i16::from(co_signed);
+    let cg = i16::from(cg_signed);
+
+    let t = y - cg;
+    let r = clip_i16(t + co);
+    let g = clip_i16(y + cg);
+    let b = clip_i16(t - co);
+
+    Rgb { r, g, b }
 }
 
 impl BitmapStreamDecoder {
@@ -286,35 +310,35 @@ mod tests {
     }
 
     #[test]
-    fn decode_64x24_aycocg_rle() {
+    fn decode_64x64_aycocg_rle() {
         // AYCoCg (With alpha), RLE, no chroma subsampling
         assert_decoded_image(
-            include_bytes!("test_assets/64x24_aycocg_rle.bin"),
-            include_bytes!("test_assets/64x24_aycocg_rle.bmp"),
+            include_bytes!("test_assets/64x64_aycocg_rle.bin"),
+            include_bytes!("test_assets/64x64_aycocg_rle.bmp"),
             64,
-            24,
+            64,
         );
     }
 
     #[test]
-    fn decode_64x24_ycocg_rle_ss() {
+    fn decode_64x64_ycocg_rle_ss() {
         // AYCoCg (No alpha), RLE, with chroma subsampling
         assert_decoded_image(
-            include_bytes!("test_assets/64x24_ycocg_rle_ss.bin"),
-            include_bytes!("test_assets/64x24_ycocg_rle_ss.bmp"),
+            include_bytes!("test_assets/64x64_ycocg_rle_ss.bin"),
+            include_bytes!("test_assets/64x64_ycocg_rle_ss.bmp"),
             64,
-            24,
+            64,
         );
     }
 
     #[test]
-    fn decode_64x57_ycocg_rle_ss() {
+    fn decode_64x35_ycocg_rle_ss() {
         // AYCoCg (No alpha), RLE, with chroma subsampling + odd resolution
         assert_decoded_image(
-            include_bytes!("test_assets/64x57_ycocg_rle_ss.bin"),
-            include_bytes!("test_assets/64x57_ycocg_rle_ss.bmp"),
+            include_bytes!("test_assets/64x35_ycocg_rle_ss.bin"),
+            include_bytes!("test_assets/64x35_ycocg_rle_ss.bmp"),
             64,
-            57,
+            35,
         );
     }
 
