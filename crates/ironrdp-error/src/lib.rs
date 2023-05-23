@@ -161,7 +161,7 @@ where
     }
 }
 
-/// Temporary compability traits to smooth transition from old style
+/// Temporary compatibility traits to smooth transition from old style
 #[cfg(feature = "std")]
 #[doc(hidden)]
 pub mod legacy {

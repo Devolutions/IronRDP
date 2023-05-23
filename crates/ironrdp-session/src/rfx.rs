@@ -76,7 +76,7 @@ impl DecodingContext {
         let channels = channels.ok_or(general_err!("channels header is missing"))?;
 
         if channels.0.is_empty() {
-            return Err(general_err!("no RFX channel annouced"));
+            return Err(general_err!("no RFX channel announced"));
         }
 
         self.context = context;
