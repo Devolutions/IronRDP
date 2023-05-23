@@ -286,35 +286,35 @@ mod tests {
     }
 
     #[test]
-    fn decode_64x24_aycocg_rle() {
+    fn decode_64x64_aycocg_rle() {
         // AYCoCg (With alpha), RLE, no chroma subsampling
         assert_decoded_image(
-            include_bytes!("test_assets/64x24_aycocg_rle.bin"),
-            include_bytes!("test_assets/64x24_aycocg_rle.bmp"),
+            include_bytes!("test_assets/64x64_aycocg_rle.bin"),
+            include_bytes!("test_assets/64x64_aycocg_rle.bmp"),
             64,
-            24,
+            64,
         );
     }
 
     #[test]
-    fn decode_64x24_ycocg_rle_ss() {
+    fn decode_64x64_ycocg_rle_ss() {
         // AYCoCg (No alpha), RLE, with chroma subsampling
         assert_decoded_image(
-            include_bytes!("test_assets/64x24_ycocg_rle_ss.bin"),
-            include_bytes!("test_assets/64x24_ycocg_rle_ss.bmp"),
+            include_bytes!("test_assets/64x64_ycocg_rle_ss.bin"),
+            include_bytes!("test_assets/64x64_ycocg_rle_ss.bmp"),
             64,
-            24,
+            64,
         );
     }
 
     #[test]
-    fn decode_64x57_ycocg_rle_ss() {
+    fn decode_64x35_ycocg_rle_ss() {
         // AYCoCg (No alpha), RLE, with chroma subsampling + odd resolution
         assert_decoded_image(
-            include_bytes!("test_assets/64x57_ycocg_rle_ss.bin"),
-            include_bytes!("test_assets/64x57_ycocg_rle_ss.bmp"),
+            include_bytes!("test_assets/64x35_ycocg_rle_ss.bin"),
+            include_bytes!("test_assets/64x35_ycocg_rle_ss.bmp"),
             64,
-            57,
+            35,
         );
     }
 

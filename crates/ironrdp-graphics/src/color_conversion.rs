@@ -97,11 +97,11 @@ impl From<YCoCg> for Rgb {
         let co = i16::from(co);
         let cg = i16::from(cg);
 
-        let t = y - cg / 2;
+        let t = y - cg;
 
-        let r = clip_i16(t + co / 2);
-        let g = clip_i16(y + cg / 2);
-        let b = clip_i16(t - co / 2);
+        let r = clip_i16(t + co);
+        let g = clip_i16(y + cg);
+        let b = clip_i16(t - co);
 
         Self { r, g, b }
     }
