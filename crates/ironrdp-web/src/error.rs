@@ -4,11 +4,18 @@ use wasm_bindgen::prelude::*;
 #[wasm_bindgen]
 #[derive(Clone, Copy)]
 pub enum IronRdpErrorKind {
+    /// Catch-all error kind
     General,
+    /// Incorrect password used
     WrongPassword,
+    /// Unable to login to machine
     LogonFailure,
+    /// Insufficient permission, server denied access
     AccessDenied,
+    /// Something wrong happened when sending or receiving the RDClenaPath message
     RDCleanPath,
+    /// Couldn’t connect to proxy
+    ProxyConnect,
 }
 
 #[wasm_bindgen]
