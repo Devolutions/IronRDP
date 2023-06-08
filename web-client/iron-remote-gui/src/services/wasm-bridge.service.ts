@@ -1,5 +1,5 @@
 import {BehaviorSubject, from, Observable, of, Subject} from 'rxjs';
-import init, {DeviceEvent, InputTransaction, ironrdp_init, IronRdpError, Session, SessionBuilder} from '../../../../crates/ironrdp-web/pkg/ironrdp_web';
+import init, {DesktopSize, DeviceEvent, InputTransaction, ironrdp_init, IronRdpError, Session, SessionBuilder} from '../../../../crates/ironrdp-web/pkg/ironrdp_web';
 import {loggingService} from './logging.service';
 import {catchError, filter, map} from 'rxjs/operators';
 import {scanCode} from '../lib/scancodes';
@@ -82,7 +82,7 @@ export class WasmBridgeService {
     }
 
 
-    connect(username: string, password: string, destination: string, proxyAddress: string, serverDomain: string, authToken: string): Observable<NewSessionInfo> {
+    connect(username: string, password: string, destination: string, proxyAddress: string, serverDomain: string, authToken: string, desktopSize?: DesktopSize, preConnectionBlob?: string): Observable<NewSessionInfo> {
         const sessionBuilder = SessionBuilder.new();
         sessionBuilder.proxy_address(proxyAddress);
         sessionBuilder.destination(destination);
@@ -92,6 +92,14 @@ export class WasmBridgeService {
         sessionBuilder.username(username);
         sessionBuilder.update_callback_context(this);
         sessionBuilder.update_callback(this.updateImageCallback);
+        
+        if (preConnectionBlob) {
+            sessionBuilder.pcb(preConnectionBlob);
+        }
+        
+        if (desktopSize) {
+            sessionBuilder.desktop_size(desktopSize);
+        }
 
         return from(sessionBuilder.connect()).pipe(
             catchError((err: IronRdpError) => {
