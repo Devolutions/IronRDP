@@ -5,6 +5,7 @@ use anyhow::Context as _;
 use futures_channel::mpsc;
 use futures_util::io::{ReadHalf, WriteHalf};
 use futures_util::{AsyncReadExt as _, AsyncWriteExt as _, StreamExt as _};
+use gloo_net::websocket;
 use gloo_net::websocket::futures::WebSocket;
 use ironrdp::connector::{self, ClientConnector};
 use ironrdp::graphics::image_processing::PixelFormat;
@@ -168,7 +169,17 @@ impl SessionBuilder {
 
         let config = build_config(username, password, server_domain, client_name, desktop_size);
 
-        let ws = WebSocketCompat::new(WebSocket::open(&proxy_address).context("Couldn’t open WebSocket")?);
+        let ws = WebSocket::open(&proxy_address).context("Couldn’t open WebSocket")?;
+
+        if matches!(ws.state(), websocket::State::Closing | websocket::State::Closed) {
+            return Err(IronRdpError::from(anyhow::anyhow!(
+                "Failed to connect to {proxy_address} (WebSocket is in state {:?})",
+                ws.state()
+            ))
+            .with_kind(IronRdpErrorKind::ProxyConnect));
+        }
+
+        let ws = WebSocketCompat::new(ws);
 
         let (connection_result, ws) = connect(ws, config, auth_token, destination, pcb).await?;
 
