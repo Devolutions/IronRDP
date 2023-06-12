@@ -5,6 +5,7 @@
     import {of} from 'rxjs';
     import {toast} from '$lib/messages/message-store';
     import {showLogin} from '$lib/login/login-store';
+    import {DesktopSize} from '../../models/desktop-size';
 
     let username = "Administrator";
     let password = "DevoLabs123!";
@@ -12,7 +13,11 @@
     let hostname = "10.10.0.3:3389";
     let domain = "";
     let authtoken = "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCIsImN0eSI6IkFTU09DSUFUSU9OIn0.eyJkc3RfaHN0IjoiMTAuMTAuMC4zIiwiZXhwIjoxNjcxMTIwNjE0LCJqZXRfYWlkIjoiOWMwODAwNTktMDMzOS00MjJhLTgxODgtODEzNGJjOTc3MzczIiwiamV0X2FwIjoicmRwIiwiamV0X2NtIjoiZndkIiwianRpIjoiOTAzMDNlMDUtMzg5MC00OGQ3LTgxMTYtYWJmYzAwYWNlMTUxIiwibmJmIjoxNjcxMTE5NzE0fQ.JdT4KSyB2Zf3OcEA44Hmmc59cqx6KApXrFoJf_gIQwU8VqYWMnSMqENMyYw4CLDKj31tgUlSjWkHLj2wELZCOWFtsbONJqTWIc8mkCpnlbGVWIaNm7MISZXAS2p1LF1nsv9kzCJNvWK2AgfjsiZ4TBIUrhLa1dCRfuLsNaABotjcTJFvVCZUaadejeFDA6S2YbvQQHOjztIKJsg3zKkvTOpB_cZvRv9yDSgW09wXS0MOsnLqzmiLMd-9IPEkkwQ4oe9e6-AJI3OXZogkJDTcE0xdHlMSUG6JVwowt9FHervTn1n3nuN1ZKARvDbEsHJsLxPI1w2eqlZvPkqfKw5oqA";
-
+    let desktopSize: DesktopSize = {
+        width: 1280,
+        height: 768
+    };
+    let pcb;
     let toastMessage: string;
 
     let userInteraction: IRGUserInteraction;
@@ -47,7 +52,7 @@
             type: 'info',
             message: 'Connection in progress...'
         });
-        userInteraction.connect(username, password, hostname, gatewayAddress, domain, authtoken)
+        userInteraction.connect(username, password, hostname, gatewayAddress, domain, authtoken, desktopSize, pcb)
             .pipe(
                 catchError(err => {
                     toast.set({
@@ -124,6 +129,18 @@
                     <div class="field label border">
                         <input id="authtoken" type="text" bind:value={authtoken}/>
                         <label for="authtoken">AuthToken</label>
+                    </div>
+                    <div class="field label border">
+                        <input id="pcb" type="text" bind:value={pcb}/>
+                        <label for="pcb">Pre Connection Blob</label>
+                    </div>
+                    <div class="field label border">
+                        <input id="desktopSizeW" type="text" bind:value={desktopSize.width}/>
+                        <label for="desktopSizeW">Desktop Width</label>
+                    </div>
+                    <div class="field label border">
+                        <input id="desktopSizeH" type="text" bind:value={desktopSize.height}/>
+                        <label for="desktopSizeH">Desktop Height</label>
                     </div>
                 </div>
                 <nav class="center-align">
