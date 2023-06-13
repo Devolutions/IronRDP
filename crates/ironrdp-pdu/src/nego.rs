@@ -369,7 +369,9 @@ impl<'de> X224Pdu<'de> for ConnectionConfirm {
 }
 
 fn read_nego_data(src: &mut ReadCursor<'_>, name: &'static str, prefix: &str) -> PduResult<Option<String>> {
-    ensure_size!(ctx: name, in: src, size: prefix.len() + 2);
+    if src.len() < prefix.len() + 2 {
+        return Ok(None);
+    }
 
     if src.peek_slice(prefix.len()) != prefix.as_bytes() {
         return Ok(None);
