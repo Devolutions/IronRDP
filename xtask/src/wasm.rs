@@ -22,10 +22,6 @@ pub fn check(sh: &Shell) -> anyhow::Result<()> {
             list_files(sh, local_bin())?;
         }
 
-        if let Err(e) = cmd!(sh, "wasm2wat ./target/wasm32-unknown-unknown/debug/{artifact_name}").run() {
-            println!("{e}");
-        }
-
         let stdout = cmd!(sh, "wasm2wat ./target/wasm32-unknown-unknown/debug/{artifact_name}").read()?;
 
         if stdout.contains("import \"env\"") {
