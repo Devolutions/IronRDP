@@ -22,8 +22,11 @@ pub fn check(sh: &Shell) -> anyhow::Result<()> {
             list_files(sh, local_bin())?;
         }
 
-        let output = cmd!(sh, "wasm2wat ./target/wasm32-unknown-unknown/debug/{artifact_name}").output()?;
-        let stdout = std::str::from_utf8(&output.stdout).context("wasm2wat output is not valid UTF-8")?;
+        if let Err(e) = cmd!(sh, "wasm2wat ./target/wasm32-unknown-unknown/debug/{artifact_name}").run() {
+            println!("{e}");
+        }
+
+        let stdout = cmd!(sh, "wasm2wat ./target/wasm32-unknown-unknown/debug/{artifact_name}").read()?;
 
         if stdout.contains("import \"env\"") {
             anyhow::bail!("Found undefined symbols in generated wasm file");
