@@ -47,7 +47,7 @@ jobs:
           - os: windows
             runner: windows-2019
           - os: linux
-            runner: ubuntu-20.04
+            runner: ubuntu-22.04 # 22.04 because we need a recent wabt version
 
     steps:
       - uses: actions/checkout@v3
@@ -57,21 +57,24 @@ jobs:
 
       # Compilation is separated from execution so we know exactly the time for each step.
 
-      - name: Tests (compile)
-        run: cargo xtask check tests --no-run -v
+      # - name: Tests (compile)
+      #   run: cargo xtask check tests --no-run -v
 
-      - name: Tests (run)
-        run: cargo xtask check tests -v
+      # - name: Tests (run)
+      #   run: cargo xtask check tests -v
 
-      - name: Lints
-        run: cargo xtask check lints -v
+      # - name: Lints
+      #   run: cargo xtask check lints -v
 
-      - name: Binary cache
-        uses: actions/cache@v3
-        with:
-          path: ./.cargo/local_root/bin
-          key: ${{ runner.os }}-bin-${{ github.job }}-${{ hashFiles('xtask/src/bin_version.rs') }}
-          restore-keys: ${{ runner.os }}-bin-
+      # - name: Binary cache
+      #   uses: actions/cache@v3
+      #   with:
+      #     path: ./.cargo/local_root/bin
+      #     key: ${{ runner.os }}-bin-${{ github.job }}-${{ hashFiles('xtask/src/bin_version.rs') }}
+      #     restore-keys: ${{ runner.os }}-bin-
+
+      - name: WASM (prepare)
+        run: cargo xtask wasm install -v
 
       - name: Install wabt
         if: matrix.os == 'linux'
@@ -80,8 +83,11 @@ jobs:
       - name: WASM (prepare)
         run: cargo xtask wasm install -v
 
-      - name: WASM (check)
-        run: cargo xtask wasm check -v
+      # - name: WASM (check)
+      #   run: cargo xtask wasm check -v
+  
+      - name: Fail
+        run: uiesutier
 
   fuzz:
     name: Fuzzing
