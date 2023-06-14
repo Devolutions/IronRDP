@@ -76,15 +76,8 @@ jobs:
       - name: WASM (prepare)
         run: cargo xtask wasm install -v
 
-      - name: Install wabt
-        if: matrix.os == 'linux'
-        run: sudo apt install wabt
-
-      - name: WASM (prepare)
-        run: cargo xtask wasm install -v
-
-      # - name: WASM (check)
-      #   run: cargo xtask wasm check -v
+      - name: WASM (check)
+        run: cargo xtask wasm check -v
   
       - name: Fail
         run: uiesutier
