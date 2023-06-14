@@ -6,8 +6,10 @@ USAGE:
 
 FLAGS:
   -h, --help      Prints help information
+  -v, --verbose   Prints additional execution traces
 
 TASKS:
+  bootstrap               Install all requirements for development
   check fmt               Check formatting
   check lints             Check lints
   check tests [--no-run]  Compile tests and, unless specified otherwise, run them
@@ -36,8 +38,14 @@ pub fn print_help() {
     println!("{HELP}");
 }
 
+pub struct Args {
+    pub verbose: bool,
+    pub action: Action,
+}
+
 pub enum Action {
     ShowHelp,
+    Bootstrap,
     CheckFmt,
     CheckLints,
     CheckTests {
@@ -70,13 +78,14 @@ pub enum Action {
     WebRun,
 }
 
-pub fn parse_args() -> anyhow::Result<Action> {
+pub fn parse_args() -> anyhow::Result<Args> {
     let mut args = pico_args::Arguments::from_env();
 
     let action = if args.contains(["-h", "--help"]) {
         Action::ShowHelp
     } else {
         match args.subcommand()?.as_deref() {
+            Some("bootstrap") => Action::Bootstrap,
             Some("check") => match args.subcommand()?.as_deref() {
                 Some("fmt") => Action::CheckFmt,
                 Some("lints") => Action::CheckLints,
@@ -133,5 +142,7 @@ pub fn parse_args() -> anyhow::Result<Action> {
         }
     };
 
-    Ok(action)
+    let verbose = args.contains(["-v", "--verbose"]);
+
+    Ok(Args { verbose, action })
 }

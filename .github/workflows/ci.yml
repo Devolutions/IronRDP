@@ -33,7 +33,7 @@ jobs:
       - uses: actions/checkout@v3
 
       - name: Check formatting
-        run: cargo xtask check fmt
+        run: cargo xtask check fmt -v
 
   checks:
     name: Checks [${{ matrix.os }}]
@@ -47,7 +47,7 @@ jobs:
           - os: windows
             runner: windows-2019
           - os: linux
-            runner: ubuntu-20.04
+            runner: ubuntu-22.04 # 22.04 because we need a recent wabt version
 
     steps:
       - uses: actions/checkout@v3
@@ -58,18 +58,15 @@ jobs:
       # Compilation is separated from execution so we know exactly the time for each step.
 
       - name: Tests (compile)
-        run: cargo xtask check tests --no-run
+        run: cargo xtask check tests --no-run -v
 
       - name: Tests (run)
-        run: cargo xtask check tests
+        run: cargo xtask check tests -v
 
       - name: Lints
-        run: cargo xtask check lints
-
-      # Linux-only section
+        run: cargo xtask check lints -v
 
       - name: Binary cache
-        if: matrix.os == 'linux'
         uses: actions/cache@v3
         with:
           path: ./.cargo/local_root/bin
@@ -77,14 +74,10 @@ jobs:
           restore-keys: ${{ runner.os }}-bin-
 
       - name: WASM (prepare)
-        if: matrix.os == 'linux'
-        run: |
-          sudo apt install wabt
-          cargo xtask wasm install
+        run: cargo xtask wasm install -v
 
       - name: WASM (check)
-        if: matrix.os == 'linux'
-        run: cargo xtask wasm check
+        run: cargo xtask wasm check -v
 
   fuzz:
     name: Fuzzing
@@ -107,11 +100,11 @@ jobs:
           restore-keys: ${{ runner.os }}-bin-
 
       - name: Prepare
-        run: cargo xtask fuzz install
+        run: cargo xtask fuzz install -v
 
       # Simply run all fuzz targets for a few seconds, just checking there is nothing obviously wrong at a quick glance
       - name: Fuzz
-        run: cargo xtask fuzz run
+        run: cargo xtask fuzz run -v
 
   web:
     name: Web Client
@@ -132,7 +125,7 @@ jobs:
           restore-keys: ${{ runner.os }}-bin-
 
       - name: Prepare
-        run: cargo xtask web install
+        run: cargo xtask web install -v
 
       - name: Check
-        run: cargo xtask web check
+        run: cargo xtask web check -v

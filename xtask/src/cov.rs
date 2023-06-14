@@ -8,9 +8,7 @@ const COV_IGNORE_REGEX: &str =
 pub fn install(sh: &Shell) -> anyhow::Result<()> {
     let _s = Section::new("COV-INSTALL");
 
-    let llvm_cov_path: std::path::PathBuf = [LOCAL_CARGO_ROOT, "bin", "cargo-llvm-cov"].iter().collect();
-
-    if !sh.path_exists(llvm_cov_path) {
+    if !is_installed(sh, "cargo-llvm-cov") {
         cmd!(
             sh,
             "{CARGO} install --locked --root {LOCAL_CARGO_ROOT} cargo-llvm-cov@{CARGO_LLVM_COV_VERSION}"
@@ -60,7 +58,7 @@ pub fn report(sh: &Shell, html_report: bool) -> anyhow::Result<()> {
     let _s = Section::new("COV-REPORT");
 
     if html_report {
-        cmd!(sh, "{LOCAL_CARGO_ROOT}/bin/cargo-llvm-cov llvm-cov --html")
+        cmd!(sh, "{CARGO} llvm-cov --html")
             .arg("--ignore-filename-regex")
             .arg(COV_IGNORE_REGEX)
             .run()?;
@@ -162,10 +160,7 @@ pub fn grcov(sh: &Shell) -> anyhow::Result<()> {
     cmd!(sh, "rustup component add --toolchain nightly llvm-tools-preview").run()?;
     cmd!(sh, "rustup component add llvm-tools-preview").run()?;
 
-    let cargo_fuzz_path: std::path::PathBuf = [LOCAL_CARGO_ROOT, "bin", "cargo-fuzz"].iter().collect();
-    let grcov_path: std::path::PathBuf = [LOCAL_CARGO_ROOT, "bin", "grcov"].iter().collect();
-
-    if !sh.path_exists(cargo_fuzz_path) {
+    if !is_installed(sh, "cargo-fuzz") {
         cmd!(
             sh,
             "{CARGO} install --debug --locked --root {LOCAL_CARGO_ROOT} cargo-fuzz@{CARGO_FUZZ_VERSION}"
@@ -173,7 +168,7 @@ pub fn grcov(sh: &Shell) -> anyhow::Result<()> {
         .run()?;
     }
 
-    if !sh.path_exists(grcov_path) {
+    if !is_installed(sh, "grcov") {
         cmd!(
             sh,
             "{CARGO} install --debug --locked --root {LOCAL_CARGO_ROOT} grcov@{GRCOV_VERSION}"
@@ -187,7 +182,7 @@ pub fn grcov(sh: &Shell) -> anyhow::Result<()> {
 
     sh.create_dir("./coverage/binaries")?;
 
-    {
+    if cfg!(not(target_os = "windows")) {
         // Fuzz coverage
 
         let _guard = sh.push_dir("./fuzz");
@@ -195,9 +190,7 @@ pub fn grcov(sh: &Shell) -> anyhow::Result<()> {
         cmd!(sh, "{CARGO} clean").run()?;
 
         for target in FUZZ_TARGETS {
-            cmd!(sh, "../{LOCAL_CARGO_ROOT}/bin/cargo-fuzz coverage {target}")
-                .env("RUSTUP_TOOLCHAIN", "nightly")
-                .run()?;
+            cmd!(sh, "rustup run nightly cargo fuzz coverage {target}").run()?;
         }
 
         cmd!(sh, "cp -r ./target ../coverage/binaries/").run()?;
@@ -221,7 +214,7 @@ pub fn grcov(sh: &Shell) -> anyhow::Result<()> {
 
     cmd!(
         sh,
-        "./{LOCAL_CARGO_ROOT}/bin/grcov . ./fuzz
+        "grcov . ./fuzz
         --source-dir .
         --binary-path ./coverage/binaries/
         --output-type html
@@ -294,7 +287,7 @@ impl CoverageReport {
     fn generate(sh: &Shell) -> anyhow::Result<Self> {
         let output = cmd!(
             sh,
-            "{LOCAL_CARGO_ROOT}/bin/cargo-llvm-cov llvm-cov
+            "{CARGO} llvm-cov
             --ignore-filename-regex {COV_IGNORE_REGEX}
             --json"
         )
