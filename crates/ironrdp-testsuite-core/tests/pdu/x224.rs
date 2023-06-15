@@ -74,6 +74,26 @@ fn tpdu_header_write() {
 }
 
 encode_decode_test! {
+    nego_connection_request_rdp_security_without_cookie:
+        ConnectionRequest {
+            nego_data: None,
+            flags: RequestFlags::empty(),
+            protocol: SecurityProtocol::RDP,
+        },
+        [
+            // tpkt header
+            0x03, // version
+            0x00, // reserved
+            0x00, 0x0B, // length in BE
+            // tpdu header
+            0x06, // length
+            0xE0, // code
+            0x00, 0x00, // dst_ref
+            0x00, 0x00, // src_ref
+            0x00, // class
+            // variable part
+        ];
+
     nego_connection_request_rdp_security_with_cookie:
         ConnectionRequest {
             nego_data: Some(NegoRequestData::Cookie(Cookie("User".to_owned()))),
