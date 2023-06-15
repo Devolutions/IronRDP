@@ -55,6 +55,12 @@ jobs:
       - name: Rust cache
         uses: Swatinem/rust-cache@v2.3.0
 
+      - name: Binary cache
+        uses: actions/cache@v3
+        with:
+          path: ./.cargo/local_root/bin
+          key: ${{ runner.os }}-bin-${{ github.job }}-${{ hashFiles('xtask/src/bin_version.rs') }}
+
       # Compilation is separated from execution so we know exactly the time for each step.
 
       - name: Tests (compile)
@@ -65,13 +71,6 @@ jobs:
 
       - name: Lints
         run: cargo xtask check lints -v
-
-      - name: Binary cache
-        uses: actions/cache@v3
-        with:
-          path: ./.cargo/local_root/bin
-          key: ${{ runner.os }}-bin-${{ github.job }}-${{ hashFiles('xtask/src/bin_version.rs') }}
-          restore-keys: ${{ runner.os }}-bin-
 
       - name: WASM (prepare)
         run: cargo xtask wasm install -v
@@ -97,7 +96,6 @@ jobs:
         with:
           path: ./.cargo/local_root/bin
           key: ${{ runner.os }}-bin-${{ github.job }}-${{ hashFiles('xtask/src/bin_version.rs') }}
-          restore-keys: ${{ runner.os }}-bin-
 
       - name: Prepare
         run: cargo xtask fuzz install -v
@@ -122,7 +120,6 @@ jobs:
         with:
           path: ./.cargo/local_root/bin
           key: ${{ runner.os }}-bin-${{ github.job }}-${{ hashFiles('xtask/src/bin_version.rs') }}
-          restore-keys: ${{ runner.os }}-bin-
 
       - name: Prepare
         run: cargo xtask web install -v

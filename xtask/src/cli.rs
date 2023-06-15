@@ -22,7 +22,8 @@ TASKS:
   cov report [--html]     Generate a coverage report (optionally, a HTML report)
   cov update              Update coverage data in the cov-data branch
   fuzz corpus-fetch       Fetch fuzzing corpus from Azure storage
-  fuzz corpus-min         Minify fuzzing corpus
+  fuzz corpus-min [--target <NAME>]
+                          Minify fuzzing corpus for a specific target (or all if unspecified)
   fuzz corpus-push        Push fuzzing corpus to Azure storage
   fuzz install            Install dependencies required for fuzzing
   fuzz run [--duration <SECONDS>] [--target <NAME>]
@@ -64,7 +65,9 @@ pub enum Action {
     },
     CovUpdate,
     FuzzCorpusFetch,
-    FuzzCorpusMin,
+    FuzzCorpusMin {
+        target: Option<String>,
+    },
     FuzzCorpusPush,
     FuzzInstall,
     FuzzRun {
@@ -112,7 +115,9 @@ pub fn parse_args() -> anyhow::Result<Args> {
             },
             Some("fuzz") => match args.subcommand()?.as_deref() {
                 Some("corpus-fetch") => Action::FuzzCorpusFetch,
-                Some("corpus-min") => Action::FuzzCorpusMin,
+                Some("corpus-min") => Action::FuzzCorpusMin {
+                    target: args.opt_value_from_str("--target")?,
+                },
                 Some("corpus-push") => Action::FuzzCorpusPush,
                 Some("install") => Action::FuzzInstall,
                 Some("run") => Action::FuzzRun {

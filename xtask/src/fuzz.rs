@@ -2,13 +2,21 @@ use crate::prelude::*;
 
 // NOTE: cargo-fuzz (libFuzzer) does not support Windows yet (coming soon?)
 
-pub fn corpus_minify(sh: &Shell) -> anyhow::Result<()> {
+pub fn corpus_minify(sh: &Shell, target: Option<String>) -> anyhow::Result<()> {
     let _s = Section::new("FUZZ-CORPUS-MINIFY");
     windows_skip!();
 
     let _guard = sh.push_dir("./fuzz");
 
-    for target in FUZZ_TARGETS {
+    let target_from_user = target.as_deref().map(|value| [value]);
+
+    let targets = if let Some(targets) = &target_from_user {
+        targets
+    } else {
+        FUZZ_TARGETS
+    };
+
+    for target in targets {
         cmd!(sh, "rustup run nightly cargo fuzz cmin {target}")
             .env("RUSTUP_TOOLCHAIN", "nightly")
             .run()?;
