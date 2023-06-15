@@ -70,7 +70,7 @@ fn main() -> anyhow::Result<()> {
         Action::CovReport { html_report } => cov::report(&sh, html_report)?,
         Action::CovUpdate => cov::update(&sh)?,
         Action::FuzzCorpusFetch => fuzz::corpus_fetch(&sh)?,
-        Action::FuzzCorpusMin => fuzz::corpus_minify(&sh)?,
+        Action::FuzzCorpusMin { target } => fuzz::corpus_minify(&sh, target)?,
         Action::FuzzCorpusPush => fuzz::corpus_push(&sh)?,
         Action::FuzzInstall => fuzz::install(&sh)?,
         Action::FuzzRun { duration, target } => fuzz::run(&sh, duration, target)?,
