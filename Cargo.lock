@@ -186,6 +186,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "assert_hex"
+version = "0.2.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bc782823ed0b8133960a4525e1064b6c30473ca6554d00f697af2b5b520dc723"
+
+[[package]]
 name = "async-dnssd"
 version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1668,6 +1674,7 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "array-concat",
+ "assert_hex",
  "expect-test",
  "hex",
  "ironrdp-connector",

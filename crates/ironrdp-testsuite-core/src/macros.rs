@@ -10,7 +10,7 @@ macro_rules! encode_decode_test {
                 let mut encoded = Vec::new();
                 ::ironrdp_pdu::encode_buf(&pdu, &mut encoded).unwrap();
 
-                assert_eq!(encoded, expected);
+                ::assert_hex::assert_eq_hex!(encoded, expected);
             }
 
             #[test]
@@ -22,7 +22,7 @@ macro_rules! encode_decode_test {
 
                 let _ = expected == decoded; // type inference trick
 
-                assert_eq!(decoded, expected);
+                ::assert_hex::assert_eq_hex!(decoded, expected);
             }
 
             #[test]
@@ -32,7 +32,7 @@ macro_rules! encode_decode_test {
 
                 let pdu_size = ::ironrdp_pdu::size(&pdu);
 
-                assert_eq!(pdu_size, expected);
+                ::assert_hex::assert_eq_hex!(pdu_size, expected);
             }
         }
     };
@@ -58,7 +58,7 @@ macro_rules! mcs_encode_decode_test {
                 let mut cursor = ::ironrdp_pdu::cursor::WriteCursor::new(&mut encoded);
                 pdu.mcs_body_encode(&mut cursor).unwrap();
 
-                assert_eq!(encoded, expected);
+                ::assert_hex::assert_eq_hex!(encoded, expected);
             }
 
             #[test]
@@ -73,7 +73,7 @@ macro_rules! mcs_encode_decode_test {
 
                 let _ = expected == decoded; // type inference trick
 
-                assert_eq!(decoded, expected);
+                ::assert_hex::assert_eq_hex!(decoded, expected);
             }
 
             #[test]
@@ -85,7 +85,7 @@ macro_rules! mcs_encode_decode_test {
 
                 let pdu_size = pdu.mcs_size();
 
-                assert_eq!(pdu_size, expected);
+                ::assert_hex::assert_eq_hex!(pdu_size, expected);
             }
         }
     };

@@ -24,6 +24,7 @@ lazy_static = "1.4.0"
 paste = "1"
 
 [dev-dependencies]
+assert_hex = "0.2"
 hex = "0.4.3"
 ironrdp-connector.workspace = true
 ironrdp-fuzzing.workspace = true
