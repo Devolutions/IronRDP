@@ -24,7 +24,7 @@ jobs:
       - uses: actions/checkout@v3
 
       - name: Download fuzzing corpus
-        run: cargo xtask fuzz corpus-fetch
+        run: cargo xtask fuzz corpus-fetch -v
 
       - name: Save corpus
         uses: actions/cache/save@v3
@@ -60,26 +60,26 @@ jobs:
           tree ./fuzz/corpus
           tree ./fuzz/artifacts
 
-      - name: Fuzz build cache
+      - name: Rust cache
+        uses: Swatinem/rust-cache@v2.3.0
+        with:
+          workspaces: fuzz -> target
+
+      - name: Binary cache
         uses: actions/cache@v3
         with:
-          path: |
-            ~/.cargo/registry/
-            ~/.cargo/git/
-            ./target/
-            ./fuzz/target/
-            ./.cargo/local_root/
-          key: ${{ runner.os }}-fuzz-${{ hashFiles('fuzz/Cargo.lock') }}
+          path: ./.cargo/local_root/bin
+          key: ${{ runner.os }}-bin-${{ github.job }}-${{ hashFiles('xtask/src/bin_version.rs') }}
 
       - name: Prepare runner
-        run: cargo xtask fuzz install
+        run: cargo xtask fuzz install -v
 
       - name: Fuzz
-        run: cargo xtask fuzz run --duration 1000 --target ${{ matrix.target }}
+        run: cargo xtask fuzz run --duration 1000 --target ${{ matrix.target }} -v
 
       - name: Minify fuzzing corpus
         if: ${{ always() && !cancelled() }}
-        run: cargo xtask fuzz corpus-min
+        run: cargo xtask fuzz corpus-min --target ${{ matrix.target }} -v
 
       # Use GitHub artifacts instead of cache for the updated corpus
       # because same cache can’t be used by multiple jobs at the same time.
@@ -100,7 +100,7 @@ jobs:
         if: ${{ always() && !cancelled() }}
         uses: actions/upload-artifact@v3
         with:
-          retention-days: 5
+          retention-days: 7
           name: minified-corpus
           path: |
             ${{ runner.temp }}/corpus
@@ -129,7 +129,7 @@ jobs:
           tree ./fuzz/artifacts
 
       - name: Upload fuzzing corpus
-        run: cargo xtask fuzz corpus-push
+        run: cargo xtask fuzz corpus-push -v
 
       - name: Clean corpus cache
         run: |

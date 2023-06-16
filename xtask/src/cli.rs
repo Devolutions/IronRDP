@@ -6,8 +6,10 @@ USAGE:
 
 FLAGS:
   -h, --help      Prints help information
+  -v, --verbose   Prints additional execution traces
 
 TASKS:
+  bootstrap               Install all requirements for development
   check fmt               Check formatting
   check lints             Check lints
   check tests [--no-run]  Compile tests and, unless specified otherwise, run them
@@ -20,7 +22,8 @@ TASKS:
   cov report [--html]     Generate a coverage report (optionally, a HTML report)
   cov update              Update coverage data in the cov-data branch
   fuzz corpus-fetch       Fetch fuzzing corpus from Azure storage
-  fuzz corpus-min         Minify fuzzing corpus
+  fuzz corpus-min [--target <NAME>]
+                          Minify fuzzing corpus for a specific target (or all if unspecified)
   fuzz corpus-push        Push fuzzing corpus to Azure storage
   fuzz install            Install dependencies required for fuzzing
   fuzz run [--duration <SECONDS>] [--target <NAME>]
@@ -36,8 +39,14 @@ pub fn print_help() {
     println!("{HELP}");
 }
 
+pub struct Args {
+    pub verbose: bool,
+    pub action: Action,
+}
+
 pub enum Action {
     ShowHelp,
+    Bootstrap,
     CheckFmt,
     CheckLints,
     CheckTests {
@@ -56,7 +65,9 @@ pub enum Action {
     },
     CovUpdate,
     FuzzCorpusFetch,
-    FuzzCorpusMin,
+    FuzzCorpusMin {
+        target: Option<String>,
+    },
     FuzzCorpusPush,
     FuzzInstall,
     FuzzRun {
@@ -70,13 +81,14 @@ pub enum Action {
     WebRun,
 }
 
-pub fn parse_args() -> anyhow::Result<Action> {
+pub fn parse_args() -> anyhow::Result<Args> {
     let mut args = pico_args::Arguments::from_env();
 
     let action = if args.contains(["-h", "--help"]) {
         Action::ShowHelp
     } else {
         match args.subcommand()?.as_deref() {
+            Some("bootstrap") => Action::Bootstrap,
             Some("check") => match args.subcommand()?.as_deref() {
                 Some("fmt") => Action::CheckFmt,
                 Some("lints") => Action::CheckLints,
@@ -103,7 +115,9 @@ pub fn parse_args() -> anyhow::Result<Action> {
             },
             Some("fuzz") => match args.subcommand()?.as_deref() {
                 Some("corpus-fetch") => Action::FuzzCorpusFetch,
-                Some("corpus-min") => Action::FuzzCorpusMin,
+                Some("corpus-min") => Action::FuzzCorpusMin {
+                    target: args.opt_value_from_str("--target")?,
+                },
                 Some("corpus-push") => Action::FuzzCorpusPush,
                 Some("install") => Action::FuzzInstall,
                 Some("run") => Action::FuzzRun {
@@ -133,5 +147,7 @@ pub fn parse_args() -> anyhow::Result<Action> {
         }
     };
 
-    Ok(action)
+    let verbose = args.contains(["-v", "--verbose"]);
+
+    Ok(Args { verbose, action })
 }

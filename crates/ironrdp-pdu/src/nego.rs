@@ -331,6 +331,8 @@ impl<'de> X224Pdu<'de> for ConnectionConfirm {
         ensure_size!(in: src, size: variable_part_size);
 
         if variable_part_size > 0 {
+            ensure_size!(in: src, size: 8); // message type (1) + flags (1) + length (2) + code / protocol (4)
+
             match NegoMsgType::from(src.read_u8()) {
                 NegoMsgType::RESPONSE => {
                     let flags = ResponseFlags::from_bits_truncate(src.read_u8());
@@ -368,7 +370,7 @@ impl<'de> X224Pdu<'de> for ConnectionConfirm {
     }
 }
 
-fn read_nego_data(src: &mut ReadCursor<'_>, name: &'static str, prefix: &str) -> PduResult<Option<String>> {
+fn read_nego_data(src: &mut ReadCursor<'_>, ctx: &'static str, prefix: &str) -> PduResult<Option<String>> {
     if src.len() < prefix.len() + 2 {
         return Ok(None);
     }
@@ -383,7 +385,7 @@ fn read_nego_data(src: &mut ReadCursor<'_>, name: &'static str, prefix: &str) ->
 
     while src.peek_u16() != 0x0A0D {
         src.advance(1);
-        ensure_size!(ctx: name, in: src, size: 2);
+        ensure_size!(ctx: ctx, in: src, size: 2);
     }
 
     let identifier_end = src.pos();
@@ -391,14 +393,14 @@ fn read_nego_data(src: &mut ReadCursor<'_>, name: &'static str, prefix: &str) ->
     src.advance(2);
 
     let data = core::str::from_utf8(&src.inner()[identifier_start..identifier_end])
-        .map_err(|_| PduError::invalid_message(name, "identifier", "not valid UTF-8"))?
+        .map_err(|_| PduError::invalid_message(ctx, "identifier", "not valid UTF-8"))?
         .to_owned();
 
     Ok(Some(data))
 }
 
-fn write_nego_data(dst: &mut WriteCursor<'_>, name: &'static str, prefix: &str, value: &str) -> PduResult<()> {
-    ensure_size!(ctx: name, in: dst, size: prefix.len() + value.len() + 2);
+fn write_nego_data(dst: &mut WriteCursor<'_>, ctx: &'static str, prefix: &str, value: &str) -> PduResult<()> {
+    ensure_size!(ctx: ctx, in: dst, size: prefix.len() + value.len() + 2);
 
     dst.write_slice(prefix.as_bytes());
     dst.write_slice(value.as_bytes());

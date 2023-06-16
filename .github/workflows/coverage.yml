@@ -28,7 +28,7 @@ jobs:
       - name: Generate PR report
         if: github.event.number != ''
         env:
-          GH_TOKEN: ${{ secrets.DEVOLUTIONSBOT_TOKEN }}
+          GH_TOKEN: ${{ secrets.DEVOLUTIONSBOT_TOKEN != '' && secrets.DEVOLUTIONSBOT_TOKEN || github.token }}
         run: cargo xtask cov report-gh --repo "${{ github.repository }}" --pr "${{ github.event.number }}"
 
       - name: Configure Git Identity

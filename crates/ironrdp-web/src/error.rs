@@ -12,7 +12,7 @@ pub enum IronRdpErrorKind {
     LogonFailure,
     /// Insufficient permission, server denied access
     AccessDenied,
-    /// Something wrong happened when sending or receiving the RDClenaPath message
+    /// Something wrong happened when sending or receiving the RDCleanPath message
     RDCleanPath,
     /// Couldn’t connect to proxy
     ProxyConnect,
