@@ -163,7 +163,7 @@ export class WasmBridgeService {
     mouseWheel(event) {
         let vertical = event.deltaY !== 0;
         let rotation = vertical ? event.deltaY : event.deltaX;
-        this.doTransactionFromDeviceEvents([DeviceEvent.new_wheel_rotations(vertical, rotation)]);
+        this.doTransactionFromDeviceEvents([DeviceEvent.new_wheel_rotations(vertical, -rotation)]);
     }
 
 
