@@ -12,6 +12,8 @@ export interface UserInteraction {
     ctrlAltDel();
 
     metaKey();
+    
+    shutdown();
 
     sessionListener: Observable<any>;
 }

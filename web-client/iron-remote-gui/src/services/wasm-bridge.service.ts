@@ -66,7 +66,10 @@ export class WasmBridgeService {
             this.sendKeyboard(evt);
         }
     }
-
+    
+    shutdown() {
+        this.session.shutdown();
+    }
 
     mouseButtonState(event: MouseEvent, isDown: boolean) {
         event.preventDefault(); // prevent default behavior (context menu, etc)
