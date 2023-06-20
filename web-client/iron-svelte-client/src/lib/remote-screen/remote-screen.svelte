@@ -44,6 +44,7 @@
                 <path d="M216,69.7,32,96V249H216V69.7Z"/>
             </svg>
         </button>
+        <button on:click={() => uiService.shutdown()}>Terminate Session</button>
     </div>
     <iron-remote-gui debugwasm="INFO" verbose="true" scale="fit" flexcenter="true"
                      targetplatform="{import.meta.env.MODE}"/>
