@@ -35,6 +35,10 @@ export class PublicAPI {
     private setScale(scale: ScreenScale) {
         this.wasmService.setScale(scale);
     }
+    
+    private shutdown() {   
+        this.wasmService.shutdown();
+    }
 
     getExposedFunctions(): UserInteraction {
         return {
@@ -43,7 +47,8 @@ export class PublicAPI {
             setScale: this.setScale.bind(this),
             sessionListener: this.wasmService.sessionObserver,
             ctrlAltDel: this.ctrlAltDel.bind(this),
-            metaKey: this.metaKey.bind(this)
+            metaKey: this.metaKey.bind(this),
+            shutdown: this.shutdown.bind(this)
         }
     }
 }
