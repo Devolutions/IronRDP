@@ -291,6 +291,7 @@ pub enum FastPathError {
     InvalidShareDataHeader(String),
 }
 
+#[cfg(feature = "std")]
 impl ironrdp_error::legacy::ErrorContext for FastPathError {
     fn context(&self) -> &'static str {
         "Fast-Path"

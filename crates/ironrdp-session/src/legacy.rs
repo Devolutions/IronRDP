@@ -1,5 +1,6 @@
 use ironrdp_connector::legacy::{encode_send_data_request, SendDataIndicationCtx};
 use ironrdp_pdu::rdp::vc;
+use ironrdp_pdu::write_buf::WriteBuf;
 use ironrdp_pdu::PduParsing as _;
 
 use crate::{SessionError, SessionResult};
@@ -9,7 +10,7 @@ pub fn encode_dvc_message(
     drdynvc_id: u16,
     dvc_pdu: vc::dvc::ClientPdu,
     dvc_data: &[u8],
-    mut buf: &mut Vec<u8>,
+    mut buf: &mut WriteBuf,
 ) -> SessionResult<usize> {
     let dvc_length = dvc_pdu.buffer_length() + dvc_data.len();
 
@@ -20,15 +21,15 @@ pub fn encode_dvc_message(
 
     // [ TPKT | TPDU | SendDataRequest | vc::ChannelPduHeader | …
     let written = encode_send_data_request(initiator_id, drdynvc_id, &channel_header, buf).map_err(map_error)?;
-    buf.truncate(written);
+    debug_assert_eq!(written, buf.filled_len());
 
     // … | dvc::ClientPdu | …
     dvc_pdu.to_buffer(&mut buf)?;
 
     // … | DvcData ]
-    buf.extend_from_slice(dvc_data);
+    buf.write_slice(dvc_data);
 
-    debug_assert_eq!(buf.len(), written + dvc_length);
+    debug_assert_eq!(buf.filled_len(), written + dvc_length);
 
     Ok(written + dvc_length)
 }
@@ -40,14 +41,14 @@ pub struct DynamicChannelCtx<'a> {
 
 pub fn decode_dvc_message(ctx: SendDataIndicationCtx<'_>) -> SessionResult<DynamicChannelCtx<'_>> {
     let mut user_data = ctx.user_data;
-    let user_data_len = user_data.len();
 
     // [ vc::ChannelPduHeader | …
     let channel_header = vc::ChannelPduHeader::from_buffer(&mut user_data)?;
-    debug_assert_eq!(user_data_len, channel_header.length as usize);
+    let dvc_data_len = user_data.len();
+    debug_assert_eq!(dvc_data_len, channel_header.length as usize);
 
     // … | dvc::ServerPdu | …
-    let dvc_pdu = vc::dvc::ServerPdu::from_buffer(&mut user_data, user_data_len)?;
+    let dvc_pdu = vc::dvc::ServerPdu::from_buffer(&mut user_data, dvc_data_len)?;
 
     // … | DvcData ]
     let dvc_data = user_data;

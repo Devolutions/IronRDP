@@ -1,6 +1,7 @@
 use std::mem;
 
 use ironrdp_pdu::rdp::server_license;
+use ironrdp_pdu::write_buf::WriteBuf;
 use ironrdp_pdu::PduHint;
 use rand_core::{OsRng, RngCore as _};
 
@@ -79,7 +80,7 @@ impl Sequence for LicenseExchangeSequence {
         &self.state
     }
 
-    fn step(&mut self, input: &[u8], output: &mut Vec<u8>) -> ConnectorResult<Written> {
+    fn step(&mut self, input: &[u8], output: &mut WriteBuf) -> ConnectorResult<Written> {
         let (written, next_state) = match mem::take(&mut self.state) {
             LicenseExchangeState::Consumed => {
                 return Err(general_err!(

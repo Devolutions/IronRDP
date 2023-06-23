@@ -97,6 +97,7 @@ impl From<RdpError> for io::Error {
     }
 }
 
+#[cfg(feature = "std")]
 impl ironrdp_error::legacy::ErrorContext for RdpError {
     fn context(&self) -> &'static str {
         "RDP"

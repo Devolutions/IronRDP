@@ -1146,6 +1146,7 @@ mod legacy {
         }
     }
 
+    #[cfg(feature = "std")]
     impl ironrdp_error::legacy::ErrorContext for McsError {
         fn context(&self) -> &'static str {
             "mcs"

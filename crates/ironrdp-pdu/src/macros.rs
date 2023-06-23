@@ -6,11 +6,11 @@
 ///
 /// Shorthand for
 /// ```rust
-/// <crate::PduError as crate::PduErrorExt>::not_enough_bytes(context, received, expected)
+/// <ironrdp_pdu::PduError as ironrdp_pdu::PduErrorExt>::not_enough_bytes(context, received, expected)
 /// ```
 /// and
 /// ```rust
-/// <crate::PduError as crate::PduErrorExt>::not_enough_bytes(Self::NAME, received, expected)
+/// <ironrdp_pdu::PduError as ironrdp_pdu::PduErrorExt>::not_enough_bytes(Self::NAME, received, expected)
 /// ```
 #[macro_export]
 macro_rules! not_enough_bytes_err {
@@ -26,11 +26,11 @@ macro_rules! not_enough_bytes_err {
 ///
 /// Shorthand for
 /// ```rust
-/// <crate::PduError as crate::PduErrorExt>::invalid_message(context, field, reason)
+/// <ironrdp_pdu::PduError as ironrdp_pdu::PduErrorExt>::invalid_message(context, field, reason)
 /// ```
 /// and
 /// ```rust
-/// <crate::PduError as crate::PduErrorExt>::invalid_message(Self::NAME, field, reason)
+/// <ironrdp_pdu::PduError as ironrdp_pdu::PduErrorExt>::invalid_message(Self::NAME, field, reason)
 /// ```
 #[macro_export]
 macro_rules! invalid_message_err {
@@ -46,11 +46,11 @@ macro_rules! invalid_message_err {
 ///
 /// Shorthand for
 /// ```rust
-/// <crate::PduError as crate::PduErrorExt>::unexpected_message_type(context, got)
+/// <ironrdp_pdu::PduError as ironrdp_pdu::PduErrorExt>::unexpected_message_type(context, got)
 /// ```
 /// and
 /// ```rust
-/// <crate::PduError as crate::PduErrorExt>::unexpected_message_type(Self::NAME, got)
+/// <ironrdp_pdu::PduError as ironrdp_pdu::PduErrorExt>::unexpected_message_type(Self::NAME, got)
 /// ```
 #[macro_export]
 macro_rules! unexpected_message_type_err {
@@ -66,11 +66,11 @@ macro_rules! unexpected_message_type_err {
 ///
 /// Shorthand for
 /// ```rust
-/// <crate::PduError as crate::PduErrorExt>::unsupported_version(context, got)
+/// <ironrdp_pdu::PduError as ironrdp_pdu::PduErrorExt>::unsupported_version(context, got)
 /// ```
 /// and
 /// ```rust
-/// <crate::PduError as crate::PduErrorExt>::unsupported_version(Self::NAME, got)
+/// <ironrdp_pdu::PduError as ironrdp_pdu::PduErrorExt>::unsupported_version(Self::NAME, got)
 /// ```
 #[macro_export]
 macro_rules! unsupported_version_err {
@@ -86,11 +86,11 @@ macro_rules! unsupported_version_err {
 ///
 /// Shorthand for
 /// ```rust
-/// <crate::PduError as crate::PduErrorExt>::other(context, description)
+/// <ironrdp_pdu::PduError as ironrdp_pdu::PduErrorExt>::other(context, description)
 /// ```
 /// and
 /// ```rust
-/// <crate::PduError as crate::PduErrorExt>::other(Self::NAME, description)
+/// <ironrdp_pdu::PduError as ironrdp_pdu::PduErrorExt>::other(Self::NAME, description)
 /// ```
 #[macro_export]
 macro_rules! other_err {
@@ -106,11 +106,11 @@ macro_rules! other_err {
 ///
 /// Shorthand for
 /// ```rust
-/// <crate::PduError as crate::PduErrorExt>::custom(context, source)
+/// <ironrdp_pdu::PduError as ironrdp_pdu::PduErrorExt>::custom(context, source)
 /// ```
 /// and
 /// ```rust
-/// <crate::PduError as crate::PduErrorExt>::custom(Self::NAME, source)
+/// <ironrdp_pdu::PduError as ironrdp_pdu::PduErrorExt>::custom(Self::NAME, source)
 /// ```
 #[macro_export]
 macro_rules! custom_err {

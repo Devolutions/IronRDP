@@ -233,6 +233,7 @@ pub enum ServerLicenseError {
     BlobTooSmall,
 }
 
+#[cfg(feature = "std")]
 impl ironrdp_error::legacy::ErrorContext for ServerLicenseError {
     fn context(&self) -> &'static str {
         "server license"

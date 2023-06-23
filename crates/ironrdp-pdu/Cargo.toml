@@ -16,7 +16,7 @@ doctest = false
 # test = false
 
 [features]
-default = ["std"]
+default = []
 std = ["alloc", "ironrdp-error/std"]
 alloc = ["ironrdp-error/alloc"]
 

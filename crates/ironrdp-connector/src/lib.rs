@@ -15,14 +15,12 @@ mod server_name;
 use core::any::Any;
 use core::fmt;
 
-use ironrdp_pdu::rdp::capability_sets;
-use ironrdp_pdu::{gcc, nego, PduHint};
-
-type StaticChannels = std::collections::HashMap<String, u16>;
-
 pub use channel_connection::{ChannelConnectionSequence, ChannelConnectionState};
 pub use connection::{ClientConnector, ClientConnectorState, ConnectionResult};
 pub use connection_finalization::{ConnectionFinalizationSequence, ConnectionFinalizationState};
+use ironrdp_pdu::rdp::capability_sets;
+use ironrdp_pdu::write_buf::WriteBuf;
+use ironrdp_pdu::{gcc, nego, PduHint};
 pub use license_exchange::{LicenseExchangeSequence, LicenseExchangeState};
 pub use server_name::ServerName;
 pub use sspi;
@@ -138,9 +136,9 @@ pub trait Sequence: Send + Sync {
 
     fn state(&self) -> &dyn State;
 
-    fn step(&mut self, input: &[u8], output: &mut Vec<u8>) -> ConnectorResult<Written>;
+    fn step(&mut self, input: &[u8], output: &mut WriteBuf) -> ConnectorResult<Written>;
 
-    fn step_no_input(&mut self, output: &mut Vec<u8>) -> ConnectorResult<Written> {
+    fn step_no_input(&mut self, output: &mut WriteBuf) -> ConnectorResult<Written> {
         self.step(&[], output)
     }
 }

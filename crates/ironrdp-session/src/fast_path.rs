@@ -7,6 +7,7 @@ use ironrdp_pdu::fast_path::{
 use ironrdp_pdu::geometry::Rectangle;
 use ironrdp_pdu::rdp::headers::ShareDataPdu;
 use ironrdp_pdu::surface_commands::{FrameAction, FrameMarkerPdu, SurfaceCommand};
+use ironrdp_pdu::write_buf::WriteBuf;
 use ironrdp_pdu::PduBufferParsing;
 
 use crate::image::DecodedImage;
@@ -26,7 +27,7 @@ impl Processor {
         &mut self,
         image: &mut DecodedImage,
         mut input: &[u8],
-        output: &mut Vec<u8>,
+        output: &mut WriteBuf,
     ) -> SessionResult<Option<Rectangle>> {
         use ironrdp_pdu::PduParsing as _;
 
@@ -157,7 +158,7 @@ impl Processor {
     fn process_surface_commands(
         &mut self,
         image: &mut DecodedImage,
-        output: &mut Vec<u8>,
+        output: &mut WriteBuf,
         surface_commands: Vec<SurfaceCommand<'_>>,
     ) -> SessionResult<Rectangle> {
         let mut update_rectangle = Rectangle::empty();
@@ -286,11 +287,11 @@ impl FrameMarkerProcessor {
         }
     }
 
-    fn process(&mut self, marker: &FrameMarkerPdu, output: &mut Vec<u8>) -> SessionResult<()> {
+    fn process(&mut self, marker: &FrameMarkerPdu, output: &mut WriteBuf) -> SessionResult<()> {
         match marker.frame_action {
             FrameAction::Begin => Ok(()),
             FrameAction::End => {
-                let written = ironrdp_connector::legacy::encode_share_data(
+                ironrdp_connector::legacy::encode_share_data(
                     self.user_channel_id,
                     self.io_channel_id,
                     0,
@@ -300,8 +301,6 @@ impl FrameMarkerProcessor {
                     output,
                 )
                 .map_err(crate::legacy::map_error)?;
-
-                output.truncate(written);
 
                 Ok(())
             }

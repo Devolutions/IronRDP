@@ -10,6 +10,7 @@ use gloo_net::websocket::futures::WebSocket;
 use ironrdp::connector::{self, ClientConnector};
 use ironrdp::graphics::image_processing::PixelFormat;
 use ironrdp::pdu::geometry::Rectangle;
+use ironrdp::pdu::write_buf::WriteBuf;
 use ironrdp::session::image::DecodedImage;
 use ironrdp::session::{ActiveStage, ActiveStageOutput};
 use tap::prelude::*;
@@ -192,24 +193,29 @@ impl SessionBuilder {
         spawn_local(writer_task(writer_rx, rdp_writer));
 
         Ok(Session {
-            connection_result,
+            desktop_size: connection_result.desktop_size.clone(),
             update_callback,
             update_callback_context,
             input_database: RefCell::new(ironrdp::input::Database::new()),
-            rdp_reader: RefCell::new(Some(rdp_reader)),
             writer_tx,
+
+            rdp_reader: RefCell::new(Some(rdp_reader)),
+            connection_result: RefCell::new(Some(connection_result)),
         })
     }
 }
 
 #[wasm_bindgen]
 pub struct Session {
-    connection_result: connector::ConnectionResult,
+    desktop_size: connector::DesktopSize,
     update_callback: js_sys::Function,
     update_callback_context: JsValue,
     input_database: RefCell<ironrdp::input::Database>,
-    rdp_reader: RefCell<Option<ReadHalf<WebSocketCompat>>>,
     writer_tx: mpsc::UnboundedSender<Vec<u8>>,
+
+    // Consumed when `run` is called
+    connection_result: RefCell<Option<connector::ConnectionResult>>,
+    rdp_reader: RefCell<Option<ReadHalf<WebSocketCompat>>>,
 }
 
 #[wasm_bindgen]
@@ -221,17 +227,19 @@ impl Session {
             .take()
             .context("RDP session can be started only once")?;
 
+        let connection_result = self
+            .connection_result
+            .borrow_mut()
+            .take()
+            .expect("run called only once");
+
         let mut framed = ironrdp_futures::FuturesFramed::new(rdp_reader);
 
         info!("Start RDP session");
 
-        let mut image = DecodedImage::new(
-            PixelFormat::RgbA32,
-            self.connection_result.desktop_size.width,
-            self.connection_result.desktop_size.height,
-        );
+        let mut image = DecodedImage::new(PixelFormat::RgbA32, self.desktop_size.width, self.desktop_size.height);
 
-        let mut active_stage = ActiveStage::new(self.connection_result.clone(), None);
+        let mut active_stage = ActiveStage::new(connection_result, None);
         let mut frame_id = 0;
 
         'outer: loop {
@@ -276,12 +284,9 @@ impl Session {
     }
 
     pub fn desktop_size(&self) -> DesktopSize {
-        let desktop_width = self.connection_result.desktop_size.width;
-        let desktop_height = self.connection_result.desktop_size.height;
-
         DesktopSize {
-            width: desktop_width,
-            height: desktop_height,
+            width: self.desktop_size.width,
+            height: self.desktop_size.height,
         }
     }
 
@@ -457,7 +462,8 @@ async fn connect(
 
     let mut connector = connector::ClientConnector::new(config)
         .with_server_name(&destination)
-        .with_credssp_client_factory(Box::new(PlaceholderNetworkClientFactory));
+        .with_credssp_network_client(PlaceholderNetworkClientFactory)
+        .with_static_channel(ironrdp::dvc::WithDrdynvc::new());
 
     let upgraded = connect_rdcleanpath(&mut framed, &mut connector, destination, proxy_auth_token, pcb).await?;
 
@@ -499,7 +505,7 @@ where
         }
     }
 
-    let mut buf = Vec::new();
+    let mut buf = WriteBuf::new();
 
     info!("Begin connection procedure");
 
@@ -514,7 +520,8 @@ where
 
         let written = connector.step_no_input(&mut buf)?;
         let x224_pdu_len = written.size().expect("written size");
-        let x224_pdu = buf[..x224_pdu_len].to_vec();
+        debug_assert_eq!(x224_pdu_len, buf.filled_len());
+        let x224_pdu = buf.filled().to_vec();
 
         let rdcleanpath_req =
             ironrdp_rdcleanpath::RDCleanPathPdu::new_request(x224_pdu, destination, proxy_auth_token, pcb)
@@ -571,6 +578,7 @@ where
 
         debug_assert!(connector.next_pdu_hint().is_some());
 
+        buf.clear();
         let written = connector.step(x224_connection_response.as_bytes(), &mut buf)?;
 
         debug_assert!(written.is_nothing());

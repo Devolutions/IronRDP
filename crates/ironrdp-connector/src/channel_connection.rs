@@ -1,5 +1,6 @@
 use std::mem;
 
+use ironrdp_pdu::write_buf::WriteBuf;
 use ironrdp_pdu::{mcs, PduHint};
 
 use crate::{ConnectorError, ConnectorErrorExt as _, ConnectorResult, Sequence, State, Written};
@@ -81,7 +82,7 @@ impl Sequence for ChannelConnectionSequence {
         }
     }
 
-    fn step(&mut self, input: &[u8], output: &mut Vec<u8>) -> ConnectorResult<Written> {
+    fn step(&mut self, input: &[u8], output: &mut WriteBuf) -> ConnectorResult<Written> {
         let (written, next_state) = match mem::take(&mut self.state) {
             ChannelConnectionState::Consumed => {
                 return Err(general_err!(
