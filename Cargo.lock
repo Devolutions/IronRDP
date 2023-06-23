@@ -1705,10 +1705,12 @@ name = "ironrdp"
 version = "0.5.0"
 dependencies = [
  "ironrdp-connector",
+ "ironrdp-dvc",
  "ironrdp-graphics",
  "ironrdp-input",
  "ironrdp-pdu",
  "ironrdp-session",
+ "ironrdp-svc",
 ]
 
 [[package]]
@@ -1761,9 +1763,19 @@ dependencies = [
  "arbitrary",
  "ironrdp-error",
  "ironrdp-pdu",
+ "ironrdp-svc",
  "rand_core 0.6.4",
  "rstest",
  "sspi",
+ "tracing",
+]
+
+[[package]]
+name = "ironrdp-dvc"
+version = "0.1.0"
+dependencies = [
+ "ironrdp-pdu",
+ "ironrdp-svc",
  "tracing",
 ]
 
@@ -1862,9 +1874,11 @@ version = "0.1.0"
 dependencies = [
  "bitflags 2.3.3",
  "ironrdp-connector",
+ "ironrdp-dvc",
  "ironrdp-error",
  "ironrdp-graphics",
  "ironrdp-pdu",
+ "ironrdp-svc",
  "sspi",
  "tracing",
 ]
@@ -1876,6 +1890,13 @@ dependencies = [
  "ironrdp-pdu-generators",
  "ironrdp-session",
  "proptest",
+]
+
+[[package]]
+name = "ironrdp-svc"
+version = "0.1.0"
+dependencies = [
+ "ironrdp-pdu",
 ]
 
 [[package]]

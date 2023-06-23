@@ -251,6 +251,7 @@ pub enum RfxError {
     InvalidItFlag(bool),
 }
 
+#[cfg(feature = "std")]
 impl ironrdp_error::legacy::ErrorContext for RfxError {
     fn context(&self) -> &'static str {
         "RFX"

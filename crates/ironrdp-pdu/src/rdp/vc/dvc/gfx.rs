@@ -314,6 +314,7 @@ pub enum GraphicsPipelineError {
     InvalidPduLength { expected: usize, actual: usize },
 }
 
+#[cfg(feature = "std")]
 impl ironrdp_error::legacy::ErrorContext for GraphicsPipelineError {
     fn context(&self) -> &'static str {
         "graphics pipeline"

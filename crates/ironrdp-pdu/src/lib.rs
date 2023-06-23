@@ -1,6 +1,7 @@
 use core::fmt;
 
 use cursor::WriteCursor;
+use write_buf::WriteBuf;
 
 use crate::cursor::ReadCursor;
 
@@ -21,6 +22,8 @@ pub mod tpdu;
 pub mod tpkt;
 pub mod utf16;
 pub mod utils;
+#[cfg(feature = "alloc")]
+pub mod write_buf;
 pub mod x224;
 
 pub(crate) mod basic_output;
@@ -145,20 +148,32 @@ pub fn encode<T: PduEncode>(pdu: &T, dst: &mut [u8]) -> PduResult<usize> {
     Ok(cursor.pos())
 }
 
-/// Same as `encode_pdu` but resizes the buffer when it is too small to fit the PDU.
-pub fn encode_buf<T: PduEncode>(pdu: &T, buf: &mut Vec<u8>) -> PduResult<usize> {
-    let pdu_size = pdu.size();
-
-    if buf.len() < pdu_size {
-        buf.resize(pdu_size, 0);
-    }
-
-    encode(pdu, buf)
-}
-
 /// Encodes the given PDU in-place using the provided `WriteCursor`.
 pub fn encode_cursor<T: PduEncode>(pdu: &T, dst: &mut WriteCursor<'_>) -> PduResult<()> {
     pdu.encode(dst)
+}
+
+/// Same as `encode` but resizes the buffer when it is too small to fit the PDU.
+#[cfg(feature = "alloc")]
+pub fn encode_buf<T: PduEncode>(pdu: &T, buf: &mut WriteBuf) -> PduResult<usize> {
+    let pdu_size = pdu.size();
+    let dst = buf.unfilled_to(pdu_size);
+    let written = encode(pdu, dst)?;
+    debug_assert_eq!(written, pdu_size);
+    buf.advance(written);
+    Ok(written)
+}
+
+/// Same as `encode` but allocates and returns a new buffer each time.
+///
+/// This is a convenience function, but it’s not very ressource efficient.
+#[cfg(feature = "alloc")]
+pub fn encode_vec<T: PduEncode>(pdu: &T) -> PduResult<Vec<u8>> {
+    let pdu_size = pdu.size();
+    let mut buf = vec![0; pdu_size];
+    let written = encode(pdu, buf.as_mut_slice())?;
+    debug_assert_eq!(written, pdu_size);
+    Ok(buf)
 }
 
 /// Gets the name of this PDU.

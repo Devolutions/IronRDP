@@ -2,7 +2,7 @@
 ///
 /// Shorthand for
 /// ```rust
-/// <crate::ConnectorError as crate::ConnectorErrorExt>::general(context)
+/// <ironrdp_connector::ConnectorError as ironrdp_connector::ConnectorErrorExt>::general(context)
 /// ```
 #[macro_export]
 macro_rules! general_err {
@@ -15,7 +15,7 @@ macro_rules! general_err {
 ///
 /// Shorthand for
 /// ```rust
-/// <crate::ConnectorError as crate::ConnectorErrorExt>::reason(context, reason)
+/// <ironrdp_connector::ConnectorError as ironrdp_connector::ConnectorErrorExt>::reason(context, reason)
 /// ```
 #[macro_export]
 macro_rules! reason_err {
@@ -28,7 +28,7 @@ macro_rules! reason_err {
 ///
 /// Shorthand for
 /// ```rust
-/// <crate::ConnectorError as crate::ConnectorErrorExt>::custom(context, source)
+/// <ironrdp_connector::ConnectorError as ironrdp_connector::ConnectorErrorExt>::custom(context, source)
 /// ```
 #[macro_export]
 macro_rules! custom_err {

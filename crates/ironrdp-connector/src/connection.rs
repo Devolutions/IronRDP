@@ -2,7 +2,9 @@ use std::mem;
 use std::net::SocketAddr;
 
 use ironrdp_pdu::rdp::capability_sets::CapabilitySet;
+use ironrdp_pdu::write_buf::WriteBuf;
 use ironrdp_pdu::{gcc, mcs, nego, rdp, PduHint};
+use ironrdp_svc::{StaticChannelSet, StaticVirtualChannel};
 use sspi::credssp;
 
 use crate::channel_connection::{ChannelConnectionSequence, ChannelConnectionState};
@@ -10,7 +12,7 @@ use crate::connection_finalization::ConnectionFinalizationSequence;
 use crate::license_exchange::LicenseExchangeSequence;
 use crate::{
     legacy, Config, ConnectorError, ConnectorErrorExt as _, ConnectorErrorKind, ConnectorResult, DesktopSize, Sequence,
-    ServerName, State, StaticChannels, Written,
+    ServerName, State, Written,
 };
 
 #[derive(Clone, Copy, Debug)]
@@ -40,12 +42,12 @@ impl PduHint for CredsspEarlyUserAuthResultHint {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct ConnectionResult {
     pub io_channel_id: u16,
     pub user_channel_id: u16,
-    pub static_channels: StaticChannels,
+    pub static_channels: StaticChannelSet,
     pub desktop_size: DesktopSize,
     pub graphics_config: Option<crate::GraphicsConfig>,
     pub no_server_pointer: bool,
@@ -84,45 +86,37 @@ pub enum ClientConnectorState {
     ChannelConnection {
         selected_protocol: nego::SecurityProtocol,
         io_channel_id: u16,
-        static_channels: StaticChannels,
         channel_connection: ChannelConnectionSequence,
     },
     RdpSecurityCommencement {
         selected_protocol: nego::SecurityProtocol,
         io_channel_id: u16,
         user_channel_id: u16,
-        static_channels: StaticChannels,
     },
     SecureSettingsExchange {
         io_channel_id: u16,
         user_channel_id: u16,
-        static_channels: StaticChannels,
     },
     ConnectTimeAutoDetection {
         io_channel_id: u16,
         user_channel_id: u16,
-        static_channels: StaticChannels,
     },
     LicensingExchange {
         io_channel_id: u16,
         user_channel_id: u16,
-        static_channels: StaticChannels,
         license_exchange: LicenseExchangeSequence,
     },
     MultitransportBootstrapping {
         io_channel_id: u16,
         user_channel_id: u16,
-        static_channels: StaticChannels,
     },
     CapabilitiesExchange {
         io_channel_id: u16,
         user_channel_id: u16,
-        static_channels: StaticChannels,
     },
     ConnectionFinalization {
         io_channel_id: u16,
         user_channel_id: u16,
-        static_channels: StaticChannels,
         desktop_size: DesktopSize,
         connection_finalization: ConnectionFinalizationSequence,
     },
@@ -173,6 +167,7 @@ pub struct ClientConnector {
     pub server_name: Option<ServerName>,
     pub network_client_factory: Option<Box<dyn sspi::network_client::NetworkClientFactory>>,
     pub server_public_key: Option<Vec<u8>>,
+    pub static_channels: StaticChannelSet,
 }
 
 impl ClientConnector {
@@ -184,6 +179,7 @@ impl ClientConnector {
             server_name: None,
             network_client_factory: None,
             server_public_key: None,
+            static_channels: StaticChannelSet::new(),
         }
     }
 
@@ -209,19 +205,34 @@ impl ClientConnector {
         self.server_name = Some(name.into());
     }
 
-    pub fn with_credssp_client_factory(
-        mut self,
-        network_client_factory: Box<dyn sspi::network_client::NetworkClientFactory>,
-    ) -> Self {
-        self.network_client_factory = Some(network_client_factory);
+    pub fn with_credssp_network_client<T>(mut self, network_client_factory: T) -> Self
+    where
+        T: sspi::network_client::NetworkClientFactory + 'static,
+    {
+        self.network_client_factory = Some(Box::new(network_client_factory));
         self
     }
 
-    pub fn attach_credssp_client_factory(
-        &mut self,
-        network_client_factory: Box<dyn sspi::network_client::NetworkClientFactory>,
-    ) {
-        self.network_client_factory = Some(network_client_factory);
+    pub fn with_static_channel<T>(mut self, channel: T) -> Self
+    where
+        T: StaticVirtualChannel + 'static,
+    {
+        self.static_channels.insert(channel);
+        self
+    }
+
+    pub fn attach_credssp_network_client<T>(&mut self, network_client_factory: T)
+    where
+        T: sspi::network_client::NetworkClientFactory + 'static,
+    {
+        self.network_client_factory = Some(Box::new(network_client_factory));
+    }
+
+    pub fn attach_static_channel<T>(&mut self, channel: T)
+    where
+        T: StaticVirtualChannel + 'static,
+    {
+        self.static_channels.insert(channel);
     }
 
     pub fn attach_server_public_key(&mut self, server_public_key: Vec<u8>) {
@@ -234,7 +245,7 @@ impl ClientConnector {
 
     pub fn mark_security_upgrade_as_done(&mut self) {
         assert!(self.should_perform_security_upgrade());
-        self.step(&[], &mut Vec::new()).expect("transition to next state");
+        self.step(&[], &mut WriteBuf::new()).expect("transition to next state");
         debug_assert!(!self.should_perform_security_upgrade());
     }
 
@@ -279,7 +290,7 @@ impl Sequence for ClientConnector {
         &self.state
     }
 
-    fn step(&mut self, input: &[u8], output: &mut Vec<u8>) -> ConnectorResult<Written> {
+    fn step(&mut self, input: &[u8], output: &mut WriteBuf) -> ConnectorResult<Written> {
         let (written, next_state) = match mem::take(&mut self.state) {
             // Invalid state
             ClientConnectorState::Consumed => {
@@ -465,7 +476,9 @@ impl Sequence for ClientConnector {
             //== Basic Settings Exchange ==//
             // Exchange basic settings including Core Data, Security Data and Network Data.
             ClientConnectorState::BasicSettingsExchangeSendInitial { selected_protocol } => {
-                let client_gcc_blocks = create_gcc_blocks(&self.config, selected_protocol);
+                let client_gcc_blocks =
+                    create_gcc_blocks(&self.config, selected_protocol, self.static_channels.values());
+
                 let connect_initial = mcs::ConnectInitial::with_gcc_blocks(client_gcc_blocks);
 
                 debug!(message = ?connect_initial, "Send");
@@ -511,20 +524,21 @@ impl Sequence for ClientConnector {
 
                 debug!(?static_channel_ids, io_channel_id);
 
-                let static_channels = connect_initial
-                    .channel_names()
-                    .unwrap_or_default()
-                    .into_iter()
-                    .map(|channel| channel.name)
+                let joined: Vec<_> = self
+                    .static_channels
+                    .type_ids()
                     .zip(static_channel_ids.iter().copied())
-                    .collect::<StaticChannels>();
+                    .collect();
+
+                joined.into_iter().for_each(|(channel, channel_id)| {
+                    self.static_channels.attach_channel_id(channel, channel_id);
+                });
 
                 (
                     Written::Nothing,
                     ClientConnectorState::ChannelConnection {
                         selected_protocol,
                         io_channel_id,
-                        static_channels,
                         channel_connection: ChannelConnectionSequence::new(io_channel_id, static_channel_ids),
                     },
                 )
@@ -535,7 +549,6 @@ impl Sequence for ClientConnector {
             ClientConnectorState::ChannelConnection {
                 selected_protocol,
                 io_channel_id,
-                static_channels,
                 mut channel_connection,
             } => {
                 let written = channel_connection.step(input, output)?;
@@ -548,13 +561,11 @@ impl Sequence for ClientConnector {
                         selected_protocol,
                         io_channel_id,
                         user_channel_id,
-                        static_channels,
                     }
                 } else {
                     ClientConnectorState::ChannelConnection {
                         selected_protocol,
                         io_channel_id,
-                        static_channels,
                         channel_connection,
                     }
                 };
@@ -569,7 +580,6 @@ impl Sequence for ClientConnector {
                 selected_protocol,
                 io_channel_id,
                 user_channel_id,
-                static_channels,
             } => {
                 if selected_protocol == nego::SecurityProtocol::RDP {
                     return Err(general_err!("standard RDP Security (RC4 encryption) is not supported"));
@@ -580,7 +590,6 @@ impl Sequence for ClientConnector {
                     ClientConnectorState::SecureSettingsExchange {
                         io_channel_id,
                         user_channel_id,
-                        static_channels,
                     },
                 )
             }
@@ -590,7 +599,6 @@ impl Sequence for ClientConnector {
             ClientConnectorState::SecureSettingsExchange {
                 io_channel_id,
                 user_channel_id,
-                static_channels,
             } => {
                 let routing_addr = self
                     .server_addr
@@ -608,7 +616,6 @@ impl Sequence for ClientConnector {
                     ClientConnectorState::ConnectTimeAutoDetection {
                         io_channel_id,
                         user_channel_id,
-                        static_channels,
                     },
                 )
             }
@@ -618,13 +625,11 @@ impl Sequence for ClientConnector {
             ClientConnectorState::ConnectTimeAutoDetection {
                 io_channel_id,
                 user_channel_id,
-                static_channels,
             } => (
                 Written::Nothing,
                 ClientConnectorState::LicensingExchange {
                     io_channel_id,
                     user_channel_id,
-                    static_channels,
                     license_exchange: LicenseExchangeSequence::new(
                         io_channel_id,
                         self.config.username.clone(),
@@ -639,7 +644,6 @@ impl Sequence for ClientConnector {
             ClientConnectorState::LicensingExchange {
                 io_channel_id,
                 user_channel_id,
-                static_channels,
                 mut license_exchange,
             } => {
                 let written = license_exchange.step(input, output)?;
@@ -648,13 +652,11 @@ impl Sequence for ClientConnector {
                     ClientConnectorState::MultitransportBootstrapping {
                         io_channel_id,
                         user_channel_id,
-                        static_channels,
                     }
                 } else {
                     ClientConnectorState::LicensingExchange {
                         io_channel_id,
                         user_channel_id,
-                        static_channels,
                         license_exchange,
                     }
                 };
@@ -667,13 +669,11 @@ impl Sequence for ClientConnector {
             ClientConnectorState::MultitransportBootstrapping {
                 io_channel_id,
                 user_channel_id,
-                static_channels,
             } => (
                 Written::Nothing,
                 ClientConnectorState::CapabilitiesExchange {
                     io_channel_id,
                     user_channel_id,
-                    static_channels,
                 },
             ),
 
@@ -682,7 +682,6 @@ impl Sequence for ClientConnector {
             ClientConnectorState::CapabilitiesExchange {
                 io_channel_id,
                 user_channel_id,
-                static_channels,
             } => {
                 let send_data_indication_ctx = legacy::decode_send_data_indication(input)?;
                 let share_control_ctx = legacy::decode_share_control(send_data_indication_ctx)?;
@@ -739,7 +738,6 @@ impl Sequence for ClientConnector {
                     ClientConnectorState::ConnectionFinalization {
                         io_channel_id,
                         user_channel_id,
-                        static_channels,
                         desktop_size,
                         connection_finalization: ConnectionFinalizationSequence::new(io_channel_id, user_channel_id),
                     },
@@ -752,7 +750,6 @@ impl Sequence for ClientConnector {
             ClientConnectorState::ConnectionFinalization {
                 io_channel_id,
                 user_channel_id,
-                static_channels,
                 desktop_size,
                 mut connection_finalization,
             } => {
@@ -763,7 +760,7 @@ impl Sequence for ClientConnector {
                         result: ConnectionResult {
                             io_channel_id,
                             user_channel_id,
-                            static_channels,
+                            static_channels: self.static_channels.take(),
                             desktop_size,
                             graphics_config: self.config.graphics.clone(),
                             no_server_pointer: self.config.no_server_pointer,
@@ -773,7 +770,6 @@ impl Sequence for ClientConnector {
                     ClientConnectorState::ConnectionFinalization {
                         io_channel_id,
                         user_channel_id,
-                        static_channels,
                         desktop_size,
                         connection_finalization,
                     }
@@ -793,7 +789,11 @@ impl Sequence for ClientConnector {
     }
 }
 
-fn create_gcc_blocks(config: &Config, selected_protocol: nego::SecurityProtocol) -> gcc::ClientGccBlocks {
+fn create_gcc_blocks<'a>(
+    config: &Config,
+    selected_protocol: nego::SecurityProtocol,
+    static_channels: impl Iterator<Item = &'a dyn StaticVirtualChannel>,
+) -> gcc::ClientGccBlocks {
     use ironrdp_pdu::gcc::*;
 
     let max_color_depth = config.bitmap.as_ref().map(|bitmap| bitmap.color_depth).unwrap_or(32);
@@ -805,6 +805,10 @@ fn create_gcc_blocks(config: &Config, selected_protocol: nego::SecurityProtocol)
         32 => SupportedColorDepths::BPP32 | SupportedColorDepths::BPP16,
         _ => panic!("Unsupported color depth: {}", max_color_depth),
     };
+
+    let channels = static_channels
+        .map(|channel| ironrdp_svc::make_channel_definition(channel))
+        .collect::<Vec<_>>();
 
     ClientGccBlocks {
         core: ClientCoreData {
@@ -857,15 +861,10 @@ fn create_gcc_blocks(config: &Config, selected_protocol: nego::SecurityProtocol)
             encryption_methods: EncryptionMethod::empty(),
             ext_encryption_methods: 0,
         },
-        network: if config.graphics.is_some() {
-            Some(ClientNetworkData {
-                channels: vec![Channel {
-                    name: "drdynvc".to_owned(),
-                    options: ChannelOptions::COMPRESS_RDP,
-                }],
-            })
+        network: if channels.is_empty() {
+            None
         } else {
-            Some(ClientNetworkData { channels: Vec::new() })
+            Some(ClientNetworkData { channels })
         },
         // TODO: support for Some(ClientClusterData { flags: RedirectionFlags::REDIRECTION_SUPPORTED, redirection_version: RedirectionVersion::V4, redirected_session_id: 0, }),
         cluster: None,
@@ -1052,16 +1051,16 @@ fn create_client_confirm_active(
     }
 }
 
-fn write_credssp_request(ts_request: credssp::TsRequest, output: &mut Vec<u8>) -> crate::ConnectorResult<usize> {
+fn write_credssp_request(ts_request: credssp::TsRequest, output: &mut WriteBuf) -> crate::ConnectorResult<usize> {
     let length = usize::from(ts_request.buffer_len());
 
-    if output.len() < length {
-        output.resize(length, 0);
-    }
+    let unfilled_buffer = output.unfilled_to(length);
 
     ts_request
-        .encode_ts_request(output.as_mut_slice())
+        .encode_ts_request(unfilled_buffer)
         .map_err(|e| reason_err!("CredSSP", "TsRequest encode: {e}"))?;
+
+    output.advance(length);
 
     Ok(length)
 }

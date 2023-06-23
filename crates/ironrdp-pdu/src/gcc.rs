@@ -36,7 +36,9 @@ pub use self::monitor_extended_data::{
 pub use self::multi_transport_channel_data::{
     MultiTransportChannelData, MultiTransportChannelDataError, MultiTransportFlags,
 };
-pub use self::network_data::{Channel, ChannelOptions, ClientNetworkData, NetworkDataError, ServerNetworkData};
+pub use self::network_data::{
+    Channel, ChannelName, ChannelOptions, ClientNetworkData, NetworkDataError, ServerNetworkData,
+};
 pub use self::security_data::{
     ClientSecurityData, EncryptionLevel, EncryptionMethod, SecurityDataError, ServerSecurityData,
 };

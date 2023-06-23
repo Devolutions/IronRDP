@@ -81,8 +81,7 @@ macro_rules! encode_decode_test {
                 let pdu = $pdu;
                 let expected = $encoded_pdu;
 
-                let mut encoded = Vec::new();
-                ::ironrdp_pdu::encode_buf(&pdu, &mut encoded).unwrap();
+                let encoded = ::ironrdp_pdu::encode_vec(&pdu).unwrap();
 
                 $crate::assert_eq_hex!(encoded, expected);
             }

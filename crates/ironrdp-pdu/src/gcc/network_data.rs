@@ -1,5 +1,5 @@
-use std::io::{self, Write};
-use std::str;
+use std::borrow::Cow;
+use std::{io, str};
 
 use bitflags::bitflags;
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
@@ -12,13 +12,88 @@ const CHANNELS_MAX: usize = 31;
 
 const CLIENT_CHANNEL_COUNT_SIZE: usize = 4;
 
-const CLIENT_CHANNEL_NAME_SIZE: usize = 8;
 const CLIENT_CHANNEL_OPTIONS_SIZE: usize = 4;
-const CLIENT_CHANNEL_SIZE: usize = CLIENT_CHANNEL_NAME_SIZE + CLIENT_CHANNEL_OPTIONS_SIZE;
+const CLIENT_CHANNEL_SIZE: usize = ChannelName::SIZE + CLIENT_CHANNEL_OPTIONS_SIZE;
 
 const SERVER_IO_CHANNEL_SIZE: usize = 2;
 const SERVER_CHANNEL_COUNT_SIZE: usize = 2;
 const SERVER_CHANNEL_SIZE: usize = 2;
+
+/// An 8-byte array containing a null-terminated collection of seven ANSI characters
+/// with the purpose of uniquely identifying a channel.
+///
+/// In RDP, an ANSI character is a 8-bit Windows-1252 character set unit. ANSI character set
+/// is using all the code values from 0 to 255, as such any u8 value is a valid ANSI character.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct ChannelName {
+    inner: Cow<'static, [u8; Self::SIZE]>,
+}
+
+impl ChannelName {
+    pub const SIZE: usize = 8;
+
+    /// Creates a channel name using the provided array, ensuring the last byte is always the null terminator.
+    pub const fn new(mut value: [u8; Self::SIZE]) -> Self {
+        value[Self::SIZE - 1] = 0; // ensure the last byte is always the null terminator
+
+        Self {
+            inner: Cow::Owned(value),
+        }
+    }
+
+    /// Converts an UTF-8 string into a channel name by copying up to 7 bytes.
+    pub fn from_utf8(value: &str) -> Option<Self> {
+        let mut inner = [0; Self::SIZE];
+
+        value
+            .chars()
+            .take(Self::SIZE - 1)
+            .zip(inner.iter_mut())
+            .try_for_each(|(src, dst)| {
+                let c = u8::try_from(src).ok()?;
+                c.is_ascii().then(|| *dst = c)
+            })?;
+
+        Some(Self {
+            inner: Cow::Owned(inner),
+        })
+    }
+
+    /// Converts a static u8 array into a channel name without copy.
+    ///
+    /// # Panics
+    ///
+    /// Panics if input is not null-terminated.
+    pub const fn from_static(value: &'static [u8; 8]) -> Self {
+        // ensure the last byte is always the null terminator
+        if value[Self::SIZE - 1] != 0 {
+            panic!("channel name must be null-terminated")
+        }
+
+        Self {
+            inner: Cow::Borrowed(value),
+        }
+    }
+
+    /// Returns the underlying raw representation of the channel name (an 8-byte array).
+    pub fn as_bytes(&self) -> &[u8; Self::SIZE] {
+        self.inner.as_ref()
+    }
+
+    /// Get a &str if this channel name is a valid ASCII string.
+    pub fn as_str(&self) -> Option<&str> {
+        if self.inner.iter().all(u8::is_ascii) {
+            let terminator_idx = self
+                .inner
+                .iter()
+                .position(|c| *c == 0)
+                .expect("null-terminated ASCII string");
+            Some(str::from_utf8(&self.inner[..terminator_idx]).expect("ASCII characters"))
+        } else {
+            None
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClientNetworkData {
@@ -121,7 +196,7 @@ impl PduParsing for ServerNetworkData {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Channel {
-    pub name: String,
+    pub name: ChannelName,
     pub options: ChannelOptions,
 }
 
@@ -129,12 +204,10 @@ impl PduParsing for Channel {
     type Error = NetworkDataError;
 
     fn from_buffer(mut buffer: impl io::Read) -> Result<Self, Self::Error> {
-        let mut name = [0; CLIENT_CHANNEL_NAME_SIZE];
+        let mut name = [0; ChannelName::SIZE];
         buffer.read_exact(&mut name)?;
-        let name = str::from_utf8(name.as_ref())
-            .map_err(NetworkDataError::Utf8Error)?
-            .trim_end_matches('\u{0}')
-            .into();
+        let name = ChannelName::new(name);
+
         let options = ChannelOptions::from_bits(buffer.read_u32::<LittleEndian>()?)
             .ok_or(NetworkDataError::InvalidChannelOptions)?;
 
@@ -142,11 +215,7 @@ impl PduParsing for Channel {
     }
 
     fn to_buffer(&self, mut buffer: impl io::Write) -> Result<(), Self::Error> {
-        let mut name = [0; CLIENT_CHANNEL_NAME_SIZE - 1];
-        name.as_mut().write_all(self.name.as_bytes())?;
-
-        buffer.write_all(name.as_ref())?;
-        buffer.write_u8(0)?; // null-terminated
+        buffer.write_all(self.name.as_bytes())?;
         buffer.write_u32::<LittleEndian>(self.options.bits())?;
 
         Ok(())
