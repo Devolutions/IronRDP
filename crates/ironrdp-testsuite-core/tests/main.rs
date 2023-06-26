@@ -11,6 +11,7 @@
 
 mod graphics;
 mod input;
+mod pcb;
 mod pdu;
 mod rdcleanpath;
 mod server_name;
