@@ -1,4 +1,4 @@
-/// Same macro as in `assert_hex` crate, but use `{:X?}` instead of `{:#x}` because the alternate formatting
+/// Same macro as in `assert_hex` crate, but use `{:02X?}` instead of `{:#x}` because the alternate formatting
 /// for slice / Vec is inserting a newline between each element which is not very readable for binary payloads.
 ///
 /// [Original macro](https://docs.rs/assert_hex/latest/src/assert_hex/lib.rs.html#19).
