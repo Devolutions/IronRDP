@@ -1,0 +1,170 @@
+use expect_test::expect;
+use ironrdp_pdu::pcb::*;
+use ironrdp_testsuite_core::encode_decode_test;
+
+encode_decode_test! {
+    v1:
+        PreconnectionBlob {
+            version: PcbVersion::V1,
+            id: 4_005_992_939,
+            v2_payload: None,
+        },
+        [
+            0x10, 0x00, 0x00, 0x00, // -> RDP_PRECONNECTION_PDU_V1::cbSize = 0x10 = 16 bytes
+            0x00, 0x00, 0x00, 0x00, // -> RDP_PRECONNECTION_PDU_V1::Flags = 0
+            0x01, 0x00, 0x00, 0x00, // -> RDP_PRECONNECTION_PDU_V1::Version = 1
+            0xeb, 0x99, 0xc6, 0xee, // -> RDP_PRECONNECTION_PDU_V1::Id = 0xEEC699EB = 4005992939
+        ];
+
+    v2:
+        PreconnectionBlob {
+            version: PcbVersion::V2,
+            id: 0,
+            v2_payload: Some(String::from("TestVM")),
+        },
+        [
+            0x20, 0x00, 0x00, 0x00, // -> RDP_PRECONNECTION_PDU_V1::cbSize = 0x20 = 32 bytes
+            0x00, 0x00, 0x00, 0x00, // -> RDP_PRECONNECTION_PDU_V1::Flags = 0
+            0x02, 0x00, 0x00, 0x00, // -> RDP_PRECONNECTION_PDU_V1::Version = 2
+            0x00, 0x00, 0x00, 0x00, // -> RDP_PRECONNECTION_PDU_V1::Id = 0
+            0x07, 0x00, //       -> RDP_PRECONNECTION_PDU_V2::cchPCB = 0x7 = 7 characters
+            0x54, 0x00, 0x65, 0x00, 0x73, 0x00, 0x74, 0x00, 0x56, 0x00, 0x4d, 0x00, 0x00,
+            0x00, // -> RDP_PRECONNECTION_PDU_V2::wszPCB -> "TestVM\0"
+        ];
+
+    v2_jwt:
+        PreconnectionBlob {
+            version: PcbVersion::V2,
+            id: 0,
+            v2_payload: Some(concat!(
+                "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCIsImN0eSI6IkFTU09DSUFUSU9OIn0.eyJkc3RfaHN0IjoidG",
+                "NwOi8vMTAuMTAuMC4yOjIyIiwiZXhwIjoxNjg3ODE1OTIyLCJpYXQiOjE2ODc4MTU2MjIsImpldF9haWQi",
+                "OiI4ZDA2NjBhNy0xNDlkLTRkMDctOTUwNC0zNmM5NDhiMjQxMzYiLCJqZXRfYXAiOiJzc2giLCJqZXRfY2",
+                "0iOiJmd2QiLCJqZXRfZ3dfaWQiOiJiOGExYTA2NC0xOTg1LTRkNzktYjBjNC05YWMxMWIzZTg0ZTEiLCJq",
+                "dGkiOiJmNmMyYWE4OC00MzZjLTRkN2UtODc3ZC02OGM3Y2NhNmEwZDYiLCJuYmYiOjE2ODc4MTU2MjJ9.D",
+                "P6pKkMpAVpOIxrywOkbzTKuI0zdxKN-d4XguRI2Pb48BubTQ7EY1xNp8H_kHxaQ6Fr46fBA5fmmjGtnW_2",
+                "exMOu8ZTqduSPXrUVOogE4mBZMAYjVIMnBhsLOfx30AZS8YKCsL8FNnNJZBnFpgaJe8Mz9eCrhPWiDYD10",
+                "p2dMBcElUOWU9Gh0YWlbIcRS6zkp6vAARdWGn0L98HgyxOFqnihsdmAESsm9ma7EVeTLoXJMYVCUwPj6tW",
+                "QOs9SGNnNoGShJLQbPeHUB6lGJs_g1V7ojSK-0K0rVtBRI6iG0a8Q6sMLomRoM7IKwVMHCfYte6I3fLaY1",
+                "_b3SrwXIWjn5A"
+            ).to_owned()),
+        },
+        hex::decode(concat!(
+            "f2050000000000000200000000000000f002650079004a00680062004700630069004f0069004a00530055007a0049",
+            "0031004e0069004900730049006e0052003500630043004900360049006b0070005800560043004900730049006d00",
+            "4e003000650053004900360049006b0046005400550030003900440053005500460055005300550039004f0049006e",
+            "0030002e00650079004a006b006300330052006600610048004e00300049006a006f006900640047004e0077004f00",
+            "6900380076004d005400410075004d005400410075004d004300340079004f006a004900790049006900770069005a",
+            "0058006800770049006a006f0078004e006a00670033004f004400450031004f005400490079004c0043004a007000",
+            "59005800510069004f006a00450032004f004400630034004d005400550032004d006a004900730049006d0070006c",
+            "00640046003900680061005700510069004f006900490034005a004400410032004e006a00420068004e0079003000",
+            "78004e0044006c006b004c00540052006b004d004400630074004f005400550077004e00430030007a004e006d004d",
+            "0035004e004400680069004d006a00510078004d007a00590069004c0043004a0071005a0058005200660059005800",
+            "410069004f0069004a007a0063003200670069004c0043004a0071005a0058005200660059003200300069004f0069",
+            "004a006d0064003200510069004c0043004a0071005a005800520066005a0033006400660061005700510069004f00",
+            "69004a0069004f0047004500780059005400410032004e004300300078004f005400670031004c00540052006b004e",
+            "007a006b00740059006a0042006a004e00430030003500590057004d0078004d00570049007a005a00540067003000",
+            "5a005400450069004c0043004a007100640047006b0069004f0069004a006d004e006d004d00790059005700450034",
+            "004f004300300030004d007a005a006a004c00540052006b004e003200550074004f004400630033005a0043003000",
+            "32004f0047004d003300590032004e0068004e006d00450077005a004400590069004c0043004a00750059006d0059",
+            "0069004f006a00450032004f004400630034004d005400550032004d006a004a0039002e0044005000360070004b00",
+            "6b004d0070004100560070004f00490078007200790077004f006b0062007a0054004b007500490030007a00640078",
+            "004b004e002d0064003400580067007500520049003200500062003400380042007500620054005100370045005900",
+            "310078004e007000380048005f006b00480078006100510036004600720034003600660042004100350066006d006d",
+            "006a00470074006e0057005f003200650078004d004f00750038005a00540071006400750053005000580072005500",
+            "56004f006f006700450034006d0042005a004d00410059006a00560049004d006e004200680073004c004f00660078",
+            "003300300041005a005300380059004b00430073004c00380046004e006e004e004a005a0042006e00460070006700",
+            "61004a00650038004d007a0039006500430072006800500057006900440059004400310030007000320064004d0042",
+            "00630045006c0055004f00570055003900470068003000590057006c006200490063005200530036007a006b007000",
+            "360076004100410052006400570047006e0030004c003900380048006700790078004f00460071006e006900680073",
+            "0064006d0041004500530073006d0039006d006100370045005600650054004c006f0058004a004d00590056004300",
+            "5500770050006a0036007400570051004f0073003900530047004e006e004e006f004700530068004a004c00510062",
+            "005000650048005500420036006c0047004a0073005f0067003100560037006f006a0053004b002d0030004b003000",
+            "7200560074004200520049003600690047003000610038005100360073004d004c006f006d0052006f004d00370049",
+            "004b00770056004d0048004300660059007400650036004900330066004c006100590031005f006200330053007200",
+            "77005800490057006a006e00350041000000"
+        )).expect("pcb_v2_with_jwt payload");
+}
+
+const PRECONNECTION_PDU_V1_NULL_SIZE_BUF: [u8; 16] = [
+    0x00, 0x00, 0x00, 0x00, // -> RDP_PRECONNECTION_PDU_V1::cbSize = 0x00 = 0 bytes
+    0x00, 0x00, 0x00, 0x00, // -> RDP_PRECONNECTION_PDU_V1::Flags = 0
+    0x01, 0x00, 0x00, 0x00, // -> RDP_PRECONNECTION_PDU_V1::Version = 1
+    0xeb, 0x99, 0xc6, 0xee, // -> RDP_PRECONNECTION_PDU_V1::Id = 0xEEC699EB = 4005992939
+];
+
+#[test]
+fn null_size() {
+    let e = ironrdp_pdu::decode::<PreconnectionBlob>(&PRECONNECTION_PDU_V1_NULL_SIZE_BUF)
+        .err()
+        .unwrap();
+
+    expect![
+        [r#"
+            Error {
+                context: "PreconnectionBlob",
+                kind: InvalidMessage {
+                    field: "cbSize",
+                    reason: "advertised size too small for Preconnection PDU V1",
+                },
+                source: None,
+            }
+        "#]
+    ]
+    .assert_debug_eq(&e);
+}
+
+const PRECONNECTION_PDU_V1_LARGE_SIZE_BUF: [u8; 16] = [
+    0xff, 0x00, 0x00, 0x00, // -> RDP_PRECONNECTION_PDU_V1::cbSize = 0xff
+    0x00, 0x00, 0x00, 0x00, // -> RDP_PRECONNECTION_PDU_V1::Flags = 0
+    0x01, 0x00, 0x00, 0x00, // -> RDP_PRECONNECTION_PDU_V1::Version = 1
+    0xeb, 0x99, 0xc6, 0xee, // -> RDP_PRECONNECTION_PDU_V1::Id = 0xEEC699EB = 4005992939
+];
+
+#[test]
+fn truncated() {
+    let e = ironrdp_pdu::decode::<PreconnectionBlob>(&PRECONNECTION_PDU_V1_LARGE_SIZE_BUF)
+        .err()
+        .unwrap();
+
+    expect![[r#"
+            Error {
+                context: "PreconnectionBlob",
+                kind: NotEnoughBytes {
+                    received: 0,
+                    expected: 239,
+                },
+                source: None,
+            }
+        "#]]
+    .assert_debug_eq(&e);
+}
+
+const PRECONNECTION_PDU_V2_LARGE_PAYLOAD_SIZE_BUF: [u8; 32] = [
+    0x20, 0x00, 0x00, 0x00, // -> RDP_PRECONNECTION_PDU_V1::cbSize = 0x20 = 32 bytes
+    0x00, 0x00, 0x00, 0x00, // -> RDP_PRECONNECTION_PDU_V1::Flags = 0
+    0x02, 0x00, 0x00, 0x00, // -> RDP_PRECONNECTION_PDU_V1::Version = 2
+    0x00, 0x00, 0x00, 0x00, // -> RDP_PRECONNECTION_PDU_V1::Id = 0
+    0xff, 0x00, //       -> RDP_PRECONNECTION_PDU_V2::cchPCB = 0xff
+    0x54, 0x00, 0x65, 0x00, 0x73, 0x00, 0x74, 0x00, 0x56, 0x00, 0x4d, 0x00, 0x00,
+    0x00, // -> RDP_PRECONNECTION_PDU_V2::wszPCB -> "TestVM\0"
+];
+
+#[test]
+fn pcb_v2_string_too_big() {
+    let e = ironrdp_pdu::decode::<PreconnectionBlob>(&PRECONNECTION_PDU_V2_LARGE_PAYLOAD_SIZE_BUF)
+        .err()
+        .unwrap();
+
+    expect![[r#"
+            Error {
+                context: "PreconnectionBlob",
+                kind: InvalidMessage {
+                    field: "cchPCB",
+                    reason: "PCB string bigger than advertised size",
+                },
+                source: None,
+            }
+        "#]]
+    .assert_debug_eq(&e);
+}

@@ -1,3 +1,77 @@
+/// Same macro as in `assert_hex` crate, but use `{:02X?}` instead of `{:#x}` because the alternate formatting
+/// for slice / Vec is inserting a newline between each element which is not very readable for binary payloads.
+///
+/// [Original macro](https://docs.rs/assert_hex/latest/src/assert_hex/lib.rs.html#19).
+#[macro_export]
+macro_rules! assert_eq_hex {
+    ($left:expr, $right:expr $(,)?) => ({
+        match (&$left, &$right) {
+            (left_val, right_val) => {
+                if !(*left_val == *right_val) {
+                    // The reborrows below are intentional. Without them, the stack slot for the
+                    // borrow is initialized even before the values are compared, leading to a
+                    // noticeable slow down.
+                    panic!(r#"assertion failed: `(left == right)`
+  left: `{:02X?}`,
+ right: `{:02X?}`"#, &*left_val, &*right_val)
+                }
+            }
+        }
+    });
+    ($left:expr, $right:expr, $($arg:tt)+) => ({
+        match (&($left), &($right)) {
+            (left_val, right_val) => {
+                if !(*left_val == *right_val) {
+                    // The reborrows below are intentional. Without them, the stack slot for the
+                    // borrow is initialized even before the values are compared, leading to a
+                    // noticeable slow down.
+                    panic!(r#"assertion failed: `(left == right)`
+  left: `{:02X?}`,
+ right: `{:02X?}`: {}"#, &*left_val, &*right_val,
+                           format_args!($($arg)+))
+                }
+            }
+        }
+    });
+}
+
+/// Same macro as in `assert_hex` crate, but use `{:02X?}` instead of `{:#x}` because the alternate formatting
+/// for slice / Vec is inserting a newline between each element which is not very readable for binary payloads.
+///
+/// [Original macro](https://docs.rs/assert_hex/latest/src/assert_hex/lib.rs.html#56).
+#[macro_export]
+macro_rules! assert_ne_hex {
+    ($left:expr, $right:expr $(,)?) => ({
+        match (&$left, &$right) {
+            (left_val, right_val) => {
+                if *left_val == *right_val {
+                    // The reborrows below are intentional. Without them, the stack slot for the
+                    // borrow is initialized even before the values are compared, leading to a
+                    // noticeable slow down.
+                    panic!(r#"assertion failed: `(left != right)`
+  left: `{:02X?}`,
+ right: `{:02X?}`"#, &*left_val, &*right_val)
+                }
+            }
+        }
+    });
+    ($left:expr, $right:expr, $($arg:tt)+) => ({
+        match (&($left), &($right)) {
+            (left_val, right_val) => {
+                if *left_val == *right_val {
+                    // The reborrows below are intentional. Without them, the stack slot for the
+                    // borrow is initialized even before the values are compared, leading to a
+                    // noticeable slow down.
+                    panic!(r#"assertion failed: `(left != right)`
+  left: `{:02X?}`,
+ right: `{:02X?}`: {}"#, &*left_val, &*right_val,
+                           format_args!($($arg)+))
+                }
+            }
+        }
+    });
+}
+
 #[macro_export]
 macro_rules! encode_decode_test {
     ($test_name:ident : $pdu:expr , $encoded_pdu:expr) => {
@@ -10,7 +84,7 @@ macro_rules! encode_decode_test {
                 let mut encoded = Vec::new();
                 ::ironrdp_pdu::encode_buf(&pdu, &mut encoded).unwrap();
 
-                ::assert_hex::assert_eq_hex!(encoded, expected);
+                $crate::assert_eq_hex!(encoded, expected);
             }
 
             #[test]
@@ -22,7 +96,7 @@ macro_rules! encode_decode_test {
 
                 let _ = expected == decoded; // type inference trick
 
-                ::assert_hex::assert_eq_hex!(decoded, expected);
+                $crate::assert_eq_hex!(decoded, expected);
             }
 
             #[test]
@@ -32,7 +106,7 @@ macro_rules! encode_decode_test {
 
                 let pdu_size = ::ironrdp_pdu::size(&pdu);
 
-                ::assert_hex::assert_eq_hex!(pdu_size, expected);
+                $crate::assert_eq_hex!(pdu_size, expected);
             }
         }
     };
@@ -58,7 +132,7 @@ macro_rules! mcs_encode_decode_test {
                 let mut cursor = ::ironrdp_pdu::cursor::WriteCursor::new(&mut encoded);
                 pdu.mcs_body_encode(&mut cursor).unwrap();
 
-                ::assert_hex::assert_eq_hex!(encoded, expected);
+                $crate::assert_eq_hex!(encoded, expected);
             }
 
             #[test]
@@ -73,7 +147,7 @@ macro_rules! mcs_encode_decode_test {
 
                 let _ = expected == decoded; // type inference trick
 
-                ::assert_hex::assert_eq_hex!(decoded, expected);
+                $crate::assert_eq_hex!(decoded, expected);
             }
 
             #[test]
@@ -85,7 +159,7 @@ macro_rules! mcs_encode_decode_test {
 
                 let pdu_size = pdu.mcs_size();
 
-                ::assert_hex::assert_eq_hex!(pdu_size, expected);
+                $crate::assert_eq_hex!(pdu_size, expected);
             }
         }
     };
