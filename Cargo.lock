@@ -1516,6 +1516,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "ironrdp-blocking"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "ironrdp-connector",
+ "ironrdp-pdu",
+ "tap",
+ "tracing",
+]
+
+[[package]]
 name = "ironrdp-client"
 version = "0.1.0"
 dependencies = [

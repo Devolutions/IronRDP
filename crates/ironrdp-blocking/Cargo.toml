@@ -1,0 +1,24 @@
+[package]
+name = "ironrdp-blocking"
+version = "0.1.0"
+readme = "README.md"
+description = "Blocking I/O abstraction wrapping the IronRDP state machines conveniently"
+edition.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[lib]
+doctest = false
+test = false
+
+[dependencies]
+bytes = "1"
+ironrdp-connector.workspace = true
+ironrdp-pdu.workspace = true
+# ironrdp-session.workspace = true
+tap = "1"
+tracing.workspace = true
