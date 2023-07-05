@@ -11,6 +11,10 @@ authors.workspace = true
 keywords.workspace = true
 categories.workspace = true
 
+[package.metadata.docs.rs]
+cargo-args = ["-Zunstable-options", "-Zrustdoc-scrape-examples"]
+all-features = true
+
 [lib]
 doctest = false
 test = false
@@ -44,5 +48,12 @@ ironrdp-dvc = { workspace = true, optional = true }
 ironrdp-rdpdr = { workspace = true, optional = true }
 ironrdp-rdpsnd = { workspace = true, optional = true }
 
-[package.metadata.docs.rs]
-all-features = true
+[dev-dependencies]
+ironrdp-blocking.workspace = true
+anyhow = "1"
+rustls = "0.21"
+bmp = "0.5"
+pico-args = "0.5"
+x509-cert = { version = "0.2.1", default-features = false, features = ["std"] }
+tracing.workspace = true
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

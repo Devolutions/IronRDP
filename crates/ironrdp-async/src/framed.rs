@@ -12,6 +12,12 @@ pub trait FramedRead {
         Self: 'read;
 
     /// Reads from stream and fills internal buffer
+    ///
+    /// # Cancel safety
+    ///
+    /// This method is cancel safe. If you use it as the event in a
+    /// `tokio::select!` statement and some other branch
+    /// completes first, then it is guaranteed that no data was read.
     fn read<'a>(&'a mut self, buf: &'a mut BytesMut) -> Self::ReadFut<'a>;
 }
 
@@ -21,6 +27,14 @@ pub trait FramedWrite {
         Self: 'write;
 
     /// Writes an entire buffer into this stream.
+    ///
+    /// # Cancel safety
+    ///
+    /// This method is not cancellation safe. If it is used as the event
+    /// in a `tokio::select!` statement and some other
+    /// branch completes first, then the provided buffer may have been
+    /// partially written, but future calls to `write_all` will start over
+    /// from the beginning of the buffer.
     fn write_all<'a>(&'a mut self, buf: &'a [u8]) -> Self::WriteAllFut<'a>;
 }
 
@@ -81,11 +95,14 @@ impl<S> Framed<S>
 where
     S: FramedRead,
 {
-    /// Reads from stream and fills internal buffer
-    pub async fn read(&mut self) -> io::Result<usize> {
-        self.stream.read(&mut self.buf).await
-    }
-
+    /// Accumulates at least `length` bytes and returns exactly `length` bytes, keeping the leftover in the internal buffer.
+    ///
+    /// # Cancel safety
+    ///
+    /// This method is cancel safe. If you use it as the event in a
+    /// `tokio::select!` statement and some other branch
+    /// completes first, then it is safe to drop the future and re-create it later.
+    /// Data may have been read, but it will be stored in the internal buffer.
     pub async fn read_exact(&mut self, length: usize) -> io::Result<BytesMut> {
         loop {
             if self.buf.len() >= length {
@@ -103,6 +120,14 @@ where
         }
     }
 
+    /// Reads a standard RDP PDU frame.
+    ///
+    /// # Cancel safety
+    ///
+    /// This method is cancel safe. If you use it as the event in a
+    /// `tokio::select!` statement and some other branch
+    /// completes first, then it is safe to drop the future and re-create it later.
+    /// Data may have been read, but it will be stored in the internal buffer.
     pub async fn read_pdu(&mut self) -> io::Result<(ironrdp_pdu::Action, BytesMut)> {
         loop {
             // Try decoding and see if a frame has been received already
@@ -125,6 +150,14 @@ where
         }
     }
 
+    /// Reads a frame using the provided PduHint.
+    ///
+    /// # Cancel safety
+    ///
+    /// This method is cancel safe. If you use it as the event in a
+    /// `tokio::select!` statement and some other branch
+    /// completes first, then it is safe to drop the future and re-create it later.
+    /// Data may have been read, but it will be stored in the internal buffer.
     pub async fn read_by_hint(&mut self, hint: &dyn PduHint) -> io::Result<Bytes> {
         loop {
             match hint
@@ -145,13 +178,32 @@ where
             };
         }
     }
+
+    /// Reads from stream and fills internal buffer, returning how many bytes were read.
+    ///
+    /// # Cancel safety
+    ///
+    /// This method is cancel safe. If you use it as the event in a
+    /// `tokio::select!` statement and some other branch
+    /// completes first, then it is guaranteed that no data was read.
+    async fn read(&mut self) -> io::Result<usize> {
+        self.stream.read(&mut self.buf).await
+    }
 }
 
 impl<S> Framed<S>
 where
     S: FramedWrite,
 {
-    /// Writes an entire buffer into this stream.
+    /// Attempts to write an entire buffer into this `Framed`’s stream.
+    ///
+    /// # Cancel safety
+    ///
+    /// This method is not cancellation safe. If it is used as the event
+    /// in a `tokio::select!` statement and some other
+    /// branch completes first, then the provided buffer may have been
+    /// partially written, but future calls to `write_all` will start over
+    /// from the beginning of the buffer.
     pub async fn write_all(&mut self, buf: &[u8]) -> io::Result<()> {
         self.stream.write_all(buf).await
     }

@@ -1,66 +1,41 @@
 # IronRDP client
 
-A command-line RDP client, which performs connection to an RDP server and decodes RFX graphical updates.
-If IronRDP client encounters an error, then will return `error` exit code and print what caused
-an error.
+A full-fledged RDP client based on IronRDP crates suite, and implemented using non-blocking, asynchronous I/O.
 
-## Prerequisites
+## Sample usage
 
-You need to enable RemoteFX on the target machine (see top-level [README](../README.md)).
-
-## Command-line Interface
-
-```
-USAGE:
-    ironrdp_client [OPTIONS] <ADDR> --password <PASSWORD> --security-protocol <SECURITY_PROTOCOL>... --username <USERNAME>
-
-FLAGS:
-    -h, --help       Prints help information
-    -v, --version    Prints version information
-
-OPTIONS:
-        --dig-product-id <DIG_PRODUCT_ID>
-            Contains a value that uniquely identifies the client [default: ]
-
-    -d, --domain <DOMAIN>                                                    An optional target RDP server domain name
-        --ime-file-name <IME_FILENAME>
-            The input method editor (IME) file name associated with the active input locale [default: ]
-
-        --keyboard-functional-keys-count <KEYBOARD_FUNCTIONAL_KEYS_COUNT>
-            The number of function keys on the keyboard [default: 12]
-
-        --keyboard-subtype <KEYBOARD_SUBTYPE>
-            The keyboard subtype (an original equipment manufacturer-dependent value) [default: 0]
-
-        --keyboard-type <KEYBOARD_TYPE>
-            The keyboard type [default: ibm_enhanced]  [possible values: ibm_pc_xt, olivetti_ico, ibm_pc_at,
-            ibm_enhanced, nokia1050, nokia9140, japanese]
-        --log-file <LOG_FILE>
-            A file with IronRDP client logs [default: ironrdp_client.log]
-
-    -p, --password <PASSWORD>                                                A target RDP server user password
-        --security-protocol <SECURITY_PROTOCOL>...
-            Specify the security protocols to use [default: hybrid_ex]  [possible values: ssl, hybrid, hybrid_ex]
-
-    -u, --username <USERNAME>                                                A target RDP server user name
-
-ARGS:
-    <ADDR>    An address on which the client will connect. Format: <ip>:<port>
+```bash
+ironrdp-client <HOSTNAME> --username <USERNAME> --password <PASSWORD>
 ```
 
-It worth to notice that the client takes mandatory arguments as
- - `<ADDR>` as first argument;
- - `--username` or `-u`;
- - `--password` or `-p`.
+## Configuring log filter directives
 
-## Sample Usage
+The `IRONRDP_LOG` environment variable is used to set the log filter directives. 
 
-1. Run the RDP server (Windows RDP server, FreeRDP server, etc.);
-2. Run the IronRDP client and specify the RDP server address, username and password:
-    ```
-   cargo run 192.168.1.100:3389 -u SimpleUsername -p SimplePassword!
-    ```
-3. After the RDP Connection Sequence the client will start receive RFX updates 
-and save to the internal buffer.
-In case of error, the client will print (for example) `RDP failed because of negotiation error: ...`.
-Additional logs are available in `<LOG_FILE>` (`ironrdp_client.log` by default).
+```bash
+IRONRDP_LOG="info,ironrdp_connector=trace" ironrdp-client <HOSTNAME> --username <USERNAME> --password <PASSWORD>
+```
+
+See [`tracing-subscriber`’s documentation][tracing-doc] for more details.
+
+[tracing-doc]: https://docs.rs/tracing-subscriber/0.3.17/tracing_subscriber/filter/struct.EnvFilter.html#directives
+
+## Support for `SSLKEYLOGFILE`
+
+This client supports reading the `SSLKEYLOGFILE` environment variable.
+When set, the TLS encryption secrets for the session will be dumped to the file specified
+by the environment variable. 
+This file can be read by Wireshark so that in can decrypt the packets.
+
+### Example
+
+```bash
+SSLKEYLOGFILE=/tmp/tls-secrets ironrdp-client <HOSTNAME> --username <USERNAME> --password <PASSWORD>
+```
+
+### Usage in Wireshark
+
+See this [awakecoding's repository][awakecoding-repository] explaining how to use the file in wireshark.
+
+[awakecoding-repository]: https://github.com/awakecoding/wireshark-rdp#sslkeylogfile
+

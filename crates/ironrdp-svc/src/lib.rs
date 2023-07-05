@@ -65,7 +65,7 @@ pub trait StaticVirtualChannel: AsAny + fmt::Debug + Send + Sync {
     /// Returns the name of the `StaticVirtualChannel`
     fn channel_name(&self) -> ChannelName;
 
-    /// Defines which compression flag should be sent along the [`Channel`] Definition Structure (`CHANNEL_DEF`)
+    /// Defines which compression flag should be sent along the [`ChannelDef`] Definition Structure (`CHANNEL_DEF`)
     fn compression_condition(&self) -> CompressionCondition {
         CompressionCondition::Never
     }
@@ -83,7 +83,7 @@ pub trait StaticVirtualChannel: AsAny + fmt::Debug + Send + Sync {
 
 assert_obj_safe!(StaticVirtualChannel);
 
-/// Takes a vector of PDUs and breaks them into chunks prefixed with a [`ChannelPduHeader`].
+/// Takes a vector of PDUs and breaks them into chunks prefixed with a Channel PDU Header (`CHANNEL_PDU_HEADER`).
 ///
 /// Each chunk is at most `max_chunk_len` bytes long (not including the Channel PDU Header).
 pub fn chunkify(messages: Vec<SvcMessage>, max_chunk_len: usize) -> PduResult<Vec<WriteBuf>> {

@@ -47,7 +47,7 @@ where
         Box::pin(async {
             // NOTE(perf): tokio implementation is more efficient
             let mut read_bytes = [0u8; 1024];
-            let len = self.inner.read(&mut read_bytes[..]).await?;
+            let len = self.inner.read(&mut read_bytes).await?;
             buf.extend_from_slice(&read_bytes[..len]);
 
             Ok(len)
