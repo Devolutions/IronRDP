@@ -28,7 +28,7 @@ pub(crate) mod ber;
 pub(crate) mod crypto;
 pub(crate) mod per;
 
-pub use crate::basic_output::{bitmap, fast_path, surface_commands};
+pub use crate::basic_output::{bitmap, fast_path, pointer, surface_commands};
 pub use crate::rdp::vc::dvc;
 
 pub type PduResult<T> = core::result::Result<T, PduError>;
@@ -373,8 +373,8 @@ mod legacy {
     pub enum RdpError {
         #[error("IO error")]
         IOError(#[from] std::io::Error),
-        #[error("Surface Commands error")]
-        FastPathError(#[from] crate::fast_path::FastPathError),
+        // #[error("Surface Commands error")]
+        // FastPathError(#[from] crate::fast_path::FastPathError),
         #[error("Received invalid action code: {0}")]
         InvalidActionCode(u8),
     }

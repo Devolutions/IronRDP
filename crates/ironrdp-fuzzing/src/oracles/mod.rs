@@ -44,15 +44,15 @@ pub fn pdu_decode(data: &[u8]) {
 
     let _ = vc::ChannelPduHeader::from_buffer(data);
 
-    let _ = fast_path::FastPathHeader::from_buffer(data);
-    let _ = fast_path::FastPathUpdatePdu::from_buffer(data);
-    let _ = fast_path::FastPathUpdate::from_buffer_with_code(data, fast_path::UpdateCode::SurfaceCommands);
+    let _ = decode::<fast_path::FastPathHeader>(data);
+    let _ = decode::<fast_path::FastPathUpdatePdu>(data);
+    let _ = fast_path::FastPathUpdate::decode_with_code(data, fast_path::UpdateCode::SurfaceCommands);
 
-    let _ = surface_commands::SurfaceCommand::from_buffer(data);
-    let _ = surface_commands::SurfaceBitsPdu::from_buffer(data);
-    let _ = surface_commands::FrameMarkerPdu::from_buffer(data);
-    let _ = surface_commands::ExtendedBitmapDataPdu::from_buffer(data);
-    let _ = surface_commands::BitmapDataHeader::from_buffer(data);
+    let _ = decode::<surface_commands::SurfaceCommand>(data);
+    let _ = decode::<surface_commands::SurfaceBitsPdu>(data);
+    let _ = decode::<surface_commands::FrameMarkerPdu>(data);
+    let _ = decode::<surface_commands::ExtendedBitmapDataPdu>(data);
+    let _ = decode::<surface_commands::BitmapDataHeader>(data);
 
     let _ = codecs::rfx::Headers::from_buffer(data);
     let _ = codecs::rfx::FrameAcknowledgePdu::from_buffer(data);

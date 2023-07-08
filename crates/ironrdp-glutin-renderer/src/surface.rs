@@ -7,7 +7,10 @@ use ironrdp::pdu::dvc::gfx::{
     Avc420BitmapStream, Avc444BitmapStream, Codec1Type, CreateSurfacePdu, Encoding, GraphicsPipelineError, PixelFormat,
     WireToSurface1Pdu,
 };
-use ironrdp::pdu::geometry::Rectangle;
+use ironrdp::pdu::geometry::{
+    Rectangle as _,
+    InclusiveRectangle,
+};
 use ironrdp::pdu::PduBufferParsing;
 use openh264::decoder::{DecodedYUV, Decoder};
 
@@ -19,7 +22,7 @@ type Result<T> = std::result::Result<T, RendererError>;
 #[derive(Clone)]
 struct DataRegion {
     data: Vec<u8>,
-    regions: Vec<Rectangle>,
+    regions: Vec<InclusiveRectangle>,
 }
 
 impl Debug for DataRegion {
@@ -147,7 +150,7 @@ pub struct Surface {
     id: u16,
     _pixel_format: PixelFormat,
     context: Option<DrawingContext>,
-    location: Option<Rectangle>,
+    location: Option<InclusiveRectangle>,
     data_cache: Option<DataRegion>,
     shader_version: String,
     gl: Arc<Context>,
@@ -177,7 +180,7 @@ impl Surface {
         })
     }
 
-    pub fn set_location(&mut self, location: Rectangle) {
+    pub fn set_location(&mut self, location: InclusiveRectangle) {
         self.location = Some(location);
     }
 
@@ -238,9 +241,9 @@ impl Surface {
             let location = if let Some(location) = self.location.as_ref() {
                 location.clone()
             } else {
-                Rectangle {
-                    top: 0,
+                InclusiveRectangle {
                     left: 0,
+                    top: 0,
                     right: self.width - 1,
                     bottom: self.height - 1,
                 }
@@ -306,7 +309,7 @@ impl Surfaces {
         pdu: ironrdp::pdu::dvc::gfx::MapSurfaceToScaledOutputPdu,
     ) -> Result<()> {
         let surface = self.get_surface(pdu.surface_id)?;
-        surface.set_location(Rectangle {
+        surface.set_location(InclusiveRectangle {
             left: pdu.output_origin_x as u16,
             top: pdu.output_origin_y as u16,
             right: pdu.target_width as u16,

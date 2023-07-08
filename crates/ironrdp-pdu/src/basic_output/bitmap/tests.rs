@@ -1,6 +1,7 @@
 use lazy_static::lazy_static;
 
 use super::*;
+use crate::{decode, encode};
 
 const BITMAP_BUFFER: [u8; 114] = [
     0x01, 0x00, // Bitmap update type = must be PDATETYPE_BITMAP (0x0001)
@@ -34,7 +35,7 @@ lazy_static! {
     static ref BITMAP: BitmapUpdateData<'static> = BitmapUpdateData {
         rectangles: {
             let vec = vec![BitmapData {
-                rectangle: Rectangle {
+                rectangle: InclusiveRectangle {
                     left: 1792,
                     top: 1024,
                     right: 1855,
@@ -44,7 +45,6 @@ lazy_static! {
                 height: 56,
                 bits_per_pixel: 16,
                 compression_flags: Compression::BITMAP_COMPRESSION,
-                bitmap_data_length: 92,
                 compressed_data_header: Some(CompressedDataHeader {
                     main_body_size: 80,
                     scan_width: 28,
@@ -59,7 +59,7 @@ lazy_static! {
 
 #[test]
 fn from_buffer_bitmap_data_parsses_correctly() {
-    let actual = BitmapUpdateData::from_buffer(BITMAP_BUFFER.as_ref()).unwrap();
+    let actual = decode::<BitmapUpdateData>(BITMAP_BUFFER.as_ref()).unwrap();
     assert_eq!(*BITMAP, actual);
 }
 
@@ -67,13 +67,13 @@ fn from_buffer_bitmap_data_parsses_correctly() {
 fn to_buffer_bitmap_data_serializes_correctly() {
     let expected = BITMAP_BUFFER.as_ref();
     let mut buffer = vec![0; expected.len()];
-    BITMAP.to_buffer_consume(&mut buffer.as_mut_slice()).unwrap();
+    encode(&*BITMAP, &mut buffer.as_mut_slice()).unwrap();
     assert_eq!(expected, buffer.as_slice());
 }
 
 #[test]
 fn bitmap_data_length_is_correct() {
-    let actual = BitmapUpdateData::from_buffer(BITMAP_BUFFER.as_ref()).unwrap();
+    let actual = decode::<BitmapUpdateData>(BITMAP_BUFFER.as_ref()).unwrap();
     let actual = actual.rectangles.get(0).unwrap().bitmap_data.len();
     assert_eq!(BITMAP_BUFFER[30..].len(), actual)
 }

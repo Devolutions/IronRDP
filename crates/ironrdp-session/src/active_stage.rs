@@ -1,5 +1,5 @@
 use ironrdp_connector::ConnectionResult;
-use ironrdp_pdu::geometry::Rectangle;
+use ironrdp_pdu::geometry::InclusiveRectangle;
 use ironrdp_pdu::Action;
 
 use crate::image::DecodedImage;
@@ -80,6 +80,6 @@ impl ActiveStage {
 
 pub enum ActiveStageOutput {
     ResponseFrame(Vec<u8>),
-    GraphicsUpdate(Rectangle),
+    GraphicsUpdate(InclusiveRectangle),
     Terminate,
 }

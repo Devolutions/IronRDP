@@ -1,4 +1,4 @@
-use ironrdp::pdu::geometry::Rectangle;
+use ironrdp::pdu::geometry::{InclusiveRectangle, Rectangle as _};
 use ironrdp::session::image::DecodedImage;
 use wasm_bindgen::prelude::*;
 
@@ -13,7 +13,7 @@ pub struct RectInfo {
     pub height: u16,
 }
 
-pub fn extract_partial_image(image: &DecodedImage, region: Rectangle) -> (Rectangle, Vec<u8>) {
+pub fn extract_partial_image(image: &DecodedImage, region: InclusiveRectangle) -> (InclusiveRectangle, Vec<u8>) {
     // PERF: needs actual benchmark to find a better heuristic
     if region.height() > 64 || region.width() > 512 {
         extract_whole_rows(image, region)
@@ -23,7 +23,7 @@ pub fn extract_partial_image(image: &DecodedImage, region: Rectangle) -> (Rectan
 }
 
 // Faster for low-height and smaller images
-fn extract_smallest_rectangle(image: &DecodedImage, region: Rectangle) -> (Rectangle, Vec<u8>) {
+fn extract_smallest_rectangle(image: &DecodedImage, region: InclusiveRectangle) -> (InclusiveRectangle, Vec<u8>) {
     let pixel_size = usize::from(image.pixel_format().bytes_per_pixel());
 
     let image_width = usize::try_from(image.width()).unwrap();
@@ -56,7 +56,7 @@ fn extract_smallest_rectangle(image: &DecodedImage, region: Rectangle) -> (Recta
 }
 
 // Faster for high-height and bigger images
-fn extract_whole_rows(image: &DecodedImage, region: Rectangle) -> (Rectangle, Vec<u8>) {
+fn extract_whole_rows(image: &DecodedImage, region: InclusiveRectangle) -> (InclusiveRectangle, Vec<u8>) {
     let pixel_size = usize::from(image.pixel_format().bytes_per_pixel());
 
     let image_width = usize::try_from(image.width()).unwrap();
@@ -72,7 +72,7 @@ fn extract_whole_rows(image: &DecodedImage, region: Rectangle) -> (Rectangle, Ve
 
     let dst = src[src_begin..src_end].to_vec();
 
-    let wider_region = Rectangle {
+    let wider_region = InclusiveRectangle {
         left: 0,
         top: region.top,
         right: image.width() - 1,

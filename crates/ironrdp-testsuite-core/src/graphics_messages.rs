@@ -1,5 +1,5 @@
 use ironrdp_pdu::gcc::{Monitor, MonitorFlags};
-use ironrdp_pdu::geometry::Rectangle;
+use ironrdp_pdu::geometry::InclusiveRectangle;
 use ironrdp_pdu::rdp::vc::dvc::gfx::*;
 
 pub const WIRE_TO_SURFACE_1_BUFFER: [u8; 218] = [
@@ -231,11 +231,11 @@ lazy_static! {
         surface_id: 0,
         codec_id: Codec1Type::ClearCodec,
         pixel_format: PixelFormat::XRgb,
-        destination_rectangle: Rectangle {
+        destination_rectangle: InclusiveRectangle {
             left: 933,
             top: 734,
             right: 939,
-            bottom: 743,
+            bottom: 743
         },
         bitmap_data: WIRE_TO_SURFACE_1_BUFFER[17..].to_vec(),
     };
@@ -260,21 +260,21 @@ lazy_static! {
             r: 0,
             xa: 0,
         },
-        rectangles: vec![Rectangle {
+        rectangles: vec![InclusiveRectangle {
             left: 0,
             top: 0,
             right: 64,
-            bottom: 64,
+            bottom: 64
         }],
     };
     pub static ref SURFACE_TO_SURFACE: SurfaceToSurfacePdu = SurfaceToSurfacePdu {
         source_surface_id: 0,
         destination_surface_id: 0,
-        source_rectangle: Rectangle {
+        source_rectangle: InclusiveRectangle {
             left: 200,
             top: 60,
             right: 676,
-            bottom: 148,
+            bottom: 148
         },
         destination_points: vec![Point { x: 128, y: 60 }],
     };
@@ -282,11 +282,11 @@ lazy_static! {
         surface_id: 0,
         cache_key: 0x113D_86DA_A6A3_7FB7,
         cache_slot: 14,
-        source_rectangle: Rectangle {
+        source_rectangle: InclusiveRectangle {
             left: 640,
             top: 0,
             right: 704,
-            bottom: 64,
+            bottom: 64
         },
     };
     pub static ref CACHE_TO_SURFACE: CacheToSurfacePdu = CacheToSurfacePdu {
@@ -429,7 +429,7 @@ lazy_static! {
     pub static ref AVC_444_BITMAP: Avc444BitmapStream<'static> = Avc444BitmapStream {
         encoding: Encoding::CHROMA,
         stream1: Avc420BitmapStream {
-            rectangles: vec![Rectangle {
+            rectangles: vec![InclusiveRectangle {
                 left: 1792,
                 top: 1056,
                 right: 1808,

@@ -1,6 +1,6 @@
 use ironrdp_graphics::image_processing::{ImageRegion, ImageRegionMut, PixelFormat};
 use ironrdp_graphics::rectangle_processing::Region;
-use ironrdp_pdu::geometry::Rectangle;
+use ironrdp_pdu::geometry::{InclusiveRectangle, Rectangle as _};
 
 use crate::SessionResult;
 
@@ -47,7 +47,7 @@ impl DecodedImage {
         &mut self,
         tile_output: &[u8],
         clipping_rectangles: &Region,
-        update_rectangle: &Rectangle,
+        update_rectangle: &InclusiveRectangle,
         width: u16,
     ) -> SessionResult<()> {
         debug!("Tile: {:?}", update_rectangle);
@@ -57,7 +57,7 @@ impl DecodedImage {
             let source_x = region_rectangle.left - update_rectangle.left;
             let source_y = region_rectangle.top - update_rectangle.top;
             let source_image_region = ImageRegion {
-                region: Rectangle {
+                region: InclusiveRectangle {
                     left: source_x,
                     top: source_y,
                     right: source_x + region_rectangle.width() - 1,
@@ -87,7 +87,7 @@ impl DecodedImage {
     }
 
     // FIXME: this assumes PixelFormat::RgbA32
-    pub(crate) fn apply_rgb16_bitmap(&mut self, rgb16: &[u8], update_rectangle: &Rectangle) {
+    pub(crate) fn apply_rgb16_bitmap(&mut self, rgb16: &[u8], update_rectangle: &InclusiveRectangle) {
         const SRC_COLOR_DEPTH: usize = 2;
         const DST_COLOR_DEPTH: usize = 4;
 
@@ -116,7 +116,7 @@ impl DecodedImage {
     }
 
     // FIXME: this assumes PixelFormat::RgbA32
-    pub(crate) fn apply_rgb24_bitmap(&mut self, rgb24: &[u8], update_rectangle: &Rectangle) {
+    pub(crate) fn apply_rgb24_bitmap(&mut self, rgb24: &[u8], update_rectangle: &InclusiveRectangle) {
         const SRC_COLOR_DEPTH: usize = 3;
         const DST_COLOR_DEPTH: usize = 4;
 

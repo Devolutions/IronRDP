@@ -7,7 +7,7 @@ use num_traits::{FromPrimitive, ToPrimitive};
 
 use super::{CapabilitySet, Color, GraphicsMessagesError, Point, RDP_GFX_HEADER_SIZE};
 use crate::gcc::{Monitor, MonitorDataError};
-use crate::geometry::Rectangle;
+use crate::geometry::InclusiveRectangle;
 use crate::PduParsing;
 
 pub const RESET_GRAPHICS_PDU_SIZE: usize = 340;
@@ -20,7 +20,7 @@ pub struct WireToSurface1Pdu {
     pub surface_id: u16,
     pub codec_id: Codec1Type,
     pub pixel_format: PixelFormat,
-    pub destination_rectangle: Rectangle,
+    pub destination_rectangle: InclusiveRectangle,
     pub bitmap_data: Vec<u8>,
 }
 
@@ -44,7 +44,7 @@ impl PduParsing for WireToSurface1Pdu {
         let codec_id =
             Codec1Type::from_u16(stream.read_u16::<LittleEndian>()?).ok_or(GraphicsMessagesError::InvalidCodec1Id)?;
         let pixel_format = PixelFormat::from_u8(stream.read_u8()?).ok_or(GraphicsMessagesError::InvalidFixelFormat)?;
-        let destination_rectangle = Rectangle::from_buffer(&mut stream)?;
+        let destination_rectangle = InclusiveRectangle::from_buffer(&mut stream)?;
         let bitmap_data_length = stream.read_u32::<LittleEndian>()? as usize;
         let mut bitmap_data = vec![0; bitmap_data_length];
         stream.read_exact(&mut bitmap_data)?;
@@ -166,7 +166,7 @@ impl PduParsing for DeleteEncodingContextPdu {
 pub struct SolidFillPdu {
     pub surface_id: u16,
     pub fill_pixel: Color,
-    pub rectangles: Vec<Rectangle>,
+    pub rectangles: Vec<InclusiveRectangle>,
 }
 
 impl PduParsing for SolidFillPdu {
@@ -178,7 +178,7 @@ impl PduParsing for SolidFillPdu {
         let rectangles_count = stream.read_u16::<LittleEndian>()?;
 
         let rectangles = (0..rectangles_count)
-            .map(|_| Rectangle::from_buffer(&mut stream).map_err(GraphicsMessagesError::from))
+            .map(|_| InclusiveRectangle::from_buffer(&mut stream).map_err(GraphicsMessagesError::from))
             .collect::<Result<Vec<_>, Self::Error>>()?;
 
         Ok(Self {
@@ -208,7 +208,7 @@ impl PduParsing for SolidFillPdu {
 pub struct SurfaceToSurfacePdu {
     pub source_surface_id: u16,
     pub destination_surface_id: u16,
-    pub source_rectangle: Rectangle,
+    pub source_rectangle: InclusiveRectangle,
     pub destination_points: Vec<Point>,
 }
 
@@ -218,7 +218,7 @@ impl PduParsing for SurfaceToSurfacePdu {
     fn from_buffer(mut stream: impl io::Read) -> Result<Self, Self::Error> {
         let source_surface_id = stream.read_u16::<LittleEndian>()?;
         let destination_surface_id = stream.read_u16::<LittleEndian>()?;
-        let source_rectangle = Rectangle::from_buffer(&mut stream)?;
+        let source_rectangle = InclusiveRectangle::from_buffer(&mut stream)?;
         let destination_points_count = stream.read_u16::<LittleEndian>()?;
 
         let destination_points = (0..destination_points_count)
@@ -257,7 +257,7 @@ pub struct SurfaceToCachePdu {
     pub surface_id: u16,
     pub cache_key: u64,
     pub cache_slot: u16,
-    pub source_rectangle: Rectangle,
+    pub source_rectangle: InclusiveRectangle,
 }
 
 impl PduParsing for SurfaceToCachePdu {
@@ -267,7 +267,7 @@ impl PduParsing for SurfaceToCachePdu {
         let surface_id = stream.read_u16::<LittleEndian>()?;
         let cache_key = stream.read_u64::<LittleEndian>()?;
         let cache_slot = stream.read_u16::<LittleEndian>()?;
-        let source_rectangle = Rectangle::from_buffer(&mut stream)?;
+        let source_rectangle = InclusiveRectangle::from_buffer(&mut stream)?;
 
         Ok(Self {
             surface_id,

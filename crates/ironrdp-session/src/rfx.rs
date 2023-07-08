@@ -4,7 +4,7 @@ use ironrdp_graphics::color_conversion::{self, YCbCrBuffer};
 use ironrdp_graphics::rectangle_processing::Region;
 use ironrdp_graphics::{dwt, quantization, rlgr, subband_reconstruction};
 use ironrdp_pdu::codecs::rfx::{self, EntropyAlgorithm, Headers, Quant, RfxRectangle, Tile};
-use ironrdp_pdu::geometry::Rectangle;
+use ironrdp_pdu::geometry::InclusiveRectangle;
 use ironrdp_pdu::PduBufferParsing;
 
 use crate::image::DecodedImage;
@@ -43,9 +43,9 @@ impl DecodingContext {
     pub fn decode(
         &mut self,
         image: &mut DecodedImage,
-        destination: &Rectangle,
+        destination: &InclusiveRectangle,
         input: &mut &[u8],
-    ) -> SessionResult<(FrameId, Rectangle)> {
+    ) -> SessionResult<(FrameId, InclusiveRectangle)> {
         loop {
             match self.state {
                 SequenceState::HeaderMessages => {
@@ -90,9 +90,9 @@ impl DecodingContext {
     fn process_data_messages(
         &mut self,
         image: &mut DecodedImage,
-        destination: &Rectangle,
+        destination: &InclusiveRectangle,
         input: &mut &[u8],
-    ) -> SessionResult<(FrameId, Rectangle)> {
+    ) -> SessionResult<(FrameId, InclusiveRectangle)> {
         let channel = self.channels.0.first().unwrap();
         let width = channel.width as u16;
         let height = channel.height as u16;
@@ -203,12 +203,17 @@ fn decode_component(
     Ok(())
 }
 
-fn clipping_rectangles(rectangles: &[RfxRectangle], destination: &Rectangle, width: u16, height: u16) -> Region {
+fn clipping_rectangles(
+    rectangles: &[RfxRectangle],
+    destination: &InclusiveRectangle,
+    width: u16,
+    height: u16,
+) -> Region {
     let mut clipping_rectangles = Region::new();
 
     rectangles
         .iter()
-        .map(|r| Rectangle {
+        .map(|r| InclusiveRectangle {
             left: min(destination.left + r.x, width - 1),
             top: min(destination.top + r.y, height - 1),
             right: min(destination.left + r.x + r.width - 1, width - 1),
@@ -219,8 +224,11 @@ fn clipping_rectangles(rectangles: &[RfxRectangle], destination: &Rectangle, wid
     clipping_rectangles
 }
 
-fn tiles_to_rectangles<'a>(tiles: &'a [Tile<'_>], destination: &'a Rectangle) -> impl Iterator<Item = Rectangle> + 'a {
-    tiles.iter().map(|t| Rectangle {
+fn tiles_to_rectangles<'a>(
+    tiles: &'a [Tile<'_>],
+    destination: &'a InclusiveRectangle,
+) -> impl Iterator<Item = InclusiveRectangle> + 'a {
+    tiles.iter().map(|t| InclusiveRectangle {
         left: destination.left + t.x * TILE_SIZE,
         top: destination.top + t.y * TILE_SIZE,
         right: destination.left + t.x * TILE_SIZE + TILE_SIZE - 1,

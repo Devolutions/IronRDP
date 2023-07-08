@@ -1,5 +1,5 @@
 use ironrdp_graphics::image_processing::PixelFormat;
-use ironrdp_pdu::geometry::Rectangle;
+use ironrdp_pdu::geometry::InclusiveRectangle;
 use ironrdp_session::image::DecodedImage;
 use ironrdp_session::rfx::DecodingContext;
 
@@ -9,7 +9,7 @@ const FORMAT_SIZE: usize = 4;
 
 #[test]
 fn decode_decodes_valid_sequence_of_messages() {
-    let destination = Rectangle {
+    let destination = InclusiveRectangle {
         left: 0,
         top: 0,
         right: IMAGE_WIDTH as u16 - 1,

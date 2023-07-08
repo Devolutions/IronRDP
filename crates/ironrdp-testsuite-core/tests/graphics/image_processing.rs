@@ -1,7 +1,7 @@
 use std::io;
 
 use ironrdp_graphics::image_processing::*;
-use ironrdp_pdu::geometry::Rectangle;
+use ironrdp_pdu::geometry::InclusiveRectangle;
 use proptest::prelude::*;
 
 fn bgra_to_rgba(input: &[u8], mut output: &mut [u8]) -> io::Result<()> {
@@ -22,7 +22,7 @@ fn bgra_to_rgba(input: &[u8], mut output: &mut [u8]) -> io::Result<()> {
 fn image_region_copy_bgra32_to_rgba32() {
     proptest!(|(source_buffer in proptest::collection::vec(any::<u8>(), 8 * 8 * 4))| {
         let source_region = ImageRegion {
-            region: Rectangle {
+            region: InclusiveRectangle {
                 left: 0,
                 top: 0,
                 right: 7,
@@ -35,7 +35,7 @@ fn image_region_copy_bgra32_to_rgba32() {
 
         let mut destination_buffer = vec![0; 8 * 8 * 4];
         let mut destination_region = ImageRegionMut {
-            region: Rectangle {
+            region: InclusiveRectangle {
                 left: 0,
                 top: 0,
                 right: 7,
@@ -58,7 +58,7 @@ fn image_region_copy_bgra32_to_rgba32() {
 fn image_region_correctly_writes_image_with_different_formats_with_same_sizes() {
     let mut destination_data = vec![0; CONVERTED_TO_XRGB_BUFFER.len()];
     let source_region = ImageRegion {
-        region: Rectangle {
+        region: InclusiveRectangle {
             left: 0,
             top: 0,
             right: 63,
@@ -69,7 +69,7 @@ fn image_region_correctly_writes_image_with_different_formats_with_same_sizes() 
         data: &SOURCE_IN_RGBX_BUFFER,
     };
     let mut destination_region = ImageRegionMut {
-        region: Rectangle {
+        region: InclusiveRectangle {
             left: 0,
             top: 0,
             right: 63,
@@ -88,7 +88,7 @@ fn image_region_correctly_writes_image_with_different_formats_with_same_sizes() 
 fn image_region_correctly_writes_image_with_same_formats_and_different_sizes() {
     let mut destination_data = vec![0; CONVERTED_TO_XRGB_BUFFER.len()];
     let source_region = ImageRegion {
-        region: Rectangle {
+        region: InclusiveRectangle {
             left: 8,
             top: 8,
             right: 63,
@@ -99,7 +99,7 @@ fn image_region_correctly_writes_image_with_same_formats_and_different_sizes() {
         data: &SOURCE_IN_RGBX_BUFFER,
     };
     let mut destination_region = ImageRegionMut {
-        region: Rectangle {
+        region: InclusiveRectangle {
             left: 8,
             top: 8,
             right: 39,

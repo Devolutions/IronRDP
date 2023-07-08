@@ -22,6 +22,7 @@ alloc = ["ironrdp-error/alloc"]
 
 [dependencies]
 bitflags = "2"
+const_format = "0.2"
 ironrdp-error.workspace = true
 tap = "1.0.1"
 
