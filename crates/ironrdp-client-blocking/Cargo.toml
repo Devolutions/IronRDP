@@ -1,0 +1,57 @@
+[package]
+name = "ironrdp-client-blocking"
+version = "0.1.0"
+readme = "README.md"
+description = "Portable synchronous RDP client without GPU acceleration using softbuffer and winit for windowing"
+edition.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+default-run = "ironrdp-client-blocking"
+
+[lib]
+doctest = false
+test = false
+
+[[bin]]
+name = "ironrdp-client-blocking"
+test = false
+
+[dependencies]
+
+# Protocols
+ironrdp = { workspace = true, features = ["input", "graphics"] }
+ironrdp-blocking.workspace = true
+sspi = { workspace = true, features = ["network_client"] } # TODO: enable dns_resolver at some point
+
+# GUI
+softbuffer = "0.2.0"
+winit = "0.28.3"
+
+# CLI
+clap = { version = "4.2", features = ["derive", "cargo"] }
+exitcode = "1.1.2"
+inquire = "0.6.0"
+
+# Logging
+tracing.workspace = true
+tracing-subscriber = { version = "0.3.16", features = ["env-filter"] }
+
+# TLS
+native-tls = "0.2.11"
+
+# Utils
+chrono = "0.4.24"
+whoami = "1.4.0"
+anyhow = "1.0.70"
+smallvec = "1.10.0"
+tap = "1.0.1"
+semver = "1"
+# crossbeam channels (rather than mpsc) allow us to use its synchronous select! macro
+crossbeam = { version = "0.8.2", features = ["crossbeam-channel"] }
+
+# Remove me
+x509-cert = "0.2.3"
