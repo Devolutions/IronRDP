@@ -15,7 +15,7 @@ use crate::utils::SplitTo;
 use crate::{PduBufferParsing, PduParsing};
 
 pub const COMPRESSED_DATA_HEADER_SIZE: usize = 8;
-pub const BITMAP_DATA_MAIN_DATA_SIZE: usize = 12;
+pub const BITMAP_DATA_MAIN_DATA_SIZE: usize = 18;
 pub const FIRST_ROW_SIZE_VALUE: u16 = 0;
 
 /// TS_UPDATE_BITMAP_DATA
@@ -54,7 +54,7 @@ impl<'a> PduBufferParsing<'a> for BitmapUpdateData<'a> {
     }
 
     fn buffer_length(&self) -> usize {
-        self.rectangles.iter().map(|b| b.buffer_length()).sum::<usize>()
+        4 + self.rectangles.iter().map(|b| b.buffer_length()).sum::<usize>()
     }
 }
 
@@ -139,7 +139,13 @@ impl<'a> PduBufferParsing<'a> for BitmapData<'a> {
     }
 
     fn buffer_length(&self) -> usize {
-        BITMAP_DATA_MAIN_DATA_SIZE + self.bitmap_data_length
+        let optional_header = if self.compressed_data_header.is_some() {
+            COMPRESSED_DATA_HEADER_SIZE
+        } else {
+            0
+        };
+
+        BITMAP_DATA_MAIN_DATA_SIZE + optional_header + self.bitmap_data_length
     }
 }
 
