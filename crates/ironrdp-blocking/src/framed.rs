@@ -108,7 +108,14 @@ where
 
     /// Reads from stream and fills internal buffer, returning how many bytes were read.
     fn read(&mut self) -> io::Result<usize> {
-        self.stream.read(&mut self.buf)
+        // FIXME(perf): use read_buf (https://doc.rust-lang.org/std/io/trait.Read.html#method.read_buf)
+        // once its stabilized. See tracking issue for RFC 2930: https://github.com/rust-lang/rust/issues/78485
+
+        let mut read_bytes = [0u8; 1024];
+        let len = self.stream.read(&mut read_bytes)?;
+        self.buf.extend_from_slice(&read_bytes[..len]);
+
+        Ok(len)
     }
 }
 
