@@ -120,8 +120,12 @@ fn connect(config: &Config) -> ConnectorResult<(ConnectionResult, UpgradedFramed
 
 // TODO: should probably be moved to ironrdp-tls
 fn upgrade_blocking(stream: TcpStream, server_name: &str) -> io::Result<(native_tls::TlsStream<TcpStream>, Vec<u8>)> {
-    let tls_connector =
-        native_tls::TlsConnector::new().map_err(|e| connector::custom_err!("create TlsConnector", e))?;
+    let tls_connector = native_tls::TlsConnector::builder()
+        .danger_accept_invalid_certs(true) // TODO: this should probably be optional
+        .use_sni(false) // TODO: I'm not sure why this is here, just copied from ironrdp-tls
+        .build()
+        .map_err(|e| connector::custom_err!("create TlsConnector", e))?;
+
     let tls_stream = tls_connector
         .connect(server_name, stream)
         .map_err(|e| connector::custom_err!("TLS connect", e))?;
