@@ -20,7 +20,7 @@ use crate::{decode_cursor, per, PduDecode, PduEncode, PduResult};
 pub struct FastPathHeader {
     pub flags: EncryptionFlags,
     pub data_length: usize,
-    forced_long_length: bool,
+    pub forced_long_length: bool,
 }
 
 impl FastPathHeader {

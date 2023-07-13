@@ -1700,6 +1700,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "ironrdp-server"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "bytes",
+ "ironrdp-connector",
+ "ironrdp-pdu",
+ "ironrdp-tokio",
+ "rustls 0.21.0",
+ "tokio",
+ "tokio-rustls 0.24.0",
+ "tracing",
+]
+
+[[package]]
 name = "ironrdp-session"
 version = "0.1.0"
 dependencies = [
