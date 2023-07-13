@@ -124,6 +124,9 @@ impl Sequence for ChannelConnectionSequence {
 
                 let user_channel_id = attach_user_confirm.initiator_id;
 
+                // user channel ID must also be joined
+                self.channel_ids.push(user_channel_id);
+
                 debug!(message = ?attach_user_confirm, user_channel_id, "Received");
 
                 debug_assert!(!self.channel_ids.is_empty());
