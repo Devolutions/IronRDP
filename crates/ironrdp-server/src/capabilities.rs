@@ -8,14 +8,8 @@ pub fn capabilities(_opts: &RdpServerOptions, size: DesktopSize) -> Vec<capabili
         capability_sets::CapabilitySet::General(general_capabilities()),
         capability_sets::CapabilitySet::Bitmap(bitmap_capabilities(&size)),
         capability_sets::CapabilitySet::Order(order_capabilities()),
-        capability_sets::CapabilitySet::BitmapCache(bitmap_cache_capabilities()),
-        capability_sets::CapabilitySet::BitmapCacheRev2(bitmap_cache_rev2_capabilities()),
         capability_sets::CapabilitySet::Pointer(pointer_capabilities()),
-        capability_sets::CapabilitySet::Sound(sound_capabilities()),
         capability_sets::CapabilitySet::Input(input_capabilities()),
-        capability_sets::CapabilitySet::Brush(brush_capabilities()),
-        capability_sets::CapabilitySet::GlyphCache(glyph_cache_capabilities()),
-        capability_sets::CapabilitySet::OffscreenBitmapCache(offscreen_capabilities()),
         capability_sets::CapabilitySet::VirtualChannel(virtual_channel_capabilities()),
     ]
 }
@@ -32,7 +26,7 @@ fn general_capabilities() -> capability_sets::General {
 
 fn bitmap_capabilities(size: &DesktopSize) -> capability_sets::Bitmap {
     capability_sets::Bitmap {
-        pref_bits_per_pix: 8,
+        pref_bits_per_pix: 32,
         desktop_width: size.width,
         desktop_height: size.height,
         desktop_resize_flag: false,
@@ -45,28 +39,8 @@ fn order_capabilities() -> capability_sets::Order {
         capability_sets::OrderFlags::empty(),
         capability_sets::OrderSupportExFlags::empty(),
         2048,
-        224, // TODO: ??
+        224,
     )
-}
-
-fn bitmap_cache_capabilities() -> capability_sets::BitmapCache {
-    capability_sets::BitmapCache {
-        caches: [capability_sets::CacheEntry {
-            entries: 128,
-            max_cell_size: 1024,
-        }; 3],
-    }
-}
-
-fn bitmap_cache_rev2_capabilities() -> capability_sets::BitmapCacheRev2 {
-    capability_sets::BitmapCacheRev2 {
-        cache_flags: capability_sets::CacheFlags::empty(),
-        num_cell_caches: 0,
-        cache_cell_info: [capability_sets::CellInfo {
-            num_entries: 0,
-            is_cache_persistent: false,
-        }; 5],
-    }
 }
 
 fn pointer_capabilities() -> capability_sets::Pointer {
@@ -76,48 +50,18 @@ fn pointer_capabilities() -> capability_sets::Pointer {
     }
 }
 
-fn sound_capabilities() -> capability_sets::Sound {
-    capability_sets::Sound {
-        flags: capability_sets::SoundFlags::empty(),
-    }
-}
-
 fn input_capabilities() -> capability_sets::Input {
     capability_sets::Input {
-        input_flags: capability_sets::InputFlags::empty(),
+        input_flags: capability_sets::InputFlags::SCANCODES
+            | capability_sets::InputFlags::MOUSEX
+            | capability_sets::InputFlags::FASTPATH_INPUT
+            | capability_sets::InputFlags::UNICODE
+            | capability_sets::InputFlags::FASTPATH_INPUT_2,
         keyboard_layout: 0,
         keyboard_type: None,
         keyboard_subtype: 0,
         keyboard_function_key: 128,
-        keyboard_ime_filename: "keyboard".into(),
-    }
-}
-
-fn brush_capabilities() -> capability_sets::Brush {
-    capability_sets::Brush {
-        support_level: capability_sets::SupportLevel::Default,
-    }
-}
-
-fn glyph_cache_capabilities() -> capability_sets::GlyphCache {
-    capability_sets::GlyphCache {
-        glyph_cache: [capability_sets::CacheDefinition {
-            entries: 0,
-            max_cell_size: 0,
-        }; 10],
-        frag_cache: capability_sets::CacheDefinition {
-            entries: 0,
-            max_cell_size: 0,
-        },
-        glyph_support_level: capability_sets::GlyphSupportLevel::None,
-    }
-}
-
-fn offscreen_capabilities() -> capability_sets::OffscreenBitmapCache {
-    capability_sets::OffscreenBitmapCache {
-        is_supported: false,
-        cache_size: 0,
-        cache_entries: 0,
+        keyboard_ime_filename: "".into(),
     }
 }
 

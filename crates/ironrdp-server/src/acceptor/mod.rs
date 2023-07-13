@@ -1,17 +1,18 @@
 use std::io;
 
-use ironrdp_connector::{ConnectorResult, Sequence, Written};
+use ironrdp_connector::{custom_err, ConnectorResult, Sequence, Written};
 use ironrdp_tokio::{Framed, FramedRead, FramedWrite, TokioFramed};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio_rustls::server::TlsStream;
 
+use self::connection::AcceptorResult;
 pub use self::connection::ServerAcceptor;
 
 use super::RdpServerSecurity;
-
 mod channel_connection;
 mod connection;
 mod finalization;
+mod util;
 
 pub enum BeginResult<S> {
     ShouldUpgrade(S),
@@ -50,17 +51,22 @@ where
     }
 }
 
-pub async fn accept_finalize<S>(mut framed: Framed<S>, acceptor: &mut ServerAcceptor) -> ConnectorResult<Framed<S>>
+pub async fn accept_finalize<S>(
+    mut framed: Framed<S>,
+    acceptor: &mut ServerAcceptor,
+) -> ConnectorResult<(Framed<S>, AcceptorResult)>
 where
     S: FramedWrite + FramedRead,
 {
     let mut buf = Vec::new();
 
-    while !acceptor.is_done() {
+    loop {
+        if let Some(result) = acceptor.get_result() {
+            return Ok((framed, result));
+        }
+
         single_accept_state(&mut framed, acceptor, &mut buf).await?;
     }
-
-    Ok(framed)
 }
 
 async fn single_accept_state<S>(
@@ -72,15 +78,21 @@ where
     S: FramedWrite + FramedRead,
 {
     let written = if let Some(next_pdu_hint) = acceptor.next_pdu_hint() {
-        let pdu = framed.read_by_hint(next_pdu_hint).await.unwrap();
+        let pdu = framed
+            .read_by_hint(next_pdu_hint)
+            .await
+            .map_err(|e| custom_err!("read frame by hint", e))?;
+
         acceptor.step(&pdu, buf)?
     } else {
         acceptor.step_no_input(buf)?
     };
 
     if let Some(len) = written.size() {
-        let response = &buf[..len];
-        framed.write_all(response).await.unwrap();
+        framed
+            .write_all(&buf[..len])
+            .await
+            .map_err(|e| custom_err!("write all", e))?;
     }
 
     Ok(written)

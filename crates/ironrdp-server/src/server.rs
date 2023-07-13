@@ -3,14 +3,18 @@ use std::{io::Cursor, net::SocketAddr};
 use anyhow::{Error, Result};
 use bytes::BytesMut;
 use ironrdp_pdu::{
-    input::fast_path::{FastPathInput, FastPathInputEvent},
-    Action, PduParsing,
+    self,
+    input::{
+        fast_path::{FastPathInput, FastPathInputEvent},
+        InputEventPdu,
+    },
+    mcs, rdp, Action, PduParsing,
 };
 use ironrdp_tokio::{Framed, FramedRead, FramedWrite, TokioFramed};
 use tokio::{net::TcpListener, select};
 use tokio_rustls::TlsAcceptor;
 
-use crate::DisplayUpdate;
+use crate::{DisplayUpdate, capabilities};
 
 use super::{
     acceptor::{self, BeginResult, ServerAcceptor},
@@ -56,18 +60,19 @@ where
 
         while let Ok((stream, _)) = listener.accept().await {
             let size = self.display.size().await;
-            let mut acceptor = ServerAcceptor::new(self.opts.clone(), size);
+            let capabilities = capabilities::capabilities(&self.opts, size.clone());
+            let mut acceptor = ServerAcceptor::new(self.opts.clone(), size, capabilities);
 
             match acceptor::accept_begin(stream, &mut acceptor).await {
                 Ok(BeginResult::ShouldUpgrade(stream)) => {
                     let upgraded = acceptor::upgrade(&self.opts.security, stream).await?;
                     let framed = TokioFramed::new(upgraded);
-                    let framed = acceptor::accept_finalize(framed, &mut acceptor).await?;
+                    let (framed, _) = acceptor::accept_finalize(framed, &mut acceptor).await?;
                     self.client_loop(framed).await?;
                 }
 
                 Ok(BeginResult::Continue(framed)) => {
-                    let framed = acceptor::accept_finalize(framed, &mut acceptor).await?;
+                    let (framed, _) = acceptor::accept_finalize(framed, &mut acceptor).await?;
                     self.client_loop(framed).await?;
                 }
 
@@ -87,7 +92,7 @@ where
         let mut buffer = vec![0u8; 8192 * 8192];
         let mut encoder = UpdateEncoder::new(UncompressedBitmapHandler {});
 
-        loop {
+        'main: loop {
             select! {
                 frame = framed.read_pdu() => {
                     let Ok((action, bytes)) = frame else {
@@ -98,13 +103,21 @@ where
                         Action::FastPath => {
                             let input = FastPathInput::from_buffer(Cursor::new(&bytes))?;
                             self.handle_fastpath(input).await;
-                        },
+                        }
 
                         Action::X224 => {
-                            if let Err(e) = self.handle_x224(bytes).await {
-                                eprintln!("x224 input error: {:?}", e);
-                            }
-                        },
+                            match self.handle_x224(bytes).await {
+                                Ok(disconnect) => {
+                                    if disconnect {
+                                        break 'main;
+                                    }
+                                },
+
+                                Err(e) => {
+                                    eprintln!("x224 input error: {:?}", e);
+                                }
+                            };
+                        }
                     }
                 },
 
@@ -150,7 +163,64 @@ where
         }
     }
 
-    async fn handle_x224(&mut self, _frame: BytesMut) -> Result<()> {
-        unimplemented!()
+    async fn handle_x224(&mut self, frame: BytesMut) -> Result<bool> {
+        let message = ironrdp_pdu::decode::<mcs::McsMessage>(&frame)?;
+        match message {
+            mcs::McsMessage::SendDataRequest(data) => {
+                let control = rdp::headers::ShareControlHeader::from_buffer(Cursor::new(data.user_data))?;
+
+                match control.share_control_pdu {
+                    rdp::headers::ShareControlPdu::Data(header) => match header.share_data_pdu {
+                        rdp::headers::ShareDataPdu::Input(pdu) => {
+                            self.handle_input_even(pdu).await;
+                        }
+
+                        unexpected => {
+                            eprintln!("unexpected share data pdu {:?}", unexpected);
+                        }
+                    },
+
+                    unexpected => {
+                        eprintln!("unexpected share control {:?}", unexpected);
+                    }
+                }
+            }
+
+            mcs::McsMessage::DisconnectProviderUltimatum(disconnect) => {
+                if disconnect.reason == mcs::DisconnectReason::UserRequested {
+                    return Ok(true);
+                }
+            }
+
+            unexpected => {
+                eprintln!("unexpected mcs message {:?}", ironrdp_pdu::name(&unexpected));
+            }
+        }
+
+        Ok(false)
+    }
+
+    async fn handle_input_even(&mut self, input: InputEventPdu) {
+        for event in input.0 {
+            match event {
+                ironrdp_pdu::input::InputEvent::ScanCode(key) => {
+                    self.handler.keyboard((key.key_code, key.flags).into()).await;
+                }
+
+                ironrdp_pdu::input::InputEvent::Unicode(key) => {
+                    self.handler.keyboard((key.unicode_code, key.flags).into()).await;
+                }
+
+                ironrdp_pdu::input::InputEvent::Mouse(mouse) => {
+                    self.handler.mouse(mouse.into()).await;
+                }
+
+                ironrdp_pdu::input::InputEvent::MouseX(mouse) => {
+                    self.handler.mouse(mouse.into()).await;
+                }
+
+                other => println!("{other:?}"),
+            }
+        }
     }
 }

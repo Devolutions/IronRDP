@@ -1,3 +1,6 @@
+#[macro_use]
+extern crate tracing;
+
 mod acceptor;
 mod builder;
 mod capabilities;

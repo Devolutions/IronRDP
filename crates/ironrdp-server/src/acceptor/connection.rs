@@ -1,12 +1,15 @@
-use std::{borrow::Cow, io::Cursor};
+use std::io::Cursor;
 
 use ironrdp_connector::{
     legacy, ConnectorError, ConnectorErrorExt, ConnectorResult, DesktopSize, Sequence, State, Written,
 };
 use ironrdp_pdu as pdu;
+use pdu::rdp::capability_sets::CapabilitySet;
+use pdu::rdp::headers::ShareControlPdu;
 use pdu::{gcc, mcs, nego, rdp, PduParsing};
 
-use crate::{capabilities, RdpServerOptions, RdpServerSecurity};
+use crate::acceptor::util::{self, wrap_share_data};
+use crate::{RdpServerOptions, RdpServerSecurity};
 
 use super::channel_connection::ChannelConnectionSequence;
 use super::finalization::FinalizationSequence;
@@ -20,34 +23,53 @@ impl RdpServerSecurity {
     }
 }
 
+const IO_CHANNEL_ID: u16 = 1003;
+
 pub struct ServerAcceptor {
     opts: RdpServerOptions,
     state: AcceptorState,
     io_channel_id: u16,
     user_channel_id: u16,
     desktop_size: DesktopSize,
+    server_capabilities: Vec<CapabilitySet>,
+}
+
+#[derive(Debug, Clone)]
+pub struct AcceptorResult {
+    pub channels: Vec<(u16, gcc::Channel)>,
+    pub capabilities: Vec<CapabilitySet>,
 }
 
 impl ServerAcceptor {
-    pub fn new(opts: RdpServerOptions, size: DesktopSize) -> Self {
+    pub fn new(opts: RdpServerOptions, desktop_size: DesktopSize, capabilities: Vec<CapabilitySet>) -> Self {
         Self {
             opts,
             state: AcceptorState::InitiationWaitRequest,
             user_channel_id: 1001,
-            io_channel_id: 0,
-            desktop_size: size,
+            io_channel_id: IO_CHANNEL_ID,
+            desktop_size,
+            server_capabilities: capabilities,
         }
     }
 
     pub fn reached_security_upgrade(&self) -> Option<nego::SecurityProtocol> {
         match self.state {
-            AcceptorState::SecurityUpgrade { security, .. } => Some(security),
+            AcceptorState::SecurityUpgrade { .. } => Some(self.opts.security.flag()),
             _ => None,
         }
     }
 
-    pub fn is_done(&self) -> bool {
-        self.state.is_terminal()
+    pub fn get_result(&mut self) -> Option<AcceptorResult> {
+        match &self.state {
+            AcceptorState::Accepted { channels, client_capabilities } => {
+                Some(AcceptorResult {
+                    channels: channels.clone(),
+                    capabilities: client_capabilities.clone()
+                })
+            }
+
+            _ => None,
+        }
     }
 }
 
@@ -58,33 +80,55 @@ pub enum AcceptorState {
 
     InitiationWaitRequest,
     InitiationSendConfirm {
-        security: nego::SecurityProtocol,
+        requested_protocol: nego::SecurityProtocol,
     },
     SecurityUpgrade {
-        security: nego::SecurityProtocol,
+        requested_protocol: nego::SecurityProtocol,
     },
     BasicSettingsWaitInitial {
-        security: nego::SecurityProtocol,
+        requested_protocol: nego::SecurityProtocol,
     },
     BasicSettingsSendResponse {
-        security: nego::SecurityProtocol,
-        client_blocks: gcc::ClientGccBlocks,
+        requested_protocol: nego::SecurityProtocol,
+        early_capability: Option<gcc::ClientEarlyCapabilityFlags>,
+        channels: Vec<(u16, gcc::Channel)>,
     },
     ChannelConnection {
-        security: nego::SecurityProtocol,
+        early_capability: Option<gcc::ClientEarlyCapabilityFlags>,
+        channels: Vec<(u16, gcc::Channel)>,
         connection: ChannelConnectionSequence,
     },
     RdpSecurityCommencement {
-        security: nego::SecurityProtocol,
+        early_capability: Option<gcc::ClientEarlyCapabilityFlags>,
+        channels: Vec<(u16, gcc::Channel)>,
     },
-    SecureSettingsExchange,
-    LicensingExchange,
-    CapabilitiesSendServer,
-    CapabilitiesWaitConfirm,
+    SecureSettingsExchange {
+        early_capability: Option<gcc::ClientEarlyCapabilityFlags>,
+        channels: Vec<(u16, gcc::Channel)>,
+    },
+    LicensingExchange {
+        early_capability: Option<gcc::ClientEarlyCapabilityFlags>,
+        channels: Vec<(u16, gcc::Channel)>,
+    },
+    CapabilitiesSendServer {
+        early_capability: Option<gcc::ClientEarlyCapabilityFlags>,
+        channels: Vec<(u16, gcc::Channel)>,
+    },
+    MonitorLayoutSend {
+        channels: Vec<(u16, gcc::Channel)>,
+    },
+    CapabilitiesWaitConfirm {
+        channels: Vec<(u16, gcc::Channel)>,
+    },
     ConnectionFinalization {
         finalization: FinalizationSequence,
+        channels: Vec<(u16, gcc::Channel)>,
+        client_capabilities: Vec<CapabilitySet>,
     },
-    Accepted,
+    Accepted {
+        channels: Vec<(u16, gcc::Channel)>,
+        client_capabilities: Vec<CapabilitySet>,
+    },
 }
 
 impl State for AcceptorState {
@@ -101,6 +145,7 @@ impl State for AcceptorState {
             Self::SecureSettingsExchange { .. } => "SecureSettingsExchange",
             Self::LicensingExchange { .. } => "LicensingExchange",
             Self::CapabilitiesSendServer { .. } => "CapabilitiesSendServer",
+            Self::MonitorLayoutSend { .. } => "MonitorLayoutSend",
             Self::CapabilitiesWaitConfirm { .. } => "CapabilitiesWaitConfirm",
             Self::ConnectionFinalization { .. } => "ConnectionFinalization",
             Self::Accepted { .. } => "Connected",
@@ -130,6 +175,7 @@ impl Sequence for ServerAcceptor {
             AcceptorState::SecureSettingsExchange { .. } => Some(&pdu::X224_HINT),
             AcceptorState::LicensingExchange { .. } => None,
             AcceptorState::CapabilitiesSendServer { .. } => None,
+            AcceptorState::MonitorLayoutSend { .. } => None,
             AcceptorState::CapabilitiesWaitConfirm { .. } => Some(&pdu::X224_HINT),
             AcceptorState::ConnectionFinalization { finalization, .. } => finalization.next_pdu_hint(),
             AcceptorState::Accepted { .. } => None,
@@ -141,65 +187,82 @@ impl Sequence for ServerAcceptor {
     }
 
     fn step(&mut self, input: &[u8], output: &mut Vec<u8>) -> ConnectorResult<Written> {
-        println!("{:?}", self.state);
-
         let (written, next_state) = match std::mem::take(&mut self.state) {
             AcceptorState::InitiationWaitRequest => {
-                let connection_request =
-                    ironrdp_pdu::decode::<nego::ConnectionRequest>(input).map_err(ConnectorError::pdu)?;
+                let connection_request = ironrdp_pdu::decode::<nego::ConnectionRequest>(input)
+                    .map_err(ConnectorError::pdu)?;
 
-                println!("{:?}", connection_request);
-                let security = connection_request.protocol;
+                debug!(message =? connection_request, "Received");
 
-                (Written::Nothing, AcceptorState::InitiationSendConfirm { security })
+                (
+                    Written::Nothing,
+                    AcceptorState::InitiationSendConfirm {
+                        requested_protocol: connection_request.protocol,
+                    },
+                )
             }
 
-            AcceptorState::InitiationSendConfirm { security } => {
-                println!(
-                    "security | ours: {:?} ; theirs: {:?}",
-                    self.opts.security.flag(),
-                    security,
-                );
-                let security = self.opts.security.flag().intersection(security);
-
+            AcceptorState::InitiationSendConfirm { requested_protocol } => {
                 let connection_confirm = nego::ConnectionConfirm::Response {
                     flags: nego::ResponseFlags::empty(),
                     protocol: self.opts.security.flag(),
                 };
 
-                println!("{:?}", connection_confirm);
+                debug!(message =? connection_confirm, "Send");
 
-                let written = ironrdp_pdu::encode_buf(&connection_confirm, output).map_err(ConnectorError::pdu)?;
+                let written = ironrdp_pdu::encode_buf(&connection_confirm, output)
+                    .map_err(ConnectorError::pdu)?;
 
                 (
                     Written::from_size(written)?,
-                    AcceptorState::SecurityUpgrade { security },
+                    AcceptorState::SecurityUpgrade { requested_protocol },
                 )
             }
 
-            AcceptorState::SecurityUpgrade { security } => {
-                (Written::Nothing, AcceptorState::BasicSettingsWaitInitial { security })
-            }
+            AcceptorState::SecurityUpgrade { requested_protocol } => (
+                Written::Nothing,
+                AcceptorState::BasicSettingsWaitInitial { requested_protocol },
+            ),
 
-            AcceptorState::BasicSettingsWaitInitial { security } => {
+            AcceptorState::BasicSettingsWaitInitial { requested_protocol } => {
                 let settings_initial = legacy::decode_x224_packet::<mcs::ConnectInitial>(input)?;
 
-                println!("{:?}", settings_initial);
+                debug!(message =? settings_initial, "Received");
+
+                let early_capability = settings_initial
+                    .conference_create_request
+                    .gcc_blocks
+                    .core
+                    .optional_data
+                    .early_capability_flags;
+
+                let channels = settings_initial
+                    .conference_create_request
+                    .gcc_blocks
+                    .network
+                    .map(|network| {
+                        network
+                            .channels
+                            .into_iter()
+                            .enumerate()
+                            .map(|(i, c)| (i as u16 + self.io_channel_id + 1, c))
+                            .collect()
+                    })
+                    .unwrap_or(Vec::new());
 
                 (
                     Written::Nothing,
                     AcceptorState::BasicSettingsSendResponse {
-                        security,
-                        client_blocks: settings_initial.conference_create_request.gcc_blocks,
+                        requested_protocol,
+                        early_capability,
+                        channels,
                     },
                 )
             }
 
-            AcceptorState::BasicSettingsSendResponse {
-                security,
-                client_blocks,
-            } => {
-                let server_blocks = create_gcc_blocks(&self.opts, &client_blocks);
+            AcceptorState::BasicSettingsSendResponse { requested_protocol, early_capability, channels } => {
+                let channel_ids: Vec<u16> = channels.iter().map(|&(i, _)| i).collect();
+                let server_blocks = create_gcc_blocks(self.io_channel_id, channel_ids.clone(), requested_protocol);
                 let settings_response = mcs::ConnectResponse {
                     conference_create_response: gcc::ConferenceCreateResponse {
                         user_id: self.user_channel_id,
@@ -209,121 +272,171 @@ impl Sequence for ServerAcceptor {
                     domain_parameters: mcs::DomainParameters::target(),
                 };
 
-                println!("{:?}", settings_response);
+                debug!(message =? settings_response, "Send");
 
                 let written = legacy::encode_x224_packet(&settings_response, output)?;
 
                 (
                     Written::from_size(written)?,
                     AcceptorState::ChannelConnection {
-                        security,
-                        connection: ChannelConnectionSequence::new(self.io_channel_id, self.user_channel_id, vec![0]),
+                        early_capability,
+                        channels,
+                        connection: ChannelConnectionSequence::new(
+                            self.user_channel_id,
+                            self.io_channel_id,
+                            channel_ids,
+                        ),
                     },
                 )
             }
 
-            AcceptorState::ChannelConnection {
-                security,
-                mut connection,
-            } => {
+            AcceptorState::ChannelConnection { early_capability, channels, mut connection } => {
                 let written = connection.step(input, output)?;
                 let state = if connection.is_done() {
-                    AcceptorState::RdpSecurityCommencement { security }
+                    AcceptorState::RdpSecurityCommencement { early_capability, channels }
                 } else {
-                    AcceptorState::ChannelConnection { security, connection }
+                    AcceptorState::ChannelConnection { early_capability, channels, connection }
                 };
 
                 (written, state)
             }
 
-            AcceptorState::RdpSecurityCommencement { .. } => (Written::Nothing, AcceptorState::SecureSettingsExchange),
+            AcceptorState::RdpSecurityCommencement { early_capability, channels, .. } => (
+                Written::Nothing,
+                AcceptorState::SecureSettingsExchange {
+                    early_capability,
+                    channels,
+                },
+            ),
 
-            AcceptorState::SecureSettingsExchange => {
-                let data = pdu::decode::<pdu::mcs::SendDataRequest>(input).map_err(ConnectorError::pdu)?;
+            AcceptorState::SecureSettingsExchange { early_capability, channels } => {
+                let data = pdu::decode::<pdu::mcs::SendDataRequest>(input)
+                    .map_err(ConnectorError::pdu)?;
 
                 let client_info = rdp::ClientInfoPdu::from_buffer(Cursor::new(data.user_data))?;
 
-                println!("{:?}", client_info);
+                debug!(message =? client_info, "Received");
 
-                (Written::Nothing, AcceptorState::LicensingExchange)
+                (
+                    Written::Nothing,
+                    AcceptorState::LicensingExchange {
+                        early_capability,
+                        channels,
+                    },
+                )
             }
 
-            AcceptorState::LicensingExchange => {
+            AcceptorState::LicensingExchange { early_capability, channels } => {
                 let license = rdp::server_license::InitialServerLicenseMessage::new_status_valid_client_message();
 
-                println!("{:?}", license);
+                debug!(message =? license, "Send");
 
-                let mut buf = Vec::with_capacity(license.buffer_length());
-                license.to_buffer(Cursor::new(&mut buf))?;
+                let written =
+                    util::encode_send_data_indication(self.user_channel_id, self.io_channel_id, &license, output)?;
 
-                let license_indication = pdu::mcs::SendDataIndication {
-                    initiator_id: self.user_channel_id,
-                    channel_id: 0,
-                    user_data: Cow::Borrowed(&buf[..license.buffer_length()]),
-                };
-
-                let written = ironrdp_pdu::encode_buf(&license_indication, output).map_err(ConnectorError::pdu)?;
-
-                (Written::from_size(written)?, AcceptorState::CapabilitiesSendServer)
+                (
+                    Written::from_size(written)?,
+                    AcceptorState::CapabilitiesSendServer {
+                        early_capability,
+                        channels,
+                    },
+                )
             }
 
-            AcceptorState::CapabilitiesSendServer => {
+            AcceptorState::CapabilitiesSendServer { early_capability, channels } => {
                 let demand_active = rdp::headers::ShareControlHeader {
-                    share_id: 1,
-                    pdu_source: 1,
+                    share_id: 0,
+                    pdu_source: self.io_channel_id,
                     share_control_pdu: rdp::headers::ShareControlPdu::ServerDemandActive(
                         rdp::capability_sets::ServerDemandActive {
                             pdu: rdp::capability_sets::DemandActive {
-                                source_descriptor: "desc".into(),
-                                capability_sets: capabilities::capabilities(&self.opts, self.desktop_size.clone()),
+                                source_descriptor: "".into(),
+                                capability_sets: self.server_capabilities.clone(),
                             },
                         },
                     ),
                 };
 
-                println!("{:?}", demand_active);
+                debug!(message =? demand_active, "Send");
 
-                let mut buf = Vec::with_capacity(demand_active.buffer_length());
-                demand_active.to_buffer(Cursor::new(&mut buf))?;
+                let written = util::encode_send_data_indication(
+                    self.user_channel_id,
+                    self.io_channel_id,
+                    &demand_active,
+                    output,
+                )?;
 
-                let capabilities_request = pdu::mcs::SendDataIndication {
-                    initiator_id: self.user_channel_id,
-                    channel_id: 0,
-                    user_data: Cow::Borrowed(&buf[..demand_active.buffer_length()]),
+                let layout_flag = gcc::ClientEarlyCapabilityFlags::SUPPORT_MONITOR_LAYOUT_PDU;
+                let next_state = if early_capability.is_some_and(|c| c.contains(layout_flag)) {
+                    AcceptorState::MonitorLayoutSend { channels }
+                } else {
+                    AcceptorState::CapabilitiesWaitConfirm { channels }
                 };
 
-                let written = ironrdp_pdu::encode_buf(&capabilities_request, output).map_err(ConnectorError::pdu)?;
-
-                (Written::from_size(written)?, AcceptorState::CapabilitiesWaitConfirm)
+                (Written::from_size(written)?, next_state)
             }
 
-            AcceptorState::CapabilitiesWaitConfirm => {
+            AcceptorState::MonitorLayoutSend { channels } => {
+                let monitor_layout =
+                    rdp::headers::ShareDataPdu::MonitorLayout(rdp::finalization_messages::MonitorLayoutPdu {
+                        monitors: vec![gcc::Monitor {
+                            left: 0,
+                            top: 0,
+                            right: self.desktop_size.width as i32,
+                            bottom: self.desktop_size.height as i32,
+                            flags: gcc::MonitorFlags::PRIMARY,
+                        }],
+                    });
+
+                debug!(message =? monitor_layout, "Send");
+
+                let share_data = wrap_share_data(monitor_layout, self.io_channel_id);
+
+                let written =
+                    util::encode_send_data_indication(self.user_channel_id, self.io_channel_id, &share_data, output)?;
+
+                (
+                    Written::from_size(written)?,
+                    AcceptorState::CapabilitiesWaitConfirm { channels },
+                )
+            }
+
+            AcceptorState::CapabilitiesWaitConfirm { channels } => {
                 let data = pdu::decode::<pdu::mcs::SendDataRequest>(input).map_err(ConnectorError::pdu)?;
 
                 let capabilities_confirm = rdp::headers::ShareControlHeader::from_buffer(Cursor::new(data.user_data))?;
 
-                println!("{:?}", capabilities_confirm);
+                debug!(message =? capabilities_confirm, "Received");
+
+                let ShareControlPdu::ClientConfirmActive(confirm) = capabilities_confirm.share_control_pdu else {
+                    return Err(ConnectorError::general("expected client confirm active"));
+                };
 
                 (
                     Written::Nothing,
                     AcceptorState::ConnectionFinalization {
-                        finalization: FinalizationSequence::new(self.user_channel_id),
+                        channels,
+                        finalization: FinalizationSequence::new(self.user_channel_id, self.io_channel_id),
+                        client_capabilities: confirm.pdu.capability_sets,
                     },
                 )
             }
 
-            AcceptorState::ConnectionFinalization { mut finalization } => {
+            AcceptorState::ConnectionFinalization { mut finalization, channels, client_capabilities } => {
                 let written = finalization.step(input, output)?;
                 let state = if finalization.is_done() {
-                    AcceptorState::Accepted
+                    AcceptorState::Accepted { channels, client_capabilities }
                 } else {
-                    AcceptorState::ConnectionFinalization { finalization }
+                    AcceptorState::ConnectionFinalization { finalization, channels, client_capabilities }
                 };
 
                 (written, state)
             }
 
-            _ => unreachable!(),
+            x => {
+                println!("{:?}", x);
+                unreachable!()
+            }
         };
 
         self.state = next_state;
@@ -331,19 +444,23 @@ impl Sequence for ServerAcceptor {
     }
 }
 
-fn create_gcc_blocks(_opts: &RdpServerOptions, _client_blocks: &gcc::ClientGccBlocks) -> gcc::ServerGccBlocks {
+fn create_gcc_blocks(
+    io_channel: u16,
+    channel_ids: Vec<u16>,
+    requested: nego::SecurityProtocol,
+) -> gcc::ServerGccBlocks {
     pdu::gcc::ServerGccBlocks {
         core: gcc::ServerCoreData {
             version: gcc::RdpVersion::V5_PLUS,
             optional_data: gcc::ServerCoreOptionalData {
-                client_requested_protocols: None,
-                early_capability_flags: Some(gcc::ServerEarlyCapabilityFlags::empty()),
+                client_requested_protocols: Some(requested),
+                early_capability_flags: None,
             },
         },
         security: gcc::ServerSecurityData::no_security(),
         network: gcc::ServerNetworkData {
-            channel_ids: vec![],
-            io_channel: 0,
+            channel_ids,
+            io_channel,
         },
         message_channel: None,
         multi_transport_channel: None,

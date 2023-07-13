@@ -1,13 +1,16 @@
-use std::{borrow::Cow, io::Cursor};
+use std::io::Cursor;
 
 use ironrdp_connector::{ConnectorError, ConnectorErrorExt, ConnectorResult, Sequence, State, Written};
 use ironrdp_pdu as pdu;
 use pdu::{rdp, PduParsing};
 
+use crate::acceptor::util::{self, wrap_share_data};
+
 #[derive(Debug)]
 pub struct FinalizationSequence {
     state: FinalizationState,
-    user_id: u16,
+    user_channel_id: u16,
+    io_channel_id: u16,
 }
 
 #[derive(Default, Debug)]
@@ -20,7 +23,10 @@ pub enum FinalizationState {
     WaitRequestControl,
     WaitFontList,
 
-    SendResponse,
+    SendSynchronizeConfirm,
+    SendControlCooperateConfirm,
+    SendGrantedControlConfirm,
+    SendFontMap,
 
     Finished,
 }
@@ -33,7 +39,10 @@ impl State for FinalizationState {
             Self::WaitControlCooperate => "WaitControlCooperate",
             Self::WaitRequestControl => "WaitRequestControl",
             Self::WaitFontList => "WaitFontList",
-            Self::SendResponse => "SendResponse",
+            Self::SendSynchronizeConfirm => "SendSynchronizeConfirm",
+            Self::SendControlCooperateConfirm => "SendControlCooperateConfirm",
+            Self::SendGrantedControlConfirm => "SendGrantedControlConfirm",
+            Self::SendFontMap => "SendFontMap",
             Self::Finished => "Finished",
         }
     }
@@ -55,7 +64,10 @@ impl Sequence for FinalizationSequence {
             FinalizationState::WaitControlCooperate => Some(&pdu::X224Hint),
             FinalizationState::WaitRequestControl => Some(&pdu::X224Hint),
             FinalizationState::WaitFontList => Some(&pdu::X224Hint),
-            FinalizationState::SendResponse => None,
+            FinalizationState::SendSynchronizeConfirm => None,
+            FinalizationState::SendControlCooperateConfirm => None,
+            FinalizationState::SendGrantedControlConfirm => None,
+            FinalizationState::SendFontMap => None,
             FinalizationState::Finished => None,
         }
     }
@@ -70,7 +82,8 @@ impl Sequence for FinalizationSequence {
                 let data = pdu::decode::<pdu::mcs::SendDataRequest>(input).map_err(ConnectorError::pdu)?;
 
                 let synchronize = rdp::headers::ShareControlHeader::from_buffer(Cursor::new(data.user_data))?;
-                println!("{:?}", synchronize);
+
+                debug!(message =? synchronize, "Received");
 
                 (Written::Nothing, FinalizationState::WaitControlCooperate)
             }
@@ -79,7 +92,8 @@ impl Sequence for FinalizationSequence {
                 let data = pdu::decode::<pdu::mcs::SendDataRequest>(input).map_err(ConnectorError::pdu)?;
 
                 let cooperate = rdp::headers::ShareControlHeader::from_buffer(Cursor::new(data.user_data))?;
-                println!("{:?}", cooperate);
+
+                debug!(message =? cooperate, "Received");
 
                 (Written::Nothing, FinalizationState::WaitRequestControl)
             }
@@ -88,7 +102,8 @@ impl Sequence for FinalizationSequence {
                 let data = pdu::decode::<pdu::mcs::SendDataRequest>(input).map_err(ConnectorError::pdu)?;
 
                 let control = rdp::headers::ShareControlHeader::from_buffer(Cursor::new(data.user_data))?;
-                println!("{:?}", control);
+
+                debug!(message =? control, "Received");
 
                 (Written::Nothing, FinalizationState::WaitFontList)
             }
@@ -97,34 +112,62 @@ impl Sequence for FinalizationSequence {
                 let data = pdu::decode::<pdu::mcs::SendDataRequest>(input).map_err(ConnectorError::pdu)?;
 
                 let font_list = rdp::headers::ShareControlHeader::from_buffer(Cursor::new(data.user_data))?;
-                println!("{:?}", font_list);
 
-                (Written::Nothing, FinalizationState::SendResponse)
+                debug!(message =? font_list, "Received");
+
+                (Written::Nothing, FinalizationState::SendSynchronizeConfirm)
             }
 
-            FinalizationState::SendResponse => {
-                let responses = vec![
-                    synchronize_confirm(self.user_id),
-                    cooperate_confirm(self.user_id),
-                    control_confirm(self.user_id),
-                    fontmap_confirm(),
-                ];
+            FinalizationState::SendSynchronizeConfirm => {
+                let synchronize_confirm = create_synchronize_confirm();
 
-                let mut written = 0;
-                for share_pdu in responses {
-                    println!("{:?}", share_pdu);
+                debug!(message =? synchronize_confirm, "Send");
 
-                    let mut buf = Vec::with_capacity(share_pdu.buffer_length());
-                    share_pdu.to_buffer(Cursor::new(&mut buf))?;
+                let share_data = wrap_share_data(synchronize_confirm, self.io_channel_id);
+                let written =
+                    util::encode_send_data_indication(self.user_channel_id, self.io_channel_id, &share_data, output)?;
 
-                    let indication = pdu::mcs::SendDataIndication {
-                        initiator_id: self.user_id,
-                        channel_id: 0,
-                        user_data: Cow::Borrowed(&buf[..share_pdu.buffer_length()]),
-                    };
+                (
+                    Written::from_size(written)?,
+                    FinalizationState::SendControlCooperateConfirm,
+                )
+            }
 
-                    written += ironrdp_pdu::encode_buf(&indication, output).map_err(ConnectorError::pdu)?;
-                }
+            FinalizationState::SendControlCooperateConfirm => {
+                let cooperate_confirm = create_cooperate_confirm();
+
+                debug!(message =? cooperate_confirm, "Send");
+
+                let share_data = wrap_share_data(cooperate_confirm, self.io_channel_id);
+                let written =
+                    util::encode_send_data_indication(self.user_channel_id, self.io_channel_id, &share_data, output)?;
+
+                (
+                    Written::from_size(written)?,
+                    FinalizationState::SendGrantedControlConfirm,
+                )
+            }
+
+            FinalizationState::SendGrantedControlConfirm => {
+                let control_confirm = create_control_confirm(self.user_channel_id);
+
+                debug!(message =? control_confirm, "Send");
+
+                let share_data = wrap_share_data(control_confirm, self.io_channel_id);
+                let written =
+                    util::encode_send_data_indication(self.user_channel_id, self.io_channel_id, &share_data, output)?;
+
+                (Written::from_size(written)?, FinalizationState::SendFontMap)
+            }
+
+            FinalizationState::SendFontMap => {
+                let font_map = create_font_map();
+
+                debug!(message =? font_map, "Send");
+
+                let share_data = wrap_share_data(font_map, self.io_channel_id);
+                let written =
+                    util::encode_send_data_indication(self.user_channel_id, self.io_channel_id, &share_data, output)?;
 
                 (Written::from_size(written)?, FinalizationState::Finished)
             }
@@ -138,10 +181,11 @@ impl Sequence for FinalizationSequence {
 }
 
 impl FinalizationSequence {
-    pub fn new(user_id: u16) -> Self {
+    pub fn new(user_channel_id: u16, io_channel_id: u16) -> Self {
         Self {
             state: FinalizationState::WaitSynchronize,
-            user_id,
+            user_channel_id,
+            io_channel_id,
         }
     }
 
@@ -150,61 +194,31 @@ impl FinalizationSequence {
     }
 }
 
-fn synchronize_confirm(user_id: u16) -> rdp::headers::ShareControlHeader {
-    with_share_header(rdp::headers::ShareControlPdu::Data(rdp::headers::ShareDataHeader {
-        share_data_pdu: rdp::headers::ShareDataPdu::Synchronize(rdp::finalization_messages::SynchronizePdu {
-            target_user_id: user_id,
-        }),
-        stream_priority: rdp::headers::StreamPriority::Undefined,
-        compression_flags: rdp::headers::CompressionFlags::empty(),
-        compression_type: rdp::client_info::CompressionType::K8,
-    }))
+fn create_synchronize_confirm() -> rdp::headers::ShareDataPdu {
+    rdp::headers::ShareDataPdu::Synchronize(rdp::finalization_messages::SynchronizePdu { target_user_id: 0 })
 }
 
-fn cooperate_confirm(user_id: u16) -> rdp::headers::ShareControlHeader {
-    with_share_header(rdp::headers::ShareControlPdu::Data(rdp::headers::ShareDataHeader {
-        share_data_pdu: rdp::headers::ShareDataPdu::Control(rdp::finalization_messages::ControlPdu {
-            action: rdp::finalization_messages::ControlAction::Cooperate,
-            grant_id: user_id,
-            control_id: u32::from(pdu::rdp::capability_sets::SERVER_CHANNEL_ID),
-        }),
-        stream_priority: rdp::headers::StreamPriority::Undefined,
-        compression_flags: rdp::headers::CompressionFlags::empty(),
-        compression_type: rdp::client_info::CompressionType::K8,
-    }))
+fn create_cooperate_confirm() -> rdp::headers::ShareDataPdu {
+    rdp::headers::ShareDataPdu::Control(rdp::finalization_messages::ControlPdu {
+        action: rdp::finalization_messages::ControlAction::Cooperate,
+        grant_id: 0,
+        control_id: 0,
+    })
 }
 
-fn control_confirm(user_id: u16) -> rdp::headers::ShareControlHeader {
-    with_share_header(rdp::headers::ShareControlPdu::Data(rdp::headers::ShareDataHeader {
-        share_data_pdu: rdp::headers::ShareDataPdu::Control(rdp::finalization_messages::ControlPdu {
-            action: rdp::finalization_messages::ControlAction::GrantedControl,
-            grant_id: user_id,
-            control_id: u32::from(pdu::rdp::capability_sets::SERVER_CHANNEL_ID),
-        }),
-        stream_priority: rdp::headers::StreamPriority::Undefined,
-        compression_flags: rdp::headers::CompressionFlags::empty(),
-        compression_type: rdp::client_info::CompressionType::K8,
-    }))
+fn create_control_confirm(user_id: u16) -> rdp::headers::ShareDataPdu {
+    rdp::headers::ShareDataPdu::Control(rdp::finalization_messages::ControlPdu {
+        action: rdp::finalization_messages::ControlAction::GrantedControl,
+        grant_id: user_id,
+        control_id: u32::from(pdu::rdp::capability_sets::SERVER_CHANNEL_ID),
+    })
 }
 
-fn fontmap_confirm() -> rdp::headers::ShareControlHeader {
-    with_share_header(rdp::headers::ShareControlPdu::Data(rdp::headers::ShareDataHeader {
-        share_data_pdu: rdp::headers::ShareDataPdu::FontMap(rdp::finalization_messages::FontPdu {
-            number: 1, // TODO: fields
-            total_number: 1,
-            flags: rdp::finalization_messages::SequenceFlags::empty(),
-            entry_size: 0,
-        }),
-        stream_priority: rdp::headers::StreamPriority::Undefined,
-        compression_flags: rdp::headers::CompressionFlags::empty(),
-        compression_type: rdp::client_info::CompressionType::K8,
-    }))
-}
-
-fn with_share_header(pdu: rdp::headers::ShareControlPdu) -> rdp::headers::ShareControlHeader {
-    rdp::headers::ShareControlHeader {
-        share_id: 1,
-        pdu_source: 1,
-        share_control_pdu: pdu,
-    }
+fn create_font_map() -> rdp::headers::ShareDataPdu {
+    rdp::headers::ShareDataPdu::FontMap(rdp::finalization_messages::FontPdu {
+        number: 1, // TODO: fields
+        total_number: 1,
+        flags: rdp::finalization_messages::SequenceFlags::empty(),
+        entry_size: 0,
+    })
 }

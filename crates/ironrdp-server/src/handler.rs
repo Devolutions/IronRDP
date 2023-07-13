@@ -1,4 +1,6 @@
-use ironrdp_pdu::input::{fast_path::KeyboardFlags, mouse::PointerFlags, mouse_x::PointerXFlags, MousePdu, MouseXPdu};
+use ironrdp_pdu::input::{
+    fast_path, mouse::PointerFlags, mouse_x::PointerXFlags, scan_code, unicode, MousePdu, MouseXPdu,
+};
 
 #[derive(Debug)]
 pub enum KeyboardEvent {
@@ -22,9 +24,29 @@ pub trait RdpServerInputHandler {
     async fn mouse(&mut self, event: MouseEvent);
 }
 
-impl From<(u16, KeyboardFlags)> for KeyboardEvent {
-    fn from((key, flags): (u16, KeyboardFlags)) -> Self {
-        if flags.contains(KeyboardFlags::RELEASE) {
+impl From<(u16, fast_path::KeyboardFlags)> for KeyboardEvent {
+    fn from((key, flags): (u16, fast_path::KeyboardFlags)) -> Self {
+        if flags.contains(fast_path::KeyboardFlags::RELEASE) {
+            KeyboardEvent::Released(key)
+        } else {
+            KeyboardEvent::Pressed(key)
+        }
+    }
+}
+
+impl From<(u16, scan_code::KeyboardFlags)> for KeyboardEvent {
+    fn from((key, flags): (u16, scan_code::KeyboardFlags)) -> Self {
+        if flags.contains(scan_code::KeyboardFlags::RELEASE) {
+            KeyboardEvent::Released(key)
+        } else {
+            KeyboardEvent::Pressed(key)
+        }
+    }
+}
+
+impl From<(u16, unicode::KeyboardFlags)> for KeyboardEvent {
+    fn from((key, flags): (u16, unicode::KeyboardFlags)) -> Self {
+        if flags.contains(unicode::KeyboardFlags::RELEASE) {
             KeyboardEvent::Released(key)
         } else {
             KeyboardEvent::Pressed(key)
