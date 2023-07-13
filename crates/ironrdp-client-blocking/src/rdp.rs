@@ -177,9 +177,26 @@ fn active_session(
     let framed = Arc::new(std::sync::Mutex::new(framed));
     let framed_clone = framed.clone();
 
-    std::thread::spawn(move || loop {
-        let frame = framed.lock().unwrap().read_pdu();
-        pdu_tx.send(frame).unwrap();
+    std::thread::spawn(move || {
+        trace!("Spawned frame reading thread");
+        loop {
+            trace!("Waiting for lock in frame reading thread");
+            let mut locked_frame = framed.lock().unwrap();
+            trace!("Got lock in frame reading thread");
+            trace!("Waiting for read_pdu in frame reading thread");
+            let frame = locked_frame.read_pdu();
+            trace!("Got read_pdu in frame reading thread");
+            trace!("Sending frame to session thread");
+            match pdu_tx.send(frame) {
+                Ok(()) => {
+                    trace!("Frame successfully sent to session thread");
+                }
+                Err(crossbeam::channel::SendError(_)) => {
+                    trace!("Failed to send frame to session thread, this may be due to a resize event, returning");
+                    return;
+                }
+            }
+        }
     });
 
     'outer: loop {
@@ -194,7 +211,12 @@ fn active_session(
                 for out in outputs {
                     match out {
                         ActiveStageOutput::ResponseFrame(frame) => {
-                            framed_clone.lock().unwrap().write_all(&frame).map_err(|e| session::custom_err!("write response", e))?
+                            trace!("Waiting for lock in session thread (pdu_rx)");
+                            let mut framed_clone_locked = framed_clone.lock().unwrap();
+                            trace!("Got lock in session thread (pdu_rx)");
+                            trace!("Writing response frame in session thread (pdu_rx)");
+                            framed_clone_locked.write_all(&frame).map_err(|e| session::custom_err!("write response", e))?;
+                            trace!("Wrote response frame in session thread (pdu_rx)");
                         },
                         ActiveStageOutput::GraphicsUpdate(_region) => {
                             let buffer: Vec<u32> = image
@@ -256,8 +278,12 @@ fn active_session(
                         fastpath_input
                             .to_buffer(&mut frame)
                             .map_err(|e| session::custom_err!("FastPathInput encode", e))?;
-
-                            framed_clone.lock().unwrap().write_all(&frame).map_err(|e| session::custom_err!("write FastPathInput PDU", e))?;
+                            trace!("Waiting for lock in session thread (input_event_receiver)");
+                            let mut framed_clone_locked = framed_clone.lock().unwrap();
+                            trace!("Got lock in session thread (input_event_receiver)");
+                            trace!("Writing response frame in session thread (input_event_receiver)");
+                            framed_clone_locked.write_all(&frame).map_err(|e| session::custom_err!("write FastPathInput PDU", e))?;
+                            trace!("Wrote response frame in session thread (input_event_receiver)");
                     }
                     RdpInputEvent::Close => {
                         // TODO: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/27915739-8f77-487e-9927-55008af7fd68
