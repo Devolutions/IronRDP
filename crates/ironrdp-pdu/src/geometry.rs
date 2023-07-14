@@ -85,6 +85,10 @@ pub trait Rectangle: RectangleImpl {
     }
 }
 
+/// An **inclusive** rectangle.
+///
+/// This struct is defined as an **inclusive** rectangle.
+/// That is, the pixel at coordinate (right, bottom) is included in the rectangle.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InclusiveRectangle {
     pub left: u16,
@@ -93,6 +97,9 @@ pub struct InclusiveRectangle {
     pub bottom: u16,
 }
 
+/// An **exclusive** rectangle.
+/// This struct is defined as an **exclusive** rectangle.
+/// That is, the pixel at coordinate (right, bottom) is not included in the rectangle.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExclusiveRectangle {
     pub left: u16,
