@@ -1,4 +1,4 @@
-use std::io::{Read, Write};
+use std::io::{self, Read, Write};
 
 use byteorder::ReadBytesExt;
 use thiserror::Error;
@@ -12,6 +12,9 @@ pub enum RleError {
     #[error("Failed to read RLE-compressed data: {0}")]
     ReadCompressedData(#[source] std::io::Error),
 
+    #[error("Failed to write RLE-compressed data: {0}")]
+    WriteCompressedData(#[source] std::io::Error),
+
     #[error("Failed to write decompressed data: {0}")]
     WriteDecompressedData(#[source] std::io::Error),
 
@@ -20,6 +23,9 @@ pub enum RleError {
 
     #[error("Decoded scanline segments length exceeds scanline length")]
     SegmentDoNotFitScanline,
+
+    #[error("Not enough bytes in the uncompressed data")]
+    NotEnoughBytes,
 }
 
 /// RLE-encoded color plane decoder implementation for RDP6 bitmap stream
@@ -159,6 +165,188 @@ pub fn decompress_8bpp_plane(
     RlePlaneDecoder::new(width, height).decode(src, dst)
 }
 
+struct RleEncoderScanlineIterator<I> {
+    inner: std::iter::Enumerate<I>,
+    width: usize,
+    prev_scanline: Vec<u8>,
+}
+
+impl<I: Iterator> RleEncoderScanlineIterator<I> {
+    fn new(width: usize, inner: I) -> Self {
+        Self {
+            width,
+            inner: inner.enumerate(),
+            prev_scanline: vec![0; width],
+        }
+    }
+
+    fn delta_value(&self, prev: u8, next: u8) -> u8 {
+        let mut result = (next as i16 - prev as i16) as u8;
+
+        // bit magic from 3.1.9.2.1 of [MS-RDPEGDI].
+        if result < 128 {
+            result <<= 1;
+        } else {
+            result = (255u8.wrapping_sub(result) << 1).wrapping_add(1);
+        }
+
+        result
+    }
+}
+
+impl<I: Iterator<Item = u8>> Iterator for RleEncoderScanlineIterator<I> {
+    type Item = I::Item;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let Some((idx, mut next)) = self.inner.next() else {
+            return None;
+        };
+
+        let prev = std::mem::replace(&mut self.prev_scanline[idx % self.width], next);
+        if idx >= self.width {
+            next = self.delta_value(prev, next);
+        }
+
+        Some(next)
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.inner.size_hint()
+    }
+}
+
+#[derive(Debug)]
+struct RlePlaneEncoder {
+    width: usize,
+    height: usize,
+}
+
+impl RlePlaneEncoder {
+    pub fn new(width: usize, height: usize) -> Self {
+        Self { width, height }
+    }
+
+    pub fn encode(&self, mut src: impl Iterator<Item = u8>, dst: &mut impl Write) -> Result<usize, RleError> {
+        let mut written = 0;
+
+        for _ in 0..self.height {
+            written += self.encode_scanline((&mut src).take(self.width), dst)?;
+        }
+
+        Ok(written)
+    }
+
+    fn encode_scanline(&self, mut src: impl Iterator<Item = u8>, dst: &mut impl Write) -> Result<usize, RleError> {
+        let mut written = 0;
+
+        let Some(first) = src.next() else {
+            return Err(RleError::NotEnoughBytes);
+        };
+
+        let mut raw = vec![first];
+        let mut seq = (first, 0);
+
+        for byte in src {
+            let (last, count) = seq;
+
+            seq = if byte == last {
+                (byte, count + 1)
+            } else {
+                match count {
+                    3.. => {
+                        written += self
+                            .encode_segment(&raw, count, dst)
+                            .map_err(RleError::WriteCompressedData)?;
+                        raw.clear();
+                    }
+                    2 => raw.extend_from_slice(&[last, last]),
+                    1 => raw.push(last),
+                    _ => {}
+                }
+
+                raw.push(byte);
+
+                (byte, 0)
+            }
+        }
+
+        let (last, mut count) = seq;
+        if count < 3 {
+            raw.extend(vec![last; count].into_iter());
+            count = 0;
+        }
+
+        written += self
+            .encode_segment(&raw, count, dst)
+            .map_err(RleError::WriteCompressedData)?;
+
+        Ok(written)
+    }
+
+    fn encode_segment(&self, mut raw: &[u8], run: usize, dst: &mut impl Write) -> io::Result<usize> {
+        let mut extra_bytes = 0;
+
+        while raw.len() > 15 {
+            extra_bytes += self.encode_segment(&raw[0..15], 0, dst)?;
+            raw = &raw[15..];
+        }
+
+        let control = ((raw.len() as u8) << 4) + std::cmp::min(run, 15) as u8;
+        dst.write_all(&[control])?;
+        dst.write_all(raw)?;
+
+        if run > 15 {
+            let last = raw.last().unwrap();
+            extra_bytes += self.encode_long_sequence(run - 15, *last, dst)?;
+        }
+
+        Ok(1 + raw.len() + extra_bytes)
+    }
+
+    fn encode_long_sequence(&self, mut run: usize, last: u8, dst: &mut impl Write) -> io::Result<usize> {
+        let mut written = 0;
+
+        while run >= 16 {
+            let current = std::cmp::min(run, MAX_DECODED_SEGMENT_SIZE) as u8;
+
+            let c_raw_bytes = std::cmp::min(current / 16, 2);
+            let n_run_length = current - c_raw_bytes * 16;
+
+            let control = (n_run_length << 4) + c_raw_bytes;
+            written += dst.write(&[control])?;
+
+            run -= current as usize;
+        }
+
+        if run > 0 {
+            match run {
+                short @ 1..=3 => {
+                    written += self.encode_segment(&vec![last; short], 0, dst)?;
+                }
+                long => {
+                    written += self.encode_segment(&[last], long - 1, dst)?;
+                }
+            }
+        }
+
+        Ok(written)
+    }
+}
+
+pub fn compress_8bpp_plane(
+    src: impl Iterator<Item = u8>,
+    mut dst: impl Write,
+    width: impl Into<usize>,
+    height: impl Into<usize>,
+) -> Result<usize, RleError> {
+    let width = width.into();
+    let height = height.into();
+
+    let iter = RleEncoderScanlineIterator::new(width, src);
+
+    RlePlaneEncoder::new(width, height).encode(iter, &mut dst)
+}
+
 #[cfg(test)]
 mod tests {
     use expect_test::expect;
@@ -178,6 +366,67 @@ mod tests {
         dst.resize(width * height, 0);
 
         decompress_8bpp_plane(src, dst.as_mut_slice(), width, height)
+    }
+
+    pub fn compress(
+        src: &[u8],
+        dst: &mut Vec<u8>,
+        width: impl Into<usize>,
+        height: impl Into<usize>,
+    ) -> Result<usize, RleError> {
+        compress_8bpp_plane(src.iter().copied(), dst, width, height)
+    }
+
+    #[test]
+    fn simple_encode() {
+        // Example AAAABBCCCCCD from 3.1.9.2 of [MS-RDPEGDI].
+        let src = [65, 65, 65, 65, 66, 66, 67, 67, 67, 67, 67, 68];
+
+        let width = src.len();
+        let height = 1usize;
+
+        let expected = &[0x13, 65, 0x34, 66, 66, 67, 0x10, 68];
+
+        let mut actual = Vec::new();
+        compress(&src, &mut actual, width, height).unwrap();
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn long_sequence_encode() {
+        // Example from 3.1.9.2.2 of [MS-RDPEGDI].
+        let src = [0x41u8; 100];
+
+        let width = 100usize;
+        let height = 1usize;
+
+        let expected = &[0x1F, 0x41, 0xF2, 0x52];
+
+        let mut actual = Vec::new();
+        compress(&src, &mut actual, width, height).unwrap();
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn multiline_encode() {
+        // Example from 3.1.9.2.1 of [MS-RDPEGDI].
+        let src = [
+            255, 255, 255, 255, 254, 253, 254, 192, 132, 96, 75, 25, 253, 140, 62, 14, 135, 193,
+        ];
+
+        let width = 6usize;
+        let height = 3usize;
+
+        let expected = &[
+            0x13, 0xFF, 0x20, 0xFE, 0xFD, 0x60, 0x01, 0x7D, 0xF5, 0xC2, 0x9A, 0x38, 0x60, 0x01, 0x67, 0x8B, 0xA3, 0x78,
+            0xAF,
+        ];
+
+        let mut actual = Vec::new();
+        compress(&src, &mut actual, width, height).unwrap();
+
+        assert_eq!(actual, expected);
     }
 
     #[test]
@@ -213,6 +462,61 @@ mod tests {
         let mut actual = Vec::new();
         decompress(&src, &mut actual, width, height).unwrap();
         assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn long_sequence_encode_decode() {
+        // Example from 3.1.9.2.2 of [MS-RDPEGDI].
+        let src = [0x41u8; 100];
+
+        let width = 100usize;
+        let height = 1usize;
+
+        let mut compressed = Vec::new();
+        compress(&src, &mut compressed, width, height).unwrap();
+
+        let mut actual = Vec::new();
+        decompress(&compressed, &mut actual, width, height).unwrap();
+
+        assert_eq!(actual.as_slice(), src.as_slice());
+    }
+
+    #[test]
+    fn complex_encode_decode() {
+        let src = [
+            19, 19, 19, 19, 19, 19, 19, 19, 19, 19, 19, 19, 19, 19, 19, 19, 19, 19, 19, 18, 18, 18, 19, 19, 18, 18, 18,
+            18, 18, 18, 18, 18,
+        ];
+
+        let width = src.len();
+        let height = 1usize;
+
+        let mut compressed = Vec::new();
+        compress(&src, &mut compressed, width, height).unwrap();
+
+        let mut actual = Vec::new();
+        decompress(&compressed, &mut actual, width, height).unwrap();
+
+        assert_eq!(actual.as_slice(), src.as_slice());
+    }
+
+    #[test]
+    fn multiline_encode_decode() {
+        // Example from 3.1.9.2.3 of [MS-RDPEGDI].
+        let src = [
+            255, 255, 255, 255, 254, 253, 254, 192, 132, 96, 75, 25, 253, 140, 62, 14, 135, 193,
+        ];
+
+        let width = 6usize;
+        let height = 3usize;
+
+        let mut compressed = Vec::new();
+        compress(&src, &mut compressed, width, height).unwrap();
+
+        let mut actual = Vec::new();
+        decompress(&compressed, &mut actual, width, height).unwrap();
+
+        assert_eq!(actual.as_slice(), src.as_slice());
     }
 
     #[test]

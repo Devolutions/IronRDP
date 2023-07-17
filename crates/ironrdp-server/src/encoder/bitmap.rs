@@ -1,18 +1,16 @@
 use ironrdp_pdu::{
     bitmap::{BitmapData, BitmapUpdateData, Compression},
     fast_path::FastPathUpdate,
-    geometry::Rectangle,
+    geometry::InclusiveRectangle,
     rdp::{client_info::CompressionType, headers::CompressionFlags},
 };
 
 use crate::BitmapUpdate;
 
-use super::UpdateHandler;
+pub struct BitmapEncoder {}
 
-pub struct UncompressedBitmapHandler {}
-
-impl UpdateHandler for UncompressedBitmapHandler {
-    fn handle<'a>(&mut self, bitmap: &'a BitmapUpdate) -> Option<FastPathUpdate<'a>> {
+impl BitmapEncoder {
+    pub fn handle<'a>(&mut self, bitmap: &'a BitmapUpdate) -> Option<FastPathUpdate<'a>> {
         let row_len = bitmap.width * bitmap.bits_per_pixel as u32 / 8;
         let chunk_height = u16::MAX as u32 / row_len;
 
@@ -26,7 +24,7 @@ impl UpdateHandler for UncompressedBitmapHandler {
                     let top = bitmap.top + i as u32 * chunk_height;
 
                     BitmapData {
-                        rectangle: Rectangle {
+                        rectangle: InclusiveRectangle {
                             left: bitmap.left as u16,
                             top: top as u16,
                             right: (bitmap.left + bitmap.width - 1) as u16,
@@ -35,8 +33,7 @@ impl UpdateHandler for UncompressedBitmapHandler {
                         width: bitmap.width as u16,
                         height: height as u16,
                         bits_per_pixel: bitmap.bits_per_pixel,
-                        compression_flags: Compression::empty(),
-                        bitmap_data_length: chunk.len(),
+                        compression_flags: Compression::BITMAP_COMPRESSION,
                         compressed_data_header: None,
                         bitmap_data: chunk,
                     }
@@ -45,7 +42,7 @@ impl UpdateHandler for UncompressedBitmapHandler {
         }))
     }
 
-    fn compression(&self) -> Option<(CompressionFlags, CompressionType)> {
-        None
+    pub fn compression(&self) -> Option<(CompressionFlags, CompressionType)> {
+        Some((CompressionFlags::COMPRESSED, CompressionType::Rdp6))
     }
 }

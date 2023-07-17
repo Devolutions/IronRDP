@@ -14,13 +14,13 @@ use ironrdp_tokio::{Framed, FramedRead, FramedWrite, TokioFramed};
 use tokio::{net::TcpListener, select};
 use tokio_rustls::TlsAcceptor;
 
-use crate::{DisplayUpdate, capabilities};
+use crate::{capabilities, DisplayUpdate};
 
 use super::{
     acceptor::{self, BeginResult, ServerAcceptor},
     builder,
     display::RdpServerDisplay,
-    encoder::{bitmap::UncompressedBitmapHandler, UpdateEncoder},
+    encoder::UpdateEncoder,
     handler::RdpServerInputHandler,
 };
 
@@ -90,7 +90,7 @@ where
         S: FramedWrite + FramedRead,
     {
         let mut buffer = vec![0u8; 8192 * 8192];
-        let mut encoder = UpdateEncoder::new(UncompressedBitmapHandler {});
+        let mut encoder = UpdateEncoder::new();
 
         'main: loop {
             select! {
@@ -124,7 +124,7 @@ where
                 Some(update) = self.display.get_update() => {
                     match update {
                         DisplayUpdate::Bitmap(bitmap) => {
-                            if let Some(len) = encoder.encode(bitmap, &mut buffer) {
+                            if let Some(len) = encoder.bitmap(bitmap, &mut buffer) {
                                 if let Err(e) = framed.write_all(&buffer[..len]).await {
                                     eprintln!("write error: {:?}", e);
                                     break;
