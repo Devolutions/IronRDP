@@ -373,8 +373,6 @@ mod legacy {
     pub enum RdpError {
         #[error("IO error")]
         IOError(#[from] std::io::Error),
-        // #[error("Surface Commands error")]
-        // FastPathError(#[from] crate::fast_path::FastPathError),
         #[error("Received invalid action code: {0}")]
         InvalidActionCode(u8),
     }

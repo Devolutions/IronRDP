@@ -2,7 +2,7 @@ use std::cmp::{max, min};
 
 use ironrdp_pdu::geometry::{InclusiveRectangle, Rectangle as _};
 
-// TODO(@pacmancoder): This code curently works only on `InclusiveRectangle`, but it should be
+// TODO(@pacmancoder): This code currently works only on `InclusiveRectangle`, but it should be
 // made generic over `Rectangle` trait
 
 #[derive(Debug, Clone, PartialEq, Eq)]

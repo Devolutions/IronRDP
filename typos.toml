@@ -1,5 +1,5 @@
 [files]
-extend-exclude = ["*.bin", "*.bmp"]
+extend-exclude = ["*.bin", "*.bmp", "package-lock.json"]
 
 [default]
 extend-ignore-re = [

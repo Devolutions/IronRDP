@@ -44,7 +44,7 @@ impl PduDecode<'_> for Point16 {
     }
 }
 
-/// Accoring to [MS-RDPBCGR] 2.2.9.1.1.4.2 `TS_POINTERPOSATTRIBUTE` has the same layout
+/// According to [MS-RDPBCGR] 2.2.9.1.1.4.2 `TS_POINTERPOSATTRIBUTE` has the same layout
 /// as `TS_POINT16`
 pub type PointerPositionAttribute = Point16;
 

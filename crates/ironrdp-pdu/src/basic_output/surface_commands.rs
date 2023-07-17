@@ -341,17 +341,3 @@ bitflags! {
         const COMPRESSED_BITMAP_HEADER_PRESENT = 0x01;
     }
 }
-
-/*
-#[derive(Debug, Error)]
-pub enum SurfaceCommandsError {
-    #[error("IO error")]
-    IOError(#[from] io::Error),
-    #[error("Invalid Surface Command type: {0}")]
-    InvalidSurfaceCommandType(u16),
-    #[error("Invalid Frame Marker action: {0}")]
-    InvalidFrameAction(u16),
-    #[error("Input buffer is shorter than the data length: {actual} < {expected}")]
-    InvalidDataLength { expected: usize, actual: usize },
-}
-*/

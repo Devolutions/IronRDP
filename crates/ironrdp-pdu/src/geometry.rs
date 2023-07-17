@@ -260,7 +260,7 @@ impl<'de> PduDecode<'de> for ExclusiveRectangle {
     }
 }
 
-// Legacy code for serializing/deserializing exclusive rectangles as inclusive rectangles strucutre
+// Legacy code for serializing/deserializing exclusive rectangles as inclusive rectangles structure
 // TODO(@pacmancoder) this should be removed later
 mod legacy {
     use super::*;
