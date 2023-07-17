@@ -6,7 +6,7 @@ use bitflags::bitflags;
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 
 use super::GraphicsMessagesError;
-use crate::geometry::Rectangle;
+use crate::geometry::InclusiveRectangle;
 use crate::{PduBufferParsing, PduParsing};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -50,7 +50,7 @@ impl PduParsing for QuantQuality {
 
 #[derive(Clone, PartialEq, Eq)]
 pub struct Avc420BitmapStream<'a> {
-    pub rectangles: Vec<Rectangle>,
+    pub rectangles: Vec<InclusiveRectangle>,
     pub quant_qual_vals: Vec<QuantQuality>,
     pub data: &'a [u8],
 }
@@ -73,7 +73,7 @@ impl<'a> PduBufferParsing<'a> for Avc420BitmapStream<'a> {
         let mut rectangles = Vec::with_capacity(num_regions as usize);
         let mut quant_qual_vals = Vec::with_capacity(num_regions as usize);
         for _ in 0..num_regions {
-            rectangles.push(Rectangle::from_buffer(&mut buffer)?);
+            rectangles.push(InclusiveRectangle::from_buffer(&mut buffer)?);
         }
         for _ in 0..num_regions {
             quant_qual_vals.push(QuantQuality::from_buffer(&mut buffer)?);

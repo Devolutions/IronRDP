@@ -1,22 +1,25 @@
 use std::cmp::{max, min};
 
-use ironrdp_pdu::geometry::Rectangle;
+use ironrdp_pdu::geometry::{InclusiveRectangle, Rectangle as _};
+
+// TODO(@pacmancoder): This code currently works only on `InclusiveRectangle`, but it should be
+// made generic over `Rectangle` trait
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Region {
-    pub extents: Rectangle,
-    pub rectangles: Vec<Rectangle>,
+    pub extents: InclusiveRectangle,
+    pub rectangles: Vec<InclusiveRectangle>,
 }
 
 impl Region {
     pub fn new() -> Self {
         Self {
-            extents: Rectangle::empty(),
+            extents: InclusiveRectangle::empty(),
             rectangles: Vec::new(),
         }
     }
 
-    pub fn union_rectangle(&mut self, rectangle: Rectangle) {
+    pub fn union_rectangle(&mut self, rectangle: InclusiveRectangle) {
         if self.rectangles.is_empty() {
             *self = Self::from(rectangle);
         } else {
@@ -59,7 +62,7 @@ impl Region {
         }
     }
 
-    pub fn intersect_rectangle(&self, rectangle: &Rectangle) -> Self {
+    pub fn intersect_rectangle(&self, rectangle: &InclusiveRectangle) -> Self {
         match self.rectangles.len() {
             0 => Self::new(),
             1 => self.extents.intersect(rectangle).map(Self::from).unwrap_or_default(),
@@ -70,7 +73,7 @@ impl Region {
                     .take_while(|r| r.top < rectangle.bottom)
                     .filter_map(|r| r.intersect(rectangle))
                     .collect::<Vec<_>>();
-                let extents = Rectangle::union_all(rectangles.as_slice());
+                let extents = InclusiveRectangle::union_all(rectangles.as_slice());
 
                 let mut region = Self { rectangles, extents };
                 region.simplify();
@@ -129,8 +132,8 @@ impl Default for Region {
     }
 }
 
-impl From<Rectangle> for Region {
-    fn from(r: Rectangle) -> Self {
+impl From<InclusiveRectangle> for Region {
+    fn from(r: InclusiveRectangle) -> Self {
         Self {
             extents: r.clone(),
             rectangles: vec![r],
@@ -138,9 +141,13 @@ impl From<Rectangle> for Region {
     }
 }
 
-fn handle_rectangle_higher_relative_to_extents(rectangle: &Rectangle, extents: &Rectangle, dst: &mut Vec<Rectangle>) {
+fn handle_rectangle_higher_relative_to_extents(
+    rectangle: &InclusiveRectangle,
+    extents: &InclusiveRectangle,
+    dst: &mut Vec<InclusiveRectangle>,
+) {
     if rectangle.top < extents.top {
-        dst.push(Rectangle {
+        dst.push(InclusiveRectangle {
             top: rectangle.top,
             bottom: min(extents.top, rectangle.bottom),
             left: rectangle.left,
@@ -149,9 +156,13 @@ fn handle_rectangle_higher_relative_to_extents(rectangle: &Rectangle, extents: &
     }
 }
 
-fn handle_rectangle_lower_relative_to_extents(rectangle: &Rectangle, extents: &Rectangle, dst: &mut Vec<Rectangle>) {
+fn handle_rectangle_lower_relative_to_extents(
+    rectangle: &InclusiveRectangle,
+    extents: &InclusiveRectangle,
+    dst: &mut Vec<InclusiveRectangle>,
+) {
     if extents.bottom < rectangle.bottom {
-        dst.push(Rectangle {
+        dst.push(InclusiveRectangle {
             top: max(extents.bottom, rectangle.top),
             bottom: rectangle.bottom,
             left: rectangle.left,
@@ -160,7 +171,11 @@ fn handle_rectangle_lower_relative_to_extents(rectangle: &Rectangle, extents: &R
     }
 }
 
-fn handle_rectangle_that_overlaps_band(rectangle: &Rectangle, band: &[Rectangle], dst: &mut Vec<Rectangle>) {
+fn handle_rectangle_that_overlaps_band(
+    rectangle: &InclusiveRectangle,
+    band: &[InclusiveRectangle],
+    dst: &mut Vec<InclusiveRectangle>,
+) {
     /* rect overlaps the band:
                          |    |  |    |
        ====^=================|    |==|    |=========================== band
@@ -208,10 +223,10 @@ fn handle_rectangle_that_overlaps_band(rectangle: &Rectangle, band: &[Rectangle]
 }
 
 fn handle_rectangle_between_bands(
-    rectangle: &Rectangle,
-    band: &[Rectangle],
-    next_band: &[Rectangle],
-    dst: &mut Vec<Rectangle>,
+    rectangle: &InclusiveRectangle,
+    band: &[InclusiveRectangle],
+    next_band: &[InclusiveRectangle],
+    dst: &mut Vec<InclusiveRectangle>,
     top_inter_band: u16,
 ) {
     /* test if a piece of rect should be inserted as a new band between
@@ -234,7 +249,7 @@ fn handle_rectangle_between_bands(
 
     let next_band_top = next_band[0].top;
     if next_band_top != band_bottom && band_bottom < rectangle.bottom && rectangle.top < next_band_top {
-        dst.push(Rectangle {
+        dst.push(InclusiveRectangle {
             top: top_inter_band,
             bottom: min(next_band_top, rectangle.bottom),
             left: rectangle.left,
@@ -243,7 +258,7 @@ fn handle_rectangle_between_bands(
     }
 }
 
-fn rectangle_in_band(band: &[Rectangle], rectangle: &Rectangle) -> bool {
+fn rectangle_in_band(band: &[InclusiveRectangle], rectangle: &InclusiveRectangle) -> bool {
     // part of `rectangle` is higher or lower
     if rectangle.top < band[0].top || band[0].bottom < rectangle.bottom {
         return false;
@@ -266,11 +281,11 @@ fn rectangle_in_band(band: &[Rectangle], rectangle: &Rectangle) -> bool {
 }
 
 fn copy_band_with_union(
-    mut band: &[Rectangle],
-    dst: &mut Vec<Rectangle>,
+    mut band: &[InclusiveRectangle],
+    dst: &mut Vec<InclusiveRectangle>,
     band_top: u16,
     band_bottom: u16,
-    union_rectangle: &Rectangle,
+    union_rectangle: &InclusiveRectangle,
 ) {
     /* merges a band with the given rect
      * Input:
@@ -298,7 +313,7 @@ fn copy_band_with_union(
 
     let items_before_union_rectangle = band
         .iter()
-        .map(|r| Rectangle {
+        .map(|r| InclusiveRectangle {
             top: band_top,
             bottom: band_bottom,
             left: r.left,
@@ -325,7 +340,7 @@ fn copy_band_with_union(
         }
         band = &band[1..];
     }
-    dst.push(Rectangle {
+    dst.push(InclusiveRectangle {
         top: band_top,
         bottom: band_bottom,
         left,
@@ -336,8 +351,8 @@ fn copy_band_with_union(
     copy_band(band, dst, band_top, band_bottom);
 }
 
-fn copy_band(band: &[Rectangle], dst: &mut Vec<Rectangle>, band_top: u16, band_bottom: u16) {
-    dst.extend(band.iter().map(|r| Rectangle {
+fn copy_band(band: &[InclusiveRectangle], dst: &mut Vec<InclusiveRectangle>, band_top: u16, band_bottom: u16) {
+    dst.extend(band.iter().map(|r| InclusiveRectangle {
         top: band_top,
         bottom: band_bottom,
         left: r.left,
@@ -345,7 +360,7 @@ fn copy_band(band: &[Rectangle], dst: &mut Vec<Rectangle>, band_top: u16, band_b
     }));
 }
 
-fn split_bands(mut rectangles: &[Rectangle]) -> Vec<&[Rectangle]> {
+fn split_bands(mut rectangles: &[InclusiveRectangle]) -> Vec<&[InclusiveRectangle]> {
     let mut bands = Vec::new();
     while !rectangles.is_empty() {
         let band = get_current_band(rectangles);
@@ -356,7 +371,7 @@ fn split_bands(mut rectangles: &[Rectangle]) -> Vec<&[Rectangle]> {
     bands
 }
 
-fn get_current_band(rectangles: &[Rectangle]) -> &[Rectangle] {
+fn get_current_band(rectangles: &[InclusiveRectangle]) -> &[InclusiveRectangle] {
     let band_top = rectangles[0].top;
 
     for i in 1..rectangles.len() {
@@ -368,7 +383,7 @@ fn get_current_band(rectangles: &[Rectangle]) -> &[Rectangle] {
     rectangles
 }
 
-fn bands_internals_equal(first_band: &[Rectangle], second_band: &[Rectangle]) -> bool {
+fn bands_internals_equal(first_band: &[InclusiveRectangle], second_band: &[InclusiveRectangle]) -> bool {
     if first_band.len() != second_band.len() {
         return false;
     }
@@ -390,74 +405,74 @@ mod tests {
 
     lazy_static! {
         static ref REGION_FOR_RECTANGLES_INTERSECTION: Region = Region {
-            extents: Rectangle {
+            extents: InclusiveRectangle {
                 left: 1,
                 top: 1,
                 right: 11,
                 bottom: 9,
             },
             rectangles: vec![
-                Rectangle {
+                InclusiveRectangle {
                     left: 1,
                     top: 1,
                     right: 5,
                     bottom: 3,
                 },
-                Rectangle {
+                InclusiveRectangle {
                     left: 7,
                     top: 1,
                     right: 8,
                     bottom: 3,
                 },
-                Rectangle {
+                InclusiveRectangle {
                     left: 9,
                     top: 1,
                     right: 11,
                     bottom: 3,
                 },
-                Rectangle {
+                InclusiveRectangle {
                     left: 7,
                     top: 3,
                     right: 11,
                     bottom: 4,
                 },
-                Rectangle {
+                InclusiveRectangle {
                     left: 3,
                     top: 4,
                     right: 6,
                     bottom: 6,
                 },
-                Rectangle {
+                InclusiveRectangle {
                     left: 7,
                     top: 4,
                     right: 11,
                     bottom: 6,
                 },
-                Rectangle {
+                InclusiveRectangle {
                     left: 1,
                     top: 6,
                     right: 3,
                     bottom: 8,
                 },
-                Rectangle {
+                InclusiveRectangle {
                     left: 4,
                     top: 6,
                     right: 5,
                     bottom: 8,
                 },
-                Rectangle {
+                InclusiveRectangle {
                     left: 6,
                     top: 6,
                     right: 10,
                     bottom: 8,
                 },
-                Rectangle {
+                InclusiveRectangle {
                     left: 4,
                     top: 8,
                     right: 5,
                     bottom: 9,
                 },
-                Rectangle {
+                InclusiveRectangle {
                     left: 6,
                     top: 8,
                     right: 10,
@@ -471,7 +486,7 @@ mod tests {
     fn union_rectangle_sets_extents_and_single_rectangle_for_empty_region() {
         let mut region = Region::new();
 
-        let input_rectangle = Rectangle {
+        let input_rectangle = InclusiveRectangle {
             left: 5,
             top: 1,
             right: 9,
@@ -489,7 +504,7 @@ mod tests {
 
     #[test]
     fn union_rectangle_places_new_rectangle_higher_relative_to_band() {
-        let existing_band_rectangle = Rectangle {
+        let existing_band_rectangle = InclusiveRectangle {
             left: 2,
             top: 3,
             right: 7,
@@ -500,7 +515,7 @@ mod tests {
             rectangles: vec![existing_band_rectangle.clone()],
         };
 
-        let input_rectangle = Rectangle {
+        let input_rectangle = InclusiveRectangle {
             left: 5,
             top: 1,
             right: 9,
@@ -508,7 +523,7 @@ mod tests {
         };
 
         let expected_region = Region {
-            extents: Rectangle {
+            extents: InclusiveRectangle {
                 left: 2,
                 top: 1,
                 right: 9,
@@ -523,7 +538,7 @@ mod tests {
 
     #[test]
     fn union_rectangle_places_new_rectangle_lower_relative_to_band() {
-        let existing_band_rectangle = Rectangle {
+        let existing_band_rectangle = InclusiveRectangle {
             left: 2,
             top: 3,
             right: 7,
@@ -534,7 +549,7 @@ mod tests {
             rectangles: vec![existing_band_rectangle.clone()],
         };
 
-        let input_rectangle = Rectangle {
+        let input_rectangle = InclusiveRectangle {
             left: 1,
             top: 8,
             right: 4,
@@ -542,7 +557,7 @@ mod tests {
         };
 
         let expected_region = Region {
-            extents: Rectangle {
+            extents: InclusiveRectangle {
                 left: 1,
                 top: 3,
                 right: 7,
@@ -557,7 +572,7 @@ mod tests {
 
     #[test]
     fn union_rectangle_does_not_add_new_rectangle_which_is_inside_a_band() {
-        let existing_band_rectangle = Rectangle {
+        let existing_band_rectangle = InclusiveRectangle {
             left: 2,
             top: 3,
             right: 7,
@@ -568,7 +583,7 @@ mod tests {
             rectangles: vec![existing_band_rectangle.clone()],
         };
 
-        let input_rectangle = Rectangle {
+        let input_rectangle = InclusiveRectangle {
             left: 5,
             top: 4,
             right: 6,
@@ -586,7 +601,7 @@ mod tests {
 
     #[test]
     fn union_rectangle_cuts_new_rectangle_top_part_which_crosses_band_on_top() {
-        let existing_band_rectangle = Rectangle {
+        let existing_band_rectangle = InclusiveRectangle {
             left: 2,
             top: 3,
             right: 7,
@@ -597,7 +612,7 @@ mod tests {
             rectangles: vec![existing_band_rectangle],
         };
 
-        let input_rectangle = Rectangle {
+        let input_rectangle = InclusiveRectangle {
             left: 1,
             top: 2,
             right: 4,
@@ -605,26 +620,26 @@ mod tests {
         };
 
         let expected_region = Region {
-            extents: Rectangle {
+            extents: InclusiveRectangle {
                 left: 1,
                 top: 2,
                 right: 7,
                 bottom: 7,
             },
             rectangles: vec![
-                Rectangle {
+                InclusiveRectangle {
                     left: 1,
                     top: 2,
                     right: 4,
                     bottom: 3,
                 },
-                Rectangle {
+                InclusiveRectangle {
                     left: 1,
                     top: 3,
                     right: 7,
                     bottom: 4,
                 },
-                Rectangle {
+                InclusiveRectangle {
                     left: 2,
                     top: 4,
                     right: 7,
@@ -639,7 +654,7 @@ mod tests {
 
     #[test]
     fn union_rectangle_cuts_new_rectangle_lower_part_which_crosses_band_on_bottom() {
-        let existing_band_rectangle = Rectangle {
+        let existing_band_rectangle = InclusiveRectangle {
             left: 2,
             top: 3,
             right: 7,
@@ -650,7 +665,7 @@ mod tests {
             rectangles: vec![existing_band_rectangle],
         };
 
-        let input_rectangle = Rectangle {
+        let input_rectangle = InclusiveRectangle {
             left: 5,
             top: 6,
             right: 9,
@@ -658,26 +673,26 @@ mod tests {
         };
 
         let expected_region = Region {
-            extents: Rectangle {
+            extents: InclusiveRectangle {
                 left: 2,
                 top: 3,
                 right: 9,
                 bottom: 8,
             },
             rectangles: vec![
-                Rectangle {
+                InclusiveRectangle {
                     left: 2,
                     top: 3,
                     right: 7,
                     bottom: 6,
                 },
-                Rectangle {
+                InclusiveRectangle {
                     left: 2,
                     top: 6,
                     right: 9,
                     bottom: 7,
                 },
-                Rectangle {
+                InclusiveRectangle {
                     left: 5,
                     top: 7,
                     right: 9,
@@ -692,7 +707,7 @@ mod tests {
 
     #[test]
     fn union_rectangle_cuts_new_rectangle_higher_and_lower_part_which_crosses_band_on_top_and_bottom() {
-        let existing_band_rectangle = Rectangle {
+        let existing_band_rectangle = InclusiveRectangle {
             left: 2,
             top: 3,
             right: 7,
@@ -703,7 +718,7 @@ mod tests {
             rectangles: vec![existing_band_rectangle],
         };
 
-        let input_rectangle = Rectangle {
+        let input_rectangle = InclusiveRectangle {
             left: 3,
             top: 1,
             right: 5,
@@ -711,26 +726,26 @@ mod tests {
         };
 
         let expected_region = Region {
-            extents: Rectangle {
+            extents: InclusiveRectangle {
                 left: 2,
                 top: 1,
                 right: 7,
                 bottom: 11,
             },
             rectangles: vec![
-                Rectangle {
+                InclusiveRectangle {
                     left: 3,
                     top: 1,
                     right: 5,
                     bottom: 3,
                 },
-                Rectangle {
+                InclusiveRectangle {
                     left: 2,
                     top: 3,
                     right: 7,
                     bottom: 7,
                 },
-                Rectangle {
+                InclusiveRectangle {
                     left: 3,
                     top: 7,
                     right: 5,
@@ -746,26 +761,26 @@ mod tests {
     #[test]
     fn union_rectangle_inserts_new_rectangle_in_band_of_3_rectangles_without_merging_with_rectangles() {
         let mut region = Region {
-            extents: Rectangle {
+            extents: InclusiveRectangle {
                 left: 2,
                 top: 3,
                 right: 15,
                 bottom: 7,
             },
             rectangles: vec![
-                Rectangle {
+                InclusiveRectangle {
                     left: 2,
                     top: 3,
                     right: 7,
                     bottom: 7,
                 },
-                Rectangle {
+                InclusiveRectangle {
                     left: 8,
                     top: 3,
                     right: 9,
                     bottom: 7,
                 },
-                Rectangle {
+                InclusiveRectangle {
                     left: 12,
                     top: 3,
                     right: 15,
@@ -774,39 +789,39 @@ mod tests {
             ],
         };
 
-        let input_rectangle = Rectangle {
+        let input_rectangle = InclusiveRectangle {
             left: 10,
             top: 3,
             right: 11,
             bottom: 7,
         };
         let expected_region = Region {
-            extents: Rectangle {
+            extents: InclusiveRectangle {
                 left: 2,
                 top: 3,
                 right: 15,
                 bottom: 7,
             },
             rectangles: vec![
-                Rectangle {
+                InclusiveRectangle {
                     left: 2,
                     top: 3,
                     right: 7,
                     bottom: 7,
                 },
-                Rectangle {
+                InclusiveRectangle {
                     left: 8,
                     top: 3,
                     right: 9,
                     bottom: 7,
                 },
-                Rectangle {
+                InclusiveRectangle {
                     left: 10,
                     top: 3,
                     right: 11,
                     bottom: 7,
                 },
-                Rectangle {
+                InclusiveRectangle {
                     left: 12,
                     top: 3,
                     right: 15,
@@ -822,26 +837,26 @@ mod tests {
     #[test]
     fn union_rectangle_inserts_new_rectangle_in_band_of_3_rectangles_with_merging_with_side_rectangles() {
         let mut region = Region {
-            extents: Rectangle {
+            extents: InclusiveRectangle {
                 left: 2,
                 top: 3,
                 right: 15,
                 bottom: 7,
             },
             rectangles: vec![
-                Rectangle {
+                InclusiveRectangle {
                     left: 2,
                     top: 3,
                     right: 7,
                     bottom: 7,
                 },
-                Rectangle {
+                InclusiveRectangle {
                     left: 8,
                     top: 3,
                     right: 10,
                     bottom: 7,
                 },
-                Rectangle {
+                InclusiveRectangle {
                     left: 13,
                     top: 3,
                     right: 15,
@@ -850,27 +865,27 @@ mod tests {
             ],
         };
 
-        let input_rectangle = Rectangle {
+        let input_rectangle = InclusiveRectangle {
             left: 9,
             top: 3,
             right: 14,
             bottom: 7,
         };
         let expected_region = Region {
-            extents: Rectangle {
+            extents: InclusiveRectangle {
                 left: 2,
                 top: 3,
                 right: 15,
                 bottom: 7,
             },
             rectangles: vec![
-                Rectangle {
+                InclusiveRectangle {
                     left: 2,
                     top: 3,
                     right: 7,
                     bottom: 7,
                 },
-                Rectangle {
+                InclusiveRectangle {
                     left: 8,
                     top: 3,
                     right: 15,
@@ -886,26 +901,26 @@ mod tests {
     #[test]
     fn union_rectangle_inserts_new_rectangle_in_band_of_3_rectangles_with_merging_with_side_rectangles_on_board() {
         let mut region = Region {
-            extents: Rectangle {
+            extents: InclusiveRectangle {
                 left: 2,
                 top: 3,
                 right: 15,
                 bottom: 7,
             },
             rectangles: vec![
-                Rectangle {
+                InclusiveRectangle {
                     left: 2,
                     top: 3,
                     right: 7,
                     bottom: 7,
                 },
-                Rectangle {
+                InclusiveRectangle {
                     left: 8,
                     top: 3,
                     right: 10,
                     bottom: 7,
                 },
-                Rectangle {
+                InclusiveRectangle {
                     left: 13,
                     top: 3,
                     right: 15,
@@ -914,33 +929,33 @@ mod tests {
             ],
         };
 
-        let input_rectangle = Rectangle {
+        let input_rectangle = InclusiveRectangle {
             left: 10,
             top: 3,
             right: 13,
             bottom: 7,
         };
         let expected_region = Region {
-            extents: Rectangle {
+            extents: InclusiveRectangle {
                 left: 2,
                 top: 3,
                 right: 15,
                 bottom: 7,
             },
             rectangles: vec![
-                Rectangle {
+                InclusiveRectangle {
                     left: 2,
                     top: 3,
                     right: 7,
                     bottom: 7,
                 },
-                Rectangle {
+                InclusiveRectangle {
                     left: 8,
                     top: 3,
                     right: 13,
                     bottom: 7,
                 },
-                Rectangle {
+                InclusiveRectangle {
                     left: 13,
                     top: 3,
                     right: 15,
@@ -956,20 +971,20 @@ mod tests {
     #[test]
     fn union_rectangle_inserts_new_rectangle_between_two_bands() {
         let mut region = Region {
-            extents: Rectangle {
+            extents: InclusiveRectangle {
                 left: 1,
                 top: 3,
                 right: 7,
                 bottom: 10,
             },
             rectangles: vec![
-                Rectangle {
+                InclusiveRectangle {
                     left: 2,
                     top: 3,
                     right: 7,
                     bottom: 7,
                 },
-                Rectangle {
+                InclusiveRectangle {
                     left: 1,
                     top: 8,
                     right: 4,
@@ -978,33 +993,33 @@ mod tests {
             ],
         };
 
-        let input_rectangle = Rectangle {
+        let input_rectangle = InclusiveRectangle {
             left: 3,
             top: 4,
             right: 4,
             bottom: 9,
         };
         let expected_region = Region {
-            extents: Rectangle {
+            extents: InclusiveRectangle {
                 left: 1,
                 top: 3,
                 right: 7,
                 bottom: 10,
             },
             rectangles: vec![
-                Rectangle {
+                InclusiveRectangle {
                     left: 2,
                     top: 3,
                     right: 7,
                     bottom: 7,
                 },
-                Rectangle {
+                InclusiveRectangle {
                     left: 3,
                     top: 7,
                     right: 4,
                     bottom: 8,
                 },
-                Rectangle {
+                InclusiveRectangle {
                     left: 1,
                     top: 8,
                     right: 4,
@@ -1020,44 +1035,44 @@ mod tests {
     #[test]
     fn simplify_does_not_change_two_different_bands_with_multiple_rectangles() {
         let mut region = Region {
-            extents: Rectangle {
+            extents: InclusiveRectangle {
                 left: 1,
                 top: 1,
                 right: 7,
                 bottom: 3,
             },
             rectangles: vec![
-                Rectangle {
+                InclusiveRectangle {
                     left: 1,
                     top: 1,
                     right: 2,
                     bottom: 2,
                 },
-                Rectangle {
+                InclusiveRectangle {
                     left: 3,
                     top: 1,
                     right: 4,
                     bottom: 2,
                 },
-                Rectangle {
+                InclusiveRectangle {
                     left: 5,
                     top: 1,
                     right: 6,
                     bottom: 2,
                 },
-                Rectangle {
+                InclusiveRectangle {
                     left: 1,
                     top: 2,
                     right: 2,
                     bottom: 3,
                 },
-                Rectangle {
+                InclusiveRectangle {
                     left: 3,
                     top: 2,
                     right: 4,
                     bottom: 3,
                 },
-                Rectangle {
+                InclusiveRectangle {
                     left: 5,
                     top: 2,
                     right: 7,
@@ -1074,20 +1089,20 @@ mod tests {
     #[test]
     fn simplify_does_not_change_two_different_bands_with_one_rectangle() {
         let mut region = Region {
-            extents: Rectangle {
+            extents: InclusiveRectangle {
                 left: 2,
                 top: 1,
                 right: 7,
                 bottom: 11,
             },
             rectangles: vec![
-                Rectangle {
+                InclusiveRectangle {
                     left: 3,
                     top: 1,
                     right: 5,
                     bottom: 3,
                 },
-                Rectangle {
+                InclusiveRectangle {
                     left: 2,
                     top: 3,
                     right: 7,
@@ -1104,26 +1119,26 @@ mod tests {
     #[test]
     fn simplify_does_not_change_three_different_bands_with_one_rectangle() {
         let mut region = Region {
-            extents: Rectangle {
+            extents: InclusiveRectangle {
                 left: 2,
                 top: 1,
                 right: 7,
                 bottom: 11,
             },
             rectangles: vec![
-                Rectangle {
+                InclusiveRectangle {
                     left: 3,
                     top: 1,
                     right: 5,
                     bottom: 3,
                 },
-                Rectangle {
+                InclusiveRectangle {
                     left: 2,
                     top: 3,
                     right: 7,
                     bottom: 7,
                 },
-                Rectangle {
+                InclusiveRectangle {
                     left: 3,
                     top: 7,
                     right: 5,
@@ -1140,44 +1155,44 @@ mod tests {
     #[test]
     fn simplify_merges_bands_with_identical_internal_rectangles() {
         let mut region = Region {
-            extents: Rectangle {
+            extents: InclusiveRectangle {
                 left: 1,
                 top: 1,
                 right: 7,
                 bottom: 3,
             },
             rectangles: vec![
-                Rectangle {
+                InclusiveRectangle {
                     left: 1,
                     top: 1,
                     right: 2,
                     bottom: 2,
                 },
-                Rectangle {
+                InclusiveRectangle {
                     left: 3,
                     top: 1,
                     right: 4,
                     bottom: 2,
                 },
-                Rectangle {
+                InclusiveRectangle {
                     left: 5,
                     top: 1,
                     right: 6,
                     bottom: 2,
                 },
-                Rectangle {
+                InclusiveRectangle {
                     left: 1,
                     top: 2,
                     right: 2,
                     bottom: 3,
                 },
-                Rectangle {
+                InclusiveRectangle {
                     left: 3,
                     top: 2,
                     right: 4,
                     bottom: 3,
                 },
-                Rectangle {
+                InclusiveRectangle {
                     left: 5,
                     top: 2,
                     right: 6,
@@ -1186,26 +1201,26 @@ mod tests {
             ],
         };
         let expected_region = Region {
-            extents: Rectangle {
+            extents: InclusiveRectangle {
                 left: 1,
                 top: 1,
                 right: 7,
                 bottom: 3,
             },
             rectangles: vec![
-                Rectangle {
+                InclusiveRectangle {
                     left: 1,
                     top: 1,
                     right: 2,
                     bottom: 3,
                 },
-                Rectangle {
+                InclusiveRectangle {
                     left: 3,
                     top: 1,
                     right: 4,
                     bottom: 3,
                 },
-                Rectangle {
+                InclusiveRectangle {
                     left: 5,
                     top: 1,
                     right: 6,
@@ -1221,62 +1236,62 @@ mod tests {
     #[test]
     fn simplify_merges_three_bands_with_identical_internal_rectangles() {
         let mut region = Region {
-            extents: Rectangle {
+            extents: InclusiveRectangle {
                 left: 1,
                 top: 1,
                 right: 7,
                 bottom: 3,
             },
             rectangles: vec![
-                Rectangle {
+                InclusiveRectangle {
                     left: 1,
                     top: 1,
                     right: 2,
                     bottom: 2,
                 },
-                Rectangle {
+                InclusiveRectangle {
                     left: 3,
                     top: 1,
                     right: 4,
                     bottom: 2,
                 },
-                Rectangle {
+                InclusiveRectangle {
                     left: 5,
                     top: 1,
                     right: 6,
                     bottom: 2,
                 },
-                Rectangle {
+                InclusiveRectangle {
                     left: 1,
                     top: 2,
                     right: 2,
                     bottom: 3,
                 },
-                Rectangle {
+                InclusiveRectangle {
                     left: 3,
                     top: 2,
                     right: 4,
                     bottom: 3,
                 },
-                Rectangle {
+                InclusiveRectangle {
                     left: 5,
                     top: 2,
                     right: 6,
                     bottom: 3,
                 },
-                Rectangle {
+                InclusiveRectangle {
                     left: 1,
                     top: 3,
                     right: 2,
                     bottom: 4,
                 },
-                Rectangle {
+                InclusiveRectangle {
                     left: 3,
                     top: 3,
                     right: 4,
                     bottom: 4,
                 },
-                Rectangle {
+                InclusiveRectangle {
                     left: 5,
                     top: 3,
                     right: 6,
@@ -1285,26 +1300,26 @@ mod tests {
             ],
         };
         let expected_region = Region {
-            extents: Rectangle {
+            extents: InclusiveRectangle {
                 left: 1,
                 top: 1,
                 right: 7,
                 bottom: 3,
             },
             rectangles: vec![
-                Rectangle {
+                InclusiveRectangle {
                     left: 1,
                     top: 1,
                     right: 2,
                     bottom: 4,
                 },
-                Rectangle {
+                InclusiveRectangle {
                     left: 3,
                     top: 1,
                     right: 4,
                     bottom: 4,
                 },
-                Rectangle {
+                InclusiveRectangle {
                     left: 5,
                     top: 1,
                     right: 6,
@@ -1320,80 +1335,80 @@ mod tests {
     #[test]
     fn simplify_merges_two_pairs_of_bands_with_identical_internal_rectangles() {
         let mut region = Region {
-            extents: Rectangle {
+            extents: InclusiveRectangle {
                 left: 1,
                 top: 1,
                 right: 7,
                 bottom: 5,
             },
             rectangles: vec![
-                Rectangle {
+                InclusiveRectangle {
                     left: 1,
                     top: 1,
                     right: 2,
                     bottom: 2,
                 },
-                Rectangle {
+                InclusiveRectangle {
                     left: 3,
                     top: 1,
                     right: 4,
                     bottom: 2,
                 },
-                Rectangle {
+                InclusiveRectangle {
                     left: 5,
                     top: 1,
                     right: 6,
                     bottom: 2,
                 },
-                Rectangle {
+                InclusiveRectangle {
                     left: 1,
                     top: 2,
                     right: 2,
                     bottom: 3,
                 },
-                Rectangle {
+                InclusiveRectangle {
                     left: 3,
                     top: 2,
                     right: 4,
                     bottom: 3,
                 },
-                Rectangle {
+                InclusiveRectangle {
                     left: 5,
                     top: 2,
                     right: 6,
                     bottom: 3,
                 },
-                Rectangle {
+                InclusiveRectangle {
                     left: 2,
                     top: 3,
                     right: 3,
                     bottom: 4,
                 },
-                Rectangle {
+                InclusiveRectangle {
                     left: 4,
                     top: 3,
                     right: 5,
                     bottom: 4,
                 },
-                Rectangle {
+                InclusiveRectangle {
                     left: 6,
                     top: 3,
                     right: 7,
                     bottom: 4,
                 },
-                Rectangle {
+                InclusiveRectangle {
                     left: 2,
                     top: 4,
                     right: 3,
                     bottom: 5,
                 },
-                Rectangle {
+                InclusiveRectangle {
                     left: 4,
                     top: 4,
                     right: 5,
                     bottom: 5,
                 },
-                Rectangle {
+                InclusiveRectangle {
                     left: 6,
                     top: 4,
                     right: 7,
@@ -1402,44 +1417,44 @@ mod tests {
             ],
         };
         let expected_region = Region {
-            extents: Rectangle {
+            extents: InclusiveRectangle {
                 left: 1,
                 top: 1,
                 right: 7,
                 bottom: 5,
             },
             rectangles: vec![
-                Rectangle {
+                InclusiveRectangle {
                     left: 1,
                     top: 1,
                     right: 2,
                     bottom: 3,
                 },
-                Rectangle {
+                InclusiveRectangle {
                     left: 3,
                     top: 1,
                     right: 4,
                     bottom: 3,
                 },
-                Rectangle {
+                InclusiveRectangle {
                     left: 5,
                     top: 1,
                     right: 6,
                     bottom: 3,
                 },
-                Rectangle {
+                InclusiveRectangle {
                     left: 2,
                     top: 3,
                     right: 3,
                     bottom: 5,
                 },
-                Rectangle {
+                InclusiveRectangle {
                     left: 4,
                     top: 3,
                     right: 5,
                     bottom: 5,
                 },
-                Rectangle {
+                InclusiveRectangle {
                     left: 6,
                     top: 3,
                     right: 7,
@@ -1456,7 +1471,7 @@ mod tests {
     fn intersect_rectangle_returns_empty_region_for_not_intersecting_rectangle() {
         let region = &*REGION_FOR_RECTANGLES_INTERSECTION;
         let expected_region = Region {
-            extents: Rectangle {
+            extents: InclusiveRectangle {
                 left: 0,
                 top: 0,
                 right: 0,
@@ -1464,7 +1479,7 @@ mod tests {
             },
             rectangles: vec![],
         };
-        let input_rectangle = Rectangle {
+        let input_rectangle = InclusiveRectangle {
             left: 5,
             top: 2,
             right: 6,
@@ -1478,7 +1493,7 @@ mod tests {
     #[test]
     fn intersect_rectangle_returns_empty_region_for_empty_intersection_region() {
         let region = Region {
-            extents: Rectangle {
+            extents: InclusiveRectangle {
                 left: 0,
                 top: 0,
                 right: 0,
@@ -1487,7 +1502,7 @@ mod tests {
             rectangles: vec![],
         };
         let expected_region = region.clone();
-        let input_rectangle = Rectangle {
+        let input_rectangle = InclusiveRectangle {
             left: 5,
             top: 2,
             right: 6,
@@ -1501,13 +1516,13 @@ mod tests {
     #[test]
     fn intersect_rectangle_returns_part_of_rectangle_that_overlaps_for_region_with_one_rectangle() {
         let region = Region {
-            extents: Rectangle {
+            extents: InclusiveRectangle {
                 left: 1,
                 top: 1,
                 right: 5,
                 bottom: 3,
             },
-            rectangles: vec![Rectangle {
+            rectangles: vec![InclusiveRectangle {
                 left: 1,
                 top: 1,
                 right: 5,
@@ -1515,20 +1530,20 @@ mod tests {
             }],
         };
         let expected_region = Region {
-            extents: Rectangle {
+            extents: InclusiveRectangle {
                 left: 2,
                 top: 2,
                 right: 3,
                 bottom: 3,
             },
-            rectangles: vec![Rectangle {
+            rectangles: vec![InclusiveRectangle {
                 left: 2,
                 top: 2,
                 right: 3,
                 bottom: 3,
             }],
         };
-        let input_rectangle = Rectangle {
+        let input_rectangle = InclusiveRectangle {
             left: 2,
             top: 2,
             right: 3,
@@ -1543,38 +1558,38 @@ mod tests {
     fn intersect_rectangle_returns_region_with_parts_of_rectangles_that_intersect_input_rectangle() {
         let region = &*REGION_FOR_RECTANGLES_INTERSECTION;
         let expected_region = Region {
-            extents: Rectangle {
+            extents: InclusiveRectangle {
                 left: 3,
                 top: 2,
                 right: 8,
                 bottom: 5,
             },
             rectangles: vec![
-                Rectangle {
+                InclusiveRectangle {
                     left: 3,
                     top: 2,
                     right: 5,
                     bottom: 3,
                 },
-                Rectangle {
+                InclusiveRectangle {
                     left: 7,
                     top: 2,
                     right: 8,
                     bottom: 3,
                 },
-                Rectangle {
+                InclusiveRectangle {
                     left: 7,
                     top: 3,
                     right: 8,
                     bottom: 4,
                 },
-                Rectangle {
+                InclusiveRectangle {
                     left: 3,
                     top: 4,
                     right: 6,
                     bottom: 5,
                 },
-                Rectangle {
+                InclusiveRectangle {
                     left: 7,
                     top: 4,
                     right: 8,
@@ -1582,7 +1597,7 @@ mod tests {
                 },
             ],
         };
-        let input_rectangle = Rectangle {
+        let input_rectangle = InclusiveRectangle {
             left: 3,
             top: 2,
             right: 8,
@@ -1597,20 +1612,20 @@ mod tests {
     fn intersect_rectangle_returns_region_with_exact_sizes_of_rectangle_that_overlaps_it() {
         let region = &*REGION_FOR_RECTANGLES_INTERSECTION;
         let expected_region = Region {
-            extents: Rectangle {
+            extents: InclusiveRectangle {
                 left: 4,
                 top: 6,
                 right: 5,
                 bottom: 8,
             },
-            rectangles: vec![Rectangle {
+            rectangles: vec![InclusiveRectangle {
                 left: 4,
                 top: 6,
                 right: 5,
                 bottom: 8,
             }],
         };
-        let input_rectangle = Rectangle {
+        let input_rectangle = InclusiveRectangle {
             left: 4,
             top: 6,
             right: 5,

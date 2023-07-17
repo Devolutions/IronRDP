@@ -4,19 +4,14 @@ mod tests;
 pub mod rdp6;
 
 use std::fmt::{self, Debug};
-use std::io::{self, Write};
 
 use bitflags::bitflags;
-use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
-use thiserror::Error;
 
-use crate::geometry::Rectangle;
-use crate::utils::SplitTo;
-use crate::{PduBufferParsing, PduParsing};
+use crate::cursor::ReadCursor;
+use crate::geometry::InclusiveRectangle;
+use crate::{PduDecode, PduEncode, PduResult};
 
-pub const COMPRESSED_DATA_HEADER_SIZE: usize = 8;
-pub const BITMAP_DATA_MAIN_DATA_SIZE: usize = 18;
-pub const FIRST_ROW_SIZE_VALUE: u16 = 0;
+const FIRST_ROW_SIZE_VALUE: u16 = 0;
 
 /// TS_UPDATE_BITMAP_DATA
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -24,92 +19,139 @@ pub struct BitmapUpdateData<'a> {
     pub rectangles: Vec<BitmapData<'a>>,
 }
 
-impl<'a> PduBufferParsing<'a> for BitmapUpdateData<'a> {
-    type Error = BitmapError;
+impl BitmapUpdateData<'_> {
+    const NAME: &str = "TS_UPDATE_BITMAP_DATA";
+    const FIXED_PART_SIZE: usize = core::mem::size_of::<u16>() * 2;
+}
 
-    fn from_buffer_consume(buffer: &mut &'a [u8]) -> Result<Self, Self::Error> {
-        let update_type = BitmapFlags::from_bits_truncate(buffer.read_u16::<LittleEndian>()?);
-        if !update_type.contains(BitmapFlags::BITMAP_UPDATE_TYPE) {
-            return Err(BitmapError::InvalidUpdateType);
+impl<'en> PduEncode for BitmapUpdateData<'en> {
+    fn encode(&self, dst: &mut crate::cursor::WriteCursor<'_>) -> PduResult<()> {
+        ensure_size!(in: dst, size: self.size());
+
+        if self.rectangles.len() > u16::MAX as usize {
+            return Err(invalid_message_err!("numberRectangles", "rectangle count is too big"));
         }
 
-        let rectangles_number = buffer.read_u16::<LittleEndian>()? as usize;
-        let mut rectangles = Vec::with_capacity(rectangles_number);
+        dst.write_u16(BitmapFlags::BITMAP_UPDATE_TYPE.bits());
+        dst.write_u16(self.rectangles.len() as u16);
 
-        for _ in 0..rectangles_number {
-            rectangles.push(BitmapData::from_buffer_consume(buffer)?);
-        }
-
-        Ok(BitmapUpdateData { rectangles })
-    }
-
-    fn to_buffer_consume(&self, buffer: &mut &mut [u8]) -> Result<(), Self::Error> {
-        buffer.write_u16::<LittleEndian>(BitmapFlags::BITMAP_UPDATE_TYPE.bits())?;
-        buffer.write_u16::<LittleEndian>(u16::try_from(self.rectangles.len()).unwrap())?;
         for bitmap_data in self.rectangles.iter() {
-            bitmap_data.to_buffer_consume(buffer)?;
+            bitmap_data.encode(dst)?;
         }
 
         Ok(())
     }
 
-    fn buffer_length(&self) -> usize {
-        4 + self.rectangles.iter().map(|b| b.buffer_length()).sum::<usize>()
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    fn size(&self) -> usize {
+        self.rectangles
+            .iter()
+            .fold(Self::FIXED_PART_SIZE, |size, new| size + new.size())
+    }
+}
+
+impl<'de> PduDecode<'de> for BitmapUpdateData<'de> {
+    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+        ensure_fixed_part_size!(in: src);
+
+        let update_type = BitmapFlags::from_bits_truncate(src.read_u16());
+        if !update_type.contains(BitmapFlags::BITMAP_UPDATE_TYPE) {
+            return Err(invalid_message_err!("updateType", "invalid update type"));
+        }
+
+        let rectangles_number = src.read_u16() as usize;
+        let mut rectangles = Vec::with_capacity(rectangles_number);
+
+        for _ in 0..rectangles_number {
+            rectangles.push(BitmapData::decode(src)?);
+        }
+
+        Ok(Self { rectangles })
     }
 }
 
 /// TS_BITMAP_DATA
 #[derive(Clone, PartialEq, Eq)]
 pub struct BitmapData<'a> {
-    pub rectangle: Rectangle,
+    pub rectangle: InclusiveRectangle,
     pub width: u16,
     pub height: u16,
     pub bits_per_pixel: u16,
     pub compression_flags: Compression,
-    pub bitmap_data_length: usize,
     pub compressed_data_header: Option<CompressedDataHeader>,
     pub bitmap_data: &'a [u8],
 }
 
-impl<'a> PduBufferParsing<'a> for BitmapData<'a> {
-    type Error = BitmapError;
+impl<'a> BitmapData<'a> {
+    const NAME: &str = "TS_BITMAP_DATA";
+    const FIXED_PART_SIZE: usize = InclusiveRectangle::ENCODED_SIZE + core::mem::size_of::<u16>() * 5;
 
-    fn from_buffer_consume(mut buffer: &mut &'a [u8]) -> Result<Self, Self::Error> {
-        let rectangle = Rectangle::from_buffer(&mut buffer)?;
+    fn encoded_bitmap_data_length(&self) -> usize {
+        self.bitmap_data.len() + self.compressed_data_header.as_ref().map(|hdr| hdr.size()).unwrap_or(0)
+    }
+}
 
-        let width = buffer.read_u16::<LittleEndian>()?;
-        let height = buffer.read_u16::<LittleEndian>()?;
+impl<'en> PduEncode for BitmapData<'en> {
+    fn encode(&self, dst: &mut crate::cursor::WriteCursor<'_>) -> PduResult<()> {
+        ensure_size!(in: dst, size: self.size());
 
-        let bits_per_pixel = buffer.read_u16::<LittleEndian>()?;
-
-        let flags = buffer.read_u16::<LittleEndian>()?;
-        let compression_flags = Compression::from_bits_truncate(flags);
-
-        // A 16-bit, unsigned integer. The size in bytes of the data in the bitmapComprHdr and bitmapDataStream fields.
-        let bitmap_data_length = buffer.read_u16::<LittleEndian>()? as usize;
-
-        if buffer.len() < bitmap_data_length {
-            return Err(BitmapError::InvalidDataLength {
-                actual: buffer.len(),
-                expected: bitmap_data_length,
-            });
+        let encoded_bitmap_data_length = self.encoded_bitmap_data_length();
+        if encoded_bitmap_data_length > u16::MAX as usize {
+            return Err(invalid_message_err!("bitmapLength", "bitmap data length is too big"));
         }
 
-        let compressed_data_header = if compression_flags.contains(Compression::BITMAP_COMPRESSION)
+        self.rectangle.encode(dst)?;
+        dst.write_u16(self.width);
+        dst.write_u16(self.height);
+        dst.write_u16(self.bits_per_pixel);
+        dst.write_u16(self.compression_flags.bits());
+        dst.write_u16(encoded_bitmap_data_length as u16);
+        if let Some(compressed_data_header) = &self.compressed_data_header {
+            compressed_data_header.encode(dst)?;
+        };
+        dst.write_slice(self.bitmap_data);
+
+        Ok(())
+    }
+
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    fn size(&self) -> usize {
+        Self::FIXED_PART_SIZE + self.encoded_bitmap_data_length()
+    }
+}
+
+impl<'de> PduDecode<'de> for BitmapData<'de> {
+    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+        ensure_fixed_part_size!(in: src);
+
+        let rectangle = InclusiveRectangle::decode(src)?;
+        let width = src.read_u16();
+        let height = src.read_u16();
+        let bits_per_pixel = src.read_u16();
+        let compression_flags = Compression::from_bits_truncate(src.read_u16());
+
+        // A 16-bit, unsigned integer. The size in bytes of the data in the bitmapComprHdr
+        // and bitmapDataStream fields.
+        let encoded_bitmap_data_length = src.read_u16();
+
+        ensure_size!(in: src, size: encoded_bitmap_data_length as usize);
+
+        let (compressed_data_header, buffer_length) = if compression_flags.contains(Compression::BITMAP_COMPRESSION)
             && !compression_flags.contains(Compression::NO_BITMAP_COMPRESSION_HDR)
         {
-            Some(CompressedDataHeader::from_buffer_consume(buffer)?)
+            let buffer_length = encoded_bitmap_data_length as usize - CompressedDataHeader::ENCODED_SIZE;
+            (Some(CompressedDataHeader::decode(src)?), buffer_length)
         } else {
-            None
+            (None, encoded_bitmap_data_length as usize)
         };
 
-        let rest_length = if compressed_data_header.is_some() {
-            bitmap_data_length - COMPRESSED_DATA_HEADER_SIZE
-        } else {
-            bitmap_data_length
-        };
-
-        let bitmap_data = buffer.split_to(rest_length);
+        let bitmap_data = src.read_slice(buffer_length);
 
         Ok(BitmapData {
             rectangle,
@@ -117,35 +159,9 @@ impl<'a> PduBufferParsing<'a> for BitmapData<'a> {
             height,
             bits_per_pixel,
             compression_flags,
-            bitmap_data_length,
             compressed_data_header,
             bitmap_data,
         })
-    }
-
-    fn to_buffer_consume(&self, mut buffer: &mut &mut [u8]) -> Result<(), Self::Error> {
-        self.rectangle.to_buffer(&mut buffer)?;
-        buffer.write_u16::<LittleEndian>(self.width)?;
-        buffer.write_u16::<LittleEndian>(self.height)?;
-        buffer.write_u16::<LittleEndian>(self.bits_per_pixel)?;
-        buffer.write_u16::<LittleEndian>(self.compression_flags.bits())?;
-        buffer.write_u16::<LittleEndian>(self.bitmap_data_length as u16)?;
-        if let Some(ref compressed_data_header) = self.compressed_data_header {
-            compressed_data_header.to_buffer_consume(buffer)?;
-        };
-        buffer.write_all(self.bitmap_data)?;
-
-        Ok(())
-    }
-
-    fn buffer_length(&self) -> usize {
-        let optional_header = if self.compressed_data_header.is_some() {
-            COMPRESSED_DATA_HEADER_SIZE
-        } else {
-            0
-        };
-
-        BITMAP_DATA_MAIN_DATA_SIZE + optional_header + self.bitmap_data_length
     }
 }
 
@@ -171,24 +187,32 @@ pub struct CompressedDataHeader {
     pub uncompressed_size: u16,
 }
 
-impl<'a> PduBufferParsing<'a> for CompressedDataHeader {
-    type Error = BitmapError;
+impl CompressedDataHeader {
+    const NAME: &str = "TS_CD_HEADER";
+    const FIXED_PART_SIZE: usize = core::mem::size_of::<u16>() * 4;
 
-    fn from_buffer_consume(buffer: &mut &[u8]) -> Result<Self, Self::Error> {
-        let size = buffer.read_u16::<LittleEndian>()?;
+    pub const ENCODED_SIZE: usize = Self::FIXED_PART_SIZE;
+}
+
+impl<'de> PduDecode<'de> for CompressedDataHeader {
+    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+        ensure_fixed_part_size!(in: src);
+
+        let size = src.read_u16();
         if size != FIRST_ROW_SIZE_VALUE {
-            return Err(BitmapError::InvalidFirstRowSize {
-                actual: size as usize,
-                expected: FIRST_ROW_SIZE_VALUE as usize,
-            });
+            return Err(invalid_message_err!("cbCompFirstRowSize", "invalid first row size"));
         }
 
-        let main_body_size = buffer.read_u16::<LittleEndian>()?;
-        let scan_width = buffer.read_u16::<LittleEndian>()?;
+        let main_body_size = src.read_u16();
+        let scan_width = src.read_u16();
+
         if scan_width % 4 != 0 {
-            return Err(BitmapError::InvalidScanWidth);
+            return Err(invalid_message_err!(
+                "cbScanWidth",
+                "The width of the bitmap must be divisible by 4"
+            ));
         }
-        let uncompressed_size = buffer.read_u16::<LittleEndian>()?;
+        let uncompressed_size = src.read_u16();
 
         Ok(Self {
             main_body_size,
@@ -196,18 +220,26 @@ impl<'a> PduBufferParsing<'a> for CompressedDataHeader {
             uncompressed_size,
         })
     }
+}
 
-    fn to_buffer_consume(&self, buffer: &mut &mut [u8]) -> Result<(), Self::Error> {
-        buffer.write_u16::<LittleEndian>(FIRST_ROW_SIZE_VALUE)?;
-        buffer.write_u16::<LittleEndian>(self.main_body_size)?;
-        buffer.write_u16::<LittleEndian>(self.scan_width)?;
-        buffer.write_u16::<LittleEndian>(self.uncompressed_size)?;
+impl PduEncode for CompressedDataHeader {
+    fn encode(&self, dst: &mut crate::cursor::WriteCursor<'_>) -> PduResult<()> {
+        ensure_fixed_part_size!(in: dst);
+
+        dst.write_u16(FIRST_ROW_SIZE_VALUE);
+        dst.write_u16(self.main_body_size);
+        dst.write_u16(self.scan_width);
+        dst.write_u16(self.uncompressed_size);
 
         Ok(())
     }
 
-    fn buffer_length(&self) -> usize {
-        COMPRESSED_DATA_HEADER_SIZE
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    fn size(&self) -> usize {
+        Self::FIXED_PART_SIZE
     }
 }
 
@@ -224,20 +256,4 @@ bitflags! {
        const BITMAP_COMPRESSION = 0x0001;
        const NO_BITMAP_COMPRESSION_HDR = 0x0400;
     }
-}
-
-#[derive(Debug, Error)]
-pub enum BitmapError {
-    #[error("IO error")]
-    IOError(#[from] io::Error),
-    #[error("Invalid update type for Bitmap Update")]
-    InvalidUpdateType,
-    #[error("Input buffer len is shorter than the data length: {} < {}", actual, expected)]
-    InvalidDataLength { actual: usize, expected: usize },
-    #[error("Compression is not supported for Bitmap data")]
-    NotSupportedCompression,
-    #[error("Invalid first row size, expected: {}, but got: {}", actual, expected)]
-    InvalidFirstRowSize { actual: usize, expected: usize },
-    #[error("The width of the bitmap must be divisible by 4")]
-    InvalidScanWidth,
 }

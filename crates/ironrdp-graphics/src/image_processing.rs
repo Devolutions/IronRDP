@@ -1,7 +1,7 @@
 use std::io;
 
 use byteorder::WriteBytesExt;
-use ironrdp_pdu::geometry::Rectangle;
+use ironrdp_pdu::geometry::{InclusiveRectangle, Rectangle as _};
 use num_derive::ToPrimitive;
 use num_traits::ToPrimitive as _;
 
@@ -9,14 +9,14 @@ const MIN_ALPHA: u8 = 0x00;
 const MAX_ALPHA: u8 = 0xff;
 
 pub struct ImageRegionMut<'a> {
-    pub region: Rectangle,
+    pub region: InclusiveRectangle,
     pub step: u16,
     pub pixel_format: PixelFormat,
     pub data: &'a mut [u8],
 }
 
 pub struct ImageRegion<'a> {
-    pub region: Rectangle,
+    pub region: InclusiveRectangle,
     pub step: u16,
     pub pixel_format: PixelFormat,
     pub data: &'a [u8],

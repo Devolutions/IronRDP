@@ -1,20 +1,17 @@
 #[cfg(test)]
 mod tests;
 
-use std::io::{self, Write};
-
 use bitflags::bitflags;
-use byteorder::{LittleEndian, ReadBytesExt as _, WriteBytesExt as _};
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive as _, ToPrimitive as _};
-use thiserror::Error;
 
-use crate::geometry::Rectangle;
-use crate::utils::SplitTo;
-use crate::PduBufferParsing;
+use crate::cursor::{ReadCursor, WriteCursor};
+use crate::geometry::ExclusiveRectangle;
+use crate::{PduDecode, PduEncode, PduResult};
 
 pub const SURFACE_COMMAND_HEADER_SIZE: usize = 2;
 
+// TS_SURFCMD
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SurfaceCommand<'a> {
     SetSurfaceBits(SurfaceBitsPdu<'a>),
@@ -22,113 +19,150 @@ pub enum SurfaceCommand<'a> {
     StreamSurfaceBits(SurfaceBitsPdu<'a>),
 }
 
-impl<'a> PduBufferParsing<'a> for SurfaceCommand<'a> {
-    type Error = SurfaceCommandsError;
+impl SurfaceCommand<'_> {
+    const NAME: &str = "TS_SURFCMD";
+    const FIXED_PART_SIZE: usize = std::mem::size_of::<u16>();
+}
 
-    fn from_buffer_consume(buffer: &mut &'a [u8]) -> Result<Self, Self::Error> {
-        let cmd_type = buffer.read_u16::<LittleEndian>()?;
-        let cmd_type =
-            SurfaceCommandType::from_u16(cmd_type).ok_or(SurfaceCommandsError::InvalidSurfaceCommandType(cmd_type))?;
+impl<'en> PduEncode for SurfaceCommand<'en> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_size!(in: dst, size: self.size());
 
-        match cmd_type {
-            SurfaceCommandType::SetSurfaceBits => {
-                Ok(Self::SetSurfaceBits(SurfaceBitsPdu::from_buffer_consume(buffer)?))
-            }
-            SurfaceCommandType::FrameMarker => Ok(Self::FrameMarker(FrameMarkerPdu::from_buffer_consume(buffer)?)),
-            SurfaceCommandType::StreamSurfaceBits => {
-                Ok(Self::StreamSurfaceBits(SurfaceBitsPdu::from_buffer_consume(buffer)?))
-            }
-        }
-    }
-
-    fn to_buffer_consume(&self, buffer: &mut &mut [u8]) -> Result<(), Self::Error> {
         let cmd_type = SurfaceCommandType::from(self);
-        buffer.write_u16::<LittleEndian>(cmd_type.to_u16().unwrap())?;
+        dst.write_u16(cmd_type.to_u16().unwrap());
 
         match self {
-            Self::SetSurfaceBits(pdu) | Self::StreamSurfaceBits(pdu) => pdu.to_buffer_consume(buffer),
-            Self::FrameMarker(pdu) => pdu.to_buffer_consume(buffer),
-        }
+            Self::SetSurfaceBits(pdu) | Self::StreamSurfaceBits(pdu) => pdu.encode(dst),
+            Self::FrameMarker(pdu) => pdu.encode(dst),
+        }?;
+
+        Ok(())
     }
 
-    fn buffer_length(&self) -> usize {
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    fn size(&self) -> usize {
         SURFACE_COMMAND_HEADER_SIZE
             + match self {
-                Self::SetSurfaceBits(pdu) | Self::StreamSurfaceBits(pdu) => pdu.buffer_length(),
-                Self::FrameMarker(pdu) => pdu.buffer_length(),
+                Self::SetSurfaceBits(pdu) | Self::StreamSurfaceBits(pdu) => pdu.size(),
+                Self::FrameMarker(pdu) => pdu.size(),
             }
     }
 }
 
+impl<'de> PduDecode<'de> for SurfaceCommand<'de> {
+    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+        ensure_fixed_part_size!(in: src);
+
+        let cmd_type = src.read_u16();
+        let cmd_type = SurfaceCommandType::from_u16(cmd_type)
+            .ok_or_else(|| invalid_message_err!("cmdType", "invalid surface command"))?;
+
+        match cmd_type {
+            SurfaceCommandType::SetSurfaceBits => Ok(Self::SetSurfaceBits(SurfaceBitsPdu::decode(src)?)),
+            SurfaceCommandType::FrameMarker => Ok(Self::FrameMarker(FrameMarkerPdu::decode(src)?)),
+            SurfaceCommandType::StreamSurfaceBits => Ok(Self::StreamSurfaceBits(SurfaceBitsPdu::decode(src)?)),
+        }
+    }
+}
+
+// TS_SURFCMD_STREAM_SURF_BITS and TS_SURFCMD_SET_SURF_BITS
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SurfaceBitsPdu<'a> {
-    pub destination: Rectangle,
+    pub destination: ExclusiveRectangle,
     pub extended_bitmap_data: ExtendedBitmapDataPdu<'a>,
 }
 
-impl<'a> PduBufferParsing<'a> for SurfaceBitsPdu<'a> {
-    type Error = SurfaceCommandsError;
+impl SurfaceBitsPdu<'_> {
+    const NAME: &str = "TS_SURFCMD_x_SURFACE_BITS_PDU";
+}
 
-    fn from_buffer_consume(mut buffer: &mut &'a [u8]) -> Result<Self, Self::Error> {
-        let destination = Rectangle::from_buffer_exclusive(&mut buffer)?;
-        let extended_bitmap_data = ExtendedBitmapDataPdu::from_buffer_consume(buffer)?;
+impl<'en> PduEncode for SurfaceBitsPdu<'en> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        self.destination.encode(dst)?;
+        self.extended_bitmap_data.encode(dst)?;
+
+        Ok(())
+    }
+
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    fn size(&self) -> usize {
+        self.destination.size() + self.extended_bitmap_data.size()
+    }
+}
+
+impl<'de> PduDecode<'de> for SurfaceBitsPdu<'de> {
+    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+        let destination = ExclusiveRectangle::decode(src)?;
+        let extended_bitmap_data = ExtendedBitmapDataPdu::decode(src)?;
 
         Ok(Self {
             destination,
             extended_bitmap_data,
         })
     }
-
-    fn to_buffer_consume(&self, mut buffer: &mut &mut [u8]) -> Result<(), Self::Error> {
-        self.destination.to_buffer_exclusive(&mut buffer)?;
-        self.extended_bitmap_data.to_buffer_consume(buffer)?;
-
-        Ok(())
-    }
-
-    fn buffer_length(&self) -> usize {
-        8 + self.extended_bitmap_data.buffer_length()
-    }
 }
 
+// TS_FRAME_MARKER
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FrameMarkerPdu {
     pub frame_action: FrameAction,
     pub frame_id: Option<u32>,
 }
 
-impl<'a> PduBufferParsing<'a> for FrameMarkerPdu {
-    type Error = SurfaceCommandsError;
+impl FrameMarkerPdu {
+    const NAME: &str = "TS_FRAME_MARKER_PDU";
+    const FIXED_PART_SIZE: usize = core::mem::size_of::<u16>() + core::mem::size_of::<u32>();
+}
 
-    fn from_buffer_consume(buffer: &mut &[u8]) -> Result<Self, Self::Error> {
-        let frame_action = buffer.read_u16::<LittleEndian>()?;
-        let frame_action =
-            FrameAction::from_u16(frame_action).ok_or(SurfaceCommandsError::InvalidFrameAction(frame_action))?;
+impl PduEncode for FrameMarkerPdu {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_fixed_part_size!(in: dst);
 
-        let frame_id = if buffer.is_empty() {
+        dst.write_u16(self.frame_action as u16);
+        dst.write_u32(self.frame_id.unwrap_or(0));
+
+        Ok(())
+    }
+
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    fn size(&self) -> usize {
+        Self::FIXED_PART_SIZE
+    }
+}
+
+impl<'de> PduDecode<'de> for FrameMarkerPdu {
+    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+        ensure_size!(in: src, size: core::mem::size_of::<u16>());
+
+        let frame_action = src.read_u16();
+
+        let frame_action = FrameAction::from_u16(frame_action)
+            .ok_or_else(|| invalid_message_err!("frameAction", "invalid frame action"))?;
+
+        let frame_id = if src.is_empty() {
             // Sometimes Windows 10 RDP server sends not complete FrameMarker PDU (without frame ID),
             // so we made frame ID field as optional (not officially)
 
             None
         } else {
-            Some(buffer.read_u32::<LittleEndian>()?)
+            ensure_size!(in: src, size: core::mem::size_of::<u32>());
+            Some(src.read_u32())
         };
 
         Ok(Self { frame_action, frame_id })
     }
-
-    fn to_buffer_consume(&self, buffer: &mut &mut [u8]) -> Result<(), Self::Error> {
-        buffer.write_u16::<LittleEndian>(self.frame_action.to_u16().unwrap())?;
-        buffer.write_u32::<LittleEndian>(self.frame_id.unwrap_or(0))?;
-
-        Ok(())
-    }
-
-    fn buffer_length(&self) -> usize {
-        6
-    }
 }
 
+// TS_BITMAP_DATA_EX
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExtendedBitmapDataPdu<'a> {
     pub bpp: u8,
@@ -139,30 +173,76 @@ pub struct ExtendedBitmapDataPdu<'a> {
     pub data: &'a [u8],
 }
 
-impl<'a> PduBufferParsing<'a> for ExtendedBitmapDataPdu<'a> {
-    type Error = SurfaceCommandsError;
+impl ExtendedBitmapDataPdu<'_> {
+    const NAME: &str = "TS_BITMAP_DATA_EX";
+    const FIXED_PART_SIZE: usize =
+        core::mem::size_of::<u8>() * 4 + core::mem::size_of::<u16>() * 2 + core::mem::size_of::<u32>();
+}
 
-    fn from_buffer_consume(buffer: &mut &'a [u8]) -> Result<Self, Self::Error> {
-        let bpp = buffer.read_u8()?;
-        let flags = BitmapDataFlags::from_bits_truncate(buffer.read_u8()?);
-        let _reserved = buffer.read_u8()?;
-        let codec_id = buffer.read_u8()?;
-        let width = buffer.read_u16::<LittleEndian>()?;
-        let height = buffer.read_u16::<LittleEndian>()?;
-        let data_length = buffer.read_u32::<LittleEndian>()? as usize;
+impl<'en> PduEncode for ExtendedBitmapDataPdu<'en> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_size!(in: dst, size: self.size());
+
+        if self.data.len() > u32::MAX as usize {
+            return Err(invalid_message_err!("bitmapDataLength", "bitmap data is too big"));
+        }
+
+        dst.write_u8(self.bpp);
+        let flags = if self.header.is_some() {
+            BitmapDataFlags::COMPRESSED_BITMAP_HEADER_PRESENT
+        } else {
+            BitmapDataFlags::empty()
+        };
+        dst.write_u8(flags.bits());
+        dst.write_u8(0); // reserved
+        dst.write_u8(self.codec_id);
+        dst.write_u16(self.width);
+        dst.write_u16(self.height);
+        dst.write_u32(self.data.len() as u32);
+        if let Some(header) = &self.header {
+            header.encode(dst)?;
+        }
+        dst.write_slice(self.data);
+
+        Ok(())
+    }
+
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    fn size(&self) -> usize {
+        Self::FIXED_PART_SIZE + self.header.as_ref().map_or(0, |h| h.size()) + self.data.len()
+    }
+}
+
+impl<'de> PduDecode<'de> for ExtendedBitmapDataPdu<'de> {
+    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+        ensure_fixed_part_size!(in: src);
+
+        let bpp = src.read_u8();
+        let flags = BitmapDataFlags::from_bits_truncate(src.read_u8());
+        let _reserved = src.read_u8();
+        let codec_id = src.read_u8();
+        let width = src.read_u16();
+        let height = src.read_u16();
+        let data_length = src.read_u32() as usize;
+
+        let expected_remaining_size = if flags.contains(BitmapDataFlags::COMPRESSED_BITMAP_HEADER_PRESENT) {
+            data_length + BitmapDataHeader::ENCODED_SIZE
+        } else {
+            data_length
+        };
+
+        ensure_size!(in: src, size: expected_remaining_size);
+
         let header = if flags.contains(BitmapDataFlags::COMPRESSED_BITMAP_HEADER_PRESENT) {
-            Some(BitmapDataHeader::from_buffer_consume(buffer)?)
+            Some(BitmapDataHeader::decode(src)?)
         } else {
             None
         };
 
-        if buffer.len() < data_length {
-            return Err(SurfaceCommandsError::InvalidDataLength {
-                expected: data_length,
-                actual: buffer.len(),
-            });
-        }
-        let data = buffer.split_to(data_length);
+        let data = src.read_slice(data_length);
 
         Ok(Self {
             bpp,
@@ -173,34 +253,9 @@ impl<'a> PduBufferParsing<'a> for ExtendedBitmapDataPdu<'a> {
             data,
         })
     }
-
-    fn to_buffer_consume(&self, buffer: &mut &mut [u8]) -> Result<(), Self::Error> {
-        buffer.write_u8(self.bpp)?;
-
-        let flags = if self.header.is_some() {
-            BitmapDataFlags::COMPRESSED_BITMAP_HEADER_PRESENT
-        } else {
-            BitmapDataFlags::empty()
-        };
-        buffer.write_u8(flags.bits())?;
-        buffer.write_u8(0)?; // reserved
-        buffer.write_u8(self.codec_id)?;
-        buffer.write_u16::<LittleEndian>(self.width)?;
-        buffer.write_u16::<LittleEndian>(self.height)?;
-        buffer.write_u32::<LittleEndian>(self.data.len() as u32)?;
-        if let Some(ref header) = self.header {
-            header.to_buffer_consume(buffer)?;
-        }
-        buffer.write_all(self.data)?;
-
-        Ok(())
-    }
-
-    fn buffer_length(&self) -> usize {
-        12 + self.header.as_ref().map(PduBufferParsing::buffer_length).unwrap_or(0) + self.data.len()
-    }
 }
 
+// TS_COMPRESSED_BITMAP_HEADER_EX
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BitmapDataHeader {
     pub high_unique_id: u32,
@@ -209,14 +264,42 @@ pub struct BitmapDataHeader {
     pub tm_seconds: u64,
 }
 
-impl<'a> PduBufferParsing<'a> for BitmapDataHeader {
-    type Error = SurfaceCommandsError;
+impl BitmapDataHeader {
+    const NAME: &str = "TS_COMPRESSED_BITMAP_HEADER_EX";
+    const FIXED_PART_SIZE: usize = core::mem::size_of::<u32>() * 2 + core::mem::size_of::<u64>() * 4;
 
-    fn from_buffer_consume(buffer: &mut &[u8]) -> Result<Self, Self::Error> {
-        let high_unique_id = buffer.read_u32::<LittleEndian>()?;
-        let low_unique_id = buffer.read_u32::<LittleEndian>()?;
-        let tm_milliseconds = buffer.read_u64::<LittleEndian>()?;
-        let tm_seconds = buffer.read_u64::<LittleEndian>()?;
+    pub const ENCODED_SIZE: usize = Self::FIXED_PART_SIZE;
+}
+
+impl PduEncode for BitmapDataHeader {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_fixed_part_size!(in: dst);
+
+        dst.write_u32(self.high_unique_id);
+        dst.write_u32(self.low_unique_id);
+        dst.write_u64(self.tm_milliseconds);
+        dst.write_u64(self.tm_seconds);
+
+        Ok(())
+    }
+
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    fn size(&self) -> usize {
+        Self::FIXED_PART_SIZE
+    }
+}
+
+impl<'de> PduDecode<'de> for BitmapDataHeader {
+    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+        ensure_fixed_part_size!(in: src);
+
+        let high_unique_id = src.read_u32();
+        let low_unique_id = src.read_u32();
+        let tm_milliseconds = src.read_u64();
+        let tm_seconds = src.read_u64();
 
         Ok(Self {
             high_unique_id,
@@ -224,19 +307,6 @@ impl<'a> PduBufferParsing<'a> for BitmapDataHeader {
             tm_milliseconds,
             tm_seconds,
         })
-    }
-
-    fn to_buffer_consume(&self, buffer: &mut &mut [u8]) -> Result<(), Self::Error> {
-        buffer.write_u32::<LittleEndian>(self.high_unique_id)?;
-        buffer.write_u32::<LittleEndian>(self.low_unique_id)?;
-        buffer.write_u64::<LittleEndian>(self.tm_milliseconds)?;
-        buffer.write_u64::<LittleEndian>(self.tm_seconds)?;
-
-        Ok(())
-    }
-
-    fn buffer_length(&self) -> usize {
-        24
     }
 }
 
@@ -270,16 +340,4 @@ bitflags! {
     struct BitmapDataFlags: u8 {
         const COMPRESSED_BITMAP_HEADER_PRESENT = 0x01;
     }
-}
-
-#[derive(Debug, Error)]
-pub enum SurfaceCommandsError {
-    #[error("IO error")]
-    IOError(#[from] io::Error),
-    #[error("Invalid Surface Command type: {0}")]
-    InvalidSurfaceCommandType(u16),
-    #[error("Invalid Frame Marker action: {0}")]
-    InvalidFrameAction(u16),
-    #[error("Input buffer is shorter than the data length: {actual} < {expected}")]
-    InvalidDataLength { expected: usize, actual: usize },
 }

@@ -9,7 +9,7 @@ use gloo_net::websocket;
 use gloo_net::websocket::futures::WebSocket;
 use ironrdp::connector::{self, ClientConnector};
 use ironrdp::graphics::image_processing::PixelFormat;
-use ironrdp::pdu::geometry::Rectangle;
+use ironrdp::pdu::geometry::{InclusiveRectangle, Rectangle as _};
 use ironrdp::session::image::DecodedImage;
 use ironrdp::session::{ActiveStage, ActiveStageOutput};
 use tap::prelude::*;
@@ -391,7 +391,7 @@ fn send_update_rectangle(
     update_callback: &js_sys::Function,
     callback_context: &JsValue,
     frame_id: usize,
-    region: Rectangle,
+    region: InclusiveRectangle,
     buffer: Vec<u8>,
 ) -> anyhow::Result<()> {
     use js_sys::Uint8ClampedArray;

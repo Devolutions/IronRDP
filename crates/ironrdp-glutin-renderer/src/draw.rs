@@ -4,7 +4,10 @@ use std::slice::from_raw_parts;
 use std::sync::Arc;
 
 use glow::*;
-use ironrdp::pdu::geometry::Rectangle;
+use ironrdp::pdu::geometry::{
+    Rectangle as _,
+    InclusiveRectangle,
+}
 
 fn cast_as_bytes<T>(input: &[T]) -> &[u8] {
     unsafe { from_raw_parts(input.as_ptr() as *const u8, input.len() * size_of::<T>()) }
@@ -314,7 +317,7 @@ impl TextureShaderProgram {
         })
     }
 
-    unsafe fn set_location(&self, location: Rectangle) {
+    unsafe fn set_location(&self, location: InclusiveRectangle) {
         self.gl.viewport(
             location.left as i32,
             location.top as i32,
@@ -373,7 +376,7 @@ impl Drop for AvcShaderProgram {
 }
 
 impl AvcShaderProgram {
-    unsafe fn update_shader_data(&self, stride_scale: f32, regions: &[Rectangle]) {
+    unsafe fn update_shader_data(&self, stride_scale: f32, regions: &[InclusiveRectangle]) {
         let gl = self.gl.clone();
         // Redraw the two triangles for the region
         #[rustfmt::skip]
@@ -489,7 +492,7 @@ impl AvcShaderProgram {
         aux: Option<&[u8]>,
         stride_0: usize,
         stride_1: usize,
-        regions: &Vec<Rectangle>,
+        regions: &Vec<InclusiveRectangle>,
     ) {
         let gl = self.gl.clone();
         gl.use_program(Some(self.program));
@@ -580,7 +583,7 @@ impl DrawingContext {
         aux: Option<&[u8]>,
         stride_0: usize,
         stride_1: usize,
-        regions: &Vec<Rectangle>,
+        regions: &Vec<InclusiveRectangle>,
     ) {
         let program = if aux.is_some() { &self.avc_444 } else { &self.avc_420 };
         // Draw to an offscreen buffer so that we can reutilize it on next frame paint
@@ -593,7 +596,7 @@ impl DrawingContext {
     /// # Safety
     ///
     /// TODO: Safety notes
-    pub unsafe fn draw_cached(&self, location: Rectangle) {
+    pub unsafe fn draw_cached(&self, location: InclusiveRectangle) {
         self.texture_shader.set_location(location);
         self.texture_shader.draw_texture(self.offscreen_buffer.texture);
     }

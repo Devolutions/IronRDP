@@ -103,10 +103,15 @@ pub(crate) fn read_length(src: &mut ReadCursor<'_>) -> Result<(u16, usize), PerE
 
 pub(crate) fn write_length(dst: &mut WriteCursor<'_>, length: u16) {
     if length > 0x7f {
-        dst.write_u16_be(length | 0x8000);
+        write_long_length(dst, length);
     } else {
         dst.write_u8(u8::try_from(length).unwrap());
     }
+}
+
+/// Force write length as 2 bytes even if it is less than 0x80
+pub(crate) fn write_long_length(dst: &mut WriteCursor<'_>, length: u16) {
+    dst.write_u16_be(length | 0x8000)
 }
 
 pub(crate) fn sizeof_length(length: u16) -> usize {

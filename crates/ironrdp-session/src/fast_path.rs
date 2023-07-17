@@ -1,17 +1,16 @@
 use ironrdp_graphics::rdp6::BitmapStreamDecoder;
 use ironrdp_graphics::rle::RlePixelFormat;
 use ironrdp_pdu::codecs::rfx::FrameAcknowledgePdu;
-use ironrdp_pdu::fast_path::{
-    FastPathError, FastPathHeader, FastPathUpdate, FastPathUpdatePdu, Fragmentation, UpdateCode,
-};
-use ironrdp_pdu::geometry::Rectangle;
+use ironrdp_pdu::fast_path::{FastPathHeader, FastPathUpdate, FastPathUpdatePdu, Fragmentation};
+use ironrdp_pdu::geometry::{InclusiveRectangle, Rectangle as _};
 use ironrdp_pdu::rdp::headers::ShareDataPdu;
 use ironrdp_pdu::surface_commands::{FrameAction, FrameMarkerPdu, SurfaceCommand};
-use ironrdp_pdu::PduBufferParsing;
+use ironrdp_pdu::{decode_cursor, PduErrorKind};
 
 use crate::image::DecodedImage;
 use crate::utils::CodecId;
-use crate::{rfx, SessionResult};
+use crate::{rfx, SessionError, SessionErrorExt, SessionResult};
+use ironrdp_pdu::cursor::ReadCursor;
 
 pub struct Processor {
     complete_data: CompleteData,
@@ -25,15 +24,15 @@ impl Processor {
     pub fn process(
         &mut self,
         image: &mut DecodedImage,
-        mut input: &[u8],
+        input: &[u8],
         output: &mut Vec<u8>,
-    ) -> SessionResult<Option<Rectangle>> {
-        use ironrdp_pdu::PduParsing as _;
+    ) -> SessionResult<Option<InclusiveRectangle>> {
+        let mut input = ReadCursor::new(input);
 
-        let header = FastPathHeader::from_buffer(&mut input)?;
+        let header = decode_cursor::<FastPathHeader>(&mut input).map_err(SessionError::pdu)?;
         debug!(fast_path_header = ?header, "Received Fast-Path packet");
 
-        let update_pdu = FastPathUpdatePdu::from_buffer(input)?;
+        let update_pdu = decode_cursor::<FastPathUpdatePdu>(&mut input).map_err(SessionError::pdu)?;
         trace!(fast_path_update_fragmentation = ?update_pdu.fragmentation);
 
         let processed_complete_data = self
@@ -46,7 +45,7 @@ impl Processor {
             return Ok(None);
         };
 
-        let update = FastPathUpdate::from_buffer_with_code(data.as_slice(), update_code);
+        let update = FastPathUpdate::decode_with_code(data.as_slice(), update_code);
 
         match update {
             Ok(FastPathUpdate::SurfaceCommands(surface_commands)) => {
@@ -58,7 +57,7 @@ impl Processor {
                 trace!("Received bitmap update");
 
                 let mut buf = Vec::new();
-                let mut update_rectangle: Option<Rectangle> = None;
+                let mut update_rectangle: Option<InclusiveRectangle> = None;
 
                 for update in bitmap_update.rectangles {
                     trace!("{update:?}");
@@ -136,21 +135,19 @@ impl Processor {
 
                 Ok(update_rectangle)
             }
-            Err(FastPathError::UnsupportedFastPathUpdate(code))
-                if code == UpdateCode::Orders || code == UpdateCode::Palette =>
-            {
-                warn!(?code, "Received unsupported Fast-Path update");
+            Ok(FastPathUpdate::Pointer(_)) => {
+                // TODO(@pacmancoder): Implement pointer update
+                trace!("Received pointer update");
                 Ok(None)
             }
-            Err(FastPathError::UnsupportedFastPathUpdate(code)) => {
-                debug!(?code, "Received unsupported Fast-Path update");
-                Ok(None)
+            Err(e) => {
+                if let PduErrorKind::InvalidMessage { field, reason } = e.kind {
+                    warn!(field, reason, "Received invalid Fast-Path update");
+                    Ok(None)
+                } else {
+                    Err(custom_err!("Fast-Path", e))
+                }
             }
-            Err(FastPathError::BitmapError(error)) => {
-                warn!(?error, "Received invalid bitmap");
-                Ok(None)
-            }
-            Err(e) => Err(custom_err!("Fast-Path", e)),
         }
     }
 
@@ -159,8 +156,8 @@ impl Processor {
         image: &mut DecodedImage,
         output: &mut Vec<u8>,
         surface_commands: Vec<SurfaceCommand<'_>>,
-    ) -> SessionResult<Rectangle> {
-        let mut update_rectangle = Rectangle::empty();
+    ) -> SessionResult<InclusiveRectangle> {
+        let mut update_rectangle = InclusiveRectangle::empty();
 
         for command in surface_commands {
             match command {
@@ -181,6 +178,16 @@ impl Processor {
                             let mut data = bits.extended_bitmap_data.data;
 
                             while !data.is_empty() {
+                                // TODO(@pacmancoder): Correct rectangle conversion logic should
+                                // be revisited when `rectangle_processing.rs` from
+                                // `ironrdp-graphics` will be refactored to use generic `Rectangle`
+                                // trait instead of hardcoded `InclusiveRectangle`.
+                                let destination = InclusiveRectangle {
+                                    left: destination.left,
+                                    top: destination.top,
+                                    right: destination.right,
+                                    bottom: destination.bottom,
+                                };
                                 let (_frame_id, rectangle) = self.rfx_handler.decode(image, &destination, &mut data)?;
                                 update_rectangle = update_rectangle.union(&rectangle);
                             }

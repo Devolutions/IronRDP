@@ -1,6 +1,8 @@
 use lazy_static::lazy_static;
 
 use super::*;
+use crate::geometry::ExclusiveRectangle;
+use crate::{decode, encode};
 
 const FRAME_MARKER_BUFFER: [u8; 8] = [0x4, 0x0, 0x0, 0x0, 0x5, 0x0, 0x0, 0x0];
 
@@ -76,11 +78,11 @@ const FRAME_MARKER_PDU: SurfaceCommand<'_> = SurfaceCommand::FrameMarker(FrameMa
 
 lazy_static! {
     static ref SURFACE_BITS_PDU: SurfaceCommand<'static> = SurfaceCommand::StreamSurfaceBits(SurfaceBitsPdu {
-        destination: Rectangle {
+        destination: ExclusiveRectangle {
             left: 0,
             top: 0,
-            right: 1919,
-            bottom: 1079,
+            right: 1920,
+            bottom: 1080,
         },
         extended_bitmap_data: ExtendedBitmapDataPdu {
             bpp: 32,
@@ -97,7 +99,7 @@ lazy_static! {
 fn from_buffer_correctly_parses_surface_command_frame_marker() {
     assert_eq!(
         FRAME_MARKER_PDU,
-        SurfaceCommand::from_buffer(FRAME_MARKER_BUFFER.as_ref()).unwrap()
+        decode::<SurfaceCommand>(FRAME_MARKER_BUFFER.as_ref()).unwrap()
     );
 }
 
@@ -106,20 +108,20 @@ fn to_buffer_correctly_serializes_surface_command_frame_marker() {
     let expected = FRAME_MARKER_BUFFER.as_ref();
     let mut buffer = vec![0; expected.len()];
 
-    FRAME_MARKER_PDU.to_buffer_consume(&mut buffer.as_mut_slice()).unwrap();
+    encode(&FRAME_MARKER_PDU, buffer.as_mut_slice()).unwrap();
     assert_eq!(expected, buffer.as_slice());
 }
 
 #[test]
 fn buffer_length_is_correct_for_surface_command_frame_marker() {
-    assert_eq!(FRAME_MARKER_BUFFER.len(), FRAME_MARKER_PDU.buffer_length());
+    assert_eq!(FRAME_MARKER_BUFFER.len(), FRAME_MARKER_PDU.size());
 }
 
 #[test]
 fn from_buffer_correctly_parses_surface_command_bits() {
     assert_eq!(
         *SURFACE_BITS_PDU,
-        SurfaceCommand::from_buffer(SURFACE_BITS_BUFFER.as_ref()).unwrap()
+        decode::<SurfaceCommand>(SURFACE_BITS_BUFFER.as_ref()).unwrap()
     );
 }
 
@@ -128,11 +130,11 @@ fn to_buffer_correctly_serializes_surface_command_bits() {
     let expected = SURFACE_BITS_BUFFER.as_ref();
     let mut buffer = vec![0; expected.len()];
 
-    SURFACE_BITS_PDU.to_buffer_consume(&mut buffer.as_mut_slice()).unwrap();
+    encode(&*SURFACE_BITS_PDU, buffer.as_mut_slice()).unwrap();
     assert_eq!(expected, buffer.as_slice());
 }
 
 #[test]
 fn buffer_length_is_correct_for_surface_command_bits() {
-    assert_eq!(SURFACE_BITS_BUFFER.len(), SURFACE_BITS_PDU.buffer_length());
+    assert_eq!(SURFACE_BITS_BUFFER.len(), SURFACE_BITS_PDU.size());
 }
