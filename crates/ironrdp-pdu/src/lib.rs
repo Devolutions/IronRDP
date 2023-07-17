@@ -253,6 +253,7 @@ pub fn find_size(bytes: &[u8]) -> PduResult<Option<PduInfo>> {
 
     match action {
         Action::X224 => {
+            ensure_enough!(bytes, crate::tpkt::TpktHeader::SIZE);
             let tpkt = crate::tpkt::TpktHeader::read(&mut ReadCursor::new(bytes))?;
 
             Ok(Some(PduInfo {
