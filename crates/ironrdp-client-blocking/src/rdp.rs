@@ -5,6 +5,7 @@ use ironrdp::pdu::input::fast_path::FastPathInputEvent;
 use ironrdp::session::image::DecodedImage;
 use ironrdp::session::{ActiveStage, ActiveStageOutput, SessionResult};
 use ironrdp::{connector, session};
+use native_tls::{HandshakeError, MidHandshakeTlsStream, TlsStream};
 use smallvec::SmallVec;
 use sspi::network_client::reqwest_network_client::RequestClientFactory;
 use std::io;
@@ -82,7 +83,7 @@ enum RdpControlFlow {
     TerminatedGracefully,
 }
 
-type UpgradedFramed = ironrdp_blocking::Framed<native_tls::TlsStream<TcpStream>>;
+type UpgradedFramed = ironrdp_blocking::Framed<TlsStream<TcpStream>>;
 
 fn connect(config: &Config) -> ConnectorResult<(ConnectionResult, UpgradedFramed)> {
     let server_addr = config
@@ -105,6 +106,11 @@ fn connect(config: &Config) -> ConnectorResult<(ConnectionResult, UpgradedFramed
 
     // Ensure there is no leftover
     let initial_stream = framed.into_inner_no_leftover();
+    // Set the stream to non-blocking so that it can be read/written from/to in multiple threads
+    // without causing a deadlock.
+    initial_stream
+        .set_nonblocking(true)
+        .map_err(|e| connector::custom_err!("set nonblocking", e))?;
 
     let (upgraded_stream, server_public_key) = upgrade_blocking(initial_stream, config.destination.name())
         .map_err(|e| connector::custom_err!("TLS upgrade", e))?;
@@ -119,16 +125,18 @@ fn connect(config: &Config) -> ConnectorResult<(ConnectionResult, UpgradedFramed
 }
 
 // TODO: should probably be moved to ironrdp-tls
-fn upgrade_blocking(stream: TcpStream, server_name: &str) -> io::Result<(native_tls::TlsStream<TcpStream>, Vec<u8>)> {
+fn upgrade_blocking(stream: TcpStream, server_name: &str) -> io::Result<(TlsStream<TcpStream>, Vec<u8>)> {
     let tls_connector = native_tls::TlsConnector::builder()
         .danger_accept_invalid_certs(true) // TODO: this should probably be optional
         .use_sni(false) // TODO: I'm not sure why this is here, just copied from ironrdp-tls
         .build()
         .map_err(|e| connector::custom_err!("create TlsConnector", e))?;
 
-    let tls_stream = tls_connector
-        .connect(server_name, stream)
-        .map_err(|e| connector::custom_err!("TLS connect", e))?;
+    let tls_stream = match tls_connector.connect(server_name, stream.try_clone()?) {
+        Ok(stream) => Ok(stream),
+        Err(HandshakeError::WouldBlock(s)) => handle_midhandshake_tls_stream(s),
+        Err(e) => Err(connector::custom_err!("TLS handshake", e))?,
+    }?;
 
     let server_public_key = {
         let cert = tls_stream
@@ -140,6 +148,19 @@ fn upgrade_blocking(stream: TcpStream, server_name: &str) -> io::Result<(native_
     };
 
     Ok((tls_stream, server_public_key))
+}
+
+fn handle_midhandshake_tls_stream(s: MidHandshakeTlsStream<TcpStream>) -> io::Result<TlsStream<TcpStream>> {
+    let mut s = s;
+    loop {
+        match s.handshake() {
+            Ok(stream) => return Ok(stream),
+            Err(HandshakeError::WouldBlock(s2)) => {
+                s = s2;
+            }
+            Err(e) => return Err(connector::custom_err!("TLS handshake", e))?,
+        }
+    }
 }
 
 // TODO: taken from ironrdp-tls, remove x509_cert from Cargo.toml when this is removed
