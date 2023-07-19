@@ -52,6 +52,7 @@ tap = "1.0.1"
 semver = "1"
 # crossbeam channels (rather than mpsc) allow us to use its synchronous select! macro
 crossbeam = { version = "0.8.2", features = ["crossbeam-channel"] }
+mio = "0.8.8"
 
 # Remove me
 x509-cert = "0.2.3"

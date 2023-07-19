@@ -5,11 +5,12 @@ use ironrdp::pdu::input::fast_path::FastPathInputEvent;
 use ironrdp::session::image::DecodedImage;
 use ironrdp::session::{ActiveStage, ActiveStageOutput, SessionResult};
 use ironrdp::{connector, session};
+use mio::net::TcpStream;
 use native_tls::{HandshakeError, MidHandshakeTlsStream, TlsStream};
 use smallvec::SmallVec;
 use sspi::network_client::reqwest_network_client::RequestClientFactory;
 use std::io;
-use std::net::TcpStream;
+use std::net::TcpStream as StdTcpStream;
 use std::sync::Arc;
 use winit::event_loop::EventLoopProxy;
 
@@ -91,7 +92,7 @@ fn connect(config: &Config) -> ConnectorResult<(ConnectionResult, UpgradedFramed
         .lookup_addr()
         .map_err(|e| connector::custom_err!("lookup addr", e))?;
 
-    let stream = TcpStream::connect(server_addr).map_err(|e| connector::custom_err!("TCP connect", e))?;
+    let stream = StdTcpStream::connect(server_addr).map_err(|e| connector::custom_err!("TCP connect", e))?;
 
     let mut framed = ironrdp_blocking::Framed::new(stream);
 
@@ -106,11 +107,12 @@ fn connect(config: &Config) -> ConnectorResult<(ConnectionResult, UpgradedFramed
 
     // Ensure there is no leftover
     let initial_stream = framed.into_inner_no_leftover();
-    // Set the stream to non-blocking so that it can be read/written from/to in multiple threads
-    // without causing a deadlock.
+    // Set the stream to non-blocking so that it can be read/written
+    // from/to in multiple threads without causing a deadlock.
     initial_stream
         .set_nonblocking(true)
         .map_err(|e| connector::custom_err!("set nonblocking", e))?;
+    let initial_stream = TcpStream::from_std(initial_stream);
 
     let (upgraded_stream, server_public_key) = upgrade_blocking(initial_stream, config.destination.name())
         .map_err(|e| connector::custom_err!("TLS upgrade", e))?;
@@ -132,7 +134,7 @@ fn upgrade_blocking(stream: TcpStream, server_name: &str) -> io::Result<(TlsStre
         .build()
         .map_err(|e| connector::custom_err!("create TlsConnector", e))?;
 
-    let tls_stream = match tls_connector.connect(server_name, stream.try_clone()?) {
+    let tls_stream = match tls_connector.connect(server_name, stream) {
         Ok(stream) => Ok(stream),
         Err(HandshakeError::WouldBlock(s)) => handle_midhandshake_tls_stream(s),
         Err(e) => Err(connector::custom_err!("TLS handshake", e))?,
@@ -150,15 +152,28 @@ fn upgrade_blocking(stream: TcpStream, server_name: &str) -> io::Result<(TlsStre
     Ok((tls_stream, server_public_key))
 }
 
-fn handle_midhandshake_tls_stream(s: MidHandshakeTlsStream<TcpStream>) -> io::Result<TlsStream<TcpStream>> {
+fn handle_midhandshake_tls_stream(s: MidHandshakeTlsStream<TcpStream>) -> io::Result<native_tls::TlsStream<TcpStream>> {
+    use mio::{Events, Interest, Poll, Token};
+    use std::time::Duration;
+
     let mut s = s;
+    let mut events = Events::with_capacity(128);
+
+    // Create a `Poll` instance to monitor our stream
+    let mut poll = Poll::new()?;
+
+    // Register the stream with `Poll`. We want to know when the stream is ready for reading or writing.
+    poll.registry()
+        .register(s.get_mut(), Token(0), Interest::READABLE | Interest::WRITABLE)?;
+
     loop {
+        // Wait for the stream to become ready
+        poll.poll(&mut events, Some(Duration::from_secs(1)))?;
+
         match s.handshake() {
             Ok(stream) => return Ok(stream),
-            Err(HandshakeError::WouldBlock(s2)) => {
-                s = s2;
-            }
-            Err(e) => return Err(connector::custom_err!("TLS handshake", e))?,
+            Err(HandshakeError::WouldBlock(s2)) => s = s2,
+            Err(HandshakeError::Failure(e)) => return Err(connector::custom_err!("TLS handshake", e))?,
         }
     }
 }
