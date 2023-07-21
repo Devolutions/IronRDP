@@ -105,8 +105,8 @@ mod tests {
         let image = buffer_from_bmp(bmp, width, height);
 
         let mut pdu = vec![0; width * height * 4 + 2];
-        let written = BitmapStreamEncoder::<RGBFormat>::new(width, height)
-            .encode_bitmap(&image, &mut pdu, rle)
+        let written = BitmapStreamEncoder::new(width, height)
+            .encode_bitmap::<RgbChannels>(&image, &mut pdu, rle)
             .unwrap();
 
         // last byte is padding when !rle
@@ -117,8 +117,8 @@ mod tests {
         let image = buffer_from_bmp(bmp, width, height);
 
         let mut pdu = vec![0; width * height * 4 + 2];
-        let written = BitmapStreamEncoder::<RGBFormat>::new(width, height)
-            .encode_bitmap(&image, &mut pdu, rle)
+        let written = BitmapStreamEncoder::new(width, height)
+            .encode_bitmap::<RgbChannels>(&image, &mut pdu, rle)
             .unwrap();
 
         let mut actual = Vec::new();

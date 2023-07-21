@@ -1707,6 +1707,7 @@ dependencies = [
  "async-trait",
  "bytes",
  "ironrdp-connector",
+ "ironrdp-graphics",
  "ironrdp-pdu",
  "ironrdp-tokio",
  "rustls 0.21.0",

@@ -88,6 +88,24 @@ pub enum PixelFormat {
     RgbX32 = 537_069_704,
 }
 
+impl TryFrom<u32> for PixelFormat {
+    type Error = ();
+
+    fn try_from(value: u32) -> Result<Self, Self::Error> {
+        match value {
+            536_971_400 => Ok(PixelFormat::ARgb32),
+            536_938_632 => Ok(PixelFormat::XRgb32),
+            537_036_936 => Ok(PixelFormat::ABgr32),
+            537_004_168 => Ok(PixelFormat::XBgr32),
+            537_168_008 => Ok(PixelFormat::BgrA32),
+            537_135_240 => Ok(PixelFormat::BgrX32),
+            537_102_472 => Ok(PixelFormat::RgbA32),
+            537_069_704 => Ok(PixelFormat::RgbX32),
+            _ => Err(()),
+        }
+    }
+}
+
 impl PixelFormat {
     pub const fn bytes_per_pixel(self) -> u8 {
         match self {

@@ -14,12 +14,10 @@ use ironrdp_tokio::{Framed, FramedRead, FramedWrite, TokioFramed};
 use tokio::{net::TcpListener, select};
 use tokio_rustls::TlsAcceptor;
 
-use crate::{capabilities, DisplayUpdate};
-
-use super::{
+use crate::{
     acceptor::{self, BeginResult, ServerAcceptor},
-    builder,
-    display::RdpServerDisplay,
+    builder, capabilities,
+    display::{DisplayUpdate, RdpServerDisplay},
     encoder::UpdateEncoder,
     handler::RdpServerInputHandler,
 };

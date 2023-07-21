@@ -1,5 +1,3 @@
-use std::marker::PhantomData;
-
 use ironrdp_pdu::{
     bitmap::rdp6::{BitmapStream as BitmapStreamPdu, ColorPlanes},
     encode,
@@ -16,6 +14,17 @@ pub enum BitmapEncodeError {
     RleFailed(RleError),
 }
 
+pub trait ColorChannels {
+    const STRIDE: usize;
+    const R: usize;
+    const G: usize;
+    const B: usize;
+}
+
+pub trait AlphaChannel {
+    const A: usize;
+}
+
 pub trait PixelFormat {
     const STRIDE: usize;
 
@@ -28,68 +37,93 @@ pub trait PixelAlpha: PixelFormat {
     fn a(pixel: &[u8]) -> u8;
 }
 
-pub struct RGBFormat;
-pub struct ARGBFormat;
-pub struct RGBAFormat;
+impl<T> PixelFormat for T
+where
+    T: ColorChannels,
+{
+    const STRIDE: usize = T::STRIDE;
 
-impl PixelFormat for RGBFormat {
+    fn r(pixel: &[u8]) -> u8 {
+        pixel[T::R]
+    }
+
+    fn g(pixel: &[u8]) -> u8 {
+        pixel[T::G]
+    }
+
+    fn b(pixel: &[u8]) -> u8 {
+        pixel[T::B]
+    }
+}
+
+impl<T> PixelAlpha for T
+where
+    T: ColorChannels + AlphaChannel,
+{
+    fn a(pixel: &[u8]) -> u8 {
+        pixel[T::A]
+    }
+}
+
+pub struct RgbChannels;
+
+impl ColorChannels for RgbChannels {
     const STRIDE: usize = 3;
-
-    fn r(pixel: &[u8]) -> u8 {
-        pixel[0]
-    }
-
-    fn g(pixel: &[u8]) -> u8 {
-        pixel[1]
-    }
-
-    fn b(pixel: &[u8]) -> u8 {
-        pixel[2]
-    }
+    const R: usize = 0;
+    const G: usize = 1;
+    const B: usize = 2;
 }
 
-impl PixelFormat for RGBAFormat {
+pub struct ARgbChannels;
+
+impl ColorChannels for ARgbChannels {
     const STRIDE: usize = 4;
-
-    fn r(pixel: &[u8]) -> u8 {
-        pixel[0]
-    }
-
-    fn g(pixel: &[u8]) -> u8 {
-        pixel[1]
-    }
-
-    fn b(pixel: &[u8]) -> u8 {
-        pixel[2]
-    }
+    const R: usize = 1;
+    const G: usize = 2;
+    const B: usize = 3;
 }
 
-impl PixelAlpha for RGBAFormat {
-    fn a(pixel: &[u8]) -> u8 {
-        pixel[3]
-    }
+impl AlphaChannel for ARgbChannels {
+    const A: usize = 0;
 }
 
-impl PixelFormat for ARGBFormat {
+pub struct RgbAChannels;
+
+impl ColorChannels for RgbAChannels {
     const STRIDE: usize = 4;
-
-    fn r(pixel: &[u8]) -> u8 {
-        pixel[1]
-    }
-
-    fn g(pixel: &[u8]) -> u8 {
-        pixel[2]
-    }
-
-    fn b(pixel: &[u8]) -> u8 {
-        pixel[3]
-    }
+    const R: usize = 0;
+    const G: usize = 1;
+    const B: usize = 2;
 }
 
-impl PixelAlpha for ARGBFormat {
-    fn a(pixel: &[u8]) -> u8 {
-        pixel[0]
-    }
+impl AlphaChannel for RgbAChannels {
+    const A: usize = 3;
+}
+
+pub struct ABgrChannels;
+
+impl ColorChannels for ABgrChannels {
+    const STRIDE: usize = 4;
+    const R: usize = 3;
+    const G: usize = 2;
+    const B: usize = 1;
+}
+
+impl AlphaChannel for ABgrChannels {
+    const A: usize = 0;
+}
+
+pub struct BgrAChannels;
+
+impl ColorChannels for BgrAChannels {
+    const STRIDE: usize = 4;
+    const R: usize = 2;
+    const G: usize = 1;
+    const B: usize = 0;
+}
+
+impl AlphaChannel for BgrAChannels {
+    const A: usize = 3;
 }
 
 impl BitmapEncodeError {
@@ -102,32 +136,33 @@ impl BitmapEncodeError {
     }
 }
 
-pub struct BitmapStreamEncoder<F> {
+pub struct BitmapStreamEncoder {
     width: usize,
     height: usize,
     planes_buffer: Vec<u8>,
-    _format: PhantomData<F>,
 }
 
-impl<F> BitmapStreamEncoder<F>
-where
-    F: PixelFormat,
-{
+impl BitmapStreamEncoder {
     pub fn new(width: usize, height: usize) -> Self {
         Self {
             width,
             height,
             planes_buffer: Vec::new(),
-            _format: PhantomData,
         }
     }
 
-    pub fn encode_bitmap(&mut self, src: &[u8], dst: &mut [u8], rle: bool) -> Result<usize, BitmapEncodeError> {
+    pub fn encode_channels_stream<R, G, B>(
+        &mut self,
+        (r, g, b): (R, G, B),
+        dst: &mut [u8],
+        rle: bool,
+    ) -> Result<usize, BitmapEncodeError>
+    where
+        R: Iterator<Item = u8>,
+        G: Iterator<Item = u8>,
+        B: Iterator<Item = u8>,
+    {
         self.planes_buffer.clear();
-
-        let r = src.chunks(F::STRIDE).map(F::r);
-        let g = src.chunks(F::STRIDE).map(F::g);
-        let b = src.chunks(F::STRIDE).map(F::b);
 
         match rle {
             true => {
@@ -152,19 +187,51 @@ where
 
         encode::<BitmapStreamPdu>(&header, dst).map_err(BitmapEncodeError::invalid_bitmap)
     }
-}
 
-impl<F> BitmapStreamEncoder<F>
-where
-    F: PixelFormat + PixelAlpha,
-{
-    pub fn encode_bitmap_alpha(&mut self, src: &[u8], dst: &mut [u8], rle: bool) -> Result<usize, BitmapEncodeError> {
-        self.planes_buffer.clear();
+    pub fn encode_pixels_stream<'a, I, F>(
+        &mut self,
+        data: I,
+        dst: &mut [u8],
+        rle: bool,
+    ) -> Result<usize, BitmapEncodeError>
+    where
+        F: PixelFormat,
+        I: Iterator<Item = &'a [u8]> + Clone,
+    {
+        let r = data.clone().map(F::r);
+        let g = data.clone().map(F::g);
+        let b = data.map(F::b);
 
+        self.encode_channels_stream((r, g, b), dst, rle)
+    }
+
+
+    pub fn encode_bitmap<F>(&mut self, src: &[u8], dst: &mut [u8], rle: bool) -> Result<usize, BitmapEncodeError>
+    where
+        F: PixelFormat,
+    {
         let r = src.chunks(F::STRIDE).map(F::r);
         let g = src.chunks(F::STRIDE).map(F::g);
         let b = src.chunks(F::STRIDE).map(F::b);
-        let a = src.chunks(F::STRIDE).map(F::a);
+
+        self.encode_channels_stream((r, g, b), dst, rle)
+    }
+}
+
+impl BitmapStreamEncoder {
+    pub fn encode_channels_stream_alpha<R, G, B, A>(
+        &mut self,
+        (r, g, b, a): (R, G, B, A),
+        dst: &mut [u8],
+        rle: bool,
+    ) -> Result<usize, BitmapEncodeError>
+    where
+        R: Iterator<Item = u8>,
+        G: Iterator<Item = u8>,
+        B: Iterator<Item = u8>,
+        A: Iterator<Item = u8>,
+    {
+        self.planes_buffer.clear();
 
         match rle {
             true => {
@@ -189,5 +256,17 @@ where
         };
 
         encode::<BitmapStreamPdu>(&header, dst).map_err(BitmapEncodeError::invalid_bitmap)
+    }
+
+    pub fn encode_bitmap_alpha<F>(&mut self, src: &[u8], dst: &mut [u8], rle: bool) -> Result<usize, BitmapEncodeError>
+    where
+        F: PixelFormat + PixelAlpha,
+    {
+        let r = src.chunks(F::STRIDE).map(F::r);
+        let g = src.chunks(F::STRIDE).map(F::g);
+        let b = src.chunks(F::STRIDE).map(F::b);
+        let a = src.chunks(F::STRIDE).map(F::a);
+
+        self.encode_channels_stream_alpha((r, g, b, a), dst, rle)
     }
 }
