@@ -7,6 +7,7 @@ mod macros;
 pub mod fast_path;
 pub mod image;
 pub mod legacy;
+pub mod pointer;
 pub mod rfx; // FIXME: maybe this module should not be in this crate
 pub mod utils;
 pub mod x224;

@@ -16,6 +16,7 @@ use crate::{
 #[derive(Clone, Copy, Debug)]
 pub struct CredsspTsRequestHint;
 
+pub const DEFAULT_POINTER_CACHE_SIZE: u16 = 32;
 pub const CREDSSP_TS_REQUEST_HINT: CredsspTsRequestHint = CredsspTsRequestHint;
 
 impl PduHint for CredsspTsRequestHint {
@@ -977,8 +978,8 @@ fn create_client_confirm_active(
             keyboard_ime_filename: config.ime_file_name.clone(),
         }),
         CapabilitySet::Pointer(Pointer {
-            color_pointer_cache_size: 0,
-            pointer_cache_size: 0,
+            color_pointer_cache_size: DEFAULT_POINTER_CACHE_SIZE,
+            pointer_cache_size: DEFAULT_POINTER_CACHE_SIZE,
         }),
         CapabilitySet::Brush(Brush {
             support_level: SupportLevel::Default,
@@ -1007,7 +1008,7 @@ fn create_client_confirm_active(
             flags: SoundFlags::empty(),
         }),
         CapabilitySet::LargePointer(LargePointer {
-            flags: LargePointerSupportFlags::UP_TO_96X96_PIXELS,
+            flags: LargePointerSupportFlags::UP_TO_384X384_PIXELS,
         }),
         CapabilitySet::SurfaceCommands(SurfaceCommands {
             flags: CmdFlags::SET_SURFACE_BITS | CmdFlags::STREAM_SURFACE_BITS | CmdFlags::FRAME_MARKER,

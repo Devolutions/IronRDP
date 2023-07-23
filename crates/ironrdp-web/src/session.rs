@@ -4,7 +4,8 @@ use std::rc::Rc;
 use anyhow::Context as _;
 use futures_channel::mpsc;
 use futures_util::io::{ReadHalf, WriteHalf};
-use futures_util::{AsyncReadExt as _, AsyncWriteExt as _, StreamExt as _};
+use futures_util::select;
+use futures_util::{AsyncReadExt as _, AsyncWriteExt as _, FutureExt, StreamExt as _};
 use gloo_net::websocket;
 use gloo_net::websocket::futures::WebSocket;
 use ironrdp::connector::{self, ClientConnector};
@@ -22,6 +23,7 @@ use crate::input::InputTransaction;
 use crate::network_client::PlaceholderNetworkClientFactory;
 use crate::websocket::WebSocketCompat;
 use crate::DesktopSize;
+use ironrdp::pdu::input::fast_path::FastPathInputEvent;
 
 const DEFAULT_WIDTH: u16 = 1280;
 const DEFAULT_HEIGHT: u16 = 720;
@@ -40,8 +42,13 @@ struct SessionBuilderInner {
     pcb: Option<String>,
     client_name: String,
     desktop_size: DesktopSize,
+
     update_callback: Option<js_sys::Function>,
     update_callback_context: Option<JsValue>,
+    hide_pointer_callback: Option<js_sys::Function>,
+    hide_pointer_callback_context: Option<JsValue>,
+    show_pointer_callback: Option<js_sys::Function>,
+    show_pointer_callback_context: Option<JsValue>,
 }
 
 impl Default for SessionBuilderInner {
@@ -61,6 +68,11 @@ impl Default for SessionBuilderInner {
             },
             update_callback: None,
             update_callback_context: None,
+
+            hide_pointer_callback: None,
+            hide_pointer_callback_context: None,
+            show_pointer_callback: None,
+            show_pointer_callback_context: None,
         }
     }
 }
@@ -135,6 +147,30 @@ impl SessionBuilder {
         self.clone()
     }
 
+    /// Required
+    pub fn hide_pointer_callback(&self, callback: js_sys::Function) -> SessionBuilder {
+        self.0.borrow_mut().hide_pointer_callback = Some(callback);
+        self.clone()
+    }
+
+    /// Required
+    pub fn hide_pointer_callback_context(&self, context: JsValue) -> SessionBuilder {
+        self.0.borrow_mut().hide_pointer_callback_context = Some(context);
+        self.clone()
+    }
+
+    /// Required
+    pub fn show_pointer_callback(&self, callback: js_sys::Function) -> SessionBuilder {
+        self.0.borrow_mut().show_pointer_callback = Some(callback);
+        self.clone()
+    }
+
+    /// Required
+    pub fn show_pointer_callback_context(&self, context: JsValue) -> SessionBuilder {
+        self.0.borrow_mut().show_pointer_callback_context = Some(context);
+        self.clone()
+    }
+
     pub async fn connect(&self) -> Result<Session, IronRdpError> {
         let (
             username,
@@ -148,6 +184,10 @@ impl SessionBuilder {
             desktop_size,
             update_callback,
             update_callback_context,
+            hide_pointer_callback,
+            hide_pointer_callback_context,
+            show_pointer_callback,
+            show_pointer_callback_context,
         );
 
         {
@@ -161,8 +201,20 @@ impl SessionBuilder {
             pcb = inner.pcb.clone();
             client_name = inner.client_name.clone();
             desktop_size = inner.desktop_size.clone();
+
             update_callback = inner.update_callback.clone().expect("update_callback");
             update_callback_context = inner.update_callback_context.clone().expect("update_callback_context");
+
+            hide_pointer_callback = inner.hide_pointer_callback.clone().expect("hide_pointer_callback");
+            hide_pointer_callback_context = inner
+                .hide_pointer_callback_context
+                .clone()
+                .expect("show_pointer_callback_context");
+            show_pointer_callback = inner.show_pointer_callback.clone().expect("hide_pointer_callback");
+            show_pointer_callback_context = inner
+                .show_pointer_callback_context
+                .clone()
+                .expect("show_pointer_callback_context");
         }
 
         info!("Connect to RDP host");
@@ -189,27 +241,47 @@ impl SessionBuilder {
 
         let (writer_tx, writer_rx) = mpsc::unbounded();
 
+        let (input_events_tx, input_events_rx) = mpsc::unbounded();
+
         spawn_local(writer_task(writer_rx, rdp_writer));
 
         Ok(Session {
             connection_result,
-            update_callback,
-            update_callback_context,
             input_database: RefCell::new(ironrdp::input::Database::new()),
             rdp_reader: RefCell::new(Some(rdp_reader)),
             writer_tx,
+
+            update_callback,
+            update_callback_context,
+            hide_pointer_callback,
+            hide_pointer_callback_context,
+            show_pointer_callback,
+            show_pointer_callback_context,
+
+            input_events_tx,
+            input_events_rx: RefCell::new(Some(input_events_rx)),
         })
     }
 }
 
+type FastPathInputEvents = smallvec::SmallVec<[FastPathInputEvent; 2]>;
+
 #[wasm_bindgen]
 pub struct Session {
     connection_result: connector::ConnectionResult,
-    update_callback: js_sys::Function,
-    update_callback_context: JsValue,
     input_database: RefCell<ironrdp::input::Database>,
     rdp_reader: RefCell<Option<ReadHalf<WebSocketCompat>>>,
     writer_tx: mpsc::UnboundedSender<Vec<u8>>,
+
+    update_callback: js_sys::Function,
+    update_callback_context: JsValue,
+    hide_pointer_callback: js_sys::Function,
+    hide_pointer_callback_context: JsValue,
+    show_pointer_callback: js_sys::Function,
+    show_pointer_callback_context: JsValue,
+
+    input_events_tx: mpsc::UnboundedSender<FastPathInputEvents>,
+    input_events_rx: RefCell<Option<mpsc::UnboundedReceiver<FastPathInputEvents>>>,
 }
 
 #[wasm_bindgen]
@@ -217,6 +289,12 @@ impl Session {
     pub async fn run(&self) -> Result<(), IronRdpError> {
         let rdp_reader = self
             .rdp_reader
+            .borrow_mut()
+            .take()
+            .context("RDP session can be started only once")?;
+
+        let mut fastpath_input_events = self
+            .input_events_rx
             .borrow_mut()
             .take()
             .context("RDP session can be started only once")?;
@@ -235,16 +313,39 @@ impl Session {
         let mut frame_id = 0;
 
         'outer: loop {
-            let outputs = {
-                let (action, frame) = framed.read_pdu().await.context("read next frame")?;
+            let outputs = select! {
+                incoming_pdu = framed.read_pdu().fuse() => {
+                    let (action, frame) = incoming_pdu.context("read next frame")?;
 
-                active_stage
-                    .process(&mut image, action, &frame)
-                    .context("Active stage processing")?
+                    active_stage
+                        .process(&mut image, action, &frame)
+                        .context("Active stage processing")?
+                }
+                input_events = fastpath_input_events.next() => {
+                    let events = input_events.context("read next fastpath input events")?;
+
+                    active_stage.process_fastpath_input(&mut image, &events)
+                            .context("Fast path input events processing")?
+                }
             };
 
             for out in outputs {
                 match out {
+                    ActiveStageOutput::PointerDefault => {
+                        let _ret = self
+                            .show_pointer_callback
+                            .call0(&self.show_pointer_callback_context)
+                            .map_err(|e| anyhow::Error::msg(format!("show pointer callback failed: {e:?}")))?;
+                    }
+                    ActiveStageOutput::PointerHidden => {
+                        let _ret = self
+                            .hide_pointer_callback
+                            .call0(&self.hide_pointer_callback_context)
+                            .map_err(|e| anyhow::Error::msg(format!("hide pointer callback failed: {e:?}")))?;
+                    }
+                    ActiveStageOutput::PointerPosition { .. } => {
+                        // Not applicable for web
+                    }
                     ActiveStageOutput::ResponseFrame(frame) => {
                         // PERF: unnecessary copy
                         self.writer_tx
@@ -299,21 +400,12 @@ impl Session {
         &self,
         inputs: smallvec::SmallVec<[ironrdp::pdu::input::fast_path::FastPathInputEvent; 2]>,
     ) -> Result<(), IronRdpError> {
-        use ironrdp::pdu::input::fast_path::FastPathInput;
-        use ironrdp::pdu::PduParsing as _;
-
-        trace!("Inputs: {inputs:?}");
-
         if !inputs.is_empty() {
-            // PERF: unnecessary copy
-            let fastpath_input = FastPathInput(inputs.into_vec());
+            trace!("Inputs: {inputs:?}");
 
-            let mut frame = Vec::new();
-            fastpath_input.to_buffer(&mut frame).context("FastPathInput encoding")?;
-
-            self.writer_tx
-                .unbounded_send(frame)
-                .context("Send frame to writer task")?;
+            self.input_events_tx
+                .unbounded_send(inputs.clone())
+                .context("Send input events to writer task")?;
         }
 
         Ok(())
@@ -371,7 +463,7 @@ fn build_config(
         },
         graphics: None,
         bitmap: Some(connector::BitmapConfig {
-            color_depth: 16,
+            color_depth: 32,
             lossy_compression: true,
         }),
         client_build: semver::Version::parse(env!("CARGO_PKG_VERSION"))

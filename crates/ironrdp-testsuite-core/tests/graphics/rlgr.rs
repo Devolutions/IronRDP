@@ -74,7 +74,7 @@ fn decode_correctly_decodes_rl_with_leading_ones() {
 #[test]
 fn decode_correctly_decodes_rlgr3() {
     #[allow(clippy::inconsistent_digit_grouping, clippy::unreadable_literal)]
-    let input = [0b110000_00];
+    let input = [0b11000000];
     let expected = [0, 1, 0, 0];
     let mode = EntropyAlgorithm::Rlgr3;
 

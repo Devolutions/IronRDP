@@ -16,6 +16,9 @@ use crate::config::Config;
 pub enum RdpOutputEvent {
     Image { buffer: Vec<u32>, width: u16, height: u16 },
     ConnectionFailure(connector::ConnectorError),
+    PointerDefault,
+    PointerHidden,
+    PointerPosition { x: usize, y: usize },
     Terminated(SessionResult<()>),
 }
 
@@ -133,39 +136,12 @@ async fn active_session(
     let mut active_stage = ActiveStage::new(connection_result, None);
 
     'outer: loop {
-        tokio::select! {
+        let outputs = tokio::select! {
             frame = framed.read_pdu() => {
                 let (action, payload) = frame.map_err(|e| session::custom_err!("read frame", e))?;
                 trace!(?action, frame_length = payload.len(), "Frame received");
 
-                let outputs = active_stage.process(&mut image, action, &payload)?;
-
-                for out in outputs {
-                    match out {
-                        ActiveStageOutput::ResponseFrame(frame) => framed.write_all(&frame).await.map_err(|e| session::custom_err!("write response", e))?,
-                        ActiveStageOutput::GraphicsUpdate(_region) => {
-                            let buffer: Vec<u32> = image
-                                .data()
-                                .chunks_exact(4)
-                                .map(|pixel| {
-                                    let r = pixel[0];
-                                    let g = pixel[1];
-                                    let b = pixel[2];
-                                    u32::from_be_bytes([0, r, g, b])
-                                })
-                                .collect();
-
-                            event_loop_proxy
-                                .send_event(RdpOutputEvent::Image {
-                                    buffer,
-                                    width: image.width(),
-                                    height: image.height(),
-                                })
-                                .map_err(|e| session::custom_err!("event_loop_proxy", e))?;
-                        }
-                        ActiveStageOutput::Terminate => break 'outer,
-                    }
-                }
+                active_stage.process(&mut image, action, &payload)?
             }
             input_event = input_event_receiver.recv() => {
                 let input_event = input_event.ok_or_else(|| session::general_err!("GUI is stopped"))?;
@@ -191,25 +167,58 @@ async fn active_session(
                         return Ok(RdpControlFlow::ReconnectWithNewSize { width, height })
                     },
                     RdpInputEvent::FastPath(events) => {
-                        use ironrdp::pdu::input::fast_path::FastPathInput;
-                        use ironrdp::pdu::PduParsing as _;
-
                         trace!(?events);
-
-                        // PERF: unnecessary copy
-                        let fastpath_input = FastPathInput(events.into_vec());
-
-                        let mut frame = Vec::new();
-                        fastpath_input
-                            .to_buffer(&mut frame)
-                            .map_err(|e| session::custom_err!("FastPathInput encode", e))?;
-
-                        framed.write_all(&frame).await.map_err(|e| session::custom_err!("write FastPathInput PDU", e))?;
+                        active_stage.process_fastpath_input(&mut image, &events)?
                     }
                     RdpInputEvent::Close => {
                         // TODO: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/27915739-8f77-487e-9927-55008af7fd68
                         break 'outer;
                     }
+                }
+            }
+        };
+
+        for out in outputs {
+            match out {
+                ActiveStageOutput::ResponseFrame(frame) => framed
+                    .write_all(&frame)
+                    .await
+                    .map_err(|e| session::custom_err!("write response", e))?,
+                ActiveStageOutput::GraphicsUpdate(_region) => {
+                    let buffer: Vec<u32> = image
+                        .data()
+                        .chunks_exact(4)
+                        .map(|pixel| {
+                            let r = pixel[0];
+                            let g = pixel[1];
+                            let b = pixel[2];
+                            u32::from_be_bytes([0, r, g, b])
+                        })
+                        .collect();
+
+                    event_loop_proxy
+                        .send_event(RdpOutputEvent::Image {
+                            buffer,
+                            width: image.width(),
+                            height: image.height(),
+                        })
+                        .map_err(|e| session::custom_err!("event_loop_proxy", e))?;
+                }
+                ActiveStageOutput::Terminate => break 'outer,
+                ActiveStageOutput::PointerDefault => {
+                    event_loop_proxy
+                        .send_event(RdpOutputEvent::PointerDefault)
+                        .map_err(|e| session::custom_err!("event_loop_proxy", e))?;
+                }
+                ActiveStageOutput::PointerHidden => {
+                    event_loop_proxy
+                        .send_event(RdpOutputEvent::PointerHidden)
+                        .map_err(|e| session::custom_err!("event_loop_proxy", e))?;
+                }
+                ActiveStageOutput::PointerPosition { x, y } => {
+                    event_loop_proxy
+                        .send_event(RdpOutputEvent::PointerPosition { x, y })
+                        .map_err(|e| session::custom_err!("event_loop_proxy", e))?;
                 }
             }
         }

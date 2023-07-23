@@ -63,12 +63,15 @@ impl<'a> ColorPointerAttribute<'a> {
     const NAME: &'static str = "TS_COLORPOINTERATTRIBUTE";
     const FIXED_PART_SIZE: usize = core::mem::size_of::<u16>() * 5 + Point16::FIXED_PART_SIZE;
 
-    fn check_masks_alignment(and_mask: &[u8], xor_mask: &[u8], pointer_height: u16) -> PduResult<()> {
+    fn check_masks_alignment(and_mask: &[u8], xor_mask: &[u8], pointer_height: u16, large_ptr: bool) -> PduResult<()> {
         const AND_MASK_SIZE_FIELD: &str = "lengthAndMask";
         const XOR_MASK_SIZE_FIELD: &str = "lengthXorMask";
 
         let check_mask = |mask: &[u8], field: &'static str| {
-            if mask.len() > u16::MAX as usize {
+            if large_ptr && (mask.len() > u32::MAX as usize) {
+                return Err(invalid_message_err!(field, "pointer mask is too big for u32 size"));
+            }
+            if !large_ptr && (mask.len() > u16::MAX as usize) {
                 return Err(invalid_message_err!(field, "pointer mask is too big for u16 size"));
             }
             if (mask.len() % pointer_height as usize) != 0 {
@@ -92,7 +95,7 @@ impl<'a> PduEncode for ColorPointerAttribute<'a> {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
         ensure_size!(in: dst, size: self.size());
 
-        Self::check_masks_alignment(self.and_mask, self.xor_mask, self.height)?;
+        Self::check_masks_alignment(self.and_mask, self.xor_mask, self.height, false)?;
 
         dst.write_u16(self.cache_index);
         self.hot_spot.encode(dst)?;
@@ -135,7 +138,7 @@ impl<'a> PduDecode<'a> for ColorPointerAttribute<'a> {
         let xor_mask = src.read_slice(length_xor_mask as usize);
         let and_mask = src.read_slice(length_and_mask as usize);
 
-        Self::check_masks_alignment(and_mask, xor_mask, height)?;
+        Self::check_masks_alignment(and_mask, xor_mask, height, false)?;
 
         Ok(Self {
             cache_index,
@@ -251,7 +254,7 @@ impl<'a> PduEncode for LargePointerAttribute<'a> {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
         ensure_size!(in: dst, size: self.size());
 
-        ColorPointerAttribute::check_masks_alignment(self.and_mask, self.xor_mask, self.height)?;
+        ColorPointerAttribute::check_masks_alignment(self.and_mask, self.xor_mask, self.height, true)?;
 
         dst.write_u16(self.xor_bpp);
         dst.write_u16(self.cache_index);
@@ -295,7 +298,7 @@ impl<'a> PduDecode<'a> for LargePointerAttribute<'a> {
         let xor_mask = src.read_slice(length_xor_mask as usize);
         let and_mask = src.read_slice(length_and_mask as usize);
 
-        ColorPointerAttribute::check_masks_alignment(and_mask, xor_mask, height)?;
+        ColorPointerAttribute::check_masks_alignment(and_mask, xor_mask, height, true)?;
 
         Ok(Self {
             xor_bpp,

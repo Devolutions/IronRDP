@@ -1,10 +1,12 @@
 use ironrdp_connector::ConnectionResult;
 use ironrdp_pdu::geometry::InclusiveRectangle;
-use ironrdp_pdu::Action;
+use ironrdp_pdu::{Action, PduParsing};
 
+use crate::fast_path::UpdateKind;
 use crate::image::DecodedImage;
 use crate::x224::GfxHandler;
 use crate::{fast_path, utils, x224, SessionResult};
+use ironrdp_pdu::input::fast_path::{FastPathInput, FastPathInputEvent};
 
 pub struct ActiveStage {
     x224_processor: x224::Processor,
@@ -33,21 +35,66 @@ impl ActiveStage {
         }
     }
 
+    pub fn update_mouse_pos(&mut self, x: usize, y: usize) {
+        self.fast_path_processor.update_mouse_pos(x, y);
+    }
+
+    pub fn process_fastpath_input(
+        &mut self,
+        image: &mut DecodedImage,
+        events: &[FastPathInputEvent],
+    ) -> SessionResult<Vec<ActiveStageOutput>> {
+        if events.is_empty() {
+            return Ok(vec![]);
+        }
+
+        // Mouse move events are prevalent, so we can preallocate space for
+        // response frame + graphics update
+        let mut output = Vec::with_capacity(2);
+
+        // Encoding fastpath response frame
+        // PERF: unnecessary copy
+        let fastpath_input = FastPathInput(events.to_vec());
+        let mut frame = Vec::new();
+        fastpath_input
+            .to_buffer(&mut frame)
+            .map_err(|e| custom_err!("FastPathInput encode", e))?;
+        output.push(ActiveStageOutput::ResponseFrame(frame));
+
+        // If mouse was moved by client - we should update framebuffer to reflect new
+        // pointer position
+        let mouse_pos = events.iter().find_map(|event| match event {
+            FastPathInputEvent::MouseEvent(event) => Some((event.x_position as usize, event.y_position as usize)),
+            FastPathInputEvent::MouseEventEx(event) => Some((event.x_position as usize, event.y_position as usize)),
+            _ => None,
+        });
+
+        let (mouse_x, mouse_y) = match mouse_pos {
+            Some(mouse_pos) => mouse_pos,
+            None => return Ok(output),
+        };
+
+        // Graphics update is only sent when update is visualy changed the framebuffer
+        if let Some(rect) = image.move_pointer(mouse_x as u16, mouse_y as u16)? {
+            output.push(ActiveStageOutput::GraphicsUpdate(rect));
+        }
+
+        Ok(output)
+    }
+
     pub fn process(
         &mut self,
         image: &mut DecodedImage,
         action: Action,
         frame: &[u8],
     ) -> SessionResult<Vec<ActiveStageOutput>> {
-        let mut graphics_update_region = None;
-
-        let output = match action {
+        let (output, processor_updates) = match action {
             Action::FastPath => {
                 let mut output = Vec::new();
-                graphics_update_region = self.fast_path_processor.process(image, frame, &mut output)?;
-                output
+                let processor_updates = self.fast_path_processor.process(image, frame, &mut output)?;
+                (output, processor_updates)
             }
-            Action::X224 => self.x224_processor.process(frame)?,
+            Action::X224 => (self.x224_processor.process(frame)?, vec![]),
         };
 
         let mut stage_outputs = Vec::new();
@@ -56,8 +103,22 @@ impl ActiveStage {
             stage_outputs.push(ActiveStageOutput::ResponseFrame(output));
         }
 
-        if let Some(update_region) = graphics_update_region {
-            stage_outputs.push(ActiveStageOutput::GraphicsUpdate(update_region));
+        for update in processor_updates {
+            match update {
+                UpdateKind::None => {}
+                UpdateKind::Region(region) => {
+                    stage_outputs.push(ActiveStageOutput::GraphicsUpdate(region));
+                }
+                UpdateKind::PointerDefault => {
+                    stage_outputs.push(ActiveStageOutput::PointerDefault);
+                }
+                UpdateKind::PointerHidden => {
+                    stage_outputs.push(ActiveStageOutput::PointerHidden);
+                }
+                UpdateKind::PointerPosition { x, y } => {
+                    stage_outputs.push(ActiveStageOutput::PointerPosition { x, y });
+                }
+            }
         }
 
         Ok(stage_outputs)
@@ -82,4 +143,7 @@ pub enum ActiveStageOutput {
     ResponseFrame(Vec<u8>),
     GraphicsUpdate(InclusiveRectangle),
     Terminate,
+    PointerDefault,
+    PointerHidden,
+    PointerPosition { x: usize, y: usize },
 }
