@@ -3629,8 +3629,7 @@ dependencies = [
 [[package]]
 name = "sspi"
 version = "0.8.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a17c8f328c54d4dfb5956d93dc93356e74a07cf156c1ab64466d619bba255c27"
+source = "git+https://github.com/Devolutions/sspi-rs.git?rev=428e89ba7937819e0304c33df50aa2ae5e576156#428e89ba7937819e0304c33df50aa2ae5e576156"
 dependencies = [
  "async-dnssd",
  "bitflags 1.3.2",
