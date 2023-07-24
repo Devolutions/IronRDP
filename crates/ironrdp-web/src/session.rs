@@ -19,7 +19,7 @@ use wasm_bindgen_futures::spawn_local;
 use crate::error::{IronRdpError, IronRdpErrorKind};
 use crate::image::{extract_partial_image, RectInfo};
 use crate::input::InputTransaction;
-use crate::network_client::PlaceholderNetworkClientFactory;
+use crate::network_client::WasmNetworkClientFactory;
 use crate::websocket::WebSocketCompat;
 use crate::DesktopSize;
 
@@ -457,7 +457,7 @@ async fn connect(
 
     let mut connector = connector::ClientConnector::new(config)
         .with_server_name(&destination)
-        .with_credssp_client_factory(Box::new(PlaceholderNetworkClientFactory));
+        .with_credssp_client_factory(Box::new(WasmNetworkClientFactory));
 
     let upgraded = connect_rdcleanpath(&mut framed, &mut connector, destination, proxy_auth_token, pcb).await?;
 
