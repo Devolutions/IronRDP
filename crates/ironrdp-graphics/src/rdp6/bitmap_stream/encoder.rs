@@ -1,6 +1,6 @@
 use ironrdp_pdu::{
     bitmap::rdp6::{BitmapStream as BitmapStreamPdu, ColorPlanes},
-    encode,
+    cursor::WriteCursor,
 };
 use thiserror::Error;
 
@@ -8,8 +8,6 @@ use crate::rdp6::rle::{compress_8bpp_plane, RleError};
 
 #[derive(Debug, Error)]
 pub enum BitmapEncodeError {
-    #[error("Failed to encode bitmap")]
-    InvalidBitmap,
     #[error("Failed to rle compress")]
     RleFailed(RleError),
 }
@@ -127,10 +125,6 @@ impl AlphaChannel for BgrAChannels {
 }
 
 impl BitmapEncodeError {
-    fn invalid_bitmap<E>(_: E) -> Self {
-        Self::InvalidBitmap
-    }
-
     fn rle(e: RleError) -> Self {
         Self::RleFailed(e)
     }
@@ -139,16 +133,11 @@ impl BitmapEncodeError {
 pub struct BitmapStreamEncoder {
     width: usize,
     height: usize,
-    planes_buffer: Vec<u8>,
 }
 
 impl BitmapStreamEncoder {
     pub fn new(width: usize, height: usize) -> Self {
-        Self {
-            width,
-            height,
-            planes_buffer: Vec::new(),
-        }
+        Self { width, height }
     }
 
     pub fn encode_channels_stream<R, G, B>(
@@ -162,30 +151,32 @@ impl BitmapStreamEncoder {
         G: Iterator<Item = u8>,
         B: Iterator<Item = u8>,
     {
-        self.planes_buffer.clear();
+        let mut cursor = WriteCursor::new(dst);
+
+        let header = BitmapStreamPdu {
+            enable_rle_compression: rle,
+            use_alpha: false,
+            color_planes: ColorPlanes::Argb { data: &[] },
+        };
+
+        header.encode_header(&mut cursor).unwrap();
 
         match rle {
             true => {
-                let mut cursor = std::io::Cursor::new(&mut self.planes_buffer);
                 compress_8bpp_plane(r, &mut cursor, self.width, self.height).map_err(BitmapEncodeError::rle)?;
                 compress_8bpp_plane(g, &mut cursor, self.width, self.height).map_err(BitmapEncodeError::rle)?;
                 compress_8bpp_plane(b, &mut cursor, self.width, self.height).map_err(BitmapEncodeError::rle)?;
             }
 
             false => {
-                self.planes_buffer.extend(r.chain(g).chain(b));
+                for byte in r.chain(g).chain(b) {
+                    cursor.write_u8(byte);
+                }
+                cursor.write_u8(0u8);
             }
-        }
-
-        let header = BitmapStreamPdu {
-            enable_rle_compression: rle,
-            use_alpha: false,
-            color_planes: ColorPlanes::Argb {
-                data: &self.planes_buffer,
-            },
         };
 
-        encode::<BitmapStreamPdu>(&header, dst).map_err(BitmapEncodeError::invalid_bitmap)
+        Ok(cursor.pos())
     }
 
     pub fn encode_pixels_stream<'a, I, F>(
@@ -204,7 +195,6 @@ impl BitmapStreamEncoder {
 
         self.encode_channels_stream((r, g, b), dst, rle)
     }
-
 
     pub fn encode_bitmap<F>(&mut self, src: &[u8], dst: &mut [u8], rle: bool) -> Result<usize, BitmapEncodeError>
     where
@@ -231,11 +221,18 @@ impl BitmapStreamEncoder {
         B: Iterator<Item = u8>,
         A: Iterator<Item = u8>,
     {
-        self.planes_buffer.clear();
+        let mut cursor = WriteCursor::new(dst);
+
+        let header = BitmapStreamPdu {
+            enable_rle_compression: rle,
+            use_alpha: false,
+            color_planes: ColorPlanes::Argb { data: &[] },
+        };
+
+        header.encode_header(&mut cursor).unwrap();
 
         match rle {
             true => {
-                let mut cursor = std::io::Cursor::new(&mut self.planes_buffer);
                 compress_8bpp_plane(a, &mut cursor, self.width, self.height).map_err(BitmapEncodeError::rle)?;
                 compress_8bpp_plane(r, &mut cursor, self.width, self.height).map_err(BitmapEncodeError::rle)?;
                 compress_8bpp_plane(g, &mut cursor, self.width, self.height).map_err(BitmapEncodeError::rle)?;
@@ -243,19 +240,14 @@ impl BitmapStreamEncoder {
             }
 
             false => {
-                self.planes_buffer.extend(a.chain(r).chain(g).chain(b));
+                for byte in a.chain(r).chain(g).chain(b) {
+                    cursor.write_u8(byte);
+                }
+                cursor.write_u8(0u8);
             }
-        }
-
-        let header = BitmapStreamPdu {
-            enable_rle_compression: rle,
-            use_alpha: true,
-            color_planes: ColorPlanes::Argb {
-                data: &self.planes_buffer,
-            },
         };
 
-        encode::<BitmapStreamPdu>(&header, dst).map_err(BitmapEncodeError::invalid_bitmap)
+        Ok(cursor.pos())
     }
 
     pub fn encode_bitmap_alpha<F>(&mut self, src: &[u8], dst: &mut [u8], rle: bool) -> Result<usize, BitmapEncodeError>

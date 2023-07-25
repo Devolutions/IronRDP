@@ -1,6 +1,7 @@
-use std::io::{self, Read, Write};
+use std::io::{Read, Write};
 
 use byteorder::ReadBytesExt;
+use ironrdp_pdu::cursor::WriteCursor;
 use thiserror::Error;
 
 /// Maximum possible segment size is 47 (run_length = 2, raw_bytes_count = 15), which is treated as
@@ -226,7 +227,7 @@ impl RlePlaneEncoder {
         Self { width, height }
     }
 
-    pub fn encode(&self, mut src: impl Iterator<Item = u8>, dst: &mut impl Write) -> Result<usize, RleError> {
+    pub fn encode(&self, mut src: impl Iterator<Item = u8>, dst: &mut WriteCursor<'_>) -> Result<usize, RleError> {
         let mut written = 0;
 
         for _ in 0..self.height {
@@ -236,7 +237,7 @@ impl RlePlaneEncoder {
         Ok(written)
     }
 
-    fn encode_scanline(&self, mut src: impl Iterator<Item = u8>, dst: &mut impl Write) -> Result<usize, RleError> {
+    fn encode_scanline(&self, mut src: impl Iterator<Item = u8>, dst: &mut WriteCursor<'_>) -> Result<usize, RleError> {
         let mut written = 0;
 
         let Some(first) = src.next() else {
@@ -254,9 +255,7 @@ impl RlePlaneEncoder {
             } else {
                 match count {
                     3.. => {
-                        written += self
-                            .encode_segment(&raw, count, dst)
-                            .map_err(RleError::WriteCompressedData)?;
+                        written += self.encode_segment(&raw, count, dst);
                         raw.clear();
                     }
                     2 => raw.extend_from_slice(&[last, last]),
@@ -276,34 +275,32 @@ impl RlePlaneEncoder {
             count = 0;
         }
 
-        written += self
-            .encode_segment(&raw, count, dst)
-            .map_err(RleError::WriteCompressedData)?;
+        written += self.encode_segment(&raw, count, dst);
 
         Ok(written)
     }
 
-    fn encode_segment(&self, mut raw: &[u8], run: usize, dst: &mut impl Write) -> io::Result<usize> {
+    fn encode_segment(&self, mut raw: &[u8], run: usize, dst: &mut WriteCursor<'_>) -> usize {
         let mut extra_bytes = 0;
 
         while raw.len() > 15 {
-            extra_bytes += self.encode_segment(&raw[0..15], 0, dst)?;
+            extra_bytes += self.encode_segment(&raw[0..15], 0, dst);
             raw = &raw[15..];
         }
 
         let control = ((raw.len() as u8) << 4) + std::cmp::min(run, 15) as u8;
-        dst.write_all(&[control])?;
-        dst.write_all(raw)?;
+        dst.write_u8(control);
+        dst.write_slice(raw);
 
         if run > 15 {
             let last = raw.last().unwrap();
-            extra_bytes += self.encode_long_sequence(run - 15, *last, dst)?;
+            extra_bytes += self.encode_long_sequence(run - 15, *last, dst);
         }
 
-        Ok(1 + raw.len() + extra_bytes)
+        1 + raw.len() + extra_bytes
     }
 
-    fn encode_long_sequence(&self, mut run: usize, last: u8, dst: &mut impl Write) -> io::Result<usize> {
+    fn encode_long_sequence(&self, mut run: usize, last: u8, dst: &mut WriteCursor<'_>) -> usize {
         let mut written = 0;
 
         while run >= 16 {
@@ -313,7 +310,8 @@ impl RlePlaneEncoder {
             let n_run_length = current - c_raw_bytes * 16;
 
             let control = (n_run_length << 4) + c_raw_bytes;
-            written += dst.write(&[control])?;
+            dst.write_u8(control);
+            written += 1;
 
             run -= current as usize;
         }
@@ -321,21 +319,21 @@ impl RlePlaneEncoder {
         if run > 0 {
             match run {
                 short @ 1..=3 => {
-                    written += self.encode_segment(&vec![last; short], 0, dst)?;
+                    written += self.encode_segment(&vec![last; short], 0, dst);
                 }
                 long => {
-                    written += self.encode_segment(&[last], long - 1, dst)?;
+                    written += self.encode_segment(&[last], long - 1, dst);
                 }
             }
         }
 
-        Ok(written)
+        written
     }
 }
 
 pub fn compress_8bpp_plane(
     src: impl Iterator<Item = u8>,
-    mut dst: impl Write,
+    dst: &mut WriteCursor<'_>,
     width: impl Into<usize>,
     height: impl Into<usize>,
 ) -> Result<usize, RleError> {
@@ -344,7 +342,7 @@ pub fn compress_8bpp_plane(
 
     let iter = RleEncoderScanlineIterator::new(width, src);
 
-    RlePlaneEncoder::new(width, height).encode(iter, &mut dst)
+    RlePlaneEncoder::new(width, height).encode(iter, dst)
 }
 
 #[cfg(test)]
@@ -374,7 +372,7 @@ mod tests {
         width: impl Into<usize>,
         height: impl Into<usize>,
     ) -> Result<usize, RleError> {
-        compress_8bpp_plane(src.iter().copied(), dst, width, height)
+        compress_8bpp_plane(src.iter().copied(), &mut WriteCursor::new(dst), width, height)
     }
 
     #[test]
@@ -387,10 +385,10 @@ mod tests {
 
         let expected = &[0x13, 65, 0x34, 66, 66, 67, 0x10, 68];
 
-        let mut actual = Vec::new();
-        compress(&src, &mut actual, width, height).unwrap();
+        let mut compressed = vec![0; 255];
+        let len = compress(&src, &mut compressed, width, height).unwrap();
 
-        assert_eq!(actual, expected);
+        assert_eq!(&compressed[..len], expected);
     }
 
     #[test]
@@ -403,9 +401,10 @@ mod tests {
 
         let expected = &[0x1F, 0x41, 0xF2, 0x52];
 
-        let mut actual = Vec::new();
-        compress(&src, &mut actual, width, height).unwrap();
-        assert_eq!(actual, expected);
+        let mut compressed = vec![0; 255];
+        let len = compress(&src, &mut compressed, width, height).unwrap();
+
+        assert_eq!(&compressed[..len], expected);
     }
 
     #[test]
@@ -423,10 +422,10 @@ mod tests {
             0xAF,
         ];
 
-        let mut actual = Vec::new();
-        compress(&src, &mut actual, width, height).unwrap();
+        let mut compressed = vec![0; 255];
+        let len = compress(&src, &mut compressed, width, height).unwrap();
 
-        assert_eq!(actual, expected);
+        assert_eq!(&compressed[..len], expected);
     }
 
     #[test]
@@ -472,11 +471,11 @@ mod tests {
         let width = 100usize;
         let height = 1usize;
 
-        let mut compressed = Vec::new();
-        compress(&src, &mut compressed, width, height).unwrap();
+        let mut compressed = vec![0; 255];
+        let len = compress(&src, &mut compressed, width, height).unwrap();
 
         let mut actual = Vec::new();
-        decompress(&compressed, &mut actual, width, height).unwrap();
+        decompress(&compressed[..len], &mut actual, width, height).unwrap();
 
         assert_eq!(actual.as_slice(), src.as_slice());
     }
@@ -491,11 +490,11 @@ mod tests {
         let width = src.len();
         let height = 1usize;
 
-        let mut compressed = Vec::new();
-        compress(&src, &mut compressed, width, height).unwrap();
+        let mut compressed = vec![0; 255];
+        let len = compress(&src, &mut compressed, width, height).unwrap();
 
         let mut actual = Vec::new();
-        decompress(&compressed, &mut actual, width, height).unwrap();
+        decompress(&compressed[..len], &mut actual, width, height).unwrap();
 
         assert_eq!(actual.as_slice(), src.as_slice());
     }
@@ -510,11 +509,11 @@ mod tests {
         let width = 6usize;
         let height = 3usize;
 
-        let mut compressed = Vec::new();
-        compress(&src, &mut compressed, width, height).unwrap();
+        let mut compressed = vec![0; 255];
+        let len = compress(&src, &mut compressed, width, height).unwrap();
 
         let mut actual = Vec::new();
-        decompress(&compressed, &mut actual, width, height).unwrap();
+        decompress(&compressed[..len], &mut actual, width, height).unwrap();
 
         assert_eq!(actual.as_slice(), src.as_slice());
     }

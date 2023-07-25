@@ -53,6 +53,17 @@ impl<'en> PduEncode for BitmapUpdateData<'en> {
     }
 }
 
+impl<'en> BitmapUpdateData<'en> {
+    pub fn encode_header(rectangles: u16, dst: &mut crate::cursor::WriteCursor<'_>) -> PduResult<()> {
+        ensure_size!(in: dst, size: 2);
+
+        dst.write_u16(BitmapFlags::BITMAP_UPDATE_TYPE.bits());
+        dst.write_u16(rectangles);
+
+        Ok(())
+    }
+}
+
 impl<'de> PduDecode<'de> for BitmapUpdateData<'de> {
     fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
         ensure_fixed_part_size!(in: src);

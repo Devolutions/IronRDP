@@ -134,6 +134,31 @@ impl<'a> PduEncode for BitmapStream<'a> {
     }
 }
 
+impl<'a> BitmapStream<'a> {
+    pub fn encode_header(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        let mut header = ((self.enable_rle_compression as u8) << 4) | ((!self.use_alpha as u8) << 5);
+
+        if let ColorPlanes::AYCoCg {
+            color_loss_level,
+            use_chroma_subsampling,
+            ..
+        } = self.color_planes
+        {
+            header |= (color_loss_level & 0x07) | ((use_chroma_subsampling as u8) << 3);
+        }
+
+        ensure_size!(in: dst, size: self.header_size());
+
+        dst.write_u8(header);
+
+        Ok(())
+    }
+
+    pub fn header_size(&self) -> usize {
+        Self::FIXED_PART_SIZE
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use expect_test::{expect, Expect};
