@@ -1,7 +1,7 @@
 use std::borrow::Cow;
 
-use ironrdp_pdu::{PduParsing, rdp};
 use ironrdp_connector::{ConnectorError, ConnectorErrorExt, ConnectorResult};
+use ironrdp_pdu::{rdp, PduParsing};
 
 pub fn encode_send_data_indication<T>(
     initiator_id: u16,

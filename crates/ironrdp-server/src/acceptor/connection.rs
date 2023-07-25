@@ -61,12 +61,13 @@ impl ServerAcceptor {
 
     pub fn get_result(&mut self) -> Option<AcceptorResult> {
         match &self.state {
-            AcceptorState::Accepted { channels, client_capabilities } => {
-                Some(AcceptorResult {
-                    channels: channels.clone(),
-                    capabilities: client_capabilities.clone()
-                })
-            }
+            AcceptorState::Accepted {
+                channels,
+                client_capabilities,
+            } => Some(AcceptorResult {
+                channels: channels.clone(),
+                capabilities: client_capabilities.clone(),
+            }),
 
             _ => None,
         }
@@ -189,8 +190,8 @@ impl Sequence for ServerAcceptor {
     fn step(&mut self, input: &[u8], output: &mut Vec<u8>) -> ConnectorResult<Written> {
         let (written, next_state) = match std::mem::take(&mut self.state) {
             AcceptorState::InitiationWaitRequest => {
-                let connection_request = ironrdp_pdu::decode::<nego::ConnectionRequest>(input)
-                    .map_err(ConnectorError::pdu)?;
+                let connection_request =
+                    ironrdp_pdu::decode::<nego::ConnectionRequest>(input).map_err(ConnectorError::pdu)?;
 
                 debug!(message =? connection_request, "Received");
 
@@ -210,8 +211,7 @@ impl Sequence for ServerAcceptor {
 
                 debug!(message =? connection_confirm, "Send");
 
-                let written = ironrdp_pdu::encode_buf(&connection_confirm, output)
-                    .map_err(ConnectorError::pdu)?;
+                let written = ironrdp_pdu::encode_buf(&connection_confirm, output).map_err(ConnectorError::pdu)?;
 
                 (
                     Written::from_size(written)?,
@@ -260,7 +260,11 @@ impl Sequence for ServerAcceptor {
                 )
             }
 
-            AcceptorState::BasicSettingsSendResponse { requested_protocol, early_capability, channels } => {
+            AcceptorState::BasicSettingsSendResponse {
+                requested_protocol,
+                early_capability,
+                channels,
+            } => {
                 let channel_ids: Vec<u16> = channels.iter().map(|&(i, _)| i).collect();
                 let server_blocks = create_gcc_blocks(self.io_channel_id, channel_ids.clone(), requested_protocol);
                 let settings_response = mcs::ConnectResponse {
@@ -290,18 +294,33 @@ impl Sequence for ServerAcceptor {
                 )
             }
 
-            AcceptorState::ChannelConnection { early_capability, channels, mut connection } => {
+            AcceptorState::ChannelConnection {
+                early_capability,
+                channels,
+                mut connection,
+            } => {
                 let written = connection.step(input, output)?;
                 let state = if connection.is_done() {
-                    AcceptorState::RdpSecurityCommencement { early_capability, channels }
+                    AcceptorState::RdpSecurityCommencement {
+                        early_capability,
+                        channels,
+                    }
                 } else {
-                    AcceptorState::ChannelConnection { early_capability, channels, connection }
+                    AcceptorState::ChannelConnection {
+                        early_capability,
+                        channels,
+                        connection,
+                    }
                 };
 
                 (written, state)
             }
 
-            AcceptorState::RdpSecurityCommencement { early_capability, channels, .. } => (
+            AcceptorState::RdpSecurityCommencement {
+                early_capability,
+                channels,
+                ..
+            } => (
                 Written::Nothing,
                 AcceptorState::SecureSettingsExchange {
                     early_capability,
@@ -309,9 +328,11 @@ impl Sequence for ServerAcceptor {
                 },
             ),
 
-            AcceptorState::SecureSettingsExchange { early_capability, channels } => {
-                let data = pdu::decode::<pdu::mcs::SendDataRequest>(input)
-                    .map_err(ConnectorError::pdu)?;
+            AcceptorState::SecureSettingsExchange {
+                early_capability,
+                channels,
+            } => {
+                let data = pdu::decode::<pdu::mcs::SendDataRequest>(input).map_err(ConnectorError::pdu)?;
 
                 let client_info = rdp::ClientInfoPdu::from_buffer(Cursor::new(data.user_data))?;
 
@@ -326,7 +347,10 @@ impl Sequence for ServerAcceptor {
                 )
             }
 
-            AcceptorState::LicensingExchange { early_capability, channels } => {
+            AcceptorState::LicensingExchange {
+                early_capability,
+                channels,
+            } => {
                 let license = rdp::server_license::InitialServerLicenseMessage::new_status_valid_client_message();
 
                 debug!(message =? license, "Send");
@@ -343,7 +367,10 @@ impl Sequence for ServerAcceptor {
                 )
             }
 
-            AcceptorState::CapabilitiesSendServer { early_capability, channels } => {
+            AcceptorState::CapabilitiesSendServer {
+                early_capability,
+                channels,
+            } => {
                 let demand_active = rdp::headers::ShareControlHeader {
                     share_id: 0,
                     pdu_source: self.io_channel_id,
@@ -422,12 +449,23 @@ impl Sequence for ServerAcceptor {
                 )
             }
 
-            AcceptorState::ConnectionFinalization { mut finalization, channels, client_capabilities } => {
+            AcceptorState::ConnectionFinalization {
+                mut finalization,
+                channels,
+                client_capabilities,
+            } => {
                 let written = finalization.step(input, output)?;
                 let state = if finalization.is_done() {
-                    AcceptorState::Accepted { channels, client_capabilities }
+                    AcceptorState::Accepted {
+                        channels,
+                        client_capabilities,
+                    }
                 } else {
-                    AcceptorState::ConnectionFinalization { finalization, channels, client_capabilities }
+                    AcceptorState::ConnectionFinalization {
+                        finalization,
+                        channels,
+                        client_capabilities,
+                    }
                 };
 
                 (written, state)
