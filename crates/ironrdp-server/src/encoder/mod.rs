@@ -77,7 +77,7 @@ impl UpdateFragmenter {
         let header = FastPathHeader {
             flags: EncryptionFlags::empty(),
             data_length: update.size(),
-            forced_long_length: true,
+            forced_long_length: false,
         };
 
         header.encode(cursor).unwrap();

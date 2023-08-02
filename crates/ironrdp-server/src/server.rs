@@ -178,7 +178,7 @@ impl RdpServer {
                 match control.share_control_pdu {
                     rdp::headers::ShareControlPdu::Data(header) => match header.share_data_pdu {
                         rdp::headers::ShareDataPdu::Input(pdu) => {
-                            self.handle_input_even(pdu).await;
+                            self.handle_input_event(pdu).await;
                         }
 
                         unexpected => {
@@ -206,7 +206,7 @@ impl RdpServer {
         Ok(false)
     }
 
-    async fn handle_input_even(&mut self, input: InputEventPdu) {
+    async fn handle_input_event(&mut self, input: InputEventPdu) {
         for event in input.0 {
             match event {
                 ironrdp_pdu::input::InputEvent::ScanCode(key) => {

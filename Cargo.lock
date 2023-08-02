@@ -1710,7 +1710,6 @@ dependencies = [
  "ironrdp-graphics",
  "ironrdp-pdu",
  "ironrdp-tokio",
- "rustls 0.21.0",
  "tokio",
  "tokio-rustls 0.24.0",
  "tracing",
