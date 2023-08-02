@@ -22,10 +22,10 @@ use crate::{
     handler::RdpServerInputHandler,
 };
 
-pub struct RdpServer<H, D> {
+pub struct RdpServer {
     opts: RdpServerOptions,
-    handler: H,
-    display: D,
+    handler: Box<dyn RdpServerInputHandler>,
+    display: Box<dyn RdpServerDisplay>,
 }
 
 #[derive(Clone)]
@@ -40,16 +40,24 @@ pub enum RdpServerSecurity {
     SSL(TlsAcceptor),
 }
 
-impl<H, D> RdpServer<H, D>
-where
-    H: RdpServerInputHandler,
-    D: RdpServerDisplay,
-{
-    pub fn new(opts: RdpServerOptions, handler: H, display: D) -> Self {
-        Self { opts, handler, display }
+impl RdpServer {
+    pub fn new<H, D>(opts: RdpServerOptions, handler: H, display: D) -> Self
+    where
+        H: RdpServerInputHandler + 'static,
+        D: RdpServerDisplay + 'static,
+    {
+        Self {
+            opts,
+            handler: Box::new(handler),
+            display: Box::new(display),
+        }
     }
 
-    pub fn builder() -> builder::RdpServerBuilder<builder::WantsAddr, H, D> {
+    pub fn builder<H, D>() -> builder::RdpServerBuilder<builder::WantsAddr, H, D>
+    where
+        H: RdpServerInputHandler,
+        D: RdpServerDisplay,
+    {
         builder::RdpServerBuilder::new()
     }
 

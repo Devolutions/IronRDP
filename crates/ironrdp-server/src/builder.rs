@@ -110,8 +110,12 @@ impl<H, D> RdpServerBuilder<WantsDisplay<H>, H, D> {
     }
 }
 
-impl<H: RdpServerInputHandler, D: RdpServerDisplay> RdpServerBuilder<BuilderDone<H, D>, H, D> {
-    pub fn build(self) -> RdpServer<H, D> {
+impl<H, D> RdpServerBuilder<BuilderDone<H, D>, H, D>
+where
+    H: RdpServerInputHandler + 'static,
+    D: RdpServerDisplay + 'static,
+{
+    pub fn build(self) -> RdpServer {
         RdpServer::new(
             RdpServerOptions {
                 addr: self.state.addr,
