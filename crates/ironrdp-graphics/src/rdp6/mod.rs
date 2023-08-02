@@ -4,4 +4,4 @@ pub(crate) mod bitmap_stream;
 pub(crate) mod rle;
 
 pub use bitmap_stream::*;
-pub use rle::RleError;
+pub use rle::{RleDecodeError, RleEncodeError};

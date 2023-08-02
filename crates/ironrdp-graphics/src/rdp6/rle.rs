@@ -9,12 +9,9 @@ use thiserror::Error;
 const MAX_DECODED_SEGMENT_SIZE: usize = 47;
 
 #[derive(Debug, Error)]
-pub enum RleError {
+pub enum RleDecodeError {
     #[error("Failed to read RLE-compressed data: {0}")]
     ReadCompressedData(#[source] std::io::Error),
-
-    #[error("Failed to write RLE-compressed data: {0}")]
-    WriteCompressedData(#[source] std::io::Error),
 
     #[error("Failed to write decompressed data: {0}")]
     WriteDecompressedData(#[source] std::io::Error),
@@ -24,9 +21,15 @@ pub enum RleError {
 
     #[error("Decoded scanline segments length exceeds scanline length")]
     SegmentDoNotFitScanline,
+}
 
-    #[error("Not enough bytes in the uncompressed data")]
+#[derive(Debug, Error)]
+pub enum RleEncodeError {
+    #[error("Not enough data to compress")]
     NotEnoughBytes,
+
+    #[error("Destination buffer is too small")]
+    BufferTooSmall,
 }
 
 /// RLE-encoded color plane decoder implementation for RDP6 bitmap stream
@@ -54,11 +57,11 @@ impl RlePlaneDecoder {
         }
     }
 
-    fn decompress_next_segment(&mut self, mut src: &[u8]) -> Result<usize, RleError> {
-        let control_byte = src.read_u8().map_err(RleError::ReadCompressedData)?;
+    fn decompress_next_segment(&mut self, mut src: &[u8]) -> Result<usize, RleDecodeError> {
+        let control_byte = src.read_u8().map_err(RleDecodeError::ReadCompressedData)?;
 
         if control_byte == 0 {
-            return Err(RleError::InvalidSegmentHeader);
+            return Err(RleDecodeError::InvalidSegmentHeader);
         }
 
         let rle_bytes_field = control_byte & 0x0F;
@@ -73,7 +76,7 @@ impl RlePlaneDecoder {
         self.decoded_data_len = raw_bytes_count + run_length;
 
         src.read_exact(&mut self.decoded_data[..raw_bytes_count])
-            .map_err(RleError::ReadCompressedData)?;
+            .map_err(RleDecodeError::ReadCompressedData)?;
 
         if raw_bytes_count > 0 {
             // save last decoded byte for the next segments decoding
@@ -86,7 +89,7 @@ impl RlePlaneDecoder {
     }
 
     /// Decodes single RLE-encoded scanline, without performing delta transformation
-    fn decode_scanline(&mut self, src: &[u8], mut dst: &mut [u8]) -> Result<usize, RleError> {
+    fn decode_scanline(&mut self, src: &[u8], mut dst: &mut [u8]) -> Result<usize, RleDecodeError> {
         let mut decoded_columns = 0;
         let mut read_bytes = 0;
 
@@ -96,11 +99,11 @@ impl RlePlaneDecoder {
             read_bytes += self.decompress_next_segment(&src[read_bytes..])?;
 
             if decoded_columns + self.decoded_data_len > self.width {
-                return Err(RleError::SegmentDoNotFitScanline);
+                return Err(RleDecodeError::SegmentDoNotFitScanline);
             }
 
             dst.write_all(&self.decoded_data[..self.decoded_data_len])
-                .map_err(RleError::WriteDecompressedData)?;
+                .map_err(RleDecodeError::WriteDecompressedData)?;
 
             decoded_columns += self.decoded_data_len;
         }
@@ -129,7 +132,7 @@ impl RlePlaneDecoder {
             });
     }
 
-    pub fn decode(mut self, src: &[u8], dst: &mut [u8]) -> Result<usize, RleError> {
+    pub fn decode(mut self, src: &[u8], dst: &mut [u8]) -> Result<usize, RleDecodeError> {
         let mut read_bytes = 0;
 
         read_bytes += self.decode_scanline(src, dst)?;
@@ -159,7 +162,7 @@ pub fn decompress_8bpp_plane(
     dst: &mut [u8],
     width: impl Into<usize>,
     height: impl Into<usize>,
-) -> Result<usize, RleError> {
+) -> Result<usize, RleDecodeError> {
     let width = width.into();
     let height = height.into();
 
@@ -222,12 +225,26 @@ struct RlePlaneEncoder {
     height: usize,
 }
 
+macro_rules! ensure_size {
+    (dst: $buf:ident, size: $expected:expr) => {{
+        let available = $buf.len();
+        let needed = $expected;
+        if !(available >= needed) {
+            return None;
+        }
+    }};
+}
+
 impl RlePlaneEncoder {
     pub fn new(width: usize, height: usize) -> Self {
         Self { width, height }
     }
 
-    pub fn encode(&self, mut src: impl Iterator<Item = u8>, dst: &mut WriteCursor<'_>) -> Result<usize, RleError> {
+    pub fn encode(
+        &self,
+        mut src: impl Iterator<Item = u8>,
+        dst: &mut WriteCursor<'_>,
+    ) -> Result<usize, RleEncodeError> {
         let mut written = 0;
 
         for _ in 0..self.height {
@@ -237,12 +254,13 @@ impl RlePlaneEncoder {
         Ok(written)
     }
 
-    fn encode_scanline(&self, mut src: impl Iterator<Item = u8>, dst: &mut WriteCursor<'_>) -> Result<usize, RleError> {
+    fn encode_scanline(
+        &self,
+        mut src: impl Iterator<Item = u8>,
+        dst: &mut WriteCursor<'_>,
+    ) -> Result<usize, RleEncodeError> {
         let mut written = 0;
-
-        let Some(first) = src.next() else {
-            return Err(RleError::NotEnoughBytes);
-        };
+        let first = src.next().ok_or(RleEncodeError::NotEnoughBytes)?;
 
         let mut raw = vec![first];
         let mut seq = (first, 0);
@@ -255,7 +273,9 @@ impl RlePlaneEncoder {
             } else {
                 match count {
                     3.. => {
-                        written += self.encode_segment(&raw, count, dst);
+                        written += self
+                            .encode_segment(&raw, count, dst)
+                            .ok_or(RleEncodeError::BufferTooSmall)?;
                         raw.clear();
                     }
                     2 => raw.extend_from_slice(&[last, last]),
@@ -275,35 +295,42 @@ impl RlePlaneEncoder {
             count = 0;
         }
 
-        written += self.encode_segment(&raw, count, dst);
+        written += self
+            .encode_segment(&raw, count, dst)
+            .ok_or(RleEncodeError::BufferTooSmall)?;
 
         Ok(written)
     }
 
-    fn encode_segment(&self, mut raw: &[u8], run: usize, dst: &mut WriteCursor<'_>) -> usize {
+    fn encode_segment(&self, mut raw: &[u8], run: usize, dst: &mut WriteCursor<'_>) -> Option<usize> {
         let mut extra_bytes = 0;
 
         while raw.len() > 15 {
-            extra_bytes += self.encode_segment(&raw[0..15], 0, dst);
+            extra_bytes += self.encode_segment(&raw[0..15], 0, dst)?;
             raw = &raw[15..];
         }
 
         let control = ((raw.len() as u8) << 4) + std::cmp::min(run, 15) as u8;
+
+        ensure_size!(dst: dst, size: raw.len() + 1);
+
         dst.write_u8(control);
         dst.write_slice(raw);
 
         if run > 15 {
             let last = raw.last().unwrap();
-            extra_bytes += self.encode_long_sequence(run - 15, *last, dst);
+            extra_bytes += self.encode_long_sequence(run - 15, *last, dst)?;
         }
 
-        1 + raw.len() + extra_bytes
+        Some(1 + raw.len() + extra_bytes)
     }
 
-    fn encode_long_sequence(&self, mut run: usize, last: u8, dst: &mut WriteCursor<'_>) -> usize {
+    fn encode_long_sequence(&self, mut run: usize, last: u8, dst: &mut WriteCursor<'_>) -> Option<usize> {
         let mut written = 0;
 
         while run >= 16 {
+            ensure_size!(dst: dst, size: 1);
+
             let current = std::cmp::min(run, MAX_DECODED_SEGMENT_SIZE) as u8;
 
             let c_raw_bytes = std::cmp::min(current / 16, 2);
@@ -319,24 +346,29 @@ impl RlePlaneEncoder {
         if run > 0 {
             match run {
                 short @ 1..=3 => {
-                    written += self.encode_segment(&vec![last; short], 0, dst);
+                    written += self.encode_segment(&vec![last; short], 0, dst)?;
                 }
                 long => {
-                    written += self.encode_segment(&[last], long - 1, dst);
+                    written += self.encode_segment(&[last], long - 1, dst)?;
                 }
             }
         }
 
-        written
+        Some(written)
     }
 }
 
+/// Performs compression of 8bpp color plane pixel stream into a buffer.
+/// Pixel iterator must have at least width * height items.
+/// Destination slice must have enough space for the compressed data.
+///
+/// Returns number of bytes written to the dst buffer.
 pub fn compress_8bpp_plane(
     src: impl Iterator<Item = u8>,
     dst: &mut WriteCursor<'_>,
     width: impl Into<usize>,
     height: impl Into<usize>,
-) -> Result<usize, RleError> {
+) -> Result<usize, RleEncodeError> {
     let width = width.into();
     let height = height.into();
 
@@ -357,7 +389,7 @@ mod tests {
         dst: &mut Vec<u8>,
         width: impl Into<usize>,
         height: impl Into<usize>,
-    ) -> Result<usize, RleError> {
+    ) -> Result<usize, RleDecodeError> {
         let width = width.into();
         let height = height.into();
         // Ensure dest buffer have enough space for decompressed data
@@ -371,7 +403,7 @@ mod tests {
         dst: &mut Vec<u8>,
         width: impl Into<usize>,
         height: impl Into<usize>,
-    ) -> Result<usize, RleError> {
+    ) -> Result<usize, RleEncodeError> {
         compress_8bpp_plane(src.iter().copied(), &mut WriteCursor::new(dst), width, height)
     }
 
@@ -610,6 +642,42 @@ mod tests {
             )
         "#]]
         .assert_debug_eq(&decompress(&src, &mut actual, width, height));
+    }
+
+    #[test]
+    fn buffer_too_small_encode() {
+        let src = [
+            255, 255, 255, 255, 254, 253, 254, 192, 132, 96, 75, 25, 253, 140, 62, 14, 135, 193,
+        ];
+
+        let width = 6usize;
+        let height = 3usize;
+
+        let mut compressed = vec![0; 4];
+
+        expect![[r#"
+            Err(
+                BufferTooSmall,
+            )
+        "#]]
+        .assert_debug_eq(&compress(&src, &mut compressed, width, height));
+    }
+
+    #[test]
+    fn not_enough_bytes_to_encode() {
+        let src = [255, 255, 255, 255, 254, 253, 254, 192, 132, 96, 75, 25, 253];
+
+        let width = 8usize;
+        let height = 3usize;
+
+        let mut compressed = vec![0; 255];
+
+        expect![[r#"
+            Err(
+                NotEnoughBytes,
+            )
+        "#]]
+        .assert_debug_eq(&compress(&src, &mut compressed, width, height));
     }
 
     #[test]

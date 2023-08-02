@@ -4,12 +4,12 @@ use ironrdp_pdu::{
 };
 use thiserror::Error;
 
-use crate::rdp6::rle::{compress_8bpp_plane, RleError};
+use crate::rdp6::rle::{compress_8bpp_plane, RleEncodeError};
 
 #[derive(Debug, Error)]
 pub enum BitmapEncodeError {
     #[error("Failed to rle compress")]
-    RleFailed(RleError),
+    Rle(RleEncodeError),
 }
 
 pub trait ColorChannels {
@@ -125,8 +125,8 @@ impl AlphaChannel for BgrAChannels {
 }
 
 impl BitmapEncodeError {
-    fn rle(e: RleError) -> Self {
-        Self::RleFailed(e)
+    fn rle(e: RleEncodeError) -> Self {
+        Self::Rle(e)
     }
 }
 
