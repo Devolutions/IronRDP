@@ -24,6 +24,17 @@ impl BitmapUpdateData<'_> {
     const FIXED_PART_SIZE: usize = core::mem::size_of::<u16>() * 2;
 }
 
+impl BitmapUpdateData<'_> {
+    pub fn encode_header(rectangles: u16, dst: &mut crate::cursor::WriteCursor<'_>) -> PduResult<()> {
+        ensure_size!(in: dst, size: 2);
+
+        dst.write_u16(BitmapFlags::BITMAP_UPDATE_TYPE.bits());
+        dst.write_u16(rectangles);
+
+        Ok(())
+    }
+}
+
 impl<'en> PduEncode for BitmapUpdateData<'en> {
     fn encode(&self, dst: &mut crate::cursor::WriteCursor<'_>) -> PduResult<()> {
         ensure_size!(in: dst, size: self.size());
@@ -32,8 +43,7 @@ impl<'en> PduEncode for BitmapUpdateData<'en> {
             return Err(invalid_message_err!("numberRectangles", "rectangle count is too big"));
         }
 
-        dst.write_u16(BitmapFlags::BITMAP_UPDATE_TYPE.bits());
-        dst.write_u16(self.rectangles.len() as u16);
+        Self::encode_header(self.rectangles.len() as u16, dst)?;
 
         for bitmap_data in self.rectangles.iter() {
             bitmap_data.encode(dst)?;
@@ -50,17 +60,6 @@ impl<'en> PduEncode for BitmapUpdateData<'en> {
         self.rectangles
             .iter()
             .fold(Self::FIXED_PART_SIZE, |size, new| size + new.size())
-    }
-}
-
-impl<'en> BitmapUpdateData<'en> {
-    pub fn encode_header(rectangles: u16, dst: &mut crate::cursor::WriteCursor<'_>) -> PduResult<()> {
-        ensure_size!(in: dst, size: 2);
-
-        dst.write_u16(BitmapFlags::BITMAP_UPDATE_TYPE.bits());
-        dst.write_u16(rectangles);
-
-        Ok(())
     }
 }
 
