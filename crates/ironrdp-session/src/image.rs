@@ -3,6 +3,7 @@ use ironrdp_graphics::rectangle_processing::Region;
 use ironrdp_pdu::geometry::{InclusiveRectangle, Rectangle as _};
 
 use crate::SessionResult;
+use ironrdp_graphics::color_conversion::rdp_16bit_to_rgb;
 use ironrdp_graphics::pointer::DecodedPointer;
 use std::rc::Rc;
 
@@ -489,14 +490,13 @@ impl DecodedImage {
                 row.chunks_exact(SRC_COLOR_DEPTH)
                     .enumerate()
                     .for_each(|(col_idx, src_pixel)| {
-                        // TODO(@pacmancoder): Move color conversion elsewhere
-
                         let rgb16_value = u16::from_le_bytes(src_pixel.try_into().unwrap());
                         let dst_idx = ((top + row_idx) * image_width + left + col_idx) * DST_COLOR_DEPTH;
 
-                        self.data[dst_idx] = (((((rgb16_value >> 11) & 0x1f) * 527) + 23) >> 6) as u8;
-                        self.data[dst_idx + 1] = (((((rgb16_value >> 5) & 0x3f) * 259) + 33) >> 6) as u8;
-                        self.data[dst_idx + 2] = ((((rgb16_value & 0x1f) * 527) + 23) >> 6) as u8;
+                        let [r, g, b] = rdp_16bit_to_rgb(rgb16_value);
+                        self.data[dst_idx] = r;
+                        self.data[dst_idx + 1] = g;
+                        self.data[dst_idx + 2] = b;
                         self.data[dst_idx + 3] = 0xff;
                     })
             });

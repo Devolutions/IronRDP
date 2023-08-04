@@ -72,6 +72,7 @@ pub struct Config {
     pub dig_product_id: String,
     pub client_dir: String,
     pub platform: capability_sets::MajorPlatformType,
+    pub no_server_pointer: bool,
 }
 
 pub trait State: Send + Sync + core::fmt::Debug {

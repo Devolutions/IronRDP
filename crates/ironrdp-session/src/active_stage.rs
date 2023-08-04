@@ -11,6 +11,7 @@ use ironrdp_pdu::input::fast_path::{FastPathInput, FastPathInputEvent};
 pub struct ActiveStage {
     x224_processor: x224::Processor,
     fast_path_processor: fast_path::Processor,
+    no_server_pointer: bool,
 }
 
 impl ActiveStage {
@@ -26,12 +27,14 @@ impl ActiveStage {
         let fast_path_processor = fast_path::ProcessorBuilder {
             io_channel_id: connection_result.io_channel_id,
             user_channel_id: connection_result.user_channel_id,
+            no_server_pointer: connection_result.no_server_pointer,
         }
         .build();
 
         Self {
             x224_processor,
             fast_path_processor,
+            no_server_pointer: connection_result.no_server_pointer,
         }
     }
 
@@ -39,6 +42,8 @@ impl ActiveStage {
         self.fast_path_processor.update_mouse_pos(x, y);
     }
 
+    /// Encodes outgoing input events and modifies image if necessary (e.g for client-side pointer
+    /// rendering).
     pub fn process_fastpath_input(
         &mut self,
         image: &mut DecodedImage,
@@ -61,6 +66,11 @@ impl ActiveStage {
             .map_err(|e| custom_err!("FastPathInput encode", e))?;
         output.push(ActiveStageOutput::ResponseFrame(frame));
 
+        // If pointer rendering is disabled - we can skip the rest
+        if self.no_server_pointer {
+            return Ok(output);
+        }
+
         // If mouse was moved by client - we should update framebuffer to reflect new
         // pointer position
         let mouse_pos = events.iter().find_map(|event| match event {
@@ -82,6 +92,7 @@ impl ActiveStage {
         Ok(output)
     }
 
+    /// Process a frame received from the client.
     pub fn process(
         &mut self,
         image: &mut DecodedImage,

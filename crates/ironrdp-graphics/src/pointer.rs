@@ -1,21 +1,30 @@
+//! This module implements logic to decode pointer PDUs into RGBA bitmaps ready for rendering.
+//!
+//! #### References:
+//! - Drawing pointers: https://learn.microsoft.com/en-us/windows-hardware/drivers/display/pointer-drawing
+//! - Drawing color pointers: https://learn.microsoft.com/en-us/windows-hardware/drivers/display/drawing-color-pointers
+//! -Drawing monochrome pointers https://learn.microsoft.com/en-us/windows-hardware/drivers/display/drawing-monochrome-pointers
+//!
+//!
+//! #### Notes on xor/and masks encoding:
+//! RDP's pointer representation is a bit weird. It uses two masks to represent a pointer -
+//! andMask and xorMask. Xor mask is used as a base color for a pointer pixel, and andMask
+//! mask is used co control pixel's full transparency (`src_color.a = 0`), full opacity
+//! (`src_color.a = 255`) or pixel invertion (`dst_color.rgb = vec3(255) - dst_color.rgb`).
+//!
+//! Xor basks could be 1, 8, 16, 24 or 32 bits per pixel, and andMask is always 1 bit per pixel.
+//!
+//! Rules for decoding masks:
+//! - `andMask == 0` -> dst_color Copy pixel from xorMask
+//! - andMask == 1, xorMask == 0(black color) -> Transparent pixel
+//! - andMask == 1, xorMask == 1(white color) -> Pixel is inverted
+
+use crate::color_conversion::rdp_16bit_to_rgb;
 use ironrdp_pdu::{
     cursor::ReadCursor,
     pointer::{ColorPointerAttribute, LargePointerAttribute, PointerAttribute},
 };
 use thiserror::Error;
-
-/// References:
-/// Drawing pointers: https://learn.microsoft.com/en-us/windows-hardware/drivers/display/pointer-drawing
-/// Drawing color pointers: https://learn.microsoft.com/en-us/windows-hardware/drivers/display/drawing-color-pointers
-/// Drawing monochrome pointers https://learn.microsoft.com/en-us/windows-hardware/drivers/display/drawing-monochrome-pointers
-///
-///
-/// andMask is always 1bpp.
-/// andMask == 0 -> Copy pixel from xorMask
-/// andMask == 1, xorMask == 0 -> Transparent pixel
-/// andMask == 1, xorMask == 1 -> Pixel is inverted
-///
-/// Input: andMask, xorMask, lastFrame -> Output: pixelColor, invertionMask
 
 #[derive(Debug, Error)]
 pub enum PointerError {
@@ -29,6 +38,7 @@ pub enum PointerError {
     Pdu(#[from] ironrdp_pdu::PduError),
 }
 
+/// Represents RDP pointer in decoded form (color channels stored as RGBA pre-multiplied values)
 #[derive(Debug)]
 pub struct DecodedPointer {
     pub width: usize,
@@ -271,7 +281,8 @@ impl ColorStrideReader {
                     16 => {
                         *read_stide_bytes += 2;
                         let color_16bit = cursor.read_u16();
-                        rgb16_to_rgba32(color_16bit)
+                        let [r, g, b] = rdp_16bit_to_rgb(color_16bit);
+                        [r, g, b, 0xff]
                     }
                     24 => {
                         *read_stide_bytes += 3;
@@ -304,67 +315,6 @@ fn bit_stride_size_align_u8(size_bits: usize) -> usize {
 
 fn bit_stride_size_align_u16(size_bits: usize) -> usize {
     ((size_bits + 15) / 16) * 2
-}
-
-// TODO: Move to more general module
-fn rgb16_to_rgba32(color: u16) -> [u8; 4] {
-    let r = (((((color >> 11) & 0x1f) * 527) + 23) >> 6) as u8;
-    let g = (((((color >> 5) & 0x3f) * 259) + 33) >> 6) as u8;
-    let b = ((((color & 0x1f) * 527) + 23) >> 6) as u8;
-
-    [r, g, b, 0xff]
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn bitmask_alignment_16() {
-        assert_eq!(bit_stride_size_align_u16(0), 0);
-        assert_eq!(bit_stride_size_align_u16(1), 2);
-        assert_eq!(bit_stride_size_align_u16(2), 2);
-        assert_eq!(bit_stride_size_align_u16(15), 2);
-        assert_eq!(bit_stride_size_align_u16(16), 2);
-        assert_eq!(bit_stride_size_align_u16(17), 4);
-        assert_eq!(bit_stride_size_align_u16(31), 4);
-        assert_eq!(bit_stride_size_align_u16(32), 4);
-        assert_eq!(bit_stride_size_align_u16(33), 6);
-    }
-
-    #[test]
-    fn bitmask_alignment_8() {
-        assert_eq!(bit_stride_size_align_u8(0), 0);
-        assert_eq!(bit_stride_size_align_u8(1), 1);
-        assert_eq!(bit_stride_size_align_u8(2), 1);
-        assert_eq!(bit_stride_size_align_u8(15), 2);
-        assert_eq!(bit_stride_size_align_u8(16), 2);
-        assert_eq!(bit_stride_size_align_u8(17), 3);
-        assert_eq!(bit_stride_size_align_u8(31), 4);
-        assert_eq!(bit_stride_size_align_u8(32), 4);
-        assert_eq!(bit_stride_size_align_u8(33), 5);
-    }
-
-    #[test]
-    fn bitmask_reader() {
-        let mut reader = BitmaskStrideReader::new(Stride::from_bits(13));
-        let cursor = &mut ReadCursor::new(&[0b11001101, 0b01101001]);
-
-        assert_eq!(reader.next_bit(cursor), 1);
-        assert_eq!(reader.next_bit(cursor), 1);
-        assert_eq!(reader.next_bit(cursor), 0);
-        assert_eq!(reader.next_bit(cursor), 0);
-        assert_eq!(reader.next_bit(cursor), 1);
-        assert_eq!(reader.next_bit(cursor), 1);
-        assert_eq!(reader.next_bit(cursor), 0);
-        assert_eq!(reader.next_bit(cursor), 1);
-
-        assert_eq!(reader.next_bit(cursor), 0);
-        assert_eq!(reader.next_bit(cursor), 1);
-        assert_eq!(reader.next_bit(cursor), 1);
-        assert_eq!(reader.next_bit(cursor), 0);
-        assert_eq!(reader.next_bit(cursor), 1);
-    }
 }
 
 /// Message-agnostic pointer data.

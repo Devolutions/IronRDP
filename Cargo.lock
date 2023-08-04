@@ -1679,6 +1679,7 @@ dependencies = [
  "ironrdp-session",
  "lazy_static",
  "paste",
+ "png",
  "pretty_assertions",
  "proptest",
  "rdp-rs",

@@ -32,6 +32,7 @@ pub struct Processor {
     pointer_cache: PointerCache,
     use_system_pointer: bool,
     mouse_pos_update: Option<(usize, usize)>,
+    no_server_pointer: bool,
 }
 
 impl Processor {
@@ -39,7 +40,7 @@ impl Processor {
         self.mouse_pos_update = Some((x, y));
     }
 
-    // Returns true if image buffer was updated, false otherwise
+    /// Process input fast path frame and return the updated region of the image.
     pub fn process(
         &mut self,
         image: &mut DecodedImage,
@@ -169,6 +170,10 @@ impl Processor {
                 processor_updates.push(update_kind);
             }
             Ok(FastPathUpdate::Pointer(update)) => {
+                if self.no_server_pointer {
+                    return Ok(processor_updates);
+                }
+
                 match update {
                     PointerUpdateData::SetHidden => {
                         processor_updates.push(UpdateKind::PointerHidden);
@@ -249,7 +254,7 @@ impl Processor {
                     PointerUpdateData::Large(pointer) => {
                         let cache_index = pointer.cache_index;
 
-                        let decoded_pointer = Rc::new(
+                        let decoded_pointer: Rc<DecodedPointer> = Rc::new(
                             DecodedPointer::decode_large_pointer_attribute(&pointer)
                                 .expect("Failed to decode large pointer attribute"),
                         );
@@ -336,6 +341,7 @@ impl Processor {
 pub struct ProcessorBuilder {
     pub io_channel_id: u16,
     pub user_channel_id: u16,
+    pub no_server_pointer: bool,
 }
 
 impl ProcessorBuilder {
@@ -348,6 +354,7 @@ impl ProcessorBuilder {
             pointer_cache: PointerCache::default(),
             use_system_pointer: true,
             mouse_pos_update: None,
+            no_server_pointer: self.no_server_pointer,
         }
     }
 }
