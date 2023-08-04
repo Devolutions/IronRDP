@@ -40,7 +40,7 @@ impl Processor {
         self.mouse_pos_update = Some((x, y));
     }
 
-    /// Process input fast path frame and return the updated region of the image.
+    /// Process input fast path frame and return list of updates.
     pub fn process(
         &mut self,
         image: &mut DecodedImage,
@@ -221,7 +221,7 @@ impl Processor {
                         let cache_index = cached.cache_index;
 
                         if let Some(cached_pointer) = self.pointer_cache.get(cache_index as usize) {
-                            // Disable syste pointer
+                            // Disable system pointer
                             processor_updates.push(UpdateKind::PointerHidden);
                             self.use_system_pointer = false;
                             // Send graphics update

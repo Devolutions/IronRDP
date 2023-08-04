@@ -26,7 +26,7 @@ pub struct DecodedImage {
     pointer_y: u16,
 
     pointer: Option<Rc<DecodedPointer>>,
-    /// Image data, overriden by pointer. Used to restore image after pointer was hidden or moved
+    /// Image data, overridden by pointer. Used to restore image after pointer was hidden or moved
     pointer_backbuffer: Vec<u8>,
     /// Whether to show pointer or not
     show_pointer: bool,

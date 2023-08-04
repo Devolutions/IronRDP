@@ -84,7 +84,7 @@ impl ActiveStage {
             None => return Ok(output),
         };
 
-        // Graphics update is only sent when update is visualy changed the framebuffer
+        // Graphics update is only sent when update is visually changed the framebuffer
         if let Some(rect) = image.move_pointer(mouse_x as u16, mouse_y as u16)? {
             output.push(ActiveStageOutput::GraphicsUpdate(rect));
         }

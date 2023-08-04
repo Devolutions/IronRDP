@@ -67,7 +67,7 @@ fn new_pointer_32bpp() {
 }
 
 #[test]
-fn large_poiner_32bpp() {
+fn large_pointer_32bpp() {
     let data = include_bytes!("../../test_data/pdu/pointer/large_pointer_32bpp.bin");
     let mut parsed = ironrdp_pdu::decode::<LargePointerAttribute>(data).unwrap();
     let decoded = DecodedPointer::decode_large_pointer_attribute(&parsed).unwrap();
