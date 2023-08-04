@@ -404,7 +404,7 @@ impl Session {
             trace!("Inputs: {inputs:?}");
 
             self.input_events_tx
-                .unbounded_send(inputs.clone())
+                .unbounded_send(inputs)
                 .context("Send input events to writer task")?;
         }
 
