@@ -4,7 +4,7 @@ use ironrdp_graphics::color_conversion::{self, YCbCrBuffer};
 use ironrdp_graphics::rectangle_processing::Region;
 use ironrdp_graphics::{dwt, quantization, rlgr, subband_reconstruction};
 use ironrdp_pdu::codecs::rfx::{self, EntropyAlgorithm, Headers, Quant, RfxRectangle, Tile};
-use ironrdp_pdu::geometry::InclusiveRectangle;
+use ironrdp_pdu::geometry::{InclusiveRectangle, Rectangle};
 use ironrdp_pdu::PduBufferParsing;
 
 use crate::image::DecodedImage;
@@ -122,6 +122,8 @@ impl DecodingContext {
         let clipping_rectangles = clipping_rectangles(region.rectangles.as_slice(), destination, width, height);
         trace!("Clipping rectangles: {:?}", clipping_rectangles);
 
+        let mut final_update_rectangle = clipping_rectangles.extents.clone();
+
         for (update_rectangle, tile_data) in tiles_to_rectangles(tile_set.tiles.as_slice(), destination)
             .zip(map_tiles_data(tile_set.tiles.as_slice(), tile_set.quants.as_slice()))
         {
@@ -133,19 +135,21 @@ impl DecodingContext {
                 self.decoding_tiles.ycbcr_temp_buffer.as_mut(),
             )?;
 
-            image.apply_tile(
+            let current_update_rectangle = image.apply_tile(
                 &self.decoding_tiles.tile_output,
                 &clipping_rectangles,
                 &update_rectangle,
                 width,
             )?;
+
+            final_update_rectangle = final_update_rectangle.union(&current_update_rectangle);
         }
 
         if self.context.flags.contains(rfx::OperatingMode::IMAGE_MODE) {
             self.state = SequenceState::HeaderMessages;
         }
 
-        Ok((frame_begin.index, clipping_rectangles.extents))
+        Ok((frame_begin.index, final_update_rectangle))
     }
 }
 

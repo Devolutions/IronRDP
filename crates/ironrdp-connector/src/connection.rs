@@ -16,6 +16,7 @@ use crate::{
 #[derive(Clone, Copy, Debug)]
 pub struct CredsspTsRequestHint;
 
+pub const DEFAULT_POINTER_CACHE_SIZE: u16 = 32;
 pub const CREDSSP_TS_REQUEST_HINT: CredsspTsRequestHint = CredsspTsRequestHint;
 
 impl PduHint for CredsspTsRequestHint {
@@ -47,6 +48,7 @@ pub struct ConnectionResult {
     pub static_channels: StaticChannels,
     pub desktop_size: DesktopSize,
     pub graphics_config: Option<crate::GraphicsConfig>,
+    pub no_server_pointer: bool,
 }
 
 #[derive(Default, Debug)]
@@ -764,6 +766,7 @@ impl Sequence for ClientConnector {
                             static_channels,
                             desktop_size,
                             graphics_config: self.config.graphics.clone(),
+                            no_server_pointer: self.config.no_server_pointer,
                         },
                     }
                 } else {
@@ -977,8 +980,9 @@ fn create_client_confirm_active(
             keyboard_ime_filename: config.ime_file_name.clone(),
         }),
         CapabilitySet::Pointer(Pointer {
-            color_pointer_cache_size: 0,
-            pointer_cache_size: 0,
+            // Pointer cache should be set to non-zero value to enable client-side pointer rendering.
+            color_pointer_cache_size: DEFAULT_POINTER_CACHE_SIZE,
+            pointer_cache_size: DEFAULT_POINTER_CACHE_SIZE,
         }),
         CapabilitySet::Brush(Brush {
             support_level: SupportLevel::Default,
@@ -1007,7 +1011,10 @@ fn create_client_confirm_active(
             flags: SoundFlags::empty(),
         }),
         CapabilitySet::LargePointer(LargePointer {
-            flags: LargePointerSupportFlags::UP_TO_96X96_PIXELS,
+            // Setting `LargePointerSupportFlags::UP_TO_384X384_PIXELS` allows server to send
+            // `TS_FP_LARGEPOINTERATTRIBUTE` update messages, which are required for client-side
+            // rendering of pointers bigger than 96x96 pixels.
+            flags: LargePointerSupportFlags::UP_TO_384X384_PIXELS,
         }),
         CapabilitySet::SurfaceCommands(SurfaceCommands {
             flags: CmdFlags::SET_SURFACE_BITS | CmdFlags::STREAM_SURFACE_BITS | CmdFlags::FRAME_MARKER,

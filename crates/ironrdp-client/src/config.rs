@@ -211,6 +211,11 @@ struct Args {
     #[clap(long)]
     color_depth: Option<u32>,
 
+    /// Ignore mouse pointer messages sent by the server. Increases performance when enabled, as the
+    /// client could skip costly software rendering of the pointer with alpha blending
+    #[clap(long)]
+    no_server_pointer: bool,
+
     /// Enabled capability versions. Each bit represents enabling a capability version
     /// starting from V8 to V10_7
     #[clap(long, value_parser = parse_hex, default_value_t = 0)]
@@ -303,6 +308,7 @@ impl Config {
                 whoami::Platform::Android => MajorPlatformType::Android,
                 _ => MajorPlatformType::Unspecified,
             },
+            no_server_pointer: args.no_server_pointer,
         };
 
         Ok(Self {

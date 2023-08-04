@@ -1492,7 +1492,7 @@ mod tests {
 
     #[test]
     fn intersect_rectangle_returns_empty_region_for_empty_intersection_region() {
-        let region = Region {
+        let expected_region = Region {
             extents: InclusiveRectangle {
                 left: 0,
                 top: 0,
@@ -1501,7 +1501,6 @@ mod tests {
             },
             rectangles: vec![],
         };
-        let expected_region = region.clone();
         let input_rectangle = InclusiveRectangle {
             left: 5,
             top: 2,
@@ -1509,7 +1508,7 @@ mod tests {
             bottom: 3,
         };
 
-        let actual_region = region.intersect_rectangle(&input_rectangle);
+        let actual_region = expected_region.intersect_rectangle(&input_rectangle);
         assert_eq!(expected_region, actual_region);
     }
 

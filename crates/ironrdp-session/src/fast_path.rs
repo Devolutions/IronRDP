@@ -3,30 +3,58 @@ use ironrdp_graphics::rle::RlePixelFormat;
 use ironrdp_pdu::codecs::rfx::FrameAcknowledgePdu;
 use ironrdp_pdu::fast_path::{FastPathHeader, FastPathUpdate, FastPathUpdatePdu, Fragmentation};
 use ironrdp_pdu::geometry::{InclusiveRectangle, Rectangle as _};
+use ironrdp_pdu::pointer::PointerUpdateData;
 use ironrdp_pdu::rdp::headers::ShareDataPdu;
 use ironrdp_pdu::surface_commands::{FrameAction, FrameMarkerPdu, SurfaceCommand};
 use ironrdp_pdu::{decode_cursor, PduErrorKind};
 
 use crate::image::DecodedImage;
+use crate::pointer::PointerCache;
 use crate::utils::CodecId;
 use crate::{rfx, SessionError, SessionErrorExt, SessionResult};
+use ironrdp_graphics::pointer::DecodedPointer;
 use ironrdp_pdu::cursor::ReadCursor;
+use std::rc::Rc;
+
+pub enum UpdateKind {
+    None,
+    Region(InclusiveRectangle),
+    PointerDefault,
+    PointerHidden,
+    PointerPosition { x: usize, y: usize },
+}
 
 pub struct Processor {
     complete_data: CompleteData,
     rfx_handler: rfx::DecodingContext,
     marker_processor: FrameMarkerProcessor,
     bitmap_stream_decoder: BitmapStreamDecoder,
+    pointer_cache: PointerCache,
+    use_system_pointer: bool,
+    mouse_pos_update: Option<(usize, usize)>,
+    no_server_pointer: bool,
 }
 
 impl Processor {
-    // Returns true if image buffer was updated, false otherwise
+    pub fn update_mouse_pos(&mut self, x: usize, y: usize) {
+        self.mouse_pos_update = Some((x, y));
+    }
+
+    /// Process input fast path frame and return list of updates.
     pub fn process(
         &mut self,
         image: &mut DecodedImage,
         input: &[u8],
         output: &mut Vec<u8>,
-    ) -> SessionResult<Option<InclusiveRectangle>> {
+    ) -> SessionResult<Vec<UpdateKind>> {
+        let mut processor_updates = Vec::new();
+
+        if let Some((x, y)) = self.mouse_pos_update.take() {
+            if let Some(rect) = image.move_pointer(x as u16, y as u16)? {
+                processor_updates.push(UpdateKind::Region(rect));
+            }
+        }
+
         let mut input = ReadCursor::new(input);
 
         let header = decode_cursor::<FastPathHeader>(&mut input).map_err(SessionError::pdu)?;
@@ -42,7 +70,7 @@ impl Processor {
         let update_code = update_pdu.update_code;
 
         let Some(data) = processed_complete_data else {
-            return Ok(None);
+            return Ok(vec![]);
         };
 
         let update = FastPathUpdate::decode_with_code(data.as_slice(), update_code);
@@ -51,13 +79,13 @@ impl Processor {
             Ok(FastPathUpdate::SurfaceCommands(surface_commands)) => {
                 trace!("Received Surface Commands: {} pieces", surface_commands.len());
                 let update_region = self.process_surface_commands(image, output, surface_commands)?;
-                Ok(Some(update_region))
+                processor_updates.push(UpdateKind::Region(update_region));
             }
             Ok(FastPathUpdate::Bitmap(bitmap_update)) => {
                 trace!("Received bitmap update");
 
                 let mut buf = Vec::new();
-                let mut update_rectangle: Option<InclusiveRectangle> = None;
+                let mut update_kind = UpdateKind::None;
 
                 for update in bitmap_update.rectangles {
                     trace!("{update:?}");
@@ -66,7 +94,7 @@ impl Processor {
                     // Bitmap data is either compressed or uncompressed, depending
                     // on whether the BITMAP_COMPRESSION flag is present in the
                     // flags field.
-                    if update
+                    let update_rectangle = if update
                         .compression_flags
                         .contains(ironrdp_pdu::bitmap::Compression::BITMAP_COMPRESSION)
                     {
@@ -82,11 +110,10 @@ impl Processor {
                                 update.width as usize,
                                 update.height as usize,
                             ) {
-                                Ok(()) => {
-                                    image.apply_rgb24_bitmap(&buf, &update.rectangle);
-                                }
+                                Ok(()) => image.apply_rgb24_bitmap(&buf, &update.rectangle)?,
                                 Err(err) => {
                                     warn!("Invalid RDP6_BITMAP_STREAM: {err}");
+                                    update.rectangle.clone()
                                 }
                             }
                         } else {
@@ -102,16 +129,18 @@ impl Processor {
                                 update.height,
                                 update.bits_per_pixel,
                             ) {
-                                Ok(RlePixelFormat::Rgb16) => {
-                                    image.apply_rgb16_bitmap(&buf, &update.rectangle);
-                                }
+                                Ok(RlePixelFormat::Rgb16) => image.apply_rgb16_bitmap(&buf, &update.rectangle)?,
 
                                 // TODO: support other pixel formats…
                                 Ok(format @ (RlePixelFormat::Rgb8 | RlePixelFormat::Rgb15 | RlePixelFormat::Rgb24)) => {
                                     warn!("Received RLE-compressed bitmap with unsupported color depth: {format:?}");
+                                    update.rectangle.clone()
                                 }
 
-                                Err(e) => warn!("Invalid RLE-compressed bitmap: {e}"),
+                                Err(e) => {
+                                    warn!("Invalid RLE-compressed bitmap: {e}");
+                                    update.rectangle.clone()
+                                }
                             }
                         }
                     } else {
@@ -121,34 +150,134 @@ impl Processor {
                         trace!("Uncompressed raw bitmap");
 
                         match update.bits_per_pixel {
-                            16 => image.apply_rgb16_bitmap(update.bitmap_data, &update.rectangle),
+                            16 => image.apply_rgb16_bitmap(update.bitmap_data, &update.rectangle)?,
                             // TODO: support other pixel formats…
-                            unsupported => warn!("Invalid raw bitmap with {unsupported} bytes per pixels"),
+                            unsupported => {
+                                warn!("Invalid raw bitmap with {unsupported} bytes per pixels");
+                                update.rectangle.clone()
+                            }
                         }
-                    }
+                    };
 
-                    match update_rectangle {
-                        Some(current) => update_rectangle = Some(current.union(&update.rectangle)),
-                        None => update_rectangle = Some(update.rectangle),
+                    match update_kind {
+                        UpdateKind::Region(current) => {
+                            update_kind = UpdateKind::Region(current.union(&update_rectangle))
+                        }
+                        _ => update_kind = UpdateKind::Region(update_rectangle),
                     }
                 }
 
-                Ok(update_rectangle)
+                processor_updates.push(update_kind);
             }
-            Ok(FastPathUpdate::Pointer(_)) => {
-                // TODO(@pacmancoder): Implement pointer update
-                trace!("Received pointer update");
-                Ok(None)
+            Ok(FastPathUpdate::Pointer(update)) => {
+                if self.no_server_pointer {
+                    return Ok(processor_updates);
+                }
+
+                match update {
+                    PointerUpdateData::SetHidden => {
+                        processor_updates.push(UpdateKind::PointerHidden);
+                        if !self.use_system_pointer {
+                            self.use_system_pointer = true;
+                            if let Some(rect) = image.hide_pointer()? {
+                                processor_updates.push(UpdateKind::Region(rect));
+                            }
+                        }
+                    }
+                    PointerUpdateData::SetDefault => {
+                        processor_updates.push(UpdateKind::PointerDefault);
+                        if !self.use_system_pointer {
+                            self.use_system_pointer = true;
+                            if let Some(rect) = image.hide_pointer()? {
+                                processor_updates.push(UpdateKind::Region(rect));
+                            }
+                        }
+                    }
+                    PointerUpdateData::SetPosition(position) => {
+                        if self.use_system_pointer {
+                            processor_updates.push(UpdateKind::PointerPosition {
+                                x: position.x as usize,
+                                y: position.y as usize,
+                            });
+                        } else if let Some(rect) = image.move_pointer(position.x, position.y)? {
+                            processor_updates.push(UpdateKind::Region(rect));
+                        }
+                    }
+                    PointerUpdateData::Color(pointer) => {
+                        let cache_index = pointer.cache_index;
+
+                        let decoded_pointer = Rc::new(
+                            DecodedPointer::decode_color_pointer_attribute(&pointer)
+                                .expect("Failed to decode color pointer attribute"),
+                        );
+
+                        let _ = self.pointer_cache.insert(cache_index as usize, decoded_pointer.clone());
+
+                        if let Some(rect) = image.update_pointer(decoded_pointer)? {
+                            processor_updates.push(UpdateKind::Region(rect));
+                        }
+                    }
+                    PointerUpdateData::Cached(cached) => {
+                        let cache_index = cached.cache_index;
+
+                        if let Some(cached_pointer) = self.pointer_cache.get(cache_index as usize) {
+                            // Disable system pointer
+                            processor_updates.push(UpdateKind::PointerHidden);
+                            self.use_system_pointer = false;
+                            // Send graphics update
+                            if let Some(rect) = image.update_pointer(cached_pointer)? {
+                                processor_updates.push(UpdateKind::Region(rect));
+                            } else {
+                                // In case pointer was hidden previously
+                                if let Some(rect) = image.show_pointer()? {
+                                    processor_updates.push(UpdateKind::Region(rect));
+                                }
+                            }
+                        } else {
+                            eprintln!("Cached pointer not found {}", cache_index);
+                        }
+                    }
+                    PointerUpdateData::New(pointer) => {
+                        let cache_index = pointer.color_pointer.cache_index;
+
+                        let decoded_pointer = Rc::new(
+                            DecodedPointer::decode_pointer_attribute(&pointer)
+                                .expect("Failed to decode pointer attribute"),
+                        );
+
+                        let _ = self.pointer_cache.insert(cache_index as usize, decoded_pointer.clone());
+
+                        if let Some(rect) = image.update_pointer(decoded_pointer)? {
+                            processor_updates.push(UpdateKind::Region(rect));
+                        }
+                    }
+                    PointerUpdateData::Large(pointer) => {
+                        let cache_index = pointer.cache_index;
+
+                        let decoded_pointer: Rc<DecodedPointer> = Rc::new(
+                            DecodedPointer::decode_large_pointer_attribute(&pointer)
+                                .expect("Failed to decode large pointer attribute"),
+                        );
+
+                        let _ = self.pointer_cache.insert(cache_index as usize, decoded_pointer.clone());
+
+                        if let Some(rect) = image.update_pointer(decoded_pointer)? {
+                            processor_updates.push(UpdateKind::Region(rect));
+                        }
+                    }
+                };
             }
             Err(e) => {
                 if let PduErrorKind::InvalidMessage { field, reason } = e.kind {
                     warn!(field, reason, "Received invalid Fast-Path update");
-                    Ok(None)
+                    processor_updates.push(UpdateKind::None);
                 } else {
-                    Err(custom_err!("Fast-Path", e))
+                    return Err(custom_err!("Fast-Path", e));
                 }
             }
-        }
+        };
+
+        Ok(processor_updates)
     }
 
     fn process_surface_commands(
@@ -212,6 +341,7 @@ impl Processor {
 pub struct ProcessorBuilder {
     pub io_channel_id: u16,
     pub user_channel_id: u16,
+    pub no_server_pointer: bool,
 }
 
 impl ProcessorBuilder {
@@ -221,6 +351,10 @@ impl ProcessorBuilder {
             rfx_handler: rfx::DecodingContext::new(),
             marker_processor: FrameMarkerProcessor::new(self.user_channel_id, self.io_channel_id),
             bitmap_stream_decoder: BitmapStreamDecoder::default(),
+            pointer_cache: PointerCache::default(),
+            use_system_pointer: true,
+            mouse_pos_update: None,
+            no_server_pointer: self.no_server_pointer,
         }
     }
 }

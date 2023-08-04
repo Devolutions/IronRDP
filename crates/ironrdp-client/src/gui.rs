@@ -6,6 +6,7 @@ use winit::event_loop::{ControlFlow, EventLoop, EventLoopBuilder};
 use winit::window::{Window, WindowBuilder};
 
 use crate::rdp::{RdpInputEvent, RdpOutputEvent};
+use winit::dpi::LogicalPosition;
 
 pub struct GuiContext {
     pub window: Window,
@@ -226,6 +227,17 @@ impl GuiContext {
                     };
 
                     control_flow.set_exit_with_code(exit_code);
+                }
+                Event::UserEvent(RdpOutputEvent::PointerHidden) => {
+                    window.set_cursor_visible(false);
+                }
+                Event::UserEvent(RdpOutputEvent::PointerDefault) => {
+                    window.set_cursor_visible(true);
+                }
+                Event::UserEvent(RdpOutputEvent::PointerPosition { x, y }) => {
+                    if let Err(e) = window.set_cursor_position(LogicalPosition::new(x as f64, y as f64)) {
+                        eprintln!("Failed to set cursor position: {}", e);
+                    }
                 }
                 Event::LoopDestroyed => {
                     let _ = input_event_sender.send(RdpInputEvent::Close);

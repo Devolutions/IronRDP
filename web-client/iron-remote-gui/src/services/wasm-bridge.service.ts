@@ -66,7 +66,7 @@ export class WasmBridgeService {
             this.sendKeyboard(evt);
         }
     }
-    
+
     shutdown() {
         this.session.shutdown();
     }
@@ -96,11 +96,15 @@ export class WasmBridgeService {
         sessionBuilder.username(username);
         sessionBuilder.update_callback_context(this);
         sessionBuilder.update_callback(this.updateImageCallback);
-        
+        sessionBuilder.hide_pointer_callback_context(this);
+        sessionBuilder.hide_pointer_callback(this.hidePointerCallback);
+        sessionBuilder.show_pointer_callback_context(this);
+        sessionBuilder.show_pointer_callback(this.showPointerCallback);
+
         if (preConnectionBlob) {
             sessionBuilder.pcb(preConnectionBlob);
         }
-        
+
         if (desktopSize) {
             sessionBuilder.desktop_size(DesktopSize.new(desktopSize.width, desktopSize.height));
         }
@@ -217,6 +221,14 @@ export class WasmBridgeService {
             pixels: buffer,
             infos: metadata
         });
+    }
+
+    private hidePointerCallback() {
+        this.canvas.style.cursor = 'none';
+    }
+
+    private showPointerCallback() {
+        this.canvas.style.cursor = 'default';
     }
 
     private syncModifier(evt: any): void {

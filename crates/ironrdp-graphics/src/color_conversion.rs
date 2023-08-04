@@ -14,6 +14,15 @@ pub fn ycbcr_to_bgra(input: YCbCrBuffer<'_>, mut output: &mut [u8]) -> io::Resul
     Ok(())
 }
 
+/// Convert a 16-bit RDP color to RGB representation. Input value should be represented in
+/// little-endian format.
+pub fn rdp_16bit_to_rgb(color: u16) -> [u8; 3] {
+    let r = (((((color >> 11) & 0x1f) * 527) + 23) >> 6) as u8;
+    let g = (((((color >> 5) & 0x3f) * 259) + 33) >> 6) as u8;
+    let b = ((((color & 0x1f) * 527) + 23) >> 6) as u8;
+    [r, g, b]
+}
+
 fn clip(v: i32) -> u8 {
     min(max(v, 0), 255) as u8
 }
