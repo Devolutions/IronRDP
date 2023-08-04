@@ -1560,7 +1560,20 @@ dependencies = [
  "ironrdp-graphics",
  "ironrdp-input",
  "ironrdp-pdu",
+ "ironrdp-server",
  "ironrdp-session",
+]
+
+[[package]]
+name = "ironrdp-acceptor"
+version = "0.1.0"
+dependencies = [
+ "ironrdp-connector",
+ "ironrdp-pdu",
+ "ironrdp-tokio",
+ "tokio",
+ "tokio-rustls 0.24.0",
+ "tracing",
 ]
 
 [[package]]
@@ -1706,7 +1719,7 @@ dependencies = [
  "anyhow",
  "async-trait",
  "bytes",
- "ironrdp-connector",
+ "ironrdp-acceptor",
  "ironrdp-graphics",
  "ironrdp-pdu",
  "ironrdp-tokio",

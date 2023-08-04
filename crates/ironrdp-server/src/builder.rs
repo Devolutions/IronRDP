@@ -1,6 +1,8 @@
 use std::{marker::PhantomData, net::SocketAddr};
 use tokio_rustls::TlsAcceptor;
 
+use ironrdp_acceptor::{RdpServerOptions, RdpServerSecurity};
+
 use super::display::RdpServerDisplay;
 use super::handler::RdpServerInputHandler;
 use super::server::*;

@@ -24,6 +24,7 @@ categories = ["network-programming"]
 expect-test = "1"
 ironrdp-async = { version = "0.1", path = "crates/ironrdp-async" }
 ironrdp-connector = { version = "0.1", path = "crates/ironrdp-connector" }
+ironrdp-acceptor = { version = "0.1", path = "crates/ironrdp-acceptor" }
 ironrdp-error = { version = "0.1", path = "crates/ironrdp-error" }
 ironrdp-futures = { version = "0.1", path = "crates/ironrdp-futures" }
 ironrdp-fuzzing = { path = "crates/ironrdp-fuzzing" }
@@ -37,6 +38,7 @@ ironrdp-session = { version = "0.1", path = "crates/ironrdp-session" }
 ironrdp-testsuite-core = { path = "crates/ironrdp-testsuite-core" }
 ironrdp-tls = { version = "0.1", path = "crates/ironrdp-tls" }
 ironrdp-tokio = { version = "0.1", path = "crates/ironrdp-tokio" }
+ironrdp-server = { version = "0.1", path = "crates/ironrdp-server" }
 ironrdp = { version = "0.5", path = "crates/ironrdp" }
 proptest = "1.1.0"
 rstest = "0.17.0"

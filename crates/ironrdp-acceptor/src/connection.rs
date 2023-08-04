@@ -8,20 +8,11 @@ use pdu::rdp::capability_sets::CapabilitySet;
 use pdu::rdp::headers::ShareControlPdu;
 use pdu::{gcc, mcs, nego, rdp, PduParsing};
 
-use crate::acceptor::util::{self, wrap_share_data};
-use crate::{RdpServerOptions, RdpServerSecurity};
+use crate::util::{self, wrap_share_data};
+use crate::RdpServerOptions;
 
 use super::channel_connection::ChannelConnectionSequence;
 use super::finalization::FinalizationSequence;
-
-impl RdpServerSecurity {
-    pub fn flag(&self) -> nego::SecurityProtocol {
-        match self {
-            RdpServerSecurity::None => ironrdp_pdu::nego::SecurityProtocol::empty(),
-            RdpServerSecurity::SSL(_) => ironrdp_pdu::nego::SecurityProtocol::SSL,
-        }
-    }
-}
 
 const IO_CHANNEL_ID: u16 = 1003;
 

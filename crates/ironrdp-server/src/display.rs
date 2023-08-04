@@ -1,4 +1,4 @@
-use ironrdp_connector::DesktopSize;
+use ironrdp_acceptor::DesktopSize;
 pub use ironrdp_graphics::image_processing::PixelFormat;
 
 #[derive(Debug, Clone)]

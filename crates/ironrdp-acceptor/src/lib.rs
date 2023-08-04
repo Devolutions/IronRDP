@@ -1,3 +1,11 @@
+#[macro_use]
+extern crate tracing;
+
+use std::net::SocketAddr;
+
+use ironrdp_pdu::nego;
+use tokio_rustls::TlsAcceptor;
+
 use std::io;
 
 use ironrdp_connector::{custom_err, ConnectorResult, Sequence, Written};
@@ -6,13 +14,35 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use tokio_rustls::server::TlsStream;
 
 use self::connection::AcceptorResult;
-pub use self::connection::ServerAcceptor;
 
-use super::RdpServerSecurity;
-mod channel_connection;
-mod connection;
-mod finalization;
-mod util;
+pub mod channel_connection;
+pub mod connection;
+pub mod finalization;
+pub mod util;
+
+pub use self::connection::ServerAcceptor;
+pub use ironrdp_connector::DesktopSize;
+
+#[derive(Clone)]
+pub struct RdpServerOptions {
+    pub addr: SocketAddr,
+    pub security: RdpServerSecurity,
+}
+
+#[derive(Clone)]
+pub enum RdpServerSecurity {
+    None,
+    SSL(TlsAcceptor),
+}
+
+impl RdpServerSecurity {
+    pub fn flag(&self) -> nego::SecurityProtocol {
+        match self {
+            RdpServerSecurity::None => ironrdp_pdu::nego::SecurityProtocol::empty(),
+            RdpServerSecurity::SSL(_) => ironrdp_pdu::nego::SecurityProtocol::SSL,
+        }
+    }
+}
 
 pub enum BeginResult<S> {
     ShouldUpgrade(S),

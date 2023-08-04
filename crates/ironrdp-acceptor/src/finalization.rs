@@ -4,7 +4,7 @@ use ironrdp_connector::{ConnectorError, ConnectorErrorExt, ConnectorResult, Sequ
 use ironrdp_pdu as pdu;
 use pdu::{rdp, PduParsing};
 
-use crate::acceptor::util::{self, wrap_share_data};
+use crate::util::{self, wrap_share_data};
 
 #[derive(Debug)]
 pub struct FinalizationSequence {

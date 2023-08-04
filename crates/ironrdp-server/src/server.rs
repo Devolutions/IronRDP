@@ -1,7 +1,8 @@
-use std::{io::Cursor, net::SocketAddr};
+use std::io::Cursor;
 
-use anyhow::{Error, Result};
+use anyhow::Result;
 use bytes::BytesMut;
+use ironrdp_acceptor::RdpServerOptions;
 use ironrdp_pdu::{
     self,
     input::{
@@ -12,7 +13,6 @@ use ironrdp_pdu::{
 };
 use ironrdp_tokio::{Framed, FramedRead, FramedWrite, TokioFramed};
 use tokio::{net::TcpListener, select};
-use tokio_rustls::TlsAcceptor;
 
 use crate::{
     acceptor::{self, BeginResult, ServerAcceptor},
@@ -26,18 +26,6 @@ pub struct RdpServer {
     opts: RdpServerOptions,
     handler: Box<dyn RdpServerInputHandler>,
     display: Box<dyn RdpServerDisplay>,
-}
-
-#[derive(Clone)]
-pub struct RdpServerOptions {
-    pub addr: SocketAddr,
-    pub security: RdpServerSecurity,
-}
-
-#[derive(Clone)]
-pub enum RdpServerSecurity {
-    None,
-    SSL(TlsAcceptor),
 }
 
 impl RdpServer {
@@ -61,10 +49,12 @@ impl RdpServer {
         builder::RdpServerBuilder::new()
     }
 
-    pub async fn run(&mut self) -> Result<(), Error> {
+    pub async fn run(&mut self) -> Result<()> {
         let listener = TcpListener::bind(self.opts.addr).await?;
 
-        while let Ok((stream, _)) = listener.accept().await {
+        while let Ok((stream, peer)) = listener.accept().await {
+            debug!("received connection from {:?}", peer);
+
             let size = self.display.size().await;
             let capabilities = capabilities::capabilities(&self.opts, size.clone());
             let mut acceptor = ServerAcceptor::new(self.opts.clone(), size, capabilities);
@@ -97,6 +87,8 @@ impl RdpServer {
     {
         let mut buffer = vec![0u8; 8192 * 8192];
         let mut encoder = UpdateEncoder::new();
+
+        debug!("starting client loop");
 
         'main: loop {
             select! {
@@ -164,7 +156,7 @@ impl RdpServer {
                     self.handler.mouse(mouse.into()).await;
                 }
 
-                other => println!("{other:?}"),
+                other => eprintln!("unhandled event {other:?}"),
             }
         }
     }
@@ -225,7 +217,7 @@ impl RdpServer {
                     self.handler.mouse(mouse.into()).await;
                 }
 
-                other => println!("{other:?}"),
+                other => eprintln!("unhandled event {other:?}"),
             }
         }
     }
