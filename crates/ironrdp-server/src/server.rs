@@ -85,7 +85,7 @@ impl RdpServer {
     where
         S: FramedWrite + FramedRead,
     {
-        let mut buffer = vec![0u8; 8192 * 8192];
+        let mut buffer = vec![0u8; 4096];
         let mut encoder = UpdateEncoder::new();
 
         debug!("starting client loop");
@@ -120,15 +120,21 @@ impl RdpServer {
                 },
 
                 Some(update) = self.display.get_update() => {
-                    match update {
-                        DisplayUpdate::Bitmap(bitmap) => {
-                            if let Some(len) = encoder.bitmap(bitmap, &mut buffer) {
-                                if let Err(e) = framed.write_all(&buffer[..len]).await {
-                                    eprintln!("write error: {:?}", e);
-                                    break;
-                                };
+                    let fragmenter = match update {
+                        DisplayUpdate::Bitmap(bitmap) => encoder.bitmap(bitmap)
+                    };
+
+                    if let Some(mut fragmenter) = fragmenter {
+                        if fragmenter.size_hint() > buffer.len() {
+                            buffer.resize(fragmenter.size_hint(), 0);
+                        }
+
+                        while let Some(len) = fragmenter.next(&mut buffer) {
+                            if let Err(e) = framed.write_all(&buffer[..len]).await {
+                                eprintln!("write error: {:?}", e);
+                                break;
                             };
-                        },
+                        }
                     }
                 }
             }
