@@ -1,10 +1,10 @@
-use std::{marker::PhantomData, net::SocketAddr};
+use std::{future, marker::PhantomData, net::SocketAddr};
 use tokio_rustls::TlsAcceptor;
 
 use ironrdp_acceptor::{RdpServerOptions, RdpServerSecurity};
 
-use super::display::RdpServerDisplay;
-use super::handler::RdpServerInputHandler;
+use super::display::{DesktopSize, DisplayUpdate, RdpServerDisplay};
+use super::handler::{KeyboardEvent, MouseEvent, RdpServerInputHandler};
 use super::server::*;
 
 pub struct WantsAddr {}
@@ -84,12 +84,26 @@ impl<H, D> RdpServerBuilder<WantsSecurity, H, D> {
 }
 
 impl<H, D> RdpServerBuilder<WantsHandler, H, D> {
-    pub fn with_io_handler(self, handler: H) -> RdpServerBuilder<WantsDisplay<H>, H, D> {
+    pub fn with_input_handler(self, handler: H) -> RdpServerBuilder<WantsDisplay<H>, H, D> {
         RdpServerBuilder {
             state: WantsDisplay {
                 addr: self.state.addr,
                 security: self.state.security,
                 handler,
+            },
+            _handler: PhantomData,
+            _display: PhantomData,
+        }
+    }
+}
+
+impl<D> RdpServerBuilder<WantsHandler, NoopInputHandler, D> {
+    pub fn with_no_input(self) -> RdpServerBuilder<WantsDisplay<NoopInputHandler>, NoopInputHandler, D> {
+        RdpServerBuilder {
+            state: WantsDisplay {
+                addr: self.state.addr,
+                security: self.state.security,
+                handler: NoopInputHandler,
             },
             _handler: PhantomData,
             _display: PhantomData,
@@ -112,6 +126,21 @@ impl<H, D> RdpServerBuilder<WantsDisplay<H>, H, D> {
     }
 }
 
+impl<H> RdpServerBuilder<WantsDisplay<H>, H, NoopDisplay> {
+    pub fn with_no_display(self) -> RdpServerBuilder<BuilderDone<H, NoopDisplay>, H, NoopDisplay> {
+        RdpServerBuilder {
+            state: BuilderDone {
+                addr: self.state.addr,
+                security: self.state.security,
+                handler: self.state.handler,
+                display: NoopDisplay,
+            },
+            _handler: PhantomData,
+            _display: PhantomData,
+        }
+    }
+}
+
 impl<H, D> RdpServerBuilder<BuilderDone<H, D>, H, D>
 where
     H: RdpServerInputHandler + 'static,
@@ -126,5 +155,26 @@ where
             self.state.handler,
             self.state.display,
         )
+    }
+}
+
+pub struct NoopInputHandler;
+
+#[async_trait::async_trait]
+impl RdpServerInputHandler for NoopInputHandler {
+    async fn keyboard(&mut self, _: KeyboardEvent) {}
+    async fn mouse(&mut self, _: MouseEvent) {}
+}
+
+pub struct NoopDisplay;
+
+#[async_trait::async_trait]
+impl RdpServerDisplay for NoopDisplay {
+    async fn size(&mut self) -> DesktopSize {
+        DesktopSize { width: 0, height: 0 }
+    }
+    async fn get_update(&mut self) -> Option<DisplayUpdate> {
+        let () = future::pending().await;
+        unreachable!()
     }
 }

@@ -2,12 +2,20 @@ use ironrdp_pdu::input::{
     fast_path, mouse::PointerFlags, mouse_x::PointerXFlags, scan_code, unicode, MousePdu, MouseXPdu,
 };
 
+/// Keyboard Event
+///
+/// Describes a keyboard event received from the client
+///
 #[derive(Debug)]
 pub enum KeyboardEvent {
     Pressed(u16),
     Released(u16),
 }
 
+/// Mouse Event
+///
+/// Describes a mouse event received from the client
+///
 #[derive(Debug)]
 pub enum MouseEvent {
     Move { x: u16, y: u16 },
@@ -18,6 +26,33 @@ pub enum MouseEvent {
     Scroll,
 }
 
+/// Input Event Handler for an RDP server
+///
+/// Whenever the RDP server will receive an input event from a client, the relevent callback from
+/// this handler will be called
+///
+/// # Example
+///
+/// ```
+/// pub struct InputHandler;
+///
+/// #[async_trait::async_trait]
+/// impl RdpServerInputHandler for InputHandler {
+///     async fn keyboard(&mut self, event: KeyboardEvent) {
+///         match event {
+///             KeyboardEvent::Pressed(code) => println!("Pressed {}", code)
+///             KeyboardEvent::Released(code) => println!("Released {}", code)
+///         };
+///     }
+///
+///     async fn mouse(&mut self, event: MouseEvent) {
+///         let result = match event {
+///             MouseEvent::Move { x, y } => println!("Moved mouse to {} {}", x, y)
+///             _ => unimplemented!()
+///         };
+///     }
+/// }
+/// ```
 #[async_trait::async_trait]
 pub trait RdpServerInputHandler {
     async fn keyboard(&mut self, event: KeyboardEvent);

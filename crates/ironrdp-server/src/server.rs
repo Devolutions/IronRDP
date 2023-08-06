@@ -22,6 +22,25 @@ use crate::{
     handler::RdpServerInputHandler,
 };
 
+/// RDP Server
+///
+/// A server is created to listen for connections.
+/// After the connection sequence is finalized using the provided security mechanism, the server can:
+///  - receive display updates from a [`RdpServerDisplay`] and forward them to the client
+///  - receive input events from a client and forward them to an [`RdpServerInputHandler`]
+///
+/// # Example
+///
+/// ```
+/// let mut server = RdpServer::builder()
+///     .with_addr(([127, 0, 0, 1], 3389))
+///     .with_ssl(tls_acceptor)
+///     .with_input_handler(handler)
+///     .with_display_handler(display)
+///     .build();
+///
+/// server.run().await
+/// ```
 pub struct RdpServer {
     opts: RdpServerOptions,
     handler: Box<dyn RdpServerInputHandler>,
