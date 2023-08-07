@@ -24,6 +24,7 @@ graphics = ["dep:ironrdp-graphics"]
 input = ["dep:ironrdp-input"]
 svc = ["dep:ironrdp-svc"]
 dvc = ["dep:ironrdp-dvc"]
+efs = ["dep:ironrdp-efs"]
 
 [dependencies]
 ironrdp-pdu = { workspace = true, optional = true }
@@ -33,3 +34,4 @@ ironrdp-graphics = { workspace = true, optional = true }
 ironrdp-input = { workspace = true, optional = true }
 ironrdp-svc = { workspace = true, optional = true }
 ironrdp-dvc = { workspace = true, optional = true }
+ironrdp-efs = { workspace = true, optional = true }

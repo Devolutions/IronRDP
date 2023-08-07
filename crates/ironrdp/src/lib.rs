@@ -6,6 +6,8 @@
 pub use ironrdp_connector as connector;
 #[cfg(feature = "dvc")]
 pub use ironrdp_dvc as dvc;
+#[cfg(feature = "efs")]
+pub use ironrdp_efs as efs;
 #[cfg(feature = "graphics")]
 pub use ironrdp_graphics as graphics;
 #[cfg(feature = "input")]

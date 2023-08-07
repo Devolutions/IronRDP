@@ -96,8 +96,8 @@ async fn connect(config: &Config) -> ConnectorResult<(ConnectionResult, Upgraded
     let mut connector = connector::ClientConnector::new(config.connector.clone())
         .with_server_addr(server_addr)
         .with_server_name(&config.destination)
-        .with_credssp_network_client(RequestClientFactory);
-    // .with_static_channel(ironrdp::dvc::WithDrdynvc::new()); // TODO: fix drdynvc
+        .with_credssp_network_client(RequestClientFactory)
+        .with_static_channel(ironrdp::efs::WithEfs::new());
 
     let should_upgrade = ironrdp_tokio::connect_begin(&mut framed, &mut connector).await?;
 
