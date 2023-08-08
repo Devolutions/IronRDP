@@ -1,7 +1,7 @@
 use std::mem;
 use std::net::SocketAddr;
 
-use ironrdp_pdu::rdp::capability_sets::CapabilitySet;
+use ironrdp_pdu::rdp::capability_sets::{CapabilitySet, VirtualChannel};
 use ironrdp_pdu::write_buf::WriteBuf;
 use ironrdp_pdu::{gcc, mcs, nego, rdp, PduHint};
 use ironrdp_svc::{MakeStaticVirtualChannel, StaticVirtualChannel};
@@ -50,6 +50,8 @@ pub struct ConnectionResult {
     pub user_channel_id: u16,
     pub static_channels: StaticChannels,
     pub desktop_size: DesktopSize,
+    /// The virtual channel capability set sent back to us by the server.
+    pub server_vchan_cap: Option<VirtualChannel>,
     pub graphics_config: Option<crate::GraphicsConfig>,
 }
 
@@ -127,6 +129,7 @@ pub enum ClientConnectorState {
         static_channels: StaticChannels,
         desktop_size: DesktopSize,
         connection_finalization: ConnectionFinalizationSequence,
+        server_vchan_cap: Option<VirtualChannel>,
     },
     Connected {
         result: ConnectionResult,
@@ -740,6 +743,11 @@ impl Sequence for ClientConnector {
                         height: self.config.desktop_size.height,
                     });
 
+                let server_vchan_cap = capability_sets.iter().find_map(|c| match c {
+                    rdp::capability_sets::CapabilitySet::VirtualChannel(v) => Some(v.clone()),
+                    _ => None,
+                });
+
                 let client_confirm_active = rdp::headers::ShareControlPdu::ClientConfirmActive(
                     create_client_confirm_active(&self.config, capability_sets),
                 );
@@ -762,6 +770,7 @@ impl Sequence for ClientConnector {
                         static_channels,
                         desktop_size,
                         connection_finalization: ConnectionFinalizationSequence::new(io_channel_id, user_channel_id),
+                        server_vchan_cap,
                     },
                 )
             }
@@ -775,6 +784,7 @@ impl Sequence for ClientConnector {
                 static_channels,
                 desktop_size,
                 mut connection_finalization,
+                server_vchan_cap,
             } => {
                 let written = connection_finalization.step(input, output)?;
 
@@ -786,6 +796,7 @@ impl Sequence for ClientConnector {
                             static_channels,
                             desktop_size,
                             graphics_config: self.config.graphics.clone(),
+                            server_vchan_cap,
                         },
                     }
                 } else {
@@ -795,6 +806,7 @@ impl Sequence for ClientConnector {
                         static_channels,
                         desktop_size,
                         connection_finalization,
+                        server_vchan_cap,
                     }
                 };
 

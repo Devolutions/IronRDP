@@ -70,6 +70,7 @@ where
     };
 
     info!("Connected with success");
+    debug!(?result, "Connection result");
 
     Ok(result)
 }
