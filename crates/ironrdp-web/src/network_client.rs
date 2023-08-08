@@ -29,7 +29,7 @@ impl WasmNetworkClient {
 }
 
 impl NetworkClient for WasmNetworkClient {
-    fn send(&self, _protocol: NetworkProtocol, url: &Url, data: &[u8]) -> sspi::Result<Vec<u8>> {
+    fn send(&self, _protocol: NetworkProtocol, url: Url, data: &[u8]) -> sspi::Result<Vec<u8>> {
         let length = JsValue::from_f64(data.len() as f64);
         let payload = js_sys::Uint8Array::new(&length);
         payload.copy_from(data);
