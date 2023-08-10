@@ -23,6 +23,7 @@ pub enum RdpOutputEvent {
 pub enum RdpInputEvent {
     Resize { width: u16, height: u16 },
     FastPath(SmallVec<[FastPathInputEvent; 2]>),
+    AnnounceDeviceForRedirection { name: String, device_id: u32 },
     Close,
 }
 
@@ -97,7 +98,9 @@ async fn connect(config: &Config) -> ConnectorResult<(ConnectionResult, Upgraded
         .with_server_addr(server_addr)
         .with_server_name(&config.destination)
         .with_credssp_network_client(RequestClientFactory)
-        .with_static_channel(ironrdp::efs::WithEfs::new());
+        // .with_static_channel(ironrdp::dvc::WithDrdynvc::new())
+        .with_static_channel(ironrdp::rdpsnd::WithRdpsnd::new())
+        .with_static_channel(ironrdp::rdpdr::WithRdpdr::new());
 
     let should_upgrade = ironrdp_tokio::connect_begin(&mut framed, &mut connector).await?;
 
@@ -206,11 +209,14 @@ async fn active_session(
                             .map_err(|e| session::custom_err!("FastPathInput encode", e))?;
 
                         framed.write_all(&frame).await.map_err(|e| session::custom_err!("write FastPathInput PDU", e))?;
-                    }
+                    },
+                    RdpInputEvent::AnnounceDeviceForRedirection{ name: _, device_id: _ } => {
+                        break 'outer;
+                    },
                     RdpInputEvent::Close => {
                         // TODO: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/27915739-8f77-487e-9927-55008af7fd68
                         break 'outer;
-                    }
+                    },
                 }
             }
         }

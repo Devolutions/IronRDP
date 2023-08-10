@@ -1499,10 +1499,11 @@ version = "0.5.0"
 dependencies = [
  "ironrdp-connector",
  "ironrdp-dvc",
- "ironrdp-efs",
  "ironrdp-graphics",
  "ironrdp-input",
  "ironrdp-pdu",
+ "ironrdp-rdpdr",
+ "ironrdp-rdpsnd",
  "ironrdp-session",
  "ironrdp-svc",
 ]
@@ -1558,15 +1559,6 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-dvc"
-version = "0.1.0"
-dependencies = [
- "ironrdp-pdu",
- "ironrdp-svc",
- "tracing",
-]
-
-[[package]]
-name = "ironrdp-efs"
 version = "0.1.0"
 dependencies = [
  "ironrdp-pdu",
@@ -1660,6 +1652,24 @@ name = "ironrdp-rdcleanpath"
 version = "0.1.0"
 dependencies = [
  "der 0.7.5",
+]
+
+[[package]]
+name = "ironrdp-rdpdr"
+version = "0.1.0"
+dependencies = [
+ "ironrdp-pdu",
+ "ironrdp-svc",
+ "tracing",
+]
+
+[[package]]
+name = "ironrdp-rdpsnd"
+version = "0.1.0"
+dependencies = [
+ "ironrdp-pdu",
+ "ironrdp-svc",
+ "tracing",
 ]
 
 [[package]]

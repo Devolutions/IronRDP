@@ -67,6 +67,7 @@ impl Processor {
             match self.drdynvc_channel_id {
                 Some(drdynvc_id) if channel_id == drdynvc_id => self.process_dyvc(data_ctx),
                 _ => {
+                    trace!("Processing data for channel {}", channel_id);
                     if let Some(static_channel) = self.static_channels.get_mut(&channel_id) {
                         let mut user_data = data_ctx.user_data;
 

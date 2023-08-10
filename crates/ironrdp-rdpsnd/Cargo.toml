@@ -1,8 +1,8 @@
 [package]
-name = "ironrdp-efs"
+name = "ironrdp-rdpsnd"
 version = "0.1.0"
 readme = "README.md"
-description = "MS-RDPEFS File System Static Virtual Channel implementation and traits to implement a client-side file system driver"
+description = "Implements the rdpsnd static virtual channel for audio output as described in MS-RDPEA"
 edition.workspace = true
 license.workspace = true
 homepage.workspace = true
