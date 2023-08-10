@@ -23,7 +23,7 @@ pub enum MouseEvent {
     RightReleased,
     LeftPressed,
     LeftReleased,
-    Scroll,
+    VerticalScroll { value: i16 },
 }
 
 /// Input Event Handler for an RDP server
@@ -102,6 +102,10 @@ impl From<MousePdu> for MouseEvent {
                 MouseEvent::RightPressed
             } else {
                 MouseEvent::RightReleased
+            }
+        } else if value.flags.contains(PointerFlags::VERTICAL_WHEEL) {
+            MouseEvent::VerticalScroll {
+                value: value.number_of_wheel_rotation_units,
             }
         } else {
             MouseEvent::Move {
