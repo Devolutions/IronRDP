@@ -9,6 +9,7 @@ pub fn capabilities(_opts: &RdpServerOptions, size: DesktopSize) -> Vec<capabili
         capability_sets::CapabilitySet::Pointer(pointer_capabilities()),
         capability_sets::CapabilitySet::Input(input_capabilities()),
         capability_sets::CapabilitySet::VirtualChannel(virtual_channel_capabilities()),
+        capability_sets::CapabilitySet::MultiFragmentUpdate(multifragment_update()),
     ]
 }
 
@@ -67,5 +68,11 @@ fn virtual_channel_capabilities() -> capability_sets::VirtualChannel {
     capability_sets::VirtualChannel {
         flags: capability_sets::VirtualChannelFlags::NO_COMPRESSION,
         chunk_size: None,
+    }
+}
+
+fn multifragment_update() -> capability_sets::MultifragmentUpdate {
+    capability_sets::MultifragmentUpdate {
+        max_request_size: u32::MAX,
     }
 }
