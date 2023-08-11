@@ -7,6 +7,7 @@ use crate::cursor::ReadCursor;
 #[macro_use]
 mod macros;
 
+pub mod clipboard;
 pub mod codecs;
 pub mod cursor;
 pub mod gcc;
