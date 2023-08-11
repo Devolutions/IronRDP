@@ -1257,6 +1257,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "gloo-timers"
+version = "0.2.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9b995a66bb87bebce9a0f4a95aed01daca4872c050bfcb21653361c03bc35e5c"
+dependencies = [
+ "futures-channel",
+ "futures-core",
+ "js-sys",
+ "wasm-bindgen",
+]
+
+[[package]]
 name = "gloo-utils"
 version = "0.1.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1776,6 +1788,7 @@ dependencies = [
  "futures-util",
  "getrandom 0.2.8",
  "gloo-net",
+ "gloo-timers",
  "ironrdp",
  "ironrdp-futures",
  "ironrdp-rdcleanpath",
