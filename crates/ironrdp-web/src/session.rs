@@ -1,5 +1,6 @@
 use core::cell::RefCell;
 use std::rc::Rc;
+use std::time::Duration;
 
 use anyhow::Context as _;
 use futures_channel::mpsc;
@@ -223,12 +224,28 @@ impl SessionBuilder {
 
         let ws = WebSocket::open(&proxy_address).context("Couldn’t open WebSocket")?;
 
-        if matches!(ws.state(), websocket::State::Closing | websocket::State::Closed) {
-            return Err(IronRdpError::from(anyhow::anyhow!(
-                "Failed to connect to {proxy_address} (WebSocket is in state {:?})",
-                ws.state()
-            ))
-            .with_kind(IronRdpErrorKind::ProxyConnect));
+        // NOTE: ideally, when the WebSocket can’t be opened, the above call should fail with details on why is that
+        // (e.g., the proxy hostname could not be resolved, proxy service is not running), but errors are neved
+        // bubbled up in practice, so instead we poll the WebSocket state until we know its connected (i.e., the
+        // WebSocket handshake is a success and user data can be exchanged).
+        loop {
+            match ws.state() {
+                websocket::State::Closing | websocket::State::Closed => {
+                    return Err(IronRdpError::from(anyhow::anyhow!(
+                        "Failed to connect to {proxy_address} (WebSocket is `{:?}`)",
+                        ws.state()
+                    ))
+                    .with_kind(IronRdpErrorKind::ProxyConnect));
+                }
+                websocket::State::Connecting => {
+                    trace!("WebSocket is connecting to proxy at {proxy_address}...");
+                    gloo_timers::future::sleep(Duration::from_millis(50)).await;
+                }
+                websocket::State::Open => {
+                    debug!("WebSocket connected to {proxy_address} with success");
+                    break;
+                }
+            }
         }
 
         let ws = WebSocketCompat::new(ws);
