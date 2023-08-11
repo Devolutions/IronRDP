@@ -1,6 +1,6 @@
-use crate::{PduDecode, PduEncode, PduResult, ensure_fixed_part_size, invalid_message_err};
 use crate::cursor::{ReadCursor, WriteCursor};
-use crate::utils::{CharacterSet, read_string_from_cursor, write_string_to_cursor};
+use crate::utils::{read_string_from_cursor, write_string_to_cursor, CharacterSet};
+use crate::{ensure_fixed_part_size, invalid_message_err, PduDecode, PduEncode, PduResult};
 use bitflags::bitflags;
 use std::borrow::Cow;
 
@@ -107,47 +107,47 @@ impl PduEncode for ClipboardPdu<'_> {
             ClipboardPdu::MonitorReady => {
                 dst.write_u16(MSG_TYPE_MONITOR_READY);
                 write_empty_pdu(dst)
-            },
+            }
             ClipboardPdu::FormatList(pdu) => {
                 dst.write_u16(MSG_TYPE_FORMAT_LIST);
                 pdu.encode(dst)
-            },
+            }
             ClipboardPdu::FormatListResponse(pdu) => {
                 dst.write_u16(MSG_TYPE_FORMAT_LIST_RESPONSE);
                 pdu.encode(dst)
-            },
+            }
             ClipboardPdu::FormatDataRequest(pdu) => {
                 dst.write_u16(MSG_TYPE_FORMAT_DATA_REQUEST);
                 pdu.encode(dst)
-            },
+            }
             ClipboardPdu::FormatDataResponse(pdu) => {
                 dst.write_u16(MSG_TYPE_FORMAT_DATA_RESPONSE);
                 pdu.encode(dst)
-            },
+            }
             ClipboardPdu::TemporaryDirectory(pdu) => {
                 dst.write_u16(MSG_TYPE_TEMPORARY_DIRECTORY);
                 pdu.encode(dst)
-            },
+            }
             ClipboardPdu::Capabilites(pdu) => {
                 dst.write_u16(MSG_TYPE_CAPABILITIES);
                 pdu.encode(dst)
-            },
+            }
             ClipboardPdu::FileContentsRequest(pdu) => {
                 dst.write_u16(MSG_TYPE_FILE_CONTENTS_REQUEST);
                 pdu.encode(dst)
-            },
+            }
             ClipboardPdu::FileContentsResponse(pdu) => {
                 dst.write_u16(MSG_TYPE_FILE_CONTENTS_RESPONSE);
                 pdu.encode(dst)
-            },
+            }
             ClipboardPdu::LockData(pdu) => {
                 dst.write_u16(MSG_TYPE_LOCK_CLIPDATA);
                 pdu.encode(dst)
-            },
+            }
             ClipboardPdu::UnlockData(pdu) => {
                 dst.write_u16(MSG_TYPE_UNLOCK_CLIPDATA);
                 pdu.encode(dst)
-            },
+            }
         }
     }
 
@@ -458,24 +458,20 @@ impl<'de> PduDecode<'de> for ClipboardPalette {
             });
         }
 
-        Ok(Self {
-            entries,
-        })
+        Ok(Self { entries })
     }
 }
 
 /// Represents `CLIPRDR_FORMAT_DATA_RESPONSE`
 pub struct FormatDataResponse<'a> {
-    data: Cow<'a, [u8]>
+    data: Cow<'a, [u8]>,
 }
 
 impl<'a> FormatDataResponse<'a> {
     const NAME: &str = "CLIPRDR_FORMAT_DATA_RESPONSE";
 
     pub fn with_data(data: impl Into<Cow<'a, [u8]>>) -> Self {
-        Self {
-            data: data.into()
-        }
+        Self { data: data.into() }
     }
 
     pub fn data(&self) -> &[u8] {
@@ -491,9 +487,7 @@ impl<'a> FormatDataResponse<'a> {
         let mut cursor = WriteCursor::new(&mut data);
         palette.encode(&mut cursor)?;
 
-        Ok(Self {
-            data: data.into()
-        })
+        Ok(Self { data: data.into() })
     }
 
     /// Creates new format data response from packed metafile. Please note that this method
@@ -505,9 +499,7 @@ impl<'a> FormatDataResponse<'a> {
         let mut cursor = WriteCursor::new(&mut data);
         metafile.encode(&mut cursor)?;
 
-        Ok(Self {
-            data: data.into()
-        })
+        Ok(Self { data: data.into() })
     }
 
     /// Creates new format data response from packed file list. Please note that this method
@@ -519,9 +511,7 @@ impl<'a> FormatDataResponse<'a> {
         let mut cursor = WriteCursor::new(&mut data);
         list.encode(&mut cursor)?;
 
-        Ok(Self {
-            data: data.into()
-        })
+        Ok(Self { data: data.into() })
     }
 
     /// Reads inner data as [`ClipboardPalette`]
@@ -571,7 +561,7 @@ impl<'de> PduDecode<'de> for FormatDataResponse<'de> {
         let data = src.read_slice(header.inner_data_length());
 
         Ok(Self {
-            data: Cow::Borrowed(data)
+            data: Cow::Borrowed(data),
         })
     }
 }
@@ -646,8 +636,7 @@ impl FormatList<'_> {
 
         if use_long_format {
             // Minimal `CLIPRDR_LONG_FORMAT_NAME` size (id + null-terminated name)
-            const MINIMAL_FORMAT_SIZE: usize = std::mem::size_of::<u32>()
-                + std::mem::size_of::<u16>();
+            const MINIMAL_FORMAT_SIZE: usize = std::mem::size_of::<u32>() + std::mem::size_of::<u16>();
 
             let mut formats = Vec::with_capacity(16);
 
@@ -840,7 +829,7 @@ impl<'de> PduDecode<'de> for FileContentsResponse<'de> {
     fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
         let header = PartialHeader::decode(src)?;
 
-        ensure_size!(in: src, size: header.inner_data_length() as usize);
+        ensure_size!(in: src, size: header.inner_data_length());
 
         let data_size = header.inner_data_length() - Self::FIXED_PART_SIZE;
 
@@ -910,7 +899,6 @@ impl PduEncode for FileContentsRequest {
     }
 }
 
-
 impl<'de> PduDecode<'de> for FileContentsRequest {
     fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
         let header = PartialHeader::decode(src)?;
@@ -931,11 +919,7 @@ impl<'de> PduDecode<'de> for FileContentsRequest {
         let position_hi = src.read_u32();
         let position = combine_u64(position_lo, position_hi);
         let requested_size = src.read_u32();
-        let data_id = if read_data_id {
-            Some(src.read_u32())
-        } else {
-            None
-        };
+        let data_id = if read_data_id { Some(src.read_u32()) } else { None };
 
         Ok(Self {
             stream_id,
@@ -987,7 +971,6 @@ impl<'de> PduDecode<'de> for ClipboardLockDataId {
     }
 }
 
-
 /// Represents `CLIPRDR_TEMP_DIRECTORY`
 pub struct ClipboardClientTemporaryDirectory<'a> {
     path_buffer: Cow<'a, [u8]>,
@@ -1007,7 +990,9 @@ impl ClipboardClientTemporaryDirectory<'_> {
             write_string_to_cursor(&mut cursor, &path, CharacterSet::Unicode, true)?;
         }
 
-        Ok(Self { path_buffer: Cow::Owned(buffer) })
+        Ok(Self {
+            path_buffer: Cow::Owned(buffer),
+        })
     }
 
     pub fn temporary_directory_path(&self) -> PduResult<String> {
@@ -1049,10 +1034,11 @@ impl<'de> PduDecode<'de> for ClipboardClientTemporaryDirectory<'de> {
         ensure_fixed_part_size!(in: src);
         let buffer = src.read_slice(Self::PATH_BUFFER_SIZE);
 
-        Ok(Self { path_buffer: Cow::Borrowed(buffer) })
+        Ok(Self {
+            path_buffer: Cow::Borrowed(buffer),
+        })
     }
 }
-
 
 /// Represents `CLIPRDR_CAPS`
 pub struct ClipboardCapabilities {
@@ -1116,9 +1102,7 @@ impl<'de> PduDecode<'de> for ClipboardCapabilities {
             capabilities.push(caps);
         }
 
-        Ok(Self {
-            capabilities,
-        })
+        Ok(Self { capabilities })
     }
 }
 
@@ -1146,7 +1130,7 @@ impl PduEncode for CapabilitySet {
             Self::General(value) => {
                 let length = value.size() + Self::FIXED_PART_SIZE;
                 (value, length)
-            },
+            }
         };
 
         ensure_size!(in: dst, size: length);
@@ -1179,7 +1163,7 @@ impl<'de> PduDecode<'de> for CapabilitySet {
             Self::CAPSTYPE_GENERAL => {
                 let general = GeneralCapabilitySet::decode(src)?;
                 Ok(Self::General(general))
-            },
+            }
             _ => Err(invalid_message_err!(
                 "capabilitySetType",
                 "invalid clipboard capability set type"
@@ -1187,8 +1171,6 @@ impl<'de> PduDecode<'de> for CapabilitySet {
         }
     }
 }
-
-
 
 /// Represents `CLIPRDR_GENERAL_CAPABILITY` without header
 pub struct GeneralCapabilitySet {
@@ -1220,7 +1202,6 @@ impl PduEncode for GeneralCapabilitySet {
     }
 }
 
-
 impl<'de> PduDecode<'de> for GeneralCapabilitySet {
     fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
         ensure_fixed_part_size!(in: src);
@@ -1228,10 +1209,7 @@ impl<'de> PduDecode<'de> for GeneralCapabilitySet {
         let version: ClipboardProtocolVersion = src.read_u32().try_into()?;
         let general_flags = ClipboardGeneralCapabilityFlags::from_bits_truncate(src.read_u32());
 
-        Ok(Self {
-            version,
-            general_flags,
-        })
+        Ok(Self { version, general_flags })
     }
 }
 
@@ -1278,7 +1256,10 @@ impl TryFrom<u32> for ClipboardProtocolVersion {
 fn split_u64(value: u64) -> (u32, u32) {
     let bytes = value.to_le_bytes();
     let (low, high) = bytes.split_at(std::mem::size_of::<u32>());
-    (u32::from_le_bytes(low.try_into().unwrap()), u32::from_le_bytes(high.try_into().unwrap()))
+    (
+        u32::from_le_bytes(low.try_into().unwrap()),
+        u32::from_le_bytes(high.try_into().unwrap()),
+    )
 }
 
 fn combine_u64(lo: u32, hi: u32) -> u64 {

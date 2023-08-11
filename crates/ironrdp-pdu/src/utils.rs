@@ -1,9 +1,12 @@
 use std::io;
 
+use crate::{
+    cursor::{ReadCursor, WriteCursor},
+    PduResult,
+};
 use byteorder::{LittleEndian, ReadBytesExt as _, WriteBytesExt as _};
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::ToPrimitive as _;
-use crate::{cursor::{ReadCursor, WriteCursor}, PduResult};
 
 pub(crate) fn to_utf16_bytes(value: &str) -> Vec<u8> {
     value
@@ -33,33 +36,31 @@ pub(crate) fn read_string_from_cursor(
     read_null_terminator: bool,
 ) -> PduResult<String> {
     let size = if character_set == CharacterSet::Unicode {
-        let code_points = if read_null_terminator {
+        let code_units = if read_null_terminator {
             // Find null or read all if null is not found
             cursor
                 .remaining()
                 .chunks_exact(2)
                 .position(|chunk| chunk[0] == 0 && chunk[1] == 0)
-                .map(|codepoints| codepoints + 1) // Read null codepoint
+                .map(|code_units| code_units + 1) // Read null code point
                 .unwrap_or(cursor.len() / 2)
         } else {
-            // UTF16 uses 2 bytes per code point, so we need to read an even number of bytes
+            // UTF16 uses 2 bytes per code unit, so we need to read an even number of bytes
             cursor.len() / 2
         };
 
-        code_points * 2
+        code_units * 2
+    } else if read_null_terminator {
+        // Find null or read all if null is not found
+        cursor
+            .remaining()
+            .iter()
+            .position(|&i| i == 0)
+            .map(|code_units| code_units + 1) // Read null code point
+            .unwrap_or(cursor.len())
     } else {
-        if read_null_terminator {
-            // Find null or read all if null is not found
-            cursor
-                .remaining()
-                .iter()
-                .position(|&i| i == 0)
-                .map(|codepoints| codepoints + 1) // Read null codepoint
-                .unwrap_or(cursor.len())
-        } else {
-            // Read all
-            cursor.len()
-        }
+        // Read all
+        cursor.len()
     };
 
     // Empty string, nothing to do
@@ -80,11 +81,9 @@ pub(crate) fn read_string_from_cursor(
 
             String::from_utf16(&u16_buffer)
                 .map_err(|_| invalid_message_err!("UTF16 decode", "buffer", "Failed to decode UTF16 string"))?
-        },
-        CharacterSet::Ansi => {
-            String::from_utf8(slice.to_vec())
-                .map_err(|_| invalid_message_err!("UTF8 decode", "buffer", "Failed to decode UTF8 string"))?
         }
+        CharacterSet::Ansi => String::from_utf8(slice.to_vec())
+            .map_err(|_| invalid_message_err!("UTF8 decode", "buffer", "Failed to decode UTF8 string"))?,
     };
 
     Ok(result.trim_end_matches('\0').into())
