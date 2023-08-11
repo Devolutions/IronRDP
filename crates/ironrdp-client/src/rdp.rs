@@ -23,7 +23,6 @@ pub enum RdpOutputEvent {
 pub enum RdpInputEvent {
     Resize { width: u16, height: u16 },
     FastPath(SmallVec<[FastPathInputEvent; 2]>),
-    AnnounceDeviceForRedirection { name: String, device_id: u32 },
     Close,
 }
 
@@ -209,9 +208,6 @@ async fn active_session(
                             .map_err(|e| session::custom_err!("FastPathInput encode", e))?;
 
                         framed.write_all(&frame).await.map_err(|e| session::custom_err!("write FastPathInput PDU", e))?;
-                    },
-                    RdpInputEvent::AnnounceDeviceForRedirection{ name: _, device_id: _ } => {
-                        break 'outer;
                     },
                     RdpInputEvent::Close => {
                         // TODO: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/27915739-8f77-487e-9927-55008af7fd68
