@@ -463,7 +463,7 @@ async fn connect(
     let mut connector = connector::ClientConnector::new(config)
         .with_server_name(&destination)
         .with_credssp_network_client(PlaceholderNetworkClientFactory)
-        .with_static_channel(ironrdp::dvc::WithDrdynvc::new());
+        .with_static_channel(ironrdp::dvc::Drdynvc::new());
 
     let upgraded = connect_rdcleanpath(&mut framed, &mut connector, destination, proxy_auth_token, pcb).await?;
 

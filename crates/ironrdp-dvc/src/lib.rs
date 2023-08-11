@@ -23,7 +23,7 @@ use ironrdp_pdu::gcc::ChannelName;
 use ironrdp_pdu::rdp::vc;
 use ironrdp_pdu::write_buf::WriteBuf;
 use ironrdp_pdu::{assert_obj_safe, dvc, PduResult};
-use ironrdp_svc::{CompressionCondition, MakeStaticVirtualChannel, StaticVirtualChannel};
+use ironrdp_svc::{CompressionCondition, StaticVirtualChannel};
 
 /// A type that can create `DynamicVirtualChannel` instances ("abstract factory" design pattern)
 ///
@@ -49,12 +49,17 @@ pub trait DynamicVirtualChannel: Send + Sync {
 
 assert_obj_safe!(DynamicVirtualChannel);
 
-/// A `MakeStaticVirtualChannel` combinator that produces a DRDYNVC static virtual channel (`Drdynvc`).
-pub struct WithDrdynvc {
+/// DRDYNVC Static Virtual Channel (the Remote Desktop Protocol: Dynamic Virtual Channel Extension)
+///
+/// It adds support for dynamic virtual channels (DVC).
+#[derive(Clone)]
+pub struct Drdynvc {
     dynamic_channels: BTreeMap<String, Arc<dyn MakeDynamicVirtualChannel>>,
 }
 
-impl WithDrdynvc {
+impl Drdynvc {
+    pub const NAME: ChannelName = ChannelName::from_static(b"drdynvc\0");
+
     pub fn new() -> Self {
         Self {
             dynamic_channels: BTreeMap::new(),
@@ -73,64 +78,23 @@ impl WithDrdynvc {
     }
 }
 
-impl Default for WithDrdynvc {
+impl Default for Drdynvc {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl fmt::Debug for WithDrdynvc {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "WithDrdynvc([")?;
-
-        let mut is_first = true;
-
-        for channel in self.dynamic_channels.values() {
-            if is_first {
-                is_first = false;
-            } else {
-                write!(f, ", ")?;
-            }
-
-            write!(f, "{}", channel.channel_name())?;
-        }
-
-        write!(f, "])")
+impl StaticVirtualChannel for Drdynvc {
+    fn is_drdynvc(&self) -> bool {
+        true
     }
-}
 
-impl MakeStaticVirtualChannel for WithDrdynvc {
     fn channel_name(&self) -> ChannelName {
-        Drdynvc::NAME
+        Self::NAME
     }
 
     fn compression_condition(&self) -> CompressionCondition {
         CompressionCondition::WhenRdpDataIsCompressed
-    }
-
-    fn make_static_channel(&self, channel_id: u16) -> Box<dyn StaticVirtualChannel> {
-        debug!(channel_id, "DRDYNVC channel created");
-        Box::new(Drdynvc {
-            dynamic_channels: self.dynamic_channels.clone(),
-        })
-    }
-}
-
-/// DRDYNVC Static Virtual Channel (the Remote Desktop Protocol: Dynamic Virtual Channel Extension)
-///
-/// It adds support for dynamic virtual channels (DVC).
-#[derive(Debug, Clone)]
-pub struct Drdynvc {
-    dynamic_channels: BTreeMap<String, Arc<dyn MakeDynamicVirtualChannel>>,
-}
-
-impl Drdynvc {
-    pub const NAME: ChannelName = ChannelName::from_static(b"drdynvc\0");
-}
-
-impl StaticVirtualChannel for Drdynvc {
-    fn is_drdynvc(&self) -> bool {
-        true
     }
 
     fn process(&mut self, initiator_id: u16, channel_id: u16, payload: &[u8], output: &mut WriteBuf) -> PduResult<()> {
@@ -268,6 +232,26 @@ impl StaticVirtualChannel for Drdynvc {
             "DRDYNVC",
             "ironrdp-dvc::Drdynvc implemention is not yet ready"
         ))
+    }
+}
+
+impl fmt::Debug for Drdynvc {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Drdynvc([")?;
+
+        let mut is_first = true;
+
+        for channel in self.dynamic_channels.values() {
+            if is_first {
+                is_first = false;
+            } else {
+                write!(f, ", ")?;
+            }
+
+            write!(f, "{}", channel.channel_name())?;
+        }
+
+        write!(f, "])")
     }
 }
 

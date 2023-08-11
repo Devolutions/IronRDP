@@ -4,7 +4,7 @@ use std::net::SocketAddr;
 use ironrdp_pdu::rdp::capability_sets::{CapabilitySet, VirtualChannel};
 use ironrdp_pdu::write_buf::WriteBuf;
 use ironrdp_pdu::{gcc, mcs, nego, rdp, PduHint};
-use ironrdp_svc::{MakeStaticVirtualChannel, StaticVirtualChannel};
+use ironrdp_svc::StaticVirtualChannel;
 use sspi::credssp;
 
 use crate::channel_connection::{ChannelConnectionSequence, ChannelConnectionState};
@@ -178,7 +178,7 @@ pub struct ClientConnector {
     pub server_name: Option<ServerName>,
     pub network_client_factory: Option<Box<dyn sspi::network_client::NetworkClientFactory>>,
     pub server_public_key: Option<Vec<u8>>,
-    pub static_virtual_channels: Vec<Box<dyn MakeStaticVirtualChannel>>,
+    pub static_virtual_channels: Vec<Box<dyn StaticVirtualChannel>>,
 }
 
 impl ClientConnector {
@@ -226,7 +226,7 @@ impl ClientConnector {
 
     pub fn with_static_channel<T>(mut self, with_channel: T) -> Self
     where
-        T: MakeStaticVirtualChannel + 'static,
+        T: StaticVirtualChannel + 'static,
     {
         self.static_virtual_channels.push(Box::new(with_channel));
         self
@@ -241,7 +241,7 @@ impl ClientConnector {
 
     pub fn attach_static_channel<T>(&mut self, with_channel: T)
     where
-        T: MakeStaticVirtualChannel + 'static,
+        T: StaticVirtualChannel + 'static,
     {
         self.static_virtual_channels.push(Box::new(with_channel));
     }
@@ -539,7 +539,7 @@ impl Sequence for ClientConnector {
                     .static_virtual_channels
                     .drain(..)
                     .zip(static_channel_ids.iter().copied())
-                    .map(|(maker, channel_id)| (channel_id, maker.make_static_channel(channel_id)))
+                    .map(|(svc, channel_id)| (channel_id, svc))
                     .collect::<StaticChannels>();
 
                 (
@@ -827,7 +827,7 @@ impl Sequence for ClientConnector {
 fn create_gcc_blocks(
     config: &Config,
     selected_protocol: nego::SecurityProtocol,
-    static_channels: &[Box<dyn MakeStaticVirtualChannel>],
+    static_channels: &[Box<dyn StaticVirtualChannel>],
 ) -> gcc::ClientGccBlocks {
     use ironrdp_pdu::gcc::*;
 
@@ -897,7 +897,7 @@ fn create_gcc_blocks(
         } else {
             let channels = static_channels
                 .iter()
-                .map(|channel| ironrdp_svc::make_channel_definition(channel.as_ref()))
+                .map(|channel| channel.make_channel_definition())
                 .collect();
 
             Some(ClientNetworkData { channels })
