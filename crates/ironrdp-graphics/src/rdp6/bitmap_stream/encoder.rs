@@ -211,9 +211,9 @@ impl BitmapStreamEncoder {
     where
         F: PixelFormat,
     {
-        let r = src.chunks(F::STRIDE).map(F::r);
-        let g = src.chunks(F::STRIDE).map(F::g);
-        let b = src.chunks(F::STRIDE).map(F::b);
+        let r = src.chunks_exact(F::STRIDE).map(F::r);
+        let g = src.chunks_exact(F::STRIDE).map(F::g);
+        let b = src.chunks_exact(F::STRIDE).map(F::b);
 
         self.encode_channels_stream((r, g, b), dst, rle)
     }
@@ -273,10 +273,10 @@ impl BitmapStreamEncoder {
     where
         F: PixelFormat + PixelAlpha,
     {
-        let r = src.chunks(F::STRIDE).map(F::r);
-        let g = src.chunks(F::STRIDE).map(F::g);
-        let b = src.chunks(F::STRIDE).map(F::b);
-        let a = src.chunks(F::STRIDE).map(F::a);
+        let r = src.chunks_exact(F::STRIDE).map(F::r);
+        let g = src.chunks_exact(F::STRIDE).map(F::g);
+        let b = src.chunks_exact(F::STRIDE).map(F::b);
+        let a = src.chunks_exact(F::STRIDE).map(F::a);
 
         self.encode_channels_stream_alpha((r, g, b, a), dst, rle)
     }
