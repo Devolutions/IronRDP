@@ -120,9 +120,16 @@ impl<'de> PduDecode<'de> for FileContentsResponse<'de> {
 
         let is_error = header.message_flags.contains(ClipboardPduFlags::RESPONSE_FAIL);
 
-        ensure_size!(in: src, size: header.inner_data_length());
+        ensure_size!(in: src, size: header.data_length());
 
-        let data_size = header.inner_data_length() - Self::FIXED_PART_SIZE;
+        if header.data_length() < Self::FIXED_PART_SIZE {
+            return Err(invalid_message_err!(
+                "requestedFileContentsData",
+                "Invalid data size"
+            ));
+        };
+
+        let data_size = header.data_length() - Self::FIXED_PART_SIZE;
 
         let stream_id = src.read_u32();
         let data = src.read_slice(data_size);
@@ -196,7 +203,7 @@ impl<'de> PduDecode<'de> for FileContentsRequest {
     fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
         let header = PartialHeader::decode(src)?;
 
-        let read_data_id = header.inner_data_length() > Self::FIXED_PART_SIZE;
+        let read_data_id = header.data_length() > Self::FIXED_PART_SIZE;
 
         let mut expected_size = Self::FIXED_PART_SIZE;
         if read_data_id {

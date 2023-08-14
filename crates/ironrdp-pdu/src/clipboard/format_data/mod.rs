@@ -177,8 +177,8 @@ impl<'de> PduDecode<'de> for FormatDataResponse<'de> {
 
         let is_error = header.message_flags.contains(ClipboardPduFlags::RESPONSE_FAIL);
 
-        ensure_size!(in: src, size: header.inner_data_length());
-        let data = src.read_slice(header.inner_data_length());
+        ensure_size!(in: src, size: header.data_length());
+        let data = src.read_slice(header.data_length());
 
         Ok(Self {
             is_error,

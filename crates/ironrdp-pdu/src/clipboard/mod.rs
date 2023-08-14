@@ -57,7 +57,7 @@ impl PartialHeader {
         }
     }
 
-    pub fn inner_data_length(&self) -> usize {
+    pub fn data_length(&self) -> usize {
         self.data_length as usize
     }
 }

@@ -143,9 +143,9 @@ impl<'de> PduDecode<'de> for FormatList<'de> {
         let header = PartialHeader::decode(src)?;
 
         let use_ascii = header.message_flags.contains(ClipboardPduFlags::ASCII_NAMES);
-        ensure_size!(in: src, size: header.inner_data_length());
+        ensure_size!(in: src, size: header.data_length());
 
-        let encoded_formats = src.read_slice(header.inner_data_length());
+        let encoded_formats = src.read_slice(header.data_length());
 
         Ok(Self {
             use_ascii,
