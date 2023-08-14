@@ -1,6 +1,6 @@
 use crate::cursor::{ReadCursor, WriteCursor};
 use crate::utils::{read_string_from_cursor, write_string_to_cursor, CharacterSet};
-use crate::{ensure_fixed_part_size, invalid_message_err, PduDecode, PduEncode, PduResult};
+use crate::{ensure_fixed_part_size, invalid_message_err, PduDecode, PduEncode, PduError, PduErrorKind, PduResult};
 use bitflags::bitflags;
 use std::borrow::Cow;
 
@@ -18,15 +18,15 @@ impl PartialHeader {
         Self::new_with_flags(inner_data_length, ClipboardPduFlags::empty())
     }
 
-    pub fn new_with_flags(inner_data_length: u32, message_flags: ClipboardPduFlags) -> Self {
+    pub fn new_with_flags(data_length: u32, message_flags: ClipboardPduFlags) -> Self {
         Self {
             message_flags,
-            data_length: std::mem::size_of::<u16>() as u32 + Self::FIXED_PART_SIZE as u32 + inner_data_length,
+            data_length,
         }
     }
 
     pub fn inner_data_length(&self) -> usize {
-        self.data_length as usize - Self::FIXED_PART_SIZE - std::mem::size_of::<u16>()
+        self.data_length as usize
     }
 }
 
@@ -75,6 +75,7 @@ const MSG_TYPE_FILE_CONTENTS_RESPONSE: u16 = 0x0009;
 const MSG_TYPE_LOCK_CLIPDATA: u16 = 0x000A;
 const MSG_TYPE_UNLOCK_CLIPDATA: u16 = 0x000B;
 
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ClipboardPdu<'a> {
     MonitorReady,
     FormatList(FormatList<'a>),
@@ -176,9 +177,41 @@ impl PduEncode for ClipboardPdu<'_> {
     }
 }
 
-// TODO(@pacmancoder) DECODE
+impl<'de> PduDecode<'de> for ClipboardPdu<'de> {
+    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+        ensure_fixed_part_size!(in: src);
+
+        let read_empty_pdu = |src: &mut ReadCursor<'de>| {
+            let _header = PartialHeader::decode(src)?;
+            Ok(())
+        };
+
+        let pdu = match src.read_u16() {
+            MSG_TYPE_MONITOR_READY => {
+                read_empty_pdu(src)?;
+                ClipboardPdu::MonitorReady
+            }
+            MSG_TYPE_FORMAT_LIST => ClipboardPdu::FormatList(FormatList::decode(src)?),
+            MSG_TYPE_FORMAT_LIST_RESPONSE => ClipboardPdu::FormatListResponse(FormatListResponse::decode(src)?),
+            MSG_TYPE_FORMAT_DATA_REQUEST => ClipboardPdu::FormatDataRequest(FormatDataRequest::decode(src)?),
+            MSG_TYPE_FORMAT_DATA_RESPONSE => ClipboardPdu::FormatDataResponse(FormatDataResponse::decode(src)?),
+            MSG_TYPE_TEMPORARY_DIRECTORY => {
+                ClipboardPdu::TemporaryDirectory(ClipboardClientTemporaryDirectory::decode(src)?)
+            }
+            MSG_TYPE_CAPABILITIES => ClipboardPdu::Capabilites(ClipboardCapabilities::decode(src)?),
+            MSG_TYPE_FILE_CONTENTS_REQUEST => ClipboardPdu::FileContentsRequest(FileContentsRequest::decode(src)?),
+            MSG_TYPE_FILE_CONTENTS_RESPONSE => ClipboardPdu::FileContentsResponse(FileContentsResponse::decode(src)?),
+            MSG_TYPE_LOCK_CLIPDATA => ClipboardPdu::LockData(ClipboardLockDataId::decode(src)?),
+            MSG_TYPE_UNLOCK_CLIPDATA => ClipboardPdu::UnlockData(ClipboardLockDataId::decode(src)?),
+            _ => return Err(invalid_message_err!("msgType", "Unknown clipboard PDU type")),
+        };
+
+        Ok(pdu)
+    }
+}
 
 /// Represents `CLIPRDR_FILEDESCRIPTOR`
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileDescriptor {
     pub attibutes: Option<ClipboardFileAttributes>,
     pub last_write_time: Option<u64>,
@@ -290,6 +323,7 @@ impl<'de> PduDecode<'de> for FileDescriptor {
 /// Represents `CLIPRDR_FILELIST`
 ///
 /// NOTE: `PduDecode` implementation will read all remaining data in cursor as file list.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PackedFileList {
     pub files: Vec<FileDescriptor>,
 }
@@ -338,6 +372,7 @@ impl<'de> PduDecode<'de> for PackedFileList {
 /// Represents `CLIPRDR_MFPICT`
 ///
 /// NOTE: `PduDecode` implementation will read all remaining data in cursor as metafile contents.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PackedMetafile<'a> {
     pub mapping_mode: PackedMetafileMappingMode,
     pub x_ext: u32,
@@ -409,7 +444,7 @@ impl PaletteEntry {
 /// Represents `CLIPRDR_PALETTE`
 ///
 /// NOTE: `PduDecode` implementation will read all remaining data in cursor as the palette entries.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClipboardPalette {
     pub entries: Vec<PaletteEntry>,
 }
@@ -463,19 +498,35 @@ impl<'de> PduDecode<'de> for ClipboardPalette {
 }
 
 /// Represents `CLIPRDR_FORMAT_DATA_RESPONSE`
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FormatDataResponse<'a> {
+    is_error: bool,
     data: Cow<'a, [u8]>,
 }
 
 impl<'a> FormatDataResponse<'a> {
     const NAME: &str = "CLIPRDR_FORMAT_DATA_RESPONSE";
 
-    pub fn with_data(data: impl Into<Cow<'a, [u8]>>) -> Self {
-        Self { data: data.into() }
+    pub fn new_with_data(data: impl Into<Cow<'a, [u8]>>) -> Self {
+        Self {
+            is_error: false,
+            data: data.into(),
+        }
+    }
+
+    pub fn new_error() -> Self {
+        Self {
+            is_error: true,
+            data: Cow::Borrowed(&[]),
+        }
     }
 
     pub fn data(&self) -> &[u8] {
         &self.data
+    }
+
+    pub fn is_error(&self) -> bool {
+        self.is_error
     }
 
     /// Creates new format data response from clipboard palette. Please note that this method
@@ -487,7 +538,10 @@ impl<'a> FormatDataResponse<'a> {
         let mut cursor = WriteCursor::new(&mut data);
         palette.encode(&mut cursor)?;
 
-        Ok(Self { data: data.into() })
+        Ok(Self {
+            is_error: false,
+            data: data.into(),
+        })
     }
 
     /// Creates new format data response from packed metafile. Please note that this method
@@ -499,7 +553,10 @@ impl<'a> FormatDataResponse<'a> {
         let mut cursor = WriteCursor::new(&mut data);
         metafile.encode(&mut cursor)?;
 
-        Ok(Self { data: data.into() })
+        Ok(Self {
+            is_error: false,
+            data: data.into(),
+        })
     }
 
     /// Creates new format data response from packed file list. Please note that this method
@@ -511,7 +568,10 @@ impl<'a> FormatDataResponse<'a> {
         let mut cursor = WriteCursor::new(&mut data);
         list.encode(&mut cursor)?;
 
-        Ok(Self { data: data.into() })
+        Ok(Self {
+            is_error: false,
+            data: data.into(),
+        })
     }
 
     /// Reads inner data as [`ClipboardPalette`]
@@ -535,7 +595,13 @@ impl<'a> FormatDataResponse<'a> {
 
 impl PduEncode for FormatDataResponse<'_> {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
-        let header = PartialHeader::new(self.data.len() as u32);
+        let flags = if self.is_error {
+            ClipboardPduFlags::RESPONSE_FAIL
+        } else {
+            ClipboardPduFlags::RESPONSE_OK
+        };
+
+        let header = PartialHeader::new_with_flags(self.data.len() as u32, flags);
         header.encode(dst)?;
 
         ensure_size!(in: dst, size: self.data.len());
@@ -557,16 +623,20 @@ impl<'de> PduDecode<'de> for FormatDataResponse<'de> {
     fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
         let header = PartialHeader::decode(src)?;
 
+        let is_error = header.message_flags.contains(ClipboardPduFlags::RESPONSE_FAIL);
+
         ensure_size!(in: src, size: header.inner_data_length());
         let data = src.read_slice(header.inner_data_length());
 
         Ok(Self {
+            is_error,
             data: Cow::Borrowed(data),
         })
     }
 }
 
 /// Represents `CLIPRDR_FORMAT_DATA_REQUEST`
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FormatDataRequest {
     pub format_id: u32,
 }
@@ -612,12 +682,14 @@ pub const FORMAT_ID_METAFILE: u32 = 3;
 pub const FILE_LIST_FORMAT_NAME: &str = "FileGroupDescriptorW";
 
 /// Represents `CLIPRDR_SHORT_FORMAT_NAME` and `CLIPRDR_LONG_FORMAT_NAME`
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClipboardFormat {
     pub id: u32,
     pub name: String,
 }
 
 /// Represents `CLIPRDR_FORMAT_LIST`
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FormatList<'a> {
     use_ascii: bool,
     encoded_formats: Cow<'a, [u8]>,
@@ -625,6 +697,96 @@ pub struct FormatList<'a> {
 
 impl FormatList<'_> {
     const NAME: &str = "CLIPRDR_FORMAT_LIST";
+
+    // `CLIPRDR_SHORT_FORMAT_NAME` size
+    const SHORT_FORMAT_SIZE: usize = std::mem::size_of::<u32>() + 32;
+
+    fn new_impl(formats: &[ClipboardFormat], use_long_format: bool, use_ascii: bool) -> PduResult<Self> {
+        let charset = if use_ascii {
+            CharacterSet::Ansi
+        } else {
+            CharacterSet::Unicode
+        };
+
+        let mut bytes_written = 0;
+
+        if use_long_format {
+            // Sane default for formats buffer size to avoid reallocations
+            const DEFAULT_STRING_BUFFER_SIZE: usize = 1024;
+            let mut buffer = vec![0u8; DEFAULT_STRING_BUFFER_SIZE];
+
+            for format in formats {
+                let approximate_item_length = std::mem::size_of::<u32>()
+                    + match charset {
+                        CharacterSet::Ansi => format.name.len() + 1,
+                        CharacterSet::Unicode => {
+                            // This is only an approximation, but it's enough to avoid reallocations in
+                            // most cases. If resulting string is bigger than that, we will resize the
+                            // buffer later when first encoding attempt fails.
+                            (format.name.len() + 1) * std::mem::size_of::<u16>()
+                        }
+                    };
+
+                buffer.resize(buffer.len() + approximate_item_length, 0);
+
+                let mut cursor = WriteCursor::new(&mut buffer[bytes_written..]);
+
+                // Format id write will never fail, as we pre-allocated space in buffer
+                cursor.write_u32(format.id);
+
+                let encoding_attempt = write_string_to_cursor(&mut cursor, &format.name, charset, true);
+
+                match encoding_attempt {
+                    Ok(()) => {
+                        bytes_written += cursor.pos();
+                    }
+                    Err(PduError {
+                        kind: PduErrorKind::NotEnoughBytes { received, expected },
+                        ..
+                    }) => {
+                        // Re-allocate buffer, try again. `write_string_to_cursor` will return
+                        // `PduErrorKind::NotEnoughBytes` error if buffer is too small
+                        buffer.resize(buffer.len() + expected - received, 0);
+
+                        // Keep written format id in buffer
+                        bytes_written += std::mem::size_of::<u32>();
+
+                        let mut cursor = WriteCursor::new(&mut buffer[bytes_written..]);
+                        write_string_to_cursor(&mut cursor, &format.name, charset, true)?;
+                        bytes_written += cursor.pos();
+                    }
+                    Err(e) => return Err(e),
+                }
+            }
+
+            buffer.truncate(bytes_written);
+
+            Ok(Self {
+                use_ascii,
+                encoded_formats: Cow::Owned(buffer),
+            })
+        } else {
+            let mut buffer = vec![0u8; Self::SHORT_FORMAT_SIZE * formats.len()];
+            for (idx, format) in formats.iter().enumerate() {
+                let mut cursor = WriteCursor::new(&mut buffer[idx * Self::SHORT_FORMAT_SIZE..]);
+                cursor.write_u32(format.id);
+                write_string_to_cursor(&mut cursor, &format.name, charset, true)?;
+            }
+
+            Ok(Self {
+                use_ascii,
+                encoded_formats: Cow::Owned(buffer),
+            })
+        }
+    }
+
+    pub fn new_unicode(formats: &[ClipboardFormat], use_long_format: bool) -> PduResult<Self> {
+        Self::new_impl(formats, use_long_format, false)
+    }
+
+    pub fn new_ascii(formats: &[ClipboardFormat], use_long_format: bool) -> PduResult<Self> {
+        Self::new_impl(formats, use_long_format, true)
+    }
 
     pub fn get_formats(&self, use_long_format: bool) -> PduResult<Vec<ClipboardFormat>> {
         let mut src = ReadCursor::new(self.encoded_formats.as_ref());
@@ -649,10 +811,7 @@ impl FormatList<'_> {
 
             Ok(formats)
         } else {
-            // `CLIPRDR_SHORT_FORMAT_NAME` size
-            const FORMAT_SIZE: usize = std::mem::size_of::<u32>() + 32;
-
-            let items_count = src.len() / FORMAT_SIZE;
+            let items_count = src.len() / Self::SHORT_FORMAT_SIZE;
 
             let mut formats = Vec::with_capacity(items_count);
 
@@ -715,6 +874,7 @@ impl PduEncode for FormatList<'_> {
 }
 
 /// Represents `FORMAT_LIST_RESPONSE`
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FormatListResponse {
     Ok,
     Fail,
@@ -756,7 +916,9 @@ impl<'de> PduDecode<'de> for FormatListResponse {
 }
 
 /// Represents `CLIPRDR_FILECONTENTS_RESPONSE`
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileContentsResponse<'a> {
+    is_error: bool,
     stream_id: u32,
     data: Cow<'a, [u8]>,
 }
@@ -771,15 +933,25 @@ impl<'a> FileContentsResponse<'a> {
 
     pub fn new_size_response(stream_id: u32, size: u64) -> Self {
         Self {
+            is_error: false,
             stream_id,
             data: Cow::Owned(size.to_le_bytes().to_vec()),
         }
     }
 
-    pub fn new_range_response(stream_id: u32, data: &'a [u8]) -> Self {
+    pub fn new_data_response(stream_id: u32, data: &'a [u8]) -> Self {
         Self {
+            is_error: false,
             stream_id,
             data: Cow::Borrowed(data),
+        }
+    }
+
+    pub fn new_error(stream_id: u32) -> Self {
+        Self {
+            is_error: true,
+            stream_id,
+            data: Cow::Borrowed(&[]),
         }
     }
 
@@ -805,7 +977,13 @@ impl<'a> FileContentsResponse<'a> {
 
 impl PduEncode for FileContentsResponse<'_> {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
-        let header = PartialHeader::new(self.inner_size() as u32);
+        let flags = if self.is_error {
+            ClipboardPduFlags::RESPONSE_FAIL
+        } else {
+            ClipboardPduFlags::RESPONSE_OK
+        };
+
+        let header = PartialHeader::new_with_flags(self.inner_size() as u32, flags);
         header.encode(dst)?;
 
         ensure_size!(in: dst, size: self.inner_size());
@@ -829,6 +1007,8 @@ impl<'de> PduDecode<'de> for FileContentsResponse<'de> {
     fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
         let header = PartialHeader::decode(src)?;
 
+        let is_error = header.message_flags.contains(ClipboardPduFlags::RESPONSE_FAIL);
+
         ensure_size!(in: src, size: header.inner_data_length());
 
         let data_size = header.inner_data_length() - Self::FIXED_PART_SIZE;
@@ -837,6 +1017,7 @@ impl<'de> PduDecode<'de> for FileContentsResponse<'de> {
         let data = src.read_slice(data_size);
 
         Ok(Self {
+            is_error,
             stream_id,
             data: Cow::Borrowed(data),
         })
@@ -844,6 +1025,7 @@ impl<'de> PduDecode<'de> for FileContentsResponse<'de> {
 }
 
 /// Represents `CLIPRDR_FILECONTENTS_REQUEST`
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileContentsRequest {
     pub stream_id: u32,
     pub index: u32,
@@ -933,7 +1115,8 @@ impl<'de> PduDecode<'de> for FileContentsRequest {
 }
 
 /// Represents `CLIPRDR_LOCK_CLIPDATA`/`CLIPRDR_UNLOCK_CLIPDATA`
-pub struct ClipboardLockDataId(u32);
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClipboardLockDataId(pub u32);
 
 impl ClipboardLockDataId {
     const NAME: &str = "CLIPRDR_(UN)LOCK_CLIPDATA";
@@ -972,6 +1155,7 @@ impl<'de> PduDecode<'de> for ClipboardLockDataId {
 }
 
 /// Represents `CLIPRDR_TEMP_DIRECTORY`
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClipboardClientTemporaryDirectory<'a> {
     path_buffer: Cow<'a, [u8]>,
 }
@@ -1003,7 +1187,7 @@ impl ClipboardClientTemporaryDirectory<'_> {
     }
 
     fn inner_size(&self) -> usize {
-        Self::FIXED_PART_SIZE + self.path_buffer.len()
+        Self::FIXED_PART_SIZE
     }
 }
 
@@ -1041,6 +1225,7 @@ impl<'de> PduDecode<'de> for ClipboardClientTemporaryDirectory<'de> {
 }
 
 /// Represents `CLIPRDR_CAPS`
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClipboardCapabilities {
     pub capabilities: Vec<CapabilitySet>,
 }
@@ -1107,6 +1292,7 @@ impl<'de> PduDecode<'de> for ClipboardCapabilities {
 }
 
 /// Represents `CLIPRDR_CAPS_SET`
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CapabilitySet {
     General(GeneralCapabilitySet),
 }
@@ -1173,6 +1359,7 @@ impl<'de> PduDecode<'de> for CapabilitySet {
 }
 
 /// Represents `CLIPRDR_GENERAL_CAPABILITY` without header
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GeneralCapabilitySet {
     pub version: ClipboardProtocolVersion,
     pub general_flags: ClipboardGeneralCapabilityFlags,

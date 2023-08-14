@@ -68,10 +68,11 @@ pub(crate) fn read_string_from_cursor(
         return Ok(String::new());
     }
 
-    let mut slice = cursor.read_slice(size);
-
     let result = match character_set {
         CharacterSet::Unicode => {
+            ensure_size!(ctx: "Decode string (UTF-16)", in: cursor, size: size);
+            let mut slice = cursor.read_slice(size);
+
             let str_buffer = &mut slice;
             let mut u16_buffer = vec![0u16; str_buffer.len() / 2];
 
@@ -82,8 +83,12 @@ pub(crate) fn read_string_from_cursor(
             String::from_utf16(&u16_buffer)
                 .map_err(|_| invalid_message_err!("UTF16 decode", "buffer", "Failed to decode UTF16 string"))?
         }
-        CharacterSet::Ansi => String::from_utf8(slice.to_vec())
-            .map_err(|_| invalid_message_err!("UTF8 decode", "buffer", "Failed to decode UTF8 string"))?,
+        CharacterSet::Ansi => {
+            ensure_size!(ctx: "Decode string (UTF-8)", in: cursor, size: size);
+            let slice = cursor.read_slice(size);
+            String::from_utf8(slice.to_vec())
+                .map_err(|_| invalid_message_err!("UTF8 decode", "buffer", "Failed to decode UTF8 string"))?
+        }
     };
 
     Ok(result.trim_end_matches('\0').into())
@@ -103,6 +108,7 @@ pub(crate) fn write_string_to_cursor(
                 buffer.push(0);
             }
 
+            ensure_size!(ctx: "Encode sting (UTF-16)", in: cursor, size: buffer.len());
             cursor.write_slice(&buffer);
         }
         CharacterSet::Ansi => {
@@ -111,6 +117,7 @@ pub(crate) fn write_string_to_cursor(
                 buffer.push(0);
             }
 
+            ensure_size!(ctx: "Encode sting (UTF-8)", in: cursor, size: buffer.len());
             cursor.write_slice(&buffer);
         }
     }

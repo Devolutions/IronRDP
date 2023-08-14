@@ -73,6 +73,8 @@ pub fn pdu_decode(data: &[u8]) {
     let _ = input::InputEvent::from_buffer(data);
 
     let _ = decode::<bitmap::rdp6::BitmapStream>(data);
+
+    let _ = decode::<clipboard::ClipboardPdu>(data);
 }
 
 pub fn rle_decompress_bitmap(input: BitmapInput) {
