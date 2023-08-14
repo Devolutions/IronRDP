@@ -1,9 +1,9 @@
 use expect_test::expect;
 use ironrdp_pdu::{
     clipboard::{
-        CapabilitySet, ClipboardCapabilities, ClipboardFormat, ClipboardGeneralCapabilityFlags, ClipboardLockDataId,
-        ClipboardPdu, ClipboardProtocolVersion, FileContentsFlags, FileContentsRequest, FileContentsResponse,
-        FormatDataRequest, FormatDataResponse, FormatList, FormatListResponse, GeneralCapabilitySet,
+        Capabilities, CapabilitySet, ClipboardFormat, ClipboardGeneralCapabilityFlags, ClipboardPdu,
+        ClipboardProtocolVersion, FileContentsFlags, FileContentsRequest, FileContentsResponse, FormatDataRequest,
+        FormatDataResponse, FormatList, FormatListResponse, GeneralCapabilitySet, LockDataId,
         PackedMetafileMappingMode,
     },
     PduEncode,
@@ -14,7 +14,7 @@ use ironrdp_testsuite_core::encode_decode_test;
 encode_decode_test! {
     capabilities:
         ClipboardPdu::Capabilites(
-            ClipboardCapabilities {
+            Capabilities {
                 capabilities: vec![
                     CapabilitySet::General(
                         GeneralCapabilitySet {
@@ -46,14 +46,14 @@ encode_decode_test! {
         ];
 
     lock:
-        ClipboardPdu::LockData(ClipboardLockDataId(8)),
+        ClipboardPdu::LockData(LockDataId(8)),
         [
             0x0a, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00,
             0x08, 0x00, 0x00, 0x00,
         ];
 
     unlock:
-        ClipboardPdu::UnlockData(ClipboardLockDataId(8)),
+        ClipboardPdu::UnlockData(LockDataId(8)),
         [
             0x0b, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00,
             0x08, 0x00, 0x00, 0x00,
@@ -70,7 +70,7 @@ encode_decode_test! {
 
     format_data_response:
         ClipboardPdu::FormatDataResponse(
-            FormatDataResponse::new_with_data(b"h\0e\0l\0l\0o\0 \0w\0o\0r\0l\0d\0\0\0".as_slice()),
+            FormatDataResponse::new_data(b"h\0e\0l\0l\0o\0 \0w\0o\0r\0l\0d\0\0\0".as_slice()),
         ),
         [
             0x05, 0x00, 0x01, 0x00, 0x18, 0x00, 0x00, 0x00,
@@ -310,14 +310,14 @@ fn metafile_pdu_ms() {
     let decoded_pdu: ClipboardPdu = ironrdp_pdu::decode(input).unwrap();
 
     if let ClipboardPdu::FormatDataResponse(response) = &decoded_pdu {
-        let metafile = response.to_packed_metafile().unwrap();
+        let metafile = response.to_metafile().unwrap();
 
         assert_eq!(metafile.mapping_mode, PackedMetafileMappingMode::ANISOTROPIC);
         assert_eq!(metafile.x_ext, 556);
         assert_eq!(metafile.y_ext, 423);
 
         // Just check some known arbitrary byte in raw metafile data
-        assert_eq!(metafile.data[metafile.data.len() - 6], 0x03);
+        assert_eq!(metafile.data()[metafile.data().len() - 6], 0x03);
     } else {
         panic!("Expected FormatDataResponse");
     };
@@ -363,7 +363,7 @@ fn file_list_pdu_ms() {
     let decoded_pdu: ClipboardPdu = ironrdp_pdu::decode(input).unwrap();
 
     if let ClipboardPdu::FormatDataResponse(response) = &decoded_pdu {
-        let file_list = response.to_packed_file_list().unwrap();
+        let file_list = response.to_file_list().unwrap();
 
         expect![[r#"
             [

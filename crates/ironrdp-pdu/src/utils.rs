@@ -8,6 +8,22 @@ use byteorder::{LittleEndian, ReadBytesExt as _, WriteBytesExt as _};
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::ToPrimitive as _;
 
+pub(crate) fn split_u64(value: u64) -> (u32, u32) {
+    let bytes = value.to_le_bytes();
+    let (low, high) = bytes.split_at(std::mem::size_of::<u32>());
+    (
+        u32::from_le_bytes(low.try_into().unwrap()),
+        u32::from_le_bytes(high.try_into().unwrap()),
+    )
+}
+
+pub(crate) fn combine_u64(lo: u32, hi: u32) -> u64 {
+    let mut position_bytes = [0u8; std::mem::size_of::<u64>()];
+    position_bytes[..std::mem::size_of::<u32>()].copy_from_slice(&lo.to_le_bytes());
+    position_bytes[std::mem::size_of::<u32>()..].copy_from_slice(&hi.to_le_bytes());
+    u64::from_le_bytes(position_bytes)
+}
+
 pub(crate) fn to_utf16_bytes(value: &str) -> Vec<u8> {
     value
         .encode_utf16()
