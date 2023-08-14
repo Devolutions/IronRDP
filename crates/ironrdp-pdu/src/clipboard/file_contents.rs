@@ -123,10 +123,7 @@ impl<'de> PduDecode<'de> for FileContentsResponse<'de> {
         ensure_size!(in: src, size: header.data_length());
 
         if header.data_length() < Self::FIXED_PART_SIZE {
-            return Err(invalid_message_err!(
-                "requestedFileContentsData",
-                "Invalid data size"
-            ));
+            return Err(invalid_message_err!("requestedFileContentsData", "Invalid data size"));
         };
 
         let data_size = header.data_length() - Self::FIXED_PART_SIZE;
