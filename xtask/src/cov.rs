@@ -81,6 +81,7 @@ pub fn report_github(sh: &Shell, repo: &str, pr_id: u32) -> anyhow::Result<()> {
     use std::fmt::Write as _;
 
     const COMMENT_HEADER: &str = "## Coverage Report :robot: :gear:";
+    const DIFF_THRESHOLD: f64 = 0.005;
 
     let _s = Section::new("COV-REPORT");
 
@@ -91,7 +92,7 @@ pub fn report_github(sh: &Shell, repo: &str, pr_id: u32) -> anyhow::Result<()> {
 
     println!("Past:\n{past_report}");
     println!("New:\n{report}");
-    println!("Diff: {:+.2}%", diff);
+    println!("Diff: {:+}%", diff);
 
     let comments = cmd!(sh, "gh api")
         .arg("-H")
@@ -137,7 +138,8 @@ pub fn report_github(sh: &Shell, repo: &str, pr_id: u32) -> anyhow::Result<()> {
             .arg(format!("/repos/{repo}/issues/comments/{comment_id}"))
             .ignore_stdout()
             .run()?;
-    } else if diff.abs() < 0.01 {
+    } else if diff.abs() > DIFF_THRESHOLD {
+        trace!("Diff ({diff}) is greater than threshold ({DIFF_THRESHOLD})");
         println!("Create new comment");
 
         command
