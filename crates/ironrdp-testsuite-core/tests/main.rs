@@ -9,6 +9,7 @@
 //! Cargo will run all tests from a single binary in parallel, but
 //! binaries themselves are run sequentally.
 
+mod clipboard;
 mod graphics;
 mod input;
 mod pcb;

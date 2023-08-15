@@ -1,17 +1,37 @@
 use std::io;
 
+use crate::{
+    cursor::{ReadCursor, WriteCursor},
+    PduResult,
+};
 use byteorder::{LittleEndian, ReadBytesExt as _, WriteBytesExt as _};
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::ToPrimitive as _;
 
-pub(crate) fn to_utf16_bytes(value: &str) -> Vec<u8> {
+pub fn split_u64(value: u64) -> (u32, u32) {
+    let bytes = value.to_le_bytes();
+    let (low, high) = bytes.split_at(std::mem::size_of::<u32>());
+    (
+        u32::from_le_bytes(low.try_into().unwrap()),
+        u32::from_le_bytes(high.try_into().unwrap()),
+    )
+}
+
+pub fn combine_u64(lo: u32, hi: u32) -> u64 {
+    let mut position_bytes = [0u8; std::mem::size_of::<u64>()];
+    position_bytes[..std::mem::size_of::<u32>()].copy_from_slice(&lo.to_le_bytes());
+    position_bytes[std::mem::size_of::<u32>()..].copy_from_slice(&hi.to_le_bytes());
+    u64::from_le_bytes(position_bytes)
+}
+
+pub fn to_utf16_bytes(value: &str) -> Vec<u8> {
     value
         .encode_utf16()
         .flat_map(|i| i.to_le_bytes().to_vec())
         .collect::<Vec<u8>>()
 }
 
-pub(crate) fn from_utf16_bytes(mut value: &[u8]) -> String {
+pub fn from_utf16_bytes(mut value: &[u8]) -> String {
     let mut value_u16 = vec![0x00; value.len() / 2];
     value
         .read_u16_into::<LittleEndian>(value_u16.as_mut())
@@ -21,9 +41,104 @@ pub(crate) fn from_utf16_bytes(mut value: &[u8]) -> String {
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive, ToPrimitive)]
-pub(crate) enum CharacterSet {
+pub enum CharacterSet {
     Ansi = 1,
     Unicode = 2,
+}
+
+pub fn read_string_from_cursor(
+    cursor: &mut ReadCursor<'_>,
+    character_set: CharacterSet,
+    read_null_terminator: bool,
+) -> PduResult<String> {
+    let size = if character_set == CharacterSet::Unicode {
+        let code_units = if read_null_terminator {
+            // Find null or read all if null is not found
+            cursor
+                .remaining()
+                .chunks_exact(2)
+                .position(|chunk| chunk[0] == 0 && chunk[1] == 0)
+                .map(|code_units| code_units + 1) // Read null code point
+                .unwrap_or(cursor.len() / 2)
+        } else {
+            // UTF16 uses 2 bytes per code unit, so we need to read an even number of bytes
+            cursor.len() / 2
+        };
+
+        code_units * 2
+    } else if read_null_terminator {
+        // Find null or read all if null is not found
+        cursor
+            .remaining()
+            .iter()
+            .position(|&i| i == 0)
+            .map(|code_units| code_units + 1) // Read null code point
+            .unwrap_or(cursor.len())
+    } else {
+        // Read all
+        cursor.len()
+    };
+
+    // Empty string, nothing to do
+    if size == 0 {
+        return Ok(String::new());
+    }
+
+    let result = match character_set {
+        CharacterSet::Unicode => {
+            ensure_size!(ctx: "Decode string (UTF-16)", in: cursor, size: size);
+            let mut slice = cursor.read_slice(size);
+
+            let str_buffer = &mut slice;
+            let mut u16_buffer = vec![0u16; str_buffer.len() / 2];
+
+            str_buffer
+                .read_u16_into::<LittleEndian>(u16_buffer.as_mut())
+                .expect("BUG: str_buffer is always even for UTF16");
+
+            String::from_utf16(&u16_buffer)
+                .map_err(|_| invalid_message_err!("UTF16 decode", "buffer", "Failed to decode UTF16 string"))?
+        }
+        CharacterSet::Ansi => {
+            ensure_size!(ctx: "Decode string (UTF-8)", in: cursor, size: size);
+            let slice = cursor.read_slice(size);
+            String::from_utf8(slice.to_vec())
+                .map_err(|_| invalid_message_err!("UTF8 decode", "buffer", "Failed to decode UTF8 string"))?
+        }
+    };
+
+    Ok(result.trim_end_matches('\0').into())
+}
+
+pub fn write_string_to_cursor(
+    cursor: &mut WriteCursor<'_>,
+    value: &str,
+    character_set: CharacterSet,
+    write_null_terminator: bool,
+) -> PduResult<()> {
+    match character_set {
+        CharacterSet::Unicode => {
+            let mut buffer = to_utf16_bytes(value);
+            if write_null_terminator {
+                buffer.push(0);
+                buffer.push(0);
+            }
+
+            ensure_size!(ctx: "Encode sting (UTF-16)", in: cursor, size: buffer.len());
+            cursor.write_slice(&buffer);
+        }
+        CharacterSet::Ansi => {
+            let mut buffer = value.as_bytes().to_vec();
+            if write_null_terminator {
+                buffer.push(0);
+            }
+
+            ensure_size!(ctx: "Encode sting (UTF-8)", in: cursor, size: buffer.len());
+            cursor.write_slice(&buffer);
+        }
+    }
+
+    Ok(())
 }
 
 pub(crate) fn read_string(

@@ -155,6 +155,23 @@ macro_rules! cast_length {
     }};
 }
 
+#[macro_export]
+macro_rules! cast_int {
+    ($ctx:expr, $field:expr, $len:expr) => {{
+        $len.try_into().map_err(|e| {
+            <$crate::PduError as $crate::PduErrorExt>::invalid_message(
+                $ctx,
+                $field,
+                "out of range integral type conversion",
+            )
+            .with_source(e)
+        })
+    }};
+    ($field:expr, $len:expr) => {{
+        $crate::cast_int!(Self::NAME, $field, $len)
+    }};
+}
+
 /// Asserts that the traits support dynamic dispatch.
 ///
 /// From <https://docs.rs/static_assertions/latest/src/static_assertions/assert_obj_safe.rs.html#72-76>
