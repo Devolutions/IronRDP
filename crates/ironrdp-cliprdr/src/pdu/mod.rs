@@ -15,9 +15,9 @@ pub use format_data::*;
 pub use format_list::*;
 pub use lock::*;
 
-use crate::cursor::{ReadCursor, WriteCursor};
-use crate::{ensure_fixed_part_size, invalid_message_err, PduDecode, PduEncode, PduResult};
 use bitflags::bitflags;
+use ironrdp_pdu::cursor::{ReadCursor, WriteCursor};
+use ironrdp_pdu::{ensure_fixed_part_size, invalid_message_err, PduDecode, PduEncode, PduResult};
 
 const MSG_TYPE_MONITOR_READY: u16 = 0x0001;
 const MSG_TYPE_FORMAT_LIST: u16 = 0x0002;

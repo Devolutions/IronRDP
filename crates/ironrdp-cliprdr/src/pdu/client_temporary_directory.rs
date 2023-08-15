@@ -1,7 +1,9 @@
-use crate::clipboard::PartialHeader;
-use crate::cursor::{ReadCursor, WriteCursor};
-use crate::utils::{read_string_from_cursor, write_string_to_cursor, CharacterSet};
-use crate::{ensure_fixed_part_size, invalid_message_err, PduDecode, PduEncode, PduResult};
+use crate::pdu::PartialHeader;
+use ironrdp_pdu::cursor::{ReadCursor, WriteCursor};
+use ironrdp_pdu::utils::{read_string_from_cursor, write_string_to_cursor, CharacterSet};
+use ironrdp_pdu::{
+    cast_int, ensure_fixed_part_size, ensure_size, invalid_message_err, PduDecode, PduEncode, PduResult,
+};
 use std::borrow::Cow;
 
 /// Represents `CLIPRDR_TEMP_DIRECTORY`
@@ -45,7 +47,7 @@ impl ClientTemporaryDirectory<'_> {
 
 impl PduEncode for ClientTemporaryDirectory<'_> {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
-        let header = PartialHeader::new(self.inner_size() as u32);
+        let header = PartialHeader::new(cast_int!("dataLen", self.inner_size())?);
         header.encode(dst)?;
 
         ensure_size!(in: dst, size: self.inner_size());

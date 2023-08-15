@@ -1,0 +1,22 @@
+[package]
+name = "ironrdp-cliprdr"
+version = "0.1.0"
+description = "RDP PDU encoding and decoding"
+readme = "README.md"
+edition.workspace = true
+license.workspace = true
+
+homepage.workspace = true
+repository.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[lib]
+doctest = false
+test = false
+
+[dependencies]
+ironrdp-pdu.workspace = true
+
+bitflags = "2"

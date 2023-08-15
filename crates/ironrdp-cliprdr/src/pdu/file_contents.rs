@@ -1,8 +1,8 @@
-use crate::clipboard::{ClipboardPduFlags, PartialHeader};
-use crate::cursor::{ReadCursor, WriteCursor};
-use crate::utils::{combine_u64, split_u64};
-use crate::{invalid_message_err, PduDecode, PduEncode, PduResult};
+use crate::pdu::{ClipboardPduFlags, PartialHeader};
 use bitflags::bitflags;
+use ironrdp_pdu::cursor::{ReadCursor, WriteCursor};
+use ironrdp_pdu::utils::{combine_u64, split_u64};
+use ironrdp_pdu::{cast_int, ensure_size, invalid_message_err, PduDecode, PduEncode, PduResult};
 use std::borrow::Cow;
 
 bitflags! {
@@ -94,7 +94,7 @@ impl PduEncode for FileContentsResponse<'_> {
             ClipboardPduFlags::RESPONSE_OK
         };
 
-        let header = PartialHeader::new_with_flags(self.inner_size() as u32, flags);
+        let header = PartialHeader::new_with_flags(cast_int!("dataLen", self.inner_size())?, flags);
         header.encode(dst)?;
 
         ensure_size!(in: dst, size: self.inner_size());
@@ -166,7 +166,7 @@ impl FileContentsRequest {
 
 impl PduEncode for FileContentsRequest {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
-        let header = PartialHeader::new(self.inner_size() as u32);
+        let header = PartialHeader::new(cast_int!("dataLen", self.inner_size())?);
         header.encode(dst)?;
 
         ensure_size!(in: dst, size: self.inner_size());

@@ -8,7 +8,7 @@ use byteorder::{LittleEndian, ReadBytesExt as _, WriteBytesExt as _};
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::ToPrimitive as _;
 
-pub(crate) fn split_u64(value: u64) -> (u32, u32) {
+pub fn split_u64(value: u64) -> (u32, u32) {
     let bytes = value.to_le_bytes();
     let (low, high) = bytes.split_at(std::mem::size_of::<u32>());
     (
@@ -17,21 +17,21 @@ pub(crate) fn split_u64(value: u64) -> (u32, u32) {
     )
 }
 
-pub(crate) fn combine_u64(lo: u32, hi: u32) -> u64 {
+pub fn combine_u64(lo: u32, hi: u32) -> u64 {
     let mut position_bytes = [0u8; std::mem::size_of::<u64>()];
     position_bytes[..std::mem::size_of::<u32>()].copy_from_slice(&lo.to_le_bytes());
     position_bytes[std::mem::size_of::<u32>()..].copy_from_slice(&hi.to_le_bytes());
     u64::from_le_bytes(position_bytes)
 }
 
-pub(crate) fn to_utf16_bytes(value: &str) -> Vec<u8> {
+pub fn to_utf16_bytes(value: &str) -> Vec<u8> {
     value
         .encode_utf16()
         .flat_map(|i| i.to_le_bytes().to_vec())
         .collect::<Vec<u8>>()
 }
 
-pub(crate) fn from_utf16_bytes(mut value: &[u8]) -> String {
+pub fn from_utf16_bytes(mut value: &[u8]) -> String {
     let mut value_u16 = vec![0x00; value.len() / 2];
     value
         .read_u16_into::<LittleEndian>(value_u16.as_mut())
@@ -41,12 +41,12 @@ pub(crate) fn from_utf16_bytes(mut value: &[u8]) -> String {
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive, ToPrimitive)]
-pub(crate) enum CharacterSet {
+pub enum CharacterSet {
     Ansi = 1,
     Unicode = 2,
 }
 
-pub(crate) fn read_string_from_cursor(
+pub fn read_string_from_cursor(
     cursor: &mut ReadCursor<'_>,
     character_set: CharacterSet,
     read_null_terminator: bool,
@@ -110,7 +110,7 @@ pub(crate) fn read_string_from_cursor(
     Ok(result.trim_end_matches('\0').into())
 }
 
-pub(crate) fn write_string_to_cursor(
+pub fn write_string_to_cursor(
     cursor: &mut WriteCursor<'_>,
     value: &str,
     character_set: CharacterSet,

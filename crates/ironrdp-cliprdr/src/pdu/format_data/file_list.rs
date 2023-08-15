@@ -1,7 +1,7 @@
-use crate::cursor::{ReadCursor, WriteCursor};
-use crate::utils::{combine_u64, read_string_from_cursor, split_u64, write_string_to_cursor, CharacterSet};
-use crate::{ensure_fixed_part_size, PduDecode, PduEncode, PduResult};
 use bitflags::bitflags;
+use ironrdp_pdu::cursor::{ReadCursor, WriteCursor};
+use ironrdp_pdu::utils::{combine_u64, read_string_from_cursor, split_u64, write_string_to_cursor, CharacterSet};
+use ironrdp_pdu::{cast_length, ensure_fixed_part_size, PduDecode, PduEncode, PduResult};
 
 bitflags! {
     /// Represents `flags` field of `CLIPRDR_FILEDESCRIPTOR` structure.
@@ -167,7 +167,7 @@ impl PduEncode for PackedFileList {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
         ensure_fixed_part_size!(in: dst);
 
-        dst.write_u32(self.files.len() as u32);
+        dst.write_u32(cast_length!(Self::NAME, "cItems", self.files.len())?);
 
         for file in &self.files {
             file.encode(dst)?;

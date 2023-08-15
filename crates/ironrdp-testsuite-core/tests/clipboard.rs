@@ -1,13 +1,10 @@
 use expect_test::expect;
-use ironrdp_pdu::{
-    clipboard::{
-        Capabilities, CapabilitySet, ClipboardFormat, ClipboardGeneralCapabilityFlags, ClipboardPdu,
-        ClipboardProtocolVersion, FileContentsFlags, FileContentsRequest, FileContentsResponse, FormatDataRequest,
-        FormatDataResponse, FormatList, FormatListResponse, GeneralCapabilitySet, LockDataId,
-        PackedMetafileMappingMode,
-    },
-    PduEncode,
+use ironrdp_cliprdr::pdu::{
+    Capabilities, CapabilitySet, ClipboardFormat, ClipboardGeneralCapabilityFlags, ClipboardPdu,
+    ClipboardProtocolVersion, FileContentsFlags, FileContentsRequest, FileContentsResponse, FormatDataRequest,
+    FormatDataResponse, FormatList, FormatListResponse, GeneralCapabilitySet, LockDataId, PackedMetafileMappingMode,
 };
+use ironrdp_pdu::PduEncode;
 use ironrdp_testsuite_core::encode_decode_test;
 
 // Test blobs from [MS-RDPECLIP]

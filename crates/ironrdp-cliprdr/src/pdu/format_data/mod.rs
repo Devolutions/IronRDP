@@ -6,10 +6,10 @@ pub use file_list::*;
 pub use metafile::*;
 pub use palette::*;
 
-use crate::clipboard::{ClipboardPduFlags, PartialHeader};
-use crate::cursor::{ReadCursor, WriteCursor};
-use crate::utils::{read_string_from_cursor, to_utf16_bytes, CharacterSet};
-use crate::{ensure_fixed_part_size, PduDecode, PduEncode, PduResult};
+use crate::pdu::{ClipboardPduFlags, PartialHeader};
+use ironrdp_pdu::cursor::{ReadCursor, WriteCursor};
+use ironrdp_pdu::utils::{read_string_from_cursor, to_utf16_bytes, CharacterSet};
+use ironrdp_pdu::{cast_int, ensure_fixed_part_size, ensure_size, PduDecode, PduEncode, PduResult};
 use std::borrow::Cow;
 
 /// Represents `CLIPRDR_FORMAT_DATA_RESPONSE`
@@ -153,7 +153,7 @@ impl PduEncode for FormatDataResponse<'_> {
             ClipboardPduFlags::RESPONSE_OK
         };
 
-        let header = PartialHeader::new_with_flags(self.data.len() as u32, flags);
+        let header = PartialHeader::new_with_flags(cast_int!("dataLen", self.data.len())?, flags);
         header.encode(dst)?;
 
         ensure_size!(in: dst, size: self.data.len());
@@ -200,7 +200,7 @@ impl FormatDataRequest {
 
 impl PduEncode for FormatDataRequest {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
-        let header = PartialHeader::new(Self::FIXED_PART_SIZE as u32);
+        let header = PartialHeader::new(cast_int!("dataLen", Self::FIXED_PART_SIZE)?);
         header.encode(dst)?;
 
         ensure_fixed_part_size!(in: dst);

@@ -1,6 +1,6 @@
-use crate::clipboard::PartialHeader;
-use crate::cursor::{ReadCursor, WriteCursor};
-use crate::{ensure_fixed_part_size, PduDecode, PduEncode, PduResult};
+use crate::pdu::PartialHeader;
+use ironrdp_pdu::cursor::{ReadCursor, WriteCursor};
+use ironrdp_pdu::{cast_int, ensure_fixed_part_size, PduDecode, PduEncode, PduResult};
 
 /// Represents `CLIPRDR_LOCK_CLIPDATA`/`CLIPRDR_UNLOCK_CLIPDATA`
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -13,7 +13,7 @@ impl LockDataId {
 
 impl PduEncode for LockDataId {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
-        let header = PartialHeader::new(Self::FIXED_PART_SIZE as u32);
+        let header = PartialHeader::new(cast_int!("dataLen", Self::FIXED_PART_SIZE)?);
         header.encode(dst)?;
 
         ensure_fixed_part_size!(in: dst);

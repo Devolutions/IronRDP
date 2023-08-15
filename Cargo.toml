@@ -23,6 +23,7 @@ categories = ["network-programming"]
 [workspace.dependencies]
 expect-test = "1"
 ironrdp-async = { version = "0.1", path = "crates/ironrdp-async" }
+ironrdp-cliprdr = { version = "0.1", path = "crates/ironrdp-cliprdr" }
 ironrdp-connector = { version = "0.1", path = "crates/ironrdp-connector" }
 ironrdp-error = { version = "0.1", path = "crates/ironrdp-error" }
 ironrdp-futures = { version = "0.1", path = "crates/ironrdp-futures" }

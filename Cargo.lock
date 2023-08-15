@@ -1599,6 +1599,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "ironrdp-cliprdr"
+version = "0.1.0"
+dependencies = [
+ "bitflags 2.0.2",
+ "ironrdp-pdu",
+]
+
+[[package]]
 name = "ironrdp-connector"
 version = "0.1.0"
 dependencies = [
@@ -1629,6 +1637,7 @@ name = "ironrdp-fuzzing"
 version = "0.0.0"
 dependencies = [
  "arbitrary",
+ "ironrdp-cliprdr",
  "ironrdp-graphics",
  "ironrdp-pdu",
 ]
@@ -1729,6 +1738,7 @@ dependencies = [
  "array-concat",
  "expect-test",
  "hex",
+ "ironrdp-cliprdr",
  "ironrdp-connector",
  "ironrdp-fuzzing",
  "ironrdp-graphics",

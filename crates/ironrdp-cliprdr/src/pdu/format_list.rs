@@ -1,7 +1,7 @@
-use crate::clipboard::{ClipboardPduFlags, PartialHeader};
-use crate::cursor::{ReadCursor, WriteCursor};
-use crate::utils::{read_string_from_cursor, to_utf16_bytes, write_string_to_cursor, CharacterSet};
-use crate::{invalid_message_err, PduDecode, PduEncode, PduResult};
+use crate::pdu::{ClipboardPduFlags, PartialHeader};
+use ironrdp_pdu::cursor::{ReadCursor, WriteCursor};
+use ironrdp_pdu::utils::{read_string_from_cursor, to_utf16_bytes, write_string_to_cursor, CharacterSet};
+use ironrdp_pdu::{cast_int, ensure_size, invalid_message_err, PduDecode, PduEncode, PduResult};
 use std::borrow::Cow;
 
 /// Represents `CLIPRDR_SHORT_FORMAT_NAME` and `CLIPRDR_LONG_FORMAT_NAME`
@@ -162,7 +162,7 @@ impl PduEncode for FormatList<'_> {
             ClipboardPduFlags::empty()
         };
 
-        let header = PartialHeader::new_with_flags(self.encoded_formats.len() as u32, header_flags);
+        let header = PartialHeader::new_with_flags(cast_int!("dataLen", self.encoded_formats.len())?, header_flags);
         header.encode(dst)?;
 
         ensure_size!(in: dst, size: self.encoded_formats.len());

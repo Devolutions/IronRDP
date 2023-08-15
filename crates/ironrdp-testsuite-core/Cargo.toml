@@ -26,6 +26,7 @@ paste = "1"
 [dev-dependencies]
 png = "0.17"
 hex = "0.4.3"
+ironrdp-cliprdr.workspace = true
 ironrdp-connector.workspace = true
 ironrdp-fuzzing.workspace = true
 ironrdp-graphics.workspace = true

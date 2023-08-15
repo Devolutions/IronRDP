@@ -1,5 +1,5 @@
-use crate::cursor::{ReadCursor, WriteCursor};
-use crate::{PduDecode, PduEncode, PduResult};
+use ironrdp_pdu::cursor::{ReadCursor, WriteCursor};
+use ironrdp_pdu::{PduDecode, PduEncode, PduResult};
 
 /// Represents `PALETTEENTRY`
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -1,7 +1,9 @@
-use crate::clipboard::PartialHeader;
-use crate::cursor::{ReadCursor, WriteCursor};
-use crate::{ensure_fixed_part_size, invalid_message_err, PduDecode, PduEncode, PduResult};
+use crate::pdu::PartialHeader;
 use bitflags::bitflags;
+use ironrdp_pdu::cursor::{ReadCursor, WriteCursor};
+use ironrdp_pdu::{
+    cast_int, cast_length, ensure_fixed_part_size, ensure_size, invalid_message_err, PduDecode, PduEncode, PduResult,
+};
 
 /// Represents `CLIPRDR_CAPS`
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -20,19 +22,12 @@ impl Capabilities {
 
 impl PduEncode for Capabilities {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
-        if self.capabilities.len() > u16::MAX as usize {
-            return Err(invalid_message_err!(
-                "cCapabilitiesSets",
-                "Too much capability sets specified",
-            ));
-        }
-
-        let header = PartialHeader::new(self.inner_size() as u32);
+        let header = PartialHeader::new(cast_int!("dataLen", self.inner_size())?);
         header.encode(dst)?;
 
         ensure_size!(in: dst, size: self.inner_size());
 
-        dst.write_u16(self.capabilities.len() as u16);
+        dst.write_u16(cast_length!(Self::NAME, "cCapabilitiesSets", self.capabilities.len())?);
         dst.write_u16(0); // pad
 
         for capability in &self.capabilities {
@@ -100,7 +95,7 @@ impl PduEncode for CapabilitySet {
 
         ensure_size!(in: dst, size: length);
         dst.write_u16(Self::CAPSTYPE_GENERAL);
-        dst.write_u16(length as u16);
+        dst.write_u16(cast_int!("lengthCapability", length)?);
         caps.encode(dst)
     }
 
@@ -205,7 +200,7 @@ impl From<ClipboardProtocolVersion> for u32 {
 }
 
 impl TryFrom<u32> for ClipboardProtocolVersion {
-    type Error = crate::PduError;
+    type Error = ironrdp_pdu::PduError;
 
     fn try_from(value: u32) -> Result<Self, Self::Error> {
         match value {
