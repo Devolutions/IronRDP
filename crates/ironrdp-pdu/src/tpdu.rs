@@ -138,10 +138,10 @@ impl TpduHeader {
         }
 
         if code == TpduCode::DATA {
-            crate::padding::read(src, 1); // EOT
+            read_padding!(src, 1); // EOT
         } else {
             ensure_size!(in: src, size: 5);
-            crate::padding::read(src, 5); // DST-REF, SRC-REF, Class 0
+            read_padding!(src, 5); // DST-REF, SRC-REF, Class 0
         }
 
         Ok(Self { li, code })

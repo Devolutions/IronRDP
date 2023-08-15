@@ -1,8 +1,10 @@
-use crate::pdu::{ClipboardPduFlags, PartialHeader};
+use std::borrow::Cow;
+
 use ironrdp_pdu::cursor::{ReadCursor, WriteCursor};
 use ironrdp_pdu::utils::{read_string_from_cursor, to_utf16_bytes, write_string_to_cursor, CharacterSet};
 use ironrdp_pdu::{cast_int, ensure_size, invalid_message_err, PduDecode, PduEncode, PduResult};
-use std::borrow::Cow;
+
+use crate::pdu::{ClipboardPduFlags, PartialHeader};
 
 /// Represents `CLIPRDR_SHORT_FORMAT_NAME` and `CLIPRDR_LONG_FORMAT_NAME`
 #[derive(Debug, Clone, PartialEq, Eq)]

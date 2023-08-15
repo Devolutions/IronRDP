@@ -56,7 +56,7 @@ impl TpktHeader {
             return Err(PduError::unsupported_version("TPKT version", version));
         }
 
-        crate::padding::read(src, 1);
+        read_padding!(src, 1);
 
         let packet_length = src.read_u16_be();
 
@@ -68,7 +68,7 @@ impl TpktHeader {
 
         dst.write_u8(Self::VERSION);
 
-        crate::padding::write(dst, 1);
+        write_padding!(dst, 1);
 
         dst.write_u16_be(self.packet_length);
 

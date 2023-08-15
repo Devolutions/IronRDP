@@ -55,7 +55,7 @@ impl<'de> PduDecode<'de> for PreconnectionBlob {
             ));
         }
 
-        crate::padding::read(src, 4); // flags
+        read_padding!(src, 4); // flags
 
         // The version field SHOULD be initialized by the client and SHOULD be ignored by the server,
         // as specified in sections 3.1.5.1 and 3.2.5.1.
@@ -118,7 +118,7 @@ impl PduEncode for PreconnectionBlob {
         ensure_size!(in: dst, size: pcb_size);
 
         dst.write_u32(cast_length!("cbSize", pcb_size)?); // cbSize
-        crate::padding::write(dst, 4); // flags
+        write_padding!(dst, 4); // flags
         dst.write_u32(self.version.0); // version
         dst.write_u32(self.id); // id
 

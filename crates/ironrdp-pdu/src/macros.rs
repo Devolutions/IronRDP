@@ -217,6 +217,41 @@ macro_rules! impl_pdu_borrowing {
     };
 }
 
+/// Writes zeroes using as few `write_u*` calls as possible.
+///
+/// This is similar to `ironrdp_pdu::padding::write`, but the loop is optimized out when a single
+/// operation is enough.
+#[macro_export]
+macro_rules! write_padding {
+    ($dst:expr, 1) => {
+        $dst.write_u8(0)
+    };
+    ($dst:expr, 2) => {
+        $dst.write_u16(0)
+    };
+    ($dst:expr, 4) => {
+        $dst.write_u32(0)
+    };
+    ($dst:expr, 8) => {
+        $dst.write_u64(0)
+    };
+    ($dst:expr, $n:expr) => {
+        $crate::padding::write($dst, $n)
+    };
+}
+
+/// Moves read cursor, ignoring padding bytes.
+///
+/// This is similar to `ironrdp_pdu::padding::read`, only exists for consistancy with `write_padding!`.
+#[macro_export]
+macro_rules! read_padding {
+    ($src:expr, $n:expr) => {
+        $crate::padding::read($src, $n)
+    };
+}
+
+// FIXME: legacy macros below
+
 #[macro_export]
 macro_rules! try_read_optional {
     ($e:expr, $ret:expr) => {

@@ -1,7 +1,7 @@
 use std::collections::HashMap;
+use std::rc::Rc;
 
 use ironrdp_graphics::pointer::DecodedPointer;
-use std::rc::Rc;
 
 #[derive(Debug, Clone, Default)]
 pub struct PointerCache {

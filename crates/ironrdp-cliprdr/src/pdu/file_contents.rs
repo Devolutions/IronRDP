@@ -1,9 +1,11 @@
-use crate::pdu::{ClipboardPduFlags, PartialHeader};
+use std::borrow::Cow;
+
 use bitflags::bitflags;
 use ironrdp_pdu::cursor::{ReadCursor, WriteCursor};
 use ironrdp_pdu::utils::{combine_u64, split_u64};
 use ironrdp_pdu::{cast_int, ensure_size, invalid_message_err, PduDecode, PduEncode, PduResult};
-use std::borrow::Cow;
+
+use crate::pdu::{ClipboardPduFlags, PartialHeader};
 
 bitflags! {
     /// Represents `dwFlags` field of `CLIPRDR_FILECONTENTS_REQUEST` structure.

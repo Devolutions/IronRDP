@@ -1,6 +1,7 @@
-use crate::pdu::PartialHeader;
 use ironrdp_pdu::cursor::{ReadCursor, WriteCursor};
 use ironrdp_pdu::{cast_int, ensure_fixed_part_size, PduDecode, PduEncode, PduResult};
+
+use crate::pdu::PartialHeader;
 
 /// Represents `CLIPRDR_LOCK_CLIPDATA`/`CLIPRDR_UNLOCK_CLIPDATA`
 #[derive(Debug, Clone, PartialEq, Eq)]

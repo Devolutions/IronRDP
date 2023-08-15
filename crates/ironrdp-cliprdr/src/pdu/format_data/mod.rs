@@ -2,15 +2,18 @@ mod file_list;
 mod metafile;
 mod palette;
 
-pub use file_list::*;
-pub use metafile::*;
-pub use palette::*;
+pub use self::file_list::*;
+pub use self::metafile::*;
+pub use self::palette::*;
 
-use crate::pdu::{ClipboardPduFlags, PartialHeader};
+#[rustfmt::skip]
+use std::borrow::Cow;
+
 use ironrdp_pdu::cursor::{ReadCursor, WriteCursor};
 use ironrdp_pdu::utils::{read_string_from_cursor, to_utf16_bytes, CharacterSet};
 use ironrdp_pdu::{cast_int, ensure_fixed_part_size, ensure_size, PduDecode, PduEncode, PduResult};
-use std::borrow::Cow;
+
+use crate::pdu::{ClipboardPduFlags, PartialHeader};
 
 /// Represents `CLIPRDR_FORMAT_DATA_RESPONSE`
 #[derive(Debug, Clone, PartialEq, Eq)]

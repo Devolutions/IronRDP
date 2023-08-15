@@ -263,9 +263,11 @@ impl<'de> PduDecode<'de> for ExclusiveRectangle {
 // Legacy code for serializing/deserializing exclusive rectangles as inclusive rectangles structure
 // TODO(@pacmancoder) this should be removed later
 mod legacy {
-    use super::*;
-    use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
     use std::io;
+
+    use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
+
+    use super::*;
 
     impl InclusiveRectangle {
         // TODO: clarify code related to rectangles (inclusive vs exclusive bounds, …)

@@ -1,10 +1,8 @@
 use std::time::Duration;
 
 use gloo_net::http::Request;
-use ironrdp::connector::sspi::{
-    self,
-    network_client::{NetworkClient, NetworkClientFactory, NetworkProtocol},
-};
+use ironrdp::connector::sspi::network_client::{NetworkClient, NetworkClientFactory, NetworkProtocol};
+use ironrdp::connector::sspi::{self};
 use url::Url;
 use wasm_bindgen::JsValue;
 
