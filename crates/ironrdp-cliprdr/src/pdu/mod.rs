@@ -58,7 +58,7 @@ impl PartialHeader {
     }
 
     pub fn data_length(&self) -> usize {
-        self.data_length as usize
+        usize::try_from(self.data_length).expect("BUG: Upcasting u32 -> usize should be infallible")
     }
 }
 

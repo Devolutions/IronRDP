@@ -188,7 +188,7 @@ impl PduEncode for PackedFileList {
 impl<'de> PduDecode<'de> for PackedFileList {
     fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
         ensure_fixed_part_size!(in: src);
-        let file_count = src.read_u32() as usize;
+        let file_count = cast_length!(Self::NAME, "cItems", src.read_u32())?;
 
         let mut files = Vec::with_capacity(file_count);
         for _ in 0..file_count {
