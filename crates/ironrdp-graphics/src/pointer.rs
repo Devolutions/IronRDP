@@ -19,12 +19,11 @@
 //! - andMask == 1, xorMask == 0(black color) -> Transparent pixel
 //! - andMask == 1, xorMask == 1(white color) -> Pixel is inverted
 
-use crate::color_conversion::rdp_16bit_to_rgb;
-use ironrdp_pdu::{
-    cursor::ReadCursor,
-    pointer::{ColorPointerAttribute, LargePointerAttribute, PointerAttribute},
-};
+use ironrdp_pdu::cursor::ReadCursor;
+use ironrdp_pdu::pointer::{ColorPointerAttribute, LargePointerAttribute, PointerAttribute};
 use thiserror::Error;
+
+use crate::color_conversion::rdp_16bit_to_rgb;
 
 #[derive(Debug, Error)]
 pub enum PointerError {

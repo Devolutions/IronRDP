@@ -1,10 +1,11 @@
-use crate::pdu::PartialHeader;
 use bitflags::bitflags;
 use ironrdp_pdu::cursor::{ReadCursor, WriteCursor};
 use ironrdp_pdu::{
-    cast_int, cast_length, ensure_fixed_part_size, ensure_size, invalid_message_err, padding, PduDecode, PduEncode,
-    PduResult,
+    cast_int, cast_length, ensure_fixed_part_size, ensure_size, invalid_message_err, read_padding, write_padding,
+    PduDecode, PduEncode, PduResult,
 };
+
+use crate::pdu::PartialHeader;
 
 /// Represents `CLIPRDR_CAPS`
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -29,7 +30,7 @@ impl PduEncode for Capabilities {
         ensure_size!(in: dst, size: self.inner_size());
 
         dst.write_u16(cast_length!(Self::NAME, "cCapabilitiesSets", self.capabilities.len())?);
-        padding::write(dst, 2);
+        write_padding!(dst, 2);
 
         for capability in &self.capabilities {
             capability.encode(dst)?;
@@ -53,7 +54,7 @@ impl<'de> PduDecode<'de> for Capabilities {
 
         ensure_fixed_part_size!(in: src);
         let capabilities_count = src.read_u16();
-        padding::read(src, 2);
+        read_padding!(src, 2);
 
         let mut capabilities = Vec::with_capacity(usize::from(capabilities_count));
 

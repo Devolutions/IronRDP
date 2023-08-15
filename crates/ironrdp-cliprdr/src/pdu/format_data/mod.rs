@@ -2,15 +2,16 @@ mod file_list;
 mod metafile;
 mod palette;
 
+use std::borrow::Cow;
+
 pub use file_list::*;
+use ironrdp_pdu::cursor::{ReadCursor, WriteCursor};
+use ironrdp_pdu::utils::{read_string_from_cursor, to_utf16_bytes, CharacterSet};
+use ironrdp_pdu::{cast_int, ensure_fixed_part_size, ensure_size, PduDecode, PduEncode, PduResult};
 pub use metafile::*;
 pub use palette::*;
 
 use crate::pdu::{ClipboardPduFlags, PartialHeader};
-use ironrdp_pdu::cursor::{ReadCursor, WriteCursor};
-use ironrdp_pdu::utils::{read_string_from_cursor, to_utf16_bytes, CharacterSet};
-use ironrdp_pdu::{cast_int, ensure_fixed_part_size, ensure_size, PduDecode, PduEncode, PduResult};
-use std::borrow::Cow;
 
 /// Represents `CLIPRDR_FORMAT_DATA_RESPONSE`
 #[derive(Debug, Clone, PartialEq, Eq)]

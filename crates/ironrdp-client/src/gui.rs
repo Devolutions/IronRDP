@@ -1,12 +1,12 @@
 use anyhow::Context as _;
 use softbuffer::GraphicsContext;
 use tokio::sync::mpsc;
+use winit::dpi::LogicalPosition;
 use winit::event::{self, Event, WindowEvent};
 use winit::event_loop::{ControlFlow, EventLoop, EventLoopBuilder};
 use winit::window::{Window, WindowBuilder};
 
 use crate::rdp::{RdpInputEvent, RdpOutputEvent};
-use winit::dpi::LogicalPosition;
 
 pub struct GuiContext {
     pub window: Window,

@@ -1,12 +1,12 @@
 use ironrdp_connector::ConnectionResult;
 use ironrdp_pdu::geometry::InclusiveRectangle;
+use ironrdp_pdu::input::fast_path::{FastPathInput, FastPathInputEvent};
 use ironrdp_pdu::{Action, PduParsing};
 
 use crate::fast_path::UpdateKind;
 use crate::image::DecodedImage;
 use crate::x224::GfxHandler;
 use crate::{fast_path, utils, x224, SessionResult};
-use ironrdp_pdu::input::fast_path::{FastPathInput, FastPathInputEvent};
 
 pub struct ActiveStage {
     x224_processor: x224::Processor,

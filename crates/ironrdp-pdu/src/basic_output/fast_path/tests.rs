@@ -1,6 +1,7 @@
+use lazy_static::lazy_static;
+
 use super::*;
 use crate::{decode, encode};
-use lazy_static::lazy_static;
 
 const FAST_PATH_HEADER_WITH_SHORT_LEN_BUFFER: [u8; 2] = [0x80, 0x08];
 const FAST_PATH_HEADER_WITH_LONG_LEN_BUFFER: [u8; 3] = [0x80, 0x81, 0xE7];

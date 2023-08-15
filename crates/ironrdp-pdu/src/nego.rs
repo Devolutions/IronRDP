@@ -225,8 +225,14 @@ impl<'de> X224Pdu<'de> for ConnectionRequest {
 
         let nego_data = NegoRequestData::read(src)?;
 
-        let Some(variable_part_rest_size) = variable_part_size.checked_sub(nego_data.as_ref().map(|data| data.size()).unwrap_or(0)) else {
-            return Err(PduError::invalid_message(Self::NAME, "TPDU header variable part", "advertised size too small"));
+        let Some(variable_part_rest_size) =
+            variable_part_size.checked_sub(nego_data.as_ref().map(|data| data.size()).unwrap_or(0))
+        else {
+            return Err(PduError::invalid_message(
+                Self::NAME,
+                "TPDU header variable part",
+                "advertised size too small",
+            ));
         };
 
         if variable_part_rest_size >= usize::from(Self::RDP_NEG_REQ_SIZE) {

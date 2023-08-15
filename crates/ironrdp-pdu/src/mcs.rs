@@ -601,7 +601,7 @@ impl<'de> McsPdu<'de> for SendDataRequest<'de> {
 
         // dataPriority + segmentation
         ensure_size!(ctx: Self::MCS_NAME, in: src, size: 1);
-        crate::padding::read(src, 1);
+        read_padding!(src, 1);
 
         let (length, _) = per::read_length(src).map_err(per_field_err!("userDataLength"))?;
         let length = usize::from(length);
@@ -682,7 +682,7 @@ impl<'de> McsPdu<'de> for SendDataIndication<'de> {
 
         // dataPriority + segmentation
         ensure_size!(ctx: Self::MCS_NAME, in: src, size: 1);
-        crate::padding::read(src, 1);
+        read_padding!(src, 1);
 
         let (length, _) = per::read_length(src).map_err(per_field_err!("userDataLength"))?;
         let length = usize::from(length);

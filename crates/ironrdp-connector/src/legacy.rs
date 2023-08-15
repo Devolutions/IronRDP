@@ -180,7 +180,9 @@ pub fn decode_share_data(ctx: SendDataIndicationCtx<'_>) -> ConnectorResult<Shar
     let ctx = decode_share_control(ctx)?;
 
     let rdp::headers::ShareControlPdu::Data(share_data_header) = ctx.pdu else {
-        return Err(general_err!("received unexpected Share Control Pdu (expected SHare Data Header)"));
+        return Err(general_err!(
+            "received unexpected Share Control Pdu (expected SHare Data Header)"
+        ));
     };
 
     Ok(ShareDataCtx {

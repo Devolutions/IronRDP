@@ -98,9 +98,13 @@ fn serialization(#[case] message: RDCleanPathPdu, #[case] expected_der: &[u8]) {
 fn detect(#[case] der: &[u8]) {
     let result = RDCleanPathPdu::detect(der);
 
-    let DetectionResult::Detected { version: detected_version, total_length: detected_length } = result else {
-            panic!("unexpected result: {result:?}");
-        };
+    let DetectionResult::Detected {
+        version: detected_version,
+        total_length: detected_length,
+    } = result
+    else {
+        panic!("unexpected result: {result:?}");
+    };
 
     assert_eq!(detected_version, VERSION_1);
     assert_eq!(detected_length, der.len());

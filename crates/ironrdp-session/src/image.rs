@@ -1,11 +1,12 @@
+use std::rc::Rc;
+
+use ironrdp_graphics::color_conversion::rdp_16bit_to_rgb;
 use ironrdp_graphics::image_processing::{ImageRegion, ImageRegionMut, PixelFormat};
+use ironrdp_graphics::pointer::DecodedPointer;
 use ironrdp_graphics::rectangle_processing::Region;
 use ironrdp_pdu::geometry::{InclusiveRectangle, Rectangle as _};
 
 use crate::SessionResult;
-use ironrdp_graphics::color_conversion::rdp_16bit_to_rgb;
-use ironrdp_graphics::pointer::DecodedPointer;
-use std::rc::Rc;
 
 const TILE_SIZE: u16 = 64;
 const SOURCE_PIXEL_FORMAT: PixelFormat = PixelFormat::BgrX32;

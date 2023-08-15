@@ -128,7 +128,7 @@ impl RDCleanPathPdu {
         use der::{Decode as _, Encode as _};
 
         let Ok(mut reader) = der::SliceReader::new(src) else {
-            return DetectionResult::Failed
+            return DetectionResult::Failed;
         };
 
         let header = match der::Header::decode(&mut reader) {
@@ -139,7 +139,10 @@ impl RDCleanPathPdu {
             },
         };
 
-        let (Ok(header_encoded_len), Ok(body_length)) = (header.encoded_len().and_then(usize::try_from), usize::try_from(header.length)) else {
+        let (Ok(header_encoded_len), Ok(body_length)) = (
+            header.encoded_len().and_then(usize::try_from),
+            usize::try_from(header.length),
+        ) else {
             return DetectionResult::Failed;
         };
 

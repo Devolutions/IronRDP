@@ -8,13 +8,14 @@ mod format_data;
 mod format_list;
 mod lock;
 
-pub use capabilities::*;
-pub use client_temporary_directory::*;
-pub use file_contents::*;
-pub use format_data::*;
-pub use format_list::*;
-pub use lock::*;
+pub use self::capabilities::*;
+pub use self::client_temporary_directory::*;
+pub use self::file_contents::*;
+pub use self::format_data::*;
+pub use self::format_list::*;
+pub use self::lock::*;
 
+#[rustfmt::skip]
 use bitflags::bitflags;
 use ironrdp_pdu::cursor::{ReadCursor, WriteCursor};
 use ironrdp_pdu::{ensure_fixed_part_size, invalid_message_err, PduDecode, PduEncode, PduResult};

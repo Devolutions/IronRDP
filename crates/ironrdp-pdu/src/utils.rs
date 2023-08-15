@@ -1,12 +1,11 @@
 use std::io;
 
-use crate::{
-    cursor::{ReadCursor, WriteCursor},
-    PduResult,
-};
 use byteorder::{LittleEndian, ReadBytesExt as _, WriteBytesExt as _};
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::ToPrimitive as _;
+
+use crate::cursor::{ReadCursor, WriteCursor};
+use crate::PduResult;
 
 pub fn split_u64(value: u64) -> (u32, u32) {
     let bytes = value.to_le_bytes();

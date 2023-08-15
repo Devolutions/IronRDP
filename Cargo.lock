@@ -1750,7 +1750,7 @@ dependencies = [
 name = "ironrdp-cliprdr"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.0.2",
+ "bitflags 2.3.3",
  "ironrdp-pdu",
 ]
 

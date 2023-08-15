@@ -1,10 +1,12 @@
-use crate::pdu::PartialHeader;
+use std::borrow::Cow;
+
 use ironrdp_pdu::cursor::{ReadCursor, WriteCursor};
 use ironrdp_pdu::utils::{read_string_from_cursor, write_string_to_cursor, CharacterSet};
 use ironrdp_pdu::{
     cast_int, ensure_fixed_part_size, ensure_size, invalid_message_err, PduDecode, PduEncode, PduResult,
 };
-use std::borrow::Cow;
+
+use crate::pdu::PartialHeader;
 
 /// Represents `CLIPRDR_TEMP_DIRECTORY`
 #[derive(Debug, Clone, PartialEq, Eq)]

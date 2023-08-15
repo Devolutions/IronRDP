@@ -1,6 +1,10 @@
+use std::rc::Rc;
+
+use ironrdp_graphics::pointer::DecodedPointer;
 use ironrdp_graphics::rdp6::BitmapStreamDecoder;
 use ironrdp_graphics::rle::RlePixelFormat;
 use ironrdp_pdu::codecs::rfx::FrameAcknowledgePdu;
+use ironrdp_pdu::cursor::ReadCursor;
 use ironrdp_pdu::fast_path::{FastPathHeader, FastPathUpdate, FastPathUpdatePdu, Fragmentation};
 use ironrdp_pdu::geometry::{InclusiveRectangle, Rectangle as _};
 use ironrdp_pdu::pointer::PointerUpdateData;
@@ -12,9 +16,6 @@ use crate::image::DecodedImage;
 use crate::pointer::PointerCache;
 use crate::utils::CodecId;
 use crate::{rfx, SessionError, SessionErrorExt, SessionResult};
-use ironrdp_graphics::pointer::DecodedPointer;
-use ironrdp_pdu::cursor::ReadCursor;
-use std::rc::Rc;
 
 pub enum UpdateKind {
     None,
