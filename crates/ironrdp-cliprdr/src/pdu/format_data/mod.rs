@@ -2,14 +2,16 @@ mod file_list;
 mod metafile;
 mod palette;
 
+pub use self::file_list::*;
+pub use self::metafile::*;
+pub use self::palette::*;
+
+#[rustfmt::skip]
 use std::borrow::Cow;
 
-pub use file_list::*;
 use ironrdp_pdu::cursor::{ReadCursor, WriteCursor};
 use ironrdp_pdu::utils::{read_string_from_cursor, to_utf16_bytes, CharacterSet};
 use ironrdp_pdu::{cast_int, ensure_fixed_part_size, ensure_size, PduDecode, PduEncode, PduResult};
-pub use metafile::*;
-pub use palette::*;
 
 use crate::pdu::{ClipboardPduFlags, PartialHeader};
 
