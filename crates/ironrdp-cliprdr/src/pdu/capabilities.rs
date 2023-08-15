@@ -55,7 +55,7 @@ impl<'de> PduDecode<'de> for Capabilities {
         let capabilities_count = src.read_u16();
         padding::read(src, 2);
 
-        let mut capabilities = Vec::with_capacity(cast_length!(Self::NAME, "cCapabilitiesSets", capabilities_count)?);
+        let mut capabilities = Vec::with_capacity(usize::from(capabilities_count));
 
         for _ in 0..capabilities_count {
             let caps = CapabilitySet::decode(src)?;
