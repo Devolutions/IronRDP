@@ -61,7 +61,10 @@ impl<S> FramedWrite for FuturesStream<S>
 where
     S: Unpin + AsyncWrite,
 {
-    fn write_all<'a>(&'a mut self, buf: &'a [u8]) -> Pin<Box<dyn std::future::Future<Output = io::Result<()>> + 'a>>
+    fn write_all<'a>(
+        &'a mut self,
+        buf: &'a [u8],
+    ) -> Pin<Box<dyn std::future::Future<Output = io::Result<()>> + 'a + Send>>
     where
         Self: 'a,
     {

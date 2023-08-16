@@ -33,14 +33,14 @@ impl<S> StreamWrapper for TokioStream<S> {
 
 impl<S> FramedRead for TokioStream<S>
 where
-    S: Unpin + AsyncRead,
+    S: Unpin + AsyncRead + Send,
 {
     fn read<'a>(
         &'a mut self,
         buf: &'a mut BytesMut,
-    ) -> Pin<Box<dyn std::future::Future<Output = io::Result<usize>> + 'a>>
+    ) -> Pin<Box<dyn std::future::Future<Output = io::Result<usize>> + 'a + Send>>
     where
-        Self: 'a,
+        Self: 'a + Send,
     {
         use tokio::io::AsyncReadExt as _;
 
@@ -50,9 +50,12 @@ where
 
 impl<S> FramedWrite for TokioStream<S>
 where
-    S: Unpin + AsyncWrite,
+    S: Unpin + AsyncWrite + Send,
 {
-    fn write_all<'a>(&'a mut self, buf: &'a [u8]) -> Pin<Box<dyn std::future::Future<Output = io::Result<()>> + 'a>>
+    fn write_all<'a>(
+        &'a mut self,
+        buf: &'a [u8],
+    ) -> Pin<Box<dyn std::future::Future<Output = io::Result<()>> + 'a + Send>>
     where
         Self: 'a,
     {
