@@ -166,11 +166,15 @@ impl RdpServer {
         for event in input.0 {
             match event {
                 FastPathInputEvent::KeyboardEvent(flags, key) => {
-                    self.handler.keyboard((key as u16, flags).into()).await;
+                    self.handler.keyboard((key, flags).into()).await;
                 }
 
                 FastPathInputEvent::UnicodeKeyboardEvent(flags, key) => {
                     self.handler.keyboard((key, flags).into()).await;
+                }
+
+                FastPathInputEvent::SyncEvent(flags) => {
+                    self.handler.keyboard(flags.into()).await;
                 }
 
                 FastPathInputEvent::MouseEvent(mouse) => {
@@ -181,7 +185,9 @@ impl RdpServer {
                     self.handler.mouse(mouse.into()).await;
                 }
 
-                other => eprintln!("unhandled event {other:?}"),
+                FastPathInputEvent::QoeEvent(quality) => {
+                    eprintln!("received QoE: {}", quality);
+                }
             }
         }
     }
@@ -234,6 +240,10 @@ impl RdpServer {
                     self.handler.keyboard((key.unicode_code, key.flags).into()).await;
                 }
 
+                ironrdp_pdu::input::InputEvent::Sync(sync) => {
+                    self.handler.keyboard(sync.flags.into()).await;
+                }
+
                 ironrdp_pdu::input::InputEvent::Mouse(mouse) => {
                     self.handler.mouse(mouse.into()).await;
                 }
@@ -242,7 +252,7 @@ impl RdpServer {
                     self.handler.mouse(mouse.into()).await;
                 }
 
-                other => eprintln!("unhandled event {other:?}"),
+                ironrdp_pdu::input::InputEvent::Unused(_) => {}
             }
         }
     }

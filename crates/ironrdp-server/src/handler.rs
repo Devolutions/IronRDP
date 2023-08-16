@@ -1,5 +1,10 @@
 use ironrdp_pdu::input::{
-    fast_path, mouse::PointerFlags, mouse_x::PointerXFlags, scan_code, unicode, MousePdu, MouseXPdu,
+    fast_path::{self, SynchronizeFlags},
+    mouse::PointerFlags,
+    mouse_x::PointerXFlags,
+    scan_code,
+    sync::SyncToggleFlags,
+    unicode, MousePdu, MouseXPdu,
 };
 
 /// Keyboard Event
@@ -8,8 +13,11 @@ use ironrdp_pdu::input::{
 ///
 #[derive(Debug)]
 pub enum KeyboardEvent {
-    Pressed(u16),
-    Released(u16),
+    Pressed(u8),
+    Released(u8),
+    UnicodePressed(u16),
+    UnicodeReleased(u16),
+    Synchronize(SynchronizeFlags),
 }
 
 /// Mouse Event
@@ -42,13 +50,14 @@ pub enum MouseEvent {
 ///         match event {
 ///             KeyboardEvent::Pressed(code) => println!("Pressed {}", code)
 ///             KeyboardEvent::Released(code) => println!("Released {}", code)
+///             other => println!("unhandled event: {:?}", other)
 ///         };
 ///     }
 ///
 ///     async fn mouse(&mut self, event: MouseEvent) {
 ///         let result = match event {
 ///             MouseEvent::Move { x, y } => println!("Moved mouse to {} {}", x, y)
-///             _ => unimplemented!()
+///             other => println!("unhandled event: {:?}", other)
 ///         };
 ///     }
 /// }
@@ -59,8 +68,8 @@ pub trait RdpServerInputHandler {
     async fn mouse(&mut self, event: MouseEvent);
 }
 
-impl From<(u16, fast_path::KeyboardFlags)> for KeyboardEvent {
-    fn from((key, flags): (u16, fast_path::KeyboardFlags)) -> Self {
+impl From<(u8, fast_path::KeyboardFlags)> for KeyboardEvent {
+    fn from((key, flags): (u8, fast_path::KeyboardFlags)) -> Self {
         if flags.contains(fast_path::KeyboardFlags::RELEASE) {
             KeyboardEvent::Released(key)
         } else {
@@ -69,12 +78,22 @@ impl From<(u16, fast_path::KeyboardFlags)> for KeyboardEvent {
     }
 }
 
+impl From<(u16, fast_path::KeyboardFlags)> for KeyboardEvent {
+    fn from((key, flags): (u16, fast_path::KeyboardFlags)) -> Self {
+        if flags.contains(fast_path::KeyboardFlags::RELEASE) {
+            KeyboardEvent::UnicodeReleased(key)
+        } else {
+            KeyboardEvent::UnicodePressed(key)
+        }
+    }
+}
+
 impl From<(u16, scan_code::KeyboardFlags)> for KeyboardEvent {
     fn from((key, flags): (u16, scan_code::KeyboardFlags)) -> Self {
         if flags.contains(scan_code::KeyboardFlags::RELEASE) {
-            KeyboardEvent::Released(key)
+            KeyboardEvent::Released(key as u8)
         } else {
-            KeyboardEvent::Pressed(key)
+            KeyboardEvent::Pressed(key as u8)
         }
     }
 }
@@ -82,10 +101,22 @@ impl From<(u16, scan_code::KeyboardFlags)> for KeyboardEvent {
 impl From<(u16, unicode::KeyboardFlags)> for KeyboardEvent {
     fn from((key, flags): (u16, unicode::KeyboardFlags)) -> Self {
         if flags.contains(unicode::KeyboardFlags::RELEASE) {
-            KeyboardEvent::Released(key)
+            KeyboardEvent::UnicodeReleased(key)
         } else {
-            KeyboardEvent::Pressed(key)
+            KeyboardEvent::UnicodePressed(key)
         }
+    }
+}
+
+impl From<SynchronizeFlags> for KeyboardEvent {
+    fn from(value: SynchronizeFlags) -> Self {
+        KeyboardEvent::Synchronize(value)
+    }
+}
+
+impl From<SyncToggleFlags> for KeyboardEvent {
+    fn from(value: SyncToggleFlags) -> Self {
+        KeyboardEvent::Synchronize(SynchronizeFlags::from_bits_truncate(value.bits() as u8))
     }
 }
 
