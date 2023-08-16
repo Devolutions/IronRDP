@@ -544,10 +544,6 @@ pub enum CapabilitySetsError {
     InvalidCompressionFlag,
     #[error("Invalid multiple rectangle support field")]
     InvalidMultipleRectSupport,
-    #[error("Invalid major platform type field")]
-    InvalidMajorPlatformType,
-    #[error("Invalid minor platform type field")]
-    InvalidMinorPlatformType,
     #[error("Invalid protocol version field")]
     InvalidProtocolVersion,
     #[error("Invalid compression types field")]

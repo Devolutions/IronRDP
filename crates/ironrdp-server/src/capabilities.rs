@@ -16,8 +16,8 @@ pub fn capabilities(_opts: &RdpServerOptions, size: DesktopSize) -> Vec<capabili
 
 fn general_capabilities() -> capability_sets::General {
     capability_sets::General {
-        major_platform_type: capability_sets::MajorPlatformType::Unspecified,
-        minor_platform_type: capability_sets::MinorPlatformType::Unspecified,
+        major_platform_type: capability_sets::MajorPlatformType::UNSPECIFIED,
+        minor_platform_type: capability_sets::MinorPlatformType::UNSPECIFIED,
         extra_flags: capability_sets::GeneralExtraFlags::empty(),
         refresh_rect_support: false,
         suppress_output_support: false,

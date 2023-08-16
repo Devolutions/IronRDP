@@ -1,12 +1,10 @@
 #[cfg(test)]
 mod tests;
 
-use std::io;
+use std::{fmt, io};
 
 use bitflags::bitflags;
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
-use num_derive::{FromPrimitive, ToPrimitive};
-use num_traits::{FromPrimitive, ToPrimitive};
 
 use crate::rdp::capability_sets::CapabilitySetsError;
 use crate::PduParsing;
@@ -14,31 +12,74 @@ use crate::PduParsing;
 const GENERAL_LENGTH: usize = 20;
 const PROTOCOL_VER: u16 = 0x0200;
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq, FromPrimitive, ToPrimitive)]
-pub enum MajorPlatformType {
-    Unspecified = 0,
-    Windows = 1,
-    Os2 = 2,
-    Macintosh = 3,
-    Unix = 4,
-    IOs = 5,
-    OsX = 6,
-    Android = 7,
-    ChromeOs = 8,
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct MajorPlatformType(u16);
+
+impl fmt::Debug for MajorPlatformType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let name = match *self {
+            Self::UNSPECIFIED => "UNSPECIFIED",
+            Self::WINDOWS => "WINDOWS",
+            Self::OS2 => "OS2",
+            Self::MACINTOSH => "MACINTOSH",
+            Self::UNIX => "UNIX",
+            Self::IOS => "IOS",
+            Self::OSX => "OSX",
+            Self::ANDROID => "ANDROID",
+            Self::CHROMEOS => "CHROMEOS",
+            _ => "UNKNOWN",
+        };
+
+        write!(f, "MajorPlatformType(0x{:02X}-{name})", self.0)
+    }
 }
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq, FromPrimitive, ToPrimitive)]
-pub enum MinorPlatformType {
-    Unspecified = 0,
-    Windows31X = 1,
-    Windows95 = 2,
-    WindowsNT = 3,
-    Os2V21 = 4,
-    PowerPc = 5,
-    Macintosh = 6,
-    NativeXServer = 7,
-    PseudoXServer = 8,
-    WindowsRt = 9,
+impl MajorPlatformType {
+    pub const UNSPECIFIED: Self = Self(0);
+    pub const WINDOWS: Self = Self(1);
+    pub const OS2: Self = Self(2);
+    pub const MACINTOSH: Self = Self(3);
+    pub const UNIX: Self = Self(4);
+    pub const IOS: Self = Self(5);
+    pub const OSX: Self = Self(6);
+    pub const ANDROID: Self = Self(7);
+    pub const CHROMEOS: Self = Self(8);
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct MinorPlatformType(u16);
+
+impl fmt::Debug for MinorPlatformType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let name = match *self {
+            Self::UNSPECIFIED => "UNSPECIFIED",
+            Self::WINDOWS_31X => "WINDOWS_31X",
+            Self::WINDOWS_95 => "WINDOWS_95",
+            Self::WINDOWS_NT => "WINDOWS_NT",
+            Self::OS2V21 => "OS2_V21",
+            Self::POWER_PC => "POWER_PC",
+            Self::MACINTOSH => "MACINTOSH",
+            Self::NATIVE_XSERVER => "NATIVE_XSERVER",
+            Self::PSEUDO_XSERVER => "PSEUDO_XSERVER",
+            Self::WINDOWS_RT => "WINDOWS_RT",
+            _ => "UNKNOWN",
+        };
+
+        write!(f, "MinorPlatformType(0x{:02X}-{name})", self.0)
+    }
+}
+
+impl MinorPlatformType {
+    pub const UNSPECIFIED: Self = Self(0);
+    pub const WINDOWS_31X: Self = Self(1);
+    pub const WINDOWS_95: Self = Self(2);
+    pub const WINDOWS_NT: Self = Self(3);
+    pub const OS2V21: Self = Self(4);
+    pub const POWER_PC: Self = Self(5);
+    pub const MACINTOSH: Self = Self(6);
+    pub const NATIVE_XSERVER: Self = Self(7);
+    pub const PSEUDO_XSERVER: Self = Self(8);
+    pub const WINDOWS_RT: Self = Self(9);
 }
 
 bitflags! {
@@ -65,10 +106,8 @@ impl PduParsing for General {
     type Error = CapabilitySetsError;
 
     fn from_buffer(mut buffer: impl io::Read) -> Result<Self, Self::Error> {
-        let major_platform_type = MajorPlatformType::from_u16(buffer.read_u16::<LittleEndian>()?)
-            .ok_or(CapabilitySetsError::InvalidMajorPlatformType)?;
-        let minor_platform_type = MinorPlatformType::from_u16(buffer.read_u16::<LittleEndian>()?)
-            .ok_or(CapabilitySetsError::InvalidMinorPlatformType)?;
+        let major_platform_type = MajorPlatformType(buffer.read_u16::<LittleEndian>()?);
+        let minor_platform_type = MinorPlatformType(buffer.read_u16::<LittleEndian>()?);
 
         let protocol_ver = buffer.read_u16::<LittleEndian>()?;
         if protocol_ver != PROTOCOL_VER {
@@ -112,8 +151,8 @@ impl PduParsing for General {
     }
 
     fn to_buffer(&self, mut buffer: impl io::Write) -> Result<(), Self::Error> {
-        buffer.write_u16::<LittleEndian>(self.major_platform_type.to_u16().unwrap())?;
-        buffer.write_u16::<LittleEndian>(self.minor_platform_type.to_u16().unwrap())?;
+        buffer.write_u16::<LittleEndian>(self.major_platform_type.0)?;
+        buffer.write_u16::<LittleEndian>(self.minor_platform_type.0)?;
         buffer.write_u16::<LittleEndian>(PROTOCOL_VER)?;
         buffer.write_u16::<LittleEndian>(0)?; // padding
         buffer.write_u16::<LittleEndian>(0)?; // generalCompressionTypes

@@ -18,8 +18,8 @@ const GENERAL_CAPSET_BUFFER: [u8; 20] = [
 
 lazy_static! {
     pub static ref CAPSET_GENERAL: General = General {
-        major_platform_type: MajorPlatformType::Windows,
-        minor_platform_type: MinorPlatformType::WindowsNT,
+        major_platform_type: MajorPlatformType::WINDOWS,
+        minor_platform_type: MinorPlatformType::WINDOWS_NT,
         extra_flags: GeneralExtraFlags::FASTPATH_OUTPUT_SUPPORTED
             | GeneralExtraFlags::LONG_CREDENTIALS_SUPPORTED
             | GeneralExtraFlags::AUTORECONNECT_SUPPORTED

@@ -301,12 +301,12 @@ impl Config {
             // https://github.com/FreeRDP/FreeRDP/blob/4e24b966c86fdf494a782f0dfcfc43a057a2ea60/libfreerdp/core/settings.c#LL49C34-L49C70
             client_dir: "C:\\Windows\\System32\\mstscax.dll".to_owned(),
             platform: match whoami::platform() {
-                whoami::Platform::Windows => MajorPlatformType::Windows,
-                whoami::Platform::Linux => MajorPlatformType::Unix,
-                whoami::Platform::MacOS => MajorPlatformType::Macintosh,
-                whoami::Platform::Ios => MajorPlatformType::IOs,
-                whoami::Platform::Android => MajorPlatformType::Android,
-                _ => MajorPlatformType::Unspecified,
+                whoami::Platform::Windows => MajorPlatformType::WINDOWS,
+                whoami::Platform::Linux => MajorPlatformType::UNIX,
+                whoami::Platform::MacOS => MajorPlatformType::MACINTOSH,
+                whoami::Platform::Ios => MajorPlatformType::IOS,
+                whoami::Platform::Android => MajorPlatformType::ANDROID,
+                _ => MajorPlatformType::UNSPECIFIED,
             },
             no_server_pointer: args.no_server_pointer,
         };
