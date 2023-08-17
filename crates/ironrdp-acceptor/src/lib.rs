@@ -1,67 +1,37 @@
 #[macro_use]
 extern crate tracing;
 
-use std::net::SocketAddr;
-
-use ironrdp_pdu::nego;
-use tokio_rustls::TlsAcceptor;
-
-use std::io;
-
+use ironrdp_async::{Framed, FramedRead, FramedWrite, StreamWrapper};
 use ironrdp_connector::{custom_err, ConnectorResult, Sequence, Written};
-use ironrdp_tokio::{Framed, FramedRead, FramedWrite, TokioFramed};
-use tokio::io::{AsyncRead, AsyncWrite};
-use tokio_rustls::server::TlsStream;
 
-use self::connection::AcceptorResult;
+mod channel_connection;
+mod connection;
+mod finalization;
+mod util;
 
-pub mod channel_connection;
-pub mod connection;
-pub mod finalization;
-pub mod util;
-
-pub use self::connection::ServerAcceptor;
+pub use connection::{Acceptor, AcceptorResult};
 pub use ironrdp_connector::DesktopSize;
 
-#[derive(Clone)]
-pub struct RdpServerOptions {
-    pub addr: SocketAddr,
-    pub security: RdpServerSecurity,
-}
-
-#[derive(Clone)]
-pub enum RdpServerSecurity {
-    None,
-    SSL(TlsAcceptor),
-}
-
-impl RdpServerSecurity {
-    pub fn flag(&self) -> nego::SecurityProtocol {
-        match self {
-            RdpServerSecurity::None => ironrdp_pdu::nego::SecurityProtocol::empty(),
-            RdpServerSecurity::SSL(_) => ironrdp_pdu::nego::SecurityProtocol::SSL,
-        }
-    }
-}
-
-pub enum BeginResult<S> {
-    ShouldUpgrade(S),
-    Continue(TokioFramed<S>),
-}
-
-pub async fn accept_begin<S>(stream: S, acceptor: &mut ServerAcceptor) -> ConnectorResult<BeginResult<S>>
+pub enum BeginResult<S>
 where
-    S: Unpin + AsyncRead + AsyncWrite,
+    S: StreamWrapper,
+{
+    ShouldUpgrade(S::InnerStream),
+    Continue(Framed<S>),
+}
+
+pub async fn accept_begin<S>(mut framed: Framed<S>, acceptor: &mut Acceptor) -> ConnectorResult<BeginResult<S>>
+where
+    S: FramedRead + FramedWrite + StreamWrapper,
 {
     let mut buf = Vec::new();
-    let mut framed = TokioFramed::new(stream);
 
     loop {
         if let Some(security) = acceptor.reached_security_upgrade() {
             let result = if security.is_empty() {
                 BeginResult::Continue(framed)
             } else {
-                BeginResult::ShouldUpgrade(framed.into_inner().0)
+                BeginResult::ShouldUpgrade(framed.into_inner_no_leftover())
             };
 
             return Ok(result);
@@ -71,22 +41,12 @@ where
     }
 }
 
-pub async fn upgrade<S>(security: &RdpServerSecurity, stream: S) -> Result<TlsStream<S>, io::Error>
-where
-    S: Unpin + AsyncRead + AsyncWrite,
-{
-    match security {
-        RdpServerSecurity::None => unreachable!(),
-        RdpServerSecurity::SSL(tls_acceptor) => tls_acceptor.accept(stream).await,
-    }
-}
-
 pub async fn accept_finalize<S>(
     mut framed: Framed<S>,
-    acceptor: &mut ServerAcceptor,
+    acceptor: &mut Acceptor,
 ) -> ConnectorResult<(Framed<S>, AcceptorResult)>
 where
-    S: FramedWrite + FramedRead,
+    S: FramedRead + FramedWrite,
 {
     let mut buf = Vec::new();
 
@@ -101,17 +61,25 @@ where
 
 async fn single_accept_state<S>(
     framed: &mut Framed<S>,
-    acceptor: &mut ServerAcceptor,
+    acceptor: &mut Acceptor,
     buf: &mut Vec<u8>,
 ) -> ConnectorResult<Written>
 where
-    S: FramedWrite + FramedRead,
+    S: FramedRead + FramedWrite,
 {
     let written = if let Some(next_pdu_hint) = acceptor.next_pdu_hint() {
+        debug!(
+            acceptor.state = acceptor.state().name(),
+            hint = ?next_pdu_hint,
+            "Wait for PDU"
+        );
+
         let pdu = framed
             .read_by_hint(next_pdu_hint)
             .await
             .map_err(|e| custom_err!("read frame by hint", e))?;
+
+        trace!(length = pdu.len(), "PDU received");
 
         acceptor.step(&pdu, buf)?
     } else {
@@ -119,6 +87,7 @@ where
     };
 
     if let Some(len) = written.size() {
+        trace!(length = len, "Send response");
         framed
             .write_all(&buf[..len])
             .await

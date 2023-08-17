@@ -16,9 +16,7 @@ doctest = false
 test = false
 
 [dependencies]
-tokio = { version = "1", features = ["full"] }
-tokio-rustls = "0.24"
 ironrdp-pdu.workspace = true
 ironrdp-connector.workspace = true
-ironrdp-tokio.workspace = true
+ironrdp-async.workspace = true
 tracing.workspace = true

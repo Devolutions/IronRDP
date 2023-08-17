@@ -1,26 +1,48 @@
-use std::io::Cursor;
+use std::{io::Cursor, net::SocketAddr};
 
 use anyhow::Result;
 use bytes::BytesMut;
-use ironrdp_acceptor::RdpServerOptions;
+use tokio::net::TcpListener;
+
+use ironrdp_acceptor::{self, Acceptor, BeginResult};
 use ironrdp_pdu::{
     self,
     input::{
         fast_path::{FastPathInput, FastPathInputEvent},
         InputEventPdu,
     },
-    mcs, rdp, Action, PduParsing,
+    mcs, nego, rdp, Action, PduParsing,
 };
 use ironrdp_tokio::{Framed, FramedRead, FramedWrite, TokioFramed};
-use tokio::{net::TcpListener, select};
+use tokio_rustls::TlsAcceptor;
 
 use crate::{
-    acceptor::{self, BeginResult, ServerAcceptor},
     builder, capabilities,
     display::{DisplayUpdate, RdpServerDisplay},
     encoder::UpdateEncoder,
     handler::RdpServerInputHandler,
 };
+
+#[derive(Clone)]
+pub struct RdpServerOptions {
+    pub addr: SocketAddr,
+    pub security: RdpServerSecurity,
+}
+
+#[derive(Clone)]
+pub enum RdpServerSecurity {
+    None,
+    Tls(TlsAcceptor),
+}
+
+impl RdpServerSecurity {
+    pub fn flag(&self) -> nego::SecurityProtocol {
+        match self {
+            RdpServerSecurity::None => ironrdp_pdu::nego::SecurityProtocol::empty(),
+            RdpServerSecurity::Tls(_) => ironrdp_pdu::nego::SecurityProtocol::SSL,
+        }
+    }
+}
 
 /// RDP Server
 ///
@@ -31,15 +53,23 @@ use crate::{
 ///
 /// # Example
 ///
-/// ```
-/// let mut server = RdpServer::builder()
-///     .with_addr(([127, 0, 0, 1], 3389))
-///     .with_ssl(tls_acceptor)
-///     .with_input_handler(handler)
-///     .with_display_handler(display)
-///     .build();
+/// ```ignore
+/// use ironrdp_server::{RdpServer, RdpServerInputHandler, RdpServerDisplay};
 ///
-/// server.run().await
+/// async fn main() {
+///     let tls_acceptor = todo!();
+///     let input_handler = todo!();
+///     let display_handler = todo!();
+///
+///     let mut server = RdpServer::builder()
+///         .with_addr(([127, 0, 0, 1], 3389))
+///         .with_tls(tls_acceptor)
+///         .with_input_handler(input_handler)
+///         .with_display_handler(display_handler)
+///         .build();
+///
+///     server.run().await;
+/// }
 /// ```
 pub struct RdpServer {
     opts: RdpServerOptions,
@@ -72,27 +102,30 @@ impl RdpServer {
         let listener = TcpListener::bind(self.opts.addr).await?;
 
         while let Ok((stream, peer)) = listener.accept().await {
-            debug!("received connection from {:?}", peer);
+            debug!(?peer, "received connection");
+            let framed = TokioFramed::new(stream);
 
             let size = self.display.size().await;
             let capabilities = capabilities::capabilities(&self.opts, size.clone());
-            let mut acceptor = ServerAcceptor::new(self.opts.clone(), size, capabilities);
+            let mut acceptor = Acceptor::new(self.opts.security.flag(), size, capabilities);
 
-            match acceptor::accept_begin(stream, &mut acceptor).await {
+            match ironrdp_acceptor::accept_begin(framed, &mut acceptor).await {
                 Ok(BeginResult::ShouldUpgrade(stream)) => {
-                    let upgraded = acceptor::upgrade(&self.opts.security, stream).await?;
-                    let framed = TokioFramed::new(upgraded);
-                    let (framed, _) = acceptor::accept_finalize(framed, &mut acceptor).await?;
+                    let framed = TokioFramed::new(match &self.opts.security {
+                        RdpServerSecurity::Tls(acceptor) => acceptor.accept(stream).await?,
+                        RdpServerSecurity::None => unreachable!(),
+                    });
+                    let (framed, _) = ironrdp_acceptor::accept_finalize(framed, &mut acceptor).await?;
                     self.client_loop(framed).await?;
                 }
 
                 Ok(BeginResult::Continue(framed)) => {
-                    let (framed, _) = acceptor::accept_finalize(framed, &mut acceptor).await?;
+                    let (framed, _) = ironrdp_acceptor::accept_finalize(framed, &mut acceptor).await?;
                     self.client_loop(framed).await?;
                 }
 
                 Err(e) => {
-                    eprintln!("connection error: {:?}", e);
+                    error!("connection error: {:?}", e);
                 }
             }
         }
@@ -110,7 +143,7 @@ impl RdpServer {
         debug!("starting client loop");
 
         'main: loop {
-            select! {
+            tokio::select! {
                 frame = framed.read_pdu() => {
                     let Ok((action, bytes)) = frame else {
                         break;
@@ -131,7 +164,7 @@ impl RdpServer {
                                 },
 
                                 Err(e) => {
-                                    eprintln!("x224 input error: {:?}", e);
+                                    error!("x224 input error: {:?}", e);
                                 }
                             };
                         }
@@ -150,7 +183,7 @@ impl RdpServer {
 
                         while let Some(len) = fragmenter.next(&mut buffer) {
                             if let Err(e) = framed.write_all(&buffer[..len]).await {
-                                eprintln!("write error: {:?}", e);
+                                error!("write error: {:?}", e);
                                 break;
                             };
                         }
@@ -186,7 +219,7 @@ impl RdpServer {
                 }
 
                 FastPathInputEvent::QoeEvent(quality) => {
-                    eprintln!("received QoE: {}", quality);
+                    warn!("received QoE: {}", quality);
                 }
             }
         }
@@ -205,12 +238,12 @@ impl RdpServer {
                         }
 
                         unexpected => {
-                            eprintln!("unexpected share data pdu {:?}", unexpected);
+                            warn!("unexpected share data pdu {:?}", unexpected);
                         }
                     },
 
                     unexpected => {
-                        eprintln!("unexpected share control {:?}", unexpected);
+                        warn!("unexpected share control {:?}", unexpected);
                     }
                 }
             }
@@ -222,7 +255,7 @@ impl RdpServer {
             }
 
             unexpected => {
-                eprintln!("unexpected mcs message {:?}", ironrdp_pdu::name(&unexpected));
+                warn!("unexpected mcs message {:?}", ironrdp_pdu::name(&unexpected));
             }
         }
 

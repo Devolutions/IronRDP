@@ -1,4 +1,4 @@
-use ironrdp_acceptor::{DesktopSize, RdpServerOptions};
+use crate::{DesktopSize, RdpServerOptions};
 use ironrdp_pdu::rdp::capability_sets;
 
 pub fn capabilities(_opts: &RdpServerOptions, size: DesktopSize) -> Vec<capability_sets::CapabilitySet> {

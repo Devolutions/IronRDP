@@ -74,7 +74,7 @@ impl Sequence for ChannelConnectionSequence {
                 let erect_domain_request =
                     ironrdp_pdu::decode::<mcs::ErectDomainPdu>(input).map_err(ConnectorError::pdu)?;
 
-                debug!(message =? erect_domain_request, "Received");
+                debug!(message = ?erect_domain_request, "Received");
 
                 (Written::Nothing, ChannelConnectionState::WaitAttachUserRequest)
             }
@@ -83,7 +83,7 @@ impl Sequence for ChannelConnectionSequence {
                 let attach_user_request =
                     ironrdp_pdu::decode::<mcs::AttachUserRequest>(input).map_err(ConnectorError::pdu)?;
 
-                debug!(message =? attach_user_request, "Received");
+                debug!(message = ?attach_user_request, "Received");
 
                 (Written::Nothing, ChannelConnectionState::SendAttachUserConfirm)
             }
@@ -94,7 +94,7 @@ impl Sequence for ChannelConnectionSequence {
                     initiator_id: self.user_channel_id,
                 };
 
-                debug!(message =? attach_user_confirm, "Send");
+                debug!(message = ?attach_user_confirm, "Send");
 
                 let written = ironrdp_pdu::encode_buf(&attach_user_confirm, output).map_err(ConnectorError::pdu)?;
 
@@ -109,7 +109,7 @@ impl Sequence for ChannelConnectionSequence {
                 let channel_request =
                     ironrdp_pdu::decode::<mcs::ChannelJoinRequest>(input).map_err(ConnectorError::pdu)?;
 
-                debug!(message =? channel_request, "Received");
+                debug!(message = ?channel_request, "Received");
 
                 let channel_id = channel_request.channel_id;
 
@@ -127,7 +127,7 @@ impl Sequence for ChannelConnectionSequence {
                     channel_id,
                 };
 
-                debug!(message =? channel_confirm, "Send");
+                debug!(message = ?channel_confirm, "Send");
 
                 let written = ironrdp_pdu::encode_buf(&channel_confirm, output).map_err(ConnectorError::pdu)?;
 

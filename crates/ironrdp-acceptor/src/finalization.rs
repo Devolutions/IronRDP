@@ -83,7 +83,7 @@ impl Sequence for FinalizationSequence {
 
                 let synchronize = rdp::headers::ShareControlHeader::from_buffer(Cursor::new(data.user_data))?;
 
-                debug!(message =? synchronize, "Received");
+                debug!(message = ?synchronize, "Received");
 
                 (Written::Nothing, FinalizationState::WaitControlCooperate)
             }
@@ -93,7 +93,7 @@ impl Sequence for FinalizationSequence {
 
                 let cooperate = rdp::headers::ShareControlHeader::from_buffer(Cursor::new(data.user_data))?;
 
-                debug!(message =? cooperate, "Received");
+                debug!(message = ?cooperate, "Received");
 
                 (Written::Nothing, FinalizationState::WaitRequestControl)
             }
@@ -103,7 +103,7 @@ impl Sequence for FinalizationSequence {
 
                 let control = rdp::headers::ShareControlHeader::from_buffer(Cursor::new(data.user_data))?;
 
-                debug!(message =? control, "Received");
+                debug!(message = ?control, "Received");
 
                 (Written::Nothing, FinalizationState::WaitFontList)
             }
@@ -113,7 +113,7 @@ impl Sequence for FinalizationSequence {
 
                 let font_list = rdp::headers::ShareControlHeader::from_buffer(Cursor::new(data.user_data))?;
 
-                debug!(message =? font_list, "Received");
+                debug!(message = ?font_list, "Received");
 
                 (Written::Nothing, FinalizationState::SendSynchronizeConfirm)
             }
@@ -121,7 +121,7 @@ impl Sequence for FinalizationSequence {
             FinalizationState::SendSynchronizeConfirm => {
                 let synchronize_confirm = create_synchronize_confirm();
 
-                debug!(message =? synchronize_confirm, "Send");
+                debug!(message = ?synchronize_confirm, "Send");
 
                 let share_data = wrap_share_data(synchronize_confirm, self.io_channel_id);
                 let written =
@@ -136,7 +136,7 @@ impl Sequence for FinalizationSequence {
             FinalizationState::SendControlCooperateConfirm => {
                 let cooperate_confirm = create_cooperate_confirm();
 
-                debug!(message =? cooperate_confirm, "Send");
+                debug!(message = ?cooperate_confirm, "Send");
 
                 let share_data = wrap_share_data(cooperate_confirm, self.io_channel_id);
                 let written =
@@ -151,7 +151,7 @@ impl Sequence for FinalizationSequence {
             FinalizationState::SendGrantedControlConfirm => {
                 let control_confirm = create_control_confirm(self.user_channel_id);
 
-                debug!(message =? control_confirm, "Send");
+                debug!(message = ?control_confirm, "Send");
 
                 let share_data = wrap_share_data(control_confirm, self.io_channel_id);
                 let written =
@@ -163,7 +163,7 @@ impl Sequence for FinalizationSequence {
             FinalizationState::SendFontMap => {
                 let font_map = create_font_map();
 
-                debug!(message =? font_map, "Send");
+                debug!(message = ?font_map, "Send");
 
                 let share_data = wrap_share_data(font_map, self.io_channel_id);
                 let written =

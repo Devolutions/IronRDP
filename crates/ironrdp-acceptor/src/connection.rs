@@ -9,16 +9,16 @@ use pdu::rdp::headers::ShareControlPdu;
 use pdu::{gcc, mcs, nego, rdp, PduParsing};
 
 use crate::util::{self, wrap_share_data};
-use crate::RdpServerOptions;
 
 use super::channel_connection::ChannelConnectionSequence;
 use super::finalization::FinalizationSequence;
 
 const IO_CHANNEL_ID: u16 = 1003;
+const USER_CHANNEL_ID: u16 = 1002;
 
-pub struct ServerAcceptor {
-    opts: RdpServerOptions,
+pub struct Acceptor {
     state: AcceptorState,
+    security: nego::SecurityProtocol,
     io_channel_id: u16,
     user_channel_id: u16,
     desktop_size: DesktopSize,
@@ -31,12 +31,12 @@ pub struct AcceptorResult {
     pub capabilities: Vec<CapabilitySet>,
 }
 
-impl ServerAcceptor {
-    pub fn new(opts: RdpServerOptions, desktop_size: DesktopSize, capabilities: Vec<CapabilitySet>) -> Self {
+impl Acceptor {
+    pub fn new(security: nego::SecurityProtocol, desktop_size: DesktopSize, capabilities: Vec<CapabilitySet>) -> Self {
         Self {
-            opts,
+            security,
             state: AcceptorState::InitiationWaitRequest,
-            user_channel_id: 1001,
+            user_channel_id: USER_CHANNEL_ID,
             io_channel_id: IO_CHANNEL_ID,
             desktop_size,
             server_capabilities: capabilities,
@@ -45,7 +45,7 @@ impl ServerAcceptor {
 
     pub fn reached_security_upgrade(&self) -> Option<nego::SecurityProtocol> {
         match self.state {
-            AcceptorState::SecurityUpgrade { .. } => Some(self.opts.security.flag()),
+            AcceptorState::SecurityUpgrade { .. } => Some(self.security),
             _ => None,
         }
     }
@@ -153,7 +153,7 @@ impl State for AcceptorState {
     }
 }
 
-impl Sequence for ServerAcceptor {
+impl Sequence for Acceptor {
     fn next_pdu_hint(&self) -> Option<&dyn pdu::PduHint> {
         match &self.state {
             AcceptorState::Consumed => None,
@@ -184,7 +184,7 @@ impl Sequence for ServerAcceptor {
                 let connection_request =
                     ironrdp_pdu::decode::<nego::ConnectionRequest>(input).map_err(ConnectorError::pdu)?;
 
-                debug!(message =? connection_request, "Received");
+                debug!(message = ?connection_request, "Received");
 
                 (
                     Written::Nothing,
@@ -197,10 +197,10 @@ impl Sequence for ServerAcceptor {
             AcceptorState::InitiationSendConfirm { requested_protocol } => {
                 let connection_confirm = nego::ConnectionConfirm::Response {
                     flags: nego::ResponseFlags::empty(),
-                    protocol: self.opts.security.flag(),
+                    protocol: self.security,
                 };
 
-                debug!(message =? connection_confirm, "Send");
+                debug!(message = ?connection_confirm, "Send");
 
                 let written = ironrdp_pdu::encode_buf(&connection_confirm, output).map_err(ConnectorError::pdu)?;
 
@@ -218,7 +218,7 @@ impl Sequence for ServerAcceptor {
             AcceptorState::BasicSettingsWaitInitial { requested_protocol } => {
                 let settings_initial = legacy::decode_x224_packet::<mcs::ConnectInitial>(input)?;
 
-                debug!(message =? settings_initial, "Received");
+                debug!(message = ?settings_initial, "Received");
 
                 let early_capability = settings_initial
                     .conference_create_request
@@ -267,7 +267,7 @@ impl Sequence for ServerAcceptor {
                     domain_parameters: mcs::DomainParameters::target(),
                 };
 
-                debug!(message =? settings_response, "Send");
+                debug!(message = ?settings_response, "Send");
 
                 let written = legacy::encode_x224_packet(&settings_response, output)?;
 
@@ -327,7 +327,7 @@ impl Sequence for ServerAcceptor {
 
                 let client_info = rdp::ClientInfoPdu::from_buffer(Cursor::new(data.user_data))?;
 
-                debug!(message =? client_info, "Received");
+                debug!(message = ?client_info, "Received");
 
                 (
                     Written::Nothing,
@@ -344,7 +344,7 @@ impl Sequence for ServerAcceptor {
             } => {
                 let license = rdp::server_license::InitialServerLicenseMessage::new_status_valid_client_message();
 
-                debug!(message =? license, "Send");
+                debug!(message = ?license, "Send");
 
                 let written =
                     util::encode_send_data_indication(self.user_channel_id, self.io_channel_id, &license, output)?;
@@ -375,7 +375,7 @@ impl Sequence for ServerAcceptor {
                     ),
                 };
 
-                debug!(message =? demand_active, "Send");
+                debug!(message = ?demand_active, "Send");
 
                 let written = util::encode_send_data_indication(
                     self.user_channel_id,
@@ -406,7 +406,7 @@ impl Sequence for ServerAcceptor {
                         }],
                     });
 
-                debug!(message =? monitor_layout, "Send");
+                debug!(message = ?monitor_layout, "Send");
 
                 let share_data = wrap_share_data(monitor_layout, self.io_channel_id);
 
@@ -424,7 +424,7 @@ impl Sequence for ServerAcceptor {
 
                 let capabilities_confirm = rdp::headers::ShareControlHeader::from_buffer(Cursor::new(data.user_data))?;
 
-                debug!(message =? capabilities_confirm, "Received");
+                debug!(message = ?capabilities_confirm, "Received");
 
                 let ShareControlPdu::ClientConfirmActive(confirm) = capabilities_confirm.share_control_pdu else {
                     return Err(ConnectorError::general("expected client confirm active"));
@@ -462,10 +462,7 @@ impl Sequence for ServerAcceptor {
                 (written, state)
             }
 
-            x => {
-                println!("{:?}", x);
-                unreachable!()
-            }
+            _ => unreachable!(),
         };
 
         self.state = next_state;

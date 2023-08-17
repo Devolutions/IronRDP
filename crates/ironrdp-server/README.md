@@ -6,7 +6,7 @@ Library for implementing custom async RDP servers on the tokio runtime.
 The server currently supports:
 
 **Security**
- - Security-Enhanced connection with SSL Security
+ - Enhanced RDP Security with TLS External Security Protocols (TLS 1.2 and TLS 1.3)
 
 **Input**
  - FastPath input events

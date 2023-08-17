@@ -1556,6 +1556,7 @@ checksum = "f88c5561171189e69df9d98bcf18fd5f9558300f7ea7b801eb8a0fd748bd8745"
 name = "ironrdp"
 version = "0.5.0"
 dependencies = [
+ "ironrdp-acceptor",
  "ironrdp-connector",
  "ironrdp-graphics",
  "ironrdp-input",
@@ -1568,11 +1569,9 @@ dependencies = [
 name = "ironrdp-acceptor"
 version = "0.1.0"
 dependencies = [
+ "ironrdp-async",
  "ironrdp-connector",
  "ironrdp-pdu",
- "ironrdp-tokio",
- "tokio",
- "tokio-rustls 0.24.0",
  "tracing",
 ]
 

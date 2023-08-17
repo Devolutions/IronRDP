@@ -11,5 +11,3 @@ mod server;
 pub use display::*;
 pub use handler::*;
 pub use server::*;
-
-pub use ironrdp_acceptor as acceptor;

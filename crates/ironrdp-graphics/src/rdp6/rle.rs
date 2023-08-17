@@ -157,15 +157,7 @@ impl RlePlaneDecoder {
 /// Size of data written to dst buffer is exactly equal to `width * height`.
 ///
 /// Returns number of bytes consumed from src buffer.
-pub fn decompress_8bpp_plane(
-    src: &[u8],
-    dst: &mut [u8],
-    width: impl Into<usize>,
-    height: impl Into<usize>,
-) -> Result<usize, RleDecodeError> {
-    let width = width.into();
-    let height = height.into();
-
+pub fn decompress_8bpp_plane(src: &[u8], dst: &mut [u8], width: usize, height: usize) -> Result<usize, RleDecodeError> {
     RlePlaneDecoder::new(width, height).decode(src, dst)
 }
 
@@ -366,14 +358,10 @@ impl RlePlaneEncoder {
 pub fn compress_8bpp_plane(
     src: impl Iterator<Item = u8>,
     dst: &mut WriteCursor<'_>,
-    width: impl Into<usize>,
-    height: impl Into<usize>,
+    width: usize,
+    height: usize,
 ) -> Result<usize, RleEncodeError> {
-    let width = width.into();
-    let height = height.into();
-
     let iter = RleEncoderScanlineIterator::new(width, src);
-
     RlePlaneEncoder::new(width, height).encode(iter, dst)
 }
 
@@ -384,26 +372,14 @@ mod tests {
     use super::*;
 
     /// Performs decompression of 8bpp color plane into vector. Vector will be resized to fit decompressed data.
-    pub fn decompress(
-        src: &[u8],
-        dst: &mut Vec<u8>,
-        width: impl Into<usize>,
-        height: impl Into<usize>,
-    ) -> Result<usize, RleDecodeError> {
-        let width = width.into();
-        let height = height.into();
+    pub fn decompress(src: &[u8], dst: &mut Vec<u8>, width: usize, height: usize) -> Result<usize, RleDecodeError> {
         // Ensure dest buffer have enough space for decompressed data
         dst.resize(width * height, 0);
 
         decompress_8bpp_plane(src, dst.as_mut_slice(), width, height)
     }
 
-    pub fn compress(
-        src: &[u8],
-        dst: &mut Vec<u8>,
-        width: impl Into<usize>,
-        height: impl Into<usize>,
-    ) -> Result<usize, RleEncodeError> {
+    pub fn compress(src: &[u8], dst: &mut Vec<u8>, width: usize, height: usize) -> Result<usize, RleEncodeError> {
         compress_8bpp_plane(src.iter().copied(), &mut WriteCursor::new(dst), width, height)
     }
 

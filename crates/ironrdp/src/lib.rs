@@ -2,6 +2,8 @@
 //!
 //! This is a meta crate re-exporting other ironrdp crates for convenience.
 
+#[cfg(feature = "acceptor")]
+pub use ironrdp_acceptor as acceptor;
 #[cfg(feature = "connector")]
 pub use ironrdp_connector as connector;
 #[cfg(feature = "graphics")]

@@ -1,8 +1,6 @@
 use std::{future, marker::PhantomData, net::SocketAddr};
 use tokio_rustls::TlsAcceptor;
 
-use ironrdp_acceptor::{RdpServerOptions, RdpServerSecurity};
-
 use super::display::{DesktopSize, DisplayUpdate, RdpServerDisplay};
 use super::handler::{KeyboardEvent, MouseEvent, RdpServerInputHandler};
 use super::server::*;
@@ -71,11 +69,11 @@ impl<H, D> RdpServerBuilder<WantsSecurity, H, D> {
         }
     }
 
-    pub fn with_ssl<T: Into<TlsAcceptor>>(self, acceptor: T) -> RdpServerBuilder<WantsHandler, H, D> {
+    pub fn with_tls<T: Into<TlsAcceptor>>(self, acceptor: T) -> RdpServerBuilder<WantsHandler, H, D> {
         RdpServerBuilder {
             state: WantsHandler {
                 addr: self.state.addr,
-                security: RdpServerSecurity::SSL(acceptor.into()),
+                security: RdpServerSecurity::Tls(acceptor.into()),
             },
             _handler: PhantomData,
             _display: PhantomData,

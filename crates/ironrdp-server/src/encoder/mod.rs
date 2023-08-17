@@ -113,11 +113,7 @@ impl<'a> UpdateFragmenter<'a> {
             data,
         };
 
-        let header = FastPathHeader {
-            flags: EncryptionFlags::empty(),
-            data_length: update.size(),
-            forced_long_length: false,
-        };
+        let header = FastPathHeader::new(EncryptionFlags::empty(), update.size());
 
         header.encode(&mut cursor).ok()?;
         update.encode(&mut cursor).ok()?;

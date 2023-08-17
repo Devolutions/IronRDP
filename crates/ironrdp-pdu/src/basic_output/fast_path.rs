@@ -20,12 +20,20 @@ use crate::{decode_cursor, per, PduDecode, PduEncode, PduResult};
 pub struct FastPathHeader {
     pub flags: EncryptionFlags,
     pub data_length: usize,
-    pub forced_long_length: bool,
+    forced_long_length: bool,
 }
 
 impl FastPathHeader {
     const NAME: &str = "TS_FP_UPDATE_PDU header";
     const FIXED_PART_SIZE: usize = std::mem::size_of::<EncryptionFlags>();
+
+    pub fn new(flags: EncryptionFlags, data_length: usize) -> Self {
+        Self {
+            flags,
+            data_length,
+            forced_long_length: false,
+        }
+    }
 
     fn minimal_size(&self) -> usize {
         Self::FIXED_PART_SIZE + per::sizeof_length(self.data_length as u16)

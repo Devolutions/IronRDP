@@ -13,8 +13,8 @@ use ironrdp_pdu::input::{
 ///
 #[derive(Debug)]
 pub enum KeyboardEvent {
-    Pressed(u8),
-    Released(u8),
+    Pressed { code: u8, extended: bool },
+    Released { code: u8, extended: bool },
     UnicodePressed(u16),
     UnicodeReleased(u16),
     Synchronize(SynchronizeFlags),
@@ -42,22 +42,24 @@ pub enum MouseEvent {
 /// # Example
 ///
 /// ```
+/// use ironrdp_server::{KeyboardEvent, MouseEvent, RdpServerInputHandler};
+///
 /// pub struct InputHandler;
 ///
 /// #[async_trait::async_trait]
 /// impl RdpServerInputHandler for InputHandler {
 ///     async fn keyboard(&mut self, event: KeyboardEvent) {
 ///         match event {
-///             KeyboardEvent::Pressed(code) => println!("Pressed {}", code)
-///             KeyboardEvent::Released(code) => println!("Released {}", code)
-///             other => println!("unhandled event: {:?}", other)
+///             KeyboardEvent::Pressed { code, .. } => println!("Pressed {}", code),
+///             KeyboardEvent::Released { code, .. } => println!("Released {}", code),
+///             other => println!("unhandled event: {:?}", other),
 ///         };
 ///     }
 ///
 ///     async fn mouse(&mut self, event: MouseEvent) {
 ///         let result = match event {
-///             MouseEvent::Move { x, y } => println!("Moved mouse to {} {}", x, y)
-///             other => println!("unhandled event: {:?}", other)
+///             MouseEvent::Move { x, y } => println!("Moved mouse to {} {}", x, y),
+///             other => println!("unhandled event: {:?}", other),
 ///         };
 ///     }
 /// }
@@ -70,10 +72,11 @@ pub trait RdpServerInputHandler {
 
 impl From<(u8, fast_path::KeyboardFlags)> for KeyboardEvent {
     fn from((key, flags): (u8, fast_path::KeyboardFlags)) -> Self {
+        let extended = flags.contains(fast_path::KeyboardFlags::EXTENDED);
         if flags.contains(fast_path::KeyboardFlags::RELEASE) {
-            KeyboardEvent::Released(key)
+            KeyboardEvent::Released { code: key, extended }
         } else {
-            KeyboardEvent::Pressed(key)
+            KeyboardEvent::Pressed { code: key, extended }
         }
     }
 }
@@ -90,10 +93,17 @@ impl From<(u16, fast_path::KeyboardFlags)> for KeyboardEvent {
 
 impl From<(u16, scan_code::KeyboardFlags)> for KeyboardEvent {
     fn from((key, flags): (u16, scan_code::KeyboardFlags)) -> Self {
+        let extended = flags.contains(scan_code::KeyboardFlags::EXTENDED);
         if flags.contains(scan_code::KeyboardFlags::RELEASE) {
-            KeyboardEvent::Released(key as u8)
+            KeyboardEvent::Released {
+                code: key as u8,
+                extended,
+            }
         } else {
-            KeyboardEvent::Pressed(key as u8)
+            KeyboardEvent::Pressed {
+                code: key as u8,
+                extended,
+            }
         }
     }
 }
