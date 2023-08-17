@@ -12,6 +12,10 @@ pub use ironrdp_graphics as graphics;
 pub use ironrdp_input as input;
 #[cfg(feature = "pdu")]
 pub use ironrdp_pdu as pdu;
+#[cfg(feature = "rdpdr")]
+pub use ironrdp_rdpdr as rdpdr;
+#[cfg(feature = "rdpsnd")]
+pub use ironrdp_rdpsnd as rdpsnd;
 #[cfg(feature = "session")]
 pub use ironrdp_session as session;
 #[cfg(feature = "svc")]

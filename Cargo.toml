@@ -34,6 +34,8 @@ ironrdp-input = { version = "0.1", path = "crates/ironrdp-input" }
 ironrdp-pdu-generators = { path = "crates/ironrdp-pdu-generators" }
 ironrdp-pdu = { version = "0.1", path = "crates/ironrdp-pdu" }
 ironrdp-rdcleanpath = { version = "0.1", path = "crates/ironrdp-rdcleanpath" }
+ironrdp-rdpdr = { version = "0.1", path = "crates/ironrdp-rdpdr" }
+ironrdp-rdpsnd = { version = "0.1", path = "crates/ironrdp-rdpsnd" }
 ironrdp-session-generators = { path = "crates/ironrdp-session-generators" }
 ironrdp-session = { version = "0.1", path = "crates/ironrdp-session" }
 ironrdp-svc = { version = "0.1", path = "crates/ironrdp-svc" }
