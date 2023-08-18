@@ -3,15 +3,9 @@
 
 mod pdu;
 use crate::pdu::efs::{ClientNameRequest, Component, PacketId, SharedHeader, VersionAndIdPDU, VersionAndIdPDUKind};
-use ironrdp_pdu::{
-    cursor::{ReadCursor, WriteCursor},
-    encode_buf,
-    gcc::ChannelName,
-    write_buf::WriteBuf,
-    PduDecode, PduEncode, PduResult,
-};
+use ironrdp_pdu::{cursor::ReadCursor, gcc::ChannelName, PduEncode, PduResult};
 use ironrdp_svc::{AsAny, CompressionCondition, StaticVirtualChannel};
-use std::any::Any;
+use std::{any::Any, vec};
 use tracing::{trace, warn};
 
 /// The RDPDR channel as specified in [MS-RDPEFS].
@@ -38,19 +32,18 @@ impl Rdpdr {
         Self { computer_name }
     }
 
-    fn handle_server_announce(&mut self, payload: &mut ReadCursor<'_>, outputs: &mut [WriteBuf; 2]) -> PduResult<()> {
+    fn handle_server_announce(&mut self, payload: &mut ReadCursor<'_>) -> PduResult<Vec<Box<dyn PduEncode>>> {
         let req = VersionAndIdPDU::decode(payload, VersionAndIdPDUKind::ServerAnnounceRequest)?;
         trace!("received {:?}", req);
 
-        let res = VersionAndIdPDU::new(28, 0, req.client_id, VersionAndIdPDUKind::ClientAnnounceReply);
-        trace!("sending {:?}", res);
-        encode_buf(&res, &mut outputs[0])?;
+        let client_announce_reply =
+            VersionAndIdPDU::new(28, 0, req.client_id, VersionAndIdPDUKind::ClientAnnounceReply);
+        trace!("sending {:?}", client_announce_reply);
 
-        let res = ClientNameRequest::new(self.computer_name.clone());
-        trace!("sending {:?}", res);
-        encode_buf(&res, &mut outputs[1])?;
+        let client_name_request = ClientNameRequest::new(self.computer_name.clone());
+        trace!("sending {:?}", client_name_request);
 
-        Ok(())
+        Ok(vec![Box::new(client_announce_reply), Box::new(client_name_request)])
     }
 }
 
@@ -73,35 +66,26 @@ impl StaticVirtualChannel for Rdpdr {
         CompressionCondition::WhenRdpDataIsCompressed
     }
 
-    fn process(
-        &mut self,
-        initiator_id: u16,
-        channel_id: u16,
-        payload: &[u8],
-        outputs: &mut [WriteBuf; 2],
-    ) -> PduResult<()> {
+    fn process(&mut self, payload: &[u8]) -> PduResult<Vec<Box<dyn PduEncode>>> {
         let mut payload = ReadCursor::new(payload);
 
         let header = SharedHeader::decode(&mut payload)?;
-        trace!("{:?}", header);
+        trace!("received {:?}", header);
 
         if let Component::RDPDR_CTYP_PRN = header.component {
             warn!(
                 "received {:?} RDPDR header from RDP server, printer redirection is unimplemented",
                 Component::RDPDR_CTYP_PRN
             );
-            return Ok(());
+            return Ok(vec![]);
         }
 
         match header.packet_id {
-            PacketId::PAKID_CORE_SERVER_ANNOUNCE => self.handle_server_announce(&mut payload, outputs)?,
+            PacketId::PAKID_CORE_SERVER_ANNOUNCE => self.handle_server_announce(&mut payload),
             _ => {
                 warn!("received unimplemented packet: {:?}", header.packet_id);
-                return Ok(());
+                Ok(vec![])
             }
         }
-
-        warn!("received data, protocol is unimplemented");
-        Ok(())
     }
 }

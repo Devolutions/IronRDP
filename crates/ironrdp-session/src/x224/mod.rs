@@ -74,23 +74,17 @@ impl Processor {
                 Some(drdynvc_id) if channel_id == drdynvc_id => self.process_dyvc(data_ctx),
                 _ => {
                     if let Some(static_channel) = self.static_channels.get_by_channel_id_mut(channel_id) {
-                        let mut user_data = data_ctx.user_data;
+                        let mut payload = data_ctx.user_data;
 
                         // [ vc::ChannelPduHeader | vc data… ]
-                        let channel_header = ironrdp_pdu::rdp::vc::ChannelPduHeader::from_buffer(&mut user_data)?;
-                        debug_assert_eq!(user_data.len(), channel_header.length as usize);
-
-                        let mut static_channel_pdus: [WriteBuf; 2] = [WriteBuf::new(), WriteBuf::new()]; // TODO(perf): reuse this buffer using `clear` and `filled` as appropriate
+                        let channel_header = ironrdp_pdu::rdp::vc::ChannelPduHeader::from_buffer(&mut payload)?;
+                        debug_assert_eq!(payload.len(), channel_header.length as usize);
 
                         // Fill the bufs with encoded response PDUs
-                        static_channel
-                            .process(data_ctx.initiator_id, channel_id, user_data, &mut static_channel_pdus)
-                            .map_err(crate::SessionError::pdu)?;
+                        let response_pdus = static_channel.process(payload).map_err(crate::SessionError::pdu)?;
 
-                        // For each response PDU, chunkify it it and add
-                        // appropriate static channel headers.
-                        let chunks = chunkify(&mut static_channel_pdus, CHANNEL_CHUNK_LEGNTH)
-                            .map_err(crate::SessionError::pdu)?; // TODO: CHANNEL_CHUNK_LEGNTH is only the default, we should grab this from what the server advertises if possible
+                        // For each response PDU, chunkify it it and add appropriate static channel headers.
+                        let chunks = chunkify(response_pdus, CHANNEL_CHUNK_LEGNTH).map_err(crate::SessionError::pdu)?;
 
                         // Place each chunk into a SendDataRequest
                         let mcs_pdus = chunks

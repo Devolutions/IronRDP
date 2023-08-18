@@ -10,7 +10,7 @@ use bitflags::bitflags;
 use core::any::{Any, TypeId};
 use core::fmt;
 use pdu::cursor::WriteCursor;
-use pdu::{encode_buf, PduEncode};
+use pdu::{encode_buf, encode_buf_box, PduEncode};
 
 use ironrdp_pdu::gcc::{ChannelName, ChannelOptions};
 use ironrdp_pdu::write_buf::WriteBuf;
@@ -46,18 +46,8 @@ pub trait StaticVirtualChannel: AsAny + fmt::Debug + Send + Sync {
     }
 
     /// Processes a payload received on the virtual channel.
-    /// Implementer is responsible for filling outputs with
-    /// each fully encoded PDU to be sent back to the client.
-    ///
-    /// They are NOT repsonsible for splitting the PDU into
-    /// multiple chunks this is handled by the `StaticVirtualChannelCodec`.
-    fn process(
-        &mut self,
-        initiator_id: StaticChannelId,
-        channel_id: StaticChannelId,
-        payload: &[u8],
-        outputs: &mut [WriteBuf; 2],
-    ) -> PduResult<()>;
+    /// Returns a list of PDUs to be sent back to the client.
+    fn process(&mut self, payload: &[u8]) -> PduResult<Vec<Box<dyn PduEncode>>>;
 
     #[doc(hidden)]
     fn is_drdynvc(&self) -> bool {
@@ -66,22 +56,29 @@ pub trait StaticVirtualChannel: AsAny + fmt::Debug + Send + Sync {
     }
 }
 
-/// Takes an array of individual, fully-encoded PDUs (created by a call to [`StaticVirtualChannel::process`])
-/// and breaks them into chunks prefixed with a [`ChannelPDUHeader`]. Each chunk is at most `max_chunk_len`
-/// bytes long (not including the ChannelPduHeader).
-pub fn chunkify(encoded_pdus: &mut [WriteBuf; 2], max_chunk_len: usize) -> PduResult<Vec<WriteBuf>> {
-    let mut results = Vec::new();
+assert_obj_safe!(StaticVirtualChannel);
 
-    for encoded_pdu in encoded_pdus {
-        let chunks = chunkify_one(encoded_pdu, max_chunk_len)?;
-        results.extend(chunks);
+/// Takes a vector of PDUs and breaks them into chunks prefixed with a [`ChannelPDUHeader`].
+/// Each chunk is at most `max_chunk_len` bytes long (not including the ChannelPduHeader).
+pub fn chunkify(pdus: Vec<Box<dyn PduEncode>>, max_chunk_len: usize) -> PduResult<Vec<WriteBuf>> {
+    let mut results = vec![];
+    for pdu in pdus {
+        results.extend(chunkify_one(pdu, max_chunk_len)?);
     }
-
     Ok(results)
 }
 
-/// See [`chunkify`].
-fn chunkify_one(encoded_pdu: &mut WriteBuf, max_chunk_len: usize) -> PduResult<Vec<WriteBuf>> {
+/// Takes a single PDU and breaks it into chunks prefixed with a [`ChannelPDUHeader`].
+/// Each chunk is at most `max_chunk_len` bytes long (not including the ChannelPduHeader).
+///
+/// For example, if the PDU is 4000 bytes long and `max_chunk_len` is 1600, this function will
+/// return 3 chunks, each 1600 bytes long, and the last chunk will be 800 bytes long.
+///
+/// [[ ChannelPDUHeader | 1600 bytes of PDU data ] [ ChannelPDUHeader | 1600 bytes of PDU data ] [ ChannelPDUHeader | 800 bytes of PDU data ]]
+fn chunkify_one(pdu: Box<dyn PduEncode>, max_chunk_len: usize) -> PduResult<Vec<WriteBuf>> {
+    let mut encoded_pdu = WriteBuf::new(); // TODO(perf): reuse this buffer using `clear` and `filled` as appropriate
+    encode_buf_box(pdu, &mut encoded_pdu)?;
+
     let mut chunks = Vec::new();
 
     let total_len = encoded_pdu.filled_len();
@@ -89,6 +86,9 @@ fn chunkify_one(encoded_pdu: &mut WriteBuf, max_chunk_len: usize) -> PduResult<V
     let mut chunk_end_index = std::cmp::min(total_len, max_chunk_len);
     loop {
         // Create a buffer to hold this next chunk.
+        // TODO(perf): Reuse this buffer using `clear` and `filled` as appropriate.
+        //             This one will be a bit trickier because we'll need to grow
+        //             the number of chunk buffers if we run out.
         let mut chunk = WriteBuf::new();
 
         // Set the first and last flags if this is the first and/or last chunk for this PDU.
@@ -130,8 +130,6 @@ fn chunkify_one(encoded_pdu: &mut WriteBuf, max_chunk_len: usize) -> PduResult<V
 
     Ok(chunks)
 }
-
-assert_obj_safe!(StaticVirtualChannel);
 
 /// Build the `ChannelOptions` bitfield to be used in the Channel Definition Structure.
 pub fn make_channel_options(channel: &dyn StaticVirtualChannel) -> ChannelOptions {

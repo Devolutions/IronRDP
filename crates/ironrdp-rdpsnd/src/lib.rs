@@ -1,7 +1,6 @@
-use ironrdp_pdu::{gcc::ChannelName, write_buf::WriteBuf, PduResult};
+use ironrdp_pdu::{gcc::ChannelName, PduEncode, PduResult};
 use ironrdp_svc::{AsAny, CompressionCondition, StaticVirtualChannel};
 use std::any::Any;
-use tracing::warn;
 
 /// We currently don't implement any of rdpsnd, however it's required
 /// for rdpdr to work: https://tinyurl.com/2fvrtfjd
@@ -41,14 +40,10 @@ impl StaticVirtualChannel for Rdpsnd {
         CompressionCondition::Never
     }
 
-    fn process(
-        &mut self,
-        initiator_id: u16,
-        channel_id: u16,
-        payload: &[u8],
-        outputs: &mut [WriteBuf; 2],
-    ) -> PduResult<()> {
-        warn!("rdpsnd channel received data, protocol is unimplemented");
-        Ok(())
+    fn process(&mut self, _payload: &[u8]) -> PduResult<Vec<Box<dyn PduEncode>>> {
+        Err(ironrdp_pdu::other_err!(
+            "RDPSND",
+            "ironrdp-rdpsnd::Rdpsnd implemention is not implemented"
+        ))
     }
 }
