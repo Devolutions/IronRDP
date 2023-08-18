@@ -122,14 +122,14 @@ pub fn write_string_to_cursor(
                 buffer.push(0);
                 buffer.push(0);
             }
-            (buffer, "Encode sting (UTF-16)")
+            (buffer, "Encode string (UTF-16)")
         }
         CharacterSet::Ansi => {
             let mut buffer = value.as_bytes().to_vec();
             if write_null_terminator {
                 buffer.push(0);
             }
-            (buffer, "Encode sting (UTF-16)")
+            (buffer, "Encode string (UTF-8)")
         }
     };
 

@@ -12,7 +12,7 @@ use tracing::{trace, warn};
 ///
 /// This channel must always be advertised with the "rdpsnd"
 /// channel in order for the server to send anything back to it,
-/// see: https://tinyurl.com/2fvrtfjd.
+/// see: [\[MS-RDPEFS\] Appendix A<1>](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/fd28bfd9-dae2-4a78-abe1-b4efa208b7aa#Appendix_A_1)
 #[derive(Debug)]
 pub struct Rdpdr {
     /// TODO: explain what this is
