@@ -1,5 +1,3 @@
-#![cfg_attr(not(feature = "std"), no_std)]
-
 extern crate alloc;
 
 // Re-export ironrdp_pdu crate for convenience
@@ -44,13 +42,16 @@ pub trait StaticVirtualChannel: AsAny + fmt::Debug + Send + Sync {
         CompressionCondition::Never
     }
 
-    /// Processes a complete block (chunks must be assembled by calling code)
+    /// Processes a payload received on the virtual channel.
+    /// Implementer is responsible for filling the output vector
+    /// with the data to be sent back to the client. Each output
+    /// vector element will be sent as a separate PDU.
     fn process(
         &mut self,
         initiator_id: StaticChannelId,
         channel_id: StaticChannelId,
         payload: &[u8],
-        output: &mut WriteBuf,
+        outputs: &mut [WriteBuf; 2],
     ) -> PduResult<()>;
 
     #[doc(hidden)]

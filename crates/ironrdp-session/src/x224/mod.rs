@@ -6,6 +6,7 @@ use std::collections::HashMap;
 
 use ironrdp_connector::legacy::SendDataIndicationCtx;
 use ironrdp_connector::GraphicsConfig;
+use ironrdp_pdu::cursor::WriteCursor;
 use ironrdp_pdu::dvc::FieldType;
 use ironrdp_pdu::rdp::headers::ShareDataPdu;
 use ironrdp_pdu::rdp::server_error_info::{ErrorInfo, ProtocolIndependentCode, ServerSetErrorInfoPdu};
@@ -78,13 +79,13 @@ impl Processor {
                         let channel_header = ironrdp_pdu::rdp::vc::ChannelPduHeader::from_buffer(&mut user_data)?;
                         debug_assert_eq!(user_data.len(), channel_header.length as usize);
 
-                        let mut buf = WriteBuf::new(); // TODO(perf): reuse this buffer using `clear` and `filled` as appropriate
+                        let mut bufs: [WriteBuf; 2] = [WriteBuf::new(), WriteBuf::new()]; // TODO(perf): reuse this buffer using `clear` and `filled` as appropriate
 
                         static_channel
-                            .process(data_ctx.initiator_id, channel_id, user_data, &mut buf)
+                            .process(data_ctx.initiator_id, channel_id, user_data, &mut bufs)
                             .map_err(crate::SessionError::pdu)?;
 
-                        Ok(buf.into_inner())
+                        Ok(bufs.into_inner())
                     } else {
                         Err(reason_err!("X224", "unexpected channel received: ID {channel_id}"))
                     }

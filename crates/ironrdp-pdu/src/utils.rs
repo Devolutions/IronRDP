@@ -115,29 +115,36 @@ pub fn write_string_to_cursor(
     character_set: CharacterSet,
     write_null_terminator: bool,
 ) -> PduResult<()> {
-    match character_set {
+    let (buffer, ctx) = match character_set {
         CharacterSet::Unicode => {
             let mut buffer = to_utf16_bytes(value);
             if write_null_terminator {
                 buffer.push(0);
                 buffer.push(0);
             }
-
-            ensure_size!(ctx: "Encode sting (UTF-16)", in: cursor, size: buffer.len());
-            cursor.write_slice(&buffer);
+            (buffer, "Encode sting (UTF-16)")
         }
         CharacterSet::Ansi => {
             let mut buffer = value.as_bytes().to_vec();
             if write_null_terminator {
                 buffer.push(0);
             }
-
-            ensure_size!(ctx: "Encode sting (UTF-8)", in: cursor, size: buffer.len());
-            cursor.write_slice(&buffer);
+            (buffer, "Encode sting (UTF-16)")
         }
-    }
+    };
 
+    ensure_size!(ctx: ctx, in: cursor, size: buffer.len());
+    cursor.write_slice(&buffer);
     Ok(())
+}
+
+/// Returns the length in bytes of the encoded value
+/// based on the passed CharacterSet and with_null_terminator flag.
+pub fn encoded_str_len(value: &str, character_set: CharacterSet, with_null_terminator: bool) -> usize {
+    match character_set {
+        CharacterSet::Ansi => value.len() + if with_null_terminator { 1 } else { 0 },
+        CharacterSet::Unicode => value.encode_utf16().count() * 2 + if with_null_terminator { 2 } else { 0 },
+    }
 }
 
 pub(crate) fn read_string(

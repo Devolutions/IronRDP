@@ -41,7 +41,13 @@ impl StaticVirtualChannel for Rdpsnd {
         CompressionCondition::Never
     }
 
-    fn process(&mut self, initiator_id: u16, channel_id: u16, payload: &[u8], output: &mut WriteBuf) -> PduResult<()> {
+    fn process(
+        &mut self,
+        initiator_id: u16,
+        channel_id: u16,
+        payload: &[u8],
+        outputs: &mut [WriteBuf; 2],
+    ) -> PduResult<()> {
         warn!("rdpsnd channel received data, protocol is unimplemented");
         Ok(())
     }

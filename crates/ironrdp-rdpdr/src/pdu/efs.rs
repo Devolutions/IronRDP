@@ -2,42 +2,37 @@
 
 use std::fmt::Debug;
 
-use ironrdp_pdu::write_buf::WriteBuf;
+use ironrdp_pdu::utils::{encoded_str_len, write_string_to_cursor, CharacterSet};
 use ironrdp_pdu::{
     cursor::{ReadCursor, WriteCursor},
-    Pdu, PduDecode, PduEncode, PduResult,
+    PduEncode, PduResult,
 };
-use ironrdp_pdu::{encode_buf, invalid_message_err, PduError};
+use ironrdp_pdu::{invalid_message_err, unexpected_message_type_err, PduError};
 
 /// [2.2.1.1 Shared Header (RDPDR_HEADER)](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/29d4108f-8163-4a67-8271-e48c4b9c2a7c)
+/// A header that is shared by all RDPDR PDUs.
 #[derive(Debug)]
 pub struct SharedHeader {
-    pub component: Component,
-    pub packet_id: PacketId,
+    pub component: Component, // u16
+    pub packet_id: PacketId,  // u16
 }
 
-impl<'de> PduDecode<'de> for SharedHeader {
-    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+impl SharedHeader {
+    pub fn decode(src: &mut ReadCursor) -> PduResult<Self> {
         Ok(Self {
             component: src.read_u16().try_into()?,
             packet_id: src.read_u16().try_into()?,
         })
     }
-}
 
-impl PduEncode for SharedHeader {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor) -> PduResult<()> {
         dst.write_u16(self.component as u16);
         dst.write_u16(self.packet_id as u16);
         Ok(())
     }
 
-    fn name(&self) -> &'static str {
-        "SharedHeader"
-    }
-
     fn size(&self) -> usize {
-        4 // u16 + u16 = 2 bytes + 2 bytes = 4 bytes
+        4 // 2 * u16  = 2 * 2 bytes = 4 bytes
     }
 }
 
@@ -131,6 +126,16 @@ impl VersionAndIdPDU {
         }
     }
 
+    fn header(&self) -> PduResult<SharedHeader> {
+        match self.kind {
+            VersionAndIdPDUKind::ClientAnnounceReply => Ok(SharedHeader {
+                component: Component::RDPDR_CTYP_CORE,
+                packet_id: PacketId::PAKID_CORE_CLIENTID_CONFIRM,
+            }),
+            VersionAndIdPDUKind::ServerAnnounceRequest => Err(unexpected_message_type_err!("ServerAnnounceRequest", 0)),
+        }
+    }
+
     pub fn decode(src: &mut ReadCursor, kind: VersionAndIdPDUKind) -> PduResult<Self> {
         Ok(Self {
             version_major: src.read_u16(),
@@ -143,6 +148,7 @@ impl VersionAndIdPDU {
 
 impl PduEncode for VersionAndIdPDU {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        self.header()?.encode(dst)?;
         dst.write_u16(self.version_major);
         dst.write_u16(self.version_minor);
         dst.write_u32(self.client_id);
@@ -157,6 +163,67 @@ impl PduEncode for VersionAndIdPDU {
     }
 
     fn size(&self) -> usize {
-        8 // u16 + u16 + u32 = 2 bytes + 2 bytes + 4 bytes = 8 bytes
+        // header bytes + (2 * u16) + u32 = header bytes + (2 * 2 bytes) + 4 bytes = header bytes + 8 bytes
+        self.header().unwrap().size() + 8
+    }
+}
+
+/// 2.2.2.4 Client Name Request (DR_CORE_CLIENT_NAME_REQ)
+/// https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/902497f1-3b1c-4aee-95f8-1668f9b7b7d2
+#[derive(Debug)]
+pub struct ClientNameRequest {
+    unicode_flag: ClientNameRequestUnicodeFlag,
+    computer_name: String,
+}
+
+impl ClientNameRequest {
+    pub fn new(computer_name: String) -> Self {
+        Self {
+            unicode_flag: ClientNameRequestUnicodeFlag::Unicode,
+            computer_name,
+        }
+    }
+
+    fn header(&self) -> SharedHeader {
+        SharedHeader {
+            component: Component::RDPDR_CTYP_CORE,
+            packet_id: PacketId::PAKID_CORE_CLIENT_NAME,
+        }
+    }
+}
+
+impl PduEncode for ClientNameRequest {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        self.header().encode(dst)?;
+        dst.write_u32(self.unicode_flag as u32);
+        dst.write_u32(0); // // CodePage (4 bytes): it MUST be set to 0
+        dst.write_u32(encoded_str_len(&self.computer_name, self.unicode_flag.into(), true) as u32);
+        write_string_to_cursor(dst, &self.computer_name, self.unicode_flag.into(), true)
+    }
+
+    fn name(&self) -> &'static str {
+        "ClientNameRequest"
+    }
+
+    fn size(&self) -> usize {
+        // header bytes + u32 * 3 + computer_name_len = header bytes + 4 bytes * 3 + computer_name_len = header bytes + 12 + computer_name_len
+        self.header().size() + 12 + encoded_str_len(&self.computer_name, self.unicode_flag.into(), true)
+    }
+}
+
+#[repr(u32)]
+#[derive(Debug, Clone, Copy)]
+enum ClientNameRequestUnicodeFlag {
+    #[allow(dead_code)]
+    Ascii = 0x0,
+    Unicode = 0x1,
+}
+
+impl From<ClientNameRequestUnicodeFlag> for CharacterSet {
+    fn from(val: ClientNameRequestUnicodeFlag) -> Self {
+        match val {
+            ClientNameRequestUnicodeFlag::Ascii => CharacterSet::Ansi,
+            ClientNameRequestUnicodeFlag::Unicode => CharacterSet::Unicode,
+        }
     }
 }

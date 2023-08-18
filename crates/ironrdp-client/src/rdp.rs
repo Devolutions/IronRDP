@@ -102,7 +102,7 @@ async fn connect(config: &Config) -> ConnectorResult<(ConnectionResult, Upgraded
         .with_credssp_network_client(RequestClientFactory)
         // .with_static_channel(ironrdp::dvc::Drdynvc::new()); // FIXME: something is broken
         .with_static_channel(ironrdp::rdpsnd::Rdpsnd::new())
-        .with_static_channel(ironrdp::rdpdr::Rdpdr::new());
+        .with_static_channel(ironrdp::rdpdr::Rdpdr::default());
 
     let should_upgrade = ironrdp_tokio::connect_begin(&mut framed, &mut connector).await?;
 
