@@ -1,3 +1,4 @@
+#![cfg_attr(not(feature = "std"), no_std)]
 #![allow(unused)] // FIXME: remove this annotation
 
 // TODO: this crate is WIP
@@ -15,6 +16,7 @@ use alloc::borrow::ToOwned;
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::string::String;
+use alloc::vec::Vec;
 use core::any::Any;
 use core::fmt;
 use pdu::cursor::WriteCursor;
