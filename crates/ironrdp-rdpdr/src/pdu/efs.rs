@@ -13,8 +13,8 @@ use ironrdp_pdu::{invalid_message_err, unexpected_message_type_err, PduError};
 /// A header that is shared by all RDPDR PDUs.
 #[derive(Debug)]
 pub struct SharedHeader {
-    pub component: Component, // u16
-    pub packet_id: PacketId,  // u16
+    pub component: Component,
+    pub packet_id: PacketId,
 }
 
 impl SharedHeader {

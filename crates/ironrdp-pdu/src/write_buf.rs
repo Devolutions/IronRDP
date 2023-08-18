@@ -40,6 +40,10 @@ impl WriteBuf {
         self.inner
     }
 
+    pub fn slice(&self, from: usize, to: usize) -> &[u8] {
+        &self.inner[from..to]
+    }
+
     /// Returns length of the filled region.
     ///
     /// This is always equal to the starting index for the unfilled initialized portion of the buffer.

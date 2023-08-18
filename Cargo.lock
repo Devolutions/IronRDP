@@ -1916,6 +1916,7 @@ dependencies = [
 name = "ironrdp-svc"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.3.3",
  "ironrdp-pdu",
 ]
 
