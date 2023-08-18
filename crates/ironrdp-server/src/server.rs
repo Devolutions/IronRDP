@@ -78,23 +78,15 @@ pub struct RdpServer {
 }
 
 impl RdpServer {
-    pub fn new<H, D>(opts: RdpServerOptions, handler: H, display: D) -> Self
-    where
-        H: RdpServerInputHandler + 'static,
-        D: RdpServerDisplay + 'static,
-    {
-        Self {
-            opts,
-            handler: Box::new(handler),
-            display: Box::new(display),
-        }
+    pub fn new(
+        opts: RdpServerOptions,
+        handler: Box<dyn RdpServerInputHandler>,
+        display: Box<dyn RdpServerDisplay>,
+    ) -> Self {
+        Self { opts, handler, display }
     }
 
-    pub fn builder<H, D>() -> builder::RdpServerBuilder<builder::WantsAddr, H, D>
-    where
-        H: RdpServerInputHandler,
-        D: RdpServerDisplay,
-    {
+    pub fn builder() -> builder::RdpServerBuilder<builder::WantsAddr> {
         builder::RdpServerBuilder::new()
     }
 
