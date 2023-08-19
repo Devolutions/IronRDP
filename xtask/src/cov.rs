@@ -94,6 +94,14 @@ pub fn report_github(sh: &Shell, repo: &str, pr_id: u32) -> anyhow::Result<()> {
     println!("New:\n{report}");
     println!("Diff: {:+}%", diff);
 
+    // `GH_TOKEN` environment variable sanity checks
+    match std::env::var_os("GH_TOKEN") {
+        Some(value) if value.is_empty() => trace!("WARNING: `GH_TOKEN` environment variable is empty"),
+        Some(value) if value.is_ascii() => trace!("`GH_TOKEN` environment variable appears to be set properly"),
+        Some(_) => trace!("WARNING: `GH_TOKEN` environment variable’s value is not an ASCII string"),
+        None => trace!("WARNING: `GH_TOKEN` environment variable is not set"),
+    }
+
     let comments = cmd!(sh, "gh api")
         .arg("-H")
         .arg("Accept: application/vnd.github.v3+json")
