@@ -114,7 +114,7 @@ fn chunkify_one(pdu: Box<dyn PduEncode>, max_chunk_len: usize) -> PduResult<Vec<
         // Encode the header for this chunk.
         encode_buf(&header, &mut chunk)?;
         // Append the piece of the encoded_pdu that belongs in this chunk.
-        chunk.write_slice(encoded_pdu.slice(chunk_start_index, chunk_end_index));
+        chunk.write_slice(&encoded_pdu[chunk_start_index..chunk_end_index]);
         // Push the chunk onto the results.
         chunks.push(chunk);
 
