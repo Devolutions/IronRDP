@@ -3,7 +3,9 @@ use ironrdp_svc::{AsAny, CompressionCondition, StaticVirtualChannel};
 use std::any::Any;
 
 /// We currently don't implement any of rdpsnd, however it's required
-/// for rdpdr to work: [\[MS-RDPEFS\] Appendix A<1>](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/fd28bfd9-dae2-4a78-abe1-b4efa208b7aa#Appendix_A_1)
+/// for rdpdr to work: [\[MS-RDPEFS\] Appendix A<1>]
+///
+/// [\[MS-RDPEFS\] Appendix A<1>]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/fd28bfd9-dae2-4a78-abe1-b4efa208b7aa#Appendix_A_1
 #[derive(Debug)]
 pub struct Rdpsnd;
 

@@ -1,18 +1,26 @@
 //! Implements the RDPDR static virtual channel as described in
-//! [[MS-RDPEFS]: Remote Desktop Protocol: File System Virtual Channel Extension](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/34d9de58-b2b5-40b6-b970-f82d4603bdb5)
+//! [\[MS-RDPEFS\]: Remote Desktop Protocol: File System Virtual Channel Extension]
+//!
+//! [\[MS-RDPEFS\]: Remote Desktop Protocol: File System Virtual Channel Extension]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/34d9de58-b2b5-40b6-b970-f82d4603bdb5
 
 mod pdu;
-use crate::pdu::efs::{ClientNameRequest, Component, PacketId, SharedHeader, VersionAndIdPdu, VersionAndIdPduKind, ClientNameRequestUnicodeFlag};
+use crate::pdu::efs::{
+    ClientNameRequest, ClientNameRequestUnicodeFlag, Component, PacketId, SharedHeader, VersionAndIdPdu,
+    VersionAndIdPduKind,
+};
 use ironrdp_pdu::{cursor::ReadCursor, gcc::ChannelName, PduEncode, PduResult};
 use ironrdp_svc::{AsAny, CompressionCondition, StaticVirtualChannel};
 use std::{any::Any, vec};
 use tracing::{trace, warn};
 
-/// The RDPDR channel as specified in [MS-RDPEFS].
+/// The RDPDR channel as specified in [\[MS-RDPEFS\]].
 ///
 /// This channel must always be advertised with the "rdpsnd"
 /// channel in order for the server to send anything back to it,
-/// see: [\[MS-RDPEFS\] Appendix A<1>](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/fd28bfd9-dae2-4a78-abe1-b4efa208b7aa#Appendix_A_1)
+/// see: [\[MS-RDPEFS\] Appendix A<1>]
+///
+/// [\[MS-RDPEFS\]]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/34d9de58-b2b5-40b6-b970-f82d4603bdb5
+/// [\[MS-RDPEFS\] Appendix A<1>]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/fd28bfd9-dae2-4a78-abe1-b4efa208b7aa#Appendix_A_1
 #[derive(Debug)]
 pub struct Rdpdr {
     /// TODO: explain what this is
