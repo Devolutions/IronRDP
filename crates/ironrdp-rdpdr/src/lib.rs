@@ -44,7 +44,7 @@ impl Rdpdr {
         };
         trace!("sending {:?}", client_announce_reply);
 
-        let client_name_request = ClientNameRequest::new(self.computer_name.clone());
+        let client_name_request = ClientNameRequest::Unicode(self.computer_name.clone());
         trace!("sending {:?}", client_name_request);
 
         Ok(vec![Box::new(client_announce_reply), Box::new(client_name_request)])

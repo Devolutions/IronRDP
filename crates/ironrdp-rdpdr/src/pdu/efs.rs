@@ -163,26 +163,33 @@ impl PduEncode for VersionAndIdPdu {
     }
 }
 
-/// 2.2.2.4 Client Name Request (DR_CORE_CLIENT_NAME_REQ)
-/// https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/902497f1-3b1c-4aee-95f8-1668f9b7b7d2
+/// [2.2.2.4 Client Name Request (DR_CORE_CLIENT_NAME_REQ)](https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/902497f1-3b1c-4aee-95f8-1668f9b7b7d2)
 #[derive(Debug)]
-pub struct ClientNameRequest {
-    unicode_flag: ClientNameRequestUnicodeFlag,
-    computer_name: String,
+pub enum ClientNameRequest {
+    #[allow(dead_code)]
+    Ascii(String),
+    Unicode(String),
 }
 
 impl ClientNameRequest {
-    pub fn new(computer_name: String) -> Self {
-        Self {
-            unicode_flag: ClientNameRequestUnicodeFlag::Unicode,
-            computer_name,
-        }
-    }
-
     fn header(&self) -> SharedHeader {
         SharedHeader {
             component: Component::RDPDR_CTYP_CORE,
             packet_id: PacketId::PAKID_CORE_CLIENT_NAME,
+        }
+    }
+
+    fn unicode_flag(&self) -> ClientNameRequestUnicodeFlag {
+        match self {
+            ClientNameRequest::Ascii(_) => ClientNameRequestUnicodeFlag::Ascii,
+            ClientNameRequest::Unicode(_) => ClientNameRequestUnicodeFlag::Unicode,
+        }
+    }
+
+    fn computer_name(&self) -> &str {
+        match self {
+            ClientNameRequest::Ascii(name) => name,
+            ClientNameRequest::Unicode(name) => name,
         }
     }
 }
@@ -190,10 +197,10 @@ impl ClientNameRequest {
 impl PduEncode for ClientNameRequest {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
         self.header().encode(dst)?;
-        dst.write_u32(self.unicode_flag as u32);
+        dst.write_u32(self.unicode_flag() as u32);
         dst.write_u32(0); // // CodePage (4 bytes): it MUST be set to 0
-        dst.write_u32(encoded_str_len(&self.computer_name, self.unicode_flag.into(), true) as u32);
-        write_string_to_cursor(dst, &self.computer_name, self.unicode_flag.into(), true)
+        dst.write_u32(encoded_str_len(self.computer_name(), self.unicode_flag().into(), true) as u32);
+        write_string_to_cursor(dst, self.computer_name(), self.unicode_flag().into(), true)
     }
 
     fn name(&self) -> &'static str {
@@ -203,14 +210,13 @@ impl PduEncode for ClientNameRequest {
     fn size(&self) -> usize {
         self.header().size()
             + (std::mem::size_of::<u32>() * 3) // unicode_flag + CodePage + ComputerNameLen
-            + encoded_str_len(&self.computer_name, self.unicode_flag.into(), true)
+            + encoded_str_len(self.computer_name(), self.unicode_flag().into(), true)
     }
 }
 
 #[repr(u32)]
 #[derive(Debug, Clone, Copy)]
 enum ClientNameRequestUnicodeFlag {
-    #[allow(dead_code)]
     Ascii = 0x0,
     Unicode = 0x1,
 }
