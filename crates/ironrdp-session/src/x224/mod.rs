@@ -83,7 +83,7 @@ impl Processor {
                         // Fill the bufs with encoded response PDUs
                         let response_pdus = static_channel.process(payload).map_err(crate::SessionError::pdu)?;
 
-                        // For each response PDU, chunkify it it and add appropriate static channel headers.
+                        // For each response PDU, chunkify it and add appropriate static channel headers.
                         let chunks = chunkify(response_pdus, CHANNEL_CHUNK_LEGNTH).map_err(crate::SessionError::pdu)?;
 
                         // Place each chunk into a SendDataRequest
