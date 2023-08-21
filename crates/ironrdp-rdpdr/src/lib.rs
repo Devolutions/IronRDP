@@ -2,7 +2,7 @@
 //! [[MS-RDPEFS]: Remote Desktop Protocol: File System Virtual Channel Extension](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/34d9de58-b2b5-40b6-b970-f82d4603bdb5)
 
 mod pdu;
-use crate::pdu::efs::{ClientNameRequest, Component, PacketId, SharedHeader, VersionAndIdPdu, VersionAndIdPduKind};
+use crate::pdu::efs::{ClientNameRequest, Component, PacketId, SharedHeader, VersionAndIdPdu, VersionAndIdPduKind, ClientNameRequestUnicodeFlag};
 use ironrdp_pdu::{cursor::ReadCursor, gcc::ChannelName, PduEncode, PduResult};
 use ironrdp_svc::{AsAny, CompressionCondition, StaticVirtualChannel};
 use std::{any::Any, vec};
@@ -44,7 +44,8 @@ impl Rdpdr {
         };
         trace!("sending {:?}", client_announce_reply);
 
-        let client_name_request = ClientNameRequest::Unicode(self.computer_name.clone());
+        let client_name_request =
+            ClientNameRequest::new(self.computer_name.clone(), ClientNameRequestUnicodeFlag::Unicode);
         trace!("sending {:?}", client_name_request);
 
         Ok(vec![Box::new(client_announce_reply), Box::new(client_name_request)])

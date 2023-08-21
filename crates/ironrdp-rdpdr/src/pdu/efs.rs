@@ -166,12 +166,17 @@ impl PduEncode for VersionAndIdPdu {
 /// [2.2.2.4 Client Name Request (DR_CORE_CLIENT_NAME_REQ)](https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/902497f1-3b1c-4aee-95f8-1668f9b7b7d2)
 #[derive(Debug)]
 pub enum ClientNameRequest {
-    #[allow(dead_code)]
     Ascii(String),
     Unicode(String),
 }
 
 impl ClientNameRequest {
+    pub fn new(computer_name: String, kind: ClientNameRequestUnicodeFlag) -> Self {
+        match kind {
+            ClientNameRequestUnicodeFlag::Ascii => ClientNameRequest::Ascii(computer_name),
+            ClientNameRequestUnicodeFlag::Unicode => ClientNameRequest::Unicode(computer_name),
+        }
+    }
     fn header(&self) -> SharedHeader {
         SharedHeader {
             component: Component::RDPDR_CTYP_CORE,
@@ -216,7 +221,7 @@ impl PduEncode for ClientNameRequest {
 
 #[repr(u32)]
 #[derive(Debug, Clone, Copy)]
-enum ClientNameRequestUnicodeFlag {
+pub enum ClientNameRequestUnicodeFlag {
     Ascii = 0x0,
     Unicode = 0x1,
 }
