@@ -7,7 +7,7 @@ use ironrdp_pdu::{
     cursor::{ReadCursor, WriteCursor},
     PduEncode, PduResult,
 };
-use ironrdp_pdu::{invalid_message_err, unexpected_message_type_err, PduError};
+use ironrdp_pdu::{invalid_message_err, PduError};
 
 /// [2.2.1.1 Shared Header (RDPDR_HEADER)](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/29d4108f-8163-4a67-8271-e48c4b9c2a7c)
 /// A header that is shared by all RDPDR PDUs.
@@ -126,13 +126,16 @@ impl VersionAndIdPDU {
         }
     }
 
-    fn header(&self) -> PduResult<SharedHeader> {
+    fn header(&self) -> SharedHeader {
         match self.kind {
-            VersionAndIdPDUKind::ClientAnnounceReply => Ok(SharedHeader {
+            VersionAndIdPDUKind::ClientAnnounceReply => SharedHeader {
                 component: Component::RDPDR_CTYP_CORE,
                 packet_id: PacketId::PAKID_CORE_CLIENTID_CONFIRM,
-            }),
-            VersionAndIdPDUKind::ServerAnnounceRequest => Err(unexpected_message_type_err!("ServerAnnounceRequest", 0)),
+            },
+            VersionAndIdPDUKind::ServerAnnounceRequest => SharedHeader {
+                component: Component::RDPDR_CTYP_CORE,
+                packet_id: PacketId::PAKID_CORE_SERVER_ANNOUNCE,
+            },
         }
     }
 
@@ -148,7 +151,7 @@ impl VersionAndIdPDU {
 
 impl PduEncode for VersionAndIdPDU {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
-        self.header()?.encode(dst)?;
+        self.header().encode(dst)?;
         dst.write_u16(self.version_major);
         dst.write_u16(self.version_minor);
         dst.write_u32(self.client_id);
@@ -164,7 +167,7 @@ impl PduEncode for VersionAndIdPDU {
 
     fn size(&self) -> usize {
         // header bytes + (2 * u16) + u32 = header bytes + (2 * 2 bytes) + 4 bytes = header bytes + 8 bytes
-        self.header().unwrap().size() + 8
+        self.header().size() + 8
     }
 }
 
