@@ -141,6 +141,20 @@ pub trait PduEncode {
 
 assert_obj_safe!(PduEncode);
 
+impl PduEncode for Box<dyn PduEncode> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        self.as_ref().encode(dst)
+    }
+
+    fn name(&self) -> &'static str {
+        self.as_ref().name()
+    }
+
+    fn size(&self) -> usize {
+        self.as_ref().size()
+    }
+}
+
 /// Encodes the given PDU in-place into the provided buffer and returns the number of bytes written.
 pub fn encode<T: PduEncode>(pdu: &T, dst: &mut [u8]) -> PduResult<usize> {
     let mut cursor = WriteCursor::new(dst);
@@ -148,18 +162,8 @@ pub fn encode<T: PduEncode>(pdu: &T, dst: &mut [u8]) -> PduResult<usize> {
     Ok(cursor.pos())
 }
 
-pub fn encode_box(pdu: Box<dyn PduEncode>, dst: &mut [u8]) -> PduResult<usize> {
-    let mut cursor = WriteCursor::new(dst);
-    encode_cursor_box(pdu, &mut cursor)?;
-    Ok(cursor.pos())
-}
-
 /// Encodes the given PDU in-place using the provided `WriteCursor`.
 pub fn encode_cursor<T: PduEncode>(pdu: &T, dst: &mut WriteCursor<'_>) -> PduResult<()> {
-    pdu.encode(dst)
-}
-
-pub fn encode_cursor_box(pdu: Box<dyn PduEncode>, dst: &mut WriteCursor<'_>) -> PduResult<()> {
     pdu.encode(dst)
 }
 
@@ -169,15 +173,6 @@ pub fn encode_buf<T: PduEncode>(pdu: &T, buf: &mut WriteBuf) -> PduResult<usize>
     let pdu_size = pdu.size();
     let dst = buf.unfilled_to(pdu_size);
     let written = encode(pdu, dst)?;
-    debug_assert_eq!(written, pdu_size);
-    buf.advance(written);
-    Ok(written)
-}
-
-pub fn encode_buf_box(pdu: Box<dyn PduEncode>, buf: &mut WriteBuf) -> PduResult<usize> {
-    let pdu_size = pdu.size();
-    let dst = buf.unfilled_to(pdu_size);
-    let written = encode_box(pdu, dst)?;
     debug_assert_eq!(written, pdu_size);
     buf.advance(written);
     Ok(written)

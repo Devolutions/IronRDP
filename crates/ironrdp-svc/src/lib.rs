@@ -10,7 +10,7 @@ use bitflags::bitflags;
 use core::any::{Any, TypeId};
 use core::fmt;
 use pdu::cursor::WriteCursor;
-use pdu::{encode_buf, encode_buf_box, PduEncode};
+use pdu::{encode_buf, PduEncode};
 
 use ironrdp_pdu::gcc::{ChannelName, ChannelOptions};
 use ironrdp_pdu::write_buf::WriteBuf;
@@ -77,7 +77,7 @@ pub fn chunkify(pdus: Vec<Box<dyn PduEncode>>, max_chunk_len: usize) -> PduResul
 /// [[ ChannelPDUHeader | 1600 bytes of PDU data ] [ ChannelPDUHeader | 1600 bytes of PDU data ] [ ChannelPDUHeader | 800 bytes of PDU data ]]
 fn chunkify_one(pdu: Box<dyn PduEncode>, max_chunk_len: usize) -> PduResult<Vec<WriteBuf>> {
     let mut encoded_pdu = WriteBuf::new(); // TODO(perf): reuse this buffer using `clear` and `filled` as appropriate
-    encode_buf_box(pdu, &mut encoded_pdu)?;
+    encode_buf(&pdu, &mut encoded_pdu)?;
 
     let mut chunks = Vec::new();
 
