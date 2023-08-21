@@ -32,7 +32,7 @@ impl SharedHeader {
     }
 
     fn size(&self) -> usize {
-        4 // 2 * u16  = 2 * 2 bytes = 4 bytes
+        std::mem::size_of::<u16>() * 2
     }
 }
 
@@ -99,47 +99,39 @@ impl std::convert::TryFrom<u16> for PacketId {
 }
 
 #[derive(Debug)]
-pub enum VersionAndIdPDUKind {
+pub enum VersionAndIdPduKind {
     /// [2.2.2.2 Server Announce Request (DR_CORE_SERVER_ANNOUNCE_REQ)](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/046047aa-62d8-49f9-bf16-7fe41880aaf4)
     ServerAnnounceRequest,
     /// [2.2.2.3 Client Announce Reply (DR_CORE_CLIENT_ANNOUNCE_RSP)](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/d6fe6d1b-c145-4a6f-99aa-4fe3cdcea398)
     ClientAnnounceReply,
 }
 
-#[derive(Debug)]
 /// VersionAndIdPDU is a fixed size structure representing multiple PDUs.
+///
 /// The kind field is used to determine the actual PDU type.
-pub struct VersionAndIdPDU {
-    version_major: u16,
-    version_minor: u16,
+#[derive(Debug)]
+pub struct VersionAndIdPdu {
+    pub version_major: u16,
+    pub version_minor: u16,
     pub client_id: u32,
-    kind: VersionAndIdPDUKind,
+    pub kind: VersionAndIdPduKind,
 }
 
-impl VersionAndIdPDU {
-    pub fn new(version_major: u16, version_minor: u16, client_id: u32, kind: VersionAndIdPDUKind) -> Self {
-        Self {
-            version_major,
-            version_minor,
-            client_id,
-            kind,
-        }
-    }
-
+impl VersionAndIdPdu {
     fn header(&self) -> SharedHeader {
         match self.kind {
-            VersionAndIdPDUKind::ClientAnnounceReply => SharedHeader {
+            VersionAndIdPduKind::ClientAnnounceReply => SharedHeader {
                 component: Component::RDPDR_CTYP_CORE,
                 packet_id: PacketId::PAKID_CORE_CLIENTID_CONFIRM,
             },
-            VersionAndIdPDUKind::ServerAnnounceRequest => SharedHeader {
+            VersionAndIdPduKind::ServerAnnounceRequest => SharedHeader {
                 component: Component::RDPDR_CTYP_CORE,
                 packet_id: PacketId::PAKID_CORE_SERVER_ANNOUNCE,
             },
         }
     }
 
-    pub fn decode(src: &mut ReadCursor, kind: VersionAndIdPDUKind) -> PduResult<Self> {
+    pub fn decode(src: &mut ReadCursor, kind: VersionAndIdPduKind) -> PduResult<Self> {
         Ok(Self {
             version_major: src.read_u16(),
             version_minor: src.read_u16(),
@@ -149,7 +141,7 @@ impl VersionAndIdPDU {
     }
 }
 
-impl PduEncode for VersionAndIdPDU {
+impl PduEncode for VersionAndIdPdu {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
         self.header().encode(dst)?;
         dst.write_u16(self.version_major);
@@ -160,8 +152,8 @@ impl PduEncode for VersionAndIdPDU {
 
     fn name(&self) -> &'static str {
         match self.kind {
-            VersionAndIdPDUKind::ServerAnnounceRequest => "ServerAnnounceRequest",
-            VersionAndIdPDUKind::ClientAnnounceReply => "ClientAnnounceReply",
+            VersionAndIdPduKind::ServerAnnounceRequest => "ServerAnnounceRequest",
+            VersionAndIdPduKind::ClientAnnounceReply => "ClientAnnounceReply",
         }
     }
 
@@ -209,8 +201,9 @@ impl PduEncode for ClientNameRequest {
     }
 
     fn size(&self) -> usize {
-        // header bytes + u32 * 3 + computer_name_len = header bytes + 4 bytes * 3 + computer_name_len = header bytes + 12 + computer_name_len
-        self.header().size() + 12 + encoded_str_len(&self.computer_name, self.unicode_flag.into(), true)
+        self.header().size()
+            + (std::mem::size_of::<u32>() * 3) // unicode_flag + CodePage + ComputerNameLen
+            + encoded_str_len(&self.computer_name, self.unicode_flag.into(), true)
     }
 }
 

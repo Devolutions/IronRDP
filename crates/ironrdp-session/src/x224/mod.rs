@@ -80,7 +80,7 @@ impl Processor {
                         let channel_header = ironrdp_pdu::rdp::vc::ChannelPduHeader::from_buffer(&mut payload)?;
                         debug_assert_eq!(payload.len(), channel_header.length as usize);
 
-                        // Fill the bufs with encoded response PDUs
+                        // Create a vector of response PDUs
                         let response_pdus = static_channel.process(payload).map_err(crate::SessionError::pdu)?;
 
                         // For each response PDU, chunkify it and add appropriate static channel headers.

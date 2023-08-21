@@ -2,7 +2,7 @@
 //! [[MS-RDPEFS]: Remote Desktop Protocol: File System Virtual Channel Extension](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/34d9de58-b2b5-40b6-b970-f82d4603bdb5)
 
 mod pdu;
-use crate::pdu::efs::{ClientNameRequest, Component, PacketId, SharedHeader, VersionAndIdPDU, VersionAndIdPDUKind};
+use crate::pdu::efs::{ClientNameRequest, Component, PacketId, SharedHeader, VersionAndIdPdu, VersionAndIdPduKind};
 use ironrdp_pdu::{cursor::ReadCursor, gcc::ChannelName, PduEncode, PduResult};
 use ironrdp_svc::{AsAny, CompressionCondition, StaticVirtualChannel};
 use std::{any::Any, vec};
@@ -33,11 +33,15 @@ impl Rdpdr {
     }
 
     fn handle_server_announce(&mut self, payload: &mut ReadCursor<'_>) -> PduResult<Vec<Box<dyn PduEncode>>> {
-        let req = VersionAndIdPDU::decode(payload, VersionAndIdPDUKind::ServerAnnounceRequest)?;
+        let req = VersionAndIdPdu::decode(payload, VersionAndIdPduKind::ServerAnnounceRequest)?;
         trace!("received {:?}", req);
 
-        let client_announce_reply =
-            VersionAndIdPDU::new(28, 0, req.client_id, VersionAndIdPDUKind::ClientAnnounceReply);
+        let client_announce_reply = VersionAndIdPdu {
+            version_major: 28,
+            version_minor: 0,
+            client_id: req.client_id,
+            kind: VersionAndIdPduKind::ClientAnnounceReply,
+        };
         trace!("sending {:?}", client_announce_reply);
 
         let client_name_request = ClientNameRequest::new(self.computer_name.clone());
