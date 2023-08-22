@@ -3,13 +3,14 @@
 //! [\[MS-RDPEFS\]: Remote Desktop Protocol: File System Virtual Channel Extension]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/34d9de58-b2b5-40b6-b970-f82d4603bdb5
 
 use std::fmt::Debug;
+use std::mem::size_of;
 
 use ironrdp_pdu::utils::{encoded_str_len, write_string_to_cursor, CharacterSet};
 use ironrdp_pdu::{
     cursor::{ReadCursor, WriteCursor},
     PduEncode, PduResult,
 };
-use ironrdp_pdu::{invalid_message_err, PduError};
+use ironrdp_pdu::{ensure_size, invalid_message_err, PduError};
 
 /// [2.2.1.1 Shared Header (RDPDR_HEADER)](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/29d4108f-8163-4a67-8271-e48c4b9c2a7c)
 /// A header that is shared by all RDPDR PDUs.
@@ -20,7 +21,11 @@ pub struct SharedHeader {
 }
 
 impl SharedHeader {
+    const NAME: &str = "RDPDR_HEADER";
+    const SIZE: usize = size_of::<u16>() * 2;
+
     pub fn decode(src: &mut ReadCursor) -> PduResult<Self> {
+        ensure_size!(in: src, size: Self::SIZE);
         Ok(Self {
             component: src.read_u16().try_into()?,
             packet_id: src.read_u16().try_into()?,
@@ -28,13 +33,14 @@ impl SharedHeader {
     }
 
     fn encode(&self, dst: &mut WriteCursor) -> PduResult<()> {
+        ensure_size!(in: dst, size: Self::SIZE);
         dst.write_u16(self.component as u16);
         dst.write_u16(self.packet_id as u16);
         Ok(())
     }
 
     fn size(&self) -> usize {
-        std::mem::size_of::<u16>() * 2
+        Self::SIZE
     }
 }
 
@@ -108,6 +114,15 @@ pub enum VersionAndIdPduKind {
     ClientAnnounceReply,
 }
 
+impl VersionAndIdPduKind {
+    fn name(&self) -> &'static str {
+        match self {
+            VersionAndIdPduKind::ServerAnnounceRequest => "ServerAnnounceRequest",
+            VersionAndIdPduKind::ClientAnnounceReply => "ClientAnnounceReply",
+        }
+    }
+}
+
 /// VersionAndIdPDU is a fixed size structure representing multiple PDUs.
 ///
 /// The kind field is used to determine the actual PDU type.
@@ -120,6 +135,9 @@ pub struct VersionAndIdPdu {
 }
 
 impl VersionAndIdPdu {
+    /// The size of the PDU without the header
+    const HEADERLESS_SIZE: usize = (size_of::<u16>() * 2) + size_of::<u32>();
+
     fn header(&self) -> SharedHeader {
         match self.kind {
             VersionAndIdPduKind::ClientAnnounceReply => SharedHeader {
@@ -134,6 +152,7 @@ impl VersionAndIdPdu {
     }
 
     pub fn decode(src: &mut ReadCursor, kind: VersionAndIdPduKind) -> PduResult<Self> {
+        ensure_size!(ctx: kind.name(), in: src, size: Self::HEADERLESS_SIZE);
         Ok(Self {
             version_major: src.read_u16(),
             version_minor: src.read_u16(),
@@ -145,6 +164,7 @@ impl VersionAndIdPdu {
 
 impl PduEncode for VersionAndIdPdu {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_size!(ctx: self.name(), in: dst, size: self.size());
         self.header().encode(dst)?;
         dst.write_u16(self.version_major);
         dst.write_u16(self.version_minor);
@@ -153,15 +173,11 @@ impl PduEncode for VersionAndIdPdu {
     }
 
     fn name(&self) -> &'static str {
-        match self.kind {
-            VersionAndIdPduKind::ServerAnnounceRequest => "ServerAnnounceRequest",
-            VersionAndIdPduKind::ClientAnnounceReply => "ClientAnnounceReply",
-        }
+        self.kind.name()
     }
 
     fn size(&self) -> usize {
-        // header bytes + (2 * u16) + u32 = header bytes + (2 * 2 bytes) + 4 bytes = header bytes + 8 bytes
-        self.header().size() + 8
+        Self::HEADERLESS_SIZE + self.header().size()
     }
 }
 
@@ -173,6 +189,7 @@ pub enum ClientNameRequest {
 }
 
 impl ClientNameRequest {
+    const NAME: &str = "ClientNameRequest";
     pub fn new(computer_name: String, kind: ClientNameRequestUnicodeFlag) -> Self {
         match kind {
             ClientNameRequestUnicodeFlag::Ascii => ClientNameRequest::Ascii(computer_name),
@@ -203,6 +220,7 @@ impl ClientNameRequest {
 
 impl PduEncode for ClientNameRequest {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_size!(in: dst, size: self.size());
         self.header().encode(dst)?;
         dst.write_u32(self.unicode_flag() as u32);
         dst.write_u32(0); // // CodePage (4 bytes): it MUST be set to 0
@@ -211,12 +229,12 @@ impl PduEncode for ClientNameRequest {
     }
 
     fn name(&self) -> &'static str {
-        "ClientNameRequest"
+        Self::NAME
     }
 
     fn size(&self) -> usize {
         self.header().size()
-            + (std::mem::size_of::<u32>() * 3) // unicode_flag + CodePage + ComputerNameLen
+            + (size_of::<u32>() * 3) // unicode_flag + CodePage + ComputerNameLen
             + encoded_str_len(self.computer_name(), self.unicode_flag().into(), true)
     }
 }
