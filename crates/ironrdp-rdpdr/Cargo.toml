@@ -1,12 +1,14 @@
 [package]
-name = "ironrdp-svc"
+name = "ironrdp-rdpdr"
 version = "0.1.0"
+description = "RDPDR channel implementation."
 readme = "README.md"
-description = "IronRDP traits to implement RDP static virtual channels"
 edition.workspace = true
 license.workspace = true
+
 homepage.workspace = true
 repository.workspace = true
+# TODO: add individuals and/or Teleport as authors?
 authors.workspace = true
 keywords.workspace = true
 categories.workspace = true
@@ -15,11 +17,7 @@ categories.workspace = true
 doctest = false
 test = false
 
-[features]
-default = []
-std = []
-
 [dependencies]
-ironrdp-pdu = { workspace = true, features = ["alloc"] }
-
-bitflags = "2"
+tracing.workspace = true
+ironrdp-pdu.workspace = true
+ironrdp-svc.workspace = true

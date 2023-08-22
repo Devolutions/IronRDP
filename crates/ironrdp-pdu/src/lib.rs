@@ -142,20 +142,20 @@ pub trait PduEncode {
 assert_obj_safe!(PduEncode);
 
 /// Encodes the given PDU in-place into the provided buffer and returns the number of bytes written.
-pub fn encode<T: PduEncode>(pdu: &T, dst: &mut [u8]) -> PduResult<usize> {
+pub fn encode<T: PduEncode + ?Sized>(pdu: &T, dst: &mut [u8]) -> PduResult<usize> {
     let mut cursor = WriteCursor::new(dst);
     encode_cursor(pdu, &mut cursor)?;
     Ok(cursor.pos())
 }
 
 /// Encodes the given PDU in-place using the provided `WriteCursor`.
-pub fn encode_cursor<T: PduEncode>(pdu: &T, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+pub fn encode_cursor<T: PduEncode + ?Sized>(pdu: &T, dst: &mut WriteCursor<'_>) -> PduResult<()> {
     pdu.encode(dst)
 }
 
 /// Same as `encode` but resizes the buffer when it is too small to fit the PDU.
 #[cfg(feature = "alloc")]
-pub fn encode_buf<T: PduEncode>(pdu: &T, buf: &mut WriteBuf) -> PduResult<usize> {
+pub fn encode_buf<T: PduEncode + ?Sized>(pdu: &T, buf: &mut WriteBuf) -> PduResult<usize> {
     let pdu_size = pdu.size();
     let dst = buf.unfilled_to(pdu_size);
     let written = encode(pdu, dst)?;

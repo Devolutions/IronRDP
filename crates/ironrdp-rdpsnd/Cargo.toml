@@ -1,8 +1,8 @@
 [package]
-name = "ironrdp-svc"
+name = "ironrdp-rdpsnd"
 version = "0.1.0"
 readme = "README.md"
-description = "IronRDP traits to implement RDP static virtual channels"
+description = "Implements the rdpsnd static virtual channel for audio output as described in MS-RDPEA"
 edition.workspace = true
 license.workspace = true
 homepage.workspace = true
@@ -20,6 +20,6 @@ default = []
 std = []
 
 [dependencies]
+ironrdp-svc.workspace = true
 ironrdp-pdu = { workspace = true, features = ["alloc"] }
-
-bitflags = "2"
+tracing.workspace = true

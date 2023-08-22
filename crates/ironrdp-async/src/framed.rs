@@ -150,7 +150,7 @@ impl<S> Framed<S>
 where
     S: FramedWrite,
 {
-    /// Reads from stream and fills internal buffer
+    /// Writes an entire buffer into this stream.
     pub async fn write_all(&mut self, buf: &[u8]) -> io::Result<()> {
         self.stream.write_all(buf).await
     }

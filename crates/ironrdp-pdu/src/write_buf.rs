@@ -1,3 +1,5 @@
+use std::ops::{Index, Range};
+
 /// Max capacity to keep for the inner Vec<u8> when `WriteBuf::clear` is called.
 const MAX_CAPACITY_WHEN_CLEARED: usize = 16384; // 16 kib
 
@@ -136,5 +138,14 @@ impl std::io::Write for WriteBuf {
 
     fn flush(&mut self) -> std::io::Result<()> {
         Ok(())
+    }
+}
+
+// Allows you to do `&buf[..]` to get a slice of the filled region.
+impl Index<Range<usize>> for WriteBuf {
+    type Output = [u8];
+
+    fn index(&self, range: Range<usize>) -> &Self::Output {
+        &self.inner[range]
     }
 }

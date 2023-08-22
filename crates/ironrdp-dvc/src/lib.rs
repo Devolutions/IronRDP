@@ -16,8 +16,11 @@ use alloc::borrow::ToOwned;
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::string::String;
+use alloc::vec::Vec;
 use core::any::Any;
 use core::fmt;
+use pdu::cursor::WriteCursor;
+use pdu::PduEncode;
 
 use ironrdp_pdu::gcc::ChannelName;
 use ironrdp_pdu::rdp::vc;
@@ -112,7 +115,7 @@ impl StaticVirtualChannel for Drdynvc {
         CompressionCondition::WhenRdpDataIsCompressed
     }
 
-    fn process(&mut self, initiator_id: u16, channel_id: u16, payload: &[u8], output: &mut WriteBuf) -> PduResult<()> {
+    fn process(&mut self, payload: &[u8]) -> PduResult<Vec<Box<dyn PduEncode>>> {
         let dvc_ctx = decode_dvc_message(payload)?;
 
         match dvc_ctx.dvc_pdu {

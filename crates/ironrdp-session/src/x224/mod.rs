@@ -1,6 +1,7 @@
 mod display;
 mod gfx;
 
+use std::borrow::Cow;
 use std::cmp;
 use std::collections::HashMap;
 
@@ -12,7 +13,8 @@ use ironrdp_pdu::rdp::server_error_info::{ErrorInfo, ProtocolIndependentCode, Se
 use ironrdp_pdu::rdp::vc::dvc;
 use ironrdp_pdu::write_buf::WriteBuf;
 use ironrdp_pdu::PduParsing;
-use ironrdp_svc::StaticChannelSet;
+use ironrdp_pdu::{encode_buf, mcs};
+use ironrdp_svc::{chunkify, StaticChannelSet, CHANNEL_CHUNK_LEGNTH};
 
 pub use self::gfx::GfxHandler;
 use crate::{SessionErrorExt as _, SessionResult};
@@ -72,19 +74,42 @@ impl Processor {
                 Some(drdynvc_id) if channel_id == drdynvc_id => self.process_dyvc(data_ctx),
                 _ => {
                     if let Some(static_channel) = self.static_channels.get_by_channel_id_mut(channel_id) {
-                        let mut user_data = data_ctx.user_data;
+                        let mut payload = data_ctx.user_data;
 
                         // [ vc::ChannelPduHeader | vc data… ]
-                        let channel_header = ironrdp_pdu::rdp::vc::ChannelPduHeader::from_buffer(&mut user_data)?;
-                        debug_assert_eq!(user_data.len(), channel_header.length as usize);
+                        let channel_header = ironrdp_pdu::rdp::vc::ChannelPduHeader::from_buffer(&mut payload)?;
+                        debug_assert_eq!(payload.len(), channel_header.length as usize);
 
-                        let mut buf = WriteBuf::new(); // TODO(perf): reuse this buffer using `clear` and `filled` as appropriate
+                        // Create a vector of response PDUs
+                        let response_pdus = static_channel.process(payload).map_err(crate::SessionError::pdu)?;
 
-                        static_channel
-                            .process(data_ctx.initiator_id, channel_id, user_data, &mut buf)
-                            .map_err(crate::SessionError::pdu)?;
+                        // For each response PDU, chunkify it and add appropriate static channel headers.
+                        let chunks = chunkify(response_pdus, CHANNEL_CHUNK_LEGNTH).map_err(crate::SessionError::pdu)?;
 
-                        Ok(buf.into_inner())
+                        // Place each chunk into a SendDataRequest
+                        let mcs_pdus = chunks
+                            .into_iter()
+                            .map(|buf| mcs::SendDataRequest {
+                                initiator_id: data_ctx.initiator_id,
+                                channel_id,
+                                user_data: Cow::Owned(buf.into_inner()),
+                            })
+                            .collect::<Vec<mcs::SendDataRequest>>();
+
+                        // SendDataRequest is [`McsPdu`], which is [`x224Pdu`], which is [`PduEncode`]. [`PduEncode`] for [`x224Pdu`]
+                        // also takes care of adding the Tpkt header, so therefore we can just call `encode_buf` on each of these and
+                        // we will create a buffer of fully encoded PDUs ready to send to the server.
+                        //
+                        // For example, if we had 2 chunks, our fully_encoded_responses buffer would look like:
+                        //
+                        // [ | tpkt | x224 | mcs::SendDataRequest | chunk 1 | tpkt | x224 | mcs::SendDataRequest | chunk 2 | ]
+                        //   |<------------------- PDU 1 ------------------>|<------------------- PDU 2 ------------------>|
+                        let mut fully_encoded_responses = WriteBuf::new(); // TODO(perf): reuse this buffer using `clear` and `filled` as appropriate
+                        for pdu in mcs_pdus {
+                            encode_buf(&pdu, &mut fully_encoded_responses).map_err(crate::SessionError::pdu)?;
+                        }
+
+                        Ok(fully_encoded_responses.into_inner())
                     } else {
                         Err(reason_err!("X224", "unexpected channel received: ID {channel_id}"))
                     }

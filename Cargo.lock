@@ -1709,6 +1709,8 @@ dependencies = [
  "ironrdp-graphics",
  "ironrdp-input",
  "ironrdp-pdu",
+ "ironrdp-rdpdr",
+ "ironrdp-rdpsnd",
  "ironrdp-session",
  "ironrdp-svc",
 ]
@@ -1869,6 +1871,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "ironrdp-rdpdr"
+version = "0.1.0"
+dependencies = [
+ "ironrdp-pdu",
+ "ironrdp-svc",
+ "tracing",
+]
+
+[[package]]
+name = "ironrdp-rdpsnd"
+version = "0.1.0"
+dependencies = [
+ "ironrdp-pdu",
+ "ironrdp-svc",
+ "tracing",
+]
+
+[[package]]
 name = "ironrdp-session"
 version = "0.1.0"
 dependencies = [
@@ -1896,6 +1916,7 @@ dependencies = [
 name = "ironrdp-svc"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.3.3",
  "ironrdp-pdu",
 ]
 
