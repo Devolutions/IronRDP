@@ -46,10 +46,11 @@ impl SharedHeader {
 
 #[derive(Debug, Clone, Copy)]
 #[repr(u16)]
-#[allow(non_camel_case_types)]
 pub enum Component {
-    RDPDR_CTYP_CORE = 0x4472,
-    RDPDR_CTYP_PRN = 0x5052,
+    /// RDPDR_CTYP_CORE
+    RdpdrCtypCore = 0x4472,
+    /// RDPDR_CTYP_PRN
+    RdpdrCtypPrn = 0x5052,
 }
 
 impl TryFrom<u16> for Component {
@@ -57,8 +58,8 @@ impl TryFrom<u16> for Component {
 
     fn try_from(value: u16) -> Result<Self, Self::Error> {
         match value {
-            0x4472 => Ok(Component::RDPDR_CTYP_CORE),
-            0x5052 => Ok(Component::RDPDR_CTYP_PRN),
+            0x4472 => Ok(Component::RdpdrCtypCore),
+            0x5052 => Ok(Component::RdpdrCtypPrn),
             _ => Err(invalid_message_err!("try_from", "Component", "invalid value")),
         }
     }
@@ -66,21 +67,33 @@ impl TryFrom<u16> for Component {
 
 #[derive(Debug, Clone, Copy)]
 #[repr(u16)]
-#[allow(non_camel_case_types)]
 pub enum PacketId {
-    PAKID_CORE_SERVER_ANNOUNCE = 0x496E,
-    PAKID_CORE_CLIENTID_CONFIRM = 0x4343,
-    PAKID_CORE_CLIENT_NAME = 0x434E,
-    PAKID_CORE_DEVICELIST_ANNOUNCE = 0x4441,
-    PAKID_CORE_DEVICE_REPLY = 0x6472,
-    PAKID_CORE_DEVICE_IOREQUEST = 0x4952,
-    PAKID_CORE_DEVICE_IOCOMPLETION = 0x4943,
-    PAKID_CORE_SERVER_CAPABILITY = 0x5350,
-    PAKID_CORE_CLIENT_CAPABILITY = 0x4350,
-    PAKID_CORE_DEVICELIST_REMOVE = 0x444D,
-    PAKID_PRN_CACHE_DATA = 0x5043,
-    PAKID_CORE_USER_LOGGEDON = 0x554C,
-    PAKID_PRN_USING_XPS = 0x5543,
+    /// PAKID_CORE_SERVER_ANNOUNCE
+    CoreServerAnnounce = 0x496E,
+    /// PAKID_CORE_CLIENTID_CONFIRM
+    CoreClientidConfirm = 0x4343,
+    /// PAKID_CORE_CLIENT_NAME
+    CoreClientName = 0x434E,
+    /// PAKID_CORE_DEVICELIST_ANNOUNCE
+    CoreDevicelistAnnounce = 0x4441,
+    /// PAKID_CORE_DEVICE_REPLY
+    CoreDeviceReply = 0x6472,
+    /// PAKID_CORE_DEVICE_IOREQUEST
+    CoreDeviceIorequest = 0x4952,
+    /// PAKID_CORE_DEVICE_IOCOMPLETION
+    CoreDeviceIocompletion = 0x4943,
+    /// PAKID_CORE_SERVER_CAPABILITY
+    CoreServerCapability = 0x5350,
+    /// PAKID_CORE_CLIENT_CAPABILITY
+    CoreClientCapability = 0x4350,
+    /// PAKID_CORE_DEVICELIST_REMOVE
+    CoreDevicelistRemove = 0x444D,
+    /// PAKID_PRN_CACHE_DATA
+    PrnCacheData = 0x5043,
+    /// PAKID_CORE_USER_LOGGEDON
+    CoreUserLoggedon = 0x554C,
+    /// PAKID_PRN_USING_XPS
+    PrnUsingXps = 0x5543,
 }
 
 impl std::convert::TryFrom<u16> for PacketId {
@@ -88,19 +101,19 @@ impl std::convert::TryFrom<u16> for PacketId {
 
     fn try_from(value: u16) -> Result<Self, Self::Error> {
         match value {
-            0x496E => Ok(PacketId::PAKID_CORE_SERVER_ANNOUNCE),
-            0x4343 => Ok(PacketId::PAKID_CORE_CLIENTID_CONFIRM),
-            0x434E => Ok(PacketId::PAKID_CORE_CLIENT_NAME),
-            0x4441 => Ok(PacketId::PAKID_CORE_DEVICELIST_ANNOUNCE),
-            0x6472 => Ok(PacketId::PAKID_CORE_DEVICE_REPLY),
-            0x4952 => Ok(PacketId::PAKID_CORE_DEVICE_IOREQUEST),
-            0x4943 => Ok(PacketId::PAKID_CORE_DEVICE_IOCOMPLETION),
-            0x5350 => Ok(PacketId::PAKID_CORE_SERVER_CAPABILITY),
-            0x4350 => Ok(PacketId::PAKID_CORE_CLIENT_CAPABILITY),
-            0x444D => Ok(PacketId::PAKID_CORE_DEVICELIST_REMOVE),
-            0x5043 => Ok(PacketId::PAKID_PRN_CACHE_DATA),
-            0x554C => Ok(PacketId::PAKID_CORE_USER_LOGGEDON),
-            0x5543 => Ok(PacketId::PAKID_PRN_USING_XPS),
+            0x496E => Ok(PacketId::CoreServerAnnounce),
+            0x4343 => Ok(PacketId::CoreClientidConfirm),
+            0x434E => Ok(PacketId::CoreClientName),
+            0x4441 => Ok(PacketId::CoreDevicelistAnnounce),
+            0x6472 => Ok(PacketId::CoreDeviceReply),
+            0x4952 => Ok(PacketId::CoreDeviceIorequest),
+            0x4943 => Ok(PacketId::CoreDeviceIocompletion),
+            0x5350 => Ok(PacketId::CoreServerCapability),
+            0x4350 => Ok(PacketId::CoreClientCapability),
+            0x444D => Ok(PacketId::CoreDevicelistRemove),
+            0x5043 => Ok(PacketId::PrnCacheData),
+            0x554C => Ok(PacketId::CoreUserLoggedon),
+            0x5543 => Ok(PacketId::PrnUsingXps),
             _ => Err(invalid_message_err!("try_from", "PacketId", "invalid value")),
         }
     }
@@ -141,12 +154,12 @@ impl VersionAndIdPdu {
     fn header(&self) -> SharedHeader {
         match self.kind {
             VersionAndIdPduKind::ClientAnnounceReply => SharedHeader {
-                component: Component::RDPDR_CTYP_CORE,
-                packet_id: PacketId::PAKID_CORE_CLIENTID_CONFIRM,
+                component: Component::RdpdrCtypCore,
+                packet_id: PacketId::CoreClientidConfirm,
             },
             VersionAndIdPduKind::ServerAnnounceRequest => SharedHeader {
-                component: Component::RDPDR_CTYP_CORE,
-                packet_id: PacketId::PAKID_CORE_SERVER_ANNOUNCE,
+                component: Component::RdpdrCtypCore,
+                packet_id: PacketId::CoreServerAnnounce,
             },
         }
     }
@@ -198,8 +211,8 @@ impl ClientNameRequest {
     }
     fn header(&self) -> SharedHeader {
         SharedHeader {
-            component: Component::RDPDR_CTYP_CORE,
-            packet_id: PacketId::PAKID_CORE_CLIENT_NAME,
+            component: Component::RdpdrCtypCore,
+            packet_id: PacketId::CoreClientName,
         }
     }
 

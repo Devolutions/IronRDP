@@ -85,16 +85,16 @@ impl StaticVirtualChannel for Rdpdr {
         let header = SharedHeader::decode(&mut payload)?;
         trace!("received {:?}", header);
 
-        if let Component::RDPDR_CTYP_PRN = header.component {
+        if let Component::RdpdrCtypPrn = header.component {
             warn!(
                 "received {:?} RDPDR header from RDP server, printer redirection is unimplemented",
-                Component::RDPDR_CTYP_PRN
+                Component::RdpdrCtypPrn
             );
             return Ok(vec![]);
         }
 
         match header.packet_id {
-            PacketId::PAKID_CORE_SERVER_ANNOUNCE => self.handle_server_announce(&mut payload),
+            PacketId::CoreServerAnnounce => self.handle_server_announce(&mut payload),
             _ => {
                 warn!("received unimplemented packet: {:?}", header.packet_id);
                 Ok(vec![])
