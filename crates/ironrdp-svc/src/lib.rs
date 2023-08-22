@@ -77,7 +77,7 @@ pub fn chunkify(pdus: Vec<Box<dyn PduEncode>>, max_chunk_len: usize) -> PduResul
 /// [[ ChannelPDUHeader | 1600 bytes of PDU data ] [ ChannelPDUHeader | 1600 bytes of PDU data ] [ ChannelPDUHeader | 800 bytes of PDU data ]]
 fn chunkify_one(pdu: Box<dyn PduEncode>, max_chunk_len: usize) -> PduResult<Vec<WriteBuf>> {
     let mut encoded_pdu = WriteBuf::new(); // TODO(perf): reuse this buffer using `clear` and `filled` as appropriate
-    encode_buf(&pdu, &mut encoded_pdu)?;
+    encode_buf(pdu.as_ref(), &mut encoded_pdu)?;
 
     let mut chunks = Vec::new();
 
