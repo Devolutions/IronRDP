@@ -274,7 +274,7 @@ impl From<ClientNameRequestUnicodeFlag> for CharacterSet {
 pub struct CoreCapability {
     num_capabilities: u16,
     padding: u16,
-    capabilities: Vec<CapabilitySet>,
+    capabilities: Vec<CapabilityMessage>,
     kind: CoreCapabilityKind,
 }
 
@@ -284,7 +284,7 @@ impl CoreCapability {
     /// Creates a new [`DR_CORE_CAPABILITY_RSP`] with the given `capabilities`.
     ///
     /// [`DR_CORE_CAPABILITY_RSP`]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/f513bf87-cca0-488a-ac5c-18cf18f4a7e1
-    pub fn new_response(capabilities: Vec<CapabilitySet>) -> Self {
+    pub fn new_response(capabilities: Vec<CapabilityMessage>) -> Self {
         Self {
             num_capabilities: capabilities.len() as u16,
             padding: 0,
@@ -301,7 +301,7 @@ impl CoreCapability {
         let padding = payload.read_u16();
         let mut capabilities = vec![];
         for _ in 0..num_capabilities {
-            capabilities.push(CapabilitySet::decode(payload)?);
+            capabilities.push(CapabilityMessage::decode(payload)?);
         }
 
         Ok(Self {
@@ -311,8 +311,43 @@ impl CoreCapability {
             kind,
         })
     }
+
+    fn header(&self) -> SharedHeader {
+        match self.kind {
+            CoreCapabilityKind::ServerCoreCapabilityRequest => SharedHeader {
+                component: Component::RdpdrCtypCore,
+                packet_id: PacketId::CoreServerCapability,
+            },
+            CoreCapabilityKind::ClientCoreCapabilityResponse => SharedHeader {
+                component: Component::RdpdrCtypCore,
+                packet_id: PacketId::CoreClientCapability,
+            },
+        }
+    }
 }
 
+impl PduEncode for CoreCapability {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_size!(ctx: "CoreCapability", in: dst, size: self.size());
+        self.header().encode(dst)?;
+        dst.write_u16(self.num_capabilities);
+        dst.write_u16(self.padding);
+        for cap in self.capabilities.iter() {
+            cap.encode(dst)?;
+        }
+        Ok(())
+    }
+
+    fn name(&self) -> &'static str {
+        self.kind.name()
+    }
+
+    fn size(&self) -> usize {
+        Self::HEADERLESS_FIXED_PART_SIZE
+            + self.header().size()
+            + self.capabilities.iter().map(|c| c.size()).sum::<usize>()
+    }
+}
 #[derive(Debug)]
 enum CoreCapabilityKind {
     /// [2.2.2.7 Server Core Capability Request (DR_CORE_CAPABILITY_REQ)](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/702789c3-b924-4bc2-9280-3221bc7d6797)
@@ -331,19 +366,14 @@ impl CoreCapabilityKind {
 }
 
 /// [2.2.1.2.1 Capability Message (CAPABILITY_SET)](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/f1b9dd1d-2c37-4aac-9836-4b0df02369ba)
-#[derive(Debug)]
-pub struct CapabilitySet {
+#[derive(Debug, Clone, Copy)]
+pub struct CapabilityMessage {
     header: CapabilityHeader,
-    capability_data: Capability,
+    capability_data: CapabilityData,
 }
 
-impl CapabilitySet {
-    // fn encode(&self) -> RdpResult<Message> {
-    //     let mut w = self.header.encode()?;
-    //     w.extend_from_slice(&self.data.encode()?);
-    //     Ok(w)
-    // }
-
+impl CapabilityMessage {
+    const NAME: &str = "CapabilityMessage";
     /// Creates a new [`GENERAL_CAPS_SET`].
     ///
     /// `special_type_device_cap`: A 32-bit unsigned integer that
@@ -356,7 +386,7 @@ impl CapabilitySet {
     pub fn new_general(special_type_device_cap: u32) -> Self {
         Self {
             header: CapabilityHeader::new_general(),
-            capability_data: Capability::General(GeneralCapabilitySet {
+            capability_data: CapabilityData::General(GeneralCapabilitySet {
                 os_type: 0,
                 os_version: 0,
                 protocol_major_version: 1,
@@ -380,7 +410,7 @@ impl CapabilitySet {
     pub fn new_smartcard() -> Self {
         Self {
             header: CapabilityHeader::new_smartcard(),
-            capability_data: Capability::Smartcard,
+            capability_data: CapabilityData::Smartcard,
         }
     }
 
@@ -390,23 +420,33 @@ impl CapabilitySet {
     pub fn new_drive() -> Self {
         Self {
             header: CapabilityHeader::new_drive(),
-            capability_data: Capability::Drive,
+            capability_data: CapabilityData::Drive,
         }
+    }
+
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_size!(in: dst, size: self.size());
+        self.header.encode(dst)?;
+        self.capability_data.encode(dst)
     }
 
     fn decode(payload: &mut ReadCursor<'_>) -> PduResult<Self> {
         let header = CapabilityHeader::decode(payload)?;
-        let capability_data = Capability::decode(payload, &header)?;
+        let capability_data = CapabilityData::decode(payload, &header)?;
 
         Ok(Self {
             header,
             capability_data,
         })
     }
+
+    fn size(&self) -> usize {
+        self.header.size() + self.capability_data.size()
+    }
 }
 
 /// [2.2.1.2 Capability Header (CAPABILITY_HEADER)](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/b3c3304a-2e1b-4667-97e9-3bce49544907)
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 struct CapabilityHeader {
     cap_type: CapabilityType,
     length: u16,
@@ -449,9 +489,21 @@ impl CapabilityHeader {
             version: payload.read_u32(),
         })
     }
+
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_size!(in: dst, size: self.size());
+        dst.write_u16(self.cap_type as u16);
+        dst.write_u16(self.length);
+        dst.write_u32(self.version);
+        Ok(())
+    }
+
+    fn size(&self) -> usize {
+        Self::SIZE
+    }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 #[repr(u16)]
 enum CapabilityType {
     /// CAP_GENERAL_TYPE
@@ -466,14 +518,12 @@ enum CapabilityType {
     Smartcard = 0x0005,
 }
 
-/// GENERAL_CAPABILITY_VERSION_01
-const GENERAL_CAPABILITY_VERSION_01: u32 = 0x00000001;
 /// GENERAL_CAPABILITY_VERSION_02
-const GENERAL_CAPABILITY_VERSION_02: u32 = 0x00000002;
+pub const GENERAL_CAPABILITY_VERSION_02: u32 = 0x00000002;
 /// SMARTCARD_CAPABILITY_VERSION_01
-const SMARTCARD_CAPABILITY_VERSION_01: u32 = 0x00000001;
+pub const SMARTCARD_CAPABILITY_VERSION_01: u32 = 0x00000001;
 /// DRIVE_CAPABILITY_VERSION_02
-const DRIVE_CAPABILITY_VERSION_02: u32 = 0x00000002;
+pub const DRIVE_CAPABILITY_VERSION_02: u32 = 0x00000002;
 
 impl std::convert::TryFrom<u16> for CapabilityType {
     type Error = PduError;
@@ -490,8 +540,8 @@ impl std::convert::TryFrom<u16> for CapabilityType {
     }
 }
 
-#[derive(Debug)]
-enum Capability {
+#[derive(Debug, Clone, Copy)]
+enum CapabilityData {
     General(GeneralCapabilitySet),
     Printer,
     Port,
@@ -499,30 +549,40 @@ enum Capability {
     Smartcard,
 }
 
-impl Capability {
-    // fn encode(&self) -> RdpResult<Message> {
-    //     match self {
-    //         Capability::General(general) => Ok(general.encode()?),
-    //         _ => Ok(vec![]),
-    //     }
-    // }
+impl CapabilityData {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        match self {
+            CapabilityData::General(general) => general.encode(dst),
+            _ => Ok(()),
+        }
+    }
 
     fn decode(payload: &mut ReadCursor<'_>, header: &CapabilityHeader) -> PduResult<Self> {
         match header.cap_type {
-            CapabilityType::General => Ok(Capability::General(GeneralCapabilitySet::decode(
+            CapabilityType::General => Ok(CapabilityData::General(GeneralCapabilitySet::decode(
                 payload,
                 header.version,
             )?)),
-            CapabilityType::Printer => Ok(Capability::Printer),
-            CapabilityType::Port => Ok(Capability::Port),
-            CapabilityType::Drive => Ok(Capability::Drive),
-            CapabilityType::Smartcard => Ok(Capability::Smartcard),
+            CapabilityType::Printer => Ok(CapabilityData::Printer),
+            CapabilityType::Port => Ok(CapabilityData::Port),
+            CapabilityType::Drive => Ok(CapabilityData::Drive),
+            CapabilityType::Smartcard => Ok(CapabilityData::Smartcard),
+        }
+    }
+
+    fn size(&self) -> usize {
+        match self {
+            CapabilityData::General(general) => general.size(),
+            CapabilityData::Printer => 0,
+            CapabilityData::Port => 0,
+            CapabilityData::Drive => 0,
+            CapabilityData::Smartcard => 0,
         }
     }
 }
 
 /// [2.2.2.7.1 General Capability Set (GENERAL_CAPS_SET)](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/06c7cb30-303d-4fa2-b396-806df8ac1501)
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 struct GeneralCapabilitySet {
     /// MUST be ignored.
     os_type: u32,
@@ -558,20 +618,20 @@ impl GeneralCapabilitySet {
     #[allow(clippy::manual_bits)]
     const SIZE: usize = size_of::<u32>() * 8 + size_of::<u16>() * 2;
 
-    // fn encode(&self) -> RdpResult<Message> {
-    //     let mut w = vec![];
-    //     w.write_u32::<LittleEndian>(self.os_type)?;
-    //     w.write_u32::<LittleEndian>(self.os_version)?;
-    //     w.write_u16::<LittleEndian>(self.protocol_major_version)?;
-    //     w.write_u16::<LittleEndian>(self.protocol_minor_version)?;
-    //     w.write_u32::<LittleEndian>(self.io_code_1)?;
-    //     w.write_u32::<LittleEndian>(self.io_code_2)?;
-    //     w.write_u32::<LittleEndian>(self.extended_pdu)?;
-    //     w.write_u32::<LittleEndian>(self.extra_flags_1)?;
-    //     w.write_u32::<LittleEndian>(self.extra_flags_2)?;
-    //     w.write_u32::<LittleEndian>(self.special_type_device_cap)?;
-    //     Ok(w)
-    // }
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_size!(in: dst, size: self.size());
+        dst.write_u32(self.os_type);
+        dst.write_u32(self.os_version);
+        dst.write_u16(self.protocol_major_version);
+        dst.write_u16(self.protocol_minor_version);
+        dst.write_u32(self.io_code_1.bits());
+        dst.write_u32(self.io_code_2);
+        dst.write_u32(self.extended_pdu.bits());
+        dst.write_u32(self.extra_flags_1.bits());
+        dst.write_u32(self.extra_flags_2);
+        dst.write_u32(self.special_type_device_cap);
+        Ok(())
+    }
 
     fn decode(payload: &mut ReadCursor<'_>, version: u32) -> PduResult<Self> {
         ensure_size!(in: payload, size: Self::SIZE);
@@ -595,6 +655,10 @@ impl GeneralCapabilitySet {
             },
         })
     }
+
+    fn size(&self) -> usize {
+        Self::SIZE
+    }
 }
 
 bitflags! {
@@ -602,7 +666,7 @@ bitflags! {
     /// If the bit is set, the I/O request is allowed. The requests are identified by the MajorFunction field
     /// in the Device I/O Request (section 2.2.1.4) header. This field MUST be set to a valid combination of
     /// the following values.
-    #[derive(Debug)]
+    #[derive(Debug, Clone, Copy)]
     struct IoCode1: u32 {
         /// Unused, always set.
         const RDPDR_IRP_MJ_CREATE = 0x00000001;
@@ -659,7 +723,7 @@ bitflags! {
 bitflags! {
     /// A 32-bit unsigned integer that specifies extended PDU flags.
     /// This field MUST be set as a bitmask of the following values.
-    #[derive(Debug)]
+    #[derive(Debug, Clone, Copy)]
     struct ExtendedPdu: u32 {
         /// Allow the client to send Client Drive Device List Remove packets.
         const RDPDR_DEVICE_REMOVE_PDUS = 0x00000001;
@@ -673,7 +737,7 @@ bitflags! {
 bitflags! {
     /// A 32-bit unsigned integer that specifies extended flags.
     /// The extraFlags1 field MUST be set as a bitmask of the following value.
-    #[derive(Debug)]
+    #[derive(Debug, Clone, Copy)]
     struct ExtraFlags1: u32 {
         /// Optionally present only in the Client Core Capability Response.
         /// Allows the server to send multiple simultaneous read or write requests

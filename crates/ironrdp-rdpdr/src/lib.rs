@@ -5,8 +5,8 @@
 
 mod pdu;
 use crate::pdu::efs::{
-    CapabilitySet, ClientNameRequest, ClientNameRequestUnicodeFlag, Component, CoreCapability, PacketId, SharedHeader,
-    VersionAndIdPdu, VersionAndIdPduKind,
+    CapabilityMessage, ClientNameRequest, ClientNameRequestUnicodeFlag, Component, CoreCapability, PacketId,
+    SharedHeader, VersionAndIdPdu, VersionAndIdPduKind,
 };
 use ironrdp_pdu::{cursor::ReadCursor, gcc::ChannelName, PduEncode, PduResult};
 use ironrdp_svc::{AsAny, CompressionCondition, StaticVirtualChannel};
@@ -25,19 +25,24 @@ use tracing::{trace, warn};
 pub struct Rdpdr {
     /// TODO: explain what this is
     computer_name: String,
+    /// See [`CapabilityMessage`]
+    capabilities: Vec<CapabilityMessage>,
 }
 
 impl Default for Rdpdr {
     fn default() -> Self {
-        Self::new("IronRDP".to_string())
+        Self::new("IronRDP".to_string(), vec![CapabilityMessage::new_general(0)])
     }
 }
 
 impl Rdpdr {
     pub const NAME: ChannelName = ChannelName::from_static(b"rdpdr\0\0\0");
 
-    pub fn new(computer_name: String) -> Self {
-        Self { computer_name }
+    pub fn new(computer_name: String, capabilities: Vec<CapabilityMessage>) -> Self {
+        Self {
+            computer_name,
+            capabilities,
+        }
     }
 
     fn handle_server_announce(&mut self, payload: &mut ReadCursor<'_>) -> PduResult<Vec<Box<dyn PduEncode>>> {
@@ -63,13 +68,7 @@ impl Rdpdr {
         let req = CoreCapability::decode(payload)?;
         trace!("received {:?}", req);
 
-        // TODO: Make capability sets configurable in the Rdpdr struct
-        let special_type_device_cap = 1; // 1 for smartcard
-        let res = CoreCapability::new_response(vec![
-            CapabilitySet::new_general(special_type_device_cap),
-            CapabilitySet::new_smartcard(),
-            CapabilitySet::new_drive(),
-        ]);
+        let res = CoreCapability::new_response(self.capabilities.clone());
         trace!("sending {:?}", res);
 
         // TODO: Make CoreCapability PduEncode
