@@ -349,11 +349,11 @@ impl Sequence for ClientConnector {
 
             //== CredSSP ==//
             ClientConnectorState::CredsspInitial { selected_protocol } => {
-                let credentials = sspi::AuthIdentity {
+                let credentials = sspi::Credentials::AuthIdentity(sspi::AuthIdentity {
                     username: self.config.username.clone(),
                     password: self.config.password.clone().into(),
                     domain: self.config.domain.clone(),
-                };
+                });
 
                 let server_public_key = self
                     .server_public_key
