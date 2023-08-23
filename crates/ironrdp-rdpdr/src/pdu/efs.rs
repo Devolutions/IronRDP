@@ -267,3 +267,196 @@ impl From<ClientNameRequestUnicodeFlag> for CharacterSet {
         }
     }
 }
+
+/// [2.2.2.7 Server Core Capability Request (DR_CORE_CAPABILITY_REQ)](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/702789c3-b924-4bc2-9280-3221bc7d6797)
+#[derive(Debug)]
+pub struct ServerCoreCapabilityRequest {
+    num_capabilities: u16,
+    padding: u16,
+    capabilities: Vec<CapabilitySet>,
+}
+
+impl ServerCoreCapabilityRequest {
+    const NAME: &str = "ServerCoreCapabilityRequest";
+    const HEADERLESS_FIXED_PART_SIZE: usize = size_of::<u16>() * 2;
+
+    pub fn decode(payload: &mut ReadCursor<'_>) -> PduResult<Self> {
+        ensure_size!(in: payload, size: Self::HEADERLESS_FIXED_PART_SIZE);
+        let num_capabilities = payload.read_u16();
+        let padding = payload.read_u16();
+        let mut capabilities = vec![];
+        for _ in 0..num_capabilities {
+            capabilities.push(CapabilitySet::decode(payload)?);
+        }
+
+        Ok(Self {
+            num_capabilities,
+            padding,
+            capabilities,
+        })
+    }
+}
+
+/// [2.2.1.2.1 Capability Message (CAPABILITY_SET)](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/f1b9dd1d-2c37-4aac-9836-4b0df02369ba)
+#[derive(Debug)]
+struct CapabilitySet {
+    header: CapabilityHeader,
+    data: Capability,
+}
+
+impl CapabilitySet {
+    // fn encode(&self) -> RdpResult<Message> {
+    //     let mut w = self.header.encode()?;
+    //     w.extend_from_slice(&self.data.encode()?);
+    //     Ok(w)
+    // }
+
+    fn decode(payload: &mut ReadCursor<'_>) -> PduResult<Self> {
+        let header = CapabilityHeader::decode(payload)?;
+        let data = Capability::decode(payload, &header)?;
+
+        Ok(Self { header, data })
+    }
+}
+
+/// [2.2.1.2 Capability Header (CAPABILITY_HEADER)](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/b3c3304a-2e1b-4667-97e9-3bce49544907)
+#[derive(Debug)]
+struct CapabilityHeader {
+    cap_type: CapabilityType,
+    length: u16,
+    version: u32,
+}
+
+impl CapabilityHeader {
+    const NAME: &str = "CapabilityHeader";
+    const SIZE: usize = size_of::<u16>() * 2 + size_of::<u32>();
+
+    fn decode(payload: &mut ReadCursor<'_>) -> PduResult<Self> {
+        ensure_size!(in: payload, size: Self::SIZE);
+        Ok(Self {
+            cap_type: payload.read_u16().try_into()?,
+            length: payload.read_u16(),
+            version: payload.read_u32(),
+        })
+    }
+}
+
+#[derive(Debug)]
+#[repr(u16)]
+enum CapabilityType {
+    /// CAP_GENERAL_TYPE
+    General = 0x0001,
+    /// CAP_PRINTER_TYPE
+    Printer = 0x0002,
+    /// CAP_PORT_TYPE
+    Port = 0x0003,
+    /// CAP_DRIVE_TYPE
+    Drive = 0x0004,
+    /// CAP_SMARTCARD_TYPE
+    Smartcard = 0x0005,
+}
+
+/// GENERAL_CAPABILITY_VERSION_01
+const GENERAL_CAPABILITY_VERSION_01: u32 = 0x00000001;
+/// GENERAL_CAPABILITY_VERSION_02
+const GENERAL_CAPABILITY_VERSION_02: u32 = 0x00000002;
+
+impl std::convert::TryFrom<u16> for CapabilityType {
+    type Error = PduError;
+
+    fn try_from(value: u16) -> Result<Self, Self::Error> {
+        match value {
+            0x0001 => Ok(CapabilityType::General),
+            0x0002 => Ok(CapabilityType::Printer),
+            0x0003 => Ok(CapabilityType::Port),
+            0x0004 => Ok(CapabilityType::Drive),
+            0x0005 => Ok(CapabilityType::Smartcard),
+            _ => Err(invalid_message_err!("try_from", "CapabilityType", "invalid value")),
+        }
+    }
+}
+
+#[derive(Debug)]
+enum Capability {
+    General(GeneralCapabilitySet),
+    Printer,
+    Port,
+    Drive,
+    Smartcard,
+}
+
+impl Capability {
+    // fn encode(&self) -> RdpResult<Message> {
+    //     match self {
+    //         Capability::General(general) => Ok(general.encode()?),
+    //         _ => Ok(vec![]),
+    //     }
+    // }
+
+    fn decode(payload: &mut ReadCursor<'_>, header: &CapabilityHeader) -> PduResult<Self> {
+        match header.cap_type {
+            CapabilityType::General => Ok(Capability::General(GeneralCapabilitySet::decode(
+                payload,
+                header.version,
+            )?)),
+            CapabilityType::Printer => Ok(Capability::Printer),
+            CapabilityType::Port => Ok(Capability::Port),
+            CapabilityType::Drive => Ok(Capability::Drive),
+            CapabilityType::Smartcard => Ok(Capability::Smartcard),
+        }
+    }
+}
+
+/// [2.2.2.7.1 General Capability Set (GENERAL_CAPS_SET)](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/06c7cb30-303d-4fa2-b396-806df8ac1501)
+#[derive(Debug)]
+struct GeneralCapabilitySet {
+    os_type: u32,
+    os_version: u32,
+    protocol_major_version: u16,
+    protocol_minor_version: u16,
+    io_code_1: u32,
+    io_code_2: u32,
+    extended_pdu: u32,
+    extra_flags_1: u32,
+    extra_flags_2: u32,
+    special_type_device_cap: u32,
+}
+
+impl GeneralCapabilitySet {
+    const NAME: &str = "GeneralCapabilitySet";
+    const SIZE: usize = size_of::<u32>() * 8 + size_of::<u16>() * 2;
+    // fn encode(&self) -> RdpResult<Message> {
+    //     let mut w = vec![];
+    //     w.write_u32::<LittleEndian>(self.os_type)?;
+    //     w.write_u32::<LittleEndian>(self.os_version)?;
+    //     w.write_u16::<LittleEndian>(self.protocol_major_version)?;
+    //     w.write_u16::<LittleEndian>(self.protocol_minor_version)?;
+    //     w.write_u32::<LittleEndian>(self.io_code_1)?;
+    //     w.write_u32::<LittleEndian>(self.io_code_2)?;
+    //     w.write_u32::<LittleEndian>(self.extended_pdu)?;
+    //     w.write_u32::<LittleEndian>(self.extra_flags_1)?;
+    //     w.write_u32::<LittleEndian>(self.extra_flags_2)?;
+    //     w.write_u32::<LittleEndian>(self.special_type_device_cap)?;
+    //     Ok(w)
+    // }
+
+    fn decode(payload: &mut ReadCursor<'_>, version: u32) -> PduResult<Self> {
+        ensure_size!(in: payload, size: Self::SIZE);
+        Ok(Self {
+            os_type: payload.read_u32(),
+            os_version: payload.read_u32(),
+            protocol_major_version: payload.read_u16(),
+            protocol_minor_version: payload.read_u16(),
+            io_code_1: payload.read_u32(),
+            io_code_2: payload.read_u32(),
+            extended_pdu: payload.read_u32(),
+            extra_flags_1: payload.read_u32(),
+            extra_flags_2: payload.read_u32(),
+            special_type_device_cap: if version == GENERAL_CAPABILITY_VERSION_02 {
+                payload.read_u32()
+            } else {
+                0
+            },
+        })
+    }
+}

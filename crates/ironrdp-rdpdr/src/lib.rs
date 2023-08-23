@@ -5,8 +5,8 @@
 
 mod pdu;
 use crate::pdu::efs::{
-    ClientNameRequest, ClientNameRequestUnicodeFlag, Component, PacketId, SharedHeader, VersionAndIdPdu,
-    VersionAndIdPduKind,
+    ClientNameRequest, ClientNameRequestUnicodeFlag, Component, PacketId, ServerCoreCapabilityRequest, SharedHeader,
+    VersionAndIdPdu, VersionAndIdPduKind,
 };
 use ironrdp_pdu::{cursor::ReadCursor, gcc::ChannelName, PduEncode, PduResult};
 use ironrdp_svc::{AsAny, CompressionCondition, StaticVirtualChannel};
@@ -58,6 +58,17 @@ impl Rdpdr {
 
         Ok(vec![Box::new(client_announce_reply), Box::new(client_name_request)])
     }
+
+    fn handle_server_capability(&mut self, payload: &mut ReadCursor<'_>) -> PduResult<Vec<Box<dyn PduEncode>>> {
+        let req = ServerCoreCapabilityRequest::decode(payload)?;
+        trace!("received {:?}", req);
+
+        // let resp = ClientCoreCapabilityResponse::new_response(self.allow_directory_sharing);
+        // debug!("sending RDP ClientCoreCapabilityResponse: {:?}", resp);
+        // let resp = self.add_headers_and_chunkify(PacketId::PAKID_CORE_CLIENT_CAPABILITY, resp.encode()?)?;
+        // Ok(resp)
+        Ok(vec![])
+    }
 }
 
 impl AsAny for Rdpdr {
@@ -95,6 +106,7 @@ impl StaticVirtualChannel for Rdpdr {
 
         match header.packet_id {
             PacketId::CoreServerAnnounce => self.handle_server_announce(&mut payload),
+            PacketId::CoreServerCapability => self.handle_server_capability(&mut payload),
             _ => {
                 warn!("received unimplemented packet: {:?}", header.packet_id);
                 Ok(vec![])
