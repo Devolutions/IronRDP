@@ -28,7 +28,7 @@ native-tls = ["ironrdp-tls/native-tls"]
 [dependencies]
 
 # Protocols
-ironrdp = { workspace = true, features = ["input", "graphics", "dvc", "rdpdr", "rdpsnd"] }
+ironrdp = { workspace = true, features = ["input", "graphics", "dvc", "rdpdr", "rdpsnd", "cliprdr"] }
 ironrdp-tls.workspace = true
 ironrdp-tokio.workspace = true
 sspi = { workspace = true, features = ["network_client", "dns_resolver"] } # enable additional features

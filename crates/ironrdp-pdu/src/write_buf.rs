@@ -162,8 +162,8 @@ impl Index<RangeFrom<usize>> for WriteBuf {
 impl Index<RangeFull> for WriteBuf {
     type Output = [u8];
 
-    fn index(&self, range: RangeFull) -> &Self::Output {
-        &self.filled()[range]
+    fn index(&self, _range: RangeFull) -> &Self::Output {
+        self.filled()
     }
 }
 

@@ -26,7 +26,7 @@ use ironrdp_pdu::gcc::ChannelName;
 use ironrdp_pdu::rdp::vc;
 use ironrdp_pdu::write_buf::WriteBuf;
 use ironrdp_pdu::{assert_obj_safe, dvc, PduResult};
-use ironrdp_svc::{AsAny, CompressionCondition, StaticVirtualChannel};
+use ironrdp_svc::{impl_as_any, CompressionCondition, StaticVirtualChannel, SvcMessage};
 
 /// A type that is a Dynamic Virtual Channel (DVC)
 ///
@@ -90,15 +90,7 @@ impl Drdynvc {
     }
 }
 
-impl AsAny for Drdynvc {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
-    fn as_any_mut(&mut self) -> &mut dyn Any {
-        self
-    }
-}
+impl_as_any!(Drdynvc);
 
 impl Default for Drdynvc {
     fn default() -> Self {
@@ -115,7 +107,7 @@ impl StaticVirtualChannel for Drdynvc {
         CompressionCondition::WhenRdpDataIsCompressed
     }
 
-    fn process(&mut self, payload: &[u8]) -> PduResult<Vec<Box<dyn PduEncode>>> {
+    fn process(&mut self, payload: &[u8]) -> PduResult<Vec<SvcMessage>> {
         let dvc_ctx = decode_dvc_message(payload)?;
 
         match dvc_ctx.dvc_pdu {
