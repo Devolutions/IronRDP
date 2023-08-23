@@ -12,7 +12,8 @@ use ironrdp_pdu::rdp::headers::ShareDataPdu;
 use ironrdp_pdu::rdp::server_error_info::{ErrorInfo, ProtocolIndependentCode, ServerSetErrorInfoPdu};
 use ironrdp_pdu::rdp::vc::dvc;
 use ironrdp_pdu::write_buf::WriteBuf;
-use ironrdp_pdu::{encode_buf, mcs, PduParsing};
+use ironrdp_pdu::PduParsing;
+use ironrdp_pdu::{encode_buf, mcs};
 use ironrdp_svc::{chunkify, StaticChannelSet, CHANNEL_CHUNK_LENGTH};
 
 pub use self::gfx::GfxHandler;
@@ -61,7 +62,7 @@ impl Processor {
     }
 
     pub fn process(&mut self, frame: &[u8]) -> SessionResult<Vec<u8>> {
-        let data_ctx =
+        let data_ctx: SendDataIndicationCtx<'_> =
             ironrdp_connector::legacy::decode_send_data_indication(frame).map_err(crate::legacy::map_error)?;
         let channel_id = data_ctx.channel_id;
 

@@ -20,6 +20,30 @@ use pdu::{encode_buf, PduEncode};
 /// The integer type representing a static virtual channel ID.
 pub type StaticChannelId = u16;
 
+/// Encodable PDU that can used as a message to be sent over a static virtual channel.
+/// Additional SVC header flags could be added via [`SvcMessage::with_flags`] method.
+pub struct SvcMessage {
+    pdu: Box<dyn PduEncode>,
+    flags: ChannelFlags,
+}
+
+impl SvcMessage {
+    /// Adds additional SVC header flags to the message.
+    pub fn with_flags(mut self, flags: ChannelFlags) -> Self {
+        self.flags |= flags;
+        self
+    }
+}
+
+impl<T: PduEncode + 'static> From<T> for SvcMessage {
+    fn from(pdu: T) -> Self {
+        Self {
+            pdu: Box::new(pdu),
+            flags: ChannelFlags::empty(),
+        }
+    }
+}
+
 /// Defines which compression flag should be sent along the [`ChannelDef`] structure (CHANNEL_DEF)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CompressionCondition {
@@ -48,7 +72,7 @@ pub trait StaticVirtualChannel: AsAny + fmt::Debug + Send + Sync {
 
     /// Processes a payload received on the virtual channel.
     /// Returns a list of PDUs to be sent back to the client.
-    fn process(&mut self, payload: &[u8]) -> PduResult<Vec<Box<dyn PduEncode>>>;
+    fn process(&mut self, payload: &[u8]) -> PduResult<Vec<SvcMessage>>;
 
     #[doc(hidden)]
     fn is_drdynvc(&self) -> bool {
@@ -62,10 +86,10 @@ assert_obj_safe!(StaticVirtualChannel);
 /// Takes a vector of PDUs and breaks them into chunks prefixed with a [`ChannelPduHeader`].
 ///
 /// Each chunk is at most `max_chunk_len` bytes long (not including the Channel PDU Header).
-pub fn chunkify(pdus: Vec<Box<dyn PduEncode>>, max_chunk_len: usize) -> PduResult<Vec<WriteBuf>> {
+pub fn chunkify(messages: Vec<SvcMessage>, max_chunk_len: usize) -> PduResult<Vec<WriteBuf>> {
     let mut results = vec![];
-    for pdu in pdus {
-        results.extend(chunkify_one(pdu, max_chunk_len)?);
+    for message in messages {
+        results.extend(chunkify_one(message, max_chunk_len)?);
     }
     Ok(results)
 }
@@ -78,9 +102,9 @@ pub fn chunkify(pdus: Vec<Box<dyn PduEncode>>, max_chunk_len: usize) -> PduResul
 /// return 3 chunks, each 1600 bytes long, and the last chunk will be 800 bytes long.
 ///
 /// [[ Channel PDU Header | 1600 bytes of PDU data ] [ Channel PDU Header | 1600 bytes of PDU data ] [ Channel PDU Header | 800 bytes of PDU data ]]
-fn chunkify_one(pdu: Box<dyn PduEncode>, max_chunk_len: usize) -> PduResult<Vec<WriteBuf>> {
+fn chunkify_one(message: SvcMessage, max_chunk_len: usize) -> PduResult<Vec<WriteBuf>> {
     let mut encoded_pdu = WriteBuf::new(); // TODO(perf): reuse this buffer using `clear` and `filled` as appropriate
-    encode_buf(pdu.as_ref(), &mut encoded_pdu)?;
+    encode_buf(message.pdu.as_ref(), &mut encoded_pdu)?;
 
     let mut chunks = Vec::new();
 
@@ -107,6 +131,8 @@ fn chunkify_one(pdu: Box<dyn PduEncode>, max_chunk_len: usize) -> PduResult<Vec<
             if last {
                 flags |= ChannelFlags::LAST;
             }
+
+            flags |= message.flags;
 
             ChannelPduHeader {
                 length: ironrdp_pdu::cast_int!(ChannelPduHeader::NAME, "length", total_len)?,
@@ -155,6 +181,23 @@ pub trait AsAny {
     fn as_any(&self) -> &dyn Any;
 
     fn as_any_mut(&mut self) -> &mut dyn Any;
+}
+
+#[macro_export]
+macro_rules! impl_as_any {
+    ($t:ty) => {
+        impl $crate::AsAny for $t {
+            #[inline]
+            fn as_any(&self) -> &dyn core::any::Any {
+                self
+            }
+
+            #[inline]
+            fn as_any_mut(&mut self) -> &mut dyn core::any::Any {
+                self
+            }
+        }
+    };
 }
 
 /// A set holding at most one trait object for any given static channel.
@@ -300,7 +343,7 @@ bitflags! {
     ///
     /// [section 2.2.6.1.1 of MS-RDPBCGR]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/f125c65e-6901-43c3-8071-d7d5aaee7ae4
     #[derive(Debug, PartialEq, Copy, Clone)]
-    struct ChannelFlags: u32 {
+    pub struct ChannelFlags: u32 {
         /// CHANNEL_FLAG_FIRST
         const FIRST = 0x00000001;
         /// CHANNEL_FLAG_LAST

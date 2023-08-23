@@ -1,8 +1,6 @@
-use std::any::Any;
-
 use ironrdp_pdu::gcc::ChannelName;
-use ironrdp_pdu::{PduEncode, PduResult};
-use ironrdp_svc::{AsAny, CompressionCondition, StaticVirtualChannel};
+use ironrdp_pdu::PduResult;
+use ironrdp_svc::{impl_as_any, CompressionCondition, StaticVirtualChannel, SvcMessage};
 
 /// We currently don't implement any of rdpsnd, however it's required
 /// for rdpdr to work: [\[MS-RDPEFS\] Appendix A<1>]
@@ -25,15 +23,7 @@ impl Default for Rdpsnd {
     }
 }
 
-impl AsAny for Rdpsnd {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
-    fn as_any_mut(&mut self) -> &mut dyn Any {
-        self
-    }
-}
+impl_as_any!(Rdpsnd);
 
 impl StaticVirtualChannel for Rdpsnd {
     fn channel_name(&self) -> ChannelName {
@@ -44,7 +34,7 @@ impl StaticVirtualChannel for Rdpsnd {
         CompressionCondition::Never
     }
 
-    fn process(&mut self, _payload: &[u8]) -> PduResult<Vec<Box<dyn PduEncode>>> {
+    fn process(&mut self, _payload: &[u8]) -> PduResult<Vec<SvcMessage>> {
         Err(ironrdp_pdu::other_err!(
             "RDPSND",
             "ironrdp-rdpsnd::Rdpsnd is not implemented"

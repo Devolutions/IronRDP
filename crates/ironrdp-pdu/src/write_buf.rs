@@ -116,7 +116,7 @@ impl WriteBuf {
 
     /// Set the filled cursor to the very beginning of the buffer.
     ///
-    /// If the buffer grew big, it is shrinked in order to reclaim memory.
+    /// If the buffer grew big, it is shrunk in order to reclaim memory.
     pub fn clear(&mut self) {
         self.filled = 0;
         self.inner.shrink_to(MAX_CAPACITY_WHEN_CLEARED);

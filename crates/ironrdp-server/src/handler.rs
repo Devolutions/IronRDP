@@ -33,7 +33,7 @@ pub enum MouseEvent {
 
 /// Input Event Handler for an RDP server
 ///
-/// Whenever the RDP server will receive an input event from a client, the relevent callback from
+/// Whenever the RDP server will receive an input event from a client, the relevant callback from
 /// this handler will be called
 ///
 /// # Example

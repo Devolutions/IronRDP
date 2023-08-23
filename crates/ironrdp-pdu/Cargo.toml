@@ -29,7 +29,7 @@ tap = "1.0.1"
 bit_field = "0.10.2"
 byteorder = "1.4.3"
 der-parser = "8.2.0"
-thiserror = "1.0.40"
+thiserror.workspace = true
 md5 = { package = "md-5", version = "0.10.5" }
 num-bigint = "0.4.3"
 num-derive = "0.3.3"

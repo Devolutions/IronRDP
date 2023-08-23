@@ -4,6 +4,8 @@
 
 #[cfg(feature = "acceptor")]
 pub use ironrdp_acceptor as acceptor;
+#[cfg(feature = "cliprdr")]
+pub use ironrdp_cliprdr as cliprdr;
 #[cfg(feature = "connector")]
 pub use ironrdp_connector as connector;
 #[cfg(feature = "dvc")]

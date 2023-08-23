@@ -1699,6 +1699,7 @@ name = "ironrdp"
 version = "0.5.0"
 dependencies = [
  "ironrdp-acceptor",
+ "ironrdp-cliprdr",
  "ironrdp-connector",
  "ironrdp-dvc",
  "ironrdp-graphics",
@@ -1762,6 +1763,9 @@ version = "0.1.0"
 dependencies = [
  "bitflags 2.4.0",
  "ironrdp-pdu",
+ "ironrdp-svc",
+ "thiserror",
+ "tracing",
 ]
 
 [[package]]
