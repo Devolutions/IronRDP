@@ -1,7 +1,7 @@
 //! PDUs for [\[MS-RDPEFS\]: Remote Desktop Protocol: File System Virtual Channel Extension]
 //!
 //! [\[MS-RDPEFS\]: Remote Desktop Protocol: File System Virtual Channel Extension]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/34d9de58-b2b5-40b6-b970-f82d4603bdb5
-
+use bitflags::bitflags;
 use std::fmt::Debug;
 use std::mem::size_of;
 
@@ -269,19 +269,34 @@ impl From<ClientNameRequestUnicodeFlag> for CharacterSet {
 }
 
 /// [2.2.2.7 Server Core Capability Request (DR_CORE_CAPABILITY_REQ)](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/702789c3-b924-4bc2-9280-3221bc7d6797)
+/// [2.2.2.8 Client Core Capability Response (DR_CORE_CAPABILITY_RSP)](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/f513bf87-cca0-488a-ac5c-18cf18f4a7e1)
 #[derive(Debug)]
-pub struct ServerCoreCapabilityRequest {
+pub struct CoreCapability {
     num_capabilities: u16,
     padding: u16,
     capabilities: Vec<CapabilitySet>,
+    kind: CoreCapabilityKind,
 }
 
-impl ServerCoreCapabilityRequest {
-    const NAME: &str = "ServerCoreCapabilityRequest";
+impl CoreCapability {
     const HEADERLESS_FIXED_PART_SIZE: usize = size_of::<u16>() * 2;
 
+    /// Creates a new [`DR_CORE_CAPABILITY_RSP`] with the given `capabilities`.
+    ///
+    /// [`DR_CORE_CAPABILITY_RSP`]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/f513bf87-cca0-488a-ac5c-18cf18f4a7e1
+    pub fn new_response(capabilities: Vec<CapabilitySet>) -> Self {
+        Self {
+            num_capabilities: capabilities.len() as u16,
+            padding: 0,
+            capabilities,
+            kind: CoreCapabilityKind::ClientCoreCapabilityResponse,
+        }
+    }
+
     pub fn decode(payload: &mut ReadCursor<'_>) -> PduResult<Self> {
-        ensure_size!(in: payload, size: Self::HEADERLESS_FIXED_PART_SIZE);
+        // assumes we're decoding a message from the server
+        let kind = CoreCapabilityKind::ServerCoreCapabilityRequest;
+        ensure_size!(ctx: kind.name(), in: payload, size: Self::HEADERLESS_FIXED_PART_SIZE);
         let num_capabilities = payload.read_u16();
         let padding = payload.read_u16();
         let mut capabilities = vec![];
@@ -293,15 +308,33 @@ impl ServerCoreCapabilityRequest {
             num_capabilities,
             padding,
             capabilities,
+            kind,
         })
+    }
+}
+
+#[derive(Debug)]
+enum CoreCapabilityKind {
+    /// [2.2.2.7 Server Core Capability Request (DR_CORE_CAPABILITY_REQ)](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/702789c3-b924-4bc2-9280-3221bc7d6797)
+    ServerCoreCapabilityRequest,
+    /// [2.2.2.8 Client Core Capability Response (DR_CORE_CAPABILITY_RSP)](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/f513bf87-cca0-488a-ac5c-18cf18f4a7e1)
+    ClientCoreCapabilityResponse,
+}
+
+impl CoreCapabilityKind {
+    fn name(&self) -> &'static str {
+        match self {
+            CoreCapabilityKind::ServerCoreCapabilityRequest => "ServerCoreCapabilityRequest",
+            CoreCapabilityKind::ClientCoreCapabilityResponse => "ClientCoreCapabilityResponse",
+        }
     }
 }
 
 /// [2.2.1.2.1 Capability Message (CAPABILITY_SET)](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/f1b9dd1d-2c37-4aac-9836-4b0df02369ba)
 #[derive(Debug)]
-struct CapabilitySet {
+pub struct CapabilitySet {
     header: CapabilityHeader,
-    data: Capability,
+    capability_data: Capability,
 }
 
 impl CapabilitySet {
@@ -311,11 +344,64 @@ impl CapabilitySet {
     //     Ok(w)
     // }
 
+    /// Creates a new [`GENERAL_CAPS_SET`].
+    ///
+    /// `special_type_device_cap`: A 32-bit unsigned integer that
+    /// specifies the number of special devices to be redirected
+    /// before the user is logged on. Special devices are those
+    /// that are safe and/or required to be redirected before a
+    /// user logs on (such as smart cards and serial ports).
+    ///
+    /// [`GENERAL_CAPS_SET`]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/06c7cb30-303d-4fa2-b396-806df8ac1501
+    pub fn new_general(special_type_device_cap: u32) -> Self {
+        Self {
+            header: CapabilityHeader::new_general(),
+            capability_data: Capability::General(GeneralCapabilitySet {
+                os_type: 0,
+                os_version: 0,
+                protocol_major_version: 1,
+                // VERSION_MINOR_12 is what Teleport has successfully been using.
+                // There is a version 13 as well, but it's not clear to me what
+                // the difference is.
+                protocol_minor_version: VERSION_MINOR_12,
+                io_code_1: IoCode1::REQUIRED,
+                io_code_2: 0,
+                extended_pdu: ExtendedPdu::RDPDR_DEVICE_REMOVE_PDUS | ExtendedPdu::RDPDR_CLIENT_DISPLAY_NAME_PDU,
+                extra_flags_1: ExtraFlags1::empty(),
+                extra_flags_2: 0,
+                special_type_device_cap,
+            }),
+        }
+    }
+
+    /// Creates a new [`SMARTCARD_CAPS_SET`].
+    ///
+    /// [`SMARTCARD_CAPS_SET`]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/e02de60a-4d32-4dc7-ab17-9d591129eb93
+    pub fn new_smartcard() -> Self {
+        Self {
+            header: CapabilityHeader::new_smartcard(),
+            capability_data: Capability::Smartcard,
+        }
+    }
+
+    /// Creates a new [`DRIVE_CAPS_SET`].
+    ///
+    /// [`DRIVE_CAPS_SET`]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/4f018cd2-60ba-4c7b-adcf-55bd05cea6f8
+    pub fn new_drive() -> Self {
+        Self {
+            header: CapabilityHeader::new_drive(),
+            capability_data: Capability::Drive,
+        }
+    }
+
     fn decode(payload: &mut ReadCursor<'_>) -> PduResult<Self> {
         let header = CapabilityHeader::decode(payload)?;
-        let data = Capability::decode(payload, &header)?;
+        let capability_data = Capability::decode(payload, &header)?;
 
-        Ok(Self { header, data })
+        Ok(Self {
+            header,
+            capability_data,
+        })
     }
 }
 
@@ -330,6 +416,30 @@ struct CapabilityHeader {
 impl CapabilityHeader {
     const NAME: &str = "CapabilityHeader";
     const SIZE: usize = size_of::<u16>() * 2 + size_of::<u32>();
+
+    fn new_general() -> Self {
+        Self {
+            cap_type: CapabilityType::General,
+            length: (Self::SIZE + GeneralCapabilitySet::SIZE) as u16,
+            version: GENERAL_CAPABILITY_VERSION_02,
+        }
+    }
+
+    fn new_smartcard() -> Self {
+        Self {
+            cap_type: CapabilityType::Smartcard,
+            length: Self::SIZE as u16,
+            version: SMARTCARD_CAPABILITY_VERSION_01,
+        }
+    }
+
+    fn new_drive() -> Self {
+        Self {
+            cap_type: CapabilityType::Drive,
+            length: Self::SIZE as u16,
+            version: DRIVE_CAPABILITY_VERSION_02,
+        }
+    }
 
     fn decode(payload: &mut ReadCursor<'_>) -> PduResult<Self> {
         ensure_size!(in: payload, size: Self::SIZE);
@@ -360,6 +470,10 @@ enum CapabilityType {
 const GENERAL_CAPABILITY_VERSION_01: u32 = 0x00000001;
 /// GENERAL_CAPABILITY_VERSION_02
 const GENERAL_CAPABILITY_VERSION_02: u32 = 0x00000002;
+/// SMARTCARD_CAPABILITY_VERSION_01
+const SMARTCARD_CAPABILITY_VERSION_01: u32 = 0x00000001;
+/// DRIVE_CAPABILITY_VERSION_02
+const DRIVE_CAPABILITY_VERSION_02: u32 = 0x00000002;
 
 impl std::convert::TryFrom<u16> for CapabilityType {
     type Error = PduError;
@@ -410,21 +524,40 @@ impl Capability {
 /// [2.2.2.7.1 General Capability Set (GENERAL_CAPS_SET)](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/06c7cb30-303d-4fa2-b396-806df8ac1501)
 #[derive(Debug)]
 struct GeneralCapabilitySet {
+    /// MUST be ignored.
     os_type: u32,
+    /// SHOULD be ignored.
     os_version: u32,
+    /// MUST be set to 1.
     protocol_major_version: u16,
+    /// MUST be set to one of the values described by the VersionMinor field
+    /// of the [Server Client ID Confirm (section 2.2.2.6)] packet.
+    ///
+    /// [Server Client ID Confirm (section 2.2.2.6)]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/bbbb9666-6994-4cf6-8e65-0d46eb319c6e
     protocol_minor_version: u16,
-    io_code_1: u32,
+    /// See [`IoCode1`].
+    io_code_1: IoCode1,
+    /// MUST be set to 0.
     io_code_2: u32,
-    extended_pdu: u32,
-    extra_flags_1: u32,
+    /// See [`ExtendedPdu`].
+    extended_pdu: ExtendedPdu,
+    /// See [`ExtraFlags1`].
+    extra_flags_1: ExtraFlags1,
+    /// MUST be set to 0.
     extra_flags_2: u32,
+    /// A 32-bit unsigned integer that specifies the number
+    /// of special devices to be redirected before the user
+    /// is logged on. Special devices are those that are safe
+    /// and/or required to be redirected before a user logs
+    /// on (such as smart cards and serial ports).
     special_type_device_cap: u32,
 }
 
 impl GeneralCapabilitySet {
     const NAME: &str = "GeneralCapabilitySet";
+    #[allow(clippy::manual_bits)]
     const SIZE: usize = size_of::<u32>() * 8 + size_of::<u16>() * 2;
+
     // fn encode(&self) -> RdpResult<Message> {
     //     let mut w = vec![];
     //     w.write_u32::<LittleEndian>(self.os_type)?;
@@ -447,10 +580,13 @@ impl GeneralCapabilitySet {
             os_version: payload.read_u32(),
             protocol_major_version: payload.read_u16(),
             protocol_minor_version: payload.read_u16(),
-            io_code_1: payload.read_u32(),
+            io_code_1: IoCode1::from_bits(payload.read_u32())
+                .ok_or_else(|| invalid_message_err!("io_code_1", "invalid io_code_1"))?,
             io_code_2: payload.read_u32(),
-            extended_pdu: payload.read_u32(),
-            extra_flags_1: payload.read_u32(),
+            extended_pdu: ExtendedPdu::from_bits(payload.read_u32())
+                .ok_or_else(|| invalid_message_err!("extended_pdu", "invalid extended_pdu"))?,
+            extra_flags_1: ExtraFlags1::from_bits(payload.read_u32())
+                .ok_or_else(|| invalid_message_err!("extra_flags_1", "invalid extra_flags_1"))?,
             extra_flags_2: payload.read_u32(),
             special_type_device_cap: if version == GENERAL_CAPABILITY_VERSION_02 {
                 payload.read_u32()
@@ -460,3 +596,93 @@ impl GeneralCapabilitySet {
         })
     }
 }
+
+bitflags! {
+    /// A 32-bit unsigned integer that identifies a bitmask of the supported I/O requests for the given device.
+    /// If the bit is set, the I/O request is allowed. The requests are identified by the MajorFunction field
+    /// in the Device I/O Request (section 2.2.1.4) header. This field MUST be set to a valid combination of
+    /// the following values.
+    #[derive(Debug)]
+    struct IoCode1: u32 {
+        /// Unused, always set.
+        const RDPDR_IRP_MJ_CREATE = 0x00000001;
+        /// Unused, always set.
+        const RDPDR_IRP_MJ_CLEANUP = 0x00000002;
+        /// Unused, always set.
+        const RDPDR_IRP_MJ_CLOSE = 0x00000004;
+        /// Unused, always set.
+        const RDPDR_IRP_MJ_READ = 0x00000008;
+        /// Unused, always set.
+        const RDPDR_IRP_MJ_WRITE = 0x00000010;
+        /// Unused, always set.
+        const RDPDR_IRP_MJ_FLUSH_BUFFERS = 0x00000020;
+        /// Unused, always set.
+        const RDPDR_IRP_MJ_SHUTDOWN = 0x00000040;
+        /// Unused, always set.
+        const RDPDR_IRP_MJ_DEVICE_CONTROL = 0x00000080;
+        /// Unused, always set.
+        const RDPDR_IRP_MJ_QUERY_VOLUME_INFORMATION = 0x00000100;
+        /// Unused, always set.
+        const RDPDR_IRP_MJ_SET_VOLUME_INFORMATION = 0x00000200;
+        /// Unused, always set.
+        const RDPDR_IRP_MJ_QUERY_INFORMATION = 0x00000400;
+        /// Unused, always set.
+        const RDPDR_IRP_MJ_SET_INFORMATION = 0x00000800;
+        /// Unused, always set.
+        const RDPDR_IRP_MJ_DIRECTORY_CONTROL = 0x00001000;
+        /// Unused, always set.
+        const RDPDR_IRP_MJ_LOCK_CONTROL = 0x00002000;
+        /// Enable Query Security requests (IRP_MJ_QUERY_SECURITY).
+        const RDPDR_IRP_MJ_QUERY_SECURITY = 0x00004000;
+        /// Enable Set Security requests (IRP_MJ_SET_SECURITY).
+        const RDPDR_IRP_MJ_SET_SECURITY = 0x00008000;
+
+        /// Combination of all the required bits.
+        const REQUIRED = Self::RDPDR_IRP_MJ_CREATE.bits()
+            | Self::RDPDR_IRP_MJ_CLEANUP.bits()
+            | Self::RDPDR_IRP_MJ_CLOSE.bits()
+            | Self::RDPDR_IRP_MJ_READ.bits()
+            | Self::RDPDR_IRP_MJ_WRITE.bits()
+            | Self::RDPDR_IRP_MJ_FLUSH_BUFFERS.bits()
+            | Self::RDPDR_IRP_MJ_SHUTDOWN.bits()
+            | Self::RDPDR_IRP_MJ_DEVICE_CONTROL.bits()
+            | Self::RDPDR_IRP_MJ_QUERY_VOLUME_INFORMATION.bits()
+            | Self::RDPDR_IRP_MJ_SET_VOLUME_INFORMATION.bits()
+            | Self::RDPDR_IRP_MJ_QUERY_INFORMATION.bits()
+            | Self::RDPDR_IRP_MJ_SET_INFORMATION.bits()
+            | Self::RDPDR_IRP_MJ_DIRECTORY_CONTROL.bits()
+            | Self::RDPDR_IRP_MJ_LOCK_CONTROL.bits();
+
+    }
+}
+
+bitflags! {
+    /// A 32-bit unsigned integer that specifies extended PDU flags.
+    /// This field MUST be set as a bitmask of the following values.
+    #[derive(Debug)]
+    struct ExtendedPdu: u32 {
+        /// Allow the client to send Client Drive Device List Remove packets.
+        const RDPDR_DEVICE_REMOVE_PDUS = 0x00000001;
+        /// Unused, always set.
+        const RDPDR_CLIENT_DISPLAY_NAME_PDU = 0x00000002;
+        /// Allow the server to send a Server User Logged On packet.
+        const RDPDR_USER_LOGGEDON_PDU = 0x00000004;
+    }
+}
+
+bitflags! {
+    /// A 32-bit unsigned integer that specifies extended flags.
+    /// The extraFlags1 field MUST be set as a bitmask of the following value.
+    #[derive(Debug)]
+    struct ExtraFlags1: u32 {
+        /// Optionally present only in the Client Core Capability Response.
+        /// Allows the server to send multiple simultaneous read or write requests
+        /// on the same file from a redirected file system.
+        const ENABLE_ASYNCIO = 0x00000001;
+    }
+}
+
+/// From VersionMinor in [Server Client ID Confirm (section 2.2.2.6)]
+///
+/// [Server Client ID Confirm (section 2.2.2.6)]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/bbbb9666-6994-4cf6-8e65-0d46eb319c6e
+const VERSION_MINOR_12: u16 = 0x000C;

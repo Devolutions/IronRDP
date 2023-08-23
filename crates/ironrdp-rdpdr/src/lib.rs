@@ -5,7 +5,7 @@
 
 mod pdu;
 use crate::pdu::efs::{
-    ClientNameRequest, ClientNameRequestUnicodeFlag, Component, PacketId, ServerCoreCapabilityRequest, SharedHeader,
+    CapabilitySet, ClientNameRequest, ClientNameRequestUnicodeFlag, Component, CoreCapability, PacketId, SharedHeader,
     VersionAndIdPdu, VersionAndIdPduKind,
 };
 use ironrdp_pdu::{cursor::ReadCursor, gcc::ChannelName, PduEncode, PduResult};
@@ -60,14 +60,20 @@ impl Rdpdr {
     }
 
     fn handle_server_capability(&mut self, payload: &mut ReadCursor<'_>) -> PduResult<Vec<Box<dyn PduEncode>>> {
-        let req = ServerCoreCapabilityRequest::decode(payload)?;
+        let req = CoreCapability::decode(payload)?;
         trace!("received {:?}", req);
 
-        // let resp = ClientCoreCapabilityResponse::new_response(self.allow_directory_sharing);
-        // debug!("sending RDP ClientCoreCapabilityResponse: {:?}", resp);
-        // let resp = self.add_headers_and_chunkify(PacketId::PAKID_CORE_CLIENT_CAPABILITY, resp.encode()?)?;
-        // Ok(resp)
-        Ok(vec![])
+        // TODO: Make capability sets configurable in the Rdpdr struct
+        let special_type_device_cap = 1; // 1 for smartcard
+        let res = CoreCapability::new_response(vec![
+            CapabilitySet::new_general(special_type_device_cap),
+            CapabilitySet::new_smartcard(),
+            CapabilitySet::new_drive(),
+        ]);
+        trace!("sending {:?}", res);
+
+        // TODO: Make CoreCapability PduEncode
+        Ok(vec![Box::new(res)])
     }
 }
 
