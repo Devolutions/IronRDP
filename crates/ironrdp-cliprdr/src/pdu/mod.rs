@@ -115,6 +115,22 @@ pub enum ClipboardPdu<'a> {
 impl ClipboardPdu<'_> {
     const NAME: &str = "CliboardPdu";
     const FIXED_PART_SIZE: usize = std::mem::size_of::<u16>();
+
+    pub fn message_name(&self) -> &'static str {
+        match self {
+            ClipboardPdu::MonitorReady => "CLIPRDR_MONITOR_READY",
+            ClipboardPdu::FormatList(_) => "CLIPRDR_FORMAT_LIST",
+            ClipboardPdu::FormatListResponse(_) => "CLIPRDR_FORMAT_LIST_RESPONSE",
+            ClipboardPdu::FormatDataRequest(_) => "CLIPRDR_FORMAT_DATA_REQUEST",
+            ClipboardPdu::FormatDataResponse(_) => "CLIPRDR_FORMAT_DATA_RESPONSE",
+            ClipboardPdu::TemporaryDirectory(_) => "CLIPRDR_TEMP_DIRECTORY",
+            ClipboardPdu::Capabilites(_) => "CLIPRDR_CAPABILITIES",
+            ClipboardPdu::FileContentsRequest(_) => "CLIPRDR_FILECONTENTS_REQUEST",
+            ClipboardPdu::FileContentsResponse(_) => "CLIPRDR_FILECONTENTS_RESPONSE",
+            ClipboardPdu::LockData(_) => "CLIPRDR_LOCK_CLIPDATA",
+            ClipboardPdu::UnlockData(_) => "CLIPRDR_UNLOCK_CLIPDATA",
+        }
+    }
 }
 
 impl PduEncode for ClipboardPdu<'_> {

@@ -2,6 +2,8 @@
 //!
 //! This is a meta crate re-exporting other ironrdp crates for convenience.
 
+#[cfg(feature = "cliprdr")]
+pub use ironrdp_cliprdr as cliprdr;
 #[cfg(feature = "connector")]
 pub use ironrdp_connector as connector;
 #[cfg(feature = "dvc")]

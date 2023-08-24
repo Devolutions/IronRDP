@@ -13,6 +13,15 @@ pub struct ClipboardFormat {
     pub name: String,
 }
 
+impl ClipboardFormat {
+    pub fn new_standard(id: u32) -> Self {
+        Self {
+            id,
+            name: String::new(),
+        }
+    }
+}
+
 /// Represents `CLIPRDR_FORMAT_LIST`
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FormatList<'a> {

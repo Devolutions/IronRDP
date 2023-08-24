@@ -1,4 +1,4 @@
-use std::ops::{Index, Range};
+use std::ops::{Index, Range, RangeFrom, RangeFull, RangeInclusive, RangeTo, RangeToInclusive};
 
 /// Max capacity to keep for the inner Vec<u8> when `WriteBuf::clear` is called.
 const MAX_CAPACITY_WHEN_CLEARED: usize = 16384; // 16 kib
@@ -141,11 +141,52 @@ impl std::io::Write for WriteBuf {
     }
 }
 
-// Allows you to do `&buf[..]` to get a slice of the filled region.
+// Allows the user to get a slice of the filled region using indexing operations (e.g.: buf[..], buf[..10], buf[2..8]).
+
 impl Index<Range<usize>> for WriteBuf {
     type Output = [u8];
 
     fn index(&self, range: Range<usize>) -> &Self::Output {
-        &self.inner[range]
+        &self.filled()[range]
+    }
+}
+
+impl Index<RangeFrom<usize>> for WriteBuf {
+    type Output = [u8];
+
+    fn index(&self, range: RangeFrom<usize>) -> &Self::Output {
+        &self.filled()[range]
+    }
+}
+
+impl Index<RangeFull> for WriteBuf {
+    type Output = [u8];
+
+    fn index(&self, _range: RangeFull) -> &Self::Output {
+        self.filled()
+    }
+}
+
+impl Index<RangeInclusive<usize>> for WriteBuf {
+    type Output = [u8];
+
+    fn index(&self, range: RangeInclusive<usize>) -> &Self::Output {
+        &self.filled()[range]
+    }
+}
+
+impl Index<RangeTo<usize>> for WriteBuf {
+    type Output = [u8];
+
+    fn index(&self, range: RangeTo<usize>) -> &Self::Output {
+        &self.filled()[range]
+    }
+}
+
+impl Index<RangeToInclusive<usize>> for WriteBuf {
+    type Output = [u8];
+
+    fn index(&self, range: RangeToInclusive<usize>) -> &Self::Output {
+        &self.filled()[range]
     }
 }
