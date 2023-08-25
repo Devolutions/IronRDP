@@ -1,0 +1,25 @@
+[package]
+name = "ironrdp-rdpsnd"
+version = "0.1.0"
+readme = "README.md"
+description = "RDPSND static channel for audio output implemented as described in MS-RDPEA"
+edition.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[lib]
+doctest = false
+test = false
+
+[features]
+default = []
+std = []
+
+[dependencies]
+ironrdp-svc.workspace = true
+ironrdp-pdu = { workspace = true, features = ["alloc"] }
+tracing.workspace = true
