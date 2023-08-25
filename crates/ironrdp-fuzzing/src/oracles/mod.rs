@@ -86,7 +86,25 @@ pub fn rle_decompress_bitmap(input: BitmapInput) {
     let _ = ironrdp_graphics::rle::decompress_8_bpp(input.src, &mut out, input.width, input.height);
 }
 
-pub fn rdp6_decode_bitmap_stream_to_rgb24(input: BitmapInput) {
+pub fn rdp6_encode_bitmap_stream(input: &BitmapInput) {
+    use ironrdp_graphics::rdp6::{BitmapStreamEncoder, RgbAChannels, RgbChannels};
+
+    let mut out = vec![0; input.src.len() * 2];
+
+    let _ = BitmapStreamEncoder::new(input.width.into(), input.height.into()).encode_bitmap::<RgbChannels>(
+        input.src,
+        out.as_mut_slice(),
+        false,
+    );
+
+    let _ = BitmapStreamEncoder::new(input.width.into(), input.height.into()).encode_bitmap::<RgbAChannels>(
+        input.src,
+        out.as_mut_slice(),
+        true,
+    );
+}
+
+pub fn rdp6_decode_bitmap_stream_to_rgb24(input: &BitmapInput) {
     use ironrdp_graphics::rdp6::BitmapStreamDecoder;
 
     let mut out = Vec::new();

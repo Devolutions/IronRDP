@@ -3,23 +3,96 @@ use crate::{PduDecode, PduEncode, PduResult, ReadCursor, WriteCursor};
 const NON_RLE_PADDING_SIZE: usize = 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ColorPlanes<'a> {
-    Argb {
-        data: &'a [u8],
-    },
+pub enum ColorPlaneDefinition {
+    Argb,
     AYCoCg {
         color_loss_level: u8,
         use_chroma_subsampling: bool,
-        data: &'a [u8],
     },
 }
 
-/// Represents `RDP6_BITMAP_STREAM` structure described in [MS-RDPEGDI] 2.2.2.5.1
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct BitmapStream<'a> {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BitmapStreamHeader {
     pub enable_rle_compression: bool,
     pub use_alpha: bool,
-    pub color_planes: ColorPlanes<'a>,
+    pub color_plane_definition: ColorPlaneDefinition,
+}
+
+impl BitmapStreamHeader {
+    pub const NAME: &'static str = "Rdp6BitmapStreamHeader";
+    const FIXED_PART_SIZE: usize = 1;
+}
+
+impl PduDecode<'_> for BitmapStreamHeader {
+    fn decode(src: &mut ReadCursor<'_>) -> PduResult<Self> {
+        ensure_fixed_part_size!(in: src);
+        let header = src.read_u8();
+
+        let color_loss_level = header & 0x07;
+        let use_chroma_subsampling = (header & 0x08) != 0;
+        let enable_rle_compression = (header & 0x10) != 0;
+        let use_alpha = (header & 0x20) == 0;
+
+        let color_plane_definition = match color_loss_level {
+            0 => ColorPlaneDefinition::Argb,
+            color_loss_level => ColorPlaneDefinition::AYCoCg {
+                color_loss_level,
+                use_chroma_subsampling,
+            },
+        };
+
+        Ok(Self {
+            enable_rle_compression,
+            use_alpha,
+            color_plane_definition,
+        })
+    }
+}
+
+impl PduEncode for BitmapStreamHeader {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_size!(in: dst, size: self.size());
+
+        let mut header = ((self.enable_rle_compression as u8) << 4) | ((!self.use_alpha as u8) << 5);
+
+        match self.color_plane_definition {
+            ColorPlaneDefinition::Argb { .. } => {
+                // ARGB color planes keep cll and cs flags set to 0
+            }
+            ColorPlaneDefinition::AYCoCg {
+                color_loss_level,
+                use_chroma_subsampling,
+                ..
+            } => {
+                // Add cll and cs flags to header
+                header |= (color_loss_level & 0x07) | ((use_chroma_subsampling as u8) << 3);
+            }
+        }
+
+        dst.write_u8(header);
+
+        Ok(())
+    }
+
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    fn size(&self) -> usize {
+        Self::FIXED_PART_SIZE
+            + if self.enable_rle_compression {
+                0
+            } else {
+                NON_RLE_PADDING_SIZE
+            }
+    }
+}
+
+/// Represents `RDP6_BITMAP_STREAM` structure described in [MS-RDPEGDI] 2.2.2.5.1
+#[derive(Debug, Clone)]
+pub struct BitmapStream<'a> {
+    pub header: BitmapStreamHeader,
+    pub color_planes: &'a [u8],
 }
 
 impl<'a> BitmapStream<'a> {
@@ -27,16 +100,13 @@ impl<'a> BitmapStream<'a> {
     const FIXED_PART_SIZE: usize = 1;
 
     pub fn color_panes_data(&self) -> &'a [u8] {
-        match self.color_planes {
-            ColorPlanes::Argb { data } => data,
-            ColorPlanes::AYCoCg { data, .. } => data,
-        }
+        self.color_planes
     }
 
     pub fn has_subsampled_chroma(&self) -> bool {
-        match self.color_planes {
-            ColorPlanes::Argb { .. } => false,
-            ColorPlanes::AYCoCg {
+        match self.header.color_plane_definition {
+            ColorPlaneDefinition::Argb { .. } => false,
+            ColorPlaneDefinition::AYCoCg {
                 use_chroma_subsampling, ..
             } => use_chroma_subsampling,
         }
@@ -46,14 +116,9 @@ impl<'a> BitmapStream<'a> {
 impl<'a> PduDecode<'a> for BitmapStream<'a> {
     fn decode(src: &mut ReadCursor<'a>) -> PduResult<Self> {
         ensure_fixed_part_size!(in: src);
-        let header = src.read_u8();
+        let header = crate::decode_cursor::<BitmapStreamHeader>(src)?;
 
-        let color_loss_level = header & 0x07;
-        let use_chroma_subsampling = (header & 0x08) != 0;
-        let enable_rle_compression = (header & 0x10) != 0;
-        let use_alpha = (header & 0x20) == 0;
-
-        let color_planes_size = if !enable_rle_compression {
+        let color_planes_size = if !header.enable_rle_compression {
             // Cut padding field if RLE flags is set to 0
             if src.is_empty() {
                 return Err(invalid_message_err!(
@@ -66,55 +131,21 @@ impl<'a> PduDecode<'a> for BitmapStream<'a> {
             src.len()
         };
 
-        let color_planes_data = src.peek_slice(color_planes_size);
+        let color_planes = src.peek_slice(color_planes_size);
 
-        let color_planes = match color_loss_level {
-            0 => {
-                // ARGB color planes
-                ColorPlanes::Argb {
-                    data: color_planes_data,
-                }
-            }
-            color_loss_level => ColorPlanes::AYCoCg {
-                color_loss_level,
-                use_chroma_subsampling,
-                data: color_planes_data,
-            },
-        };
-
-        Ok(Self {
-            enable_rle_compression,
-            use_alpha,
-            color_planes,
-        })
+        Ok(Self { header, color_planes })
     }
 }
 
 impl<'a> PduEncode for BitmapStream<'a> {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
-        let mut header = ((self.enable_rle_compression as u8) << 4) | ((!self.use_alpha as u8) << 5);
-
-        match self.color_planes {
-            ColorPlanes::Argb { .. } => {
-                // ARGB color planes keep cll and cs flags set to 0
-            }
-            ColorPlanes::AYCoCg {
-                color_loss_level,
-                use_chroma_subsampling,
-                ..
-            } => {
-                // Add cll and cs flags to header
-                header |= (color_loss_level & 0x07) | ((use_chroma_subsampling as u8) << 3);
-            }
-        }
-
         ensure_size!(in: dst, size: self.size());
 
-        dst.write_u8(header);
+        crate::encode_cursor(&self.header, dst)?;
         dst.write_slice(self.color_panes_data());
 
         // Write padding
-        if !self.enable_rle_compression {
+        if !self.header.enable_rle_compression {
             dst.write_u8(0);
         }
 
@@ -126,11 +157,7 @@ impl<'a> PduEncode for BitmapStream<'a> {
     }
 
     fn size(&self) -> usize {
-        if self.enable_rle_compression {
-            Self::FIXED_PART_SIZE + self.color_panes_data().len()
-        } else {
-            Self::FIXED_PART_SIZE + NON_RLE_PADDING_SIZE + self.color_panes_data().len()
-        }
+        self.header.size() + self.color_panes_data().len()
     }
 }
 
@@ -162,18 +189,20 @@ mod tests {
             &[0x3F, 0x01, 0x02, 0x03, 0x04],
             expect![[r#"
                 BitmapStream {
-                    enable_rle_compression: true,
-                    use_alpha: false,
-                    color_planes: AYCoCg {
-                        color_loss_level: 7,
-                        use_chroma_subsampling: true,
-                        data: [
-                            1,
-                            2,
-                            3,
-                            4,
-                        ],
+                    header: BitmapStreamHeader {
+                        enable_rle_compression: true,
+                        use_alpha: false,
+                        color_plane_definition: AYCoCg {
+                            color_loss_level: 7,
+                            use_chroma_subsampling: true,
+                        },
                     },
+                    color_planes: [
+                        1,
+                        2,
+                        3,
+                        4,
+                    ],
                 }
             "#]],
         );
@@ -183,16 +212,17 @@ mod tests {
             &[0x10, 0x01, 0x02, 0x03, 0x04],
             expect![[r#"
                 BitmapStream {
-                    enable_rle_compression: true,
-                    use_alpha: true,
-                    color_planes: Argb {
-                        data: [
-                            1,
-                            2,
-                            3,
-                            4,
-                        ],
+                    header: BitmapStreamHeader {
+                        enable_rle_compression: true,
+                        use_alpha: true,
+                        color_plane_definition: Argb,
                     },
+                    color_planes: [
+                        1,
+                        2,
+                        3,
+                        4,
+                    ],
                 }
             "#]],
         );
@@ -202,15 +232,16 @@ mod tests {
             &[0x20, 0x01, 0x02, 0x03, 0x00],
             expect![[r#"
                 BitmapStream {
-                    enable_rle_compression: false,
-                    use_alpha: false,
-                    color_planes: Argb {
-                        data: [
-                            1,
-                            2,
-                            3,
-                        ],
+                    header: BitmapStreamHeader {
+                        enable_rle_compression: false,
+                        use_alpha: false,
+                        color_plane_definition: Argb,
                     },
+                    color_planes: [
+                        1,
+                        2,
+                        3,
+                    ],
                 }
             "#]],
         );
@@ -220,11 +251,12 @@ mod tests {
             &[0x10],
             expect![[r#"
                 BitmapStream {
-                    enable_rle_compression: true,
-                    use_alpha: true,
-                    color_planes: Argb {
-                        data: [],
+                    header: BitmapStreamHeader {
+                        enable_rle_compression: true,
+                        use_alpha: true,
+                        color_plane_definition: Argb,
                     },
+                    color_planes: [],
                 }
             "#]],
         );
@@ -234,11 +266,12 @@ mod tests {
             &[0x00, 0x00],
             expect![[r#"
                 BitmapStream {
-                    enable_rle_compression: false,
-                    use_alpha: true,
-                    color_planes: Argb {
-                        data: [],
+                    header: BitmapStreamHeader {
+                        enable_rle_compression: false,
+                        use_alpha: true,
+                        color_plane_definition: Argb,
                     },
+                    color_planes: [],
                 }
             "#]],
         );

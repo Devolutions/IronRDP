@@ -19,13 +19,17 @@ test = false
 default = ["pdu", "connector", "session"]
 pdu = ["dep:ironrdp-pdu"]
 connector = ["dep:ironrdp-connector"]
+acceptor = ["dep:ironrdp-acceptor"]
 session = ["dep:ironrdp-session"]
 graphics = ["dep:ironrdp-graphics"]
 input = ["dep:ironrdp-input"]
+server = ["dep:ironrdp-server"]
 
 [dependencies]
 ironrdp-pdu = { workspace = true, optional = true }
 ironrdp-connector = { workspace = true, optional = true }
+ironrdp-acceptor = { workspace = true, optional = true }
 ironrdp-session = { workspace = true, optional = true }
 ironrdp-graphics = { workspace = true, optional = true }
 ironrdp-input = { workspace = true, optional = true }
+ironrdp-server = { workspace = true, optional = true }

@@ -1704,11 +1704,23 @@ checksum = "28b29a3cd74f0f4598934efe3aeba42bae0eb4680554128851ebbecb02af14e6"
 name = "ironrdp"
 version = "0.5.0"
 dependencies = [
+ "ironrdp-acceptor",
  "ironrdp-connector",
  "ironrdp-graphics",
  "ironrdp-input",
  "ironrdp-pdu",
+ "ironrdp-server",
  "ironrdp-session",
+]
+
+[[package]]
+name = "ironrdp-acceptor"
+version = "0.1.0"
+dependencies = [
+ "ironrdp-async",
+ "ironrdp-connector",
+ "ironrdp-pdu",
+ "tracing",
 ]
 
 [[package]]
@@ -1854,6 +1866,22 @@ name = "ironrdp-rdcleanpath"
 version = "0.1.0"
 dependencies = [
  "der 0.7.8",
+]
+
+[[package]]
+name = "ironrdp-server"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "bytes",
+ "ironrdp-acceptor",
+ "ironrdp-graphics",
+ "ironrdp-pdu",
+ "ironrdp-tokio",
+ "tokio",
+ "tokio-rustls 0.24.0",
+ "tracing",
 ]
 
 [[package]]
