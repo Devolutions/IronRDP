@@ -66,7 +66,7 @@ impl Rdpdr {
         ])
     }
 
-    fn handle_server_capability(&mut self, payload: &mut ReadCursor<'_>) -> PduResult<Vec<Box<dyn PduEncode>>> {
+    fn handle_server_capability(&mut self, payload: &mut ReadCursor<'_>) -> PduResult<Vec<SvcMessage>> {
         let req = CoreCapability::decode(payload)?;
         trace!("received {:?}", req);
 
@@ -74,7 +74,7 @@ impl Rdpdr {
         trace!("sending {:?}", res);
 
         // TODO: Make CoreCapability PduEncode
-        Ok(vec![Box::new(res)])
+        Ok(vec![SvcMessage::from(res)])
     }
 }
 
