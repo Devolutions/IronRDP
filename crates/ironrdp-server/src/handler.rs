@@ -1,11 +1,8 @@
-use ironrdp_pdu::input::{
-    fast_path::{self, SynchronizeFlags},
-    mouse::PointerFlags,
-    mouse_x::PointerXFlags,
-    scan_code,
-    sync::SyncToggleFlags,
-    unicode, MousePdu, MouseXPdu,
-};
+use ironrdp_pdu::input::fast_path::{self, SynchronizeFlags};
+use ironrdp_pdu::input::mouse::PointerFlags;
+use ironrdp_pdu::input::mouse_x::PointerXFlags;
+use ironrdp_pdu::input::sync::SyncToggleFlags;
+use ironrdp_pdu::input::{scan_code, unicode, MousePdu, MouseXPdu};
 
 /// Keyboard Event
 ///

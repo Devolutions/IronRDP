@@ -1,8 +1,6 @@
-use ironrdp_pdu::{
-    bitmap::rdp6::{BitmapStreamHeader, ColorPlaneDefinition},
-    cursor::WriteCursor,
-    PduError,
-};
+use ironrdp_pdu::bitmap::rdp6::{BitmapStreamHeader, ColorPlaneDefinition};
+use ironrdp_pdu::cursor::WriteCursor;
+use ironrdp_pdu::PduError;
 use thiserror::Error;
 
 use crate::rdp6::rle::{compress_8bpp_plane, RleEncodeError};

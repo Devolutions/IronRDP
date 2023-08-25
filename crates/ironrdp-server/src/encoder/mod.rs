@@ -2,14 +2,11 @@ pub mod bitmap;
 
 use std::cmp;
 
-use ironrdp_pdu::{
-    cursor::WriteCursor,
-    fast_path::{EncryptionFlags, FastPathHeader, FastPathUpdatePdu, Fragmentation, UpdateCode},
-    PduEncode,
-};
+use ironrdp_pdu::cursor::WriteCursor;
+use ironrdp_pdu::fast_path::{EncryptionFlags, FastPathHeader, FastPathUpdatePdu, Fragmentation, UpdateCode};
+use ironrdp_pdu::PduEncode;
 
 use self::bitmap::BitmapEncoder;
-
 use super::BitmapUpdate;
 
 // this is the maximum amount of data (not including headers) we can send in a single TS_FP_UPDATE_PDU

@@ -1,24 +1,29 @@
 mod display;
 mod gfx;
 
+use std::borrow::Cow;
+use std::cmp;
 use std::collections::HashMap;
-use std::{cmp, io};
 
 use ironrdp_connector::legacy::SendDataIndicationCtx;
 use ironrdp_connector::GraphicsConfig;
 use ironrdp_pdu::dvc::FieldType;
 use ironrdp_pdu::rdp::headers::ShareDataPdu;
 use ironrdp_pdu::rdp::server_error_info::{ErrorInfo, ProtocolIndependentCode, ServerSetErrorInfoPdu};
-use ironrdp_pdu::rdp::vc::{self, dvc};
+use ironrdp_pdu::rdp::vc::dvc;
+use ironrdp_pdu::write_buf::WriteBuf;
+use ironrdp_pdu::{encode_buf, mcs, PduParsing};
+use ironrdp_svc::{chunkify, StaticChannelSet, CHANNEL_CHUNK_LENGTH};
 
 pub use self::gfx::GfxHandler;
-use crate::SessionResult;
+use crate::{SessionErrorExt as _, SessionResult};
 
 pub const RDP8_GRAPHICS_PIPELINE_NAME: &str = "Microsoft::Windows::RDS::Graphics";
 pub const RDP8_DISPLAY_PIPELINE_NAME: &str = "Microsoft::Windows::RDS::DisplayControl";
 
 pub struct Processor {
     channel_map: HashMap<String, u32>,
+    static_channels: StaticChannelSet,
     dynamic_channels: HashMap<u32, DynamicChannel>,
     user_channel_id: u16,
     io_channel_id: u16,
@@ -29,21 +34,22 @@ pub struct Processor {
 
 impl Processor {
     pub fn new(
-        static_channels: HashMap<u16, String>,
+        static_channels: StaticChannelSet,
         user_channel_id: u16,
         io_channel_id: u16,
         graphics_config: Option<GraphicsConfig>,
         graphics_handler: Option<Box<dyn GfxHandler + Send>>,
     ) -> Self {
-        let drdynvc_channel_id = static_channels.iter().find_map(|(id, name)| {
-            if name == vc::DRDYNVC_CHANNEL_NAME {
-                Some(*id)
+        let drdynvc_channel_id = static_channels.iter().find_map(|(type_id, channel)| {
+            if channel.is_drdynvc() {
+                static_channels.get_channel_id_by_type_id(type_id)
             } else {
                 None
             }
         });
 
         Self {
+            static_channels,
             dynamic_channels: HashMap::new(),
             channel_map: HashMap::new(),
             user_channel_id,
@@ -64,8 +70,49 @@ impl Processor {
             Ok(Vec::new())
         } else {
             match self.drdynvc_channel_id {
-                Some(dyvc_id) if channel_id == dyvc_id => self.process_dyvc(data_ctx),
-                _ => Err(reason_err!("X224", "unexpected channel received: ID {channel_id}")),
+                Some(drdynvc_id) if channel_id == drdynvc_id => self.process_dyvc(data_ctx),
+                _ => {
+                    if let Some(static_channel) = self.static_channels.get_by_channel_id_mut(channel_id) {
+                        let mut payload = data_ctx.user_data;
+
+                        // [ vc::ChannelPduHeader | vc data… ]
+                        let channel_header = ironrdp_pdu::rdp::vc::ChannelPduHeader::from_buffer(&mut payload)?;
+                        debug_assert_eq!(payload.len(), channel_header.length as usize);
+
+                        // Create a vector of response PDUs
+                        let response_pdus = static_channel.process(payload).map_err(crate::SessionError::pdu)?;
+
+                        // For each response PDU, chunkify it and add appropriate static channel headers.
+                        let chunks = chunkify(response_pdus, CHANNEL_CHUNK_LENGTH).map_err(crate::SessionError::pdu)?;
+
+                        // Place each chunk into a SendDataRequest
+                        let mcs_pdus = chunks
+                            .into_iter()
+                            .map(|buf| mcs::SendDataRequest {
+                                initiator_id: data_ctx.initiator_id,
+                                channel_id,
+                                user_data: Cow::Owned(buf.into_inner()),
+                            })
+                            .collect::<Vec<mcs::SendDataRequest>>();
+
+                        // SendDataRequest is [`McsPdu`], which is [`x224Pdu`], which is [`PduEncode`]. [`PduEncode`] for [`x224Pdu`]
+                        // also takes care of adding the Tpkt header, so therefore we can just call `encode_buf` on each of these and
+                        // we will create a buffer of fully encoded PDUs ready to send to the server.
+                        //
+                        // For example, if we had 2 chunks, our fully_encoded_responses buffer would look like:
+                        //
+                        // [ | tpkt | x224 | mcs::SendDataRequest | chunk 1 | tpkt | x224 | mcs::SendDataRequest | chunk 2 | ]
+                        //   |<------------------- PDU 1 ------------------>|<------------------- PDU 2 ------------------>|
+                        let mut fully_encoded_responses = WriteBuf::new(); // TODO(perf): reuse this buffer using `clear` and `filled` as appropriate
+                        for pdu in mcs_pdus {
+                            encode_buf(&pdu, &mut fully_encoded_responses).map_err(crate::SessionError::pdu)?;
+                        }
+
+                        Ok(fully_encoded_responses.into_inner())
+                    } else {
+                        Err(reason_err!("X224", "unexpected channel received: ID {channel_id}"))
+                    }
+                }
             }
         }
     }
@@ -102,7 +149,7 @@ impl Processor {
 
         let dvc_ctx = crate::legacy::decode_dvc_message(data_ctx)?;
 
-        let mut buf = Vec::new();
+        let mut buf = WriteBuf::new();
 
         match dvc_ctx.dvc_pdu {
             dvc::ServerPdu::CapabilitiesRequest(caps_request) => {
@@ -238,11 +285,11 @@ impl Processor {
             }
         }
 
-        Ok(buf)
+        Ok(buf.into_inner())
     }
 
     /// Sends a PDU on the dynamic channel.
-    pub fn encode_dynamic(&self, output: &mut Vec<u8>, channel_name: &str, dvc_data: &[u8]) -> SessionResult<usize> {
+    pub fn encode_dynamic(&self, output: &mut WriteBuf, channel_name: &str, dvc_data: &[u8]) -> SessionResult<()> {
         let drdynvc_channel_id = self
             .drdynvc_channel_id
             .ok_or_else(|| general_err!("dynamic virtual channel not connected"))?;
@@ -263,7 +310,7 @@ impl Processor {
             data_size: dvc_data.len(),
         });
 
-        let written = crate::legacy::encode_dvc_message(
+        crate::legacy::encode_dvc_message(
             self.user_channel_id,
             drdynvc_channel_id,
             dvc_client_data,
@@ -271,11 +318,11 @@ impl Processor {
             output,
         )?;
 
-        Ok(written)
+        Ok(())
     }
 
     /// Send a pdu on the static global channel. Typically used to send input events
-    pub fn encode_static(&self, output: &mut Vec<u8>, pdu: ShareDataPdu) -> SessionResult<usize> {
+    pub fn encode_static(&self, output: &mut WriteBuf, pdu: ShareDataPdu) -> SessionResult<usize> {
         let written =
             ironrdp_connector::legacy::encode_share_data(self.user_channel_id, self.io_channel_id, 0, pdu, output)
                 .map_err(crate::legacy::map_error)?;
@@ -304,7 +351,7 @@ fn create_dvc(
             channel_id_type,
         )),
         _ => {
-            error!("Unknown channel name: {}", channel_name);
+            warn!(channel_name, "Unsupported dynamic virtual channel");
             None
         }
     }
@@ -314,7 +361,7 @@ fn negotiate_dvc(
     create_request: &dvc::CreateRequestPdu,
     initiator_id: u16,
     channel_id: u16,
-    mut stream: impl io::Write,
+    buf: &mut WriteBuf,
     graphics_config: &Option<GraphicsConfig>,
 ) -> SessionResult<()> {
     if create_request.channel_name == RDP8_GRAPHICS_PIPELINE_NAME {
@@ -326,9 +373,7 @@ fn negotiate_dvc(
         });
 
         debug!("Send GFX Capabilities Advertise PDU");
-        let mut buf = Vec::new();
-        crate::legacy::encode_dvc_message(initiator_id, channel_id, dvc_pdu, &dvc_data, &mut buf)?;
-        stream.write_all(&buf).map_err(|e| custom_err!("DVC write", e))?;
+        crate::legacy::encode_dvc_message(initiator_id, channel_id, dvc_pdu, &dvc_data, buf)?;
     }
 
     Ok(())

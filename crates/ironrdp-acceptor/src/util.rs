@@ -1,13 +1,14 @@
 use std::borrow::Cow;
 
 use ironrdp_connector::{ConnectorError, ConnectorErrorExt, ConnectorResult};
+use ironrdp_pdu::write_buf::WriteBuf;
 use ironrdp_pdu::{rdp, PduParsing};
 
 pub fn encode_send_data_indication<T>(
     initiator_id: u16,
     channel_id: u16,
     user_msg: &T,
-    buf: &mut Vec<u8>,
+    buf: &mut WriteBuf,
 ) -> ConnectorResult<usize>
 where
     T: PduParsing,

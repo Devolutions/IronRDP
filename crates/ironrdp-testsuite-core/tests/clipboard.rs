@@ -4,7 +4,6 @@ use ironrdp_cliprdr::pdu::{
     ClipboardProtocolVersion, FileContentsFlags, FileContentsRequest, FileContentsResponse, FormatDataRequest,
     FormatDataResponse, FormatList, FormatListResponse, GeneralCapabilitySet, LockDataId, PackedMetafileMappingMode,
 };
-use ironrdp_pdu::PduEncode;
 use ironrdp_testsuite_core::encode_decode_test;
 
 // Test blobs from [MS-RDPECLIP]
@@ -146,8 +145,7 @@ fn client_temp_dir_encode_decode_ms_1() {
         panic!("Expected ClientTemporaryDirectory");
     }
 
-    let mut encoded = Vec::with_capacity(decoded_pdu.size());
-    let _ = ironrdp_pdu::encode_buf(&decoded_pdu, &mut encoded).unwrap();
+    let encoded = ironrdp_pdu::encode_vec(&decoded_pdu).unwrap();
 
     assert_eq!(&encoded, input);
 }
@@ -189,8 +187,7 @@ fn format_list_ms_1() {
         panic!("Expected FormatList");
     };
 
-    let mut encoded = Vec::with_capacity(decoded_pdu.size());
-    let _ = ironrdp_pdu::encode_buf(&decoded_pdu, &mut encoded).unwrap();
+    let encoded = ironrdp_pdu::encode_vec(&decoded_pdu).unwrap();
 
     assert_eq!(&encoded, input);
 }
@@ -256,8 +253,7 @@ fn format_list_ms_2() {
         panic!("Expected FormatList");
     };
 
-    let mut encoded = Vec::with_capacity(decoded_pdu.size());
-    let _ = ironrdp_pdu::encode_buf(&decoded_pdu, &mut encoded).unwrap();
+    let encoded = ironrdp_pdu::encode_vec(&decoded_pdu).unwrap();
 
     assert_eq!(&encoded, input);
 }
@@ -319,8 +315,7 @@ fn metafile_pdu_ms() {
         panic!("Expected FormatDataResponse");
     };
 
-    let mut encoded = Vec::with_capacity(decoded_pdu.size());
-    let _ = ironrdp_pdu::encode_buf(&decoded_pdu, &mut encoded).unwrap();
+    let encoded = ironrdp_pdu::encode_vec(&decoded_pdu).unwrap();
 
     assert_eq!(&encoded, input);
 }
@@ -346,8 +341,7 @@ fn palette_pdu_ms() {
         panic!("Expected FormatDataResponse");
     };
 
-    let mut encoded = Vec::with_capacity(decoded_pdu.size());
-    let _ = ironrdp_pdu::encode_buf(&decoded_pdu, &mut encoded).unwrap();
+    let encoded = ironrdp_pdu::encode_vec(&decoded_pdu).unwrap();
 
     assert_eq!(&encoded, input);
 }
@@ -399,8 +393,7 @@ fn file_list_pdu_ms() {
         panic!("Expected FormatDataResponse");
     };
 
-    let mut encoded = Vec::with_capacity(decoded_pdu.size());
-    let _ = ironrdp_pdu::encode_buf(&decoded_pdu, &mut encoded).unwrap();
+    let encoded = ironrdp_pdu::encode_vec(&decoded_pdu).unwrap();
 
     assert_eq!(&encoded, input);
 }

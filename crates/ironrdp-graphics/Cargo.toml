@@ -21,7 +21,7 @@ bitflags = "2"
 bitvec = "1.0.1"
 byteorder = "1.4.3"
 ironrdp-error.workspace = true
-ironrdp-pdu.workspace = true
+ironrdp-pdu = { workspace = true, features = ["std"] }
 lazy_static = "1.4.0"
 num-derive = "0.3.3"
 num-traits = "0.2.15"

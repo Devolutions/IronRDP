@@ -3,6 +3,7 @@ use std::collections::HashSet;
 use ironrdp_connector::{ConnectorError, ConnectorErrorExt, ConnectorResult, Sequence, State, Written};
 use ironrdp_pdu as pdu;
 use pdu::mcs;
+use pdu::write_buf::WriteBuf;
 
 #[derive(Debug)]
 pub struct ChannelConnectionSequence {
@@ -68,7 +69,7 @@ impl Sequence for ChannelConnectionSequence {
         &self.state
     }
 
-    fn step(&mut self, input: &[u8], output: &mut Vec<u8>) -> ConnectorResult<Written> {
+    fn step(&mut self, input: &[u8], output: &mut WriteBuf) -> ConnectorResult<Written> {
         let (written, next_state) = match std::mem::take(&mut self.state) {
             ChannelConnectionState::WaitErectDomainRequest => {
                 let erect_domain_request =

@@ -2,11 +2,12 @@
 
 use std::borrow::Cow;
 
+use ironrdp_pdu::write_buf::WriteBuf;
 use ironrdp_pdu::{rdp, x224, PduParsing};
 
 use crate::{ConnectorError, ConnectorErrorExt as _, ConnectorResult};
 
-pub fn encode_x224_packet<T: PduParsing>(x224_msg: &T, buf: &mut Vec<u8>) -> ConnectorResult<usize>
+pub fn encode_x224_packet<T: PduParsing>(x224_msg: &T, buf: &mut WriteBuf) -> ConnectorResult<usize>
 where
     T: PduParsing,
     ConnectorError: From<T::Error>,
@@ -39,7 +40,7 @@ pub fn encode_send_data_request<T>(
     initiator_id: u16,
     channel_id: u16,
     user_msg: &T,
-    buf: &mut Vec<u8>,
+    buf: &mut WriteBuf,
 ) -> ConnectorResult<usize>
 where
     T: PduParsing,
@@ -114,7 +115,7 @@ pub fn encode_share_control(
     channel_id: u16,
     share_id: u32,
     pdu: rdp::headers::ShareControlPdu,
-    buf: &mut Vec<u8>,
+    buf: &mut WriteBuf,
 ) -> ConnectorResult<usize> {
     let pdu_source = initiator_id;
 
@@ -153,7 +154,7 @@ pub fn encode_share_data(
     channel_id: u16,
     share_id: u32,
     pdu: rdp::headers::ShareDataPdu,
-    buf: &mut Vec<u8>,
+    buf: &mut WriteBuf,
 ) -> ConnectorResult<usize> {
     let share_data_header = rdp::headers::ShareDataHeader {
         share_data_pdu: pdu,

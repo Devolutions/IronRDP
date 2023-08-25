@@ -1,12 +1,13 @@
 use ironrdp_connector::ConnectionResult;
 use ironrdp_pdu::geometry::InclusiveRectangle;
 use ironrdp_pdu::input::fast_path::{FastPathInput, FastPathInputEvent};
+use ironrdp_pdu::write_buf::WriteBuf;
 use ironrdp_pdu::{Action, PduParsing};
 
 use crate::fast_path::UpdateKind;
 use crate::image::DecodedImage;
 use crate::x224::GfxHandler;
-use crate::{fast_path, utils, x224, SessionResult};
+use crate::{fast_path, x224, SessionResult};
 
 pub struct ActiveStage {
     x224_processor: x224::Processor,
@@ -17,7 +18,7 @@ pub struct ActiveStage {
 impl ActiveStage {
     pub fn new(connection_result: ConnectionResult, graphics_handler: Option<Box<dyn GfxHandler + Send>>) -> Self {
         let x224_processor = x224::Processor::new(
-            utils::swap_hashmap_kv(connection_result.static_channels),
+            connection_result.static_channels,
             connection_result.user_channel_id,
             connection_result.io_channel_id,
             connection_result.graphics_config,
@@ -101,9 +102,9 @@ impl ActiveStage {
     ) -> SessionResult<Vec<ActiveStageOutput>> {
         let (output, processor_updates) = match action {
             Action::FastPath => {
-                let mut output = Vec::new();
+                let mut output = WriteBuf::new();
                 let processor_updates = self.fast_path_processor.process(image, frame, &mut output)?;
-                (output, processor_updates)
+                (output.into_inner(), processor_updates)
             }
             Action::X224 => (self.x224_processor.process(frame)?, vec![]),
         };
@@ -136,14 +137,14 @@ impl ActiveStage {
     }
 
     /// Sends a PDU on the dynamic channel.
-    pub fn encode_dynamic(&self, output: &mut Vec<u8>, channel_name: &str, dvc_data: &[u8]) -> SessionResult<usize> {
+    pub fn encode_dynamic(&self, output: &mut WriteBuf, channel_name: &str, dvc_data: &[u8]) -> SessionResult<()> {
         self.x224_processor.encode_dynamic(output, channel_name, dvc_data)
     }
 
     /// Send a pdu on the static global channel. Typically used to send input events
     pub fn encode_static(
         &self,
-        output: &mut Vec<u8>,
+        output: &mut WriteBuf,
         pdu: ironrdp_pdu::rdp::headers::ShareDataPdu,
     ) -> SessionResult<usize> {
         self.x224_processor.encode_static(output, pdu)

@@ -11,10 +11,9 @@ use thiserror::Error;
 
 use crate::PduParsing;
 
-pub const DRDYNVC_CHANNEL_NAME: &str = "drdynvc";
-
 const CHANNEL_PDU_HEADER_SIZE: usize = 8;
 
+/// Channel PDU Header (CHANNEL_PDU_HEADER)
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChannelPduHeader {
     /// The total length in bytes of the uncompressed channel data, excluding this header
@@ -96,6 +95,7 @@ impl From<ChannelError> for io::Error {
     }
 }
 
+#[cfg(feature = "std")]
 impl ironrdp_error::legacy::ErrorContext for ChannelError {
     fn context(&self) -> &'static str {
         "virtual channel error"

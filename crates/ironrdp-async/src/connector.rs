@@ -1,6 +1,7 @@
 use ironrdp_connector::{
     ClientConnector, ClientConnectorState, ConnectionResult, ConnectorResult, Sequence as _, State as _,
 };
+use ironrdp_pdu::write_buf::WriteBuf;
 
 use crate::framed::{Framed, FramedRead, FramedWrite};
 
@@ -13,7 +14,7 @@ pub async fn connect_begin<S>(framed: &mut Framed<S>, connector: &mut ClientConn
 where
     S: Sync + FramedRead + FramedWrite,
 {
-    let mut buf = Vec::new();
+    let mut buf = WriteBuf::new();
 
     info!("Begin connection procedure");
 
@@ -50,7 +51,7 @@ pub async fn connect_finalize<S>(
 where
     S: FramedRead + FramedWrite,
 {
-    let mut buf = Vec::new();
+    let mut buf = WriteBuf::new();
 
     debug!("CredSSP procedure");
 
@@ -76,11 +77,13 @@ where
 pub async fn single_connect_step<S>(
     framed: &mut Framed<S>,
     connector: &mut ClientConnector,
-    buf: &mut Vec<u8>,
+    buf: &mut WriteBuf,
 ) -> ConnectorResult<ironrdp_connector::Written>
 where
     S: FramedWrite + FramedRead,
 {
+    buf.clear();
+
     let written = if let Some(next_pdu_hint) = connector.next_pdu_hint() {
         debug!(
             connector.state = connector.state.name(),
@@ -101,7 +104,8 @@ where
     };
 
     if let Some(response_len) = written.size() {
-        let response = &buf[..response_len];
+        debug_assert_eq!(buf.filled_len(), response_len);
+        let response = buf.filled();
         trace!(response_len, "Send response");
         framed
             .write_all(response)
