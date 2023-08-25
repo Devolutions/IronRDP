@@ -31,19 +31,19 @@ pub const SERVER_NETWORK_DATA_WITHOUT_CHANNELS_ID_BUFFER: [u8; 4] = [
 lazy_static! {
     pub static ref CLIENT_NETWORK_DATA_WITH_CHANNELS: ClientNetworkData = ClientNetworkData {
         channels: vec![
-            Channel {
-                name: String::from("rdpdr"),
+            ChannelDef {
+                name: ChannelName::from_utf8("rdpdr").unwrap(),
                 options: ChannelOptions::INITIALIZED | ChannelOptions::COMPRESS_RDP,
             },
-            Channel {
-                name: String::from("cliprdr"),
+            ChannelDef {
+                name: ChannelName::from_utf8("cliprdr").unwrap(),
                 options: ChannelOptions::INITIALIZED
                     | ChannelOptions::COMPRESS_RDP
                     | ChannelOptions::ENCRYPT_RDP
                     | ChannelOptions::SHOW_PROTOCOL,
             },
-            Channel {
-                name: String::from("rdpsnd"),
+            ChannelDef {
+                name: ChannelName::from_utf8("rdpsnd").unwrap(),
                 options: ChannelOptions::INITIALIZED | ChannelOptions::ENCRYPT_RDP,
             },
         ],

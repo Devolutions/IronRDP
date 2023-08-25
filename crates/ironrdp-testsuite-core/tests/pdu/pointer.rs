@@ -41,8 +41,7 @@ fn new_pointer_32bpp() {
     let decoded = DecodedPointer::decode_pointer_attribute(&parsed).unwrap();
     expect_pointer_png(&decoded, "pdu/pointer/new_pointer_32bpp.png");
 
-    let mut encoded = vec![];
-    ironrdp_pdu::encode_buf(&parsed, &mut encoded).unwrap();
+    let encoded = ironrdp_pdu::encode_vec(&parsed).unwrap();
     assert_eq!(&encoded, data);
 
     parsed.color_pointer.and_mask = &[];
@@ -73,8 +72,7 @@ fn large_pointer_32bpp() {
     let decoded = DecodedPointer::decode_large_pointer_attribute(&parsed).unwrap();
     expect_pointer_png(&decoded, "pdu/pointer/large_pointer_32bpp.png");
 
-    let mut encoded = vec![];
-    ironrdp_pdu::encode_buf(&parsed, &mut encoded).unwrap();
+    let encoded = ironrdp_pdu::encode_vec(&parsed).unwrap();
     assert_eq!(&encoded, data);
 
     parsed.and_mask = &[];
@@ -103,8 +101,7 @@ fn color_pointer_24bpp() {
     let decoded = DecodedPointer::decode_color_pointer_attribute(&parsed).unwrap();
     expect_pointer_png(&decoded, "pdu/pointer/color_pointer_24bpp.png");
 
-    let mut encoded = vec![];
-    ironrdp_pdu::encode_buf(&parsed, &mut encoded).unwrap();
+    let encoded = ironrdp_pdu::encode_vec(&parsed).unwrap();
     assert_eq!(&encoded, data);
 
     parsed.and_mask = &[];
@@ -151,10 +148,9 @@ fn color_pointer_1bpp() {
     };
 
     // Re-encode test
-    let mut encoded_buffer = vec![];
-    ironrdp_pdu::encode_buf(&value, &mut encoded_buffer).unwrap();
-    let decoded_value = ironrdp_pdu::decode::<PointerAttribute>(&encoded_buffer).unwrap();
-    assert_eq!(&decoded_value, &value);
+    let encoded = ironrdp_pdu::encode_vec(&value).unwrap();
+    let decoded = ironrdp_pdu::decode::<PointerAttribute>(&encoded).unwrap();
+    assert_eq!(&decoded, &value);
 
     let decoded = DecodedPointer::decode_pointer_attribute(&value).unwrap();
     expect_pointer_png(&decoded, "pdu/pointer/color_pointer_1bpp.png");
@@ -179,10 +175,9 @@ fn color_pointer_16bpp() {
     };
 
     // Re-encode test
-    let mut encoded_buffer = vec![];
-    ironrdp_pdu::encode_buf(&value, &mut encoded_buffer).unwrap();
-    let decoded_value = ironrdp_pdu::decode::<PointerAttribute>(&encoded_buffer).unwrap();
-    assert_eq!(&decoded_value, &value);
+    let encoded = ironrdp_pdu::encode_vec(&value).unwrap();
+    let decoded = ironrdp_pdu::decode::<PointerAttribute>(&encoded).unwrap();
+    assert_eq!(&decoded, &value);
 
     let decoded = DecodedPointer::decode_pointer_attribute(&value).unwrap();
     expect_pointer_png(&decoded, "pdu/pointer/color_pointer_16bpp.png");
@@ -191,8 +186,7 @@ fn color_pointer_16bpp() {
 #[test]
 fn cached_pointer() {
     let value = CachedPointerAttribute { cache_index: 42 };
-    let mut encoded = vec![];
-    ironrdp_pdu::encode_buf(&value, &mut encoded).unwrap();
+    let encoded = ironrdp_pdu::encode_vec(&value).unwrap();
     let decoded = ironrdp_pdu::decode::<CachedPointerAttribute>(&encoded).unwrap();
     assert_eq!(&decoded, &value);
 }
@@ -200,8 +194,7 @@ fn cached_pointer() {
 #[test]
 fn set_pointer_position() {
     let value = PointerPositionAttribute { x: 12, y: 34 };
-    let mut encoded = vec![];
-    ironrdp_pdu::encode_buf(&value, &mut encoded).unwrap();
+    let encoded = ironrdp_pdu::encode_vec(&value).unwrap();
     let decoded = ironrdp_pdu::decode::<PointerPositionAttribute>(&encoded).unwrap();
     assert_eq!(&decoded, &value);
 }

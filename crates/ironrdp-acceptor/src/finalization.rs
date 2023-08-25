@@ -2,6 +2,7 @@ use std::io::Cursor;
 
 use ironrdp_connector::{ConnectorError, ConnectorErrorExt, ConnectorResult, Sequence, State, Written};
 use ironrdp_pdu as pdu;
+use pdu::write_buf::WriteBuf;
 use pdu::{rdp, PduParsing};
 
 use crate::util::{self, wrap_share_data};
@@ -76,7 +77,7 @@ impl Sequence for FinalizationSequence {
         &self.state
     }
 
-    fn step(&mut self, input: &[u8], output: &mut Vec<u8>) -> ConnectorResult<Written> {
+    fn step(&mut self, input: &[u8], output: &mut WriteBuf) -> ConnectorResult<Written> {
         let (written, next_state) = match std::mem::take(&mut self.state) {
             FinalizationState::WaitSynchronize => {
                 let data = pdu::decode::<pdu::mcs::SendDataRequest>(input).map_err(ConnectorError::pdu)?;

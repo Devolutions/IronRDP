@@ -1,0 +1,25 @@
+[package]
+name = "ironrdp-dvc"
+version = "0.1.0"
+readme = "README.md"
+description = "DRDYNVC static channel implementation and traits to implement dynamic virtual channels"
+edition.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[lib]
+doctest = false
+test = false
+
+[features]
+default = []
+std = []
+
+[dependencies]
+ironrdp-svc.workspace = true
+ironrdp-pdu = { workspace = true, features = ["alloc"] }
+tracing.workspace = true

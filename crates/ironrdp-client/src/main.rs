@@ -64,7 +64,7 @@ fn setup_logging(log_file: &str) -> anyhow::Result<()> {
 
     let env_filter = EnvFilter::builder()
         .with_default_directive(LevelFilter::WARN.into())
-        .with_env_var("IRONRDP_LOG_LEVEL")
+        .with_env_var("IRONRDP_LOG")
         .from_env_lossy();
 
     tracing_subscriber::registry()

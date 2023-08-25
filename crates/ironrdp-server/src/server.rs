@@ -1,27 +1,20 @@
-use std::{io::Cursor, net::SocketAddr};
+use std::io::Cursor;
+use std::net::SocketAddr;
 
 use anyhow::Result;
 use bytes::BytesMut;
-use tokio::net::TcpListener;
-
 use ironrdp_acceptor::{self, Acceptor, BeginResult};
-use ironrdp_pdu::{
-    self,
-    input::{
-        fast_path::{FastPathInput, FastPathInputEvent},
-        InputEventPdu,
-    },
-    mcs, nego, rdp, Action, PduParsing,
-};
+use ironrdp_pdu::input::fast_path::{FastPathInput, FastPathInputEvent};
+use ironrdp_pdu::input::InputEventPdu;
+use ironrdp_pdu::{self, mcs, nego, rdp, Action, PduParsing};
 use ironrdp_tokio::{Framed, FramedRead, FramedWrite, TokioFramed};
+use tokio::net::TcpListener;
 use tokio_rustls::TlsAcceptor;
 
-use crate::{
-    builder, capabilities,
-    display::{DisplayUpdate, RdpServerDisplay},
-    encoder::UpdateEncoder,
-    handler::RdpServerInputHandler,
-};
+use crate::display::{DisplayUpdate, RdpServerDisplay};
+use crate::encoder::UpdateEncoder;
+use crate::handler::RdpServerInputHandler;
+use crate::{builder, capabilities};
 
 #[derive(Clone)]
 pub struct RdpServerOptions {

@@ -1,13 +1,9 @@
-use ironrdp_graphics::{
-    image_processing::PixelFormat,
-    rdp6::{ABgrChannels, ARgbChannels, BgrAChannels, BitmapStreamEncoder, RgbAChannels},
-};
-use ironrdp_pdu::{
-    bitmap::{self, BitmapData, BitmapUpdateData, Compression},
-    cursor::WriteCursor,
-    geometry::InclusiveRectangle,
-    PduEncode, PduError,
-};
+use ironrdp_graphics::image_processing::PixelFormat;
+use ironrdp_graphics::rdp6::{ABgrChannels, ARgbChannels, BgrAChannels, BitmapStreamEncoder, RgbAChannels};
+use ironrdp_pdu::bitmap::{self, BitmapData, BitmapUpdateData, Compression};
+use ironrdp_pdu::cursor::WriteCursor;
+use ironrdp_pdu::geometry::InclusiveRectangle;
+use ironrdp_pdu::{PduEncode, PduError};
 
 use crate::{BitmapUpdate, PixelOrder};
 

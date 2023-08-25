@@ -6,12 +6,12 @@ use ironrdp_connector::{
 use ironrdp_pdu as pdu;
 use pdu::rdp::capability_sets::CapabilitySet;
 use pdu::rdp::headers::ShareControlPdu;
+use pdu::write_buf::WriteBuf;
 use pdu::{gcc, mcs, nego, rdp, PduParsing};
-
-use crate::util::{self, wrap_share_data};
 
 use super::channel_connection::ChannelConnectionSequence;
 use super::finalization::FinalizationSequence;
+use crate::util::{self, wrap_share_data};
 
 const IO_CHANNEL_ID: u16 = 1003;
 const USER_CHANNEL_ID: u16 = 1002;
@@ -27,7 +27,7 @@ pub struct Acceptor {
 
 #[derive(Debug, Clone)]
 pub struct AcceptorResult {
-    pub channels: Vec<(u16, gcc::Channel)>,
+    pub channels: Vec<(u16, gcc::ChannelDef)>,
     pub capabilities: Vec<CapabilitySet>,
 }
 
@@ -83,42 +83,42 @@ pub enum AcceptorState {
     BasicSettingsSendResponse {
         requested_protocol: nego::SecurityProtocol,
         early_capability: Option<gcc::ClientEarlyCapabilityFlags>,
-        channels: Vec<(u16, gcc::Channel)>,
+        channels: Vec<(u16, gcc::ChannelDef)>,
     },
     ChannelConnection {
         early_capability: Option<gcc::ClientEarlyCapabilityFlags>,
-        channels: Vec<(u16, gcc::Channel)>,
+        channels: Vec<(u16, gcc::ChannelDef)>,
         connection: ChannelConnectionSequence,
     },
     RdpSecurityCommencement {
         early_capability: Option<gcc::ClientEarlyCapabilityFlags>,
-        channels: Vec<(u16, gcc::Channel)>,
+        channels: Vec<(u16, gcc::ChannelDef)>,
     },
     SecureSettingsExchange {
         early_capability: Option<gcc::ClientEarlyCapabilityFlags>,
-        channels: Vec<(u16, gcc::Channel)>,
+        channels: Vec<(u16, gcc::ChannelDef)>,
     },
     LicensingExchange {
         early_capability: Option<gcc::ClientEarlyCapabilityFlags>,
-        channels: Vec<(u16, gcc::Channel)>,
+        channels: Vec<(u16, gcc::ChannelDef)>,
     },
     CapabilitiesSendServer {
         early_capability: Option<gcc::ClientEarlyCapabilityFlags>,
-        channels: Vec<(u16, gcc::Channel)>,
+        channels: Vec<(u16, gcc::ChannelDef)>,
     },
     MonitorLayoutSend {
-        channels: Vec<(u16, gcc::Channel)>,
+        channels: Vec<(u16, gcc::ChannelDef)>,
     },
     CapabilitiesWaitConfirm {
-        channels: Vec<(u16, gcc::Channel)>,
+        channels: Vec<(u16, gcc::ChannelDef)>,
     },
     ConnectionFinalization {
         finalization: FinalizationSequence,
-        channels: Vec<(u16, gcc::Channel)>,
+        channels: Vec<(u16, gcc::ChannelDef)>,
         client_capabilities: Vec<CapabilitySet>,
     },
     Accepted {
-        channels: Vec<(u16, gcc::Channel)>,
+        channels: Vec<(u16, gcc::ChannelDef)>,
         client_capabilities: Vec<CapabilitySet>,
     },
 }
@@ -178,7 +178,7 @@ impl Sequence for Acceptor {
         &self.state
     }
 
-    fn step(&mut self, input: &[u8], output: &mut Vec<u8>) -> ConnectorResult<Written> {
+    fn step(&mut self, input: &[u8], output: &mut WriteBuf) -> ConnectorResult<Written> {
         let (written, next_state) = match std::mem::take(&mut self.state) {
             AcceptorState::InitiationWaitRequest => {
                 let connection_request =
