@@ -5,7 +5,7 @@ use ironrdp_pdu::cursor::{ReadCursor, WriteCursor};
 use ironrdp_pdu::{ensure_fixed_part_size, ensure_size, PduDecode, PduEncode, PduResult};
 
 bitflags! {
-    /// Represents `mappingMode` fields of `CLIPRDR_MFPICT` strucutre.
+    /// Represents `mappingMode` fields of `CLIPRDR_MFPICT` structure.
     #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
     pub struct PackedMetafileMappingMode: u32 {
         /// Each logical unit is mapped to one device pixel. Positive x is to the right; positive

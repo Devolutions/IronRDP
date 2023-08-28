@@ -14,7 +14,7 @@ use ironrdp_pdu::rdp::vc::dvc;
 use ironrdp_pdu::write_buf::WriteBuf;
 use ironrdp_pdu::PduParsing;
 use ironrdp_pdu::{encode_buf, mcs};
-use ironrdp_svc::{chunkify, StaticChannelSet, CHANNEL_CHUNK_LEGNTH};
+use ironrdp_svc::{chunkify, StaticChannelSet, CHANNEL_CHUNK_LENGTH};
 
 pub use self::gfx::GfxHandler;
 use crate::{SessionErrorExt as _, SessionResult};
@@ -62,7 +62,7 @@ impl Processor {
     }
 
     pub fn process(&mut self, frame: &[u8]) -> SessionResult<Vec<u8>> {
-        let data_ctx =
+        let data_ctx: SendDataIndicationCtx<'_> =
             ironrdp_connector::legacy::decode_send_data_indication(frame).map_err(crate::legacy::map_error)?;
         let channel_id = data_ctx.channel_id;
 
@@ -84,7 +84,7 @@ impl Processor {
                         let response_pdus = static_channel.process(payload).map_err(crate::SessionError::pdu)?;
 
                         // For each response PDU, chunkify it and add appropriate static channel headers.
-                        let chunks = chunkify(response_pdus, CHANNEL_CHUNK_LEGNTH).map_err(crate::SessionError::pdu)?;
+                        let chunks = chunkify(response_pdus, CHANNEL_CHUNK_LENGTH).map_err(crate::SessionError::pdu)?;
 
                         // Place each chunk into a SendDataRequest
                         let mcs_pdus = chunks
@@ -290,7 +290,7 @@ impl Processor {
     }
 
     /// Sends a PDU on the dynamic channel.
-    pub fn encode_dynamic(&self, output: &mut WriteBuf, channel_name: &str, dvc_data: &[u8]) -> SessionResult<usize> {
+    pub fn encode_dynamic(&self, output: &mut WriteBuf, channel_name: &str, dvc_data: &[u8]) -> SessionResult<()> {
         let drdynvc_channel_id = self
             .drdynvc_channel_id
             .ok_or_else(|| general_err!("dynamic virtual channel not connected"))?;
@@ -311,7 +311,7 @@ impl Processor {
             data_size: dvc_data.len(),
         });
 
-        let written = crate::legacy::encode_dvc_message(
+        crate::legacy::encode_dvc_message(
             self.user_channel_id,
             drdynvc_channel_id,
             dvc_client_data,
@@ -319,7 +319,7 @@ impl Processor {
             output,
         )?;
 
-        Ok(written)
+        Ok(())
     }
 
     /// Send a pdu on the static global channel. Typically used to send input events
@@ -352,7 +352,7 @@ fn create_dvc(
             channel_id_type,
         )),
         _ => {
-            error!("Unknown channel name: {}", channel_name);
+            warn!(channel_name, "Unsupported dynamic virtual channel");
             None
         }
     }

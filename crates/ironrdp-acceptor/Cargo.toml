@@ -1,0 +1,22 @@
+[package]
+name = "ironrdp-acceptor"
+version = "0.1.0"
+readme = "README.md"
+description = ""
+edition.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[lib]
+doctest = false
+test = false
+
+[dependencies]
+ironrdp-pdu.workspace = true
+ironrdp-connector.workspace = true
+ironrdp-async.workspace = true
+tracing.workspace = true

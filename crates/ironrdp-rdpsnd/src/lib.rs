@@ -1,4 +1,5 @@
-use ironrdp_pdu::{gcc::ChannelName, PduResult};
+use ironrdp_pdu::gcc::ChannelName;
+use ironrdp_pdu::PduResult;
 use ironrdp_svc::{impl_as_any, CompressionCondition, StaticVirtualChannel, SvcMessage};
 
 /// We currently don't implement any of rdpsnd, however it's required
@@ -36,7 +37,7 @@ impl StaticVirtualChannel for Rdpsnd {
     fn process(&mut self, _payload: &[u8]) -> PduResult<Vec<SvcMessage>> {
         Err(ironrdp_pdu::other_err!(
             "RDPSND",
-            "ironrdp-rdpsnd::Rdpsnd implemention is not implemented"
+            "ironrdp-rdpsnd::Rdpsnd is not implemented"
         ))
     }
 }

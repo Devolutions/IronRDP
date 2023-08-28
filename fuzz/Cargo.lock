@@ -232,6 +232,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "ironrdp-cliprdr"
+version = "0.1.0"
+dependencies = [
+ "bitflags",
+ "ironrdp-pdu",
+]
+
+[[package]]
 name = "ironrdp-error"
 version = "0.1.0"
 
@@ -248,6 +256,7 @@ name = "ironrdp-fuzzing"
 version = "0.0.0"
 dependencies = [
  "arbitrary",
+ "ironrdp-cliprdr",
  "ironrdp-graphics",
  "ironrdp-pdu",
 ]

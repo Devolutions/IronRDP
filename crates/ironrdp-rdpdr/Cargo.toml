@@ -8,7 +8,6 @@ license.workspace = true
 
 homepage.workspace = true
 repository.workspace = true
-# TODO: add individuals and/or Teleport as authors?
 authors.workspace = true
 keywords.workspace = true
 categories.workspace = true

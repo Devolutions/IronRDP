@@ -569,8 +569,8 @@ async fn connect(
 
     let mut connector = connector::ClientConnector::new(config)
         .with_server_name(&destination)
-        .with_credssp_network_client(WasmNetworkClientFactory)
-        .with_static_channel(ironrdp::dvc::Drdynvc::new());
+        .with_credssp_network_client(WasmNetworkClientFactory);
+    // .with_static_channel(ironrdp::dvc::Drdynvc::new()); // FIXME: drdynvc is not working
 
     let upgraded = connect_rdcleanpath(&mut framed, &mut connector, destination, proxy_auth_token, pcb).await?;
 

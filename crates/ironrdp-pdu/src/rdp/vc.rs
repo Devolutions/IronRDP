@@ -13,6 +13,7 @@ use crate::PduParsing;
 
 const CHANNEL_PDU_HEADER_SIZE: usize = 8;
 
+/// Channel PDU Header (CHANNEL_PDU_HEADER)
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChannelPduHeader {
     /// The total length in bytes of the uncompressed channel data, excluding this header

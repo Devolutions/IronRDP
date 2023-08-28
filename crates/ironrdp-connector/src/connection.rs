@@ -512,11 +512,11 @@ impl Sequence for ClientConnector {
                 }
 
                 if server_gcc_blocks.message_channel.is_some() {
-                    warn!("Unexpected server message channel data received");
+                    warn!("Unexpected ServerMessageChannelData GCC block (not supported)");
                 }
 
                 if server_gcc_blocks.multi_transport_channel.is_some() {
-                    warn!("Unexpected multitransport channel data received");
+                    warn!("Unexpected MultiTransportChannelData GCC block (not supported)");
                 }
 
                 let static_channel_ids = server_gcc_blocks.network.channel_ids;
@@ -760,7 +760,7 @@ impl Sequence for ClientConnector {
                         result: ConnectionResult {
                             io_channel_id,
                             user_channel_id,
-                            static_channels: self.static_channels.take(),
+                            static_channels: mem::take(&mut self.static_channels),
                             desktop_size,
                             graphics_config: self.config.graphics.clone(),
                             no_server_pointer: self.config.no_server_pointer,
@@ -869,7 +869,8 @@ fn create_gcc_blocks<'a>(
         // TODO: support for Some(ClientClusterData { flags: RedirectionFlags::REDIRECTION_SUPPORTED, redirection_version: RedirectionVersion::V4, redirected_session_id: 0, }),
         cluster: None,
         monitor: None,
-        message_channel: Some(ClientMessageChannelData),
+        // TODO: support for Client Message Channel Data (https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/f50e791c-de03-4b25-b17e-e914c9020bc3)
+        message_channel: None,
         // TODO: support for Some(MultiTransportChannelData { flags: MultiTransportFlags::empty(), })
         multi_transport_channel: None,
         monitor_extended: None,

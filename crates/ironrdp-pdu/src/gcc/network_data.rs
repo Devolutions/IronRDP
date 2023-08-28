@@ -97,7 +97,7 @@ impl ChannelName {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClientNetworkData {
-    pub channels: Vec<Channel>,
+    pub channels: Vec<ChannelDef>,
 }
 
 impl PduParsing for ClientNetworkData {
@@ -112,7 +112,7 @@ impl PduParsing for ClientNetworkData {
 
         let mut channels = Vec::with_capacity(channel_count as usize);
         for _ in 0..channel_count {
-            channels.push(Channel::from_buffer(&mut buffer)?);
+            channels.push(ChannelDef::from_buffer(&mut buffer)?);
         }
 
         Ok(Self { channels })
@@ -194,13 +194,14 @@ impl PduParsing for ServerNetworkData {
     }
 }
 
+/// Channel Definition Structure (CHANNEL_DEF)
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Channel {
+pub struct ChannelDef {
     pub name: ChannelName,
     pub options: ChannelOptions,
 }
 
-impl PduParsing for Channel {
+impl PduParsing for ChannelDef {
     type Error = NetworkDataError;
 
     fn from_buffer(mut buffer: impl io::Read) -> Result<Self, Self::Error> {

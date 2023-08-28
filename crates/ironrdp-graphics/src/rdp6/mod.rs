@@ -3,5 +3,5 @@
 pub(crate) mod bitmap_stream;
 pub(crate) mod rle;
 
-pub use bitmap_stream::{BitmapDecodeError, BitmapStreamDecoder};
-pub use rle::RleError;
+pub use bitmap_stream::*;
+pub use rle::{RleDecodeError, RleEncodeError};

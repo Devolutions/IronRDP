@@ -3,7 +3,7 @@ use std::ops::{Index, Range, RangeFrom, RangeFull, RangeInclusive, RangeTo, Rang
 /// Max capacity to keep for the inner Vec<u8> when `WriteBuf::clear` is called.
 const MAX_CAPACITY_WHEN_CLEARED: usize = 16384; // 16 kib
 
-/// Growable buffer backed by a Vec<u8> that is incrementally filled.
+/// Growable buffer backed by a [`Vec<u8>`] that is incrementally filled.
 ///
 /// This type is tracking the filled region and provides methods to
 /// grow and write into the unfilled region.
@@ -116,7 +116,7 @@ impl WriteBuf {
 
     /// Set the filled cursor to the very beginning of the buffer.
     ///
-    /// If the buffer grew big, it is shrinked in order to reclaim memory.
+    /// If the buffer grew big, it is shrunk in order to reclaim memory.
     pub fn clear(&mut self) {
         self.filled = 0;
         self.inner.shrink_to(MAX_CAPACITY_WHEN_CLEARED);
@@ -162,7 +162,7 @@ impl Index<RangeFrom<usize>> for WriteBuf {
 impl Index<RangeFull> for WriteBuf {
     type Output = [u8];
 
-    fn index(&self, _range: RangeFull) -> &Self::Output {
+    fn index(&self, _: RangeFull) -> &Self::Output {
         self.filled()
     }
 }

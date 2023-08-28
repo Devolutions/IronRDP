@@ -11,7 +11,7 @@ pub fn encode_dvc_message(
     dvc_pdu: vc::dvc::ClientPdu,
     dvc_data: &[u8],
     mut buf: &mut WriteBuf,
-) -> SessionResult<usize> {
+) -> SessionResult<()> {
     let dvc_length = dvc_pdu.buffer_length() + dvc_data.len();
 
     let channel_header = vc::ChannelPduHeader {
@@ -31,7 +31,7 @@ pub fn encode_dvc_message(
 
     debug_assert_eq!(buf.filled_len(), written + dvc_length);
 
-    Ok(written + dvc_length)
+    Ok(())
 }
 
 pub struct DynamicChannelCtx<'a> {

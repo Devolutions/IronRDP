@@ -37,7 +37,7 @@ pub use self::multi_transport_channel_data::{
     MultiTransportChannelData, MultiTransportChannelDataError, MultiTransportFlags,
 };
 pub use self::network_data::{
-    Channel, ChannelName, ChannelOptions, ClientNetworkData, NetworkDataError, ServerNetworkData,
+    ChannelDef, ChannelName, ChannelOptions, ClientNetworkData, NetworkDataError, ServerNetworkData,
 };
 pub use self::security_data::{
     ClientSecurityData, EncryptionLevel, EncryptionMethod, SecurityDataError, ServerSecurityData,
@@ -74,7 +74,7 @@ pub struct ClientGccBlocks {
 }
 
 impl ClientGccBlocks {
-    pub fn channel_names(&self) -> Option<Vec<network_data::Channel>> {
+    pub fn channel_names(&self) -> Option<Vec<network_data::ChannelDef>> {
         self.network.as_ref().map(|network| network.channels.clone())
     }
 }

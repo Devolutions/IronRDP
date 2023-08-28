@@ -100,7 +100,7 @@ async fn connect(config: &Config) -> ConnectorResult<(ConnectionResult, Upgraded
         .with_server_addr(server_addr)
         .with_server_name(&config.destination)
         .with_credssp_network_client(RequestClientFactory)
-        // .with_static_channel(ironrdp::dvc::Drdynvc::new()); // FIXME: something is broken
+        // .with_static_channel(ironrdp::dvc::Drdynvc::new()) // FIXME: drdynvc is not working
         .with_static_channel(ironrdp::rdpsnd::Rdpsnd::new())
         .with_static_channel(ironrdp::rdpdr::Rdpdr::default())
         .with_static_channel(ironrdp::cliprdr::Cliprdr::default());

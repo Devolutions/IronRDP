@@ -6,29 +6,30 @@ pub use ironrdp_pdu as pdu;
 
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
-use bitflags::bitflags;
 use core::any::{Any, TypeId};
 use core::fmt;
-use pdu::cursor::WriteCursor;
-use pdu::{encode_buf, PduEncode};
 
+use bitflags::bitflags;
 use ironrdp_pdu::gcc::{ChannelName, ChannelOptions};
 use ironrdp_pdu::write_buf::WriteBuf;
 use ironrdp_pdu::{assert_obj_safe, PduResult};
-use pdu::gcc::Channel;
+use pdu::cursor::WriteCursor;
+use pdu::gcc::ChannelDef;
+use pdu::{encode_buf, PduEncode};
 
+/// The integer type representing a static virtual channel ID.
 pub type StaticChannelId = u16;
 
 /// Encodable PDU that can used as a message to be sent over a static virtual channel.
 /// Additional SVC header flags could be added via [`SvcMessage::with_flags`] method.
 pub struct SvcMessage {
     pdu: Box<dyn PduEncode>,
-    flags: ChannelPDUFlags,
+    flags: ChannelFlags,
 }
 
 impl SvcMessage {
     /// Adds additional SVC header flags to the message.
-    pub fn with_flags(mut self, flags: ChannelPDUFlags) -> Self {
+    pub fn with_flags(mut self, flags: ChannelFlags) -> Self {
         self.flags |= flags;
         self
     }
@@ -38,12 +39,12 @@ impl<T: PduEncode + 'static> From<T> for SvcMessage {
     fn from(pdu: T) -> Self {
         Self {
             pdu: Box::new(pdu),
-            flags: ChannelPDUFlags::empty(),
+            flags: ChannelFlags::empty(),
         }
     }
 }
 
-/// Defines which compression flag should be sent along the Channel Definition Structure (CHANNEL_DEF)
+/// Defines which compression flag should be sent along the [`ChannelDef`] structure (CHANNEL_DEF)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CompressionCondition {
     /// Virtual channel data will not be compressed
@@ -64,7 +65,7 @@ pub trait StaticVirtualChannel: AsAny + fmt::Debug + Send + Sync {
     /// Returns the name of the `StaticVirtualChannel`
     fn channel_name(&self) -> ChannelName;
 
-    /// Defines which compression flag should be sent along the Channel Definition Structure (CHANNEL_DEF)
+    /// Defines which compression flag should be sent along the [`Channel`] Definition Structure (`CHANNEL_DEF`)
     fn compression_condition(&self) -> CompressionCondition {
         CompressionCondition::Never
     }
@@ -82,8 +83,9 @@ pub trait StaticVirtualChannel: AsAny + fmt::Debug + Send + Sync {
 
 assert_obj_safe!(StaticVirtualChannel);
 
-/// Takes a vector of PDUs and breaks them into chunks prefixed with a [`ChannelPDUHeader`].
-/// Each chunk is at most `max_chunk_len` bytes long (not including the ChannelPduHeader).
+/// Takes a vector of PDUs and breaks them into chunks prefixed with a [`ChannelPduHeader`].
+///
+/// Each chunk is at most `max_chunk_len` bytes long (not including the Channel PDU Header).
 pub fn chunkify(messages: Vec<SvcMessage>, max_chunk_len: usize) -> PduResult<Vec<WriteBuf>> {
     let mut results = vec![];
     for message in messages {
@@ -92,13 +94,14 @@ pub fn chunkify(messages: Vec<SvcMessage>, max_chunk_len: usize) -> PduResult<Ve
     Ok(results)
 }
 
-/// Takes a single PDU and breaks it into chunks prefixed with a [`ChannelPDUHeader`].
-/// Each chunk is at most `max_chunk_len` bytes long (not including the ChannelPduHeader).
+/// Takes a single PDU and breaks it into chunks prefixed with a [`ChannelPduHeader`].
+///
+/// Each chunk is at most `max_chunk_len` bytes long (not including the Channel PDU Header).
 ///
 /// For example, if the PDU is 4000 bytes long and `max_chunk_len` is 1600, this function will
 /// return 3 chunks, each 1600 bytes long, and the last chunk will be 800 bytes long.
 ///
-/// [[ ChannelPDUHeader | 1600 bytes of PDU data ] [ ChannelPDUHeader | 1600 bytes of PDU data ] [ ChannelPDUHeader | 800 bytes of PDU data ]]
+/// [[ Channel PDU Header | 1600 bytes of PDU data ] [ Channel PDU Header | 1600 bytes of PDU data ] [ Channel PDU Header | 800 bytes of PDU data ]]
 fn chunkify_one(message: SvcMessage, max_chunk_len: usize) -> PduResult<Vec<WriteBuf>> {
     let mut encoded_pdu = WriteBuf::new(); // TODO(perf): reuse this buffer using `clear` and `filled` as appropriate
     encode_buf(message.pdu.as_ref(), &mut encoded_pdu)?;
@@ -121,18 +124,18 @@ fn chunkify_one(message: SvcMessage, max_chunk_len: usize) -> PduResult<Vec<Writ
 
         // Create the header for this chunk.
         let header = {
-            let mut flags = ChannelPDUFlags::empty();
+            let mut flags = ChannelFlags::empty();
             if first {
-                flags |= ChannelPDUFlags::CHANNEL_FLAG_FIRST;
+                flags |= ChannelFlags::FIRST;
             }
             if last {
-                flags |= ChannelPDUFlags::CHANNEL_FLAG_LAST;
+                flags |= ChannelFlags::LAST;
             }
 
             flags |= message.flags;
 
-            ChannelPDUHeader {
-                length: total_len as u32,
+            ChannelPduHeader {
+                length: ironrdp_pdu::cast_int!(ChannelPduHeader::NAME, "length", total_len)?,
                 flags,
             }
         };
@@ -157,7 +160,7 @@ fn chunkify_one(message: SvcMessage, max_chunk_len: usize) -> PduResult<Vec<Writ
     Ok(chunks)
 }
 
-/// Build the `ChannelOptions` bitfield to be used in the Channel Definition Structure.
+/// Builds the [`ChannelOptions`] bitfield to be used in the [`ChannelDef`] structure.
 pub fn make_channel_options(channel: &dyn StaticVirtualChannel) -> ChannelOptions {
     match channel.compression_condition() {
         CompressionCondition::Never => ChannelOptions::empty(),
@@ -166,13 +169,14 @@ pub fn make_channel_options(channel: &dyn StaticVirtualChannel) -> ChannelOption
     }
 }
 
-/// Build the Channel Definition Structure (CHANNEL_DEF) containing information for this channel.
-pub fn make_channel_definition(channel: &dyn StaticVirtualChannel) -> Channel {
+/// Builds the [`ChannelDef`] structure containing information for this channel.
+pub fn make_channel_definition(channel: &dyn StaticVirtualChannel) -> ChannelDef {
     let name = channel.channel_name();
     let options = make_channel_options(channel);
-    Channel { name, options }
+    ChannelDef { name, options }
 }
 
+/// Type information ([`TypeId`]) may be retrieved at runtime for this type.
 pub trait AsAny {
     fn as_any(&self) -> &dyn Any;
 
@@ -196,6 +200,18 @@ macro_rules! impl_as_any {
     };
 }
 
+/// A set holding at most one trait object for any given static channel.
+///
+/// To ensure uniqueness, each trait object is associated to the [`TypeId`] of it’s original type.
+/// Once joined, channels may have their ID attached using [`Self::attach_channel_id()`], effectively
+/// associating them together so it’s possible.
+///
+/// At this point, it’s possible to retrieve the trait object using either
+/// the type ID ([`Self::get_by_type_id()`]), the original type ([`Self::get_by_type()`]) or
+/// the channel ID ([`Self::get_by_channel_id()`]).
+///
+/// It’s possible to downcast the trait object and to retrieve the concrete value
+/// since all [`StaticVirtualChannel`]s are also implementing the [`AsAny`] trait.
 #[derive(Debug)]
 pub struct StaticChannelSet {
     channels: BTreeMap<TypeId, Box<dyn StaticVirtualChannel>>,
@@ -303,15 +319,6 @@ impl StaticChannelSet {
         self.to_channel_id.clear();
         self.to_type_id.clear();
     }
-
-    #[inline]
-    pub fn take(&mut self) -> Self {
-        Self {
-            channels: core::mem::take(&mut self.channels),
-            to_channel_id: core::mem::take(&mut self.to_channel_id),
-            to_type_id: core::mem::take(&mut self.to_type_id),
-        }
-    }
 }
 
 impl Default for StaticChannelSet {
@@ -327,47 +334,61 @@ impl Default for StaticChannelSet {
 /// virtual channel capability set.
 ///
 /// See also:
-/// - https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/6c074267-1b32-4ceb-9496-2eb941a23e6b
-/// - https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/a8593178-80c0-4b80-876c-cb77e62cecfc
-pub const CHANNEL_CHUNK_LEGNTH: usize = 1600;
+/// - <https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/6c074267-1b32-4ceb-9496-2eb941a23e6b>
+/// - <https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/a8593178-80c0-4b80-876c-cb77e62cecfc>
+pub const CHANNEL_CHUNK_LENGTH: usize = 1600;
 
 bitflags! {
-    /// Channel control flags, as specified in section 2.2.6.1.1 of MS-RDPBCGR.
+    /// Channel control flags, as specified in [section 2.2.6.1.1 of MS-RDPBCGR].
     ///
-    /// See: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/f125c65e-6901-43c3-8071-d7d5aaee7ae4
+    /// [section 2.2.6.1.1 of MS-RDPBCGR]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/f125c65e-6901-43c3-8071-d7d5aaee7ae4
     #[derive(Debug, PartialEq, Copy, Clone)]
-    pub struct ChannelPDUFlags: u32 {
-        const CHANNEL_FLAG_FIRST = 0x00000001;
-        const CHANNEL_FLAG_LAST = 0x00000002;
-        const CHANNEL_FLAG_SHOW_PROTOCOL = 0x00000010;
-        const CHANNEL_FLAG_SUSPEND = 0x00000020;
-        const CHANNEL_FLAG_RESUME = 0x00000040;
-        const CHANNEL_FLAG_SHADOW_PERSISTENT = 0x00000080;
-        const CHANNEL_PACKET_COMPRESSED = 0x00200000;
-        const CHANNEL_PACKET_AT_FRONT = 0x00400000;
-        const CHANNEL_PACKET_FLUSHED = 0x00800000;
-
-        const CHANNEL_FLAG_ONLY = Self::CHANNEL_FLAG_FIRST.bits() | Self::CHANNEL_FLAG_LAST.bits();
+    pub struct ChannelFlags: u32 {
+        /// CHANNEL_FLAG_FIRST
+        const FIRST = 0x00000001;
+        /// CHANNEL_FLAG_LAST
+        const LAST = 0x00000002;
+        /// CHANNEL_FLAG_SHOW_PROTOCOL
+        const SHOW_PROTOCOL = 0x00000010;
+        /// CHANNEL_FLAG_SUSPEND
+        const SUSPEND = 0x00000020;
+        /// CHANNEL_FLAG_RESUME
+        const RESUME = 0x00000040;
+        /// CHANNEL_FLAG_SHADOW_PERSISTENT
+        const SHADOW_PERSISTENT = 0x00000080;
+        /// CHANNEL_PACKET_COMPRESSED
+        const COMPRESSED = 0x00200000;
+        /// CHANNEL_PACKET_AT_FRONT
+        const AT_FRONT = 0x00400000;
+        /// CHANNEL_PACKET_FLUSHED
+        const FLUSHED = 0x00800000;
     }
 }
 
+/// Channel PDU Header (CHANNEL_PDU_HEADER)
+///
 /// Channel PDU header precedes all static virtual channel traffic
 /// transmitted between an RDP client and server.
 ///
-/// It is specified in section 2.2.6.1.1 of MS-RDPBCGR.
-/// https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/f125c65e-6901-43c3-8071-d7d5aaee7ae4
+/// It is specified in [section 2.2.6.1.1 of MS-RDPBCGR].
+///
+/// [section 2.2.6.1.1 of MS-RDPBCGR]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/f125c65e-6901-43c3-8071-d7d5aaee7ae4
 #[derive(Debug)]
-struct ChannelPDUHeader {
+struct ChannelPduHeader {
     /// The total length of the uncompressed PDU data,
     /// excluding the length of this header.
     /// Note: the data can span multiple PDUs, in which
     /// case each PDU in the series contains the same
     /// length field.
     length: u32,
-    flags: ChannelPDUFlags,
+    flags: ChannelFlags,
 }
 
-impl PduEncode for ChannelPDUHeader {
+impl ChannelPduHeader {
+    const NAME: &str = "CHANNEL_PDU_HEADER";
+}
+
+impl PduEncode for ChannelPduHeader {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
         dst.write_u32(self.length);
         dst.write_u32(self.flags.bits());
@@ -375,7 +396,7 @@ impl PduEncode for ChannelPDUHeader {
     }
 
     fn name(&self) -> &'static str {
-        "ChannelPDUHeader"
+        Self::NAME
     }
 
     fn size(&self) -> usize {

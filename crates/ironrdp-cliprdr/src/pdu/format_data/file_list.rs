@@ -17,7 +17,7 @@ bitflags! {
 }
 
 bitflags! {
-    /// Represents `fileAttributes` of `CLIPRDR_FILEDESCRIPTOR` strucutre.
+    /// Represents `fileAttributes` of `CLIPRDR_FILEDESCRIPTOR` structure.
     #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
     pub struct ClipboardFileAttributes: u32 {
         /// A file that is read-only. Applications can read the file, but cannot write to
@@ -43,7 +43,7 @@ bitflags! {
 /// Represents `CLIPRDR_FILEDESCRIPTOR`
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileDescriptor {
-    pub attibutes: Option<ClipboardFileAttributes>,
+    pub attributes: Option<ClipboardFileAttributes>,
     pub last_write_time: Option<u64>,
     pub file_size: Option<u64>,
     pub name: String,
@@ -67,7 +67,7 @@ impl PduEncode for FileDescriptor {
         ensure_fixed_part_size!(in: dst);
 
         let mut flags = ClipboardFileFlags::empty();
-        if self.attibutes.is_some() {
+        if self.attributes.is_some() {
             flags |= ClipboardFileFlags::ATTRIBUTES;
         }
         if self.last_write_time.is_some() {
@@ -79,7 +79,7 @@ impl PduEncode for FileDescriptor {
 
         dst.write_u32(flags.bits());
         dst.write_array([0u8; 32]);
-        dst.write_u32(self.attibutes.unwrap_or(ClipboardFileAttributes::empty()).bits());
+        dst.write_u32(self.attributes.unwrap_or(ClipboardFileAttributes::empty()).bits());
         dst.write_array([0u8; 16]);
         dst.write_u64(self.last_write_time.unwrap_or_default());
 
@@ -112,7 +112,7 @@ impl<'de> PduDecode<'de> for FileDescriptor {
 
         let flags = ClipboardFileFlags::from_bits_truncate(src.read_u32());
         src.read_array::<32>();
-        let attibutes = if flags.contains(ClipboardFileFlags::ATTRIBUTES) {
+        let attributes = if flags.contains(ClipboardFileFlags::ATTRIBUTES) {
             Some(ClipboardFileAttributes::from_bits_truncate(src.read_u32()))
         } else {
             let _ = src.read_u32();
@@ -142,7 +142,7 @@ impl<'de> PduDecode<'de> for FileDescriptor {
         src.advance(520);
 
         Ok(Self {
-            attibutes,
+            attributes,
             last_write_time,
             file_size,
             name,

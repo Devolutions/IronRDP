@@ -137,7 +137,7 @@ impl ActiveStage {
     }
 
     /// Sends a PDU on the dynamic channel.
-    pub fn encode_dynamic(&self, output: &mut WriteBuf, channel_name: &str, dvc_data: &[u8]) -> SessionResult<usize> {
+    pub fn encode_dynamic(&self, output: &mut WriteBuf, channel_name: &str, dvc_data: &[u8]) -> SessionResult<()> {
         self.x224_processor.encode_dynamic(output, channel_name, dvc_data)
     }
 

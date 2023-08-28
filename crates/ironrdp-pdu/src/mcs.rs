@@ -1,7 +1,7 @@
 use std::borrow::Cow;
 
 use crate::cursor::{ReadCursor, WriteCursor};
-use crate::gcc::{Channel, ClientGccBlocks, ConferenceCreateRequest, ConferenceCreateResponse};
+use crate::gcc::{ChannelDef, ClientGccBlocks, ConferenceCreateRequest, ConferenceCreateResponse};
 use crate::tpdu::{TpduCode, TpduHeader};
 use crate::tpkt::TpktHeader;
 use crate::x224::{user_data_size, X224Pdu};
@@ -851,7 +851,7 @@ impl ConnectInitial {
         }
     }
 
-    pub fn channel_names(&self) -> Option<Vec<Channel>> {
+    pub fn channel_names(&self) -> Option<Vec<ChannelDef>> {
         self.conference_create_request.gcc_blocks.channel_names()
     }
 }

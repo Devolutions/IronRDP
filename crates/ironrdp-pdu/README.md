@@ -2,7 +2,20 @@
 
 RDP PDU encoding and decoding library.
 
-## TODO: overview of encoding and decoding traits
+## WIP: overview of encoding and decoding traits
+
+It’s important for `PduEncode` to be object-safe in order to enable patterns such as the one
+found in `ironrdp-svc`:
+
+```rust
+pub trait StaticVirtualChannel {
+    fn process(&mut self, payload: &[u8]) -> PduResult<Vec<Box<dyn PduEncode>>>;
+}
+```
+
+(The actual trait is a bit more complicated, but this gives the rough idea.)
+
+TODO: elaborate this section
 
 ## Difference between `WriteBuf` and `WriteCursor`
 
@@ -67,12 +80,16 @@ fn process(&mut self, payload: &[u8], output: &mut WriteBuf) -> PduResult<()> {
         ServerOrder::DoThis => {
             // do this
             let response = DoThisResponse { … };
-            ironrdp_pdu::encode_buf(response, output)?; // buffer is grown, or not, as appropriate, and `DoThisResponse` is encoded in the "unfilled" region
+
+            // buffer is grown, or not, as appropriate, and `DoThisResponse` is encoded in the "unfilled" region
+            ironrdp_pdu::encode_buf(response, output)?;
         }
         ServerOrder::DoThat => {
             // do that
             let response = DoThatResponse { … };
-            ironrdp_pdu::encode_buf(response, output)?; // same here
+
+            // same as above
+            ironrdp_pdu::encode_buf(response, output)?;
         }
     }
 
@@ -83,7 +100,7 @@ fn process(&mut self, payload: &[u8], output: &mut WriteBuf) -> PduResult<()> {
 Methods such as `write_u8` are overlapping with the `WriteCursor` API, but it’s mostly for
 convenience if one needs to manually write something in an ad-hoc fashion.
 
-Otherwise, using `WriteCursor` is prefered in order to write `no-std` and `no-alloc` friendly code.
+Otherwise, using `WriteCursor` is preferred in order to write `no-std` and `no-alloc` friendly code.
 
 ## Most PDUs are "plain old data" structures with public fields
 
@@ -113,4 +130,3 @@ When hiding some fields is really required, one of the following approach is sug
 [2]: https://doc.rust-lang.org/reference/expressions/struct-expr.html#functional-update-syntax
 [3]: https://matklad.github.io/2022/05/29/builder-lite.html
 [4]: https://xaeroxe.github.io/init-struct-pattern/
-

@@ -242,7 +242,7 @@ macro_rules! write_padding {
 
 /// Moves read cursor, ignoring padding bytes.
 ///
-/// This is similar to `ironrdp_pdu::padding::read`, only exists for consistancy with `write_padding!`.
+/// This is similar to `ironrdp_pdu::padding::read`, only exists for consistency with `write_padding!`.
 #[macro_export]
 macro_rules! read_padding {
     ($src:expr, $n:expr) => {

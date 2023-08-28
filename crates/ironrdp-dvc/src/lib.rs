@@ -19,14 +19,14 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use core::any::Any;
 use core::fmt;
-use pdu::cursor::WriteCursor;
-use pdu::PduEncode;
 
 use ironrdp_pdu::gcc::ChannelName;
 use ironrdp_pdu::rdp::vc;
 use ironrdp_pdu::write_buf::WriteBuf;
 use ironrdp_pdu::{assert_obj_safe, dvc, PduResult};
 use ironrdp_svc::{impl_as_any, CompressionCondition, StaticVirtualChannel, SvcMessage};
+use pdu::cursor::WriteCursor;
+use pdu::PduEncode;
 
 /// A type that is a Dynamic Virtual Channel (DVC)
 ///
@@ -240,7 +240,7 @@ impl StaticVirtualChannel for Drdynvc {
 
         Err(ironrdp_pdu::other_err!(
             "DRDYNVC",
-            "ironrdp-dvc::Drdynvc implemention is not yet ready"
+            "ironrdp-dvc::Drdynvc implementation is not yet ready"
         ))
     }
 

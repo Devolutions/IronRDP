@@ -16,6 +16,12 @@ jobs:
     name: Coverage Report
     runs-on: ubuntu-20.04
 
+    # Running the coverage job is only supported on the official repo itself, not on forks
+    # (because $GITHUB_TOKEN only have read permissions when run on a fork)
+    # We would need something like Codecov integration to handle forks properly
+    # https://github.com/taiki-e/cargo-llvm-cov#continuous-integration
+    if: github.repository == 'Devolutions/IronRDP'
+
     steps:
       - uses: actions/checkout@v3
 
@@ -28,7 +34,7 @@ jobs:
       - name: Generate PR report
         if: github.event.number != ''
         env:
-          GH_TOKEN: ${{ secrets.DEVOLUTIONSBOT_TOKEN != '' && secrets.DEVOLUTIONSBOT_TOKEN || github.token }}
+          GH_TOKEN: ${{ github.token }}
         run: cargo xtask cov report-gh --repo "${{ github.repository }}" --pr "${{ github.event.number }}" -v
 
       - name: Configure Git Identity

@@ -142,20 +142,29 @@ pub trait PduEncode {
 assert_obj_safe!(PduEncode);
 
 /// Encodes the given PDU in-place into the provided buffer and returns the number of bytes written.
-pub fn encode<T: PduEncode + ?Sized>(pdu: &T, dst: &mut [u8]) -> PduResult<usize> {
+pub fn encode<T>(pdu: &T, dst: &mut [u8]) -> PduResult<usize>
+where
+    T: PduEncode + ?Sized,
+{
     let mut cursor = WriteCursor::new(dst);
     encode_cursor(pdu, &mut cursor)?;
     Ok(cursor.pos())
 }
 
 /// Encodes the given PDU in-place using the provided `WriteCursor`.
-pub fn encode_cursor<T: PduEncode + ?Sized>(pdu: &T, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+pub fn encode_cursor<T>(pdu: &T, dst: &mut WriteCursor<'_>) -> PduResult<()>
+where
+    T: PduEncode + ?Sized,
+{
     pdu.encode(dst)
 }
 
 /// Same as `encode` but resizes the buffer when it is too small to fit the PDU.
 #[cfg(feature = "alloc")]
-pub fn encode_buf<T: PduEncode + ?Sized>(pdu: &T, buf: &mut WriteBuf) -> PduResult<usize> {
+pub fn encode_buf<T>(pdu: &T, buf: &mut WriteBuf) -> PduResult<usize>
+where
+    T: PduEncode + ?Sized,
+{
     let pdu_size = pdu.size();
     let dst = buf.unfilled_to(pdu_size);
     let written = encode(pdu, dst)?;
@@ -166,9 +175,12 @@ pub fn encode_buf<T: PduEncode + ?Sized>(pdu: &T, buf: &mut WriteBuf) -> PduResu
 
 /// Same as `encode` but allocates and returns a new buffer each time.
 ///
-/// This is a convenience function, but it’s not very ressource efficient.
+/// This is a convenience function, but it’s not very resource efficient.
 #[cfg(feature = "alloc")]
-pub fn encode_vec<T: PduEncode>(pdu: &T) -> PduResult<Vec<u8>> {
+pub fn encode_vec<T>(pdu: &T) -> PduResult<Vec<u8>>
+where
+    T: PduEncode + ?Sized,
+{
     let pdu_size = pdu.size();
     let mut buf = vec![0; pdu_size];
     let written = encode(pdu, buf.as_mut_slice())?;
@@ -193,12 +205,18 @@ pub trait PduDecode<'de>: Sized {
     fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self>;
 }
 
-pub fn decode<'de, T: PduDecode<'de>>(src: &'de [u8]) -> PduResult<T> {
+pub fn decode<'de, T>(src: &'de [u8]) -> PduResult<T>
+where
+    T: PduDecode<'de>,
+{
     let mut cursor = ReadCursor::new(src);
     T::decode(&mut cursor)
 }
 
-pub fn decode_cursor<'de, T: PduDecode<'de>>(src: &mut ReadCursor<'de>) -> PduResult<T> {
+pub fn decode_cursor<'de, T>(src: &mut ReadCursor<'de>) -> PduResult<T>
+where
+    T: PduDecode<'de>,
+{
     T::decode(src)
 }
 

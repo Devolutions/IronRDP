@@ -2,7 +2,7 @@
 name = "ironrdp-rdpsnd"
 version = "0.1.0"
 readme = "README.md"
-description = "Implements the rdpsnd static virtual channel for audio output as described in MS-RDPEA"
+description = "RDPSND static channel for audio output implemented as described in MS-RDPEA"
 edition.workspace = true
 license.workspace = true
 homepage.workspace = true

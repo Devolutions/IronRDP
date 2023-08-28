@@ -1,16 +1,16 @@
-use ironrdp_pdu::bitmap::rdp6::{BitmapStream as BitmapStreamPdu, ColorPlanes};
+use ironrdp_pdu::bitmap::rdp6::{BitmapStream as BitmapStreamPdu, ColorPlaneDefinition};
 use ironrdp_pdu::{decode, PduError};
 use thiserror::Error;
 
 use crate::color_conversion::Rgb;
-use crate::rdp6::rle::{decompress_8bpp_plane, RleError};
+use crate::rdp6::rle::{decompress_8bpp_plane, RleDecodeError};
 
 #[derive(Debug, Error)]
 pub enum BitmapDecodeError {
     #[error("Failed to decode RDP6 bitmap stream PDU: {0}")]
     Pdu(#[from] PduError),
     #[error("Failed to perform RLE decompression of RDP6 bitmap stream: {0}")]
-    Rle(#[from] RleError),
+    Rle(#[from] RleDecodeError),
     #[error("Color plane data size provided in PDU is not sufficient to reconstruct the bitmap")]
     InvalidUncompressedDataSize,
 }
@@ -78,7 +78,7 @@ impl<'a> BitmapStreamDecoderImpl<'a> {
     }
 
     fn decompress_planes(&'a self, aux_buffer: &'a mut Vec<u8>) -> Result<&'a [u8], BitmapDecodeError> {
-        let planes = if self.bitmap.enable_rle_compression {
+        let planes = if self.bitmap.header.enable_rle_compression {
             // We don't care for the previous content, just resize it to fit the data
             aux_buffer.resize(self.uncompressed_planes_size, 0);
             let uncompressed_planes_buffer = &mut aux_buffer[..self.uncompressed_planes_size];
@@ -87,7 +87,7 @@ impl<'a> BitmapStreamDecoderImpl<'a> {
             let mut src_offset = 0;
 
             // Decompress Alpha plane
-            if self.bitmap.use_alpha {
+            if self.bitmap.header.use_alpha {
                 // Decompress alpha alpha, but discard it (always 0xFF)
                 src_offset += decompress_8bpp_plane(
                     &compressed[src_offset..],
@@ -124,7 +124,11 @@ impl<'a> BitmapStreamDecoderImpl<'a> {
             &uncompressed_planes_buffer[..self.uncompressed_planes_size]
         } else {
             // Discard alpha plane
-            let color_planes_offset = if self.bitmap.use_alpha { self.full_plane_size } else { 0 };
+            let color_planes_offset = if self.bitmap.header.use_alpha {
+                self.full_plane_size
+            } else {
+                0
+            };
 
             let expected_data_size = color_planes_offset + self.uncompressed_planes_size;
 
@@ -194,12 +198,12 @@ impl<'a> BitmapStreamDecoderImpl<'a> {
         // Reserve enough space for decoded RGB channels data
         dst.reserve(self.image_height * self.image_width * 3);
 
-        match self.bitmap.color_planes {
-            ColorPlanes::Argb { .. } => {
+        match self.bitmap.header.color_plane_definition {
+            ColorPlaneDefinition::Argb => {
                 let color_planes = self.decompress_planes(aux_buffer)?;
                 self.write_argb_planes_to_rgb24(color_planes, dst);
             }
-            ColorPlanes::AYCoCg {
+            ColorPlaneDefinition::AYCoCg {
                 color_loss_level,
                 use_chroma_subsampling,
                 ..
@@ -207,7 +211,7 @@ impl<'a> BitmapStreamDecoderImpl<'a> {
                 let params: AYCoCgParams = AYCoCgParams {
                     color_loss_level,
                     chroma_subsampling: use_chroma_subsampling,
-                    alpha: self.bitmap.use_alpha,
+                    alpha: self.bitmap.header.use_alpha,
                 };
                 let color_planes = self.decompress_planes(aux_buffer)?;
                 self.write_aycocg_planes_to_rgb24(params, color_planes, dst);
@@ -259,97 +263,5 @@ impl BitmapStreamDecoder {
         let decoder = BitmapStreamDecoderImpl::init(bitmap, image_width, image_height);
 
         decoder.decode(dst, &mut self.planes_buffer)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn assert_decoded_image(pdu: &[u8], expected_bmp: &[u8], width: usize, height: usize) {
-        let expected_bmp = bmp::from_reader(&mut std::io::Cursor::new(expected_bmp)).unwrap();
-        let mut expected_buffer = vec![0; width * height * 3];
-        for (idx, (x, y)) in expected_bmp.coordinates().enumerate() {
-            let pixel = expected_bmp.get_pixel(x, y);
-
-            let offset = idx * 3;
-            expected_buffer[offset] = pixel.r;
-            expected_buffer[offset + 1] = pixel.g;
-            expected_buffer[offset + 2] = pixel.b;
-        }
-
-        let mut actual = Vec::new();
-
-        BitmapStreamDecoder::default()
-            .decode_bitmap_stream_to_rgb24(pdu, &mut actual, width, height)
-            .unwrap();
-
-        assert_eq!(actual.as_slice(), expected_buffer.as_slice());
-    }
-
-    #[test]
-    fn decode_32x64_rgb_raw() {
-        // RGB (No alpha), no RLE
-        assert_decoded_image(
-            include_bytes!("test_assets/32x64_rgb_raw.bin"),
-            include_bytes!("test_assets/32x64_rgb_raw.bmp"),
-            32,
-            64,
-        );
-    }
-
-    #[test]
-    fn decode_64x24_argb_rle() {
-        // ARGB (With alpha), RLE
-        assert_decoded_image(
-            include_bytes!("test_assets/64x24_argb_rle.bin"),
-            include_bytes!("test_assets/64x24_argb_rle.bmp"),
-            64,
-            24,
-        );
-    }
-
-    #[test]
-    fn decode_64x64_aycocg_rle() {
-        // AYCoCg (With alpha), RLE, no chroma subsampling
-        assert_decoded_image(
-            include_bytes!("test_assets/64x64_aycocg_rle.bin"),
-            include_bytes!("test_assets/64x64_aycocg_rle.bmp"),
-            64,
-            64,
-        );
-    }
-
-    #[test]
-    fn decode_64x64_ycocg_rle_ss() {
-        // AYCoCg (No alpha), RLE, with chroma subsampling
-        assert_decoded_image(
-            include_bytes!("test_assets/64x64_ycocg_rle_ss.bin"),
-            include_bytes!("test_assets/64x64_ycocg_rle_ss.bmp"),
-            64,
-            64,
-        );
-    }
-
-    #[test]
-    fn decode_64x35_ycocg_rle_ss() {
-        // AYCoCg (No alpha), RLE, with chroma subsampling + odd resolution
-        assert_decoded_image(
-            include_bytes!("test_assets/64x35_ycocg_rle_ss.bin"),
-            include_bytes!("test_assets/64x35_ycocg_rle_ss.bmp"),
-            64,
-            35,
-        );
-    }
-
-    #[test]
-    fn decode_64x64_ycocg_raw_ss() {
-        // AYCoCg (No alpha), no RLE, with chroma subsampling
-        assert_decoded_image(
-            include_bytes!("test_assets/64x64_ycocg_raw_ss.bin"),
-            include_bytes!("test_assets/64x64_ycocg_raw_ss.bmp"),
-            64,
-            64,
-        );
     }
 }
