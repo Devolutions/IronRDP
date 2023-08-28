@@ -15,10 +15,39 @@ use ironrdp_pdu::write_buf::WriteBuf;
 use ironrdp_pdu::{assert_obj_safe, PduResult};
 use pdu::cursor::WriteCursor;
 use pdu::gcc::ChannelDef;
-use pdu::{encode_buf, PduEncode};
+use pdu::{encode_buf, invalid_message_err, PduEncode};
+use std::marker::PhantomData;
 
 /// The integer type representing a static virtual channel ID.
 pub type StaticChannelId = u16;
+
+/// SVC data which sould be sent to the server over the main communication channel (RDP socket).
+/// Usually returned by the channel-specific methods.
+pub struct SvcRequest<C> {
+    messages: Vec<SvcMessage>,
+    _channel: PhantomData<C>,
+}
+
+impl<C> From<Vec<SvcMessage>> for SvcRequest<C> {
+    fn from(messages: Vec<SvcMessage>) -> Self {
+        Self::new(messages)
+    }
+}
+
+impl<C> From<SvcRequest<C>> for Vec<SvcMessage> {
+    fn from(request: SvcRequest<C>) -> Self {
+        request.messages
+    }
+}
+
+impl<C> SvcRequest<C> {
+    pub fn new(messages: Vec<SvcMessage>) -> Self {
+        Self {
+            messages,
+            _channel: Default::default(),
+        }
+    }
+}
 
 /// Encodable PDU that can used as a message to be sent over a static virtual channel.
 /// Additional SVC header flags could be added via [`SvcMessage::with_flags`] method.
@@ -70,7 +99,21 @@ pub trait StaticVirtualChannel: AsAny + fmt::Debug + Send + Sync {
         CompressionCondition::Never
     }
 
+    /// Processes a payload received on the virtual channel. This method is called when message
+    /// is divided into chunks. If SVC received complete unchunked message,
+    /// [`StaticVirtualChannel::process`] is called instead.
+    ///
+    /// Returns a list of PDUs to be sent back to the client.
+    fn process_chunked(&mut self, _payload: &[u8], _last: bool) -> PduResult<Vec<SvcMessage>> {
+        Err(invalid_message_err!(
+            "ironrdp-svc",
+            "SVC",
+            "Chunked messages are not supported for this SVC",
+        ))
+    }
+
     /// Processes a payload received on the virtual channel.
+    ///
     /// Returns a list of PDUs to be sent back to the client.
     fn process(&mut self, payload: &[u8]) -> PduResult<Vec<SvcMessage>>;
 

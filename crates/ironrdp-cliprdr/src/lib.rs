@@ -1,20 +1,25 @@
 //! Cliboard static virtual channel(SVC) implementation.
 //! This library includes:
 //! - Cliboard SVC PDUs parsing
-//! - Clipboard SVC processing (TODO)
+//! - Clipboard SVC processing
 
+pub mod backend;
 pub mod pdu;
 
 use ironrdp_pdu::{decode, gcc::ChannelName, PduResult};
-use ironrdp_svc::{impl_as_any, ChannelFlags, CompressionCondition, StaticVirtualChannel, SvcMessage};
+use ironrdp_svc::{impl_as_any, ChannelFlags, CompressionCondition, StaticVirtualChannel, SvcMessage, SvcRequest};
 use pdu::{
     Capabilities, ClientTemporaryDirectory, ClipboardFormat, ClipboardFormatId, ClipboardGeneralCapabilityFlags,
-    ClipboardPdu, ClipboardProtocolVersion, FormatListResponse,
+    ClipboardPdu, ClipboardProtocolVersion, FileContentsResponse, FormatDataRequest, FormatDataResponse,
+    FormatListResponse,
 };
 
 use crate::pdu::FormatList;
+use backend::CliprdrBackend;
 use thiserror::Error;
 use tracing::{error, info};
+
+pub type CliprdrSvcRequest = SvcRequest<Cliprdr>;
 
 #[derive(Debug, Error)]
 enum ClipboardError {
@@ -32,12 +37,29 @@ enum CliprdrState {
     Failed,
 }
 
+pub struct FileStreamSettings {
+    /// Path to local temporary directory where files will be stored
+    pub temporary_directory: String,
+    /// Enable source file path information in
+    pub enable_file_paths: bool,
+    pub enable_data_lock: bool,
+    pub enable_huge_files: bool,
+}
+
 /// CLIPRDR static virtual channel client endpoint implementation
 #[derive(Debug)]
 pub struct Cliprdr {
+    backend: Box<dyn CliprdrBackend>,
     capabilities: Capabilities,
-    temporary_directory: String,
     state: CliprdrState,
+
+    /// Buffer for de-chunkification of clipboard PDUs. Everything bigger than ~1600 bytes is
+    /// usually chunked when transfered over svc.
+    ///
+    /// `Option` is used here to allow call `process` which borrows `self` mutably inside
+    /// `process_chunked` which borrows `self` mutably too, while keeping access to `chunked_pdu`
+    /// field data
+    chunked_pdu: Option<Vec<u8>>,
 }
 
 impl_as_any!(Cliprdr);
@@ -45,18 +67,26 @@ impl_as_any!(Cliprdr);
 impl Cliprdr {
     const CHANNEL_NAME: ChannelName = ChannelName::from_static(b"cliprdr\0");
 
-    fn build_local_format_list(&self) -> PduResult<FormatList<'static>> {
-        let formats = vec![
-            ClipboardFormat::new(ClipboardFormatId::CF_TEXT),
-            ClipboardFormat::new(ClipboardFormatId::CF_UNICODETEXT),
-        ];
+    pub fn new(backend: Box<dyn CliprdrBackend>) -> Self {
+        // This CLIPRDR implementation supports long format names by default
+        let flags = ClipboardGeneralCapabilityFlags::USE_LONG_FORMAT_NAMES | backend.client_capabilities();
 
-        FormatList::new_unicode(
-            &formats,
-            self.capabilities
-                .flags()
-                .contains(ClipboardGeneralCapabilityFlags::USE_LONG_FORMAT_NAMES),
-        )
+        Self {
+            backend,
+            state: CliprdrState::Initialization,
+            capabilities: Capabilities::new(ClipboardProtocolVersion::V2, flags),
+            chunked_pdu: vec![].into(),
+        }
+    }
+
+    fn are_long_format_names_enabled(&self) -> bool {
+        self.capabilities
+            .flags()
+            .contains(ClipboardGeneralCapabilityFlags::USE_LONG_FORMAT_NAMES)
+    }
+
+    fn build_format_list(&self, formats: &[ClipboardFormat]) -> PduResult<FormatList<'static>> {
+        FormatList::new_unicode(formats, self.are_long_format_names_enabled())
     }
 
     fn handle_error_transition(&mut self, err: ClipboardError) -> PduResult<Vec<SvcMessage>> {
@@ -70,29 +100,29 @@ impl Cliprdr {
 
     fn handle_server_capabilities(&mut self, server_capabilities: Capabilities) -> PduResult<Vec<SvcMessage>> {
         self.capabilities.downgrade(&server_capabilities);
+        self.backend
+            .on_receive_downgraded_capabilities(self.capabilities.flags());
 
         // Do not send anything, wait for monitor ready pdu
         Ok(vec![])
     }
 
     fn handle_monitor_ready(&mut self) -> PduResult<Vec<SvcMessage>> {
-        let response = [
-            ClipboardPdu::Capabilities(self.capabilities.clone()),
-            ClipboardPdu::TemporaryDirectory(ClientTemporaryDirectory::new(self.temporary_directory.clone())?),
-            ClipboardPdu::FormatList(self.build_local_format_list()?),
-        ]
-        .into_iter()
-        .map(into_cliprdr_message)
-        .collect();
-
-        Ok(response)
+        // Request client to sent list of initially available formats and wait for the backend
+        // response.
+        self.backend.on_request_format_list();
+        Ok(vec![])
     }
 
     fn handle_format_list_response(&mut self, response: FormatListResponse) -> PduResult<Vec<SvcMessage>> {
         match response {
             FormatListResponse::Ok => {
-                info!("CLIPRDR(clipboard) virtual channel has been initialized");
-                self.state = CliprdrState::Ready;
+                if self.state == CliprdrState::Initialization {
+                    info!("CLIPRDR(clipboard) virtual channel has been initialized");
+                    self.state = CliprdrState::Ready;
+                } else {
+                    info!("CLIPRDR(clipboard) Remote has received format list successfully");
+                }
             }
             FormatListResponse::Fail => {
                 return self.handle_error_transition(ClipboardError::FormatListRejected);
@@ -101,18 +131,92 @@ impl Cliprdr {
 
         Ok(vec![])
     }
-}
 
-impl Default for Cliprdr {
-    fn default() -> Self {
-        Self {
-            state: CliprdrState::Initialization,
-            capabilities: Capabilities::new(
-                ClipboardProtocolVersion::V2,
-                ClipboardGeneralCapabilityFlags::USE_LONG_FORMAT_NAMES,
-            ),
-            temporary_directory: ".cliprdr".to_string(),
+    fn handle_format_list(&mut self, format_list: FormatList) -> PduResult<Vec<SvcMessage>> {
+        let formats = format_list.get_formats(self.are_long_format_names_enabled())?;
+        self.backend.on_remote_copy(&formats);
+
+        let pdu = ClipboardPdu::FormatListResponse(FormatListResponse::Ok);
+
+        Ok(vec![into_cliprdr_message(pdu)])
+    }
+
+    /// Should be called by the clipboard implementation when it receives data from the OS clipboard
+    /// and is ready to sent it to the server. This should happen after `CLIPRDR` channel triggered
+    /// `on_format_data_request` via `CliprdrBackend`.
+    ///
+    /// If data is not available anymore, an error response should be sent instead.
+    pub fn sumbit_format_data(&self, response: FormatDataResponse<'static>) -> PduResult<CliprdrSvcRequest> {
+        if self.state != CliprdrState::Ready {
+            return Ok(vec![].into());
         }
+
+        let pdu = ClipboardPdu::FormatDataResponse(response);
+
+        Ok(vec![into_cliprdr_message(pdu)].into())
+    }
+
+    /// Should be called by the clipboard implementation when file data is ready to sent it to the
+    /// server. This should happen after `CLIPRDR` channel triggered `on_file_contents_request` via
+    /// `CliprdrBackend`.
+    ///
+    /// If data is not available anymore, an error response should be sent instead.
+    pub fn sumbit_file_contents(&self, response: FileContentsResponse<'static>) -> PduResult<CliprdrSvcRequest> {
+        if self.state != CliprdrState::Ready {
+            return Ok(vec![].into());
+        }
+
+        let pdu = ClipboardPdu::FileContentsResponse(response);
+
+        Ok(vec![into_cliprdr_message(pdu)].into())
+    }
+
+    /// Start processing of `CLIPRDR` copy command. Should be called by `ironrdp` client
+    /// implementation when user performs OS-specific copy command (e.g. `Ctrl+C` shortcut on
+    /// keyboard)
+    pub fn initiate_copy(&self, available_formats: &[ClipboardFormat]) -> PduResult<CliprdrSvcRequest> {
+        // During initialization state, first copy action is syntetic and should be sent along with
+        // capabilities and temporary directory PDUs.
+        if self.state == CliprdrState::Initialization {
+            let temporary_directory = self.backend.temporary_directory();
+
+            let response = [
+                ClipboardPdu::Capabilities(self.capabilities.clone()),
+                ClipboardPdu::TemporaryDirectory(ClientTemporaryDirectory::new(temporary_directory)?),
+                ClipboardPdu::FormatList(self.build_format_list(available_formats).unwrap()),
+            ]
+            .into_iter()
+            .map(into_cliprdr_message)
+            .collect::<Vec<_>>();
+
+            return Ok(response.into());
+        }
+
+        if self.state != CliprdrState::Ready {
+            return Ok(vec![].into());
+        }
+
+        // When user initiates copy, we should send format list to server, and expect to
+        // receive response with `FormatListResponse::Ok` status.
+        let pdu = ClipboardPdu::FormatList(self.build_format_list(available_formats)?);
+        Ok(vec![into_cliprdr_message(pdu)].into())
+    }
+
+    /// Start processing of `CLIPRDR` paste command. Should be called by `ironrdp` client
+    /// implementation when user performs OS-specific paste command (e.g. `Ctrl+V` shortcut on
+    /// keyboard)
+    pub fn initiate_paste(&self, requested_format: ClipboardFormatId) -> PduResult<CliprdrSvcRequest> {
+        if self.state != CliprdrState::Ready {
+            return Ok(vec![].into());
+        }
+
+        // When user initiates paste, we should send format data request to server, and expect to
+        // receive response with contents via `FormatDataResponse` PDU.
+        let pdu = ClipboardPdu::FormatDataRequest(FormatDataRequest {
+            format: requested_format,
+        });
+
+        Ok(vec![into_cliprdr_message(pdu)].into())
     }
 }
 
@@ -121,8 +225,29 @@ impl StaticVirtualChannel for Cliprdr {
         Self::CHANNEL_NAME
     }
 
+    fn process_chunked(&mut self, payload: &[u8], last: bool) -> PduResult<Vec<SvcMessage>> {
+        // Get temporary ownership of the buffer to allow call of `process` method
+        // which borrows `self` mutably
+        let mut chunked_pdu = self.chunked_pdu.take().unwrap_or_default();
+
+        chunked_pdu.extend_from_slice(payload);
+
+        if !last {
+            self.chunked_pdu = Some(chunked_pdu);
+            return Ok(vec![]);
+        }
+
+        let result = self.process(&chunked_pdu);
+        chunked_pdu.clear();
+
+        // Give buffer ownership back to the Cliprdr instance
+        self.chunked_pdu = Some(chunked_pdu);
+
+        result
+    }
+
     fn process(&mut self, payload: &[u8]) -> PduResult<Vec<SvcMessage>> {
-        let pdu = decode::<ClipboardPdu>(payload)?;
+        let pdu: ClipboardPdu = decode::<ClipboardPdu>(payload)?;
 
         if self.state == CliprdrState::Failed {
             error!("Attempted to process clipboard static virtual channel in failed state");
@@ -131,8 +256,36 @@ impl StaticVirtualChannel for Cliprdr {
 
         match pdu {
             ClipboardPdu::Capabilities(caps) => self.handle_server_capabilities(caps),
+            ClipboardPdu::FormatList(format_list) => self.handle_format_list(format_list),
             ClipboardPdu::FormatListResponse(response) => self.handle_format_list_response(response),
             ClipboardPdu::MonitorReady => self.handle_monitor_ready(),
+            ClipboardPdu::LockData(id) => {
+                self.backend.on_lock(id);
+                Ok(vec![])
+            }
+            ClipboardPdu::UnlockData(id) => {
+                self.backend.on_unlock(id);
+                Ok(vec![])
+            }
+            ClipboardPdu::FormatDataRequest(request) => {
+                self.backend.on_format_data_request(request);
+
+                // NOTE: An actual data should be sent later via `submit_format_data` method,
+                // therefore we do not send anything immediately.
+                Ok(vec![])
+            }
+            ClipboardPdu::FormatDataResponse(response) => {
+                self.backend.on_format_data_response(response);
+                Ok(vec![])
+            }
+            ClipboardPdu::FileContentsRequest(request) => {
+                self.backend.on_file_contents_request(request);
+                Ok(vec![])
+            }
+            ClipboardPdu::FileContentsResponse(response) => {
+                self.backend.on_file_contents_response(response);
+                Ok(vec![])
+            }
             _ => self.handle_error_transition(ClipboardError::UnimplementedPdu {
                 pdu: pdu.message_name(),
             }),

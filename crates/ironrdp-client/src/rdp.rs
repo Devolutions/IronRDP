@@ -11,6 +11,8 @@ use tokio::sync::mpsc;
 use winit::event_loop::EventLoopProxy;
 
 use crate::config::Config;
+use ironrdp::cliprdr::backend::{ClipboardMessage, CliprdrBackendFactory};
+use ironrdp::cliprdr::Cliprdr;
 
 #[derive(Debug)]
 pub enum RdpOutputEvent {
@@ -27,6 +29,7 @@ pub enum RdpInputEvent {
     Resize { width: u16, height: u16 },
     FastPath(SmallVec<[FastPathInputEvent; 2]>),
     Close,
+    Clipboard(ClipboardMessage),
 }
 
 impl RdpInputEvent {
@@ -39,12 +42,13 @@ pub struct RdpClient {
     pub config: Config,
     pub event_loop_proxy: EventLoopProxy<RdpOutputEvent>,
     pub input_event_receiver: mpsc::UnboundedReceiver<RdpInputEvent>,
+    pub cliprdr_builder: Option<Box<dyn CliprdrBackendFactory + Send>>,
 }
 
 impl RdpClient {
     pub async fn run(mut self) {
         loop {
-            let (connection_result, framed) = match connect(&self.config).await {
+            let (connection_result, framed) = match connect(&self.config, self.cliprdr_builder.as_deref()).await {
                 Ok(result) => result,
                 Err(e) => {
                     let _ = self.event_loop_proxy.send_event(RdpOutputEvent::ConnectionFailure(e));
@@ -84,7 +88,10 @@ enum RdpControlFlow {
 
 type UpgradedFramed = ironrdp_tokio::TokioFramed<ironrdp_tls::TlsStream<TcpStream>>;
 
-async fn connect(config: &Config) -> ConnectorResult<(ConnectionResult, UpgradedFramed)> {
+async fn connect(
+    config: &Config,
+    cliprdr_factory: Option<&(dyn CliprdrBackendFactory + Send)>,
+) -> ConnectorResult<(ConnectionResult, UpgradedFramed)> {
     let server_addr = config
         .destination
         .lookup_addr()
@@ -102,8 +109,15 @@ async fn connect(config: &Config) -> ConnectorResult<(ConnectionResult, Upgraded
         .with_credssp_network_client(RequestClientFactory)
         // .with_static_channel(ironrdp::dvc::Drdynvc::new()) // FIXME: drdynvc is not working
         .with_static_channel(ironrdp::rdpsnd::Rdpsnd::new())
-        .with_static_channel(ironrdp::rdpdr::Rdpdr::default())
-        .with_static_channel(ironrdp::cliprdr::Cliprdr::default());
+        .with_static_channel(ironrdp::rdpdr::Rdpdr::default());
+
+    if let Some(builder) = cliprdr_factory {
+        let backend = builder.build_cliprdr_backend();
+
+        let cliprdr = Cliprdr::new(backend);
+
+        connector = connector.with_static_channel(cliprdr);
+    }
 
     let should_upgrade = ironrdp_tokio::connect_begin(&mut framed, &mut connector).await?;
 
@@ -177,6 +191,41 @@ async fn active_session(
                     RdpInputEvent::Close => {
                         // TODO: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/27915739-8f77-487e-9927-55008af7fd68
                         break 'outer;
+                    }
+                    RdpInputEvent::Clipboard(event) => {
+                        if let Some(cliprdr) = active_stage.get_svc::<ironrdp::cliprdr::Cliprdr>() {
+                            let svc_request = match event {
+                                ClipboardMessage::SendInitiateCopy(formats) => {
+                                    let request = cliprdr.initiate_copy(&formats)
+                                        .map_err(|e| session::custom_err!("CLIPRDR", e))?;
+                                    Some(request)
+                                }
+                                ClipboardMessage::SendFormatData(response) => {
+                                    let request = cliprdr.sumbit_format_data(response)
+                                        .map_err(|e| session::custom_err!("CLIPRDR", e))?;
+                                    Some(request)
+                                }
+                                ClipboardMessage::SendInitiatePaste(format) => {
+                                    let request = cliprdr.initiate_paste(format)
+                                        .map_err(|e| session::custom_err!("CLIPRDR", e))?;
+                                    Some(request)
+                                }
+                                ClipboardMessage::Error(e) => {
+                                    error!("Clipboard backend error: {}", e);
+                                    None
+                                }
+                            };
+
+                            if let Some(request) = svc_request {
+                                let frame = active_stage.process_user_svc_request(request)?;
+                                vec![ActiveStageOutput::ResponseFrame(frame)]
+                            } else {
+                                vec![]
+                            }
+                        } else  {
+                            warn!("Clipboard event received, but Cliprdr is not available");
+                            vec![]
+                        }
                     }
                 }
             }

@@ -5,12 +5,13 @@ use ironrdp_pdu::utils::{read_string_from_cursor, to_utf16_bytes, write_string_t
 use ironrdp_pdu::{cast_int, ensure_size, invalid_message_err, PduDecode, PduEncode, PduResult};
 
 use crate::pdu::{ClipboardPduFlags, PartialHeader};
+use winapi::um::winuser::{CF_GDIOBJFIRST, CF_GDIOBJLAST, CF_PRIVATEFIRST, CF_PRIVATELAST};
 
 /// Clipboard format id.
 ///
 /// [Standard clipboard formats](https://learn.microsoft.com/en-us/windows/win32/dataxchg/standard-clipboard-formats)
 /// defined by Microsoft are available as constants.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ClipboardFormatId(u32);
 
 impl ClipboardFormatId {
@@ -107,6 +108,40 @@ impl ClipboardFormatId {
 
     pub fn value(&self) -> u32 {
         self.0
+    }
+
+    pub fn is_standard(&self) -> bool {
+        matches!(
+            *self,
+            Self::CF_TEXT
+                | Self::CF_BITMAP
+                | Self::CF_METAFILEPICT
+                | Self::CF_SYLK
+                | Self::CF_DIF
+                | Self::CF_TIFF
+                | Self::CF_OEMTEXT
+                | Self::CF_DIB
+                | Self::CF_PALETTE
+                | Self::CF_PENDATA
+                | Self::CF_RIFF
+                | Self::CF_WAVE
+                | Self::CF_UNICODETEXT
+                | Self::CF_ENHMETAFILE
+                | Self::CF_HDROP
+                | Self::CF_LOCALE
+                | Self::CF_DIBV5
+        )
+    }
+
+    pub fn is_private(&self) -> bool {
+        let private_range = (self.0 >= CF_PRIVATEFIRST) && (self.0 <= CF_PRIVATELAST);
+        let gdi_range = (self.0 >= CF_GDIOBJFIRST) && (self.0 <= CF_GDIOBJLAST);
+
+        private_range || gdi_range
+    }
+
+    pub fn is_registrered(&self) -> bool {
+        (self.0 >= 0xC000) && (self.0 <= 0xFFFF)
     }
 }
 

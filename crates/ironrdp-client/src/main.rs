@@ -29,10 +29,28 @@ fn main() -> anyhow::Result<()> {
 
     let (input_event_sender, input_event_receiver) = RdpInputEvent::create_channel();
 
+    #[cfg(not(windows))]
+    let cliprdr_builder = None;
+
+    #[cfg(windows)]
+    let cliprdr_builder = {
+        use ironrdp::cliprdr::backend::windows::WinClipboard;
+        use ironrdp_client::clipboard::ClientClipboardMessageProxy;
+        use winit::platform::windows::WindowExtWindows;
+
+        let clipboard_context = WinClipboard::new(
+            gui.window.hwnd() as _,
+            ClientClipboardMessageProxy::new(input_event_sender.clone()),
+        )?;
+
+        Some(Box::new(clipboard_context.backend_factory()) as _)
+    };
+
     let client = RdpClient {
         config,
         event_loop_proxy,
         input_event_receiver,
+        cliprdr_builder,
     };
 
     debug!("Start RDP thread");

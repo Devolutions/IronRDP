@@ -16,7 +16,7 @@ const MAX_CAPACITY_WHEN_CLEARED: usize = 16384; // 16 kib
 /// [    initialized    | uninitialized ]
 /// ```
 pub struct WriteBuf {
-    inner: Vec<u8>,
+    pub inner: Vec<u8>,
     filled: usize,
 }
 

@@ -22,3 +22,7 @@ ironrdp-svc.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 bitflags = "2"
+
+[target.'cfg(windows)'.dependencies]
+winapi = { version = "0.3", features = ["winuser", "commctrl", "errhandlingapi", "winerror", "winbase"] }
+tokio = { version = "1", features = ["full"]}
