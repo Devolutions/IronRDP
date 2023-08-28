@@ -18,6 +18,7 @@ test = false
 [features]
 default = ["pdu", "connector", "session"]
 pdu = ["dep:ironrdp-pdu"]
+cliprdr = ["dep:ironrdp-cliprdr"]
 connector = ["dep:ironrdp-connector"]
 acceptor = ["dep:ironrdp-acceptor"]
 session = ["dep:ironrdp-session"]
@@ -31,6 +32,7 @@ rdpsnd = ["dep:ironrdp-rdpsnd"]
 
 [dependencies]
 ironrdp-pdu = { workspace = true, optional = true }
+ironrdp-cliprdr = { workspace = true, optional = true }
 ironrdp-connector = { workspace = true, optional = true }
 ironrdp-acceptor = { workspace = true, optional = true }
 ironrdp-session = { workspace = true, optional = true }

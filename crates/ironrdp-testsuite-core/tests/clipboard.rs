@@ -1,15 +1,16 @@
 use expect_test::expect;
 use ironrdp_cliprdr::pdu::{
-    Capabilities, CapabilitySet, ClipboardFormat, ClipboardGeneralCapabilityFlags, ClipboardPdu,
-    ClipboardProtocolVersion, FileContentsFlags, FileContentsRequest, FileContentsResponse, FormatDataRequest,
-    FormatDataResponse, FormatList, FormatListResponse, GeneralCapabilitySet, LockDataId, PackedMetafileMappingMode,
+    Capabilities, CapabilitySet, ClipboardFormat, ClipboardFormatId, ClipboardFormatName,
+    ClipboardGeneralCapabilityFlags, ClipboardPdu, ClipboardProtocolVersion, FileContentsFlags, FileContentsRequest,
+    FileContentsResponse, FormatDataRequest, FormatDataResponse, FormatList, FormatListResponse, GeneralCapabilitySet,
+    LockDataId, PackedMetafileMappingMode,
 };
 use ironrdp_testsuite_core::encode_decode_test;
 
 // Test blobs from [MS-RDPECLIP]
 encode_decode_test! {
     capabilities:
-        ClipboardPdu::Capabilites(
+        ClipboardPdu::Capabilities(
             Capabilities {
                 capabilities: vec![
                     CapabilitySet::General(
@@ -163,20 +164,32 @@ fn format_list_ms_1() {
         expect![[r#"
             [
                 ClipboardFormat {
-                    id: 49156,
-                    name: "Native",
+                    id: ClipboardFormatId(
+                        49156,
+                    ),
+                    name: Some(
+                        ClipboardFormatName(
+                            "Native",
+                        ),
+                    ),
                 },
                 ClipboardFormat {
-                    id: 3,
-                    name: "",
+                    id: ClipboardFormatId(
+                        3,
+                    ),
+                    name: None,
                 },
                 ClipboardFormat {
-                    id: 8,
-                    name: "",
+                    id: ClipboardFormatId(
+                        8,
+                    ),
+                    name: None,
                 },
                 ClipboardFormat {
-                    id: 17,
-                    name: "",
+                    id: ClipboardFormatId(
+                        17,
+                    ),
+                    name: None,
                 },
             ]
         "#]]
@@ -205,44 +218,84 @@ fn format_list_ms_2() {
         expect![[r#"
             [
                 ClipboardFormat {
-                    id: 49290,
-                    name: "Rich Text Format",
+                    id: ClipboardFormatId(
+                        49290,
+                    ),
+                    name: Some(
+                        ClipboardFormatName(
+                            "Rich Text Format",
+                        ),
+                    ),
                 },
                 ClipboardFormat {
-                    id: 49477,
-                    name: "Rich Text Format Without Objects",
+                    id: ClipboardFormatId(
+                        49477,
+                    ),
+                    name: Some(
+                        ClipboardFormatName(
+                            "Rich Text Format Without Objects",
+                        ),
+                    ),
                 },
                 ClipboardFormat {
-                    id: 49475,
-                    name: "RTF As Text",
+                    id: ClipboardFormatId(
+                        49475,
+                    ),
+                    name: Some(
+                        ClipboardFormatName(
+                            "RTF As Text",
+                        ),
+                    ),
                 },
                 ClipboardFormat {
-                    id: 1,
-                    name: "",
+                    id: ClipboardFormatId(
+                        1,
+                    ),
+                    name: None,
                 },
                 ClipboardFormat {
-                    id: 13,
-                    name: "",
+                    id: ClipboardFormatId(
+                        13,
+                    ),
+                    name: None,
                 },
                 ClipboardFormat {
-                    id: 49156,
-                    name: "Native",
+                    id: ClipboardFormatId(
+                        49156,
+                    ),
+                    name: Some(
+                        ClipboardFormatName(
+                            "Native",
+                        ),
+                    ),
                 },
                 ClipboardFormat {
-                    id: 49166,
-                    name: "Object Descriptor",
+                    id: ClipboardFormatId(
+                        49166,
+                    ),
+                    name: Some(
+                        ClipboardFormatName(
+                            "Object Descriptor",
+                        ),
+                    ),
                 },
                 ClipboardFormat {
-                    id: 3,
-                    name: "",
+                    id: ClipboardFormatId(
+                        3,
+                    ),
+                    name: None,
                 },
                 ClipboardFormat {
-                    id: 16,
-                    name: "",
+                    id: ClipboardFormatId(
+                        16,
+                    ),
+                    name: None,
                 },
                 ClipboardFormat {
-                    id: 7,
-                    name: "",
+                    id: ClipboardFormatId(
+                        7,
+                    ),
+                    name: None,
                 },
             ]
         "#]]
@@ -260,18 +313,9 @@ fn format_list_ms_2() {
 
 fn fake_format_list(use_ascii: bool, use_long_format: bool) -> Box<FormatList<'static>> {
     let formats = vec![
-        ClipboardFormat {
-            id: 42,
-            name: "Hello".to_string(),
-        },
-        ClipboardFormat {
-            id: 24,
-            name: "".to_string(),
-        },
-        ClipboardFormat {
-            id: 11,
-            name: "World".to_string(),
-        },
+        ClipboardFormat::new(ClipboardFormatId::new(42)).with_name(ClipboardFormatName::new("Hello")),
+        ClipboardFormat::new(ClipboardFormatId::new(24)),
+        ClipboardFormat::new(ClipboardFormatId::new(11)).with_name(ClipboardFormatName::new("World")),
     ];
 
     let list = if use_ascii {
@@ -359,7 +403,7 @@ fn file_list_pdu_ms() {
         expect![[r#"
             [
                 FileDescriptor {
-                    attibutes: Some(
+                    attributes: Some(
                         ClipboardFileAttributes(
                             ARCHIVE,
                         ),
@@ -373,7 +417,7 @@ fn file_list_pdu_ms() {
                     name: "File1.txt",
                 },
                 FileDescriptor {
-                    attibutes: Some(
+                    attributes: Some(
                         ClipboardFileAttributes(
                             ARCHIVE,
                         ),

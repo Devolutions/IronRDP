@@ -8,7 +8,7 @@ use ironrdp_pdu::{
 use crate::pdu::PartialHeader;
 
 /// Represents `CLIPRDR_CAPS`
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Capabilities {
     pub capabilities: Vec<CapabilitySet>,
 }
@@ -19,6 +19,40 @@ impl Capabilities {
 
     fn inner_size(&self) -> usize {
         Self::FIXED_PART_SIZE + self.capabilities.iter().map(|c| c.size()).sum::<usize>()
+    }
+
+    pub fn new(version: ClipboardProtocolVersion, general_flags: ClipboardGeneralCapabilityFlags) -> Self {
+        let capabilities = vec![CapabilitySet::General(GeneralCapabilitySet { version, general_flags })];
+
+        Self { capabilities }
+    }
+
+    pub fn flags(&self) -> ClipboardGeneralCapabilityFlags {
+        // There is only one capability set in the capabilities field in current CLIPRDR version
+        self.capabilities
+            .first()
+            .map(|set| set.general().general_flags)
+            .unwrap_or_else(ClipboardGeneralCapabilityFlags::empty)
+    }
+
+    pub fn version(&self) -> ClipboardProtocolVersion {
+        self.capabilities
+            .first()
+            .map(|set| set.general().version)
+            .unwrap_or(ClipboardProtocolVersion::V1)
+    }
+
+    pub fn downgrade(&mut self, server_caps: &Self) {
+        let client_flags = self.flags();
+        let server_flags = self.flags();
+
+        let flags = client_flags & server_flags;
+        let version = self.version().downgrade(server_caps.version());
+
+        self.capabilities = vec![CapabilitySet::General(GeneralCapabilitySet {
+            version,
+            general_flags: flags,
+        })];
     }
 }
 
@@ -78,6 +112,12 @@ impl CapabilitySet {
     const FIXED_PART_SIZE: usize = std::mem::size_of::<u16>() * 2;
 
     const CAPSTYPE_GENERAL: u16 = 0x0001;
+
+    pub fn general(&self) -> &GeneralCapabilitySet {
+        match self {
+            Self::General(value) => value,
+        }
+    }
 }
 
 impl From<GeneralCapabilitySet> for CapabilitySet {
@@ -190,6 +230,13 @@ impl ClipboardProtocolVersion {
     const VERSION_VALUE_V2: u32 = 0x00000002;
 
     const NAME: &str = "CLIPRDR_CAPS_VERSION";
+
+    pub fn downgrade(self, other: Self) -> Self {
+        if self != other {
+            return Self::V1;
+        }
+        self
+    }
 }
 
 impl From<ClipboardProtocolVersion> for u32 {

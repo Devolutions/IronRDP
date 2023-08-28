@@ -175,7 +175,7 @@ where
 
 /// Same as `encode` but allocates and returns a new buffer each time.
 ///
-/// This is a convenience function, but it’s not very ressource efficient.
+/// This is a convenience function, but it’s not very resource efficient.
 #[cfg(feature = "alloc")]
 pub fn encode_vec<T>(pdu: &T) -> PduResult<Vec<u8>>
 where

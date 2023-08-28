@@ -105,7 +105,7 @@ pub enum ClipboardPdu<'a> {
     FormatDataRequest(FormatDataRequest),
     FormatDataResponse(FormatDataResponse<'a>),
     TemporaryDirectory(ClientTemporaryDirectory<'a>),
-    Capabilites(Capabilities),
+    Capabilities(Capabilities),
     FileContentsRequest(FileContentsRequest),
     FileContentsResponse(FileContentsResponse<'a>),
     LockData(LockDataId),
@@ -115,6 +115,22 @@ pub enum ClipboardPdu<'a> {
 impl ClipboardPdu<'_> {
     const NAME: &str = "CliboardPdu";
     const FIXED_PART_SIZE: usize = std::mem::size_of::<u16>();
+
+    pub fn message_name(&self) -> &'static str {
+        match self {
+            ClipboardPdu::MonitorReady => "CLIPRDR_MONITOR_READY",
+            ClipboardPdu::FormatList(_) => "CLIPRDR_FORMAT_LIST",
+            ClipboardPdu::FormatListResponse(_) => "CLIPRDR_FORMAT_LIST_RESPONSE",
+            ClipboardPdu::FormatDataRequest(_) => "CLIPRDR_FORMAT_DATA_REQUEST",
+            ClipboardPdu::FormatDataResponse(_) => "CLIPRDR_FORMAT_DATA_RESPONSE",
+            ClipboardPdu::TemporaryDirectory(_) => "CLIPRDR_TEMP_DIRECTORY",
+            ClipboardPdu::Capabilities(_) => "CLIPRDR_CAPABILITIES",
+            ClipboardPdu::FileContentsRequest(_) => "CLIPRDR_FILECONTENTS_REQUEST",
+            ClipboardPdu::FileContentsResponse(_) => "CLIPRDR_FILECONTENTS_RESPONSE",
+            ClipboardPdu::LockData(_) => "CLIPRDR_LOCK_CLIPDATA",
+            ClipboardPdu::UnlockData(_) => "CLIPRDR_UNLOCK_CLIPDATA",
+        }
+    }
 }
 
 impl PduEncode for ClipboardPdu<'_> {
@@ -151,7 +167,7 @@ impl PduEncode for ClipboardPdu<'_> {
                 dst.write_u16(MSG_TYPE_TEMPORARY_DIRECTORY);
                 pdu.encode(dst)
             }
-            ClipboardPdu::Capabilites(pdu) => {
+            ClipboardPdu::Capabilities(pdu) => {
                 dst.write_u16(MSG_TYPE_CAPABILITIES);
                 pdu.encode(dst)
             }
@@ -188,7 +204,7 @@ impl PduEncode for ClipboardPdu<'_> {
             ClipboardPdu::FormatDataRequest(pdu) => pdu.size(),
             ClipboardPdu::FormatDataResponse(pdu) => pdu.size(),
             ClipboardPdu::TemporaryDirectory(pdu) => pdu.size(),
-            ClipboardPdu::Capabilites(pdu) => pdu.size(),
+            ClipboardPdu::Capabilities(pdu) => pdu.size(),
             ClipboardPdu::FileContentsRequest(pdu) => pdu.size(),
             ClipboardPdu::FileContentsResponse(pdu) => pdu.size(),
             ClipboardPdu::LockData(pdu) => pdu.size(),
@@ -218,7 +234,7 @@ impl<'de> PduDecode<'de> for ClipboardPdu<'de> {
             MSG_TYPE_FORMAT_DATA_REQUEST => ClipboardPdu::FormatDataRequest(FormatDataRequest::decode(src)?),
             MSG_TYPE_FORMAT_DATA_RESPONSE => ClipboardPdu::FormatDataResponse(FormatDataResponse::decode(src)?),
             MSG_TYPE_TEMPORARY_DIRECTORY => ClipboardPdu::TemporaryDirectory(ClientTemporaryDirectory::decode(src)?),
-            MSG_TYPE_CAPABILITIES => ClipboardPdu::Capabilites(Capabilities::decode(src)?),
+            MSG_TYPE_CAPABILITIES => ClipboardPdu::Capabilities(Capabilities::decode(src)?),
             MSG_TYPE_FILE_CONTENTS_REQUEST => ClipboardPdu::FileContentsRequest(FileContentsRequest::decode(src)?),
             MSG_TYPE_FILE_CONTENTS_RESPONSE => ClipboardPdu::FileContentsResponse(FileContentsResponse::decode(src)?),
             MSG_TYPE_LOCK_CLIPDATA => ClipboardPdu::LockData(LockDataId::decode(src)?),
@@ -241,7 +257,7 @@ bitflags! {
         const RESPONSE_OK = 0x0001;
         /// Used by the Format List Response PDU, Format Data Response PDU, and File
         /// Contents Response PDU to indicate that the associated Format List PDU, Format
-        /// Data Request PDU, and File Contents Request PDU were not processed successfull
+        /// Data Request PDU, and File Contents Request PDU were not processed successful
         const RESPONSE_FAIL = 0x0002;
         /// Used by the Short Format Name variant of the Format List Response PDU to indicate
         /// that the format names are in ASCII 8

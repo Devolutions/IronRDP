@@ -33,9 +33,9 @@ pub struct BitmapUpdate {
     pub data: Vec<u8>,
 }
 
-/// Display Update reciever for an RDP server
+/// Display Update receiver for an RDP server
 ///
-/// The RDP server will repeatadly call the `get_update` method to receive display updates
+/// The RDP server will repeatedly call the `get_update` method to receive display updates
 /// which will then be encoded and sent to the client
 ///
 /// # Example

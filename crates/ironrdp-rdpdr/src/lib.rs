@@ -3,21 +3,20 @@
 //!
 //! [\[MS-RDPEFS\]: Remote Desktop Protocol: File System Virtual Channel Extension]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/34d9de58-b2b5-40b6-b970-f82d4603bdb5
 
-use std::any::Any;
+mod pdu;
+
 use std::vec;
 
 use ironrdp_pdu::cursor::ReadCursor;
 use ironrdp_pdu::gcc::ChannelName;
-use ironrdp_pdu::{PduEncode, PduResult};
-use ironrdp_svc::{AsAny, CompressionCondition, StaticVirtualChannel};
+use ironrdp_pdu::PduResult;
+use ironrdp_svc::{impl_as_any, CompressionCondition, StaticVirtualChannel, SvcMessage};
 use tracing::{trace, warn};
 
 use crate::pdu::efs::{
     ClientNameRequest, ClientNameRequestUnicodeFlag, Component, PacketId, SharedHeader, VersionAndIdPdu,
     VersionAndIdPduKind,
 };
-
-mod pdu;
 
 /// The RDPDR channel as specified in [\[MS-RDPEFS\]].
 ///
@@ -46,7 +45,7 @@ impl Rdpdr {
         Self { computer_name }
     }
 
-    fn handle_server_announce(&mut self, payload: &mut ReadCursor<'_>) -> PduResult<Vec<Box<dyn PduEncode>>> {
+    fn handle_server_announce(&mut self, payload: &mut ReadCursor<'_>) -> PduResult<Vec<SvcMessage>> {
         let req = VersionAndIdPdu::decode(payload, VersionAndIdPduKind::ServerAnnounceRequest)?;
         trace!("received {:?}", req);
 
@@ -62,19 +61,14 @@ impl Rdpdr {
             ClientNameRequest::new(self.computer_name.clone(), ClientNameRequestUnicodeFlag::Unicode);
         trace!("sending {:?}", client_name_request);
 
-        Ok(vec![Box::new(client_announce_reply), Box::new(client_name_request)])
+        Ok(vec![
+            SvcMessage::from(client_announce_reply),
+            SvcMessage::from(client_name_request),
+        ])
     }
 }
 
-impl AsAny for Rdpdr {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-
-    fn as_any_mut(&mut self) -> &mut dyn Any {
-        self
-    }
-}
+impl_as_any!(Rdpdr);
 
 impl StaticVirtualChannel for Rdpdr {
     fn channel_name(&self) -> ChannelName {
@@ -85,7 +79,7 @@ impl StaticVirtualChannel for Rdpdr {
         CompressionCondition::WhenRdpDataIsCompressed
     }
 
-    fn process(&mut self, payload: &[u8]) -> PduResult<Vec<Box<dyn PduEncode>>> {
+    fn process(&mut self, payload: &[u8]) -> PduResult<Vec<SvcMessage>> {
         let mut payload = ReadCursor::new(payload);
 
         let header = SharedHeader::decode(&mut payload)?;
