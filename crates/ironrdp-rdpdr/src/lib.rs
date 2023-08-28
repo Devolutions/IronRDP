@@ -4,11 +4,14 @@
 //! [\[MS-RDPEFS\]: Remote Desktop Protocol: File System Virtual Channel Extension]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/34d9de58-b2b5-40b6-b970-f82d4603bdb5
 
 mod pdu;
-use crate::pdu::efs::{
-    CapabilityMessage, ClientNameRequest, ClientNameRequestUnicodeFlag, Component, CoreCapability, PacketId,
-    SharedHeader, VersionAndIdPdu, VersionAndIdPduKind,
+use crate::pdu::{
+    efs::{
+        CapabilityMessage, ClientNameRequest, ClientNameRequestUnicodeFlag, CoreCapability, CoreCapabilityKind,
+        VersionAndIdPdu, VersionAndIdPduKind,
+    },
+    RdpdrPdu,
 };
-use ironrdp_pdu::{cursor::ReadCursor, gcc::ChannelName, PduResult};
+use ironrdp_pdu::{decode, gcc::ChannelName, other_err, PduResult};
 use ironrdp_svc::{impl_as_any, CompressionCondition, StaticVirtualChannel, SvcMessage};
 use tracing::{trace, warn};
 
@@ -44,20 +47,14 @@ impl Rdpdr {
         }
     }
 
-    fn handle_server_announce(&mut self, payload: &mut ReadCursor<'_>) -> PduResult<Vec<SvcMessage>> {
-        let req = VersionAndIdPdu::decode(payload, VersionAndIdPduKind::ServerAnnounceRequest)?;
-        trace!("received {:?}", req);
-
-        let client_announce_reply = VersionAndIdPdu {
-            version_major: 28,
-            version_minor: 0,
-            client_id: req.client_id,
-            kind: VersionAndIdPduKind::ClientAnnounceReply,
-        };
+    fn handle_server_announce(&mut self, req: VersionAndIdPdu) -> PduResult<Vec<SvcMessage>> {
+        let client_announce_reply = RdpdrPdu::VersionAndIdPdu(VersionAndIdPdu::new_client_announce_reply(req)?);
         trace!("sending {:?}", client_announce_reply);
 
-        let client_name_request =
-            ClientNameRequest::new(self.computer_name.clone(), ClientNameRequestUnicodeFlag::Unicode);
+        let client_name_request = RdpdrPdu::ClientNameRequest(ClientNameRequest::new(
+            self.computer_name.clone(),
+            ClientNameRequestUnicodeFlag::Unicode,
+        ));
         trace!("sending {:?}", client_name_request);
 
         Ok(vec![
@@ -66,11 +63,8 @@ impl Rdpdr {
         ])
     }
 
-    fn handle_server_capability(&mut self, payload: &mut ReadCursor<'_>) -> PduResult<Vec<SvcMessage>> {
-        let req = CoreCapability::decode(payload)?;
-        trace!("received {:?}", req);
-
-        let res = CoreCapability::new_response(self.capabilities.clone());
+    fn handle_server_capability(&mut self, _req: CoreCapability) -> PduResult<Vec<SvcMessage>> {
+        let res = RdpdrPdu::CoreCapability(CoreCapability::new_response(self.capabilities.clone()));
         trace!("sending {:?}", res);
 
         // TODO: Make CoreCapability PduEncode
@@ -90,26 +84,21 @@ impl StaticVirtualChannel for Rdpdr {
     }
 
     fn process(&mut self, payload: &[u8]) -> PduResult<Vec<SvcMessage>> {
-        let mut payload = ReadCursor::new(payload);
+        let pdu = decode::<RdpdrPdu>(payload)?;
+        trace!("received {:?}", pdu);
 
-        let header = SharedHeader::decode(&mut payload)?;
-        trace!("received {:?}", header);
-
-        if let Component::RdpdrCtypPrn = header.component {
-            warn!(
-                "received {:?} RDPDR header from RDP server, printer redirection is unimplemented",
-                Component::RdpdrCtypPrn
-            );
-            return Ok(vec![]);
-        }
-
-        match header.packet_id {
-            PacketId::CoreServerAnnounce => self.handle_server_announce(&mut payload),
-            PacketId::CoreServerCapability => self.handle_server_capability(&mut payload),
-            _ => {
-                warn!("received unimplemented packet: {:?}", header.packet_id);
+        match pdu {
+            RdpdrPdu::VersionAndIdPdu(pdu) if pdu.kind == VersionAndIdPduKind::ServerAnnounceRequest => {
+                self.handle_server_announce(pdu)
+            }
+            RdpdrPdu::CoreCapability(pdu) if pdu.kind == CoreCapabilityKind::ServerCoreCapabilityRequest => {
+                self.handle_server_capability(pdu)
+            }
+            RdpdrPdu::Unimplemented => {
+                warn!("received unimplemented packet: {:?}", pdu);
                 Ok(vec![])
             }
+            _ => Err(other_err!("rdpdr", "internal error")),
         }
     }
 }
