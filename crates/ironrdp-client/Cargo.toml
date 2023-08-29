@@ -34,25 +34,25 @@ ironrdp-tokio.workspace = true
 sspi = { workspace = true, features = ["network_client", "dns_resolver"] } # enable additional features
 
 # GUI
-softbuffer = "0.2.0"
-winit = "0.28.3"
+softbuffer = "0.3"
+winit = "0.28"
 
 # CLI
 clap = { version = "4.2", features = ["derive", "cargo"] }
-exitcode = "1.1.2"
-inquire = "0.6.0"
+exitcode = "1.1"
+inquire = "0.6"
 
 # Logging
 tracing.workspace = true
-tracing-subscriber = { version = "0.3.16", features = ["env-filter"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # Async, futures
 tokio = { version = "1", features = ["full"]}
 
 # Utils
-chrono = "0.4.24"
-whoami = "1.4.0"
-anyhow = "1.0.70"
-smallvec = "1.10.0"
-tap = "1.0.1"
+chrono = "0.4"
+whoami = "1.4"
+anyhow = "1.0"
+smallvec = "1.10"
+tap = "1"
 semver = "1"
