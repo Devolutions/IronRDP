@@ -1,14 +1,13 @@
 [package]
 name = "ironrdp-rdpdr"
 version = "0.1.0"
-description = "RDPDR static channel for file system implemented as described in MS-RDPEFS"
+description = "RDPDR channel implementation."
 readme = "README.md"
 edition.workspace = true
 license.workspace = true
 
 homepage.workspace = true
 repository.workspace = true
-# TODO: add individuals and/or Teleport as authors?
 authors.workspace = true
 keywords.workspace = true
 categories.workspace = true
@@ -21,3 +20,5 @@ test = false
 tracing.workspace = true
 ironrdp-pdu.workspace = true
 ironrdp-svc.workspace = true
+
+bitflags = "2"

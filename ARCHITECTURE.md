@@ -22,7 +22,7 @@ Pay attention to the "**Architecture Invariant**" sections.
 - `crates/ironrdp-graphics`: image processing primitives.
 - `crates/ironrdp-svc`: traits to implement RDP static virtual channels.
 - `crates/ironrdp-dvc`: DRDYNVC static channel implementation and traits to implement dynamic virtual channels.
-- `crates/ironrdp-rdpdr`: RDPDR static channel for file system implemented as described in MS-RDPEFS.
+- `crates/ironrdp-rdpdr`: RDPDR channel implementation.
 - `crates/ironrdp-rdpsnd`: RDPSND static channel for audio output implemented as described in MS-RDPEA.
 - `crates/ironrdp-connector`: state machines to drive an RDP connection sequence.
 - `crates/ironrdp-session`: state machines to drive an RDP session.
@@ -78,7 +78,7 @@ This is mostly test case generators, fuzzing oracles, build tools, and so on.
 
 Crates provided and maintained by the community.
 Core maintainers will not invest a lot of time into these.
-One or several community maintainers are associated to each one 
+One or several community maintainers are associated to each one
 
 - `crates/ironrdp-glutin-renderer` (no maintainer): `glutin` primitives for OpenGL rendering.
 - `crates/ironrdp-client-glutin` (no maintainer): GPU-accelerated RDP client using glutin.
@@ -138,10 +138,12 @@ and maintain such tests. When something affecting the representation is changed,
 `UPDATE_EXPECT=1` env variable to magically update the code.
 
 See:
+
 - <https://matklad.github.io/2021/05/31/how-to-test.html#Expect-Tests>
 - <https://docs.rs/expect-test/latest/expect_test/>
 
 TODO: take further inspiration from rust-analyzer
+
 - https://github.com/rust-lang/rust-analyzer/blob/d7c99931d05e3723d878bea5dc26766791fa4e69/docs/dev/architecture.md#testing
 - https://matklad.github.io/2021/05/31/how-to-test.html
 
