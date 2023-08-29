@@ -6,11 +6,11 @@ use std::fmt::Debug;
 use std::mem::size_of;
 
 use ironrdp_pdu::utils::{encoded_str_len, write_string_to_cursor, CharacterSet};
+use ironrdp_pdu::{cast_length, ensure_size, invalid_message_err, PduError};
 use ironrdp_pdu::{
     cursor::{ReadCursor, WriteCursor},
     PduResult,
 };
-use ironrdp_pdu::{ensure_size, invalid_message_err, PduError};
 
 use super::{PacketId, SharedHeader};
 
@@ -172,7 +172,6 @@ impl From<ClientNameRequestUnicodeFlag> for CharacterSet {
 /// [2.2.2.8 Client Core Capability Response (DR_CORE_CAPABILITY_RSP)](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/f513bf87-cca0-488a-ac5c-18cf18f4a7e1)
 #[derive(Debug)]
 pub struct CoreCapability {
-    pub num_capabilities: u16,
     pub padding: u16,
     pub capabilities: Vec<CapabilityMessage>,
     pub kind: CoreCapabilityKind,
@@ -186,7 +185,6 @@ impl CoreCapability {
     /// [`DR_CORE_CAPABILITY_RSP`]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/f513bf87-cca0-488a-ac5c-18cf18f4a7e1
     pub fn new_response(capabilities: Vec<CapabilityMessage>) -> Self {
         Self {
-            num_capabilities: capabilities.len() as u16,
             padding: 0,
             capabilities,
             kind: CoreCapabilityKind::ClientCoreCapabilityResponse,
@@ -195,7 +193,11 @@ impl CoreCapability {
 
     pub fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
         ensure_size!(ctx: self.name(), in: dst, size: self.size());
-        dst.write_u16(self.num_capabilities);
+        dst.write_u16(cast_length!(
+            "CoreCapability",
+            "numCapabilities",
+            self.capabilities.len()
+        )?);
         dst.write_u16(self.padding);
         for cap in self.capabilities.iter() {
             cap.encode(dst)?;
@@ -226,7 +228,6 @@ impl CoreCapability {
         }
 
         Ok(Self {
-            num_capabilities,
             padding,
             capabilities,
             kind,
