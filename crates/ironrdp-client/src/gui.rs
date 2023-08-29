@@ -1,5 +1,6 @@
+use std::num::NonZeroU32;
+
 use anyhow::Context as _;
-use softbuffer::GraphicsContext;
 use tokio::sync::mpsc;
 use winit::dpi::LogicalPosition;
 use winit::event::{self, Event, WindowEvent};
@@ -11,7 +12,7 @@ use crate::rdp::{RdpInputEvent, RdpOutputEvent};
 pub struct GuiContext {
     pub window: Window,
     pub event_loop: EventLoop<RdpOutputEvent>,
-    pub graphics_context: GraphicsContext,
+    pub context: softbuffer::Context,
 }
 
 impl GuiContext {
@@ -21,15 +22,15 @@ impl GuiContext {
         let window = WindowBuilder::new()
             .with_title("IronRDP")
             .build(&event_loop)
-            .context("Unable to create winit Window")?;
+            .context("unable to create winit Window")?;
 
-        let graphics_context = unsafe { GraphicsContext::new(&window, &window) }
-            .map_err(|e| anyhow::Error::msg(format!("Unable to initialize graphics context: {e}")))?;
+        let context = unsafe { softbuffer::Context::new(&window) }
+            .map_err(|e| anyhow::Error::msg(format!("unable to initialize softbuffer context: {e}")))?;
 
         Ok(Self {
             window,
             event_loop,
-            graphics_context,
+            context,
         })
     }
 
@@ -37,26 +38,15 @@ impl GuiContext {
         let Self {
             window,
             event_loop,
-            mut graphics_context,
+            context,
         } = self;
 
-        let (mut image_width, mut image_height) = {
-            let window_size = window.inner_size();
-            (
-                u16::try_from(window_size.width).unwrap(),
-                u16::try_from(window_size.height).unwrap(),
-            )
-        };
-        let mut image_buffer = vec![0; usize::from(image_width) * usize::from(image_height)];
+        let mut surface = unsafe { softbuffer::Surface::new(&context, &window) }.expect("surface");
 
         let mut input_database = ironrdp::input::Database::new();
 
         event_loop.run(move |event, _, control_flow| {
             *control_flow = ControlFlow::Wait;
-
-            let image_width = &mut image_width;
-            let image_height = &mut image_height;
-            let image_buffer = &mut image_buffer;
 
             match event {
                 Event::WindowEvent { window_id, event } if window_id == window.id() => match event {
@@ -199,14 +189,19 @@ impl GuiContext {
                     _ => {}
                 },
                 Event::RedrawRequested(window_id) if window_id == window.id() => {
-                    graphics_context.set_buffer(image_buffer, *image_width, *image_height);
+                    // TODO: is there something we should handle here?
                 }
                 Event::UserEvent(RdpOutputEvent::Image { buffer, width, height }) => {
-                    *image_buffer = buffer;
-                    *image_width = width;
-                    *image_height = height;
+                    surface
+                        .resize(
+                            NonZeroU32::new(u32::from(width)).unwrap(),
+                            NonZeroU32::new(u32::from(height)).unwrap(),
+                        )
+                        .expect("surface resize");
 
-                    graphics_context.set_buffer(image_buffer, width, height);
+                    let mut sb_buffer = surface.buffer_mut().expect("surface buffer");
+                    sb_buffer.copy_from_slice(buffer.as_slice());
+                    sb_buffer.present().expect("buffer present");
                 }
                 Event::UserEvent(RdpOutputEvent::ConnectionFailure(error)) => {
                     error!(?error);

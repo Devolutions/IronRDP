@@ -180,6 +180,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "96d30a06541fbafbc7f82ed10c06164cfbd2c401138f6addd8404629c4b16711"
 
 [[package]]
+name = "as-raw-xcb-connection"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2d5f312b0a56c5cdf967c0aeb67f6289603354951683bc97ddc595ab974ba9aa"
+
+[[package]]
 name = "asn1-rs"
 version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -950,7 +956,7 @@ version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "330c60081dcc4c72131f8eb70510f1ac07223e5d4163db481a04a0befcffa412"
 dependencies = [
- "libloading 0.8.0",
+ "libloading",
 ]
 
 [[package]]
@@ -1303,9 +1309,9 @@ dependencies = [
 
 [[package]]
 name = "gethostname"
-version = "0.2.3"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c1ebd34e35c46e00bb73e81363248d627782724609fe1b6396f553f68fe3862e"
+checksum = "bb65d4ba3173c56a500b555b532f72c42e8d1fe64962b518897f8959fae2c177"
 dependencies = [
  "libc",
  "winapi",
@@ -2098,16 +2104,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "libloading"
-version = "0.8.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d580318f95776505201b28cf98eb1fa5e4be3b689633ba6a3e6cd880ff22d8cb"
-dependencies = [
- "cfg-if 1.0.0",
- "windows-sys 0.48.0",
-]
-
-[[package]]
 name = "libm"
 version = "0.2.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2245,6 +2241,15 @@ name = "memmap2"
 version = "0.5.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "83faa42c0a078c393f6b29d5db232d8be22776a891f8f56e5284faee4a20b327"
+dependencies = [
+ "libc",
+]
+
+[[package]]
+name = "memmap2"
+version = "0.6.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6d28bba84adfe6646737845bc5ebbfa2c08424eb1c37e94a1fd2a82adb56a872"
 dependencies = [
  "libc",
 ]
@@ -3583,7 +3588,7 @@ checksum = "cda4e97be1fd174ccc2aae81c8b694e803fa99b34e8fd0f057a9d70698e3ed09"
 dependencies = [
  "ab_glyph",
  "log",
- "memmap2",
+ "memmap2 0.5.10",
  "smithay-client-toolkit",
  "tiny-skia",
 ]
@@ -3829,7 +3834,7 @@ dependencies = [
  "dlib",
  "lazy_static",
  "log",
- "memmap2",
+ "memmap2 0.5.10",
  "nix 0.24.3",
  "pkg-config",
  "wayland-client 0.29.5",
@@ -3859,9 +3864,9 @@ dependencies = [
 
 [[package]]
 name = "softbuffer"
-version = "0.2.1"
+version = "0.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c2b953f6ba7285f0af131eb748aabd8ddaf53e0b81dda3ba5d803b0847d6559f"
+checksum = "7cc7e34c6782f6fe16e384f25d009ed7b30f70e022d77966769a0366232c4dc4"
 dependencies = [
  "bytemuck",
  "cfg_aliases",
@@ -3869,12 +3874,13 @@ dependencies = [
  "core-graphics",
  "fastrand 1.9.0",
  "foreign-types",
+ "js-sys",
  "log",
+ "memmap2 0.6.2",
  "nix 0.26.2",
  "objc",
  "raw-window-handle",
  "redox_syscall",
- "thiserror",
  "wasm-bindgen",
  "wayland-backend",
  "wayland-client 0.30.2",
@@ -5077,14 +5083,15 @@ dependencies = [
 
 [[package]]
 name = "x11rb"
-version = "0.11.1"
+version = "0.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cdf3c79412dd91bae7a7366b8ad1565a85e35dd049affc3a6a2c549e97419617"
+checksum = "b1641b26d4dec61337c35a1b1aaf9e3cba8f46f0b43636c609ab0291a648040a"
 dependencies = [
+ "as-raw-xcb-connection",
  "gethostname",
  "libc",
- "libloading 0.7.4",
- "nix 0.25.1",
+ "libloading",
+ "nix 0.26.2",
  "once_cell",
  "winapi",
  "winapi-wsapoll",
@@ -5093,11 +5100,11 @@ dependencies = [
 
 [[package]]
 name = "x11rb-protocol"
-version = "0.11.1"
+version = "0.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e0b1513b141123073ce54d5bb1d33f801f17508fbd61e02060b1214e96d39c56"
+checksum = "82d6c3f9a0fb6701fab8f6cea9b0c0bd5d6876f1f89f7fada07e558077c344bc"
 dependencies = [
- "nix 0.25.1",
+ "nix 0.26.2",
 ]
 
 [[package]]
