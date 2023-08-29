@@ -25,8 +25,8 @@ pub enum VersionAndIdPduKind {
 impl VersionAndIdPduKind {
     fn name(&self) -> &'static str {
         match self {
-            VersionAndIdPduKind::ServerAnnounceRequest => "ServerAnnounceRequest",
-            VersionAndIdPduKind::ClientAnnounceReply => "ClientAnnounceReply",
+            VersionAndIdPduKind::ServerAnnounceRequest => "DR_CORE_SERVER_ANNOUNCE_REQ",
+            VersionAndIdPduKind::ClientAnnounceReply => "DR_CORE_CLIENT_ANNOUNCE_RSP",
         }
     }
 }
@@ -94,7 +94,7 @@ impl VersionAndIdPdu {
         })
     }
 
-    fn name(&self) -> &'static str {
+    pub fn name(&self) -> &'static str {
         self.kind.name()
     }
 
@@ -111,7 +111,7 @@ pub enum ClientNameRequest {
 }
 
 impl ClientNameRequest {
-    const NAME: &str = "ClientNameRequest";
+    const NAME: &str = "DR_CORE_CLIENT_NAME_REQ";
     const FIXED_PART_SIZE: usize = size_of::<u32>() * 3; // unicode_flag + CodePage + ComputerNameLen
 
     pub fn new(computer_name: String, kind: ClientNameRequestUnicodeFlag) -> Self {
@@ -141,6 +141,10 @@ impl ClientNameRequest {
         dst.write_u32(0); // // CodePage (4 bytes): it MUST be set to 0
         dst.write_u32(encoded_str_len(self.computer_name(), self.unicode_flag().into(), true) as u32);
         write_string_to_cursor(dst, self.computer_name(), self.unicode_flag().into(), true)
+    }
+
+    pub fn name(&self) -> &'static str {
+        Self::NAME
     }
 
     pub fn size(&self) -> usize {
@@ -190,7 +194,7 @@ impl CoreCapability {
     }
 
     pub fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
-        ensure_size!(ctx: "CoreCapability", in: dst, size: self.size());
+        ensure_size!(ctx: self.name(), in: dst, size: self.size());
         dst.write_u16(self.num_capabilities);
         dst.write_u16(self.padding);
         for cap in self.capabilities.iter() {
@@ -229,6 +233,10 @@ impl CoreCapability {
         })
     }
 
+    pub fn name(&self) -> &'static str {
+        self.kind.name()
+    }
+
     pub fn size(&self) -> usize {
         Self::FIXED_PART_SIZE + self.capabilities.iter().map(|c| c.size()).sum::<usize>()
     }
@@ -245,8 +253,8 @@ pub enum CoreCapabilityKind {
 impl CoreCapabilityKind {
     fn name(&self) -> &'static str {
         match self {
-            CoreCapabilityKind::ServerCoreCapabilityRequest => "ServerCoreCapabilityRequest",
-            CoreCapabilityKind::ClientCoreCapabilityResponse => "ClientCoreCapabilityResponse",
+            CoreCapabilityKind::ServerCoreCapabilityRequest => "DR_CORE_CAPABILITY_REQ",
+            CoreCapabilityKind::ClientCoreCapabilityResponse => "DR_CORE_CAPABILITY_RSP",
         }
     }
 }
@@ -259,7 +267,7 @@ pub struct CapabilityMessage {
 }
 
 impl CapabilityMessage {
-    const NAME: &str = "CapabilityMessage";
+    const NAME: &str = "CAPABILITY_SET";
     /// Creates a new [`GENERAL_CAPS_SET`].
     ///
     /// `special_type_device_cap`: A 32-bit unsigned integer that
@@ -337,7 +345,7 @@ struct CapabilityHeader {
 }
 
 impl CapabilityHeader {
-    const NAME: &str = "CapabilityHeader";
+    const NAME: &str = "CAPABILITY_HEADER";
     const SIZE: usize = size_of::<u16>() * 2 + size_of::<u32>();
 
     fn new_general() -> Self {
@@ -497,7 +505,7 @@ struct GeneralCapabilitySet {
 }
 
 impl GeneralCapabilitySet {
-    const NAME: &str = "GeneralCapabilitySet";
+    const NAME: &str = "GENERAL_CAPS_SET";
     #[allow(clippy::manual_bits)]
     const SIZE: usize = size_of::<u32>() * 8 + size_of::<u16>() * 2;
 

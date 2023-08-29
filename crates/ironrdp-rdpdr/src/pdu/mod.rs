@@ -77,7 +77,12 @@ impl PduEncode for RdpdrPdu {
     }
 
     fn name(&self) -> &'static str {
-        "rdpdr"
+        match self {
+            RdpdrPdu::VersionAndIdPdu(pdu) => pdu.name(),
+            RdpdrPdu::ClientNameRequest(pdu) => pdu.name(),
+            RdpdrPdu::CoreCapability(pdu) => pdu.name(),
+            RdpdrPdu::Unimplemented => "Unimplemented",
+        }
     }
 
     fn size(&self) -> usize {
@@ -94,14 +99,14 @@ impl PduEncode for RdpdrPdu {
 impl fmt::Debug for RdpdrPdu {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::VersionAndIdPdu(pdu) => {
-                write!(f, "RdpdrPdu({:?})", pdu)
+            Self::VersionAndIdPdu(it) => {
+                write!(f, "RdpdrPdu({:?})", it)
             }
-            Self::ClientNameRequest(request) => {
-                write!(f, "RdpdrPdu({:?})", request)
+            Self::ClientNameRequest(it) => {
+                write!(f, "RdpdrPdu({:?})", it)
             }
-            Self::CoreCapability(capability) => {
-                write!(f, "RdpdrPdu({:?})", capability)
+            Self::CoreCapability(it) => {
+                write!(f, "RdpdrPdu({:?})", it)
             }
             Self::Unimplemented => {
                 write!(f, "RdpdrPdu::Unimplemented")

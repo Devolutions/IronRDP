@@ -27,7 +27,6 @@ use tracing::{trace, warn};
 pub struct Rdpdr {
     /// TODO: explain what this is
     computer_name: String,
-    /// See [`CapabilityMessage`]
     capabilities: Vec<CapabilityMessage>,
 }
 
