@@ -22,7 +22,7 @@ Pay attention to the "**Architecture Invariant**" sections.
 - `crates/ironrdp-graphics`: image processing primitives.
 - `crates/ironrdp-svc`: traits to implement RDP static virtual channels.
 - `crates/ironrdp-dvc`: DRDYNVC static channel implementation and traits to implement dynamic virtual channels.
-- `crates/ironrdp-rdpdr`: RDPDR static channel for file system implemented as described in MS-RDPEFS.
+- `crates/ironrdp-rdpdr`: RDPDR channel implementation.
 - `crates/ironrdp-rdpsnd`: RDPSND static channel for audio output implemented as described in MS-RDPEA.
 - `crates/ironrdp-connector`: state machines to drive an RDP connection sequence.
 - `crates/ironrdp-session`: state machines to drive an RDP session.
