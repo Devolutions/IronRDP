@@ -85,11 +85,14 @@ impl VersionAndIdPdu {
         };
 
         ensure_size!(ctx: kind.name(), in: src, size: Self::FIXED_PART_SIZE);
+        let version_major = src.read_u16();
+        let version_minor = src.read_u16();
+        let client_id = src.read_u32();
 
         Ok(Self {
-            version_major: src.read_u16(),
-            version_minor: src.read_u16(),
-            client_id: src.read_u32(),
+            version_major,
+            version_minor,
+            client_id,
             kind,
         })
     }
@@ -375,10 +378,14 @@ impl CapabilityHeader {
 
     fn decode(payload: &mut ReadCursor<'_>) -> PduResult<Self> {
         ensure_size!(in: payload, size: Self::SIZE);
+        let cap_type: CapabilityType = payload.read_u16().try_into()?;
+        let length = payload.read_u16();
+        let version = payload.read_u32();
+
         Ok(Self {
-            cap_type: payload.read_u16().try_into()?,
-            length: payload.read_u16(),
-            version: payload.read_u32(),
+            cap_type,
+            length,
+            version,
         })
     }
 
@@ -527,24 +534,35 @@ impl GeneralCapabilitySet {
 
     fn decode(payload: &mut ReadCursor<'_>, version: u32) -> PduResult<Self> {
         ensure_size!(in: payload, size: Self::SIZE);
+        let os_type = payload.read_u32();
+        let os_version = payload.read_u32();
+        let protocol_major_version = payload.read_u16();
+        let protocol_minor_version = payload.read_u16();
+        let io_code_1 = IoCode1::from_bits(payload.read_u32())
+            .ok_or_else(|| invalid_message_err!("io_code_1", "invalid io_code_1"))?;
+        let io_code_2 = payload.read_u32();
+        let extended_pdu = ExtendedPdu::from_bits(payload.read_u32())
+            .ok_or_else(|| invalid_message_err!("extended_pdu", "invalid extended_pdu"))?;
+        let extra_flags_1 = ExtraFlags1::from_bits(payload.read_u32())
+            .ok_or_else(|| invalid_message_err!("extra_flags_1", "invalid extra_flags_1"))?;
+        let extra_flags_2 = payload.read_u32();
+        let special_type_device_cap = if version == GENERAL_CAPABILITY_VERSION_02 {
+            payload.read_u32()
+        } else {
+            0
+        };
+
         Ok(Self {
-            os_type: payload.read_u32(),
-            os_version: payload.read_u32(),
-            protocol_major_version: payload.read_u16(),
-            protocol_minor_version: payload.read_u16(),
-            io_code_1: IoCode1::from_bits(payload.read_u32())
-                .ok_or_else(|| invalid_message_err!("io_code_1", "invalid io_code_1"))?,
-            io_code_2: payload.read_u32(),
-            extended_pdu: ExtendedPdu::from_bits(payload.read_u32())
-                .ok_or_else(|| invalid_message_err!("extended_pdu", "invalid extended_pdu"))?,
-            extra_flags_1: ExtraFlags1::from_bits(payload.read_u32())
-                .ok_or_else(|| invalid_message_err!("extra_flags_1", "invalid extra_flags_1"))?,
-            extra_flags_2: payload.read_u32(),
-            special_type_device_cap: if version == GENERAL_CAPABILITY_VERSION_02 {
-                payload.read_u32()
-            } else {
-                0
-            },
+            os_type,
+            os_version,
+            protocol_major_version,
+            protocol_minor_version,
+            io_code_1,
+            io_code_2,
+            extended_pdu,
+            extra_flags_1,
+            extra_flags_2,
+            special_type_device_cap,
         })
     }
 
