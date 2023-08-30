@@ -13,6 +13,7 @@ use crate::pdu::{
 };
 use ironrdp_pdu::{decode, gcc::ChannelName, other_err, PduResult};
 use ironrdp_svc::{impl_as_any, CompressionCondition, StaticVirtualChannel, SvcMessage};
+use pdu::efs::{ClientDeviceListAnnounce, DeviceAnnounceHeader};
 use tracing::{trace, warn};
 
 /// The RDPDR channel as specified in [\[MS-RDPEFS\]].
@@ -28,21 +29,30 @@ pub struct Rdpdr {
     /// TODO: explain what this is
     computer_name: String,
     capabilities: Vec<CapabilityMessage>,
+    /// Pre-configured list of devices to announce to the server.
+    ///
+    /// All devices not of the type [`DeviceType::Filesystem`] must be declared here.
+    device_list: Option<Vec<DeviceAnnounceHeader>>,
 }
 
 impl Default for Rdpdr {
     fn default() -> Self {
-        Self::new("IronRDP".to_string(), vec![CapabilityMessage::new_general(0)])
+        Self::new("IronRDP".to_string(), vec![CapabilityMessage::new_general(0)], None)
     }
 }
 
 impl Rdpdr {
     pub const NAME: ChannelName = ChannelName::from_static(b"rdpdr\0\0\0");
 
-    pub fn new(computer_name: String, capabilities: Vec<CapabilityMessage>) -> Self {
+    pub fn new(
+        computer_name: String,
+        capabilities: Vec<CapabilityMessage>,
+        device_list: Option<Vec<DeviceAnnounceHeader>>,
+    ) -> Self {
         Self {
             computer_name,
             capabilities,
+            device_list,
         }
     }
 
@@ -69,6 +79,15 @@ impl Rdpdr {
         // TODO: Make CoreCapability PduEncode
         Ok(vec![SvcMessage::from(res)])
     }
+
+    fn handle_client_id_confirm(&mut self) -> PduResult<Vec<SvcMessage>> {
+        let res = RdpdrPdu::ClientDeviceListAnnounce(ClientDeviceListAnnounce {
+            device_list: self.device_list.take().unwrap_or_default(),
+        });
+        trace!("sending {:?}", res);
+
+        Ok(vec![SvcMessage::from(res)])
+    }
 }
 
 impl_as_any!(Rdpdr);
@@ -92,6 +111,9 @@ impl StaticVirtualChannel for Rdpdr {
             }
             RdpdrPdu::CoreCapability(pdu) if pdu.kind == CoreCapabilityKind::ServerCoreCapabilityRequest => {
                 self.handle_server_capability(pdu)
+            }
+            RdpdrPdu::VersionAndIdPdu(pdu) if pdu.kind == VersionAndIdPduKind::ServerClientIdConfirm => {
+                self.handle_client_id_confirm()
             }
             RdpdrPdu::Unimplemented => {
                 warn!("received unimplemented packet: {:?}", pdu);
