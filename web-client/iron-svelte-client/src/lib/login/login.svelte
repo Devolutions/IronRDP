@@ -9,10 +9,10 @@
 
     let username = "Administrator";
     let password = "DevoLabs123!";
-    let gatewayAddress = "ws://localhost:7172/jet/rdp";
+    let gatewayAddress = "ws://localhost:7171/jet/rdp";
     let hostname = "10.10.0.3:3389";
     let domain = "";
-    let authtoken = "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCIsImN0eSI6IkFTU09DSUFUSU9OIn0.eyJkc3RfaHN0IjoiMTAuMTAuMC4zIiwiZXhwIjoxNjcxMTIwNjE0LCJqZXRfYWlkIjoiOWMwODAwNTktMDMzOS00MjJhLTgxODgtODEzNGJjOTc3MzczIiwiamV0X2FwIjoicmRwIiwiamV0X2NtIjoiZndkIiwianRpIjoiOTAzMDNlMDUtMzg5MC00OGQ3LTgxMTYtYWJmYzAwYWNlMTUxIiwibmJmIjoxNjcxMTE5NzE0fQ.JdT4KSyB2Zf3OcEA44Hmmc59cqx6KApXrFoJf_gIQwU8VqYWMnSMqENMyYw4CLDKj31tgUlSjWkHLj2wELZCOWFtsbONJqTWIc8mkCpnlbGVWIaNm7MISZXAS2p1LF1nsv9kzCJNvWK2AgfjsiZ4TBIUrhLa1dCRfuLsNaABotjcTJFvVCZUaadejeFDA6S2YbvQQHOjztIKJsg3zKkvTOpB_cZvRv9yDSgW09wXS0MOsnLqzmiLMd-9IPEkkwQ4oe9e6-AJI3OXZogkJDTcE0xdHlMSUG6JVwowt9FHervTn1n3nuN1ZKARvDbEsHJsLxPI1w2eqlZvPkqfKw5oqA";
+    let authtoken = "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCIsImN0eSI6IkFTU09DSUFUSU9OIn0.eyJkc3RfaHN0IjoiMTkyLjE2OC41Ni4xMDE6MzM4OSIsImV4cCI6MTY5MzQyMzY1NSwiamV0X2FpZCI6IjMwNzZjZGIwLWYxNTctNDJlNy1iOWMzLThhMTdlNDFkYjYwNyIsImpldF9hcCI6InJkcCIsImpldF9jbSI6ImZ3ZCIsImp0aSI6IjAwYjY4OTY2LWJiYjAtNDU0NS05ZDZiLWRjNmFmMjAzNjY5MiIsIm5iZiI6MTY5MzQyMjc1NX0.SYQv4HtWQbdHMHgoCLYejCfO3TtsMAyjjILB6-Nir3mBznKiSad3POeLf02n05JFc5QhCeSGxspAaoNU7-znQFhHr0Tt0MnZJ1YMQt4UoR3PR2fTuUqv8M5TKdm4lKwCIjh73tTD001glTkXHaxuCQBTFCUSzfZhXDIqq5-CQueKtCrgJfYepJLmlvgH-ujGcxfXoGJGmeUy3Fmaijiy0uaC98j9GNCfnAd6JENmSAOkxfroMFhq601PSEizRbPzq2exDakfJ0EkaANz15udBX1a7NP-RyANHWQb8hp0rj6hyuyg1-vfUKYusw5qNUjAGXaWOjHC5bLgnqfE2V8Xnw";
     let desktopSize: DesktopSize = {
         width: 1280,
         height: 768
@@ -64,19 +64,7 @@
                 filter(result => !!result)
             )
             .subscribe((start_info: NewSessionInfo) => {
-
-                if (import.meta.env.MODE === 'tauri' && start_info.websocket_port && start_info.websocket_port > 0) { //Tauri only
-                    toast.set({
-                        type: 'info',
-                        message: 'Success'
-                    });
-                    currentSession.update(session => Object.assign(session, {
-                        sessionId: start_info.session_id,
-                        desktopSize: start_info.initial_desktop_size,
-                        active: true
-                    }));
-                    showLogin.set(false);
-                } else if (start_info.initial_desktop_size !== null) { //Browser
+                if (start_info.initial_desktop_size !== null) {
                     toast.set({
                         type: 'info',
                         message: 'Success',

@@ -29,12 +29,16 @@ ironrdp-futures.workspace = true
 ironrdp-rdcleanpath.workspace = true
 
 # WASM
-wasm-bindgen = "0.2.84"
-wasm-bindgen-futures = "0.4.34"
-js-sys = "0.3.61"
-gloo-net = { version = "0.2.6", default-features = false, features = ["websocket", "http"] }
-gloo-timers = { version = "0.2.6", default-features = false, features = ["futures"] }
-tracing-web = "0.1.2"
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+web-sys = { version = "0.3", features = ["HtmlCanvasElement"] }
+js-sys = "0.3"
+gloo-net = { version = "0.2", default-features = false, features = ["websocket", "http"] }
+gloo-timers = { version = "0.2", default-features = false, features = ["futures"] }
+tracing-web = "0.1"
+
+# Rendering
+softbuffer = { version = "0.3", default-features = false }
 
 # Enable WebAssembly support for a few crates
 getrandom = { version = "0.2", features = ["js"] }
@@ -45,7 +49,7 @@ time = { version = "0.3", features = ["wasm-bindgen"] }
 # logging them with `console.error`. This is great for development, but requires
 # all the `std::fmt` and `std::panicking` infrastructure, so isn't great for
 # code size when deploying.
-console_error_panic_hook = { version = "0.1.7", optional = true }
+console_error_panic_hook = { version = "0.1", optional = true }
 
 # Async
 futures-util = { version = "0.3", features = ["sink", "io"] }
@@ -53,12 +57,12 @@ futures-channel = "0.3"
 
 # Logging
 tracing.workspace = true
-tracing-subscriber = { version = "0.3.16", features = ["time"] }
+tracing-subscriber = { version = "0.3", features = ["time"] }
 
 # Utils
 anyhow = "1"
-smallvec = "1.10.0"
-x509-cert = { version = "0.2.1", default-features = false, features = ["std"] }
-tap = "1.0.1"
+smallvec = "1.10"
+x509-cert = { version = "0.2", default-features = false, features = ["std"] }
+tap = "1"
 semver = "1"
-url = "2.4.0"
+url = "2"

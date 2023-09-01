@@ -3,6 +3,7 @@
 #[macro_use]
 extern crate tracing;
 
+mod canvas;
 mod error;
 mod image;
 mod input;
@@ -27,7 +28,7 @@ pub fn ironrdp_init(log_level: &str) {
     //
     // For more details see
     // https://github.com/rustwasm/console_error_panic_hook#readme
-    #[cfg(feature = "console_error_panic_hook")]
+    #[cfg(feature = "panic_hook")]
     console_error_panic_hook::set_once();
 
     if let Ok(level) = log_level.parse::<Level>() {

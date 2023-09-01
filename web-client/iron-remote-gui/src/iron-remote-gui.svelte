@@ -81,9 +81,6 @@
             canvas.height = evt.desktop_size.height;
             scaleSession(scale);
         });
-        wasmService.updateImage.subscribe(({pixels, infos}) => {
-            draw(pixels, infos);
-        });
     }
 
     function userInteractionListeners() {
@@ -238,18 +235,6 @@
             x = win.innerWidth || docElem.clientWidth || body.clientWidth,
             y = win.innerHeight || docElem.clientHeight || body.clientHeight;
         return {x, y};
-    }
-
-    async function draw(bytesArray, imageInfo) {
-        let pixels = bytesArray;
-        if (import.meta.env.MODE === 'tauri') {
-            pixels = new Uint8ClampedArray(await bytesArray);
-        }
-
-        if (pixels.buffer.byteLength > 0) {
-            const imageData = new ImageData(pixels, imageInfo.width, imageInfo.height);
-            canvasCtx?.putImageData(imageData, imageInfo.left, imageInfo.top);
-        }
     }
 
     async function initcanvas() {

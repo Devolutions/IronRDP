@@ -379,7 +379,7 @@ mod tests {
         decompress_8bpp_plane(src, dst.as_mut_slice(), width, height)
     }
 
-    pub fn compress(src: &[u8], dst: &mut Vec<u8>, width: usize, height: usize) -> Result<usize, RleEncodeError> {
+    pub fn compress(src: &[u8], dst: &mut [u8], width: usize, height: usize) -> Result<usize, RleEncodeError> {
         compress_8bpp_plane(src.iter().copied(), &mut WriteCursor::new(dst), width, height)
     }
 
