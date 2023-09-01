@@ -325,7 +325,7 @@ impl Session {
             .take()
             .expect("run called only once");
 
-        let mut framed = ironrdp_futures::FuturesFramed::new(rdp_reader);
+        let mut framed = ironrdp_futures::SingleThreadedFuturesFramed::new(rdp_reader);
 
         info!("Start RDP session");
 
@@ -565,7 +565,7 @@ async fn connect(
     destination: String,
     pcb: Option<String>,
 ) -> Result<(connector::ConnectionResult, WebSocketCompat), IronRdpError> {
-    let mut framed = ironrdp_futures::FuturesFramed::new(ws);
+    let mut framed = ironrdp_futures::SingleThreadedFuturesFramed::new(ws);
 
     let mut connector = connector::ClientConnector::new(config)
         .with_server_name(&destination)
