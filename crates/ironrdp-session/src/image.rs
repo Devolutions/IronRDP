@@ -155,7 +155,6 @@ impl DecodedImage {
 
     fn apply_pointer_layer(&mut self, layer: PointerLayer) -> SessionResult<Option<InclusiveRectangle>> {
         if self.data.is_empty() {
-            eprintln!("FUCK, EMPTY DST!");
             return Ok(None);
         }
 
