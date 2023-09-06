@@ -474,5 +474,6 @@ bitflags! {
         const SUPPORT_DYN_VC_GFX_PROTOCOL =0x0100;
         const SUPPORT_DYNAMIC_TIME_ZONE = 0x0200;
         const SUPPORT_HEART_BEAT_PDU = 0x0400;
+        const SUPPORT_SKIP_CHANNELJOIN = 0x0800;
     }
 }

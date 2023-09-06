@@ -93,5 +93,6 @@ bitflags! {
         const EDGE_ACTIONS_SUPPORTED_V1 = 0x0000_0001;
         const DYNAMIC_DST_SUPPORTED = 0x0000_0002;
         const EDGE_ACTIONS_SUPPORTED_V2 = 0x0000_0004;
+        const SKIP_CHANNELJOIN_SUPPORTED = 0x0000_0008;
     }
 }
