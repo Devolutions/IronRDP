@@ -73,7 +73,9 @@ pub struct Config {
     pub no_server_pointer: bool,
 }
 
-pub trait State: Send + Sync + core::fmt::Debug {
+ironrdp_pdu::assert_impl!(Config: Send, Sync);
+
+pub trait State: Send + Sync + core::fmt::Debug + 'static {
     fn name(&self) -> &'static str;
     fn is_terminal(&self) -> bool;
     fn as_any(&self) -> &dyn Any;
@@ -81,11 +83,11 @@ pub trait State: Send + Sync + core::fmt::Debug {
 
 ironrdp_pdu::assert_obj_safe!(State);
 
-pub fn state_downcast<T: State + Any>(state: &dyn State) -> Option<&T> {
+pub fn state_downcast<T: State>(state: &dyn State) -> Option<&T> {
     state.as_any().downcast_ref()
 }
 
-pub fn state_is<T: State + Any>(state: &dyn State) -> bool {
+pub fn state_is<T: State>(state: &dyn State) -> bool {
     state.as_any().is::<T>()
 }
 

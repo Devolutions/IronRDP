@@ -315,7 +315,7 @@ pub fn find_size(bytes: &[u8]) -> PduResult<Option<PduInfo>> {
     }
 }
 
-pub trait PduHint: core::fmt::Debug {
+pub trait PduHint: Send + Sync + core::fmt::Debug + 'static {
     /// Finds next PDU size by reading the next few bytes.
     fn find_size(&self, bytes: &[u8]) -> PduResult<Option<usize>>;
 }

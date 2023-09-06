@@ -1,26 +1,27 @@
 use std::io;
-use std::pin::Pin;
 
 use bytes::{Bytes, BytesMut};
 use ironrdp_pdu::PduHint;
 
-// TODO: use static async fn / return position impl trait in traits when stabiziled (https://github.com/rust-lang/rust/issues/91611)
+// TODO: investigate if we could use static async fn / return position impl trait in traits when stabilized:
+// https://github.com/rust-lang/rust/issues/91611
 
 pub trait FramedRead {
-    /// Reads from stream and fills internal buffer
-    fn read<'a>(
-        &'a mut self,
-        buf: &'a mut BytesMut,
-    ) -> Pin<Box<dyn std::future::Future<Output = io::Result<usize>> + 'a>>
+    type ReadFut<'read>: std::future::Future<Output = io::Result<usize>> + 'read
     where
-        Self: 'a;
+        Self: 'read;
+
+    /// Reads from stream and fills internal buffer
+    fn read<'a>(&'a mut self, buf: &'a mut BytesMut) -> Self::ReadFut<'a>;
 }
 
 pub trait FramedWrite {
-    /// Writes an entire buffer into this stream.
-    fn write_all<'a>(&'a mut self, buf: &'a [u8]) -> Pin<Box<dyn std::future::Future<Output = io::Result<()>> + 'a>>
+    type WriteAllFut<'write>: std::future::Future<Output = io::Result<()>> + 'write
     where
-        Self: 'a;
+        Self: 'write;
+
+    /// Writes an entire buffer into this stream.
+    fn write_all<'a>(&'a mut self, buf: &'a [u8]) -> Self::WriteAllFut<'a>;
 }
 
 pub trait StreamWrapper: Sized {
