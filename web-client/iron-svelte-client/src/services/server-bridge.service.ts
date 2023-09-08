@@ -34,8 +34,6 @@ export abstract class ServerBridgeService {
 
   abstract resize: Observable<ResizeEvent>;
 
-  abstract updateImage: Observable<any>;
-
   abstract updateMouse(mouse_x: number, mouse_y: number, click_state: number): void;
 }
 

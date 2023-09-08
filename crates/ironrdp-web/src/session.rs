@@ -5,12 +5,11 @@ use std::time::Duration;
 use anyhow::Context as _;
 use futures_channel::mpsc;
 use futures_util::io::{ReadHalf, WriteHalf};
-use futures_util::{select, AsyncReadExt as _, AsyncWriteExt as _, FutureExt, StreamExt as _};
+use futures_util::{select, AsyncReadExt as _, AsyncWriteExt as _, FutureExt as _, StreamExt as _};
 use gloo_net::websocket;
 use gloo_net::websocket::futures::WebSocket;
 use ironrdp::connector::{self, ClientConnector};
 use ironrdp::graphics::image_processing::PixelFormat;
-use ironrdp::pdu::geometry::{InclusiveRectangle, Rectangle as _};
 use ironrdp::pdu::input::fast_path::FastPathInputEvent;
 use ironrdp::pdu::write_buf::WriteBuf;
 use ironrdp::session::image::DecodedImage;
@@ -18,9 +17,11 @@ use ironrdp::session::{ActiveStage, ActiveStageOutput};
 use tap::prelude::*;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::spawn_local;
+use web_sys::HtmlCanvasElement;
 
+use crate::canvas::Canvas;
 use crate::error::{IronRdpError, IronRdpErrorKind};
-use crate::image::{extract_partial_image, RectInfo};
+use crate::image::extract_partial_image;
 use crate::input::InputTransaction;
 use crate::network_client::WasmNetworkClientFactory;
 use crate::websocket::WebSocketCompat;
@@ -44,8 +45,7 @@ struct SessionBuilderInner {
     client_name: String,
     desktop_size: DesktopSize,
 
-    update_callback: Option<js_sys::Function>,
-    update_callback_context: Option<JsValue>,
+    render_canvas: Option<HtmlCanvasElement>,
     hide_pointer_callback: Option<js_sys::Function>,
     hide_pointer_callback_context: Option<JsValue>,
     show_pointer_callback: Option<js_sys::Function>,
@@ -67,9 +67,8 @@ impl Default for SessionBuilderInner {
                 width: DEFAULT_WIDTH,
                 height: DEFAULT_HEIGHT,
             },
-            update_callback: None,
-            update_callback_context: None,
 
+            render_canvas: None,
             hide_pointer_callback: None,
             hide_pointer_callback_context: None,
             show_pointer_callback: None,
@@ -136,15 +135,9 @@ impl SessionBuilder {
         self.clone()
     }
 
-    /// Required
-    pub fn update_callback(&self, callback: js_sys::Function) -> SessionBuilder {
-        self.0.borrow_mut().update_callback = Some(callback);
-        self.clone()
-    }
-
-    /// Required
-    pub fn update_callback_context(&self, context: JsValue) -> SessionBuilder {
-        self.0.borrow_mut().update_callback_context = Some(context);
+    /// Optional
+    pub fn render_canvas(&self, canvas: HtmlCanvasElement) -> SessionBuilder {
+        self.0.borrow_mut().render_canvas = Some(canvas);
         self.clone()
     }
 
@@ -183,8 +176,7 @@ impl SessionBuilder {
             pcb,
             client_name,
             desktop_size,
-            update_callback,
-            update_callback_context,
+            render_canvas,
             hide_pointer_callback,
             hide_pointer_callback_context,
             show_pointer_callback,
@@ -193,29 +185,34 @@ impl SessionBuilder {
 
         {
             let inner = self.0.borrow();
-            username = inner.username.clone().expect("username");
-            destination = inner.destination.clone().expect("destination");
+            username = inner.username.clone().context("username missing")?;
+            destination = inner.destination.clone().context("destination missing")?;
             server_domain = inner.server_domain.clone();
-            password = inner.password.clone().expect("password");
-            proxy_address = inner.proxy_address.clone().expect("proxy_address");
-            auth_token = inner.auth_token.clone().expect("auth_token");
+            password = inner.password.clone().context("password missing")?;
+            proxy_address = inner.proxy_address.clone().context("proxy_address missing")?;
+            auth_token = inner.auth_token.clone().context("auth_token missing")?;
             pcb = inner.pcb.clone();
             client_name = inner.client_name.clone();
             desktop_size = inner.desktop_size.clone();
 
-            update_callback = inner.update_callback.clone().expect("update_callback");
-            update_callback_context = inner.update_callback_context.clone().expect("update_callback_context");
+            render_canvas = inner.render_canvas.clone().context("render_canvas missing")?;
 
-            hide_pointer_callback = inner.hide_pointer_callback.clone().expect("hide_pointer_callback");
+            hide_pointer_callback = inner
+                .hide_pointer_callback
+                .clone()
+                .context("hide_pointer_callback missing")?;
             hide_pointer_callback_context = inner
                 .hide_pointer_callback_context
                 .clone()
-                .expect("show_pointer_callback_context");
-            show_pointer_callback = inner.show_pointer_callback.clone().expect("hide_pointer_callback");
+                .context("show_pointer_callback_context missing")?;
+            show_pointer_callback = inner
+                .show_pointer_callback
+                .clone()
+                .context("hide_pointer_callback missing")?;
             show_pointer_callback_context = inner
                 .show_pointer_callback_context
                 .clone()
-                .expect("show_pointer_callback_context");
+                .context("show_pointer_callback_context missing")?;
         }
 
         info!("Connect to RDP host");
@@ -268,8 +265,7 @@ impl SessionBuilder {
             writer_tx,
             input_events_tx,
 
-            update_callback,
-            update_callback_context,
+            render_canvas,
             hide_pointer_callback,
             hide_pointer_callback_context,
             show_pointer_callback,
@@ -291,8 +287,7 @@ pub struct Session {
     writer_tx: mpsc::UnboundedSender<Vec<u8>>,
     input_events_tx: mpsc::UnboundedSender<FastPathInputEvents>,
 
-    update_callback: js_sys::Function,
-    update_callback_context: JsValue,
+    render_canvas: HtmlCanvasElement,
     hide_pointer_callback: js_sys::Function,
     hide_pointer_callback_context: JsValue,
     show_pointer_callback: js_sys::Function,
@@ -327,32 +322,55 @@ impl Session {
 
         let mut framed = ironrdp_futures::SingleThreadedFuturesFramed::new(rdp_reader);
 
+        debug!("Initialize canvas");
+
+        let mut gui = Canvas::new(
+            self.render_canvas.clone(),
+            u32::from(connection_result.desktop_size.width),
+            u32::from(connection_result.desktop_size.height),
+        )
+        .context("canvas initialization")?;
+
+        debug!("Canvas initialized");
+
         info!("Start RDP session");
 
-        let mut image = DecodedImage::new(PixelFormat::RgbA32, self.desktop_size.width, self.desktop_size.height);
+        let mut image = DecodedImage::new(
+            PixelFormat::RgbA32,
+            connection_result.desktop_size.width,
+            connection_result.desktop_size.height,
+        );
 
         let mut active_stage = ActiveStage::new(connection_result, None);
-        let mut frame_id = 0;
 
         'outer: loop {
             let outputs = select! {
-                incoming_pdu = framed.read_pdu().fuse() => {
-                    let (action, frame) = incoming_pdu.context("read next frame")?;
+                frame = framed.read_pdu().fuse() => {
+                    let (action, payload) = frame.context("read frame")?;
+                    trace!(?action, frame_length = payload.len(), "Frame received");
 
-                    active_stage
-                        .process(&mut image, action, &frame)
-                        .context("Active stage processing")?
+                    active_stage.process(&mut image, action, &payload)?
                 }
                 input_events = fastpath_input_events.next() => {
                     let events = input_events.context("read next fastpath input events")?;
 
-                    active_stage.process_fastpath_input(&mut image, &events)
-                            .context("Fast path input events processing")?
+                    active_stage.process_fastpath_input(&mut image, &events).context("Fast path input events processing")?
                 }
             };
 
             for out in outputs {
                 match out {
+                    ActiveStageOutput::ResponseFrame(frame) => {
+                        // PERF: unnecessary copy
+                        self.writer_tx
+                            .unbounded_send(frame.to_vec())
+                            .context("Send frame to writer task")?;
+                    }
+                    ActiveStageOutput::GraphicsUpdate(region) => {
+                        // PERF: some copies and conversion could be optimized
+                        let (region, buffer) = extract_partial_image(&image, region);
+                        gui.draw(&buffer, region).context("draw updated region")?;
+                    }
                     ActiveStageOutput::PointerDefault => {
                         let _ret = self
                             .show_pointer_callback
@@ -367,26 +385,6 @@ impl Session {
                     }
                     ActiveStageOutput::PointerPosition { .. } => {
                         // Not applicable for web
-                    }
-                    ActiveStageOutput::ResponseFrame(frame) => {
-                        // PERF: unnecessary copy
-                        self.writer_tx
-                            .unbounded_send(frame.to_vec())
-                            .context("Send frame to writer task")?;
-                    }
-                    ActiveStageOutput::GraphicsUpdate(updated_region) => {
-                        let (partial_image_rectangle, partial_image) = extract_partial_image(&image, updated_region);
-
-                        send_update_rectangle(
-                            &self.update_callback,
-                            &self.update_callback_context,
-                            frame_id,
-                            partial_image_rectangle,
-                            partial_image,
-                        )
-                        .context("Failed to send update rectangle")?;
-
-                        frame_id += 1;
                     }
                     ActiveStageOutput::Terminate => break 'outer,
                 }
@@ -497,44 +495,6 @@ fn build_config(
         platform: ironrdp::pdu::rdp::capability_sets::MajorPlatformType::UNSPECIFIED,
         no_server_pointer: false,
     }
-}
-
-fn send_update_rectangle(
-    update_callback: &js_sys::Function,
-    callback_context: &JsValue,
-    frame_id: usize,
-    region: InclusiveRectangle,
-    buffer: Vec<u8>,
-) -> anyhow::Result<()> {
-    use js_sys::Uint8ClampedArray;
-
-    let top = region.top;
-    let left = region.left;
-    let right = region.right;
-    let bottom = region.bottom;
-    let width = region.width();
-    let height = region.height();
-
-    let update_rect = RectInfo {
-        frame_id,
-        top,
-        left,
-        right,
-        bottom,
-        width,
-        height,
-    };
-    let update_rect = JsValue::from(update_rect);
-
-    let js_array = Uint8ClampedArray::new_with_length(buffer.len() as u32);
-    js_array.copy_from(&buffer);
-    let js_array = JsValue::from(js_array);
-
-    let _ret = update_callback
-        .call2(callback_context, &update_rect, &js_array)
-        .map_err(|e| anyhow::Error::msg(format!("update callback failed: {e:?}")))?;
-
-    Ok(())
 }
 
 async fn writer_task(rx: mpsc::UnboundedReceiver<Vec<u8>>, rdp_writer: WriteHalf<WebSocketCompat>) {

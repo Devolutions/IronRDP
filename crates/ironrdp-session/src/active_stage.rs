@@ -154,8 +154,8 @@ impl ActiveStage {
 pub enum ActiveStageOutput {
     ResponseFrame(Vec<u8>),
     GraphicsUpdate(InclusiveRectangle),
-    Terminate,
     PointerDefault,
     PointerHidden,
     PointerPosition { x: usize, y: usize },
+    Terminate,
 }

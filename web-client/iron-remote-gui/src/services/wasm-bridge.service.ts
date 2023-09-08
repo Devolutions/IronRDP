@@ -18,7 +18,6 @@ import type {DesktopSize as IDesktopSize} from '../interfaces/DesktopSize';
 
 export class WasmBridgeService {
     private _resize: Subject<ResizeEvent> = new Subject<any>();
-    private _updateImage: Subject<any> = new Subject<any>();
     private mousePosition: BehaviorSubject<MousePosition> = new BehaviorSubject<MousePosition>({
         x: 0,
         y: 0
@@ -30,7 +29,6 @@ export class WasmBridgeService {
     private keyboardActive: boolean;
 
     resize: Observable<ResizeEvent>;
-    updateImage: Observable<any>;
     session?: Session;
     modifierKeyPressed: ModifierKey[] = [];
     mousePositionObservable: Observable<MousePosition> = this.mousePosition.asObservable();
@@ -40,7 +38,6 @@ export class WasmBridgeService {
 
     constructor() {
         this.resize = this._resize.asObservable();
-        this.updateImage = this._updateImage.asObservable();
         loggingService.info('Web bridge initialized.');
     }
 
@@ -94,8 +91,7 @@ export class WasmBridgeService {
         sessionBuilder.password(password);
         sessionBuilder.auth_token(authToken);
         sessionBuilder.username(username);
-        sessionBuilder.update_callback_context(this);
-        sessionBuilder.update_callback(this.updateImageCallback);
+        sessionBuilder.render_canvas(this.canvas);
         sessionBuilder.hide_pointer_callback_context(this);
         sessionBuilder.hide_pointer_callback(this.hidePointerCallback);
         sessionBuilder.show_pointer_callback_context(this);
@@ -214,13 +210,6 @@ export class WasmBridgeService {
                 this.doTransactionFromDeviceEvents([keyEvent(scanCode(evt.code, OS.WINDOWS))]);
             }
         }
-    }
-
-    private updateImageCallback(metadata, buffer) {
-        this._updateImage.next({
-            pixels: buffer,
-            infos: metadata
-        });
     }
 
     private hidePointerCallback() {

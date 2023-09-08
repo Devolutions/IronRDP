@@ -6,14 +6,11 @@ export class WasmBridgeService implements ServerBridgeService {
 	private wasmBridge = IronWasm;
 
 	private _resize: Subject<any> = new Subject<any>();
-	private _updateImage: Subject<any> = new Subject<any>();
 
 	resize: Observable<any>;
-	updateImage: Observable<any>;
 
 	constructor() {
 		this.resize = this._resize.asObservable();
-		this.updateImage = this._updateImage.asObservable();
 	}
 
 	init(): void {

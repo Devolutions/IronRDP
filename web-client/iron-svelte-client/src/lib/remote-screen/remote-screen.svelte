@@ -46,8 +46,7 @@
         </button>
         <button on:click={() => uiService.shutdown()}>Terminate Session</button>
     </div>
-    <iron-remote-gui debugwasm="INFO" verbose="true" scale="fit" flexcenter="true"
-                     targetplatform="{import.meta.env.MODE}"/>
+    <iron-remote-gui debugwasm="INFO" verbose="true" scale="fit" flexcenter="true"/>
 </div>
 
 <style>
