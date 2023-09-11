@@ -15,6 +15,32 @@ Supported codecs:
 - RDP 6.0 Bitmap Compression
 - Microsoft RemoteFX (RFX)
 
+## Examples
+
+### [`ironrdp-client`](./crates/ironrdp-client)
+
+A full-fledged RDP client based on IronRDP crates suite, and implemented using non-blocking, asynchronous I/O.
+
+```bash
+cargo run --bin ironrdp-client -- <HOSTNAME> --username <USERNAME> --password <PASSWORD>
+```
+
+### [`screenshot`](./crates/ironrdp/examples/screenshot.rs)
+
+Example of utilizing IronRDP in a blocking, synchronous fashion.
+
+This example showcases the use of IronRDP in a blocking manner. It
+demonstrates how to create a basic RDP client with just a few hundred lines
+of code by leveraging the IronRDP crates suite.
+
+In this basic client implementation, the client establishes a connection
+with the destination server, decodes incoming graphics updates, and saves the
+resulting output as a BMP image file on the local disk.
+
+```bash
+cargo run --example=screenshot -- --host <HOSTNAME> --username <USERNAME> --password <PASSWORD> --output out.bmp
+```
+
 ### How to enable RemoteFX on server
 
 Run the following PowerShell commands, and reboot.

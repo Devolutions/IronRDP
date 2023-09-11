@@ -52,7 +52,7 @@ tokio = { version = "1", features = ["full"]}
 # Utils
 chrono = "0.4"
 whoami = "1.4"
-anyhow = "1.0"
+anyhow = "1"
 smallvec = "1.10"
 tap = "1"
 semver = "1"

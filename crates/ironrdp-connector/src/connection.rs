@@ -431,6 +431,8 @@ impl Sequence for ClientConnector {
                 let ts_request_from_server = credssp::TsRequest::from_buffer(input)
                     .map_err(|e| reason_err!("CredSSP", "TsRequest decode: {e}"))?;
 
+                debug!(message = ?ts_request_from_server, "Received");
+
                 let result = credssp_client
                     .process(ts_request_from_server)
                     .map_err(|e| ConnectorError::new("CredSSP", ConnectorErrorKind::Credssp(e)))?;
@@ -462,6 +464,8 @@ impl Sequence for ClientConnector {
             ClientConnectorState::CredsspEarlyUserAuthResult { selected_protocol } => {
                 let early_user_auth_result = credssp::EarlyUserAuthResult::from_buffer(input)
                     .map_err(|e| custom_err!("credssp::EarlyUserAuthResult", e))?;
+
+                debug!(message = ?early_user_auth_result, "Received");
 
                 let credssp::EarlyUserAuthResult::Success = early_user_auth_result else {
                     return Err(ConnectorError::new("CredSSP", ConnectorErrorKind::AccessDenied));

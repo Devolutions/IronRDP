@@ -46,6 +46,7 @@ a feature flag called `alloc` must exist to enable its use.
 Higher level libraries and binaries built on top of the core tier.
 Guidelines and constraints are relaxed to some extent.
 
+- `crates/ironrdp-blocking`: blocking I/O abstraction wrapping the state machines conveniently.
 - `crates/ironrdp-async`: provides `Future`s wrapping the state machines conveniently.
 - `crates/ironrdp-tokio`: `Framed*` traits implementation above `tokio`’s traits.
 - `crates/ironrdp-futures`: `Framed*` traits implementation above `futures`’s traits.

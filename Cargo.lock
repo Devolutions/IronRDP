@@ -993,7 +993,7 @@ version = "0.5.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "330c60081dcc4c72131f8eb70510f1ac07223e5d4163db481a04a0befcffa412"
 dependencies = [
- "libloading 0.7.4",
+ "libloading 0.8.0",
 ]
 
 [[package]]
@@ -1797,7 +1797,10 @@ checksum = "28b29a3cd74f0f4598934efe3aeba42bae0eb4680554128851ebbecb02af14e6"
 name = "ironrdp"
 version = "0.5.0"
 dependencies = [
+ "anyhow",
+ "bmp",
  "ironrdp-acceptor",
+ "ironrdp-blocking",
  "ironrdp-cliprdr",
  "ironrdp-connector",
  "ironrdp-dvc",
@@ -1809,6 +1812,11 @@ dependencies = [
  "ironrdp-server",
  "ironrdp-session",
  "ironrdp-svc",
+ "pico-args",
+ "rustls",
+ "tracing",
+ "tracing-subscriber",
+ "x509-cert",
 ]
 
 [[package]]
@@ -1823,6 +1831,17 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-async"
+version = "0.1.0"
+dependencies = [
+ "bytes",
+ "ironrdp-connector",
+ "ironrdp-pdu",
+ "tap",
+ "tracing",
+]
+
+[[package]]
+name = "ironrdp-blocking"
 version = "0.1.0"
 dependencies = [
  "bytes",

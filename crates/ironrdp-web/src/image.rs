@@ -1,17 +1,5 @@
 use ironrdp::pdu::geometry::{InclusiveRectangle, Rectangle as _};
 use ironrdp::session::image::DecodedImage;
-use wasm_bindgen::prelude::*;
-
-#[wasm_bindgen]
-pub struct RectInfo {
-    pub frame_id: usize,
-    pub top: u16,
-    pub left: u16,
-    pub right: u16,
-    pub bottom: u16,
-    pub width: u16,
-    pub height: u16,
-}
 
 pub fn extract_partial_image(image: &DecodedImage, region: InclusiveRectangle) -> (InclusiveRectangle, Vec<u8>) {
     // PERF: needs actual benchmark to find a better heuristic

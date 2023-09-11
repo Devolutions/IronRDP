@@ -1,3 +1,4 @@
+use ironrdp::connector::sspi::network_client::reqwest_network_client::RequestClientFactory;
 use ironrdp::connector::{ConnectionResult, ConnectorResult};
 use ironrdp::graphics::image_processing::PixelFormat;
 use ironrdp::pdu::input::fast_path::FastPathInputEvent;
@@ -5,7 +6,6 @@ use ironrdp::session::image::DecodedImage;
 use ironrdp::session::{ActiveStage, ActiveStageOutput, SessionResult};
 use ironrdp::{connector, session};
 use smallvec::SmallVec;
-use sspi::network_client::reqwest_network_client::RequestClientFactory;
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 use winit::event_loop::EventLoopProxy;
