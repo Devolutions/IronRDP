@@ -227,7 +227,7 @@ fn connect(
 
     let tcp_stream = TcpStream::connect(server_addr).context("TCP connect")?;
 
-    // Sets the read timeout for the TCP stream so we can break out the
+    // Sets the read timeout for the TCP stream so we can break out of the
     // infinite loop during the active stage once there is no more activity.
     tcp_stream
         .set_read_timeout(Some(Duration::from_secs(3)))
