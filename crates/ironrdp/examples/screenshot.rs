@@ -6,11 +6,13 @@
 //!
 //! In this basic client implementation, the client establishes a connection
 //! with the destination server, decodes incoming graphics updates, and saves the
-//! resulting output as a BMP image file on the local disk.
+//! resulting output as a BMP image file on the disk.
 //!
 //! ## Usage example
 //!
+//! ```shell
 //! cargo run --example=screenshot -- --host <HOSTNAME> -u <USERNAME> -p <PASSWORD> -o out.bmp
+//! ```
 
 #[macro_use]
 extern crate tracing;
