@@ -97,6 +97,7 @@ bitflags! {
 pub struct General {
     pub major_platform_type: MajorPlatformType,
     pub minor_platform_type: MinorPlatformType,
+    pub protocol_version: u16,
     pub extra_flags: GeneralExtraFlags,
     pub refresh_rect_support: bool,
     pub suppress_output_support: bool,
@@ -107,6 +108,7 @@ impl Default for General {
         Self {
             major_platform_type: MajorPlatformType::UNSPECIFIED,
             minor_platform_type: MinorPlatformType::UNSPECIFIED,
+            protocol_version: PROTOCOL_VER,
             extra_flags: GeneralExtraFlags::empty(),
             refresh_rect_support: Default::default(),
             suppress_output_support: Default::default(),
@@ -121,10 +123,7 @@ impl PduParsing for General {
         let major_platform_type = MajorPlatformType(buffer.read_u16::<LittleEndian>()?);
         let minor_platform_type = MinorPlatformType(buffer.read_u16::<LittleEndian>()?);
 
-        let protocol_ver = buffer.read_u16::<LittleEndian>()?;
-        if protocol_ver != PROTOCOL_VER {
-            return Err(CapabilitySetsError::InvalidProtocolVersion);
-        }
+        let protocol_version = buffer.read_u16::<LittleEndian>()?;
 
         let _padding = buffer.read_u16::<LittleEndian>()?;
 
@@ -156,6 +155,7 @@ impl PduParsing for General {
         Ok(General {
             major_platform_type,
             minor_platform_type,
+            protocol_version,
             extra_flags,
             refresh_rect_support,
             suppress_output_support,
