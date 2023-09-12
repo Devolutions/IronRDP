@@ -12,78 +12,226 @@ This document describes the high-level architecture of IronRDP.
 
 This section talks briefly about various important directories and data structures.
 
+Note also which crates are **API Boundaries**.
+Remember, [rules at the boundary are different](https://www.tedinski.com/2018/02/06/system-boundaries.html).
+
 ### Core Tier
 
 Set of foundational libraries for which strict quality standards must be observed.
+Note that all crates in this tier are **API Boundaries**.
 Pay attention to the "**Architecture Invariant**" sections.
-
-- `crates/ironrdp`: meta crate re-exporting important crates.
-- `crates/ironrdp-pdu`: PDU encoding and decoding. (TODO: talk about important types and traits such as PduDecode, PduEncode…)
-- `crates/ironrdp-graphics`: image processing primitives.
-- `crates/ironrdp-svc`: traits to implement RDP static virtual channels.
-- `crates/ironrdp-dvc`: DRDYNVC static channel implementation and traits to implement dynamic virtual channels.
-- `crates/ironrdp-rdpdr`: RDPDR channel implementation.
-- `crates/ironrdp-rdpsnd`: RDPSND static channel for audio output implemented as described in MS-RDPEA.
-- `crates/ironrdp-connector`: state machines to drive an RDP connection sequence.
-- `crates/ironrdp-session`: state machines to drive an RDP session.
-- `crates/ironrdp-input`: utilities to manage and build input packets.
-- `crates/ironrdp-rdcleanpath`: RDCleanPath PDU structure used by IronRDP web client and Devolutions Gateway.
-- `crates/ironrdp-error`: lightweight and `no_std`-compatible generic `Error` and `Report` types.
-  The `Error` type wraps a custom consumer-defined type for domain-specific details (such as `PduErrorKind`).
 
 **Architectural Invariant**: doing I/O is not allowed for these crates.
 
 **Architectural Invariant**: all these crates must be fuzzed.
 
-**Architectural Invariant**: no non-essential dependency is allowed.
-
 **Architectural Invariant**: must be `#[no_std]`-compatible (optionally using the `alloc` crate). Usage of the standard
 library must be opt-in through a feature flag called `std` that is enabled by default. When the `alloc` crate is optional,
 a feature flag called `alloc` must exist to enable its use.
+
+**Architectural Invariant**: no non-essential dependency is allowed.
+
+**Architectural Invariant**: no proc-macro dependency. Dependencies such as `syn` should be pushed
+as far as possible from the foundational crates so it doesn’t become too much of a compilation
+bottleneck. The paper [Developer Productivity For Humans, Part 4: Build Latency, Predictability,
+and Developer Productivity][developer-productivity] by Ciera Jaspan and Collin Green, Google
+researchers, elaborates on why it is important to keep build times low.
+
+**Architectural Invariant**: unless the performance, usability or ergonomic gain is really worth
+it the amount of [monomorphization] incured in downstream user code should be minimal to avoid
+binary bloating, and keep the compilation as parallel as possible. Large generic functions should be
+avoided if possible.
+
+[developer-productivity]: https://www.computer.org/csdl/magazine/so/2023/04/10176199/1OAJyfknInm
+[monomorphization]: https://rustc-dev-guide.rust-lang.org/backend/monomorph.html
+
+#### [`crates/ironrdp`](./crates/ironrdp)
+
+Meta crate re-exporting important crates.
+
+**Architectural Invariant**: this crate only re-export other crates and does not provide anything else. 
+
+_TODO_: clean up the dependencies
+
+#### [`crates/ironrdp-pdu`](./crates/ironrdp-pdu)
+
+PDU encoding and decoding.
+
+_TODO_: talk about important types and traits such as PduDecode, PduEncode…
+
+#### [`crates/ironrdp-graphics`](./crates/ironrdp-graphics)
+
+Image processing primitives.
+
+_TODO_: break down into multiple smaller crates
+
+_TODO_: clean up the dependencies
+
+#### [`crates/ironrdp-svc`](./crates/ironrdp-svc)
+
+Traits to implement RDP static virtual channels.
+
+#### [`crates/ironrdp-dvc`](./crates/ironrdp-dvc)
+
+DRDYNVC static channel implementation and traits to implement dynamic virtual channels.
+
+#### [`crates/ironrdp-cliprdr`](./crates/ironrdp-cliprdr)
+
+CLIPRDR static channel for clipboard implemented as described in MS-RDPECLIP.
+
+#### [`crates/ironrdp-rdpdr`](./crates/ironrdp-rdpdr)
+
+RDPDR channel implementation.
+
+#### [`crates/ironrdp-rdpsnd`](./crates/ironrdp-rdpsnd)
+
+RDPSND static channel for audio output implemented as described in MS-RDPEA.
+
+#### [`crates/ironrdp-connector`](./crates/ironrdp-connector)
+
+State machines to drive an RDP connection sequence.
+
+#### [`crates/ironrdp-session`](./crates/ironrdp-session)
+
+State machines to drive an RDP session.
+
+#### [`crates/ironrdp-input`](./crates/ironrdp-input)
+
+Utilities to manage and build input packets.
+
+#### [`crates/ironrdp-rdcleanpath`](./crates/ironrdp-rdcleanpath)
+
+RDCleanPath PDU structure used by IronRDP web client and Devolutions Gateway.
+
+#### [`crates/ironrdp-error`](./crates/ironrdp-error)
+
+Lightweight and `no_std`-compatible generic `Error` and `Report` types.
+The `Error` type wraps a custom consumer-defined type for domain-specific details (such as `PduErrorKind`).
 
 ### Extra Tier
 
 Higher level libraries and binaries built on top of the core tier.
 Guidelines and constraints are relaxed to some extent.
 
-- `crates/ironrdp-blocking`: blocking I/O abstraction wrapping the state machines conveniently.
-- `crates/ironrdp-async`: provides `Future`s wrapping the state machines conveniently.
-- `crates/ironrdp-tokio`: `Framed*` traits implementation above `tokio`’s traits.
-- `crates/ironrdp-futures`: `Framed*` traits implementation above `futures`’s traits.
-- `crates/ironrdp-tls`: TLS boilerplate common with most IronRDP clients.
-- `crates/ironrdp-client`: portable RDP client without GPU acceleration using softbuffer and winit for windowing.
-- `crates/ironrdp-web`: WebAssembly high-level bindings targeting web browsers.
-- `web-client/iron-remote-gui`: core frontend UI used by `iron-svelte-client` as a Web Component.
-- `web-client/iron-svelte-client`: web-based frontend using `Svelte` and `Material` frameworks.
+#### [`crates/ironrdp-blocking`](./crates/ironrdp-blocking)
+
+Blocking I/O abstraction wrapping the state machines conveniently.
+
+This crate is an **API Boundary**.
+
+#### [`crates/ironrdp-async`](./crates/ironrdp-async)
+
+Provides `Future`s wrapping the state machines conveniently.
+
+This crate is an **API Boundary**.
+
+#### [`crates/ironrdp-tokio`](./crates/ironrdp-tokio)
+
+`Framed*` traits implementation above `tokio`’s traits.
+
+This crate is an **API Boundary**.
+
+#### [`crates/ironrdp-futures`](./crates/ironrdp-futures)
+
+`Framed*` traits implementation above `futures`’s traits.
+
+This crate is an **API Boundary**.
+
+#### [`crates/ironrdp-tls`](./crates/ironrdp-tls)
+
+TLS boilerplate common with most IronRDP clients.
+
+NOTE: it’s not yet clear if this crate is an API Boundary or an implementation detail for the native clients.
+
+#### [`crates/ironrdp-client`](./crates/ironrdp-client)
+
+Portable RDP client without GPU acceleration.
+
+#### [`crates/ironrdp-web`](./crates/ironrdp-web)
+
+WebAssembly high-level bindings targeting web browsers.
+
+This crate is an **API Boundary** (WASM module).
+
+#### [`web-client/iron-remote-gui`](./web-client/iron-remote-gui)
+
+Core frontend UI used by `iron-svelte-client` as a Web Component.
+
+This crate is an **API Boundary**.
+
+#### [`web-client/iron-svelte-client`](./web-client/iron-svelte-client)
+
+Web-based frontend using `Svelte` and `Material` frameworks.
 
 ### Internal Tier
 
 Crates that are only used inside the IronRDP project, not meant to be published.
 This is mostly test case generators, fuzzing oracles, build tools, and so on.
 
-- `crates/ironrdp-pdu-generators`: `proptest` generators for `ironrdp-pdu` types.
-- `crates/ironrdp-session-generators`: `proptest` generators for `ironrdp-session` types.
-- `crates/ironrdp-testsuite-core`: contains all integration tests for code living in the core tier, in a single binary,
-  organized in modules. **Architectural Invariant**: no dependency from another tier is allowed.
-  It must be the case that compiling and running the core test suite does not require building any library from
-  the extra tier. This is to keep iteration time short.
-- `crates/ironrdp-testsuite-extra`: contains all integration tests for code living in the extra tier, in a single binary,
-  organized in modules. (WIP: this crate does not exist yet.)
-- `crates/ironrdp-fuzzing`: provides test case generators and oracles for use with fuzzing.
-- `fuzz`: fuzz targets for code in core tier.
-- `xtask`: IronRDP’s free-form automation using Rust code.
-
 **Architecture Invariant**: these crates are not, and will never be, an **API Boundary**.
+
+#### [`crates/ironrdp-pdu-generators`](./crates/ironrdp-pdu-generators)
+
+`proptest` generators for `ironrdp-pdu` types.
+
+#### [`crates/ironrdp-session-generators`](./crates/ironrdp-session-generators)
+  
+`proptest` generators for `ironrdp-session` types.
+
+#### [`crates/ironrdp-testsuite-core`](./crates/ironrdp-testsuite-core)
+
+Contains all integration tests for code living in the core tier, in a single binary, organized in modules.
+  
+**Architectural Invariant**: no dependency from another tier is allowed. It must be the case that
+compiling and running the core test suite does not require building any library from the extra tier.
+This is to keep iteration time short.
+
+#### [`crates/ironrdp-testsuite-extra`](./crates/ironrdp-testsuite-extra)
+
+Contains all integration tests for code living in the extra tier, in a single binary, organized in modules.
+
+(WIP: this crate does not exist yet.)
+
+#### [`crates/ironrdp-fuzzing`](./crates/ironrdp-fuzzing)
+
+Provides test case generators and oracles for use with fuzzing.
+
+#### [`fuzz`](./fuzz)
+
+Fuzz targets for code in core tier.
+
+#### [`xtask`](./xtask)
+
+IronRDP’s free-form automation using Rust code.
 
 ### Community Tier
 
-Crates provided and maintained by the community.
-Core maintainers will not invest a lot of time into these.
-One or several community maintainers are associated to each one
+Crates provided and maintained by the community. Core maintainers will not invest a lot of time into
+these. One or several community maintainers are associated to each one.
 
-- `crates/ironrdp-glutin-renderer` (no maintainer): `glutin` primitives for OpenGL rendering.
-- `crates/ironrdp-client-glutin` (no maintainer): GPU-accelerated RDP client using glutin.
-- `crates/ironrdp-replay-client` (no maintainer): utility tool to replay RDP graphics pipeline for debugging purposes.
+The IronRDP team is happy to accept new crates but may not necessarily commit to keeping them
+working when changing foundational libraries. We promise to notify you if such a crate breaks, and
+will always try to fix things when it's a minor change.
+
+#### [`crates/ironrdp-acceptor`](./crates/ironrdp-acceptor) (@mihneabuz)
+
+State machines to drive an RDP connection acceptance sequence
+
+#### [`crates/ironrdp-server`](./crates/ironrdp-server) (@mihneabuz)
+
+Extendable skeleton for implementing custom RDP servers.
+
+#### [`crates/ironrdp-glutin-renderer`](./crates/ironrdp-glutin-renderer) (no maintainer)
+
+`glutin` primitives for OpenGL rendering.
+
+#### [`crates/ironrdp-client-glutin`](./crates/ironrdp-client-glutin) (no maintainer)
+
+GPU-accelerated RDP client using glutin.
+
+#### [`crates/ironrdp-replay-client`](./crates/ironrdp-replay-client) (no maintainer)
+
+Utility tool to replay RDP graphics pipeline for debugging purposes.
 
 ## Cross-Cutting Concerns
 

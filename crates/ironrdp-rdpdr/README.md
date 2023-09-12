@@ -1,1 +1,3 @@
-# IronRDP RDPDR library
+# IronRDP RDPDR
+
+RDPDR channel implementation.

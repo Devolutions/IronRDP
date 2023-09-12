@@ -1,4 +1,4 @@
-use std::ops::{Index, Range, RangeFrom, RangeFull, RangeInclusive, RangeTo, RangeToInclusive};
+use core::ops::{Index, Range, RangeFrom, RangeFull, RangeInclusive, RangeTo, RangeToInclusive};
 
 /// Max capacity to keep for the inner Vec<u8> when `WriteBuf::clear` is called.
 const MAX_CAPACITY_WHEN_CLEARED: usize = 16384; // 16 kib

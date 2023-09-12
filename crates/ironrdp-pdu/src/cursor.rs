@@ -204,6 +204,16 @@ impl<'a> ReadCursor<'a> {
     }
 }
 
+#[cfg(feature = "std")]
+impl std::io::Read for ReadCursor<'_> {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let n_to_copy = core::cmp::min(buf.len(), self.len());
+        let to_copy = self.read_slice(n_to_copy);
+        buf.copy_from_slice(to_copy);
+        Ok(n_to_copy)
+    }
+}
+
 #[derive(Debug)]
 pub struct WriteCursor<'a> {
     inner: &'a mut [u8],
@@ -306,5 +316,17 @@ impl<'a> WriteCursor<'a> {
             inner: self.inner,
             pos: self.pos - len,
         }
+    }
+}
+
+#[cfg(feature = "std")]
+impl std::io::Write for WriteCursor<'_> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.write_slice(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
     }
 }

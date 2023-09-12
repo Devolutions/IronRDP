@@ -1,8 +1,11 @@
 # IronRDP Server
 
-Library for implementing custom async RDP servers on the tokio runtime.
+Extendable skeleton for implementing custom RDP servers.
+
+For now, it requires the [Tokio runtime](https://tokio.rs/).
 
 ---
+
 The server currently supports:
 
 **Security**
@@ -16,6 +19,7 @@ The server currently supports:
  - bitmap display updates with RDP 6.0 compression
 
 ---
+
 Custom logic for your RDP server can be added by implementing these traits:
  - `RdpServerInputHandler` - callbacks used when the server receives input events from a client
  - `RdpServerDisplay`      - notifies the server of display updates

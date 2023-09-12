@@ -1,11 +1,10 @@
 [package]
 name = "ironrdp-rdpdr"
 version = "0.1.0"
-description = "RDPDR channel implementation."
 readme = "README.md"
+description = "RDPDR channel implementation."
 edition.workspace = true
 license.workspace = true
-
 homepage.workspace = true
 repository.workspace = true
 authors.workspace = true
