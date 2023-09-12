@@ -20,6 +20,7 @@ lazy_static! {
     pub static ref CAPSET_GENERAL: General = General {
         major_platform_type: MajorPlatformType::WINDOWS,
         minor_platform_type: MinorPlatformType::WINDOWS_NT,
+        protocol_version: PROTOCOL_VER,
         extra_flags: GeneralExtraFlags::FASTPATH_OUTPUT_SUPPORTED
             | GeneralExtraFlags::LONG_CREDENTIALS_SUPPORTED
             | GeneralExtraFlags::AUTORECONNECT_SUPPORTED
