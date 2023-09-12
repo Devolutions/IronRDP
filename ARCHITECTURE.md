@@ -49,7 +49,7 @@ be avoided if possible.
 
 Meta crate re-exporting important crates.
 
-**Architectural Invariant**: this crate only re-export other crates and does not provide anything else. 
+**Architectural Invariant**: this crate re-exports other crates and does not provide anything else. 
 
 _TODO_: clean up the dependencies
 
