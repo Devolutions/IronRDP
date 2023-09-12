@@ -22,12 +22,12 @@ TODO: elaborate this section
 `WriteCursor` is a wrapper around `&mut [u8]` and its purpose is to:
 
 - Provide convenient methods such as `write_u8`, `write_u16`, `write_u16_be`, etc.
-- Guarantee syscall-free, infaillible write access to a continuous slice of memory.
+- Guarantee syscall-free, infallible write access to a continuous slice of memory.
 - Keep track of the number of bytes written.
 - Allow backtracking to override a value previously written or skipped.
 - Be `no-std` and `no-alloc` friendly, which `std::io::Cursor` is not as of today.
 
-The underlying storage could be abtracted over, but it’s deliberately hardcoded to `&mut [u8]`
+The underlying storage could be abstracted over, but it’s deliberately hardcoded to `&mut [u8]`
 so traits such as `PduEncode` using `WriteCursor` in their associated methods are object-safe.
 
 `WriteBuf` is used in APIs where the required space cannot be known in advance. For instance,
@@ -302,7 +302,7 @@ This pattern is used in several places:
 Of course, the main drawback is that exhaustive matching is not possible.
 
 The question to consider is whether it's genuinely necessary to handle all the possible values
-explicitely. It may not often be required or desirable. Since neither the client nor the server
+explicitly. It may not often be required or desirable. Since neither the client nor the server
 should typically break when the protocol is extended, an older client (not handling the new value)
 should generally be able to function properly with a newer server, and vice versa. In other words,
 not handling the new value must not be an immediate problem. However, it is often desirable to
