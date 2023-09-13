@@ -282,7 +282,7 @@ impl Capabilities {
         self.increment_special_devices();
     }
 
-    pub fn take_clone(&mut self) -> Vec<CapabilityMessage> {
+    pub fn clone_inner(&mut self) -> Vec<CapabilityMessage> {
         self.0.clone()
     }
 
@@ -769,7 +769,7 @@ impl Devices {
         self.0.push(device);
     }
 
-    pub fn take_clone(&mut self) -> Vec<DeviceAnnounceHeader> {
+    pub fn clone_inner(&mut self) -> Vec<DeviceAnnounceHeader> {
         self.0.clone()
     }
 }

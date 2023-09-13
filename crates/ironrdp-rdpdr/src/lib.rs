@@ -76,14 +76,14 @@ impl Rdpdr {
     }
 
     fn handle_server_capability(&mut self, _req: CoreCapability) -> PduResult<Vec<SvcMessage>> {
-        let res = RdpdrPdu::CoreCapability(CoreCapability::new_response(self.capabilities.take_clone()));
+        let res = RdpdrPdu::CoreCapability(CoreCapability::new_response(self.capabilities.clone_inner()));
         trace!("sending {:?}", res);
         Ok(vec![SvcMessage::from(res)])
     }
 
     fn handle_client_id_confirm(&mut self) -> PduResult<Vec<SvcMessage>> {
         let res = RdpdrPdu::ClientDeviceListAnnounce(ClientDeviceListAnnounce {
-            device_list: self.device_list.take_clone(),
+            device_list: self.device_list.clone_inner(),
         });
         trace!("sending {:?}", res);
         Ok(vec![SvcMessage::from(res)])
