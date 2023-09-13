@@ -4,6 +4,7 @@
 use bitflags::bitflags;
 use std::fmt::Debug;
 use std::mem::size_of;
+use std::vec;
 
 use ironrdp_pdu::utils::{encoded_str_len, write_string_to_cursor, CharacterSet};
 use ironrdp_pdu::{cast_length, ensure_size, invalid_message_err, PduError};
@@ -267,11 +268,11 @@ impl CoreCapabilityKind {
 }
 
 #[derive(Debug)]
-pub struct Capabilities(Option<Vec<CapabilityMessage>>);
+pub struct Capabilities(Vec<CapabilityMessage>);
 
 impl Capabilities {
     pub fn new() -> Self {
-        let mut this = Self(None);
+        let mut this = Self(vec![]);
         this.add_general(0);
         this
     }
@@ -281,8 +282,8 @@ impl Capabilities {
         self.increment_special_devices();
     }
 
-    pub fn take(&mut self) -> Vec<CapabilityMessage> {
-        self.0.take().unwrap_or_default()
+    pub fn take_clone(&mut self) -> Vec<CapabilityMessage> {
+        self.0.clone()
     }
 
     fn add_general(&mut self, special_type_device_cap: u32) {
@@ -290,26 +291,19 @@ impl Capabilities {
     }
 
     fn push(&mut self, capability: CapabilityMessage) {
-        if let Some(capabilities) = &mut self.0 {
-            capabilities.push(capability);
-        } else {
-            self.0 = Some(vec![capability]);
-        }
+        self.0.push(capability);
     }
 
     fn increment_special_devices(&mut self) {
-        if let Some(capabilities) = &mut self.0 {
-            for capability in capabilities.iter_mut() {
-                match &mut capability.capability_data {
-                    CapabilityData::General(general_capability) => {
-                        general_capability.special_type_device_cap += 1;
-                        break;
-                    }
-                    _ => continue,
+        let capabilities = &mut self.0;
+        for capability in capabilities.iter_mut() {
+            match &mut capability.capability_data {
+                CapabilityData::General(general_capability) => {
+                    general_capability.special_type_device_cap += 1;
+                    break;
                 }
+                _ => continue,
             }
-        } else {
-            self.add_general(1);
         }
     }
 }
@@ -760,11 +754,11 @@ impl ClientDeviceListAnnounce {
 }
 
 #[derive(Debug)]
-pub struct Devices(Option<Vec<DeviceAnnounceHeader>>);
+pub struct Devices(Vec<DeviceAnnounceHeader>);
 
 impl Devices {
     pub fn new() -> Self {
-        Self(None)
+        Self(vec![])
     }
 
     pub fn add_smartcard(&mut self, device_id: u32) {
@@ -772,15 +766,11 @@ impl Devices {
     }
 
     fn push(&mut self, device: DeviceAnnounceHeader) {
-        if let Some(list) = self.0.as_mut() {
-            list.push(device);
-        } else {
-            self.0 = Some(vec![device]);
-        }
+        self.0.push(device);
     }
 
-    pub fn take(&mut self) -> Vec<DeviceAnnounceHeader> {
-        self.0.take().unwrap_or_default()
+    pub fn take_clone(&mut self) -> Vec<DeviceAnnounceHeader> {
+        self.0.clone()
     }
 }
 
@@ -793,7 +783,7 @@ impl Default for Devices {
 /// [2.2.1.3 Device Announce Header (DEVICE_ANNOUNCE)]
 ///
 /// [2.2.1.3 Device Announce Header (DEVICE_ANNOUNCE)]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/32e34332-774b-4ead-8c9d-5d64720d6bf9
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct DeviceAnnounceHeader {
     device_type: DeviceType,
     device_id: u32,
@@ -843,7 +833,7 @@ impl DeviceAnnounceHeader {
 /// If DeviceType is set to RDPDR_DTYP_SMARTCARD, the PreferredDosName MUST be set to "SCARD".
 ///
 /// Note A column character, ":", is valid only when present at the end of the PreferredDosName field, otherwise it is also considered invalid.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct PreferredDosName(String);
 
 impl PreferredDosName {
