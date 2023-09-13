@@ -151,6 +151,7 @@ impl ActiveStage {
     }
 }
 
+#[derive(Debug)]
 pub enum ActiveStageOutput {
     ResponseFrame(Vec<u8>),
     GraphicsUpdate(InclusiveRectangle),

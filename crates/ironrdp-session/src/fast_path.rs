@@ -18,6 +18,7 @@ use crate::pointer::PointerCache;
 use crate::utils::CodecId;
 use crate::{rfx, SessionError, SessionErrorExt, SessionResult};
 
+#[derive(Debug)]
 pub enum UpdateKind {
     None,
     Region(InclusiveRectangle),

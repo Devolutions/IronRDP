@@ -102,8 +102,8 @@ async fn connect(config: &Config) -> ConnectorResult<(ConnectionResult, Upgraded
         .with_credssp_network_client(RequestClientFactory)
         // .with_static_channel(ironrdp::dvc::Drdynvc::new()) // FIXME: drdynvc is not working
         .with_static_channel(ironrdp::rdpsnd::Rdpsnd::new())
-        .with_static_channel(ironrdp::rdpdr::Rdpdr::default())
-        .with_static_channel(ironrdp::cliprdr::Cliprdr::default());
+        .with_static_channel(ironrdp_rdpdr::Rdpdr::new("IronRDP".to_string()));
+    // .with_static_channel(ironrdp::cliprdr::Cliprdr::default());
 
     let should_upgrade = ironrdp_tokio::connect_begin(&mut framed, &mut connector).await?;
 
@@ -121,6 +121,8 @@ async fn connect(config: &Config) -> ConnectorResult<(ConnectionResult, Upgraded
     let mut upgraded_framed = ironrdp_tokio::TokioFramed::new(upgraded_stream);
 
     let connection_result = ironrdp_tokio::connect_finalize(upgraded, &mut upgraded_framed, connector).await?;
+
+    debug!(?connection_result);
 
     Ok((connection_result, upgraded_framed))
 }

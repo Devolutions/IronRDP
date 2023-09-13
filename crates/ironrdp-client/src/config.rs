@@ -12,7 +12,7 @@ use tap::prelude::*;
 const DEFAULT_WIDTH: u16 = 1920;
 const DEFAULT_HEIGHT: u16 = 1080;
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct Config {
     pub log_file: String,
     pub destination: Destination,

@@ -266,6 +266,60 @@ impl CoreCapabilityKind {
     }
 }
 
+#[derive(Debug)]
+pub struct Capabilities(Option<Vec<CapabilityMessage>>);
+
+impl Capabilities {
+    pub fn new() -> Self {
+        let mut this = Self(None);
+        this.add_general(0);
+        this
+    }
+
+    pub fn add_smartcard(&mut self) {
+        self.push(CapabilityMessage::new_smartcard());
+        self.increment_special_devices();
+    }
+
+    pub fn take(&mut self) -> Vec<CapabilityMessage> {
+        self.0.take().unwrap_or_default()
+    }
+
+    fn add_general(&mut self, special_type_device_cap: u32) {
+        self.push(CapabilityMessage::new_general(special_type_device_cap));
+    }
+
+    fn push(&mut self, capability: CapabilityMessage) {
+        if let Some(capabilities) = &mut self.0 {
+            capabilities.push(capability);
+        } else {
+            self.0 = Some(vec![capability]);
+        }
+    }
+
+    fn increment_special_devices(&mut self) {
+        if let Some(capabilities) = &mut self.0 {
+            for capability in capabilities.iter_mut() {
+                match &mut capability.capability_data {
+                    CapabilityData::General(general_capability) => {
+                        general_capability.special_type_device_cap += 1;
+                        break;
+                    }
+                    _ => continue,
+                }
+            }
+        } else {
+            self.add_general(1);
+        }
+    }
+}
+
+impl Default for Capabilities {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// [2.2.1.2.1 Capability Message (CAPABILITY_SET)](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/f1b9dd1d-2c37-4aac-9836-4b0df02369ba)
 #[derive(Debug, Clone, Copy)]
 pub struct CapabilityMessage {
@@ -705,6 +759,37 @@ impl ClientDeviceListAnnounce {
     }
 }
 
+#[derive(Debug)]
+pub struct Devices(Option<Vec<DeviceAnnounceHeader>>);
+
+impl Devices {
+    pub fn new() -> Self {
+        Self(None)
+    }
+
+    pub fn add_smartcard(&mut self, device_id: u32) {
+        self.push(DeviceAnnounceHeader::new_smartcard(device_id));
+    }
+
+    fn push(&mut self, device: DeviceAnnounceHeader) {
+        if let Some(list) = self.0.as_mut() {
+            list.push(device);
+        } else {
+            self.0 = Some(vec![device]);
+        }
+    }
+
+    pub fn take(&mut self) -> Vec<DeviceAnnounceHeader> {
+        self.0.take().unwrap_or_default()
+    }
+}
+
+impl Default for Devices {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// [2.2.1.3 Device Announce Header (DEVICE_ANNOUNCE)]
 ///
 /// [2.2.1.3 Device Announce Header (DEVICE_ANNOUNCE)]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/32e34332-774b-4ead-8c9d-5d64720d6bf9
@@ -718,6 +803,16 @@ pub struct DeviceAnnounceHeader {
 
 impl DeviceAnnounceHeader {
     const FIXED_PART_SIZE: usize = size_of::<u32>() * 3 + 8; // DeviceType, DeviceId, DeviceDataLength, PreferredDosName
+
+    pub fn new_smartcard(device_id: u32) -> Self {
+        Self {
+            device_type: DeviceType::Smartcard,
+            device_id,
+            // This name is a constant defined by the spec.
+            preferred_dos_name: PreferredDosName("SCARD".to_string()),
+            device_data: vec![],
+        }
+    }
 
     fn encode(&self, dst: &mut WriteCursor) -> PduResult<()> {
         dst.write_u32(self.device_type as u32);
