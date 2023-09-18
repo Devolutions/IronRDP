@@ -87,7 +87,7 @@ assert_obj_safe!(StaticVirtualChannel);
 ///
 /// Each chunk is at most `max_chunk_len` bytes long (not including the Channel PDU Header).
 pub fn chunkify(messages: Vec<SvcMessage>, max_chunk_len: usize) -> PduResult<Vec<WriteBuf>> {
-    let mut results = vec![];
+    let mut results = Vec::new();
     for message in messages {
         results.extend(chunkify_one(message, max_chunk_len)?);
     }

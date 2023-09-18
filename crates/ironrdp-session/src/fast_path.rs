@@ -73,7 +73,7 @@ impl Processor {
         let update_code = update_pdu.update_code;
 
         let Some(data) = processed_complete_data else {
-            return Ok(vec![]);
+            return Ok(Vec::new());
         };
 
         let update = FastPathUpdate::decode_with_code(data.as_slice(), update_code);

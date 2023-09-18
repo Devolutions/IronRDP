@@ -35,7 +35,7 @@ impl Handler {
 
 impl DynamicChannelDataHandler for Handler {
     fn process_complete_data(&mut self, complete_data: Vec<u8>) -> SessionResult<Option<Vec<u8>>> {
-        let mut client_pdu_buffer: Vec<u8> = vec![];
+        let mut client_pdu_buffer: Vec<u8> = Vec::new();
         self.decompressed_buffer.clear();
         self.decompressor
             .decompress(complete_data.as_slice(), &mut self.decompressed_buffer)?;
@@ -97,7 +97,7 @@ bitflags! {
 }
 
 pub fn create_capabilities_advertise(graphics_config: &Option<GraphicsConfig>) -> SessionResult<Vec<u8>> {
-    let mut capabilities = vec![];
+    let mut capabilities = Vec::new();
 
     if let Some(config) = graphics_config {
         let capability_version = CapabilityVersion::from_bits(config.capabilities)

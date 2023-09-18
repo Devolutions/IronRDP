@@ -4,7 +4,6 @@
 use bitflags::bitflags;
 use std::fmt::Debug;
 use std::mem::size_of;
-use std::vec;
 
 use ironrdp_pdu::utils::{encoded_str_len, write_string_to_cursor, CharacterSet};
 use ironrdp_pdu::{cast_length, ensure_size, invalid_message_err, PduError};
@@ -229,7 +228,7 @@ impl CoreCapability {
 
         let num_capabilities = payload.read_u16();
         let padding = payload.read_u16();
-        let mut capabilities = vec![];
+        let mut capabilities = Vec::new();
         for _ in 0..num_capabilities {
             capabilities.push(CapabilityMessage::decode(payload)?);
         }
@@ -272,7 +271,7 @@ pub struct Capabilities(Vec<CapabilityMessage>);
 
 impl Capabilities {
     pub fn new() -> Self {
-        let mut this = Self(vec![]);
+        let mut this = Self(Vec::new());
         this.add_general(0);
         this
     }
@@ -758,7 +757,7 @@ pub struct Devices(Vec<DeviceAnnounceHeader>);
 
 impl Devices {
     pub fn new() -> Self {
-        Self(vec![])
+        Self(Vec::new())
     }
 
     pub fn add_smartcard(&mut self, device_id: u32) {
@@ -800,7 +799,7 @@ impl DeviceAnnounceHeader {
             device_id,
             // This name is a constant defined by the spec.
             preferred_dos_name: PreferredDosName("SCARD".to_string()),
-            device_data: vec![],
+            device_data: Vec::new(),
         }
     }
 

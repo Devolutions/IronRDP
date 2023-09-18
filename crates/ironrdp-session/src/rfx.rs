@@ -29,7 +29,7 @@ impl Default for DecodingContext {
                 flags: rfx::OperatingMode::empty(),
                 entropy_algorithm: rfx::EntropyAlgorithm::Rlgr1,
             },
-            channels: rfx::ChannelsPdu(vec![]),
+            channels: rfx::ChannelsPdu(Vec::new()),
             decoding_tiles: DecodingTileContext::new(),
         }
     }

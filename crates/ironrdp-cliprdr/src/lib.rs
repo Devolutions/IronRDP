@@ -65,14 +65,14 @@ impl Cliprdr {
         self.state = CliprdrState::Failed;
         error!("CLIPRDR(clipboard) failed: {err}");
 
-        Ok(vec![])
+        Ok(Vec::new())
     }
 
     fn handle_server_capabilities(&mut self, server_capabilities: Capabilities) -> PduResult<Vec<SvcMessage>> {
         self.capabilities.downgrade(&server_capabilities);
 
         // Do not send anything, wait for monitor ready pdu
-        Ok(vec![])
+        Ok(Vec::new())
     }
 
     fn handle_monitor_ready(&mut self) -> PduResult<Vec<SvcMessage>> {
@@ -99,7 +99,7 @@ impl Cliprdr {
             }
         }
 
-        Ok(vec![])
+        Ok(Vec::new())
     }
 }
 
@@ -126,7 +126,7 @@ impl StaticVirtualChannel for Cliprdr {
 
         if self.state == CliprdrState::Failed {
             error!("Attempted to process clipboard static virtual channel in failed state");
-            return Ok(vec![]);
+            return Ok(Vec::new());
         }
 
         match pdu {

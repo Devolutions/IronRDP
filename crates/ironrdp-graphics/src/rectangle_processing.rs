@@ -1477,7 +1477,7 @@ mod tests {
                 right: 0,
                 bottom: 0,
             },
-            rectangles: vec![],
+            rectangles: Vec::new(),
         };
         let input_rectangle = InclusiveRectangle {
             left: 5,
@@ -1499,7 +1499,7 @@ mod tests {
                 right: 0,
                 bottom: 0,
             },
-            rectangles: vec![],
+            rectangles: Vec::new(),
         };
         let input_rectangle = InclusiveRectangle {
             left: 5,

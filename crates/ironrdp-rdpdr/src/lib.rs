@@ -111,7 +111,7 @@ impl StaticVirtualChannel for Rdpdr {
             }
             RdpdrPdu::Unimplemented => {
                 warn!("received unimplemented packet: {:?}", pdu);
-                Ok(vec![])
+                Ok(Vec::new())
             }
             _ => Err(other_err!("rdpdr", "internal error")),
         }

@@ -126,7 +126,7 @@ impl DecodedPointer {
             });
         }
 
-        let mut bitmap_data = vec![];
+        let mut bitmap_data = Vec::new();
 
         for row_idx in 0..data.height {
             // For non-monochrome cursors we read strides from bottom to top

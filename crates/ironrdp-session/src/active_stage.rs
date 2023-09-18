@@ -51,7 +51,7 @@ impl ActiveStage {
         events: &[FastPathInputEvent],
     ) -> SessionResult<Vec<ActiveStageOutput>> {
         if events.is_empty() {
-            return Ok(vec![]);
+            return Ok(Vec::new());
         }
 
         // Mouse move events are prevalent, so we can preallocate space for
@@ -106,7 +106,7 @@ impl ActiveStage {
                 let processor_updates = self.fast_path_processor.process(image, frame, &mut output)?;
                 (output.into_inner(), processor_updates)
             }
-            Action::X224 => (self.x224_processor.process(frame)?, vec![]),
+            Action::X224 => (self.x224_processor.process(frame)?, Vec::new()),
         };
 
         let mut stage_outputs = Vec::new();
