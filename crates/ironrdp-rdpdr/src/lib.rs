@@ -35,12 +35,6 @@ pub struct Rdpdr {
     device_list: Devices,
 }
 
-impl Default for Rdpdr {
-    fn default() -> Self {
-        Self::new("IronRDP".to_string())
-    }
-}
-
 impl Rdpdr {
     pub const NAME: ChannelName = ChannelName::from_static(b"rdpdr\0\0\0");
 
