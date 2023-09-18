@@ -1,10 +1,14 @@
 # IronRDP client
 
-A full-fledged RDP client based on IronRDP crates suite, and implemented using non-blocking, asynchronous I/O.
+Portable RDP client without GPU acceleration.
+
+This is a a full-fledged RDP client based on IronRDP crates suite, and implemented using
+non-blocking, asynchronous I/O. Portability is achieved by using softbuffer for rendering
+and winit for windowing.
 
 ## Sample usage
 
-```bash
+```shell
 ironrdp-client <HOSTNAME> --username <USERNAME> --password <PASSWORD>
 ```
 
@@ -12,7 +16,7 @@ ironrdp-client <HOSTNAME> --username <USERNAME> --password <PASSWORD>
 
 The `IRONRDP_LOG` environment variable is used to set the log filter directives. 
 
-```bash
+```shell
 IRONRDP_LOG="info,ironrdp_connector=trace" ironrdp-client <HOSTNAME> --username <USERNAME> --password <PASSWORD>
 ```
 
@@ -29,7 +33,7 @@ This file can be read by Wireshark so that in can decrypt the packets.
 
 ### Example
 
-```bash
+```shell
 SSLKEYLOGFILE=/tmp/tls-secrets ironrdp-client <HOSTNAME> --username <USERNAME> --password <PASSWORD>
 ```
 

@@ -2,7 +2,7 @@
 name = "ironrdp-acceptor"
 version = "0.1.0"
 readme = "README.md"
-description = ""
+description = "State machines to drive an RDP connection acceptance sequence"
 edition.workspace = true
 license.workspace = true
 homepage.workspace = true

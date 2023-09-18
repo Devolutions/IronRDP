@@ -1,6 +1,8 @@
-# IronRDP clipboard library
+# IronRDP CLIPRDR
 
-Cliboard static virtual channel(SVC) implementation.
+CLIPRDR static channel for clipboard implemented as described in MS-RDPECLIP.
+
 This library includes:
-    - Cliboard SVC PDUs parsing
-    - Clipboard SVC processing (TODO)
+
+- CLIPRDR PDUs parsing
+- CLIPRDR processing (TODO)

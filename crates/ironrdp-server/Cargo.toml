@@ -2,7 +2,7 @@
 name = "ironrdp-server"
 version = "0.1.0"
 readme = "README.md"
-description = ""
+description = "Extendable skeleton for implementing custom RDP servers"
 edition.workspace = true
 license.workspace = true
 homepage.workspace = true

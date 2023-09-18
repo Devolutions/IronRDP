@@ -204,7 +204,7 @@ macro_rules! impl_as_any {
 ///
 /// To ensure uniqueness, each trait object is associated to the [`TypeId`] of it’s original type.
 /// Once joined, channels may have their ID attached using [`Self::attach_channel_id()`], effectively
-/// associating them together so it’s possible.
+/// associating them together.
 ///
 /// At this point, it’s possible to retrieve the trait object using either
 /// the type ID ([`Self::get_by_type_id()`]), the original type ([`Self::get_by_type()`]) or
@@ -229,14 +229,19 @@ impl StaticChannelSet {
         }
     }
 
+    /// Inserts a [`StaticVirtualChannel`] into this [`StaticChannelSet`].
+    ///
+    /// If a static virtual channel of this type already exists, it is returned.
     pub fn insert<T: StaticVirtualChannel + 'static>(&mut self, val: T) -> Option<Box<dyn StaticVirtualChannel>> {
         self.channels.insert(TypeId::of::<T>(), Box::new(val))
     }
 
+    /// Gets a reference to a [`StaticVirtualChannel`] trait object by looking up its [`TypeId`].
     pub fn get_by_type_id(&self, type_id: TypeId) -> Option<&dyn StaticVirtualChannel> {
         self.channels.get(&type_id).map(|boxed| boxed.as_ref())
     }
 
+    /// Gets a mutable reference to a [`StaticVirtualChannel`] trait object by looking up its [`TypeId`].
     pub fn get_by_type_id_mut(&mut self, type_id: TypeId) -> Option<&mut dyn StaticVirtualChannel> {
         if let Some(boxed) = self.channels.get_mut(&type_id) {
             Some(boxed.as_mut())
@@ -245,46 +250,72 @@ impl StaticChannelSet {
         }
     }
 
+    /// Gets a reference to a [`StaticVirtualChannel`] trait object by looking up its [`TypeId`].
     pub fn get_by_type<T: StaticVirtualChannel + 'static>(&self) -> Option<&dyn StaticVirtualChannel> {
         self.get_by_type_id(TypeId::of::<T>())
     }
 
+    /// Gets a mutable reference to a [`StaticVirtualChannel`] trait object by looking up its [`TypeId`].
     pub fn get_by_type_mut<T: StaticVirtualChannel + 'static>(&mut self) -> Option<&mut dyn StaticVirtualChannel> {
         self.get_by_type_id_mut(TypeId::of::<T>())
     }
 
+    /// Gets a reference to a [`StaticVirtualChannel`] trait object by looking up its channel ID.
     pub fn get_by_channel_id(&self, channel_id: StaticChannelId) -> Option<&dyn StaticVirtualChannel> {
         self.get_type_id_by_channel_id(channel_id)
             .and_then(|type_id| self.get_by_type_id(type_id))
     }
 
+    /// Gets a mutable reference to a [`StaticVirtualChannel`] trait object by looking up its channel ID.
     pub fn get_by_channel_id_mut(&mut self, channel_id: StaticChannelId) -> Option<&mut dyn StaticVirtualChannel> {
         self.get_type_id_by_channel_id(channel_id)
             .and_then(|type_id| self.get_by_type_id_mut(type_id))
     }
 
-    pub fn remove_by_type<T: StaticVirtualChannel + 'static>(&mut self) -> Option<Box<dyn StaticVirtualChannel>> {
-        self.channels.remove(&TypeId::of::<T>())
+    /// Removes a [`StaticVirtualChannel`] from this [`StaticChannelSet`].
+    ///
+    /// If a static virtual channel of this type existed, it will be returned.
+    pub fn remove_by_type_id(&mut self, type_id: TypeId) -> Option<Box<dyn StaticVirtualChannel>> {
+        let svc = self.channels.remove(&type_id);
+        if let Some(channel_id) = self.to_channel_id.remove(&type_id) {
+            self.to_type_id.remove(&channel_id);
+        }
+        svc
     }
 
+    /// Removes a [`StaticVirtualChannel`] from this [`StaticChannelSet`].
+    ///
+    /// If a static virtual channel of this type existed, it will be returned.
+    pub fn remove_by_type<T: StaticVirtualChannel + 'static>(&mut self) -> Option<Box<dyn StaticVirtualChannel>> {
+        let type_id = TypeId::of::<T>();
+        self.remove_by_type_id(type_id)
+    }
+
+    /// Attaches a channel ID to a static virtual channel.
+    ///
+    /// If a channel ID was already attached, it will be returned.
     pub fn attach_channel_id(&mut self, type_id: TypeId, channel_id: StaticChannelId) -> Option<StaticChannelId> {
         self.to_type_id.insert(channel_id, type_id);
         self.to_channel_id.insert(type_id, channel_id)
     }
 
+    /// Gets the attached channel ID for a given static virtual channel.
     pub fn get_channel_id_by_type_id(&self, type_id: TypeId) -> Option<StaticChannelId> {
         self.to_channel_id.get(&type_id).copied()
     }
 
+    /// Gets the attached channel ID for a given static virtual channel.
     pub fn get_channel_id_by_type<T: StaticVirtualChannel + 'static>(&self) -> Option<StaticChannelId> {
         self.get_channel_id_by_type_id(TypeId::of::<T>())
     }
 
+    /// Gets the [`TypeId`] of the static virtual channel associated to this channel ID.
     pub fn get_type_id_by_channel_id(&self, channel_id: StaticChannelId) -> Option<TypeId> {
         self.to_type_id.get(&channel_id).copied()
     }
 
-    pub fn detach_id(&mut self, type_id: TypeId) -> Option<StaticChannelId> {
+    /// Detaches the channel ID associated to a given static virtual channel.
+    pub fn detach_channel_id(&mut self, type_id: TypeId) -> Option<StaticChannelId> {
         if let Some(channel_id) = self.to_channel_id.remove(&type_id) {
             self.to_type_id.remove(&channel_id);
             Some(channel_id)

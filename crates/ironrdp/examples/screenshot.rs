@@ -6,11 +6,13 @@
 //!
 //! In this basic client implementation, the client establishes a connection
 //! with the destination server, decodes incoming graphics updates, and saves the
-//! resulting output as a BMP image file on the local disk.
+//! resulting output as a BMP image file on the disk.
 //!
 //! ## Usage example
 //!
+//! ```shell
 //! cargo run --example=screenshot -- --host <HOSTNAME> -u <USERNAME> -p <PASSWORD> -o out.bmp
+//! ```
 
 #[macro_use]
 extern crate tracing;
@@ -210,7 +212,8 @@ fn build_config(username: String, password: String, domain: Option<String>) -> c
         #[cfg(target_os = "netbsd")]
         platform: MajorPlatformType::UNIX,
 
-        no_server_pointer: false,
+        // Disable custom pointers (there is no user interaction anyway)
+        no_server_pointer: true,
     }
 }
 

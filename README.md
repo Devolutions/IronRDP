@@ -21,7 +21,7 @@ Supported codecs:
 
 A full-fledged RDP client based on IronRDP crates suite, and implemented using non-blocking, asynchronous I/O.
 
-```bash
+```shell
 cargo run --bin ironrdp-client -- <HOSTNAME> --username <USERNAME> --password <PASSWORD>
 ```
 
@@ -35,9 +35,9 @@ of code by leveraging the IronRDP crates suite.
 
 In this basic client implementation, the client establishes a connection
 with the destination server, decodes incoming graphics updates, and saves the
-resulting output as a BMP image file on the local disk.
+resulting output as a BMP image file on the disk.
 
-```bash
+```shell
 cargo run --example=screenshot -- --host <HOSTNAME> --username <USERNAME> --password <PASSWORD> --output out.bmp
 ```
 

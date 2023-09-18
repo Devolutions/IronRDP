@@ -1,8 +1,8 @@
 [package]
 name = "ironrdp-cliprdr"
 version = "0.1.0"
-description = "RDP PDU encoding and decoding"
 readme = "README.md"
+description = "CLIPRDR static channel for clipboard implemented as described in MS-RDPECLIP"
 edition.workspace = true
 license.workspace = true
 

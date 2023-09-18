@@ -2,7 +2,7 @@
 name = "ironrdp-client"
 version = "0.1.0"
 readme = "README.md"
-description = "Portable RDP client without GPU acceleration using softbuffer and winit for windowing"
+description = "Portable RDP client without GPU acceleration"
 edition.workspace = true
 license.workspace = true
 homepage.workspace = true
