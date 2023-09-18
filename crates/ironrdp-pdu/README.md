@@ -199,6 +199,8 @@ When hiding some fields is really required, one of the following approach is sug
 
 ## Enumeration-like types should allow resilient parsing
 
+The **TL;DR** is that enums in Rust should not be used when parsing resilience is required.
+
 Network protocols are generally designed with forward and backward compatibility in mind. Items
 like status codes, error codes, and other enumeration-like types may later get extended to include
 new values. Additionally, it's not uncommon for different implementations of the same protocol to
@@ -242,8 +244,74 @@ remain compatible with future protocol versions as desired.
 
 However, this solution is not without its issues. There is a hard to catch forward-compatibility
 hazard at the library level: when a new value, such as `ThirdValue = 2`, is added to the enum, the
-`Unknown` variant for this value will no longer be emitted by the library. This can lead to _silent_
-failures in downstream code that relies on matching `Unknown` to handle the previously unknown value.
+`Unknown` variant for this value will no longer be emitted by the library (the library does not
+construct and return the value anymore). This can lead to _silent_ failures in downstream code that
+relies on matching `Unknown` to handle the previously unknown value.
+
+For instance:
+
+```rust
+// Library code
+
+impl MyNetworkCode {
+    fn parse_network_code(value: u32) -> MyNetworkCode {
+        match value {
+            0 => MyNetworkCode::FirstValue,
+            1 => MyNetworkCode::SecondValue,
+            _ => MyNetworkCode::Unknown(value),
+        }
+    }
+}
+
+// User code
+
+fn handle_network_code(reader: /* … */) {
+    let value = reader.read_u32();
+    let code = MyNetworkCode::from_u32(value);
+    
+    if code == MyNetworkCode::Unknown(2) {
+        // The library doesn’t know about this value yet, but we need to handle it because […]
+    }
+}
+```
+
+Once the library is updated to handle the third value:
+
+```rust
+// Library code
+
+#[repr(u32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MyNetworkCode {
+    FirstValue = 0,
+    SecondValue = 1,
+    ThirdValue = 2, // NEW
+    Unknown(u32),
+}
+
+impl MyNetworkCode {
+    fn parse_network_code(value: u32) -> MyNetworkCode {
+        match value {
+            0 => MyNetworkCode::FirstValue,
+            1 => MyNetworkCode::SecondValue,
+            2 => MyNetworkCode::ThirdValue, // NEW
+            _ => MyNetworkCode::Unknown(value), // This branch is not entered anymore when value = 2
+        }
+    }
+}
+
+// User code (unchanged)
+
+fn handle_network_code(reader: /* … */) {
+    let value = reader.read_u32();
+    let code = MyNetworkCode::from_u32(value);
+    
+    if code == MyNetworkCode::Unknown(2) { // <- The library does not construct this value as it used to…
+        // …  the special case is not handled anymore; no warning and no error
+        // is emitted by the compiler, so it’s very easy to overlook this
+    }
+}
+```
 
 Several other concerns arise:
 
@@ -253,7 +321,16 @@ Several other concerns arise:
 - Even if `PartialEq` is fixed, the pattern matching issue can’t be fixed.
 - The size of this type is bigger than necessary.
 
-All in all, this can be considered a potential source of bugs in code consuming the API.
+All in all, this can be considered a potential source of bugs in code consuming the API, and the
+bottom line is to avoid type definitions that allow for the same thing to be represented in two
+different ways, i.e: different "type-level values", because the library will not return or "emit"
+both at the same time; it’s as if one of the two value was implicitly "dead"[^deranged-note].
+
+[^deranged-note]: Note that [`RangedU32::new_static`][RangedU32_new_static] from [`deranged`][deranged]
+(ranged integers library) could help here, but in this case the end result is not ergonomic and still
+error-prone as it’s natural to reach for [`RangedU32_get`][RangedU32_get] instead when comparing the
+value. This approach would work if a lint was emitted when the compiler detects that the condition
+operand will always evaluate to `false`. Built-in ranged integers would be great here.
 
 Another approach would be for `Unknown` not to hold the original value at all, ensuring it can never
 overlap with another variant. In this case, users would need to wait for the library to be updated
@@ -319,6 +396,7 @@ easier-to-use type, `RDCleanPath`.
 Don’t forget that in some cases, the protocol specification explicitly states that other values
 MUST always be rejected. In such cases, an `enum` is deemed appropriate.
 
-The **TL;DR** of all this is that enums in Rust should not be used when parsing resilience is required.
-
+[RangedU32_new_static]: https://docs.rs/deranged/0.3.8/deranged/struct.RangedU32.html#method.new_static
+[RangedU32_get]: https://docs.rs/deranged/0.3.8/deranged/struct.RangedU32.html#method.get
+[deranged]: https://docs.rs/deranged/0.3.8/
 [http-status-code]: https://docs.rs/http/0.2.9/http/status/struct.StatusCode.html
