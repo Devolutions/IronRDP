@@ -1820,6 +1820,7 @@ dependencies = [
  "ironrdp-cliprdr",
  "ironrdp-graphics",
  "ironrdp-pdu",
+ "ironrdp-rdpdr",
 ]
 
 [[package]]

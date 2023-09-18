@@ -75,6 +75,8 @@ pub fn pdu_decode(data: &[u8]) {
     let _ = decode::<bitmap::rdp6::BitmapStream>(data);
 
     let _ = decode::<ironrdp_cliprdr::pdu::ClipboardPdu>(data);
+
+    let _ = decode::<ironrdp_rdpdr::pdu::RdpdrPdu>(data);
 }
 
 pub fn rle_decompress_bitmap(input: BitmapInput) {
