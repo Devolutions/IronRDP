@@ -328,7 +328,7 @@ both at the same time; it’s as if one of the two value was implicitly "dead"[^
 
 [^deranged-note]: Note that [`RangedU32::new_static`][RangedU32_new_static] from [`deranged`][deranged]
 (ranged integers library) could help here, but in this case the end result is not ergonomic and still
-error-prone as it’s natural to reach for [`RangedU32_get`][RangedU32_get] instead when comparing the
+error-prone as it’s natural to reach for [`RangedU32::get`][RangedU32_get] instead when comparing the
 value. This approach would work if a lint was emitted when the compiler detects that the condition
 operand will always evaluate to `false`. Built-in ranged integers would be great here.
 
