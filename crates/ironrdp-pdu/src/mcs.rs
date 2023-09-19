@@ -203,7 +203,7 @@ enum DomainMcsPdu {
 impl DomainMcsPdu {
     fn check_expected(self, name: &'static str, expected: DomainMcsPdu) -> PduResult<()> {
         if self != expected {
-            Err(PduError::unexpected_message_type(name, expected.as_u8()))
+            Err(PduError::unexpected_message_type(name, self.as_u8()))
         } else {
             Ok(())
         }
