@@ -5,7 +5,12 @@ use ironrdp_pdu::utils::{read_string_from_cursor, to_utf16_bytes, write_string_t
 use ironrdp_pdu::{cast_int, ensure_size, invalid_message_err, PduDecode, PduEncode, PduResult};
 
 use crate::pdu::{ClipboardPduFlags, PartialHeader};
-use winapi::um::winuser::{CF_GDIOBJFIRST, CF_GDIOBJLAST, CF_PRIVATEFIRST, CF_PRIVATELAST};
+
+// Private format types which should not be transferred between machines
+const CF_PRIVATEFIRST: u32 = 0x0200;
+const CF_PRIVATELAST: u32 = 0x02FF;
+const CF_GDIOBJFIRST: u32 = 0x0300;
+const CF_GDIOBJLAST: u32 = 0x03FF;
 
 /// Clipboard format id.
 ///
