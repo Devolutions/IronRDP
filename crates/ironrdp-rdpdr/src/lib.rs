@@ -3,16 +3,17 @@
 //!
 //! [\[MS-RDPEFS\]: Remote Desktop Protocol: File System Virtual Channel Extension]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/34d9de58-b2b5-40b6-b970-f82d4603bdb5
 
-mod pdu;
+pub mod pdu;
 use crate::pdu::{
     efs::{
-        CapabilityMessage, ClientNameRequest, ClientNameRequestUnicodeFlag, CoreCapability, CoreCapabilityKind,
-        VersionAndIdPdu, VersionAndIdPduKind,
+        ClientNameRequest, ClientNameRequestUnicodeFlag, CoreCapability, CoreCapabilityKind, VersionAndIdPdu,
+        VersionAndIdPduKind,
     },
     RdpdrPdu,
 };
 use ironrdp_pdu::{decode, gcc::ChannelName, other_err, PduResult};
 use ironrdp_svc::{impl_as_any, CompressionCondition, StaticVirtualChannel, SvcMessage};
+use pdu::efs::{Capabilities, ClientDeviceListAnnounce, Devices};
 use tracing::{trace, warn};
 
 /// The RDPDR channel as specified in [\[MS-RDPEFS\]].
@@ -27,23 +28,29 @@ use tracing::{trace, warn};
 pub struct Rdpdr {
     /// TODO: explain what this is
     computer_name: String,
-    capabilities: Vec<CapabilityMessage>,
-}
-
-impl Default for Rdpdr {
-    fn default() -> Self {
-        Self::new("IronRDP".to_string(), vec![CapabilityMessage::new_general(0)])
-    }
+    capabilities: Capabilities,
+    /// Pre-configured list of devices to announce to the server.
+    ///
+    /// All devices not of the type [`DeviceType::Filesystem`] must be declared here.
+    device_list: Devices,
 }
 
 impl Rdpdr {
     pub const NAME: ChannelName = ChannelName::from_static(b"rdpdr\0\0\0");
 
-    pub fn new(computer_name: String, capabilities: Vec<CapabilityMessage>) -> Self {
+    /// Creates a new [`Rdpdr`].
+    pub fn new(computer_name: String) -> Self {
         Self {
             computer_name,
-            capabilities,
+            capabilities: Capabilities::new(),
+            device_list: Devices::new(),
         }
+    }
+
+    pub fn with_smartcard(mut self, device_id: u32) -> Self {
+        self.device_list.add_smartcard(device_id);
+        self.capabilities.add_smartcard();
+        self
     }
 
     fn handle_server_announce(&mut self, req: VersionAndIdPdu) -> PduResult<Vec<SvcMessage>> {
@@ -63,10 +70,16 @@ impl Rdpdr {
     }
 
     fn handle_server_capability(&mut self, _req: CoreCapability) -> PduResult<Vec<SvcMessage>> {
-        let res = RdpdrPdu::CoreCapability(CoreCapability::new_response(self.capabilities.clone()));
+        let res = RdpdrPdu::CoreCapability(CoreCapability::new_response(self.capabilities.clone_inner()));
         trace!("sending {:?}", res);
+        Ok(vec![SvcMessage::from(res)])
+    }
 
-        // TODO: Make CoreCapability PduEncode
+    fn handle_client_id_confirm(&mut self) -> PduResult<Vec<SvcMessage>> {
+        let res = RdpdrPdu::ClientDeviceListAnnounce(ClientDeviceListAnnounce {
+            device_list: self.device_list.clone_inner(),
+        });
+        trace!("sending {:?}", res);
         Ok(vec![SvcMessage::from(res)])
     }
 }
@@ -93,9 +106,12 @@ impl StaticVirtualChannel for Rdpdr {
             RdpdrPdu::CoreCapability(pdu) if pdu.kind == CoreCapabilityKind::ServerCoreCapabilityRequest => {
                 self.handle_server_capability(pdu)
             }
+            RdpdrPdu::VersionAndIdPdu(pdu) if pdu.kind == VersionAndIdPduKind::ServerClientIdConfirm => {
+                self.handle_client_id_confirm()
+            }
             RdpdrPdu::Unimplemented => {
                 warn!("received unimplemented packet: {:?}", pdu);
-                Ok(vec![])
+                Ok(Vec::new())
             }
             _ => Err(other_err!("rdpdr", "internal error")),
         }

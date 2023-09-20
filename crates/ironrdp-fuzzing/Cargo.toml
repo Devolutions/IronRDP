@@ -14,3 +14,4 @@ arbitrary = { version = "1", features = ["derive"] }
 ironrdp-graphics.workspace = true
 ironrdp-pdu.workspace = true
 ironrdp-cliprdr.workspace = true
+ironrdp-rdpdr.workspace = true

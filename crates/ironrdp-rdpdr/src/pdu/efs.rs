@@ -20,6 +20,8 @@ pub enum VersionAndIdPduKind {
     ServerAnnounceRequest,
     /// [2.2.2.3 Client Announce Reply (DR_CORE_CLIENT_ANNOUNCE_RSP)](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/d6fe6d1b-c145-4a6f-99aa-4fe3cdcea398)
     ClientAnnounceReply,
+    /// [2.2.2.6 Server Client ID Confirm (DR_CORE_SERVER_CLIENTID_CONFIRM)](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/bbbb9666-6994-4cf6-8e65-0d46eb319c6e)
+    ServerClientIdConfirm,
 }
 
 impl VersionAndIdPduKind {
@@ -27,6 +29,7 @@ impl VersionAndIdPduKind {
         match self {
             VersionAndIdPduKind::ServerAnnounceRequest => "DR_CORE_SERVER_ANNOUNCE_REQ",
             VersionAndIdPduKind::ClientAnnounceReply => "DR_CORE_CLIENT_ANNOUNCE_RSP",
+            VersionAndIdPduKind::ServerClientIdConfirm => "DR_CORE_SERVER_CLIENTID_CONFIRM",
         }
     }
 }
@@ -63,7 +66,7 @@ impl VersionAndIdPdu {
         })
     }
 
-    pub fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    pub fn encode(&self, dst: &mut WriteCursor) -> PduResult<()> {
         ensure_size!(ctx: self.name(), in: dst, size: Self::FIXED_PART_SIZE);
         dst.write_u16(self.version_major);
         dst.write_u16(self.version_minor);
@@ -74,7 +77,7 @@ impl VersionAndIdPdu {
     pub fn decode(header: SharedHeader, src: &mut ReadCursor) -> PduResult<Self> {
         let kind = match header.packet_id {
             PacketId::CoreServerAnnounce => VersionAndIdPduKind::ServerAnnounceRequest,
-            PacketId::CoreClientidConfirm => VersionAndIdPduKind::ClientAnnounceReply,
+            PacketId::CoreClientidConfirm => VersionAndIdPduKind::ServerClientIdConfirm,
             _ => {
                 return Err(invalid_message_err!(
                     "VersionAndIdPdu::decode",
@@ -138,7 +141,7 @@ impl ClientNameRequest {
         }
     }
 
-    pub fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    pub fn encode(&self, dst: &mut WriteCursor) -> PduResult<()> {
         ensure_size!(in: dst, size: self.size());
         dst.write_u32(self.unicode_flag() as u32);
         dst.write_u32(0); // // CodePage (4 bytes): it MUST be set to 0
@@ -194,7 +197,7 @@ impl CoreCapability {
         }
     }
 
-    pub fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    pub fn encode(&self, dst: &mut WriteCursor) -> PduResult<()> {
         ensure_size!(ctx: self.name(), in: dst, size: self.size());
         dst.write_u16(cast_length!(
             "CoreCapability",
@@ -225,7 +228,7 @@ impl CoreCapability {
 
         let num_capabilities = payload.read_u16();
         let padding = payload.read_u16();
-        let mut capabilities = vec![];
+        let mut capabilities = Vec::new();
         for _ in 0..num_capabilities {
             capabilities.push(CapabilityMessage::decode(payload)?);
         }
@@ -260,6 +263,53 @@ impl CoreCapabilityKind {
             CoreCapabilityKind::ServerCoreCapabilityRequest => "DR_CORE_CAPABILITY_REQ",
             CoreCapabilityKind::ClientCoreCapabilityResponse => "DR_CORE_CAPABILITY_RSP",
         }
+    }
+}
+
+#[derive(Debug)]
+pub struct Capabilities(Vec<CapabilityMessage>);
+
+impl Capabilities {
+    pub fn new() -> Self {
+        let mut this = Self(Vec::new());
+        this.add_general(0);
+        this
+    }
+
+    pub fn add_smartcard(&mut self) {
+        self.push(CapabilityMessage::new_smartcard());
+        self.increment_special_devices();
+    }
+
+    pub fn clone_inner(&mut self) -> Vec<CapabilityMessage> {
+        self.0.clone()
+    }
+
+    fn add_general(&mut self, special_type_device_cap: u32) {
+        self.push(CapabilityMessage::new_general(special_type_device_cap));
+    }
+
+    fn push(&mut self, capability: CapabilityMessage) {
+        self.0.push(capability);
+    }
+
+    fn increment_special_devices(&mut self) {
+        let capabilities = &mut self.0;
+        for capability in capabilities.iter_mut() {
+            match &mut capability.capability_data {
+                CapabilityData::General(general_capability) => {
+                    general_capability.special_type_device_cap += 1;
+                    break;
+                }
+                _ => continue,
+            }
+        }
+    }
+}
+
+impl Default for Capabilities {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -319,7 +369,7 @@ impl CapabilityMessage {
         }
     }
 
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor) -> PduResult<()> {
         ensure_size!(in: dst, size: self.size());
         self.header.encode(dst)?;
         self.capability_data.encode(dst)
@@ -389,7 +439,7 @@ impl CapabilityHeader {
         })
     }
 
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor) -> PduResult<()> {
         ensure_size!(in: dst, size: self.size());
         dst.write_u16(self.cap_type as u16);
         dst.write_u16(self.length);
@@ -449,7 +499,7 @@ enum CapabilityData {
 }
 
 impl CapabilityData {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor) -> PduResult<()> {
         match self {
             CapabilityData::General(general) => general.encode(dst),
             _ => Ok(()),
@@ -517,7 +567,7 @@ impl GeneralCapabilitySet {
     #[allow(clippy::manual_bits)]
     const SIZE: usize = size_of::<u32>() * 8 + size_of::<u16>() * 2;
 
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor) -> PduResult<()> {
         ensure_size!(in: dst, size: self.size());
         dst.write_u32(self.os_type);
         dst.write_u32(self.os_version);
@@ -666,3 +716,172 @@ bitflags! {
 /// [2.2.2.3 Client Announce Reply (DR_CORE_CLIENT_ANNOUNCE_RSP)]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/d6fe6d1b-c145-4a6f-99aa-4fe3cdcea398
 const VERSION_MINOR_12: u16 = 0x000C;
 const VERSION_MAJOR: u16 = 0x0001;
+
+/// [2.2.2.9 Client Device List Announce Request (DR_CORE_DEVICELIST_ANNOUNCE_REQ)], [2.2.3.1 Client Device List Announce (DR_DEVICELIST_ANNOUNCE)]
+///
+/// [2.2.2.9 Client Device List Announce Request (DR_CORE_DEVICELIST_ANNOUNCE_REQ)]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/10ef9ada-cba2-4384-ab60-7b6290ed4a9a
+/// [2.2.3.1 Client Device List Announce (DR_DEVICELIST_ANNOUNCE)]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/d8b2bc1c-0207-4c15-abe3-62eaa2afcaf1
+#[derive(Debug)]
+pub struct ClientDeviceListAnnounce {
+    pub device_list: Vec<DeviceAnnounceHeader>,
+}
+
+impl ClientDeviceListAnnounce {
+    const FIXED_PART_SIZE: usize = size_of::<u32>(); // DeviceCount
+
+    pub fn encode(&self, dst: &mut WriteCursor) -> PduResult<()> {
+        dst.write_u32(cast_length!(
+            "ClientDeviceListAnnounce",
+            "DeviceCount",
+            self.device_list.len()
+        )?);
+
+        for dev in self.device_list.iter() {
+            dev.encode(dst)?;
+        }
+
+        Ok(())
+    }
+
+    pub fn name(&self) -> &'static str {
+        "DR_CORE_DEVICELIST_ANNOUNCE_REQ"
+    }
+
+    pub fn size(&self) -> usize {
+        Self::FIXED_PART_SIZE + self.device_list.iter().map(|d| d.size()).sum::<usize>()
+    }
+}
+
+#[derive(Debug)]
+pub struct Devices(Vec<DeviceAnnounceHeader>);
+
+impl Devices {
+    pub fn new() -> Self {
+        Self(Vec::new())
+    }
+
+    pub fn add_smartcard(&mut self, device_id: u32) {
+        self.push(DeviceAnnounceHeader::new_smartcard(device_id));
+    }
+
+    fn push(&mut self, device: DeviceAnnounceHeader) {
+        self.0.push(device);
+    }
+
+    pub fn clone_inner(&mut self) -> Vec<DeviceAnnounceHeader> {
+        self.0.clone()
+    }
+}
+
+impl Default for Devices {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// [2.2.1.3 Device Announce Header (DEVICE_ANNOUNCE)]
+///
+/// [2.2.1.3 Device Announce Header (DEVICE_ANNOUNCE)]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/32e34332-774b-4ead-8c9d-5d64720d6bf9
+#[derive(Debug, Clone)]
+pub struct DeviceAnnounceHeader {
+    device_type: DeviceType,
+    device_id: u32,
+    preferred_dos_name: PreferredDosName,
+    device_data: Vec<u8>,
+}
+
+impl DeviceAnnounceHeader {
+    const FIXED_PART_SIZE: usize = size_of::<u32>() * 3 + 8; // DeviceType, DeviceId, DeviceDataLength, PreferredDosName
+
+    pub fn new_smartcard(device_id: u32) -> Self {
+        Self {
+            device_type: DeviceType::Smartcard,
+            device_id,
+            // This name is a constant defined by the spec.
+            preferred_dos_name: PreferredDosName("SCARD".to_string()),
+            device_data: Vec::new(),
+        }
+    }
+
+    fn encode(&self, dst: &mut WriteCursor) -> PduResult<()> {
+        dst.write_u32(self.device_type as u32);
+        dst.write_u32(self.device_id);
+        self.preferred_dos_name.encode(dst)?;
+        dst.write_u32(cast_length!(
+            "DeviceAnnounceHeader",
+            "DeviceDataLength",
+            self.device_data.len()
+        )?);
+        dst.write_slice(&self.device_data);
+        Ok(())
+    }
+
+    fn size(&self) -> usize {
+        Self::FIXED_PART_SIZE + self.device_data.len()
+    }
+}
+
+/// From ["PreferredDosName"](https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/32e34332-774b-4ead-8c9d-5d64720d6bf9):
+///
+/// PreferredDosName (8 bytes): A string of ASCII characters (with a maximum length of eight characters) that represents the name of the device as it appears on the client. This field MUST be null-terminated, so the maximum device name is 7 characters long. The following characters are considered invalid for the PreferredDosName field:
+///
+/// <, >, ", /, \, |
+///
+/// If any of these characters are present, the DR_CORE_DEVICE_ANNOUNC_RSP packet for this device (section 2.2.2.1) will be sent with STATUS_ACCESS_DENIED set in the ResultCode field.
+///
+/// If DeviceType is set to RDPDR_DTYP_SMARTCARD, the PreferredDosName MUST be set to "SCARD".
+///
+/// Note A column character, ":", is valid only when present at the end of the PreferredDosName field, otherwise it is also considered invalid.
+#[derive(Debug, Clone)]
+struct PreferredDosName(String);
+
+impl PreferredDosName {
+    fn encode(&self, dst: &mut WriteCursor) -> PduResult<()> {
+        write_string_to_cursor(dst, &self.format(), CharacterSet::Ansi, false)
+    }
+
+    /// Returns the underlying String with a maximum length of 7 characters plus a null terminator.
+    fn format(&self) -> String {
+        let mut name: &str = &self.0;
+        if name.len() > 7 {
+            name = &name[..7];
+        }
+        format!("{name:\x00<8}")
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+#[repr(u32)]
+pub enum DeviceType {
+    /// RDPDR_DTYP_SERIAL
+    Serial = 0x00000001,
+    /// RDPDR_DTYP_PARALLEL
+    Parallel = 0x00000002,
+    /// RDPDR_DTYP_PRINT
+    Print = 0x00000004,
+    /// RDPDR_DTYP_FILESYSTEM
+    Filesystem = 0x00000008,
+    /// RDPDR_DTYP_SMARTCARD
+    Smartcard = 0x00000020,
+}
+
+impl From<DeviceType> for u32 {
+    fn from(device_type: DeviceType) -> Self {
+        device_type as u32
+    }
+}
+
+impl std::convert::TryFrom<u32> for DeviceType {
+    type Error = PduError;
+
+    fn try_from(value: u32) -> Result<Self, Self::Error> {
+        match value {
+            0x00000001 => Ok(DeviceType::Serial),
+            0x00000002 => Ok(DeviceType::Parallel),
+            0x00000004 => Ok(DeviceType::Print),
+            0x00000008 => Ok(DeviceType::Filesystem),
+            0x00000020 => Ok(DeviceType::Smartcard),
+            _ => Err(invalid_message_err!("try_from", "DeviceType", "invalid value")),
+        }
+    }
+}

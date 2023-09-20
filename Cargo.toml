@@ -50,7 +50,7 @@ expect-test = "1"
 proptest = "1.1.0"
 rstest = "0.17.0"
 sspi = "0.10.1"
-tracing = "0.1.37"
+tracing = { version = "0.1.37", features = ["log"] }
 thiserror = "1.0.40"
 
 [profile.dev]

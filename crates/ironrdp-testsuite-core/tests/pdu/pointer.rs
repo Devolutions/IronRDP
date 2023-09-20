@@ -9,7 +9,7 @@ fn expect_pointer_png(pointer: &DecodedPointer, expected_file_path: &str) {
     let path = format!("{}/test_data/{}", env!("CARGO_MANIFEST_DIR"), expected_file_path);
 
     if std::env::var("UPDATE_EXPECT").unwrap_or_default() == "1" {
-        let mut encoded_png = vec![];
+        let mut encoded_png = Vec::new();
 
         let mut png = png::Encoder::new(&mut encoded_png, pointer.width as u32, pointer.height as u32);
         png.set_color(png::ColorType::Rgba);
