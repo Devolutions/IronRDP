@@ -24,7 +24,7 @@ use ironrdp_pdu::gcc::ChannelName;
 use ironrdp_pdu::rdp::vc;
 use ironrdp_pdu::write_buf::WriteBuf;
 use ironrdp_pdu::{assert_obj_safe, dvc, PduResult};
-use ironrdp_svc::{impl_as_any, CompressionCondition, StaticVirtualChannel, SvcMessage};
+use ironrdp_svc::{impl_as_any, CompressionCondition, StaticVirtualChannel, SvcMessage, SvcPreprocessor};
 use pdu::cursor::WriteCursor;
 use pdu::PduEncode;
 
@@ -47,6 +47,7 @@ assert_obj_safe!(DynamicVirtualChannel);
 /// It adds support for dynamic virtual channels (DVC).
 pub struct Drdynvc {
     dynamic_channels: BTreeMap<String, Box<dyn DynamicVirtualChannel>>,
+    preprocessor: SvcPreprocessor,
 }
 
 impl fmt::Debug for Drdynvc {
@@ -75,6 +76,7 @@ impl Drdynvc {
     pub fn new() -> Self {
         Self {
             dynamic_channels: BTreeMap::new(),
+            preprocessor: SvcPreprocessor::new(),
         }
     }
 
@@ -101,6 +103,14 @@ impl Default for Drdynvc {
 impl StaticVirtualChannel for Drdynvc {
     fn channel_name(&self) -> ChannelName {
         Drdynvc::NAME
+    }
+
+    fn preprocessor(&self) -> &SvcPreprocessor {
+        &self.preprocessor
+    }
+
+    fn preprocessor_mut(&mut self) -> &mut SvcPreprocessor {
+        &mut self.preprocessor
     }
 
     fn compression_condition(&self) -> CompressionCondition {

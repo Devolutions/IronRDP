@@ -7,7 +7,9 @@ pub mod backend;
 pub mod pdu;
 
 use ironrdp_pdu::{decode, gcc::ChannelName, PduResult};
-use ironrdp_svc::{impl_as_any, ChannelFlags, CompressionCondition, StaticVirtualChannel, SvcMessage, SvcRequest};
+use ironrdp_svc::{
+    impl_as_any, ChannelFlags, CompressionCondition, StaticVirtualChannel, SvcMessage, SvcPreprocessor, SvcRequest,
+};
 use pdu::{
     Capabilities, ClientTemporaryDirectory, ClipboardFormat, ClipboardFormatId, ClipboardGeneralCapabilityFlags,
     ClipboardPdu, ClipboardProtocolVersion, FileContentsResponse, FormatDataRequest, FormatDataResponse,
@@ -52,6 +54,7 @@ pub struct Cliprdr {
     backend: Box<dyn CliprdrBackend>,
     capabilities: Capabilities,
     state: CliprdrState,
+    preprocessor: SvcPreprocessor,
 
     /// Buffer for de-chunkification of clipboard PDUs. Everything bigger than ~1600 bytes is
     /// usually chunked when transfered over svc.
@@ -76,6 +79,7 @@ impl Cliprdr {
             state: CliprdrState::Initialization,
             capabilities: Capabilities::new(ClipboardProtocolVersion::V2, flags),
             chunked_pdu: vec![].into(),
+            preprocessor: SvcPreprocessor::new(),
         }
     }
 
@@ -223,6 +227,14 @@ impl Cliprdr {
 impl StaticVirtualChannel for Cliprdr {
     fn channel_name(&self) -> ChannelName {
         Self::CHANNEL_NAME
+    }
+
+    fn preprocessor(&self) -> &SvcPreprocessor {
+        &self.preprocessor
+    }
+
+    fn preprocessor_mut(&mut self) -> &mut SvcPreprocessor {
+        &mut self.preprocessor
     }
 
     fn process_chunked(&mut self, payload: &[u8], last: bool) -> PduResult<Vec<SvcMessage>> {

@@ -1,19 +1,23 @@
 use ironrdp_pdu::gcc::ChannelName;
 use ironrdp_pdu::PduResult;
-use ironrdp_svc::{impl_as_any, CompressionCondition, StaticVirtualChannel, SvcMessage};
+use ironrdp_svc::{impl_as_any, CompressionCondition, StaticVirtualChannel, SvcMessage, SvcPreprocessor};
 
 /// We currently don't implement any of rdpsnd, however it's required
 /// for rdpdr to work: [\[MS-RDPEFS\] Appendix A<1>]
 ///
 /// [\[MS-RDPEFS\] Appendix A<1>]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/fd28bfd9-dae2-4a78-abe1-b4efa208b7aa#Appendix_A_1
 #[derive(Debug)]
-pub struct Rdpsnd;
+pub struct Rdpsnd {
+    preprocessor: SvcPreprocessor,
+}
 
 impl Rdpsnd {
     pub const NAME: ChannelName = ChannelName::from_static(b"rdpsnd\0\0");
 
     pub fn new() -> Self {
-        Self
+        Self {
+            preprocessor: SvcPreprocessor::new(),
+        }
     }
 }
 
@@ -28,6 +32,14 @@ impl_as_any!(Rdpsnd);
 impl StaticVirtualChannel for Rdpsnd {
     fn channel_name(&self) -> ChannelName {
         Self::NAME
+    }
+
+    fn preprocessor(&self) -> &SvcPreprocessor {
+        &self.preprocessor
+    }
+
+    fn preprocessor_mut(&mut self) -> &mut SvcPreprocessor {
+        &mut self.preprocessor
     }
 
     fn compression_condition(&self) -> CompressionCondition {
