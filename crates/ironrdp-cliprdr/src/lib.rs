@@ -55,14 +55,6 @@ pub struct Cliprdr {
     capabilities: Capabilities,
     state: CliprdrState,
     preprocessor: SvcPreprocessor,
-
-    /// Buffer for de-chunkification of clipboard PDUs. Everything bigger than ~1600 bytes is
-    /// usually chunked when transfered over svc.
-    ///
-    /// `Option` is used here to allow call `process` which borrows `self` mutably inside
-    /// `process_chunked` which borrows `self` mutably too, while keeping access to `chunked_pdu`
-    /// field data
-    chunked_pdu: Option<Vec<u8>>,
 }
 
 impl_as_any!(Cliprdr);
@@ -78,7 +70,6 @@ impl Cliprdr {
             backend,
             state: CliprdrState::Initialization,
             capabilities: Capabilities::new(ClipboardProtocolVersion::V2, flags),
-            chunked_pdu: vec![].into(),
             preprocessor: SvcPreprocessor::new(),
         }
     }
@@ -235,27 +226,6 @@ impl StaticVirtualChannel for Cliprdr {
 
     fn preprocessor_mut(&mut self) -> &mut SvcPreprocessor {
         &mut self.preprocessor
-    }
-
-    fn process_chunked(&mut self, payload: &[u8], last: bool) -> PduResult<Vec<SvcMessage>> {
-        // Get temporary ownership of the buffer to allow call of `process` method
-        // which borrows `self` mutably
-        let mut chunked_pdu = self.chunked_pdu.take().unwrap_or_default();
-
-        chunked_pdu.extend_from_slice(payload);
-
-        if !last {
-            self.chunked_pdu = Some(chunked_pdu);
-            return Ok(vec![]);
-        }
-
-        let result = self.process(&chunked_pdu);
-        chunked_pdu.clear();
-
-        // Give buffer ownership back to the Cliprdr instance
-        self.chunked_pdu = Some(chunked_pdu);
-
-        result
     }
 
     fn process(&mut self, payload: &[u8]) -> PduResult<Vec<SvcMessage>> {

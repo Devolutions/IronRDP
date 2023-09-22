@@ -106,19 +106,6 @@ pub trait StaticVirtualChannel: AsAny + fmt::Debug + Send + Sync {
         CompressionCondition::Never
     }
 
-    /// Processes a payload received on the virtual channel. This method is called when message
-    /// is divided into chunks. If SVC received complete unchunked message,
-    /// [`StaticVirtualChannel::process`] is called instead.
-    ///
-    /// Returns a list of PDUs to be sent back to the client.
-    fn process_chunked(&mut self, _payload: &[u8], _last: bool) -> PduResult<Vec<SvcMessage>> {
-        Err(invalid_message_err!(
-            "ironrdp-svc",
-            "SVC",
-            "Chunked messages are not supported for this SVC",
-        ))
-    }
-
     /// Processes a payload received on the virtual channel.
     ///
     /// Returns a list of PDUs to be sent back to the client.
