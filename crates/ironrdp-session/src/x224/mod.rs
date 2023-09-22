@@ -99,15 +99,17 @@ impl Processor {
                 Some(drdynvc_id) if channel_id == drdynvc_id => self.process_dyvc(data_ctx),
                 _ => {
                     if let Some(static_channel) = self.static_channels.get_by_channel_id_mut(channel_id) {
-                        let payload = static_channel
+                        if let Some(payload) = static_channel
                             .preprocessor_mut()
                             .dechunkify(data_ctx.user_data)
                             .map_err(crate::SessionError::pdu)?
-                            .unwrap_or_default();
+                        {
+                            let response_pdus = static_channel.process(&payload).map_err(crate::SessionError::pdu)?;
+                            return self.process_svc_request(response_pdus, channel_id, data_ctx.initiator_id);
+                        }
 
-                        let response_pdus = static_channel.process(&payload).map_err(crate::SessionError::pdu)?;
-
-                        self.process_svc_request(response_pdus, channel_id, data_ctx.initiator_id)
+                        // No payload means this was an intermediate chunk, so we don't need to respond with anything yet.
+                        Ok(Vec::new())
                     } else {
                         Err(reason_err!("X224", "unexpected channel received: ID {channel_id}"))
                     }
