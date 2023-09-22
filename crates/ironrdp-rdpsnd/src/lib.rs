@@ -1,6 +1,6 @@
 use ironrdp_pdu::gcc::ChannelName;
 use ironrdp_pdu::PduResult;
-use ironrdp_svc::{impl_as_any, CompressionCondition, StaticVirtualChannel, SvcMessage, SvcPreprocessor};
+use ironrdp_svc::{impl_as_any, ChunkProcessor, CompressionCondition, StaticVirtualChannel, SvcMessage};
 
 /// We currently don't implement any of rdpsnd, however it's required
 /// for rdpdr to work: [\[MS-RDPEFS\] Appendix A<1>]
@@ -8,7 +8,7 @@ use ironrdp_svc::{impl_as_any, CompressionCondition, StaticVirtualChannel, SvcMe
 /// [\[MS-RDPEFS\] Appendix A<1>]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/fd28bfd9-dae2-4a78-abe1-b4efa208b7aa#Appendix_A_1
 #[derive(Debug)]
 pub struct Rdpsnd {
-    preprocessor: SvcPreprocessor,
+    preprocessor: ChunkProcessor,
 }
 
 impl Rdpsnd {
@@ -16,7 +16,7 @@ impl Rdpsnd {
 
     pub fn new() -> Self {
         Self {
-            preprocessor: SvcPreprocessor::new(),
+            preprocessor: ChunkProcessor::new(),
         }
     }
 }
@@ -34,11 +34,11 @@ impl StaticVirtualChannel for Rdpsnd {
         Self::NAME
     }
 
-    fn preprocessor(&self) -> &SvcPreprocessor {
+    fn preprocessor(&self) -> &ChunkProcessor {
         &self.preprocessor
     }
 
-    fn preprocessor_mut(&mut self) -> &mut SvcPreprocessor {
+    fn preprocessor_mut(&mut self) -> &mut ChunkProcessor {
         &mut self.preprocessor
     }
 

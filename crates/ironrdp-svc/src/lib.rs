@@ -96,10 +96,10 @@ pub trait StaticVirtualChannel: AsAny + fmt::Debug + Send + Sync {
     fn channel_name(&self) -> ChannelName;
 
     /// Returns an instance of the preprocessor for this SVC
-    fn preprocessor(&self) -> &SvcPreprocessor;
+    fn preprocessor(&self) -> &ChunkProcessor;
 
     /// Returns an instance of the preprocessor for this SVC
-    fn preprocessor_mut(&mut self) -> &mut SvcPreprocessor;
+    fn preprocessor_mut(&mut self) -> &mut ChunkProcessor;
 
     /// Defines which compression flag should be sent along the [`ChannelDef`] Definition Structure (`CHANNEL_DEF`)
     fn compression_condition(&self) -> CompressionCondition {
@@ -120,15 +120,15 @@ pub trait StaticVirtualChannel: AsAny + fmt::Debug + Send + Sync {
 
 assert_obj_safe!(StaticVirtualChannel);
 
-/// SvcPreprocessor is used to chunkify/de-chunkify static virtual channel PDUs.
+/// ChunkProcessor is used to chunkify/de-chunkify static virtual channel PDUs.
 #[derive(Debug)]
-pub struct SvcPreprocessor {
+pub struct ChunkProcessor {
     /// Buffer for de-chunkification of clipboard PDUs. Everything bigger than ~1600 bytes is
     /// usually chunked when transfered over svc.
     chunked_pdu: Vec<u8>,
 }
 
-impl SvcPreprocessor {
+impl ChunkProcessor {
     pub fn new() -> Self {
         Self {
             chunked_pdu: Vec::new(),
@@ -241,7 +241,7 @@ impl SvcPreprocessor {
     }
 }
 
-impl Default for SvcPreprocessor {
+impl Default for ChunkProcessor {
     fn default() -> Self {
         Self::new()
     }

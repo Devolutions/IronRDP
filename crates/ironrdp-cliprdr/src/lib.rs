@@ -8,7 +8,7 @@ pub mod pdu;
 
 use ironrdp_pdu::{decode, gcc::ChannelName, PduResult};
 use ironrdp_svc::{
-    impl_as_any, ChannelFlags, CompressionCondition, StaticVirtualChannel, SvcMessage, SvcPreprocessor, SvcRequest,
+    impl_as_any, ChannelFlags, ChunkProcessor, CompressionCondition, StaticVirtualChannel, SvcMessage, SvcRequest,
 };
 use pdu::{
     Capabilities, ClientTemporaryDirectory, ClipboardFormat, ClipboardFormatId, ClipboardGeneralCapabilityFlags,
@@ -54,7 +54,7 @@ pub struct Cliprdr {
     backend: Box<dyn CliprdrBackend>,
     capabilities: Capabilities,
     state: CliprdrState,
-    preprocessor: SvcPreprocessor,
+    preprocessor: ChunkProcessor,
 }
 
 impl_as_any!(Cliprdr);
@@ -70,7 +70,7 @@ impl Cliprdr {
             backend,
             state: CliprdrState::Initialization,
             capabilities: Capabilities::new(ClipboardProtocolVersion::V2, flags),
-            preprocessor: SvcPreprocessor::new(),
+            preprocessor: ChunkProcessor::new(),
         }
     }
 
@@ -220,11 +220,11 @@ impl StaticVirtualChannel for Cliprdr {
         Self::CHANNEL_NAME
     }
 
-    fn preprocessor(&self) -> &SvcPreprocessor {
+    fn preprocessor(&self) -> &ChunkProcessor {
         &self.preprocessor
     }
 
-    fn preprocessor_mut(&mut self) -> &mut SvcPreprocessor {
+    fn preprocessor_mut(&mut self) -> &mut ChunkProcessor {
         &mut self.preprocessor
     }
 

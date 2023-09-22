@@ -12,7 +12,7 @@ use crate::pdu::{
     RdpdrPdu,
 };
 use ironrdp_pdu::{decode, gcc::ChannelName, other_err, PduResult};
-use ironrdp_svc::{impl_as_any, CompressionCondition, StaticVirtualChannel, SvcMessage, SvcPreprocessor};
+use ironrdp_svc::{impl_as_any, ChunkProcessor, CompressionCondition, StaticVirtualChannel, SvcMessage};
 use tracing::{trace, warn};
 
 /// The RDPDR channel as specified in [\[MS-RDPEFS\]].
@@ -28,7 +28,7 @@ pub struct Rdpdr {
     /// TODO: explain what this is
     computer_name: String,
     capabilities: Vec<CapabilityMessage>,
-    preprocessor: SvcPreprocessor,
+    preprocessor: ChunkProcessor,
 }
 
 impl Default for Rdpdr {
@@ -44,7 +44,7 @@ impl Rdpdr {
         Self {
             computer_name,
             capabilities,
-            preprocessor: SvcPreprocessor::new(),
+            preprocessor: ChunkProcessor::new(),
         }
     }
 
@@ -80,11 +80,11 @@ impl StaticVirtualChannel for Rdpdr {
         Self::NAME
     }
 
-    fn preprocessor(&self) -> &SvcPreprocessor {
+    fn preprocessor(&self) -> &ChunkProcessor {
         &self.preprocessor
     }
 
-    fn preprocessor_mut(&mut self) -> &mut SvcPreprocessor {
+    fn preprocessor_mut(&mut self) -> &mut ChunkProcessor {
         &mut self.preprocessor
     }
 
