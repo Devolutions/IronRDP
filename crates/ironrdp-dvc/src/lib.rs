@@ -47,7 +47,6 @@ assert_obj_safe!(DynamicVirtualChannel);
 /// It adds support for dynamic virtual channels (DVC).
 pub struct Drdynvc {
     dynamic_channels: BTreeMap<String, Box<dyn DynamicVirtualChannel>>,
-    preprocessor: ChunkProcessor,
 }
 
 impl fmt::Debug for Drdynvc {
@@ -76,7 +75,6 @@ impl Drdynvc {
     pub fn new() -> Self {
         Self {
             dynamic_channels: BTreeMap::new(),
-            preprocessor: ChunkProcessor::new(),
         }
     }
 
@@ -103,14 +101,6 @@ impl Default for Drdynvc {
 impl StaticVirtualChannel for Drdynvc {
     fn channel_name(&self) -> ChannelName {
         Drdynvc::NAME
-    }
-
-    fn preprocessor(&self) -> &ChunkProcessor {
-        &self.preprocessor
-    }
-
-    fn preprocessor_mut(&mut self) -> &mut ChunkProcessor {
-        &mut self.preprocessor
     }
 
     fn compression_condition(&self) -> CompressionCondition {

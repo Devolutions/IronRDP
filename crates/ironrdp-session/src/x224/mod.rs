@@ -63,13 +63,13 @@ impl Processor {
     pub fn get_svc<T: StaticVirtualChannel + 'static>(&mut self) -> Option<&T> {
         self.static_channels
             .get_by_type::<T>()
-            .and_then(|svc| svc.as_any().downcast_ref())
+            .and_then(|(svc, _)| svc.as_any().downcast_ref())
     }
 
     pub fn get_svc_mut<T: StaticVirtualChannel + 'static>(&mut self) -> Option<&mut T> {
         self.static_channels
             .get_by_type_mut::<T>()
-            .and_then(|svc| svc.as_any_mut().downcast_mut())
+            .and_then(|(svc, _)| svc.as_any_mut().downcast_mut())
     }
 
     /// Completes user's SVC request with data, required to sent it over the network and returns
@@ -98,9 +98,10 @@ impl Processor {
             match self.drdynvc_channel_id {
                 Some(drdynvc_id) if channel_id == drdynvc_id => self.process_dyvc(data_ctx),
                 _ => {
-                    if let Some(static_channel) = self.static_channels.get_by_channel_id_mut(channel_id) {
-                        if let Some(payload) = static_channel
-                            .preprocessor_mut()
+                    if let Some((static_channel, chunk_processor)) =
+                        self.static_channels.get_by_channel_id_mut(channel_id)
+                    {
+                        if let Some(payload) = chunk_processor
                             .dechunkify(data_ctx.user_data)
                             .map_err(crate::SessionError::pdu)?
                         {
@@ -336,7 +337,7 @@ impl Processor {
         channel_id: u16,
         initiator_id: u16,
     ) -> SessionResult<Vec<u8>> {
-        let static_channel = self.static_channels.get_by_channel_id(channel_id).ok_or_else(|| {
+        let (_, chunk_processor) = self.static_channels.get_by_channel_id(channel_id).ok_or_else(|| {
             reason_err!(
                 "SVC",
                 "access to non existing channel: ID {channel_id}",
@@ -345,8 +346,7 @@ impl Processor {
         })?;
 
         // For each response PDU, chunkify it and add appropriate static channel headers.
-        let chunks = static_channel
-            .preprocessor()
+        let chunks = chunk_processor
             .chunkify(messages, CHANNEL_CHUNK_LENGTH)
             .map_err(crate::SessionError::pdu)?;
 

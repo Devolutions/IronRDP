@@ -95,12 +95,6 @@ pub trait StaticVirtualChannel: AsAny + fmt::Debug + Send + Sync {
     /// Returns the name of the `StaticVirtualChannel`
     fn channel_name(&self) -> ChannelName;
 
-    /// Returns an instance of the preprocessor for this SVC
-    fn preprocessor(&self) -> &ChunkProcessor;
-
-    /// Returns an instance of the preprocessor for this SVC
-    fn preprocessor_mut(&mut self) -> &mut ChunkProcessor;
-
     /// Defines which compression flag should be sent along the [`ChannelDef`] Definition Structure (`CHANNEL_DEF`)
     fn compression_condition(&self) -> CompressionCondition {
         CompressionCondition::Never
@@ -155,7 +149,7 @@ impl ChunkProcessor {
         let last = self.process_header(payload)?;
 
         // Extend the chunked_pdu buffer with the payload
-        self.chunked_pdu.extend_from_slice(payload); // unwrap ok because we just ensured we have a chunked_pdu buffer above
+        self.chunked_pdu.extend_from_slice(payload);
 
         // If this was an unchunked message, or the last in a series of chunks, return the payload
         if last {
@@ -287,7 +281,8 @@ macro_rules! impl_as_any {
     };
 }
 
-/// A set holding at most one trait object for any given static channel.
+/// A set holding at most one [`StaticVirtualChannel`] trait object for any given static channel and
+/// its corresponding [`ChunkProcessor`].
 ///
 /// To ensure uniqueness, each trait object is associated to the [`TypeId`] of it’s original type.
 /// Once joined, channels may have their ID attached using [`Self::attach_channel_id()`], effectively
@@ -301,7 +296,7 @@ macro_rules! impl_as_any {
 /// since all [`StaticVirtualChannel`]s are also implementing the [`AsAny`] trait.
 #[derive(Debug)]
 pub struct StaticChannelSet {
-    channels: BTreeMap<TypeId, Box<dyn StaticVirtualChannel>>,
+    channels: BTreeMap<TypeId, (Box<dyn StaticVirtualChannel>, ChunkProcessor)>,
     to_channel_id: BTreeMap<TypeId, StaticChannelId>,
     to_type_id: BTreeMap<StaticChannelId, TypeId>,
 }
@@ -319,42 +314,59 @@ impl StaticChannelSet {
     /// Inserts a [`StaticVirtualChannel`] into this [`StaticChannelSet`].
     ///
     /// If a static virtual channel of this type already exists, it is returned.
-    pub fn insert<T: StaticVirtualChannel + 'static>(&mut self, val: T) -> Option<Box<dyn StaticVirtualChannel>> {
-        self.channels.insert(TypeId::of::<T>(), Box::new(val))
+    pub fn insert<T: StaticVirtualChannel + 'static>(
+        &mut self,
+        val: T,
+    ) -> Option<(Box<dyn StaticVirtualChannel>, ChunkProcessor)> {
+        self.channels
+            .insert(TypeId::of::<T>(), (Box::new(val), ChunkProcessor::new()))
     }
 
     /// Gets a reference to a [`StaticVirtualChannel`] trait object by looking up its [`TypeId`].
-    pub fn get_by_type_id(&self, type_id: TypeId) -> Option<&dyn StaticVirtualChannel> {
-        self.channels.get(&type_id).map(|boxed| boxed.as_ref())
+    pub fn get_by_type_id(&self, type_id: TypeId) -> Option<(&dyn StaticVirtualChannel, &ChunkProcessor)> {
+        self.channels.get(&type_id).map(|(boxed, cp)| (boxed.as_ref(), cp))
     }
 
     /// Gets a mutable reference to a [`StaticVirtualChannel`] trait object by looking up its [`TypeId`].
-    pub fn get_by_type_id_mut(&mut self, type_id: TypeId) -> Option<&mut dyn StaticVirtualChannel> {
-        if let Some(boxed) = self.channels.get_mut(&type_id) {
-            Some(boxed.as_mut())
+    pub fn get_by_type_id_mut(
+        &mut self,
+        type_id: TypeId,
+    ) -> Option<(&mut dyn StaticVirtualChannel, &mut ChunkProcessor)> {
+        if let Some((boxed, cp)) = self.channels.get_mut(&type_id) {
+            Some((boxed.as_mut(), cp))
         } else {
             None
         }
     }
 
     /// Gets a reference to a [`StaticVirtualChannel`] trait object by looking up its [`TypeId`].
-    pub fn get_by_type<T: StaticVirtualChannel + 'static>(&self) -> Option<&dyn StaticVirtualChannel> {
+    pub fn get_by_type<T: StaticVirtualChannel + 'static>(
+        &self,
+    ) -> Option<(&dyn StaticVirtualChannel, &ChunkProcessor)> {
         self.get_by_type_id(TypeId::of::<T>())
     }
 
     /// Gets a mutable reference to a [`StaticVirtualChannel`] trait object by looking up its [`TypeId`].
-    pub fn get_by_type_mut<T: StaticVirtualChannel + 'static>(&mut self) -> Option<&mut dyn StaticVirtualChannel> {
+    pub fn get_by_type_mut<T: StaticVirtualChannel + 'static>(
+        &mut self,
+    ) -> Option<(&mut dyn StaticVirtualChannel, &mut ChunkProcessor)> {
         self.get_by_type_id_mut(TypeId::of::<T>())
     }
 
     /// Gets a reference to a [`StaticVirtualChannel`] trait object by looking up its channel ID.
-    pub fn get_by_channel_id(&self, channel_id: StaticChannelId) -> Option<&dyn StaticVirtualChannel> {
+    pub fn get_by_channel_id(
+        &self,
+        channel_id: StaticChannelId,
+    ) -> Option<(&dyn StaticVirtualChannel, &ChunkProcessor)> {
         self.get_type_id_by_channel_id(channel_id)
             .and_then(|type_id| self.get_by_type_id(type_id))
     }
 
     /// Gets a mutable reference to a [`StaticVirtualChannel`] trait object by looking up its channel ID.
-    pub fn get_by_channel_id_mut(&mut self, channel_id: StaticChannelId) -> Option<&mut dyn StaticVirtualChannel> {
+    pub fn get_by_channel_id_mut(
+        &mut self,
+        channel_id: StaticChannelId,
+    ) -> Option<(&mut dyn StaticVirtualChannel, &mut ChunkProcessor)> {
         self.get_type_id_by_channel_id(channel_id)
             .and_then(|type_id| self.get_by_type_id_mut(type_id))
     }
@@ -362,7 +374,7 @@ impl StaticChannelSet {
     /// Removes a [`StaticVirtualChannel`] from this [`StaticChannelSet`].
     ///
     /// If a static virtual channel of this type existed, it will be returned.
-    pub fn remove_by_type_id(&mut self, type_id: TypeId) -> Option<Box<dyn StaticVirtualChannel>> {
+    pub fn remove_by_type_id(&mut self, type_id: TypeId) -> Option<(Box<dyn StaticVirtualChannel>, ChunkProcessor)> {
         let svc = self.channels.remove(&type_id);
         if let Some(channel_id) = self.to_channel_id.remove(&type_id) {
             self.to_type_id.remove(&channel_id);
@@ -373,7 +385,9 @@ impl StaticChannelSet {
     /// Removes a [`StaticVirtualChannel`] from this [`StaticChannelSet`].
     ///
     /// If a static virtual channel of this type existed, it will be returned.
-    pub fn remove_by_type<T: StaticVirtualChannel + 'static>(&mut self) -> Option<Box<dyn StaticVirtualChannel>> {
+    pub fn remove_by_type<T: StaticVirtualChannel + 'static>(
+        &mut self,
+    ) -> Option<(Box<dyn StaticVirtualChannel>, ChunkProcessor)> {
         let type_id = TypeId::of::<T>();
         self.remove_by_type_id(type_id)
     }
@@ -413,12 +427,14 @@ impl StaticChannelSet {
 
     #[inline]
     pub fn iter(&self) -> impl Iterator<Item = (TypeId, &dyn StaticVirtualChannel)> {
-        self.channels.iter().map(|(type_id, boxed)| (*type_id, boxed.as_ref()))
+        self.channels
+            .iter()
+            .map(|(type_id, (boxed, _))| (*type_id, boxed.as_ref()))
     }
 
     #[inline]
     pub fn values(&self) -> impl Iterator<Item = &dyn StaticVirtualChannel> {
-        self.channels.values().map(|boxed| boxed.as_ref())
+        self.channels.values().map(|(boxed, _)| boxed.as_ref())
     }
 
     #[inline]
