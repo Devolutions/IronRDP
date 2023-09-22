@@ -24,7 +24,7 @@ use ironrdp_pdu::gcc::ChannelName;
 use ironrdp_pdu::rdp::vc;
 use ironrdp_pdu::write_buf::WriteBuf;
 use ironrdp_pdu::{assert_obj_safe, dvc, PduResult};
-use ironrdp_svc::{impl_as_any, ChunkProcessor, CompressionCondition, StaticVirtualChannel, SvcMessage};
+use ironrdp_svc::{impl_as_any, CompressionCondition, StaticVirtualChannel, SvcMessage};
 use pdu::cursor::WriteCursor;
 use pdu::PduEncode;
 
