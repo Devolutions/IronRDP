@@ -138,12 +138,14 @@ assert_obj_safe!(StaticVirtualChannel);
 pub struct SvcPreprocessor {
     /// Buffer for de-chunkification of clipboard PDUs. Everything bigger than ~1600 bytes is
     /// usually chunked when transfered over svc.
-    chunked_pdu: Option<Vec<u8>>,
+    chunked_pdu: Vec<u8>,
 }
 
 impl SvcPreprocessor {
     pub fn new() -> Self {
-        Self { chunked_pdu: None }
+        Self {
+            chunked_pdu: Vec::new(),
+        }
     }
 
     /// Takes a vector of PDUs and breaks them into chunks prefixed with a Channel PDU Header (`CHANNEL_PDU_HEADER`).
@@ -163,21 +165,18 @@ impl SvcPreprocessor {
     /// For chunked payloads, returns `Ok(None)` until the last chunk is received, at which point
     /// it returns `Ok(Some(payload))`.
     pub fn dechunkify(&mut self, payload: &[u8]) -> PduResult<Option<Vec<u8>>> {
-        // Ensure we have a chunked_pdu buffer
-        if self.chunked_pdu.is_none() {
-            self.chunked_pdu = Some(Vec::new());
-        }
-
         let last = self.process_header(payload)?;
 
         // Extend the chunked_pdu buffer with the payload
-        self.chunked_pdu.as_mut().unwrap().extend_from_slice(payload); // unwrap ok because we just ensured we have a chunked_pdu buffer above
+        self.chunked_pdu.extend_from_slice(payload); // unwrap ok because we just ensured we have a chunked_pdu buffer above
 
         // If this was an unchunked message, or the last in a series of chunks, return the payload
         if last {
-            return Ok(self.chunked_pdu.take());
+            // Take the chunked_pdu buffer and replace it with an empty one
+            return Ok(Some(std::mem::take(&mut self.chunked_pdu)));
         }
 
+        // This was an intermediate chunk, return None
         Ok(None)
     }
 
