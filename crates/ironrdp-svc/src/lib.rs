@@ -152,7 +152,7 @@ impl SvcPreprocessor {
     pub fn chunkify(&self, messages: Vec<SvcMessage>, max_chunk_len: usize) -> PduResult<Vec<WriteBuf>> {
         let mut results = vec![];
         for message in messages {
-            results.extend(self.chunkify_one(message, max_chunk_len)?);
+            results.extend(Self::chunkify_one(message, max_chunk_len)?);
         }
         Ok(results)
     }
@@ -196,7 +196,7 @@ impl SvcPreprocessor {
     /// return 3 chunks, each 1600 bytes long, and the last chunk will be 800 bytes long.
     ///
     /// [[ Channel PDU Header | 1600 bytes of PDU data ] [ Channel PDU Header | 1600 bytes of PDU data ] [ Channel PDU Header | 800 bytes of PDU data ]]
-    fn chunkify_one(&self, message: SvcMessage, max_chunk_len: usize) -> PduResult<Vec<WriteBuf>> {
+    fn chunkify_one(message: SvcMessage, max_chunk_len: usize) -> PduResult<Vec<WriteBuf>> {
         let mut encoded_pdu = WriteBuf::new(); // TODO(perf): reuse this buffer using `clear` and `filled` as appropriate
         encode_buf(message.pdu.as_ref(), &mut encoded_pdu)?;
 
