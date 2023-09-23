@@ -13,7 +13,7 @@ use ironrdp_pdu::rdp::server_error_info::{ErrorInfo, ProtocolIndependentCode, Se
 use ironrdp_pdu::rdp::vc::dvc;
 use ironrdp_pdu::write_buf::WriteBuf;
 use ironrdp_pdu::{encode_buf, mcs};
-use ironrdp_svc::{StaticChannelSet, StaticVirtualChannelProcessor, SvcMessage, SvcRequest};
+use ironrdp_svc::{StaticChannelSet, StaticVirtualChannel, StaticVirtualChannelProcessor, SvcMessage, SvcRequest};
 
 pub use self::gfx::GfxHandler;
 use crate::{SessionErrorExt as _, SessionResult};
@@ -83,9 +83,10 @@ impl Processor {
             .get_channel_id_by_type::<C>()
             .ok_or_else(|| reason_err!("SVC", "channel not found"))?;
 
-        self.process_svc_request(request.into(), channel_id, self.user_channel_id)
+        self.process_svc_messages(request.into(), channel_id, self.user_channel_id)
     }
 
+    /// Processes a received PDU. Returns a buffer with encoded data to send to the server, if any.
     pub fn process(&mut self, frame: &[u8]) -> SessionResult<Vec<u8>> {
         let data_ctx: SendDataIndicationCtx<'_> =
             ironrdp_connector::legacy::decode_send_data_indication(frame).map_err(crate::legacy::map_error)?;
@@ -100,7 +101,7 @@ impl Processor {
                 _ => {
                     if let Some(svc) = self.static_channels.get_by_channel_id_mut(channel_id) {
                         let response_pdus = svc.process(data_ctx.user_data).map_err(crate::SessionError::pdu)?;
-                        self.process_svc_request(response_pdus, channel_id, data_ctx.initiator_id)
+                        self.process_svc_messages(response_pdus, channel_id, data_ctx.initiator_id)
                     } else {
                         Err(reason_err!("X224", "unexpected channel received: ID {channel_id}"))
                     }
@@ -321,22 +322,20 @@ impl Processor {
         Ok(written)
     }
 
-    fn process_svc_request(
+    /// Processes a vector of [`SvcMessage`] in preparation for sending them to the server on the `channel_id` channel.
+    ///
+    /// This includes chunkifying the messages, adding MCS, x224, and tpkt headers, and encoding them into a buffer.
+    /// The messages returned here are ready to be sent to the server.
+    ///
+    /// The caller is responsible for ensuring that the `channel_id` corresponds to the correct channel.
+    fn process_svc_messages(
         &self,
         messages: Vec<SvcMessage>,
         channel_id: u16,
         initiator_id: u16,
     ) -> SessionResult<Vec<u8>> {
-        let svc = self.static_channels.get_by_channel_id(channel_id).ok_or_else(|| {
-            reason_err!(
-                "SVC",
-                "access to non existing channel: ID {channel_id}",
-                channel_id = channel_id
-            )
-        })?;
-
         // For each response PDU, chunkify it and add appropriate static channel headers.
-        let chunks = svc.chunkify(messages).map_err(crate::SessionError::pdu)?;
+        let chunks = StaticVirtualChannel::chunkify(messages).map_err(crate::SessionError::pdu)?;
 
         // Place each chunk into a SendDataRequest
         let mcs_pdus = chunks

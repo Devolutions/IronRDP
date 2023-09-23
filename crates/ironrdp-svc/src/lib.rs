@@ -108,6 +108,8 @@ impl StaticVirtualChannel {
         self.channel_processor.compression_condition()
     }
 
+    /// Processes a payload received on the virtual channel. Returns a vector of PDUs to be sent back
+    /// to the server. If no PDUs are to be sent, an empty vector is returned.
     pub fn process(&mut self, payload: &[u8]) -> PduResult<Vec<SvcMessage>> {
         if let Some(payload) = self.dechunkify(payload)? {
             return self.channel_processor.process(&payload);
@@ -116,8 +118,8 @@ impl StaticVirtualChannel {
         Ok(Vec::new())
     }
 
-    pub fn chunkify(&self, messages: Vec<SvcMessage>) -> PduResult<Vec<WriteBuf>> {
-        self.chunk_processor.chunkify(messages, CHANNEL_CHUNK_LENGTH)
+    pub fn chunkify(messages: Vec<SvcMessage>) -> PduResult<Vec<WriteBuf>> {
+        ChunkProcessor::chunkify(messages, CHANNEL_CHUNK_LENGTH)
     }
 
     pub fn is_drdynvc(&self) -> bool {
@@ -169,7 +171,7 @@ assert_obj_safe!(StaticVirtualChannelProcessor);
 
 /// ChunkProcessor is used to chunkify/de-chunkify static virtual channel PDUs.
 #[derive(Debug)]
-pub struct ChunkProcessor {
+struct ChunkProcessor {
     /// Buffer for de-chunkification of clipboard PDUs. Everything bigger than ~1600 bytes is
     /// usually chunked when transfered over svc.
     chunked_pdu: Vec<u8>,
@@ -185,7 +187,7 @@ impl ChunkProcessor {
     /// Takes a vector of PDUs and breaks them into chunks prefixed with a Channel PDU Header (`CHANNEL_PDU_HEADER`).
     ///
     /// Each chunk is at most `max_chunk_len` bytes long (not including the Channel PDU Header).
-    pub fn chunkify(&self, messages: Vec<SvcMessage>, max_chunk_len: usize) -> PduResult<Vec<WriteBuf>> {
+    fn chunkify(messages: Vec<SvcMessage>, max_chunk_len: usize) -> PduResult<Vec<WriteBuf>> {
         let mut results = vec![];
         for message in messages {
             results.extend(Self::chunkify_one(message, max_chunk_len)?);
@@ -198,7 +200,7 @@ impl ChunkProcessor {
     /// If the payload is not chunked, returns the payload as-is.
     /// For chunked payloads, returns `Ok(None)` until the last chunk is received, at which point
     /// it returns `Ok(Some(payload))`.
-    pub fn dechunkify(&mut self, payload: &[u8]) -> PduResult<Option<Vec<u8>>> {
+    fn dechunkify(&mut self, payload: &[u8]) -> PduResult<Option<Vec<u8>>> {
         let last = self.process_header(payload)?;
 
         // Extend the chunked_pdu buffer with the payload
