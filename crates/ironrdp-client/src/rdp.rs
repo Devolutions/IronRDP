@@ -194,38 +194,32 @@ async fn active_session(
                     }
                     RdpInputEvent::Clipboard(event) => {
                         if let Some(cliprdr) = active_stage.get_svc_processor_downcast_ref::<ironrdp::cliprdr::Cliprdr>() {
-                            let svc_request = match event {
+                            if let Some(svc_messages) = match event {
                                 ClipboardMessage::SendInitiateCopy(formats) => {
-                                    let request = cliprdr.initiate_copy(&formats)
-                                        .map_err(|e| session::custom_err!("CLIPRDR", e))?;
-                                    Some(request)
+                                    Some(cliprdr.initiate_copy(&formats)
+                                        .map_err(|e| session::custom_err!("CLIPRDR", e))?)
                                 }
                                 ClipboardMessage::SendFormatData(response) => {
-                                    let request = cliprdr.sumbit_format_data(response)
-                                        .map_err(|e| session::custom_err!("CLIPRDR", e))?;
-                                    Some(request)
+                                    Some(cliprdr.sumbit_format_data(response)
+                                    .map_err(|e| session::custom_err!("CLIPRDR", e))?)
                                 }
                                 ClipboardMessage::SendInitiatePaste(format) => {
-                                    let request = cliprdr.initiate_paste(format)
-                                        .map_err(|e| session::custom_err!("CLIPRDR", e))?;
-                                    Some(request)
+                                    Some(cliprdr.initiate_paste(format)
+                                        .map_err(|e| session::custom_err!("CLIPRDR", e))?)
                                 }
                                 ClipboardMessage::Error(e) => {
                                     error!("Clipboard backend error: {}", e);
                                     None
                                 }
-                            };
-
-                            if let Some(request) = svc_request {
-                                let frame = active_stage.process_user_svc_request(request)?;
+                            } {
+                                let frame = active_stage.process_svc_messages_w_processor(svc_messages)?;
                                 vec![ActiveStageOutput::ResponseFrame(frame)]
-                            } else {
-                                vec![]
                             }
                         } else  {
                             warn!("Clipboard event received, but Cliprdr is not available");
-                            vec![]
                         }
+
+                        vec![]
                     }
                 }
             }

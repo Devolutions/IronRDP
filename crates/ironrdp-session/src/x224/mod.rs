@@ -13,7 +13,9 @@ use ironrdp_pdu::rdp::server_error_info::{ErrorInfo, ProtocolIndependentCode, Se
 use ironrdp_pdu::rdp::vc::dvc;
 use ironrdp_pdu::write_buf::WriteBuf;
 use ironrdp_pdu::{encode_buf, mcs};
-use ironrdp_svc::{StaticChannelSet, StaticVirtualChannel, StaticVirtualChannelProcessor, SvcMessage, SvcRequest};
+use ironrdp_svc::{
+    StaticChannelSet, StaticVirtualChannel, StaticVirtualChannelProcessor, SvcMessage, SvcMessagesWithProcessor,
+};
 
 pub use self::gfx::GfxHandler;
 use crate::{SessionErrorExt as _, SessionResult};
@@ -74,9 +76,9 @@ impl Processor {
 
     /// Completes user's SVC request with data, required to sent it over the network and returns
     /// a buffer with encoded data.
-    pub fn process_user_svc_request<C: StaticVirtualChannelProcessor + 'static>(
+    pub fn process_svc_messages_w_processor<C: StaticVirtualChannelProcessor + 'static>(
         &self,
-        request: SvcRequest<C>,
+        request: SvcMessagesWithProcessor<C>,
     ) -> SessionResult<Vec<u8>> {
         let channel_id = self
             .static_channels

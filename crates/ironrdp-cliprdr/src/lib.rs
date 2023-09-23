@@ -8,7 +8,8 @@ pub mod pdu;
 
 use ironrdp_pdu::{decode, gcc::ChannelName, PduResult};
 use ironrdp_svc::{
-    impl_as_any, ChannelFlags, CompressionCondition, StaticVirtualChannelProcessor, SvcMessage, SvcRequest,
+    impl_as_any, ChannelFlags, CompressionCondition, StaticVirtualChannelProcessor, SvcMessage,
+    SvcMessagesWithProcessor,
 };
 use pdu::{
     Capabilities, ClientTemporaryDirectory, ClipboardFormat, ClipboardFormatId, ClipboardGeneralCapabilityFlags,
@@ -21,7 +22,8 @@ use backend::CliprdrBackend;
 use thiserror::Error;
 use tracing::{error, info};
 
-pub type CliprdrSvcRequest = SvcRequest<Cliprdr>;
+/// PDUs for sending to the server on the CLIPRDR channel.
+pub type CliprdrSvcMessages = SvcMessagesWithProcessor<Cliprdr>;
 
 #[derive(Debug, Error)]
 enum ClipboardError {
@@ -57,6 +59,15 @@ pub struct Cliprdr {
 }
 
 impl_as_any!(Cliprdr);
+
+macro_rules! ready_guard {
+        ($self:ident, $function:ident) => {
+            if $self.state != CliprdrState::Ready {
+                error!(?$self.state, concat!("Attempted to initiate ", stringify!($function), " in incorrect state"));
+                return Ok(vec![].into());
+            }
+        };
+    }
 
 impl Cliprdr {
     const CHANNEL_NAME: ChannelName = ChannelName::from_static(b"cliprdr\0");
@@ -139,10 +150,8 @@ impl Cliprdr {
     /// `on_format_data_request` via `CliprdrBackend`.
     ///
     /// If data is not available anymore, an error response should be sent instead.
-    pub fn sumbit_format_data(&self, response: FormatDataResponse<'static>) -> PduResult<CliprdrSvcRequest> {
-        if self.state != CliprdrState::Ready {
-            return Ok(vec![].into());
-        }
+    pub fn sumbit_format_data(&self, response: FormatDataResponse<'static>) -> PduResult<CliprdrSvcMessages> {
+        ready_guard!(self, sumbit_format_data);
 
         let pdu = ClipboardPdu::FormatDataResponse(response);
 
@@ -154,10 +163,8 @@ impl Cliprdr {
     /// `CliprdrBackend`.
     ///
     /// If data is not available anymore, an error response should be sent instead.
-    pub fn sumbit_file_contents(&self, response: FileContentsResponse<'static>) -> PduResult<CliprdrSvcRequest> {
-        if self.state != CliprdrState::Ready {
-            return Ok(vec![].into());
-        }
+    pub fn sumbit_file_contents(&self, response: FileContentsResponse<'static>) -> PduResult<CliprdrSvcMessages> {
+        ready_guard!(self, sumbit_file_contents);
 
         let pdu = ClipboardPdu::FileContentsResponse(response);
 
@@ -167,41 +174,31 @@ impl Cliprdr {
     /// Start processing of `CLIPRDR` copy command. Should be called by `ironrdp` client
     /// implementation when user performs OS-specific copy command (e.g. `Ctrl+C` shortcut on
     /// keyboard)
-    pub fn initiate_copy(&self, available_formats: &[ClipboardFormat]) -> PduResult<CliprdrSvcRequest> {
-        // During initialization state, first copy action is syntetic and should be sent along with
-        // capabilities and temporary directory PDUs.
-        if self.state == CliprdrState::Initialization {
-            let temporary_directory = self.backend.temporary_directory();
-
-            let response = [
+    pub fn initiate_copy(&self, available_formats: &[ClipboardFormat]) -> PduResult<CliprdrSvcMessages> {
+        let pdus = match self.state {
+            // During initialization state, first copy action is syntetic and should be sent along with
+            // capabilities and temporary directory PDUs.
+            CliprdrState::Initialization => vec![
                 ClipboardPdu::Capabilities(self.capabilities.clone()),
-                ClipboardPdu::TemporaryDirectory(ClientTemporaryDirectory::new(temporary_directory)?),
+                ClipboardPdu::TemporaryDirectory(ClientTemporaryDirectory::new(self.backend.temporary_directory())?),
                 ClipboardPdu::FormatList(self.build_format_list(available_formats).unwrap()),
-            ]
-            .into_iter()
-            .map(into_cliprdr_message)
-            .collect::<Vec<_>>();
+            ],
+            // When user initiates copy, we should send format list to server.
+            CliprdrState::Ready => vec![ClipboardPdu::FormatList(self.build_format_list(available_formats)?)],
+            CliprdrState::Failed => {
+                error!(?self.state, "Attempted to initiate copy in incorrect state");
+                vec![]
+            }
+        };
 
-            return Ok(response.into());
-        }
-
-        if self.state != CliprdrState::Ready {
-            return Ok(vec![].into());
-        }
-
-        // When user initiates copy, we should send format list to server, and expect to
-        // receive response with `FormatListResponse::Ok` status.
-        let pdu = ClipboardPdu::FormatList(self.build_format_list(available_formats)?);
-        Ok(vec![into_cliprdr_message(pdu)].into())
+        Ok(pdus.into_iter().map(into_cliprdr_message).collect::<Vec<_>>().into())
     }
 
     /// Start processing of `CLIPRDR` paste command. Should be called by `ironrdp` client
     /// implementation when user performs OS-specific paste command (e.g. `Ctrl+V` shortcut on
     /// keyboard)
-    pub fn initiate_paste(&self, requested_format: ClipboardFormatId) -> PduResult<CliprdrSvcRequest> {
-        if self.state != CliprdrState::Ready {
-            return Ok(vec![].into());
-        }
+    pub fn initiate_paste(&self, requested_format: ClipboardFormatId) -> PduResult<CliprdrSvcMessages> {
+        ready_guard!(self, initiate_paste);
 
         // When user initiates paste, we should send format data request to server, and expect to
         // receive response with contents via `FormatDataResponse` PDU.

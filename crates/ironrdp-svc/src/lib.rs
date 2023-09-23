@@ -22,35 +22,35 @@ use std::marker::PhantomData;
 /// The integer type representing a static virtual channel ID.
 pub type StaticChannelId = u16;
 
-/// SVC data which sould be sent to the server over the main communication channel (RDP socket).
+/// SVC data to be sent to the server. See [`SvcMessage`] for more information.
 /// Usually returned by the channel-specific methods.
-pub struct SvcRequest<C> {
+pub struct SvcMessagesWithProcessor<P: StaticVirtualChannelProcessor> {
     messages: Vec<SvcMessage>,
-    _channel: PhantomData<C>,
+    _channel: PhantomData<P>,
 }
 
-impl<C> From<Vec<SvcMessage>> for SvcRequest<C> {
+impl<P: StaticVirtualChannelProcessor> SvcMessagesWithProcessor<P> {
+    pub fn new(messages: Vec<SvcMessage>) -> Self {
+        Self {
+            messages,
+            _channel: PhantomData,
+        }
+    }
+}
+
+impl<P: StaticVirtualChannelProcessor> From<Vec<SvcMessage>> for SvcMessagesWithProcessor<P> {
     fn from(messages: Vec<SvcMessage>) -> Self {
         Self::new(messages)
     }
 }
 
-impl<C> From<SvcRequest<C>> for Vec<SvcMessage> {
-    fn from(request: SvcRequest<C>) -> Self {
+impl<P: StaticVirtualChannelProcessor> From<SvcMessagesWithProcessor<P>> for Vec<SvcMessage> {
+    fn from(request: SvcMessagesWithProcessor<P>) -> Self {
         request.messages
     }
 }
 
-impl<C> SvcRequest<C> {
-    pub fn new(messages: Vec<SvcMessage>) -> Self {
-        Self {
-            messages,
-            _channel: Default::default(),
-        }
-    }
-}
-
-/// Encodable PDU that can used as a message to be sent over a static virtual channel.
+/// Encodable PDU to be sent over a static virtual channel.
 /// Additional SVC header flags could be added via [`SvcMessage::with_flags`] method.
 pub struct SvcMessage {
     pdu: Box<dyn PduEncode>,
