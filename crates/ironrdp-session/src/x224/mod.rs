@@ -13,7 +13,7 @@ use ironrdp_pdu::rdp::server_error_info::{ErrorInfo, ProtocolIndependentCode, Se
 use ironrdp_pdu::rdp::vc::dvc;
 use ironrdp_pdu::write_buf::WriteBuf;
 use ironrdp_pdu::{encode_buf, mcs};
-use ironrdp_svc::{StaticChannelSet, StaticVirtualChannel, SvcMessage, SvcRequest, CHANNEL_CHUNK_LENGTH};
+use ironrdp_svc::{StaticChannelSet, StaticVirtualChannelProcessor, SvcMessage, SvcRequest};
 
 pub use self::gfx::GfxHandler;
 use crate::{SessionErrorExt as _, SessionResult};
@@ -60,21 +60,21 @@ impl Processor {
         }
     }
 
-    pub fn get_svc<T: StaticVirtualChannel + 'static>(&mut self) -> Option<&T> {
+    pub fn get_svc_processor_downcast_ref<T: StaticVirtualChannelProcessor + 'static>(&mut self) -> Option<&T> {
         self.static_channels
             .get_by_type::<T>()
-            .and_then(|(svc, _)| svc.as_any().downcast_ref())
+            .and_then(|svc| svc.channel_processor_downcast_ref())
     }
 
-    pub fn get_svc_mut<T: StaticVirtualChannel + 'static>(&mut self) -> Option<&mut T> {
+    pub fn get_svc_processor_downcast_mut<T: StaticVirtualChannelProcessor + 'static>(&mut self) -> Option<&mut T> {
         self.static_channels
             .get_by_type_mut::<T>()
-            .and_then(|(svc, _)| svc.as_any_mut().downcast_mut())
+            .and_then(|svc| svc.channel_processor_downcast_mut())
     }
 
     /// Completes user's SVC request with data, required to sent it over the network and returns
     /// a buffer with encoded data.
-    pub fn process_user_svc_request<C: StaticVirtualChannel + 'static>(
+    pub fn process_user_svc_request<C: StaticVirtualChannelProcessor + 'static>(
         &self,
         request: SvcRequest<C>,
     ) -> SessionResult<Vec<u8>> {
@@ -98,19 +98,9 @@ impl Processor {
             match self.drdynvc_channel_id {
                 Some(drdynvc_id) if channel_id == drdynvc_id => self.process_dyvc(data_ctx),
                 _ => {
-                    if let Some((static_channel, chunk_processor)) =
-                        self.static_channels.get_by_channel_id_mut(channel_id)
-                    {
-                        if let Some(payload) = chunk_processor
-                            .dechunkify(data_ctx.user_data)
-                            .map_err(crate::SessionError::pdu)?
-                        {
-                            let response_pdus = static_channel.process(&payload).map_err(crate::SessionError::pdu)?;
-                            return self.process_svc_request(response_pdus, channel_id, data_ctx.initiator_id);
-                        }
-
-                        // No payload means this was an intermediate chunk, so we don't need to respond with anything yet.
-                        Ok(Vec::new())
+                    if let Some(svc) = self.static_channels.get_by_channel_id_mut(channel_id) {
+                        let response_pdus = svc.process(data_ctx.user_data).map_err(crate::SessionError::pdu)?;
+                        self.process_svc_request(response_pdus, channel_id, data_ctx.initiator_id)
                     } else {
                         Err(reason_err!("X224", "unexpected channel received: ID {channel_id}"))
                     }
@@ -337,7 +327,7 @@ impl Processor {
         channel_id: u16,
         initiator_id: u16,
     ) -> SessionResult<Vec<u8>> {
-        let (_, chunk_processor) = self.static_channels.get_by_channel_id(channel_id).ok_or_else(|| {
+        let svc = self.static_channels.get_by_channel_id(channel_id).ok_or_else(|| {
             reason_err!(
                 "SVC",
                 "access to non existing channel: ID {channel_id}",
@@ -346,9 +336,7 @@ impl Processor {
         })?;
 
         // For each response PDU, chunkify it and add appropriate static channel headers.
-        let chunks = chunk_processor
-            .chunkify(messages, CHANNEL_CHUNK_LENGTH)
-            .map_err(crate::SessionError::pdu)?;
+        let chunks = svc.chunkify(messages).map_err(crate::SessionError::pdu)?;
 
         // Place each chunk into a SendDataRequest
         let mcs_pdus = chunks

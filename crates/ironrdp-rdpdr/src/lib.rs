@@ -12,7 +12,7 @@ use crate::pdu::{
     RdpdrPdu,
 };
 use ironrdp_pdu::{decode, gcc::ChannelName, other_err, PduResult};
-use ironrdp_svc::{impl_as_any, CompressionCondition, StaticVirtualChannel, SvcMessage};
+use ironrdp_svc::{impl_as_any, CompressionCondition, StaticVirtualChannelProcessor, SvcMessage};
 use tracing::{trace, warn};
 
 /// The RDPDR channel as specified in [\[MS-RDPEFS\]].
@@ -73,7 +73,7 @@ impl Rdpdr {
 
 impl_as_any!(Rdpdr);
 
-impl StaticVirtualChannel for Rdpdr {
+impl StaticVirtualChannelProcessor for Rdpdr {
     fn channel_name(&self) -> ChannelName {
         Self::NAME
     }

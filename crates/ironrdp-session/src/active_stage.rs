@@ -8,7 +8,7 @@ use crate::fast_path::UpdateKind;
 use crate::image::DecodedImage;
 use crate::x224::GfxHandler;
 use crate::{fast_path, x224, SessionResult};
-use ironrdp_svc::{StaticVirtualChannel, SvcRequest};
+use ironrdp_svc::{StaticVirtualChannelProcessor, SvcRequest};
 
 pub struct ActiveStage {
     x224_processor: x224::Processor,
@@ -151,17 +151,17 @@ impl ActiveStage {
         self.x224_processor.encode_static(output, pdu)
     }
 
-    pub fn get_svc<T: StaticVirtualChannel + 'static>(&mut self) -> Option<&T> {
-        self.x224_processor.get_svc()
+    pub fn get_svc_processor_downcast_ref<T: StaticVirtualChannelProcessor + 'static>(&mut self) -> Option<&T> {
+        self.x224_processor.get_svc_processor_downcast_ref()
     }
 
-    pub fn get_svc_mut<T: StaticVirtualChannel + 'static>(&mut self) -> Option<&mut T> {
-        self.x224_processor.get_svc_mut()
+    pub fn get_svc_processor_downcast_mut<T: StaticVirtualChannelProcessor + 'static>(&mut self) -> Option<&mut T> {
+        self.x224_processor.get_svc_processor_downcast_mut()
     }
 
     /// Completes user's SVC request with data, required to sent it over the network and returns
     /// a buffer with encoded data.
-    pub fn process_user_svc_request<C: StaticVirtualChannel + 'static>(
+    pub fn process_user_svc_request<C: StaticVirtualChannelProcessor + 'static>(
         &self,
         request: SvcRequest<C>,
     ) -> SessionResult<Vec<u8>> {
