@@ -16,7 +16,7 @@ use ironrdp_pdu::write_buf::WriteBuf;
 use ironrdp_pdu::{assert_obj_safe, PduResult};
 use pdu::cursor::WriteCursor;
 use pdu::gcc::ChannelDef;
-use pdu::{custom_err, encode_buf, invalid_message_err, PduEncode, PduParsing};
+use pdu::{custom_err, encode_buf, PduEncode, PduParsing};
 use std::marker::PhantomData;
 
 /// The integer type representing a static virtual channel ID.
