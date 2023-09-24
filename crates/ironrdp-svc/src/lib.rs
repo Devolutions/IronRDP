@@ -23,13 +23,14 @@ use std::marker::PhantomData;
 pub type StaticChannelId = u16;
 
 /// SVC data to be sent to the server. See [`SvcMessage`] for more information.
+///
 /// Usually returned by the channel-specific methods.
-pub struct SvcMessagesWithProcessor<P: StaticVirtualChannelProcessor> {
+pub struct SvcMessagesForProcessor<P: StaticVirtualChannelProcessor> {
     messages: Vec<SvcMessage>,
     _channel: PhantomData<P>,
 }
 
-impl<P: StaticVirtualChannelProcessor> SvcMessagesWithProcessor<P> {
+impl<P: StaticVirtualChannelProcessor> SvcMessagesForProcessor<P> {
     pub fn new(messages: Vec<SvcMessage>) -> Self {
         Self {
             messages,
@@ -38,20 +39,21 @@ impl<P: StaticVirtualChannelProcessor> SvcMessagesWithProcessor<P> {
     }
 }
 
-impl<P: StaticVirtualChannelProcessor> From<Vec<SvcMessage>> for SvcMessagesWithProcessor<P> {
+impl<P: StaticVirtualChannelProcessor> From<Vec<SvcMessage>> for SvcMessagesForProcessor<P> {
     fn from(messages: Vec<SvcMessage>) -> Self {
         Self::new(messages)
     }
 }
 
-impl<P: StaticVirtualChannelProcessor> From<SvcMessagesWithProcessor<P>> for Vec<SvcMessage> {
-    fn from(request: SvcMessagesWithProcessor<P>) -> Self {
+impl<P: StaticVirtualChannelProcessor> From<SvcMessagesForProcessor<P>> for Vec<SvcMessage> {
+    fn from(request: SvcMessagesForProcessor<P>) -> Self {
         request.messages
     }
 }
 
 /// Encodable PDU to be sent over a static virtual channel.
-/// Additional SVC header flags could be added via [`SvcMessage::with_flags`] method.
+///
+/// Additional SVC header flags can be added via [`SvcMessage::with_flags`] method.
 pub struct SvcMessage {
     pdu: Box<dyn PduEncode>,
     flags: ChannelFlags,
@@ -146,7 +148,7 @@ impl StaticVirtualChannel {
 /// There are at most 31 (optional) static virtual channels that can be created for a single connection, for a
 /// total of 32 static channels when accounting for the non-optional I/O channel.
 pub trait StaticVirtualChannelProcessor: AsAny + fmt::Debug + Send + Sync {
-    /// Returns the name of the `StaticVirtualChannelProcessor`
+    /// Returns the name of the static virtual channel corresponding to this processor.
     fn channel_name(&self) -> ChannelName;
 
     /// Defines which compression flag should be sent along the [`ChannelDef`] Definition Structure (`CHANNEL_DEF`)
@@ -336,8 +338,8 @@ macro_rules! impl_as_any {
     };
 }
 
-/// A set holding at most one [`StaticVirtualChannel`] for any given static channel and
-/// its corresponding [`ChunkProcessor`].
+/// A set holding at most one [`StaticVirtualChannel`] for any given type
+/// implementing [`StaticVirtualChannelProcessor`].
 ///
 /// To ensure uniqueness, each trait object is associated to the [`TypeId`] of it’s original type.
 /// Once joined, channels may have their ID attached using [`Self::attach_channel_id()`], effectively
@@ -373,22 +375,22 @@ impl StaticChannelSet {
         self.channels.insert(TypeId::of::<T>(), StaticVirtualChannel::new(val))
     }
 
-    /// Gets a reference to a [`StaticVirtualChannel`] by looking up its [`TypeId`].
+    /// Gets a reference to a [`StaticVirtualChannel`] by looking up its internal [`StaticVirtualChannelProcessor`]'s [`TypeId`].
     pub fn get_by_type_id(&self, type_id: TypeId) -> Option<&StaticVirtualChannel> {
         self.channels.get(&type_id)
     }
 
-    /// Gets a mutable reference to a [`StaticVirtualChannel`] by looking up its [`TypeId`].
+    /// Gets a mutable reference to a [`StaticVirtualChannel`] by looking up its internal [`StaticVirtualChannelProcessor`]'s [`TypeId`].
     pub fn get_by_type_id_mut(&mut self, type_id: TypeId) -> Option<&mut StaticVirtualChannel> {
         self.channels.get_mut(&type_id)
     }
 
-    /// Gets a reference to a [`StaticVirtualChannel`] by looking up its [`TypeId`].
+    /// Gets a reference to a [`StaticVirtualChannel`] by looking up its internal [`StaticVirtualChannelProcessor`]'s [`TypeId`].
     pub fn get_by_type<T: StaticVirtualChannelProcessor + 'static>(&self) -> Option<&StaticVirtualChannel> {
         self.get_by_type_id(TypeId::of::<T>())
     }
 
-    /// Gets a mutable reference to a [`StaticVirtualChannel`] by looking up its [`TypeId`].
+    /// Gets a mutable reference to a [`StaticVirtualChannel`] by looking up its internal [`StaticVirtualChannelProcessor`]'s [`TypeId`].
     pub fn get_by_type_mut<T: StaticVirtualChannelProcessor + 'static>(&mut self) -> Option<&mut StaticVirtualChannel> {
         self.get_by_type_id_mut(TypeId::of::<T>())
     }

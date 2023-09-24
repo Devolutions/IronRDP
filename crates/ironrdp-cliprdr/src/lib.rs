@@ -8,8 +8,7 @@ pub mod pdu;
 
 use ironrdp_pdu::{decode, gcc::ChannelName, PduResult};
 use ironrdp_svc::{
-    impl_as_any, ChannelFlags, CompressionCondition, StaticVirtualChannelProcessor, SvcMessage,
-    SvcMessagesWithProcessor,
+    impl_as_any, ChannelFlags, CompressionCondition, StaticVirtualChannelProcessor, SvcMessage, SvcMessagesForProcessor,
 };
 use pdu::{
     Capabilities, ClientTemporaryDirectory, ClipboardFormat, ClipboardFormatId, ClipboardGeneralCapabilityFlags,
@@ -23,7 +22,7 @@ use thiserror::Error;
 use tracing::{error, info};
 
 /// PDUs for sending to the server on the CLIPRDR channel.
-pub type CliprdrSvcMessages = SvcMessagesWithProcessor<Cliprdr>;
+pub type CliprdrSvcMessages = SvcMessagesForProcessor<Cliprdr>;
 
 #[derive(Debug, Error)]
 enum ClipboardError {

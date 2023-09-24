@@ -193,7 +193,7 @@ async fn active_session(
                         break 'outer;
                     }
                     RdpInputEvent::Clipboard(event) => {
-                        if let Some(cliprdr) = active_stage.get_svc_processor_downcast_ref::<ironrdp::cliprdr::Cliprdr>() {
+                        if let Some(cliprdr) = active_stage.get_svc_processor::<ironrdp::cliprdr::Cliprdr>() {
                             if let Some(svc_messages) = match event {
                                 ClipboardMessage::SendInitiateCopy(formats) => {
                                     Some(cliprdr.initiate_copy(&formats)
@@ -212,7 +212,7 @@ async fn active_session(
                                     None
                                 }
                             } {
-                                let frame = active_stage.process_svc_messages_w_processor(svc_messages)?;
+                                let frame = active_stage.process_svc_messages(svc_messages)?;
                                 // Send the messages to the server
                                 vec![ActiveStageOutput::ResponseFrame(frame)]
                             } else {

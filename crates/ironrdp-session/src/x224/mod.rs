@@ -14,7 +14,7 @@ use ironrdp_pdu::rdp::vc::dvc;
 use ironrdp_pdu::write_buf::WriteBuf;
 use ironrdp_pdu::{encode_buf, mcs};
 use ironrdp_svc::{
-    StaticChannelSet, StaticVirtualChannel, StaticVirtualChannelProcessor, SvcMessage, SvcMessagesWithProcessor,
+    StaticChannelSet, StaticVirtualChannel, StaticVirtualChannelProcessor, SvcMessage, SvcMessagesForProcessor,
 };
 
 pub use self::gfx::GfxHandler;
@@ -62,13 +62,13 @@ impl Processor {
         }
     }
 
-    pub fn get_svc_processor_downcast_ref<T: StaticVirtualChannelProcessor + 'static>(&mut self) -> Option<&T> {
+    pub fn get_svc_processor<T: StaticVirtualChannelProcessor + 'static>(&mut self) -> Option<&T> {
         self.static_channels
             .get_by_type::<T>()
             .and_then(|svc| svc.channel_processor_downcast_ref())
     }
 
-    pub fn get_svc_processor_downcast_mut<T: StaticVirtualChannelProcessor + 'static>(&mut self) -> Option<&mut T> {
+    pub fn get_svc_processor_mut<T: StaticVirtualChannelProcessor + 'static>(&mut self) -> Option<&mut T> {
         self.static_channels
             .get_by_type_mut::<T>()
             .and_then(|svc| svc.channel_processor_downcast_mut())
@@ -76,9 +76,9 @@ impl Processor {
 
     /// Completes user's SVC request with data, required to sent it over the network and returns
     /// a buffer with encoded data.
-    pub fn process_svc_messages_w_processor<C: StaticVirtualChannelProcessor + 'static>(
+    pub fn process_svc_messages<C: StaticVirtualChannelProcessor + 'static>(
         &self,
-        request: SvcMessagesWithProcessor<C>,
+        request: SvcMessagesForProcessor<C>,
     ) -> SessionResult<Vec<u8>> {
         let channel_id = self
             .static_channels
