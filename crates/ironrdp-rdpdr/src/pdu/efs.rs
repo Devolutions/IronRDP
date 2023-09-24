@@ -71,7 +71,7 @@ impl VersionAndIdPdu {
         Ok(())
     }
 
-    pub fn decode(header: SharedHeader, src: &mut ReadCursor) -> PduResult<Self> {
+    pub fn decode(header: SharedHeader, payload: &mut ReadCursor) -> PduResult<Self> {
         let kind = match header.packet_id {
             PacketId::CoreServerAnnounce => VersionAndIdPduKind::ServerAnnounceRequest,
             PacketId::CoreClientidConfirm => VersionAndIdPduKind::ServerClientIdConfirm,
@@ -84,10 +84,10 @@ impl VersionAndIdPdu {
             }
         };
 
-        ensure_size!(ctx: kind.name(), in: src, size: Self::FIXED_PART_SIZE);
-        let version_major = src.read_u16();
-        let version_minor = src.read_u16();
-        let client_id = src.read_u32();
+        ensure_size!(ctx: kind.name(), in: payload, size: Self::FIXED_PART_SIZE);
+        let version_major = payload.read_u16();
+        let version_minor = payload.read_u16();
+        let client_id = payload.read_u32();
 
         Ok(Self {
             version_major,
@@ -879,6 +879,84 @@ impl std::convert::TryFrom<u32> for DeviceType {
             0x00000008 => Ok(DeviceType::Filesystem),
             0x00000020 => Ok(DeviceType::Smartcard),
             _ => Err(invalid_message_err!("try_from", "DeviceType", "invalid value")),
+        }
+    }
+}
+
+/// [2.2.2.1 Server Device Announce Response (DR_CORE_DEVICE_ANNOUNCE_RSP)]
+///
+/// [2.2.2.1 Server Device Announce Response (DR_CORE_DEVICE_ANNOUNCE_RSP)]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/a4c0b619-6e87-4721-bdc4-5d2db7f485f3
+#[derive(Debug)]
+pub struct ServerDeviceAnnounceResponse {
+    pub device_id: u32,
+    pub result_code: NtStatus,
+}
+
+impl ServerDeviceAnnounceResponse {
+    const NAME: &str = "DR_CORE_DEVICE_ANNOUNCE_RSP";
+    const FIXED_PART_SIZE: usize = size_of::<u32>() * 2; // DeviceId, ResultCode
+
+    pub fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    pub fn encode(&self, dst: &mut WriteCursor) -> PduResult<()> {
+        ensure_size!(in: dst, size: self.size());
+        dst.write_u32(self.device_id);
+        dst.write_u32(self.result_code as u32);
+        Ok(())
+    }
+
+    pub fn decode(payload: &mut ReadCursor<'_>) -> PduResult<Self> {
+        ensure_size!(ctx: Self::NAME, in: payload, size: Self::FIXED_PART_SIZE);
+        let device_id = payload.read_u32();
+        let result_code = NtStatus::try_from(payload.read_u32())?;
+
+        Ok(Self { device_id, result_code })
+    }
+
+    pub fn size(&self) -> usize {
+        Self::FIXED_PART_SIZE
+    }
+}
+
+/// [2.3.1 NTSTATUS Values]
+///
+/// Windows defines an absolutely massive list of potential NTSTATUS values.
+/// This enum includes some basic ones for communicating with the RDP server.
+///
+/// [2.3.1 NTSTATUS Values]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-erref/596a1078-e883-4972-9bbc-49e60bebca55
+#[derive(Debug, PartialEq, Copy, Clone)]
+#[repr(u32)]
+pub enum NtStatus {
+    Success = 0x00000000,
+    Unsuccessful = 0xC0000001,
+    NotImplemented = 0xC0000002,
+    NoMoreFiles = 0x80000006,
+    ObjectNameCollision = 0xC0000035,
+    AccessDenied = 0xC0000022,
+    NotADirectory = 0xC0000103,
+    NoSuchFile = 0xC000000F,
+    NotSupported = 0xC00000BB,
+    DirectoryNotEmpty = 0xC0000101,
+}
+
+impl std::convert::TryFrom<u32> for NtStatus {
+    type Error = PduError;
+
+    fn try_from(value: u32) -> Result<Self, Self::Error> {
+        match value {
+            0x00000000 => Ok(NtStatus::Success),
+            0xC0000001 => Ok(NtStatus::Unsuccessful),
+            0xC0000002 => Ok(NtStatus::NotImplemented),
+            0x80000006 => Ok(NtStatus::NoMoreFiles),
+            0xC0000035 => Ok(NtStatus::ObjectNameCollision),
+            0xC0000022 => Ok(NtStatus::AccessDenied),
+            0xC0000103 => Ok(NtStatus::NotADirectory),
+            0xC000000F => Ok(NtStatus::NoSuchFile),
+            0xC00000BB => Ok(NtStatus::NotSupported),
+            0xC0000101 => Ok(NtStatus::DirectoryNotEmpty),
+            _ => Err(invalid_message_err!("try_from", "NtStatus", "unsupported value")),
         }
     }
 }

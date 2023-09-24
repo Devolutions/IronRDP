@@ -108,6 +108,10 @@ impl StaticVirtualChannelProcessor for Rdpdr {
             RdpdrPdu::VersionAndIdPdu(pdu) if pdu.kind == VersionAndIdPduKind::ServerClientIdConfirm => {
                 self.handle_client_id_confirm()
             }
+            RdpdrPdu::ServerDeviceAnnounceResponse(pdu) => {
+                warn!("received unimplemented packet: {:?}", pdu); // todo
+                Ok(Vec::new())
+            }
             RdpdrPdu::Unimplemented => {
                 warn!("received unimplemented packet: {:?}", pdu);
                 Ok(Vec::new())
