@@ -213,8 +213,12 @@ async fn active_session(
                                 }
                             } {
                                 let frame = active_stage.process_svc_messages_w_processor(svc_messages)?;
+                                // Send the messages to the server
                                 vec![ActiveStageOutput::ResponseFrame(frame)]
-                            }
+                            } else {
+                                // No messages to send to the server
+                                vec![]
+                            };
                         } else  {
                             warn!("Clipboard event received, but Cliprdr is not available");
                         }
