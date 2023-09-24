@@ -5,8 +5,8 @@ use ironrdp_pdu::cursor::{ReadCursor, WriteCursor};
 use ironrdp_pdu::{ensure_size, invalid_message_err, PduDecode, PduEncode, PduError, PduResult};
 
 use self::efs::{
-    ClientDeviceListAnnounce, ClientNameRequest, CoreCapability, CoreCapabilityKind, VersionAndIdPdu,
-    VersionAndIdPduKind,
+    ClientDeviceListAnnounce, ClientNameRequest, CoreCapability, CoreCapabilityKind, ServerDeviceAnnounceResponse,
+    VersionAndIdPdu, VersionAndIdPduKind,
 };
 
 pub mod efs;
@@ -17,6 +17,7 @@ pub enum RdpdrPdu {
     ClientNameRequest(ClientNameRequest),
     CoreCapability(CoreCapability),
     ClientDeviceListAnnounce(ClientDeviceListAnnounce),
+    ServerDeviceAnnounceResponse(ServerDeviceAnnounceResponse),
     /// TODO: temporary value for development, this should be removed
     Unimplemented,
 }
@@ -57,6 +58,10 @@ impl RdpdrPdu {
                 component: Component::RdpdrCtypCore,
                 packet_id: PacketId::CoreDevicelistAnnounce,
             },
+            RdpdrPdu::ServerDeviceAnnounceResponse(_) => SharedHeader {
+                component: Component::RdpdrCtypCore,
+                packet_id: PacketId::CoreDeviceReply,
+            },
             RdpdrPdu::Unimplemented => SharedHeader {
                 component: Component::Unimplemented,
                 packet_id: PacketId::Unimplemented,
@@ -72,6 +77,9 @@ impl PduDecode<'_> for RdpdrPdu {
             PacketId::CoreServerAnnounce => Ok(RdpdrPdu::VersionAndIdPdu(VersionAndIdPdu::decode(header, src)?)),
             PacketId::CoreServerCapability => Ok(RdpdrPdu::CoreCapability(CoreCapability::decode(header, src)?)),
             PacketId::CoreClientidConfirm => Ok(RdpdrPdu::VersionAndIdPdu(VersionAndIdPdu::decode(header, src)?)),
+            PacketId::CoreDeviceReply => Ok(RdpdrPdu::ServerDeviceAnnounceResponse(
+                ServerDeviceAnnounceResponse::decode(src)?,
+            )),
             _ => Ok(RdpdrPdu::Unimplemented),
         }
     }
@@ -86,6 +94,7 @@ impl PduEncode for RdpdrPdu {
             RdpdrPdu::ClientNameRequest(pdu) => pdu.encode(dst),
             RdpdrPdu::CoreCapability(pdu) => pdu.encode(dst),
             RdpdrPdu::ClientDeviceListAnnounce(pdu) => pdu.encode(dst),
+            RdpdrPdu::ServerDeviceAnnounceResponse(pdu) => pdu.encode(dst),
             RdpdrPdu::Unimplemented => Ok(()),
         }
     }
@@ -96,6 +105,7 @@ impl PduEncode for RdpdrPdu {
             RdpdrPdu::ClientNameRequest(pdu) => pdu.name(),
             RdpdrPdu::CoreCapability(pdu) => pdu.name(),
             RdpdrPdu::ClientDeviceListAnnounce(pdu) => pdu.name(),
+            RdpdrPdu::ServerDeviceAnnounceResponse(pdu) => pdu.name(),
             RdpdrPdu::Unimplemented => "Unimplemented",
         }
     }
@@ -107,6 +117,7 @@ impl PduEncode for RdpdrPdu {
                 RdpdrPdu::ClientNameRequest(pdu) => pdu.size(),
                 RdpdrPdu::CoreCapability(pdu) => pdu.size(),
                 RdpdrPdu::ClientDeviceListAnnounce(pdu) => pdu.size(),
+                RdpdrPdu::ServerDeviceAnnounceResponse(pdu) => pdu.size(),
                 RdpdrPdu::Unimplemented => 0,
             }
     }
@@ -125,6 +136,9 @@ impl fmt::Debug for RdpdrPdu {
                 write!(f, "RdpdrPdu({:?})", it)
             }
             Self::ClientDeviceListAnnounce(it) => {
+                write!(f, "RdpdrPdu({:?})", it)
+            }
+            Self::ServerDeviceAnnounceResponse(it) => {
                 write!(f, "RdpdrPdu({:?})", it)
             }
             Self::Unimplemented => {
