@@ -212,7 +212,7 @@ async fn active_session(
                                     None
                                 }
                             } {
-                                let frame = active_stage.process_svc_messages(svc_messages)?;
+                                let frame = active_stage.process_svc_messages_for_p(svc_messages)?;
                                 // Send the messages to the server
                                 vec![ActiveStageOutput::ResponseFrame(frame)]
                             } else {

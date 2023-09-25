@@ -161,11 +161,11 @@ impl ActiveStage {
 
     /// Completes user's SVC request with data, required to sent it over the network and returns
     /// a buffer with encoded data.
-    pub fn process_svc_messages<C: StaticVirtualChannelProcessor + 'static>(
+    pub fn process_svc_messages_for_p<C: StaticVirtualChannelProcessor + 'static>(
         &self,
-        request: SvcMessagesForProcessor<C>,
+        messages: SvcMessagesForProcessor<C>,
     ) -> SessionResult<Vec<u8>> {
-        self.x224_processor.process_svc_messages(request)
+        self.x224_processor.process_svc_messages_for_p(messages)
     }
 }
 

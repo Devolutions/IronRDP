@@ -76,16 +76,16 @@ impl Processor {
 
     /// Completes user's SVC request with data, required to sent it over the network and returns
     /// a buffer with encoded data.
-    pub fn process_svc_messages<C: StaticVirtualChannelProcessor + 'static>(
+    pub fn process_svc_messages_for_p<C: StaticVirtualChannelProcessor + 'static>(
         &self,
-        request: SvcMessagesForProcessor<C>,
+        messages: SvcMessagesForProcessor<C>,
     ) -> SessionResult<Vec<u8>> {
         let channel_id = self
             .static_channels
             .get_channel_id_by_type::<C>()
             .ok_or_else(|| reason_err!("SVC", "channel not found"))?;
 
-        self.process_svc_messages(request.into(), channel_id, self.user_channel_id)
+        self.process_svc_messages(messages.into(), channel_id, self.user_channel_id)
     }
 
     /// Processes a received PDU. Returns a buffer with encoded data to send to the server, if any.
