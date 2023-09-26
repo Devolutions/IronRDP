@@ -1861,6 +1861,7 @@ dependencies = [
  "exitcode",
  "inquire",
  "ironrdp",
+ "ironrdp-cliprdr-native",
  "ironrdp-rdpdr",
  "ironrdp-rdpsnd",
  "ironrdp-tls",
@@ -1874,6 +1875,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "whoami",
+ "windows 0.48.0",
  "winit",
 ]
 
@@ -1886,6 +1888,17 @@ dependencies = [
  "ironrdp-svc",
  "thiserror",
  "tracing",
+]
+
+[[package]]
+name = "ironrdp-cliprdr-native"
+version = "0.1.0"
+dependencies = [
+ "ironrdp-cliprdr",
+ "ironrdp-svc",
+ "thiserror",
+ "tracing",
+ "windows 0.48.0",
 ]
 
 [[package]]

@@ -1,16 +1,13 @@
 //! PDUs for [\[MS-RDPEFS\]: Remote Desktop Protocol: File System Virtual Channel Extension]
 //!
 //! [\[MS-RDPEFS\]: Remote Desktop Protocol: File System Virtual Channel Extension]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/34d9de58-b2b5-40b6-b970-f82d4603bdb5
-use bitflags::bitflags;
 use std::fmt::Debug;
 use std::mem::size_of;
 
+use bitflags::bitflags;
+use ironrdp_pdu::cursor::{ReadCursor, WriteCursor};
 use ironrdp_pdu::utils::{encoded_str_len, write_string_to_cursor, CharacterSet};
-use ironrdp_pdu::{cast_length, ensure_size, invalid_message_err, PduError};
-use ironrdp_pdu::{
-    cursor::{ReadCursor, WriteCursor},
-    PduResult,
-};
+use ironrdp_pdu::{cast_length, ensure_size, invalid_message_err, PduError, PduResult};
 
 use super::{PacketId, SharedHeader};
 

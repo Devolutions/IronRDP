@@ -3,6 +3,7 @@ use ironrdp_pdu::geometry::InclusiveRectangle;
 use ironrdp_pdu::input::fast_path::{FastPathInput, FastPathInputEvent};
 use ironrdp_pdu::write_buf::WriteBuf;
 use ironrdp_pdu::{Action, PduParsing};
+use ironrdp_svc::{StaticVirtualChannelProcessor, SvcProcessorMessages};
 
 use crate::fast_path::UpdateKind;
 use crate::image::DecodedImage;
@@ -93,7 +94,7 @@ impl ActiveStage {
         Ok(output)
     }
 
-    /// Process a frame received from the client.
+    /// Process a frame received from the server.
     pub fn process(
         &mut self,
         image: &mut DecodedImage,
@@ -148,6 +149,23 @@ impl ActiveStage {
         pdu: ironrdp_pdu::rdp::headers::ShareDataPdu,
     ) -> SessionResult<usize> {
         self.x224_processor.encode_static(output, pdu)
+    }
+
+    pub fn get_svc_processor<T: StaticVirtualChannelProcessor + 'static>(&mut self) -> Option<&T> {
+        self.x224_processor.get_svc_processor()
+    }
+
+    pub fn get_svc_processor_mut<T: StaticVirtualChannelProcessor + 'static>(&mut self) -> Option<&mut T> {
+        self.x224_processor.get_svc_processor_mut()
+    }
+
+    /// Completes user's SVC request with data, required to sent it over the network and returns
+    /// a buffer with encoded data.
+    pub fn process_svc_processor_messages<C: StaticVirtualChannelProcessor + 'static>(
+        &self,
+        messages: SvcProcessorMessages<C>,
+    ) -> SessionResult<Vec<u8>> {
+        self.x224_processor.process_svc_processor_messages(messages)
     }
 }
 

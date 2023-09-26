@@ -25,6 +25,7 @@ ironrdp-acceptor = { version = "0.1", path = "crates/ironrdp-acceptor" }
 ironrdp-async = { version = "0.1", path = "crates/ironrdp-async" }
 ironrdp-blocking = { version = "0.1", path = "crates/ironrdp-blocking" }
 ironrdp-cliprdr = { version = "0.1", path = "crates/ironrdp-cliprdr" }
+ironrdp-cliprdr-native = { version = "0.1", path = "crates/ironrdp-cliprdr-native" }
 ironrdp-connector = { version = "0.1", path = "crates/ironrdp-connector" }
 ironrdp-dvc = { version = "0.1", path = "crates/ironrdp-dvc" }
 ironrdp-error = { version = "0.1", path = "crates/ironrdp-error" }

@@ -8,7 +8,7 @@ It’s important for `PduEncode` to be object-safe in order to enable patterns s
 found in `ironrdp-svc`:
 
 ```rust
-pub trait StaticVirtualChannel {
+pub trait StaticVirtualChannelProcessor {
     fn process(&mut self, payload: &[u8]) -> PduResult<Vec<Box<dyn PduEncode>>>;
 }
 ```

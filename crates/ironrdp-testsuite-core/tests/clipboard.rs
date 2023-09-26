@@ -58,7 +58,7 @@ encode_decode_test! {
 
     format_data_request:
         ClipboardPdu::FormatDataRequest(FormatDataRequest {
-            format_id: 0x0d,
+            format: ClipboardFormatId::new(0x0d),
         }),
         [
             0x04, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00,

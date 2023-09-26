@@ -8,6 +8,7 @@ use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use core::any::{Any, TypeId};
 use core::fmt;
+use std::marker::PhantomData;
 
 use bitflags::bitflags;
 use ironrdp_pdu::gcc::{ChannelName, ChannelOptions};
@@ -15,13 +16,43 @@ use ironrdp_pdu::write_buf::WriteBuf;
 use ironrdp_pdu::{assert_obj_safe, PduResult};
 use pdu::cursor::WriteCursor;
 use pdu::gcc::ChannelDef;
-use pdu::{encode_buf, PduEncode};
+use pdu::rdp::vc::ChannelControlFlags;
+use pdu::{custom_err, encode_buf, PduEncode, PduParsing};
 
 /// The integer type representing a static virtual channel ID.
 pub type StaticChannelId = u16;
 
-/// Encodable PDU that can used as a message to be sent over a static virtual channel.
-/// Additional SVC header flags could be added via [`SvcMessage::with_flags`] method.
+/// SVC data to be sent to the server. See [`SvcMessage`] for more information.
+/// Usually returned by the channel-specific methods.
+pub struct SvcProcessorMessages<P: StaticVirtualChannelProcessor> {
+    messages: Vec<SvcMessage>,
+    _channel: PhantomData<P>,
+}
+
+impl<P: StaticVirtualChannelProcessor> SvcProcessorMessages<P> {
+    pub fn new(messages: Vec<SvcMessage>) -> Self {
+        Self {
+            messages,
+            _channel: PhantomData,
+        }
+    }
+}
+
+impl<P: StaticVirtualChannelProcessor> From<Vec<SvcMessage>> for SvcProcessorMessages<P> {
+    fn from(messages: Vec<SvcMessage>) -> Self {
+        Self::new(messages)
+    }
+}
+
+impl<P: StaticVirtualChannelProcessor> From<SvcProcessorMessages<P>> for Vec<SvcMessage> {
+    fn from(request: SvcProcessorMessages<P>) -> Self {
+        request.messages
+    }
+}
+
+/// Encodable PDU to be sent over a static virtual channel.
+///
+/// Additional SVC header flags can be added via [`SvcMessage::with_flags`] method.
 pub struct SvcMessage {
     pdu: Box<dyn PduEncode>,
     flags: ChannelFlags,
@@ -55,14 +86,68 @@ pub enum CompressionCondition {
     Always,
 }
 
+/// A static virtual channel.
+#[derive(Debug)]
+pub struct StaticVirtualChannel {
+    channel_processor: Box<dyn StaticVirtualChannelProcessor>,
+    chunk_processor: ChunkProcessor,
+}
+
+impl StaticVirtualChannel {
+    pub fn new<T: StaticVirtualChannelProcessor + 'static>(channel_processor: T) -> Self {
+        Self {
+            channel_processor: Box::new(channel_processor),
+            chunk_processor: ChunkProcessor::new(),
+        }
+    }
+
+    pub fn channel_name(&self) -> ChannelName {
+        self.channel_processor.channel_name()
+    }
+
+    pub fn compression_condition(&self) -> CompressionCondition {
+        self.channel_processor.compression_condition()
+    }
+
+    /// Processes a payload received on the virtual channel. Returns a vector of PDUs to be sent back
+    /// to the server. If no PDUs are to be sent, an empty vector is returned.
+    pub fn process(&mut self, payload: &[u8]) -> PduResult<Vec<SvcMessage>> {
+        if let Some(payload) = self.dechunkify(payload)? {
+            return self.channel_processor.process(&payload);
+        }
+
+        Ok(Vec::new())
+    }
+
+    pub fn chunkify(messages: Vec<SvcMessage>) -> PduResult<Vec<WriteBuf>> {
+        ChunkProcessor::chunkify(messages, CHANNEL_CHUNK_LENGTH)
+    }
+
+    pub fn is_drdynvc(&self) -> bool {
+        self.channel_processor.is_drdynvc()
+    }
+
+    pub fn channel_processor_downcast_ref<T: StaticVirtualChannelProcessor + 'static>(&self) -> Option<&T> {
+        self.channel_processor.as_any().downcast_ref()
+    }
+
+    pub fn channel_processor_downcast_mut<T: StaticVirtualChannelProcessor + 'static>(&mut self) -> Option<&mut T> {
+        self.channel_processor.as_any_mut().downcast_mut()
+    }
+
+    fn dechunkify(&mut self, payload: &[u8]) -> PduResult<Option<Vec<u8>>> {
+        self.chunk_processor.dechunkify(payload)
+    }
+}
+
 /// A type that is a Static Virtual Channel
 ///
 /// Static virtual channels are created once at the beginning of the RDP session and allow lossless
 /// communication between client and server components over the main data connection.
 /// There are at most 31 (optional) static virtual channels that can be created for a single connection, for a
 /// total of 32 static channels when accounting for the non-optional I/O channel.
-pub trait StaticVirtualChannel: AsAny + fmt::Debug + Send + Sync {
-    /// Returns the name of the `StaticVirtualChannel`
+pub trait StaticVirtualChannelProcessor: AsAny + fmt::Debug + Send + Sync {
+    /// Returns the name of the static virtual channel corresponding to this processor.
     fn channel_name(&self) -> ChannelName;
 
     /// Defines which compression flag should be sent along the [`ChannelDef`] Definition Structure (`CHANNEL_DEF`)
@@ -70,7 +155,9 @@ pub trait StaticVirtualChannel: AsAny + fmt::Debug + Send + Sync {
         CompressionCondition::Never
     }
 
-    /// Processes a payload received on the virtual channel.
+    /// Processes a payload received on the virtual channel. The `payload` is expected
+    /// to be a fully de-chunkified PDU.
+    ///
     /// Returns a list of PDUs to be sent back to the client.
     fn process(&mut self, payload: &[u8]) -> PduResult<Vec<SvcMessage>>;
 
@@ -81,87 +168,137 @@ pub trait StaticVirtualChannel: AsAny + fmt::Debug + Send + Sync {
     }
 }
 
-assert_obj_safe!(StaticVirtualChannel);
+assert_obj_safe!(StaticVirtualChannelProcessor);
 
-/// Takes a vector of PDUs and breaks them into chunks prefixed with a Channel PDU Header (`CHANNEL_PDU_HEADER`).
-///
-/// Each chunk is at most `max_chunk_len` bytes long (not including the Channel PDU Header).
-pub fn chunkify(messages: Vec<SvcMessage>, max_chunk_len: usize) -> PduResult<Vec<WriteBuf>> {
-    let mut results = Vec::new();
-    for message in messages {
-        results.extend(chunkify_one(message, max_chunk_len)?);
-    }
-    Ok(results)
+/// ChunkProcessor is used to chunkify/de-chunkify static virtual channel PDUs.
+#[derive(Debug)]
+struct ChunkProcessor {
+    /// Buffer for de-chunkification of clipboard PDUs. Everything bigger than ~1600 bytes is
+    /// usually chunked when transferred over svc.
+    chunked_pdu: Vec<u8>,
 }
 
-/// Takes a single PDU and breaks it into chunks prefixed with a [`ChannelPduHeader`].
-///
-/// Each chunk is at most `max_chunk_len` bytes long (not including the Channel PDU Header).
-///
-/// For example, if the PDU is 4000 bytes long and `max_chunk_len` is 1600, this function will
-/// return 3 chunks, each 1600 bytes long, and the last chunk will be 800 bytes long.
-///
-/// [[ Channel PDU Header | 1600 bytes of PDU data ] [ Channel PDU Header | 1600 bytes of PDU data ] [ Channel PDU Header | 800 bytes of PDU data ]]
-fn chunkify_one(message: SvcMessage, max_chunk_len: usize) -> PduResult<Vec<WriteBuf>> {
-    let mut encoded_pdu = WriteBuf::new(); // TODO(perf): reuse this buffer using `clear` and `filled` as appropriate
-    encode_buf(message.pdu.as_ref(), &mut encoded_pdu)?;
-
-    let mut chunks = Vec::new();
-
-    let total_len = encoded_pdu.filled_len();
-    let mut chunk_start_index: usize = 0;
-    let mut chunk_end_index = std::cmp::min(total_len, max_chunk_len);
-    loop {
-        // Create a buffer to hold this next chunk.
-        // TODO(perf): Reuse this buffer using `clear` and `filled` as appropriate.
-        //             This one will be a bit trickier because we'll need to grow
-        //             the number of chunk buffers if we run out.
-        let mut chunk = WriteBuf::new();
-
-        // Set the first and last flags if this is the first and/or last chunk for this PDU.
-        let first = chunk_start_index == 0;
-        let last = chunk_end_index == total_len;
-
-        // Create the header for this chunk.
-        let header = {
-            let mut flags = ChannelFlags::empty();
-            if first {
-                flags |= ChannelFlags::FIRST;
-            }
-            if last {
-                flags |= ChannelFlags::LAST;
-            }
-
-            flags |= message.flags;
-
-            ChannelPduHeader {
-                length: ironrdp_pdu::cast_int!(ChannelPduHeader::NAME, "length", total_len)?,
-                flags,
-            }
-        };
-
-        // Encode the header for this chunk.
-        encode_buf(&header, &mut chunk)?;
-        // Append the piece of the encoded_pdu that belongs in this chunk.
-        chunk.write_slice(&encoded_pdu[chunk_start_index..chunk_end_index]);
-        // Push the chunk onto the results.
-        chunks.push(chunk);
-
-        // If this was the last chunk, we're done, return the results.
-        if last {
-            break;
+impl ChunkProcessor {
+    pub fn new() -> Self {
+        Self {
+            chunked_pdu: Vec::new(),
         }
-
-        // Otherwise, update the chunk start and end indices for the next iteration.
-        chunk_start_index = chunk_end_index;
-        chunk_end_index = std::cmp::min(total_len, chunk_end_index + max_chunk_len);
     }
 
-    Ok(chunks)
+    /// Takes a vector of PDUs and breaks them into chunks prefixed with a Channel PDU Header (`CHANNEL_PDU_HEADER`).
+    ///
+    /// Each chunk is at most `max_chunk_len` bytes long (not including the Channel PDU Header).
+    fn chunkify(messages: Vec<SvcMessage>, max_chunk_len: usize) -> PduResult<Vec<WriteBuf>> {
+        let mut results = Vec::new();
+        for message in messages {
+            results.extend(Self::chunkify_one(message, max_chunk_len)?);
+        }
+        Ok(results)
+    }
+
+    /// Dechunkify a payload received on the virtual channel.
+    ///
+    /// If the payload is not chunked, returns the payload as-is.
+    /// For chunked payloads, returns `Ok(None)` until the last chunk is received, at which point
+    /// it returns `Ok(Some(payload))`.
+    fn dechunkify(&mut self, mut payload: &[u8]) -> PduResult<Option<Vec<u8>>> {
+        let last = self.process_header(&mut payload)?;
+
+        // Extend the chunked_pdu buffer with the payload
+        self.chunked_pdu.extend_from_slice(payload);
+
+        // If this was an unchunked message, or the last in a series of chunks, return the payload
+        if last {
+            // Take the chunked_pdu buffer and replace it with an empty one
+            return Ok(Some(std::mem::take(&mut self.chunked_pdu)));
+        }
+
+        // This was an intermediate chunk, return None
+        Ok(None)
+    }
+
+    /// Returns whether this was the last chunk based on the flags in the channel header.
+    fn process_header(&self, payload: &mut &[u8]) -> PduResult<bool> {
+        let channel_header = ironrdp_pdu::rdp::vc::ChannelPduHeader::from_buffer(payload)
+            .map_err(|e| custom_err!("failed to decode svc channel header", e))?;
+        Ok(channel_header.flags.contains(ChannelControlFlags::FLAG_LAST))
+    }
+
+    /// Takes a single PDU and breaks it into chunks prefixed with a [`ChannelPduHeader`].
+    ///
+    /// Each chunk is at most `max_chunk_len` bytes long (not including the Channel PDU Header).
+    ///
+    /// For example, if the PDU is 4000 bytes long and `max_chunk_len` is 1600, this function will
+    /// return 3 chunks, each 1600 bytes long, and the last chunk will be 800 bytes long.
+    ///
+    /// [[ Channel PDU Header | 1600 bytes of PDU data ] [ Channel PDU Header | 1600 bytes of PDU data ] [ Channel PDU Header | 800 bytes of PDU data ]]
+    fn chunkify_one(message: SvcMessage, max_chunk_len: usize) -> PduResult<Vec<WriteBuf>> {
+        let mut encoded_pdu = WriteBuf::new(); // TODO(perf): reuse this buffer using `clear` and `filled` as appropriate
+        encode_buf(message.pdu.as_ref(), &mut encoded_pdu)?;
+
+        let mut chunks = Vec::new();
+
+        let total_len = encoded_pdu.filled_len();
+        let mut chunk_start_index: usize = 0;
+        let mut chunk_end_index = std::cmp::min(total_len, max_chunk_len);
+        loop {
+            // Create a buffer to hold this next chunk.
+            // TODO(perf): Reuse this buffer using `clear` and `filled` as appropriate.
+            //             This one will be a bit trickier because we'll need to grow
+            //             the number of chunk buffers if we run out.
+            let mut chunk = WriteBuf::new();
+
+            // Set the first and last flags if this is the first and/or last chunk for this PDU.
+            let first = chunk_start_index == 0;
+            let last = chunk_end_index == total_len;
+
+            // Create the header for this chunk.
+            let header = {
+                let mut flags = ChannelFlags::empty();
+                if first {
+                    flags |= ChannelFlags::FIRST;
+                }
+                if last {
+                    flags |= ChannelFlags::LAST;
+                }
+
+                flags |= message.flags;
+
+                ChannelPduHeader {
+                    length: ironrdp_pdu::cast_int!(ChannelPduHeader::NAME, "length", total_len)?,
+                    flags,
+                }
+            };
+
+            // Encode the header for this chunk.
+            encode_buf(&header, &mut chunk)?;
+            // Append the piece of the encoded_pdu that belongs in this chunk.
+            chunk.write_slice(&encoded_pdu[chunk_start_index..chunk_end_index]);
+            // Push the chunk onto the results.
+            chunks.push(chunk);
+
+            // If this was the last chunk, we're done, return the results.
+            if last {
+                break;
+            }
+
+            // Otherwise, update the chunk start and end indices for the next iteration.
+            chunk_start_index = chunk_end_index;
+            chunk_end_index = std::cmp::min(total_len, chunk_end_index + max_chunk_len);
+        }
+
+        Ok(chunks)
+    }
+}
+
+impl Default for ChunkProcessor {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 /// Builds the [`ChannelOptions`] bitfield to be used in the [`ChannelDef`] structure.
-pub fn make_channel_options(channel: &dyn StaticVirtualChannel) -> ChannelOptions {
+pub fn make_channel_options(channel: &StaticVirtualChannel) -> ChannelOptions {
     match channel.compression_condition() {
         CompressionCondition::Never => ChannelOptions::empty(),
         CompressionCondition::WhenRdpDataIsCompressed => ChannelOptions::COMPRESS_RDP,
@@ -170,7 +307,7 @@ pub fn make_channel_options(channel: &dyn StaticVirtualChannel) -> ChannelOption
 }
 
 /// Builds the [`ChannelDef`] structure containing information for this channel.
-pub fn make_channel_definition(channel: &dyn StaticVirtualChannel) -> ChannelDef {
+pub fn make_channel_definition(channel: &StaticVirtualChannel) -> ChannelDef {
     let name = channel.channel_name();
     let options = make_channel_options(channel);
     ChannelDef { name, options }
@@ -200,7 +337,8 @@ macro_rules! impl_as_any {
     };
 }
 
-/// A set holding at most one trait object for any given static channel.
+/// A set holding at most one [`StaticVirtualChannel`] for any given type
+/// implementing [`StaticVirtualChannelProcessor`].
 ///
 /// To ensure uniqueness, each trait object is associated to the [`TypeId`] of it’s original type.
 /// Once joined, channels may have their ID attached using [`Self::attach_channel_id()`], effectively
@@ -211,10 +349,10 @@ macro_rules! impl_as_any {
 /// the channel ID ([`Self::get_by_channel_id()`]).
 ///
 /// It’s possible to downcast the trait object and to retrieve the concrete value
-/// since all [`StaticVirtualChannel`]s are also implementing the [`AsAny`] trait.
+/// since all [`StaticVirtualChannelProcessor`]s are also implementing the [`AsAny`] trait.
 #[derive(Debug)]
 pub struct StaticChannelSet {
-    channels: BTreeMap<TypeId, Box<dyn StaticVirtualChannel>>,
+    channels: BTreeMap<TypeId, StaticVirtualChannel>,
     to_channel_id: BTreeMap<TypeId, StaticChannelId>,
     to_type_id: BTreeMap<StaticChannelId, TypeId>,
 }
@@ -232,42 +370,38 @@ impl StaticChannelSet {
     /// Inserts a [`StaticVirtualChannel`] into this [`StaticChannelSet`].
     ///
     /// If a static virtual channel of this type already exists, it is returned.
-    pub fn insert<T: StaticVirtualChannel + 'static>(&mut self, val: T) -> Option<Box<dyn StaticVirtualChannel>> {
-        self.channels.insert(TypeId::of::<T>(), Box::new(val))
+    pub fn insert<T: StaticVirtualChannelProcessor + 'static>(&mut self, val: T) -> Option<StaticVirtualChannel> {
+        self.channels.insert(TypeId::of::<T>(), StaticVirtualChannel::new(val))
     }
 
-    /// Gets a reference to a [`StaticVirtualChannel`] trait object by looking up its [`TypeId`].
-    pub fn get_by_type_id(&self, type_id: TypeId) -> Option<&dyn StaticVirtualChannel> {
-        self.channels.get(&type_id).map(|boxed| boxed.as_ref())
+    /// Gets a reference to a [`StaticVirtualChannel`] by looking up its internal [`StaticVirtualChannelProcessor`]'s [`TypeId`].
+    pub fn get_by_type_id(&self, type_id: TypeId) -> Option<&StaticVirtualChannel> {
+        self.channels.get(&type_id)
     }
 
-    /// Gets a mutable reference to a [`StaticVirtualChannel`] trait object by looking up its [`TypeId`].
-    pub fn get_by_type_id_mut(&mut self, type_id: TypeId) -> Option<&mut dyn StaticVirtualChannel> {
-        if let Some(boxed) = self.channels.get_mut(&type_id) {
-            Some(boxed.as_mut())
-        } else {
-            None
-        }
+    /// Gets a mutable reference to a [`StaticVirtualChannel`] by looking up its internal [`StaticVirtualChannelProcessor`]'s [`TypeId`].
+    pub fn get_by_type_id_mut(&mut self, type_id: TypeId) -> Option<&mut StaticVirtualChannel> {
+        self.channels.get_mut(&type_id)
     }
 
-    /// Gets a reference to a [`StaticVirtualChannel`] trait object by looking up its [`TypeId`].
-    pub fn get_by_type<T: StaticVirtualChannel + 'static>(&self) -> Option<&dyn StaticVirtualChannel> {
+    /// Gets a reference to a [`StaticVirtualChannel`] by looking up its internal [`StaticVirtualChannelProcessor`]'s [`TypeId`].
+    pub fn get_by_type<T: StaticVirtualChannelProcessor + 'static>(&self) -> Option<&StaticVirtualChannel> {
         self.get_by_type_id(TypeId::of::<T>())
     }
 
-    /// Gets a mutable reference to a [`StaticVirtualChannel`] trait object by looking up its [`TypeId`].
-    pub fn get_by_type_mut<T: StaticVirtualChannel + 'static>(&mut self) -> Option<&mut dyn StaticVirtualChannel> {
+    /// Gets a mutable reference to a [`StaticVirtualChannel`] by looking up its internal [`StaticVirtualChannelProcessor`]'s [`TypeId`].
+    pub fn get_by_type_mut<T: StaticVirtualChannelProcessor + 'static>(&mut self) -> Option<&mut StaticVirtualChannel> {
         self.get_by_type_id_mut(TypeId::of::<T>())
     }
 
-    /// Gets a reference to a [`StaticVirtualChannel`] trait object by looking up its channel ID.
-    pub fn get_by_channel_id(&self, channel_id: StaticChannelId) -> Option<&dyn StaticVirtualChannel> {
+    /// Gets a reference to a [`StaticVirtualChannel`] by looking up its channel ID.
+    pub fn get_by_channel_id(&self, channel_id: StaticChannelId) -> Option<&StaticVirtualChannel> {
         self.get_type_id_by_channel_id(channel_id)
             .and_then(|type_id| self.get_by_type_id(type_id))
     }
 
-    /// Gets a mutable reference to a [`StaticVirtualChannel`] trait object by looking up its channel ID.
-    pub fn get_by_channel_id_mut(&mut self, channel_id: StaticChannelId) -> Option<&mut dyn StaticVirtualChannel> {
+    /// Gets a mutable reference to a [`StaticVirtualChannel`] by looking up its channel ID.
+    pub fn get_by_channel_id_mut(&mut self, channel_id: StaticChannelId) -> Option<&mut StaticVirtualChannel> {
         self.get_type_id_by_channel_id(channel_id)
             .and_then(|type_id| self.get_by_type_id_mut(type_id))
     }
@@ -275,7 +409,7 @@ impl StaticChannelSet {
     /// Removes a [`StaticVirtualChannel`] from this [`StaticChannelSet`].
     ///
     /// If a static virtual channel of this type existed, it will be returned.
-    pub fn remove_by_type_id(&mut self, type_id: TypeId) -> Option<Box<dyn StaticVirtualChannel>> {
+    pub fn remove_by_type_id(&mut self, type_id: TypeId) -> Option<StaticVirtualChannel> {
         let svc = self.channels.remove(&type_id);
         if let Some(channel_id) = self.to_channel_id.remove(&type_id) {
             self.to_type_id.remove(&channel_id);
@@ -286,7 +420,7 @@ impl StaticChannelSet {
     /// Removes a [`StaticVirtualChannel`] from this [`StaticChannelSet`].
     ///
     /// If a static virtual channel of this type existed, it will be returned.
-    pub fn remove_by_type<T: StaticVirtualChannel + 'static>(&mut self) -> Option<Box<dyn StaticVirtualChannel>> {
+    pub fn remove_by_type<T: StaticVirtualChannelProcessor + 'static>(&mut self) -> Option<StaticVirtualChannel> {
         let type_id = TypeId::of::<T>();
         self.remove_by_type_id(type_id)
     }
@@ -305,7 +439,7 @@ impl StaticChannelSet {
     }
 
     /// Gets the attached channel ID for a given static virtual channel.
-    pub fn get_channel_id_by_type<T: StaticVirtualChannel + 'static>(&self) -> Option<StaticChannelId> {
+    pub fn get_channel_id_by_type<T: StaticVirtualChannelProcessor + 'static>(&self) -> Option<StaticChannelId> {
         self.get_channel_id_by_type_id(TypeId::of::<T>())
     }
 
@@ -325,13 +459,13 @@ impl StaticChannelSet {
     }
 
     #[inline]
-    pub fn iter(&self) -> impl Iterator<Item = (TypeId, &dyn StaticVirtualChannel)> {
-        self.channels.iter().map(|(type_id, boxed)| (*type_id, boxed.as_ref()))
+    pub fn iter(&self) -> impl Iterator<Item = (TypeId, &StaticVirtualChannel)> {
+        self.channels.iter().map(|(type_id, svc)| (*type_id, svc))
     }
 
     #[inline]
-    pub fn values(&self) -> impl Iterator<Item = &dyn StaticVirtualChannel> {
-        self.channels.values().map(|boxed| boxed.as_ref())
+    pub fn values(&self) -> impl Iterator<Item = &StaticVirtualChannel> {
+        self.channels.values()
     }
 
     #[inline]

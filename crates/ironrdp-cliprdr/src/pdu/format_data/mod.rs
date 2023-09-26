@@ -13,6 +13,7 @@ use ironrdp_pdu::cursor::{ReadCursor, WriteCursor};
 use ironrdp_pdu::utils::{read_string_from_cursor, to_utf16_bytes, CharacterSet};
 use ironrdp_pdu::{cast_int, ensure_fixed_part_size, ensure_size, PduDecode, PduEncode, PduResult};
 
+use super::ClipboardFormatId;
 use crate::pdu::{ClipboardPduFlags, PartialHeader};
 
 /// Represents `CLIPRDR_FORMAT_DATA_RESPONSE`
@@ -146,6 +147,13 @@ impl<'a> FormatDataResponse<'a> {
         let mut cursor = ReadCursor::new(&self.data);
         read_string_from_cursor(&mut cursor, CharacterSet::Unicode, true)
     }
+
+    pub fn into_owned(self) -> FormatDataResponse<'static> {
+        FormatDataResponse {
+            is_error: self.is_error,
+            data: Cow::Owned(self.data.into_owned()),
+        }
+    }
 }
 
 impl PduEncode for FormatDataResponse<'_> {
@@ -193,7 +201,7 @@ impl<'de> PduDecode<'de> for FormatDataResponse<'de> {
 /// Represents `CLIPRDR_FORMAT_DATA_REQUEST`
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FormatDataRequest {
-    pub format_id: u32,
+    pub format: ClipboardFormatId,
 }
 
 impl FormatDataRequest {
@@ -207,7 +215,7 @@ impl PduEncode for FormatDataRequest {
         header.encode(dst)?;
 
         ensure_fixed_part_size!(in: dst);
-        dst.write_u32(self.format_id);
+        dst.write_u32(self.format.value());
 
         Ok(())
     }
@@ -226,8 +234,8 @@ impl<'de> PduDecode<'de> for FormatDataRequest {
         let _header = PartialHeader::decode(src)?;
 
         ensure_fixed_part_size!(in: src);
-        let format_id = src.read_u32();
+        let format = ClipboardFormatId::new(src.read_u32());
 
-        Ok(Self { format_id })
+        Ok(Self { format })
     }
 }
