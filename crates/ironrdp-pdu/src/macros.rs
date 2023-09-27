@@ -283,6 +283,9 @@ macro_rules! try_read_optional {
 macro_rules! try_write_optional {
     ($val:expr, $f:expr) => {
         if let Some(ref val) = $val {
+            // This is a workaround for clippy false positive because
+            // of macro expansion.
+            #[allow(clippy::redundant_closure_call)]
             $f(val)?
         } else {
             return Ok(());

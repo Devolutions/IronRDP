@@ -61,9 +61,12 @@ impl RemoteClipboardFormatRegistry {
             .chain(std::iter::once(0))
             .collect::<Vec<_>>();
 
-        // SAFETY: `format_name_utf16` is always a valid null-terminated UTF-16 string
-        let mapped_format_id =
-            ClipboardFormatId::new(unsafe { RegisterClipboardFormatW(PCWSTR::from_raw(format_name_utf16.as_ptr())) });
+        let format_name_pcwstr = PCWSTR::from_raw(format_name_utf16.as_ptr());
+
+        // SAFETY: `RegisterClipboardFormatW` is always safe to call.
+        let raw_format_id = unsafe { RegisterClipboardFormatW(format_name_pcwstr) };
+
+        let mapped_format_id = ClipboardFormatId::new(raw_format_id);
 
         if mapped_format_id.value() == 0 {
             let error_code = get_last_winapi_error().0;

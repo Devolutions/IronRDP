@@ -1,9 +1,4 @@
-//! Cliboard static virtual channel(SVC) implementation.
-//! This library includes:
-//! - Cliboard SVC PDUs parsing
-//! - Clipboard SVC processing
-//!
-//! For concrete native clipboard backend implementations, see `ironrdp-cliprdr-native` crate.
+#![doc = include_str!("../README.md")]
 
 pub mod backend;
 pub mod pdu;

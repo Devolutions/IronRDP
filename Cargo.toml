@@ -3,6 +3,7 @@ members = [
   "crates/*",
   "xtask",
 ]
+resolver = "2"
 
 # FIXME: fix compilation
 exclude = [

@@ -167,12 +167,12 @@ impl WinClipboard {
 impl Drop for WinClipboard {
     fn drop(&mut self) {
         // Remove clipboard processing from WinAPI event loop
-        //
-        // SAFETY: `window` is a valid window handle
-        unsafe {
-            RemoveClipboardFormatListener(self.window);
-            RemoveWindowSubclass(self.window, Some(clipboard_subproc), 0);
-        }
+
+        // SAFETY: Format listener was registered in the `new` method previously.
+        unsafe { RemoveClipboardFormatListener(self.window) };
+
+        // SAFETY: Subclass was registered in the `new` method previously.
+        unsafe { RemoveWindowSubclass(self.window, Some(clipboard_subproc), 0) };
     }
 }
 

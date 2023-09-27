@@ -1,8 +1,10 @@
 # IronRDP CLIPRDR
 
-CLIPRDR static channel for clipboard implemented as described in MS-RDPECLIP.
+Implementation of cliboard static virtual channel(`CLIPRDR`) described in `MS-RDPECLIP`
 
 This library includes:
+- Cliboard SVC PDUs parsing
+- Clipboard SVC processing
+- Clipboard backend API types for implementing OS-specific clipboard logic
 
-- CLIPRDR PDUs parsing
-- CLIPRDR processing
+For concrete native clipboard backend implementations, see `ironrdp-cliprdr-native` crate.

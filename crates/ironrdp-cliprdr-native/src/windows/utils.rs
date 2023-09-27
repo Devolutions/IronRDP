@@ -16,12 +16,20 @@ impl GlobalMemoryBuffer {
         // `windows` crate will catch this error via internal invalid handle check
         let handle = unsafe { GlobalAlloc(GMEM_MOVEABLE, data.len())? };
 
-        // SAFETY: We own the handle, so it is safe to assume that GlobalLock will succeed
-        unsafe {
-            let dst = GlobalLock(handle);
-            std::ptr::copy(data.as_ptr(), dst as _, data.len());
-            GlobalUnlock(handle);
-        };
+        // SAFETY: We created the handle and ensured it wasn’t null just above.
+        // Note that we don’t check for failure because we own the handle and
+        // know that the specified memory block can’t be discarded at this point.
+        let dst = unsafe { GlobalLock(handle) };
+
+        // SAFETY:
+        // - `data` is valid for reads of `data.len()` bytes.
+        // - `dst` is valid for writes of `data.len()` bytes, we allocated enough above.
+        // - Both `data` and `dst` are properly aligned: u8 alignment is 1
+        // - Memory regions are not overlapping, `dst` was allocated by us just above.
+        unsafe { std::ptr::copy_nonoverlapping(data.as_ptr(), dst as _, data.len()) };
+
+        // SAFETY: We called `GlobalLock` on this handle just above.
+        unsafe { GlobalUnlock(handle) };
 
         Ok(Self(handle))
     }
@@ -51,7 +59,9 @@ pub unsafe fn render_format(format: ClipboardFormatId, data: &[u8]) -> WinCliprd
     // Cast HGLOBAL to HANDLE
     let handle = HANDLE(global_data.as_raw().0);
 
-    let _ = SetClipboardData(format.value(), handle);
+    // SAFETY: If described above safety requirements of `render_format` call are met, then
+    // `SetClipboardData` is safe to call.
+    let _ = unsafe { SetClipboardData(format.value(), handle) };
 
     // We successfully transferred ownership of the data to the clipboard, we don't need to
     // call drop on handle

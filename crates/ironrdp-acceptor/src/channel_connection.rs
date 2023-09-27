@@ -158,7 +158,7 @@ impl ChannelConnectionSequence {
             user_channel_id,
             channels: vec![user_channel_id, io_channel_id]
                 .into_iter()
-                .chain(other_channels.into_iter())
+                .chain(other_channels)
                 .collect(),
         }
     }

@@ -48,7 +48,7 @@ pub trait CliprdrBackend: std::fmt::Debug + Send + Sync + 'static {
     /// stored.
     fn temporary_directory(&self) -> &str;
 
-    /// Return capabilities of the client.
+    /// Returns capabilities of the client.
     ///
     /// This method is called by [crate::Cliprdr] when it is
     /// ready to send capabilities to the server. Note that this method by itself does not

@@ -294,24 +294,24 @@ pub(crate) unsafe extern "system" fn clipboard_subproc(
 ) -> LRESULT {
     if msg == WM_DESTROY {
         // Transfer ownership and drop previously allocated context
-        let _ = Box::from_raw(data as *mut WinClipboardImpl);
+
+        // SAFETY: `data` is a valid pointer, returned by `Box::into_raw`, transfered to OS earlier
+        // via `SetWindowSubclass` call.
+        let _ = unsafe { Box::from_raw(data as *mut WinClipboardImpl) };
         return LRESULT(0);
     }
 
-    let ctx = &mut *(data as *mut WinClipboardImpl);
+    // SAFETY: `data` is a valid pointer, returned by `Box::into_raw`, transfered to OS earlier
+    // via `SetWindowSubclass` call.
+    let ctx = unsafe { &mut *(data as *mut WinClipboardImpl) };
 
     match msg {
         // We need to keep track of window state to distinguish between local and remote copy
-        WM_ACTIVATE => {
-            if wparam.0 == WA_INACTIVE as _ {
-                ctx.window_is_active = false;
-            } else {
-                ctx.window_is_active = true;
-            }
-        }
+        WM_ACTIVATE => ctx.window_is_active = wparam.0 != WA_INACTIVE as _,
         // Sent by the OS when OS clipboard content is changed
         WM_CLIPBOARDUPDATE => {
-            let clipboard_owner = GetClipboardOwner();
+            // SAFETY: `GetClipboardOwner` is always safe to call.
+            let clipboard_owner = unsafe { GetClipboardOwner() };
             let spurious_event = clipboard_owner == hwnd;
 
             // We need to send copy message from remote only when window is NOT active, because if
@@ -346,7 +346,11 @@ pub(crate) unsafe extern "system" fn clipboard_subproc(
         WM_TIMER => {
             if wparam.0 == IDT_CLIPBOARD_RETRY {
                 // Timer is one-shot, we need to stop it immediately
-                KillTimer(hwnd, IDT_CLIPBOARD_RETRY);
+
+                // SAFETY: `KillTimer` is always safe to call when `hwnd` is a valid window handle.
+                unsafe {
+                    KillTimer(hwnd, IDT_CLIPBOARD_RETRY);
+                }
 
                 if let Some(event) = ctx.retry_message.take() {
                     ctx.handle_event(event);
@@ -355,7 +359,9 @@ pub(crate) unsafe extern "system" fn clipboard_subproc(
         }
         _ => {
             // Call next event handler in the subclass chain
-            return DefSubclassProc(hwnd, msg, wparam, lparam);
+
+            // SAFETY: `DefSubclassProc` is always safe to call in conext of subclass event loop
+            return unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) };
         }
     };
 
