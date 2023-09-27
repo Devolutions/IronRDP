@@ -94,5 +94,7 @@ bitflags! {
         const DYNAMIC_DST_SUPPORTED = 0x0000_0002;
         const EDGE_ACTIONS_SUPPORTED_V2 = 0x0000_0004;
         const SKIP_CHANNELJOIN_SUPPORTED = 0x0000_0008;
+        // The source may set any bits
+        const _ = !0;
     }
 }
