@@ -21,12 +21,12 @@ impl ClientTemporaryDirectory<'_> {
     const FIXED_PART_SIZE: usize = Self::PATH_BUFFER_SIZE;
 
     /// Creates new `ClientTemporaryDirectory` and encodes given path to UTF-16 representation.
-    pub fn new(path: String) -> PduResult<Self> {
+    pub fn new(path: &str) -> PduResult<Self> {
         let mut buffer = vec![0x00; Self::PATH_BUFFER_SIZE];
 
         {
             let mut cursor = WriteCursor::new(&mut buffer);
-            write_string_to_cursor(&mut cursor, &path, CharacterSet::Unicode, true)?;
+            write_string_to_cursor(&mut cursor, path, CharacterSet::Unicode, true)?;
         }
 
         Ok(Self {

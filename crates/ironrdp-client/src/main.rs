@@ -29,10 +29,37 @@ fn main() -> anyhow::Result<()> {
 
     let (input_event_sender, input_event_receiver) = RdpInputEvent::create_channel();
 
+    #[cfg(not(windows))]
+    let cliprdr_factory = None;
+
+    #[cfg(windows)]
+    let (_win_clipboard, cliprdr_factory) = {
+        use ironrdp_client::clipboard::ClientClipboardMessageProxy;
+        use ironrdp_cliprdr_native::WinClipboard;
+        use windows::Win32::Foundation::HWND;
+        use winit::platform::windows::WindowExtWindows;
+
+        // SAFETY: provided window handle from `winit` is valid and is guaranteed to be alive
+        // while the gui window is still open.
+        let win_clipboard = unsafe {
+            WinClipboard::new(
+                HWND(gui.window.hwnd() as _),
+                ClientClipboardMessageProxy::new(input_event_sender.clone()),
+            )?
+        };
+
+        let factory = Some(win_clipboard.backend_factory());
+
+        // NOTE: we need to keep `win_clipboard` alive, otherwise it will be dropped before IronRDP
+        // starts and clipboard functionality will not be available.
+        (win_clipboard, factory)
+    };
+
     let client = RdpClient {
         config,
         event_loop_proxy,
         input_event_receiver,
+        cliprdr_factory,
     };
 
     debug!("Start RDP thread");

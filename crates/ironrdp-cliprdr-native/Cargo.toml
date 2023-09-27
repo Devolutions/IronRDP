@@ -1,0 +1,33 @@
+[package]
+name = "ironrdp-cliprdr-native"
+version = "0.1.0"
+readme = "README.md"
+description = "Native CLIPRDR static channel backend implementations for IronRDP"
+edition.workspace = true
+license.workspace = true
+
+homepage.workspace = true
+repository.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[lib]
+doctest = false
+test = false
+
+[dependencies]
+ironrdp-cliprdr.workspace = true
+ironrdp-svc.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+
+windows = { version = "0.48.0", features = [
+    "Win32_Foundation",
+    "Win32_System_DataExchange",
+    "Win32_System_Memory",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging"
+] }

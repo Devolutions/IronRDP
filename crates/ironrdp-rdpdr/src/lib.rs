@@ -4,17 +4,16 @@
 //! [\[MS-RDPEFS\]: Remote Desktop Protocol: File System Virtual Channel Extension]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/34d9de58-b2b5-40b6-b970-f82d4603bdb5
 
 pub mod pdu;
-use crate::pdu::{
-    efs::{
-        ClientNameRequest, ClientNameRequestUnicodeFlag, CoreCapability, CoreCapabilityKind, VersionAndIdPdu,
-        VersionAndIdPduKind,
-    },
-    RdpdrPdu,
-};
-use ironrdp_pdu::{decode, gcc::ChannelName, other_err, PduResult};
-use ironrdp_svc::{impl_as_any, CompressionCondition, StaticVirtualChannel, SvcMessage};
-use pdu::efs::{Capabilities, ClientDeviceListAnnounce, Devices};
+use ironrdp_pdu::gcc::ChannelName;
+use ironrdp_pdu::{decode, other_err, PduResult};
+use ironrdp_svc::{impl_as_any, CompressionCondition, StaticVirtualChannelProcessor, SvcMessage};
 use tracing::{trace, warn};
+
+use crate::pdu::efs::{
+    Capabilities, ClientDeviceListAnnounce, ClientNameRequest, ClientNameRequestUnicodeFlag, CoreCapability,
+    CoreCapabilityKind, Devices, VersionAndIdPdu, VersionAndIdPduKind,
+};
+use crate::pdu::RdpdrPdu;
 
 /// The RDPDR channel as specified in [\[MS-RDPEFS\]].
 ///
@@ -86,7 +85,7 @@ impl Rdpdr {
 
 impl_as_any!(Rdpdr);
 
-impl StaticVirtualChannel for Rdpdr {
+impl StaticVirtualChannelProcessor for Rdpdr {
     fn channel_name(&self) -> ChannelName {
         Self::NAME
     }

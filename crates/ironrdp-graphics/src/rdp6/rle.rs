@@ -283,7 +283,7 @@ impl RlePlaneEncoder {
 
         let (last, mut count) = seq;
         if count < 3 {
-            raw.extend(vec![last; count].into_iter());
+            raw.extend(vec![last; count]);
             count = 0;
         }
 

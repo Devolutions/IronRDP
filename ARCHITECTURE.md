@@ -49,7 +49,7 @@ be avoided if possible.
 
 Meta crate re-exporting important crates.
 
-**Architectural Invariant**: this crate re-exports other crates and does not provide anything else. 
+**Architectural Invariant**: this crate re-exports other crates and does not provide anything else.
 
 _TODO_: clean up the dependencies
 
@@ -163,6 +163,10 @@ This crate is an **API Boundary**.
 
 Web-based frontend using `Svelte` and `Material` frameworks.
 
+#### [`crates/ironrdp-cliprdr-native`](./crates/ironrdp-cliprdr-native)
+
+Native CLIPRDR backend implementations.
+
 ### Internal Tier
 
 Crates that are only used inside the IronRDP project, not meant to be published.
@@ -175,13 +179,13 @@ This is mostly test case generators, fuzzing oracles, build tools, and so on.
 `proptest` generators for `ironrdp-pdu` types.
 
 #### [`crates/ironrdp-session-generators`](./crates/ironrdp-session-generators)
-  
+
 `proptest` generators for `ironrdp-session` types.
 
 #### [`crates/ironrdp-testsuite-core`](./crates/ironrdp-testsuite-core)
 
 Contains all integration tests for code living in the core tier, in a single binary, organized in modules.
-  
+
 **Architectural Invariant**: no dependency from another tier is allowed. It must be the case that
 compiling and running the core test suite does not require building any library from the extra tier.
 This is to keep iteration time short.

@@ -1,12 +1,12 @@
-use std::{fmt, mem::size_of};
+use std::fmt;
+use std::mem::size_of;
+
+use ironrdp_pdu::cursor::{ReadCursor, WriteCursor};
+use ironrdp_pdu::{ensure_size, invalid_message_err, PduDecode, PduEncode, PduError, PduResult};
 
 use self::efs::{
     ClientDeviceListAnnounce, ClientNameRequest, CoreCapability, CoreCapabilityKind, VersionAndIdPdu,
     VersionAndIdPduKind,
-};
-use ironrdp_pdu::{
-    cursor::{ReadCursor, WriteCursor},
-    ensure_size, invalid_message_err, PduDecode, PduEncode, PduError, PduResult,
 };
 
 pub mod efs;

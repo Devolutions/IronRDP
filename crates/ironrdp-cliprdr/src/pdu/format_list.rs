@@ -10,7 +10,7 @@ use crate::pdu::{ClipboardPduFlags, PartialHeader};
 ///
 /// [Standard clipboard formats](https://learn.microsoft.com/en-us/windows/win32/dataxchg/standard-clipboard-formats)
 /// defined by Microsoft are available as constants.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ClipboardFormatId(u32);
 
 impl ClipboardFormatId {
@@ -107,6 +107,33 @@ impl ClipboardFormatId {
 
     pub fn value(&self) -> u32 {
         self.0
+    }
+
+    pub fn is_standard(self) -> bool {
+        matches!(
+            self,
+            Self::CF_TEXT
+                | Self::CF_BITMAP
+                | Self::CF_METAFILEPICT
+                | Self::CF_SYLK
+                | Self::CF_DIF
+                | Self::CF_TIFF
+                | Self::CF_OEMTEXT
+                | Self::CF_DIB
+                | Self::CF_PALETTE
+                | Self::CF_PENDATA
+                | Self::CF_RIFF
+                | Self::CF_WAVE
+                | Self::CF_UNICODETEXT
+                | Self::CF_ENHMETAFILE
+                | Self::CF_HDROP
+                | Self::CF_LOCALE
+                | Self::CF_DIBV5
+        )
+    }
+
+    pub fn is_registrered(self) -> bool {
+        (self.0 >= 0xC000) && (self.0 <= 0xFFFF)
     }
 }
 
