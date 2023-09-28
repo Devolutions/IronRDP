@@ -3,17 +3,22 @@
 //!
 //! [\[MS-RDPEFS\]: Remote Desktop Protocol: File System Virtual Channel Extension]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/34d9de58-b2b5-40b6-b970-f82d4603bdb5
 
+mod backend;
 pub mod pdu;
+use crate::pdu::{
+    efs::{
+        ClientNameRequest, ClientNameRequestUnicodeFlag, CoreCapability, CoreCapabilityKind, VersionAndIdPdu,
+        VersionAndIdPduKind,
+    },
+    RdpdrPdu,
+};
+pub use backend::{noop::NoopRdpdrBackend, RdpdrBackend};
 use ironrdp_pdu::gcc::ChannelName;
 use ironrdp_pdu::{decode, other_err, PduResult};
-use ironrdp_svc::{impl_as_any, CompressionCondition, StaticVirtualChannelProcessor, SvcMessage};
+use ironrdp_svc::{AsAny, CompressionCondition, StaticVirtualChannelProcessor, SvcMessage};
+use pdu::efs::{Capabilities, ClientDeviceListAnnounce, Devices, ServerDeviceAnnounceResponse};
+use std::any::Any;
 use tracing::{trace, warn};
-
-use crate::pdu::efs::{
-    Capabilities, ClientDeviceListAnnounce, ClientNameRequest, ClientNameRequestUnicodeFlag, CoreCapability,
-    CoreCapabilityKind, Devices, VersionAndIdPdu, VersionAndIdPduKind,
-};
-use crate::pdu::RdpdrPdu;
 
 /// The RDPDR channel as specified in [\[MS-RDPEFS\]].
 ///
@@ -24,7 +29,7 @@ use crate::pdu::RdpdrPdu;
 /// [\[MS-RDPEFS\]]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/34d9de58-b2b5-40b6-b970-f82d4603bdb5
 /// [\[MS-RDPEFS\] Appendix A<1>]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/fd28bfd9-dae2-4a78-abe1-b4efa208b7aa#Appendix_A_1
 #[derive(Debug)]
-pub struct Rdpdr {
+pub struct Rdpdr<B: RdpdrBackend> {
     /// TODO: explain what this is
     computer_name: String,
     capabilities: Capabilities,
@@ -32,17 +37,19 @@ pub struct Rdpdr {
     ///
     /// All devices not of the type [`DeviceType::Filesystem`] must be declared here.
     device_list: Devices,
+    backend: B,
 }
 
-impl Rdpdr {
+impl<B: RdpdrBackend> Rdpdr<B> {
     pub const NAME: ChannelName = ChannelName::from_static(b"rdpdr\0\0\0");
 
     /// Creates a new [`Rdpdr`].
-    pub fn new(computer_name: String) -> Self {
+    pub fn new(backend: B, computer_name: String) -> Self {
         Self {
             computer_name,
             capabilities: Capabilities::new(),
             device_list: Devices::new(),
+            backend,
         }
     }
 
@@ -81,11 +88,29 @@ impl Rdpdr {
         trace!("sending {:?}", res);
         Ok(vec![SvcMessage::from(res)])
     }
+
+    fn handle_server_device_announce_response(&self, pdu: ServerDeviceAnnounceResponse) -> PduResult<Vec<SvcMessage>> {
+        self.backend.handle_server_device_announce_response(pdu)?;
+        Ok(Vec::new())
+    }
+
+    fn handle_device_io_request(&self, pdu: pdu::efs::DeviceIoRequest) -> PduResult<Vec<SvcMessage>> {
+        self.backend.handle_device_io_request(pdu)?;
+        Ok(Vec::new())
+    }
 }
 
-impl_as_any!(Rdpdr);
+impl<B: RdpdrBackend + 'static> AsAny for Rdpdr<B> {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
 
-impl StaticVirtualChannelProcessor for Rdpdr {
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
+}
+
+impl<B: RdpdrBackend + 'static> StaticVirtualChannelProcessor for Rdpdr<B> {
     fn channel_name(&self) -> ChannelName {
         Self::NAME
     }
@@ -108,15 +133,18 @@ impl StaticVirtualChannelProcessor for Rdpdr {
             RdpdrPdu::VersionAndIdPdu(pdu) if pdu.kind == VersionAndIdPduKind::ServerClientIdConfirm => {
                 self.handle_client_id_confirm()
             }
-            RdpdrPdu::ServerDeviceAnnounceResponse(pdu) => {
-                warn!("received unimplemented packet: {:?}", pdu); // todo
-                Ok(Vec::new())
-            }
+            RdpdrPdu::ServerDeviceAnnounceResponse(pdu) => self.handle_server_device_announce_response(pdu),
+            RdpdrPdu::DeviceIoRequest(pdu) => self.handle_device_io_request(pdu),
             RdpdrPdu::Unimplemented => {
                 warn!("received unimplemented packet: {:?}", pdu);
                 Ok(Vec::new())
             }
-            _ => Err(other_err!("rdpdr", "internal error")),
+            // TODO: This can eventually become a `_ => {}` block, but being explicit for now
+            // to make sure we don't miss handling new RdpdrPdu variants here during active development.
+            RdpdrPdu::ClientNameRequest(_)
+            | RdpdrPdu::ClientDeviceListAnnounce(_)
+            | RdpdrPdu::VersionAndIdPdu(_)
+            | RdpdrPdu::CoreCapability(_) => Err(other_err!("Rdpdr", "received unexpected packet")),
         }
     }
 }
