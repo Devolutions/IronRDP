@@ -960,3 +960,127 @@ impl std::convert::TryFrom<u32> for NtStatus {
         }
     }
 }
+
+/// [2.2.1.4 Device I/O Request (DR_DEVICE_IOREQUEST)]
+///
+/// [2.2.1.4 Device I/O Request (DR_DEVICE_IOREQUEST)]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/a087ffa8-d0d5-4874-ac7b-0494f63e2d5d
+#[derive(Debug)]
+pub struct DeviceIoRequest {
+    device_id: u32,
+    file_id: u32,
+    completion_id: u32,
+    major_function: MajorFunction,
+    minor_function: MinorFunction,
+}
+
+impl DeviceIoRequest {
+    const NAME: &str = "DR_DEVICE_IOREQUEST";
+    const FIXED_PART_SIZE: usize = size_of::<u32>() * 5; // DeviceId, FileId, CompletionId, MajorFunction, MinorFunction
+
+    pub fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    pub fn encode(&self, dst: &mut WriteCursor) -> PduResult<()> {
+        ensure_size!(in: dst, size: self.size());
+        dst.write_u32(self.device_id);
+        dst.write_u32(self.file_id);
+        dst.write_u32(self.completion_id);
+        dst.write_u32(self.major_function as u32);
+        dst.write_u32(self.minor_function as u32);
+        Ok(())
+    }
+
+    pub fn decode(payload: &mut ReadCursor<'_>) -> PduResult<Self> {
+        ensure_size!(ctx: Self::NAME, in: payload, size: Self::FIXED_PART_SIZE);
+        let device_id = payload.read_u32();
+        let file_id = payload.read_u32();
+        let completion_id = payload.read_u32();
+        let major_function = MajorFunction::try_from(payload.read_u32())?;
+
+        // From the spec (linked in [`DeviceIoRequest`] doc comment):
+        // "This field [MinorFunction] is valid only when the MajorFunction field
+        // is set to IRP_MJ_DIRECTORY_CONTROL. If the MajorFunction field is set
+        // to another value, the MinorFunction field value SHOULD be 0x00000000."
+        //
+        // SHOULD means implementations are not guaranteed to give us 0x00000000,
+        // so handle that possibility here.
+        let minor_function = if major_function == MajorFunction::DirectoryControl {
+            MinorFunction::try_from(payload.read_u32())?
+        } else {
+            MinorFunction::None
+        };
+
+        Ok(Self {
+            device_id,
+            file_id,
+            completion_id,
+            major_function,
+            minor_function,
+        })
+    }
+
+    pub fn size(&self) -> usize {
+        Self::FIXED_PART_SIZE
+    }
+}
+
+/// See [`DeviceIoRequest`].
+#[derive(Debug, PartialEq, Clone, Copy)]
+#[repr(u32)]
+pub enum MajorFunction {
+    Create = 0x00000000,
+    Close = 0x00000002,
+    Read = 0x00000003,
+    Write = 0x00000004,
+    DeviceControl = 0x0000000e,
+    QueryVolumeInformation = 0x0000000a,
+    SetVolumeInformation = 0x0000000b,
+    QueryInformation = 0x00000005,
+    SetInformation = 0x00000006,
+    DirectoryControl = 0x0000000c,
+    LockControl = 0x00000011,
+}
+
+impl std::convert::TryFrom<u32> for MajorFunction {
+    type Error = PduError;
+
+    fn try_from(value: u32) -> Result<Self, Self::Error> {
+        match value {
+            0x00000000 => Ok(MajorFunction::Create),
+            0x00000002 => Ok(MajorFunction::Close),
+            0x00000003 => Ok(MajorFunction::Read),
+            0x00000004 => Ok(MajorFunction::Write),
+            0x0000000e => Ok(MajorFunction::DeviceControl),
+            0x0000000a => Ok(MajorFunction::QueryVolumeInformation),
+            0x0000000b => Ok(MajorFunction::SetVolumeInformation),
+            0x00000005 => Ok(MajorFunction::QueryInformation),
+            0x00000006 => Ok(MajorFunction::SetInformation),
+            0x0000000c => Ok(MajorFunction::DirectoryControl),
+            0x00000011 => Ok(MajorFunction::LockControl),
+            _ => Err(invalid_message_err!("try_from", "MajorFunction", "unsupported value")),
+        }
+    }
+}
+
+/// See [`DeviceIoRequest`].
+#[derive(Debug, Clone, Copy)]
+#[repr(u32)]
+pub enum MinorFunction {
+    /// "If the MajorFunction field is set to another value, the MinorFunction field value SHOULD be 0x00000000."
+    None = 0x00000000,
+    QueryDirectory = 0x00000001,
+    NotifyChangeDirectory = 0x00000002,
+}
+
+impl std::convert::TryFrom<u32> for MinorFunction {
+    type Error = PduError;
+
+    fn try_from(value: u32) -> Result<Self, Self::Error> {
+        match value {
+            0x00000001 => Ok(MinorFunction::QueryDirectory),
+            0x00000002 => Ok(MinorFunction::NotifyChangeDirectory),
+            _ => Err(invalid_message_err!("try_from", "MinorFunction", "unsupported value")),
+        }
+    }
+}

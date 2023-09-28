@@ -5,8 +5,8 @@ use ironrdp_pdu::cursor::{ReadCursor, WriteCursor};
 use ironrdp_pdu::{ensure_size, invalid_message_err, PduDecode, PduEncode, PduError, PduResult};
 
 use self::efs::{
-    ClientDeviceListAnnounce, ClientNameRequest, CoreCapability, CoreCapabilityKind, ServerDeviceAnnounceResponse,
-    VersionAndIdPdu, VersionAndIdPduKind,
+    ClientDeviceListAnnounce, ClientNameRequest, CoreCapability, CoreCapabilityKind, DeviceIoRequest,
+    ServerDeviceAnnounceResponse, VersionAndIdPdu, VersionAndIdPduKind,
 };
 
 pub mod efs;
@@ -18,6 +18,7 @@ pub enum RdpdrPdu {
     CoreCapability(CoreCapability),
     ClientDeviceListAnnounce(ClientDeviceListAnnounce),
     ServerDeviceAnnounceResponse(ServerDeviceAnnounceResponse),
+    DeviceIoRequest(DeviceIoRequest),
     /// TODO: temporary value for development, this should be removed
     Unimplemented,
 }
@@ -62,6 +63,10 @@ impl RdpdrPdu {
                 component: Component::RdpdrCtypCore,
                 packet_id: PacketId::CoreDeviceReply,
             },
+            RdpdrPdu::DeviceIoRequest(_) => SharedHeader {
+                component: Component::RdpdrCtypCore,
+                packet_id: PacketId::CoreDeviceIoRequest,
+            },
             RdpdrPdu::Unimplemented => SharedHeader {
                 component: Component::Unimplemented,
                 packet_id: PacketId::Unimplemented,
@@ -80,6 +85,7 @@ impl PduDecode<'_> for RdpdrPdu {
             PacketId::CoreDeviceReply => Ok(RdpdrPdu::ServerDeviceAnnounceResponse(
                 ServerDeviceAnnounceResponse::decode(src)?,
             )),
+            PacketId::CoreDeviceIoRequest => Ok(RdpdrPdu::DeviceIoRequest(DeviceIoRequest::decode(src)?)),
             _ => Ok(RdpdrPdu::Unimplemented),
         }
     }
@@ -95,6 +101,7 @@ impl PduEncode for RdpdrPdu {
             RdpdrPdu::CoreCapability(pdu) => pdu.encode(dst),
             RdpdrPdu::ClientDeviceListAnnounce(pdu) => pdu.encode(dst),
             RdpdrPdu::ServerDeviceAnnounceResponse(pdu) => pdu.encode(dst),
+            RdpdrPdu::DeviceIoRequest(pdu) => pdu.encode(dst),
             RdpdrPdu::Unimplemented => Ok(()),
         }
     }
@@ -106,6 +113,7 @@ impl PduEncode for RdpdrPdu {
             RdpdrPdu::CoreCapability(pdu) => pdu.name(),
             RdpdrPdu::ClientDeviceListAnnounce(pdu) => pdu.name(),
             RdpdrPdu::ServerDeviceAnnounceResponse(pdu) => pdu.name(),
+            RdpdrPdu::DeviceIoRequest(pdu) => pdu.name(),
             RdpdrPdu::Unimplemented => "Unimplemented",
         }
     }
@@ -118,6 +126,7 @@ impl PduEncode for RdpdrPdu {
                 RdpdrPdu::CoreCapability(pdu) => pdu.size(),
                 RdpdrPdu::ClientDeviceListAnnounce(pdu) => pdu.size(),
                 RdpdrPdu::ServerDeviceAnnounceResponse(pdu) => pdu.size(),
+                RdpdrPdu::DeviceIoRequest(pdu) => pdu.size(),
                 RdpdrPdu::Unimplemented => 0,
             }
     }
@@ -139,6 +148,9 @@ impl fmt::Debug for RdpdrPdu {
                 write!(f, "RdpdrPdu({:?})", it)
             }
             Self::ServerDeviceAnnounceResponse(it) => {
+                write!(f, "RdpdrPdu({:?})", it)
+            }
+            Self::DeviceIoRequest(it) => {
                 write!(f, "RdpdrPdu({:?})", it)
             }
             Self::Unimplemented => {
@@ -213,9 +225,9 @@ pub enum PacketId {
     /// PAKID_CORE_DEVICE_REPLY
     CoreDeviceReply = 0x6472,
     /// PAKID_CORE_DEVICE_IOREQUEST
-    CoreDeviceIorequest = 0x4952,
+    CoreDeviceIoRequest = 0x4952,
     /// PAKID_CORE_DEVICE_IOCOMPLETION
-    CoreDeviceIocompletion = 0x4943,
+    CoreDeviceIoCompletion = 0x4943,
     /// PAKID_CORE_SERVER_CAPABILITY
     CoreServerCapability = 0x5350,
     /// PAKID_CORE_CLIENT_CAPABILITY
@@ -242,8 +254,8 @@ impl std::convert::TryFrom<u16> for PacketId {
             0x434E => Ok(PacketId::CoreClientName),
             0x4441 => Ok(PacketId::CoreDevicelistAnnounce),
             0x6472 => Ok(PacketId::CoreDeviceReply),
-            0x4952 => Ok(PacketId::CoreDeviceIorequest),
-            0x4943 => Ok(PacketId::CoreDeviceIocompletion),
+            0x4952 => Ok(PacketId::CoreDeviceIoRequest),
+            0x4943 => Ok(PacketId::CoreDeviceIoCompletion),
             0x5350 => Ok(PacketId::CoreServerCapability),
             0x4350 => Ok(PacketId::CoreClientCapability),
             0x444D => Ok(PacketId::CoreDevicelistRemove),
