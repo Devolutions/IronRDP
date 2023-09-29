@@ -129,11 +129,11 @@ impl WinClipboard {
 
         // We need to receive winapi messages in the main thread, so we need to add a subclass to
         // the window.
-
-        // SAFETY: `window` is a valid window handle, `clipboard_subproc` is in the static memory,
-        // `ctx` is valid and its ownership is transferred to the subclass via `into_raw`.
-        let winapi_result =
-            unsafe { SetWindowSubclass(window, Some(clipboard_subproc), 0, Box::into_raw(ctx) as usize) };
+        let winapi_result = unsafe {
+            // SAFETY: `window` is a valid window handle, `clipboard_subproc` is in the static memory,
+            // `ctx` is valid and its ownership is transferred to the subclass via `into_raw`.
+            SetWindowSubclass(window, Some(clipboard_subproc), 0, Box::into_raw(ctx) as usize)
+        };
 
         if winapi_result == FALSE {
             return Err(WinCliprdrError::WindowSubclass);
