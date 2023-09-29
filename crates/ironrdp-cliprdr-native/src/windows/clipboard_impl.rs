@@ -154,7 +154,7 @@ impl WinClipboardImpl {
 
         for format in formats {
             if let Some(response) = self.get_remote_format_data(format)? {
-                self.on_format_data_response(format, &response)?;
+                Self::on_format_data_response(format, &response)?;
             }
         }
 
@@ -210,7 +210,7 @@ impl WinClipboardImpl {
             BackendEvent::RenderAllFormats => self.on_render_all_formats(),
 
             BackendEvent::DowngradedCapabilities(flags) => {
-                warn!(%flags, "Unhandled downgraded capabilities event");
+                warn!(?flags, "Unhandled downgraded capabilities event");
                 Ok(None)
             }
         };
@@ -241,11 +241,11 @@ impl WinClipboardImpl {
                 self.attempt = 0;
             }
             Some(err) => {
-                const MAX_PROCESSING_ATTEMPTS: usize = 10;
+                const MAX_PROCESSING_ATTEMPTS: u32 = 10;
                 const PROCESSING_TIMEOUT_MS: u32 = 100;
 
                 #[allow(clippy::arithmetic_side_effects)]
-                // self.attempt can’t be greater than MAX_PROCESSING_ATTEMPTS
+                // self.attempt can’t be greater than MAX_PROCESSING_ATTEMPTS, so the arithmetic is safe here
                 if self.attempt < MAX_PROCESSING_ATTEMPTS {
                     self.attempt += 1;
 
@@ -311,7 +311,7 @@ pub(crate) unsafe extern "system" fn clipboard_subproc(
 
     match msg {
         // We need to keep track of window state to distinguish between local and remote copy
-        WM_ACTIVATE => ctx.window_is_active = wparam.0 != WA_INACTIVE as usize, // as conversion is fine for constants
+        WM_ACTIVATE => ctx.window_is_active = wparam.0 != WA_INACTIVE as usize, // `as` conversion is fine for constants
         // Sent by the OS when OS clipboard content is changed
         WM_CLIPBOARDUPDATE => {
             // SAFETY: `GetClipboardOwner` is always safe to call.
