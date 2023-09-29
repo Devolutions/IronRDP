@@ -480,7 +480,7 @@ fn build_config(
             color_depth: 32,
             lossy_compression: true,
         }),
-        #[allow(clippy::arithmetic_side_effects)] // fine unless we ending with an insanely big version
+        #[allow(clippy::arithmetic_side_effects)] // fine unless we end up with an insanely big version
         client_build: semver::Version::parse(env!("CARGO_PKG_VERSION"))
             .map(|version| version.major * 100 + version.minor * 10 + version.patch)
             .unwrap_or(0)

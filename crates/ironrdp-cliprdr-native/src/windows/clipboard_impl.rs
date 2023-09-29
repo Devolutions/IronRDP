@@ -295,13 +295,13 @@ pub(crate) unsafe extern "system" fn clipboard_subproc(
     if msg == WM_DESTROY {
         // Transfer ownership and drop previously allocated context
 
-        // SAFETY: `data` is a valid pointer, returned by `Box::into_raw`, transfered to OS earlier
+        // SAFETY: `data` is a valid pointer, returned by `Box::into_raw`, transferred to OS earlier
         // via `SetWindowSubclass` call.
         let _ = unsafe { Box::from_raw(data as *mut WinClipboardImpl) };
         return LRESULT(0);
     }
 
-    // SAFETY: `data` is a valid pointer, returned by `Box::into_raw`, transfered to OS earlier
+    // SAFETY: `data` is a valid pointer, returned by `Box::into_raw`, transferred to OS earlier
     // via `SetWindowSubclass` call.
     let ctx = unsafe { &mut *(data as *mut WinClipboardImpl) };
 
@@ -360,7 +360,7 @@ pub(crate) unsafe extern "system" fn clipboard_subproc(
         _ => {
             // Call next event handler in the subclass chain
 
-            // SAFETY: `DefSubclassProc` is always safe to call in conext of subclass event loop
+            // SAFETY: `DefSubclassProc` is always safe to call in context of subclass event loop
             return unsafe { DefSubclassProc(hwnd, msg, wparam, lparam) };
         }
     };
