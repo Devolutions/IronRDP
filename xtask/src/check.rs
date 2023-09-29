@@ -65,7 +65,6 @@ const EXTRA_LINTS: &[&str] = &[
     "clippy::implicit_clone",
     "clippy::large_types_passed_by_value",
     "clippy::redundant_clone",
-    "clippy::string_to_string",
     "clippy::alloc_instead_of_core",
     "clippy::empty_drop",
     "clippy::return_self_not_must_use",
