@@ -1,5 +1,5 @@
 use std::collections::HashSet;
-use std::sync::mpsc as mpsc_sync;
+use std::sync::mpsc;
 use std::time::Duration;
 
 use ironrdp_cliprdr::backend::{ClipboardMessage, ClipboardMessageProxy};
@@ -27,7 +27,7 @@ pub(crate) struct WinClipboardImpl {
     window: HWND,
     message_proxy: Box<dyn ClipboardMessageProxy>,
     window_is_active: bool,
-    backend_rx: mpsc_sync::Receiver<BackendEvent>,
+    backend_rx: mpsc::Receiver<BackendEvent>,
     // Number of attempts spent to process current clipboard message
     attempt: u32,
     // Message to retry
@@ -38,6 +38,23 @@ pub(crate) struct WinClipboardImpl {
 }
 
 impl WinClipboardImpl {
+    pub(crate) fn new(
+        window: HWND,
+        message_proxy: impl ClipboardMessageProxy + 'static,
+        backend_rx: mpsc::Receiver<BackendEvent>,
+    ) -> Self {
+        Self {
+            window,
+            message_proxy: Box::new(message_proxy),
+            window_is_active: true, // We assume that we start with current window active,
+            backend_rx,
+            attempt: 0,
+            retry_message: None,
+            available_formats_on_remote: Vec::new(),
+            remote_format_registry: Default::default(),
+        }
+    }
+
     fn on_format_data_request(&mut self, request: &FormatDataRequest) -> WinCliprdrResult<Option<ClipboardMessage>> {
         // Get data from the clipboard and send event to the main event loop
         let clipboard = OwnedOsClipboard::new(self.window)?;
