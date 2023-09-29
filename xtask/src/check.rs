@@ -38,7 +38,7 @@ const EXTRA_LINTS: &[&str] = &[
     "clippy::type_repetition_in_bounds",
     "clippy::checked_conversions",
     "clippy::get_unwrap",
-    // TODO: "clippy::similar_names", // reduce risk of confusing similar names together, and check for typos when shadowing variables
+    // TODO: "clippy::similar_names", // reduce risk of confusing similar names together, and protects against typos when variable shadowing was intended
     "clippy::str_to_string",
     "clippy::string_to_string",
     // TODO: "clippy::std_instead_of_alloc",
