@@ -28,7 +28,7 @@ where
 
 impl<'de, T> PduEncode for T
 where
-    T: X224Pdu<'de>,
+    T: X224Pdu<'de> + Send + Sync + std::fmt::Debug,
 {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
         let packet_length = self.size();
@@ -86,6 +86,7 @@ where
     }
 }
 
+#[derive(Debug)]
 pub struct X224Data<'a> {
     pub data: Cow<'a, [u8]>,
 }

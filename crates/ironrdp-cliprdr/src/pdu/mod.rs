@@ -37,6 +37,7 @@ pub const FORMAT_ID_METAFILE: u32 = 3;
 pub const FORMAT_NAME_FILE_LIST: &str = "FileGroupDescriptorW";
 
 /// Header without message type included
+#[derive(Debug)]
 struct PartialHeader {
     pub message_flags: ClipboardPduFlags,
     pub data_length: u32,

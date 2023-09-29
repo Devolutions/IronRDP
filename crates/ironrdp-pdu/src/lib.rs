@@ -128,7 +128,7 @@ pub trait Pdu {
 /// The resulting binary payload is a fully encoded PDU that may be sent to the peer.
 ///
 /// This trait is object-safe and may be used in a dynamic context.
-pub trait PduEncode {
+pub trait PduEncode: Send + Sync + fmt::Debug {
     /// Encodes this PDU in-place using the provided `WriteCursor`.
     fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()>;
 

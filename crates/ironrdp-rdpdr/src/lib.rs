@@ -13,12 +13,17 @@ use crate::pdu::{
     RdpdrPdu,
 };
 pub use backend::{noop::NoopRdpdrBackend, RdpdrBackend};
-use ironrdp_pdu::gcc::ChannelName;
-use ironrdp_pdu::{decode, other_err, PduResult};
-use ironrdp_svc::{AsAny, CompressionCondition, StaticVirtualChannelProcessor, SvcMessage};
-use pdu::efs::{Capabilities, ClientDeviceListAnnounce, Devices, ServerDeviceAnnounceResponse};
-use std::any::Any;
-use tracing::{trace, warn};
+use ironrdp_pdu::{cursor::ReadCursor, gcc::ChannelName};
+use ironrdp_pdu::{decode_cursor, other_err, PduResult};
+use ironrdp_svc::{impl_as_any, CompressionCondition, StaticVirtualChannelProcessor, SvcMessage};
+use pdu::{
+    efs::{
+        Capabilities, ClientDeviceListAnnounce, DeviceControlRequest, DeviceIoRequest, Devices,
+        ServerDeviceAnnounceResponse,
+    },
+    esc::{ScardAccessStartedEventCall, ScardIoctlCode},
+};
+use tracing::{debug, trace, warn};
 
 /// The RDPDR channel as specified in [\[MS-RDPEFS\]].
 ///
@@ -29,7 +34,7 @@ use tracing::{trace, warn};
 /// [\[MS-RDPEFS\]]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/34d9de58-b2b5-40b6-b970-f82d4603bdb5
 /// [\[MS-RDPEFS\] Appendix A<1>]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/fd28bfd9-dae2-4a78-abe1-b4efa208b7aa#Appendix_A_1
 #[derive(Debug)]
-pub struct Rdpdr<B: RdpdrBackend> {
+pub struct Rdpdr {
     /// TODO: explain what this is
     computer_name: String,
     capabilities: Capabilities,
@@ -37,14 +42,14 @@ pub struct Rdpdr<B: RdpdrBackend> {
     ///
     /// All devices not of the type [`DeviceType::Filesystem`] must be declared here.
     device_list: Devices,
-    backend: B,
+    backend: Box<dyn RdpdrBackend>,
 }
 
-impl<B: RdpdrBackend> Rdpdr<B> {
+impl Rdpdr {
     pub const NAME: ChannelName = ChannelName::from_static(b"rdpdr\0\0\0");
 
     /// Creates a new [`Rdpdr`].
-    pub fn new(backend: B, computer_name: String) -> Self {
+    pub fn new(backend: Box<dyn RdpdrBackend>, computer_name: String) -> Self {
         Self {
             computer_name,
             capabilities: Capabilities::new(),
@@ -94,23 +99,37 @@ impl<B: RdpdrBackend> Rdpdr<B> {
         Ok(Vec::new())
     }
 
-    fn handle_device_io_request(&self, pdu: pdu::efs::DeviceIoRequest) -> PduResult<Vec<SvcMessage>> {
-        self.backend.handle_device_io_request(pdu)?;
-        Ok(Vec::new())
+    fn handle_device_io_request(
+        &self,
+        pdu: DeviceIoRequest,
+        payload: &mut ReadCursor<'_>,
+    ) -> PduResult<Vec<SvcMessage>> {
+        if self.is_for_smartcard(&pdu) {
+            let req = DeviceControlRequest::<ScardIoctlCode>::decode(pdu, payload)?;
+            match req.io_control_code {
+                ScardIoctlCode::AccessStartedEvent => {
+                    let call = ScardAccessStartedEventCall::decode(payload)?;
+                    debug!(?req, ?call, "received smartcard ioctl");
+                    self.backend.handle_scard_access_started_event_call(req, call)?;
+                }
+                _ => {
+                    warn!(?req, "received unimplemented smartcard ioctl");
+                }
+            }
+            Ok(Vec::new())
+        } else {
+            Err(other_err!("Rdpdr", "received unexpected packet"))
+        }
+    }
+
+    fn is_for_smartcard(&self, pdu: &DeviceIoRequest) -> bool {
+        self.device_list.is_smartcard(pdu.device_id)
     }
 }
 
-impl<B: RdpdrBackend + 'static> AsAny for Rdpdr<B> {
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
+impl_as_any!(Rdpdr);
 
-    fn as_any_mut(&mut self) -> &mut dyn Any {
-        self
-    }
-}
-
-impl<B: RdpdrBackend + 'static> StaticVirtualChannelProcessor for Rdpdr<B> {
+impl StaticVirtualChannelProcessor for Rdpdr {
     fn channel_name(&self) -> ChannelName {
         Self::NAME
     }
@@ -120,8 +139,9 @@ impl<B: RdpdrBackend + 'static> StaticVirtualChannelProcessor for Rdpdr<B> {
     }
 
     fn process(&mut self, payload: &[u8]) -> PduResult<Vec<SvcMessage>> {
-        let pdu = decode::<RdpdrPdu>(payload)?;
-        trace!("received {:?}", pdu);
+        let mut payload = ReadCursor::new(payload);
+        let pdu = decode_cursor::<RdpdrPdu>(&mut payload)?;
+        debug!("received {:?}", pdu);
 
         match pdu {
             RdpdrPdu::VersionAndIdPdu(pdu) if pdu.kind == VersionAndIdPduKind::ServerAnnounceRequest => {
@@ -134,7 +154,7 @@ impl<B: RdpdrBackend + 'static> StaticVirtualChannelProcessor for Rdpdr<B> {
                 self.handle_client_id_confirm()
             }
             RdpdrPdu::ServerDeviceAnnounceResponse(pdu) => self.handle_server_device_announce_response(pdu),
-            RdpdrPdu::DeviceIoRequest(pdu) => self.handle_device_io_request(pdu),
+            RdpdrPdu::DeviceIoRequest(pdu) => self.handle_device_io_request(pdu, &mut payload),
             RdpdrPdu::Unimplemented => {
                 warn!("received unimplemented packet: {:?}", pdu);
                 Ok(Vec::new())
@@ -144,7 +164,8 @@ impl<B: RdpdrBackend + 'static> StaticVirtualChannelProcessor for Rdpdr<B> {
             RdpdrPdu::ClientNameRequest(_)
             | RdpdrPdu::ClientDeviceListAnnounce(_)
             | RdpdrPdu::VersionAndIdPdu(_)
-            | RdpdrPdu::CoreCapability(_) => Err(other_err!("Rdpdr", "received unexpected packet")),
+            | RdpdrPdu::CoreCapability(_)
+            | RdpdrPdu::DeviceControlResponse(_) => Err(other_err!("Rdpdr", "received unexpected packet")),
         }
     }
 }
