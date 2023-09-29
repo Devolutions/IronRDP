@@ -45,7 +45,7 @@ fn main() -> anyhow::Result<()> {
         // while the gui window is still open.
         let win_clipboard = unsafe {
             WinClipboard::new(
-                HWND(gui.window().hwnd() as isize),
+                HWND(gui.window().hwnd()),
                 ClientClipboardMessageProxy::new(input_event_sender.clone()),
             )?
         };
