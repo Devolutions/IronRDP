@@ -73,6 +73,7 @@ const EXTRA_LINTS: &[&str] = &[
     // == Let’s not merge unintended eprint!/print! statements in libraries == //
     "clippy::print_stderr",
     "clippy::print_stdout",
+    "clippy::dbg_macro",
 ];
 
 pub fn fmt(sh: &Shell) -> anyhow::Result<()> {
