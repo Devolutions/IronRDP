@@ -24,17 +24,17 @@ const IDT_CLIPBOARD_RETRY: usize = 1;
 
 /// Internal implementation of the clipboard processing logic.
 pub(crate) struct WinClipboardImpl {
-    pub window: HWND,
-    pub message_proxy: Box<dyn ClipboardMessageProxy>,
-    pub window_is_active: bool,
-    pub backend_rx: mpsc_sync::Receiver<BackendEvent>,
+    window: HWND,
+    message_proxy: Box<dyn ClipboardMessageProxy>,
+    window_is_active: bool,
+    backend_rx: mpsc_sync::Receiver<BackendEvent>,
     // Number of attempts spent to process current clipboard message
-    pub attempt: usize,
+    attempt: u32,
     // Message to retry
-    pub retry_message: Option<BackendEvent>,
+    retry_message: Option<BackendEvent>,
     // Formats available on the remote (represented as LOCAL format ids)
-    pub available_formats_on_remote: Vec<ClipboardFormatId>,
-    pub remote_format_registry: RemoteClipboardFormatRegistry,
+    available_formats_on_remote: Vec<ClipboardFormatId>,
+    remote_format_registry: RemoteClipboardFormatRegistry,
 }
 
 impl WinClipboardImpl {
@@ -56,7 +56,6 @@ impl WinClipboardImpl {
     }
 
     fn on_format_data_response(
-        &mut self,
         requested_local_format: ClipboardFormatId,
         response: &FormatDataResponse,
     ) -> WinCliprdrResult<()> {
@@ -71,6 +70,7 @@ impl WinClipboardImpl {
         unsafe {
             render_format(requested_local_format, response.data())?;
         }
+
         Ok(())
     }
 
@@ -121,7 +121,7 @@ impl WinClipboardImpl {
     fn on_render_format(&mut self, format: ClipboardFormatId) -> WinCliprdrResult<Option<ClipboardMessage>> {
         // Owning clipboard is not required when processing `WM_RENDERFORMAT` message
         if let Some(response) = self.get_remote_format_data(format)? {
-            self.on_format_data_response(format, &response)?;
+            Self::on_format_data_response(format, &response)?;
         }
 
         Ok(None)
@@ -209,8 +209,8 @@ impl WinClipboardImpl {
             BackendEvent::RenderFormat(format) => self.on_render_format(*format),
             BackendEvent::RenderAllFormats => self.on_render_all_formats(),
 
-            unhandled_event => {
-                warn!("Unhandled clipboard event: {:?}", unhandled_event);
+            BackendEvent::DowngradedCapabilities(flags) => {
+                warn!(%flags, "Unhandled downgraded capabilities event");
                 Ok(None)
             }
         };
@@ -244,15 +244,19 @@ impl WinClipboardImpl {
                 const MAX_PROCESSING_ATTEMPTS: usize = 10;
                 const PROCESSING_TIMEOUT_MS: u32 = 100;
 
+                #[allow(clippy::arithmetic_side_effects)]
+                // self.attempt can’t be greater than MAX_PROCESSING_ATTEMPTS
                 if self.attempt < MAX_PROCESSING_ATTEMPTS {
                     self.attempt += 1;
+
                     self.retry_message = Some(event);
+
                     // SAFETY: `SetTimer` is always safe to call when `hwnd` is a valid window handle
                     unsafe {
                         SetTimer(
                             self.window,
                             IDT_CLIPBOARD_RETRY,
-                            self.attempt as u32 * PROCESSING_TIMEOUT_MS,
+                            self.attempt * PROCESSING_TIMEOUT_MS,
                             None,
                         )
                     };
@@ -307,7 +311,7 @@ pub(crate) unsafe extern "system" fn clipboard_subproc(
 
     match msg {
         // We need to keep track of window state to distinguish between local and remote copy
-        WM_ACTIVATE => ctx.window_is_active = wparam.0 != WA_INACTIVE as _,
+        WM_ACTIVATE => ctx.window_is_active = wparam.0 != WA_INACTIVE as usize, // as conversion is fine for constants
         // Sent by the OS when OS clipboard content is changed
         WM_CLIPBOARDUPDATE => {
             // SAFETY: `GetClipboardOwner` is always safe to call.
@@ -324,7 +328,8 @@ pub(crate) unsafe extern "system" fn clipboard_subproc(
         }
         // Sent by the OS when delay-rendered data is requested for rendering.
         WM_RENDERFORMAT => {
-            ctx.handle_event(BackendEvent::RenderFormat(ClipboardFormatId::new(wparam.0 as _)));
+            #[allow(clippy::cast_possible_truncation)] // should never truncate in practice
+            ctx.handle_event(BackendEvent::RenderFormat(ClipboardFormatId::new(wparam.0 as u32)));
         }
         // Sent by the OS when all delay-rendered data is requested for rendering.
         WM_RENDERALLFORMATS => {

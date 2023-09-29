@@ -1890,7 +1890,6 @@ name = "ironrdp-cliprdr-native"
 version = "0.1.0"
 dependencies = [
  "ironrdp-cliprdr",
- "ironrdp-svc",
  "thiserror",
  "tracing",
  "windows 0.48.0",

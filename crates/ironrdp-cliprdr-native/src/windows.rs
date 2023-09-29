@@ -142,7 +142,8 @@ impl WinClipboard {
         //
         // SAFETY: `window` is a valid window handle, `clipboard_subproc` is in the static memory,
         // `ctx` is valid and its ownership is transferred to the subclass via `into_raw`.
-        let winapi_result = unsafe { SetWindowSubclass(window, Some(clipboard_subproc), 0, Box::into_raw(ctx) as _) };
+        let winapi_result =
+            unsafe { SetWindowSubclass(window, Some(clipboard_subproc), 0, Box::into_raw(ctx) as usize) };
 
         if winapi_result == FALSE {
             return Err(WinCliprdrError::WindowSubclass);
@@ -177,7 +178,7 @@ impl Drop for WinClipboard {
 }
 
 /// Windows-specific clipboard backend factory
-pub struct WinCliprdrBackendFactory {
+struct WinCliprdrBackendFactory {
     tx: mpsc_sync::SyncSender<BackendEvent>,
     window: HWND,
 }
