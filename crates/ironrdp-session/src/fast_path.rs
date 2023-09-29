@@ -216,7 +216,7 @@ impl Processor {
 
                         let _ = self
                             .pointer_cache
-                            .insert(cache_index as usize, Rc::clone(&decoded_pointer));
+                            .insert(usize::from(cache_index), Rc::clone(&decoded_pointer));
 
                         if let Some(rect) = image.update_pointer(decoded_pointer)? {
                             processor_updates.push(UpdateKind::Region(rect));
@@ -225,7 +225,7 @@ impl Processor {
                     PointerUpdateData::Cached(cached) => {
                         let cache_index = cached.cache_index;
 
-                        if let Some(cached_pointer) = self.pointer_cache.get(cache_index as usize) {
+                        if let Some(cached_pointer) = self.pointer_cache.get(usize::from(cache_index)) {
                             // Disable system pointer
                             processor_updates.push(UpdateKind::PointerHidden);
                             self.use_system_pointer = false;
@@ -252,7 +252,7 @@ impl Processor {
 
                         let _ = self
                             .pointer_cache
-                            .insert(cache_index as usize, Rc::clone(&decoded_pointer));
+                            .insert(usize::from(cache_index), Rc::clone(&decoded_pointer));
 
                         if let Some(rect) = image.update_pointer(decoded_pointer)? {
                             processor_updates.push(UpdateKind::Region(rect));
@@ -268,7 +268,7 @@ impl Processor {
 
                         let _ = self
                             .pointer_cache
-                            .insert(cache_index as usize, Rc::clone(&decoded_pointer));
+                            .insert(usize::from(cache_index), Rc::clone(&decoded_pointer));
 
                         if let Some(rect) = image.update_pointer(decoded_pointer)? {
                             processor_updates.push(UpdateKind::Region(rect));
