@@ -15,7 +15,7 @@ pub trait GfxHandler {
     fn on_message(&self, message: ServerPdu) -> SessionResult<Option<ClientPdu>>;
 }
 
-pub struct Handler {
+pub(crate) struct Handler {
     decompressor: zgfx::Decompressor,
     decompressed_buffer: Vec<u8>,
     frames_decoded: u32,
@@ -23,7 +23,7 @@ pub struct Handler {
 }
 
 impl Handler {
-    pub fn new(gfx_handler: Option<Box<dyn GfxHandler + Send>>) -> Self {
+    pub(crate) fn new(gfx_handler: Option<Box<dyn GfxHandler + Send>>) -> Self {
         Self {
             decompressor: zgfx::Decompressor::new(),
             decompressed_buffer: Vec::with_capacity(1024 * 16),
@@ -96,7 +96,7 @@ bitflags! {
     }
 }
 
-pub fn create_capabilities_advertise(graphics_config: &Option<GraphicsConfig>) -> SessionResult<Vec<u8>> {
+pub(crate) fn create_capabilities_advertise(graphics_config: &Option<GraphicsConfig>) -> SessionResult<Vec<u8>> {
     let mut capabilities = Vec::new();
 
     if let Some(config) = graphics_config {

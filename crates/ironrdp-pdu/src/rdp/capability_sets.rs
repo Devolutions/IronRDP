@@ -137,7 +137,7 @@ impl PduParsing for DemandActive {
         stream.read_exact(source_descriptor_buffer.as_mut())?;
         let source_descriptor = String::from_utf8(source_descriptor_buffer)?
             .trim_end_matches(NULL_TERMINATOR)
-            .to_string();
+            .to_owned();
 
         let capability_sets_count = stream.read_u16::<LittleEndian>()? as usize;
         let _padding = stream.read_u16::<LittleEndian>()?;

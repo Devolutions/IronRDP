@@ -12,7 +12,7 @@ pub use self::data_messages::{
     ContextPdu, EntropyAlgorithm, FrameBeginPdu, FrameEndPdu, OperatingMode, Quant, RegionPdu, RfxRectangle, Tile,
     TileSetPdu,
 };
-pub use self::header_messages::{Channel, ChannelsPdu, CodecVersionsPdu, SyncPdu};
+pub use self::header_messages::{ChannelsPdu, CodecVersionsPdu, RfxChannel, SyncPdu};
 use crate::{PduBufferParsing, PduParsing};
 
 const BLOCK_HEADER_SIZE: usize = 6;
@@ -133,6 +133,7 @@ impl CodecChannelHeader {
         Ok(Self)
     }
 
+    #[allow(clippy::unused_self)] // for symmetry
     fn to_buffer_consume_with_type(&self, buffer: &mut &mut [u8], ty: BlockType) -> Result<(), RfxError> {
         buffer.write_u8(CODEC_ID)?;
 
@@ -249,6 +250,10 @@ pub enum RfxError {
     InvalidSubtype(u16),
     #[error("Got invalid IT flag of TileSet: {0}")]
     InvalidItFlag(bool),
+    #[error("Got invalid channel width: {0}")]
+    InvalidChannelWidth(i16),
+    #[error("Got invalid channel height: {0}")]
+    InvalidChannelHeight(i16),
 }
 
 #[cfg(feature = "std")]

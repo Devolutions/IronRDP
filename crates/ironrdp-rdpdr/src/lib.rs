@@ -1,9 +1,12 @@
-//! Implements the RDPDR static virtual channel as described in
-//! [\[MS-RDPEFS\]: Remote Desktop Protocol: File System Virtual Channel Extension]
-//!
-//! [\[MS-RDPEFS\]: Remote Desktop Protocol: File System Virtual Channel Extension]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/34d9de58-b2b5-40b6-b970-f82d4603bdb5
+#![doc = include_str!("../README.md")]
+#![allow(clippy::arithmetic_side_effects)] // FIXME: remove
+#![allow(clippy::cast_lossless)] // FIXME: remove
+#![allow(clippy::cast_possible_truncation)] // FIXME: remove
+#![allow(clippy::cast_possible_wrap)] // FIXME: remove
+#![allow(clippy::cast_sign_loss)] // FIXME: remove
 
 pub mod pdu;
+
 use ironrdp_pdu::gcc::ChannelName;
 use ironrdp_pdu::{decode, other_err, PduResult};
 use ironrdp_svc::{impl_as_any, CompressionCondition, StaticVirtualChannelProcessor, SvcMessage};
@@ -46,6 +49,7 @@ impl Rdpdr {
         }
     }
 
+    #[must_use]
     pub fn with_smartcard(mut self, device_id: u32) -> Self {
         self.device_list.add_smartcard(device_id);
         self.capabilities.add_smartcard();

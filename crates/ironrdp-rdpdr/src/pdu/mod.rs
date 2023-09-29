@@ -78,7 +78,7 @@ impl PduDecode<'_> for RdpdrPdu {
 }
 
 impl PduEncode for RdpdrPdu {
-    fn encode(&self, dst: &mut ironrdp_pdu::cursor::WriteCursor<'_>) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
         self.header().encode(dst)?;
 
         match self {
@@ -218,7 +218,7 @@ pub enum PacketId {
     Unimplemented,
 }
 
-impl std::convert::TryFrom<u16> for PacketId {
+impl TryFrom<u16> for PacketId {
     type Error = PduError;
 
     fn try_from(value: u16) -> Result<Self, Self::Error> {

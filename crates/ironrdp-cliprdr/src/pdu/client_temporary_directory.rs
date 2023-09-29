@@ -2,9 +2,7 @@ use std::borrow::Cow;
 
 use ironrdp_pdu::cursor::{ReadCursor, WriteCursor};
 use ironrdp_pdu::utils::{read_string_from_cursor, write_string_to_cursor, CharacterSet};
-use ironrdp_pdu::{
-    cast_int, ensure_fixed_part_size, ensure_size, invalid_message_err, PduDecode, PduEncode, PduResult,
-};
+use ironrdp_pdu::{cast_int, ensure_size, invalid_message_err, PduDecode, PduEncode, PduResult};
 
 use crate::pdu::PartialHeader;
 
@@ -18,7 +16,7 @@ impl ClientTemporaryDirectory<'_> {
     const PATH_BUFFER_SIZE: usize = 520;
 
     const NAME: &str = "CLIPRDR_TEMP_DIRECTORY";
-    const FIXED_PART_SIZE: usize = Self::PATH_BUFFER_SIZE;
+    const INNER_SIZE: usize = Self::PATH_BUFFER_SIZE;
 
     /// Creates new `ClientTemporaryDirectory` and encodes given path to UTF-16 representation.
     pub fn new(path: &str) -> PduResult<Self> {
@@ -41,18 +39,14 @@ impl ClientTemporaryDirectory<'_> {
         read_string_from_cursor(&mut cursor, CharacterSet::Unicode, true)
             .map_err(|_| invalid_message_err!("wszTempDir", "failed to decode temp dir path"))
     }
-
-    fn inner_size(&self) -> usize {
-        Self::FIXED_PART_SIZE
-    }
 }
 
 impl PduEncode for ClientTemporaryDirectory<'_> {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
-        let header = PartialHeader::new(cast_int!("dataLen", self.inner_size())?);
+        let header = PartialHeader::new(cast_int!("dataLen", Self::INNER_SIZE)?);
         header.encode(dst)?;
 
-        ensure_size!(in: dst, size: self.inner_size());
+        ensure_size!(in: dst, size: Self::INNER_SIZE);
         dst.write_slice(&self.path_buffer);
 
         Ok(())
@@ -63,7 +57,7 @@ impl PduEncode for ClientTemporaryDirectory<'_> {
     }
 
     fn size(&self) -> usize {
-        PartialHeader::SIZE + self.inner_size()
+        PartialHeader::SIZE + Self::INNER_SIZE
     }
 }
 
@@ -71,7 +65,7 @@ impl<'de> PduDecode<'de> for ClientTemporaryDirectory<'de> {
     fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
         let _header = PartialHeader::decode(src)?;
 
-        ensure_fixed_part_size!(in: src);
+        ensure_size!(in: src, size: Self::INNER_SIZE);
         let buffer = src.read_slice(Self::PATH_BUFFER_SIZE);
 
         Ok(Self {

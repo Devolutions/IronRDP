@@ -1,18 +1,20 @@
+#![allow(clippy::print_stderr, clippy::print_stdout)] // allowed in this module only
+
 use std::num::NonZeroU32;
 
 use anyhow::Context as _;
 use tokio::sync::mpsc;
 use winit::dpi::LogicalPosition;
 use winit::event::{self, Event, WindowEvent};
-use winit::event_loop::{ControlFlow, EventLoop, EventLoopBuilder};
+use winit::event_loop::{ControlFlow, EventLoop, EventLoopBuilder, EventLoopProxy};
 use winit::window::{Window, WindowBuilder};
 
 use crate::rdp::{RdpInputEvent, RdpOutputEvent};
 
 pub struct GuiContext {
-    pub window: Window,
-    pub event_loop: EventLoop<RdpOutputEvent>,
-    pub context: softbuffer::Context,
+    window: Window,
+    event_loop: EventLoop<RdpOutputEvent>,
+    context: softbuffer::Context,
 }
 
 impl GuiContext {
@@ -24,6 +26,7 @@ impl GuiContext {
             .build(&event_loop)
             .context("unable to create winit Window")?;
 
+        // SAFETY: both the context and the window are held by the GuiContext
         let context = unsafe { softbuffer::Context::new(&window) }
             .map_err(|e| anyhow::Error::msg(format!("unable to initialize softbuffer context: {e}")))?;
 
@@ -34,6 +37,14 @@ impl GuiContext {
         })
     }
 
+    pub fn window(&self) -> &Window {
+        &self.window
+    }
+
+    pub fn create_event_proxy(&self) -> EventLoopProxy<RdpOutputEvent> {
+        self.event_loop.create_proxy()
+    }
+
     pub fn run(self, input_event_sender: mpsc::UnboundedSender<RdpInputEvent>) -> ! {
         let Self {
             window,
@@ -41,6 +52,7 @@ impl GuiContext {
             context,
         } = self;
 
+        // SAFETY: both the context and the window are kept alive until the end of this function’s scope
         let mut surface = unsafe { softbuffer::Surface::new(&context, &window) }.expect("surface");
 
         let mut input_database = ironrdp::input::Database::new();

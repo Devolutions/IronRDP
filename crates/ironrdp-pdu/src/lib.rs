@@ -1,3 +1,9 @@
+#![allow(clippy::arithmetic_side_effects)] // FIXME: remove
+#![allow(clippy::cast_lossless)] // FIXME: remove
+#![allow(clippy::cast_possible_truncation)] // FIXME: remove
+#![allow(clippy::cast_possible_wrap)] // FIXME: remove
+#![allow(clippy::cast_sign_loss)] // FIXME: remove
+
 use core::fmt;
 
 use cursor::WriteCursor;
@@ -34,7 +40,7 @@ pub(crate) mod per;
 pub use crate::basic_output::{bitmap, fast_path, pointer, surface_commands};
 pub use crate::rdp::vc::dvc;
 
-pub type PduResult<T> = core::result::Result<T, PduError>;
+pub type PduResult<T> = Result<T, PduError>;
 
 pub type PduError = ironrdp_error::Error<PduErrorKind>;
 
@@ -249,7 +255,7 @@ pub enum Action {
 }
 
 impl Action {
-    pub fn from_fp_output_header(fp_output_header: u8) -> core::result::Result<Self, u8> {
+    pub fn from_fp_output_header(fp_output_header: u8) -> Result<Self, u8> {
         match fp_output_header & 0b11 {
             0x00 => Ok(Self::FastPath),
             0x03 => Ok(Self::X224),

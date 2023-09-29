@@ -1,3 +1,8 @@
+#![allow(clippy::print_stdout)]
+#![allow(clippy::print_stderr)]
+#![allow(clippy::unwrap_used)]
+#![allow(unreachable_pub)]
+
 #[macro_use]
 mod macros;
 

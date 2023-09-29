@@ -1,4 +1,9 @@
 #![doc = include_str!("../README.md")]
+#![allow(clippy::arithmetic_side_effects)] // FIXME: remove
+#![allow(clippy::cast_lossless)] // FIXME: remove
+#![allow(clippy::cast_possible_truncation)] // FIXME: remove
+#![allow(clippy::cast_possible_wrap)] // FIXME: remove
+#![allow(clippy::cast_sign_loss)] // FIXME: remove
 
 pub mod backend;
 pub mod pdu;
@@ -17,6 +22,7 @@ use pdu::{
 use thiserror::Error;
 use tracing::{error, info};
 
+#[rustfmt::skip] // do not reorder
 use crate::pdu::FormatList;
 
 /// PDUs for sending to the server on the CLIPRDR channel.
@@ -253,7 +259,7 @@ impl StaticVirtualChannelProcessor for Cliprdr {
         }
     }
 
-    fn compression_condition(&self) -> ironrdp_svc::CompressionCondition {
+    fn compression_condition(&self) -> CompressionCondition {
         CompressionCondition::WhenRdpDataIsCompressed
     }
 }

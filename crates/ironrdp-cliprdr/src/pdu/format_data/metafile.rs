@@ -10,25 +10,25 @@ bitflags! {
     pub struct PackedMetafileMappingMode: u32 {
         /// Each logical unit is mapped to one device pixel. Positive x is to the right; positive
         /// y is down.
-        const TEXT = 0x00000001;
+        const TEXT = 0x0000_0001;
         /// Each logical unit is mapped to 0.1 millimeter. Positive x is to the right; positive
         /// y is up.
-        const LO_METRIC = 0x00000002;
+        const LO_METRIC = 0x0000_0002;
         /// Each logical unit is mapped to 0.01 millimeter. Positive x is to the right; positive
         /// y is up.
-        const HI_METRIC = 0x00000003;
+        const HI_METRIC = 0x0000_0003;
         /// Each logical unit is mapped to 0.01 inch. Positive x is to the right; positive y is up.
-        const LO_ENGLISH = 0x00000004;
+        const LO_ENGLISH = 0x0000_0004;
         /// Each logical unit is mapped to 0.001 inch. Positive x is to the right; positive y is up.
-        const HI_ENGLISH = 0x00000005;
+        const HI_ENGLISH = 0x0000_0005;
         /// Each logical unit is mapped to 1/20 of a printer's point (1/1440 of an inch), also
         /// called a twip. Positive x is to the right; positive y is up.
-        const TWIPS = 0x00000006;
+        const TWIPS = 0x0000_0006;
         /// Logical units are mapped to arbitrary units with equally scaled axes; one unit along
         /// the x-axis is equal to one unit along the y-axis.
-        const ISOTROPIC = 0x00000007;
+        const ISOTROPIC = 0x0000_0007;
         /// Logical units are mapped to arbitrary units with arbitrarily scaled axes.
-        const ANISOTROPIC = 0x00000008;
+        const ANISOTROPIC = 0x0000_0008;
     }
 }
 

@@ -226,11 +226,12 @@ pub enum ClipboardProtocolVersion {
 }
 
 impl ClipboardProtocolVersion {
-    const VERSION_VALUE_V1: u32 = 0x00000001;
-    const VERSION_VALUE_V2: u32 = 0x00000002;
+    const VERSION_VALUE_V1: u32 = 0x0000_0001;
+    const VERSION_VALUE_V2: u32 = 0x0000_0002;
 
     const NAME: &str = "CLIPRDR_CAPS_VERSION";
 
+    #[must_use]
     pub fn downgrade(self, other: Self) -> Self {
         if self != other {
             return Self::V1;
@@ -271,23 +272,23 @@ bitflags! {
         /// Short Format Name variant MUST be used. If this flag is set by both
         /// protocol endpoints, then the Long Format Name variant MUST be
         /// used.
-        const USE_LONG_FORMAT_NAMES = 0x00000002;
+        const USE_LONG_FORMAT_NAMES = 0x0000_0002;
         /// File copy and paste using stream-based operations are supported
         /// using the File Contents Request PDU and File Contents Response
         /// PDU.
-        const STREAM_FILECLIP_ENABLED = 0x00000004;
+        const STREAM_FILECLIP_ENABLED = 0x0000_0004;
         /// Indicates that any description of files to copy and paste MUST NOT
         /// include the source path of the files.
-        const FILECLIP_NO_FILE_PATHS = 0x00000008;
+        const FILECLIP_NO_FILE_PATHS = 0x0000_0008;
         /// Locking and unlocking of File Stream data on the clipboard is
         /// supported using the Lock Clipboard Data PDU and Unlock Clipboard
         /// Data PDU.
-        const CAN_LOCK_CLIPDATA = 0x00000010;
+        const CAN_LOCK_CLIPDATA = 0x0000_0010;
         /// Indicates support for transferring files that are larger than
         /// 4,294,967,295 bytes in size. If this flag is not set, then only files of
         /// size less than or equal to 4,294,967,295 bytes can be exchanged
         /// using the File Contents Request PDU and File Contents
         /// Response PDU.
-        const HUGE_FILE_SUPPORT_ENABLED = 0x00000020;
+        const HUGE_FILE_SUPPORT_ENABLED = 0x0000_0020;
     }
 }

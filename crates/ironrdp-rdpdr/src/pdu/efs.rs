@@ -383,7 +383,7 @@ impl CapabilityMessage {
     }
 
     fn size(&self) -> usize {
-        self.header.size() + self.capability_data.size()
+        CapabilityHeader::SIZE + self.capability_data.size()
     }
 }
 
@@ -437,15 +437,11 @@ impl CapabilityHeader {
     }
 
     fn encode(&self, dst: &mut WriteCursor) -> PduResult<()> {
-        ensure_size!(in: dst, size: self.size());
+        ensure_size!(in: dst, size: Self::SIZE);
         dst.write_u16(self.cap_type as u16);
         dst.write_u16(self.length);
         dst.write_u32(self.version);
         Ok(())
-    }
-
-    fn size(&self) -> usize {
-        Self::SIZE
     }
 }
 
@@ -465,13 +461,13 @@ enum CapabilityType {
 }
 
 /// GENERAL_CAPABILITY_VERSION_02
-pub const GENERAL_CAPABILITY_VERSION_02: u32 = 0x00000002;
+pub const GENERAL_CAPABILITY_VERSION_02: u32 = 0x0000_0002;
 /// SMARTCARD_CAPABILITY_VERSION_01
-pub const SMARTCARD_CAPABILITY_VERSION_01: u32 = 0x00000001;
+pub const SMARTCARD_CAPABILITY_VERSION_01: u32 = 0x0000_0001;
 /// DRIVE_CAPABILITY_VERSION_02
-pub const DRIVE_CAPABILITY_VERSION_02: u32 = 0x00000002;
+pub const DRIVE_CAPABILITY_VERSION_02: u32 = 0x0000_0002;
 
-impl std::convert::TryFrom<u16> for CapabilityType {
+impl TryFrom<u16> for CapabilityType {
     type Error = PduError;
 
     fn try_from(value: u16) -> Result<Self, Self::Error> {
@@ -518,7 +514,7 @@ impl CapabilityData {
 
     fn size(&self) -> usize {
         match self {
-            CapabilityData::General(general) => general.size(),
+            CapabilityData::General(_) => GeneralCapabilitySet::SIZE,
             CapabilityData::Printer => 0,
             CapabilityData::Port => 0,
             CapabilityData::Drive => 0,
@@ -565,7 +561,7 @@ impl GeneralCapabilitySet {
     const SIZE: usize = size_of::<u32>() * 8 + size_of::<u16>() * 2;
 
     fn encode(&self, dst: &mut WriteCursor) -> PduResult<()> {
-        ensure_size!(in: dst, size: self.size());
+        ensure_size!(in: dst, size: Self::SIZE);
         dst.write_u32(self.os_type);
         dst.write_u32(self.os_version);
         dst.write_u16(self.protocol_major_version);
@@ -612,10 +608,6 @@ impl GeneralCapabilitySet {
             special_type_device_cap,
         })
     }
-
-    fn size(&self) -> usize {
-        Self::SIZE
-    }
 }
 
 bitflags! {
@@ -626,37 +618,37 @@ bitflags! {
     #[derive(Debug, Clone, Copy)]
     struct IoCode1: u32 {
         /// Unused, always set.
-        const RDPDR_IRP_MJ_CREATE = 0x00000001;
+        const RDPDR_IRP_MJ_CREATE = 0x0000_0001;
         /// Unused, always set.
-        const RDPDR_IRP_MJ_CLEANUP = 0x00000002;
+        const RDPDR_IRP_MJ_CLEANUP = 0x0000_0002;
         /// Unused, always set.
-        const RDPDR_IRP_MJ_CLOSE = 0x00000004;
+        const RDPDR_IRP_MJ_CLOSE = 0x0000_0004;
         /// Unused, always set.
-        const RDPDR_IRP_MJ_READ = 0x00000008;
+        const RDPDR_IRP_MJ_READ = 0x0000_0008;
         /// Unused, always set.
-        const RDPDR_IRP_MJ_WRITE = 0x00000010;
+        const RDPDR_IRP_MJ_WRITE = 0x0000_0010;
         /// Unused, always set.
-        const RDPDR_IRP_MJ_FLUSH_BUFFERS = 0x00000020;
+        const RDPDR_IRP_MJ_FLUSH_BUFFERS = 0x0000_0020;
         /// Unused, always set.
-        const RDPDR_IRP_MJ_SHUTDOWN = 0x00000040;
+        const RDPDR_IRP_MJ_SHUTDOWN = 0x0000_0040;
         /// Unused, always set.
-        const RDPDR_IRP_MJ_DEVICE_CONTROL = 0x00000080;
+        const RDPDR_IRP_MJ_DEVICE_CONTROL = 0x0000_0080;
         /// Unused, always set.
-        const RDPDR_IRP_MJ_QUERY_VOLUME_INFORMATION = 0x00000100;
+        const RDPDR_IRP_MJ_QUERY_VOLUME_INFORMATION = 0x0000_0100;
         /// Unused, always set.
-        const RDPDR_IRP_MJ_SET_VOLUME_INFORMATION = 0x00000200;
+        const RDPDR_IRP_MJ_SET_VOLUME_INFORMATION = 0x0000_0200;
         /// Unused, always set.
-        const RDPDR_IRP_MJ_QUERY_INFORMATION = 0x00000400;
+        const RDPDR_IRP_MJ_QUERY_INFORMATION = 0x0000_0400;
         /// Unused, always set.
-        const RDPDR_IRP_MJ_SET_INFORMATION = 0x00000800;
+        const RDPDR_IRP_MJ_SET_INFORMATION = 0x0000_0800;
         /// Unused, always set.
-        const RDPDR_IRP_MJ_DIRECTORY_CONTROL = 0x00001000;
+        const RDPDR_IRP_MJ_DIRECTORY_CONTROL = 0x0000_1000;
         /// Unused, always set.
-        const RDPDR_IRP_MJ_LOCK_CONTROL = 0x00002000;
+        const RDPDR_IRP_MJ_LOCK_CONTROL = 0x0000_2000;
         /// Enable Query Security requests (IRP_MJ_QUERY_SECURITY).
-        const RDPDR_IRP_MJ_QUERY_SECURITY = 0x00004000;
+        const RDPDR_IRP_MJ_QUERY_SECURITY = 0x0000_4000;
         /// Enable Set Security requests (IRP_MJ_SET_SECURITY).
-        const RDPDR_IRP_MJ_SET_SECURITY = 0x00008000;
+        const RDPDR_IRP_MJ_SET_SECURITY = 0x0000_8000;
 
         /// Combination of all the required bits.
         const REQUIRED = Self::RDPDR_IRP_MJ_CREATE.bits()
@@ -683,11 +675,11 @@ bitflags! {
     #[derive(Debug, Clone, Copy)]
     struct ExtendedPdu: u32 {
         /// Allow the client to send Client Drive Device List Remove packets.
-        const RDPDR_DEVICE_REMOVE_PDUS = 0x00000001;
+        const RDPDR_DEVICE_REMOVE_PDUS = 0x0000_0001;
         /// Unused, always set.
-        const RDPDR_CLIENT_DISPLAY_NAME_PDU = 0x00000002;
+        const RDPDR_CLIENT_DISPLAY_NAME_PDU = 0x0000_0002;
         /// Allow the server to send a Server User Logged On packet.
-        const RDPDR_USER_LOGGEDON_PDU = 0x00000004;
+        const RDPDR_USER_LOGGEDON_PDU = 0x0000_0004;
     }
 }
 
@@ -699,7 +691,7 @@ bitflags! {
         /// Optionally present only in the Client Core Capability Response.
         /// Allows the server to send multiple simultaneous read or write requests
         /// on the same file from a redirected file system.
-        const ENABLE_ASYNCIO = 0x00000001;
+        const ENABLE_ASYNCIO = 0x0000_0001;
     }
 }
 
@@ -795,7 +787,7 @@ impl DeviceAnnounceHeader {
             device_type: DeviceType::Smartcard,
             device_id,
             // This name is a constant defined by the spec.
-            preferred_dos_name: PreferredDosName("SCARD".to_string()),
+            preferred_dos_name: PreferredDosName("SCARD".to_owned()),
             device_data: Vec::new(),
         }
     }
@@ -851,15 +843,15 @@ impl PreferredDosName {
 #[repr(u32)]
 pub enum DeviceType {
     /// RDPDR_DTYP_SERIAL
-    Serial = 0x00000001,
+    Serial = 0x0000_0001,
     /// RDPDR_DTYP_PARALLEL
-    Parallel = 0x00000002,
+    Parallel = 0x0000_0002,
     /// RDPDR_DTYP_PRINT
-    Print = 0x00000004,
+    Print = 0x0000_0004,
     /// RDPDR_DTYP_FILESYSTEM
-    Filesystem = 0x00000008,
+    Filesystem = 0x0000_0008,
     /// RDPDR_DTYP_SMARTCARD
-    Smartcard = 0x00000020,
+    Smartcard = 0x0000_0020,
 }
 
 impl From<DeviceType> for u32 {
@@ -868,16 +860,16 @@ impl From<DeviceType> for u32 {
     }
 }
 
-impl std::convert::TryFrom<u32> for DeviceType {
+impl TryFrom<u32> for DeviceType {
     type Error = PduError;
 
     fn try_from(value: u32) -> Result<Self, Self::Error> {
         match value {
-            0x00000001 => Ok(DeviceType::Serial),
-            0x00000002 => Ok(DeviceType::Parallel),
-            0x00000004 => Ok(DeviceType::Print),
-            0x00000008 => Ok(DeviceType::Filesystem),
-            0x00000020 => Ok(DeviceType::Smartcard),
+            0x0000_0001 => Ok(DeviceType::Serial),
+            0x0000_0002 => Ok(DeviceType::Parallel),
+            0x0000_0004 => Ok(DeviceType::Print),
+            0x0000_0008 => Ok(DeviceType::Filesystem),
+            0x0000_0020 => Ok(DeviceType::Smartcard),
             _ => Err(invalid_message_err!("try_from", "DeviceType", "invalid value")),
         }
     }

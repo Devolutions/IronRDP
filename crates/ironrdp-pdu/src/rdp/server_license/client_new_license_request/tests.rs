@@ -117,7 +117,7 @@ lazy_static! {
         .concat()
     };
 
-    pub static ref SERVER_LICENSE_REQUEST: ServerLicenseRequest = ServerLicenseRequest {
+    pub(crate) static ref SERVER_LICENSE_REQUEST: ServerLicenseRequest = ServerLicenseRequest {
         server_random: Vec::from(SERVER_RANDOM_BUFFER.as_ref()),
         product_info: ProductInfo {
             version: 0x60000,

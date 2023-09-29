@@ -4,7 +4,7 @@ use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
 
 #[repr(u8)]
 #[allow(unused)]
-pub enum Pc {
+pub(crate) enum Pc {
     Primitive = 0x00,
     Construct = 0x20,
 }
@@ -31,26 +31,26 @@ enum Tag {
     Sequence = 0x10,
 }
 
-pub const SIZEOF_ENUMERATED: u16 = 3;
-pub const SIZEOF_BOOL: u16 = 3;
+pub(crate) const SIZEOF_ENUMERATED: u16 = 3;
+pub(crate) const SIZEOF_BOOL: u16 = 3;
 
 const TAG_MASK: u8 = 0x1F;
 
-pub fn sizeof_application_tag(tagnum: u8, length: u16) -> u16 {
+pub(crate) fn sizeof_application_tag(tagnum: u8, length: u16) -> u16 {
     let tag_len = if tagnum > 0x1E { 2 } else { 1 };
 
     sizeof_length(length) + tag_len
 }
 
-pub fn sizeof_sequence_tag(length: u16) -> u16 {
+pub(crate) fn sizeof_sequence_tag(length: u16) -> u16 {
     1 + sizeof_length(length)
 }
 
-pub fn sizeof_octet_string(length: u16) -> u16 {
+pub(crate) fn sizeof_octet_string(length: u16) -> u16 {
     1 + sizeof_length(length) + length
 }
 
-pub fn sizeof_integer(value: u32) -> u16 {
+pub(crate) fn sizeof_integer(value: u32) -> u16 {
     if value < 0x0000_0080 {
         3
     } else if value < 0x0000_8000 {
@@ -62,12 +62,12 @@ pub fn sizeof_integer(value: u32) -> u16 {
     }
 }
 
-pub fn write_sequence_tag(mut stream: impl io::Write, length: u16) -> io::Result<usize> {
+pub(crate) fn write_sequence_tag(mut stream: impl io::Write, length: u16) -> io::Result<usize> {
     write_universal_tag(&mut stream, Tag::Sequence, Pc::Construct)?;
     write_length(stream, length).map(|length| length + 1)
 }
 
-pub fn read_sequence_tag(mut stream: impl io::Read) -> io::Result<u16> {
+pub(crate) fn read_sequence_tag(mut stream: impl io::Read) -> io::Result<u16> {
     let identifier = stream.read_u8()?;
 
     if identifier != Class::Universal as u8 | Pc::Construct as u8 | (TAG_MASK & Tag::Sequence as u8) {
@@ -80,7 +80,7 @@ pub fn read_sequence_tag(mut stream: impl io::Read) -> io::Result<u16> {
     }
 }
 
-pub fn write_application_tag(mut stream: impl io::Write, tagnum: u8, length: u16) -> io::Result<usize> {
+pub(crate) fn write_application_tag(mut stream: impl io::Write, tagnum: u8, length: u16) -> io::Result<usize> {
     let taglen = if tagnum > 0x1E {
         stream.write_u8(Class::Application as u8 | Pc::Construct as u8 | TAG_MASK)?;
         stream.write_u8(tagnum)?;
@@ -93,7 +93,7 @@ pub fn write_application_tag(mut stream: impl io::Write, tagnum: u8, length: u16
     write_length(stream, length).map(|length| length + taglen)
 }
 
-pub fn read_application_tag(mut stream: impl io::Read, tagnum: u8) -> io::Result<u16> {
+pub(crate) fn read_application_tag(mut stream: impl io::Read, tagnum: u8) -> io::Result<u16> {
     let identifier = stream.read_u8()?;
 
     if tagnum > 0x1E {
@@ -119,7 +119,7 @@ pub fn read_application_tag(mut stream: impl io::Read, tagnum: u8) -> io::Result
     read_length(stream)
 }
 
-pub fn write_enumerated(mut stream: impl io::Write, enumerated: u8) -> io::Result<usize> {
+pub(crate) fn write_enumerated(mut stream: impl io::Write, enumerated: u8) -> io::Result<usize> {
     let mut size = 0;
     size += write_universal_tag(&mut stream, Tag::Enumerated, Pc::Primitive)?;
     size += write_length(&mut stream, 1)?;
@@ -129,7 +129,7 @@ pub fn write_enumerated(mut stream: impl io::Write, enumerated: u8) -> io::Resul
     Ok(size)
 }
 
-pub fn read_enumerated(mut stream: impl io::Read, count: u8) -> io::Result<u8> {
+pub(crate) fn read_enumerated(mut stream: impl io::Read, count: u8) -> io::Result<u8> {
     read_universal_tag(&mut stream, Tag::Enumerated, Pc::Primitive)?;
 
     let length = read_length(&mut stream)?;
@@ -145,7 +145,7 @@ pub fn read_enumerated(mut stream: impl io::Read, count: u8) -> io::Result<u8> {
     Ok(enumerated)
 }
 
-pub fn write_integer(mut stream: impl io::Write, value: u32) -> io::Result<usize> {
+pub(crate) fn write_integer(mut stream: impl io::Write, value: u32) -> io::Result<usize> {
     write_universal_tag(&mut stream, Tag::Integer, Pc::Primitive)?;
 
     if value < 0x0000_0080 {
@@ -172,7 +172,7 @@ pub fn write_integer(mut stream: impl io::Write, value: u32) -> io::Result<usize
     }
 }
 
-pub fn read_integer(mut stream: impl io::Read) -> io::Result<u64> {
+pub(crate) fn read_integer(mut stream: impl io::Read) -> io::Result<u64> {
     read_universal_tag(&mut stream, Tag::Integer, Pc::Primitive)?;
     let length = read_length(&mut stream)?;
 
@@ -194,7 +194,7 @@ pub fn read_integer(mut stream: impl io::Read) -> io::Result<u64> {
     }
 }
 
-pub fn write_bool(mut stream: impl io::Write, value: bool) -> io::Result<usize> {
+pub(crate) fn write_bool(mut stream: impl io::Write, value: bool) -> io::Result<usize> {
     let mut size = 0;
     size += write_universal_tag(&mut stream, Tag::Boolean, Pc::Primitive)?;
     size += write_length(&mut stream, 1)?;
@@ -204,7 +204,7 @@ pub fn write_bool(mut stream: impl io::Write, value: bool) -> io::Result<usize> 
     Ok(size)
 }
 
-pub fn read_bool(mut stream: impl io::Read) -> io::Result<bool> {
+pub(crate) fn read_bool(mut stream: impl io::Read) -> io::Result<bool> {
     read_universal_tag(&mut stream, Tag::Boolean, Pc::Primitive)?;
     let length = read_length(&mut stream)?;
 
@@ -215,18 +215,18 @@ pub fn read_bool(mut stream: impl io::Read) -> io::Result<bool> {
     Ok(stream.read_u8()? != 0)
 }
 
-pub fn write_octet_string(mut stream: impl io::Write, value: &[u8]) -> io::Result<usize> {
+pub(crate) fn write_octet_string(mut stream: impl io::Write, value: &[u8]) -> io::Result<usize> {
     let tag_size = write_octet_string_tag(&mut stream, value.len() as u16)?;
     stream.write_all(value)?;
     Ok(tag_size + value.len())
 }
 
-pub fn write_octet_string_tag(mut stream: impl io::Write, length: u16) -> io::Result<usize> {
+pub(crate) fn write_octet_string_tag(mut stream: impl io::Write, length: u16) -> io::Result<usize> {
     write_universal_tag(&mut stream, Tag::OctetString, Pc::Primitive)?;
     write_length(&mut stream, length).map(|length| length + 1)
 }
 
-pub fn read_octet_string(mut stream: impl io::Read) -> io::Result<Vec<u8>> {
+pub(crate) fn read_octet_string(mut stream: impl io::Read) -> io::Result<Vec<u8>> {
     let length = read_octet_string_tag(&mut stream)?;
 
     let mut buffer = vec![0; length as usize];
@@ -235,7 +235,7 @@ pub fn read_octet_string(mut stream: impl io::Read) -> io::Result<Vec<u8>> {
     Ok(buffer)
 }
 
-pub fn read_octet_string_tag(mut stream: impl io::Read) -> io::Result<u16> {
+pub(crate) fn read_octet_string_tag(mut stream: impl io::Read) -> io::Result<u16> {
     read_universal_tag(&mut stream, Tag::OctetString, Pc::Primitive)?;
     read_length(stream)
 }

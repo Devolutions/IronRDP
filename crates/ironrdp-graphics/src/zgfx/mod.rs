@@ -204,8 +204,8 @@ fn read_encoded_bytes(
 }
 
 struct Token {
-    pub prefix: &'static BitSlice<u8, Msb0>,
-    pub ty: TokenType,
+    prefix: &'static BitSlice<u8, Msb0>,
+    ty: TokenType,
 }
 
 enum TokenType {

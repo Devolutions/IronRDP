@@ -74,7 +74,7 @@ pub struct ClientGccBlocks {
 }
 
 impl ClientGccBlocks {
-    pub fn channel_names(&self) -> Option<Vec<network_data::ChannelDef>> {
+    pub fn channel_names(&self) -> Option<Vec<ChannelDef>> {
         self.network.as_ref().map(|network| network.channels.clone())
     }
 }
@@ -321,7 +321,7 @@ pub struct UserDataHeader<T: FromPrimitive + ToPrimitive> {
 impl<T: FromPrimitive + ToPrimitive> UserDataHeader<T> {
     fn from_gcc_block<B: PduParsing>(block_type: T, gcc_block: &B) -> Result<Self, GccError>
     where
-        GccError: std::convert::From<<B as PduParsing>::Error>,
+        GccError: From<<B as PduParsing>::Error>,
     {
         let mut block_data = Vec::with_capacity(gcc_block.buffer_length());
         gcc_block.to_buffer(&mut block_data)?;

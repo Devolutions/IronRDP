@@ -24,7 +24,7 @@ impl SurfaceCommand<'_> {
     const FIXED_PART_SIZE: usize = std::mem::size_of::<u16>();
 }
 
-impl<'en> PduEncode for SurfaceCommand<'en> {
+impl PduEncode for SurfaceCommand<'_> {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
         ensure_size!(in: dst, size: self.size());
 
@@ -79,7 +79,7 @@ impl SurfaceBitsPdu<'_> {
     const NAME: &str = "TS_SURFCMD_x_SURFACE_BITS_PDU";
 }
 
-impl<'en> PduEncode for SurfaceBitsPdu<'en> {
+impl PduEncode for SurfaceBitsPdu<'_> {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
         self.destination.encode(dst)?;
         self.extended_bitmap_data.encode(dst)?;
@@ -179,7 +179,7 @@ impl ExtendedBitmapDataPdu<'_> {
         core::mem::size_of::<u8>() * 4 + core::mem::size_of::<u16>() * 2 + core::mem::size_of::<u32>();
 }
 
-impl<'en> PduEncode for ExtendedBitmapDataPdu<'en> {
+impl PduEncode for ExtendedBitmapDataPdu<'_> {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
         ensure_size!(in: dst, size: self.size());
 
@@ -292,8 +292,8 @@ impl PduEncode for BitmapDataHeader {
     }
 }
 
-impl<'de> PduDecode<'de> for BitmapDataHeader {
-    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+impl PduDecode<'_> for BitmapDataHeader {
+    fn decode(src: &mut ReadCursor<'_>) -> PduResult<Self> {
         ensure_fixed_part_size!(in: src);
 
         let high_unique_id = src.read_u32();
@@ -318,7 +318,7 @@ enum SurfaceCommandType {
     StreamSurfaceBits = 0x06,
 }
 
-impl<'a> From<&SurfaceCommand<'a>> for SurfaceCommandType {
+impl From<&SurfaceCommand<'_>> for SurfaceCommandType {
     fn from(command: &SurfaceCommand<'_>) -> Self {
         match command {
             SurfaceCommand::SetSurfaceBits(_) => Self::SetSurfaceBits,

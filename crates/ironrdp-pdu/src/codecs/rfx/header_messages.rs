@@ -16,7 +16,7 @@ const CHANNEL_SIZE: usize = 5;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SyncPdu;
 
-impl<'a> PduBufferParsing<'a> for SyncPdu {
+impl PduBufferParsing<'_> for SyncPdu {
     type Error = RfxError;
 
     fn from_buffer_consume(buffer: &mut &[u8]) -> Result<Self, Self::Error> {
@@ -71,7 +71,7 @@ impl CodecVersionsPdu {
     }
 }
 
-impl<'a> PduBufferParsing<'a> for CodecVersionsPdu {
+impl PduBufferParsing<'_> for CodecVersionsPdu {
     type Error = RfxError;
 
     fn from_buffer_consume(buffer: &mut &[u8]) -> Result<Self, Self::Error> {
@@ -98,7 +98,7 @@ impl<'a> PduBufferParsing<'a> for CodecVersionsPdu {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ChannelsPdu(pub Vec<Channel>);
+pub struct ChannelsPdu(pub Vec<RfxChannel>);
 
 impl ChannelsPdu {
     pub fn from_buffer_consume_with_header(buffer: &mut &[u8], header: BlockHeader) -> Result<Self, RfxError> {
@@ -114,14 +114,14 @@ impl ChannelsPdu {
         }
 
         let channels = (0..channels_number)
-            .map(|_| Channel::from_buffer_consume(&mut buffer))
+            .map(|_| RfxChannel::from_buffer_consume(&mut buffer))
             .collect::<Result<Vec<_>, _>>()?;
 
         Ok(Self(channels))
     }
 }
 
-impl<'a> PduBufferParsing<'a> for ChannelsPdu {
+impl PduBufferParsing<'_> for ChannelsPdu {
     type Error = RfxError;
 
     fn from_buffer_consume(buffer: &mut &[u8]) -> Result<Self, Self::Error> {
@@ -151,13 +151,44 @@ impl<'a> PduBufferParsing<'a> for ChannelsPdu {
     }
 }
 
+/// TS_RFX_CHANNELT
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
-pub struct Channel {
-    pub width: i16,
-    pub height: i16,
+pub struct RfxChannel {
+    pub width: RfxChannelWidth,
+    pub height: RfxChannelHeight,
 }
 
-impl<'a> PduBufferParsing<'a> for Channel {
+/// A 16-bit, signed integer within the range of 1 to 4096
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[repr(transparent)]
+pub struct RfxChannelWidth(i16);
+
+impl RfxChannelWidth {
+    pub fn as_u16(self) -> u16 {
+        u16::try_from(self.0).expect("integer within the range of 1 to 4096")
+    }
+
+    pub fn get(self) -> i16 {
+        self.0
+    }
+}
+
+/// A 16-bit, signed integer within the range of 1 to 2048
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[repr(transparent)]
+pub struct RfxChannelHeight(i16);
+
+impl RfxChannelHeight {
+    pub fn as_u16(self) -> u16 {
+        u16::try_from(self.0).expect("integer within the range of 1 to 2048")
+    }
+
+    pub fn get(self) -> i16 {
+        self.0
+    }
+}
+
+impl PduBufferParsing<'_> for RfxChannel {
     type Error = RfxError;
 
     fn from_buffer_consume(buffer: &mut &[u8]) -> Result<Self, Self::Error> {
@@ -167,15 +198,24 @@ impl<'a> PduBufferParsing<'a> for Channel {
         }
 
         let width = buffer.read_i16::<LittleEndian>()?;
+        if width < 1 && width > 4096 {
+            return Err(RfxError::InvalidChannelWidth(width));
+        }
+        let width = RfxChannelWidth(width);
+
         let height = buffer.read_i16::<LittleEndian>()?;
+        if height < 1 && height > 2048 {
+            return Err(RfxError::InvalidChannelHeight(height));
+        }
+        let height = RfxChannelHeight(height);
 
         Ok(Self { width, height })
     }
 
     fn to_buffer_consume(&self, buffer: &mut &mut [u8]) -> Result<(), Self::Error> {
         buffer.write_u8(CHANNEL_ID)?;
-        buffer.write_i16::<LittleEndian>(self.width)?;
-        buffer.write_i16::<LittleEndian>(self.height)?;
+        buffer.write_i16::<LittleEndian>(self.width.get())?;
+        buffer.write_i16::<LittleEndian>(self.height.get())?;
 
         Ok(())
     }
@@ -188,7 +228,7 @@ impl<'a> PduBufferParsing<'a> for Channel {
 #[derive(Debug, Clone, PartialEq)]
 struct CodecVersion;
 
-impl<'a> PduBufferParsing<'a> for CodecVersion {
+impl PduBufferParsing<'_> for CodecVersion {
     type Error = RfxError;
 
     fn from_buffer_consume(buffer: &mut &[u8]) -> Result<Self, Self::Error> {

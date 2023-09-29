@@ -57,7 +57,7 @@ pub struct ColorPointerAttribute<'a> {
     pub and_mask: &'a [u8],
 }
 
-impl<'a> ColorPointerAttribute<'a> {
+impl ColorPointerAttribute<'_> {
     const NAME: &'static str = "TS_COLORPOINTERATTRIBUTE";
     const FIXED_PART_SIZE: usize = core::mem::size_of::<u16>() * 5 + Point16::FIXED_PART_SIZE;
 
@@ -89,7 +89,7 @@ impl<'a> ColorPointerAttribute<'a> {
     }
 }
 
-impl<'a> PduEncode for ColorPointerAttribute<'a> {
+impl PduEncode for ColorPointerAttribute<'_> {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
         ensure_size!(in: dst, size: self.size());
 
@@ -156,12 +156,12 @@ pub struct PointerAttribute<'a> {
     pub color_pointer: ColorPointerAttribute<'a>,
 }
 
-impl<'a> PointerAttribute<'a> {
+impl PointerAttribute<'_> {
     const NAME: &'static str = "TS_POINTERATTRIBUTE";
     const FIXED_PART_SIZE: usize = core::mem::size_of::<u16>();
 }
 
-impl<'a> PduEncode for PointerAttribute<'a> {
+impl PduEncode for PointerAttribute<'_> {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
         ensure_size!(in: dst, size: self.size());
 
@@ -242,13 +242,13 @@ pub struct LargePointerAttribute<'a> {
     pub and_mask: &'a [u8],
 }
 
-impl<'a> LargePointerAttribute<'a> {
+impl LargePointerAttribute<'_> {
     const NAME: &'static str = "TS_FP_LARGEPOINTERATTRIBUTE";
     const FIXED_PART_SIZE: usize =
         core::mem::size_of::<u32>() * 2 + core::mem::size_of::<u16>() * 4 + core::mem::size_of::<Point16>();
 }
 
-impl<'a> PduEncode for LargePointerAttribute<'a> {
+impl PduEncode for LargePointerAttribute<'_> {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
         ensure_size!(in: dst, size: self.size());
 

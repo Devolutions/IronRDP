@@ -70,6 +70,7 @@ pub trait Rectangle: RectangleImpl {
         }
     }
 
+    #[must_use]
     fn union(&self, other: &Self) -> Self {
         let a = self.to_base();
         let b = other.to_base();

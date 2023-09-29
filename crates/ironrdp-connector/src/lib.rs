@@ -100,7 +100,7 @@ impl State for () {
         true
     }
 
-    fn as_any(&self) -> &dyn core::any::Any {
+    fn as_any(&self) -> &dyn Any {
         self
     }
 }
@@ -116,7 +116,7 @@ impl Written {
     pub fn from_size(value: usize) -> ConnectorResult<Self> {
         core::num::NonZeroUsize::new(value)
             .map(Self::Size)
-            .ok_or(ConnectorError::general("invalid written length (can’t be zero)"))
+            .ok_or_else(|| ConnectorError::general("invalid written length (can’t be zero)"))
     }
 
     #[inline]
@@ -148,7 +148,7 @@ pub trait Sequence: Send + Sync {
 
 ironrdp_pdu::assert_obj_safe!(Sequence);
 
-pub type ConnectorResult<T> = std::result::Result<T, ConnectorError>;
+pub type ConnectorResult<T> = Result<T, ConnectorError>;
 
 #[non_exhaustive]
 #[derive(Debug)]
@@ -220,7 +220,9 @@ impl ConnectorErrorExt for ConnectorError {
 }
 
 pub trait ConnectorResultExt {
+    #[must_use]
     fn with_context(self, context: &'static str) -> Self;
+    #[must_use]
     fn with_source<E>(self, source: E) -> Self
     where
         E: std::error::Error + Sync + Send + 'static;

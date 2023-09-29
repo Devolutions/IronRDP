@@ -19,9 +19,8 @@ test = false
 bitflags = "2" # TODO: investigate usage in this crate
 ironrdp-connector.workspace = true # TODO: at some point, this dependency could be removed (good for compilation speed)
 ironrdp-svc.workspace = true
-ironrdp-dvc.workspace = true
+# ironrdp-dvc.workspace = true
 ironrdp-error.workspace = true
 ironrdp-graphics.workspace = true
 ironrdp-pdu = { workspace = true, features = ["std"] }
-sspi.workspace = true
 tracing.workspace = true

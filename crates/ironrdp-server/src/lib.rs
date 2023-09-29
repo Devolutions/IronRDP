@@ -1,3 +1,5 @@
+#![allow(clippy::arithmetic_side_effects)] // TODO: should we enable this lint back?
+
 #[macro_use]
 extern crate tracing;
 

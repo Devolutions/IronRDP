@@ -178,6 +178,7 @@ impl ClipboardFormat {
     ///
     /// This is typically used for custom/OS-specific formats where a name must be associated to
     /// the `ClipboardFormatId` in order to distinguish between vendors.
+    #[must_use]
     pub fn with_name(self, name: ClipboardFormatName) -> Self {
         if name.0.is_empty() {
             return Self {

@@ -3,7 +3,7 @@ use std::io;
 use der_parser::parse_der;
 use num_bigint::BigUint;
 
-pub fn encrypt_with_public_key(message: &[u8], public_key_der: &[u8]) -> io::Result<Vec<u8>> {
+pub(crate) fn encrypt_with_public_key(message: &[u8], public_key_der: &[u8]) -> io::Result<Vec<u8>> {
     let (_, der_object) = parse_der(public_key_der).map_err(|err| {
         io::Error::new(
             io::ErrorKind::InvalidData,

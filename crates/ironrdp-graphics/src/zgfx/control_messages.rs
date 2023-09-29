@@ -7,7 +7,7 @@ use num_traits::FromPrimitive as _;
 use super::ZgfxError;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SegmentedDataPdu<'a> {
+pub(crate) enum SegmentedDataPdu<'a> {
     Single(BulkEncodedData<'a>),
     Multipart {
         uncompressed_size: usize,
@@ -16,7 +16,7 @@ pub enum SegmentedDataPdu<'a> {
 }
 
 impl<'a> SegmentedDataPdu<'a> {
-    pub fn from_buffer(mut buffer: &'a [u8]) -> Result<Self, ZgfxError> {
+    pub(crate) fn from_buffer(mut buffer: &'a [u8]) -> Result<Self, ZgfxError> {
         let descriptor =
             SegmentedDescriptor::from_u8(buffer.read_u8()?).ok_or(ZgfxError::InvalidSegmentedDescriptor)?;
 
@@ -45,13 +45,13 @@ impl<'a> SegmentedDataPdu<'a> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct BulkEncodedData<'a> {
-    pub compression_flags: CompressionFlags,
-    pub data: &'a [u8],
+pub(crate) struct BulkEncodedData<'a> {
+    pub(crate) compression_flags: CompressionFlags,
+    pub(crate) data: &'a [u8],
 }
 
 impl<'a> BulkEncodedData<'a> {
-    pub fn from_buffer(mut buffer: &'a [u8]) -> Result<Self, ZgfxError> {
+    pub(crate) fn from_buffer(mut buffer: &'a [u8]) -> Result<Self, ZgfxError> {
         let compression_type_and_flags = buffer.read_u8()?;
         let _compression_type = CompressionType::from_u8(compression_type_and_flags.get_bits(..4))
             .ok_or(ZgfxError::InvalidCompressionType)?;

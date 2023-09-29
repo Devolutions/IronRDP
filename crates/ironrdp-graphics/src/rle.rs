@@ -461,7 +461,7 @@ impl Code {
     }
 
     /// Extract the run length of a compression order.
-    pub fn extract_run_length(self, header: u8, src: &mut Buf) -> Result<usize, RleError> {
+    fn extract_run_length(self, header: u8, src: &mut Buf) -> Result<usize, RleError> {
         match self {
             Self::REGULAR_FGBG_IMAGE => extract_run_length_fg_bg(header, MASK_REGULAR_RUN_LENGTH, src),
 
@@ -736,11 +736,11 @@ impl DepthMode for Mode24Bpp {
 
     const PIXEL_FORMAT: RlePixelFormat = RlePixelFormat::Rgb24;
 
-    const BLACK_PIXEL: Self::Pixel = 0x000000;
+    const BLACK_PIXEL: Self::Pixel = 0x00_0000;
 
     // 8 bits per RGB component:
     // 1111 1111 1111 1111 1111 1111 (binary)
-    const WHITE_PIXEL: Self::Pixel = 0xFFFFFF;
+    const WHITE_PIXEL: Self::Pixel = 0xFF_FFFF;
 
     fn write_pixel(dst: &mut BufMut, pixel: Self::Pixel) {
         dst.write_u24(pixel);

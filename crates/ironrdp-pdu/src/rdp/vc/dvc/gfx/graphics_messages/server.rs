@@ -10,7 +10,7 @@ use crate::gcc::{Monitor, MonitorDataError};
 use crate::geometry::InclusiveRectangle;
 use crate::PduParsing;
 
-pub const RESET_GRAPHICS_PDU_SIZE: usize = 340;
+pub(crate) const RESET_GRAPHICS_PDU_SIZE: usize = 340;
 
 const MAX_RESET_GRAPHICS_WIDTH_HEIGHT: u32 = 32_766;
 const MONITOR_COUNT_MAX: u32 = 16;

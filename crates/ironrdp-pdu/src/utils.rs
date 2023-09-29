@@ -189,6 +189,7 @@ pub(crate) fn write_string_with_null_terminator(
 }
 
 pub trait SplitTo {
+    #[must_use]
     fn split_to(&mut self, n: usize) -> Self;
 }
 

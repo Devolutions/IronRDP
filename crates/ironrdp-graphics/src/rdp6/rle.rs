@@ -47,7 +47,7 @@ struct RlePlaneDecoder {
 }
 
 impl RlePlaneDecoder {
-    pub fn new(width: usize, height: usize) -> Self {
+    fn new(width: usize, height: usize) -> Self {
         Self {
             last_decoded_byte: 0,
             width,
@@ -132,7 +132,7 @@ impl RlePlaneDecoder {
             });
     }
 
-    pub fn decode(mut self, src: &[u8], dst: &mut [u8]) -> Result<usize, RleDecodeError> {
+    fn decode(mut self, src: &[u8], dst: &mut [u8]) -> Result<usize, RleDecodeError> {
         let mut read_bytes = 0;
 
         read_bytes += self.decode_scanline(src, dst)?;
@@ -157,7 +157,12 @@ impl RlePlaneDecoder {
 /// Size of data written to dst buffer is exactly equal to `width * height`.
 ///
 /// Returns number of bytes consumed from src buffer.
-pub fn decompress_8bpp_plane(src: &[u8], dst: &mut [u8], width: usize, height: usize) -> Result<usize, RleDecodeError> {
+pub(crate) fn decompress_8bpp_plane(
+    src: &[u8],
+    dst: &mut [u8],
+    width: usize,
+    height: usize,
+) -> Result<usize, RleDecodeError> {
     RlePlaneDecoder::new(width, height).decode(src, dst)
 }
 
@@ -176,7 +181,7 @@ impl<I: Iterator> RleEncoderScanlineIterator<I> {
         }
     }
 
-    fn delta_value(&self, prev: u8, next: u8) -> u8 {
+    fn delta_value(prev: u8, next: u8) -> u8 {
         let mut result = (next as i16 - prev as i16) as u8;
 
         // bit magic from 3.1.9.2.1 of [MS-RDPEGDI].
@@ -200,7 +205,7 @@ impl<I: Iterator<Item = u8>> Iterator for RleEncoderScanlineIterator<I> {
 
         let prev = std::mem::replace(&mut self.prev_scanline[idx % self.width], next);
         if idx >= self.width {
-            next = self.delta_value(prev, next);
+            next = Self::delta_value(prev, next);
         }
 
         Some(next)
@@ -228,15 +233,11 @@ macro_rules! ensure_size {
 }
 
 impl RlePlaneEncoder {
-    pub fn new(width: usize, height: usize) -> Self {
+    fn new(width: usize, height: usize) -> Self {
         Self { width, height }
     }
 
-    pub fn encode(
-        &self,
-        mut src: impl Iterator<Item = u8>,
-        dst: &mut WriteCursor<'_>,
-    ) -> Result<usize, RleEncodeError> {
+    fn encode(&self, mut src: impl Iterator<Item = u8>, dst: &mut WriteCursor<'_>) -> Result<usize, RleEncodeError> {
         let mut written = 0;
 
         for _ in 0..self.height {
@@ -355,7 +356,7 @@ impl RlePlaneEncoder {
 /// Destination slice must have enough space for the compressed data.
 ///
 /// Returns number of bytes written to the dst buffer.
-pub fn compress_8bpp_plane(
+pub(crate) fn compress_8bpp_plane(
     src: impl Iterator<Item = u8>,
     dst: &mut WriteCursor<'_>,
     width: usize,
