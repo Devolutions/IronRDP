@@ -8,12 +8,16 @@ use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive as _, ToPrimitive as _};
 use thiserror::Error;
 
+use crate::{PduBufferParsing, PduParsing};
+
+#[rustfmt::skip]
 pub use self::data_messages::{
     ContextPdu, EntropyAlgorithm, FrameBeginPdu, FrameEndPdu, OperatingMode, Quant, RegionPdu, RfxRectangle, Tile,
     TileSetPdu,
 };
-pub use self::header_messages::{ChannelsPdu, CodecVersionsPdu, RfxChannel, SyncPdu};
-use crate::{PduBufferParsing, PduParsing};
+pub use self::header_messages::{
+    ChannelsPdu, CodecVersionsPdu, RfxChannel, RfxChannelHeight, RfxChannelWidth, SyncPdu,
+};
 
 const BLOCK_HEADER_SIZE: usize = 6;
 const CODEC_CHANNEL_HEADER_SIZE: usize = 2;

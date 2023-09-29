@@ -164,6 +164,13 @@ pub struct RfxChannel {
 pub struct RfxChannelWidth(i16);
 
 impl RfxChannelWidth {
+    pub fn new(value: i16) -> Result<Self, RfxError> {
+        (1..=4096)
+            .contains(&value)
+            .then_some(Self(value))
+            .ok_or(RfxError::InvalidChannelWidth(value))
+    }
+
     pub fn as_u16(self) -> u16 {
         u16::try_from(self.0).expect("integer within the range of 1 to 4096")
     }
@@ -179,6 +186,13 @@ impl RfxChannelWidth {
 pub struct RfxChannelHeight(i16);
 
 impl RfxChannelHeight {
+    pub fn new(value: i16) -> Result<Self, RfxError> {
+        (1..=2048)
+            .contains(&value)
+            .then_some(Self(value))
+            .ok_or(RfxError::InvalidChannelWidth(value))
+    }
+
     pub fn as_u16(self) -> u16 {
         u16::try_from(self.0).expect("integer within the range of 1 to 2048")
     }
@@ -198,16 +212,10 @@ impl PduBufferParsing<'_> for RfxChannel {
         }
 
         let width = buffer.read_i16::<LittleEndian>()?;
-        if width < 1 && width > 4096 {
-            return Err(RfxError::InvalidChannelWidth(width));
-        }
-        let width = RfxChannelWidth(width);
+        let width = RfxChannelWidth::new(width)?;
 
         let height = buffer.read_i16::<LittleEndian>()?;
-        if height < 1 && height > 2048 {
-            return Err(RfxError::InvalidChannelHeight(height));
-        }
-        let height = RfxChannelHeight(height);
+        let height = RfxChannelHeight::new(height)?;
 
         Ok(Self { width, height })
     }
