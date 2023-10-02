@@ -11,7 +11,7 @@ use windows::Win32::UI::WindowsAndMessaging::PostMessageW;
 use crate::windows::{BackendEvent, WM_CLIPRDR_BACKEND_EVENT};
 
 #[derive(Debug)]
-pub struct WinCliprdrBackend {
+pub(crate) struct WinCliprdrBackend {
     backend_event_tx: mpsc_sync::SyncSender<BackendEvent>,
     window: HWND,
 }

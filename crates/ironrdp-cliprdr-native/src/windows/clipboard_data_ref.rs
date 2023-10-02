@@ -6,7 +6,7 @@ use windows::Win32::System::Memory::{GlobalLock, GlobalSize, GlobalUnlock};
 use crate::windows::os_clipboard::OwnedOsClipboard;
 
 /// Wrapper for global clipboard data handle ready for reading.
-pub struct ClipboardDataRef<'a> {
+pub(crate) struct ClipboardDataRef<'a> {
     _os_clipboard: &'a OwnedOsClipboard,
     handle: HGLOBAL,
     data: *const u8,
@@ -15,7 +15,7 @@ pub struct ClipboardDataRef<'a> {
 impl<'a> ClipboardDataRef<'a> {
     /// Get new clipboard data from the clipboard. If no data is available for the specified
     /// format, or handle can't be locked, returns `None`.
-    pub fn get(os_clipboard: &'a OwnedOsClipboard, format: ClipboardFormatId) -> Option<Self> {
+    pub(crate) fn get(os_clipboard: &'a OwnedOsClipboard, format: ClipboardFormatId) -> Option<Self> {
         // SAFETY: it is safe to call `GetClipboardData`, because we own the clipboard
         // before calling this function.
         let handle = match unsafe { GetClipboardData(format.value()) } {
@@ -47,13 +47,13 @@ impl<'a> ClipboardDataRef<'a> {
     ///
     /// E.g. for `CF_TEXT`
     /// format it's required to search for null-terminator to get the actual size of the string.
-    pub fn size(&self) -> usize {
+    pub(crate) fn size(&self) -> usize {
         // SAFETY: We always own non-null handle, so it is safe to call `GlobalSize` on it
         unsafe { GlobalSize(self.handle) }
     }
 
     /// Pointer to the data buffer available for reading.
-    pub fn data(&self) -> &[u8] {
+    pub(crate) fn data(&self) -> &[u8] {
         let size = self.size();
         // SAFETY: `data` pointer is valid during the lifetime of the wrapper
         unsafe { std::slice::from_raw_parts(self.data, size) }

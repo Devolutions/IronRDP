@@ -1,3 +1,5 @@
+#![allow(unused_crate_dependencies)] // false positives because there is both a library and a binary
+
 #[macro_use]
 extern crate tracing;
 
@@ -16,11 +18,11 @@ fn main() -> anyhow::Result<()> {
     let gui = GuiContext::init().context("unable to initialize GUI context")?;
     debug!("GUI context initialized");
 
-    let window_size = gui.window.inner_size();
+    let window_size = gui.window().inner_size();
     config.connector.desktop_size.width = u16::try_from(window_size.width).unwrap();
     config.connector.desktop_size.height = u16::try_from(window_size.height).unwrap();
 
-    let event_loop_proxy = gui.event_loop.create_proxy();
+    let event_loop_proxy = gui.create_event_proxy();
 
     let rt = runtime::Builder::new_multi_thread()
         .enable_all()
@@ -43,7 +45,7 @@ fn main() -> anyhow::Result<()> {
         // while the gui window is still open.
         let win_clipboard = unsafe {
             WinClipboard::new(
-                HWND(gui.window.hwnd() as _),
+                HWND(gui.window().hwnd()),
                 ClientClipboardMessageProxy::new(input_event_sender.clone()),
             )?
         };

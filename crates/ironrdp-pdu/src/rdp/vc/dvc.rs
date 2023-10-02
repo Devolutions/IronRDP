@@ -247,9 +247,9 @@ impl FieldType {
 
 #[derive(Debug, Clone, PartialEq)]
 struct Header {
-    pub channel_id_type: u8, // 2 bit
-    pub pdu_dependent: u8,   // 2 bit
-    pub pdu_type: PduType,   // 4 bit
+    channel_id_type: u8, // 2 bit
+    pdu_dependent: u8,   // 2 bit
+    pdu_type: PduType,   // 4 bit
 }
 
 impl PduParsing for Header {

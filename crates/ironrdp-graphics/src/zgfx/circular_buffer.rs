@@ -1,20 +1,20 @@
 use std::cmp::min;
 use std::io;
 
-pub struct FixedCircularBuffer {
+pub(crate) struct FixedCircularBuffer {
     buffer: Vec<u8>,
     position: usize,
 }
 
 impl FixedCircularBuffer {
-    pub fn new(size: usize) -> Self {
+    pub(crate) fn new(size: usize) -> Self {
         Self {
             buffer: vec![0; size],
             position: 0,
         }
     }
 
-    pub fn read_with_offset(&self, offset: usize, length: usize, mut output: impl io::Write) -> io::Result<()> {
+    pub(crate) fn read_with_offset(&self, offset: usize, length: usize, mut output: impl io::Write) -> io::Result<()> {
         let position = (self.buffer.len() + self.position - offset) % self.buffer.len();
 
         // will take the offset if the destination length is greater than the offset,

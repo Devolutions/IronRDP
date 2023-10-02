@@ -42,7 +42,7 @@ struct AYCoCgParams {
 }
 
 impl<'a> BitmapStreamDecoderImpl<'a> {
-    pub fn init(bitmap: BitmapStreamPdu<'a>, image_width: usize, image_height: usize) -> Self {
+    fn init(bitmap: BitmapStreamPdu<'a>, image_width: usize, image_height: usize) -> Self {
         let (chroma_width, chroma_height) = if bitmap.has_subsampled_chroma() {
             // When image is subsampled, chroma plane has half the size of the luma plane, however
             // its size is rounded up to the nearest greater integer, to take into account odd image

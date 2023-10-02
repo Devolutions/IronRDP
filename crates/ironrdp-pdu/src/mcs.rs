@@ -239,21 +239,15 @@ impl DomainMcsPdu {
 fn read_mcspdu_header(src: &mut ReadCursor<'_>, ctx: &'static str) -> PduResult<DomainMcsPdu> {
     let choice = src.try_read_u8(ctx)?;
 
-    DomainMcsPdu::from_choice(choice).ok_or(PduError::invalid_message(
-        ctx,
-        "domain-mcspdu",
-        "unexpected application tag for CHOICE",
-    ))
+    DomainMcsPdu::from_choice(choice)
+        .ok_or_else(|| PduError::invalid_message(ctx, "domain-mcspdu", "unexpected application tag for CHOICE"))
 }
 
 fn peek_mcspdu_header(src: &mut ReadCursor<'_>, ctx: &'static str) -> PduResult<DomainMcsPdu> {
     let choice = src.try_peek_u8(ctx)?;
 
-    DomainMcsPdu::from_choice(choice).ok_or(PduError::invalid_message(
-        ctx,
-        "domain-mcspdu",
-        "unexpected application tag for CHOICE",
-    ))
+    DomainMcsPdu::from_choice(choice)
+        .ok_or_else(|| PduError::invalid_message(ctx, "domain-mcspdu", "unexpected application tag for CHOICE"))
 }
 
 fn write_mcspdu_header(dst: &mut WriteCursor<'_>, domain_mcspdu: DomainMcsPdu, options: u8) {
@@ -806,19 +800,14 @@ impl<'de> McsPdu<'de> for DisconnectProviderUltimatum {
         let reason = (b1 & 0x03) << 1 | (b2 >> 7);
 
         DomainMcsPdu::from_u8(domain_mcspdu_choice)
-            .ok_or(PduError::invalid_message(
-                Self::MCS_NAME,
-                "domain-mcspdu",
-                "unexpected application tag for CHOICE",
-            ))?
+            .ok_or_else(|| {
+                PduError::invalid_message(Self::MCS_NAME, "domain-mcspdu", "unexpected application tag for CHOICE")
+            })?
             .check_expected(Self::MCS_NAME, DomainMcsPdu::DisconnectProviderUltimatum)?;
 
         Ok(Self {
-            reason: DisconnectReason::from_u8(reason).ok_or(PduError::invalid_message(
-                Self::MCS_NAME,
-                "reason",
-                "unknown variant",
-            ))?,
+            reason: DisconnectReason::from_u8(reason)
+                .ok_or_else(|| PduError::invalid_message(Self::MCS_NAME, "reason", "unknown variant"))?,
         })
     }
 
@@ -972,7 +961,7 @@ mod legacy {
     impl PduParsing for ConnectInitial {
         type Error = McsError;
 
-        fn from_buffer(mut stream: impl io::Read) -> std::result::Result<Self, McsError> {
+        fn from_buffer(mut stream: impl io::Read) -> Result<Self, McsError> {
             ber::read_application_tag(&mut stream, MCS_TYPE_CONNECT_INITIAL)?;
             let calling_domain_selector = ber::read_octet_string(&mut stream)?;
             let called_domain_selector = ber::read_octet_string(&mut stream)?;
@@ -994,7 +983,7 @@ mod legacy {
             })
         }
 
-        fn to_buffer(&self, mut stream: impl io::Write) -> std::result::Result<(), McsError> {
+        fn to_buffer(&self, mut stream: impl io::Write) -> Result<(), McsError> {
             ber::write_application_tag(&mut stream, MCS_TYPE_CONNECT_INITIAL, self.fields_buffer_ber_length())?;
             ber::write_octet_string(&mut stream, self.calling_domain_selector.as_ref())?;
             ber::write_octet_string(&mut stream, self.called_domain_selector.as_ref())?;
@@ -1028,7 +1017,7 @@ mod legacy {
     impl PduParsing for ConnectResponse {
         type Error = McsError;
 
-        fn from_buffer(mut stream: impl io::Read) -> std::result::Result<Self, McsError> {
+        fn from_buffer(mut stream: impl io::Read) -> Result<Self, McsError> {
             ber::read_application_tag(&mut stream, MCS_TYPE_CONNECT_RESPONSE)?;
             ber::read_enumerated(&mut stream, RESULT_ENUM_LENGTH)?;
             let called_connect_id = ber::read_integer(&mut stream)? as u32;
@@ -1043,7 +1032,7 @@ mod legacy {
             })
         }
 
-        fn to_buffer(&self, mut stream: impl io::Write) -> std::result::Result<(), McsError> {
+        fn to_buffer(&self, mut stream: impl io::Write) -> Result<(), McsError> {
             ber::write_application_tag(&mut stream, MCS_TYPE_CONNECT_RESPONSE, self.fields_buffer_ber_length())?;
             ber::write_enumerated(&mut stream, 0)?;
             ber::write_integer(&mut stream, self.called_connect_id)?;

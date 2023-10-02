@@ -1,4 +1,4 @@
-use std::io::{self, Read, Write};
+use std::io;
 
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 
@@ -46,7 +46,7 @@ pub struct FrameAcknowledgePdu {
 impl PduParsing for FrameAcknowledgePdu {
     type Error = GraphicsMessagesError;
 
-    fn from_buffer(mut stream: impl Read) -> Result<Self, Self::Error> {
+    fn from_buffer(mut stream: impl io::Read) -> Result<Self, Self::Error> {
         let queue_depth = QueueDepth::from_u32(stream.read_u32::<LittleEndian>()?);
         let frame_id = stream.read_u32::<LittleEndian>()?;
         let total_frames_decoded = stream.read_u32::<LittleEndian>()?;
@@ -58,7 +58,7 @@ impl PduParsing for FrameAcknowledgePdu {
         })
     }
 
-    fn to_buffer(&self, mut stream: impl Write) -> Result<(), Self::Error> {
+    fn to_buffer(&self, mut stream: impl io::Write) -> Result<(), Self::Error> {
         stream.write_u32::<LittleEndian>(self.queue_depth.to_u32())?;
         stream.write_u32::<LittleEndian>(self.frame_id)?;
         stream.write_u32::<LittleEndian>(self.total_frames_decoded)?;
@@ -79,7 +79,7 @@ pub struct CacheImportReplyPdu {
 impl PduParsing for CacheImportReplyPdu {
     type Error = GraphicsMessagesError;
 
-    fn from_buffer(mut stream: impl Read) -> Result<Self, Self::Error> {
+    fn from_buffer(mut stream: impl io::Read) -> Result<Self, Self::Error> {
         let entries_count = stream.read_u16::<LittleEndian>()? as usize;
 
         let cache_slots = (0..entries_count)
@@ -89,7 +89,7 @@ impl PduParsing for CacheImportReplyPdu {
         Ok(Self { cache_slots })
     }
 
-    fn to_buffer(&self, mut stream: impl Write) -> Result<(), Self::Error> {
+    fn to_buffer(&self, mut stream: impl io::Write) -> Result<(), Self::Error> {
         stream.write_u16::<LittleEndian>(self.cache_slots.len() as u16)?;
 
         for cache_slot in self.cache_slots.iter() {

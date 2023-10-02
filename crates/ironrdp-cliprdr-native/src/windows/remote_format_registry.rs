@@ -8,7 +8,7 @@ use windows::Win32::System::DataExchange::RegisterClipboardFormatW;
 use crate::windows::utils::get_last_winapi_error;
 
 #[derive(Debug, Default)]
-pub struct RemoteClipboardFormatRegistry {
+pub(crate) struct RemoteClipboardFormatRegistry {
     remote_to_local: HashMap<ClipboardFormatId, ClipboardFormatId>,
     local_to_remote: HashMap<ClipboardFormatId, ClipboardFormatId>,
 }
@@ -16,7 +16,7 @@ pub struct RemoteClipboardFormatRegistry {
 impl RemoteClipboardFormatRegistry {
     /// Clear current format mapping, as per RDP spec, format mapping is reset on every
     /// received `CLIPRDR_FORMAT_LIST` message.
-    pub fn clear(&mut self) {
+    pub(crate) fn clear(&mut self) {
         self.remote_to_local.clear();
         self.local_to_remote.clear();
     }
@@ -34,7 +34,7 @@ impl RemoteClipboardFormatRegistry {
     ///
     /// Returns local format id for the remote format id.
     /// If the format is unknown or not supported on the local machine, returns `None`.
-    pub fn register(&mut self, remote_format: &ClipboardFormat) -> Option<ClipboardFormatId> {
+    pub(crate) fn register(&mut self, remote_format: &ClipboardFormat) -> Option<ClipboardFormatId> {
         if remote_format.id().is_standard() {
             // Standard formats such as `CF_TEXT` have fixed ids, which are same on all machines.
             return Some(remote_format.id());
@@ -87,7 +87,7 @@ impl RemoteClipboardFormatRegistry {
         Some(mapped_format_id)
     }
 
-    pub fn local_to_remote(&self, local_format: ClipboardFormatId) -> Option<ClipboardFormatId> {
+    pub(crate) fn local_to_remote(&self, local_format: ClipboardFormatId) -> Option<ClipboardFormatId> {
         if local_format.is_standard() {
             return Some(local_format);
         }

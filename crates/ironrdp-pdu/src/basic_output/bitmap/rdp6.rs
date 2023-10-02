@@ -137,7 +137,7 @@ impl<'a> PduDecode<'a> for BitmapStream<'a> {
     }
 }
 
-impl<'a> PduEncode for BitmapStream<'a> {
+impl PduEncode for BitmapStream<'_> {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
         ensure_size!(in: dst, size: self.size());
 

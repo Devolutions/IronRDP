@@ -60,7 +60,7 @@ impl NetworkClient for WasmNetworkClient {
         Self::NAME
     }
 
-    fn supported_protocols(&self) -> &[sspi::network_client::NetworkProtocol] {
+    fn supported_protocols(&self) -> &[NetworkProtocol] {
         Self::SUPPORTED_PROTOCOLS
     }
 

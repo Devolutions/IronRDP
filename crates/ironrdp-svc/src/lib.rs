@@ -1,3 +1,6 @@
+#![doc = include_str!("../README.md")]
+// TODO: #![warn(missing_docs)]
+
 extern crate alloc;
 
 // Re-export ironrdp_pdu crate for convenience
@@ -60,6 +63,7 @@ pub struct SvcMessage {
 
 impl SvcMessage {
     /// Adds additional SVC header flags to the message.
+    #[must_use]
     pub fn with_flags(mut self, flags: ChannelFlags) -> Self {
         self.flags |= flags;
         self
@@ -179,7 +183,7 @@ struct ChunkProcessor {
 }
 
 impl ChunkProcessor {
-    pub fn new() -> Self {
+    fn new() -> Self {
         Self {
             chunked_pdu: Vec::new(),
         }
@@ -188,6 +192,7 @@ impl ChunkProcessor {
     /// Takes a vector of PDUs and breaks them into chunks prefixed with a Channel PDU Header (`CHANNEL_PDU_HEADER`).
     ///
     /// Each chunk is at most `max_chunk_len` bytes long (not including the Channel PDU Header).
+    #[allow(clippy::unused_self)] // For symmetry with `dechunkify`
     fn chunkify(messages: Vec<SvcMessage>, max_chunk_len: usize) -> PduResult<Vec<WriteBuf>> {
         let mut results = Vec::new();
         for message in messages {
@@ -202,7 +207,7 @@ impl ChunkProcessor {
     /// For chunked payloads, returns `Ok(None)` until the last chunk is received, at which point
     /// it returns `Ok(Some(payload))`.
     fn dechunkify(&mut self, mut payload: &[u8]) -> PduResult<Option<Vec<u8>>> {
-        let last = self.process_header(&mut payload)?;
+        let last = Self::process_header(&mut payload)?;
 
         // Extend the chunked_pdu buffer with the payload
         self.chunked_pdu.extend_from_slice(payload);
@@ -218,7 +223,7 @@ impl ChunkProcessor {
     }
 
     /// Returns whether this was the last chunk based on the flags in the channel header.
-    fn process_header(&self, payload: &mut &[u8]) -> PduResult<bool> {
+    fn process_header(payload: &mut &[u8]) -> PduResult<bool> {
         let channel_header = ironrdp_pdu::rdp::vc::ChannelPduHeader::from_buffer(payload)
             .map_err(|e| custom_err!("failed to decode svc channel header", e))?;
         Ok(channel_header.flags.contains(ChannelControlFlags::FLAG_LAST))
@@ -284,7 +289,7 @@ impl ChunkProcessor {
 
             // Otherwise, update the chunk start and end indices for the next iteration.
             chunk_start_index = chunk_end_index;
-            chunk_end_index = std::cmp::min(total_len, chunk_end_index + max_chunk_len);
+            chunk_end_index = std::cmp::min(total_len, chunk_end_index.saturating_add(max_chunk_len));
         }
 
         Ok(chunks)
@@ -510,23 +515,23 @@ bitflags! {
     #[derive(Debug, PartialEq, Copy, Clone)]
     pub struct ChannelFlags: u32 {
         /// CHANNEL_FLAG_FIRST
-        const FIRST = 0x00000001;
+        const FIRST = 0x0000_0001;
         /// CHANNEL_FLAG_LAST
-        const LAST = 0x00000002;
+        const LAST = 0x0000_0002;
         /// CHANNEL_FLAG_SHOW_PROTOCOL
-        const SHOW_PROTOCOL = 0x00000010;
+        const SHOW_PROTOCOL = 0x0000_0010;
         /// CHANNEL_FLAG_SUSPEND
-        const SUSPEND = 0x00000020;
+        const SUSPEND = 0x0000_0020;
         /// CHANNEL_FLAG_RESUME
-        const RESUME = 0x00000040;
+        const RESUME = 0x0000_0040;
         /// CHANNEL_FLAG_SHADOW_PERSISTENT
-        const SHADOW_PERSISTENT = 0x00000080;
+        const SHADOW_PERSISTENT = 0x0000_0080;
         /// CHANNEL_PACKET_COMPRESSED
-        const COMPRESSED = 0x00200000;
+        const COMPRESSED = 0x0020_0000;
         /// CHANNEL_PACKET_AT_FRONT
-        const AT_FRONT = 0x00400000;
+        const AT_FRONT = 0x0040_0000;
         /// CHANNEL_PACKET_FLUSHED
-        const FLUSHED = 0x00800000;
+        const FLUSHED = 0x0080_0000;
     }
 }
 
@@ -564,6 +569,7 @@ impl PduEncode for ChannelPduHeader {
         Self::NAME
     }
 
+    #[allow(clippy::arithmetic_side_effects)]
     fn size(&self) -> usize {
         std::mem::size_of::<u32>() * 2
     }

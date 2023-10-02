@@ -128,7 +128,7 @@ impl PduParsing for ClientPlatformChallengeResponse {
         })
     }
 
-    fn to_buffer(&self, mut stream: impl io::Write) -> Result<(), Self::Error> {
+    fn to_buffer(&self, mut stream: impl Write) -> Result<(), Self::Error> {
         self.license_header.to_buffer(&mut stream)?;
 
         BlobHeader::new(BlobType::EncryptedData, self.encrypted_challenge_response_data.len())
@@ -166,7 +166,7 @@ enum LicenseDetailLevel {
 }
 
 #[derive(Debug, PartialEq)]
-pub struct PlatformChallengeResponseData {
+pub(crate) struct PlatformChallengeResponseData {
     client_type: ClientType,
     license_detail_level: LicenseDetailLevel,
     challenge: Vec<u8>,
@@ -198,7 +198,7 @@ impl PduParsing for PlatformChallengeResponseData {
         })
     }
 
-    fn to_buffer(&self, mut stream: impl io::Write) -> Result<(), Self::Error> {
+    fn to_buffer(&self, mut stream: impl Write) -> Result<(), Self::Error> {
         stream.write_u16::<LittleEndian>(RESPONSE_DATA_VERSION)?;
         stream.write_u16::<LittleEndian>(self.client_type.to_u16().unwrap())?;
         stream.write_u16::<LittleEndian>(self.license_detail_level.to_u16().unwrap())?;
@@ -214,9 +214,9 @@ impl PduParsing for PlatformChallengeResponseData {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-pub struct ClientHardwareIdentification {
-    pub platform_id: u32,
-    pub data: Vec<u8>,
+pub(crate) struct ClientHardwareIdentification {
+    pub(crate) platform_id: u32,
+    pub(crate) data: Vec<u8>,
 }
 
 impl PduParsing for ClientHardwareIdentification {
@@ -231,7 +231,7 @@ impl PduParsing for ClientHardwareIdentification {
         Ok(Self { platform_id, data })
     }
 
-    fn to_buffer(&self, mut stream: impl io::Write) -> Result<(), Self::Error> {
+    fn to_buffer(&self, mut stream: impl Write) -> Result<(), Self::Error> {
         stream.write_u32::<LittleEndian>(self.platform_id)?;
         stream.write_all(&self.data)?;
 

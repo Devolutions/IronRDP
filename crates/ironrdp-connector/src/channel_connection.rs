@@ -180,7 +180,7 @@ impl Sequence for ChannelConnectionSequence {
                     return Err(general_err!("received bad MCS Channel Join Confirm"));
                 }
 
-                let next_index = index + 1;
+                let next_index = index.checked_add(1).unwrap();
 
                 let next_state = if next_index == self.channel_ids.len() {
                     ChannelConnectionState::AllJoined { user_channel_id }

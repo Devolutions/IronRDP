@@ -3,19 +3,22 @@ mod server;
 
 use std::io;
 mod avc_messages;
-pub use avc_messages::{Avc420BitmapStream, Avc444BitmapStream, Encoding, QuantQuality};
 use bitflags::bitflags;
 use byteorder::{LittleEndian, ReadBytesExt as _, WriteBytesExt as _};
-pub use client::{CacheImportReplyPdu, CapabilitiesAdvertisePdu, FrameAcknowledgePdu, QueueDepth};
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive as _, ToPrimitive as _};
+use thiserror::Error;
+
+#[rustfmt::skip] // do not re-order this
+pub use avc_messages::{Avc420BitmapStream, Avc444BitmapStream, Encoding, QuantQuality};
+pub use client::{CacheImportReplyPdu, CapabilitiesAdvertisePdu, FrameAcknowledgePdu, QueueDepth};
+pub(crate) use server::RESET_GRAPHICS_PDU_SIZE;
 pub use server::{
     CacheToSurfacePdu, CapabilitiesConfirmPdu, Codec1Type, Codec2Type, CreateSurfacePdu, DeleteEncodingContextPdu,
     DeleteSurfacePdu, EndFramePdu, EvictCacheEntryPdu, MapSurfaceToOutputPdu, MapSurfaceToScaledOutputPdu,
     MapSurfaceToScaledWindowPdu, PixelFormat, ResetGraphicsPdu, SolidFillPdu, StartFramePdu, SurfaceToCachePdu,
-    SurfaceToSurfacePdu, Timestamp, WireToSurface1Pdu, WireToSurface2Pdu, RESET_GRAPHICS_PDU_SIZE,
+    SurfaceToSurfacePdu, Timestamp, WireToSurface1Pdu, WireToSurface2Pdu,
 };
-use thiserror::Error;
 
 use super::RDP_GFX_HEADER_SIZE;
 use crate::gcc::MonitorDataError;
@@ -215,7 +218,7 @@ impl PduParsing for Point {
 
 #[repr(u32)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive, ToPrimitive)]
-pub enum CapabilityVersion {
+pub(crate) enum CapabilityVersion {
     V8 = 0x8_0004,
     V8_1 = 0x8_0105,
     V10 = 0xa_0002,

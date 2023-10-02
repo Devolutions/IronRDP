@@ -22,4 +22,3 @@ std = []
 [dependencies]
 ironrdp-svc.workspace = true
 ironrdp-pdu = { workspace = true, features = ["alloc"] }
-tracing.workspace = true

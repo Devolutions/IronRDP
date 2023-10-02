@@ -1,4 +1,4 @@
-use std::io::{self, Read, Write};
+use std::io;
 
 use bitflags::bitflags;
 use byteorder::{LittleEndian, ReadBytesExt as _, WriteBytesExt as _};
@@ -20,7 +20,7 @@ pub struct DisplayControlCapsPdu {
 impl PduParsing for DisplayControlCapsPdu {
     type Error = io::Error;
 
-    fn from_buffer(mut stream: impl Read) -> Result<Self, Self::Error> {
+    fn from_buffer(mut stream: impl io::Read) -> Result<Self, Self::Error> {
         let max_num_monitors = stream.read_u32::<LittleEndian>()?;
         let max_monitor_area_factora = stream.read_u32::<LittleEndian>()?;
         let max_monitor_area_factorb = stream.read_u32::<LittleEndian>()?;
@@ -32,7 +32,7 @@ impl PduParsing for DisplayControlCapsPdu {
         })
     }
 
-    fn to_buffer(&self, mut stream: impl Write) -> Result<(), Self::Error> {
+    fn to_buffer(&self, mut stream: impl io::Write) -> Result<(), Self::Error> {
         stream.write_u32::<LittleEndian>(self.max_num_monitors)?;
         stream.write_u32::<LittleEndian>(self.max_monitor_area_factora)?;
         stream.write_u32::<LittleEndian>(self.max_monitor_area_factorb)?;
@@ -80,7 +80,7 @@ const MONITOR_PDU_HEADER_SIZE: usize = 8;
 impl PduParsing for Monitor {
     type Error = io::Error;
 
-    fn from_buffer(mut stream: impl Read) -> Result<Self, Self::Error> {
+    fn from_buffer(mut stream: impl io::Read) -> Result<Self, Self::Error> {
         let flags = MonitorFlags::from_bits(stream.read_u32::<LittleEndian>()?)
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "Invalid monitor flags"))?;
         let left = stream.read_u32::<LittleEndian>()?;
@@ -108,7 +108,7 @@ impl PduParsing for Monitor {
         })
     }
 
-    fn to_buffer(&self, mut stream: impl Write) -> Result<(), Self::Error> {
+    fn to_buffer(&self, mut stream: impl io::Write) -> Result<(), Self::Error> {
         stream.write_u32::<LittleEndian>(self.flags.bits())?;
         stream.write_u32::<LittleEndian>(self.left)?;
         stream.write_u32::<LittleEndian>(self.top)?;
@@ -136,7 +136,7 @@ pub struct MonitorLayoutPdu {
 impl PduParsing for MonitorLayoutPdu {
     type Error = io::Error;
 
-    fn from_buffer(mut stream: impl Read) -> Result<Self, Self::Error> {
+    fn from_buffer(mut stream: impl io::Read) -> Result<Self, Self::Error> {
         let _size = stream.read_u32::<LittleEndian>()?;
         let num_monitors = stream.read_u32::<LittleEndian>()?;
         let mut monitors = Vec::new();
@@ -146,7 +146,7 @@ impl PduParsing for MonitorLayoutPdu {
         Ok(Self { monitors })
     }
 
-    fn to_buffer(&self, mut stream: impl Write) -> Result<(), Self::Error> {
+    fn to_buffer(&self, mut stream: impl io::Write) -> Result<(), Self::Error> {
         stream.write_u32::<LittleEndian>(MONITOR_SIZE as u32)?;
         stream.write_u32::<LittleEndian>(self.monitors.len() as u32)?;
 

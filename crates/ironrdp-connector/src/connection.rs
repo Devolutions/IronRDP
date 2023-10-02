@@ -16,10 +16,10 @@ use crate::{
 };
 
 #[derive(Clone, Copy, Debug)]
-pub struct CredsspTsRequestHint;
+struct CredsspTsRequestHint;
 
-pub const DEFAULT_POINTER_CACHE_SIZE: u16 = 32;
-pub const CREDSSP_TS_REQUEST_HINT: CredsspTsRequestHint = CredsspTsRequestHint;
+const DEFAULT_POINTER_CACHE_SIZE: u16 = 32;
+const CREDSSP_TS_REQUEST_HINT: CredsspTsRequestHint = CredsspTsRequestHint;
 
 impl PduHint for CredsspTsRequestHint {
     fn find_size(&self, bytes: &[u8]) -> ironrdp_pdu::PduResult<Option<usize>> {
@@ -32,9 +32,9 @@ impl PduHint for CredsspTsRequestHint {
 }
 
 #[derive(Clone, Copy, Debug)]
-pub struct CredsspEarlyUserAuthResultHint;
+struct CredsspEarlyUserAuthResultHint;
 
-pub const CREDSSP_EARLY_USER_AUTH_RESULT_HINT: CredsspEarlyUserAuthResultHint = CredsspEarlyUserAuthResultHint;
+const CREDSSP_EARLY_USER_AUTH_RESULT_HINT: CredsspEarlyUserAuthResultHint = CredsspEarlyUserAuthResultHint;
 
 impl PduHint for CredsspEarlyUserAuthResultHint {
     fn find_size(&self, _: &[u8]) -> ironrdp_pdu::PduResult<Option<usize>> {
@@ -163,7 +163,7 @@ impl State for ClientConnectorState {
 pub struct ClientConnector {
     pub config: Config,
     pub state: ClientConnectorState,
-    pub server_addr: Option<std::net::SocketAddr>,
+    pub server_addr: Option<SocketAddr>,
     pub server_name: Option<ServerName>,
     pub network_client_factory: Option<Box<dyn sspi::network_client::NetworkClientFactory>>,
     pub server_public_key: Option<Vec<u8>>,
@@ -184,17 +184,19 @@ impl ClientConnector {
     }
 
     /// Must be set to the actual target server address (as opposed to the proxy)
-    pub fn with_server_addr(mut self, addr: std::net::SocketAddr) -> Self {
+    #[must_use]
+    pub fn with_server_addr(mut self, addr: SocketAddr) -> Self {
         self.server_addr = Some(addr);
         self
     }
 
     /// Must be set to the actual target server address (as opposed to the proxy)
-    pub fn attach_server_addr(&mut self, addr: std::net::SocketAddr) {
+    pub fn attach_server_addr(&mut self, addr: SocketAddr) {
         self.server_addr = Some(addr);
     }
 
     /// Must be set to the actual target server hostname (as opposed to the proxy)
+    #[must_use]
     pub fn with_server_name(mut self, name: impl Into<ServerName>) -> Self {
         self.server_name = Some(name.into());
         self
@@ -205,6 +207,7 @@ impl ClientConnector {
         self.server_name = Some(name.into());
     }
 
+    #[must_use]
     pub fn with_credssp_network_client<T>(mut self, network_client_factory: T) -> Self
     where
         T: sspi::network_client::NetworkClientFactory + 'static,
@@ -213,19 +216,20 @@ impl ClientConnector {
         self
     }
 
+    pub fn attach_credssp_network_client<T>(&mut self, network_client_factory: T)
+    where
+        T: sspi::network_client::NetworkClientFactory + 'static,
+    {
+        self.network_client_factory = Some(Box::new(network_client_factory));
+    }
+
+    #[must_use]
     pub fn with_static_channel<T>(mut self, channel: T) -> Self
     where
         T: StaticVirtualChannelProcessor + 'static,
     {
         self.static_channels.insert(channel);
         self
-    }
-
-    pub fn attach_credssp_network_client<T>(&mut self, network_client_factory: T)
-    where
-        T: sspi::network_client::NetworkClientFactory + 'static,
-    {
-        self.network_client_factory = Some(Box::new(network_client_factory));
     }
 
     pub fn attach_static_channel<T>(&mut self, channel: T)
@@ -793,6 +797,7 @@ impl Sequence for ClientConnector {
     }
 }
 
+#[allow(single_use_lifetimes)] // anonymous lifetimes in `impl Trait` are unstable
 fn create_gcc_blocks<'a>(
     config: &Config,
     selected_protocol: nego::SecurityProtocol,
@@ -1056,7 +1061,7 @@ fn create_client_confirm_active(
     }
 }
 
-fn write_credssp_request(ts_request: credssp::TsRequest, output: &mut WriteBuf) -> crate::ConnectorResult<usize> {
+fn write_credssp_request(ts_request: credssp::TsRequest, output: &mut WriteBuf) -> ConnectorResult<usize> {
     let length = usize::from(ts_request.buffer_len());
 
     let unfilled_buffer = output.unfilled_to(length);

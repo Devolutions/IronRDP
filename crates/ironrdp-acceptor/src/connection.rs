@@ -227,6 +227,7 @@ impl Sequence for Acceptor {
                     .optional_data
                     .early_capability_flags;
 
+                #[allow(clippy::arithmetic_side_effects)] // IO channel ID is not big enough for overflowing
                 let channels = settings_initial
                     .conference_create_request
                     .gcc_blocks
@@ -236,10 +237,10 @@ impl Sequence for Acceptor {
                             .channels
                             .into_iter()
                             .enumerate()
-                            .map(|(i, c)| (i as u16 + self.io_channel_id + 1, c))
+                            .map(|(i, c)| (u16::try_from(i).unwrap() + self.io_channel_id + 1, c))
                             .collect()
                     })
-                    .unwrap_or(Vec::new());
+                    .unwrap_or_default();
 
                 (
                     Written::Nothing,
@@ -400,8 +401,8 @@ impl Sequence for Acceptor {
                         monitors: vec![gcc::Monitor {
                             left: 0,
                             top: 0,
-                            right: self.desktop_size.width as i32,
-                            bottom: self.desktop_size.height as i32,
+                            right: i32::from(self.desktop_size.width),
+                            bottom: i32::from(self.desktop_size.height),
                             flags: gcc::MonitorFlags::PRIMARY,
                         }],
                     });

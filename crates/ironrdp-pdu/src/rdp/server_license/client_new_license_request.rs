@@ -107,8 +107,8 @@ impl ClientNewLicenseRequest {
                 license_header,
                 client_random: Vec::from(client_random),
                 encrypted_premaster_secret,
-                client_username: client_username.to_string(),
-                client_machine_name: client_machine_name.to_string(),
+                client_username: client_username.to_owned(),
+                client_machine_name: client_machine_name.to_owned(),
             },
             LicenseEncryptionData {
                 premaster_secret: Vec::from(premaster_secret),

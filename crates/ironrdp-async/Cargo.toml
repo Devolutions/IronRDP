@@ -20,5 +20,4 @@ bytes = "1"
 ironrdp-connector.workspace = true
 ironrdp-pdu.workspace = true
 # ironrdp-session.workspace = true
-tap = "1"
 tracing.workspace = true

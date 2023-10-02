@@ -8,11 +8,11 @@ bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
     pub struct ClipboardFileFlags: u32 {
         /// The fileAttributes field contains valid data.
-        const ATTRIBUTES = 0x00000004;
+        const ATTRIBUTES = 0x0000_0004;
         /// The fileSizeHigh and fileSizeLow fields contain valid data.
-        const FILE_SIZE = 0x00000040;
+        const FILE_SIZE = 0x0000_0040;
         /// The lastWriteTime field contains valid data.
-        const LAST_WRITE_TIME = 0x00000020;
+        const LAST_WRITE_TIME = 0x0000_0020;
     }
 }
 
@@ -22,21 +22,21 @@ bitflags! {
     pub struct ClipboardFileAttributes: u32 {
         /// A file that is read-only. Applications can read the file, but cannot write to
         /// it or delete it
-        const READONLY = 0x00000001;
+        const READONLY = 0x0000_0001;
         /// The file or directory is hidden. It is not included in an ordinary directory
         /// listing.
-        const HIDDEN = 0x00000002;
+        const HIDDEN = 0x0000_0002;
         /// A file or directory that the operating system uses a part of, or uses
         /// exclusively.
-        const SYSTEM = 0x00000004;
+        const SYSTEM = 0x0000_0004;
         /// Identifies a directory.
-        const DIRECTORY = 0x00000010;
+        const DIRECTORY = 0x0000_0010;
         /// A file or directory that is an archive file or directory. Applications typically
         /// use this attribute to mark files for backup or removal
-        const ARCHIVE = 0x00000020;
+        const ARCHIVE = 0x0000_0020;
         /// A file that does not have other attributes set. This attribute is valid only
         /// when used alone.
-        const NORMAL = 0x00000080;
+        const NORMAL = 0x0000_0080;
     }
 }
 

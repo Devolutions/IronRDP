@@ -62,6 +62,7 @@ impl Region {
         }
     }
 
+    #[must_use]
     pub fn intersect_rectangle(&self, rectangle: &InclusiveRectangle) -> Self {
         match self.rectangles.len() {
             0 => Self::new(),

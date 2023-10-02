@@ -10,5 +10,5 @@ doctest = false
 test = false
 
 [dependencies]
-ironrdp-pdu.workspace = true
-proptest.workspace = true
+# ironrdp-pdu.workspace = true
+# proptest.workspace = true
