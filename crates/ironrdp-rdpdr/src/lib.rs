@@ -5,12 +5,14 @@
 #![allow(clippy::cast_possible_wrap)] // FIXME: remove
 #![allow(clippy::cast_sign_loss)] // FIXME: remove
 
+#[macro_use]
+extern crate tracing;
+
 pub mod pdu;
 
 use ironrdp_pdu::gcc::ChannelName;
 use ironrdp_pdu::{decode, other_err, PduResult};
 use ironrdp_svc::{impl_as_any, CompressionCondition, StaticVirtualChannelProcessor, SvcMessage};
-use tracing::{trace, warn};
 
 use crate::pdu::efs::{
     Capabilities, ClientDeviceListAnnounce, ClientNameRequest, ClientNameRequestUnicodeFlag, CoreCapability,
@@ -112,8 +114,12 @@ impl StaticVirtualChannelProcessor for Rdpdr {
             RdpdrPdu::VersionAndIdPdu(pdu) if pdu.kind == VersionAndIdPduKind::ServerClientIdConfirm => {
                 self.handle_client_id_confirm()
             }
+            RdpdrPdu::ServerDeviceAnnounceResponse(pdu) => {
+                warn!(?pdu, "received unimplemented packet"); // todo
+                Ok(Vec::new())
+            }
             RdpdrPdu::Unimplemented => {
-                warn!("received unimplemented packet: {:?}", pdu);
+                warn!(?pdu, "received unimplemented packet");
                 Ok(Vec::new())
             }
             _ => Err(other_err!("rdpdr", "internal error")),

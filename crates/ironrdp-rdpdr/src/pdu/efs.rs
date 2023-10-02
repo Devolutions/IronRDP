@@ -208,7 +208,7 @@ impl CoreCapability {
         Ok(())
     }
 
-    pub fn decode(header: SharedHeader, payload: &mut ReadCursor<'_>) -> PduResult<Self> {
+    pub fn decode(header: SharedHeader, src: &mut ReadCursor<'_>) -> PduResult<Self> {
         let kind = match header.packet_id {
             PacketId::CoreServerCapability => CoreCapabilityKind::ServerCoreCapabilityRequest,
             PacketId::CoreClientCapability => CoreCapabilityKind::ClientCoreCapabilityResponse,
@@ -221,13 +221,13 @@ impl CoreCapability {
             }
         };
 
-        ensure_size!(ctx: kind.name(), in: payload, size: Self::FIXED_PART_SIZE);
+        ensure_size!(ctx: kind.name(), in: src, size: Self::FIXED_PART_SIZE);
 
-        let num_capabilities = payload.read_u16();
-        let padding = payload.read_u16();
+        let num_capabilities = src.read_u16();
+        let padding = src.read_u16();
         let mut capabilities = Vec::new();
         for _ in 0..num_capabilities {
-            capabilities.push(CapabilityMessage::decode(payload)?);
+            capabilities.push(CapabilityMessage::decode(src)?);
         }
 
         Ok(Self {
@@ -372,9 +372,9 @@ impl CapabilityMessage {
         self.capability_data.encode(dst)
     }
 
-    fn decode(payload: &mut ReadCursor<'_>) -> PduResult<Self> {
-        let header = CapabilityHeader::decode(payload)?;
-        let capability_data = CapabilityData::decode(payload, &header)?;
+    fn decode(src: &mut ReadCursor<'_>) -> PduResult<Self> {
+        let header = CapabilityHeader::decode(src)?;
+        let capability_data = CapabilityData::decode(src, &header)?;
 
         Ok(Self {
             header,
@@ -423,11 +423,11 @@ impl CapabilityHeader {
         }
     }
 
-    fn decode(payload: &mut ReadCursor<'_>) -> PduResult<Self> {
-        ensure_size!(in: payload, size: Self::SIZE);
-        let cap_type: CapabilityType = payload.read_u16().try_into()?;
-        let length = payload.read_u16();
-        let version = payload.read_u32();
+    fn decode(src: &mut ReadCursor<'_>) -> PduResult<Self> {
+        ensure_size!(in: src, size: Self::SIZE);
+        let cap_type: CapabilityType = src.read_u16().try_into()?;
+        let length = src.read_u16();
+        let version = src.read_u32();
 
         Ok(Self {
             cap_type,
@@ -499,10 +499,10 @@ impl CapabilityData {
         }
     }
 
-    fn decode(payload: &mut ReadCursor<'_>, header: &CapabilityHeader) -> PduResult<Self> {
+    fn decode(src: &mut ReadCursor<'_>, header: &CapabilityHeader) -> PduResult<Self> {
         match header.cap_type {
             CapabilityType::General => Ok(CapabilityData::General(GeneralCapabilitySet::decode(
-                payload,
+                src,
                 header.version,
             )?)),
             CapabilityType::Printer => Ok(CapabilityData::Printer),
@@ -575,22 +575,22 @@ impl GeneralCapabilitySet {
         Ok(())
     }
 
-    fn decode(payload: &mut ReadCursor<'_>, version: u32) -> PduResult<Self> {
-        ensure_size!(in: payload, size: Self::SIZE);
-        let os_type = payload.read_u32();
-        let os_version = payload.read_u32();
-        let protocol_major_version = payload.read_u16();
-        let protocol_minor_version = payload.read_u16();
-        let io_code_1 = IoCode1::from_bits(payload.read_u32())
-            .ok_or_else(|| invalid_message_err!("io_code_1", "invalid io_code_1"))?;
-        let io_code_2 = payload.read_u32();
-        let extended_pdu = ExtendedPdu::from_bits(payload.read_u32())
+    fn decode(src: &mut ReadCursor<'_>, version: u32) -> PduResult<Self> {
+        ensure_size!(in: src, size: Self::SIZE);
+        let os_type = src.read_u32();
+        let os_version = src.read_u32();
+        let protocol_major_version = src.read_u16();
+        let protocol_minor_version = src.read_u16();
+        let io_code_1 =
+            IoCode1::from_bits(src.read_u32()).ok_or_else(|| invalid_message_err!("io_code_1", "invalid io_code_1"))?;
+        let io_code_2 = src.read_u32();
+        let extended_pdu = ExtendedPdu::from_bits(src.read_u32())
             .ok_or_else(|| invalid_message_err!("extended_pdu", "invalid extended_pdu"))?;
-        let extra_flags_1 = ExtraFlags1::from_bits(payload.read_u32())
+        let extra_flags_1 = ExtraFlags1::from_bits(src.read_u32())
             .ok_or_else(|| invalid_message_err!("extra_flags_1", "invalid extra_flags_1"))?;
-        let extra_flags_2 = payload.read_u32();
+        let extra_flags_2 = src.read_u32();
         let special_type_device_cap = if version == GENERAL_CAPABILITY_VERSION_02 {
-            payload.read_u32()
+            src.read_u32()
         } else {
             0
         };
@@ -871,6 +871,84 @@ impl TryFrom<u32> for DeviceType {
             0x0000_0008 => Ok(DeviceType::Filesystem),
             0x0000_0020 => Ok(DeviceType::Smartcard),
             _ => Err(invalid_message_err!("try_from", "DeviceType", "invalid value")),
+        }
+    }
+}
+
+/// [2.2.2.1 Server Device Announce Response (DR_CORE_DEVICE_ANNOUNCE_RSP)]
+///
+/// [2.2.2.1 Server Device Announce Response (DR_CORE_DEVICE_ANNOUNCE_RSP)]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/a4c0b619-6e87-4721-bdc4-5d2db7f485f3
+#[derive(Debug)]
+pub struct ServerDeviceAnnounceResponse {
+    pub device_id: u32,
+    pub result_code: NtStatus,
+}
+
+impl ServerDeviceAnnounceResponse {
+    const NAME: &str = "DR_CORE_DEVICE_ANNOUNCE_RSP";
+    const FIXED_PART_SIZE: usize = size_of::<u32>() * 2; // DeviceId, ResultCode
+
+    pub fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    pub fn encode(&self, dst: &mut WriteCursor) -> PduResult<()> {
+        ensure_size!(in: dst, size: self.size());
+        dst.write_u32(self.device_id);
+        dst.write_u32(self.result_code as u32);
+        Ok(())
+    }
+
+    pub fn decode(src: &mut ReadCursor<'_>) -> PduResult<Self> {
+        ensure_size!(ctx: Self::NAME, in: src, size: Self::FIXED_PART_SIZE);
+        let device_id = src.read_u32();
+        let result_code = NtStatus::try_from(src.read_u32())?;
+
+        Ok(Self { device_id, result_code })
+    }
+
+    pub fn size(&self) -> usize {
+        Self::FIXED_PART_SIZE
+    }
+}
+
+/// [2.3.1 NTSTATUS Values]
+///
+/// Windows defines an absolutely massive list of potential NTSTATUS values.
+/// This enum includes some basic ones for communicating with the RDP server.
+///
+/// [2.3.1 NTSTATUS Values]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-erref/596a1078-e883-4972-9bbc-49e60bebca55
+#[derive(Debug, PartialEq, Copy, Clone)]
+#[repr(u32)]
+pub enum NtStatus {
+    Success = 0x0000_0000,
+    Unsuccessful = 0xC000_0001,
+    NotImplemented = 0xC000_0002,
+    NoMoreFiles = 0x8000_0006,
+    ObjectNameCollision = 0xC000_0035,
+    AccessDenied = 0xC000_0022,
+    NotADirectory = 0xC000_0103,
+    NoSuchFile = 0xC000_000F,
+    NotSupported = 0xC000_00BB,
+    DirectoryNotEmpty = 0xC000_0101,
+}
+
+impl TryFrom<u32> for NtStatus {
+    type Error = PduError;
+
+    fn try_from(value: u32) -> Result<Self, Self::Error> {
+        match value {
+            0x0000_0000 => Ok(NtStatus::Success),
+            0xC000_0001 => Ok(NtStatus::Unsuccessful),
+            0xC000_0002 => Ok(NtStatus::NotImplemented),
+            0x8000_0006 => Ok(NtStatus::NoMoreFiles),
+            0xC000_0035 => Ok(NtStatus::ObjectNameCollision),
+            0xC000_0022 => Ok(NtStatus::AccessDenied),
+            0xC000_0103 => Ok(NtStatus::NotADirectory),
+            0xC000_000F => Ok(NtStatus::NoSuchFile),
+            0xC000_00BB => Ok(NtStatus::NotSupported),
+            0xC000_0101 => Ok(NtStatus::DirectoryNotEmpty),
+            _ => Err(invalid_message_err!("try_from", "NtStatus", "unsupported value")),
         }
     }
 }
