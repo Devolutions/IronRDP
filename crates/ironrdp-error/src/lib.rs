@@ -5,20 +5,26 @@ extern crate alloc;
 
 use core::fmt;
 
-#[cfg(all(not(feature = "std"), feature = "alloc"))]
-trait NoAllocSource: fmt::Display + fmt::Debug {}
+#[cfg(feature = "std")]
+pub trait Source: std::error::Error + Sync + Send + 'static {}
 
-#[cfg(all(not(feature = "std"), feature = "alloc"))]
-impl<T> NoAllocSource for T where T: fmt::Display + fmt::Debug {}
+#[cfg(feature = "std")]
+impl<T> Source for T where T: std::error::Error + Sync + Send + 'static {}
+
+#[cfg(not(feature = "std"))]
+pub trait Source: fmt::Display + fmt::Debug + Send + Sync + 'static {}
+
+#[cfg(not(feature = "std"))]
+impl<T> Source for T where T: fmt::Display + fmt::Debug + Send + Sync + 'static {}
 
 #[derive(Debug)]
 pub struct Error<Kind> {
     pub context: &'static str,
     pub kind: Kind,
     #[cfg(feature = "std")]
-    source: Option<Box<dyn std::error::Error + Sync + Send + 'static>>,
+    source: Option<Box<dyn std::error::Error + Sync + Send>>,
     #[cfg(all(not(feature = "std"), feature = "alloc"))]
-    source: Option<alloc::boxed::Box<dyn NoAllocSource + Sync + Send + 'static>>,
+    source: Option<alloc::boxed::Box<dyn Source>>,
 }
 
 impl<Kind> Error<Kind> {
@@ -33,36 +39,25 @@ impl<Kind> Error<Kind> {
         }
     }
 
-    #[cfg(feature = "std")]
     #[cold]
     #[must_use]
-    pub fn with_source<E>(mut self, source: E) -> Self
+    pub fn with_source<E>(self, source: E) -> Self
     where
-        E: std::error::Error + Sync + Send + 'static,
-    {
-        self.source = Some(Box::new(source));
-        self
-    }
-
-    #[cfg(all(not(feature = "std"), feature = "alloc"))]
-    #[cold]
-    #[must_use]
-    pub fn with_source<E>(mut self, source: E) -> Self
-    where
-        E: fmt::Display + fmt::Debug + Sync + Send + 'static,
+        E: Source,
     {
         #[cfg(feature = "alloc")]
         {
-            self.source = Some(alloc::boxed::Box::new(source));
+            let mut this = self;
+            this.source = Some(alloc::boxed::Box::new(source));
+            this
         }
 
         // No source when no std and no alloc crates
         #[cfg(not(feature = "alloc"))]
         {
             let _ = source;
+            self
         }
-
-        self
     }
 
     pub fn into_other_kind<OtherKind>(self) -> Error<OtherKind>

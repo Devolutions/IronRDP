@@ -262,6 +262,7 @@ dependencies = [
  "ironrdp-cliprdr",
  "ironrdp-graphics",
  "ironrdp-pdu",
+ "ironrdp-rdpdr",
 ]
 
 [[package]]
@@ -299,6 +300,17 @@ dependencies = [
  "tap",
  "thiserror",
  "x509-cert",
+]
+
+[[package]]
+name = "ironrdp-rdpdr"
+version = "0.1.0"
+dependencies = [
+ "bitflags",
+ "ironrdp-error",
+ "ironrdp-pdu",
+ "ironrdp-svc",
+ "tracing",
 ]
 
 [[package]]
@@ -340,6 +352,12 @@ dependencies = [
  "cc",
  "once_cell",
 ]
+
+[[package]]
+name = "log"
+version = "0.4.20"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b5e6163cb8c49088c2c36f57875e58ccd8c87c7427f7fbd50ea6710b2f3f2e8f"
 
 [[package]]
 name = "md-5"
@@ -580,6 +598,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8ce8c33a8d48bd45d624a6e523445fd21ec13d3653cd51f681abf67418f54eb8"
 dependencies = [
  "cfg-if",
+ "log",
  "pin-project-lite",
  "tracing-attributes",
  "tracing-core",

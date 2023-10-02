@@ -1139,7 +1139,10 @@ pub struct DeviceControlRequest<T: IoCtlCode> {
     pub io_control_code: T,
 }
 
-impl<T: IoCtlCode> DeviceControlRequest<T> {
+impl<T: IoCtlCode> DeviceControlRequest<T>
+where
+    T::Error: ironrdp_error::Source,
+{
     fn headerless_size() -> usize {
         size_of::<u32>() * 3 // OutputBufferLength, InputBufferLength, IoControlCode
     }
@@ -1148,12 +1151,10 @@ impl<T: IoCtlCode> DeviceControlRequest<T> {
         ensure_size!(ctx: "DeviceControlRequest", in: payload, size: Self::headerless_size());
         let output_buffer_length = payload.read_u32();
         let input_buffer_length = payload.read_u32();
-        let io_control_code = T::try_from(payload.read_u32())
-            // TODO: precise error reporting is lost here, figure out how to fix that
-            .map_err(|_| {
-                error!("Failed to parse IoCtlCode");
-                invalid_message_err!("DeviceControlRequest", "IoCtlCode", "invalid IoCtlCode")
-            })?;
+        let io_control_code = T::try_from(payload.read_u32()).map_err(|e| {
+            error!("Failed to parse IoCtlCode");
+            invalid_message_err!("DeviceControlRequest", "IoCtlCode", "invalid IoCtlCode").with_source(e)
+        })?;
 
         // Padding (20 bytes): An array of 20 bytes. Reserved. This field can be set to any value and MUST be ignored.
         payload.advance(20); // padding
