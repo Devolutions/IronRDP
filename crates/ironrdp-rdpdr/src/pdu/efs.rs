@@ -71,7 +71,7 @@ impl VersionAndIdPdu {
         Ok(())
     }
 
-    pub fn decode(header: SharedHeader, payload: &mut ReadCursor) -> PduResult<Self> {
+    pub fn decode(header: SharedHeader, src: &mut ReadCursor) -> PduResult<Self> {
         let kind = match header.packet_id {
             PacketId::CoreServerAnnounce => VersionAndIdPduKind::ServerAnnounceRequest,
             PacketId::CoreClientidConfirm => VersionAndIdPduKind::ServerClientIdConfirm,
@@ -84,10 +84,10 @@ impl VersionAndIdPdu {
             }
         };
 
-        ensure_size!(ctx: kind.name(), in: payload, size: Self::FIXED_PART_SIZE);
-        let version_major = payload.read_u16();
-        let version_minor = payload.read_u16();
-        let client_id = payload.read_u32();
+        ensure_size!(ctx: kind.name(), in: src, size: Self::FIXED_PART_SIZE);
+        let version_major = src.read_u16();
+        let version_minor = src.read_u16();
+        let client_id = src.read_u32();
 
         Ok(Self {
             version_major,
@@ -208,7 +208,7 @@ impl CoreCapability {
         Ok(())
     }
 
-    pub fn decode(header: SharedHeader, payload: &mut ReadCursor<'_>) -> PduResult<Self> {
+    pub fn decode(header: SharedHeader, src: &mut ReadCursor<'_>) -> PduResult<Self> {
         let kind = match header.packet_id {
             PacketId::CoreServerCapability => CoreCapabilityKind::ServerCoreCapabilityRequest,
             PacketId::CoreClientCapability => CoreCapabilityKind::ClientCoreCapabilityResponse,
@@ -221,13 +221,13 @@ impl CoreCapability {
             }
         };
 
-        ensure_size!(ctx: kind.name(), in: payload, size: Self::FIXED_PART_SIZE);
+        ensure_size!(ctx: kind.name(), in: src, size: Self::FIXED_PART_SIZE);
 
-        let num_capabilities = payload.read_u16();
-        let padding = payload.read_u16();
+        let num_capabilities = src.read_u16();
+        let padding = src.read_u16();
         let mut capabilities = Vec::new();
         for _ in 0..num_capabilities {
-            capabilities.push(CapabilityMessage::decode(payload)?);
+            capabilities.push(CapabilityMessage::decode(src)?);
         }
 
         Ok(Self {
@@ -372,9 +372,9 @@ impl CapabilityMessage {
         self.capability_data.encode(dst)
     }
 
-    fn decode(payload: &mut ReadCursor<'_>) -> PduResult<Self> {
-        let header = CapabilityHeader::decode(payload)?;
-        let capability_data = CapabilityData::decode(payload, &header)?;
+    fn decode(src: &mut ReadCursor<'_>) -> PduResult<Self> {
+        let header = CapabilityHeader::decode(src)?;
+        let capability_data = CapabilityData::decode(src, &header)?;
 
         Ok(Self {
             header,
@@ -423,11 +423,11 @@ impl CapabilityHeader {
         }
     }
 
-    fn decode(payload: &mut ReadCursor<'_>) -> PduResult<Self> {
-        ensure_size!(in: payload, size: Self::SIZE);
-        let cap_type: CapabilityType = payload.read_u16().try_into()?;
-        let length = payload.read_u16();
-        let version = payload.read_u32();
+    fn decode(src: &mut ReadCursor<'_>) -> PduResult<Self> {
+        ensure_size!(in: src, size: Self::SIZE);
+        let cap_type: CapabilityType = src.read_u16().try_into()?;
+        let length = src.read_u16();
+        let version = src.read_u32();
 
         Ok(Self {
             cap_type,
@@ -499,10 +499,10 @@ impl CapabilityData {
         }
     }
 
-    fn decode(payload: &mut ReadCursor<'_>, header: &CapabilityHeader) -> PduResult<Self> {
+    fn decode(src: &mut ReadCursor<'_>, header: &CapabilityHeader) -> PduResult<Self> {
         match header.cap_type {
             CapabilityType::General => Ok(CapabilityData::General(GeneralCapabilitySet::decode(
-                payload,
+                src,
                 header.version,
             )?)),
             CapabilityType::Printer => Ok(CapabilityData::Printer),
@@ -575,22 +575,22 @@ impl GeneralCapabilitySet {
         Ok(())
     }
 
-    fn decode(payload: &mut ReadCursor<'_>, version: u32) -> PduResult<Self> {
-        ensure_size!(in: payload, size: Self::SIZE);
-        let os_type = payload.read_u32();
-        let os_version = payload.read_u32();
-        let protocol_major_version = payload.read_u16();
-        let protocol_minor_version = payload.read_u16();
-        let io_code_1 = IoCode1::from_bits(payload.read_u32())
-            .ok_or_else(|| invalid_message_err!("io_code_1", "invalid io_code_1"))?;
-        let io_code_2 = payload.read_u32();
-        let extended_pdu = ExtendedPdu::from_bits(payload.read_u32())
+    fn decode(src: &mut ReadCursor<'_>, version: u32) -> PduResult<Self> {
+        ensure_size!(in: src, size: Self::SIZE);
+        let os_type = src.read_u32();
+        let os_version = src.read_u32();
+        let protocol_major_version = src.read_u16();
+        let protocol_minor_version = src.read_u16();
+        let io_code_1 =
+            IoCode1::from_bits(src.read_u32()).ok_or_else(|| invalid_message_err!("io_code_1", "invalid io_code_1"))?;
+        let io_code_2 = src.read_u32();
+        let extended_pdu = ExtendedPdu::from_bits(src.read_u32())
             .ok_or_else(|| invalid_message_err!("extended_pdu", "invalid extended_pdu"))?;
-        let extra_flags_1 = ExtraFlags1::from_bits(payload.read_u32())
+        let extra_flags_1 = ExtraFlags1::from_bits(src.read_u32())
             .ok_or_else(|| invalid_message_err!("extra_flags_1", "invalid extra_flags_1"))?;
-        let extra_flags_2 = payload.read_u32();
+        let extra_flags_2 = src.read_u32();
         let special_type_device_cap = if version == GENERAL_CAPABILITY_VERSION_02 {
-            payload.read_u32()
+            src.read_u32()
         } else {
             0
         };
@@ -899,10 +899,10 @@ impl ServerDeviceAnnounceResponse {
         Ok(())
     }
 
-    pub fn decode(payload: &mut ReadCursor<'_>) -> PduResult<Self> {
-        ensure_size!(ctx: Self::NAME, in: payload, size: Self::FIXED_PART_SIZE);
-        let device_id = payload.read_u32();
-        let result_code = NtStatus::try_from(payload.read_u32())?;
+    pub fn decode(src: &mut ReadCursor<'_>) -> PduResult<Self> {
+        ensure_size!(ctx: Self::NAME, in: src, size: Self::FIXED_PART_SIZE);
+        let device_id = src.read_u32();
+        let result_code = NtStatus::try_from(src.read_u32())?;
 
         Ok(Self { device_id, result_code })
     }
