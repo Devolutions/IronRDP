@@ -921,33 +921,33 @@ impl ServerDeviceAnnounceResponse {
 #[derive(Debug, PartialEq, Copy, Clone)]
 #[repr(u32)]
 pub enum NtStatus {
-    Success = 0x00000000,
-    Unsuccessful = 0xC0000001,
-    NotImplemented = 0xC0000002,
-    NoMoreFiles = 0x80000006,
-    ObjectNameCollision = 0xC0000035,
-    AccessDenied = 0xC0000022,
-    NotADirectory = 0xC0000103,
-    NoSuchFile = 0xC000000F,
-    NotSupported = 0xC00000BB,
-    DirectoryNotEmpty = 0xC0000101,
+    Success = 0x0000_0000,
+    Unsuccessful = 0xC000_0001,
+    NotImplemented = 0xC000_0002,
+    NoMoreFiles = 0x8000_0006,
+    ObjectNameCollision = 0xC000_0035,
+    AccessDenied = 0xC000_0022,
+    NotADirectory = 0xC000_0103,
+    NoSuchFile = 0xC000_000F,
+    NotSupported = 0xC000_00BB,
+    DirectoryNotEmpty = 0xC000_0101,
 }
 
-impl std::convert::TryFrom<u32> for NtStatus {
+impl TryFrom<u32> for NtStatus {
     type Error = PduError;
 
     fn try_from(value: u32) -> Result<Self, Self::Error> {
         match value {
-            0x00000000 => Ok(NtStatus::Success),
-            0xC0000001 => Ok(NtStatus::Unsuccessful),
-            0xC0000002 => Ok(NtStatus::NotImplemented),
-            0x80000006 => Ok(NtStatus::NoMoreFiles),
-            0xC0000035 => Ok(NtStatus::ObjectNameCollision),
-            0xC0000022 => Ok(NtStatus::AccessDenied),
-            0xC0000103 => Ok(NtStatus::NotADirectory),
-            0xC000000F => Ok(NtStatus::NoSuchFile),
-            0xC00000BB => Ok(NtStatus::NotSupported),
-            0xC0000101 => Ok(NtStatus::DirectoryNotEmpty),
+            0x0000_0000 => Ok(NtStatus::Success),
+            0xC000_0001 => Ok(NtStatus::Unsuccessful),
+            0xC000_0002 => Ok(NtStatus::NotImplemented),
+            0x8000_0006 => Ok(NtStatus::NoMoreFiles),
+            0xC000_0035 => Ok(NtStatus::ObjectNameCollision),
+            0xC000_0022 => Ok(NtStatus::AccessDenied),
+            0xC000_0103 => Ok(NtStatus::NotADirectory),
+            0xC000_000F => Ok(NtStatus::NoSuchFile),
+            0xC000_00BB => Ok(NtStatus::NotSupported),
+            0xC000_0101 => Ok(NtStatus::DirectoryNotEmpty),
             _ => Err(invalid_message_err!("try_from", "NtStatus", "unsupported value")),
         }
     }
