@@ -208,7 +208,7 @@ impl LongReturn {
 impl rpce::HeaderlessEncode for LongReturn {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
         ensure_size!(in: dst, size: self.size());
-        dst.write_u32(self.return_code as u32);
+        dst.write_u32(self.return_code.into());
         Ok(())
     }
 
@@ -363,6 +363,12 @@ pub enum ReturnCode {
     CacheItemTooBig = 0x80100072,
 }
 
+impl From<ReturnCode> for u32 {
+    fn from(val: ReturnCode) -> Self {
+        val as u32
+    }
+}
+
 pub mod rpce {
     //! PDUs for [\[MS-RPCE\]: Remote Procedure Call Protocol Extensions] as required by [MS-RDPESC].
     //!
@@ -452,7 +458,7 @@ pub mod rpce {
         fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
             ensure_size!(in: dst, size: Self::size());
             dst.write_u8(self.version);
-            dst.write_u8(self.endianness as u8);
+            dst.write_u8(self.endianness.into());
             dst.write_u16(self.common_header_length);
             dst.write_u32(self.filler);
             Ok(())
@@ -479,6 +485,12 @@ pub mod rpce {
                 0x10 => Ok(Endianness::LittleEndian),
                 _ => Err(invalid_message_err!("try_from", "RpceEndianness", "unsupported value")),
             }
+        }
+    }
+
+    impl From<Endianness> for u8 {
+        fn from(endianness: Endianness) -> Self {
+            endianness as u8
         }
     }
 

@@ -186,8 +186,8 @@ impl SharedHeader {
 
     fn encode(&self, dst: &mut WriteCursor) -> PduResult<()> {
         ensure_size!(in: dst, size: Self::SIZE);
-        dst.write_u16(self.component as u16);
-        dst.write_u16(self.packet_id as u16);
+        dst.write_u16(self.component.into());
+        dst.write_u16(self.packet_id.into());
         Ok(())
     }
 
@@ -220,6 +220,12 @@ impl TryFrom<u16> for Component {
             0x5052 => Ok(Component::RdpdrCtypPrn),
             _ => Err(invalid_message_err!("try_from", "Component", "invalid value")),
         }
+    }
+}
+
+impl From<Component> for u16 {
+    fn from(component: Component) -> Self {
+        component as u16
     }
 }
 
@@ -276,5 +282,11 @@ impl std::convert::TryFrom<u16> for PacketId {
             0x5543 => Ok(PacketId::PrnUsingXps),
             _ => Err(invalid_message_err!("try_from", "PacketId", "invalid value")),
         }
+    }
+}
+
+impl From<PacketId> for u16 {
+    fn from(packet_id: PacketId) -> Self {
+        packet_id as u16
     }
 }

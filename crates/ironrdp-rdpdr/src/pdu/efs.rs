@@ -142,7 +142,7 @@ impl ClientNameRequest {
 
     pub fn encode(&self, dst: &mut WriteCursor) -> PduResult<()> {
         ensure_size!(in: dst, size: self.size());
-        dst.write_u32(self.unicode_flag() as u32);
+        dst.write_u32(self.unicode_flag().into());
         dst.write_u32(0); // // CodePage (4 bytes): it MUST be set to 0
         dst.write_u32(encoded_str_len(self.computer_name(), self.unicode_flag().into(), true) as u32);
         write_string_to_cursor(dst, self.computer_name(), self.unicode_flag().into(), true)
@@ -170,6 +170,12 @@ impl From<ClientNameRequestUnicodeFlag> for CharacterSet {
             ClientNameRequestUnicodeFlag::Ascii => CharacterSet::Ansi,
             ClientNameRequestUnicodeFlag::Unicode => CharacterSet::Unicode,
         }
+    }
+}
+
+impl From<ClientNameRequestUnicodeFlag> for u32 {
+    fn from(val: ClientNameRequestUnicodeFlag) -> Self {
+        val as u32
     }
 }
 
@@ -440,7 +446,7 @@ impl CapabilityHeader {
 
     fn encode(&self, dst: &mut WriteCursor) -> PduResult<()> {
         ensure_size!(in: dst, size: self.size());
-        dst.write_u16(self.cap_type as u16);
+        dst.write_u16(self.cap_type.into());
         dst.write_u16(self.length);
         dst.write_u32(self.version);
         Ok(())
@@ -464,6 +470,12 @@ enum CapabilityType {
     Drive = 0x0004,
     /// CAP_SMARTCARD_TYPE
     Smartcard = 0x0005,
+}
+
+impl From<CapabilityType> for u16 {
+    fn from(cap_type: CapabilityType) -> Self {
+        cap_type as u16
+    }
 }
 
 /// GENERAL_CAPABILITY_VERSION_02
@@ -810,7 +822,7 @@ impl DeviceAnnounceHeader {
     }
 
     fn encode(&self, dst: &mut WriteCursor) -> PduResult<()> {
-        dst.write_u32(self.device_type as u32);
+        dst.write_u32(self.device_type.into());
         dst.write_u32(self.device_id);
         self.preferred_dos_name.encode(dst)?;
         dst.write_u32(cast_length!(
@@ -912,7 +924,7 @@ impl ServerDeviceAnnounceResponse {
     pub fn encode(&self, dst: &mut WriteCursor) -> PduResult<()> {
         ensure_size!(in: dst, size: self.size());
         dst.write_u32(self.device_id);
-        dst.write_u32(self.result_code as u32);
+        dst.write_u32(self.result_code.into());
         Ok(())
     }
 
@@ -971,6 +983,12 @@ impl TryFrom<u32> for NtStatus {
     }
 }
 
+impl From<NtStatus> for u32 {
+    fn from(status: NtStatus) -> Self {
+        status as u32
+    }
+}
+
 /// [2.2.1.4 Device I/O Request (DR_DEVICE_IOREQUEST)]
 ///
 /// [2.2.1.4 Device I/O Request (DR_DEVICE_IOREQUEST)]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/a087ffa8-d0d5-4874-ac7b-0494f63e2d5d
@@ -996,8 +1014,8 @@ impl DeviceIoRequest {
         dst.write_u32(self.device_id);
         dst.write_u32(self.file_id);
         dst.write_u32(self.completion_id);
-        dst.write_u32(self.major_function as u32);
-        dst.write_u32(self.minor_function as u32);
+        dst.write_u32(self.major_function.into());
+        dst.write_u32(self.minor_function.into());
         Ok(())
     }
 
@@ -1085,6 +1103,12 @@ impl TryFrom<u32> for MajorFunction {
     }
 }
 
+impl From<MajorFunction> for u32 {
+    fn from(major_function: MajorFunction) -> Self {
+        major_function as u32
+    }
+}
+
 /// See [`DeviceIoRequest`].
 #[derive(Debug, Clone, Copy)]
 #[repr(u32)]
@@ -1106,6 +1130,12 @@ impl TryFrom<u32> for MinorFunction {
             0x00000002 => Ok(MinorFunction::NotifyChangeDirectory),
             _ => Err(invalid_message_err!("try_from", "MinorFunction", "unsupported value")),
         }
+    }
+}
+
+impl From<MinorFunction> for u32 {
+    fn from(minor_function: MinorFunction) -> Self {
+        minor_function as u32
     }
 }
 
@@ -1216,7 +1246,7 @@ impl DeviceIoResponse {
         ensure_size!(in: dst, size: self.size());
         dst.write_u32(self.device_id);
         dst.write_u32(self.completion_id);
-        dst.write_u32(self.io_status as u32);
+        dst.write_u32(self.io_status.into());
         Ok(())
     }
 
