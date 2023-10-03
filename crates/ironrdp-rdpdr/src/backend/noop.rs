@@ -1,7 +1,7 @@
 use super::RdpdrBackend;
 use crate::pdu::{
     efs::{DeviceControlRequest, ServerDeviceAnnounceResponse},
-    esc::{ScardAccessStartedEventCall, ScardIoctlCode},
+    esc::{ScardAccessStartedEventCall, ScardIoCtlCode},
 };
 use ironrdp_pdu::PduResult;
 
@@ -14,7 +14,7 @@ impl RdpdrBackend for NoopRdpdrBackend {
     }
     fn handle_scard_access_started_event_call(
         &self,
-        _req: DeviceControlRequest<ScardIoctlCode>,
+        _req: DeviceControlRequest<ScardIoCtlCode>,
         _call: ScardAccessStartedEventCall,
     ) -> PduResult<()> {
         Ok(())

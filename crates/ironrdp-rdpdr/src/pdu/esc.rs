@@ -2,7 +2,7 @@
 //!
 //! [\[MS-RDPESC\]: Remote Desktop Protocol: Smart Card Virtual Channel Extension]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/0428ca28-b4dc-46a3-97c3-01887fa44a90
 
-use super::efs::IoctlCode;
+use super::efs::IoCtlCode;
 use ironrdp_pdu::{
     cursor::{ReadCursor, WriteCursor},
     ensure_size, invalid_message_err, PduError, PduResult,
@@ -14,7 +14,7 @@ use tracing::error;
 /// [3.1.4 Message Processing Events and Sequencing Rules]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/60d5977d-0017-4c90-ab0c-f34bf44a74a5
 #[derive(Debug)]
 #[repr(u32)]
-pub enum ScardIoctlCode {
+pub enum ScardIoCtlCode {
     /// SCARD_IOCTL_ESTABLISHCONTEXT
     EstablishContext = 0x00090014,
     /// SCARD_IOCTL_RELEASECONTEXT
@@ -113,69 +113,69 @@ pub enum ScardIoctlCode {
     GetDeviceTypeId = 0x00090108,
 }
 
-impl TryFrom<u32> for ScardIoctlCode {
+impl TryFrom<u32> for ScardIoCtlCode {
     type Error = PduError;
 
     fn try_from(value: u32) -> Result<Self, Self::Error> {
         match value {
-            0x00090014 => Ok(ScardIoctlCode::EstablishContext),
-            0x00090018 => Ok(ScardIoctlCode::ReleaseContext),
-            0x0009001C => Ok(ScardIoctlCode::IsValidContext),
-            0x00090020 => Ok(ScardIoctlCode::ListReaderGroupsA),
-            0x00090024 => Ok(ScardIoctlCode::ListReaderGroupsW),
-            0x00090028 => Ok(ScardIoctlCode::ListReadersA),
-            0x0009002C => Ok(ScardIoctlCode::ListReadersW),
-            0x00090050 => Ok(ScardIoctlCode::IntroduceReaderGroupA),
-            0x00090054 => Ok(ScardIoctlCode::IntroduceReaderGroupW),
-            0x00090058 => Ok(ScardIoctlCode::ForgetReaderGroupA),
-            0x0009005C => Ok(ScardIoctlCode::ForgetReaderGroupW),
-            0x00090060 => Ok(ScardIoctlCode::IntroduceReaderA),
-            0x00090064 => Ok(ScardIoctlCode::IntroduceReaderW),
-            0x00090068 => Ok(ScardIoctlCode::ForgetReaderA),
-            0x0009006C => Ok(ScardIoctlCode::ForgetReaderW),
-            0x00090070 => Ok(ScardIoctlCode::AddReaderToGroupA),
-            0x00090074 => Ok(ScardIoctlCode::AddReaderToGroupW),
-            0x00090078 => Ok(ScardIoctlCode::RemoveReaderFromGroupA),
-            0x0009007C => Ok(ScardIoctlCode::RemoveReaderFromGroupW),
-            0x00090098 => Ok(ScardIoctlCode::LocateCardsA),
-            0x0009009C => Ok(ScardIoctlCode::LocateCardsW),
-            0x000900A0 => Ok(ScardIoctlCode::GetStatusChangeA),
-            0x000900A4 => Ok(ScardIoctlCode::GetStatusChangeW),
-            0x000900A8 => Ok(ScardIoctlCode::Cancel),
-            0x000900AC => Ok(ScardIoctlCode::ConnectA),
-            0x000900B0 => Ok(ScardIoctlCode::ConnectW),
-            0x000900B4 => Ok(ScardIoctlCode::Reconnect),
-            0x000900B8 => Ok(ScardIoctlCode::Disconnect),
-            0x000900BC => Ok(ScardIoctlCode::BeginTransaction),
-            0x000900C0 => Ok(ScardIoctlCode::EndTransaction),
-            0x000900C4 => Ok(ScardIoctlCode::State),
-            0x000900C8 => Ok(ScardIoctlCode::StatusA),
-            0x000900CC => Ok(ScardIoctlCode::StatusW),
-            0x000900D0 => Ok(ScardIoctlCode::Transmit),
-            0x000900D4 => Ok(ScardIoctlCode::Control),
-            0x000900D8 => Ok(ScardIoctlCode::GetAttrib),
-            0x000900DC => Ok(ScardIoctlCode::SetAttrib),
-            0x000900E0 => Ok(ScardIoctlCode::AccessStartedEvent),
-            0x000900E4 => Ok(ScardIoctlCode::ReleaseTartedEvent),
-            0x000900E8 => Ok(ScardIoctlCode::LocateCardsByAtrA),
-            0x000900EC => Ok(ScardIoctlCode::LocateCardsByAtrW),
-            0x000900F0 => Ok(ScardIoctlCode::ReadCacheA),
-            0x000900F4 => Ok(ScardIoctlCode::ReadCacheW),
-            0x000900F8 => Ok(ScardIoctlCode::WriteCacheA),
-            0x000900FC => Ok(ScardIoctlCode::WriteCacheW),
-            0x00090100 => Ok(ScardIoctlCode::GetTransmitCount),
-            0x00090104 => Ok(ScardIoctlCode::GetReaderIcon),
-            0x00090108 => Ok(ScardIoctlCode::GetDeviceTypeId),
+            0x00090014 => Ok(ScardIoCtlCode::EstablishContext),
+            0x00090018 => Ok(ScardIoCtlCode::ReleaseContext),
+            0x0009001C => Ok(ScardIoCtlCode::IsValidContext),
+            0x00090020 => Ok(ScardIoCtlCode::ListReaderGroupsA),
+            0x00090024 => Ok(ScardIoCtlCode::ListReaderGroupsW),
+            0x00090028 => Ok(ScardIoCtlCode::ListReadersA),
+            0x0009002C => Ok(ScardIoCtlCode::ListReadersW),
+            0x00090050 => Ok(ScardIoCtlCode::IntroduceReaderGroupA),
+            0x00090054 => Ok(ScardIoCtlCode::IntroduceReaderGroupW),
+            0x00090058 => Ok(ScardIoCtlCode::ForgetReaderGroupA),
+            0x0009005C => Ok(ScardIoCtlCode::ForgetReaderGroupW),
+            0x00090060 => Ok(ScardIoCtlCode::IntroduceReaderA),
+            0x00090064 => Ok(ScardIoCtlCode::IntroduceReaderW),
+            0x00090068 => Ok(ScardIoCtlCode::ForgetReaderA),
+            0x0009006C => Ok(ScardIoCtlCode::ForgetReaderW),
+            0x00090070 => Ok(ScardIoCtlCode::AddReaderToGroupA),
+            0x00090074 => Ok(ScardIoCtlCode::AddReaderToGroupW),
+            0x00090078 => Ok(ScardIoCtlCode::RemoveReaderFromGroupA),
+            0x0009007C => Ok(ScardIoCtlCode::RemoveReaderFromGroupW),
+            0x00090098 => Ok(ScardIoCtlCode::LocateCardsA),
+            0x0009009C => Ok(ScardIoCtlCode::LocateCardsW),
+            0x000900A0 => Ok(ScardIoCtlCode::GetStatusChangeA),
+            0x000900A4 => Ok(ScardIoCtlCode::GetStatusChangeW),
+            0x000900A8 => Ok(ScardIoCtlCode::Cancel),
+            0x000900AC => Ok(ScardIoCtlCode::ConnectA),
+            0x000900B0 => Ok(ScardIoCtlCode::ConnectW),
+            0x000900B4 => Ok(ScardIoCtlCode::Reconnect),
+            0x000900B8 => Ok(ScardIoCtlCode::Disconnect),
+            0x000900BC => Ok(ScardIoCtlCode::BeginTransaction),
+            0x000900C0 => Ok(ScardIoCtlCode::EndTransaction),
+            0x000900C4 => Ok(ScardIoCtlCode::State),
+            0x000900C8 => Ok(ScardIoCtlCode::StatusA),
+            0x000900CC => Ok(ScardIoCtlCode::StatusW),
+            0x000900D0 => Ok(ScardIoCtlCode::Transmit),
+            0x000900D4 => Ok(ScardIoCtlCode::Control),
+            0x000900D8 => Ok(ScardIoCtlCode::GetAttrib),
+            0x000900DC => Ok(ScardIoCtlCode::SetAttrib),
+            0x000900E0 => Ok(ScardIoCtlCode::AccessStartedEvent),
+            0x000900E4 => Ok(ScardIoCtlCode::ReleaseTartedEvent),
+            0x000900E8 => Ok(ScardIoCtlCode::LocateCardsByAtrA),
+            0x000900EC => Ok(ScardIoCtlCode::LocateCardsByAtrW),
+            0x000900F0 => Ok(ScardIoCtlCode::ReadCacheA),
+            0x000900F4 => Ok(ScardIoCtlCode::ReadCacheW),
+            0x000900F8 => Ok(ScardIoCtlCode::WriteCacheA),
+            0x000900FC => Ok(ScardIoCtlCode::WriteCacheW),
+            0x00090100 => Ok(ScardIoCtlCode::GetTransmitCount),
+            0x00090104 => Ok(ScardIoCtlCode::GetReaderIcon),
+            0x00090108 => Ok(ScardIoCtlCode::GetDeviceTypeId),
             _ => {
-                error!("Unsupported ScardIoctlCode: 0x{:08x}", value);
-                Err(invalid_message_err!("try_from", "ScardIoctlCode", "unsupported value"))
+                error!("Unsupported ScardIoCtlCode: 0x{:08x}", value);
+                Err(invalid_message_err!("try_from", "ScardIoCtlCode", "unsupported value"))
             }
         }
     }
 }
 
-/// Allow [`ScardIoctlCode`] to be used as an [`IoctlCode`].
-impl IoctlCode for ScardIoctlCode {}
+/// Allow [`ScardIoCtlCode`] to be used as an [`IoCtlCode`].
+impl IoCtlCode for ScardIoCtlCode {}
 
 /// [2.2.2.30 ScardAccessStartedEvent_Call]
 ///

@@ -21,7 +21,7 @@ use pdu::{
         Capabilities, ClientDeviceListAnnounce, DeviceControlRequest, DeviceIoRequest, Devices,
         ServerDeviceAnnounceResponse,
     },
-    esc::{ScardAccessStartedEventCall, ScardIoctlCode},
+    esc::{ScardAccessStartedEventCall, ScardIoCtlCode},
 };
 use tracing::{debug, trace, warn};
 
@@ -105,9 +105,9 @@ impl Rdpdr {
         payload: &mut ReadCursor<'_>,
     ) -> PduResult<Vec<SvcMessage>> {
         if self.is_for_smartcard(&pdu) {
-            let req = DeviceControlRequest::<ScardIoctlCode>::decode(pdu, payload)?;
+            let req = DeviceControlRequest::<ScardIoCtlCode>::decode(pdu, payload)?;
             match req.io_control_code {
-                ScardIoctlCode::AccessStartedEvent => {
+                ScardIoCtlCode::AccessStartedEvent => {
                     let call = ScardAccessStartedEventCall::decode(payload)?;
                     debug!(?req, ?call, "received smartcard ioctl");
                     self.backend.handle_scard_access_started_event_call(req, call)?;

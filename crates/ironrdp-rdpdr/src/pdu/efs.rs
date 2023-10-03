@@ -1113,14 +1113,14 @@ impl TryFrom<u32> for MinorFunction {
 ///
 /// [2.2.1.4.5 Device Control Request (DR_CONTROL_REQ)]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/30662c80-ec6e-4ed1-9004-2e6e367bb59f
 #[derive(Debug)]
-pub struct DeviceControlRequest<T: IoctlCode> {
+pub struct DeviceControlRequest<T: IoCtlCode> {
     pub header: DeviceIoRequest,
     pub output_buffer_length: u32,
     pub input_buffer_length: u32,
     pub io_control_code: T,
 }
 
-impl<T: IoctlCode> DeviceControlRequest<T> {
+impl<T: IoCtlCode> DeviceControlRequest<T> {
     fn headerless_size() -> usize {
         size_of::<u32>() * 3 // OutputBufferLength, InputBufferLength, IoControlCode
     }
@@ -1132,8 +1132,8 @@ impl<T: IoctlCode> DeviceControlRequest<T> {
         let io_control_code = T::try_from(payload.read_u32())
             // TODO: precise error reporting is lost here, figure out how to fix that
             .map_err(|_| {
-                error!("Failed to parse IoctlCode");
-                invalid_message_err!("DeviceControlRequest", "IoctlCode", "invalid IoctlCode")
+                error!("Failed to parse IoCtlCode");
+                invalid_message_err!("DeviceControlRequest", "IoCtlCode", "invalid IoCtlCode")
             })?;
 
         // Padding (20 bytes): An array of 20 bytes. Reserved. This field can be set to any value and MUST be ignored.
@@ -1149,7 +1149,7 @@ impl<T: IoctlCode> DeviceControlRequest<T> {
 }
 
 /// A 32-bit unsigned integer. This field is specific to the redirected device.
-pub trait IoctlCode: TryFrom<u32> {}
+pub trait IoCtlCode: TryFrom<u32> {}
 
 /// [2.2.1.5.5 Device Control Response (DR_CONTROL_RSP)]
 ///
