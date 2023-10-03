@@ -108,7 +108,8 @@ where
             if self.buf.len() >= length {
                 return Ok(self.buf.split_to(length));
             } else {
-                self.buf.reserve(length - self.buf.len());
+                self.buf
+                    .reserve(length.checked_sub(self.buf.len()).expect("length > self.buf.len()"));
             }
 
             let len = self.read().await?;

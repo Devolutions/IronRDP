@@ -1,17 +1,15 @@
 //! PDUs for [\[MS-RDPEFS\]: Remote Desktop Protocol: File System Virtual Channel Extension]
 //!
 //! [\[MS-RDPEFS\]: Remote Desktop Protocol: File System Virtual Channel Extension]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/34d9de58-b2b5-40b6-b970-f82d4603bdb5
-use std::fmt::Debug;
-use std::mem::size_of;
 
+use super::esc::rpce;
+use super::{PacketId, SharedHeader};
 use bitflags::bitflags;
 use ironrdp_pdu::cursor::{ReadCursor, WriteCursor};
 use ironrdp_pdu::utils::{encoded_str_len, write_string_to_cursor, CharacterSet};
 use ironrdp_pdu::{cast_length, ensure_size, invalid_message_err, PduError, PduResult};
-use tracing::error;
-
-use super::esc::rpce;
-use super::{PacketId, SharedHeader};
+use std::fmt::Debug;
+use std::mem::size_of;
 
 #[derive(Debug, PartialEq)]
 pub enum VersionAndIdPduKind {
@@ -216,7 +214,7 @@ impl CoreCapability {
         Ok(())
     }
 
-    pub fn decode(header: SharedHeader, payload: &mut ReadCursor<'_>) -> PduResult<Self> {
+    pub fn decode(header: SharedHeader, src: &mut ReadCursor<'_>) -> PduResult<Self> {
         let kind = match header.packet_id {
             PacketId::CoreServerCapability => CoreCapabilityKind::ServerCoreCapabilityRequest,
             PacketId::CoreClientCapability => CoreCapabilityKind::ClientCoreCapabilityResponse,
@@ -229,13 +227,13 @@ impl CoreCapability {
             }
         };
 
-        ensure_size!(ctx: kind.name(), in: payload, size: Self::FIXED_PART_SIZE);
+        ensure_size!(ctx: kind.name(), in: src, size: Self::FIXED_PART_SIZE);
 
-        let num_capabilities = payload.read_u16();
-        let padding = payload.read_u16();
+        let num_capabilities = src.read_u16();
+        let padding = src.read_u16();
         let mut capabilities = Vec::new();
         for _ in 0..num_capabilities {
-            capabilities.push(CapabilityMessage::decode(payload)?);
+            capabilities.push(CapabilityMessage::decode(src)?);
         }
 
         Ok(Self {
@@ -380,9 +378,9 @@ impl CapabilityMessage {
         self.capability_data.encode(dst)
     }
 
-    fn decode(payload: &mut ReadCursor<'_>) -> PduResult<Self> {
-        let header = CapabilityHeader::decode(payload)?;
-        let capability_data = CapabilityData::decode(payload, &header)?;
+    fn decode(src: &mut ReadCursor<'_>) -> PduResult<Self> {
+        let header = CapabilityHeader::decode(src)?;
+        let capability_data = CapabilityData::decode(src, &header)?;
 
         Ok(Self {
             header,
@@ -391,7 +389,7 @@ impl CapabilityMessage {
     }
 
     fn size(&self) -> usize {
-        self.header.size() + self.capability_data.size()
+        CapabilityHeader::SIZE + self.capability_data.size()
     }
 }
 
@@ -431,11 +429,11 @@ impl CapabilityHeader {
         }
     }
 
-    fn decode(payload: &mut ReadCursor<'_>) -> PduResult<Self> {
-        ensure_size!(in: payload, size: Self::SIZE);
-        let cap_type: CapabilityType = payload.read_u16().try_into()?;
-        let length = payload.read_u16();
-        let version = payload.read_u32();
+    fn decode(src: &mut ReadCursor<'_>) -> PduResult<Self> {
+        ensure_size!(in: src, size: Self::SIZE);
+        let cap_type: CapabilityType = src.read_u16().try_into()?;
+        let length = src.read_u16();
+        let version = src.read_u32();
 
         Ok(Self {
             cap_type,
@@ -445,15 +443,11 @@ impl CapabilityHeader {
     }
 
     fn encode(&self, dst: &mut WriteCursor) -> PduResult<()> {
-        ensure_size!(in: dst, size: self.size());
+        ensure_size!(in: dst, size: Self::SIZE);
         dst.write_u16(self.cap_type.into());
         dst.write_u16(self.length);
         dst.write_u32(self.version);
         Ok(())
-    }
-
-    fn size(&self) -> usize {
-        Self::SIZE
     }
 }
 
@@ -479,11 +473,11 @@ impl From<CapabilityType> for u16 {
 }
 
 /// GENERAL_CAPABILITY_VERSION_02
-pub const GENERAL_CAPABILITY_VERSION_02: u32 = 0x00000002;
+pub const GENERAL_CAPABILITY_VERSION_02: u32 = 0x0000_0002;
 /// SMARTCARD_CAPABILITY_VERSION_01
-pub const SMARTCARD_CAPABILITY_VERSION_01: u32 = 0x00000001;
+pub const SMARTCARD_CAPABILITY_VERSION_01: u32 = 0x0000_0001;
 /// DRIVE_CAPABILITY_VERSION_02
-pub const DRIVE_CAPABILITY_VERSION_02: u32 = 0x00000002;
+pub const DRIVE_CAPABILITY_VERSION_02: u32 = 0x0000_0002;
 
 impl TryFrom<u16> for CapabilityType {
     type Error = PduError;
@@ -517,10 +511,10 @@ impl CapabilityData {
         }
     }
 
-    fn decode(payload: &mut ReadCursor<'_>, header: &CapabilityHeader) -> PduResult<Self> {
+    fn decode(src: &mut ReadCursor<'_>, header: &CapabilityHeader) -> PduResult<Self> {
         match header.cap_type {
             CapabilityType::General => Ok(CapabilityData::General(GeneralCapabilitySet::decode(
-                payload,
+                src,
                 header.version,
             )?)),
             CapabilityType::Printer => Ok(CapabilityData::Printer),
@@ -532,7 +526,7 @@ impl CapabilityData {
 
     fn size(&self) -> usize {
         match self {
-            CapabilityData::General(general) => general.size(),
+            CapabilityData::General(_) => GeneralCapabilitySet::SIZE,
             CapabilityData::Printer => 0,
             CapabilityData::Port => 0,
             CapabilityData::Drive => 0,
@@ -579,7 +573,7 @@ impl GeneralCapabilitySet {
     const SIZE: usize = size_of::<u32>() * 8 + size_of::<u16>() * 2;
 
     fn encode(&self, dst: &mut WriteCursor) -> PduResult<()> {
-        ensure_size!(in: dst, size: self.size());
+        ensure_size!(in: dst, size: Self::SIZE);
         dst.write_u32(self.os_type);
         dst.write_u32(self.os_version);
         dst.write_u16(self.protocol_major_version);
@@ -593,22 +587,22 @@ impl GeneralCapabilitySet {
         Ok(())
     }
 
-    fn decode(payload: &mut ReadCursor<'_>, version: u32) -> PduResult<Self> {
-        ensure_size!(in: payload, size: Self::SIZE);
-        let os_type = payload.read_u32();
-        let os_version = payload.read_u32();
-        let protocol_major_version = payload.read_u16();
-        let protocol_minor_version = payload.read_u16();
-        let io_code_1 = IoCode1::from_bits(payload.read_u32())
-            .ok_or_else(|| invalid_message_err!("io_code_1", "invalid io_code_1"))?;
-        let io_code_2 = payload.read_u32();
-        let extended_pdu = ExtendedPdu::from_bits(payload.read_u32())
+    fn decode(src: &mut ReadCursor<'_>, version: u32) -> PduResult<Self> {
+        ensure_size!(in: src, size: Self::SIZE);
+        let os_type = src.read_u32();
+        let os_version = src.read_u32();
+        let protocol_major_version = src.read_u16();
+        let protocol_minor_version = src.read_u16();
+        let io_code_1 =
+            IoCode1::from_bits(src.read_u32()).ok_or_else(|| invalid_message_err!("io_code_1", "invalid io_code_1"))?;
+        let io_code_2 = src.read_u32();
+        let extended_pdu = ExtendedPdu::from_bits(src.read_u32())
             .ok_or_else(|| invalid_message_err!("extended_pdu", "invalid extended_pdu"))?;
-        let extra_flags_1 = ExtraFlags1::from_bits(payload.read_u32())
+        let extra_flags_1 = ExtraFlags1::from_bits(src.read_u32())
             .ok_or_else(|| invalid_message_err!("extra_flags_1", "invalid extra_flags_1"))?;
-        let extra_flags_2 = payload.read_u32();
+        let extra_flags_2 = src.read_u32();
         let special_type_device_cap = if version == GENERAL_CAPABILITY_VERSION_02 {
-            payload.read_u32()
+            src.read_u32()
         } else {
             0
         };
@@ -626,10 +620,6 @@ impl GeneralCapabilitySet {
             special_type_device_cap,
         })
     }
-
-    fn size(&self) -> usize {
-        Self::SIZE
-    }
 }
 
 bitflags! {
@@ -640,37 +630,37 @@ bitflags! {
     #[derive(Debug, Clone, Copy)]
     struct IoCode1: u32 {
         /// Unused, always set.
-        const RDPDR_IRP_MJ_CREATE = 0x00000001;
+        const RDPDR_IRP_MJ_CREATE = 0x0000_0001;
         /// Unused, always set.
-        const RDPDR_IRP_MJ_CLEANUP = 0x00000002;
+        const RDPDR_IRP_MJ_CLEANUP = 0x0000_0002;
         /// Unused, always set.
-        const RDPDR_IRP_MJ_CLOSE = 0x00000004;
+        const RDPDR_IRP_MJ_CLOSE = 0x0000_0004;
         /// Unused, always set.
-        const RDPDR_IRP_MJ_READ = 0x00000008;
+        const RDPDR_IRP_MJ_READ = 0x0000_0008;
         /// Unused, always set.
-        const RDPDR_IRP_MJ_WRITE = 0x00000010;
+        const RDPDR_IRP_MJ_WRITE = 0x0000_0010;
         /// Unused, always set.
-        const RDPDR_IRP_MJ_FLUSH_BUFFERS = 0x00000020;
+        const RDPDR_IRP_MJ_FLUSH_BUFFERS = 0x0000_0020;
         /// Unused, always set.
-        const RDPDR_IRP_MJ_SHUTDOWN = 0x00000040;
+        const RDPDR_IRP_MJ_SHUTDOWN = 0x0000_0040;
         /// Unused, always set.
-        const RDPDR_IRP_MJ_DEVICE_CONTROL = 0x00000080;
+        const RDPDR_IRP_MJ_DEVICE_CONTROL = 0x0000_0080;
         /// Unused, always set.
-        const RDPDR_IRP_MJ_QUERY_VOLUME_INFORMATION = 0x00000100;
+        const RDPDR_IRP_MJ_QUERY_VOLUME_INFORMATION = 0x0000_0100;
         /// Unused, always set.
-        const RDPDR_IRP_MJ_SET_VOLUME_INFORMATION = 0x00000200;
+        const RDPDR_IRP_MJ_SET_VOLUME_INFORMATION = 0x0000_0200;
         /// Unused, always set.
-        const RDPDR_IRP_MJ_QUERY_INFORMATION = 0x00000400;
+        const RDPDR_IRP_MJ_QUERY_INFORMATION = 0x0000_0400;
         /// Unused, always set.
-        const RDPDR_IRP_MJ_SET_INFORMATION = 0x00000800;
+        const RDPDR_IRP_MJ_SET_INFORMATION = 0x0000_0800;
         /// Unused, always set.
-        const RDPDR_IRP_MJ_DIRECTORY_CONTROL = 0x00001000;
+        const RDPDR_IRP_MJ_DIRECTORY_CONTROL = 0x0000_1000;
         /// Unused, always set.
-        const RDPDR_IRP_MJ_LOCK_CONTROL = 0x00002000;
+        const RDPDR_IRP_MJ_LOCK_CONTROL = 0x0000_2000;
         /// Enable Query Security requests (IRP_MJ_QUERY_SECURITY).
-        const RDPDR_IRP_MJ_QUERY_SECURITY = 0x00004000;
+        const RDPDR_IRP_MJ_QUERY_SECURITY = 0x0000_4000;
         /// Enable Set Security requests (IRP_MJ_SET_SECURITY).
-        const RDPDR_IRP_MJ_SET_SECURITY = 0x00008000;
+        const RDPDR_IRP_MJ_SET_SECURITY = 0x0000_8000;
 
         /// Combination of all the required bits.
         const REQUIRED = Self::RDPDR_IRP_MJ_CREATE.bits()
@@ -697,11 +687,11 @@ bitflags! {
     #[derive(Debug, Clone, Copy)]
     struct ExtendedPdu: u32 {
         /// Allow the client to send Client Drive Device List Remove packets.
-        const RDPDR_DEVICE_REMOVE_PDUS = 0x00000001;
+        const RDPDR_DEVICE_REMOVE_PDUS = 0x0000_0001;
         /// Unused, always set.
-        const RDPDR_CLIENT_DISPLAY_NAME_PDU = 0x00000002;
+        const RDPDR_CLIENT_DISPLAY_NAME_PDU = 0x0000_0002;
         /// Allow the server to send a Server User Logged On packet.
-        const RDPDR_USER_LOGGEDON_PDU = 0x00000004;
+        const RDPDR_USER_LOGGEDON_PDU = 0x0000_0004;
     }
 }
 
@@ -713,7 +703,7 @@ bitflags! {
         /// Optionally present only in the Client Core Capability Response.
         /// Allows the server to send multiple simultaneous read or write requests
         /// on the same file from a redirected file system.
-        const ENABLE_ASYNCIO = 0x00000001;
+        const ENABLE_ASYNCIO = 0x0000_0001;
     }
 }
 
@@ -816,7 +806,7 @@ impl DeviceAnnounceHeader {
             device_type: DeviceType::Smartcard,
             device_id,
             // This name is a constant defined by the spec.
-            preferred_dos_name: PreferredDosName("SCARD".to_string()),
+            preferred_dos_name: PreferredDosName("SCARD".to_owned()),
             device_data: Vec::new(),
         }
     }
@@ -872,15 +862,15 @@ impl PreferredDosName {
 #[repr(u32)]
 pub enum DeviceType {
     /// RDPDR_DTYP_SERIAL
-    Serial = 0x00000001,
+    Serial = 0x0000_0001,
     /// RDPDR_DTYP_PARALLEL
-    Parallel = 0x00000002,
+    Parallel = 0x0000_0002,
     /// RDPDR_DTYP_PRINT
-    Print = 0x00000004,
+    Print = 0x0000_0004,
     /// RDPDR_DTYP_FILESYSTEM
-    Filesystem = 0x00000008,
+    Filesystem = 0x0000_0008,
     /// RDPDR_DTYP_SMARTCARD
-    Smartcard = 0x00000020,
+    Smartcard = 0x0000_0020,
 }
 
 impl From<DeviceType> for u32 {
@@ -894,11 +884,11 @@ impl TryFrom<u32> for DeviceType {
 
     fn try_from(value: u32) -> Result<Self, Self::Error> {
         match value {
-            0x00000001 => Ok(DeviceType::Serial),
-            0x00000002 => Ok(DeviceType::Parallel),
-            0x00000004 => Ok(DeviceType::Print),
-            0x00000008 => Ok(DeviceType::Filesystem),
-            0x00000020 => Ok(DeviceType::Smartcard),
+            0x0000_0001 => Ok(DeviceType::Serial),
+            0x0000_0002 => Ok(DeviceType::Parallel),
+            0x0000_0004 => Ok(DeviceType::Print),
+            0x0000_0008 => Ok(DeviceType::Filesystem),
+            0x0000_0020 => Ok(DeviceType::Smartcard),
             _ => Err(invalid_message_err!("try_from", "DeviceType", "invalid value")),
         }
     }
@@ -947,20 +937,19 @@ impl ServerDeviceAnnounceResponse {
 /// This enum includes some basic ones for communicating with the RDP server.
 ///
 /// [2.3.1 NTSTATUS Values]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-erref/596a1078-e883-4972-9bbc-49e60bebca55
-// TODO: consider moving this elsewhere, as it is not technically exclusive to [MS-RDPEFS]
 #[derive(Debug, PartialEq, Copy, Clone)]
 #[repr(u32)]
 pub enum NtStatus {
-    Success = 0x00000000,
-    Unsuccessful = 0xC0000001,
-    NotImplemented = 0xC0000002,
-    NoMoreFiles = 0x80000006,
-    ObjectNameCollision = 0xC0000035,
-    AccessDenied = 0xC0000022,
-    NotADirectory = 0xC0000103,
-    NoSuchFile = 0xC000000F,
-    NotSupported = 0xC00000BB,
-    DirectoryNotEmpty = 0xC0000101,
+    Success = 0x0000_0000,
+    Unsuccessful = 0xC000_0001,
+    NotImplemented = 0xC000_0002,
+    NoMoreFiles = 0x8000_0006,
+    ObjectNameCollision = 0xC000_0035,
+    AccessDenied = 0xC000_0022,
+    NotADirectory = 0xC000_0103,
+    NoSuchFile = 0xC000_000F,
+    NotSupported = 0xC000_00BB,
+    DirectoryNotEmpty = 0xC000_0101,
 }
 
 impl TryFrom<u32> for NtStatus {
@@ -968,16 +957,16 @@ impl TryFrom<u32> for NtStatus {
 
     fn try_from(value: u32) -> Result<Self, Self::Error> {
         match value {
-            0x00000000 => Ok(NtStatus::Success),
-            0xC0000001 => Ok(NtStatus::Unsuccessful),
-            0xC0000002 => Ok(NtStatus::NotImplemented),
-            0x80000006 => Ok(NtStatus::NoMoreFiles),
-            0xC0000035 => Ok(NtStatus::ObjectNameCollision),
-            0xC0000022 => Ok(NtStatus::AccessDenied),
-            0xC0000103 => Ok(NtStatus::NotADirectory),
-            0xC000000F => Ok(NtStatus::NoSuchFile),
-            0xC00000BB => Ok(NtStatus::NotSupported),
-            0xC0000101 => Ok(NtStatus::DirectoryNotEmpty),
+            0x0000_0000 => Ok(NtStatus::Success),
+            0xC000_0001 => Ok(NtStatus::Unsuccessful),
+            0xC000_0002 => Ok(NtStatus::NotImplemented),
+            0x8000_0006 => Ok(NtStatus::NoMoreFiles),
+            0xC000_0035 => Ok(NtStatus::ObjectNameCollision),
+            0xC000_0022 => Ok(NtStatus::AccessDenied),
+            0xC000_0103 => Ok(NtStatus::NotADirectory),
+            0xC000_000F => Ok(NtStatus::NoSuchFile),
+            0xC000_00BB => Ok(NtStatus::NotSupported),
+            0xC000_0101 => Ok(NtStatus::DirectoryNotEmpty),
             _ => Err(invalid_message_err!("try_from", "NtStatus", "unsupported value")),
         }
     }

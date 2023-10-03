@@ -74,13 +74,16 @@ impl Scancode {
 
     pub const fn from_u16(scancode: u16) -> Self {
         let extended = scancode & 0xE000 == 0xE000;
+
+        #[allow(clippy::cast_possible_truncation)] // truncating on purpose
         let code = scancode as u8;
+
         Self { code, extended }
     }
 
     pub fn as_idx(self) -> usize {
         if self.extended {
-            usize::from(self.code) + 256
+            usize::from(self.code).checked_add(256).expect("never overflow")
         } else {
             usize::from(self.code)
         }
@@ -322,7 +325,8 @@ impl Database {
 
         for idx in self.keyboard.iter_ones() {
             let (scancode, extended) = if idx >= 256 {
-                (u8::try_from(idx - 256).unwrap(), true)
+                let extended_code = idx.checked_sub(256).expect("never underflow");
+                (u8::try_from(extended_code).unwrap(), true)
             } else {
                 (u8::try_from(idx).unwrap(), false)
             };

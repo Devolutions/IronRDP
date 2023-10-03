@@ -32,8 +32,6 @@ ironrdp = { workspace = true, features = ["input", "graphics", "dvc", "rdpdr", "
 ironrdp-cliprdr-native.workspace = true
 ironrdp-tls.workspace = true
 ironrdp-tokio.workspace = true
-ironrdp-rdpsnd.workspace = true
-ironrdp-rdpdr.workspace = true
 sspi = { workspace = true, features = ["network_client", "dns_resolver"] } # enable additional features
 
 # Windowing and rendering
@@ -53,7 +51,6 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tokio = { version = "1", features = ["full"]}
 
 # Utils
-chrono = "0.4"
 whoami = "1.4"
 anyhow = "1"
 smallvec = "1.10"

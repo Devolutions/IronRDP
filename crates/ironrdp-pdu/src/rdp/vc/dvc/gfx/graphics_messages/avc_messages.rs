@@ -1,5 +1,5 @@
 use std::fmt::Debug;
-use std::io::Write;
+use std::io::Write as _;
 
 use bit_field::BitField;
 use bitflags::bitflags;
@@ -55,7 +55,7 @@ pub struct Avc420BitmapStream<'a> {
     pub data: &'a [u8],
 }
 
-impl<'a> Debug for Avc420BitmapStream<'a> {
+impl Debug for Avc420BitmapStream<'_> {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Avc420BitmapStream")
             .field("rectangles", &self.rectangles)

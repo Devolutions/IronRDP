@@ -35,7 +35,7 @@ impl BitmapUpdateData<'_> {
     }
 }
 
-impl<'en> PduEncode for BitmapUpdateData<'en> {
+impl PduEncode for BitmapUpdateData<'_> {
     fn encode(&self, dst: &mut crate::cursor::WriteCursor<'_>) -> PduResult<()> {
         ensure_size!(in: dst, size: self.size());
 
@@ -95,7 +95,7 @@ pub struct BitmapData<'a> {
     pub bitmap_data: &'a [u8],
 }
 
-impl<'a> BitmapData<'a> {
+impl BitmapData<'_> {
     const NAME: &str = "TS_BITMAP_DATA";
     const FIXED_PART_SIZE: usize = InclusiveRectangle::ENCODED_SIZE + core::mem::size_of::<u16>() * 5;
 
@@ -104,7 +104,7 @@ impl<'a> BitmapData<'a> {
     }
 }
 
-impl<'en> PduEncode for BitmapData<'en> {
+impl PduEncode for BitmapData<'_> {
     fn encode(&self, dst: &mut crate::cursor::WriteCursor<'_>) -> PduResult<()> {
         ensure_size!(in: dst, size: self.size());
 

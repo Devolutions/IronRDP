@@ -4,7 +4,7 @@ use ironrdp_connector::{ConnectorError, ConnectorErrorExt, ConnectorResult};
 use ironrdp_pdu::write_buf::WriteBuf;
 use ironrdp_pdu::{rdp, PduParsing};
 
-pub fn encode_send_data_indication<T>(
+pub(crate) fn encode_send_data_indication<T>(
     initiator_id: u16,
     channel_id: u16,
     user_msg: &T,
@@ -30,7 +30,7 @@ where
     Ok(written)
 }
 
-pub fn wrap_share_data(pdu: rdp::headers::ShareDataPdu, io_channel_id: u16) -> rdp::headers::ShareControlHeader {
+pub(crate) fn wrap_share_data(pdu: rdp::headers::ShareDataPdu, io_channel_id: u16) -> rdp::headers::ShareControlHeader {
     rdp::headers::ShareControlHeader {
         share_id: 0,
         pdu_source: io_channel_id,

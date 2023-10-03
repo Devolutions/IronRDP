@@ -1,3 +1,5 @@
+#![allow(clippy::arithmetic_side_effects)] // FIXME: remove
+
 #[macro_use]
 extern crate tracing;
 
@@ -18,7 +20,7 @@ use core::fmt;
 
 pub use active_stage::{ActiveStage, ActiveStageOutput};
 
-pub type SessionResult<T> = std::result::Result<T, SessionError>;
+pub type SessionResult<T> = Result<T, SessionError>;
 
 #[non_exhaustive]
 #[derive(Debug)]
@@ -84,7 +86,9 @@ impl SessionErrorExt for SessionError {
 }
 
 pub trait SessionResultExt {
+    #[must_use]
     fn with_context(self, context: &'static str) -> Self;
+    #[must_use]
     fn with_source<E>(self, source: E) -> Self
     where
         E: std::error::Error + Sync + Send + 'static;

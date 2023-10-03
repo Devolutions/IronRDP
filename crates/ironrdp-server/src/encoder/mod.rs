@@ -1,4 +1,4 @@
-pub mod bitmap;
+pub(crate) mod bitmap;
 
 use std::cmp;
 
@@ -14,20 +14,20 @@ const MAX_FASTPATH_UPDATE_SIZE: usize = 16_374;
 
 const FASTPATH_HEADER_SIZE: usize = 6;
 
-pub struct UpdateEncoder {
+pub(crate) struct UpdateEncoder {
     buffer: Vec<u8>,
     bitmap: BitmapEncoder,
 }
 
 impl UpdateEncoder {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             buffer: vec![0; 16384],
             bitmap: BitmapEncoder::new(),
         }
     }
 
-    pub fn bitmap(&mut self, bitmap: BitmapUpdate) -> Option<UpdateFragmenter> {
+    pub(crate) fn bitmap(&mut self, bitmap: BitmapUpdate) -> Option<UpdateFragmenter> {
         let len = loop {
             match self.bitmap.encode(&bitmap, self.buffer.as_mut_slice()) {
                 Err(e) => match e.kind() {
@@ -49,25 +49,25 @@ impl UpdateEncoder {
     }
 }
 
-pub struct UpdateFragmenter<'a> {
+pub(crate) struct UpdateFragmenter<'a> {
     code: UpdateCode,
     index: usize,
     data: &'a [u8],
 }
 
 impl<'a> UpdateFragmenter<'a> {
-    pub fn new(code: UpdateCode, data: &'a [u8]) -> Self {
+    pub(crate) fn new(code: UpdateCode, data: &'a [u8]) -> Self {
         Self { code, index: 0, data }
     }
 
-    pub fn size_hint(&self) -> usize {
+    pub(crate) fn size_hint(&self) -> usize {
         FASTPATH_HEADER_SIZE + cmp::min(self.data.len(), MAX_FASTPATH_UPDATE_SIZE)
     }
 
-    pub fn next(&mut self, dst: &mut [u8]) -> Option<usize> {
+    pub(crate) fn next(&mut self, dst: &mut [u8]) -> Option<usize> {
         let (consumed, written) = self.encode_next(dst)?;
         self.data = &self.data[consumed..];
-        self.index += 1;
+        self.index.checked_add(1)?;
         Some(written)
     }
 

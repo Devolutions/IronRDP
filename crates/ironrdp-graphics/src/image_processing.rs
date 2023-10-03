@@ -22,7 +22,7 @@ pub struct ImageRegion<'a> {
     pub data: &'a [u8],
 }
 
-impl<'a> ImageRegion<'a> {
+impl ImageRegion<'_> {
     pub fn copy_to(&self, other: &mut ImageRegionMut<'_>) -> io::Result<()> {
         let width = usize::from(other.region.width());
         let height = usize::from(other.region.height());
@@ -256,8 +256,8 @@ impl PixelFormat {
 }
 
 struct Point {
-    pub x: usize,
-    pub y: usize,
+    x: usize,
+    y: usize,
 }
 
 pub struct Rgba {

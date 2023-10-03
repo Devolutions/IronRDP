@@ -7,7 +7,6 @@ use ironrdp_pdu::{
     cursor::{ReadCursor, WriteCursor},
     ensure_size, invalid_message_err, PduError, PduResult,
 };
-use tracing::error;
 
 /// From [3.1.4 Message Processing Events and Sequencing Rules]
 ///

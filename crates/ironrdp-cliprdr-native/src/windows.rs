@@ -125,24 +125,15 @@ impl WinClipboard {
 
         let (backend_tx, backend_rx) = mpsc_sync::sync_channel(BACKEND_CHANNEL_SIZE);
 
-        let ctx = Box::new(WinClipboardImpl {
-            message_proxy: Box::new(message_proxy),
-            backend_rx,
-            window,
-            attempt: 0,
-            retry_message: None,
-            // We assume that we start with current window active
-            window_is_active: true,
-            remote_format_registry: Default::default(),
-            available_formats_on_remote: Vec::new(),
-        });
+        let ctx = Box::new(WinClipboardImpl::new(window, message_proxy, backend_rx));
 
         // We need to receive winapi messages in the main thread, so we need to add a subclass to
         // the window.
         //
         // SAFETY: `window` is a valid window handle, `clipboard_subproc` is in the static memory,
         // `ctx` is valid and its ownership is transferred to the subclass via `into_raw`.
-        let winapi_result = unsafe { SetWindowSubclass(window, Some(clipboard_subproc), 0, Box::into_raw(ctx) as _) };
+        let winapi_result =
+            unsafe { SetWindowSubclass(window, Some(clipboard_subproc), 0, Box::into_raw(ctx) as usize) };
 
         if winapi_result == FALSE {
             return Err(WinCliprdrError::WindowSubclass);
@@ -177,7 +168,7 @@ impl Drop for WinClipboard {
 }
 
 /// Windows-specific clipboard backend factory
-pub struct WinCliprdrBackendFactory {
+struct WinCliprdrBackendFactory {
     tx: mpsc_sync::SyncSender<BackendEvent>,
     window: HWND,
 }

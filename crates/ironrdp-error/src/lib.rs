@@ -16,13 +16,14 @@ pub struct Error<Kind> {
     pub context: &'static str,
     pub kind: Kind,
     #[cfg(feature = "std")]
-    source: Option<alloc::boxed::Box<dyn std::error::Error + Sync + Send + 'static>>,
+    source: Option<Box<dyn std::error::Error + Sync + Send + 'static>>,
     #[cfg(all(not(feature = "std"), feature = "alloc"))]
     source: Option<alloc::boxed::Box<dyn NoAllocSource + Sync + Send + 'static>>,
 }
 
 impl<Kind> Error<Kind> {
     #[cold]
+    #[must_use]
     pub fn new(context: &'static str, kind: Kind) -> Self {
         Self {
             context,
@@ -34,6 +35,7 @@ impl<Kind> Error<Kind> {
 
     #[cfg(feature = "std")]
     #[cold]
+    #[must_use]
     pub fn with_source<E>(mut self, source: E) -> Self
     where
         E: std::error::Error + Sync + Send + 'static,
@@ -44,6 +46,7 @@ impl<Kind> Error<Kind> {
 
     #[cfg(all(not(feature = "std"), feature = "alloc"))]
     #[cold]
+    #[must_use]
     pub fn with_source<E>(mut self, source: E) -> Self
     where
         E: fmt::Display + fmt::Debug + Sync + Send + 'static,
@@ -117,7 +120,7 @@ where
     Kind: std::error::Error + Send + Sync + 'static,
 {
     fn from(error: Error<Kind>) -> Self {
-        std::io::Error::new(std::io::ErrorKind::Other, error)
+        Self::new(std::io::ErrorKind::Other, error)
     }
 }
 

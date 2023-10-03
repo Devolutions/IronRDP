@@ -47,16 +47,16 @@ const DATA_BUFFER: [u8; 16] = [
 ];
 
 lazy_static! {
-    pub static ref RESPONSE: PlatformChallengeResponseData = PlatformChallengeResponseData {
+    pub(crate) static ref RESPONSE: PlatformChallengeResponseData = PlatformChallengeResponseData {
         client_type: ClientType::Win32,
         license_detail_level: LicenseDetailLevel::Detail,
         challenge: Vec::from(CHALLENGE_BUFFER.as_ref()),
     };
-    pub static ref CLIENT_HARDWARE_IDENTIFICATION: ClientHardwareIdentification = ClientHardwareIdentification {
+    pub(crate) static ref CLIENT_HARDWARE_IDENTIFICATION: ClientHardwareIdentification = ClientHardwareIdentification {
         platform_id: HARDWARE_ID,
         data: Vec::from(DATA_BUFFER.as_ref()),
     };
-    pub static ref CLIENT_PLATFORM_CHALLENGE_RESPONSE: ClientPlatformChallengeResponse =
+    pub(crate) static ref CLIENT_PLATFORM_CHALLENGE_RESPONSE: ClientPlatformChallengeResponse =
         ClientPlatformChallengeResponse {
             license_header: LicenseHeader {
                 security_header: BasicSecurityHeader {

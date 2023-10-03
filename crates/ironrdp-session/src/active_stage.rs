@@ -40,7 +40,7 @@ impl ActiveStage {
         }
     }
 
-    pub fn update_mouse_pos(&mut self, x: usize, y: usize) {
+    pub fn update_mouse_pos(&mut self, x: u16, y: u16) {
         self.fast_path_processor.update_mouse_pos(x, y);
     }
 
@@ -76,8 +76,8 @@ impl ActiveStage {
         // If mouse was moved by client - we should update framebuffer to reflect new
         // pointer position
         let mouse_pos = events.iter().find_map(|event| match event {
-            FastPathInputEvent::MouseEvent(event) => Some((event.x_position as usize, event.y_position as usize)),
-            FastPathInputEvent::MouseEventEx(event) => Some((event.x_position as usize, event.y_position as usize)),
+            FastPathInputEvent::MouseEvent(event) => Some((event.x_position, event.y_position)),
+            FastPathInputEvent::MouseEventEx(event) => Some((event.x_position, event.y_position)),
             _ => None,
         });
 
@@ -87,7 +87,7 @@ impl ActiveStage {
         };
 
         // Graphics update is only sent when update is visually changed the framebuffer
-        if let Some(rect) = image.move_pointer(mouse_x as u16, mouse_y as u16)? {
+        if let Some(rect) = image.move_pointer(mouse_x, mouse_y)? {
             output.push(ActiveStageOutput::GraphicsUpdate(rect));
         }
 

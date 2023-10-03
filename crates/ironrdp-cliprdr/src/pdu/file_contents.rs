@@ -15,12 +15,12 @@ bitflags! {
         /// returned as a 64-bit, unsigned integer. The cbRequested field MUST be set to
         /// 0x00000008 and both the nPositionLow and nPositionHigh fields MUST be
         /// set to 0x00000000.
-        const SIZE = 0x00000001;
+        const SIZE = 0x0000_0001;
         /// A request for the data present in the file identified by the lindex field. The data
         /// to be retrieved is extracted starting from the offset given by the nPositionLow
         /// and nPositionHigh fields. The maximum number of bytes to extract is specified
         /// by the cbRequested field.
-        const DATA = 0x00000002;
+        const DATA = 0x0000_0002;
     }
 }
 

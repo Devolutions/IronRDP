@@ -1836,7 +1836,6 @@ dependencies = [
  "bytes",
  "ironrdp-connector",
  "ironrdp-pdu",
- "tap",
  "tracing",
 ]
 
@@ -1847,7 +1846,6 @@ dependencies = [
  "bytes",
  "ironrdp-connector",
  "ironrdp-pdu",
- "tap",
  "tracing",
 ]
 
@@ -1856,14 +1854,11 @@ name = "ironrdp-client"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "chrono",
  "clap",
  "exitcode",
  "inquire",
  "ironrdp",
  "ironrdp-cliprdr-native",
- "ironrdp-rdpdr",
- "ironrdp-rdpsnd",
  "ironrdp-tls",
  "ironrdp-tokio",
  "semver",
@@ -1895,7 +1890,6 @@ name = "ironrdp-cliprdr-native"
 version = "0.1.0"
 dependencies = [
  "ironrdp-cliprdr",
- "ironrdp-svc",
  "thiserror",
  "tracing",
  "windows 0.48.0",
@@ -1910,7 +1904,6 @@ dependencies = [
  "ironrdp-pdu",
  "ironrdp-svc",
  "rand_core 0.6.4",
- "rstest",
  "sspi",
  "tracing",
 ]
@@ -2002,10 +1995,6 @@ dependencies = [
 [[package]]
 name = "ironrdp-pdu-generators"
 version = "0.0.0"
-dependencies = [
- "ironrdp-pdu",
- "proptest",
-]
 
 [[package]]
 name = "ironrdp-rdcleanpath"
@@ -2031,7 +2020,6 @@ version = "0.1.0"
 dependencies = [
  "ironrdp-pdu",
  "ironrdp-svc",
- "tracing",
 ]
 
 [[package]]
@@ -2056,23 +2044,16 @@ version = "0.1.0"
 dependencies = [
  "bitflags 2.4.0",
  "ironrdp-connector",
- "ironrdp-dvc",
  "ironrdp-error",
  "ironrdp-graphics",
  "ironrdp-pdu",
  "ironrdp-svc",
- "sspi",
  "tracing",
 ]
 
 [[package]]
 name = "ironrdp-session-generators"
 version = "0.0.0"
-dependencies = [
- "ironrdp-pdu-generators",
- "ironrdp-session",
- "proptest",
-]
 
 [[package]]
 name = "ironrdp-svc"
@@ -2124,7 +2105,6 @@ dependencies = [
  "bytes",
  "ironrdp-async",
  "tokio",
- "tokio-util",
 ]
 
 [[package]]

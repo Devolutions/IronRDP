@@ -10,6 +10,6 @@ doctest = false
 test = false
 
 [dependencies]
-ironrdp-session.workspace = true
-ironrdp-pdu-generators.workspace = true
-proptest.workspace = true
+# ironrdp-session.workspace = true
+# ironrdp-pdu-generators.workspace = true
+# proptest.workspace = true

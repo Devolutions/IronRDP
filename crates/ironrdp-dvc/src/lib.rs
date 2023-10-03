@@ -80,6 +80,7 @@ impl Drdynvc {
 
     // FIXME: it’s likely we want to enable adding dynamic channels at any point during the session (message passing? other approach?)
 
+    #[must_use]
     pub fn with_dynamic_channel<T>(mut self, channel: T) -> Self
     where
         T: DynamicVirtualChannel + 'static,
@@ -250,8 +251,8 @@ impl StaticVirtualChannelProcessor for Drdynvc {
 }
 
 struct DynamicChannelCtx<'a> {
-    pub dvc_pdu: vc::dvc::ServerPdu,
-    pub dvc_data: &'a [u8],
+    dvc_pdu: vc::dvc::ServerPdu,
+    dvc_data: &'a [u8],
 }
 
 fn decode_dvc_message(user_data: &[u8]) -> PduResult<DynamicChannelCtx<'_>> {

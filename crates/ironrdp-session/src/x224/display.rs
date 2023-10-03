@@ -4,7 +4,7 @@ use ironrdp_pdu::PduParsing;
 use super::DynamicChannelDataHandler;
 use crate::SessionResult;
 
-pub struct Handler;
+pub(crate) struct Handler;
 
 impl DynamicChannelDataHandler for Handler {
     fn process_complete_data(&mut self, complete_data: Vec<u8>) -> SessionResult<Option<Vec<u8>>> {

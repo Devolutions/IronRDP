@@ -9,10 +9,10 @@ use crate::windows::utils::get_last_winapi_error;
 use crate::windows::WinCliprdrError;
 
 /// Safe wrapper around windows. Clipboard is automatically closed on drop.
-pub struct OwnedOsClipboard;
+pub(crate) struct OwnedOsClipboard;
 
 impl OwnedOsClipboard {
-    pub fn new(window: HWND) -> Result<Self, WinCliprdrError> {
+    pub(crate) fn new(window: HWND) -> Result<Self, WinCliprdrError> {
         // SAFETY: `window` is valid handle, therefore it is safe to call `OpenClipboard`.
         if unsafe { OpenClipboard(window) } == FALSE {
             // Retryable error
@@ -28,7 +28,8 @@ impl OwnedOsClipboard {
     }
 
     /// Enumerates all available formats in the current clipboard.
-    pub fn enum_available_formats(&self) -> Result<Vec<ClipboardFormat>, WinCliprdrError> {
+    #[allow(clippy::unused_self)] // ensure we own the clipboard using RAII, and exclusive &mut self reference
+    pub(crate) fn enum_available_formats(&mut self) -> Result<Vec<ClipboardFormat>, WinCliprdrError> {
         const DEFAULT_FORMATS_CAPACITY: usize = 16;
         // Sane default for format name. If format name is longer than this,
         // `GetClipboardFormatNameW` will truncate it.
@@ -48,7 +49,9 @@ impl OwnedOsClipboard {
             let format = if !format_id.is_standard() {
                 // SAFETY: It is safe to call `GetClipboardFormatNameW` with correct buffer pointer
                 // and size (wrapped as slice via `windows` crate)
-                let read_chars = unsafe { GetClipboardFormatNameW(raw_format, &mut format_name_w) } as usize;
+                let read_chars: usize = unsafe { GetClipboardFormatNameW(raw_format, &mut format_name_w) }
+                    .try_into()
+                    .expect("never negative");
 
                 if read_chars != 0 {
                     let format_name = String::from_utf16(format_name_w[..read_chars].as_ref())
@@ -77,9 +80,11 @@ impl OwnedOsClipboard {
         Ok(formats)
     }
 
-    pub fn clear(&mut self) -> Result<(), WinCliprdrError> {
-        // We need to empty clipboard before setting any delay-rendered data
-        //
+    /// Empties the clipboard
+    ///
+    /// It is required to empty clipboard before setting any delay-rendered data.
+    #[allow(clippy::unused_self)] // ensure we own the clipboard using RAII, and exclusive &mut self reference
+    pub(crate) fn clear(&mut self) -> Result<(), WinCliprdrError> {
         // SAFETY: We own the clipboard at moment of method invocation, therefore it is safe to
         // call `EmptyClipboard`.
         if unsafe { EmptyClipboard() } == FALSE {
@@ -89,7 +94,8 @@ impl OwnedOsClipboard {
         Ok(())
     }
 
-    pub fn delay_render(&mut self, format: ClipboardFormatId) -> Result<(), WinCliprdrError> {
+    #[allow(clippy::unused_self)] // ensure we own the clipboard using RAII, and exclusive &mut self reference
+    pub(crate) fn delay_render(&mut self, format: ClipboardFormatId) -> Result<(), WinCliprdrError> {
         // SAFETY: We own the clipboard at moment of method invocation, therefore it is safe to
         // call `SetClipboardData`.
         let result = unsafe { SetClipboardData(format.value(), HANDLE(0)) };

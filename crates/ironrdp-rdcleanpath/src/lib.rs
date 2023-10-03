@@ -127,11 +127,11 @@ impl RDCleanPathPdu {
     pub fn detect(src: &[u8]) -> DetectionResult {
         use der::{Decode as _, Encode as _};
 
-        let Ok(mut reader) = der::SliceReader::new(src) else {
+        let Ok(mut slice_reader) = der::SliceReader::new(src) else {
             return DetectionResult::Failed;
         };
 
-        let header = match der::Header::decode(&mut reader) {
+        let header = match der::Header::decode(&mut slice_reader) {
             Ok(header) => header,
             Err(e) => match e.kind() {
                 der::ErrorKind::Incomplete { .. } => return DetectionResult::NotEnoughBytes,
@@ -146,9 +146,11 @@ impl RDCleanPathPdu {
             return DetectionResult::Failed;
         };
 
-        let total_length = header_encoded_len + body_length;
+        let Some(total_length) = header_encoded_len.checked_add(body_length) else {
+            return DetectionResult::Failed;
+        };
 
-        match der::asn1::ContextSpecific::<u64>::decode_explicit(&mut reader, der::TagNumber::N0) {
+        match der::asn1::ContextSpecific::<u64>::decode_explicit(&mut slice_reader, der::TagNumber::N0) {
             Ok(Some(version)) if version.value == VERSION_1 => DetectionResult::Detected {
                 version: VERSION_1,
                 total_length,

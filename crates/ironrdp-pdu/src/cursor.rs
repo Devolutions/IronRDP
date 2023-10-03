@@ -185,6 +185,7 @@ impl<'a> ReadCursor<'a> {
         self.pos += len;
     }
 
+    #[must_use]
     pub const fn advanced(&'a self, len: usize) -> ReadCursor<'a> {
         ReadCursor {
             inner: self.inner,
@@ -196,6 +197,7 @@ impl<'a> ReadCursor<'a> {
         self.pos -= len;
     }
 
+    #[must_use]
     pub const fn rewinded(&'a self, len: usize) -> ReadCursor<'a> {
         ReadCursor {
             inner: self.inner,
@@ -300,6 +302,7 @@ impl<'a> WriteCursor<'a> {
         self.pos += len;
     }
 
+    #[must_use]
     pub fn advanced(&'a mut self, len: usize) -> WriteCursor<'a> {
         WriteCursor {
             inner: self.inner,
@@ -311,6 +314,7 @@ impl<'a> WriteCursor<'a> {
         self.pos -= len;
     }
 
+    #[must_use]
     pub fn rewinded(&'a mut self, len: usize) -> WriteCursor<'a> {
         WriteCursor {
             inner: self.inner,

@@ -8,8 +8,7 @@
 #![warn(clippy::as_ptr_cast_mut)]
 #![warn(clippy::cast_ptr_alignment)]
 #![warn(clippy::fn_to_numeric_cast_any)]
-// TODO(@pacmancoder): Enable after toolchain update
-// #![warn(clippy::ptr_cast_constness)]
+#![warn(clippy::ptr_cast_constness)]
 
 #[cfg(windows)]
 mod windows;

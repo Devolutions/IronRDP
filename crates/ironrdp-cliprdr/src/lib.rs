@@ -1,4 +1,9 @@
 #![doc = include_str!("../README.md")]
+#![allow(clippy::arithmetic_side_effects)] // FIXME: remove
+#![allow(clippy::cast_lossless)] // FIXME: remove
+#![allow(clippy::cast_possible_truncation)] // FIXME: remove
+#![allow(clippy::cast_possible_wrap)] // FIXME: remove
+#![allow(clippy::cast_sign_loss)] // FIXME: remove
 
 pub mod backend;
 pub mod pdu;
@@ -17,6 +22,7 @@ use pdu::{
 use thiserror::Error;
 use tracing::{error, info};
 
+#[rustfmt::skip] // do not reorder
 use crate::pdu::FormatList;
 
 /// PDUs for sending to the server on the CLIPRDR channel.
@@ -49,12 +55,14 @@ pub struct Cliprdr {
 impl_as_any!(Cliprdr);
 
 macro_rules! ready_guard {
-        ($self:ident, $function:ident) => {
+        ($self:ident, $function:ident) => {{
+            let _ = Self::$function; // ensure the function actually exists
+
             if $self.state != CliprdrState::Ready {
                 error!(?$self.state, concat!("Attempted to initiate ", stringify!($function), " in incorrect state"));
                 return Ok(Vec::new().into());
             }
-        };
+        }};
     }
 
 impl Cliprdr {
@@ -141,7 +149,7 @@ impl Cliprdr {
     ///
     /// If data is not available anymore, an error response should be sent instead.
     pub fn submit_format_data(&self, response: FormatDataResponse<'static>) -> PduResult<CliprdrSvcMessages> {
-        ready_guard!(self, sumbit_format_data);
+        ready_guard!(self, submit_format_data);
 
         let pdu = ClipboardPdu::FormatDataResponse(response);
 
@@ -156,7 +164,7 @@ impl Cliprdr {
     ///
     /// If data is not available anymore, an error response should be sent instead.
     pub fn submit_file_contents(&self, response: FileContentsResponse<'static>) -> PduResult<CliprdrSvcMessages> {
-        ready_guard!(self, sumbit_file_contents);
+        ready_guard!(self, submit_file_contents);
 
         let pdu = ClipboardPdu::FileContentsResponse(response);
 
@@ -253,7 +261,7 @@ impl StaticVirtualChannelProcessor for Cliprdr {
         }
     }
 
-    fn compression_condition(&self) -> ironrdp_svc::CompressionCondition {
+    fn compression_condition(&self) -> CompressionCondition {
         CompressionCondition::WhenRdpDataIsCompressed
     }
 }

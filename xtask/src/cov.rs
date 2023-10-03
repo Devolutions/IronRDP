@@ -117,7 +117,7 @@ pub fn report_github(sh: &Shell, repo: &str, pr_id: u32) -> anyhow::Result<()> {
         let body = comment["body"].get::<String>().context("comment body")?;
 
         if body.starts_with(COMMENT_HEADER) {
-            let comment_id = *comment["id"].get::<f64>().context("id")? as u64;
+            let comment_id = get_json_int(comment, "id")?;
             prev_comment_id = Some(comment_id);
             break;
         }
@@ -280,9 +280,9 @@ struct CoverageReport {
 
 impl CoverageReport {
     fn from_json_value(lines: &tinyjson::JsonValue) -> anyhow::Result<Self> {
-        let total_lines = *lines["count"].get::<f64>().context("invalid value for `count`")? as u64;
-        let covered_lines = *lines["covered"].get::<f64>().context("invalid value for `covered`")? as u64;
-        let covered_lines_percent = *lines["percent"].get::<f64>().context("invalid value for `covered`")?;
+        let total_lines = get_json_int(lines, "count")?;
+        let covered_lines = get_json_int(lines, "covered")?;
+        let covered_lines_percent = get_json_float(lines, "percent")?;
 
         let original_json_data = lines.stringify().context("original json data")?;
 
@@ -333,4 +333,18 @@ impl fmt::Display for CoverageReport {
         )?;
         Ok(())
     }
+}
+
+fn get_json_float(value: &tinyjson::JsonValue, key: &str) -> anyhow::Result<f64> {
+    value[key]
+        .get::<f64>()
+        .copied()
+        .with_context(|| format!("invalid value for `{key}`"))
+}
+
+fn get_json_int(value: &tinyjson::JsonValue, key: &str) -> anyhow::Result<u64> {
+    // tinyjson does not expose any integers at all, so we need the f64 to u64 as casting
+    #[allow(clippy::cast_sign_loss)]
+    #[allow(clippy::cast_possible_truncation)]
+    get_json_float(value, key).map(|value| value as u64)
 }

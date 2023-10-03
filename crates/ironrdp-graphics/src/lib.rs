@@ -1,3 +1,9 @@
+#![allow(clippy::arithmetic_side_effects)] // FIXME: remove
+#![allow(clippy::cast_lossless)] // FIXME: remove
+#![allow(clippy::cast_possible_truncation)] // FIXME: remove
+#![allow(clippy::cast_possible_wrap)] // FIXME: remove
+#![allow(clippy::cast_sign_loss)] // FIXME: remove
+
 pub mod color_conversion;
 pub mod dwt;
 pub mod image_processing;

@@ -72,8 +72,8 @@ impl DecodingContext {
                 Headers::CodecVersions(_) => (),
             }
         }
-        let context = context.ok_or(general_err!("context header is missing"))?;
-        let channels = channels.ok_or(general_err!("channels header is missing"))?;
+        let context = context.ok_or_else(|| general_err!("context header is missing"))?;
+        let channels = channels.ok_or_else(|| general_err!("channels header is missing"))?;
 
         if channels.0.is_empty() {
             return Err(general_err!("no RFX channel announced"));
@@ -94,8 +94,8 @@ impl DecodingContext {
         input: &mut &[u8],
     ) -> SessionResult<(FrameId, InclusiveRectangle)> {
         let channel = self.channels.0.first().unwrap();
-        let width = channel.width as u16;
-        let height = channel.height as u16;
+        let width = channel.width.as_u16();
+        let height = channel.height.as_u16();
         let entropy_algorithm = self.context.entropy_algorithm;
 
         let frame_begin = rfx::FrameBeginPdu::from_buffer_consume(input)?;
@@ -155,9 +155,9 @@ impl DecodingContext {
 
 #[derive(Debug, Clone)]
 struct DecodingTileContext {
-    pub tile_output: Vec<u8>,
-    pub ycbcr_buffer: Vec<Vec<i16>>,
-    pub ycbcr_temp_buffer: Vec<i16>,
+    tile_output: Vec<u8>,
+    ycbcr_buffer: Vec<Vec<i16>>,
+    ycbcr_temp_buffer: Vec<i16>,
 }
 
 impl DecodingTileContext {
@@ -255,8 +255,8 @@ fn map_tiles_data<'a>(tiles: &'_ [Tile<'a>], quants: &'_ [Quant]) -> Vec<TileDat
 }
 
 struct TileData<'a> {
-    pub quants: [Quant; 3],
-    pub data: [&'a [u8]; 3],
+    quants: [Quant; 3],
+    data: [&'a [u8]; 3],
 }
 
 enum SequenceState {

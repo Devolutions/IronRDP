@@ -38,8 +38,8 @@ pub const FORMAT_NAME_FILE_LIST: &str = "FileGroupDescriptorW";
 
 /// Header without message type included
 struct PartialHeader {
-    pub message_flags: ClipboardPduFlags,
-    pub data_length: u32,
+    pub(crate) message_flags: ClipboardPduFlags,
+    pub(crate) data_length: u32,
 }
 
 impl PartialHeader {
@@ -47,18 +47,18 @@ impl PartialHeader {
     const FIXED_PART_SIZE: usize = std::mem::size_of::<u16>() + std::mem::size_of::<u32>();
     const SIZE: usize = Self::FIXED_PART_SIZE;
 
-    pub fn new(inner_data_length: u32) -> Self {
+    pub(crate) fn new(inner_data_length: u32) -> Self {
         Self::new_with_flags(inner_data_length, ClipboardPduFlags::empty())
     }
 
-    pub fn new_with_flags(data_length: u32, message_flags: ClipboardPduFlags) -> Self {
+    pub(crate) fn new_with_flags(data_length: u32, message_flags: ClipboardPduFlags) -> Self {
         Self {
             message_flags,
             data_length,
         }
     }
 
-    pub fn data_length(&self) -> usize {
+    pub(crate) fn data_length(&self) -> usize {
         usize::try_from(self.data_length).expect("BUG: Upcasting u32 -> usize should be infallible")
     }
 }

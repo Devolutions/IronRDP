@@ -1,5 +1,5 @@
-pub mod client;
-pub mod server;
+pub(crate) mod client;
+pub(crate) mod server;
 
 use std::io;
 

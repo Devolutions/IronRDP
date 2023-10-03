@@ -75,7 +75,7 @@ impl ContextPdu {
     }
 }
 
-impl<'a> PduBufferParsing<'a> for ContextPdu {
+impl PduBufferParsing<'_> for ContextPdu {
     type Error = RfxError;
 
     fn from_buffer_consume(buffer: &mut &[u8]) -> Result<Self, Self::Error> {
@@ -120,7 +120,7 @@ pub struct FrameBeginPdu {
     pub number_of_regions: i16,
 }
 
-impl<'a> PduBufferParsing<'a> for FrameBeginPdu {
+impl PduBufferParsing<'_> for FrameBeginPdu {
     type Error = RfxError;
 
     fn from_buffer_consume(buffer: &mut &[u8]) -> Result<Self, Self::Error> {
@@ -161,7 +161,7 @@ impl<'a> PduBufferParsing<'a> for FrameBeginPdu {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FrameEndPdu;
 
-impl<'a> PduBufferParsing<'a> for FrameEndPdu {
+impl PduBufferParsing<'_> for FrameEndPdu {
     type Error = RfxError;
 
     fn from_buffer_consume(buffer: &mut &[u8]) -> Result<Self, Self::Error> {
@@ -194,7 +194,7 @@ pub struct RegionPdu {
     pub rectangles: Vec<RfxRectangle>,
 }
 
-impl<'a> PduBufferParsing<'a> for RegionPdu {
+impl PduBufferParsing<'_> for RegionPdu {
     type Error = RfxError;
 
     fn from_buffer_consume(buffer: &mut &[u8]) -> Result<Self, Self::Error> {
@@ -415,7 +415,7 @@ pub struct RfxRectangle {
     pub height: u16,
 }
 
-impl<'a> PduBufferParsing<'a> for RfxRectangle {
+impl PduBufferParsing<'_> for RfxRectangle {
     type Error = RfxError;
 
     fn from_buffer_consume(buffer: &mut &[u8]) -> Result<Self, Self::Error> {
@@ -455,7 +455,7 @@ pub struct Quant {
     pub hh1: u8,
 }
 
-impl<'a> PduBufferParsing<'a> for Quant {
+impl PduBufferParsing<'_> for Quant {
     type Error = RfxError;
 
     fn from_buffer_consume(buffer: &mut &[u8]) -> Result<Self, Self::Error> {

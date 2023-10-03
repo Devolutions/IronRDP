@@ -3,13 +3,13 @@ use std::num::NonZeroU32;
 use ironrdp::pdu::geometry::{InclusiveRectangle, Rectangle as _};
 use web_sys::HtmlCanvasElement;
 
-pub struct Canvas {
+pub(crate) struct Canvas {
     width: u32,
     surface: softbuffer::Surface,
 }
 
 impl Canvas {
-    pub fn new(render_canvas: HtmlCanvasElement, width: u32, height: u32) -> anyhow::Result<Self> {
+    pub(crate) fn new(render_canvas: HtmlCanvasElement, width: u32, height: u32) -> anyhow::Result<Self> {
         render_canvas.set_width(width);
         render_canvas.set_height(height);
 
@@ -35,7 +35,7 @@ impl Canvas {
         Ok(Self { width, surface })
     }
 
-    pub fn draw(&mut self, buffer: &[u8], region: InclusiveRectangle) -> anyhow::Result<()> {
+    pub(crate) fn draw(&mut self, buffer: &[u8], region: InclusiveRectangle) -> anyhow::Result<()> {
         let region_width = region.width();
         let region_height = region.height();
 

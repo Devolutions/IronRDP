@@ -43,6 +43,7 @@ impl Default for RdpServerBuilder<WantsAddr> {
 }
 
 impl RdpServerBuilder<WantsAddr> {
+    #[allow(clippy::unused_self)] // ensuring state transition from WantsAddr
     pub fn with_addr(self, addr: impl Into<SocketAddr>) -> RdpServerBuilder<WantsSecurity> {
         RdpServerBuilder {
             state: WantsSecurity { addr: addr.into() },
@@ -135,7 +136,7 @@ impl RdpServerBuilder<BuilderDone> {
     }
 }
 
-pub struct NoopInputHandler;
+struct NoopInputHandler;
 
 #[async_trait::async_trait]
 impl RdpServerInputHandler for NoopInputHandler {
@@ -143,7 +144,7 @@ impl RdpServerInputHandler for NoopInputHandler {
     async fn mouse(&mut self, _: MouseEvent) {}
 }
 
-pub struct NoopDisplay;
+struct NoopDisplay;
 
 #[async_trait::async_trait]
 impl RdpServerDisplay for NoopDisplay {

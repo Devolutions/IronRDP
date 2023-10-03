@@ -10,7 +10,7 @@ impl Section {
         flush_all();
         eprintln!("::group::{name}");
         let start = Instant::now();
-        Section { name, start }
+        Self { name, start }
     }
 }
 

@@ -8,30 +8,30 @@ use ironrdp_pdu::{PduEncode, PduError};
 use crate::{BitmapUpdate, PixelOrder};
 
 // PERF: we could also remove the need for this buffer
-pub struct BitmapEncoder {
+pub(crate) struct BitmapEncoder {
     buffer: Vec<u8>,
 }
 
 impl BitmapEncoder {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             buffer: vec![0; u16::MAX as usize],
         }
     }
 
-    pub fn encode(&mut self, bitmap: &BitmapUpdate, output: &mut [u8]) -> Result<usize, PduError> {
-        let row_len = bitmap.width * bitmap.format.bytes_per_pixel() as u32;
-        let chunk_height = u16::MAX as u32 / row_len;
+    pub(crate) fn encode(&mut self, bitmap: &BitmapUpdate, output: &mut [u8]) -> Result<usize, PduError> {
+        let row_len = bitmap.width * u32::from(bitmap.format.bytes_per_pixel());
+        let chunk_height = u32::from(u16::MAX) / row_len;
 
         let mut cursor = WriteCursor::new(output);
         let chunks = bitmap.data.chunks((row_len * chunk_height) as usize);
 
-        let total = chunks.size_hint().0;
-        BitmapUpdateData::encode_header(total as u16, &mut cursor)?;
+        let total = u16::try_from(chunks.clone().count()).unwrap();
+        BitmapUpdateData::encode_header(total, &mut cursor)?;
 
         for (i, chunk) in chunks.enumerate() {
-            let height = chunk.len() as u32 / row_len;
-            let top = bitmap.top + i as u32 * chunk_height;
+            let height = u32::try_from(chunk.len()).unwrap() / row_len;
+            let top = bitmap.top + u32::try_from(i).unwrap() * chunk_height;
 
             let encoder = BitmapStreamEncoder::new(bitmap.width as usize, height as usize);
 
@@ -53,19 +53,19 @@ impl BitmapEncoder {
 
             let data = BitmapData {
                 rectangle: InclusiveRectangle {
-                    left: bitmap.left as u16,
-                    top: top as u16,
-                    right: (bitmap.left + bitmap.width - 1) as u16,
-                    bottom: (top + height - 1) as u16,
+                    left: u16::try_from(bitmap.left).unwrap(),
+                    top: u16::try_from(top).unwrap(),
+                    right: u16::try_from(bitmap.left + bitmap.width - 1).unwrap(),
+                    bottom: u16::try_from(top + height - 1).unwrap(),
                 },
-                width: bitmap.width as u16,
-                height: height as u16,
-                bits_per_pixel: bitmap.format.bytes_per_pixel() as u16 * 8,
+                width: u16::try_from(bitmap.width).unwrap(),
+                height: u16::try_from(height).unwrap(),
+                bits_per_pixel: u16::from(bitmap.format.bytes_per_pixel()) * 8,
                 compression_flags: Compression::BITMAP_COMPRESSION,
                 compressed_data_header: Some(bitmap::CompressedDataHeader {
-                    main_body_size: len as u16,
-                    scan_width: bitmap.width as u16,
-                    uncompressed_size: chunk.len() as u16,
+                    main_body_size: u16::try_from(len).unwrap(),
+                    scan_width: u16::try_from(bitmap.width).unwrap(),
+                    uncompressed_size: u16::try_from(chunk.len()).unwrap(),
                 }),
                 bitmap_data: &self.buffer[..len],
             };

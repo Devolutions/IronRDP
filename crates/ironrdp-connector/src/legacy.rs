@@ -7,7 +7,7 @@ use ironrdp_pdu::{rdp, x224, PduParsing};
 
 use crate::{ConnectorError, ConnectorErrorExt as _, ConnectorResult};
 
-pub fn encode_x224_packet<T: PduParsing>(x224_msg: &T, buf: &mut WriteBuf) -> ConnectorResult<usize>
+pub fn encode_x224_packet<T>(x224_msg: &T, buf: &mut WriteBuf) -> ConnectorResult<usize>
 where
     T: PduParsing,
     ConnectorError: From<T::Error>,

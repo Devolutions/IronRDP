@@ -1,12 +1,11 @@
 use ironrdp::cliprdr::backend::{ClipboardMessage, CliprdrBackendFactory};
-use ironrdp::cliprdr::Cliprdr;
 use ironrdp::connector::sspi::network_client::reqwest_network_client::RequestClientFactory;
 use ironrdp::connector::{ConnectionResult, ConnectorResult};
 use ironrdp::graphics::image_processing::PixelFormat;
 use ironrdp::pdu::input::fast_path::FastPathInputEvent;
 use ironrdp::session::image::DecodedImage;
 use ironrdp::session::{ActiveStage, ActiveStageOutput, SessionResult};
-use ironrdp::{connector, session};
+use ironrdp::{cliprdr, connector, rdpdr, rdpsnd, session};
 use ironrdp_rdpdr::NoopRdpdrBackend;
 use smallvec::SmallVec;
 use tokio::net::TcpStream;
@@ -117,7 +116,7 @@ async fn connect(
     if let Some(builder) = cliprdr_factory {
         let backend = builder.build_cliprdr_backend();
 
-        let cliprdr = Cliprdr::new(backend);
+        let cliprdr = cliprdr::Cliprdr::new(backend);
 
         connector.attach_static_channel(cliprdr);
     }

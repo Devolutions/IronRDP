@@ -16,14 +16,10 @@ categories.workspace = true
 doctest = false
 test = false
 
-[dependencies]
+[target.'cfg(windows)'.dependencies]
 ironrdp-cliprdr.workspace = true
-ironrdp-svc.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
-
-[target.'cfg(windows)'.dependencies]
-
 windows = { version = "0.48.0", features = [
     "Win32_Foundation",
     "Win32_System_DataExchange",

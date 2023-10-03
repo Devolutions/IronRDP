@@ -23,9 +23,9 @@ mod server_upgrade_license;
 pub use self::client_new_license_request::{ClientNewLicenseRequest, PLATFORM_ID};
 pub use self::client_platform_challenge_response::ClientPlatformChallengeResponse;
 pub use self::licensing_error_message::{LicenseErrorCode, LicensingErrorMessage, LicensingStateTransition};
-pub use self::server_license_request::{InitialMessageType, InitialServerLicenseMessage, ServerLicenseRequest};
+pub use self::server_license_request::{cert, InitialMessageType, InitialServerLicenseMessage, ServerLicenseRequest};
 pub use self::server_platform_challenge::ServerPlatformChallenge;
-pub use self::server_upgrade_license::ServerUpgradeLicense;
+pub use self::server_upgrade_license::{NewLicenseInformation, ServerUpgradeLicense};
 
 pub const PREAMBLE_SIZE: usize = 4;
 pub const PREMASTER_SECRET_SIZE: usize = 48;

@@ -3,15 +3,18 @@ extern crate tracing;
 
 use ironrdp_async::{Framed, FramedRead, FramedWrite, StreamWrapper};
 use ironrdp_connector::{custom_err, ConnectorResult, Sequence, Written};
+use ironrdp_pdu::write_buf::WriteBuf;
 
 mod channel_connection;
 mod connection;
 mod finalization;
 mod util;
 
-pub use connection::{Acceptor, AcceptorResult};
 pub use ironrdp_connector::DesktopSize;
-use ironrdp_pdu::write_buf::WriteBuf;
+
+pub use self::channel_connection::{ChannelConnectionSequence, ChannelConnectionState};
+pub use self::connection::{Acceptor, AcceptorResult, AcceptorState};
+pub use self::finalization::{FinalizationSequence, FinalizationState};
 
 pub enum BeginResult<S>
 where

@@ -34,12 +34,12 @@ pub struct Processor {
     bitmap_stream_decoder: BitmapStreamDecoder,
     pointer_cache: PointerCache,
     use_system_pointer: bool,
-    mouse_pos_update: Option<(usize, usize)>,
+    mouse_pos_update: Option<(u16, u16)>,
     no_server_pointer: bool,
 }
 
 impl Processor {
-    pub fn update_mouse_pos(&mut self, x: usize, y: usize) {
+    pub fn update_mouse_pos(&mut self, x: u16, y: u16) {
         self.mouse_pos_update = Some((x, y));
     }
 
@@ -53,7 +53,7 @@ impl Processor {
         let mut processor_updates = Vec::new();
 
         if let Some((x, y)) = self.mouse_pos_update.take() {
-            if let Some(rect) = image.move_pointer(x as u16, y as u16)? {
+            if let Some(rect) = image.move_pointer(x, y)? {
                 processor_updates.push(UpdateKind::Region(rect));
             }
         }
@@ -110,8 +110,8 @@ impl Processor {
                             match self.bitmap_stream_decoder.decode_bitmap_stream_to_rgb24(
                                 update.bitmap_data,
                                 &mut buf,
-                                update.width as usize,
-                                update.height as usize,
+                                usize::from(update.width),
+                                usize::from(update.height),
                             ) {
                                 Ok(()) => image.apply_rgb24_bitmap(&buf, &update.rectangle)?,
                                 Err(err) => {
@@ -214,7 +214,9 @@ impl Processor {
                                 .expect("Failed to decode color pointer attribute"),
                         );
 
-                        let _ = self.pointer_cache.insert(cache_index as usize, decoded_pointer.clone());
+                        let _ = self
+                            .pointer_cache
+                            .insert(usize::from(cache_index), Rc::clone(&decoded_pointer));
 
                         if let Some(rect) = image.update_pointer(decoded_pointer)? {
                             processor_updates.push(UpdateKind::Region(rect));
@@ -223,7 +225,7 @@ impl Processor {
                     PointerUpdateData::Cached(cached) => {
                         let cache_index = cached.cache_index;
 
-                        if let Some(cached_pointer) = self.pointer_cache.get(cache_index as usize) {
+                        if let Some(cached_pointer) = self.pointer_cache.get(usize::from(cache_index)) {
                             // Disable system pointer
                             processor_updates.push(UpdateKind::PointerHidden);
                             self.use_system_pointer = false;
@@ -237,7 +239,7 @@ impl Processor {
                                 }
                             }
                         } else {
-                            eprintln!("Cached pointer not found {}", cache_index);
+                            warn!("Cached pointer not found {}", cache_index);
                         }
                     }
                     PointerUpdateData::New(pointer) => {
@@ -248,7 +250,9 @@ impl Processor {
                                 .expect("Failed to decode pointer attribute"),
                         );
 
-                        let _ = self.pointer_cache.insert(cache_index as usize, decoded_pointer.clone());
+                        let _ = self
+                            .pointer_cache
+                            .insert(usize::from(cache_index), Rc::clone(&decoded_pointer));
 
                         if let Some(rect) = image.update_pointer(decoded_pointer)? {
                             processor_updates.push(UpdateKind::Region(rect));
@@ -262,7 +266,9 @@ impl Processor {
                                 .expect("Failed to decode large pointer attribute"),
                         );
 
-                        let _ = self.pointer_cache.insert(cache_index as usize, decoded_pointer.clone());
+                        let _ = self
+                            .pointer_cache
+                            .insert(usize::from(cache_index), Rc::clone(&decoded_pointer));
 
                         if let Some(rect) = image.update_pointer(decoded_pointer)? {
                             processor_updates.push(UpdateKind::Region(rect));

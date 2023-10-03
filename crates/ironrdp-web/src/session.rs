@@ -361,9 +361,8 @@ impl Session {
             for out in outputs {
                 match out {
                     ActiveStageOutput::ResponseFrame(frame) => {
-                        // PERF: unnecessary copy
                         self.writer_tx
-                            .unbounded_send(frame.to_vec())
+                            .unbounded_send(frame)
                             .context("Send frame to writer task")?;
                     }
                     ActiveStageOutput::GraphicsUpdate(region) => {
@@ -413,10 +412,7 @@ impl Session {
         self.h_send_inputs(inputs)
     }
 
-    fn h_send_inputs(
-        &self,
-        inputs: smallvec::SmallVec<[ironrdp::pdu::input::fast_path::FastPathInputEvent; 2]>,
-    ) -> Result<(), IronRdpError> {
+    fn h_send_inputs(&self, inputs: smallvec::SmallVec<[FastPathInputEvent; 2]>) -> Result<(), IronRdpError> {
         if !inputs.is_empty() {
             trace!("Inputs: {inputs:?}");
 
@@ -451,6 +447,7 @@ impl Session {
         Ok(())
     }
 
+    #[allow(clippy::unused_self)] // FIXME: not yet implemented
     pub fn shutdown(&self) -> Result<(), IronRdpError> {
         // TODO: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/27915739-8f77-487e-9927-55008af7fd68
         Ok(())
@@ -483,6 +480,7 @@ fn build_config(
             color_depth: 32,
             lossy_compression: true,
         }),
+        #[allow(clippy::arithmetic_side_effects)] // fine unless we end up with an insanely big version
         client_build: semver::Version::parse(env!("CARGO_PKG_VERSION"))
             .map(|version| version.major * 100 + version.minor * 10 + version.patch)
             .unwrap_or(0)
@@ -555,9 +553,9 @@ where
     use x509_cert::der::Decode as _;
 
     #[derive(Clone, Copy, Debug)]
-    pub struct RDCleanPathHint;
+    struct RDCleanPathHint;
 
-    pub const RDCLEANPATH_HINT: RDCleanPathHint = RDCleanPathHint;
+    const RDCLEANPATH_HINT: RDCleanPathHint = RDCleanPathHint;
 
     impl ironrdp::pdu::PduHint for RDCleanPathHint {
         fn find_size(&self, bytes: &[u8]) -> ironrdp::pdu::PduResult<Option<usize>> {

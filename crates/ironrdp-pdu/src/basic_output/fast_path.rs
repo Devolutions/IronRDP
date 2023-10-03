@@ -120,7 +120,7 @@ impl FastPathUpdatePdu<'_> {
     const FIXED_PART_SIZE: usize = std::mem::size_of::<u8>();
 }
 
-impl<'en> PduEncode for FastPathUpdatePdu<'en> {
+impl PduEncode for FastPathUpdatePdu<'_> {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
         ensure_size!(in: dst, size: self.size());
 
@@ -242,7 +242,7 @@ impl<'a> FastPathUpdate<'a> {
             UpdateCode::DefaultPointer => Ok(Self::Pointer(PointerUpdateData::SetDefault)),
             UpdateCode::PositionPointer => Ok(Self::Pointer(PointerUpdateData::SetPosition(decode_cursor(src)?))),
             UpdateCode::ColorPointer => {
-                let color = crate::decode_cursor(src)?;
+                let color = decode_cursor(src)?;
                 Ok(Self::Pointer(PointerUpdateData::Color(color)))
             }
             UpdateCode::CachedPointer => Ok(Self::Pointer(PointerUpdateData::Cached(decode_cursor(src)?))),
@@ -261,7 +261,7 @@ impl<'a> FastPathUpdate<'a> {
     }
 }
 
-impl<'en> PduEncode for FastPathUpdate<'en> {
+impl PduEncode for FastPathUpdate<'_> {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
         ensure_size!(in: dst, size: self.size());
 
@@ -325,7 +325,7 @@ pub enum UpdateCode {
     LargePointer = 0xc,
 }
 
-impl<'a> From<&FastPathUpdate<'a>> for UpdateCode {
+impl From<&FastPathUpdate<'_>> for UpdateCode {
     fn from(update: &FastPathUpdate<'_>) -> Self {
         match update {
             FastPathUpdate::SurfaceCommands(_) => Self::SurfaceCommands,

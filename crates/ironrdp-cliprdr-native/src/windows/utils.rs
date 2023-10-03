@@ -26,7 +26,7 @@ impl GlobalMemoryBuffer {
         // - `dst` is valid for writes of `data.len()` bytes, we allocated enough above.
         // - Both `data` and `dst` are properly aligned: u8 alignment is 1
         // - Memory regions are not overlapping, `dst` was allocated by us just above.
-        unsafe { std::ptr::copy_nonoverlapping(data.as_ptr(), dst as _, data.len()) };
+        unsafe { std::ptr::copy_nonoverlapping(data.as_ptr(), dst as *mut u8, data.len()) };
 
         // SAFETY: We called `GlobalLock` on this handle just above.
         unsafe { GlobalUnlock(handle) };
@@ -52,7 +52,7 @@ impl Drop for GlobalMemoryBuffer {
 ///
 /// SAFETY: This function should only be called in the context of processing
 /// `WM_RENDERFORMAT` or `WM_RENDERALLFORMATS` messages inside WinAPI message loop.
-pub unsafe fn render_format(format: ClipboardFormatId, data: &[u8]) -> WinCliprdrResult<()> {
+pub(crate) unsafe fn render_format(format: ClipboardFormatId, data: &[u8]) -> WinCliprdrResult<()> {
     // Allocate buffer and copy data into it
     let global_data = GlobalMemoryBuffer::from_slice(data)?;
 
@@ -71,7 +71,7 @@ pub unsafe fn render_format(format: ClipboardFormatId, data: &[u8]) -> WinCliprd
 }
 
 /// Return last WinAPI error code.
-pub fn get_last_winapi_error() -> WIN32_ERROR {
+pub(crate) fn get_last_winapi_error() -> WIN32_ERROR {
     // SAFETY: `GetLastError` is always safe to call.
     unsafe { GetLastError() }
 }
