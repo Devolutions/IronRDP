@@ -2008,6 +2008,7 @@ name = "ironrdp-rdpdr"
 version = "0.1.0"
 dependencies = [
  "bitflags 2.4.0",
+ "ironrdp-error",
  "ironrdp-pdu",
  "ironrdp-svc",
  "tracing",

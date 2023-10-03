@@ -16,8 +16,8 @@ doctest = false
 test = false
 
 [dependencies]
-tracing.workspace = true
+ironrdp-error.workspace = true
 ironrdp-pdu.workspace = true
 ironrdp-svc.workspace = true
-
+tracing.workspace = true
 bitflags = "2"
