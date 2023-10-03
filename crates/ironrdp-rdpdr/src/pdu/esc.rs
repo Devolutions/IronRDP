@@ -197,11 +197,15 @@ impl ScardAccessStartedEventCall {
 /// [2.2.3.3 Long_Return]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/e77a1365-2379-4037-99c4-d30d14ba10fc
 #[derive(Debug)]
 pub struct LongReturn {
-    pub return_code: ReturnCode,
+    return_code: ReturnCode,
 }
 
 impl LongReturn {
     const NAME: &'static str = "Long_Return";
+
+    pub fn new(return_code: ReturnCode) -> rpce::Pdu<Self> {
+        rpce::Pdu(Self { return_code })
+    }
 }
 
 impl rpce::HeaderlessEncode for LongReturn {
@@ -373,36 +377,49 @@ pub mod rpce {
     //!
     //! [\[MS-RPCE\]: Remote Procedure Call Protocol Extensions]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rpce/290c38b1-92fe-4229-91e6-4fc376610c15
 
-    use ironrdp_pdu::{cursor::WriteCursor, ensure_size, invalid_message_err, PduError, PduResult};
+    use ironrdp_pdu::{cursor::WriteCursor, ensure_size, invalid_message_err, PduEncode, PduError, PduResult};
 
-    /// Trait for types that can be encoded into an [MS-RPCE] message.
+    /// Wrapper struct for [MS-RPCE] PDUs that allows for a common [`PduEncode`] and [`Encode`] implementation.
     ///
-    /// Implementers should typically avoid implementing this trait directly
-    /// and instead implement [`HeaderlessEncode`].
-    pub trait Encode: Send + std::fmt::Debug {
-        /// Encodes this RPCE PDU in-place using the provided `WriteCursor`.
-        fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()>;
-
-        /// Returns the name associated with this RPCE PDU.
-        fn name(&self) -> &'static str;
-
-        /// Computes the size in bytes for this RPCE PDU.
-        fn size(&self) -> usize;
-    }
-
-    /// Trait for types that can be encoded into an [MS-RPCE] message.
+    /// Structs which are meant to be encoded into an [MS-RPCE] message should typically implement [`HeaderlessEncode`],
+    /// and their `new` function should return a [`Pdu`] wrapping the underlying struct.
     ///
-    /// Implementers should typically implement this trait instead of [`Encode`].
-    pub trait HeaderlessEncode: Send + std::fmt::Debug {
-        /// Encodes the instance into a buffer sans its [`RpceStreamHeader`] and [`RpceTypeHeader`].
-        fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()>;
-        /// Returns the name associated with this RPCE PDU.
-        fn name(&self) -> &'static str;
-        /// Returns the size of the instance sans its [`RpceStreamHeader`] and [`RpceTypeHeader`].
-        fn size(&self) -> usize;
-    }
+    /// ```rust
+    /// #[derive(Debug)]
+    /// pub struct SomeRpcePdu {
+    ///     example_field: u32,
+    /// }
+    ///
+    /// impl SomeRpcePdu {
+    ///     /// `new` returns a `Pdu` wrapping the underlying struct.
+    ///     pub fn new(example_field: u32) -> rpce::Pdu<Self> {
+    ///         rpce::Pdu(Self { example_field })
+    ///     }
+    /// }
+    ///
+    /// /// The underlying struct should implement `HeaderlessEncode`.
+    /// impl rpce::HeaderlessEncode for SomeRpcePdu {
+    ///     fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    ///         ensure_size!(in: dst, size: self.size());
+    ///         dst.write_u32(self.return_code.into());
+    ///         Ok(())
+    ///     }
+    ///
+    ///     fn name(&self) -> &'static str {
+    ///         "SomeRpcePdu"
+    ///     }
+    ///
+    ///     fn size(&self) -> usize {
+    ///         4 // u32 == 4 bytes
+    ///     }
+    /// }
+    /// ```
+    ///
+    /// See [`super::LongReturn`] for a live example.
+    #[derive(Debug)]
+    pub struct Pdu<T: HeaderlessEncode>(pub T);
 
-    impl<T: HeaderlessEncode> Encode for T {
+    impl<T: HeaderlessEncode> PduEncode for Pdu<T> {
         fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
             ensure_size!(ctx: self.name(), in: dst, size: self.size());
             let stream_header = StreamHeader::default();
@@ -410,10 +427,10 @@ pub mod rpce {
 
             stream_header.encode(dst)?;
             type_header.encode(dst)?;
-            HeaderlessEncode::encode(self, dst)?;
+            HeaderlessEncode::encode(&self.0, dst)?;
 
             // Pad response to be 8-byte aligned.
-            let padding_size = padding_size(self);
+            let padding_size = padding_size(&self.0);
             if padding_size > 0 {
                 dst.write_slice(&vec![0; padding_size]);
             }
@@ -422,12 +439,32 @@ pub mod rpce {
         }
 
         fn name(&self) -> &'static str {
-            HeaderlessEncode::name(self)
+            self.0.name()
         }
 
         fn size(&self) -> usize {
-            StreamHeader::size() + TypeHeader::size() + HeaderlessEncode::size(self) + padding_size(self)
+            StreamHeader::size() + TypeHeader::size() + HeaderlessEncode::size(&self.0) + padding_size(&self.0)
         }
+    }
+
+    impl<T: HeaderlessEncode> Encode for Pdu<T> {}
+
+    /// Trait for types that can be encoded into an [MS-RPCE] message.
+    ///
+    /// Implementers should typically avoid implementing this trait directly
+    /// and instead implement [`HeaderlessEncode`], and wrap it in a [`Pdu`].
+    pub trait Encode: PduEncode + Send + std::fmt::Debug {}
+
+    /// Trait for types that can be encoded into an [MS-RPCE] message.
+    ///
+    /// Implementers should typically implement this trait instead of [`Encode`].
+    pub trait HeaderlessEncode: Send + std::fmt::Debug {
+        /// Encodes the instance into a buffer sans its [`StreamHeader`] and [`TypeHeader`].
+        fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()>;
+        /// Returns the name associated with this RPCE PDU.
+        fn name(&self) -> &'static str;
+        /// Returns the size of the instance sans its [`StreamHeader`] and [`TypeHeader`].
+        fn size(&self) -> usize;
     }
 
     /// [2.2.6.1 Common Type Header for the Serialization Stream]
