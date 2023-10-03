@@ -54,7 +54,7 @@ impl<P: StaticVirtualChannelProcessor> From<SvcProcessorMessages<P>> for Vec<Svc
 ///
 /// Additional SVC header flags can be added via [`SvcMessage::with_flags`] method.
 pub struct SvcMessage {
-    pdu: Box<dyn PduEncode>,
+    pdu: Box<dyn PduEncode + Send>,
     flags: ChannelFlags,
 }
 
@@ -66,7 +66,10 @@ impl SvcMessage {
     }
 }
 
-impl<T: PduEncode + 'static> From<T> for SvcMessage {
+impl<T> From<T> for SvcMessage
+where
+    T: PduEncode + Send + 'static,
+{
     fn from(pdu: T) -> Self {
         Self {
             pdu: Box::new(pdu),
