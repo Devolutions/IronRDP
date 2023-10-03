@@ -374,7 +374,7 @@ pub mod rpce {
     ///
     /// Implementers should typically avoid implementing this trait directly
     /// and instead implement [`HeaderlessEncode`].
-    pub trait Encode: Send + Sync + std::fmt::Debug {
+    pub trait Encode: Send + std::fmt::Debug {
         /// Encodes this RPCE PDU in-place using the provided `WriteCursor`.
         fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()>;
 
@@ -388,7 +388,7 @@ pub mod rpce {
     /// Trait for types that can be encoded into an [MS-RPCE] message.
     ///
     /// Implementers should typically implement this trait instead of [`Encode`].
-    pub trait HeaderlessEncode: Send + Sync + std::fmt::Debug {
+    pub trait HeaderlessEncode: Send + std::fmt::Debug {
         /// Encodes the instance into a buffer sans its [`RpceStreamHeader`] and [`RpceTypeHeader`].
         fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()>;
         /// Returns the name associated with this RPCE PDU.
