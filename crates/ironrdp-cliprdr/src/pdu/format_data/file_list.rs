@@ -1,7 +1,7 @@
 use bitflags::bitflags;
 use ironrdp_pdu::cursor::{ReadCursor, WriteCursor};
 use ironrdp_pdu::utils::{combine_u64, read_string_from_cursor, split_u64, write_string_to_cursor, CharacterSet};
-use ironrdp_pdu::{cast_length, ensure_fixed_part_size, PduDecode, PduEncode, PduResult};
+use ironrdp_pdu::{cast_length, ensure_fixed_part_size, impl_pdu_pod, PduDecode, PduEncode, PduResult};
 
 bitflags! {
     /// Represents `flags` field of `CLIPRDR_FILEDESCRIPTOR` structure.
@@ -48,6 +48,8 @@ pub struct FileDescriptor {
     pub file_size: Option<u64>,
     pub name: String,
 }
+
+impl_pdu_pod!(FileDescriptor);
 
 impl FileDescriptor {
     const NAME: &str = "CLIPRDR_FILEDESCRIPTOR";
@@ -157,6 +159,8 @@ impl<'de> PduDecode<'de> for FileDescriptor {
 pub struct PackedFileList {
     pub files: Vec<FileDescriptor>,
 }
+
+impl_pdu_pod!(PackedFileList);
 
 impl PackedFileList {
     const NAME: &str = "CLIPRDR_FILELIST";

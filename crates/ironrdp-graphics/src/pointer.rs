@@ -58,7 +58,7 @@ impl DecodedPointer {
         }
     }
 
-    pub fn decode_pointer_attribute(src: &PointerAttribute) -> Result<Self, PointerError> {
+    pub fn decode_pointer_attribute(src: &PointerAttribute<'_>) -> Result<Self, PointerError> {
         Self::decode_pointer(PointerData {
             width: src.color_pointer.width as usize,
             height: src.color_pointer.height as usize,
@@ -70,7 +70,7 @@ impl DecodedPointer {
         })
     }
 
-    pub fn decode_color_pointer_attribute(src: &ColorPointerAttribute) -> Result<Self, PointerError> {
+    pub fn decode_color_pointer_attribute(src: &ColorPointerAttribute<'_>) -> Result<Self, PointerError> {
         Self::decode_pointer(PointerData {
             width: src.width as usize,
             height: src.height as usize,
@@ -82,7 +82,7 @@ impl DecodedPointer {
         })
     }
 
-    pub fn decode_large_pointer_attribute(src: &LargePointerAttribute) -> Result<Self, PointerError> {
+    pub fn decode_large_pointer_attribute(src: &LargePointerAttribute<'_>) -> Result<Self, PointerError> {
         Self::decode_pointer(PointerData {
             width: src.width as usize,
             height: src.height as usize,

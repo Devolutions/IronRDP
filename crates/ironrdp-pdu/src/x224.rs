@@ -90,7 +90,7 @@ pub struct X224Data<'a> {
     pub data: Cow<'a, [u8]>,
 }
 
-impl_pdu_borrowing!(X224Data, OwnedX224Data);
+impl_pdu_borrowing!(X224Data<'_>, OwnedX224Data);
 
 impl IntoOwnedPdu for X224Data<'_> {
     type Owned = OwnedX224Data;

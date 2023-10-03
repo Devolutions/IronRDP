@@ -461,7 +461,7 @@ impl Code {
     }
 
     /// Extract the run length of a compression order.
-    fn extract_run_length(self, header: u8, src: &mut Buf) -> Result<usize, RleError> {
+    fn extract_run_length(self, header: u8, src: &mut Buf<'_>) -> Result<usize, RleError> {
         match self {
             Self::REGULAR_FGBG_IMAGE => extract_run_length_fg_bg(header, MASK_REGULAR_RUN_LENGTH, src),
 
@@ -493,7 +493,7 @@ const MASK_REGULAR_RUN_LENGTH: u8 = 0x1F;
 const MASK_LITE_RUN_LENGTH: u8 = 0x0F;
 
 /// Extract the run length of a Foreground/Background Image Order.
-fn extract_run_length_fg_bg(header: u8, length_mask: u8, src: &mut Buf) -> Result<usize, RleError> {
+fn extract_run_length_fg_bg(header: u8, length_mask: u8, src: &mut Buf<'_>) -> Result<usize, RleError> {
     match header & length_mask {
         0 => {
             ensure_size!(from: src, size: 1);
@@ -504,7 +504,7 @@ fn extract_run_length_fg_bg(header: u8, length_mask: u8, src: &mut Buf) -> Resul
 }
 
 /// Extract the run length of a regular-form compression order.
-fn extract_run_length_regular(header: u8, src: &mut Buf) -> Result<usize, RleError> {
+fn extract_run_length_regular(header: u8, src: &mut Buf<'_>) -> Result<usize, RleError> {
     match header & MASK_REGULAR_RUN_LENGTH {
         0 => {
             // An extended (MEGA) run.
@@ -515,7 +515,7 @@ fn extract_run_length_regular(header: u8, src: &mut Buf) -> Result<usize, RleErr
     }
 }
 
-fn extract_run_length_lite(header: u8, src: &mut Buf) -> Result<usize, RleError> {
+fn extract_run_length_lite(header: u8, src: &mut Buf<'_>) -> Result<usize, RleError> {
     match header & MASK_LITE_RUN_LENGTH {
         0 => {
             // An extended (MEGA) run.
@@ -526,7 +526,7 @@ fn extract_run_length_lite(header: u8, src: &mut Buf) -> Result<usize, RleError>
     }
 }
 
-fn extract_run_length_mega_mega(src: &mut Buf) -> Result<usize, RleError> {
+fn extract_run_length_mega_mega(src: &mut Buf<'_>) -> Result<usize, RleError> {
     ensure_size!(from: src, size: 2);
 
     let run_length = usize::from(src.read_u16());
@@ -538,6 +538,7 @@ fn extract_run_length_mega_mega(src: &mut Buf) -> Result<usize, RleError> {
     }
 }
 
+// TODO: use ironrdp_pdu::cursor::ReadCursor instead
 struct Buf<'a> {
     inner: &'a [u8],
     pos: usize,
@@ -583,6 +584,7 @@ impl<'a> Buf<'a> {
     }
 }
 
+// TODO: use ironrdp_pdu::cursor::WriteCursor instead
 struct BufMut<'a> {
     inner: &'a mut [u8],
     pos: usize,
@@ -643,10 +645,10 @@ trait DepthMode {
     const WHITE_PIXEL: Self::Pixel;
 
     /// Writes a pixel to the specified buffer
-    fn write_pixel(dst: &mut BufMut, pixel: Self::Pixel);
+    fn write_pixel(dst: &mut BufMut<'_>, pixel: Self::Pixel);
 
     /// Reads a pixel from the specified buffer
-    fn read_pixel(src: &mut Buf) -> Self::Pixel;
+    fn read_pixel(src: &mut Buf<'_>) -> Self::Pixel;
 }
 
 struct Mode8Bpp;
@@ -664,11 +666,11 @@ impl DepthMode for Mode8Bpp {
 
     const WHITE_PIXEL: Self::Pixel = 0xFF;
 
-    fn write_pixel(dst: &mut BufMut, pixel: Self::Pixel) {
+    fn write_pixel(dst: &mut BufMut<'_>, pixel: Self::Pixel) {
         dst.write_u8(pixel);
     }
 
-    fn read_pixel(src: &mut Buf) -> Self::Pixel {
+    fn read_pixel(src: &mut Buf<'_>) -> Self::Pixel {
         src.read_u8()
     }
 }
@@ -690,11 +692,11 @@ impl DepthMode for Mode15Bpp {
     // 0111 1111 1111 1111 (binary)
     const WHITE_PIXEL: Self::Pixel = 0x7FFF;
 
-    fn write_pixel(dst: &mut BufMut, pixel: Self::Pixel) {
+    fn write_pixel(dst: &mut BufMut<'_>, pixel: Self::Pixel) {
         dst.write_u16(pixel);
     }
 
-    fn read_pixel(src: &mut Buf) -> Self::Pixel {
+    fn read_pixel(src: &mut Buf<'_>) -> Self::Pixel {
         src.read_u16()
     }
 }
@@ -716,11 +718,11 @@ impl DepthMode for Mode16Bpp {
     // 1111 1111 1111 1111 (binary)
     const WHITE_PIXEL: Self::Pixel = 0xFFFF;
 
-    fn write_pixel(dst: &mut BufMut, pixel: Self::Pixel) {
+    fn write_pixel(dst: &mut BufMut<'_>, pixel: Self::Pixel) {
         dst.write_u16(pixel);
     }
 
-    fn read_pixel(src: &mut Buf) -> Self::Pixel {
+    fn read_pixel(src: &mut Buf<'_>) -> Self::Pixel {
         src.read_u16()
     }
 }
@@ -742,18 +744,18 @@ impl DepthMode for Mode24Bpp {
     // 1111 1111 1111 1111 1111 1111 (binary)
     const WHITE_PIXEL: Self::Pixel = 0xFF_FFFF;
 
-    fn write_pixel(dst: &mut BufMut, pixel: Self::Pixel) {
+    fn write_pixel(dst: &mut BufMut<'_>, pixel: Self::Pixel) {
         dst.write_u24(pixel);
     }
 
-    fn read_pixel(src: &mut Buf) -> Self::Pixel {
+    fn read_pixel(src: &mut Buf<'_>) -> Self::Pixel {
         src.read_u24()
     }
 }
 
 /// Writes a foreground/background image to a destination buffer.
 fn write_fg_bg_image<Mode: DepthMode>(
-    dst: &mut BufMut,
+    dst: &mut BufMut<'_>,
     row_delta: usize,
     bitmask: u8,
     fg_pel: Mode::Pixel,
@@ -783,7 +785,7 @@ fn write_fg_bg_image<Mode: DepthMode>(
 
 /// Writes a foreground/background image to a destination buffer
 fn write_first_line_fg_bg_image<Mode: DepthMode>(
-    dst: &mut BufMut,
+    dst: &mut BufMut<'_>,
     bitmask: u8,
     fg_pel: Mode::Pixel,
     mut c_bits: usize,

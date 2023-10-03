@@ -232,7 +232,7 @@ impl<'a> FastPathUpdate<'a> {
             UpdateCode::SurfaceCommands => {
                 let mut commands = Vec::with_capacity(1);
                 while src.len() >= SURFACE_COMMAND_HEADER_SIZE {
-                    commands.push(decode_cursor::<SurfaceCommand>(src)?);
+                    commands.push(decode_cursor::<SurfaceCommand<'_>>(src)?);
                 }
 
                 Ok(Self::SurfaceCommands(commands))

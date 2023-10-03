@@ -1,5 +1,6 @@
 use crate::prelude::*;
 
+// TODO: when 1.74 is released use `[lints]`: https://doc.rust-lang.org/nightly/cargo/reference/unstable.html#lints
 const EXTRA_LINTS: &[&str] = &[
     // == Safer unsafe == //
     "unsafe_op_in_unsafe_fn",
@@ -24,6 +25,7 @@ const EXTRA_LINTS: &[&str] = &[
     // TODO: "clippy::unwrap_used", // let’s either handle `None`, `Err` or use `expect` to give a reason
     "clippy::large_stack_frames",
     // == Style, readability == //
+    "elided_lifetimes_in_paths", // https://quinedot.github.io/rust-learning/dont-hide.html
     "absolute_paths_not_starting_with_crate",
     "single_use_lifetimes",
     "unreachable_pub",
@@ -92,6 +94,7 @@ pub fn fmt(sh: &Shell) -> anyhow::Result<()> {
 pub fn lints(sh: &Shell) -> anyhow::Result<()> {
     let _s = Section::new("LINTS");
 
+    // TODO: when 1.74 is released use `--keep-going`: https://doc.rust-lang.org/nightly/cargo/reference/unstable.html#keep-going
     let cmd = cmd!(sh, "{CARGO} clippy --workspace --locked -- -D warnings");
 
     EXTRA_LINTS.iter().fold(cmd, |cmd, lint| cmd.args(["-W", lint])).run()?;

@@ -32,6 +32,7 @@ pub fn write(dst: &mut WriteCursor<'_>, mut n: usize) {
 }
 
 /// Moves read cursor, ignoring padding bytes.
+#[inline]
 pub fn read(src: &mut ReadCursor<'_>, n: usize) {
     src.advance(n);
 }

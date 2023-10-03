@@ -219,12 +219,12 @@ macro_rules! impl_pdu_pod {
 /// Implements additional traits for a borrowing PDU and defines a static-bounded owned version.
 #[macro_export]
 macro_rules! impl_pdu_borrowing {
-    ($pdu_ty:ident, $owned_ty:ident) => {
+    ($pdu_ty:ident $(<$($lt:lifetime),+>)?, $owned_ty:ident) => {
         pub type $owned_ty = $pdu_ty<'static>;
 
         impl $crate::PduDecodeOwned for $owned_ty {
             fn decode_owned(src: &mut $crate::cursor::ReadCursor<'_>) -> $crate::PduResult<Self> {
-                let pdu = <$pdu_ty as $crate::PduDecode>::decode(src)?;
+                let pdu = <$pdu_ty $(<$($lt),+>)? as $crate::PduDecode>::decode(src)?;
                 Ok($crate::IntoOwnedPdu::into_owned_pdu(pdu))
             }
         }

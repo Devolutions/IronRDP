@@ -16,8 +16,8 @@ use ironrdp_svc::{
 };
 use pdu::{
     Capabilities, ClientTemporaryDirectory, ClipboardFormat, ClipboardFormatId, ClipboardGeneralCapabilityFlags,
-    ClipboardPdu, ClipboardProtocolVersion, FileContentsResponse, FormatDataRequest, FormatDataResponse,
-    FormatListResponse,
+    ClipboardPdu, ClipboardProtocolVersion, FileContentsResponse, FormatDataRequest, FormatListResponse,
+    OwnedFormatDataResponse,
 };
 use thiserror::Error;
 use tracing::{error, info};
@@ -132,7 +132,7 @@ impl Cliprdr {
         Ok(Vec::new())
     }
 
-    fn handle_format_list(&mut self, format_list: FormatList) -> PduResult<Vec<SvcMessage>> {
+    fn handle_format_list(&mut self, format_list: FormatList<'_>) -> PduResult<Vec<SvcMessage>> {
         let formats = format_list.get_formats(self.are_long_format_names_enabled())?;
         self.backend.on_remote_copy(&formats);
 
@@ -148,7 +148,7 @@ impl Cliprdr {
     /// [`CliprdrBackend::on_format_data_request`] is called by [`Cliprdr`].
     ///
     /// If data is not available anymore, an error response should be sent instead.
-    pub fn submit_format_data(&self, response: FormatDataResponse<'static>) -> PduResult<CliprdrSvcMessages> {
+    pub fn submit_format_data(&self, response: OwnedFormatDataResponse) -> PduResult<CliprdrSvcMessages> {
         ready_guard!(self, submit_format_data);
 
         let pdu = ClipboardPdu::FormatDataResponse(response);
@@ -216,7 +216,7 @@ impl StaticVirtualChannelProcessor for Cliprdr {
     }
 
     fn process(&mut self, payload: &[u8]) -> PduResult<Vec<SvcMessage>> {
-        let pdu: ClipboardPdu = decode::<ClipboardPdu>(payload)?;
+        let pdu = decode::<ClipboardPdu<'_>>(payload)?;
 
         if self.state == CliprdrState::Failed {
             error!("Attempted to process clipboard static virtual channel in failed state");

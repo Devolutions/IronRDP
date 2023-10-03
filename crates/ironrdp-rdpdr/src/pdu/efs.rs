@@ -7,7 +7,7 @@ use super::{PacketId, SharedHeader};
 use bitflags::bitflags;
 use ironrdp_pdu::cursor::{ReadCursor, WriteCursor};
 use ironrdp_pdu::utils::{encoded_str_len, write_string_to_cursor, CharacterSet};
-use ironrdp_pdu::{cast_length, ensure_size, invalid_message_err, PduError, PduResult};
+use ironrdp_pdu::{cast_length, ensure_size, invalid_message_err, read_padding, write_padding, PduError, PduResult};
 use std::fmt::Debug;
 use std::mem::size_of;
 
@@ -63,7 +63,7 @@ impl VersionAndIdPdu {
         })
     }
 
-    pub fn encode(&self, dst: &mut WriteCursor) -> PduResult<()> {
+    pub fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
         ensure_size!(ctx: self.name(), in: dst, size: Self::FIXED_PART_SIZE);
         dst.write_u16(self.version_major);
         dst.write_u16(self.version_minor);
@@ -71,7 +71,7 @@ impl VersionAndIdPdu {
         Ok(())
     }
 
-    pub fn decode(header: SharedHeader, payload: &mut ReadCursor) -> PduResult<Self> {
+    pub fn decode(header: SharedHeader, src: &mut ReadCursor<'_>) -> PduResult<Self> {
         let kind = match header.packet_id {
             PacketId::CoreServerAnnounce => VersionAndIdPduKind::ServerAnnounceRequest,
             PacketId::CoreClientidConfirm => VersionAndIdPduKind::ServerClientIdConfirm,
@@ -84,10 +84,10 @@ impl VersionAndIdPdu {
             }
         };
 
-        ensure_size!(ctx: kind.name(), in: payload, size: Self::FIXED_PART_SIZE);
-        let version_major = payload.read_u16();
-        let version_minor = payload.read_u16();
-        let client_id = payload.read_u32();
+        ensure_size!(ctx: kind.name(), in: src, size: Self::FIXED_PART_SIZE);
+        let version_major = src.read_u16();
+        let version_minor = src.read_u16();
+        let client_id = src.read_u32();
 
         Ok(Self {
             version_major,
@@ -138,7 +138,7 @@ impl ClientNameRequest {
         }
     }
 
-    pub fn encode(&self, dst: &mut WriteCursor) -> PduResult<()> {
+    pub fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
         ensure_size!(in: dst, size: self.size());
         dst.write_u32(self.unicode_flag().into());
         dst.write_u32(0); // // CodePage (4 bytes): it MUST be set to 0
@@ -181,7 +181,6 @@ impl From<ClientNameRequestUnicodeFlag> for u32 {
 /// [2.2.2.8 Client Core Capability Response (DR_CORE_CAPABILITY_RSP)](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/f513bf87-cca0-488a-ac5c-18cf18f4a7e1)
 #[derive(Debug)]
 pub struct CoreCapability {
-    pub padding: u16,
     pub capabilities: Vec<CapabilityMessage>,
     pub kind: CoreCapabilityKind,
 }
@@ -194,20 +193,19 @@ impl CoreCapability {
     /// [`DR_CORE_CAPABILITY_RSP`]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/f513bf87-cca0-488a-ac5c-18cf18f4a7e1
     pub fn new_response(capabilities: Vec<CapabilityMessage>) -> Self {
         Self {
-            padding: 0,
             capabilities,
             kind: CoreCapabilityKind::ClientCoreCapabilityResponse,
         }
     }
 
-    pub fn encode(&self, dst: &mut WriteCursor) -> PduResult<()> {
+    pub fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
         ensure_size!(ctx: self.name(), in: dst, size: self.size());
         dst.write_u16(cast_length!(
             "CoreCapability",
             "numCapabilities",
             self.capabilities.len()
         )?);
-        dst.write_u16(self.padding);
+        write_padding!(dst, 2); // 2-bytes padding
         for cap in self.capabilities.iter() {
             cap.encode(dst)?;
         }
@@ -230,17 +228,13 @@ impl CoreCapability {
         ensure_size!(ctx: kind.name(), in: src, size: Self::FIXED_PART_SIZE);
 
         let num_capabilities = src.read_u16();
-        let padding = src.read_u16();
+        read_padding!(src, 2); // 2-bytes padding
         let mut capabilities = Vec::new();
         for _ in 0..num_capabilities {
             capabilities.push(CapabilityMessage::decode(src)?);
         }
 
-        Ok(Self {
-            padding,
-            capabilities,
-            kind,
-        })
+        Ok(Self { capabilities, kind })
     }
 
     pub fn name(&self) -> &'static str {
@@ -372,7 +366,7 @@ impl CapabilityMessage {
         }
     }
 
-    fn encode(&self, dst: &mut WriteCursor) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
         ensure_size!(in: dst, size: self.size());
         self.header.encode(dst)?;
         self.capability_data.encode(dst)
@@ -442,7 +436,7 @@ impl CapabilityHeader {
         })
     }
 
-    fn encode(&self, dst: &mut WriteCursor) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
         ensure_size!(in: dst, size: Self::SIZE);
         dst.write_u16(self.cap_type.into());
         dst.write_u16(self.length);
@@ -504,7 +498,7 @@ enum CapabilityData {
 }
 
 impl CapabilityData {
-    fn encode(&self, dst: &mut WriteCursor) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
         match self {
             CapabilityData::General(general) => general.encode(dst),
             _ => Ok(()),
@@ -572,7 +566,7 @@ impl GeneralCapabilitySet {
     #[allow(clippy::manual_bits)]
     const SIZE: usize = size_of::<u32>() * 8 + size_of::<u16>() * 2;
 
-    fn encode(&self, dst: &mut WriteCursor) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
         ensure_size!(in: dst, size: Self::SIZE);
         dst.write_u32(self.os_type);
         dst.write_u32(self.os_version);
@@ -730,7 +724,7 @@ pub struct ClientDeviceListAnnounce {
 impl ClientDeviceListAnnounce {
     const FIXED_PART_SIZE: usize = size_of::<u32>(); // DeviceCount
 
-    pub fn encode(&self, dst: &mut WriteCursor) -> PduResult<()> {
+    pub fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
         dst.write_u32(cast_length!(
             "ClientDeviceListAnnounce",
             "DeviceCount",
@@ -811,7 +805,7 @@ impl DeviceAnnounceHeader {
         }
     }
 
-    fn encode(&self, dst: &mut WriteCursor) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
         dst.write_u32(self.device_type.into());
         dst.write_u32(self.device_id);
         self.preferred_dos_name.encode(dst)?;
@@ -844,7 +838,7 @@ impl DeviceAnnounceHeader {
 struct PreferredDosName(String);
 
 impl PreferredDosName {
-    fn encode(&self, dst: &mut WriteCursor) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
         write_string_to_cursor(dst, &self.format(), CharacterSet::Ansi, false)
     }
 
@@ -911,17 +905,17 @@ impl ServerDeviceAnnounceResponse {
         Self::NAME
     }
 
-    pub fn encode(&self, dst: &mut WriteCursor) -> PduResult<()> {
+    pub fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
         ensure_size!(in: dst, size: self.size());
         dst.write_u32(self.device_id);
         dst.write_u32(self.result_code.into());
         Ok(())
     }
 
-    pub fn decode(payload: &mut ReadCursor<'_>) -> PduResult<Self> {
-        ensure_size!(ctx: Self::NAME, in: payload, size: Self::FIXED_PART_SIZE);
-        let device_id = payload.read_u32();
-        let result_code = NtStatus::try_from(payload.read_u32())?;
+    pub fn decode(src: &mut ReadCursor<'_>) -> PduResult<Self> {
+        ensure_size!(ctx: Self::NAME, in: src, size: Self::FIXED_PART_SIZE);
+        let device_id = src.read_u32();
+        let result_code = NtStatus::try_from(src.read_u32())?;
 
         Ok(Self { device_id, result_code })
     }
@@ -998,7 +992,7 @@ impl DeviceIoRequest {
         Self::NAME
     }
 
-    pub fn encode(&self, dst: &mut WriteCursor) -> PduResult<()> {
+    pub fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
         ensure_size!(in: dst, size: self.size());
         dst.write_u32(self.device_id);
         dst.write_u32(self.file_id);
@@ -1008,13 +1002,13 @@ impl DeviceIoRequest {
         Ok(())
     }
 
-    pub fn decode(payload: &mut ReadCursor<'_>) -> PduResult<Self> {
-        ensure_size!(ctx: Self::NAME, in: payload, size: Self::FIXED_PART_SIZE);
-        let device_id = payload.read_u32();
-        let file_id = payload.read_u32();
-        let completion_id = payload.read_u32();
-        let major_function = MajorFunction::try_from(payload.read_u32())?;
-        let minor_function = payload.read_u32();
+    pub fn decode(src: &mut ReadCursor<'_>) -> PduResult<Self> {
+        ensure_size!(ctx: Self::NAME, in: src, size: Self::FIXED_PART_SIZE);
+        let device_id = src.read_u32();
+        let file_id = src.read_u32();
+        let completion_id = src.read_u32();
+        let major_function = MajorFunction::try_from(src.read_u32())?;
+        let minor_function = src.read_u32();
 
         // From the spec (linked in [`DeviceIoRequest`] doc comment):
         // "This field [MinorFunction] is valid only when the MajorFunction field
@@ -1147,17 +1141,17 @@ where
         size_of::<u32>() * 3 // OutputBufferLength, InputBufferLength, IoControlCode
     }
 
-    pub fn decode(header: DeviceIoRequest, payload: &mut ReadCursor<'_>) -> PduResult<Self> {
-        ensure_size!(ctx: "DeviceControlRequest", in: payload, size: Self::headerless_size());
-        let output_buffer_length = payload.read_u32();
-        let input_buffer_length = payload.read_u32();
-        let io_control_code = T::try_from(payload.read_u32()).map_err(|e| {
+    pub fn decode(header: DeviceIoRequest, src: &mut ReadCursor<'_>) -> PduResult<Self> {
+        ensure_size!(ctx: "DeviceControlRequest", in: src, size: Self::headerless_size());
+        let output_buffer_length = src.read_u32();
+        let input_buffer_length = src.read_u32();
+        let io_control_code = T::try_from(src.read_u32()).map_err(|e| {
             error!("Failed to parse IoCtlCode");
             invalid_message_err!("DeviceControlRequest", "IoCtlCode", "invalid IoCtlCode").with_source(e)
         })?;
 
         // Padding (20 bytes): An array of 20 bytes. Reserved. This field can be set to any value and MUST be ignored.
-        payload.advance(20); // padding
+        read_padding!(src, 20);
 
         Ok(Self {
             header,
@@ -1187,7 +1181,7 @@ impl DeviceControlResponse {
         Self::NAME
     }
 
-    pub fn encode(&self, dst: &mut WriteCursor) -> PduResult<()> {
+    pub fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
         ensure_size!(in: dst, size: self.size());
         self.device_io_reply.encode(dst)?;
         dst.write_u32(cast_length!(
@@ -1219,11 +1213,11 @@ impl DeviceIoResponse {
     const NAME: &str = "DR_DEVICE_IOCOMPLETION";
     const FIXED_PART_SIZE: usize = size_of::<u32>() * 3; // DeviceId, CompletionId, IoStatus
 
-    pub fn decode(payload: &mut ReadCursor<'_>) -> PduResult<Self> {
-        ensure_size!(ctx: "DeviceIoResponse", in: payload, size: Self::FIXED_PART_SIZE);
-        let device_id = payload.read_u32();
-        let completion_id = payload.read_u32();
-        let io_status = NtStatus::try_from(payload.read_u32())?;
+    pub fn decode(src: &mut ReadCursor<'_>) -> PduResult<Self> {
+        ensure_size!(ctx: "DeviceIoResponse", in: src, size: Self::FIXED_PART_SIZE);
+        let device_id = src.read_u32();
+        let completion_id = src.read_u32();
+        let io_status = NtStatus::try_from(src.read_u32())?;
 
         Ok(Self {
             device_id,
@@ -1232,7 +1226,7 @@ impl DeviceIoResponse {
         })
     }
 
-    pub fn encode(&self, dst: &mut WriteCursor) -> PduResult<()> {
+    pub fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
         ensure_size!(in: dst, size: self.size());
         dst.write_u32(self.device_id);
         dst.write_u32(self.completion_id);

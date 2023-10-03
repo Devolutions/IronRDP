@@ -345,7 +345,7 @@ fn process_svc_messages(messages: Vec<SvcMessage>, channel_id: u16, initiator_id
             channel_id,
             user_data: Cow::Borrowed(buf.filled()),
         })
-        .collect::<Vec<mcs::SendDataRequest>>();
+        .collect::<Vec<mcs::SendDataRequest<'_>>>();
 
     // SendDataRequest is [`McsPdu`], which is [`x224Pdu`], which is [`PduEncode`]. [`PduEncode`] for [`x224Pdu`]
     // also takes care of adding the Tpkt header, so therefore we can just call `encode_buf` on each of these and

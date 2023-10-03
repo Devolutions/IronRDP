@@ -25,7 +25,7 @@ pub struct WireToSurface1Pdu {
 }
 
 impl fmt::Debug for WireToSurface1Pdu {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("WireToSurface1Pdu")
             .field("surface_id", &self.surface_id)
             .field("codec_id", &self.codec_id)
@@ -82,7 +82,7 @@ pub struct WireToSurface2Pdu {
 }
 
 impl fmt::Debug for WireToSurface2Pdu {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("WireToSurface2Pdu")
             .field("surface_id", &self.surface_id)
             .field("codec_id", &self.codec_id)

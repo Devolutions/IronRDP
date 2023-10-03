@@ -183,8 +183,8 @@ impl IoCtlCode for ScardIoCtlCode {}
 pub struct ScardAccessStartedEventCall;
 
 impl ScardAccessStartedEventCall {
-    pub fn decode(payload: &mut ReadCursor<'_>) -> PduResult<Self> {
-        ironrdp_pdu::read_padding!(payload, 4); // Unused (4 bytes)
+    pub fn decode(src: &mut ReadCursor<'_>) -> PduResult<Self> {
+        ironrdp_pdu::read_padding!(src, 4); // Unused (4 bytes)
         Ok(Self)
     }
 }

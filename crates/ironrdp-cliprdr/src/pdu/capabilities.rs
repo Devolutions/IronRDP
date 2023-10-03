@@ -1,8 +1,8 @@
 use bitflags::bitflags;
 use ironrdp_pdu::cursor::{ReadCursor, WriteCursor};
 use ironrdp_pdu::{
-    cast_int, cast_length, ensure_fixed_part_size, ensure_size, invalid_message_err, read_padding, write_padding,
-    PduDecode, PduEncode, PduResult,
+    cast_int, cast_length, ensure_fixed_part_size, ensure_size, impl_pdu_pod, invalid_message_err, read_padding,
+    write_padding, PduDecode, PduEncode, PduResult,
 };
 
 use crate::pdu::PartialHeader;
@@ -12,6 +12,8 @@ use crate::pdu::PartialHeader;
 pub struct Capabilities {
     pub capabilities: Vec<CapabilitySet>,
 }
+
+impl_pdu_pod!(Capabilities);
 
 impl Capabilities {
     const NAME: &str = "CLIPRDR_CAPS";
@@ -106,6 +108,8 @@ impl<'de> PduDecode<'de> for Capabilities {
 pub enum CapabilitySet {
     General(GeneralCapabilitySet),
 }
+
+impl_pdu_pod!(CapabilitySet);
 
 impl CapabilitySet {
     const NAME: &str = "CLIPRDR_CAPS_SET";

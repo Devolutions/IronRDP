@@ -176,7 +176,7 @@ impl<'de> PduDecode<'de> for BitmapData<'de> {
 }
 
 impl Debug for BitmapData<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("BitmapData")
             .field("rectangle", &self.rectangle)
             .field("width", &self.width)

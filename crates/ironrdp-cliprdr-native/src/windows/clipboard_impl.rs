@@ -74,7 +74,7 @@ impl WinClipboardImpl {
 
     fn on_format_data_response(
         requested_local_format: ClipboardFormatId,
-        response: &FormatDataResponse,
+        response: &FormatDataResponse<'_>,
     ) -> WinCliprdrResult<()> {
         if response.is_error() {
             // No data available for this format anymore

@@ -27,7 +27,7 @@ impl UpdateEncoder {
         }
     }
 
-    pub(crate) fn bitmap(&mut self, bitmap: BitmapUpdate) -> Option<UpdateFragmenter> {
+    pub(crate) fn bitmap(&mut self, bitmap: BitmapUpdate) -> Option<UpdateFragmenter<'_>> {
         let len = loop {
             match self.bitmap.encode(&bitmap, self.buffer.as_mut_slice()) {
                 Err(e) => match e.kind() {

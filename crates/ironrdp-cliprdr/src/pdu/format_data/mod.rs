@@ -10,7 +10,9 @@ pub use self::palette::*;
 use std::borrow::Cow;
 
 use ironrdp_pdu::cursor::{ReadCursor, WriteCursor};
+use ironrdp_pdu::impl_pdu_borrowing;
 use ironrdp_pdu::utils::{read_string_from_cursor, to_utf16_bytes, CharacterSet};
+use ironrdp_pdu::IntoOwnedPdu;
 use ironrdp_pdu::{cast_int, ensure_fixed_part_size, ensure_size, PduDecode, PduEncode, PduResult};
 
 use super::ClipboardFormatId;
@@ -21,6 +23,19 @@ use crate::pdu::{ClipboardPduFlags, PartialHeader};
 pub struct FormatDataResponse<'a> {
     is_error: bool,
     data: Cow<'a, [u8]>,
+}
+
+impl_pdu_borrowing!(FormatDataResponse<'_>, OwnedFormatDataResponse);
+
+impl IntoOwnedPdu for FormatDataResponse<'_> {
+    type Owned = OwnedFormatDataResponse;
+
+    fn into_owned_pdu(self) -> Self::Owned {
+        OwnedFormatDataResponse {
+            is_error: self.is_error,
+            data: Cow::Owned(self.data.into_owned()),
+        }
+    }
 }
 
 impl<'a> FormatDataResponse<'a> {
@@ -68,7 +83,7 @@ impl<'a> FormatDataResponse<'a> {
     /// Creates new format data response from packed metafile. Please note that this method
     /// allocates memory for the data automatically. If you want to avoid this, you can use
     /// `new_data` method and encode [`PackedMetafile`] prior to the call.
-    pub fn new_metafile(metafile: &PackedMetafile) -> PduResult<Self> {
+    pub fn new_metafile(metafile: &PackedMetafile<'_>) -> PduResult<Self> {
         let mut data = vec![0u8; metafile.size()];
 
         let mut cursor = WriteCursor::new(&mut data);
@@ -125,7 +140,7 @@ impl<'a> FormatDataResponse<'a> {
     }
 
     /// Reads inner data as [`PackedMetafile`]
-    pub fn to_metafile(&self) -> PduResult<PackedMetafile> {
+    pub fn to_metafile(&self) -> PduResult<PackedMetafile<'_>> {
         let mut cursor = ReadCursor::new(&self.data);
         PackedMetafile::decode(&mut cursor)
     }
@@ -148,11 +163,8 @@ impl<'a> FormatDataResponse<'a> {
         read_string_from_cursor(&mut cursor, CharacterSet::Unicode, true)
     }
 
-    pub fn into_owned(self) -> FormatDataResponse<'static> {
-        FormatDataResponse {
-            is_error: self.is_error,
-            data: Cow::Owned(self.data.into_owned()),
-        }
+    pub fn into_owned(self) -> OwnedFormatDataResponse {
+        self.into_owned_pdu()
     }
 }
 

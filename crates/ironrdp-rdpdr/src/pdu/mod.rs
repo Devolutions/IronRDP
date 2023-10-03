@@ -184,14 +184,14 @@ impl SharedHeader {
     const NAME: &str = "RDPDR_HEADER";
     const SIZE: usize = size_of::<u16>() * 2;
 
-    fn encode(&self, dst: &mut WriteCursor) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
         ensure_size!(in: dst, size: Self::SIZE);
         dst.write_u16(self.component.into());
         dst.write_u16(self.packet_id.into());
         Ok(())
     }
 
-    pub fn decode(src: &mut ReadCursor) -> PduResult<Self> {
+    pub fn decode(src: &mut ReadCursor<'_>) -> PduResult<Self> {
         ensure_size!(in: src, size: Self::SIZE);
         Ok(Self {
             component: src.read_u16().try_into()?,
