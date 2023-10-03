@@ -180,15 +180,12 @@ impl IoCtlCode for ScardIoCtlCode {}
 ///
 /// [2.2.2.30 ScardAccessStartedEvent_Call]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/c5ab8dd0-4914-4355-960c-0a527971ea69
 #[derive(Debug)]
-pub struct ScardAccessStartedEventCall {
-    _unused: u32,
-}
+pub struct ScardAccessStartedEventCall;
 
 impl ScardAccessStartedEventCall {
     pub fn decode(payload: &mut ReadCursor<'_>) -> PduResult<Self> {
-        Ok(Self {
-            _unused: payload.read_u32(),
-        })
+        ironrdp_pdu::read_padding!(payload, 4); // Unused (4 bytes)
+        Ok(Self)
     }
 }
 
