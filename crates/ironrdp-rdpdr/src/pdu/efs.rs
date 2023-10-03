@@ -1,7 +1,6 @@
 //! PDUs for [\[MS-RDPEFS\]: Remote Desktop Protocol: File System Virtual Channel Extension]
 //!
 //! [\[MS-RDPEFS\]: Remote Desktop Protocol: File System Virtual Channel Extension]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/34d9de58-b2b5-40b6-b970-f82d4603bdb5
-use std::convert::TryFrom;
 use std::fmt::Debug;
 use std::mem::size_of;
 
