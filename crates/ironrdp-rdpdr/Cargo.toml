@@ -19,6 +19,5 @@ test = false
 tracing.workspace = true
 ironrdp-pdu.workspace = true
 ironrdp-svc.workspace = true
-ironrdp-error.workspace = true
 
 bitflags = "2"

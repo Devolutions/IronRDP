@@ -1048,27 +1048,27 @@ impl DeviceIoRequest {
 #[repr(u32)]
 pub enum MajorFunction {
     /// IRP_MJ_CREATE
-    Create = 0x00000000,
+    Create = 0x0000_0000,
     /// IRP_MJ_CLOSE
-    Close = 0x00000002,
+    Close = 0x0000_0002,
     /// IRP_MJ_READ
-    Read = 0x00000003,
+    Read = 0x0000_0003,
     /// IRP_MJ_WRITE
-    Write = 0x00000004,
+    Write = 0x0000_0004,
     /// IRP_MJ_DEVICE_CONTROL
-    DeviceControl = 0x0000000e,
+    DeviceControl = 0x0000_000e,
     /// IRP_MJ_QUERY_VOLUME_INFORMATION
-    QueryVolumeInformation = 0x0000000a,
+    QueryVolumeInformation = 0x0000_000a,
     /// IRP_MJ_SET_VOLUME_INFORMATION
-    SetVolumeInformation = 0x0000000b,
+    SetVolumeInformation = 0x0000_000b,
     /// IRP_MJ_QUERY_INFORMATION
-    QueryInformation = 0x00000005,
+    QueryInformation = 0x0000_0005,
     /// IRP_MJ_SET_INFORMATION
-    SetInformation = 0x00000006,
+    SetInformation = 0x0000_0006,
     /// IRP_MJ_DIRECTORY_CONTROL
-    DirectoryControl = 0x0000000c,
+    DirectoryControl = 0x0000_000c,
     /// IRP_MJ_LOCK_CONTROL
-    LockControl = 0x00000011,
+    LockControl = 0x0000_0011,
 }
 
 impl TryFrom<u32> for MajorFunction {
@@ -1076,17 +1076,17 @@ impl TryFrom<u32> for MajorFunction {
 
     fn try_from(value: u32) -> Result<Self, Self::Error> {
         match value {
-            0x00000000 => Ok(MajorFunction::Create),
-            0x00000002 => Ok(MajorFunction::Close),
-            0x00000003 => Ok(MajorFunction::Read),
-            0x00000004 => Ok(MajorFunction::Write),
-            0x0000000e => Ok(MajorFunction::DeviceControl),
-            0x0000000a => Ok(MajorFunction::QueryVolumeInformation),
-            0x0000000b => Ok(MajorFunction::SetVolumeInformation),
-            0x00000005 => Ok(MajorFunction::QueryInformation),
-            0x00000006 => Ok(MajorFunction::SetInformation),
-            0x0000000c => Ok(MajorFunction::DirectoryControl),
-            0x00000011 => Ok(MajorFunction::LockControl),
+            0x0000_0000 => Ok(MajorFunction::Create),
+            0x0000_0002 => Ok(MajorFunction::Close),
+            0x0000_0003 => Ok(MajorFunction::Read),
+            0x0000_0004 => Ok(MajorFunction::Write),
+            0x0000_000e => Ok(MajorFunction::DeviceControl),
+            0x0000_000a => Ok(MajorFunction::QueryVolumeInformation),
+            0x0000_000b => Ok(MajorFunction::SetVolumeInformation),
+            0x0000_0005 => Ok(MajorFunction::QueryInformation),
+            0x0000_0006 => Ok(MajorFunction::SetInformation),
+            0x0000_000c => Ok(MajorFunction::DirectoryControl),
+            0x0000_0011 => Ok(MajorFunction::LockControl),
             _ => Err(invalid_message_err!("try_from", "MajorFunction", "unsupported value")),
         }
     }
@@ -1102,12 +1102,12 @@ impl From<MajorFunction> for u32 {
 #[derive(Debug, Clone, Copy)]
 #[repr(u32)]
 pub enum MinorFunction {
-    /// "If the MajorFunction field is set to another value, the MinorFunction field value SHOULD be 0x00000000."
-    None = 0x00000000,
+    /// "If the MajorFunction field is set to another value, the MinorFunction field value SHOULD be 0x0000_0000."
+    None = 0x0000_0000,
     /// IRP_MN_QUERY_DIRECTORY
-    QueryDirectory = 0x00000001,
+    QueryDirectory = 0x0000_0001,
     /// IRP_MN_NOTIFY_CHANGE_DIRECTORY
-    NotifyChangeDirectory = 0x00000002,
+    NotifyChangeDirectory = 0x0000_0002,
 }
 
 impl TryFrom<u32> for MinorFunction {
@@ -1115,8 +1115,8 @@ impl TryFrom<u32> for MinorFunction {
 
     fn try_from(value: u32) -> Result<Self, Self::Error> {
         match value {
-            0x00000001 => Ok(MinorFunction::QueryDirectory),
-            0x00000002 => Ok(MinorFunction::NotifyChangeDirectory),
+            0x0000_0001 => Ok(MinorFunction::QueryDirectory),
+            0x0000_0002 => Ok(MinorFunction::NotifyChangeDirectory),
             _ => Err(invalid_message_err!("try_from", "MinorFunction", "unsupported value")),
         }
     }

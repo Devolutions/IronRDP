@@ -8,7 +8,7 @@
 #[macro_use]
 extern crate tracing;
 
-mod backend;
+pub mod backend;
 pub mod pdu;
 pub use backend::{noop::NoopRdpdrBackend, RdpdrBackend};
 use ironrdp_pdu::{cursor::ReadCursor, decode_cursor, gcc::ChannelName, other_err, PduResult};

@@ -15,101 +15,101 @@ use ironrdp_pdu::{
 #[repr(u32)]
 pub enum ScardIoCtlCode {
     /// SCARD_IOCTL_ESTABLISHCONTEXT
-    EstablishContext = 0x00090014,
+    EstablishContext = 0x0009_0014,
     /// SCARD_IOCTL_RELEASECONTEXT
-    ReleaseContext = 0x00090018,
+    ReleaseContext = 0x0009_0018,
     /// SCARD_IOCTL_ISVALIDCONTEXT
-    IsValidContext = 0x0009001C,
+    IsValidContext = 0x0009_001C,
     /// SCARD_IOCTL_LISTREADERGROUPSA
-    ListReaderGroupsA = 0x00090020,
+    ListReaderGroupsA = 0x0009_0020,
     /// SCARD_IOCTL_LISTREADERGROUPSW
-    ListReaderGroupsW = 0x00090024,
+    ListReaderGroupsW = 0x0009_0024,
     /// SCARD_IOCTL_LISTREADERSA
-    ListReadersA = 0x00090028,
+    ListReadersA = 0x0009_0028,
     /// SCARD_IOCTL_LISTREADERSW
-    ListReadersW = 0x0009002C,
+    ListReadersW = 0x0009_002C,
     /// SCARD_IOCTL_INTRODUCEREADERGROUPA
-    IntroduceReaderGroupA = 0x00090050,
+    IntroduceReaderGroupA = 0x0009_0050,
     /// SCARD_IOCTL_INTRODUCEREADERGROUPW
-    IntroduceReaderGroupW = 0x00090054,
+    IntroduceReaderGroupW = 0x0009_0054,
     /// SCARD_IOCTL_FORGETREADERGROUPA
-    ForgetReaderGroupA = 0x00090058,
+    ForgetReaderGroupA = 0x0009_0058,
     /// SCARD_IOCTL_FORGETREADERGROUPW
-    ForgetReaderGroupW = 0x0009005C,
+    ForgetReaderGroupW = 0x0009_005C,
     /// SCARD_IOCTL_INTRODUCEREADERA
-    IntroduceReaderA = 0x00090060,
+    IntroduceReaderA = 0x0009_0060,
     /// SCARD_IOCTL_INTRODUCEREADERW
-    IntroduceReaderW = 0x00090064,
+    IntroduceReaderW = 0x0009_0064,
     /// SCARD_IOCTL_FORGETREADERA
-    ForgetReaderA = 0x00090068,
+    ForgetReaderA = 0x0009_0068,
     /// SCARD_IOCTL_FORGETREADERW
-    ForgetReaderW = 0x0009006C,
+    ForgetReaderW = 0x0009_006C,
     /// SCARD_IOCTL_ADDREADERTOGROUPA
-    AddReaderToGroupA = 0x00090070,
+    AddReaderToGroupA = 0x0009_0070,
     /// SCARD_IOCTL_ADDREADERTOGROUPW
-    AddReaderToGroupW = 0x00090074,
+    AddReaderToGroupW = 0x0009_0074,
     /// SCARD_IOCTL_REMOVEREADERFROMGROUPA
-    RemoveReaderFromGroupA = 0x00090078,
+    RemoveReaderFromGroupA = 0x0009_0078,
     /// SCARD_IOCTL_REMOVEREADERFROMGROUPW
-    RemoveReaderFromGroupW = 0x0009007C,
+    RemoveReaderFromGroupW = 0x0009_007C,
     /// SCARD_IOCTL_LOCATECARDSA
-    LocateCardsA = 0x00090098,
+    LocateCardsA = 0x0009_0098,
     /// SCARD_IOCTL_LOCATECARDSW
-    LocateCardsW = 0x0009009C,
+    LocateCardsW = 0x0009_009C,
     /// SCARD_IOCTL_GETSTATUSCHANGEA
-    GetStatusChangeA = 0x000900A0,
+    GetStatusChangeA = 0x0009_00A0,
     /// SCARD_IOCTL_GETSTATUSCHANGEW
-    GetStatusChangeW = 0x000900A4,
+    GetStatusChangeW = 0x0009_00A4,
     /// SCARD_IOCTL_CANCEL
-    Cancel = 0x000900A8,
+    Cancel = 0x0009_00A8,
     /// SCARD_IOCTL_CONNECTA
-    ConnectA = 0x000900AC,
+    ConnectA = 0x0009_00AC,
     /// SCARD_IOCTL_CONNECTW
-    ConnectW = 0x000900B0,
+    ConnectW = 0x0009_00B0,
     /// SCARD_IOCTL_RECONNECT
-    Reconnect = 0x000900B4,
+    Reconnect = 0x0009_00B4,
     /// SCARD_IOCTL_DISCONNECT
-    Disconnect = 0x000900B8,
+    Disconnect = 0x0009_00B8,
     /// SCARD_IOCTL_BEGINTRANSACTION
-    BeginTransaction = 0x000900BC,
+    BeginTransaction = 0x0009_00BC,
     /// SCARD_IOCTL_ENDTRANSACTION
-    EndTransaction = 0x000900C0,
+    EndTransaction = 0x0009_00C0,
     /// SCARD_IOCTL_STATE
-    State = 0x000900C4,
+    State = 0x0009_00C4,
     /// SCARD_IOCTL_STATUSA
-    StatusA = 0x000900C8,
+    StatusA = 0x0009_00C8,
     /// SCARD_IOCTL_STATUSW
-    StatusW = 0x000900CC,
+    StatusW = 0x0009_00CC,
     /// SCARD_IOCTL_TRANSMIT
-    Transmit = 0x000900D0,
+    Transmit = 0x0009_00D0,
     /// SCARD_IOCTL_CONTROL
-    Control = 0x000900D4,
+    Control = 0x0009_00D4,
     /// SCARD_IOCTL_GETATTRIB
-    GetAttrib = 0x000900D8,
+    GetAttrib = 0x0009_00D8,
     /// SCARD_IOCTL_SETATTRIB
-    SetAttrib = 0x000900DC,
+    SetAttrib = 0x0009_00DC,
     /// SCARD_IOCTL_ACCESSSTARTEDEVENT
-    AccessStartedEvent = 0x000900E0,
+    AccessStartedEvent = 0x0009_00E0,
     /// SCARD_IOCTL_RELEASETARTEDEVENT
-    ReleaseTartedEvent = 0x000900E4,
+    ReleaseTartedEvent = 0x0009_00E4,
     /// SCARD_IOCTL_LOCATECARDSBYATRA
-    LocateCardsByAtrA = 0x000900E8,
+    LocateCardsByAtrA = 0x0009_00E8,
     /// SCARD_IOCTL_LOCATECARDSBYATRW
-    LocateCardsByAtrW = 0x000900EC,
+    LocateCardsByAtrW = 0x0009_00EC,
     /// SCARD_IOCTL_READCACHEA
-    ReadCacheA = 0x000900F0,
+    ReadCacheA = 0x0009_00F0,
     /// SCARD_IOCTL_READCACHEW
-    ReadCacheW = 0x000900F4,
+    ReadCacheW = 0x0009_00F4,
     /// SCARD_IOCTL_WRITECACHEA
-    WriteCacheA = 0x000900F8,
+    WriteCacheA = 0x0009_00F8,
     /// SCARD_IOCTL_WRITECACHEW
-    WriteCacheW = 0x000900FC,
+    WriteCacheW = 0x0009_00FC,
     /// SCARD_IOCTL_GETTRANSMITCOUNT
-    GetTransmitCount = 0x00090100,
+    GetTransmitCount = 0x0009_0100,
     /// SCARD_IOCTL_GETREADERICON
-    GetReaderIcon = 0x00090104,
+    GetReaderIcon = 0x0009_0104,
     /// SCARD_IOCTL_GETDEVICETYPEID
-    GetDeviceTypeId = 0x00090108,
+    GetDeviceTypeId = 0x0009_0108,
 }
 
 impl TryFrom<u32> for ScardIoCtlCode {
@@ -117,54 +117,54 @@ impl TryFrom<u32> for ScardIoCtlCode {
 
     fn try_from(value: u32) -> Result<Self, Self::Error> {
         match value {
-            0x00090014 => Ok(ScardIoCtlCode::EstablishContext),
-            0x00090018 => Ok(ScardIoCtlCode::ReleaseContext),
-            0x0009001C => Ok(ScardIoCtlCode::IsValidContext),
-            0x00090020 => Ok(ScardIoCtlCode::ListReaderGroupsA),
-            0x00090024 => Ok(ScardIoCtlCode::ListReaderGroupsW),
-            0x00090028 => Ok(ScardIoCtlCode::ListReadersA),
-            0x0009002C => Ok(ScardIoCtlCode::ListReadersW),
-            0x00090050 => Ok(ScardIoCtlCode::IntroduceReaderGroupA),
-            0x00090054 => Ok(ScardIoCtlCode::IntroduceReaderGroupW),
-            0x00090058 => Ok(ScardIoCtlCode::ForgetReaderGroupA),
-            0x0009005C => Ok(ScardIoCtlCode::ForgetReaderGroupW),
-            0x00090060 => Ok(ScardIoCtlCode::IntroduceReaderA),
-            0x00090064 => Ok(ScardIoCtlCode::IntroduceReaderW),
-            0x00090068 => Ok(ScardIoCtlCode::ForgetReaderA),
-            0x0009006C => Ok(ScardIoCtlCode::ForgetReaderW),
-            0x00090070 => Ok(ScardIoCtlCode::AddReaderToGroupA),
-            0x00090074 => Ok(ScardIoCtlCode::AddReaderToGroupW),
-            0x00090078 => Ok(ScardIoCtlCode::RemoveReaderFromGroupA),
-            0x0009007C => Ok(ScardIoCtlCode::RemoveReaderFromGroupW),
-            0x00090098 => Ok(ScardIoCtlCode::LocateCardsA),
-            0x0009009C => Ok(ScardIoCtlCode::LocateCardsW),
-            0x000900A0 => Ok(ScardIoCtlCode::GetStatusChangeA),
-            0x000900A4 => Ok(ScardIoCtlCode::GetStatusChangeW),
-            0x000900A8 => Ok(ScardIoCtlCode::Cancel),
-            0x000900AC => Ok(ScardIoCtlCode::ConnectA),
-            0x000900B0 => Ok(ScardIoCtlCode::ConnectW),
-            0x000900B4 => Ok(ScardIoCtlCode::Reconnect),
-            0x000900B8 => Ok(ScardIoCtlCode::Disconnect),
-            0x000900BC => Ok(ScardIoCtlCode::BeginTransaction),
-            0x000900C0 => Ok(ScardIoCtlCode::EndTransaction),
-            0x000900C4 => Ok(ScardIoCtlCode::State),
-            0x000900C8 => Ok(ScardIoCtlCode::StatusA),
-            0x000900CC => Ok(ScardIoCtlCode::StatusW),
-            0x000900D0 => Ok(ScardIoCtlCode::Transmit),
-            0x000900D4 => Ok(ScardIoCtlCode::Control),
-            0x000900D8 => Ok(ScardIoCtlCode::GetAttrib),
-            0x000900DC => Ok(ScardIoCtlCode::SetAttrib),
-            0x000900E0 => Ok(ScardIoCtlCode::AccessStartedEvent),
-            0x000900E4 => Ok(ScardIoCtlCode::ReleaseTartedEvent),
-            0x000900E8 => Ok(ScardIoCtlCode::LocateCardsByAtrA),
-            0x000900EC => Ok(ScardIoCtlCode::LocateCardsByAtrW),
-            0x000900F0 => Ok(ScardIoCtlCode::ReadCacheA),
-            0x000900F4 => Ok(ScardIoCtlCode::ReadCacheW),
-            0x000900F8 => Ok(ScardIoCtlCode::WriteCacheA),
-            0x000900FC => Ok(ScardIoCtlCode::WriteCacheW),
-            0x00090100 => Ok(ScardIoCtlCode::GetTransmitCount),
-            0x00090104 => Ok(ScardIoCtlCode::GetReaderIcon),
-            0x00090108 => Ok(ScardIoCtlCode::GetDeviceTypeId),
+            0x0009_0014 => Ok(ScardIoCtlCode::EstablishContext),
+            0x0009_0018 => Ok(ScardIoCtlCode::ReleaseContext),
+            0x0009_001C => Ok(ScardIoCtlCode::IsValidContext),
+            0x0009_0020 => Ok(ScardIoCtlCode::ListReaderGroupsA),
+            0x0009_0024 => Ok(ScardIoCtlCode::ListReaderGroupsW),
+            0x0009_0028 => Ok(ScardIoCtlCode::ListReadersA),
+            0x0009_002C => Ok(ScardIoCtlCode::ListReadersW),
+            0x0009_0050 => Ok(ScardIoCtlCode::IntroduceReaderGroupA),
+            0x0009_0054 => Ok(ScardIoCtlCode::IntroduceReaderGroupW),
+            0x0009_0058 => Ok(ScardIoCtlCode::ForgetReaderGroupA),
+            0x0009_005C => Ok(ScardIoCtlCode::ForgetReaderGroupW),
+            0x0009_0060 => Ok(ScardIoCtlCode::IntroduceReaderA),
+            0x0009_0064 => Ok(ScardIoCtlCode::IntroduceReaderW),
+            0x0009_0068 => Ok(ScardIoCtlCode::ForgetReaderA),
+            0x0009_006C => Ok(ScardIoCtlCode::ForgetReaderW),
+            0x0009_0070 => Ok(ScardIoCtlCode::AddReaderToGroupA),
+            0x0009_0074 => Ok(ScardIoCtlCode::AddReaderToGroupW),
+            0x0009_0078 => Ok(ScardIoCtlCode::RemoveReaderFromGroupA),
+            0x0009_007C => Ok(ScardIoCtlCode::RemoveReaderFromGroupW),
+            0x0009_0098 => Ok(ScardIoCtlCode::LocateCardsA),
+            0x0009_009C => Ok(ScardIoCtlCode::LocateCardsW),
+            0x0009_00A0 => Ok(ScardIoCtlCode::GetStatusChangeA),
+            0x0009_00A4 => Ok(ScardIoCtlCode::GetStatusChangeW),
+            0x0009_00A8 => Ok(ScardIoCtlCode::Cancel),
+            0x0009_00AC => Ok(ScardIoCtlCode::ConnectA),
+            0x0009_00B0 => Ok(ScardIoCtlCode::ConnectW),
+            0x0009_00B4 => Ok(ScardIoCtlCode::Reconnect),
+            0x0009_00B8 => Ok(ScardIoCtlCode::Disconnect),
+            0x0009_00BC => Ok(ScardIoCtlCode::BeginTransaction),
+            0x0009_00C0 => Ok(ScardIoCtlCode::EndTransaction),
+            0x0009_00C4 => Ok(ScardIoCtlCode::State),
+            0x0009_00C8 => Ok(ScardIoCtlCode::StatusA),
+            0x0009_00CC => Ok(ScardIoCtlCode::StatusW),
+            0x0009_00D0 => Ok(ScardIoCtlCode::Transmit),
+            0x0009_00D4 => Ok(ScardIoCtlCode::Control),
+            0x0009_00D8 => Ok(ScardIoCtlCode::GetAttrib),
+            0x0009_00DC => Ok(ScardIoCtlCode::SetAttrib),
+            0x0009_00E0 => Ok(ScardIoCtlCode::AccessStartedEvent),
+            0x0009_00E4 => Ok(ScardIoCtlCode::ReleaseTartedEvent),
+            0x0009_00E8 => Ok(ScardIoCtlCode::LocateCardsByAtrA),
+            0x0009_00EC => Ok(ScardIoCtlCode::LocateCardsByAtrW),
+            0x0009_00F0 => Ok(ScardIoCtlCode::ReadCacheA),
+            0x0009_00F4 => Ok(ScardIoCtlCode::ReadCacheW),
+            0x0009_00F8 => Ok(ScardIoCtlCode::WriteCacheA),
+            0x0009_00FC => Ok(ScardIoCtlCode::WriteCacheW),
+            0x0009_0100 => Ok(ScardIoCtlCode::GetTransmitCount),
+            0x0009_0104 => Ok(ScardIoCtlCode::GetReaderIcon),
+            0x0009_0108 => Ok(ScardIoCtlCode::GetDeviceTypeId),
             _ => {
                 error!("Unsupported ScardIoCtlCode: 0x{:08x}", value);
                 Err(invalid_message_err!("try_from", "ScardIoCtlCode", "unsupported value"))
@@ -227,139 +227,139 @@ impl rpce::HeaderlessEncode for LongReturn {
 #[repr(u32)]
 pub enum ReturnCode {
     /// SCARD_S_SUCCESS
-    Success = 0x00000000,
+    Success = 0x0000_0000,
     /// SCARD_F_INTERNAL_ERROR
-    InternalError = 0x80100001,
+    InternalError = 0x8010_0001,
     /// SCARD_E_CANCELLED
-    Cancelled = 0x80100002,
+    Cancelled = 0x8010_0002,
     /// SCARD_E_INVALID_HANDLE
-    InvalidHandle = 0x80100003,
+    InvalidHandle = 0x8010_0003,
     /// SCARD_E_INVALID_PARAMETER
-    InvalidParameter = 0x80100004,
+    InvalidParameter = 0x8010_0004,
     /// SCARD_E_INVALID_TARGET
-    InvalidTarget = 0x80100005,
+    InvalidTarget = 0x8010_0005,
     /// SCARD_E_NO_MEMORY
-    NoMemory = 0x80100006,
+    NoMemory = 0x8010_0006,
     /// SCARD_F_WAITED_TOO_LONG
-    WaitedTooLong = 0x80100007,
+    WaitedTooLong = 0x8010_0007,
     /// SCARD_E_INSUFFICIENT_BUFFER
-    InsufficientBuffer = 0x80100008,
+    InsufficientBuffer = 0x8010_0008,
     /// SCARD_E_UNKNOWN_READER
-    UnknownReader = 0x80100009,
+    UnknownReader = 0x8010_0009,
     /// SCARD_E_TIMEOUT
-    Timeout = 0x8010000A,
+    Timeout = 0x8010_000A,
     /// SCARD_E_SHARING_VIOLATION
-    SharingViolation = 0x8010000B,
+    SharingViolation = 0x8010_000B,
     /// SCARD_E_NO_SMARTCARD
-    NoSmartcard = 0x8010000C,
+    NoSmartcard = 0x8010_000C,
     /// SCARD_E_UNKNOWN_CARD
-    UnknownCard = 0x8010000D,
+    UnknownCard = 0x8010_000D,
     /// SCARD_E_CANT_DISPOSE
-    CantDispose = 0x8010000E,
+    CantDispose = 0x8010_000E,
     /// SCARD_E_PROTO_MISMATCH
-    ProtoMismatch = 0x8010000F,
+    ProtoMismatch = 0x8010_000F,
     /// SCARD_E_NOT_READY
-    NotReady = 0x80100010,
+    NotReady = 0x8010_0010,
     /// SCARD_E_INVALID_VALUE
-    InvalidValue = 0x80100011,
+    InvalidValue = 0x8010_0011,
     /// SCARD_E_SYSTEM_CANCELLED
-    SystemCancelled = 0x80100012,
+    SystemCancelled = 0x8010_0012,
     /// SCARD_F_COMM_ERROR
-    CommError = 0x80100013,
+    CommError = 0x8010_0013,
     /// SCARD_F_UNKNOWN_ERROR
-    UnknownError = 0x80100014,
+    UnknownError = 0x8010_0014,
     /// SCARD_E_INVALID_ATR
-    InvalidAtr = 0x80100015,
+    InvalidAtr = 0x8010_0015,
     /// SCARD_E_NOT_TRANSACTED
-    NotTransacted = 0x80100016,
+    NotTransacted = 0x8010_0016,
     /// SCARD_E_READER_UNAVAILABLE
-    ReaderUnavailable = 0x80100017,
+    ReaderUnavailable = 0x8010_0017,
     /// SCARD_P_SHUTDOWN
-    Shutdown = 0x80100018,
+    Shutdown = 0x8010_0018,
     /// SCARD_E_PCI_TOO_SMALL
-    PciTooSmall = 0x80100019,
+    PciTooSmall = 0x8010_0019,
     /// SCARD_E_ICC_INSTALLATION
-    IccInstallation = 0x80100020,
+    IccInstallation = 0x8010_0020,
     /// SCARD_E_ICC_CREATEORDER
-    IccCreateorder = 0x80100021,
+    IccCreateorder = 0x8010_0021,
     /// SCARD_E_UNSUPPORTED_FEATURE
-    UnsupportedFeature = 0x80100022,
+    UnsupportedFeature = 0x8010_0022,
     /// SCARD_E_DIR_NOT_FOUND
-    DirNotFound = 0x80100023,
+    DirNotFound = 0x8010_0023,
     /// SCARD_E_FILE_NOT_FOUND
-    FileNotFound = 0x80100024,
+    FileNotFound = 0x8010_0024,
     /// SCARD_E_NO_DIR
-    NoDir = 0x80100025,
+    NoDir = 0x8010_0025,
     /// SCARD_E_READER_UNSUPPORTED
-    ReaderUnsupported = 0x8010001A,
+    ReaderUnsupported = 0x8010_001A,
     /// SCARD_E_DUPLICATE_READER
-    DuplicateReader = 0x8010001B,
+    DuplicateReader = 0x8010_001B,
     /// SCARD_E_CARD_UNSUPPORTED
-    CardUnsupported = 0x8010001C,
+    CardUnsupported = 0x8010_001C,
     /// SCARD_E_NO_SERVICE
-    NoService = 0x8010001D,
+    NoService = 0x8010_001D,
     /// SCARD_E_SERVICE_STOPPED
-    ServiceStopped = 0x8010001E,
+    ServiceStopped = 0x8010_001E,
     /// SCARD_E_UNEXPECTED
-    Unexpected = 0x8010001F,
+    Unexpected = 0x8010_001F,
     /// SCARD_E_NO_FILE
-    NoFile = 0x80100026,
+    NoFile = 0x8010_0026,
     /// SCARD_E_NO_ACCESS
-    NoAccess = 0x80100027,
+    NoAccess = 0x8010_0027,
     /// SCARD_E_WRITE_TOO_MANY
-    WriteTooMany = 0x80100028,
+    WriteTooMany = 0x8010_0028,
     /// SCARD_E_BAD_SEEK
-    BadSeek = 0x80100029,
+    BadSeek = 0x8010_0029,
     /// SCARD_E_INVALID_CHV
-    InvalidChv = 0x8010002A,
+    InvalidChv = 0x8010_002A,
     /// SCARD_E_UNKNOWN_RES_MSG
-    UnknownResMsg = 0x8010002B,
+    UnknownResMsg = 0x8010_002B,
     /// SCARD_E_NO_SUCH_CERTIFICATE
-    NoSuchCertificate = 0x8010002C,
+    NoSuchCertificate = 0x8010_002C,
     /// SCARD_E_CERTIFICATE_UNAVAILABLE
-    CertificateUnavailable = 0x8010002D,
+    CertificateUnavailable = 0x8010_002D,
     /// SCARD_E_NO_READERS_AVAILABLE
-    NoReadersAvailable = 0x8010002E,
+    NoReadersAvailable = 0x8010_002E,
     /// SCARD_E_COMM_DATA_LOST
-    CommDataLost = 0x8010002F,
+    CommDataLost = 0x8010_002F,
     /// SCARD_E_NO_KEY_CONTAINER
-    NoKeyContainer = 0x80100030,
+    NoKeyContainer = 0x8010_0030,
     /// SCARD_E_SERVER_TOO_BUSY
-    ServerTooBusy = 0x80100031,
+    ServerTooBusy = 0x8010_0031,
     /// SCARD_E_PIN_CACHE_EXPIRED
-    PinCacheExpired = 0x80100032,
+    PinCacheExpired = 0x8010_0032,
     /// SCARD_E_NO_PIN_CACHE
-    NoPinCache = 0x80100033,
+    NoPinCache = 0x8010_0033,
     /// SCARD_E_READ_ONLY_CARD
-    ReadOnlyCard = 0x80100034,
+    ReadOnlyCard = 0x8010_0034,
     /// SCARD_W_UNSUPPORTED_CARD
-    UnsupportedCard = 0x80100065,
+    UnsupportedCard = 0x8010_0065,
     /// SCARD_W_UNRESPONSIVE_CARD
-    UnresponsiveCard = 0x80100066,
+    UnresponsiveCard = 0x8010_0066,
     /// SCARD_W_UNPOWERED_CARD
-    UnpoweredCard = 0x80100067,
+    UnpoweredCard = 0x8010_0067,
     /// SCARD_W_RESET_CARD
-    ResetCard = 0x80100068,
+    ResetCard = 0x8010_0068,
     /// SCARD_W_REMOVED_CARD
-    RemovedCard = 0x80100069,
+    RemovedCard = 0x8010_0069,
     /// SCARD_W_SECURITY_VIOLATION
-    SecurityViolation = 0x8010006A,
+    SecurityViolation = 0x8010_006A,
     /// SCARD_W_WRONG_CHV
-    WrongChv = 0x8010006B,
+    WrongChv = 0x8010_006B,
     /// SCARD_W_CHV_BLOCKED
-    ChvBlocked = 0x8010006C,
+    ChvBlocked = 0x8010_006C,
     /// SCARD_W_EOF
-    Eof = 0x8010006D,
+    Eof = 0x8010_006D,
     /// SCARD_W_CANCELLED_BY_USER
-    CancelledByUser = 0x8010006E,
+    CancelledByUser = 0x8010_006E,
     /// SCARD_W_CARD_NOT_AUTHENTICATED
-    CardNotAuthenticated = 0x8010006F,
+    CardNotAuthenticated = 0x8010_006F,
     /// SCARD_W_CACHE_ITEM_NOT_FOUND
-    CacheItemNotFound = 0x80100070,
+    CacheItemNotFound = 0x8010_0070,
     /// SCARD_W_CACHE_ITEM_STALE
-    CacheItemStale = 0x80100071,
+    CacheItemStale = 0x8010_0071,
     /// SCARD_W_CACHE_ITEM_TOO_BIG
-    CacheItemTooBig = 0x80100072,
+    CacheItemTooBig = 0x8010_0072,
 }
 
 impl From<ReturnCode> for u32 {
@@ -446,7 +446,7 @@ pub mod rpce {
                 version: 1,
                 endianness: Endianness::LittleEndian,
                 common_header_length: 8,
-                filler: 0xcccccccc,
+                filler: 0xCCCC_CCCC,
             }
         }
     }
@@ -505,7 +505,7 @@ pub mod rpce {
     impl TypeHeader {
         const NAME: &'static str = "RpceTypeHeader";
 
-        pub fn new(object_buffer_length: u32) -> Self {
+        fn new(object_buffer_length: u32) -> Self {
             Self {
                 object_buffer_length,
                 filler: 0,

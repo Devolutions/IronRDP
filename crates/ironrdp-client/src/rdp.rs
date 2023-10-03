@@ -6,7 +6,7 @@ use ironrdp::pdu::input::fast_path::FastPathInputEvent;
 use ironrdp::session::image::DecodedImage;
 use ironrdp::session::{ActiveStage, ActiveStageOutput, SessionResult};
 use ironrdp::{cliprdr, connector, rdpdr, rdpsnd, session};
-use ironrdp_rdpdr::NoopRdpdrBackend;
+use rdpdr::NoopRdpdrBackend;
 use smallvec::SmallVec;
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
@@ -108,10 +108,8 @@ async fn connect(
         .with_server_name(&config.destination)
         .with_credssp_network_client(RequestClientFactory)
         // .with_static_channel(ironrdp::dvc::Drdynvc::new()) // FIXME: drdynvc is not working
-        .with_static_channel(ironrdp::rdpsnd::Rdpsnd::new())
-        .with_static_channel(
-            ironrdp_rdpdr::Rdpdr::new(Box::new(NoopRdpdrBackend {}), "IronRDP".to_string()).with_smartcard(0),
-        );
+        .with_static_channel(rdpsnd::Rdpsnd::new())
+        .with_static_channel(rdpdr::Rdpdr::new(Box::new(NoopRdpdrBackend {}), "IronRDP".to_owned()).with_smartcard(0));
 
     if let Some(builder) = cliprdr_factory {
         let backend = builder.build_cliprdr_backend();
