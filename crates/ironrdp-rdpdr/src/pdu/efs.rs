@@ -8,9 +8,10 @@ use std::mem::size_of;
 use bitflags::bitflags;
 use ironrdp_pdu::cursor::{ReadCursor, WriteCursor};
 use ironrdp_pdu::utils::{encoded_str_len, write_string_to_cursor, CharacterSet};
-use ironrdp_pdu::{cast_length, ensure_size, invalid_message_err, PduEncode, PduError, PduResult};
+use ironrdp_pdu::{cast_length, ensure_size, invalid_message_err, PduError, PduResult};
 use tracing::error;
 
+use super::esc::rpce;
 use super::{PacketId, SharedHeader};
 
 #[derive(Debug, PartialEq)]
@@ -1157,7 +1158,7 @@ pub trait IoctlCode: TryFrom<u32> {}
 #[derive(Debug)]
 pub struct DeviceControlResponse {
     pub device_io_reply: DeviceIoResponse,
-    pub output_buffer: Box<dyn PduEncode>,
+    pub output_buffer: Box<dyn rpce::Encode>,
 }
 
 impl DeviceControlResponse {

@@ -5,7 +5,7 @@
 use super::efs::IoctlCode;
 use ironrdp_pdu::{
     cursor::{ReadCursor, WriteCursor},
-    ensure_size, invalid_message_err, PduEncode, PduError, PduResult,
+    ensure_size, invalid_message_err, PduError, PduResult,
 };
 use tracing::error;
 
@@ -205,26 +205,15 @@ impl LongReturn {
     const NAME: &'static str = "Long_Return";
 }
 
-impl PduEncode for LongReturn {
+impl rpce::HeaderlessEncode for LongReturn {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
-        ensure_size!(in: dst, size: PduEncode::size(self));
-        rpce::encode(self, dst)
+        ensure_size!(in: dst, size: self.size());
+        dst.write_u32(self.return_code as u32);
+        Ok(())
     }
 
     fn name(&self) -> &'static str {
         Self::NAME
-    }
-
-    fn size(&self) -> usize {
-        rpce::size(self)
-    }
-}
-
-impl rpce::HeaderlessEncode for LongReturn {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
-        ensure_size!(in: dst, size: rpce::size(self));
-        dst.write_u32(self.return_code as u32);
-        Ok(())
     }
 
     fn size(&self) -> usize {
@@ -374,7 +363,7 @@ pub enum ReturnCode {
     CacheItemTooBig = 0x80100072,
 }
 
-mod rpce {
+pub mod rpce {
     //! PDUs for [\[MS-RPCE\]: Remote Procedure Call Protocol Extensions] as required by [MS-RDPESC].
     //!
     //! [\[MS-RPCE\]: Remote Procedure Call Protocol Extensions]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rpce/290c38b1-92fe-4229-91e6-4fc376610c15
@@ -382,34 +371,58 @@ mod rpce {
     use ironrdp_pdu::{cursor::WriteCursor, ensure_size, invalid_message_err, PduError, PduResult};
 
     /// Trait for types that can be encoded into an [MS-RPCE] message.
-    pub trait HeaderlessEncode {
+    ///
+    /// Implementers should typically avoid implementing this trait directly
+    /// and instead implement [`HeaderlessEncode`].
+    pub trait Encode: Send + Sync + std::fmt::Debug {
+        /// Encodes this RPCE PDU in-place using the provided `WriteCursor`.
+        fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()>;
+
+        /// Returns the name associated with this RPCE PDU.
+        fn name(&self) -> &'static str;
+
+        /// Computes the size in bytes for this RPCE PDU.
+        fn size(&self) -> usize;
+    }
+
+    /// Trait for types that can be encoded into an [MS-RPCE] message.
+    ///
+    /// Implementers should typically implement this trait instead of [`Encode`].
+    pub trait HeaderlessEncode: Send + Sync + std::fmt::Debug {
         /// Encodes the instance into a buffer sans its [`RpceStreamHeader`] and [`RpceTypeHeader`].
         fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()>;
+        /// Returns the name associated with this RPCE PDU.
+        fn name(&self) -> &'static str;
         /// Returns the size of the instance sans its [`RpceStreamHeader`] and [`RpceTypeHeader`].
         fn size(&self) -> usize;
     }
 
-    /// Accepts a [`HeaderlessEncode`] and encodes it into a full [MS-RPCE] message with headers.
-    pub fn encode(pdu: &impl HeaderlessEncode, dst: &mut WriteCursor) -> PduResult<()> {
-        let stream_header = StreamHeader::default();
-        let type_header = TypeHeader::new(pdu.size() as u32);
+    impl<T: HeaderlessEncode> Encode for T {
+        fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+            ensure_size!(ctx: self.name(), in: dst, size: self.size());
+            let stream_header = StreamHeader::default();
+            let type_header = TypeHeader::new(self.size() as u32);
 
-        stream_header.encode(dst)?;
-        type_header.encode(dst)?;
-        pdu.encode(dst)?;
+            stream_header.encode(dst)?;
+            type_header.encode(dst)?;
+            HeaderlessEncode::encode(self, dst)?;
 
-        // Pad response to be 8-byte aligned.
-        let padding_size = padding_size(pdu);
-        if padding_size > 0 {
-            dst.write_slice(&vec![0; padding_size]);
+            // Pad response to be 8-byte aligned.
+            let padding_size = padding_size(self);
+            if padding_size > 0 {
+                dst.write_slice(&vec![0; padding_size]);
+            }
+
+            Ok(())
         }
 
-        Ok(())
-    }
+        fn name(&self) -> &'static str {
+            HeaderlessEncode::name(self)
+        }
 
-    /// Accepts a [`HeaderlessEncode`] and calculates the full size of an [MS-RPCE] message including headers.
-    pub fn size(pdu: &impl HeaderlessEncode) -> usize {
-        StreamHeader::size() + TypeHeader::size() + HeaderlessEncode::size(pdu) + padding_size(pdu)
+        fn size(&self) -> usize {
+            StreamHeader::size() + TypeHeader::size() + HeaderlessEncode::size(self) + padding_size(self)
+        }
     }
 
     /// [2.2.6.1 Common Type Header for the Serialization Stream]
