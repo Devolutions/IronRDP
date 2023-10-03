@@ -1,15 +1,15 @@
 //! PDUs for [\[MS-RDPEFS\]: Remote Desktop Protocol: File System Virtual Channel Extension]
 //!
 //! [\[MS-RDPEFS\]: Remote Desktop Protocol: File System Virtual Channel Extension]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/34d9de58-b2b5-40b6-b970-f82d4603bdb5
-use std::fmt::Debug;
-use std::mem::size_of;
 
+use super::esc::rpce;
+use super::{PacketId, SharedHeader};
 use bitflags::bitflags;
 use ironrdp_pdu::cursor::{ReadCursor, WriteCursor};
 use ironrdp_pdu::utils::{encoded_str_len, write_string_to_cursor, CharacterSet};
 use ironrdp_pdu::{cast_length, ensure_size, invalid_message_err, PduError, PduResult};
-
-use super::{PacketId, SharedHeader};
+use std::fmt::Debug;
+use std::mem::size_of;
 
 #[derive(Debug, PartialEq)]
 pub enum VersionAndIdPduKind {
@@ -71,7 +71,7 @@ impl VersionAndIdPdu {
         Ok(())
     }
 
-    pub fn decode(header: SharedHeader, src: &mut ReadCursor) -> PduResult<Self> {
+    pub fn decode(header: SharedHeader, payload: &mut ReadCursor) -> PduResult<Self> {
         let kind = match header.packet_id {
             PacketId::CoreServerAnnounce => VersionAndIdPduKind::ServerAnnounceRequest,
             PacketId::CoreClientidConfirm => VersionAndIdPduKind::ServerClientIdConfirm,
@@ -84,10 +84,10 @@ impl VersionAndIdPdu {
             }
         };
 
-        ensure_size!(ctx: kind.name(), in: src, size: Self::FIXED_PART_SIZE);
-        let version_major = src.read_u16();
-        let version_minor = src.read_u16();
-        let client_id = src.read_u32();
+        ensure_size!(ctx: kind.name(), in: payload, size: Self::FIXED_PART_SIZE);
+        let version_major = payload.read_u16();
+        let version_minor = payload.read_u16();
+        let client_id = payload.read_u32();
 
         Ok(Self {
             version_major,
@@ -140,7 +140,7 @@ impl ClientNameRequest {
 
     pub fn encode(&self, dst: &mut WriteCursor) -> PduResult<()> {
         ensure_size!(in: dst, size: self.size());
-        dst.write_u32(self.unicode_flag() as u32);
+        dst.write_u32(self.unicode_flag().into());
         dst.write_u32(0); // // CodePage (4 bytes): it MUST be set to 0
         dst.write_u32(encoded_str_len(self.computer_name(), self.unicode_flag().into(), true) as u32);
         write_string_to_cursor(dst, self.computer_name(), self.unicode_flag().into(), true)
@@ -168,6 +168,12 @@ impl From<ClientNameRequestUnicodeFlag> for CharacterSet {
             ClientNameRequestUnicodeFlag::Ascii => CharacterSet::Ansi,
             ClientNameRequestUnicodeFlag::Unicode => CharacterSet::Unicode,
         }
+    }
+}
+
+impl From<ClientNameRequestUnicodeFlag> for u32 {
+    fn from(val: ClientNameRequestUnicodeFlag) -> Self {
+        val as u32
     }
 }
 
@@ -438,7 +444,7 @@ impl CapabilityHeader {
 
     fn encode(&self, dst: &mut WriteCursor) -> PduResult<()> {
         ensure_size!(in: dst, size: Self::SIZE);
-        dst.write_u16(self.cap_type as u16);
+        dst.write_u16(self.cap_type.into());
         dst.write_u16(self.length);
         dst.write_u32(self.version);
         Ok(())
@@ -458,6 +464,12 @@ enum CapabilityType {
     Drive = 0x0004,
     /// CAP_SMARTCARD_TYPE
     Smartcard = 0x0005,
+}
+
+impl From<CapabilityType> for u16 {
+    fn from(cap_type: CapabilityType) -> Self {
+        cap_type as u16
+    }
 }
 
 /// GENERAL_CAPABILITY_VERSION_02
@@ -753,6 +765,13 @@ impl Devices {
         self.push(DeviceAnnounceHeader::new_smartcard(device_id));
     }
 
+    pub fn is_smartcard(&self, device_id: u32) -> bool {
+        // TODO: consider caching here
+        self.0
+            .iter()
+            .any(|d| d.device_id == device_id && d.device_type == DeviceType::Smartcard)
+    }
+
     fn push(&mut self, device: DeviceAnnounceHeader) {
         self.0.push(device);
     }
@@ -793,7 +812,7 @@ impl DeviceAnnounceHeader {
     }
 
     fn encode(&self, dst: &mut WriteCursor) -> PduResult<()> {
-        dst.write_u32(self.device_type as u32);
+        dst.write_u32(self.device_type.into());
         dst.write_u32(self.device_id);
         self.preferred_dos_name.encode(dst)?;
         dst.write_u32(cast_length!(
@@ -839,7 +858,7 @@ impl PreferredDosName {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 #[repr(u32)]
 pub enum DeviceType {
     /// RDPDR_DTYP_SERIAL
@@ -895,14 +914,14 @@ impl ServerDeviceAnnounceResponse {
     pub fn encode(&self, dst: &mut WriteCursor) -> PduResult<()> {
         ensure_size!(in: dst, size: self.size());
         dst.write_u32(self.device_id);
-        dst.write_u32(self.result_code as u32);
+        dst.write_u32(self.result_code.into());
         Ok(())
     }
 
-    pub fn decode(src: &mut ReadCursor<'_>) -> PduResult<Self> {
-        ensure_size!(ctx: Self::NAME, in: src, size: Self::FIXED_PART_SIZE);
-        let device_id = src.read_u32();
-        let result_code = NtStatus::try_from(src.read_u32())?;
+    pub fn decode(payload: &mut ReadCursor<'_>) -> PduResult<Self> {
+        ensure_size!(ctx: Self::NAME, in: payload, size: Self::FIXED_PART_SIZE);
+        let device_id = payload.read_u32();
+        let result_code = NtStatus::try_from(payload.read_u32())?;
 
         Ok(Self { device_id, result_code })
     }
@@ -950,5 +969,277 @@ impl TryFrom<u32> for NtStatus {
             0xC000_0101 => Ok(NtStatus::DirectoryNotEmpty),
             _ => Err(invalid_message_err!("try_from", "NtStatus", "unsupported value")),
         }
+    }
+}
+
+impl From<NtStatus> for u32 {
+    fn from(status: NtStatus) -> Self {
+        status as u32
+    }
+}
+
+/// [2.2.1.4 Device I/O Request (DR_DEVICE_IOREQUEST)]
+///
+/// [2.2.1.4 Device I/O Request (DR_DEVICE_IOREQUEST)]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/a087ffa8-d0d5-4874-ac7b-0494f63e2d5d
+#[derive(Debug)]
+pub struct DeviceIoRequest {
+    pub device_id: u32,
+    pub file_id: u32,
+    pub completion_id: u32,
+    pub major_function: MajorFunction,
+    pub minor_function: MinorFunction,
+}
+
+impl DeviceIoRequest {
+    const NAME: &str = "DR_DEVICE_IOREQUEST";
+    const FIXED_PART_SIZE: usize = size_of::<u32>() * 5; // DeviceId, FileId, CompletionId, MajorFunction, MinorFunction
+
+    pub fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    pub fn encode(&self, dst: &mut WriteCursor) -> PduResult<()> {
+        ensure_size!(in: dst, size: self.size());
+        dst.write_u32(self.device_id);
+        dst.write_u32(self.file_id);
+        dst.write_u32(self.completion_id);
+        dst.write_u32(self.major_function.into());
+        dst.write_u32(self.minor_function.into());
+        Ok(())
+    }
+
+    pub fn decode(payload: &mut ReadCursor<'_>) -> PduResult<Self> {
+        ensure_size!(ctx: Self::NAME, in: payload, size: Self::FIXED_PART_SIZE);
+        let device_id = payload.read_u32();
+        let file_id = payload.read_u32();
+        let completion_id = payload.read_u32();
+        let major_function = MajorFunction::try_from(payload.read_u32())?;
+        let minor_function = payload.read_u32();
+
+        // From the spec (linked in [`DeviceIoRequest`] doc comment):
+        // "This field [MinorFunction] is valid only when the MajorFunction field
+        // is set to IRP_MJ_DIRECTORY_CONTROL. If the MajorFunction field is set
+        // to another value, the MinorFunction field value SHOULD be 0x00000000."
+        //
+        // SHOULD means implementations are not guaranteed to give us 0x00000000,
+        // so handle that possibility here.
+        let minor_function = if major_function == MajorFunction::DirectoryControl {
+            MinorFunction::try_from(minor_function)?
+        } else {
+            MinorFunction::None
+        };
+
+        Ok(Self {
+            device_id,
+            file_id,
+            completion_id,
+            major_function,
+            minor_function,
+        })
+    }
+
+    pub fn size(&self) -> usize {
+        Self::FIXED_PART_SIZE
+    }
+}
+
+/// See [`DeviceIoRequest`].
+#[derive(Debug, PartialEq, Clone, Copy)]
+#[repr(u32)]
+pub enum MajorFunction {
+    /// IRP_MJ_CREATE
+    Create = 0x0000_0000,
+    /// IRP_MJ_CLOSE
+    Close = 0x0000_0002,
+    /// IRP_MJ_READ
+    Read = 0x0000_0003,
+    /// IRP_MJ_WRITE
+    Write = 0x0000_0004,
+    /// IRP_MJ_DEVICE_CONTROL
+    DeviceControl = 0x0000_000e,
+    /// IRP_MJ_QUERY_VOLUME_INFORMATION
+    QueryVolumeInformation = 0x0000_000a,
+    /// IRP_MJ_SET_VOLUME_INFORMATION
+    SetVolumeInformation = 0x0000_000b,
+    /// IRP_MJ_QUERY_INFORMATION
+    QueryInformation = 0x0000_0005,
+    /// IRP_MJ_SET_INFORMATION
+    SetInformation = 0x0000_0006,
+    /// IRP_MJ_DIRECTORY_CONTROL
+    DirectoryControl = 0x0000_000c,
+    /// IRP_MJ_LOCK_CONTROL
+    LockControl = 0x0000_0011,
+}
+
+impl TryFrom<u32> for MajorFunction {
+    type Error = PduError;
+
+    fn try_from(value: u32) -> Result<Self, Self::Error> {
+        match value {
+            0x0000_0000 => Ok(MajorFunction::Create),
+            0x0000_0002 => Ok(MajorFunction::Close),
+            0x0000_0003 => Ok(MajorFunction::Read),
+            0x0000_0004 => Ok(MajorFunction::Write),
+            0x0000_000e => Ok(MajorFunction::DeviceControl),
+            0x0000_000a => Ok(MajorFunction::QueryVolumeInformation),
+            0x0000_000b => Ok(MajorFunction::SetVolumeInformation),
+            0x0000_0005 => Ok(MajorFunction::QueryInformation),
+            0x0000_0006 => Ok(MajorFunction::SetInformation),
+            0x0000_000c => Ok(MajorFunction::DirectoryControl),
+            0x0000_0011 => Ok(MajorFunction::LockControl),
+            _ => Err(invalid_message_err!("try_from", "MajorFunction", "unsupported value")),
+        }
+    }
+}
+
+impl From<MajorFunction> for u32 {
+    fn from(major_function: MajorFunction) -> Self {
+        major_function as u32
+    }
+}
+
+/// See [`DeviceIoRequest`].
+#[derive(Debug, Clone, Copy)]
+#[repr(u32)]
+pub enum MinorFunction {
+    /// "If the MajorFunction field is set to another value, the MinorFunction field value SHOULD be 0x0000_0000."
+    None = 0x0000_0000,
+    /// IRP_MN_QUERY_DIRECTORY
+    QueryDirectory = 0x0000_0001,
+    /// IRP_MN_NOTIFY_CHANGE_DIRECTORY
+    NotifyChangeDirectory = 0x0000_0002,
+}
+
+impl TryFrom<u32> for MinorFunction {
+    type Error = PduError;
+
+    fn try_from(value: u32) -> Result<Self, Self::Error> {
+        match value {
+            0x0000_0001 => Ok(MinorFunction::QueryDirectory),
+            0x0000_0002 => Ok(MinorFunction::NotifyChangeDirectory),
+            _ => Err(invalid_message_err!("try_from", "MinorFunction", "unsupported value")),
+        }
+    }
+}
+
+impl From<MinorFunction> for u32 {
+    fn from(minor_function: MinorFunction) -> Self {
+        minor_function as u32
+    }
+}
+
+/// [2.2.1.4.5 Device Control Request (DR_CONTROL_REQ)]
+///
+/// [2.2.1.4.5 Device Control Request (DR_CONTROL_REQ)]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/30662c80-ec6e-4ed1-9004-2e6e367bb59f
+#[derive(Debug)]
+pub struct DeviceControlRequest<T: IoCtlCode> {
+    pub header: DeviceIoRequest,
+    pub output_buffer_length: u32,
+    pub input_buffer_length: u32,
+    pub io_control_code: T,
+}
+
+impl<T: IoCtlCode> DeviceControlRequest<T> {
+    fn headerless_size() -> usize {
+        size_of::<u32>() * 3 // OutputBufferLength, InputBufferLength, IoControlCode
+    }
+
+    pub fn decode(header: DeviceIoRequest, payload: &mut ReadCursor<'_>) -> PduResult<Self> {
+        ensure_size!(ctx: "DeviceControlRequest", in: payload, size: Self::headerless_size());
+        let output_buffer_length = payload.read_u32();
+        let input_buffer_length = payload.read_u32();
+        let io_control_code = T::try_from(payload.read_u32())
+            // TODO: precise error reporting is lost here, figure out how to fix that
+            .map_err(|_| {
+                error!("Failed to parse IoCtlCode");
+                invalid_message_err!("DeviceControlRequest", "IoCtlCode", "invalid IoCtlCode")
+            })?;
+
+        // Padding (20 bytes): An array of 20 bytes. Reserved. This field can be set to any value and MUST be ignored.
+        payload.advance(20); // padding
+
+        Ok(Self {
+            header,
+            output_buffer_length,
+            input_buffer_length,
+            io_control_code,
+        })
+    }
+}
+
+/// A 32-bit unsigned integer. This field is specific to the redirected device.
+pub trait IoCtlCode: TryFrom<u32> {}
+
+/// [2.2.1.5.5 Device Control Response (DR_CONTROL_RSP)]
+///
+/// [2.2.1.5.5 Device Control Response (DR_CONTROL_RSP)]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/a00fbce4-95bb-4e15-8182-be2b5ef9076a
+#[derive(Debug)]
+pub struct DeviceControlResponse {
+    pub device_io_reply: DeviceIoResponse,
+    pub output_buffer: Box<dyn rpce::Encode>,
+}
+
+impl DeviceControlResponse {
+    const NAME: &str = "DR_CONTROL_RSP";
+
+    pub fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    pub fn encode(&self, dst: &mut WriteCursor) -> PduResult<()> {
+        ensure_size!(in: dst, size: self.size());
+        self.device_io_reply.encode(dst)?;
+        dst.write_u32(cast_length!(
+            "DeviceControlResponse",
+            "OutputBufferLength",
+            self.output_buffer.size()
+        )?);
+        self.output_buffer.encode(dst)?;
+        Ok(())
+    }
+
+    pub fn size(&self) -> usize {
+        // DeviceIoResponse + OutputBufferLength + OutputBuffer
+        self.device_io_reply.size() + size_of::<u32>() + self.output_buffer.size()
+    }
+}
+
+/// [2.2.1.5 Device I/O Response (DR_DEVICE_IOCOMPLETION)]
+///
+/// [2.2.1.5 Device I/O Response (DR_DEVICE_IOCOMPLETION)]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/1c412a84-0776-4984-b35c-3f0445fcae65
+#[derive(Debug)]
+pub struct DeviceIoResponse {
+    pub device_id: u32,
+    pub completion_id: u32,
+    pub io_status: NtStatus,
+}
+
+impl DeviceIoResponse {
+    const NAME: &str = "DR_DEVICE_IOCOMPLETION";
+    const FIXED_PART_SIZE: usize = size_of::<u32>() * 3; // DeviceId, CompletionId, IoStatus
+
+    pub fn decode(payload: &mut ReadCursor<'_>) -> PduResult<Self> {
+        ensure_size!(ctx: "DeviceIoResponse", in: payload, size: Self::FIXED_PART_SIZE);
+        let device_id = payload.read_u32();
+        let completion_id = payload.read_u32();
+        let io_status = NtStatus::try_from(payload.read_u32())?;
+
+        Ok(Self {
+            device_id,
+            completion_id,
+            io_status,
+        })
+    }
+
+    pub fn encode(&self, dst: &mut WriteCursor) -> PduResult<()> {
+        ensure_size!(in: dst, size: self.size());
+        dst.write_u32(self.device_id);
+        dst.write_u32(self.completion_id);
+        dst.write_u32(self.io_status.into());
+        Ok(())
+    }
+
+    pub fn size(&self) -> usize {
+        Self::FIXED_PART_SIZE
     }
 }

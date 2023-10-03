@@ -57,7 +57,7 @@ impl<P: StaticVirtualChannelProcessor> From<SvcProcessorMessages<P>> for Vec<Svc
 ///
 /// Additional SVC header flags can be added via [`SvcMessage::with_flags`] method.
 pub struct SvcMessage {
-    pdu: Box<dyn PduEncode>,
+    pdu: Box<dyn PduEncode + Send>,
     flags: ChannelFlags,
 }
 
@@ -70,7 +70,10 @@ impl SvcMessage {
     }
 }
 
-impl<T: PduEncode + 'static> From<T> for SvcMessage {
+impl<T> From<T> for SvcMessage
+where
+    T: PduEncode + Send + 'static,
+{
     fn from(pdu: T) -> Self {
         Self {
             pdu: Box::new(pdu),
@@ -192,7 +195,6 @@ impl ChunkProcessor {
     /// Takes a vector of PDUs and breaks them into chunks prefixed with a Channel PDU Header (`CHANNEL_PDU_HEADER`).
     ///
     /// Each chunk is at most `max_chunk_len` bytes long (not including the Channel PDU Header).
-    #[allow(clippy::unused_self)] // For symmetry with `dechunkify`
     fn chunkify(messages: Vec<SvcMessage>, max_chunk_len: usize) -> PduResult<Vec<WriteBuf>> {
         let mut results = Vec::new();
         for message in messages {

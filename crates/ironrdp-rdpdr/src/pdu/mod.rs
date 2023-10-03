@@ -5,11 +5,12 @@ use ironrdp_pdu::cursor::{ReadCursor, WriteCursor};
 use ironrdp_pdu::{ensure_size, invalid_message_err, PduDecode, PduEncode, PduError, PduResult};
 
 use self::efs::{
-    ClientDeviceListAnnounce, ClientNameRequest, CoreCapability, CoreCapabilityKind, ServerDeviceAnnounceResponse,
-    VersionAndIdPdu, VersionAndIdPduKind,
+    ClientDeviceListAnnounce, ClientNameRequest, CoreCapability, CoreCapabilityKind, DeviceControlResponse,
+    DeviceIoRequest, ServerDeviceAnnounceResponse, VersionAndIdPdu, VersionAndIdPduKind,
 };
 
 pub mod efs;
+pub mod esc;
 
 /// All available RDPDR PDUs.
 pub enum RdpdrPdu {
@@ -18,6 +19,8 @@ pub enum RdpdrPdu {
     CoreCapability(CoreCapability),
     ClientDeviceListAnnounce(ClientDeviceListAnnounce),
     ServerDeviceAnnounceResponse(ServerDeviceAnnounceResponse),
+    DeviceIoRequest(DeviceIoRequest),
+    DeviceControlResponse(DeviceControlResponse),
     /// TODO: temporary value for development, this should be removed
     Unimplemented,
 }
@@ -62,6 +65,14 @@ impl RdpdrPdu {
                 component: Component::RdpdrCtypCore,
                 packet_id: PacketId::CoreDeviceReply,
             },
+            RdpdrPdu::DeviceIoRequest(_) => SharedHeader {
+                component: Component::RdpdrCtypCore,
+                packet_id: PacketId::CoreDeviceIoRequest,
+            },
+            RdpdrPdu::DeviceControlResponse(_) => SharedHeader {
+                component: Component::RdpdrCtypCore,
+                packet_id: PacketId::CoreDeviceIoCompletion,
+            },
             RdpdrPdu::Unimplemented => SharedHeader {
                 component: Component::Unimplemented,
                 packet_id: PacketId::Unimplemented,
@@ -80,6 +91,7 @@ impl PduDecode<'_> for RdpdrPdu {
             PacketId::CoreDeviceReply => Ok(RdpdrPdu::ServerDeviceAnnounceResponse(
                 ServerDeviceAnnounceResponse::decode(src)?,
             )),
+            PacketId::CoreDeviceIoRequest => Ok(RdpdrPdu::DeviceIoRequest(DeviceIoRequest::decode(src)?)),
             _ => Ok(RdpdrPdu::Unimplemented),
         }
     }
@@ -95,6 +107,8 @@ impl PduEncode for RdpdrPdu {
             RdpdrPdu::CoreCapability(pdu) => pdu.encode(dst),
             RdpdrPdu::ClientDeviceListAnnounce(pdu) => pdu.encode(dst),
             RdpdrPdu::ServerDeviceAnnounceResponse(pdu) => pdu.encode(dst),
+            RdpdrPdu::DeviceIoRequest(pdu) => pdu.encode(dst),
+            RdpdrPdu::DeviceControlResponse(pdu) => pdu.encode(dst),
             RdpdrPdu::Unimplemented => Ok(()),
         }
     }
@@ -106,6 +120,8 @@ impl PduEncode for RdpdrPdu {
             RdpdrPdu::CoreCapability(pdu) => pdu.name(),
             RdpdrPdu::ClientDeviceListAnnounce(pdu) => pdu.name(),
             RdpdrPdu::ServerDeviceAnnounceResponse(pdu) => pdu.name(),
+            RdpdrPdu::DeviceIoRequest(pdu) => pdu.name(),
+            RdpdrPdu::DeviceControlResponse(pdu) => pdu.name(),
             RdpdrPdu::Unimplemented => "Unimplemented",
         }
     }
@@ -118,6 +134,8 @@ impl PduEncode for RdpdrPdu {
                 RdpdrPdu::CoreCapability(pdu) => pdu.size(),
                 RdpdrPdu::ClientDeviceListAnnounce(pdu) => pdu.size(),
                 RdpdrPdu::ServerDeviceAnnounceResponse(pdu) => pdu.size(),
+                RdpdrPdu::DeviceIoRequest(pdu) => pdu.size(),
+                RdpdrPdu::DeviceControlResponse(pdu) => pdu.size(),
                 RdpdrPdu::Unimplemented => 0,
             }
     }
@@ -141,6 +159,12 @@ impl fmt::Debug for RdpdrPdu {
             Self::ServerDeviceAnnounceResponse(it) => {
                 write!(f, "RdpdrPdu({:?})", it)
             }
+            Self::DeviceIoRequest(it) => {
+                write!(f, "RdpdrPdu({:?})", it)
+            }
+            Self::DeviceControlResponse(it) => {
+                write!(f, "RdpdrPdu({:?})", it)
+            }
             Self::Unimplemented => {
                 write!(f, "RdpdrPdu::Unimplemented")
             }
@@ -162,8 +186,8 @@ impl SharedHeader {
 
     fn encode(&self, dst: &mut WriteCursor) -> PduResult<()> {
         ensure_size!(in: dst, size: Self::SIZE);
-        dst.write_u16(self.component as u16);
-        dst.write_u16(self.packet_id as u16);
+        dst.write_u16(self.component.into());
+        dst.write_u16(self.packet_id.into());
         Ok(())
     }
 
@@ -199,6 +223,12 @@ impl TryFrom<u16> for Component {
     }
 }
 
+impl From<Component> for u16 {
+    fn from(component: Component) -> Self {
+        component as u16
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 #[repr(u16)]
 pub enum PacketId {
@@ -213,9 +243,9 @@ pub enum PacketId {
     /// PAKID_CORE_DEVICE_REPLY
     CoreDeviceReply = 0x6472,
     /// PAKID_CORE_DEVICE_IOREQUEST
-    CoreDeviceIorequest = 0x4952,
+    CoreDeviceIoRequest = 0x4952,
     /// PAKID_CORE_DEVICE_IOCOMPLETION
-    CoreDeviceIocompletion = 0x4943,
+    CoreDeviceIoCompletion = 0x4943,
     /// PAKID_CORE_SERVER_CAPABILITY
     CoreServerCapability = 0x5350,
     /// PAKID_CORE_CLIENT_CAPABILITY
@@ -242,8 +272,8 @@ impl TryFrom<u16> for PacketId {
             0x434E => Ok(PacketId::CoreClientName),
             0x4441 => Ok(PacketId::CoreDevicelistAnnounce),
             0x6472 => Ok(PacketId::CoreDeviceReply),
-            0x4952 => Ok(PacketId::CoreDeviceIorequest),
-            0x4943 => Ok(PacketId::CoreDeviceIocompletion),
+            0x4952 => Ok(PacketId::CoreDeviceIoRequest),
+            0x4943 => Ok(PacketId::CoreDeviceIoCompletion),
             0x5350 => Ok(PacketId::CoreServerCapability),
             0x4350 => Ok(PacketId::CoreClientCapability),
             0x444D => Ok(PacketId::CoreDevicelistRemove),
@@ -252,5 +282,11 @@ impl TryFrom<u16> for PacketId {
             0x5543 => Ok(PacketId::PrnUsingXps),
             _ => Err(invalid_message_err!("try_from", "PacketId", "invalid value")),
         }
+    }
+}
+
+impl From<PacketId> for u16 {
+    fn from(packet_id: PacketId) -> Self {
+        packet_id as u16
     }
 }
