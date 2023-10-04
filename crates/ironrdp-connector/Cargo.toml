@@ -26,3 +26,8 @@ ironrdp-pdu = { workspace = true, features = ["std"] }
 rand_core = { version = "0.6", features = ["std"] } # TODO: dependency injection?
 sspi.workspace = true
 tracing.workspace = true
+
+# FIXME: sspi-rs forgot to enable the `std` feature for `winapi`.
+# This workaround should be removed when sspi 0.11 is released.
+[target.'cfg(windows)'.dependencies]
+winapi = { version = "0.3", features = ["std"] }

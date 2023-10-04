@@ -1,3 +1,6 @@
+#[cfg(windows)]
+extern crate winapi;
+
 #[macro_use]
 extern crate tracing;
 

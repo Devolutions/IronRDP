@@ -32,7 +32,10 @@ impl NetworkClient for WasmNetworkClient {
         let payload = js_sys::Uint8Array::new(&length);
         payload.copy_from(data);
 
-        let fut = Request::new(url.as_str()).body(payload).send();
+        let fut = Request::post(url.as_str())
+            .body(payload)
+            .map_err(|e| sspi::Error::new(sspi::ErrorKind::InternalError, e.to_string()))?
+            .send();
 
         let (tx, rx) = std::sync::mpsc::sync_channel(0); // rendezvous channel
 

@@ -32,7 +32,7 @@ der-parser = "8.2"
 thiserror.workspace = true
 md5 = { package = "md-5", version = "0.10" }
 num-bigint = "0.4"
-num-derive = "0.3"
+num-derive = "0.4"
 num-integer = "0.1"
 num-traits = "0.2"
 sha1 = "0.10"
