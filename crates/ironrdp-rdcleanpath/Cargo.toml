@@ -16,4 +16,4 @@ doctest = false
 test = false
 
 [dependencies]
-der = { version = "0.7.1", features = ["alloc", "derive"] }
+der = { version = "0.7", features = ["alloc", "derive"] }

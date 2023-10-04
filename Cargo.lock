@@ -1154,12 +1154,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "exitcode"
-version = "1.1.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "de853764b47027c2e862a995c34978ffa63c1501f2e15f987ba11bd4f9bba193"
-
-[[package]]
 name = "expect-test"
 version = "1.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1855,12 +1849,12 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
- "exitcode",
  "inquire",
  "ironrdp",
  "ironrdp-cliprdr-native",
  "ironrdp-tls",
  "ironrdp-tokio",
+ "proc-exit",
  "semver",
  "smallvec",
  "softbuffer",
@@ -3186,6 +3180,12 @@ checksum = "3c2fcef82c0ec6eefcc179b978446c399b3cdf73c392c35604e399eee6df1ee3"
 dependencies = [
  "elliptic-curve",
 ]
+
+[[package]]
+name = "proc-exit"
+version = "2.0.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "dbd05acff31c8b626109e8e1db042b9bddb2b3ffba01ead93d15b78517a282ca"
 
 [[package]]
 name = "proc-macro-crate"

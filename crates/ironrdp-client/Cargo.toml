@@ -40,7 +40,7 @@ softbuffer = "0.3"
 
 # CLI
 clap = { version = "4.2", features = ["derive", "cargo"] }
-exitcode = "1.1"
+proc-exit = "2"
 inquire = "0.6"
 
 # Logging
@@ -58,6 +58,6 @@ tap = "1"
 semver = "1"
 
 [target.'cfg(windows)'.dependencies]
-windows = { version = "0.48.0", features = [
+windows = { version = "0.48", features = [
     "Win32_Foundation",
 ] }

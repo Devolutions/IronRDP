@@ -16,15 +16,15 @@ doctest = false
 # test = false
 
 [dependencies]
-bit_field = "0.10.2"
+bit_field = "0.10"
 bitflags = "2"
-bitvec = "1.0.1"
-byteorder = "1.4.3"
+bitvec = "1.0"
+byteorder = "1.4"
 ironrdp-error.workspace = true
 ironrdp-pdu = { workspace = true, features = ["std"] }
-lazy_static = "1.4.0"
-num-derive = "0.3.3"
-num-traits = "0.2.15"
+lazy_static = "1.4"
+num-derive = "0.3"
+num-traits = "0.2"
 thiserror.workspace = true
 
 [dev-dependencies]

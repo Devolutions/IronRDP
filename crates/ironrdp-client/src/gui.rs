@@ -218,22 +218,22 @@ impl GuiContext {
                 Event::UserEvent(RdpOutputEvent::ConnectionFailure(error)) => {
                     error!(?error);
                     eprintln!("Connection error: {}", error.report());
-                    control_flow.set_exit_with_code(exitcode::PROTOCOL);
+                    control_flow.set_exit_with_code(proc_exit::sysexits::PROTOCOL_ERR.as_raw());
                 }
                 Event::UserEvent(RdpOutputEvent::Terminated(result)) => {
                     let exit_code = match result {
                         Ok(()) => {
                             println!("Terminated gracefully");
-                            exitcode::OK
+                            proc_exit::sysexits::OK
                         }
                         Err(error) => {
                             error!(?error);
                             eprintln!("Active session error: {}", error.report());
-                            exitcode::PROTOCOL
+                            proc_exit::sysexits::PROTOCOL_ERR
                         }
                     };
 
-                    control_flow.set_exit_with_code(exit_code);
+                    control_flow.set_exit_with_code(exit_code.as_raw());
                 }
                 Event::UserEvent(RdpOutputEvent::PointerHidden) => {
                     window.set_cursor_visible(false);

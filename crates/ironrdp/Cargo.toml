@@ -50,7 +50,7 @@ anyhow = "1"
 rustls = "0.21"
 bmp = "0.5"
 pico-args = "0.5"
-x509-cert = { version = "0.2.1", default-features = false, features = ["std"] }
+x509-cert = { version = "0.2", default-features = false, features = ["std"] }
 tracing.workspace = true
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
