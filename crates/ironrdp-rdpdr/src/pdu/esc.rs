@@ -811,7 +811,7 @@ pub mod ndr {
     //! Request/response messages are nested structs with fields, encoded as NDR (network data
     //! representation).
     //!
-    //! Fixed-sized fields are encoded in-line as they appear in the struct.
+    //! Fixed-size fields are encoded in-line as they appear in the struct.
     //!
     //! Variable-sized fields (strings, byte arrays, sometimes structs) are encoded as pointers:
     //! - in place of the field in the struct, a "pointer" is written
