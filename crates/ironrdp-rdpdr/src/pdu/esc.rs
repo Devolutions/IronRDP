@@ -7,7 +7,7 @@ use self::ndr::ScardContext;
 use super::efs::IoCtlCode;
 use ironrdp_pdu::{
     cursor::{ReadCursor, WriteCursor},
-    ensure_size, invalid_message_err, PduError, PduResult,
+    ensure_size, invalid_message_err, PduDecode, PduError, PduResult,
 };
 use std::mem::size_of;
 
@@ -418,7 +418,7 @@ impl EstablishContextCall {
     const NAME: &'static str = "EstablishContext_Call";
 
     pub fn decode(payload: &mut ReadCursor<'_>) -> PduResult<Self> {
-        rpce::Pdu::<Self>::decode(payload)
+        Ok(rpce::Pdu::<Self>::decode(payload)?.into_inner())
     }
 
     fn size() -> usize {
@@ -509,7 +509,7 @@ pub mod rpce {
 
     use ironrdp_pdu::{
         cursor::{ReadCursor, WriteCursor},
-        ensure_size, invalid_message_err, PduEncode, PduError, PduResult,
+        ensure_size, invalid_message_err, PduDecode, PduEncode, PduError, PduResult,
     };
 
     /// Wrapper struct for [MS-RPCE] PDUs that allows for common [`PduEncode`], [`Encode`], and [`Self::decode`] implementations.
@@ -561,7 +561,7 @@ pub mod rpce {
     /// impl RpceDecodePdu {
     ///     /// `decode` returns a `Pdu` wrapping the underlying struct.
     ///     pub fn decode(payload: &mut ReadCursor<'_>) -> PduResult<rpce::Pdu<Self>> {
-    ///         rpce::Pdu::<Self>::decode(payload)
+    ///         Ok(rpce::Pdu::<Self>::decode(payload)?.into_inner())
     ///     }
     ///
     ///     fn size() -> usize {
@@ -586,16 +586,25 @@ pub mod rpce {
     #[derive(Debug)]
     pub struct Pdu<T>(pub T);
 
-    impl<T: HeaderlessDecode> Pdu<T> {
-        /// Decodes the instance from a buffer sans its [`StreamHeader`] and [`TypeHeader`].
-        pub fn decode(src: &mut ReadCursor<'_>) -> PduResult<T> {
+    impl<T> Pdu<T>
+    where
+        T: HeaderlessDecode,
+    {
+        pub fn into_inner(self) -> T {
+            self.0
+        }
+    }
+
+    impl<'de, T: HeaderlessDecode> PduDecode<'de> for Pdu<T> {
+        /// Decodes the instance from a buffer stripping it of its [`StreamHeader`] and [`TypeHeader`].
+        fn decode(src: &mut ReadCursor<'_>) -> PduResult<Pdu<T>> {
             // We expect `StreamHeader::decode`, `TypeHeader::decode`, and `T::decode` to each
             // call `ensure_size!` to ensure that the buffer is large enough, so we can safely
             // omit that check here.
             let _stream_header = StreamHeader::decode(src)?;
             let _type_header = TypeHeader::decode(src)?;
             let pdu = T::decode(src)?;
-            Ok(pdu)
+            Ok(Self(pdu))
         }
     }
 
