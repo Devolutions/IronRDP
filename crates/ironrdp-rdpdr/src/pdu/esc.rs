@@ -427,10 +427,7 @@ impl EstablishContextCall {
 }
 
 impl rpce::HeaderlessDecode for EstablishContextCall {
-    fn decode(src: &mut ReadCursor<'_>) -> PduResult<Self>
-    where
-        Self: Sized,
-    {
+    fn decode(src: &mut ReadCursor<'_>) -> PduResult<Self> {
         ensure_size!(in: src, size: Self::size());
         let scope = Scope::try_from(src.read_u32())?;
         Ok(Self { scope })
@@ -586,7 +583,6 @@ pub mod rpce {
     /// ```
     ///
     /// See [`super::EstablishContextCall`] for a live example of a decodable PDU.
-
     #[derive(Debug)]
     pub struct Pdu<T>(pub T);
 
@@ -651,11 +647,14 @@ pub mod rpce {
         fn size(&self) -> usize;
     }
 
-    pub trait HeaderlessDecode {
+    /// Trait for types that can be decoded from an [MS-RPCE] message.
+    ///
+    /// Implementers should typically implement this trait for a given type `T`
+    /// and then call [`Pdu::decode`] to decode the instance. See [`Pdu`] for more
+    /// details and an example.
+    pub trait HeaderlessDecode: Sized {
         /// Decodes the instance from a buffer sans its [`StreamHeader`] and [`TypeHeader`].
-        fn decode(src: &mut ReadCursor<'_>) -> PduResult<Self>
-        where
-            Self: Sized;
+        fn decode(src: &mut ReadCursor<'_>) -> PduResult<Self>;
     }
 
     /// [2.2.6.1 Common Type Header for the Serialization Stream]
