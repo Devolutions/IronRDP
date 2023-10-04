@@ -49,11 +49,11 @@ ironrdp-tokio = { version = "0.1", path = "crates/ironrdp-tokio" }
 ironrdp = { version = "0.5", path = "crates/ironrdp" }
 
 expect-test = "1"
-proptest = "1.1.0"
-rstest = "0.17.0"
-sspi = "0.10.1"
-tracing = { version = "0.1.37", features = ["log"] }
-thiserror = "1.0.40"
+proptest = "1.1"
+rstest = "0.17"
+sspi = "0.10"
+tracing = { version = "0.1", features = ["log"] }
+thiserror = "1.0"
 
 [profile.dev]
 opt-level = 1
