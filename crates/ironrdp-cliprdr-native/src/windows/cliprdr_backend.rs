@@ -58,7 +58,7 @@ impl CliprdrBackend for WinCliprdrBackend {
         self.send_event(BackendEvent::FormatDataRequest(request));
     }
 
-    fn on_format_data_response(&mut self, response: FormatDataResponse) {
+    fn on_format_data_response(&mut self, response: FormatDataResponse<'_>) {
         self.send_event(BackendEvent::FormatDataResponse(response.into_owned()));
     }
 
@@ -66,7 +66,7 @@ impl CliprdrBackend for WinCliprdrBackend {
         // File transfer not implemented yet
     }
 
-    fn on_file_contents_response(&mut self, _response: FileContentsResponse) {
+    fn on_file_contents_response(&mut self, _response: FileContentsResponse<'_>) {
         // File transfer not implemented yet
     }
 

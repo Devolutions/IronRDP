@@ -80,7 +80,7 @@ impl Sequence for FinalizationSequence {
     fn step(&mut self, input: &[u8], output: &mut WriteBuf) -> ConnectorResult<Written> {
         let (written, next_state) = match std::mem::take(&mut self.state) {
             FinalizationState::WaitSynchronize => {
-                let data = pdu::decode::<pdu::mcs::SendDataRequest>(input).map_err(ConnectorError::pdu)?;
+                let data = pdu::decode::<pdu::mcs::SendDataRequest<'_>>(input).map_err(ConnectorError::pdu)?;
 
                 let synchronize = rdp::headers::ShareControlHeader::from_buffer(Cursor::new(data.user_data))?;
 
@@ -90,7 +90,7 @@ impl Sequence for FinalizationSequence {
             }
 
             FinalizationState::WaitControlCooperate => {
-                let data = pdu::decode::<pdu::mcs::SendDataRequest>(input).map_err(ConnectorError::pdu)?;
+                let data = pdu::decode::<pdu::mcs::SendDataRequest<'_>>(input).map_err(ConnectorError::pdu)?;
 
                 let cooperate = rdp::headers::ShareControlHeader::from_buffer(Cursor::new(data.user_data))?;
 
@@ -100,7 +100,7 @@ impl Sequence for FinalizationSequence {
             }
 
             FinalizationState::WaitRequestControl => {
-                let data = pdu::decode::<pdu::mcs::SendDataRequest>(input).map_err(ConnectorError::pdu)?;
+                let data = pdu::decode::<pdu::mcs::SendDataRequest<'_>>(input).map_err(ConnectorError::pdu)?;
 
                 let control = rdp::headers::ShareControlHeader::from_buffer(Cursor::new(data.user_data))?;
 
@@ -110,7 +110,7 @@ impl Sequence for FinalizationSequence {
             }
 
             FinalizationState::WaitFontList => {
-                let data = pdu::decode::<pdu::mcs::SendDataRequest>(input).map_err(ConnectorError::pdu)?;
+                let data = pdu::decode::<pdu::mcs::SendDataRequest<'_>>(input).map_err(ConnectorError::pdu)?;
 
                 let font_list = rdp::headers::ShareControlHeader::from_buffer(Cursor::new(data.user_data))?;
 

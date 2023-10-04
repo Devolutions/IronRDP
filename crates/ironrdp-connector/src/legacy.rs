@@ -31,7 +31,7 @@ where
     T: PduParsing,
     ConnectorError: From<T::Error>,
 {
-    let x224_payload = ironrdp_pdu::decode::<x224::X224Data>(src).map_err(ConnectorError::pdu)?;
+    let x224_payload = ironrdp_pdu::decode::<x224::X224Data<'_>>(src).map_err(ConnectorError::pdu)?;
     let x224_msg = T::from_buffer(x224_payload.data.as_ref())?;
     Ok(x224_msg)
 }
@@ -83,7 +83,7 @@ impl SendDataIndicationCtx<'_> {
 pub fn decode_send_data_indication(src: &[u8]) -> ConnectorResult<SendDataIndicationCtx<'_>> {
     use ironrdp_pdu::mcs::McsMessage;
 
-    let mcs_msg = ironrdp_pdu::decode::<McsMessage>(src).map_err(ConnectorError::pdu)?;
+    let mcs_msg = ironrdp_pdu::decode::<McsMessage<'_>>(src).map_err(ConnectorError::pdu)?;
 
     match mcs_msg {
         McsMessage::SendDataIndication(msg) => {

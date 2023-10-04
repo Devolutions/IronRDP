@@ -240,7 +240,7 @@ fn tiles_to_rectangles<'a>(
     })
 }
 
-fn map_tiles_data<'a>(tiles: &'_ [Tile<'a>], quants: &'_ [Quant]) -> Vec<TileData<'a>> {
+fn map_tiles_data<'a>(tiles: &[Tile<'a>], quants: &[Quant]) -> Vec<TileData<'a>> {
     tiles
         .iter()
         .map(|t| TileData {

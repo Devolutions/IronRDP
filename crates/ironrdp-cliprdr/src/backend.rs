@@ -2,7 +2,7 @@
 
 use crate::pdu::{
     ClipboardFormat, ClipboardFormatId, ClipboardGeneralCapabilityFlags, FileContentsRequest, FileContentsResponse,
-    FormatDataRequest, FormatDataResponse, LockDataId,
+    FormatDataRequest, FormatDataResponse, LockDataId, OwnedFormatDataResponse,
 };
 
 pub trait ClipboardError: std::error::Error + Send + Sync + 'static {}
@@ -21,7 +21,7 @@ pub enum ClipboardMessage {
     ///
     /// Client implementation should send format data to `CLIPRDR` SVC when this message is
     /// received.
-    SendFormatData(FormatDataResponse<'static>),
+    SendFormatData(OwnedFormatDataResponse),
 
     /// Sent by clipboard backend when format data in given format is need to be received from
     /// the remote.
@@ -100,7 +100,7 @@ pub trait CliprdrBackend: std::fmt::Debug + Send + Sync + 'static {
     ///
     /// If data is not available anymore, [`FormatDataResponse`] will have its `is_error` field
     /// set to `true`.
-    fn on_format_data_response(&mut self, response: FormatDataResponse);
+    fn on_format_data_response(&mut self, response: FormatDataResponse<'_>);
 
     /// Processes remote's request to send file contents.
     ///
@@ -117,7 +117,7 @@ pub trait CliprdrBackend: std::fmt::Debug + Send + Sync + 'static {
     /// previously sent file contents request.
     ///
     /// If data is not available anymore, then server will send error response instead.
-    fn on_file_contents_response(&mut self, response: FileContentsResponse);
+    fn on_file_contents_response(&mut self, response: FileContentsResponse<'_>);
 
     /// Locks specific data stream in the client clipboard.
     ///

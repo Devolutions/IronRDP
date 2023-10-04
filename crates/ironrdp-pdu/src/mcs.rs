@@ -272,7 +272,7 @@ pub enum McsMessage<'a> {
     DisconnectProviderUltimatum(DisconnectProviderUltimatum),
 }
 
-impl_pdu_borrowing!(McsMessage, OwnedMcsMessage);
+impl_pdu_borrowing!(McsMessage<'_>, OwnedMcsMessage);
 
 impl IntoOwnedPdu for McsMessage<'_> {
     type Owned = OwnedMcsMessage;
@@ -555,7 +555,7 @@ pub struct SendDataRequest<'a> {
     pub user_data: Cow<'a, [u8]>,
 }
 
-impl_pdu_borrowing!(SendDataRequest, OwnedSendDataRequest);
+impl_pdu_borrowing!(SendDataRequest<'_>, OwnedSendDataRequest);
 
 impl IntoOwnedPdu for SendDataRequest<'_> {
     type Owned = OwnedSendDataRequest;
@@ -636,7 +636,7 @@ pub struct SendDataIndication<'a> {
     pub user_data: Cow<'a, [u8]>,
 }
 
-impl_pdu_borrowing!(SendDataIndication, OwnedSendDataIndication);
+impl_pdu_borrowing!(SendDataIndication<'_>, OwnedSendDataIndication);
 
 impl IntoOwnedPdu for SendDataIndication<'_> {
     type Owned = OwnedSendDataIndication;

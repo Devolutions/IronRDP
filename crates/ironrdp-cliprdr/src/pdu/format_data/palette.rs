@@ -1,5 +1,5 @@
 use ironrdp_pdu::cursor::{ReadCursor, WriteCursor};
-use ironrdp_pdu::{PduDecode, PduEncode, PduResult};
+use ironrdp_pdu::{impl_pdu_pod, PduDecode, PduEncode, PduResult};
 
 /// Represents `PALETTEENTRY`
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -21,6 +21,8 @@ impl PaletteEntry {
 pub struct ClipboardPalette {
     pub entries: Vec<PaletteEntry>,
 }
+
+impl_pdu_pod!(ClipboardPalette);
 
 impl ClipboardPalette {
     const NAME: &str = "CLIPRDR_PALETTE";

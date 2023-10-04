@@ -1,11 +1,13 @@
 use ironrdp_pdu::cursor::{ReadCursor, WriteCursor};
-use ironrdp_pdu::{cast_int, ensure_fixed_part_size, PduDecode, PduEncode, PduResult};
+use ironrdp_pdu::{cast_int, ensure_fixed_part_size, impl_pdu_pod, PduDecode, PduEncode, PduResult};
 
 use crate::pdu::PartialHeader;
 
 /// Represents `CLIPRDR_LOCK_CLIPDATA`/`CLIPRDR_UNLOCK_CLIPDATA`
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LockDataId(pub u32);
+
+impl_pdu_pod!(LockDataId);
 
 impl LockDataId {
     const NAME: &str = "CLIPRDR_(UN)LOCK_CLIPDATA";

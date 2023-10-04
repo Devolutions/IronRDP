@@ -324,7 +324,7 @@ impl Sequence for Acceptor {
                 early_capability,
                 channels,
             } => {
-                let data = pdu::decode::<pdu::mcs::SendDataRequest>(input).map_err(ConnectorError::pdu)?;
+                let data = pdu::decode::<pdu::mcs::SendDataRequest<'_>>(input).map_err(ConnectorError::pdu)?;
 
                 let client_info = rdp::ClientInfoPdu::from_buffer(Cursor::new(data.user_data))?;
 
@@ -421,7 +421,7 @@ impl Sequence for Acceptor {
             }
 
             AcceptorState::CapabilitiesWaitConfirm { channels } => {
-                let data = pdu::decode::<pdu::mcs::SendDataRequest>(input).map_err(ConnectorError::pdu)?;
+                let data = pdu::decode::<pdu::mcs::SendDataRequest<'_>>(input).map_err(ConnectorError::pdu)?;
 
                 let capabilities_confirm = rdp::headers::ShareControlHeader::from_buffer(Cursor::new(data.user_data))?;
 

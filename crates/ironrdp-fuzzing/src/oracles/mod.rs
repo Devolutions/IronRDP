@@ -20,7 +20,7 @@ pub fn pdu_decode(data: &[u8]) {
 
     let _ = decode::<ConnectionRequest>(data);
     let _ = decode::<ConnectionConfirm>(data);
-    let _ = decode::<McsMessage>(data);
+    let _ = decode::<McsMessage<'_>>(data);
     let _ = ConnectInitial::from_buffer(data);
     let _ = ConnectResponse::from_buffer(data);
     let _ = ClientInfoPdu::from_buffer(data);
@@ -45,13 +45,13 @@ pub fn pdu_decode(data: &[u8]) {
     let _ = vc::ChannelPduHeader::from_buffer(data);
 
     let _ = decode::<fast_path::FastPathHeader>(data);
-    let _ = decode::<fast_path::FastPathUpdatePdu>(data);
+    let _ = decode::<fast_path::FastPathUpdatePdu<'_>>(data);
     let _ = fast_path::FastPathUpdate::decode_with_code(data, fast_path::UpdateCode::SurfaceCommands);
 
-    let _ = decode::<surface_commands::SurfaceCommand>(data);
-    let _ = decode::<surface_commands::SurfaceBitsPdu>(data);
+    let _ = decode::<surface_commands::SurfaceCommand<'_>>(data);
+    let _ = decode::<surface_commands::SurfaceBitsPdu<'_>>(data);
     let _ = decode::<surface_commands::FrameMarkerPdu>(data);
-    let _ = decode::<surface_commands::ExtendedBitmapDataPdu>(data);
+    let _ = decode::<surface_commands::ExtendedBitmapDataPdu<'_>>(data);
     let _ = decode::<surface_commands::BitmapDataHeader>(data);
 
     let _ = codecs::rfx::Headers::from_buffer(data);
@@ -72,14 +72,14 @@ pub fn pdu_decode(data: &[u8]) {
     let _ = input::InputEventPdu::from_buffer(data);
     let _ = input::InputEvent::from_buffer(data);
 
-    let _ = decode::<bitmap::rdp6::BitmapStream>(data);
+    let _ = decode::<bitmap::rdp6::BitmapStream<'_>>(data);
 
-    let _ = decode::<ironrdp_cliprdr::pdu::ClipboardPdu>(data);
+    let _ = decode::<ironrdp_cliprdr::pdu::ClipboardPdu<'_>>(data);
 
     let _ = decode::<ironrdp_rdpdr::pdu::RdpdrPdu>(data);
 }
 
-pub fn rle_decompress_bitmap(input: BitmapInput) {
+pub fn rle_decompress_bitmap(input: BitmapInput<'_>) {
     let mut out = Vec::new();
 
     let _ = ironrdp_graphics::rle::decompress_24_bpp(input.src, &mut out, input.width, input.height);
@@ -88,7 +88,7 @@ pub fn rle_decompress_bitmap(input: BitmapInput) {
     let _ = ironrdp_graphics::rle::decompress_8_bpp(input.src, &mut out, input.width, input.height);
 }
 
-pub fn rdp6_encode_bitmap_stream(input: &BitmapInput) {
+pub fn rdp6_encode_bitmap_stream(input: &BitmapInput<'_>) {
     use ironrdp_graphics::rdp6::{BitmapStreamEncoder, RgbAChannels, RgbChannels};
 
     let mut out = vec![0; input.src.len() * 2];
@@ -106,7 +106,7 @@ pub fn rdp6_encode_bitmap_stream(input: &BitmapInput) {
     );
 }
 
-pub fn rdp6_decode_bitmap_stream_to_rgb24(input: &BitmapInput) {
+pub fn rdp6_decode_bitmap_stream_to_rgb24(input: &BitmapInput<'_>) {
     use ironrdp_graphics::rdp6::BitmapStreamDecoder;
 
     let mut out = Vec::new();

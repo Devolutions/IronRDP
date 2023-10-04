@@ -211,7 +211,7 @@ impl RdpServer {
     }
 
     async fn handle_x224(&mut self, frame: BytesMut) -> Result<bool> {
-        let message = ironrdp_pdu::decode::<mcs::McsMessage>(&frame)?;
+        let message = ironrdp_pdu::decode::<mcs::McsMessage<'_>>(&frame)?;
         match message {
             mcs::McsMessage::SendDataRequest(data) => {
                 let control = rdp::headers::ShareControlHeader::from_buffer(Cursor::new(data.user_data))?;

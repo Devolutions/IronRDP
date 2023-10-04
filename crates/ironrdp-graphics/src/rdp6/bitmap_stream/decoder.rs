@@ -258,7 +258,7 @@ impl BitmapStreamDecoder {
         image_width: usize,
         image_height: usize,
     ) -> Result<(), BitmapDecodeError> {
-        let bitmap = decode::<BitmapStreamPdu>(bitmap_data)?;
+        let bitmap = decode::<BitmapStreamPdu<'_>>(bitmap_data)?;
 
         let decoder = BitmapStreamDecoderImpl::init(bitmap, image_width, image_height);
 

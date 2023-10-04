@@ -2,7 +2,9 @@ use std::borrow::Cow;
 
 use ironrdp_pdu::cursor::{ReadCursor, WriteCursor};
 use ironrdp_pdu::utils::{read_string_from_cursor, write_string_to_cursor, CharacterSet};
-use ironrdp_pdu::{cast_int, ensure_size, invalid_message_err, PduDecode, PduEncode, PduResult};
+use ironrdp_pdu::{
+    cast_int, ensure_size, impl_pdu_borrowing, invalid_message_err, IntoOwnedPdu, PduDecode, PduEncode, PduResult,
+};
 
 use crate::pdu::PartialHeader;
 
@@ -10,6 +12,18 @@ use crate::pdu::PartialHeader;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClientTemporaryDirectory<'a> {
     path_buffer: Cow<'a, [u8]>,
+}
+
+impl_pdu_borrowing!(ClientTemporaryDirectory<'_>, OwnedClientTemporaryDirectory);
+
+impl IntoOwnedPdu for ClientTemporaryDirectory<'_> {
+    type Owned = OwnedClientTemporaryDirectory;
+
+    fn into_owned_pdu(self) -> Self::Owned {
+        OwnedClientTemporaryDirectory {
+            path_buffer: Cow::Owned(self.path_buffer.into_owned()),
+        }
+    }
 }
 
 impl ClientTemporaryDirectory<'_> {
