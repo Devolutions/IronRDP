@@ -18,7 +18,7 @@ use pdu::efs::{
     CoreCapabilityKind, DeviceControlRequest, DeviceIoRequest, Devices, ServerDeviceAnnounceResponse, VersionAndIdPdu,
     VersionAndIdPduKind,
 };
-use pdu::esc::{ScardAccessStartedEventCall, ScardIoCtlCode};
+use pdu::esc::{ScardAccessStartedEventCall, ScardCall, ScardIoCtlCode};
 use pdu::RdpdrPdu;
 
 /// The RDPDR channel as specified in [\[MS-RDPEFS\]].
@@ -91,28 +91,28 @@ impl Rdpdr {
         Ok(vec![SvcMessage::from(res)])
     }
 
-    fn handle_server_device_announce_response(&self, pdu: ServerDeviceAnnounceResponse) -> PduResult<Vec<SvcMessage>> {
+    fn handle_server_device_announce_response(
+        &mut self,
+        pdu: ServerDeviceAnnounceResponse,
+    ) -> PduResult<Vec<SvcMessage>> {
         self.backend.handle_server_device_announce_response(pdu)?;
         Ok(Vec::new())
     }
 
     fn handle_device_io_request(
-        &self,
+        &mut self,
         pdu: DeviceIoRequest,
         payload: &mut ReadCursor<'_>,
     ) -> PduResult<Vec<SvcMessage>> {
         if self.is_for_smartcard(&pdu) {
             let req = DeviceControlRequest::<ScardIoCtlCode>::decode(pdu, payload)?;
-            match req.io_control_code {
-                ScardIoCtlCode::AccessStartedEvent => {
-                    let call = ScardAccessStartedEventCall::decode(payload)?;
-                    debug!(?req, ?call, "received smartcard ioctl");
-                    self.backend.handle_scard_access_started_event_call(req, call)?;
-                }
-                _ => {
-                    warn!(?req, "received unimplemented smartcard ioctl");
-                }
-            }
+            let call = ScardCall::decode(req.io_control_code, payload)?;
+
+            debug!(?req);
+            debug!(?call);
+
+            self.backend.handle_scard_call(req, call)?;
+
             Ok(Vec::new())
         } else {
             Err(other_err!("Rdpdr", "received unexpected packet"))

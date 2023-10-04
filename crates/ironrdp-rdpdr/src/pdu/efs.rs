@@ -1183,6 +1183,21 @@ pub struct DeviceControlResponse {
 impl DeviceControlResponse {
     const NAME: &str = "DR_CONTROL_RSP";
 
+    pub fn new<T: IoCtlCode>(
+        req: DeviceControlRequest<T>,
+        io_status: NtStatus,
+        output_buffer: Box<dyn rpce::Encode>,
+    ) -> Self {
+        Self {
+            device_io_reply: DeviceIoResponse {
+                device_id: req.header.device_id,
+                completion_id: req.header.completion_id,
+                io_status,
+            },
+            output_buffer,
+        }
+    }
+
     pub fn name(&self) -> &'static str {
         Self::NAME
     }
