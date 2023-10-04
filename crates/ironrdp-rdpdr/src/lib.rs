@@ -18,7 +18,7 @@ use pdu::efs::{
     CoreCapabilityKind, DeviceControlRequest, DeviceIoRequest, Devices, ServerDeviceAnnounceResponse, VersionAndIdPdu,
     VersionAndIdPduKind,
 };
-use pdu::esc::{ScardAccessStartedEventCall, ScardCall, ScardIoCtlCode};
+use pdu::esc::{ScardCall, ScardIoCtlCode};
 use pdu::RdpdrPdu;
 
 /// The RDPDR channel as specified in [\[MS-RDPEFS\]].

@@ -808,7 +808,7 @@ pub mod ndr {
     //! Variable-sized fields (strings, byte arrays, sometimes structs) are encoded as pointers:
     //! - in place of the field in the struct, a "pointer" is written
     //! - the pointer value is 0x0002xxxx, where xxxx is an "index" in increments of 4
-    //! - for example, first pointer is 0x00020000, second is 0x00020004, third is 0x00020008 etc.
+    //! - for example, first pointer is 0x0002_0000, second is 0x0002_0004, third is 0x0002_0008 etc.
     //! - the actual values are then appended at the end of the message, in the same order as their
     //!   pointers appeared
     //! - in the code below, "*_ptr" is the pointer value and "*_value" the actual data
@@ -866,7 +866,7 @@ pub mod ndr {
             dst.write_u32(length);
         }
 
-        dst.write_u32(0x00020000 + *index * 4);
+        dst.write_u32(0x0002_0000 + *index * 4);
         *index += 1;
         Ok(())
     }
