@@ -45,6 +45,11 @@ pub enum CharacterSet {
     Unicode = 2,
 }
 
+// Read a string from the cursor, using the specified character set.
+//
+// If read_null_terminator is true, the string will be read until a null terminator is found.
+// Otherwise, the string will be read until the end of the cursor. If the next character is a null
+// terminator, an empty string will be returned (without consuming the null terminator).
 pub fn read_string_from_cursor(
     cursor: &mut ReadCursor<'_>,
     character_set: CharacterSet,
