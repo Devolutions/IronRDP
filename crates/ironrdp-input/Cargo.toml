@@ -18,4 +18,4 @@ test = false
 [dependencies]
 ironrdp-pdu.workspace = true
 bitvec = "1.0"
-smallvec = "1.10"
+smallvec = "1.11"

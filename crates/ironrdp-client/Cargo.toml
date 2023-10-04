@@ -39,7 +39,7 @@ winit = "0.28"
 softbuffer = "0.3"
 
 # CLI
-clap = { version = "4.2", features = ["derive", "cargo"] }
+clap = { version = "4.4", features = ["derive", "cargo"] }
 proc-exit = "2"
 inquire = "0.6"
 
@@ -53,7 +53,7 @@ tokio = { version = "1", features = ["full"]}
 # Utils
 whoami = "1.4"
 anyhow = "1"
-smallvec = "1.10"
+smallvec = "1.11"
 tap = "1"
 semver = "1"
 
