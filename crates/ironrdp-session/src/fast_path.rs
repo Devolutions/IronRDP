@@ -128,9 +128,9 @@ impl Processor {
                             match ironrdp_graphics::rle::decompress(
                                 update.bitmap_data,
                                 &mut buf,
-                                update.width,
-                                update.height,
-                                update.bits_per_pixel,
+                                usize::from(update.width),
+                                usize::from(update.height),
+                                usize::from(update.bits_per_pixel),
                             ) {
                                 Ok(RlePixelFormat::Rgb16) => image.apply_rgb16_bitmap(&buf, &update.rectangle)?,
 
