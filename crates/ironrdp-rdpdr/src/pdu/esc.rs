@@ -7,7 +7,9 @@ use self::ndr::ScardContext;
 use super::efs::IoCtlCode;
 use ironrdp_pdu::{
     cursor::{ReadCursor, WriteCursor},
-    ensure_size, invalid_message_err, PduDecode, PduError, PduResult,
+    ensure_size, invalid_message_err,
+    utils::{encoded_multistring_len, read_multistring_from_cursor, write_multistring_to_cursor, CharacterSet},
+    PduDecode, PduError, PduResult,
 };
 use std::mem::size_of;
 
@@ -18,18 +20,18 @@ use std::mem::size_of;
 pub enum ScardCall {
     AccessStartedEventCall(ScardAccessStartedEventCall),
     EstablishContextCall(EstablishContextCall),
+    ListReadersCall(ListReadersCall),
     Unsupported,
 }
 
 impl ScardCall {
-    pub fn decode(io_ctl_code: ScardIoCtlCode, payload: &mut ReadCursor<'_>) -> PduResult<Self> {
+    pub fn decode(io_ctl_code: ScardIoCtlCode, src: &mut ReadCursor<'_>) -> PduResult<Self> {
         match io_ctl_code {
             ScardIoCtlCode::AccessStartedEvent => Ok(ScardCall::AccessStartedEventCall(
-                ScardAccessStartedEventCall::decode(payload)?,
+                ScardAccessStartedEventCall::decode(src)?,
             )),
-            ScardIoCtlCode::EstablishContext => {
-                Ok(ScardCall::EstablishContextCall(EstablishContextCall::decode(payload)?))
-            }
+            ScardIoCtlCode::EstablishContext => Ok(ScardCall::EstablishContextCall(EstablishContextCall::decode(src)?)),
+            ScardIoCtlCode::ListReadersW => Ok(ScardCall::ListReadersCall(ListReadersCall::decode(src)?)),
             _ => {
                 warn!(?io_ctl_code, "Unsupported ScardIoCtlCode");
                 // TODO: maybe this should be an error
@@ -500,6 +502,120 @@ impl rpce::HeaderlessEncode for EstablishContextReturn {
     }
 }
 
+/// [2.2.2.4 ListReaders_Call]
+///
+/// [2.2.2.4 ListReaders_Call]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/be2f46a5-77fb-40bf-839c-aed45f0a26d7
+#[derive(Debug)]
+pub struct ListReadersCall {
+    pub context: ScardContext,
+    pub groups_ptr_length: u32,
+    pub groups_length: u32,
+    pub groups_ptr: u32,
+    pub groups: Vec<String>,
+    pub readers_is_null: bool, // u32
+    pub readers_size: u32,
+}
+
+impl ListReadersCall {
+    const NAME: &'static str = "ListReaders_Call";
+
+    pub fn decode(src: &mut ReadCursor<'_>) -> PduResult<Self> {
+        Ok(rpce::Pdu::<Self>::decode(src)?.into_inner())
+    }
+}
+
+impl rpce::HeaderlessDecode for ListReadersCall {
+    fn decode(src: &mut ReadCursor<'_>) -> PduResult<Self> {
+        let mut index = 0;
+        let mut context = ScardContext::decode_ptr(src, &mut index)?;
+
+        ensure_size!(in: src, size: size_of::<u32>());
+        let groups_ptr_length = src.read_u32();
+
+        let groups_ptr = ndr::decode_ptr(src, &mut index)?;
+
+        ensure_size!(in: src, size: size_of::<u32>() * 2);
+        let readers_is_null = (src.read_u32()) == 0x0000_0001;
+        let readers_size = src.read_u32();
+
+        context.decode_value(src)?;
+
+        if groups_ptr == 0 {
+            return Ok(Self {
+                context,
+                groups_ptr_length,
+                groups_ptr,
+                groups_length: 0,
+                groups: Vec::new(),
+                readers_is_null,
+                readers_size,
+            });
+        }
+
+        ensure_size!(in: src, size: size_of::<u32>());
+        let groups_length = src.read_u32();
+        if groups_length != groups_ptr_length {
+            return Err(invalid_message_err!(
+                "decode",
+                "mismatched reader groups length in NDR pointer and value"
+            ));
+        }
+
+        let groups = read_multistring_from_cursor(src, CharacterSet::Unicode)?;
+
+        Ok(Self {
+            context,
+            groups_ptr_length,
+            groups_ptr,
+            groups_length,
+            groups,
+            readers_is_null,
+            readers_size,
+        })
+    }
+}
+
+/// [2.2.3.4 ListReaderGroups_Return and ListReaders_Return]
+///
+/// [2.2.3.4 ListReaderGroups_Return and ListReaders_Return]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/6630bb5b-fc0e-4141-8b53-263225c7628d
+#[derive(Debug)]
+pub struct ListReadersReturn {
+    pub return_code: ReturnCode,
+    pub readers: Vec<String>,
+}
+
+impl ListReadersReturn {
+    const NAME: &'static str = "ListReaders_Return";
+
+    pub fn new(return_code: ReturnCode, readers: Vec<String>) -> rpce::Pdu<Self> {
+        rpce::Pdu(Self { return_code, readers })
+    }
+}
+
+impl rpce::HeaderlessEncode for ListReadersReturn {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_size!(in: dst, size: self.size());
+        dst.write_u32(self.return_code.into());
+        let readers_length = encoded_multistring_len(&self.readers, CharacterSet::Unicode) as u32;
+        let mut index = 0;
+        ndr::encode_ptr(Some(readers_length), &mut index, dst)?;
+        dst.write_u32(readers_length as u32);
+        write_multistring_to_cursor(dst, &self.readers, CharacterSet::Unicode)?;
+        Ok(())
+    }
+
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    fn size(&self) -> usize {
+        self.return_code.size() // dst.write_u32(self.return_code.into());
+        + ndr::ptr_size(true) // ndr::encode_ptr(...);
+        + 4 // dst.write_u32(readers_length as u32);
+        + encoded_multistring_len(&self.readers, CharacterSet::Unicode) // write_multistring_to_cursor(...);
+    }
+}
+
 pub mod rpce {
     //! PDUs for [\[MS-RPCE\]: Remote Procedure Call Protocol Extensions] as required by [MS-RDPESC].
     //!
@@ -832,7 +948,10 @@ pub mod ndr {
 
     use std::mem::size_of;
 
-    use ironrdp_pdu::{cursor::WriteCursor, ensure_size, PduResult};
+    use ironrdp_pdu::{
+        cursor::{ReadCursor, WriteCursor},
+        ensure_size, invalid_message_err, PduResult,
+    };
 
     /// [2.2.1.1 REDIR_SCARDCONTEXT]
     ///
@@ -846,6 +965,8 @@ pub mod ndr {
     }
 
     impl ScardContext {
+        const NAME: &'static str = "REDIR_SCARDCONTEXT";
+
         pub fn new(value: u32) -> Self {
             Self {
                 length: size_of::<u32>() as u32,
@@ -863,13 +984,34 @@ pub mod ndr {
             Ok(())
         }
 
+        pub fn decode_ptr(src: &mut ReadCursor<'_>, index: &mut u32) -> PduResult<Self> {
+            ensure_size!(in: src, size: size_of::<u32>());
+            let length = src.read_u32();
+            let _ptr = decode_ptr(src, index)?;
+            Ok(Self { length, value: 0 })
+        }
+
+        pub fn decode_value(&mut self, src: &mut ReadCursor<'_>) -> PduResult<()> {
+            ensure_size!(in: src, size: size_of::<u32>()*2);
+            let length = src.read_u32();
+            if length != self.length {
+                Err(invalid_message_err!(
+                    "decode_value",
+                    "mismatched length in ScardContext reference and value"
+                ))
+            } else {
+                self.value = src.read_u32();
+                Ok(())
+            }
+        }
+
         pub fn size(&self) -> usize {
-            ptr_size(Some(self.length)) + size_of::<u32>() * 2
+            ptr_size(true) + size_of::<u32>() * 2
         }
     }
 
     pub fn encode_ptr(length: Option<u32>, index: &mut u32, dst: &mut WriteCursor<'_>) -> PduResult<()> {
-        ensure_size!(ctx: "ndr::encode_ptr", in: dst, size: ptr_size(length));
+        ensure_size!(ctx: "encode_ptr", in: dst, size: ptr_size(length.is_some()));
         if let Some(length) = length {
             dst.write_u32(length);
         }
@@ -879,8 +1021,24 @@ pub mod ndr {
         Ok(())
     }
 
-    pub fn ptr_size(length: Option<u32>) -> usize {
-        if length.is_some() {
+    pub fn decode_ptr(src: &mut ReadCursor<'_>, index: &mut u32) -> PduResult<u32> {
+        ensure_size!(ctx: "decode_ptr", in: src, size: size_of::<u32>());
+        let ptr = src.read_u32();
+        if ptr == 0 {
+            // NULL pointer is OK. Don't update index.
+            return Ok(ptr);
+        }
+        let expect_ptr = 0x0002_0000 + *index * 4;
+        *index += 1;
+        if ptr != expect_ptr {
+            Err(invalid_message_err!("decode_ptr", "ptr", "ptr != expect_ptr"))
+        } else {
+            Ok(ptr)
+        }
+    }
+
+    pub fn ptr_size(with_length: bool) -> usize {
+        if with_length {
             size_of::<u32>() * 2
         } else {
             size_of::<u32>()
