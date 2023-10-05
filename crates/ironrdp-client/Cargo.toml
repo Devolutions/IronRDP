@@ -58,6 +58,6 @@ tap = "1"
 semver = "1"
 
 [target.'cfg(windows)'.dependencies]
-windows = { version = "0.48", features = [
+windows = { version = "0.51", features = [
     "Win32_Foundation",
 ] }

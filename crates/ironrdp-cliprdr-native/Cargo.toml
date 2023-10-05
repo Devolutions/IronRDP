@@ -20,7 +20,7 @@ test = false
 ironrdp-cliprdr.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
-windows = { version = "0.48", features = [
+windows = { version = "0.51", features = [
     "Win32_Foundation",
     "Win32_System_DataExchange",
     "Win32_System_Memory",
