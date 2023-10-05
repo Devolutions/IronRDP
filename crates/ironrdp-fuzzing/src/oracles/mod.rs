@@ -82,10 +82,10 @@ pub fn pdu_decode(data: &[u8]) {
 pub fn rle_decompress_bitmap(input: BitmapInput<'_>) {
     let mut out = Vec::new();
 
-    let _ = ironrdp_graphics::rle::decompress_24_bpp(input.src, &mut out, input.width, input.height);
-    let _ = ironrdp_graphics::rle::decompress_16_bpp(input.src, &mut out, input.width, input.height);
-    let _ = ironrdp_graphics::rle::decompress_15_bpp(input.src, &mut out, input.width, input.height);
-    let _ = ironrdp_graphics::rle::decompress_8_bpp(input.src, &mut out, input.width, input.height);
+    let _ = ironrdp_graphics::rle::decompress_24_bpp(input.src, &mut out, input.width.into(), input.height.into());
+    let _ = ironrdp_graphics::rle::decompress_16_bpp(input.src, &mut out, input.width.into(), input.height.into());
+    let _ = ironrdp_graphics::rle::decompress_15_bpp(input.src, &mut out, input.width.into(), input.height.into());
+    let _ = ironrdp_graphics::rle::decompress_8_bpp(input.src, &mut out, input.width.into(), input.height.into());
 }
 
 pub fn rdp6_encode_bitmap_stream(input: &BitmapInput<'_>) {

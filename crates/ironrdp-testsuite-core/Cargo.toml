@@ -33,7 +33,6 @@ ironrdp-rdcleanpath.workspace = true
 ironrdp-session.workspace = true
 pretty_assertions = "1.4"
 proptest.workspace = true
-rdp-rs = { git = "https://github.com/citronneur/rdp-rs", rev = "7ac880d7efb7f05efef3c84476f7c24f4053e0ea" }
 rstest.workspace = true
 expect-test.workspace = true
 anyhow = "1"

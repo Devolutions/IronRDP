@@ -20,7 +20,7 @@ pub enum RlePixelFormat {
     Rgb8,
 }
 
-/// Decompress an RLE compressed bitmap.
+/// Decompresses an RLE compressed bitmap.
 ///
 /// `src`: source buffer containing compressed bitmap
 /// `dst`: destination buffer
@@ -30,11 +30,11 @@ pub enum RlePixelFormat {
 pub fn decompress(
     src: &[u8],
     dst: &mut Vec<u8>,
-    width: impl Into<usize>,
-    height: impl Into<usize>,
-    bpp: impl Into<usize>,
+    width: usize,
+    height: usize,
+    bpp: usize,
 ) -> Result<RlePixelFormat, RleError> {
-    match bpp.into() {
+    match bpp {
         Mode24Bpp::BPP => decompress_24_bpp(src, dst, width, height),
         Mode16Bpp::BPP => decompress_16_bpp(src, dst, width, height),
         Mode15Bpp::BPP => decompress_15_bpp(src, dst, width, height),
@@ -43,7 +43,7 @@ pub fn decompress(
     }
 }
 
-/// Decompress a 24-bpp RLE compressed bitmap.
+/// Decompresses a 24-bpp RLE compressed bitmap.
 ///
 /// `src`: source buffer containing compressed bitmap
 /// `dst`: destination buffer
@@ -52,13 +52,13 @@ pub fn decompress(
 pub fn decompress_24_bpp(
     src: &[u8],
     dst: &mut Vec<u8>,
-    width: impl Into<usize>,
-    height: impl Into<usize>,
+    width: usize,
+    height: usize,
 ) -> Result<RlePixelFormat, RleError> {
-    decompress_helper::<Mode24Bpp>(src, dst, width.into(), height.into())
+    decompress_helper::<Mode24Bpp>(src, dst, width, height)
 }
 
-/// Decompress a 16-bpp RLE compressed bitmap.
+/// Decompresses a 16-bpp RLE compressed bitmap.
 ///
 /// `src`: source buffer containing compressed bitmap
 /// `dst`: destination buffer
@@ -67,13 +67,13 @@ pub fn decompress_24_bpp(
 pub fn decompress_16_bpp(
     src: &[u8],
     dst: &mut Vec<u8>,
-    width: impl Into<usize>,
-    height: impl Into<usize>,
+    width: usize,
+    height: usize,
 ) -> Result<RlePixelFormat, RleError> {
-    decompress_helper::<Mode16Bpp>(src, dst, width.into(), height.into())
+    decompress_helper::<Mode16Bpp>(src, dst, width, height)
 }
 
-/// Decompress a 15-bpp RLE compressed bitmap.
+/// Decompresses a 15-bpp RLE compressed bitmap.
 ///
 /// `src`: source buffer containing compressed bitmap
 /// `dst`: destination buffer
@@ -82,13 +82,13 @@ pub fn decompress_16_bpp(
 pub fn decompress_15_bpp(
     src: &[u8],
     dst: &mut Vec<u8>,
-    width: impl Into<usize>,
-    height: impl Into<usize>,
+    width: usize,
+    height: usize,
 ) -> Result<RlePixelFormat, RleError> {
-    decompress_helper::<Mode15Bpp>(src, dst, width.into(), height.into())
+    decompress_helper::<Mode15Bpp>(src, dst, width, height)
 }
 
-/// Decompress a 8-bpp RLE compressed bitmap.
+/// Decompresses a 8-bpp RLE compressed bitmap.
 ///
 /// `src`: source buffer containing compressed bitmap
 /// `dst`: destination buffer
@@ -97,10 +97,10 @@ pub fn decompress_15_bpp(
 pub fn decompress_8_bpp(
     src: &[u8],
     dst: &mut Vec<u8>,
-    width: impl Into<usize>,
-    height: impl Into<usize>,
+    width: usize,
+    height: usize,
 ) -> Result<RlePixelFormat, RleError> {
-    decompress_helper::<Mode8Bpp>(src, dst, width.into(), height.into())
+    decompress_helper::<Mode8Bpp>(src, dst, width, height)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
