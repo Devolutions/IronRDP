@@ -8,7 +8,7 @@ use super::efs::IoCtlCode;
 use ironrdp_pdu::{
     cursor::{ReadCursor, WriteCursor},
     ensure_size, invalid_message_err,
-    utils::{read_string_from_cursor, CharacterSet},
+    utils::{encoded_multistring_len, read_multistring_from_cursor, write_multistring_to_cursor, CharacterSet},
     PduDecode, PduError, PduResult,
 };
 use std::mem::size_of;
@@ -561,22 +561,7 @@ impl rpce::HeaderlessDecode for ListReadersCall {
             ));
         }
 
-        // Here we read a multi-string: https://stackoverflow.com/questions/3576527/details-on-the-microsoft-multi-string-format
-        // (Note that this is a Unicode multi-string whereas the one in the link is an ASCII multi-string.)
-        let mut groups = Vec::new();
-        loop {
-            // Check whether we're at the end of the list by checking for a null terminator.
-            ensure_size!(in: src, size: size_of::<u16>());
-            if src.peek_u16() == 0 {
-                // We've reached the end of the list, consume the null terminator and break out of the loop.
-                src.read_u16();
-                break;
-            }
-
-            // Read a null terminated string and add it to the accumulator.
-            let group = read_string_from_cursor(src, CharacterSet::Unicode, true)?;
-            groups.push(group);
-        }
+        let groups = read_multistring_from_cursor(src, CharacterSet::Unicode)?;
 
         Ok(Self {
             context,
@@ -587,6 +572,47 @@ impl rpce::HeaderlessDecode for ListReadersCall {
             readers_is_null,
             readers_size,
         })
+    }
+}
+
+/// [2.2.3.4 ListReaderGroups_Return and ListReaders_Return]
+///
+/// [2.2.3.4 ListReaderGroups_Return and ListReaders_Return]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/6630bb5b-fc0e-4141-8b53-263225c7628d
+#[derive(Debug)]
+pub struct ListReadersReturn {
+    pub return_code: ReturnCode,
+    pub readers: Vec<String>,
+}
+
+impl ListReadersReturn {
+    const NAME: &'static str = "ListReaders_Return";
+
+    pub fn new(return_code: ReturnCode, readers: Vec<String>) -> rpce::Pdu<Self> {
+        rpce::Pdu(Self { return_code, readers })
+    }
+}
+
+impl rpce::HeaderlessEncode for ListReadersReturn {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_size!(in: dst, size: self.size());
+        dst.write_u32(self.return_code.into());
+        let readers_length = encoded_multistring_len(&self.readers, CharacterSet::Unicode) as u32;
+        let mut index = 0;
+        ndr::encode_ptr(Some(readers_length), &mut index, dst)?;
+        dst.write_u32(readers_length as u32);
+        write_multistring_to_cursor(dst, &self.readers, CharacterSet::Unicode)?;
+        Ok(())
+    }
+
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    fn size(&self) -> usize {
+        self.return_code.size() // dst.write_u32(self.return_code.into());
+        + ndr::ptr_size(true) // ndr::encode_ptr(...);
+        + 4 // dst.write_u32(readers_length as u32);
+        + encoded_multistring_len(&self.readers, CharacterSet::Unicode) // write_multistring_to_cursor(...);
     }
 }
 
@@ -980,12 +1006,12 @@ pub mod ndr {
         }
 
         pub fn size(&self) -> usize {
-            ptr_size(Some(self.length)) + size_of::<u32>() * 2
+            ptr_size(true) + size_of::<u32>() * 2
         }
     }
 
     pub fn encode_ptr(length: Option<u32>, index: &mut u32, dst: &mut WriteCursor<'_>) -> PduResult<()> {
-        ensure_size!(ctx: "encode_ptr", in: dst, size: ptr_size(length));
+        ensure_size!(ctx: "encode_ptr", in: dst, size: ptr_size(length.is_some()));
         if let Some(length) = length {
             dst.write_u32(length);
         }
@@ -1011,8 +1037,8 @@ pub mod ndr {
         }
     }
 
-    pub fn ptr_size(length: Option<u32>) -> usize {
-        if length.is_some() {
+    pub fn ptr_size(with_length: bool) -> usize {
+        if with_length {
             size_of::<u32>() * 2
         } else {
             size_of::<u32>()

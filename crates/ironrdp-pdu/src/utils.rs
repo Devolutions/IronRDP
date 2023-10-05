@@ -114,6 +114,26 @@ pub fn read_string_from_cursor(
     Ok(result.trim_end_matches('\0').into())
 }
 
+pub fn read_multistring_from_cursor(
+    cursor: &mut ReadCursor<'_>,
+    character_set: CharacterSet,
+) -> PduResult<Vec<String>> {
+    let mut strings = Vec::new();
+
+    loop {
+        let string = read_string_from_cursor(cursor, character_set, true)?;
+        if string.is_empty() {
+            // empty string indicates the end of the multi-string array
+            // (we hit two null terminators in a row)
+            break;
+        }
+
+        strings.push(string);
+    }
+
+    Ok(strings)
+}
+
 pub fn write_string_to_cursor(
     cursor: &mut WriteCursor<'_>,
     value: &str,
@@ -143,6 +163,31 @@ pub fn write_string_to_cursor(
     Ok(())
 }
 
+pub fn write_multistring_to_cursor(
+    cursor: &mut WriteCursor<'_>,
+    strings: &[String],
+    character_set: CharacterSet,
+) -> PduResult<()> {
+    // Write each string to cursor, separated by a null terminator
+    for string in strings {
+        write_string_to_cursor(cursor, string, character_set, true)?;
+    }
+
+    // Write final null terminator signifying the end of the multi-string
+    match character_set {
+        CharacterSet::Unicode => {
+            ensure_size!(ctx: "Encode multistring (UTF-16)", in: cursor, size: 2);
+            cursor.write_u16(0)
+        }
+        CharacterSet::Ansi => {
+            ensure_size!(ctx: "Encode multistring (UTF-8)", in: cursor, size: 1);
+            cursor.write_u8(0)
+        }
+    }
+
+    Ok(())
+}
+
 /// Returns the length in bytes of the encoded value
 /// based on the passed CharacterSet and with_null_terminator flag.
 pub fn encoded_str_len(value: &str, character_set: CharacterSet, with_null_terminator: bool) -> usize {
@@ -150,6 +195,16 @@ pub fn encoded_str_len(value: &str, character_set: CharacterSet, with_null_termi
         CharacterSet::Ansi => value.len() + if with_null_terminator { 1 } else { 0 },
         CharacterSet::Unicode => value.encode_utf16().count() * 2 + if with_null_terminator { 2 } else { 0 },
     }
+}
+
+/// Returns the length in bytes of the encoded multi-string
+/// based on the passed CharacterSet.
+pub fn encoded_multistring_len(strings: &[String], character_set: CharacterSet) -> usize {
+    strings
+        .iter()
+        .map(|s| encoded_str_len(s, character_set, true))
+        .sum::<usize>()
+        + if character_set == CharacterSet::Unicode { 2 } else { 1 }
 }
 
 pub(crate) fn read_string(
