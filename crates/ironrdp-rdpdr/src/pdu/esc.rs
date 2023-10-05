@@ -595,7 +595,7 @@ pub mod rpce {
         }
     }
 
-    impl<'de, T: HeaderlessDecode> PduDecode<'de> for Pdu<T> {
+    impl<T: HeaderlessDecode> PduDecode<'_> for Pdu<T> {
         /// Decodes the instance from a buffer stripping it of its [`StreamHeader`] and [`TypeHeader`].
         fn decode(src: &mut ReadCursor<'_>) -> PduResult<Pdu<T>> {
             // We expect `StreamHeader::decode`, `TypeHeader::decode`, and `T::decode` to each
