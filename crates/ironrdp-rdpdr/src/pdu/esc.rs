@@ -6,6 +6,7 @@ use self::ndr::{ReaderState, ScardContext};
 use super::efs::IoCtlCode;
 use bitflags::bitflags;
 use ironrdp_pdu::{
+    cast_length,
     cursor::{ReadCursor, WriteCursor},
     ensure_size, invalid_message_err,
     utils::{encoded_multistring_len, read_multistring_from_cursor, write_multistring_to_cursor, CharacterSet},
@@ -598,10 +599,14 @@ impl rpce::HeaderlessEncode for ListReadersReturn {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
         ensure_size!(in: dst, size: self.size());
         dst.write_u32(self.return_code.into());
-        let readers_length = encoded_multistring_len(&self.readers, CharacterSet::Unicode) as u32;
+        let readers_length: u32 = cast_length!(
+            "ListReadersReturn",
+            "readers",
+            encoded_multistring_len(&self.readers, CharacterSet::Unicode)
+        )?;
         let mut index = 0;
         ndr::encode_ptr(Some(readers_length), &mut index, dst)?;
-        dst.write_u32(readers_length as u32);
+        dst.write_u32(readers_length);
         write_multistring_to_cursor(dst, &self.readers, CharacterSet::Unicode)?;
         Ok(())
     }
@@ -613,7 +618,7 @@ impl rpce::HeaderlessEncode for ListReadersReturn {
     fn size(&self) -> usize {
         self.return_code.size() // dst.write_u32(self.return_code.into());
         + ndr::ptr_size(true) // ndr::encode_ptr(...);
-        + 4 // dst.write_u32(readers_length as u32);
+        + 4 // dst.write_u32(readers_length);
         + encoded_multistring_len(&self.readers, CharacterSet::Unicode) // write_multistring_to_cursor(...);
     }
 }
@@ -652,7 +657,7 @@ impl rpce::HeaderlessDecode for GetStatusChangeCall {
 
         context.decode_value(src)?;
 
-        ensure_size!(in: src, size: size_of::<u32>() * 2);
+        ensure_size!(in: src, size: size_of::<u32>());
         let states_length = src.read_u32();
 
         let mut states = Vec::new();
@@ -758,10 +763,12 @@ impl GetStatusChangeReturn {
 
 impl rpce::HeaderlessEncode for GetStatusChangeReturn {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_size!(in: dst, size: self.size());
         dst.write_u32(self.return_code.into());
+        let reader_states_len = cast_length!("GetStatusChangeReturn", "reader_states", self.reader_states.len())?;
         let mut index = 0;
-        ndr::encode_ptr(Some(self.reader_states.len() as u32), &mut index, dst)?;
-        dst.write_u32(self.reader_states.len() as u32);
+        ndr::encode_ptr(Some(reader_states_len), &mut index, dst)?;
+        dst.write_u32(reader_states_len);
         for reader_state in &self.reader_states {
             reader_state.encode(dst)?;
         }
@@ -774,8 +781,8 @@ impl rpce::HeaderlessEncode for GetStatusChangeReturn {
 
     fn size(&self) -> usize {
         self.return_code.size() // dst.write_u32(self.return_code.into());
-        + ndr::ptr_size(true) // ndr::encode_ptr(...);
-        + 4 // dst.write_u32(self.reader_states.len() as u32);
+        + ndr::ptr_size(true) // ndr::encode_ptr(Some(reader_states_len), &mut index, dst)?;
+        + 4 // dst.write_u32(reader_states_len);
         + self.reader_states.iter().map(|s| s.size()).sum::<usize>()
     }
 }
@@ -788,6 +795,7 @@ pub mod rpce {
     use std::mem::size_of;
 
     use ironrdp_pdu::{
+        cast_length,
         cursor::{ReadCursor, WriteCursor},
         ensure_size, invalid_message_err, PduDecode, PduEncode, PduError, PduResult,
     };
@@ -893,7 +901,7 @@ pub mod rpce {
         fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
             ensure_size!(ctx: self.name(), in: dst, size: self.size());
             let stream_header = StreamHeader::default();
-            let type_header = TypeHeader::new(self.size() as u32);
+            let type_header = TypeHeader::new(cast_length!("Pdu<T>", "size", self.size())?);
 
             stream_header.encode(dst)?;
             type_header.encode(dst)?;
