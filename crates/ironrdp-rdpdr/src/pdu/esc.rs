@@ -718,7 +718,7 @@ impl ReaderStateCommonCall {
         Ok(())
     }
 
-    fn size(&self) -> usize {
+    fn size() -> usize {
         Self::FIXED_PART_SIZE
     }
 }
@@ -783,7 +783,7 @@ impl rpce::HeaderlessEncode for GetStatusChangeReturn {
         self.return_code.size() // dst.write_u32(self.return_code.into());
         + ndr::ptr_size(true) // ndr::encode_ptr(Some(reader_states_len), &mut index, dst)?;
         + 4 // dst.write_u32(reader_states_len);
-        + self.reader_states.iter().map(|s| s.size()).sum::<usize>()
+        + self.reader_states.iter().map(|_s| ReaderStateCommonCall::size()).sum::<usize>()
     }
 }
 
