@@ -153,7 +153,7 @@ impl StaticVirtualChannel {
 /// communication between client and server components over the main data connection.
 /// There are at most 31 (optional) static virtual channels that can be created for a single connection, for a
 /// total of 32 static channels when accounting for the non-optional I/O channel.
-pub trait StaticVirtualChannelProcessor: AsAny + fmt::Debug + Send + Sync {
+pub trait StaticVirtualChannelProcessor: AsAny + fmt::Debug + Send {
     /// Returns the name of the static virtual channel corresponding to this processor.
     fn channel_name(&self) -> ChannelName;
 
