@@ -2,10 +2,11 @@
 //!
 //! [\[MS-RDPESC\]: Remote Desktop Protocol: Smart Card Virtual Channel Extension]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/0428ca28-b4dc-46a3-97c3-01887fa44a90
 
-use self::ndr::ScardContext;
-
+use self::ndr::{ReaderState, ScardContext};
 use super::efs::IoCtlCode;
+use bitflags::bitflags;
 use ironrdp_pdu::{
+    cast_length,
     cursor::{ReadCursor, WriteCursor},
     ensure_size, invalid_message_err,
     utils::{encoded_multistring_len, read_multistring_from_cursor, write_multistring_to_cursor, CharacterSet},
@@ -21,6 +22,7 @@ pub enum ScardCall {
     AccessStartedEventCall(ScardAccessStartedEventCall),
     EstablishContextCall(EstablishContextCall),
     ListReadersCall(ListReadersCall),
+    GetStatusChangeCall(GetStatusChangeCall),
     Unsupported,
 }
 
@@ -32,6 +34,7 @@ impl ScardCall {
             )),
             ScardIoCtlCode::EstablishContext => Ok(ScardCall::EstablishContextCall(EstablishContextCall::decode(src)?)),
             ScardIoCtlCode::ListReadersW => Ok(ScardCall::ListReadersCall(ListReadersCall::decode(src)?)),
+            ScardIoCtlCode::GetStatusChangeW => Ok(ScardCall::GetStatusChangeCall(GetStatusChangeCall::decode(src)?)),
             _ => {
                 warn!(?io_ctl_code, "Unsupported ScardIoCtlCode");
                 // TODO: maybe this should be an error
@@ -419,8 +422,8 @@ pub struct EstablishContextCall {
 impl EstablishContextCall {
     const NAME: &'static str = "EstablishContext_Call";
 
-    pub fn decode(payload: &mut ReadCursor<'_>) -> PduResult<Self> {
-        Ok(rpce::Pdu::<Self>::decode(payload)?.into_inner())
+    pub fn decode(src: &mut ReadCursor<'_>) -> PduResult<Self> {
+        Ok(rpce::Pdu::<Self>::decode(src)?.into_inner())
     }
 
     fn size() -> usize {
@@ -596,10 +599,14 @@ impl rpce::HeaderlessEncode for ListReadersReturn {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
         ensure_size!(in: dst, size: self.size());
         dst.write_u32(self.return_code.into());
-        let readers_length = encoded_multistring_len(&self.readers, CharacterSet::Unicode) as u32;
+        let readers_length: u32 = cast_length!(
+            "ListReadersReturn",
+            "readers",
+            encoded_multistring_len(&self.readers, CharacterSet::Unicode)
+        )?;
         let mut index = 0;
         ndr::encode_ptr(Some(readers_length), &mut index, dst)?;
-        dst.write_u32(readers_length as u32);
+        dst.write_u32(readers_length);
         write_multistring_to_cursor(dst, &self.readers, CharacterSet::Unicode)?;
         Ok(())
     }
@@ -611,8 +618,172 @@ impl rpce::HeaderlessEncode for ListReadersReturn {
     fn size(&self) -> usize {
         self.return_code.size() // dst.write_u32(self.return_code.into());
         + ndr::ptr_size(true) // ndr::encode_ptr(...);
-        + 4 // dst.write_u32(readers_length as u32);
+        + 4 // dst.write_u32(readers_length);
         + encoded_multistring_len(&self.readers, CharacterSet::Unicode) // write_multistring_to_cursor(...);
+    }
+}
+
+/// [2.2.2.12 GetStatusChangeW_Call]
+///
+/// [2.2.2.12 GetStatusChangeW_Call]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/af357ce8-63ee-4577-b6bf-c6f5ca68d754
+#[derive(Debug)]
+pub struct GetStatusChangeCall {
+    pub context: ScardContext,
+    pub timeout: u32,
+    pub states_ptr_length: u32,
+    pub states_ptr: u32,
+    pub states_length: u32,
+    pub states: Vec<ReaderState>,
+}
+
+impl GetStatusChangeCall {
+    const NAME: &'static str = "GetStatusChangeW_Call";
+
+    pub fn decode(src: &mut ReadCursor<'_>) -> PduResult<Self> {
+        Ok(rpce::Pdu::<Self>::decode(src)?.into_inner())
+    }
+}
+
+impl rpce::HeaderlessDecode for GetStatusChangeCall {
+    fn decode(src: &mut ReadCursor<'_>) -> PduResult<Self> {
+        let mut index = 0;
+        let mut context = ScardContext::decode_ptr(src, &mut index)?;
+
+        ensure_size!(in: src, size: size_of::<u32>() * 2);
+        let timeout = src.read_u32();
+        let states_ptr_length = src.read_u32();
+
+        let states_ptr = ndr::decode_ptr(src, &mut index)?;
+
+        context.decode_value(src)?;
+
+        ensure_size!(in: src, size: size_of::<u32>());
+        let states_length = src.read_u32();
+
+        let mut states = Vec::new();
+        for _ in 0..states_length {
+            let state = ReaderState::decode_ptr(src, &mut index)?;
+            states.push(state);
+        }
+        for state in states.iter_mut() {
+            state.decode_value(src)?;
+        }
+
+        Ok(Self {
+            context,
+            timeout,
+            states_ptr_length,
+            states_ptr,
+            states_length,
+            states,
+        })
+    }
+}
+
+/// [2.2.1.5 ReaderState_Common_Call]
+///
+/// [2.2.1.5 ReaderState_Common_Call]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/a71e63ba-e58f-487c-a5d2-5a3e48856594
+#[derive(Debug)]
+pub struct ReaderStateCommonCall {
+    pub current_state: CardStateFlags,
+    pub event_state: CardStateFlags,
+    pub atr_length: u32,
+    pub atr: [u8; 36],
+}
+
+impl ReaderStateCommonCall {
+    const NAME: &'static str = "ReaderState_Common_Call";
+    const FIXED_PART_SIZE: usize = size_of::<u32>() * 3 /* dwCurrentState, dwEventState, cbAtr */ + 36 /* rgbAtr */;
+
+    fn decode(src: &mut ReadCursor<'_>) -> PduResult<Self> {
+        ensure_size!(in: src, size: Self::FIXED_PART_SIZE);
+        let current_state = CardStateFlags::from_bits_truncate(src.read_u32());
+        let event_state = CardStateFlags::from_bits_truncate(src.read_u32());
+        let atr_length = src.read_u32();
+        let atr = src.read_array::<36>();
+
+        Ok(Self {
+            current_state,
+            event_state,
+            atr_length,
+            atr,
+        })
+    }
+
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        dst.write_u32(self.current_state.bits());
+        dst.write_u32(self.event_state.bits());
+        dst.write_u32(self.atr_length);
+        dst.write_slice(&self.atr);
+        Ok(())
+    }
+
+    fn size() -> usize {
+        Self::FIXED_PART_SIZE
+    }
+}
+
+bitflags! {
+    #[derive(Debug, PartialEq, Clone, Copy)]
+    pub struct CardStateFlags: u32 {
+        const SCARD_STATE_UNAWARE = 0x0000_0000;
+        const SCARD_STATE_IGNORE = 0x0000_0001;
+        const SCARD_STATE_CHANGED = 0x0000_0002;
+        const SCARD_STATE_UNKNOWN = 0x0000_0004;
+        const SCARD_STATE_UNAVAILABLE = 0x0000_0008;
+        const SCARD_STATE_EMPTY = 0x0000_0010;
+        const SCARD_STATE_PRESENT = 0x0000_0020;
+        const SCARD_STATE_ATRMATCH = 0x0000_0040;
+        const SCARD_STATE_EXCLUSIVE = 0x0000_0080;
+        const SCARD_STATE_INUSE = 0x0000_0100;
+        const SCARD_STATE_MUTE = 0x0000_0200;
+        const SCARD_STATE_UNPOWERED = 0x0000_0400;
+    }
+}
+
+/// [2.2.3.5 LocateCards_Return and GetStatusChange_Return]
+///
+/// [2.2.3.5 LocateCards_Return and GetStatusChange_Return]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/7b73e0c2-e0fc-46b1-9b03-50684ad2beba
+#[derive(Debug)]
+pub struct GetStatusChangeReturn {
+    pub return_code: ReturnCode,
+    pub reader_states: Vec<ReaderStateCommonCall>,
+}
+
+impl GetStatusChangeReturn {
+    const NAME: &'static str = "GetStatusChange_Return";
+
+    pub fn new(return_code: ReturnCode, reader_states: Vec<ReaderStateCommonCall>) -> rpce::Pdu<Self> {
+        rpce::Pdu(Self {
+            return_code,
+            reader_states,
+        })
+    }
+}
+
+impl rpce::HeaderlessEncode for GetStatusChangeReturn {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_size!(in: dst, size: self.size());
+        dst.write_u32(self.return_code.into());
+        let reader_states_len = cast_length!("GetStatusChangeReturn", "reader_states", self.reader_states.len())?;
+        let mut index = 0;
+        ndr::encode_ptr(Some(reader_states_len), &mut index, dst)?;
+        dst.write_u32(reader_states_len);
+        for reader_state in &self.reader_states {
+            reader_state.encode(dst)?;
+        }
+        Ok(())
+    }
+
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    fn size(&self) -> usize {
+        self.return_code.size() // dst.write_u32(self.return_code.into());
+        + ndr::ptr_size(true) // ndr::encode_ptr(Some(reader_states_len), &mut index, dst)?;
+        + 4 // dst.write_u32(reader_states_len);
+        + self.reader_states.iter().map(|_s| ReaderStateCommonCall::size()).sum::<usize>()
     }
 }
 
@@ -624,6 +795,7 @@ pub mod rpce {
     use std::mem::size_of;
 
     use ironrdp_pdu::{
+        cast_length,
         cursor::{ReadCursor, WriteCursor},
         ensure_size, invalid_message_err, PduDecode, PduEncode, PduError, PduResult,
     };
@@ -676,8 +848,8 @@ pub mod rpce {
     ///
     /// impl RpceDecodePdu {
     ///     /// `decode` returns a `Pdu` wrapping the underlying struct.
-    ///     pub fn decode(payload: &mut ReadCursor<'_>) -> PduResult<rpce::Pdu<Self>> {
-    ///         Ok(rpce::Pdu::<Self>::decode(payload)?.into_inner())
+    ///     pub fn decode(src: &mut ReadCursor<'_>) -> PduResult<rpce::Pdu<Self>> {
+    ///         Ok(rpce::Pdu::<Self>::decode(src)?.into_inner())
     ///     }
     ///
     ///     fn size() -> usize {
@@ -702,12 +874,13 @@ pub mod rpce {
     #[derive(Debug)]
     pub struct Pdu<T>(pub T);
 
-    impl<T> Pdu<T>
-    where
-        T: HeaderlessDecode,
-    {
+    impl<T> Pdu<T> {
         pub fn into_inner(self) -> T {
             self.0
+        }
+
+        pub fn into_inner_ref(&self) -> &T {
+            &self.0
         }
     }
 
@@ -728,7 +901,7 @@ pub mod rpce {
         fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
             ensure_size!(ctx: self.name(), in: dst, size: self.size());
             let stream_header = StreamHeader::default();
-            let type_header = TypeHeader::new(self.size() as u32);
+            let type_header = TypeHeader::new(cast_length!("Pdu<T>", "size", self.size())?);
 
             stream_header.encode(dst)?;
             type_header.encode(dst)?;
@@ -758,12 +931,12 @@ pub mod rpce {
     ///
     /// Implementers should typically avoid implementing this trait directly
     /// and instead implement [`HeaderlessEncode`], and wrap it in a [`Pdu`].
-    pub trait Encode: PduEncode + Send + std::fmt::Debug {}
+    pub trait Encode: PduEncode + Send + Sync + std::fmt::Debug {}
 
     /// Trait for types that can be encoded into an [MS-RPCE] message.
     ///
     /// Implementers should typically implement this trait instead of [`Encode`].
-    pub trait HeaderlessEncode: Send + std::fmt::Debug {
+    pub trait HeaderlessEncode: Send + Sync + std::fmt::Debug {
         /// Encodes the instance into a buffer sans its [`StreamHeader`] and [`TypeHeader`].
         fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()>;
         /// Returns the name associated with this RPCE PDU.
@@ -950,18 +1123,22 @@ pub mod ndr {
 
     use ironrdp_pdu::{
         cursor::{ReadCursor, WriteCursor},
-        ensure_size, invalid_message_err, PduResult,
+        ensure_size, invalid_message_err,
+        utils::{self, CharacterSet},
+        PduResult,
     };
+
+    use super::ReaderStateCommonCall;
 
     /// [2.2.1.1 REDIR_SCARDCONTEXT]
     ///
     /// [2.2.1.1 REDIR_SCARDCONTEXT]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/060abee1-e520-4149-9ef7-ce79eb500a59
     #[derive(Debug)]
     pub struct ScardContext {
-        length: u32,
+        pub length: u32,
         // Shortcut: we always create 4-byte context values.
         // The spec allows this field to have variable length.
-        value: u32,
+        pub value: u32,
     }
 
     impl ScardContext {
@@ -1010,6 +1187,31 @@ pub mod ndr {
         }
     }
 
+    /// [2.2.1.7 ReaderStateW]
+    ///
+    /// [2.2.1.7 ReaderStateW]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/0ba03cd2-bed0-495b-adbe-3d2cde61980c
+    #[derive(Debug)]
+    pub struct ReaderState {
+        pub reader: String,
+        pub common: ReaderStateCommonCall,
+    }
+
+    impl ReaderState {
+        pub fn decode_ptr(src: &mut ReadCursor<'_>, index: &mut u32) -> PduResult<Self> {
+            let _reader_ptr = decode_ptr(src, index)?;
+            let common = ReaderStateCommonCall::decode(src)?;
+            Ok(Self {
+                reader: String::new(),
+                common,
+            })
+        }
+
+        pub fn decode_value(&mut self, src: &mut ReadCursor<'_>) -> PduResult<()> {
+            self.reader = read_string_from_cursor(src)?;
+            Ok(())
+        }
+    }
+
     pub fn encode_ptr(length: Option<u32>, index: &mut u32, dst: &mut WriteCursor<'_>) -> PduResult<()> {
         ensure_size!(ctx: "encode_ptr", in: dst, size: ptr_size(length.is_some()));
         if let Some(length) = length {
@@ -1043,5 +1245,25 @@ pub mod ndr {
         } else {
             size_of::<u32>()
         }
+    }
+
+    /// A special read_string_from_cursor which reads and ignores the additional length and
+    /// offset fields prefixing the string, as well as any extra padding for a 4-byte aligned
+    /// NULL-terminated string.
+    pub fn read_string_from_cursor(cursor: &mut ReadCursor<'_>) -> PduResult<String> {
+        ensure_size!(ctx: "ndr::read_string_from_cursor", in: cursor, size: size_of::<u32>() * 3);
+        let length = cursor.read_u32();
+        let _offset = cursor.read_u32();
+        let _length2 = cursor.read_u32();
+
+        let string = utils::read_string_from_cursor(cursor, CharacterSet::Unicode, true)?;
+
+        // Skip padding for 4-byte aligned NULL-terminated string.
+        if length % 2 != 0 {
+            ensure_size!(ctx: "ndr::read_string_from_cursor", in: cursor, size: size_of::<u16>());
+            let _padding = cursor.read_u16();
+        }
+
+        Ok(string)
     }
 }
