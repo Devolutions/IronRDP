@@ -787,6 +787,73 @@ impl rpce::HeaderlessEncode for GetStatusChangeReturn {
     }
 }
 
+/// [2.2.2.14 ConnectW_Call]
+///
+/// [2.2.2.14 ConnectW_Call]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/fd06f6a0-a9ea-478c-9b5e-470fd9cde5a6
+#[derive(Debug)]
+pub struct ConnectCall {
+    pub reader: String,
+    pub common: ConnectCommon,
+}
+
+impl rpce::HeaderlessDecode for ConnectCall {
+    fn decode(src: &mut ReadCursor<'_>) -> PduResult<Self> {
+        let mut index = 0;
+        let _reader_ptr = ndr::decode_ptr(src, &mut index)?;
+        let mut common = ConnectCommon::decode_ptr(src, &mut index)?;
+        let reader = ndr::read_string_from_cursor(src)?;
+        common.decode_value(src)?;
+        Ok(Self { reader, common })
+    }
+}
+
+/// [2.2.1.3 Connect_Common]
+///
+/// [2.2.1.3 Connect_Common]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/32752f32-4410-4682-b9fc-9096674b52de
+#[derive(Debug)]
+pub struct ConnectCommon {
+    pub context: ScardContext,
+    pub share_mode: u32,
+    pub preferred_protocols: CardProtocol,
+}
+
+impl ConnectCommon {
+    const NAME: &'static str = "Connect_Common";
+
+    fn decode_ptr(src: &mut ReadCursor<'_>, index: &mut u32) -> PduResult<Self> {
+        let mut context = ScardContext::decode_ptr(src, index)?;
+        ensure_size!(in: src, size: size_of::<u32>() * 2);
+        let share_mode = src.read_u32();
+        let preferred_protocols = CardProtocol::from_bits_truncate(src.read_u32());
+        context.decode_value(src)?;
+        Ok(Self {
+            context,
+            share_mode,
+            preferred_protocols,
+        })
+    }
+
+    fn decode_value(&mut self, src: &mut ReadCursor<'_>) -> PduResult<()> {
+        self.context.decode_value(src)
+    }
+}
+
+bitflags! {
+    /// [2.2.5 Protocol Identifier]
+    ///
+    /// [2.2.5 Protocol Identifier]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/41673567-2710-4e86-be87-7b6f46fe10af
+    #[derive(Debug, Clone)]
+    pub struct CardProtocol: u32 {
+        const SCARD_PROTOCOL_UNDEFINED = 0x00000000;
+        const SCARD_PROTOCOL_T0 = 0x00000001;
+        const SCARD_PROTOCOL_T1 = 0x00000002;
+        const SCARD_PROTOCOL_TX = 0x00000003;
+        const SCARD_PROTOCOL_RAW = 0x00010000;
+        const SCARD_PROTOCOL_DEFAULT = 0x80000000;
+        const SCARD_PROTOCOL_OPTIMAL = 0x00000000;
+    }
+}
+
 pub mod rpce {
     //! PDUs for [\[MS-RPCE\]: Remote Procedure Call Protocol Extensions] as required by [MS-RDPESC].
     //!
