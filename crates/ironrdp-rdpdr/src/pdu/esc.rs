@@ -5,6 +5,7 @@
 pub mod ndr;
 pub mod rpce;
 use super::efs::IoCtlCode;
+use crate::pdu::esc::ndr::{Decode, Encode};
 use bitflags::bitflags;
 use ironrdp_pdu::{
     cast_length,
@@ -13,7 +14,7 @@ use ironrdp_pdu::{
     utils::{encoded_multistring_len, read_multistring_from_cursor, write_multistring_to_cursor, CharacterSet},
     PduDecode, PduError, PduResult,
 };
-use ndr::{ReaderState, ScardContext};
+use ndr::ReaderState;
 use std::mem::size_of;
 
 /// [2.2.2 TS Server-Generated Structures]
@@ -42,6 +43,74 @@ impl ScardCall {
                 // TODO: maybe this should be an error
                 Ok(Self::Unsupported)
             }
+        }
+    }
+}
+
+/// [2.2.1.1 REDIR_SCARDCONTEXT]
+///
+/// [2.2.1.1 REDIR_SCARDCONTEXT]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/060abee1-e520-4149-9ef7-ce79eb500a59
+#[derive(Debug)]
+pub struct ScardContext {
+    pub length: u32,
+    // Shortcut: we always create 4-byte context values.
+    // The spec allows this field to have variable length.
+    pub value: u32,
+}
+
+impl ScardContext {
+    const NAME: &'static str = "REDIR_SCARDCONTEXT";
+
+    pub fn new(value: u32) -> Self {
+        Self {
+            length: size_of::<u32>() as u32,
+            value,
+        }
+    }
+}
+
+impl ndr::Encode for ScardContext {
+    fn encode_ptr(&self, index: &mut u32, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ndr::encode_ptr(Some(self.length), index, dst)
+    }
+
+    fn encode_value(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        dst.write_u32(self.length);
+        dst.write_u32(self.value);
+        Ok(())
+    }
+
+    fn size_ptr(&self) -> usize {
+        ndr::ptr_size(true)
+    }
+
+    fn size_value(&self) -> usize {
+        4 /* length */ + 4 /* value */
+    }
+}
+
+impl ndr::Decode for ScardContext {
+    fn decode_ptr(src: &mut ReadCursor<'_>, index: &mut u32) -> PduResult<Self>
+    where
+        Self: Sized,
+    {
+        ensure_size!(in: src, size: size_of::<u32>());
+        let length = src.read_u32();
+        let _ptr = ndr::decode_ptr(src, index)?;
+        Ok(Self { length, value: 0 })
+    }
+
+    fn decode_value(&mut self, src: &mut ReadCursor<'_>) -> PduResult<()> {
+        ensure_size!(in: src, size: size_of::<u32>()*2);
+        let length = src.read_u32();
+        if length != self.length {
+            Err(invalid_message_err!(
+                "decode_value",
+                "mismatched length in ScardContext reference and value"
+            ))
+        } else {
+            self.value = src.read_u32();
+            Ok(())
         }
     }
 }

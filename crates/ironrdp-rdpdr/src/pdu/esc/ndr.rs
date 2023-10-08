@@ -31,60 +31,20 @@ use ironrdp_pdu::{
 
 use super::ReaderStateCommonCall;
 
-/// [2.2.1.1 REDIR_SCARDCONTEXT]
-///
-/// [2.2.1.1 REDIR_SCARDCONTEXT]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/060abee1-e520-4149-9ef7-ce79eb500a59
-#[derive(Debug)]
-pub struct ScardContext {
-    pub length: u32,
-    // Shortcut: we always create 4-byte context values.
-    // The spec allows this field to have variable length.
-    pub value: u32,
+pub trait Decode {
+    fn decode_ptr(src: &mut ReadCursor<'_>, index: &mut u32) -> PduResult<Self>
+    where
+        Self: Sized;
+    fn decode_value(&mut self, src: &mut ReadCursor<'_>) -> PduResult<()>;
 }
 
-impl ScardContext {
-    const NAME: &'static str = "REDIR_SCARDCONTEXT";
-
-    pub fn new(value: u32) -> Self {
-        Self {
-            length: size_of::<u32>() as u32,
-            value,
-        }
-    }
-
-    pub fn encode_ptr(&self, index: &mut u32, dst: &mut WriteCursor<'_>) -> PduResult<()> {
-        encode_ptr(Some(self.length), index, dst)
-    }
-
-    pub fn encode_value(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
-        dst.write_u32(self.length);
-        dst.write_u32(self.value);
-        Ok(())
-    }
-
-    pub fn decode_ptr(src: &mut ReadCursor<'_>, index: &mut u32) -> PduResult<Self> {
-        ensure_size!(in: src, size: size_of::<u32>());
-        let length = src.read_u32();
-        let _ptr = decode_ptr(src, index)?;
-        Ok(Self { length, value: 0 })
-    }
-
-    pub fn decode_value(&mut self, src: &mut ReadCursor<'_>) -> PduResult<()> {
-        ensure_size!(in: src, size: size_of::<u32>()*2);
-        let length = src.read_u32();
-        if length != self.length {
-            Err(invalid_message_err!(
-                "decode_value",
-                "mismatched length in ScardContext reference and value"
-            ))
-        } else {
-            self.value = src.read_u32();
-            Ok(())
-        }
-    }
-
-    pub fn size(&self) -> usize {
-        ptr_size(true) + size_of::<u32>() * 2
+pub trait Encode {
+    fn encode_ptr(&self, index: &mut u32, dst: &mut WriteCursor<'_>) -> PduResult<()>;
+    fn encode_value(&self, dst: &mut WriteCursor<'_>) -> PduResult<()>;
+    fn size_ptr(&self) -> usize;
+    fn size_value(&self) -> usize;
+    fn size(&self) -> usize {
+        self.size_ptr() + self.size_value()
     }
 }
 
