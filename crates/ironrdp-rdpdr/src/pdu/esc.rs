@@ -14,7 +14,6 @@ use ironrdp_pdu::{
     utils::{encoded_multistring_len, read_multistring_from_cursor, write_multistring_to_cursor, CharacterSet},
     PduDecode, PduError, PduResult,
 };
-use ndr::ReaderState;
 use std::mem::size_of;
 
 /// [2.2.2 TS Server-Generated Structures]
@@ -112,6 +111,31 @@ impl ndr::Decode for ScardContext {
             self.value = src.read_u32();
             Ok(())
         }
+    }
+}
+
+/// [2.2.1.7 ReaderStateW]
+///
+/// [2.2.1.7 ReaderStateW]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/0ba03cd2-bed0-495b-adbe-3d2cde61980c
+#[derive(Debug)]
+pub struct ReaderState {
+    pub reader: String,
+    pub common: ReaderStateCommonCall,
+}
+
+impl ndr::Decode for ReaderState {
+    fn decode_ptr(src: &mut ReadCursor<'_>, index: &mut u32) -> PduResult<Self> {
+        let _reader_ptr = ndr::decode_ptr(src, index)?;
+        let common = ReaderStateCommonCall::decode(src)?;
+        Ok(Self {
+            reader: String::new(),
+            common,
+        })
+    }
+
+    fn decode_value(&mut self, src: &mut ReadCursor<'_>) -> PduResult<()> {
+        self.reader = ndr::read_string_from_cursor(src)?;
+        Ok(())
     }
 }
 

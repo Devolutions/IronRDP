@@ -20,16 +20,13 @@
 //! Most of the above was reverse-engineered from FreeRDP:
 //! https://github.com/FreeRDP/FreeRDP/blob/master/channels/smartcard/client/smartcard_pack.c
 
-use std::mem::size_of;
-
 use ironrdp_pdu::{
     cursor::{ReadCursor, WriteCursor},
     ensure_size, invalid_message_err,
     utils::{self, CharacterSet},
     PduResult,
 };
-
-use super::ReaderStateCommonCall;
+use std::mem::size_of;
 
 pub trait Decode {
     fn decode_ptr(src: &mut ReadCursor<'_>, index: &mut u32) -> PduResult<Self>
@@ -45,31 +42,6 @@ pub trait Encode {
     fn size_value(&self) -> usize;
     fn size(&self) -> usize {
         self.size_ptr() + self.size_value()
-    }
-}
-
-/// [2.2.1.7 ReaderStateW]
-///
-/// [2.2.1.7 ReaderStateW]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/0ba03cd2-bed0-495b-adbe-3d2cde61980c
-#[derive(Debug)]
-pub struct ReaderState {
-    pub reader: String,
-    pub common: ReaderStateCommonCall,
-}
-
-impl ReaderState {
-    pub fn decode_ptr(src: &mut ReadCursor<'_>, index: &mut u32) -> PduResult<Self> {
-        let _reader_ptr = decode_ptr(src, index)?;
-        let common = ReaderStateCommonCall::decode(src)?;
-        Ok(Self {
-            reader: String::new(),
-            common,
-        })
-    }
-
-    pub fn decode_value(&mut self, src: &mut ReadCursor<'_>) -> PduResult<()> {
-        self.reader = read_string_from_cursor(src)?;
-        Ok(())
     }
 }
 
