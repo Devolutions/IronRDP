@@ -76,6 +76,7 @@ impl ndr::Encode for ScardContext {
     }
 
     fn encode_value(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_size!(in: dst, size: self.size_value());
         dst.write_u32(self.length);
         dst.write_u32(self.value);
         Ok(())
@@ -86,7 +87,7 @@ impl ndr::Encode for ScardContext {
     }
 
     fn size_value(&self) -> usize {
-        4 /* length */ + 4 /* value */
+        size_of::<u32>() * 2 /* self.length, self.value */
     }
 }
 
@@ -1016,5 +1017,71 @@ impl ndr::Decode for ScardHandle {
             self.value = src.read_u32();
             Ok(())
         }
+    }
+}
+
+impl ndr::Encode for ScardHandle {
+    fn encode_ptr(&self, index: &mut u32, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        self.context.encode_ptr(index, dst)?;
+        ndr::encode_ptr(Some(self.length), index, dst)?;
+        Ok(())
+    }
+
+    fn encode_value(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_size!(in: dst, size: self.size_value());
+        self.context.encode_value(dst)?;
+        dst.write_u32(self.length);
+        dst.write_u32(self.value);
+        Ok(())
+    }
+
+    fn size_ptr(&self) -> usize {
+        self.context.size_ptr() + ndr::ptr_size(true)
+    }
+
+    fn size_value(&self) -> usize {
+        self.context.size_value() + size_of::<u32>() * 2 /* self.length, self.value */
+    }
+}
+
+/// [2.2.3.8 Connect_Return]
+///
+/// [2.2.3.8 Connect_Return]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/ad9fbc8e-0963-44ac-8d71-38021685790c
+#[derive(Debug)]
+pub struct ConnectReturn {
+    pub return_code: ReturnCode,
+    pub handle: ScardHandle,
+    pub active_protocol: CardProtocol,
+}
+
+impl ConnectReturn {
+    const NAME: &'static str = "Connect_Return";
+
+    pub fn new(return_code: ReturnCode, handle: ScardHandle, active_protocol: CardProtocol) -> rpce::Pdu<Self> {
+        rpce::Pdu(Self {
+            return_code,
+            handle,
+            active_protocol,
+        })
+    }
+}
+
+impl rpce::HeaderlessEncode for ConnectReturn {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_size!(in: dst, size: self.size());
+        dst.write_u32(self.return_code.into());
+        let mut index = 0;
+        self.handle.encode_ptr(&mut index, dst)?;
+        dst.write_u32(self.active_protocol.bits());
+        self.handle.encode_value(dst)?;
+        Ok(())
+    }
+
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    fn size(&self) -> usize {
+        self.return_code.size() + self.handle.size() + size_of::<u32>() // self.active_protocol
     }
 }
