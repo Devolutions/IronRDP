@@ -51,7 +51,7 @@ impl ScardCall {
 /// [2.2.1.1 REDIR_SCARDCONTEXT]
 ///
 /// [2.2.1.1 REDIR_SCARDCONTEXT]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/060abee1-e520-4149-9ef7-ce79eb500a59
-#[derive(Debug)]
+#[derive(Debug, Copy, Clone)]
 pub struct ScardContext {
     pub length: u32,
     // Shortcut: we always create 4-byte context values.
@@ -923,9 +923,14 @@ pub struct ConnectCommon {
 
 impl ConnectCommon {
     const NAME: &'static str = "Connect_Common";
+}
 
-    fn decode_ptr(src: &mut ReadCursor<'_>, index: &mut u32) -> PduResult<Self> {
-        let mut context = ScardContext::decode_ptr(src, index)?;
+impl ndr::Decode for ConnectCommon {
+    fn decode_ptr(src: &mut ReadCursor<'_>, index: &mut u32) -> PduResult<Self>
+    where
+        Self: Sized,
+    {
+        let context = ScardContext::decode_ptr(src, index)?;
         ensure_size!(in: src, size: size_of::<u32>() * 2);
         let share_mode = src.read_u32();
         let preferred_protocols = CardProtocol::from_bits_truncate(src.read_u32());
@@ -954,5 +959,62 @@ bitflags! {
         const SCARD_PROTOCOL_RAW = 0x00010000;
         const SCARD_PROTOCOL_DEFAULT = 0x80000000;
         const SCARD_PROTOCOL_OPTIMAL = 0x00000000;
+    }
+}
+
+/// [2.2.1.2 REDIR_SCARDHANDLE]
+///
+/// [2.2.1.2 REDIR_SCARDHANDLE]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/b6276356-7c5f-4d3e-be92-a6c85e58d008
+#[derive(Debug)]
+pub struct ScardHandle {
+    context: ScardContext,
+    length: u32,
+    // Shortcut: we always create 4-byte handle values.
+    // The spec allows this field to have variable length.
+    value: u32,
+}
+
+impl ScardHandle {
+    const NAME: &'static str = "REDIR_SCARDHANDLE";
+
+    pub fn new(context: ScardContext, value: u32) -> Self {
+        Self {
+            context,
+            length: 4,
+            value,
+        }
+    }
+}
+
+impl ndr::Decode for ScardHandle {
+    fn decode_ptr(src: &mut ReadCursor<'_>, index: &mut u32) -> PduResult<Self>
+    where
+        Self: Sized,
+    {
+        let context = ScardContext::decode_ptr(src, index)?;
+        ensure_size!(ctx: "Handle::decode_ptr", in: src, size: size_of::<u32>());
+        let length = src.read_u32();
+        let _ptr = ndr::decode_ptr(src, index)?;
+        Ok(Self {
+            context,
+            length,
+            value: 0,
+        })
+    }
+
+    fn decode_value(&mut self, src: &mut ReadCursor<'_>) -> PduResult<()> {
+        self.context.decode_value(src)?;
+        ensure_size!(in: src, size: size_of::<u32>());
+        let length = src.read_u32();
+        if length != self.length {
+            Err(invalid_message_err!(
+                "decode_value",
+                "mismatched length in Handle reference and value"
+            ))
+        } else {
+            ensure_size!(in: src, size: size_of::<u32>());
+            self.value = src.read_u32();
+            Ok(())
+        }
     }
 }
