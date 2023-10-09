@@ -25,6 +25,7 @@ pub enum ScardCall {
     EstablishContextCall(EstablishContextCall),
     ListReadersCall(ListReadersCall),
     GetStatusChangeCall(GetStatusChangeCall),
+    ConnectCall(ConnectCall),
     Unsupported,
 }
 
@@ -37,6 +38,7 @@ impl ScardCall {
             ScardIoCtlCode::EstablishContext => Ok(ScardCall::EstablishContextCall(EstablishContextCall::decode(src)?)),
             ScardIoCtlCode::ListReadersW => Ok(ScardCall::ListReadersCall(ListReadersCall::decode(src)?)),
             ScardIoCtlCode::GetStatusChangeW => Ok(ScardCall::GetStatusChangeCall(GetStatusChangeCall::decode(src)?)),
+            ScardIoCtlCode::ConnectW => Ok(ScardCall::ConnectCall(ConnectCall::decode(src)?)),
             _ => {
                 warn!(?io_ctl_code, "Unsupported ScardIoCtlCode");
                 // TODO: maybe this should be an error
@@ -103,6 +105,7 @@ impl ndr::Decode for ScardContext {
         ensure_size!(in: src, size: size_of::<u32>()*2);
         let length = src.read_u32();
         if length != self.length {
+            error!(?length, ?self.length, "Mismatched length in ScardContext reference and value");
             Err(invalid_message_err!(
                 "decode_value",
                 "mismatched length in ScardContext reference and value"
@@ -891,6 +894,12 @@ pub struct ConnectCall {
     pub common: ConnectCommon,
 }
 
+impl ConnectCall {
+    pub fn decode(src: &mut ReadCursor<'_>) -> PduResult<Self> {
+        Ok(rpce::Pdu::<Self>::decode(src)?.into_inner())
+    }
+}
+
 impl rpce::HeaderlessDecode for ConnectCall {
     fn decode(src: &mut ReadCursor<'_>) -> PduResult<Self> {
         let mut index = 0;
@@ -920,7 +929,6 @@ impl ConnectCommon {
         ensure_size!(in: src, size: size_of::<u32>() * 2);
         let share_mode = src.read_u32();
         let preferred_protocols = CardProtocol::from_bits_truncate(src.read_u32());
-        context.decode_value(src)?;
         Ok(Self {
             context,
             share_mode,
