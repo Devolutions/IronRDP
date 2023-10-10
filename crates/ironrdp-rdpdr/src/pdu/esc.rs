@@ -26,6 +26,7 @@ pub enum ScardCall {
     ListReadersCall(ListReadersCall),
     GetStatusChangeCall(GetStatusChangeCall),
     ConnectCall(ConnectCall),
+    HCardAndDispositionCall(HCardAndDispositionCall),
     Unsupported,
 }
 
@@ -39,6 +40,9 @@ impl ScardCall {
             ScardIoCtlCode::ListReadersW => Ok(ScardCall::ListReadersCall(ListReadersCall::decode(src)?)),
             ScardIoCtlCode::GetStatusChangeW => Ok(ScardCall::GetStatusChangeCall(GetStatusChangeCall::decode(src)?)),
             ScardIoCtlCode::ConnectW => Ok(ScardCall::ConnectCall(ConnectCall::decode(src)?)),
+            ScardIoCtlCode::BeginTransaction => Ok(ScardCall::HCardAndDispositionCall(
+                HCardAndDispositionCall::decode(src)?,
+            )),
             _ => {
                 warn!(?io_ctl_code, "Unsupported ScardIoCtlCode");
                 // TODO: maybe this should be an error
@@ -146,7 +150,7 @@ impl ndr::Decode for ReaderState {
 /// From [3.1.4 Message Processing Events and Sequencing Rules]
 ///
 /// [3.1.4 Message Processing Events and Sequencing Rules]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/60d5977d-0017-4c90-ab0c-f34bf44a74a5
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 #[repr(u32)]
 pub enum ScardIoCtlCode {
     /// SCARD_IOCTL_ESTABLISHCONTEXT
@@ -1083,5 +1087,33 @@ impl rpce::HeaderlessEncode for ConnectReturn {
 
     fn size(&self) -> usize {
         self.return_code.size() + self.handle.size() + size_of::<u32>() // self.active_protocol
+    }
+}
+
+/// [2.2.2.16 HCardAndDisposition_Call]
+///
+/// [2.2.2.16 HCardAndDisposition_Call]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/f15ae865-9e99-4c5b-bb43-15a6b4885bd0
+#[derive(Debug)]
+pub struct HCardAndDispositionCall {
+    pub handle: ScardHandle,
+    pub disposition: u32,
+}
+
+impl HCardAndDispositionCall {
+    const NAME: &'static str = "HCardAndDisposition_Call";
+
+    pub fn decode(src: &mut ReadCursor<'_>) -> PduResult<Self> {
+        Ok(rpce::Pdu::<Self>::decode(src)?.into_inner())
+    }
+}
+
+impl rpce::HeaderlessDecode for HCardAndDispositionCall {
+    fn decode(src: &mut ReadCursor<'_>) -> PduResult<Self> {
+        let mut index = 0;
+        let mut handle = ScardHandle::decode_ptr(src, &mut index)?;
+        ensure_size!(in: src, size: size_of::<u32>());
+        let disposition = src.read_u32();
+        handle.decode_value(src)?;
+        Ok(Self { handle, disposition })
     }
 }
