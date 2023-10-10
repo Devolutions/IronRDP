@@ -63,10 +63,7 @@ impl ScardContext {
     const NAME: &'static str = "REDIR_SCARDCONTEXT";
 
     pub fn new(value: u32) -> Self {
-        Self {
-            length: size_of::<u32>() as u32,
-            value,
-        }
+        Self { length: 4, value }
     }
 }
 
@@ -87,7 +84,7 @@ impl ndr::Encode for ScardContext {
     }
 
     fn size_value(&self) -> usize {
-        size_of::<u32>() * 2 /* self.length, self.value */
+        4 /* cbContext */ + 4 /* pbContext */
     }
 }
 
@@ -993,7 +990,7 @@ impl ndr::Decode for ScardHandle {
         Self: Sized,
     {
         let context = ScardContext::decode_ptr(src, index)?;
-        ensure_size!(ctx: "Handle::decode_ptr", in: src, size: size_of::<u32>());
+        ensure_size!(ctx: "ScardHandle::decode_ptr", in: src, size: size_of::<u32>());
         let length = src.read_u32();
         let _ptr = ndr::decode_ptr(src, index)?;
         Ok(Self {
@@ -1010,7 +1007,7 @@ impl ndr::Decode for ScardHandle {
         if length != self.length {
             Err(invalid_message_err!(
                 "decode_value",
-                "mismatched length in Handle reference and value"
+                "mismatched length in ScardHandle reference and value"
             ))
         } else {
             ensure_size!(in: src, size: size_of::<u32>());
@@ -1040,7 +1037,7 @@ impl ndr::Encode for ScardHandle {
     }
 
     fn size_value(&self) -> usize {
-        self.context.size_value() + size_of::<u32>() * 2 /* self.length, self.value */
+        self.context.size_value() + 4 /* cbHandle */ + 4 /* pbHandle */
     }
 }
 
@@ -1082,6 +1079,6 @@ impl rpce::HeaderlessEncode for ConnectReturn {
     }
 
     fn size(&self) -> usize {
-        self.return_code.size() + self.handle.size() + size_of::<u32>() // self.active_protocol
+        self.return_code.size() + self.handle.size() + 4 /* dwActiveProtocol */
     }
 }
