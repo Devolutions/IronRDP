@@ -2,8 +2,10 @@
 //!
 //! [\[MS-RDPESC\]: Remote Desktop Protocol: Smart Card Virtual Channel Extension]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/0428ca28-b4dc-46a3-97c3-01887fa44a90
 
-use self::ndr::{ReaderState, ScardContext};
+pub mod ndr;
+pub mod rpce;
 use super::efs::IoCtlCode;
+use crate::pdu::esc::ndr::{Decode as NdrDecode, Encode as NdrEncode};
 use bitflags::bitflags;
 use ironrdp_pdu::{
     cast_length,
@@ -23,6 +25,7 @@ pub enum ScardCall {
     EstablishContextCall(EstablishContextCall),
     ListReadersCall(ListReadersCall),
     GetStatusChangeCall(GetStatusChangeCall),
+    ConnectCall(ConnectCall),
     Unsupported,
 }
 
@@ -35,12 +38,113 @@ impl ScardCall {
             ScardIoCtlCode::EstablishContext => Ok(ScardCall::EstablishContextCall(EstablishContextCall::decode(src)?)),
             ScardIoCtlCode::ListReadersW => Ok(ScardCall::ListReadersCall(ListReadersCall::decode(src)?)),
             ScardIoCtlCode::GetStatusChangeW => Ok(ScardCall::GetStatusChangeCall(GetStatusChangeCall::decode(src)?)),
+            ScardIoCtlCode::ConnectW => Ok(ScardCall::ConnectCall(ConnectCall::decode(src)?)),
             _ => {
                 warn!(?io_ctl_code, "Unsupported ScardIoCtlCode");
                 // TODO: maybe this should be an error
                 Ok(Self::Unsupported)
             }
         }
+    }
+}
+
+/// [2.2.1.1 REDIR_SCARDCONTEXT]
+///
+/// [2.2.1.1 REDIR_SCARDCONTEXT]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/060abee1-e520-4149-9ef7-ce79eb500a59
+#[derive(Debug, Copy, Clone)]
+pub struct ScardContext {
+    /// Shortcut: we always create 4-byte context values.
+    /// The spec allows this field to have variable length.
+    pub value: u32,
+}
+
+impl ScardContext {
+    const NAME: &'static str = "REDIR_SCARDCONTEXT";
+    /// See [`ScardContext::value`]
+    const VALUE_LENGTH: u32 = 4;
+
+    pub fn new(value: u32) -> Self {
+        Self { value }
+    }
+}
+
+impl NdrEncode for ScardContext {
+    fn encode_ptr(&self, index: &mut u32, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ndr::encode_ptr(Some(Self::VALUE_LENGTH), index, dst)
+    }
+
+    fn encode_value(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_size!(in: dst, size: self.size_value());
+        dst.write_u32(Self::VALUE_LENGTH);
+        dst.write_u32(self.value);
+        Ok(())
+    }
+
+    fn size_ptr(&self) -> usize {
+        ndr::ptr_size(true)
+    }
+
+    fn size_value(&self) -> usize {
+        4 /* cbContext */ + 4 /* pbContext */
+    }
+}
+
+impl NdrDecode for ScardContext {
+    fn decode_ptr(src: &mut ReadCursor<'_>, index: &mut u32) -> PduResult<Self>
+    where
+        Self: Sized,
+    {
+        ensure_size!(in: src, size: size_of::<u32>());
+        let length = src.read_u32();
+        if length != Self::VALUE_LENGTH {
+            error!(?length, "Unsupported value length in ScardContext");
+            return Err(invalid_message_err!(
+                "decode_ptr",
+                "unsupported value length in ScardContext"
+            ));
+        }
+
+        let _ptr = ndr::decode_ptr(src, index)?;
+        Ok(Self { value: 0 })
+    }
+
+    fn decode_value(&mut self, src: &mut ReadCursor<'_>) -> PduResult<()> {
+        ensure_size!(in: src, size: size_of::<u32>() * 2);
+        let length = src.read_u32();
+        if length != Self::VALUE_LENGTH {
+            error!(?length, "Unsupported value length in ScardContext");
+            return Err(invalid_message_err!(
+                "decode_value",
+                "unsupported value length in ScardContext"
+            ));
+        }
+        self.value = src.read_u32();
+        Ok(())
+    }
+}
+
+/// [2.2.1.7 ReaderStateW]
+///
+/// [2.2.1.7 ReaderStateW]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/0ba03cd2-bed0-495b-adbe-3d2cde61980c
+#[derive(Debug)]
+pub struct ReaderState {
+    pub reader: String,
+    pub common: ReaderStateCommonCall,
+}
+
+impl NdrDecode for ReaderState {
+    fn decode_ptr(src: &mut ReadCursor<'_>, index: &mut u32) -> PduResult<Self> {
+        let _reader_ptr = ndr::decode_ptr(src, index)?;
+        let common = ReaderStateCommonCall::decode(src)?;
+        Ok(Self {
+            reader: String::new(),
+            common,
+        })
+    }
+
+    fn decode_value(&mut self, src: &mut ReadCursor<'_>) -> PduResult<()> {
+        self.reader = ndr::read_string_from_cursor(src)?;
+        Ok(())
     }
 }
 
@@ -787,483 +891,202 @@ impl rpce::HeaderlessEncode for GetStatusChangeReturn {
     }
 }
 
-pub mod rpce {
-    //! PDUs for [\[MS-RPCE\]: Remote Procedure Call Protocol Extensions] as required by [MS-RDPESC].
-    //!
-    //! [\[MS-RPCE\]: Remote Procedure Call Protocol Extensions]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rpce/290c38b1-92fe-4229-91e6-4fc376610c15
+/// [2.2.2.14 ConnectW_Call]
+///
+/// [2.2.2.14 ConnectW_Call]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/fd06f6a0-a9ea-478c-9b5e-470fd9cde5a6
+#[derive(Debug)]
+pub struct ConnectCall {
+    pub reader: String,
+    pub common: ConnectCommon,
+}
 
-    use std::mem::size_of;
-
-    use ironrdp_pdu::{
-        cast_length,
-        cursor::{ReadCursor, WriteCursor},
-        ensure_size, invalid_message_err, PduDecode, PduEncode, PduError, PduResult,
-    };
-
-    /// Wrapper struct for [MS-RPCE] PDUs that allows for common [`PduEncode`], [`Encode`], and [`Self::decode`] implementations.
-    ///
-    /// Structs which are meant to be encoded into an [MS-RPCE] message should typically implement [`HeaderlessEncode`],
-    /// and their `new` function should return a [`Pdu`] wrapping the underlying struct.
-    ///
-    /// ```rust
-    /// #[derive(Debug)]
-    /// pub struct RpceEncodePdu {
-    ///     example_field: u32,
-    /// }
-    ///
-    /// impl RpceEncodePdu {
-    ///     /// `new` returns a `Pdu` wrapping the underlying struct.
-    ///     pub fn new(example_field: u32) -> rpce::Pdu<Self> {
-    ///         rpce::Pdu(Self { example_field })
-    ///     }
-    /// }
-    ///
-    /// /// The underlying struct should implement `HeaderlessEncode`.
-    /// impl rpce::HeaderlessEncode for RpceEncodePdu {
-    ///     fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
-    ///         ensure_size!(in: dst, size: self.size());
-    ///         dst.write_u32(self.return_code.into());
-    ///         Ok(())
-    ///     }
-    ///
-    ///     fn name(&self) -> &'static str {
-    ///         "RpceEncodePdu"
-    ///     }
-    ///
-    ///     fn size(&self) -> usize {
-    ///         std::mem::size_of<u32>()
-    ///     }
-    /// }
-    /// ```
-    ///
-    /// See [`super::LongReturn`] for a live example of an encodable PDU.
-    ///
-    /// Structs which are meant to be decoded from an [MS-RPCE] message should typically implement [`HeaderlessDecode`],
-    /// and their `decode` function should return a [`Pdu`] wrapping the underlying struct.
-    ///
-    /// ```rust
-    /// pub struct RpceDecodePdu {
-    ///     example_field: u32,
-    /// }
-    ///
-    /// impl RpceDecodePdu {
-    ///     /// `decode` returns a `Pdu` wrapping the underlying struct.
-    ///     pub fn decode(src: &mut ReadCursor<'_>) -> PduResult<rpce::Pdu<Self>> {
-    ///         Ok(rpce::Pdu::<Self>::decode(src)?.into_inner())
-    ///     }
-    ///
-    ///     fn size() -> usize {
-    ///         std::mem::size_of<u32>()
-    ///     }
-    /// }
-    ///
-    /// /// The underlying struct should implement `HeaderlessDecode`.
-    /// impl rpce::HeaderlessDecode for RpceDecodePdu {
-    ///    fn decode(src: &mut ReadCursor<'_>) -> PduResult<Self>
-    ///    where
-    ///         Self: Sized,
-    ///    {
-    ///        ensure_size!(in: src, size: Self::size());
-    ///        let example_field = src.read_u32();
-    ///        Ok(Self { example_field })
-    ///     }
-    /// }
-    /// ```
-    ///
-    /// See [`super::EstablishContextCall`] for a live example of a decodable PDU.
-    #[derive(Debug)]
-    pub struct Pdu<T>(pub T);
-
-    impl<T> Pdu<T> {
-        pub fn into_inner(self) -> T {
-            self.0
-        }
-
-        pub fn into_inner_ref(&self) -> &T {
-            &self.0
-        }
-    }
-
-    impl<T: HeaderlessDecode> PduDecode<'_> for Pdu<T> {
-        /// Decodes the instance from a buffer stripping it of its [`StreamHeader`] and [`TypeHeader`].
-        fn decode(src: &mut ReadCursor<'_>) -> PduResult<Pdu<T>> {
-            // We expect `StreamHeader::decode`, `TypeHeader::decode`, and `T::decode` to each
-            // call `ensure_size!` to ensure that the buffer is large enough, so we can safely
-            // omit that check here.
-            let _stream_header = StreamHeader::decode(src)?;
-            let _type_header = TypeHeader::decode(src)?;
-            let pdu = T::decode(src)?;
-            Ok(Self(pdu))
-        }
-    }
-
-    impl<T: HeaderlessEncode> PduEncode for Pdu<T> {
-        fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
-            ensure_size!(ctx: self.name(), in: dst, size: self.size());
-            let stream_header = StreamHeader::default();
-            let type_header = TypeHeader::new(cast_length!("Pdu<T>", "size", self.size())?);
-
-            stream_header.encode(dst)?;
-            type_header.encode(dst)?;
-            HeaderlessEncode::encode(&self.0, dst)?;
-
-            // Pad response to be 8-byte aligned.
-            let padding_size = padding_size(&self.0);
-            if padding_size > 0 {
-                dst.write_slice(&vec![0; padding_size]);
-            }
-
-            Ok(())
-        }
-
-        fn name(&self) -> &'static str {
-            self.0.name()
-        }
-
-        fn size(&self) -> usize {
-            StreamHeader::size() + TypeHeader::size() + HeaderlessEncode::size(&self.0) + padding_size(&self.0)
-        }
-    }
-
-    impl<T: HeaderlessEncode> Encode for Pdu<T> {}
-
-    /// Trait for types that can be encoded into an [MS-RPCE] message.
-    ///
-    /// Implementers should typically avoid implementing this trait directly
-    /// and instead implement [`HeaderlessEncode`], and wrap it in a [`Pdu`].
-    pub trait Encode: PduEncode + Send + std::fmt::Debug {}
-
-    /// Trait for types that can be encoded into an [MS-RPCE] message.
-    ///
-    /// Implementers should typically implement this trait instead of [`Encode`].
-    pub trait HeaderlessEncode: Send + std::fmt::Debug {
-        /// Encodes the instance into a buffer sans its [`StreamHeader`] and [`TypeHeader`].
-        fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()>;
-        /// Returns the name associated with this RPCE PDU.
-        fn name(&self) -> &'static str;
-        /// Returns the size of the instance sans its [`StreamHeader`] and [`TypeHeader`].
-        fn size(&self) -> usize;
-    }
-
-    /// Trait for types that can be decoded from an [MS-RPCE] message.
-    ///
-    /// Implementers should typically implement this trait for a given type `T`
-    /// and then call [`Pdu::decode`] to decode the instance. See [`Pdu`] for more
-    /// details and an example.
-    pub trait HeaderlessDecode: Sized {
-        /// Decodes the instance from a buffer sans its [`StreamHeader`] and [`TypeHeader`].
-        fn decode(src: &mut ReadCursor<'_>) -> PduResult<Self>;
-    }
-
-    /// [2.2.6.1 Common Type Header for the Serialization Stream]
-    ///
-    /// [2.2.6.1 Common Type Header for the Serialization Stream]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rpce/6d75d40e-e2d2-4420-b9e9-8508a726a9ae
-    struct StreamHeader {
-        version: u8,
-        endianness: Endianness,
-        common_header_length: u16,
-        filler: u32,
-    }
-
-    impl Default for StreamHeader {
-        fn default() -> Self {
-            Self {
-                version: 1,
-                endianness: Endianness::LittleEndian,
-                common_header_length: 8,
-                filler: 0xCCCC_CCCC,
-            }
-        }
-    }
-
-    impl StreamHeader {
-        const NAME: &'static str = "RpceStreamHeader";
-
-        fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
-            ensure_size!(in: dst, size: Self::size());
-            dst.write_u8(self.version);
-            dst.write_u8(self.endianness.into());
-            dst.write_u16(self.common_header_length);
-            dst.write_u32(self.filler);
-            Ok(())
-        }
-
-        fn decode(src: &mut ReadCursor<'_>) -> PduResult<Self> {
-            ensure_size!(in: src, size: Self::size());
-            let version = src.read_u8();
-            let endianness = Endianness::try_from(src.read_u8())?;
-            let common_header_length = src.read_u16();
-            let filler = src.read_u32();
-            if endianness == Endianness::LittleEndian {
-                Ok(Self {
-                    version,
-                    endianness,
-                    common_header_length,
-                    filler,
-                })
-            } else {
-                Err(invalid_message_err!(
-                    "decode",
-                    "StreamHeader",
-                    "server returned big-endian data, parsing not implemented"
-                ))
-            }
-        }
-
-        fn size() -> usize {
-            size_of::<u8>() + size_of::<u8>() + size_of::<u16>() + size_of::<u32>()
-        }
-    }
-
-    #[derive(Debug, Clone, Copy, PartialEq)]
-    #[repr(u8)]
-    enum Endianness {
-        BigEndian = 0x00,
-        LittleEndian = 0x10,
-    }
-
-    impl TryFrom<u8> for Endianness {
-        type Error = PduError;
-
-        fn try_from(value: u8) -> Result<Self, Self::Error> {
-            match value {
-                0x00 => Ok(Endianness::BigEndian),
-                0x10 => Ok(Endianness::LittleEndian),
-                _ => Err(invalid_message_err!("try_from", "RpceEndianness", "unsupported value")),
-            }
-        }
-    }
-
-    impl From<Endianness> for u8 {
-        fn from(endianness: Endianness) -> Self {
-            endianness as u8
-        }
-    }
-
-    /// [2.2.6.2 Private Header for Constructed Type]
-    ///
-    /// [2.2.6.2 Private Header for Constructed Type]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rpce/63949ba8-bc88-4c0c-9377-23f14b197827
-    #[derive(Debug)]
-    struct TypeHeader {
-        object_buffer_length: u32,
-        filler: u32,
-    }
-
-    impl TypeHeader {
-        const NAME: &'static str = "RpceTypeHeader";
-
-        fn new(object_buffer_length: u32) -> Self {
-            Self {
-                object_buffer_length,
-                filler: 0,
-            }
-        }
-
-        fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
-            ensure_size!(in: dst, size: Self::size());
-            dst.write_u32(self.object_buffer_length);
-            dst.write_u32(self.filler);
-            Ok(())
-        }
-
-        fn decode(src: &mut ReadCursor<'_>) -> PduResult<Self> {
-            ensure_size!(in: src, size: Self::size());
-            let object_buffer_length = src.read_u32();
-            let filler = src.read_u32();
-
-            Ok(Self {
-                object_buffer_length,
-                filler,
-            })
-        }
-    }
-
-    impl TypeHeader {
-        fn size() -> usize {
-            size_of::<u32>() * 2
-        }
-    }
-
-    /// Calculates the padding required for an [MS-RPCE] message
-    /// to be 8-byte aligned.
-    fn padding_size(pdu: &impl HeaderlessEncode) -> usize {
-        let tail = pdu.size() % 8;
-        if tail > 0 {
-            8 - tail
-        } else {
-            0
-        }
+impl ConnectCall {
+    pub fn decode(src: &mut ReadCursor<'_>) -> PduResult<Self> {
+        Ok(rpce::Pdu::<Self>::decode(src)?.into_inner())
     }
 }
 
-pub mod ndr {
-    //! Request/response messages are nested structs with fields, encoded as NDR (network data
-    //! representation).
-    //!
-    //! Fixed-size fields are encoded in-line as they appear in the struct.
-    //!
-    //! Variable-sized fields (strings, byte arrays, sometimes structs) are encoded as pointers:
-    //! - in place of the field in the struct, a "pointer" is written
-    //! - the pointer value is 0x0002xxxx, where xxxx is an "index" in increments of 4
-    //! - for example, first pointer is 0x0002_0000, second is 0x0002_0004, third is 0x0002_0008 etc.
-    //! - the actual values are then appended at the end of the message, in the same order as their
-    //!   pointers appeared
-    //! - in the code below, "*_ptr" is the pointer value and "*_value" the actual data
-    //! - note that some fields (like arrays) will have a length prefix before the pointer and also
-    //!   before the actual data at the end of the message
-    //!
-    //! To deal with this, fixed-size structs only have encode/decode methods, while variable-size ones
-    //! have encode_ptr/decode_ptr and encode_value/decode_value methods. Messages are parsed linearly,
-    //! so decode_ptr/decode_value are called at different stages (same for encoding).
-    //!
-    //! Most of the above was reverse-engineered from FreeRDP:
-    //! https://github.com/FreeRDP/FreeRDP/blob/master/channels/smartcard/client/smartcard_pack.c
+impl rpce::HeaderlessDecode for ConnectCall {
+    fn decode(src: &mut ReadCursor<'_>) -> PduResult<Self> {
+        let mut index = 0;
+        let _reader_ptr = ndr::decode_ptr(src, &mut index)?;
+        let mut common = ConnectCommon::decode_ptr(src, &mut index)?;
+        let reader = ndr::read_string_from_cursor(src)?;
+        common.decode_value(src)?;
+        Ok(Self { reader, common })
+    }
+}
 
-    use std::mem::size_of;
+/// [2.2.1.3 Connect_Common]
+///
+/// [2.2.1.3 Connect_Common]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/32752f32-4410-4682-b9fc-9096674b52de
+#[derive(Debug)]
+pub struct ConnectCommon {
+    pub context: ScardContext,
+    pub share_mode: u32,
+    pub preferred_protocols: CardProtocol,
+}
 
-    use ironrdp_pdu::{
-        cursor::{ReadCursor, WriteCursor},
-        ensure_size, invalid_message_err,
-        utils::{self, CharacterSet},
-        PduResult,
-    };
+impl ConnectCommon {
+    const NAME: &'static str = "Connect_Common";
+}
 
-    use super::ReaderStateCommonCall;
+impl NdrDecode for ConnectCommon {
+    fn decode_ptr(src: &mut ReadCursor<'_>, index: &mut u32) -> PduResult<Self>
+    where
+        Self: Sized,
+    {
+        let context = ScardContext::decode_ptr(src, index)?;
+        ensure_size!(in: src, size: size_of::<u32>() * 2);
+        let share_mode = src.read_u32();
+        let preferred_protocols = CardProtocol::from_bits_truncate(src.read_u32());
+        Ok(Self {
+            context,
+            share_mode,
+            preferred_protocols,
+        })
+    }
 
-    /// [2.2.1.1 REDIR_SCARDCONTEXT]
+    fn decode_value(&mut self, src: &mut ReadCursor<'_>) -> PduResult<()> {
+        self.context.decode_value(src)
+    }
+}
+
+bitflags! {
+    /// [2.2.5 Protocol Identifier]
     ///
-    /// [2.2.1.1 REDIR_SCARDCONTEXT]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/060abee1-e520-4149-9ef7-ce79eb500a59
-    #[derive(Debug)]
-    pub struct ScardContext {
-        pub length: u32,
-        // Shortcut: we always create 4-byte context values.
-        // The spec allows this field to have variable length.
-        pub value: u32,
+    /// [2.2.5 Protocol Identifier]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/41673567-2710-4e86-be87-7b6f46fe10af
+    #[derive(Debug, Clone)]
+    pub struct CardProtocol: u32 {
+        const SCARD_PROTOCOL_UNDEFINED = 0x0000_0000;
+        const SCARD_PROTOCOL_T0 = 0x0000_0001;
+        const SCARD_PROTOCOL_T1 = 0x0000_0002;
+        const SCARD_PROTOCOL_TX = 0x0000_0003;
+        const SCARD_PROTOCOL_RAW = 0x0001_0000;
+        const SCARD_PROTOCOL_DEFAULT = 0x8000_0000;
+        const SCARD_PROTOCOL_OPTIMAL = 0x0000_0000;
+    }
+}
+
+/// [2.2.1.2 REDIR_SCARDHANDLE]
+///
+/// [2.2.1.2 REDIR_SCARDHANDLE]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/b6276356-7c5f-4d3e-be92-a6c85e58d008
+#[derive(Debug)]
+pub struct ScardHandle {
+    context: ScardContext,
+    /// Shortcut: we always create 4-byte handle values.
+    /// The spec allows this field to have variable length.
+    value: u32,
+}
+
+impl ScardHandle {
+    const NAME: &'static str = "REDIR_SCARDHANDLE";
+    /// See [`ScardHandle::value`]
+    const VALUE_LENGTH: u32 = 4;
+
+    pub fn new(context: ScardContext, value: u32) -> Self {
+        Self { context, value }
+    }
+}
+
+impl NdrDecode for ScardHandle {
+    fn decode_ptr(src: &mut ReadCursor<'_>, index: &mut u32) -> PduResult<Self>
+    where
+        Self: Sized,
+    {
+        let context = ScardContext::decode_ptr(src, index)?;
+        ensure_size!(ctx: "ScardHandle::decode_ptr", in: src, size: size_of::<u32>());
+        let length = src.read_u32();
+        if length != Self::VALUE_LENGTH {
+            error!(?length, "Unsupported value length in ScardHandle");
+            return Err(invalid_message_err!(
+                "decode_ptr",
+                "unsupported value length in ScardHandle"
+            ));
+        }
+        let _ptr = ndr::decode_ptr(src, index)?;
+        Ok(Self { context, value: 0 })
     }
 
-    impl ScardContext {
-        const NAME: &'static str = "REDIR_SCARDCONTEXT";
-
-        pub fn new(value: u32) -> Self {
-            Self {
-                length: size_of::<u32>() as u32,
-                value,
-            }
+    fn decode_value(&mut self, src: &mut ReadCursor<'_>) -> PduResult<()> {
+        self.context.decode_value(src)?;
+        ensure_size!(in: src, size: size_of::<u32>());
+        let length = src.read_u32();
+        if length != Self::VALUE_LENGTH {
+            error!(?length, "Unsupported value length in ScardHandle");
+            return Err(invalid_message_err!(
+                "decode_value",
+                "unsupported value length in ScardHandle"
+            ));
         }
-
-        pub fn encode_ptr(&self, index: &mut u32, dst: &mut WriteCursor<'_>) -> PduResult<()> {
-            encode_ptr(Some(self.length), index, dst)
-        }
-
-        pub fn encode_value(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
-            dst.write_u32(self.length);
-            dst.write_u32(self.value);
-            Ok(())
-        }
-
-        pub fn decode_ptr(src: &mut ReadCursor<'_>, index: &mut u32) -> PduResult<Self> {
-            ensure_size!(in: src, size: size_of::<u32>());
-            let length = src.read_u32();
-            let _ptr = decode_ptr(src, index)?;
-            Ok(Self { length, value: 0 })
-        }
-
-        pub fn decode_value(&mut self, src: &mut ReadCursor<'_>) -> PduResult<()> {
-            ensure_size!(in: src, size: size_of::<u32>()*2);
-            let length = src.read_u32();
-            if length != self.length {
-                Err(invalid_message_err!(
-                    "decode_value",
-                    "mismatched length in ScardContext reference and value"
-                ))
-            } else {
-                self.value = src.read_u32();
-                Ok(())
-            }
-        }
-
-        pub fn size(&self) -> usize {
-            ptr_size(true) + size_of::<u32>() * 2
-        }
+        ensure_size!(in: src, size: size_of::<u32>());
+        self.value = src.read_u32();
+        Ok(())
     }
+}
 
-    /// [2.2.1.7 ReaderStateW]
-    ///
-    /// [2.2.1.7 ReaderStateW]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/0ba03cd2-bed0-495b-adbe-3d2cde61980c
-    #[derive(Debug)]
-    pub struct ReaderState {
-        pub reader: String,
-        pub common: ReaderStateCommonCall,
-    }
-
-    impl ReaderState {
-        pub fn decode_ptr(src: &mut ReadCursor<'_>, index: &mut u32) -> PduResult<Self> {
-            let _reader_ptr = decode_ptr(src, index)?;
-            let common = ReaderStateCommonCall::decode(src)?;
-            Ok(Self {
-                reader: String::new(),
-                common,
-            })
-        }
-
-        pub fn decode_value(&mut self, src: &mut ReadCursor<'_>) -> PduResult<()> {
-            self.reader = read_string_from_cursor(src)?;
-            Ok(())
-        }
-    }
-
-    pub fn encode_ptr(length: Option<u32>, index: &mut u32, dst: &mut WriteCursor<'_>) -> PduResult<()> {
-        ensure_size!(ctx: "encode_ptr", in: dst, size: ptr_size(length.is_some()));
-        if let Some(length) = length {
-            dst.write_u32(length);
-        }
-
-        dst.write_u32(0x0002_0000 + *index * 4);
-        *index += 1;
+impl NdrEncode for ScardHandle {
+    fn encode_ptr(&self, index: &mut u32, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        self.context.encode_ptr(index, dst)?;
+        ndr::encode_ptr(Some(Self::VALUE_LENGTH), index, dst)?;
         Ok(())
     }
 
-    pub fn decode_ptr(src: &mut ReadCursor<'_>, index: &mut u32) -> PduResult<u32> {
-        ensure_size!(ctx: "decode_ptr", in: src, size: size_of::<u32>());
-        let ptr = src.read_u32();
-        if ptr == 0 {
-            // NULL pointer is OK. Don't update index.
-            return Ok(ptr);
-        }
-        let expect_ptr = 0x0002_0000 + *index * 4;
-        *index += 1;
-        if ptr != expect_ptr {
-            Err(invalid_message_err!("decode_ptr", "ptr", "ptr != expect_ptr"))
-        } else {
-            Ok(ptr)
-        }
+    fn encode_value(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_size!(in: dst, size: self.size_value());
+        self.context.encode_value(dst)?;
+        dst.write_u32(Self::VALUE_LENGTH);
+        dst.write_u32(self.value);
+        Ok(())
     }
 
-    pub fn ptr_size(with_length: bool) -> usize {
-        if with_length {
-            size_of::<u32>() * 2
-        } else {
-            size_of::<u32>()
-        }
+    fn size_ptr(&self) -> usize {
+        self.context.size_ptr() + ndr::ptr_size(true)
     }
 
-    /// A special read_string_from_cursor which reads and ignores the additional length and
-    /// offset fields prefixing the string, as well as any extra padding for a 4-byte aligned
-    /// NULL-terminated string.
-    pub fn read_string_from_cursor(cursor: &mut ReadCursor<'_>) -> PduResult<String> {
-        ensure_size!(ctx: "ndr::read_string_from_cursor", in: cursor, size: size_of::<u32>() * 3);
-        let length = cursor.read_u32();
-        let _offset = cursor.read_u32();
-        let _length2 = cursor.read_u32();
+    fn size_value(&self) -> usize {
+        self.context.size_value() + 4 /* cbHandle */ + 4 /* pbHandle */
+    }
+}
 
-        let string = utils::read_string_from_cursor(cursor, CharacterSet::Unicode, true)?;
+/// [2.2.3.8 Connect_Return]
+///
+/// [2.2.3.8 Connect_Return]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/ad9fbc8e-0963-44ac-8d71-38021685790c
+#[derive(Debug)]
+pub struct ConnectReturn {
+    pub return_code: ReturnCode,
+    pub handle: ScardHandle,
+    pub active_protocol: CardProtocol,
+}
 
-        // Skip padding for 4-byte aligned NULL-terminated string.
-        if length % 2 != 0 {
-            ensure_size!(ctx: "ndr::read_string_from_cursor", in: cursor, size: size_of::<u16>());
-            let _padding = cursor.read_u16();
-        }
+impl ConnectReturn {
+    const NAME: &'static str = "Connect_Return";
 
-        Ok(string)
+    pub fn new(return_code: ReturnCode, handle: ScardHandle, active_protocol: CardProtocol) -> rpce::Pdu<Self> {
+        rpce::Pdu(Self {
+            return_code,
+            handle,
+            active_protocol,
+        })
+    }
+}
+
+impl rpce::HeaderlessEncode for ConnectReturn {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_size!(in: dst, size: self.size());
+        dst.write_u32(self.return_code.into());
+        let mut index = 0;
+        self.handle.encode_ptr(&mut index, dst)?;
+        dst.write_u32(self.active_protocol.bits());
+        self.handle.encode_value(dst)?;
+        Ok(())
+    }
+
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    fn size(&self) -> usize {
+        self.return_code.size() + self.handle.size() + 4 /* dwActiveProtocol */
     }
 }
