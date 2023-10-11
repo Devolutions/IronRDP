@@ -294,6 +294,10 @@ impl RdpServer {
                             self.handle_input_event(pdu).await;
                         }
 
+                        rdp::headers::ShareDataPdu::ShutdownRequest => {
+                            return Ok(true);
+                        }
+
                         unexpected => {
                             warn!(?unexpected, "Unexpected share data pdu");
                         }
