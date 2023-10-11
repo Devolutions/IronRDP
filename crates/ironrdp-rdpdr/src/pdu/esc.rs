@@ -5,7 +5,7 @@
 pub mod ndr;
 pub mod rpce;
 use super::efs::IoCtlCode;
-use crate::pdu::esc::ndr::{Decode, Encode};
+use crate::pdu::esc::ndr::{Decode as _, Encode as _};
 use bitflags::bitflags;
 use ironrdp_pdu::{
     cast_length,
@@ -59,31 +59,29 @@ impl ScardCall {
 /// [2.2.1.1 REDIR_SCARDCONTEXT]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/060abee1-e520-4149-9ef7-ce79eb500a59
 #[derive(Debug, Copy, Clone)]
 pub struct ScardContext {
-    pub length: u32,
-    // Shortcut: we always create 4-byte context values.
-    // The spec allows this field to have variable length.
+    /// Shortcut: we always create 4-byte context values.
+    /// The spec allows this field to have variable length.
     pub value: u32,
 }
 
 impl ScardContext {
     const NAME: &'static str = "REDIR_SCARDCONTEXT";
+    /// See [`ScardContext::value`]
+    const VALUE_LENGTH: u32 = 4;
 
     pub fn new(value: u32) -> Self {
-        Self {
-            length: size_of::<u32>() as u32,
-            value,
-        }
+        Self { value }
     }
 }
 
 impl ndr::Encode for ScardContext {
     fn encode_ptr(&self, index: &mut u32, dst: &mut WriteCursor<'_>) -> PduResult<()> {
-        ndr::encode_ptr(Some(self.length), index, dst)
+        ndr::encode_ptr(Some(Self::VALUE_LENGTH), index, dst)
     }
 
     fn encode_value(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
         ensure_size!(in: dst, size: self.size_value());
-        dst.write_u32(self.length);
+        dst.write_u32(Self::VALUE_LENGTH);
         dst.write_u32(self.value);
         Ok(())
     }
@@ -93,7 +91,7 @@ impl ndr::Encode for ScardContext {
     }
 
     fn size_value(&self) -> usize {
-        size_of::<u32>() * 2 /* self.length, self.value */
+        4 /* cbContext */ + 4 /* pbContext */
     }
 }
 
@@ -104,23 +102,30 @@ impl ndr::Decode for ScardContext {
     {
         ensure_size!(in: src, size: size_of::<u32>());
         let length = src.read_u32();
+        if length != Self::VALUE_LENGTH {
+            error!(?length, "Unsupported value length in ScardContext");
+            return Err(invalid_message_err!(
+                "decode_ptr",
+                "unsupported value length in ScardContext"
+            ));
+        }
+
         let _ptr = ndr::decode_ptr(src, index)?;
-        Ok(Self { length, value: 0 })
+        Ok(Self { value: 0 })
     }
 
     fn decode_value(&mut self, src: &mut ReadCursor<'_>) -> PduResult<()> {
-        ensure_size!(in: src, size: size_of::<u32>()*2);
+        ensure_size!(in: src, size: size_of::<u32>() * 2);
         let length = src.read_u32();
-        if length != self.length {
-            error!(?length, ?self.length, "Mismatched length in ScardContext reference and value");
-            Err(invalid_message_err!(
+        if length != Self::VALUE_LENGTH {
+            error!(?length, "Unsupported value length in ScardContext");
+            return Err(invalid_message_err!(
                 "decode_value",
-                "mismatched length in ScardContext reference and value"
-            ))
-        } else {
-            self.value = src.read_u32();
-            Ok(())
+                "unsupported value length in ScardContext"
+            ));
         }
+        self.value = src.read_u32();
+        Ok(())
     }
 }
 
@@ -960,13 +965,13 @@ bitflags! {
     /// [2.2.5 Protocol Identifier]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/41673567-2710-4e86-be87-7b6f46fe10af
     #[derive(Debug, Clone)]
     pub struct CardProtocol: u32 {
-        const SCARD_PROTOCOL_UNDEFINED = 0x00000000;
-        const SCARD_PROTOCOL_T0 = 0x00000001;
-        const SCARD_PROTOCOL_T1 = 0x00000002;
-        const SCARD_PROTOCOL_TX = 0x00000003;
-        const SCARD_PROTOCOL_RAW = 0x00010000;
-        const SCARD_PROTOCOL_DEFAULT = 0x80000000;
-        const SCARD_PROTOCOL_OPTIMAL = 0x00000000;
+        const SCARD_PROTOCOL_UNDEFINED = 0x0000_0000;
+        const SCARD_PROTOCOL_T0 = 0x0000_0001;
+        const SCARD_PROTOCOL_T1 = 0x0000_0002;
+        const SCARD_PROTOCOL_TX = 0x0000_0003;
+        const SCARD_PROTOCOL_RAW = 0x0001_0000;
+        const SCARD_PROTOCOL_DEFAULT = 0x8000_0000;
+        const SCARD_PROTOCOL_OPTIMAL = 0x0000_0000;
     }
 }
 
@@ -976,21 +981,18 @@ bitflags! {
 #[derive(Debug)]
 pub struct ScardHandle {
     context: ScardContext,
-    length: u32,
-    // Shortcut: we always create 4-byte handle values.
-    // The spec allows this field to have variable length.
+    /// Shortcut: we always create 4-byte handle values.
+    /// The spec allows this field to have variable length.
     value: u32,
 }
 
 impl ScardHandle {
     const NAME: &'static str = "REDIR_SCARDHANDLE";
+    /// See [`ScardHandle::value`]
+    const VALUE_LENGTH: u32 = 4;
 
     pub fn new(context: ScardContext, value: u32) -> Self {
-        Self {
-            context,
-            length: 4,
-            value,
-        }
+        Self { context, value }
     }
 }
 
@@ -1000,44 +1002,47 @@ impl ndr::Decode for ScardHandle {
         Self: Sized,
     {
         let context = ScardContext::decode_ptr(src, index)?;
-        ensure_size!(ctx: "Handle::decode_ptr", in: src, size: size_of::<u32>());
+        ensure_size!(ctx: "ScardHandle::decode_ptr", in: src, size: size_of::<u32>());
         let length = src.read_u32();
+        if length != Self::VALUE_LENGTH {
+            error!(?length, "Unsupported value length in ScardHandle");
+            return Err(invalid_message_err!(
+                "decode_ptr",
+                "unsupported value length in ScardHandle"
+            ));
+        }
         let _ptr = ndr::decode_ptr(src, index)?;
-        Ok(Self {
-            context,
-            length,
-            value: 0,
-        })
+        Ok(Self { context, value: 0 })
     }
 
     fn decode_value(&mut self, src: &mut ReadCursor<'_>) -> PduResult<()> {
         self.context.decode_value(src)?;
         ensure_size!(in: src, size: size_of::<u32>());
         let length = src.read_u32();
-        if length != self.length {
-            Err(invalid_message_err!(
+        if length != Self::VALUE_LENGTH {
+            error!(?length, "Unsupported value length in ScardHandle");
+            return Err(invalid_message_err!(
                 "decode_value",
-                "mismatched length in Handle reference and value"
-            ))
-        } else {
-            ensure_size!(in: src, size: size_of::<u32>());
-            self.value = src.read_u32();
-            Ok(())
+                "unsupported value length in ScardHandle"
+            ));
         }
+        ensure_size!(in: src, size: size_of::<u32>());
+        self.value = src.read_u32();
+        Ok(())
     }
 }
 
 impl ndr::Encode for ScardHandle {
     fn encode_ptr(&self, index: &mut u32, dst: &mut WriteCursor<'_>) -> PduResult<()> {
         self.context.encode_ptr(index, dst)?;
-        ndr::encode_ptr(Some(self.length), index, dst)?;
+        ndr::encode_ptr(Some(Self::VALUE_LENGTH), index, dst)?;
         Ok(())
     }
 
     fn encode_value(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
         ensure_size!(in: dst, size: self.size_value());
         self.context.encode_value(dst)?;
-        dst.write_u32(self.length);
+        dst.write_u32(Self::VALUE_LENGTH);
         dst.write_u32(self.value);
         Ok(())
     }
@@ -1047,7 +1052,7 @@ impl ndr::Encode for ScardHandle {
     }
 
     fn size_value(&self) -> usize {
-        self.context.size_value() + size_of::<u32>() * 2 /* self.length, self.value */
+        self.context.size_value() + 4 /* cbHandle */ + 4 /* pbHandle */
     }
 }
 
@@ -1089,7 +1094,7 @@ impl rpce::HeaderlessEncode for ConnectReturn {
     }
 
     fn size(&self) -> usize {
-        self.return_code.size() + self.handle.size() + size_of::<u32>() // self.active_protocol
+        self.return_code.size() + self.handle.size() + 4 /* dwActiveProtocol */
     }
 }
 

@@ -17,8 +17,9 @@
 //! have encode_ptr/decode_ptr and encode_value/decode_value methods. Messages are parsed linearly,
 //! so decode_ptr/decode_value are called at different stages (same for encoding).
 //!
-//! Most of the above was reverse-engineered from FreeRDP:
-//! https://github.com/FreeRDP/FreeRDP/blob/master/channels/smartcard/client/smartcard_pack.c
+//! Most of the above was reverse-engineered from FreeRDP: [smartcard_pack.c]
+//!
+//! [smartcard_pack.c]: https://github.com/FreeRDP/FreeRDP/blob/ff303a9bda911c54ffc1b9f2471acd79c897b075/libfreerdp/utils/smartcard_pack.c
 
 use ironrdp_pdu::{
     cursor::{ReadCursor, WriteCursor},
