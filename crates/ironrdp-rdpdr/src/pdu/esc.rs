@@ -5,7 +5,7 @@
 pub mod ndr;
 pub mod rpce;
 use super::efs::IoCtlCode;
-use crate::pdu::esc::ndr::{Decode as NdrDecode, Encode as NdrEncode};
+use crate::pdu::esc::ndr::{Decode as _, Encode as _};
 use bitflags::bitflags;
 use ironrdp_pdu::{
     cast_length,
@@ -72,7 +72,7 @@ impl ScardContext {
     }
 }
 
-impl NdrEncode for ScardContext {
+impl ndr::Encode for ScardContext {
     fn encode_ptr(&self, index: &mut u32, dst: &mut WriteCursor<'_>) -> PduResult<()> {
         ndr::encode_ptr(Some(Self::VALUE_LENGTH), index, dst)
     }
@@ -93,7 +93,7 @@ impl NdrEncode for ScardContext {
     }
 }
 
-impl NdrDecode for ScardContext {
+impl ndr::Decode for ScardContext {
     fn decode_ptr(src: &mut ReadCursor<'_>, index: &mut u32) -> PduResult<Self>
     where
         Self: Sized,
@@ -136,7 +136,7 @@ pub struct ReaderState {
     pub common: ReaderStateCommonCall,
 }
 
-impl NdrDecode for ReaderState {
+impl ndr::Decode for ReaderState {
     fn decode_ptr(src: &mut ReadCursor<'_>, index: &mut u32) -> PduResult<Self> {
         let _reader_ptr = ndr::decode_ptr(src, index)?;
         let common = ReaderStateCommonCall::decode(src)?;
@@ -935,7 +935,7 @@ impl ConnectCommon {
     const NAME: &'static str = "Connect_Common";
 }
 
-impl NdrDecode for ConnectCommon {
+impl ndr::Decode for ConnectCommon {
     fn decode_ptr(src: &mut ReadCursor<'_>, index: &mut u32) -> PduResult<Self>
     where
         Self: Sized,
@@ -993,7 +993,7 @@ impl ScardHandle {
     }
 }
 
-impl NdrDecode for ScardHandle {
+impl ndr::Decode for ScardHandle {
     fn decode_ptr(src: &mut ReadCursor<'_>, index: &mut u32) -> PduResult<Self>
     where
         Self: Sized,
@@ -1029,7 +1029,7 @@ impl NdrDecode for ScardHandle {
     }
 }
 
-impl NdrEncode for ScardHandle {
+impl ndr::Encode for ScardHandle {
     fn encode_ptr(&self, index: &mut u32, dst: &mut WriteCursor<'_>) -> PduResult<()> {
         self.context.encode_ptr(index, dst)?;
         ndr::encode_ptr(Some(Self::VALUE_LENGTH), index, dst)?;
