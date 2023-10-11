@@ -27,6 +27,7 @@ pub enum ScardCall {
     GetStatusChangeCall(GetStatusChangeCall),
     ConnectCall(ConnectCall),
     HCardAndDispositionCall(HCardAndDispositionCall),
+    TransmitCall(TransmitCall),
     Unsupported,
 }
 
@@ -43,6 +44,7 @@ impl ScardCall {
             ScardIoCtlCode::BeginTransaction => Ok(ScardCall::HCardAndDispositionCall(
                 HCardAndDispositionCall::decode(src)?,
             )),
+            ScardIoCtlCode::Transmit => Ok(ScardCall::TransmitCall(TransmitCall::decode(src)?)),
             _ => {
                 warn!(?io_ctl_code, "Unsupported ScardIoCtlCode");
                 // TODO: maybe this should be an error
@@ -805,8 +807,8 @@ impl ReaderStateCommonCall {
 
     fn decode(src: &mut ReadCursor<'_>) -> PduResult<Self> {
         ensure_size!(in: src, size: Self::FIXED_PART_SIZE);
-        let current_state = CardStateFlags::from_bits_truncate(src.read_u32());
-        let event_state = CardStateFlags::from_bits_truncate(src.read_u32());
+        let current_state = CardStateFlags::from_bits_retain(src.read_u32());
+        let event_state = CardStateFlags::from_bits_retain(src.read_u32());
         let atr_length = src.read_u32();
         let atr = src.read_array::<36>();
 
@@ -943,7 +945,7 @@ impl ndr::Decode for ConnectCommon {
         let context = ScardContext::decode_ptr(src, index)?;
         ensure_size!(in: src, size: size_of::<u32>() * 2);
         let share_mode = src.read_u32();
-        let preferred_protocols = CardProtocol::from_bits_truncate(src.read_u32());
+        let preferred_protocols = CardProtocol::from_bits_retain(src.read_u32());
         Ok(Self {
             context,
             share_mode,
@@ -977,10 +979,10 @@ bitflags! {
 /// [2.2.1.2 REDIR_SCARDHANDLE]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/b6276356-7c5f-4d3e-be92-a6c85e58d008
 #[derive(Debug)]
 pub struct ScardHandle {
-    context: ScardContext,
+    pub context: ScardContext,
     /// Shortcut: we always create 4-byte handle values.
     /// The spec allows this field to have variable length.
-    value: u32,
+    pub value: u32,
 }
 
 impl ScardHandle {
@@ -1120,5 +1122,190 @@ impl rpce::HeaderlessDecode for HCardAndDispositionCall {
         let disposition = src.read_u32();
         handle.decode_value(src)?;
         Ok(Self { handle, disposition })
+    }
+}
+
+/// [2.2.2.19 Transmit_Call]
+///
+/// [2.2.2.19 Transmit_Call]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/e3861cfa-e61b-4d64-b19d-f6b31e076beb
+#[derive(Debug)]
+pub struct TransmitCall {
+    pub handle: ScardHandle,
+    pub send_pci: SCardIORequest,
+    pub send_length: u32,
+    pub send_buffer: Vec<u8>,
+    pub recv_pci: Option<SCardIORequest>,
+    pub recv_buffer_is_null: bool,
+    pub recv_length: u32,
+}
+
+impl TransmitCall {
+    const NAME: &'static str = "Transmit_Call";
+
+    pub fn decode(src: &mut ReadCursor<'_>) -> PduResult<Self> {
+        Ok(rpce::Pdu::<Self>::decode(src)?.into_inner())
+    }
+}
+
+impl rpce::HeaderlessDecode for TransmitCall {
+    fn decode(src: &mut ReadCursor<'_>) -> PduResult<Self> {
+        let mut index = 0;
+        let mut handle = ScardHandle::decode_ptr(src, &mut index)?;
+        let mut send_pci = SCardIORequest::decode_ptr(src, &mut index)?;
+        ensure_size!(in: src, size: size_of::<u32>());
+        let _send_length = src.read_u32();
+        let _send_buffer_ptr = ndr::decode_ptr(src, &mut index)?;
+        let recv_pci_ptr = ndr::decode_ptr(src, &mut index)?;
+        ensure_size!(in: src, size: size_of::<u32>() * 2);
+        let recv_buffer_is_null = src.read_u32() == 1;
+        let recv_length = src.read_u32();
+
+        handle.decode_value(src)?;
+        send_pci.decode_value(src)?;
+
+        ensure_size!(in: src, size: size_of::<u32>());
+        let send_length = src.read_u32();
+        let send_length_usize: usize = cast_length!("TransmitCall", "send_length", send_length)?;
+        ensure_size!(in: src, size: send_length_usize);
+        let send_buffer = src.read_slice(send_length_usize).to_vec();
+
+        let recv_pci = if recv_pci_ptr != 0 {
+            let mut recv_pci = SCardIORequest::decode_ptr(src, &mut index)?;
+            recv_pci.decode_value(src)?;
+            Some(recv_pci)
+        } else {
+            None
+        };
+
+        Ok(Self {
+            handle,
+            send_pci,
+            send_length,
+            send_buffer,
+            recv_pci,
+            recv_buffer_is_null,
+            recv_length,
+        })
+    }
+}
+
+/// [2.2.1.8 SCardIO_Request]
+///
+/// [2.2.1.8 SCardIO_Request]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/f6e15da8-5bc0-4ef6-b28a-ce88e8415621
+#[derive(Debug, Clone)]
+pub struct SCardIORequest {
+    pub protocol: CardProtocol,
+    pub extra_bytes_length: u32,
+    pub extra_bytes: Vec<u8>,
+}
+
+impl SCardIORequest {
+    const NAME: &'static str = "SCardIO_Request";
+}
+
+impl ndr::Decode for SCardIORequest {
+    fn decode_ptr(src: &mut ReadCursor<'_>, index: &mut u32) -> PduResult<Self>
+    where
+        Self: Sized,
+    {
+        ensure_size!(in: src, size: size_of::<u32>() * 2);
+        let protocol = CardProtocol::from_bits_retain(src.read_u32());
+        let extra_bytes_length = src.read_u32();
+        let _extra_bytes_ptr = ndr::decode_ptr(src, index)?;
+        let extra_bytes = Vec::new();
+        Ok(Self {
+            protocol,
+            extra_bytes_length,
+            extra_bytes,
+        })
+    }
+
+    fn decode_value(&mut self, src: &mut ReadCursor<'_>) -> PduResult<()> {
+        let extra_bytes_length: usize = cast_length!("TransmitCall", "extra_bytes_length", self.extra_bytes_length)?;
+        ensure_size!(in: src, size: extra_bytes_length);
+        self.extra_bytes = src.read_slice(extra_bytes_length).to_vec();
+        Ok(())
+    }
+}
+
+impl ndr::Encode for SCardIORequest {
+    fn encode_ptr(&self, index: &mut u32, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_size!(in: dst, size: self.size_ptr());
+        dst.write_u32(self.protocol.bits());
+        ndr::encode_ptr(Some(self.extra_bytes_length), index, dst)
+    }
+
+    fn encode_value(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_size!(in: dst, size: self.size_value());
+        dst.write_slice(&self.extra_bytes);
+        Ok(())
+    }
+
+    fn size_ptr(&self) -> usize {
+        4 /* dwProtocol */ + ndr::ptr_size(true)
+    }
+
+    fn size_value(&self) -> usize {
+        self.extra_bytes_length as usize
+    }
+}
+
+/// [2.2.3.11 Transmit_Return]
+///
+/// [2.2.3.11 Transmit_Return]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/252cffd0-58b8-434d-9e1b-0d547544fb0f
+#[derive(Debug)]
+pub struct TransmitReturn {
+    pub return_code: ReturnCode,
+    pub recv_pci: Option<SCardIORequest>,
+    pub recv_buffer: Vec<u8>,
+}
+
+impl TransmitReturn {
+    const NAME: &'static str = "Transmit_Return";
+
+    pub fn new(return_code: ReturnCode, recv_pci: Option<SCardIORequest>, recv_buffer: Vec<u8>) -> rpce::Pdu<Self> {
+        rpce::Pdu(Self {
+            return_code,
+            recv_pci,
+            recv_buffer,
+        })
+    }
+}
+
+impl rpce::HeaderlessEncode for TransmitReturn {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_size!(in: dst, size: self.size());
+        dst.write_u32(self.return_code.into());
+
+        let mut index = 0;
+        if let Some(recv_pci) = &self.recv_pci {
+            recv_pci.encode_ptr(&mut index, dst)?;
+            recv_pci.encode_value(dst)?;
+        } else {
+            dst.write_u32(0); // null value
+        }
+
+        let recv_buffer_len: u32 = cast_length!("TransmitReturn", "recv_buffer_len", self.recv_buffer.len())?;
+        ndr::encode_ptr(Some(recv_buffer_len), &mut index, dst)?;
+        dst.write_u32(recv_buffer_len);
+        dst.write_slice(&self.recv_buffer);
+
+        Ok(())
+    }
+
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    fn size(&self) -> usize {
+        self.return_code.size() // dst.write_u32(self.return_code.into());
+        + if let Some(recv_pci) = &self.recv_pci {
+            recv_pci.size()
+        } else {
+            4 // null value
+        }
+        + ndr::ptr_size(true) // ndr::encode_ptr(Some(recv_buffer_len), &mut index, dst)?;
+        + 4 // dst.write_u32(recv_buffer_len);
+        + self.recv_buffer.len() // dst.write_slice(&self.recv_buffer);
     }
 }
