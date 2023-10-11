@@ -28,6 +28,7 @@ pub enum ScardCall {
     ConnectCall(ConnectCall),
     HCardAndDispositionCall(HCardAndDispositionCall),
     TransmitCall(TransmitCall),
+    StatusCall(StatusCall),
     Unsupported,
 }
 
@@ -45,6 +46,7 @@ impl ScardCall {
                 HCardAndDispositionCall::decode(src)?,
             )),
             ScardIoCtlCode::Transmit => Ok(ScardCall::TransmitCall(TransmitCall::decode(src)?)),
+            ScardIoCtlCode::StatusW => Ok(ScardCall::StatusCall(StatusCall::decode(src)?)),
             _ => {
                 warn!(?io_ctl_code, "Unsupported ScardIoCtlCode");
                 // TODO: maybe this should be an error
@@ -1307,5 +1309,42 @@ impl rpce::HeaderlessEncode for TransmitReturn {
         + ndr::ptr_size(true) // ndr::encode_ptr(Some(recv_buffer_len), &mut index, dst)?;
         + 4 // dst.write_u32(recv_buffer_len);
         + self.recv_buffer.len() // dst.write_slice(&self.recv_buffer);
+    }
+}
+
+/// [2.2.2.18 Status_Call]
+///
+/// [2.2.2.18 Status_Call]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/f1139aed-e578-47f3-a800-f36b56c80500
+#[derive(Debug)]
+pub struct StatusCall {
+    pub handle: ScardHandle,
+    pub reader_names_is_null: bool,
+    pub reader_length: u32,
+    pub atr_length: u32,
+}
+
+impl StatusCall {
+    const NAME: &'static str = "Status_Call";
+
+    pub fn decode(src: &mut ReadCursor<'_>) -> PduResult<Self> {
+        Ok(rpce::Pdu::<Self>::decode(src)?.into_inner())
+    }
+}
+
+impl rpce::HeaderlessDecode for StatusCall {
+    fn decode(src: &mut ReadCursor<'_>) -> PduResult<Self> {
+        let mut index = 0;
+        let mut handle = ScardHandle::decode_ptr(src, &mut index)?;
+        ensure_size!(in: src, size: size_of::<u32>() * 3);
+        let reader_names_is_null = src.read_u32() == 1;
+        let reader_length = src.read_u32();
+        let atr_length = src.read_u32();
+        handle.decode_value(src)?;
+        Ok(Self {
+            handle,
+            reader_names_is_null,
+            reader_length,
+            atr_length,
+        })
     }
 }
