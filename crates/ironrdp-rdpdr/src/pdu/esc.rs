@@ -28,6 +28,7 @@ pub enum ScardCall {
     ConnectCall(ConnectCall),
     HCardAndDispositionCall(HCardAndDispositionCall),
     TransmitCall(TransmitCall),
+    StatusCall(StatusCall),
     Unsupported,
 }
 
@@ -45,6 +46,7 @@ impl ScardCall {
                 HCardAndDispositionCall::decode(src)?,
             )),
             ScardIoCtlCode::Transmit => Ok(ScardCall::TransmitCall(TransmitCall::decode(src)?)),
+            ScardIoCtlCode::StatusW | ScardIoCtlCode::StatusA => Ok(ScardCall::StatusCall(StatusCall::decode(src)?)),
             _ => {
                 warn!(?io_ctl_code, "Unsupported ScardIoCtlCode");
                 // TODO: maybe this should be an error
@@ -1307,5 +1309,140 @@ impl rpce::HeaderlessEncode for TransmitReturn {
         + ndr::ptr_size(true) // ndr::encode_ptr(Some(recv_buffer_len), &mut index, dst)?;
         + 4 // dst.write_u32(recv_buffer_len);
         + self.recv_buffer.len() // dst.write_slice(&self.recv_buffer);
+    }
+}
+
+/// [2.2.2.18 Status_Call]
+///
+/// [2.2.2.18 Status_Call]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/f1139aed-e578-47f3-a800-f36b56c80500
+#[derive(Debug)]
+pub struct StatusCall {
+    pub handle: ScardHandle,
+    pub reader_names_is_null: bool,
+    pub reader_length: u32,
+    pub atr_length: u32,
+}
+
+impl StatusCall {
+    const NAME: &'static str = "Status_Call";
+
+    pub fn decode(src: &mut ReadCursor<'_>) -> PduResult<Self> {
+        Ok(rpce::Pdu::<Self>::decode(src)?.into_inner())
+    }
+}
+
+impl rpce::HeaderlessDecode for StatusCall {
+    fn decode(src: &mut ReadCursor<'_>) -> PduResult<Self> {
+        let mut index = 0;
+        let mut handle = ScardHandle::decode_ptr(src, &mut index)?;
+        ensure_size!(in: src, size: size_of::<u32>() * 3);
+        let reader_names_is_null = src.read_u32() == 1;
+        let reader_length = src.read_u32();
+        let atr_length = src.read_u32();
+        handle.decode_value(src)?;
+        Ok(Self {
+            handle,
+            reader_names_is_null,
+            reader_length,
+            atr_length,
+        })
+    }
+}
+
+/// [2.2.3.10 Status_Return]
+///
+/// [2.2.3.10 Status_Return]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/987c1358-ad6b-4c8e-88e1-06210c28a66f
+#[derive(Debug)]
+pub struct StatusReturn {
+    pub return_code: ReturnCode,
+    pub reader_names: Vec<String>,
+    pub state: CardState,
+    pub protocol: CardProtocol,
+    pub atr: [u8; 32],
+    pub atr_length: u32,
+
+    pub encoding: CharacterSet,
+}
+
+impl StatusReturn {
+    const NAME: &'static str = "Status_Return";
+
+    pub fn new(
+        return_code: ReturnCode,
+        reader_names: Vec<String>,
+        state: CardState,
+        protocol: CardProtocol,
+        atr: [u8; 32],
+        atr_length: u32,
+        encoding: CharacterSet,
+    ) -> rpce::Pdu<Self> {
+        rpce::Pdu(Self {
+            return_code,
+            reader_names,
+            state,
+            protocol,
+            atr,
+            atr_length,
+            encoding,
+        })
+    }
+}
+
+impl rpce::HeaderlessEncode for StatusReturn {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_size!(in: dst, size: self.size());
+        dst.write_u32(self.return_code.into());
+        let mut index = 0;
+        let reader_names_length: u32 = cast_length!(
+            "StatusReturn",
+            "reader_names_length",
+            encoded_multistring_len(&self.reader_names, self.encoding)
+        )?;
+        ndr::encode_ptr(Some(reader_names_length), &mut index, dst)?;
+        dst.write_u32(self.state.into());
+        dst.write_u32(self.protocol.bits());
+        dst.write_slice(&self.atr);
+        dst.write_u32(self.atr_length);
+        dst.write_u32(reader_names_length);
+        write_multistring_to_cursor(dst, &self.reader_names, self.encoding)?;
+        Ok(())
+    }
+
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    fn size(&self) -> usize {
+        size_of::<u32>() * 5 // dst.write_u32(self.return_code.into()); dst.write_u32(self.state.into()); dst.write_u32(self.protocol.bits()); dst.write_slice(&self.atr); dst.write_u32(self.atr_length);
+        + ndr::ptr_size(true) // ndr::encode_ptr(Some(reader_names_length), &mut index, dst)?;
+        + self.atr.len() // dst.write_slice(&self.atr);
+        + encoded_multistring_len(&self.reader_names, self.encoding) // write_multistring_to_cursor(dst, &self.reader_names, self.encoding)?;
+    }
+}
+
+/// [2.2.4 Card/Reader State]
+///
+/// [2.2.4 Card/Reader State]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/264bc504-1195-43ff-a057-3d86a02c5d9c
+#[derive(Debug, Clone, Copy)]
+pub enum CardState {
+    /// SCARD_UNKNOWN
+    Unknown = 0x0000_0000,
+    /// SCARD_ABSENT
+    Absent = 0x0000_0001,
+    /// SCARD_PRESENT
+    Present = 0x0000_0002,
+    /// SCARD_SWALLOWED
+    Swallowed = 0x0000_0003,
+    /// SCARD_POWERED
+    Powered = 0x0000_0004,
+    /// SCARD_NEGOTIABLE
+    Negotiable = 0x0000_0005,
+    /// SCARD_SPECIFICMODE
+    SpecificMode = 0x0000_0006,
+}
+
+impl From<CardState> for u32 {
+    fn from(val: CardState) -> Self {
+        val as u32
     }
 }
