@@ -587,13 +587,10 @@ impl GeneralCapabilitySet {
         let os_version = src.read_u32();
         let protocol_major_version = src.read_u16();
         let protocol_minor_version = src.read_u16();
-        let io_code_1 =
-            IoCode1::from_bits(src.read_u32()).ok_or_else(|| invalid_message_err!("io_code_1", "invalid io_code_1"))?;
+        let io_code_1 = IoCode1::from_bits_retain(src.read_u32());
         let io_code_2 = src.read_u32();
-        let extended_pdu = ExtendedPdu::from_bits(src.read_u32())
-            .ok_or_else(|| invalid_message_err!("extended_pdu", "invalid extended_pdu"))?;
-        let extra_flags_1 = ExtraFlags1::from_bits(src.read_u32())
-            .ok_or_else(|| invalid_message_err!("extra_flags_1", "invalid extra_flags_1"))?;
+        let extended_pdu = ExtendedPdu::from_bits_retain(src.read_u32());
+        let extra_flags_1 = ExtraFlags1::from_bits_retain(src.read_u32());
         let extra_flags_2 = src.read_u32();
         let special_type_device_cap = if version == GENERAL_CAPABILITY_VERSION_02 {
             src.read_u32()

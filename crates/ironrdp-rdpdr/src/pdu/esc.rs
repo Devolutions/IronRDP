@@ -807,8 +807,8 @@ impl ReaderStateCommonCall {
 
     fn decode(src: &mut ReadCursor<'_>) -> PduResult<Self> {
         ensure_size!(in: src, size: Self::FIXED_PART_SIZE);
-        let current_state = CardStateFlags::from_bits_truncate(src.read_u32());
-        let event_state = CardStateFlags::from_bits_truncate(src.read_u32());
+        let current_state = CardStateFlags::from_bits_retain(src.read_u32());
+        let event_state = CardStateFlags::from_bits_retain(src.read_u32());
         let atr_length = src.read_u32();
         let atr = src.read_array::<36>();
 
@@ -945,8 +945,7 @@ impl ndr::Decode for ConnectCommon {
         let context = ScardContext::decode_ptr(src, index)?;
         ensure_size!(in: src, size: size_of::<u32>() * 2);
         let share_mode = src.read_u32();
-        let preferred_protocols = CardProtocol::from_bits(src.read_u32())
-            .ok_or_else(|| invalid_message_err!("decode_ptr", "ConnectCommon", "invalid CardProtocol"))?;
+        let preferred_protocols = CardProtocol::from_bits_retain(src.read_u32());
         Ok(Self {
             context,
             share_mode,
@@ -1209,8 +1208,7 @@ impl ndr::Decode for SCardIORequest {
         Self: Sized,
     {
         ensure_size!(in: src, size: size_of::<u32>() * 2);
-        let protocol = CardProtocol::from_bits(src.read_u32())
-            .ok_or_else(|| invalid_message_err!("decode_ptr", "SCardIORequest", "invalid CardProtocol"))?;
+        let protocol = CardProtocol::from_bits_retain(src.read_u32());
         let extra_bytes_length = src.read_u32();
         let _extra_bytes_ptr = ndr::decode_ptr(src, index)?;
         let extra_bytes = Vec::new();
