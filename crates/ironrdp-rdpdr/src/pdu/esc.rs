@@ -1165,8 +1165,9 @@ impl rpce::HeaderlessDecode for TransmitCall {
 
         ensure_size!(in: src, size: size_of::<u32>());
         let send_length = src.read_u32();
-        ensure_size!(in: src, size: send_length as usize);
-        let send_buffer = src.read_slice(send_length as usize).to_vec();
+        let send_length_usize: usize = cast_length!("TransmitCall", "send_length", send_length)?;
+        ensure_size!(in: src, size: send_length_usize);
+        let send_buffer = src.read_slice(send_length_usize).to_vec();
 
         let recv_pci = if recv_pci_ptr != 0 {
             let mut recv_pci = SCardIORequest::decode_ptr(src, &mut index)?;
@@ -1220,8 +1221,9 @@ impl ndr::Decode for SCardIORequest {
     }
 
     fn decode_value(&mut self, src: &mut ReadCursor<'_>) -> PduResult<()> {
-        ensure_size!(in: src, size: self.extra_bytes_length as usize);
-        self.extra_bytes = src.read_slice(self.extra_bytes_length as usize).to_vec();
+        let extra_bytes_length: usize = cast_length!("TransmitCall", "extra_bytes_length", self.extra_bytes_length)?;
+        ensure_size!(in: src, size: extra_bytes_length);
+        self.extra_bytes = src.read_slice(extra_bytes_length).to_vec();
         Ok(())
     }
 }
