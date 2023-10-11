@@ -19,7 +19,7 @@ doctest = false
 bit_field = "0.10"
 bitflags = "2"
 bitvec = "1.0"
-byteorder = "1.4"
+byteorder = "1.5"
 ironrdp-error.workspace = true
 ironrdp-pdu = { workspace = true, features = ["std"] }
 lazy_static = "1.4"
