@@ -221,7 +221,7 @@ impl PduParsing for ConferenceCreateResponse {
         // ConnectData::connectPDU: length (MUST be ignored by the client according to [MS-RDPBCGR])
         per::legacy::write_length(
             &mut stream,
-            gcc_blocks_buffer_length as u16 + CONFERENCE_RESPONSE_CONNECT_PDU_SIZE,
+            gcc_blocks_buffer_length as u16 + CONFERENCE_RESPONSE_CONNECT_PDU_SIZE + 1,
         )?;
         // ConnectGCCPDU (CHOICE): Select conferenceCreateResponse (1) of type ConferenceCreateResponse
         per::legacy::write_choice(&mut stream, CONNECT_GCC_PDU_CONFERENCE_RESPONSE_CHOICE)?;
