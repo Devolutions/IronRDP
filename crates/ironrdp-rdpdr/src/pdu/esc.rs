@@ -980,10 +980,10 @@ bitflags! {
 /// [2.2.1.2 REDIR_SCARDHANDLE]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/b6276356-7c5f-4d3e-be92-a6c85e58d008
 #[derive(Debug)]
 pub struct ScardHandle {
-    context: ScardContext,
+    pub context: ScardContext,
     /// Shortcut: we always create 4-byte handle values.
     /// The spec allows this field to have variable length.
-    value: u32,
+    pub value: u32,
 }
 
 impl ScardHandle {
@@ -1225,5 +1225,87 @@ impl ndr::Decode for SCardIORequest {
         ensure_size!(in: src, size: self.extra_bytes_length as usize);
         self.extra_bytes = src.read_slice(self.extra_bytes_length as usize).to_vec();
         Ok(())
+    }
+}
+
+impl ndr::Encode for SCardIORequest {
+    fn encode_ptr(&self, index: &mut u32, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_size!(in: dst, size: self.size_ptr());
+        dst.write_u32(self.protocol.bits());
+        ndr::encode_ptr(Some(self.extra_bytes_length), index, dst)
+    }
+
+    fn encode_value(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_size!(in: dst, size: self.size_value());
+        dst.write_slice(&self.extra_bytes);
+        Ok(())
+    }
+
+    fn size_ptr(&self) -> usize {
+        4 /* dwProtocol */ + ndr::ptr_size(true)
+    }
+
+    fn size_value(&self) -> usize {
+        self.extra_bytes_length as usize
+    }
+}
+
+/// [2.2.3.11 Transmit_Return]
+///
+/// [2.2.3.11 Transmit_Return]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/252cffd0-58b8-434d-9e1b-0d547544fb0f
+#[derive(Debug)]
+pub struct TransmitReturn {
+    pub return_code: ReturnCode,
+    pub recv_pci: Option<SCardIORequest>,
+    pub recv_buffer: Vec<u8>,
+}
+
+impl TransmitReturn {
+    const NAME: &'static str = "Transmit_Return";
+
+    pub fn new(return_code: ReturnCode, recv_pci: Option<SCardIORequest>, recv_buffer: Vec<u8>) -> rpce::Pdu<Self> {
+        rpce::Pdu(Self {
+            return_code,
+            recv_pci,
+            recv_buffer,
+        })
+    }
+}
+
+impl rpce::HeaderlessEncode for TransmitReturn {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_size!(in: dst, size: self.size());
+        dst.write_u32(self.return_code.into());
+
+        let mut index = 0;
+        if let Some(recv_pci) = &self.recv_pci {
+            recv_pci.encode_ptr(&mut index, dst)?;
+            recv_pci.encode_value(dst)?;
+        } else {
+            dst.write_u32(0); // null value
+        }
+
+        let recv_buffer_len: u32 = cast_length!("TransmitReturn", "recv_buffer_len", self.recv_buffer.len())?;
+        ndr::encode_ptr(Some(recv_buffer_len), &mut index, dst)?;
+        dst.write_u32(recv_buffer_len);
+        dst.write_slice(&self.recv_buffer);
+
+        Ok(())
+    }
+
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    fn size(&self) -> usize {
+        self.return_code.size() // dst.write_u32(self.return_code.into());
+        + if let Some(recv_pci) = &self.recv_pci {
+            recv_pci.size()
+        } else {
+            4 // null value
+        }
+        + ndr::ptr_size(true) // ndr::encode_ptr(Some(recv_buffer_len), &mut index, dst)?;
+        + 4 // dst.write_u32(recv_buffer_len);
+        + self.recv_buffer.len() // dst.write_slice(&self.recv_buffer);
     }
 }
