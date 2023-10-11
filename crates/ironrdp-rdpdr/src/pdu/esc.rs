@@ -5,7 +5,7 @@
 pub mod ndr;
 pub mod rpce;
 use super::efs::IoCtlCode;
-use crate::pdu::esc::ndr::{Decode, Encode};
+use crate::pdu::esc::ndr::{Decode as NdrDecode, Encode as NdrEncode};
 use bitflags::bitflags;
 use ironrdp_pdu::{
     cast_length,
@@ -68,7 +68,7 @@ impl ScardContext {
     }
 }
 
-impl ndr::Encode for ScardContext {
+impl NdrEncode for ScardContext {
     fn encode_ptr(&self, index: &mut u32, dst: &mut WriteCursor<'_>) -> PduResult<()> {
         ndr::encode_ptr(Some(Self::VALUE_LENGTH), index, dst)
     }
@@ -89,7 +89,7 @@ impl ndr::Encode for ScardContext {
     }
 }
 
-impl ndr::Decode for ScardContext {
+impl NdrDecode for ScardContext {
     fn decode_ptr(src: &mut ReadCursor<'_>, index: &mut u32) -> PduResult<Self>
     where
         Self: Sized,
@@ -132,7 +132,7 @@ pub struct ReaderState {
     pub common: ReaderStateCommonCall,
 }
 
-impl ndr::Decode for ReaderState {
+impl NdrDecode for ReaderState {
     fn decode_ptr(src: &mut ReadCursor<'_>, index: &mut u32) -> PduResult<Self> {
         let _reader_ptr = ndr::decode_ptr(src, index)?;
         let common = ReaderStateCommonCall::decode(src)?;
@@ -931,7 +931,7 @@ impl ConnectCommon {
     const NAME: &'static str = "Connect_Common";
 }
 
-impl ndr::Decode for ConnectCommon {
+impl NdrDecode for ConnectCommon {
     fn decode_ptr(src: &mut ReadCursor<'_>, index: &mut u32) -> PduResult<Self>
     where
         Self: Sized,
@@ -958,13 +958,13 @@ bitflags! {
     /// [2.2.5 Protocol Identifier]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/41673567-2710-4e86-be87-7b6f46fe10af
     #[derive(Debug, Clone)]
     pub struct CardProtocol: u32 {
-        const SCARD_PROTOCOL_UNDEFINED = 0x00000000;
-        const SCARD_PROTOCOL_T0 = 0x00000001;
-        const SCARD_PROTOCOL_T1 = 0x00000002;
-        const SCARD_PROTOCOL_TX = 0x00000003;
-        const SCARD_PROTOCOL_RAW = 0x00010000;
-        const SCARD_PROTOCOL_DEFAULT = 0x80000000;
-        const SCARD_PROTOCOL_OPTIMAL = 0x00000000;
+        const SCARD_PROTOCOL_UNDEFINED = 0x0000_0000;
+        const SCARD_PROTOCOL_T0 = 0x0000_0001;
+        const SCARD_PROTOCOL_T1 = 0x0000_0002;
+        const SCARD_PROTOCOL_TX = 0x0000_0003;
+        const SCARD_PROTOCOL_RAW = 0x0001_0000;
+        const SCARD_PROTOCOL_DEFAULT = 0x8000_0000;
+        const SCARD_PROTOCOL_OPTIMAL = 0x0000_0000;
     }
 }
 
@@ -989,7 +989,7 @@ impl ScardHandle {
     }
 }
 
-impl ndr::Decode for ScardHandle {
+impl NdrDecode for ScardHandle {
     fn decode_ptr(src: &mut ReadCursor<'_>, index: &mut u32) -> PduResult<Self>
     where
         Self: Sized,
@@ -1025,7 +1025,7 @@ impl ndr::Decode for ScardHandle {
     }
 }
 
-impl ndr::Encode for ScardHandle {
+impl NdrEncode for ScardHandle {
     fn encode_ptr(&self, index: &mut u32, dst: &mut WriteCursor<'_>) -> PduResult<()> {
         self.context.encode_ptr(index, dst)?;
         ndr::encode_ptr(Some(Self::VALUE_LENGTH), index, dst)?;
