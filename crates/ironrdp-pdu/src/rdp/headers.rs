@@ -262,6 +262,7 @@ pub enum ShareDataPdu {
     FrameAcknowledge(FrameAcknowledgePdu),
     ServerSetErrorInfo(ServerSetErrorInfoPdu),
     Input(InputEventPdu),
+    ShutdownRequest,
 }
 
 impl ShareDataPdu {
@@ -276,6 +277,7 @@ impl ShareDataPdu {
             ShareDataPdu::FrameAcknowledge(_) => "Frame Acknowledge PDU",
             ShareDataPdu::ServerSetErrorInfo(_) => "Server Set Error Info PDU",
             ShareDataPdu::Input(_) => "Server Input PDU",
+            ShareDataPdu::ShutdownRequest => "Shutdown Request",
         }
     }
 }
@@ -300,12 +302,12 @@ impl ShareDataPdu {
                 ServerSetErrorInfoPdu::from_buffer(&mut stream)?,
             )),
             ShareDataPduType::Input => Ok(ShareDataPdu::Input(InputEventPdu::from_buffer(&mut stream)?)),
+            ShareDataPduType::ShutdownRequest => Ok(ShareDataPdu::ShutdownRequest),
             ShareDataPduType::Update
             | ShareDataPduType::Pointer
             | ShareDataPduType::RefreshRectangle
             | ShareDataPduType::PlaySound
             | ShareDataPduType::SuppressOutput
-            | ShareDataPduType::ShutdownRequest
             | ShareDataPduType::ShutdownDenied
             | ShareDataPduType::SetKeyboardIndicators
             | ShareDataPduType::BitmapCachePersistentList
@@ -331,6 +333,7 @@ impl ShareDataPdu {
             ShareDataPdu::FrameAcknowledge(pdu) => pdu.to_buffer(&mut stream).map_err(RdpError::from),
             ShareDataPdu::ServerSetErrorInfo(pdu) => pdu.to_buffer(&mut stream).map_err(RdpError::from),
             ShareDataPdu::Input(pdu) => pdu.to_buffer(&mut stream).map_err(RdpError::from),
+            ShareDataPdu::ShutdownRequest => Ok(()),
         }
     }
 
@@ -344,6 +347,7 @@ impl ShareDataPdu {
             ShareDataPdu::FrameAcknowledge(pdu) => pdu.buffer_length(),
             ShareDataPdu::ServerSetErrorInfo(pdu) => pdu.buffer_length(),
             ShareDataPdu::Input(pdu) => pdu.buffer_length(),
+            ShareDataPdu::ShutdownRequest => 0,
         }
     }
     pub fn share_header_type(&self) -> ShareDataPduType {
@@ -357,6 +361,7 @@ impl ShareDataPdu {
             ShareDataPdu::FrameAcknowledge(_) => ShareDataPduType::FrameAcknowledgePdu,
             ShareDataPdu::ServerSetErrorInfo(_) => ShareDataPduType::SetErrorInfoPdu,
             ShareDataPdu::Input(_) => ShareDataPduType::Input,
+            ShareDataPdu::ShutdownRequest => ShareDataPduType::ShutdownRequest,
         }
     }
 }
