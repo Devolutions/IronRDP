@@ -68,6 +68,8 @@ fn virtual_channel_capabilities() -> capability_sets::VirtualChannel {
 
 fn multifragment_update() -> capability_sets::MultifragmentUpdate {
     capability_sets::MultifragmentUpdate {
-        max_request_size: u32::MAX,
+        // FIXME: use an acceptable value for msctc.
+        // What is the actual server max size?
+        max_request_size: 16_777_215,
     }
 }
