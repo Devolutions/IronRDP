@@ -109,6 +109,7 @@ impl Rdpdr {
             let call = ScardCall::decode(req.io_control_code, payload)?;
 
             debug!(?req);
+            debug!(?req.io_control_code);
             debug!(?call);
 
             self.backend.handle_scard_call(req, call)?;
