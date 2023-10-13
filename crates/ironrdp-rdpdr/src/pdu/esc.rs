@@ -29,6 +29,7 @@ pub enum ScardCall {
     HCardAndDispositionCall(HCardAndDispositionCall),
     TransmitCall(TransmitCall),
     StatusCall(StatusCall),
+    ContextCall(ContextCall),
     Unsupported,
 }
 
@@ -47,6 +48,7 @@ impl ScardCall {
             )),
             ScardIoCtlCode::Transmit => Ok(ScardCall::TransmitCall(TransmitCall::decode(src)?)),
             ScardIoCtlCode::StatusW | ScardIoCtlCode::StatusA => Ok(ScardCall::StatusCall(StatusCall::decode(src)?)),
+            ScardIoCtlCode::ReleaseContext => Ok(ScardCall::ContextCall(ContextCall::decode(src)?)),
             _ => {
                 warn!(?io_ctl_code, "Unsupported ScardIoCtlCode");
                 // TODO: maybe this should be an error
@@ -1444,5 +1446,28 @@ pub enum CardState {
 impl From<CardState> for u32 {
     fn from(val: CardState) -> Self {
         val as u32
+    }
+}
+
+/// [2.2.2.2 Context_Call]
+///
+/// [2.2.2.2 Context_Call]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/b11d26d9-c3d5-4e96-8d9f-aba35cded852
+#[derive(Debug)]
+pub struct ContextCall {
+    pub context: ScardContext,
+}
+
+impl ContextCall {
+    pub fn decode(src: &mut ReadCursor<'_>) -> PduResult<Self> {
+        Ok(rpce::Pdu::<Self>::decode(src)?.into_inner())
+    }
+}
+
+impl rpce::HeaderlessDecode for ContextCall {
+    fn decode(src: &mut ReadCursor<'_>) -> PduResult<Self> {
+        let mut index = 0;
+        let mut context = ScardContext::decode_ptr(src, &mut index)?;
+        context.decode_value(src)?;
+        Ok(Self { context })
     }
 }
