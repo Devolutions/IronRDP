@@ -18,6 +18,7 @@ test = false
 
 [target.'cfg(windows)'.dependencies]
 ironrdp-cliprdr.workspace = true
+ironrdp-svc.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 windows = { version = "0.48", features = [

@@ -4,6 +4,7 @@ use crate::pdu::{
     ClipboardFormat, ClipboardFormatId, ClipboardGeneralCapabilityFlags, FileContentsRequest, FileContentsResponse,
     FormatDataRequest, FormatDataResponse, LockDataId, OwnedFormatDataResponse,
 };
+use ironrdp_svc::AsAny;
 
 pub trait ClipboardError: std::error::Error + Send + Sync + 'static {}
 impl<T> ClipboardError for T where T: std::error::Error + Send + Sync + 'static {}
@@ -43,7 +44,7 @@ pub trait ClipboardMessageProxy: std::fmt::Debug + Send + Sync {
 }
 
 /// OS-specific clipboard backend interface.
-pub trait CliprdrBackend: std::fmt::Debug + Send + Sync + 'static {
+pub trait CliprdrBackend: AsAny + std::fmt::Debug + Send + Sync + 'static {
     /// Returns path to local temporary directory where clipboard-transferred files should be
     /// stored.
     fn temporary_directory(&self) -> &str;
