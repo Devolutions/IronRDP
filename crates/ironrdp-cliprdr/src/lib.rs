@@ -47,7 +47,7 @@ enum CliprdrState {
 /// CLIPRDR static virtual channel client endpoint implementation
 #[derive(Debug)]
 pub struct Cliprdr {
-    pub backend: Box<dyn CliprdrBackend>,
+    backend: Box<dyn CliprdrBackend>,
     capabilities: Capabilities,
     state: CliprdrState,
 }
@@ -77,6 +77,14 @@ impl Cliprdr {
             state: CliprdrState::Initialization,
             capabilities: Capabilities::new(ClipboardProtocolVersion::V2, flags),
         }
+    }
+
+    pub fn downcast_backend<T: CliprdrBackend>(&self) -> Option<&T> {
+        self.backend.as_any().downcast_ref::<T>()
+    }
+
+    pub fn downcast_backend_mut<T: CliprdrBackend>(&mut self) -> Option<&mut T> {
+        self.backend.as_any_mut().downcast_mut::<T>()
     }
 
     fn are_long_format_names_enabled(&self) -> bool {

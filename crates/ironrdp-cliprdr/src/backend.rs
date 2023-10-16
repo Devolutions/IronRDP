@@ -1,11 +1,10 @@
 //! This module provides infrastructure for implementing OS-specific clipboard backend.
 
-use ironrdp_svc::AsAny;
-
 use crate::pdu::{
     ClipboardFormat, ClipboardFormatId, ClipboardGeneralCapabilityFlags, FileContentsRequest, FileContentsResponse,
     FormatDataRequest, FormatDataResponse, LockDataId, OwnedFormatDataResponse,
 };
+use ironrdp_svc::AsAny;
 
 pub trait ClipboardError: std::error::Error + Send + Sync + 'static {}
 impl<T> ClipboardError for T where T: std::error::Error + Send + Sync + 'static {}
