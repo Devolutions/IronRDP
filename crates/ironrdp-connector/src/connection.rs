@@ -790,10 +790,8 @@ fn create_client_confirm_active(
     server_capability_sets.extend_from_slice(&[
         CapabilitySet::General(General {
             major_platform_type: config.platform,
-            minor_platform_type: MinorPlatformType::UNSPECIFIED,
             extra_flags: GeneralExtraFlags::FASTPATH_OUTPUT_SUPPORTED | GeneralExtraFlags::NO_BITMAP_COMPRESSION_HDR,
-            refresh_rect_support: false,
-            suppress_output_support: false,
+            ..Default::default()
         }),
         CapabilitySet::Bitmap(Bitmap {
             pref_bits_per_pix: 32,

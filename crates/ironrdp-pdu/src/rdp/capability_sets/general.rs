@@ -102,6 +102,18 @@ pub struct General {
     pub suppress_output_support: bool,
 }
 
+impl Default for General {
+    fn default() -> Self {
+        Self {
+            major_platform_type: MajorPlatformType::UNSPECIFIED,
+            minor_platform_type: MinorPlatformType::UNSPECIFIED,
+            extra_flags: GeneralExtraFlags::empty(),
+            refresh_rect_support: Default::default(),
+            suppress_output_support: Default::default(),
+        }
+    }
+}
+
 impl PduParsing for General {
     type Error = CapabilitySetsError;
 
