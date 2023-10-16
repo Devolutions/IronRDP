@@ -20,7 +20,7 @@ jobs:
     # (because $GITHUB_TOKEN only have read permissions when run on a fork)
     # We would need something like Codecov integration to handle forks properly
     # https://github.com/taiki-e/cargo-llvm-cov#continuous-integration
-    if: github.repository == 'Devolutions/IronRDP'
+    if: github.event.pull_request.head.repo.full_name == github.repository || github.event_name != 'pull_request'
 
     steps:
       - uses: actions/checkout@v3
