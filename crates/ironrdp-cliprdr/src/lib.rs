@@ -47,7 +47,7 @@ enum CliprdrState {
 /// CLIPRDR static virtual channel client endpoint implementation
 #[derive(Debug)]
 pub struct Cliprdr {
-    backend: Box<dyn CliprdrBackend>,
+    pub backend: Box<dyn CliprdrBackend>,
     capabilities: Capabilities,
     state: CliprdrState,
 }
