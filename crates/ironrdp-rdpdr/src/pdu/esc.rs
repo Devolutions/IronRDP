@@ -49,6 +49,14 @@ impl ScardCall {
             ScardIoCtlCode::Transmit => Ok(ScardCall::TransmitCall(TransmitCall::decode(src)?)),
             ScardIoCtlCode::StatusW | ScardIoCtlCode::StatusA => Ok(ScardCall::StatusCall(StatusCall::decode(src)?)),
             ScardIoCtlCode::ReleaseContext => Ok(ScardCall::ContextCall(ContextCall::decode(src)?)),
+            ScardIoCtlCode::EndTransaction => Ok(ScardCall::HCardAndDispositionCall(HCardAndDispositionCall::decode(
+                src,
+            )?)),
+            ScardIoCtlCode::Disconnect => Ok(ScardCall::HCardAndDispositionCall(HCardAndDispositionCall::decode(
+                src,
+            )?)),
+            ScardIoCtlCode::Cancel => Ok(ScardCall::ContextCall(ContextCall::decode(src)?)),
+            ScardIoCtlCode::IsValidContext => Ok(ScardCall::ContextCall(ContextCall::decode(src)?)),
             _ => {
                 warn!(?io_ctl_code, "Unsupported ScardIoCtlCode");
                 // TODO: maybe this should be an error
