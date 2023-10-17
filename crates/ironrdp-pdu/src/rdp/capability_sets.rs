@@ -34,7 +34,7 @@ pub use self::bitmap_codecs::{
 };
 pub use self::brush::{Brush, SupportLevel};
 pub use self::frame_acknowledge::FrameAcknowledge;
-pub use self::general::{General, GeneralExtraFlags, MajorPlatformType, MinorPlatformType};
+pub use self::general::{General, GeneralExtraFlags, MajorPlatformType, MinorPlatformType, PROTOCOL_VER};
 pub use self::glyph_cache::{CacheDefinition, GlyphCache, GlyphSupportLevel, GLYPH_CACHE_NUM};
 pub use self::input::{Input, InputFlags};
 pub use self::large_pointer::{LargePointer, LargePointerSupportFlags};

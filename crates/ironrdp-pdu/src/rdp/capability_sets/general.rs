@@ -10,7 +10,7 @@ use crate::rdp::capability_sets::CapabilitySetsError;
 use crate::PduParsing;
 
 const GENERAL_LENGTH: usize = 20;
-const PROTOCOL_VER: u16 = 0x0200;
+pub const PROTOCOL_VER: u16 = 0x0200;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct MajorPlatformType(u16);
