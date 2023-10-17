@@ -67,7 +67,7 @@ impl<'a> UpdateFragmenter<'a> {
     pub(crate) fn next(&mut self, dst: &mut [u8]) -> Option<usize> {
         let (consumed, written) = self.encode_next(dst)?;
         self.data = &self.data[consumed..];
-        self.index.checked_add(1)?;
+        self.index = self.index.checked_add(1)?;
         Some(written)
     }
 
