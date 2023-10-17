@@ -4,6 +4,7 @@
 
 pub mod ndr;
 pub mod rpce;
+
 use super::efs::IoCtlCode;
 use crate::pdu::esc::ndr::{Decode as _, Encode as _};
 use bitflags::bitflags;
@@ -30,6 +31,7 @@ pub enum ScardCall {
     TransmitCall(TransmitCall),
     StatusCall(StatusCall),
     ContextCall(ContextCall),
+    GetDeviceTypeIdCall(GetDeviceTypeIdCall),
     Unsupported,
 }
 
@@ -57,6 +59,7 @@ impl ScardCall {
             )?)),
             ScardIoCtlCode::Cancel => Ok(ScardCall::ContextCall(ContextCall::decode(src)?)),
             ScardIoCtlCode::IsValidContext => Ok(ScardCall::ContextCall(ContextCall::decode(src)?)),
+            ScardIoCtlCode::GetDeviceTypeId => Ok(ScardCall::GetDeviceTypeIdCall(GetDeviceTypeIdCall::decode(src)?)),
             _ => {
                 warn!(?io_ctl_code, "Unsupported ScardIoCtlCode");
                 // TODO: maybe this should be an error
@@ -1477,5 +1480,74 @@ impl rpce::HeaderlessDecode for ContextCall {
         let mut context = ScardContext::decode_ptr(src, &mut index)?;
         context.decode_value(src)?;
         Ok(Self { context })
+    }
+}
+
+/// [2.2.2.32 GetDeviceTypeId_Call]
+///
+/// [2.2.2.32 GetDeviceTypeId_Call]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/b5e18874-c42d-42ea-b1b1-3fd86a8a95f1
+#[derive(Debug)]
+pub struct GetDeviceTypeIdCall {
+    pub context: ScardContext,
+    pub reader_ptr: u32,
+    pub reader_name: String,
+}
+
+impl GetDeviceTypeIdCall {
+    pub fn decode(src: &mut ReadCursor<'_>) -> PduResult<Self> {
+        Ok(rpce::Pdu::<Self>::decode(src)?.into_inner())
+    }
+}
+
+impl rpce::HeaderlessDecode for GetDeviceTypeIdCall {
+    fn decode(src: &mut ReadCursor<'_>) -> PduResult<Self> {
+        let mut index = 0;
+        let mut context = ScardContext::decode_ptr(src, &mut index)?;
+        let reader_ptr = ndr::decode_ptr(src, &mut index)?;
+        context.decode_value(src)?;
+        let reader_name = ndr::read_string_from_cursor(src)?;
+        Ok(Self {
+            context,
+            reader_ptr,
+            reader_name,
+        })
+    }
+}
+
+/// [2.2.3.15 GetDeviceTypeId_Return]
+///
+/// [2.2.3.15 GetDeviceTypeId_Return]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/fed90d29-c41f-490a-86e9-7e88e42656b2
+#[derive(Debug)]
+pub struct GetDeviceTypeIdReturn {
+    pub return_code: ReturnCode,
+    pub device_type_id: u32,
+}
+
+impl GetDeviceTypeIdReturn {
+    const NAME: &'static str = "GetDeviceTypeId_Return";
+
+    pub fn new(return_code: ReturnCode, device_type_id: u32) -> rpce::Pdu<Self> {
+        rpce::Pdu(Self {
+            return_code,
+            device_type_id,
+        })
+    }
+}
+
+impl rpce::HeaderlessEncode for GetDeviceTypeIdReturn {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_size!(in: dst, size: self.size());
+        dst.write_u32(self.return_code.into());
+        dst.write_u32(self.device_type_id);
+        Ok(())
+    }
+
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    fn size(&self) -> usize {
+        self.return_code.size() // dst.write_u32(self.return_code.into());
+        + size_of::<u32>() // dst.write_u32(self.device_type_id);
     }
 }
