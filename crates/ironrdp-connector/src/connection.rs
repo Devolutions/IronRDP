@@ -534,6 +534,15 @@ impl Sequence for ClientConnector {
                     ));
                 };
 
+                for c in &capability_sets {
+                    if let rdp::capability_sets::CapabilitySet::General(g) = c {
+                        if g.protocol_version != rdp::capability_sets::PROTOCOL_VER {
+                            warn!(version = g.protocol_version, "Unexpected protocol version");
+                        }
+                        break;
+                    }
+                }
+
                 let desktop_size = capability_sets
                     .iter()
                     .find_map(|c| match c {
