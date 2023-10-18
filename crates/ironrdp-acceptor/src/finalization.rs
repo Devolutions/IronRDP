@@ -217,12 +217,7 @@ fn create_control_confirm(user_id: u16) -> rdp::headers::ShareDataPdu {
 }
 
 fn create_font_map() -> rdp::headers::ShareDataPdu {
-    rdp::headers::ShareDataPdu::FontMap(rdp::finalization_messages::FontPdu {
-        number: 1, // TODO: fields
-        total_number: 1,
-        flags: rdp::finalization_messages::SequenceFlags::empty(),
-        entry_size: 0,
-    })
+    rdp::headers::ShareDataPdu::FontMap(rdp::finalization_messages::FontPdu::default())
 }
 
 fn decode_share_control(input: &[u8]) -> ConnectorResult<rdp::headers::ShareControlHeader> {
