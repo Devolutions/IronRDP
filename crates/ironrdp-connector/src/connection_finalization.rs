@@ -137,12 +137,7 @@ impl Sequence for ConnectionFinalizationSequence {
             }
 
             ConnectionFinalizationState::SendFontList => {
-                let message = ShareDataPdu::FontList(finalization_messages::FontPdu {
-                    number: 0,
-                    total_number: 0,
-                    flags: finalization_messages::SequenceFlags::FIRST | finalization_messages::SequenceFlags::LAST,
-                    entry_size: 0x0032,
-                });
+                let message = ShareDataPdu::FontList(finalization_messages::FontPdu::default());
 
                 debug!(?message, "Send");
 
