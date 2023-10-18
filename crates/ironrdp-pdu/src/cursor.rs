@@ -145,6 +145,28 @@ impl<'a> ReadCursor<'a> {
     }
 
     #[inline]
+    pub fn read_i32(&mut self) -> i32 {
+        i32::from_le_bytes(self.read_array::<4>())
+    }
+
+    #[inline]
+    pub fn read_i32_be(&mut self) -> i32 {
+        i32::from_be_bytes(self.read_array::<4>())
+    }
+
+    #[inline]
+    pub fn try_read_i32(&mut self, ctx: &'static str) -> PduResult<i32> {
+        ensure_size!(ctx: ctx, in: self, size: 4);
+        Ok(i32::from_le_bytes(self.read_array::<4>()))
+    }
+
+    #[inline]
+    pub fn try_read_i32_be(&mut self, ctx: &'static str) -> PduResult<i32> {
+        ensure_size!(ctx: ctx, in: self, size: 4);
+        Ok(i32::from_be_bytes(self.read_array::<4>()))
+    }
+
+    #[inline]
     #[track_caller]
     pub fn peek<const N: usize>(&mut self) -> [u8; N] {
         self.inner[self.pos..self.pos + N].try_into().expect("N-elements array")

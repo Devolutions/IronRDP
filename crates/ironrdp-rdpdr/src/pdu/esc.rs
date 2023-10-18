@@ -32,6 +32,7 @@ pub enum ScardCall {
     StatusCall(StatusCall),
     ContextCall(ContextCall),
     GetDeviceTypeIdCall(GetDeviceTypeIdCall),
+    ReadCacheCall(ReadCacheCall),
     Unsupported,
 }
 
@@ -60,6 +61,7 @@ impl ScardCall {
             ScardIoCtlCode::Cancel => Ok(ScardCall::ContextCall(ContextCall::decode(src)?)),
             ScardIoCtlCode::IsValidContext => Ok(ScardCall::ContextCall(ContextCall::decode(src)?)),
             ScardIoCtlCode::GetDeviceTypeId => Ok(ScardCall::GetDeviceTypeIdCall(GetDeviceTypeIdCall::decode(src)?)),
+            ScardIoCtlCode::ReadCacheW => Ok(ScardCall::ReadCacheCall(ReadCacheCall::decode(src)?)),
             _ => {
                 warn!(?io_ctl_code, "Unsupported ScardIoCtlCode");
                 // TODO: maybe this should be an error
@@ -1549,5 +1551,118 @@ impl rpce::HeaderlessEncode for GetDeviceTypeIdReturn {
     fn size(&self) -> usize {
         self.return_code.size() // dst.write_u32(self.return_code.into());
         + size_of::<u32>() // dst.write_u32(self.device_type_id);
+    }
+}
+
+/// [2.2.2.26 ReadCacheW_Call]
+///
+/// [2.2.2.26 ReadCacheW_Call]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/f45705cf-9299-4802-b408-685f02025e6a
+#[derive(Debug)]
+pub struct ReadCacheCall {
+    pub lookup_name: String,
+    pub common: ReadCacheCommon,
+}
+
+impl ReadCacheCall {
+    pub fn decode(src: &mut ReadCursor<'_>) -> PduResult<Self> {
+        Ok(rpce::Pdu::<Self>::decode(src)?.into_inner())
+    }
+}
+
+impl rpce::HeaderlessDecode for ReadCacheCall {
+    fn decode(src: &mut ReadCursor<'_>) -> PduResult<Self> {
+        let mut index = 0;
+        let _lookup_name_ptr = ndr::decode_ptr(src, &mut index)?;
+        let mut common = ReadCacheCommon::decode_ptr(src, &mut index)?;
+        let lookup_name = ndr::read_string_from_cursor(src)?;
+        common.decode_value(src)?;
+        Ok(Self { lookup_name, common })
+    }
+}
+
+/// [2.2.1.9 ReadCache_Common]
+///
+/// [2.2.1.9 ReadCache_Common]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/3f9e07fa-66e2-498b-920c-39531709116b
+#[derive(Debug)]
+pub struct ReadCacheCommon {
+    pub context: ScardContext,
+    pub card_uuid: Vec<u8>,
+    pub freshness_counter: u32,
+    pub data_is_null: bool,
+    pub data_len: u32,
+}
+
+impl ReadCacheCommon {
+    const NAME: &'static str = "ReadCache_Common";
+}
+
+impl ndr::Decode for ReadCacheCommon {
+    fn decode_ptr(src: &mut ReadCursor<'_>, index: &mut u32) -> PduResult<Self>
+    where
+        Self: Sized,
+    {
+        let context = ScardContext::decode_ptr(src, index)?;
+        let _card_uuid_ptr = ndr::decode_ptr(src, index)?;
+        ensure_size!(in: src, size: size_of::<u32>() * 2 + size_of::<i32>());
+        let freshness_counter = src.read_u32();
+        let data_is_null = src.read_i32() == 1;
+        let data_len = src.read_u32();
+
+        Ok(Self {
+            context,
+            card_uuid: Vec::new(),
+            freshness_counter,
+            data_is_null,
+            data_len,
+        })
+    }
+
+    fn decode_value(&mut self, src: &mut ReadCursor<'_>) -> PduResult<()> {
+        self.context.decode_value(src)?;
+        // 16 bytes for UUID.
+        ensure_size!(in: src, size: 16);
+        self.card_uuid = src.read_slice(16).to_vec();
+        Ok(())
+    }
+}
+
+/// [2.2.3.1 ReadCache_Return]
+///
+/// [2.2.3.1 ReadCache_Return]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/da342355-e37f-485e-a490-3222a97fa356
+#[derive(Debug)]
+pub struct ReadCacheReturn {
+    pub return_code: ReturnCode,
+    pub data: Vec<u8>,
+}
+
+impl ReadCacheReturn {
+    const NAME: &'static str = "ReadCache_Return";
+
+    pub fn new(return_code: ReturnCode, data: Vec<u8>) -> rpce::Pdu<Self> {
+        rpce::Pdu(Self { return_code, data })
+    }
+}
+
+impl rpce::HeaderlessEncode for ReadCacheReturn {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_size!(in: dst, size: self.size());
+        dst.write_u32(self.return_code.into());
+        let mut index = 0;
+        let data_len: u32 = cast_length!("ReadCacheReturn", "data_len", self.data.len())?;
+        ndr::encode_ptr(Some(data_len), &mut index, dst)?;
+        dst.write_u32(data_len);
+        dst.write_slice(&self.data);
+        Ok(())
+    }
+
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    fn size(&self) -> usize {
+        self.return_code.size() // dst.write_u32(self.return_code.into());
+        + ndr::ptr_size(true) // ndr::encode_ptr(Some(data_len), &mut index, dst)?;
+        + size_of::<u32>() // dst.write_u32(data_len);
+        + self.data.len() // dst.write_slice(&self.data);
     }
 }
