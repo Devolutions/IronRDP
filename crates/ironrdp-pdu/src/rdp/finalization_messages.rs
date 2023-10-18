@@ -81,12 +81,27 @@ impl PduParsing for ControlPdu {
     }
 }
 
+/// [2.2.1.22.1] Font Map PDU Data (TS_FONT_MAP_PDU)
+///
+/// [2.2.1.22.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/b4e557f3-7540-46fc-815d-0c12299cf1ee
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FontPdu {
     pub number: u16,
     pub total_number: u16,
     pub flags: SequenceFlags,
     pub entry_size: u16,
+}
+
+impl Default for FontPdu {
+    fn default() -> Self {
+        // Those values are recommended in [2.2.1.22.1].
+        Self {
+            number: 0,
+            total_number: 0,
+            flags: SequenceFlags::FIRST | SequenceFlags::LAST,
+            entry_size: 4,
+        }
+    }
 }
 
 impl PduParsing for FontPdu {
