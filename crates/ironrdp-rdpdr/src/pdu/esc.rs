@@ -33,6 +33,7 @@ pub enum ScardCall {
     ContextCall(ContextCall),
     GetDeviceTypeIdCall(GetDeviceTypeIdCall),
     ReadCacheCall(ReadCacheCall),
+    WriteCacheCall(WriteCacheCall),
     Unsupported,
 }
 
@@ -62,6 +63,7 @@ impl ScardCall {
             ScardIoCtlCode::IsValidContext => Ok(ScardCall::ContextCall(ContextCall::decode(src)?)),
             ScardIoCtlCode::GetDeviceTypeId => Ok(ScardCall::GetDeviceTypeIdCall(GetDeviceTypeIdCall::decode(src)?)),
             ScardIoCtlCode::ReadCacheW => Ok(ScardCall::ReadCacheCall(ReadCacheCall::decode(src)?)),
+            ScardIoCtlCode::WriteCacheW => Ok(ScardCall::WriteCacheCall(WriteCacheCall::decode(src)?)),
             _ => {
                 warn!(?io_ctl_code, "Unsupported ScardIoCtlCode");
                 // TODO: maybe this should be an error
@@ -1619,7 +1621,6 @@ impl ndr::Decode for ReadCacheCommon {
 
     fn decode_value(&mut self, src: &mut ReadCursor<'_>) -> PduResult<()> {
         self.context.decode_value(src)?;
-        // 16 bytes for UUID.
         ensure_size!(in: src, size: 16);
         self.card_uuid = src.read_slice(16).to_vec();
         Ok(())
@@ -1664,5 +1665,78 @@ impl rpce::HeaderlessEncode for ReadCacheReturn {
         + ndr::ptr_size(true) // ndr::encode_ptr(Some(data_len), &mut index, dst)?;
         + size_of::<u32>() // dst.write_u32(data_len);
         + self.data.len() // dst.write_slice(&self.data);
+    }
+}
+
+/// [2.2.2.28 WriteCacheW_Call]
+///
+/// [2.2.2.28 WriteCacheW_Call]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/3969bdcd-ecf3-42db-8bc6-2d6f970f9c67
+#[derive(Debug)]
+pub struct WriteCacheCall {
+    pub lookup_name: String,
+    pub common: WriteCacheCommon,
+}
+
+impl WriteCacheCall {
+    pub fn decode(src: &mut ReadCursor<'_>) -> PduResult<Self> {
+        Ok(rpce::Pdu::<Self>::decode(src)?.into_inner())
+    }
+}
+
+impl rpce::HeaderlessDecode for WriteCacheCall {
+    fn decode(src: &mut ReadCursor<'_>) -> PduResult<Self> {
+        let mut index = 0;
+        let _lookup_name_ptr = ndr::decode_ptr(src, &mut index)?;
+        let mut common = WriteCacheCommon::decode_ptr(src, &mut index)?;
+        let lookup_name = ndr::read_string_from_cursor(src)?;
+        common.decode_value(src)?;
+        Ok(Self { lookup_name, common })
+    }
+}
+
+/// [2.2.1.10 WriteCache_Common]
+///
+/// [2.2.1.10 WriteCache_Common]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/5604251b-9173-457c-9476-57863df9010e
+#[derive(Debug)]
+pub struct WriteCacheCommon {
+    pub context: ScardContext,
+    pub card_uuid: Vec<u8>,
+    pub freshness_counter: u32,
+    pub data: Vec<u8>,
+}
+
+impl WriteCacheCommon {
+    const NAME: &'static str = "WriteCache_Common";
+}
+
+impl ndr::Decode for WriteCacheCommon {
+    fn decode_ptr(src: &mut ReadCursor<'_>, index: &mut u32) -> PduResult<Self>
+    where
+        Self: Sized,
+    {
+        let context = ScardContext::decode_ptr(src, index)?;
+        let _card_uuid_ptr = ndr::decode_ptr(src, index)?;
+        ensure_size!(in: src, size: size_of::<u32>() * 2);
+        let freshness_counter = src.read_u32();
+        let _data_len = src.read_u32();
+        let _data_ptr = ndr::decode_ptr(src, index)?;
+
+        Ok(Self {
+            context,
+            card_uuid: Vec::new(),
+            freshness_counter,
+            data: Vec::new(),
+        })
+    }
+
+    fn decode_value(&mut self, src: &mut ReadCursor<'_>) -> PduResult<()> {
+        self.context.decode_value(src)?;
+        ensure_size!(in: src, size: 16);
+        self.card_uuid = src.read_slice(16).to_vec();
+        ensure_size!(in: src, size: size_of::<u32>());
+        let data_len: usize = cast_length!("WriteCacheCommon", "data_len", src.read_u32())?;
+        ensure_size!(in: src, size: data_len);
+        self.data = src.read_slice(data_len).to_vec();
+        Ok(())
     }
 }
