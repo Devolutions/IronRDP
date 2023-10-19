@@ -22,6 +22,7 @@ pub use channel_connection::{ChannelConnectionSequence, ChannelConnectionState};
 pub use connection::{ClientConnector, ClientConnectorState, ConnectionResult};
 pub use connection_finalization::{ConnectionFinalizationSequence, ConnectionFinalizationState};
 use ironrdp_pdu::rdp::capability_sets;
+use ironrdp_pdu::rdp::client_info::ClientInfoFlags;
 use ironrdp_pdu::write_buf::WriteBuf;
 use ironrdp_pdu::{gcc, nego, PduHint};
 pub use license_exchange::{LicenseExchangeSequence, LicenseExchangeState};
@@ -74,6 +75,10 @@ pub struct Config {
     pub client_dir: String,
     pub platform: capability_sets::MajorPlatformType,
     pub no_server_pointer: bool,
+    /// Client info flags, passed to the server via the [`ironrdp_pdu::rdp::client_info::ClientInfo`] PDU.
+    ///
+    /// Be aware that some flags are passed in by default.
+    pub client_info_flags: Option<ClientInfoFlags>,
 }
 
 ironrdp_pdu::assert_impl!(Config: Send, Sync);

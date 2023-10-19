@@ -910,7 +910,8 @@ fn create_client_info_pdu(config: &Config, routing_addr: &SocketAddr) -> rdp::Cl
             | ClientInfoFlags::LOGON_NOTIFY
             | ClientInfoFlags::LOGON_ERRORS
             | ClientInfoFlags::NO_AUDIO_PLAYBACK
-            | ClientInfoFlags::VIDEO_DISABLE,
+            | ClientInfoFlags::VIDEO_DISABLE
+            | config.client_info_flags.unwrap_or(ClientInfoFlags::empty()),
         compression_type: CompressionType::K8, // ignored if ClientInfoFlags::COMPRESSION is not set
         alternate_shell: String::new(),
         work_dir: String::new(),

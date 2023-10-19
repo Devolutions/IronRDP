@@ -309,6 +309,7 @@ impl Config {
                 _ => MajorPlatformType::UNSPECIFIED,
             },
             no_server_pointer: args.no_server_pointer,
+            client_info_flags: None,
         };
 
         Ok(Self {

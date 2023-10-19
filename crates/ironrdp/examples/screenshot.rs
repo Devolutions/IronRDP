@@ -214,6 +214,7 @@ fn build_config(username: String, password: String, domain: Option<String>) -> c
 
         // Disable custom pointers (there is no user interaction anyway)
         no_server_pointer: true,
+        client_info_flags: None,
     }
 }
 
