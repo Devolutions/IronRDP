@@ -274,7 +274,7 @@ fn from_buffer_correctly_parses_server_license_request() {
 fn from_buffer_correctly_parses_server_license_request_no_certificate() {
     let server_certificate_header_buffer = [
         0x03, 0x00, // blob type
-        0x00, 0x00,
+        0x00, 0x00, // blob len
     ];
 
     let request_buffer = [
