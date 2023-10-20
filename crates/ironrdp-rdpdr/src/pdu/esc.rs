@@ -34,6 +34,7 @@ pub enum ScardCall {
     GetDeviceTypeIdCall(GetDeviceTypeIdCall),
     ReadCacheCall(ReadCacheCall),
     WriteCacheCall(WriteCacheCall),
+    GetReaderIconCall(GetReaderIconCall),
     Unsupported,
 }
 
@@ -64,6 +65,7 @@ impl ScardCall {
             ScardIoCtlCode::GetDeviceTypeId => Ok(ScardCall::GetDeviceTypeIdCall(GetDeviceTypeIdCall::decode(src)?)),
             ScardIoCtlCode::ReadCacheW => Ok(ScardCall::ReadCacheCall(ReadCacheCall::decode(src)?)),
             ScardIoCtlCode::WriteCacheW => Ok(ScardCall::WriteCacheCall(WriteCacheCall::decode(src)?)),
+            ScardIoCtlCode::GetReaderIcon => Ok(ScardCall::GetReaderIconCall(GetReaderIconCall::decode(src)?)),
             _ => {
                 warn!(?io_ctl_code, "Unsupported ScardIoCtlCode");
                 // TODO: maybe this should be an error
@@ -1738,5 +1740,74 @@ impl ndr::Decode for WriteCacheCommon {
         ensure_size!(in: src, size: data_len);
         self.data = src.read_slice(data_len).to_vec();
         Ok(())
+    }
+}
+
+/// [2.2.2.31 GetReaderIcon_Call]
+///
+/// [2.2.2.31 GetReaderIcon_Call]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/e6a68d90-697f-4b98-8ad6-f74853d27ccb
+#[derive(Debug)]
+pub struct GetReaderIconCall {
+    pub context: ScardContext,
+    pub reader_name: String,
+}
+
+impl GetReaderIconCall {
+    pub fn decode(src: &mut ReadCursor<'_>) -> PduResult<Self> {
+        Ok(rpce::Pdu::<Self>::decode(src)?.into_inner())
+    }
+}
+
+impl rpce::HeaderlessDecode for GetReaderIconCall {
+    fn decode(src: &mut ReadCursor<'_>) -> PduResult<Self> {
+        let mut index = 0;
+        let mut context = ScardContext::decode_ptr(src, &mut index)?;
+
+        let _reader_ptr = ndr::decode_ptr(src, &mut index)?;
+
+        context.decode_value(src)?;
+        let reader_name = ndr::read_string_from_cursor(src)?;
+        Ok(Self { context, reader_name })
+    }
+}
+
+/// [2.2.3.14 GetReaderIcon_Return]
+///
+/// [2.2.3.14 GetReaderIcon_Return]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/f011f3d9-e2a4-4c43-a336-4c89ecaa8360
+#[derive(Debug)]
+pub struct GetReaderIconReturn {
+    pub return_code: ReturnCode,
+    pub data: Vec<u8>,
+}
+
+impl GetReaderIconReturn {
+    const NAME: &'static str = "GetReaderIcon_Return";
+
+    pub fn new(return_code: ReturnCode, data: Vec<u8>) -> rpce::Pdu<Self> {
+        rpce::Pdu(Self { return_code, data })
+    }
+}
+
+impl rpce::HeaderlessEncode for GetReaderIconReturn {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_size!(in: dst, size: self.size());
+        dst.write_u32(self.return_code.into());
+        let data_len: u32 = cast_length!("GetReaderIconReturn", "data_len", self.data.len())?;
+        let mut index = 0;
+        ndr::encode_ptr(Some(data_len), &mut index, dst)?;
+        dst.write_u32(data_len);
+        dst.write_slice(&self.data);
+        Ok(())
+    }
+
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    fn size(&self) -> usize {
+        size_of::<u32>() // dst.write_u32(self.return_code.into());
+        + ndr::ptr_size(true) // ndr::encode_ptr(Some(data_len), &mut index, dst)?;
+        + size_of::<u32>() // dst.write_u32(data_len);
+        + self.data.len() // dst.write_slice(&self.data);
     }
 }
