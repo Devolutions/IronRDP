@@ -305,7 +305,7 @@ impl Sequence for ClientConnector {
             // Exchange supported security protocols and a few other connection flags.
             ClientConnectorState::ConnectionInitiationSendRequest => {
                 let connection_request = nego::ConnectionRequest {
-                    nego_data: Some(nego::NegoRequestData::cookie(self.config.username.clone())),
+                    nego_data: Some(nego::NegoRequestData::cookie(self.config.credentials.username().into())),
                     flags: nego::RequestFlags::empty(),
                     protocol: self.config.security_protocol,
                 };
@@ -364,9 +364,15 @@ impl Sequence for ClientConnector {
 
             //== CredSSP ==//
             ClientConnectorState::CredsspInitial { selected_protocol } => {
+                if let crate::Credentials::SmartCard { .. } = self.config.credentials {
+                    return Err(general_err!(
+                        "CredSSP with smart card credentials is not currently supported"
+                    ));
+                }
+
                 let credentials = sspi::AuthIdentity {
-                    username: self.config.username.clone(),
-                    password: self.config.password.clone().into(),
+                    username: self.config.credentials.username().into(),
+                    password: self.config.credentials.secret().to_owned().into(),
                     domain: self.config.domain.clone(),
                 };
 
@@ -640,7 +646,7 @@ impl Sequence for ClientConnector {
                     user_channel_id,
                     license_exchange: LicenseExchangeSequence::new(
                         io_channel_id,
-                        self.config.username.clone(),
+                        self.config.credentials.username().into(),
                         self.config.domain.clone(),
                     ),
                 },
@@ -898,20 +904,30 @@ fn create_client_info_pdu(config: &Config, routing_addr: &SocketAddr) -> rdp::Cl
         flags: BasicSecurityHeaderFlags::INFO_PKT,
     };
 
+    // Default flags for all sessions
+    let mut flags = ClientInfoFlags::UNICODE
+        | ClientInfoFlags::DISABLE_CTRL_ALT_DEL
+        | ClientInfoFlags::LOGON_NOTIFY
+        | ClientInfoFlags::LOGON_ERRORS
+        | ClientInfoFlags::NO_AUDIO_PLAYBACK
+        | ClientInfoFlags::VIDEO_DISABLE;
+
+    if config.auto_login {
+        flags |= ClientInfoFlags::AUTOLOGON;
+    }
+
+    if let crate::Credentials::SmartCard { .. } = &config.credentials {
+        flags |= ClientInfoFlags::PASSWORD_IS_SC_PIN;
+    }
+
     let client_info = ClientInfo {
         credentials: Credentials {
-            username: config.username.clone(),
-            password: config.password.clone(),
+            username: config.credentials.username().into(),
+            password: config.credentials.secret().into(),
             domain: config.domain.clone(),
         },
         code_page: 0, // ignored if the keyboardLayout field of the Client Core Data is set to zero
-        flags: ClientInfoFlags::UNICODE
-            | ClientInfoFlags::DISABLE_CTRL_ALT_DEL
-            | ClientInfoFlags::LOGON_NOTIFY
-            | ClientInfoFlags::LOGON_ERRORS
-            | ClientInfoFlags::NO_AUDIO_PLAYBACK
-            | ClientInfoFlags::VIDEO_DISABLE
-            | config.client_info_flags.unwrap_or(ClientInfoFlags::empty()),
+        flags,
         compression_type: CompressionType::K8, // ignored if ClientInfoFlags::COMPRESSION is not set
         alternate_shell: String::new(),
         work_dir: String::new(),

@@ -8,7 +8,7 @@ use futures_util::io::{ReadHalf, WriteHalf};
 use futures_util::{select, AsyncReadExt as _, AsyncWriteExt as _, FutureExt as _, StreamExt as _};
 use gloo_net::websocket;
 use gloo_net::websocket::futures::WebSocket;
-use ironrdp::connector::{self, ClientConnector};
+use ironrdp::connector::{self, ClientConnector, Credentials};
 use ironrdp::graphics::image_processing::PixelFormat;
 use ironrdp::pdu::input::fast_path::FastPathInputEvent;
 use ironrdp::pdu::write_buf::WriteBuf;
@@ -462,8 +462,7 @@ fn build_config(
     desktop_size: DesktopSize,
 ) -> connector::Config {
     connector::Config {
-        username,
-        password,
+        credentials: Credentials::UsernamePassword { username, password },
         domain,
         security_protocol: ironrdp::pdu::nego::SecurityProtocol::HYBRID,
         keyboard_type: ironrdp::pdu::gcc::KeyboardType::IbmEnhanced,
@@ -492,7 +491,7 @@ fn build_config(
         client_dir: "C:\\Windows\\System32\\mstscax.dll".to_owned(),
         platform: ironrdp::pdu::rdp::capability_sets::MajorPlatformType::UNSPECIFIED,
         no_server_pointer: false,
-        client_info_flags: None,
+        auto_login: false,
     }
 }
 

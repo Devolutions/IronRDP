@@ -22,7 +22,6 @@ pub use channel_connection::{ChannelConnectionSequence, ChannelConnectionState};
 pub use connection::{ClientConnector, ClientConnectorState, ConnectionResult};
 pub use connection_finalization::{ConnectionFinalizationSequence, ConnectionFinalizationState};
 use ironrdp_pdu::rdp::capability_sets;
-use ironrdp_pdu::rdp::client_info::ClientInfoFlags;
 use ironrdp_pdu::write_buf::WriteBuf;
 use ironrdp_pdu::{gcc, nego, PduHint};
 pub use license_exchange::{LicenseExchangeSequence, LicenseExchangeState};
@@ -54,12 +53,33 @@ pub struct BitmapConfig {
 }
 
 #[derive(Debug, Clone)]
+pub enum Credentials {
+    UsernamePassword { username: String, password: String },
+    SmartCard { pin: String },
+}
+
+impl Credentials {
+    fn username(&self) -> &str {
+        match self {
+            Self::UsernamePassword { username, .. } => username,
+            Self::SmartCard { .. } => "", // Username is ultimately provided by the smart card certificate.
+        }
+    }
+
+    fn secret(&self) -> &str {
+        match self {
+            Self::UsernamePassword { password, .. } => password,
+            Self::SmartCard { pin, .. } => pin,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
 #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct Config {
     pub desktop_size: DesktopSize,
     pub security_protocol: nego::SecurityProtocol,
-    pub username: String,
-    pub password: String,
+    pub credentials: Credentials,
     pub domain: Option<String>,
     /// The build number of the client.
     pub client_build: u32,
@@ -75,10 +95,7 @@ pub struct Config {
     pub client_dir: String,
     pub platform: capability_sets::MajorPlatformType,
     pub no_server_pointer: bool,
-    /// Client info flags, passed to the server via the [`ironrdp_pdu::rdp::client_info::ClientInfo`] PDU.
-    ///
-    /// Be aware that some flags are passed in by default.
-    pub client_info_flags: Option<ClientInfoFlags>,
+    pub auto_login: bool,
 }
 
 ironrdp_pdu::assert_impl!(Config: Send, Sync);

@@ -23,6 +23,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::Context as _;
+use connector::Credentials;
 use ironrdp::connector;
 use ironrdp::connector::sspi::network_client::reqwest_network_client::RequestClientFactory;
 use ironrdp::connector::ConnectionResult;
@@ -174,8 +175,7 @@ fn run(
 
 fn build_config(username: String, password: String, domain: Option<String>) -> connector::Config {
     connector::Config {
-        username,
-        password,
+        credentials: Credentials::UsernamePassword { username, password },
         domain,
         security_protocol: SecurityProtocol::HYBRID,
         keyboard_type: KeyboardType::IbmEnhanced,
@@ -214,7 +214,7 @@ fn build_config(username: String, password: String, domain: Option<String>) -> c
 
         // Disable custom pointers (there is no user interaction anyway)
         no_server_pointer: true,
-        client_info_flags: None,
+        auto_login: false,
     }
 }
 
