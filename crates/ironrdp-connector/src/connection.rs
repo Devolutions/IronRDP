@@ -304,6 +304,7 @@ impl Sequence for ClientConnector {
             //== Connection Initiation ==//
             // Exchange supported security protocols and a few other connection flags.
             ClientConnectorState::ConnectionInitiationSendRequest => {
+                debug!("Connection Initiation");
                 let connection_request = nego::ConnectionRequest {
                     nego_data: Some(nego::NegoRequestData::cookie(self.config.credentials.username().into())),
                     flags: nego::RequestFlags::empty(),
@@ -356,6 +357,7 @@ impl Sequence for ClientConnector {
                 {
                     ClientConnectorState::CredsspInitial { selected_protocol }
                 } else {
+                    debug!("Skipped CredSSP");
                     ClientConnectorState::BasicSettingsExchangeSendInitial { selected_protocol }
                 };
 
@@ -364,6 +366,7 @@ impl Sequence for ClientConnector {
 
             //== CredSSP ==//
             ClientConnectorState::CredsspInitial { selected_protocol } => {
+                debug!("CredSSP");
                 if let crate::Credentials::SmartCard { .. } = self.config.credentials {
                     return Err(general_err!(
                         "CredSSP with smart card credentials is not currently supported"
@@ -490,6 +493,7 @@ impl Sequence for ClientConnector {
             //== Basic Settings Exchange ==//
             // Exchange basic settings including Core Data, Security Data and Network Data.
             ClientConnectorState::BasicSettingsExchangeSendInitial { selected_protocol } => {
+                debug!("Basic Settings Exchange");
                 let client_gcc_blocks =
                     create_gcc_blocks(&self.config, selected_protocol, self.static_channels.values());
 
@@ -565,6 +569,7 @@ impl Sequence for ClientConnector {
                 io_channel_id,
                 mut channel_connection,
             } => {
+                debug!("Channel Connection");
                 let written = channel_connection.step(input, output)?;
 
                 let next_state = if let ChannelConnectionState::AllJoined { user_channel_id } = channel_connection.state
@@ -595,6 +600,7 @@ impl Sequence for ClientConnector {
                 io_channel_id,
                 user_channel_id,
             } => {
+                debug!("RDP Security Commencement");
                 if selected_protocol == nego::SecurityProtocol::RDP {
                     return Err(general_err!("standard RDP Security (RC4 encryption) is not supported"));
                 }
@@ -614,6 +620,7 @@ impl Sequence for ClientConnector {
                 io_channel_id,
                 user_channel_id,
             } => {
+                debug!("Secure Settings Exchange");
                 let routing_addr = self
                     .server_addr
                     .as_ref()
@@ -660,6 +667,7 @@ impl Sequence for ClientConnector {
                 user_channel_id,
                 mut license_exchange,
             } => {
+                debug!("Licensing Exchange");
                 let written = license_exchange.step(input, output)?;
 
                 let next_state = if license_exchange.state.is_terminal() {
@@ -697,6 +705,7 @@ impl Sequence for ClientConnector {
                 io_channel_id,
                 user_channel_id,
             } => {
+                debug!("Capabilities Exchange");
                 let send_data_indication_ctx = legacy::decode_send_data_indication(input)?;
                 let share_control_ctx = legacy::decode_share_control(send_data_indication_ctx)?;
 
@@ -767,6 +776,7 @@ impl Sequence for ClientConnector {
                 desktop_size,
                 mut connection_finalization,
             } => {
+                debug!("Connection Finalization");
                 let written = connection_finalization.step(input, output)?;
 
                 let next_state = if connection_finalization.state.is_terminal() {
