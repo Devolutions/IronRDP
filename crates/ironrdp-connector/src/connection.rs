@@ -912,7 +912,7 @@ fn create_client_info_pdu(config: &Config, routing_addr: &SocketAddr) -> rdp::Cl
         | ClientInfoFlags::NO_AUDIO_PLAYBACK
         | ClientInfoFlags::VIDEO_DISABLE;
 
-    if config.auto_login {
+    if config.autologon {
         flags |= ClientInfoFlags::AUTOLOGON;
     }
 

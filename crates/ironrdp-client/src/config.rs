@@ -309,7 +309,7 @@ impl Config {
                 _ => MajorPlatformType::UNSPECIFIED,
             },
             no_server_pointer: args.no_server_pointer,
-            auto_login: false,
+            autologon: false,
         };
 
         Ok(Self {

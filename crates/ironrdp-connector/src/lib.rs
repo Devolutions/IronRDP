@@ -95,7 +95,7 @@ pub struct Config {
     pub client_dir: String,
     pub platform: capability_sets::MajorPlatformType,
     pub no_server_pointer: bool,
-    pub auto_login: bool,
+    pub autologon: bool,
 }
 
 ironrdp_pdu::assert_impl!(Config: Send, Sync);
