@@ -169,7 +169,7 @@ struct Args {
     password: Option<String>,
 
     /// Specify the security protocols to use
-    #[clap(long, value_enum, value_parser, default_value_t = SecurityProtocol::Ssl)]
+    #[clap(long, value_enum, value_parser, default_value_t = SecurityProtocol::Hybrid)]
     security_protocol: SecurityProtocol,
 
     /// The keyboard type
@@ -221,6 +221,11 @@ struct Args {
     /// starting from V8 to V10_7
     #[clap(long, value_parser = parse_hex, default_value_t = 0)]
     capabilities: u32,
+
+    /// Automatically logon to the server by passing the INFO_AUTOLOGON flag. This flag is
+    /// ignored if CredSSP is used (SecurityProtocol::Hybrid | SecurityProtocol::HybridEx).
+    #[clap(long)]
+    autologon: bool,
 }
 
 impl Config {
@@ -309,6 +314,7 @@ impl Config {
                 _ => MajorPlatformType::UNSPECIFIED,
             },
             no_server_pointer: args.no_server_pointer,
+            autologon: args.autologon,
         };
 
         Ok(Self {
