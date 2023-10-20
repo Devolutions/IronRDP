@@ -169,7 +169,7 @@ struct Args {
     password: Option<String>,
 
     /// Specify the security protocols to use
-    #[clap(long, value_enum, value_parser, default_value_t = SecurityProtocol::Hybrid)]
+    #[clap(long, value_enum, value_parser, default_value_t = SecurityProtocol::Ssl)]
     security_protocol: SecurityProtocol,
 
     /// The keyboard type
@@ -309,7 +309,6 @@ impl Config {
                 _ => MajorPlatformType::UNSPECIFIED,
             },
             no_server_pointer: args.no_server_pointer,
-            autologon: false,
         };
 
         Ok(Self {
