@@ -53,13 +53,9 @@ where
 {
     let mut buf = WriteBuf::new();
 
-    debug!("CredSSP procedure");
-
     while connector.is_credssp_step() {
         single_connect_step(framed, &mut connector, &mut buf).await?;
     }
-
-    debug!("Remaining of connection sequence");
 
     let result = loop {
         single_connect_step(framed, &mut connector, &mut buf).await?;

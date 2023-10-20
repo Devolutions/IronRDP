@@ -53,12 +53,33 @@ pub struct BitmapConfig {
 }
 
 #[derive(Debug, Clone)]
+pub enum Credentials {
+    UsernamePassword { username: String, password: String },
+    SmartCard { pin: String },
+}
+
+impl Credentials {
+    fn username(&self) -> &str {
+        match self {
+            Self::UsernamePassword { username, .. } => username,
+            Self::SmartCard { .. } => "", // Username is ultimately provided by the smart card certificate.
+        }
+    }
+
+    fn secret(&self) -> &str {
+        match self {
+            Self::UsernamePassword { password, .. } => password,
+            Self::SmartCard { pin, .. } => pin,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
 #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct Config {
     pub desktop_size: DesktopSize,
     pub security_protocol: nego::SecurityProtocol,
-    pub username: String,
-    pub password: String,
+    pub credentials: Credentials,
     pub domain: Option<String>,
     /// The build number of the client.
     pub client_build: u32,
@@ -74,6 +95,8 @@ pub struct Config {
     pub client_dir: String,
     pub platform: capability_sets::MajorPlatformType,
     pub no_server_pointer: bool,
+    /// If true, the INFO_AUTOLOGON flag is set in the [`ironrdp_pdu::rdp::ClientInfoPdu`].
+    pub autologon: bool,
 }
 
 ironrdp_pdu::assert_impl!(Config: Send, Sync);

@@ -141,7 +141,7 @@ fn client_temp_dir_encode_decode_ms_1() {
 
     if let ClipboardPdu::TemporaryDirectory(client_temp_dir) = &decoded_pdu {
         let path = client_temp_dir.temporary_directory_path().unwrap();
-        expect![[r#"C:\DOCUME~1\ELTONS~1.NTD\LOCALS~1\Temp\cdepotslhrdp_1\_TSABD.tmp"#]].assert_eq(&path);
+        expect![[r"C:\DOCUME~1\ELTONS~1.NTD\LOCALS~1\Temp\cdepotslhrdp_1\_TSABD.tmp"]].assert_eq(&path);
     } else {
         panic!("Expected ClientTemporaryDirectory");
     }

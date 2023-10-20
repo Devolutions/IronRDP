@@ -304,8 +304,9 @@ impl Sequence for ClientConnector {
             //== Connection Initiation ==//
             // Exchange supported security protocols and a few other connection flags.
             ClientConnectorState::ConnectionInitiationSendRequest => {
+                debug!("Connection Initiation");
                 let connection_request = nego::ConnectionRequest {
-                    nego_data: Some(nego::NegoRequestData::cookie(self.config.username.clone())),
+                    nego_data: Some(nego::NegoRequestData::cookie(self.config.credentials.username().into())),
                     flags: nego::RequestFlags::empty(),
                     protocol: self.config.security_protocol,
                 };
@@ -356,6 +357,7 @@ impl Sequence for ClientConnector {
                 {
                     ClientConnectorState::CredsspInitial { selected_protocol }
                 } else {
+                    debug!("Skipped CredSSP");
                     ClientConnectorState::BasicSettingsExchangeSendInitial { selected_protocol }
                 };
 
@@ -364,9 +366,16 @@ impl Sequence for ClientConnector {
 
             //== CredSSP ==//
             ClientConnectorState::CredsspInitial { selected_protocol } => {
+                debug!("CredSSP");
+                if let crate::Credentials::SmartCard { .. } = self.config.credentials {
+                    return Err(general_err!(
+                        "CredSSP with smart card credentials is not currently supported"
+                    ));
+                }
+
                 let credentials = sspi::AuthIdentity {
-                    username: self.config.username.clone(),
-                    password: self.config.password.clone().into(),
+                    username: self.config.credentials.username().into(),
+                    password: self.config.credentials.secret().to_owned().into(),
                     domain: self.config.domain.clone(),
                 };
 
@@ -484,6 +493,7 @@ impl Sequence for ClientConnector {
             //== Basic Settings Exchange ==//
             // Exchange basic settings including Core Data, Security Data and Network Data.
             ClientConnectorState::BasicSettingsExchangeSendInitial { selected_protocol } => {
+                debug!("Basic Settings Exchange");
                 let client_gcc_blocks =
                     create_gcc_blocks(&self.config, selected_protocol, self.static_channels.values());
 
@@ -559,6 +569,7 @@ impl Sequence for ClientConnector {
                 io_channel_id,
                 mut channel_connection,
             } => {
+                debug!("Channel Connection");
                 let written = channel_connection.step(input, output)?;
 
                 let next_state = if let ChannelConnectionState::AllJoined { user_channel_id } = channel_connection.state
@@ -589,6 +600,7 @@ impl Sequence for ClientConnector {
                 io_channel_id,
                 user_channel_id,
             } => {
+                debug!("RDP Security Commencement");
                 if selected_protocol == nego::SecurityProtocol::RDP {
                     return Err(general_err!("standard RDP Security (RC4 encryption) is not supported"));
                 }
@@ -608,6 +620,7 @@ impl Sequence for ClientConnector {
                 io_channel_id,
                 user_channel_id,
             } => {
+                debug!("Secure Settings Exchange");
                 let routing_addr = self
                     .server_addr
                     .as_ref()
@@ -640,7 +653,7 @@ impl Sequence for ClientConnector {
                     user_channel_id,
                     license_exchange: LicenseExchangeSequence::new(
                         io_channel_id,
-                        self.config.username.clone(),
+                        self.config.credentials.username().into(),
                         self.config.domain.clone(),
                     ),
                 },
@@ -654,6 +667,7 @@ impl Sequence for ClientConnector {
                 user_channel_id,
                 mut license_exchange,
             } => {
+                debug!("Licensing Exchange");
                 let written = license_exchange.step(input, output)?;
 
                 let next_state = if license_exchange.state.is_terminal() {
@@ -691,6 +705,7 @@ impl Sequence for ClientConnector {
                 io_channel_id,
                 user_channel_id,
             } => {
+                debug!("Capabilities Exchange");
                 let send_data_indication_ctx = legacy::decode_send_data_indication(input)?;
                 let share_control_ctx = legacy::decode_share_control(send_data_indication_ctx)?;
 
@@ -761,6 +776,7 @@ impl Sequence for ClientConnector {
                 desktop_size,
                 mut connection_finalization,
             } => {
+                debug!("Connection Finalization");
                 let written = connection_finalization.step(input, output)?;
 
                 let next_state = if connection_finalization.state.is_terminal() {
@@ -898,19 +914,30 @@ fn create_client_info_pdu(config: &Config, routing_addr: &SocketAddr) -> rdp::Cl
         flags: BasicSecurityHeaderFlags::INFO_PKT,
     };
 
+    // Default flags for all sessions
+    let mut flags = ClientInfoFlags::UNICODE
+        | ClientInfoFlags::DISABLE_CTRL_ALT_DEL
+        | ClientInfoFlags::LOGON_NOTIFY
+        | ClientInfoFlags::LOGON_ERRORS
+        | ClientInfoFlags::NO_AUDIO_PLAYBACK
+        | ClientInfoFlags::VIDEO_DISABLE;
+
+    if config.autologon {
+        flags |= ClientInfoFlags::AUTOLOGON;
+    }
+
+    if let crate::Credentials::SmartCard { .. } = &config.credentials {
+        flags |= ClientInfoFlags::PASSWORD_IS_SC_PIN;
+    }
+
     let client_info = ClientInfo {
         credentials: Credentials {
-            username: config.username.clone(),
-            password: config.password.clone(),
+            username: config.credentials.username().into(),
+            password: config.credentials.secret().into(),
             domain: config.domain.clone(),
         },
         code_page: 0, // ignored if the keyboardLayout field of the Client Core Data is set to zero
-        flags: ClientInfoFlags::UNICODE
-            | ClientInfoFlags::DISABLE_CTRL_ALT_DEL
-            | ClientInfoFlags::LOGON_NOTIFY
-            | ClientInfoFlags::LOGON_ERRORS
-            | ClientInfoFlags::NO_AUDIO_PLAYBACK
-            | ClientInfoFlags::VIDEO_DISABLE,
+        flags,
         compression_type: CompressionType::K8, // ignored if ClientInfoFlags::COMPRESSION is not set
         alternate_shell: String::new(),
         work_dir: String::new(),

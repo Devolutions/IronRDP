@@ -5,6 +5,7 @@ use std::str::FromStr;
 use anyhow::Context as _;
 use clap::clap_derive::ValueEnum;
 use clap::{crate_name, Parser};
+use ironrdp::connector::Credentials;
 use ironrdp::pdu::rdp::capability_sets::MajorPlatformType;
 use ironrdp::{connector, pdu};
 use tap::prelude::*;
@@ -220,6 +221,11 @@ struct Args {
     /// starting from V8 to V10_7
     #[clap(long, value_parser = parse_hex, default_value_t = 0)]
     capabilities: u32,
+
+    /// Automatically logon to the server by passing the INFO_AUTOLOGON flag. This flag is
+    /// ignored if CredSSP is used (SecurityProtocol::Hybrid | SecurityProtocol::HybridEx).
+    #[clap(long)]
+    autologon: bool,
 }
 
 impl Config {
@@ -276,8 +282,7 @@ impl Config {
         };
 
         let connector = connector::Config {
-            username,
-            password,
+            credentials: Credentials::UsernamePassword { username, password },
             domain: args.domain,
             security_protocol: SecurityProtocol::parse(args.security_protocol),
             keyboard_type: KeyboardType::parse(args.keyboard_type),
@@ -309,6 +314,7 @@ impl Config {
                 _ => MajorPlatformType::UNSPECIFIED,
             },
             no_server_pointer: args.no_server_pointer,
+            autologon: args.autologon,
         };
 
         Ok(Self {

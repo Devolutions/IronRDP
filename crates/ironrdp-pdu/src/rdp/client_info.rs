@@ -31,6 +31,9 @@ const RECONNECT_COOKIE_LENGTH_SIZE: usize = 2;
 const BIAS_SIZE: usize = 4;
 const SYSTEM_TIME_SIZE: usize = 16;
 
+/// [2.2.1.11.1.1 Info Packet (TS_INFO_PACKET)]
+///
+/// [2.2.1.11.1.1 Info Packet (TS_INFO_PACKET)]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/732394f5-e2b5-4ac5-8a0a-35345386b0d1
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClientInfo {
     pub credentials: Credentials,
@@ -521,26 +524,47 @@ pub enum AddressFamily {
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
     pub struct ClientInfoFlags: u32 {
+        /// INFO_MOUSE
         const MOUSE = 0x0000_0001;
+        /// INFO_DISABLECTRLALTDEL
         const DISABLE_CTRL_ALT_DEL = 0x0000_0002;
+        /// INFO_AUTOLOGON
         const AUTOLOGON = 0x0000_0008;
+        /// INFO_UNICODE
         const UNICODE = 0x0000_0010;
+        /// INFO_MAXIMIZESHELL
         const MAXIMIZE_SHELL = 0x0000_0020;
+        /// INFO_LOGONNOTIFY
         const LOGON_NOTIFY = 0x0000_0040;
+        /// INFO_COMPRESSION
         const COMPRESSION = 0x0000_0080;
+        /// INFO_ENABLEWINDOWSKEY
         const ENABLE_WINDOWS_KEY = 0x0000_0100;
+        /// INFO_REMOTECONSOLEAUDIO
         const REMOTE_CONSOLE_AUDIO = 0x0000_2000;
+        /// INFO_FORCE_ENCRYPTED_CS_PDU
         const FORCE_ENCRYPTED_CS_PDU = 0x0000_4000;
+        /// INFO_RAIL
         const RAIL = 0x0000_8000;
+        /// INFO_LOGONERRORS
         const LOGON_ERRORS = 0x0001_0000;
+        /// INFO_MOUSE_HAS_WHEEL
         const MOUSE_HAS_WHEEL = 0x0002_0000;
+        /// INFO_PASSWORD_IS_SC_PIN
         const PASSWORD_IS_SC_PIN = 0x0004_0000;
+        /// INFO_NOAUDIOPLAYBACK
         const NO_AUDIO_PLAYBACK = 0x0008_0000;
+        /// INFO_USING_SAVED_CREDS
         const USING_SAVED_CREDS = 0x0010_0000;
+        /// INFO_AUDIOCAPTURE
         const AUDIO_CAPTURE = 0x0020_0000;
+        /// INFO_VIDEO_DISABLE
         const VIDEO_DISABLE = 0x0040_0000;
+        /// INFO_RESERVED1
         const RESERVED1 = 0x0080_0000;
+        /// INFO_RESERVED1
         const RESERVED2 = 0x0100_0000;
+        /// INFO_HIDEF_RAIL_SUPPORTED
         const HIDEF_RAIL_SUPPORTED = 0x0200_0000;
     }
 }
