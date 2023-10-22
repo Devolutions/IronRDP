@@ -327,6 +327,18 @@ pub trait PduHint: Send + Sync + core::fmt::Debug + 'static {
     fn find_size(&self, bytes: &[u8]) -> PduResult<Option<usize>>;
 }
 
+// Matches both X224 and FastPath pdus
+#[derive(Clone, Copy, Debug)]
+pub struct RdpHint;
+
+pub const RDP_HINT: RdpHint = RdpHint;
+
+impl PduHint for RdpHint {
+    fn find_size(&self, bytes: &[u8]) -> PduResult<Option<usize>> {
+        find_size(bytes).map(|opt| opt.map(|info| info.length))
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub struct X224Hint;
 
