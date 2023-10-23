@@ -23,6 +23,14 @@ pub fn combine_u64(lo: u32, hi: u32) -> u64 {
     u64::from_le_bytes(position_bytes)
 }
 
+pub fn to_utf8_bytes(value: &str, write_null_terminator: bool) -> Vec<u8> {
+    let mut bytes = value.as_bytes().to_vec();
+    if write_null_terminator {
+        bytes.push(0u8);
+    }
+    bytes
+}
+
 pub fn to_utf16_bytes(value: &str) -> Vec<u8> {
     value
         .encode_utf16()

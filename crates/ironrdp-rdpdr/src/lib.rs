@@ -56,8 +56,24 @@ impl Rdpdr {
 
     #[must_use]
     pub fn with_smartcard(mut self, device_id: u32) -> Self {
-        self.device_list.add_smartcard(device_id);
         self.capabilities.add_smartcard();
+        self.device_list.add_smartcard(device_id);
+        self
+    }
+
+    /// Adds drive redirection capability.
+    ///
+    /// Callers may also include `initial_drives` to pre-configure the list of drives to announce to the server.
+    /// Note that drives do not need to be pre-configured in order to be redirected, a new drive can be announced
+    /// at any time during a session.
+    #[must_use]
+    pub fn with_drives(mut self, initial_drives: Option<Vec<(u32, String)>>) -> Self {
+        self.capabilities.add_drive();
+        if let Some(initial_drives) = initial_drives {
+            for (device_id, path) in initial_drives {
+                self.device_list.add_drive(device_id, path);
+            }
+        }
         self
     }
 

@@ -6,7 +6,7 @@ use super::esc::rpce;
 use super::{PacketId, SharedHeader};
 use bitflags::bitflags;
 use ironrdp_pdu::cursor::{ReadCursor, WriteCursor};
-use ironrdp_pdu::utils::{encoded_str_len, write_string_to_cursor, CharacterSet};
+use ironrdp_pdu::utils::{encoded_str_len, to_utf8_bytes, write_string_to_cursor, CharacterSet};
 use ironrdp_pdu::{cast_length, ensure_size, invalid_message_err, read_padding, write_padding, PduError, PduResult};
 use std::fmt::Debug;
 use std::mem::size_of;
@@ -273,13 +273,17 @@ impl Capabilities {
         this
     }
 
+    pub fn clone_inner(&mut self) -> Vec<CapabilityMessage> {
+        self.0.clone()
+    }
+
     pub fn add_smartcard(&mut self) {
         self.push(CapabilityMessage::new_smartcard());
         self.increment_special_devices();
     }
 
-    pub fn clone_inner(&mut self) -> Vec<CapabilityMessage> {
-        self.0.clone()
+    pub fn add_drive(&mut self) {
+        self.push(CapabilityMessage::new_drive());
     }
 
     fn add_general(&mut self, special_type_device_cap: u32) {
@@ -756,6 +760,10 @@ impl Devices {
         self.push(DeviceAnnounceHeader::new_smartcard(device_id));
     }
 
+    pub fn add_drive(&mut self, device_id: u32, name: String) {
+        self.push(DeviceAnnounceHeader::new_drive(device_id, name));
+    }
+
     pub fn is_smartcard(&self, device_id: u32) -> bool {
         // TODO: consider caching here
         self.0
@@ -799,6 +807,22 @@ impl DeviceAnnounceHeader {
             // This name is a constant defined by the spec.
             preferred_dos_name: PreferredDosName("SCARD".to_owned()),
             device_data: Vec::new(),
+        }
+    }
+
+    pub fn new_drive(device_id: u32, name: String) -> Self {
+        Self {
+            device_type: DeviceType::Filesystem,
+            device_id,
+            // "The drive name MUST be specified in the PreferredDosName field; however, if the drive name is larger than the allocated size of the PreferredDosName field,
+            // then the drive name MUST be truncated to fit. If the client supports DRIVE_CAPABILITY_VERSION_02 in the Drive Capability Set, then the full name MUST also
+            // be specified in the DeviceData field, as a null-terminated Unicode string. If the DeviceDataLength field is nonzero, the content of the PreferredDosName field
+            // is ignored."
+            //
+            // Since we do support DRIVE_CAPABILITY_VERSION_02, we'll put the full name in the DeviceData field.
+            preferred_dos_name: PreferredDosName("ignored".to_owned()),
+            // The spec says Unicode but empirically this wants null terminated UTF-8.
+            device_data: to_utf8_bytes(&name, true),
         }
     }
 
