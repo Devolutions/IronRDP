@@ -2,8 +2,7 @@ use std::io::Cursor;
 use std::net::SocketAddr;
 
 use anyhow::Result;
-use bytes::BytesMut;
-use ironrdp_acceptor::{self, Acceptor, BeginResult};
+use ironrdp_acceptor::{self, Acceptor, AcceptorResult, BeginResult};
 use ironrdp_pdu::input::fast_path::{FastPathInput, FastPathInputEvent};
 use ironrdp_pdu::input::InputEventPdu;
 use ironrdp_pdu::{self, mcs, nego, rdp, Action, PduParsing};
@@ -133,13 +132,13 @@ impl RdpServer {
                         RdpServerSecurity::Tls(acceptor) => acceptor.accept(stream).await?,
                         RdpServerSecurity::None => unreachable!(),
                     });
-                    let (framed, _) = ironrdp_acceptor::accept_finalize(framed, &mut acceptor).await?;
-                    self.client_loop(framed).await?;
+                    let (framed, result) = ironrdp_acceptor::accept_finalize(framed, &mut acceptor).await?;
+                    self.client_loop(framed, result).await?;
                 }
 
                 Ok(BeginResult::Continue(framed)) => {
-                    let (framed, _) = ironrdp_acceptor::accept_finalize(framed, &mut acceptor).await?;
-                    self.client_loop(framed).await?;
+                    let (framed, result) = ironrdp_acceptor::accept_finalize(framed, &mut acceptor).await?;
+                    self.client_loop(framed, result).await?;
                 }
 
                 Err(e) => {
@@ -151,12 +150,17 @@ impl RdpServer {
         Ok(())
     }
 
-    async fn client_loop<S>(&mut self, mut framed: Framed<S>) -> Result<()>
+    async fn client_loop<S>(&mut self, mut framed: Framed<S>, result: AcceptorResult) -> Result<()>
     where
         S: FramedWrite + FramedRead,
     {
         let mut buffer = vec![0u8; 4096];
         let mut encoder = UpdateEncoder::new();
+
+        if !result.input_events.is_empty() {
+            debug!("handling input event backlog from acceptor sequence");
+            self.handle_input_backlog(result.input_events).await?;
+        }
 
         debug!("starting client loop");
 
@@ -174,7 +178,7 @@ impl RdpServer {
                         }
 
                         Action::X224 => {
-                            match self.handle_x224(bytes).await {
+                            match self.handle_x224(&bytes).await {
                                 Ok(disconnect) => {
                                     if disconnect {
                                         break 'main;
@@ -213,6 +217,25 @@ impl RdpServer {
         Ok(())
     }
 
+    async fn handle_input_backlog(&mut self, frames: Vec<Vec<u8>>) -> Result<()> {
+        for frame in frames {
+            match Action::from_fp_output_header(frame[0]) {
+                Ok(Action::FastPath) => {
+                    let input = FastPathInput::from_buffer(Cursor::new(&frame))?;
+                    self.handle_fastpath(input).await;
+                }
+
+                Ok(Action::X224) => {
+                    let _ = self.handle_x224(&frame).await;
+                }
+
+                _ => unreachable!(),
+            }
+        }
+
+        Ok(())
+    }
+
     async fn handle_fastpath(&mut self, input: FastPathInput) {
         for event in input.0 {
             match event {
@@ -243,8 +266,8 @@ impl RdpServer {
         }
     }
 
-    async fn handle_x224(&mut self, frame: BytesMut) -> Result<bool> {
-        let message = ironrdp_pdu::decode::<mcs::McsMessage<'_>>(&frame)?;
+    async fn handle_x224(&mut self, frame: &[u8]) -> Result<bool> {
+        let message = ironrdp_pdu::decode::<mcs::McsMessage<'_>>(frame)?;
         match message {
             mcs::McsMessage::SendDataRequest(data) => {
                 let control = rdp::headers::ShareControlHeader::from_buffer(Cursor::new(data.user_data))?;

@@ -29,6 +29,7 @@ pub struct Acceptor {
 pub struct AcceptorResult {
     pub channels: Vec<(u16, gcc::ChannelDef)>,
     pub capabilities: Vec<CapabilitySet>,
+    pub input_events: Vec<Vec<u8>>,
 }
 
 impl Acceptor {
@@ -51,13 +52,15 @@ impl Acceptor {
     }
 
     pub fn get_result(&mut self) -> Option<AcceptorResult> {
-        match &self.state {
+        match &mut self.state {
             AcceptorState::Accepted {
                 channels,
                 client_capabilities,
+                input_events,
             } => Some(AcceptorResult {
-                channels: channels.clone(),
-                capabilities: client_capabilities.clone(),
+                channels: std::mem::take(channels),
+                capabilities: std::mem::take(client_capabilities),
+                input_events: std::mem::take(input_events),
             }),
 
             _ => None,
@@ -120,6 +123,7 @@ pub enum AcceptorState {
     Accepted {
         channels: Vec<(u16, gcc::ChannelDef)>,
         client_capabilities: Vec<CapabilitySet>,
+        input_events: Vec<Vec<u8>>,
     },
 }
 
@@ -451,6 +455,7 @@ impl Sequence for Acceptor {
                     AcceptorState::Accepted {
                         channels,
                         client_capabilities,
+                        input_events: finalization.input_events,
                     }
                 } else {
                     AcceptorState::ConnectionFinalization {
