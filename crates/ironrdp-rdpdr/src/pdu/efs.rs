@@ -6,7 +6,7 @@ use super::esc::rpce;
 use super::{PacketId, SharedHeader};
 use bitflags::bitflags;
 use ironrdp_pdu::cursor::{ReadCursor, WriteCursor};
-use ironrdp_pdu::utils::{encoded_str_len, to_utf8_bytes, write_string_to_cursor, CharacterSet};
+use ironrdp_pdu::utils::{encoded_str_len, write_string_to_cursor, CharacterSet};
 use ironrdp_pdu::{cast_length, ensure_size, invalid_message_err, read_padding, write_padding, PduError, PduResult};
 use std::fmt::Debug;
 use std::mem::size_of;
@@ -824,6 +824,10 @@ impl DeviceAnnounceHeader {
     }
 
     fn new_drive(device_id: u32, name: String) -> Self {
+        // The spec says Unicode but empirically this wants null terminated UTF-8.
+        let mut device_data = name.into_bytes();
+        device_data.push(0u8);
+
         Self {
             device_type: DeviceType::Filesystem,
             device_id,
@@ -834,8 +838,7 @@ impl DeviceAnnounceHeader {
             //
             // Since we do support DRIVE_CAPABILITY_VERSION_02, we'll put the full name in the DeviceData field.
             preferred_dos_name: PreferredDosName("ignored".to_owned()),
-            // The spec says Unicode but empirically this wants null terminated UTF-8.
-            device_data: to_utf8_bytes(&name, true),
+            device_data,
         }
     }
 
