@@ -10,13 +10,14 @@ extern crate tracing;
 
 pub mod backend;
 pub mod pdu;
+use crate::pdu::efs::MajorFunction;
 pub use backend::{noop::NoopRdpdrBackend, RdpdrBackend};
 use ironrdp_pdu::{cursor::ReadCursor, decode_cursor, gcc::ChannelName, other_err, PduResult};
 use ironrdp_svc::{impl_as_any, CompressionCondition, StaticVirtualChannelProcessor, SvcMessage};
 use pdu::efs::{
     Capabilities, ClientDeviceListAnnounce, ClientNameRequest, ClientNameRequestUnicodeFlag, CoreCapability,
-    CoreCapabilityKind, DeviceControlRequest, DeviceIoRequest, Devices, ServerDeviceAnnounceResponse, VersionAndIdPdu,
-    VersionAndIdPduKind,
+    CoreCapabilityKind, DeviceAnnounceHeader, DeviceControlRequest, DeviceIoRequest, DeviceType, Devices,
+    ServerDeviceAnnounceResponse, VersionAndIdPdu, VersionAndIdPduKind,
 };
 use pdu::esc::{ScardCall, ScardIoCtlCode};
 use pdu::RdpdrPdu;
@@ -40,6 +41,8 @@ pub struct Rdpdr {
     device_list: Devices,
     backend: Box<dyn RdpdrBackend>,
 }
+
+impl_as_any!(Rdpdr);
 
 impl Rdpdr {
     pub const NAME: ChannelName = ChannelName::from_static(b"rdpdr\0\0\0");
@@ -65,7 +68,7 @@ impl Rdpdr {
     ///
     /// Callers may also include `initial_drives` to pre-configure the list of drives to announce to the server.
     /// Note that drives do not need to be pre-configured in order to be redirected, a new drive can be announced
-    /// at any time during a session.
+    /// at any time during a session by calling [`Self::add_drive`].
     #[must_use]
     pub fn with_drives(mut self, initial_drives: Option<Vec<(u32, String)>>) -> Self {
         self.capabilities.add_drive();
@@ -75,6 +78,21 @@ impl Rdpdr {
             }
         }
         self
+    }
+
+    /// Users should call this method to announce a new drive to the server. It's the caller's responsibility
+    /// to take the returned [`ClientDeviceListAnnounce`] and send it to the server.
+    pub fn add_drive(&mut self, device_id: u32, name: String) -> ClientDeviceListAnnounce {
+        self.device_list.add_drive(device_id, name.clone());
+        ClientDeviceListAnnounce::new_drive(device_id, name)
+    }
+
+    pub fn downcast_backend<T: RdpdrBackend>(&self) -> Option<&T> {
+        self.backend.as_any().downcast_ref::<T>()
+    }
+
+    pub fn downcast_backend_mut<T: RdpdrBackend>(&mut self) -> Option<&mut T> {
+        self.backend.as_any_mut().downcast_mut::<T>()
     }
 
     fn handle_server_announce(&mut self, req: VersionAndIdPdu) -> PduResult<Vec<SvcMessage>> {
@@ -120,27 +138,42 @@ impl Rdpdr {
         pdu: DeviceIoRequest,
         payload: &mut ReadCursor<'_>,
     ) -> PduResult<Vec<SvcMessage>> {
-        if self.is_for_smartcard(&pdu) {
-            let req = DeviceControlRequest::<ScardIoCtlCode>::decode(pdu, payload)?;
-            let call = ScardCall::decode(req.io_control_code, payload)?;
+        match self.device_list.for_device_type(pdu.device_id)? {
+            DeviceType::Smartcard => {
+                let req = DeviceControlRequest::<ScardIoCtlCode>::decode(pdu, payload)?;
+                let call = ScardCall::decode(req.io_control_code, payload)?;
 
-            debug!(?req);
-            debug!(?req.io_control_code, ?call);
+                debug!(?req);
+                debug!(?req.io_control_code, ?call);
 
-            self.backend.handle_scard_call(req, call)?;
+                self.backend.handle_scard_call(req, call)?;
 
-            Ok(Vec::new())
-        } else {
-            Err(other_err!("Rdpdr", "received unexpected packet"))
+                Ok(Vec::new())
+            }
+            DeviceType::Filesystem => {
+                debug!("received filesystem packet");
+                match pdu.major_function {
+                    MajorFunction::Create => todo!(),
+                    MajorFunction::Close => todo!(),
+                    MajorFunction::Read => todo!(),
+                    MajorFunction::Write => todo!(),
+                    MajorFunction::DeviceControl => todo!(),
+                    MajorFunction::QueryVolumeInformation => todo!(),
+                    MajorFunction::SetVolumeInformation => todo!(),
+                    MajorFunction::QueryInformation => todo!(),
+                    MajorFunction::SetInformation => todo!(),
+                    MajorFunction::DirectoryControl => todo!(),
+                    MajorFunction::LockControl => todo!(),
+                }
+            }
+            _ => {
+                // This should never happen, as we only announce devices that we support.
+                warn!(?pdu, "received packet for unsupported device type");
+                Ok(Vec::new())
+            }
         }
     }
-
-    fn is_for_smartcard(&self, pdu: &DeviceIoRequest) -> bool {
-        self.device_list.is_smartcard(pdu.device_id)
-    }
 }
-
-impl_as_any!(Rdpdr);
 
 impl StaticVirtualChannelProcessor for Rdpdr {
     fn channel_name(&self) -> ChannelName {

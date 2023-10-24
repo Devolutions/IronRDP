@@ -725,6 +725,13 @@ pub struct ClientDeviceListAnnounce {
 impl ClientDeviceListAnnounce {
     const FIXED_PART_SIZE: usize = size_of::<u32>(); // DeviceCount
 
+    /// Library users should not typically call this directly, use [`Rdpdr::add_drive`] instead.
+    pub(crate) fn new_drive(device_id: u32, name: String) -> Self {
+        Self {
+            device_list: vec![DeviceAnnounceHeader::new_drive(device_id, name)],
+        }
+    }
+
     pub fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
         dst.write_u32(cast_length!(
             "ClientDeviceListAnnounce",
@@ -764,11 +771,17 @@ impl Devices {
         self.push(DeviceAnnounceHeader::new_drive(device_id, name));
     }
 
-    pub fn is_smartcard(&self, device_id: u32) -> bool {
-        // TODO: consider caching here
-        self.0
-            .iter()
-            .any(|d| d.device_id == device_id && d.device_type == DeviceType::Smartcard)
+    /// Returns the [`DeviceType`] for the given device ID.
+    pub fn for_device_type(&self, device_id: u32) -> PduResult<DeviceType> {
+        if let Some(device_type) = self.0.iter().find(|d| d.device_id == device_id).map(|d| d.device_type) {
+            Ok(device_type)
+        } else {
+            Err(invalid_message_err!(
+                "Devices::for_device_type",
+                "device_id",
+                "no device with that ID"
+            ))
+        }
     }
 
     fn push(&mut self, device: DeviceAnnounceHeader) {
@@ -810,7 +823,7 @@ impl DeviceAnnounceHeader {
         }
     }
 
-    pub fn new_drive(device_id: u32, name: String) -> Self {
+    fn new_drive(device_id: u32, name: String) -> Self {
         Self {
             device_type: DeviceType::Filesystem,
             device_id,

@@ -6,9 +6,10 @@ use crate::pdu::{
 };
 use core::fmt;
 use ironrdp_pdu::PduResult;
+use ironrdp_svc::AsAny;
 
 /// OS-specific device redirection backend inteface.
-pub trait RdpdrBackend: fmt::Debug + Send {
+pub trait RdpdrBackend: AsAny + fmt::Debug + Send + 'static {
     fn handle_server_device_announce_response(&mut self, pdu: ServerDeviceAnnounceResponse) -> PduResult<()>;
     fn handle_scard_call(&mut self, req: DeviceControlRequest<ScardIoCtlCode>, call: ScardCall) -> PduResult<()>;
 }
