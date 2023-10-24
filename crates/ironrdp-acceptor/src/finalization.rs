@@ -12,6 +12,8 @@ pub struct FinalizationSequence {
     state: FinalizationState,
     user_channel_id: u16,
     io_channel_id: u16,
+
+    pub input_events: Vec<Vec<u8>>,
 }
 
 #[derive(Default, Debug)]
@@ -64,7 +66,7 @@ impl Sequence for FinalizationSequence {
             FinalizationState::WaitSynchronize => Some(&pdu::X224Hint),
             FinalizationState::WaitControlCooperate => Some(&pdu::X224Hint),
             FinalizationState::WaitRequestControl => Some(&pdu::X224Hint),
-            FinalizationState::WaitFontList => Some(&pdu::X224Hint),
+            FinalizationState::WaitFontList => Some(&pdu::RdpHint),
             FinalizationState::SendSynchronizeConfirm => None,
             FinalizationState::SendControlCooperateConfirm => None,
             FinalizationState::SendGrantedControlConfirm => None,
@@ -80,9 +82,7 @@ impl Sequence for FinalizationSequence {
     fn step(&mut self, input: &[u8], output: &mut WriteBuf) -> ConnectorResult<Written> {
         let (written, next_state) = match std::mem::take(&mut self.state) {
             FinalizationState::WaitSynchronize => {
-                let data = pdu::decode::<pdu::mcs::SendDataRequest<'_>>(input).map_err(ConnectorError::pdu)?;
-
-                let synchronize = rdp::headers::ShareControlHeader::from_buffer(Cursor::new(data.user_data))?;
+                let synchronize = decode_share_control(input);
 
                 debug!(message = ?synchronize, "Received");
 
@@ -90,9 +90,7 @@ impl Sequence for FinalizationSequence {
             }
 
             FinalizationState::WaitControlCooperate => {
-                let data = pdu::decode::<pdu::mcs::SendDataRequest<'_>>(input).map_err(ConnectorError::pdu)?;
-
-                let cooperate = rdp::headers::ShareControlHeader::from_buffer(Cursor::new(data.user_data))?;
+                let cooperate = decode_share_control(input);
 
                 debug!(message = ?cooperate, "Received");
 
@@ -100,24 +98,26 @@ impl Sequence for FinalizationSequence {
             }
 
             FinalizationState::WaitRequestControl => {
-                let data = pdu::decode::<pdu::mcs::SendDataRequest<'_>>(input).map_err(ConnectorError::pdu)?;
-
-                let control = rdp::headers::ShareControlHeader::from_buffer(Cursor::new(data.user_data))?;
+                let control = decode_share_control(input)?;
 
                 debug!(message = ?control, "Received");
 
                 (Written::Nothing, FinalizationState::WaitFontList)
             }
 
-            FinalizationState::WaitFontList => {
-                let data = pdu::decode::<pdu::mcs::SendDataRequest<'_>>(input).map_err(ConnectorError::pdu)?;
+            FinalizationState::WaitFontList => match decode_font_list(input) {
+                Ok(font_list) => {
+                    debug!(message = ?font_list, "Received");
 
-                let font_list = rdp::headers::ShareControlHeader::from_buffer(Cursor::new(data.user_data))?;
+                    (Written::Nothing, FinalizationState::SendSynchronizeConfirm)
+                }
 
-                debug!(message = ?font_list, "Received");
+                Err(()) => {
+                    self.input_events.push(input.to_vec());
 
-                (Written::Nothing, FinalizationState::SendSynchronizeConfirm)
-            }
+                    (Written::Nothing, FinalizationState::WaitFontList)
+                }
+            },
 
             FinalizationState::SendSynchronizeConfirm => {
                 let synchronize_confirm = create_synchronize_confirm();
@@ -187,6 +187,7 @@ impl FinalizationSequence {
             state: FinalizationState::WaitSynchronize,
             user_channel_id,
             io_channel_id,
+            input_events: Vec::new(),
         }
     }
 
@@ -222,4 +223,26 @@ fn create_font_map() -> rdp::headers::ShareDataPdu {
         flags: rdp::finalization_messages::SequenceFlags::empty(),
         entry_size: 0,
     })
+}
+
+fn decode_share_control(input: &[u8]) -> ConnectorResult<rdp::headers::ShareControlHeader> {
+    let data_request = pdu::decode::<pdu::mcs::SendDataRequest<'_>>(input).map_err(ConnectorError::pdu)?;
+    let share_control = rdp::headers::ShareControlHeader::from_buffer(Cursor::new(data_request.user_data))?;
+    Ok(share_control)
+}
+
+fn decode_font_list(input: &[u8]) -> Result<rdp::finalization_messages::FontPdu, ()> {
+    use pdu::rdp::headers::{ShareControlPdu, ShareDataPdu};
+
+    let share_control = decode_share_control(input).map_err(|_| ())?;
+
+    let ShareControlPdu::Data(data_pdu) = share_control.share_control_pdu else {
+        return Err(());
+    };
+
+    let ShareDataPdu::FontList(font_pdu) = data_pdu.share_data_pdu else {
+        return Err(());
+    };
+
+    Ok(font_pdu)
 }
