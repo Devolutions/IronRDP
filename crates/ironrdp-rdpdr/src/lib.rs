@@ -16,8 +16,8 @@ use ironrdp_pdu::{cursor::ReadCursor, decode_cursor, gcc::ChannelName, other_err
 use ironrdp_svc::{impl_as_any, CompressionCondition, StaticVirtualChannelProcessor, SvcMessage};
 use pdu::efs::{
     Capabilities, ClientDeviceListAnnounce, ClientNameRequest, ClientNameRequestUnicodeFlag, CoreCapability,
-    CoreCapabilityKind, DeviceAnnounceHeader, DeviceControlRequest, DeviceIoRequest, DeviceType, Devices,
-    ServerDeviceAnnounceResponse, VersionAndIdPdu, VersionAndIdPduKind,
+    CoreCapabilityKind, DeviceControlRequest, DeviceIoRequest, DeviceType, Devices, ServerDeviceAnnounceResponse,
+    VersionAndIdPdu, VersionAndIdPduKind,
 };
 use pdu::esc::{ScardCall, ScardIoCtlCode};
 use pdu::RdpdrPdu;
@@ -87,11 +87,11 @@ impl Rdpdr {
         ClientDeviceListAnnounce::new_drive(device_id, name)
     }
 
-    pub fn downcast_backend<T: RdpdrBackend>(&self) -> Option<&T> {
+    pub fn downcast_backend<T: RdpdrBackend + 'static>(&self) -> Option<&T> {
         self.backend.as_any().downcast_ref::<T>()
     }
 
-    pub fn downcast_backend_mut<T: RdpdrBackend>(&mut self) -> Option<&mut T> {
+    pub fn downcast_backend_mut<T: RdpdrBackend + 'static>(&mut self) -> Option<&mut T> {
         self.backend.as_any_mut().downcast_mut::<T>()
     }
 
