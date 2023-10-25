@@ -321,7 +321,7 @@ pub fn make_channel_definition(channel: &StaticVirtualChannel) -> ChannelDef {
 }
 
 /// Type information ([`TypeId`]) may be retrieved at runtime for this type.
-pub trait AsAny {
+pub trait AsAny: 'static {
     fn as_any(&self) -> &dyn Any;
 
     fn as_any_mut(&mut self) -> &mut dyn Any;

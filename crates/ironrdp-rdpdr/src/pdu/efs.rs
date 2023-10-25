@@ -273,13 +273,17 @@ impl Capabilities {
         this
     }
 
+    pub fn clone_inner(&mut self) -> Vec<CapabilityMessage> {
+        self.0.clone()
+    }
+
     pub fn add_smartcard(&mut self) {
         self.push(CapabilityMessage::new_smartcard());
         self.increment_special_devices();
     }
 
-    pub fn clone_inner(&mut self) -> Vec<CapabilityMessage> {
-        self.0.clone()
+    pub fn add_drive(&mut self) {
+        self.push(CapabilityMessage::new_drive());
     }
 
     fn add_general(&mut self, special_type_device_cap: u32) {
@@ -721,6 +725,13 @@ pub struct ClientDeviceListAnnounce {
 impl ClientDeviceListAnnounce {
     const FIXED_PART_SIZE: usize = size_of::<u32>(); // DeviceCount
 
+    /// Library users should not typically call this directly, use [`Rdpdr::add_drive`] instead.
+    pub(crate) fn new_drive(device_id: u32, name: String) -> Self {
+        Self {
+            device_list: vec![DeviceAnnounceHeader::new_drive(device_id, name)],
+        }
+    }
+
     pub fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
         dst.write_u32(cast_length!(
             "ClientDeviceListAnnounce",
@@ -756,11 +767,21 @@ impl Devices {
         self.push(DeviceAnnounceHeader::new_smartcard(device_id));
     }
 
-    pub fn is_smartcard(&self, device_id: u32) -> bool {
-        // TODO: consider caching here
-        self.0
-            .iter()
-            .any(|d| d.device_id == device_id && d.device_type == DeviceType::Smartcard)
+    pub fn add_drive(&mut self, device_id: u32, name: String) {
+        self.push(DeviceAnnounceHeader::new_drive(device_id, name));
+    }
+
+    /// Returns the [`DeviceType`] for the given device ID.
+    pub fn for_device_type(&self, device_id: u32) -> PduResult<DeviceType> {
+        if let Some(device_type) = self.0.iter().find(|d| d.device_id == device_id).map(|d| d.device_type) {
+            Ok(device_type)
+        } else {
+            Err(invalid_message_err!(
+                "Devices::for_device_type",
+                "device_id",
+                "no device with that ID"
+            ))
+        }
     }
 
     fn push(&mut self, device: DeviceAnnounceHeader) {
@@ -799,6 +820,25 @@ impl DeviceAnnounceHeader {
             // This name is a constant defined by the spec.
             preferred_dos_name: PreferredDosName("SCARD".to_owned()),
             device_data: Vec::new(),
+        }
+    }
+
+    fn new_drive(device_id: u32, name: String) -> Self {
+        // The spec says Unicode but empirically this wants null terminated UTF-8.
+        let mut device_data = name.into_bytes();
+        device_data.push(0u8);
+
+        Self {
+            device_type: DeviceType::Filesystem,
+            device_id,
+            // "The drive name MUST be specified in the PreferredDosName field; however, if the drive name is larger than the allocated size of the PreferredDosName field,
+            // then the drive name MUST be truncated to fit. If the client supports DRIVE_CAPABILITY_VERSION_02 in the Drive Capability Set, then the full name MUST also
+            // be specified in the DeviceData field, as a null-terminated Unicode string. If the DeviceDataLength field is nonzero, the content of the PreferredDosName field
+            // is ignored."
+            //
+            // Since we do support DRIVE_CAPABILITY_VERSION_02, we'll put the full name in the DeviceData field.
+            preferred_dos_name: PreferredDosName("ignored".to_owned()),
+            device_data,
         }
     }
 
