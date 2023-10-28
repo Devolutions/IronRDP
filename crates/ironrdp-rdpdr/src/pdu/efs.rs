@@ -6,7 +6,7 @@ use super::esc::rpce;
 use super::{PacketId, SharedHeader};
 use bitflags::bitflags;
 use ironrdp_pdu::cursor::{ReadCursor, WriteCursor};
-use ironrdp_pdu::utils::{encoded_str_len, write_string_to_cursor, CharacterSet};
+use ironrdp_pdu::utils::{encoded_str_len, from_utf16_bytes, write_string_to_cursor, CharacterSet};
 use ironrdp_pdu::{cast_length, ensure_size, invalid_message_err, read_padding, write_padding, PduError, PduResult};
 use std::fmt::Debug;
 use std::mem::size_of;
@@ -971,15 +971,25 @@ impl ServerDeviceAnnounceResponse {
 #[derive(Debug, PartialEq, Copy, Clone)]
 #[repr(u32)]
 pub enum NtStatus {
+    /// STATUS_SUCCESS
     Success = 0x0000_0000,
+    /// STATUS_UNSUCCESSFUL
     Unsuccessful = 0xC000_0001,
+    /// STATUS_NOT_IMPLEMENTED
     NotImplemented = 0xC000_0002,
+    /// STATUS_NO_MORE_FILES
     NoMoreFiles = 0x8000_0006,
+    /// STATUS_OBJECT_NAME_COLLISION
     ObjectNameCollision = 0xC000_0035,
+    /// STATUS_ACCESS_DENIED
     AccessDenied = 0xC000_0022,
+    /// STATUS_NOT_A_DIRECTORY
     NotADirectory = 0xC000_0103,
+    /// STATUS_NO_SUCH_FILE
     NoSuchFile = 0xC000_000F,
+    /// STATUS_NOT_SUPPORTED
     NotSupported = 0xC000_00BB,
+    /// STATUS_DIRECTORY_NOT_EMPTY
     DirectoryNotEmpty = 0xC000_0101,
 }
 
@@ -1012,7 +1022,7 @@ impl From<NtStatus> for u32 {
 /// [2.2.1.4 Device I/O Request (DR_DEVICE_IOREQUEST)]
 ///
 /// [2.2.1.4 Device I/O Request (DR_DEVICE_IOREQUEST)]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/a087ffa8-d0d5-4874-ac7b-0494f63e2d5d
-#[derive(Debug)]
+#[derive(Debug, Copy, Clone)]
 pub struct DeviceIoRequest {
     pub device_id: u32,
     pub file_id: u32,
@@ -1265,6 +1275,14 @@ impl DeviceIoResponse {
     const NAME: &str = "DR_DEVICE_IOCOMPLETION";
     const FIXED_PART_SIZE: usize = size_of::<u32>() * 3; // DeviceId, CompletionId, IoStatus
 
+    pub fn new(device_io_request: DeviceIoRequest, io_status: NtStatus) -> Self {
+        Self {
+            device_id: device_io_request.device_id,
+            completion_id: device_io_request.completion_id,
+            io_status,
+        }
+    }
+
     pub fn decode(src: &mut ReadCursor<'_>) -> PduResult<Self> {
         ensure_size!(ctx: "DeviceIoResponse", in: src, size: Self::FIXED_PART_SIZE);
         let device_id = src.read_u32();
@@ -1288,5 +1306,278 @@ impl DeviceIoResponse {
 
     pub fn size(&self) -> usize {
         Self::FIXED_PART_SIZE
+    }
+}
+
+#[derive(Debug)]
+pub enum FilesystemRequest {
+    DeviceCreateRequest(DeviceCreateRequest),
+}
+
+impl FilesystemRequest {
+    pub fn decode(dev_io_req: DeviceIoRequest, src: &mut ReadCursor<'_>) -> PduResult<Self> {
+        match dev_io_req.major_function {
+            MajorFunction::Create => Ok(Self::DeviceCreateRequest(DeviceCreateRequest::decode(dev_io_req, src)?)),
+            MajorFunction::Close => todo!(),
+            MajorFunction::Read => todo!(),
+            MajorFunction::Write => todo!(),
+            MajorFunction::DeviceControl => todo!(),
+            MajorFunction::QueryVolumeInformation => todo!(),
+            MajorFunction::SetVolumeInformation => todo!(),
+            MajorFunction::QueryInformation => todo!(),
+            MajorFunction::SetInformation => todo!(),
+            MajorFunction::DirectoryControl => todo!(),
+            MajorFunction::LockControl => todo!(),
+        }
+    }
+}
+
+/// [2.2.3.3.1 Server Create Drive Request (DR_DRIVE_CREATE_REQ)] and [2.2.1.4.1 Device Create Request (DR_CREATE_REQ)]
+///
+/// [2.2.3.3.1 Server Create Drive Request (DR_DRIVE_CREATE_REQ)]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/95b16fd0-d530-407c-a310-adedc85e9897
+/// [2.2.1.4.1 Device Create Request (DR_CREATE_REQ)]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/5f71f6d2-d9ff-40c2-bdb5-a739447d3c3e
+#[derive(Debug)]
+pub struct DeviceCreateRequest {
+    /// The MajorFunction field in this header MUST be set to IRP_MJ_CREATE.
+    pub device_io_request: DeviceIoRequest,
+    pub desired_access: DesiredAccess,
+    pub allocation_size: u64,
+    pub file_attributes: FileAttributes,
+    pub shared_access: SharedAccess,
+    pub create_disposition: CreateDisposition,
+    pub create_options: CreateOptions,
+    pub path: String,
+}
+
+impl DeviceCreateRequest {
+    const FIXED_PART_SIZE: usize = 4  // DesiredAccess
+                                 + 8  // AllocationSize
+                                 + 4  // FileAttributes
+                                 + 4  // SharedAccess
+                                 + 4  // CreateDisposition
+                                 + 4  // CreateOptions
+                                 + 4; // PathLength
+
+    fn decode(dev_io_req: DeviceIoRequest, src: &mut ReadCursor<'_>) -> PduResult<Self> {
+        ensure_size!(ctx: "DeviceCreateRequest", in: src, size: Self::FIXED_PART_SIZE);
+        let desired_access = DesiredAccess::from_bits_retain(src.read_u32());
+        let allocation_size = src.read_u64();
+        let file_attributes = FileAttributes::from_bits_retain(src.read_u32());
+        let shared_access = SharedAccess::from_bits_retain(src.read_u32());
+        let create_disposition = CreateDisposition::from_bits_retain(src.read_u32());
+        let create_options = CreateOptions::from_bits_retain(src.read_u32());
+        let path_length: usize = cast_length!("DeviceCreateRequest", "path_length", src.read_u32())?;
+
+        ensure_size!(ctx: "DeviceCreateRequest", in: src, size: path_length);
+        let path = from_utf16_bytes(src.read_slice(path_length));
+
+        Ok(Self {
+            device_io_request: dev_io_req,
+            desired_access,
+            allocation_size,
+            file_attributes,
+            shared_access,
+            create_disposition,
+            create_options,
+            path,
+        })
+    }
+}
+
+bitflags! {
+    /// DesiredAccess can be interpreted as either
+    /// [2.2.13.1.1 File_Pipe_Printer_Access_Mask \[MS-SMB2\]] or [2.2.13.1.2 Directory_Access_Mask \[MS-SMB2\]]
+    ///
+    /// This implements the combination of the two. For flags where the names and/or functions are distinct between the two,
+    /// the names are appended with an "_OR_", and the File_Pipe_Printer_Access_Mask functionality is described on the top line comment,
+    /// and the Directory_Access_Mask functionality is described on the bottom (2nd) line comment.
+    ///
+    /// [2.2.13.1.1 File_Pipe_Printer_Access_Mask \[MS-SMB2\]]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-smb2/77b36d0f-6016-458a-a7a0-0f4a72ae1534
+    /// [2.2.13.1.2 Directory_Access_Mask \[MS-SMB2\]]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-smb2/0a5934b1-80f1-4da0-b1bf-5e021c309b71
+    #[derive(Debug, Clone)]
+    pub struct DesiredAccess: u32 {
+        /// This value indicates the right to read data from the file or named pipe.
+        ///
+        /// This value indicates the right to enumerate the contents of the directory.
+        const FILE_READ_DATA_OR_FILE_LIST_DIRECTORY = 0x00000001;
+        /// This value indicates the right to write data into the file or named pipe beyond the end of the file.
+        ///
+        /// This value indicates the right to create a file under the directory.
+        const FILE_WRITE_DATA_OR_FILE_ADD_FILE = 0x00000002;
+        /// This value indicates the right to append data into the file or named pipe.
+        ///
+        /// This value indicates the right to add a sub-directory under the directory.
+        const FILE_APPEND_DATA_OR_FILE_ADD_SUBDIRECTORY = 0x00000004;
+        /// This value indicates the right to read the extended attributes of the file or named pipe.
+        const FILE_READ_EA = 0x00000008;
+        /// This value indicates the right to write or change the extended attributes to the file or named pipe.
+        const FILE_WRITE_EA = 0x00000010;
+        /// This value indicates the right to traverse this directory if the server enforces traversal checking.
+        const FILE_TRAVERSE = 0x00000020;
+        /// This value indicates the right to delete entries within a directory.
+        const FILE_DELETE_CHILD = 0x00000040;
+        /// This value indicates the right to execute the file/directory.
+        const FILE_EXECUTE = 0x00000020;
+        /// This value indicates the right to read the attributes of the file/directory.
+        const FILE_READ_ATTRIBUTES = 0x00000080;
+        /// This value indicates the right to change the attributes of the file/directory.
+        const FILE_WRITE_ATTRIBUTES = 0x00000100;
+        /// This value indicates the right to delete the file/directory.
+        const DELETE = 0x00010000;
+        /// This value indicates the right to read the security descriptor for the file/directory or named pipe.
+        const READ_CONTROL = 0x00020000;
+        /// This value indicates the right to change the discretionary access control list (DACL) in the security descriptor for the file/directory or named pipe. For the DACL data pub structure, see ACL in [MS-DTYP].
+        const WRITE_DAC = 0x00040000;
+        /// This value indicates the right to change the owner in the security descriptor for the file/directory or named pipe.
+        const WRITE_OWNER = 0x00080000;
+        /// SMB2 clients set this flag to any value. SMB2 servers SHOULD ignore this flag.
+        const SYNCHRONIZE = 0x00100000;
+        /// This value indicates the right to read or change the system access control list (SACL) in the security descriptor for the file/directory or named pipe. For the SACL data pub structure, see ACL in [MS-DTYP].
+        const ACCESS_SYSTEM_SECURITY = 0x01000000;
+        /// This value indicates that the client is requesting an open to the file with the highest level of access the client has on this file. If no access is granted for the client on this file, the server MUST fail the open with STATUS_ACCESS_DENIED.
+        const MAXIMUM_ALLOWED = 0x02000000;
+        /// This value indicates a request for all the access flags that are previously listed except MAXIMUM_ALLOWED and ACCESS_SYSTEM_SECURITY.
+        const GENERIC_ALL = 0x10000000;
+        /// This value indicates a request for the following combination of access flags listed above: FILE_READ_ATTRIBUTES| FILE_EXECUTE| SYNCHRONIZE| READ_CONTROL.
+        const GENERIC_EXECUTE = 0x20000000;
+        /// This value indicates a request for the following combination of access flags listed above: FILE_WRITE_DATA| FILE_APPEND_DATA| FILE_WRITE_ATTRIBUTES| FILE_WRITE_EA| SYNCHRONIZE| READ_CONTROL.
+        const GENERIC_WRITE = 0x40000000;
+        /// This value indicates a request for the following combination of access flags listed above: FILE_READ_DATA| FILE_READ_ATTRIBUTES| FILE_READ_EA| SYNCHRONIZE| READ_CONTROL.
+        const GENERIC_READ = 0x80000000;
+    }
+}
+
+bitflags! {
+    /// [2.6 File Attributes \[MS-FSCC\]]
+    ///
+    /// [2.6 File Attributes \[MS-FSCC\]]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-fscc/ca28ec38-f155-4768-81d6-4bfeb8586fc9
+    #[derive(Debug, Clone)]
+    pub struct FileAttributes: u32 {
+        const FILE_ATTRIBUTE_READONLY = 0x00000001;
+        const FILE_ATTRIBUTE_HIDDEN = 0x00000002;
+        const FILE_ATTRIBUTE_SYSTEM = 0x00000004;
+        const FILE_ATTRIBUTE_DIRECTORY = 0x00000010;
+        const FILE_ATTRIBUTE_ARCHIVE = 0x00000020;
+        const FILE_ATTRIBUTE_NORMAL = 0x00000080;
+        const FILE_ATTRIBUTE_TEMPORARY = 0x00000100;
+        const FILE_ATTRIBUTE_SPARSE_FILE = 0x00000200;
+        const FILE_ATTRIBUTE_REPARSE_POINT = 0x00000400;
+        const FILE_ATTRIBUTE_COMPRESSED = 0x00000800;
+        const FILE_ATTRIBUTE_OFFLINE = 0x00001000;
+        const FILE_ATTRIBUTE_NOT_CONTENT_INDEXED = 0x00002000;
+        const FILE_ATTRIBUTE_ENCRYPTED = 0x00004000;
+        const FILE_ATTRIBUTE_INTEGRITY_STREAM = 0x00008000;
+        const FILE_ATTRIBUTE_NO_SCRUB_DATA = 0x00020000;
+        const FILE_ATTRIBUTE_RECALL_ON_OPEN = 0x00040000;
+        const FILE_ATTRIBUTE_PINNED = 0x00080000;
+        const FILE_ATTRIBUTE_UNPINNED = 0x00100000;
+        const FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS = 0x00400000;
+    }
+}
+
+bitflags! {
+    /// Specified in [2.2.13 SMB2 CREATE Request]
+    ///
+    /// [2.2.13 SMB2 CREATE Request]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-smb2/e8fb45c1-a03d-44ca-b7ae-47385cfd7997
+    #[derive(Debug, Clone)]
+    pub struct SharedAccess: u32 {
+        const FILE_SHARE_READ = 0x00000001;
+        const FILE_SHARE_WRITE = 0x00000002;
+        const FILE_SHARE_DELETE = 0x00000004;
+    }
+}
+
+bitflags! {
+    /// Defined in [2.2.13 SMB2 CREATE Request]
+    ///
+    /// See FreeRDP's [drive_file.c] for context about how these should be interpreted.
+    ///
+    /// [2.2.13 SMB2 CREATE Request]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-smb2/e8fb45c1-a03d-44ca-b7ae-47385cfd7997
+    /// [drive_file.c]: https://github.com/FreeRDP/FreeRDP/blob/511444a65e7aa2f537c5e531fa68157a50c1bd4d/channels/drive/client/drive_file.c#L207
+    #[derive(PartialEq, Eq, Debug, Clone)]
+    pub struct CreateDisposition: u32 {
+        const FILE_SUPERSEDE = 0x00000000;
+        const FILE_OPEN = 0x00000001;
+        const FILE_CREATE = 0x00000002;
+        const FILE_OPEN_IF = 0x00000003;
+        const FILE_OVERWRITE = 0x00000004;
+        const FILE_OVERWRITE_IF = 0x00000005;
+    }
+}
+
+bitflags! {
+    /// Defined in [2.2.13 SMB2 CREATE Request]
+    ///
+    /// [2.2.13 SMB2 CREATE Request]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-smb2/e8fb45c1-a03d-44ca-b7ae-47385cfd7997
+    #[derive(Debug, Clone)]
+    pub struct CreateOptions: u32 {
+        const FILE_DIRECTORY_FILE = 0x00000001;
+        const FILE_WRITE_THROUGH = 0x00000002;
+        const FILE_SEQUENTIAL_ONLY = 0x00000004;
+        const FILE_NO_INTERMEDIATE_BUFFERING = 0x00000008;
+        const FILE_SYNCHRONOUS_IO_ALERT = 0x00000010;
+        const FILE_SYNCHRONOUS_IO_NONALERT = 0x00000020;
+        const FILE_NON_DIRECTORY_FILE = 0x00000040;
+        const FILE_COMPLETE_IF_OPLOCKED = 0x00000100;
+        const FILE_NO_EA_KNOWLEDGE = 0x00000200;
+        const FILE_RANDOM_ACCESS = 0x00000800;
+        const FILE_DELETE_ON_CLOSE = 0x00001000;
+        const FILE_OPEN_BY_FILE_ID = 0x00002000;
+        const FILE_OPEN_FOR_BACKUP_INTENT = 0x00004000;
+        const FILE_NO_COMPRESSION = 0x00008000;
+        const FILE_OPEN_REMOTE_INSTANCE = 0x00000400;
+        const FILE_OPEN_REQUIRING_OPLOCK = 0x00010000;
+        const FILE_DISALLOW_EXCLUSIVE = 0x00020000;
+        const FILE_RESERVE_OPFILTER = 0x00100000;
+        const FILE_OPEN_REPARSE_POINT = 0x00200000;
+        const FILE_OPEN_NO_RECALL = 0x00400000;
+        const FILE_OPEN_FOR_FREE_SPACE_QUERY = 0x00800000;
+    }
+}
+
+/// [2.2.1.5.1 Device Create Response (DR_CREATE_RSP)]
+///
+/// [2.2.1.5.1 Device Create Response (DR_CREATE_RSP)]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/99e5fca5-b37a-41e4-bc69-8d7da7860f76
+#[derive(Debug)]
+pub struct DeviceCreateResponse {
+    pub device_io_reply: DeviceIoResponse,
+    pub file_id: u32,
+    pub information: Information,
+}
+
+impl DeviceCreateResponse {
+    const NAME: &str = "DR_CREATE_RSP";
+
+    pub fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    pub fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_size!(in: dst, size: self.size());
+        self.device_io_reply.encode(dst)?;
+        dst.write_u32(self.file_id);
+        dst.write_u8(self.information.bits());
+        Ok(())
+    }
+
+    pub fn size(&self) -> usize {
+        self.device_io_reply.size() // DeviceIoReply
+        + 4 // FileId
+        + 1 // Information
+    }
+}
+
+bitflags! {
+    /// Defined in [2.2.1.5.1 Device Create Response (DR_CREATE_RSP)]
+    ///
+    /// [2.2.1.5.1 Device Create Response (DR_CREATE_RSP)]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/99e5fca5-b37a-41e4-bc69-8d7da7860f76
+    #[derive(Debug)]
+    pub struct Information: u8 {
+        /// A new file was created.
+        const FILE_SUPERSEDED = 0x00000000;
+        /// An existing file was opened.
+        const FILE_OPENED = 0x00000001;
+        /// An existing file was overwritten.
+        const FILE_OVERWRITTEN = 0x00000003;
     }
 }
