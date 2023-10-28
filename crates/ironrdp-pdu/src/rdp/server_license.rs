@@ -23,7 +23,9 @@ mod server_upgrade_license;
 pub use self::client_new_license_request::{ClientNewLicenseRequest, PLATFORM_ID};
 pub use self::client_platform_challenge_response::ClientPlatformChallengeResponse;
 pub use self::licensing_error_message::{LicenseErrorCode, LicensingErrorMessage, LicensingStateTransition};
-pub use self::server_license_request::{cert, InitialMessageType, InitialServerLicenseMessage, ServerLicenseRequest};
+pub use self::server_license_request::{
+    cert, InitialMessageType, InitialServerLicenseMessage, ProductInfo, Scope, ServerCertificate, ServerLicenseRequest,
+};
 pub use self::server_platform_challenge::ServerPlatformChallenge;
 pub use self::server_upgrade_license::{NewLicenseInformation, ServerUpgradeLicense};
 
@@ -167,69 +169,72 @@ pub enum ServerLicenseError {
     IOError(#[from] io::Error),
     #[error("UTF-8 error: {0}")]
     Utf8Error(#[from] std::string::FromUtf8Error),
-    #[error("Invalid preamble field: {0}")]
+    #[error("invalid preamble field: {0}")]
     InvalidPreamble(String),
-    #[error("Invalid preamble message type field")]
+    #[error("invalid preamble message type field")]
     InvalidLicenseType,
-    #[error("Invalid error code field")]
+    #[error("invalid error code field")]
     InvalidErrorCode,
-    #[error("Invalid state transition field")]
+    #[error("invalid state transition field")]
     InvalidStateTransition,
-    #[error("Invalid blob type field")]
+    #[error("invalid blob type field")]
     InvalidBlobType,
-    #[error("Unable to generate random number {0}")]
+    #[error("unable to generate random number {0}")]
     RandomNumberGenerationError(String),
-    #[error("Unable to retrieve public key from the certificate")]
+    #[error("unable to retrieve public key from the certificate")]
     UnableToGetPublicKey,
-    #[error("Unable to encrypt RSA public key")]
+    #[error("unable to encrypt RSA public key")]
     RsaKeyEncryptionError,
-    #[error("Invalid License Request key exchange algorithm value")]
+    #[error("invalid License Request key exchange algorithm value")]
     InvalidKeyExchangeValue,
     #[error("MAC checksum generated over decrypted data does not match the server's checksum")]
     InvalidMacData,
-    #[error("Invalid platform challenge response data version")]
+    #[error("invalid platform challenge response data version")]
     InvalidChallengeResponseDataVersion,
-    #[error("Invalid platform challenge response data client type")]
+    #[error("invalid platform challenge response data client type")]
     InvalidChallengeResponseDataClientType,
-    #[error("Invalid platform challenge response data license detail level")]
+    #[error("invalid platform challenge response data license detail level")]
     InvalidChallengeResponseDataLicenseDetail,
-    #[error("Invalid x509 certificate")]
-    InvalidX509Certificate,
-    #[error("Invalid certificate version")]
+    #[error("invalid x509 certificate")]
+    InvalidX509Certificate {
+        source: x509_cert::der::Error,
+        cert_der: Vec<u8>,
+    },
+    #[error("invalid certificate version")]
     InvalidCertificateVersion,
-    #[error("Invalid x509 certificates amount")]
+    #[error("invalid x509 certificates amount")]
     InvalidX509CertificatesAmount,
-    #[error("Invalid proprietary certificate signature algorithm ID")]
+    #[error("invalid proprietary certificate signature algorithm ID")]
     InvalidPropCertSignatureAlgorithmId,
-    #[error("Invalid proprietary certificate key algorithm ID")]
+    #[error("invalid proprietary certificate key algorithm ID")]
     InvalidPropCertKeyAlgorithmId,
-    #[error("Invalid RSA public key magic")]
+    #[error("invalid RSA public key magic")]
     InvalidRsaPublicKeyMagic,
-    #[error("Invalid RSA public key length")]
+    #[error("invalid RSA public key length")]
     InvalidRsaPublicKeyLength,
-    #[error("Invalid RSA public key data length")]
+    #[error("invalid RSA public key data length")]
     InvalidRsaPublicKeyDataLength,
-    #[error("Invalid License Header security flags")]
+    #[error("invalid License Header security flags")]
     InvalidSecurityFlags,
-    #[error("The server returned unexpected error")]
+    #[error("ihe server returned unexpected error")]
     UnexpectedError(LicensingErrorMessage),
-    #[error("Got unexpected license message")]
+    #[error("got unexpected license message")]
     UnexpectedLicenseMessage,
-    #[error("The server has returned an unexpected error")]
+    #[error("the server has returned an unexpected error")]
     UnexpectedServerError(LicensingErrorMessage),
-    #[error("The server has returned STATUS_VALID_CLIENT (not an error)")]
+    #[error("the server has returned STATUS_VALID_CLIENT (not an error)")]
     ValidClientStatus(LicensingErrorMessage),
-    #[error("Invalid Key Exchange List field")]
+    #[error("invalid Key Exchange List field")]
     InvalidKeyExchangeAlgorithm,
-    #[error("Received invalid company name length (Product Information): {0}")]
+    #[error("received invalid company name length (Product Information): {0}")]
     InvalidCompanyNameLength(u32),
-    #[error("Received invalid product ID length (Product Information): {0}")]
+    #[error("received invalid product ID length (Product Information): {0}")]
     InvalidProductIdLength(u32),
-    #[error("Received invalid scope count field: {0}")]
+    #[error("received invalid scope count field: {0}")]
     InvalidScopeCount(u32),
-    #[error("Received invalid certificate length: {0}")]
+    #[error("received invalid certificate length: {0}")]
     InvalidCertificateLength(u32),
-    #[error("Blob too small")]
+    #[error("blob too small")]
     BlobTooSmall,
 }
 
