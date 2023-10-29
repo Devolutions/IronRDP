@@ -242,7 +242,7 @@ impl GuiContext {
                     window.set_cursor_visible(true);
                 }
                 Event::UserEvent(RdpOutputEvent::PointerPosition { x, y }) => {
-                    if let Err(error) = window.set_cursor_position(LogicalPosition::new(x as f64, y as f64)) {
+                    if let Err(error) = window.set_cursor_position(LogicalPosition::new(x, y)) {
                         error!(?error, "Failed to set cursor position");
                     }
                 }
