@@ -31,7 +31,8 @@ impl<'a> ReadCursor<'a> {
     #[inline]
     #[track_caller]
     pub fn remaining(&self) -> &[u8] {
-        &self.inner[self.pos..]
+        let idx = core::cmp::min(self.pos, self.inner.len());
+        &self.inner[idx..]
     }
 
     #[inline]
@@ -336,13 +337,15 @@ impl<'a> WriteCursor<'a> {
     #[inline]
     #[track_caller]
     pub fn remaining(&self) -> &[u8] {
-        &self.inner[self.pos..]
+        let idx = core::cmp::min(self.pos, self.inner.len());
+        &self.inner[idx..]
     }
 
     #[inline]
     #[track_caller]
     pub fn remaining_mut(&mut self) -> &mut [u8] {
-        &mut self.inner[self.pos..]
+        let idx = core::cmp::min(self.pos, self.inner.len());
+        &mut self.inner[idx..]
     }
 
     #[inline]
