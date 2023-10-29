@@ -162,28 +162,24 @@ impl BitmapStreamEncoder {
 
         ironrdp_pdu::encode_cursor(&header, &mut cursor).map_err(BitmapEncodeError::Pdu)?;
 
-        match rle {
-            true => {
-                compress_8bpp_plane(r, &mut cursor, self.width, self.height).map_err(BitmapEncodeError::Rle)?;
-                compress_8bpp_plane(g, &mut cursor, self.width, self.height).map_err(BitmapEncodeError::Rle)?;
-                compress_8bpp_plane(b, &mut cursor, self.width, self.height).map_err(BitmapEncodeError::Rle)?;
+        if rle {
+            compress_8bpp_plane(r, &mut cursor, self.width, self.height).map_err(BitmapEncodeError::Rle)?;
+            compress_8bpp_plane(g, &mut cursor, self.width, self.height).map_err(BitmapEncodeError::Rle)?;
+            compress_8bpp_plane(b, &mut cursor, self.width, self.height).map_err(BitmapEncodeError::Rle)?;
+        } else {
+            let remaining = cursor.len();
+            let needed = self.width * self.height * 3 + 1;
+            if needed > remaining {
+                return Err(BitmapEncodeError::Pdu(
+                    <PduError as ironrdp_pdu::PduErrorExt>::not_enough_bytes("BitmapStreamData", remaining, needed),
+                ));
             }
 
-            false => {
-                let remaining = cursor.remaining().len();
-                let needed = self.width * self.height * 3 + 1;
-                if needed > remaining {
-                    return Err(BitmapEncodeError::Pdu(
-                        <PduError as ironrdp_pdu::PduErrorExt>::not_enough_bytes("BitmapStreamData", remaining, needed),
-                    ));
-                }
-
-                for byte in r.chain(g).chain(b) {
-                    cursor.write_u8(byte);
-                }
-                cursor.write_u8(0u8);
+            for byte in r.chain(g).chain(b) {
+                cursor.write_u8(byte);
             }
-        };
+            cursor.write_u8(0u8);
+        }
 
         Ok(cursor.pos())
     }
@@ -240,29 +236,25 @@ impl BitmapStreamEncoder {
 
         ironrdp_pdu::encode_cursor(&header, &mut cursor).map_err(BitmapEncodeError::Pdu)?;
 
-        match rle {
-            true => {
-                compress_8bpp_plane(a, &mut cursor, self.width, self.height).map_err(BitmapEncodeError::rle)?;
-                compress_8bpp_plane(r, &mut cursor, self.width, self.height).map_err(BitmapEncodeError::rle)?;
-                compress_8bpp_plane(g, &mut cursor, self.width, self.height).map_err(BitmapEncodeError::rle)?;
-                compress_8bpp_plane(b, &mut cursor, self.width, self.height).map_err(BitmapEncodeError::rle)?;
+        if rle {
+            compress_8bpp_plane(a, &mut cursor, self.width, self.height).map_err(BitmapEncodeError::rle)?;
+            compress_8bpp_plane(r, &mut cursor, self.width, self.height).map_err(BitmapEncodeError::rle)?;
+            compress_8bpp_plane(g, &mut cursor, self.width, self.height).map_err(BitmapEncodeError::rle)?;
+            compress_8bpp_plane(b, &mut cursor, self.width, self.height).map_err(BitmapEncodeError::rle)?;
+        } else {
+            let remaining = cursor.len();
+            let needed = self.width * self.height * 4 + 1;
+            if needed > remaining {
+                return Err(BitmapEncodeError::Pdu(
+                    <PduError as ironrdp_pdu::PduErrorExt>::not_enough_bytes("BitmapStreamData", remaining, needed),
+                ));
             }
 
-            false => {
-                let remaining = cursor.remaining().len();
-                let needed = self.width * self.height * 4 + 1;
-                if needed > remaining {
-                    return Err(BitmapEncodeError::Pdu(
-                        <PduError as ironrdp_pdu::PduErrorExt>::not_enough_bytes("BitmapStreamData", remaining, needed),
-                    ));
-                }
-
-                for byte in a.chain(r).chain(g).chain(b) {
-                    cursor.write_u8(byte);
-                }
-                cursor.write_u8(0u8);
+            for byte in a.chain(r).chain(g).chain(b) {
+                cursor.write_u8(byte);
             }
-        };
+            cursor.write_u8(0u8);
+        }
 
         Ok(cursor.pos())
     }

@@ -4,11 +4,8 @@
 
 use std::mem::size_of;
 
-use ironrdp_pdu::{
-    cast_length,
-    cursor::{ReadCursor, WriteCursor},
-    ensure_size, invalid_message_err, PduDecode, PduEncode, PduError, PduResult,
-};
+use ironrdp_pdu::cursor::{ReadCursor, WriteCursor};
+use ironrdp_pdu::{cast_length, ensure_size, invalid_message_err, PduDecode, PduEncode, PduError, PduResult};
 
 /// Wrapper struct for [MS-RPCE] PDUs that allows for common [`PduEncode`], [`Encode`], and [`Self::decode`] implementations.
 ///

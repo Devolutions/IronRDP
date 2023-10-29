@@ -8,11 +8,9 @@
 #[macro_use]
 extern crate tracing;
 
-pub mod backend;
-pub mod pdu;
-use crate::pdu::efs::FilesystemRequest;
-pub use backend::{noop::NoopRdpdrBackend, RdpdrBackend};
-use ironrdp_pdu::{cursor::ReadCursor, decode_cursor, gcc::ChannelName, other_err, PduResult};
+use ironrdp_pdu::cursor::ReadCursor;
+use ironrdp_pdu::gcc::ChannelName;
+use ironrdp_pdu::{decode_cursor, other_err, PduResult};
 use ironrdp_svc::{impl_as_any, CompressionCondition, StaticVirtualChannelProcessor, SvcMessage};
 use pdu::efs::{
     Capabilities, ClientDeviceListAnnounce, ClientNameRequest, ClientNameRequestUnicodeFlag, CoreCapability,
@@ -21,6 +19,14 @@ use pdu::efs::{
 };
 use pdu::esc::{ScardCall, ScardIoCtlCode};
 use pdu::RdpdrPdu;
+
+use crate::pdu::efs::FilesystemRequest;
+
+pub mod backend;
+pub mod pdu;
+
+pub use self::backend::noop::NoopRdpdrBackend;
+pub use self::backend::RdpdrBackend;
 
 /// The RDPDR channel as specified in [\[MS-RDPEFS\]].
 ///

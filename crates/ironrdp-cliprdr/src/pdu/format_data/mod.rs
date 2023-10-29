@@ -10,10 +10,10 @@ pub use self::palette::*;
 use std::borrow::Cow;
 
 use ironrdp_pdu::cursor::{ReadCursor, WriteCursor};
-use ironrdp_pdu::impl_pdu_borrowing;
 use ironrdp_pdu::utils::{read_string_from_cursor, to_utf16_bytes, CharacterSet};
-use ironrdp_pdu::IntoOwnedPdu;
-use ironrdp_pdu::{cast_int, ensure_fixed_part_size, ensure_size, PduDecode, PduEncode, PduResult};
+use ironrdp_pdu::{
+    cast_int, ensure_fixed_part_size, ensure_size, impl_pdu_borrowing, IntoOwnedPdu, PduDecode, PduEncode, PduResult,
+};
 
 use super::ClipboardFormatId;
 use crate::pdu::{ClipboardPduFlags, PartialHeader};

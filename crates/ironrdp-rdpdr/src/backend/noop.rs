@@ -1,10 +1,9 @@
-use super::RdpdrBackend;
-use crate::pdu::{
-    efs::{DeviceControlRequest, ServerDeviceAnnounceResponse},
-    esc::{ScardCall, ScardIoCtlCode},
-};
 use ironrdp_pdu::PduResult;
 use ironrdp_svc::impl_as_any;
+
+use super::RdpdrBackend;
+use crate::pdu::efs::{DeviceControlRequest, ServerDeviceAnnounceResponse};
+use crate::pdu::esc::{ScardCall, ScardIoCtlCode};
 
 #[derive(Debug)]
 pub struct NoopRdpdrBackend;

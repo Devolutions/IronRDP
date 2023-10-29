@@ -21,13 +21,11 @@
 //!
 //! [smartcard_pack.c]: https://github.com/FreeRDP/FreeRDP/blob/ff303a9bda911c54ffc1b9f2471acd79c897b075/libfreerdp/utils/smartcard_pack.c
 
-use ironrdp_pdu::{
-    cursor::{ReadCursor, WriteCursor},
-    ensure_size, invalid_message_err,
-    utils::{self, CharacterSet},
-    PduResult,
-};
 use std::mem::size_of;
+
+use ironrdp_pdu::cursor::{ReadCursor, WriteCursor};
+use ironrdp_pdu::utils::{self, CharacterSet};
+use ironrdp_pdu::{ensure_size, invalid_message_err, PduResult};
 
 pub trait Decode {
     fn decode_ptr(src: &mut ReadCursor<'_>, index: &mut u32) -> PduResult<Self>

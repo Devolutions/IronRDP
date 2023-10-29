@@ -58,12 +58,13 @@ impl_pdu_pod!(FileDescriptor);
 
 impl FileDescriptor {
     const NAME: &str = "CLIPRDR_FILEDESCRIPTOR";
-    const FIXED_PART_SIZE: usize = std::mem::size_of::<u32>() // flags
+
+    const FIXED_PART_SIZE: usize = 4 // flags
         + 32 // reserved
-        + std::mem::size_of::<u32>() // attributes
+        + 4 // attributes
         + 16 // reserved
-        + std::mem::size_of::<u64>() // last write time
-        + std::mem::size_of::<u64>() // size
+        + 8 // last write time
+        + 8 // size
         + NAME_LENGTH; // name
 
     const SIZE: usize = Self::FIXED_PART_SIZE;
