@@ -66,9 +66,13 @@ where
     S: StreamWrapper,
 {
     pub fn new(stream: S::InnerStream) -> Self {
+        Self::new_with_leftover(stream, BytesMut::new())
+    }
+
+    pub fn new_with_leftover(stream: S::InnerStream, leftover: BytesMut) -> Self {
         Self {
             stream: S::from_inner(stream),
-            buf: BytesMut::new(),
+            buf: leftover,
         }
     }
 
