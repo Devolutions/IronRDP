@@ -10,10 +10,11 @@ pub struct Framed<S> {
 
 impl<S> Framed<S> {
     pub fn new(stream: S) -> Self {
-        Self {
-            stream,
-            buf: BytesMut::new(),
-        }
+        Self::new_with_leftover(stream, BytesMut::new())
+    }
+
+    pub fn new_with_leftover(stream: S, leftover: BytesMut) -> Self {
+        Self { stream, buf: leftover }
     }
 
     pub fn into_inner(self) -> (S, BytesMut) {
