@@ -2,15 +2,17 @@
 //!
 //! [\[MS-RDPEFS\]: Remote Desktop Protocol: File System Virtual Channel Extension]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/34d9de58-b2b5-40b6-b970-f82d4603bdb5
 
-use super::esc::rpce;
-use super::{PacketId, SharedHeader};
-use bitflags::bitflags;
 use core::fmt;
+use std::fmt::Debug;
+use std::mem::size_of;
+
+use bitflags::bitflags;
 use ironrdp_pdu::cursor::{ReadCursor, WriteCursor};
 use ironrdp_pdu::utils::{encoded_str_len, from_utf16_bytes, write_string_to_cursor, CharacterSet};
 use ironrdp_pdu::{cast_length, ensure_size, invalid_message_err, read_padding, write_padding, PduError, PduResult};
-use std::fmt::Debug;
-use std::mem::size_of;
+
+use super::esc::rpce;
+use super::{PacketId, SharedHeader};
 
 #[derive(Debug, PartialEq)]
 pub enum VersionAndIdPduKind {

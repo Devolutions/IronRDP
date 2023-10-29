@@ -1,12 +1,12 @@
 pub mod noop;
 
-use crate::pdu::{
-    efs::{DeviceControlRequest, FilesystemRequest, ServerDeviceAnnounceResponse},
-    esc::{ScardCall, ScardIoCtlCode},
-};
 use core::fmt;
+
 use ironrdp_pdu::PduResult;
 use ironrdp_svc::AsAny;
+
+use crate::pdu::efs::{DeviceControlRequest, FilesystemRequest, ServerDeviceAnnounceResponse};
+use crate::pdu::esc::{ScardCall, ScardIoCtlCode};
 
 /// OS-specific device redirection backend inteface.
 pub trait RdpdrBackend: AsAny + fmt::Debug + Send {
