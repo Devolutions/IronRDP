@@ -30,7 +30,7 @@ impl CreateRequestPdu {
         let channel_id = channel_id_type.read_buffer_according_to_type(&mut stream)?;
 
         data_size -= channel_id_type.get_type_size();
-        let channel_name = utils::read_string(&mut stream, data_size, utils::CharacterSet::Ansi, false)?;
+        let channel_name = utils::read_string_from_stream(&mut stream, data_size, utils::CharacterSet::Ansi, false)?;
 
         Ok(Self {
             channel_id_type,

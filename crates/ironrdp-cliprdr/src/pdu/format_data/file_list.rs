@@ -1,7 +1,9 @@
 use bitflags::bitflags;
 use ironrdp_pdu::cursor::{ReadCursor, WriteCursor};
-use ironrdp_pdu::utils::{combine_u64, read_string_from_cursor, split_u64, write_string_to_cursor, CharacterSet};
-use ironrdp_pdu::{cast_length, ensure_fixed_part_size, impl_pdu_pod, PduDecode, PduEncode, PduResult};
+use ironrdp_pdu::utils::{combine_u64, decode_string, encode_string, split_u64, CharacterSet};
+use ironrdp_pdu::{cast_length, ensure_fixed_part_size, impl_pdu_pod, write_padding, PduDecode, PduEncode, PduResult};
+
+const NAME_LENGTH: usize = 520;
 
 bitflags! {
     /// Represents `flags` field of `CLIPRDR_FILEDESCRIPTOR` structure.
@@ -40,12 +42,15 @@ bitflags! {
     }
 }
 
-/// Represents `CLIPRDR_FILEDESCRIPTOR`
+/// [2.2.5.2.3.1] File Descriptor (CLIPRDR_FILEDESCRIPTOR)
+///
+/// [2.2.5.2.3.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpeclip/a765d784-2b39-4b88-9faa-88f8666f9c35
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileDescriptor {
     pub attributes: Option<ClipboardFileAttributes>,
     pub last_write_time: Option<u64>,
     pub file_size: Option<u64>,
+    // TODO: Define a new type for "bounded" strings (this one should never be bigger than 260 characters, including the null-terminator)
     pub name: String,
 }
 
@@ -59,7 +64,7 @@ impl FileDescriptor {
         + 16 // reserved
         + std::mem::size_of::<u64>() // last write time
         + std::mem::size_of::<u64>() // size
-        + 520; // name
+        + NAME_LENGTH; // name
 
     const SIZE: usize = Self::FIXED_PART_SIZE;
 }
@@ -89,12 +94,11 @@ impl PduEncode for FileDescriptor {
         dst.write_u32(size_hi);
         dst.write_u32(size_lo);
 
-        {
-            let mut cursor = WriteCursor::new(dst.remaining_mut());
-            write_string_to_cursor(&mut cursor, &self.name, CharacterSet::Unicode, true)?;
-        }
+        let written = encode_string(dst.remaining_mut(), &self.name, CharacterSet::Unicode, true)?;
+        dst.advance(written);
 
-        dst.advance(520);
+        // Pad with zeroes, overidding any previously written data
+        write_padding!(dst, NAME_LENGTH - written);
 
         Ok(())
     }
@@ -136,12 +140,8 @@ impl<'de> PduDecode<'de> for FileDescriptor {
             None
         };
 
-        let name = {
-            let mut cursor = ReadCursor::new(src.remaining());
-            read_string_from_cursor(&mut cursor, CharacterSet::Unicode, true)?
-        };
-
-        src.advance(520);
+        let name = decode_string(src.remaining(), CharacterSet::Unicode, true)?;
+        src.advance(NAME_LENGTH);
 
         Ok(Self {
             attributes,
