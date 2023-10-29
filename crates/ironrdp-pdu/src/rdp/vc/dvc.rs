@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::{io, mem};
 
 use bit_field::BitField;
@@ -31,8 +30,6 @@ const HEADER_SIZE: usize = 1;
 const PDU_WITH_DATA_MAX_SIZE: usize = 1600;
 
 const UNUSED_U8: u8 = 0;
-
-pub type DynamicChannels = HashMap<u32, String>;
 
 #[repr(u8)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive, ToPrimitive)]
