@@ -308,3 +308,8 @@ When a test can be generalized for multiple inputs, use [`rstest`](https://githu
 
 It allows to test that certain properties of your code hold for arbitrary inputs, and if a failure
 is found, automatically finds the minimal test case to reproduce the problem.
+
+See:
+- <https://blog.auxon.io/2021/02/01/effective-property-based-testing/>
+- <https://blog.ssanj.net/posts/2016-06-26-property-based-testing-patterns.html>
+- <https://fsharpforfunandprofit.com/posts/property-based-testing/>
