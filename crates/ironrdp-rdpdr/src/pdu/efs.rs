@@ -1022,7 +1022,7 @@ impl From<NtStatus> for u32 {
 /// [2.2.1.4 Device I/O Request (DR_DEVICE_IOREQUEST)]
 ///
 /// [2.2.1.4 Device I/O Request (DR_DEVICE_IOREQUEST)]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/a087ffa8-d0d5-4874-ac7b-0494f63e2d5d
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Clone)]
 pub struct DeviceIoRequest {
     pub device_id: u32,
     pub file_id: u32,
