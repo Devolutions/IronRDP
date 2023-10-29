@@ -87,11 +87,11 @@ impl Rdpdr {
         ClientDeviceListAnnounce::new_drive(device_id, name)
     }
 
-    pub fn downcast_backend<T: RdpdrBackend + 'static>(&self) -> Option<&T> {
+    pub fn downcast_backend<T: RdpdrBackend>(&self) -> Option<&T> {
         self.backend.as_any().downcast_ref::<T>()
     }
 
-    pub fn downcast_backend_mut<T: RdpdrBackend + 'static>(&mut self) -> Option<&mut T> {
+    pub fn downcast_backend_mut<T: RdpdrBackend>(&mut self) -> Option<&mut T> {
         self.backend.as_any_mut().downcast_mut::<T>()
     }
 
