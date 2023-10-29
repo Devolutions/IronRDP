@@ -7,9 +7,8 @@ use ironrdp_pdu::write_buf::WriteBuf;
 
 use crate::framed::Framed;
 
-pub struct ShouldUpgrade {
-    _priv: (),
-}
+#[non_exhaustive]
+pub struct ShouldUpgrade;
 
 #[instrument(skip_all)]
 pub fn connect_begin<S>(framed: &mut Framed<S>, connector: &mut ClientConnector) -> ConnectorResult<ShouldUpgrade>
@@ -24,24 +23,23 @@ where
         single_connect_step(framed, connector, &mut buf)?;
     }
 
-    Ok(ShouldUpgrade { _priv: () })
+    Ok(ShouldUpgrade)
 }
 
 pub fn skip_connect_begin(connector: &mut ClientConnector) -> ShouldUpgrade {
     assert!(connector.should_perform_security_upgrade());
-    ShouldUpgrade { _priv: () }
+    ShouldUpgrade
 }
 
-pub struct Upgraded {
-    _priv: (),
-}
+#[non_exhaustive]
+pub struct Upgraded;
 
 #[instrument(skip_all)]
 pub fn mark_as_upgraded(_: ShouldUpgrade, connector: &mut ClientConnector, server_public_key: Vec<u8>) -> Upgraded {
-    trace!("marked as upgraded");
+    trace!("Marked as upgraded");
     connector.attach_server_public_key(server_public_key);
     connector.mark_security_upgrade_as_done();
-    Upgraded { _priv: () }
+    Upgraded
 }
 
 #[instrument(skip_all)]
