@@ -995,7 +995,7 @@ impl NtStatus {
     pub const DIRECTORY_NOT_EMPTY: Self = Self(0xC000_0101);
 }
 
-impl fmt::Debug for NtStatus {
+impl Debug for NtStatus {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match *self {
             NtStatus::SUCCESS => write!(f, "STATUS_SUCCESS"),
