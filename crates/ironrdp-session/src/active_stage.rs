@@ -175,6 +175,6 @@ pub enum ActiveStageOutput {
     GraphicsUpdate(InclusiveRectangle),
     PointerDefault,
     PointerHidden,
-    PointerPosition { x: usize, y: usize },
+    PointerPosition { x: u16, y: u16 },
     Terminate,
 }

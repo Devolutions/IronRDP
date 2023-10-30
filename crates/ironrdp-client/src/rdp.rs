@@ -20,7 +20,7 @@ pub enum RdpOutputEvent {
     ConnectionFailure(connector::ConnectorError),
     PointerDefault,
     PointerHidden,
-    PointerPosition { x: usize, y: usize },
+    PointerPosition { x: u16, y: u16 },
     Terminated(SessionResult<()>),
 }
 

@@ -24,7 +24,7 @@ pub enum UpdateKind {
     Region(InclusiveRectangle),
     PointerDefault,
     PointerHidden,
-    PointerPosition { x: usize, y: usize },
+    PointerPosition { x: u16, y: u16 },
 }
 
 pub struct Processor {
@@ -199,8 +199,8 @@ impl Processor {
                     PointerUpdateData::SetPosition(position) => {
                         if self.use_system_pointer {
                             processor_updates.push(UpdateKind::PointerPosition {
-                                x: position.x as usize,
-                                y: position.y as usize,
+                                x: position.x,
+                                y: position.y,
                             });
                         } else if let Some(rect) = image.move_pointer(position.x, position.y)? {
                             processor_updates.push(UpdateKind::Region(rect));
