@@ -5,11 +5,10 @@
 use super::esc::rpce;
 use super::{PacketId, SharedHeader};
 use bitflags::bitflags;
+use core::fmt;
 use ironrdp_pdu::cursor::{ReadCursor, WriteCursor};
 use ironrdp_pdu::utils::{encoded_str_len, from_utf16_bytes, write_string_to_cursor, CharacterSet};
-use ironrdp_pdu::{
-    cast_length, custom_err, ensure_size, invalid_message_err, read_padding, write_padding, PduError, PduResult,
-};
+use ironrdp_pdu::{cast_length, ensure_size, invalid_message_err, read_padding, write_padding, PduError, PduResult};
 use std::fmt::Debug;
 use std::mem::size_of;
 
@@ -954,7 +953,7 @@ impl ServerDeviceAnnounceResponse {
     pub fn decode(src: &mut ReadCursor<'_>) -> PduResult<Self> {
         ensure_size!(ctx: Self::NAME, in: src, size: Self::FIXED_PART_SIZE);
         let device_id = src.read_u32();
-        let result_code = NtStatus::try_from(src.read_u32())?;
+        let result_code = NtStatus::from(src.read_u32());
 
         Ok(Self { device_id, result_code })
     }
@@ -970,7 +969,7 @@ impl ServerDeviceAnnounceResponse {
 /// This enum includes some basic ones for communicating with the RDP server.
 ///
 /// [2.3.1 NTSTATUS Values]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-erref/596a1078-e883-4972-9bbc-49e60bebca55
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub struct NtStatus(u32);
 
 impl NtStatus {
@@ -996,23 +995,27 @@ impl NtStatus {
     pub const DIRECTORY_NOT_EMPTY: Self = Self(0xC000_0101);
 }
 
-impl TryFrom<u32> for NtStatus {
-    type Error = PduError;
-
-    fn try_from(value: u32) -> Result<Self, Self::Error> {
-        match value {
-            0x0000_0000 => Ok(NtStatus::SUCCESS),
-            0xC000_0001 => Ok(NtStatus::UNSUCCESSFUL),
-            0xC000_0002 => Ok(NtStatus::NOT_IMPLEMENTED),
-            0x8000_0006 => Ok(NtStatus::NO_MORE_FILES),
-            0xC000_0035 => Ok(NtStatus::OBJECT_NAME_COLLISION),
-            0xC000_0022 => Ok(NtStatus::ACCESS_DENIED),
-            0xC000_0103 => Ok(NtStatus::NOT_A_DIRECTORY),
-            0xC000_000F => Ok(NtStatus::NO_SUCH_FILE),
-            0xC000_00BB => Ok(NtStatus::NOT_SUPPORTED),
-            0xC000_0101 => Ok(NtStatus::DIRECTORY_NOT_EMPTY),
-            _ => Err(custom_err!("NtStatus", UnsupportedNtStatus(value))),
+impl fmt::Debug for NtStatus {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match *self {
+            NtStatus::SUCCESS => write!(f, "STATUS_SUCCESS"),
+            NtStatus::UNSUCCESSFUL => write!(f, "STATUS_UNSUCCESSFUL"),
+            NtStatus::NOT_IMPLEMENTED => write!(f, "STATUS_NOT_IMPLEMENTED"),
+            NtStatus::NO_MORE_FILES => write!(f, "STATUS_NO_MORE_FILES"),
+            NtStatus::OBJECT_NAME_COLLISION => write!(f, "STATUS_OBJECT_NAME_COLLISION"),
+            NtStatus::ACCESS_DENIED => write!(f, "STATUS_ACCESS_DENIED"),
+            NtStatus::NOT_A_DIRECTORY => write!(f, "STATUS_NOT_A_DIRECTORY"),
+            NtStatus::NO_SUCH_FILE => write!(f, "STATUS_NO_SUCH_FILE"),
+            NtStatus::NOT_SUPPORTED => write!(f, "STATUS_NOT_SUPPORTED"),
+            NtStatus::DIRECTORY_NOT_EMPTY => write!(f, "STATUS_DIRECTORY_NOT_EMPTY"),
+            _ => write!(f, "{:#010X}", self.0),
         }
+    }
+}
+
+impl From<u32> for NtStatus {
+    fn from(value: u32) -> Self {
+        Self(value)
     }
 }
 
@@ -1021,18 +1024,6 @@ impl From<NtStatus> for u32 {
         status.0
     }
 }
-
-/// An error type for when we receive an NTSTATUS value that we don't (yet) support.
-#[derive(Debug)]
-pub struct UnsupportedNtStatus(u32);
-
-impl std::fmt::Display for UnsupportedNtStatus {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{:#010X}", self.0)
-    }
-}
-
-impl std::error::Error for UnsupportedNtStatus {}
 
 /// [2.2.1.4 Device I/O Request (DR_DEVICE_IOREQUEST)]
 ///
@@ -1302,7 +1293,7 @@ impl DeviceIoResponse {
         ensure_size!(ctx: "DeviceIoResponse", in: src, size: Self::FIXED_PART_SIZE);
         let device_id = src.read_u32();
         let completion_id = src.read_u32();
-        let io_status = NtStatus::try_from(src.read_u32())?;
+        let io_status = NtStatus::from(src.read_u32());
 
         Ok(Self {
             device_id,
