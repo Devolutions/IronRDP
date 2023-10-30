@@ -29,19 +29,23 @@ Pay attention to the "**Architecture Invariant**" sections.
 library must be opt-in through a feature flag called `std` that is enabled by default. When the `alloc` crate is optional,
 a feature flag called `alloc` must exist to enable its use.
 
+**Architectural Invariant**: no platform-dependant code (`#[cfg(windows)]` and such).
+
 **Architectural Invariant**: no non-essential dependency is allowed.
 
 **Architectural Invariant**: no proc-macro dependency. Dependencies such as `syn` should be pushed
 as far as possible from the foundational crates so it doesn’t become too much of a compilation
-bottleneck. The paper [Developer Productivity For Humans, Part 4: Build Latency, Predictability,
+bottleneck. [Compilation time is a multiplier for everything][why-care-about-build-time].
+The paper [Developer Productivity For Humans, Part 4: Build Latency, Predictability,
 and Developer Productivity][developer-productivity] by Ciera Jaspan and Collin Green, Google
-researchers, elaborates on why it is important to keep build times low.
+researchers, also elaborates on why it is important to keep build times low.
 
 **Architectural Invariant**: unless the performance, usability or ergonomic gain is really worth
 it, the amount of [monomorphization] incured in downstream user code should be minimal to avoid
 binary bloating and to keep the compilation as parallel as possible. Large generic functions should
 be avoided if possible.
 
+[why-care-about-build-time]: https://matklad.github.io/2021/09/04/fast-rust-builds.html#Why-Care-About-Build-Times
 [developer-productivity]: https://www.computer.org/csdl/magazine/so/2023/04/10176199/1OAJyfknInm
 [monomorphization]: https://rustc-dev-guide.rust-lang.org/backend/monomorph.html
 
@@ -51,13 +55,13 @@ Meta crate re-exporting important crates.
 
 **Architectural Invariant**: this crate re-exports other crates and does not provide anything else.
 
-_TODO_: clean up the dependencies
-
 #### [`crates/ironrdp-pdu`](./crates/ironrdp-pdu)
 
 PDU encoding and decoding.
 
 _TODO_: talk about important types and traits such as PduDecode, PduEncode…
+
+_TODO_: clean up the dependencies
 
 #### [`crates/ironrdp-graphics`](./crates/ironrdp-graphics)
 
