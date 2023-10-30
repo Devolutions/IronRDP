@@ -413,7 +413,9 @@ MUST always be rejected. In such cases, an `enum` is deemed appropriate.
 The **TL;DR** is:
 
 - Use **both** `from_bits_retain` and `const _ = !0` when resilient parsing is required.
-    - `const _ = !0` ensures we don’t accidentally have non resilient or destructive parsing.
+    - `const _ = !0` ensures we don’t accidentally have non resilient or destructive parsing. In
+        addition to that, generated methods such as `complement` (`!`) will consider additional bits
+        and follow the principle of least surprise (`!!flags == flags`).
     - `from_bits_retain` makes it clear at the call site that preserving all the bits is intentional.
 - Use `from_bits` WITHOUT `const _ = !0` when strictness is required (almost never in IronRDP), and
     document why with an in-source comment.
