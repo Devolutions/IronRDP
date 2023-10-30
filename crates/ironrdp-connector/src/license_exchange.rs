@@ -1,3 +1,4 @@
+use core::fmt;
 use std::mem;
 
 use ironrdp_pdu::rdp::server_license;
@@ -103,30 +104,54 @@ impl Sequence for LicenseExchangeSequence {
                         let mut premaster_secret = [0u8; server_license::PREMASTER_SECRET_SIZE];
                         OsRng.fill_bytes(&mut premaster_secret);
 
-                        let (new_license_request, encryption_data) =
-                            server_license::ClientNewLicenseRequest::from_server_license_request(
-                                &license_request,
-                                &client_random,
-                                &premaster_secret,
-                                &self.username,
-                                self.domain.as_deref().unwrap_or(""),
-                            )
-                            .map_err(|e| custom_err!("ClientNewLicenseRequest", e))?;
+                        match server_license::ClientNewLicenseRequest::from_server_license_request(
+                            &license_request,
+                            &client_random,
+                            &premaster_secret,
+                            &self.username,
+                            self.domain.as_deref().unwrap_or(""),
+                        ) {
+                            Ok((new_license_request, encryption_data)) => {
+                                trace!(?encryption_data, "Successfully generated Client New License Request");
+                                info!(message = ?new_license_request, "Send");
 
-                        trace!(?encryption_data, "Successfully generated Client New License Request");
-                        info!(message = ?new_license_request, "Send");
+                                let written = legacy::encode_send_data_request(
+                                    send_data_indication_ctx.initiator_id,
+                                    send_data_indication_ctx.channel_id,
+                                    &new_license_request,
+                                    output,
+                                )?;
 
-                        let written = legacy::encode_send_data_request(
-                            send_data_indication_ctx.initiator_id,
-                            send_data_indication_ctx.channel_id,
-                            &new_license_request,
-                            output,
-                        )?;
+                                (
+                                    Written::from_size(written)?,
+                                    LicenseExchangeState::PlatformChallenge { encryption_data },
+                                )
+                            }
+                            Err(error) => {
+                                if let server_license::ServerLicenseError::InvalidX509Certificate {
+                                    source: error,
+                                    cert_der,
+                                } = &error
+                                {
+                                    struct BytesHexFormatter<'a>(&'a [u8]);
 
-                        (
-                            Written::from_size(written)?,
-                            LicenseExchangeState::PlatformChallenge { encryption_data },
-                        )
+                                    impl fmt::Display for BytesHexFormatter<'_> {
+                                        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                                            write!(f, "0x")?;
+                                            self.0.iter().try_for_each(|byte| write!(f, "{byte:02X}"))
+                                        }
+                                    }
+
+                                    error!(
+                                        %error,
+                                        cert_der = %BytesHexFormatter(cert_der),
+                                        "Unsupported or invalid X509 certificate received during license exchange step"
+                                    );
+                                }
+
+                                return Err(custom_err!("ClientNewLicenseRequest", error));
+                            }
+                        }
                     }
                     server_license::InitialMessageType::StatusValidClient(_) => {
                         info!("Server did not initiate license exchange");

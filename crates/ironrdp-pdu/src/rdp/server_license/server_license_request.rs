@@ -286,13 +286,17 @@ impl ServerCertificate {
                 Ok(public_key)
             }
             CertificateType::X509(certificate) => {
-                let der = certificate
+                let cert_der = certificate
                     .certificate_array
                     .last()
                     .ok_or_else(|| ServerLicenseError::InvalidX509CertificatesAmount)?;
 
-                let cert =
-                    x509_cert::Certificate::from_der(der).map_err(|_| ServerLicenseError::InvalidX509Certificate)?;
+                let cert = x509_cert::Certificate::from_der(cert_der).map_err(|source| {
+                    ServerLicenseError::InvalidX509Certificate {
+                        source,
+                        cert_der: cert_der.clone(),
+                    }
+                })?;
 
                 let public_key = cert
                     .tbs_certificate
