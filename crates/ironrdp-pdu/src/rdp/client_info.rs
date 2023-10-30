@@ -70,9 +70,9 @@ impl PduParsing for ClientInfo {
         let alternate_shell_size = stream.read_u16::<LittleEndian>()? as usize;
         let work_dir_size = stream.read_u16::<LittleEndian>()? as usize;
 
-        let domain = utils::read_string(&mut stream, domain_size, character_set, true)?;
-        let username = utils::read_string(&mut stream, user_name_size, character_set, true)?;
-        let password = utils::read_string(&mut stream, password_size, character_set, true)?;
+        let domain = utils::read_string_from_stream(&mut stream, domain_size, character_set, true)?;
+        let username = utils::read_string_from_stream(&mut stream, user_name_size, character_set, true)?;
+        let password = utils::read_string_from_stream(&mut stream, password_size, character_set, true)?;
 
         let domain = if domain.is_empty() { None } else { Some(domain) };
         let credentials = Credentials {
@@ -81,8 +81,8 @@ impl PduParsing for ClientInfo {
             domain,
         };
 
-        let alternate_shell = utils::read_string(&mut stream, alternate_shell_size, character_set, true)?;
-        let work_dir = utils::read_string(&mut stream, work_dir_size, character_set, true)?;
+        let alternate_shell = utils::read_string_from_stream(&mut stream, alternate_shell_size, character_set, true)?;
+        let work_dir = utils::read_string_from_stream(&mut stream, work_dir_size, character_set, true)?;
 
         let extra_info = ExtendedClientInfo::from_buffer(&mut stream, character_set)?;
 
@@ -184,11 +184,11 @@ impl ExtendedClientInfo {
 
         // This size includes the length of the mandatory null terminator.
         let address_size = stream.read_u16::<LittleEndian>()? as usize;
-        let address = utils::read_string(&mut stream, address_size, character_set, false)?;
+        let address = utils::read_string_from_stream(&mut stream, address_size, character_set, false)?;
 
         // This size includes the length of the mandatory null terminator.
         let dir_size = stream.read_u16::<LittleEndian>()? as usize;
-        let dir = utils::read_string(&mut stream, dir_size, character_set, false)?;
+        let dir = utils::read_string_from_stream(&mut stream, dir_size, character_set, false)?;
 
         let optional_data = ExtendedClientOptionalInfo::from_buffer(&mut stream)?;
 
@@ -328,11 +328,13 @@ impl PduParsing for TimezoneInfo {
     fn from_buffer(mut stream: impl io::Read) -> Result<Self, Self::Error> {
         let bias = stream.read_u32::<LittleEndian>()?;
 
-        let standard_name = utils::read_string(&mut stream, TIMEZONE_INFO_NAME_LEN, CharacterSet::Unicode, false)?;
+        let standard_name =
+            utils::read_string_from_stream(&mut stream, TIMEZONE_INFO_NAME_LEN, CharacterSet::Unicode, false)?;
         let standard_date = Option::<SystemTime>::from_buffer(&mut stream)?;
         let standard_bias = stream.read_u32::<LittleEndian>()?;
 
-        let daylight_name = utils::read_string(&mut stream, TIMEZONE_INFO_NAME_LEN, CharacterSet::Unicode, false)?;
+        let daylight_name =
+            utils::read_string_from_stream(&mut stream, TIMEZONE_INFO_NAME_LEN, CharacterSet::Unicode, false)?;
         let daylight_date = Option::<SystemTime>::from_buffer(&mut stream)?;
         let daylight_bias = stream.read_u32::<LittleEndian>()?;
 

@@ -61,8 +61,8 @@ pub fn read_string_from_cursor(
             cursor
                 .remaining()
                 .chunks_exact(2)
-                .position(|chunk| chunk[0] == 0 && chunk[1] == 0)
-                .map(|code_units| code_units + 1) // Read null code point
+                .position(|chunk| chunk == [0, 0])
+                .map(|null_terminator_pos| null_terminator_pos + 1) // Read null code point
                 .unwrap_or(cursor.len() / 2)
         } else {
             // UTF16 uses 2 bytes per code unit, so we need to read an even number of bytes
@@ -76,7 +76,7 @@ pub fn read_string_from_cursor(
             .remaining()
             .iter()
             .position(|&i| i == 0)
-            .map(|code_units| code_units + 1) // Read null code point
+            .map(|null_terminator_pos| null_terminator_pos + 1) // Read null code point
             .unwrap_or(cursor.len())
     } else {
         // Read all
@@ -114,6 +114,10 @@ pub fn read_string_from_cursor(
     Ok(result.trim_end_matches('\0').into())
 }
 
+pub fn decode_string(src: &[u8], character_set: CharacterSet, read_null_terminator: bool) -> PduResult<String> {
+    read_string_from_cursor(&mut ReadCursor::new(src), character_set, read_null_terminator)
+}
+
 pub fn read_multistring_from_cursor(
     cursor: &mut ReadCursor<'_>,
     character_set: CharacterSet,
@@ -134,18 +138,17 @@ pub fn read_multistring_from_cursor(
     Ok(strings)
 }
 
-pub fn write_string_to_cursor(
-    cursor: &mut WriteCursor<'_>,
+pub fn encode_string(
+    dst: &mut [u8],
     value: &str,
     character_set: CharacterSet,
     write_null_terminator: bool,
-) -> PduResult<()> {
+) -> PduResult<usize> {
     let (buffer, ctx) = match character_set {
         CharacterSet::Unicode => {
             let mut buffer = to_utf16_bytes(value);
             if write_null_terminator {
-                buffer.push(0);
-                buffer.push(0);
+                buffer.extend_from_slice(&[0, 0]);
             }
             (buffer, "Encode string (UTF-16)")
         }
@@ -158,8 +161,22 @@ pub fn write_string_to_cursor(
         }
     };
 
-    ensure_size!(ctx: ctx, in: cursor, size: buffer.len());
-    cursor.write_slice(&buffer);
+    let len = buffer.len();
+
+    ensure_size!(ctx: ctx, in: dst, size: len);
+    dst[..len].copy_from_slice(&buffer);
+
+    Ok(len)
+}
+
+pub fn write_string_to_cursor(
+    cursor: &mut WriteCursor<'_>,
+    value: &str,
+    character_set: CharacterSet,
+    write_null_terminator: bool,
+) -> PduResult<()> {
+    let len = encode_string(cursor.remaining_mut(), value, character_set, write_null_terminator)?;
+    cursor.advance(len);
     Ok(())
 }
 
@@ -207,7 +224,8 @@ pub fn encoded_multistring_len(strings: &[String], character_set: CharacterSet) 
         + if character_set == CharacterSet::Unicode { 2 } else { 1 }
 }
 
-pub(crate) fn read_string(
+// FIXME: legacy
+pub(crate) fn read_string_from_stream(
     mut stream: impl io::Read,
     size: usize,
     character_set: CharacterSet,
@@ -248,6 +266,7 @@ pub(crate) fn write_string_with_null_terminator(
     }
 }
 
+// FIXME: legacy trait
 pub trait SplitTo {
     #[must_use]
     fn split_to(&mut self, n: usize) -> Self;

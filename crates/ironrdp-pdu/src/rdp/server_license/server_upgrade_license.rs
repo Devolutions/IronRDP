@@ -105,7 +105,7 @@ impl PduParsing for NewLicenseInformation {
         let version = stream.read_u32::<LittleEndian>()?;
 
         let scope_len = stream.read_u32::<LittleEndian>()?;
-        let scope = utils::read_string(
+        let scope = utils::read_string_from_stream(
             &mut stream,
             scope_len as usize - UTF8_NULL_TERMINATOR_SIZE,
             CharacterSet::Ansi,
@@ -113,7 +113,7 @@ impl PduParsing for NewLicenseInformation {
         )?;
 
         let company_name_len = stream.read_u32::<LittleEndian>()?;
-        let company_name = utils::read_string(
+        let company_name = utils::read_string_from_stream(
             &mut stream,
             company_name_len as usize - UTF16_NULL_TERMINATOR_SIZE,
             CharacterSet::Unicode,
@@ -121,7 +121,7 @@ impl PduParsing for NewLicenseInformation {
         )?;
 
         let product_id_len = stream.read_u32::<LittleEndian>()?;
-        let product_id = utils::read_string(
+        let product_id = utils::read_string_from_stream(
             &mut stream,
             product_id_len as usize - UTF16_NULL_TERMINATOR_SIZE,
             CharacterSet::Unicode,

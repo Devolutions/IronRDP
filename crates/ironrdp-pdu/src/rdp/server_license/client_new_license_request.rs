@@ -147,10 +147,12 @@ impl PduParsing for ClientNewLicenseRequest {
         stream.read_exact(&mut encrypted_premaster_secret)?;
 
         let username_blob_header = BlobHeader::read_from_buffer(BlobType::ClientUserName, &mut stream)?;
-        let client_username = utils::read_string(&mut stream, username_blob_header.length, CharacterSet::Ansi, false)?;
+        let client_username =
+            utils::read_string_from_stream(&mut stream, username_blob_header.length, CharacterSet::Ansi, false)?;
 
         let machine_name_blob = BlobHeader::read_from_buffer(BlobType::ClientMachineNameBlob, &mut stream)?;
-        let client_machine_name = utils::read_string(&mut stream, machine_name_blob.length, CharacterSet::Ansi, false)?;
+        let client_machine_name =
+            utils::read_string_from_stream(&mut stream, machine_name_blob.length, CharacterSet::Ansi, false)?;
 
         Ok(Self {
             license_header,

@@ -32,14 +32,16 @@ impl PduParsing for LogonInfoVersion1 {
             return Err(SessionError::InvalidDomainNameSize);
         }
 
-        let domain_name = utils::read_string(&mut stream, DOMAIN_NAME_SIZE_V1, utils::CharacterSet::Unicode, false)?;
+        let domain_name =
+            utils::read_string_from_stream(&mut stream, DOMAIN_NAME_SIZE_V1, utils::CharacterSet::Unicode, false)?;
 
         let user_name_size = stream.read_u32::<LittleEndian>()?;
         if user_name_size > USER_NAME_SIZE_V1 as u32 {
             return Err(SessionError::InvalidUserNameSize);
         }
 
-        let user_name = utils::read_string(&mut stream, USER_NAME_SIZE_V1, utils::CharacterSet::Unicode, false)?;
+        let user_name =
+            utils::read_string_from_stream(&mut stream, USER_NAME_SIZE_V1, utils::CharacterSet::Unicode, false)?;
 
         let session_id = stream.read_u32::<LittleEndian>()?;
 
@@ -111,13 +113,13 @@ impl PduParsing for LogonInfoVersion2 {
         let mut padding_buffer = [0; LOGON_INFO_V2_PADDING_SIZE];
         stream.read_exact(&mut padding_buffer)?;
 
-        let domain_name = utils::read_string(
+        let domain_name = utils::read_string_from_stream(
             &mut stream,
             domain_name_size as usize,
             utils::CharacterSet::Unicode,
             false,
         )?;
-        let user_name = utils::read_string(
+        let user_name = utils::read_string_from_stream(
             &mut stream,
             user_name_size as usize,
             utils::CharacterSet::Unicode,
