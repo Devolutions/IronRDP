@@ -17,11 +17,12 @@ doctest = false
 
 [features]
 default = []
-std = ["alloc", "ironrdp-error/std"]
-alloc = ["ironrdp-error/alloc"]
+std = ["alloc", "ironrdp-error/std", "ironrdp-common/std"]
+alloc = ["ironrdp-error/alloc", "ironrdp-common/alloc"]
 
 [dependencies]
 bitflags = "2"
+ironrdp-common.workspace = true
 ironrdp-error.workspace = true
 tap = "1"
 

@@ -1,5 +1,5 @@
 #![doc = include_str!("../README.md")]
-// TODO: #![warn(missing_docs)]
+// #![warn(missing_docs)] // TODO: this crate should be well documented
 
 extern crate alloc;
 
@@ -318,30 +318,6 @@ pub fn make_channel_definition(channel: &StaticVirtualChannel) -> ChannelDef {
     let name = channel.channel_name();
     let options = make_channel_options(channel);
     ChannelDef { name, options }
-}
-
-/// Type information ([`TypeId`]) may be retrieved at runtime for this type.
-pub trait AsAny: 'static {
-    fn as_any(&self) -> &dyn Any;
-
-    fn as_any_mut(&mut self) -> &mut dyn Any;
-}
-
-#[macro_export]
-macro_rules! impl_as_any {
-    ($t:ty) => {
-        impl $crate::AsAny for $t {
-            #[inline]
-            fn as_any(&self) -> &dyn core::any::Any {
-                self
-            }
-
-            #[inline]
-            fn as_any_mut(&mut self) -> &mut dyn core::any::Any {
-                self
-            }
-        }
-    };
 }
 
 /// A set holding at most one [`StaticVirtualChannel`] for any given type

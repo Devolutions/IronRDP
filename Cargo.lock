@@ -1775,6 +1775,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "ironrdp-common"
+version = "0.1.0"
+dependencies = [
+ "ironrdp-error",
+]
+
+[[package]]
 name = "ironrdp-connector"
 version = "0.1.0"
 dependencies = [
@@ -1849,6 +1856,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "ironrdp-mcs"
+version = "0.1.0"
+dependencies = [
+ "ironrdp-common",
+ "ironrdp-error",
+]
+
+[[package]]
 name = "ironrdp-pdu"
 version = "0.1.0"
 dependencies = [
@@ -1857,6 +1872,7 @@ dependencies = [
  "byteorder",
  "der-parser",
  "expect-test",
+ "ironrdp-common",
  "ironrdp-error",
  "ironrdp-testsuite-core",
  "lazy_static",
@@ -1881,6 +1897,14 @@ name = "ironrdp-rdcleanpath"
 version = "0.1.0"
 dependencies = [
  "der",
+]
+
+[[package]]
+name = "ironrdp-rdpbcgr"
+version = "0.1.0"
+dependencies = [
+ "ironrdp-common",
+ "ironrdp-error",
 ]
 
 [[package]]

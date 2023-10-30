@@ -1,0 +1,24 @@
+[package]
+name = "ironrdp-common"
+version = "0.1.0"
+readme = "README.md"
+description = "IronRDP common traits and types"
+edition.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[lib]
+doctest = false
+test = false
+
+[features]
+default = []
+std = ["alloc", "ironrdp-error/std"]
+alloc = ["ironrdp-error/alloc"]
+
+[dependencies]
+ironrdp-error.workspace = true

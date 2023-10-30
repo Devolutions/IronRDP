@@ -28,7 +28,6 @@ pub mod tpdu;
 pub mod tpkt;
 pub mod utf16;
 pub mod utils;
-#[cfg(feature = "alloc")]
 pub mod write_buf;
 pub mod x224;
 
@@ -40,212 +39,11 @@ pub(crate) mod per;
 pub use crate::basic_output::{bitmap, fast_path, pointer, surface_commands};
 pub use crate::rdp::vc::dvc;
 
-pub type PduResult<T> = Result<T, PduError>;
-
-pub type PduError = ironrdp_error::Error<PduErrorKind>;
-
-#[non_exhaustive]
-#[derive(Clone, Debug)]
-pub enum PduErrorKind {
-    NotEnoughBytes { received: usize, expected: usize },
-    InvalidMessage { field: &'static str, reason: &'static str },
-    UnexpectedMessageType { got: u8 },
-    UnsupportedVersion { got: u8 },
-    Other { description: &'static str },
-    Custom,
-}
-
-impl std::error::Error for PduErrorKind {}
-
-impl fmt::Display for PduErrorKind {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::NotEnoughBytes { received, expected } => write!(
-                f,
-                "not enough bytes provided to decode: received {received} bytes, expected {expected} bytes"
-            ),
-            Self::InvalidMessage { field, reason } => {
-                write!(f, "invalid `{field}`: {reason}")
-            }
-            Self::UnexpectedMessageType { got } => {
-                write!(f, "invalid message type ({got})")
-            }
-            Self::UnsupportedVersion { got } => {
-                write!(f, "unsupported version ({got})")
-            }
-            Self::Other { description } => {
-                write!(f, "{description}")
-            }
-            Self::Custom => {
-                write!(f, "custom error")
-            }
-        }
-    }
-}
-
-pub trait PduErrorExt {
-    fn not_enough_bytes(context: &'static str, received: usize, expected: usize) -> Self;
-    fn invalid_message(context: &'static str, field: &'static str, reason: &'static str) -> Self;
-    fn unexpected_message_type(context: &'static str, got: u8) -> Self;
-    fn unsupported_version(context: &'static str, got: u8) -> Self;
-    fn other(context: &'static str, description: &'static str) -> Self;
-    fn custom<E>(context: &'static str, e: E) -> Self
-    where
-        E: std::error::Error + Sync + Send + 'static;
-}
-
-impl PduErrorExt for PduError {
-    fn not_enough_bytes(context: &'static str, received: usize, expected: usize) -> Self {
-        Self::new(context, PduErrorKind::NotEnoughBytes { received, expected })
-    }
-
-    fn invalid_message(context: &'static str, field: &'static str, reason: &'static str) -> Self {
-        Self::new(context, PduErrorKind::InvalidMessage { field, reason })
-    }
-
-    fn unexpected_message_type(context: &'static str, got: u8) -> Self {
-        Self::new(context, PduErrorKind::UnexpectedMessageType { got })
-    }
-
-    fn unsupported_version(context: &'static str, got: u8) -> Self {
-        Self::new(context, PduErrorKind::UnsupportedVersion { got })
-    }
-
-    fn other(context: &'static str, description: &'static str) -> Self {
-        Self::new(context, PduErrorKind::Other { description })
-    }
-
-    fn custom<E>(context: &'static str, e: E) -> Self
-    where
-        E: std::error::Error + Sync + Send + 'static,
-    {
-        Self::new(context, PduErrorKind::Custom).with_source(e)
-    }
-}
-
-/// An RDP PDU.
-pub trait Pdu {
-    /// Name associated to this PDU.
-    const NAME: &'static str;
-}
-
-/// PDU that can be encoded into its binary form.
-///
-/// The resulting binary payload is a fully encoded PDU that may be sent to the peer.
-///
-/// This trait is object-safe and may be used in a dynamic context.
-pub trait PduEncode {
-    /// Encodes this PDU in-place using the provided `WriteCursor`.
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()>;
-
-    /// Returns the associated PDU name associated.
-    fn name(&self) -> &'static str;
-
-    /// Computes the size in bytes for this PDU.
-    fn size(&self) -> usize;
-}
-
-assert_obj_safe!(PduEncode);
-
-/// Encodes the given PDU in-place into the provided buffer and returns the number of bytes written.
-pub fn encode<T>(pdu: &T, dst: &mut [u8]) -> PduResult<usize>
-where
-    T: PduEncode + ?Sized,
-{
-    let mut cursor = WriteCursor::new(dst);
-    encode_cursor(pdu, &mut cursor)?;
-    Ok(cursor.pos())
-}
-
-/// Encodes the given PDU in-place using the provided `WriteCursor`.
-pub fn encode_cursor<T>(pdu: &T, dst: &mut WriteCursor<'_>) -> PduResult<()>
-where
-    T: PduEncode + ?Sized,
-{
-    pdu.encode(dst)
-}
-
-/// Same as `encode` but resizes the buffer when it is too small to fit the PDU.
-#[cfg(feature = "alloc")]
-pub fn encode_buf<T>(pdu: &T, buf: &mut WriteBuf) -> PduResult<usize>
-where
-    T: PduEncode + ?Sized,
-{
-    let pdu_size = pdu.size();
-    let dst = buf.unfilled_to(pdu_size);
-    let written = encode(pdu, dst)?;
-    debug_assert_eq!(written, pdu_size);
-    buf.advance(written);
-    Ok(written)
-}
-
-/// Same as `encode` but allocates and returns a new buffer each time.
-///
-/// This is a convenience function, but it’s not very resource efficient.
-#[cfg(feature = "alloc")]
-pub fn encode_vec<T>(pdu: &T) -> PduResult<Vec<u8>>
-where
-    T: PduEncode + ?Sized,
-{
-    let pdu_size = pdu.size();
-    let mut buf = vec![0; pdu_size];
-    let written = encode(pdu, buf.as_mut_slice())?;
-    debug_assert_eq!(written, pdu_size);
-    Ok(buf)
-}
-
-/// Gets the name of this PDU.
-pub fn name<T: PduEncode>(pdu: &T) -> &'static str {
-    pdu.name()
-}
-
-/// Computes the size in bytes for this PDU.
-pub fn size<T: PduEncode>(pdu: &T) -> usize {
-    pdu.size()
-}
-
-/// PDU that can be decoded from a binary input.
-///
-/// The binary payload must be a full PDU, not some subset of it.
-pub trait PduDecode<'de>: Sized {
-    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self>;
-}
-
-pub fn decode<'de, T>(src: &'de [u8]) -> PduResult<T>
-where
-    T: PduDecode<'de>,
-{
-    let mut cursor = ReadCursor::new(src);
-    T::decode(&mut cursor)
-}
-
-pub fn decode_cursor<'de, T>(src: &mut ReadCursor<'de>) -> PduResult<T>
-where
-    T: PduDecode<'de>,
-{
-    T::decode(src)
-}
-
-/// Similar to `PduDecode` but unconditionally returns an owned type.
-pub trait PduDecodeOwned: Sized {
-    fn decode_owned(src: &mut ReadCursor<'_>) -> PduResult<Self>;
-}
-
-pub fn decode_owned<T: PduDecodeOwned>(src: &[u8]) -> PduResult<T> {
-    let mut cursor = ReadCursor::new(src);
-    T::decode_owned(&mut cursor)
-}
-
-pub fn decode_owned_cursor<T: PduDecodeOwned>(src: &mut ReadCursor<'_>) -> PduResult<T> {
-    T::decode_owned(src)
-}
-
-/// Trait used to produce an owned version of a given PDU.
-pub trait IntoOwnedPdu: Sized {
-    type Owned: 'static;
-
-    fn into_owned_pdu(self) -> Self::Owned;
-}
+// FIXME: remove
+pub use ironrdp_common::{
+    assert_impl, assert_obj_safe, encode, encode_buf, encode_cursor, size, Decode as PduDecode, Encode as PduEncode,
+    IntoOwned as IntoOwnedPdu, Pdu, PduError, PduErrorExt, PduErrorKind, PduResult,
+};
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 #[repr(u8)]
@@ -319,11 +117,6 @@ pub fn find_size(bytes: &[u8]) -> PduResult<Option<PduInfo>> {
             }))
         }
     }
-}
-
-pub trait PduHint: Send + Sync + core::fmt::Debug + 'static {
-    /// Finds next PDU size by reading the next few bytes.
-    fn find_size(&self, bytes: &[u8]) -> PduResult<Option<usize>>;
 }
 
 #[derive(Clone, Copy, Debug)]
