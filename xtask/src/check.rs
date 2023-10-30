@@ -45,7 +45,6 @@ const EXTRA_LINTS: &[&str] = &[
     "clippy::string_to_string",
     // TODO: "clippy::std_instead_of_alloc",
     // TODO: "clippy::std_instead_of_core",
-    "clippy::unreadable_literal",
     "clippy::separated_literal_suffix",
     "clippy::unused_self",
     // TODO: "clippy::use_self", // NOTE(@CBenoit): not sure about that one

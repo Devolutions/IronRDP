@@ -6,7 +6,7 @@ use ironrdp_pdu::{ensure_size, invalid_message_err, PduDecode, PduEncode, PduErr
 
 use self::efs::{
     ClientDeviceListAnnounce, ClientNameRequest, CoreCapability, CoreCapabilityKind, DeviceControlResponse,
-    DeviceIoRequest, ServerDeviceAnnounceResponse, VersionAndIdPdu, VersionAndIdPduKind,
+    DeviceCreateResponse, DeviceIoRequest, ServerDeviceAnnounceResponse, VersionAndIdPdu, VersionAndIdPduKind,
 };
 
 pub mod efs;
@@ -21,6 +21,7 @@ pub enum RdpdrPdu {
     ServerDeviceAnnounceResponse(ServerDeviceAnnounceResponse),
     DeviceIoRequest(DeviceIoRequest),
     DeviceControlResponse(DeviceControlResponse),
+    DeviceCreateResponse(DeviceCreateResponse),
     /// TODO: temporary value for development, this should be removed
     Unimplemented,
 }
@@ -69,7 +70,7 @@ impl RdpdrPdu {
                 component: Component::RdpdrCtypCore,
                 packet_id: PacketId::CoreDeviceIoRequest,
             },
-            RdpdrPdu::DeviceControlResponse(_) => SharedHeader {
+            RdpdrPdu::DeviceControlResponse(_) | RdpdrPdu::DeviceCreateResponse(_) => SharedHeader {
                 component: Component::RdpdrCtypCore,
                 packet_id: PacketId::CoreDeviceIoCompletion,
             },
@@ -109,6 +110,7 @@ impl PduEncode for RdpdrPdu {
             RdpdrPdu::ServerDeviceAnnounceResponse(pdu) => pdu.encode(dst),
             RdpdrPdu::DeviceIoRequest(pdu) => pdu.encode(dst),
             RdpdrPdu::DeviceControlResponse(pdu) => pdu.encode(dst),
+            RdpdrPdu::DeviceCreateResponse(pdu) => pdu.encode(dst),
             RdpdrPdu::Unimplemented => Ok(()),
         }
     }
@@ -122,6 +124,7 @@ impl PduEncode for RdpdrPdu {
             RdpdrPdu::ServerDeviceAnnounceResponse(pdu) => pdu.name(),
             RdpdrPdu::DeviceIoRequest(pdu) => pdu.name(),
             RdpdrPdu::DeviceControlResponse(pdu) => pdu.name(),
+            RdpdrPdu::DeviceCreateResponse(pdu) => pdu.name(),
             RdpdrPdu::Unimplemented => "Unimplemented",
         }
     }
@@ -136,6 +139,7 @@ impl PduEncode for RdpdrPdu {
                 RdpdrPdu::ServerDeviceAnnounceResponse(pdu) => pdu.size(),
                 RdpdrPdu::DeviceIoRequest(pdu) => pdu.size(),
                 RdpdrPdu::DeviceControlResponse(pdu) => pdu.size(),
+                RdpdrPdu::DeviceCreateResponse(pdu) => pdu.size(),
                 RdpdrPdu::Unimplemented => 0,
             }
     }
@@ -165,10 +169,25 @@ impl fmt::Debug for RdpdrPdu {
             Self::DeviceControlResponse(it) => {
                 write!(f, "RdpdrPdu({:?})", it)
             }
+            Self::DeviceCreateResponse(it) => {
+                write!(f, "RdpdrPdu({:?})", it)
+            }
             Self::Unimplemented => {
                 write!(f, "RdpdrPdu::Unimplemented")
             }
         }
+    }
+}
+
+impl From<DeviceControlResponse> for RdpdrPdu {
+    fn from(value: DeviceControlResponse) -> Self {
+        Self::DeviceControlResponse(value)
+    }
+}
+
+impl From<DeviceCreateResponse> for RdpdrPdu {
+    fn from(value: DeviceCreateResponse) -> Self {
+        Self::DeviceCreateResponse(value)
     }
 }
 

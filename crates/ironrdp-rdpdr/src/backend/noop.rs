@@ -18,4 +18,7 @@ impl RdpdrBackend for NoopRdpdrBackend {
     fn handle_scard_call(&mut self, _req: DeviceControlRequest<ScardIoCtlCode>, _call: ScardCall) -> PduResult<()> {
         Ok(())
     }
+    fn handle_fs_request(&mut self, _req: crate::pdu::efs::FilesystemRequest) -> PduResult<()> {
+        Ok(())
+    }
 }

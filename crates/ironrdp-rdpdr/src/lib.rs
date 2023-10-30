@@ -10,7 +10,7 @@ extern crate tracing;
 
 pub mod backend;
 pub mod pdu;
-use crate::pdu::efs::MajorFunction;
+use crate::pdu::efs::FilesystemRequest;
 pub use backend::{noop::NoopRdpdrBackend, RdpdrBackend};
 use ironrdp_pdu::{cursor::ReadCursor, decode_cursor, gcc::ChannelName, other_err, PduResult};
 use ironrdp_svc::{impl_as_any, CompressionCondition, StaticVirtualChannelProcessor, SvcMessage};
@@ -135,13 +135,13 @@ impl Rdpdr {
 
     fn handle_device_io_request(
         &mut self,
-        pdu: DeviceIoRequest,
-        payload: &mut ReadCursor<'_>,
+        dev_io_req: DeviceIoRequest,
+        src: &mut ReadCursor<'_>,
     ) -> PduResult<Vec<SvcMessage>> {
-        match self.device_list.for_device_type(pdu.device_id)? {
+        match self.device_list.for_device_type(dev_io_req.device_id)? {
             DeviceType::Smartcard => {
-                let req = DeviceControlRequest::<ScardIoCtlCode>::decode(pdu, payload)?;
-                let call = ScardCall::decode(req.io_control_code, payload)?;
+                let req = DeviceControlRequest::<ScardIoCtlCode>::decode(dev_io_req, src)?;
+                let call = ScardCall::decode(req.io_control_code, src)?;
 
                 debug!(?req);
                 debug!(?req.io_control_code, ?call);
@@ -151,24 +151,17 @@ impl Rdpdr {
                 Ok(Vec::new())
             }
             DeviceType::Filesystem => {
-                debug!("received filesystem packet");
-                match pdu.major_function {
-                    MajorFunction::Create => todo!(),
-                    MajorFunction::Close => todo!(),
-                    MajorFunction::Read => todo!(),
-                    MajorFunction::Write => todo!(),
-                    MajorFunction::DeviceControl => todo!(),
-                    MajorFunction::QueryVolumeInformation => todo!(),
-                    MajorFunction::SetVolumeInformation => todo!(),
-                    MajorFunction::QueryInformation => todo!(),
-                    MajorFunction::SetInformation => todo!(),
-                    MajorFunction::DirectoryControl => todo!(),
-                    MajorFunction::LockControl => todo!(),
-                }
+                let req = FilesystemRequest::decode(dev_io_req, src)?;
+
+                debug!(?req);
+
+                self.backend.handle_fs_request(req)?;
+
+                Ok(Vec::new())
             }
             _ => {
                 // This should never happen, as we only announce devices that we support.
-                warn!(?pdu, "received packet for unsupported device type");
+                warn!(?dev_io_req, "received packet for unsupported device type");
                 Ok(Vec::new())
             }
         }
@@ -211,7 +204,8 @@ impl StaticVirtualChannelProcessor for Rdpdr {
             | RdpdrPdu::ClientDeviceListAnnounce(_)
             | RdpdrPdu::VersionAndIdPdu(_)
             | RdpdrPdu::CoreCapability(_)
-            | RdpdrPdu::DeviceControlResponse(_) => Err(other_err!("Rdpdr", "received unexpected packet")),
+            | RdpdrPdu::DeviceControlResponse(_)
+            | RdpdrPdu::DeviceCreateResponse(_) => Err(other_err!("Rdpdr", "received unexpected packet")),
         }
     }
 }
