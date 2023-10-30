@@ -974,15 +974,25 @@ impl ServerDeviceAnnounceResponse {
 pub struct NtStatus(u32);
 
 impl NtStatus {
+    /// STATUS_SUCCESS
     pub const SUCCESS: Self = Self(0x0000_0000);
+    /// STATUS_UNSUCCESSFUL
     pub const UNSUCCESSFUL: Self = Self(0xC000_0001);
+    /// STATUS_NOT_IMPLEMENTED
     pub const NOT_IMPLEMENTED: Self = Self(0xC000_0002);
+    /// STATUS_NO_MORE_FILES
     pub const NO_MORE_FILES: Self = Self(0x8000_0006);
+    /// STATUS_OBJECT_NAME_COLLISION
     pub const OBJECT_NAME_COLLISION: Self = Self(0xC000_0035);
+    /// STATUS_ACCESS_DENIED
     pub const ACCESS_DENIED: Self = Self(0xC000_0022);
+    /// STATUS_NOT_A_DIRECTORY
     pub const NOT_A_DIRECTORY: Self = Self(0xC000_0103);
+    /// STATUS_NO_SUCH_FILE
     pub const NO_SUCH_FILE: Self = Self(0xC000_000F);
+    /// STATUS_NOT_SUPPORTED
     pub const NOT_SUPPORTED: Self = Self(0xC000_00BB);
+    /// STATUS_DIRECTORY_NOT_EMPTY
     pub const DIRECTORY_NOT_EMPTY: Self = Self(0xC000_0101);
 }
 
