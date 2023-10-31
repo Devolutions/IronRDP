@@ -20,10 +20,10 @@ use pdu::efs::{
 use pdu::esc::{ScardCall, ScardIoCtlCode};
 use pdu::RdpdrPdu;
 
-use crate::pdu::efs::FilesystemRequest;
-
 pub mod backend;
 pub mod pdu;
+
+use crate::pdu::efs::ServerDriveIoRequest;
 
 pub use self::backend::noop::NoopRdpdrBackend;
 pub use self::backend::RdpdrBackend;
@@ -157,11 +157,11 @@ impl Rdpdr {
                 Ok(Vec::new())
             }
             DeviceType::Filesystem => {
-                let req = FilesystemRequest::decode(dev_io_req, src)?;
+                let req = ServerDriveIoRequest::decode(dev_io_req, src)?;
 
                 debug!(?req);
 
-                self.backend.handle_fs_request(req)?;
+                self.backend.handle_drive_io_request(req)?;
 
                 Ok(Vec::new())
             }
@@ -211,7 +211,10 @@ impl StaticVirtualChannelProcessor for Rdpdr {
             | RdpdrPdu::VersionAndIdPdu(_)
             | RdpdrPdu::CoreCapability(_)
             | RdpdrPdu::DeviceControlResponse(_)
-            | RdpdrPdu::DeviceCreateResponse(_) => Err(other_err!("Rdpdr", "received unexpected packet")),
+            | RdpdrPdu::DeviceCreateResponse(_)
+            | RdpdrPdu::ClientDriveQueryInformationResponse(_) => {
+                Err(other_err!("Rdpdr", "received unexpected packet"))
+            }
         }
     }
 }
