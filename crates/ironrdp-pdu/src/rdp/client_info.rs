@@ -31,9 +31,9 @@ const RECONNECT_COOKIE_LENGTH_SIZE: usize = 2;
 const BIAS_SIZE: usize = 4;
 const SYSTEM_TIME_SIZE: usize = 16;
 
-/// [2.2.1.11.1.1 Info Packet (TS_INFO_PACKET)]
+/// [2.2.1.11.1.1] Info Packet (TS_INFO_PACKET)
 ///
-/// [2.2.1.11.1.1 Info Packet (TS_INFO_PACKET)]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/732394f5-e2b5-4ac5-8a0a-35345386b0d1
+/// [2.2.1.11.1.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/732394f5-e2b5-4ac5-8a0a-35345386b0d1
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClientInfo {
     pub credentials: Credentials,

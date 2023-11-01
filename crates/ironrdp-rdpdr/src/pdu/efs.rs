@@ -16,11 +16,17 @@ use super::{PacketId, SharedHeader};
 
 #[derive(Debug, PartialEq)]
 pub enum VersionAndIdPduKind {
-    /// [2.2.2.2 Server Announce Request (DR_CORE_SERVER_ANNOUNCE_REQ)](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/046047aa-62d8-49f9-bf16-7fe41880aaf4)
+    /// [2.2.2.2] Server Announce Request (DR_CORE_SERVER_ANNOUNCE_REQ)
+    ///
+    /// [2.2.2.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/046047aa-62d8-49f9-bf16-7fe41880aaf4
     ServerAnnounceRequest,
-    /// [2.2.2.3 Client Announce Reply (DR_CORE_CLIENT_ANNOUNCE_RSP)](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/d6fe6d1b-c145-4a6f-99aa-4fe3cdcea398)
+    /// [2.2.2.3] Client Announce Reply (DR_CORE_CLIENT_ANNOUNCE_RSP)
+    ///
+    /// [2.2.2.3]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/d6fe6d1b-c145-4a6f-99aa-4fe3cdcea398
     ClientAnnounceReply,
-    /// [2.2.2.6 Server Client ID Confirm (DR_CORE_SERVER_CLIENTID_CONFIRM)](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/bbbb9666-6994-4cf6-8e65-0d46eb319c6e)
+    /// [2.2.2.6] Server Client ID Confirm (DR_CORE_SERVER_CLIENTID_CONFIRM)
+    ///
+    /// [2.2.2.6]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/bbbb9666-6994-4cf6-8e65-0d46eb319c6e
     ServerClientIdConfirm,
 }
 
@@ -109,7 +115,9 @@ impl VersionAndIdPdu {
     }
 }
 
-/// [2.2.2.4 Client Name Request (DR_CORE_CLIENT_NAME_REQ)](https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/902497f1-3b1c-4aee-95f8-1668f9b7b7d2)
+/// [2.2.2.4] Client Name Request (DR_CORE_CLIENT_NAME_REQ)
+///
+/// [2.2.2.4]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/902497f1-3b1c-4aee-95f8-1668f9b7b7d2
 #[derive(Debug)]
 pub enum ClientNameRequest {
     Ascii(String),
@@ -180,8 +188,11 @@ impl From<ClientNameRequestUnicodeFlag> for u32 {
     }
 }
 
-/// [2.2.2.7 Server Core Capability Request (DR_CORE_CAPABILITY_REQ)](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/702789c3-b924-4bc2-9280-3221bc7d6797)
-/// [2.2.2.8 Client Core Capability Response (DR_CORE_CAPABILITY_RSP)](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/f513bf87-cca0-488a-ac5c-18cf18f4a7e1)
+/// [2.2.2.7] Server Core Capability Request (DR_CORE_CAPABILITY_REQ)
+/// and [2.2.2.8] Client Core Capability Response (DR_CORE_CAPABILITY_RSP)
+///
+/// [2.2.2.7]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/702789c3-b924-4bc2-9280-3221bc7d6797
+/// [2.2.2.8]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/f513bf87-cca0-488a-ac5c-18cf18f4a7e1
 #[derive(Debug)]
 pub struct CoreCapability {
     pub capabilities: Vec<CapabilityMessage>,
@@ -251,9 +262,13 @@ impl CoreCapability {
 
 #[derive(Debug, PartialEq)]
 pub enum CoreCapabilityKind {
-    /// [2.2.2.7 Server Core Capability Request (DR_CORE_CAPABILITY_REQ)](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/702789c3-b924-4bc2-9280-3221bc7d6797)
+    /// [2.2.2.7] Server Core Capability Request (DR_CORE_CAPABILITY_REQ)
+    ///
+    /// [2.2.2.7]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/702789c3-b924-4bc2-9280-3221bc7d6797
     ServerCoreCapabilityRequest,
-    /// [2.2.2.8 Client Core Capability Response (DR_CORE_CAPABILITY_RSP)](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/f513bf87-cca0-488a-ac5c-18cf18f4a7e1)
+    /// [2.2.2.8] Client Core Capability Response (DR_CORE_CAPABILITY_RSP)
+    ///
+    /// [2.2.2.8]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/f513bf87-cca0-488a-ac5c-18cf18f4a7e1
     ClientCoreCapabilityResponse,
 }
 
@@ -317,7 +332,9 @@ impl Default for Capabilities {
     }
 }
 
-/// [2.2.1.2.1 Capability Message (CAPABILITY_SET)](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/f1b9dd1d-2c37-4aac-9836-4b0df02369ba)
+/// [2.2.1.2.1] Capability Message (CAPABILITY_SET)
+///
+/// [2.2.1.2.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/f1b9dd1d-2c37-4aac-9836-4b0df02369ba
 #[derive(Debug, Clone, Copy)]
 pub struct CapabilityMessage {
     header: CapabilityHeader,
@@ -394,7 +411,9 @@ impl CapabilityMessage {
     }
 }
 
-/// [2.2.1.2 Capability Header (CAPABILITY_HEADER)](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/b3c3304a-2e1b-4667-97e9-3bce49544907)
+/// [2.2.1.2] Capability Header (CAPABILITY_HEADER)
+///
+/// [2.2.1.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/b3c3304a-2e1b-4667-97e9-3bce49544907
 #[derive(Debug, Clone, Copy)]
 struct CapabilityHeader {
     cap_type: CapabilityType,
@@ -536,7 +555,9 @@ impl CapabilityData {
     }
 }
 
-/// [2.2.2.7.1 General Capability Set (GENERAL_CAPS_SET)](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/06c7cb30-303d-4fa2-b396-806df8ac1501)
+/// [2.2.2.7.1] General Capability Set (GENERAL_CAPS_SET)
+///
+/// [2.2.2.7.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/06c7cb30-303d-4fa2-b396-806df8ac1501
 #[derive(Debug, Clone, Copy)]
 struct GeneralCapabilitySet {
     /// MUST be ignored.
@@ -712,14 +733,15 @@ bitflags! {
 /// the difference is.
 ///
 /// [Server Client ID Confirm (section 2.2.2.6)]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/bbbb9666-6994-4cf6-8e65-0d46eb319c6e
-/// [2.2.2.3 Client Announce Reply (DR_CORE_CLIENT_ANNOUNCE_RSP)]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/d6fe6d1b-c145-4a6f-99aa-4fe3cdcea398
+/// [2.2.2.3]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/d6fe6d1b-c145-4a6f-99aa-4fe3cdcea398
 const VERSION_MINOR_12: u16 = 0x000C;
 const VERSION_MAJOR: u16 = 0x0001;
 
-/// [2.2.2.9 Client Device List Announce Request (DR_CORE_DEVICELIST_ANNOUNCE_REQ)], [2.2.3.1 Client Device List Announce (DR_DEVICELIST_ANNOUNCE)]
+/// [2.2.2.9] Client Device List Announce Request (DR_CORE_DEVICELIST_ANNOUNCE_REQ)
+/// and [2.2.3.1] Client Device List Announce (DR_DEVICELIST_ANNOUNCE)
 ///
-/// [2.2.2.9 Client Device List Announce Request (DR_CORE_DEVICELIST_ANNOUNCE_REQ)]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/10ef9ada-cba2-4384-ab60-7b6290ed4a9a
-/// [2.2.3.1 Client Device List Announce (DR_DEVICELIST_ANNOUNCE)]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/d8b2bc1c-0207-4c15-abe3-62eaa2afcaf1
+/// [2.2.2.9]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/10ef9ada-cba2-4384-ab60-7b6290ed4a9a
+/// [2.2.3.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/d8b2bc1c-0207-4c15-abe3-62eaa2afcaf1
 #[derive(Debug)]
 pub struct ClientDeviceListAnnounce {
     pub device_list: Vec<DeviceAnnounceHeader>,
@@ -802,9 +824,9 @@ impl Default for Devices {
     }
 }
 
-/// [2.2.1.3 Device Announce Header (DEVICE_ANNOUNCE)]
+/// [2.2.1.3] Device Announce Header (DEVICE_ANNOUNCE)
 ///
-/// [2.2.1.3 Device Announce Header (DEVICE_ANNOUNCE)]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/32e34332-774b-4ead-8c9d-5d64720d6bf9
+/// [2.2.1.3]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/32e34332-774b-4ead-8c9d-5d64720d6bf9
 #[derive(Debug, Clone)]
 pub struct DeviceAnnounceHeader {
     device_type: DeviceType,
@@ -928,9 +950,9 @@ impl TryFrom<u32> for DeviceType {
     }
 }
 
-/// [2.2.2.1 Server Device Announce Response (DR_CORE_DEVICE_ANNOUNCE_RSP)]
+/// [2.2.2.1] Server Device Announce Response (DR_CORE_DEVICE_ANNOUNCE_RSP)
 ///
-/// [2.2.2.1 Server Device Announce Response (DR_CORE_DEVICE_ANNOUNCE_RSP)]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/a4c0b619-6e87-4721-bdc4-5d2db7f485f3
+/// [2.2.2.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/a4c0b619-6e87-4721-bdc4-5d2db7f485f3
 #[derive(Debug)]
 pub struct ServerDeviceAnnounceResponse {
     pub device_id: u32,
@@ -965,12 +987,12 @@ impl ServerDeviceAnnounceResponse {
     }
 }
 
-/// [2.3.1 NTSTATUS Values]
+/// [2.3.1] NTSTATUS Values
 ///
 /// Windows defines an absolutely massive list of potential NTSTATUS values.
 /// This enum includes some basic ones for communicating with the RDP server.
 ///
-/// [2.3.1 NTSTATUS Values]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-erref/596a1078-e883-4972-9bbc-49e60bebca55
+/// [2.3.1]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-erref/596a1078-e883-4972-9bbc-49e60bebca55
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct NtStatus(u32);
 
@@ -1027,9 +1049,9 @@ impl From<NtStatus> for u32 {
     }
 }
 
-/// [2.2.1.4 Device I/O Request (DR_DEVICE_IOREQUEST)]
+/// [2.2.1.4] Device I/O Request (DR_DEVICE_IOREQUEST)
 ///
-/// [2.2.1.4 Device I/O Request (DR_DEVICE_IOREQUEST)]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/a087ffa8-d0d5-4874-ac7b-0494f63e2d5d
+/// [2.2.1.4]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/a087ffa8-d0d5-4874-ac7b-0494f63e2d5d
 #[derive(Debug, Clone)]
 pub struct DeviceIoRequest {
     pub device_id: u32,
@@ -1177,9 +1199,9 @@ impl From<MinorFunction> for u32 {
     }
 }
 
-/// [2.2.1.4.5 Device Control Request (DR_CONTROL_REQ)]
+/// [2.2.1.4.5] Device Control Request (DR_CONTROL_REQ)
 ///
-/// [2.2.1.4.5 Device Control Request (DR_CONTROL_REQ)]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/30662c80-ec6e-4ed1-9004-2e6e367bb59f
+/// [2.2.1.4.5]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/30662c80-ec6e-4ed1-9004-2e6e367bb59f
 #[derive(Debug)]
 pub struct DeviceControlRequest<T: IoCtlCode> {
     pub header: DeviceIoRequest,
@@ -1220,9 +1242,9 @@ where
 /// A 32-bit unsigned integer. This field is specific to the redirected device.
 pub trait IoCtlCode: TryFrom<u32> {}
 
-/// [2.2.1.5.5 Device Control Response (DR_CONTROL_RSP)]
+/// [2.2.1.5.5] Device Control Response (DR_CONTROL_RSP)
 ///
-/// [2.2.1.5.5 Device Control Response (DR_CONTROL_RSP)]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/a00fbce4-95bb-4e15-8182-be2b5ef9076a
+/// [2.2.1.5.5]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/a00fbce4-95bb-4e15-8182-be2b5ef9076a
 #[derive(Debug)]
 pub struct DeviceControlResponse {
     pub device_io_reply: DeviceIoResponse,
@@ -1269,9 +1291,9 @@ impl DeviceControlResponse {
     }
 }
 
-/// [2.2.1.5 Device I/O Response (DR_DEVICE_IOCOMPLETION)]
+/// [2.2.1.5] Device I/O Response (DR_DEVICE_IOCOMPLETION)
 ///
-/// [2.2.1.5 Device I/O Response (DR_DEVICE_IOCOMPLETION)]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/1c412a84-0776-4984-b35c-3f0445fcae65
+/// [2.2.1.5]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/1c412a84-0776-4984-b35c-3f0445fcae65
 #[derive(Debug)]
 pub struct DeviceIoResponse {
     pub device_id: u32,
@@ -1317,9 +1339,9 @@ impl DeviceIoResponse {
     }
 }
 
-/// [2.2.3.3 Server Drive I/O Request (DR_DRIVE_CORE_DEVICE_IOREQUEST)]
+/// [2.2.3.3] Server Drive I/O Request (DR_DRIVE_CORE_DEVICE_IOREQUEST)
 ///
-/// [2.2.3.3 Server Drive I/O Request (DR_DRIVE_CORE_DEVICE_IOREQUEST)]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/89bb51af-c54d-40fb-81c1-d1bb353c4536
+/// [2.2.3.3]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/89bb51af-c54d-40fb-81c1-d1bb353c4536
 #[derive(Debug)]
 pub enum ServerDriveIoRequest {
     ServerCreateDriveRequest(DeviceCreateRequest),
@@ -1348,10 +1370,11 @@ impl ServerDriveIoRequest {
     }
 }
 
-/// [2.2.3.3.1 Server Create Drive Request (DR_DRIVE_CREATE_REQ)] and [2.2.1.4.1 Device Create Request (DR_CREATE_REQ)]
+/// [2.2.3.3.1] Server Create Drive Request (DR_DRIVE_CREATE_REQ)
+/// and [2.2.1.4.1] Device Create Request (DR_CREATE_REQ)
 ///
-/// [2.2.3.3.1 Server Create Drive Request (DR_DRIVE_CREATE_REQ)]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/95b16fd0-d530-407c-a310-adedc85e9897
-/// [2.2.1.4.1 Device Create Request (DR_CREATE_REQ)]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/5f71f6d2-d9ff-40c2-bdb5-a739447d3c3e
+/// [2.2.3.3.1]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/95b16fd0-d530-407c-a310-adedc85e9897
+/// [2.2.1.4.1]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/5f71f6d2-d9ff-40c2-bdb5-a739447d3c3e
 #[derive(Debug)]
 pub struct DeviceCreateRequest {
     /// The MajorFunction field in this header MUST be set to IRP_MJ_CREATE.
@@ -1402,14 +1425,14 @@ impl DeviceCreateRequest {
 
 bitflags! {
     /// DesiredAccess can be interpreted as either
-    /// [2.2.13.1.1 File_Pipe_Printer_Access_Mask \[MS-SMB2\]] or [2.2.13.1.2 Directory_Access_Mask \[MS-SMB2\]]
+    /// [2.2.13.1.1] File_Pipe_Printer_Access_Mask \[MS-SMB2\] or [2.2.13.1.2] Directory_Access_Mask \[MS-SMB2\]
     ///
     /// This implements the combination of the two. For flags where the names and/or functions are distinct between the two,
     /// the names are appended with an "_OR_", and the File_Pipe_Printer_Access_Mask functionality is described on the top line comment,
     /// and the Directory_Access_Mask functionality is described on the bottom (2nd) line comment.
     ///
-    /// [2.2.13.1.1 File_Pipe_Printer_Access_Mask \[MS-SMB2\]]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-smb2/77b36d0f-6016-458a-a7a0-0f4a72ae1534
-    /// [2.2.13.1.2 Directory_Access_Mask \[MS-SMB2\]]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-smb2/0a5934b1-80f1-4da0-b1bf-5e021c309b71
+    /// [2.2.13.1.1]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-smb2/77b36d0f-6016-458a-a7a0-0f4a72ae1534
+    /// [2.2.13.1.2]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-smb2/0a5934b1-80f1-4da0-b1bf-5e021c309b71
     #[derive(Debug, Clone)]
     pub struct DesiredAccess: u32 {
         /// This value indicates the right to read data from the file or named pipe.
@@ -1464,9 +1487,9 @@ bitflags! {
 }
 
 bitflags! {
-    /// [2.6 File Attributes \[MS-FSCC\]]
+    /// [2.6] File Attributes \[MS-FSCC\]
     ///
-    /// [2.6 File Attributes \[MS-FSCC\]]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-fscc/ca28ec38-f155-4768-81d6-4bfeb8586fc9
+    /// [2.6]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-fscc/ca28ec38-f155-4768-81d6-4bfeb8586fc9
     #[derive(Debug, Clone)]
     pub struct FileAttributes: u32 {
         const FILE_ATTRIBUTE_READONLY = 0x00000001;
@@ -1492,9 +1515,9 @@ bitflags! {
 }
 
 bitflags! {
-    /// Specified in [2.2.13 SMB2 CREATE Request]
+    /// Specified in [2.2.13] SMB2 CREATE Request
     ///
-    /// [2.2.13 SMB2 CREATE Request]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-smb2/e8fb45c1-a03d-44ca-b7ae-47385cfd7997
+    /// [2.2.13]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-smb2/e8fb45c1-a03d-44ca-b7ae-47385cfd7997
     #[derive(Debug, Clone)]
     pub struct SharedAccess: u32 {
         const FILE_SHARE_READ = 0x00000001;
@@ -1504,11 +1527,11 @@ bitflags! {
 }
 
 bitflags! {
-    /// Defined in [2.2.13 SMB2 CREATE Request]
+    /// Defined in [2.2.13] SMB2 CREATE Request
     ///
     /// See FreeRDP's [drive_file.c] for context about how these should be interpreted.
     ///
-    /// [2.2.13 SMB2 CREATE Request]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-smb2/e8fb45c1-a03d-44ca-b7ae-47385cfd7997
+    /// [2.2.13]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-smb2/e8fb45c1-a03d-44ca-b7ae-47385cfd7997
     /// [drive_file.c]: https://github.com/FreeRDP/FreeRDP/blob/511444a65e7aa2f537c5e531fa68157a50c1bd4d/channels/drive/client/drive_file.c#L207
     #[derive(PartialEq, Eq, Debug, Clone)]
     pub struct CreateDisposition: u32 {
@@ -1522,9 +1545,9 @@ bitflags! {
 }
 
 bitflags! {
-    /// Defined in [2.2.13 SMB2 CREATE Request]
+    /// Defined in [2.2.13] SMB2 CREATE Request
     ///
-    /// [2.2.13 SMB2 CREATE Request]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-smb2/e8fb45c1-a03d-44ca-b7ae-47385cfd7997
+    /// [2.2.13]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-smb2/e8fb45c1-a03d-44ca-b7ae-47385cfd7997
     #[derive(Debug, Clone)]
     pub struct CreateOptions: u32 {
         const FILE_DIRECTORY_FILE = 0x00000001;
@@ -1551,9 +1574,9 @@ bitflags! {
     }
 }
 
-/// [2.2.1.5.1 Device Create Response (DR_CREATE_RSP)]
+/// [2.2.1.5.1] Device Create Response (DR_CREATE_RSP)
 ///
-/// [2.2.1.5.1 Device Create Response (DR_CREATE_RSP)]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/99e5fca5-b37a-41e4-bc69-8d7da7860f76
+/// [2.2.1.5.1]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/99e5fca5-b37a-41e4-bc69-8d7da7860f76
 #[derive(Debug)]
 pub struct DeviceCreateResponse {
     pub device_io_reply: DeviceIoResponse,
@@ -1584,9 +1607,9 @@ impl DeviceCreateResponse {
 }
 
 bitflags! {
-    /// Defined in [2.2.1.5.1 Device Create Response (DR_CREATE_RSP)]
+    /// Defined in [2.2.1.5.1] Device Create Response (DR_CREATE_RSP)
     ///
-    /// [2.2.1.5.1 Device Create Response (DR_CREATE_RSP)]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/99e5fca5-b37a-41e4-bc69-8d7da7860f76
+    /// [2.2.1.5.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/99e5fca5-b37a-41e4-bc69-8d7da7860f76
     #[derive(Debug)]
     pub struct Information: u8 {
         /// A new file was created.
@@ -1598,11 +1621,11 @@ bitflags! {
     }
 }
 
-/// [2.2.3.3.8 Server Drive Query Information Request (DR_DRIVE_QUERY_INFORMATION_REQ)]
+/// [2.2.3.3.8] Server Drive Query Information Request (DR_DRIVE_QUERY_INFORMATION_REQ)
 ///
 /// Note that Length, Padding, and QueryBuffer fields are all ignored in keeping with the [analogous code in FreeRDP].
 ///
-/// [2.2.3.3.8 Server Drive Query Information Request (DR_DRIVE_QUERY_INFORMATION_REQ)]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/e43dcd68-2980-40a9-9238-344b6cf94946
+/// [2.2.3.3.8]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/e43dcd68-2980-40a9-9238-344b6cf94946
 /// [analogous code in FreeRDP]: https://github.com/FreeRDP/FreeRDP/blob/511444a65e7aa2f537c5e531fa68157a50c1bd4d/channels/drive/client/drive_main.c#L384
 #[derive(Debug)]
 pub struct ServerDriveQueryInformationRequest {
@@ -1622,9 +1645,9 @@ impl ServerDriveQueryInformationRequest {
     }
 }
 
-/// [2.4 File Information Classes \[MS-FSCC\]]
+/// [2.4] File Information Classes \[MS-FSCC\]
 ///
-/// [2.4 File Information Classes \[MS-FSCC\]]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-fscc/4718fc40-e539-4014-8e33-b675af74e3e1
+/// [2.4]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-fscc/4718fc40-e539-4014-8e33-b675af74e3e1
 #[derive(PartialEq, Eq, Clone)]
 pub struct FileInformationClassLevel(u32);
 
@@ -1660,9 +1683,9 @@ impl From<FileInformationClassLevel> for u32 {
     }
 }
 
-/// [2.2.3.4.8 Client Drive Query Information Response (DR_DRIVE_QUERY_INFORMATION_RSP)]
+/// [2.2.3.4.8] Client Drive Query Information Response (DR_DRIVE_QUERY_INFORMATION_RSP)
 ///
-/// [2.2.3.4.8 Client Drive Query Information Response (DR_DRIVE_QUERY_INFORMATION_RSP)]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/37ef4fb1-6a95-4200-9fbf-515464f034a4
+/// [2.2.3.4.8]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/37ef4fb1-6a95-4200-9fbf-515464f034a4
 #[derive(Debug)]
 pub struct ClientDriveQueryInformationResponse {
     pub device_io_response: DeviceIoResponse,
@@ -1705,9 +1728,9 @@ impl ClientDriveQueryInformationResponse {
     }
 }
 
-/// [2.4 File Information Classes \[MS-FSCC\]]
+/// [2.4] File Information Classes \[MS-FSCC\]
 ///
-/// [2.4 File Information Classes \[MS-FSCC\]]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-fscc/4718fc40-e539-4014-8e33-b675af74e3e1
+/// [2.4]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-fscc/4718fc40-e539-4014-8e33-b675af74e3e1
 #[derive(Debug, Clone)]
 pub enum FileInformationClass {
     Basic(FileBasicInformation),
@@ -1733,9 +1756,9 @@ impl FileInformationClass {
     }
 }
 
-/// [2.4.7 FileBasicInformation \[MS-FSCC\]]
+/// [2.4.7] FileBasicInformation \[MS-FSCC\]
 ///
-/// [2.4.7 FileBasicInformation \[MS-FSCC\]]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-fscc/16023025-8a78-492f-8b96-c873b042ac50
+/// [2.4.7]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-fscc/16023025-8a78-492f-8b96-c873b042ac50
 #[derive(Debug, Clone)]
 pub struct FileBasicInformation {
     pub creation_time: i64,
@@ -1769,9 +1792,9 @@ impl FileBasicInformation {
     }
 }
 
-/// [2.4.41 FileStandardInformation \[MS-FSCC\]]
+/// [2.4.41] FileStandardInformation \[MS-FSCC\]
 ///
-/// [2.4.41 FileStandardInformation \[MS-FSCC\]]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-fscc/5afa7f66-619c-48f3-955f-68c4ece704ae
+/// [2.4.41]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-fscc/5afa7f66-619c-48f3-955f-68c4ece704ae
 #[derive(Debug, Clone)]
 pub struct FileStandardInformation {
     pub allocation_size: i64,
@@ -1804,9 +1827,9 @@ impl FileStandardInformation {
     }
 }
 
-/// [2.1.8 Boolean]
+/// [2.1.8] Boolean
 ///
-/// [2.1.8 Boolean]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-fscc/8ce7b38c-d3cc-415d-ab39-944000ea77ff
+/// [2.1.8]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-fscc/8ce7b38c-d3cc-415d-ab39-944000ea77ff
 #[derive(Debug, PartialEq, Clone, Copy)]
 #[repr(u8)]
 pub enum Boolean {
@@ -1823,9 +1846,9 @@ impl From<Boolean> for u8 {
     }
 }
 
-/// [2.4.6 FileAttributeTagInformation \[MS-FSCC\]]
+/// [2.4.6] FileAttributeTagInformation \[MS-FSCC\]
 ///
-/// [2.4.6 FileAttributeTagInformation \[MS-FSCC\]]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-fscc/d295752f-ce89-4b98-8553-266d37c84f0e?redirectedfrom=MSDN
+/// [2.4.6]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-fscc/d295752f-ce89-4b98-8553-266d37c84f0e?redirectedfrom=MSDN
 #[derive(Debug, Clone)]
 pub struct FileAttributeTagInformation {
     pub file_attributes: FileAttributes,
