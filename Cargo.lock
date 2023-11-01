@@ -3737,8 +3737,9 @@ dependencies = [
 
 [[package]]
 name = "softbuffer"
-version = "0.3.0"
-source = "git+https://github.com/CBenoit/softbuffer.git?rev=8a9e7f95e054f9af5752682aa5f27890aeb1b094#8a9e7f95e054f9af5752682aa5f27890aeb1b094"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8bd56fe5e6c6f1881aad2bd37acaef4ac4a3689c970dfcbd87a36a6e60210ec8"
 dependencies = [
  "as-raw-xcb-connection",
  "bytemuck",

@@ -72,6 +72,3 @@ opt-level = 3
 
 [profile.test.package.rand_chacha]
 opt-level = 3
-
-[patch.crates-io]
-softbuffer = { git = "https://github.com/CBenoit/softbuffer.git", rev = "8a9e7f95e054f9af5752682aa5f27890aeb1b094" }
