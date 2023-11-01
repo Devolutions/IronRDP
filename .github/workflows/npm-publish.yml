@@ -31,10 +31,9 @@ jobs:
             echo "dry-run=false" >> $Env:GITHUB_OUTPUT
           }
 
-  publish:
-    name: Publish package
+  build:
+    name: Build package
     runs-on: ubuntu-20.04
-    environment: artifactory-publish
     needs:
       - preflight
 
@@ -47,23 +46,79 @@ jobs:
         run: |
           curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh      
 
-      - name: Build package
+      - name: Install dependencies
         shell: pwsh
         run: |
           Set-Location -Path ./web-client/iron-remote-gui/
+          npm install
+
+      - name: Build package
+        shell: pwsh
+        run: |
+          Set-PSDebug -Trace 1
+
+          Set-Location -Path ./web-client/iron-remote-gui/
           npm run build
+          Set-Location -Path ./dist
+          npm pack
+
+      - name: Harvest package
+        shell: pwsh
+        run: |
+          Set-PSDebug -Trace 1
+
+          New-Item -ItemType "directory" -Path . -Name "npm-packages"
+          Get-ChildItem -Path ./web-client/ -Recurse *.tgz | ForEach { Copy-Item $_ "./npm-packages" }
+
+      - name: Upload package artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: npm
+          path: npm-packages/*.tgz
+
+  publish:
+    name: Publish package
+    runs-on: ubuntu-20.04
+    if: github.event_name == 'workflow_dispatch'
+    environment: publish
+    needs:
+      - preflight
+      - build
+
+    steps:
+      - name: Download NPM packages artifact
+        uses: actions/download-artifact@v3
+        with:
+          name: npm
+          path: npm-packages
 
       - name: Prepare npm
         shell: pwsh
-        run: |
-          npm config set "email = ${{ secrets.ARTIFACTORY_USERNAME }}"
-          npm config set "@devolutions:registry=https://devolutions.jfrog.io/devolutions/api/npm/npm/"
-          npm config set "//devolutions.jfrog.io/devolutions/api/npm/npm/:_auth=${{ secrets.ARTIFACTORY_PASSWORD }}"
-          npm config set "//devolutions.jfrog.io/devolutions/api/npm/npm-local/:_auth=${{ secrets.ARTIFACTORY_PASSWORD }}"
+        run: npm config set "//registry.npmjs.org/:_authToken=${{ secrets.NPM_TOKEN }}"
 
-      - name: Build & Publish
-        if: needs.preflight.outputs.dry-run == 'false'
+      - name: Publish
         shell: pwsh
         run: |
-          Set-Location -Path ./web-client/iron-remote-gui/dist/
-          npm publish --@devolutions:registry=https://devolutions.jfrog.io/devolutions/api/npm/npm-local/
+          Set-PSDebug -Trace 1
+
+          $isDryRun = '${{ needs.preflight.outputs.dry-run }}' -Eq 'true'
+
+          $files = Get-ChildItem -Recurse npm-packages/*.tgz
+
+          foreach ($file in $files) {
+            Write-Host "Publishing $($File.Name)..."
+
+            $publishCmd = @(
+              'npm', 
+              'publish', 
+              "$File",
+              '--access=public'
+            )
+
+            if ($isDryRun) {
+              $publishCmd += '--dry-run'
+            }
+
+            $publishCmd = $publishCmd -Join ' '
+            Invoke-Expression $publishCmd
+          }
