@@ -1705,9 +1705,9 @@ impl ClientDriveQueryInformationResponse {
     }
 }
 
-/// [2.4 File Information Classes [MS-FSCC]]
+/// [2.4 File Information Classes \[MS-FSCC\]]
 ///
-/// [2.4 File Information Classes [MS-FSCC]]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-fscc/4718fc40-e539-4014-8e33-b675af74e3e1
+/// [2.4 File Information Classes \[MS-FSCC\]]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-fscc/4718fc40-e539-4014-8e33-b675af74e3e1
 #[derive(Debug, Clone)]
 pub enum FileInformationClass {
     Basic(FileBasicInformation),
@@ -1733,9 +1733,9 @@ impl FileInformationClass {
     }
 }
 
-/// [2.4.7 FileBasicInformation [MS-FSCC]]
+/// [2.4.7 FileBasicInformation \[MS-FSCC\]]
 ///
-/// [2.4.7 FileBasicInformation [MS-FSCC]]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-fscc/16023025-8a78-492f-8b96-c873b042ac50
+/// [2.4.7 FileBasicInformation \[MS-FSCC\]]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-fscc/16023025-8a78-492f-8b96-c873b042ac50
 #[derive(Debug, Clone)]
 pub struct FileBasicInformation {
     pub creation_time: i64,
@@ -1769,9 +1769,9 @@ impl FileBasicInformation {
     }
 }
 
-/// [2.4.41 FileStandardInformation [MS-FSCC]]
+/// [2.4.41 FileStandardInformation \[MS-FSCC\]]
 ///
-/// [2.4.41 FileStandardInformation [MS-FSCC]]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-fscc/5afa7f66-619c-48f3-955f-68c4ece704ae
+/// [2.4.41 FileStandardInformation \[MS-FSCC\]]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-fscc/5afa7f66-619c-48f3-955f-68c4ece704ae
 #[derive(Debug, Clone)]
 pub struct FileStandardInformation {
     pub allocation_size: i64,
@@ -1823,9 +1823,9 @@ impl From<Boolean> for u8 {
     }
 }
 
-/// [2.4.6 FileAttributeTagInformation [MS-FSCC]]
+/// [2.4.6 FileAttributeTagInformation \[MS-FSCC\]]
 ///
-/// [2.4.6 FileAttributeTagInformation [MS-FSCC]]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-fscc/d295752f-ce89-4b98-8553-266d37c84f0e?redirectedfrom=MSDN
+/// [2.4.6 FileAttributeTagInformation \[MS-FSCC\]]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-fscc/d295752f-ce89-4b98-8553-266d37c84f0e?redirectedfrom=MSDN
 #[derive(Debug, Clone)]
 pub struct FileAttributeTagInformation {
     pub file_attributes: FileAttributes,
