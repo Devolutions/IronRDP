@@ -17,9 +17,9 @@ use ironrdp_pdu::{cast_length, ensure_size, invalid_message_err, PduDecode, PduE
 use super::efs::IoCtlCode;
 use crate::pdu::esc::ndr::{Decode as _, Encode as _};
 
-/// [2.2.2 TS Server-Generated Structures]
+/// [2.2.2] TS Server-Generated Structures
 ///
-/// [2.2.2 TS Server-Generated Structures]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/f4ca3b61-b49c-463c-8932-2cf82fb7ec7a
+/// [2.2.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/f4ca3b61-b49c-463c-8932-2cf82fb7ec7a
 #[derive(Debug)]
 pub enum ScardCall {
     AccessStartedEventCall(ScardAccessStartedEventCall),
@@ -75,9 +75,9 @@ impl ScardCall {
     }
 }
 
-/// [2.2.1.1 REDIR_SCARDCONTEXT]
+/// [2.2.1.1] REDIR_SCARDCONTEXT
 ///
-/// [2.2.1.1 REDIR_SCARDCONTEXT]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/060abee1-e520-4149-9ef7-ce79eb500a59
+/// [2.2.1.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/060abee1-e520-4149-9ef7-ce79eb500a59
 #[derive(Debug, Copy, Clone)]
 pub struct ScardContext {
     /// Shortcut: we always create 4-byte context values.
@@ -150,9 +150,9 @@ impl ndr::Decode for ScardContext {
     }
 }
 
-/// [2.2.1.7 ReaderStateW]
+/// [2.2.1.7] ReaderStateW
 ///
-/// [2.2.1.7 ReaderStateW]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/0ba03cd2-bed0-495b-adbe-3d2cde61980c
+/// [2.2.1.7]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/0ba03cd2-bed0-495b-adbe-3d2cde61980c
 #[derive(Debug)]
 pub struct ReaderState {
     pub reader: String,
@@ -175,9 +175,9 @@ impl ndr::Decode for ReaderState {
     }
 }
 
-/// From [3.1.4 Message Processing Events and Sequencing Rules]
+/// From [3.1.4] Message Processing Events and Sequencing Rules
 ///
-/// [3.1.4 Message Processing Events and Sequencing Rules]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/60d5977d-0017-4c90-ab0c-f34bf44a74a5
+/// [3.1.4]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/60d5977d-0017-4c90-ab0c-f34bf44a74a5
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[repr(u32)]
 pub enum ScardIoCtlCode {
@@ -343,9 +343,9 @@ impl TryFrom<u32> for ScardIoCtlCode {
 /// Allow [`ScardIoCtlCode`] to be used as an [`IoCtlCode`].
 impl IoCtlCode for ScardIoCtlCode {}
 
-/// [2.2.2.30 ScardAccessStartedEvent_Call]
+/// [2.2.2.30] ScardAccessStartedEvent_Call
 ///
-/// [2.2.2.30 ScardAccessStartedEvent_Call]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/c5ab8dd0-4914-4355-960c-0a527971ea69
+/// [2.2.2.30]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/c5ab8dd0-4914-4355-960c-0a527971ea69
 #[derive(Debug)]
 pub struct ScardAccessStartedEventCall;
 
@@ -356,9 +356,9 @@ impl ScardAccessStartedEventCall {
     }
 }
 
-/// [2.2.3.3 Long_Return]
+/// [2.2.3.3] Long_Return
 ///
-/// [2.2.3.3 Long_Return]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/e77a1365-2379-4037-99c4-d30d14ba10fc
+/// [2.2.3.3]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/e77a1365-2379-4037-99c4-d30d14ba10fc
 #[derive(Debug)]
 pub struct LongReturn {
     return_code: ReturnCode,
@@ -388,9 +388,9 @@ impl rpce::HeaderlessEncode for LongReturn {
     }
 }
 
-/// [2.2.8 Return Code]
+/// [2.2.8] Return Code
 ///
-/// [2.2.8 Return Code]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/9861f8da-76fe-41e6-847e-40c9aa35df8d
+/// [2.2.8]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/9861f8da-76fe-41e6-847e-40c9aa35df8d
 #[derive(Debug, Clone, Copy)]
 #[repr(u32)]
 pub enum ReturnCode {
@@ -542,9 +542,9 @@ impl From<ReturnCode> for u32 {
     }
 }
 
-/// [2.2.2.1 EstablishContext_Call]
+/// [2.2.2.1] EstablishContext_Call
 ///
-/// [2.2.2.1 EstablishContext_Call]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/b990635a-7637-464a-8923-361ed3e3d67a
+/// [2.2.2.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/b990635a-7637-464a-8923-361ed3e3d67a
 #[derive(Debug)]
 pub struct EstablishContextCall {
     pub scope: Scope,
@@ -600,9 +600,9 @@ impl TryFrom<u32> for Scope {
     }
 }
 
-/// [2.2.3.2 EstablishContext_Return]
+/// [2.2.3.2] EstablishContext_Return
 ///
-/// [2.2.3.2 EstablishContext_Return]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/9135d95f-3740-411b-bdca-34ac7571fddc
+/// [2.2.3.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/9135d95f-3740-411b-bdca-34ac7571fddc
 #[derive(Debug)]
 pub struct EstablishContextReturn {
     return_code: ReturnCode,
@@ -636,9 +636,9 @@ impl rpce::HeaderlessEncode for EstablishContextReturn {
     }
 }
 
-/// [2.2.2.4 ListReaders_Call]
+/// [2.2.2.4] ListReaders_Call
 ///
-/// [2.2.2.4 ListReaders_Call]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/be2f46a5-77fb-40bf-839c-aed45f0a26d7
+/// [2.2.2.4]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/be2f46a5-77fb-40bf-839c-aed45f0a26d7
 #[derive(Debug)]
 pub struct ListReadersCall {
     pub context: ScardContext,
@@ -709,9 +709,9 @@ impl rpce::HeaderlessDecode for ListReadersCall {
     }
 }
 
-/// [2.2.3.4 ListReaderGroups_Return and ListReaders_Return]
+/// [2.2.3.4] ListReaderGroups_Return and ListReaders_Return
 ///
-/// [2.2.3.4 ListReaderGroups_Return and ListReaders_Return]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/6630bb5b-fc0e-4141-8b53-263225c7628d
+/// [2.2.3.4]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/6630bb5b-fc0e-4141-8b53-263225c7628d
 #[derive(Debug)]
 pub struct ListReadersReturn {
     pub return_code: ReturnCode,
@@ -754,9 +754,9 @@ impl rpce::HeaderlessEncode for ListReadersReturn {
     }
 }
 
-/// [2.2.2.12 GetStatusChangeW_Call]
+/// [2.2.2.12] GetStatusChangeW_Call
 ///
-/// [2.2.2.12 GetStatusChangeW_Call]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/af357ce8-63ee-4577-b6bf-c6f5ca68d754
+/// [2.2.2.12]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/af357ce8-63ee-4577-b6bf-c6f5ca68d754
 #[derive(Debug)]
 pub struct GetStatusChangeCall {
     pub context: ScardContext,
@@ -811,9 +811,9 @@ impl rpce::HeaderlessDecode for GetStatusChangeCall {
     }
 }
 
-/// [2.2.1.5 ReaderState_Common_Call]
+/// [2.2.1.5] ReaderState_Common_Call
 ///
-/// [2.2.1.5 ReaderState_Common_Call]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/a71e63ba-e58f-487c-a5d2-5a3e48856594
+/// [2.2.1.5]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/a71e63ba-e58f-487c-a5d2-5a3e48856594
 #[derive(Debug)]
 pub struct ReaderStateCommonCall {
     pub current_state: CardStateFlags,
@@ -872,9 +872,9 @@ bitflags! {
     }
 }
 
-/// [2.2.3.5 LocateCards_Return and GetStatusChange_Return]
+/// [2.2.3.5] LocateCards_Return and GetStatusChange_Return
 ///
-/// [2.2.3.5 LocateCards_Return and GetStatusChange_Return]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/7b73e0c2-e0fc-46b1-9b03-50684ad2beba
+/// [2.2.3.5]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/7b73e0c2-e0fc-46b1-9b03-50684ad2beba
 #[derive(Debug)]
 pub struct GetStatusChangeReturn {
     pub return_code: ReturnCode,
@@ -918,9 +918,9 @@ impl rpce::HeaderlessEncode for GetStatusChangeReturn {
     }
 }
 
-/// [2.2.2.14 ConnectW_Call]
+/// [2.2.2.14] ConnectW_Call
 ///
-/// [2.2.2.14 ConnectW_Call]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/fd06f6a0-a9ea-478c-9b5e-470fd9cde5a6
+/// [2.2.2.14]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/fd06f6a0-a9ea-478c-9b5e-470fd9cde5a6
 #[derive(Debug)]
 pub struct ConnectCall {
     pub reader: String,
@@ -944,9 +944,9 @@ impl rpce::HeaderlessDecode for ConnectCall {
     }
 }
 
-/// [2.2.1.3 Connect_Common]
+/// [2.2.1.3] Connect_Common
 ///
-/// [2.2.1.3 Connect_Common]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/32752f32-4410-4682-b9fc-9096674b52de
+/// [2.2.1.3]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/32752f32-4410-4682-b9fc-9096674b52de
 #[derive(Debug)]
 pub struct ConnectCommon {
     pub context: ScardContext,
@@ -980,9 +980,9 @@ impl ndr::Decode for ConnectCommon {
 }
 
 bitflags! {
-    /// [2.2.5 Protocol Identifier]
+    /// [2.2.5] Protocol Identifier
     ///
-    /// [2.2.5 Protocol Identifier]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/41673567-2710-4e86-be87-7b6f46fe10af
+    /// [2.2.5]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/41673567-2710-4e86-be87-7b6f46fe10af
     #[derive(Debug, Clone)]
     pub struct CardProtocol: u32 {
         const SCARD_PROTOCOL_UNDEFINED = 0x0000_0000;
@@ -995,9 +995,9 @@ bitflags! {
     }
 }
 
-/// [2.2.1.2 REDIR_SCARDHANDLE]
+/// [2.2.1.2] REDIR_SCARDHANDLE
 ///
-/// [2.2.1.2 REDIR_SCARDHANDLE]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/b6276356-7c5f-4d3e-be92-a6c85e58d008
+/// [2.2.1.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/b6276356-7c5f-4d3e-be92-a6c85e58d008
 #[derive(Debug)]
 pub struct ScardHandle {
     pub context: ScardContext,
@@ -1076,9 +1076,9 @@ impl ndr::Encode for ScardHandle {
     }
 }
 
-/// [2.2.3.8 Connect_Return]
+/// [2.2.3.8] Connect_Return
 ///
-/// [2.2.3.8 Connect_Return]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/ad9fbc8e-0963-44ac-8d71-38021685790c
+/// [2.2.3.8]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/ad9fbc8e-0963-44ac-8d71-38021685790c
 #[derive(Debug)]
 pub struct ConnectReturn {
     pub return_code: ReturnCode,
@@ -1118,9 +1118,9 @@ impl rpce::HeaderlessEncode for ConnectReturn {
     }
 }
 
-/// [2.2.2.16 HCardAndDisposition_Call]
+/// [2.2.2.16] HCardAndDisposition_Call
 ///
-/// [2.2.2.16 HCardAndDisposition_Call]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/f15ae865-9e99-4c5b-bb43-15a6b4885bd0
+/// [2.2.2.16]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/f15ae865-9e99-4c5b-bb43-15a6b4885bd0
 #[derive(Debug)]
 pub struct HCardAndDispositionCall {
     pub handle: ScardHandle,
@@ -1146,9 +1146,9 @@ impl rpce::HeaderlessDecode for HCardAndDispositionCall {
     }
 }
 
-/// [2.2.2.19 Transmit_Call]
+/// [2.2.2.19] Transmit_Call
 ///
-/// [2.2.2.19 Transmit_Call]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/e3861cfa-e61b-4d64-b19d-f6b31e076beb
+/// [2.2.2.19]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/e3861cfa-e61b-4d64-b19d-f6b31e076beb
 #[derive(Debug)]
 pub struct TransmitCall {
     pub handle: ScardHandle,
@@ -1210,9 +1210,9 @@ impl rpce::HeaderlessDecode for TransmitCall {
     }
 }
 
-/// [2.2.1.8 SCardIO_Request]
+/// [2.2.1.8] SCardIO_Request
 ///
-/// [2.2.1.8 SCardIO_Request]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/f6e15da8-5bc0-4ef6-b28a-ce88e8415621
+/// [2.2.1.8]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/f6e15da8-5bc0-4ef6-b28a-ce88e8415621
 #[derive(Debug, Clone)]
 pub struct SCardIORequest {
     pub protocol: CardProtocol,
@@ -1271,9 +1271,9 @@ impl ndr::Encode for SCardIORequest {
     }
 }
 
-/// [2.2.3.11 Transmit_Return]
+/// [2.2.3.11] Transmit_Return
 ///
-/// [2.2.3.11 Transmit_Return]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/252cffd0-58b8-434d-9e1b-0d547544fb0f
+/// [2.2.3.11]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/252cffd0-58b8-434d-9e1b-0d547544fb0f
 #[derive(Debug)]
 pub struct TransmitReturn {
     pub return_code: ReturnCode,
@@ -1331,9 +1331,9 @@ impl rpce::HeaderlessEncode for TransmitReturn {
     }
 }
 
-/// [2.2.2.18 Status_Call]
+/// [2.2.2.18] Status_Call
 ///
-/// [2.2.2.18 Status_Call]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/f1139aed-e578-47f3-a800-f36b56c80500
+/// [2.2.2.18]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/f1139aed-e578-47f3-a800-f36b56c80500
 #[derive(Debug)]
 pub struct StatusCall {
     pub handle: ScardHandle,
@@ -1368,9 +1368,9 @@ impl rpce::HeaderlessDecode for StatusCall {
     }
 }
 
-/// [2.2.3.10 Status_Return]
+/// [2.2.3.10] Status_Return
 ///
-/// [2.2.3.10 Status_Return]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/987c1358-ad6b-4c8e-88e1-06210c28a66f
+/// [2.2.3.10]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/987c1358-ad6b-4c8e-88e1-06210c28a66f
 #[derive(Debug)]
 pub struct StatusReturn {
     pub return_code: ReturnCode,
@@ -1439,9 +1439,9 @@ impl rpce::HeaderlessEncode for StatusReturn {
     }
 }
 
-/// [2.2.4 Card/Reader State]
+/// [2.2.4] Card/Reader State
 ///
-/// [2.2.4 Card/Reader State]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/264bc504-1195-43ff-a057-3d86a02c5d9c
+/// [2.2.4]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/264bc504-1195-43ff-a057-3d86a02c5d9c
 #[derive(Debug, Clone, Copy)]
 pub enum CardState {
     /// SCARD_UNKNOWN
@@ -1466,9 +1466,9 @@ impl From<CardState> for u32 {
     }
 }
 
-/// [2.2.2.2 Context_Call]
+/// [2.2.2.2] Context_Call
 ///
-/// [2.2.2.2 Context_Call]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/b11d26d9-c3d5-4e96-8d9f-aba35cded852
+/// [2.2.2.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/b11d26d9-c3d5-4e96-8d9f-aba35cded852
 #[derive(Debug)]
 pub struct ContextCall {
     pub context: ScardContext,
@@ -1489,9 +1489,9 @@ impl rpce::HeaderlessDecode for ContextCall {
     }
 }
 
-/// [2.2.2.32 GetDeviceTypeId_Call]
+/// [2.2.2.32] GetDeviceTypeId_Call
 ///
-/// [2.2.2.32 GetDeviceTypeId_Call]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/b5e18874-c42d-42ea-b1b1-3fd86a8a95f1
+/// [2.2.2.32]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/b5e18874-c42d-42ea-b1b1-3fd86a8a95f1
 #[derive(Debug)]
 pub struct GetDeviceTypeIdCall {
     pub context: ScardContext,
@@ -1520,9 +1520,9 @@ impl rpce::HeaderlessDecode for GetDeviceTypeIdCall {
     }
 }
 
-/// [2.2.3.15 GetDeviceTypeId_Return]
+/// [2.2.3.15] GetDeviceTypeId_Return
 ///
-/// [2.2.3.15 GetDeviceTypeId_Return]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/fed90d29-c41f-490a-86e9-7e88e42656b2
+/// [2.2.3.15]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/fed90d29-c41f-490a-86e9-7e88e42656b2
 #[derive(Debug)]
 pub struct GetDeviceTypeIdReturn {
     pub return_code: ReturnCode,
@@ -1558,9 +1558,9 @@ impl rpce::HeaderlessEncode for GetDeviceTypeIdReturn {
     }
 }
 
-/// [2.2.2.26 ReadCacheW_Call]
+/// [2.2.2.26] ReadCacheW_Call
 ///
-/// [2.2.2.26 ReadCacheW_Call]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/f45705cf-9299-4802-b408-685f02025e6a
+/// [2.2.2.26]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/f45705cf-9299-4802-b408-685f02025e6a
 #[derive(Debug)]
 pub struct ReadCacheCall {
     pub lookup_name: String,
@@ -1584,9 +1584,9 @@ impl rpce::HeaderlessDecode for ReadCacheCall {
     }
 }
 
-/// [2.2.1.9 ReadCache_Common]
+/// [2.2.1.9] ReadCache_Common
 ///
-/// [2.2.1.9 ReadCache_Common]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/3f9e07fa-66e2-498b-920c-39531709116b
+/// [2.2.1.9]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/3f9e07fa-66e2-498b-920c-39531709116b
 #[derive(Debug)]
 pub struct ReadCacheCommon {
     pub context: ScardContext,
@@ -1629,9 +1629,9 @@ impl ndr::Decode for ReadCacheCommon {
     }
 }
 
-/// [2.2.3.1 ReadCache_Return]
+/// [2.2.3.1] ReadCache_Return
 ///
-/// [2.2.3.1 ReadCache_Return]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/da342355-e37f-485e-a490-3222a97fa356
+/// [2.2.3.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/da342355-e37f-485e-a490-3222a97fa356
 #[derive(Debug)]
 pub struct ReadCacheReturn {
     pub return_code: ReturnCode,
@@ -1670,9 +1670,9 @@ impl rpce::HeaderlessEncode for ReadCacheReturn {
     }
 }
 
-/// [2.2.2.28 WriteCacheW_Call]
+/// [2.2.2.28] WriteCacheW_Call
 ///
-/// [2.2.2.28 WriteCacheW_Call]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/3969bdcd-ecf3-42db-8bc6-2d6f970f9c67
+/// [2.2.2.28]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/3969bdcd-ecf3-42db-8bc6-2d6f970f9c67
 #[derive(Debug)]
 pub struct WriteCacheCall {
     pub lookup_name: String,
@@ -1696,9 +1696,9 @@ impl rpce::HeaderlessDecode for WriteCacheCall {
     }
 }
 
-/// [2.2.1.10 WriteCache_Common]
+/// [2.2.1.10] WriteCache_Common
 ///
-/// [2.2.1.10 WriteCache_Common]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/5604251b-9173-457c-9476-57863df9010e
+/// [2.2.1.10]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/5604251b-9173-457c-9476-57863df9010e
 #[derive(Debug)]
 pub struct WriteCacheCommon {
     pub context: ScardContext,
@@ -1743,9 +1743,9 @@ impl ndr::Decode for WriteCacheCommon {
     }
 }
 
-/// [2.2.2.31 GetReaderIcon_Call]
+/// [2.2.2.31] GetReaderIcon_Call
 ///
-/// [2.2.2.31 GetReaderIcon_Call]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/e6a68d90-697f-4b98-8ad6-f74853d27ccb
+/// [2.2.2.31]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/e6a68d90-697f-4b98-8ad6-f74853d27ccb
 #[derive(Debug)]
 pub struct GetReaderIconCall {
     pub context: ScardContext,
@@ -1771,9 +1771,9 @@ impl rpce::HeaderlessDecode for GetReaderIconCall {
     }
 }
 
-/// [2.2.3.14 GetReaderIcon_Return]
+/// [2.2.3.14] GetReaderIcon_Return
 ///
-/// [2.2.3.14 GetReaderIcon_Return]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/f011f3d9-e2a4-4c43-a336-4c89ecaa8360
+/// [2.2.3.14]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpesc/f011f3d9-e2a4-4c43-a336-4c89ecaa8360
 #[derive(Debug)]
 pub struct GetReaderIconReturn {
     pub return_code: ReturnCode,

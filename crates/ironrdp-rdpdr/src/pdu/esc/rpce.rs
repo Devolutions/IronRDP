@@ -162,9 +162,9 @@ pub trait HeaderlessDecode: Sized {
     fn decode(src: &mut ReadCursor<'_>) -> PduResult<Self>;
 }
 
-/// [2.2.6.1 Common Type Header for the Serialization Stream]
+/// [2.2.6.1] Common Type Header for the Serialization Stream
 ///
-/// [2.2.6.1 Common Type Header for the Serialization Stream]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rpce/6d75d40e-e2d2-4420-b9e9-8508a726a9ae
+/// [2.2.6.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rpce/6d75d40e-e2d2-4420-b9e9-8508a726a9ae
 struct StreamHeader {
     version: u8,
     endianness: Endianness,
@@ -247,9 +247,9 @@ impl From<Endianness> for u8 {
     }
 }
 
-/// [2.2.6.2 Private Header for Constructed Type]
+/// [2.2.6.2] Private Header for Constructed Type
 ///
-/// [2.2.6.2 Private Header for Constructed Type]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rpce/63949ba8-bc88-4c0c-9377-23f14b197827
+/// [2.2.6.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rpce/63949ba8-bc88-4c0c-9377-23f14b197827
 #[derive(Debug)]
 struct TypeHeader {
     object_buffer_length: u32,

@@ -201,8 +201,9 @@ impl From<DeviceCreateResponse> for RdpdrPdu {
     }
 }
 
-/// [2.2.1.1 Shared Header (RDPDR_HEADER)](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/29d4108f-8163-4a67-8271-e48c4b9c2a7c)
-/// A header that is shared by all RDPDR PDUs.
+/// [2.2.1.1] Shared Header (RDPDR_HEADER), a header that is shared by all RDPDR PDUs.
+///
+/// [2.2.1.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/29d4108f-8163-4a67-8271-e48c4b9c2a7c
 #[derive(Debug)]
 pub struct SharedHeader {
     pub component: Component,
