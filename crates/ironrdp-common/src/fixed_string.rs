@@ -323,13 +323,13 @@ impl<const N: usize> FixedStringZ<N, Utf16Encoding> {
         let mut array = [0; N];
         let mut null_idx = 0;
 
-        input
-            .encode_utf16()
-            .zip(array.chunks_exact_mut(2))
-            .for_each(|(code_unit, dst)| {
-                dst.copy_from_slice(&code_unit.to_le_bytes());
-                null_idx += 2;
-            });
+        // Until N - 2 so we always have a null terminator at the end
+        let dst_it = array[..N - 2].chunks_exact_mut(2);
+
+        input.encode_utf16().zip(dst_it).for_each(|(code_unit, dst)| {
+            dst.copy_from_slice(&code_unit.to_le_bytes());
+            null_idx += 2;
+        });
 
         Self {
             array,
