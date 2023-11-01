@@ -1,0 +1,69 @@
+name: Publish npm package
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry-run:
+        description: 'Dry run'
+        required: true
+        type: boolean
+        default: 'true'
+  schedule:
+    - cron: '48 3 * * 1' # 3:48 AM UTC every Monday
+
+jobs:
+  preflight:
+    name: Preflight
+    runs-on: ubuntu-20.04
+    outputs:
+      dry-run: ${{ steps.get-dry-run.outputs.dry-run }}
+
+    steps:
+      - name: Get dry run
+        id: get-dry-run
+        shell: pwsh
+        run: |
+          $IsDryRun = '${{ github.event.inputs.dry-run }}' -Eq 'true' -Or '${{ github.event_name }}' -Eq 'schedule'
+
+          if ($IsDryRun) {
+            echo "dry-run=true" >> $Env:GITHUB_OUTPUT
+          } else {
+            echo "dry-run=false" >> $Env:GITHUB_OUTPUT
+          }
+
+  publish:
+    name: Publish package
+    runs-on: ubuntu-20.04
+    environment: artifactory-publish
+    needs:
+      - preflight
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      - name: Setup wasm-pack
+        shell: bash
+        run: |
+          curl https://rustwasm.github.io/wasm-pack/installer/init.sh -sSf | sh      
+
+      - name: Build package
+        shell: pwsh
+        run: |
+          Set-Location -Path ./web-client/iron-remote-gui/
+          npm run build
+
+      - name: Prepare npm
+        shell: pwsh
+        run: |
+          npm config set "email = ${{ secrets.ARTIFACTORY_USERNAME }}"
+          npm config set "@devolutions:registry=https://devolutions.jfrog.io/devolutions/api/npm/npm/"
+          npm config set "//devolutions.jfrog.io/devolutions/api/npm/npm/:_auth=${{ secrets.ARTIFACTORY_PASSWORD }}"
+          npm config set "//devolutions.jfrog.io/devolutions/api/npm/npm-local/:_auth=${{ secrets.ARTIFACTORY_PASSWORD }}"
+
+      - name: Build & Publish
+        if: needs.preflight.outputs.dry-run == 'false'
+        shell: pwsh
+        run: |
+          Set-Location -Path ./web-client/iron-remote-gui/dist/
+          npm publish --@devolutions:registry=https://devolutions.jfrog.io/devolutions/api/npm/npm-local/
