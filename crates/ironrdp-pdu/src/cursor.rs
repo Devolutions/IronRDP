@@ -422,6 +422,18 @@ impl<'a> WriteCursor<'a> {
 
     #[inline]
     #[track_caller]
+    pub fn write_i64(&mut self, value: i64) {
+        self.write_array(value.to_le_bytes())
+    }
+
+    #[inline]
+    #[track_caller]
+    pub fn write_i64_be(&mut self, value: i64) {
+        self.write_array(value.to_be_bytes())
+    }
+
+    #[inline]
+    #[track_caller]
     pub fn advance(&mut self, len: usize) {
         self.pos += len;
     }

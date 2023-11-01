@@ -1010,7 +1010,7 @@ impl Debug for NtStatus {
             NtStatus::NO_SUCH_FILE => write!(f, "STATUS_NO_SUCH_FILE"),
             NtStatus::NOT_SUPPORTED => write!(f, "STATUS_NOT_SUPPORTED"),
             NtStatus::DIRECTORY_NOT_EMPTY => write!(f, "STATUS_DIRECTORY_NOT_EMPTY"),
-            _ => write!(f, "{:#010X}", self.0),
+            _ => write!(f, "NtStatus({:#010X})", self.0),
         }
     }
 }
@@ -1317,22 +1317,30 @@ impl DeviceIoResponse {
     }
 }
 
+/// [2.2.3.3 Server Drive I/O Request (DR_DRIVE_CORE_DEVICE_IOREQUEST)]
+///
+/// [2.2.3.3 Server Drive I/O Request (DR_DRIVE_CORE_DEVICE_IOREQUEST)]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/89bb51af-c54d-40fb-81c1-d1bb353c4536
 #[derive(Debug)]
-pub enum FilesystemRequest {
-    DeviceCreateRequest(DeviceCreateRequest),
+pub enum ServerDriveIoRequest {
+    ServerCreateDriveRequest(DeviceCreateRequest),
+    ServerDriveQueryInformationRequest(ServerDriveQueryInformationRequest),
 }
 
-impl FilesystemRequest {
+impl ServerDriveIoRequest {
     pub fn decode(dev_io_req: DeviceIoRequest, src: &mut ReadCursor<'_>) -> PduResult<Self> {
         match dev_io_req.major_function {
-            MajorFunction::Create => Ok(Self::DeviceCreateRequest(DeviceCreateRequest::decode(dev_io_req, src)?)),
+            MajorFunction::Create => Ok(Self::ServerCreateDriveRequest(DeviceCreateRequest::decode(
+                dev_io_req, src,
+            )?)),
             MajorFunction::Close => todo!(),
             MajorFunction::Read => todo!(),
             MajorFunction::Write => todo!(),
             MajorFunction::DeviceControl => todo!(),
             MajorFunction::QueryVolumeInformation => todo!(),
             MajorFunction::SetVolumeInformation => todo!(),
-            MajorFunction::QueryInformation => todo!(),
+            MajorFunction::QueryInformation => Ok(Self::ServerDriveQueryInformationRequest(
+                ServerDriveQueryInformationRequest::decode(dev_io_req, src)?,
+            )),
             MajorFunction::SetInformation => todo!(),
             MajorFunction::DirectoryControl => todo!(),
             MajorFunction::LockControl => todo!(),
@@ -1587,5 +1595,252 @@ bitflags! {
         const FILE_OPENED = 0x00000001;
         /// An existing file was overwritten.
         const FILE_OVERWRITTEN = 0x00000003;
+    }
+}
+
+/// [2.2.3.3.8 Server Drive Query Information Request (DR_DRIVE_QUERY_INFORMATION_REQ)]
+///
+/// Note that Length, Padding, and QueryBuffer fields are all ignored in keeping with the [analogous code in FreeRDP].
+///
+/// [2.2.3.3.8 Server Drive Query Information Request (DR_DRIVE_QUERY_INFORMATION_REQ)]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/e43dcd68-2980-40a9-9238-344b6cf94946
+/// [analogous code in FreeRDP]: https://github.com/FreeRDP/FreeRDP/blob/511444a65e7aa2f537c5e531fa68157a50c1bd4d/channels/drive/client/drive_main.c#L384
+#[derive(Debug)]
+pub struct ServerDriveQueryInformationRequest {
+    pub device_io_request: DeviceIoRequest,
+    pub file_info_class_lvl: FileInformationClassLevel,
+}
+
+impl ServerDriveQueryInformationRequest {
+    pub fn decode(dev_io_req: DeviceIoRequest, src: &mut ReadCursor<'_>) -> PduResult<Self> {
+        ensure_size!(ctx: "ServerDriveQueryInformationRequest", in: src, size: 4);
+        let file_info_class_lvl = FileInformationClassLevel::from(src.read_u32());
+
+        Ok(Self {
+            device_io_request: dev_io_req,
+            file_info_class_lvl,
+        })
+    }
+}
+
+/// [2.4 File Information Classes \[MS-FSCC\]]
+///
+/// [2.4 File Information Classes \[MS-FSCC\]]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-fscc/4718fc40-e539-4014-8e33-b675af74e3e1
+#[derive(PartialEq, Eq, Clone)]
+pub struct FileInformationClassLevel(u32);
+
+impl FileInformationClassLevel {
+    /// FileBasicInformation
+    pub const FILE_BASIC_INFORMATION: Self = Self(0x00000004);
+    /// FileStandardInformation
+    pub const FILE_STANDARD_INFORMATION: Self = Self(0x00000005);
+    /// FileAttributeTagInformation
+    pub const FILE_ATTRIBUTE_TAG_INFORMATION: Self = Self(0x00000023);
+}
+
+impl Debug for FileInformationClassLevel {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match *self {
+            FileInformationClassLevel::FILE_BASIC_INFORMATION => write!(f, "FileBasicInformation"),
+            FileInformationClassLevel::FILE_STANDARD_INFORMATION => write!(f, "FileStandardInformation"),
+            FileInformationClassLevel::FILE_ATTRIBUTE_TAG_INFORMATION => write!(f, "FileAttributeTagInformation"),
+            _ => write!(f, "FileInformationClassLevel({:#010X})", self.0),
+        }
+    }
+}
+
+impl From<u32> for FileInformationClassLevel {
+    fn from(value: u32) -> Self {
+        Self(value)
+    }
+}
+
+impl From<FileInformationClassLevel> for u32 {
+    fn from(file_info_class_lvl: FileInformationClassLevel) -> Self {
+        file_info_class_lvl.0
+    }
+}
+
+/// [2.2.3.4.8 Client Drive Query Information Response (DR_DRIVE_QUERY_INFORMATION_RSP)]
+///
+/// [2.2.3.4.8 Client Drive Query Information Response (DR_DRIVE_QUERY_INFORMATION_RSP)]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/37ef4fb1-6a95-4200-9fbf-515464f034a4
+#[derive(Debug)]
+pub struct ClientDriveQueryInformationResponse {
+    pub device_io_response: DeviceIoResponse,
+    /// If [`Self::device_io_response`] has an `io_status` besides [`NtStatus::SUCCESS`],
+    /// this field can be omitted (set to `None`).
+    pub buffer: Option<FileInformationClass>,
+}
+
+impl ClientDriveQueryInformationResponse {
+    const NAME: &str = "DR_DRIVE_QUERY_INFORMATION_RSP";
+
+    pub fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    pub fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_size!(in: dst, size: self.size());
+        self.device_io_response.encode(dst)?;
+        if let Some(buffer) = &self.buffer {
+            dst.write_u32(cast_length!(
+                "ClientDriveQueryInformationResponse",
+                "buffer.size()",
+                buffer.size()
+            )?);
+            buffer.encode(dst)?;
+        } else {
+            dst.write_u32(0); // Length = 0
+        }
+        Ok(())
+    }
+
+    pub fn size(&self) -> usize {
+        self.device_io_response.size() // DeviceIoResponse
+        + 4 // Length
+        + if let Some(buffer) = &self.buffer {
+            buffer.size() // Buffer
+        } else {
+            0
+        }
+    }
+}
+
+/// [2.4 File Information Classes \[MS-FSCC\]]
+///
+/// [2.4 File Information Classes \[MS-FSCC\]]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-fscc/4718fc40-e539-4014-8e33-b675af74e3e1
+#[derive(Debug, Clone)]
+pub enum FileInformationClass {
+    Basic(FileBasicInformation),
+    Standard(FileStandardInformation),
+    AttributeTag(FileAttributeTagInformation),
+}
+
+impl FileInformationClass {
+    pub fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        match self {
+            Self::Basic(f) => f.encode(dst),
+            Self::Standard(f) => f.encode(dst),
+            Self::AttributeTag(f) => f.encode(dst),
+        }
+    }
+
+    pub fn size(&self) -> usize {
+        match self {
+            Self::Basic(_) => FileBasicInformation::size(),
+            Self::Standard(_) => FileStandardInformation::size(),
+            Self::AttributeTag(_) => FileAttributeTagInformation::size(),
+        }
+    }
+}
+
+/// [2.4.7 FileBasicInformation \[MS-FSCC\]]
+///
+/// [2.4.7 FileBasicInformation \[MS-FSCC\]]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-fscc/16023025-8a78-492f-8b96-c873b042ac50
+#[derive(Debug, Clone)]
+pub struct FileBasicInformation {
+    pub creation_time: i64,
+    pub last_access_time: i64,
+    pub last_write_time: i64,
+    pub change_time: i64,
+    pub file_attributes: FileAttributes,
+    // NOTE: The `reserved` field in the spec MUST not be serialized and sent over RDP, or it will break the server implementation.
+    // FreeRDP does the same: https://github.com/FreeRDP/FreeRDP/blob/1adb263813ca2e76a893ef729a04db8f94b5d757/channels/drive/client/drive_file.c#L508
+}
+
+impl FileBasicInformation {
+    const NAME: &str = "FileBasicInformation";
+
+    pub fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_size!(in: dst, size: Self::size());
+        dst.write_i64(self.creation_time);
+        dst.write_i64(self.last_access_time);
+        dst.write_i64(self.last_write_time);
+        dst.write_i64(self.change_time);
+        dst.write_u32(self.file_attributes.bits());
+        Ok(())
+    }
+
+    pub fn size() -> usize {
+        8 // CreationTime
+        + 8 // LastAccessTime
+        + 8 // LastWriteTime
+        + 8 // ChangeTime
+        + 4 // FileAttributes
+    }
+}
+
+/// [2.4.41 FileStandardInformation \[MS-FSCC\]]
+///
+/// [2.4.41 FileStandardInformation \[MS-FSCC\]]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-fscc/5afa7f66-619c-48f3-955f-68c4ece704ae
+#[derive(Debug, Clone)]
+pub struct FileStandardInformation {
+    pub allocation_size: i64,
+    pub end_of_file: i64,
+    pub number_of_links: u32,
+    /// Set to TRUE to indicate that a file deletion has been requested; set to FALSE
+    /// otherwise.
+    pub delete_pending: Boolean,
+    /// Set to TRUE to indicate that the file is a directory; set to FALSE otherwise.
+    pub directory: Boolean,
+    // NOTE: `reserved` field omitted.
+}
+
+impl FileStandardInformation {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        dst.write_i64(self.allocation_size);
+        dst.write_i64(self.end_of_file);
+        dst.write_u32(self.number_of_links);
+        dst.write_u8(self.delete_pending.into());
+        dst.write_u8(self.directory.into());
+        Ok(())
+    }
+
+    pub fn size() -> usize {
+        8 // AllocationSize
+        + 8 // EndOfFile
+        + 4 // NumberOfLinks
+        + 1 // DeletePending
+        + 1 // Directory
+    }
+}
+
+/// [2.1.8 Boolean]
+///
+/// [2.1.8 Boolean]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-fscc/8ce7b38c-d3cc-415d-ab39-944000ea77ff
+#[derive(Debug, PartialEq, Clone, Copy)]
+#[repr(u8)]
+pub enum Boolean {
+    True = 1,
+    False = 0,
+}
+
+impl From<Boolean> for u8 {
+    fn from(boolean: Boolean) -> Self {
+        match boolean {
+            Boolean::True => 1,
+            Boolean::False => 0,
+        }
+    }
+}
+
+/// [2.4.6 FileAttributeTagInformation \[MS-FSCC\]]
+///
+/// [2.4.6 FileAttributeTagInformation \[MS-FSCC\]]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-fscc/d295752f-ce89-4b98-8553-266d37c84f0e?redirectedfrom=MSDN
+#[derive(Debug, Clone)]
+pub struct FileAttributeTagInformation {
+    pub file_attributes: FileAttributes,
+    pub reparse_tag: u32,
+}
+
+impl FileAttributeTagInformation {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        dst.write_u32(self.file_attributes.bits());
+        dst.write_u32(self.reparse_tag);
+        Ok(())
+    }
+
+    fn size() -> usize {
+        4 // FileAttributes
+        + 4 // ReparseTag
     }
 }
