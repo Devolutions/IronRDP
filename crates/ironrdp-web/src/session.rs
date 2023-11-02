@@ -476,7 +476,7 @@ fn build_config(
         },
         graphics: None,
         bitmap: Some(connector::BitmapConfig {
-            color_depth: 32,
+            color_depth: 16,
             lossy_compression: true,
         }),
         #[allow(clippy::arithmetic_side_effects)] // fine unless we end up with an insanely big version
