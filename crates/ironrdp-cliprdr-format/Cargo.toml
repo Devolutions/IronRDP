@@ -17,7 +17,6 @@ doctest = false
 test = false
 
 [dependencies]
-ironrdp-cliprdr.workspace = true
 ironrdp-pdu.workspace = true
 thiserror.workspace = true
 tracing.workspace = true

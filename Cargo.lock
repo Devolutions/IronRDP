@@ -1767,7 +1767,6 @@ dependencies = [
 name = "ironrdp-cliprdr-format"
 version = "0.1.0"
 dependencies = [
- "ironrdp-cliprdr",
  "ironrdp-pdu",
  "png",
  "thiserror",

@@ -7,6 +7,7 @@
 use core::fmt;
 
 use cursor::WriteCursor;
+#[cfg(feature = "alloc")]
 use write_buf::WriteBuf;
 
 use crate::cursor::ReadCursor;

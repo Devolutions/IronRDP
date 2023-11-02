@@ -17,55 +17,58 @@ pub enum BitmapError {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct BitmapCompression(pub u32);
+struct BitmapCompression(u32);
 
+#[allow(dead_code)]
 impl BitmapCompression {
-    pub const RGB: Self = Self(0x0000);
-    pub const RLE8: Self = Self(0x0001);
-    pub const RLE4: Self = Self(0x0002);
-    pub const BITFIELDS: Self = Self(0x0003);
-    pub const JPEG: Self = Self(0x0004);
-    pub const PNG: Self = Self(0x0005);
-    pub const CMYK: Self = Self(0x000B);
-    pub const CMYKRLE8: Self = Self(0x000C);
-    pub const CMYKRLE4: Self = Self(0x000D);
+    const RGB: Self = Self(0x0000);
+    const RLE8: Self = Self(0x0001);
+    const RLE4: Self = Self(0x0002);
+    const BITFIELDS: Self = Self(0x0003);
+    const JPEG: Self = Self(0x0004);
+    const PNG: Self = Self(0x0005);
+    const CMYK: Self = Self(0x000B);
+    const CMYKRLE8: Self = Self(0x000C);
+    const CMYKRLE4: Self = Self(0x000D);
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct ColorSpace(pub u32);
+struct ColorSpace(u32);
 
+#[allow(dead_code)]
 impl ColorSpace {
-    pub const CALIBRATED_RGB: Self = Self(0x00000000);
-    pub const SRGB: Self = Self(0x73524742);
-    pub const WINDOWS: Self = Self(0x57696E20);
-    pub const PROFILE_LINKED: Self = Self(0x4C494E4B);
-    pub const PROFILE_EMBEDDED: Self = Self(0x4D424544);
+    const CALIBRATED_RGB: Self = Self(0x00000000);
+    const SRGB: Self = Self(0x73524742);
+    const WINDOWS: Self = Self(0x57696E20);
+    const PROFILE_LINKED: Self = Self(0x4C494E4B);
+    const PROFILE_EMBEDDED: Self = Self(0x4D424544);
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct BitmapIntent(pub u32);
+struct BitmapIntent(u32);
 
+#[allow(dead_code)]
 impl BitmapIntent {
-    pub const LCS_GM_ABS_COLORIMETRIC: Self = Self(0x00000008);
-    pub const LCS_GM_BUSINESS: Self = Self(0x00000001);
-    pub const LCS_GM_GRAPHICS: Self = Self(0x00000002);
-    pub const LCS_GM_IMAGES: Self = Self(0x00000004);
+    const LCS_GM_ABS_COLORIMETRIC: Self = Self(0x00000008);
+    const LCS_GM_BUSINESS: Self = Self(0x00000001);
+    const LCS_GM_GRAPHICS: Self = Self(0x00000002);
+    const LCS_GM_IMAGES: Self = Self(0x00000004);
 }
 
-pub type Fxpt2Dot30 = u32; // (LONG)
+type Fxpt2Dot30 = u32; // (LONG)
 
 #[derive(Default)]
-pub struct Ciexyz {
-    pub x: Fxpt2Dot30,
-    pub y: Fxpt2Dot30,
-    pub z: Fxpt2Dot30,
+struct Ciexyz {
+    x: Fxpt2Dot30,
+    y: Fxpt2Dot30,
+    z: Fxpt2Dot30,
 }
 
 #[derive(Default)]
-pub struct CiexyzTriple {
-    pub red: Ciexyz,
-    pub green: Ciexyz,
-    pub blue: Ciexyz,
+struct CiexyzTriple {
+    red: Ciexyz,
+    green: Ciexyz,
+    blue: Ciexyz,
 }
 
 impl CiexyzTriple {
@@ -127,17 +130,22 @@ impl PduEncode for CiexyzTriple {
     }
 }
 
+/// Header used in `CF_DIB` formats, part of BITMAPINFO defined in
+/// [wingdi](https://learn.microsoft.com/ru-ru/windows/win32/api/wingdi/ns-wingdi-bitmapinfo)
+///
+/// We don't use the optional `bmiColors` field, because it is only relevant for bitmaps with
+/// bpp < 24, which are not supported yet, therefore only fixed part of the header is implemented.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct BitmapInfoHeader {
-    pub width: i32,
-    pub height: i32,
-    pub bit_count: u16,
-    pub compression: BitmapCompression,
-    pub size_image: u32,
-    pub x_pels_per_meter: i32,
-    pub y_pels_per_meter: i32,
-    pub clr_used: u32,
-    pub clr_important: u32,
+struct BitmapInfoHeader {
+    width: i32,
+    height: i32,
+    bit_count: u16,
+    compression: BitmapCompression,
+    size_image: u32,
+    x_pels_per_meter: i32,
+    y_pels_per_meter: i32,
+    clr_used: u32,
+    clr_important: u32,
 }
 
 impl BitmapInfoHeader {
@@ -154,10 +162,6 @@ impl BitmapInfoHeader {
         + 4; // biClrImportant (DWORD)
 
     const NAME: &str = "BITMAPINFOHEADER";
-
-    pub fn has_color_table(&self) -> bool {
-        (self.bit_count <= 8) && (self.compression == BitmapCompression::RGB)
-    }
 
     fn encode_with_size(&self, dst: &mut WriteCursor<'_>, size: u32) -> PduResult<()> {
         ensure_fixed_part_size!(in: dst);
@@ -240,20 +244,22 @@ impl<'a> PduDecode<'a> for BitmapInfoHeader {
     }
 }
 
-pub struct BitmapV5Header {
-    pub header_v1: BitmapInfoHeader,
-    pub red_mask: u32,
-    pub green_mask: u32,
-    pub blue_mask: u32,
-    pub alpha_mask: u32,
-    pub color_space: ColorSpace,
-    pub endpoints: CiexyzTriple,
-    pub gamma_red: u32,
-    pub gamma_green: u32,
-    pub gamma_blue: u32,
-    pub intent: BitmapIntent,
-    pub profile_data: u32,
-    pub profile_size: u32,
+/// Header used in `CF_DIBV5` formats, defined as `BITMAPV5HEADER` in
+/// [wingdi](https://learn.microsoft.com/ru-ru/windows/win32/api/wingdi/ns-wingdi-bitmapv5header)
+struct BitmapV5Header {
+    header_v1: BitmapInfoHeader,
+    red_mask: u32,
+    green_mask: u32,
+    blue_mask: u32,
+    alpha_mask: u32,
+    color_space: ColorSpace,
+    endpoints: CiexyzTriple,
+    gamma_red: u32,
+    gamma_green: u32,
+    gamma_blue: u32,
+    intent: BitmapIntent,
+    profile_data: u32,
+    profile_size: u32,
 }
 
 impl BitmapV5Header {
@@ -514,6 +520,7 @@ fn encode_png(input: PngEncoderInput) -> Result<Vec<u8>, BitmapError> {
     Ok(output)
 }
 
+/// Convert `CF_DIB` to PNG.
 pub fn dib_to_png(input: &[u8]) -> Result<Vec<u8>, BitmapError> {
     let mut src = ReadCursor::new(input);
     let header = BitmapInfoHeader::decode(&mut src).map_err(BitmapError::InvalidHeader)?;
@@ -524,6 +531,7 @@ pub fn dib_to_png(input: &[u8]) -> Result<Vec<u8>, BitmapError> {
     encode_png(png_inputs)
 }
 
+/// Convert `CF_DIB` to PNG.
 pub fn dibv5_to_png(input: &[u8]) -> Result<Vec<u8>, BitmapError> {
     let mut src = ReadCursor::new(input);
     let header = BitmapV5Header::decode(&mut src).map_err(BitmapError::InvalidHeader)?;
@@ -534,7 +542,7 @@ pub fn dibv5_to_png(input: &[u8]) -> Result<Vec<u8>, BitmapError> {
     encode_png(png_inputs)
 }
 
-pub fn transform_png(info: png::OutputInfo, input_buffer: Vec<u8>) -> Result<(BitmapInfoHeader, Vec<u8>), BitmapError> {
+fn transform_png(info: png::OutputInfo, input_buffer: Vec<u8>) -> Result<(BitmapInfoHeader, Vec<u8>), BitmapError> {
     let no_alpha = info.color_type != png::ColorType::Rgba;
 
     let stride = bmp_stride(
@@ -607,6 +615,7 @@ fn decode_png(mut input: &[u8]) -> Result<(png::OutputInfo, Vec<u8>), BitmapErro
     Ok((info, buffer))
 }
 
+/// Convert PNG to `CF_DIB` format.
 pub fn png_to_cf_dib(input: &[u8]) -> Result<Vec<u8>, BitmapError> {
     let (info, input_buffer) = decode_png(input)?;
     let (header, output_buffer) = transform_png(info, input_buffer)?;
@@ -621,6 +630,7 @@ pub fn png_to_cf_dib(input: &[u8]) -> Result<Vec<u8>, BitmapError> {
     Ok(dib_buffer)
 }
 
+/// Convert PNG to `CF_DIBV5` format.
 pub fn png_to_cf_dibv5(input: &[u8]) -> Result<Vec<u8>, BitmapError> {
     let (info, input_buffer) = decode_png(input)?;
     let (header_v1, output_buffer) = transform_png(info, input_buffer)?;

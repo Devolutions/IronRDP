@@ -12,6 +12,7 @@ pub enum HtmlError {
     InvalidConversion,
 }
 
+/// Convert `CF_HTML` format to plain text.
 pub fn cf_html_to_text(input: &[u8]) -> Result<String, HtmlError> {
     let mut start_fragment = None;
     let mut end_fragment = None;
@@ -81,6 +82,7 @@ pub fn cf_html_to_text(input: &[u8]) -> Result<String, HtmlError> {
     Ok(fragment)
 }
 
+/// Convert plain text HTML to `CF_HTML` format.
 pub fn text_to_cf_html(fragment: &str) -> Vec<u8> {
     let mut buffer = Vec::new();
 

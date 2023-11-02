@@ -1,3 +1,5 @@
+//! This module implements browser-based clipboard backend for CLIPRDR SVC
+
 mod transaction;
 
 use std::collections::HashMap;
@@ -54,6 +56,7 @@ const FORMAT_MIME_HTML: ClientFormatDescriptor =
 const FORMAT_PNG: ClientFormatDescriptor = ClientFormatDescriptor::new(FORMAT_PNG_ID, FORMAT_PNG_NAME);
 const FORMAT_MIME_PNG: ClientFormatDescriptor = ClientFormatDescriptor::new(FORMAT_MIME_PNG_ID, FORMAT_MIME_PNG_NAME);
 
+/// Message proxy used to send clipboard-related messages to the application main event loop
 #[derive(Debug, Clone)]
 pub struct WasmClipboardMessageProxy {
     tx: mpsc::UnboundedSender<RdpInputEvent>,
@@ -64,12 +67,14 @@ impl WasmClipboardMessageProxy {
         Self { tx }
     }
 
+    /// Send messages which require action on CLIPRDR SVC
     pub fn send_cliprdr_message(&self, message: ClipboardMessage) {
         if self.tx.unbounded_send(RdpInputEvent::Cliprdr(message)).is_err() {
             error!("Failed to send os clipboard message, receiver is closed");
         }
     }
 
+    /// Send messages which require action on wasm clipboard backend
     pub fn send_backend_message(&self, message: WasmClipboardBackendMessage) {
         if self
             .tx
@@ -81,23 +86,21 @@ impl WasmClipboardMessageProxy {
     }
 }
 
+/// Messages sent by the JS code or CLIPRDR to the backend implementation.
 #[derive(Debug)]
 pub enum WasmClipboardBackendMessage {
-    /// Client's clipboard changed
-    ///
-    /// When received:
-    /// - Client should CLIPRDR copy sequence
-    /// - Client should be ready for paste sequence
     LocalClipboardChanged(ClipboardTransaction),
-    RemotePaste(ClipboardFormatId),
+    RemoteDataRequest(ClipboardFormatId),
 
-    RemoteCopy(Vec<ClipboardFormat>),
-    RemoteFormatReceived(FormatDataResponse<'static>),
+    RemoteClipboardChanged(Vec<ClipboardFormat>),
+    RemoteDataResponse(FormatDataResponse<'static>),
 
     FormatListReceived,
     ForceClipboardUpdate,
 }
 
+/// Clipboard backend implementation for web. This object should be created once per session and
+/// kept alive until session is terminated.
 pub struct WasmCipboard {
     local_clipboard: Option<ClipboardTransaction>,
     remote_clipborad: ClipboardTransaction,
@@ -109,6 +112,7 @@ pub struct WasmCipboard {
     js_callbacks: JsClipboardCallbacks,
 }
 
+/// Callbacks, required to interact with JS code from within the backend.
 pub struct JsClipboardCallbacks {
     pub on_remote_clipboard_changed: js_sys::Function,
     pub on_remote_received_format_list: Option<js_sys::Function>,
@@ -128,6 +132,7 @@ impl WasmCipboard {
         }
     }
 
+    /// Returns CLIPRDR backend implementation
     pub fn backend(&self) -> WasmClipboardBackend {
         WasmClipboardBackend {
             proxy: self.proxy.clone(),
@@ -171,7 +176,10 @@ impl WasmCipboard {
         Ok(formats)
     }
 
-    fn process_remote_paste(&mut self, format: ClipboardFormatId) -> anyhow::Result<FormatDataResponse<'static>> {
+    fn process_remote_data_request(
+        &mut self,
+        format: ClipboardFormatId,
+    ) -> anyhow::Result<FormatDataResponse<'static>> {
         // Transaction is not set, bail!
         let transaction = if let Some(transaction) = &self.local_clipboard {
             transaction
@@ -327,7 +335,7 @@ impl WasmCipboard {
         Ok(self.remote_formats_to_read.last().cloned())
     }
 
-    fn process_client_paste(&mut self, response: FormatDataResponse) -> anyhow::Result<()> {
+    fn process_remote_data_response(&mut self, response: FormatDataResponse) -> anyhow::Result<()> {
         let pending_format = match self.remote_formats_to_read.pop() {
             Some(format) => format,
             None => {
@@ -415,6 +423,7 @@ impl WasmCipboard {
         Ok(())
     }
 
+    /// Process backend event. This method should be called from the main event loop.
     pub fn process_event(&mut self, event: WasmClipboardBackendMessage) -> anyhow::Result<()> {
         match event {
             WasmClipboardBackendMessage::LocalClipboardChanged(transaction) => {
@@ -429,22 +438,23 @@ impl WasmCipboard {
                     }
                 }
             }
-            WasmClipboardBackendMessage::RemotePaste(format) => {
-                let message = match self.process_remote_paste(format) {
+            WasmClipboardBackendMessage::RemoteDataRequest(format) => {
+                let message = match self.process_remote_data_request(format) {
                     Ok(message) => message,
                     Err(err) => {
                         // Not a critical error, but we should notify remote about error
-                        error!("Failed to process remote paste: {}", err);
+                        error!("Failed to process remote data request: {}", err);
                         FormatDataResponse::new_error()
                     }
                 };
                 self.proxy
                     .send_cliprdr_message(ClipboardMessage::SendFormatData(message));
             }
-            WasmClipboardBackendMessage::RemoteCopy(formats) => {
+            WasmClipboardBackendMessage::RemoteClipboardChanged(formats) => {
                 match self.process_remote_clipboard_changed(formats) {
                     Ok(Some(format)) => {
-                        // Request first format
+                        // We start querying formats right away. This is due absence of
+                        // delay-rendering in web client.
                         self.proxy
                             .send_cliprdr_message(ClipboardMessage::SendInitiatePaste(format));
                     }
@@ -456,12 +466,14 @@ impl WasmCipboard {
                     }
                 }
             }
-            WasmClipboardBackendMessage::RemoteFormatReceived(formats) => match self.process_client_paste(formats) {
-                Ok(()) => {}
-                Err(err) => {
-                    error!("Failed to process remote paste: {}", err);
+            WasmClipboardBackendMessage::RemoteDataResponse(formats) => {
+                match self.process_remote_data_response(formats) {
+                    Ok(()) => {}
+                    Err(err) => {
+                        error!("Failed to process remote data response: {}", err);
+                    }
                 }
-            },
+            }
             WasmClipboardBackendMessage::FormatListReceived => {
                 if let Some(callback) = self.js_callbacks.on_remote_received_format_list.as_mut() {
                     callback.call0(&JsValue::NULL).expect("Failed to call JS callback");
@@ -483,6 +495,8 @@ impl WasmCipboard {
     }
 }
 
+/// CLIPRDR backend implementation for web. This object could be instantiated via [`WasmCipboard`]
+/// to pass it to CLIPRDR SVC constructor.
 #[derive(Debug)]
 pub struct WasmClipboardBackend {
     proxy: WasmClipboardMessageProxy,
@@ -520,15 +534,17 @@ impl CliprdrBackend for WasmClipboardBackend {
     }
 
     fn on_remote_copy(&mut self, available_formats: &[ClipboardFormat]) {
-        self.send_event(WasmClipboardBackendMessage::RemoteCopy(available_formats.to_vec()));
+        self.send_event(WasmClipboardBackendMessage::RemoteClipboardChanged(
+            available_formats.to_vec(),
+        ));
     }
 
     fn on_format_data_request(&mut self, request: FormatDataRequest) {
-        self.send_event(WasmClipboardBackendMessage::RemotePaste(request.format));
+        self.send_event(WasmClipboardBackendMessage::RemoteDataRequest(request.format));
     }
 
     fn on_format_data_response(&mut self, response: FormatDataResponse) {
-        self.send_event(WasmClipboardBackendMessage::RemoteFormatReceived(response.into_owned()));
+        self.send_event(WasmClipboardBackendMessage::RemoteDataResponse(response.into_owned()));
     }
 
     fn on_file_contents_request(&mut self, _request: FileContentsRequest) {

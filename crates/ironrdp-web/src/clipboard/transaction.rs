@@ -1,5 +1,6 @@
 use wasm_bindgen::prelude::*;
 
+/// Object which represents complete clipboard transaction with multiple MIME types.
 #[wasm_bindgen]
 #[derive(Debug, Default, Clone)]
 pub struct ClipboardTransaction {
@@ -63,6 +64,7 @@ impl ClipboardContentValue {
     }
 }
 
+/// Object which represents single clipboard format represented standard MIME type.
 #[wasm_bindgen]
 #[derive(Debug, Clone)]
 pub struct ClipboardContent {
