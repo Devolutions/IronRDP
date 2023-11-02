@@ -158,11 +158,7 @@ impl CredSspSequence {
         self.client.process(request)
     }
 
-    pub fn handle_process_result(
-        &mut self,
-        result: ClientState,
-        output: &mut WriteBuf,
-    ) -> ConnectorResult<Written> {
+    pub fn handle_process_result(&mut self, result: ClientState, output: &mut WriteBuf) -> ConnectorResult<Written> {
         let (size, next_state) = match self.state {
             CredSSPState::CredsspInitial => {
                 let (ts_request_from_client, next_state) = match result {
