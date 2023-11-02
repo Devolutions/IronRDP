@@ -137,7 +137,7 @@ where
         };
 
         if credssp_sequence.wants_request_from_server() {
-            credssp_sequence.read_request_from_server(&input.unwrap_or_else(||[].to_vec()))?;
+            credssp_sequence.read_request_from_server(&input.unwrap_or_else(|| [].to_vec()))?;
         }
         let client_state = {
             let mut generator = credssp_sequence.process();
