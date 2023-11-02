@@ -38,7 +38,10 @@ pub use self::backend::RdpdrBackend;
 /// [\[MS-RDPEFS\] Appendix A<1>]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/fd28bfd9-dae2-4a78-abe1-b4efa208b7aa#Appendix_A_1
 #[derive(Debug)]
 pub struct Rdpdr {
-    /// TODO: explain what this is
+    /// The name of the computer that is running the client.
+    ///
+    /// Any directories shared will be displayed by File Explorer
+    /// as "<directory> on <computer_name>".
     computer_name: String,
     capabilities: Capabilities,
     /// Pre-configured list of devices to announce to the server.
@@ -54,6 +57,8 @@ impl Rdpdr {
     pub const NAME: ChannelName = ChannelName::from_static(b"rdpdr\0\0\0");
 
     /// Creates a new [`Rdpdr`].
+    ///
+    /// See [`Rdpdr::computer_name`].
     pub fn new(backend: Box<dyn RdpdrBackend>, computer_name: String) -> Self {
         Self {
             computer_name,
@@ -212,9 +217,8 @@ impl StaticVirtualChannelProcessor for Rdpdr {
             | RdpdrPdu::CoreCapability(_)
             | RdpdrPdu::DeviceControlResponse(_)
             | RdpdrPdu::DeviceCreateResponse(_)
-            | RdpdrPdu::ClientDriveQueryInformationResponse(_) => {
-                Err(other_err!("Rdpdr", "received unexpected packet"))
-            }
+            | RdpdrPdu::ClientDriveQueryInformationResponse(_)
+            | RdpdrPdu::DeviceCloseResponse(_) => Err(other_err!("Rdpdr", "received unexpected packet")),
         }
     }
 }

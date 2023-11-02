@@ -1346,27 +1346,42 @@ impl DeviceIoResponse {
 pub enum ServerDriveIoRequest {
     ServerCreateDriveRequest(DeviceCreateRequest),
     ServerDriveQueryInformationRequest(ServerDriveQueryInformationRequest),
+    DeviceCloseRequest(DeviceCloseRequest),
 }
 
 impl ServerDriveIoRequest {
     pub fn decode(dev_io_req: DeviceIoRequest, src: &mut ReadCursor<'_>) -> PduResult<Self> {
         match dev_io_req.major_function {
-            MajorFunction::Create => Ok(Self::ServerCreateDriveRequest(DeviceCreateRequest::decode(
-                dev_io_req, src,
-            )?)),
-            MajorFunction::Close => todo!(),
+            MajorFunction::Create => Ok(DeviceCreateRequest::decode(dev_io_req, src)?.into()),
+            MajorFunction::Close => Ok(DeviceCloseRequest::decode(dev_io_req).into()),
             MajorFunction::Read => todo!(),
             MajorFunction::Write => todo!(),
             MajorFunction::DeviceControl => todo!(),
             MajorFunction::QueryVolumeInformation => todo!(),
             MajorFunction::SetVolumeInformation => todo!(),
-            MajorFunction::QueryInformation => Ok(Self::ServerDriveQueryInformationRequest(
-                ServerDriveQueryInformationRequest::decode(dev_io_req, src)?,
-            )),
+            MajorFunction::QueryInformation => Ok(ServerDriveQueryInformationRequest::decode(dev_io_req, src)?.into()),
             MajorFunction::SetInformation => todo!(),
             MajorFunction::DirectoryControl => todo!(),
             MajorFunction::LockControl => todo!(),
         }
+    }
+}
+
+impl From<DeviceCreateRequest> for ServerDriveIoRequest {
+    fn from(req: DeviceCreateRequest) -> Self {
+        Self::ServerCreateDriveRequest(req)
+    }
+}
+
+impl From<ServerDriveQueryInformationRequest> for ServerDriveIoRequest {
+    fn from(req: ServerDriveQueryInformationRequest) -> Self {
+        Self::ServerDriveQueryInformationRequest(req)
+    }
+}
+
+impl From<DeviceCloseRequest> for ServerDriveIoRequest {
+    fn from(req: DeviceCloseRequest) -> Self {
+        Self::DeviceCloseRequest(req)
     }
 }
 
@@ -1408,7 +1423,9 @@ impl DeviceCreateRequest {
         let path_length: usize = cast_length!("DeviceCreateRequest", "path_length", src.read_u32())?;
 
         ensure_size!(ctx: "DeviceCreateRequest", in: src, size: path_length);
-        let path = from_utf16_bytes(src.read_slice(path_length));
+        let path = from_utf16_bytes(src.read_slice(path_length))
+            .trim_end_matches('\0')
+            .into();
 
         Ok(Self {
             device_io_request: dev_io_req,
@@ -1865,5 +1882,52 @@ impl FileAttributeTagInformation {
     fn size() -> usize {
         4 // FileAttributes
         + 4 // ReparseTag
+    }
+}
+
+/// [2.2.1.4.2] Device Close Request (DR_CLOSE_REQ)
+///
+/// [2.2.1.4.2]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/3ec6627f-9e0f-4941-a828-3fc6ed63d9e7
+#[derive(Debug)]
+pub struct DeviceCloseRequest {
+    pub device_io_request: DeviceIoRequest,
+    // Padding (32 bytes): ignored as per FreeRDP:
+    // https://github.com/FreeRDP/FreeRDP/blob/511444a65e7aa2f537c5e531fa68157a50c1bd4d/channels/drive/client/drive_main.c#L236
+}
+
+impl DeviceCloseRequest {
+    pub fn decode(dev_io_req: DeviceIoRequest) -> Self {
+        Self {
+            device_io_request: dev_io_req,
+        }
+    }
+}
+
+/// [2.2.1.5.2] Device Close Response (DR_CLOSE_RSP)
+///
+/// [2.2.1.5.2]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/0dae7031-cfd8-4f14-908c-ec06e14997b5
+#[derive(Debug)]
+pub struct DeviceCloseResponse {
+    pub device_io_response: DeviceIoResponse,
+    // Padding (4 bytes):  An array of 4 bytes. Reserved. This field can be set to any value and MUST be ignored.
+}
+
+impl DeviceCloseResponse {
+    const NAME: &str = "DR_CLOSE_RSP";
+
+    pub fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    pub fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_size!(in: dst, size: self.size());
+        self.device_io_response.encode(dst)?;
+        dst.write_u32(0); // Padding
+        Ok(())
+    }
+
+    pub fn size(&self) -> usize {
+        self.device_io_response.size() // DeviceIoResponse
+        + 4 // Padding
     }
 }
