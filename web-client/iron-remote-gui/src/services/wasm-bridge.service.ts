@@ -182,7 +182,7 @@ export class WasmBridgeService {
 		}
 	}
 
-	mouseWheel(event) {
+	mouseWheel(event: WheelEvent) {
 		const vertical = event.deltaY !== 0;
 		const rotation = vertical ? event.deltaY : event.deltaX;
 		this.doTransactionFromDeviceEvents([DeviceEvent.new_wheel_rotations(vertical, -rotation)]);
@@ -216,15 +216,15 @@ export class WasmBridgeService {
 		}
 
 		if (keyEvent) {
-			if (ModifierKey[evt.code]) {
+			if (ModifierKey[evt.code as keyof typeof ModifierKey]) {
 				this.updateModifierKeyState(evt);
 			}
 
-			if (LockKey[evt.code]) {
+			if (LockKey[evt.code as keyof typeof LockKey]) {
 				this.syncModifier(evt);
 			}
 
-			if (!evt.repeat || (!ModifierKey[evt.code] && !LockKey[evt.code])) {
+			if (!evt.repeat || (!ModifierKey[evt.code as keyof typeof ModifierKey] && !LockKey[evt.code as keyof typeof LockKey])) {
 				this.doTransactionFromDeviceEvents([keyEvent(scanCode(evt.code, OS.WINDOWS))]);
 			}
 		}
@@ -256,11 +256,11 @@ export class WasmBridgeService {
 		this.sessionEvent.next(event);
 	}
 
-	private updateModifierKeyState(evt) {
-		if (this.modifierKeyPressed.indexOf(ModifierKey[evt.code]) === -1) {
-			this.modifierKeyPressed.push(ModifierKey[evt.code]);
+	private updateModifierKeyState(evt: KeyboardEvent) {
+		if (this.modifierKeyPressed.indexOf(ModifierKey[evt.code as keyof typeof ModifierKey]) === -1) {
+			this.modifierKeyPressed.push(ModifierKey[evt.code as keyof typeof ModifierKey]);
 		} else if (evt.type === 'keyup') {
-			this.modifierKeyPressed.splice(this.modifierKeyPressed.indexOf(ModifierKey[evt.code]), 1);
+			this.modifierKeyPressed.splice(this.modifierKeyPressed.indexOf(ModifierKey[evt.code as keyof typeof ModifierKey]), 1);
 		}
 	}
 

@@ -18,13 +18,12 @@
     let isVisible = false;
     let capturingInputs = false;
     let currentComponent = get_current_component();
-    let canvas;
+    let canvas:HTMLCanvasElement;
 
-    let wrapper;
-    let viewer;
+    let wrapper:HTMLDivElement;
 
-    let viewerStyle;
-    let wrapperStyle;
+    let viewerStyle:string;
+    let wrapperStyle: string;
     
     let wasmService = new WasmBridgeService();
     let publicAPI = new PublicAPI(wasmService);
@@ -69,7 +68,7 @@
         viewerStyle = newStyle;
     }
 
-    function setWrapperStyle(height, width, overflow) {
+    function setWrapperStyle(height:string, width:string, overflow:string) {
         wrapperStyle = `height: ${height}; width: ${width}; overflow: ${overflow}`;
     }
 
@@ -191,7 +190,7 @@
         setHostStyle(false);
     }
 
-    function getMousePos(evt) {
+    function getMousePos(evt:MouseEvent) {
         const rect = canvas?.getBoundingClientRect(),
             scaleX = canvas?.width / rect.width,
             scaleY = canvas?.height / rect.height;
@@ -204,25 +203,25 @@
         wasmService.updateMousePosition(coord);
     }
 
-    function setMouseButtonState(state, isDown) {
+    function setMouseButtonState(state:MouseEvent, isDown:boolean) {
         wasmService.mouseButtonState(state, isDown);
     }
 
-    function mouseWheel(evt) {
+    function mouseWheel(evt:WheelEvent) {
         wasmService.mouseWheel(evt);
     }
 
-    function setMouseIn(evt) {
+    function setMouseIn(evt:MouseEvent ) {
         capturingInputs = true;
         wasmService.mouseIn(evt);
     }
 
-    function setMouseOut(evt) {
+    function setMouseOut(evt:MouseEvent) {
         capturingInputs = false;
         wasmService.mouseOut(evt);
     }
 
-    function keyboardEvent(evt) {
+    function keyboardEvent(evt:KeyboardEvent) {
         wasmService.sendKeyboardEvent(evt);
     }
 
@@ -267,7 +266,7 @@
 <div bind:this={wrapper} class="screen-wrapper scale-{scale}" class:hidden="{!isVisible}"
      class:capturing-inputs="{capturingInputs}"
      style="{wrapperStyle}">
-    <div bind:this={viewer} class="screen-viewer" style="{viewerStyle}">
+    <div class="screen-viewer" style="{viewerStyle}">
         <canvas
                 on:mousemove={getMousePos}
                 on:mousedown={(event) => setMouseButtonState(event, true)}

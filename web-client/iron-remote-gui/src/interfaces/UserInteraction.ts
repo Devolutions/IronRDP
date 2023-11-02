@@ -4,12 +4,12 @@ import type { NewSessionInfo } from './NewSessionInfo';
 import type { SessionEvent } from './session-event';
 
 export interface UserInteraction {
-	setVisibility(state: boolean);
+	setVisibility(state: boolean):void;
 
-	setScale(scale: ScreenScale);
+	setScale(scale: ScreenScale):void;
 
 	connect(
-		username,
+		username:string,
 		password: string,
 		destination: string,
 		proxyAddress: string,
@@ -17,11 +17,11 @@ export interface UserInteraction {
 		authToken: string
 	): Observable<NewSessionInfo>;
 
-	ctrlAltDel();
+	ctrlAltDel():void;
 
-	metaKey();
+	metaKey():void;
 
-	shutdown();
+	shutdown():void;
 
 	sessionListener: Observable<SessionEvent>;
 }

@@ -4,8 +4,13 @@ import type { OS } from '../enums/OS';
 /*
     Scancode found on: https://developer.mozilla.org/en-US/docs/Web/API/UI_Events/Keyboard_event_code_values
  */
+type EngineMaps = {
+	['gecko']: Record<string, string>;
+	['blink']?: Record<string, string>;
+};
+type CodeMap = Record<Exclude<OS,OS.MACOS>, EngineMaps>
 
-export const ScanCodeToCode = {
+export const ScanCodeToCode:CodeMap = {
 	windows: {
 		blink: {
 			'0x0001': 'Escape',
@@ -803,7 +808,8 @@ export const ScanCodeToCode = {
 	}
 };
 
-export const CodeToScanCode = {
+
+export const CodeToScanCode:CodeMap = {
 	windows: {
 		blink: {},
 		gecko: {}
@@ -828,7 +834,6 @@ const mapList = [
 mapList.forEach((maps) => {
 	for (const key in maps[0]) {
 		if (Object.prototype.hasOwnProperty.call(maps[0], key)) {
-			// eslint: no-prototype-builtins
 			maps[1][maps[0][key]] = key;
 		}
 	}
@@ -838,12 +843,23 @@ const parser = new UAParser();
 const parsedUA = parser.getResult();
 const engine = parsedUA.engine.name.toLowerCase();
 
-export const scanCode = function (code: string, targetOs: OS) {
-	const map = CodeToScanCode[targetOs][engine] || CodeToScanCode.linux.gecko;
-	return map[code];
+export const scanCode = function (code: string, targetOs: Exclude<OS,OS.MACOS>) {
+	let map
+	if (engine !== 'blink' && engine !== 'gecko') {
+		map = CodeToScanCode.linux.gecko
+	}else{
+		map = CodeToScanCode[targetOs][engine] || CodeToScanCode.linux.gecko
+	}
+	return parseInt(map[code], 16);
 };
 
-export const code = function (scanCode: string, targetOs: OS) {
-	const map = ScanCodeToCode[targetOs][engine] || CodeToScanCode.linux.gecko;
+export const code = function (scanCode: string, targetOs: Exclude<OS,OS.MACOS>) {
+	let map
+	if (engine !== 'blink' && engine !== 'gecko') {
+		map = CodeToScanCode.linux.gecko
+	}
+	else{
+		map = CodeToScanCode[targetOs][engine]|| CodeToScanCode.linux.gecko
+	}
 	return map[scanCode];
 };
