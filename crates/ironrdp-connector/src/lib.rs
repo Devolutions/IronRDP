@@ -104,32 +104,33 @@ pub struct Config {
     pub sspi_config: Option<SspiConfig>,
 }
 
-#[derive(Debug, Clone,Default)]
+#[derive(Debug, Clone, Default)]
 pub struct SspiConfig {
-    pub kdc_url:Option<url::Url>,
-    pub hostname:Option<String>
+    pub kdc_url: Option<url::Url>,
+    pub hostname: Option<String>,
 }
 
 impl SspiConfig {
-    pub fn new(kdc_url:Option<impl Into<String>>,hostname:Option<impl Into<String>>) -> ConnectorResult<Self>{
-        let kdc_url:Option<url::Url> = match kdc_url {
+    pub fn new(kdc_url: Option<impl Into<String>>, hostname: Option<impl Into<String>>) -> ConnectorResult<Self> {
+        let kdc_url: Option<url::Url> = match kdc_url {
             Some(inner) => {
-                let url_str:String =inner.into();
+                let url_str: String = inner.into();
                 let url = url::Url::parse(&url_str).map_err(|_| general_err!("kdc url cannot be parsed"))?;
                 Some(url)
-            },
+            }
             None => None,
         };
-        let hostname:Option<String> = hostname.map(|inner| inner.into());
-        Ok(
-        Self { kdc_url, hostname  }
-        )
+        let hostname: Option<String> = hostname.map(|inner| inner.into());
+        Ok(Self { kdc_url, hostname })
     }
 }
 
 impl From<SspiConfig> for KerberosConfig {
     fn from(val: SspiConfig) -> Self {
-        KerberosConfig { url: val.kdc_url, hostname: val.hostname }
+        KerberosConfig {
+            url: val.kdc_url,
+            hostname: val.hostname,
+        }
     }
 }
 
