@@ -1989,7 +1989,6 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "tracing-web",
- "url",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
