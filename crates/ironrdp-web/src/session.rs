@@ -8,7 +8,7 @@ use futures_util::io::{ReadHalf, WriteHalf};
 use futures_util::{select, AsyncReadExt as _, AsyncWriteExt as _, FutureExt as _, StreamExt as _};
 use gloo_net::websocket;
 use gloo_net::websocket::futures::WebSocket;
-use ironrdp::connector::{self, ClientConnector, Credentials};
+use ironrdp::connector::{self, ClientConnector, Credentials, SspiConfig};
 use ironrdp::graphics::image_processing::PixelFormat;
 use ironrdp::pdu::input::fast_path::FastPathInputEvent;
 use ironrdp::pdu::write_buf::WriteBuf;
@@ -23,7 +23,7 @@ use crate::canvas::Canvas;
 use crate::error::{IronRdpError, IronRdpErrorKind};
 use crate::image::extract_partial_image;
 use crate::input::InputTransaction;
-use crate::network_client::WasmNetworkClientFactory;
+use crate::network_client::WasmNetworkClient;
 use crate::websocket::WebSocketCompat;
 use crate::DesktopSize;
 
@@ -50,6 +50,8 @@ struct SessionBuilderInner {
     hide_pointer_callback_context: Option<JsValue>,
     show_pointer_callback: Option<js_sys::Function>,
     show_pointer_callback_context: Option<JsValue>,
+
+    kdc_url: Option<String>,
 }
 
 impl Default for SessionBuilderInner {
@@ -73,6 +75,8 @@ impl Default for SessionBuilderInner {
             hide_pointer_callback_context: None,
             show_pointer_callback: None,
             show_pointer_callback_context: None,
+
+            kdc_url: None,
         }
     }
 }
@@ -165,6 +169,12 @@ impl SessionBuilder {
         self.clone()
     }
 
+    /// Optional
+    pub fn kdc_url(&self, kdc_url: String) -> SessionBuilder {
+        self.0.borrow_mut().kdc_url = Some(kdc_url);
+        self.clone()
+    }
+
     pub async fn connect(&self) -> Result<Session, IronRdpError> {
         let (
             username,
@@ -181,6 +191,7 @@ impl SessionBuilder {
             hide_pointer_callback_context,
             show_pointer_callback,
             show_pointer_callback_context,
+            kdc_url,
         );
 
         {
@@ -194,6 +205,8 @@ impl SessionBuilder {
             pcb = inner.pcb.clone();
             client_name = inner.client_name.clone();
             desktop_size = inner.desktop_size.clone();
+
+            kdc_url = inner.kdc_url.clone();
 
             render_canvas = inner.render_canvas.clone().context("render_canvas missing")?;
 
@@ -217,7 +230,15 @@ impl SessionBuilder {
 
         info!("Connect to RDP host");
 
-        let config = build_config(username, password, server_domain, client_name, desktop_size);
+        let config = build_config(
+            username,
+            password,
+            server_domain,
+            client_name,
+            desktop_size,
+            kdc_url.clone(),
+            Some(destination.clone()),
+        );
 
         let ws = WebSocket::open(&proxy_address).context("Couldn’t open WebSocket")?;
 
@@ -247,7 +268,7 @@ impl SessionBuilder {
 
         let ws = WebSocketCompat::new(ws);
 
-        let (connection_result, ws) = connect(ws, config, auth_token, destination, pcb).await?;
+        let (connection_result, ws) = connect(ws, config, auth_token, destination, pcb, kdc_url).await?;
 
         info!("Connected!");
 
@@ -460,6 +481,8 @@ fn build_config(
     domain: Option<String>,
     client_name: String,
     desktop_size: DesktopSize,
+    kdc_url: Option<String>,
+    hostname: Option<String>,
 ) -> connector::Config {
     connector::Config {
         credentials: Credentials::UsernamePassword { username, password },
@@ -491,7 +514,8 @@ fn build_config(
         client_dir: "C:\\Windows\\System32\\mstscax.dll".to_owned(),
         platform: ironrdp::pdu::rdp::capability_sets::MajorPlatformType::UNSPECIFIED,
         no_server_pointer: false,
-        autologon: false
+        autologon: false,
+        sspi_config:Some(SspiConfig::new(kdc_url, hostname).unwrap())
     }
 }
 
@@ -522,17 +546,29 @@ async fn connect(
     proxy_auth_token: String,
     destination: String,
     pcb: Option<String>,
+    kdc_url: Option<String>,
 ) -> Result<(connector::ConnectionResult, WebSocketCompat), IronRdpError> {
     let mut framed = ironrdp_futures::SingleThreadedFuturesFramed::new(ws);
 
-    let mut connector = connector::ClientConnector::new(config)
-        .with_server_name(&destination)
-        .with_credssp_network_client(WasmNetworkClientFactory);
-    // .with_static_channel(ironrdp::dvc::Drdynvc::new()); // FIXME: drdynvc is not working
+    let mut connector = connector::ClientConnector::new(config);
 
-    let upgraded = connect_rdcleanpath(&mut framed, &mut connector, destination, proxy_auth_token, pcb).await?;
+    let (upgraded, server_public_key) =
+        connect_rdcleanpath(&mut framed, &mut connector, destination.clone(), proxy_auth_token, pcb).await?;
 
-    let connection_result = ironrdp_futures::connect_finalize(upgraded, &mut framed, connector).await?;
+    info!("kdc url = {:?}", &kdc_url);
+    let networkc_client = match kdc_url {
+        Some(kdc_url) => Some(WasmNetworkClient::new(kdc_url)),
+        None => None,
+    };
+    let connection_result = ironrdp_futures::connect_finalize(
+        upgraded,
+        &mut framed,
+        &destination,
+        server_public_key,
+        networkc_client,
+        connector,
+    )
+    .await?;
 
     let ws = framed.into_inner_no_leftover();
 
@@ -545,7 +581,7 @@ async fn connect_rdcleanpath<S>(
     destination: String,
     proxy_auth_token: String,
     pcb: Option<String>,
-) -> Result<ironrdp_futures::Upgraded, IronRdpError>
+) -> Result<(ironrdp_futures::Upgraded, Vec<u8>), IronRdpError>
 where
     S: ironrdp_futures::FramedRead + ironrdp_futures::FramedWrite,
 {
@@ -668,8 +704,8 @@ where
 
         // At this point, proxy established the TLS session
 
-        let upgraded = ironrdp_futures::mark_as_upgraded(should_upgrade, connector, server_public_key);
+        let upgraded = ironrdp_futures::mark_as_upgraded(should_upgrade, connector);
 
-        Ok(upgraded)
+        Ok((upgraded, server_public_key))
     }
 }

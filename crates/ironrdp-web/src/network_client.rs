@@ -1,73 +1,50 @@
-use std::time::Duration;
+use std::pin::Pin;
 
-use gloo_net::http::Request;
-use ironrdp::connector::sspi;
-use ironrdp::connector::sspi::network_client::{NetworkClient, NetworkClientFactory, NetworkProtocol};
-use url::Url;
-use wasm_bindgen::JsValue;
+use futures_util::Future;
+use ironrdp::connector::sspi::generator::NetworkRequest;
+use ironrdp::connector::sspi::network_client::NetworkProtocol;
+use ironrdp::connector::{general_err, reason_err, ConnectorResult};
+use ironrdp_futures::AsyncNetworkClient;
 
 #[derive(Debug)]
-pub(crate) struct WasmNetworkClientFactory;
+pub(crate) struct WasmNetworkClient {
+    kdc_url: String,
+    client: reqwest::Client,
+}
+impl AsyncNetworkClient for WasmNetworkClient {
+    fn send<'a>(
+        &'a mut self,
+        network_request: &'a NetworkRequest,
+    ) -> Pin<Box<dyn Future<Output = ConnectorResult<Vec<u8>>> + 'a>> {
+        Box::pin(async move {
+            info!("network requwest = {:?}", &network_request);
+            match &network_request.protocol {
+                NetworkProtocol::Http | NetworkProtocol::Https => {
+                    let res = self
+                        .client
+                        .post(&self.kdc_url)
+                        .body(network_request.data.to_owned())
+                        .send()
+                        .await
+                        .map_err(|e| reason_err!("Error send KDC request", "{}", e))?
+                        .bytes()
+                        .await
+                        .map_err(|e| reason_err!("Error decode KDC response", "{}", e))?
+                        .to_vec();
 
-impl NetworkClientFactory for WasmNetworkClientFactory {
-    fn network_client(&self) -> Box<dyn NetworkClient> {
-        Box::new(WasmNetworkClient)
-    }
-
-    fn box_clone(&self) -> Box<dyn NetworkClientFactory> {
-        Box::new(WasmNetworkClientFactory)
+                    Ok(res)
+                }
+                _ => Err(general_err!("KDC Url must always start with HTTP/HTTPS for Web")),
+            }
+        })
     }
 }
-
-struct WasmNetworkClient;
 
 impl WasmNetworkClient {
-    const NAME: &str = "Wasm";
-    const SUPPORTED_PROTOCOLS: &[NetworkProtocol] = &[NetworkProtocol::Http, NetworkProtocol::Https];
-}
-
-impl NetworkClient for WasmNetworkClient {
-    fn send(&self, _protocol: NetworkProtocol, url: Url, data: &[u8]) -> sspi::Result<Vec<u8>> {
-        let length = JsValue::from_f64(data.len() as f64);
-        let payload = js_sys::Uint8Array::new(&length);
-        payload.copy_from(data);
-
-        let fut = Request::post(url.as_str())
-            .body(payload)
-            .map_err(|e| sspi::Error::new(sspi::ErrorKind::InternalError, e.to_string()))?
-            .send();
-
-        let (tx, rx) = std::sync::mpsc::sync_channel(0); // rendezvous channel
-
-        wasm_bindgen_futures::spawn_local(async move {
-            match fut.await {
-                Ok(response) => {
-                    let result = response.binary().await;
-                    let _ = tx.send(result);
-                }
-                Err(error) => {
-                    let _ = tx.send(Err(error));
-                }
-            }
-        });
-
-        let response = rx
-            .recv_timeout(Duration::from_secs(10))
-            .map_err(|e| sspi::Error::new(sspi::ErrorKind::InternalError, e.to_string()))?
-            .map_err(|e| sspi::Error::new(sspi::ErrorKind::NoAuthenticatingAuthority, e.to_string()))?;
-
-        Ok(response)
-    }
-
-    fn name(&self) -> &'static str {
-        Self::NAME
-    }
-
-    fn supported_protocols(&self) -> &[NetworkProtocol] {
-        Self::SUPPORTED_PROTOCOLS
-    }
-
-    fn box_clone(&self) -> Box<dyn NetworkClient> {
-        Box::new(WasmNetworkClient)
+    pub fn new(kdc_url: String) -> Self {
+        Self {
+            kdc_url,
+            client: reqwest::Client::new(),
+        }
     }
 }

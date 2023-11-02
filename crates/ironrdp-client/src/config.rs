@@ -315,6 +315,7 @@ impl Config {
             },
             no_server_pointer: args.no_server_pointer,
             autologon: args.autologon,
+            sspi_config:Default::default()
         };
 
         Ok(Self {
