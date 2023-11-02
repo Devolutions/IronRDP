@@ -2,13 +2,17 @@ use ironrdp_connector::credssp::{CredsspProcessGenerator, CredsspSequence, Kerbe
 use ironrdp_connector::sspi::credssp::ClientState;
 use ironrdp_connector::sspi::generator::GeneratorState;
 use ironrdp_connector::{
-    custom_err, ClientConnector, ClientConnectorState, ConnectionResult, ConnectorError, ConnectorResult,
+    custom_err,
+    sspi::{credssp::ClientState, generator::GeneratorState},
+    ClientConnector, ClientConnectorState, ConnectionResult, ConnectorResult, CredSspProcessGenerator, CredSspSequence,
     Sequence as _, ServerName, State as _,
 };
 use ironrdp_pdu::write_buf::WriteBuf;
 
-use crate::framed::{Framed, FramedRead, FramedWrite};
-use crate::AsyncNetworkClient;
+use crate::{
+    framed::{Framed, FramedRead, FramedWrite},
+    AsyncNetworkClient,
+};
 
 #[non_exhaustive]
 pub struct ShouldUpgrade;
@@ -48,6 +52,9 @@ pub fn mark_as_upgraded(_: ShouldUpgrade, connector: &mut ClientConnector) -> Up
 pub async fn connect_finalize<S>(
     _: Upgraded,
     framed: &mut Framed<S>,
+    server_name: impl Into<ServerName>,
+    server_public_key: Vec<u8>,
+    network_client: Option<impl AsyncNetworkClient>,
     mut connector: ClientConnector,
     server_name: ServerName,
     server_public_key: Vec<u8>,
@@ -67,7 +74,6 @@ where
             server_name,
             server_public_key,
             network_client,
-            kerberos_config,
         )
         .await?;
     }
@@ -86,46 +92,42 @@ where
 }
 
 async fn resolve_generator(
-    generator: &mut CredsspProcessGenerator<'_>,
-    network_client: &mut dyn AsyncNetworkClient,
+    generator: &mut CredSspProcessGenerator<'_>,
+    network_client: &mut impl AsyncNetworkClient,
 ) -> ConnectorResult<ClientState> {
     let mut state = generator.start();
-
-    loop {
+    let res = loop {
         match state {
             GeneratorState::Suspended(request) => {
                 let response = network_client.send(&request).await?;
                 state = generator.resume(Ok(response));
             }
             GeneratorState::Completed(client_state) => {
-                break client_state
-                    .map_err(|e| ConnectorError::new("CredSSP", ironrdp_connector::ConnectorErrorKind::Credssp(e)))
+                break Ok(client_state.map_err(|e| custom_err!("cannot resolve generator state", e))?)
             }
         }
-    }
+    };
+
+    res
 }
 
-#[instrument(level = "trace", skip_all)]
+#[instrument(level = "trace", skip(network_client, framed, buf, server_name, server_public_key))]
 async fn perform_credssp_step<S>(
     framed: &mut Framed<S>,
     connector: &mut ClientConnector,
     buf: &mut WriteBuf,
-    server_name: ServerName,
+    server_name: impl Into<ServerName>,
     server_public_key: Vec<u8>,
-    mut network_client: Option<&mut dyn AsyncNetworkClient>,
-    kerberos_config: Option<KerberosConfig>,
-) -> ConnectorResult<()>
+    mut network_client: Option<impl AsyncNetworkClient>,
+) -> ConnectorResult<ironrdp_connector::Written>
 where
     S: FramedRead + FramedWrite,
 {
     assert!(connector.should_perform_credssp());
-
-    let mut credssp_sequence = CredsspSequence::new(connector, server_name, server_public_key, kerberos_config)?;
-
+    let mut credssp_sequence = CredSspSequence::new(&connector, server_name, server_public_key)?;
     while !credssp_sequence.is_done() {
         buf.clear();
-
-        if let Some(next_pdu_hint) = credssp_sequence.next_pdu_hint() {
+        let input = if let Some(next_pdu_hint) = credssp_sequence.next_pdu_hint() {
             debug!(
                 connector.state = connector.state.name(),
                 hint = ?next_pdu_hint,
@@ -138,23 +140,25 @@ where
                 .map_err(|e| ironrdp_connector::custom_err!("read frame by hint", e))?;
 
             trace!(length = pdu.len(), "PDU received");
+            Some(pdu.to_vec())
+        } else {
+            None
+        };
 
-            credssp_sequence.read_request_from_server(&pdu)?;
+        if credssp_sequence.wants_request_from_server() {
+            credssp_sequence.read_request_from_server(&input.unwrap_or([].to_vec()))?;
         }
-
         let client_state = {
             let mut generator = credssp_sequence.process();
-
-            if let Some(network_client_ref) = network_client.as_deref_mut() {
-                trace!("resolving network");
+            if let Some(ref mut network_client_ref) = network_client {
+                info!("resolving network");
                 resolve_generator(&mut generator, network_client_ref).await?
             } else {
                 generator
                     .resolve_to_result()
-                    .map_err(|e| custom_err!("resolve without network client", e))?
+                    .map_err(|e| custom_err!(" cannot resolve generator without a network client", e))?
             }
         }; // drop generator
-
         let written = credssp_sequence.handle_process_result(client_state, buf)?;
 
         if let Some(response_len) = written.size() {
@@ -167,9 +171,7 @@ where
         }
     }
 
-    connector.mark_credssp_as_done();
-
-    Ok(())
+    Ok(connector.mark_credssp_as_done())
 }
 
 pub async fn single_connect_step<S>(
@@ -182,7 +184,7 @@ where
 {
     buf.clear();
 
-    let written = if let Some(next_pdu_hint) = connector.next_pdu_hint() {
+    let written: ironrdp_connector::Written = if let Some(next_pdu_hint) = connector.next_pdu_hint() {
         debug!(
             connector.state = connector.state.name(),
             hint = ?next_pdu_hint,

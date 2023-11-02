@@ -3,39 +3,48 @@ use std::pin::Pin;
 use futures_util::Future;
 use ironrdp::connector::sspi::generator::NetworkRequest;
 use ironrdp::connector::sspi::network_client::NetworkProtocol;
-use ironrdp::connector::{custom_err, reason_err, ConnectorResult};
+use ironrdp::connector::{general_err, reason_err, ConnectorResult};
 use ironrdp_futures::AsyncNetworkClient;
 
 #[derive(Debug)]
-pub(crate) struct WasmNetworkClient;
-
+pub(crate) struct WasmNetworkClient {
+    kdc_url: String,
+    client: reqwest::Client,
+}
 impl AsyncNetworkClient for WasmNetworkClient {
     fn send<'a>(
         &'a mut self,
         network_request: &'a NetworkRequest,
     ) -> Pin<Box<dyn Future<Output = ConnectorResult<Vec<u8>>> + 'a>> {
         Box::pin(async move {
-            debug!(?network_request.protocol, ?network_request.url);
-
+            info!("network requwest = {:?}", &network_request);
             match &network_request.protocol {
                 NetworkProtocol::Http | NetworkProtocol::Https => {
-                    let body = js_sys::Uint8Array::from(&network_request.data[..]);
-
-                    let response = gloo_net::http::Request::post(network_request.url.as_str())
-                        .header("keep-alive", "true")
-                        .body(body)
-                        .map_err(|e| custom_err!("failed to send KDC request", e))?
+                    let res = self
+                        .client
+                        .post(&self.kdc_url)
+                        .body(network_request.data.to_owned())
                         .send()
                         .await
-                        .map_err(|e| custom_err!("failed to send KDC request", e))?
-                        .binary()
+                        .map_err(|e| reason_err!("Error send KDC request", "{}", e))?
+                        .bytes()
                         .await
-                        .map_err(|e| custom_err!("failed to retrieve HTTP response", e))?;
+                        .map_err(|e| reason_err!("Error decode KDC response", "{}", e))?
+                        .to_vec();
 
-                    Ok(response)
+                    Ok(res)
                 }
-                unsupported => Err(reason_err!("CredSSP", "unsupported protocol: {unsupported:?}")),
+                _ => Err(general_err!("KDC Url must always start with HTTP/HTTPS for Web")),
             }
         })
+    }
+}
+
+impl WasmNetworkClient {
+    pub fn new(kdc_url: String) -> Self {
+        Self {
+            kdc_url,
+            client: reqwest::Client::new(),
+        }
     }
 }

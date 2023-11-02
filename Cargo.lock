@@ -1632,7 +1632,7 @@ version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b58db92f96b720de98181bbbe63c831e87005ab460c1bf306eb2622b4707997f"
 dependencies = [
- "socket2 0.5.5",
+ "socket2 0.5.4",
  "widestring",
  "windows-sys 0.48.0",
  "winreg 0.50.0",
@@ -1705,12 +1705,14 @@ name = "ironrdp-client"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "byteorder",
  "clap",
  "inquire",
  "ironrdp",
  "ironrdp-cliprdr-native",
  "ironrdp-tls",
  "ironrdp-tokio",
+ "portpicker",
  "proc-exit",
  "reqwest",
  "semver",
@@ -1990,9 +1992,7 @@ dependencies = [
  "ironrdp-futures",
  "ironrdp-rdcleanpath",
  "js-sys",
- "png",
- "resize",
- "rgb",
+ "reqwest",
  "semver",
  "smallvec",
  "softbuffer",
@@ -3694,9 +3694,8 @@ dependencies = [
 
 [[package]]
 name = "sspi"
-version = "0.11.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bf9e7d03e3a0314c94b37625112eeaba08068b0ffbb181deefd4c7deae5ba046"
+version = "0.10.1"
+source = "git+https://github.com/Devolutions/sspi-rs.git#7779af59d32af845f25778897dc5ff8e5febde2f"
 dependencies = [
  "async-dnssd",
  "async-recursion",

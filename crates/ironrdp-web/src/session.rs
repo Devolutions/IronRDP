@@ -10,10 +10,7 @@ use futures_util::io::{ReadHalf, WriteHalf};
 use futures_util::{select, AsyncReadExt as _, AsyncWriteExt as _, FutureExt as _, StreamExt as _};
 use gloo_net::websocket;
 use gloo_net::websocket::futures::WebSocket;
-use ironrdp::cliprdr::backend::ClipboardMessage;
-use ironrdp::cliprdr::Cliprdr;
-use ironrdp::connector::credssp::KerberosConfig;
-use ironrdp::connector::{self, ClientConnector, Credentials};
+use ironrdp::connector::{self, ClientConnector, Credentials, SspiConfig};
 use ironrdp::graphics::image_processing::PixelFormat;
 use ironrdp::pdu::input::fast_path::FastPathInputEvent;
 use ironrdp::pdu::write_buf::WriteBuf;
@@ -54,11 +51,12 @@ struct SessionBuilderInner {
     desktop_size: DesktopSize,
 
     render_canvas: Option<HtmlCanvasElement>,
-    set_cursor_style_callback: Option<js_sys::Function>,
-    set_cursor_style_callback_context: Option<JsValue>,
-    remote_clipboard_changed_callback: Option<js_sys::Function>,
-    remote_received_format_list_callback: Option<js_sys::Function>,
-    force_clipboard_update_callback: Option<js_sys::Function>,
+    hide_pointer_callback: Option<js_sys::Function>,
+    hide_pointer_callback_context: Option<JsValue>,
+    show_pointer_callback: Option<js_sys::Function>,
+    show_pointer_callback_context: Option<JsValue>,
+
+    kdc_url: Option<String>,
 }
 
 impl Default for SessionBuilderInner {
@@ -79,11 +77,12 @@ impl Default for SessionBuilderInner {
             },
 
             render_canvas: None,
-            set_cursor_style_callback: None,
-            set_cursor_style_callback_context: None,
-            remote_clipboard_changed_callback: None,
-            remote_received_format_list_callback: None,
-            force_clipboard_update_callback: None,
+            hide_pointer_callback: None,
+            hide_pointer_callback_context: None,
+            show_pointer_callback: None,
+            show_pointer_callback_context: None,
+
+            kdc_url: None,
         }
     }
 }
@@ -204,6 +203,12 @@ impl SessionBuilder {
         self.clone()
     }
 
+    /// Optional
+    pub fn kdc_url(&self, kdc_url: String) -> SessionBuilder {
+        self.0.borrow_mut().kdc_url = Some(kdc_url);
+        self.clone()
+    }
+
     pub async fn connect(&self) -> Result<Session, IronRdpError> {
         let (
             username,
@@ -217,11 +222,11 @@ impl SessionBuilder {
             client_name,
             desktop_size,
             render_canvas,
-            set_cursor_style_callback,
-            set_cursor_style_callback_context,
-            remote_clipboard_changed_callback,
-            remote_received_format_list_callback,
-            force_clipboard_update_callback,
+            hide_pointer_callback,
+            hide_pointer_callback_context,
+            show_pointer_callback,
+            show_pointer_callback_context,
+            kdc_url,
         );
 
         {
@@ -237,6 +242,8 @@ impl SessionBuilder {
             kdc_proxy_url = inner.kdc_proxy_url.clone();
             client_name = inner.client_name.clone();
             desktop_size = inner.desktop_size.clone();
+
+            kdc_url = inner.kdc_url.clone();
 
             render_canvas = inner.render_canvas.clone().context("render_canvas missing")?;
 
@@ -255,7 +262,15 @@ impl SessionBuilder {
 
         info!("Connect to RDP host");
 
-        let config = build_config(username, password, server_domain, client_name, desktop_size);
+        let config = build_config(
+            username,
+            password,
+            server_domain,
+            client_name,
+            desktop_size,
+            kdc_url.clone(),
+            Some(destination.clone()),
+        );
 
         let (input_events_tx, input_events_rx) = mpsc::unbounded();
 
@@ -298,16 +313,7 @@ impl SessionBuilder {
 
         let ws = WebSocketCompat::new(ws);
 
-        let (connection_result, ws) = connect(
-            ws,
-            config,
-            auth_token,
-            destination,
-            pcb,
-            kdc_proxy_url,
-            clipboard.as_ref().map(|clip| clip.backend()),
-        )
-        .await?;
+        let (connection_result, ws) = connect(ws, config, auth_token, destination, pcb, kdc_url).await?;
 
         info!("Connected!");
 
@@ -700,6 +706,8 @@ fn build_config(
     domain: Option<String>,
     client_name: String,
     desktop_size: DesktopSize,
+    kdc_url: Option<String>,
+    hostname: Option<String>,
 ) -> connector::Config {
     connector::Config {
         credentials: Credentials::UsernamePassword { username, password },
@@ -732,7 +740,7 @@ fn build_config(
         platform: ironrdp::pdu::rdp::capability_sets::MajorPlatformType::UNSPECIFIED,
         no_server_pointer: false,
         autologon: false,
-        pointer_software_rendering: false,
+        sspi_config:Some(SspiConfig::new(kdc_url, hostname).unwrap())
     }
 }
 
@@ -763,35 +771,27 @@ async fn connect(
     proxy_auth_token: String,
     destination: String,
     pcb: Option<String>,
-    kdc_proxy_url: Option<String>,
-    clipboard_backend: Option<WasmClipboardBackend>,
+    kdc_url: Option<String>,
 ) -> Result<(connector::ConnectionResult, WebSocketCompat), IronRdpError> {
     let mut framed = ironrdp_futures::SingleThreadedFuturesFramed::new(ws);
 
     let mut connector = connector::ClientConnector::new(config);
 
-    if let Some(clipboard_backend) = clipboard_backend {
-        connector.attach_static_channel(Cliprdr::new(Box::new(clipboard_backend)));
-    }
-
     let (upgraded, server_public_key) =
         connect_rdcleanpath(&mut framed, &mut connector, destination.clone(), proxy_auth_token, pcb).await?;
 
+    info!("kdc url = {:?}", &kdc_url);
+    let networkc_client = match kdc_url {
+        Some(kdc_url) => Some(WasmNetworkClient::new(kdc_url)),
+        None => None,
+    };
     let connection_result = ironrdp_futures::connect_finalize(
         upgraded,
         &mut framed,
-        connector,
-        (&destination).into(),
+        &destination,
         server_public_key,
-        Some(&mut WasmNetworkClient),
-        url::Url::parse(kdc_proxy_url.unwrap_or_default().as_str()) // if kdc_proxy_url does not exit, give url parser a empty string, it will fail anyway and map to a None
-            .ok()
-            .map(|url| KerberosConfig {
-                kdc_proxy_url: Some(url),
-                // HACK: It’s supposed to be the computer name of the client, but since it’s not easy to retrieve this information in the browser,
-                // we set the destination hostname instead because it happens to work.
-                hostname: Some(destination),
-            }),
+        networkc_client,
+        connector,
     )
     .await?;
 

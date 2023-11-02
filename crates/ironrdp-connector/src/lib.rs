@@ -20,7 +20,9 @@ use core::any::Any;
 use core::fmt;
 
 pub use channel_connection::{ChannelConnectionSequence, ChannelConnectionState};
-pub use connection::{ClientConnector, ClientConnectorState, ConnectionResult};
+pub use connection::{
+    ClientConnector, ClientConnectorState, ConnectionResult, CredSspProcessGenerator, CredSspSequence,
+};
 pub use connection_finalization::{ConnectionFinalizationSequence, ConnectionFinalizationState};
 use ironrdp_pdu::rdp::capability_sets;
 use ironrdp_pdu::write_buf::WriteBuf;
@@ -28,6 +30,7 @@ use ironrdp_pdu::{gcc, nego, PduHint};
 pub use license_exchange::{LicenseExchangeSequence, LicenseExchangeState};
 pub use server_name::ServerName;
 pub use sspi;
+use sspi::KerberosConfig;
 
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
@@ -98,7 +101,37 @@ pub struct Config {
     pub no_server_pointer: bool,
     /// If true, the INFO_AUTOLOGON flag is set in the [`ironrdp_pdu::rdp::ClientInfoPdu`].
     pub autologon: bool,
-    pub pointer_software_rendering: bool,
+    // for kerberos authentication
+    pub sspi_config: Option<SspiConfig>,
+}
+
+#[derive(Debug, Clone,Default)]
+pub struct SspiConfig {
+    pub kdc_url:Option<url::Url>,
+    pub hostname:Option<String>
+}
+
+impl SspiConfig {
+    pub fn new(kdc_url:Option<impl Into<String>>,hostname:Option<impl Into<String>>) -> ConnectorResult<Self>{
+        let kdc_url:Option<url::Url> = match kdc_url {
+            Some(inner) => {
+                let url_str:String =inner.into();
+                let url = url::Url::parse(&url_str).map_err(|_| general_err!("kdc url cannot be parsed"))?;
+                Some(url)
+            },
+            None => None,
+        };
+        let hostname:Option<String> = hostname.map(|inner| inner.into());
+        Ok(
+        Self { kdc_url, hostname  }
+        )
+    }
+}
+
+impl From<SspiConfig> for KerberosConfig {
+    fn from(val: SspiConfig) -> Self {
+        KerberosConfig { url: val.kdc_url, hostname: val.hostname }
+    }
 }
 
 ironrdp_pdu::assert_impl!(Config: Send, Sync);

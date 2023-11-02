@@ -52,7 +52,7 @@ ironrdp = { version = "0.5", path = "crates/ironrdp" }
 expect-test = "1"
 proptest = "1.4"
 rstest = "0.18"
-sspi = "0.11"
+sspi = {git = "https://github.com/Devolutions/sspi-rs.git"}
 tracing = { version = "0.1", features = ["log"] }
 thiserror = "1.0"
 png = "0.17"
