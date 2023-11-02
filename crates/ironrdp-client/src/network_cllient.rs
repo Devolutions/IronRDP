@@ -9,7 +9,7 @@ use reqwest::Client;
 use url::Url;
 
 use ironrdp_tokio::AsyncNetworkClient;
-pub struct AsyncTokioNetworkClient {
+pub(crate) struct AsyncTokioNetworkClient {
     client: Option<Client>,
 }
 impl AsyncNetworkClient for AsyncTokioNetworkClient {
@@ -30,7 +30,7 @@ impl AsyncNetworkClient for AsyncTokioNetworkClient {
 }
 
 impl AsyncTokioNetworkClient {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self { client: None }
     }
 }
@@ -103,7 +103,7 @@ impl AsyncTokioNetworkClient {
         let result_bytes = self
             .client
             .as_ref()
-            .ok_or(general_err!("Missing HTTP client, should never happen"))?
+            .ok_or_else(|| general_err!("Missing HTTP client, should never happen"))?
             .post(url.clone())
             .body(data.to_vec())
             .send()

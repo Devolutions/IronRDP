@@ -781,10 +781,7 @@ async fn connect(
         connect_rdcleanpath(&mut framed, &mut connector, destination.clone(), proxy_auth_token, pcb).await?;
 
     info!("kdc url = {:?}", &kdc_url);
-    let networkc_client = match kdc_url {
-        Some(kdc_url) => Some(WasmNetworkClient::new(kdc_url)),
-        None => None,
-    };
+    let networkc_client = kdc_url.map(WasmNetworkClient::new);
     let connection_result = ironrdp_futures::connect_finalize(
         upgraded,
         &mut framed,

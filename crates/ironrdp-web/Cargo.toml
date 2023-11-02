@@ -69,5 +69,4 @@ smallvec = "1.11"
 x509-cert = { version = "0.2", default-features = false, features = ["std"] }
 tap = "1"
 semver = "1"
-url = "2"
 reqwest = "0.11.22"

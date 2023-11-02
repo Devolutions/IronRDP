@@ -44,7 +44,7 @@ pub struct CredSspSequence {
 }
 
 #[derive(Debug, PartialEq)]
-pub enum CredSSPState {
+pub(crate) enum CredSSPState {
     CredsspInitial,
     CredsspReplyNeeded,
     CredsspEarlyUserAuthResult,
@@ -160,14 +160,14 @@ impl CredSspSequence {
 
     pub fn handle_process_result(
         &mut self,
-        result: credssp::ClientState,
+        result: ClientState,
         output: &mut WriteBuf,
     ) -> ConnectorResult<Written> {
         let (size, next_state) = match self.state {
             CredSSPState::CredsspInitial => {
                 let (ts_request_from_client, next_state) = match result {
-                    credssp::ClientState::ReplyNeeded(ts_request) => (ts_request, CredSSPState::CredsspReplyNeeded),
-                    credssp::ClientState::FinalMessage(ts_request) => (ts_request, CredSSPState::Finishied),
+                    ClientState::ReplyNeeded(ts_request) => (ts_request, CredSSPState::CredsspReplyNeeded),
+                    ClientState::FinalMessage(ts_request) => (ts_request, CredSSPState::Finishied),
                 };
                 debug!(message = ?ts_request_from_client, "Send");
 

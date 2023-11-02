@@ -23,7 +23,7 @@ impl AsyncNetworkClient for WasmNetworkClient {
                     let res = self
                         .client
                         .post(&self.kdc_url)
-                        .body(network_request.data.to_owned())
+                        .body(network_request.data.clone())
                         .send()
                         .await
                         .map_err(|e| reason_err!("Error send KDC request", "{}", e))?
@@ -41,7 +41,7 @@ impl AsyncNetworkClient for WasmNetworkClient {
 }
 
 impl WasmNetworkClient {
-    pub fn new(kdc_url: String) -> Self {
+    pub(crate) fn new(kdc_url: String) -> Self {
         Self {
             kdc_url,
             client: reqwest::Client::new(),

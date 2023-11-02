@@ -96,7 +96,7 @@ async fn resolve_generator(
     network_client: &mut impl AsyncNetworkClient,
 ) -> ConnectorResult<ClientState> {
     let mut state = generator.start();
-    let res = loop {
+    loop {
         match state {
             GeneratorState::Suspended(request) => {
                 let response = network_client.send(&request).await?;
@@ -106,9 +106,7 @@ async fn resolve_generator(
                 break Ok(client_state.map_err(|e| custom_err!("cannot resolve generator state", e))?)
             }
         }
-    };
-
-    res
+    }
 }
 
 #[instrument(level = "trace", skip(network_client, framed, buf, server_name, server_public_key))]
@@ -124,7 +122,7 @@ where
     S: FramedRead + FramedWrite,
 {
     assert!(connector.should_perform_credssp());
-    let mut credssp_sequence = CredSspSequence::new(&connector, server_name, server_public_key)?;
+    let mut credssp_sequence = CredSspSequence::new(connector, server_name, server_public_key)?;
     while !credssp_sequence.is_done() {
         buf.clear();
         let input = if let Some(next_pdu_hint) = credssp_sequence.next_pdu_hint() {
@@ -146,7 +144,7 @@ where
         };
 
         if credssp_sequence.wants_request_from_server() {
-            credssp_sequence.read_request_from_server(&input.unwrap_or([].to_vec()))?;
+            credssp_sequence.read_request_from_server(&input.unwrap_or_else(||[].to_vec()))?;
         }
         let client_state = {
             let mut generator = credssp_sequence.process();
