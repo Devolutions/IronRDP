@@ -24,7 +24,7 @@ panic_hook = ["dep:console_error_panic_hook"]
 [dependencies]
 
 # Protocols
-ironrdp = { workspace = true, features = ["input", "graphics", "dvc", "cliprdr"] }
+ironrdp = { workspace = true, features = ["input", "graphics", "dvc", "cliprdr",  "svc"] }
 ironrdp-cliprdr-format = { workspace = true }
 ironrdp-futures.workspace = true
 ironrdp-rdcleanpath.workspace = true

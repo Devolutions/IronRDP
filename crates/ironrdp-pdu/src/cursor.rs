@@ -110,12 +110,6 @@ impl<'a> ReadCursor<'a> {
     }
 
     #[inline]
-    #[track_caller]
-    pub fn read_i32(&mut self) -> i32 {
-        i32::from_le_bytes(self.read_array::<4>())
-    }
-
-    #[inline]
     pub fn try_read_u32(&mut self, ctx: &'static str) -> PduResult<u32> {
         ensure_size!(ctx: ctx, in: self, size: 4);
         Ok(u32::from_le_bytes(self.read_array::<4>()))

@@ -8,6 +8,7 @@ use ironrdp::cliprdr::pdu::{
     ClipboardFormat, ClipboardFormatId, ClipboardFormatName, ClipboardGeneralCapabilityFlags, FileContentsRequest,
     FileContentsResponse, FormatDataRequest, FormatDataResponse, LockDataId,
 };
+use ironrdp::svc::impl_as_any;
 use ironrdp_cliprdr_format::bitmap::{dib_to_png, dibv5_to_png, png_to_cf_dibv5};
 use ironrdp_cliprdr_format::html::{cf_html_to_text, text_to_cf_html};
 pub use transaction::{ClipboardContent, ClipboardContentValue, ClipboardTransaction};
@@ -492,6 +493,8 @@ impl WasmClipboardBackend {
         self.proxy.send_backend_message(event);
     }
 }
+
+impl_as_any!(WasmClipboardBackend);
 
 impl CliprdrBackend for WasmClipboardBackend {
     fn temporary_directory(&self) -> &str {
