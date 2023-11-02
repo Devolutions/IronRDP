@@ -1,278 +1,299 @@
-import {BehaviorSubject, from, Observable, of, Subject} from 'rxjs';
-import init, {DesktopSize, DeviceEvent, InputTransaction, ironrdp_init, IronRdpError, Session, SessionBuilder} from '../../../../crates/ironrdp-web/pkg/ironrdp_web';
-import {loggingService} from './logging.service';
-import {catchError, filter, map} from 'rxjs/operators';
-import {scanCode} from '../lib/scancodes';
-import {LogType} from '../enums/LogType';
-import {OS} from '../enums/OS';
-import {ModifierKey} from '../enums/ModifierKey';
-import {LockKey} from '../enums/LockKey';
-import {SessionEventType} from '../enums/SessionEventType';
-import type {NewSessionInfo} from '../interfaces/NewSessionInfo';
-import {SpecialCombination} from '../enums/SpecialCombination';
-import type {ResizeEvent} from '../interfaces/ResizeEvent';
-import {ScreenScale} from '../enums/ScreenScale';
-import type {MousePosition} from '../interfaces/MousePosition';
-import type {SessionEvent} from '../interfaces/session-event';
-import type {DesktopSize as IDesktopSize} from '../interfaces/DesktopSize';
+import { BehaviorSubject, from, Observable, of, Subject } from 'rxjs';
+import init, {
+	DesktopSize,
+	DeviceEvent,
+	InputTransaction,
+	ironrdp_init,
+	IronRdpError,
+	Session,
+	SessionBuilder
+} from '../../../../crates/ironrdp-web/pkg/ironrdp_web';
+import { loggingService } from './logging.service';
+import { catchError, filter, map } from 'rxjs/operators';
+import { scanCode } from '../lib/scancodes';
+import { LogType } from '../enums/LogType';
+import { OS } from '../enums/OS';
+import { ModifierKey } from '../enums/ModifierKey';
+import { LockKey } from '../enums/LockKey';
+import { SessionEventType } from '../enums/SessionEventType';
+import type { NewSessionInfo } from '../interfaces/NewSessionInfo';
+import { SpecialCombination } from '../enums/SpecialCombination';
+import type { ResizeEvent } from '../interfaces/ResizeEvent';
+import { ScreenScale } from '../enums/ScreenScale';
+import type { MousePosition } from '../interfaces/MousePosition';
+import type { SessionEvent } from '../interfaces/session-event';
+import type { DesktopSize as IDesktopSize } from '../interfaces/DesktopSize';
 
 export class WasmBridgeService {
-    private _resize: Subject<ResizeEvent> = new Subject<any>();
-    private mousePosition: BehaviorSubject<MousePosition> = new BehaviorSubject<MousePosition>({
-        x: 0,
-        y: 0
-    });
-    private changeVisibility: Subject<boolean> = new Subject();
-    private sessionEvent: Subject<SessionEvent> = new Subject();
-    private scale: BehaviorSubject<ScreenScale> = new BehaviorSubject(ScreenScale.Fit);
-    private canvas: HTMLCanvasElement;
-    private keyboardActive: boolean;
+	private _resize: Subject<ResizeEvent> = new Subject<ResizeEvent>();
+	private mousePosition: BehaviorSubject<MousePosition> = new BehaviorSubject<MousePosition>({
+		x: 0,
+		y: 0
+	});
+	private changeVisibility: Subject<boolean> = new Subject();
+	private sessionEvent: Subject<SessionEvent> = new Subject();
+	private scale: BehaviorSubject<ScreenScale> = new BehaviorSubject(ScreenScale.Fit);
+	private canvas: HTMLCanvasElement;
+	private keyboardActive: boolean;
 
-    resize: Observable<ResizeEvent>;
-    session?: Session;
-    modifierKeyPressed: ModifierKey[] = [];
-    mousePositionObservable: Observable<MousePosition> = this.mousePosition.asObservable();
-    changeVisibilityObservable: Observable<boolean> = this.changeVisibility.asObservable();
-    sessionObserver: Observable<SessionEvent> = this.sessionEvent.asObservable();
-    scaleObserver: Observable<ScreenScale> = this.scale.asObservable();
+	resize: Observable<ResizeEvent>;
+	session?: Session;
+	modifierKeyPressed: ModifierKey[] = [];
+	mousePositionObservable: Observable<MousePosition> = this.mousePosition.asObservable();
+	changeVisibilityObservable: Observable<boolean> = this.changeVisibility.asObservable();
+	sessionObserver: Observable<SessionEvent> = this.sessionEvent.asObservable();
+	scaleObserver: Observable<ScreenScale> = this.scale.asObservable();
 
-    constructor() {
-        this.resize = this._resize.asObservable();
-        loggingService.info('Web bridge initialized.');
-    }
+	constructor() {
+		this.resize = this._resize.asObservable();
+		loggingService.info('Web bridge initialized.');
+	}
 
-    async init(debug: LogType) {
-        loggingService.info('Loading wasm file.');
-        await init();
-        loggingService.info('Initializing IronRDP.');
-        ironrdp_init(LogType[debug]);
-    }
+	async init(debug: LogType) {
+		loggingService.info('Loading wasm file.');
+		await init();
+		loggingService.info('Initializing IronRDP.');
+		ironrdp_init(LogType[debug]);
+	}
 
-    mouseIn(event: MouseEvent) {
-        this.syncModifier(event);
-        this.keyboardActive = true;
-    }
+	mouseIn(event: MouseEvent) {
+		this.syncModifier(event);
+		this.keyboardActive = true;
+	}
 
-    mouseOut(_event: MouseEvent) {
-        this.keyboardActive = false;
-        this.releaseAllInputs();
-    }
+	mouseOut(_event: MouseEvent) {
+		this.keyboardActive = false;
+		this.releaseAllInputs();
+	}
 
-    sendKeyboardEvent(evt: KeyboardEvent) {
-        if (this.keyboardActive) {
-            this.sendKeyboard(evt);
-        }
-    }
+	sendKeyboardEvent(evt: KeyboardEvent) {
+		if (this.keyboardActive) {
+			this.sendKeyboard(evt);
+		}
+	}
 
-    shutdown() {
-        this.session.shutdown();
-    }
+	shutdown() {
+		this.session.shutdown();
+	}
 
-    mouseButtonState(event: MouseEvent, isDown: boolean) {
-        event.preventDefault(); // prevent default behavior (context menu, etc)
-        let mouseFnc = isDown ? DeviceEvent.new_mouse_button_pressed : DeviceEvent.new_mouse_button_released;
-        this.doTransactionFromDeviceEvents([mouseFnc(event.button)]);
-    }
+	mouseButtonState(event: MouseEvent, isDown: boolean) {
+		event.preventDefault(); // prevent default behavior (context menu, etc)
+		const mouseFnc = isDown
+			? DeviceEvent.new_mouse_button_pressed
+			: DeviceEvent.new_mouse_button_released;
+		this.doTransactionFromDeviceEvents([mouseFnc(event.button)]);
+	}
 
-    updateMousePosition(position: MousePosition) {
-        if (!this.keyboardActive) {
-            this.keyboardActive = true;
-        }
-        this.doTransactionFromDeviceEvents([DeviceEvent.new_mouse_move(position.x, position.y)]);
-        this.mousePosition.next(position);
-    }
+	updateMousePosition(position: MousePosition) {
+		if (!this.keyboardActive) {
+			this.keyboardActive = true;
+		}
+		this.doTransactionFromDeviceEvents([DeviceEvent.new_mouse_move(position.x, position.y)]);
+		this.mousePosition.next(position);
+	}
 
+	connect(
+		username: string,
+		password: string,
+		destination: string,
+		proxyAddress: string,
+		serverDomain: string,
+		authToken: string,
+		desktopSize?: IDesktopSize,
+		preConnectionBlob?: string
+	): Observable<NewSessionInfo> {
+		const sessionBuilder = SessionBuilder.new();
+		sessionBuilder.proxy_address(proxyAddress);
+		sessionBuilder.destination(destination);
+		sessionBuilder.server_domain(serverDomain);
+		sessionBuilder.password(password);
+		sessionBuilder.auth_token(authToken);
+		sessionBuilder.username(username);
+		sessionBuilder.render_canvas(this.canvas);
+		sessionBuilder.hide_pointer_callback_context(this);
+		sessionBuilder.hide_pointer_callback(this.hidePointerCallback);
+		sessionBuilder.show_pointer_callback_context(this);
+		sessionBuilder.show_pointer_callback(this.showPointerCallback);
 
-    connect(username: string, password: string, destination: string, proxyAddress: string, serverDomain: string, authToken: string, desktopSize?: IDesktopSize, preConnectionBlob?: string): Observable<NewSessionInfo> {
-        const sessionBuilder = SessionBuilder.new();
-        sessionBuilder.proxy_address(proxyAddress);
-        sessionBuilder.destination(destination);
-        sessionBuilder.server_domain(serverDomain);
-        sessionBuilder.password(password);
-        sessionBuilder.auth_token(authToken);
-        sessionBuilder.username(username);
-        sessionBuilder.render_canvas(this.canvas);
-        sessionBuilder.hide_pointer_callback_context(this);
-        sessionBuilder.hide_pointer_callback(this.hidePointerCallback);
-        sessionBuilder.show_pointer_callback_context(this);
-        sessionBuilder.show_pointer_callback(this.showPointerCallback);
+		if (preConnectionBlob) {
+			sessionBuilder.pcb(preConnectionBlob);
+		}
 
-        if (preConnectionBlob) {
-            sessionBuilder.pcb(preConnectionBlob);
-        }
+		if (desktopSize) {
+			sessionBuilder.desktop_size(DesktopSize.new(desktopSize.width, desktopSize.height));
+		}
 
-        if (desktopSize) {
-            sessionBuilder.desktop_size(DesktopSize.new(desktopSize.width, desktopSize.height));
-        }
+		return from(sessionBuilder.connect()).pipe(
+			catchError((err: IronRdpError) => {
+				this.raiseSessionEvent({
+					type: SessionEventType.ERROR,
+					data: err
+				});
+				return of(err);
+			}),
+			filter((result) => result instanceof Session),
+			map((session: Session) => {
+				from(session.run())
+					.pipe(
+						catchError((err) => {
+							this.setVisibility(false);
+							this.raiseSessionEvent({
+								type: SessionEventType.ERROR,
+								data: err.backtrace()
+							});
+							this.raiseSessionEvent({
+								type: SessionEventType.TERMINATED,
+								data: 'Session was terminated.'
+							});
+							return of(err);
+						})
+					)
+					.subscribe();
+				return session;
+			}),
+			map((session: Session) => {
+				loggingService.info('Session started.');
+				this.session = session;
+				this._resize.next({
+					desktop_size: session.desktop_size(),
+					session_id: 0
+				});
+				this.raiseSessionEvent({
+					type: SessionEventType.STARTED,
+					data: 'Session started'
+				});
+				return {
+					session_id: 0,
+					initial_desktop_size: session.desktop_size(),
+					websocket_port: 0
+				};
+			})
+		);
+	}
 
-        return from(sessionBuilder.connect()).pipe(
-            catchError((err: IronRdpError) => {
-                this.raiseSessionEvent({
-                    type: SessionEventType.ERROR,
-                    data: err
-                });
-                return of(err);
-            }),
-            filter(result => result instanceof Session),
-            map((session: Session) => {
-                from(session.run()).pipe(
-                    catchError(err => {
-                        this.setVisibility(false);
-                        this.raiseSessionEvent({
-                            type: SessionEventType.ERROR,
-                            data: err.backtrace()
-                        });
-                        this.raiseSessionEvent({
-                            type: SessionEventType.TERMINATED,
-                            data: 'Session was terminated.'
-                        });
-                        return of(err);
-                    }),
-                ).subscribe();
-                return session;
-            }),
-            map((session: Session) => {
-                loggingService.info('Session started.');
-                this.session = session;
-                this._resize.next({
-                    desktop_size: session.desktop_size(),
-                    session_id: 0
-                });
-                this.raiseSessionEvent({
-                    type: SessionEventType.STARTED,
-                    data: 'Session started'
-                });
-                return {
-                    session_id: 0,
-                    initial_desktop_size: session.desktop_size(),
-                    websocket_port: 0
-                }
-            }),
-        );
-    }
+	sendSpecialCombination(specialCombination: SpecialCombination): void {
+		switch (specialCombination) {
+			case SpecialCombination.CTRL_ALT_DEL:
+				this.ctrlAltDel();
+				break;
+			case SpecialCombination.META:
+				this.sendMeta();
+				break;
+		}
+	}
 
-    sendSpecialCombination(specialCombination: SpecialCombination): void {
-        switch (specialCombination) {
-            case SpecialCombination.CTRL_ALT_DEL:
-                this.ctrlAltDel();
-                break;
-            case SpecialCombination.META:
-                this.sendMeta();
-                break;
-        }
-    }
+	mouseWheel(event) {
+		const vertical = event.deltaY !== 0;
+		const rotation = vertical ? event.deltaY : event.deltaX;
+		this.doTransactionFromDeviceEvents([DeviceEvent.new_wheel_rotations(vertical, -rotation)]);
+	}
 
+	setVisibility(state: boolean) {
+		this.changeVisibility.next(state);
+	}
 
-    mouseWheel(event) {
-        let vertical = event.deltaY !== 0;
-        let rotation = vertical ? event.deltaY : event.deltaX;
-        this.doTransactionFromDeviceEvents([DeviceEvent.new_wheel_rotations(vertical, -rotation)]);
-    }
+	setScale(scale: ScreenScale) {
+		this.scale.next(scale);
+	}
 
+	setCanvas(canvas: HTMLCanvasElement) {
+		this.canvas = canvas;
+	}
 
-    setVisibility(state: boolean) {
-        this.changeVisibility.next(state);
-    }
+	private releaseAllInputs() {
+		this.session?.release_all_inputs();
+	}
 
-    setScale(scale: ScreenScale) {
-        this.scale.next(scale);
-    }
+	private sendKeyboard(evt: KeyboardEvent) {
+		evt.preventDefault();
 
-    setCanvas(canvas: HTMLCanvasElement) {
-        this.canvas = canvas;
-    }
+		let keyEvent;
 
-    private releaseAllInputs() {
-        this.session?.release_all_inputs();
-    }
+		if (evt.type === 'keydown') {
+			keyEvent = DeviceEvent.new_key_pressed;
+		} else if (evt.type === 'keyup') {
+			keyEvent = DeviceEvent.new_key_released;
+		}
 
-    private sendKeyboard(evt: KeyboardEvent) {
-        evt.preventDefault();
+		if (keyEvent) {
+			if (ModifierKey[evt.code]) {
+				this.updateModifierKeyState(evt);
+			}
 
-        let keyEvent;
+			if (LockKey[evt.code]) {
+				this.syncModifier(evt);
+			}
 
-        if (evt.type === 'keydown') {
-            keyEvent = DeviceEvent.new_key_pressed;
-        } else if (evt.type === 'keyup') {
-            keyEvent = DeviceEvent.new_key_released;
-        }
+			if (!evt.repeat || (!ModifierKey[evt.code] && !LockKey[evt.code])) {
+				this.doTransactionFromDeviceEvents([keyEvent(scanCode(evt.code, OS.WINDOWS))]);
+			}
+		}
+	}
 
-        if (keyEvent) {
-            if (ModifierKey[evt.code]) {
-                this.updateModifierKeyState(evt);
-            }
+	private hidePointerCallback() {
+		this.canvas.style.cursor = 'none';
+	}
 
-            if (LockKey[evt.code]) {
-                this.syncModifier(evt);
-            }
+	private showPointerCallback() {
+		this.canvas.style.cursor = 'default';
+	}
 
-            if (!evt.repeat || (!ModifierKey[evt.code] && !LockKey[evt.code])) {
-                this.doTransactionFromDeviceEvents([keyEvent(scanCode(evt.code, OS.WINDOWS))]);
-            }
-        }
-    }
+	private syncModifier(mouseEvent: KeyboardEvent | MouseEvent): void {
+		const syncCapsLockActive = mouseEvent.getModifierState(LockKey.CAPS_LOCK);
+		const syncNumsLockActive = mouseEvent.getModifierState(LockKey.NUM_LOCK);
+		const syncScrollLockActive = mouseEvent.getModifierState(LockKey.SCROLL_LOCK);
+		const syncKanaModeActive = mouseEvent.getModifierState(LockKey.KANA_MODE);
 
-    private hidePointerCallback() {
-        this.canvas.style.cursor = 'none';
-    }
+		this.session.synchronize_lock_keys(
+			syncScrollLockActive,
+			syncNumsLockActive,
+			syncCapsLockActive,
+			syncKanaModeActive
+		);
+	}
 
-    private showPointerCallback() {
-        this.canvas.style.cursor = 'default';
-    }
+	private raiseSessionEvent(event: SessionEvent) {
+		this.sessionEvent.next(event);
+	}
 
-    private syncModifier(evt: any): void {
-        const mouseEvent = evt as MouseEvent;
+	private updateModifierKeyState(evt) {
+		if (this.modifierKeyPressed.indexOf(ModifierKey[evt.code]) === -1) {
+			this.modifierKeyPressed.push(ModifierKey[evt.code]);
+		} else if (evt.type === 'keyup') {
+			this.modifierKeyPressed.splice(this.modifierKeyPressed.indexOf(ModifierKey[evt.code]), 1);
+		}
+	}
 
-        let syncCapsLockActive = mouseEvent.getModifierState(LockKey.CAPS_LOCK);
-        let syncNumsLockActive = mouseEvent.getModifierState(LockKey.NUM_LOCK);
-        let syncScrollLockActive = mouseEvent.getModifierState(LockKey.SCROLL_LOCK);
-        let syncKanaModeActive = mouseEvent.getModifierState(LockKey.KANA_MODE);
+	private doTransactionFromDeviceEvents(deviceEvents: DeviceEvent[]) {
+		const transaction = InputTransaction.new();
+		deviceEvents.forEach((event) => transaction.add_event(event));
+		this.session?.apply_inputs(transaction);
+	}
 
-        this.session.synchronize_lock_keys(syncScrollLockActive, syncNumsLockActive, syncCapsLockActive, syncKanaModeActive);
-    }
+	private ctrlAltDel() {
+		const ctrl = scanCode('ControlLeft', OS.WINDOWS);
+		const alt = scanCode('AltLeft', OS.WINDOWS);
+		const suppr = scanCode('Delete', OS.WINDOWS);
 
-    private raiseSessionEvent(event: SessionEvent) {
-        this.sessionEvent.next(event);
-    }
+		this.doTransactionFromDeviceEvents([
+			DeviceEvent.new_key_pressed(ctrl),
+			DeviceEvent.new_key_pressed(alt),
+			DeviceEvent.new_key_pressed(suppr),
+			DeviceEvent.new_key_released(ctrl),
+			DeviceEvent.new_key_released(alt),
+			DeviceEvent.new_key_released(suppr)
+		]);
+	}
 
-    private updateModifierKeyState(evt) {
-        if (this.modifierKeyPressed.indexOf(ModifierKey[evt.code]) === -1) {
-            this.modifierKeyPressed.push(ModifierKey[evt.code]);
-        } else if (evt.type === 'keyup') {
-            this.modifierKeyPressed.splice(this.modifierKeyPressed.indexOf(ModifierKey[evt.code]), 1);
-        }
-    }
+	private sendMeta() {
+		const ctrl = scanCode('ControlLeft', OS.WINDOWS);
+		const escape = scanCode('Escape', OS.WINDOWS);
 
-    private doTransactionFromDeviceEvents(deviceEvents: DeviceEvent[]) {
-        const transaction = InputTransaction.new();
-        deviceEvents.forEach(event => transaction.add_event(event));
-        this.session?.apply_inputs(transaction);
-    }
-
-    private ctrlAltDel() {
-        const ctrl = scanCode('ControlLeft', OS.WINDOWS);
-        const alt = scanCode('AltLeft', OS.WINDOWS);
-        const suppr = scanCode('Delete', OS.WINDOWS);
-
-        this.doTransactionFromDeviceEvents([
-            DeviceEvent.new_key_pressed(ctrl),
-            DeviceEvent.new_key_pressed(alt),
-            DeviceEvent.new_key_pressed(suppr),
-            DeviceEvent.new_key_released(ctrl),
-            DeviceEvent.new_key_released(alt),
-            DeviceEvent.new_key_released(suppr),
-        ]);
-    }
-
-    private sendMeta() {
-        const ctrl = scanCode('ControlLeft', OS.WINDOWS);
-        const escape = scanCode('Escape', OS.WINDOWS);
-
-        this.doTransactionFromDeviceEvents([
-            DeviceEvent.new_key_pressed(ctrl),
-            DeviceEvent.new_key_pressed(escape),
-            DeviceEvent.new_key_released(ctrl),
-            DeviceEvent.new_key_released(escape),
-        ]);
-    }
+		this.doTransactionFromDeviceEvents([
+			DeviceEvent.new_key_pressed(ctrl),
+			DeviceEvent.new_key_pressed(escape),
+			DeviceEvent.new_key_released(ctrl),
+			DeviceEvent.new_key_released(escape)
+		]);
+	}
 }

@@ -1,19 +1,19 @@
-﻿<!DOCTYPE html>
+﻿<!doctype html>
 <html lang="en">
-<head>
-    <meta charset="UTF-8"/>
-    <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-    <title>Test</title>
-</head>
-<body>
-<script type="module" src="./iron-remote-gui.js"></script>
-<iron-remote-gui isvisible="false" desktopwidth="600" desktopheight="400"/>
+	<head>
+		<meta charset="UTF-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+		<title>Test</title>
+	</head>
+	<body>
+		<script type="module" src="./iron-remote-gui.js"></script>
+		<iron-remote-gui isvisible="false" desktopwidth="600" desktopheight="400" />
 
-<script>
-    var el = document.querySelector('iron-remote-gui');
-    el.addEventListener('ready', (e) => {
-        e.detail.irgUserInteraction.setVisibility(true);
-    });
-</script>
-</body>
+		<script>
+			var el = document.querySelector('iron-remote-gui');
+			el.addEventListener('ready', (e) => {
+				e.detail.irgUserInteraction.setVisibility(true);
+			});
+		</script>
+	</body>
 </html>

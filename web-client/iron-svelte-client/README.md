@@ -48,10 +48,10 @@ For convenience, modify the freshly generated `gateway.json` like so:
 
 ```json
 {
-  // -- snip -- //
-  "__debug__": {
-    "disable_token_validation": true
-  }
+	// -- snip -- //
+	"__debug__": {
+		"disable_token_validation": true
+	}
 }
 ```
 
@@ -97,7 +97,7 @@ $ New-DGatewayToken -Type ASSOCIATION -PrivateKeyFile <PRIVATE KEY PATH> -Destin
 First, run `npm install` in the [iron-remote-gui](../iron-remote-gui/) folder,
 and then `npm install` in [iron-svelte-client](./) folder.
 
-You can then start the dev server with either: 
+You can then start the dev server with either:
 
 - `npm run dev` - Runs only the final application.
 - `npm run dev-all` - Builds WASM module and `iron-remote-gui` prior to starting the dev server.

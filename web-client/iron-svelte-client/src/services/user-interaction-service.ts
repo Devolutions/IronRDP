@@ -1,4 +1,4 @@
-import { BehaviorSubject, Observable } from 'rxjs';
+import { BehaviorSubject } from 'rxjs';
 import { serverBridge } from './services-injector';
 
 export interface MousePosition {
@@ -11,8 +11,6 @@ const mousePosition: BehaviorSubject<MousePosition> = new BehaviorSubject<MouseP
 	y: 0
 });
 const mouseLeftClick: BehaviorSubject<number> = new BehaviorSubject<number>(0);
-const mousePositionObservable: Observable<MousePosition> = mousePosition.asObservable();
-const mouseLeftClickObservable: Observable<number> = mouseLeftClick.asObservable();
 
 export const setMousePosition = function (position: MousePosition) {
 	serverBridge.updateMouse(position.x, position.y, mouseLeftClick.value);

@@ -15,7 +15,7 @@ Run `npm run build`
 As member of the Devolutions organization, you can import the Web Component from JFrog Artifactory by running the following npm command:
 
 ```shell
-$ npm install @devolutions/iron-remote-gui 
+$ npm install @devolutions/iron-remote-gui
 ```
 
 Otherwise, you can run `npm install` targeting the `dist/` folder directly.
@@ -33,10 +33,10 @@ Call the `connect` method on this object.
 For now, we didn't make the enums used by some method directly available (I didn't find the good way to export them directly with the component.).
 You need to recreate them on your application for now (it will be improved in future version);
 
-Also, even if the connection to RDP work there is still a lot of improvement to do. 
+Also, even if the connection to RDP work there is still a lot of improvement to do.
 As of now, you can expect, mouse movement and click (4 buttons) - no scroll, Keyboard for at least the standard.
-Windows and CTRL+ALT+DEL can be called by method on `UserInteractionService`. 
-Lock keys (like caps lock), have a partial support. 
+Windows and CTRL+ALT+DEL can be called by method on `UserInteractionService`.
+Lock keys (like caps lock), have a partial support.
 Other advanced functionalities (sharing / copy past...) are not implemented yet.
 
 ## Component parameters
@@ -59,19 +59,18 @@ You can add some parameters for default initialization on the component `<iron-r
 > `authtoken` is the authentication token to send to the Devolutions Gateway.
 
 > `ctrlAltDel()`
-> 
+>
 > Sends the ctrl+alt+del key to server.
 
 > `metaKey()`
-> 
+>
 > Sends the meta key event to remote host (i.e.: Windows key).
 
 > `setVisibility(value: bool)`
-> 
+>
 > Shows or hides rendering canvas.
 
 > `setScale(scale: ScreenScale)`
-> 
+>
 > Sets the scale behavior of the canvas.
 > See the [ScreenScale](./src/services/user-interaction-service.ts) enum for possible values.
-

@@ -1,6 +1,6 @@
-﻿import type {SessionEventType} from '../enums/SessionEventType';
+﻿import type { SessionEventType } from '../enums/SessionEventType';
 
 export interface SessionEvent {
-    type: SessionEventType,
-    data?: any
+	type: SessionEventType;
+	data?: unknown;
 }

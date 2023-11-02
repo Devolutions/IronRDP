@@ -1,17 +1,17 @@
 ﻿export class LoggingService {
-    verbose: boolean;
-    
-    info(description: string) {
-        if (this.verbose) {
-            console.log(description);   
-        }
-    }
-    
-    error(description: string, object?: any) {
-        if (this.verbose) {
-            console.error(description, object);
-        }
-    }
+	verbose: boolean;
+
+	info(description: string) {
+		if (this.verbose) {
+			console.log(description);
+		}
+	}
+
+	error(description: string, object?: unknown) {
+		if (this.verbose) {
+			console.error(description, object);
+		}
+	}
 }
 
-export let loggingService = new LoggingService();
+export const loggingService = new LoggingService();

@@ -19,7 +19,6 @@
     let capturingInputs = false;
     let currentComponent = get_current_component();
     let canvas;
-    let canvasCtx;
 
     let wrapper;
     let viewer;
@@ -240,7 +239,6 @@
     async function initcanvas() {
         loggingService.info('Start canvas initialization.')
         canvas = currentComponent.shadowRoot.getElementById('renderer');
-        canvasCtx = canvas?.getContext('2d', {alpha: false});
 
         // Set a default canvas size. Need more test to know if i can remove it.
         canvas.width = 800;

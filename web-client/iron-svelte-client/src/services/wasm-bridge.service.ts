@@ -1,13 +1,13 @@
-import type { NewSessionInfo, ServerBridgeService } from './server-bridge.service';
+import type { NewSessionInfo, ResizeEvent, ServerBridgeService } from './server-bridge.service';
 import * as IronWasm from '../../../ffi/wasm/pkg/ironrdp_web';
 import { Observable, of, Subject } from 'rxjs';
 
 export class WasmBridgeService implements ServerBridgeService {
 	private wasmBridge = IronWasm;
 
-	private _resize: Subject<any> = new Subject<any>();
+	private _resize: Subject<ResizeEvent> = new Subject<ResizeEvent>();
 
-	resize: Observable<any>;
+	resize: Observable<ResizeEvent>;
 
 	constructor() {
 		this.resize = this._resize.asObservable();
@@ -17,7 +17,7 @@ export class WasmBridgeService implements ServerBridgeService {
 		this.wasmBridge.init();
 	}
 
-	updateMouse(mouse_x: number, mouse_y: number, click_state: number): void {
+	updateMouse(_mouse_x: number, _mouse_y: number, _click_state: number): void {
 		// Not implemented yet...
 	}
 
