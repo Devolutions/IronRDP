@@ -40,10 +40,10 @@ impl fmt::Display for EncodeErrorKind {
 ///
 /// This trait is object-safe and may be used in a dynamic context.
 pub trait Encode {
-    /// Encodes this PDU in-place using the provided `WriteCursor`.
+    /// Encodes this structure in-place using the provided `WriteCursor`.
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()>;
 
-    /// Computes the size in bytes for this PDU.
+    /// Computes the size in bytes for this structure.
     fn size(&self) -> usize;
 }
 
@@ -96,7 +96,7 @@ where
     Ok(buf)
 }
 
-/// Computes the size in bytes for this PDU.
+/// Computes the size in bytes for this structure.
 pub fn size<T: Encode>(pdu: &T) -> usize {
     pdu.size()
 }
