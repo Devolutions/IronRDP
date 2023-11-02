@@ -1764,6 +1764,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "ironrdp-cliprdr-format"
+version = "0.1.0"
+dependencies = [
+ "ironrdp-cliprdr",
+ "ironrdp-pdu",
+ "png",
+ "thiserror",
+ "tracing",
+]
+
+[[package]]
 name = "ironrdp-cliprdr-native"
 version = "0.1.0"
 dependencies = [
@@ -1816,6 +1827,7 @@ version = "0.0.0"
 dependencies = [
  "arbitrary",
  "ironrdp-cliprdr",
+ "ironrdp-cliprdr-format",
  "ironrdp-graphics",
  "ironrdp-pdu",
  "ironrdp-rdpdr",
@@ -1952,6 +1964,7 @@ dependencies = [
  "expect-test",
  "hex",
  "ironrdp-cliprdr",
+ "ironrdp-cliprdr-format",
  "ironrdp-connector",
  "ironrdp-fuzzing",
  "ironrdp-graphics",
@@ -1999,6 +2012,7 @@ dependencies = [
  "gloo-net",
  "gloo-timers",
  "ironrdp",
+ "ironrdp-cliprdr-format",
  "ironrdp-futures",
  "ironrdp-rdcleanpath",
  "js-sys",

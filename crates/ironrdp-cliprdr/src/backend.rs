@@ -70,6 +70,18 @@ pub trait CliprdrBackend: AsAny + std::fmt::Debug + Send {
     /// client's clipboard prior to `CLIPRDR` SVC initialization.
     fn on_request_format_list(&mut self);
 
+    /// Called by [crate::Cliprdr] when copy sequence is finished.
+    /// This method is called after remote returns format list response.
+    ///
+    /// Usefull for the backend implementations which need to know when remote is ready to paste
+    /// previously advertised formats from the client. E.g. Web client uses this for
+    /// Firefox-specific logic to delay sending keyboard key events to prevent pasting the old
+    /// data from the clipboard.
+    ///
+    /// This method has default implementation which does nothing because it is not required for
+    /// most of the backends.
+    fn on_format_list_received(&mut self) {}
+
     /// Adjusts [crate::Cliprdr] backend capabilities based on capabilities negotiated with a server.
     ///
     /// Called by [crate::Cliprdr] when capability negotiation is finished and server capabilities are

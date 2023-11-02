@@ -8,6 +8,8 @@ use futures_util::io::{ReadHalf, WriteHalf};
 use futures_util::{select, AsyncReadExt as _, AsyncWriteExt as _, FutureExt as _, StreamExt as _};
 use gloo_net::websocket;
 use gloo_net::websocket::futures::WebSocket;
+use ironrdp::cliprdr::backend::ClipboardMessage;
+use ironrdp::cliprdr::Cliprdr;
 use ironrdp::connector::{self, ClientConnector, Credentials};
 use ironrdp::graphics::image_processing::PixelFormat;
 use ironrdp::pdu::input::fast_path::FastPathInputEvent;
@@ -20,12 +22,13 @@ use wasm_bindgen_futures::spawn_local;
 use web_sys::HtmlCanvasElement;
 
 use crate::canvas::Canvas;
+use crate::clipboard::{ClipboardTransaction, WasmCipboard, WasmClipboardBackend, WasmClipboardBackendMessage};
 use crate::error::{IronRdpError, IronRdpErrorKind};
 use crate::image::extract_partial_image;
 use crate::input::InputTransaction;
 use crate::network_client::WasmNetworkClientFactory;
 use crate::websocket::WebSocketCompat;
-use crate::DesktopSize;
+use crate::{clipboard, DesktopSize};
 
 const DEFAULT_WIDTH: u16 = 1280;
 const DEFAULT_HEIGHT: u16 = 720;
@@ -50,6 +53,9 @@ struct SessionBuilderInner {
     hide_pointer_callback_context: Option<JsValue>,
     show_pointer_callback: Option<js_sys::Function>,
     show_pointer_callback_context: Option<JsValue>,
+    remote_clipboard_changed_callback: Option<js_sys::Function>,
+    remote_received_format_list_callback: Option<js_sys::Function>,
+    force_clipboard_update_callback: Option<js_sys::Function>,
 }
 
 impl Default for SessionBuilderInner {
@@ -73,6 +79,9 @@ impl Default for SessionBuilderInner {
             hide_pointer_callback_context: None,
             show_pointer_callback: None,
             show_pointer_callback_context: None,
+            remote_clipboard_changed_callback: None,
+            remote_received_format_list_callback: None,
+            force_clipboard_update_callback: None,
         }
     }
 }
@@ -165,6 +174,24 @@ impl SessionBuilder {
         self.clone()
     }
 
+    /// Optional
+    pub fn remote_clipboard_changed_callback(&self, callback: js_sys::Function) -> SessionBuilder {
+        self.0.borrow_mut().remote_clipboard_changed_callback = Some(callback);
+        self.clone()
+    }
+
+    /// Optional
+    pub fn remote_received_format_list_callback(&self, callback: js_sys::Function) -> SessionBuilder {
+        self.0.borrow_mut().remote_received_format_list_callback = Some(callback);
+        self.clone()
+    }
+
+    /// Optional
+    pub fn force_clipboard_update_callback(&self, callback: js_sys::Function) -> SessionBuilder {
+        self.0.borrow_mut().force_clipboard_update_callback = Some(callback);
+        self.clone()
+    }
+
     pub async fn connect(&self) -> Result<Session, IronRdpError> {
         let (
             username,
@@ -181,6 +208,9 @@ impl SessionBuilder {
             hide_pointer_callback_context,
             show_pointer_callback,
             show_pointer_callback_context,
+            remote_clipboard_changed_callback,
+            remote_received_format_list_callback,
+            force_clipboard_update_callback,
         );
 
         {
@@ -213,11 +243,27 @@ impl SessionBuilder {
                 .show_pointer_callback_context
                 .clone()
                 .context("show_pointer_callback_context missing")?;
+            remote_clipboard_changed_callback = inner.remote_clipboard_changed_callback.clone();
+            remote_received_format_list_callback = inner.remote_received_format_list_callback.clone();
+            force_clipboard_update_callback = inner.force_clipboard_update_callback.clone();
         }
 
         info!("Connect to RDP host");
 
         let config = build_config(username, password, server_domain, client_name, desktop_size);
+
+        let (input_events_tx, input_events_rx) = mpsc::unbounded();
+
+        let clipboard = remote_clipboard_changed_callback.clone().map(|callback| {
+            WasmCipboard::new(
+                clipboard::WasmClipboardMessageProxy::new(input_events_tx.clone()),
+                clipboard::JsClipboardCallbacks {
+                    on_remote_clipboard_changed: callback,
+                    on_remote_received_format_list: remote_received_format_list_callback,
+                    on_force_clipboard_update: force_clipboard_update_callback,
+                },
+            )
+        });
 
         let ws = WebSocket::open(&proxy_address).context("Couldn’t open WebSocket")?;
 
@@ -247,15 +293,21 @@ impl SessionBuilder {
 
         let ws = WebSocketCompat::new(ws);
 
-        let (connection_result, ws) = connect(ws, config, auth_token, destination, pcb).await?;
+        let (connection_result, ws) = connect(
+            ws,
+            config,
+            auth_token,
+            destination,
+            pcb,
+            clipboard.as_ref().map(|clip| clip.backend()),
+        )
+        .await?;
 
         info!("Connected!");
 
         let (rdp_reader, rdp_writer) = ws.split();
 
         let (writer_tx, writer_rx) = mpsc::unbounded();
-
-        let (input_events_tx, input_events_rx) = mpsc::unbounded();
 
         spawn_local(writer_task(writer_rx, rdp_writer));
 
@@ -274,18 +326,26 @@ impl SessionBuilder {
             input_events_rx: RefCell::new(Some(input_events_rx)),
             rdp_reader: RefCell::new(Some(rdp_reader)),
             connection_result: RefCell::new(Some(connection_result)),
+            clipboard: RefCell::new(Some(clipboard)),
         })
     }
 }
 
-type FastPathInputEvents = smallvec::SmallVec<[FastPathInputEvent; 2]>;
+pub type FastPathInputEvents = smallvec::SmallVec<[FastPathInputEvent; 2]>;
+
+#[derive(Debug)]
+pub enum RdpInputEvent {
+    Cliprdr(ClipboardMessage),
+    ClipboardBackend(WasmClipboardBackendMessage),
+    FastPath(FastPathInputEvents),
+}
 
 #[wasm_bindgen]
 pub struct Session {
     desktop_size: connector::DesktopSize,
     input_database: RefCell<ironrdp::input::Database>,
     writer_tx: mpsc::UnboundedSender<Vec<u8>>,
-    input_events_tx: mpsc::UnboundedSender<FastPathInputEvents>,
+    input_events_tx: mpsc::UnboundedSender<RdpInputEvent>,
 
     render_canvas: HtmlCanvasElement,
     hide_pointer_callback: js_sys::Function,
@@ -294,9 +354,10 @@ pub struct Session {
     show_pointer_callback_context: JsValue,
 
     // Consumed when `run` is called
-    input_events_rx: RefCell<Option<mpsc::UnboundedReceiver<FastPathInputEvents>>>,
+    input_events_rx: RefCell<Option<mpsc::UnboundedReceiver<RdpInputEvent>>>,
     connection_result: RefCell<Option<connector::ConnectionResult>>,
     rdp_reader: RefCell<Option<ReadHalf<WebSocketCompat>>>,
+    clipboard: RefCell<Option<Option<WasmCipboard>>>,
 }
 
 #[wasm_bindgen]
@@ -308,7 +369,7 @@ impl Session {
             .take()
             .context("RDP session can be started only once")?;
 
-        let mut fastpath_input_events = self
+        let mut input_events = self
             .input_events_rx
             .borrow_mut()
             .take()
@@ -319,6 +380,8 @@ impl Session {
             .borrow_mut()
             .take()
             .expect("run called only once");
+
+        let mut clipboard = self.clipboard.borrow_mut().take().expect("run called only once");
 
         let mut framed = ironrdp_futures::SingleThreadedFuturesFramed::new(rdp_reader);
 
@@ -351,10 +414,54 @@ impl Session {
 
                     active_stage.process(&mut image, action, &payload)?
                 }
-                input_events = fastpath_input_events.next() => {
-                    let events = input_events.context("read next fastpath input events")?;
+                input_events = input_events.next() => {
+                    let event = input_events.context("read next input events")?;
 
-                    active_stage.process_fastpath_input(&mut image, &events).context("Fast path input events processing")?
+                    match event {
+                        RdpInputEvent::Cliprdr(message) => {
+                            if let Some(cliprdr) = active_stage.get_svc_processor::<ironrdp::cliprdr::Cliprdr>() {
+                                if let Some(svc_messages) = match message {
+                                    ClipboardMessage::SendInitiateCopy(formats) => Some(
+                                        cliprdr.initiate_copy(&formats)
+                                            .context("CLIPRDR initiate copy")?
+                                    ),
+                                    ClipboardMessage::SendFormatData(response) => Some(
+                                        cliprdr.submit_format_data(response)
+                                            .context("CLIPRDR submit format data")?
+                                    ),
+                                    ClipboardMessage::SendInitiatePaste(format) => Some(
+                                        cliprdr.initiate_paste(format)
+                                            .context("CLIPRDR initiate paste")?
+                                    ),
+                                    ClipboardMessage::Error(e) => {
+                                        error!("Clipboard backend error: {}", e);
+                                        None
+                                    }
+                                } {
+                                    let frame = active_stage.process_svc_processor_messages(svc_messages)?;
+                                    // Send the messages to the server
+                                    vec![ActiveStageOutput::ResponseFrame(frame)]
+                                } else {
+                                    // No messages to send to the server
+                                    Vec::new()
+                                }
+                            } else  {
+                                warn!("Clipboard event received, but Cliprdr is not available");
+                                Vec::new()
+                            }
+                        }
+                        RdpInputEvent::ClipboardBackend(event) => {
+                            if let Some(clipboard) = &mut clipboard {
+                                clipboard.process_event(event)?;
+                            }
+                            // No RDP output frames for backend event processing
+                            Vec::new()
+                        }
+                        RdpInputEvent::FastPath(events) => {
+                            active_stage.process_fastpath_input(&mut image, &events)
+                                .context("Fast path input events processing")?
+                        }
+                    }
                 }
             };
 
@@ -417,7 +524,7 @@ impl Session {
             trace!("Inputs: {inputs:?}");
 
             self.input_events_tx
-                .unbounded_send(inputs)
+                .unbounded_send(RdpInputEvent::FastPath(inputs))
                 .context("Send input events to writer task")?;
         }
 
@@ -450,6 +557,16 @@ impl Session {
     #[allow(clippy::unused_self)] // FIXME: not yet implemented
     pub fn shutdown(&self) -> Result<(), IronRdpError> {
         // TODO: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/27915739-8f77-487e-9927-55008af7fd68
+        Ok(())
+    }
+
+    pub async fn on_clipboard_paste(&self, content: ClipboardTransaction) -> Result<(), IronRdpError> {
+        self.input_events_tx
+            .unbounded_send(RdpInputEvent::ClipboardBackend(
+                WasmClipboardBackendMessage::LocalClipboardChanged(content),
+            ))
+            .context("Send clipboard backend event")?;
+
         Ok(())
     }
 }
@@ -522,6 +639,7 @@ async fn connect(
     proxy_auth_token: String,
     destination: String,
     pcb: Option<String>,
+    clipboard_backend: Option<WasmClipboardBackend>,
 ) -> Result<(connector::ConnectionResult, WebSocketCompat), IronRdpError> {
     let mut framed = ironrdp_futures::SingleThreadedFuturesFramed::new(ws);
 
@@ -529,6 +647,10 @@ async fn connect(
         .with_server_name(&destination)
         .with_credssp_network_client(WasmNetworkClientFactory);
     // .with_static_channel(ironrdp::dvc::Drdynvc::new()); // FIXME: drdynvc is not working
+
+    if let Some(clipboard_backend) = clipboard_backend {
+        connector.attach_static_channel(Cliprdr::new(Box::new(clipboard_backend)));
+    }
 
     let upgraded = connect_rdcleanpath(&mut framed, &mut connector, destination, proxy_auth_token, pcb).await?;
 

@@ -1,0 +1,546 @@
+mod transaction;
+
+use std::collections::HashMap;
+
+use futures_channel::mpsc;
+use ironrdp::cliprdr::backend::{ClipboardMessage, CliprdrBackend};
+use ironrdp::cliprdr::pdu::{
+    ClipboardFormat, ClipboardFormatId, ClipboardFormatName, ClipboardGeneralCapabilityFlags, FileContentsRequest,
+    FileContentsResponse, FormatDataRequest, FormatDataResponse, LockDataId,
+};
+use ironrdp_cliprdr_format::bitmap::{dib_to_png, dibv5_to_png, png_to_cf_dibv5};
+use ironrdp_cliprdr_format::html::{cf_html_to_text, text_to_cf_html};
+pub use transaction::{ClipboardContent, ClipboardContentValue, ClipboardTransaction};
+use wasm_bindgen::prelude::*;
+
+use crate::session::RdpInputEvent;
+
+const MIME_TEXT: &str = "text/plain";
+const MIME_HTML: &str = "text/html";
+const MIME_PNG: &str = "image/png";
+
+#[derive(Clone, Copy)]
+struct ClientFormatDescriptor {
+    pub id: ClipboardFormatId,
+    pub name: &'static str,
+}
+
+impl ClientFormatDescriptor {
+    pub const fn new(id: ClipboardFormatId, name: &'static str) -> Self {
+        Self { id, name }
+    }
+}
+
+impl From<ClientFormatDescriptor> for ClipboardFormat {
+    fn from(descriptor: ClientFormatDescriptor) -> Self {
+        ClipboardFormat::new(descriptor.id).with_name(ClipboardFormatName::new_static(descriptor.name))
+    }
+}
+
+const FORMAT_WIN_HTML_ID: ClipboardFormatId = ClipboardFormatId(0xC001);
+const FORMAT_MIME_HTML_ID: ClipboardFormatId = ClipboardFormatId(0xC002);
+const FORMAT_PNG_ID: ClipboardFormatId = ClipboardFormatId(0xC003);
+const FORMAT_MIME_PNG_ID: ClipboardFormatId = ClipboardFormatId(0xC004);
+
+const FORMAT_WIN_HTML_NAME: &str = "HTML Format";
+const FORMAT_MIME_HTML_NAME: &str = "text/html";
+const FORMAT_PNG_NAME: &str = "PNG";
+const FORMAT_MIME_PNG_NAME: &str = "image/png";
+
+const FORMAT_WIN_HTML: ClientFormatDescriptor = ClientFormatDescriptor::new(FORMAT_WIN_HTML_ID, FORMAT_WIN_HTML_NAME);
+const FORMAT_MIME_HTML: ClientFormatDescriptor =
+    ClientFormatDescriptor::new(FORMAT_MIME_HTML_ID, FORMAT_MIME_HTML_NAME);
+const FORMAT_PNG: ClientFormatDescriptor = ClientFormatDescriptor::new(FORMAT_PNG_ID, FORMAT_PNG_NAME);
+const FORMAT_MIME_PNG: ClientFormatDescriptor = ClientFormatDescriptor::new(FORMAT_MIME_PNG_ID, FORMAT_MIME_PNG_NAME);
+
+#[derive(Debug, Clone)]
+pub struct WasmClipboardMessageProxy {
+    tx: mpsc::UnboundedSender<RdpInputEvent>,
+}
+
+impl WasmClipboardMessageProxy {
+    pub fn new(tx: mpsc::UnboundedSender<RdpInputEvent>) -> Self {
+        Self { tx }
+    }
+
+    pub fn send_cliprdr_message(&self, message: ClipboardMessage) {
+        if self.tx.unbounded_send(RdpInputEvent::Cliprdr(message)).is_err() {
+            error!("Failed to send os clipboard message, receiver is closed");
+        }
+    }
+
+    pub fn send_backend_message(&self, message: WasmClipboardBackendMessage) {
+        if self
+            .tx
+            .unbounded_send(RdpInputEvent::ClipboardBackend(message))
+            .is_err()
+        {
+            error!("Failed to send os clipboard message, receiver is closed");
+        }
+    }
+}
+
+#[derive(Debug)]
+pub enum WasmClipboardBackendMessage {
+    /// Client's clipboard changed
+    ///
+    /// When received:
+    /// - Client should CLIPRDR copy sequence
+    /// - Client should be ready for paste sequence
+    LocalClipboardChanged(ClipboardTransaction),
+    RemotePaste(ClipboardFormatId),
+
+    RemoteCopy(Vec<ClipboardFormat>),
+    RemoteFormatReceived(FormatDataResponse<'static>),
+
+    FormatListReceived,
+    ForceClipboardUpdate,
+}
+
+pub struct WasmCipboard {
+    local_clipboard: Option<ClipboardTransaction>,
+    remote_clipborad: ClipboardTransaction,
+
+    remote_mapping: HashMap<ClipboardFormatId, String>,
+    remote_formats_to_read: Vec<ClipboardFormatId>,
+
+    proxy: WasmClipboardMessageProxy,
+    js_callbacks: JsClipboardCallbacks,
+}
+
+pub struct JsClipboardCallbacks {
+    pub on_remote_clipboard_changed: js_sys::Function,
+    pub on_remote_received_format_list: Option<js_sys::Function>,
+    pub on_force_clipboard_update: Option<js_sys::Function>,
+}
+
+impl WasmCipboard {
+    pub fn new(message_proxy: WasmClipboardMessageProxy, js_callbacks: JsClipboardCallbacks) -> Self {
+        Self {
+            local_clipboard: None,
+            remote_clipborad: ClipboardTransaction::new(),
+            proxy: message_proxy,
+            js_callbacks,
+
+            remote_mapping: HashMap::new(),
+            remote_formats_to_read: Vec::new(),
+        }
+    }
+
+    pub fn backend(&self) -> WasmClipboardBackend {
+        WasmClipboardBackend {
+            proxy: self.proxy.clone(),
+        }
+    }
+
+    fn handle_local_clipboard_changed(
+        &mut self,
+        transaction: ClipboardTransaction,
+    ) -> anyhow::Result<Vec<ClipboardFormat>> {
+        let mut formats = Vec::new();
+        transaction.contents().iter().for_each(|content| {
+            match content.mime_type() {
+                MIME_TEXT => formats.push(ClipboardFormat::new(ClipboardFormatId::CF_UNICODETEXT)),
+                MIME_HTML => {
+                    formats.extend([
+                        // We don't provide CF_TEXT, because it could be synthesized from
+                        // CF_UNICODETEXT on the remote side.
+                        ClipboardFormat::new(ClipboardFormatId::CF_UNICODETEXT),
+                        FORMAT_WIN_HTML.into(),
+                        FORMAT_MIME_HTML.into(),
+                    ]);
+                }
+                MIME_PNG => {
+                    formats.extend([
+                        // We don't provide CF_DIB, because it could be synthesized from
+                        // CF_DIBV5 on the remote side.
+                        ClipboardFormat::new(ClipboardFormatId::CF_DIBV5),
+                        FORMAT_PNG.into(),
+                        FORMAT_MIME_PNG.into(),
+                    ]);
+                }
+                _ => {}
+            };
+        });
+
+        self.local_clipboard = Some(transaction);
+
+        trace!("Sending clipboard formats: {:?}", formats);
+
+        Ok(formats)
+    }
+
+    fn process_remote_paste(&mut self, format: ClipboardFormatId) -> anyhow::Result<FormatDataResponse<'static>> {
+        // Transaction is not set, bail!
+        let transaction = if let Some(transaction) = &self.local_clipboard {
+            transaction
+        } else {
+            anyhow::bail!("Local clipboard is empty");
+        };
+
+        let find_content_by_mime = |mime: &str| {
+            transaction
+                .contents()
+                .iter()
+                .find(|content| content.mime_type() == mime)
+        };
+
+        let find_text_content_by_mime = |mime: &str| {
+            find_content_by_mime(mime)
+                .and_then(|content| {
+                    if let ClipboardContentValue::Text(text) = content.value() {
+                        Some(text.as_str())
+                    } else {
+                        None
+                    }
+                })
+                .ok_or_else(|| anyhow::anyhow!("Failed to find `{mime}` in client clipboard"))
+        };
+
+        let find_binary_content_by_mime = |mime: &str| {
+            find_content_by_mime(mime)
+                .and_then(|content| {
+                    if let ClipboardContentValue::Binary(binary) = content.value() {
+                        Some(binary.as_slice())
+                    } else {
+                        None
+                    }
+                })
+                .ok_or_else(|| anyhow::anyhow!("Failed to find `{mime}` in client clipboard"))
+        };
+
+        let response = match format {
+            ClipboardFormatId::CF_UNICODETEXT => {
+                let text = find_text_content_by_mime(MIME_TEXT)?;
+                FormatDataResponse::new_unicode_string(text)
+            }
+            FORMAT_WIN_HTML_ID => {
+                let text = find_text_content_by_mime(MIME_HTML)?;
+                let buffer = text_to_cf_html(text);
+                FormatDataResponse::new_data(buffer)
+            }
+            FORMAT_MIME_HTML_ID => {
+                let text = find_text_content_by_mime(MIME_HTML)?;
+                FormatDataResponse::new_string(text)
+            }
+            ClipboardFormatId::CF_DIBV5 => {
+                let png_data = find_binary_content_by_mime(MIME_PNG)?;
+                let buffer = png_to_cf_dibv5(png_data)?;
+                FormatDataResponse::new_data(buffer)
+            }
+            FORMAT_MIME_PNG_ID | FORMAT_PNG_ID => {
+                let png_data = find_binary_content_by_mime(MIME_PNG)?;
+                FormatDataResponse::new_data(png_data)
+            }
+            _ => {
+                anyhow::bail!("Unknown format id requested: {}", format.value());
+            }
+        };
+
+        Ok(response.into_owned())
+    }
+
+    fn process_remote_clipboard_changed(
+        &mut self,
+        formats: Vec<ClipboardFormat>,
+    ) -> anyhow::Result<Option<ClipboardFormatId>> {
+        self.remote_formats_to_read.clear();
+        self.remote_clipborad.clear();
+
+        let is_format_name_equal = |format: &ClipboardFormat, name: &str| {
+            format
+                .name()
+                .map(|actual: &ClipboardFormatName| actual.value() == name)
+                .unwrap_or(false)
+        };
+
+        for format in &formats {
+            if format.id().is_registrered() {
+                if let Some(name) = format.name() {
+                    const SUPPORTED_FORMATS: &[&str] = &[
+                        FORMAT_WIN_HTML.name,
+                        FORMAT_MIME_HTML.name,
+                        FORMAT_PNG.name,
+                        FORMAT_MIME_PNG.name,
+                    ];
+
+                    if !SUPPORTED_FORMATS.iter().any(|supported| *supported == name.value()) {
+                        // Unknown format
+                        continue;
+                    }
+
+                    // Skip inferior formats (e.g. raw image/png is better than encoded CF_DIB;
+                    // text/html is better than CF_HTML).
+                    //
+                    // Web client do not have delay-rendering, so we should skip formats that
+                    // are not relevant for transferred over the network.
+                    let skip_win_html = is_format_name_equal(format, FORMAT_WIN_HTML.name)
+                        && formats
+                            .iter()
+                            .any(|format| is_format_name_equal(format, FORMAT_MIME_HTML.name));
+
+                    let skip_mime_png = is_format_name_equal(format, FORMAT_MIME_PNG.name)
+                        && formats
+                            .iter()
+                            .any(|format| is_format_name_equal(format, FORMAT_PNG.name));
+
+                    if skip_win_html || skip_mime_png {
+                        continue;
+                    }
+
+                    self.remote_mapping.insert(format.id(), name.value().to_owned());
+                }
+            } else {
+                const SUPPORTED_FORMATS: &[ClipboardFormatId] = &[
+                    ClipboardFormatId::CF_UNICODETEXT,
+                    ClipboardFormatId::CF_DIB,
+                    ClipboardFormatId::CF_DIBV5,
+                ];
+
+                if !SUPPORTED_FORMATS.iter().any(|supported| *supported == format.id()) {
+                    // Unknown format
+                    continue;
+                }
+
+                let skip_dib = format.id() == ClipboardFormatId::CF_DIB
+                    && formats.iter().any(|format| {
+                        format.id() == ClipboardFormatId::CF_DIBV5
+                            || is_format_name_equal(format, FORMAT_MIME_PNG.name)
+                            || is_format_name_equal(format, FORMAT_PNG.name)
+                    });
+
+                let skip_dibv5 = format.id() == ClipboardFormatId::CF_DIBV5
+                    && formats.iter().any(|format| {
+                        is_format_name_equal(format, FORMAT_MIME_PNG.name)
+                            || is_format_name_equal(format, FORMAT_PNG.name)
+                    });
+
+                if skip_dib || skip_dibv5 {
+                    continue;
+                }
+            }
+
+            self.remote_formats_to_read.push(format.id());
+        }
+
+        Ok(self.remote_formats_to_read.last().cloned())
+    }
+
+    fn process_client_paste(&mut self, response: FormatDataResponse) -> anyhow::Result<()> {
+        let pending_format = match self.remote_formats_to_read.pop() {
+            Some(format) => format,
+            None => {
+                warn!("Remote returned format data, but no formats were requested");
+                return Ok(());
+            }
+        };
+
+        if response.is_error() {
+            // Format is not available anymore
+            return Ok(());
+        }
+
+        let content = match pending_format {
+            ClipboardFormatId::CF_UNICODETEXT => match response.to_unicode_string() {
+                Ok(text) => Some(ClipboardContent::new_text(MIME_TEXT, &text)),
+                Err(err) => {
+                    error!("CF_UNICODETEXT decode error: {}", err);
+                    None
+                }
+            },
+            ClipboardFormatId::CF_DIB => match dib_to_png(response.data()) {
+                Ok(png) => Some(ClipboardContent::new_binary(MIME_PNG, &png)),
+                Err(err) => {
+                    warn!("DIB decode error: {}", err);
+                    None
+                }
+            },
+            ClipboardFormatId::CF_DIBV5 => match dibv5_to_png(response.data()) {
+                Ok(png) => Some(ClipboardContent::new_binary(MIME_PNG, &png)),
+                Err(err) => {
+                    warn!("DIBv5 decode error: {}", err);
+                    None
+                }
+            },
+            registered => {
+                let format_name = self.remote_mapping.get(&registered).map(|s| s.as_str());
+                match format_name {
+                    Some(FORMAT_WIN_HTML_NAME) => match cf_html_to_text(response.data()) {
+                        Ok(text) => Some(ClipboardContent::new_text(MIME_HTML, &text)),
+                        Err(err) => {
+                            warn!("CF_HTML decode error: {}", err);
+                            None
+                        }
+                    },
+                    Some(FORMAT_MIME_HTML_NAME) => match response.to_string() {
+                        Ok(text) => Some(ClipboardContent::new_text(MIME_HTML, &text)),
+                        Err(err) => {
+                            warn!("text/html decode error: {}", err);
+                            None
+                        }
+                    },
+                    Some(FORMAT_MIME_PNG_NAME) | Some(FORMAT_PNG_NAME) => {
+                        Some(ClipboardContent::new_binary(MIME_PNG, response.data()))
+                    }
+                    _ => {
+                        // Not supported format
+                        None
+                    }
+                }
+            }
+        };
+
+        if let Some(content) = content {
+            self.remote_clipborad.add_content(content);
+        }
+
+        // Request next format
+        if let Some(format) = self.remote_formats_to_read.last() {
+            // Request next format
+            self.proxy
+                .send_cliprdr_message(ClipboardMessage::SendInitiatePaste(*format));
+        } else {
+            // All formats were read, send clipboard to JS
+            let transaction = std::mem::take(&mut self.remote_clipborad);
+            if transaction.is_empty() {
+                return Ok(());
+            }
+            // Set clipboard when all formats were read
+            self.js_callbacks
+                .on_remote_clipboard_changed
+                .call1(&JsValue::NULL, &JsValue::from(transaction))
+                .expect("Failed to call JS callback");
+        }
+        Ok(())
+    }
+
+    pub fn process_event(&mut self, event: WasmClipboardBackendMessage) -> anyhow::Result<()> {
+        match event {
+            WasmClipboardBackendMessage::LocalClipboardChanged(transaction) => {
+                match self.handle_local_clipboard_changed(transaction) {
+                    Ok(formats) => {
+                        self.proxy
+                            .send_cliprdr_message(ClipboardMessage::SendInitiateCopy(formats));
+                    }
+                    Err(err) => {
+                        // Not a critical error, we could skip single clipboard update
+                        error!("Failed to handle local clipboard change: {}", err);
+                    }
+                }
+            }
+            WasmClipboardBackendMessage::RemotePaste(format) => {
+                let message = match self.process_remote_paste(format) {
+                    Ok(message) => message,
+                    Err(err) => {
+                        // Not a critical error, but we should notify remote about error
+                        error!("Failed to process remote paste: {}", err);
+                        FormatDataResponse::new_error()
+                    }
+                };
+                self.proxy
+                    .send_cliprdr_message(ClipboardMessage::SendFormatData(message));
+            }
+            WasmClipboardBackendMessage::RemoteCopy(formats) => {
+                match self.process_remote_clipboard_changed(formats) {
+                    Ok(Some(format)) => {
+                        // Request first format
+                        self.proxy
+                            .send_cliprdr_message(ClipboardMessage::SendInitiatePaste(format));
+                    }
+                    Ok(None) => {
+                        // No formats to query
+                    }
+                    Err(err) => {
+                        error!("Failed to process remote clipboard change: {}", err);
+                    }
+                }
+            }
+            WasmClipboardBackendMessage::RemoteFormatReceived(formats) => match self.process_client_paste(formats) {
+                Ok(()) => {}
+                Err(err) => {
+                    error!("Failed to process remote paste: {}", err);
+                }
+            },
+            WasmClipboardBackendMessage::FormatListReceived => {
+                if let Some(callback) = self.js_callbacks.on_remote_received_format_list.as_mut() {
+                    callback.call0(&JsValue::NULL).expect("Failed to call JS callback");
+                }
+            }
+            WasmClipboardBackendMessage::ForceClipboardUpdate => {
+                if let Some(callback) = self.js_callbacks.on_force_clipboard_update.as_mut() {
+                    callback.call0(&JsValue::NULL).expect("Failed to call JS callback");
+                } else {
+                    // If no initial clipboard callback was set, send empty format list instead
+                    return self.process_event(WasmClipboardBackendMessage::LocalClipboardChanged(
+                        ClipboardTransaction::new(),
+                    ));
+                }
+            }
+        };
+
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
+pub struct WasmClipboardBackend {
+    proxy: WasmClipboardMessageProxy,
+}
+
+impl WasmClipboardBackend {
+    fn send_event(&self, event: WasmClipboardBackendMessage) {
+        self.proxy.send_backend_message(event);
+    }
+}
+
+impl CliprdrBackend for WasmClipboardBackend {
+    fn temporary_directory(&self) -> &str {
+        ".cliprdr"
+    }
+
+    fn client_capabilities(&self) -> ClipboardGeneralCapabilityFlags {
+        // No additional capabilities yet
+        ClipboardGeneralCapabilityFlags::empty()
+    }
+
+    fn on_request_format_list(&mut self) {
+        // Initial clipboard is assumed to be empty on WASM (TODO: This is only relevant for Firefox?)
+        self.send_event(WasmClipboardBackendMessage::ForceClipboardUpdate);
+    }
+
+    fn on_format_list_received(&mut self) {
+        self.send_event(WasmClipboardBackendMessage::FormatListReceived);
+    }
+
+    fn on_process_negotiated_capabilities(&mut self, _: ClipboardGeneralCapabilityFlags) {
+        // No additional capabilities yet
+    }
+
+    fn on_remote_copy(&mut self, available_formats: &[ClipboardFormat]) {
+        self.send_event(WasmClipboardBackendMessage::RemoteCopy(available_formats.to_vec()));
+    }
+
+    fn on_format_data_request(&mut self, request: FormatDataRequest) {
+        self.send_event(WasmClipboardBackendMessage::RemotePaste(request.format));
+    }
+
+    fn on_format_data_response(&mut self, response: FormatDataResponse) {
+        self.send_event(WasmClipboardBackendMessage::RemoteFormatReceived(response.into_owned()));
+    }
+
+    fn on_file_contents_request(&mut self, _request: FileContentsRequest) {
+        // File transfer not implemented yet
+    }
+
+    fn on_file_contents_response(&mut self, _response: FileContentsResponse) {
+        // File transfer not implemented yet
+    }
+
+    fn on_lock(&mut self, _data_id: LockDataId) {
+        // File transfer not implemented yet
+    }
+
+    fn on_unlock(&mut self, _data_id: LockDataId) {
+        // File transfer not implemented yet
+    }
+}
