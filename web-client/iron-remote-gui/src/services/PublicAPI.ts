@@ -70,3 +70,7 @@ export class PublicAPI {
 		};
 	}
 }
+
+export type CustomEventWithUserInteraction = CustomEvent<{
+	userInteraction: UserInteraction;
+}>;

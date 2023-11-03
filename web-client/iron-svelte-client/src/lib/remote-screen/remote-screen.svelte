@@ -2,8 +2,12 @@
 	import { onMount } from 'svelte';
 	import { setCurrentSessionActive, userInteractionService } from '../../services/session.service';
 	import { showLogin } from '$lib/login/login-store';
+	import type {
+		CustomEventWithUserInteraction,
+		UserInteraction
+	} from 'static/iron-remote-gui/main';
 
-	let uiService;
+	let uiService: UserInteraction;
 
 	userInteractionService.subscribe((uis) => {
 		if (uis) {
@@ -21,8 +25,12 @@
 
 	onMount(async () => {
 		let el = document.querySelector('iron-remote-gui');
-		el.addEventListener('ready', (e) => {
-			userInteractionService.set(e.detail.irgUserInteraction);
+		if (!el) {
+			throw new Error('Elements iron-remote-gui not found');
+		}
+		el.addEventListener('ready', (event: Event) => {
+			const customEvent = event as CustomEventWithUserInteraction;
+			userInteractionService.set(customEvent.detail.userInteraction);
 		});
 	});
 </script>

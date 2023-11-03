@@ -1,11 +1,13 @@
 <script lang="ts">
 	import { currentSession, userInteractionService } from '../../services/session.service';
 	import { catchError, filter } from 'rxjs/operators';
-	import type { IRGUserInteraction, NewSessionInfo } from '../../../static/iron-remote-gui';
+	import type { UserInteraction, SessionEvent } from '../../../static/iron-remote-gui';
 	import { of } from 'rxjs';
-	import { toast } from '$lib/messages/message-store';
-	import { showLogin } from '$lib/login/login-store';
+	// import { toast } from '$lib/messages/message-store';
+	// import { showLogin } from '$lib/login/login-store';
 	import type { DesktopSize } from '../../models/desktop-size';
+	import { toast } from '../messages/message-store';
+	import { showLogin } from './login-store';
 
 	let username = 'Administrator';
 	let password = 'DevoLabs123!';
@@ -18,9 +20,9 @@
 		width: 1280,
 		height: 768
 	};
-	let pcb;
+	let pcb: string;
 
-	let userInteraction: IRGUserInteraction;
+	let userInteraction: UserInteraction;
 
 	userInteractionService.subscribe((val) => {
 		userInteraction = val;
@@ -30,7 +32,7 @@
 	});
 
 	const initListeners = () => {
-		userInteraction.sessionListener.subscribe((event) => {
+		userInteraction.sessionListener.subscribe((event: SessionEvent) => {
 			if (event.type === 2) {
 				console.log('Error event', event.data);
 
@@ -64,8 +66,8 @@
 				}),
 				filter((result) => !!result)
 			)
-			.subscribe((start_info: NewSessionInfo) => {
-				if (start_info.initial_desktop_size !== null) {
+			.subscribe((start_info) => {
+				if (start_info && start_info.initial_desktop_size !== null) {
 					toast.set({
 						type: 'info',
 						message: 'Success'

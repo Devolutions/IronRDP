@@ -1,313 +1,320 @@
-<svelte:options tag="iron-remote-gui"/>
+<svelte:options tag="iron-remote-gui" />
 
 <script lang="ts">
-    import {onMount} from 'svelte';
-    import {get_current_component} from "svelte/internal";
-    import {loggingService} from "./services/logging.service";
-    import {WasmBridgeService} from './services/wasm-bridge.service';
-    import {LogType} from './enums/LogType';
-    import type {ResizeEvent} from './interfaces/ResizeEvent';
-    import {PublicAPI} from './services/PublicAPI';
-    import {ScreenScale} from './enums/ScreenScale';
+	import { onMount } from 'svelte';
+	import { get_current_component } from 'svelte/internal';
+	import { loggingService } from './services/logging.service';
+	import { WasmBridgeService } from './services/wasm-bridge.service';
+	import { LogType } from './enums/LogType';
+	import type { ResizeEvent } from './interfaces/ResizeEvent';
+	import { PublicAPI, type CustomEventWithUserInteraction } from './services/PublicAPI';
+	import { ScreenScale } from './enums/ScreenScale';
 
-    export let scale = 'real';
-    export let verbose = 'false';
-    export let debugwasm: "OFF" | "ERROR" | "WARN" | "INFO" | "DEBUG" | "TRACE" = 'INFO';
-    export let flexcenter = 'true';
+	export let scale = 'real';
+	export let verbose = 'false';
+	export let debugwasm: 'OFF' | 'ERROR' | 'WARN' | 'INFO' | 'DEBUG' | 'TRACE' = 'INFO';
+	export let flexcenter = 'true';
 
-    let isVisible = false;
-    let capturingInputs = false;
-    let currentComponent = get_current_component();
-    let canvas:HTMLCanvasElement;
+	let isVisible = false;
+	let capturingInputs = false;
+	let currentComponent = get_current_component();
+	let canvas: HTMLCanvasElement;
 
-    let wrapper:HTMLDivElement;
+	let wrapper: HTMLDivElement;
 
-    let viewerStyle:string;
-    let wrapperStyle: string;
-    
-    let wasmService = new WasmBridgeService();
-    let publicAPI = new PublicAPI(wasmService);
+	let viewerStyle: string;
+	let wrapperStyle: string;
 
-    function initListeners() {
-        serverBridgeListeners();
-        userInteractionListeners();
+	let wasmService = new WasmBridgeService();
+	let publicAPI = new PublicAPI(wasmService);
 
-        window.addEventListener('keydown', keyboardEvent, false);
-        window.addEventListener('keyup', keyboardEvent, false);
-    }
+	function initListeners() {
+		serverBridgeListeners();
+		userInteractionListeners();
 
-    function resetHostStyle() {
-        if (flexcenter === 'true') {
-            currentComponent.style.flexGrow = null;
-            currentComponent.style.display = null;
-            currentComponent.style.justifyContent = null;
-            currentComponent.style.alignItems = null;
-        }
-    }
+		window.addEventListener('keydown', keyboardEvent, false);
+		window.addEventListener('keyup', keyboardEvent, false);
+	}
 
-    function setHostStyle(full: boolean) {
-        if (flexcenter === 'true') {
-            if (!full) {
-                currentComponent.style.flexGrow = 1;
-                currentComponent.style.display = "flex";
-                currentComponent.style.justifyContent = "center";
-                currentComponent.style.alignItems = "center";
-            } else {
-                currentComponent.style.flexGrow = 1;
-            }
-        }
-    }
+	function resetHostStyle() {
+		if (flexcenter === 'true') {
+			currentComponent.style.flexGrow = null;
+			currentComponent.style.display = null;
+			currentComponent.style.justifyContent = null;
+			currentComponent.style.alignItems = null;
+		}
+	}
 
-    function setViewerStyle(height: string, width: string, forceMinAndMax: boolean) {
-        let newStyle = `height: ${height}; width: ${width}`;
-        if (forceMinAndMax) {
-            newStyle = forceMinAndMax
-                ? `${newStyle}; max-height: ${height}; max-width: ${width}; min-height: ${height}; min-width: ${width}`
-                : `${newStyle}; max-height: initial; max-width: initial; min-height: initial; min-width: initial`;
-        }
-        viewerStyle = newStyle;
-    }
+	function setHostStyle(full: boolean) {
+		if (flexcenter === 'true') {
+			if (!full) {
+				currentComponent.style.flexGrow = 1;
+				currentComponent.style.display = 'flex';
+				currentComponent.style.justifyContent = 'center';
+				currentComponent.style.alignItems = 'center';
+			} else {
+				currentComponent.style.flexGrow = 1;
+			}
+		}
+	}
 
-    function setWrapperStyle(height:string, width:string, overflow:string) {
-        wrapperStyle = `height: ${height}; width: ${width}; overflow: ${overflow}`;
-    }
+	function setViewerStyle(height: string, width: string, forceMinAndMax: boolean) {
+		let newStyle = `height: ${height}; width: ${width}`;
+		if (forceMinAndMax) {
+			newStyle = forceMinAndMax
+				? `${newStyle}; max-height: ${height}; max-width: ${width}; min-height: ${height}; min-width: ${width}`
+				: `${newStyle}; max-height: initial; max-width: initial; min-height: initial; min-width: initial`;
+		}
+		viewerStyle = newStyle;
+	}
 
-    function serverBridgeListeners() {
-        wasmService.resize.subscribe((evt: ResizeEvent) => {
-            loggingService.info(`Resize canvas to: ${evt.desktop_size.width}x${evt.desktop_size.height}`);
-            canvas.width = evt.desktop_size.width;
-            canvas.height = evt.desktop_size.height;
-            scaleSession(scale);
-        });
-    }
+	function setWrapperStyle(height: string, width: string, overflow: string) {
+		wrapperStyle = `height: ${height}; width: ${width}; overflow: ${overflow}`;
+	}
 
-    function userInteractionListeners() {
-        window.addEventListener('resize', (_evt) => {
-            scaleSession(scale);
-        });
+	function serverBridgeListeners() {
+		wasmService.resize.subscribe((evt: ResizeEvent) => {
+			loggingService.info(`Resize canvas to: ${evt.desktop_size.width}x${evt.desktop_size.height}`);
+			canvas.width = evt.desktop_size.width;
+			canvas.height = evt.desktop_size.height;
+			scaleSession(scale);
+		});
+	}
 
-        wasmService.scaleObserver.subscribe(s => {
-            loggingService.info("Change scale!");
-            scaleSession(s);
-        });
+	function userInteractionListeners() {
+		window.addEventListener('resize', (_evt) => {
+			scaleSession(scale);
+		});
 
-        wasmService.changeVisibilityObservable.subscribe(val => {
-            isVisible = val;
-            if (val) {
-                //Enforce first scaling and delay the call to scaleSession to ensure Dom is ready.
-                setWrapperStyle("100%", "100%", "hidden");
-                setTimeout(() => scaleSession(scale), 150);
-            }
-        });
-    }
+		wasmService.scaleObserver.subscribe((s) => {
+			loggingService.info('Change scale!');
+			scaleSession(s);
+		});
 
-    function scaleSession(currentSize: ScreenScale | string) {
-        resetHostStyle();
-        if (isVisible) {
-            switch (currentSize) {
-                case 'fit':
-                case ScreenScale.Fit:
-                    loggingService.info("Size to fit");
-                    scale = 'fit';
-                    fitResize();
-                    break;
-                case 'full':
-                case ScreenScale.Full:
-                    loggingService.info("Size to full");
-                    fullResize();
-                    scale = 'full';
-                    break;
-                case 'real':
-                case ScreenScale.Real:
-                    loggingService.info("Size to real");
-                    realResize();
-                    scale = 'real';
-                    break
-            }
-        }
-    }
+		wasmService.changeVisibilityObservable.subscribe((val) => {
+			isVisible = val;
+			if (val) {
+				//Enforce first scaling and delay the call to scaleSession to ensure Dom is ready.
+				setWrapperStyle('100%', '100%', 'hidden');
+				setTimeout(() => scaleSession(scale), 150);
+			}
+		});
+	}
 
-    function fullResize() {
-        const windowSize = getWindowSize();
-        const wrapperBoundingBox = wrapper.getBoundingClientRect();
+	function scaleSession(currentSize: ScreenScale | string) {
+		resetHostStyle();
+		if (isVisible) {
+			switch (currentSize) {
+				case 'fit':
+				case ScreenScale.Fit:
+					loggingService.info('Size to fit');
+					scale = 'fit';
+					fitResize();
+					break;
+				case 'full':
+				case ScreenScale.Full:
+					loggingService.info('Size to full');
+					fullResize();
+					scale = 'full';
+					break;
+				case 'real':
+				case ScreenScale.Real:
+					loggingService.info('Size to real');
+					realResize();
+					scale = 'real';
+					break;
+			}
+		}
+	}
 
-        const containerWidth = windowSize.x - wrapperBoundingBox.x;
-        const containerHeight = windowSize.y - wrapperBoundingBox.y;
+	function fullResize() {
+		const windowSize = getWindowSize();
+		const wrapperBoundingBox = wrapper.getBoundingClientRect();
 
-        let width = canvas.width;
-        let height = canvas.height;
+		const containerWidth = windowSize.x - wrapperBoundingBox.x;
+		const containerHeight = windowSize.y - wrapperBoundingBox.y;
 
-        const ratio = Math.max(containerWidth / canvas.width, containerHeight / canvas.height);
-        width = width * ratio;
-        height = height * ratio;
+		let width = canvas.width;
+		let height = canvas.height;
 
-        setWrapperStyle(`${containerHeight}px`, `${containerWidth}px`, 'auto');
+		const ratio = Math.max(containerWidth / canvas.width, containerHeight / canvas.height);
+		width = width * ratio;
+		height = height * ratio;
 
-        width = width > 0 ? width : 0;
-        height = height > 0 ? height : 0;
+		setWrapperStyle(`${containerHeight}px`, `${containerWidth}px`, 'auto');
 
-        setViewerStyle(`${height}px`, `${width}px`, true);
-    }
+		width = width > 0 ? width : 0;
+		height = height > 0 ? height : 0;
 
-    function fitResize(realSizeLimit = false) {
-        const windowSize = getWindowSize();
-        const wrapperBoundingBox = wrapper.getBoundingClientRect();
+		setViewerStyle(`${height}px`, `${width}px`, true);
+	}
 
-        const containerWidth = windowSize.x - wrapperBoundingBox.x;
-        const containerHeight = windowSize.y - wrapperBoundingBox.y;
+	function fitResize(realSizeLimit = false) {
+		const windowSize = getWindowSize();
+		const wrapperBoundingBox = wrapper.getBoundingClientRect();
 
-        let width = canvas.width;
-        let height = canvas.height;
+		const containerWidth = windowSize.x - wrapperBoundingBox.x;
+		const containerHeight = windowSize.y - wrapperBoundingBox.y;
 
-        if (!realSizeLimit || containerWidth < canvas.width || containerHeight < canvas.height) {
-            const ratio = Math.min(containerWidth / canvas.width, containerHeight / canvas.height);
-            width = width * ratio;
-            height = height * ratio;
-        }
+		let width = canvas.width;
+		let height = canvas.height;
 
-        width = width > 0 ? width : 0;
-        height = height > 0 ? height : 0;
+		if (!realSizeLimit || containerWidth < canvas.width || containerHeight < canvas.height) {
+			const ratio = Math.min(containerWidth / canvas.width, containerHeight / canvas.height);
+			width = width * ratio;
+			height = height * ratio;
+		}
 
-        setWrapperStyle('initial', 'initial', 'hidden');
-        setViewerStyle(`${height}px`, `${width}px`, true);
-        setHostStyle(false);
-    }
+		width = width > 0 ? width : 0;
+		height = height > 0 ? height : 0;
 
-    function realResize() {
-        const windowSize = getWindowSize();
-        const wrapperBoundingBox = wrapper.getBoundingClientRect();
+		setWrapperStyle('initial', 'initial', 'hidden');
+		setViewerStyle(`${height}px`, `${width}px`, true);
+		setHostStyle(false);
+	}
 
-        const containerWidth = windowSize.x - wrapperBoundingBox.x;
-        const containerHeight = windowSize.y - wrapperBoundingBox.y;
+	function realResize() {
+		const windowSize = getWindowSize();
+		const wrapperBoundingBox = wrapper.getBoundingClientRect();
 
-        if (containerWidth < canvas.width || containerHeight < canvas.height) {
-            setWrapperStyle(`${Math.min(containerHeight, canvas.height)}px`, `${Math.min(containerWidth, canvas.width)}px`, 'auto');
-        } else {
-            setWrapperStyle('initial', 'initial', 'initial');
-        }
+		const containerWidth = windowSize.x - wrapperBoundingBox.x;
+		const containerHeight = windowSize.y - wrapperBoundingBox.y;
 
-        setViewerStyle(`${canvas.height}px`, `${canvas.width}px`, true);
-        setHostStyle(false);
-    }
+		if (containerWidth < canvas.width || containerHeight < canvas.height) {
+			setWrapperStyle(
+				`${Math.min(containerHeight, canvas.height)}px`,
+				`${Math.min(containerWidth, canvas.width)}px`,
+				'auto'
+			);
+		} else {
+			setWrapperStyle('initial', 'initial', 'initial');
+		}
 
-    function getMousePos(evt:MouseEvent) {
-        const rect = canvas?.getBoundingClientRect(),
-            scaleX = canvas?.width / rect.width,
-            scaleY = canvas?.height / rect.height;
+		setViewerStyle(`${canvas.height}px`, `${canvas.width}px`, true);
+		setHostStyle(false);
+	}
 
-        const coord = {
-            x: Math.round((evt.clientX - rect.left) * scaleX),
-            y: Math.round((evt.clientY - rect.top) * scaleY)
-        };
+	function getMousePos(evt: MouseEvent) {
+		const rect = canvas?.getBoundingClientRect(),
+			scaleX = canvas?.width / rect.width,
+			scaleY = canvas?.height / rect.height;
 
-        wasmService.updateMousePosition(coord);
-    }
+		const coord = {
+			x: Math.round((evt.clientX - rect.left) * scaleX),
+			y: Math.round((evt.clientY - rect.top) * scaleY)
+		};
 
-    function setMouseButtonState(state:MouseEvent, isDown:boolean) {
-        wasmService.mouseButtonState(state, isDown);
-    }
+		wasmService.updateMousePosition(coord);
+	}
 
-    function mouseWheel(evt:WheelEvent) {
-        wasmService.mouseWheel(evt);
-    }
+	function setMouseButtonState(state: MouseEvent, isDown: boolean) {
+		wasmService.mouseButtonState(state, isDown);
+	}
 
-    function setMouseIn(evt:MouseEvent ) {
-        capturingInputs = true;
-        wasmService.mouseIn(evt);
-    }
+	function mouseWheel(evt: WheelEvent) {
+		wasmService.mouseWheel(evt);
+	}
 
-    function setMouseOut(evt:MouseEvent) {
-        capturingInputs = false;
-        wasmService.mouseOut(evt);
-    }
+	function setMouseIn(evt: MouseEvent) {
+		capturingInputs = true;
+		wasmService.mouseIn(evt);
+	}
 
-    function keyboardEvent(evt:KeyboardEvent) {
-        wasmService.sendKeyboardEvent(evt);
-    }
+	function setMouseOut(evt: MouseEvent) {
+		capturingInputs = false;
+		wasmService.mouseOut(evt);
+	}
 
-    function getWindowSize() {
-        const win = window,
-            doc = document,
-            docElem = doc.documentElement,
-            body = doc.getElementsByTagName('body')[0],
-            x = win.innerWidth || docElem.clientWidth || body.clientWidth,
-            y = win.innerHeight || docElem.clientHeight || body.clientHeight;
-        return {x, y};
-    }
+	function keyboardEvent(evt: KeyboardEvent) {
+		wasmService.sendKeyboardEvent(evt);
+	}
 
-    async function initcanvas() {
-        loggingService.info('Start canvas initialization.')
-        canvas = currentComponent.shadowRoot.getElementById('renderer');
+	function getWindowSize() {
+		const win = window,
+			doc = document,
+			docElem = doc.documentElement,
+			body = doc.getElementsByTagName('body')[0],
+			x = win.innerWidth || docElem.clientWidth || body.clientWidth,
+			y = win.innerHeight || docElem.clientHeight || body.clientHeight;
+		return { x, y };
+	}
 
-        // Set a default canvas size. Need more test to know if i can remove it.
-        canvas.width = 800;
-        canvas.height = 600;
+	async function initcanvas() {
+		loggingService.info('Start canvas initialization.');
+		canvas = currentComponent.shadowRoot.getElementById('renderer');
 
-        await wasmService.init(LogType[debugwasm] || LogType.INFO);
-        wasmService.setCanvas(canvas);
+		// Set a default canvas size. Need more test to know if i can remove it.
+		canvas.width = 800;
+		canvas.height = 600;
 
-        initListeners();
+		await wasmService.init(LogType[debugwasm] || LogType.INFO);
+		wasmService.setCanvas(canvas);
 
-        let result = {
-            irgUserInteraction: publicAPI.getExposedFunctions()
-        };
+		initListeners();
 
-        loggingService.info('Component ready');
-        currentComponent.dispatchEvent(new CustomEvent("ready", {detail: result}));
-    }
+		let result = {
+			userInteraction: publicAPI.getExposedFunctions()
+		};
 
-    onMount(async () => {
-        loggingService.verbose = verbose === 'true';
-        loggingService.info('Dom ready');
-        await initcanvas();
-    });
+		loggingService.info('Component ready');
+		let event: CustomEventWithUserInteraction = new CustomEvent('ready', { detail: result });
+		currentComponent.dispatchEvent(event);
+	}
+
+	onMount(async () => {
+		loggingService.verbose = verbose === 'true';
+		loggingService.info('Dom ready');
+		await initcanvas();
+	});
 </script>
 
-<div bind:this={wrapper} class="screen-wrapper scale-{scale}" class:hidden="{!isVisible}"
-     class:capturing-inputs="{capturingInputs}"
-     style="{wrapperStyle}">
-    <div class="screen-viewer" style="{viewerStyle}">
-        <canvas
-                on:mousemove={getMousePos}
-                on:mousedown={(event) => setMouseButtonState(event, true)}
-                on:mouseup={(event) => setMouseButtonState(event, false)}
-                on:mouseleave={(event) => {
-                        setMouseButtonState(event, false);
-                        setMouseOut(event);
-                    }
-                }
-                on:mouseenter={(event) => {
-                        setMouseIn(event);
-                    }
-                }
-                on:contextmenu={(event) => event.preventDefault()}
-                on:wheel={mouseWheel}
-                id="renderer"
-        />
-    </div>
+<div
+	bind:this={wrapper}
+	class="screen-wrapper scale-{scale}"
+	class:hidden={!isVisible}
+	class:capturing-inputs={capturingInputs}
+	style={wrapperStyle}
+>
+	<div class="screen-viewer" style={viewerStyle}>
+		<canvas
+			on:mousemove={getMousePos}
+			on:mousedown={(event) => setMouseButtonState(event, true)}
+			on:mouseup={(event) => setMouseButtonState(event, false)}
+			on:mouseleave={(event) => {
+				setMouseButtonState(event, false);
+				setMouseOut(event);
+			}}
+			on:mouseenter={(event) => {
+				setMouseIn(event);
+			}}
+			on:contextmenu={(event) => event.preventDefault()}
+			on:wheel={mouseWheel}
+			id="renderer"
+		/>
+	</div>
 </div>
 
 <style>
-    .screen-wrapper {
-        position: relative;
-    }
+	.screen-wrapper {
+		position: relative;
+	}
 
-    .capturing-inputs {
-        outline: 1px solid rgba(0, 97, 166, .7);
-        outline-offset: -1px;
-    }
+	.capturing-inputs {
+		outline: 1px solid rgba(0, 97, 166, 0.7);
+		outline-offset: -1px;
+	}
 
-    canvas {
-        width: 100%;
-        height: 100%;
-    }
+	canvas {
+		width: 100%;
+		height: 100%;
+	}
 
-    .screen-wrapper.hidden {
-        pointer-events: none !important;
-        position: absolute !important;
-        visibility: hidden;
-        height: 100%;
-        width: 100%;
-        transform: translate(-100%, -100%);
-    }
+	.screen-wrapper.hidden {
+		pointer-events: none !important;
+		position: absolute !important;
+		visibility: hidden;
+		height: 100%;
+		width: 100%;
+		transform: translate(-100%, -100%);
+	}
 </style>

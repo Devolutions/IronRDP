@@ -1,6 +1,7 @@
 export * as default from './iron-remote-gui.svelte';
 
 export type { UserInteraction } from './interfaces/UserInteraction';
+export type { CustomEventWithUserInteraction } from './services/PublicAPI';
 export type { ResizeEvent } from './interfaces/ResizeEvent';
 export type { NewSessionInfo } from './interfaces/NewSessionInfo';
 export type { ServerRect } from './interfaces/ServerRect';

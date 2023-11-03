@@ -2,6 +2,7 @@
 import type { Observable } from 'rxjs';
 import type { NewSessionInfo } from './NewSessionInfo';
 import type { SessionEvent } from './session-event';
+import type { DesktopSize } from './DesktopSize';
 
 export interface UserInteraction {
 	setVisibility(state: boolean): void;
@@ -14,7 +15,9 @@ export interface UserInteraction {
 		destination: string,
 		proxyAddress: string,
 		serverDomain: string,
-		authToken: string
+		authToken: string,
+		desktopSize?: DesktopSize,
+		preConnectionBlob?: string
 	): Observable<NewSessionInfo>;
 
 	ctrlAltDel(): void;
