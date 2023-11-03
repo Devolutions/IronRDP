@@ -68,10 +68,7 @@ impl AsyncTokioNetworkClient {
     }
 
     async fn send_udp(&self, url: &Url, data: &[u8]) -> ConnectorResult<Vec<u8>> {
-        let port =
-            portpicker::pick_unused_port().ok_or_else(|| general_err!("No ports free for sending udp request"))?;
-
-        let udp_socket = UdpSocket::bind((IpAddr::V4(Ipv4Addr::LOCALHOST), port))
+        let udp_socket = UdpSocket::bind((IpAddr::V4(Ipv4Addr::LOCALHOST), 0))
             .await
             .map_err(|e| custom_err!("Cannot bind udp socket", e))?;
 
