@@ -78,9 +78,7 @@ export class WasmBridgeService {
 
     mouseButtonState(event: MouseEvent, isDown: boolean) {
         event.preventDefault(); // prevent default behavior (context menu, etc)
-        const mouseFnc = isDown
-            ? DeviceEvent.new_mouse_button_pressed
-            : DeviceEvent.new_mouse_button_released;
+        const mouseFnc = isDown ? DeviceEvent.new_mouse_button_pressed : DeviceEvent.new_mouse_button_released;
         this.doTransactionFromDeviceEvents([mouseFnc(event.button)]);
     }
 
@@ -226,8 +224,7 @@ export class WasmBridgeService {
 
             if (
                 !evt.repeat ||
-                (!ModifierKey[evt.code as keyof typeof ModifierKey] &&
-                    !LockKey[evt.code as keyof typeof LockKey])
+                (!ModifierKey[evt.code as keyof typeof ModifierKey] && !LockKey[evt.code as keyof typeof LockKey])
             ) {
                 this.doTransactionFromDeviceEvents([keyEvent(scanCode(evt.code, OS.WINDOWS))]);
             }
@@ -261,10 +258,7 @@ export class WasmBridgeService {
     }
 
     private updateModifierKeyState(evt: KeyboardEvent) {
-        if (
-            this.modifierKeyPressed.indexOf(ModifierKey[evt.code as keyof typeof ModifierKey]) ===
-            -1
-        ) {
+        if (this.modifierKeyPressed.indexOf(ModifierKey[evt.code as keyof typeof ModifierKey]) === -1) {
             this.modifierKeyPressed.push(ModifierKey[evt.code as keyof typeof ModifierKey]);
         } else if (evt.type === 'keyup') {
             this.modifierKeyPressed.splice(

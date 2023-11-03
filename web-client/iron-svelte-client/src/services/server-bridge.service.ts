@@ -30,11 +30,7 @@ export interface ResizeEvent {
 export abstract class ServerBridgeService {
     abstract init(): void;
 
-    abstract connect(
-        username: string,
-        password: string,
-        address: string,
-    ): Observable<NewSessionInfo>;
+    abstract connect(username: string, password: string, address: string): Observable<NewSessionInfo>;
 
     abstract resize: Observable<ResizeEvent>;
 
