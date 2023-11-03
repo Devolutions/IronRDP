@@ -224,7 +224,11 @@ export class WasmBridgeService {
 				this.syncModifier(evt);
 			}
 
-			if (!evt.repeat || (!ModifierKey[evt.code as keyof typeof ModifierKey] && !LockKey[evt.code as keyof typeof LockKey])) {
+			if (
+				!evt.repeat ||
+				(!ModifierKey[evt.code as keyof typeof ModifierKey] &&
+					!LockKey[evt.code as keyof typeof LockKey])
+			) {
 				this.doTransactionFromDeviceEvents([keyEvent(scanCode(evt.code, OS.WINDOWS))]);
 			}
 		}
@@ -260,7 +264,10 @@ export class WasmBridgeService {
 		if (this.modifierKeyPressed.indexOf(ModifierKey[evt.code as keyof typeof ModifierKey]) === -1) {
 			this.modifierKeyPressed.push(ModifierKey[evt.code as keyof typeof ModifierKey]);
 		} else if (evt.type === 'keyup') {
-			this.modifierKeyPressed.splice(this.modifierKeyPressed.indexOf(ModifierKey[evt.code as keyof typeof ModifierKey]), 1);
+			this.modifierKeyPressed.splice(
+				this.modifierKeyPressed.indexOf(ModifierKey[evt.code as keyof typeof ModifierKey]),
+				1
+			);
 		}
 	}
 

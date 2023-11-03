@@ -8,9 +8,9 @@ type EngineMaps = {
 	['gecko']: Record<string, string>;
 	['blink']?: Record<string, string>;
 };
-type CodeMap = Record<Exclude<OS,OS.MACOS>, EngineMaps>
+type CodeMap = Record<Exclude<OS, OS.MACOS>, EngineMaps>;
 
-export const ScanCodeToCode:CodeMap = {
+export const ScanCodeToCode: CodeMap = {
 	windows: {
 		blink: {
 			'0x0001': 'Escape',
@@ -808,8 +808,7 @@ export const ScanCodeToCode:CodeMap = {
 	}
 };
 
-
-export const CodeToScanCode:CodeMap = {
+export const CodeToScanCode: CodeMap = {
 	windows: {
 		blink: {},
 		gecko: {}
@@ -843,23 +842,22 @@ const parser = new UAParser();
 const parsedUA = parser.getResult();
 const engine = parsedUA.engine.name.toLowerCase();
 
-export const scanCode = function (code: string, targetOs: Exclude<OS,OS.MACOS>) {
-	let map
+export const scanCode = function (code: string, targetOs: Exclude<OS, OS.MACOS>) {
+	let map;
 	if (engine !== 'blink' && engine !== 'gecko') {
-		map = CodeToScanCode.linux.gecko
-	}else{
-		map = CodeToScanCode[targetOs][engine] || CodeToScanCode.linux.gecko
+		map = CodeToScanCode.linux.gecko;
+	} else {
+		map = CodeToScanCode[targetOs][engine] || CodeToScanCode.linux.gecko;
 	}
 	return parseInt(map[code], 16);
 };
 
-export const code = function (scanCode: string, targetOs: Exclude<OS,OS.MACOS>) {
-	let map
+export const code = function (scanCode: string, targetOs: Exclude<OS, OS.MACOS>) {
+	let map;
 	if (engine !== 'blink' && engine !== 'gecko') {
-		map = CodeToScanCode.linux.gecko
-	}
-	else{
-		map = CodeToScanCode[targetOs][engine]|| CodeToScanCode.linux.gecko
+		map = CodeToScanCode.linux.gecko;
+	} else {
+		map = CodeToScanCode[targetOs][engine] || CodeToScanCode.linux.gecko;
 	}
 	return map[scanCode];
 };

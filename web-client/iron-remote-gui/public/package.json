@@ -1,18 +1,18 @@
 {
-  "name": "@devolutions/iron-remote-gui",
-  "author": "Nicolas Girot",
-  "email": "ngirot@devolutions.net",
-  "contributors": [
-    "Benoit Cortier",
-    "Zacharia Ellaham"
-  ],
-  "description": "Web Component providing agnostic implementation for Iron Wasm base client.",
-  "version": "0.8.1",
-  "main": "iron-remote-gui.umd.cjs",
-  "types": "main.d.ts",
-  "files": [
-    "iron-remote-gui.umd.cjs",
-    "enums",
-    "services"
-  ]
+	"name": "@devolutions/iron-remote-gui",
+	"author": "Nicolas Girot",
+	"email": "ngirot@devolutions.net",
+	"contributors": [
+		"Benoit Cortier",
+		"Zacharia Ellaham"
+	],
+	"description": "Web Component providing agnostic implementation for Iron Wasm base client.",
+	"version": "0.8.1",
+	"main": "iron-remote-gui.umd.cjs",
+	"types": "main.d.ts",
+	"files": [
+		"iron-remote-gui.umd.cjs",
+		"enums",
+		"services"
+	]
 }

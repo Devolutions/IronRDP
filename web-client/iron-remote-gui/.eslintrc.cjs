@@ -30,7 +30,6 @@ module.exports = {
 		node: true
 	},
 	rules: {
-		'@typescript-eslint/no-unused-vars': ['error', { argsIgnorePattern: '^_' }],
-		'svelte/valid-compile': 'off'
+		'@typescript-eslint/no-unused-vars': ['error', { argsIgnorePattern: '^_' }]
 	}
 };
