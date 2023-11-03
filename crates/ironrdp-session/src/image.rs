@@ -31,11 +31,14 @@ pub struct DecodedImage {
     pointer_backbuffer: Vec<u8>,
     /// Whether to show pointer or not
     show_pointer: bool,
+    /// Whether pointer is visible on the screen or its sprite is currently out of bounds
+    pointer_visible_on_screen: bool,
 
     width: u16,
     height: u16,
 }
 
+#[derive(PartialEq, Eq)]
 enum PointerLayer {
     Background,
     Pointer,
@@ -135,6 +138,7 @@ impl DecodedImage {
             pointer_backbuffer: Vec::new(),
             pointer: None,
             show_pointer: false,
+            pointer_visible_on_screen: true,
         }
     }
 
@@ -155,6 +159,12 @@ impl DecodedImage {
     }
 
     fn apply_pointer_layer(&mut self, layer: PointerLayer) -> SessionResult<Option<InclusiveRectangle>> {
+        // Pointer is not hidden, but its texture is not visible on the screen, so we don't
+        // need to render it
+        if layer == PointerLayer::Pointer && !self.pointer_visible_on_screen {
+            return Ok(None);
+        }
+
         if self.data.is_empty() {
             return Ok(None);
         }
@@ -296,19 +306,33 @@ impl DecodedImage {
             (0, y - pointer.hot_spot_y as u16)
         };
 
+        // Cut right side if required
         let right = if right_virtual >= (self.width - 1) as i16 {
-            // Cut right side if required
-            self.width - draw_x - 1
+            if draw_x + 1 >= self.width {
+                // Pointer is completely out of bounds horizontally
+                self.pointer_visible_on_screen = false;
+                return;
+            } else {
+                self.width - (draw_x + 1)
+            }
         } else {
             pointer.width as u16 - 1
         };
 
+        // Cut bottom side if required
         let bottom = if bottom_virtual >= (self.height - 1) as i16 {
-            // Cut bottom side if required
-            self.height - draw_y - 1
+            if (draw_y + 1) >= self.height {
+                // Pointer is completely out of bounds vertically
+                self.pointer_visible_on_screen = false;
+                return;
+            } else {
+                self.height - (draw_y + 1)
+            }
         } else {
             pointer.height as u16 - 1
         };
+
+        self.pointer_visible_on_screen = true;
 
         let pointer_src_rect = InclusiveRectangle {
             left,
