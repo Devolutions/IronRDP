@@ -13,4 +13,11 @@
 # Editor/IDE files
 *~
 /tags
-/.idea
+.idea
+.vscode
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
