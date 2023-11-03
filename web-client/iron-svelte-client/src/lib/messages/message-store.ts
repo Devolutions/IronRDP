@@ -2,7 +2,7 @@
 import { writable } from 'svelte/store';
 
 type ToastMessage = {
-	message: string;
-	type: 'info' | 'error';
+    message: string;
+    type: 'info' | 'error';
 };
 export const toast: Writable<ToastMessage> = writable();

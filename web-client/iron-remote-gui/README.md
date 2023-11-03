@@ -45,10 +45,10 @@ You can add some parameters for default initialization on the component `<iron-r
 
 > Note that due to a limitation of the framework all parameters need to be lower-cased.
 
-- `scale`: The scaling behavior of the distant screen. Can be `fit`, `real` or `full`. Default is `real`;
-- `verbose`: Show logs from `iron-remote-gui`. `true` or `false`. Default is `false`.
-- `debugwasm`: Show debug info from web assembly. Can be `"OFF"`, `"ERROR"`, `"WARN"`, `"INFO"`, `"DEBUG"`, `"TRACE"`. Default is `"OFF"`.
-- `flexcentre`: Helper to force `iron-remote-gui` a flex and centering the content automatically. Otherwise, you need to manage manually. Default is `true`.
+-   `scale`: The scaling behavior of the distant screen. Can be `fit`, `real` or `full`. Default is `real`;
+-   `verbose`: Show logs from `iron-remote-gui`. `true` or `false`. Default is `false`.
+-   `debugwasm`: Show debug info from web assembly. Can be `"OFF"`, `"ERROR"`, `"WARN"`, `"INFO"`, `"DEBUG"`, `"TRACE"`. Default is `"OFF"`.
+-   `flexcentre`: Helper to force `iron-remote-gui` a flex and centering the content automatically. Otherwise, you need to manage manually. Default is `true`.
 
 ## `UserInteractionService` methods
 

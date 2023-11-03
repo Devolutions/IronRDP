@@ -1,4 +1,4 @@
 export class DesktopSize {
-	width!: number;
-	height!: number;
+    width!: number;
+    height!: number;
 }

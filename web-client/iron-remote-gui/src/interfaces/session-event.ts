@@ -2,6 +2,6 @@
 import type { SessionEventType } from '../enums/SessionEventType';
 
 export interface SessionEvent {
-	type: SessionEventType;
-	data?: IronRdpError | string;
+    type: SessionEventType;
+    data?: IronRdpError | string;
 }

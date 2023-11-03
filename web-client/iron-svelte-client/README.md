@@ -5,8 +5,8 @@ This is a simple wrapper around the `iron-remote-gui` Web Component demonstratin
 
 ## Requirements
 
-- A Devolutions Gateway with network access to this machine up and running
-- A token signed using the provisioner key the Devolutions Gateway is expecting
+-   A Devolutions Gateway with network access to this machine up and running
+-   A token signed using the provisioner key the Devolutions Gateway is expecting
 
 ### Devolutions Gateway setup
 
@@ -16,9 +16,9 @@ However, this version not yet officially published.
 
 Therefore, you need to either:
 
-- Download a binary prebuilt from master such as [this one](https://devolutions.sharepoint.com/:f:/s/Prereleases/En3Y3T3OIuFFpYknTZYZfIYBXo_OpCubXBKd8wpjZ7Qrtg?e=MBVz53).
-- Build [master](https://github.com/Devolutions/devolutions-gateway/tree/master) yourself.
-  Simply [install the Rust toolchain](https://rustup.rs/) and run `cargo build --release`. Binary will be found in the `./target/release` folder.
+-   Download a binary prebuilt from master such as [this one](https://devolutions.sharepoint.com/:f:/s/Prereleases/En3Y3T3OIuFFpYknTZYZfIYBXo_OpCubXBKd8wpjZ7Qrtg?e=MBVz53).
+-   Build [master](https://github.com/Devolutions/devolutions-gateway/tree/master) yourself.
+    Simply [install the Rust toolchain](https://rustup.rs/) and run `cargo build --release`. Binary will be found in the `./target/release` folder.
 
 Create a new folder somewhere on your system. For instance `/home/david/Documents/gateway-config`.
 We’ll store Devolutions Gateway configuration inside this folder.
@@ -48,10 +48,10 @@ For convenience, modify the freshly generated `gateway.json` like so:
 
 ```json
 {
-	// -- snip -- //
-	"__debug__": {
-		"disable_token_validation": true
-	}
+    // -- snip -- //
+    "__debug__": {
+        "disable_token_validation": true
+    }
 }
 ```
 
@@ -99,9 +99,9 @@ and then `npm install` in [iron-svelte-client](./) folder.
 
 You can then start the dev server with either:
 
-- `npm run dev` - Runs only the final application.
-- `npm run dev-all` - Builds WASM module and `iron-remote-gui` prior to starting the dev server.
-- `npm run dev-no-wasm` - Only builds `iron-remote-gui` prior to starting the dev server.
+-   `npm run dev` - Runs only the final application.
+-   `npm run dev-all` - Builds WASM module and `iron-remote-gui` prior to starting the dev server.
+-   `npm run dev-no-wasm` - Only builds `iron-remote-gui` prior to starting the dev server.
 
 You can build distribution files with `npm run build`.
 Files are to be found in `./iron-svelte-client/build/browser`

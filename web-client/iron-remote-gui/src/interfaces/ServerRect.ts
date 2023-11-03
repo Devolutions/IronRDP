@@ -1,10 +1,10 @@
 ﻿export interface ServerRect {
-	free(): void;
+    free(): void;
 
-	clone_buffer(): Uint8Array;
+    clone_buffer(): Uint8Array;
 
-	bottom: number;
-	left: number;
-	right: number;
-	top: number;
+    bottom: number;
+    left: number;
+    right: number;
+    top: number;
 }

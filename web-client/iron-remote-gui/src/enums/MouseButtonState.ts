@@ -1,4 +1,4 @@
 ﻿export enum MouseButtonState {
-	MOUSE_DOWN,
-	MOUSE_UP,
+    MOUSE_DOWN,
+    MOUSE_UP,
 }
