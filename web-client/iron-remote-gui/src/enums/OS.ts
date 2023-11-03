@@ -2,5 +2,5 @@
 	WINDOWS = 'windows',
 	LINUX = 'linux',
 	MACOS = 'macos',
-	ANDROID = 'android'
+	ANDROID = 'android',
 }

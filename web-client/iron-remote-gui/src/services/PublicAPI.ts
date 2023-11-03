@@ -22,7 +22,7 @@ export class PublicAPI {
 		serverDomain: string,
 		authToken: string,
 		desktopSize?: DesktopSize,
-		preConnectionBlob?: string
+		preConnectionBlob?: string,
 	): Observable<NewSessionInfo> {
 		loggingService.info('Initializing connection.');
 		return this.wasmService.connect(
@@ -33,7 +33,7 @@ export class PublicAPI {
 			serverDomain,
 			authToken,
 			desktopSize,
-			preConnectionBlob
+			preConnectionBlob,
 		);
 	}
 
@@ -66,7 +66,7 @@ export class PublicAPI {
 			sessionListener: this.wasmService.sessionObserver,
 			ctrlAltDel: this.ctrlAltDel.bind(this),
 			metaKey: this.metaKey.bind(this),
-			shutdown: this.shutdown.bind(this)
+			shutdown: this.shutdown.bind(this),
 		};
 	}
 }

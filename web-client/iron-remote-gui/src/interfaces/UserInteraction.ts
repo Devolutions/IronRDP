@@ -17,7 +17,7 @@ export interface UserInteraction {
 		serverDomain: string,
 		authToken: string,
 		desktopSize?: DesktopSize,
-		preConnectionBlob?: string
+		preConnectionBlob?: string,
 	): Observable<NewSessionInfo>;
 
 	ctrlAltDel(): void;

@@ -6,5 +6,5 @@
 	'CapsLock' = CAPS_LOCK,
 	'ScrollLock' = SCROLL_LOCK,
 	'NumLock' = NUM_LOCK,
-	'KanaMode' = KANA_MODE
+	'KanaMode' = KANA_MODE,
 }

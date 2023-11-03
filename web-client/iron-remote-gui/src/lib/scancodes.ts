@@ -168,7 +168,7 @@ export const ScanCodeToCode: CodeMap = {
 			'0xE06A': 'BrowserBack',
 			'0xE06B': 'LaunchApp1',
 			'0xE06C': 'LaunchMail',
-			'0xE06D': 'MediaSelect'
+			'0xE06D': 'MediaSelect',
 		},
 		gecko: {
 			'0x0001': 'Escape',
@@ -319,8 +319,8 @@ export const ScanCodeToCode: CodeMap = {
 			'0xE06C': 'LaunchMail',
 			'0xE06D': 'MediaSelect',
 			'0xE0F1': 'Lang2',
-			'0xE0F2': 'Lang1'
-		}
+			'0xE0F2': 'Lang1',
+		},
 	},
 	linux: {
 		gecko: {
@@ -480,7 +480,7 @@ export const ScanCodeToCode: CodeMap = {
 			'0x00C8': 'F22',
 			'0x00C9': 'F23',
 			'0x00CA': 'F24',
-			'0x00E1': 'BrowserSearch'
+			'0x00E1': 'BrowserSearch',
 		},
 		blink: {
 			'0x0009': 'Escape',
@@ -644,8 +644,8 @@ export const ScanCodeToCode: CodeMap = {
 			'0x00C8': 'F22',
 			'0x00C9': 'F23',
 			'0x00CA': 'F24',
-			'0x00E1': 'BrowserSearch'
-		}
+			'0x00E1': 'BrowserSearch',
+		},
 	},
 	android: {
 		gecko: {
@@ -803,23 +803,23 @@ export const ScanCodeToCode: CodeMap = {
 			'0x00C1': 'F23',
 			'0x00C2': 'F24',
 			'0x00D9': 'BrowserSearch',
-			'0x01D0': 'Fn'
-		}
-	}
+			'0x01D0': 'Fn',
+		},
+	},
 };
 
 export const CodeToScanCode: CodeMap = {
 	windows: {
 		blink: {},
-		gecko: {}
+		gecko: {},
 	},
 	linux: {
 		gecko: {},
-		blink: {}
+		blink: {},
 	},
 	android: {
-		gecko: {}
-	}
+		gecko: {},
+	},
 };
 
 const mapList = [
@@ -827,7 +827,7 @@ const mapList = [
 	[ScanCodeToCode.windows.gecko, CodeToScanCode.windows.gecko],
 	[ScanCodeToCode.linux.blink, CodeToScanCode.linux.blink],
 	[ScanCodeToCode.linux.gecko, CodeToScanCode.linux.gecko],
-	[ScanCodeToCode.android.gecko, CodeToScanCode.android.gecko]
+	[ScanCodeToCode.android.gecko, CodeToScanCode.android.gecko],
 ];
 
 mapList.forEach((maps) => {

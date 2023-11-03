@@ -6,7 +6,7 @@ import init, {
 	ironrdp_init,
 	IronRdpError,
 	Session,
-	SessionBuilder
+	SessionBuilder,
 } from '../../../../crates/ironrdp-web/pkg/ironrdp_web';
 import { loggingService } from './logging.service';
 import { catchError, filter, map } from 'rxjs/operators';
@@ -28,7 +28,7 @@ export class WasmBridgeService {
 	private _resize: Subject<ResizeEvent> = new Subject<ResizeEvent>();
 	private mousePosition: BehaviorSubject<MousePosition> = new BehaviorSubject<MousePosition>({
 		x: 0,
-		y: 0
+		y: 0,
 	});
 	private changeVisibility: Subject<boolean> = new Subject();
 	private sessionEvent: Subject<SessionEvent> = new Subject();
@@ -100,7 +100,7 @@ export class WasmBridgeService {
 		serverDomain: string,
 		authToken: string,
 		desktopSize?: IDesktopSize,
-		preConnectionBlob?: string
+		preConnectionBlob?: string,
 	): Observable<NewSessionInfo> {
 		const sessionBuilder = SessionBuilder.new();
 		sessionBuilder.proxy_address(proxyAddress);
@@ -127,7 +127,7 @@ export class WasmBridgeService {
 			catchError((err: IronRdpError) => {
 				this.raiseSessionEvent({
 					type: SessionEventType.ERROR,
-					data: err
+					data: err,
 				});
 				return of(err);
 			}),
@@ -139,14 +139,14 @@ export class WasmBridgeService {
 							this.setVisibility(false);
 							this.raiseSessionEvent({
 								type: SessionEventType.ERROR,
-								data: err.backtrace()
+								data: err.backtrace(),
 							});
 							this.raiseSessionEvent({
 								type: SessionEventType.TERMINATED,
-								data: 'Session was terminated.'
+								data: 'Session was terminated.',
 							});
 							return of(err);
-						})
+						}),
 					)
 					.subscribe();
 				return session;
@@ -156,18 +156,18 @@ export class WasmBridgeService {
 				this.session = session;
 				this._resize.next({
 					desktop_size: session.desktop_size(),
-					session_id: 0
+					session_id: 0,
 				});
 				this.raiseSessionEvent({
 					type: SessionEventType.STARTED,
-					data: 'Session started'
+					data: 'Session started',
 				});
 				return {
 					session_id: 0,
 					initial_desktop_size: session.desktop_size(),
-					websocket_port: 0
+					websocket_port: 0,
 				};
-			})
+			}),
 		);
 	}
 
@@ -252,7 +252,7 @@ export class WasmBridgeService {
 			syncScrollLockActive,
 			syncNumsLockActive,
 			syncCapsLockActive,
-			syncKanaModeActive
+			syncKanaModeActive,
 		);
 	}
 
@@ -266,7 +266,7 @@ export class WasmBridgeService {
 		} else if (evt.type === 'keyup') {
 			this.modifierKeyPressed.splice(
 				this.modifierKeyPressed.indexOf(ModifierKey[evt.code as keyof typeof ModifierKey]),
-				1
+				1,
 			);
 		}
 	}
@@ -288,7 +288,7 @@ export class WasmBridgeService {
 			DeviceEvent.new_key_pressed(suppr),
 			DeviceEvent.new_key_released(ctrl),
 			DeviceEvent.new_key_released(alt),
-			DeviceEvent.new_key_released(suppr)
+			DeviceEvent.new_key_released(suppr),
 		]);
 	}
 
@@ -300,7 +300,7 @@ export class WasmBridgeService {
 			DeviceEvent.new_key_pressed(ctrl),
 			DeviceEvent.new_key_pressed(escape),
 			DeviceEvent.new_key_released(ctrl),
-			DeviceEvent.new_key_released(escape)
+			DeviceEvent.new_key_released(escape),
 		]);
 	}
 }

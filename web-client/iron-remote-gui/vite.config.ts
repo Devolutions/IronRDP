@@ -10,22 +10,22 @@ export default defineConfig({
 		lib: {
 			entry: './src/main.ts',
 			name: 'IronRemoteGui',
-			formats: ['umd', 'es']
-		}
+			formats: ['umd', 'es'],
+		},
 	},
 	server: {
 		fs: {
-			strict: false
-		}
+			strict: false,
+		},
 	},
 	plugins: [
 		svelte({
 			compilerOptions: {
-				customElement: true
-			}
+				customElement: true,
+			},
 		}),
 		wasm(),
 		topLevelAwait(),
-		dtsPlugin()
-	]
+		dtsPlugin(),
+	],
 });

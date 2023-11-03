@@ -10,5 +10,5 @@
 	'ShiftRight' = SHIFT_RIGHT,
 	'AltLeft' = ALT_LEFT,
 	'ControlRight' = CTRL_RIGHT,
-	'AltRight' = ALT_RIGHT
+	'AltRight' = ALT_RIGHT,
 }

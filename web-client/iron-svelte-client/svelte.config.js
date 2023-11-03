@@ -13,9 +13,9 @@ const config = {
 			assets: 'build/browser',
 			fallback: null,
 			precompress: false,
-			strict: true
-		})
-	}
+			strict: true,
+		}),
+	},
 };
 
 export default config;
