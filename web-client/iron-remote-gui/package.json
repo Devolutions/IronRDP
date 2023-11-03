@@ -16,11 +16,15 @@
     "build-alone": "vite build",
     "pre-build": "node ./pre-build.js",
     "preview": "vite preview",
-    "check": "svelte-check --tsconfig ./tsconfig.json"
+    "check": "svelte-check --tsconfig ./tsconfig.json",
+    "lint": "tsc --noemit && prettier . --check .",
+    "format": "prettier . --write ."
   },
   "devDependencies": {
     "@sveltejs/vite-plugin-svelte": "^2.0.0",
     "@tsconfig/svelte": "^3.0.0",
+    "prettier": "^3.0.3",
+    "prettier-plugin-svelte": "^3.0.3",
     "rxjs": "^6.6.7",
     "svelte": "^3.54.0",
     "svelte-check": "^2.10.0",

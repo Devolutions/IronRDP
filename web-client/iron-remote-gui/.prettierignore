@@ -7,7 +7,7 @@ node_modules/
 /.svelte-kit
 /package
 /build
-/static/beercss
+/static/bearcss
 /static/material-icons
 
 # Ignore files for PNPM, NPM and YARN

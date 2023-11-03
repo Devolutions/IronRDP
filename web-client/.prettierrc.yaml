@@ -1,0 +1,28 @@
+# Prettier:
+# - https://prettier.io/docs/en/options
+
+# prettier-plugin-svelte:
+# - https://github.com/sveltejs/prettier-plugin-svelte
+---
+useTabs: false
+tabWidth: 4
+singleQuote: true
+semi: true
+trailingComma: all
+printWidth: 120
+
+plugins:
+  - prettier-plugin-svelte
+
+overrides:
+  - files: '*.svelte'
+    options:
+      parser: svelte
+  - files:
+      - '*.yml'
+      - '*.yaml'
+      - '*.json'
+      - '*.html'
+      - '*.md'
+    options:
+      tabWidth: 2
