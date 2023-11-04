@@ -5,11 +5,12 @@
         userInteractionService
     } from '../../services/session.service';
     import {showLogin} from '$lib/login/login-store';
+    import type { UserInteraction } from '../../../static/iron-remote-gui/main';
 
-    let uiService;
+    let uiService: UserInteraction;
 
     userInteractionService.subscribe(uis => {
-        if (uis) {
+        if (uis != null) {
             uiService = uis
             uiService.sessionListener.subscribe(event => {
                 if (event.type === 0) {
@@ -24,8 +25,14 @@
 
     onMount(async () => {
         let el = document.querySelector('iron-remote-gui');
+
+        if (el == null) {
+            throw "`iron-remote-gui` element not found";
+        }
+
         el.addEventListener('ready', (e) => {
-            userInteractionService.set(e.detail.irgUserInteraction);
+            const event = e as CustomEvent;
+            userInteractionService.set(event.detail.irgUserInteraction);
         });
     });
 </script>

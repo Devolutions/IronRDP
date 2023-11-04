@@ -70,7 +70,7 @@ export class WasmBridgeService {
 
     mouseButtonState(event: MouseEvent, isDown: boolean) {
         event.preventDefault(); // prevent default behavior (context menu, etc)
-        let mouseFnc = isDown ? DeviceEvent.new_mouse_button_pressed : DeviceEvent.new_mouse_button_released;
+        const mouseFnc = isDown ? DeviceEvent.new_mouse_button_pressed : DeviceEvent.new_mouse_button_released;
         this.doTransactionFromDeviceEvents([mouseFnc(event.button)]);
     }
 
@@ -97,11 +97,11 @@ export class WasmBridgeService {
         sessionBuilder.show_pointer_callback_context(this);
         sessionBuilder.show_pointer_callback(this.showPointerCallback);
 
-        if (preConnectionBlob) {
+        if (preConnectionBlob != null) {
             sessionBuilder.pcb(preConnectionBlob);
         }
 
-        if (desktopSize) {
+        if (desktopSize != null) {
             sessionBuilder.desktop_size(DesktopSize.new(desktopSize.width, desktopSize.height));
         }
 
@@ -169,8 +169,8 @@ export class WasmBridgeService {
 
 
     mouseWheel(event: WheelEvent) {
-        let vertical = event.deltaY !== 0;
-        let rotation = vertical ? event.deltaY : event.deltaX;
+        const vertical = event.deltaY !== 0;
+        const rotation = vertical ? event.deltaY : event.deltaX;
         this.doTransactionFromDeviceEvents([DeviceEvent.new_wheel_rotations(vertical, -rotation)]);
     }
 
@@ -228,13 +228,11 @@ export class WasmBridgeService {
         this.canvas!.style.cursor = 'default';
     }
 
-    private syncModifier(evt: any): void {
-        const mouseEvent = evt as MouseEvent;
-
-        let syncCapsLockActive = mouseEvent.getModifierState(LockKey.CAPS_LOCK);
-        let syncNumsLockActive = mouseEvent.getModifierState(LockKey.NUM_LOCK);
-        let syncScrollLockActive = mouseEvent.getModifierState(LockKey.SCROLL_LOCK);
-        let syncKanaModeActive = mouseEvent.getModifierState(LockKey.KANA_MODE);
+    private syncModifier(evt: KeyboardEvent | MouseEvent): void {
+        const syncCapsLockActive = evt.getModifierState(LockKey.CAPS_LOCK);
+        const syncNumsLockActive = evt.getModifierState(LockKey.NUM_LOCK);
+        const syncScrollLockActive = evt.getModifierState(LockKey.SCROLL_LOCK);
+        const syncKanaModeActive = evt.getModifierState(LockKey.KANA_MODE);
 
         this.session?.synchronize_lock_keys(syncScrollLockActive, syncNumsLockActive, syncCapsLockActive, syncKanaModeActive);
     }

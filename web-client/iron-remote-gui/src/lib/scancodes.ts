@@ -13,7 +13,7 @@ type EngineMaps = {
 };
 type CodeMap = Record<OS, EngineMaps>;
 
-export let ScanCodeToCode: CodeMap = {
+export const ScanCodeToCode: CodeMap = {
     windows: {
         blink: {
             "0x0001": "Escape",
@@ -813,7 +813,7 @@ export let ScanCodeToCode: CodeMap = {
     }
 }
 
-export let CodeToScanCode: CodeMap = {
+export const CodeToScanCode: CodeMap = {
     windows: {
         blink: {},
         gecko: {}
@@ -828,7 +828,7 @@ export let CodeToScanCode: CodeMap = {
     }
 };
 
-let mapList: [Record<string, string>, Record<string, string>][] = [
+const mapList: [Record<string, string>, Record<string, string>][] = [
     [ScanCodeToCode.windows.blink!, CodeToScanCode.windows.blink!],
     [ScanCodeToCode.windows.gecko, CodeToScanCode.windows.gecko],
     [ScanCodeToCode.linux.blink!, CodeToScanCode.linux.blink!],
@@ -837,23 +837,23 @@ let mapList: [Record<string, string>, Record<string, string>][] = [
 ];
 
 mapList.forEach(maps => {
-    for (let key in maps[0]) {
+    for (const key in maps[0]) {
         if (Object.prototype.hasOwnProperty.call(maps[0], key)) {
             maps[1][maps[0][key]] = key;
         }
     }
 })
 
-let parser = new UAParser();
-let parsedUA = parser.getResult();
-let engine = parsedUA.engine.name?.toLowerCase() as EngineName;
+const parser = new UAParser();
+const parsedUA = parser.getResult();
+const engine = parsedUA.engine.name?.toLowerCase() as EngineName;
 
-export let scanCode = function (code: string, targetOs: OS): number {
-    let map = CodeToScanCode[targetOs][engine] || CodeToScanCode.linux.gecko;
+export const scanCode = function (code: string, targetOs: OS): number {
+    const map = CodeToScanCode[targetOs][engine] || CodeToScanCode.linux.gecko;
     return parseInt(map[code], 16);
 }
 
-export let code = function (scanCode: string, targetOs: OS): string {
-    let map = ScanCodeToCode[targetOs][engine] || CodeToScanCode.linux.gecko;
+export const code = function (scanCode: string, targetOs: OS): string {
+    const map = ScanCodeToCode[targetOs][engine] || CodeToScanCode.linux.gecko;
     return map[scanCode];
 }

@@ -24,7 +24,7 @@ export function getCurrentSession(): Session {
 
 export function setCurrentSessionActive(active: boolean) {
    currentSession.update(session => {
-       session.active = true;
+       session.active = active;
        return session;
    }); 
 }
