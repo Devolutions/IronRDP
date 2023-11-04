@@ -65,7 +65,7 @@ export class WasmBridgeService {
     }
 
     shutdown() {
-        this.session.shutdown();
+        this.session?.shutdown();
     }
 
     mouseButtonState(event: MouseEvent, isDown: boolean) {
@@ -228,7 +228,7 @@ export class WasmBridgeService {
         let syncScrollLockActive = mouseEvent.getModifierState(LockKey.SCROLL_LOCK);
         let syncKanaModeActive = mouseEvent.getModifierState(LockKey.KANA_MODE);
 
-        this.session.synchronize_lock_keys(syncScrollLockActive, syncNumsLockActive, syncCapsLockActive, syncKanaModeActive);
+        this.session?.synchronize_lock_keys(syncScrollLockActive, syncNumsLockActive, syncCapsLockActive, syncKanaModeActive);
     }
 
     private raiseSessionEvent(event: SessionEvent) {
