@@ -33,9 +33,11 @@ let run = async function (command, cwd) {
             console.log(`child process exited with code ${code}`);
             resolve();
         });
-    })
-}
+    });
+};
+
 let copyCoreFiles = async function () {
+    console.log('Copying core files…');
     await fs.remove(assetIronRemoteGuiFolder);
     return new Promise(resolve => {
         let source = '../iron-remote-gui/dist';
@@ -43,10 +45,10 @@ let copyCoreFiles = async function () {
 
         fs.copy(source, destination, function (err) {
             if (err) {
-                console.log('An error occurred while copying folder.');
+                console.log('An error occurred while copying core files.');
                 return console.error(err);
             }
-            console.log('Core files was copied successfully');
+            console.log('Core files were copied successfully');
             resolve();
         });
     })

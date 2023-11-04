@@ -1,11 +1,11 @@
 <script lang="ts">
     import {currentSession, userInteractionService} from '../../services/session.service';
     import {catchError, filter} from "rxjs/operators";
-    import type {IRGUserInteraction, NewSessionInfo} from '../../../static/iron-remote-gui';
+    import type {UserInteraction, NewSessionInfo} from '../../../static/iron-remote-gui';
     import {of} from 'rxjs';
     import {toast} from '$lib/messages/message-store';
     import {showLogin} from '$lib/login/login-store';
-    import {DesktopSize} from '../../models/desktop-size';
+    import type {DesktopSize} from '../../models/desktop-size';
 
     let username = "Administrator";
     let password = "DevoLabs123!";
@@ -17,14 +17,13 @@
         width: 1280,
         height: 768
     };
-    let pcb;
-    let toastMessage: string;
+    let pcb: string;
 
-    let userInteraction: IRGUserInteraction;
+    let userInteraction: UserInteraction;
 
     userInteractionService.subscribe(val => {
         userInteraction = val;
-        if (val) {
+        if (val != null) {
             initListeners();
         }
     });
@@ -36,12 +35,12 @@
 
                 toast.set({
                     type: 'error',
-                    message: event.data.backtrace ? event.data.backtrace() : event.data,
+                    message: event.data.backtrace != null ? event.data.backtrace() : event.data,
                 });
             } else {
                 toast.set({
                     type: 'info',
-                    message: event.data || "No info",
+                    message: event.data ?? "No info",
                 });
             }
         });
@@ -63,8 +62,8 @@
                 }),
                 filter(result => !!result)
             )
-            .subscribe((start_info: NewSessionInfo) => {
-                if (start_info.initial_desktop_size !== null) {
+            .subscribe((start_info: NewSessionInfo | null) => {
+                if (start_info != null && start_info.initial_desktop_size !== null) {
                     toast.set({
                         type: 'info',
                         message: 'Success',

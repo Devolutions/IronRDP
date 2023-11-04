@@ -7,11 +7,11 @@
         }
     }
     
-    error(description: string, object?: any) {
+    error(description: string, object?: unknown) {
         if (this.verbose) {
             console.error(description, object);
         }
     }
 }
 
-export let loggingService = new LoggingService();
+export const loggingService = new LoggingService();

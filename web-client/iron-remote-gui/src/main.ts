@@ -1,4 +1,4 @@
-import IronRemoteGui from './iron-remote-gui.svelte';
+export * as default from './iron-remote-gui.svelte';
 
 export type {UserInteraction} from './interfaces/UserInteraction';
 export type {ResizeEvent} from './interfaces/ResizeEvent';
