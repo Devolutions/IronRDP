@@ -1,8 +1,8 @@
-import type {Guid} from "guid-typescript";
-import type {Writable} from "svelte/store";
-import {writable} from "svelte/store";
-import {Session} from "../models/session";
-import type {UserInteraction} from '../../static/iron-remote-gui';
+import type { Guid } from 'guid-typescript';
+import type { Writable } from 'svelte/store';
+import { writable } from 'svelte/store';
+import { Session } from '../models/session';
+import type { UserInteraction } from '../../static/iron-remote-gui';
 
 export const userInteractionService: Writable<UserInteraction> = writable();
 export const currentSession: Writable<Session> = writable();
@@ -23,14 +23,14 @@ export function getCurrentSession(): Session {
 }
 
 export function setCurrentSessionActive(active: boolean) {
-   currentSession.update(session => {
-       session.active = active;
-       return session;
-   }); 
+    currentSession.update((session) => {
+        session.active = active;
+        return session;
+    });
 }
 
 export function setCurrentSessionById(id: Guid) {
-    const session = sessions.find(session => session.id.equals(id));
+    const session = sessions.find((session) => session.id.equals(id));
     if (session) {
         setCurrentSession(session);
     }
@@ -47,7 +47,7 @@ export function addSession(name: string) {
 
 export function closeSession(id: Guid) {
     sessionCounter--;
-    sessions = sessions.filter(session => !session.id.equals(id));
+    sessions = sessions.filter((session) => !session.id.equals(id));
     if (sessionCounter == 1) {
         setCurrentSession(sessions[0]);
     }

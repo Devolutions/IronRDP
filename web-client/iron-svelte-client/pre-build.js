@@ -1,7 +1,7 @@
 ﻿import * as fs from 'fs-extra';
-import {spawn} from 'child_process';
+import { spawn } from 'child_process';
 import * as path from 'path';
-import {fileURLToPath} from 'url';
+import { fileURLToPath } from 'url';
 import { argv } from 'node:process';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -18,8 +18,8 @@ argv.forEach((val, index) => {
 });
 
 let run = async function (command, cwd) {
-    return new Promise(resolve => {
-        const buildCommand = spawn(command, {stdio: "pipe", shell: true, cwd: cwd});
+    return new Promise((resolve) => {
+        const buildCommand = spawn(command, { stdio: 'pipe', shell: true, cwd: cwd });
 
         buildCommand.stdout.on('data', (data) => {
             console.log(`${data}`);
@@ -39,7 +39,7 @@ let run = async function (command, cwd) {
 let copyCoreFiles = async function () {
     console.log('Copying core files…');
     await fs.remove(assetIronRemoteGuiFolder);
-    return new Promise(resolve => {
+    return new Promise((resolve) => {
         let source = '../iron-remote-gui/dist';
         let destination = assetIronRemoteGuiFolder;
 
@@ -51,8 +51,8 @@ let copyCoreFiles = async function () {
             console.log('Core files were copied successfully');
             resolve();
         });
-    })
-}
+    });
+};
 
 let buildCommand = 'npm run build';
 if (noWasm) {

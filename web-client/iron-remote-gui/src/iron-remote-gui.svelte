@@ -1,18 +1,18 @@
-<svelte:options tag="iron-remote-gui"/>
+<svelte:options tag="iron-remote-gui" />
 
 <script lang="ts">
-    import {onMount} from 'svelte';
-    import {get_current_component} from "svelte/internal";
-    import {loggingService} from "./services/logging.service";
-    import {WasmBridgeService} from './services/wasm-bridge.service';
-    import {LogType} from './enums/LogType';
-    import type {ResizeEvent} from './interfaces/ResizeEvent';
-    import {PublicAPI} from './services/PublicAPI';
-    import {ScreenScale} from './enums/ScreenScale';
+    import { onMount } from 'svelte';
+    import { get_current_component } from 'svelte/internal';
+    import { loggingService } from './services/logging.service';
+    import { WasmBridgeService } from './services/wasm-bridge.service';
+    import { LogType } from './enums/LogType';
+    import type { ResizeEvent } from './interfaces/ResizeEvent';
+    import { PublicAPI } from './services/PublicAPI';
+    import { ScreenScale } from './enums/ScreenScale';
 
     export let scale = 'real';
     export let verbose = 'false';
-    export let debugwasm: "OFF" | "ERROR" | "WARN" | "INFO" | "DEBUG" | "TRACE" = 'INFO';
+    export let debugwasm: 'OFF' | 'ERROR' | 'WARN' | 'INFO' | 'DEBUG' | 'TRACE' = 'INFO';
     export let flexcenter = 'true';
 
     let isVisible = false;
@@ -24,7 +24,7 @@
 
     let viewerStyle: string;
     let wrapperStyle: string;
-    
+
     let wasmService = new WasmBridgeService();
     let publicAPI = new PublicAPI(wasmService);
 
@@ -49,9 +49,9 @@
         if (flexcenter === 'true') {
             if (!full) {
                 currentComponent.style.flexGrow = 1;
-                currentComponent.style.display = "flex";
-                currentComponent.style.justifyContent = "center";
-                currentComponent.style.alignItems = "center";
+                currentComponent.style.display = 'flex';
+                currentComponent.style.justifyContent = 'center';
+                currentComponent.style.alignItems = 'center';
             } else {
                 currentComponent.style.flexGrow = 1;
             }
@@ -86,16 +86,16 @@
             scaleSession(scale);
         });
 
-        wasmService.scaleObserver.subscribe(s => {
-            loggingService.info("Change scale!");
+        wasmService.scaleObserver.subscribe((s) => {
+            loggingService.info('Change scale!');
             scaleSession(s);
         });
 
-        wasmService.changeVisibilityObservable.subscribe(val => {
+        wasmService.changeVisibilityObservable.subscribe((val) => {
             isVisible = val;
             if (val) {
                 //Enforce first scaling and delay the call to scaleSession to ensure Dom is ready.
-                setWrapperStyle("100%", "100%", "hidden");
+                setWrapperStyle('100%', '100%', 'hidden');
                 setTimeout(() => scaleSession(scale), 150);
             }
         });
@@ -107,22 +107,22 @@
             switch (currentSize) {
                 case 'fit':
                 case ScreenScale.Fit:
-                    loggingService.info("Size to fit");
+                    loggingService.info('Size to fit');
                     scale = 'fit';
                     fitResize();
                     break;
                 case 'full':
                 case ScreenScale.Full:
-                    loggingService.info("Size to full");
+                    loggingService.info('Size to full');
                     fullResize();
                     scale = 'full';
                     break;
                 case 'real':
                 case ScreenScale.Real:
-                    loggingService.info("Size to real");
+                    loggingService.info('Size to real');
                     realResize();
                     scale = 'real';
-                    break
+                    break;
             }
         }
     }
@@ -181,7 +181,11 @@
         const containerHeight = windowSize.y - wrapperBoundingBox.y;
 
         if (containerWidth < canvas.width || containerHeight < canvas.height) {
-            setWrapperStyle(`${Math.min(containerHeight, canvas.height)}px`, `${Math.min(containerWidth, canvas.width)}px`, 'auto');
+            setWrapperStyle(
+                `${Math.min(containerHeight, canvas.height)}px`,
+                `${Math.min(containerWidth, canvas.width)}px`,
+                'auto',
+            );
         } else {
             setWrapperStyle('initial', 'initial', 'initial');
         }
@@ -197,7 +201,7 @@
 
         const coord = {
             x: Math.round((evt.clientX - rect.left) * scaleX),
-            y: Math.round((evt.clientY - rect.top) * scaleY)
+            y: Math.round((evt.clientY - rect.top) * scaleY),
         };
 
         wasmService.updateMousePosition(coord);
@@ -232,11 +236,11 @@
             body = doc.getElementsByTagName('body')[0],
             x = win.innerWidth ?? docElem.clientWidth ?? body.clientWidth,
             y = win.innerHeight ?? docElem.clientHeight ?? body.clientHeight;
-        return {x, y};
+        return { x, y };
     }
 
     async function initcanvas() {
-        loggingService.info('Start canvas initialization.')
+        loggingService.info('Start canvas initialization.');
         canvas = currentComponent.shadowRoot.getElementById('renderer');
 
         // Set a default canvas size. Need more test to know if i can remove it.
@@ -250,11 +254,11 @@
         initListeners();
 
         let result = {
-            irgUserInteraction: publicAPI.getExposedFunctions()
+            irgUserInteraction: publicAPI.getExposedFunctions(),
         };
 
         loggingService.info('Component ready');
-        currentComponent.dispatchEvent(new CustomEvent("ready", {detail: result}));
+        currentComponent.dispatchEvent(new CustomEvent('ready', { detail: result }));
     }
 
     onMount(async () => {
@@ -264,26 +268,28 @@
     });
 </script>
 
-<div bind:this={wrapper} class="screen-wrapper scale-{scale}" class:hidden="{!isVisible}"
-     class:capturing-inputs="{capturingInputs}"
-     style="{wrapperStyle}">
-    <div class="screen-viewer" style="{viewerStyle}">
+<div
+    bind:this={wrapper}
+    class="screen-wrapper scale-{scale}"
+    class:hidden={!isVisible}
+    class:capturing-inputs={capturingInputs}
+    style={wrapperStyle}
+>
+    <div class="screen-viewer" style={viewerStyle}>
         <canvas
-                on:mousemove={getMousePos}
-                on:mousedown={(event) => setMouseButtonState(event, true)}
-                on:mouseup={(event) => setMouseButtonState(event, false)}
-                on:mouseleave={(event) => {
-                        setMouseButtonState(event, false);
-                        setMouseOut(event);
-                    }
-                }
-                on:mouseenter={(event) => {
-                        setMouseIn(event);
-                    }
-                }
-                on:contextmenu={(event) => event.preventDefault()}
-                on:wheel={mouseWheel}
-                id="renderer"
+            on:mousemove={getMousePos}
+            on:mousedown={(event) => setMouseButtonState(event, true)}
+            on:mouseup={(event) => setMouseButtonState(event, false)}
+            on:mouseleave={(event) => {
+                setMouseButtonState(event, false);
+                setMouseOut(event);
+            }}
+            on:mouseenter={(event) => {
+                setMouseIn(event);
+            }}
+            on:contextmenu={(event) => event.preventDefault()}
+            on:wheel={mouseWheel}
+            id="renderer"
         />
     </div>
 </div>
@@ -294,7 +300,7 @@
     }
 
     .capturing-inputs {
-        outline: 1px solid rgba(0, 97, 166, .7);
+        outline: 1px solid rgba(0, 97, 166, 0.7);
         outline-offset: -1px;
     }
 

@@ -12,30 +12,30 @@
 root: true
 
 plugins:
-  - "@typescript-eslint"
+  - '@typescript-eslint'
 
 extends:
-  - "eslint:recommended"
-  - "plugin:@typescript-eslint/recommended"
-  - "plugin:svelte/prettier" # Turns off rules that may conflict with Prettier
-  - "plugin:prettier/recommended"
+  - 'eslint:recommended'
+  - 'plugin:@typescript-eslint/recommended'
+  - 'plugin:svelte/prettier' # Turns off rules that may conflict with Prettier
+  - 'plugin:prettier/recommended'
 
-parser: "@typescript-eslint/parser"
+parser: '@typescript-eslint/parser'
 parserOptions:
   project: ./tsconfig.json
   sourceType: module
   ecmaVersion: 2020
   extraFileExtensions:
-    - ".svelte"
+    - '.svelte'
 
 ignorePatterns:
-  - "*.cjs"
+  - '*.cjs'
 
 overrides:
-  - files: "*.svelte"
+  - files: '*.svelte'
     parser: svelte-eslint-parser
     parserOptions:
-      parser: "@typescript-eslint/parser"
+      parser: '@typescript-eslint/parser'
 
 env:
   browser: true
@@ -44,10 +44,10 @@ env:
 
 rules:
   strict: 2
-  "@typescript-eslint/no-unused-vars":
-    - "error"
+  '@typescript-eslint/no-unused-vars':
+    - 'error'
     - argsIgnorePattern: '^_'
-  "@typescript-eslint/strict-boolean-expressions":
+  '@typescript-eslint/strict-boolean-expressions':
     - 2
     - allowString: false
       allowNumber: false

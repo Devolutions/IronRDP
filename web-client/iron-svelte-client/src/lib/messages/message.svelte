@@ -1,9 +1,9 @@
 ﻿<script lang="ts">
-    import {toast} from '$lib/messages/message-store';
+    import { toast } from '$lib/messages/message-store';
 
     let toastMessage: string;
 
-    toast.subscribe(t => {
+    toast.subscribe((t) => {
         if (t != null) {
             toastMessage = t.message;
             switch (t.type) {
@@ -24,7 +24,6 @@
             }
         }
     });
-
 </script>
 
 <div id="toast" class="toast blue white-text">
