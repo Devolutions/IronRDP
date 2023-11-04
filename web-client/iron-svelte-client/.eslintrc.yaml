@@ -1,0 +1,54 @@
+# ESLint:
+# - https://eslint.org/docs/latest/use/configure/
+
+# eslint-plugin-prettier:
+# - https://github.com/prettier/eslint-plugin-prettier
+# - https://www.npmjs.com/package/eslint-plugin-prettier
+
+# eslint-plugin-svelte:
+# - https://github.com/sveltejs/eslint-plugin-svelte
+# - https://sveltejs.github.io/eslint-plugin-svelte/user-guide/
+---
+root: true
+
+plugins:
+  - "@typescript-eslint"
+  - 'html'
+
+extends:
+  - "eslint:recommended"
+  - "plugin:@typescript-eslint/recommended"
+  - "plugin:svelte/prettier" # Turns off rules that may conflict with Prettier
+  - "plugin:prettier/recommended"
+
+parser: "@typescript-eslint/parser"
+parserOptions:
+  project: ./tsconfig.json
+  sourceType: module
+  ecmaVersion: 2020
+  extraFileExtensions:
+    - ".svelte"
+
+ignorePatterns:
+  - "*.cjs"
+
+overrides:
+  - files: "*.svelte"
+    parser: svelte-eslint-parser
+    parserOptions:
+      parser: "@typescript-eslint/parser"
+
+env:
+  browser: true
+  es2017: true
+  node: true
+
+rules:
+  strict: 2
+  "@typescript-eslint/no-unused-vars":
+    - "error"
+    - argsIgnorePattern: '^_'
+  "@typescript-eslint/strict-boolean-expressions":
+    - 2
+    - allowString: false
+      allowNumber: false
