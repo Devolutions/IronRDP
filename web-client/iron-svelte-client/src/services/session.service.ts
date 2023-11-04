@@ -2,9 +2,9 @@ import type {Guid} from "guid-typescript";
 import type {Writable} from "svelte/store";
 import {writable} from "svelte/store";
 import {Session} from "../models/session";
-import type {IRGUserInteraction} from '../../static/iron-remote-gui';
+import type {UserInteraction} from '../../static/iron-remote-gui';
 
-export const userInteractionService: Writable<IRGUserInteraction> = writable();
+export const userInteractionService: Writable<UserInteraction> = writable();
 export const currentSession: Writable<Session> = writable();
 
 let _currentSession: Session = new Session('NewSession');

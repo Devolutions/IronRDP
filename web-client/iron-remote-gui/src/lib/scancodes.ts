@@ -835,7 +835,7 @@ mapList.forEach(maps => {
 
 let parser = new UAParser();
 let parsedUA = parser.getResult();
-let engine = parsedUA.engine.name.toLowerCase();
+let engine = parsedUA.engine.name?.toLowerCase();
 
 export let scanCode = function (code: string, targetOs: OS) {
     let map = CodeToScanCode[targetOs][engine] || CodeToScanCode.linux.gecko;
