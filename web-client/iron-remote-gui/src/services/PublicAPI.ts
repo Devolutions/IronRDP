@@ -1,11 +1,11 @@
-import {loggingService} from './logging.service';
-import type {NewSessionInfo} from '../interfaces/NewSessionInfo';
-import {SpecialCombination} from '../enums/SpecialCombination';
-import type {WasmBridgeService} from './wasm-bridge.service';
-import type {UserInteraction} from '../interfaces/UserInteraction';
-import type {ScreenScale} from '../enums/ScreenScale';
-import type {Observable} from 'rxjs';
-import type {DesktopSize} from '../interfaces/DesktopSize';
+import { loggingService } from './logging.service';
+import type { NewSessionInfo } from '../interfaces/NewSessionInfo';
+import { SpecialCombination } from '../enums/SpecialCombination';
+import type { WasmBridgeService } from './wasm-bridge.service';
+import type { UserInteraction } from '../interfaces/UserInteraction';
+import type { ScreenScale } from '../enums/ScreenScale';
+import type { Observable } from 'rxjs';
+import type { DesktopSize } from '../interfaces/DesktopSize';
 
 export class PublicAPI {
     private wasmService: WasmBridgeService;
@@ -14,9 +14,27 @@ export class PublicAPI {
         this.wasmService = wasmService;
     }
 
-    private connect(username: string, password: string, destination: string, proxyAddress: string, serverDomain: string, authToken: string, desktopSize?: DesktopSize, preConnectionBlob?: string): Observable<NewSessionInfo> {
+    private connect(
+        username: string,
+        password: string,
+        destination: string,
+        proxyAddress: string,
+        serverDomain: string,
+        authToken: string,
+        desktopSize?: DesktopSize,
+        preConnectionBlob?: string,
+    ): Observable<NewSessionInfo> {
         loggingService.info('Initializing connection.');
-        return this.wasmService.connect(username, password, destination, proxyAddress, serverDomain, authToken, desktopSize, preConnectionBlob);
+        return this.wasmService.connect(
+            username,
+            password,
+            destination,
+            proxyAddress,
+            serverDomain,
+            authToken,
+            desktopSize,
+            preConnectionBlob,
+        );
     }
 
     private ctrlAltDel() {
@@ -35,8 +53,8 @@ export class PublicAPI {
     private setScale(scale: ScreenScale) {
         this.wasmService.setScale(scale);
     }
-    
-    private shutdown() {   
+
+    private shutdown() {
         this.wasmService.shutdown();
     }
 
@@ -48,8 +66,7 @@ export class PublicAPI {
             sessionListener: this.wasmService.sessionObserver,
             ctrlAltDel: this.ctrlAltDel.bind(this),
             metaKey: this.metaKey.bind(this),
-            shutdown: this.shutdown.bind(this)
-        }
+            shutdown: this.shutdown.bind(this),
+        };
     }
 }
-

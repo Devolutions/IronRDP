@@ -11,14 +11,11 @@
     "build": "npm run pre-build && vite build",
     "build-no-wasm": "npm run pre-build-no-wasm && vite build",
     "preview": "vite preview",
-
     "check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
     "check:watch": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json --watch",
-
     "lint": "npm run lint:prettier && npm run lint:eslint",
     "lint:prettier": "prettier . --check",
     "lint:eslint": "eslint src/**",
-
     "format": "prettier . --write ."
   },
   "devDependencies": {

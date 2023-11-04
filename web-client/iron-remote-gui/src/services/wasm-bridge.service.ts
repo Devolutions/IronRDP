@@ -1,26 +1,34 @@
-import {BehaviorSubject, from, Observable, of, Subject} from 'rxjs';
-import init, {DesktopSize, DeviceEvent, InputTransaction, ironrdp_init, IronRdpError, Session, SessionBuilder} from '../../../../crates/ironrdp-web/pkg/ironrdp_web';
-import {loggingService} from './logging.service';
-import {catchError, filter, map} from 'rxjs/operators';
-import {scanCode} from '../lib/scancodes';
-import {LogType} from '../enums/LogType';
-import {OS} from '../enums/OS';
-import {ModifierKey} from '../enums/ModifierKey';
-import {LockKey} from '../enums/LockKey';
-import {SessionEventType} from '../enums/SessionEventType';
-import type {NewSessionInfo} from '../interfaces/NewSessionInfo';
-import {SpecialCombination} from '../enums/SpecialCombination';
-import type {ResizeEvent} from '../interfaces/ResizeEvent';
-import {ScreenScale} from '../enums/ScreenScale';
-import type {MousePosition} from '../interfaces/MousePosition';
-import type {SessionEvent} from '../interfaces/session-event';
-import type {DesktopSize as IDesktopSize} from '../interfaces/DesktopSize';
+import { BehaviorSubject, from, Observable, of, Subject } from 'rxjs';
+import init, {
+    DesktopSize,
+    DeviceEvent,
+    InputTransaction,
+    ironrdp_init,
+    IronRdpError,
+    Session,
+    SessionBuilder,
+} from '../../../../crates/ironrdp-web/pkg/ironrdp_web';
+import { loggingService } from './logging.service';
+import { catchError, filter, map } from 'rxjs/operators';
+import { scanCode } from '../lib/scancodes';
+import { LogType } from '../enums/LogType';
+import { OS } from '../enums/OS';
+import { ModifierKey } from '../enums/ModifierKey';
+import { LockKey } from '../enums/LockKey';
+import { SessionEventType } from '../enums/SessionEventType';
+import type { NewSessionInfo } from '../interfaces/NewSessionInfo';
+import { SpecialCombination } from '../enums/SpecialCombination';
+import type { ResizeEvent } from '../interfaces/ResizeEvent';
+import { ScreenScale } from '../enums/ScreenScale';
+import type { MousePosition } from '../interfaces/MousePosition';
+import type { SessionEvent } from '../interfaces/session-event';
+import type { DesktopSize as IDesktopSize } from '../interfaces/DesktopSize';
 
 export class WasmBridgeService {
     private _resize: Subject<ResizeEvent> = new Subject<ResizeEvent>();
     private mousePosition: BehaviorSubject<MousePosition> = new BehaviorSubject<MousePosition>({
         x: 0,
-        y: 0
+        y: 0,
     });
     private changeVisibility: Subject<boolean> = new Subject();
     private sessionEvent: Subject<SessionEvent> = new Subject();
@@ -82,8 +90,16 @@ export class WasmBridgeService {
         this.mousePosition.next(position);
     }
 
-
-    connect(username: string, password: string, destination: string, proxyAddress: string, serverDomain: string, authToken: string, desktopSize?: IDesktopSize, preConnectionBlob?: string): Observable<NewSessionInfo> {
+    connect(
+        username: string,
+        password: string,
+        destination: string,
+        proxyAddress: string,
+        serverDomain: string,
+        authToken: string,
+        desktopSize?: IDesktopSize,
+        preConnectionBlob?: string,
+    ): Observable<NewSessionInfo> {
         const sessionBuilder = SessionBuilder.new();
         sessionBuilder.proxy_address(proxyAddress);
         sessionBuilder.destination(destination);
@@ -114,26 +130,28 @@ export class WasmBridgeService {
             catchError((err: IronRdpError) => {
                 this.raiseSessionEvent({
                     type: SessionEventType.ERROR,
-                    data: err
+                    data: err,
                 });
                 return of(err);
             }),
             filter(isSession),
             map((session: Session) => {
-                from(session.run()).pipe(
-                    catchError(err => {
-                        this.setVisibility(false);
-                        this.raiseSessionEvent({
-                            type: SessionEventType.ERROR,
-                            data: err.backtrace()
-                        });
-                        this.raiseSessionEvent({
-                            type: SessionEventType.TERMINATED,
-                            data: 'Session was terminated.'
-                        });
-                        return of(err);
-                    }),
-                ).subscribe();
+                from(session.run())
+                    .pipe(
+                        catchError((err) => {
+                            this.setVisibility(false);
+                            this.raiseSessionEvent({
+                                type: SessionEventType.ERROR,
+                                data: err.backtrace(),
+                            });
+                            this.raiseSessionEvent({
+                                type: SessionEventType.TERMINATED,
+                                data: 'Session was terminated.',
+                            });
+                            return of(err);
+                        }),
+                    )
+                    .subscribe();
                 return session;
             }),
             map((session: Session) => {
@@ -141,17 +159,17 @@ export class WasmBridgeService {
                 this.session = session;
                 this._resize.next({
                     desktop_size: session.desktop_size(),
-                    session_id: 0
+                    session_id: 0,
                 });
                 this.raiseSessionEvent({
                     type: SessionEventType.STARTED,
-                    data: 'Session started'
+                    data: 'Session started',
                 });
                 return {
                     session_id: 0,
                     initial_desktop_size: session.desktop_size(),
-                    websocket_port: 0
-                }
+                    websocket_port: 0,
+                };
             }),
         );
     }
@@ -167,13 +185,11 @@ export class WasmBridgeService {
         }
     }
 
-
     mouseWheel(event: WheelEvent) {
         const vertical = event.deltaY !== 0;
         const rotation = vertical ? event.deltaY : event.deltaX;
         this.doTransactionFromDeviceEvents([DeviceEvent.new_wheel_rotations(vertical, -rotation)]);
     }
-
 
     setVisibility(state: boolean) {
         this.changeVisibility.next(state);
@@ -234,7 +250,12 @@ export class WasmBridgeService {
         const syncScrollLockActive = evt.getModifierState(LockKey.SCROLL_LOCK);
         const syncKanaModeActive = evt.getModifierState(LockKey.KANA_MODE);
 
-        this.session?.synchronize_lock_keys(syncScrollLockActive, syncNumsLockActive, syncCapsLockActive, syncKanaModeActive);
+        this.session?.synchronize_lock_keys(
+            syncScrollLockActive,
+            syncNumsLockActive,
+            syncCapsLockActive,
+            syncKanaModeActive,
+        );
     }
 
     private raiseSessionEvent(event: SessionEvent) {
@@ -253,7 +274,7 @@ export class WasmBridgeService {
 
     private doTransactionFromDeviceEvents(deviceEvents: DeviceEvent[]) {
         const transaction = InputTransaction.new();
-        deviceEvents.forEach(event => transaction.add_event(event));
+        deviceEvents.forEach((event) => transaction.add_event(event));
         this.session?.apply_inputs(transaction);
     }
 
