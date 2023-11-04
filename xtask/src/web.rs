@@ -55,6 +55,11 @@ pub fn check(sh: &Shell) -> anyhow::Result<()> {
 
     build(sh, true)?;
 
+    run_cmd_in!(sh, IRON_REMOTE_GUI_PATH, "{NPM} run check")?;
+    run_cmd_in!(sh, IRON_REMOTE_GUI_PATH, "{NPM} run lint")?;
+    run_cmd_in!(sh, IRON_SVELTE_CLIENT_PATH, "{NPM} run check")?;
+    run_cmd_in!(sh, IRON_SVELTE_CLIENT_PATH, "{NPM} run lint")?;
+
     Ok(())
 }
 
@@ -75,10 +80,7 @@ fn build(sh: &Shell, wasm_pack_dev: bool) -> anyhow::Result<()> {
         run_cmd_in!(sh, IRONRDP_WEB_PATH, "wasm-pack build --target web")?;
     }
 
-    run_cmd_in!(sh, IRON_REMOTE_GUI_PATH, "{NPM} run check")?;
     run_cmd_in!(sh, IRON_REMOTE_GUI_PATH, "{NPM} run build-alone")?;
-
-    // run_cmd_in!(sh, IRON_SVELTE_CLIENT_PREFIX, "{NPM} run check").run()?; // FIXME: failing on master
     run_cmd_in!(sh, IRON_SVELTE_CLIENT_PATH, "{NPM} run build-no-wasm")?;
 
     Ok(())
