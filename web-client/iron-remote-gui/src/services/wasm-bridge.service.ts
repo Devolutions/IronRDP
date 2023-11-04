@@ -17,16 +17,16 @@ import type {SessionEvent} from '../interfaces/session-event';
 import type {DesktopSize as IDesktopSize} from '../interfaces/DesktopSize';
 
 export class WasmBridgeService {
-    private _resize: Subject<ResizeEvent> = new Subject<any>();
+    private _resize: Subject<ResizeEvent> = new Subject<ResizeEvent>();
     private mousePosition: BehaviorSubject<MousePosition> = new BehaviorSubject<MousePosition>({
         x: 0,
         y: 0
     });
     private changeVisibility: Subject<boolean> = new Subject();
     private sessionEvent: Subject<SessionEvent> = new Subject();
-    private scale: BehaviorSubject<ScreenScale> = new BehaviorSubject(ScreenScale.Fit);
-    private canvas: HTMLCanvasElement;
-    private keyboardActive: boolean;
+    private scale: BehaviorSubject<ScreenScale> = new BehaviorSubject(ScreenScale.Fit as ScreenScale);
+    private canvas?: HTMLCanvasElement;
+    private keyboardActive: boolean = false;
 
     resize: Observable<ResizeEvent>;
     session?: Session;
@@ -91,7 +91,7 @@ export class WasmBridgeService {
         sessionBuilder.password(password);
         sessionBuilder.auth_token(authToken);
         sessionBuilder.username(username);
-        sessionBuilder.render_canvas(this.canvas);
+        sessionBuilder.render_canvas(this.canvas!);
         sessionBuilder.hide_pointer_callback_context(this);
         sessionBuilder.hide_pointer_callback(this.hidePointerCallback);
         sessionBuilder.show_pointer_callback_context(this);
@@ -105,6 +105,11 @@ export class WasmBridgeService {
             sessionBuilder.desktop_size(DesktopSize.new(desktopSize.width, desktopSize.height));
         }
 
+        // Type guard to filter out errors
+        function isSession(result: IronRdpError | Session): result is Session {
+            return result instanceof Session;
+        }
+
         return from(sessionBuilder.connect()).pipe(
             catchError((err: IronRdpError) => {
                 this.raiseSessionEvent({
@@ -113,7 +118,7 @@ export class WasmBridgeService {
                 });
                 return of(err);
             }),
-            filter(result => result instanceof Session),
+            filter(isSession),
             map((session: Session) => {
                 from(session.run()).pipe(
                     catchError(err => {
@@ -216,11 +221,11 @@ export class WasmBridgeService {
     }
 
     private hidePointerCallback() {
-        this.canvas.style.cursor = 'none';
+        this.canvas!.style.cursor = 'none';
     }
 
     private showPointerCallback() {
-        this.canvas.style.cursor = 'default';
+        this.canvas!.style.cursor = 'default';
     }
 
     private syncModifier(evt: any): void {

@@ -1,5 +1,5 @@
 ﻿export class LoggingService {
-    verbose: boolean;
+    verbose: boolean = false;
     
     info(description: string) {
         if (this.verbose) {
