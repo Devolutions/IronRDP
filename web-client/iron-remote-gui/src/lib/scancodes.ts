@@ -2,10 +2,18 @@
 import type {OS} from '../enums/OS';
 
 /*
-    Scancode found on: https://developer.mozilla.org/en-US/docs/Web/API/UI_Events/Keyboard_event_code_values
+ * Scancode found on: https://developer.mozilla.org/en-US/docs/Web/API/UI_Events/Keyboard_event_code_values
  */
 
-export let ScanCodeToCode = {
+type EngineName = 'gecko' | 'blink';
+
+type EngineMaps = {
+    ['gecko']: Record<string, string>;
+    ['blink']: Record<string, string> | null;
+};
+type CodeMap = Record<OS, EngineMaps>;
+
+export let ScanCodeToCode: CodeMap = {
     windows: {
         blink: {
             "0x0001": "Escape",
@@ -799,11 +807,13 @@ export let ScanCodeToCode = {
             "0x00C2": "F24",
             "0x00D9": "BrowserSearch",
             "0x01D0": "Fn",
-        }
+        },
+        // There is no code map for blink on Android
+        blink: null
     }
 }
 
-export let CodeToScanCode = {
+export let CodeToScanCode: CodeMap = {
     windows: {
         blink: {},
         gecko: {}
@@ -813,21 +823,22 @@ export let CodeToScanCode = {
         blink: {}
     },
     android: {
-        gecko: {}
+        gecko: {},
+        blink: null
     }
 };
 
-let mapList = [
-    [ScanCodeToCode.windows.blink, CodeToScanCode.windows.blink],
+let mapList: [Record<string, string>, Record<string, string>][] = [
+    [ScanCodeToCode.windows.blink!, CodeToScanCode.windows.blink!],
     [ScanCodeToCode.windows.gecko, CodeToScanCode.windows.gecko],
-    [ScanCodeToCode.linux.blink, CodeToScanCode.linux.blink],
+    [ScanCodeToCode.linux.blink!, CodeToScanCode.linux.blink!],
     [ScanCodeToCode.linux.gecko, CodeToScanCode.linux.gecko],
-    [ScanCodeToCode.android.gecko, CodeToScanCode.android.gecko]
+    [ScanCodeToCode.android.gecko, CodeToScanCode.android.gecko],
 ];
 
 mapList.forEach(maps => {
     for (let key in maps[0]) {
-        if (maps[0].hasOwnProperty(key)) {
+        if (Object.prototype.hasOwnProperty.call(maps[0], key)) {
             maps[1][maps[0][key]] = key;
         }
     }
@@ -835,14 +846,14 @@ mapList.forEach(maps => {
 
 let parser = new UAParser();
 let parsedUA = parser.getResult();
-let engine = parsedUA.engine.name?.toLowerCase();
+let engine = parsedUA.engine.name?.toLowerCase() as EngineName;
 
-export let scanCode = function (code: string, targetOs: OS) {
+export let scanCode = function (code: string, targetOs: OS): number {
     let map = CodeToScanCode[targetOs][engine] || CodeToScanCode.linux.gecko;
-    return map[code];
+    return parseInt(map[code], 16);
 }
 
-export let code = function (scanCode: string, targetOs: OS) {
+export let code = function (scanCode: string, targetOs: OS): string {
     let map = ScanCodeToCode[targetOs][engine] || CodeToScanCode.linux.gecko;
     return map[scanCode];
 }
