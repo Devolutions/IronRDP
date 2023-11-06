@@ -7,7 +7,6 @@ import init, {
     IronRdpError,
     Session,
     SessionBuilder,
-    ClipboardTransaction,
 } from '../../../../crates/ironrdp-web/pkg/ironrdp_web';
 import { loggingService } from './logging.service';
 import { catchError, filter, map } from 'rxjs/operators';
@@ -25,10 +24,6 @@ import type { MousePosition } from '../interfaces/MousePosition';
 import type { SessionEvent } from '../interfaces/session-event';
 import type { DesktopSize as IDesktopSize } from '../interfaces/DesktopSize';
 
-type OnRemoteClipboardChanged = (transaction: ClipboardTransaction) => void;
-type OnRemoteReceivedFormatsList = () => void;
-type OnForceClipboardUpdate = () => void;
-
 export class WasmBridgeService {
     private _resize: Subject<ResizeEvent> = new Subject<ResizeEvent>();
     private mousePosition: BehaviorSubject<MousePosition> = new BehaviorSubject<MousePosition>({
@@ -40,9 +35,6 @@ export class WasmBridgeService {
     private scale: BehaviorSubject<ScreenScale> = new BehaviorSubject(ScreenScale.Fit as ScreenScale);
     private canvas?: HTMLCanvasElement;
     private keyboardActive: boolean = false;
-    private onRemoteClipboardChanged?: OnRemoteClipboardChanged;
-    private onRemoteReceivedFormatList?: OnRemoteReceivedFormatsList;
-    private onForceClipboardUpdate?: OnForceClipboardUpdate;
 
     resize: Observable<ResizeEvent>;
     session?: Session;
@@ -62,22 +54,6 @@ export class WasmBridgeService {
         await init();
         loggingService.info('Initializing IronRDP.');
         ironrdp_init(LogType[debug]);
-    }
-
-    /// Callback to set the local clipboard content to data received from the remote.
-    setOnRemoteClipboardChanged(callback: OnRemoteClipboardChanged) {
-        this.onRemoteClipboardChanged = callback;
-    }
-
-    /// Callback which is called when the remote sends a list of supported clipboard formats.
-    setOnRemoteReceivedFormatList(callback: OnRemoteReceivedFormatsList) {
-        this.onRemoteReceivedFormatList = callback;
-    }
-
-    /// Callback which is called when the remote requests a forced clipboard update (e.g. on
-    /// clipboard initialization sequence)
-    setOnForceClipboardUpdate(callback: OnForceClipboardUpdate) {
-        this.onForceClipboardUpdate = callback;
     }
 
     mouseIn(event: MouseEvent) {
@@ -100,10 +76,8 @@ export class WasmBridgeService {
         this.session?.shutdown();
     }
 
-    mouseButtonState(event: MouseEvent, isDown: boolean, preventDefault: boolean) {
-        if (preventDefault) {
-            event.preventDefault(); // prevent default behavior (context menu, etc)
-        }
+    mouseButtonState(event: MouseEvent, isDown: boolean) {
+        event.preventDefault(); // prevent default behavior (context menu, etc)
         const mouseFnc = isDown ? DeviceEvent.new_mouse_button_pressed : DeviceEvent.new_mouse_button_released;
         this.doTransactionFromDeviceEvents([mouseFnc(event.button)]);
     }
@@ -135,21 +109,14 @@ export class WasmBridgeService {
         sessionBuilder.auth_token(authToken);
         sessionBuilder.username(username);
         sessionBuilder.render_canvas(this.canvas!);
-        sessionBuilder.set_cursor_style_callback_context(this);
-        sessionBuilder.set_cursor_style_callback(this.setCursorStyleCallback);
+        sessionBuilder.hide_pointer_callback_context(this);
+        sessionBuilder.hide_pointer_callback(this.hidePointerCallback);
+        sessionBuilder.show_pointer_callback_context(this);
+        sessionBuilder.show_pointer_callback(this.showPointerCallback);
         sessionBuilder.kdc_proxy_url(kdc_proxy_url);
 
         if (preConnectionBlob != null) {
             sessionBuilder.pcb(preConnectionBlob);
-        }
-        if (this.onRemoteClipboardChanged != null) {
-            sessionBuilder.remote_clipboard_changed_callback(this.onRemoteClipboardChanged);
-        }
-        if (this.onRemoteReceivedFormatList != null) {
-            sessionBuilder.remote_received_format_list_callback(this.onRemoteReceivedFormatList);
-        }
-        if (this.onForceClipboardUpdate != null) {
-            sessionBuilder.force_clipboard_update_callback(this.onForceClipboardUpdate);
         }
 
         if (desktopSize != null) {
@@ -238,15 +205,6 @@ export class WasmBridgeService {
         this.canvas = canvas;
     }
 
-    /// Triggered by the browser when local clipboard is updated. Clipboard backend should
-    /// cache the content and send it to the server when it is requested.
-    onClipboardChanged(transaction: ClipboardTransaction): Promise<void> {
-        const onClipboardChangedPromise = async () => {
-            await this.session?.on_clipboard_paste(transaction);
-        };
-        return onClipboardChangedPromise();
-    }
-
     private releaseAllInputs() {
         this.session?.release_all_inputs();
     }
@@ -280,43 +238,12 @@ export class WasmBridgeService {
         }
     }
 
-    private setCursorStyleCallback(
-        style: string,
-        data: string | undefined,
-        hotspot_x: number | undefined,
-        hotspot_y: number | undefined,
-    ) {
-        switch (style) {
-            case 'hidden': {
-                this.canvas!.style.cursor = 'none';
-                break;
-            }
-            case 'default': {
-                this.canvas!.style.cursor = 'default';
-                break;
-            }
-            case 'url': {
-                if (data == undefined || hotspot_x == undefined || hotspot_y == undefined) {
-                    console.error('Invalid custom cursor parameters.');
-                    return;
-                }
+    private hidePointerCallback() {
+        this.canvas!.style.cursor = 'none';
+    }
 
-                // IMPORTANT: We need to make proxy `Image` object to actually load the image and
-                // make it usable for CSS property. Without this proxy object, URL will be rejected.
-                const image = new Image();
-                image.src = style;
-
-                const rounded_hotspot_x = Math.round(hotspot_x);
-                const rounded_hotspot_y = Math.round(hotspot_y);
-
-                this.canvas!.style.cursor = `url(${data}) ${rounded_hotspot_x} ${rounded_hotspot_y}, default`;
-
-                break;
-            }
-            default: {
-                console.error(`Unsupported cursor style: ${style}.`);
-            }
-        }
+    private showPointerCallback() {
+        this.canvas!.style.cursor = 'default';
     }
 
     private syncModifier(evt: KeyboardEvent | MouseEvent): void {

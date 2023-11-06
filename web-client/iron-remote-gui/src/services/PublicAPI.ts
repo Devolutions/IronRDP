@@ -35,7 +35,7 @@ export class PublicAPI {
             authToken,
             desktopSize,
             preConnectionBlob,
-            kdc_proxy_url,
+            kdc_proxy_url
         );
     }
 

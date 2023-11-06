@@ -1,10 +1,8 @@
 use core::cell::RefCell;
-use std::borrow::Cow;
 use std::rc::Rc;
 use std::time::Duration;
 
 use anyhow::Context as _;
-use base64::Engine as _;
 use futures_channel::mpsc;
 use futures_util::io::{ReadHalf, WriteHalf};
 use futures_util::{select, AsyncReadExt as _, AsyncWriteExt as _, FutureExt as _, StreamExt as _};
@@ -16,20 +14,18 @@ use ironrdp::pdu::input::fast_path::FastPathInputEvent;
 use ironrdp::pdu::write_buf::WriteBuf;
 use ironrdp::session::image::DecodedImage;
 use ironrdp::session::{ActiveStage, ActiveStageOutput};
-use rgb::AsPixels as _;
 use tap::prelude::*;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::spawn_local;
 use web_sys::HtmlCanvasElement;
 
 use crate::canvas::Canvas;
-use crate::clipboard::{ClipboardTransaction, WasmClipboard, WasmClipboardBackend, WasmClipboardBackendMessage};
 use crate::error::{IronRdpError, IronRdpErrorKind};
 use crate::image::extract_partial_image;
 use crate::input::InputTransaction;
 use crate::network_client::WasmNetworkClient;
 use crate::websocket::WebSocketCompat;
-use crate::{clipboard, DesktopSize};
+use crate::DesktopSize;
 
 const DEFAULT_WIDTH: u16 = 1280;
 const DEFAULT_HEIGHT: u16 = 720;
@@ -46,7 +42,6 @@ struct SessionBuilderInner {
     proxy_address: Option<String>,
     auth_token: Option<String>,
     pcb: Option<String>,
-    kdc_proxy_url: Option<String>,
     client_name: String,
     desktop_size: DesktopSize,
 
@@ -56,7 +51,7 @@ struct SessionBuilderInner {
     show_pointer_callback: Option<js_sys::Function>,
     show_pointer_callback_context: Option<JsValue>,
 
-    kdc_url: Option<String>,
+    kdc_proxy_url: Option<String>,
 }
 
 impl Default for SessionBuilderInner {
@@ -69,7 +64,6 @@ impl Default for SessionBuilderInner {
             proxy_address: None,
             auth_token: None,
             pcb: None,
-            kdc_proxy_url: None,
             client_name: "ironrdp-web".to_owned(),
             desktop_size: DesktopSize {
                 width: DEFAULT_WIDTH,
@@ -82,7 +76,7 @@ impl Default for SessionBuilderInner {
             show_pointer_callback: None,
             show_pointer_callback_context: None,
 
-            kdc_url: None,
+            kdc_proxy_url: None,
         }
     }
 }
@@ -140,12 +134,6 @@ impl SessionBuilder {
     }
 
     /// Optional
-    pub fn kdc_proxy_url(&self, kdc_proxy_url: Option<String>) -> SessionBuilder {
-        self.0.borrow_mut().kdc_proxy_url = kdc_proxy_url;
-        self.clone()
-    }
-
-    /// Optional
     pub fn desktop_size(&self, desktop_size: DesktopSize) -> SessionBuilder {
         self.0.borrow_mut().desktop_size = desktop_size;
         self.clone()
@@ -157,55 +145,33 @@ impl SessionBuilder {
         self.clone()
     }
 
-    /// Required.
-    ///
-    /// # Callback signature:
-    /// ```typescript
-    /// function callback(
-    ///     cursor_kind: string,
-    ///     cursor_data: string | undefined,
-    ///     hotspot_x: number | undefined,
-    ///     hotspot_y: number | undefined
-    /// ): void
-    /// ```
-    ///
-    /// # Cursor kinds:
-    /// - `default` (default system cursor); other arguments are `UNDEFINED`
-    /// - `none` (hide cursor); other arguments are `UNDEFINED`
-    /// - `url` (custom cursor data URL); `cursor_data` contains the data URL with Base64-encoded
-    ///   cursor bitmap; `hotspot_x` and `hotspot_y` are set to the cursor hotspot coordinates.
-    pub fn set_cursor_style_callback(&self, callback: js_sys::Function) -> SessionBuilder {
-        self.0.borrow_mut().set_cursor_style_callback = Some(callback);
+    /// Required
+    pub fn hide_pointer_callback(&self, callback: js_sys::Function) -> SessionBuilder {
+        self.0.borrow_mut().hide_pointer_callback = Some(callback);
         self.clone()
     }
 
-    /// Required.
-    pub fn set_cursor_style_callback_context(&self, context: JsValue) -> SessionBuilder {
-        self.0.borrow_mut().set_cursor_style_callback_context = Some(context);
+    /// Required
+    pub fn hide_pointer_callback_context(&self, context: JsValue) -> SessionBuilder {
+        self.0.borrow_mut().hide_pointer_callback_context = Some(context);
+        self.clone()
+    }
+
+    /// Required
+    pub fn show_pointer_callback(&self, callback: js_sys::Function) -> SessionBuilder {
+        self.0.borrow_mut().show_pointer_callback = Some(callback);
+        self.clone()
+    }
+
+    /// Required
+    pub fn show_pointer_callback_context(&self, context: JsValue) -> SessionBuilder {
+        self.0.borrow_mut().show_pointer_callback_context = Some(context);
         self.clone()
     }
 
     /// Optional
-    pub fn remote_clipboard_changed_callback(&self, callback: js_sys::Function) -> SessionBuilder {
-        self.0.borrow_mut().remote_clipboard_changed_callback = Some(callback);
-        self.clone()
-    }
-
-    /// Optional
-    pub fn remote_received_format_list_callback(&self, callback: js_sys::Function) -> SessionBuilder {
-        self.0.borrow_mut().remote_received_format_list_callback = Some(callback);
-        self.clone()
-    }
-
-    /// Optional
-    pub fn force_clipboard_update_callback(&self, callback: js_sys::Function) -> SessionBuilder {
-        self.0.borrow_mut().force_clipboard_update_callback = Some(callback);
-        self.clone()
-    }
-
-    /// Optional
-    pub fn kdc_url(&self, kdc_url: String) -> SessionBuilder {
-        self.0.borrow_mut().kdc_url = Some(kdc_url);
+    pub fn kdc_proxy_url(&self, kdc_proxy_url: Option<String>) -> SessionBuilder {
+        self.0.borrow_mut().kdc_proxy_url = kdc_proxy_url;
         self.clone()
     }
 
@@ -218,7 +184,6 @@ impl SessionBuilder {
             proxy_address,
             auth_token,
             pcb,
-            kdc_proxy_url,
             client_name,
             desktop_size,
             render_canvas,
@@ -231,7 +196,6 @@ impl SessionBuilder {
 
         {
             let inner = self.0.borrow();
-
             username = inner.username.clone().context("username missing")?;
             destination = inner.destination.clone().context("destination missing")?;
             server_domain = inner.server_domain.clone();
@@ -239,25 +203,29 @@ impl SessionBuilder {
             proxy_address = inner.proxy_address.clone().context("proxy_address missing")?;
             auth_token = inner.auth_token.clone().context("auth_token missing")?;
             pcb = inner.pcb.clone();
-            kdc_proxy_url = inner.kdc_proxy_url.clone();
             client_name = inner.client_name.clone();
             desktop_size = inner.desktop_size.clone();
 
-            kdc_url = inner.kdc_url.clone();
+            kdc_url = inner.kdc_proxy_url.clone();
 
             render_canvas = inner.render_canvas.clone().context("render_canvas missing")?;
 
-            set_cursor_style_callback = inner
-                .set_cursor_style_callback
+            hide_pointer_callback = inner
+                .hide_pointer_callback
                 .clone()
-                .context("set_cursor_style_callback missing")?;
-            set_cursor_style_callback_context = inner
-                .set_cursor_style_callback_context
+                .context("hide_pointer_callback missing")?;
+            hide_pointer_callback_context = inner
+                .hide_pointer_callback_context
                 .clone()
-                .context("set_cursor_style_callback_context missing")?;
-            remote_clipboard_changed_callback = inner.remote_clipboard_changed_callback.clone();
-            remote_received_format_list_callback = inner.remote_received_format_list_callback.clone();
-            force_clipboard_update_callback = inner.force_clipboard_update_callback.clone();
+                .context("show_pointer_callback_context missing")?;
+            show_pointer_callback = inner
+                .show_pointer_callback
+                .clone()
+                .context("hide_pointer_callback missing")?;
+            show_pointer_callback_context = inner
+                .show_pointer_callback_context
+                .clone()
+                .context("show_pointer_callback_context missing")?;
         }
 
         info!("Connect to RDP host");
@@ -271,19 +239,6 @@ impl SessionBuilder {
             kdc_url.clone(),
             Some(destination.clone()),
         );
-
-        let (input_events_tx, input_events_rx) = mpsc::unbounded();
-
-        let clipboard = remote_clipboard_changed_callback.clone().map(|callback| {
-            WasmClipboard::new(
-                clipboard::WasmClipboardMessageProxy::new(input_events_tx.clone()),
-                clipboard::JsClipboardCallbacks {
-                    on_remote_clipboard_changed: callback,
-                    on_remote_received_format_list: remote_received_format_list_callback,
-                    on_force_clipboard_update: force_clipboard_update_callback,
-                },
-            )
-        });
 
         let ws = WebSocket::open(&proxy_address).context("Couldn’t open WebSocket")?;
 
@@ -321,6 +276,8 @@ impl SessionBuilder {
 
         let (writer_tx, writer_rx) = mpsc::unbounded();
 
+        let (input_events_tx, input_events_rx) = mpsc::unbounded();
+
         spawn_local(writer_task(writer_rx, rdp_writer));
 
         Ok(Session {
@@ -330,52 +287,37 @@ impl SessionBuilder {
             input_events_tx,
 
             render_canvas,
-            set_cursor_style_callback,
-            set_cursor_style_callback_context,
+            hide_pointer_callback,
+            hide_pointer_callback_context,
+            show_pointer_callback,
+            show_pointer_callback_context,
 
             input_events_rx: RefCell::new(Some(input_events_rx)),
             rdp_reader: RefCell::new(Some(rdp_reader)),
             connection_result: RefCell::new(Some(connection_result)),
-            clipboard: RefCell::new(Some(clipboard)),
         })
     }
 }
 
-pub(crate) type FastPathInputEvents = smallvec::SmallVec<[FastPathInputEvent; 2]>;
-
-#[derive(Debug)]
-pub(crate) enum RdpInputEvent {
-    Cliprdr(ClipboardMessage),
-    ClipboardBackend(WasmClipboardBackendMessage),
-    FastPath(FastPathInputEvents),
-}
-
-enum CursorStyle {
-    Default,
-    Hidden,
-    Url {
-        data: String,
-        hotspot_x: u16,
-        hotspot_y: u16,
-    },
-}
+type FastPathInputEvents = smallvec::SmallVec<[FastPathInputEvent; 2]>;
 
 #[wasm_bindgen]
 pub struct Session {
     desktop_size: connector::DesktopSize,
     input_database: RefCell<ironrdp::input::Database>,
     writer_tx: mpsc::UnboundedSender<Vec<u8>>,
-    input_events_tx: mpsc::UnboundedSender<RdpInputEvent>,
+    input_events_tx: mpsc::UnboundedSender<FastPathInputEvents>,
 
     render_canvas: HtmlCanvasElement,
-    set_cursor_style_callback: js_sys::Function,
-    set_cursor_style_callback_context: JsValue,
+    hide_pointer_callback: js_sys::Function,
+    hide_pointer_callback_context: JsValue,
+    show_pointer_callback: js_sys::Function,
+    show_pointer_callback_context: JsValue,
 
     // Consumed when `run` is called
-    input_events_rx: RefCell<Option<mpsc::UnboundedReceiver<RdpInputEvent>>>,
+    input_events_rx: RefCell<Option<mpsc::UnboundedReceiver<FastPathInputEvents>>>,
     connection_result: RefCell<Option<connector::ConnectionResult>>,
     rdp_reader: RefCell<Option<ReadHalf<WebSocketCompat>>>,
-    clipboard: RefCell<Option<Option<WasmClipboard>>>,
 }
 
 #[wasm_bindgen]
@@ -387,7 +329,7 @@ impl Session {
             .take()
             .context("RDP session can be started only once")?;
 
-        let mut input_events = self
+        let mut fastpath_input_events = self
             .input_events_rx
             .borrow_mut()
             .take()
@@ -398,8 +340,6 @@ impl Session {
             .borrow_mut()
             .take()
             .expect("run called only once");
-
-        let mut clipboard = self.clipboard.borrow_mut().take().expect("run called only once");
 
         let mut framed = ironrdp_futures::SingleThreadedFuturesFramed::new(rdp_reader);
 
@@ -432,54 +372,10 @@ impl Session {
 
                     active_stage.process(&mut image, action, &payload)?
                 }
-                input_events = input_events.next() => {
-                    let event = input_events.context("read next input events")?;
+                input_events = fastpath_input_events.next() => {
+                    let events = input_events.context("read next fastpath input events")?;
 
-                    match event {
-                        RdpInputEvent::Cliprdr(message) => {
-                            if let Some(cliprdr) = active_stage.get_svc_processor::<Cliprdr>() {
-                                if let Some(svc_messages) = match message {
-                                    ClipboardMessage::SendInitiateCopy(formats) => Some(
-                                        cliprdr.initiate_copy(&formats)
-                                            .context("CLIPRDR initiate copy")?
-                                    ),
-                                    ClipboardMessage::SendFormatData(response) => Some(
-                                        cliprdr.submit_format_data(response)
-                                            .context("CLIPRDR submit format data")?
-                                    ),
-                                    ClipboardMessage::SendInitiatePaste(format) => Some(
-                                        cliprdr.initiate_paste(format)
-                                            .context("CLIPRDR initiate paste")?
-                                    ),
-                                    ClipboardMessage::Error(e) => {
-                                        error!("Clipboard backend error: {}", e);
-                                        None
-                                    }
-                                } {
-                                    let frame = active_stage.process_svc_processor_messages(svc_messages)?;
-                                    // Send the messages to the server
-                                    vec![ActiveStageOutput::ResponseFrame(frame)]
-                                } else {
-                                    // No messages to send to the server
-                                    Vec::new()
-                                }
-                            } else  {
-                                warn!("Clipboard event received, but Cliprdr is not available");
-                                Vec::new()
-                            }
-                        }
-                        RdpInputEvent::ClipboardBackend(event) => {
-                            if let Some(clipboard) = &mut clipboard {
-                                clipboard.process_event(event)?;
-                            }
-                            // No RDP output frames for backend event processing
-                            Vec::new()
-                        }
-                        RdpInputEvent::FastPath(events) => {
-                            active_stage.process_fastpath_input(&mut image, &events)
-                                .context("Fast path input events processing")?
-                        }
-                    }
+                    active_stage.process_fastpath_input(&mut image, &events).context("Fast path input events processing")?
                 }
             };
 
@@ -496,104 +392,19 @@ impl Session {
                         gui.draw(&buffer, region).context("draw updated region")?;
                     }
                     ActiveStageOutput::PointerDefault => {
-                        self.set_cursor_style(CursorStyle::Default)?;
+                        let _ret = self
+                            .show_pointer_callback
+                            .call0(&self.show_pointer_callback_context)
+                            .map_err(|e| anyhow::Error::msg(format!("show pointer callback failed: {e:?}")))?;
                     }
                     ActiveStageOutput::PointerHidden => {
-                        self.set_cursor_style(CursorStyle::Hidden)?;
+                        let _ret = self
+                            .hide_pointer_callback
+                            .call0(&self.hide_pointer_callback_context)
+                            .map_err(|e| anyhow::Error::msg(format!("hide pointer callback failed: {e:?}")))?;
                     }
                     ActiveStageOutput::PointerPosition { .. } => {
-                        // Not applicable for web.
-                    }
-                    ActiveStageOutput::PointerBitmap(pointer) => {
-                        // Maximum allowed cursor size for browsers is 32x32, because bigger sizes
-                        // will cause the following issues:
-                        // - cursors bigger than 128x128 are not supported in browsers.
-                        // - cursors bigger than 32x32 will default to the system cursor if their
-                        //   sprite does not fit in the browser's viewport, introducing an abrupt
-                        //   cursor style change when the cursor is moved to the edge of the
-                        //   browser window.
-                        //
-                        // Therefore, we need to scale the cursor sprite down to 32x32 if it is
-                        // bigger than that.
-                        const MAX_CURSOR_SIZE: u16 = 32;
-                        // INVARIANT: 0 < scale <= 1.0
-                        // INVARIANT: pointer.width * scale <= MAX_CURSOR_SIZE
-                        // INVARIANT: pointer.height * scale <= MAX_CURSOR_SIZE
-                        let scale = if pointer.width >= pointer.height && pointer.width > MAX_CURSOR_SIZE {
-                            Some(f64::from(MAX_CURSOR_SIZE) / f64::from(pointer.width))
-                        } else if pointer.height > MAX_CURSOR_SIZE {
-                            Some(f64::from(MAX_CURSOR_SIZE) / f64::from(pointer.height))
-                        } else {
-                            None
-                        };
-
-                        let (png_width, png_height, hotspot_x, hotspot_y, rgba_buffer) = if let Some(scale) = scale {
-                            // Per invariants: Following conversions will never saturate.
-                            let scaled_width = f64_to_u16_saturating_cast(f64::from(pointer.width) * scale);
-                            let scaled_height = f64_to_u16_saturating_cast(f64::from(pointer.height) * scale);
-                            let hotspot_x = f64_to_u16_saturating_cast(f64::from(pointer.hotspot_x) * scale);
-                            let hotspot_y = f64_to_u16_saturating_cast(f64::from(pointer.hotspot_y) * scale);
-
-                            // Per invariants: scaled_width * scaled_height * 4 <= 32 * 32 * 4 < usize::MAX
-                            #[allow(clippy::arithmetic_side_effects)]
-                            let resized_rgba_buffer_size = usize::from(scaled_width * scaled_height * 4);
-
-                            let mut rgba_resized = vec![0u8; resized_rgba_buffer_size];
-                            let mut resizer = resize::new(
-                                usize::from(pointer.width),
-                                usize::from(pointer.height),
-                                usize::from(scaled_width),
-                                usize::from(scaled_height),
-                                resize::Pixel::RGBA8P,
-                                resize::Type::Lanczos3,
-                            )
-                            .context("failed to initialize cursor resizer")?;
-
-                            resizer
-                                .resize(pointer.bitmap_data.as_pixels(), rgba_resized.as_pixels_mut())
-                                .context("failed to resize cursor")?;
-
-                            (
-                                scaled_width,
-                                scaled_height,
-                                hotspot_x,
-                                hotspot_y,
-                                Cow::Owned(rgba_resized),
-                            )
-                        } else {
-                            (
-                                pointer.width,
-                                pointer.height,
-                                pointer.hotspot_x,
-                                pointer.hotspot_y,
-                                Cow::Borrowed(pointer.bitmap_data.as_slice()),
-                            )
-                        };
-
-                        // Encode PNG.
-                        let mut png_buffer = Vec::new();
-                        {
-                            let mut encoder =
-                                png::Encoder::new(&mut png_buffer, u32::from(png_width), u32::from(png_height));
-
-                            encoder.set_color(png::ColorType::Rgba);
-                            encoder.set_depth(png::BitDepth::Eight);
-                            encoder.set_compression(png::Compression::Fast);
-                            let mut writer = encoder.write_header().context("PNG encoder header write failed")?;
-                            writer
-                                .write_image_data(rgba_buffer.as_ref())
-                                .context("failed to encode pointer PNG")?;
-                        }
-
-                        // Encode PNG into Base64 data URL.
-                        let mut style = "data:image/png;base64,".to_owned();
-                        base64::engine::general_purpose::STANDARD.encode_string(png_buffer, &mut style);
-
-                        self.set_cursor_style(CursorStyle::Url {
-                            data: style,
-                            hotspot_x,
-                            hotspot_y,
-                        })?;
+                        // Not applicable for web
                     }
                     ActiveStageOutput::Terminate => break 'outer,
                 }
@@ -627,7 +438,7 @@ impl Session {
             trace!("Inputs: {inputs:?}");
 
             self.input_events_tx
-                .unbounded_send(RdpInputEvent::FastPath(inputs))
+                .unbounded_send(inputs)
                 .context("Send input events to writer task")?;
         }
 
@@ -659,43 +470,7 @@ impl Session {
 
     #[allow(clippy::unused_self)] // FIXME: not yet implemented
     pub fn shutdown(&self) -> Result<(), IronRdpError> {
-        // TODO(#115): https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/27915739-8f77-487e-9927-55008af7fd68
-        Ok(())
-    }
-
-    pub async fn on_clipboard_paste(&self, content: ClipboardTransaction) -> Result<(), IronRdpError> {
-        self.input_events_tx
-            .unbounded_send(RdpInputEvent::ClipboardBackend(
-                WasmClipboardBackendMessage::LocalClipboardChanged(content),
-            ))
-            .context("Send clipboard backend event")?;
-
-        Ok(())
-    }
-
-    fn set_cursor_style(&self, style: CursorStyle) -> Result<(), IronRdpError> {
-        let (kind, data, hotspot_x, hotspot_y) = match style {
-            CursorStyle::Default => ("default", None, None, None),
-            CursorStyle::Hidden => ("hidden", None, None, None),
-            CursorStyle::Url {
-                data,
-                hotspot_x,
-                hotspot_y,
-            } => ("url", Some(data), Some(hotspot_x), Some(hotspot_y)),
-        };
-
-        let args = js_sys::Array::from_iter([
-            JsValue::from_str(kind),
-            JsValue::from(data),
-            JsValue::from_f64(hotspot_x.unwrap_or_default().into()),
-            JsValue::from_f64(hotspot_y.unwrap_or_default().into()),
-        ]);
-
-        let _ret = self
-            .set_cursor_style_callback
-            .apply(&self.set_cursor_style_callback_context, &args)
-            .map_err(|e| anyhow::Error::msg(format!("set cursor style callback failed: {e:?}")))?;
-
+        // TODO: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/27915739-8f77-487e-9927-55008af7fd68
         Ok(())
     }
 }
@@ -930,10 +705,4 @@ where
 
         Ok((upgraded, server_public_key))
     }
-}
-
-#[allow(clippy::cast_sign_loss)]
-#[allow(clippy::cast_possible_truncation)]
-fn f64_to_u16_saturating_cast(value: f64) -> u16 {
-    value as u16
 }

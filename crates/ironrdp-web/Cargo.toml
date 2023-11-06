@@ -24,8 +24,7 @@ panic_hook = ["dep:console_error_panic_hook"]
 [dependencies]
 
 # Protocols
-ironrdp = { workspace = true, features = ["input", "graphics", "dvc", "cliprdr",  "svc"] }
-ironrdp-cliprdr-format = { workspace = true }
+ironrdp = { workspace = true, features = ["input", "graphics", "dvc"] }
 ironrdp-futures.workspace = true
 ironrdp-rdcleanpath.workspace = true
 
@@ -40,9 +39,6 @@ tracing-web = "0.1"
 
 # Rendering
 softbuffer = { version = "0.3", default-features = false }
-png = "0.17"
-resize = { version = "0.8", features = ["std"], default-features = false }
-rgb = "0.8"
 
 # Enable WebAssembly support for a few crates
 getrandom = { version = "0.2", features = ["js"] }
@@ -70,3 +66,4 @@ x509-cert = { version = "0.2", default-features = false, features = ["std"] }
 tap = "1"
 semver = "1"
 reqwest = "0.11.22"
+base64 = "0.21.5"
