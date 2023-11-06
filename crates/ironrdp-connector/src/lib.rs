@@ -111,7 +111,7 @@ pub struct SspiConfig {
 }
 
 impl SspiConfig {
-    pub fn new(kdc_proxy_url: Option<impl Into<String>>, hostname: Option<impl Into<String>>) -> ConnectorResult<Self> {
+    pub fn new(kdc_proxy_url: Option<String>, hostname: Option<String>) -> ConnectorResult<Self> {
         let kdc_url: Option<url::Url> = match kdc_proxy_url {
             Some(inner) => {
                 let url_str: String = inner.into();
