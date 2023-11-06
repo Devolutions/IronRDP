@@ -31,7 +31,7 @@ ironrdp-rdcleanpath.workspace = true
 # WASM
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
-web-sys = { version = "0.3", features = ["HtmlCanvasElement"] }
+web-sys = { version = "0.3", features = ["HtmlCanvasElement", "ReadableStreamDefaultReader"] }
 js-sys = "0.3"
 gloo-net = { version = "0.4", default-features = false, features = ["websocket", "http"] }
 gloo-timers = { version = "0.3", default-features = false, features = ["futures"] }
@@ -65,5 +65,3 @@ smallvec = "1.11"
 x509-cert = { version = "0.2", default-features = false, features = ["std"] }
 tap = "1"
 semver = "1"
-reqwest = "0.11.22"
-base64 = "0.21.5"

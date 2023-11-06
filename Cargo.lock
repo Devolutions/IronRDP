@@ -1705,7 +1705,6 @@ name = "ironrdp-client"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "byteorder",
  "clap",
  "inquire",
  "ironrdp",
@@ -1969,7 +1968,6 @@ name = "ironrdp-web"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "base64",
  "chrono",
  "console_error_panic_hook",
  "futures-channel",
@@ -1981,7 +1979,6 @@ dependencies = [
  "ironrdp-futures",
  "ironrdp-rdcleanpath",
  "js-sys",
- "reqwest",
  "semver",
  "smallvec",
  "softbuffer",

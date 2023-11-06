@@ -32,7 +32,7 @@ ironrdp = { workspace = true, features = ["input", "graphics", "dvc", "rdpdr", "
 ironrdp-cliprdr-native.workspace = true
 ironrdp-tls.workspace = true
 ironrdp-tokio.workspace = true
-sspi = { workspace = true, features = ["network_client", "dns_resolver"] } # enable additional features
+sspi = { workspace = true, features = ["network_client", "dns_resolver"] }                            # enable additional features
 
 # Windowing and rendering
 winit = "0.28"
@@ -48,7 +48,7 @@ tracing.workspace = true
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # Async, futures
-tokio = { version = "1", features = ["full"]}
+tokio = { version = "1", features = ["full"] }
 
 # Utils
 whoami = "1.4"
@@ -56,12 +56,9 @@ anyhow = "1"
 smallvec = "1.11"
 tap = "1"
 semver = "1"
-byteorder = "1.5.0"
 reqwest = "0.11.22"
 url = "2.4.1"
 portpicker = "0.1.1"
 
 [target.'cfg(windows)'.dependencies]
-windows = { version = "0.48", features = [
-    "Win32_Foundation",
-] }
+windows = { version = "0.48", features = ["Win32_Foundation"] }
