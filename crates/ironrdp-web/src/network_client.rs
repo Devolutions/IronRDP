@@ -32,7 +32,7 @@ impl AsyncNetworkClient for WasmNetworkClient {
                         .await
                         .map_err(|e| reason_err!("Error send KDC request", "{}", e))?
                         .body()
-                        .ok_or(general_err!("No body in response"))?;
+                        .ok_or_else(|| general_err!("No body in response"))?;
                     let res = read_stream(stream).await?;
 
                     Ok(res)
@@ -49,7 +49,7 @@ impl WasmNetworkClient {
     }
 }
 
-pub async fn read_stream(stream: ReadableStream) -> ConnectorResult<Vec<u8>> {
+async fn read_stream(stream: ReadableStream) -> ConnectorResult<Vec<u8>> {
     let mut bytes = Vec::new();
     let reader = web_sys::ReadableStreamDefaultReader::new(&stream).map_err(|_| general_err!("error create reader"))?;
 
@@ -63,7 +63,7 @@ pub async fn read_stream(stream: ReadableStream) -> ConnectorResult<Vec<u8>> {
         let done = js_sys::Reflect::get(&result_obj, &"done".into())
             .map_err(|_| general_err!("error read stream"))?
             .as_bool()
-            .ok_or(general_err!("error resolve reader promise proerty: done"))?;
+            .ok_or_else(|| general_err!("error resolve reader promise proerty: done"))?;
         if done {
             break;
         }
