@@ -19,6 +19,5 @@ test = false
 [dependencies]
 ironrdp-pdu.workspace = true
 thiserror.workspace = true
-tracing.workspace = true
 
 png = "0.17"

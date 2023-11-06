@@ -29,7 +29,7 @@
     let wasmService = new WasmBridgeService();
     let publicAPI = new PublicAPI(wasmService);
 
-    // Firefox's clipboard API is very limited, and doesn't reading from the clipboard
+    // Firefox's clipboard API is very limited, and doesn't support reading from the clipboard
     // without changing browser settings via `about:config`.
     //
     // For firefox, we will use a different approach by marking `screen-wrapper` component

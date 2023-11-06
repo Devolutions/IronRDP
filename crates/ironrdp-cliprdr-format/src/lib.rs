@@ -1,5 +1,4 @@
-//! This Library provides the conversion logic between RDP-specific clipboard formats and
-//! widely used formats like PNG for images, plain string for HTML etc.
+#![doc = include_str!("../README.md")]
 
 pub mod bitmap;
 pub mod html;

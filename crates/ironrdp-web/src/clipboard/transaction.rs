@@ -77,7 +77,7 @@ impl ClipboardContent {
     pub fn new_text(mime_type: &str, text: &str) -> Self {
         Self {
             mime_type: mime_type.into(),
-            value: ClipboardContentValue::Text(text.to_string()),
+            value: ClipboardContentValue::Text(text.to_owned()),
         }
     }
 

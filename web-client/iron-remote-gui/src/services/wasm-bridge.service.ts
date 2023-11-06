@@ -240,7 +240,7 @@ export class WasmBridgeService {
         this.canvas = canvas;
     }
 
-    /// Triggered by the browser when local clipboard is updated. Clipbard backend should
+    /// Triggered by the browser when local clipboard is updated. Clipboard backend should
     /// cache the content and send it to the server when it is requested.
     onClipboardChanged(transaction: ClipboardTransaction): Promise<void> {
         const onClipboardChangedPromise = async () => {

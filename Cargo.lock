@@ -1770,7 +1770,6 @@ dependencies = [
  "ironrdp-pdu",
  "png",
  "thiserror",
- "tracing",
 ]
 
 [[package]]

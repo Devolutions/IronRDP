@@ -13,7 +13,8 @@ use ironrdp::cliprdr::pdu::{
 use ironrdp::svc::impl_as_any;
 use ironrdp_cliprdr_format::bitmap::{dib_to_png, dibv5_to_png, png_to_cf_dibv5};
 use ironrdp_cliprdr_format::html::{cf_html_to_text, text_to_cf_html};
-pub use transaction::{ClipboardContent, ClipboardContentValue, ClipboardTransaction};
+pub(crate) use transaction::ClipboardTransaction;
+use transaction::{ClipboardContent, ClipboardContentValue};
 use wasm_bindgen::prelude::*;
 
 use crate::session::RdpInputEvent;
@@ -24,12 +25,12 @@ const MIME_PNG: &str = "image/png";
 
 #[derive(Clone, Copy)]
 struct ClientFormatDescriptor {
-    pub id: ClipboardFormatId,
-    pub name: &'static str,
+    id: ClipboardFormatId,
+    name: &'static str,
 }
 
 impl ClientFormatDescriptor {
-    pub const fn new(id: ClipboardFormatId, name: &'static str) -> Self {
+    const fn new(id: ClipboardFormatId, name: &'static str) -> Self {
         Self { id, name }
     }
 }
@@ -58,24 +59,24 @@ const FORMAT_MIME_PNG: ClientFormatDescriptor = ClientFormatDescriptor::new(FORM
 
 /// Message proxy used to send clipboard-related messages to the application main event loop
 #[derive(Debug, Clone)]
-pub struct WasmClipboardMessageProxy {
+pub(crate) struct WasmClipboardMessageProxy {
     tx: mpsc::UnboundedSender<RdpInputEvent>,
 }
 
 impl WasmClipboardMessageProxy {
-    pub fn new(tx: mpsc::UnboundedSender<RdpInputEvent>) -> Self {
+    pub(crate) fn new(tx: mpsc::UnboundedSender<RdpInputEvent>) -> Self {
         Self { tx }
     }
 
     /// Send messages which require action on CLIPRDR SVC
-    pub fn send_cliprdr_message(&self, message: ClipboardMessage) {
+    pub(crate) fn send_cliprdr_message(&self, message: ClipboardMessage) {
         if self.tx.unbounded_send(RdpInputEvent::Cliprdr(message)).is_err() {
             error!("Failed to send os clipboard message, receiver is closed");
         }
     }
 
     /// Send messages which require action on wasm clipboard backend
-    pub fn send_backend_message(&self, message: WasmClipboardBackendMessage) {
+    pub(crate) fn send_backend_message(&self, message: WasmClipboardBackendMessage) {
         if self
             .tx
             .unbounded_send(RdpInputEvent::ClipboardBackend(message))
@@ -88,7 +89,7 @@ impl WasmClipboardMessageProxy {
 
 /// Messages sent by the JS code or CLIPRDR to the backend implementation.
 #[derive(Debug)]
-pub enum WasmClipboardBackendMessage {
+pub(crate) enum WasmClipboardBackendMessage {
     LocalClipboardChanged(ClipboardTransaction),
     RemoteDataRequest(ClipboardFormatId),
 
@@ -101,7 +102,7 @@ pub enum WasmClipboardBackendMessage {
 
 /// Clipboard backend implementation for web. This object should be created once per session and
 /// kept alive until session is terminated.
-pub struct WasmCipboard {
+pub(crate) struct WasmClipboard {
     local_clipboard: Option<ClipboardTransaction>,
     remote_clipborad: ClipboardTransaction,
 
@@ -113,14 +114,14 @@ pub struct WasmCipboard {
 }
 
 /// Callbacks, required to interact with JS code from within the backend.
-pub struct JsClipboardCallbacks {
-    pub on_remote_clipboard_changed: js_sys::Function,
-    pub on_remote_received_format_list: Option<js_sys::Function>,
-    pub on_force_clipboard_update: Option<js_sys::Function>,
+pub(crate) struct JsClipboardCallbacks {
+    pub(crate) on_remote_clipboard_changed: js_sys::Function,
+    pub(crate) on_remote_received_format_list: Option<js_sys::Function>,
+    pub(crate) on_force_clipboard_update: Option<js_sys::Function>,
 }
 
-impl WasmCipboard {
-    pub fn new(message_proxy: WasmClipboardMessageProxy, js_callbacks: JsClipboardCallbacks) -> Self {
+impl WasmClipboard {
+    pub(crate) fn new(message_proxy: WasmClipboardMessageProxy, js_callbacks: JsClipboardCallbacks) -> Self {
         Self {
             local_clipboard: None,
             remote_clipborad: ClipboardTransaction::new(),
@@ -133,7 +134,7 @@ impl WasmCipboard {
     }
 
     /// Returns CLIPRDR backend implementation
-    pub fn backend(&self) -> WasmClipboardBackend {
+    pub(crate) fn backend(&self) -> WasmClipboardBackend {
         WasmClipboardBackend {
             proxy: self.proxy.clone(),
         }
@@ -332,10 +333,10 @@ impl WasmCipboard {
             self.remote_formats_to_read.push(format.id());
         }
 
-        Ok(self.remote_formats_to_read.last().cloned())
+        Ok(self.remote_formats_to_read.last().copied())
     }
 
-    fn process_remote_data_response(&mut self, response: FormatDataResponse) -> anyhow::Result<()> {
+    fn process_remote_data_response(&mut self, response: FormatDataResponse<'_>) -> anyhow::Result<()> {
         let pending_format = match self.remote_formats_to_read.pop() {
             Some(format) => format,
             None => {
@@ -424,7 +425,7 @@ impl WasmCipboard {
     }
 
     /// Process backend event. This method should be called from the main event loop.
-    pub fn process_event(&mut self, event: WasmClipboardBackendMessage) -> anyhow::Result<()> {
+    pub(crate) fn process_event(&mut self, event: WasmClipboardBackendMessage) -> anyhow::Result<()> {
         match event {
             WasmClipboardBackendMessage::LocalClipboardChanged(transaction) => {
                 match self.handle_local_clipboard_changed(transaction) {
@@ -495,10 +496,10 @@ impl WasmCipboard {
     }
 }
 
-/// CLIPRDR backend implementation for web. This object could be instantiated via [`WasmCipboard`]
+/// CLIPRDR backend implementation for web. This object could be instantiated via [`WasmClipboard`]
 /// to pass it to CLIPRDR SVC constructor.
 #[derive(Debug)]
-pub struct WasmClipboardBackend {
+pub(crate) struct WasmClipboardBackend {
     proxy: WasmClipboardMessageProxy,
 }
 
@@ -543,7 +544,7 @@ impl CliprdrBackend for WasmClipboardBackend {
         self.send_event(WasmClipboardBackendMessage::RemoteDataRequest(request.format));
     }
 
-    fn on_format_data_response(&mut self, response: FormatDataResponse) {
+    fn on_format_data_response(&mut self, response: FormatDataResponse<'_>) {
         self.send_event(WasmClipboardBackendMessage::RemoteDataResponse(response.into_owned()));
     }
 
@@ -551,7 +552,7 @@ impl CliprdrBackend for WasmClipboardBackend {
         // File transfer not implemented yet
     }
 
-    fn on_file_contents_response(&mut self, _response: FileContentsResponse) {
+    fn on_file_contents_response(&mut self, _response: FileContentsResponse<'_>) {
         // File transfer not implemented yet
     }
 

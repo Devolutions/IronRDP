@@ -67,15 +67,19 @@ pub fn cf_html_to_text(input: &[u8]) -> Result<String, HtmlError> {
             break String::from_utf8(input[start..end].to_vec())?;
         }
 
-        // Go to the next line, skipping any leftover `LF` if CRLF was used.
-        let has_leftover_lf = end_pos + 1 != headers_cursor.len()
-            && headers_cursor[end_pos] == b'\r'
-            && headers_cursor[end_pos + 1] == b'\n';
+        // INVARIANT: end_pos < headers_cursor.len() - 1
+        #[allow(clippy::arithmetic_side_effects)]
+        {
+            // Go to the next line, skipping any leftover `LF` if CRLF was used.
+            let has_leftover_lf = end_pos + 1 != headers_cursor.len()
+                && headers_cursor[end_pos] == b'\r'
+                && headers_cursor[end_pos + 1] == b'\n';
 
-        if has_leftover_lf {
-            headers_cursor = &headers_cursor[end_pos + 2..];
-        } else {
-            headers_cursor = &headers_cursor[end_pos + 1..];
+            if has_leftover_lf {
+                headers_cursor = &headers_cursor[end_pos + 2..];
+            } else {
+                headers_cursor = &headers_cursor[end_pos + 1..];
+            }
         }
     };
 
@@ -86,6 +90,8 @@ pub fn cf_html_to_text(input: &[u8]) -> Result<String, HtmlError> {
 pub fn text_to_cf_html(fragment: &str) -> Vec<u8> {
     let mut buffer = Vec::new();
 
+    // INVARIANT: key.len() + value.len() + ":\r\n".len() < usize::MAX
+    #[allow(clippy::arithmetic_side_effects)]
     let mut write_header = |key: &str, value: &str| {
         let size = key.len() + value.len() + ":\r\n".len();
         buffer.reserve(size);
@@ -123,6 +129,8 @@ pub fn text_to_cf_html(fragment: &str) -> Vec<u8> {
     let start_fragment_pos_value = format!("{:0>10}", start_fragment_pos);
     let end_fragment_pos_value = format!("{:0>10}", end_fragment_pos);
 
+    // INVARIANT: buffer.len() > placeholder_pos + POS_PLACEHOLDER.len()
+    #[allow(clippy::arithmetic_side_effects)]
     let mut replace_placeholder = |placeholder_pos: usize, placeholder_value: &str| {
         buffer[placeholder_pos..placeholder_pos + POS_PLACEHOLDER.len()].copy_from_slice(placeholder_value.as_bytes());
     };
@@ -133,9 +141,4 @@ pub fn text_to_cf_html(fragment: &str) -> Vec<u8> {
     replace_placeholder(end_fragment_placeholder_pos, &end_fragment_pos_value);
 
     buffer
-}
-
-#[cfg(test)]
-mod test {
-    use super::*;
 }

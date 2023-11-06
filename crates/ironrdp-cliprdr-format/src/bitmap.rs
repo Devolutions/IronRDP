@@ -2,6 +2,9 @@ use ironrdp_pdu::cursor::{ReadCursor, WriteCursor};
 use ironrdp_pdu::{cast_int, ensure_fixed_part_size, invalid_message_err, PduDecode, PduEncode, PduResult};
 use thiserror::Error;
 
+/// Maximum size of PNG image that could be placed on the clipboard.
+const MAX_BUFFER_SIZE: usize = 64 * 1024 * 1024; // 64 MB
+
 #[derive(Debug, Error)]
 pub enum BitmapError {
     #[error("Invalid bitmap header")]
@@ -10,6 +13,12 @@ pub enum BitmapError {
     Unsupported(&'static str),
     #[error("One of bitmap's dimensions is invalid")]
     InvalidSize,
+    #[error("Buffer size required for allocation is too big")]
+    BufferTooBig,
+    #[error("Image width is too big")]
+    WidthTooBig,
+    #[error("Image height is too big")]
+    HeightTooBig,
     #[error("PNG encoding error")]
     PngEncode(#[from] png::EncodingError),
     #[error("PNG decoding error")]
@@ -130,11 +139,14 @@ impl PduEncode for CiexyzTriple {
     }
 }
 
-/// Header used in `CF_DIB` formats, part of BITMAPINFO defined in
-/// [wingdi](https://learn.microsoft.com/ru-ru/windows/win32/api/wingdi/ns-wingdi-bitmapinfo)
+/// Header used in `CF_DIB` formats, part of [BITMAPINFO]
 ///
 /// We don't use the optional `bmiColors` field, because it is only relevant for bitmaps with
 /// bpp < 24, which are not supported yet, therefore only fixed part of the header is implemented.
+///
+/// INVARIANT: `width` and `height` magnitudes are less than or equal to `u16::MAX`.
+///
+/// [BITMAPINFO]: https://learn.microsoft.com/en-us/windows/win32/api/wingdi/ns-wingdi-bitmapinfo
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct BitmapInfoHeader {
     width: i32,
@@ -166,11 +178,16 @@ impl BitmapInfoHeader {
     fn encode_with_size(&self, dst: &mut WriteCursor<'_>, size: u32) -> PduResult<()> {
         ensure_fixed_part_size!(in: dst);
 
+        check_invariant(self.width.abs() <= u16::MAX.into())
+            .ok_or_else(|| invalid_message_err!("biWidth", "width is too big"))?;
+        check_invariant(self.height.abs() <= u16::MAX.into())
+            .ok_or_else(|| invalid_message_err!("biHeight", "height is too big"))?;
         dst.write_u32(size);
         dst.write_i32(self.width);
         dst.write_i32(self.height);
         dst.write_u16(1); // biPlanes
         dst.write_u16(self.bit_count);
+        check_invariant(self.bit_count <= 32).ok_or_else(|| invalid_message_err!("biBitCount", "invalid bit count"))?;
         dst.write_u32(self.compression.0);
         dst.write_u32(self.size_image);
         dst.write_i32(self.x_pels_per_meter);
@@ -187,12 +204,20 @@ impl BitmapInfoHeader {
         let size = src.read_u32();
 
         let width = src.read_i32();
+        check_invariant(width.abs() <= u16::MAX.into())
+            .ok_or_else(|| invalid_message_err!("biWidth", "width is too big"))?;
+
         let height = src.read_i32();
+        check_invariant(height.abs() <= u16::MAX.into())
+            .ok_or_else(|| invalid_message_err!("biHeight", "height is too big"))?;
+
         let planes = src.read_u16();
         if planes != 1 {
             return Err(invalid_message_err!("biPlanes", "invalid planes count"));
         }
         let bit_count = src.read_u16();
+        check_invariant(bit_count <= 32).ok_or_else(|| invalid_message_err!("biBitCount", "invalid bit count"))?;
+
         let compression = BitmapCompression(src.read_u32());
         let size_image = src.read_u32();
         let x_pels_per_meter = src.read_i32();
@@ -213,6 +238,20 @@ impl BitmapInfoHeader {
         };
 
         Ok((header, size))
+    }
+
+    fn width(&self) -> u16 {
+        // Cast is safe, invariant is checked in `encode_with_size` and `decode_with_size`.
+        u16::try_from(self.width.abs()).unwrap()
+    }
+
+    fn height(&self) -> u16 {
+        // Cast is safe, invariant is checked in `encode_with_size` and `decode_with_size`.
+        u16::try_from(self.height.abs()).unwrap()
+    }
+
+    fn flip_vertically(&self) -> bool {
+        self.height >= 0
     }
 }
 
@@ -244,8 +283,9 @@ impl<'a> PduDecode<'a> for BitmapInfoHeader {
     }
 }
 
-/// Header used in `CF_DIBV5` formats, defined as `BITMAPV5HEADER` in
-/// [wingdi](https://learn.microsoft.com/ru-ru/windows/win32/api/wingdi/ns-wingdi-bitmapv5header)
+/// Header used in `CF_DIBV5` formats, defined as [BITMAPV5HEADER]
+///
+/// [BITMAPV5HEADER]: https://learn.microsoft.com/en-us/windows/win32/api/wingdi/ns-wingdi-bitmapv5header
 struct BitmapV5Header {
     header_v1: BitmapInfoHeader,
     red_mask: u32,
@@ -416,14 +456,16 @@ struct PngEncoderInput {
 
 /// From MS docs:
 /// For uncompressed RGB formats, the minimum stride is always the image width in bytes, rounded
-/// up to the nearest DWORD. You can use the following formula to calculate the stride and image
-/// size:
+/// up to the nearest DWORD (4 bytes). You can use the following formula to calculate the stride
+/// and image size:
 /// ```
 /// stride = ((((biWidth * biBitCount) + 31) & ~31) >> 3);
 /// biSizeImage = abs(biHeight) * stride;
 /// ```
-fn bmp_stride(width: usize, bit_count: usize) -> usize {
-    (((width * bit_count) + 31) & !31) >> 3
+#[allow(clippy::arithmetic_side_effects)] // INVARIANT: bit_count <= 32
+fn bmp_stride(width: u16, bit_count: u16) -> usize {
+    debug_assert!(bit_count <= 32);
+    (((usize::from(width) * usize::from(bit_count)) + 31) & !31) >> 3
 }
 
 fn transform_bitmap(
@@ -432,16 +474,16 @@ fn transform_bitmap(
     preserve_alpha: bool,
 ) -> Result<PngEncoderInput, BitmapError> {
     // If height is positive, DIB is bottom-up, but target PNG format is top-down.
-    let flip = header.height > 0;
+    let flip = header.flip_vertically();
 
-    let width: usize = cast_int!(BitmapInfoHeader::NAME, "biWidth", header.width).expect("width is positive");
-    let height: usize = cast_int!(BitmapInfoHeader::NAME, "biHeight", header.height.abs()).expect("height is positive");
+    let width = header.width();
+    let height = header.height();
 
-    let bit_count = usize::from(header.bit_count);
+    let bit_count = header.bit_count;
 
     let stride = bmp_stride(width, bit_count);
 
-    let input_bytes_per_pixel = bit_count / 8;
+    let input_bytes_per_pixel = usize::from(bit_count / 8);
     let color_type = if preserve_alpha {
         png::ColorType::Rgba
     } else {
@@ -449,8 +491,15 @@ fn transform_bitmap(
     };
 
     let components = color_type.samples();
+    debug_assert!(components <= 4);
+    // INVARIANT: height * width * components <= usize::MAX
+    #[allow(clippy::arithmetic_side_effects)]
+    let frame_buffer_len = usize::from(height) * usize::from(width) * components;
 
-    let mut frame_buffer = vec![0u8; height * width * components];
+    // Prevent allocation of huge frame buffers
+    check_invariant(frame_buffer_len <= MAX_BUFFER_SIZE).ok_or(BitmapError::BufferTooBig)?;
+
+    let mut frame_buffer = vec![0u8; frame_buffer_len];
 
     let mut strides_normal;
     let mut strides_reversed;
@@ -487,8 +536,10 @@ fn transform_bitmap(
         _ => unreachable!("possible values are restricted by header validation and logic above"),
     };
 
+    // INVARIANT: width * components <= usize::MAX
+    #[allow(clippy::arithmetic_side_effects)]
     frame_buffer
-        .chunks_exact_mut(width * components)
+        .chunks_exact_mut(usize::from(width) * components)
         .zip(strides)
         .for_each(|(row, stride)| {
             let input = stride.chunks_exact(input_bytes_per_pixel);
@@ -497,8 +548,8 @@ fn transform_bitmap(
 
     Ok(PngEncoderInput {
         frame_buffer,
-        width,
-        height,
+        width: width.into(),
+        height: height.into(),
         color_type,
     })
 }
@@ -550,14 +601,22 @@ fn transform_png(info: png::OutputInfo, input_buffer: Vec<u8>) -> Result<(Bitmap
         32,
     );
 
-    let width_unsigned: usize = info.width.try_into().map_err(|_| BitmapError::InvalidSize)?;
-    let height_unsigned: usize = info.height.try_into().map_err(|_| BitmapError::InvalidSize)?;
+    check_invariant(u16::try_from(info.width).is_ok()).ok_or_else(|| BitmapError::WidthTooBig)?;
+    check_invariant(u16::try_from(info.height).is_ok()).ok_or_else(|| BitmapError::HeightTooBig)?;
 
-    let image_size: usize = stride * height_unsigned;
+    let width_unsigned = u16::try_from(info.width).unwrap();
+    let height_unsigned = u16::try_from(info.height).unwrap();
+
+    // INVARIANT: stride * height_unsigned <= usize::MAX.
+    //
+    // This should be always true, because stide can't be greater than `width_unsigned * 4`,
+    // and `width_unsigned * height_unsigned * 4` is guaranteed to be less or equal to `usize::MAX`.
+    #[allow(clippy::arithmetic_side_effects)]
+    let image_size: usize = stride * usize::from(height_unsigned);
 
     let header = BitmapInfoHeader {
-        width: cast_int!("DIB header", "biWidth", info.width).map_err(|_| BitmapError::InvalidSize)?,
-        height: cast_int!("DIB header", "biHeight", info.height).map_err(|_| BitmapError::InvalidSize)?,
+        width: width_unsigned.into(),
+        height: height_unsigned.into(),
         bit_count: 32,
         compression: BitmapCompression::RGB,
         size_image: cast_int!("DIB header", "biImageSize", image_size).map_err(|_| BitmapError::InvalidSize)?,
@@ -568,7 +627,9 @@ fn transform_png(info: png::OutputInfo, input_buffer: Vec<u8>) -> Result<(Bitmap
     };
 
     // Row is in RGBA format
-    let row_size: usize = 4 * width_unsigned;
+    // INVARIANT: width_unsigned * 4 <= usize::MAX
+    #[allow(clippy::arithmetic_side_effects)]
+    let row_size: usize = 4 * usize::from(width_unsigned);
 
     let mut output_buffer = vec![0; image_size];
 
@@ -620,7 +681,14 @@ pub fn png_to_cf_dib(input: &[u8]) -> Result<Vec<u8>, BitmapError> {
     let (info, input_buffer) = decode_png(input)?;
     let (header, output_buffer) = transform_png(info, input_buffer)?;
 
-    let mut dib_buffer = vec![0; header.size() + output_buffer.len()];
+    let dib_buffer_size = header
+        .size()
+        .checked_add(output_buffer.len())
+        .ok_or(BitmapError::BufferTooBig)?;
+
+    check_invariant(dib_buffer_size <= MAX_BUFFER_SIZE).ok_or(BitmapError::BufferTooBig)?;
+
+    let mut dib_buffer = vec![0; dib_buffer_size];
     {
         let mut dst = WriteCursor::new(&mut dib_buffer);
         header.encode(&mut dst).map_err(BitmapError::InvalidHeader)?;
@@ -652,7 +720,14 @@ pub fn png_to_cf_dibv5(input: &[u8]) -> Result<Vec<u8>, BitmapError> {
         profile_size: 0,
     };
 
-    let mut dib_buffer: Vec<u8> = vec![0; header.size() + output_buffer.len()];
+    let dib_buffer_size = header
+        .size()
+        .checked_add(output_buffer.len())
+        .ok_or(BitmapError::BufferTooBig)?;
+
+    check_invariant(dib_buffer_size <= MAX_BUFFER_SIZE).ok_or(BitmapError::BufferTooBig)?;
+
+    let mut dib_buffer: Vec<u8> = vec![0; dib_buffer_size];
     {
         let mut dst = WriteCursor::new(&mut dib_buffer);
         header.encode(&mut dst).map_err(BitmapError::InvalidHeader)?;
@@ -660,4 +735,10 @@ pub fn png_to_cf_dibv5(input: &[u8]) -> Result<Vec<u8>, BitmapError> {
     }
 
     Ok(dib_buffer)
+}
+
+#[inline]
+#[must_use]
+fn check_invariant(condition: bool) -> Option<()> {
+    condition.then_some(())
 }

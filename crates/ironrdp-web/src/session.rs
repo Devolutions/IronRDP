@@ -22,7 +22,7 @@ use wasm_bindgen_futures::spawn_local;
 use web_sys::HtmlCanvasElement;
 
 use crate::canvas::Canvas;
-use crate::clipboard::{ClipboardTransaction, WasmCipboard, WasmClipboardBackend, WasmClipboardBackendMessage};
+use crate::clipboard::{ClipboardTransaction, WasmClipboard, WasmClipboardBackend, WasmClipboardBackendMessage};
 use crate::error::{IronRdpError, IronRdpErrorKind};
 use crate::image::extract_partial_image;
 use crate::input::InputTransaction;
@@ -255,7 +255,7 @@ impl SessionBuilder {
         let (input_events_tx, input_events_rx) = mpsc::unbounded();
 
         let clipboard = remote_clipboard_changed_callback.clone().map(|callback| {
-            WasmCipboard::new(
+            WasmClipboard::new(
                 clipboard::WasmClipboardMessageProxy::new(input_events_tx.clone()),
                 clipboard::JsClipboardCallbacks {
                     on_remote_clipboard_changed: callback,
@@ -331,10 +331,10 @@ impl SessionBuilder {
     }
 }
 
-pub type FastPathInputEvents = smallvec::SmallVec<[FastPathInputEvent; 2]>;
+pub(crate) type FastPathInputEvents = smallvec::SmallVec<[FastPathInputEvent; 2]>;
 
 #[derive(Debug)]
-pub enum RdpInputEvent {
+pub(crate) enum RdpInputEvent {
     Cliprdr(ClipboardMessage),
     ClipboardBackend(WasmClipboardBackendMessage),
     FastPath(FastPathInputEvents),
@@ -357,7 +357,7 @@ pub struct Session {
     input_events_rx: RefCell<Option<mpsc::UnboundedReceiver<RdpInputEvent>>>,
     connection_result: RefCell<Option<connector::ConnectionResult>>,
     rdp_reader: RefCell<Option<ReadHalf<WebSocketCompat>>>,
-    clipboard: RefCell<Option<Option<WasmCipboard>>>,
+    clipboard: RefCell<Option<Option<WasmClipboard>>>,
 }
 
 #[wasm_bindgen]
@@ -419,7 +419,7 @@ impl Session {
 
                     match event {
                         RdpInputEvent::Cliprdr(message) => {
-                            if let Some(cliprdr) = active_stage.get_svc_processor::<ironrdp::cliprdr::Cliprdr>() {
+                            if let Some(cliprdr) = active_stage.get_svc_processor::<Cliprdr>() {
                                 if let Some(svc_messages) = match message {
                                     ClipboardMessage::SendInitiateCopy(formats) => Some(
                                         cliprdr.initiate_copy(&formats)
