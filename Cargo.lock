@@ -1711,7 +1711,6 @@ dependencies = [
  "ironrdp-cliprdr-native",
  "ironrdp-tls",
  "ironrdp-tokio",
- "portpicker",
  "proc-exit",
  "reqwest",
  "semver",
