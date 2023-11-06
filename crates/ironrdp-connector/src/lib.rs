@@ -12,6 +12,7 @@ pub mod legacy;
 mod channel_connection;
 mod connection;
 mod connection_finalization;
+pub mod credssp_sequence;
 mod license_exchange;
 mod server_name;
 
@@ -19,9 +20,7 @@ use core::any::Any;
 use core::fmt;
 
 pub use channel_connection::{ChannelConnectionSequence, ChannelConnectionState};
-pub use connection::{
-    ClientConnector, ClientConnectorState, ConnectionResult, CredSspProcessGenerator, CredSspSequence,
-};
+pub use connection::{ClientConnector, ClientConnectorState, ConnectionResult};
 pub use connection_finalization::{ConnectionFinalizationSequence, ConnectionFinalizationState};
 use ironrdp_pdu::rdp::capability_sets;
 use ironrdp_pdu::write_buf::WriteBuf;
@@ -112,8 +111,14 @@ pub struct SspiConfig {
 
 impl SspiConfig {
     pub fn new(kdc_proxy_url: Option<String>, hostname: Option<String>) -> ConnectorResult<Self> {
-        let kdc_proxy_url = kdc_proxy_url.map(|url| url::Url::parse(&url)).transpose().map_err(|e| custom_err!("invalid KDC URL", e))?;
-        Ok(Self { kdc_proxy_url, hostname })
+        let kdc_proxy_url = kdc_proxy_url
+            .map(|url| url::Url::parse(&url))
+            .transpose()
+            .map_err(|e| custom_err!("invalid KDC URL", e))?;
+        Ok(Self {
+            kdc_proxy_url,
+            hostname,
+        })
     }
 }
 
