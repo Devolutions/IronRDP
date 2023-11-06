@@ -10,10 +10,12 @@
     let username = 'Administrator';
     let password = 'DevoLabs123!';
     let gatewayAddress = 'ws://localhost:7171/jet/rdp';
-    let hostname = '10.10.0.3:3389';
-    let domain = '';
+    let hostname = 'IT-HELP-DC.ad.it-help.ninja:3389';
+    let domain = 'ad.it-help.ninja';
     let authtoken =
-        'eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCIsImN0eSI6IkFTU09DSUFUSU9OIn0.eyJkc3RfaHN0IjoiMTkyLjE2OC41Ni4xMDE6MzM4OSIsImV4cCI6MTY5MzQyMzY1NSwiamV0X2FpZCI6IjMwNzZjZGIwLWYxNTctNDJlNy1iOWMzLThhMTdlNDFkYjYwNyIsImpldF9hcCI6InJkcCIsImpldF9jbSI6ImZ3ZCIsImp0aSI6IjAwYjY4OTY2LWJiYjAtNDU0NS05ZDZiLWRjNmFmMjAzNjY5MiIsIm5iZiI6MTY5MzQyMjc1NX0.SYQv4HtWQbdHMHgoCLYejCfO3TtsMAyjjILB6-Nir3mBznKiSad3POeLf02n05JFc5QhCeSGxspAaoNU7-znQFhHr0Tt0MnZJ1YMQt4UoR3PR2fTuUqv8M5TKdm4lKwCIjh73tTD001glTkXHaxuCQBTFCUSzfZhXDIqq5-CQueKtCrgJfYepJLmlvgH-ujGcxfXoGJGmeUy3Fmaijiy0uaC98j9GNCfnAd6JENmSAOkxfroMFhq601PSEizRbPzq2exDakfJ0EkaANz15udBX1a7NP-RyANHWQb8hp0rj6hyuyg1-vfUKYusw5qNUjAGXaWOjHC5bLgnqfE2V8Xnw';
+        'eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCIsImN0eSI6IkFTU09DSUFUSU9OIn0NCg.eyJpYXQiOjE2OTkyODg4MDAsIm5iZiI6MTY5OTI4ODgwMCwiZXhwIjoxNjk5ODkzNjAwLCJqdGkiOiI5NjczZmQwYi01MzhmLTQwNTUtYjRhMy1iOTVhZTYzYWMxMDAiLCJqZXRfYXAiOiJyZHAiLCJqZXRfY20iOiJmd2QiLCJqZXRfYWlkIjoiNzkxNTFjYjctZjUxNS00ZjJjLWI1ZDQtNTA1N2Q5ODc2NjY5IiwiZHN0X2hzdCI6InRjcDovL0lULUhFTFAtREMuYWQuaXQtaGVscC5uaW5qYTozMzg5In0NCg.XBAUzc3WNgcroMkDeQS93WIfnf1WgiTb6gjT-gEzkhE-98TZWC8Zmjeb5-IVBe9H3YY4srMzKczFLJVfTbRZA-UCQCC0GrQPsnnv8eJAVxP29Gz7jdALHeAKWyAfpH4FuGKFeMHJV0D97lHILn67x-q3pf77BKBI9CKMNOkaKIeZsh11YF1I0ZvDfGB9rWohlMTMvr4zBQ1FgGr_ZBekM8_EerRHBbKuqTZIHKGJVmObI9oV4m_2l32Rt7Fw1WwbpNHfFhbIQYnzl9_NdihDN9yF_I7qF2s45zuxykXst7YxHe1OJFg1R6hcNKHvu0kovlv9Vin2pYfOMuHmhd_5Vg';
+    let kdc_proxy_url =
+        'http://localhost:7171/jet/KdcProxy/eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCIsImN0eSI6IktEQyJ9.eyJleHAiOjE2OTkyODk3MDAsImp0aSI6ImM0MzA4Nzg4LWU2NzctNDJjYi04Mzk1LThhOTZmZjZkODc3ZiIsImtyYl9rZGMiOiJ0Y3A6Ly9JVC1IRUxQLURDLmFkLml0LWhlbHAubmluamE6ODgiLCJrcmJfcmVhbG0iOiJhZC5pdC1oZWxwLm5pbmphIiwibmJmIjoxNjk5Mjg4ODAwfQ.cb6pk5Fge1OXh3w9qLYGjBuiGveEyVJ4rh7TL0imqtMeuFudF2ShSrbuRq8fl_5gEada-qWCz7Oo6VhiJsycEw21DhW1tj5qjLTarz_QiZQXqgTHYwHdfI5A89Cm8d6sPkMZKMM61e0AL7S2DXWoIn9MzZwHLfNhd_Aa40fQB0YbEtgAzk0hu_ao6nsYCpK32tq7BY6tDoEc0TDatTR4ToYhqZs6scJCE1wlPVKswpaVfhTAWbnWmhVXkiZhTKyGLXr3EDovRNv2FSAGK0j0jszDbNPtEuH1VG_Wx8a4Kc033y2A-8AsPTZrHj1pRKldBnHap-Ii7DLddaRvO3p9jA';
     let desktopSize: DesktopSize = {
         width: 1280,
         height: 768,
@@ -53,7 +55,7 @@
             message: 'Connection in progress...',
         });
         userInteraction
-            .connect(username, password, hostname, gatewayAddress, domain, authtoken, desktopSize, pcb)
+            .connect(username, password, hostname, gatewayAddress, domain, authtoken, desktopSize, pcb, kdc_proxy_url)
             .pipe(
                 catchError((err) => {
                     toast.set({
@@ -132,6 +134,10 @@
                     <div class="field label border">
                         <input id="desktopSizeH" type="text" bind:value={desktopSize.height} />
                         <label for="desktopSizeH">Desktop Height</label>
+                    </div>
+                    <div class="field label border">
+                        <input id="kdc_proxy_url" type="text" bind:value={kdc_proxy_url} />
+                        <label for="kdc_proxy_url">KDC Proxy URL</label>
                     </div>
                 </div>
                 <nav class="center-align">
