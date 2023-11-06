@@ -113,15 +113,7 @@ pub struct SspiConfig {
 
 impl SspiConfig {
     pub fn new(kdc_proxy_url: Option<String>, hostname: Option<String>) -> ConnectorResult<Self> {
-        let kdc_url: Option<url::Url> = match kdc_proxy_url {
-            Some(inner) => {
-                let url_str: String = inner.into();
-                let url = url::Url::parse(&url_str).map_err(|_| general_err!("kdc url cannot be parsed"))?;
-                Some(url)
-            }
-            None => None,
-        };
-        let hostname: Option<String> = hostname.map(|inner| inner.into());
+        let kdc_url = kdc_proxy_url.map(|url| url::Url::parse(&url)).transpose().map_err(|e| custom_err!("invalid KDC URL", e)?;
         Ok(Self { kdc_url, hostname })
     }
 }
