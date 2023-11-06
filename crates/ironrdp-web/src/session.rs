@@ -42,6 +42,7 @@ struct SessionBuilderInner {
     proxy_address: Option<String>,
     auth_token: Option<String>,
     pcb: Option<String>,
+    kdc_proxy_url: Option<String>,
     client_name: String,
     desktop_size: DesktopSize,
 
@@ -50,8 +51,6 @@ struct SessionBuilderInner {
     hide_pointer_callback_context: Option<JsValue>,
     show_pointer_callback: Option<js_sys::Function>,
     show_pointer_callback_context: Option<JsValue>,
-
-    kdc_proxy_url: Option<String>,
 }
 
 impl Default for SessionBuilderInner {
@@ -556,13 +555,13 @@ async fn connect(
         connect_rdcleanpath(&mut framed, &mut connector, destination.clone(), proxy_auth_token, pcb).await?;
 
     info!("kdc url = {:?}", &kdc_url);
-    let networkc_client = kdc_url.map(WasmNetworkClient::new);
+    let network_client = kdc_url.map(WasmNetworkClient::new);
     let connection_result = ironrdp_futures::connect_finalize(
         upgraded,
         &mut framed,
         &destination,
         server_public_key,
-        networkc_client,
+        network_client,
         connector,
     )
     .await?;
