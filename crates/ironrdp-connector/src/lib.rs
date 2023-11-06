@@ -107,21 +107,21 @@ pub struct Config {
 
 #[derive(Debug, Clone, Default)]
 pub struct SspiConfig {
-    pub kdc_url: Option<url::Url>,
+    pub kdc_proxy_url: Option<url::Url>,
     pub hostname: Option<String>,
 }
 
 impl SspiConfig {
     pub fn new(kdc_proxy_url: Option<String>, hostname: Option<String>) -> ConnectorResult<Self> {
-        let kdc_url = kdc_proxy_url.map(|url| url::Url::parse(&url)).transpose().map_err(|e| custom_err!("invalid KDC URL", e)?;
-        Ok(Self { kdc_url, hostname })
+        let kdc_proxy_url = kdc_proxy_url.map(|url| url::Url::parse(&url)).transpose().map_err(|e| custom_err!("invalid KDC URL", e))?;
+        Ok(Self { kdc_proxy_url, hostname })
     }
 }
 
 impl From<SspiConfig> for KerberosConfig {
     fn from(val: SspiConfig) -> Self {
         KerberosConfig {
-            url: val.kdc_url,
+            url: val.kdc_proxy_url,
             hostname: val.hostname,
         }
     }
