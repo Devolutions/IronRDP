@@ -104,6 +104,7 @@ async fn connect(
 
     let mut connector = connector::ClientConnector::new(config.connector.clone())
         .with_server_addr(server_addr)
+        // .with_static_channel(ironrdp::dvc::Drdynvc::new()) // FIXME: drdynvc is not working
         .with_static_channel(rdpsnd::Rdpsnd::new())
         .with_static_channel(rdpdr::Rdpdr::new(Box::new(NoopRdpdrBackend {}), "IronRDP".to_owned()).with_smartcard(0));
 
@@ -130,7 +131,7 @@ async fn connect(
 
     let mut upgraded_framed = ironrdp_tokio::TokioFramed::new(upgraded_stream);
 
-    let network_client = crate::network_cllient::AsyncTokioNetworkClient::new();
+    let network_client = crate::network_client::AsyncTokioNetworkClient::new();
     let connection_result = ironrdp_tokio::connect_finalize(
         upgraded,
         &mut upgraded_framed,
