@@ -63,20 +63,19 @@ You can add some parameters for default initialization on the component `<iron-r
         desktopSize?: DesktopSize,
         preConnectionBlob?: string,
         kdc_proxy_url?: string,
-    ): Observable<NewSessionInfo> 
+    ): Observable<NewSessionInfo>
 ```
->
+
 > `username` and `password` are the credentials to use on the remote host.
 
 > `host` refers to the Devolutions Gateway hostname and port.
 
 > `authtoken` is the authentication token to send to the Devolutions Gateway.
 
-> `serverDomain` is the Microsoft Doman name(if the computer has one) 
+> `serverDomain` is the Microsoft Doman name(if the computer has one)
 
-> `kdc_proxy_url` is the URL to a KDC Proxy, as specified in [MS-KKDCP documentation]( https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-kkdcp/5bcebb8d-b747-4ee5-9453-428aec1c5c38
- )
- 
+> `kdc_proxy_url` is the URL to a KDC Proxy, as specified in [MS-KKDCP documentation](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-kkdcp/5bcebb8d-b747-4ee5-9453-428aec1c5c38)
+
 > `ctrlAltDel()`
 >
 > Sends the ctrl+alt+del key to server.
