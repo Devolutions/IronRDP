@@ -5,10 +5,10 @@ use ironrdp_connector::sspi::credssp::ClientState;
 use ironrdp_connector::sspi::generator::GeneratorState;
 use ironrdp_connector::sspi::network_client::NetworkClient;
 use ironrdp_connector::{
+    credssp_sequence::{CredSspProcessGenerator, CredSspSequence},
     custom_err,
     sspi::{credssp::ClientState, generator::GeneratorState, network_client::NetworkClient},
-    ClientConnector, ClientConnectorState, ConnectionResult, ConnectorResult, CredSspProcessGenerator, CredSspSequence,
-    Sequence as _, ServerName, State as _,
+    ClientConnector, ClientConnectorState, ConnectionResult, ConnectorResult, Sequence as _, ServerName, State as _,
 };
 use ironrdp_pdu::write_buf::WriteBuf;
 
