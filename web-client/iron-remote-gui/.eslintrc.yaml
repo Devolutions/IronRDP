@@ -51,3 +51,6 @@ rules:
     - 2
     - allowString: false
       allowNumber: false
+  'prettier/prettier':
+    - 'error'
+    - endOfLine: auto
