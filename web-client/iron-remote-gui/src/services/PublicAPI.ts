@@ -23,6 +23,7 @@ export class PublicAPI {
         authToken: string,
         desktopSize?: DesktopSize,
         preConnectionBlob?: string,
+        kdc_proxy_url?: string,
     ): Observable<NewSessionInfo> {
         loggingService.info('Initializing connection.');
         return this.wasmService.connect(
@@ -34,6 +35,7 @@ export class PublicAPI {
             authToken,
             desktopSize,
             preConnectionBlob,
+            kdc_proxy_url
         );
     }
 

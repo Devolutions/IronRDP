@@ -99,6 +99,7 @@ export class WasmBridgeService {
         authToken: string,
         desktopSize?: IDesktopSize,
         preConnectionBlob?: string,
+        kdc_proxy_url?: string,
     ): Observable<NewSessionInfo> {
         const sessionBuilder = SessionBuilder.new();
         sessionBuilder.proxy_address(proxyAddress);
@@ -112,6 +113,7 @@ export class WasmBridgeService {
         sessionBuilder.hide_pointer_callback(this.hidePointerCallback);
         sessionBuilder.show_pointer_callback_context(this);
         sessionBuilder.show_pointer_callback(this.showPointerCallback);
+        sessionBuilder.kdc_proxy_url(kdc_proxy_url);
 
         if (preConnectionBlob != null) {
             sessionBuilder.pcb(preConnectionBlob);

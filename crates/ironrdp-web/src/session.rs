@@ -51,7 +51,7 @@ struct SessionBuilderInner {
     show_pointer_callback: Option<js_sys::Function>,
     show_pointer_callback_context: Option<JsValue>,
 
-    kdc_url: Option<String>,
+    kdc_proxy_url: Option<String>,
 }
 
 impl Default for SessionBuilderInner {
@@ -76,7 +76,7 @@ impl Default for SessionBuilderInner {
             show_pointer_callback: None,
             show_pointer_callback_context: None,
 
-            kdc_url: None,
+            kdc_proxy_url: None,
         }
     }
 }
@@ -170,8 +170,8 @@ impl SessionBuilder {
     }
 
     /// Optional
-    pub fn kdc_url(&self, kdc_url: String) -> SessionBuilder {
-        self.0.borrow_mut().kdc_url = Some(kdc_url);
+    pub fn kdc_proxy_url(&self, kdc_proxy_url: Option<String>) -> SessionBuilder {
+        self.0.borrow_mut().kdc_proxy_url = kdc_proxy_url;
         self.clone()
     }
 
@@ -206,7 +206,7 @@ impl SessionBuilder {
             client_name = inner.client_name.clone();
             desktop_size = inner.desktop_size.clone();
 
-            kdc_url = inner.kdc_url.clone();
+            kdc_url = inner.kdc_proxy_url.clone();
 
             render_canvas = inner.render_canvas.clone().context("render_canvas missing")?;
 
