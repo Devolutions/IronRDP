@@ -63,6 +63,7 @@ impl Default for SessionBuilderInner {
             proxy_address: None,
             auth_token: None,
             pcb: None,
+            kdc_proxy_url: None,
             client_name: "ironrdp-web".to_owned(),
             desktop_size: DesktopSize {
                 width: DEFAULT_WIDTH,
@@ -74,8 +75,6 @@ impl Default for SessionBuilderInner {
             hide_pointer_callback_context: None,
             show_pointer_callback: None,
             show_pointer_callback_context: None,
-
-            kdc_proxy_url: None,
         }
     }
 }

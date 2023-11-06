@@ -6,6 +6,7 @@
     import { toast } from '$lib/messages/message-store';
     import { showLogin } from '$lib/login/login-store';
     import type { DesktopSize } from '../../models/desktop-size';
+
     let username = 'Administrator';
     let password = 'DevoLabs123!';
     let gatewayAddress = 'ws://localhost:7171/jet/rdp';
