@@ -52,8 +52,8 @@ You can add some parameters for default initialization on the component `<iron-r
 
 ## `UserInteractionService` methods
 
-```typesccript
- private connect(
+```ts
+connect(
         username: string,
         password: string,
         destination: string,
@@ -63,12 +63,12 @@ You can add some parameters for default initialization on the component `<iron-r
         desktopSize?: DesktopSize,
         preConnectionBlob?: string,
         kdc_proxy_url?: string,
-    ): Observable<NewSessionInfo>
+    ): Observable<NewSessionInfo>;
 ```
 
 > `username` and `password` are the credentials to use on the remote host.
 
-> `host` refers to the Devolutions Gateway hostname and port.
+> `destination` refers to the Devolutions Gateway hostname and port.
 
 > `authtoken` is the authentication token to send to the Devolutions Gateway.
 
