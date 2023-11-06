@@ -111,8 +111,8 @@ pub struct SspiConfig {
 }
 
 impl SspiConfig {
-    pub fn new(kdc_url: Option<impl Into<String>>, hostname: Option<impl Into<String>>) -> ConnectorResult<Self> {
-        let kdc_url: Option<url::Url> = match kdc_url {
+    pub fn new(kdc_proxy_url: Option<impl Into<String>>, hostname: Option<impl Into<String>>) -> ConnectorResult<Self> {
+        let kdc_url: Option<url::Url> = match kdc_proxy_url {
             Some(inner) => {
                 let url_str: String = inner.into();
                 let url = url::Url::parse(&url_str).map_err(|_| general_err!("kdc url cannot be parsed"))?;
