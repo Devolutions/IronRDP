@@ -84,7 +84,7 @@ impl AsyncTokioNetworkClient {
         let n = udp_socket
             .recv(&mut buf)
             .await
-            .map_err(|e| custom_err!("Error receving udp request", e))?;
+            .map_err(|e| custom_err!("Error receiving UDP request", e))?;
 
         let mut reply_buf = Vec::with_capacity(n + 4);
         reply_buf.extend_from_slice(&(n as u32).to_be_bytes());
