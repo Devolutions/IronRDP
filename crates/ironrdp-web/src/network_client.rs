@@ -63,7 +63,8 @@ async fn read_stream(stream: ReadableStream) -> ConnectorResult<Vec<u8>> {
         let done = js_sys::Reflect::get(&result_obj, &"done".into())
             .map_err(|_| general_err!("error read stream"))?
             .as_bool()
-            .ok_or_else(|| general_err!("error resolve reader promise proerty: done"))?;
+            .ok_or_else(|| general_err!("error resolve reader promise property: done"))?;
+
         if done {
             break;
         }
