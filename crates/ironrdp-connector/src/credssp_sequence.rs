@@ -49,7 +49,7 @@ pub(crate) enum CredSSPState {
     CredsspInitial,
     CredsspReplyNeeded,
     CredsspEarlyUserAuthResult,
-    Finishied,
+    Finished,
 }
 
 impl CredSspSequence {
