@@ -64,7 +64,7 @@ impl CredSspSequence {
 
     pub fn new(
         connector: &ClientConnector,
-        server_name: impl Into<ServerName>,
+        server_name: ServerName,
         server_public_key: Vec<u8>,
     ) -> ConnectorResult<Self> {
         let config = &connector.config;
