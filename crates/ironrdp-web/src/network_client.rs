@@ -17,7 +17,7 @@ impl AsyncNetworkClient for WasmNetworkClient {
         network_request: &'a NetworkRequest,
     ) -> Pin<Box<dyn Future<Output = ConnectorResult<Vec<u8>>> + 'a>> {
         Box::pin(async move {
-            info!("network requwest = {:?}", &network_request);
+            trace!("network requwest = {:?}", &network_request);
             match &network_request.protocol {
                 NetworkProtocol::Http | NetworkProtocol::Https => {
                     let body = js_sys::Uint8Array::from(&network_request.data[..]);

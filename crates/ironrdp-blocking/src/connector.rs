@@ -161,8 +161,8 @@ where
                 .map_err(|e| ironrdp_connector::custom_err!("write all", e))?;
         }
     }
-
-    Ok(connector.mark_credssp_as_done())
+    connector.mark_credssp_as_done();
+    Ok(())
 }
 
 pub fn single_connect_step<S>(

@@ -131,7 +131,7 @@ async fn connect(
 
     let mut upgraded_framed = ironrdp_tokio::TokioFramed::new(upgraded_stream);
 
-    let mut network_client = crate::network_client::AsyncTokioNetworkClient::new();
+    let mut network_client = crate::network_client::ReqwestNetworkClient::new();
     let connection_result = ironrdp_tokio::connect_finalize(
         upgraded,
         &mut upgraded_framed,

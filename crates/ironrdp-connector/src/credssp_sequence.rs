@@ -3,7 +3,7 @@ use ironrdp_pdu::{nego, PduHint};
 use sspi::credssp::{self, ClientState, CredSspClient};
 use sspi::generator::{Generator, NetworkRequest};
 use sspi::negotiate::ProtocolConfig;
-use sspi::{kerberos, KerberosConfig as SSPIKerberosConfig};
+use sspi::KerberosConfig as SSPIKerberosConfig;
 
 use crate::{
     ClientConnector, ClientConnectorState, ConnectorError, ConnectorErrorKind, ConnectorResult, KerberosConfig,
@@ -82,7 +82,6 @@ impl CredSspSequence {
             domain: config.domain.clone(),
         };
 
-        let server_name: ServerName = server_name.into();
         let server_name = server_name.into_inner();
 
         let service_principal_name = format!("TERMSRV/{}", &server_name);
