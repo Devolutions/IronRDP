@@ -9,10 +9,10 @@ use reqwest::Client;
 use url::Url;
 
 use ironrdp_tokio::AsyncNetworkClient;
-pub(crate) struct AsyncTokioNetworkClient {
+pub(crate) struct ReqwestNetworkClient {
     client: Option<Client>,
 }
-impl AsyncNetworkClient for AsyncTokioNetworkClient {
+impl AsyncNetworkClient for ReqwestNetworkClient {
     fn send<'a>(
         &'a mut self,
         request: &'a sspi::generator::NetworkRequest,
@@ -29,19 +29,19 @@ impl AsyncNetworkClient for AsyncTokioNetworkClient {
     }
 
     fn box_clone(&self) -> Box<dyn AsyncNetworkClient> {
-        return Box::new(AsyncTokioNetworkClient {
+        Box::new(ReqwestNetworkClient {
             client: self.client.clone(),
-        });
+        })
     }
 }
 
-impl AsyncTokioNetworkClient {
+impl ReqwestNetworkClient {
     pub(crate) fn new() -> Self {
         Self { client: None }
     }
 }
 
-impl AsyncTokioNetworkClient {
+impl ReqwestNetworkClient {
     async fn send_tcp(&self, url: &Url, data: &[u8]) -> ConnectorResult<Vec<u8>> {
         let addr = format!("{}:{}", url.host_str().unwrap_or_default(), url.port().unwrap_or(88));
         let mut stream = TcpStream::connect(addr)

@@ -229,15 +229,7 @@ impl SessionBuilder {
 
         info!("Connect to RDP host");
 
-        let config = build_config(
-            username,
-            password,
-            server_domain,
-            client_name,
-            desktop_size,
-            kdc_proxy_url.clone(),
-            Some(destination.clone()),
-        );
+        let config = build_config(username, password, server_domain, client_name, desktop_size);
 
         let ws = WebSocket::open(&proxy_address).context("Couldn’t open WebSocket")?;
 
@@ -480,8 +472,6 @@ fn build_config(
     domain: Option<String>,
     client_name: String,
     desktop_size: DesktopSize,
-    kdc_proxy_url: Option<String>,
-    hostname: Option<String>,
 ) -> connector::Config {
     connector::Config {
         credentials: Credentials::UsernamePassword { username, password },
