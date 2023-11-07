@@ -116,7 +116,7 @@ async fn perform_credssp_step<S>(
     buf: &mut WriteBuf,
     server_name: impl Into<ServerName>,
     server_public_key: Vec<u8>,
-    mut network_client: Option<impl AsyncNetworkClient>,
+    mut network_client: Option<&mut dyn AsyncNetworkClient>,
 ) -> ConnectorResult<ironrdp_connector::Written>
 where
     S: FramedRead + FramedWrite,
