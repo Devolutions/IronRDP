@@ -58,7 +58,7 @@ impl CredSspSequence {
             CredSSPState::CredsspInitial => None,
             CredSSPState::CredsspReplyNeeded => Some(&CREDSSP_TS_REQUEST_HINT),
             CredSSPState::CredsspEarlyUserAuthResult => Some(&CREDSSP_EARLY_USER_AUTH_RESULT_HINT),
-            CredSSPState::Finishied => panic!(),
+            CredSSPState::Finishied => None,
         }
     }
 
