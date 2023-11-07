@@ -72,7 +72,7 @@ connect(
 
 > `authtoken` is the authentication token to send to the Devolutions Gateway.
 
-> `serverDomain` is the Microsoft Doman name(if the computer has one)
+> `serverDomain` is the Windows domain name (if the target computer has one)
 
 > `kdc_proxy_url` is the URL to a KDC Proxy, as specified in [MS-KKDCP documentation](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-kkdcp/5bcebb8d-b747-4ee5-9453-428aec1c5c38)
 
