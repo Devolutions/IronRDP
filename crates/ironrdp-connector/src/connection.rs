@@ -183,11 +183,11 @@ impl ClientConnector {
         matches!(self.state, ClientConnectorState::CredSsp { .. })
     }
 
-    pub fn mark_credssp_as_done(&mut self) -> Written {
+    pub fn mark_credssp_as_done(&mut self) {
         assert!(self.should_perform_credssp());
         let res = self.step(&[], &mut WriteBuf::new()).expect("transition to next state");
         debug_assert!(!self.should_perform_credssp());
-        res
+        assert_eq!(res, Written::Nothing);
     }
 }
 
