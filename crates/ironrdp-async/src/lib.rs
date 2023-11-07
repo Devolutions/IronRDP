@@ -20,4 +20,6 @@ pub trait AsyncNetworkClient {
         &'a mut self,
         network_request: &'a NetworkRequest,
     ) -> Pin<Box<dyn Future<Output = ConnectorResult<Vec<u8>>> + 'a>>;
+
+    fn box_clone(&self) -> Box<dyn AsyncNetworkClient>;
 }

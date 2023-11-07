@@ -10,9 +10,7 @@ use wasm_bindgen_futures::JsFuture;
 use web_sys::ReadableStream;
 
 #[derive(Debug)]
-pub(crate) struct WasmNetworkClient {
-    kdc_proxy_url: String,
-}
+pub(crate) struct WasmNetworkClient;
 impl AsyncNetworkClient for WasmNetworkClient {
     fn send<'a>(
         &'a mut self,
@@ -24,7 +22,7 @@ impl AsyncNetworkClient for WasmNetworkClient {
                 NetworkProtocol::Http | NetworkProtocol::Https => {
                     let body = js_sys::Uint8Array::from(&network_request.data[..]);
 
-                    let stream = gloo_net::http::Request::post(&self.kdc_proxy_url)
+                    let stream = gloo_net::http::Request::post(network_request.url.as_str())
                         .header("keep-alive", "true")
                         .body(body)
                         .map_err(|e| reason_err!("Error send KDC request", "{}", e))?
@@ -41,14 +39,17 @@ impl AsyncNetworkClient for WasmNetworkClient {
             }
         })
     }
-}
 
-impl WasmNetworkClient {
-    pub(crate) fn new(kdc_proxy_url: String) -> Self {
-        Self { kdc_proxy_url }
+    fn box_clone(&self) -> Box<dyn AsyncNetworkClient> {
+        Box::new(WasmNetworkClient)
     }
 }
 
+impl WasmNetworkClient {
+    pub(crate) fn new() -> Self {
+        Self
+    }
+}
 async fn read_stream(stream: ReadableStream) -> ConnectorResult<Vec<u8>> {
     let mut bytes = Vec::new();
     let reader = web_sys::ReadableStreamDefaultReader::new(&stream).map_err(|_| general_err!("error create reader"))?;

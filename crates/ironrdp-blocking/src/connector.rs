@@ -8,7 +8,8 @@ use ironrdp_connector::{
     credssp_sequence::{CredSspProcessGenerator, CredSspSequence},
     custom_err,
     sspi::{credssp::ClientState, generator::GeneratorState, network_client::NetworkClient},
-    ClientConnector, ClientConnectorState, ConnectionResult, ConnectorResult, Sequence as _, ServerName, State as _,
+    ClientConnector, ClientConnectorState, ConnectionResult, ConnectorResult, KerberosConfig, Sequence as _,
+    ServerName, State as _,
 };
 use ironrdp_pdu::write_buf::WriteBuf;
 
@@ -52,13 +53,10 @@ pub fn mark_as_upgraded(_: ShouldUpgrade, connector: &mut ClientConnector) -> Up
 pub fn connect_finalize<S>(
     _: Upgraded,
     framed: &mut Framed<S>,
-    server_name: impl Into<ServerName>,
-    server_public_key: Vec<u8>,
-    network_client: &mut impl NetworkClient,
-    mut connector: ClientConnector,
     server_name: ServerName,
     server_public_key: Vec<u8>,
     network_client: &mut impl NetworkClient,
+    mut connector: ClientConnector,
     kerberos_config: Option<KerberosConfig>,
 ) -> ConnectorResult<ConnectionResult>
 where
@@ -76,6 +74,7 @@ where
             server_name,
             server_public_key,
             network_client,
+            kerberos_config,
         )?;
     }
 
@@ -120,15 +119,16 @@ fn perform_credssp_step<S>(
     framed: &mut Framed<S>,
     connector: &mut ClientConnector,
     buf: &mut WriteBuf,
-    server_name: impl Into<ServerName>,
+    server_name: ServerName,
     server_public_key: Vec<u8>,
     network_client: &mut impl NetworkClient,
-) -> ConnectorResult<ironrdp_connector::Written>
+    kerberos_config: Option<KerberosConfig>,
+) -> ConnectorResult<()>
 where
     S: Read + Write,
 {
     assert!(connector.should_perform_credssp());
-    let mut credssp_sequence = CredSspSequence::new(connector, server_name, server_public_key)?;
+    let mut credssp_sequence = CredSspSequence::new(connector, server_name, server_public_key, kerberos_config)?;
     while !credssp_sequence.is_done() {
         buf.clear();
         let input = if let Some(next_pdu_hint) = credssp_sequence.next_pdu_hint() {

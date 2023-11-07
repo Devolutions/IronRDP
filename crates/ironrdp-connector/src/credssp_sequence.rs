@@ -3,10 +3,11 @@ use ironrdp_pdu::{nego, PduHint};
 use sspi::credssp::{self, ClientState, CredSspClient};
 use sspi::generator::{Generator, NetworkRequest};
 use sspi::negotiate::ProtocolConfig;
-use sspi::KerberosConfig;
+use sspi::{kerberos, KerberosConfig as SSPIKerberosConfig};
 
 use crate::{
-    ClientConnector, ClientConnectorState, ConnectorError, ConnectorErrorKind, ConnectorResult, ServerName, Written,
+    ClientConnector, ClientConnectorState, ConnectorError, ConnectorErrorKind, ConnectorResult, KerberosConfig,
+    ServerName, Written,
 };
 
 #[derive(Clone, Copy, Debug)]
@@ -58,7 +59,7 @@ impl CredSspSequence {
             CredSSPState::CredsspInitial => None,
             CredSSPState::CredsspReplyNeeded => Some(&CREDSSP_TS_REQUEST_HINT),
             CredSSPState::CredsspEarlyUserAuthResult => Some(&CREDSSP_EARLY_USER_AUTH_RESULT_HINT),
-            CredSSPState::Finishied => None,
+            CredSSPState::Finished => None,
         }
     }
 
@@ -66,6 +67,7 @@ impl CredSspSequence {
         connector: &ClientConnector,
         server_name: ServerName,
         server_public_key: Vec<u8>,
+        kerberos_config: Option<KerberosConfig>,
     ) -> ConnectorResult<Self> {
         let config = &connector.config;
         if let crate::Credentials::SmartCard { .. } = config.credentials {
@@ -86,8 +88,8 @@ impl CredSspSequence {
         let service_principal_name = format!("TERMSRV/{}", &server_name);
 
         let credssp_config: Box<dyn ProtocolConfig>;
-        if let Some(ref krb_config) = config.sspi_config {
-            credssp_config = Box::new(Into::<KerberosConfig>::into(krb_config.clone()));
+        if let Some(ref krb_config) = kerberos_config {
+            credssp_config = Box::new(Into::<SSPIKerberosConfig>::into(krb_config.clone()));
         } else {
             credssp_config = Box::<sspi::ntlm::NtlmConfig>::default();
         }
@@ -120,14 +122,13 @@ impl CredSspSequence {
     }
 
     pub fn is_done(&self) -> bool {
-        self.state == CredSSPState::Finishied
+        self.state == CredSSPState::Finished
     }
 
     pub fn wants_request_from_server(&self) -> bool {
         self.next_request.is_none()
     }
 
-    // FIXME: support for EarlyUserAuthResult
     pub fn read_request_from_server(&mut self, input: &[u8]) -> ConnectorResult<()> {
         match self.state {
             CredSSPState::CredsspInitial | CredSSPState::CredsspReplyNeeded => {
@@ -164,7 +165,7 @@ impl CredSspSequence {
             CredSSPState::CredsspInitial => {
                 let (ts_request_from_client, next_state) = match result {
                     ClientState::ReplyNeeded(ts_request) => (ts_request, CredSSPState::CredsspReplyNeeded),
-                    ClientState::FinalMessage(ts_request) => (ts_request, CredSSPState::Finishied),
+                    ClientState::FinalMessage(ts_request) => (ts_request, CredSSPState::Finished),
                 };
                 debug!(message = ?ts_request_from_client, "Send");
 
@@ -180,7 +181,7 @@ impl CredSspSequence {
                         if self.selected_protocol.contains(nego::SecurityProtocol::HYBRID_EX) {
                             CredSSPState::CredsspEarlyUserAuthResult
                         } else {
-                            CredSSPState::Finishied
+                            CredSSPState::Finished
                         },
                     ),
                 };
@@ -191,8 +192,8 @@ impl CredSspSequence {
                 self.next_request = None;
                 Ok((Written::from_size(written)?, next_state))
             }
-            CredSSPState::CredsspEarlyUserAuthResult => Ok((Written::Nothing, CredSSPState::Finishied)),
-            CredSSPState::Finishied => Err(general_err!("CredSSP Sequence if finished")),
+            CredSSPState::CredsspEarlyUserAuthResult => Ok((Written::Nothing, CredSSPState::Finished)),
+            CredSSPState::Finished => Err(general_err!("CredSSP Sequence if finished")),
         }?;
         self.state = next_state;
         Ok(size)

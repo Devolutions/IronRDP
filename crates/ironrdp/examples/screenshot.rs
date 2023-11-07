@@ -215,7 +215,6 @@ fn build_config(username: String, password: String, domain: Option<String>) -> c
         // Disable custom pointers (there is no user interaction anyway)
         no_server_pointer: true,
         autologon: false,
-        sspi_config: Default::default(),
     }
 }
 
@@ -259,10 +258,11 @@ fn connect(
     let connection_result = ironrdp_blocking::connect_finalize(
         upgraded,
         &mut upgraded_framed,
-        &server_name,
+        server_name.into(),
         server_public_key,
         &mut network_client,
         connector,
+        None,
     )
     .context("finalize connection")?;
 

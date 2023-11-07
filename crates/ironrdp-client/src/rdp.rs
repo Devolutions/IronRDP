@@ -131,14 +131,15 @@ async fn connect(
 
     let mut upgraded_framed = ironrdp_tokio::TokioFramed::new(upgraded_stream);
 
-    let network_client = crate::network_client::AsyncTokioNetworkClient::new();
+    let mut network_client = crate::network_client::AsyncTokioNetworkClient::new();
     let connection_result = ironrdp_tokio::connect_finalize(
         upgraded,
         &mut upgraded_framed,
-        &config.destination,
+        (&config.destination).into(),
         server_public_key,
-        Some(network_client),
+        Some(&mut network_client),
         connector,
+        None,
     )
     .await?;
 
