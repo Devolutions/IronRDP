@@ -27,6 +27,12 @@ impl AsyncNetworkClient for AsyncTokioNetworkClient {
             }
         })
     }
+
+    fn box_clone(&self) -> Box<dyn AsyncNetworkClient> {
+        return Box::new(AsyncTokioNetworkClient {
+            client: self.client.clone(),
+        });
+    }
 }
 
 impl AsyncTokioNetworkClient {

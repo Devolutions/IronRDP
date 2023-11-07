@@ -28,7 +28,7 @@ use ironrdp_pdu::{gcc, nego, PduHint};
 pub use license_exchange::{LicenseExchangeSequence, LicenseExchangeState};
 pub use server_name::ServerName;
 pub use sspi;
-use sspi::KerberosConfig;
+use sspi::KerberosConfig as SSPIKerberosConfig;
 
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
@@ -99,17 +99,15 @@ pub struct Config {
     pub no_server_pointer: bool,
     /// If true, the INFO_AUTOLOGON flag is set in the [`ironrdp_pdu::rdp::ClientInfoPdu`].
     pub autologon: bool,
-    // for kerberos authentication
-    pub sspi_config: Option<SspiConfig>,
 }
 
 #[derive(Debug, Clone, Default)]
-pub struct SspiConfig {
+pub struct KerberosConfig {
     pub kdc_proxy_url: Option<url::Url>,
     pub hostname: Option<String>,
 }
 
-impl SspiConfig {
+impl KerberosConfig {
     pub fn new(kdc_proxy_url: Option<String>, hostname: Option<String>) -> ConnectorResult<Self> {
         let kdc_proxy_url = kdc_proxy_url
             .map(|url| url::Url::parse(&url))
@@ -122,9 +120,9 @@ impl SspiConfig {
     }
 }
 
-impl From<SspiConfig> for KerberosConfig {
-    fn from(val: SspiConfig) -> Self {
-        KerberosConfig {
+impl From<KerberosConfig> for SSPIKerberosConfig {
+    fn from(val: KerberosConfig) -> Self {
+        SSPIKerberosConfig {
             url: val.kdc_proxy_url,
             hostname: val.hostname,
         }

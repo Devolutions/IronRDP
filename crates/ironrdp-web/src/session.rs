@@ -8,12 +8,13 @@ use futures_util::io::{ReadHalf, WriteHalf};
 use futures_util::{select, AsyncReadExt as _, AsyncWriteExt as _, FutureExt as _, StreamExt as _};
 use gloo_net::websocket;
 use gloo_net::websocket::futures::WebSocket;
-use ironrdp::connector::{self, ClientConnector, Credentials, SspiConfig};
+use ironrdp::connector::{self, ClientConnector, Credentials, KerberosConfig};
 use ironrdp::graphics::image_processing::PixelFormat;
 use ironrdp::pdu::input::fast_path::FastPathInputEvent;
 use ironrdp::pdu::write_buf::WriteBuf;
 use ironrdp::session::image::DecodedImage;
 use ironrdp::session::{ActiveStage, ActiveStageOutput};
+use ironrdp_futures::AsyncNetworkClient;
 use tap::prelude::*;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::spawn_local;
@@ -513,7 +514,6 @@ fn build_config(
         platform: ironrdp::pdu::rdp::capability_sets::MajorPlatformType::UNSPECIFIED,
         no_server_pointer: false,
         autologon: false,
-        sspi_config:Some(SspiConfig::new(kdc_proxy_url, hostname).unwrap())
     }
 }
 
@@ -554,14 +554,26 @@ async fn connect(
         connect_rdcleanpath(&mut framed, &mut connector, destination.clone(), proxy_auth_token, pcb).await?;
 
     info!("kdc url = {:?}", &kdc_proxy_url);
-    let network_client = kdc_proxy_url.map(WasmNetworkClient::new);
+
+    let mut wasm_network_client = WasmNetworkClient::new();
+    let network_client: Option<&mut dyn AsyncNetworkClient> = kdc_proxy_url
+        .as_ref()
+        .map(|_| &mut wasm_network_client as &mut dyn AsyncNetworkClient);
+
     let connection_result = ironrdp_futures::connect_finalize(
         upgraded,
         &mut framed,
-        &destination,
+        (&destination).into(),
         server_public_key,
         network_client,
         connector,
+        Some(KerberosConfig {
+            kdc_proxy_url: kdc_proxy_url
+                .map(|url| url::Url::parse(&url))
+                .transpose()
+                .context("invalid KDC URL")?,
+            hostname: Some(destination),
+        }),
     )
     .await?;
 
