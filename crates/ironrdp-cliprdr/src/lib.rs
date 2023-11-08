@@ -131,6 +131,8 @@ impl Cliprdr {
                 } else {
                     info!("CLIPRDR(clipboard) Remote has received format list successfully");
                 }
+
+                self.backend.on_format_list_received();
             }
             FormatListResponse::Fail => {
                 return self.handle_error_transition(ClipboardError::FormatListRejected);

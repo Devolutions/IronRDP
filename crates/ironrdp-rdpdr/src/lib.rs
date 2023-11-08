@@ -23,10 +23,9 @@ use pdu::RdpdrPdu;
 pub mod backend;
 pub mod pdu;
 
-use crate::pdu::efs::ServerDriveIoRequest;
-
 pub use self::backend::noop::NoopRdpdrBackend;
 pub use self::backend::RdpdrBackend;
+use crate::pdu::efs::ServerDriveIoRequest;
 
 /// The RDPDR channel as specified in [\[MS-RDPEFS\]].
 ///
