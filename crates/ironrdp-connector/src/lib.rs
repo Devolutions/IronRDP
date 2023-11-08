@@ -28,7 +28,6 @@ use ironrdp_pdu::{gcc, nego, PduHint};
 pub use license_exchange::{LicenseExchangeSequence, LicenseExchangeState};
 pub use server_name::ServerName;
 pub use sspi;
-use sspi::KerberosConfig as SSPIKerberosConfig;
 
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
@@ -120,9 +119,9 @@ impl KerberosConfig {
     }
 }
 
-impl From<KerberosConfig> for SSPIKerberosConfig {
+impl From<KerberosConfig> for sspi::KerberosConfig {
     fn from(val: KerberosConfig) -> Self {
-        SSPIKerberosConfig {
+        sspi::KerberosConfig {
             url: val.kdc_proxy_url,
             hostname: val.hostname,
         }

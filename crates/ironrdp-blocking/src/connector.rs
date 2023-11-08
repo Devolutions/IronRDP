@@ -5,7 +5,7 @@ use ironrdp_connector::sspi::credssp::ClientState;
 use ironrdp_connector::sspi::generator::GeneratorState;
 use ironrdp_connector::sspi::network_client::NetworkClient;
 use ironrdp_connector::{
-    credssp_sequence::{CredSspProcessGenerator, CredSspSequence},
+    credssp_sequence::{CredsspProcessGenerator, CredSspSequence},
     custom_err,
     sspi::{credssp::ClientState, generator::GeneratorState, network_client::NetworkClient},
     ClientConnector, ClientConnectorState, ConnectionResult, ConnectorResult, KerberosConfig, Sequence as _,
@@ -95,7 +95,7 @@ where
 
 #[instrument(level = "info", skip(generator, network_client))]
 fn resolve_generator(
-    generator: &mut CredSspProcessGenerator<'_>,
+    generator: &mut CredsspProcessGenerator<'_>,
     network_client: &mut impl NetworkClient,
 ) -> ConnectorResult<ClientState> {
     let mut state = generator.start();
