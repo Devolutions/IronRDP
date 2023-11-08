@@ -3,7 +3,6 @@ use ironrdp_pdu::{nego, PduHint};
 use sspi::credssp::{self, ClientState, CredSspClient};
 use sspi::generator::{Generator, NetworkRequest};
 use sspi::negotiate::ProtocolConfig;
-use sspi::KerberosConfig as SSPIKerberosConfig;
 
 use crate::{
     ClientConnector, ClientConnectorState, ConnectorError, ConnectorErrorKind, ConnectorResult, KerberosConfig,
@@ -35,7 +34,7 @@ impl PduHint for CredsspEarlyUserAuthResultHint {
     }
 }
 
-pub type CredSspProcessGenerator<'a> = Generator<'a, NetworkRequest, sspi::Result<Vec<u8>>, sspi::Result<ClientState>>;
+pub type CredsspProcessGenerator<'a> = Generator<'a, NetworkRequest, sspi::Result<Vec<u8>>, sspi::Result<ClientState>>;
 
 #[derive(Debug)]
 pub struct CredSspSequence {
@@ -88,7 +87,7 @@ impl CredSspSequence {
 
         let credssp_config: Box<dyn ProtocolConfig>;
         if let Some(ref krb_config) = kerberos_config {
-            credssp_config = Box::new(Into::<SSPIKerberosConfig>::into(krb_config.clone()));
+            credssp_config = Box::new(Into::<sspi::KerberosConfig>::into(krb_config.clone()));
         } else {
             credssp_config = Box::<sspi::ntlm::NtlmConfig>::default();
         }
@@ -153,7 +152,7 @@ impl CredSspSequence {
         }
     }
 
-    pub fn process(&mut self) -> CredSspProcessGenerator<'_> {
+    pub fn process(&mut self) -> CredsspProcessGenerator<'_> {
         let request = self.next_request.take().expect("next request");
         info!("Ts request = {:?}", &request);
         self.client.process(request)
