@@ -68,6 +68,7 @@ pub fn cf_html_to_text(input: &[u8]) -> Result<String, HtmlError> {
         }
 
         // INVARIANT: end_pos < headers_cursor.len() - 1
+        // This is safe because we already checked above that the line ends with `\r` or `\n`.
         #[allow(clippy::arithmetic_side_effects)]
         {
             // Go to the next line, skipping any leftover `LF` if CRLF was used.
@@ -91,6 +92,8 @@ pub fn text_to_cf_html(fragment: &str) -> Vec<u8> {
     let mut buffer = Vec::new();
 
     // INVARIANT: key.len() + value.len() + ":\r\n".len() < usize::MAX
+    // This is always true because we know `key` and `value` used in code below are
+    // short and their sizes are far from `usize::MAX`.
     #[allow(clippy::arithmetic_side_effects)]
     let mut write_header = |key: &str, value: &str| {
         let size = key.len() + value.len() + ":\r\n".len();
@@ -129,7 +132,9 @@ pub fn text_to_cf_html(fragment: &str) -> Vec<u8> {
     let start_fragment_pos_value = format!("{:0>10}", start_fragment_pos);
     let end_fragment_pos_value = format!("{:0>10}", end_fragment_pos);
 
-    // INVARIANT: buffer.len() > placeholder_pos + POS_PLACEHOLDER.len()
+    // INVARIANT: placeholder_pos + POS_PLACEHOLDER.len() < buffer.len()
+    // This is always valid because we know that placeholder is always present in the buffer
+    // fter the header is written and placeholder is within the bounds of the buffer.
     #[allow(clippy::arithmetic_side_effects)]
     let mut replace_placeholder = |placeholder_pos: usize, placeholder_value: &str| {
         buffer[placeholder_pos..placeholder_pos + POS_PLACEHOLDER.len()].copy_from_slice(placeholder_value.as_bytes());

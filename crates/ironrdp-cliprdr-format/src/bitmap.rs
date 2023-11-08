@@ -145,6 +145,7 @@ impl PduEncode for CiexyzTriple {
 /// bpp < 24, which are not supported yet, therefore only fixed part of the header is implemented.
 ///
 /// INVARIANT: `width` and `height` magnitudes are less than or equal to `u16::MAX`.
+/// INVARIANT: `bit_count` is less than or equal to `32`.
 ///
 /// [BITMAPINFO]: https://learn.microsoft.com/en-us/windows/win32/api/wingdi/ns-wingdi-bitmapinfo
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -175,19 +176,26 @@ impl BitmapInfoHeader {
 
     const NAME: &str = "BITMAPINFOHEADER";
 
-    fn encode_with_size(&self, dst: &mut WriteCursor<'_>, size: u32) -> PduResult<()> {
-        ensure_fixed_part_size!(in: dst);
-
+    fn validate_invariants(&self) -> PduResult<()> {
         check_invariant(self.width.abs() <= u16::MAX.into())
             .ok_or_else(|| invalid_message_err!("biWidth", "width is too big"))?;
         check_invariant(self.height.abs() <= u16::MAX.into())
             .ok_or_else(|| invalid_message_err!("biHeight", "height is too big"))?;
+        check_invariant(self.bit_count <= 32).ok_or_else(|| invalid_message_err!("biBitCount", "invalid bit count"))?;
+
+        Ok(())
+    }
+
+    fn encode_with_size(&self, dst: &mut WriteCursor<'_>, size: u32) -> PduResult<()> {
+        ensure_fixed_part_size!(in: dst);
+
+        self.validate_invariants()?;
+
         dst.write_u32(size);
         dst.write_i32(self.width);
         dst.write_i32(self.height);
         dst.write_u16(1); // biPlanes
         dst.write_u16(self.bit_count);
-        check_invariant(self.bit_count <= 32).ok_or_else(|| invalid_message_err!("biBitCount", "invalid bit count"))?;
         dst.write_u32(self.compression.0);
         dst.write_u32(self.size_image);
         dst.write_i32(self.x_pels_per_meter);
@@ -204,20 +212,12 @@ impl BitmapInfoHeader {
         let size = src.read_u32();
 
         let width = src.read_i32();
-        check_invariant(width.abs() <= u16::MAX.into())
-            .ok_or_else(|| invalid_message_err!("biWidth", "width is too big"))?;
-
         let height = src.read_i32();
-        check_invariant(height.abs() <= u16::MAX.into())
-            .ok_or_else(|| invalid_message_err!("biHeight", "height is too big"))?;
-
         let planes = src.read_u16();
         if planes != 1 {
             return Err(invalid_message_err!("biPlanes", "invalid planes count"));
         }
         let bit_count = src.read_u16();
-        check_invariant(bit_count <= 32).ok_or_else(|| invalid_message_err!("biBitCount", "invalid bit count"))?;
-
         let compression = BitmapCompression(src.read_u32());
         let size_image = src.read_u32();
         let x_pels_per_meter = src.read_i32();
@@ -236,6 +236,8 @@ impl BitmapInfoHeader {
             clr_used,
             clr_important,
         };
+
+        header.validate_invariants()?;
 
         Ok((header, size))
     }
@@ -462,7 +464,9 @@ struct PngEncoderInput {
 /// stride = ((((biWidth * biBitCount) + 31) & ~31) >> 3);
 /// biSizeImage = abs(biHeight) * stride;
 /// ```
-#[allow(clippy::arithmetic_side_effects)] // INVARIANT: bit_count <= 32
+///
+/// INVARIANT: bit_count <= 32
+#[allow(clippy::arithmetic_side_effects)]
 fn bmp_stride(width: u16, bit_count: u16) -> usize {
     debug_assert!(bit_count <= 32);
     (((usize::from(width) * usize::from(bit_count)) + 31) & !31) >> 3
@@ -492,7 +496,10 @@ fn transform_bitmap(
 
     let components = color_type.samples();
     debug_assert!(components <= 4);
-    // INVARIANT: height * width * components <= usize::MAX
+
+    // INVARIANT: height * width * components <= u16::MAX * u16::MAX * 4 < usize::MAX
+    // This is always true because `components <= 4` is checked above, and width & height
+    // bounds are validated on PDU encode/decode
     #[allow(clippy::arithmetic_side_effects)]
     let frame_buffer_len = usize::from(height) * usize::from(width) * components;
 
@@ -536,10 +543,14 @@ fn transform_bitmap(
         _ => unreachable!("possible values are restricted by header validation and logic above"),
     };
 
-    // INVARIANT: width * components <= usize::MAX
+    // INVARIANT: width * components <= u16::MAX * 4 < usize::MAX
+    //
+    //
     #[allow(clippy::arithmetic_side_effects)]
+    let dst_chunk_size = usize::from(width) * components;
+
     frame_buffer
-        .chunks_exact_mut(usize::from(width) * components)
+        .chunks_exact_mut(dst_chunk_size)
         .zip(strides)
         .for_each(|(row, stride)| {
             let input = stride.chunks_exact(input_bytes_per_pixel);
@@ -601,16 +612,14 @@ fn transform_png(info: png::OutputInfo, input_buffer: Vec<u8>) -> Result<(Bitmap
         32,
     );
 
-    check_invariant(u16::try_from(info.width).is_ok()).ok_or_else(|| BitmapError::WidthTooBig)?;
-    check_invariant(u16::try_from(info.height).is_ok()).ok_or_else(|| BitmapError::HeightTooBig)?;
-
-    let width_unsigned = u16::try_from(info.width).unwrap();
-    let height_unsigned = u16::try_from(info.height).unwrap();
+    let width_unsigned: u16 = u16::try_from(info.width).map_err(|_| BitmapError::WidthTooBig)?;
+    let height_unsigned: u16 = u16::try_from(info.height).map_err(|_| BitmapError::HeightTooBig)?;
 
     // INVARIANT: stride * height_unsigned <= usize::MAX.
     //
-    // This should be always true, because stide can't be greater than `width_unsigned * 4`,
-    // and `width_unsigned * height_unsigned * 4` is guaranteed to be less or equal to `usize::MAX`.
+    // This never overflows, because stride can't be greater than `width_unsigned * 4`,
+    // and `width_unsigned * height_unsigned * 4` is guaranteed to be lesser or equal
+    // to `usize::MAX`.
     #[allow(clippy::arithmetic_side_effects)]
     let image_size: usize = stride * usize::from(height_unsigned);
 
@@ -627,7 +636,8 @@ fn transform_png(info: png::OutputInfo, input_buffer: Vec<u8>) -> Result<(Bitmap
     };
 
     // Row is in RGBA format
-    // INVARIANT: width_unsigned * 4 <= usize::MAX
+    // INVARIANT: width_unsigned * 4 <= u16::MAX * 4 < usize::MAX
+    // This is always true because width_unsigned is validate above to be less or equal to u16::MAX
     #[allow(clippy::arithmetic_side_effects)]
     let row_size: usize = 4 * usize::from(width_unsigned);
 

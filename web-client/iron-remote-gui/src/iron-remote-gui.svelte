@@ -10,6 +10,7 @@
     import { PublicAPI } from './services/PublicAPI';
     import { ScreenScale } from './enums/ScreenScale';
     import { ClipboardContent, ClipboardTransaction } from '../../../crates/ironrdp-web/pkg/ironrdp_web';
+    import { every } from 'rxjs/operators';
 
     export let scale = 'real';
     export let verbose = 'false';
@@ -62,6 +63,7 @@
     let ffRemoteClipboardTransactionRetriesLeft = 0;
     let ffPostponeKeyboardEvents = false;
     let ffDelayedKeyboardEvents = [];
+    let ffCnavasFocused = false;
 
     /* Firefox-specific END */
 
@@ -550,6 +552,26 @@
     }
 
     function setMouseButtonState(state: MouseEvent, isDown: boolean) {
+        if (isFirefox) {
+            let get_canvas_parent = () => {
+                return currentComponent.shadowRoot.getElementById('renderer').parentElement
+            };
+
+            if (isDown && state.button == 0 && !ffCnavasFocused) {
+                // Do not capture first mouse down event on Firefox, as we need to transfer focus to the
+                // canvas first in order to receive paste events.
+                // wasmService.mouseButtonState(state, isDown, false);
+                // Focus `contenteditable` element to receive `on_paste` events
+                get_canvas_parent().focus();
+                // Finish the focus sequence on Firefox
+                ffCnavasFocused = true;
+            } else {
+                // This is needed to prevent visible "double click" selection on
+                // `texteditable` element
+                get_canvas_parent().blur();
+            }
+        }
+
         wasmService.mouseButtonState(state, isDown, true);
     }
 
@@ -606,9 +628,6 @@
         wasmService.setCanvas(canvas);
 
         initListeners();
-
-        // Make it focused to receive `on_paste` events
-        canvas.focus();
 
         let result = {
             irgUserInteraction: publicAPI.getExposedFunctions(),
