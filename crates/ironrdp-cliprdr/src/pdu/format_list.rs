@@ -14,7 +14,7 @@ use crate::pdu::{ClipboardPduFlags, PartialHeader};
 /// [Standard clipboard formats](https://learn.microsoft.com/en-us/windows/win32/dataxchg/standard-clipboard-formats)
 /// defined by Microsoft are available as constants.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct ClipboardFormatId(u32);
+pub struct ClipboardFormatId(pub u32);
 
 impl ClipboardFormatId {
     /// Text format. Each line ends with a carriage return/linefeed (CR-LF) combination.
@@ -150,6 +150,9 @@ impl ClipboardFormatName {
     /// data  with [`crate::pdu::format_data::PackedFileList`] payload.
     pub const FILE_LIST: Self = Self::new_static("FileGroupDescriptorW");
 
+    /// Special format defined by Windows to store HTML fragment in clipboard.
+    pub const HTML: Self = Self::new_static("HTML Format");
+
     pub fn new(name: impl Into<Cow<'static, str>>) -> Self {
         Self(name.into())
     }
@@ -167,8 +170,8 @@ impl ClipboardFormatName {
 /// Represents `CLIPRDR_SHORT_FORMAT_NAME` and `CLIPRDR_LONG_FORMAT_NAME`
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClipboardFormat {
-    id: ClipboardFormatId,
-    name: Option<ClipboardFormatName>,
+    pub id: ClipboardFormatId,
+    pub name: Option<ClipboardFormatName>,
 }
 
 impl ClipboardFormat {

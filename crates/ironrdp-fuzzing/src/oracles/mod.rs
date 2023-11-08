@@ -118,3 +118,17 @@ pub fn rdp6_decode_bitmap_stream_to_rgb24(input: &BitmapInput<'_>) {
         input.height as usize,
     );
 }
+
+pub fn cliprdr_format(input: &[u8]) {
+    use ironrdp_cliprdr_format::bitmap::{dib_to_png, dibv5_to_png, png_to_cf_dib, png_to_cf_dibv5};
+    use ironrdp_cliprdr_format::html::{cf_html_to_text, text_to_cf_html};
+
+    let _ = png_to_cf_dib(input);
+    let _ = png_to_cf_dibv5(input);
+
+    let _ = dib_to_png(input);
+    let _ = dibv5_to_png(input);
+
+    let _ = cf_html_to_text(input);
+    let _ = text_to_cf_html(String::from_utf8_lossy(input).as_ref());
+}

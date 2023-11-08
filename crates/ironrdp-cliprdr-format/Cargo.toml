@@ -1,0 +1,23 @@
+[package]
+name = "ironrdp-cliprdr-format"
+version = "0.1.0"
+readme = "README.md"
+description = "CLIPRDR format conversion library"
+edition.workspace = true
+license.workspace = true
+
+homepage.workspace = true
+repository.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[lib]
+doctest = false
+test = false
+
+[dependencies]
+ironrdp-pdu.workspace = true
+thiserror.workspace = true
+
+png = "0.17"

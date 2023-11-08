@@ -1,3 +1,5 @@
+mod format;
+
 use expect_test::expect;
 use ironrdp_cliprdr::pdu::{
     Capabilities, CapabilitySet, ClipboardFormat, ClipboardFormatId, ClipboardFormatName,
@@ -135,7 +137,7 @@ encode_decode_test! {
 #[test]
 fn client_temp_dir_encode_decode_ms_1() {
     // Test blob from [MS-RDPECLIP]
-    let input = include_bytes!("../test_data/pdu/clipboard/client_temp_dir.pdu");
+    let input = include_bytes!("../../test_data/pdu/clipboard/client_temp_dir.pdu");
 
     let decoded_pdu: ClipboardPdu = ironrdp_pdu::decode(input).unwrap();
 
@@ -154,7 +156,7 @@ fn client_temp_dir_encode_decode_ms_1() {
 #[test]
 fn format_list_ms_1() {
     // Test blob from [MS-RDPECLIP]
-    let input = include_bytes!("../test_data/pdu/clipboard/format_list.pdu");
+    let input = include_bytes!("../../test_data/pdu/clipboard/format_list.pdu");
 
     let decoded_pdu: ClipboardPdu = ironrdp_pdu::decode(input).unwrap();
 
@@ -208,7 +210,7 @@ fn format_list_ms_1() {
 #[test]
 fn format_list_ms_2() {
     // Test blob from [MS-RDPECLIP]
-    let input = include_bytes!("../test_data/pdu/clipboard/format_list_2.pdu");
+    let input = include_bytes!("../../test_data/pdu/clipboard/format_list_2.pdu");
 
     let decoded_pdu: ClipboardPdu = ironrdp_pdu::decode(input).unwrap();
 
@@ -342,7 +344,7 @@ fn format_list_all_encodings() {
 #[test]
 fn metafile_pdu_ms() {
     // Test blob from [MS-RDPECLIP]
-    let input = include_bytes!("../test_data/pdu/clipboard/metafile.pdu");
+    let input = include_bytes!("../../test_data/pdu/clipboard/metafile.pdu");
 
     let decoded_pdu: ClipboardPdu = ironrdp_pdu::decode(input).unwrap();
 
@@ -367,7 +369,7 @@ fn metafile_pdu_ms() {
 #[test]
 fn palette_pdu_ms() {
     // Test blob from [MS-RDPECLIP]
-    let input = include_bytes!("../test_data/pdu/clipboard/palette.pdu");
+    let input = include_bytes!("../../test_data/pdu/clipboard/palette.pdu");
 
     let decoded_pdu: ClipboardPdu = ironrdp_pdu::decode(input).unwrap();
 
@@ -393,7 +395,7 @@ fn palette_pdu_ms() {
 #[test]
 fn file_list_pdu_ms() {
     // Test blob from [MS-RDPECLIP]
-    let input = include_bytes!("../test_data/pdu/clipboard/file_list.pdu");
+    let input = include_bytes!("../../test_data/pdu/clipboard/file_list.pdu");
 
     let decoded_pdu: ClipboardPdu = ironrdp_pdu::decode(input).unwrap();
 

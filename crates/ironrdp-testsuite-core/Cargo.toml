@@ -25,6 +25,7 @@ paste = "1"
 png = "0.17"
 hex = "0.4"
 ironrdp-cliprdr.workspace = true
+ironrdp-cliprdr-format.workspace = true
 ironrdp-connector.workspace = true
 ironrdp-fuzzing.workspace = true
 ironrdp-graphics.workspace = true
