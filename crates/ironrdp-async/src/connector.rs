@@ -92,7 +92,7 @@ where
 
 async fn resolve_generator(
     generator: &mut CredsspProcessGenerator<'_>,
-    mut network_client: Box<dyn AsyncNetworkClient>,
+    network_client: &mut dyn AsyncNetworkClient,
 ) -> ConnectorResult<ClientState> {
     let mut state = generator.start();
     loop {
@@ -115,7 +115,7 @@ async fn perform_credssp_step<S>(
     buf: &mut WriteBuf,
     server_name: ServerName,
     server_public_key: Vec<u8>,
-    network_client: Option<&mut dyn AsyncNetworkClient>,
+    mut network_client: Option<&mut dyn AsyncNetworkClient>,
     kerberos_config: Option<KerberosConfig>,
 ) -> ConnectorResult<()>
 where
@@ -148,9 +148,9 @@ where
         }
         let client_state = {
             let mut generator = credssp_sequence.process();
-            if let Some(ref network_client_ref) = network_client {
+            if let Some(network_client_ref) = network_client.as_deref_mut() {
                 trace!("resolving network");
-                resolve_generator(&mut generator, network_client_ref.box_clone()).await?
+                resolve_generator(&mut generator, network_client_ref).await?
             } else {
                 generator
                     .resolve_to_result()
