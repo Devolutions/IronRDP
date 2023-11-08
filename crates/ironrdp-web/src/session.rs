@@ -545,23 +545,22 @@ async fn connect(
 
     info!("kdc url = {:?}", &kdc_proxy_url);
 
-    let mut wasm_network_client = WasmNetworkClient::new();
-    let network_client: Option<&mut dyn AsyncNetworkClient> = kdc_proxy_url
-        .as_ref()
-        .map(|_| &mut wasm_network_client as &mut dyn AsyncNetworkClient);
+    let mut network_client = WasmNetworkClient::new();
 
     let connection_result = ironrdp_futures::connect_finalize(
         upgraded,
         &mut framed,
         (&destination).into(),
         server_public_key,
-        network_client,
+        Some(&mut network_client),
         connector,
         Some(KerberosConfig {
             kdc_proxy_url: kdc_proxy_url
                 .map(|url| url::Url::parse(&url))
                 .transpose()
                 .context("invalid KDC URL")?,
+            // HACK: It’s supposed to be the computer name of the client, but since it’s not easy to retrieve this information in the browser,
+            // we set the destination hostname instead because it happens to work.
             hostname: Some(destination),
         }),
     )
