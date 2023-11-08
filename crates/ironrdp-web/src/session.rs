@@ -559,6 +559,8 @@ async fn connect(
                 .map(|url| url::Url::parse(&url))
                 .transpose()
                 .context("invalid KDC URL")?,
+            // HACK: It’s supposed to be the computer name of the client, but since it’s not easy to retrieve this information in the browser,
+            // we set the destination hostname instead because it happens to work.
             hostname: Some(destination),
         }),
     )
