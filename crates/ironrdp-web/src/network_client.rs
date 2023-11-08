@@ -40,9 +40,6 @@ impl AsyncNetworkClient for WasmNetworkClient {
         })
     }
 
-    fn box_clone(&self) -> Box<dyn AsyncNetworkClient> {
-        Box::new(WasmNetworkClient)
-    }
 }
 
 impl WasmNetworkClient {
