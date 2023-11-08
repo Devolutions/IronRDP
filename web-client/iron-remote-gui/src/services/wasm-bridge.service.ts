@@ -80,7 +80,6 @@ export class WasmBridgeService {
         this.onForceClipboardUpdate = callback;
     }
 
-
     mouseIn(event: MouseEvent) {
         this.syncModifier(event);
         this.keyboardActive = true;
@@ -152,7 +151,6 @@ export class WasmBridgeService {
         if (this.onForceClipboardUpdate != null) {
             sessionBuilder.force_clipboard_update_callback(this.onForceClipboardUpdate);
         }
-
 
         if (desktopSize != null) {
             sessionBuilder.desktop_size(DesktopSize.new(desktopSize.width, desktopSize.height));

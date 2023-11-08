@@ -10,7 +10,6 @@
     import { PublicAPI } from './services/PublicAPI';
     import { ScreenScale } from './enums/ScreenScale';
     import { ClipboardContent, ClipboardTransaction } from '../../../crates/ironrdp-web/pkg/ironrdp_web';
-    import { every } from 'rxjs/operators';
 
     export let scale = 'real';
     export let verbose = 'false';
@@ -41,8 +40,8 @@
 
     let isClipboardApiSupported = false;
     let lastClientClipboardItems = new Map<string, string | Uint8Array>();
-    let lastClientClipboardTransaction = null;
-    let lastClipboardMonitorLoopError = null;
+    let lastClientClipboardTransaction: ClipboardTransaction | null = null;
+    let lastClipboardMonitorLoopError: Error | null = null;
 
     /* Firefox-specific BEGIN */
 
@@ -62,17 +61,16 @@
     // clipboard content to the client.
     let ffRemoteClipboardTransactionRetriesLeft = 0;
     let ffPostponeKeyboardEvents = false;
-    let ffDelayedKeyboardEvents = [];
+    let ffDelayedKeyboardEvents: KeyboardEvent[] = [];
     let ffCnavasFocused = false;
 
     /* Firefox-specific END */
 
-
     /* Clipboard initialization BEGIN */
 
     // Detect if browser supports async Clipboard API
-    if (!isFirefox && navigator.clipboard) {
-        if (navigator.clipboard.read && navigator.clipboard.write) {
+    if (!isFirefox && navigator.clipboard != undefined) {
+        if (navigator.clipboard.read != undefined && navigator.clipboard.write != undefined) {
             isClipboardApiSupported = true;
         }
     }
@@ -92,15 +90,16 @@
     /* Clipboard initialization END */
 
     function isCopyKeyboardEvent(evt: KeyboardEvent) {
-        return (evt.ctrlKey && evt.code === 'KeyC')
-            || (evt.ctrlKey && evt.code === 'KeyX')
-            || (evt.code == 'Copy')
-            || (evt.code == 'Cut');
+        return (
+            (evt.ctrlKey && evt.code === 'KeyC') ||
+            (evt.ctrlKey && evt.code === 'KeyX') ||
+            evt.code == 'Copy' ||
+            evt.code == 'Cut'
+        );
     }
 
     function isPasteKeyboardEvent(evt: KeyboardEvent) {
-        return (evt.ctrlKey && evt.code === 'KeyV')
-            || (evt.code == 'Paste');
+        return (evt.ctrlKey && evt.code === 'KeyV') || evt.code == 'Paste';
     }
 
     // This function is required to covert `ClipboardTransaction` to a object that can be used
@@ -114,7 +113,7 @@
             }
 
             let mime = item.mime_type();
-            let value = new Blob([ item.value() ], { type: mime });
+            let value = new Blob([item.value()], { type: mime });
             result[mime] = value;
         }
 
@@ -130,7 +129,7 @@
                 wasmService.onClipboardChanged(ClipboardTransaction.new());
             }
         } catch (err) {
-            console.error("Failed to send initial clipboard state: " + err);
+            console.error('Failed to send initial clipboard state: ' + err);
         }
     }
 
@@ -141,7 +140,7 @@
             const clipboard_item = new ClipboardItem(mime_formats);
             navigator.clipboard.write([clipboard_item]);
         } catch (err) {
-            console.error("Failed to set client clipboard: " + err);
+            console.error('Failed to set client clipboard: ' + err);
         }
     }
 
@@ -163,7 +162,7 @@
             // We only support one item at a time
             var item = value[0];
 
-            if (!item.types.some((type) => type.startsWith("text/") || type.startsWith("image/png") )) {
+            if (!item.types.some((type) => type.startsWith('text/') || type.startsWith('image/png'))) {
                 // Unsupported types
                 return;
             }
@@ -178,26 +177,24 @@
             // very frequent network activity.
             for (const kind of item.types) {
                 // Get blob
-                const blobIsString = kind.startsWith("text/");
+                const blobIsString = kind.startsWith('text/');
 
                 const blob = await item.getType(kind);
-                const value = blobIsString
-                    ? await blob.text()
-                    : new Uint8Array(await blob.arrayBuffer());
+                const value = blobIsString ? await blob.text() : new Uint8Array(await blob.arrayBuffer());
 
                 const is_equal = blobIsString
-                    ? function (a: any, b: any) {
-                        return a === b;
-                    }
-                    : function (a: any, b: any) {
-                        if (!(a instanceof Uint8Array) || !(b instanceof Uint8Array)) {
-                            return false;
-                        }
+                    ? function (a: string | Uint8Array | undefined, b: string | Uint8Array | undefined) {
+                          return a === b;
+                      }
+                    : function (a: string | Uint8Array | undefined, b: string | Uint8Array | undefined) {
+                          if (!(a instanceof Uint8Array) || !(b instanceof Uint8Array)) {
+                              return false;
+                          }
 
-                        return a && b
-                            && a.length === b.length
-                            && a.every((v, i) => v === b[i])
-                    };
+                          return (
+                              a != undefined && b != undefined && a.length === b.length && a.every((v, i) => v === b[i])
+                          );
+                      };
 
                 const previousValue = lastClientClipboardItems.get(kind);
 
@@ -208,7 +205,6 @@
 
                 values.set(kind, value);
             }
-
 
             // Clipboard has changed, we need to acknowledge remote side about it.
             if (!sameValue) {
@@ -223,12 +219,12 @@
                         return;
                     }
 
-                    if (key.startsWith("text/") && typeof value === "string") {
+                    if (key.startsWith('text/') && typeof value === 'string') {
                         transaction.add_content(ClipboardContent.new_text(key, value));
-                    } else if (key.startsWith("image/") && value instanceof Uint8Array) {
+                    } else if (key.startsWith('image/') && value instanceof Uint8Array) {
                         transaction.add_content(ClipboardContent.new_binary(key, value));
                     }
-                })
+                });
 
                 if (!transaction.is_empty()) {
                     lastClientClipboardTransaction = transaction;
@@ -236,11 +232,16 @@
                 }
             }
         } catch (err) {
-            // Prevent spamming the console with the same error
-            if ((lastClipboardMonitorLoopError === null) || (lastClipboardMonitorLoopError.toString() !== err.toString())) {
-                console.error("Clipboard monitoring error: " + err);
+            if (err instanceof Error) {
+                const printError =
+                    lastClipboardMonitorLoopError === null ||
+                    lastClipboardMonitorLoopError.toString() !== err.toString();
+                // Prevent spamming the console with the same error
+                if (printError) {
+                    console.error('Clipboard monitoring error: ' + err);
+                }
+                lastClipboardMonitorLoopError = err;
             }
-            lastClipboardMonitorLoopError = err;
         } finally {
             setTimeout(onMonitorClipboard, CLIPBOARD_MONITORING_INTERVAL);
         }
@@ -253,7 +254,7 @@
             // We are ready to send delayed Ctrl+V events
             ffSimulateDelayedKeyEvents();
         } catch (err) {
-            console.error("Failed to send delayed keyboard events: " + err);
+            console.error('Failed to send delayed keyboard events: ' + err);
         }
     }
 
@@ -270,13 +271,13 @@
                 ffRemoteClipboardTransaction = null;
                 for (const content of transaction.content()) {
                     // Firefox only supports text/plain mime type for clipboard writes :(
-                    if (content.mime_type() === "text/plain") {
+                    if (content.mime_type() === 'text/plain') {
                         navigator.clipboard.writeText(content.value());
                         break;
                     }
                 }
             } catch (err) {
-                console.error("Failed to set client clipboard: " + err);
+                console.error('Failed to set client clipboard: ' + err);
             }
         } else if (ffRemoteClipboardTransactionRetriesLeft > 0) {
             ffRemoteClipboardTransactionRetriesLeft--;
@@ -295,7 +296,7 @@
         ffPostponeKeyboardEvents = false;
     }
 
-    function ffOnPasteHandler(evt) {
+    function ffOnPasteHandler(evt: ClipboardEvent) {
         // We don't actually want to paste the clipboard data into the `contenteditable` div.
         evt.preventDefault();
 
@@ -309,11 +310,15 @@
         try {
             let transaction = ClipboardTransaction.new();
 
+            if (evt.clipboardData == null) {
+                return;
+            }
+
             for (var clipItem of evt.clipboardData.items) {
                 let mime = clipItem.type;
 
-                if (mime.startsWith("text/")) {
-                    clipItem.getAsString((str) => {
+                if (mime.startsWith('text/')) {
+                    clipItem.getAsString((str: string) => {
                         let content = ClipboardContent.new_text(mime, str);
                         transaction.add_content(content);
 
@@ -324,8 +329,13 @@
                     break;
                 }
 
-                if (mime.startsWith("image/")) {
-                    clipItem.getAsFile().arrayBuffer().then((buffer) => {
+                if (mime.startsWith('image/')) {
+                    let file = clipItem.getAsFile();
+                    if (file == null) {
+                        continue;
+                    }
+
+                    file.arrayBuffer().then((buffer: ArrayBuffer) => {
                         const strict_buffer = new Uint8Array(buffer);
                         let content = ClipboardContent.new_binary(mime, strict_buffer);
                         transaction.add_content(content);
@@ -338,7 +348,7 @@
                 }
             }
         } catch (err) {
-            console.error("Failed to update remote clipboard: " + err);
+            console.error('Failed to update remote clipboard: ' + err);
         }
     }
 
@@ -554,7 +564,7 @@
     function setMouseButtonState(state: MouseEvent, isDown: boolean) {
         if (isFirefox) {
             let get_canvas_parent = () => {
-                return currentComponent.shadowRoot.getElementById('renderer').parentElement
+                return currentComponent.shadowRoot.getElementById('renderer').parentElement;
             };
 
             if (isDown && state.button == 0 && !ffCnavasFocused) {
@@ -590,7 +600,10 @@
     }
 
     function keyboardEvent(evt: KeyboardEvent) {
-        if (isFirefox && navigator.clipboard && navigator.clipboard.writeText && isCopyKeyboardEvent(evt)) {
+        const browserHasClipboardAccess =
+            navigator.clipboard != undefined && navigator.clipboard.writeText != undefined;
+
+        if (isFirefox && browserHasClipboardAccess && isCopyKeyboardEvent(evt)) {
             // Special processing for firefox, as the only way Firefox supports clipboard write is
             // only after some user-initiated event (e.g. keyboard event).
             // therefore we need to wait here for the clipboard data to be ready.
@@ -643,6 +656,7 @@
         await initcanvas();
     });
 </script>
+
 <div
     bind:this={wrapper}
     class="screen-wrapper scale-{scale}"
@@ -650,12 +664,7 @@
     class:capturing-inputs={capturingInputs}
     style={wrapperStyle}
 >
-    <div
-        class="screen-viewer"
-        style={viewerStyle}
-        contenteditable="{isFirefox}"
-        on:paste={ffOnPasteHandler}
-    >
+    <div class="screen-viewer" style={viewerStyle} contenteditable={isFirefox} on:paste={ffOnPasteHandler}>
         <canvas
             on:mousemove={getMousePos}
             on:mousedown={(event) => setMouseButtonState(event, true)}
