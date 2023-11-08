@@ -27,12 +27,6 @@ impl AsyncNetworkClient for ReqwestNetworkClient {
             }
         })
     }
-
-    fn box_clone(&self) -> Box<dyn AsyncNetworkClient> {
-        Box::new(ReqwestNetworkClient {
-            client: self.client.clone(),
-        })
-    }
 }
 
 impl ReqwestNetworkClient {
