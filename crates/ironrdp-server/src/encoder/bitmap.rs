@@ -20,20 +20,20 @@ impl BitmapEncoder {
     }
 
     pub(crate) fn encode(&mut self, bitmap: &BitmapUpdate, output: &mut [u8]) -> Result<usize, PduError> {
-        let row_len = bitmap.width * u32::from(bitmap.format.bytes_per_pixel());
-        let chunk_height = u32::from(u16::MAX) / row_len;
+        let row_len = usize::from(bitmap.width.get()) * usize::from(bitmap.format.bytes_per_pixel());
+        let chunk_height = usize::from(u16::MAX) / row_len;
 
         let mut cursor = WriteCursor::new(output);
-        let chunks = bitmap.data.chunks((row_len * chunk_height) as usize);
+        let chunks = bitmap.data.chunks(row_len * chunk_height);
 
         let total = u16::try_from(chunks.clone().count()).unwrap();
         BitmapUpdateData::encode_header(total, &mut cursor)?;
 
         for (i, chunk) in chunks.enumerate() {
-            let height = u32::try_from(chunk.len()).unwrap() / row_len;
-            let top = bitmap.top + u32::try_from(i).unwrap() * chunk_height;
+            let height = chunk.len() / row_len;
+            let top = usize::from(bitmap.top) + i * chunk_height;
 
-            let encoder = BitmapStreamEncoder::new(bitmap.width as usize, height as usize);
+            let encoder = BitmapStreamEncoder::new(usize::from(bitmap.width.get()), height);
 
             let len = match bitmap.order {
                 PixelOrder::BottomToTop => {
@@ -41,11 +41,8 @@ impl BitmapEncoder {
                 }
 
                 PixelOrder::TopToBottom => {
-                    let bytes_per_pixel = bitmap.format.bytes_per_pixel() as usize;
-                    let pixels = chunk
-                        .chunks(row_len as usize)
-                        .rev()
-                        .flat_map(|row| row.chunks(bytes_per_pixel));
+                    let bytes_per_pixel = usize::from(bitmap.format.bytes_per_pixel());
+                    let pixels = chunk.chunks(row_len).rev().flat_map(|row| row.chunks(bytes_per_pixel));
 
                     Self::encode_iter(encoder, bitmap.format, pixels, self.buffer.as_mut_slice())
                 }
@@ -53,9 +50,9 @@ impl BitmapEncoder {
 
             let data = BitmapData {
                 rectangle: InclusiveRectangle {
-                    left: u16::try_from(bitmap.left).unwrap(),
+                    left: bitmap.left,
                     top: u16::try_from(top).unwrap(),
-                    right: u16::try_from(bitmap.left + bitmap.width - 1).unwrap(),
+                    right: bitmap.left + bitmap.width.get() - 1,
                     bottom: u16::try_from(top + height - 1).unwrap(),
                 },
                 width: u16::try_from(bitmap.width).unwrap(),

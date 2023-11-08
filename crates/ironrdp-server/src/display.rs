@@ -1,3 +1,5 @@
+use std::num::NonZeroU16;
+
 pub use ironrdp_acceptor::DesktopSize;
 pub use ironrdp_graphics::image_processing::PixelFormat;
 
@@ -24,10 +26,10 @@ pub enum PixelOrder {
 ///
 #[derive(Debug, Clone)]
 pub struct BitmapUpdate {
-    pub top: u32,
-    pub left: u32,
-    pub width: u32,
-    pub height: u32,
+    pub top: u16,
+    pub left: u16,
+    pub width: NonZeroU16,
+    pub height: NonZeroU16,
     pub format: PixelFormat,
     pub order: PixelOrder,
     pub data: Vec<u8>,
