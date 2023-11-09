@@ -1,7 +1,5 @@
-use std::io::Cursor;
-
 use ironrdp_connector::{
-    legacy, ConnectorError, ConnectorErrorExt, ConnectorResult, DesktopSize, Sequence, State, Written,
+    legacy, reason_err, ConnectorError, ConnectorErrorExt, ConnectorResult, DesktopSize, Sequence, State, Written,
 };
 use ironrdp_pdu as pdu;
 use pdu::rdp::capability_sets::CapabilitySet;
@@ -52,18 +50,20 @@ impl Acceptor {
     }
 
     pub fn get_result(&mut self) -> Option<AcceptorResult> {
-        match &mut self.state {
+        match std::mem::take(&mut self.state) {
             AcceptorState::Accepted {
                 channels,
                 client_capabilities,
                 input_events,
             } => Some(AcceptorResult {
-                channels: std::mem::take(channels),
-                capabilities: std::mem::take(client_capabilities),
-                input_events: std::mem::take(input_events),
+                channels,
+                capabilities: client_capabilities,
+                input_events,
             }),
-
-            _ => None,
+            previous_state => {
+                self.state = previous_state;
+                None
+            }
         }
     }
 }
@@ -330,7 +330,7 @@ impl Sequence for Acceptor {
             } => {
                 let data = pdu::decode::<pdu::mcs::SendDataRequest<'_>>(input).map_err(ConnectorError::pdu)?;
 
-                let client_info = rdp::ClientInfoPdu::from_buffer(Cursor::new(data.user_data))?;
+                let client_info = rdp::ClientInfoPdu::from_buffer(data.user_data.as_ref())?;
 
                 debug!(message = ?client_info, "Received");
 
@@ -425,24 +425,40 @@ impl Sequence for Acceptor {
             }
 
             AcceptorState::CapabilitiesWaitConfirm { channels } => {
-                let data = pdu::decode::<pdu::mcs::SendDataRequest<'_>>(input).map_err(ConnectorError::pdu)?;
+                let message = ironrdp_pdu::decode::<mcs::McsMessage<'_>>(input).map_err(ConnectorError::pdu)?;
 
-                let capabilities_confirm = rdp::headers::ShareControlHeader::from_buffer(Cursor::new(data.user_data))?;
+                match message {
+                    mcs::McsMessage::SendDataRequest(data) => {
+                        let capabilities_confirm =
+                            rdp::headers::ShareControlHeader::from_buffer(data.user_data.as_ref())?;
 
-                debug!(message = ?capabilities_confirm, "Received");
+                        debug!(message = ?capabilities_confirm, "Received");
 
-                let ShareControlPdu::ClientConfirmActive(confirm) = capabilities_confirm.share_control_pdu else {
-                    return Err(ConnectorError::general("expected client confirm active"));
-                };
+                        let ShareControlPdu::ClientConfirmActive(confirm) = capabilities_confirm.share_control_pdu
+                        else {
+                            return Err(ConnectorError::general("expected client confirm active"));
+                        };
 
-                (
-                    Written::Nothing,
-                    AcceptorState::ConnectionFinalization {
-                        channels,
-                        finalization: FinalizationSequence::new(self.user_channel_id, self.io_channel_id),
-                        client_capabilities: confirm.pdu.capability_sets,
-                    },
-                )
+                        (
+                            Written::Nothing,
+                            AcceptorState::ConnectionFinalization {
+                                channels,
+                                finalization: FinalizationSequence::new(self.user_channel_id, self.io_channel_id),
+                                client_capabilities: confirm.pdu.capability_sets,
+                            },
+                        )
+                    }
+
+                    mcs::McsMessage::DisconnectProviderUltimatum(ultimatum) => {
+                        return Err(reason_err!("received disconnect ultimatum", "{:?}", ultimatum.reason))
+                    }
+
+                    _ => {
+                        warn!(?message, "Unexpected MCS message received");
+
+                        (Written::Nothing, AcceptorState::CapabilitiesWaitConfirm { channels })
+                    }
+                }
             }
 
             AcceptorState::ConnectionFinalization {
