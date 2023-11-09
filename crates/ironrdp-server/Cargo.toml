@@ -17,7 +17,6 @@ test = false
 
 [dependencies]
 anyhow = "1.0"
-bytes = "1"
 tokio = { version = "1", features = ["net", "macros"] }
 tokio-rustls = "0.24"
 async-trait = "0.1"
