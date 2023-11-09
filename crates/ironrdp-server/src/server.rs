@@ -46,23 +46,56 @@ impl RdpServerSecurity {
 ///
 /// # Example
 ///
-/// ```ignore
+/// ```
 /// use ironrdp_server::{RdpServer, RdpServerInputHandler, RdpServerDisplay};
 ///
-/// async fn main() {
-///     let tls_acceptor = todo!();
-///     let input_handler = todo!();
-///     let display_handler = todo!();
-///
-///     let mut server = RdpServer::builder()
-///         .with_addr(([127, 0, 0, 1], 3389))
-///         .with_tls(tls_acceptor)
-///         .with_input_handler(input_handler)
-///         .with_display_handler(display_handler)
-///         .build();
-///
-///     server.run().await;
+///# use ironrdp_server::{DisplayUpdate, DesktopSize, KeyboardEvent, MouseEvent};
+///# use tokio_rustls::TlsAcceptor;
+///# struct NoopInputHandler;
+///# #[async_trait::async_trait]
+///# impl RdpServerInputHandler for NoopInputHandler {
+///#     async fn keyboard(&mut self, _: KeyboardEvent) {}
+///#     async fn mouse(&mut self, _: MouseEvent) {}
+///# }
+///# struct NoopDisplay;
+///# #[async_trait::async_trait]
+///# impl RdpServerDisplay for NoopDisplay {
+///#     async fn size(&mut self) -> DesktopSize {
+///#         todo!()
+///#     }
+///#     async fn get_update(&mut self) -> Option<DisplayUpdate> {
+///#         todo!()
+///#     }
+///# }
+///# async fn stub() {
+/// fn make_tls_acceptor() -> TlsAcceptor {
+///    /* snip */
+///#    todo!()  
 /// }
+///
+/// fn make_input_handler() -> impl RdpServerInputHandler {
+///    /* snip */
+///#    NoopInputHandler    
+/// }
+///
+/// fn make_display_handler() -> impl RdpServerDisplay {
+///    /* snip */
+///#    NoopDisplay    
+/// }
+///
+/// let tls_acceptor = make_tls_acceptor();
+/// let input_handler = make_input_handler();
+/// let display_handler = make_display_handler();
+///
+/// let mut server = RdpServer::builder()
+///     .with_addr(([127, 0, 0, 1], 3389))
+///     .with_tls(tls_acceptor)
+///     .with_input_handler(input_handler)
+///     .with_display_handler(display_handler)
+///     .build();
+///
+/// server.run().await;
+///# }
 /// ```
 pub struct RdpServer {
     opts: RdpServerOptions,
