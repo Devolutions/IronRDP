@@ -216,7 +216,7 @@ pub enum ServerLicenseError {
     InvalidRsaPublicKeyDataLength,
     #[error("invalid License Header security flags")]
     InvalidSecurityFlags,
-    #[error("ihe server returned unexpected error")]
+    #[error("the server returned unexpected error: {0:?}")]
     UnexpectedError(LicensingErrorMessage),
     #[error("got unexpected license message")]
     UnexpectedLicenseMessage,

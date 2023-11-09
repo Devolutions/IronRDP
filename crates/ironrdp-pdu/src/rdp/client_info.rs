@@ -585,13 +585,13 @@ pub enum ClientInfoError {
     IOError(#[from] io::Error),
     #[error("UTF-8 error")]
     Utf8Error(#[from] std::string::FromUtf8Error),
-    #[error("Invalid address family field")]
+    #[error("invalid address family field")]
     InvalidAddressFamily,
-    #[error("Invalid flags field")]
+    #[error("invalid flags field")]
     InvalidClientInfoFlags,
-    #[error("Invalid performance flags field")]
+    #[error("invalid performance flags field")]
     InvalidPerformanceFlags,
-    #[error("Invalid reconnect cookie field")]
+    #[error("invalid reconnect cookie field")]
     InvalidReconnectCookie,
 }
 

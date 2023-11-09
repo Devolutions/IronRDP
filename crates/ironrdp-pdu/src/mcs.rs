@@ -1119,13 +1119,13 @@ mod legacy {
         RdpError(#[from] crate::RdpError),
         #[error("GCC block error")]
         GccError(#[from] GccError),
-        #[error("Invalid disconnect provider ultimatum")]
+        #[error("invalid disconnect provider ultimatum")]
         InvalidDisconnectProviderUltimatum,
-        #[error("Invalid domain MCS PDU")]
+        #[error("invalid domain MCS PDU")]
         InvalidDomainMcsPdu,
-        #[error("Invalid MCS Connection Sequence PDU")]
+        #[error("invalid MCS Connection Sequence PDU")]
         InvalidPdu(String),
-        #[error("Invalid invalid MCS channel id")]
+        #[error("invalid invalid MCS channel id")]
         UnexpectedChannelId(String),
     }
 

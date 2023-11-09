@@ -118,10 +118,10 @@ pub enum MonitorOrientation {
 pub enum MonitorExtendedDataError {
     #[error("IO error")]
     IOError(#[from] io::Error),
-    #[error("Invalid monitor attribute size field")]
+    #[error("invalid monitor attribute size field")]
     InvalidMonitorAttributeSize,
-    #[error("Invalid monitor orientation field")]
+    #[error("invalid monitor orientation field")]
     InvalidMonitorOrientation,
-    #[error("Invalid monitor count field")]
+    #[error("invalid monitor count field")]
     InvalidMonitorCount,
 }

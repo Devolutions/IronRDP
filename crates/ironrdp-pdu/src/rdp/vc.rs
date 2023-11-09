@@ -69,23 +69,23 @@ bitflags! {
 pub enum ChannelError {
     #[error("IO error")]
     IOError(#[from] io::Error),
-    #[error("From UTF8 error: {}", _0)]
+    #[error("from UTF-8 error")]
     FromUtf8Error(#[from] std::string::FromUtf8Error),
-    #[error("Invalid channel PDU header")]
+    #[error("invalid channel PDU header")]
     InvalidChannelPduHeader,
-    #[error("Invalid channel total data length")]
+    #[error("invalid channel total data length")]
     InvalidChannelTotalDataLength,
-    #[error("Invalid DVC PDU type")]
+    #[error("invalid DVC PDU type")]
     InvalidDvcPduType,
-    #[error("Invalid DVC id length value")]
+    #[error("invalid DVC id length value")]
     InvalidDVChannelIdLength,
-    #[error("Invalid DVC data length value")]
+    #[error("invalid DVC data length value")]
     InvalidDvcDataLength,
-    #[error("Invalid DVC capabilities version")]
+    #[error("invalid DVC capabilities version")]
     InvalidDvcCapabilitiesVersion,
-    #[error("Invalid DVC message size")]
+    #[error("invalid DVC message size")]
     InvalidDvcMessageSize,
-    #[error("Invalid DVC total message size: actual ({actual}) > expected ({expected})")]
+    #[error("invalid DVC total message size: actual ({actual}) > expected ({expected})")]
     InvalidDvcTotalMessageSize { actual: usize, expected: usize },
 }
 

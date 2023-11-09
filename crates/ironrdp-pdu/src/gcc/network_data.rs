@@ -250,8 +250,8 @@ pub enum NetworkDataError {
     IOError(#[from] io::Error),
     #[error("UTF-8 error")]
     Utf8Error(#[from] str::Utf8Error),
-    #[error("Invalid channel options field")]
+    #[error("invalid channel options field")]
     InvalidChannelOptions,
-    #[error("Invalid channel count field")]
+    #[error("invalid channel count field")]
     InvalidChannelCount,
 }

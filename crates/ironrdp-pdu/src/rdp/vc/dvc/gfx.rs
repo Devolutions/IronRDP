@@ -300,17 +300,17 @@ impl<'a> From<&'a ServerPdu> for ServerPduType {
 pub enum GraphicsPipelineError {
     #[error("IO error")]
     IOError(#[from] io::Error),
-    #[error("Graphics messages error")]
+    #[error("graphics messages error")]
     GraphicsMessagesError(#[from] graphics_messages::GraphicsMessagesError),
-    #[error("Invalid Header cmd ID")]
+    #[error("invalid Header cmd ID")]
     InvalidCmdId,
-    #[error("Unexpected client's PDU type: {0:?}")]
+    #[error("unexpected client's PDU type: {0:?}")]
     UnexpectedClientPduType(ClientPduType),
-    #[error("Unexpected server's PDU type: {0:?}")]
+    #[error("unexpected server's PDU type: {0:?}")]
     UnexpectedServerPduType(ServerPduType),
-    #[error("Invalid ResetGraphics PDU size: expected ({expected}) != actual ({actual})")]
+    #[error("invalid ResetGraphics PDU size: expected ({expected}) != actual ({actual})")]
     InvalidResetGraphicsPduSize { expected: usize, actual: usize },
-    #[error("Invalid PDU length: expected ({expected}) != actual ({actual})")]
+    #[error("invalid PDU length: expected ({expected}) != actual ({actual})")]
     InvalidPduLength { expected: usize, actual: usize },
 }
 

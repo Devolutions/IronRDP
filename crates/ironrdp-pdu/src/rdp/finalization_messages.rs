@@ -179,18 +179,18 @@ bitflags! {
 pub enum FinalizationMessagesError {
     #[error("IO error")]
     IOError(#[from] io::Error),
-    #[error("Monitor Data error")]
+    #[error("monitor Data error")]
     MonitorDataError(#[from] gcc::MonitorDataError),
-    #[error("Invalid message type field in Synchronize PDU")]
+    #[error("invalid message type field in Synchronize PDU")]
     InvalidMessageType,
-    #[error("Invalid control action field in Control PDU")]
+    #[error("invalid control action field in Control PDU")]
     InvalidControlAction,
-    #[error("Invalid grant id field in Control PDU")]
+    #[error("invalid grant id field in Control PDU")]
     InvalidGrantId,
-    #[error("Invalid control id field in Control PDU")]
+    #[error("invalid control id field in Control PDU")]
     InvalidControlId,
-    #[error("Invalid list flags field in Font List PDU")]
+    #[error("invalid list flags field in Font List PDU")]
     InvalidListFlags,
-    #[error("Invalid monitor count field: {0}")]
+    #[error("invalid monitor count field: {0}")]
     InvalidMonitorCount(u32),
 }

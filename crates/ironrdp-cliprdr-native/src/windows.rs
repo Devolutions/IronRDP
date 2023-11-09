@@ -28,40 +28,40 @@ pub type WinCliprdrResult<T> = Result<T, WinCliprdrError>;
 
 #[derive(Debug, Error)]
 pub enum WinCliprdrError {
-    #[error("Failed to register clipboard format listener")]
+    #[error("failed to register clipboard format listener")]
     AddClipboardFormatListener,
 
-    #[error("Failed to enumerate formats available in the current clipboard")]
+    #[error("failed to enumerate formats available in the current clipboard")]
     FormatsEnumeration,
 
-    #[error("Clipboard is busy")]
+    #[error("clipboard is busy")]
     ClipboardAccessDenied,
 
-    #[error("Failed to open the clipboard")]
+    #[error("failed to open the clipboard")]
     ClipboardOpen,
 
-    #[error("Failed to empty the clipboard")]
+    #[error("failed to empty the clipboard")]
     ClipboardEmpty,
 
-    #[error("Failed to convert UTF-16 string to UTF-8")]
+    #[error("failed to convert UTF-16 string to UTF-8")]
     Uft16Conversion,
 
-    #[error("Failed to get current clipboard data")]
+    #[error("failed to get current clipboard data")]
     ClipboardData,
 
-    #[error("Failed to set clipboard data")]
+    #[error("failed to set clipboard data")]
     SetClipboardData,
 
-    #[error("Failed to subclass window")]
+    #[error("failed to subclass window")]
     WindowSubclass,
 
-    #[error("Failed to allocate global memory")]
+    #[error("failed to allocate global memory")]
     Alloc,
 
-    #[error("Failed to receive data from remote clipboard")]
+    #[error("failed to receive data from remote clipboard")]
     DataReceiveTimeout,
 
-    #[error("Failed to render clipboard format")]
+    #[error("failed to render clipboard format")]
     RenderFormat,
 
     #[error("WinAPI error")]

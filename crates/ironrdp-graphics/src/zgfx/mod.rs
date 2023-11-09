@@ -430,12 +430,12 @@ lazy_static::lazy_static! {
 pub enum ZgfxError {
     #[error("IO error")]
     IOError(#[from] io::Error),
-    #[error("Invalid compression type")]
+    #[error("invalid compression type")]
     InvalidCompressionType,
-    #[error("Invalid segmented descriptor")]
+    #[error("invalid segmented descriptor")]
     InvalidSegmentedDescriptor,
     #[error(
-        "Decompressed size of segments ({}) does not equal to uncompressed size ({})",
+        "decompressed size of segments ({}) does not equal to uncompressed size ({})",
         decompressed_size,
         uncompressed_size
     )]
@@ -443,7 +443,7 @@ pub enum ZgfxError {
         decompressed_size: usize,
         uncompressed_size: usize,
     },
-    #[error("Token bits not found")]
+    #[error("token bits not found")]
     TokenBitsNotFound,
 }
 

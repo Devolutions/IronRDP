@@ -2,13 +2,13 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum HtmlError {
-    #[error("Invalid CF_HTML format")]
+    #[error("invalid CF_HTML format")]
     InvalidFormat,
-    #[error("Invalid UTF-8")]
+    #[error("invalid UTF-8")]
     InvalidUtf8(#[from] std::string::FromUtf8Error),
-    #[error("Failed to parse integer")]
+    #[error("failed to parse integer")]
     InvalidInteger(#[from] std::num::ParseIntError),
-    #[error("Invalid integer conversion")]
+    #[error("invalid integer conversion")]
     InvalidConversion,
 }
 

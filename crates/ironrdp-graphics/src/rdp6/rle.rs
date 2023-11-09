@@ -10,25 +10,25 @@ const MAX_DECODED_SEGMENT_SIZE: usize = 47;
 
 #[derive(Debug, Error)]
 pub enum RleDecodeError {
-    #[error("Failed to read RLE-compressed data: {0}")]
+    #[error("failed to read RLE-compressed data: {0}")]
     ReadCompressedData(#[source] std::io::Error),
 
-    #[error("Failed to write decompressed data: {0}")]
+    #[error("failed to write decompressed data: {0}")]
     WriteDecompressedData(#[source] std::io::Error),
 
-    #[error("Invalid RLE segment header")]
+    #[error("invalid RLE segment header")]
     InvalidSegmentHeader,
 
-    #[error("Decoded scanline segments length exceeds scanline length")]
+    #[error("decoded scanline segments length exceeds scanline length")]
     SegmentDoNotFitScanline,
 }
 
 #[derive(Debug, Error)]
 pub enum RleEncodeError {
-    #[error("Not enough data to compress")]
+    #[error("not enough data to compress")]
     NotEnoughBytes,
 
-    #[error("Destination buffer is too small")]
+    #[error("destination buffer is too small")]
     BufferTooSmall,
 }
 

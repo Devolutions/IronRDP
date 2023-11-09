@@ -292,9 +292,9 @@ impl<'a> From<&'a ClientPdu> for ClientPduType {
 pub enum DisplayPipelineError {
     #[error("IO error")]
     IOError(#[from] io::Error),
-    #[error("Invalid Header cmd ID")]
+    #[error("invalid Header cmd ID")]
     InvalidCmdId,
-    #[error("Invalid PDU length: expected ({expected}) != actual ({actual})")]
+    #[error("invalid PDU length: expected ({expected}) != actual ({actual})")]
     InvalidPduLength { expected: usize, actual: usize },
 }
 

@@ -536,56 +536,56 @@ enum CapabilitySetType {
 pub enum CapabilitySetsError {
     #[error("IO error")]
     IOError(#[from] io::Error),
-    #[error("Utf8 error")]
+    #[error("UTF-8 error")]
     Utf8Error(#[from] std::string::FromUtf8Error),
-    #[error("Invalid type field")]
+    #[error("invalid type field")]
     InvalidType,
-    #[error("Invalid bitmap compression field")]
+    #[error("invalid bitmap compression field")]
     InvalidCompressionFlag,
-    #[error("Invalid multiple rectangle support field")]
+    #[error("invalid multiple rectangle support field")]
     InvalidMultipleRectSupport,
-    #[error("Invalid protocol version field")]
+    #[error("invalid protocol version field")]
     InvalidProtocolVersion,
-    #[error("Invalid compression types field")]
+    #[error("invalid compression types field")]
     InvalidCompressionTypes,
-    #[error("Invalid update capability flags field")]
+    #[error("invalid update capability flags field")]
     InvalidUpdateCapFlag,
-    #[error("Invalid remote unshare flag field")]
+    #[error("invalid remote unshare flag field")]
     InvalidRemoteUnshareFlag,
-    #[error("Invalid compression level field")]
+    #[error("invalid compression level field")]
     InvalidCompressionLevel,
-    #[error("Invalid brush support level field")]
+    #[error("invalid brush support level field")]
     InvalidBrushSupportLevel,
-    #[error("Invalid glyph support level field")]
+    #[error("invalid glyph support level field")]
     InvalidGlyphSupportLevel,
-    #[error("Invalid RemoteFX capability version")]
+    #[error("invalid RemoteFX capability version")]
     InvalidRfxICapVersion,
-    #[error("Invalid RemoteFX capability tile size")]
+    #[error("invalid RemoteFX capability tile size")]
     InvalidRfxICapTileSize,
-    #[error("Invalid RemoteFXICap color conversion bits")]
+    #[error("invalid RemoteFXICap color conversion bits")]
     InvalidRfxICapColorConvBits,
-    #[error("Invalid RemoteFXICap transform bits")]
+    #[error("invalid RemoteFXICap transform bits")]
     InvalidRfxICapTransformBits,
-    #[error("Invalid RemoteFXICap entropy bits field")]
+    #[error("invalid RemoteFXICap entropy bits field")]
     InvalidRfxICapEntropyBits,
-    #[error("Invalid RemoteFX capability set block type")]
+    #[error("invalid RemoteFX capability set block type")]
     InvalidRfxCapsetBlockType,
-    #[error("Invalid RemoteFX capability set type")]
+    #[error("invalid RemoteFX capability set type")]
     InvalidRfxCapsetType,
-    #[error("Invalid RemoteFX capabilities block type")]
+    #[error("invalid RemoteFX capabilities block type")]
     InvalidRfxCapsBlockType,
-    #[error("Invalid RemoteFX capabilities block length")]
+    #[error("invalid RemoteFX capabilities block length")]
     InvalidRfxCapsBockLength,
-    #[error("Invalid number of capability sets in RemoteFX capabilities")]
+    #[error("invalid number of capability sets in RemoteFX capabilities")]
     InvalidRfxCapsNumCapsets,
-    #[error("Invalid codec property field")]
+    #[error("invalid codec property field")]
     InvalidCodecProperty,
-    #[error("Invalid codec ID")]
+    #[error("invalid codec ID")]
     InvalidCodecID,
-    #[error("Invalid channel chunk size field")]
+    #[error("invalid channel chunk size field")]
     InvalidChunkSize,
-    #[error("Invalid codec property length for the current property ID")]
+    #[error("invalid codec property length for the current property ID")]
     InvalidPropertyLength,
-    #[error("Invalid data length")]
+    #[error("invalid data length")]
     InvalidLength,
 }
