@@ -170,7 +170,7 @@ pub trait StaticVirtualChannelProcessor: AsAny + fmt::Debug + Send {
 
     #[doc(hidden)]
     fn is_drdynvc(&self) -> bool {
-        // FIXME: temporary method that will be removed once drdynvc is ported to the new API
+        // FIXME(#61): temporary method that will be removed once drdynvc is ported to the new API
         false
     }
 }
