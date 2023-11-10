@@ -38,28 +38,28 @@ impl PduHint for CredsspEarlyUserAuthResultHint {
 pub type CredsspProcessGenerator<'a> = Generator<'a, NetworkRequest, sspi::Result<Vec<u8>>, sspi::Result<ClientState>>;
 
 #[derive(Debug)]
-pub struct CredSspSequence {
+pub struct CredsspSequence {
     client: CredSspClient,
     next_request: Option<credssp::TsRequest>,
-    state: CredSSPState,
+    state: CredsspState,
     selected_protocol: nego::SecurityProtocol,
 }
 
 #[derive(Debug, PartialEq)]
-pub(crate) enum CredSSPState {
+pub(crate) enum CredsspState {
     CredsspInitial,
     CredsspReplyNeeded,
     CredsspEarlyUserAuthResult,
     Finished,
 }
 
-impl CredSspSequence {
+impl CredsspSequence {
     pub fn next_pdu_hint(&self) -> Option<&dyn PduHint> {
         match self.state {
-            CredSSPState::CredsspInitial => None,
-            CredSSPState::CredsspReplyNeeded => Some(&CREDSSP_TS_REQUEST_HINT),
-            CredSSPState::CredsspEarlyUserAuthResult => Some(&CREDSSP_EARLY_USER_AUTH_RESULT_HINT),
-            CredSSPState::Finished => None,
+            CredsspState::CredsspInitial => None,
+            CredsspState::CredsspReplyNeeded => Some(&CREDSSP_TS_REQUEST_HINT),
+            CredsspState::CredsspEarlyUserAuthResult => Some(&CREDSSP_EARLY_USER_AUTH_RESULT_HINT),
+            CredsspState::Finished => None,
         }
     }
 
@@ -110,7 +110,7 @@ impl CredSspSequence {
             ClientConnectorState::CredSsp { selected_protocol } => Ok(Self {
                 client,
                 next_request: Some(credssp::TsRequest::default()),
-                state: CredSSPState::CredsspInitial,
+                state: CredsspState::CredsspInitial,
                 selected_protocol,
             }),
             _ => Err(general_err!(
@@ -120,7 +120,7 @@ impl CredSspSequence {
     }
 
     pub fn is_done(&self) -> bool {
-        self.state == CredSSPState::Finished
+        self.state == CredsspState::Finished
     }
 
     pub fn wants_request_from_server(&self) -> bool {
@@ -129,7 +129,7 @@ impl CredSspSequence {
 
     pub fn read_request_from_server(&mut self, input: &[u8]) -> ConnectorResult<()> {
         match self.state {
-            CredSSPState::CredsspInitial | CredSSPState::CredsspReplyNeeded => {
+            CredsspState::CredsspInitial | CredsspState::CredsspReplyNeeded => {
                 info!("read request from server: {:?}", input);
                 let message = credssp::TsRequest::from_buffer(input)
                     .map_err(|e| reason_err!("CredSSP", "TsRequest decode: {e}"))?;
@@ -137,7 +137,7 @@ impl CredSspSequence {
                 self.next_request = Some(message);
                 Ok(())
             }
-            CredSSPState::CredsspEarlyUserAuthResult => {
+            CredsspState::CredsspEarlyUserAuthResult => {
                 let early_user_auth_result = credssp::EarlyUserAuthResult::from_buffer(input)
                     .map_err(|e| custom_err!("credssp::EarlyUserAuthResult", e))?;
 
@@ -160,10 +160,10 @@ impl CredSspSequence {
 
     pub fn handle_process_result(&mut self, result: ClientState, output: &mut WriteBuf) -> ConnectorResult<Written> {
         let (size, next_state) = match self.state {
-            CredSSPState::CredsspInitial => {
+            CredsspState::CredsspInitial => {
                 let (ts_request_from_client, next_state) = match result {
-                    ClientState::ReplyNeeded(ts_request) => (ts_request, CredSSPState::CredsspReplyNeeded),
-                    ClientState::FinalMessage(ts_request) => (ts_request, CredSSPState::Finished),
+                    ClientState::ReplyNeeded(ts_request) => (ts_request, CredsspState::CredsspReplyNeeded),
+                    ClientState::FinalMessage(ts_request) => (ts_request, CredsspState::Finished),
                 };
                 debug!(message = ?ts_request_from_client, "Send");
 
@@ -171,15 +171,15 @@ impl CredSspSequence {
                 self.next_request = None;
                 Ok((Written::from_size(written)?, next_state))
             }
-            CredSSPState::CredsspReplyNeeded => {
+            CredsspState::CredsspReplyNeeded => {
                 let (ts_request_from_client, next_state) = match result {
-                    credssp::ClientState::ReplyNeeded(ts_request) => (ts_request, CredSSPState::CredsspReplyNeeded),
+                    credssp::ClientState::ReplyNeeded(ts_request) => (ts_request, CredsspState::CredsspReplyNeeded),
                     credssp::ClientState::FinalMessage(ts_request) => (
                         ts_request,
                         if self.selected_protocol.contains(nego::SecurityProtocol::HYBRID_EX) {
-                            CredSSPState::CredsspEarlyUserAuthResult
+                            CredsspState::CredsspEarlyUserAuthResult
                         } else {
-                            CredSSPState::Finished
+                            CredsspState::Finished
                         },
                     ),
                 };
@@ -190,8 +190,8 @@ impl CredSspSequence {
                 self.next_request = None;
                 Ok((Written::from_size(written)?, next_state))
             }
-            CredSSPState::CredsspEarlyUserAuthResult => Ok((Written::Nothing, CredSSPState::Finished)),
-            CredSSPState::Finished => Err(general_err!("CredSSP Sequence if finished")),
+            CredsspState::CredsspEarlyUserAuthResult => Ok((Written::Nothing, CredsspState::Finished)),
+            CredsspState::Finished => Err(general_err!("CredSSP Sequence if finished")),
         }?;
         self.state = next_state;
         Ok(size)
