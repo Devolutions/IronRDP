@@ -116,3 +116,33 @@ pub fn tests_run(sh: &Shell) -> anyhow::Result<()> {
     println!("All good!");
     Ok(())
 }
+
+pub fn lock_files(sh: &Shell) -> anyhow::Result<()> {
+    let _s = Section::new("CHECK-LOCKS");
+
+    // Note that we can’t really use the --locked option of cargo, because to
+    // run xtask, we need to compile it using cargo first, and thus the lock
+    // files are already "refreshed" as far as cargo is concerned. Instead,
+    // this task will check for modifications to the lock files using git-status
+    // porcelain. The side benefit is that we can check for npm lock files too.
+
+    const LOCK_FILES: &[&str] = &[
+        "Cargo.lock",
+        "fuzz/Cargo.lock",
+        "web-client/iron-remote-gui/package-lock.json",
+        "web-client/iron-svelte-client/package-lock.json",
+    ];
+
+    let output = cmd!(sh, "git status --porcelain --untracked-files=no")
+        .args(LOCK_FILES)
+        .read()?;
+
+    if !output.is_empty() {
+        cmd!(sh, "git status").run()?;
+        anyhow::bail!("one or more lock files are changed, you should commit those");
+    }
+
+    println!("All good!");
+
+    Ok(())
+}

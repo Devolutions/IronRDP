@@ -12,6 +12,7 @@ TASKS:
   bootstrap               Install all requirements for development
   check fmt               Check formatting
   check lints             Check lints
+  check locks             Check for dirty or staged lock files not yet committed
   check tests [--no-run]  Compile tests and, unless specified otherwise, run them
   ci                      Run all checks required on CI
   clean                   Clean workspace
@@ -49,6 +50,7 @@ pub enum Action {
     Bootstrap,
     CheckFmt,
     CheckLints,
+    CheckLocks,
     CheckTests {
         no_run: bool,
     },
@@ -92,6 +94,7 @@ pub fn parse_args() -> anyhow::Result<Args> {
             Some("check") => match args.subcommand()?.as_deref() {
                 Some("fmt") => Action::CheckFmt,
                 Some("lints") => Action::CheckLints,
+                Some("locks") => Action::CheckLocks,
                 Some("tests") => Action::CheckTests {
                     no_run: args.contains("--no-run"),
                 },
