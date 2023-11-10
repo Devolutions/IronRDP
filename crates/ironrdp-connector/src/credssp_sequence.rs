@@ -3,6 +3,7 @@ use ironrdp_pdu::{nego, PduHint};
 use sspi::credssp::{self, ClientState, CredSspClient};
 use sspi::generator::{Generator, NetworkRequest};
 use sspi::negotiate::ProtocolConfig;
+use sspi::Username;
 
 use crate::{
     ClientConnector, ClientConnectorState, ConnectorError, ConnectorErrorKind, ConnectorResult, KerberosConfig,
@@ -76,9 +77,8 @@ impl CredSspSequence {
         }
 
         let credentials = sspi::AuthIdentity {
-            username: config.credentials.username().into(),
+            username: Username::parse(config.credentials.username()).map_err(|e| custom_err!("parsing username", e))?,
             password: config.credentials.secret().to_owned().into(),
-            domain: config.domain.clone(),
         };
 
         let server_name = server_name.into_inner();
