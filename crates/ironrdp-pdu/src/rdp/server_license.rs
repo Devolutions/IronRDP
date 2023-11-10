@@ -121,6 +121,9 @@ impl PduParsing for LicenseHeader {
     }
 }
 
+/// [2.2.1.12.1.1] Licensing Preamble (LICENSE_PREAMBLE)
+///
+/// [2.2.1.12.1.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/73170ca2-5f82-4a2d-9d1b-b439f3d8dadc
 #[repr(u8)]
 #[derive(Debug, PartialEq, Eq, FromPrimitive, ToPrimitive)]
 pub enum PreambleType {
