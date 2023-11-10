@@ -265,7 +265,7 @@ If the line is too long, you want to split the sentence in two.
 Some parameters are threaded unchanged through many function calls.
 They determine the "context" of the operation.
 Pass such parameters first, not last.
-If there are several context parameters, consider packing them into a `struct Ctx` and passing it as `&self`.
+If there are several context parameters, consider [packing them into a `struct Ctx` and passing it as `&self`][ra-ctx-struct].
 
 ```rust
 // GOOD
@@ -291,6 +291,8 @@ fn do_something_else(op: impl Fn(KeyKind) -> bool, connector: &mut ClientConnect
 
 **Rationale:** consistency.
 Context-first works better when non-context parameter is a lambda.
+
+[ra-ctx-struct]: https://github.com/rust-lang/rust-analyzer/blob/76633199f4316b9c659d4ec0c102774d693cd940/crates/ide-db/src/path_transform.rs#L192-L339
 
 # Runtime and compile time performance
 
