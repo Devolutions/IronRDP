@@ -2,7 +2,7 @@ use ironrdp_connector::credssp::{CredsspProcessGenerator, CredsspSequence, Kerbe
 use ironrdp_connector::sspi::credssp::ClientState;
 use ironrdp_connector::sspi::generator::GeneratorState;
 use ironrdp_connector::{
-    credssp_sequence::{CredSspSequence, CredsspPCredsspSequence},
+    credssp_sequence::{CredsspProcessGenerator, CredsspSequence},
     custom_err,
     sspi::{credssp::ClientState, generator::GeneratorState},
     ClientConnector, ClientConnectorState, ConnectionResult, ConnectorResult, KerberosConfig, Sequence as _,
