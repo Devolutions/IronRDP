@@ -207,9 +207,9 @@ pub struct ServerDriveQueryInformationRequest {
   /* snip */
 }
 
-// BAD (non reference-style links make very long lines)
+// BAD (non reference-style links make barely readable, very long lines)
 
-/// [2.2.3.3.8 Server Drive Query Information Request (DR_DRIVE_QUERY_INFORMATION_REQ)](https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/e43dcd68-2980-40a9-9238-344b6cf94946)
+/// [2.2.3.3.8](https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/e43dcd68-2980-40a9-9238-344b6cf94946) Server Drive Query Information Request (DR_DRIVE_QUERY_INFORMATION_REQ)
 ///
 /// The server issues a query information request on a redirected file system device.
 pub struct ServerDriveQueryInformationRequest {
