@@ -1,5 +1,5 @@
 use ironrdp_connector::{
-    credssp_sequence::{CredSspSequence, CredsspProcessGenerator},
+    credssp_sequence::{CredSspSequence, CredsspPCredsspSequence},
     custom_err,
     sspi::{credssp::ClientState, generator::GeneratorState},
     ClientConnector, ClientConnectorState, ConnectionResult, ConnectorResult, KerberosConfig, Sequence as _,
@@ -119,7 +119,7 @@ where
     S: FramedRead + FramedWrite,
 {
     assert!(connector.should_perform_credssp());
-    let mut credssp_sequence = CredSspSequence::new(connector, server_name, server_public_key, kerberos_config)?;
+    let mut credssp_sequence = CredsspSequence::new(connector, server_name, server_public_key, kerberos_config)?;
     while !credssp_sequence.is_done() {
         buf.clear();
         let input = if let Some(next_pdu_hint) = credssp_sequence.next_pdu_hint() {
