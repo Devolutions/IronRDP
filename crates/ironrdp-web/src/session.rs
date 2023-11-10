@@ -258,7 +258,16 @@ impl SessionBuilder {
 
         let ws = WebSocketCompat::new(ws);
 
-        let (connection_result, ws) = connect(ws, config, auth_token, destination, pcb, kdc_proxy_url).await?;
+        let (connection_result, ws) = connect(
+            ws,
+            config,
+            auth_token,
+            destination,
+            pcb,
+            clipboard.as_ref().map(|clip| clip.backend()),
+            kdc_proxy_url,
+        )
+        .await?;
 
         info!("Connected!");
 
@@ -543,7 +552,8 @@ async fn connect(
         connector.attach_static_channel(Cliprdr::new(Box::new(clipboard_backend)));
     }
 
-    let (upgraded, server_public_key) = connect_rdcleanpath(&mut framed, &mut connector, destination.clone(), proxy_auth_token, pcb).await?;
+    let (upgraded, server_public_key) =
+        connect_rdcleanpath(&mut framed, &mut connector, destination.clone(), proxy_auth_token, pcb).await?;
 
     info!("kdc url = {:?}", &kdc_proxy_url);
 

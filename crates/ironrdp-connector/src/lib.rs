@@ -122,8 +122,8 @@ impl KerberosConfig {
 impl From<KerberosConfig> for sspi::KerberosConfig {
     fn from(val: KerberosConfig) -> Self {
         sspi::KerberosConfig {
-            url: val.kdc_proxy_url,
-            hostname: val.hostname,
+            kdc_url: val.kdc_proxy_url,
+            client_computer_name: val.hostname,
         }
     }
 }

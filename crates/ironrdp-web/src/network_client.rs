@@ -39,7 +39,6 @@ impl AsyncNetworkClient for WasmNetworkClient {
             }
         })
     }
-
 }
 
 impl WasmNetworkClient {

@@ -100,7 +100,7 @@ impl CredSspSequence {
             credssp::ClientMode::Negotiate(sspi::NegotiateConfig {
                 protocol_config: credssp_config,
                 package_list: None,
-                hostname: server_name,
+                client_computer_name: server_name,
             }),
             service_principal_name,
         )
