@@ -141,7 +141,6 @@ error!(error = ?e, "Active stage failed");
 error!(%error, "Active stage failed");
 error!(error = format!("{err:#}"), "Active stage failed");
 
-
 // BAD
 error!(?e, "Active stage failed");
 error!(%err, "Active stage failed");
