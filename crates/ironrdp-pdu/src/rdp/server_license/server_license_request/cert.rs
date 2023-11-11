@@ -24,6 +24,9 @@ pub enum CertificateType {
     X509(X509CertificateChain),
 }
 
+/// [2.2.1.4.2] X.509 Certificate Chain (X509 _CERTIFICATE_CHAIN)
+///
+/// [2.2.1.4.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpele/bf2cc9cc-2b01-442e-a288-6ddfa3b80d59
 #[derive(Debug, PartialEq, Eq)]
 pub struct X509CertificateChain {
     pub certificate_array: Vec<Vec<u8>>,
@@ -84,6 +87,9 @@ impl PduParsing for X509CertificateChain {
     }
 }
 
+/// [2.2.1.4.3.1.1] Server Proprietary Certificate (PROPRIETARYSERVERCERTIFICATE)
+///
+/// [2.2.1.4.3.1.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/a37d449a-73ac-4f00-9b9d-56cefc954634
 #[derive(Debug, PartialEq, Eq)]
 pub struct ProprietaryCertificate {
     pub public_key: RsaPublicKey,

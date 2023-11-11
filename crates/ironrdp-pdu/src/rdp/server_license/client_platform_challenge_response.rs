@@ -22,6 +22,9 @@ const RESPONSE_DATA_STATIC_FIELDS_SIZE: usize = 8;
 
 const CLIENT_HARDWARE_IDENTIFICATION_SIZE: usize = 20;
 
+/// [2.2.2.5] Client Platform Challenge Response (CLIENT_PLATFORM_CHALLENGE_RESPONSE)
+///
+/// [2.2.2.5]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpele/f53ab87c-d07d-4bf9-a2ac-79542f7b456c
 #[derive(Debug, PartialEq, Eq)]
 pub struct ClientPlatformChallengeResponse {
     pub license_header: LicenseHeader,
