@@ -46,6 +46,11 @@ impl State for LicenseExchangeState {
     }
 }
 
+/// Client licensing sequence
+///
+/// Implements the state machine described in MS-RDPELE, section [3.1.5.3.1] Client State Transition.
+///
+/// [3.1.5.3.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpele/8f9b860a-3687-401d-b3bc-7e9f5d4f7528
 #[derive(Debug)]
 #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct LicenseExchangeSequence {
@@ -156,7 +161,6 @@ impl Sequence for LicenseExchangeSequence {
                     }
                     server_license::InitialMessageType::StatusValidClient(_) => {
                         info!("Server did not initiate license exchange");
-
                         (Written::Nothing, LicenseExchangeState::LicenseExchanged)
                     }
                 }
@@ -195,13 +199,10 @@ impl Sequence for LicenseExchangeSequence {
                         )
                     }
                     Err(error) => {
-                        // It appears that in some cases (?), the server does not send a SERVER_PLATFORM_CHALLENGE.
-                        // Instead a SERVER_LICENSE_ERROR with the STATUS_VALID_CLIENT error code is received.
-                        // Note that the specification says this SHOULD happen at the beginning of the Licensing Phase:
-                        // https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/7d941d0d-d482-41c5-b728-538faa3efb31
+                        // FIXME(#269): weird control flow pattern
                         downcast_if_status_valid_client(error, |licensing_error_message| {
                             debug!(message = ?licensing_error_message, "Received");
-                            warn!("STATUS_VALID_CLIENT error code at License Platform Challenge step");
+                            info!("Client licensing completed");
                             (Written::Nothing, LicenseExchangeState::LicenseExchanged)
                         })?
                     }
@@ -228,13 +229,10 @@ impl Sequence for LicenseExchangeSequence {
                         debug!("License verified with success");
                     }
                     Err(error) => {
-                        // It appears that in some cases (?), the server does not send a SERVER_NEW_LICENSE/SERVER_UPGRADE_LICENSE.
-                        // Instead a SERVER_LICENSE_ERROR with the STATUS_VALID_CLIENT error code is received.
-                        // Note that the specification says this SHOULD happen at the beginning of the Licensing Phase:
-                        // https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/7d941d0d-d482-41c5-b728-538faa3efb31
+                        // FIXME(#269): weird control flow pattern
                         downcast_if_status_valid_client(error, |licensing_error_message| {
                             debug!(message = ?licensing_error_message, "Received");
-                            warn!("STATUS_VALID_CLIENT error code at Licensing final step");
+                            info!("Client licensing completed");
                         })?;
                     }
                 }
