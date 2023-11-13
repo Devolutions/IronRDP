@@ -7,9 +7,9 @@ use crate::rdp6::rle::{compress_8bpp_plane, RleEncodeError};
 
 #[derive(Debug, Error)]
 pub enum BitmapEncodeError {
-    #[error("Failed to rle compress")]
+    #[error("failed to rle compress")]
     Rle(RleEncodeError),
-    #[error("Failed to encode pdu")]
+    #[error("failed to encode pdu")]
     Pdu(PduError),
 }
 

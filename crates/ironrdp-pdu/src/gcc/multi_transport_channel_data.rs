@@ -47,6 +47,6 @@ bitflags! {
 pub enum MultiTransportChannelDataError {
     #[error("IO error")]
     IOError(#[from] io::Error),
-    #[error("Invalid flags field")]
+    #[error("invalid flags field")]
     InvalidMultiTransportFlags,
 }

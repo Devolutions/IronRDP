@@ -168,21 +168,21 @@ impl Renderer {
 
 #[derive(Debug, Error)]
 pub enum RendererError {
-    #[error("Unable to send message on channel {0}")]
+    #[error("unable to send message on channel {0}")]
     SendError(String),
-    #[error("Unable to receive message on channel {0}")]
+    #[error("unable to receive message on channel {0}")]
     ReceiveError(String),
-    #[error("errored to decode openh264 stream {0}")]
+    #[error("failed to decode OpenH264 stream {0}")]
     OpenH264Error(#[from] openh264::Error),
-    #[error("Graphics pipeline protocol error: {0}")]
+    #[error("graphics pipeline protocol error: {0}")]
     GraphicsPipelineError(#[from] gfx::GraphicsPipelineError),
-    #[error("Invalid surface id: {0}")]
+    #[error("invalid surface id: {0}")]
     InvalidSurfaceId(u16),
-    #[error("Codec not supported: {0:?}")]
+    #[error("codec not supported: {0:?}")]
     UnsupportedCodec(Codec1Type),
-    #[error("errored to decode rdp data")]
+    #[error("failed to decode rdp data")]
     DecodeError,
-    #[error("Lock poisoned")]
+    #[error("lock poisoned")]
     LockPoisonedError,
 }
 

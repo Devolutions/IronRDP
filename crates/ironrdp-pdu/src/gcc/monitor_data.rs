@@ -104,8 +104,8 @@ bitflags! {
 pub enum MonitorDataError {
     #[error("IO error")]
     IOError(#[from] io::Error),
-    #[error("Invalid monitor count field")]
+    #[error("invalid monitor count field")]
     InvalidMonitorCount,
-    #[error("Invalid monitor flags field")]
+    #[error("invalid monitor flags field")]
     InvalidMonitorFlags,
 }

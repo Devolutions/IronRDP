@@ -77,6 +77,6 @@ pub enum RedirectionVersion {
 pub enum ClusterDataError {
     #[error("IO error")]
     IOError(#[from] io::Error),
-    #[error("Invalid redirection flags field")]
+    #[error("invalid redirection flags field")]
     InvalidRedirectionFlags,
 }

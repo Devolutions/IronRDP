@@ -389,7 +389,7 @@ impl RdpSpecificCode {
 pub enum ServerSetErrorInfoError {
     #[error("IO error")]
     IoError(#[from] io::Error),
-    #[error("Unexpected info code: {0}")]
+    #[error("unexpected info code: {0}")]
     UnexpectedInfoCode(u32),
 }
 

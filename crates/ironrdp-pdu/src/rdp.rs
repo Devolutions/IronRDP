@@ -61,33 +61,33 @@ impl PduParsing for ClientInfoPdu {
 pub enum RdpError {
     #[error("IO error")]
     IOError(#[from] io::Error),
-    #[error("Client Info PDU error")]
+    #[error("client Info PDU error")]
     ClientInfoError(#[from] ClientInfoError),
-    #[error("Server License PDU error")]
+    #[error("server License PDU error")]
     ServerLicenseError(#[from] ServerLicenseError),
-    #[error("Capability sets error")]
+    #[error("capability sets error")]
     CapabilitySetsError(#[from] CapabilitySetsError),
-    #[error("Finalization PDUs error")]
+    #[error("finalization PDUs error")]
     FinalizationMessagesError(#[from] FinalizationMessagesError),
-    #[error("Invalid RDP security header")]
+    #[error("invalid RDP security header")]
     InvalidSecurityHeader,
-    #[error("Invalid RDP Share Control Header: {0}")]
+    #[error("invalid RDP Share Control Header: {0}")]
     InvalidShareControlHeader(String),
-    #[error("Invalid RDP Share Data Header: {0}")]
+    #[error("invalid RDP Share Data Header: {0}")]
     InvalidShareDataHeader(String),
-    #[error("Invalid RDP Connection Sequence PDU")]
+    #[error("invalid RDP Connection Sequence PDU")]
     InvalidPdu(String),
-    #[error("Unexpected RDP Share Control Header PDU type: {0:?}")]
+    #[error("unexpected RDP Share Control Header PDU type: {0:?}")]
     UnexpectedShareControlPdu(ShareControlPduType),
-    #[error("Unexpected RDP Share Data Header PDU type: {0:?}")]
+    #[error("unexpected RDP Share Data Header PDU type: {0:?}")]
     UnexpectedShareDataPdu(ShareDataPduType),
-    #[error("Save session info PDU error")]
+    #[error("save session info PDU error")]
     SaveSessionInfoError(#[from] session_info::SessionError),
-    #[error("Server set error info PDU error")]
+    #[error("server set error info PDU error")]
     ServerSetErrorInfoError(#[from] ServerSetErrorInfoError),
-    #[error("Input event PDU error")]
+    #[error("input event PDU error")]
     InputEventError(#[from] InputEventError),
-    #[error("Not enough bytes")]
+    #[error("not enough bytes")]
     NotEnoughBytes,
 }
 

@@ -289,22 +289,22 @@ bitflags! {
 pub enum GraphicsMessagesError {
     #[error("IO error")]
     IOError(#[from] io::Error),
-    #[error("Invalid codec ID version 1")]
+    #[error("invalid codec ID version 1")]
     InvalidCodec1Id,
-    #[error("Invalid codec ID version 2")]
+    #[error("invalid codec ID version 2")]
     InvalidCodec2Id,
-    #[error("Invalid pixel format")]
+    #[error("invalid pixel format")]
     InvalidFixelFormat,
-    #[error("Monitor error")]
+    #[error("monitor error")]
     MonitorError(#[from] MonitorDataError),
-    #[error("Invalid ResetGraphics PDU width: {} > MAX ({})", actual, max)]
+    #[error("invalid ResetGraphics PDU width: {} > MAX ({})", actual, max)]
     InvalidResetGraphicsPduWidth { actual: u32, max: u32 },
-    #[error("Invalid ResetGraphics PDU height: {} > MAX ({})", actual, max)]
+    #[error("invalid ResetGraphics PDU height: {} > MAX ({})", actual, max)]
     InvalidResetGraphicsPduHeight { actual: u32, max: u32 },
-    #[error("Invalid ResetGraphics PDU monitors count: {} > MAX ({})", actual, max)]
+    #[error("invalid ResetGraphics PDU monitors count: {} > MAX ({})", actual, max)]
     InvalidResetGraphicsPduMonitorsCount { actual: u32, max: u32 },
-    #[error("Invalid capabilities version")]
+    #[error("invalid capabilities version")]
     InvalidCapabilitiesVersion,
-    #[error("Both luma and chroma packets specified but length is missing")]
+    #[error("both luma and chroma packets specified but length is missing")]
     InvalidAvcEncoding,
 }

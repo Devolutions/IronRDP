@@ -138,16 +138,16 @@ impl From<&InputEvent> for InputEventType {
 pub enum InputEventError {
     #[error("IO error")]
     IOError(#[from] io::Error),
-    #[error("Invalid Input Event type: {0}")]
+    #[error("invalid Input Event type: {0}")]
     InvalidInputEventType(u16),
-    #[error("Encryption not supported")]
+    #[error("encryption not supported")]
     EncryptionNotSupported,
-    #[error("Event code not supported {0}")]
+    #[error("event code not supported {0}")]
     EventCodeUnsupported(u8),
-    #[error("Keyboard flags not supported {0}")]
+    #[error("keyboard flags not supported {0}")]
     KeyboardFlagsUnsupported(u8),
-    #[error("Synchronize flags not supported {0}")]
+    #[error("synchronize flags not supported {0}")]
     SynchronizeFlagsUnsupported(u8),
-    #[error("FastPathInput PDU is empty")]
+    #[error("Fast-Path Input Event PDU is empty")]
     EmptyFastPathInput,
 }

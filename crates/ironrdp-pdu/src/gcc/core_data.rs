@@ -45,24 +45,24 @@ impl RdpVersion {
 pub enum CoreDataError {
     #[error("IO error")]
     IOError(#[from] io::Error),
-    #[error("Invalid version field")]
+    #[error("invalid version field")]
     InvalidVersion,
-    #[error("Invalid color depth field")]
+    #[error("invalid color depth field")]
     InvalidColorDepth,
-    #[error("Invalid post beta color depth field")]
+    #[error("invalid post beta color depth field")]
     InvalidPostBetaColorDepth,
-    #[error("Invalid high color depth field")]
+    #[error("invalid high color depth field")]
     InvalidHighColorDepth,
-    #[error("Invalid supported color depths field")]
+    #[error("invalid supported color depths field")]
     InvalidSupportedColorDepths,
-    #[error("Invalid secure access sequence field")]
+    #[error("invalid secure access sequence field")]
     InvalidSecureAccessSequence,
-    #[error("Invalid keyboard type field")]
+    #[error("invalid keyboard type field")]
     InvalidKeyboardType,
-    #[error("Invalid early capability flags field")]
+    #[error("invalid early capability flags field")]
     InvalidEarlyCapabilityFlags,
-    #[error("Invalid connection type field")]
+    #[error("invalid connection type field")]
     InvalidConnectionType,
-    #[error("Invalid server security protocol field")]
+    #[error("invalid server security protocol field")]
     InvalidServerSecurityProtocol,
 }

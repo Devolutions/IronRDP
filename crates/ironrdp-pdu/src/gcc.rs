@@ -371,28 +371,28 @@ impl<T: FromPrimitive + ToPrimitive> PduParsing for UserDataHeader<T> {
 pub enum GccError {
     #[error("IO error")]
     IOError(#[from] io::Error),
-    #[error("Core data block error")]
+    #[error("core data block error")]
     CoreError(#[from] CoreDataError),
-    #[error("Security data block error")]
+    #[error("security data block error")]
     SecurityError(#[from] SecurityDataError),
-    #[error("Network data block error")]
+    #[error("network data block error")]
     NetworkError(#[from] NetworkDataError),
-    #[error("Cluster data block error")]
+    #[error("cluster data block error")]
     ClusterError(#[from] ClusterDataError),
-    #[error("Monitor data block error")]
+    #[error("monitor data block error")]
     MonitorError(#[from] MonitorDataError),
-    #[error("Multi-transport channel data block error")]
+    #[error("multi-transport channel data block error")]
     MultiTransportChannelError(#[from] MultiTransportChannelDataError),
-    #[error("Monitor extended data block error")]
+    #[error("monitor extended data block error")]
     MonitorExtendedError(#[from] MonitorExtendedDataError),
-    #[error("Invalid GCC block type")]
+    #[error("invalid GCC block type")]
     InvalidGccType,
-    #[error("Invalid conference create request: {0}")]
+    #[error("invalid conference create request: {0}")]
     InvalidConferenceCreateRequest(String),
-    #[error("Invalid Conference create response: {0}")]
+    #[error("invalid Conference create response: {0}")]
     InvalidConferenceCreateResponse(String),
-    #[error("A server did not send the required GCC data block: {0:?}")]
+    #[error("a server did not send the required GCC data block: {0:?}")]
     RequiredClientDataBlockIsAbsent(ClientGccType),
-    #[error("A client did not send the required GCC data block: {0:?}")]
+    #[error("a client did not send the required GCC data block: {0:?}")]
     RequiredServerDataBlockIsAbsent(ServerGccType),
 }

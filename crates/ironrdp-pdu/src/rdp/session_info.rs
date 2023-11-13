@@ -104,22 +104,22 @@ pub enum InfoData {
 pub enum SessionError {
     #[error("IO error")]
     IOError(#[from] io::Error),
-    #[error("Invalid save session info type value")]
+    #[error("invalid save session info type value")]
     InvalidSaveSessionInfoType,
-    #[error("Invalid domain name size value")]
+    #[error("invalid domain name size value")]
     InvalidDomainNameSize,
-    #[error("Invalid user name size value")]
+    #[error("invalid user name size value")]
     InvalidUserNameSize,
-    #[error("Invalid logon version value")]
+    #[error("invalid logon version value")]
     InvalidLogonVersion2,
-    #[error("Invalid logon info version2 size value")]
+    #[error("invalid logon info version2 size value")]
     InvalidLogonVersion2Size,
-    #[error("Invalid server auto-reconnect packet size value")]
+    #[error("invalid server auto-reconnect packet size value")]
     InvalidAutoReconnectPacketSize,
-    #[error("Invalid server auto-reconnect version")]
+    #[error("invalid server auto-reconnect version")]
     InvalidAutoReconnectVersion,
-    #[error("Invalid logon error type value")]
+    #[error("invalid logon error type value")]
     InvalidLogonErrorType,
-    #[error("Invalid logon error data value")]
+    #[error("invalid logon error data value")]
     InvalidLogonErrorData,
 }

@@ -208,55 +208,55 @@ pub enum BlockType {
 pub enum RfxError {
     #[error("IO error")]
     IoError(#[from] io::Error),
-    #[error("Got invalid block type: {0}")]
+    #[error("got invalid block type: {0}")]
     InvalidBlockType(u16),
-    #[error("Got unexpected Block type: expected ({expected:?}) != actual({actual:?})")]
+    #[error("got unexpected Block type: expected ({expected:?}) != actual({actual:?})")]
     UnexpectedBlockType { expected: BlockType, actual: BlockType },
-    #[error("Got unexpected Block type ({0:?}) while was expected header message")]
+    #[error("got unexpected Block type ({0:?}) while was expected header message")]
     InvalidHeaderBlockType(BlockType),
-    #[error("Got invalid block length: {0}")]
+    #[error("got invalid block length: {0}")]
     InvalidBlockLength(usize),
-    #[error("Got invalid Sync magic number: {0}")]
+    #[error("got invalid Sync magic number: {0}")]
     InvalidMagicNumber(u32),
-    #[error("Got invalid Sync version: {0}")]
+    #[error("got invalid Sync version: {0}")]
     InvalidSyncVersion(u16),
-    #[error("Got invalid codecs number: {0}")]
+    #[error("got invalid codecs number: {0}")]
     InvalidCodecsNumber(u8),
-    #[error("Got invalid codec ID: {0}")]
+    #[error("got invalid codec ID: {0}")]
     InvalidCodecId(u8),
-    #[error("Got invalid codec version: {0}")]
+    #[error("got invalid codec version: {0}")]
     InvalidCodecVersion(u16),
-    #[error("Got invalid channel ID: {0}")]
+    #[error("got invalid channel ID: {0}")]
     InvalidChannelId(u8),
-    #[error("Got invalid context ID: {0}")]
+    #[error("got invalid context ID: {0}")]
     InvalidContextId(u8),
-    #[error("Got invalid context tile size: {0}")]
+    #[error("got invalid context tile size: {0}")]
     InvalidTileSize(u16),
-    #[error("Got invalid conversion transform: {0}")]
+    #[error("got invalid conversion transform: {0}")]
     InvalidColorConversionTransform(u16),
-    #[error("Got invalid DWT: {0}")]
+    #[error("got invalid DWT: {0}")]
     InvalidDwt(u16),
-    #[error("Got invalid entropy algorithm: {0}")]
+    #[error("got invalid entropy algorithm: {0}")]
     InvalidEntropyAlgorithm(u16),
-    #[error("Got invalid quantization type: {0}")]
+    #[error("got invalid quantization type: {0}")]
     InvalidQuantizationType(u16),
-    #[error("Input buffer is shorter than the data length: {actual} < {expected}")]
+    #[error("input buffer is shorter than the data length: {actual} < {expected}")]
     InvalidDataLength { expected: usize, actual: usize },
-    #[error("Got invalid Region LRF: {0}")]
+    #[error("got invalid Region LRF: {0}")]
     InvalidLrf(bool),
-    #[error("Got invalid Region type: {0}")]
+    #[error("got invalid Region type: {0}")]
     InvalidRegionType(u16),
-    #[error("Got invalid number of tilesets: {0}")]
+    #[error("got invalid number of tilesets: {0}")]
     InvalidNumberOfTilesets(u16),
-    #[error("Got invalid ID of context: {0}")]
+    #[error("got invalid ID of context: {0}")]
     InvalidIdOfContext(u16),
-    #[error("Got invalid TileSet subtype: {0}")]
+    #[error("got invalid TileSet subtype: {0}")]
     InvalidSubtype(u16),
-    #[error("Got invalid IT flag of TileSet: {0}")]
+    #[error("got invalid IT flag of TileSet: {0}")]
     InvalidItFlag(bool),
-    #[error("Got invalid channel width: {0}")]
+    #[error("got invalid channel width: {0}")]
     InvalidChannelWidth(i16),
-    #[error("Got invalid channel height: {0}")]
+    #[error("got invalid channel height: {0}")]
     InvalidChannelHeight(i16),
 }
 

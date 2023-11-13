@@ -30,10 +30,10 @@ pub type CliprdrSvcMessages = SvcProcessorMessages<Cliprdr>;
 
 #[derive(Debug, Error)]
 enum ClipboardError {
-    #[error("Received clipboard PDU is not implemented")]
+    #[error("received clipboard PDU is not implemented")]
     UnimplementedPdu { pdu: &'static str },
 
-    #[error("Sent format list was rejected")]
+    #[error("sent format list was rejected")]
     FormatListRejected,
 }
 
