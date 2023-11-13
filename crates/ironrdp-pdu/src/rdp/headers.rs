@@ -11,6 +11,7 @@ use crate::rdp::capability_sets::{ClientConfirmActive, ServerDemandActive};
 use crate::rdp::finalization_messages::{ControlPdu, FontPdu, MonitorLayoutPdu, SynchronizePdu};
 use crate::rdp::server_error_info::ServerSetErrorInfoPdu;
 use crate::rdp::session_info::SaveSessionInfoPdu;
+use crate::rdp::suppress_output::SuppressOutputPdu;
 use crate::rdp::{client_info, RdpError};
 use crate::PduParsing;
 
@@ -263,6 +264,7 @@ pub enum ShareDataPdu {
     ServerSetErrorInfo(ServerSetErrorInfoPdu),
     Input(InputEventPdu),
     ShutdownRequest,
+    SuppressOutput(SuppressOutputPdu),
 }
 
 impl ShareDataPdu {
@@ -278,6 +280,7 @@ impl ShareDataPdu {
             ShareDataPdu::ServerSetErrorInfo(_) => "Server Set Error Info PDU",
             ShareDataPdu::Input(_) => "Server Input PDU",
             ShareDataPdu::ShutdownRequest => "Shutdown Request",
+            ShareDataPdu::SuppressOutput(_) => "Suppress Output PDU",
         }
     }
 }
@@ -303,11 +306,13 @@ impl ShareDataPdu {
             )),
             ShareDataPduType::Input => Ok(ShareDataPdu::Input(InputEventPdu::from_buffer(&mut stream)?)),
             ShareDataPduType::ShutdownRequest => Ok(ShareDataPdu::ShutdownRequest),
+            ShareDataPduType::SuppressOutput => Ok(ShareDataPdu::SuppressOutput(SuppressOutputPdu::from_buffer(
+                &mut stream,
+            )?)),
             ShareDataPduType::Update
             | ShareDataPduType::Pointer
             | ShareDataPduType::RefreshRectangle
             | ShareDataPduType::PlaySound
-            | ShareDataPduType::SuppressOutput
             | ShareDataPduType::ShutdownDenied
             | ShareDataPduType::SetKeyboardIndicators
             | ShareDataPduType::BitmapCachePersistentList
@@ -334,6 +339,7 @@ impl ShareDataPdu {
             ShareDataPdu::ServerSetErrorInfo(pdu) => pdu.to_buffer(&mut stream).map_err(RdpError::from),
             ShareDataPdu::Input(pdu) => pdu.to_buffer(&mut stream).map_err(RdpError::from),
             ShareDataPdu::ShutdownRequest => Ok(()),
+            ShareDataPdu::SuppressOutput(pdu) => pdu.to_buffer(&mut stream).map_err(RdpError::from),
         }
     }
 
@@ -348,6 +354,7 @@ impl ShareDataPdu {
             ShareDataPdu::ServerSetErrorInfo(pdu) => pdu.buffer_length(),
             ShareDataPdu::Input(pdu) => pdu.buffer_length(),
             ShareDataPdu::ShutdownRequest => 0,
+            ShareDataPdu::SuppressOutput(pdu) => pdu.buffer_length(),
         }
     }
     pub fn share_header_type(&self) -> ShareDataPduType {
@@ -362,6 +369,7 @@ impl ShareDataPdu {
             ShareDataPdu::ServerSetErrorInfo(_) => ShareDataPduType::SetErrorInfoPdu,
             ShareDataPdu::Input(_) => ShareDataPduType::Input,
             ShareDataPdu::ShutdownRequest => ShareDataPduType::ShutdownRequest,
+            ShareDataPdu::SuppressOutput(_) => ShareDataPduType::SuppressOutput,
         }
     }
 }

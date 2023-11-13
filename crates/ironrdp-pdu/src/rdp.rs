@@ -18,6 +18,7 @@ pub mod headers;
 pub mod server_error_info;
 pub mod server_license;
 pub mod session_info;
+pub mod suppress_output;
 pub mod vc;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
