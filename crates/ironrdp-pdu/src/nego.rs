@@ -245,7 +245,7 @@ impl<'de> X224Pdu<'de> for ConnectionRequest {
             let flags = RequestFlags::from_bits_truncate(src.read_u8());
 
             if flags.contains(RequestFlags::CORRELATION_INFO_PRESENT) {
-                // TODO: support for RDP_NEG_CORRELATION_INFO
+                // TODO(#111): support for RDP_NEG_CORRELATION_INFO
                 return Err(PduError::invalid_message(
                     Self::NAME,
                     "flags",

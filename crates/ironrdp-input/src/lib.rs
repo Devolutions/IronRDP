@@ -6,7 +6,7 @@ use ironrdp_pdu::input::mouse_x::PointerXFlags;
 use ironrdp_pdu::input::{MousePdu, MouseXPdu};
 use smallvec::SmallVec;
 
-// TODO: unicode keyboard event support
+// TODO(#106): unicode keyboard event support
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u8)]

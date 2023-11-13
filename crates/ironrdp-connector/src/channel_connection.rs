@@ -141,7 +141,7 @@ impl Sequence for ChannelConnectionSequence {
                 )
             }
 
-            // TODO: send all the join requests in a single batch
+            // TODO(#112): send all the join requests in a single batch
             // (RDP 4.0, 5.0, 5.1, 5.2, 6.0, 6.1, 7.0, 7.1, 8.0, 10.2, 10.3,
             // 10.4, and 10.5 clients send a Channel Join Request to the server only after the
             // Channel Join Confirm for a previously sent request has been received. RDP 8.1,

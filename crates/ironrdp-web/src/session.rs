@@ -556,7 +556,7 @@ impl Session {
 
     #[allow(clippy::unused_self)] // FIXME: not yet implemented
     pub fn shutdown(&self) -> Result<(), IronRdpError> {
-        // TODO: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/27915739-8f77-487e-9927-55008af7fd68
+        // TODO(#115): https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/27915739-8f77-487e-9927-55008af7fd68
         Ok(())
     }
 

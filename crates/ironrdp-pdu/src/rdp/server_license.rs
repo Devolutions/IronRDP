@@ -323,6 +323,14 @@ fn read_license_header(
 ) -> Result<LicenseHeader, ServerLicenseError> {
     let license_header = LicenseHeader::from_buffer(&mut stream)?;
 
+    // FIXME(#269): ERROR_ALERT licensing packets should not be returned as error by the parser.
+    // Such packets should be handled by the caller, and the caller is responsible for turning
+    // those into "Result::Err" if necessary. It should be possible to decode a `LICENSE_ERROR_MESSAGE`
+    // structure like any other PDU.
+    // Otherwise it requires the caller to match on the error kind in order to check for variants that are
+    // not actual errors, it makes the flow of control harder to write correctly and less obvious.
+    // See `ConnectionConfirm` from the `nego` module for prior art.
+
     if license_header.preamble_message_type != required_preamble_message_type {
         if license_header.preamble_message_type == PreambleType::ErrorAlert {
             let license_error = LicensingErrorMessage::from_buffer(&mut stream)?;

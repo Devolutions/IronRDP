@@ -860,7 +860,7 @@ fn create_gcc_blocks<'a>(
                         | ClientEarlyCapabilityFlags::SUPPORT_ERR_INFO_PDU
                         | ClientEarlyCapabilityFlags::STRONG_ASYMMETRIC_KEYS;
 
-                    // TODO: support for ClientEarlyCapabilityFlags::SUPPORT_STATUS_INFO_PDU
+                    // TODO(#136): support for ClientEarlyCapabilityFlags::SUPPORT_STATUS_INFO_PDU
 
                     if config.graphics.is_some() {
                         early_capability_flags |= ClientEarlyCapabilityFlags::SUPPORT_DYN_VC_GFX_PROTOCOL;
@@ -891,12 +891,12 @@ fn create_gcc_blocks<'a>(
         } else {
             Some(ClientNetworkData { channels })
         },
-        // TODO: support for Some(ClientClusterData { flags: RedirectionFlags::REDIRECTION_SUPPORTED, redirection_version: RedirectionVersion::V4, redirected_session_id: 0, }),
+        // TODO(#139): support for Some(ClientClusterData { flags: RedirectionFlags::REDIRECTION_SUPPORTED, redirection_version: RedirectionVersion::V4, redirected_session_id: 0, }),
         cluster: None,
         monitor: None,
-        // TODO: support for Client Message Channel Data (https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/f50e791c-de03-4b25-b17e-e914c9020bc3)
+        // TODO(#140): support for Client Message Channel Data (https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/f50e791c-de03-4b25-b17e-e914c9020bc3)
         message_channel: None,
-        // TODO: support for Some(MultiTransportChannelData { flags: MultiTransportFlags::empty(), })
+        // TODO(#140): support for Some(MultiTransportChannelData { flags: MultiTransportFlags::empty(), })
         multi_transport_channel: None,
         monitor_extended: None,
     }

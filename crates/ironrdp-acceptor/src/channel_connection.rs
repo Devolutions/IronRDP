@@ -105,7 +105,7 @@ impl Sequence for ChannelConnectionSequence {
                 )
             }
 
-            // TODO: support RNS_UD_CS_SUPPORT_SKIP_CHANNELJOIN
+            // TODO(#165): support RNS_UD_CS_SUPPORT_SKIP_CHANNELJOIN
             ChannelConnectionState::WaitChannelJoinRequest { joined } => {
                 let channel_request =
                     ironrdp_pdu::decode::<mcs::ChannelJoinRequest>(input).map_err(ConnectorError::pdu)?;
