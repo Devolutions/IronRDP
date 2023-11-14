@@ -7,11 +7,11 @@ use crate::rdp6::rle::{decompress_8bpp_plane, RleDecodeError};
 
 #[derive(Debug, Error)]
 pub enum BitmapDecodeError {
-    #[error("Failed to decode RDP6 bitmap stream PDU: {0}")]
+    #[error("failed to decode RDP6 bitmap stream PDU: {0}")]
     Pdu(#[from] PduError),
-    #[error("Failed to perform RLE decompression of RDP6 bitmap stream: {0}")]
+    #[error("failed to perform RLE decompression of RDP6 bitmap stream: {0}")]
     Rle(#[from] RleDecodeError),
-    #[error("Color plane data size provided in PDU is not sufficient to reconstruct the bitmap")]
+    #[error("color plane data size provided in PDU is not sufficient to reconstruct the bitmap")]
     InvalidUncompressedDataSize,
 }
 

@@ -6,8 +6,8 @@
     "Benoit Cortier",
     "Zacharia Ellaham"
   ],
-  "description": "Web Component providing agnostic implementation for Iron Wasm base client.",
-  "version": "0.8.1",
+  "description": "Web Component providing agnostic implementation for Iron Wasm base client",
+  "version": "0.9.0",
   "type": "module",
   "private": true,
   "scripts": {
@@ -19,10 +19,11 @@
     "check": "svelte-check --tsconfig ./tsconfig.json",
     "check:watch": "svelte-check --tsconfig ./tsconfig.json --watch",
     "lint": "npm run lint:prettier && npm run lint:eslint",
-    "lint:prettier": "prettier . --check",
+    "lint:prettier": "prettier --check . --plugin prettier-plugin-svelte",
     "lint:eslint": "eslint src/**",
-    "format": "prettier . --write ."
+    "format": "prettier --write . --plugin prettier-plugin-svelte"
   },
+  "//": "FIXME: There's currently an issue with Prettier 3.0 which requires the seemingly redundant --plugin setting. This bug will be fixed in the 3.1, and the extra argument may then be removed",
   "devDependencies": {
     "eslint": "^8.52.0",
     "eslint-config-prettier": "^9.0.0",

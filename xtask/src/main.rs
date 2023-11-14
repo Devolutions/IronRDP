@@ -51,6 +51,7 @@ fn main() -> anyhow::Result<()> {
         }
         Action::CheckFmt => check::fmt(&sh)?,
         Action::CheckLints => check::lints(&sh)?,
+        Action::CheckLocks => check::lock_files(&sh)?,
         Action::CheckTests { no_run } => {
             if no_run {
                 check::tests_compile(&sh)?;
@@ -67,6 +68,7 @@ fn main() -> anyhow::Result<()> {
             fuzz::run(&sh, None, None)?;
             web::install(&sh)?;
             web::check(&sh)?;
+            check::lock_files(&sh)?;
         }
         Action::Clean => clean::workspace(&sh)?,
         Action::CovGrcov => cov::grcov(&sh)?,

@@ -15,6 +15,9 @@ use crate::{utils, PduParsing};
 
 const NEW_LICENSE_INFO_STATIC_FIELDS_SIZE: usize = 20;
 
+/// [2.2.2.6] Server Upgrade License (SERVER_UPGRADE_LICENSE)
+///
+/// [2.2.2.6]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpele/e8339fbd-1fe3-42c2-a599-27c04407166d
 #[derive(Debug, PartialEq, Eq)]
 pub struct ServerUpgradeLicense {
     pub license_header: LicenseHeader,

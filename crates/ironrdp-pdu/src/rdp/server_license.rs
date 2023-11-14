@@ -121,6 +121,9 @@ impl PduParsing for LicenseHeader {
     }
 }
 
+/// [2.2.1.12.1.1] Licensing Preamble (LICENSE_PREAMBLE)
+///
+/// [2.2.1.12.1.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/73170ca2-5f82-4a2d-9d1b-b439f3d8dadc
 #[repr(u8)]
 #[derive(Debug, PartialEq, Eq, FromPrimitive, ToPrimitive)]
 pub enum PreambleType {
@@ -216,7 +219,7 @@ pub enum ServerLicenseError {
     InvalidRsaPublicKeyDataLength,
     #[error("invalid License Header security flags")]
     InvalidSecurityFlags,
-    #[error("ihe server returned unexpected error")]
+    #[error("the server returned unexpected error: {0:?}")]
     UnexpectedError(LicensingErrorMessage),
     #[error("got unexpected license message")]
     UnexpectedLicenseMessage,
@@ -319,6 +322,14 @@ fn read_license_header(
     mut stream: impl io::Read,
 ) -> Result<LicenseHeader, ServerLicenseError> {
     let license_header = LicenseHeader::from_buffer(&mut stream)?;
+
+    // FIXME(#269): ERROR_ALERT licensing packets should not be returned as error by the parser.
+    // Such packets should be handled by the caller, and the caller is responsible for turning
+    // those into "Result::Err" if necessary. It should be possible to decode a `LICENSE_ERROR_MESSAGE`
+    // structure like any other PDU.
+    // Otherwise it requires the caller to match on the error kind in order to check for variants that are
+    // not actual errors, it makes the flow of control harder to write correctly and less obvious.
+    // See `ConnectionConfirm` from the `nego` module for prior art.
 
     if license_header.preamble_message_type != required_preamble_message_type {
         if license_header.preamble_message_type == PreambleType::ErrorAlert {

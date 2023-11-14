@@ -185,14 +185,14 @@ pub enum EncryptionLevel {
 pub enum SecurityDataError {
     #[error("IO error")]
     IOError(#[from] io::Error),
-    #[error("Invalid encryption methods field")]
+    #[error("invalid encryption methods field")]
     InvalidEncryptionMethod,
-    #[error("Invalid encryption level field")]
+    #[error("invalid encryption level field")]
     InvalidEncryptionLevel,
-    #[error("Invalid server random length field: {0}")]
+    #[error("invalid server random length field: {0}")]
     InvalidServerRandomLen(u32),
-    #[error("Invalid input: {0}")]
+    #[error("invalid input: {0}")]
     InvalidInput(String),
-    #[error("Invalid server certificate length: {0}")]
+    #[error("invalid server certificate length: {0}")]
     InvalidServerCertificateLen(u32),
 }

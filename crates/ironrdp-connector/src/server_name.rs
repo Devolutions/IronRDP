@@ -3,7 +3,7 @@ pub struct ServerName(String);
 
 impl ServerName {
     pub fn new(name: impl Into<String>) -> Self {
-        Self(sanitize_server_name(name))
+        Self(sanitize_server_name(name.into()))
     }
 
     pub fn as_str(&self) -> &str {
@@ -33,9 +33,7 @@ impl From<&str> for ServerName {
     }
 }
 
-fn sanitize_server_name(name: impl Into<String>) -> String {
-    let name = name.into();
-
+fn sanitize_server_name(name: String) -> String {
     if let Some(idx) = name.rfind(':') {
         if let Ok(sock_addr) = name.parse::<std::net::SocketAddr>() {
             // A socket address, including a port

@@ -7,17 +7,17 @@ const MAX_BUFFER_SIZE: usize = 64 * 1024 * 1024; // 64 MB
 
 #[derive(Debug, Error)]
 pub enum BitmapError {
-    #[error("Invalid bitmap header")]
+    #[error("invalid bitmap header")]
     InvalidHeader(ironrdp_pdu::PduError),
-    #[error("Unsupported bitmap: {0}")]
+    #[error("unsupported bitmap: {0}")]
     Unsupported(&'static str),
-    #[error("One of bitmap's dimensions is invalid")]
+    #[error("one of bitmap's dimensions is invalid")]
     InvalidSize,
-    #[error("Buffer size required for allocation is too big")]
+    #[error("buffer size required for allocation is too big")]
     BufferTooBig,
-    #[error("Image width is too big")]
+    #[error("image width is too big")]
     WidthTooBig,
-    #[error("Image height is too big")]
+    #[error("image height is too big")]
     HeightTooBig,
     #[error("PNG encoding error")]
     PngEncode(#[from] png::EncodingError),

@@ -38,6 +38,9 @@ bitflags! {
     }
 }
 
+/// [2.2.2.2] Client New License Request (CLIENT_NEW_LICENSE_REQUEST)
+///
+/// [2.2.2.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpele/c57e4890-9049-421e-9fe8-9a6f9519675a
 #[derive(Debug, PartialEq, Eq)]
 pub struct ClientNewLicenseRequest {
     pub license_header: LicenseHeader,

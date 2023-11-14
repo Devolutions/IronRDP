@@ -1,5 +1,5 @@
 #![cfg_attr(not(feature = "std"), no_std)]
-#![allow(unused)] // FIXME: remove this annotation
+#![allow(unused)] // FIXME(#61): remove this annotation
 
 // TODO: this crate is WIP
 
@@ -78,7 +78,7 @@ impl Drdynvc {
         }
     }
 
-    // FIXME: it’s likely we want to enable adding dynamic channels at any point during the session (message passing? other approach?)
+    // FIXME(#61): it’s likely we want to enable adding dynamic channels at any point during the session (message passing? other approach?)
 
     #[must_use]
     pub fn with_dynamic_channel<T>(mut self, channel: T) -> Self

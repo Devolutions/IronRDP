@@ -34,6 +34,15 @@ pub enum InitialMessageType {
     StatusValidClient(LicensingErrorMessage),
 }
 
+// FIXME(#269): this is a helper structure which tries to detect if a
+// SERVER_LICENSE_REQUEST PDU is received from the server, or if a
+// STATUS_VALID_CLIENT error code is received instead (no need to negotiate
+// a license). I think this could be refactored into a more generic struct / enum,
+// without trying to be too smart by, e.g., returning errors when a LICENSE_ERROR_MESSAGE
+// is received depending on the error code. Parsing code should lend the data received
+// from the network without making too much decisions.
+
+/// Either a SERVER_LICENSE_REQUEST or a LICENSE_ERROR_MESSAGE with the STATUS_VALID_CLIENT code
 #[derive(Debug, PartialEq, Eq)]
 pub struct InitialServerLicenseMessage {
     pub license_header: LicenseHeader,
@@ -130,6 +139,9 @@ impl PduParsing for InitialServerLicenseMessage {
     }
 }
 
+/// [2.2.2.1] Server License Request (SERVER_LICENSE_REQUEST)
+///
+/// [2.2.2.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpele/e17772e9-9642-4bb6-a2bc-82875dd6da7c
 #[derive(Debug, PartialEq, Eq)]
 pub struct ServerLicenseRequest {
     pub server_random: Vec<u8>,
@@ -262,6 +274,9 @@ impl PduParsing for Scope {
     }
 }
 
+/// [2.2.1.4.3.1] Server Certificate (SERVER_CERTIFICATE)
+///
+/// [2.2.1.4.3.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/54e72cc6-3422-404c-a6b4-2486db125342
 #[derive(Debug, PartialEq, Eq)]
 pub struct ServerCertificate {
     pub issued_permanently: bool,

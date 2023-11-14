@@ -229,6 +229,6 @@ impl From<u32> for CompressionMode {
 pub enum RlgrError {
     #[error("IO error: {0}")]
     IoError(#[from] io::Error),
-    #[error("The input tile is empty")]
+    #[error("the input tile is empty")]
     EmptyTile,
 }

@@ -104,7 +104,7 @@ async fn connect(
 
     let mut connector = connector::ClientConnector::new(config.connector.clone())
         .with_server_addr(server_addr)
-        // .with_static_channel(ironrdp::dvc::Drdynvc::new()) // FIXME: drdynvc is not working
+        // .with_static_channel(ironrdp::dvc::Drdynvc::new()) // FIXME(#61): drdynvc is not working
         .with_static_channel(rdpsnd::Rdpsnd::new())
         .with_static_channel(rdpdr::Rdpdr::new(Box::new(NoopRdpdrBackend {}), "IronRDP".to_owned()).with_smartcard(0));
 
@@ -175,7 +175,7 @@ async fn active_session(
 
                 match input_event {
                     RdpInputEvent::Resize { mut width, mut height } => {
-                        // TODO: Add support for Display Update Virtual Channel Extension
+                        // TODO(#105): Add support for Display Update Virtual Channel Extension
                         // https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpedisp/d2954508-f487-48bc-8731-39743e0854a9
                         // One approach when this extension is not available is to perform a connection from scratch again.
 
@@ -187,7 +187,7 @@ async fn active_session(
                             }
                         }
 
-                        // TODO: use the "auto-reconnect cookie": https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/15b0d1c9-2891-4adb-a45e-deb4aeeeab7c
+                        // TODO(#271): use the "auto-reconnect cookie": https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/15b0d1c9-2891-4adb-a45e-deb4aeeeab7c
 
                         info!(width, height, "resize event");
 
@@ -198,7 +198,7 @@ async fn active_session(
                         active_stage.process_fastpath_input(&mut image, &events)?
                     }
                     RdpInputEvent::Close => {
-                        // TODO: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/27915739-8f77-487e-9927-55008af7fd68
+                        // TODO(#115): https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/27915739-8f77-487e-9927-55008af7fd68
                         break 'outer;
                     }
                     RdpInputEvent::Clipboard(event) => {

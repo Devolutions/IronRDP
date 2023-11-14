@@ -7,7 +7,7 @@ use ironrdp_pdu::PduHint;
 use rand_core::{OsRng, RngCore as _};
 
 use super::legacy;
-use crate::{ConnectorResult, Sequence, State, Written};
+use crate::{ConnectorError, ConnectorResult, ConnectorResultExt as _, Sequence, State, Written};
 
 #[derive(Default, Debug)]
 #[non_exhaustive]
@@ -46,6 +46,11 @@ impl State for LicenseExchangeState {
     }
 }
 
+/// Client licensing sequence
+///
+/// Implements the state machine described in MS-RDPELE, section [3.1.5.3.1] Client State Transition.
+///
+/// [3.1.5.3.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpele/8f9b860a-3687-401d-b3bc-7e9f5d4f7528
 #[derive(Debug)]
 #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct LicenseExchangeSequence {
@@ -91,8 +96,9 @@ impl Sequence for LicenseExchangeSequence {
 
             LicenseExchangeState::NewLicenseRequest => {
                 let send_data_indication_ctx = legacy::decode_send_data_indication(input)?;
-                let initial_server_license =
-                    send_data_indication_ctx.decode_user_data::<server_license::InitialServerLicenseMessage>()?;
+                let initial_server_license = send_data_indication_ctx
+                    .decode_user_data::<server_license::InitialServerLicenseMessage>()
+                    .with_context("decode initial server license PDU")?;
 
                 debug!(message = ?initial_server_license, "Received");
 
@@ -155,7 +161,6 @@ impl Sequence for LicenseExchangeSequence {
                     }
                     server_license::InitialMessageType::StatusValidClient(_) => {
                         info!("Server did not initiate license exchange");
-
                         (Written::Nothing, LicenseExchangeState::LicenseExchanged)
                     }
                 }
@@ -164,7 +169,10 @@ impl Sequence for LicenseExchangeSequence {
             LicenseExchangeState::PlatformChallenge { encryption_data } => {
                 let send_data_indication_ctx = legacy::decode_send_data_indication(input)?;
 
-                match send_data_indication_ctx.decode_user_data::<server_license::ServerPlatformChallenge>() {
+                match send_data_indication_ctx
+                    .decode_user_data::<server_license::ServerPlatformChallenge>()
+                    .with_context("decode SERVER_PLATFORM_CHALLENGE")
+                {
                     Ok(challenge) => {
                         debug!(message = ?challenge, "Received");
 
@@ -191,38 +199,43 @@ impl Sequence for LicenseExchangeSequence {
                         )
                     }
                     Err(error) => {
-                        // In some cases, server does not send a platform challenge and a ServerLicenseError PDU
-                        // with the VALID_CLIENT_STATUS flag is received.
-                        if let Some(source) = std::error::Error::source(&error) {
-                            match source.downcast_ref::<server_license::ServerLicenseError>() {
-                                Some(server_license::ServerLicenseError::ValidClientStatus(
-                                    licensing_error_message,
-                                )) => {
-                                    debug!(message = ?licensing_error_message, "Received");
-
-                                    (Written::Nothing, LicenseExchangeState::LicenseExchanged)
-                                }
-                                _ => return Err(error),
-                            }
-                        } else {
-                            return Err(error);
-                        }
+                        // FIXME(#269): weird control flow pattern
+                        downcast_if_status_valid_client(error, |licensing_error_message| {
+                            debug!(message = ?licensing_error_message, "Received");
+                            info!("Client licensing completed");
+                            (Written::Nothing, LicenseExchangeState::LicenseExchanged)
+                        })?
                     }
                 }
             }
 
             LicenseExchangeState::UpgradeLicense { encryption_data } => {
                 let send_data_indication_ctx = legacy::decode_send_data_indication(input)?;
-                let upgrade_license =
-                    send_data_indication_ctx.decode_user_data::<server_license::ServerUpgradeLicense>()?;
 
-                debug!(message = ?upgrade_license, "Received");
+                // FIXME: The ServerUpgradeLicense type is handling both SERVER_UPGRADE_LICENSE and SERVER_NEW_LICENSE PDUs.
+                // It’s expected that fixing #263 will also lead to a better alternative here.
 
-                upgrade_license
-                    .verify_server_license(&encryption_data)
-                    .map_err(|e| custom_err!("license verification", e))?;
+                match send_data_indication_ctx
+                    .decode_user_data::<server_license::ServerUpgradeLicense>()
+                    .with_context("decode SERVER_NEW_LICENSE/SERVER_UPGRADE_LICENSE")
+                {
+                    Ok(upgrade_license) => {
+                        debug!(message = ?upgrade_license, "Received");
 
-                debug!("License verified with success");
+                        upgrade_license
+                            .verify_server_license(&encryption_data)
+                            .map_err(|e| custom_err!("license verification", e))?;
+
+                        debug!("License verified with success");
+                    }
+                    Err(error) => {
+                        // FIXME(#269): weird control flow pattern
+                        downcast_if_status_valid_client(error, |licensing_error_message| {
+                            debug!(message = ?licensing_error_message, "Received");
+                            info!("Client licensing completed");
+                        })?;
+                    }
+                }
 
                 (Written::Nothing, LicenseExchangeState::LicenseExchanged)
             }
@@ -233,5 +246,22 @@ impl Sequence for LicenseExchangeSequence {
         self.state = next_state;
 
         Ok(written)
+    }
+}
+
+// FIXME(#269): server_license::ServerLicenseError should not be retrieved from an error type.
+fn downcast_if_status_valid_client<T, Fn>(error: ConnectorError, op: Fn) -> ConnectorResult<T>
+where
+    Fn: FnOnce(&server_license::LicensingErrorMessage) -> T,
+{
+    match std::error::Error::source(&error)
+        .and_then(|source| source.downcast_ref::<server_license::ServerLicenseError>())
+    {
+        Some(server_license::ServerLicenseError::ValidClientStatus(licensing_error_message))
+            if licensing_error_message.error_code == server_license::LicenseErrorCode::StatusValidClient =>
+        {
+            Ok(op(licensing_error_message))
+        }
+        _ => Err(error),
     }
 }

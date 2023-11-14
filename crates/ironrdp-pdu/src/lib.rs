@@ -414,7 +414,7 @@ mod legacy {
     pub enum RdpError {
         #[error("IO error")]
         IOError(#[from] std::io::Error),
-        #[error("Received invalid action code: {0}")]
+        #[error("received invalid action code: {0}")]
         InvalidActionCode(u8),
     }
 }

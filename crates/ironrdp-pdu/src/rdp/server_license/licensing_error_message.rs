@@ -13,6 +13,9 @@ use crate::PduParsing;
 const ERROR_CODE_SIZE: usize = 4;
 const STATE_TRANSITION_SIZE: usize = 4;
 
+/// [2.2.1.12.1.3] Licensing Error Message (LICENSE_ERROR_MESSAGE)
+///
+/// [2.2.1.12.1.3]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/f18b6c9f-f3d8-4a0e-8398-f9b153233dca
 #[derive(Debug, PartialEq, Eq)]
 pub struct LicensingErrorMessage {
     pub error_code: LicenseErrorCode,

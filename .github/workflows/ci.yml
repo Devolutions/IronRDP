@@ -78,6 +78,9 @@ jobs:
       - name: WASM (check)
         run: cargo xtask wasm check -v
 
+      - name: Lock files
+        run: cargo xtask check locks -v
+
   fuzz:
     name: Fuzzing
     runs-on: ubuntu-20.04
@@ -104,6 +107,9 @@ jobs:
       - name: Fuzz
         run: cargo xtask fuzz run -v
 
+      - name: Lock files
+        run: cargo xtask check locks -v
+
   web:
     name: Web Client
     runs-on: ubuntu-20.04
@@ -126,3 +132,6 @@ jobs:
 
       - name: Check
         run: cargo xtask web check -v
+
+      - name: Lock files
+        run: cargo xtask check locks -v

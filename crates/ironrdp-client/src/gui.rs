@@ -72,10 +72,10 @@ impl GuiContext {
                         control_flow.set_exit();
                     }
                     WindowEvent::DroppedFile(_) => {
-                        // TODO: File upload
+                        // TODO(#110): File upload
                     }
                     WindowEvent::ReceivedCharacter(_) => {
-                        // TODO: Unicode mode
+                        // TODO(#106): Unicode mode
                     }
                     WindowEvent::KeyboardInput { input, .. } => {
                         let scancode = ironrdp::input::Scancode::from_u16(u16::try_from(input.scancode).unwrap());

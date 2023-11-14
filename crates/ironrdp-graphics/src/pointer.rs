@@ -27,11 +27,11 @@ use crate::color_conversion::rdp_16bit_to_rgb;
 
 #[derive(Debug, Error)]
 pub enum PointerError {
-    #[error("Invalid pointer xorMask size. Expected: {expected}, actual: {actual}")]
+    #[error("invalid pointer xorMask size. Expected: {expected}, actual: {actual}")]
     InvalidXorMaskSize { expected: usize, actual: usize },
-    #[error("Invalid pointer andMask size. Expected: {expected}, actual: {actual}")]
+    #[error("invalid pointer andMask size. Expected: {expected}, actual: {actual}")]
     InvalidAndMaskSize { expected: usize, actual: usize },
-    #[error("Not supported pointer bpp: {bpp}")]
+    #[error("not supported pointer bpp: {bpp}")]
     NotSupportedBpp { bpp: usize },
     #[error(transparent)]
     Pdu(#[from] ironrdp_pdu::PduError),
