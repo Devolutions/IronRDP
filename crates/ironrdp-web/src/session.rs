@@ -676,15 +676,14 @@ async fn connect(
         server_public_key,
         Some(&mut network_client),
         connector,
-        Some(KerberosConfig {
-            kdc_proxy_url: kdc_proxy_url
-                .map(|url| url::Url::parse(&url))
-                .transpose()
-                .context("invalid KDC URL")?,
-            // HACK: It’s supposed to be the computer name of the client, but since it’s not easy to retrieve this information in the browser,
-            // we set the destination hostname instead because it happens to work.
-            hostname: Some(destination),
-        }),
+        url::Url::parse(kdc_proxy_url.unwrap_or(String::new()).as_str()) // if kdc_proxy_url does not exit, give url parser a empty string, it will fail anyway and map to a None
+            .ok()
+            .map(|url| KerberosConfig {
+                kdc_proxy_url: Some(url),
+                // HACK: It’s supposed to be the computer name of the client, but since it’s not easy to retrieve this information in the browser,
+                // we set the destination hostname instead because it happens to work.
+                hostname: Some(destination),
+            }),
     )
     .await?;
 
