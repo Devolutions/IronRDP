@@ -419,7 +419,7 @@ fn validate_v1_header(header: &BitmapInfoHeader) -> Result<(), BitmapError> {
 
     // We support only uncompressed DIB bitmaps as it is the most common case for clipboard-copied
     // bitmaps.
-    const SUPPORTED_COMPRESSION: &[BitmapCompression] = &[BitmapCompression::RGB];
+    const SUPPORTED_COMPRESSION: &[BitmapCompression] = &[BitmapCompression::RGB, BitmapCompression::BITFIELDS];
     if !SUPPORTED_COMPRESSION.contains(&header.compression) {
         return Err(BitmapError::Unsupported("unsupported compression"));
     }
