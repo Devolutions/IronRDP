@@ -417,13 +417,6 @@ fn validate_v1_header(header: &BitmapInfoHeader) -> Result<(), BitmapError> {
         return Err(BitmapError::Unsupported("unsupported bit count"));
     }
 
-    // We support only uncompressed DIB bitmaps as it is the most common case for clipboard-copied
-    // bitmaps.
-    const SUPPORTED_COMPRESSION: &[BitmapCompression] = &[BitmapCompression::RGB];
-    if !SUPPORTED_COMPRESSION.contains(&header.compression) {
-        return Err(BitmapError::Unsupported("unsupported compression"));
-    }
-
     // This is only relevant for bitmaps with bpp < 24, which are not supported.
     if header.clr_used != 0 {
         return Err(BitmapError::Unsupported("color table is not supported"));
@@ -434,6 +427,27 @@ fn validate_v1_header(header: &BitmapInfoHeader) -> Result<(), BitmapError> {
 
 fn validate_v5_header(header: &BitmapV5Header) -> Result<(), BitmapError> {
     validate_v1_header(&header.header_v1)?;
+
+    // We support only uncompressed DIB bitmaps as it is the most common case for clipboard-copied bitmaps.
+    const DIBV5_SUPPORTED_COMPRESSION: &[BitmapCompression] = &[BitmapCompression::RGB, BitmapCompression::BITFIELDS];
+
+    if !DIBV5_SUPPORTED_COMPRESSION.contains(&header.header_v1.compression) {
+        return Err(BitmapError::Unsupported("unsupported compression"));
+    }
+
+    if header.header_v1.compression == BitmapCompression::BITFIELDS {
+        // Currently, we only support the standard order, BGRA, for the bitfields compression.
+        let is_bgr = header.red_mask == 0x00FF0000 && header.green_mask == 0x0000FF00 && header.blue_mask == 0x000000FF;
+
+        // Note: when there is no alpha channel, the mask is 0x00000000 and we support this too.
+        let is_supported_alpha = header.alpha_mask == 0 || header.alpha_mask == 0xFF000000;
+
+        if !is_bgr || !is_supported_alpha {
+            return Err(BitmapError::Unsupported(
+                "non-standard color masks for `BITFIELDS` compression are not supported",
+            ));
+        }
+    }
 
     const SUPPORTED_COLOR_SPACE: &[ColorSpace] = &[
         ColorSpace::SRGB,
@@ -588,6 +602,15 @@ pub fn dib_to_png(input: &[u8]) -> Result<Vec<u8>, BitmapError> {
     let header = BitmapInfoHeader::decode(&mut src).map_err(BitmapError::InvalidHeader)?;
 
     validate_v1_header(&header)?;
+
+    // We support only uncompressed DIB bitmaps as it is the most common case for clipboard-copied bitmaps.
+    // However, for DIBv1 specifically, BitmapCompression::BITFIELDS is not supported even when the order is BGRA,
+    // because there is an additional variable-sized header holding the color masks that we don’t support yet.
+    const DIBV1_SUPPORTED_COMPRESSION: &[BitmapCompression] = &[BitmapCompression::RGB];
+
+    if !DIBV1_SUPPORTED_COMPRESSION.contains(&header.compression) {
+        return Err(BitmapError::Unsupported("unsupported compression"));
+    }
 
     let png_inputs = transform_bitmap(&header, src.remaining(), false)?;
     encode_png(png_inputs)
