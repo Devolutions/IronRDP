@@ -676,7 +676,7 @@ async fn connect(
         server_public_key,
         Some(&mut network_client),
         connector,
-        url::Url::parse(kdc_proxy_url.unwrap_or(String::new()).as_str()) // if kdc_proxy_url does not exit, give url parser a empty string, it will fail anyway and map to a None
+        url::Url::parse(kdc_proxy_url.unwrap_or_default().as_str()) // if kdc_proxy_url does not exit, give url parser a empty string, it will fail anyway and map to a None
             .ok()
             .map(|url| KerberosConfig {
                 kdc_proxy_url: Some(url),
