@@ -437,14 +437,17 @@ fn validate_v5_header(header: &BitmapV5Header) -> Result<(), BitmapError> {
 
     if header.header_v1.compression == BitmapCompression::BITFIELDS {
         // Currently, we only support the standard order, BGRA, for the bitfields compression.
-        // Note: we are making sure to interpret the masks as big-endian using `u32::to_be`.
-        // (`to_be` is a no-op on big endian architectures.)
-        let is_bgra = header.red_mask.to_be() == 0x00FF0000
-            || header.green_mask.to_be() == 0x0000FF00
-            || header.blue_mask.to_be() == 0x000000FF
-            || header.alpha_mask.to_be() == 0xFF000000;
+        // Note: we are making sure to interpret the masks as little-endian using `u32::to_le`.
+        // (`to_le` is a no-op on little endian architectures, which are the most common.)
 
-        if !is_bgra {
+        let is_bgr = header.red_mask.to_le() == 0x00FF0000
+            && header.green_mask.to_le() == 0x0000FF00
+            && header.blue_mask.to_le() == 0x000000FF;
+
+        // Note: when there is no alpha channel, the mask is 0x00000000 and we support this too.
+        let is_supported_alpha = header.alpha_mask.to_le() == 0x00000000 || header.alpha_mask.to_le() == 0xFF000000;
+
+        if !is_bgr || !is_supported_alpha {
             return Err(BitmapError::Unsupported(
                 "non-standard color masks for `BITFIELDS` compression are not supported",
             ));
