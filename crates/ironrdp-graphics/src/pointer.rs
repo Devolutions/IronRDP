@@ -10,7 +10,7 @@
 //! RDP's pointer representation is a bit weird. It uses two masks to represent a pointer -
 //! andMask and xorMask. Xor mask is used as a base color for a pointer pixel, and andMask
 //! mask is used co control pixel's full transparency (`src_color.a = 0`), full opacity
-//! (`src_color.a = 255`) or pixel invertion (`dst_color.rgb = vec3(255) - dst_color.rgb`).
+//! (`src_color.a = 255`) or pixel inversion (`dst_color.rgb = vec3(255) - dst_color.rgb`).
 //!
 //! Xor basks could be 1, 8, 16, 24 or 32 bits per pixel, and andMask is always 1 bit per pixel.
 //!

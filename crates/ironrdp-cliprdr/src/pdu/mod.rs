@@ -113,7 +113,7 @@ pub enum ClipboardPdu<'a> {
 }
 
 impl ClipboardPdu<'_> {
-    const NAME: &str = "CliboardPdu";
+    const NAME: &str = "ClipboardPdu";
     const FIXED_PART_SIZE: usize = std::mem::size_of::<u16>();
 
     pub fn message_name(&self) -> &'static str {

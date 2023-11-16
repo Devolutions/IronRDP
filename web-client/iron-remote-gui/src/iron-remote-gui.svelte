@@ -170,7 +170,7 @@
             var values = new Map<string, string | Uint8Array>();
             var sameValue = true;
 
-            // Saddly, browsers build new `ClipboardItem` object for each `read` call,
+            // Sadly, browsers build new `ClipboardItem` object for each `read` call,
             // so we can't do reference comparison here :(
             //
             // For monitoring loop approach we also can't drop this logic, as it will result in

@@ -134,7 +134,7 @@ pub fn text_to_cf_html(fragment: &str) -> Vec<u8> {
 
     // INVARIANT: placeholder_pos + POS_PLACEHOLDER.len() < buffer.len()
     // This is always valid because we know that placeholder is always present in the buffer
-    // fter the header is written and placeholder is within the bounds of the buffer.
+    // after the header is written and placeholder is within the bounds of the buffer.
     #[allow(clippy::arithmetic_side_effects)]
     let mut replace_placeholder = |placeholder_pos: usize, placeholder_value: &str| {
         buffer[placeholder_pos..placeholder_pos + POS_PLACEHOLDER.len()].copy_from_slice(placeholder_value.as_bytes());

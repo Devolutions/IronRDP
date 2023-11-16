@@ -135,7 +135,7 @@ impl ClipboardFormatId {
         )
     }
 
-    pub fn is_registrered(self) -> bool {
+    pub fn is_registered(self) -> bool {
         (self.0 >= 0xC000) && (self.0 <= 0xFFFF)
     }
 }

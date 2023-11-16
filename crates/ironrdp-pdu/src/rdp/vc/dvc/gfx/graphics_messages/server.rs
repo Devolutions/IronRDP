@@ -43,7 +43,7 @@ impl PduParsing for WireToSurface1Pdu {
         let surface_id = stream.read_u16::<LittleEndian>()?;
         let codec_id =
             Codec1Type::from_u16(stream.read_u16::<LittleEndian>()?).ok_or(GraphicsMessagesError::InvalidCodec1Id)?;
-        let pixel_format = PixelFormat::from_u8(stream.read_u8()?).ok_or(GraphicsMessagesError::InvalidFixelFormat)?;
+        let pixel_format = PixelFormat::from_u8(stream.read_u8()?).ok_or(GraphicsMessagesError::InvalidPixelFormat)?;
         let destination_rectangle = InclusiveRectangle::from_buffer(&mut stream)?;
         let bitmap_data_length = stream.read_u32::<LittleEndian>()? as usize;
         let mut bitmap_data = vec![0; bitmap_data_length];
@@ -101,7 +101,7 @@ impl PduParsing for WireToSurface2Pdu {
         let codec_id =
             Codec2Type::from_u16(stream.read_u16::<LittleEndian>()?).ok_or(GraphicsMessagesError::InvalidCodec2Id)?;
         let codec_context_id = stream.read_u32::<LittleEndian>()?;
-        let pixel_format = PixelFormat::from_u8(stream.read_u8()?).ok_or(GraphicsMessagesError::InvalidFixelFormat)?;
+        let pixel_format = PixelFormat::from_u8(stream.read_u8()?).ok_or(GraphicsMessagesError::InvalidPixelFormat)?;
         let bitmap_data_length = stream.read_u32::<LittleEndian>()? as usize;
         let mut bitmap_data = vec![0; bitmap_data_length];
         stream.read_exact(&mut bitmap_data)?;
@@ -348,7 +348,7 @@ impl PduParsing for CreateSurfacePdu {
         let surface_id = stream.read_u16::<LittleEndian>()?;
         let width = stream.read_u16::<LittleEndian>()?;
         let height = stream.read_u16::<LittleEndian>()?;
-        let pixel_format = PixelFormat::from_u8(stream.read_u8()?).ok_or(GraphicsMessagesError::InvalidFixelFormat)?;
+        let pixel_format = PixelFormat::from_u8(stream.read_u8()?).ok_or(GraphicsMessagesError::InvalidPixelFormat)?;
 
         Ok(Self {
             surface_id,
