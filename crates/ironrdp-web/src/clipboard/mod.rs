@@ -1,4 +1,15 @@
 //! This module implements browser-based clipboard backend for CLIPRDR SVC
+//!
+//! # Implementation notes
+//!
+//! A catch with web browsers, is that there is no support for delayed clipboard rendering.
+//! We can’t know which format will be requested by the target application ultimately.
+//! Because of that, we need to fetch optimistically all available formats.
+//!
+//! For instance, we query both "text/plain" and "text/html". Indeed, depending on the
+//! target application in which the user performs the paste operation, either one could be
+//! requested: when pasting into notepad, which does not support "text/html", "text/plain"
+//! will be requested, and when pasting into WordPad, "text/html" will be requested.
 
 mod transaction;
 
@@ -13,11 +24,13 @@ use ironrdp::cliprdr::pdu::{
 use ironrdp::svc::impl_as_any;
 use ironrdp_cliprdr_format::bitmap::{dib_to_png, dibv5_to_png, png_to_cf_dibv5};
 use ironrdp_cliprdr_format::html::{cf_html_to_text, text_to_cf_html};
-pub(crate) use transaction::ClipboardTransaction;
 use transaction::{ClipboardContent, ClipboardContentValue};
 use wasm_bindgen::prelude::*;
 
 use crate::session::RdpInputEvent;
+
+#[rustfmt::skip]
+pub(crate) use transaction::ClipboardTransaction;
 
 const MIME_TEXT: &str = "text/plain";
 const MIME_HTML: &str = "text/html";
@@ -254,8 +267,11 @@ impl WasmClipboard {
         &mut self,
         formats: Vec<ClipboardFormat>,
     ) -> anyhow::Result<Option<ClipboardFormatId>> {
-        self.remote_formats_to_read.clear();
         self.remote_clipboard.clear();
+
+        // We accumulate all formats in the `remote_formats_to_read` attribute.
+        // Later, we loop over and fetch all of these (see `process_remote_data_response`).
+        self.remote_formats_to_read.clear();
 
         let is_format_name_equal = |format: &ClipboardFormat, name: &str| {
             format
@@ -264,6 +280,17 @@ impl WasmClipboard {
                 .unwrap_or(false)
         };
 
+        // In this loop, we ignore some formats. There are two reasons for that:
+        //
+        // 1) Some formats require an extra conversion into the appropriate MIME format
+        // prior to being written to the system clipboard.
+        // E.g.: "image/png" format is preferred over "CF_DIB" because we’ll convert the
+        // uncompressed BMP into "image/png". "text/html" is preferred over Windows
+        // "CF_HTML" because we’ll convert it into "text/html".
+        //
+        // 2) A direct consequence of 1) is that some formats will end up being mapped
+        // into the same MIME type. Fetching only one of these is enough, especially given
+        // that delayed rendering is not an option.
         for format in &formats {
             if format.id().is_registered() {
                 if let Some(name) = format.name() {
@@ -279,11 +306,6 @@ impl WasmClipboard {
                         continue;
                     }
 
-                    // Skip inferior formats (e.g. raw image/png is better than encoded CF_DIB;
-                    // text/html is better than CF_HTML).
-                    //
-                    // Web client do not have delay-rendering, so we should skip formats that
-                    // are not relevant for transferred over the network.
                     let skip_win_html = is_format_name_equal(format, FORMAT_WIN_HTML.name)
                         && formats
                             .iter()
@@ -307,7 +329,7 @@ impl WasmClipboard {
                     ClipboardFormatId::CF_DIBV5,
                 ];
 
-                if !SUPPORTED_FORMATS.iter().any(|supported| *supported == format.id()) {
+                if !SUPPORTED_FORMATS.contains(&format.id()) {
                     // Unknown format
                     continue;
                 }
@@ -404,9 +426,8 @@ impl WasmClipboard {
             self.remote_clipboard.add_content(content);
         }
 
-        // Request next format
         if let Some(format) = self.remote_formats_to_read.last() {
-            // Request next format
+            // Request next format.
             self.proxy
                 .send_cliprdr_message(ClipboardMessage::SendInitiatePaste(*format));
         } else {
@@ -421,6 +442,7 @@ impl WasmClipboard {
                 .call1(&JsValue::NULL, &JsValue::from(transaction))
                 .expect("Failed to call JS callback");
         }
+
         Ok(())
     }
 
