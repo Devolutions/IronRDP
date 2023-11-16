@@ -104,7 +104,7 @@ pub(crate) enum WasmClipboardBackendMessage {
 /// kept alive until session is terminated.
 pub(crate) struct WasmClipboard {
     local_clipboard: Option<ClipboardTransaction>,
-    remote_clipborad: ClipboardTransaction,
+    remote_clipboard: ClipboardTransaction,
 
     remote_mapping: HashMap<ClipboardFormatId, String>,
     remote_formats_to_read: Vec<ClipboardFormatId>,
@@ -124,7 +124,7 @@ impl WasmClipboard {
     pub(crate) fn new(message_proxy: WasmClipboardMessageProxy, js_callbacks: JsClipboardCallbacks) -> Self {
         Self {
             local_clipboard: None,
-            remote_clipborad: ClipboardTransaction::new(),
+            remote_clipboard: ClipboardTransaction::new(),
             proxy: message_proxy,
             js_callbacks,
 
@@ -255,7 +255,7 @@ impl WasmClipboard {
         formats: Vec<ClipboardFormat>,
     ) -> anyhow::Result<Option<ClipboardFormatId>> {
         self.remote_formats_to_read.clear();
-        self.remote_clipborad.clear();
+        self.remote_clipboard.clear();
 
         let is_format_name_equal = |format: &ClipboardFormat, name: &str| {
             format
@@ -265,7 +265,7 @@ impl WasmClipboard {
         };
 
         for format in &formats {
-            if format.id().is_registrered() {
+            if format.id().is_registered() {
                 if let Some(name) = format.name() {
                     const SUPPORTED_FORMATS: &[&str] = &[
                         FORMAT_WIN_HTML.name,
@@ -401,7 +401,7 @@ impl WasmClipboard {
         };
 
         if let Some(content) = content {
-            self.remote_clipborad.add_content(content);
+            self.remote_clipboard.add_content(content);
         }
 
         // Request next format
@@ -411,7 +411,7 @@ impl WasmClipboard {
                 .send_cliprdr_message(ClipboardMessage::SendInitiatePaste(*format));
         } else {
             // All formats were read, send clipboard to JS
-            let transaction = std::mem::take(&mut self.remote_clipborad);
+            let transaction = std::mem::take(&mut self.remote_clipboard);
             if transaction.is_empty() {
                 return Ok(());
             }

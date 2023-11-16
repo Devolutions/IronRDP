@@ -45,7 +45,7 @@ impl RemoteClipboardFormatRegistry {
             return None;
         }
 
-        if !remote_format.id().is_registrered() {
+        if !remote_format.id().is_registered() {
             // Unknown format range, we could skip it
             return None;
         }

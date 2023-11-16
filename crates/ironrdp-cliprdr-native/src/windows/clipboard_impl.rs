@@ -148,7 +148,7 @@ impl WinClipboardImpl {
         // We need to be clipboard owner to be able to set all clipboard formats
         let _clipboard = match OwnedOsClipboard::new(self.window) {
             Ok(clipboard) => {
-                // SAFETY: `GetClipboardOwner` is alwys safe to call
+                // SAFETY: `GetClipboardOwner` is always safe to call
                 if self.window != unsafe { GetClipboardOwner() } {
                     // As per MSDN, we need to validate clipboard owner after opening clipboard
                     return Ok(None);

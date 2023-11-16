@@ -73,7 +73,7 @@ pub trait CliprdrBackend: AsAny + std::fmt::Debug + Send {
     /// Called by [crate::Cliprdr] when copy sequence is finished.
     /// This method is called after remote returns format list response.
     ///
-    /// Usefull for the backend implementations which need to know when remote is ready to paste
+    /// Useful for the backend implementations which need to know when remote is ready to paste
     /// previously advertised formats from the client. E.g. Web client uses this for
     /// Firefox-specific logic to delay sending keyboard key events to prevent pasting the old
     /// data from the clipboard.

@@ -294,7 +294,7 @@ pub enum GraphicsMessagesError {
     #[error("invalid codec ID version 2")]
     InvalidCodec2Id,
     #[error("invalid pixel format")]
-    InvalidFixelFormat,
+    InvalidPixelFormat,
     #[error("monitor error")]
     MonitorError(#[from] MonitorDataError),
     #[error("invalid ResetGraphics PDU width: {} > MAX ({})", actual, max)]
