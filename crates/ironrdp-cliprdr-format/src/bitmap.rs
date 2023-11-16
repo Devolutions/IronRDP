@@ -445,7 +445,7 @@ fn validate_v5_header(header: &BitmapV5Header) -> Result<(), BitmapError> {
             && header.blue_mask.to_le() == 0x000000FF;
 
         // Note: when there is no alpha channel, the mask is 0x00000000 and we support this too.
-        let is_supported_alpha = header.alpha_mask.to_le() == 0x00000000 || header.alpha_mask.to_le() == 0xFF000000;
+        let is_supported_alpha = header.alpha_mask == 0 || header.alpha_mask.to_le() == 0xFF000000;
 
         if !is_bgr || !is_supported_alpha {
             return Err(BitmapError::Unsupported(
