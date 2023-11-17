@@ -258,10 +258,10 @@ fn connect(
     let connection_result = ironrdp_blocking::connect_finalize(
         upgraded,
         &mut upgraded_framed,
+        connector,
         server_name.into(),
         server_public_key,
         &mut network_client,
-        connector,
         None,
     )
     .context("finalize connection")?;

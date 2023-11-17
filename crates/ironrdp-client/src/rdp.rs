@@ -135,10 +135,10 @@ async fn connect(
     let connection_result = ironrdp_tokio::connect_finalize(
         upgraded,
         &mut upgraded_framed,
+        connector,
         (&config.destination).into(),
         server_public_key,
         Some(&mut network_client),
-        connector,
         None,
     )
     .await?;
