@@ -25,7 +25,7 @@ use std::time::Duration;
 use anyhow::Context as _;
 use connector::Credentials;
 use ironrdp::connector;
-use ironrdp::connector::sspi::network_client::reqwest_network_client::RequestClientFactory;
+use ironrdp::connector::sspi::network_client::reqwest_network_client::ReqwestNetworkClient;
 use ironrdp::connector::ConnectionResult;
 use ironrdp::pdu::gcc::KeyboardType;
 use ironrdp::pdu::nego::SecurityProtocol;
@@ -239,10 +239,7 @@ fn connect(
 
     let mut framed = ironrdp_blocking::Framed::new(tcp_stream);
 
-    let mut connector = connector::ClientConnector::new(config)
-        .with_server_addr(server_addr)
-        .with_server_name(&server_name)
-        .with_credssp_network_client(RequestClientFactory);
+    let mut connector = connector::ClientConnector::new(config).with_server_addr(server_addr);
 
     let should_upgrade = ironrdp_blocking::connect_begin(&mut framed, &mut connector).context("begin connection")?;
 
@@ -253,12 +250,21 @@ fn connect(
 
     let (upgraded_stream, server_public_key) = tls_upgrade(initial_stream, &server_name).context("TLS upgrade")?;
 
-    let upgraded = ironrdp_blocking::mark_as_upgraded(should_upgrade, &mut connector, server_public_key);
+    let upgraded = ironrdp_blocking::mark_as_upgraded(should_upgrade, &mut connector);
 
     let mut upgraded_framed = ironrdp_blocking::Framed::new(upgraded_stream);
 
-    let connection_result =
-        ironrdp_blocking::connect_finalize(upgraded, &mut upgraded_framed, connector).context("finalize connection")?;
+    let mut network_client = ReqwestNetworkClient;
+    let connection_result = ironrdp_blocking::connect_finalize(
+        upgraded,
+        &mut upgraded_framed,
+        server_name.into(),
+        server_public_key,
+        &mut network_client,
+        connector,
+        None,
+    )
+    .context("finalize connection")?;
 
     Ok((connection_result, upgraded_framed))
 }

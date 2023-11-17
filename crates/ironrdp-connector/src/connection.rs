@@ -5,42 +5,15 @@ use ironrdp_pdu::rdp::capability_sets::CapabilitySet;
 use ironrdp_pdu::write_buf::WriteBuf;
 use ironrdp_pdu::{gcc, mcs, nego, rdp, PduHint};
 use ironrdp_svc::{StaticChannelSet, StaticVirtualChannel, StaticVirtualChannelProcessor};
-use sspi::credssp;
 
 use crate::channel_connection::{ChannelConnectionSequence, ChannelConnectionState};
 use crate::connection_finalization::ConnectionFinalizationSequence;
 use crate::license_exchange::LicenseExchangeSequence;
 use crate::{
-    legacy, Config, ConnectorError, ConnectorErrorExt as _, ConnectorErrorKind, ConnectorResult, DesktopSize, Sequence,
-    ServerName, State, Written,
+    legacy, Config, ConnectorError, ConnectorErrorExt as _, ConnectorResult, DesktopSize, Sequence, State, Written,
 };
 
-#[derive(Clone, Copy, Debug)]
-struct CredsspTsRequestHint;
-
 const DEFAULT_POINTER_CACHE_SIZE: u16 = 32;
-const CREDSSP_TS_REQUEST_HINT: CredsspTsRequestHint = CredsspTsRequestHint;
-
-impl PduHint for CredsspTsRequestHint {
-    fn find_size(&self, bytes: &[u8]) -> ironrdp_pdu::PduResult<Option<usize>> {
-        match sspi::credssp::TsRequest::read_length(bytes) {
-            Ok(length) => Ok(Some(length)),
-            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => Ok(None),
-            Err(e) => Err(ironrdp_pdu::custom_err!("CredsspTsRequestHint", e)),
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug)]
-struct CredsspEarlyUserAuthResultHint;
-
-const CREDSSP_EARLY_USER_AUTH_RESULT_HINT: CredsspEarlyUserAuthResultHint = CredsspEarlyUserAuthResultHint;
-
-impl PduHint for CredsspEarlyUserAuthResultHint {
-    fn find_size(&self, _: &[u8]) -> ironrdp_pdu::PduResult<Option<usize>> {
-        Ok(Some(sspi::credssp::EARLY_USER_AUTH_RESULT_PDU_SIZE))
-    }
-}
 
 #[derive(Debug)]
 #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
@@ -65,15 +38,7 @@ pub enum ClientConnectorState {
     EnhancedSecurityUpgrade {
         selected_protocol: nego::SecurityProtocol,
     },
-    CredsspInitial {
-        selected_protocol: nego::SecurityProtocol,
-    },
-    /// At this point, user code may use `sspi::credssp::TsRequest::read_length` to find the correct frame length.
-    CredsspReplyNeeded {
-        selected_protocol: nego::SecurityProtocol,
-        credssp_client: Box<credssp::CredSspClient>,
-    },
-    CredsspEarlyUserAuthResult {
+    CredSsp {
         selected_protocol: nego::SecurityProtocol,
     },
     BasicSettingsExchangeSendInitial {
@@ -132,9 +97,7 @@ impl State for ClientConnectorState {
             Self::ConnectionInitiationSendRequest => "ConnectionInitiationSendRequest",
             Self::ConnectionInitiationWaitConfirm => "ConnectionInitiationWaitResponse",
             Self::EnhancedSecurityUpgrade { .. } => "EnhancedSecurityUpgrade",
-            Self::CredsspInitial { .. } => "CredsspInitial",
-            Self::CredsspReplyNeeded { .. } => "CredsspReplyNeeded",
-            Self::CredsspEarlyUserAuthResult { .. } => "CredsspEarlyUserAuthResult",
+            Self::CredSsp { .. } => "CredSsp",
             Self::BasicSettingsExchangeSendInitial { .. } => "BasicSettingsExchangeSendInitial",
             Self::BasicSettingsExchangeWaitResponse { .. } => "BasicSettingsExchangeWaitResponse",
             Self::ChannelConnection { .. } => "ChannelConnection",
@@ -164,9 +127,6 @@ pub struct ClientConnector {
     pub config: Config,
     pub state: ClientConnectorState,
     pub server_addr: Option<SocketAddr>,
-    pub server_name: Option<ServerName>,
-    pub network_client_factory: Option<Box<dyn sspi::network_client::NetworkClientFactory>>,
-    pub server_public_key: Option<Vec<u8>>,
     pub static_channels: StaticChannelSet,
 }
 
@@ -176,9 +136,6 @@ impl ClientConnector {
             config,
             state: ClientConnectorState::ConnectionInitiationSendRequest,
             server_addr: None,
-            server_name: None,
-            network_client_factory: None,
-            server_public_key: None,
             static_channels: StaticChannelSet::new(),
         }
     }
@@ -193,34 +150,6 @@ impl ClientConnector {
     /// Must be set to the actual target server address (as opposed to the proxy)
     pub fn attach_server_addr(&mut self, addr: SocketAddr) {
         self.server_addr = Some(addr);
-    }
-
-    /// Must be set to the actual target server hostname (as opposed to the proxy)
-    #[must_use]
-    pub fn with_server_name(mut self, name: impl Into<ServerName>) -> Self {
-        self.server_name = Some(name.into());
-        self
-    }
-
-    /// Must be set to the actual target server hostname (as opposed to the proxy)
-    pub fn attach_server_name(&mut self, name: impl Into<ServerName>) {
-        self.server_name = Some(name.into());
-    }
-
-    #[must_use]
-    pub fn with_credssp_network_client<T>(mut self, network_client_factory: T) -> Self
-    where
-        T: sspi::network_client::NetworkClientFactory + 'static,
-    {
-        self.network_client_factory = Some(Box::new(network_client_factory));
-        self
-    }
-
-    pub fn attach_credssp_network_client<T>(&mut self, network_client_factory: T)
-    where
-        T: sspi::network_client::NetworkClientFactory + 'static,
-    {
-        self.network_client_factory = Some(Box::new(network_client_factory));
     }
 
     #[must_use]
@@ -239,10 +168,6 @@ impl ClientConnector {
         self.static_channels.insert(channel);
     }
 
-    pub fn attach_server_public_key(&mut self, server_public_key: Vec<u8>) {
-        self.server_public_key = Some(server_public_key);
-    }
-
     pub fn should_perform_security_upgrade(&self) -> bool {
         matches!(self.state, ClientConnectorState::EnhancedSecurityUpgrade { .. })
     }
@@ -253,13 +178,15 @@ impl ClientConnector {
         debug_assert!(!self.should_perform_security_upgrade());
     }
 
-    pub fn is_credssp_step(&self) -> bool {
-        matches!(
-            &self.state,
-            ClientConnectorState::CredsspInitial { .. }
-                | ClientConnectorState::CredsspReplyNeeded { .. }
-                | ClientConnectorState::CredsspEarlyUserAuthResult { .. }
-        )
+    pub fn should_perform_credssp(&self) -> bool {
+        matches!(self.state, ClientConnectorState::CredSsp { .. })
+    }
+
+    pub fn mark_credssp_as_done(&mut self) {
+        assert!(self.should_perform_credssp());
+        let res = self.step(&[], &mut WriteBuf::new()).expect("transition to next state");
+        debug_assert!(!self.should_perform_credssp());
+        assert_eq!(res, Written::Nothing);
     }
 }
 
@@ -270,9 +197,7 @@ impl Sequence for ClientConnector {
             ClientConnectorState::ConnectionInitiationSendRequest => None,
             ClientConnectorState::ConnectionInitiationWaitConfirm => Some(&ironrdp_pdu::X224_HINT),
             ClientConnectorState::EnhancedSecurityUpgrade { .. } => None,
-            ClientConnectorState::CredsspInitial { .. } => None,
-            ClientConnectorState::CredsspReplyNeeded { .. } => Some(&CREDSSP_TS_REQUEST_HINT),
-            ClientConnectorState::CredsspEarlyUserAuthResult { .. } => Some(&CREDSSP_EARLY_USER_AUTH_RESULT_HINT),
+            ClientConnectorState::CredSsp { .. } => None,
             ClientConnectorState::BasicSettingsExchangeSendInitial { .. } => None,
             ClientConnectorState::BasicSettingsExchangeWaitResponse { .. } => Some(&ironrdp_pdu::X224_HINT),
             ClientConnectorState::ChannelConnection { channel_connection, .. } => channel_connection.next_pdu_hint(),
@@ -355,7 +280,7 @@ impl Sequence for ClientConnector {
                 let next_state = if selected_protocol.contains(nego::SecurityProtocol::HYBRID)
                     || selected_protocol.contains(nego::SecurityProtocol::HYBRID_EX)
                 {
-                    ClientConnectorState::CredsspInitial { selected_protocol }
+                    ClientConnectorState::CredSsp { selected_protocol }
                 } else {
                     debug!("Skipped CredSSP");
                     ClientConnectorState::BasicSettingsExchangeSendInitial { selected_protocol }
@@ -365,130 +290,10 @@ impl Sequence for ClientConnector {
             }
 
             //== CredSSP ==//
-            ClientConnectorState::CredsspInitial { selected_protocol } => {
-                debug!("CredSSP");
-                if let crate::Credentials::SmartCard { .. } = self.config.credentials {
-                    return Err(general_err!(
-                        "CredSSP with smart card credentials is not currently supported"
-                    ));
-                }
-
-                let credentials = sspi::AuthIdentity {
-                    username: self.config.credentials.username().into(),
-                    password: self.config.credentials.secret().to_owned().into(),
-                    domain: self.config.domain.clone(),
-                };
-
-                let server_public_key = self
-                    .server_public_key
-                    .take()
-                    .ok_or_else(|| general_err!("server public key is missing"))?;
-
-                let network_client_factory = self
-                    .network_client_factory
-                    .take()
-                    .ok_or_else(|| general_err!("CredSSP network client factory is missing"))?;
-
-                let server_name = self
-                    .server_name
-                    .take()
-                    .ok_or_else(|| general_err!("server name is missing"))?
-                    .into_inner();
-
-                let service_principal_name = format!("TERMSRV/{server_name}");
-
-                let mut credssp_client = credssp::CredSspClient::new(
-                    server_public_key,
-                    credentials,
-                    credssp::CredSspMode::WithCredentials,
-                    credssp::ClientMode::Negotiate(sspi::NegotiateConfig {
-                        protocol_config: Box::<sspi::ntlm::NtlmConfig>::default(),
-                        package_list: None,
-                        hostname: server_name,
-                        network_client_factory,
-                    }),
-                    service_principal_name,
-                )
-                .map_err(|e| ConnectorError::new("CredSSP", ConnectorErrorKind::Credssp(e)))?;
-
-                let initial_ts_request = credssp::TsRequest::default();
-
-                let result = credssp_client
-                    .process(initial_ts_request)
-                    .map_err(|e| ConnectorError::new("CredSSP", ConnectorErrorKind::Credssp(e)))?;
-
-                let (ts_request_from_client, next_state) = match result {
-                    credssp::ClientState::ReplyNeeded(ts_request) => (
-                        ts_request,
-                        ClientConnectorState::CredsspReplyNeeded {
-                            selected_protocol,
-                            credssp_client: Box::new(credssp_client),
-                        },
-                    ),
-                    credssp::ClientState::FinalMessage(ts_request) => (
-                        ts_request,
-                        ClientConnectorState::BasicSettingsExchangeSendInitial { selected_protocol },
-                    ),
-                };
-
-                debug!(message = ?ts_request_from_client, "Send");
-
-                let written = write_credssp_request(ts_request_from_client, output)?;
-
-                (Written::from_size(written)?, next_state)
-            }
-            ClientConnectorState::CredsspReplyNeeded {
-                selected_protocol,
-                mut credssp_client,
-            } => {
-                let ts_request_from_server = credssp::TsRequest::from_buffer(input)
-                    .map_err(|e| reason_err!("CredSSP", "TsRequest decode: {e}"))?;
-
-                debug!(message = ?ts_request_from_server, "Received");
-
-                let result = credssp_client
-                    .process(ts_request_from_server)
-                    .map_err(|e| ConnectorError::new("CredSSP", ConnectorErrorKind::Credssp(e)))?;
-
-                let (ts_request_from_client, next_state) = match result {
-                    credssp::ClientState::ReplyNeeded(ts_request) => (
-                        ts_request,
-                        ClientConnectorState::CredsspReplyNeeded {
-                            selected_protocol,
-                            credssp_client,
-                        },
-                    ),
-                    credssp::ClientState::FinalMessage(ts_request) => (
-                        ts_request,
-                        if selected_protocol.contains(nego::SecurityProtocol::HYBRID_EX) {
-                            ClientConnectorState::CredsspEarlyUserAuthResult { selected_protocol }
-                        } else {
-                            ClientConnectorState::BasicSettingsExchangeSendInitial { selected_protocol }
-                        },
-                    ),
-                };
-
-                debug!(message = ?ts_request_from_client, "Send");
-
-                let written = write_credssp_request(ts_request_from_client, output)?;
-
-                (Written::from_size(written)?, next_state)
-            }
-            ClientConnectorState::CredsspEarlyUserAuthResult { selected_protocol } => {
-                let early_user_auth_result = credssp::EarlyUserAuthResult::from_buffer(input)
-                    .map_err(|e| custom_err!("credssp::EarlyUserAuthResult", e))?;
-
-                debug!(message = ?early_user_auth_result, "Received");
-
-                let credssp::EarlyUserAuthResult::Success = early_user_auth_result else {
-                    return Err(ConnectorError::new("CredSSP", ConnectorErrorKind::AccessDenied));
-                };
-
-                (
-                    Written::Nothing,
-                    ClientConnectorState::BasicSettingsExchangeSendInitial { selected_protocol },
-                )
-            }
+            ClientConnectorState::CredSsp { selected_protocol } => (
+                Written::Nothing,
+                ClientConnectorState::BasicSettingsExchangeSendInitial { selected_protocol },
+            ),
 
             //== Basic Settings Exchange ==//
             // Exchange basic settings including Core Data, Security Data and Network Data.
@@ -1086,18 +891,4 @@ fn create_client_confirm_active(
             capability_sets: server_capability_sets,
         },
     }
-}
-
-fn write_credssp_request(ts_request: credssp::TsRequest, output: &mut WriteBuf) -> ConnectorResult<usize> {
-    let length = usize::from(ts_request.buffer_len());
-
-    let unfilled_buffer = output.unfilled_to(length);
-
-    ts_request
-        .encode_ts_request(unfilled_buffer)
-        .map_err(|e| reason_err!("CredSSP", "TsRequest encode: {e}"))?;
-
-    output.advance(length);
-
-    Ok(length)
 }

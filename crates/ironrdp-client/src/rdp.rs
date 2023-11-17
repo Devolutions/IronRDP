@@ -1,5 +1,4 @@
 use ironrdp::cliprdr::backend::{ClipboardMessage, CliprdrBackendFactory};
-use ironrdp::connector::sspi::network_client::reqwest_network_client::RequestClientFactory;
 use ironrdp::connector::{ConnectionResult, ConnectorResult};
 use ironrdp::graphics::image_processing::PixelFormat;
 use ironrdp::pdu::input::fast_path::FastPathInputEvent;
@@ -105,8 +104,6 @@ async fn connect(
 
     let mut connector = connector::ClientConnector::new(config.connector.clone())
         .with_server_addr(server_addr)
-        .with_server_name(&config.destination)
-        .with_credssp_network_client(RequestClientFactory)
         // .with_static_channel(ironrdp::dvc::Drdynvc::new()) // FIXME(#61): drdynvc is not working
         .with_static_channel(rdpsnd::Rdpsnd::new())
         .with_static_channel(rdpdr::Rdpdr::new(Box::new(NoopRdpdrBackend {}), "IronRDP".to_owned()).with_smartcard(0));
@@ -130,11 +127,21 @@ async fn connect(
         .await
         .map_err(|e| connector::custom_err!("TLS upgrade", e))?;
 
-    let upgraded = ironrdp_tokio::mark_as_upgraded(should_upgrade, &mut connector, server_public_key);
+    let upgraded = ironrdp_tokio::mark_as_upgraded(should_upgrade, &mut connector);
 
     let mut upgraded_framed = ironrdp_tokio::TokioFramed::new(upgraded_stream);
 
-    let connection_result = ironrdp_tokio::connect_finalize(upgraded, &mut upgraded_framed, connector).await?;
+    let mut network_client = crate::network_client::ReqwestNetworkClient::new();
+    let connection_result = ironrdp_tokio::connect_finalize(
+        upgraded,
+        &mut upgraded_framed,
+        (&config.destination).into(),
+        server_public_key,
+        Some(&mut network_client),
+        connector,
+        None,
+    )
+    .await?;
 
     debug!(?connection_result);
 

@@ -18,6 +18,7 @@ export interface UserInteraction {
         authToken: string,
         desktopSize?: DesktopSize,
         preConnectionBlob?: string,
+        kdc_proxy_url?: string,
     ): Observable<NewSessionInfo>;
 
     ctrlAltDel(): void;

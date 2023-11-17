@@ -1,73 +1,78 @@
-use std::time::Duration;
+use std::pin::Pin;
 
-use gloo_net::http::Request;
-use ironrdp::connector::sspi;
-use ironrdp::connector::sspi::network_client::{NetworkClient, NetworkClientFactory, NetworkProtocol};
-use url::Url;
-use wasm_bindgen::JsValue;
+use futures_util::Future;
+use ironrdp::connector::sspi::generator::NetworkRequest;
+use ironrdp::connector::sspi::network_client::NetworkProtocol;
+use ironrdp::connector::{general_err, reason_err, ConnectorResult};
+use ironrdp_futures::AsyncNetworkClient;
+use wasm_bindgen::JsCast;
+use wasm_bindgen_futures::JsFuture;
+use web_sys::ReadableStream;
 
 #[derive(Debug)]
-pub(crate) struct WasmNetworkClientFactory;
+pub(crate) struct WasmNetworkClient;
+impl AsyncNetworkClient for WasmNetworkClient {
+    fn send<'a>(
+        &'a mut self,
+        network_request: &'a NetworkRequest,
+    ) -> Pin<Box<dyn Future<Output = ConnectorResult<Vec<u8>>> + 'a>> {
+        Box::pin(async move {
+            trace!("network requwest = {:?}", &network_request);
+            match &network_request.protocol {
+                NetworkProtocol::Http | NetworkProtocol::Https => {
+                    let body = js_sys::Uint8Array::from(&network_request.data[..]);
 
-impl NetworkClientFactory for WasmNetworkClientFactory {
-    fn network_client(&self) -> Box<dyn NetworkClient> {
-        Box::new(WasmNetworkClient)
-    }
+                    let stream = gloo_net::http::Request::post(network_request.url.as_str())
+                        .header("keep-alive", "true")
+                        .body(body)
+                        .map_err(|e| reason_err!("Error send KDC request", "{}", e))?
+                        .send()
+                        .await
+                        .map_err(|e| reason_err!("Error send KDC request", "{}", e))?
+                        .body()
+                        .ok_or_else(|| general_err!("No body in response"))?;
+                    let res = read_stream(stream).await?;
 
-    fn box_clone(&self) -> Box<dyn NetworkClientFactory> {
-        Box::new(WasmNetworkClientFactory)
+                    Ok(res)
+                }
+                _ => Err(general_err!("KDC Url must always start with HTTP/HTTPS for Web")),
+            }
+        })
     }
 }
-
-struct WasmNetworkClient;
 
 impl WasmNetworkClient {
-    const NAME: &str = "Wasm";
-    const SUPPORTED_PROTOCOLS: &[NetworkProtocol] = &[NetworkProtocol::Http, NetworkProtocol::Https];
+    pub(crate) fn new() -> Self {
+        Self
+    }
 }
+async fn read_stream(stream: ReadableStream) -> ConnectorResult<Vec<u8>> {
+    let mut bytes = Vec::new();
+    let reader = web_sys::ReadableStreamDefaultReader::new(&stream).map_err(|_| general_err!("error create reader"))?;
 
-impl NetworkClient for WasmNetworkClient {
-    fn send(&self, _protocol: NetworkProtocol, url: Url, data: &[u8]) -> sspi::Result<Vec<u8>> {
-        let length = JsValue::from_f64(data.len() as f64);
-        let payload = js_sys::Uint8Array::new(&length);
-        payload.copy_from(data);
+    loop {
+        let result = JsFuture::from(reader.read())
+            .await
+            .map_err(|_e| general_err!("error read stream"))?;
 
-        let fut = Request::post(url.as_str())
-            .body(payload)
-            .map_err(|e| sspi::Error::new(sspi::ErrorKind::InternalError, e.to_string()))?
-            .send();
+        // Cast the result into an object and check if the stream is done
+        let result_obj = result.dyn_into::<js_sys::Object>().unwrap();
+        let done = js_sys::Reflect::get(&result_obj, &"done".into())
+            .map_err(|_| general_err!("error read stream"))?
+            .as_bool()
+            .ok_or_else(|| general_err!("error resolve reader promise property: done"))?;
 
-        let (tx, rx) = std::sync::mpsc::sync_channel(0); // rendezvous channel
+        if done {
+            break;
+        }
 
-        wasm_bindgen_futures::spawn_local(async move {
-            match fut.await {
-                Ok(response) => {
-                    let result = response.binary().await;
-                    let _ = tx.send(result);
-                }
-                Err(error) => {
-                    let _ = tx.send(Err(error));
-                }
-            }
-        });
+        // Extract the value (the chunk) from the result
+        let value = js_sys::Reflect::get(&result_obj, &"value".into()).unwrap();
 
-        let response = rx
-            .recv_timeout(Duration::from_secs(10))
-            .map_err(|e| sspi::Error::new(sspi::ErrorKind::InternalError, e.to_string()))?
-            .map_err(|e| sspi::Error::new(sspi::ErrorKind::NoAuthenticatingAuthority, e.to_string()))?;
-
-        Ok(response)
+        // Convert value to Uint8Array, then to Vec<u8> and append to bytes
+        let chunk = js_sys::Uint8Array::new(&value);
+        bytes.extend_from_slice(&chunk.to_vec());
     }
 
-    fn name(&self) -> &'static str {
-        Self::NAME
-    }
-
-    fn supported_protocols(&self) -> &[NetworkProtocol] {
-        Self::SUPPORTED_PROTOCOLS
-    }
-
-    fn box_clone(&self) -> Box<dyn NetworkClient> {
-        Box::new(WasmNetworkClient)
-    }
+    Ok(bytes)
 }

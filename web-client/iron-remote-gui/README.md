@@ -52,11 +52,29 @@ You can add some parameters for default initialization on the component `<iron-r
 
 ## `UserInteractionService` methods
 
-> `connect(username: string, password: string, host: string, authtoken: string): Observable<NewSessionInfo>`
->
+```ts
+connect(
+        username: string,
+        password: string,
+        destination: string,
+        proxyAddress: string,
+        serverDomain: string,
+        authToken: string,
+        desktopSize?: DesktopSize,
+        preConnectionBlob?: string,
+        kdc_proxy_url?: string,
+    ): Observable<NewSessionInfo>;
+```
+
 > `username` and `password` are the credentials to use on the remote host.
-> `host` refers to the Devolutions Gateway hostname and port.
+
+> `destination` refers to the Devolutions Gateway hostname and port.
+
 > `authtoken` is the authentication token to send to the Devolutions Gateway.
+
+> `serverDomain` is the Windows domain name (if the target computer has one)
+
+> `kdc_proxy_url` is the URL to a KDC Proxy, as specified in [MS-KKDCP documentation](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-kkdcp/5bcebb8d-b747-4ee5-9453-428aec1c5c38)
 
 > `ctrlAltDel()`
 >

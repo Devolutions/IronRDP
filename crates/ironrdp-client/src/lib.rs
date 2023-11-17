@@ -13,4 +13,5 @@ extern crate tracing;
 pub mod clipboard;
 pub mod config;
 pub mod gui;
+pub mod network_client;
 pub mod rdp;

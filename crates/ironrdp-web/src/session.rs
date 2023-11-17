@@ -10,7 +10,7 @@ use gloo_net::websocket;
 use gloo_net::websocket::futures::WebSocket;
 use ironrdp::cliprdr::backend::ClipboardMessage;
 use ironrdp::cliprdr::Cliprdr;
-use ironrdp::connector::{self, ClientConnector, Credentials};
+use ironrdp::connector::{self, ClientConnector, Credentials, KerberosConfig};
 use ironrdp::graphics::image_processing::PixelFormat;
 use ironrdp::pdu::input::fast_path::FastPathInputEvent;
 use ironrdp::pdu::write_buf::WriteBuf;
@@ -26,7 +26,7 @@ use crate::clipboard::{ClipboardTransaction, WasmClipboard, WasmClipboardBackend
 use crate::error::{IronRdpError, IronRdpErrorKind};
 use crate::image::extract_partial_image;
 use crate::input::InputTransaction;
-use crate::network_client::WasmNetworkClientFactory;
+use crate::network_client::WasmNetworkClient;
 use crate::websocket::WebSocketCompat;
 use crate::{clipboard, DesktopSize};
 
@@ -45,6 +45,7 @@ struct SessionBuilderInner {
     proxy_address: Option<String>,
     auth_token: Option<String>,
     pcb: Option<String>,
+    kdc_proxy_url: Option<String>,
     client_name: String,
     desktop_size: DesktopSize,
 
@@ -68,6 +69,7 @@ impl Default for SessionBuilderInner {
             proxy_address: None,
             auth_token: None,
             pcb: None,
+            kdc_proxy_url: None,
             client_name: "ironrdp-web".to_owned(),
             desktop_size: DesktopSize {
                 width: DEFAULT_WIDTH,
@@ -175,6 +177,12 @@ impl SessionBuilder {
     }
 
     /// Optional
+    pub fn kdc_proxy_url(&self, kdc_proxy_url: Option<String>) -> SessionBuilder {
+        self.0.borrow_mut().kdc_proxy_url = kdc_proxy_url;
+        self.clone()
+    }
+
+    /// Optional
     pub fn remote_clipboard_changed_callback(&self, callback: js_sys::Function) -> SessionBuilder {
         self.0.borrow_mut().remote_clipboard_changed_callback = Some(callback);
         self.clone()
@@ -208,6 +216,7 @@ impl SessionBuilder {
             hide_pointer_callback_context,
             show_pointer_callback,
             show_pointer_callback_context,
+            kdc_proxy_url,
             remote_clipboard_changed_callback,
             remote_received_format_list_callback,
             force_clipboard_update_callback,
@@ -224,6 +233,8 @@ impl SessionBuilder {
             pcb = inner.pcb.clone();
             client_name = inner.client_name.clone();
             desktop_size = inner.desktop_size.clone();
+
+            kdc_proxy_url = inner.kdc_proxy_url.clone();
 
             render_canvas = inner.render_canvas.clone().context("render_canvas missing")?;
 
@@ -300,6 +311,7 @@ impl SessionBuilder {
             destination,
             pcb,
             clipboard.as_ref().map(|clip| clip.backend()),
+            kdc_proxy_url,
         )
         .await?;
 
@@ -608,7 +620,7 @@ fn build_config(
         client_dir: "C:\\Windows\\System32\\mstscax.dll".to_owned(),
         platform: ironrdp::pdu::rdp::capability_sets::MajorPlatformType::UNSPECIFIED,
         no_server_pointer: false,
-        autologon: false
+        autologon: false,
     }
 }
 
@@ -640,21 +652,40 @@ async fn connect(
     destination: String,
     pcb: Option<String>,
     clipboard_backend: Option<WasmClipboardBackend>,
+    kdc_proxy_url: Option<String>,
 ) -> Result<(connector::ConnectionResult, WebSocketCompat), IronRdpError> {
     let mut framed = ironrdp_futures::SingleThreadedFuturesFramed::new(ws);
 
-    let mut connector = connector::ClientConnector::new(config)
-        .with_server_name(&destination)
-        .with_credssp_network_client(WasmNetworkClientFactory);
-    // .with_static_channel(ironrdp::dvc::Drdynvc::new()); // FIXME: drdynvc is not working
+    let mut connector = connector::ClientConnector::new(config);
 
     if let Some(clipboard_backend) = clipboard_backend {
         connector.attach_static_channel(Cliprdr::new(Box::new(clipboard_backend)));
     }
 
-    let upgraded = connect_rdcleanpath(&mut framed, &mut connector, destination, proxy_auth_token, pcb).await?;
+    let (upgraded, server_public_key) =
+        connect_rdcleanpath(&mut framed, &mut connector, destination.clone(), proxy_auth_token, pcb).await?;
 
-    let connection_result = ironrdp_futures::connect_finalize(upgraded, &mut framed, connector).await?;
+    info!("kdc url = {:?}", &kdc_proxy_url);
+
+    let mut network_client = WasmNetworkClient::new();
+
+    let connection_result = ironrdp_futures::connect_finalize(
+        upgraded,
+        &mut framed,
+        (&destination).into(),
+        server_public_key,
+        Some(&mut network_client),
+        connector,
+        url::Url::parse(kdc_proxy_url.unwrap_or_default().as_str()) // if kdc_proxy_url does not exit, give url parser a empty string, it will fail anyway and map to a None
+            .ok()
+            .map(|url| KerberosConfig {
+                kdc_proxy_url: Some(url),
+                // HACK: It’s supposed to be the computer name of the client, but since it’s not easy to retrieve this information in the browser,
+                // we set the destination hostname instead because it happens to work.
+                hostname: Some(destination),
+            }),
+    )
+    .await?;
 
     let ws = framed.into_inner_no_leftover();
 
@@ -667,7 +698,7 @@ async fn connect_rdcleanpath<S>(
     destination: String,
     proxy_auth_token: String,
     pcb: Option<String>,
-) -> Result<ironrdp_futures::Upgraded, IronRdpError>
+) -> Result<(ironrdp_futures::Upgraded, Vec<u8>), IronRdpError>
 where
     S: ironrdp_futures::FramedRead + ironrdp_futures::FramedWrite,
 {
@@ -790,8 +821,8 @@ where
 
         // At this point, proxy established the TLS session
 
-        let upgraded = ironrdp_futures::mark_as_upgraded(should_upgrade, connector, server_public_key);
+        let upgraded = ironrdp_futures::mark_as_upgraded(should_upgrade, connector);
 
-        Ok(upgraded)
+        Ok((upgraded, server_public_key))
     }
 }

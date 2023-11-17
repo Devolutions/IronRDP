@@ -14,6 +14,7 @@
     let domain = '';
     let authtoken =
         'eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCIsImN0eSI6IkFTU09DSUFUSU9OIn0.eyJkc3RfaHN0IjoiMTkyLjE2OC41Ni4xMDE6MzM4OSIsImV4cCI6MTY5MzQyMzY1NSwiamV0X2FpZCI6IjMwNzZjZGIwLWYxNTctNDJlNy1iOWMzLThhMTdlNDFkYjYwNyIsImpldF9hcCI6InJkcCIsImpldF9jbSI6ImZ3ZCIsImp0aSI6IjAwYjY4OTY2LWJiYjAtNDU0NS05ZDZiLWRjNmFmMjAzNjY5MiIsIm5iZiI6MTY5MzQyMjc1NX0.SYQv4HtWQbdHMHgoCLYejCfO3TtsMAyjjILB6-Nir3mBznKiSad3POeLf02n05JFc5QhCeSGxspAaoNU7-znQFhHr0Tt0MnZJ1YMQt4UoR3PR2fTuUqv8M5TKdm4lKwCIjh73tTD001glTkXHaxuCQBTFCUSzfZhXDIqq5-CQueKtCrgJfYepJLmlvgH-ujGcxfXoGJGmeUy3Fmaijiy0uaC98j9GNCfnAd6JENmSAOkxfroMFhq601PSEizRbPzq2exDakfJ0EkaANz15udBX1a7NP-RyANHWQb8hp0rj6hyuyg1-vfUKYusw5qNUjAGXaWOjHC5bLgnqfE2V8Xnw';
+    let kdc_proxy_url = '';
     let desktopSize: DesktopSize = {
         width: 1280,
         height: 768,
@@ -53,7 +54,7 @@
             message: 'Connection in progress...',
         });
         userInteraction
-            .connect(username, password, hostname, gatewayAddress, domain, authtoken, desktopSize, pcb)
+            .connect(username, password, hostname, gatewayAddress, domain, authtoken, desktopSize, pcb, kdc_proxy_url)
             .pipe(
                 catchError((err) => {
                     toast.set({
@@ -132,6 +133,10 @@
                     <div class="field label border">
                         <input id="desktopSizeH" type="text" bind:value={desktopSize.height} />
                         <label for="desktopSizeH">Desktop Height</label>
+                    </div>
+                    <div class="field label border">
+                        <input id="kdc_proxy_url" type="text" bind:value={kdc_proxy_url} />
+                        <label for="kdc_proxy_url">KDC Proxy URL</label>
                     </div>
                 </div>
                 <nav class="center-align">
