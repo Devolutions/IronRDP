@@ -38,7 +38,7 @@ pub enum ClientConnectorState {
     EnhancedSecurityUpgrade {
         selected_protocol: nego::SecurityProtocol,
     },
-    CredSsp {
+    Credssp {
         selected_protocol: nego::SecurityProtocol,
     },
     BasicSettingsExchangeSendInitial {
@@ -97,7 +97,7 @@ impl State for ClientConnectorState {
             Self::ConnectionInitiationSendRequest => "ConnectionInitiationSendRequest",
             Self::ConnectionInitiationWaitConfirm => "ConnectionInitiationWaitResponse",
             Self::EnhancedSecurityUpgrade { .. } => "EnhancedSecurityUpgrade",
-            Self::CredSsp { .. } => "CredSsp",
+            Self::Credssp { .. } => "Credssp",
             Self::BasicSettingsExchangeSendInitial { .. } => "BasicSettingsExchangeSendInitial",
             Self::BasicSettingsExchangeWaitResponse { .. } => "BasicSettingsExchangeWaitResponse",
             Self::ChannelConnection { .. } => "ChannelConnection",
@@ -179,7 +179,7 @@ impl ClientConnector {
     }
 
     pub fn should_perform_credssp(&self) -> bool {
-        matches!(self.state, ClientConnectorState::CredSsp { .. })
+        matches!(self.state, ClientConnectorState::Credssp { .. })
     }
 
     pub fn mark_credssp_as_done(&mut self) {
@@ -197,7 +197,7 @@ impl Sequence for ClientConnector {
             ClientConnectorState::ConnectionInitiationSendRequest => None,
             ClientConnectorState::ConnectionInitiationWaitConfirm => Some(&ironrdp_pdu::X224_HINT),
             ClientConnectorState::EnhancedSecurityUpgrade { .. } => None,
-            ClientConnectorState::CredSsp { .. } => None,
+            ClientConnectorState::Credssp { .. } => None,
             ClientConnectorState::BasicSettingsExchangeSendInitial { .. } => None,
             ClientConnectorState::BasicSettingsExchangeWaitResponse { .. } => Some(&ironrdp_pdu::X224_HINT),
             ClientConnectorState::ChannelConnection { channel_connection, .. } => channel_connection.next_pdu_hint(),
@@ -280,7 +280,7 @@ impl Sequence for ClientConnector {
                 let next_state = if selected_protocol.contains(nego::SecurityProtocol::HYBRID)
                     || selected_protocol.contains(nego::SecurityProtocol::HYBRID_EX)
                 {
-                    ClientConnectorState::CredSsp { selected_protocol }
+                    ClientConnectorState::Credssp { selected_protocol }
                 } else {
                     debug!("Skipped CredSSP");
                     ClientConnectorState::BasicSettingsExchangeSendInitial { selected_protocol }
@@ -290,7 +290,7 @@ impl Sequence for ClientConnector {
             }
 
             //== CredSSP ==//
-            ClientConnectorState::CredSsp { selected_protocol } => (
+            ClientConnectorState::Credssp { selected_protocol } => (
                 Written::Nothing,
                 ClientConnectorState::BasicSettingsExchangeSendInitial { selected_protocol },
             ),

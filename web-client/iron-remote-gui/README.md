@@ -54,16 +54,16 @@ You can add some parameters for default initialization on the component `<iron-r
 
 ```ts
 connect(
-        username: string,
-        password: string,
-        destination: string,
-        proxyAddress: string,
-        serverDomain: string,
-        authToken: string,
-        desktopSize?: DesktopSize,
-        preConnectionBlob?: string,
-        kdc_proxy_url?: string,
-    ): Observable<NewSessionInfo>;
+  username: string,
+  password: string,
+  destination: string,
+  proxyAddress: string,
+  serverDomain: string,
+  authToken: string,
+  desktopSize?: DesktopSize,
+  preConnectionBlob?: string,
+  kdc_proxy_url?: string,
+): Observable<NewSessionInfo>;
 ```
 
 > `username` and `password` are the credentials to use on the remote host.

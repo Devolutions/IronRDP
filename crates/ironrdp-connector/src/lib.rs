@@ -12,7 +12,7 @@ pub mod legacy;
 mod channel_connection;
 mod connection;
 mod connection_finalization;
-pub mod credssp_sequence;
+pub mod credssp;
 mod license_exchange;
 mod server_name;
 
@@ -98,34 +98,6 @@ pub struct Config {
     pub no_server_pointer: bool,
     /// If true, the INFO_AUTOLOGON flag is set in the [`ironrdp_pdu::rdp::ClientInfoPdu`].
     pub autologon: bool,
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct KerberosConfig {
-    pub kdc_proxy_url: Option<url::Url>,
-    pub hostname: Option<String>,
-}
-
-impl KerberosConfig {
-    pub fn new(kdc_proxy_url: Option<String>, hostname: Option<String>) -> ConnectorResult<Self> {
-        let kdc_proxy_url = kdc_proxy_url
-            .map(|url| url::Url::parse(&url))
-            .transpose()
-            .map_err(|e| custom_err!("invalid KDC URL", e))?;
-        Ok(Self {
-            kdc_proxy_url,
-            hostname,
-        })
-    }
-}
-
-impl From<KerberosConfig> for sspi::KerberosConfig {
-    fn from(val: KerberosConfig) -> Self {
-        sspi::KerberosConfig {
-            kdc_url: val.kdc_proxy_url,
-            client_computer_name: val.hostname,
-        }
-    }
 }
 
 ironrdp_pdu::assert_impl!(Config: Send, Sync);

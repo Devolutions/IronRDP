@@ -6,9 +6,36 @@ use sspi::negotiate::ProtocolConfig;
 use sspi::Username;
 
 use crate::{
-    ClientConnector, ClientConnectorState, ConnectorError, ConnectorErrorKind, ConnectorResult, KerberosConfig,
-    ServerName, Written,
+    ClientConnector, ClientConnectorState, ConnectorError, ConnectorErrorKind, ConnectorResult, ServerName, Written,
 };
+
+#[derive(Debug, Clone, Default)]
+pub struct KerberosConfig {
+    pub kdc_proxy_url: Option<url::Url>,
+    pub hostname: Option<String>,
+}
+
+impl KerberosConfig {
+    pub fn new(kdc_proxy_url: Option<String>, hostname: Option<String>) -> ConnectorResult<Self> {
+        let kdc_proxy_url = kdc_proxy_url
+            .map(|url| url::Url::parse(&url))
+            .transpose()
+            .map_err(|e| custom_err!("invalid KDC URL", e))?;
+        Ok(Self {
+            kdc_proxy_url,
+            hostname,
+        })
+    }
+}
+
+impl From<KerberosConfig> for sspi::KerberosConfig {
+    fn from(val: KerberosConfig) -> Self {
+        sspi::KerberosConfig {
+            kdc_url: val.kdc_proxy_url,
+            client_computer_name: val.hostname,
+        }
+    }
+}
 
 #[derive(Clone, Copy, Debug)]
 struct CredsspTsRequestHint;
@@ -24,6 +51,7 @@ impl PduHint for CredsspTsRequestHint {
         }
     }
 }
+
 #[derive(Clone, Copy, Debug)]
 struct CredsspEarlyUserAuthResultHint;
 
@@ -63,6 +91,7 @@ impl CredsspSequence {
         }
     }
 
+    /// `server_name` must be the actual target server hostname (as opposed to the proxy)
     pub fn new(
         connector: &ClientConnector,
         server_name: ServerName,
@@ -76,8 +105,11 @@ impl CredsspSequence {
             ));
         }
 
+        let username = Username::new(config.credentials.username(), config.domain.as_deref())
+            .map_err(|e| custom_err!("invalid username", e))?;
+
         let credentials = sspi::AuthIdentity {
-            username: Username::parse(config.credentials.username()).map_err(|e| custom_err!("parsing username", e))?,
+            username,
             password: config.credentials.secret().to_owned().into(),
         };
 
@@ -91,7 +123,7 @@ impl CredsspSequence {
         } else {
             credssp_config = Box::<sspi::ntlm::NtlmConfig>::default();
         }
-        info!("using config : {:?}", &credssp_config);
+        debug!(?credssp_config);
 
         let client = credssp::CredSspClient::new(
             server_public_key,
@@ -107,15 +139,13 @@ impl CredsspSequence {
         .map_err(|e| ConnectorError::new("CredSSP", ConnectorErrorKind::Credssp(e)))?;
 
         match connector.state {
-            ClientConnectorState::CredSsp { selected_protocol } => Ok(Self {
+            ClientConnectorState::Credssp { selected_protocol } => Ok(Self {
                 client,
                 next_request: Some(credssp::TsRequest::default()),
                 state: CredsspState::CredsspInitial,
                 selected_protocol,
             }),
-            _ => Err(general_err!(
-                "Cannot perform cred ssp opeartions when ClientConnector is not in CredSsp state"
-            )),
+            _ => Err(general_err!("invalid connector state for CredSSP sequence")),
         }
     }
 
@@ -123,38 +153,35 @@ impl CredsspSequence {
         self.state == CredsspState::Finished
     }
 
-    pub fn wants_request_from_server(&self) -> bool {
-        self.next_request.is_none()
-    }
-
     pub fn read_request_from_server(&mut self, input: &[u8]) -> ConnectorResult<()> {
         match self.state {
-            CredsspState::CredsspInitial | CredsspState::CredsspReplyNeeded => {
-                info!("read request from server: {:?}", input);
-                let message = credssp::TsRequest::from_buffer(input)
-                    .map_err(|e| reason_err!("CredSSP", "TsRequest decode: {e}"))?;
+            CredsspState::CredsspReplyNeeded => {
+                let message = credssp::TsRequest::from_buffer(input).map_err(|e| custom_err!("TsRequest", e))?;
                 debug!(?message, "Received");
                 self.next_request = Some(message);
                 Ok(())
             }
             CredsspState::CredsspEarlyUserAuthResult => {
                 let early_user_auth_result = credssp::EarlyUserAuthResult::from_buffer(input)
-                    .map_err(|e| custom_err!("credssp::EarlyUserAuthResult", e))?;
+                    .map_err(|e| custom_err!("EarlyUserAuthResult", e))?;
 
                 debug!(message = ?early_user_auth_result, "Received");
 
-                let credssp::EarlyUserAuthResult::Success = early_user_auth_result else {
-                    return Err(ConnectorError::new("CredSSP", ConnectorErrorKind::AccessDenied));
-                };
-                Ok(())
+                match early_user_auth_result {
+                    credssp::EarlyUserAuthResult::Success => Ok(()),
+                    credssp::EarlyUserAuthResult::AccessDenied => {
+                        Err(ConnectorError::new("CredSSP", ConnectorErrorKind::AccessDenied))
+                    }
+                }
             }
-            _ => Err(general_err!("CredSsp Sequence is Finished")),
+            _ => Err(general_err!(
+                "attempted to feed server request to CredSSP sequence in an unexpected state"
+            )),
         }
     }
 
     pub fn process(&mut self) -> CredsspProcessGenerator<'_> {
-        let request = self.next_request.take().expect("next request");
-        info!("Ts request = {:?}", &request);
+        let request = self.next_request.take().expect("next request"); // FIXME: error handling
         self.client.process(request)
     }
 
@@ -191,9 +218,11 @@ impl CredsspSequence {
                 Ok((Written::from_size(written)?, next_state))
             }
             CredsspState::CredsspEarlyUserAuthResult => Ok((Written::Nothing, CredsspState::Finished)),
-            CredsspState::Finished => Err(general_err!("CredSSP Sequence if finished")),
+            CredsspState::Finished => Err(general_err!("CredSSP sequence is already done")),
         }?;
+
         self.state = next_state;
+
         Ok(size)
     }
 }
@@ -205,7 +234,7 @@ fn write_credssp_request(ts_request: credssp::TsRequest, output: &mut WriteBuf) 
 
     ts_request
         .encode_ts_request(unfilled_buffer)
-        .map_err(|e| reason_err!("CredSSP", "TsRequest encode: {e}"))?;
+        .map_err(|e| custom_err!("TsRequest", e))?;
 
     output.advance(length);
 

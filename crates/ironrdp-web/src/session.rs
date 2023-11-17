@@ -10,7 +10,8 @@ use gloo_net::websocket;
 use gloo_net::websocket::futures::WebSocket;
 use ironrdp::cliprdr::backend::ClipboardMessage;
 use ironrdp::cliprdr::Cliprdr;
-use ironrdp::connector::{self, ClientConnector, Credentials, KerberosConfig};
+use ironrdp::connector::credssp::KerberosConfig;
+use ironrdp::connector::{self, ClientConnector, Credentials};
 use ironrdp::graphics::image_processing::PixelFormat;
 use ironrdp::pdu::input::fast_path::FastPathInputEvent;
 use ironrdp::pdu::write_buf::WriteBuf;
@@ -141,6 +142,12 @@ impl SessionBuilder {
     }
 
     /// Optional
+    pub fn kdc_proxy_url(&self, kdc_proxy_url: Option<String>) -> SessionBuilder {
+        self.0.borrow_mut().kdc_proxy_url = kdc_proxy_url;
+        self.clone()
+    }
+
+    /// Optional
     pub fn desktop_size(&self, desktop_size: DesktopSize) -> SessionBuilder {
         self.0.borrow_mut().desktop_size = desktop_size;
         self.clone()
@@ -177,12 +184,6 @@ impl SessionBuilder {
     }
 
     /// Optional
-    pub fn kdc_proxy_url(&self, kdc_proxy_url: Option<String>) -> SessionBuilder {
-        self.0.borrow_mut().kdc_proxy_url = kdc_proxy_url;
-        self.clone()
-    }
-
-    /// Optional
     pub fn remote_clipboard_changed_callback(&self, callback: js_sys::Function) -> SessionBuilder {
         self.0.borrow_mut().remote_clipboard_changed_callback = Some(callback);
         self.clone()
@@ -209,6 +210,7 @@ impl SessionBuilder {
             proxy_address,
             auth_token,
             pcb,
+            kdc_proxy_url,
             client_name,
             desktop_size,
             render_canvas,
@@ -216,7 +218,6 @@ impl SessionBuilder {
             hide_pointer_callback_context,
             show_pointer_callback,
             show_pointer_callback_context,
-            kdc_proxy_url,
             remote_clipboard_changed_callback,
             remote_received_format_list_callback,
             force_clipboard_update_callback,
@@ -224,6 +225,7 @@ impl SessionBuilder {
 
         {
             let inner = self.0.borrow();
+
             username = inner.username.clone().context("username missing")?;
             destination = inner.destination.clone().context("destination missing")?;
             server_domain = inner.server_domain.clone();
@@ -231,10 +233,9 @@ impl SessionBuilder {
             proxy_address = inner.proxy_address.clone().context("proxy_address missing")?;
             auth_token = inner.auth_token.clone().context("auth_token missing")?;
             pcb = inner.pcb.clone();
+            kdc_proxy_url = inner.kdc_proxy_url.clone();
             client_name = inner.client_name.clone();
             desktop_size = inner.desktop_size.clone();
-
-            kdc_proxy_url = inner.kdc_proxy_url.clone();
 
             render_canvas = inner.render_canvas.clone().context("render_canvas missing")?;
 
@@ -310,8 +311,8 @@ impl SessionBuilder {
             auth_token,
             destination,
             pcb,
-            clipboard.as_ref().map(|clip| clip.backend()),
             kdc_proxy_url,
+            clipboard.as_ref().map(|clip| clip.backend()),
         )
         .await?;
 
@@ -651,8 +652,8 @@ async fn connect(
     proxy_auth_token: String,
     destination: String,
     pcb: Option<String>,
-    clipboard_backend: Option<WasmClipboardBackend>,
     kdc_proxy_url: Option<String>,
+    clipboard_backend: Option<WasmClipboardBackend>,
 ) -> Result<(connector::ConnectionResult, WebSocketCompat), IronRdpError> {
     let mut framed = ironrdp_futures::SingleThreadedFuturesFramed::new(ws);
 
@@ -665,17 +666,13 @@ async fn connect(
     let (upgraded, server_public_key) =
         connect_rdcleanpath(&mut framed, &mut connector, destination.clone(), proxy_auth_token, pcb).await?;
 
-    info!("kdc url = {:?}", &kdc_proxy_url);
-
-    let mut network_client = WasmNetworkClient::new();
-
     let connection_result = ironrdp_futures::connect_finalize(
         upgraded,
         &mut framed,
+        connector,
         (&destination).into(),
         server_public_key,
-        Some(&mut network_client),
-        connector,
+        Some(&mut WasmNetworkClient),
         url::Url::parse(kdc_proxy_url.unwrap_or_default().as_str()) // if kdc_proxy_url does not exit, give url parser a empty string, it will fail anyway and map to a None
             .ok()
             .map(|url| KerberosConfig {
