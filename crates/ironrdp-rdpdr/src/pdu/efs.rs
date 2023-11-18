@@ -8,8 +8,11 @@ use std::mem::size_of;
 
 use bitflags::bitflags;
 use ironrdp_pdu::cursor::{ReadCursor, WriteCursor};
-use ironrdp_pdu::utils::{encoded_str_len, from_utf16_bytes, write_string_to_cursor, CharacterSet};
-use ironrdp_pdu::{cast_length, ensure_size, invalid_message_err, read_padding, write_padding, PduError, PduResult};
+use ironrdp_pdu::utils::{decode_string, encoded_str_len, from_utf16_bytes, write_string_to_cursor, CharacterSet};
+use ironrdp_pdu::{
+    cast_length, ensure_size, invalid_message_err, read_padding, unexpected_message_type_err, write_padding, PduError,
+    PduResult,
+};
 
 use super::esc::rpce;
 use super::{PacketId, SharedHeader};
@@ -1199,6 +1202,12 @@ impl From<MinorFunction> for u32 {
     }
 }
 
+impl From<MinorFunction> for u8 {
+    fn from(minor_function: MinorFunction) -> Self {
+        minor_function as u8
+    }
+}
+
 /// [2.2.1.4.5] Device Control Request (DR_CONTROL_REQ)
 ///
 /// [2.2.1.4.5]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/30662c80-ec6e-4ed1-9004-2e6e367bb59f
@@ -1347,6 +1356,7 @@ pub enum ServerDriveIoRequest {
     ServerCreateDriveRequest(DeviceCreateRequest),
     ServerDriveQueryInformationRequest(ServerDriveQueryInformationRequest),
     DeviceCloseRequest(DeviceCloseRequest),
+    ServerDriveQueryDirectoryRequest(ServerDriveQueryDirectoryRequest),
 }
 
 impl ServerDriveIoRequest {
@@ -1361,7 +1371,15 @@ impl ServerDriveIoRequest {
             MajorFunction::SetVolumeInformation => todo!(),
             MajorFunction::QueryInformation => Ok(ServerDriveQueryInformationRequest::decode(dev_io_req, src)?.into()),
             MajorFunction::SetInformation => todo!(),
-            MajorFunction::DirectoryControl => todo!(),
+            MajorFunction::DirectoryControl => match dev_io_req.minor_function {
+                MinorFunction::QueryDirectory => Ok(ServerDriveQueryDirectoryRequest::decode(dev_io_req, src)?.into()),
+                // Not supporting other minor functions per FreeRDP:
+                // https://github.com/FreeRDP/FreeRDP/blob/511444a65e7aa2f537c5e531fa68157a50c1bd4d/channels/drive/client/drive_main.c#L660-L666
+                _ => Err(unexpected_message_type_err!(
+                    "ServerDriveIoRequest MinorFunction",
+                    cast_length!("ServerDriveIoRequest", "MinorFunction", dev_io_req.minor_function)?
+                )),
+            },
             MajorFunction::LockControl => todo!(),
         }
     }
@@ -1382,6 +1400,12 @@ impl From<ServerDriveQueryInformationRequest> for ServerDriveIoRequest {
 impl From<DeviceCloseRequest> for ServerDriveIoRequest {
     fn from(req: DeviceCloseRequest) -> Self {
         Self::DeviceCloseRequest(req)
+    }
+}
+
+impl From<ServerDriveQueryDirectoryRequest> for ServerDriveIoRequest {
+    fn from(req: ServerDriveQueryDirectoryRequest) -> Self {
+        Self::ServerDriveQueryDirectoryRequest(req)
     }
 }
 
@@ -1670,11 +1694,19 @@ pub struct FileInformationClassLevel(u32);
 
 impl FileInformationClassLevel {
     /// FileBasicInformation
-    pub const FILE_BASIC_INFORMATION: Self = Self(0x00000004);
+    pub const FILE_BASIC_INFORMATION: Self = Self(4);
     /// FileStandardInformation
-    pub const FILE_STANDARD_INFORMATION: Self = Self(0x00000005);
+    pub const FILE_STANDARD_INFORMATION: Self = Self(5);
     /// FileAttributeTagInformation
-    pub const FILE_ATTRIBUTE_TAG_INFORMATION: Self = Self(0x00000023);
+    pub const FILE_ATTRIBUTE_TAG_INFORMATION: Self = Self(35);
+    /// FileDirectoryInformation
+    pub const FILE_DIRECTORY_INFORMATION: Self = Self(1);
+    /// FileFullDirectoryInformation
+    pub const FILE_FULL_DIRECTORY_INFORMATION: Self = Self(2);
+    /// FileBothDirectoryInformation
+    pub const FILE_BOTH_DIRECTORY_INFORMATION: Self = Self(3);
+    /// FileNamesInformation
+    pub const FILE_NAMES_INFORMATION: Self = Self(12);
 }
 
 impl Debug for FileInformationClassLevel {
@@ -1753,14 +1785,25 @@ pub enum FileInformationClass {
     Basic(FileBasicInformation),
     Standard(FileStandardInformation),
     AttributeTag(FileAttributeTagInformation),
+    BothDirectory(FileBothDirectoryInformation),
+    FullDirectory(FileFullDirectoryInformation),
+    Names(FileNamesInformation),
+    Directory(FileDirectoryInformation),
 }
 
 impl FileInformationClass {
+    const NAME: &str = "FileInformationClass";
+
     pub fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_size!(in: dst, size: self.size());
         match self {
             Self::Basic(f) => f.encode(dst),
             Self::Standard(f) => f.encode(dst),
             Self::AttributeTag(f) => f.encode(dst),
+            Self::BothDirectory(f) => f.encode(dst),
+            Self::FullDirectory(f) => f.encode(dst),
+            Self::Names(f) => f.encode(dst),
+            Self::Directory(f) => f.encode(dst),
         }
     }
 
@@ -1769,6 +1812,10 @@ impl FileInformationClass {
             Self::Basic(_) => FileBasicInformation::size(),
             Self::Standard(_) => FileStandardInformation::size(),
             Self::AttributeTag(_) => FileAttributeTagInformation::size(),
+            Self::BothDirectory(f) => f.size(),
+            Self::FullDirectory(f) => f.size(),
+            Self::Names(f) => f.size(),
+            Self::Directory(f) => f.size(),
         }
     }
 }
@@ -1826,7 +1873,10 @@ pub struct FileStandardInformation {
 }
 
 impl FileStandardInformation {
+    const NAME: &str = "FileStandardInformation";
+
     fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_size!(in: dst, size: Self::size());
         dst.write_i64(self.allocation_size);
         dst.write_i64(self.end_of_file);
         dst.write_u32(self.number_of_links);
@@ -1873,7 +1923,10 @@ pub struct FileAttributeTagInformation {
 }
 
 impl FileAttributeTagInformation {
+    const NAME: &str = "FileAttributeTagInformation";
+
     fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_size!(in: dst, size: Self::size());
         dst.write_u32(self.file_attributes.bits());
         dst.write_u32(self.reparse_tag);
         Ok(())
@@ -1882,6 +1935,310 @@ impl FileAttributeTagInformation {
     fn size() -> usize {
         4 // FileAttributes
         + 4 // ReparseTag
+    }
+}
+
+/// [2.4.8] FileBothDirectoryInformation \[MS-FSCC\]
+///
+/// [2.4.8]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-fscc/270df317-9ba5-4ccb-ba00-8d22be139bc5
+#[derive(Debug, Clone)]
+pub struct FileBothDirectoryInformation {
+    pub next_entry_offset: u32,
+    pub file_index: u32,
+    pub creation_time: i64,
+    pub last_access_time: i64,
+    pub last_write_time: i64,
+    pub change_time: i64,
+    pub end_of_file: i64,
+    pub allocation_size: i64,
+    pub file_attributes: FileAttributes,
+    pub ea_size: u32,
+    pub short_name_length: i8,
+    // reserved: u8: MUST NOT be added,
+    // see https://github.com/FreeRDP/FreeRDP/blob/511444a65e7aa2f537c5e531fa68157a50c1bd4d/channels/drive/client/drive_file.c#L907
+    pub short_name: [u8; 24], // 24 bytes
+    pub file_name: String,
+}
+
+impl FileBothDirectoryInformation {
+    const NAME: &str = "FileBothDirectoryInformation";
+
+    pub fn new(
+        creation_time: i64,
+        last_access_time: i64,
+        last_write_time: i64,
+        change_time: i64,
+        file_size: i64,
+        file_attributes: FileAttributes,
+        file_name: String,
+    ) -> Self {
+        // Default field values taken from
+        // https://github.com/FreeRDP/FreeRDP/blob/511444a65e7aa2f537c5e531fa68157a50c1bd4d/channels/drive/client/drive_file.c#L871
+        Self {
+            next_entry_offset: 0,
+            file_index: 0,
+            creation_time,
+            last_access_time,
+            last_write_time,
+            change_time,
+            end_of_file: file_size,
+            allocation_size: file_size,
+            file_attributes,
+            ea_size: 0,
+            short_name_length: 0,
+            short_name: [0; 24],
+            file_name,
+        }
+    }
+
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_size!(in: dst, size: self.size());
+        dst.write_u32(self.next_entry_offset);
+        dst.write_u32(self.file_index);
+        dst.write_i64(self.creation_time);
+        dst.write_i64(self.last_access_time);
+        dst.write_i64(self.last_write_time);
+        dst.write_i64(self.change_time);
+        dst.write_i64(self.end_of_file);
+        dst.write_i64(self.allocation_size);
+        dst.write_u32(self.file_attributes.bits());
+        dst.write_u32(cast_length!(
+            "FileBothDirectoryInformation::encode",
+            "file_name_length",
+            encoded_str_len(&self.file_name, CharacterSet::Unicode, false)
+        )?);
+        dst.write_u32(self.ea_size);
+        dst.write_i8(self.short_name_length);
+        // reserved u8 MUST NOT be added,
+        // see https://github.com/FreeRDP/FreeRDP/blob/511444a65e7aa2f537c5e531fa68157a50c1bd4d/channels/drive/client/drive_file.c#L907
+        dst.write_slice(&self.short_name);
+        write_string_to_cursor(dst, &self.file_name, CharacterSet::Unicode, false)?;
+        Ok(())
+    }
+
+    fn size(&self) -> usize {
+        4 // NextEntryOffset
+        + 4 // FileIndex
+        + 8 // CreationTime
+        + 8 // LastAccessTime
+        + 8 // LastWriteTime
+        + 8 // ChangeTime
+        + 8 // EndOfFile
+        + 8 // AllocationSize
+        + 4 // FileAttributes
+        + 4 // FileNameLength
+        + 4 // EaSize
+        + 1 // ShortNameLength
+        + 24 // ShortName
+        + encoded_str_len(&self.file_name, CharacterSet::Unicode, false)
+    }
+}
+
+/// [2.4.14] FileFullDirectoryInformation \[MS-FSCC\]
+///
+/// [2.4.14]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-fscc/e8d926d1-3a22-4654-be9c-58317a85540b
+#[derive(Debug, Clone)]
+pub struct FileFullDirectoryInformation {
+    pub next_entry_offset: u32,
+    pub file_index: u32,
+    pub creation_time: i64,
+    pub last_access_time: i64,
+    pub last_write_time: i64,
+    pub change_time: i64,
+    pub end_of_file: i64,
+    pub allocation_size: i64,
+    pub file_attributes: FileAttributes,
+    pub ea_size: u32,
+    pub file_name: String,
+}
+
+impl FileFullDirectoryInformation {
+    const NAME: &str = "FileFullDirectoryInformation";
+
+    pub fn new(
+        creation_time: i64,
+        last_access_time: i64,
+        last_write_time: i64,
+        change_time: i64,
+        file_size: i64,
+        file_attributes: FileAttributes,
+        file_name: String,
+    ) -> Self {
+        // Default field values taken from
+        // https://github.com/FreeRDP/FreeRDP/blob/511444a65e7aa2f537c5e531fa68157a50c1bd4d/channels/drive/client/drive_file.c#L871
+        Self {
+            next_entry_offset: 0,
+            file_index: 0,
+            creation_time,
+            last_access_time,
+            last_write_time,
+            change_time,
+            end_of_file: file_size,
+            allocation_size: file_size,
+            file_attributes,
+            ea_size: 0,
+            file_name,
+        }
+    }
+
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_size!(in: dst, size: self.size());
+        dst.write_u32(self.next_entry_offset);
+        dst.write_u32(self.file_index);
+        dst.write_i64(self.creation_time);
+        dst.write_i64(self.last_access_time);
+        dst.write_i64(self.last_write_time);
+        dst.write_i64(self.change_time);
+        dst.write_i64(self.end_of_file);
+        dst.write_i64(self.allocation_size);
+        dst.write_u32(self.file_attributes.bits());
+        dst.write_u32(cast_length!(
+            "FileFullDirectoryInformation::encode",
+            "file_name_length",
+            encoded_str_len(&self.file_name, CharacterSet::Unicode, false)
+        )?);
+        dst.write_u32(self.ea_size);
+        write_string_to_cursor(dst, &self.file_name, CharacterSet::Unicode, false)?;
+        Ok(())
+    }
+
+    fn size(&self) -> usize {
+        4 // NextEntryOffset
+        + 4 // FileIndex
+        + 8 // CreationTime
+        + 8 // LastAccessTime
+        + 8 // LastWriteTime
+        + 8 // ChangeTime
+        + 8 // EndOfFile
+        + 8 // AllocationSize
+        + 4 // FileAttributes
+        + 4 // FileNameLength
+        + 4 // EaSize
+        + encoded_str_len(&self.file_name, CharacterSet::Unicode, false)
+    }
+}
+
+/// [2.4.28] FileNamesInformation \[MS-FSCC\]
+///
+/// [2.4.28]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-fscc/a289f7a8-83d2-4927-8c88-b2d328dde5a5?redirectedfrom=MSDN
+#[derive(Debug, Clone)]
+pub struct FileNamesInformation {
+    pub next_entry_offset: u32,
+    pub file_index: u32,
+    pub file_name: String,
+}
+
+impl FileNamesInformation {
+    const NAME: &str = "FileNamesInformation";
+
+    pub fn new(file_name: String) -> Self {
+        // Default field values taken from
+        // https://github.com/FreeRDP/FreeRDP/blob/dfa231c0a55b005af775b833f92f6bcd30363d77/channels/drive/client/drive_file.c#L912
+        Self {
+            next_entry_offset: 0,
+            file_index: 0,
+            file_name,
+        }
+    }
+
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_size!(in: dst, size: self.size());
+        dst.write_u32(self.next_entry_offset);
+        dst.write_u32(self.file_index);
+        dst.write_u32(cast_length!(
+            "FileNamesInformation::encode",
+            "file_name_length",
+            encoded_str_len(&self.file_name, CharacterSet::Unicode, false)
+        )?);
+        write_string_to_cursor(dst, &self.file_name, CharacterSet::Unicode, false)?;
+        Ok(())
+    }
+
+    fn size(&self) -> usize {
+        4 // NextEntryOffset
+        + 4 // FileIndex
+        + 4 // FileNameLength
+        + encoded_str_len(&self.file_name, CharacterSet::Unicode, false)
+    }
+}
+
+/// [2.4.10] FileDirectoryInformation \[MS-FSCC\]
+///
+/// [2.4.10]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-fscc/b38bf518-9057-4c88-9ddd-5e2d3976a64b
+#[derive(Debug, Clone)]
+pub struct FileDirectoryInformation {
+    pub next_entry_offset: u32,
+    pub file_index: u32,
+    pub creation_time: i64,
+    pub last_access_time: i64,
+    pub last_write_time: i64,
+    pub change_time: i64,
+    pub end_of_file: i64,
+    pub allocation_size: i64,
+    pub file_attributes: FileAttributes,
+    pub file_name: String,
+}
+
+impl FileDirectoryInformation {
+    const NAME: &str = "FileDirectoryInformation";
+
+    pub fn new(
+        creation_time: i64,
+        last_access_time: i64,
+        last_write_time: i64,
+        change_time: i64,
+        file_size: i64,
+        file_attributes: FileAttributes,
+        file_name: String,
+    ) -> Self {
+        // Default field values taken from
+        // https://github.com/FreeRDP/FreeRDP/blob/511444a65e7aa2f537c5e531fa68157a50c1bd4d/channels/drive/client/drive_file.c#L796
+        Self {
+            next_entry_offset: 0,
+            file_index: 0,
+            creation_time,
+            last_access_time,
+            last_write_time,
+            change_time,
+            end_of_file: file_size,
+            allocation_size: file_size,
+            file_attributes,
+            file_name,
+        }
+    }
+
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_size!(in: dst, size: self.size());
+        dst.write_u32(self.next_entry_offset);
+        dst.write_u32(self.file_index);
+        dst.write_i64(self.creation_time);
+        dst.write_i64(self.last_access_time);
+        dst.write_i64(self.last_write_time);
+        dst.write_i64(self.change_time);
+        dst.write_i64(self.end_of_file);
+        dst.write_i64(self.allocation_size);
+        dst.write_u32(self.file_attributes.bits());
+        dst.write_u32(cast_length!(
+            "FileDirectoryInformation::encode",
+            "file_name_length",
+            encoded_str_len(&self.file_name, CharacterSet::Unicode, false)
+        )?);
+        write_string_to_cursor(dst, &self.file_name, CharacterSet::Unicode, false)?;
+        Ok(())
+    }
+
+    fn size(&self) -> usize {
+        4 // NextEntryOffset
+        + 4 // FileIndex
+        + 8 // CreationTime
+        + 8 // LastAccessTime
+        + 8 // LastWriteTime
+        + 8 // ChangeTime
+        + 8 // EndOfFile
+        + 8 // AllocationSize
+        + 4 // FileAttributes
+        + 4 // FileNameLength
+        + encoded_str_len(&self.file_name, CharacterSet::Unicode, false)
     }
 }
 
@@ -1929,5 +2286,105 @@ impl DeviceCloseResponse {
     pub fn size(&self) -> usize {
         self.device_io_response.size() // DeviceIoResponse
         + 4 // Padding
+    }
+}
+
+/// [2.2.3.3.10] Server Drive Query Directory Request (DR_DRIVE_QUERY_DIRECTORY_REQ)
+///
+/// [2.2.3.3.10]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/458019d2-5d5a-4fd4-92ef-8c05f8d7acb1
+#[derive(Debug)]
+pub struct ServerDriveQueryDirectoryRequest {
+    pub device_io_request: DeviceIoRequest,
+    pub file_info_class_lvl: FileInformationClassLevel,
+    pub initial_query: u8,
+    pub path: String,
+}
+
+impl ServerDriveQueryDirectoryRequest {
+    const NAME: &str = "DR_DRIVE_QUERY_DIRECTORY_REQ";
+
+    fn decode(device_io_request: DeviceIoRequest, src: &mut ReadCursor<'_>) -> PduResult<Self> {
+        ensure_size!(in: src, size: size_of::<u32>());
+        let file_info_class_lvl = FileInformationClassLevel::from(src.read_u32());
+
+        // From the documentation: "This field MUST contain one of the following values"
+        static VALID_LEVELS: [FileInformationClassLevel; 4] = [
+            FileInformationClassLevel::FILE_DIRECTORY_INFORMATION,
+            FileInformationClassLevel::FILE_FULL_DIRECTORY_INFORMATION,
+            FileInformationClassLevel::FILE_BOTH_DIRECTORY_INFORMATION,
+            FileInformationClassLevel::FILE_NAMES_INFORMATION,
+        ];
+
+        if !VALID_LEVELS.contains(&file_info_class_lvl) {
+            return Err(invalid_message_err!(
+                "ServerDriveQueryDirectoryRequest::decode",
+                "file_info_class_lvl",
+                "received invalid level"
+            ));
+        }
+
+        ensure_size!(in: src, size: size_of::<u8>());
+        let initial_query = src.read_u8();
+        ensure_size!(in: src, size: size_of::<u32>());
+        let path_length = cast_length!("ServerDriveQueryDirectoryRequest", "path_length", src.read_u32())?;
+        // Padding (23 bytes): An array of 23 bytes. This field is unused and MUST be ignored.
+        ensure_size!(in: src, size: 23);
+        let _ = src.read_slice(23);
+        ensure_size!(in: src, size: path_length);
+        let path = decode_string(src.read_slice(path_length), CharacterSet::Unicode, true)?;
+
+        Ok(Self {
+            device_io_request,
+            file_info_class_lvl,
+            initial_query,
+            path,
+        })
+    }
+}
+
+/// [2.2.3.4.10] Client Drive Query Directory Response (DR_DRIVE_QUERY_DIRECTORY_RSP)
+///
+/// [2.2.3.4.10]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/9c929407-a833-4893-8f20-90c984756140
+#[derive(Debug)]
+pub struct ClientDriveQueryDirectoryResponse {
+    pub device_io_reply: DeviceIoResponse,
+    pub buffer: Option<FileInformationClass>,
+}
+
+impl ClientDriveQueryDirectoryResponse {
+    const NAME: &str = "DR_DRIVE_QUERY_DIRECTORY_RSP";
+
+    pub fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    pub fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_size!(in: dst, size: self.size());
+        self.device_io_reply.encode(dst)?;
+        dst.write_u32(cast_length!(
+            "ClientDriveQueryDirectoryResponse",
+            "length",
+            if self.buffer.is_some() {
+                self.buffer.as_ref().unwrap().size()
+            } else {
+                0
+            }
+        )?);
+        if let Some(buffer) = &self.buffer {
+            buffer.encode(dst)?;
+        } else {
+            dst.write_u8(0) // Padding: https://github.com/FreeRDP/FreeRDP/blob/511444a65e7aa2f537c5e531fa68157a50c1bd4d/channels/drive/client/drive_file.c#L937
+        }
+        Ok(())
+    }
+
+    pub fn size(&self) -> usize {
+        self.device_io_reply.size() // DeviceIoResponse
+        + 4 // Length
+        + if let Some(buffer) = &self.buffer {
+            buffer.size() // Buffer
+        } else {
+            1 // Padding: https://github.com/FreeRDP/FreeRDP/blob/511444a65e7aa2f537c5e531fa68157a50c1bd4d/channels/drive/client/drive_file.c#L937
+        }
     }
 }

@@ -386,6 +386,12 @@ impl<'a> WriteCursor<'a> {
 
     #[inline]
     #[track_caller]
+    pub fn write_i8(&mut self, value: i8) {
+        self.write_array(value.to_le_bytes())
+    }
+
+    #[inline]
+    #[track_caller]
     pub fn write_u16(&mut self, value: u16) {
         self.write_array(value.to_le_bytes())
     }
