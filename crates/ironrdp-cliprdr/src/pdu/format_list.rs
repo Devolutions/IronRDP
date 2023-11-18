@@ -199,10 +199,12 @@ impl ClipboardFormat {
         }
     }
 
+    #[inline]
     pub fn id(&self) -> ClipboardFormatId {
         self.id
     }
 
+    #[inline]
     pub fn name(&self) -> Option<&ClipboardFormatName> {
         self.name.as_ref()
     }
