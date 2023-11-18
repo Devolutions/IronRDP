@@ -273,13 +273,6 @@ impl WasmClipboard {
         // Later, we loop over and fetch all of these (see `process_remote_data_response`).
         self.remote_formats_to_read.clear();
 
-        let is_format_name_equal = |format: &ClipboardFormat, name: &str| {
-            format
-                .name()
-                .map(|actual: &ClipboardFormatName| actual.value() == name)
-                .unwrap_or(false)
-        };
-
         // In this loop, we ignore some formats. There are two reasons for that:
         //
         // 1) Some formats require an extra conversion into the appropriate MIME format
@@ -306,15 +299,13 @@ impl WasmClipboard {
                         continue;
                     }
 
-                    let skip_win_html = is_format_name_equal(format, FORMAT_WIN_HTML.name)
+                    let skip_win_html = format_name_eq(format, FORMAT_WIN_HTML.name)
                         && formats
                             .iter()
-                            .any(|format| is_format_name_equal(format, FORMAT_MIME_HTML.name));
+                            .any(|format| format_name_eq(format, FORMAT_MIME_HTML.name));
 
-                    let skip_mime_png = is_format_name_equal(format, FORMAT_MIME_PNG.name)
-                        && formats
-                            .iter()
-                            .any(|format| is_format_name_equal(format, FORMAT_PNG.name));
+                    let skip_mime_png = format_name_eq(format, FORMAT_MIME_PNG.name)
+                        && formats.iter().any(|format| format_name_eq(format, FORMAT_PNG.name));
 
                     if skip_win_html || skip_mime_png {
                         continue;
@@ -337,14 +328,13 @@ impl WasmClipboard {
                 let skip_dib = format.id() == ClipboardFormatId::CF_DIB
                     && formats.iter().any(|format| {
                         format.id() == ClipboardFormatId::CF_DIBV5
-                            || is_format_name_equal(format, FORMAT_MIME_PNG.name)
-                            || is_format_name_equal(format, FORMAT_PNG.name)
+                            || format_name_eq(format, FORMAT_MIME_PNG.name)
+                            || format_name_eq(format, FORMAT_PNG.name)
                     });
 
                 let skip_dibv5 = format.id() == ClipboardFormatId::CF_DIBV5
                     && formats.iter().any(|format| {
-                        is_format_name_equal(format, FORMAT_MIME_PNG.name)
-                            || is_format_name_equal(format, FORMAT_PNG.name)
+                        format_name_eq(format, FORMAT_MIME_PNG.name) || format_name_eq(format, FORMAT_PNG.name)
                     });
 
                 if skip_dib || skip_dibv5 {
@@ -355,7 +345,14 @@ impl WasmClipboard {
             self.remote_formats_to_read.push(format.id());
         }
 
-        Ok(self.remote_formats_to_read.last().copied())
+        return Ok(self.remote_formats_to_read.last().copied());
+
+        fn format_name_eq(format: &ClipboardFormat, name: &str) -> bool {
+            format
+                .name()
+                .map(|actual: &ClipboardFormatName| actual.value() == name)
+                .unwrap_or(false)
+        }
     }
 
     fn process_remote_data_response(&mut self, response: FormatDataResponse<'_>) -> anyhow::Result<()> {
@@ -368,7 +365,7 @@ impl WasmClipboard {
         };
 
         if response.is_error() {
-            // Format is not available anymore
+            // Format is not available anymore.
             return Ok(());
         }
 
