@@ -32,8 +32,6 @@ pub fn cf_html_to_text(input: &[u8]) -> Result<String, HtmlError> {
 
         let line = String::from_utf8(headers_cursor[..end_pos].to_vec())?;
 
-        let header_value_to_u32 = |value: &str| value.trim_start_matches('0').parse::<u32>();
-
         match line.split_once(':') {
             Some((key, value)) => match key {
                 "StartFragment" => {
@@ -84,7 +82,11 @@ pub fn cf_html_to_text(input: &[u8]) -> Result<String, HtmlError> {
         }
     };
 
-    Ok(fragment)
+    return Ok(fragment);
+
+    fn header_value_to_u32(value: &str) -> Result<u32, std::num::ParseIntError> {
+        value.trim_start_matches('0').parse::<u32>()
+    }
 }
 
 /// Convert plain text HTML to `CF_HTML` format.

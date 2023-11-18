@@ -180,6 +180,33 @@ Re-using originally single-purpose function often leads to bad coupling.
 
 Exception: if you want to make use of `return` or `?`.
 
+## Local helper functions
+
+Put nested helper functions at the end of the enclosing functions (this requires using return statement).
+Don't nest more than one level deep.
+
+```rust
+// GOOD
+fn func() -> u32 {
+    return helper();
+
+    fn helper() -> u32 {
+        /* ... */
+    }
+}
+
+// BAD
+fn func() -> u32 {
+    fn helper() -> u32 {
+        /* ... */
+    }
+
+    helper()
+}
+```
+
+**Rationale:** consistency, improved top-down readability.
+
 ## Documentation
 
 ### Doc comments should link to reference documents
