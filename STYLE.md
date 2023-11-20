@@ -287,6 +287,231 @@ If the line is too long, you want to split the sentence in two.
 
 [asciidoctor-practices]: https://asciidoctor.org/docs/asciidoc-recommended-practices/#one-sentence-per-line
 
+## Invariants
+
+Recommended reads:
+
+- <https://en.wikipedia.org/wiki/Invariant_(mathematics)#Invariants_in_computer_science>
+- <https://en.wikipedia.org/wiki/Loop_invariant>
+- <https://en.wikipedia.org/wiki/Class_invariant>
+- <https://matklad.github.io/2023/10/06/what-is-an-invariant.html>
+- <https://matklad.github.io/2023/09/13/comparative-analysis.html>
+
+### Write down invariants clearly
+
+Write down invariants using `INVARIANT:` code comments.
+
+```rust
+// GOOD
+
+// INVARIANT: for i in 0..lo: xs[i] < x
+
+// BAD
+
+// for i in 0..lo: xs[i] < x
+```
+
+**Rationale**: invariants should be upheld at all times.
+It’s useful to keep invariants in mind when analyzing the flow of the code.
+It’s easy to look up the local invariants when programming "in the small".
+
+For field invariants, a doc comment should come at the place where they are declared, inside the type definition.
+
+```rust
+// GOOD
+struct BitmapInfoHeader {
+    /// INVARIANT: `width.abs() <= u16::MAX`
+    width: i32,
+}
+
+// BAD
+
+/// INVARIANT: `width.abs() <= u16::MAX`
+struct BitmapInfoHeader {
+    width: i32,
+}
+
+// BAD
+struct BitmapInfoHeader {
+    width: i32,
+}
+
+impl BitmapInfoHeader {
+  fn new(width: i32) -> Option<BitmapInfoHeader> {
+    // INVARIANT: width.abs() <= u16::MAX
+    if !(width.abs() <= i32::from(u16::MAX)) {
+      return None;
+    }
+
+    Some(BitmapInfoHeader { width })
+  }
+}
+```
+
+**Rationale**: it’s easy to find about the invariant.
+The invariant will show up in the documentation (typically available by hovering the item in IDEs).
+
+For loop invariants, the comment should come before or at the beginning of the loop.
+
+```rust
+// GOOD
+
+/// Computes the smallest index such that, if `x` is inserted at this index, the array remains sorted.
+fn insertion_point(xs: &[i32], x: i32) -> usize {
+  let mut lo = 0;
+  let mut hi = xs.len();
+
+  while lo < hi {
+    // INVARIANT: for i in 0..lo: xs[i] < x
+    // INVARIANT: for i in hi..:  x <= xs[i]
+
+    let mid = lo + (hi - lo) / 2;
+    if xs[mid] < x {
+      lo = mid + 1;
+    } else {
+      hi = mid;
+    }
+  }
+
+  lo
+}
+
+// BAD
+fn insertion_point(xs: &[i32], x: i32) -> usize {
+  let mut lo = 0;
+  let mut hi = xs.len();
+
+  while lo < hi {
+    let mid = lo + (hi - lo) / 2;
+    if xs[mid] < x {
+      lo = mid + 1;
+    } else {
+      hi = mid;
+    }
+  }
+
+  // INVARIANT: for i in 0..lo: xs[i] < x
+  // INVARIANT: for i in hi..:  x <= xs[i]
+
+  lo
+}
+```
+
+**Rationale**: improved top-down readability, only read forward, no need to backtrack.
+
+For function output invariants, the comment should be specified in the doc comment.
+(However, consider [enforcing this invariant][parse-dont-validate] using [the type system][type-safety] instead.)
+
+```rust
+// GOOD
+
+/// Computes the stride of an uncompressed RGB bitmap.
+///
+/// INVARIANT: `width <= output (stride) <= width * 4`
+fn rgb_bmp_stride(width: u16, bit_count: u16) -> usize {
+    assert!(bit_count <= 32);
+    let stride = /* ... */;
+    stride
+}
+
+// BAD
+
+/// Computes the stride of an uncompressed RGB bitmap.
+fn rgb_bmp_stride(width: u16, bit_count: u16) -> usize {
+    assert!(bit_count <= 32);
+    // INVARIANT: width <= stride <= width * 4
+    let stride = /* ... */;
+    stride
+}
+```
+
+**Rationale**: it’s easy to find about the invariant.
+The invariant will show up in the documentation (typically available by hovering the item in IDEs).
+
+[parse-dont-validate]: https://lexi-lambda.github.io/blog/2019/11/05/parse-don-t-validate/
+[type-safety]: https://www.parsonsmatt.org/2017/10/11/type_safety_back_and_forth.html
+
+### Explain non-obvious assumptions by referencing the invariants
+
+Explain clearly non-obvious assumptions and invariants relied upon (e.g.: when disabling a lint locally).
+When referencing invariants, do not use the `INVARIANT:` comment prefix which is reserved for defining them.
+
+```rust
+// GOOD
+
+// Per invariants: width * dst_n_samples <= 10_000 * 4 < usize::MAX
+#[allow(clippy::arithmetic_side_effects)]
+let dst_stride = usize::from(width) * dst_n_samples;
+
+// BAD
+#[allow(clippy::arithmetic_side_effects)]
+let dst_stride = usize::from(width) * dst_n_samples;
+
+// BAD
+
+// INVARIANT: width * dst_n_samples <= 10_000 * 4 < usize::MAX
+#[allow(clippy::arithmetic_side_effects)]
+let dst_stride = usize::from(width) * dst_n_samples;
+```
+
+**Rationale**: make the assumption obvious.
+The code is easier to review.
+No one will lose time refactoring based on the wrong assumption.
+
+### State invariants positively
+
+Establish invariants positively.
+Prefer `if !invariant` to `if negated_invariant`.
+
+```rust
+// GOOD
+if !(idx < len) {
+  return None;
+}
+
+// GOOD
+check_invariant(idx < len)?;
+
+// GOOD
+ensure!(idx < len);
+
+// GOOD
+debug_assert!(idx < len);
+
+// GOOD
+if idx < len {
+  /* ... */
+} else {
+  return None;
+}
+
+// BAD
+if idx >= len {
+  return None;
+}
+```
+
+**Rationale:** it's useful to see the invariant relied upon by the rest of the function clearly spelled out.
+
+### Strongly prefer `<` and `<=` over `>` and `>=`
+
+Use `<` and `<=` operators instead of `>` and `>=`.
+
+```rust
+/// GOOD
+if lo <= x && x <= hi {}
+if x < lo || hi < x {}
+
+/// BAD
+if x >= lo && x <= hi {}
+if x < lo || x > hi {}
+```
+
+**Rationale**: consistent, canonicalized form that is trivial to visualize by reading from left to right.
+Things are naturally ordered from small to big like in the [number line].
+
+[number line]: https://en.wikipedia.org/wiki/Number_line
+
 ## Context parameters
 
 Some parameters are threaded unchanged through many function calls.

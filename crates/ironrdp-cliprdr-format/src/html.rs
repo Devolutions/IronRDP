@@ -93,11 +93,10 @@ pub fn plain_html_to_cf_html(fragment: &str) -> String {
 
     let mut buffer = String::new();
 
-    // INVARIANT: key.len() + value.len() + ":\r\n".len() < usize::MAX
-    // This is always true because we know `key` and `value` used in code below are
-    // short and their sizes are far from `usize::MAX`.
-    #[allow(clippy::arithmetic_side_effects)]
     let mut write_header = |key: &str, value: &str| {
+        // This relation holds: key.len() + value.len() + ":\r\n".len() < usize::MAX
+        // Rationale: we know all possible values (see code below), and they are much smaller than `usize::MAX`.
+        #[allow(clippy::arithmetic_side_effects)]
         let size = key.len() + value.len() + ":\r\n".len();
         buffer.reserve(size);
 
@@ -112,10 +111,10 @@ pub fn plain_html_to_cf_html(fragment: &str) -> String {
 
     write_header("Version", "0.9");
 
-    let start_html_header_pos = write_header("StartHTML", POS_PLACEHOLDER);
-    let end_html_header_pos = write_header("EndHTML", POS_PLACEHOLDER);
-    let start_fragment_header_pos = write_header("StartFragment", POS_PLACEHOLDER);
-    let end_fragment_header_pos = write_header("EndFragment", POS_PLACEHOLDER);
+    let start_html_header_value_pos = write_header("StartHTML", POS_PLACEHOLDER);
+    let end_html_header_value_pos = write_header("EndHTML", POS_PLACEHOLDER);
+    let start_fragment_header_value_pos = write_header("StartFragment", POS_PLACEHOLDER);
+    let end_fragment_header_value_pos = write_header("EndFragment", POS_PLACEHOLDER);
 
     let start_html_pos = buffer.len();
     buffer.push_str("<html>\r\n<body>\r\n<!--StartFragment-->");
@@ -133,18 +132,19 @@ pub fn plain_html_to_cf_html(fragment: &str) -> String {
     let start_fragment_pos_value = format!("{:0>10}", start_fragment_pos);
     let end_fragment_pos_value = format!("{:0>10}", end_fragment_pos);
 
-    // INVARIANT: placeholder_pos + POS_PLACEHOLDER.len() < buffer.len()
-    // This is always valid because we know that placeholder is always present in the buffer
-    // after the header is written and placeholder is within the bounds of the buffer.
-    #[allow(clippy::arithmetic_side_effects)]
-    let mut replace_placeholder = |header_pos: usize, header_value: &str| {
-        buffer.replace_range(header_pos..header_pos + POS_PLACEHOLDER.len(), header_value);
+    let mut replace_placeholder = |value_begin_idx: usize, header_value: &str| {
+        // We know that: value_begin_idx + POS_PLACEHOLDER.len() < usize::MAX
+        // Rationale: the headers are written at the beginning, and we’re not indexing outside of the string.
+        #[allow(clippy::arithmetic_side_effects)]
+        let value_end_idx = value_begin_idx + POS_PLACEHOLDER.len();
+
+        buffer.replace_range(value_begin_idx..value_end_idx, header_value);
     };
 
-    replace_placeholder(start_html_header_pos, &start_html_pos_value);
-    replace_placeholder(end_html_header_pos, &end_html_pos_value);
-    replace_placeholder(start_fragment_header_pos, &start_fragment_pos_value);
-    replace_placeholder(end_fragment_header_pos, &end_fragment_pos_value);
+    replace_placeholder(start_html_header_value_pos, &start_html_pos_value);
+    replace_placeholder(end_html_header_value_pos, &end_html_pos_value);
+    replace_placeholder(start_fragment_header_value_pos, &start_fragment_pos_value);
+    replace_placeholder(end_fragment_header_value_pos, &end_fragment_pos_value);
 
     buffer
 }
