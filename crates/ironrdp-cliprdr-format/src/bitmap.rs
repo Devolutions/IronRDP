@@ -144,14 +144,14 @@ impl PduEncode for CiexyzTriple {
 /// We don't use the optional `bmiColors` field, because it is only relevant for bitmaps with
 /// bpp < 24, which are not supported yet, therefore only fixed part of the header is implemented.
 ///
-/// INVARIANT: `width` and `height` magnitudes are less than or equal to `u16::MAX`.
-/// INVARIANT: `bit_count` is less than or equal to `32`.
-///
 /// [BITMAPINFO]: https://learn.microsoft.com/en-us/windows/win32/api/wingdi/ns-wingdi-bitmapinfo
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct BitmapInfoHeader {
+    /// INVARIANT: `width.abs() <= 10_000`
     width: i32,
+    /// INVARIANT: `height.abs() <= 10_000`
     height: i32,
+    /// INVARIANT: `bit_count <= 32`
     bit_count: u16,
     compression: BitmapCompression,
     size_image: u32,
@@ -176,20 +176,8 @@ impl BitmapInfoHeader {
 
     const NAME: &str = "BITMAPINFOHEADER";
 
-    fn validate_invariants(&self) -> PduResult<()> {
-        check_invariant(self.width.abs() <= u16::MAX.into())
-            .ok_or_else(|| invalid_message_err!("biWidth", "width is too big"))?;
-        check_invariant(self.height.abs() <= u16::MAX.into())
-            .ok_or_else(|| invalid_message_err!("biHeight", "height is too big"))?;
-        check_invariant(self.bit_count <= 32).ok_or_else(|| invalid_message_err!("biBitCount", "invalid bit count"))?;
-
-        Ok(())
-    }
-
     fn encode_with_size(&self, dst: &mut WriteCursor<'_>, size: u32) -> PduResult<()> {
         ensure_fixed_part_size!(in: dst);
-
-        self.validate_invariants()?;
 
         dst.write_u32(size);
         dst.write_i32(self.width);
@@ -212,12 +200,19 @@ impl BitmapInfoHeader {
         let size = src.read_u32();
 
         let width = src.read_i32();
+        check_invariant(width.abs() <= 10_000).ok_or_else(|| invalid_message_err!("biWidth", "width is too big"))?;
+
         let height = src.read_i32();
+        check_invariant(height.abs() <= 10_000).ok_or_else(|| invalid_message_err!("biHeight", "height is too big"))?;
+
         let planes = src.read_u16();
         if planes != 1 {
             return Err(invalid_message_err!("biPlanes", "invalid planes count"));
         }
+
         let bit_count = src.read_u16();
+        check_invariant(bit_count <= 32).ok_or_else(|| invalid_message_err!("biBitCount", "invalid bit count"))?;
+
         let compression = BitmapCompression(src.read_u32());
         let size_image = src.read_u32();
         let x_pels_per_meter = src.read_i32();
@@ -237,19 +232,23 @@ impl BitmapInfoHeader {
             clr_important,
         };
 
-        header.validate_invariants()?;
-
         Ok((header, size))
     }
 
+    // INVARIANT: output (width) < 10_000
     fn width(&self) -> u16 {
-        // Cast is safe, invariant is checked in `encode_with_size` and `decode_with_size`.
-        u16::try_from(self.width.abs()).unwrap()
+        let abs = self.width.abs();
+        debug_assert!(abs < 10_000);
+        // Per the invariant on self.width, this cast is infaillible.
+        u16::try_from(abs).unwrap()
     }
 
+    // INVARIANT: output (height) < 10_000
     fn height(&self) -> u16 {
-        // Cast is safe, invariant is checked in `encode_with_size` and `decode_with_size`.
-        u16::try_from(self.height.abs()).unwrap()
+        let abs = self.height.abs();
+        debug_assert!(abs < 10_000);
+        // Per the invariant on self.height, this cast is infaillible.
+        u16::try_from(abs).unwrap()
     }
 
     fn is_bottom_up(&self) -> bool {
@@ -471,20 +470,31 @@ struct PngEncoderContext {
     color_type: png::ColorType,
 }
 
-/// From MS docs:
-/// For uncompressed RGB formats, the minimum stride is always the image width in bytes, rounded
-/// up to the nearest DWORD (4 bytes). You can use the following formula to calculate the stride
-/// and image size:
+/// Computes the stride of an uncompressed RGB bitmap.
+///
+/// INVARIANT: `width <= output (stride) <= width * 4`
+///
+/// In an uncompressed bitmap, the stride is the number of bytes needed to go from the start of one
+/// row of pixels to the start of the next row. The image format defines a minimum stride for an
+/// image. In addition, the graphics hardware might require a larger stride for the surface that
+/// contains the image.
+///
+/// For uncompressed RGB formats, the minimum stride is always the image width in bytes, rounded up
+/// to the nearest DWORD (4 bytes). The following formula is used to calculate the stride:
+///
 /// ```
-/// stride = ((((biWidth * biBitCount) + 31) & ~31) >> 3);
-/// biSizeImage = abs(biHeight) * stride;
+/// stride = ((((width * bit_count) + 31) & ~31) >> 3)
 /// ```
 ///
-/// INVARIANT: bit_count <= 32
-#[allow(clippy::arithmetic_side_effects)]
+/// From Microsoft doc: https://learn.microsoft.com/en-us/windows/win32/api/wingdi/ns-wingdi-bitmapinfoheader
 fn rgb_bmp_stride(width: u16, bit_count: u16) -> usize {
     debug_assert!(bit_count <= 32);
-    (((usize::from(width) * usize::from(bit_count)) + 31) & !31) >> 3
+
+    // No side effects, because u16::MAX * 32 + 31 < u16::MAX * u16::MAX < u32::MAX
+    #[allow(clippy::arithmetic_side_effects)]
+    {
+        (((usize::from(width) * usize::from(bit_count)) + 31) & !31) >> 3
+    }
 }
 
 fn bgra_to_top_down_rgba(
@@ -508,9 +518,7 @@ fn bgra_to_top_down_rgba(
         (png::ColorType::Rgb, 3)
     };
 
-    // INVARIANT: height * width * components <= u16::MAX * u16::MAX * 4 < usize::MAX
-    // This is always true because `components <= 4` is checked above, and width & height
-    // bounds are validated on PDU encode/decode
+    // Per invariants: height * width * dst_n_samples <= 10_000 * 10_000 * 4 < u32::MAX
     #[allow(clippy::arithmetic_side_effects)]
     let dst_bitmap_len = usize::from(height) * usize::from(width) * dst_n_samples;
 
@@ -552,9 +560,7 @@ fn bgra_to_top_down_rgba(
         _ => unreachable!("possible values are restricted by header validation and logic above"),
     };
 
-    // INVARIANT: width * components <= u16::MAX * 4 < usize::MAX
-    //
-    //
+    // Per invariants: width * dst_n_samples <= 10_000 * 4 < u32::MAX
     #[allow(clippy::arithmetic_side_effects)]
     let dst_stride = usize::from(width) * dst_n_samples;
 
@@ -633,18 +639,15 @@ fn top_down_rgba_to_bottom_up_bgra(
     let width = u16::try_from(info.width).map_err(|_| BitmapError::WidthTooBig)?;
     let height = u16::try_from(info.height).map_err(|_| BitmapError::HeightTooBig)?;
 
-    #[allow(clippy::arithmetic_side_effects)] // width * 4 <= u16::MAX * 4 < usize::MAX
+    #[allow(clippy::arithmetic_side_effects)] // width * 4 <= 10_000 * 4 < u32::MAX
     let stride = usize::from(width) * 4;
 
     let src_rows = src_bitmap.chunks_exact(stride);
 
-    // INVARIANT: stride * height_unsigned <= usize::MAX.
-    //
-    // This never overflows, because stride can't be greater than `width_unsigned * 4`,
-    // and `width_unsigned * height_unsigned * 4` is guaranteed to be lesser or equal
-    // to `usize::MAX`.
+    // As per invariants: stride * height <= width * 4 * height <= 10_000 * 4 * 10_000 <= u32::MAX.
     #[allow(clippy::arithmetic_side_effects)]
-    let dst_len = u32::try_from(stride * usize::from(height)).map_err(|_| BitmapError::InvalidSize)?;
+    let dst_len = stride * usize::from(height);
+    let dst_len = u32::try_from(dst_len).map_err(|_| BitmapError::InvalidSize)?;
 
     let header = BitmapInfoHeader {
         width: i32::from(width),
