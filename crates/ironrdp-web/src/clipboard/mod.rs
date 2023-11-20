@@ -238,13 +238,13 @@ impl WasmClipboard {
                 FormatDataResponse::new_unicode_string(text)
             }
             FORMAT_WIN_HTML_ID => {
-                let text = find_text_content_by_mime(MIME_HTML)?;
-                let buffer = plain_html_to_cf_html(text);
-                FormatDataResponse::new_data(buffer)
+                let html_text = find_text_content_by_mime(MIME_HTML)?;
+                let cf_html = plain_html_to_cf_html(html_text);
+                FormatDataResponse::new_data(cf_html.into_bytes())
             }
             FORMAT_MIME_HTML_ID => {
-                let text = find_text_content_by_mime(MIME_HTML)?;
-                FormatDataResponse::new_string(text)
+                let html_text = find_text_content_by_mime(MIME_HTML)?;
+                FormatDataResponse::new_string(html_text)
             }
             ClipboardFormatId::CF_DIBV5 => {
                 let png_data = find_binary_content_by_mime(MIME_PNG)?;
@@ -395,7 +395,7 @@ impl WasmClipboard {
                 let format_name = self.remote_mapping.get(&registered).map(|s| s.as_str());
                 match format_name {
                     Some(FORMAT_WIN_HTML_NAME) => match cf_html_to_plain_html(response.data()) {
-                        Ok(text) => Some(ClipboardContent::new_text(MIME_HTML, &text)),
+                        Ok(text) => Some(ClipboardContent::new_text(MIME_HTML, text)),
                         Err(err) => {
                             warn!("CF_HTML decode error: {}", err);
                             None
