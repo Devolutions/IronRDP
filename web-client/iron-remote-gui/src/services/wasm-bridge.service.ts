@@ -281,14 +281,14 @@ export class WasmBridgeService {
     }
 
     private setCursorStyleCallback(style: string, hotspot_x: number, hotspot_y: number) {
-        if (style === "none" || style === "hidden") {
+        if (style === 'none' || style === 'hidden') {
             this.canvas!.style.cursor = style;
             return;
         }
 
-        if (style.startsWith("data")) {
+        if (style.startsWith('data')) {
             if (hotspot_x == undefined || hotspot_y == undefined) {
-                console.error("Hot spot is not defined for a custom cursor.");
+                console.error('Hot spot is not defined for a custom cursor.');
                 return;
             }
 
