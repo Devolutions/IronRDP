@@ -39,7 +39,7 @@ gloo-timers = { version = "0.3", default-features = false, features = ["futures"
 tracing-web = "0.1"
 
 # Rendering
-softbuffer = { version = "0.3", default-features = false }
+softbuffer = { version = "0.4", default-features = false }
 
 # Enable WebAssembly support for a few crates
 getrandom = { version = "0.2", features = ["js"] }
