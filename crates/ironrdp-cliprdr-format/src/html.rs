@@ -60,7 +60,7 @@ pub fn cf_html_to_plain_html(input: &[u8]) -> Result<&str, HtmlError> {
                     let end = usize::try_from(end).map_err(|_| HtmlError::InvalidConversion)?;
 
                     // Ensure start and end values are properly bounded.
-                    if start > end || end > input.len() {
+                    if !(start < end && end < input.len()) {
                         return Err(HtmlError::InvalidFormat);
                     }
 
