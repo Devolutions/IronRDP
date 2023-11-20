@@ -294,11 +294,11 @@ export class WasmBridgeService {
 
             // IMPORTANT: We need to make proxy `Image` object to actually load the image and make
             // it usable for CSS property. Without this projy object, URL will be rejected.
-            let image = new Image();
+            const image = new Image();
             image.src = style;
 
-            let style_x = Math.round(hotspot_x);
-            let style_y = Math.round(hotspot_y);
+            const style_x = Math.round(hotspot_x);
+            const style_y = Math.round(hotspot_y);
 
             this.canvas!.style.cursor = `url(${style}) ${style_x} ${style_y}, default`;
         }
