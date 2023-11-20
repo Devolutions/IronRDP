@@ -293,7 +293,7 @@ export class WasmBridgeService {
             }
 
             // IMPORTANT: We need to make proxy `Image` object to actually load the image and make
-            // it usable for CSS property. Without this projy object, URL will be rejected.
+            // it usable for CSS property. Without this proxy object, URL will be rejected.
             const image = new Image();
             image.src = style;
 
