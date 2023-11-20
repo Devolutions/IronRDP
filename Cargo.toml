@@ -50,7 +50,7 @@ ironrdp-tokio = { version = "0.1", path = "crates/ironrdp-tokio" }
 ironrdp = { version = "0.5", path = "crates/ironrdp" }
 
 expect-test = "1"
-proptest = "1.3"
+proptest = "1.4"
 rstest = "0.18"
 sspi = "0.11"
 tracing = { version = "0.1", features = ["log"] }
