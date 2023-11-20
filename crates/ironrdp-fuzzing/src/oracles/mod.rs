@@ -129,5 +129,8 @@ pub fn cliprdr_format(input: &[u8]) {
     let _ = dibv5_to_png(input);
 
     let _ = cf_html_to_plain_html(input);
-    let _ = plain_html_to_cf_html(String::from_utf8_lossy(input).as_ref());
+
+    if let Ok(input) = core::str::from_utf8(input) {
+        let _ = plain_html_to_cf_html(input);
+    }
 }

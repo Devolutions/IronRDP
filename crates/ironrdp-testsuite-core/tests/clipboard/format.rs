@@ -22,7 +22,7 @@ fn html_failure() {
     // Empty
     assert!(cf_html_to_plain_html(&[]).is_err());
     // Garbage
-    assert!(cf_html_to_plain_html(&[0x00, 0x00, 0x00, 0x00]).is_err());
+    assert!(cf_html_to_plain_html(&[0x00, 0x01, 0x02, 0x03]).is_err());
     // No headers
     assert!(cf_html_to_plain_html(b"hello world").is_err());
     // Headers with fragment size not found
@@ -41,13 +41,14 @@ fn test_cf_html_to_text() {
     assert!(actual.ends_with("</sup>"));
 
     // Validate roundtrip
-    let mut cf_html = plain_html_to_cf_html(&actual);
-    let roundtrip_html_text = cf_html_to_plain_html(&cf_html).unwrap();
+    let cf_html = plain_html_to_cf_html(&actual);
+    let roundtrip_html_text = cf_html_to_plain_html(cf_html.as_bytes()).unwrap();
     assert_eq!(actual, roundtrip_html_text);
 
     // Add some padding (CF_HTML is not null-terminated, we need to work with data which is
     // potentially padded with arbitrary fill bytes).
-    cf_html.extend_from_slice(&[0xFFu8; 10]);
+    let mut cf_html = cf_html.into_bytes();
+    cf_html.extend_from_slice(&[0xFF; 10]);
     let roundtrip_html_text = cf_html_to_plain_html(&cf_html).unwrap();
     assert_eq!(actual, roundtrip_html_text);
 }
