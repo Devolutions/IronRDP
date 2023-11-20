@@ -528,7 +528,7 @@ impl Session {
                             let hotspot_x = cast_f64_to_u16_lossy(f64::from(pointer.hotspot_x) * scale);
                             let hotspot_y = cast_f64_to_u16_lossy(f64::from(pointer.hotspot_y) * scale);
 
-                            // INVARIANT: scaled_width * scaled_height * 4 <= 32 * 32 * 4
+                            // Per invariants: scaled_width * scaled_height * 4 <= 32 * 32 * 4 < usize::MAX
                             #[allow(clippy::arithmetic_side_effects)]
                             let resized_rgba_buffer_size = usize::from(scaled_width * scaled_height * 4);
 
