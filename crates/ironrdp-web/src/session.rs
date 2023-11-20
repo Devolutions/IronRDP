@@ -513,6 +513,8 @@ impl Session {
                         // bigger than that.
                         const MAX_CURSOR_SIZE: u16 = 32;
                         // INVARIANT: 0 < scale <= 1.0
+                        // INVARIANT: pointer.width * scale <= MAX_CURSOR_SIZE
+                        // INVARIANT: pointer.height * scale <= MAX_CURSOR_SIZE
                         let scale = if pointer.width >= pointer.height && pointer.width > MAX_CURSOR_SIZE {
                             Some(f64::from(MAX_CURSOR_SIZE) / f64::from(pointer.width))
                         } else if pointer.height > MAX_CURSOR_SIZE {
@@ -522,7 +524,7 @@ impl Session {
                         };
 
                         let (png_width, png_height, hot_spot_x, hot_spot_y, rgba_buffer) = if let Some(scale) = scale {
-                            // Per invariants: Following conversions are losslesss.
+                            // Per invariants: Following conversions will never saturate.
                             let scaled_width = cast_f64_to_u16_lossy(f64::from(pointer.width) * scale);
                             let scaled_height = cast_f64_to_u16_lossy(f64::from(pointer.height) * scale);
                             let hotspot_x = cast_f64_to_u16_lossy(f64::from(pointer.hotspot_x) * scale);
