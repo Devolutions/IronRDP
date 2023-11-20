@@ -12,8 +12,8 @@ pub enum HtmlError {
     InvalidConversion,
 }
 
-/// Convert `CF_HTML` format to plain text.
-pub fn cf_html_to_text(input: &[u8]) -> Result<String, HtmlError> {
+/// Converts `CF_HTML` format to plain HTML text.
+pub fn cf_html_to_plain_html(input: &[u8]) -> Result<String, HtmlError> {
     let mut start_fragment = None;
     let mut end_fragment = None;
 
@@ -22,11 +22,11 @@ pub fn cf_html_to_text(input: &[u8]) -> Result<String, HtmlError> {
     let fragment = loop {
         // Line split logic is manual instead of using BufReader::read_line because
         // the line ending could be represented as `\r\n`, `\n` or even `\r`.
-        const ENDLINE_CONTROLS: &[u8] = &[b'\r', b'\n'];
+        const EOL_CONTROL_CHARS: &[u8] = &[b'\r', b'\n'];
 
-        // Failed to find the end of the line
-        let end_pos = match headers_cursor.iter().position(|ch| ENDLINE_CONTROLS.contains(ch)) {
+        let end_pos = match headers_cursor.iter().position(|ch| EOL_CONTROL_CHARS.contains(ch)) {
             Some(pos) => pos,
+            // Failed to find the end of the line
             None => return Err(HtmlError::InvalidFormat),
         };
 
@@ -89,8 +89,8 @@ pub fn cf_html_to_text(input: &[u8]) -> Result<String, HtmlError> {
     }
 }
 
-/// Convert plain text HTML to `CF_HTML` format.
-pub fn text_to_cf_html(fragment: &str) -> Vec<u8> {
+/// Converts plain HTML text to `CF_HTML` format.
+pub fn plain_html_to_cf_html(fragment: &str) -> Vec<u8> {
     let mut buffer = Vec::new();
 
     // INVARIANT: key.len() + value.len() + ":\r\n".len() < usize::MAX

@@ -252,7 +252,8 @@ impl BitmapInfoHeader {
         u16::try_from(self.height.abs()).unwrap()
     }
 
-    fn flip_vertically(&self) -> bool {
+    fn is_bottom_up(&self) -> bool {
+        // When self.height is positive, the bitmap is defined as bottom-up.
         self.height >= 0
     }
 }
@@ -289,7 +290,7 @@ impl<'a> PduDecode<'a> for BitmapInfoHeader {
 ///
 /// [BITMAPV5HEADER]: https://learn.microsoft.com/en-us/windows/win32/api/wingdi/ns-wingdi-bitmapv5header
 struct BitmapV5Header {
-    header_v1: BitmapInfoHeader,
+    v1: BitmapInfoHeader,
     red_mask: u32,
     green_mask: u32,
     blue_mask: u32,
@@ -328,7 +329,7 @@ impl PduEncode for BitmapV5Header {
         ensure_fixed_part_size!(in: dst);
 
         let size = cast_int!("biSize", Self::FIXED_PART_SIZE)?;
-        self.header_v1.encode_with_size(dst, size)?;
+        self.v1.encode_with_size(dst, size)?;
 
         dst.write_u32(self.red_mask);
         dst.write_u32(self.green_mask);
@@ -382,7 +383,7 @@ impl<'a> PduDecode<'a> for BitmapV5Header {
         let _reserved = src.read_u32();
 
         Ok(Self {
-            header_v1,
+            v1: header_v1,
             red_mask,
             green_mask,
             blue_mask,
@@ -426,16 +427,16 @@ fn validate_v1_header(header: &BitmapInfoHeader) -> Result<(), BitmapError> {
 }
 
 fn validate_v5_header(header: &BitmapV5Header) -> Result<(), BitmapError> {
-    validate_v1_header(&header.header_v1)?;
+    validate_v1_header(&header.v1)?;
 
     // We support only uncompressed DIB bitmaps as it is the most common case for clipboard-copied bitmaps.
     const DIBV5_SUPPORTED_COMPRESSION: &[BitmapCompression] = &[BitmapCompression::RGB, BitmapCompression::BITFIELDS];
 
-    if !DIBV5_SUPPORTED_COMPRESSION.contains(&header.header_v1.compression) {
+    if !DIBV5_SUPPORTED_COMPRESSION.contains(&header.v1.compression) {
         return Err(BitmapError::Unsupported("unsupported compression"));
     }
 
-    if header.header_v1.compression == BitmapCompression::BITFIELDS {
+    if header.v1.compression == BitmapCompression::BITFIELDS {
         // Currently, we only support the standard order, BGRA, for the bitfields compression.
         let is_bgr = header.red_mask == 0x00FF0000 && header.green_mask == 0x0000FF00 && header.blue_mask == 0x000000FF;
 
@@ -463,10 +464,10 @@ fn validate_v5_header(header: &BitmapV5Header) -> Result<(), BitmapError> {
     Ok(())
 }
 
-struct PngEncoderInput {
-    frame_buffer: Vec<u8>,
-    width: usize,
-    height: usize,
+struct PngEncoderContext {
+    bitmap: Vec<u8>,
+    width: u16,
+    height: u16,
     color_type: png::ColorType,
 }
 
@@ -481,62 +482,56 @@ struct PngEncoderInput {
 ///
 /// INVARIANT: bit_count <= 32
 #[allow(clippy::arithmetic_side_effects)]
-fn bmp_stride(width: u16, bit_count: u16) -> usize {
+fn rgb_bmp_stride(width: u16, bit_count: u16) -> usize {
     debug_assert!(bit_count <= 32);
     (((usize::from(width) * usize::from(bit_count)) + 31) & !31) >> 3
 }
 
-fn transform_bitmap(
+fn bgra_to_top_down_rgba(
     header: &BitmapInfoHeader,
-    input: &[u8],
+    src_bitmap: &[u8],
     preserve_alpha: bool,
-) -> Result<PngEncoderInput, BitmapError> {
-    // If height is positive, DIB is bottom-up, but target PNG format is top-down.
-    let flip = header.flip_vertically();
+) -> Result<PngEncoderContext, BitmapError> {
+    // DIB may be encoded bottom-up, but the format we target, PNG, is top-down.
+    let should_flip_vertically = header.is_bottom_up();
 
     let width = header.width();
     let height = header.height();
 
-    let bit_count = header.bit_count;
+    let src_n_samples = usize::from(header.bit_count / 8);
 
-    let stride = bmp_stride(width, bit_count);
+    let src_stride = rgb_bmp_stride(width, header.bit_count);
 
-    let input_bytes_per_pixel = usize::from(bit_count / 8);
-    let color_type = if preserve_alpha {
-        png::ColorType::Rgba
+    let (dst_color_type, dst_n_samples) = if preserve_alpha {
+        (png::ColorType::Rgba, 4)
     } else {
-        png::ColorType::Rgb
+        (png::ColorType::Rgb, 3)
     };
-
-    let components = color_type.samples();
-    debug_assert!(components <= 4);
 
     // INVARIANT: height * width * components <= u16::MAX * u16::MAX * 4 < usize::MAX
     // This is always true because `components <= 4` is checked above, and width & height
     // bounds are validated on PDU encode/decode
     #[allow(clippy::arithmetic_side_effects)]
-    let frame_buffer_len = usize::from(height) * usize::from(width) * components;
+    let dst_bitmap_len = usize::from(height) * usize::from(width) * dst_n_samples;
 
-    // Prevent allocation of huge frame buffers
-    check_invariant(frame_buffer_len <= MAX_BUFFER_SIZE).ok_or(BitmapError::BufferTooBig)?;
+    // Prevent allocation of huge buffers.
+    ensure(dst_bitmap_len <= MAX_BUFFER_SIZE).ok_or(BitmapError::BufferTooBig)?;
 
-    let mut frame_buffer = vec![0u8; frame_buffer_len];
+    let mut rows_normal;
+    let mut rows_reversed;
 
-    let mut strides_normal;
-    let mut strides_reversed;
-
-    let strides: &mut dyn Iterator<Item = &[u8]> = if flip {
-        strides_reversed = input.chunks_exact(stride).rev();
-        &mut strides_reversed
+    let rows: &mut dyn Iterator<Item = &[u8]> = if should_flip_vertically {
+        rows_reversed = src_bitmap.chunks_exact(src_stride).rev();
+        &mut rows_reversed
     } else {
-        strides_normal = input.chunks_exact(stride);
-        &mut strides_normal
+        rows_normal = src_bitmap.chunks_exact(src_stride);
+        &mut rows_normal
     };
 
-    // DIB stores color as strided BGRA, PNG require packed RGBA. DIBv1 (CF_DIB) do not have alpha,
-    // and the fourth byte is always set to 0xFF. DIBv5 (CF_DIBV5) may have alpha, so we should
-    // preserve it if it is present.
-    let transform: fn((&mut [u8], &[u8])) = match (header.bit_count, color_type) {
+    // DIB stores BGRA colors while PNG uses RGBA.
+    // DIBv1 (CF_DIB) does not have alpha channel, and the fourth byte is always set to 0xFF.
+    // DIBv5 (CF_DIBV5) supports alpha channel, so we should preserve it if it is present.
+    let transform: fn((&mut [u8], &[u8])) = match (header.bit_count, dst_color_type) {
         (24 | 32, png::ColorType::Rgb) => |(pixel_out, pixel_in)| {
             pixel_out[0] = pixel_in[2];
             pixel_out[1] = pixel_in[1];
@@ -561,42 +556,45 @@ fn transform_bitmap(
     //
     //
     #[allow(clippy::arithmetic_side_effects)]
-    let dst_chunk_size = usize::from(width) * components;
+    let dst_stride = usize::from(width) * dst_n_samples;
 
-    frame_buffer
-        .chunks_exact_mut(dst_chunk_size)
-        .zip(strides)
-        .for_each(|(row, stride)| {
-            let input = stride.chunks_exact(input_bytes_per_pixel);
-            row.chunks_exact_mut(components).zip(input).for_each(transform);
+    let mut dst_bitmap = vec![0u8; dst_bitmap_len];
+
+    dst_bitmap
+        .chunks_exact_mut(dst_stride)
+        .zip(rows)
+        .for_each(|(dst_row, src_row)| {
+            let dst_pixels = dst_row.chunks_exact_mut(dst_n_samples);
+            let src_pixels = src_row.chunks_exact(src_n_samples);
+            dst_pixels.zip(src_pixels).for_each(transform);
         });
 
-    Ok(PngEncoderInput {
-        frame_buffer,
-        width: width.into(),
-        height: height.into(),
-        color_type,
+    Ok(PngEncoderContext {
+        bitmap: dst_bitmap,
+        width,
+        height,
+        color_type: dst_color_type,
     })
 }
 
-fn encode_png(input: PngEncoderInput) -> Result<Vec<u8>, BitmapError> {
+fn encode_png(ctx: &PngEncoderContext) -> Result<Vec<u8>, BitmapError> {
     let mut output: Vec<u8> = Vec::new();
 
-    let width: u32 = cast_int!("PNG encode", "width", input.width).unwrap();
-    let height: u32 = cast_int!("PNG encode", "height", input.height).unwrap();
+    let width = u32::from(ctx.width);
+    let height = u32::from(ctx.height);
 
     let mut encoder = png::Encoder::new(&mut output, width, height);
-    encoder.set_color(input.color_type);
+    encoder.set_color(ctx.color_type);
     encoder.set_depth(png::BitDepth::Eight);
 
     let mut writer = encoder.write_header()?;
-    writer.write_image_data(&input.frame_buffer)?;
+    writer.write_image_data(&ctx.bitmap)?;
     writer.finish()?;
 
     Ok(output)
 }
 
-/// Convert `CF_DIB` to PNG.
+/// Converts `CF_DIB` to PNG.
 pub fn dib_to_png(input: &[u8]) -> Result<Vec<u8>, BitmapError> {
     let mut src = ReadCursor::new(input);
     let header = BitmapInfoHeader::decode(&mut src).map_err(BitmapError::InvalidHeader)?;
@@ -612,31 +610,33 @@ pub fn dib_to_png(input: &[u8]) -> Result<Vec<u8>, BitmapError> {
         return Err(BitmapError::Unsupported("unsupported compression"));
     }
 
-    let png_inputs = transform_bitmap(&header, src.remaining(), false)?;
-    encode_png(png_inputs)
+    let png_ctx = bgra_to_top_down_rgba(&header, src.remaining(), false)?;
+    encode_png(&png_ctx)
 }
 
-/// Convert `CF_DIB` to PNG.
+/// Converts `CF_DIB` to PNG.
 pub fn dibv5_to_png(input: &[u8]) -> Result<Vec<u8>, BitmapError> {
     let mut src = ReadCursor::new(input);
     let header = BitmapV5Header::decode(&mut src).map_err(BitmapError::InvalidHeader)?;
 
     validate_v5_header(&header)?;
 
-    let png_inputs = transform_bitmap(&header.header_v1, src.remaining(), true)?;
-    encode_png(png_inputs)
+    let png_ctx = bgra_to_top_down_rgba(&header.v1, src.remaining(), true)?;
+    encode_png(&png_ctx)
 }
 
-fn transform_png(info: png::OutputInfo, input_buffer: Vec<u8>) -> Result<(BitmapInfoHeader, Vec<u8>), BitmapError> {
+fn top_down_rgba_to_bottom_up_bgra(
+    info: png::OutputInfo,
+    src_bitmap: &[u8],
+) -> Result<(BitmapInfoHeader, Vec<u8>), BitmapError> {
     let no_alpha = info.color_type != png::ColorType::Rgba;
+    let width = u16::try_from(info.width).map_err(|_| BitmapError::WidthTooBig)?;
+    let height = u16::try_from(info.height).map_err(|_| BitmapError::HeightTooBig)?;
 
-    let stride = bmp_stride(
-        cast_int!("BMP stride", "biWidth", info.width).map_err(|_| BitmapError::InvalidSize)?,
-        32,
-    );
+    #[allow(clippy::arithmetic_side_effects)] // width * 4 <= u16::MAX * 4 < usize::MAX
+    let stride = usize::from(width) * 4;
 
-    let width_unsigned: u16 = u16::try_from(info.width).map_err(|_| BitmapError::WidthTooBig)?;
-    let height_unsigned: u16 = u16::try_from(info.height).map_err(|_| BitmapError::HeightTooBig)?;
+    let src_rows = src_bitmap.chunks_exact(stride);
 
     // INVARIANT: stride * height_unsigned <= usize::MAX.
     //
@@ -644,55 +644,49 @@ fn transform_png(info: png::OutputInfo, input_buffer: Vec<u8>) -> Result<(Bitmap
     // and `width_unsigned * height_unsigned * 4` is guaranteed to be lesser or equal
     // to `usize::MAX`.
     #[allow(clippy::arithmetic_side_effects)]
-    let image_size: usize = stride * usize::from(height_unsigned);
+    let dst_len = u32::try_from(stride * usize::from(height)).map_err(|_| BitmapError::InvalidSize)?;
 
     let header = BitmapInfoHeader {
-        width: width_unsigned.into(),
-        height: height_unsigned.into(),
-        bit_count: 32,
+        width: i32::from(width),
+        height: i32::from(height),
+        bit_count: 32, // 4 samples * 8 bits
         compression: BitmapCompression::RGB,
-        size_image: cast_int!("DIB header", "biImageSize", image_size).map_err(|_| BitmapError::InvalidSize)?,
+        size_image: dst_len,
         x_pels_per_meter: 0,
         y_pels_per_meter: 0,
         clr_used: 0,
         clr_important: 0,
     };
 
-    // Row is in RGBA format
-    // INVARIANT: width_unsigned * 4 <= u16::MAX * 4 < usize::MAX
-    // This is always true because width_unsigned is validate above to be less or equal to u16::MAX
-    #[allow(clippy::arithmetic_side_effects)]
-    let row_size: usize = 4 * usize::from(width_unsigned);
+    let dst_len = usize::try_from(dst_len).map_err(|_| BitmapError::InvalidSize)?;
+    let mut dst_bitmap = vec![0; dst_len];
 
-    let mut output_buffer = vec![0; image_size];
-
-    let rows = input_buffer.chunks_exact(row_size);
-
-    // Reverse strides to draw image bottom-up
-    let strides = output_buffer.chunks_exact_mut(stride).rev();
+    // Reverse rows to draw the image from bottom to top.
+    let dst_rows = dst_bitmap.chunks_exact_mut(stride).rev();
 
     let transform: fn((&mut [u8], &[u8])) = if no_alpha {
-        |(pixel_out, pixel_in)| {
-            pixel_out[0] = pixel_in[2];
-            pixel_out[1] = pixel_in[1];
-            pixel_out[2] = pixel_in[0];
-            pixel_out[3] = 0xFF;
+        |(dst_pixel, src_pixel)| {
+            dst_pixel[0] = src_pixel[2];
+            dst_pixel[1] = src_pixel[1];
+            dst_pixel[2] = src_pixel[0];
+            dst_pixel[3] = 0xFF;
         }
     } else {
-        |(pixel_out, pixel_in)| {
-            pixel_out[0] = pixel_in[2];
-            pixel_out[1] = pixel_in[1];
-            pixel_out[2] = pixel_in[0];
-            pixel_out[3] = pixel_in[3];
+        |(dst_pixel, src_pixel)| {
+            dst_pixel[0] = src_pixel[2];
+            dst_pixel[1] = src_pixel[1];
+            dst_pixel[2] = src_pixel[0];
+            dst_pixel[3] = src_pixel[3];
         }
     };
 
-    strides.zip(rows).for_each(|(output, input)| {
-        let input = input.chunks_exact(4);
-        output.chunks_exact_mut(4).zip(input).for_each(transform);
+    dst_rows.zip(src_rows).for_each(|(dst_row, src_row)| {
+        let dst_pixels = dst_row.chunks_exact_mut(4);
+        let src_pixels = src_row.chunks_exact(4);
+        dst_pixels.zip(src_pixels).for_each(transform);
     });
 
-    Ok((header, output_buffer))
+    Ok((header, dst_bitmap))
 }
 
 fn decode_png(mut input: &[u8]) -> Result<(png::OutputInfo, Vec<u8>), BitmapError> {
@@ -709,35 +703,43 @@ fn decode_png(mut input: &[u8]) -> Result<(png::OutputInfo, Vec<u8>), BitmapErro
     Ok((info, buffer))
 }
 
-/// Convert PNG to `CF_DIB` format.
+/// Converts PNG to `CF_DIB` format.
 pub fn png_to_cf_dib(input: &[u8]) -> Result<Vec<u8>, BitmapError> {
-    let (info, input_buffer) = decode_png(input)?;
-    let (header, output_buffer) = transform_png(info, input_buffer)?;
+    // FIXME(perf): it’s possible to allocate a single array and to directly write both the header and the actual bitmap inside.
+    // Currently, the code is performing three allocations: one inside `decode_png`, one inside `top_down_rgba_to_bottom_up_bgra`
+    // and one in the body of this function.
 
-    let dib_buffer_size = header
+    let (png_info, rgba_bytes) = decode_png(input)?;
+    let (header, bgra_bytes) = top_down_rgba_to_bottom_up_bgra(png_info, &rgba_bytes)?;
+
+    let output_len = header
         .size()
-        .checked_add(output_buffer.len())
+        .checked_add(bgra_bytes.len())
         .ok_or(BitmapError::BufferTooBig)?;
 
-    check_invariant(dib_buffer_size <= MAX_BUFFER_SIZE).ok_or(BitmapError::BufferTooBig)?;
+    ensure(output_len <= MAX_BUFFER_SIZE).ok_or(BitmapError::BufferTooBig)?;
 
-    let mut dib_buffer = vec![0; dib_buffer_size];
+    let mut output = vec![0; output_len];
     {
-        let mut dst = WriteCursor::new(&mut dib_buffer);
+        let mut dst = WriteCursor::new(&mut output);
         header.encode(&mut dst).map_err(BitmapError::InvalidHeader)?;
-        dst.write_slice(&output_buffer);
+        dst.write_slice(&bgra_bytes);
     }
 
-    Ok(dib_buffer)
+    Ok(output)
 }
 
-/// Convert PNG to `CF_DIBV5` format.
+/// Converts PNG to `CF_DIBV5` format.
 pub fn png_to_cf_dibv5(input: &[u8]) -> Result<Vec<u8>, BitmapError> {
-    let (info, input_buffer) = decode_png(input)?;
-    let (header_v1, output_buffer) = transform_png(info, input_buffer)?;
+    // FIXME(perf): it’s possible to allocate a single array and to directly write both the header and the actual bitmap inside.
+    // Currently, the code is performing three allocations: one inside `decode_png`, one inside `top_down_rgba_to_bottom_up_bgra`
+    // and one in the body of this function.
+
+    let (png_info, rgba_bytes) = decode_png(input)?;
+    let (header_v1, bgra_bytes) = top_down_rgba_to_bottom_up_bgra(png_info, &rgba_bytes)?;
 
     let header = BitmapV5Header {
-        header_v1,
+        v1: header_v1,
         // Windows sets these masks for 32-bit bitmaps even if BITFIELDS compression is not used.
         red_mask: 0x00FF0000,
         green_mask: 0x0000FF00,
@@ -753,25 +755,33 @@ pub fn png_to_cf_dibv5(input: &[u8]) -> Result<Vec<u8>, BitmapError> {
         profile_size: 0,
     };
 
-    let dib_buffer_size = header
+    let output_len = header
         .size()
-        .checked_add(output_buffer.len())
+        .checked_add(bgra_bytes.len())
         .ok_or(BitmapError::BufferTooBig)?;
 
-    check_invariant(dib_buffer_size <= MAX_BUFFER_SIZE).ok_or(BitmapError::BufferTooBig)?;
+    ensure(output_len <= MAX_BUFFER_SIZE).ok_or(BitmapError::BufferTooBig)?;
 
-    let mut dib_buffer: Vec<u8> = vec![0; dib_buffer_size];
+    let mut output = vec![0; output_len];
     {
-        let mut dst = WriteCursor::new(&mut dib_buffer);
+        let mut dst = WriteCursor::new(&mut output);
         header.encode(&mut dst).map_err(BitmapError::InvalidHeader)?;
-        dst.write_slice(&output_buffer);
+        dst.write_slice(&bgra_bytes);
     }
 
-    Ok(dib_buffer)
+    Ok(output)
 }
 
+/// Use this when establishing invariants.
 #[inline]
 #[must_use]
 fn check_invariant(condition: bool) -> Option<()> {
+    condition.then_some(())
+}
+
+/// Returns `None` when the condition is unmet.
+#[inline]
+#[must_use]
+fn ensure(condition: bool) -> Option<()> {
     condition.then_some(())
 }

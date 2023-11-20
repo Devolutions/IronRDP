@@ -1,5 +1,5 @@
 use ironrdp_cliprdr_format::bitmap::{dib_to_png, dibv5_to_png, png_to_cf_dib, png_to_cf_dibv5};
-use ironrdp_cliprdr_format::html::{cf_html_to_text, text_to_cf_html};
+use ironrdp_cliprdr_format::html::{cf_html_to_plain_html, plain_html_to_cf_html};
 
 #[test]
 fn dib_to_png_conversion_1() {
@@ -20,36 +20,34 @@ fn dibv5_to_png_conversion_1() {
 #[test]
 fn html_failure() {
     // Empty
-    assert!(cf_html_to_text(&[]).is_err());
+    assert!(cf_html_to_plain_html(&[]).is_err());
     // Garbage
-    assert!(cf_html_to_text(&[0x00, 0x00, 0x00, 0x00]).is_err());
+    assert!(cf_html_to_plain_html(&[0x00, 0x00, 0x00, 0x00]).is_err());
     // No headers
-    assert!(cf_html_to_text(b"hello world").is_err());
+    assert!(cf_html_to_plain_html(b"hello world").is_err());
     // Headers with fragment size not found
-    assert!(cf_html_to_text(b"Version:0.9\r\n<html>nopers</html>").is_err());
+    assert!(cf_html_to_plain_html(b"Version:0.9\r\n<html>nopers</html>").is_err());
     // Out of bounds headers
-    assert!(cf_html_to_text(b"StartFragment:999\r\nEndFragment:9999\r\n<html>nopers</html>").is_err());
+    assert!(cf_html_to_plain_html(b"StartFragment:999\r\nEndFragment:9999\r\n<html>nopers</html>").is_err());
 }
 
 #[test]
 fn test_cf_html_to_text() {
     let input = include_bytes!("../../test_data/pdu/clipboard/cf_html.pdu");
-    let actual = cf_html_to_text(input).unwrap();
+    let actual = cf_html_to_plain_html(input).unwrap();
 
     // Validate that the output is valid HTML
     assert!(actual.starts_with("<b>Remote Desktop Protocol</b>"));
     assert!(actual.ends_with("</sup>"));
 
     // Validate roundtrip
-    let mut cf_html = text_to_cf_html(&actual);
-    let roundtrip_text_html = cf_html_to_text(&cf_html).unwrap();
-    assert_eq!(actual, roundtrip_text_html);
+    let mut cf_html = plain_html_to_cf_html(&actual);
+    let roundtrip_html_text = cf_html_to_plain_html(&cf_html).unwrap();
+    assert_eq!(actual, roundtrip_html_text);
 
     // Add some padding (CF_HTML is not null-terminated, we need to work with data which is
     // potentially padded with arbitrary fill bytes).
     cf_html.extend_from_slice(&[0xFFu8; 10]);
-
-    let roundtrip_text_html = cf_html_to_text(&cf_html).unwrap();
-
-    assert_eq!(actual, roundtrip_text_html);
+    let roundtrip_html_text = cf_html_to_plain_html(&cf_html).unwrap();
+    assert_eq!(actual, roundtrip_html_text);
 }

@@ -23,7 +23,7 @@ use ironrdp::cliprdr::pdu::{
 };
 use ironrdp::svc::impl_as_any;
 use ironrdp_cliprdr_format::bitmap::{dib_to_png, dibv5_to_png, png_to_cf_dibv5};
-use ironrdp_cliprdr_format::html::{cf_html_to_text, text_to_cf_html};
+use ironrdp_cliprdr_format::html::{cf_html_to_plain_html, plain_html_to_cf_html};
 use transaction::{ClipboardContent, ClipboardContentValue};
 use wasm_bindgen::prelude::*;
 
@@ -239,7 +239,7 @@ impl WasmClipboard {
             }
             FORMAT_WIN_HTML_ID => {
                 let text = find_text_content_by_mime(MIME_HTML)?;
-                let buffer = text_to_cf_html(text);
+                let buffer = plain_html_to_cf_html(text);
                 FormatDataResponse::new_data(buffer)
             }
             FORMAT_MIME_HTML_ID => {
@@ -394,7 +394,7 @@ impl WasmClipboard {
             registered => {
                 let format_name = self.remote_mapping.get(&registered).map(|s| s.as_str());
                 match format_name {
-                    Some(FORMAT_WIN_HTML_NAME) => match cf_html_to_text(response.data()) {
+                    Some(FORMAT_WIN_HTML_NAME) => match cf_html_to_plain_html(response.data()) {
                         Ok(text) => Some(ClipboardContent::new_text(MIME_HTML, &text)),
                         Err(err) => {
                             warn!("CF_HTML decode error: {}", err);
