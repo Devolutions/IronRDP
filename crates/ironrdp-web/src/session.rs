@@ -525,10 +525,10 @@ impl Session {
 
                         let (png_width, png_height, hot_spot_x, hot_spot_y, rgba_buffer) = if let Some(scale) = scale {
                             // Per invariants: Following conversions will never saturate.
-                            let scaled_width = cast_f64_to_u16_lossy(f64::from(pointer.width) * scale);
-                            let scaled_height = cast_f64_to_u16_lossy(f64::from(pointer.height) * scale);
-                            let hotspot_x = cast_f64_to_u16_lossy(f64::from(pointer.hotspot_x) * scale);
-                            let hotspot_y = cast_f64_to_u16_lossy(f64::from(pointer.hotspot_y) * scale);
+                            let scaled_width = cast_f64_to_u16_unchecked(f64::from(pointer.width) * scale);
+                            let scaled_height = cast_f64_to_u16_unchecked(f64::from(pointer.height) * scale);
+                            let hotspot_x = cast_f64_to_u16_unchecked(f64::from(pointer.hotspot_x) * scale);
+                            let hotspot_y = cast_f64_to_u16_unchecked(f64::from(pointer.hotspot_y) * scale);
 
                             // Per invariants: scaled_width * scaled_height * 4 <= 32 * 32 * 4 < usize::MAX
                             #[allow(clippy::arithmetic_side_effects)]
@@ -916,6 +916,6 @@ where
 
 #[allow(clippy::cast_sign_loss)]
 #[allow(clippy::cast_possible_truncation)]
-fn cast_f64_to_u16_lossy(value: f64) -> u16 {
+fn cast_f64_to_u16_unchecked(value: f64) -> u16 {
     value as u16
 }
