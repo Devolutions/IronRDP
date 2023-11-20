@@ -1,6 +1,6 @@
 use std::rc::Rc;
 
-use ironrdp_graphics::pointer::DecodedPointer;
+use ironrdp_graphics::pointer::{DecodedPointer, PointerBitmapTarget};
 use ironrdp_graphics::rdp6::BitmapStreamDecoder;
 use ironrdp_graphics::rle::RlePixelFormat;
 use ironrdp_pdu::codecs::rfx::FrameAcknowledgePdu;
@@ -25,6 +25,7 @@ pub enum UpdateKind {
     PointerDefault,
     PointerHidden,
     PointerPosition { x: u16, y: u16 },
+    NativePointerUpdate(Rc<DecodedPointer>),
 }
 
 pub struct Processor {
@@ -36,6 +37,7 @@ pub struct Processor {
     use_system_pointer: bool,
     mouse_pos_update: Option<(u16, u16)>,
     no_server_pointer: bool,
+    pointer_software_rendering: bool,
 }
 
 impl Processor {
@@ -177,10 +179,16 @@ impl Processor {
                     return Ok(processor_updates);
                 }
 
+                let bitmap_target = if self.pointer_software_rendering {
+                    PointerBitmapTarget::Software
+                } else {
+                    PointerBitmapTarget::Accelerated
+                };
+
                 match update {
                     PointerUpdateData::SetHidden => {
                         processor_updates.push(UpdateKind::PointerHidden);
-                        if !self.use_system_pointer {
+                        if self.pointer_software_rendering && !self.use_system_pointer {
                             self.use_system_pointer = true;
                             if let Some(rect) = image.hide_pointer()? {
                                 processor_updates.push(UpdateKind::Region(rect));
@@ -189,7 +197,7 @@ impl Processor {
                     }
                     PointerUpdateData::SetDefault => {
                         processor_updates.push(UpdateKind::PointerDefault);
-                        if !self.use_system_pointer {
+                        if self.pointer_software_rendering && !self.use_system_pointer {
                             self.use_system_pointer = true;
                             if let Some(rect) = image.hide_pointer()? {
                                 processor_updates.push(UpdateKind::Region(rect));
@@ -197,7 +205,7 @@ impl Processor {
                         }
                     }
                     PointerUpdateData::SetPosition(position) => {
-                        if self.use_system_pointer {
+                        if self.use_system_pointer || !self.pointer_software_rendering {
                             processor_updates.push(UpdateKind::PointerPosition {
                                 x: position.x,
                                 y: position.y,
@@ -210,7 +218,7 @@ impl Processor {
                         let cache_index = pointer.cache_index;
 
                         let decoded_pointer = Rc::new(
-                            DecodedPointer::decode_color_pointer_attribute(&pointer)
+                            DecodedPointer::decode_color_pointer_attribute(&pointer, bitmap_target)
                                 .expect("Failed to decode color pointer attribute"),
                         );
 
@@ -218,7 +226,9 @@ impl Processor {
                             .pointer_cache
                             .insert(usize::from(cache_index), Rc::clone(&decoded_pointer));
 
-                        if let Some(rect) = image.update_pointer(decoded_pointer)? {
+                        if !self.pointer_software_rendering {
+                            processor_updates.push(UpdateKind::NativePointerUpdate(Rc::clone(&decoded_pointer)));
+                        } else if let Some(rect) = image.update_pointer(decoded_pointer)? {
                             processor_updates.push(UpdateKind::Region(rect));
                         }
                     }
@@ -230,7 +240,9 @@ impl Processor {
                             processor_updates.push(UpdateKind::PointerHidden);
                             self.use_system_pointer = false;
                             // Send graphics update
-                            if let Some(rect) = image.update_pointer(cached_pointer)? {
+                            if !self.pointer_software_rendering {
+                                processor_updates.push(UpdateKind::NativePointerUpdate(Rc::clone(&cached_pointer)));
+                            } else if let Some(rect) = image.update_pointer(cached_pointer)? {
                                 processor_updates.push(UpdateKind::Region(rect));
                             } else {
                                 // In case pointer was hidden previously
@@ -246,7 +258,7 @@ impl Processor {
                         let cache_index = pointer.color_pointer.cache_index;
 
                         let decoded_pointer = Rc::new(
-                            DecodedPointer::decode_pointer_attribute(&pointer)
+                            DecodedPointer::decode_pointer_attribute(&pointer, bitmap_target)
                                 .expect("Failed to decode pointer attribute"),
                         );
 
@@ -254,7 +266,9 @@ impl Processor {
                             .pointer_cache
                             .insert(usize::from(cache_index), Rc::clone(&decoded_pointer));
 
-                        if let Some(rect) = image.update_pointer(decoded_pointer)? {
+                        if !self.pointer_software_rendering {
+                            processor_updates.push(UpdateKind::NativePointerUpdate(Rc::clone(&decoded_pointer)));
+                        } else if let Some(rect) = image.update_pointer(decoded_pointer)? {
                             processor_updates.push(UpdateKind::Region(rect));
                         }
                     }
@@ -262,7 +276,7 @@ impl Processor {
                         let cache_index = pointer.cache_index;
 
                         let decoded_pointer: Rc<DecodedPointer> = Rc::new(
-                            DecodedPointer::decode_large_pointer_attribute(&pointer)
+                            DecodedPointer::decode_large_pointer_attribute(&pointer, bitmap_target)
                                 .expect("Failed to decode large pointer attribute"),
                         );
 
@@ -270,7 +284,9 @@ impl Processor {
                             .pointer_cache
                             .insert(usize::from(cache_index), Rc::clone(&decoded_pointer));
 
-                        if let Some(rect) = image.update_pointer(decoded_pointer)? {
+                        if !self.pointer_software_rendering {
+                            processor_updates.push(UpdateKind::NativePointerUpdate(Rc::clone(&decoded_pointer)));
+                        } else if let Some(rect) = image.update_pointer(decoded_pointer)? {
                             processor_updates.push(UpdateKind::Region(rect));
                         }
                     }
@@ -351,6 +367,7 @@ pub struct ProcessorBuilder {
     pub io_channel_id: u16,
     pub user_channel_id: u16,
     pub no_server_pointer: bool,
+    pub pointer_software_rendering: bool,
 }
 
 impl ProcessorBuilder {
@@ -364,6 +381,7 @@ impl ProcessorBuilder {
             use_system_pointer: true,
             mouse_pos_update: None,
             no_server_pointer: self.no_server_pointer,
+            pointer_software_rendering: self.pointer_software_rendering,
         }
     }
 }

@@ -40,6 +40,9 @@ tracing-web = "0.1"
 
 # Rendering
 softbuffer = { version = "0.3", default-features = false }
+png.workspace = true
+resize = "0.8"
+rgb = "0.8"
 
 # Enable WebAssembly support for a few crates
 getrandom = { version = "0.2", features = ["js"] }
@@ -67,3 +70,4 @@ x509-cert = { version = "0.2", default-features = false, features = ["std"] }
 tap = "1"
 semver = "1"
 url = "2.4"
+base64 = "0.21"

@@ -135,10 +135,8 @@ export class WasmBridgeService {
         sessionBuilder.auth_token(authToken);
         sessionBuilder.username(username);
         sessionBuilder.render_canvas(this.canvas!);
-        sessionBuilder.hide_pointer_callback_context(this);
-        sessionBuilder.hide_pointer_callback(this.hidePointerCallback);
-        sessionBuilder.show_pointer_callback_context(this);
-        sessionBuilder.show_pointer_callback(this.showPointerCallback);
+        sessionBuilder.set_cursor_style_callback_context(this);
+        sessionBuilder.set_cursor_style_callback(this.setCursorStyleCallback);
         sessionBuilder.kdc_proxy_url(kdc_proxy_url);
 
         if (preConnectionBlob != null) {
@@ -282,12 +280,28 @@ export class WasmBridgeService {
         }
     }
 
-    private hidePointerCallback() {
-        this.canvas!.style.cursor = 'none';
-    }
+    private setCursorStyleCallback(style: string, hotspot_x: number, hotspot_y: number) {
+        if (style === "none" || style === "hidden") {
+            this.canvas!.style.cursor = style;
+            return;
+        }
 
-    private showPointerCallback() {
-        this.canvas!.style.cursor = 'default';
+        if (style.startsWith("data")) {
+            if (hotspot_x == undefined || hotspot_y == undefined) {
+                console.error("Hot spot is not defined for a custom cursor.");
+                return;
+            }
+
+            // IMPORTANT: We need to make proxy `Image` object to actually load the image and make
+            // it usable for CSS property. Without this projy object, URL will be rejected.
+            let image = new Image();
+            image.src = style;
+
+            let style_x = Math.round(hotspot_x);
+            let style_y = Math.round(hotspot_y);
+
+            this.canvas!.style.cursor = `url(${style}) ${style_x} ${style_y}, default`;
+        }
     }
 
     private syncModifier(evt: KeyboardEvent | MouseEvent): void {

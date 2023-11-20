@@ -1,4 +1,7 @@
+use std::rc::Rc;
+
 use ironrdp_connector::ConnectionResult;
+use ironrdp_graphics::pointer::DecodedPointer;
 use ironrdp_pdu::geometry::InclusiveRectangle;
 use ironrdp_pdu::input::fast_path::{FastPathInput, FastPathInputEvent};
 use ironrdp_pdu::write_buf::WriteBuf;
@@ -30,6 +33,7 @@ impl ActiveStage {
             io_channel_id: connection_result.io_channel_id,
             user_channel_id: connection_result.user_channel_id,
             no_server_pointer: connection_result.no_server_pointer,
+            pointer_software_rendering: connection_result.pointer_software_rendering,
         }
         .build();
 
@@ -131,6 +135,9 @@ impl ActiveStage {
                 UpdateKind::PointerPosition { x, y } => {
                     stage_outputs.push(ActiveStageOutput::PointerPosition { x, y });
                 }
+                UpdateKind::NativePointerUpdate(pointer) => {
+                    stage_outputs.push(ActiveStageOutput::NativePointerUpdate(pointer));
+                }
             }
         }
 
@@ -176,5 +183,6 @@ pub enum ActiveStageOutput {
     PointerDefault,
     PointerHidden,
     PointerPosition { x: u16, y: u16 },
+    NativePointerUpdate(Rc<DecodedPointer>),
     Terminate,
 }

@@ -32,7 +32,7 @@ pub enum PointerError {
     #[error("invalid pointer andMask size. Expected: {expected}, actual: {actual}")]
     InvalidAndMaskSize { expected: usize, actual: usize },
     #[error("not supported pointer bpp: {bpp}")]
-    NotSupportedBpp { bpp: usize },
+    NotSupportedBpp { bpp: u16 },
     #[error(transparent)]
     Pdu(#[from] ironrdp_pdu::PduError),
 }
@@ -40,11 +40,45 @@ pub enum PointerError {
 /// Represents RDP pointer in decoded form (color channels stored as RGBA pre-multiplied values)
 #[derive(Debug)]
 pub struct DecodedPointer {
-    pub width: usize,
-    pub height: usize,
-    pub hot_spot_x: usize,
-    pub hot_spot_y: usize,
+    pub width: u16,
+    pub height: u16,
+    pub hotspot_x: u16,
+    pub hotspot_y: u16,
     pub bitmap_data: Vec<u8>,
+}
+
+/// Pointer bitmap rendering target. Defines properties and format of the decoded bitmap.
+#[derive(Clone, Copy, Debug)]
+pub enum PointerBitmapTarget {
+    /// Software rendering target will produce RGBA bitmaps with premultiplied alpha
+    /// and inverted pixels represented as `[0xFF, 0xFF, 0xFF, 0x00]` color.
+    Software,
+    /// Accelerated rendering target will produce RGBA bitmaps with non-premultiplied alpha.
+    /// Inverted pixels will be rendered checkboard pattern.
+    Accelerated,
+}
+
+impl PointerBitmapTarget {
+    fn premultiply_alpha(self) -> bool {
+        match self {
+            Self::Software => true,
+            Self::Accelerated => false,
+        }
+    }
+
+    fn inverted_pixels_as_checkboard(self) -> bool {
+        match self {
+            Self::Software => false,
+            Self::Accelerated => true,
+        }
+    }
+
+    fn inverted_pixels_color(self) -> [u8; 4] {
+        match self {
+            Self::Software => [0xFF, 0xFF, 0xFF, 0x00],
+            Self::Accelerated => [0x00, 0x00, 0x00, 0x00],
+        }
+    }
 }
 
 impl DecodedPointer {
@@ -53,49 +87,67 @@ impl DecodedPointer {
             width: 0,
             height: 0,
             bitmap_data: Vec::new(),
-            hot_spot_x: 0,
-            hot_spot_y: 0,
+            hotspot_x: 0,
+            hotspot_y: 0,
         }
     }
 
-    pub fn decode_pointer_attribute(src: &PointerAttribute<'_>) -> Result<Self, PointerError> {
-        Self::decode_pointer(PointerData {
-            width: src.color_pointer.width as usize,
-            height: src.color_pointer.height as usize,
-            xor_bpp: src.xor_bpp as usize,
-            xor_mask: src.color_pointer.xor_mask,
-            and_mask: src.color_pointer.and_mask,
-            hot_spot_x: src.color_pointer.hot_spot.x as usize,
-            hot_spot_y: src.color_pointer.hot_spot.y as usize,
-        })
+    pub fn decode_pointer_attribute(
+        src: &PointerAttribute<'_>,
+        target: PointerBitmapTarget,
+    ) -> Result<Self, PointerError> {
+        Self::decode_pointer(
+            PointerData {
+                width: src.color_pointer.width,
+                height: src.color_pointer.height,
+                xor_bpp: src.xor_bpp,
+                xor_mask: src.color_pointer.xor_mask,
+                and_mask: src.color_pointer.and_mask,
+                hot_spot_x: src.color_pointer.hot_spot.x,
+                hot_spot_y: src.color_pointer.hot_spot.y,
+            },
+            target,
+        )
     }
 
-    pub fn decode_color_pointer_attribute(src: &ColorPointerAttribute<'_>) -> Result<Self, PointerError> {
-        Self::decode_pointer(PointerData {
-            width: src.width as usize,
-            height: src.height as usize,
-            xor_bpp: 24,
-            xor_mask: src.xor_mask,
-            and_mask: src.and_mask,
-            hot_spot_x: src.hot_spot.x as usize,
-            hot_spot_y: src.hot_spot.y as usize,
-        })
+    pub fn decode_color_pointer_attribute(
+        src: &ColorPointerAttribute<'_>,
+        target: PointerBitmapTarget,
+    ) -> Result<Self, PointerError> {
+        Self::decode_pointer(
+            PointerData {
+                width: src.width,
+                height: src.height,
+                xor_bpp: 24,
+                xor_mask: src.xor_mask,
+                and_mask: src.and_mask,
+                hot_spot_x: src.hot_spot.x,
+                hot_spot_y: src.hot_spot.y,
+            },
+            target,
+        )
     }
 
-    pub fn decode_large_pointer_attribute(src: &LargePointerAttribute<'_>) -> Result<Self, PointerError> {
-        Self::decode_pointer(PointerData {
-            width: src.width as usize,
-            height: src.height as usize,
-            xor_bpp: src.xor_bpp as usize,
-            xor_mask: src.xor_mask,
-            and_mask: src.and_mask,
-            hot_spot_x: src.hot_spot.x as usize,
-            hot_spot_y: src.hot_spot.y as usize,
-        })
+    pub fn decode_large_pointer_attribute(
+        src: &LargePointerAttribute<'_>,
+        target: PointerBitmapTarget,
+    ) -> Result<Self, PointerError> {
+        Self::decode_pointer(
+            PointerData {
+                width: src.width,
+                height: src.height,
+                xor_bpp: src.xor_bpp,
+                xor_mask: src.xor_mask,
+                and_mask: src.and_mask,
+                hot_spot_x: src.hot_spot.x,
+                hot_spot_y: src.hot_spot.y,
+            },
+            target,
+        )
     }
 
-    fn decode_pointer(data: PointerData<'_>) -> Result<Self, PointerError> {
-        const SUPPORTED_COLOR_BPP: [usize; 4] = [1, 16, 24, 32];
+    fn decode_pointer(data: PointerData<'_>, target: PointerBitmapTarget) -> Result<Self, PointerError> {
+        const SUPPORTED_COLOR_BPP: [u16; 4] = [1, 16, 24, 32];
 
         if data.width == 0 || data.height == 0 {
             return Ok(Self::new_invisible());
@@ -109,19 +161,19 @@ impl DecodedPointer {
 
         let flip_vertical = data.xor_bpp != 1;
 
-        let and_stride = Stride::from_bits(data.width);
-        let xor_stride = Stride::from_bits(data.width * data.xor_bpp);
+        let and_stride = Stride::from_bits(data.width.into());
+        let xor_stride = Stride::from_bits(usize::from(data.width) * usize::from(data.xor_bpp));
 
-        if data.xor_mask.len() != xor_stride.length * data.height {
+        if data.xor_mask.len() != xor_stride.length * usize::from(data.height) {
             return Err(PointerError::InvalidXorMaskSize {
-                expected: xor_stride.length * data.height,
+                expected: xor_stride.length * usize::from(data.height),
                 actual: data.xor_mask.len(),
             });
         }
 
-        if data.and_mask.len() != and_stride.length * data.height {
+        if data.and_mask.len() != and_stride.length * usize::from(data.height) {
             return Err(PointerError::InvalidAndMaskSize {
-                expected: and_stride.length * data.height,
+                expected: and_stride.length * usize::from(data.height),
                 actual: data.and_mask.len(),
             });
         }
@@ -132,20 +184,20 @@ impl DecodedPointer {
             // For non-monochrome cursors we read strides from bottom to top
             let (mut xor_stride_cursor, mut and_stride_cursor) = if flip_vertical {
                 let xor_stride_cursor =
-                    ReadCursor::new(&data.xor_mask[(data.height - row_idx - 1) * xor_stride.length..]);
+                    ReadCursor::new(&data.xor_mask[usize::from(data.height - row_idx - 1) * xor_stride.length..]);
                 let and_stride_cursor =
-                    ReadCursor::new(&data.and_mask[(data.height - row_idx - 1) * and_stride.length..]);
+                    ReadCursor::new(&data.and_mask[usize::from(data.height - row_idx - 1) * and_stride.length..]);
                 (xor_stride_cursor, and_stride_cursor)
             } else {
-                let xor_stride_cursor = ReadCursor::new(&data.xor_mask[row_idx * xor_stride.length..]);
-                let and_stride_cursor = ReadCursor::new(&data.and_mask[row_idx * and_stride.length..]);
+                let xor_stride_cursor = ReadCursor::new(&data.xor_mask[usize::from(row_idx) * xor_stride.length..]);
+                let and_stride_cursor = ReadCursor::new(&data.and_mask[usize::from(row_idx) * and_stride.length..]);
                 (xor_stride_cursor, and_stride_cursor)
             };
 
             let mut color_reader = ColorStrideReader::new(data.xor_bpp, xor_stride);
             let mut bitmask_reader = BitmaskStrideReader::new(and_stride);
 
-            for _ in 0..data.width {
+            for col_idx in 0..data.width {
                 let and_bit = bitmask_reader.next_bit(&mut and_stride_cursor);
                 let color = color_reader.next_pixel(&mut xor_stride_cursor);
 
@@ -156,12 +208,17 @@ impl DecodedPointer {
                 } else if and_bit == 1 && color == [0xff, 0xff, 0xff, 0xff] {
                     // Inverted pixel.
 
-                    // Colors with alpha channel set to 0x00 are always invisible no matter their color
-                    // component. We could take advantage of that, and use a special color to represent
-                    // inverted pixels. For example, we could use [0xFF, 0xFF, 0xFF, 0x00] for such
-                    // purpose.
-                    bitmap_data.extend_from_slice(&[0xFF, 0xFF, 0xFF, 0x00]);
-                } else {
+                    if target.inverted_pixels_as_checkboard() {
+                        // Checkboard pattern is used to represent inverted pixels.
+                        if (row_idx + col_idx) % 2 == 0 {
+                            bitmap_data.extend_from_slice(&[0xff, 0xff, 0xff, 0xff]);
+                        } else {
+                            bitmap_data.extend_from_slice(&[0x00, 0x00, 0x00, 0xff]);
+                        }
+                    } else {
+                        bitmap_data.extend_from_slice(&target.inverted_pixels_color());
+                    }
+                } else if target.premultiply_alpha() {
                     // Calculate premultiplied alpha via integer arithmetic
                     let with_premultiplied_alpha = [
                         ((color[0] as u16 * color[0] as u16) >> 8) as u8,
@@ -170,6 +227,8 @@ impl DecodedPointer {
                         color[3],
                     ];
                     bitmap_data.extend_from_slice(&with_premultiplied_alpha);
+                } else {
+                    bitmap_data.extend_from_slice(&color);
                 }
             }
         }
@@ -178,8 +237,8 @@ impl DecodedPointer {
             width: data.width,
             height: data.height,
             bitmap_data,
-            hot_spot_x: data.hot_spot_x,
-            hot_spot_y: data.hot_spot_y,
+            hotspot_x: data.hot_spot_x,
+            hotspot_y: data.hot_spot_y,
         })
     }
 }
@@ -242,7 +301,7 @@ impl BitmaskStrideReader {
 
 enum ColorStrideReader {
     Color {
-        bpp: usize,
+        bpp: u16,
         read_stide_bytes: usize,
         stride_data_bytes: usize,
         stride_padding: usize,
@@ -251,7 +310,7 @@ enum ColorStrideReader {
 }
 
 impl ColorStrideReader {
-    fn new(bpp: usize, stride: Stride) -> Self {
+    fn new(bpp: u16, stride: Stride) -> Self {
         match bpp {
             1 => Self::Bitmask(BitmaskStrideReader::new(stride)),
             bpp => Self::Color {
@@ -318,11 +377,11 @@ fn bit_stride_size_align_u16(size_bits: usize) -> usize {
 
 /// Message-agnostic pointer data.
 struct PointerData<'a> {
-    width: usize,
-    height: usize,
-    xor_bpp: usize,
+    width: u16,
+    height: u16,
+    xor_bpp: u16,
     xor_mask: &'a [u8],
     and_mask: &'a [u8],
-    hot_spot_x: usize,
-    hot_spot_y: usize,
+    hot_spot_x: u16,
+    hot_spot_y: u16,
 }
