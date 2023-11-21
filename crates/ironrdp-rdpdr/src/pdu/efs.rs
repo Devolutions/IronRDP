@@ -2306,9 +2306,10 @@ pub struct ServerDriveQueryDirectoryRequest {
 
 impl ServerDriveQueryDirectoryRequest {
     const NAME: &str = "DR_DRIVE_QUERY_DIRECTORY_REQ";
+    const FIXED_PART_SIZE: usize = 4 /* FsInformationClass */ + 1 /* InitialQuery */ + 4 /* PathLength */ + 23 /* Padding */;
 
     fn decode(device_io_request: DeviceIoRequest, src: &mut ReadCursor<'_>) -> PduResult<Self> {
-        ensure_size!(in: src, size: size_of::<u32>());
+        ensure_size!(in: src, size: Self::FIXED_PART_SIZE);
         let file_info_class_lvl = FileInformationClassLevel::from(src.read_u32());
 
         // From the documentation: "This field MUST contain one of the following values"
@@ -2327,13 +2328,11 @@ impl ServerDriveQueryDirectoryRequest {
             ));
         }
 
-        ensure_size!(in: src, size: size_of::<u8>());
         let initial_query = src.read_u8();
-        ensure_size!(in: src, size: size_of::<u32>());
         let path_length = cast_length!("ServerDriveQueryDirectoryRequest", "path_length", src.read_u32())?;
         // Padding (23 bytes): An array of 23 bytes. This field is unused and MUST be ignored.
-        ensure_size!(in: src, size: 23);
-        let _ = src.read_slice(23);
+        read_padding!(src, 23);
+
         ensure_size!(in: src, size: path_length);
         let path = decode_string(src.read_slice(path_length), CharacterSet::Unicode, true)?;
 
@@ -2377,7 +2376,7 @@ impl ClientDriveQueryDirectoryResponse {
         if let Some(buffer) = &self.buffer {
             buffer.encode(dst)?;
         } else {
-            dst.write_u8(0) // Padding: https://github.com/FreeRDP/FreeRDP/blob/511444a65e7aa2f537c5e531fa68157a50c1bd4d/channels/drive/client/drive_file.c#L937
+            write_padding!(dst, 1) // Padding: https://github.com/FreeRDP/FreeRDP/blob/511444a65e7aa2f537c5e531fa68157a50c1bd4d/channels/drive/client/drive_file.c#L937
         }
         Ok(())
     }
