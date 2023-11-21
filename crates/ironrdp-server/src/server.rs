@@ -5,6 +5,7 @@ use anyhow::Result;
 use ironrdp_acceptor::{self, Acceptor, AcceptorResult, BeginResult};
 use ironrdp_pdu::input::fast_path::{FastPathInput, FastPathInputEvent};
 use ironrdp_pdu::input::InputEventPdu;
+use ironrdp_pdu::mcs::SendDataRequest;
 use ironrdp_pdu::{self, mcs, nego, rdp, Action, PduParsing};
 use ironrdp_tokio::{Framed, FramedRead, FramedWrite, TokioFramed};
 use tokio::net::{TcpListener, TcpStream};
@@ -100,6 +101,7 @@ pub struct RdpServer {
     opts: RdpServerOptions,
     handler: Box<dyn RdpServerInputHandler>,
     display: Box<dyn RdpServerDisplay>,
+    io_channel_id: Option<u16>,
 }
 
 impl RdpServer {
@@ -108,7 +110,12 @@ impl RdpServer {
         handler: Box<dyn RdpServerInputHandler>,
         display: Box<dyn RdpServerDisplay>,
     ) -> Self {
-        Self { opts, handler, display }
+        Self {
+            opts,
+            handler,
+            display,
+            io_channel_id: None,
+        }
     }
 
     pub fn builder() -> builder::RdpServerBuilder<builder::WantsAddr> {
@@ -170,6 +177,8 @@ impl RdpServer {
     {
         let mut buffer = vec![0u8; 4096];
         let mut encoder = UpdateEncoder::new();
+
+        self.io_channel_id = Some(result.io_channel_id);
 
         if !result.input_events.is_empty() {
             debug!("Handling input event backlog from acceptor sequence");
@@ -282,30 +291,39 @@ impl RdpServer {
         }
     }
 
+    async fn handle_io_channel_data(&mut self, data: SendDataRequest<'_>) -> Result<bool> {
+        let control = rdp::headers::ShareControlHeader::from_buffer(Cursor::new(data.user_data))?;
+
+        match control.share_control_pdu {
+            rdp::headers::ShareControlPdu::Data(header) => match header.share_data_pdu {
+                rdp::headers::ShareDataPdu::Input(pdu) => {
+                    self.handle_input_event(pdu).await;
+                }
+
+                rdp::headers::ShareDataPdu::ShutdownRequest => {
+                    return Ok(true);
+                }
+
+                unexpected => {
+                    warn!(?unexpected, "Unexpected share data pdu");
+                }
+            },
+
+            unexpected => {
+                warn!(?unexpected, "Unexpected share control");
+            }
+        }
+
+        Ok(false)
+    }
+
     async fn handle_x224(&mut self, frame: &[u8]) -> Result<bool> {
         let message = ironrdp_pdu::decode::<mcs::McsMessage<'_>>(frame)?;
         match message {
             mcs::McsMessage::SendDataRequest(data) => {
-                let control = rdp::headers::ShareControlHeader::from_buffer(Cursor::new(data.user_data))?;
-
-                match control.share_control_pdu {
-                    rdp::headers::ShareControlPdu::Data(header) => match header.share_data_pdu {
-                        rdp::headers::ShareDataPdu::Input(pdu) => {
-                            self.handle_input_event(pdu).await;
-                        }
-
-                        rdp::headers::ShareDataPdu::ShutdownRequest => {
-                            return Ok(true);
-                        }
-
-                        unexpected => {
-                            warn!(?unexpected, "Unexpected share data pdu");
-                        }
-                    },
-
-                    unexpected => {
-                        warn!(?unexpected, "Unexpected share control");
-                    }
+                debug!(?data, "McsMessage::SendDataRequest");
+                if Some(data.channel_id) == self.io_channel_id && self.handle_io_channel_data(data).await? {
+                    return Ok(true);
                 }
             }
 
