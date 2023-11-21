@@ -8,7 +8,7 @@
 //! with the destination server, decodes incoming graphics updates, and saves the
 //! resulting output as a BMP image file on the disk.
 //!
-//! ## Usage example
+//! # Usage example
 //!
 //! ```shell
 //! cargo run --example=screenshot -- --host <HOSTNAME> -u <USERNAME> -p <PASSWORD> -o out.bmp
@@ -215,6 +215,7 @@ fn build_config(username: String, password: String, domain: Option<String>) -> c
         // Disable custom pointers (there is no user interaction anyway)
         no_server_pointer: true,
         autologon: false,
+        pointer_software_rendering: true,
     }
 }
 

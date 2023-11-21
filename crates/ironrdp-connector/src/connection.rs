@@ -24,6 +24,7 @@ pub struct ConnectionResult {
     pub desktop_size: DesktopSize,
     pub graphics_config: Option<crate::GraphicsConfig>,
     pub no_server_pointer: bool,
+    pub pointer_software_rendering: bool,
 }
 
 #[derive(Default, Debug)]
@@ -593,6 +594,7 @@ impl Sequence for ClientConnector {
                             desktop_size,
                             graphics_config: self.config.graphics.clone(),
                             no_server_pointer: self.config.no_server_pointer,
+                            pointer_software_rendering: self.config.pointer_software_rendering,
                         },
                     }
                 } else {

@@ -1977,6 +1977,7 @@ name = "ironrdp-web"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "base64",
  "chrono",
  "console_error_panic_hook",
  "futures-channel",
@@ -1989,6 +1990,9 @@ dependencies = [
  "ironrdp-futures",
  "ironrdp-rdcleanpath",
  "js-sys",
+ "png",
+ "resize",
+ "rgb",
  "semver",
  "smallvec",
  "softbuffer",
@@ -3130,6 +3134,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "resize"
+version = "0.8.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8ce43c0220eff4793a20c120ff89ee01499ba3c882957021dcdc12f5e4ca97c8"
+dependencies = [
+ "rgb",
+]
+
+[[package]]
 name = "resolv-conf"
 version = "0.7.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3147,6 +3160,15 @@ checksum = "f8dd2a808d456c4a54e300a23e9f5a67e122c3024119acbfd73e3bf664491cb2"
 dependencies = [
  "hmac",
  "subtle",
+]
+
+[[package]]
+name = "rgb"
+version = "0.8.37"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "05aaa8004b64fd573fc9d002f4e632d51ad4f026c2b5ba95fcb6c2f32c2c47d8"
+dependencies = [
+ "bytemuck",
 ]
 
 [[package]]

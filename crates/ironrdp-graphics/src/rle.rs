@@ -1,6 +1,6 @@
 //! Interleaved Run-Length Encoding (RLE) Bitmap Codec
 //!
-//! ### References
+//! # References
 //!
 //! - Microsoft Learn:
 //!   - [RLE_BITMAP_STREAM](https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/b3b60873-16a8-4cbc-8aaa-5f0a93083280)

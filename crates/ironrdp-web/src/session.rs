@@ -1,8 +1,10 @@
 use core::cell::RefCell;
+use std::borrow::Cow;
 use std::rc::Rc;
 use std::time::Duration;
 
 use anyhow::Context as _;
+use base64::Engine as _;
 use futures_channel::mpsc;
 use futures_util::io::{ReadHalf, WriteHalf};
 use futures_util::{select, AsyncReadExt as _, AsyncWriteExt as _, FutureExt as _, StreamExt as _};
@@ -17,6 +19,7 @@ use ironrdp::pdu::input::fast_path::FastPathInputEvent;
 use ironrdp::pdu::write_buf::WriteBuf;
 use ironrdp::session::image::DecodedImage;
 use ironrdp::session::{ActiveStage, ActiveStageOutput};
+use rgb::AsPixels as _;
 use tap::prelude::*;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::spawn_local;
@@ -51,10 +54,8 @@ struct SessionBuilderInner {
     desktop_size: DesktopSize,
 
     render_canvas: Option<HtmlCanvasElement>,
-    hide_pointer_callback: Option<js_sys::Function>,
-    hide_pointer_callback_context: Option<JsValue>,
-    show_pointer_callback: Option<js_sys::Function>,
-    show_pointer_callback_context: Option<JsValue>,
+    set_cursor_style_callback: Option<js_sys::Function>,
+    set_cursor_style_callback_context: Option<JsValue>,
     remote_clipboard_changed_callback: Option<js_sys::Function>,
     remote_received_format_list_callback: Option<js_sys::Function>,
     force_clipboard_update_callback: Option<js_sys::Function>,
@@ -78,10 +79,8 @@ impl Default for SessionBuilderInner {
             },
 
             render_canvas: None,
-            hide_pointer_callback: None,
-            hide_pointer_callback_context: None,
-            show_pointer_callback: None,
-            show_pointer_callback_context: None,
+            set_cursor_style_callback: None,
+            set_cursor_style_callback_context: None,
             remote_clipboard_changed_callback: None,
             remote_received_format_list_callback: None,
             force_clipboard_update_callback: None,
@@ -159,27 +158,31 @@ impl SessionBuilder {
         self.clone()
     }
 
-    /// Required
-    pub fn hide_pointer_callback(&self, callback: js_sys::Function) -> SessionBuilder {
-        self.0.borrow_mut().hide_pointer_callback = Some(callback);
+    /// Required.
+    ///
+    /// # Callback signature:
+    /// ```typescript
+    /// function callback(
+    ///     cursor_kind: string,
+    ///     cursor_data: string | undefined,
+    ///     hotspot_x: number | undefined,
+    ///     hotspot_y: number | undefined
+    /// ): void
+    /// ```
+    ///
+    /// # Cursor kinds:
+    /// - `default` (default system cursor); other arguments are `UNDEFINED`
+    /// - `none` (hide cursor); other arguments are `UNDEFINED`
+    /// - `url` (custom cursor data URL); `cursor_data` contains the data URL with Base64-encoded
+    ///   cursor bitmap; `hotspot_x` and `hotspot_y` are set to the cursor hotspot coordinates.
+    pub fn set_cursor_style_callback(&self, callback: js_sys::Function) -> SessionBuilder {
+        self.0.borrow_mut().set_cursor_style_callback = Some(callback);
         self.clone()
     }
 
-    /// Required
-    pub fn hide_pointer_callback_context(&self, context: JsValue) -> SessionBuilder {
-        self.0.borrow_mut().hide_pointer_callback_context = Some(context);
-        self.clone()
-    }
-
-    /// Required
-    pub fn show_pointer_callback(&self, callback: js_sys::Function) -> SessionBuilder {
-        self.0.borrow_mut().show_pointer_callback = Some(callback);
-        self.clone()
-    }
-
-    /// Required
-    pub fn show_pointer_callback_context(&self, context: JsValue) -> SessionBuilder {
-        self.0.borrow_mut().show_pointer_callback_context = Some(context);
+    /// Required.
+    pub fn set_cursor_style_callback_context(&self, context: JsValue) -> SessionBuilder {
+        self.0.borrow_mut().set_cursor_style_callback_context = Some(context);
         self.clone()
     }
 
@@ -214,10 +217,8 @@ impl SessionBuilder {
             client_name,
             desktop_size,
             render_canvas,
-            hide_pointer_callback,
-            hide_pointer_callback_context,
-            show_pointer_callback,
-            show_pointer_callback_context,
+            set_cursor_style_callback,
+            set_cursor_style_callback_context,
             remote_clipboard_changed_callback,
             remote_received_format_list_callback,
             force_clipboard_update_callback,
@@ -239,22 +240,14 @@ impl SessionBuilder {
 
             render_canvas = inner.render_canvas.clone().context("render_canvas missing")?;
 
-            hide_pointer_callback = inner
-                .hide_pointer_callback
+            set_cursor_style_callback = inner
+                .set_cursor_style_callback
                 .clone()
-                .context("hide_pointer_callback missing")?;
-            hide_pointer_callback_context = inner
-                .hide_pointer_callback_context
+                .context("set_cursor_style_callback missing")?;
+            set_cursor_style_callback_context = inner
+                .set_cursor_style_callback_context
                 .clone()
-                .context("show_pointer_callback_context missing")?;
-            show_pointer_callback = inner
-                .show_pointer_callback
-                .clone()
-                .context("hide_pointer_callback missing")?;
-            show_pointer_callback_context = inner
-                .show_pointer_callback_context
-                .clone()
-                .context("show_pointer_callback_context missing")?;
+                .context("set_cursor_style_callback_context missing")?;
             remote_clipboard_changed_callback = inner.remote_clipboard_changed_callback.clone();
             remote_received_format_list_callback = inner.remote_received_format_list_callback.clone();
             force_clipboard_update_callback = inner.force_clipboard_update_callback.clone();
@@ -331,10 +324,8 @@ impl SessionBuilder {
             input_events_tx,
 
             render_canvas,
-            hide_pointer_callback,
-            hide_pointer_callback_context,
-            show_pointer_callback,
-            show_pointer_callback_context,
+            set_cursor_style_callback,
+            set_cursor_style_callback_context,
 
             input_events_rx: RefCell::new(Some(input_events_rx)),
             rdp_reader: RefCell::new(Some(rdp_reader)),
@@ -353,6 +344,16 @@ pub(crate) enum RdpInputEvent {
     FastPath(FastPathInputEvents),
 }
 
+enum CursorStyle {
+    Default,
+    Hidden,
+    Url {
+        data: String,
+        hotspot_x: u16,
+        hotspot_y: u16,
+    },
+}
+
 #[wasm_bindgen]
 pub struct Session {
     desktop_size: connector::DesktopSize,
@@ -361,10 +362,8 @@ pub struct Session {
     input_events_tx: mpsc::UnboundedSender<RdpInputEvent>,
 
     render_canvas: HtmlCanvasElement,
-    hide_pointer_callback: js_sys::Function,
-    hide_pointer_callback_context: JsValue,
-    show_pointer_callback: js_sys::Function,
-    show_pointer_callback_context: JsValue,
+    set_cursor_style_callback: js_sys::Function,
+    set_cursor_style_callback_context: JsValue,
 
     // Consumed when `run` is called
     input_events_rx: RefCell<Option<mpsc::UnboundedReceiver<RdpInputEvent>>>,
@@ -491,19 +490,104 @@ impl Session {
                         gui.draw(&buffer, region).context("draw updated region")?;
                     }
                     ActiveStageOutput::PointerDefault => {
-                        let _ret = self
-                            .show_pointer_callback
-                            .call0(&self.show_pointer_callback_context)
-                            .map_err(|e| anyhow::Error::msg(format!("show pointer callback failed: {e:?}")))?;
+                        self.set_cursor_style(CursorStyle::Default)?;
                     }
                     ActiveStageOutput::PointerHidden => {
-                        let _ret = self
-                            .hide_pointer_callback
-                            .call0(&self.hide_pointer_callback_context)
-                            .map_err(|e| anyhow::Error::msg(format!("hide pointer callback failed: {e:?}")))?;
+                        self.set_cursor_style(CursorStyle::Hidden)?;
                     }
                     ActiveStageOutput::PointerPosition { .. } => {
-                        // Not applicable for web
+                        // Not applicable for web.
+                    }
+                    ActiveStageOutput::PointerBitmap(pointer) => {
+                        // Maximum allowed cursor size for browsers is 32x32, because bigger sizes
+                        // will cause the following issues:
+                        // - cursors bigger than 128x128 are not supported in browsers.
+                        // - cursors bigger than 32x32 will default to the system cursor if their
+                        //   sprite does not fit in the browser's viewport, introducing an abrupt
+                        //   cursor style change when the cursor is moved to the edge of the
+                        //   browser window.
+                        //
+                        // Therefore, we need to scale the cursor sprite down to 32x32 if it is
+                        // bigger than that.
+                        const MAX_CURSOR_SIZE: u16 = 32;
+                        // INVARIANT: 0 < scale <= 1.0
+                        // INVARIANT: pointer.width * scale <= MAX_CURSOR_SIZE
+                        // INVARIANT: pointer.height * scale <= MAX_CURSOR_SIZE
+                        let scale = if pointer.width >= pointer.height && pointer.width > MAX_CURSOR_SIZE {
+                            Some(f64::from(MAX_CURSOR_SIZE) / f64::from(pointer.width))
+                        } else if pointer.height > MAX_CURSOR_SIZE {
+                            Some(f64::from(MAX_CURSOR_SIZE) / f64::from(pointer.height))
+                        } else {
+                            None
+                        };
+
+                        let (png_width, png_height, hotspot_x, hotspot_y, rgba_buffer) = if let Some(scale) = scale {
+                            // Per invariants: Following conversions will never saturate.
+                            let scaled_width = f64_to_u16_saturating_cast(f64::from(pointer.width) * scale);
+                            let scaled_height = f64_to_u16_saturating_cast(f64::from(pointer.height) * scale);
+                            let hotspot_x = f64_to_u16_saturating_cast(f64::from(pointer.hotspot_x) * scale);
+                            let hotspot_y = f64_to_u16_saturating_cast(f64::from(pointer.hotspot_y) * scale);
+
+                            // Per invariants: scaled_width * scaled_height * 4 <= 32 * 32 * 4 < usize::MAX
+                            #[allow(clippy::arithmetic_side_effects)]
+                            let resized_rgba_buffer_size = usize::from(scaled_width * scaled_height * 4);
+
+                            let mut rgba_resized = vec![0u8; resized_rgba_buffer_size];
+                            let mut resizer = resize::new(
+                                usize::from(pointer.width),
+                                usize::from(pointer.height),
+                                usize::from(scaled_width),
+                                usize::from(scaled_height),
+                                resize::Pixel::RGBA8P,
+                                resize::Type::Lanczos3,
+                            )
+                            .context("failed to initialize cursor resizer")?;
+
+                            resizer
+                                .resize(pointer.bitmap_data.as_pixels(), rgba_resized.as_pixels_mut())
+                                .context("failed to resize cursor")?;
+
+                            (
+                                scaled_width,
+                                scaled_height,
+                                hotspot_x,
+                                hotspot_y,
+                                Cow::Owned(rgba_resized),
+                            )
+                        } else {
+                            (
+                                pointer.width,
+                                pointer.height,
+                                pointer.hotspot_x,
+                                pointer.hotspot_y,
+                                Cow::Borrowed(pointer.bitmap_data.as_slice()),
+                            )
+                        };
+
+                        // Encode PNG.
+                        let mut png_buffer = Vec::new();
+                        {
+                            let mut encoder =
+                                png::Encoder::new(&mut png_buffer, u32::from(png_width), u32::from(png_height));
+
+                            encoder.set_color(png::ColorType::Rgba);
+                            encoder.set_depth(png::BitDepth::Eight);
+                            encoder.set_compression(png::Compression::Fast);
+                            let mut writer = encoder.write_header().context("PNG encoder header write failed")?;
+                            writer
+                                .write_image_data(rgba_buffer.as_ref())
+                                .context("failed to encode pointer PNG")?;
+                        }
+
+                        // Encode PNG into Base64 data URL.
+                        let mut style = "data:image/png;base64,".to_owned();
+                        base64::engine::general_purpose::STANDARD.encode_string(png_buffer, &mut style);
+
+                        self.set_cursor_style(CursorStyle::Url {
+                            data: style,
+                            hotspot_x,
+                            hotspot_y,
+                        })?;
                     }
                     ActiveStageOutput::Terminate => break 'outer,
                 }
@@ -582,6 +666,32 @@ impl Session {
 
         Ok(())
     }
+
+    fn set_cursor_style(&self, style: CursorStyle) -> Result<(), IronRdpError> {
+        let (kind, data, hotspot_x, hotspot_y) = match style {
+            CursorStyle::Default => ("default", None, None, None),
+            CursorStyle::Hidden => ("hidden", None, None, None),
+            CursorStyle::Url {
+                data,
+                hotspot_x,
+                hotspot_y,
+            } => ("url", Some(data), Some(hotspot_x), Some(hotspot_y)),
+        };
+
+        let args = js_sys::Array::from_iter([
+            JsValue::from_str(kind),
+            JsValue::from(data),
+            JsValue::from_f64(hotspot_x.unwrap_or_default().into()),
+            JsValue::from_f64(hotspot_y.unwrap_or_default().into()),
+        ]);
+
+        let _ret = self
+            .set_cursor_style_callback
+            .apply(&self.set_cursor_style_callback_context, &args)
+            .map_err(|e| anyhow::Error::msg(format!("set cursor style callback failed: {e:?}")))?;
+
+        Ok(())
+    }
 }
 
 fn build_config(
@@ -622,6 +732,7 @@ fn build_config(
         platform: ironrdp::pdu::rdp::capability_sets::MajorPlatformType::UNSPECIFIED,
         no_server_pointer: false,
         autologon: false,
+        pointer_software_rendering: false,
     }
 }
 
@@ -822,4 +933,10 @@ where
 
         Ok((upgraded, server_public_key))
     }
+}
+
+#[allow(clippy::cast_sign_loss)]
+#[allow(clippy::cast_possible_truncation)]
+fn f64_to_u16_saturating_cast(value: f64) -> u16 {
+    value as u16
 }

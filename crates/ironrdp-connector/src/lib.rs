@@ -98,6 +98,7 @@ pub struct Config {
     pub no_server_pointer: bool,
     /// If true, the INFO_AUTOLOGON flag is set in the [`ironrdp_pdu::rdp::ClientInfoPdu`].
     pub autologon: bool,
+    pub pointer_software_rendering: bool,
 }
 
 ironrdp_pdu::assert_impl!(Config: Send, Sync);

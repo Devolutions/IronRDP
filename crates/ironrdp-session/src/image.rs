@@ -239,7 +239,7 @@ impl DecodedImage {
                 copy_cursor_data(
                     pointer.bitmap_data.as_slice(),
                     (self.pointer_src_rect.left as usize, self.pointer_src_rect.top as usize),
-                    pointer.width * 4,
+                    usize::from(pointer.width) * 4,
                     &mut self.data,
                     self.width as usize * 4,
                     (self.pointer_draw_x as usize, self.pointer_draw_y as usize),
@@ -287,23 +287,23 @@ impl DecodedImage {
             _ => return,
         };
 
-        let left_virtual = x as i16 - pointer.hot_spot_x as i16;
-        let top_virtual = y as i16 - pointer.hot_spot_y as i16;
+        let left_virtual = x as i16 - pointer.hotspot_x as i16;
+        let top_virtual = y as i16 - pointer.hotspot_y as i16;
         let right_virtual = left_virtual + pointer.width as i16 - 1;
         let bottom_virtual = top_virtual + pointer.height as i16 - 1;
 
         let (left, draw_x) = if left_virtual < 0 {
             // Cut left side if required
-            (pointer.hot_spot_x as u16 - x, 0)
+            (pointer.hotspot_x - x, 0)
         } else {
-            (0, x - pointer.hot_spot_x as u16)
+            (0, x - pointer.hotspot_x)
         };
 
         let (top, draw_y) = if top_virtual < 0 {
             // Cut top side if required
-            (pointer.hot_spot_y as u16 - y, 0)
+            (pointer.hotspot_y - y, 0)
         } else {
-            (0, y - pointer.hot_spot_y as u16)
+            (0, y - pointer.hotspot_y)
         };
 
         // Cut right side if required
@@ -316,7 +316,7 @@ impl DecodedImage {
                 self.width - (draw_x + 1)
             }
         } else {
-            pointer.width as u16 - 1
+            pointer.width - 1
         };
 
         // Cut bottom side if required
@@ -329,7 +329,7 @@ impl DecodedImage {
                 self.height - (draw_y + 1)
             }
         } else {
-            pointer.height as u16 - 1
+            pointer.height - 1
         };
 
         self.pointer_visible_on_screen = true;
