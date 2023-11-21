@@ -1715,7 +1715,11 @@ impl Debug for FileInformationClassLevel {
             FileInformationClassLevel::FILE_BASIC_INFORMATION => write!(f, "FileBasicInformation"),
             FileInformationClassLevel::FILE_STANDARD_INFORMATION => write!(f, "FileStandardInformation"),
             FileInformationClassLevel::FILE_ATTRIBUTE_TAG_INFORMATION => write!(f, "FileAttributeTagInformation"),
-            _ => write!(f, "FileInformationClassLevel({:#010X})", self.0),
+            FileInformationClassLevel::FILE_DIRECTORY_INFORMATION => write!(f, "FileDirectoryInformation"),
+            FileInformationClassLevel::FILE_FULL_DIRECTORY_INFORMATION => write!(f, "FileFullDirectoryInformation"),
+            FileInformationClassLevel::FILE_BOTH_DIRECTORY_INFORMATION => write!(f, "FileBothDirectoryInformation"),
+            FileInformationClassLevel::FILE_NAMES_INFORMATION => write!(f, "FileNamesInformation"),
+            _ => write!(f, "FileInformationClassLevel({})", self.0),
         }
     }
 }
