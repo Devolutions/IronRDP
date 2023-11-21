@@ -76,7 +76,7 @@ impl PduParsing for ShareControlHeader {
         let share_id = stream.read_u32::<LittleEndian>()?;
 
         let pdu_type = ShareControlPduType::from_u16(pdu_type_with_version & SHARE_CONTROL_HEADER_MASK)
-            .ok_or_else(|| RdpError::InvalidShareControlHeader(String::from("Invalid pdu type")))?;
+            .ok_or_else(|| RdpError::InvalidShareControlHeader(format!("invalid pdu type: {pdu_type_with_version}")))?;
         let pdu_version = pdu_type_with_version & !SHARE_CONTROL_HEADER_MASK;
         if pdu_version != PROTOCOL_VERSION {
             return Err(RdpError::InvalidShareControlHeader(format!(
