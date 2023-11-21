@@ -99,18 +99,13 @@ impl Processor {
         if channel_id == self.io_channel_id {
             self.process_io_channel(data_ctx)?;
             Ok(Vec::new())
+        } else if self.drdynvc_channel_id == Some(channel_id) {
+            self.process_dyvc(data_ctx)
+        } else if let Some(svc) = self.static_channels.get_by_channel_id_mut(channel_id) {
+            let response_pdus = svc.process(data_ctx.user_data).map_err(crate::SessionError::pdu)?;
+            process_svc_messages(response_pdus, channel_id, data_ctx.initiator_id)
         } else {
-            match self.drdynvc_channel_id {
-                Some(drdynvc_id) if channel_id == drdynvc_id => self.process_dyvc(data_ctx),
-                _ => {
-                    if let Some(svc) = self.static_channels.get_by_channel_id_mut(channel_id) {
-                        let response_pdus = svc.process(data_ctx.user_data).map_err(crate::SessionError::pdu)?;
-                        process_svc_messages(response_pdus, channel_id, data_ctx.initiator_id)
-                    } else {
-                        Err(reason_err!("X224", "unexpected channel received: ID {channel_id}"))
-                    }
-                }
-            }
+            Err(reason_err!("X224", "unexpected channel received: ID {channel_id}"))
         }
     }
 
