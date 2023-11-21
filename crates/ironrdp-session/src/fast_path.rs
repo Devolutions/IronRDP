@@ -25,7 +25,7 @@ pub enum UpdateKind {
     PointerDefault,
     PointerHidden,
     PointerPosition { x: u16, y: u16 },
-    NativePointerUpdate(Rc<DecodedPointer>),
+    PointerBitmap(Rc<DecodedPointer>),
 }
 
 pub struct Processor {
@@ -227,7 +227,7 @@ impl Processor {
                             .insert(usize::from(cache_index), Rc::clone(&decoded_pointer));
 
                         if !self.pointer_software_rendering {
-                            processor_updates.push(UpdateKind::NativePointerUpdate(Rc::clone(&decoded_pointer)));
+                            processor_updates.push(UpdateKind::PointerBitmap(Rc::clone(&decoded_pointer)));
                         } else if let Some(rect) = image.update_pointer(decoded_pointer)? {
                             processor_updates.push(UpdateKind::Region(rect));
                         }
@@ -241,7 +241,7 @@ impl Processor {
                             self.use_system_pointer = false;
                             // Send graphics update
                             if !self.pointer_software_rendering {
-                                processor_updates.push(UpdateKind::NativePointerUpdate(Rc::clone(&cached_pointer)));
+                                processor_updates.push(UpdateKind::PointerBitmap(Rc::clone(&cached_pointer)));
                             } else if let Some(rect) = image.update_pointer(cached_pointer)? {
                                 processor_updates.push(UpdateKind::Region(rect));
                             } else {
@@ -267,7 +267,7 @@ impl Processor {
                             .insert(usize::from(cache_index), Rc::clone(&decoded_pointer));
 
                         if !self.pointer_software_rendering {
-                            processor_updates.push(UpdateKind::NativePointerUpdate(Rc::clone(&decoded_pointer)));
+                            processor_updates.push(UpdateKind::PointerBitmap(Rc::clone(&decoded_pointer)));
                         } else if let Some(rect) = image.update_pointer(decoded_pointer)? {
                             processor_updates.push(UpdateKind::Region(rect));
                         }
@@ -285,7 +285,7 @@ impl Processor {
                             .insert(usize::from(cache_index), Rc::clone(&decoded_pointer));
 
                         if !self.pointer_software_rendering {
-                            processor_updates.push(UpdateKind::NativePointerUpdate(Rc::clone(&decoded_pointer)));
+                            processor_updates.push(UpdateKind::PointerBitmap(Rc::clone(&decoded_pointer)));
                         } else if let Some(rect) = image.update_pointer(decoded_pointer)? {
                             processor_updates.push(UpdateKind::Region(rect));
                         }
@@ -366,7 +366,11 @@ impl Processor {
 pub struct ProcessorBuilder {
     pub io_channel_id: u16,
     pub user_channel_id: u16,
+    /// Ignore server pointer updates.
     pub no_server_pointer: bool,
+    /// Use software rendering mode for pointer bitmap generation. When this option is active,
+    /// `UpdateKind::PointerBitmap` will not be generated. Remote pointer will be drawn
+    /// via software rendering on top of the output image.
     pub pointer_software_rendering: bool,
 }
 

@@ -135,8 +135,8 @@ impl ActiveStage {
                 UpdateKind::PointerPosition { x, y } => {
                     stage_outputs.push(ActiveStageOutput::PointerPosition { x, y });
                 }
-                UpdateKind::NativePointerUpdate(pointer) => {
-                    stage_outputs.push(ActiveStageOutput::NativePointerUpdate(pointer));
+                UpdateKind::PointerBitmap(pointer) => {
+                    stage_outputs.push(ActiveStageOutput::PointerBitmap(pointer));
                 }
             }
         }
@@ -183,6 +183,6 @@ pub enum ActiveStageOutput {
     PointerDefault,
     PointerHidden,
     PointerPosition { x: u16, y: u16 },
-    NativePointerUpdate(Rc<DecodedPointer>),
+    PointerBitmap(Rc<DecodedPointer>),
     Terminate,
 }

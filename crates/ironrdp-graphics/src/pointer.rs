@@ -50,33 +50,30 @@ pub struct DecodedPointer {
 /// Pointer bitmap rendering target. Defines properties and format of the decoded bitmap.
 #[derive(Clone, Copy, Debug)]
 pub enum PointerBitmapTarget {
-    /// Software rendering target will produce RGBA bitmaps with premultiplied alpha
-    /// and inverted pixels represented as `[0xFF, 0xFF, 0xFF, 0x00]` color.
+    /// Software rendering target will produce RGBA bitmaps with premultiplied alpha.
+    ///
+    /// Colors with alpha channel set to 0x00 are always invisible no matter their color
+    /// component. We could take advantage of that, and use a special color to represent
+    /// inverted pixels. [0xFF, 0xFF, 0xFF, 0x00] is used for such purpose in software
+    /// rendering mode.
     Software,
     /// Accelerated rendering target will produce RGBA bitmaps with non-premultiplied alpha.
-    /// Inverted pixels will be rendered checkboard pattern.
+    /// Inverted pixels will be rendered following the check pattern.
     Accelerated,
 }
 
 impl PointerBitmapTarget {
-    fn premultiply_alpha(self) -> bool {
+    fn should_premultiply_alpha(self) -> bool {
         match self {
             Self::Software => true,
             Self::Accelerated => false,
         }
     }
 
-    fn inverted_pixels_as_checkboard(self) -> bool {
+    fn should_invert_pixels_using_check_pattern(self) -> bool {
         match self {
             Self::Software => false,
             Self::Accelerated => true,
-        }
-    }
-
-    fn inverted_pixels_color(self) -> [u8; 4] {
-        match self {
-            Self::Software => [0xFF, 0xFF, 0xFF, 0x00],
-            Self::Accelerated => [0x00, 0x00, 0x00, 0x00],
         }
     }
 }
@@ -197,6 +194,19 @@ impl DecodedPointer {
             let mut color_reader = ColorStrideReader::new(data.xor_bpp, xor_stride);
             let mut bitmask_reader = BitmaskStrideReader::new(and_stride);
 
+            let compute_inverted_pixel = if target.should_invert_pixels_using_check_pattern() {
+                |row_idx: u16, col_idx: u16| -> [u8; 4] {
+                    // Checkered pattern is used to represent inverted pixels.
+                    if (row_idx + col_idx) % 2 == 0 {
+                        [0xff, 0xff, 0xff, 0xff]
+                    } else {
+                        [0x00, 0x00, 0x00, 0xff]
+                    }
+                }
+            } else {
+                |_, _| [0xFF, 0xFF, 0xFF, 0x00]
+            };
+
             for col_idx in 0..data.width {
                 let and_bit = bitmask_reader.next_bit(&mut and_stride_cursor);
                 let color = color_reader.next_pixel(&mut xor_stride_cursor);
@@ -207,18 +217,8 @@ impl DecodedPointer {
                     bitmap_data.extend_from_slice(&[0, 0, 0, 0]);
                 } else if and_bit == 1 && color == [0xff, 0xff, 0xff, 0xff] {
                     // Inverted pixel.
-
-                    if target.inverted_pixels_as_checkboard() {
-                        // Checkboard pattern is used to represent inverted pixels.
-                        if (row_idx + col_idx) % 2 == 0 {
-                            bitmap_data.extend_from_slice(&[0xff, 0xff, 0xff, 0xff]);
-                        } else {
-                            bitmap_data.extend_from_slice(&[0x00, 0x00, 0x00, 0xff]);
-                        }
-                    } else {
-                        bitmap_data.extend_from_slice(&target.inverted_pixels_color());
-                    }
-                } else if target.premultiply_alpha() {
+                    bitmap_data.extend_from_slice(&compute_inverted_pixel(row_idx, col_idx));
+                } else if target.should_premultiply_alpha() {
                     // Calculate premultiplied alpha via integer arithmetic
                     let with_premultiplied_alpha = [
                         ((color[0] as u16 * color[0] as u16) >> 8) as u8,

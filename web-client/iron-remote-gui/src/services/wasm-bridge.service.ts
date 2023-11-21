@@ -280,27 +280,42 @@ export class WasmBridgeService {
         }
     }
 
-    private setCursorStyleCallback(style: string, hotspot_x: number, hotspot_y: number) {
-        if (style === 'none' || style === 'hidden') {
-            this.canvas!.style.cursor = style;
-            return;
-        }
-
-        if (style.startsWith('data')) {
-            if (hotspot_x == undefined || hotspot_y == undefined) {
-                console.error('Hot spot is not defined for a custom cursor.');
-                return;
+    private setCursorStyleCallback(
+        style: string,
+        data: string | undefined,
+        hotspot_x: number | undefined,
+        hotspot_y: number | undefined,
+    ) {
+        switch (style) {
+            case 'hidden': {
+                this.canvas!.style.cursor = 'none';
+                break;
             }
+            case 'default': {
+                this.canvas!.style.cursor = 'default';
+                break;
+            }
+            case 'url': {
+                if (data == undefined || hotspot_x == undefined || hotspot_y == undefined) {
+                    console.error('Invalid custom cursor parameters.');
+                    return;
+                }
 
-            // IMPORTANT: We need to make proxy `Image` object to actually load the image and make
-            // it usable for CSS property. Without this proxy object, URL will be rejected.
-            const image = new Image();
-            image.src = style;
+                // IMPORTANT: We need to make proxy `Image` object to actually load the image and
+                // make it usable for CSS property. Without this proxy object, URL will be rejected.
+                const image = new Image();
+                image.src = style;
 
-            const style_x = Math.round(hotspot_x);
-            const style_y = Math.round(hotspot_y);
+                const rounded_hotspot_x = Math.round(hotspot_x);
+                const rounded_hotspot_y = Math.round(hotspot_y);
 
-            this.canvas!.style.cursor = `url(${style}) ${style_x} ${style_y}, default`;
+                this.canvas!.style.cursor = `url(${data}) ${rounded_hotspot_x} ${rounded_hotspot_y}, default`;
+
+                break;
+            }
+            default: {
+                console.error(`Unsupported cursor style: ${style}.`);
+            }
         }
     }
 

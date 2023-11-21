@@ -7,13 +7,12 @@
     import { showLogin } from '$lib/login/login-store';
     import type { DesktopSize } from '../../models/desktop-size';
 
-    let username = 'Administrator';
-    let password = 'DevoLabs123!';
-    let gatewayAddress = 'ws://localhost:7171/jet/rdp';
-    let hostname = '10.10.0.3:3389';
-    let domain = '';
-    let authtoken =
-        'eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCIsImN0eSI6IkFTU09DSUFUSU9OIn0.eyJkc3RfaHN0IjoiMTkyLjE2OC41Ni4xMDE6MzM4OSIsImV4cCI6MTY5MzQyMzY1NSwiamV0X2FpZCI6IjMwNzZjZGIwLWYxNTctNDJlNy1iOWMzLThhMTdlNDFkYjYwNyIsImpldF9hcCI6InJkcCIsImpldF9jbSI6ImZ3ZCIsImp0aSI6IjAwYjY4OTY2LWJiYjAtNDU0NS05ZDZiLWRjNmFmMjAzNjY5MiIsIm5iZiI6MTY5MzQyMjc1NX0.SYQv4HtWQbdHMHgoCLYejCfO3TtsMAyjjILB6-Nir3mBznKiSad3POeLf02n05JFc5QhCeSGxspAaoNU7-znQFhHr0Tt0MnZJ1YMQt4UoR3PR2fTuUqv8M5TKdm4lKwCIjh73tTD001glTkXHaxuCQBTFCUSzfZhXDIqq5-CQueKtCrgJfYepJLmlvgH-ujGcxfXoGJGmeUy3Fmaijiy0uaC98j9GNCfnAd6JENmSAOkxfroMFhq601PSEizRbPzq2exDakfJ0EkaANz15udBX1a7NP-RyANHWQb8hp0rj6hyuyg1-vfUKYusw5qNUjAGXaWOjHC5bLgnqfE2V8Xnw';
+    let username = "vmbox";
+    let password = "vmbox";
+    let gatewayAddress = "ws://localhost:7171/jet/rdp";
+    let hostname = "192.168.1.54:3389";
+    let domain = "";
+    let authtoken = "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCIsImN0eSI6IkFTU09DSUFUSU9OIn0.eyJkc3RfaHN0IjoiMTkyLjE2OC4xLjU0OjMzODkiLCJleHAiOjE3Mjg3MDAwNTUsImpldF9haWQiOiI4N2FlOTUyNS03NzFiLTRjNWItOTI5ZC0zMjU4YjY5MTc1NDMiLCJqZXRfYXAiOiJ1bmtub3duIiwiamV0X2NtIjoiZndkIiwianRpIjoiNDExNGU0NmEtZTM2ZS00MDNmLTliYWMtMDFiZmY4MDdmMzBiIiwibmJmIjoxNjk3MTQyNDU1fQ.dO_wppJF_zCz7aAGl9j0fBLiPuJQdcxxoSYD6ELRBY1OTzyXJNgjeJkoKqlX-SrNy2D-cfao8xyvg6a-Nr3Uct9a7HFhNO0C2msrLPuHaFakczG63siLa0qbh_H-PI2jBVMReGwkQghuFQBugYzLIL_liC98pZP5hBVlEbigbZs";
     let kdc_proxy_url = '';
     let desktopSize: DesktopSize = {
         width: 1280,

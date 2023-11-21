@@ -162,15 +162,19 @@ impl SessionBuilder {
     ///
     /// #### Callback signature:
     /// ```typescript
-    /// function callback(cursor_kind: string, hotspot_x: number, hotspot_y: number): void
+    /// function callback(
+    ///     cursor_kind: string,
+    ///     cursor_data: string | undefined,
+    ///     hotspot_x: number | undefined,
+    ///     hotspot_y: number | undefined
+    /// ): void
     /// ```
     ///
     /// #### Cursor kinds:
-    /// - `default` (default system cursor); second and third arguments are `UNDEFINED`
-    /// - `none` (hide cursor); second and third arguments are `UNDEFINED`
-    /// - `data:image/png;base64,...` (custom cursor uncoded as base64 PNG). The cursor kind string
-    ///   value could be used as data URI for decoding image on JS side.
-    ///   Second and third arguments are the cursor hotspot coordinates.
+    /// - `default` (default system cursor); other arguments are `UNDEFINED`
+    /// - `none` (hide cursor); other arguments are `UNDEFINED`
+    /// - `url` (custom cursor data URL); `cursor_data` contains the data URL with Base64-encoded
+    ///   cursor bitmap; `hotspot_x` and `hotspot_y` are set to the cursor hotspot coordinates.
     pub fn set_cursor_style_callback(&self, callback: js_sys::Function) -> SessionBuilder {
         self.0.borrow_mut().set_cursor_style_callback = Some(callback);
         self.clone()
@@ -340,6 +344,16 @@ pub(crate) enum RdpInputEvent {
     FastPath(FastPathInputEvents),
 }
 
+enum CursorStyle {
+    Default,
+    Hidden,
+    Url {
+        data: String,
+        hotspot_x: u16,
+        hotspot_y: u16,
+    },
+}
+
 #[wasm_bindgen]
 pub struct Session {
     desktop_size: connector::DesktopSize,
@@ -476,37 +490,21 @@ impl Session {
                         gui.draw(&buffer, region).context("draw updated region")?;
                     }
                     ActiveStageOutput::PointerDefault => {
-                        let _ret = self
-                            .set_cursor_style_callback
-                            .call3(
-                                &self.set_cursor_style_callback_context,
-                                &JsValue::from_str("default"),
-                                &JsValue::UNDEFINED,
-                                &JsValue::UNDEFINED,
-                            )
-                            .map_err(|e| anyhow::Error::msg(format!("set cursor style callback failed: {e:?}")))?;
+                        self.set_cursor_style(CursorStyle::Default)?;
                     }
                     ActiveStageOutput::PointerHidden => {
-                        let _ret = self
-                            .set_cursor_style_callback
-                            .call3(
-                                &self.set_cursor_style_callback_context,
-                                &JsValue::from_str("none"),
-                                &JsValue::UNDEFINED,
-                                &JsValue::UNDEFINED,
-                            )
-                            .map_err(|e| anyhow::Error::msg(format!("set cursor style callback failed: {e:?}")))?;
+                        self.set_cursor_style(CursorStyle::Hidden)?;
                     }
                     ActiveStageOutput::PointerPosition { .. } => {
                         // Not applicable for web.
                     }
-                    ActiveStageOutput::NativePointerUpdate(pointer) => {
+                    ActiveStageOutput::PointerBitmap(pointer) => {
                         // Maximum allowed cursor size for browsers is 32x32, because bigger sizes
                         // will cause the following issues:
-                        // - 128x128 and bigger cursors are not supported in browsers.
-                        // - 32x32 and bigger cursors will default to the system cursor if their
-                        //   sprite does not fit in the browser's viewport, introducing anabrupt
-                        //   cursor style changes when the cursor is moved to the edge of the
+                        // - cursors bigger than 128x128 are not supported in browsers.
+                        // - cursors bigger than 32x32 will default to the system cursor if their
+                        //   sprite does not fit in the browser's viewport, introducing an abrupt
+                        //   cursor style change when the cursor is moved to the edge of the
                         //   browser window.
                         //
                         // Therefore, we need to scale the cursor sprite down to 32x32 if it is
@@ -523,12 +521,12 @@ impl Session {
                             None
                         };
 
-                        let (png_width, png_height, hot_spot_x, hot_spot_y, rgba_buffer) = if let Some(scale) = scale {
+                        let (png_width, png_height, hotspot_x, hotspot_y, rgba_buffer) = if let Some(scale) = scale {
                             // Per invariants: Following conversions will never saturate.
-                            let scaled_width = cast_f64_to_u16_unchecked(f64::from(pointer.width) * scale);
-                            let scaled_height = cast_f64_to_u16_unchecked(f64::from(pointer.height) * scale);
-                            let hotspot_x = cast_f64_to_u16_unchecked(f64::from(pointer.hotspot_x) * scale);
-                            let hotspot_y = cast_f64_to_u16_unchecked(f64::from(pointer.hotspot_y) * scale);
+                            let scaled_width = f64_to_u16_saturating_cast(f64::from(pointer.width) * scale);
+                            let scaled_height = f64_to_u16_saturating_cast(f64::from(pointer.height) * scale);
+                            let hotspot_x = f64_to_u16_saturating_cast(f64::from(pointer.hotspot_x) * scale);
+                            let hotspot_y = f64_to_u16_saturating_cast(f64::from(pointer.hotspot_y) * scale);
 
                             // Per invariants: scaled_width * scaled_height * 4 <= 32 * 32 * 4 < usize::MAX
                             #[allow(clippy::arithmetic_side_effects)]
@@ -574,6 +572,7 @@ impl Session {
 
                             encoder.set_color(png::ColorType::Rgba);
                             encoder.set_depth(png::BitDepth::Eight);
+                            encoder.set_compression(png::Compression::Fast);
                             let mut writer = encoder.write_header().context("PNG encoder header write failed")?;
                             writer
                                 .write_image_data(rgba_buffer.as_ref())
@@ -584,15 +583,11 @@ impl Session {
                         let mut style = "data:image/png;base64,".to_owned();
                         base64::engine::general_purpose::STANDARD.encode_string(png_buffer, &mut style);
 
-                        let _ret = self
-                            .set_cursor_style_callback
-                            .call3(
-                                &self.set_cursor_style_callback_context,
-                                &JsValue::from_str(&style),
-                                &JsValue::from_f64(u32::try_from(hot_spot_x).unwrap().into()),
-                                &JsValue::from_f64(u32::try_from(hot_spot_y).unwrap().into()),
-                            )
-                            .map_err(|e| anyhow::Error::msg(format!("set pointer style callback failed: {e:?}")))?;
+                        self.set_cursor_style(CursorStyle::Url {
+                            data: style,
+                            hotspot_x,
+                            hotspot_y,
+                        })?;
                     }
                     ActiveStageOutput::Terminate => break 'outer,
                 }
@@ -668,6 +663,32 @@ impl Session {
                 WasmClipboardBackendMessage::LocalClipboardChanged(content),
             ))
             .context("Send clipboard backend event")?;
+
+        Ok(())
+    }
+
+    fn set_cursor_style(&self, style: CursorStyle) -> Result<(), IronRdpError> {
+        let (kind, data, hotspot_x, hotspot_y) = match style {
+            CursorStyle::Default => ("default", None, None, None),
+            CursorStyle::Hidden => ("hidden", None, None, None),
+            CursorStyle::Url {
+                data,
+                hotspot_x,
+                hotspot_y,
+            } => ("url", Some(data), Some(hotspot_x), Some(hotspot_y)),
+        };
+
+        let args = js_sys::Array::from_iter([
+            JsValue::from_str(kind),
+            JsValue::from(data),
+            JsValue::from_f64(hotspot_x.unwrap_or_default().into()),
+            JsValue::from_f64(hotspot_y.unwrap_or_default().into()),
+        ]);
+
+        let _ret = self
+            .set_cursor_style_callback
+            .apply(&self.set_cursor_style_callback_context, &args)
+            .map_err(|e| anyhow::Error::msg(format!("set cursor style callback failed: {e:?}")))?;
 
         Ok(())
     }
@@ -916,6 +937,6 @@ where
 
 #[allow(clippy::cast_sign_loss)]
 #[allow(clippy::cast_possible_truncation)]
-fn cast_f64_to_u16_unchecked(value: f64) -> u16 {
+fn f64_to_u16_saturating_cast(value: f64) -> u16 {
     value as u16
 }

@@ -278,7 +278,7 @@ async fn active_session(
                         .send_event(RdpOutputEvent::PointerPosition { x, y })
                         .map_err(|e| session::custom_err!("event_loop_proxy", e))?;
                 }
-                ActiveStageOutput::NativePointerUpdate(_) => {
+                ActiveStageOutput::PointerBitmap(_) => {
                     // Not applicable, because we use the software cursor rendering.
                 }
                 ActiveStageOutput::Terminate => break 'outer,
