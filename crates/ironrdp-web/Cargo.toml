@@ -40,7 +40,7 @@ tracing-web = "0.1"
 
 # Rendering
 softbuffer = { version = "0.3", default-features = false }
-png.workspace = true
+png = "0.17"
 resize = { version = "0.8", features = ["std"], default-features = false }
 rgb = "0.8"
 
