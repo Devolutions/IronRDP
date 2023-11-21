@@ -28,6 +28,8 @@ pub struct AcceptorResult {
     pub channels: Vec<(u16, gcc::ChannelDef)>,
     pub capabilities: Vec<CapabilitySet>,
     pub input_events: Vec<Vec<u8>>,
+    pub user_channel_id: u16,
+    pub io_channel_id: u16,
 }
 
 impl Acceptor {
@@ -59,6 +61,8 @@ impl Acceptor {
                 channels,
                 capabilities: client_capabilities,
                 input_events,
+                user_channel_id: self.user_channel_id,
+                io_channel_id: self.io_channel_id,
             }),
             previous_state => {
                 self.state = previous_state;
