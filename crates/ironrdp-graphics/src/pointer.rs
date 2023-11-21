@@ -1,12 +1,12 @@
 //! This module implements logic to decode pointer PDUs into RGBA bitmaps ready for rendering.
 //!
-//! #### References:
+//! # References:
 //! - Drawing pointers: https://learn.microsoft.com/en-us/windows-hardware/drivers/display/pointer-drawing
 //! - Drawing color pointers: https://learn.microsoft.com/en-us/windows-hardware/drivers/display/drawing-color-pointers
 //! -Drawing monochrome pointers https://learn.microsoft.com/en-us/windows-hardware/drivers/display/drawing-monochrome-pointers
 //!
 //!
-//! #### Notes on xor/and masks encoding:
+//! # Notes on xor/and masks encoding:
 //! RDP's pointer representation is a bit weird. It uses two masks to represent a pointer -
 //! andMask and xorMask. Xor mask is used as a base color for a pointer pixel, and andMask
 //! mask is used co control pixel's full transparency (`src_color.a = 0`), full opacity

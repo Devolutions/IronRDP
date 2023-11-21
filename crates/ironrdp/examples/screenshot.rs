@@ -8,7 +8,7 @@
 //! with the destination server, decodes incoming graphics updates, and saves the
 //! resulting output as a BMP image file on the disk.
 //!
-//! ## Usage example
+//! # Usage example
 //!
 //! ```shell
 //! cargo run --example=screenshot -- --host <HOSTNAME> -u <USERNAME> -p <PASSWORD> -o out.bmp

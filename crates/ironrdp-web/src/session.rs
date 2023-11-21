@@ -160,7 +160,7 @@ impl SessionBuilder {
 
     /// Required.
     ///
-    /// #### Callback signature:
+    /// # Callback signature:
     /// ```typescript
     /// function callback(
     ///     cursor_kind: string,
@@ -170,7 +170,7 @@ impl SessionBuilder {
     /// ): void
     /// ```
     ///
-    /// #### Cursor kinds:
+    /// # Cursor kinds:
     /// - `default` (default system cursor); other arguments are `UNDEFINED`
     /// - `none` (hide cursor); other arguments are `UNDEFINED`
     /// - `url` (custom cursor data URL); `cursor_data` contains the data URL with Base64-encoded
