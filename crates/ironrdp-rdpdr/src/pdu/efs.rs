@@ -2416,8 +2416,10 @@ pub struct ServerDriveQueryVolumeInformationRequest {
 
 impl ServerDriveQueryVolumeInformationRequest {
     const NAME: &str = "DR_DRIVE_QUERY_VOLUME_INFORMATION_REQ";
+    const FIXED_PART_SIZE: usize = 4 /* FsInformationClass */ + 4 /* Length */ + 24 /* Padding */;
+
     pub fn decode(dev_io_req: DeviceIoRequest, src: &mut ReadCursor<'_>) -> PduResult<Self> {
-        ensure_size!(in: src, size: size_of::<u32>());
+        ensure_size!(in: src, size: Self::FIXED_PART_SIZE);
         let fs_info_class_lvl = FileSystemInformationClassLevel::from(src.read_u32());
 
         // This field MUST contain one of the following values.
@@ -2440,12 +2442,10 @@ impl ServerDriveQueryVolumeInformationRequest {
         // We only need to read the buffer up to the FileInformationClass to get the job done, so the rest of the fields in
         // this structure are discarded. See FreeRDP:
         // https://github.com/FreeRDP/FreeRDP/blob/511444a65e7aa2f537c5e531fa68157a50c1bd4d/channels/drive/client/drive_main.c#L464
-        ensure_size!(in: src, size: size_of::<u32>());
         let length = cast_length!("ServerDriveQueryVolumeInformationRequest", "length", src.read_u32())?; // Length
-        ensure_size!(in: src, size: 24);
-        let _ = src.read_slice(24); // Padding
+        read_padding!(src, 24); // Padding
         ensure_size!(in: src, size: length);
-        let _ = src.read_slice(length); // QueryVolumeBuffer
+        read_padding!(src, length); // QueryVolumeBuffer
 
         Ok(Self {
             device_io_request: dev_io_req,
