@@ -17,6 +17,7 @@ test = false
 
 [dependencies]
 ironrdp-pdu.workspace = true
+ironrdp-svc.workspace = true
 ironrdp-connector.workspace = true
 ironrdp-async.workspace = true
 tracing.workspace = true

@@ -1647,6 +1647,7 @@ dependencies = [
  "ironrdp-async",
  "ironrdp-connector",
  "ironrdp-pdu",
+ "ironrdp-svc",
  "tracing",
 ]
 
