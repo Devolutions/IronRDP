@@ -1,7 +1,10 @@
+use std::mem;
+
 use ironrdp_connector::{
     legacy, reason_err, ConnectorError, ConnectorErrorExt, ConnectorResult, DesktopSize, Sequence, State, Written,
 };
 use ironrdp_pdu as pdu;
+use ironrdp_svc::{StaticChannelSet, StaticVirtualChannelProcessor};
 use pdu::rdp::capability_sets::CapabilitySet;
 use pdu::rdp::headers::ShareControlPdu;
 use pdu::write_buf::WriteBuf;
@@ -21,11 +24,12 @@ pub struct Acceptor {
     user_channel_id: u16,
     desktop_size: DesktopSize,
     server_capabilities: Vec<CapabilitySet>,
+    static_channels: StaticChannelSet,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct AcceptorResult {
-    pub channels: Vec<(u16, gcc::ChannelDef)>,
+    pub static_channels: StaticChannelSet,
     pub capabilities: Vec<CapabilitySet>,
     pub input_events: Vec<Vec<u8>>,
     pub user_channel_id: u16,
@@ -41,7 +45,15 @@ impl Acceptor {
             io_channel_id: IO_CHANNEL_ID,
             desktop_size,
             server_capabilities: capabilities,
+            static_channels: StaticChannelSet::new(),
         }
+    }
+
+    pub fn attach_static_channel<T>(&mut self, channel: T)
+    where
+        T: StaticVirtualChannelProcessor + 'static,
+    {
+        self.static_channels.insert(channel);
     }
 
     pub fn reached_security_upgrade(&self) -> Option<nego::SecurityProtocol> {
@@ -54,11 +66,11 @@ impl Acceptor {
     pub fn get_result(&mut self) -> Option<AcceptorResult> {
         match std::mem::take(&mut self.state) {
             AcceptorState::Accepted {
-                channels,
+                channels: _channels, // TODO: what about ChannelDef?
                 client_capabilities,
                 input_events,
             } => Some(AcceptorResult {
-                channels,
+                static_channels: mem::take(&mut self.static_channels),
                 capabilities: client_capabilities,
                 input_events,
                 user_channel_id: self.user_channel_id,
@@ -90,7 +102,7 @@ pub enum AcceptorState {
     BasicSettingsSendResponse {
         requested_protocol: nego::SecurityProtocol,
         early_capability: Option<gcc::ClientEarlyCapabilityFlags>,
-        channels: Vec<(u16, gcc::ChannelDef)>,
+        channels: Vec<(u16, Option<gcc::ChannelDef>)>,
     },
     ChannelConnection {
         early_capability: Option<gcc::ClientEarlyCapabilityFlags>,
@@ -235,8 +247,7 @@ impl Sequence for Acceptor {
                     .optional_data
                     .early_capability_flags;
 
-                #[allow(clippy::arithmetic_side_effects)] // IO channel ID is not big enough for overflowing
-                let channels = settings_initial
+                let joined: Vec<_> = settings_initial
                     .conference_create_request
                     .gcc_blocks
                     .network
@@ -244,11 +255,29 @@ impl Sequence for Acceptor {
                         network
                             .channels
                             .into_iter()
-                            .enumerate()
-                            .map(|(i, c)| (u16::try_from(i).unwrap() + self.io_channel_id + 1, c))
+                            .map(|c| {
+                                self.static_channels
+                                    .get_by_channel_name(&c.name)
+                                    .map(|(type_id, _)| (type_id, c))
+                            })
                             .collect()
                     })
                     .unwrap_or_default();
+
+                #[allow(clippy::arithmetic_side_effects)] // IO channel ID is not big enough for overflowing
+                let channels = joined
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, channel)| {
+                        let channel_id = u16::try_from(i).unwrap() + self.io_channel_id + 1;
+                        if let Some((type_id, c)) = channel {
+                            self.static_channels.attach_channel_id(type_id, channel_id);
+                            (channel_id, Some(c))
+                        } else {
+                            (channel_id, None)
+                        }
+                    })
+                    .collect();
 
                 (
                     Written::Nothing,
@@ -279,6 +308,7 @@ impl Sequence for Acceptor {
                 debug!(message = ?settings_response, "Send");
 
                 let written = legacy::encode_x224_packet(&settings_response, output)?;
+                let channels = channels.into_iter().filter_map(|(i, c)| c.map(|c| (i, c))).collect();
 
                 (
                     Written::from_size(written)?,
