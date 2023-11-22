@@ -1357,6 +1357,7 @@ pub enum ServerDriveIoRequest {
     ServerDriveQueryInformationRequest(ServerDriveQueryInformationRequest),
     DeviceCloseRequest(DeviceCloseRequest),
     ServerDriveQueryDirectoryRequest(ServerDriveQueryDirectoryRequest),
+    ServerDriveQueryVolumeInformationRequest(ServerDriveQueryVolumeInformationRequest),
 }
 
 impl ServerDriveIoRequest {
@@ -1367,7 +1368,9 @@ impl ServerDriveIoRequest {
             MajorFunction::Read => todo!(),
             MajorFunction::Write => todo!(),
             MajorFunction::DeviceControl => todo!(),
-            MajorFunction::QueryVolumeInformation => todo!(),
+            MajorFunction::QueryVolumeInformation => {
+                Ok(ServerDriveQueryVolumeInformationRequest::decode(dev_io_req, src)?.into())
+            }
             MajorFunction::SetVolumeInformation => todo!(),
             MajorFunction::QueryInformation => Ok(ServerDriveQueryInformationRequest::decode(dev_io_req, src)?.into()),
             MajorFunction::SetInformation => todo!(),
@@ -1406,6 +1409,12 @@ impl From<DeviceCloseRequest> for ServerDriveIoRequest {
 impl From<ServerDriveQueryDirectoryRequest> for ServerDriveIoRequest {
     fn from(req: ServerDriveQueryDirectoryRequest) -> Self {
         Self::ServerDriveQueryDirectoryRequest(req)
+    }
+}
+
+impl From<ServerDriveQueryVolumeInformationRequest> for ServerDriveIoRequest {
+    fn from(req: ServerDriveQueryVolumeInformationRequest) -> Self {
+        Self::ServerDriveQueryVolumeInformationRequest(req)
     }
 }
 
@@ -2388,6 +2397,436 @@ impl ClientDriveQueryDirectoryResponse {
             buffer.size() // Buffer
         } else {
             1 // Padding: https://github.com/FreeRDP/FreeRDP/blob/511444a65e7aa2f537c5e531fa68157a50c1bd4d/channels/drive/client/drive_file.c#L937
+        }
+    }
+}
+
+/// [2.2.3.3.6] Server Drive Query Volume Information Request
+///
+/// We only need to read the buffer up to the FileInformationClass to get the job done, so the rest of the fields in
+/// this structure are discarded. See FreeRDP:
+/// https://github.com/FreeRDP/FreeRDP/blob/511444a65e7aa2f537c5e531fa68157a50c1bd4d/channels/drive/client/drive_main.c#L464
+///
+/// [2.2.3.3.6]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/484e622d-0e2b-423c-8461-7de38878effb
+#[derive(Debug)]
+pub struct ServerDriveQueryVolumeInformationRequest {
+    pub device_io_request: DeviceIoRequest,
+    pub fs_info_class_lvl: FileSystemInformationClassLevel,
+}
+
+impl ServerDriveQueryVolumeInformationRequest {
+    const NAME: &str = "DR_DRIVE_QUERY_VOLUME_INFORMATION_REQ";
+    const FIXED_PART_SIZE: usize = 4 /* FsInformationClass */ + 4 /* Length */ + 24 /* Padding */;
+
+    pub fn decode(dev_io_req: DeviceIoRequest, src: &mut ReadCursor<'_>) -> PduResult<Self> {
+        ensure_size!(in: src, size: Self::FIXED_PART_SIZE);
+        let fs_info_class_lvl = FileSystemInformationClassLevel::from(src.read_u32());
+
+        // This field MUST contain one of the following values.
+        static VALID_LEVELS: [FileSystemInformationClassLevel; 5] = [
+            FileSystemInformationClassLevel::FILE_FS_VOLUME_INFORMATION,
+            FileSystemInformationClassLevel::FILE_FS_SIZE_INFORMATION,
+            FileSystemInformationClassLevel::FILE_FS_ATTRIBUTE_INFORMATION,
+            FileSystemInformationClassLevel::FILE_FS_FULL_SIZE_INFORMATION,
+            FileSystemInformationClassLevel::FILE_FS_DEVICE_INFORMATION,
+        ];
+
+        if !VALID_LEVELS.contains(&fs_info_class_lvl) {
+            return Err(invalid_message_err!(
+                "ServerDriveQueryVolumeInformationRequest::decode",
+                "fs_info_class_lvl",
+                "received invalid level"
+            ));
+        }
+
+        // We only need to read the buffer up to the FileInformationClass to get the job done, so the rest of the fields in
+        // this structure are discarded. See FreeRDP:
+        // https://github.com/FreeRDP/FreeRDP/blob/511444a65e7aa2f537c5e531fa68157a50c1bd4d/channels/drive/client/drive_main.c#L464
+        let length = cast_length!("ServerDriveQueryVolumeInformationRequest", "length", src.read_u32())?; // Length
+        read_padding!(src, 24); // Padding
+        ensure_size!(in: src, size: length);
+        read_padding!(src, length); // QueryVolumeBuffer
+
+        Ok(Self {
+            device_io_request: dev_io_req,
+            fs_info_class_lvl,
+        })
+    }
+}
+
+/// [2.5] File System Information Classes [MS-FSCC]
+///
+/// [2.5] https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-fscc/ee12042a-9352-46e3-9f67-c094b75fe6c3
+#[derive(Debug, PartialEq, Eq)]
+pub struct FileSystemInformationClassLevel(u32);
+
+impl FileSystemInformationClassLevel {
+    /// FileFsVolumeInformation
+    pub const FILE_FS_VOLUME_INFORMATION: Self = Self(1);
+    /// FileFsLabelInformation
+    pub const FILE_FS_LABEL_INFORMATION: Self = Self(2);
+    /// FileFsSizeInformation
+    pub const FILE_FS_SIZE_INFORMATION: Self = Self(3);
+    /// FileFsDeviceInformation
+    pub const FILE_FS_DEVICE_INFORMATION: Self = Self(4);
+    /// FileFsAttributeInformation
+    pub const FILE_FS_ATTRIBUTE_INFORMATION: Self = Self(5);
+    /// FileFsControlInformation
+    pub const FILE_FS_CONTROL_INFORMATION: Self = Self(6);
+    /// FileFsFullSizeInformation
+    pub const FILE_FS_FULL_SIZE_INFORMATION: Self = Self(7);
+    /// FileFsObjectIdInformation
+    pub const FILE_FS_OBJECT_ID_INFORMATION: Self = Self(8);
+    /// FileFsDriverPathInformation
+    pub const FILE_FS_DRIVER_PATH_INFORMATION: Self = Self(9);
+    /// FileFsVolumeFlagsInformation
+    pub const FILE_FS_VOLUME_FLAGS_INFORMATION: Self = Self(10);
+    /// FileFsSectorSizeInformation
+    pub const FILE_FS_SECTOR_SIZE_INFORMATION: Self = Self(11);
+}
+
+impl From<u32> for FileSystemInformationClassLevel {
+    fn from(value: u32) -> Self {
+        Self(value)
+    }
+}
+
+/// [2.5] File System Information Classes
+///
+/// [2.5]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-fscc/ee12042a-9352-46e3-9f67-c094b75fe6c3
+#[derive(Debug)]
+pub enum FileSystemInformationClass {
+    FileFsVolumeInformation(FileFsVolumeInformation),
+    FileFsSizeInformation(FileFsSizeInformation),
+    FileFsAttributeInformation(FileFsAttributeInformation),
+    FileFsFullSizeInformation(FileFsFullSizeInformation),
+    FileFsDeviceInformation(FileFsDeviceInformation),
+}
+
+impl FileSystemInformationClass {
+    const NAME: &str = "FileSystemInformationClass";
+
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_size!(in: dst, size: self.size());
+        match self {
+            Self::FileFsVolumeInformation(f) => f.encode(dst),
+            Self::FileFsSizeInformation(f) => f.encode(dst),
+            Self::FileFsAttributeInformation(f) => f.encode(dst),
+            Self::FileFsFullSizeInformation(f) => f.encode(dst),
+            Self::FileFsDeviceInformation(f) => f.encode(dst),
+        }
+    }
+
+    fn size(&self) -> usize {
+        match self {
+            Self::FileFsVolumeInformation(f) => f.size(),
+            Self::FileFsSizeInformation(f) => f.size(),
+            Self::FileFsAttributeInformation(f) => f.size(),
+            Self::FileFsFullSizeInformation(_) => FileFsFullSizeInformation::size(),
+            Self::FileFsDeviceInformation(_) => FileFsDeviceInformation::size(),
+        }
+    }
+}
+
+impl From<FileFsVolumeInformation> for FileSystemInformationClass {
+    fn from(file_fs_vol_info: FileFsVolumeInformation) -> Self {
+        Self::FileFsVolumeInformation(file_fs_vol_info)
+    }
+}
+
+impl From<FileFsSizeInformation> for FileSystemInformationClass {
+    fn from(file_fs_vol_info: FileFsSizeInformation) -> Self {
+        Self::FileFsSizeInformation(file_fs_vol_info)
+    }
+}
+
+impl From<FileFsAttributeInformation> for FileSystemInformationClass {
+    fn from(file_fs_vol_info: FileFsAttributeInformation) -> Self {
+        Self::FileFsAttributeInformation(file_fs_vol_info)
+    }
+}
+
+impl From<FileFsFullSizeInformation> for FileSystemInformationClass {
+    fn from(file_fs_vol_info: FileFsFullSizeInformation) -> Self {
+        Self::FileFsFullSizeInformation(file_fs_vol_info)
+    }
+}
+
+impl From<FileFsDeviceInformation> for FileSystemInformationClass {
+    fn from(file_fs_vol_info: FileFsDeviceInformation) -> Self {
+        Self::FileFsDeviceInformation(file_fs_vol_info)
+    }
+}
+
+/// [2.5.9] FileFsVolumeInformation
+///
+/// [2.5.9]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-fscc/bf691378-c34e-4a13-976e-404ea1a87738
+#[derive(Debug)]
+pub struct FileFsVolumeInformation {
+    pub volume_creation_time: i64,
+    pub volume_serial_number: u32,
+    pub supports_objects: Boolean,
+    // reserved is omitted
+    // https://github.com/FreeRDP/FreeRDP/blob/511444a65e7aa2f537c5e531fa68157a50c1bd4d/channels/drive/client/drive_main.c#L495
+    pub volume_label: String,
+}
+
+impl FileFsVolumeInformation {
+    const NAME: &str = "FileFsVolumeInformation";
+
+    pub fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_size!(in: dst, size: self.size());
+        dst.write_i64(self.volume_creation_time);
+        dst.write_u32(self.volume_serial_number);
+        dst.write_u32(cast_length!(
+            "FileFsVolumeInformation::encode",
+            "volume_label_length",
+            encoded_str_len(&self.volume_label, CharacterSet::Unicode, true)
+        )?);
+        dst.write_u8(self.supports_objects.into());
+        write_string_to_cursor(dst, &self.volume_label, CharacterSet::Unicode, true)?;
+        Ok(())
+    }
+
+    pub fn size(&self) -> usize {
+        8 // VolumeCreationTime
+        + 4 // VolumeSerialNumber
+        + 4 // VolumeLabelLength
+        + 1 // SupportsObjects
+        + encoded_str_len(&self.volume_label, CharacterSet::Unicode, true)
+    }
+}
+
+/// [2.5.8] FileFsSizeInformation
+///
+/// [2.5.8]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-fscc/e13e068c-e3a7-4dd4-94fd-3892b492e6e7
+#[derive(Debug)]
+pub struct FileFsSizeInformation {
+    pub total_alloc_units: i64,
+    pub available_alloc_units: i64,
+    pub sectors_per_alloc_unit: u32,
+    pub bytes_per_sector: u32,
+}
+
+impl FileFsSizeInformation {
+    const NAME: &str = "FileFsSizeInformation";
+
+    pub fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_size!(in: dst, size: self.size());
+        dst.write_i64(self.total_alloc_units);
+        dst.write_i64(self.available_alloc_units);
+        dst.write_u32(self.sectors_per_alloc_unit);
+        dst.write_u32(self.bytes_per_sector);
+        Ok(())
+    }
+
+    pub fn size(&self) -> usize {
+        8 // TotalAllocationUnits
+        + 8 // AvailableAllocationUnits
+        + 4 // SectorsPerAllocationUnit
+        + 4 // BytesPerSector
+    }
+}
+
+/// [2.5.1] FileFsAttributeInformation
+///
+/// [2.5.1]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-fscc/ebc7e6e5-4650-4e54-b17c-cf60f6fbeeaa
+#[derive(Debug)]
+pub struct FileFsAttributeInformation {
+    pub file_system_attributes: FileSystemAttributes,
+    pub max_component_name_len: u32,
+    pub file_system_name: String,
+}
+
+impl FileFsAttributeInformation {
+    const NAME: &str = "FileFsAttributeInformation";
+
+    pub fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_size!(in: dst, size: self.size());
+        dst.write_u32(self.file_system_attributes.bits());
+        dst.write_u32(self.max_component_name_len);
+        dst.write_u32(cast_length!(
+            "FileFsAttributeInformation::encode",
+            "file_system_name_length",
+            encoded_str_len(&self.file_system_name, CharacterSet::Unicode, true)
+        )?);
+        write_string_to_cursor(dst, &self.file_system_name, CharacterSet::Unicode, true)?;
+        Ok(())
+    }
+
+    pub fn size(&self) -> usize {
+        4 // FileSystemAttributes
+        + 4 // MaximumComponentNameLength
+        + 4 // FileSystemNameLength
+        + encoded_str_len(&self.file_system_name, CharacterSet::Unicode, true)
+    }
+}
+
+/// [2.5.4] FileFsFullSizeInformation
+///
+/// [2.5.4]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-fscc/63768db7-9012-4209-8cca-00781e7322f5
+#[derive(Debug)]
+pub struct FileFsFullSizeInformation {
+    pub total_alloc_units: i64,
+    pub caller_available_alloc_units: i64,
+    pub actual_available_alloc_units: i64,
+    pub sectors_per_alloc_unit: u32,
+    pub bytes_per_sector: u32,
+}
+
+impl FileFsFullSizeInformation {
+    const NAME: &str = "FileFsFullSizeInformation";
+
+    pub fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_size!(in: dst, size: Self::size());
+        dst.write_i64(self.total_alloc_units);
+        dst.write_i64(self.caller_available_alloc_units);
+        dst.write_i64(self.actual_available_alloc_units);
+        dst.write_u32(self.sectors_per_alloc_unit);
+        dst.write_u32(self.bytes_per_sector);
+        Ok(())
+    }
+
+    pub fn size() -> usize {
+        8 // TotalAllocationUnits
+        + 8 // CallerAvailableAllocationUnits
+        + 8 // ActualAvailableAllocationUnits
+        + 4 // SectorsPerAllocationUnit
+        + 4 // BytesPerSector
+    }
+}
+
+/// [2.5.10] FileFsDeviceInformation
+///
+/// [2.5.10]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-fscc/616b66d5-b335-4e1c-8f87-b4a55e8d3e4a
+#[derive(Debug)]
+pub struct FileFsDeviceInformation {
+    pub device_type: u32,
+    pub characteristics: Characteristics,
+}
+
+impl FileFsDeviceInformation {
+    const NAME: &str = "FileFsDeviceInformation";
+
+    pub fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_size!(in: dst, size: Self::size());
+        dst.write_u32(self.device_type);
+        dst.write_u32(self.characteristics.bits());
+        Ok(())
+    }
+
+    pub fn size() -> usize {
+        4 // DeviceType
+        + 4 // Characteristics
+    }
+}
+
+bitflags! {
+    /// See [2.5.1] FileFsAttributeInformation.
+    ///
+    /// [2.5.1]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-fscc/ebc7e6e5-4650-4e54-b17c-cf60f6fbeeaa
+    #[derive(Debug)]
+    pub struct FileSystemAttributes: u32 {
+        const FILE_SUPPORTS_USN_JOURNAL = 0x02000000;
+        const FILE_SUPPORTS_OPEN_BY_FILE_ID = 0x01000000;
+        const FILE_SUPPORTS_EXTENDED_ATTRIBUTES = 0x00800000;
+        const FILE_SUPPORTS_HARD_LINKS = 0x00400000;
+        const FILE_SUPPORTS_TRANSACTIONS = 0x00200000;
+        const FILE_SEQUENTIAL_WRITE_ONCE = 0x00100000;
+        const FILE_READ_ONLY_VOLUME = 0x00080000;
+        const FILE_NAMED_STREAMS = 0x00040000;
+        const FILE_SUPPORTS_ENCRYPTION = 0x00020000;
+        const FILE_SUPPORTS_OBJECT_IDS = 0x00010000;
+        const FILE_VOLUME_IS_COMPRESSED = 0x00008000;
+        const FILE_SUPPORTS_REMOTE_STORAGE = 0x00000100;
+        const FILE_SUPPORTS_REPARSE_POINTS = 0x00000080;
+        const FILE_SUPPORTS_SPARSE_FILES = 0x00000040;
+        const FILE_VOLUME_QUOTAS = 0x00000020;
+        const FILE_FILE_COMPRESSION = 0x00000010;
+        const FILE_PERSISTENT_ACLS = 0x00000008;
+        const FILE_UNICODE_ON_DISK = 0x00000004;
+        const FILE_CASE_PRESERVED_NAMES = 0x00000002;
+        const FILE_CASE_SENSITIVE_SEARCH = 0x00000001;
+        const FILE_SUPPORT_INTEGRITY_STREAMS = 0x04000000;
+        const FILE_SUPPORTS_BLOCK_REFCOUNTING = 0x08000000;
+        const FILE_SUPPORTS_SPARSE_VDL = 0x10000000;
+    }
+}
+
+bitflags! {
+    /// See [2.5.10] FileFsDeviceInformation.
+    ///
+    /// [2.5.10]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-fscc/616b66d5-b335-4e1c-8f87-b4a55e8d3e4a
+    #[derive(Debug)]
+    pub struct Characteristics: u32 {
+        const FILE_REMOVABLE_MEDIA = 0x00000001;
+        const FILE_READ_ONLY_DEVICE = 0x00000002;
+        const FILE_FLOPPY_DISKETTE = 0x00000004;
+        const FILE_WRITE_ONCE_MEDIA = 0x00000008;
+        const FILE_REMOTE_DEVICE = 0x00000010;
+        const FILE_DEVICE_IS_MOUNTED = 0x00000020;
+        const FILE_VIRTUAL_VOLUME = 0x00000040;
+        const FILE_DEVICE_SECURE_OPEN = 0x00000100;
+        const FILE_CHARACTERISTIC_TS_DEVICE = 0x00001000;
+        const FILE_CHARACTERISTIC_WEBDAV_DEVICE = 0x00002000;
+        const FILE_DEVICE_ALLOW_APPCONTAINER_TRAVERSAL = 0x00020000;
+        const FILE_PORTABLE_DEVICE = 0x0004000;
+    }
+}
+
+/// [2.2.3.4.6] Client Drive Query Volume Information Response (DR_DRIVE_QUERY_VOLUME_INFORMATION_RSP)
+///
+/// [2.2.3.4.6]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/fbdc7db8-a268-4420-8b5e-ce689ad1d4ac
+#[derive(Debug)]
+pub struct ClientDriveQueryVolumeInformationResponse {
+    pub device_io_reply: DeviceIoResponse,
+    pub buffer: Option<FileSystemInformationClass>,
+}
+
+impl ClientDriveQueryVolumeInformationResponse {
+    const NAME: &str = "DR_DRIVE_QUERY_VOLUME_INFORMATION_RSP";
+
+    pub fn new(
+        device_io_request: DeviceIoRequest,
+        io_status: NtStatus,
+        buffer: Option<FileSystemInformationClass>,
+    ) -> Self {
+        Self {
+            device_io_reply: DeviceIoResponse::new(device_io_request, io_status),
+            buffer,
+        }
+    }
+
+    pub fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    pub fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_size!(in: dst, size: self.size());
+        self.device_io_reply.encode(dst)?;
+        dst.write_u32(cast_length!(
+            "ClientDriveQueryVolumeInformationResponse",
+            "length",
+            if self.buffer.is_some() {
+                self.buffer.as_ref().unwrap().size()
+            } else {
+                0
+            }
+        )?);
+        if let Some(buffer) = &self.buffer {
+            buffer.encode(dst)?;
+        }
+
+        Ok(())
+    }
+
+    pub fn size(&self) -> usize {
+        self.device_io_reply.size() // DeviceIoResponse
+        + 4 // Length
+        + if let Some(buffer) = &self.buffer {
+            buffer.size() // Buffer
+        } else {
+            0
         }
     }
 }
