@@ -401,6 +401,11 @@ impl StaticChannelSet {
         self.get_by_type_id_mut(TypeId::of::<T>())
     }
 
+    /// Gets a reference to a [`StaticVirtualChannel`] by looking up its channel name.
+    pub fn get_by_channel_name(&self, name: &ChannelName) -> Option<(TypeId, &StaticVirtualChannel)> {
+        self.iter().find(|(_, x)| x.channel_processor.channel_name() == *name)
+    }
+
     /// Gets a reference to a [`StaticVirtualChannel`] by looking up its channel ID.
     pub fn get_by_channel_id(&self, channel_id: StaticChannelId) -> Option<&StaticVirtualChannel> {
         self.get_type_id_by_channel_id(channel_id)
