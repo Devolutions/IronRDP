@@ -2937,7 +2937,7 @@ impl DeviceReadResponse {
     }
 }
 
-impl std::fmt::Debug for DeviceReadResponse {
+impl Debug for DeviceReadResponse {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("DeviceReadResponse")
             .field("device_io_reply", &self.device_io_reply)
