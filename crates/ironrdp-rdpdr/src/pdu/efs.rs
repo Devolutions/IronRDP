@@ -1254,7 +1254,7 @@ pub trait IoCtlCode: TryFrom<u32> {}
 /// An IoCtlCode that can be used when the IoCtlCode is not known
 /// or not important.
 #[derive(Debug)]
-pub struct AnyIoCtlCode(u32);
+pub struct AnyIoCtlCode(pub u32);
 
 impl TryFrom<u32> for AnyIoCtlCode {
     type Error = PduError;
