@@ -1251,22 +1251,45 @@ where
 /// A 32-bit unsigned integer. This field is specific to the redirected device.
 pub trait IoCtlCode: TryFrom<u32> {}
 
+/// An IoCtlCode that can be used when the IoCtlCode is not known
+/// or not important.
+#[derive(Debug)]
+pub struct AnyIoCtlCode(pub u32);
+
+impl TryFrom<u32> for AnyIoCtlCode {
+    type Error = PduError;
+
+    fn try_from(value: u32) -> Result<Self, Self::Error> {
+        Ok(Self(value))
+    }
+}
+
+impl IoCtlCode for AnyIoCtlCode {}
+
 /// [2.2.1.5.5] Device Control Response (DR_CONTROL_RSP)
 ///
 /// [2.2.1.5.5]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/a00fbce4-95bb-4e15-8182-be2b5ef9076a
 #[derive(Debug)]
 pub struct DeviceControlResponse {
     pub device_io_reply: DeviceIoResponse,
-    pub output_buffer: Box<dyn rpce::Encode>,
+    /// A value of `None` represents an empty buffer,
+    /// such as can be seen in FreeRDP [here].
+    ///
+    /// [here]: https://github.com/FreeRDP/FreeRDP/blob/511444a65e7aa2f537c5e531fa68157a50c1bd4d/channels/drive/client/drive_main.c#L677-L684
+    pub output_buffer: Option<Box<dyn rpce::Encode>>,
 }
 
 impl DeviceControlResponse {
     const NAME: &str = "DR_CONTROL_RSP";
 
+    /// A value of `None` for `output_buffer` represents an empty buffer,
+    /// such as can be seen in FreeRDP [here].
+    ///
+    /// [here]: https://github.com/FreeRDP/FreeRDP/blob/511444a65e7aa2f537c5e531fa68157a50c1bd4d/channels/drive/client/drive_main.c#L677-L684
     pub fn new<T: IoCtlCode>(
         req: DeviceControlRequest<T>,
         io_status: NtStatus,
-        output_buffer: Box<dyn rpce::Encode>,
+        output_buffer: Option<Box<dyn rpce::Encode>>,
     ) -> Self {
         Self {
             device_io_reply: DeviceIoResponse {
@@ -1285,18 +1308,28 @@ impl DeviceControlResponse {
     pub fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
         ensure_size!(in: dst, size: self.size());
         self.device_io_reply.encode(dst)?;
-        dst.write_u32(cast_length!(
-            "DeviceControlResponse",
-            "OutputBufferLength",
-            self.output_buffer.size()
-        )?);
-        self.output_buffer.encode(dst)?;
+        if let Some(output_buffer) = &self.output_buffer {
+            dst.write_u32(cast_length!(
+                "DeviceControlResponse",
+                "OutputBufferLength",
+                output_buffer.size()
+            )?);
+            output_buffer.encode(dst)?;
+        } else {
+            dst.write_u32(0); // OutputBufferLength
+        }
+
         Ok(())
     }
 
     pub fn size(&self) -> usize {
-        // DeviceIoResponse + OutputBufferLength + OutputBuffer
-        self.device_io_reply.size() + size_of::<u32>() + self.output_buffer.size()
+        self.device_io_reply.size() // DeviceIoResponse
+            + 4 // OutputBufferLength
+            + if let Some(output_buffer) = &self.output_buffer {
+                output_buffer.size() // OutputBuffer
+            } else {
+                0 // OutputBuffer
+            }
     }
 }
 
@@ -1358,6 +1391,7 @@ pub enum ServerDriveIoRequest {
     DeviceCloseRequest(DeviceCloseRequest),
     ServerDriveQueryDirectoryRequest(ServerDriveQueryDirectoryRequest),
     ServerDriveQueryVolumeInformationRequest(ServerDriveQueryVolumeInformationRequest),
+    DeviceControlRequest(DeviceControlRequest<AnyIoCtlCode>),
 }
 
 impl ServerDriveIoRequest {
@@ -1367,7 +1401,7 @@ impl ServerDriveIoRequest {
             MajorFunction::Close => Ok(DeviceCloseRequest::decode(dev_io_req).into()),
             MajorFunction::Read => todo!(),
             MajorFunction::Write => todo!(),
-            MajorFunction::DeviceControl => todo!(),
+            MajorFunction::DeviceControl => Ok(DeviceControlRequest::<AnyIoCtlCode>::decode(dev_io_req, src)?.into()),
             MajorFunction::QueryVolumeInformation => {
                 Ok(ServerDriveQueryVolumeInformationRequest::decode(dev_io_req, src)?.into())
             }
@@ -1415,6 +1449,12 @@ impl From<ServerDriveQueryDirectoryRequest> for ServerDriveIoRequest {
 impl From<ServerDriveQueryVolumeInformationRequest> for ServerDriveIoRequest {
     fn from(req: ServerDriveQueryVolumeInformationRequest) -> Self {
         Self::ServerDriveQueryVolumeInformationRequest(req)
+    }
+}
+
+impl From<DeviceControlRequest<AnyIoCtlCode>> for ServerDriveIoRequest {
+    fn from(req: DeviceControlRequest<AnyIoCtlCode>) -> Self {
+        Self::DeviceControlRequest(req)
     }
 }
 
