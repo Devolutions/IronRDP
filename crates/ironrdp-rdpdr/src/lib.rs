@@ -219,9 +219,8 @@ impl StaticVirtualChannelProcessor for Rdpdr {
             | RdpdrPdu::ClientDriveQueryInformationResponse(_)
             | RdpdrPdu::DeviceCloseResponse(_)
             | RdpdrPdu::ClientDriveQueryDirectoryResponse(_)
-            | RdpdrPdu::ClientDriveQueryVolumeInformationResponse(_) => {
-                Err(other_err!("Rdpdr", "received unexpected packet"))
-            }
+            | RdpdrPdu::ClientDriveQueryVolumeInformationResponse(_)
+            | RdpdrPdu::DeviceReadResponse(_) => Err(other_err!("Rdpdr", "received unexpected packet")),
         }
     }
 }

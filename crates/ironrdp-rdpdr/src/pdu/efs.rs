@@ -10,8 +10,8 @@ use bitflags::bitflags;
 use ironrdp_pdu::cursor::{ReadCursor, WriteCursor};
 use ironrdp_pdu::utils::{decode_string, encoded_str_len, from_utf16_bytes, write_string_to_cursor, CharacterSet};
 use ironrdp_pdu::{
-    cast_length, ensure_size, invalid_message_err, read_padding, unexpected_message_type_err, write_padding, PduError,
-    PduResult,
+    cast_length, ensure_fixed_part_size, ensure_size, invalid_message_err, read_padding, unexpected_message_type_err,
+    write_padding, PduError, PduResult,
 };
 
 use super::esc::rpce;
@@ -1392,6 +1392,7 @@ pub enum ServerDriveIoRequest {
     ServerDriveQueryDirectoryRequest(ServerDriveQueryDirectoryRequest),
     ServerDriveQueryVolumeInformationRequest(ServerDriveQueryVolumeInformationRequest),
     DeviceControlRequest(DeviceControlRequest<AnyIoCtlCode>),
+    DeviceReadRequest(DeviceReadRequest),
 }
 
 impl ServerDriveIoRequest {
@@ -1399,7 +1400,7 @@ impl ServerDriveIoRequest {
         match dev_io_req.major_function {
             MajorFunction::Create => Ok(DeviceCreateRequest::decode(dev_io_req, src)?.into()),
             MajorFunction::Close => Ok(DeviceCloseRequest::decode(dev_io_req).into()),
-            MajorFunction::Read => todo!(),
+            MajorFunction::Read => Ok(DeviceReadRequest::decode(dev_io_req, src)?.into()),
             MajorFunction::Write => todo!(),
             MajorFunction::DeviceControl => Ok(DeviceControlRequest::<AnyIoCtlCode>::decode(dev_io_req, src)?.into()),
             MajorFunction::QueryVolumeInformation => {
@@ -1455,6 +1456,12 @@ impl From<ServerDriveQueryVolumeInformationRequest> for ServerDriveIoRequest {
 impl From<DeviceControlRequest<AnyIoCtlCode>> for ServerDriveIoRequest {
     fn from(req: DeviceControlRequest<AnyIoCtlCode>) -> Self {
         Self::DeviceControlRequest(req)
+    }
+}
+
+impl From<DeviceReadRequest> for ServerDriveIoRequest {
+    fn from(req: DeviceReadRequest) -> Self {
+        Self::DeviceReadRequest(req)
     }
 }
 
@@ -2358,7 +2365,7 @@ impl ServerDriveQueryDirectoryRequest {
     const FIXED_PART_SIZE: usize = 4 /* FsInformationClass */ + 1 /* InitialQuery */ + 4 /* PathLength */ + 23 /* Padding */;
 
     fn decode(device_io_request: DeviceIoRequest, src: &mut ReadCursor<'_>) -> PduResult<Self> {
-        ensure_size!(in: src, size: Self::FIXED_PART_SIZE);
+        ensure_fixed_part_size!(in: src);
         let file_info_class_lvl = FileInformationClassLevel::from(src.read_u32());
 
         // From the documentation: "This field MUST contain one of the following values"
@@ -2459,7 +2466,7 @@ impl ServerDriveQueryVolumeInformationRequest {
     const FIXED_PART_SIZE: usize = 4 /* FsInformationClass */ + 4 /* Length */ + 24 /* Padding */;
 
     pub fn decode(dev_io_req: DeviceIoRequest, src: &mut ReadCursor<'_>) -> PduResult<Self> {
-        ensure_size!(in: src, size: Self::FIXED_PART_SIZE);
+        ensure_fixed_part_size!(in: src);
         let fs_info_class_lvl = FileSystemInformationClassLevel::from(src.read_u32());
 
         // This field MUST contain one of the following values.
@@ -2868,5 +2875,73 @@ impl ClientDriveQueryVolumeInformationResponse {
         } else {
             0
         }
+    }
+}
+
+/// [2.2.1.4.3] Device Read Request (DR_READ_REQ)
+///
+/// [2.2.1.4.3]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/3192516d-36a6-47c5-987a-55c214aa0441
+#[derive(Debug, Clone)]
+pub struct DeviceReadRequest {
+    pub device_io_request: DeviceIoRequest,
+    pub length: u32,
+    pub offset: u64,
+}
+
+impl DeviceReadRequest {
+    const NAME: &str = "DR_READ_REQ";
+    const FIXED_PART_SIZE: usize = 4 /* Length */ + 8 /* Offset */ + 20 /* Padding */;
+
+    pub fn decode(dev_io_req: DeviceIoRequest, src: &mut ReadCursor<'_>) -> PduResult<Self> {
+        ensure_fixed_part_size!(in: src);
+        let length = cast_length!("DeviceReadRequest", "length", src.read_u32())?;
+        let offset = src.read_u64();
+        // Padding (20 bytes):  An array of 20 bytes. Reserved. This field can be set to any value and MUST be ignored.
+        read_padding!(src, 20);
+
+        Ok(Self {
+            device_io_request: dev_io_req,
+            length,
+            offset,
+        })
+    }
+}
+
+/// [2.2.1.5.3] Device Read Response (DR_READ_RSP)
+///
+/// [2.2.1.5.3]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/d35d3f91-fc5b-492b-80be-47f483ad1dc9
+pub struct DeviceReadResponse {
+    pub device_io_reply: DeviceIoResponse,
+    pub read_data: Vec<u8>,
+}
+
+impl DeviceReadResponse {
+    const NAME: &str = "DR_READ_RSP";
+
+    pub fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_size!(in: dst, size: self.size());
+        self.device_io_reply.encode(dst)?;
+        dst.write_u32(cast_length!("DeviceReadResponse", "length", self.read_data.len())?);
+        dst.write_slice(&self.read_data);
+        Ok(())
+    }
+
+    pub fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    pub fn size(&self) -> usize {
+        self.device_io_reply.size() // DeviceIoResponse
+        + 4 // Length
+        + self.read_data.len() // ReadData
+    }
+}
+
+impl std::fmt::Debug for DeviceReadResponse {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DeviceReadResponse")
+            .field("device_io_reply", &self.device_io_reply)
+            .field("read_data", &format!("Vec<u8> of length {}", self.read_data.len()))
+            .finish()
     }
 }
