@@ -13,6 +13,8 @@
   "files": [
     "iron-remote-gui.umd.cjs",
     "enums",
+    "interfaces",
+    "lib",
     "services"
   ]
 }
