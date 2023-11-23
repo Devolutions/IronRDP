@@ -1393,6 +1393,7 @@ pub enum ServerDriveIoRequest {
     ServerDriveQueryVolumeInformationRequest(ServerDriveQueryVolumeInformationRequest),
     DeviceControlRequest(DeviceControlRequest<AnyIoCtlCode>),
     DeviceReadRequest(DeviceReadRequest),
+    DeviceWriteRequest(DeviceWriteRequest),
 }
 
 impl ServerDriveIoRequest {
@@ -1401,7 +1402,7 @@ impl ServerDriveIoRequest {
             MajorFunction::Create => Ok(DeviceCreateRequest::decode(dev_io_req, src)?.into()),
             MajorFunction::Close => Ok(DeviceCloseRequest::decode(dev_io_req).into()),
             MajorFunction::Read => Ok(DeviceReadRequest::decode(dev_io_req, src)?.into()),
-            MajorFunction::Write => todo!(),
+            MajorFunction::Write => Ok(DeviceWriteRequest::decode(dev_io_req, src)?.into()),
             MajorFunction::DeviceControl => Ok(DeviceControlRequest::<AnyIoCtlCode>::decode(dev_io_req, src)?.into()),
             MajorFunction::QueryVolumeInformation => {
                 Ok(ServerDriveQueryVolumeInformationRequest::decode(dev_io_req, src)?.into())
@@ -1462,6 +1463,12 @@ impl From<DeviceControlRequest<AnyIoCtlCode>> for ServerDriveIoRequest {
 impl From<DeviceReadRequest> for ServerDriveIoRequest {
     fn from(req: DeviceReadRequest) -> Self {
         Self::DeviceReadRequest(req)
+    }
+}
+
+impl From<DeviceWriteRequest> for ServerDriveIoRequest {
+    fn from(req: DeviceWriteRequest) -> Self {
+        Self::DeviceWriteRequest(req)
     }
 }
 
@@ -2943,5 +2950,77 @@ impl Debug for DeviceReadResponse {
             .field("device_io_reply", &self.device_io_reply)
             .field("read_data", &format!("Vec<u8> of length {}", self.read_data.len()))
             .finish()
+    }
+}
+
+/// [2.2.1.4.4] Device Write Request (DR_WRITE_REQ)
+///
+/// [2.2.1.4.4]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/2e25f0aa-a4ce-4ff3-ad62-ab6098280a3a
+pub struct DeviceWriteRequest {
+    pub device_io_request: DeviceIoRequest,
+    pub offset: u64,
+    pub write_data: Vec<u8>,
+}
+
+impl DeviceWriteRequest {
+    const NAME: &str = "DR_WRITE_REQ";
+    const FIXED_PART_SIZE: usize = 4 /* Length */ + 8 /* Offset */ + 20 /* Padding */;
+
+    pub fn decode(dev_io_req: DeviceIoRequest, src: &mut ReadCursor<'_>) -> PduResult<Self> {
+        ensure_fixed_part_size!(in: src);
+        let length = cast_length!("DeviceWriteRequest", "length", src.read_u32())?;
+        let offset = src.read_u64();
+        // Padding (20 bytes):  An array of 20 bytes. Reserved. This field can be set to any value and MUST be ignored.
+        read_padding!(src, 20);
+
+        ensure_size!(in: src, size: length);
+        let write_data = src.read_slice(length).to_vec();
+
+        Ok(Self {
+            device_io_request: dev_io_req,
+            offset,
+            write_data,
+        })
+    }
+}
+
+impl Debug for DeviceWriteRequest {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("DeviceWriteRequest")
+            .field("device_io_request", &self.device_io_request)
+            .field("offset", &self.offset)
+            .field("write_data", &format!("Vec<u8> of length {}", self.write_data.len()))
+            .finish()
+    }
+}
+
+/// [2.2.1.5.4] Device Write Response (DR_WRITE_RSP)
+///
+/// [2.2.1.5.4]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/58160a47-2379-4c4a-a99d-24a1a666c02a
+#[derive(Debug)]
+pub struct DeviceWriteResponse {
+    pub device_io_reply: DeviceIoResponse,
+    pub length: u32,
+}
+
+impl DeviceWriteResponse {
+    const NAME: &str = "DR_WRITE_RSP";
+
+    pub fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    pub fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_size!(in: dst, size: self.size());
+        self.device_io_reply.encode(dst)?;
+        dst.write_u32(self.length);
+        write_padding!(dst, 1); // Padding
+        Ok(())
+    }
+
+    pub fn size(&self) -> usize {
+        self.device_io_reply.size() // DeviceIoResponse
+        + 4 // Length
+        + 1 // Padding
     }
 }
