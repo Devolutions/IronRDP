@@ -8,7 +8,7 @@ use self::efs::{
     ClientDeviceListAnnounce, ClientDriveQueryDirectoryResponse, ClientDriveQueryInformationResponse,
     ClientDriveQueryVolumeInformationResponse, ClientNameRequest, CoreCapability, CoreCapabilityKind,
     DeviceCloseResponse, DeviceControlResponse, DeviceCreateResponse, DeviceIoRequest, DeviceReadResponse,
-    ServerDeviceAnnounceResponse, VersionAndIdPdu, VersionAndIdPduKind,
+    DeviceWriteResponse, ServerDeviceAnnounceResponse, VersionAndIdPdu, VersionAndIdPduKind,
 };
 
 pub mod efs;
@@ -29,6 +29,7 @@ pub enum RdpdrPdu {
     ClientDriveQueryDirectoryResponse(ClientDriveQueryDirectoryResponse),
     ClientDriveQueryVolumeInformationResponse(ClientDriveQueryVolumeInformationResponse),
     DeviceReadResponse(DeviceReadResponse),
+    DeviceWriteResponse(DeviceWriteResponse),
     /// TODO: temporary value for development, this should be removed
     Unimplemented,
 }
@@ -83,7 +84,8 @@ impl RdpdrPdu {
             | RdpdrPdu::DeviceCloseResponse(_)
             | RdpdrPdu::ClientDriveQueryDirectoryResponse(_)
             | RdpdrPdu::ClientDriveQueryVolumeInformationResponse(_)
-            | RdpdrPdu::DeviceReadResponse(_) => SharedHeader {
+            | RdpdrPdu::DeviceReadResponse(_)
+            | RdpdrPdu::DeviceWriteResponse(_) => SharedHeader {
                 component: Component::RdpdrCtypCore,
                 packet_id: PacketId::CoreDeviceIoCompletion,
             },
@@ -129,6 +131,7 @@ impl PduEncode for RdpdrPdu {
             RdpdrPdu::ClientDriveQueryDirectoryResponse(pdu) => pdu.encode(dst),
             RdpdrPdu::ClientDriveQueryVolumeInformationResponse(pdu) => pdu.encode(dst),
             RdpdrPdu::DeviceReadResponse(pdu) => pdu.encode(dst),
+            RdpdrPdu::DeviceWriteResponse(pdu) => pdu.encode(dst),
             RdpdrPdu::Unimplemented => Ok(()),
         }
     }
@@ -148,6 +151,7 @@ impl PduEncode for RdpdrPdu {
             RdpdrPdu::ClientDriveQueryDirectoryResponse(pdu) => pdu.name(),
             RdpdrPdu::ClientDriveQueryVolumeInformationResponse(pdu) => pdu.name(),
             RdpdrPdu::DeviceReadResponse(pdu) => pdu.name(),
+            RdpdrPdu::DeviceWriteResponse(pdu) => pdu.name(),
             RdpdrPdu::Unimplemented => "Unimplemented",
         }
     }
@@ -168,6 +172,7 @@ impl PduEncode for RdpdrPdu {
                 RdpdrPdu::ClientDriveQueryDirectoryResponse(pdu) => pdu.size(),
                 RdpdrPdu::ClientDriveQueryVolumeInformationResponse(pdu) => pdu.size(),
                 RdpdrPdu::DeviceReadResponse(pdu) => pdu.size(),
+                RdpdrPdu::DeviceWriteResponse(pdu) => pdu.size(),
                 RdpdrPdu::Unimplemented => 0,
             }
     }
@@ -213,6 +218,9 @@ impl fmt::Debug for RdpdrPdu {
                 write!(f, "RdpdrPdu({:?})", it)
             }
             Self::DeviceReadResponse(it) => {
+                write!(f, "RdpdrPdu({:?})", it)
+            }
+            Self::DeviceWriteResponse(it) => {
                 write!(f, "RdpdrPdu({:?})", it)
             }
             Self::Unimplemented => {
@@ -261,6 +269,12 @@ impl From<ClientDriveQueryVolumeInformationResponse> for RdpdrPdu {
 impl From<DeviceReadResponse> for RdpdrPdu {
     fn from(value: DeviceReadResponse) -> Self {
         Self::DeviceReadResponse(value)
+    }
+}
+
+impl From<DeviceWriteResponse> for RdpdrPdu {
+    fn from(value: DeviceWriteResponse) -> Self {
+        Self::DeviceWriteResponse(value)
     }
 }
 
