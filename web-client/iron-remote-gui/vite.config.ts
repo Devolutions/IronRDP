@@ -18,5 +18,12 @@ export default defineConfig({
             strict: false,
         },
     },
-    plugins: [svelte(), wasm(), topLevelAwait(), dtsPlugin()],
+    plugins: [
+        svelte(),
+        wasm(),
+        topLevelAwait(),
+        dtsPlugin({
+            rollupTypes: true,
+        }),
+    ],
 });

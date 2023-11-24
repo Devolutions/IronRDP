@@ -2,7 +2,7 @@
     import { onMount } from 'svelte';
     import { setCurrentSessionActive, userInteractionService } from '../../services/session.service';
     import { showLogin } from '$lib/login/login-store';
-    import type { UserInteraction } from '../../../static/iron-remote-gui/main';
+    import type { UserInteraction } from '../../../static/iron-remote-gui';
 
     let uiService: UserInteraction;
 
