@@ -18,13 +18,7 @@
     "strictNullChecks": true,
     "noImplicitAny": true
   },
-  "include": [
-    "src/**/*.svelte",
-    "src/**/*.ts",
-    "src/**/*.js",
-    "dist/**/*.d.ts", // make sure the output file are correctly included
-    "vite.config.ts"
-  ],
+  "include": ["src/**/*.svelte", "src/**/*.ts", "src/**/*.js", "vite.config.ts"],
   "references": [
     {
       "path": "./tsconfig.node.json"

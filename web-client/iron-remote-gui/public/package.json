@@ -4,14 +4,19 @@
   "email": "ngirot@devolutions.net",
   "contributors": [
     "Benoit Cortier",
+    "Irving Ou",
+    "Vladislav Nikonov",
     "Zacharia Ellaham"
   ],
   "description": "Web Component providing agnostic implementation for Iron Wasm base client.",
-  "version": "0.10.0",
+  "version": "0.11.0",
   "main": "iron-remote-gui.umd.cjs",
   "types": "index.d.ts",
   "files": [
     "iron-remote-gui.umd.cjs",
     "index.d.ts"
-  ]
+  ],
+  "dependencies": {
+    "rxjs": "^6.6.7"
+  }
 }

@@ -12,6 +12,9 @@ export default defineConfig({
             name: 'IronRemoteGui',
             formats: ['umd', 'es'],
         },
+        rollupOptions: {
+            external: ['rxjs'],
+        },
     },
     server: {
         fs: {

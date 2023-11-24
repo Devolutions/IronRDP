@@ -4,10 +4,12 @@
   "email": "ngirot@devolutions.net",
   "contributors": [
     "Benoit Cortier",
+    "Irving Ou",
+    "Vladislav Nikonov",
     "Zacharia Ellaham"
   ],
   "description": "Web Component providing agnostic implementation for Iron Wasm base client",
-  "version": "0.10.0",
+  "version": "0.11.0",
   "type": "module",
   "private": true,
   "scripts": {
@@ -17,6 +19,7 @@
     "pre-build": "node ./pre-build.js",
     "preview": "vite preview",
     "check": "svelte-check --tsconfig ./tsconfig.json",
+    "check:dist": "tsc ./dist/index.d.ts --noEmit",
     "check:watch": "svelte-check --tsconfig ./tsconfig.json --watch",
     "lint": "npm run lint:prettier && npm run lint:eslint",
     "lint:prettier": "prettier --check .",
@@ -30,7 +33,6 @@
     "eslint-plugin-svelte": "^2.34.1",
     "prettier": "^3.1.0",
     "prettier-plugin-svelte": "^3.1.0",
-    "rxjs": "^6.6.7",
     "svelte": "^3.54.0",
     "svelte-check": "^2.10.0",
     "svelte-eslint-parser": "^0.33.1",
@@ -39,13 +41,14 @@
     "tslib": "^2.4.1",
     "typescript": "^4.9.3",
     "@typescript-eslint/eslint-plugin": "^6.9.1",
+    "@types/ua-parser-js": "^0.7.36",
     "vite": "^4.0.0",
     "vite-plugin-dts": "^1.7.1",
     "vite-plugin-top-level-await": "^1.2.2",
     "vite-plugin-wasm": "^3.1.0"
   },
   "dependencies": {
-    "@types/ua-parser-js": "^0.7.36",
+    "rxjs": "^6.6.7",
     "ua-parser-js": "^1.0.33"
   }
 }
