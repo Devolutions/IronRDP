@@ -11,6 +11,7 @@
   "main": "iron-remote-gui.umd.cjs",
   "types": "index.d.ts",
   "files": [
-    "iron-remote-gui.umd.cjs"
+    "iron-remote-gui.umd.cjs",
+    "index.d.ts"
   ]
 }
