@@ -15,5 +15,8 @@
   "files": [
     "iron-remote-gui.umd.cjs",
     "index.d.ts"
-  ]
+  ],
+  "dependencies": {
+    "rxjs": "^6.6.7"
+  }
 }
