@@ -37,12 +37,12 @@
 
                 toast.set({
                     type: 'error',
-                    message: event.data.backtrace != null ? event.data.backtrace() : event.data,
+                    message: typeof event.data !== 'string' ? event.data.backtrace() : event.data,
                 });
             } else {
                 toast.set({
                     type: 'info',
-                    message: event.data ?? 'No info',
+                    message: typeof event.data !== 'string' ? event.data.backtrace() : event.data ?? 'No info',
                 });
             }
         });

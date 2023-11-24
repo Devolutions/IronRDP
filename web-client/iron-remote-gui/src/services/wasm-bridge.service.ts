@@ -166,8 +166,8 @@ export class WasmBridgeService {
                 this.raiseSessionEvent({
                     type: SessionEventType.ERROR,
                     data: {
-                        backtrace: err.backtrace(),
-                        errorKind: err.kind() as number as UserIronRdpErrorKind,
+                        backtrace: () => err.backtrace(),
+                        kind: () => err.kind() as number as UserIronRdpErrorKind,
                     },
                 });
                 return of(err);

@@ -9,11 +9,11 @@ export enum UserIronRdpErrorKind {
     ProxyConnect = 5,
 }
 export interface UserIronRdpError {
-    backtrace: string;
-    errorKind: UserIronRdpErrorKind;
+    backtrace: () => string;
+    kind: () => UserIronRdpErrorKind;
 }
 
 export interface SessionEvent {
     type: SessionEventType;
-    data?: UserIronRdpError | string;
+    data: UserIronRdpError | string;
 }
