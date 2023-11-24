@@ -22,7 +22,7 @@ import { SpecialCombination } from '../enums/SpecialCombination';
 import type { ResizeEvent } from '../interfaces/ResizeEvent';
 import { ScreenScale } from '../enums/ScreenScale';
 import type { MousePosition } from '../interfaces/MousePosition';
-import type { SessionEvent } from '../interfaces/session-event';
+import type { SessionEvent, UserIronRdpErrorKind } from '../interfaces/session-event';
 import type { DesktopSize as IDesktopSize } from '../interfaces/DesktopSize';
 
 type OnRemoteClipboardChanged = (transaction: ClipboardTransaction) => void;
@@ -165,7 +165,10 @@ export class WasmBridgeService {
             catchError((err: IronRdpError) => {
                 this.raiseSessionEvent({
                     type: SessionEventType.ERROR,
-                    data: err,
+                    data: {
+                        backtrace: err.backtrace(),
+                        errorKind: err.kind() as number as UserIronRdpErrorKind,
+                    },
                 });
                 return of(err);
             }),
