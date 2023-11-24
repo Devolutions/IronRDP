@@ -18,7 +18,7 @@ export default defineConfig({
         },
     },
     rollupOptions: {
-      external: ['rxjs']
+        external: ['rxjs'],
     },
     plugins: [
         svelte(),
