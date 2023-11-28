@@ -117,6 +117,10 @@ impl StaticVirtualChannel {
         self.channel_processor.compression_condition()
     }
 
+    pub fn start(&mut self) -> PduResult<Vec<SvcMessage>> {
+        self.channel_processor.start()
+    }
+
     /// Processes a payload received on the virtual channel. Returns a vector of PDUs to be sent back
     /// to the server. If no PDUs are to be sent, an empty vector is returned.
     pub fn process(&mut self, payload: &[u8]) -> PduResult<Vec<SvcMessage>> {
@@ -221,6 +225,13 @@ pub trait StaticVirtualChannelProcessor: AsAny + fmt::Debug + Send {
     /// Defines which compression flag should be sent along the [`ChannelDef`] Definition Structure (`CHANNEL_DEF`)
     fn compression_condition(&self) -> CompressionCondition {
         CompressionCondition::Never
+    }
+
+    /// Start a channel, after the connection is established and the channel is joined.
+    ///
+    /// Returns a list of PDUs to be sent back.
+    fn start(&mut self) -> PduResult<Vec<SvcMessage>> {
+        Ok(vec![])
     }
 
     /// Processes a payload received on the virtual channel. The `payload` is expected
