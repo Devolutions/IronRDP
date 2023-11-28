@@ -548,6 +548,14 @@ impl StaticChannelSet {
     }
 
     #[inline]
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = (TypeId, &mut StaticVirtualChannel, Option<StaticChannelId>)> {
+        let to_channel_id = self.to_channel_id.clone();
+        self.channels
+            .iter_mut()
+            .map(move |(type_id, svc)| (*type_id, svc, to_channel_id.get(type_id).copied()))
+    }
+
+    #[inline]
     pub fn values(&self) -> impl Iterator<Item = &StaticVirtualChannel> {
         self.channels.values()
     }
