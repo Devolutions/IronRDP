@@ -11,12 +11,13 @@ use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use core::any::{Any, TypeId};
 use core::fmt;
+use std::borrow::Cow;
 use std::marker::PhantomData;
 
 use bitflags::bitflags;
 use ironrdp_pdu::gcc::{ChannelName, ChannelOptions};
 use ironrdp_pdu::write_buf::WriteBuf;
-use ironrdp_pdu::{assert_obj_safe, PduResult};
+use ironrdp_pdu::{assert_obj_safe, mcs, PduResult};
 use pdu::cursor::WriteCursor;
 use pdu::gcc::ChannelDef;
 use pdu::rdp::vc::ChannelControlFlags;
@@ -145,6 +146,68 @@ impl StaticVirtualChannel {
     fn dechunkify(&mut self, payload: &[u8]) -> PduResult<Option<Vec<u8>>> {
         self.chunk_processor.dechunkify(payload)
     }
+}
+
+fn encode_svc_messages(
+    messages: Vec<SvcMessage>,
+    channel_id: u16,
+    initiator_id: u16,
+    client: bool,
+) -> PduResult<Vec<u8>> {
+    let mut fully_encoded_responses = WriteBuf::new(); // TODO(perf): reuse this buffer using `clear` and `filled` as appropriate
+
+    // For each response PDU, chunkify it and add appropriate static channel headers.
+    let chunks = StaticVirtualChannel::chunkify(messages)?;
+
+    // SendData is [`McsPdu`], which is [`x224Pdu`], which is [`PduEncode`]. [`PduEncode`] for [`x224Pdu`]
+    // also takes care of adding the Tpkt header, so therefore we can just call `encode_buf` on each of these and
+    // we will create a buffer of fully encoded PDUs ready to send to the server.
+    //
+    // For example, if we had 2 chunks, our fully_encoded_responses buffer would look like:
+    //
+    // [ | tpkt | x224 | mcs::SendDataRequest | chunk 1 | tpkt | x224 | mcs::SendDataRequest | chunk 2 | ]
+    //   |<------------------- PDU 1 ------------------>|<------------------- PDU 2 ------------------>|
+    if client {
+        for chunk in chunks {
+            let pdu = mcs::SendDataRequest {
+                initiator_id,
+                channel_id,
+                user_data: Cow::Borrowed(chunk.filled()),
+            };
+            encode_buf(&pdu, &mut fully_encoded_responses)?;
+        }
+    } else {
+        for chunk in chunks {
+            let pdu = mcs::SendDataIndication {
+                initiator_id,
+                channel_id,
+                user_data: Cow::Borrowed(chunk.filled()),
+            };
+            encode_buf(&pdu, &mut fully_encoded_responses)?;
+        }
+    }
+
+    Ok(fully_encoded_responses.into_inner())
+}
+
+/// Encode a vector of [`SvcMessage`] in preparation for sending them on the `channel_id` channel.
+///
+/// This includes chunkifying the messages, adding MCS, x224, and tpkt headers, and encoding them into a buffer.
+/// The messages returned here are ready to be sent to the server.
+///
+/// The caller is responsible for ensuring that the `channel_id` corresponds to the correct channel.
+pub fn client_encode_svc_messages(messages: Vec<SvcMessage>, channel_id: u16, initiator_id: u16) -> PduResult<Vec<u8>> {
+    encode_svc_messages(messages, channel_id, initiator_id, true)
+}
+
+/// Encode a vector of [`SvcMessage`] in preparation for sending them on the `channel_id` channel.
+///
+/// This includes chunkifying the messages, adding MCS, x224, and tpkt headers, and encoding them into a buffer.
+/// The messages returned here are ready to be sent to the client.
+///
+/// The caller is responsible for ensuring that the `channel_id` corresponds to the correct channel.
+pub fn server_encode_svc_messages(messages: Vec<SvcMessage>, channel_id: u16, initiator_id: u16) -> PduResult<Vec<u8>> {
+    encode_svc_messages(messages, channel_id, initiator_id, false)
 }
 
 /// A type that is a Static Virtual Channel
