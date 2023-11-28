@@ -10,8 +10,8 @@ use bitflags::bitflags;
 use ironrdp_pdu::cursor::{ReadCursor, WriteCursor};
 use ironrdp_pdu::utils::{decode_string, encoded_str_len, from_utf16_bytes, write_string_to_cursor, CharacterSet};
 use ironrdp_pdu::{
-    cast_length, ensure_fixed_part_size, ensure_size, invalid_message_err, read_padding, unexpected_message_type_err,
-    write_padding, PduError, PduResult,
+    cast_length, ensure_fixed_part_size, ensure_size, invalid_message_err, read_padding, write_padding, PduError,
+    PduResult,
 };
 
 use super::esc::rpce;
@@ -1390,6 +1390,10 @@ pub enum ServerDriveIoRequest {
     ServerDriveQueryInformationRequest(ServerDriveQueryInformationRequest),
     DeviceCloseRequest(DeviceCloseRequest),
     ServerDriveQueryDirectoryRequest(ServerDriveQueryDirectoryRequest),
+    /// A special type signifying that the minor function is not supported.
+    /// This is not a real PDU type, rather it is used to pass control of
+    /// what to do with the unsupported minor function to the caller.
+    UnsupportedMinorFunctionRequest(DeviceIoRequest),
     ServerDriveQueryVolumeInformationRequest(ServerDriveQueryVolumeInformationRequest),
     DeviceControlRequest(DeviceControlRequest<AnyIoCtlCode>),
     DeviceReadRequest(DeviceReadRequest),
@@ -1415,10 +1419,10 @@ impl ServerDriveIoRequest {
                 MinorFunction::QueryDirectory => Ok(ServerDriveQueryDirectoryRequest::decode(dev_io_req, src)?.into()),
                 // Not supporting other minor functions per FreeRDP:
                 // https://github.com/FreeRDP/FreeRDP/blob/511444a65e7aa2f537c5e531fa68157a50c1bd4d/channels/drive/client/drive_main.c#L660-L666
-                _ => Err(unexpected_message_type_err!(
-                    "ServerDriveIoRequest MinorFunction",
-                    cast_length!("ServerDriveIoRequest", "MinorFunction", dev_io_req.minor_function)?
-                )),
+                _ => {
+                    src.discard();
+                    Ok(ServerDriveIoRequest::UnsupportedMinorFunctionRequest(dev_io_req))
+                }
             },
             MajorFunction::LockControl => todo!(),
         }
