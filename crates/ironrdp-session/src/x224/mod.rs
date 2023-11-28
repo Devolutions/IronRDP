@@ -1,7 +1,6 @@
 mod display;
 mod gfx;
 
-use std::borrow::Cow;
 use std::cmp;
 use std::collections::HashMap;
 
@@ -12,9 +11,8 @@ use ironrdp_pdu::rdp::headers::ShareDataPdu;
 use ironrdp_pdu::rdp::server_error_info::{ErrorInfo, ProtocolIndependentCode, ServerSetErrorInfoPdu};
 use ironrdp_pdu::rdp::vc::dvc;
 use ironrdp_pdu::write_buf::WriteBuf;
-use ironrdp_pdu::{encode_buf, mcs};
 use ironrdp_svc::{
-    StaticChannelSet, StaticVirtualChannel, StaticVirtualChannelProcessor, SvcMessage, SvcProcessorMessages,
+    client_encode_svc_messages, StaticChannelSet, StaticVirtualChannelProcessor, SvcMessage, SvcProcessorMessages,
 };
 
 use crate::{SessionErrorExt as _, SessionResult};
@@ -329,33 +327,7 @@ impl Processor {
 ///
 /// The caller is responsible for ensuring that the `channel_id` corresponds to the correct channel.
 fn process_svc_messages(messages: Vec<SvcMessage>, channel_id: u16, initiator_id: u16) -> SessionResult<Vec<u8>> {
-    // For each response PDU, chunkify it and add appropriate static channel headers.
-    let chunks = StaticVirtualChannel::chunkify(messages).map_err(crate::SessionError::pdu)?;
-
-    // Place each chunk into a SendDataRequest
-    let mcs_pdus = chunks
-        .iter()
-        .map(|buf| mcs::SendDataRequest {
-            initiator_id,
-            channel_id,
-            user_data: Cow::Borrowed(buf.filled()),
-        })
-        .collect::<Vec<mcs::SendDataRequest<'_>>>();
-
-    // SendDataRequest is [`McsPdu`], which is [`x224Pdu`], which is [`PduEncode`]. [`PduEncode`] for [`x224Pdu`]
-    // also takes care of adding the Tpkt header, so therefore we can just call `encode_buf` on each of these and
-    // we will create a buffer of fully encoded PDUs ready to send to the server.
-    //
-    // For example, if we had 2 chunks, our fully_encoded_responses buffer would look like:
-    //
-    // [ | tpkt | x224 | mcs::SendDataRequest | chunk 1 | tpkt | x224 | mcs::SendDataRequest | chunk 2 | ]
-    //   |<------------------- PDU 1 ------------------>|<------------------- PDU 2 ------------------>|
-    let mut fully_encoded_responses = WriteBuf::new(); // TODO(perf): reuse this buffer using `clear` and `filled` as appropriate
-    for pdu in mcs_pdus {
-        encode_buf(&pdu, &mut fully_encoded_responses).map_err(crate::SessionError::pdu)?;
-    }
-
-    Ok(fully_encoded_responses.into_inner())
+    client_encode_svc_messages(messages, channel_id, initiator_id).map_err(crate::SessionError::pdu)
 }
 
 fn create_dvc(
