@@ -1394,6 +1394,7 @@ pub enum ServerDriveIoRequest {
     DeviceControlRequest(DeviceControlRequest<AnyIoCtlCode>),
     DeviceReadRequest(DeviceReadRequest),
     DeviceWriteRequest(DeviceWriteRequest),
+    ServerDriveSetInformationRequest(ServerDriveSetInformationRequest),
 }
 
 impl ServerDriveIoRequest {
@@ -1409,7 +1410,7 @@ impl ServerDriveIoRequest {
             }
             MajorFunction::SetVolumeInformation => todo!(),
             MajorFunction::QueryInformation => Ok(ServerDriveQueryInformationRequest::decode(dev_io_req, src)?.into()),
-            MajorFunction::SetInformation => todo!(),
+            MajorFunction::SetInformation => Ok(ServerDriveSetInformationRequest::decode(dev_io_req, src)?.into()),
             MajorFunction::DirectoryControl => match dev_io_req.minor_function {
                 MinorFunction::QueryDirectory => Ok(ServerDriveQueryDirectoryRequest::decode(dev_io_req, src)?.into()),
                 // Not supporting other minor functions per FreeRDP:
@@ -1469,6 +1470,12 @@ impl From<DeviceReadRequest> for ServerDriveIoRequest {
 impl From<DeviceWriteRequest> for ServerDriveIoRequest {
     fn from(req: DeviceWriteRequest) -> Self {
         Self::DeviceWriteRequest(req)
+    }
+}
+
+impl From<ServerDriveSetInformationRequest> for ServerDriveIoRequest {
+    fn from(req: ServerDriveSetInformationRequest) -> Self {
+        Self::ServerDriveSetInformationRequest(req)
     }
 }
 
@@ -1615,6 +1622,8 @@ bitflags! {
         const FILE_ATTRIBUTE_PINNED = 0x00080000;
         const FILE_ATTRIBUTE_UNPINNED = 0x00100000;
         const FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS = 0x00400000;
+
+        const _ = !0;
     }
 }
 
@@ -1770,6 +1779,14 @@ impl FileInformationClassLevel {
     pub const FILE_BOTH_DIRECTORY_INFORMATION: Self = Self(3);
     /// FileNamesInformation
     pub const FILE_NAMES_INFORMATION: Self = Self(12);
+    /// FileEndOfFileInformation
+    pub const FILE_END_OF_FILE_INFORMATION: Self = Self(20);
+    /// FileDispositionInformation
+    pub const FILE_DISPOSITION_INFORMATION: Self = Self(13);
+    /// FileRenameInformation
+    pub const FILE_RENAME_INFORMATION: Self = Self(10);
+    /// FileAllocationInformation
+    pub const FILE_ALLOCATION_INFORMATION: Self = Self(19);
 }
 
 impl Debug for FileInformationClassLevel {
@@ -1856,6 +1873,10 @@ pub enum FileInformationClass {
     FullDirectory(FileFullDirectoryInformation),
     Names(FileNamesInformation),
     Directory(FileDirectoryInformation),
+    EndOfFile(FileEndOfFileInformation),
+    Disposition(FileDispositionInformation),
+    Rename(FileRenameInformation),
+    Allocation(FileAllocationInformation),
 }
 
 impl FileInformationClass {
@@ -1871,6 +1892,28 @@ impl FileInformationClass {
             Self::FullDirectory(f) => f.encode(dst),
             Self::Names(f) => f.encode(dst),
             Self::Directory(f) => f.encode(dst),
+            _ => unimplemented!("FileInformationClass::encode: {:?}", self),
+        }
+    }
+
+    pub fn decode(
+        file_info_class_level: FileInformationClassLevel,
+        length: usize,
+        src: &mut ReadCursor<'_>,
+    ) -> PduResult<Self> {
+        match file_info_class_level {
+            FileInformationClassLevel::FILE_BASIC_INFORMATION => Ok(FileBasicInformation::decode(src)?.into()),
+            FileInformationClassLevel::FILE_END_OF_FILE_INFORMATION => {
+                Ok(FileEndOfFileInformation::decode(src)?.into())
+            }
+            FileInformationClassLevel::FILE_DISPOSITION_INFORMATION => {
+                Ok(FileDispositionInformation::decode(src, length)?.into())
+            }
+            FileInformationClassLevel::FILE_RENAME_INFORMATION => Ok(FileRenameInformation::decode(src)?.into()),
+            FileInformationClassLevel::FILE_ALLOCATION_INFORMATION => {
+                Ok(FileAllocationInformation::decode(src)?.into())
+            }
+            _ => unimplemented!("FileInformationClass::decode: {:?}", file_info_class_level),
         }
     }
 
@@ -1883,7 +1926,77 @@ impl FileInformationClass {
             Self::FullDirectory(f) => f.size(),
             Self::Names(f) => f.size(),
             Self::Directory(f) => f.size(),
+            Self::EndOfFile(_) => FileEndOfFileInformation::size(),
+            Self::Disposition(_) => FileDispositionInformation::size(),
+            Self::Rename(f) => f.size(),
+            Self::Allocation(_) => FileAllocationInformation::size(),
         }
+    }
+}
+
+impl From<FileBasicInformation> for FileInformationClass {
+    fn from(f: FileBasicInformation) -> Self {
+        Self::Basic(f)
+    }
+}
+
+impl From<FileStandardInformation> for FileInformationClass {
+    fn from(f: FileStandardInformation) -> Self {
+        Self::Standard(f)
+    }
+}
+
+impl From<FileAttributeTagInformation> for FileInformationClass {
+    fn from(f: FileAttributeTagInformation) -> Self {
+        Self::AttributeTag(f)
+    }
+}
+
+impl From<FileBothDirectoryInformation> for FileInformationClass {
+    fn from(f: FileBothDirectoryInformation) -> Self {
+        Self::BothDirectory(f)
+    }
+}
+
+impl From<FileFullDirectoryInformation> for FileInformationClass {
+    fn from(f: FileFullDirectoryInformation) -> Self {
+        Self::FullDirectory(f)
+    }
+}
+
+impl From<FileNamesInformation> for FileInformationClass {
+    fn from(f: FileNamesInformation) -> Self {
+        Self::Names(f)
+    }
+}
+
+impl From<FileDirectoryInformation> for FileInformationClass {
+    fn from(f: FileDirectoryInformation) -> Self {
+        Self::Directory(f)
+    }
+}
+
+impl From<FileEndOfFileInformation> for FileInformationClass {
+    fn from(f: FileEndOfFileInformation) -> Self {
+        Self::EndOfFile(f)
+    }
+}
+
+impl From<FileDispositionInformation> for FileInformationClass {
+    fn from(f: FileDispositionInformation) -> Self {
+        Self::Disposition(f)
+    }
+}
+
+impl From<FileRenameInformation> for FileInformationClass {
+    fn from(f: FileRenameInformation) -> Self {
+        Self::Rename(f)
+    }
+}
+
+impl From<FileAllocationInformation> for FileInformationClass {
+    fn from(f: FileAllocationInformation) -> Self {
+        Self::Allocation(f)
     }
 }
 
@@ -1903,6 +2016,22 @@ pub struct FileBasicInformation {
 
 impl FileBasicInformation {
     const NAME: &str = "FileBasicInformation";
+
+    fn decode(src: &mut ReadCursor<'_>) -> PduResult<Self> {
+        ensure_size!(ctx: "FileBasicInformation", in: src, size: Self::size());
+        let creation_time = src.read_i64();
+        let last_access_time = src.read_i64();
+        let last_write_time = src.read_i64();
+        let change_time = src.read_i64();
+        let file_attributes = FileAttributes::from_bits_retain(src.read_u32());
+        Ok(Self {
+            creation_time,
+            last_access_time,
+            last_write_time,
+            change_time,
+            file_attributes,
+        })
+    }
 
     pub fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
         ensure_size!(in: dst, size: Self::size());
@@ -1976,6 +2105,15 @@ impl From<Boolean> for u8 {
         match boolean {
             Boolean::True => 1,
             Boolean::False => 0,
+        }
+    }
+}
+
+impl From<u8> for Boolean {
+    fn from(value: u8) -> Self {
+        match value {
+            1 => Boolean::True,
+            _ => Boolean::False,
         }
     }
 }
@@ -2375,20 +2513,19 @@ impl ServerDriveQueryDirectoryRequest {
         ensure_fixed_part_size!(in: src);
         let file_info_class_lvl = FileInformationClassLevel::from(src.read_u32());
 
-        // From the documentation: "This field MUST contain one of the following values"
-        static VALID_LEVELS: [FileInformationClassLevel; 4] = [
-            FileInformationClassLevel::FILE_DIRECTORY_INFORMATION,
-            FileInformationClassLevel::FILE_FULL_DIRECTORY_INFORMATION,
-            FileInformationClassLevel::FILE_BOTH_DIRECTORY_INFORMATION,
-            FileInformationClassLevel::FILE_NAMES_INFORMATION,
-        ];
-
-        if !VALID_LEVELS.contains(&file_info_class_lvl) {
-            return Err(invalid_message_err!(
-                "ServerDriveQueryDirectoryRequest::decode",
-                "file_info_class_lvl",
-                "received invalid level"
-            ));
+        // This field MUST contain one of the following values
+        match file_info_class_lvl {
+            FileInformationClassLevel::FILE_DIRECTORY_INFORMATION
+            | FileInformationClassLevel::FILE_FULL_DIRECTORY_INFORMATION
+            | FileInformationClassLevel::FILE_BOTH_DIRECTORY_INFORMATION
+            | FileInformationClassLevel::FILE_NAMES_INFORMATION => {}
+            _ => {
+                return Err(invalid_message_err!(
+                    "ServerDriveQueryDirectoryRequest::decode",
+                    "file_info_class_lvl",
+                    "received invalid level"
+                ))
+            }
         }
 
         let initial_query = src.read_u8();
@@ -2477,20 +2614,19 @@ impl ServerDriveQueryVolumeInformationRequest {
         let fs_info_class_lvl = FileSystemInformationClassLevel::from(src.read_u32());
 
         // This field MUST contain one of the following values.
-        static VALID_LEVELS: [FileSystemInformationClassLevel; 5] = [
-            FileSystemInformationClassLevel::FILE_FS_VOLUME_INFORMATION,
-            FileSystemInformationClassLevel::FILE_FS_SIZE_INFORMATION,
-            FileSystemInformationClassLevel::FILE_FS_ATTRIBUTE_INFORMATION,
-            FileSystemInformationClassLevel::FILE_FS_FULL_SIZE_INFORMATION,
-            FileSystemInformationClassLevel::FILE_FS_DEVICE_INFORMATION,
-        ];
-
-        if !VALID_LEVELS.contains(&fs_info_class_lvl) {
-            return Err(invalid_message_err!(
-                "ServerDriveQueryVolumeInformationRequest::decode",
-                "fs_info_class_lvl",
-                "received invalid level"
-            ));
+        match fs_info_class_lvl {
+            FileSystemInformationClassLevel::FILE_FS_VOLUME_INFORMATION
+            | FileSystemInformationClassLevel::FILE_FS_SIZE_INFORMATION
+            | FileSystemInformationClassLevel::FILE_FS_ATTRIBUTE_INFORMATION
+            | FileSystemInformationClassLevel::FILE_FS_FULL_SIZE_INFORMATION
+            | FileSystemInformationClassLevel::FILE_FS_DEVICE_INFORMATION => {}
+            _ => {
+                return Err(invalid_message_err!(
+                    "ServerDriveQueryVolumeInformationRequest::decode",
+                    "fs_info_class_lvl",
+                    "received invalid level"
+                ))
+            }
         }
 
         // We only need to read the buffer up to the FileInformationClass to get the job done, so the rest of the fields in
@@ -2901,7 +3037,7 @@ impl DeviceReadRequest {
 
     pub fn decode(dev_io_req: DeviceIoRequest, src: &mut ReadCursor<'_>) -> PduResult<Self> {
         ensure_fixed_part_size!(in: src);
-        let length = cast_length!("DeviceReadRequest", "length", src.read_u32())?;
+        let length = src.read_u32();
         let offset = src.read_u64();
         // Padding (20 bytes):  An array of 20 bytes. Reserved. This field can be set to any value and MUST be ignored.
         read_padding!(src, 20);
@@ -3022,5 +3158,192 @@ impl DeviceWriteResponse {
         self.device_io_reply.size() // DeviceIoResponse
         + 4 // Length
         + 1 // Padding
+    }
+}
+
+/// [2.2.3.3.9] Server Drive Set Information Request (DR_DRIVE_SET_INFORMATION_REQ)
+///
+/// [2.2.3.3.9]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/b5d3104b-0e42-4cf8-9059-e9fe86615e5c
+#[derive(Debug, Clone)]
+pub struct ServerDriveSetInformationRequest {
+    pub device_io_request: DeviceIoRequest,
+    pub set_buffer: FileInformationClass,
+}
+
+impl ServerDriveSetInformationRequest {
+    const NAME: &str = "DR_DRIVE_SET_INFORMATION_REQ";
+    const FIXED_PART_SIZE: usize = 4 /* FileInformationClass */ + 4 /* Length */ + 24 /* Padding */;
+
+    fn decode(dev_io_req: DeviceIoRequest, src: &mut ReadCursor<'_>) -> PduResult<Self> {
+        ensure_fixed_part_size!(in: src);
+        let file_information_class_level = FileInformationClassLevel::from(src.read_u32());
+
+        // This field MUST contain one of the following values.
+        match file_information_class_level {
+            FileInformationClassLevel::FILE_BASIC_INFORMATION
+            | FileInformationClassLevel::FILE_END_OF_FILE_INFORMATION
+            | FileInformationClassLevel::FILE_DISPOSITION_INFORMATION
+            | FileInformationClassLevel::FILE_RENAME_INFORMATION
+            | FileInformationClassLevel::FILE_ALLOCATION_INFORMATION => {}
+            _ => {
+                return Err(invalid_message_err!(
+                    "ServerDriveSetInformationRequest::decode",
+                    "file_information_class_level",
+                    "received invalid level"
+                ))
+            }
+        };
+
+        let length = cast_length!("ServerDriveSetInformationRequest", "length", src.read_u32())?;
+
+        read_padding!(src, 24); // Padding
+
+        let set_buffer = FileInformationClass::decode(file_information_class_level, length, src)?;
+
+        Ok(Self {
+            device_io_request: dev_io_req,
+            set_buffer,
+        })
+    }
+}
+
+/// 2.4.13 FileEndOfFileInformation
+///
+/// [2.4.13]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-fscc/75241cca-3167-472f-8058-a52d77c6bb17
+#[derive(Debug, Clone)]
+pub struct FileEndOfFileInformation {
+    pub end_of_file: i64,
+}
+
+impl FileEndOfFileInformation {
+    const NAME: &str = "FileEndOfFileInformation";
+    const FIXED_PART_SIZE: usize = 8; // EndOfFile
+
+    fn decode(src: &mut ReadCursor<'_>) -> PduResult<Self> {
+        ensure_fixed_part_size!(in: src);
+        let end_of_file = src.read_i64();
+        Ok(Self { end_of_file })
+    }
+
+    fn size() -> usize {
+        Self::FIXED_PART_SIZE
+    }
+}
+
+/// [2.4.11] FileDispositionInformation
+///
+/// [2.4.11]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-fscc/12c3dd1c-14f6-4229-9d29-75fb2cb392f6
+#[derive(Debug, Clone)]
+pub struct FileDispositionInformation {
+    pub delete_pending: u8,
+}
+
+impl FileDispositionInformation {
+    const NAME: &str = "FileDispositionInformation";
+    const FIXED_PART_SIZE: usize = 1; // DeletePending
+
+    fn decode(src: &mut ReadCursor<'_>, length: usize) -> PduResult<Self> {
+        ensure_fixed_part_size!(in: src);
+        // https://github.com/FreeRDP/FreeRDP/blob/dfa231c0a55b005af775b833f92f6bcd30363d77/channels/drive/client/drive_file.c#L684-L692
+        let delete_pending = if length != 0 { src.read_u8() } else { 1 };
+        Ok(Self { delete_pending })
+    }
+
+    fn size() -> usize {
+        Self::FIXED_PART_SIZE
+    }
+}
+
+/// [2.4.37] FileRenameInformation
+///
+/// [2.4.37]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-fscc/1d2673a8-8fb9-4868-920a-775ccaa30cf8
+#[derive(Debug, Clone)]
+pub struct FileRenameInformation {
+    pub replace_if_exists: Boolean,
+    /// `file_name` is the relative path to the new location of the file
+    pub file_name: String,
+}
+
+impl FileRenameInformation {
+    const NAME: &str = "FileRenameInformation";
+    const FIXED_PART_SIZE: usize = 1 /* ReplaceIfExists */ + 1 /* RootDirectory */ + 4 /* FileNameLength */;
+
+    fn decode(src: &mut ReadCursor<'_>) -> PduResult<Self> {
+        ensure_fixed_part_size!(in: src);
+        let replace_if_exists = Boolean::from(src.read_u8());
+        let _ = src.read_u8(); // RootDirectory
+        let file_name_length = cast_length!("FileRenameInformation", "file_name_length", src.read_u32())?;
+
+        ensure_size!(in: src, size: file_name_length);
+        let file_name = decode_string(src.read_slice(file_name_length), CharacterSet::Unicode, true)?;
+
+        Ok(Self {
+            replace_if_exists,
+            file_name,
+        })
+    }
+
+    fn size(&self) -> usize {
+        Self::FIXED_PART_SIZE + encoded_str_len(&self.file_name, CharacterSet::Unicode, true)
+    }
+}
+
+/// [2.4.4] FileAllocationInformation
+///
+/// [2.4.4]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-fscc/0201c69b-50db-412d-bab3-dd97aeede13b
+#[derive(Debug, Clone)]
+pub struct FileAllocationInformation {
+    pub allocation_size: i64,
+}
+
+impl FileAllocationInformation {
+    const NAME: &str = "FileAllocationInformation";
+    const FIXED_PART_SIZE: usize = 8; // AllocationSize
+
+    fn decode(src: &mut ReadCursor<'_>) -> PduResult<Self> {
+        ensure_fixed_part_size!(in: src);
+        let allocation_size = src.read_i64();
+        Ok(Self { allocation_size })
+    }
+
+    fn size() -> usize {
+        Self::FIXED_PART_SIZE
+    }
+}
+
+/// [2.2.3.4.9] Client Drive Set Information Response (DR_DRIVE_SET_INFORMATION_RSP)
+///
+/// [2.2.3.4.9]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/16b893d5-5d8b-49d1-8dcb-ee21e7612970
+#[derive(Debug)]
+pub struct ClientDriveSetInformationResponse {
+    device_io_reply: DeviceIoResponse,
+    /// This field MUST be equal to the Length field in the Server Drive Set Information Request (section 2.2.3.3.9).
+    length: u32,
+}
+
+impl ClientDriveSetInformationResponse {
+    const NAME: &str = "DR_DRIVE_SET_INFORMATION_RSP";
+
+    pub fn new(req: &ServerDriveSetInformationRequest, io_status: NtStatus) -> PduResult<Self> {
+        Ok(Self {
+            device_io_reply: DeviceIoResponse::new(req.device_io_request.clone(), io_status),
+            length: cast_length!("ClientDriveSetInformationResponse", "length", req.set_buffer.size())?,
+        })
+    }
+
+    pub fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_size!(in: dst, size: self.size());
+        self.device_io_reply.encode(dst)?;
+        dst.write_u32(self.length);
+        Ok(())
+    }
+
+    pub fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    pub fn size(&self) -> usize {
+        self.device_io_reply.size() // DeviceIoResponse
+        + 4 // Length
     }
 }
