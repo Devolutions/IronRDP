@@ -1088,20 +1088,7 @@ impl DeviceIoRequest {
         let file_id = src.read_u32();
         let completion_id = src.read_u32();
         let major_function = MajorFunction::try_from(src.read_u32())?;
-        let minor_function = src.read_u32();
-
-        // From the spec (linked in [`DeviceIoRequest`] doc comment):
-        // "This field [MinorFunction] is valid only when the MajorFunction field
-        // is set to IRP_MJ_DIRECTORY_CONTROL. If the MajorFunction field is set
-        // to another value, the MinorFunction field value SHOULD be 0x00000000."
-        //
-        // SHOULD means implementations are not guaranteed to give us 0x00000000,
-        // so handle that possibility here.
-        let minor_function = if major_function == MajorFunction::DirectoryControl {
-            MinorFunction::try_from(minor_function)?
-        } else {
-            MinorFunction::None
-        };
+        let minor_function = MinorFunction::from(src.read_u32());
 
         Ok(Self {
             device_id,
@@ -1172,39 +1159,46 @@ impl From<MajorFunction> for u32 {
     }
 }
 
-/// See [`DeviceIoRequest`].
-#[derive(Debug, Clone, Copy)]
-#[repr(u32)]
-pub enum MinorFunction {
-    /// "If the MajorFunction field is set to another value, the MinorFunction field value SHOULD be 0x0000_0000."
-    None = 0x0000_0000,
-    /// IRP_MN_QUERY_DIRECTORY
-    QueryDirectory = 0x0000_0001,
-    /// IRP_MN_NOTIFY_CHANGE_DIRECTORY
-    NotifyChangeDirectory = 0x0000_0002,
+#[derive(Clone, Copy, PartialEq, Eq)]
+/// A 32-bit unsigned integer. This field is valid only when the MajorFunction field is
+/// set to IRP_MJ_DIRECTORY_CONTROL. If the MajorFunction field is set to another value,
+/// the MinorFunction field value SHOULD be 0x00000000; otherwise, the MinorFunction
+/// field MUST have one of the following values:
+///
+/// 1. [`MinorFunction::IRP_MN_QUERY_DIRECTORY`]
+/// 2. [`MinorFunction::IRP_MN_NOTIFY_CHANGE_DIRECTORY`]
+pub struct MinorFunction(u32);
+
+impl MinorFunction {
+    pub const IRP_MN_QUERY_DIRECTORY: Self = Self(0x00000001);
+    pub const IRP_MN_NOTIFY_CHANGE_DIRECTORY: Self = Self(0x00000002);
 }
 
-impl TryFrom<u32> for MinorFunction {
-    type Error = PduError;
-
-    fn try_from(value: u32) -> Result<Self, Self::Error> {
-        match value {
-            0x0000_0001 => Ok(MinorFunction::QueryDirectory),
-            0x0000_0002 => Ok(MinorFunction::NotifyChangeDirectory),
-            _ => Err(invalid_message_err!("try_from", "MinorFunction", "unsupported value")),
+impl Debug for MinorFunction {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match *self {
+            MinorFunction::IRP_MN_QUERY_DIRECTORY => write!(f, "IRP_MN_QUERY_DIRECTORY"),
+            MinorFunction::IRP_MN_NOTIFY_CHANGE_DIRECTORY => write!(f, "IRP_MN_NOTIFY_CHANGE_DIRECTORY"),
+            _ => write!(f, "MinorFunction({:#010X})", self.0),
         }
+    }
+}
+
+impl From<u32> for MinorFunction {
+    fn from(value: u32) -> Self {
+        Self(value)
     }
 }
 
 impl From<MinorFunction> for u32 {
     fn from(minor_function: MinorFunction) -> Self {
-        minor_function as u32
+        minor_function.0
     }
 }
 
 impl From<MinorFunction> for u8 {
     fn from(minor_function: MinorFunction) -> Self {
-        minor_function as u8
+        minor_function.0 as u8
     }
 }
 
@@ -1390,10 +1384,7 @@ pub enum ServerDriveIoRequest {
     ServerDriveQueryInformationRequest(ServerDriveQueryInformationRequest),
     DeviceCloseRequest(DeviceCloseRequest),
     ServerDriveQueryDirectoryRequest(ServerDriveQueryDirectoryRequest),
-    /// A special type signifying that the minor function is not supported.
-    /// This is not a real PDU type, rather it is used to pass control of
-    /// what to do with the unsupported minor function to the caller.
-    UnsupportedMinorFunctionRequest(DeviceIoRequest),
+    ServerDriveNotifyChangeDirectoryRequest(ServerDriveNotifyChangeDirectoryRequest),
     ServerDriveQueryVolumeInformationRequest(ServerDriveQueryVolumeInformationRequest),
     DeviceControlRequest(DeviceControlRequest<AnyIoCtlCode>),
     DeviceReadRequest(DeviceReadRequest),
@@ -1416,13 +1407,18 @@ impl ServerDriveIoRequest {
             MajorFunction::QueryInformation => Ok(ServerDriveQueryInformationRequest::decode(dev_io_req, src)?.into()),
             MajorFunction::SetInformation => Ok(ServerDriveSetInformationRequest::decode(dev_io_req, src)?.into()),
             MajorFunction::DirectoryControl => match dev_io_req.minor_function {
-                MinorFunction::QueryDirectory => Ok(ServerDriveQueryDirectoryRequest::decode(dev_io_req, src)?.into()),
-                // Not supporting other minor functions per FreeRDP:
-                // https://github.com/FreeRDP/FreeRDP/blob/511444a65e7aa2f537c5e531fa68157a50c1bd4d/channels/drive/client/drive_main.c#L660-L666
-                _ => {
-                    src.discard();
-                    Ok(ServerDriveIoRequest::UnsupportedMinorFunctionRequest(dev_io_req))
+                MinorFunction::IRP_MN_QUERY_DIRECTORY => {
+                    Ok(ServerDriveQueryDirectoryRequest::decode(dev_io_req, src)?.into())
                 }
+                MinorFunction::IRP_MN_NOTIFY_CHANGE_DIRECTORY => {
+                    Ok(ServerDriveNotifyChangeDirectoryRequest::decode(dev_io_req, src)?.into())
+                }
+                // If MajorFunction is set to IRP_MJ_DIRECTORY_CONTROL and MinorFunction is set to any other value, we've encountered a server bug.
+                _ => Err(invalid_message_err!(
+                    "ServerDriveIoRequest::decode",
+                    "MinorFunction",
+                    "invalid value"
+                )),
             },
             MajorFunction::LockControl => todo!(),
         }
@@ -1450,6 +1446,12 @@ impl From<DeviceCloseRequest> for ServerDriveIoRequest {
 impl From<ServerDriveQueryDirectoryRequest> for ServerDriveIoRequest {
     fn from(req: ServerDriveQueryDirectoryRequest) -> Self {
         Self::ServerDriveQueryDirectoryRequest(req)
+    }
+}
+
+impl From<ServerDriveNotifyChangeDirectoryRequest> for ServerDriveIoRequest {
+    fn from(req: ServerDriveNotifyChangeDirectoryRequest) -> Self {
+        Self::ServerDriveNotifyChangeDirectoryRequest(req)
     }
 }
 
@@ -2545,6 +2547,35 @@ impl ServerDriveQueryDirectoryRequest {
             file_info_class_lvl,
             initial_query,
             path,
+        })
+    }
+}
+
+/// 2.2.3.3.11 Server Drive NotifyChange Directory Request (DR_DRIVE_NOTIFY_CHANGE_DIRECTORY_REQ)
+///
+/// [2.2.3.3.11]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/ed05e73d-e53e-4261-a1e1-365a70ba6512
+#[derive(Debug)]
+pub struct ServerDriveNotifyChangeDirectoryRequest {
+    pub device_io_request: DeviceIoRequest,
+    pub watch_tree: u8,
+    pub completion_filter: u32,
+}
+
+impl ServerDriveNotifyChangeDirectoryRequest {
+    const NAME: &str = "DR_DRIVE_NOTIFY_CHANGE_DIRECTORY_REQ";
+    const FIXED_PART_SIZE: usize = 1 /* WatchTree */ + 4 /* CompletionFilter */ + 27 /* Padding */;
+
+    fn decode(device_io_request: DeviceIoRequest, src: &mut ReadCursor<'_>) -> PduResult<Self> {
+        ensure_fixed_part_size!(in: src);
+        let watch_tree = src.read_u8();
+        let completion_filter = src.read_u32();
+        // Padding (27 bytes): An array of 27 bytes. This field is unused and MUST be ignored.
+        read_padding!(src, 27);
+
+        Ok(Self {
+            device_io_request,
+            watch_tree,
+            completion_filter,
         })
     }
 }

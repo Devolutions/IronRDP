@@ -46,12 +46,6 @@ impl<'a> ReadCursor<'a> {
     }
 
     #[inline]
-    pub fn discard(&mut self) {
-        let remaining_len = self.len();
-        self.advance(remaining_len);
-    }
-
-    #[inline]
     #[track_caller]
     pub fn read_array<const N: usize>(&mut self) -> [u8; N] {
         let bytes = &self.inner[self.pos..self.pos + N];
