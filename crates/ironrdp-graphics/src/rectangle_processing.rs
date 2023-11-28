@@ -71,7 +71,7 @@ impl Region {
                 let rectangles = self
                     .rectangles
                     .iter()
-                    .take_while(|r| r.top < rectangle.bottom)
+                    .take_while(|r| r.top <= rectangle.bottom)
                     .filter_map(|r| r.intersect(rectangle))
                     .collect::<Vec<_>>();
                 let extents = InclusiveRectangle::union_all(rectangles.as_slice());
@@ -1481,10 +1481,10 @@ mod tests {
             rectangles: Vec::new(),
         };
         let input_rectangle = InclusiveRectangle {
-            left: 5,
-            top: 2,
-            right: 6,
-            bottom: 3,
+            left: 1,
+            top: 4,
+            right: 2,
+            bottom: 5,
         };
 
         let actual_region = region.intersect_rectangle(&input_rectangle);
@@ -1493,7 +1493,7 @@ mod tests {
 
     #[test]
     fn intersect_rectangle_returns_empty_region_for_empty_intersection_region() {
-        let expected_region = Region {
+        let expected_region: Region = Region {
             extents: InclusiveRectangle {
                 left: 0,
                 top: 0,
@@ -1613,23 +1613,23 @@ mod tests {
         let region = &*REGION_FOR_RECTANGLES_INTERSECTION;
         let expected_region = Region {
             extents: InclusiveRectangle {
-                left: 4,
-                top: 6,
-                right: 5,
-                bottom: 8,
+                left: 2,
+                top: 2,
+                right: 4,
+                bottom: 3,
             },
             rectangles: vec![InclusiveRectangle {
-                left: 4,
-                top: 6,
-                right: 5,
-                bottom: 8,
+                left: 2,
+                top: 2,
+                right: 4,
+                bottom: 3,
             }],
         };
-        let input_rectangle = InclusiveRectangle {
-            left: 4,
-            top: 6,
-            right: 5,
-            bottom: 8,
+        let input_rectangle: InclusiveRectangle = InclusiveRectangle {
+            left: 2,
+            top: 2,
+            right: 4,
+            bottom: 3,
         };
 
         let actual_region = region.intersect_rectangle(&input_rectangle);

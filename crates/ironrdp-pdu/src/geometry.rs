@@ -63,7 +63,7 @@ pub trait Rectangle: RectangleImpl {
             bottom: min(a.bottom, b.bottom),
         };
 
-        if result.left < result.right && result.top < result.bottom {
+        if result.left <= result.right && result.top <= result.bottom {
             Some(Self::from_base(result))
         } else {
             None
