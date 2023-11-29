@@ -11,7 +11,7 @@ use futures_util::{select, AsyncReadExt as _, AsyncWriteExt as _, FutureExt as _
 use gloo_net::websocket;
 use gloo_net::websocket::futures::WebSocket;
 use ironrdp::cliprdr::backend::ClipboardMessage;
-use ironrdp::cliprdr::Cliprdr;
+use ironrdp::cliprdr::CliprdrClient;
 use ironrdp::connector::credssp::KerberosConfig;
 use ironrdp::connector::{self, ClientConnector, Credentials};
 use ironrdp::graphics::image_processing::PixelFormat;
@@ -444,7 +444,7 @@ impl Session {
 
                     match event {
                         RdpInputEvent::Cliprdr(message) => {
-                            if let Some(cliprdr) = active_stage.get_svc_processor::<Cliprdr>() {
+                            if let Some(cliprdr) = active_stage.get_svc_processor::<CliprdrClient>() {
                                 if let Some(svc_messages) = match message {
                                     ClipboardMessage::SendInitiateCopy(formats) => Some(
                                         cliprdr.initiate_copy(&formats)
@@ -794,7 +794,7 @@ async fn connect(
     let mut connector = connector::ClientConnector::new(config);
 
     if let Some(clipboard_backend) = clipboard_backend {
-        connector.attach_static_channel(Cliprdr::new(Box::new(clipboard_backend)));
+        connector.attach_static_channel(CliprdrClient::new(Box::new(clipboard_backend)));
     }
 
     let (upgraded, server_public_key) =
