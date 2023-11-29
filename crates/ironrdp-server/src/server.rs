@@ -3,6 +3,7 @@ use std::net::SocketAddr;
 
 use anyhow::{bail, Result};
 use ironrdp_acceptor::{self, Acceptor, AcceptorResult, BeginResult};
+use ironrdp_cliprdr::{backend::CliprdrBackendFactory, Cliprdr};
 use ironrdp_pdu::input::fast_path::{FastPathInput, FastPathInputEvent};
 use ironrdp_pdu::input::InputEventPdu;
 use ironrdp_pdu::mcs::SendDataRequest;
@@ -104,6 +105,7 @@ pub struct RdpServer {
     handler: Box<dyn RdpServerInputHandler>,
     display: Box<dyn RdpServerDisplay>,
     static_channels: StaticChannelSet,
+    cliprdr_factory: Option<Box<dyn CliprdrBackendFactory + Send>>,
 }
 
 impl RdpServer {
@@ -111,12 +113,14 @@ impl RdpServer {
         opts: RdpServerOptions,
         handler: Box<dyn RdpServerInputHandler>,
         display: Box<dyn RdpServerDisplay>,
+        cliprdr_factory: Option<Box<dyn CliprdrBackendFactory + Send>>,
     ) -> Self {
         Self {
             opts,
             handler,
             display,
             static_channels: StaticChannelSet::new(),
+            cliprdr_factory,
         }
     }
 
@@ -130,6 +134,14 @@ impl RdpServer {
         let size = self.display.size().await;
         let capabilities = capabilities::capabilities(&self.opts, size.clone());
         let mut acceptor = Acceptor::new(self.opts.security.flag(), size, capabilities);
+
+        if let Some(cliprdr_factory) = self.cliprdr_factory.as_deref() {
+            let backend = cliprdr_factory.build_cliprdr_backend();
+
+            let cliprdr = Cliprdr::new(backend);
+
+            acceptor.attach_static_channel(cliprdr);
+        }
 
         match ironrdp_acceptor::accept_begin(framed, &mut acceptor).await {
             Ok(BeginResult::ShouldUpgrade(stream)) => {
