@@ -1,8 +1,8 @@
-use std::fmt;
+use std::fmt::{self, Display};
 use std::mem::size_of;
 
 use ironrdp_pdu::cursor::{ReadCursor, WriteCursor};
-use ironrdp_pdu::{ensure_size, invalid_message_err, PduDecode, PduEncode, PduError, PduResult};
+use ironrdp_pdu::{ensure_size, invalid_message_err, unsupported_pdu_err, PduDecode, PduEncode, PduError, PduResult};
 
 use self::efs::{
     ClientDeviceListAnnounce, ClientDriveQueryDirectoryResponse, ClientDriveQueryInformationResponse,
@@ -31,8 +31,7 @@ pub enum RdpdrPdu {
     DeviceReadResponse(DeviceReadResponse),
     DeviceWriteResponse(DeviceWriteResponse),
     ClientDriveSetInformationResponse(ClientDriveSetInformationResponse),
-    /// TODO: temporary value for development, this should be removed
-    Unimplemented,
+    EmptyResponse,
 }
 
 impl RdpdrPdu {
@@ -87,13 +86,10 @@ impl RdpdrPdu {
             | RdpdrPdu::ClientDriveQueryVolumeInformationResponse(_)
             | RdpdrPdu::DeviceReadResponse(_)
             | RdpdrPdu::DeviceWriteResponse(_)
-            | RdpdrPdu::ClientDriveSetInformationResponse(_) => SharedHeader {
+            | RdpdrPdu::ClientDriveSetInformationResponse(_)
+            | RdpdrPdu::EmptyResponse => SharedHeader {
                 component: Component::RdpdrCtypCore,
                 packet_id: PacketId::CoreDeviceIoCompletion,
-            },
-            RdpdrPdu::Unimplemented => SharedHeader {
-                component: Component::Unimplemented,
-                packet_id: PacketId::Unimplemented,
             },
         }
     }
@@ -110,7 +106,11 @@ impl PduDecode<'_> for RdpdrPdu {
                 ServerDeviceAnnounceResponse::decode(src)?,
             )),
             PacketId::CoreDeviceIoRequest => Ok(RdpdrPdu::DeviceIoRequest(DeviceIoRequest::decode(src)?)),
-            _ => Ok(RdpdrPdu::Unimplemented),
+            _ => Err(unsupported_pdu_err!(
+                "RdpdrPdu",
+                "PacketId",
+                header.packet_id.to_string()
+            )),
         }
     }
 }
@@ -135,7 +135,12 @@ impl PduEncode for RdpdrPdu {
             RdpdrPdu::DeviceReadResponse(pdu) => pdu.encode(dst),
             RdpdrPdu::DeviceWriteResponse(pdu) => pdu.encode(dst),
             RdpdrPdu::ClientDriveSetInformationResponse(pdu) => pdu.encode(dst),
-            RdpdrPdu::Unimplemented => Ok(()),
+
+            RdpdrPdu::EmptyResponse => {
+                // https://github.com/FreeRDP/FreeRDP/blob/dfa231c0a55b005af775b833f92f6bcd30363d77/channels/drive/client/drive_main.c#L601
+                dst.write_u32(0);
+                Ok(())
+            }
         }
     }
 
@@ -156,7 +161,7 @@ impl PduEncode for RdpdrPdu {
             RdpdrPdu::DeviceReadResponse(pdu) => pdu.name(),
             RdpdrPdu::DeviceWriteResponse(pdu) => pdu.name(),
             RdpdrPdu::ClientDriveSetInformationResponse(pdu) => pdu.name(),
-            RdpdrPdu::Unimplemented => "Unimplemented",
+            RdpdrPdu::EmptyResponse => "EmptyResponse",
         }
     }
 
@@ -178,7 +183,7 @@ impl PduEncode for RdpdrPdu {
                 RdpdrPdu::DeviceReadResponse(pdu) => pdu.size(),
                 RdpdrPdu::DeviceWriteResponse(pdu) => pdu.size(),
                 RdpdrPdu::ClientDriveSetInformationResponse(pdu) => pdu.size(),
-                RdpdrPdu::Unimplemented => 0,
+                RdpdrPdu::EmptyResponse => size_of::<u32>(),
             }
     }
 }
@@ -231,8 +236,8 @@ impl fmt::Debug for RdpdrPdu {
             Self::ClientDriveSetInformationResponse(it) => {
                 write!(f, "RdpdrPdu({:?})", it)
             }
-            Self::Unimplemented => {
-                write!(f, "RdpdrPdu::Unimplemented")
+            Self::EmptyResponse => {
+                write!(f, "RdpdrPdu(EmptyResponse)")
             }
         }
     }
@@ -328,8 +333,6 @@ pub enum Component {
     RdpdrCtypCore = 0x4472,
     /// RDPDR_CTYP_PRN
     RdpdrCtypPrn = 0x5052,
-    /// TODO: temporary value for development, this should be removed
-    Unimplemented,
 }
 
 impl TryFrom<u16> for Component {
@@ -379,8 +382,6 @@ pub enum PacketId {
     CoreUserLoggedon = 0x554C,
     /// PAKID_PRN_USING_XPS
     PrnUsingXps = 0x5543,
-    /// TODO: temporary value for development, this should be removed
-    Unimplemented,
 }
 
 impl TryFrom<u16> for PacketId {
@@ -402,6 +403,26 @@ impl TryFrom<u16> for PacketId {
             0x554C => Ok(PacketId::CoreUserLoggedon),
             0x5543 => Ok(PacketId::PrnUsingXps),
             _ => Err(invalid_message_err!("try_from", "PacketId", "invalid value")),
+        }
+    }
+}
+
+impl Display for PacketId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            PacketId::CoreServerAnnounce => write!(f, "PAKID_CORE_SERVER_ANNOUNCE"),
+            PacketId::CoreClientidConfirm => write!(f, "PAKID_CORE_CLIENTID_CONFIRM"),
+            PacketId::CoreClientName => write!(f, "PAKID_CORE_CLIENT_NAME"),
+            PacketId::CoreDevicelistAnnounce => write!(f, "PAKID_CORE_DEVICELIST_ANNOUNCE"),
+            PacketId::CoreDeviceReply => write!(f, "PAKID_CORE_DEVICE_REPLY"),
+            PacketId::CoreDeviceIoRequest => write!(f, "PAKID_CORE_DEVICE_IOREQUEST"),
+            PacketId::CoreDeviceIoCompletion => write!(f, "PAKID_CORE_DEVICE_IOCOMPLETION"),
+            PacketId::CoreServerCapability => write!(f, "PAKID_CORE_SERVER_CAPABILITY"),
+            PacketId::CoreClientCapability => write!(f, "PAKID_CORE_CLIENT_CAPABILITY"),
+            PacketId::CoreDevicelistRemove => write!(f, "PAKID_CORE_DEVICELIST_REMOVE"),
+            PacketId::PrnCacheData => write!(f, "PAKID_PRN_CACHE_DATA"),
+            PacketId::CoreUserLoggedon => write!(f, "PAKID_CORE_USER_LOGGEDON"),
+            PacketId::PrnUsingXps => write!(f, "PAKID_PRN_USING_XPS"),
         }
     }
 }

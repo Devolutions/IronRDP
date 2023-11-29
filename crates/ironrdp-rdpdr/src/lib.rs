@@ -187,9 +187,9 @@ impl StaticVirtualChannelProcessor for Rdpdr {
         CompressionCondition::WhenRdpDataIsCompressed
     }
 
-    fn process(&mut self, payload: &[u8]) -> PduResult<Vec<SvcMessage>> {
-        let mut payload = ReadCursor::new(payload);
-        let pdu = decode_cursor::<RdpdrPdu>(&mut payload)?;
+    fn process(&mut self, src: &[u8]) -> PduResult<Vec<SvcMessage>> {
+        let mut src = ReadCursor::new(src);
+        let pdu = decode_cursor::<RdpdrPdu>(&mut src)?;
         debug!("received {:?}", pdu);
 
         match pdu {
@@ -203,11 +203,7 @@ impl StaticVirtualChannelProcessor for Rdpdr {
                 self.handle_client_id_confirm()
             }
             RdpdrPdu::ServerDeviceAnnounceResponse(pdu) => self.handle_server_device_announce_response(pdu),
-            RdpdrPdu::DeviceIoRequest(pdu) => self.handle_device_io_request(pdu, &mut payload),
-            RdpdrPdu::Unimplemented => {
-                warn!(?pdu, "received unimplemented packet");
-                Ok(Vec::new())
-            }
+            RdpdrPdu::DeviceIoRequest(pdu) => self.handle_device_io_request(pdu, &mut src),
             // TODO: This can eventually become a `_ => {}` block, but being explicit for now
             // to make sure we don't miss handling new RdpdrPdu variants here during active development.
             RdpdrPdu::ClientNameRequest(_)
@@ -222,7 +218,8 @@ impl StaticVirtualChannelProcessor for Rdpdr {
             | RdpdrPdu::ClientDriveQueryVolumeInformationResponse(_)
             | RdpdrPdu::DeviceReadResponse(_)
             | RdpdrPdu::DeviceWriteResponse(_)
-            | RdpdrPdu::ClientDriveSetInformationResponse(_) => Err(other_err!("Rdpdr", "received unexpected packet")),
+            | RdpdrPdu::ClientDriveSetInformationResponse(_)
+            | RdpdrPdu::EmptyResponse => Err(other_err!("Rdpdr", "received unexpected packet")),
         }
     }
 }

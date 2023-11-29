@@ -3,15 +3,15 @@
 //! [\[MS-RDPEFS\]: Remote Desktop Protocol: File System Virtual Channel Extension]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/34d9de58-b2b5-40b6-b970-f82d4603bdb5
 
 use core::fmt;
-use std::fmt::Debug;
+use std::fmt::{Debug, Display};
 use std::mem::size_of;
 
 use bitflags::bitflags;
 use ironrdp_pdu::cursor::{ReadCursor, WriteCursor};
 use ironrdp_pdu::utils::{decode_string, encoded_str_len, from_utf16_bytes, write_string_to_cursor, CharacterSet};
 use ironrdp_pdu::{
-    cast_length, ensure_fixed_part_size, ensure_size, invalid_message_err, read_padding, write_padding, PduError,
-    PduResult,
+    cast_length, ensure_fixed_part_size, ensure_size, invalid_message_err, read_padding, unsupported_pdu_err,
+    write_padding, PduError, PduResult,
 };
 
 use super::esc::rpce;
@@ -1390,6 +1390,7 @@ pub enum ServerDriveIoRequest {
     DeviceReadRequest(DeviceReadRequest),
     DeviceWriteRequest(DeviceWriteRequest),
     ServerDriveSetInformationRequest(ServerDriveSetInformationRequest),
+    ServerDriveLockControlRequest(ServerDriveLockControlRequest),
 }
 
 impl ServerDriveIoRequest {
@@ -1403,7 +1404,11 @@ impl ServerDriveIoRequest {
             MajorFunction::QueryVolumeInformation => {
                 Ok(ServerDriveQueryVolumeInformationRequest::decode(dev_io_req, src)?.into())
             }
-            MajorFunction::SetVolumeInformation => todo!(),
+            MajorFunction::SetVolumeInformation => Err(unsupported_pdu_err!(
+                "ServerDriveIoRequest::decode",
+                "MajorFunction",
+                "SetVolumeInformation".to_owned()
+            )), // FreeRDP doesn't implement this
             MajorFunction::QueryInformation => Ok(ServerDriveQueryInformationRequest::decode(dev_io_req, src)?.into()),
             MajorFunction::SetInformation => Ok(ServerDriveSetInformationRequest::decode(dev_io_req, src)?.into()),
             MajorFunction::DirectoryControl => match dev_io_req.minor_function {
@@ -1420,7 +1425,7 @@ impl ServerDriveIoRequest {
                     "invalid value"
                 )),
             },
-            MajorFunction::LockControl => todo!(),
+            MajorFunction::LockControl => Ok(ServerDriveLockControlRequest::decode(dev_io_req, src)?.into()),
         }
     }
 }
@@ -1482,6 +1487,12 @@ impl From<DeviceWriteRequest> for ServerDriveIoRequest {
 impl From<ServerDriveSetInformationRequest> for ServerDriveIoRequest {
     fn from(req: ServerDriveSetInformationRequest) -> Self {
         Self::ServerDriveSetInformationRequest(req)
+    }
+}
+
+impl From<ServerDriveLockControlRequest> for ServerDriveIoRequest {
+    fn from(req: ServerDriveLockControlRequest) -> Self {
+        Self::ServerDriveLockControlRequest(req)
     }
 }
 
@@ -1795,6 +1806,25 @@ impl FileInformationClassLevel {
     pub const FILE_ALLOCATION_INFORMATION: Self = Self(19);
 }
 
+impl Display for FileInformationClassLevel {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match *self {
+            FileInformationClassLevel::FILE_BASIC_INFORMATION => write!(f, "FileBasicInformation"),
+            FileInformationClassLevel::FILE_STANDARD_INFORMATION => write!(f, "FileStandardInformation"),
+            FileInformationClassLevel::FILE_ATTRIBUTE_TAG_INFORMATION => write!(f, "FileAttributeTagInformation"),
+            FileInformationClassLevel::FILE_DIRECTORY_INFORMATION => write!(f, "FileDirectoryInformation"),
+            FileInformationClassLevel::FILE_FULL_DIRECTORY_INFORMATION => write!(f, "FileFullDirectoryInformation"),
+            FileInformationClassLevel::FILE_BOTH_DIRECTORY_INFORMATION => write!(f, "FileBothDirectoryInformation"),
+            FileInformationClassLevel::FILE_NAMES_INFORMATION => write!(f, "FileNamesInformation"),
+            FileInformationClassLevel::FILE_END_OF_FILE_INFORMATION => write!(f, "FileEndOfFileInformation"),
+            FileInformationClassLevel::FILE_DISPOSITION_INFORMATION => write!(f, "FileDispositionInformation"),
+            FileInformationClassLevel::FILE_RENAME_INFORMATION => write!(f, "FileRenameInformation"),
+            FileInformationClassLevel::FILE_ALLOCATION_INFORMATION => write!(f, "FileAllocationInformation"),
+            _ => write!(f, "FileInformationClassLevel({})", self.0),
+        }
+    }
+}
+
 impl Debug for FileInformationClassLevel {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match *self {
@@ -1898,7 +1928,11 @@ impl FileInformationClass {
             Self::FullDirectory(f) => f.encode(dst),
             Self::Names(f) => f.encode(dst),
             Self::Directory(f) => f.encode(dst),
-            _ => unimplemented!("FileInformationClass::encode: {:?}", self),
+            _ => Err(unsupported_pdu_err!(
+                "FileInformationClass::encode",
+                "FileInformationClass",
+                self.to_string()
+            )),
         }
     }
 
@@ -1919,7 +1953,11 @@ impl FileInformationClass {
             FileInformationClassLevel::FILE_ALLOCATION_INFORMATION => {
                 Ok(FileAllocationInformation::decode(src)?.into())
             }
-            _ => unimplemented!("FileInformationClass::decode: {:?}", file_info_class_level),
+            _ => Err(unsupported_pdu_err!(
+                "FileInformationClass::decode",
+                "FileInformationClassLevel",
+                file_info_class_level.to_string()
+            )),
         }
     }
 
@@ -1936,6 +1974,24 @@ impl FileInformationClass {
             Self::Disposition(_) => FileDispositionInformation::size(),
             Self::Rename(f) => f.size(),
             Self::Allocation(_) => FileAllocationInformation::size(),
+        }
+    }
+}
+
+impl Display for FileInformationClass {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Basic(_) => write!(f, "FileBasicInformation"),
+            Self::Standard(_) => write!(f, "FileStandardInformation"),
+            Self::AttributeTag(_) => write!(f, "FileAttributeTagInformation"),
+            Self::BothDirectory(_) => write!(f, "FileBothDirectoryInformation"),
+            Self::FullDirectory(_) => write!(f, "FileFullDirectoryInformation"),
+            Self::Names(_) => write!(f, "FileNamesInformation"),
+            Self::Directory(_) => write!(f, "FileDirectoryInformation"),
+            Self::EndOfFile(_) => write!(f, "FileEndOfFileInformation"),
+            Self::Disposition(_) => write!(f, "FileDispositionInformation"),
+            Self::Rename(_) => write!(f, "FileRenameInformation"),
+            Self::Allocation(_) => write!(f, "FileAllocationInformation"),
         }
     }
 }
@@ -3380,5 +3436,27 @@ impl ClientDriveSetInformationResponse {
     pub fn size(&self) -> usize {
         self.device_io_reply.size() // DeviceIoResponse
         + 4 // Length
+    }
+}
+
+/// 2.2.3.3.12 Server Drive Lock Control Request (DR_DRIVE_LOCK_REQ)
+///
+/// [2.2.3.3.12]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/a96fe85c-620c-40ce-8858-a6bc38609b0a
+#[derive(Debug, Clone)]
+pub struct ServerDriveLockControlRequest {
+    pub device_io_request: DeviceIoRequest,
+}
+
+impl ServerDriveLockControlRequest {
+    const NAME: &str = "DR_DRIVE_LOCK_REQ";
+
+    fn decode(dev_io_req: DeviceIoRequest, src: &mut ReadCursor<'_>) -> PduResult<Self> {
+        // It's not quite clear why this is done this way, but it's what FreeRDP does:
+        // https://github.com/FreeRDP/FreeRDP/blob/dfa231c0a55b005af775b833f92f6bcd30363d77/channels/drive/client/drive_main.c#L600
+        ensure_size!(in: src, size: 4);
+        let _ = src.read_u32();
+        Ok(Self {
+            device_io_request: dev_io_req,
+        })
     }
 }
