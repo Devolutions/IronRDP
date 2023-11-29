@@ -1875,6 +1875,7 @@ dependencies = [
  "ironrdp-cliprdr",
  "ironrdp-graphics",
  "ironrdp-pdu",
+ "ironrdp-rdpsnd",
  "ironrdp-svc",
  "ironrdp-tokio",
  "tokio",

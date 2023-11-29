@@ -9,6 +9,7 @@ use ironrdp_pdu::input::InputEventPdu;
 use ironrdp_pdu::mcs::SendDataRequest;
 use ironrdp_pdu::rdp::capability_sets::{CapabilitySet, CmdFlags, GeneralExtraFlags};
 use ironrdp_pdu::{self, mcs, nego, rdp, Action, PduParsing};
+use ironrdp_rdpsnd as rdpsnd;
 use ironrdp_svc::{server_encode_svc_messages, ChannelSide, StaticChannelSet};
 use ironrdp_tokio::{Framed, FramedRead, FramedWrite, TokioFramed};
 use tokio::net::{TcpListener, TcpStream};
@@ -142,6 +143,9 @@ impl RdpServer {
 
             acceptor.attach_static_channel(cliprdr);
         }
+
+        // TODO: if snd handler
+        acceptor.attach_static_channel(rdpsnd::Rdpsnd::new());
 
         match ironrdp_acceptor::accept_begin(framed, &mut acceptor).await {
             Ok(BeginResult::ShouldUpgrade(stream)) => {
