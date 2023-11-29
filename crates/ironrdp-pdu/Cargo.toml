@@ -21,7 +21,7 @@ std = ["alloc", "ironrdp-error/std"]
 alloc = ["ironrdp-error/alloc"]
 
 [dependencies]
-bitflags = "2"
+bitflags.workspace = true
 ironrdp-error.workspace = true
 tap = "1"
 

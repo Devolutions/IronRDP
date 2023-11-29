@@ -56,6 +56,7 @@ sspi = "0.11"
 tracing = { version = "0.1", features = ["log"] }
 thiserror = "1.0"
 png = "0.17"
+bitflags = "2.4"
 
 [profile.dev]
 opt-level = 1

@@ -168,6 +168,28 @@ impl<'a> ReadCursor<'a> {
     }
 
     #[inline]
+    pub fn read_i64(&mut self) -> i64 {
+        i64::from_le_bytes(self.read_array::<8>())
+    }
+
+    #[inline]
+    pub fn read_i64_be(&mut self) -> i64 {
+        i64::from_be_bytes(self.read_array::<8>())
+    }
+
+    #[inline]
+    pub fn try_read_i64(&mut self, ctx: &'static str) -> PduResult<i64> {
+        ensure_size!(ctx: ctx, in: self, size: 8);
+        Ok(i64::from_le_bytes(self.read_array::<8>()))
+    }
+
+    #[inline]
+    pub fn try_read_i64_be(&mut self, ctx: &'static str) -> PduResult<i64> {
+        ensure_size!(ctx: ctx, in: self, size: 8);
+        Ok(i64::from_be_bytes(self.read_array::<8>()))
+    }
+
+    #[inline]
     #[track_caller]
     pub fn peek<const N: usize>(&mut self) -> [u8; N] {
         self.inner[self.pos..self.pos + N].try_into().expect("N-elements array")
