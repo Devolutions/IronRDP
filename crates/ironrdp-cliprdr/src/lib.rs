@@ -38,7 +38,7 @@ enum ClipboardError {
     FormatListRejected,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 enum CliprdrState {
     Initialization,
     Ready,
@@ -128,11 +128,9 @@ impl Cliprdr {
     fn handle_format_list_response(&mut self, response: FormatListResponse) -> PduResult<Vec<SvcMessage>> {
         match response {
             FormatListResponse::Ok => {
-                if self.state == CliprdrState::Initialization {
+                if self.side == ChannelSide::Client && self.state == CliprdrState::Initialization {
                     info!("CLIPRDR(clipboard) virtual channel has been initialized");
                     self.state = CliprdrState::Ready;
-                } else {
-                    info!("CLIPRDR(clipboard) Remote has received format list successfully");
                 }
 
                 self.backend.on_format_list_received();
@@ -184,25 +182,42 @@ impl Cliprdr {
         Ok(vec![into_cliprdr_message(pdu)].into())
     }
 
+    pub fn capabilities(&self) -> PduResult<SvcMessage> {
+        let pdu = ClipboardPdu::Capabilities(self.capabilities.clone());
+
+        Ok(into_cliprdr_message(pdu))
+    }
+
+    pub fn monitor_ready(&self) -> PduResult<SvcMessage> {
+        let pdu = ClipboardPdu::MonitorReady;
+
+        Ok(into_cliprdr_message(pdu))
+    }
+
     /// Starts processing of `CLIPRDR` copy command. Should be called by the clipboard
     /// implementation when user performs OS-specific copy command (e.g. `Ctrl+C` shortcut on
     /// keyboard)
     pub fn initiate_copy(&self, available_formats: &[ClipboardFormat]) -> PduResult<CliprdrSvcMessages> {
-        let pdus = match self.state {
-            // During initialization state, first copy action is synthetic and should be sent along with
-            // capabilities and temporary directory PDUs.
-            CliprdrState::Initialization => vec![
-                ClipboardPdu::Capabilities(self.capabilities.clone()),
-                ClipboardPdu::TemporaryDirectory(ClientTemporaryDirectory::new(self.backend.temporary_directory())?),
-                ClipboardPdu::FormatList(self.build_format_list(available_formats).unwrap()),
-            ],
+        let mut pdus = vec![];
+
+        match (self.state, self.side) {
             // When user initiates copy, we should send format list to server.
-            CliprdrState::Ready => vec![ClipboardPdu::FormatList(self.build_format_list(available_formats)?)],
-            CliprdrState::Failed => {
-                error!(?self.state, "Attempted to initiate copy in incorrect state");
-                Vec::new()
+            (CliprdrState::Ready, _) => {
+                pdus.push(ClipboardPdu::FormatList(self.build_format_list(available_formats)?));
             }
-        };
+            (CliprdrState::Initialization, ChannelSide::Client) => {
+                // During initialization state, first copy action is synthetic and should be sent along with
+                // capabilities and temporary directory PDUs.
+                pdus.push(ClipboardPdu::Capabilities(self.capabilities.clone()));
+                pdus.push(ClipboardPdu::TemporaryDirectory(ClientTemporaryDirectory::new(
+                    self.backend.temporary_directory(),
+                )?));
+                pdus.push(ClipboardPdu::FormatList(self.build_format_list(available_formats)?));
+            }
+            _ => {
+                error!(?self.state, "Attempted to initiate copy in incorrect state");
+            }
+        }
 
         Ok(pdus.into_iter().map(into_cliprdr_message).collect::<Vec<_>>().into())
     }
@@ -226,6 +241,18 @@ impl Cliprdr {
 impl StaticVirtualChannelProcessor for Cliprdr {
     fn channel_name(&self) -> ChannelName {
         Self::CHANNEL_NAME
+    }
+
+    fn start(&mut self) -> PduResult<Vec<SvcMessage>> {
+        if self.state != CliprdrState::Initialization {
+            error!("Attempted to start clipboard static virtual channel in invalid state");
+        }
+
+        if self.side == ChannelSide::Server {
+            Ok(vec![self.capabilities()?, self.monitor_ready()?])
+        } else {
+            Ok(vec![])
+        }
     }
 
     fn process(&mut self, payload: &[u8]) -> PduResult<Vec<SvcMessage>> {
