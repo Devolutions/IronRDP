@@ -16,7 +16,7 @@ doctest = false
 test = false
 
 [dependencies]
-bitflags = "2" # TODO: investigate usage in this crate
+bitflags.workspace = true # TODO: investigate usage in this crate
 ironrdp-connector.workspace = true # TODO: at some point, this dependency could be removed (good for compilation speed)
 ironrdp-svc.workspace = true
 # ironrdp-dvc.workspace = true
