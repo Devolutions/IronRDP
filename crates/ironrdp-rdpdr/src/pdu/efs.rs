@@ -3334,9 +3334,13 @@ impl FileDispositionInformation {
     const FIXED_PART_SIZE: usize = 1; // DeletePending
 
     fn decode(src: &mut ReadCursor<'_>, length: usize) -> PduResult<Self> {
-        ensure_fixed_part_size!(in: src);
         // https://github.com/FreeRDP/FreeRDP/blob/dfa231c0a55b005af775b833f92f6bcd30363d77/channels/drive/client/drive_file.c#L684-L692
-        let delete_pending = if length != 0 { src.read_u8() } else { 1 };
+        let delete_pending = if length != 0 {
+            ensure_fixed_part_size!(in: src);
+            src.read_u8()
+        } else {
+            1
+        };
         Ok(Self { delete_pending })
     }
 
