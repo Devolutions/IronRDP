@@ -36,4 +36,7 @@ extend-ignore-re = [
 
    # False-positive fix for test case name at ironrdp-testsuite-core\tests\graphics\rle.rs:
    "\\bcase::[a-z0-9]{33}\\b",
+
+   # False-positive fix for intentional typo in ironrdp-graphics\src\zgfx\mod.rs:
+   "\\bfox jumps ove\\b",
 ]
