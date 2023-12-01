@@ -103,6 +103,39 @@ pub fn lints(sh: &Shell) -> anyhow::Result<()> {
     Ok(())
 }
 
+pub fn typos(sh: &Shell) -> anyhow::Result<()> {
+    let _s = Section::new("TYPOS-CLI");
+
+    let typos_path = local_bin().join("typos");
+    let typos_cli_installed = typos_path.exists() || typos_path.with_extension("exe").exists();
+    if !typos_cli_installed {
+        anyhow::bail!("`typos-cli` binary is missing (check::install step was skipped?)");
+    }
+
+    cmd!(sh, "{typos_path}").run()?;
+
+
+    println!("All good!");
+
+    Ok(())
+}
+
+pub fn install(sh: &Shell) -> anyhow::Result<()> {
+    let _s = Section::new("TYPOS-CLI-INSTALL");
+
+    if !is_installed(sh, "typos") {
+        // Install in debug because it's faster to compile and we don't need execution speed anyway.
+        // typos-cli version is pinned so we don’t get different versions without intervention.
+        cmd!(
+            sh,
+            "{CARGO} install --debug --locked --root {LOCAL_CARGO_ROOT} typos-cli@{TYPOS_CLI_VERSION}"
+        )
+        .run()?;
+    }
+
+    Ok(())
+}
+
 pub fn tests_compile(sh: &Shell) -> anyhow::Result<()> {
     let _s = Section::new("TESTS-COMPILE");
     cmd!(sh, "{CARGO} test --workspace --locked --no-run").run()?;

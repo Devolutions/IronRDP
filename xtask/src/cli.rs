@@ -54,6 +54,7 @@ pub enum Action {
     CheckTests {
         no_run: bool,
     },
+    CheckTypos,
     Ci,
     Clean,
     CovGrcov,
@@ -98,6 +99,7 @@ pub fn parse_args() -> anyhow::Result<Args> {
                 Some("tests") => Action::CheckTests {
                     no_run: args.contains("--no-run"),
                 },
+                Some("typos") => Action::CheckTypos,
                 Some(unknown) => anyhow::bail!("unknown check action: {unknown}"),
                 None => Action::ShowHelp,
             },
