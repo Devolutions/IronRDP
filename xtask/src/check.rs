@@ -114,7 +114,6 @@ pub fn typos(sh: &Shell) -> anyhow::Result<()> {
 
     cmd!(sh, "{typos_path}").run()?;
 
-
     println!("All good!");
 
     Ok(())
