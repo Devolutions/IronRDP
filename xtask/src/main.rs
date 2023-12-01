@@ -67,7 +67,6 @@ fn main() -> anyhow::Result<()> {
             check::install(&sh)?;
         }
         Action::Ci => {
-            check::install(&sh)?;
             check::fmt(&sh)?;
             check::typos(&sh)?;
             check::tests_compile(&sh)?;
