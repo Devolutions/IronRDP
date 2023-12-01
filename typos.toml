@@ -1,10 +1,42 @@
+# Typos CLI configuration file
+# ============================
+# ## Running `typos-cli`.
+# Execute `cargo xtask check typos` to run `typos-cli` with the same configuration as on CI.
+#
+# ## Updating `typos-cli`.
+# Please regularly update `typos-cli` to the latest version. If a new version is available, please
+# update the version string in `xtask\src\bin_version.rs`.
+#
+# ## How to properly fix `typos-cli` errors:
+# 1. If a typo is obvious: just fix it.
+# 2. False-positive in the binary/test asset/generated file: add it to `extend-exclude` glob list.
+# 3. False-positive in the source code: (in order of preference)
+#     3.1. Place correction in `extend-identifiers` if a false-positive is in the identifier name.
+#     3.2. Place correction in `extend-words` if a false-positive is in the arbitrary word (docs,
+#          comments, etc.) or text was not recognized as an identifier.
+#     3.3. Place regex in `extend-ignore-re` if the correction cannot be expressed as a single word.
+#     3.4. Last resort: add file ignore to `extend-exclude` list.
+
 [files]
-extend-exclude = ["*.bin", "*.bmp", "package-lock.json"]
+extend-exclude = [
+   "*.bin",
+   "*.bmp",
+   "package-lock.json",
+]
 
 [default]
 extend-ignore-re = [
    # Ignore false-positives for auth tokens in the following file:
    # - web-client\iron-svelte-client\src\lib\login\login.svelte
-   "(?m)let authtoken =.+;\\s?$",
+   "(?m)let authtoken =\\s+'.+';\\s?$",
+
+   # False-positive fix for Base64 ironrdp-testsuite-core\tests\pcb.rs:
+   # URL-safe Base64 with 83 and 84 characters
+   "\\b[a-zA-Z0-9_-]{82,83}\\b",
+
+   # False-positive fix for test case name at ironrdp-testsuite-core\tests\graphics\rle.rs:
+   "\\bcase::[a-z0-9]{33}\\b",
+
+   # False-positive fix for intentional typo in ironrdp-graphics\src\zgfx\mod.rs:
+   "\\bfox jumps ove\\b",
 ]
-extend-identifiers.lastImageInformations = "lastImageInformations"

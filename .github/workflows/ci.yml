@@ -35,6 +35,25 @@ jobs:
       - name: Check formatting
         run: cargo xtask check fmt -v
 
+  typos:
+    name: Check typos
+    runs-on: ubuntu-20.04
+
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Binary cache
+        uses: actions/cache@v3
+        with:
+          path: ./.cargo/local_root/bin
+          key: ${{ runner.os }}-bin-${{ github.job }}-${{ hashFiles('xtask/src/bin_version.rs') }}
+
+      - name: typos (prepare)
+        run: cargo xtask check install -v
+
+      - name: typos (check)
+        run: cargo xtask check typos -v
+
   checks:
     name: Checks [${{ matrix.os }}]
     runs-on: ${{ matrix.runner }}

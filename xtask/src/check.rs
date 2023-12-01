@@ -103,6 +103,35 @@ pub fn lints(sh: &Shell) -> anyhow::Result<()> {
     Ok(())
 }
 
+pub fn typos(sh: &Shell) -> anyhow::Result<()> {
+    let _s = Section::new("TYPOS-CLI");
+
+    if !is_installed(sh, "typos") {
+        anyhow::bail!("`typos-cli` binary is missing. Please run `cargo xtask check install`.");
+    }
+
+    cmd!(sh, "typos").run()?;
+
+    println!("All good!");
+    Ok(())
+}
+
+pub fn install(sh: &Shell) -> anyhow::Result<()> {
+    let _s = Section::new("TYPOS-CLI-INSTALL");
+
+    if !is_installed(sh, "typos") {
+        // Install in debug because it's faster to compile and we don't need execution speed anyway.
+        // typos-cli version is pinned so we don’t get different versions without intervention.
+        cmd!(
+            sh,
+            "{CARGO} install --debug --locked --root {LOCAL_CARGO_ROOT} typos-cli@{TYPOS_CLI_VERSION}"
+        )
+        .run()?;
+    }
+
+    Ok(())
+}
+
 pub fn tests_compile(sh: &Shell) -> anyhow::Result<()> {
     let _s = Section::new("TESTS-COMPILE");
     cmd!(sh, "{CARGO} test --workspace --locked --no-run").run()?;

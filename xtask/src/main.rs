@@ -40,6 +40,7 @@ fn main() -> anyhow::Result<()> {
     match args.action {
         Action::ShowHelp => cli::print_help(),
         Action::Bootstrap => {
+            check::install(&sh)?;
             cov::install(&sh)?;
             fuzz::install(&sh)?;
             wasm::install(&sh)?;
@@ -59,8 +60,15 @@ fn main() -> anyhow::Result<()> {
                 check::tests_run(&sh)?;
             }
         }
+        Action::CheckTypos => {
+            check::typos(&sh)?;
+        }
+        Action::CheckInstall => {
+            check::install(&sh)?;
+        }
         Action::Ci => {
             check::fmt(&sh)?;
+            check::typos(&sh)?;
             check::tests_compile(&sh)?;
             check::tests_run(&sh)?;
             check::lints(&sh)?;
