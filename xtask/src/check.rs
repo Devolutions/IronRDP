@@ -106,16 +106,13 @@ pub fn lints(sh: &Shell) -> anyhow::Result<()> {
 pub fn typos(sh: &Shell) -> anyhow::Result<()> {
     let _s = Section::new("TYPOS-CLI");
 
-    let typos_path = local_bin().join("typos");
-    let typos_cli_installed = typos_path.exists() || typos_path.with_extension("exe").exists();
-    if !typos_cli_installed {
-        anyhow::bail!("`typos-cli` binary is missing (check::install step was skipped?)");
+    if !is_installed(sh, "typos") {
+        anyhow::bail!("`typos-cli` binary is missing. Please run `cargo xtask check install`.");
     }
 
-    cmd!(sh, "{typos_path}").run()?;
+    cmd!(sh, "typos").run()?;
 
     println!("All good!");
-
     Ok(())
 }
 

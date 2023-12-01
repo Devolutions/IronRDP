@@ -61,8 +61,10 @@ fn main() -> anyhow::Result<()> {
             }
         }
         Action::CheckTypos => {
-            check::install(&sh)?;
             check::typos(&sh)?;
+        }
+        Action::CheckInstall => {
+            check::install(&sh)?;
         }
         Action::Ci => {
             check::install(&sh)?;

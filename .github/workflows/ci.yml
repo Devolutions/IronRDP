@@ -35,10 +35,23 @@ jobs:
       - name: Check formatting
         run: cargo xtask check fmt -v
 
+  typos:
+    name: Check typos
+    runs-on: ubuntu-20.04
+
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: typos (prepare)
+        run: cargo xtask check install -v
+
+      - name: typos (check)
+        run: cargo xtask check typos -v
+
   checks:
     name: Checks [${{ matrix.os }}]
     runs-on: ${{ matrix.runner }}
-    needs: formatting
+    needs: [ formatting, typos ]
     strategy:
       fail-fast: false
       matrix:

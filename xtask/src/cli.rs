@@ -14,6 +14,8 @@ TASKS:
   check lints             Check lints
   check locks             Check for dirty or staged lock files not yet committed
   check tests [--no-run]  Compile tests and, unless specified otherwise, run them
+  check typos             Check for typos in the codebase
+  check install           Install all requirements for check tasks
   ci                      Run all checks required on CI
   clean                   Clean workspace
   cov grcov               Generate a nice HTML report using code-coverage data from tests and fuzz targets
@@ -55,6 +57,7 @@ pub enum Action {
         no_run: bool,
     },
     CheckTypos,
+    CheckInstall,
     Ci,
     Clean,
     CovGrcov,
@@ -100,6 +103,7 @@ pub fn parse_args() -> anyhow::Result<Args> {
                     no_run: args.contains("--no-run"),
                 },
                 Some("typos") => Action::CheckTypos,
+                Some("install") => Action::CheckInstall,
                 Some(unknown) => anyhow::bail!("unknown check action: {unknown}"),
                 None => Action::ShowHelp,
             },
