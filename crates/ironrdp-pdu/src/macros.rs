@@ -82,6 +82,25 @@ macro_rules! unsupported_version_err {
     }};
 }
 
+/// Creates a `PduError` with `UnsupportedPdu` kind
+/// Shorthand for
+/// ```rust
+/// <ironrdp_pdu::PduError as ironrdp_pdu::PduErrorExt>::unsupported_pdu(context, name, value)
+/// ```
+/// and
+/// ```rust
+/// <ironrdp_pdu::PduError as ironrdp_pdu::PduErrorExt>::unsupported_pdu(Self::NAME, name, value)
+/// ```
+#[macro_export]
+macro_rules! unsupported_pdu_err {
+    ( $context:expr, $name:expr, $value:expr $(,)? ) => {{
+        <$crate::PduError as $crate::PduErrorExt>::unsupported_pdu($context, $name, $value)
+    }};
+    ( $name:expr, $value:expr $(,)? ) => {{
+        unsupported_pdu_err!(Self::NAME, $name, $value)
+    }};
+}
+
 /// Creates a `PduError` with `Other` kind
 ///
 /// Shorthand for
