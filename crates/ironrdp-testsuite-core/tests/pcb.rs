@@ -99,8 +99,7 @@ fn null_size() {
         .err()
         .unwrap();
 
-    expect![
-        [r#"
+    expect![[r#"
             Error {
                 context: "PreconnectionBlob",
                 kind: InvalidMessage {
@@ -109,8 +108,7 @@ fn null_size() {
                 },
                 source: None,
             }
-        "#]
-    ]
+        "#]]
     .assert_debug_eq(&e);
 }
 
@@ -129,7 +127,7 @@ fn truncated() {
 
     expect![[r#"
             Error {
-                context: "PreconnectionBlob",
+                context: "<ironrdp_pdu::pcb::PreconnectionBlob as ironrdp_pdu::PduDecode>::decode",
                 kind: NotEnoughBytes {
                     received: 0,
                     expected: 239,
