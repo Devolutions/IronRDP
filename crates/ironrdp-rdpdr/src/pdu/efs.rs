@@ -345,7 +345,6 @@ pub struct CapabilityMessage {
 }
 
 impl CapabilityMessage {
-    const NAME: &str = "CAPABILITY_SET";
     /// Creates a new [`GENERAL_CAPS_SET`].
     ///
     /// `special_type_device_cap`: A 32-bit unsigned integer that
@@ -425,7 +424,6 @@ struct CapabilityHeader {
 }
 
 impl CapabilityHeader {
-    const NAME: &str = "CAPABILITY_HEADER";
     const SIZE: usize = size_of::<u16>() * 2 + size_of::<u32>();
 
     fn new_general() -> Self {
@@ -593,7 +591,6 @@ struct GeneralCapabilitySet {
 }
 
 impl GeneralCapabilitySet {
-    const NAME: &str = "GENERAL_CAPS_SET";
     #[allow(clippy::manual_bits)]
     const SIZE: usize = size_of::<u32>() * 8 + size_of::<u16>() * 2;
 
@@ -1338,7 +1335,6 @@ pub struct DeviceIoResponse {
 }
 
 impl DeviceIoResponse {
-    const NAME: &str = "DR_DEVICE_IOCOMPLETION";
     const FIXED_PART_SIZE: usize = size_of::<u32>() * 3; // DeviceId, CompletionId, IoStatus
 
     pub fn new(device_io_request: DeviceIoRequest, io_status: NtStatus) -> Self {
@@ -1916,8 +1912,6 @@ pub enum FileInformationClass {
 }
 
 impl FileInformationClass {
-    const NAME: &str = "FileInformationClass";
-
     pub fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
         ensure_size!(in: dst, size: self.size());
         match self {
@@ -2077,8 +2071,6 @@ pub struct FileBasicInformation {
 }
 
 impl FileBasicInformation {
-    const NAME: &str = "FileBasicInformation";
-
     fn decode(src: &mut ReadCursor<'_>) -> PduResult<Self> {
         ensure_size!(ctx: "FileBasicInformation", in: src, size: Self::size());
         let creation_time = src.read_i64();
@@ -2131,8 +2123,6 @@ pub struct FileStandardInformation {
 }
 
 impl FileStandardInformation {
-    const NAME: &str = "FileStandardInformation";
-
     fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
         ensure_size!(in: dst, size: Self::size());
         dst.write_i64(self.allocation_size);
@@ -2190,8 +2180,6 @@ pub struct FileAttributeTagInformation {
 }
 
 impl FileAttributeTagInformation {
-    const NAME: &str = "FileAttributeTagInformation";
-
     fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
         ensure_size!(in: dst, size: Self::size());
         dst.write_u32(self.file_attributes.bits());
@@ -2228,8 +2216,6 @@ pub struct FileBothDirectoryInformation {
 }
 
 impl FileBothDirectoryInformation {
-    const NAME: &str = "FileBothDirectoryInformation";
-
     pub fn new(
         creation_time: i64,
         last_access_time: i64,
@@ -2320,8 +2306,6 @@ pub struct FileFullDirectoryInformation {
 }
 
 impl FileFullDirectoryInformation {
-    const NAME: &str = "FileFullDirectoryInformation";
-
     pub fn new(
         creation_time: i64,
         last_access_time: i64,
@@ -2396,8 +2380,6 @@ pub struct FileNamesInformation {
 }
 
 impl FileNamesInformation {
-    const NAME: &str = "FileNamesInformation";
-
     pub fn new(file_name: String) -> Self {
         // Default field values taken from
         // https://github.com/FreeRDP/FreeRDP/blob/dfa231c0a55b005af775b833f92f6bcd30363d77/channels/drive/client/drive_file.c#L912
@@ -2447,8 +2429,6 @@ pub struct FileDirectoryInformation {
 }
 
 impl FileDirectoryInformation {
-    const NAME: &str = "FileDirectoryInformation";
-
     pub fn new(
         creation_time: i64,
         last_access_time: i64,
@@ -2568,7 +2548,6 @@ pub struct ServerDriveQueryDirectoryRequest {
 }
 
 impl ServerDriveQueryDirectoryRequest {
-    const NAME: &str = "DR_DRIVE_QUERY_DIRECTORY_REQ";
     const FIXED_PART_SIZE: usize = 4 /* FsInformationClass */ + 1 /* InitialQuery */ + 4 /* PathLength */ + 23 /* Padding */;
 
     fn decode(device_io_request: DeviceIoRequest, src: &mut ReadCursor<'_>) -> PduResult<Self> {
@@ -2618,7 +2597,6 @@ pub struct ServerDriveNotifyChangeDirectoryRequest {
 }
 
 impl ServerDriveNotifyChangeDirectoryRequest {
-    const NAME: &str = "DR_DRIVE_NOTIFY_CHANGE_DIRECTORY_REQ";
     const FIXED_PART_SIZE: usize = 1 /* WatchTree */ + 4 /* CompletionFilter */ + 27 /* Padding */;
 
     fn decode(device_io_request: DeviceIoRequest, src: &mut ReadCursor<'_>) -> PduResult<Self> {
@@ -2697,7 +2675,6 @@ pub struct ServerDriveQueryVolumeInformationRequest {
 }
 
 impl ServerDriveQueryVolumeInformationRequest {
-    const NAME: &str = "DR_DRIVE_QUERY_VOLUME_INFORMATION_REQ";
     const FIXED_PART_SIZE: usize = 4 /* FsInformationClass */ + 4 /* Length */ + 24 /* Padding */;
 
     pub fn decode(dev_io_req: DeviceIoRequest, src: &mut ReadCursor<'_>) -> PduResult<Self> {
@@ -2785,8 +2762,6 @@ pub enum FileSystemInformationClass {
 }
 
 impl FileSystemInformationClass {
-    const NAME: &str = "FileSystemInformationClass";
-
     fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
         ensure_size!(in: dst, size: self.size());
         match self {
@@ -2853,8 +2828,6 @@ pub struct FileFsVolumeInformation {
 }
 
 impl FileFsVolumeInformation {
-    const NAME: &str = "FileFsVolumeInformation";
-
     pub fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
         ensure_size!(in: dst, size: self.size());
         dst.write_i64(self.volume_creation_time);
@@ -2890,8 +2863,6 @@ pub struct FileFsSizeInformation {
 }
 
 impl FileFsSizeInformation {
-    const NAME: &str = "FileFsSizeInformation";
-
     pub fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
         ensure_size!(in: dst, size: self.size());
         dst.write_i64(self.total_alloc_units);
@@ -2920,8 +2891,6 @@ pub struct FileFsAttributeInformation {
 }
 
 impl FileFsAttributeInformation {
-    const NAME: &str = "FileFsAttributeInformation";
-
     pub fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
         ensure_size!(in: dst, size: self.size());
         dst.write_u32(self.file_system_attributes.bits());
@@ -2956,8 +2925,6 @@ pub struct FileFsFullSizeInformation {
 }
 
 impl FileFsFullSizeInformation {
-    const NAME: &str = "FileFsFullSizeInformation";
-
     pub fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
         ensure_size!(in: dst, size: Self::size());
         dst.write_i64(self.total_alloc_units);
@@ -2987,8 +2954,6 @@ pub struct FileFsDeviceInformation {
 }
 
 impl FileFsDeviceInformation {
-    const NAME: &str = "FileFsDeviceInformation";
-
     pub fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
         ensure_size!(in: dst, size: Self::size());
         dst.write_u32(self.device_type);
@@ -3123,7 +3088,6 @@ pub struct DeviceReadRequest {
 }
 
 impl DeviceReadRequest {
-    const NAME: &str = "DR_READ_REQ";
     const FIXED_PART_SIZE: usize = 4 /* Length */ + 8 /* Offset */ + 20 /* Padding */;
 
     pub fn decode(dev_io_req: DeviceIoRequest, src: &mut ReadCursor<'_>) -> PduResult<Self> {
@@ -3190,7 +3154,6 @@ pub struct DeviceWriteRequest {
 }
 
 impl DeviceWriteRequest {
-    const NAME: &str = "DR_WRITE_REQ";
     const FIXED_PART_SIZE: usize = 4 /* Length */ + 8 /* Offset */ + 20 /* Padding */;
 
     pub fn decode(dev_io_req: DeviceIoRequest, src: &mut ReadCursor<'_>) -> PduResult<Self> {
@@ -3262,7 +3225,6 @@ pub struct ServerDriveSetInformationRequest {
 }
 
 impl ServerDriveSetInformationRequest {
-    const NAME: &str = "DR_DRIVE_SET_INFORMATION_REQ";
     const FIXED_PART_SIZE: usize = 4 /* FileInformationClass */ + 4 /* Length */ + 24 /* Padding */;
 
     fn decode(dev_io_req: DeviceIoRequest, src: &mut ReadCursor<'_>) -> PduResult<Self> {
@@ -3307,7 +3269,6 @@ pub struct FileEndOfFileInformation {
 }
 
 impl FileEndOfFileInformation {
-    const NAME: &str = "FileEndOfFileInformation";
     const FIXED_PART_SIZE: usize = 8; // EndOfFile
 
     fn decode(src: &mut ReadCursor<'_>) -> PduResult<Self> {
@@ -3330,7 +3291,6 @@ pub struct FileDispositionInformation {
 }
 
 impl FileDispositionInformation {
-    const NAME: &str = "FileDispositionInformation";
     const FIXED_PART_SIZE: usize = 1; // DeletePending
 
     fn decode(src: &mut ReadCursor<'_>, length: usize) -> PduResult<Self> {
@@ -3360,7 +3320,6 @@ pub struct FileRenameInformation {
 }
 
 impl FileRenameInformation {
-    const NAME: &str = "FileRenameInformation";
     const FIXED_PART_SIZE: usize = 1 /* ReplaceIfExists */ + 1 /* RootDirectory */ + 4 /* FileNameLength */;
 
     fn decode(src: &mut ReadCursor<'_>) -> PduResult<Self> {
@@ -3392,7 +3351,6 @@ pub struct FileAllocationInformation {
 }
 
 impl FileAllocationInformation {
-    const NAME: &str = "FileAllocationInformation";
     const FIXED_PART_SIZE: usize = 8; // AllocationSize
 
     fn decode(src: &mut ReadCursor<'_>) -> PduResult<Self> {
@@ -3452,8 +3410,6 @@ pub struct ServerDriveLockControlRequest {
 }
 
 impl ServerDriveLockControlRequest {
-    const NAME: &str = "DR_DRIVE_LOCK_REQ";
-
     fn decode(dev_io_req: DeviceIoRequest, src: &mut ReadCursor<'_>) -> PduResult<Self> {
         // It's not quite clear why this is done this way, but it's what FreeRDP does:
         // https://github.com/FreeRDP/FreeRDP/blob/dfa231c0a55b005af775b833f92f6bcd30363d77/channels/drive/client/drive_main.c#L600

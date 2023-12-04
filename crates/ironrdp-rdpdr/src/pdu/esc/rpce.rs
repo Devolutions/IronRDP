@@ -184,8 +184,6 @@ impl Default for StreamHeader {
 }
 
 impl StreamHeader {
-    const NAME: &'static str = "RpceStreamHeader";
-
     fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
         ensure_size!(in: dst, size: Self::size());
         dst.write_u8(self.version);
@@ -257,8 +255,6 @@ struct TypeHeader {
 }
 
 impl TypeHeader {
-    const NAME: &'static str = "RpceTypeHeader";
-
     fn new(object_buffer_length: u32) -> Self {
         Self {
             object_buffer_length,

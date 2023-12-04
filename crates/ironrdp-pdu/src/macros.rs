@@ -2,6 +2,20 @@
 //!
 //! Some are exported and available to external crates
 
+/// Automatically returns the full pathname to a
+/// function. Taken from https://stackoverflow.com/a/40234666.
+#[macro_export]
+macro_rules! function {
+    () => {{
+        fn f() {}
+        fn type_name_of<T>(_: T) -> &'static str {
+            std::any::type_name::<T>()
+        }
+        let name = type_name_of(f);
+        name.strip_suffix("::f").unwrap()
+    }};
+}
+
 /// Creates a `PduError` with `NotEnoughBytes` kind
 ///
 /// Shorthand for
@@ -10,7 +24,7 @@
 /// ```
 /// and
 /// ```rust
-/// <ironrdp_pdu::PduError as ironrdp_pdu::PduErrorExt>::not_enough_bytes(Self::NAME, received, expected)
+/// <ironrdp_pdu::PduError as ironrdp_pdu::PduErrorExt>::not_enough_bytes($crate::function!(), received, expected)
 /// ```
 #[macro_export]
 macro_rules! not_enough_bytes_err {
@@ -18,7 +32,7 @@ macro_rules! not_enough_bytes_err {
         <$crate::PduError as $crate::PduErrorExt>::not_enough_bytes($context, $received, $expected)
     }};
     ( $received:expr , $expected:expr $(,)? ) => {{
-        not_enough_bytes_err!(Self::NAME, $received, $expected)
+        not_enough_bytes_err!($crate::function!(), $received, $expected)
     }};
 }
 
@@ -30,7 +44,7 @@ macro_rules! not_enough_bytes_err {
 /// ```
 /// and
 /// ```rust
-/// <ironrdp_pdu::PduError as ironrdp_pdu::PduErrorExt>::invalid_message(Self::NAME, field, reason)
+/// <ironrdp_pdu::PduError as ironrdp_pdu::PduErrorExt>::invalid_message($crate::function!(), field, reason)
 /// ```
 #[macro_export]
 macro_rules! invalid_message_err {
@@ -38,7 +52,7 @@ macro_rules! invalid_message_err {
         <$crate::PduError as $crate::PduErrorExt>::invalid_message($context, $field, $reason)
     }};
     ( $field:expr , $reason:expr $(,)? ) => {{
-        invalid_message_err!(Self::NAME, $field, $reason)
+        invalid_message_err!($crate::function!(), $field, $reason)
     }};
 }
 
@@ -50,7 +64,7 @@ macro_rules! invalid_message_err {
 /// ```
 /// and
 /// ```rust
-/// <ironrdp_pdu::PduError as ironrdp_pdu::PduErrorExt>::unexpected_message_type(Self::NAME, got)
+/// <ironrdp_pdu::PduError as ironrdp_pdu::PduErrorExt>::unexpected_message_type($crate::function!(), got)
 /// ```
 #[macro_export]
 macro_rules! unexpected_message_type_err {
@@ -58,7 +72,7 @@ macro_rules! unexpected_message_type_err {
         <$crate::PduError as $crate::PduErrorExt>::unexpected_message_type($context, $got)
     }};
     ( $got:expr $(,)? ) => {{
-        unexpected_message_type_err!(Self::NAME, $got)
+        unexpected_message_type_err!($crate::function!(), $got)
     }};
 }
 
@@ -70,7 +84,7 @@ macro_rules! unexpected_message_type_err {
 /// ```
 /// and
 /// ```rust
-/// <ironrdp_pdu::PduError as ironrdp_pdu::PduErrorExt>::unsupported_version(Self::NAME, got)
+/// <ironrdp_pdu::PduError as ironrdp_pdu::PduErrorExt>::unsupported_version($crate::function!(), got)
 /// ```
 #[macro_export]
 macro_rules! unsupported_version_err {
@@ -78,7 +92,7 @@ macro_rules! unsupported_version_err {
         <$crate::PduError as $crate::PduErrorExt>::unsupported_version($context, $got)
     }};
     ( $got:expr $(,)? ) => {{
-        unsupported_version_err!(Self::NAME, $got)
+        unsupported_version_err!($crate::function!(), $got)
     }};
 }
 
@@ -89,7 +103,7 @@ macro_rules! unsupported_version_err {
 /// ```
 /// and
 /// ```rust
-/// <ironrdp_pdu::PduError as ironrdp_pdu::PduErrorExt>::unsupported_pdu(Self::NAME, name, value)
+/// <ironrdp_pdu::PduError as ironrdp_pdu::PduErrorExt>::unsupported_pdu($crate::function!(), name, value)
 /// ```
 #[macro_export]
 macro_rules! unsupported_pdu_err {
@@ -97,7 +111,7 @@ macro_rules! unsupported_pdu_err {
         <$crate::PduError as $crate::PduErrorExt>::unsupported_pdu($context, $name, $value)
     }};
     ( $name:expr, $value:expr $(,)? ) => {{
-        unsupported_pdu_err!(Self::NAME, $name, $value)
+        unsupported_pdu_err!($crate::function!(), $name, $value)
     }};
 }
 
@@ -109,7 +123,7 @@ macro_rules! unsupported_pdu_err {
 /// ```
 /// and
 /// ```rust
-/// <ironrdp_pdu::PduError as ironrdp_pdu::PduErrorExt>::other(Self::NAME, description)
+/// <ironrdp_pdu::PduError as ironrdp_pdu::PduErrorExt>::other($crate::function!(), description)
 /// ```
 #[macro_export]
 macro_rules! other_err {
@@ -117,7 +131,7 @@ macro_rules! other_err {
         <$crate::PduError as $crate::PduErrorExt>::other($context, $description)
     }};
     ( $description:expr $(,)? ) => {{
-        other_err!(Self::NAME, $description)
+        other_err!($crate::function!(), $description)
     }};
 }
 
@@ -129,7 +143,7 @@ macro_rules! other_err {
 /// ```
 /// and
 /// ```rust
-/// <ironrdp_pdu::PduError as ironrdp_pdu::PduErrorExt>::custom(Self::NAME, source)
+/// <ironrdp_pdu::PduError as ironrdp_pdu::PduErrorExt>::custom($crate::function!(), source)
 /// ```
 #[macro_export]
 macro_rules! custom_err {
@@ -137,7 +151,7 @@ macro_rules! custom_err {
         <$crate::PduError as $crate::PduErrorExt>::custom($context, $source)
     }};
     ( $source:expr $(,)? ) => {{
-        custom_err!(Self::NAME, $source)
+        custom_err!($crate::function!(), $source)
     }};
 }
 
@@ -151,14 +165,14 @@ macro_rules! ensure_size {
         }
     }};
     (in: $buf:ident, size: $expected:expr) => {{
-        $crate::ensure_size!(ctx: Self::NAME, in: $buf, size: $expected)
+        $crate::ensure_size!(ctx: $crate::function!(), in: $buf, size: $expected)
     }};
 }
 
 #[macro_export]
 macro_rules! ensure_fixed_part_size {
     (in: $buf:ident) => {{
-        $crate::ensure_size!(ctx: Self::NAME, in: $buf, size: Self::FIXED_PART_SIZE)
+        $crate::ensure_size!(ctx: $crate::function!(), in: $buf, size: Self::FIXED_PART_SIZE)
     }};
 }
 
@@ -170,7 +184,7 @@ macro_rules! cast_length {
         })
     }};
     ($field:expr, $len:expr) => {{
-        $crate::cast_length!(<Self as $crate::Pdu>::NAME, $field, $len)
+        $crate::cast_length!($crate::function!(), $field, $len)
     }};
 }
 
@@ -187,7 +201,7 @@ macro_rules! cast_int {
         })
     }};
     ($field:expr, $len:expr) => {{
-        $crate::cast_int!(Self::NAME, $field, $len)
+        $crate::cast_int!($crate::function!(), $field, $len)
     }};
 }
 

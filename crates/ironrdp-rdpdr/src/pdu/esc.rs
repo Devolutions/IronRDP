@@ -86,7 +86,6 @@ pub struct ScardContext {
 }
 
 impl ScardContext {
-    const NAME: &'static str = "REDIR_SCARDCONTEXT";
     /// See [`ScardContext::value`]
     const VALUE_LENGTH: u32 = 4;
 
@@ -551,8 +550,6 @@ pub struct EstablishContextCall {
 }
 
 impl EstablishContextCall {
-    const NAME: &'static str = "EstablishContext_Call";
-
     pub fn decode(src: &mut ReadCursor<'_>) -> PduResult<Self> {
         Ok(rpce::Pdu::<Self>::decode(src)?.into_inner())
     }
@@ -651,8 +648,6 @@ pub struct ListReadersCall {
 }
 
 impl ListReadersCall {
-    const NAME: &'static str = "ListReaders_Call";
-
     pub fn decode(src: &mut ReadCursor<'_>) -> PduResult<Self> {
         Ok(rpce::Pdu::<Self>::decode(src)?.into_inner())
     }
@@ -768,8 +763,6 @@ pub struct GetStatusChangeCall {
 }
 
 impl GetStatusChangeCall {
-    const NAME: &'static str = "GetStatusChangeW_Call";
-
     pub fn decode(src: &mut ReadCursor<'_>) -> PduResult<Self> {
         Ok(rpce::Pdu::<Self>::decode(src)?.into_inner())
     }
@@ -823,7 +816,6 @@ pub struct ReaderStateCommonCall {
 }
 
 impl ReaderStateCommonCall {
-    const NAME: &'static str = "ReaderState_Common_Call";
     const FIXED_PART_SIZE: usize = size_of::<u32>() * 3 /* dwCurrentState, dwEventState, cbAtr */ + 36 /* rgbAtr */;
 
     fn decode(src: &mut ReadCursor<'_>) -> PduResult<Self> {
@@ -954,10 +946,6 @@ pub struct ConnectCommon {
     pub preferred_protocols: CardProtocol,
 }
 
-impl ConnectCommon {
-    const NAME: &'static str = "Connect_Common";
-}
-
 impl ndr::Decode for ConnectCommon {
     fn decode_ptr(src: &mut ReadCursor<'_>, index: &mut u32) -> PduResult<Self>
     where
@@ -1007,7 +995,6 @@ pub struct ScardHandle {
 }
 
 impl ScardHandle {
-    const NAME: &'static str = "REDIR_SCARDHANDLE";
     /// See [`ScardHandle::value`]
     const VALUE_LENGTH: u32 = 4;
 
@@ -1128,8 +1115,6 @@ pub struct HCardAndDispositionCall {
 }
 
 impl HCardAndDispositionCall {
-    const NAME: &'static str = "HCardAndDisposition_Call";
-
     pub fn decode(src: &mut ReadCursor<'_>) -> PduResult<Self> {
         Ok(rpce::Pdu::<Self>::decode(src)?.into_inner())
     }
@@ -1161,8 +1146,6 @@ pub struct TransmitCall {
 }
 
 impl TransmitCall {
-    const NAME: &'static str = "Transmit_Call";
-
     pub fn decode(src: &mut ReadCursor<'_>) -> PduResult<Self> {
         Ok(rpce::Pdu::<Self>::decode(src)?.into_inner())
     }
@@ -1218,10 +1201,6 @@ pub struct SCardIORequest {
     pub protocol: CardProtocol,
     pub extra_bytes_length: u32,
     pub extra_bytes: Vec<u8>,
-}
-
-impl SCardIORequest {
-    const NAME: &'static str = "SCardIO_Request";
 }
 
 impl ndr::Decode for SCardIORequest {
@@ -1343,8 +1322,6 @@ pub struct StatusCall {
 }
 
 impl StatusCall {
-    const NAME: &'static str = "Status_Call";
-
     pub fn decode(src: &mut ReadCursor<'_>) -> PduResult<Self> {
         Ok(rpce::Pdu::<Self>::decode(src)?.into_inner())
     }
@@ -1596,10 +1573,6 @@ pub struct ReadCacheCommon {
     pub data_len: u32,
 }
 
-impl ReadCacheCommon {
-    const NAME: &'static str = "ReadCache_Common";
-}
-
 impl ndr::Decode for ReadCacheCommon {
     fn decode_ptr(src: &mut ReadCursor<'_>, index: &mut u32) -> PduResult<Self>
     where
@@ -1705,10 +1678,6 @@ pub struct WriteCacheCommon {
     pub card_uuid: Vec<u8>,
     pub freshness_counter: u32,
     pub data: Vec<u8>,
-}
-
-impl WriteCacheCommon {
-    const NAME: &'static str = "WriteCache_Common";
 }
 
 impl ndr::Decode for WriteCacheCommon {
