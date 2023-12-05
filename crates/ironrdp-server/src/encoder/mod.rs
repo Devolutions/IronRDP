@@ -4,6 +4,7 @@ use std::cmp;
 
 use ironrdp_pdu::cursor::WriteCursor;
 use ironrdp_pdu::fast_path::{EncryptionFlags, FastPathHeader, FastPathUpdatePdu, Fragmentation, UpdateCode};
+use ironrdp_pdu::rdp::capability_sets::CmdFlags;
 use ironrdp_pdu::PduEncode;
 
 use self::bitmap::BitmapEncoder;
@@ -17,13 +18,15 @@ const FASTPATH_HEADER_SIZE: usize = 6;
 pub(crate) struct UpdateEncoder {
     buffer: Vec<u8>,
     bitmap: BitmapEncoder,
+    surface_flags: CmdFlags,
 }
 
 impl UpdateEncoder {
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new(surface_flags: CmdFlags) -> Self {
         Self {
             buffer: vec![0; 16384],
             bitmap: BitmapEncoder::new(),
+            surface_flags,
         }
     }
 

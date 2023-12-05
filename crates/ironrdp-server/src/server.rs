@@ -6,7 +6,7 @@ use ironrdp_acceptor::{self, Acceptor, AcceptorResult, BeginResult};
 use ironrdp_pdu::input::fast_path::{FastPathInput, FastPathInputEvent};
 use ironrdp_pdu::input::InputEventPdu;
 use ironrdp_pdu::mcs::SendDataRequest;
-use ironrdp_pdu::rdp::capability_sets::{CapabilitySet, GeneralExtraFlags};
+use ironrdp_pdu::rdp::capability_sets::{CapabilitySet, CmdFlags, GeneralExtraFlags};
 use ironrdp_pdu::{self, mcs, nego, rdp, Action, PduParsing};
 use ironrdp_tokio::{Framed, FramedRead, FramedWrite, TokioFramed};
 use tokio::net::{TcpListener, TcpStream};
@@ -184,6 +184,7 @@ impl RdpServer {
             self.handle_input_backlog(result.input_events).await?;
         }
 
+        let mut surface_flags = CmdFlags::empty();
         for c in result.capabilities {
             match c {
                 CapabilitySet::General(c) => {
@@ -192,12 +193,15 @@ impl RdpServer {
                         bail!("Fastpath output not supported!");
                     }
                 }
+                CapabilitySet::SurfaceCommands(c) => {
+                    surface_flags = c.flags;
+                }
                 _ => {}
             }
         }
 
         let mut buffer = vec![0u8; 4096];
-        let mut encoder = UpdateEncoder::new();
+        let mut encoder = UpdateEncoder::new(surface_flags);
 
         'main: loop {
             tokio::select! {
