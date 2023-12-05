@@ -7,6 +7,7 @@ pub(crate) fn capabilities(_opts: &RdpServerOptions, size: DesktopSize) -> Vec<c
         capability_sets::CapabilitySet::General(general_capabilities()),
         capability_sets::CapabilitySet::Bitmap(bitmap_capabilities(&size)),
         capability_sets::CapabilitySet::Order(order_capabilities()),
+        capability_sets::CapabilitySet::SurfaceCommands(surface_capabilities()),
         capability_sets::CapabilitySet::Pointer(pointer_capabilities()),
         capability_sets::CapabilitySet::Input(input_capabilities()),
         capability_sets::CapabilitySet::VirtualChannel(virtual_channel_capabilities()),
@@ -35,6 +36,12 @@ fn order_capabilities() -> capability_sets::Order {
         2048,
         224,
     )
+}
+
+fn surface_capabilities() -> capability_sets::SurfaceCommands {
+    capability_sets::SurfaceCommands {
+        flags: capability_sets::CmdFlags::all(),
+    }
 }
 
 fn pointer_capabilities() -> capability_sets::Pointer {
