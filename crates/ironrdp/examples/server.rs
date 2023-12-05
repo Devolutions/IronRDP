@@ -1,7 +1,13 @@
-//! Example of utilizing IronRDP server.
+//! Example of utilizing `ironrdp-server` crate.
 
 #[macro_use]
 extern crate tracing;
+
+use std::fs::File;
+use std::io::BufReader;
+use std::net::{IpAddr, SocketAddr};
+use std::num::NonZeroU16;
+use std::sync::Arc;
 
 use anyhow::Context as _;
 use ironrdp_connector::DesktopSize;
@@ -12,13 +18,6 @@ use ironrdp_server::{
 use rand::prelude::*;
 use rustls::ServerConfig;
 use rustls_pemfile::{certs, pkcs8_private_keys};
-use std::{
-    fs::File,
-    io::BufReader,
-    net::{IpAddr, SocketAddr},
-    num::NonZeroU16,
-    sync::Arc,
-};
 use tokio::time::{sleep, Duration};
 use tokio_rustls::TlsAcceptor;
 
@@ -111,9 +110,6 @@ fn acceptor(cert_path: &str, key_path: &str) -> anyhow::Result<TlsAcceptor> {
 
     Ok(TlsAcceptor::from(Arc::new(server_config)))
 }
-
-#[derive(Debug)]
-struct InnerHandler {}
 
 #[derive(Clone, Debug)]
 struct Handler {

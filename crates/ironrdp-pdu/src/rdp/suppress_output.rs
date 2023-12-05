@@ -1,16 +1,29 @@
 use std::io;
 
 use byteorder::{ReadBytesExt as _, WriteBytesExt as _};
-use num_derive::{FromPrimitive, ToPrimitive};
-use num_traits::{FromPrimitive, ToPrimitive};
 
-use crate::{geometry::InclusiveRectangle, PduParsing};
+use crate::geometry::InclusiveRectangle;
+use crate::PduParsing;
 
 #[repr(u8)]
-#[derive(Debug, PartialEq, Eq, FromPrimitive, ToPrimitive, Clone)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub enum AllowDisplayUpdatesType {
     SuppressDisplayUpdates = 0x00,
     AllowDisplayUpdates = 0x01,
+}
+
+impl AllowDisplayUpdatesType {
+    pub fn from_u8(value: u8) -> Option<Self> {
+        match value {
+            0x00 => Some(Self::SuppressDisplayUpdates),
+            0x01 => Some(Self::AllowDisplayUpdates),
+            _ => None,
+        }
+    }
+
+    pub fn as_u8(self) -> u8 {
+        self as u8
+    }
 }
 
 /// [2.2.11.3.1] Suppress Output PDU Data (TS_SUPPRESS_OUTPUT_PDU)
@@ -24,8 +37,7 @@ pub enum AllowDisplayUpdatesType {
 /// [2.2.11.3.1] https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/0be71491-0b01-402c-947d-080706ccf91b
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SuppressOutputPdu {
-    allow_display_updates: AllowDisplayUpdatesType,
-    desktop_rect: Option<InclusiveRectangle>,
+    pub desktop_rect: Option<InclusiveRectangle>,
 }
 
 impl PduParsing for SuppressOutputPdu {
@@ -42,14 +54,17 @@ impl PduParsing for SuppressOutputPdu {
         } else {
             None
         };
-        Ok(Self {
-            allow_display_updates,
-            desktop_rect,
-        })
+        Ok(Self { desktop_rect })
     }
 
     fn to_buffer(&self, mut stream: impl io::Write) -> Result<(), Self::Error> {
-        stream.write_u8(self.allow_display_updates.to_u8().unwrap())?;
+        let allow_display_updates = if self.desktop_rect.is_some() {
+            AllowDisplayUpdatesType::AllowDisplayUpdates
+        } else {
+            AllowDisplayUpdatesType::SuppressDisplayUpdates
+        };
+
+        stream.write_u8(allow_display_updates.as_u8())?;
         stream.write_u8(0)?; // padding
         stream.write_u8(0)?; // padding
         stream.write_u8(0)?; // padding

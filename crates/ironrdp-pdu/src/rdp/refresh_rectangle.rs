@@ -2,11 +2,12 @@ use std::io;
 
 use byteorder::{ReadBytesExt as _, WriteBytesExt as _};
 
-use crate::{geometry::InclusiveRectangle, PduParsing};
+use crate::geometry::InclusiveRectangle;
+use crate::PduParsing;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RefreshRectanglePdu {
-    areas_to_refresh: Vec<InclusiveRectangle>,
+    pub areas_to_refresh: Vec<InclusiveRectangle>,
 }
 
 /// [2.2.11.2.1] Refresh Rect PDU Data (TS_REFRESH_RECT_PDU)
@@ -34,7 +35,11 @@ impl PduParsing for RefreshRectanglePdu {
     }
 
     fn to_buffer(&self, mut stream: impl io::Write) -> Result<(), Self::Error> {
-        stream.write_u8(self.areas_to_refresh.len() as u8)?;
+        // NOTE: use `cast_length!` when migrated to `PduEncode` trait.
+        let n_areas =
+            u8::try_from(self.areas_to_refresh.len()).map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
+
+        stream.write_u8(n_areas)?;
         stream.write_u8(0)?; // padding
         stream.write_u8(0)?; // padding
         stream.write_u8(0)?; // padding
