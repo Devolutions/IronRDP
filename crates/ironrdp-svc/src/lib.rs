@@ -165,7 +165,7 @@ pub trait StaticVirtualChannelProcessor: AsAny + fmt::Debug + Send {
     /// Processes a payload received on the virtual channel. The `payload` is expected
     /// to be a fully de-chunkified PDU.
     ///
-    /// Returns a list of PDUs to be sent back to the client.
+    /// Returns a list of PDUs to be sent back.
     fn process(&mut self, payload: &[u8]) -> PduResult<Vec<SvcMessage>>;
 
     #[doc(hidden)]
