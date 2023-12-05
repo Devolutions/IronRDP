@@ -1,11 +1,12 @@
 use std::io::Cursor;
 use std::net::SocketAddr;
 
-use anyhow::Result;
+use anyhow::{bail, Result};
 use ironrdp_acceptor::{self, Acceptor, AcceptorResult, BeginResult};
 use ironrdp_pdu::input::fast_path::{FastPathInput, FastPathInputEvent};
 use ironrdp_pdu::input::InputEventPdu;
 use ironrdp_pdu::mcs::SendDataRequest;
+use ironrdp_pdu::rdp::capability_sets::{CapabilitySet, GeneralExtraFlags};
 use ironrdp_pdu::{self, mcs, nego, rdp, Action, PduParsing};
 use ironrdp_tokio::{Framed, FramedRead, FramedWrite, TokioFramed};
 use tokio::net::{TcpListener, TcpStream};
@@ -175,9 +176,7 @@ impl RdpServer {
     where
         S: FramedWrite + FramedRead,
     {
-        let mut buffer = vec![0u8; 4096];
-        let mut encoder = UpdateEncoder::new();
-
+        debug!("Starting client loop");
         self.io_channel_id = Some(result.io_channel_id);
 
         if !result.input_events.is_empty() {
@@ -185,7 +184,20 @@ impl RdpServer {
             self.handle_input_backlog(result.input_events).await?;
         }
 
-        debug!("Starting client loop");
+        for c in result.capabilities {
+            match c {
+                CapabilitySet::General(c) => {
+                    let fastpath = c.extra_flags.contains(GeneralExtraFlags::FASTPATH_OUTPUT_SUPPORTED);
+                    if !fastpath {
+                        bail!("Fastpath output not supported!");
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        let mut buffer = vec![0u8; 4096];
+        let mut encoder = UpdateEncoder::new();
 
         'main: loop {
             tokio::select! {
