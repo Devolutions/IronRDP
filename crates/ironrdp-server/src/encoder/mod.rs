@@ -4,7 +4,9 @@ use std::cmp;
 
 use ironrdp_pdu::cursor::WriteCursor;
 use ironrdp_pdu::fast_path::{EncryptionFlags, FastPathHeader, FastPathUpdatePdu, Fragmentation, UpdateCode};
+use ironrdp_pdu::geometry::ExclusiveRectangle;
 use ironrdp_pdu::rdp::capability_sets::CmdFlags;
+use ironrdp_pdu::surface_commands::{ExtendedBitmapDataPdu, SurfaceBitsPdu, SurfaceCommand};
 use ironrdp_pdu::PduEncode;
 
 use self::bitmap::BitmapEncoder;
@@ -31,8 +33,49 @@ impl UpdateEncoder {
     }
 
     pub(crate) fn bitmap(&mut self, bitmap: BitmapUpdate) -> Option<UpdateFragmenter<'_>> {
+        if !self.surface_flags.contains(CmdFlags::SET_SURFACE_BITS) {
+            let len = loop {
+                match self.bitmap.encode(&bitmap, self.buffer.as_mut_slice()) {
+                    Err(e) => match e.kind() {
+                        ironrdp_pdu::PduErrorKind::NotEnoughBytes { .. } => {
+                            self.buffer.resize(self.buffer.len() * 2, 0);
+                            debug!("encoder buffer resized to: {}", self.buffer.len() * 2);
+                        }
+
+                        _ => {
+                            debug!("bitmap encode error: {:?}", e);
+                            return None;
+                        }
+                    },
+                    Ok(len) => break len,
+                }
+            };
+
+            return Some(UpdateFragmenter::new(UpdateCode::Bitmap, &self.buffer[..len]));
+        }
+
+        let destination = ExclusiveRectangle {
+            left: bitmap.left,
+            top: bitmap.top,
+            right: bitmap.left + bitmap.width.get(),
+            bottom: bitmap.top + bitmap.height.get(),
+        };
+        let extended_bitmap_data = ExtendedBitmapDataPdu {
+            bpp: bitmap.format.bytes_per_pixel() * 8,
+            width: bitmap.width.get(),
+            height: bitmap.height.get(),
+            codec_id: 0,
+            header: None,
+            data: &bitmap.data,
+        };
+        let pdu = SurfaceBitsPdu {
+            destination,
+            extended_bitmap_data,
+        };
+        let cmd = SurfaceCommand::SetSurfaceBits(pdu);
         let len = loop {
-            match self.bitmap.encode(&bitmap, self.buffer.as_mut_slice()) {
+            let mut cursor = WriteCursor::new(self.buffer.as_mut_slice());
+            match cmd.encode(&mut cursor) {
                 Err(e) => match e.kind() {
                     ironrdp_pdu::PduErrorKind::NotEnoughBytes { .. } => {
                         self.buffer.resize(self.buffer.len() * 2, 0);
@@ -44,11 +87,10 @@ impl UpdateEncoder {
                         return None;
                     }
                 },
-                Ok(len) => break len,
+                Ok(()) => break cursor.pos(),
             }
         };
-
-        Some(UpdateFragmenter::new(UpdateCode::Bitmap, &self.buffer[..len]))
+        Some(UpdateFragmenter::new(UpdateCode::SurfaceCommands, &self.buffer[..len]))
     }
 }
 
