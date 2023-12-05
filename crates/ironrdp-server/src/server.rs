@@ -102,7 +102,6 @@ pub struct RdpServer {
     opts: RdpServerOptions,
     handler: Box<dyn RdpServerInputHandler>,
     display: Box<dyn RdpServerDisplay>,
-    io_channel_id: Option<u16>,
 }
 
 impl RdpServer {
@@ -111,12 +110,7 @@ impl RdpServer {
         handler: Box<dyn RdpServerInputHandler>,
         display: Box<dyn RdpServerDisplay>,
     ) -> Self {
-        Self {
-            opts,
-            handler,
-            display,
-            io_channel_id: None,
-        }
+        Self { opts, handler, display }
     }
 
     pub fn builder() -> builder::RdpServerBuilder<builder::WantsAddr> {
@@ -177,11 +171,11 @@ impl RdpServer {
         S: FramedWrite + FramedRead,
     {
         debug!("Starting client loop");
-        self.io_channel_id = Some(result.io_channel_id);
 
         if !result.input_events.is_empty() {
             debug!("Handling input event backlog from acceptor sequence");
-            self.handle_input_backlog(result.input_events).await?;
+            self.handle_input_backlog(result.io_channel_id, result.input_events)
+                .await?;
         }
 
         let mut surface_flags = CmdFlags::empty();
@@ -217,7 +211,7 @@ impl RdpServer {
                         }
 
                         Action::X224 => {
-                            match self.handle_x224(&bytes).await {
+                            match self.handle_x224(result.io_channel_id, &bytes).await {
                                 Ok(disconnect) => {
                                     if disconnect {
                                         break 'main;
@@ -256,7 +250,7 @@ impl RdpServer {
         Ok(())
     }
 
-    async fn handle_input_backlog(&mut self, frames: Vec<Vec<u8>>) -> Result<()> {
+    async fn handle_input_backlog(&mut self, io_channel_id: u16, frames: Vec<Vec<u8>>) -> Result<()> {
         for frame in frames {
             match Action::from_fp_output_header(frame[0]) {
                 Ok(Action::FastPath) => {
@@ -265,7 +259,7 @@ impl RdpServer {
                 }
 
                 Ok(Action::X224) => {
-                    let _ = self.handle_x224(&frame).await;
+                    let _ = self.handle_x224(io_channel_id, &frame).await;
                 }
 
                 // the frame here is always valid, because otherwise it would
@@ -333,13 +327,13 @@ impl RdpServer {
         Ok(false)
     }
 
-    async fn handle_x224(&mut self, frame: &[u8]) -> Result<bool> {
+    async fn handle_x224(&mut self, io_channel_id: u16, frame: &[u8]) -> Result<bool> {
         let message = ironrdp_pdu::decode::<mcs::McsMessage<'_>>(frame)?;
         match message {
             mcs::McsMessage::SendDataRequest(data) => {
                 debug!(?data, "McsMessage::SendDataRequest");
-                if Some(data.channel_id) == self.io_channel_id && self.handle_io_channel_data(data).await? {
-                    return Ok(true);
+                if data.channel_id == io_channel_id {
+                    return self.handle_io_channel_data(data).await;
                 }
             }
 
