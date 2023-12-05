@@ -65,3 +65,8 @@ Alternatively, you may change a few group policies using `gpedit.msc`:
 ## Architecture
 
 See the [ARCHITECTURE.md](./ARCHITECTURE.md) document.
+
+## Getting help
+
+- Report bugs in the [issue tracker](https://github.com/Devolutions/IronRDP/issues)
+- Discuss the project on the [matrix room](https://matrix.to/#/#IronRDP:matrix.org)
