@@ -306,7 +306,6 @@ pub struct SharedHeader {
 }
 
 impl SharedHeader {
-    const NAME: &str = "RDPDR_HEADER";
     const SIZE: usize = size_of::<u16>() * 2;
 
     fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {

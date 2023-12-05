@@ -282,7 +282,7 @@ mod tests {
             &[],
             expect![[r#"
                 Error {
-                    context: "Rdp6BitmapStream",
+                    context: "<ironrdp_pdu::basic_output::bitmap::rdp6::BitmapStream as ironrdp_pdu::PduDecode>::decode",
                     kind: NotEnoughBytes {
                         received: 0,
                         expected: 1,
@@ -297,7 +297,7 @@ mod tests {
             &[0x20],
             expect![[r#"
                 Error {
-                    context: "Rdp6BitmapStream",
+                    context: "<ironrdp_pdu::basic_output::bitmap::rdp6::BitmapStream as ironrdp_pdu::PduDecode>::decode",
                     kind: InvalidMessage {
                         field: "padding",
                         reason: "missing padding byte from zero-sized non-RLE bitmap data",

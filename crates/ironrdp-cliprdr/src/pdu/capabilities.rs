@@ -233,8 +233,6 @@ impl ClipboardProtocolVersion {
     const VERSION_VALUE_V1: u32 = 0x0000_0001;
     const VERSION_VALUE_V2: u32 = 0x0000_0002;
 
-    const NAME: &str = "CLIPRDR_CAPS_VERSION";
-
     #[must_use]
     pub fn downgrade(self, other: Self) -> Self {
         if self != other {
