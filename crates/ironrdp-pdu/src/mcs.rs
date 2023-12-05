@@ -746,7 +746,7 @@ pub struct DisconnectProviderUltimatum {
 impl_pdu_pod!(DisconnectProviderUltimatum);
 
 impl DisconnectProviderUltimatum {
-    pub const NAME: &str = "DisconnectProviderUltimatum";
+    pub const NAME: &'static str = "DisconnectProviderUltimatum";
 
     pub const FIXED_PART_SIZE: usize = 2;
 }

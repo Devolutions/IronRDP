@@ -81,7 +81,7 @@ struct CiexyzTriple {
 }
 
 impl CiexyzTriple {
-    const NAME: &str = "CIEXYZTRIPLE";
+    const NAME: &'static str = "CIEXYZTRIPLE";
     const FIXED_PART_SIZE: usize = 4 * 3 * 3; // 4(LONG) * 3(xyz) * 3(red, green, blue)
 }
 
@@ -174,7 +174,7 @@ impl BitmapInfoHeader {
         + 4 // biClrUsed (DWORD)
         + 4; // biClrImportant (DWORD)
 
-    const NAME: &str = "BITMAPINFOHEADER";
+    const NAME: &'static str = "BITMAPINFOHEADER";
 
     fn encode_with_size(&self, dst: &mut WriteCursor<'_>, size: u32) -> PduResult<()> {
         ensure_fixed_part_size!(in: dst);
@@ -320,7 +320,7 @@ impl BitmapV5Header {
         + 4 // bV5ProfileSize (DWORD)
         + 4; // bV5Reserved (DWORD)
 
-    const NAME: &str = "BITMAPV5HEADER";
+    const NAME: &'static str = "BITMAPV5HEADER";
 }
 
 impl PduEncode for BitmapV5Header {

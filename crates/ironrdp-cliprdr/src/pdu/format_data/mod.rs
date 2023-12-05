@@ -39,7 +39,7 @@ impl IntoOwnedPdu for FormatDataResponse<'_> {
 }
 
 impl<'a> FormatDataResponse<'a> {
-    const NAME: &str = "CLIPRDR_FORMAT_DATA_RESPONSE";
+    const NAME: &'static str = "CLIPRDR_FORMAT_DATA_RESPONSE";
 
     /// Creates new format data response from raw data.
     pub fn new_data(data: impl Into<Cow<'a, [u8]>>) -> Self {
@@ -217,7 +217,7 @@ pub struct FormatDataRequest {
 }
 
 impl FormatDataRequest {
-    const NAME: &str = "CLIPRDR_FORMAT_DATA_REQUEST";
+    const NAME: &'static str = "CLIPRDR_FORMAT_DATA_REQUEST";
     const FIXED_PART_SIZE: usize = std::mem::size_of::<u32>();
 }
 

@@ -7,7 +7,7 @@ const EXTRA_LINTS: &[&str] = &[
     "invalid_reference_casting",
     "pointer_structural_match",
     "clippy::undocumented_unsafe_blocks",
-    "clippy::multiple_unsafe_ops_per_block",
+    // "clippy::multiple_unsafe_ops_per_block", // FIXME: https://github.com/rust-lang/rust-clippy/issues/11312 (fixed for 1.75.0)
     "clippy::transmute_ptr_to_ptr",
     "clippy::as_ptr_cast_mut",
     "clippy::cast_ptr_alignment",

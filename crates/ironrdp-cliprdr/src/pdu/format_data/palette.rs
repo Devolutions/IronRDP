@@ -25,7 +25,7 @@ pub struct ClipboardPalette {
 impl_pdu_pod!(ClipboardPalette);
 
 impl ClipboardPalette {
-    const NAME: &str = "CLIPRDR_PALETTE";
+    const NAME: &'static str = "CLIPRDR_PALETTE";
 }
 
 impl PduEncode for ClipboardPalette {

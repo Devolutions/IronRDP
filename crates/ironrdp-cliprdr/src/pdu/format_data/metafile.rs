@@ -45,7 +45,7 @@ pub struct PackedMetafile<'a> {
 }
 
 impl PackedMetafile<'_> {
-    const NAME: &str = "CLIPRDR_MFPICT";
+    const NAME: &'static str = "CLIPRDR_MFPICT";
     const FIXED_PART_SIZE: usize = std::mem::size_of::<u32>() * 3;
 
     pub fn new(

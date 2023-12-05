@@ -231,7 +231,7 @@ impl IntoOwnedPdu for FormatList<'_> {
 }
 
 impl FormatList<'_> {
-    const NAME: &str = "CLIPRDR_FORMAT_LIST";
+    const NAME: &'static str = "CLIPRDR_FORMAT_LIST";
 
     // `CLIPRDR_SHORT_FORMAT_NAME` size
     const SHORT_FORMAT_SIZE: usize = std::mem::size_of::<u32>() + 32;
@@ -420,7 +420,7 @@ pub enum FormatListResponse {
 impl_pdu_pod!(FormatListResponse);
 
 impl FormatListResponse {
-    const NAME: &str = "FORMAT_LIST_RESPONSE";
+    const NAME: &'static str = "FORMAT_LIST_RESPONSE";
 }
 
 impl PduEncode for FormatListResponse {

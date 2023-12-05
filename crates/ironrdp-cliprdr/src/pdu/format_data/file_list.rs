@@ -57,7 +57,7 @@ pub struct FileDescriptor {
 impl_pdu_pod!(FileDescriptor);
 
 impl FileDescriptor {
-    const NAME: &str = "CLIPRDR_FILEDESCRIPTOR";
+    const NAME: &'static str = "CLIPRDR_FILEDESCRIPTOR";
 
     const FIXED_PART_SIZE: usize = 4 // flags
         + 32 // reserved
@@ -164,7 +164,7 @@ pub struct PackedFileList {
 impl_pdu_pod!(PackedFileList);
 
 impl PackedFileList {
-    const NAME: &str = "CLIPRDR_FILELIST";
+    const NAME: &'static str = "CLIPRDR_FILELIST";
     const FIXED_PART_SIZE: usize = std::mem::size_of::<u32>(); // file count
 }
 

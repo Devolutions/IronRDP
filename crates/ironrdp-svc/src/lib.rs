@@ -562,7 +562,7 @@ struct ChannelPduHeader {
 }
 
 impl ChannelPduHeader {
-    const NAME: &str = "CHANNEL_PDU_HEADER";
+    const NAME: &'static str = "CHANNEL_PDU_HEADER";
 }
 
 impl PduEncode for ChannelPduHeader {
