@@ -326,22 +326,32 @@ impl Processor {
                         )
                     })?;
 
+                    let destination = bits.destination;
+                    // TODO(@pacmancoder): Correct rectangle conversion logic should
+                    // be revisited when `rectangle_processing.rs` from
+                    // `ironrdp-graphics` will be refactored to use generic `Rectangle`
+                    // trait instead of hardcoded `InclusiveRectangle`.
+                    let destination = InclusiveRectangle {
+                        left: destination.left,
+                        top: destination.top,
+                        right: destination.right,
+                        bottom: destination.bottom,
+                    };
                     match codec_id {
+                        CodecId::None => {
+                            let ext_data = bits.extended_bitmap_data;
+                            match ext_data.bpp {
+                                32 => {
+                                    image.apply_rgb32_bitmap(ext_data.data, &destination)?;
+                                }
+                                bpp => {
+                                    warn!("Unsupported bpp: {bpp}")
+                                }
+                            }
+                        }
                         CodecId::RemoteFx => {
-                            let destination = bits.destination;
                             let mut data = bits.extended_bitmap_data.data;
-
                             while !data.is_empty() {
-                                // TODO(@pacmancoder): Correct rectangle conversion logic should
-                                // be revisited when `rectangle_processing.rs` from
-                                // `ironrdp-graphics` will be refactored to use generic `Rectangle`
-                                // trait instead of hardcoded `InclusiveRectangle`.
-                                let destination = InclusiveRectangle {
-                                    left: destination.left,
-                                    top: destination.top,
-                                    right: destination.right,
-                                    bottom: destination.bottom,
-                                };
                                 let (_frame_id, rectangle) = self.rfx_handler.decode(image, &destination, &mut data)?;
                                 update_rectangle = update_rectangle.union(&rectangle);
                             }

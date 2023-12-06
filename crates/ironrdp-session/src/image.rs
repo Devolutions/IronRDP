@@ -571,4 +571,40 @@ impl DecodedImage {
 
         Ok(update_rectangle)
     }
+
+    // FIXME: this assumes PixelFormat::RgbA32
+    pub(crate) fn apply_rgb32_bitmap(
+        &mut self,
+        rgb32: &[u8],
+        update_rectangle: &InclusiveRectangle,
+    ) -> SessionResult<InclusiveRectangle> {
+        const SRC_COLOR_DEPTH: usize = 4;
+        const DST_COLOR_DEPTH: usize = 4;
+
+        let image_width = self.width as usize;
+        let rectangle_width = usize::from(update_rectangle.width());
+        let top = usize::from(update_rectangle.top);
+        let left = usize::from(update_rectangle.left);
+
+        let pointer_rendering_state = self.pointer_rendering_begin(update_rectangle)?;
+
+        rgb32
+            .chunks_exact(rectangle_width * SRC_COLOR_DEPTH)
+            .rev()
+            .enumerate()
+            .for_each(|(row_idx, row)| {
+                row.chunks_exact(SRC_COLOR_DEPTH)
+                    .enumerate()
+                    .for_each(|(col_idx, src_pixel)| {
+                        let dst_idx = ((top + row_idx) * image_width + left + col_idx) * DST_COLOR_DEPTH;
+
+                        // Copy RGB channels as is
+                        self.data[dst_idx..dst_idx + SRC_COLOR_DEPTH].copy_from_slice(src_pixel);
+                    })
+            });
+
+        let update_rectangle = self.pointer_rendering_end(pointer_rendering_state)?;
+
+        Ok(update_rectangle)
+    }
 }
