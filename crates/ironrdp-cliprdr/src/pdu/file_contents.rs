@@ -49,7 +49,7 @@ impl IntoOwnedPdu for FileContentsResponse<'_> {
 }
 
 impl<'a> FileContentsResponse<'a> {
-    const NAME: &str = "CLIPRDR_FILECONTENTS_RESPONSE";
+    const NAME: &'static str = "CLIPRDR_FILECONTENTS_RESPONSE";
     const FIXED_PART_SIZE: usize = std::mem::size_of::<u32>();
 
     fn inner_size(&self) -> usize {
@@ -169,7 +169,7 @@ pub struct FileContentsRequest {
 }
 
 impl FileContentsRequest {
-    const NAME: &str = "CLIPRDR_FILECONTENTS_REQUEST";
+    const NAME: &'static str = "CLIPRDR_FILECONTENTS_REQUEST";
     const FIXED_PART_SIZE: usize = std::mem::size_of::<u32>() * 4 + std::mem::size_of::<u64>();
 
     fn inner_size(&self) -> usize {

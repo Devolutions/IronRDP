@@ -16,7 +16,7 @@ pub struct Capabilities {
 impl_pdu_pod!(Capabilities);
 
 impl Capabilities {
-    const NAME: &str = "CLIPRDR_CAPS";
+    const NAME: &'static str = "CLIPRDR_CAPS";
     const FIXED_PART_SIZE: usize = std::mem::size_of::<u16>() * 2;
 
     fn inner_size(&self) -> usize {
@@ -112,7 +112,7 @@ pub enum CapabilitySet {
 impl_pdu_pod!(CapabilitySet);
 
 impl CapabilitySet {
-    const NAME: &str = "CLIPRDR_CAPS_SET";
+    const NAME: &'static str = "CLIPRDR_CAPS_SET";
     const FIXED_PART_SIZE: usize = std::mem::size_of::<u16>() * 2;
 
     const CAPSTYPE_GENERAL: u16 = 0x0001;
@@ -186,7 +186,7 @@ pub struct GeneralCapabilitySet {
 }
 
 impl GeneralCapabilitySet {
-    const NAME: &str = "CLIPRDR_GENERAL_CAPABILITY";
+    const NAME: &'static str = "CLIPRDR_GENERAL_CAPABILITY";
     const FIXED_PART_SIZE: usize = std::mem::size_of::<u32>() * 2;
 }
 

@@ -20,7 +20,7 @@ pub enum SurfaceCommand<'a> {
 }
 
 impl SurfaceCommand<'_> {
-    const NAME: &str = "TS_SURFCMD";
+    const NAME: &'static str = "TS_SURFCMD";
     const FIXED_PART_SIZE: usize = std::mem::size_of::<u16>();
 }
 
@@ -76,7 +76,7 @@ pub struct SurfaceBitsPdu<'a> {
 }
 
 impl SurfaceBitsPdu<'_> {
-    const NAME: &str = "TS_SURFCMD_x_SURFACE_BITS_PDU";
+    const NAME: &'static str = "TS_SURFCMD_x_SURFACE_BITS_PDU";
 }
 
 impl PduEncode for SurfaceBitsPdu<'_> {
@@ -116,7 +116,7 @@ pub struct FrameMarkerPdu {
 }
 
 impl FrameMarkerPdu {
-    const NAME: &str = "TS_FRAME_MARKER_PDU";
+    const NAME: &'static str = "TS_FRAME_MARKER_PDU";
     const FIXED_PART_SIZE: usize = core::mem::size_of::<u16>() + core::mem::size_of::<u32>();
 }
 
@@ -174,7 +174,7 @@ pub struct ExtendedBitmapDataPdu<'a> {
 }
 
 impl ExtendedBitmapDataPdu<'_> {
-    const NAME: &str = "TS_BITMAP_DATA_EX";
+    const NAME: &'static str = "TS_BITMAP_DATA_EX";
     const FIXED_PART_SIZE: usize =
         core::mem::size_of::<u8>() * 4 + core::mem::size_of::<u16>() * 2 + core::mem::size_of::<u32>();
 }
@@ -265,7 +265,7 @@ pub struct BitmapDataHeader {
 }
 
 impl BitmapDataHeader {
-    const NAME: &str = "TS_COMPRESSED_BITMAP_HEADER_EX";
+    const NAME: &'static str = "TS_COMPRESSED_BITMAP_HEADER_EX";
     const FIXED_PART_SIZE: usize = core::mem::size_of::<u32>() * 2 + core::mem::size_of::<u64>() * 4;
 
     pub const ENCODED_SIZE: usize = Self::FIXED_PART_SIZE;

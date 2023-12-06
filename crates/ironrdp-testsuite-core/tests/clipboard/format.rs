@@ -41,7 +41,7 @@ fn test_cf_html_to_text() {
     assert!(actual.ends_with("</sup>"));
 
     // Validate roundtrip
-    let cf_html = plain_html_to_cf_html(&actual);
+    let cf_html = plain_html_to_cf_html(actual);
     let roundtrip_html_text = cf_html_to_plain_html(cf_html.as_bytes()).unwrap();
     assert_eq!(actual, roundtrip_html_text);
 

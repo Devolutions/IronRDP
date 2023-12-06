@@ -24,7 +24,7 @@ pub struct FastPathHeader {
 }
 
 impl FastPathHeader {
-    const NAME: &str = "TS_FP_UPDATE_PDU header";
+    const NAME: &'static str = "TS_FP_UPDATE_PDU header";
     const FIXED_PART_SIZE: usize = std::mem::size_of::<EncryptionFlags>();
 
     pub fn new(flags: EncryptionFlags, data_length: usize) -> Self {

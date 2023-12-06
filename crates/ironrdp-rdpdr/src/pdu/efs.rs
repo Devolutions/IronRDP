@@ -128,7 +128,7 @@ pub enum ClientNameRequest {
 }
 
 impl ClientNameRequest {
-    const NAME: &str = "DR_CORE_CLIENT_NAME_REQ";
+    const NAME: &'static str = "DR_CORE_CLIENT_NAME_REQ";
     const FIXED_PART_SIZE: usize = size_of::<u32>() * 3; // unicode_flag + CodePage + ComputerNameLen
 
     pub fn new(computer_name: String, kind: ClientNameRequestUnicodeFlag) -> Self {
@@ -960,7 +960,7 @@ pub struct ServerDeviceAnnounceResponse {
 }
 
 impl ServerDeviceAnnounceResponse {
-    const NAME: &str = "DR_CORE_DEVICE_ANNOUNCE_RSP";
+    const NAME: &'static str = "DR_CORE_DEVICE_ANNOUNCE_RSP";
     const FIXED_PART_SIZE: usize = size_of::<u32>() * 2; // DeviceId, ResultCode
 
     pub fn name(&self) -> &'static str {
@@ -1062,7 +1062,7 @@ pub struct DeviceIoRequest {
 }
 
 impl DeviceIoRequest {
-    const NAME: &str = "DR_DEVICE_IOREQUEST";
+    const NAME: &'static str = "DR_DEVICE_IOREQUEST";
     const FIXED_PART_SIZE: usize = size_of::<u32>() * 5; // DeviceId, FileId, CompletionId, MajorFunction, MinorFunction
 
     pub fn name(&self) -> &'static str {
@@ -1271,7 +1271,7 @@ pub struct DeviceControlResponse {
 }
 
 impl DeviceControlResponse {
-    const NAME: &str = "DR_CONTROL_RSP";
+    const NAME: &'static str = "DR_CONTROL_RSP";
 
     /// A value of `None` for `output_buffer` represents an empty buffer,
     /// such as can be seen in FreeRDP [here].
@@ -1711,7 +1711,7 @@ pub struct DeviceCreateResponse {
 }
 
 impl DeviceCreateResponse {
-    const NAME: &str = "DR_CREATE_RSP";
+    const NAME: &'static str = "DR_CREATE_RSP";
 
     pub fn name(&self) -> &'static str {
         Self::NAME
@@ -1860,7 +1860,7 @@ pub struct ClientDriveQueryInformationResponse {
 }
 
 impl ClientDriveQueryInformationResponse {
-    const NAME: &str = "DR_DRIVE_QUERY_INFORMATION_RSP";
+    const NAME: &'static str = "DR_DRIVE_QUERY_INFORMATION_RSP";
 
     pub fn name(&self) -> &'static str {
         Self::NAME
@@ -2517,7 +2517,7 @@ pub struct DeviceCloseResponse {
 }
 
 impl DeviceCloseResponse {
-    const NAME: &str = "DR_CLOSE_RSP";
+    const NAME: &'static str = "DR_CLOSE_RSP";
 
     pub fn name(&self) -> &'static str {
         Self::NAME
@@ -2624,7 +2624,7 @@ pub struct ClientDriveQueryDirectoryResponse {
 }
 
 impl ClientDriveQueryDirectoryResponse {
-    const NAME: &str = "DR_DRIVE_QUERY_DIRECTORY_RSP";
+    const NAME: &'static str = "DR_DRIVE_QUERY_DIRECTORY_RSP";
 
     pub fn name(&self) -> &'static str {
         Self::NAME
@@ -3030,7 +3030,7 @@ pub struct ClientDriveQueryVolumeInformationResponse {
 }
 
 impl ClientDriveQueryVolumeInformationResponse {
-    const NAME: &str = "DR_DRIVE_QUERY_VOLUME_INFORMATION_RSP";
+    const NAME: &'static str = "DR_DRIVE_QUERY_VOLUME_INFORMATION_RSP";
 
     pub fn new(
         device_io_request: DeviceIoRequest,
@@ -3114,7 +3114,7 @@ pub struct DeviceReadResponse {
 }
 
 impl DeviceReadResponse {
-    const NAME: &str = "DR_READ_RSP";
+    const NAME: &'static str = "DR_READ_RSP";
 
     pub fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
         ensure_size!(in: dst, size: self.size());
@@ -3194,7 +3194,7 @@ pub struct DeviceWriteResponse {
 }
 
 impl DeviceWriteResponse {
-    const NAME: &str = "DR_WRITE_RSP";
+    const NAME: &'static str = "DR_WRITE_RSP";
 
     pub fn name(&self) -> &'static str {
         Self::NAME
@@ -3375,7 +3375,7 @@ pub struct ClientDriveSetInformationResponse {
 }
 
 impl ClientDriveSetInformationResponse {
-    const NAME: &str = "DR_DRIVE_SET_INFORMATION_RSP";
+    const NAME: &'static str = "DR_DRIVE_SET_INFORMATION_RSP";
 
     pub fn new(req: &ServerDriveSetInformationRequest, io_status: NtStatus) -> PduResult<Self> {
         Ok(Self {

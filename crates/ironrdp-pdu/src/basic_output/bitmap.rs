@@ -20,7 +20,7 @@ pub struct BitmapUpdateData<'a> {
 }
 
 impl BitmapUpdateData<'_> {
-    const NAME: &str = "TS_UPDATE_BITMAP_DATA";
+    const NAME: &'static str = "TS_UPDATE_BITMAP_DATA";
     const FIXED_PART_SIZE: usize = core::mem::size_of::<u16>() * 2;
 }
 
@@ -96,7 +96,7 @@ pub struct BitmapData<'a> {
 }
 
 impl BitmapData<'_> {
-    const NAME: &str = "TS_BITMAP_DATA";
+    const NAME: &'static str = "TS_BITMAP_DATA";
     const FIXED_PART_SIZE: usize = InclusiveRectangle::ENCODED_SIZE + core::mem::size_of::<u16>() * 5;
 
     fn encoded_bitmap_data_length(&self) -> usize {
@@ -198,7 +198,7 @@ pub struct CompressedDataHeader {
 }
 
 impl CompressedDataHeader {
-    const NAME: &str = "TS_CD_HEADER";
+    const NAME: &'static str = "TS_CD_HEADER";
     const FIXED_PART_SIZE: usize = core::mem::size_of::<u16>() * 4;
 
     pub const ENCODED_SIZE: usize = Self::FIXED_PART_SIZE;

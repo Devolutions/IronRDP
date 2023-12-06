@@ -43,7 +43,7 @@ struct PartialHeader {
 }
 
 impl PartialHeader {
-    const NAME: &str = "CLIPRDR_HEADER";
+    const NAME: &'static str = "CLIPRDR_HEADER";
     const FIXED_PART_SIZE: usize = std::mem::size_of::<u16>() + std::mem::size_of::<u32>();
     const SIZE: usize = Self::FIXED_PART_SIZE;
 
@@ -113,7 +113,7 @@ pub enum ClipboardPdu<'a> {
 }
 
 impl ClipboardPdu<'_> {
-    const NAME: &str = "ClipboardPdu";
+    const NAME: &'static str = "ClipboardPdu";
     const FIXED_PART_SIZE: usize = std::mem::size_of::<u16>();
 
     pub fn message_name(&self) -> &'static str {

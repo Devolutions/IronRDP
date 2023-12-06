@@ -10,7 +10,7 @@ pub struct LockDataId(pub u32);
 impl_pdu_pod!(LockDataId);
 
 impl LockDataId {
-    const NAME: &str = "CLIPRDR_(UN)LOCK_CLIPDATA";
+    const NAME: &'static str = "CLIPRDR_(UN)LOCK_CLIPDATA";
     const FIXED_PART_SIZE: usize = std::mem::size_of::<u32>();
 }
 

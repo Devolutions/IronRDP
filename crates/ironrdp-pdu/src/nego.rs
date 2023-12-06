@@ -130,7 +130,7 @@ impl NegoRequestData {
 pub struct Cookie(pub String);
 
 impl Cookie {
-    const PREFIX: &str = "Cookie: mstshash=";
+    const PREFIX: &'static str = "Cookie: mstshash=";
 
     pub fn read(src: &mut ReadCursor<'_>) -> PduResult<Option<Self>> {
         read_nego_data(src, "Cookie", Self::PREFIX)?.map(Self).pipe(Ok)
@@ -149,7 +149,7 @@ impl Cookie {
 pub struct RoutingToken(pub String);
 
 impl RoutingToken {
-    const PREFIX: &str = "Cookie: msts=";
+    const PREFIX: &'static str = "Cookie: msts=";
 
     pub fn read(src: &mut ReadCursor<'_>) -> PduResult<Option<Self>> {
         read_nego_data(src, "RoutingToken", Self::PREFIX)?.map(Self).pipe(Ok)
