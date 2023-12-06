@@ -32,7 +32,13 @@ fn main() -> anyhow::Result<()> {
     let (input_event_sender, input_event_receiver) = RdpInputEvent::create_channel();
 
     #[cfg(not(windows))]
-    let cliprdr_factory = None;
+    let (_cliprdr, cliprdr_factory) = {
+        use ironrdp_cliprdr_native::StubClipboard;
+
+        let cliprdr = StubClipboard::new();
+        let factory = Some(cliprdr.backend_factory());
+        (cliprdr, factory)
+    };
 
     #[cfg(windows)]
     let (_win_clipboard, cliprdr_factory) = {
