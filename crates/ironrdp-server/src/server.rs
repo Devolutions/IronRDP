@@ -8,6 +8,7 @@ use ironrdp_pdu::input::InputEventPdu;
 use ironrdp_pdu::mcs::SendDataRequest;
 use ironrdp_pdu::rdp::capability_sets::{CapabilitySet, CmdFlags, GeneralExtraFlags};
 use ironrdp_pdu::{self, mcs, nego, rdp, Action, PduParsing};
+use ironrdp_svc::{server_encode_svc_messages, StaticChannelSet};
 use ironrdp_tokio::{Framed, FramedRead, FramedWrite, TokioFramed};
 use tokio::net::{TcpListener, TcpStream};
 use tokio_rustls::TlsAcceptor;
@@ -102,6 +103,7 @@ pub struct RdpServer {
     opts: RdpServerOptions,
     handler: Box<dyn RdpServerInputHandler>,
     display: Box<dyn RdpServerDisplay>,
+    static_channels: StaticChannelSet,
 }
 
 impl RdpServer {
@@ -110,7 +112,12 @@ impl RdpServer {
         handler: Box<dyn RdpServerInputHandler>,
         display: Box<dyn RdpServerDisplay>,
     ) -> Self {
-        Self { opts, handler, display }
+        Self {
+            opts,
+            handler,
+            display,
+            static_channels: StaticChannelSet::new(),
+        }
     }
 
     pub fn builder() -> builder::RdpServerBuilder<builder::WantsAddr> {
@@ -174,8 +181,23 @@ impl RdpServer {
 
         if !result.input_events.is_empty() {
             debug!("Handling input event backlog from acceptor sequence");
-            self.handle_input_backlog(result.io_channel_id, result.input_events)
-                .await?;
+            self.handle_input_backlog(
+                &mut framed,
+                result.io_channel_id,
+                result.user_channel_id,
+                result.input_events,
+            )
+            .await?;
+        }
+
+        self.static_channels = result.static_channels;
+        for (_type_id, channel, channel_id) in self.static_channels.iter_mut() {
+            let Some(channel_id) = channel_id else {
+                continue;
+            };
+            let svc_responses = channel.start()?;
+            let response = server_encode_svc_messages(svc_responses, channel_id, result.user_channel_id)?;
+            framed.write_all(&response).await?;
         }
 
         let mut surface_flags = CmdFlags::empty();
@@ -211,7 +233,7 @@ impl RdpServer {
                         }
 
                         Action::X224 => {
-                            match self.handle_x224(result.io_channel_id, &bytes).await {
+                            match self.handle_x224(&mut framed, result.io_channel_id, result.user_channel_id, &bytes).await {
                                 Ok(disconnect) => {
                                     if disconnect {
                                         break 'main;
@@ -250,7 +272,16 @@ impl RdpServer {
         Ok(())
     }
 
-    async fn handle_input_backlog(&mut self, io_channel_id: u16, frames: Vec<Vec<u8>>) -> Result<()> {
+    async fn handle_input_backlog<S>(
+        &mut self,
+        framed: &mut Framed<S>,
+        io_channel_id: u16,
+        user_channel_id: u16,
+        frames: Vec<Vec<u8>>,
+    ) -> Result<()>
+    where
+        S: FramedWrite,
+    {
         for frame in frames {
             match Action::from_fp_output_header(frame[0]) {
                 Ok(Action::FastPath) => {
@@ -259,7 +290,7 @@ impl RdpServer {
                 }
 
                 Ok(Action::X224) => {
-                    let _ = self.handle_x224(io_channel_id, &frame).await;
+                    let _ = self.handle_x224(framed, io_channel_id, user_channel_id, &frame).await;
                 }
 
                 // the frame here is always valid, because otherwise it would
@@ -327,13 +358,28 @@ impl RdpServer {
         Ok(false)
     }
 
-    async fn handle_x224(&mut self, io_channel_id: u16, frame: &[u8]) -> Result<bool> {
+    async fn handle_x224<S>(
+        &mut self,
+        framed: &mut Framed<S>,
+        io_channel_id: u16,
+        user_channel_id: u16,
+        frame: &[u8],
+    ) -> Result<bool>
+    where
+        S: FramedWrite,
+    {
         let message = ironrdp_pdu::decode::<mcs::McsMessage<'_>>(frame)?;
         match message {
             mcs::McsMessage::SendDataRequest(data) => {
                 debug!(?data, "McsMessage::SendDataRequest");
                 if data.channel_id == io_channel_id {
                     return self.handle_io_channel_data(data).await;
+                } else if let Some(svc) = self.static_channels.get_by_channel_id_mut(data.channel_id) {
+                    let response_pdus = svc.process(&data.user_data)?;
+                    let response = server_encode_svc_messages(response_pdus, data.channel_id, user_channel_id)?;
+                    framed.write_all(&response).await?;
+                } else {
+                    warn!(channel_id = data.channel_id, "Unexpected channel received: ID",);
                 }
             }
 
