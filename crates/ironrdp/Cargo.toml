@@ -47,6 +47,7 @@ ironrdp-rdpsnd = { workspace = true, optional = true }
 [dev-dependencies]
 ironrdp-blocking.workspace = true
 ironrdp-server.workspace = true
+ironrdp-cliprdr-native.workspace = true
 anyhow = "1"
 async-trait = "0.1"
 rustls = "0.21"

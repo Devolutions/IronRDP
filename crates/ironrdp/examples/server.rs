@@ -10,6 +10,7 @@ use std::num::NonZeroU16;
 use std::sync::Arc;
 
 use anyhow::Context as _;
+use ironrdp_cliprdr_native::StubClipboard;
 use ironrdp_connector::DesktopSize;
 use ironrdp_server::{
     BitmapUpdate, DisplayUpdate, KeyboardEvent, MouseEvent, PixelFormat, PixelOrder, RdpServer, RdpServerDisplay,
@@ -193,9 +194,13 @@ async fn run(host: String, port: u16, cert: Option<String>, key: Option<String>)
     } else {
         server.with_no_security()
     };
+
+    let cliprdr = StubClipboard::new();
+
     let mut server = server
         .with_input_handler(handler.clone())
         .with_display_handler(handler.clone())
+        .with_cliprdr_factory(Some(cliprdr.backend_factory()))
         .build();
 
     server.run().await
