@@ -61,15 +61,7 @@ pub fn install(sh: &Shell) -> anyhow::Result<()> {
     let _s = Section::new("FUZZ-INSTALL");
     windows_skip!();
 
-    if !is_installed(sh, "cargo-fuzz") {
-        // Install in debug because it's faster to compile and we don't need execution speed anyway.
-        // cargo-fuzz version is pinned so we don’t get different versions without intervention.
-        cmd!(
-            sh,
-            "{CARGO} install --debug --locked --root {LOCAL_CARGO_ROOT} cargo-fuzz@{CARGO_FUZZ_VERSION}"
-        )
-        .run()?;
-    }
+    cargo_install(sh, &CARGO_FUZZ)?;
 
     cmd!(sh, "rustup install nightly --profile=minimal").run()?;
 

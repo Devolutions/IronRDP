@@ -119,15 +119,7 @@ pub fn typos(sh: &Shell) -> anyhow::Result<()> {
 pub fn install(sh: &Shell) -> anyhow::Result<()> {
     let _s = Section::new("TYPOS-CLI-INSTALL");
 
-    if !is_installed(sh, "typos") {
-        // Install in debug because it's faster to compile and we don't need execution speed anyway.
-        // typos-cli version is pinned so we don’t get different versions without intervention.
-        cmd!(
-            sh,
-            "{CARGO} install --debug --locked --root {LOCAL_CARGO_ROOT} typos-cli@{TYPOS_CLI_VERSION}"
-        )
-        .run()?;
-    }
+    cargo_install(sh, &TYPOS_CLI)?;
 
     Ok(())
 }
