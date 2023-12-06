@@ -1873,6 +1873,7 @@ dependencies = [
  "ironrdp-acceptor",
  "ironrdp-graphics",
  "ironrdp-pdu",
+ "ironrdp-svc",
  "ironrdp-tokio",
  "tokio",
  "tokio-rustls",
