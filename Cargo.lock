@@ -1624,6 +1624,7 @@ dependencies = [
  "ironrdp-acceptor",
  "ironrdp-blocking",
  "ironrdp-cliprdr",
+ "ironrdp-cliprdr-native",
  "ironrdp-connector",
  "ironrdp-dvc",
  "ironrdp-graphics",
