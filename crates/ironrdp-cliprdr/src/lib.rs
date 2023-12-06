@@ -12,7 +12,8 @@ use backend::CliprdrBackend;
 use ironrdp_pdu::gcc::ChannelName;
 use ironrdp_pdu::{decode, PduResult};
 use ironrdp_svc::{
-    impl_as_any, ChannelFlags, CompressionCondition, StaticVirtualChannelProcessor, SvcMessage, SvcProcessorMessages,
+    impl_as_any, ChannelFlags, ChannelSide, CompressionCondition, StaticVirtualChannelProcessor, SvcMessage,
+    SvcProcessorMessages,
 };
 use pdu::{
     Capabilities, ClientTemporaryDirectory, ClipboardFormat, ClipboardFormatId, ClipboardGeneralCapabilityFlags,
@@ -50,6 +51,7 @@ pub struct Cliprdr {
     backend: Box<dyn CliprdrBackend>,
     capabilities: Capabilities,
     state: CliprdrState,
+    side: ChannelSide,
 }
 
 impl_as_any!(Cliprdr);
@@ -68,7 +70,7 @@ macro_rules! ready_guard {
 impl Cliprdr {
     const CHANNEL_NAME: ChannelName = ChannelName::from_static(b"cliprdr\0");
 
-    pub fn new(backend: Box<dyn CliprdrBackend>) -> Self {
+    pub fn new(backend: Box<dyn CliprdrBackend>, side: ChannelSide) -> Self {
         // This CLIPRDR implementation supports long format names by default
         let flags = ClipboardGeneralCapabilityFlags::USE_LONG_FORMAT_NAMES | backend.client_capabilities();
 
@@ -76,6 +78,7 @@ impl Cliprdr {
             backend,
             state: CliprdrState::Initialization,
             capabilities: Capabilities::new(ClipboardProtocolVersion::V2, flags),
+            side,
         }
     }
 

@@ -9,7 +9,7 @@ use ironrdp_pdu::input::InputEventPdu;
 use ironrdp_pdu::mcs::SendDataRequest;
 use ironrdp_pdu::rdp::capability_sets::{CapabilitySet, CmdFlags, GeneralExtraFlags};
 use ironrdp_pdu::{self, mcs, nego, rdp, Action, PduParsing};
-use ironrdp_svc::{server_encode_svc_messages, StaticChannelSet};
+use ironrdp_svc::{server_encode_svc_messages, ChannelSide, StaticChannelSet};
 use ironrdp_tokio::{Framed, FramedRead, FramedWrite, TokioFramed};
 use tokio::net::{TcpListener, TcpStream};
 use tokio_rustls::TlsAcceptor;
@@ -138,7 +138,7 @@ impl RdpServer {
         if let Some(cliprdr_factory) = self.cliprdr_factory.as_deref() {
             let backend = cliprdr_factory.build_cliprdr_backend();
 
-            let cliprdr = Cliprdr::new(backend);
+            let cliprdr = Cliprdr::new(backend, ChannelSide::Server);
 
             acceptor.attach_static_channel(cliprdr);
         }

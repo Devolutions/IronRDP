@@ -23,6 +23,12 @@ use pdu::gcc::ChannelDef;
 use pdu::rdp::vc::ChannelControlFlags;
 use pdu::{custom_err, encode_buf, PduEncode, PduParsing};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChannelSide {
+    Server,
+    Client,
+}
+
 /// The integer type representing a static virtual channel ID.
 pub type StaticChannelId = u16;
 

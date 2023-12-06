@@ -19,6 +19,7 @@ use ironrdp::pdu::input::fast_path::FastPathInputEvent;
 use ironrdp::pdu::write_buf::WriteBuf;
 use ironrdp::session::image::DecodedImage;
 use ironrdp::session::{ActiveStage, ActiveStageOutput};
+use ironrdp::svc::ChannelSide;
 use rgb::AsPixels as _;
 use tap::prelude::*;
 use wasm_bindgen::prelude::*;
@@ -771,7 +772,7 @@ async fn connect(
     let mut connector = connector::ClientConnector::new(config);
 
     if let Some(clipboard_backend) = clipboard_backend {
-        connector.attach_static_channel(Cliprdr::new(Box::new(clipboard_backend)));
+        connector.attach_static_channel(Cliprdr::new(Box::new(clipboard_backend), ChannelSide::Client));
     }
 
     let (upgraded, server_public_key) =
