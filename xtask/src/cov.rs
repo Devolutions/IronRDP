@@ -8,13 +8,7 @@ const COV_IGNORE_REGEX: &str =
 pub fn install(sh: &Shell) -> anyhow::Result<()> {
     let _s = Section::new("COV-INSTALL");
 
-    if !is_installed(sh, "cargo-llvm-cov") {
-        cmd!(
-            sh,
-            "{CARGO} install --locked --root {LOCAL_CARGO_ROOT} cargo-llvm-cov@{CARGO_LLVM_COV_VERSION}"
-        )
-        .run()?;
-    }
+    cargo_install(sh, &CARGO_LLVM_COV)?;
 
     Ok(())
 }
@@ -170,21 +164,8 @@ pub fn grcov(sh: &Shell) -> anyhow::Result<()> {
     cmd!(sh, "rustup component add --toolchain nightly llvm-tools-preview").run()?;
     cmd!(sh, "rustup component add llvm-tools-preview").run()?;
 
-    if !is_installed(sh, "cargo-fuzz") {
-        cmd!(
-            sh,
-            "{CARGO} install --debug --locked --root {LOCAL_CARGO_ROOT} cargo-fuzz@{CARGO_FUZZ_VERSION}"
-        )
-        .run()?;
-    }
-
-    if !is_installed(sh, "grcov") {
-        cmd!(
-            sh,
-            "{CARGO} install --debug --locked --root {LOCAL_CARGO_ROOT} grcov@{GRCOV_VERSION}"
-        )
-        .run()?;
-    }
+    cargo_install(sh, &CARGO_FUZZ)?;
+    cargo_install(sh, &GRCOV)?;
 
     println!("Remove leftovers");
     sh.remove_path("./fuzz/coverage/")?;

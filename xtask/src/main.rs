@@ -6,6 +6,7 @@
 #[macro_use]
 mod macros;
 
+mod bin_install;
 mod bin_version;
 mod check;
 mod clean;
@@ -19,10 +20,20 @@ mod web;
 
 use std::path::{Path, PathBuf};
 
-use prelude::LOCAL_CARGO_ROOT;
 use xshell::Shell;
 
 use crate::cli::Action;
+
+#[cfg(target_os = "windows")]
+pub const LOCAL_CARGO_ROOT: &str = ".cargo\\local_root\\";
+#[cfg(not(target_os = "windows"))]
+pub const LOCAL_CARGO_ROOT: &str = ".cargo/local_root/";
+
+pub const CARGO: &str = env!("CARGO");
+
+pub const WASM_PACKAGES: &[&str] = &["ironrdp-web"];
+
+pub const FUZZ_TARGETS: &[&str] = &["pdu_decoding", "rle_decompression", "bitmap_stream"];
 
 fn main() -> anyhow::Result<()> {
     let args = match cli::parse_args() {
@@ -47,7 +58,7 @@ fn main() -> anyhow::Result<()> {
             web::install(&sh)?;
 
             if is_verbose() {
-                list_files(&sh, local_cargo_root().join("bin"))?;
+                list_files(&sh, local_bin())?;
             }
         }
         Action::CheckFmt => check::fmt(&sh)?,
@@ -175,12 +186,6 @@ pub fn set_verbose(value: bool) {
 
 pub fn is_verbose() -> bool {
     VERBOSE.load(std::sync::atomic::Ordering::Acquire)
-}
-
-/// Checks if a binary is installed in local root
-pub fn is_installed(sh: &Shell, name: &str) -> bool {
-    let path = local_bin().join(name);
-    sh.path_exists(&path) || sh.path_exists(path.with_extension("exe"))
 }
 
 pub fn list_files(sh: &Shell, path: impl AsRef<Path>) -> anyhow::Result<()> {

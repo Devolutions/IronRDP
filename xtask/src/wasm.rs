@@ -1,4 +1,4 @@
-use crate::prelude::*;
+use crate::{local_bin, prelude::*};
 
 pub fn check(sh: &Shell) -> anyhow::Result<()> {
     let _s = Section::new("WASM-CHECK");
@@ -53,7 +53,7 @@ pub fn install(sh: &Shell) -> anyhow::Result<()> {
 fn install_wasm2wat(sh: &Shell) -> anyhow::Result<()> {
     println!("Installing wasm2wat in local root...");
 
-    let _guard = sh.push_dir(LOCAL_CARGO_ROOT);
+    let _guard = sh.push_dir(crate::LOCAL_CARGO_ROOT);
 
     let platform_suffix = if cfg!(target_os = "windows") {
         "windows"
