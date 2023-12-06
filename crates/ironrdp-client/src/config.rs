@@ -17,6 +17,16 @@ pub struct Config {
     pub log_file: Option<String>,
     pub destination: Destination,
     pub connector: connector::Config,
+    pub clipboard_type: ClipboardType,
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
+pub enum ClipboardType {
+    Default,
+    Stub,
+    #[cfg(windows)]
+    Windows,
+    None,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
@@ -219,6 +229,10 @@ struct Args {
     /// It’s not recommended to disable this.
     #[clap(long, alias = "no-nla")]
     no_credssp: bool,
+
+    /// The clipboard type
+    #[clap(long, value_enum, value_parser, default_value_t = ClipboardType::Default)]
+    clipboard_type: ClipboardType,
 }
 
 impl Config {
@@ -274,6 +288,19 @@ impl Config {
             None
         };
 
+        let clipboard_type = if args.clipboard_type == ClipboardType::Default {
+            #[cfg(windows)]
+            {
+                ClipboardType::Windows
+            }
+            #[cfg(not(windows))]
+            {
+                ClipboardType::None
+            }
+        } else {
+            args.clipboard_type
+        };
+
         let connector = connector::Config {
             credentials: Credentials::UsernamePassword { username, password },
             domain: args.domain,
@@ -316,6 +343,7 @@ impl Config {
             log_file: args.log_file,
             destination,
             connector,
+            clipboard_type,
         })
     }
 }
