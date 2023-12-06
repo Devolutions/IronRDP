@@ -4,7 +4,7 @@ use std::str::FromStr;
 
 use anyhow::Context as _;
 use clap::clap_derive::ValueEnum;
-use clap::{crate_name, Parser};
+use clap::Parser;
 use ironrdp::connector::Credentials;
 use ironrdp::pdu::rdp::capability_sets::MajorPlatformType;
 use ironrdp::{connector, pdu};
@@ -15,7 +15,7 @@ const DEFAULT_HEIGHT: u16 = 1080;
 
 #[derive(Clone, Debug)]
 pub struct Config {
-    pub log_file: String,
+    pub log_file: Option<String>,
     pub destination: Destination,
     pub connector: connector::Config,
 }
@@ -150,8 +150,8 @@ impl From<&Destination> for connector::ServerName {
 #[clap(version, long_about = None)]
 struct Args {
     /// A file with IronRDP client logs
-    #[clap(short, long, value_parser, default_value_t = format!("{}.log", crate_name!()))]
-    log_file: String,
+    #[clap(short, long, value_parser)]
+    log_file: Option<String>,
 
     /// An address on which the client will connect.
     destination: Option<Destination>,
