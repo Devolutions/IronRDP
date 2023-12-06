@@ -1,86 +1,33 @@
-use std::io;
-
-use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt as _};
+#![doc = include_str!("../README.md")]
 
 #[cfg(feature = "rustls")]
-pub type TlsStream<S> = tokio_rustls::client::TlsStream<S>;
+#[path = "rustls.rs"]
+mod impl_;
 
-#[cfg(all(feature = "native-tls", not(feature = "rustls")))]
-pub type TlsStream<S> = tokio_native_tls::TlsStream<S>;
+#[cfg(feature = "native-tls")]
+#[path = "native_tls.rs"]
+mod impl_;
 
-pub async fn upgrade<S>(stream: S, server_name: &str) -> io::Result<(TlsStream<S>, Vec<u8>)>
-where
-    S: Unpin + AsyncRead + AsyncWrite,
-{
-    #[cfg(feature = "rustls")]
-    let mut tls_stream = {
-        let mut config = tokio_rustls::rustls::client::ClientConfig::builder()
-            .with_safe_defaults()
-            .with_custom_certificate_verifier(std::sync::Arc::new(danger::NoCertificateVerification))
-            .with_no_client_auth();
+#[cfg(feature = "stub")]
+#[path = "stub.rs"]
+mod impl_;
 
-        // This adds support for the SSLKEYLOGFILE env variable (https://wiki.wireshark.org/TLS#using-the-pre-master-secret)
-        config.key_log = std::sync::Arc::new(tokio_rustls::rustls::KeyLogFile::new());
+#[cfg(any(
+    not(any(feature = "stub", feature = "native-tls", feature = "rustls")),
+    all(feature = "stub", feature = "native-tls"),
+    all(feature = "stub", feature = "rustls"),
+    all(feature = "rustls", feature = "native-tls"),
+))]
+compile_error!("a TLS backend must be selected by enabling a single feature out of: `rustls`, `native-tls`, `stub`");
 
-        // Disable TLS resumption because it’s not supported by some services such as CredSSP.
-        //
-        // > The CredSSP Protocol does not extend the TLS wire protocol. TLS session resumption is not supported.
-        //
-        // source: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-cssp/385a7489-d46b-464c-b224-f7340e308a5c
-        config.resumption = tokio_rustls::rustls::client::Resumption::disabled();
+// The whole public API of this crate.
+#[cfg(any(feature = "stub", feature = "native-tls", feature = "rustls"))]
+pub use impl_::{upgrade, TlsStream};
 
-        let config = std::sync::Arc::new(config);
+#[cfg(any(feature = "native-tls", feature = "rustls"))]
+pub(crate) fn extract_tls_server_public_key(cert: &[u8]) -> std::io::Result<Vec<u8>> {
+    use std::io;
 
-        let server_name = server_name.try_into().unwrap();
-
-        tokio_rustls::TlsConnector::from(config)
-            .connect(server_name, stream)
-            .await?
-    };
-
-    #[cfg(all(feature = "native-tls", not(feature = "rustls")))]
-    let mut tls_stream = {
-        let connector = tokio_native_tls::native_tls::TlsConnector::builder()
-            .danger_accept_invalid_certs(true)
-            .use_sni(false)
-            .build()
-            .map(tokio_native_tls::TlsConnector::from)
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
-
-        connector
-            .connect(server_name, stream)
-            .await
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?
-    };
-
-    tls_stream.flush().await?;
-
-    #[cfg(feature = "rustls")]
-    let server_public_key = {
-        let cert = tls_stream
-            .get_ref()
-            .1
-            .peer_certificates()
-            .and_then(|certificates| certificates.first())
-            .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "peer certificate is missing"))?;
-        extract_tls_server_public_key(&cert.0)?
-    };
-
-    #[cfg(all(feature = "native-tls", not(feature = "rustls")))]
-    let server_public_key = {
-        let cert = tls_stream
-            .get_ref()
-            .peer_certificate()
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?
-            .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "peer certificate is missing"))?;
-        let cert = cert.to_der().map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
-        extract_tls_server_public_key(&cert)?
-    };
-
-    Ok((tls_stream, server_public_key))
-}
-
-fn extract_tls_server_public_key(cert: &[u8]) -> io::Result<Vec<u8>> {
     use x509_cert::der::Decode as _;
 
     let cert = x509_cert::Certificate::from_der(cert).map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
@@ -94,28 +41,4 @@ fn extract_tls_server_public_key(cert: &[u8]) -> io::Result<Vec<u8>> {
         .to_owned();
 
     Ok(server_public_key)
-}
-
-#[cfg(feature = "rustls")]
-mod danger {
-    use std::time::SystemTime;
-
-    use tokio_rustls::rustls::client::ServerCertVerified;
-    use tokio_rustls::rustls::{Certificate, Error, ServerName};
-
-    pub(super) struct NoCertificateVerification;
-
-    impl tokio_rustls::rustls::client::ServerCertVerifier for NoCertificateVerification {
-        fn verify_server_cert(
-            &self,
-            _end_entity: &Certificate,
-            _intermediates: &[Certificate],
-            _server_name: &ServerName,
-            _scts: &mut dyn Iterator<Item = &[u8]>,
-            _ocsp_response: &[u8],
-            _now: SystemTime,
-        ) -> Result<ServerCertVerified, Error> {
-            Ok(tokio_rustls::rustls::client::ServerCertVerified::assertion())
-        }
-    }
 }

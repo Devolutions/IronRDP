@@ -16,12 +16,13 @@ doctest = false
 test = false
 
 [features]
-default = ["rustls"]
-rustls = ["dep:tokio-rustls"]
-native-tls = ["dep:tokio-native-tls"]
+default = [] # No default feature, the user must choose a TLS backend by enabling the appropriate feature.
+rustls = ["dep:tokio-rustls", "dep:x509-cert", "tokio/io-util"]
+native-tls = ["dep:tokio-native-tls", "dep:x509-cert", "tokio/io-util"]
+stub = []
 
 [dependencies]
-x509-cert = { version = "0.2", default-features = false, features = ["std"] }
-tokio = { version = "1.34", features = ["io-util"] }
+tokio = { version = "1.34" }
+x509-cert = { version = "0.2", default-features = false, features = ["std"], optional = true }
 tokio-native-tls = { version = "0.3", optional = true }
 tokio-rustls =  { version = "0.24", features = ["dangerous_configuration"], optional = true }
