@@ -71,17 +71,17 @@ impl RdpServerSecurity {
 ///# async fn stub() {
 /// fn make_tls_acceptor() -> TlsAcceptor {
 ///    /* snip */
-///#    todo!()  
+///#    todo!()
 /// }
 ///
 /// fn make_input_handler() -> impl RdpServerInputHandler {
 ///    /* snip */
-///#    NoopInputHandler    
+///#    NoopInputHandler
 /// }
 ///
 /// fn make_display_handler() -> impl RdpServerDisplay {
 ///    /* snip */
-///#    NoopDisplay    
+///#    NoopDisplay
 /// }
 ///
 /// let tls_acceptor = make_tls_acceptor();
