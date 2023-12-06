@@ -31,13 +31,18 @@ fn main() -> anyhow::Result<()> {
 
     let (input_event_sender, input_event_receiver) = RdpInputEvent::create_channel();
 
-    let (_cliprdr, cliprdr_factory) = match config.clipboard_type {
+    // NOTE: we need to keep `win_clipboard` alive, otherwise it will be dropped before IronRDP
+    // starts and clipboard functionality will not be available.
+    #[cfg(windows)]
+    let mut win_clipboard = None;
+
+    let cliprdr_factory = match config.clipboard_type {
         ClipboardType::Stub => {
             use ironrdp_cliprdr_native::StubClipboard;
 
             let cliprdr = StubClipboard::new();
             let factory = cliprdr.backend_factory();
-            (Some(cliprdr), Some(factory))
+            Some(factory)
         }
         #[cfg(windows)]
         ClipboardType::Windows => {
@@ -48,20 +53,18 @@ fn main() -> anyhow::Result<()> {
 
             // SAFETY: provided window handle from `winit` is valid and is guaranteed to be alive
             // while the gui window is still open.
-            let win_clipboard = unsafe {
+            let cliprdr = unsafe {
                 WinClipboard::new(
                     HWND(gui.window().hwnd()),
                     ClientClipboardMessageProxy::new(input_event_sender.clone()),
                 )?
             };
 
-            let factory = Some(win_clipboard.backend_factory());
-
-            // NOTE: we need to keep `win_clipboard` alive, otherwise it will be dropped before IronRDP
-            // starts and clipboard functionality will not be available.
-            (Some(win_clipboard), Some(factory))
+            let factory = cliprdr.backend_factory();
+            win_clipboard = Some(cliprdr);
+            Some(factory)
         }
-        _ => (None, None),
+        _ => None,
     };
 
     let client = RdpClient {
@@ -75,6 +78,9 @@ fn main() -> anyhow::Result<()> {
     std::thread::spawn(move || {
         rt.block_on(client.run());
     });
+
+    #[cfg(windows)]
+    drop(win_clipboard);
 
     debug!("Run GUI");
     gui.run(input_event_sender);
