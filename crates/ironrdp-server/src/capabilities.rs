@@ -1,4 +1,4 @@
-use ironrdp_pdu::rdp::capability_sets;
+use ironrdp_pdu::rdp::capability_sets::{self, GeneralExtraFlags};
 
 use crate::{DesktopSize, RdpServerOptions};
 
@@ -16,7 +16,10 @@ pub(crate) fn capabilities(_opts: &RdpServerOptions, size: DesktopSize) -> Vec<c
 }
 
 fn general_capabilities() -> capability_sets::General {
-    capability_sets::General::default()
+    capability_sets::General {
+        extra_flags: GeneralExtraFlags::FASTPATH_OUTPUT_SUPPORTED,
+        ..Default::default()
+    }
 }
 
 fn bitmap_capabilities(size: &DesktopSize) -> capability_sets::Bitmap {
