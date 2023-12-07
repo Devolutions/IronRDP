@@ -24,7 +24,7 @@ pub use connection::{ClientConnector, ClientConnectorState, ConnectionResult};
 pub use connection_finalization::{ConnectionFinalizationSequence, ConnectionFinalizationState};
 use ironrdp_pdu::rdp::capability_sets;
 use ironrdp_pdu::write_buf::WriteBuf;
-use ironrdp_pdu::{gcc, nego, PduHint};
+use ironrdp_pdu::{gcc, PduHint};
 pub use license_exchange::{LicenseExchangeSequence, LicenseExchangeState};
 pub use server_name::ServerName;
 pub use sspi;
@@ -79,12 +79,34 @@ impl Credentials {
 #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct Config {
     pub desktop_size: DesktopSize,
-    pub security_protocol: nego::SecurityProtocol,
+    /// TLS + Graphical login (legacy)
+    ///
+    /// Also called SSL or TLS security protocol.
+    ///
+    /// When this security protocol is negotiated, the RDP server will show a graphical login screen.
+    /// For Windows, it means that the login subsystem (winlogon.exe) and the GDI graphics subsystem
+    /// will be initiated and the user will authenticate himself using the GUI, as if using the
+    /// physical machine directly.
+    ///
+    /// The PROTOCOL_SSL flag will be set.
+    /// By disabling this flag, it’s possible to effectively enforce usage of NLA on client side.
+    pub enable_winlogon: bool,
+    /// TLS + Network Level Authentication (NLA) using CredSSP
+    ///
+    /// This option includes the extended CredSSP early user authorization result PDU.
+    /// This PDU used by the server to deny access before any credentials (except for the username)
+    /// have been submitted, e.g.: typically if the user does not have the necessary remote access
+    /// privileges.
+    ///
+    /// The PROTOCOL_HYBRID and PROTOCOL_HYBRID_EX flags will be set.
+    pub enable_credssp: bool,
     pub credentials: Credentials,
     pub domain: Option<String>,
     /// The build number of the client.
     pub client_build: u32,
-    /// Name of the client computer. Truncated to the 15 first characters.
+    /// Name of the client computer
+    ///
+    /// The name will be truncated to the 15 first characters.
     pub client_name: String,
     pub keyboard_type: gcc::KeyboardType,
     pub keyboard_subtype: u32,
@@ -95,9 +117,11 @@ pub struct Config {
     pub dig_product_id: String,
     pub client_dir: String,
     pub platform: capability_sets::MajorPlatformType,
-    pub no_server_pointer: bool,
-    /// If true, the INFO_AUTOLOGON flag is set in the [`ironrdp_pdu::rdp::ClientInfoPdu`].
+    /// If true, the INFO_AUTOLOGON flag is set in the [`ironrdp_pdu::rdp::ClientInfoPdu`]
     pub autologon: bool,
+
+    // FIXME(@CBenoit): these are client-only options, not part of the connector.
+    pub no_server_pointer: bool,
     pub pointer_software_rendering: bool,
 }
 

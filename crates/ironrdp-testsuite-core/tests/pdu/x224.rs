@@ -84,14 +84,15 @@ encode_decode_test! {
             // tpkt header
             0x03, // version
             0x00, // reserved
-            0x00, 0x0B, // length in BE
+            0x00, 0x13, // length in BE
             // tpdu header
-            0x06, // length
+            0x0E, // length
             0xE0, // code
             0x00, 0x00, // dst_ref
             0x00, 0x00, // src_ref
             0x00, // class
             // variable part
+            0x01, 0x00, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, // RDP_NEG_REQ
         ];
 
     nego_connection_request_rdp_security_with_cookie:
@@ -104,9 +105,9 @@ encode_decode_test! {
             // tpkt header
             0x03, // version
             0x00, // reserved
-            0x00, 0x22, // length in BE
+            0x00, 0x2A, // length in BE
             // tpdu header
-            0x1D, // length
+            0x25, // length
             0xE0, // code
             0x00, 0x00, // dst_ref
             0x00, 0x00, // src_ref
@@ -114,6 +115,7 @@ encode_decode_test! {
             // variable part
             0x43, 0x6F, 0x6F, 0x6B, 0x69, 0x65, 0x3A, 0x20, 0x6D, 0x73, 0x74, 0x73, 0x68, 0x61, 0x73, 0x68, 0x3D, 0x55,
             0x73, 0x65, 0x72, 0x0D, 0x0A, // cookie
+            0x01, 0x00, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, // RDP_NEG_REQ
         ];
 
     nego_connection_request_ssl_security_with_cookie:

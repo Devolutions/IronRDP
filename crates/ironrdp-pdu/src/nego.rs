@@ -1,5 +1,7 @@
 //! PDUs used during the Connection Initiation stage
 
+use core::fmt;
+
 use bitflags::bitflags;
 use tap::prelude::*;
 
@@ -10,21 +12,38 @@ use crate::x224::X224Pdu;
 use crate::{Pdu as _, PduError, PduErrorExt as _, PduResult};
 
 bitflags! {
-    /// A 32-bit, unsigned integer that contains flags indicating the supported
-    /// security protocols.
-    /// The client and server agree on it during the Connection Initiation phase.
+    /// [2.2.1.1.1] RDP Negotiation Request (RDP_NEG_REQ)
     ///
-    /// # MSDN
+    /// The RDP Negotiation Request structure is used by a client to advertise the security protocols which it supports.
+    /// The client and server agree on the protocol to use during the Connection Initiation phase.
     ///
-    /// * [RDP Negotiation Request (RDP_NEG_REQ)](https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/902b090b-9cb3-4efc-92bf-ee13373371e3)
+    /// [2.2.1.1.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/902b090b-9cb3-4efc-92bf-ee13373371e3
     #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
     pub struct SecurityProtocol: u32 {
+        /// PROTOCOL_RDP, standard RDP security.
+        ///
+        /// Because this is equivalent to `SecurityProtocol::empty()`, this "flag" is always implied and can’t be unset.
         const RDP = 0x0000_0000;
+        /// PROTOCOL_SSL, TLS + login subsystem (winlogon.exe)
         const SSL = 0x0000_0001;
+        /// PROTOCOL_HYBRID, TLS + Credential Security Support Provider protocol (CredSSP)
         const HYBRID = 0x0000_0002;
+        /// PROTOCOL_RDSTLS, RDSTLS protocol
         const RDSTLS = 0x0000_0004;
+        /// PROTOCOL_HYBRID_EX, TLS + Credential Security Support Provider protocol (CredSSP) coupled with the Early User Authorization Result PDU
         const HYBRID_EX = 0x0000_0008;
+        /// PROTOCOL_RDSAAD, RDS-AAD-Auth Security
         const RDSAAD = 0x0000_0010;
+    }
+}
+
+impl fmt::Display for SecurityProtocol {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        if *self == Self::RDP {
+            write!(f, "STANDARD_RDP_SECURITY")
+        } else {
+            bitflags::parser::to_writer(self, f)
+        }
     }
 }
 
@@ -58,17 +77,32 @@ bitflags! {
     }
 }
 
-/// The type of the negotiation error. May be contained in ResponseData.
+/// A 32-bit, unsigned integer that specifies the negotiation failure code
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct FailureCode(u32);
 
 impl FailureCode {
+    /// The server requires that the client support Enhanced RDP Security (section 5.4)
+    /// with either TLS 1.0, 1.1 or 1.2 (section 5.4.5.1) or CredSSP (section 5.4.5.2).
+    /// If only CredSSP was requested then the server only supports TLS.
     pub const SSL_REQUIRED_BY_SERVER: Self = Self(1);
+    /// The server is configured to only use Standard RDP Security mechanisms (section
+    /// 5.3) and does not support any External Security Protocols (section 5.4.5).
     pub const SSL_NOT_ALLOWED_BY_SERVER: Self = Self(2);
+    /// The server does not possess a valid authentication certificate and cannot
+    /// initialize the External Security Protocol Provider (section 5.4.5).
     pub const SSL_CERT_NOT_ON_SERVER: Self = Self(3);
+    /// The list of requested security protocols is not consistent with the current
+    /// security protocol in effect. This error is only possible when the Direct
+    /// Approach (sections 5.4.2.2 and 1.3.1.2) is used and an External Security
+    /// Protocol (section 5.4.5) is already being used.
     pub const INCONSISTENT_FLAGS: Self = Self(4);
+    /// The server requires that the client support Enhanced RDP Security (section 5.4)
+    /// with CredSSP (section 5.4.5.2).
     pub const HYBRID_REQUIRED_BY_SERVER: Self = Self(5);
-    /// Used when the failure caused by ResponseFailure.
+    /// The server requires that the client support Enhanced RDP Security (section
+    /// 5.4) with TLS 1.0, 1.1 or 1.2 (section 5.4.5.1) and certificate-based client
+    /// authentication.
     pub const SSL_WITH_USER_AUTH_REQUIRED_BY_SERVER: Self = Self(6);
 }
 
@@ -81,6 +115,32 @@ impl From<u32> for FailureCode {
 impl From<FailureCode> for u32 {
     fn from(value: FailureCode) -> Self {
         value.0
+    }
+}
+
+impl fmt::Display for FailureCode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match *self {
+            Self::SSL_REQUIRED_BY_SERVER => {
+                write!(f, "enhanced RDP security required by server")
+            }
+            Self::SSL_NOT_ALLOWED_BY_SERVER => {
+                write!(f, "enhanced RDP security not allowed by server")
+            }
+            Self::SSL_CERT_NOT_ON_SERVER => {
+                write!(f, "no valid TLS authentication certificate on server")
+            }
+            Self::INCONSISTENT_FLAGS => {
+                write!(f, "inconsistent flags for security protocols")
+            }
+            Self::HYBRID_REQUIRED_BY_SERVER => {
+                write!(f, "CredSSP enhanced RDP security required by server")
+            }
+            Self::SSL_WITH_USER_AUTH_REQUIRED_BY_SERVER => {
+                write!(f, "TLS certificate-based client authentication required by server")
+            }
+            _ => write!(f, "unknown failure code: {}", self.0),
+        }
     }
 }
 
@@ -208,11 +268,20 @@ impl<'de> X224Pdu<'de> for ConnectionRequest {
             nego_data.write(dst)?;
         }
 
-        if self.protocol != SecurityProtocol::RDP {
-            dst.write_u8(u8::from(NegoMsgType::REQUEST));
-            dst.write_u8(self.flags.bits());
-            dst.write_u16(Self::RDP_NEG_REQ_SIZE);
-            dst.write_u32(self.protocol.bits());
+        // [MS-RDPBCGR] mentions the following payload as optional, but it appears that on recent
+        // versions of Windows, the server always expect to find this payload.
+        dst.write_u8(u8::from(NegoMsgType::REQUEST));
+        dst.write_u8(self.flags.bits());
+        dst.write_u16(Self::RDP_NEG_REQ_SIZE);
+        dst.write_u32(self.protocol.bits());
+
+        if self.flags.contains(RequestFlags::CORRELATION_INFO_PRESENT) {
+            // TODO(#111): support for RDP_NEG_CORRELATION_INFO
+            return Err(PduError::invalid_message(
+                Self::NAME,
+                "flags",
+                "CORRECTION_INFO_PRESENT flag is set, but not supported by IronRDP",
+            ));
         }
 
         Ok(())
@@ -273,14 +342,7 @@ impl<'de> X224Pdu<'de> for ConnectionRequest {
 
     fn tpdu_header_variable_part_size(&self) -> usize {
         let optional_nego_data_size = self.nego_data.as_ref().map(|data| data.size()).unwrap_or(0);
-
-        let rdp_neg_req_size = if self.protocol == SecurityProtocol::RDP {
-            0
-        } else {
-            usize::from(Self::RDP_NEG_REQ_SIZE)
-        };
-
-        optional_nego_data_size + rdp_neg_req_size
+        optional_nego_data_size + usize::from(Self::RDP_NEG_REQ_SIZE)
     }
 
     fn tpdu_user_data_size(&self) -> usize {

@@ -120,12 +120,36 @@ where
 {
     assert!(connector.should_perform_credssp());
 
-    let mut credssp_sequence = CredsspSequence::new(connector, server_name, server_public_key, kerberos_config)?;
+    let (mut sequence, mut ts_request) =
+        CredsspSequence::init(connector, server_name, server_public_key, kerberos_config)?;
 
-    while !credssp_sequence.is_done() {
+    loop {
+        let client_state = {
+            let mut generator = sequence.process_ts_request(ts_request);
+
+            if let Some(network_client_ref) = network_client.as_deref_mut() {
+                trace!("resolving network");
+                resolve_generator(&mut generator, network_client_ref).await?
+            } else {
+                generator
+                    .resolve_to_result()
+                    .map_err(|e| custom_err!("resolve without network client", e))?
+            }
+        }; // drop generator
+
         buf.clear();
+        let written = sequence.handle_process_result(client_state, buf)?;
 
-        if let Some(next_pdu_hint) = credssp_sequence.next_pdu_hint() {
+        if let Some(response_len) = written.size() {
+            let response = &buf[..response_len];
+            trace!(response_len, "Send response");
+            framed
+                .write_all(response)
+                .await
+                .map_err(|e| ironrdp_connector::custom_err!("write all", e))?;
+        }
+
+        if let Some(next_pdu_hint) = sequence.next_pdu_hint() {
             debug!(
                 connector.state = connector.state.name(),
                 hint = ?next_pdu_hint,
@@ -139,31 +163,12 @@ where
 
             trace!(length = pdu.len(), "PDU received");
 
-            credssp_sequence.read_request_from_server(&pdu)?;
-        }
-
-        let client_state = {
-            let mut generator = credssp_sequence.process();
-
-            if let Some(network_client_ref) = network_client.as_deref_mut() {
-                trace!("resolving network");
-                resolve_generator(&mut generator, network_client_ref).await?
-            } else {
-                generator
-                    .resolve_to_result()
-                    .map_err(|e| custom_err!("resolve without network client", e))?
+            match sequence.decode_server_message(&pdu)? {
+                Some(next_request) => ts_request = next_request,
+                None => break,
             }
-        }; // drop generator
-
-        let written = credssp_sequence.handle_process_result(client_state, buf)?;
-
-        if let Some(response_len) = written.size() {
-            let response = &buf[..response_len];
-            trace!(response_len, "Send response");
-            framed
-                .write_all(response)
-                .await
-                .map_err(|e| ironrdp_connector::custom_err!("write all", e))?;
+        } else {
+            break;
         }
     }
 
