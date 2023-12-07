@@ -78,7 +78,7 @@ encode_decode_test! {
         ConnectionRequest {
             nego_data: None,
             flags: RequestFlags::empty(),
-            protocol: SecurityProtocol::RDP,
+            protocol: SecurityProtocol::empty(),
         },
         [
             // tpkt header
@@ -99,7 +99,7 @@ encode_decode_test! {
         ConnectionRequest {
             nego_data: Some(NegoRequestData::Cookie(Cookie("User".to_owned()))),
             flags: RequestFlags::empty(),
-            protocol: SecurityProtocol::RDP,
+            protocol: SecurityProtocol::empty(),
         },
         [
             // tpkt header

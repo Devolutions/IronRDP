@@ -12,18 +12,12 @@ use crate::x224::X224Pdu;
 use crate::{Pdu as _, PduError, PduErrorExt as _, PduResult};
 
 bitflags! {
-    /// [2.2.1.1.1] RDP Negotiation Request (RDP_NEG_REQ)
+    /// A 32-bit, unsigned integer that contains flags indicating the supported security protocols.
     ///
-    /// The RDP Negotiation Request structure is used by a client to advertise the security protocols which it supports.
-    /// The client and server agree on the protocol to use during the Connection Initiation phase.
-    ///
-    /// [2.2.1.1.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/902b090b-9cb3-4efc-92bf-ee13373371e3
+    /// Used to negotiate the security protocol to use during the Connection Initiation phase using
+    /// the [`ConnectionConfirm`] and [`ConnectionRequest`] messages.
     #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
     pub struct SecurityProtocol: u32 {
-        /// PROTOCOL_RDP, standard RDP security.
-        ///
-        /// Because this is equivalent to `SecurityProtocol::empty()`, this "flag" is always implied and can’t be unset.
-        const RDP = 0x0000_0000;
         /// PROTOCOL_SSL, TLS + login subsystem (winlogon.exe)
         const SSL = 0x0000_0001;
         /// PROTOCOL_HYBRID, TLS + Credential Security Support Provider protocol (CredSSP)
@@ -37,9 +31,22 @@ bitflags! {
     }
 }
 
+impl SecurityProtocol {
+    /// Returns true if no enhanced security protocol is enabled
+    ///
+    /// The PROTOCOL_RDP bitmask is defined as 0x00000000.
+    /// Hence, this is logically equivalent to `SecurityProtocol::is_empty()`, but more explicit in the intention.
+    ///
+    /// As a server, to convey that the standard RDP security protocol has been chosen, no flag must be set.
+    /// As a client, the standard RDP security is always implied because there is no flag to set or unset.
+    pub fn is_standard_rdp_security(self) -> bool {
+        self.is_empty()
+    }
+}
+
 impl fmt::Display for SecurityProtocol {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        if *self == Self::RDP {
+        if self.is_standard_rdp_security() {
             write!(f, "STANDARD_RDP_SECURITY")
         } else {
             bitflags::parser::to_writer(self, f)
@@ -335,7 +342,7 @@ impl<'de> X224Pdu<'de> for ConnectionRequest {
             Ok(Self {
                 nego_data,
                 flags: RequestFlags::empty(),
-                protocol: SecurityProtocol::RDP,
+                protocol: SecurityProtocol::empty(),
             })
         }
     }
@@ -421,7 +428,7 @@ impl<'de> X224Pdu<'de> for ConnectionConfirm {
         } else {
             Ok(Self::Response {
                 flags: ResponseFlags::empty(),
-                protocol: SecurityProtocol::RDP,
+                protocol: SecurityProtocol::empty(),
             })
         }
     }

@@ -78,6 +78,7 @@ impl Credentials {
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct Config {
+    /// The initial desktop size to request
     pub desktop_size: DesktopSize,
     /// TLS + Graphical login (legacy)
     ///
@@ -94,7 +95,7 @@ pub struct Config {
     /// TLS + Network Level Authentication (NLA) using CredSSP
     ///
     /// This option includes the extended CredSSP early user authorization result PDU.
-    /// This PDU used by the server to deny access before any credentials (except for the username)
+    /// This PDU is used by the server to deny access before any credentials (except for the username)
     /// have been submitted, e.g.: typically if the user does not have the necessary remote access
     /// privileges.
     ///
@@ -117,7 +118,7 @@ pub struct Config {
     pub dig_product_id: String,
     pub client_dir: String,
     pub platform: capability_sets::MajorPlatformType,
-    /// If true, the INFO_AUTOLOGON flag is set in the [`ironrdp_pdu::rdp::ClientInfoPdu`]
+    /// If true, the INFO_AUTOLOGON flag is set in the [`ClientInfoPdu`](ironrdp_pdu::rdp::ClientInfoPdu)
     pub autologon: bool,
 
     // FIXME(@CBenoit): these are client-only options, not part of the connector.
