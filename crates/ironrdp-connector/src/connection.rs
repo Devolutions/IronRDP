@@ -348,13 +348,13 @@ impl Sequence for ClientConnector {
 
                 debug!(?static_channel_ids, io_channel_id);
 
-                let joined: Vec<_> = self
+                let zipped: Vec<_> = self
                     .static_channels
                     .type_ids()
                     .zip(static_channel_ids.iter().copied())
                     .collect();
 
-                joined.into_iter().for_each(|(channel, channel_id)| {
+                zipped.into_iter().for_each(|(channel, channel_id)| {
                     self.static_channels.attach_channel_id(channel, channel_id);
                 });
 

@@ -173,11 +173,29 @@ impl Sequence for ChannelConnectionSequence {
 
                 debug!(message = ?channel_join_confirm, "Received");
 
-                if channel_join_confirm.initiator_id != user_channel_id
-                    || channel_join_confirm.channel_id != channel_join_confirm.requested_channel_id
-                    || channel_join_confirm.channel_id != channel_id
-                {
-                    return Err(general_err!("received bad MCS Channel Join Confirm"));
+                if channel_join_confirm.initiator_id != user_channel_id {
+                    warn!(
+                        channel_join_confirm.initiator_id,
+                        user_channel_id, "Inconsistent initiator ID for MCS Channel Join Confirm",
+                    )
+                }
+
+                if channel_id != channel_join_confirm.requested_channel_id {
+                    return Err(reason_err!(
+                        "ChannelJoinConfirm",
+                        "unexpected requested_channel_id in MCS Channel Join Confirm: received {}, got {}",
+                        channel_id,
+                        channel_join_confirm.requested_channel_id,
+                    ));
+                }
+
+                if channel_id != channel_join_confirm.channel_id {
+                    return Err(reason_err!(
+                        "ChannelJoinConfirm",
+                        "unexpected channel_id in MCS Channel Join Confirm: received {}, got {}",
+                        channel_id,
+                        channel_join_confirm.channel_id,
+                    ));
                 }
 
                 let next_index = index.checked_add(1).unwrap();
