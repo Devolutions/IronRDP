@@ -149,24 +149,25 @@ where
                 .map_err(|e| ironrdp_connector::custom_err!("write all", e))?;
         }
 
-        if let Some(next_pdu_hint) = sequence.next_pdu_hint() {
-            debug!(
-                connector.state = connector.state.name(),
-                hint = ?next_pdu_hint,
-                "Wait for PDU"
-            );
+        let Some(next_pdu_hint) = sequence.next_pdu_hint() else {
+            break;
+        };
 
-            let pdu = framed
-                .read_by_hint(next_pdu_hint)
-                .await
-                .map_err(|e| ironrdp_connector::custom_err!("read frame by hint", e))?;
+        debug!(
+            connector.state = connector.state.name(),
+            hint = ?next_pdu_hint,
+            "Wait for PDU"
+        );
 
-            trace!(length = pdu.len(), "PDU received");
+        let pdu = framed
+            .read_by_hint(next_pdu_hint)
+            .await
+            .map_err(|e| ironrdp_connector::custom_err!("read frame by hint", e))?;
 
-            match sequence.decode_server_message(&pdu)? {
-                Some(next_request) => ts_request = next_request,
-                None => break,
-            }
+        trace!(length = pdu.len(), "PDU received");
+
+        if let Some(next_request) = sequence.decode_server_message(&pdu)? {
+            ts_request = next_request;
         } else {
             break;
         }
