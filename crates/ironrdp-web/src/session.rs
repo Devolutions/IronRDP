@@ -705,7 +705,7 @@ fn build_config(
         credentials: Credentials::UsernamePassword { username, password },
         domain,
         // TODO(#327): expose these options from the WASM module.
-        enable_winlogon: true,
+        enable_tls: true,
         enable_credssp: true,
         keyboard_type: ironrdp::pdu::gcc::KeyboardType::IbmEnhanced,
         keyboard_subtype: 0,

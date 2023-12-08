@@ -2,10 +2,10 @@
 //!
 //! Some are exported and available to external crates
 
-/// Automatically returns the full pathname to a
-/// function. Taken from https://stackoverflow.com/a/40234666.
+/// Finds the name of the function in which this macro is expanded
 #[macro_export]
 macro_rules! function {
+    // Taken from https://stackoverflow.com/a/40234666
     () => {{
         fn f() {}
         fn type_name_of<T>(_: T) -> &'static str {

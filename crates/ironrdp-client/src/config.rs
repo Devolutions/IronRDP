@@ -211,13 +211,13 @@ struct Args {
     ///
     /// Disabling this in order to enforce usage of CredSSP (NLA) is recommended.
     #[clap(long)]
-    no_winlogon: bool,
+    no_tls: bool,
 
     /// Disable TLS + Network Level Authentication (NLA) using CredSSP
     ///
     /// NLA is used to authenticates RDP clients and servers before sending credentials over the network.
     /// It’s not recommended to disable this.
-    #[clap(long)]
+    #[clap(long, alias = "no-nla")]
     no_credssp: bool,
 }
 
@@ -277,7 +277,7 @@ impl Config {
         let connector = connector::Config {
             credentials: Credentials::UsernamePassword { username, password },
             domain: args.domain,
-            enable_winlogon: !args.no_winlogon,
+            enable_tls: !args.no_tls,
             enable_credssp: !args.no_credssp,
             keyboard_type: KeyboardType::parse(args.keyboard_type),
             keyboard_subtype: args.keyboard_subtype,

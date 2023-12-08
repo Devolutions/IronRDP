@@ -176,7 +176,7 @@ fn build_config(username: String, password: String, domain: Option<String>) -> c
     connector::Config {
         credentials: Credentials::UsernamePassword { username, password },
         domain,
-        enable_winlogon: false, // This example does not expose any frontend.
+        enable_tls: false, // This example does not expose any frontend.
         enable_credssp: true,
         keyboard_type: KeyboardType::IbmEnhanced,
         keyboard_subtype: 0,

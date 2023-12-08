@@ -227,7 +227,7 @@ impl Sequence for ClientConnector {
 
                 let mut security_protocol = nego::SecurityProtocol::empty();
 
-                if self.config.enable_winlogon {
+                if self.config.enable_tls {
                     security_protocol.insert(nego::SecurityProtocol::SSL);
                 }
 
