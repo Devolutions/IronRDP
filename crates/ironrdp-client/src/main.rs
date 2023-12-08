@@ -12,7 +12,7 @@ use tokio::runtime;
 fn main() -> anyhow::Result<()> {
     let mut config = Config::parse_args().context("CLI arguments parsing")?;
 
-    setup_logging(config.log_file.as_str()).context("unable to initialize logging")?;
+    setup_logging(config.log_file.as_deref()).context("unable to initialize logging")?;
 
     debug!("Initialize GUI context");
     let gui = GuiContext::init().context("unable to initialize GUI context")?;
@@ -73,34 +73,46 @@ fn main() -> anyhow::Result<()> {
     gui.run(input_event_sender);
 }
 
-fn setup_logging(log_file: &str) -> anyhow::Result<()> {
+fn setup_logging(log_file: Option<&str>) -> anyhow::Result<()> {
     use std::fs::OpenOptions;
 
     use tracing::metadata::LevelFilter;
     use tracing_subscriber::prelude::*;
     use tracing_subscriber::EnvFilter;
 
-    let file = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(log_file)
-        .with_context(|| format!("couldn’t open {log_file}"))?;
-
-    let fmt_layer = tracing_subscriber::fmt::layer()
-        .compact()
-        .with_ansi(false)
-        .with_writer(file);
-
     let env_filter = EnvFilter::builder()
         .with_default_directive(LevelFilter::WARN.into())
         .with_env_var("IRONRDP_LOG")
         .from_env_lossy();
 
-    tracing_subscriber::registry()
-        .with(fmt_layer)
-        .with(env_filter)
-        .try_init()
-        .context("failed to set tracing global subscriber")?;
+    if let Some(log_file) = log_file {
+        let file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(log_file)
+            .with_context(|| format!("couldn’t open {log_file}"))?;
+        let fmt_layer = tracing_subscriber::fmt::layer()
+            .with_ansi(false)
+            .with_writer(file)
+            .compact();
+        tracing_subscriber::registry()
+            .with(env_filter)
+            .with(fmt_layer)
+            .try_init()
+            .context("failed to set tracing global subscriber")?;
+    } else {
+        let fmt_layer = tracing_subscriber::fmt::layer()
+            .compact()
+            .with_file(true)
+            .with_line_number(true)
+            .with_thread_ids(true)
+            .with_target(false);
+        tracing_subscriber::registry()
+            .with(env_filter)
+            .with(fmt_layer)
+            .try_init()
+            .context("failed to set tracing global subscriber")?;
+    };
 
     Ok(())
 }
