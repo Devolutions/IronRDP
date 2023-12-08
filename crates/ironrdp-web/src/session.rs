@@ -704,7 +704,9 @@ fn build_config(
     connector::Config {
         credentials: Credentials::UsernamePassword { username, password },
         domain,
-        security_protocol: ironrdp::pdu::nego::SecurityProtocol::HYBRID,
+        // TODO(#327): expose these options from the WASM module.
+        enable_tls: true,
+        enable_credssp: true,
         keyboard_type: ironrdp::pdu::gcc::KeyboardType::IbmEnhanced,
         keyboard_subtype: 0,
         keyboard_functional_keys_count: 12,
@@ -898,7 +900,7 @@ where
 
         connector.attach_server_addr(server_addr);
 
-        let ironrdp::connector::ClientConnectorState::ConnectionInitiationWaitConfirm = connector.state else {
+        let ironrdp::connector::ClientConnectorState::ConnectionInitiationWaitConfirm { .. } = connector.state else {
             return Err(anyhow::Error::msg("invalid connector state (wait confirm)").into());
         };
 

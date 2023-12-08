@@ -28,7 +28,6 @@ use ironrdp::connector;
 use ironrdp::connector::sspi::network_client::reqwest_network_client::ReqwestNetworkClient;
 use ironrdp::connector::ConnectionResult;
 use ironrdp::pdu::gcc::KeyboardType;
-use ironrdp::pdu::nego::SecurityProtocol;
 use ironrdp::pdu::rdp::capability_sets::MajorPlatformType;
 use ironrdp::session::image::DecodedImage;
 use ironrdp::session::{ActiveStage, ActiveStageOutput};
@@ -177,7 +176,8 @@ fn build_config(username: String, password: String, domain: Option<String>) -> c
     connector::Config {
         credentials: Credentials::UsernamePassword { username, password },
         domain,
-        security_protocol: SecurityProtocol::HYBRID,
+        enable_tls: false, // This example does not expose any frontend.
+        enable_credssp: true,
         keyboard_type: KeyboardType::IbmEnhanced,
         keyboard_subtype: 0,
         keyboard_functional_keys_count: 12,
