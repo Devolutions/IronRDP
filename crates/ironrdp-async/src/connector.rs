@@ -120,30 +120,12 @@ where
 {
     assert!(connector.should_perform_credssp());
 
-    let mut credssp_sequence = CredsspSequence::new(connector, server_name, server_public_key, kerberos_config)?;
+    let (mut sequence, mut ts_request) =
+        CredsspSequence::init(connector, server_name, server_public_key, kerberos_config)?;
 
-    while !credssp_sequence.is_done() {
-        buf.clear();
-
-        if let Some(next_pdu_hint) = credssp_sequence.next_pdu_hint() {
-            debug!(
-                connector.state = connector.state.name(),
-                hint = ?next_pdu_hint,
-                "Wait for PDU"
-            );
-
-            let pdu = framed
-                .read_by_hint(next_pdu_hint)
-                .await
-                .map_err(|e| ironrdp_connector::custom_err!("read frame by hint", e))?;
-
-            trace!(length = pdu.len(), "PDU received");
-
-            credssp_sequence.read_request_from_server(&pdu)?;
-        }
-
+    loop {
         let client_state = {
-            let mut generator = credssp_sequence.process();
+            let mut generator = sequence.process_ts_request(ts_request);
 
             if let Some(network_client_ref) = network_client.as_deref_mut() {
                 trace!("resolving network");
@@ -155,7 +137,8 @@ where
             }
         }; // drop generator
 
-        let written = credssp_sequence.handle_process_result(client_state, buf)?;
+        buf.clear();
+        let written = sequence.handle_process_result(client_state, buf)?;
 
         if let Some(response_len) = written.size() {
             let response = &buf[..response_len];
@@ -164,6 +147,29 @@ where
                 .write_all(response)
                 .await
                 .map_err(|e| ironrdp_connector::custom_err!("write all", e))?;
+        }
+
+        let Some(next_pdu_hint) = sequence.next_pdu_hint() else {
+            break;
+        };
+
+        debug!(
+            connector.state = connector.state.name(),
+            hint = ?next_pdu_hint,
+            "Wait for PDU"
+        );
+
+        let pdu = framed
+            .read_by_hint(next_pdu_hint)
+            .await
+            .map_err(|e| ironrdp_connector::custom_err!("read frame by hint", e))?;
+
+        trace!(length = pdu.len(), "PDU received");
+
+        if let Some(next_request) = sequence.decode_server_message(&pdu)? {
+            ts_request = next_request;
+        } else {
+            break;
         }
     }
 

@@ -5,9 +5,8 @@ use std::str::FromStr;
 use anyhow::Context as _;
 use clap::clap_derive::ValueEnum;
 use clap::Parser;
-use ironrdp::connector::Credentials;
+use ironrdp::connector::{self, Credentials};
 use ironrdp::pdu::rdp::capability_sets::MajorPlatformType;
-use ironrdp::{connector, pdu};
 use tap::prelude::*;
 
 const DEFAULT_WIDTH: u16 = 1920;
@@ -18,23 +17,6 @@ pub struct Config {
     pub log_file: Option<String>,
     pub destination: Destination,
     pub connector: connector::Config,
-}
-
-#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
-enum SecurityProtocol {
-    Ssl,
-    Hybrid,
-    HybridEx,
-}
-
-impl SecurityProtocol {
-    fn parse(security_protocol: SecurityProtocol) -> pdu::nego::SecurityProtocol {
-        match security_protocol {
-            SecurityProtocol::Ssl => pdu::nego::SecurityProtocol::SSL,
-            SecurityProtocol::Hybrid => pdu::nego::SecurityProtocol::HYBRID,
-            SecurityProtocol::HybridEx => pdu::nego::SecurityProtocol::HYBRID_EX,
-        }
-    }
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
@@ -168,10 +150,6 @@ struct Args {
     #[clap(short, long, value_parser)]
     password: Option<String>,
 
-    /// Specify the security protocols to use
-    #[clap(long, value_enum, value_parser, default_value_t = SecurityProtocol::Hybrid)]
-    security_protocol: SecurityProtocol,
-
     /// The keyboard type
     #[clap(long, value_enum, value_parser, default_value_t = KeyboardType::IbmEnhanced)]
     keyboard_type: KeyboardType,
@@ -222,10 +200,25 @@ struct Args {
     #[clap(long, value_parser = parse_hex, default_value_t = 0)]
     capabilities: u32,
 
-    /// Automatically logon to the server by passing the INFO_AUTOLOGON flag. This flag is
-    /// ignored if CredSSP is used (SecurityProtocol::Hybrid | SecurityProtocol::HybridEx).
+    /// Automatically logon to the server by passing the INFO_AUTOLOGON flag
+    ///
+    /// This flag is ignored if CredSSP authentication is used.
+    /// You can use `--no-credssp` to ensure it’s not.
     #[clap(long)]
     autologon: bool,
+
+    /// Disable TLS + Graphical login (legacy authentication method)
+    ///
+    /// Disabling this in order to enforce usage of CredSSP (NLA) is recommended.
+    #[clap(long)]
+    no_tls: bool,
+
+    /// Disable TLS + Network Level Authentication (NLA) using CredSSP
+    ///
+    /// NLA is used to authenticates RDP clients and servers before sending credentials over the network.
+    /// It’s not recommended to disable this.
+    #[clap(long, alias = "no-nla")]
+    no_credssp: bool,
 }
 
 impl Config {
@@ -284,7 +277,8 @@ impl Config {
         let connector = connector::Config {
             credentials: Credentials::UsernamePassword { username, password },
             domain: args.domain,
-            security_protocol: SecurityProtocol::parse(args.security_protocol),
+            enable_tls: !args.no_tls,
+            enable_credssp: !args.no_credssp,
             keyboard_type: KeyboardType::parse(args.keyboard_type),
             keyboard_subtype: args.keyboard_subtype,
             keyboard_functional_keys_count: args.keyboard_functional_keys_count,

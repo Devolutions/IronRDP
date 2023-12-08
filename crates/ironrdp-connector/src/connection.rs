@@ -35,7 +35,9 @@ pub enum ClientConnectorState {
     Consumed,
 
     ConnectionInitiationSendRequest,
-    ConnectionInitiationWaitConfirm,
+    ConnectionInitiationWaitConfirm {
+        requested_protocol: nego::SecurityProtocol,
+    },
     EnhancedSecurityUpgrade {
         selected_protocol: nego::SecurityProtocol,
     },
@@ -47,17 +49,10 @@ pub enum ClientConnectorState {
     },
     BasicSettingsExchangeWaitResponse {
         connect_initial: mcs::ConnectInitial,
-        selected_protocol: nego::SecurityProtocol,
     },
     ChannelConnection {
-        selected_protocol: nego::SecurityProtocol,
         io_channel_id: u16,
         channel_connection: ChannelConnectionSequence,
-    },
-    RdpSecurityCommencement {
-        selected_protocol: nego::SecurityProtocol,
-        io_channel_id: u16,
-        user_channel_id: u16,
     },
     SecureSettingsExchange {
         io_channel_id: u16,
@@ -96,13 +91,12 @@ impl State for ClientConnectorState {
         match self {
             Self::Consumed => "Consumed",
             Self::ConnectionInitiationSendRequest => "ConnectionInitiationSendRequest",
-            Self::ConnectionInitiationWaitConfirm => "ConnectionInitiationWaitResponse",
+            Self::ConnectionInitiationWaitConfirm { .. } => "ConnectionInitiationWaitResponse",
             Self::EnhancedSecurityUpgrade { .. } => "EnhancedSecurityUpgrade",
             Self::Credssp { .. } => "Credssp",
             Self::BasicSettingsExchangeSendInitial { .. } => "BasicSettingsExchangeSendInitial",
             Self::BasicSettingsExchangeWaitResponse { .. } => "BasicSettingsExchangeWaitResponse",
             Self::ChannelConnection { .. } => "ChannelConnection",
-            Self::RdpSecurityCommencement { .. } => "RdpSecurityCommencement",
             Self::SecureSettingsExchange { .. } => "SecureSettingsExchange",
             Self::ConnectTimeAutoDetection { .. } => "ConnectTimeAutoDetection",
             Self::LicensingExchange { .. } => "LicensingExchange",
@@ -196,13 +190,12 @@ impl Sequence for ClientConnector {
         match &self.state {
             ClientConnectorState::Consumed => None,
             ClientConnectorState::ConnectionInitiationSendRequest => None,
-            ClientConnectorState::ConnectionInitiationWaitConfirm => Some(&ironrdp_pdu::X224_HINT),
+            ClientConnectorState::ConnectionInitiationWaitConfirm { .. } => Some(&ironrdp_pdu::X224_HINT),
             ClientConnectorState::EnhancedSecurityUpgrade { .. } => None,
             ClientConnectorState::Credssp { .. } => None,
             ClientConnectorState::BasicSettingsExchangeSendInitial { .. } => None,
             ClientConnectorState::BasicSettingsExchangeWaitResponse { .. } => Some(&ironrdp_pdu::X224_HINT),
             ClientConnectorState::ChannelConnection { channel_connection, .. } => channel_connection.next_pdu_hint(),
-            ClientConnectorState::RdpSecurityCommencement { .. } => None,
             ClientConnectorState::SecureSettingsExchange { .. } => None,
             ClientConnectorState::ConnectTimeAutoDetection { .. } => None,
             ClientConnectorState::LicensingExchange { license_exchange, .. } => license_exchange.next_pdu_hint(),
@@ -231,10 +224,36 @@ impl Sequence for ClientConnector {
             // Exchange supported security protocols and a few other connection flags.
             ClientConnectorState::ConnectionInitiationSendRequest => {
                 debug!("Connection Initiation");
+
+                let mut security_protocol = nego::SecurityProtocol::empty();
+
+                if self.config.enable_tls {
+                    security_protocol.insert(nego::SecurityProtocol::SSL);
+                }
+
+                if self.config.enable_credssp {
+                    // https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/902b090b-9cb3-4efc-92bf-ee13373371e3
+                    // The spec is stating that `PROTOCOL_SSL` "SHOULD" also be set when using `PROTOCOL_HYBRID`.
+                    // > PROTOCOL_HYBRID (0x00000002)
+                    // > Credential Security Support Provider protocol (CredSSP) (section 5.4.5.2).
+                    // > If this flag is set, then the PROTOCOL_SSL (0x00000001) flag SHOULD also be set
+                    // > because Transport Layer Security (TLS) is a subset of CredSSP.
+                    // However, crucially, it’s not strictly required (not "MUST").
+                    // In fact, we purposefully choose to not set `PROTOCOL_SSL` unless `enable_winlogon` is `true`.
+                    // This tells the server that we are not going to accept downgrading NLA to TLS security.
+                    security_protocol.insert(nego::SecurityProtocol::HYBRID | nego::SecurityProtocol::HYBRID_EX);
+                }
+
+                if security_protocol.is_standard_rdp_security() {
+                    return Err(reason_err!("Initiation", "standard RDP security is not supported",));
+                }
+
                 let connection_request = nego::ConnectionRequest {
-                    nego_data: Some(nego::NegoRequestData::cookie(self.config.credentials.username().into())),
+                    nego_data: Some(nego::NegoRequestData::cookie(
+                        self.config.credentials.username().to_owned(),
+                    )),
                     flags: nego::RequestFlags::empty(),
-                    protocol: self.config.security_protocol,
+                    protocol: security_protocol,
                 };
 
                 debug!(message = ?connection_request, "Send");
@@ -243,10 +262,12 @@ impl Sequence for ClientConnector {
 
                 (
                     Written::from_size(written)?,
-                    ClientConnectorState::ConnectionInitiationWaitConfirm,
+                    ClientConnectorState::ConnectionInitiationWaitConfirm {
+                        requested_protocol: security_protocol,
+                    },
                 )
             }
-            ClientConnectorState::ConnectionInitiationWaitConfirm => {
+            ClientConnectorState::ConnectionInitiationWaitConfirm { requested_protocol } => {
                 let connection_confirm =
                     ironrdp_pdu::decode::<nego::ConnectionConfirm>(input).map_err(ConnectorError::pdu)?;
 
@@ -256,15 +277,16 @@ impl Sequence for ClientConnector {
                     nego::ConnectionConfirm::Response { flags, protocol } => (flags, protocol),
                     nego::ConnectionConfirm::Failure { code } => {
                         error!(?code, "Received connection failure code");
-                        return Err(general_err!("connection failed"));
+                        return Err(reason_err!("Initiation", "{code}"));
                     }
                 };
 
                 info!(?selected_protocol, ?flags, "Server confirmed connection");
 
-                if !self.config.security_protocol.contains(selected_protocol) {
-                    return Err(general_err!(
-                        "server selected a security protocol that is unsupported by this client",
+                if !selected_protocol.intersects(requested_protocol) {
+                    return Err(reason_err!(
+                        "Initiation",
+                        "client advertised {requested_protocol}, but server selected {selected_protocol}",
                     ));
                 }
 
@@ -278,12 +300,13 @@ impl Sequence for ClientConnector {
             // NOTE: we assume the selected protocol is never the standard RDP security (RC4).
             // User code should match this variant and perform the appropriate upgrade (TLS handshake, etc).
             ClientConnectorState::EnhancedSecurityUpgrade { selected_protocol } => {
-                let next_state = if selected_protocol.contains(nego::SecurityProtocol::HYBRID)
-                    || selected_protocol.contains(nego::SecurityProtocol::HYBRID_EX)
+                let next_state = if selected_protocol
+                    .intersects(nego::SecurityProtocol::HYBRID | nego::SecurityProtocol::HYBRID_EX)
                 {
+                    debug!("Begin NLA using CredSSP");
                     ClientConnectorState::Credssp { selected_protocol }
                 } else {
-                    debug!("Skipped CredSSP");
+                    debug!("CredSSP is disabled, skipping NLA");
                     ClientConnectorState::BasicSettingsExchangeSendInitial { selected_protocol }
                 };
 
@@ -300,6 +323,7 @@ impl Sequence for ClientConnector {
             // Exchange basic settings including Core Data, Security Data and Network Data.
             ClientConnectorState::BasicSettingsExchangeSendInitial { selected_protocol } => {
                 debug!("Basic Settings Exchange");
+
                 let client_gcc_blocks =
                     create_gcc_blocks(&self.config, selected_protocol, self.static_channels.values());
 
@@ -311,16 +335,10 @@ impl Sequence for ClientConnector {
 
                 (
                     Written::from_size(written)?,
-                    ClientConnectorState::BasicSettingsExchangeWaitResponse {
-                        connect_initial,
-                        selected_protocol,
-                    },
+                    ClientConnectorState::BasicSettingsExchangeWaitResponse { connect_initial },
                 )
             }
-            ClientConnectorState::BasicSettingsExchangeWaitResponse {
-                connect_initial,
-                selected_protocol,
-            } => {
+            ClientConnectorState::BasicSettingsExchangeWaitResponse { connect_initial } => {
                 let connect_response = legacy::decode_x224_packet::<mcs::ConnectResponse>(input)?;
 
                 debug!(message = ?connect_response, "Received");
@@ -361,7 +379,6 @@ impl Sequence for ClientConnector {
                 (
                     Written::Nothing,
                     ClientConnectorState::ChannelConnection {
-                        selected_protocol,
                         io_channel_id,
                         channel_connection: ChannelConnectionSequence::new(io_channel_id, static_channel_ids),
                     },
@@ -371,7 +388,6 @@ impl Sequence for ClientConnector {
             //== Channel Connection ==//
             // Connect every individual channel.
             ClientConnectorState::ChannelConnection {
-                selected_protocol,
                 io_channel_id,
                 mut channel_connection,
             } => {
@@ -382,14 +398,12 @@ impl Sequence for ClientConnector {
                 {
                     debug_assert!(channel_connection.state.is_terminal());
 
-                    ClientConnectorState::RdpSecurityCommencement {
-                        selected_protocol,
+                    ClientConnectorState::SecureSettingsExchange {
                         io_channel_id,
                         user_channel_id,
                     }
                 } else {
                     ClientConnectorState::ChannelConnection {
-                        selected_protocol,
                         io_channel_id,
                         channel_connection,
                     }
@@ -400,25 +414,9 @@ impl Sequence for ClientConnector {
 
             //== RDP Security Commencement ==//
             // When using standard RDP security (RC4), a Security Exchange PDU is sent at this point.
-            // NOTE: IronRDP does not support RC4 security.
-            ClientConnectorState::RdpSecurityCommencement {
-                selected_protocol,
-                io_channel_id,
-                user_channel_id,
-            } => {
-                debug!("RDP Security Commencement");
-                if selected_protocol == nego::SecurityProtocol::RDP {
-                    return Err(general_err!("standard RDP Security (RC4 encryption) is not supported"));
-                }
-
-                (
-                    Written::Nothing,
-                    ClientConnectorState::SecureSettingsExchange {
-                        io_channel_id,
-                        user_channel_id,
-                    },
-                )
-            }
+            // However, IronRDP does not support this unsecure security protocol (purposefully) and
+            // this part of the sequence is not implemented.
+            //==============================//
 
             //== Secure Settings Exchange ==//
             // Send Client Info PDU (information about supported types of compression, username, password, etc).
@@ -427,6 +425,7 @@ impl Sequence for ClientConnector {
                 user_channel_id,
             } => {
                 debug!("Secure Settings Exchange");
+
                 let routing_addr = self
                     .server_addr
                     .as_ref()
@@ -459,7 +458,7 @@ impl Sequence for ClientConnector {
                     user_channel_id,
                     license_exchange: LicenseExchangeSequence::new(
                         io_channel_id,
-                        self.config.credentials.username().into(),
+                        self.config.credentials.username().to_owned(),
                         self.config.domain.clone(),
                     ),
                 },
@@ -474,6 +473,7 @@ impl Sequence for ClientConnector {
                 mut license_exchange,
             } => {
                 debug!("Licensing Exchange");
+
                 let written = license_exchange.step(input, output)?;
 
                 let next_state = if license_exchange.state.is_terminal() {
@@ -512,6 +512,7 @@ impl Sequence for ClientConnector {
                 user_channel_id,
             } => {
                 debug!("Capabilities Exchange");
+
                 let send_data_indication_ctx = legacy::decode_send_data_indication(input)?;
                 let share_control_ctx = legacy::decode_share_control(send_data_indication_ctx)?;
 
@@ -592,6 +593,7 @@ impl Sequence for ClientConnector {
                 mut connection_finalization,
             } => {
                 debug!("Connection Finalization");
+
                 let written = connection_finalization.step(input, output)?;
 
                 let next_state = if connection_finalization.state.is_terminal() {
@@ -748,8 +750,8 @@ fn create_client_info_pdu(config: &Config, routing_addr: &SocketAddr) -> rdp::Cl
 
     let client_info = ClientInfo {
         credentials: Credentials {
-            username: config.credentials.username().into(),
-            password: config.credentials.secret().into(),
+            username: config.credentials.username().to_owned(),
+            password: config.credentials.secret().to_owned(),
             domain: config.domain.clone(),
         },
         code_page: 0, // ignored if the keyboardLayout field of the Client Core Data is set to zero

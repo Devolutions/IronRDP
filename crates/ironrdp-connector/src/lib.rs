@@ -24,7 +24,7 @@ pub use connection::{ClientConnector, ClientConnectorState, ConnectionResult};
 pub use connection_finalization::{ConnectionFinalizationSequence, ConnectionFinalizationState};
 use ironrdp_pdu::rdp::capability_sets;
 use ironrdp_pdu::write_buf::WriteBuf;
-use ironrdp_pdu::{gcc, nego, PduHint};
+use ironrdp_pdu::{gcc, PduHint};
 pub use license_exchange::{LicenseExchangeSequence, LicenseExchangeState};
 pub use server_name::ServerName;
 pub use sspi;
@@ -78,13 +78,61 @@ impl Credentials {
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct Config {
+    /// The initial desktop size to request
     pub desktop_size: DesktopSize,
-    pub security_protocol: nego::SecurityProtocol,
+    /// TLS + Graphical login (legacy)
+    ///
+    /// Also called SSL or TLS security protocol.
+    /// The PROTOCOL_SSL flag will be set.
+    ///
+    /// When this security protocol is negotiated, the RDP server will show a graphical login screen.
+    /// For Windows, it means that the login subsystem (winlogon.exe) and the GDI graphics subsystem
+    /// will be initiated and the user will authenticate himself using LogonUI.exe, as if
+    /// using the physical machine directly.
+    ///
+    /// This security protocol is being phased out because it’s not great security-wise.
+    /// Indeed, the whole RDP connection sequence will be performed, allowing anyone to effectively
+    /// open a RDP session session with all static channels joined and active (e.g.: I/O, clipboard,
+    /// sound, drive redirection, etc). This exposes a wide attack surface with many impacts on both
+    /// the client and the server.
+    ///
+    /// - Man-in-the-middle (MITM)
+    /// - Server-side takeover
+    /// - Client-side file stealing
+    /// - Client-side takeover
+    ///
+    /// Recommended reads on this topic:
+    ///
+    /// - <https://www.gosecure.net/blog/2018/12/19/rdp-man-in-the-middle-smile-youre-on-camera/>
+    /// - <https://www.gosecure.net/divi_overlay/mitigating-the-risks-of-remote-desktop-protocols/>
+    /// - <https://gosecure.github.io/presentations/2021-08-05_blackhat-usa/BlackHat-USA-21-Arsenal-PyRDP-OlivierBilodeau.pdf>
+    /// - <https://gosecure.github.io/presentations/2022-10-06_sector/OlivierBilodeau-Purple_RDP.pdf>
+    ///
+    /// By setting this option to `false`, it’s possible to effectively enforce usage of NLA on client side.
+    pub enable_tls: bool,
+    /// TLS + Network Level Authentication (NLA) using CredSSP
+    ///
+    /// The PROTOCOL_HYBRID and PROTOCOL_HYBRID_EX flags will be set.
+    ///
+    /// NLA is allowing authentication to be performed before session establishement.
+    ///
+    /// This option includes the extended CredSSP early user authorization result PDU.
+    /// This PDU is used by the server to deny access before any credentials (except for the username)
+    /// have been submitted, e.g.: typically if the user does not have the necessary remote access
+    /// privileges.
+    ///
+    /// The attack surface is considerably reduced in comparison to the legacy "TLS" security protocol.
+    /// For this reason, it is recommended to set `enable_tls` to `false` when connecting to NLA-capable
+    /// computers.
+    #[doc(alias("enable_nla", "nla"))]
+    pub enable_credssp: bool,
     pub credentials: Credentials,
     pub domain: Option<String>,
     /// The build number of the client.
     pub client_build: u32,
-    /// Name of the client computer. Truncated to the 15 first characters.
+    /// Name of the client computer
+    ///
+    /// The name will be truncated to the 15 first characters.
     pub client_name: String,
     pub keyboard_type: gcc::KeyboardType,
     pub keyboard_subtype: u32,
@@ -95,9 +143,11 @@ pub struct Config {
     pub dig_product_id: String,
     pub client_dir: String,
     pub platform: capability_sets::MajorPlatformType,
-    pub no_server_pointer: bool,
-    /// If true, the INFO_AUTOLOGON flag is set in the [`ironrdp_pdu::rdp::ClientInfoPdu`].
+    /// If true, the INFO_AUTOLOGON flag is set in the [`ClientInfoPdu`](ironrdp_pdu::rdp::ClientInfoPdu)
     pub autologon: bool,
+
+    // FIXME(@CBenoit): these are client-only options, not part of the connector.
+    pub no_server_pointer: bool,
     pub pointer_software_rendering: bool,
 }
 

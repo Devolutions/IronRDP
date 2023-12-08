@@ -82,7 +82,7 @@ lazy_static! {
         data.optional_data.early_capability_flags = Some(ClientEarlyCapabilityFlags::SUPPORT_ERR_INFO_PDU);
         data.optional_data.dig_product_id = Some(String::from("69712-783-0357974-42714"));
         data.optional_data.connection_type = Some(ConnectionType::NotUsed);
-        data.optional_data.server_selected_protocol = Some(SecurityProtocol::RDP);
+        data.optional_data.server_selected_protocol = Some(SecurityProtocol::empty());
         data
     };
     pub static ref CLIENT_CORE_DATA_WITH_ALL_OPTIONAL_FIELDS: ClientCoreData = {
@@ -163,14 +163,14 @@ lazy_static! {
     pub static ref SERVER_CORE_DATA_TO_FLAGS: ServerCoreData = ServerCoreData {
         version: RdpVersion::V5_PLUS,
         optional_data: ServerCoreOptionalData {
-            client_requested_protocols: Some(SecurityProtocol::RDP),
+            client_requested_protocols: Some(SecurityProtocol::empty()),
             early_capability_flags: None,
         },
     };
     pub static ref SERVER_CORE_DATA_WITH_ALL_OPTIONAL_FIELDS: ServerCoreData = ServerCoreData {
         version: RdpVersion::V5_PLUS,
         optional_data: ServerCoreOptionalData {
-            client_requested_protocols: Some(SecurityProtocol::RDP),
+            client_requested_protocols: Some(SecurityProtocol::empty()),
             early_capability_flags: Some(ServerEarlyCapabilityFlags::EDGE_ACTIONS_SUPPORTED_V1),
         },
     };

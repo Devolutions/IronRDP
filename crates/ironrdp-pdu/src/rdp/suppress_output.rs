@@ -34,7 +34,7 @@ impl AllowDisplayUpdatesType {
 /// restored. Server support for this PDU is indicated in the General Capability
 /// Set [2.2.7.1.1].
 ///
-/// [2.2.11.3.1] https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/0be71491-0b01-402c-947d-080706ccf91b
+/// [2.2.11.3.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/0be71491-0b01-402c-947d-080706ccf91b
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SuppressOutputPdu {
     pub desktop_rect: Option<InclusiveRectangle>,
