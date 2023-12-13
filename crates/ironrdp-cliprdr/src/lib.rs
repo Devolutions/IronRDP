@@ -11,9 +11,7 @@ pub mod pdu;
 use backend::CliprdrBackend;
 use ironrdp_pdu::gcc::ChannelName;
 use ironrdp_pdu::{decode, PduResult};
-use ironrdp_svc::{
-    impl_as_any, ChannelFlags, CompressionCondition, StaticVirtualChannelProcessor, SvcMessage, SvcProcessorMessages,
-};
+use ironrdp_svc::{impl_as_any, ChannelFlags, CompressionCondition, SvcMessage, SvcProcessor, SvcProcessorMessages};
 use pdu::{
     Capabilities, ClientTemporaryDirectory, ClipboardFormat, ClipboardFormatId, ClipboardGeneralCapabilityFlags,
     ClipboardPdu, ClipboardProtocolVersion, FileContentsResponse, FormatDataRequest, FormatListResponse,
@@ -220,7 +218,7 @@ impl Cliprdr {
     }
 }
 
-impl StaticVirtualChannelProcessor for Cliprdr {
+impl SvcProcessor for Cliprdr {
     fn channel_name(&self) -> ChannelName {
         Self::CHANNEL_NAME
     }

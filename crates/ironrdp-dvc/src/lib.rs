@@ -24,7 +24,7 @@ use ironrdp_pdu::gcc::ChannelName;
 use ironrdp_pdu::rdp::vc;
 use ironrdp_pdu::write_buf::WriteBuf;
 use ironrdp_pdu::{assert_obj_safe, dvc, PduResult};
-use ironrdp_svc::{impl_as_any, CompressionCondition, StaticVirtualChannelProcessor, SvcMessage};
+use ironrdp_svc::{impl_as_any, CompressionCondition, SvcMessage, SvcProcessor};
 use pdu::cursor::WriteCursor;
 use pdu::PduEncode;
 
@@ -99,7 +99,7 @@ impl Default for Drdynvc {
     }
 }
 
-impl StaticVirtualChannelProcessor for Drdynvc {
+impl SvcProcessor for Drdynvc {
     fn channel_name(&self) -> ChannelName {
         Drdynvc::NAME
     }

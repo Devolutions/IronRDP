@@ -4,7 +4,7 @@ use std::net::SocketAddr;
 use ironrdp_pdu::rdp::capability_sets::CapabilitySet;
 use ironrdp_pdu::write_buf::WriteBuf;
 use ironrdp_pdu::{gcc, mcs, nego, rdp, PduHint};
-use ironrdp_svc::{StaticChannelSet, StaticVirtualChannel, StaticVirtualChannelProcessor};
+use ironrdp_svc::{StaticChannelSet, StaticVirtualChannel, SvcProcessor};
 
 use crate::channel_connection::{ChannelConnectionSequence, ChannelConnectionState};
 use crate::connection_finalization::ConnectionFinalizationSequence;
@@ -150,7 +150,7 @@ impl ClientConnector {
     #[must_use]
     pub fn with_static_channel<T>(mut self, channel: T) -> Self
     where
-        T: StaticVirtualChannelProcessor + 'static,
+        T: SvcProcessor + 'static,
     {
         self.static_channels.insert(channel);
         self
@@ -158,7 +158,7 @@ impl ClientConnector {
 
     pub fn attach_static_channel<T>(&mut self, channel: T)
     where
-        T: StaticVirtualChannelProcessor + 'static,
+        T: SvcProcessor + 'static,
     {
         self.static_channels.insert(channel);
     }
