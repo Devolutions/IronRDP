@@ -1,6 +1,6 @@
 use ironrdp_pdu::gcc::ChannelName;
 use ironrdp_pdu::PduResult;
-use ironrdp_svc::{impl_as_any, CompressionCondition, StaticVirtualChannelProcessor, SvcMessage};
+use ironrdp_svc::{impl_as_any, CompressionCondition, SvcMessage, SvcProcessor};
 
 /// We currently don't implement any of rdpsnd, however it's required
 /// for rdpdr to work: [\[MS-RDPEFS\] Appendix A<1>]
@@ -25,7 +25,7 @@ impl Default for Rdpsnd {
 
 impl_as_any!(Rdpsnd);
 
-impl StaticVirtualChannelProcessor for Rdpsnd {
+impl SvcProcessor for Rdpsnd {
     fn channel_name(&self) -> ChannelName {
         Self::NAME
     }

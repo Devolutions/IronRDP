@@ -14,9 +14,7 @@ use ironrdp_pdu::rdp::server_error_info::{ErrorInfo, ProtocolIndependentCode, Se
 use ironrdp_pdu::rdp::vc::dvc;
 use ironrdp_pdu::write_buf::WriteBuf;
 use ironrdp_pdu::{encode_buf, mcs};
-use ironrdp_svc::{
-    StaticChannelSet, StaticVirtualChannel, StaticVirtualChannelProcessor, SvcMessage, SvcProcessorMessages,
-};
+use ironrdp_svc::{StaticChannelSet, StaticVirtualChannel, SvcMessage, SvcProcessor, SvcProcessorMessages};
 
 use crate::{SessionError, SessionErrorExt as _, SessionResult};
 
@@ -74,13 +72,13 @@ impl Processor {
         }
     }
 
-    pub fn get_svc_processor<T: StaticVirtualChannelProcessor + 'static>(&mut self) -> Option<&T> {
+    pub fn get_svc_processor<T: SvcProcessor + 'static>(&mut self) -> Option<&T> {
         self.static_channels
             .get_by_type::<T>()
             .and_then(|svc| svc.channel_processor_downcast_ref())
     }
 
-    pub fn get_svc_processor_mut<T: StaticVirtualChannelProcessor + 'static>(&mut self) -> Option<&mut T> {
+    pub fn get_svc_processor_mut<T: SvcProcessor + 'static>(&mut self) -> Option<&mut T> {
         self.static_channels
             .get_by_type_mut::<T>()
             .and_then(|svc| svc.channel_processor_downcast_mut())
@@ -88,7 +86,7 @@ impl Processor {
 
     /// Completes user's SVC request with data, required to sent it over the network and returns
     /// a buffer with encoded data.
-    pub fn process_svc_processor_messages<C: StaticVirtualChannelProcessor + 'static>(
+    pub fn process_svc_processor_messages<C: SvcProcessor + 'static>(
         &self,
         messages: SvcProcessorMessages<C>,
     ) -> SessionResult<Vec<u8>> {
