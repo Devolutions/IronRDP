@@ -34,19 +34,19 @@ use pdu::PduEncode;
 /// The Dynamic Virtual Channel APIs exist to address limitations of Static Virtual Channels:
 ///   - Limited number of channels
 ///   - Packet reconstruction
-pub trait DynamicVirtualChannel: Send + Sync {
+pub trait DvcProcessor: Send + Sync {
     fn channel_name(&self) -> &str;
 
     fn process(&mut self, channel_id: u32, payload: &[u8], output: &mut WriteBuf) -> PduResult<()>;
 }
 
-assert_obj_safe!(DynamicVirtualChannel);
+assert_obj_safe!(DvcProcessor);
 
 /// DRDYNVC Static Virtual Channel (the Remote Desktop Protocol: Dynamic Virtual Channel Extension)
 ///
 /// It adds support for dynamic virtual channels (DVC).
 pub struct Drdynvc {
-    dynamic_channels: BTreeMap<String, Box<dyn DynamicVirtualChannel>>,
+    dynamic_channels: BTreeMap<String, Box<dyn DvcProcessor>>,
 }
 
 impl fmt::Debug for Drdynvc {
@@ -83,7 +83,7 @@ impl Drdynvc {
     #[must_use]
     pub fn with_dynamic_channel<T>(mut self, channel: T) -> Self
     where
-        T: DynamicVirtualChannel + 'static,
+        T: DvcProcessor + 'static,
     {
         let channel_name = channel.channel_name().to_owned();
         self.dynamic_channels.insert(channel_name, Box::new(channel));
