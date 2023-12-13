@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use ironrdp_connector::legacy::SendDataIndicationCtx;
 use ironrdp_connector::GraphicsConfig;
 use ironrdp_pdu::dvc::FieldType;
+use ironrdp_pdu::mcs::{DisconnectProviderUltimatum, DisconnectReason, McsMessage};
 use ironrdp_pdu::rdp::headers::ShareDataPdu;
 use ironrdp_pdu::rdp::server_error_info::{ErrorInfo, ProtocolIndependentCode, ServerSetErrorInfoPdu};
 use ironrdp_pdu::rdp::vc::dvc;
@@ -17,13 +18,22 @@ use ironrdp_svc::{
     StaticChannelSet, StaticVirtualChannel, StaticVirtualChannelProcessor, SvcMessage, SvcProcessorMessages,
 };
 
-use crate::{SessionErrorExt as _, SessionResult};
+use crate::{SessionError, SessionErrorExt as _, SessionResult};
 
 #[rustfmt::skip]
 pub use self::gfx::GfxHandler;
 
 pub const RDP8_GRAPHICS_PIPELINE_NAME: &str = "Microsoft::Windows::RDS::Graphics";
 pub const RDP8_DISPLAY_PIPELINE_NAME: &str = "Microsoft::Windows::RDS::DisplayControl";
+
+/// X224 Processor output
+#[derive(Debug, Clone)]
+pub enum ProcessorOutput {
+    /// A buffer with encoded data to send to the server.
+    ResponseFrame(Vec<u8>),
+    /// A graceful disconnect notification. Client should close the connection upon receiving this.
+    Disconnect(DisconnectReason),
+}
 
 pub struct Processor {
     channel_map: HashMap<String, u32>,
@@ -90,26 +100,28 @@ impl Processor {
         process_svc_messages(messages.into(), channel_id, self.user_channel_id)
     }
 
-    /// Processes a received PDU. Returns a buffer with encoded data to send to the server, if any.
-    pub fn process(&mut self, frame: &[u8]) -> SessionResult<Vec<u8>> {
+    /// Processes a received PDU. Returns a vector of [`ProcessorOutput`] that should be processed
+    /// by the caller in orderly fashion.
+    pub fn process(&mut self, frame: &[u8]) -> SessionResult<Vec<ProcessorOutput>> {
         let data_ctx: SendDataIndicationCtx<'_> =
             ironrdp_connector::legacy::decode_send_data_indication(frame).map_err(crate::legacy::map_error)?;
         let channel_id = data_ctx.channel_id;
 
         if channel_id == self.io_channel_id {
-            self.process_io_channel(data_ctx)?;
-            Ok(Vec::new())
+            self.process_io_channel(data_ctx)
         } else if self.drdynvc_channel_id == Some(channel_id) {
             self.process_dyvc(data_ctx)
+                .map(|data| vec![ProcessorOutput::ResponseFrame(data)])
         } else if let Some(svc) = self.static_channels.get_by_channel_id_mut(channel_id) {
             let response_pdus = svc.process(data_ctx.user_data).map_err(crate::SessionError::pdu)?;
             process_svc_messages(response_pdus, channel_id, data_ctx.initiator_id)
+                .map(|data| vec![ProcessorOutput::ResponseFrame(data)])
         } else {
             Err(reason_err!("X224", "unexpected channel received: ID {channel_id}"))
         }
     }
 
-    fn process_io_channel(&self, data_ctx: SendDataIndicationCtx<'_>) -> SessionResult<()> {
+    fn process_io_channel(&self, data_ctx: SendDataIndicationCtx<'_>) -> SessionResult<Vec<ProcessorOutput>> {
         debug_assert_eq!(data_ctx.channel_id, self.io_channel_id);
 
         let ctx = ironrdp_connector::legacy::decode_share_data(data_ctx).map_err(crate::legacy::map_error)?;
@@ -117,16 +129,47 @@ impl Processor {
         match ctx.pdu {
             ShareDataPdu::SaveSessionInfo(session_info) => {
                 debug!("Got Session Save Info PDU: {session_info:?}");
-                Ok(())
+                Ok(Vec::new())
             }
             ShareDataPdu::ServerSetErrorInfo(ServerSetErrorInfoPdu(ErrorInfo::ProtocolIndependentCode(
                 ProtocolIndependentCode::None,
             ))) => {
                 debug!("Received None server error");
-                Ok(())
+                Ok(Vec::new())
             }
             ShareDataPdu::ServerSetErrorInfo(ServerSetErrorInfoPdu(e)) => {
-                Err(reason_err!("ServerSetErrorInfo", "{}", e.description()))
+                // This is a part of server-side graceful disconnect procedure defined
+                // in [MS-RDPBCGR].
+                //
+                // [MS-RDPBCGR]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/149070b0-ecec-4c20-af03-934bbc48adb8
+                let graceful_disconnect = error_info_to_graceful_disconnect_reason(&e);
+
+                if let Some(reason) = graceful_disconnect {
+                    debug!("Received server-side graceful disconnect request: {reason}");
+
+                    Ok(vec![ProcessorOutput::Disconnect(reason)])
+                } else {
+                    Err(reason_err!("ServerSetErrorInfo", "{}", e.description()))
+                }
+            }
+            ShareDataPdu::ShutdownDenied => {
+                debug!("ShutdownDenied received, session will be closed");
+
+                // As defined in [MS-RDPBCGR], when `ShareDataPdu::ShutdownDenied` is received, we
+                // need to send a disconnect ultimatum to the server if we want to proceed with the
+                // session shutdown.
+                //
+                // [MS-RDPBCGR]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/27915739-8f77-487e-9927-55008af7fd68
+                let ultimatum = McsMessage::DisconnectProviderUltimatum(DisconnectProviderUltimatum::from_reasom(
+                    DisconnectReason::UserRequested,
+                ));
+
+                let encoded_pdu = ironrdp_pdu::encode_vec(&ultimatum).map_err(SessionError::pdu);
+
+                Ok(vec![
+                    ProcessorOutput::ResponseFrame(encoded_pdu?),
+                    ProcessorOutput::Disconnect(DisconnectReason::UserRequested),
+                ])
             }
             _ => Err(reason_err!(
                 "IO channel",
@@ -505,5 +548,25 @@ impl CompleteData {
                 }
             }
         }
+    }
+}
+
+/// Converts a [`ServerSetErrorInfoPdu`] into a Option<[`DisconnectReason`]>.
+/// Returns `None` if the error code is not a graceful disconnect code.
+pub fn error_info_to_graceful_disconnect_reason(error_info: &ErrorInfo) -> Option<DisconnectReason> {
+    let code = if let ErrorInfo::ProtocolIndependentCode(code) = error_info {
+        code
+    } else {
+        return None;
+    };
+
+    match code {
+        ProtocolIndependentCode::RpcInitiatedDisconnect
+        | ProtocolIndependentCode::RpcInitiatedLogoff
+        | ProtocolIndependentCode::DisconnectedByOtherconnection => Some(DisconnectReason::ProviderInitiated),
+        ProtocolIndependentCode::RpcInitiatedDisconnectByuser | ProtocolIndependentCode::LogoffByUser => {
+            Some(DisconnectReason::UserRequested)
+        }
+        _ => None,
     }
 }

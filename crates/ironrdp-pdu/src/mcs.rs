@@ -736,6 +736,22 @@ impl DisconnectReason {
             _ => None,
         }
     }
+
+    pub fn description(self) -> &'static str {
+        match self {
+            Self::DomainDisconnected => "Domain disconnected",
+            Self::ProviderInitiated => "Server-initiated disconnect",
+            Self::TokenPurged => "Token purged",
+            Self::UserRequested => "User-requested disconnect",
+            Self::ChannelPurged => "Channel purged",
+        }
+    }
+}
+
+impl core::fmt::Display for DisconnectReason {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(self.description())
+    }
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
@@ -749,6 +765,10 @@ impl DisconnectProviderUltimatum {
     pub const NAME: &'static str = "DisconnectProviderUltimatum";
 
     pub const FIXED_PART_SIZE: usize = 2;
+
+    pub fn from_reasom(reason: DisconnectReason) -> Self {
+        Self { reason }
+    }
 }
 
 impl<'de> McsPdu<'de> for DisconnectProviderUltimatum {

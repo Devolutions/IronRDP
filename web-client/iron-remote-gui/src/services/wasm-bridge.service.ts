@@ -8,6 +8,7 @@ import init, {
     Session,
     SessionBuilder,
     ClipboardTransaction,
+    SessionTerminationInfo,
 } from '../../../../crates/ironrdp-web/pkg/ironrdp_web';
 import { loggingService } from './logging.service';
 import { catchError, filter, map } from 'rxjs/operators';
@@ -187,6 +188,13 @@ export class WasmBridgeService {
                                 data: 'Session was terminated.',
                             });
                             return of(err);
+                        }),
+                        map((termination_info: SessionTerminationInfo) => {
+                            this.setVisibility(false);
+                            this.raiseSessionEvent({
+                                type: SessionEventType.TERMINATED,
+                                data: 'Session was terminated: ' + termination_info.reason() + '.',
+                            });
                         }),
                     )
                     .subscribe();

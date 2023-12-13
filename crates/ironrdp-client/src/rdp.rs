@@ -3,7 +3,7 @@ use ironrdp::connector::{ConnectionResult, ConnectorResult};
 use ironrdp::graphics::image_processing::PixelFormat;
 use ironrdp::pdu::input::fast_path::FastPathInputEvent;
 use ironrdp::session::image::DecodedImage;
-use ironrdp::session::{ActiveStage, ActiveStageOutput, SessionResult};
+use ironrdp::session::{ActiveStage, ActiveStageOutput, GracefulDisconnectReason, SessionResult};
 use ironrdp::{cliprdr, connector, rdpdr, rdpsnd, session};
 use rdpdr::NoopRdpdrBackend;
 use smallvec::SmallVec;
@@ -20,7 +20,7 @@ pub enum RdpOutputEvent {
     PointerDefault,
     PointerHidden,
     PointerPosition { x: u16, y: u16 },
-    Terminated(SessionResult<()>),
+    Terminated(SessionResult<GracefulDisconnectReason>),
 }
 
 #[derive(Debug)]
@@ -67,8 +67,8 @@ impl RdpClient {
                     self.config.connector.desktop_size.width = width;
                     self.config.connector.desktop_size.height = height;
                 }
-                Ok(RdpControlFlow::TerminatedGracefully) => {
-                    let _ = self.event_loop_proxy.send_event(RdpOutputEvent::Terminated(Ok(())));
+                Ok(RdpControlFlow::TerminatedGracefully(reason)) => {
+                    let _ = self.event_loop_proxy.send_event(RdpOutputEvent::Terminated(Ok(reason)));
                     break;
                 }
                 Err(e) => {
@@ -82,7 +82,7 @@ impl RdpClient {
 
 enum RdpControlFlow {
     ReconnectWithNewSize { width: u16, height: u16 },
-    TerminatedGracefully,
+    TerminatedGracefully(GracefulDisconnectReason),
 }
 
 type UpgradedFramed = ironrdp_tokio::TokioFramed<ironrdp_tls::TlsStream<TcpStream>>;
@@ -162,7 +162,7 @@ async fn active_session(
 
     let mut active_stage = ActiveStage::new(connection_result, None);
 
-    'outer: loop {
+    let disconnect_reason = 'outer: loop {
         let outputs = tokio::select! {
             frame = framed.read_pdu() => {
                 let (action, payload) = frame.map_err(|e| session::custom_err!("read frame", e))?;
@@ -198,8 +198,7 @@ async fn active_session(
                         active_stage.process_fastpath_input(&mut image, &events)?
                     }
                     RdpInputEvent::Close => {
-                        // TODO(#115): https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/27915739-8f77-487e-9927-55008af7fd68
-                        break 'outer;
+                        active_stage.graceful_shutdown()?
                     }
                     RdpInputEvent::Clipboard(event) => {
                         if let Some(cliprdr) = active_stage.get_svc_processor::<ironrdp::cliprdr::Cliprdr>() {
@@ -281,10 +280,10 @@ async fn active_session(
                 ActiveStageOutput::PointerBitmap(_) => {
                     // Not applicable, because we use the software cursor rendering.
                 }
-                ActiveStageOutput::Terminate => break 'outer,
+                ActiveStageOutput::Terminate(reason) => break 'outer reason,
             }
         }
-    }
+    };
 
-    Ok(RdpControlFlow::TerminatedGracefully)
+    Ok(RdpControlFlow::TerminatedGracefully(disconnect_reason))
 }

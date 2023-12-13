@@ -342,6 +342,7 @@ pub(crate) enum RdpInputEvent {
     Cliprdr(ClipboardMessage),
     ClipboardBackend(WasmClipboardBackendMessage),
     FastPath(FastPathInputEvents),
+    TerminateSession,
 }
 
 enum CursorStyle {
@@ -352,6 +353,18 @@ enum CursorStyle {
         hotspot_x: u16,
         hotspot_y: u16,
     },
+}
+
+#[wasm_bindgen]
+pub struct SessionTerminationInfo {
+    reason: String,
+}
+
+#[wasm_bindgen]
+impl SessionTerminationInfo {
+    pub fn reason(&self) -> String {
+        self.reason.clone()
+    }
 }
 
 #[wasm_bindgen]
@@ -374,7 +387,7 @@ pub struct Session {
 
 #[wasm_bindgen]
 impl Session {
-    pub async fn run(&self) -> Result<(), IronRdpError> {
+    pub async fn run(&self) -> Result<SessionTerminationInfo, IronRdpError> {
         let rdp_reader = self
             .rdp_reader
             .borrow_mut()
@@ -418,7 +431,7 @@ impl Session {
 
         let mut active_stage = ActiveStage::new(connection_result, None);
 
-        'outer: loop {
+        let disconnect_reason = 'outer: loop {
             let outputs = select! {
                 frame = framed.read_pdu().fuse() => {
                     let (action, payload) = frame.context("read frame")?;
@@ -472,6 +485,10 @@ impl Session {
                         RdpInputEvent::FastPath(events) => {
                             active_stage.process_fastpath_input(&mut image, &events)
                                 .context("Fast path input events processing")?
+                        }
+                        RdpInputEvent::TerminateSession => {
+                            active_stage.graceful_shutdown()
+                                .context("Graceful shutdown")?
                         }
                     }
                 }
@@ -589,14 +606,16 @@ impl Session {
                             hotspot_y,
                         })?;
                     }
-                    ActiveStageOutput::Terminate => break 'outer,
+                    ActiveStageOutput::Terminate(reason) => break 'outer reason,
                 }
             }
-        }
+        };
 
-        info!("RPD session terminated");
+        info!("RPD session terminated: {disconnect_reason}");
 
-        Ok(())
+        Ok(SessionTerminationInfo {
+            reason: disconnect_reason.to_string(),
+        })
     }
 
     pub fn desktop_size(&self) -> DesktopSize {
@@ -651,9 +670,11 @@ impl Session {
         Ok(())
     }
 
-    #[allow(clippy::unused_self)] // FIXME: not yet implemented
     pub fn shutdown(&self) -> Result<(), IronRdpError> {
-        // TODO(#115): https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/27915739-8f77-487e-9927-55008af7fd68
+        if let Err(err) = self.input_events_tx.unbounded_send(RdpInputEvent::TerminateSession) {
+            error!("Failed to send terminate session event to writer task: {err}");
+        }
+
         Ok(())
     }
 

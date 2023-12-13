@@ -291,7 +291,7 @@ fn active_stage(
         for out in outputs {
             match out {
                 ActiveStageOutput::ResponseFrame(frame) => framed.write_all(&frame).context("write response")?,
-                ActiveStageOutput::Terminate => break 'outer,
+                ActiveStageOutput::Terminate(_) => break 'outer,
                 _ => {}
             }
         }
