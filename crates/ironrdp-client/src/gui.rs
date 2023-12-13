@@ -70,7 +70,7 @@ impl GuiContext {
                     }
                     WindowEvent::CloseRequested => {
                         if input_event_sender.send(RdpInputEvent::Close).is_err() {
-                            error!("Failed to send graceful shutdown event, closing the window...");
+                            error!("Failed to send graceful shutdown event, closing the window");
                             control_flow.set_exit();
                         }
                     }
