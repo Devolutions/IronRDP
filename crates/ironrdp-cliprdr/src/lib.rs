@@ -11,7 +11,9 @@ pub mod pdu;
 use backend::CliprdrBackend;
 use ironrdp_pdu::gcc::ChannelName;
 use ironrdp_pdu::{decode, PduResult};
-use ironrdp_svc::{impl_as_any, ChannelFlags, CompressionCondition, SvcMessage, SvcProcessor, SvcProcessorMessages};
+use ironrdp_svc::{
+    impl_as_any, ChannelFlags, CompressionCondition, SvcClientProcessor, SvcMessage, SvcProcessor, SvcProcessorMessages,
+};
 use pdu::{
     Capabilities, ClientTemporaryDirectory, ClipboardFormat, ClipboardFormatId, ClipboardGeneralCapabilityFlags,
     ClipboardPdu, ClipboardProtocolVersion, FileContentsResponse, FormatDataRequest, FormatListResponse,
@@ -273,6 +275,8 @@ impl SvcProcessor for Cliprdr {
         CompressionCondition::WhenRdpDataIsCompressed
     }
 }
+
+impl SvcClientProcessor for Cliprdr {}
 
 fn into_cliprdr_message(pdu: ClipboardPdu<'static>) -> SvcMessage {
     // Adding [`CHANNEL_FLAG_SHOW_PROTOCOL`] is a must for clipboard svc messages, because they

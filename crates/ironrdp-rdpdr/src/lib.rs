@@ -11,7 +11,7 @@ extern crate tracing;
 use ironrdp_pdu::cursor::ReadCursor;
 use ironrdp_pdu::gcc::ChannelName;
 use ironrdp_pdu::{decode_cursor, other_err, PduResult};
-use ironrdp_svc::{impl_as_any, CompressionCondition, SvcMessage, SvcProcessor};
+use ironrdp_svc::{impl_as_any, CompressionCondition, SvcClientProcessor, SvcMessage, SvcProcessor};
 use pdu::efs::{
     Capabilities, ClientDeviceListAnnounce, ClientNameRequest, ClientNameRequestUnicodeFlag, CoreCapability,
     CoreCapabilityKind, DeviceControlRequest, DeviceIoRequest, DeviceType, Devices, ServerDeviceAnnounceResponse,
@@ -223,3 +223,5 @@ impl SvcProcessor for Rdpdr {
         }
     }
 }
+
+impl SvcClientProcessor for Rdpdr {}

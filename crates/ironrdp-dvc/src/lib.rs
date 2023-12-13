@@ -24,7 +24,7 @@ use ironrdp_pdu::gcc::ChannelName;
 use ironrdp_pdu::rdp::vc;
 use ironrdp_pdu::write_buf::WriteBuf;
 use ironrdp_pdu::{assert_obj_safe, dvc, PduResult};
-use ironrdp_svc::{impl_as_any, CompressionCondition, SvcMessage, SvcProcessor};
+use ironrdp_svc::{impl_as_any, CompressionCondition, SvcClientProcessor, SvcMessage, SvcProcessor};
 use pdu::cursor::WriteCursor;
 use pdu::PduEncode;
 
@@ -249,6 +249,8 @@ impl SvcProcessor for Drdynvc {
         true
     }
 }
+
+impl SvcClientProcessor for Drdynvc {}
 
 struct DynamicChannelCtx<'a> {
     dvc_pdu: vc::dvc::ServerPdu,
