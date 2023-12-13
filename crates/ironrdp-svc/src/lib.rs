@@ -177,6 +177,14 @@ pub trait SvcProcessor: AsAny + fmt::Debug + Send {
 
 assert_obj_safe!(SvcProcessor);
 
+pub trait SvcClientProcessor: SvcProcessor {}
+
+assert_obj_safe!(SvcClientProcessor);
+
+pub trait SvcServerProcessor: SvcProcessor {}
+
+assert_obj_safe!(SvcServerProcessor);
+
 /// ChunkProcessor is used to chunkify/de-chunkify static virtual channel PDUs.
 #[derive(Debug)]
 struct ChunkProcessor {
