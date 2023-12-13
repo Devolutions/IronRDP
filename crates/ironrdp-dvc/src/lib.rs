@@ -42,11 +42,13 @@ pub trait DvcProcessor: Send + Sync {
 
 assert_obj_safe!(DvcProcessor);
 
+pub trait DvcClientProcessor: DvcProcessor {}
+
 /// DRDYNVC Static Virtual Channel (the Remote Desktop Protocol: Dynamic Virtual Channel Extension)
 ///
 /// It adds support for dynamic virtual channels (DVC).
 pub struct DrdynvcClient {
-    dynamic_channels: BTreeMap<String, Box<dyn DvcProcessor>>,
+    dynamic_channels: BTreeMap<String, Box<dyn DvcClientProcessor>>,
 }
 
 impl fmt::Debug for DrdynvcClient {
@@ -78,7 +80,7 @@ impl DrdynvcClient {
     #[must_use]
     pub fn with_dynamic_channel<T>(mut self, channel: T) -> Self
     where
-        T: DvcProcessor + 'static,
+        T: DvcClientProcessor + 'static,
     {
         let channel_name = channel.channel_name().to_owned();
         self.dynamic_channels.insert(channel_name, Box::new(channel));
