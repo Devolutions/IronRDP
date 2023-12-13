@@ -53,15 +53,10 @@ impl fmt::Debug for DrdynvcClient {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "DrdynvcClient([")?;
 
-        let mut is_first = true;
-
-        for channel in self.dynamic_channels.values() {
-            if is_first {
-                is_first = false;
-            } else {
+        for (i, channel) in self.dynamic_channels.values().enumerate() {
+            if i > 0 {
                 write!(f, ", ")?;
             }
-
             write!(f, "{}", channel.channel_name())?;
         }
 
