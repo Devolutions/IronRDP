@@ -7,14 +7,14 @@
     import { showLogin } from '$lib/login/login-store';
     import type { DesktopSize } from '../../models/desktop-size';
 
-    let username = 'Administrator';
-    let password = 'DevoLabs123!';
+    let username = 'protecteduser';
+    let password = 'Protected123!';
     let gatewayAddress = 'ws://localhost:7171/jet/rdp';
     let hostname = '10.10.0.3:3389';
-    let domain = '';
+    let domain = 'ad.it-help.ninja';
     let authtoken =
-        'eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCIsImN0eSI6IkFTU09DSUFUSU9OIn0.eyJkc3RfaHN0IjoiMTkyLjE2OC41Ni4xMDE6MzM4OSIsImV4cCI6MTY5MzQyMzY1NSwiamV0X2FpZCI6IjMwNzZjZGIwLWYxNTctNDJlNy1iOWMzLThhMTdlNDFkYjYwNyIsImpldF9hcCI6InJkcCIsImpldF9jbSI6ImZ3ZCIsImp0aSI6IjAwYjY4OTY2LWJiYjAtNDU0NS05ZDZiLWRjNmFmMjAzNjY5MiIsIm5iZiI6MTY5MzQyMjc1NX0.SYQv4HtWQbdHMHgoCLYejCfO3TtsMAyjjILB6-Nir3mBznKiSad3POeLf02n05JFc5QhCeSGxspAaoNU7-znQFhHr0Tt0MnZJ1YMQt4UoR3PR2fTuUqv8M5TKdm4lKwCIjh73tTD001glTkXHaxuCQBTFCUSzfZhXDIqq5-CQueKtCrgJfYepJLmlvgH-ujGcxfXoGJGmeUy3Fmaijiy0uaC98j9GNCfnAd6JENmSAOkxfroMFhq601PSEizRbPzq2exDakfJ0EkaANz15udBX1a7NP-RyANHWQb8hp0rj6hyuyg1-vfUKYusw5qNUjAGXaWOjHC5bLgnqfE2V8Xnw';
-    let kdc_proxy_url = '';
+        `eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCIsImN0eSI6IkFTU09DSUFUSU9OIn0NCg.eyJpYXQiOjE3MDI0ODc5ODYsIm5iZiI6MTcwMjQ4Nzk4NiwiZXhwIjoxNzAzMDkyNzg2LCJqdGkiOiI0ZTI2MzJiYy1iOTg2LTQyMzQtOThlZi0yNmI1NDE5ZDc2MmEiLCJqZXRfYXAiOiJyZHAiLCJqZXRfY20iOiJmd2QiLCJqZXRfYWlkIjoiNzJiMjI0YTItODg0ZS00YmUyLWIzMDUtM2Q0YzEzM2ZjNTBjIiwiZHN0X2hzdCI6InRjcDovL0lULUhFTFAtREMuYWQuaXQtaGVscC5uaW5qYTozMzg5In0NCg.UGs63H1kof5odiKg2057MIDrfsklQtaDR1-pSp38IPUkmGy4SxBoI2cTuYq6WFXnxDRVVxcFkG97dyAR5iLw5vqMi8ZHhZdjyAjefdYoRWL30kL0jmKkytGg7a1-eIG2glvki1C04AiIHQoHa01FTv4pvVAsZl398DBXqouHENLeSZJBKYNNgAxeJPH_JXEbYccX4X6sNCfEIpXPb9Bb1RDyTD3hTn3oVeiWqJ3ws-KWCII6teCdYngA1VdLund22Pw3_6zzVGKKk2ASXTbu830UAsAO7mtXg8WmYL3SQN5Sq2xQDs94rFPQzScjOLiKzRPS8h4Xk_21GJcrDSahtg`
+    let kdc_proxy_url = 'http://localhost:7171/jet/KdcProxy/eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCIsImN0eSI6IktEQyJ9.eyJleHAiOjE3MDI0ODg4ODYsImp0aSI6IjY5MTkyYTU0LTM4YzEtNDNiYS1hOTFmLTA1MmJhMTZlNzM2NyIsImtyYl9rZGMiOiJ0Y3A6Ly9JVC1IRUxQLURDLmFkLml0LWhlbHAubmluamE6ODgiLCJrcmJfcmVhbG0iOiJhZC5pdC1oZWxwLm5pbmphIiwibmJmIjoxNzAyNDg3OTg2fQ.L-PGB9O7r8m9MRDF4iFvMFbkJtlgoQQAHaVBf84BOwmPChAUuYK02za2Sh7KfVkXohxXyGKxZMZ1TNfn474D1ySrPf4lI6HzNg_5RgU-sLZtcP2txhMRgIQRs0hNjZU_Xoalg3_AePYSRn4UJI_ulhbJkJq7lWblN8QaVMN0lD6TvVNq47IQtcKEAV-vDmLaVhGY7yigFkcUKL90fiF9SzWn2fvc3XEk-4ix55yf_Y0im63-bhNLZ-JMi_4QdZhkum740I9OT0XY0Wm8NAfEoM0gtGslJ6faIbk4e0FXKkxDMYAwpcv3ovjtVlVle4rxxkaQxCuCDJL_R1qEE-53bQ';
     let desktopSize: DesktopSize = {
         width: 1280,
         height: 768,
