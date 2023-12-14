@@ -18,7 +18,7 @@ mod active_stage;
 
 use core::fmt;
 
-pub use active_stage::{ActiveStage, ActiveStageOutput};
+pub use active_stage::{ActiveStage, ActiveStageOutput, GracefulDisconnectReason};
 
 pub type SessionResult<T> = Result<T, SessionError>;
 

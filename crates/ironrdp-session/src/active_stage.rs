@@ -4,14 +4,15 @@ use ironrdp_connector::ConnectionResult;
 use ironrdp_graphics::pointer::DecodedPointer;
 use ironrdp_pdu::geometry::InclusiveRectangle;
 use ironrdp_pdu::input::fast_path::{FastPathInput, FastPathInputEvent};
+use ironrdp_pdu::rdp::headers::ShareDataPdu;
 use ironrdp_pdu::write_buf::WriteBuf;
-use ironrdp_pdu::{Action, PduParsing};
+use ironrdp_pdu::{mcs, Action, PduParsing};
 use ironrdp_svc::{StaticVirtualChannelProcessor, SvcProcessorMessages};
 
 use crate::fast_path::UpdateKind;
 use crate::image::DecodedImage;
 use crate::x224::GfxHandler;
-use crate::{fast_path, x224, SessionResult};
+use crate::{fast_path, x224, SessionError, SessionResult};
 
 pub struct ActiveStage {
     x224_processor: x224::Processor,
@@ -105,20 +106,25 @@ impl ActiveStage {
         action: Action,
         frame: &[u8],
     ) -> SessionResult<Vec<ActiveStageOutput>> {
-        let (output, processor_updates) = match action {
+        let (mut stage_outputs, processor_updates) = match action {
             Action::FastPath => {
                 let mut output = WriteBuf::new();
                 let processor_updates = self.fast_path_processor.process(image, frame, &mut output)?;
-                (output.into_inner(), processor_updates)
+                (
+                    vec![ActiveStageOutput::ResponseFrame(output.into_inner())],
+                    processor_updates,
+                )
             }
-            Action::X224 => (self.x224_processor.process(frame)?, Vec::new()),
+            Action::X224 => {
+                let outputs = self
+                    .x224_processor
+                    .process(frame)?
+                    .into_iter()
+                    .map(TryFrom::try_from)
+                    .collect::<Result<Vec<_>, _>>()?;
+                (outputs, Vec::new())
+            }
         };
-
-        let mut stage_outputs = Vec::new();
-
-        if !output.is_empty() {
-            stage_outputs.push(ActiveStageOutput::ResponseFrame(output));
-        }
 
         for update in processor_updates {
             match update {
@@ -144,17 +150,27 @@ impl ActiveStage {
         Ok(stage_outputs)
     }
 
+    /// Encodes client-side graceful shutdown request. Note that upon sending this request,
+    /// client should wait for server's ShutdownDenied PDU before closing the connection.
+    ///
+    /// Client-side graceful shutdown is defined in [MS-RDPBCGR]
+    ///
+    /// [MS-RDPBCGR]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/27915739-8f77-487e-9927-55008af7fd68
+    pub fn graceful_shutdown(&self) -> SessionResult<Vec<ActiveStageOutput>> {
+        let mut frame = WriteBuf::new();
+        self.x224_processor
+            .encode_static(&mut frame, ShareDataPdu::ShutdownRequest)?;
+
+        Ok(vec![ActiveStageOutput::ResponseFrame(frame.into_inner())])
+    }
+
     /// Sends a PDU on the dynamic channel.
     pub fn encode_dynamic(&self, output: &mut WriteBuf, channel_name: &str, dvc_data: &[u8]) -> SessionResult<()> {
         self.x224_processor.encode_dynamic(output, channel_name, dvc_data)
     }
 
     /// Send a pdu on the static global channel. Typically used to send input events
-    pub fn encode_static(
-        &self,
-        output: &mut WriteBuf,
-        pdu: ironrdp_pdu::rdp::headers::ShareDataPdu,
-    ) -> SessionResult<usize> {
+    pub fn encode_static(&self, output: &mut WriteBuf, pdu: ShareDataPdu) -> SessionResult<usize> {
         self.x224_processor.encode_static(output, pdu)
     }
 
@@ -184,5 +200,49 @@ pub enum ActiveStageOutput {
     PointerHidden,
     PointerPosition { x: u16, y: u16 },
     PointerBitmap(Rc<DecodedPointer>),
-    Terminate,
+    Terminate(GracefulDisconnectReason),
+}
+
+impl TryFrom<x224::ProcessorOutput> for ActiveStageOutput {
+    type Error = SessionError;
+
+    fn try_from(value: x224::ProcessorOutput) -> Result<Self, Self::Error> {
+        match value {
+            x224::ProcessorOutput::ResponseFrame(frame) => Ok(Self::ResponseFrame(frame)),
+            x224::ProcessorOutput::Disconnect(reason) => {
+                let reason = match reason {
+                    mcs::DisconnectReason::UserRequested => GracefulDisconnectReason::UserInitiated,
+                    mcs::DisconnectReason::ProviderInitiated => GracefulDisconnectReason::ServerInitiated,
+                    other => GracefulDisconnectReason::Other(other.description()),
+                };
+
+                Ok(Self::Terminate(reason))
+            }
+        }
+    }
+}
+
+/// Reasons for graceful disconnect. This type provides GUI-friendly descriptions for
+/// disconnect reasons.
+#[derive(Debug, Clone, Copy)]
+pub enum GracefulDisconnectReason {
+    UserInitiated,
+    ServerInitiated,
+    Other(&'static str),
+}
+
+impl GracefulDisconnectReason {
+    pub fn description(&self) -> &'static str {
+        match self {
+            GracefulDisconnectReason::UserInitiated => "user initiated disconnect",
+            GracefulDisconnectReason::ServerInitiated => "server initiated disconnect",
+            GracefulDisconnectReason::Other(description) => description,
+        }
+    }
+}
+
+impl core::fmt::Display for GracefulDisconnectReason {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str(self.description())
+    }
 }
