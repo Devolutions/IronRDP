@@ -18,7 +18,7 @@ use ironrdp::graphics::image_processing::PixelFormat;
 use ironrdp::pdu::input::fast_path::FastPathInputEvent;
 use ironrdp::pdu::write_buf::WriteBuf;
 use ironrdp::session::image::DecodedImage;
-use ironrdp::session::{ActiveStage, ActiveStageOutput};
+use ironrdp::session::{ActiveStage, ActiveStageOutput, GracefulDisconnectReason};
 use rgb::AsPixels as _;
 use tap::prelude::*;
 use wasm_bindgen::prelude::*;
@@ -357,13 +357,13 @@ enum CursorStyle {
 
 #[wasm_bindgen]
 pub struct SessionTerminationInfo {
-    reason: String,
+    reason: GracefulDisconnectReason,
 }
 
 #[wasm_bindgen]
 impl SessionTerminationInfo {
     pub fn reason(&self) -> String {
-        self.reason.clone()
+        self.reason.to_string()
     }
 }
 
@@ -484,11 +484,11 @@ impl Session {
                         }
                         RdpInputEvent::FastPath(events) => {
                             active_stage.process_fastpath_input(&mut image, &events)
-                                .context("Fast path input events processing")?
+                                .context("fast path input events processing")?
                         }
                         RdpInputEvent::TerminateSession => {
                             active_stage.graceful_shutdown()
-                                .context("Graceful shutdown")?
+                                .context("graceful shutdown")?
                         }
                     }
                 }
@@ -611,10 +611,10 @@ impl Session {
             }
         };
 
-        info!("RPD session terminated: {disconnect_reason}");
+        info!(%disconnect_reason, "RPD session terminated");
 
         Ok(SessionTerminationInfo {
-            reason: disconnect_reason.to_string(),
+            reason: disconnect_reason,
         })
     }
 
@@ -671,9 +671,9 @@ impl Session {
     }
 
     pub fn shutdown(&self) -> Result<(), IronRdpError> {
-        if let Err(err) = self.input_events_tx.unbounded_send(RdpInputEvent::TerminateSession) {
-            error!("Failed to send terminate session event to writer task: {err}");
-        }
+        self.input_events_tx
+            .unbounded_send(RdpInputEvent::TerminateSession)
+            .context("failed to send terminate session event to writer task")?;
 
         Ok(())
     }

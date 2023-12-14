@@ -213,15 +213,7 @@ impl TryFrom<x224::ProcessorOutput> for ActiveStageOutput {
                 let reason = match reason {
                     mcs::DisconnectReason::UserRequested => GracefulDisconnectReason::UserInitiated,
                     mcs::DisconnectReason::ProviderInitiated => GracefulDisconnectReason::ServerInitiated,
-                    mcs::DisconnectReason::ChannelPurged
-                    | mcs::DisconnectReason::TokenPurged
-                    | mcs::DisconnectReason::DomainDisconnected => {
-                        // Usually RDP server can't send these reasons to the client.
-                        return Err(reason_err!(
-                            "DisconnectReason",
-                            "Unexpected disconnect reason: {reason}"
-                        ));
-                    }
+                    other => GracefulDisconnectReason::Other(other.description()),
                 };
 
                 Ok(Self::Terminate(reason))
@@ -236,13 +228,15 @@ impl TryFrom<x224::ProcessorOutput> for ActiveStageOutput {
 pub enum GracefulDisconnectReason {
     UserInitiated,
     ServerInitiated,
+    Other(&'static str),
 }
 
 impl GracefulDisconnectReason {
     pub fn description(&self) -> &'static str {
         match self {
-            GracefulDisconnectReason::UserInitiated => "User initiated disconnect",
-            GracefulDisconnectReason::ServerInitiated => "Server initiated disconnect",
+            GracefulDisconnectReason::UserInitiated => "user initiated disconnect",
+            GracefulDisconnectReason::ServerInitiated => "server initiated disconnect",
+            GracefulDisconnectReason::Other(description) => description,
         }
     }
 }

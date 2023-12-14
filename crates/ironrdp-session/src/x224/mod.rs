@@ -100,8 +100,8 @@ impl Processor {
         process_svc_messages(messages.into(), channel_id, self.user_channel_id)
     }
 
-    /// Processes a received PDU. Returns a vector of [`ProcessorOutput`] that should be processed
-    /// by the caller in orderly fashion.
+    /// Processes a received PDU. Returns a vector of [`ProcessorOutput`] that must be processed
+    /// in the returned order.
     pub fn process(&mut self, frame: &[u8]) -> SessionResult<Vec<ProcessorOutput>> {
         let data_ctx: SendDataIndicationCtx<'_> =
             ironrdp_connector::legacy::decode_send_data_indication(frame).map_err(crate::legacy::map_error)?;
@@ -160,7 +160,7 @@ impl Processor {
                 // session shutdown.
                 //
                 // [MS-RDPBCGR]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/27915739-8f77-487e-9927-55008af7fd68
-                let ultimatum = McsMessage::DisconnectProviderUltimatum(DisconnectProviderUltimatum::from_reasom(
+                let ultimatum = McsMessage::DisconnectProviderUltimatum(DisconnectProviderUltimatum::from_reason(
                     DisconnectReason::UserRequested,
                 ));
 
@@ -551,7 +551,8 @@ impl CompleteData {
     }
 }
 
-/// Converts a [`ServerSetErrorInfoPdu`] into a Option<[`DisconnectReason`]>.
+/// Converts a [`ErrorInfo`] into an [`DisconnectReason`].
+///
 /// Returns `None` if the error code is not a graceful disconnect code.
 pub fn error_info_to_graceful_disconnect_reason(error_info: &ErrorInfo) -> Option<DisconnectReason> {
     let code = if let ErrorInfo::ProtocolIndependentCode(code) = error_info {

@@ -739,11 +739,11 @@ impl DisconnectReason {
 
     pub fn description(self) -> &'static str {
         match self {
-            Self::DomainDisconnected => "Domain disconnected",
-            Self::ProviderInitiated => "Server-initiated disconnect",
-            Self::TokenPurged => "Token purged",
-            Self::UserRequested => "User-requested disconnect",
-            Self::ChannelPurged => "Channel purged",
+            Self::DomainDisconnected => "domain disconnected",
+            Self::ProviderInitiated => "server-initiated disconnect",
+            Self::TokenPurged => "token purged",
+            Self::UserRequested => "user-requested disconnect",
+            Self::ChannelPurged => "channel purged",
         }
     }
 }
@@ -766,7 +766,7 @@ impl DisconnectProviderUltimatum {
 
     pub const FIXED_PART_SIZE: usize = 2;
 
-    pub fn from_reasom(reason: DisconnectReason) -> Self {
+    pub fn from_reason(reason: DisconnectReason) -> Self {
         Self { reason }
     }
 }
