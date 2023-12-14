@@ -551,7 +551,7 @@ impl CompleteData {
     }
 }
 
-/// Converts a [`ErrorInfo`] into an [`DisconnectReason`].
+/// Converts an [`ErrorInfo`] into a [`DisconnectReason`].
 ///
 /// Returns `None` if the error code is not a graceful disconnect code.
 pub fn error_info_to_graceful_disconnect_reason(error_info: &ErrorInfo) -> Option<DisconnectReason> {
