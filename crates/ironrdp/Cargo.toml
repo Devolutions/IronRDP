@@ -50,7 +50,7 @@ ironrdp-server.workspace = true
 anyhow = "1"
 async-trait = "0.1"
 rustls = "0.21"
-rustls-pemfile = "1.0"
+rustls-pemfile = "2.0"
 bmp = "0.5"
 pico-args = "0.5"
 x509-cert = { version = "0.2", default-features = false, features = ["std"] }
