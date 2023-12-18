@@ -265,6 +265,7 @@ pub enum ShareDataPdu {
     ServerSetErrorInfo(ServerSetErrorInfoPdu),
     Input(InputEventPdu),
     ShutdownRequest,
+    ShutdownDenied,
     SuppressOutput(SuppressOutputPdu),
     RefreshRectangle(RefreshRectanglePdu),
 }
@@ -281,7 +282,8 @@ impl ShareDataPdu {
             ShareDataPdu::FrameAcknowledge(_) => "Frame Acknowledge PDU",
             ShareDataPdu::ServerSetErrorInfo(_) => "Server Set Error Info PDU",
             ShareDataPdu::Input(_) => "Server Input PDU",
-            ShareDataPdu::ShutdownRequest => "Shutdown Request",
+            ShareDataPdu::ShutdownRequest => "Shutdown Request PDU",
+            ShareDataPdu::ShutdownDenied => "Shutdown Denied PDU",
             ShareDataPdu::SuppressOutput(_) => "Suppress Output PDU",
             ShareDataPdu::RefreshRectangle(_) => "Refresh Rectangle PDU",
         }
@@ -309,6 +311,7 @@ impl ShareDataPdu {
             )),
             ShareDataPduType::Input => Ok(ShareDataPdu::Input(InputEventPdu::from_buffer(&mut stream)?)),
             ShareDataPduType::ShutdownRequest => Ok(ShareDataPdu::ShutdownRequest),
+            ShareDataPduType::ShutdownDenied => Ok(ShareDataPdu::ShutdownDenied),
             ShareDataPduType::SuppressOutput => Ok(ShareDataPdu::SuppressOutput(SuppressOutputPdu::from_buffer(
                 &mut stream,
             )?)),
@@ -318,7 +321,6 @@ impl ShareDataPdu {
             ShareDataPduType::Update
             | ShareDataPduType::Pointer
             | ShareDataPduType::PlaySound
-            | ShareDataPduType::ShutdownDenied
             | ShareDataPduType::SetKeyboardIndicators
             | ShareDataPduType::BitmapCachePersistentList
             | ShareDataPduType::BitmapCacheErrorPdu
@@ -343,7 +345,7 @@ impl ShareDataPdu {
             ShareDataPdu::FrameAcknowledge(pdu) => pdu.to_buffer(&mut stream).map_err(RdpError::from),
             ShareDataPdu::ServerSetErrorInfo(pdu) => pdu.to_buffer(&mut stream).map_err(RdpError::from),
             ShareDataPdu::Input(pdu) => pdu.to_buffer(&mut stream).map_err(RdpError::from),
-            ShareDataPdu::ShutdownRequest => Ok(()),
+            ShareDataPdu::ShutdownRequest | ShareDataPdu::ShutdownDenied => Ok(()),
             ShareDataPdu::SuppressOutput(pdu) => pdu.to_buffer(&mut stream).map_err(RdpError::from),
             ShareDataPdu::RefreshRectangle(pdu) => pdu.to_buffer(&mut stream).map_err(RdpError::from),
         }
@@ -359,7 +361,7 @@ impl ShareDataPdu {
             ShareDataPdu::FrameAcknowledge(pdu) => pdu.buffer_length(),
             ShareDataPdu::ServerSetErrorInfo(pdu) => pdu.buffer_length(),
             ShareDataPdu::Input(pdu) => pdu.buffer_length(),
-            ShareDataPdu::ShutdownRequest => 0,
+            ShareDataPdu::ShutdownRequest | ShareDataPdu::ShutdownDenied => 0,
             ShareDataPdu::SuppressOutput(pdu) => pdu.buffer_length(),
             ShareDataPdu::RefreshRectangle(pdu) => pdu.buffer_length(),
         }
@@ -376,6 +378,7 @@ impl ShareDataPdu {
             ShareDataPdu::ServerSetErrorInfo(_) => ShareDataPduType::SetErrorInfoPdu,
             ShareDataPdu::Input(_) => ShareDataPduType::Input,
             ShareDataPdu::ShutdownRequest => ShareDataPduType::ShutdownRequest,
+            ShareDataPdu::ShutdownDenied => ShareDataPduType::ShutdownDenied,
             ShareDataPdu::SuppressOutput(_) => ShareDataPduType::SuppressOutput,
             ShareDataPdu::RefreshRectangle(_) => ShareDataPduType::RefreshRectangle,
         }

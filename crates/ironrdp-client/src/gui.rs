@@ -69,7 +69,10 @@ impl GuiContext {
                         });
                     }
                     WindowEvent::CloseRequested => {
-                        control_flow.set_exit();
+                        if input_event_sender.send(RdpInputEvent::Close).is_err() {
+                            error!("Failed to send graceful shutdown event, closing the window");
+                            control_flow.set_exit();
+                        }
                     }
                     WindowEvent::DroppedFile(_) => {
                         // TODO(#110): File upload
@@ -222,8 +225,8 @@ impl GuiContext {
                 }
                 Event::UserEvent(RdpOutputEvent::Terminated(result)) => {
                     let exit_code = match result {
-                        Ok(()) => {
-                            println!("Terminated gracefully");
+                        Ok(reason) => {
+                            println!("Terminated gracefully: {reason}");
                             proc_exit::sysexits::OK
                         }
                         Err(error) => {
