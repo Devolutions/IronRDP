@@ -23,6 +23,7 @@ categories = ["network-programming"]
 
 [workspace.dependencies]
 ironrdp-acceptor = { version = "0.1", path = "crates/ironrdp-acceptor" }
+ironrdp-ainput = { version = "0.1", path = "crates/ironrdp-ainput" }
 ironrdp-async = { version = "0.1", path = "crates/ironrdp-async" }
 ironrdp-blocking = { version = "0.1", path = "crates/ironrdp-blocking" }
 ironrdp-cliprdr = { version = "0.1", path = "crates/ironrdp-cliprdr" }
