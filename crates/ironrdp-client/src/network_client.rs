@@ -100,17 +100,23 @@ impl ReqwestNetworkClient {
     async fn send_http(&mut self, url: &Url, data: &[u8]) -> ConnectorResult<Vec<u8>> {
         let client = self.client.get_or_insert_with(Client::new);
 
-        let result_bytes = client
+        let response = client
             .post(url.clone())
             .body(data.to_vec())
             .send()
             .await
             .map_err(|e| custom_err!("failed to send KDC request over proxy", e))?
+            .error_for_status()
+            .map_err(|e| custom_err!("KdcProxy", e))?;
+
+        let body = response
             .bytes()
             .await
-            .map_err(|e| custom_err!("failed to receive KDC response", e))?
-            .to_vec();
+            .map_err(|e| custom_err!("failed to receive KDC response", e))?;
 
-        Ok(result_bytes)
+        // The type bytes::Bytes has a special From implementation for Vec<u8>.
+        let body = Vec::from(body);
+
+        Ok(body)
     }
 }
