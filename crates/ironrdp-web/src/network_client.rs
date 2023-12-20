@@ -27,12 +27,23 @@ impl AsyncNetworkClient for WasmNetworkClient {
                         .map_err(|e| custom_err!("failed to send KDC request", e))?
                         .send()
                         .await
-                        .map_err(|e| custom_err!("failed to send KDC request", e))?
+                        .map_err(|e| custom_err!("failed to send KDC request", e))?;
+
+                    if !response.ok() {
+                        return Err(reason_err!(
+                            "KdcProxy",
+                            "HTTP status error ({} {})",
+                            response.status(),
+                            response.status_text(),
+                        ));
+                    }
+
+                    let body = response
                         .binary()
                         .await
                         .map_err(|e| custom_err!("failed to retrieve HTTP response", e))?;
 
-                    Ok(response)
+                    Ok(body)
                 }
                 unsupported => Err(reason_err!("CredSSP", "unsupported protocol: {unsupported:?}")),
             }
