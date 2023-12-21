@@ -21,15 +21,8 @@ mod websocket;
 
 use wasm_bindgen::prelude::*;
 
-// NOTE: #[wasm_bindgen(start)] didn’t work last time I tried
 #[wasm_bindgen]
 pub fn ironrdp_init(log_level: &str) {
-    use tracing::Level;
-    use tracing_subscriber::filter::LevelFilter;
-    use tracing_subscriber::fmt::time::UtcTime;
-    use tracing_subscriber::prelude::*;
-    use tracing_web::MakeConsoleWriter;
-
     // When the `console_error_panic_hook` feature is enabled, we can call the
     // `set_panic_hook` function at least once during initialization, and then
     // we will get better error messages if our code ever panics.
@@ -39,7 +32,20 @@ pub fn ironrdp_init(log_level: &str) {
     #[cfg(feature = "panic_hook")]
     console_error_panic_hook::set_once();
 
-    if let Ok(level) = log_level.parse::<Level>() {
+    if let Ok(level) = log_level.parse::<tracing::Level>() {
+        set_logger_once(level);
+    }
+}
+
+fn set_logger_once(level: tracing::Level) {
+    use tracing_subscriber::filter::LevelFilter;
+    use tracing_subscriber::fmt::time::UtcTime;
+    use tracing_subscriber::prelude::*;
+    use tracing_web::MakeConsoleWriter;
+
+    static INIT: std::sync::Once = std::sync::Once::new();
+
+    INIT.call_once(|| {
         let fmt_layer = tracing_subscriber::fmt::layer()
             .with_ansi(false)
             .with_timer(UtcTime::rfc_3339()) // std::time is not available in browsers
@@ -50,7 +56,7 @@ pub fn ironrdp_init(log_level: &str) {
         tracing_subscriber::registry().with(fmt_layer).with(level_filter).init();
 
         debug!("IronRDP is ready");
-    }
+    })
 }
 
 #[wasm_bindgen]
