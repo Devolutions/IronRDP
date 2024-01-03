@@ -45,13 +45,13 @@ assert_obj_safe!(DvcProcessor);
 /// DRDYNVC Static Virtual Channel (the Remote Desktop Protocol: Dynamic Virtual Channel Extension)
 ///
 /// It adds support for dynamic virtual channels (DVC).
-pub struct Drdynvc {
+pub struct DrdynvcClient {
     dynamic_channels: BTreeMap<String, Box<dyn DvcProcessor>>,
 }
 
-impl fmt::Debug for Drdynvc {
+impl fmt::Debug for DrdynvcClient {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "Drdynvc([")?;
+        write!(f, "DrdynvcClient([")?;
 
         let mut is_first = true;
 
@@ -69,7 +69,7 @@ impl fmt::Debug for Drdynvc {
     }
 }
 
-impl Drdynvc {
+impl DrdynvcClient {
     pub const NAME: ChannelName = ChannelName::from_static(b"drdynvc\0");
 
     pub fn new() -> Self {
@@ -91,17 +91,17 @@ impl Drdynvc {
     }
 }
 
-impl_as_any!(Drdynvc);
+impl_as_any!(DrdynvcClient);
 
-impl Default for Drdynvc {
+impl Default for DrdynvcClient {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl SvcProcessor for Drdynvc {
+impl SvcProcessor for DrdynvcClient {
     fn channel_name(&self) -> ChannelName {
-        Drdynvc::NAME
+        DrdynvcClient::NAME
     }
 
     fn compression_condition(&self) -> CompressionCondition {
@@ -241,7 +241,7 @@ impl SvcProcessor for Drdynvc {
 
         Err(ironrdp_pdu::other_err!(
             "DRDYNVC",
-            "ironrdp-dvc::Drdynvc implementation is not yet ready"
+            "ironrdp-dvc::DrdynvcClient implementation is not yet ready"
         ))
     }
 
@@ -250,7 +250,7 @@ impl SvcProcessor for Drdynvc {
     }
 }
 
-impl SvcClientProcessor for Drdynvc {}
+impl SvcClientProcessor for DrdynvcClient {}
 
 struct DynamicChannelCtx<'a> {
     dvc_pdu: vc::dvc::ServerPdu,
