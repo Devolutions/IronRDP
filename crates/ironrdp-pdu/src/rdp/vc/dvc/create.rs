@@ -22,6 +22,14 @@ pub struct CreateRequestPdu {
 }
 
 impl CreateRequestPdu {
+    pub fn new(channel_id: u32, channel_name: String) -> Self {
+        Self {
+            channel_id_type: FieldType::U32,
+            channel_id,
+            channel_name,
+        }
+    }
+
     pub fn from_buffer(
         mut stream: impl io::Read,
         channel_id_type: FieldType,
