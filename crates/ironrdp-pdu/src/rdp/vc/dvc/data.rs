@@ -15,6 +15,14 @@ pub struct DataPdu {
 }
 
 impl DataPdu {
+    pub fn new(channel_id: u32, data_size: usize) -> Self {
+        Self {
+            channel_id_type: FieldType::U32,
+            channel_id,
+            data_size,
+        }
+    }
+
     pub fn from_buffer(
         mut stream: impl io::Read,
         channel_id_type: FieldType,
