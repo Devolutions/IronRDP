@@ -1,3 +1,4 @@
+use ironrdp_ainput as ainput;
 use ironrdp_pdu::input::fast_path::{self, SynchronizeFlags};
 use ironrdp_pdu::input::mouse::PointerFlags;
 use ironrdp_pdu::input::mouse_rel::PointerRelFlags;
@@ -36,7 +37,8 @@ pub enum MouseEvent {
     Button5Pressed,
     Button5Released,
     VerticalScroll { value: i16 },
-    RelMove { x: i16, y: i16 },
+    Scroll { x: i32, y: i32 },
+    RelMove { x: i32, y: i32 },
 }
 
 /// Input Event Handler for an RDP server
@@ -221,9 +223,47 @@ impl From<MouseRelPdu> for MouseEvent {
             }
         } else {
             MouseEvent::RelMove {
-                x: value.x_delta,
-                y: value.y_delta,
+                x: value.x_delta.into(),
+                y: value.y_delta.into(),
             }
+        }
+    }
+}
+
+impl From<ainput::MousePdu> for MouseEvent {
+    fn from(value: ainput::MousePdu) -> Self {
+        use ainput::MouseEventFlags;
+
+        if value.flags.contains(MouseEventFlags::BUTTON1) {
+            if value.flags.contains(MouseEventFlags::DOWN) {
+                MouseEvent::LeftPressed
+            } else {
+                MouseEvent::LeftReleased
+            }
+        } else if value.flags.contains(MouseEventFlags::BUTTON2) {
+            if value.flags.contains(MouseEventFlags::DOWN) {
+                MouseEvent::RightPressed
+            } else {
+                MouseEvent::RightReleased
+            }
+        } else if value.flags.contains(MouseEventFlags::BUTTON3) {
+            if value.flags.contains(MouseEventFlags::DOWN) {
+                MouseEvent::MiddlePressed
+            } else {
+                MouseEvent::MiddleReleased
+            }
+        } else if value.flags.contains(MouseEventFlags::WHEEL) {
+            MouseEvent::Scroll { x: value.x, y: value.y }
+        } else if value.flags.contains(MouseEventFlags::REL) {
+            MouseEvent::RelMove { x: value.x, y: value.y }
+        } else if value.flags.contains(MouseEventFlags::MOVE) {
+            // assume moves are 0 <= u16::MAX
+            MouseEvent::Move {
+                x: value.x.try_into().unwrap_or(0),
+                y: value.y.try_into().unwrap_or(0),
+            }
+        } else {
+            MouseEvent::Move { x: 0, y: 0 }
         }
     }
 }
