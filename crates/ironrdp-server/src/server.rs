@@ -337,6 +337,10 @@ impl RdpServer {
                     self.handler.mouse(mouse.into()).await;
                 }
 
+                FastPathInputEvent::MouseEventRel(mouse) => {
+                    self.handler.mouse(mouse.into()).await;
+                }
+
                 FastPathInputEvent::QoeEvent(quality) => {
                     warn!("Received QoE: {}", quality);
                 }
@@ -429,6 +433,10 @@ impl RdpServer {
                 }
 
                 ironrdp_pdu::input::InputEvent::MouseX(mouse) => {
+                    self.handler.mouse(mouse.into()).await;
+                }
+
+                ironrdp_pdu::input::InputEvent::MouseRel(mouse) => {
                     self.handler.mouse(mouse.into()).await;
                 }
 
