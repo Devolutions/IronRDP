@@ -57,6 +57,7 @@ fn pointer_capabilities() -> capability_sets::Pointer {
 fn input_capabilities() -> capability_sets::Input {
     capability_sets::Input {
         input_flags: capability_sets::InputFlags::SCANCODES
+            | capability_sets::InputFlags::MOUSE_RELATIVE
             | capability_sets::InputFlags::MOUSEX
             | capability_sets::InputFlags::FASTPATH_INPUT
             | capability_sets::InputFlags::UNICODE
