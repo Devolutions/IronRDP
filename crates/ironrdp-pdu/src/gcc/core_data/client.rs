@@ -467,7 +467,7 @@ bitflags! {
         const WANT_32_BPP_SESSION = 0x0002;
         const SUPPORT_STATUS_INFO_PDU = 0x0004;
         const STRONG_ASYMMETRIC_KEYS = 0x0008;
-        const UNUSED = 0x0010;
+        const RELATIVE_MOUSE_INPUT = 0x0010;
         const VALID_CONNECTION_TYPE = 0x0020;
         const SUPPORT_MONITOR_LAYOUT_PDU = 0x0040;
         const SUPPORT_NET_CHAR_AUTODETECT = 0x0080;
