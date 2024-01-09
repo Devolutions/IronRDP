@@ -146,7 +146,7 @@ impl Sequence for ChannelConnectionSequence {
             // > 10.0, and 10.1 clients send all of the Channel Join Requests to the server in a
             // > single batch to minimize the overall connection sequence time.
             ChannelConnectionState::SendChannelJoinRequest { user_channel_id } => {
-                let mut written = 0;
+                let mut total_written: usize = 0;
 
                 for channel_id in self.channel_ids.iter().copied() {
                     let channel_join_request = mcs::ChannelJoinRequest {
@@ -156,11 +156,14 @@ impl Sequence for ChannelConnectionSequence {
 
                     debug!(message = ?channel_join_request, "Send");
 
-                    written += ironrdp_pdu::encode_buf(&channel_join_request, output).map_err(ConnectorError::pdu)?;
+                    let written =
+                        ironrdp_pdu::encode_buf(&channel_join_request, output).map_err(ConnectorError::pdu)?;
+
+                    total_written = total_written.checked_add(written).expect("small join request PDUs");
                 }
 
                 (
-                    Written::from_size(written)?,
+                    Written::from_size(total_written)?,
                     ChannelConnectionState::WaitChannelJoinConfirm { user_channel_id },
                 )
             }
