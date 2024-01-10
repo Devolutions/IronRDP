@@ -162,6 +162,7 @@ impl PduEncode for BitmapStream<'_> {
 }
 
 #[cfg(test)]
+#[cfg(feature = "alloc")]
 mod tests {
     use expect_test::{expect, Expect};
 
