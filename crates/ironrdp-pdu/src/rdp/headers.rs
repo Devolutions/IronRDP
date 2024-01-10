@@ -6,6 +6,7 @@ use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive, ToPrimitive};
 
 use crate::codecs::rfx::FrameAcknowledgePdu;
+use crate::cursor::{ReadCursor, WriteCursor};
 use crate::input::InputEventPdu;
 use crate::rdp::capability_sets::{ClientConfirmActive, ServerDemandActive};
 use crate::rdp::finalization_messages::{ControlPdu, FontPdu, MonitorLayoutPdu, SynchronizePdu};
@@ -14,7 +15,7 @@ use crate::rdp::server_error_info::ServerSetErrorInfoPdu;
 use crate::rdp::session_info::SaveSessionInfoPdu;
 use crate::rdp::suppress_output::SuppressOutputPdu;
 use crate::rdp::{client_info, RdpError};
-use crate::PduParsing;
+use crate::{PduDecode, PduEncode, PduParsing, PduResult};
 
 pub const BASIC_SECURITY_HEADER_SIZE: usize = 4;
 pub const SHARE_DATA_HEADER_COMPRESSION_MASK: u8 = 0xF;
@@ -36,28 +37,43 @@ pub struct BasicSecurityHeader {
     pub flags: BasicSecurityHeaderFlags,
 }
 
-impl PduParsing for BasicSecurityHeader {
-    type Error = RdpError;
+impl BasicSecurityHeader {
+    const NAME: &'static str = "BasicSecurityHeader";
 
-    fn from_buffer(mut stream: impl io::Read) -> Result<Self, Self::Error> {
-        let flags = BasicSecurityHeaderFlags::from_bits(stream.read_u16::<LittleEndian>()?)
-            .ok_or(RdpError::InvalidSecurityHeader)?;
-        let _flags_hi = stream.read_u16::<LittleEndian>()?; // unused
+    pub const FIXED_PART_SIZE: usize = BASIC_SECURITY_HEADER_SIZE;
+}
 
-        Ok(Self { flags })
-    }
+impl PduEncode for BasicSecurityHeader {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_fixed_part_size!(in: dst);
 
-    fn to_buffer(&self, mut stream: impl io::Write) -> Result<(), Self::Error> {
-        stream.write_u16::<LittleEndian>(self.flags.bits())?;
-        stream.write_u16::<LittleEndian>(0)?; // flags_hi
-
+        dst.write_u16(self.flags.bits());
+        dst.write_u16(0); // flags_hi
         Ok(())
     }
 
-    fn buffer_length(&self) -> usize {
-        BASIC_SECURITY_HEADER_SIZE
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    fn size(&self) -> usize {
+        Self::FIXED_PART_SIZE
     }
 }
+
+impl<'de> PduDecode<'de> for BasicSecurityHeader {
+    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+        ensure_fixed_part_size!(in: src);
+
+        let flags = BasicSecurityHeaderFlags::from_bits(src.read_u16())
+            .ok_or(invalid_message_err!("securityHeader", "invalid basic security header"))?;
+        let _flags_hi = src.read_u16(); // unused
+
+        Ok(Self { flags })
+    }
+}
+
+impl_pdu_parsing!(BasicSecurityHeader);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ShareControlHeader {

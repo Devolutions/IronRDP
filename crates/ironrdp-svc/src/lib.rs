@@ -18,10 +18,10 @@ use bitflags::bitflags;
 use ironrdp_pdu::gcc::{ChannelName, ChannelOptions};
 use ironrdp_pdu::write_buf::WriteBuf;
 use ironrdp_pdu::{assert_obj_safe, mcs, PduResult};
-use pdu::cursor::WriteCursor;
+use pdu::cursor::{ReadCursor, WriteCursor};
 use pdu::gcc::ChannelDef;
 use pdu::rdp::vc::ChannelControlFlags;
-use pdu::{custom_err, encode_buf, PduEncode, PduParsing};
+use pdu::{decode_cursor, encode_buf, PduEncode};
 
 /// The integer type representing a static virtual channel ID.
 pub type StaticChannelId = u16;
@@ -290,11 +290,12 @@ impl ChunkProcessor {
     /// If the payload is not chunked, returns the payload as-is.
     /// For chunked payloads, returns `Ok(None)` until the last chunk is received, at which point
     /// it returns `Ok(Some(payload))`.
-    fn dechunkify(&mut self, mut payload: &[u8]) -> PduResult<Option<Vec<u8>>> {
-        let last = Self::process_header(&mut payload)?;
+    fn dechunkify(&mut self, payload: &[u8]) -> PduResult<Option<Vec<u8>>> {
+        let mut cursor = ReadCursor::new(payload);
+        let last = Self::process_header(&mut cursor)?;
 
         // Extend the chunked_pdu buffer with the payload
-        self.chunked_pdu.extend_from_slice(payload);
+        self.chunked_pdu.extend_from_slice(cursor.remaining());
 
         // If this was an unchunked message, or the last in a series of chunks, return the payload
         if last {
@@ -307,9 +308,9 @@ impl ChunkProcessor {
     }
 
     /// Returns whether this was the last chunk based on the flags in the channel header.
-    fn process_header(payload: &mut &[u8]) -> PduResult<bool> {
-        let channel_header = ironrdp_pdu::rdp::vc::ChannelPduHeader::from_buffer(payload)
-            .map_err(|e| custom_err!("failed to decode svc channel header", e))?;
+    fn process_header(payload: &mut ReadCursor<'_>) -> PduResult<bool> {
+        let channel_header: ironrdp_pdu::rdp::vc::ChannelPduHeader = decode_cursor(payload)?;
+
         Ok(channel_header.flags.contains(ChannelControlFlags::FLAG_LAST))
     }
 

@@ -1,12 +1,9 @@
-use std::io;
-
 use bitflags::bitflags;
-use byteorder::{LittleEndian, ReadBytesExt as _, WriteBytesExt as _};
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive as _, ToPrimitive as _};
-use thiserror::Error;
 
-use crate::{gcc, PduError, PduParsing};
+use crate::cursor::{ReadCursor, WriteCursor};
+use crate::{gcc, PduDecode, PduEncode, PduResult};
 
 const SYNCHRONIZE_PDU_SIZE: usize = 2 + 2;
 const CONTROL_PDU_SIZE: usize = 2 + 2 + 4;
@@ -19,31 +16,47 @@ pub struct SynchronizePdu {
     pub target_user_id: u16,
 }
 
-impl PduParsing for SynchronizePdu {
-    type Error = FinalizationMessagesError;
+impl SynchronizePdu {
+    const NAME: &'static str = "SynchronizePdu";
 
-    fn from_buffer(mut stream: impl io::Read) -> Result<Self, Self::Error> {
-        let message_type = stream.read_u16::<LittleEndian>()?;
-        if message_type != SYNCHRONIZE_MESSAGE_TYPE {
-            return Err(FinalizationMessagesError::InvalidMessageType);
-        }
+    const FIXED_PART_SIZE: usize = SYNCHRONIZE_PDU_SIZE;
+}
 
-        let target_user_id = stream.read_u16::<LittleEndian>()?;
+impl PduEncode for SynchronizePdu {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_fixed_part_size!(in: dst);
 
-        Ok(Self { target_user_id })
-    }
-
-    fn to_buffer(&self, mut stream: impl io::Write) -> Result<(), Self::Error> {
-        stream.write_u16::<LittleEndian>(SYNCHRONIZE_MESSAGE_TYPE)?;
-        stream.write_u16::<LittleEndian>(self.target_user_id)?;
+        dst.write_u16(SYNCHRONIZE_MESSAGE_TYPE);
+        dst.write_u16(self.target_user_id);
 
         Ok(())
     }
 
-    fn buffer_length(&self) -> usize {
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    fn size(&self) -> usize {
         SYNCHRONIZE_PDU_SIZE
     }
 }
+
+impl<'de> PduDecode<'de> for SynchronizePdu {
+    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+        ensure_fixed_part_size!(in: src);
+
+        let message_type = src.read_u16();
+        if message_type != SYNCHRONIZE_MESSAGE_TYPE {
+            return Err(invalid_message_err!("messageType", "invalid message type"));
+        }
+
+        let target_user_id = src.read_u16();
+
+        Ok(Self { target_user_id })
+    }
+}
+
+impl_pdu_parsing!(SynchronizePdu);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ControlPdu {
@@ -52,14 +65,40 @@ pub struct ControlPdu {
     pub control_id: u32,
 }
 
-impl PduParsing for ControlPdu {
-    type Error = FinalizationMessagesError;
+impl ControlPdu {
+    const NAME: &'static str = "ControlPdu";
 
-    fn from_buffer(mut stream: impl io::Read) -> Result<Self, Self::Error> {
-        let action = ControlAction::from_u16(stream.read_u16::<LittleEndian>()?)
-            .ok_or(FinalizationMessagesError::InvalidControlAction)?;
-        let grant_id = stream.read_u16::<LittleEndian>()?;
-        let control_id = stream.read_u32::<LittleEndian>()?;
+    const FIXED_PART_SIZE: usize = CONTROL_PDU_SIZE;
+}
+
+impl PduEncode for ControlPdu {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_fixed_part_size!(in: dst);
+
+        dst.write_u16(self.action.to_u16().unwrap());
+        dst.write_u16(self.grant_id);
+        dst.write_u32(self.control_id);
+
+        Ok(())
+    }
+
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    fn size(&self) -> usize {
+        Self::FIXED_PART_SIZE
+    }
+}
+
+impl<'de> PduDecode<'de> for ControlPdu {
+    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+        ensure_fixed_part_size!(in: src);
+
+        let action = ControlAction::from_u16(src.read_u16())
+            .ok_or_else(|| invalid_message_err!("action", "invalid control action"))?;
+        let grant_id = src.read_u16();
+        let control_id = src.read_u32();
 
         Ok(Self {
             action,
@@ -67,19 +106,9 @@ impl PduParsing for ControlPdu {
             control_id,
         })
     }
-
-    fn to_buffer(&self, mut stream: impl io::Write) -> Result<(), Self::Error> {
-        stream.write_u16::<LittleEndian>(self.action.to_u16().unwrap())?;
-        stream.write_u16::<LittleEndian>(self.grant_id)?;
-        stream.write_u32::<LittleEndian>(self.control_id)?;
-
-        Ok(())
-    }
-
-    fn buffer_length(&self) -> usize {
-        CONTROL_PDU_SIZE
-    }
 }
+
+impl_pdu_parsing!(ControlPdu);
 
 /// [2.2.1.22.1] Font Map PDU Data (TS_FONT_MAP_PDU)
 ///
@@ -104,15 +133,42 @@ impl Default for FontPdu {
     }
 }
 
-impl PduParsing for FontPdu {
-    type Error = FinalizationMessagesError;
+impl FontPdu {
+    const NAME: &'static str = "FontPdu";
 
-    fn from_buffer(mut stream: impl io::Read) -> Result<Self, Self::Error> {
-        let number = stream.read_u16::<LittleEndian>()?;
-        let total_number = stream.read_u16::<LittleEndian>()?;
-        let flags = SequenceFlags::from_bits(stream.read_u16::<LittleEndian>()?)
-            .ok_or(FinalizationMessagesError::InvalidListFlags)?;
-        let entry_size = stream.read_u16::<LittleEndian>()?;
+    const FIXED_PART_SIZE: usize = FONT_PDU_SIZE;
+}
+
+impl PduEncode for FontPdu {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_fixed_part_size!(in: dst);
+
+        dst.write_u16(self.number);
+        dst.write_u16(self.total_number);
+        dst.write_u16(self.flags.bits());
+        dst.write_u16(self.entry_size);
+
+        Ok(())
+    }
+
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    fn size(&self) -> usize {
+        Self::FIXED_PART_SIZE
+    }
+}
+
+impl<'de> PduDecode<'de> for FontPdu {
+    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+        ensure_fixed_part_size!(in: src);
+
+        let number = src.read_u16();
+        let total_number = src.read_u16();
+        let flags = SequenceFlags::from_bits(src.read_u16())
+            .ok_or_else(|| invalid_message_err!("flags", "invalid sequence flags"))?;
+        let entry_size = src.read_u16();
 
         Ok(Self {
             number,
@@ -121,57 +177,62 @@ impl PduParsing for FontPdu {
             entry_size,
         })
     }
-
-    fn to_buffer(&self, mut stream: impl io::Write) -> Result<(), Self::Error> {
-        stream.write_u16::<LittleEndian>(self.number)?;
-        stream.write_u16::<LittleEndian>(self.total_number)?;
-        stream.write_u16::<LittleEndian>(self.flags.bits())?;
-        stream.write_u16::<LittleEndian>(self.entry_size)?;
-
-        Ok(())
-    }
-
-    fn buffer_length(&self) -> usize {
-        FONT_PDU_SIZE
-    }
 }
+
+impl_pdu_parsing!(FontPdu);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MonitorLayoutPdu {
     pub monitors: Vec<gcc::Monitor>,
 }
 
-impl PduParsing for MonitorLayoutPdu {
-    type Error = FinalizationMessagesError;
+impl MonitorLayoutPdu {
+    const NAME: &'static str = "MonitorLayoutPdu";
 
-    fn from_buffer(mut stream: impl io::Read) -> Result<Self, Self::Error> {
-        let monitor_count = stream.read_u32::<LittleEndian>()?;
-        if monitor_count > MAX_MONITOR_COUNT {
-            return Err(FinalizationMessagesError::InvalidMonitorCount(monitor_count));
-        }
+    const FIXED_PART_SIZE: usize = 4 /* nMonitors */;
+}
 
-        let mut monitors = Vec::with_capacity(monitor_count as usize);
-        for _ in 0..monitor_count {
-            monitors.push(gcc::Monitor::from_buffer(&mut stream)?);
-        }
+impl PduEncode for MonitorLayoutPdu {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_fixed_part_size!(in: dst);
 
-        Ok(Self { monitors })
-    }
-
-    fn to_buffer(&self, mut stream: impl io::Write) -> Result<(), Self::Error> {
-        stream.write_u32::<LittleEndian>(self.monitors.len() as u32)?;
+        dst.write_u32(cast_length!("nMonitors", self.monitors.len())?);
 
         for monitor in self.monitors.iter() {
-            monitor.to_buffer(&mut stream)?;
+            crate::PduParsing::to_buffer(&monitor, &mut *dst)?;
         }
 
         Ok(())
     }
 
-    fn buffer_length(&self) -> usize {
-        gcc::MONITOR_COUNT_SIZE + self.monitors.len() * gcc::MONITOR_SIZE
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    fn size(&self) -> usize {
+        Self::FIXED_PART_SIZE + self.monitors.len() * gcc::MONITOR_SIZE
     }
 }
+
+impl<'de> PduDecode<'de> for MonitorLayoutPdu {
+    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+        ensure_fixed_part_size!(in: src);
+
+        let monitor_count = src.read_u32();
+        if monitor_count > MAX_MONITOR_COUNT {
+            return Err(invalid_message_err!("nMonitors", "invalid monitor count"));
+        }
+
+        let mut monitors = Vec::with_capacity(monitor_count as usize);
+        for _ in 0..monitor_count {
+            monitors.push(<gcc::Monitor as crate::PduParsing>::from_buffer(&mut *src)?);
+        }
+
+        Ok(Self { monitors })
+    }
+}
+
+impl_pdu_parsing_max!(MonitorLayoutPdu);
 
 #[repr(u16)]
 #[derive(Debug, Clone, PartialEq, Eq, FromPrimitive, ToPrimitive)]
@@ -187,33 +248,5 @@ bitflags! {
     pub struct SequenceFlags: u16 {
         const FIRST = 1;
         const LAST = 2;
-    }
-}
-
-#[derive(Debug, Error)]
-pub enum FinalizationMessagesError {
-    #[error("IO error")]
-    IOError(#[from] io::Error),
-    #[error("monitor Data error")]
-    MonitorDataError(#[from] gcc::MonitorDataError),
-    #[error("invalid message type field in Synchronize PDU")]
-    InvalidMessageType,
-    #[error("invalid control action field in Control PDU")]
-    InvalidControlAction,
-    #[error("invalid grant id field in Control PDU")]
-    InvalidGrantId,
-    #[error("invalid control id field in Control PDU")]
-    InvalidControlId,
-    #[error("invalid list flags field in Font List PDU")]
-    InvalidListFlags,
-    #[error("invalid monitor count field: {0}")]
-    InvalidMonitorCount(u32),
-    #[error("PDU error: {0}")]
-    Pdu(PduError),
-}
-
-impl From<PduError> for FinalizationMessagesError {
-    fn from(e: PduError) -> Self {
-        Self::Pdu(e)
     }
 }

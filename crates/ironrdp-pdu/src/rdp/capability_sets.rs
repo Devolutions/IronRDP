@@ -1,11 +1,11 @@
 use std::io;
 
-use byteorder::{LittleEndian, ReadBytesExt as _, WriteBytesExt as _};
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive as _, ToPrimitive as _};
 use thiserror::Error;
 
-use crate::{PduError, PduParsing};
+use crate::cursor::{ReadCursor, WriteCursor};
+use crate::{decode, utils, PduDecode, PduEncode, PduError, PduResult};
 
 mod bitmap;
 mod bitmap_cache;
@@ -64,27 +64,43 @@ pub struct ServerDemandActive {
     pub pdu: DemandActive,
 }
 
-impl PduParsing for ServerDemandActive {
-    type Error = CapabilitySetsError;
+impl ServerDemandActive {
+    const NAME: &'static str = "ServerDemandActive";
 
-    fn from_buffer(mut stream: impl io::Read) -> Result<Self, Self::Error> {
-        let pdu = DemandActive::from_buffer(&mut stream)?;
-        let _session_id = stream.read_u32::<LittleEndian>()?;
+    const FIXED_PART_SIZE: usize = SESSION_ID_FIELD_SIZE;
+}
 
-        Ok(Self { pdu })
-    }
+impl PduEncode for ServerDemandActive {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_size!(in: dst, size: self.size());
 
-    fn to_buffer(&self, mut stream: impl io::Write) -> Result<(), Self::Error> {
-        self.pdu.to_buffer(&mut stream)?;
-        stream.write_u32::<LittleEndian>(0)?; // This field is ignored by the client
+        self.pdu.encode(dst)?;
+        dst.write_u32(0); // This field is ignored by the client
 
         Ok(())
     }
 
-    fn buffer_length(&self) -> usize {
-        self.pdu.buffer_length() + SESSION_ID_FIELD_SIZE
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    fn size(&self) -> usize {
+        Self::FIXED_PART_SIZE + self.pdu.size()
     }
 }
+
+impl<'de> PduDecode<'de> for ServerDemandActive {
+    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+        let pdu = DemandActive::decode(src)?;
+
+        ensure_size!(in: src, size: 4);
+        let _session_id = src.read_u32();
+
+        Ok(Self { pdu })
+    }
+}
+
+impl_pdu_parsing_max!(ServerDemandActive);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClientConfirmActive {
@@ -98,26 +114,42 @@ pub struct ClientConfirmActive {
     pub pdu: DemandActive,
 }
 
-impl PduParsing for ClientConfirmActive {
-    type Error = CapabilitySetsError;
+impl ClientConfirmActive {
+    const NAME: &'static str = "ClientConfirmActive";
 
-    fn from_buffer(mut stream: impl io::Read) -> Result<Self, Self::Error> {
-        let originator_id = stream.read_u16::<LittleEndian>()?;
-        let pdu = DemandActive::from_buffer(&mut stream)?;
+    const FIXED_PART_SIZE: usize = ORIGINATOR_ID_FIELD_SIZE;
+}
+
+impl PduEncode for ClientConfirmActive {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_fixed_part_size!(in: dst);
+
+        dst.write_u16(self.originator_id);
+
+        self.pdu.encode(dst)
+    }
+
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    fn size(&self) -> usize {
+        Self::FIXED_PART_SIZE + self.pdu.size()
+    }
+}
+
+impl<'de> PduDecode<'de> for ClientConfirmActive {
+    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+        ensure_fixed_part_size!(in: src);
+
+        let originator_id = src.read_u16();
+        let pdu = DemandActive::decode(src)?;
 
         Ok(Self { originator_id, pdu })
     }
-
-    fn to_buffer(&self, mut stream: impl io::Write) -> Result<(), Self::Error> {
-        stream.write_u16::<LittleEndian>(self.originator_id)?;
-
-        self.pdu.to_buffer(&mut stream)
-    }
-
-    fn buffer_length(&self) -> usize {
-        self.pdu.buffer_length() + ORIGINATOR_ID_FIELD_SIZE
-    }
 }
+
+impl_pdu_parsing_max!(ClientConfirmActive);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DemandActive {
@@ -125,69 +157,79 @@ pub struct DemandActive {
     pub capability_sets: Vec<CapabilitySet>,
 }
 
-impl PduParsing for DemandActive {
-    type Error = CapabilitySetsError;
+impl DemandActive {
+    const NAME: &'static str = "DemandActive";
 
-    fn from_buffer(mut stream: impl io::Read) -> Result<Self, Self::Error> {
-        let source_descriptor_length = stream.read_u16::<LittleEndian>()? as usize;
+    const FIXED_PART_SIZE: usize = SOURCE_DESCRIPTOR_LENGTH_FIELD_SIZE + COMBINED_CAPABILITIES_LENGTH_FIELD_SIZE;
+}
+
+impl PduEncode for DemandActive {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_size!(in: dst, size: self.size());
+
+        let combined_length = self.capability_sets.iter().map(PduEncode::size).sum::<usize>()
+            + NUMBER_CAPABILITIES_FIELD_SIZE
+            + PADDING_SIZE;
+
+        dst.write_u16(cast_length!(
+            "sourceDescLen",
+            self.source_descriptor.len() + NULL_TERMINATOR.as_bytes().len()
+        )?);
+        dst.write_u16(cast_length!("combinedLen", combined_length)?);
+        dst.write_slice(self.source_descriptor.as_ref());
+        dst.write_slice(NULL_TERMINATOR.as_bytes());
+        dst.write_u16(cast_length!("len", self.capability_sets.len())?);
+        write_padding!(dst, 2);
+
+        for capability_set in self.capability_sets.iter() {
+            capability_set.encode(dst)?;
+        }
+
+        Ok(())
+    }
+
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    fn size(&self) -> usize {
+        Self::FIXED_PART_SIZE
+            + self.source_descriptor.len()
+            + 1
+            + NUMBER_CAPABILITIES_FIELD_SIZE
+            + PADDING_SIZE
+            + self.capability_sets.iter().map(PduEncode::size).sum::<usize>()
+    }
+}
+
+impl<'de> PduDecode<'de> for DemandActive {
+    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+        ensure_fixed_part_size!(in: src);
+
+        let source_descriptor_length = src.read_u16() as usize;
         // The combined size in bytes of the numberCapabilities, pad2Octets, and capabilitySets fields.
-        let _combined_capabilities_length = stream.read_u16::<LittleEndian>()? as usize;
+        let _combined_capabilities_length = src.read_u16() as usize;
 
-        let mut source_descriptor_buffer = vec![0; source_descriptor_length];
-        stream.read_exact(source_descriptor_buffer.as_mut())?;
-        let source_descriptor = String::from_utf8(source_descriptor_buffer)?
-            .trim_end_matches(NULL_TERMINATOR)
-            .to_owned();
+        ensure_size!(in: src, size: source_descriptor_length);
+        let source_descriptor = utils::decode_string(
+            src.read_slice(source_descriptor_length),
+            utils::CharacterSet::Ansi,
+            false,
+        )?;
 
-        let capability_sets_count = stream.read_u16::<LittleEndian>()? as usize;
-        let _padding = stream.read_u16::<LittleEndian>()?;
+        ensure_size!(in: src, size: 2 + 2);
+        let capability_sets_count = src.read_u16() as usize;
+        let _padding = src.read_u16();
 
         let mut capability_sets = Vec::with_capacity(capability_sets_count);
         for _ in 0..capability_sets_count {
-            capability_sets.push(CapabilitySet::from_buffer(&mut stream)?);
+            capability_sets.push(CapabilitySet::decode(src)?);
         }
 
         Ok(Self {
             source_descriptor,
             capability_sets,
         })
-    }
-
-    fn to_buffer(&self, mut stream: impl io::Write) -> Result<(), Self::Error> {
-        let combined_length = self
-            .capability_sets
-            .iter()
-            .map(PduParsing::buffer_length)
-            .sum::<usize>()
-            + NUMBER_CAPABILITIES_FIELD_SIZE
-            + PADDING_SIZE;
-
-        stream.write_u16::<LittleEndian>((self.source_descriptor.len() + NULL_TERMINATOR.as_bytes().len()) as u16)?;
-        stream.write_u16::<LittleEndian>(combined_length as u16)?;
-        stream.write_all(self.source_descriptor.as_ref())?;
-        stream.write_all(NULL_TERMINATOR.as_bytes())?;
-        stream.write_u16::<LittleEndian>(self.capability_sets.len() as u16)?;
-        stream.write_u16::<LittleEndian>(0)?; // padding
-
-        for capability_set in self.capability_sets.iter() {
-            capability_set.to_buffer(&mut stream)?;
-        }
-
-        Ok(())
-    }
-
-    fn buffer_length(&self) -> usize {
-        SOURCE_DESCRIPTOR_LENGTH_FIELD_SIZE
-            + COMBINED_CAPABILITIES_LENGTH_FIELD_SIZE
-            + self.source_descriptor.len()
-            + 1
-            + NUMBER_CAPABILITIES_FIELD_SIZE
-            + PADDING_SIZE
-            + self
-                .capability_sets
-                .iter()
-                .map(PduParsing::buffer_length)
-                .sum::<usize>()
     }
 }
 
@@ -228,212 +270,152 @@ pub enum CapabilitySet {
     FrameAcknowledge(FrameAcknowledge),
 }
 
-impl PduParsing for CapabilitySet {
-    type Error = CapabilitySetsError;
+impl CapabilitySet {
+    const NAME: &'static str = "CapabilitySet";
 
-    fn from_buffer(mut stream: impl io::Read) -> Result<Self, Self::Error> {
-        let capability_set_type =
-            CapabilitySetType::from_u16(stream.read_u16::<LittleEndian>()?).ok_or(CapabilitySetsError::InvalidType)?;
+    const FIXED_PART_SIZE: usize = CAPABILITY_SET_TYPE_FIELD_SIZE + CAPABILITY_SET_LENGTH_FIELD_SIZE;
+}
 
-        let length = stream.read_u16::<LittleEndian>()? as usize;
+impl PduEncode for CapabilitySet {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_size!(in: dst, size: self.size());
 
-        if length < CAPABILITY_SET_TYPE_FIELD_SIZE + CAPABILITY_SET_LENGTH_FIELD_SIZE {
-            return Err(CapabilitySetsError::InvalidLength);
-        }
-
-        let buffer_length = length - CAPABILITY_SET_TYPE_FIELD_SIZE - CAPABILITY_SET_LENGTH_FIELD_SIZE;
-        let mut capability_set_buffer = vec![0; buffer_length];
-        stream.read_exact(capability_set_buffer.as_mut())?;
-
-        match capability_set_type {
-            CapabilitySetType::General => Ok(CapabilitySet::General(General::from_buffer(
-                &mut capability_set_buffer.as_slice(),
-            )?)),
-            CapabilitySetType::Bitmap => Ok(CapabilitySet::Bitmap(Bitmap::from_buffer(
-                &mut capability_set_buffer.as_slice(),
-            )?)),
-            CapabilitySetType::Order => Ok(CapabilitySet::Order(Order::from_buffer(
-                &mut capability_set_buffer.as_slice(),
-            )?)),
-            CapabilitySetType::BitmapCache => Ok(CapabilitySet::BitmapCache(BitmapCache::from_buffer(
-                &mut capability_set_buffer.as_slice(),
-            )?)),
-            CapabilitySetType::BitmapCacheRev2 => Ok(CapabilitySet::BitmapCacheRev2(BitmapCacheRev2::from_buffer(
-                &mut capability_set_buffer.as_slice(),
-            )?)),
-            CapabilitySetType::Pointer => Ok(CapabilitySet::Pointer(Pointer::from_buffer(
-                &mut capability_set_buffer.as_slice(),
-            )?)),
-            CapabilitySetType::Sound => Ok(CapabilitySet::Sound(Sound::from_buffer(
-                &mut capability_set_buffer.as_slice(),
-            )?)),
-            CapabilitySetType::Input => Ok(CapabilitySet::Input(Input::from_buffer(
-                &mut capability_set_buffer.as_slice(),
-            )?)),
-            CapabilitySetType::Brush => Ok(CapabilitySet::Brush(Brush::from_buffer(
-                &mut capability_set_buffer.as_slice(),
-            )?)),
-            CapabilitySetType::GlyphCache => Ok(CapabilitySet::GlyphCache(GlyphCache::from_buffer(
-                &mut capability_set_buffer.as_slice(),
-            )?)),
-            CapabilitySetType::OffscreenBitmapCache => Ok(CapabilitySet::OffscreenBitmapCache(
-                OffscreenBitmapCache::from_buffer(&mut capability_set_buffer.as_slice())?,
-            )),
-            CapabilitySetType::VirtualChannel => Ok(CapabilitySet::VirtualChannel(VirtualChannel::from_buffer(
-                &mut capability_set_buffer.as_slice(),
-            )?)),
-            CapabilitySetType::SurfaceCommands => Ok(CapabilitySet::SurfaceCommands(SurfaceCommands::from_buffer(
-                &mut capability_set_buffer.as_slice(),
-            )?)),
-            CapabilitySetType::BitmapCodecs => Ok(CapabilitySet::BitmapCodecs(BitmapCodecs::from_buffer(
-                &mut capability_set_buffer.as_slice(),
-            )?)),
-
-            CapabilitySetType::Control => Ok(CapabilitySet::Control(capability_set_buffer)),
-            CapabilitySetType::WindowActivation => Ok(CapabilitySet::WindowActivation(capability_set_buffer)),
-            CapabilitySetType::Share => Ok(CapabilitySet::Share(capability_set_buffer)),
-            CapabilitySetType::Font => Ok(CapabilitySet::Font(capability_set_buffer)),
-            CapabilitySetType::BitmapCacheHostSupport => {
-                Ok(CapabilitySet::BitmapCacheHostSupport(capability_set_buffer))
-            }
-            CapabilitySetType::DesktopComposition => Ok(CapabilitySet::DesktopComposition(capability_set_buffer)),
-            CapabilitySetType::MultiFragmentUpdate => Ok(CapabilitySet::MultiFragmentUpdate(
-                MultifragmentUpdate::from_buffer(&mut capability_set_buffer.as_slice())?,
-            )),
-            CapabilitySetType::LargePointer => Ok(CapabilitySet::LargePointer(LargePointer::from_buffer(
-                &mut capability_set_buffer.as_slice(),
-            )?)),
-            CapabilitySetType::ColorCache => Ok(CapabilitySet::ColorCache(capability_set_buffer)),
-            CapabilitySetType::DrawNineGridCache => Ok(CapabilitySet::DrawNineGridCache(capability_set_buffer)),
-            CapabilitySetType::DrawGdiPlus => Ok(CapabilitySet::DrawGdiPlus(capability_set_buffer)),
-            CapabilitySetType::Rail => Ok(CapabilitySet::Rail(capability_set_buffer)),
-            CapabilitySetType::WindowList => Ok(CapabilitySet::WindowList(capability_set_buffer)),
-            CapabilitySetType::FrameAcknowledge => Ok(CapabilitySet::FrameAcknowledge(FrameAcknowledge::from_buffer(
-                &mut capability_set_buffer.as_slice(),
-            )?)),
-        }
-    }
-
-    fn to_buffer(&self, mut stream: impl io::Write) -> Result<(), Self::Error> {
         match self {
             CapabilitySet::General(capset) => {
-                stream.write_u16::<LittleEndian>(CapabilitySetType::General.to_u16().unwrap())?;
-                stream.write_u16::<LittleEndian>(
-                    (capset.buffer_length() + CAPABILITY_SET_TYPE_FIELD_SIZE + CAPABILITY_SET_LENGTH_FIELD_SIZE) as u16,
-                )?;
-                capset.to_buffer(&mut stream)?;
+                dst.write_u16(CapabilitySetType::General.to_u16().unwrap());
+                dst.write_u16(cast_length!(
+                    "len",
+                    capset.size() + CAPABILITY_SET_TYPE_FIELD_SIZE + CAPABILITY_SET_LENGTH_FIELD_SIZE
+                )?);
+                capset.encode(dst)?;
             }
             CapabilitySet::Bitmap(capset) => {
-                stream.write_u16::<LittleEndian>(CapabilitySetType::Bitmap.to_u16().unwrap())?;
-                stream.write_u16::<LittleEndian>(
-                    (capset.buffer_length() + CAPABILITY_SET_TYPE_FIELD_SIZE + CAPABILITY_SET_LENGTH_FIELD_SIZE) as u16,
-                )?;
-                capset.to_buffer(&mut stream)?;
+                dst.write_u16(CapabilitySetType::Bitmap.to_u16().unwrap());
+                dst.write_u16(cast_length!(
+                    "len",
+                    capset.size() + CAPABILITY_SET_TYPE_FIELD_SIZE + CAPABILITY_SET_LENGTH_FIELD_SIZE
+                )?);
+                capset.encode(dst)?;
             }
             CapabilitySet::Order(capset) => {
-                stream.write_u16::<LittleEndian>(CapabilitySetType::Order.to_u16().unwrap())?;
-                stream.write_u16::<LittleEndian>(
-                    (capset.buffer_length() + CAPABILITY_SET_TYPE_FIELD_SIZE + CAPABILITY_SET_LENGTH_FIELD_SIZE) as u16,
-                )?;
-                capset.to_buffer(&mut stream)?;
+                dst.write_u16(CapabilitySetType::Order.to_u16().unwrap());
+                dst.write_u16(cast_length!(
+                    "len",
+                    capset.size() + CAPABILITY_SET_TYPE_FIELD_SIZE + CAPABILITY_SET_LENGTH_FIELD_SIZE
+                )?);
+                capset.encode(dst)?;
             }
             CapabilitySet::BitmapCache(capset) => {
-                stream.write_u16::<LittleEndian>(CapabilitySetType::BitmapCache.to_u16().unwrap())?;
-                stream.write_u16::<LittleEndian>(
-                    (capset.buffer_length() + CAPABILITY_SET_TYPE_FIELD_SIZE + CAPABILITY_SET_LENGTH_FIELD_SIZE) as u16,
-                )?;
-                capset.to_buffer(&mut stream)?;
+                dst.write_u16(CapabilitySetType::BitmapCache.to_u16().unwrap());
+                dst.write_u16(cast_length!(
+                    "len",
+                    capset.size() + CAPABILITY_SET_TYPE_FIELD_SIZE + CAPABILITY_SET_LENGTH_FIELD_SIZE
+                )?);
+                capset.encode(dst)?;
             }
             CapabilitySet::BitmapCacheRev2(capset) => {
-                stream.write_u16::<LittleEndian>(CapabilitySetType::BitmapCacheRev2.to_u16().unwrap())?;
-                stream.write_u16::<LittleEndian>(
-                    (capset.buffer_length() + CAPABILITY_SET_TYPE_FIELD_SIZE + CAPABILITY_SET_LENGTH_FIELD_SIZE) as u16,
-                )?;
-                capset.to_buffer(&mut stream)?;
+                dst.write_u16(CapabilitySetType::BitmapCacheRev2.to_u16().unwrap());
+                dst.write_u16(cast_length!(
+                    "len",
+                    capset.size() + CAPABILITY_SET_TYPE_FIELD_SIZE + CAPABILITY_SET_LENGTH_FIELD_SIZE
+                )?);
+                capset.encode(dst)?;
             }
             CapabilitySet::Pointer(capset) => {
-                stream.write_u16::<LittleEndian>(CapabilitySetType::Pointer.to_u16().unwrap())?;
-                stream.write_u16::<LittleEndian>(
-                    (capset.buffer_length() + CAPABILITY_SET_TYPE_FIELD_SIZE + CAPABILITY_SET_LENGTH_FIELD_SIZE) as u16,
-                )?;
-                capset.to_buffer(&mut stream)?;
+                dst.write_u16(CapabilitySetType::Pointer.to_u16().unwrap());
+                dst.write_u16(cast_length!(
+                    "len",
+                    capset.size() + CAPABILITY_SET_TYPE_FIELD_SIZE + CAPABILITY_SET_LENGTH_FIELD_SIZE
+                )?);
+                capset.encode(dst)?;
             }
             CapabilitySet::Sound(capset) => {
-                stream.write_u16::<LittleEndian>(CapabilitySetType::Sound.to_u16().unwrap())?;
-                stream.write_u16::<LittleEndian>(
-                    (capset.buffer_length() + CAPABILITY_SET_TYPE_FIELD_SIZE + CAPABILITY_SET_LENGTH_FIELD_SIZE) as u16,
-                )?;
-                capset.to_buffer(&mut stream)?;
+                dst.write_u16(CapabilitySetType::Sound.to_u16().unwrap());
+                dst.write_u16(cast_length!(
+                    "len",
+                    capset.size() + CAPABILITY_SET_TYPE_FIELD_SIZE + CAPABILITY_SET_LENGTH_FIELD_SIZE
+                )?);
+                capset.encode(dst)?;
             }
             CapabilitySet::Input(capset) => {
-                stream.write_u16::<LittleEndian>(CapabilitySetType::Input.to_u16().unwrap())?;
-                stream.write_u16::<LittleEndian>(
-                    (capset.buffer_length() + CAPABILITY_SET_TYPE_FIELD_SIZE + CAPABILITY_SET_LENGTH_FIELD_SIZE) as u16,
-                )?;
-                capset.to_buffer(&mut stream)?;
+                dst.write_u16(CapabilitySetType::Input.to_u16().unwrap());
+                dst.write_u16(cast_length!(
+                    "len",
+                    capset.size() + CAPABILITY_SET_TYPE_FIELD_SIZE + CAPABILITY_SET_LENGTH_FIELD_SIZE
+                )?);
+                capset.encode(dst)?;
             }
             CapabilitySet::Brush(capset) => {
-                stream.write_u16::<LittleEndian>(CapabilitySetType::Brush.to_u16().unwrap())?;
-                stream.write_u16::<LittleEndian>(
-                    (capset.buffer_length() + CAPABILITY_SET_TYPE_FIELD_SIZE + CAPABILITY_SET_LENGTH_FIELD_SIZE) as u16,
-                )?;
-                capset.to_buffer(&mut stream)?;
+                dst.write_u16(CapabilitySetType::Brush.to_u16().unwrap());
+                dst.write_u16(cast_length!(
+                    "len",
+                    capset.size() + CAPABILITY_SET_TYPE_FIELD_SIZE + CAPABILITY_SET_LENGTH_FIELD_SIZE
+                )?);
+                capset.encode(dst)?;
             }
             CapabilitySet::GlyphCache(capset) => {
-                stream.write_u16::<LittleEndian>(CapabilitySetType::GlyphCache.to_u16().unwrap())?;
-                stream.write_u16::<LittleEndian>(
-                    (capset.buffer_length() + CAPABILITY_SET_TYPE_FIELD_SIZE + CAPABILITY_SET_LENGTH_FIELD_SIZE) as u16,
-                )?;
-                capset.to_buffer(&mut stream)?;
+                dst.write_u16(CapabilitySetType::GlyphCache.to_u16().unwrap());
+                dst.write_u16(cast_length!(
+                    "len",
+                    capset.size() + CAPABILITY_SET_TYPE_FIELD_SIZE + CAPABILITY_SET_LENGTH_FIELD_SIZE
+                )?);
+                capset.encode(dst)?;
             }
             CapabilitySet::OffscreenBitmapCache(capset) => {
-                stream.write_u16::<LittleEndian>(CapabilitySetType::OffscreenBitmapCache.to_u16().unwrap())?;
-                stream.write_u16::<LittleEndian>(
-                    (capset.buffer_length() + CAPABILITY_SET_TYPE_FIELD_SIZE + CAPABILITY_SET_LENGTH_FIELD_SIZE) as u16,
-                )?;
-                capset.to_buffer(&mut stream)?;
+                dst.write_u16(CapabilitySetType::OffscreenBitmapCache.to_u16().unwrap());
+                dst.write_u16(cast_length!(
+                    "len",
+                    capset.size() + CAPABILITY_SET_TYPE_FIELD_SIZE + CAPABILITY_SET_LENGTH_FIELD_SIZE
+                )?);
+                capset.encode(dst)?;
             }
             CapabilitySet::VirtualChannel(capset) => {
-                stream.write_u16::<LittleEndian>(CapabilitySetType::VirtualChannel.to_u16().unwrap())?;
-                stream.write_u16::<LittleEndian>(
-                    (capset.buffer_length() + CAPABILITY_SET_TYPE_FIELD_SIZE + CAPABILITY_SET_LENGTH_FIELD_SIZE) as u16,
-                )?;
-                capset.to_buffer(&mut stream)?;
+                dst.write_u16(CapabilitySetType::VirtualChannel.to_u16().unwrap());
+                dst.write_u16(cast_length!(
+                    "len",
+                    capset.size() + CAPABILITY_SET_TYPE_FIELD_SIZE + CAPABILITY_SET_LENGTH_FIELD_SIZE
+                )?);
+                capset.encode(dst)?;
             }
             CapabilitySet::SurfaceCommands(capset) => {
-                stream.write_u16::<LittleEndian>(CapabilitySetType::SurfaceCommands.to_u16().unwrap())?;
-                stream.write_u16::<LittleEndian>(
-                    (capset.buffer_length() + CAPABILITY_SET_TYPE_FIELD_SIZE + CAPABILITY_SET_LENGTH_FIELD_SIZE) as u16,
-                )?;
-                capset.to_buffer(&mut stream)?;
+                dst.write_u16(CapabilitySetType::SurfaceCommands.to_u16().unwrap());
+                dst.write_u16(cast_length!(
+                    "len",
+                    capset.size() + CAPABILITY_SET_TYPE_FIELD_SIZE + CAPABILITY_SET_LENGTH_FIELD_SIZE
+                )?);
+                capset.encode(dst)?;
             }
             CapabilitySet::BitmapCodecs(capset) => {
-                stream.write_u16::<LittleEndian>(CapabilitySetType::BitmapCodecs.to_u16().unwrap())?;
-                stream.write_u16::<LittleEndian>(
-                    (capset.buffer_length() + CAPABILITY_SET_TYPE_FIELD_SIZE + CAPABILITY_SET_LENGTH_FIELD_SIZE) as u16,
-                )?;
-                capset.to_buffer(&mut stream)?;
+                dst.write_u16(CapabilitySetType::BitmapCodecs.to_u16().unwrap());
+                dst.write_u16(cast_length!(
+                    "len",
+                    capset.size() + CAPABILITY_SET_TYPE_FIELD_SIZE + CAPABILITY_SET_LENGTH_FIELD_SIZE
+                )?);
+                capset.encode(dst)?;
             }
             CapabilitySet::MultiFragmentUpdate(capset) => {
-                stream.write_u16::<LittleEndian>(CapabilitySetType::MultiFragmentUpdate.to_u16().unwrap())?;
-                stream.write_u16::<LittleEndian>(
-                    (capset.buffer_length() + CAPABILITY_SET_TYPE_FIELD_SIZE + CAPABILITY_SET_LENGTH_FIELD_SIZE) as u16,
-                )?;
-                capset.to_buffer(&mut stream)?;
+                dst.write_u16(CapabilitySetType::MultiFragmentUpdate.to_u16().unwrap());
+                dst.write_u16(cast_length!(
+                    "len",
+                    capset.size() + CAPABILITY_SET_TYPE_FIELD_SIZE + CAPABILITY_SET_LENGTH_FIELD_SIZE
+                )?);
+                capset.encode(dst)?;
             }
             CapabilitySet::LargePointer(capset) => {
-                stream.write_u16::<LittleEndian>(CapabilitySetType::LargePointer.to_u16().unwrap())?;
-                stream.write_u16::<LittleEndian>(
-                    (capset.buffer_length() + CAPABILITY_SET_TYPE_FIELD_SIZE + CAPABILITY_SET_LENGTH_FIELD_SIZE) as u16,
-                )?;
-                capset.to_buffer(&mut stream)?;
+                dst.write_u16(CapabilitySetType::LargePointer.to_u16().unwrap());
+                dst.write_u16(cast_length!(
+                    "len",
+                    capset.size() + CAPABILITY_SET_TYPE_FIELD_SIZE + CAPABILITY_SET_LENGTH_FIELD_SIZE
+                )?);
+                capset.encode(dst)?;
             }
             CapabilitySet::FrameAcknowledge(capset) => {
-                stream.write_u16::<LittleEndian>(CapabilitySetType::FrameAcknowledge.to_u16().unwrap())?;
-                stream.write_u16::<LittleEndian>(
-                    (capset.buffer_length() + CAPABILITY_SET_TYPE_FIELD_SIZE + CAPABILITY_SET_LENGTH_FIELD_SIZE) as u16,
-                )?;
-                capset.to_buffer(&mut stream)?;
+                dst.write_u16(CapabilitySetType::FrameAcknowledge.to_u16().unwrap());
+                dst.write_u16(cast_length!(
+                    "len",
+                    capset.size() + CAPABILITY_SET_TYPE_FIELD_SIZE + CAPABILITY_SET_LENGTH_FIELD_SIZE
+                )?);
+                capset.encode(dst)?;
             }
             _ => {
                 let (capability_set_type, capability_set_buffer) = match self {
@@ -453,38 +435,41 @@ impl PduParsing for CapabilitySet {
                     _ => unreachable!(),
                 };
 
-                stream.write_u16::<LittleEndian>(capability_set_type.to_u16().unwrap())?;
-                stream.write_u16::<LittleEndian>(
-                    (capability_set_buffer.len() + CAPABILITY_SET_TYPE_FIELD_SIZE + CAPABILITY_SET_LENGTH_FIELD_SIZE)
-                        as u16,
-                )?;
-                stream.write_all(capability_set_buffer)?;
+                dst.write_u16(capability_set_type.to_u16().unwrap());
+                dst.write_u16(cast_length!(
+                    "len",
+                    capability_set_buffer.len() + CAPABILITY_SET_TYPE_FIELD_SIZE + CAPABILITY_SET_LENGTH_FIELD_SIZE
+                )?);
+                dst.write_slice(capability_set_buffer);
             }
         };
         Ok(())
     }
 
-    fn buffer_length(&self) -> usize {
-        CAPABILITY_SET_TYPE_FIELD_SIZE
-            + CAPABILITY_SET_LENGTH_FIELD_SIZE
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    fn size(&self) -> usize {
+        Self::FIXED_PART_SIZE
             + match self {
-                CapabilitySet::General(capset) => capset.buffer_length(),
-                CapabilitySet::Bitmap(capset) => capset.buffer_length(),
-                CapabilitySet::Order(capset) => capset.buffer_length(),
-                CapabilitySet::BitmapCache(capset) => capset.buffer_length(),
-                CapabilitySet::BitmapCacheRev2(capset) => capset.buffer_length(),
-                CapabilitySet::Pointer(capset) => capset.buffer_length(),
-                CapabilitySet::Sound(capset) => capset.buffer_length(),
-                CapabilitySet::Input(capset) => capset.buffer_length(),
-                CapabilitySet::Brush(capset) => capset.buffer_length(),
-                CapabilitySet::GlyphCache(capset) => capset.buffer_length(),
-                CapabilitySet::OffscreenBitmapCache(capset) => capset.buffer_length(),
-                CapabilitySet::VirtualChannel(capset) => capset.buffer_length(),
-                CapabilitySet::SurfaceCommands(capset) => capset.buffer_length(),
-                CapabilitySet::BitmapCodecs(capset) => capset.buffer_length(),
-                CapabilitySet::MultiFragmentUpdate(capset) => capset.buffer_length(),
-                CapabilitySet::LargePointer(capset) => capset.buffer_length(),
-                CapabilitySet::FrameAcknowledge(capset) => capset.buffer_length(),
+                CapabilitySet::General(capset) => capset.size(),
+                CapabilitySet::Bitmap(capset) => capset.size(),
+                CapabilitySet::Order(capset) => capset.size(),
+                CapabilitySet::BitmapCache(capset) => capset.size(),
+                CapabilitySet::BitmapCacheRev2(capset) => capset.size(),
+                CapabilitySet::Pointer(capset) => capset.size(),
+                CapabilitySet::Sound(capset) => capset.size(),
+                CapabilitySet::Input(capset) => capset.size(),
+                CapabilitySet::Brush(capset) => capset.size(),
+                CapabilitySet::GlyphCache(capset) => capset.size(),
+                CapabilitySet::OffscreenBitmapCache(capset) => capset.size(),
+                CapabilitySet::VirtualChannel(capset) => capset.size(),
+                CapabilitySet::SurfaceCommands(capset) => capset.size(),
+                CapabilitySet::BitmapCodecs(capset) => capset.size(),
+                CapabilitySet::MultiFragmentUpdate(capset) => capset.size(),
+                CapabilitySet::LargePointer(capset) => capset.size(),
+                CapabilitySet::FrameAcknowledge(capset) => capset.size(),
                 CapabilitySet::Control(buffer)
                 | CapabilitySet::WindowActivation(buffer)
                 | CapabilitySet::Share(buffer)
@@ -497,6 +482,65 @@ impl PduParsing for CapabilitySet {
                 | CapabilitySet::Rail(buffer)
                 | CapabilitySet::WindowList(buffer) => buffer.len(),
             }
+    }
+}
+
+impl<'de> PduDecode<'de> for CapabilitySet {
+    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+        ensure_fixed_part_size!(in: src);
+
+        let capability_set_type = CapabilitySetType::from_u16(src.read_u16())
+            .ok_or_else(|| invalid_message_err!("capabilitySetType", "invalid capability set type"))?;
+
+        let length = src.read_u16() as usize;
+
+        if length < CAPABILITY_SET_TYPE_FIELD_SIZE + CAPABILITY_SET_LENGTH_FIELD_SIZE {
+            return Err(invalid_message_err!("len", "invalid capability set length"));
+        }
+
+        let buffer_length = length - CAPABILITY_SET_TYPE_FIELD_SIZE - CAPABILITY_SET_LENGTH_FIELD_SIZE;
+        ensure_size!(in: src, size: buffer_length);
+        let capability_set_buffer = src.read_slice(buffer_length);
+
+        match capability_set_type {
+            CapabilitySetType::General => Ok(CapabilitySet::General(decode(capability_set_buffer)?)),
+            CapabilitySetType::Bitmap => Ok(CapabilitySet::Bitmap(decode(capability_set_buffer)?)),
+            CapabilitySetType::Order => Ok(CapabilitySet::Order(decode(capability_set_buffer)?)),
+            CapabilitySetType::BitmapCache => Ok(CapabilitySet::BitmapCache(decode(capability_set_buffer)?)),
+            CapabilitySetType::BitmapCacheRev2 => Ok(CapabilitySet::BitmapCacheRev2(decode(capability_set_buffer)?)),
+            CapabilitySetType::Pointer => Ok(CapabilitySet::Pointer(decode(capability_set_buffer)?)),
+            CapabilitySetType::Sound => Ok(CapabilitySet::Sound(decode(capability_set_buffer)?)),
+            CapabilitySetType::Input => Ok(CapabilitySet::Input(decode(capability_set_buffer)?)),
+            CapabilitySetType::Brush => Ok(CapabilitySet::Brush(decode(capability_set_buffer)?)),
+            CapabilitySetType::GlyphCache => Ok(CapabilitySet::GlyphCache(decode(capability_set_buffer)?)),
+            CapabilitySetType::OffscreenBitmapCache => {
+                Ok(CapabilitySet::OffscreenBitmapCache(decode(capability_set_buffer)?))
+            }
+            CapabilitySetType::VirtualChannel => Ok(CapabilitySet::VirtualChannel(decode(capability_set_buffer)?)),
+            CapabilitySetType::SurfaceCommands => Ok(CapabilitySet::SurfaceCommands(decode(capability_set_buffer)?)),
+            CapabilitySetType::BitmapCodecs => Ok(CapabilitySet::BitmapCodecs(decode(capability_set_buffer)?)),
+
+            CapabilitySetType::Control => Ok(CapabilitySet::Control(capability_set_buffer.into())),
+            CapabilitySetType::WindowActivation => Ok(CapabilitySet::WindowActivation(capability_set_buffer.into())),
+            CapabilitySetType::Share => Ok(CapabilitySet::Share(capability_set_buffer.into())),
+            CapabilitySetType::Font => Ok(CapabilitySet::Font(capability_set_buffer.into())),
+            CapabilitySetType::BitmapCacheHostSupport => {
+                Ok(CapabilitySet::BitmapCacheHostSupport(capability_set_buffer.into()))
+            }
+            CapabilitySetType::DesktopComposition => {
+                Ok(CapabilitySet::DesktopComposition(capability_set_buffer.into()))
+            }
+            CapabilitySetType::MultiFragmentUpdate => {
+                Ok(CapabilitySet::MultiFragmentUpdate(decode(capability_set_buffer)?))
+            }
+            CapabilitySetType::LargePointer => Ok(CapabilitySet::LargePointer(decode(capability_set_buffer)?)),
+            CapabilitySetType::ColorCache => Ok(CapabilitySet::ColorCache(capability_set_buffer.into())),
+            CapabilitySetType::DrawNineGridCache => Ok(CapabilitySet::DrawNineGridCache(capability_set_buffer.into())),
+            CapabilitySetType::DrawGdiPlus => Ok(CapabilitySet::DrawGdiPlus(capability_set_buffer.into())),
+            CapabilitySetType::Rail => Ok(CapabilitySet::Rail(capability_set_buffer.into())),
+            CapabilitySetType::WindowList => Ok(CapabilitySet::WindowList(capability_set_buffer.into())),
+            CapabilitySetType::FrameAcknowledge => Ok(CapabilitySet::FrameAcknowledge(decode(capability_set_buffer)?)),
+        }
     }
 }
 

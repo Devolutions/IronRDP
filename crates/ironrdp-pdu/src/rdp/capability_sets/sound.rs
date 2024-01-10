@@ -1,13 +1,10 @@
 #[cfg(test)]
 mod tests;
 
-use std::io;
-
 use bitflags::bitflags;
-use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 
-use crate::rdp::capability_sets::CapabilitySetsError;
-use crate::PduParsing;
+use crate::cursor::{ReadCursor, WriteCursor};
+use crate::{PduDecode, PduEncode, PduResult};
 
 const SOUND_LENGTH: usize = 4;
 
@@ -23,24 +20,40 @@ pub struct Sound {
     pub flags: SoundFlags,
 }
 
-impl PduParsing for Sound {
-    type Error = CapabilitySetsError;
+impl Sound {
+    const NAME: &'static str = "Sound";
 
-    fn from_buffer(mut buffer: impl io::Read) -> Result<Self, Self::Error> {
-        let flags = SoundFlags::from_bits_truncate(buffer.read_u16::<LittleEndian>()?);
-        let _padding = buffer.read_u16::<LittleEndian>()?;
+    const FIXED_PART_SIZE: usize = SOUND_LENGTH;
+}
 
-        Ok(Sound { flags })
-    }
+impl PduEncode for Sound {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_fixed_part_size!(in: dst);
 
-    fn to_buffer(&self, mut buffer: impl io::Write) -> Result<(), Self::Error> {
-        buffer.write_u16::<LittleEndian>(self.flags.bits())?;
-        buffer.write_u16::<LittleEndian>(0)?; // padding
+        dst.write_u16(self.flags.bits());
+        write_padding!(dst, 2);
 
         Ok(())
     }
 
-    fn buffer_length(&self) -> usize {
-        SOUND_LENGTH
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    fn size(&self) -> usize {
+        Self::FIXED_PART_SIZE
     }
 }
+
+impl<'de> PduDecode<'de> for Sound {
+    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+        ensure_fixed_part_size!(in: src);
+
+        let flags = SoundFlags::from_bits_truncate(src.read_u16());
+        read_padding!(src, 2);
+
+        Ok(Sound { flags })
+    }
+}
+
+impl_pdu_parsing!(Sound);

@@ -1,13 +1,10 @@
 #[cfg(test)]
 mod tests;
 
-use std::io;
-
 use bitflags::bitflags;
-use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 
-use crate::rdp::capability_sets::CapabilitySetsError;
-use crate::PduParsing;
+use crate::cursor::{ReadCursor, WriteCursor};
+use crate::{PduDecode, PduEncode, PduResult};
 
 const BITMAP_LENGTH: usize = 24;
 
@@ -30,34 +27,76 @@ pub struct Bitmap {
     pub drawing_flags: BitmapDrawingFlags,
 }
 
-impl PduParsing for Bitmap {
-    type Error = CapabilitySetsError;
+impl Bitmap {
+    const NAME: &'static str = "Bitmap";
 
-    fn from_buffer(mut buffer: impl io::Read) -> Result<Self, Self::Error> {
-        let pref_bits_per_pix = buffer.read_u16::<LittleEndian>()?;
+    const FIXED_PART_SIZE: usize = BITMAP_LENGTH;
+}
 
-        let _receive_1_bit_per_pixel = buffer.read_u16::<LittleEndian>()? != 0;
-        let _receive_4_bit_per_pixel = buffer.read_u16::<LittleEndian>()? != 0;
-        let _receive_8_bit_per_pixel = buffer.read_u16::<LittleEndian>()? != 0;
-        let desktop_width = buffer.read_u16::<LittleEndian>()?;
-        let desktop_height = buffer.read_u16::<LittleEndian>()?;
-        let _padding = buffer.read_u16::<LittleEndian>()?;
-        let desktop_resize_flag = buffer.read_u16::<LittleEndian>()? != 0;
+impl PduEncode for Bitmap {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_fixed_part_size!(in: dst);
 
-        let is_bitmap_compress_flag_set = buffer.read_u16::<LittleEndian>()? != 0;
+        dst.write_u16(self.pref_bits_per_pix);
+        dst.write_u16(1); // receive1BitPerPixel
+        dst.write_u16(1); // receive4BitsPerPixel
+        dst.write_u16(1); // receive8BitsPerPixel
+        dst.write_u16(self.desktop_width);
+        dst.write_u16(self.desktop_height);
+        write_padding!(dst, 2);
+        dst.write_u16(u16::from(self.desktop_resize_flag));
+        dst.write_u16(1); // bitmapCompressionFlag
+        dst.write_u8(0); // highColorFlags
+        dst.write_u8(self.drawing_flags.bits());
+        dst.write_u16(1); // multipleRectangleSupport
+        write_padding!(dst, 2);
+
+        Ok(())
+    }
+
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    fn size(&self) -> usize {
+        Self::FIXED_PART_SIZE
+    }
+}
+
+impl<'de> PduDecode<'de> for Bitmap {
+    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+        ensure_fixed_part_size!(in: src);
+
+        let pref_bits_per_pix = src.read_u16();
+
+        let _receive_1_bit_per_pixel = src.read_u16() != 0;
+        let _receive_4_bit_per_pixel = src.read_u16() != 0;
+        let _receive_8_bit_per_pixel = src.read_u16() != 0;
+        let desktop_width = src.read_u16();
+        let desktop_height = src.read_u16();
+        read_padding!(src, 2);
+        let desktop_resize_flag = src.read_u16() != 0;
+
+        let is_bitmap_compress_flag_set = src.read_u16() != 0;
         if !is_bitmap_compress_flag_set {
-            return Err(CapabilitySetsError::InvalidCompressionFlag);
+            return Err(invalid_message_err!(
+                "isBitmapCompressFlagSet",
+                "invalid compression flag"
+            ));
         }
 
-        let _high_color_flags = buffer.read_u8()?;
-        let drawing_flags = BitmapDrawingFlags::from_bits_truncate(buffer.read_u8()?);
+        let _high_color_flags = src.read_u8();
+        let drawing_flags = BitmapDrawingFlags::from_bits_truncate(src.read_u8());
 
-        let is_multiple_rect_supported = buffer.read_u16::<LittleEndian>()? != 0;
+        let is_multiple_rect_supported = src.read_u16() != 0;
         if !is_multiple_rect_supported {
-            return Err(CapabilitySetsError::InvalidMultipleRectSupport);
+            return Err(invalid_message_err!(
+                "isMultipleRectSupported",
+                "invalid multiple rect support"
+            ));
         }
 
-        let _padding = buffer.read_u16::<LittleEndian>()?;
+        read_padding!(src, 2);
 
         Ok(Bitmap {
             pref_bits_per_pix,
@@ -67,26 +106,6 @@ impl PduParsing for Bitmap {
             drawing_flags,
         })
     }
-
-    fn to_buffer(&self, mut buffer: impl io::Write) -> Result<(), Self::Error> {
-        buffer.write_u16::<LittleEndian>(self.pref_bits_per_pix)?;
-        buffer.write_u16::<LittleEndian>(1)?; // receive1BitPerPixel
-        buffer.write_u16::<LittleEndian>(1)?; // receive4BitsPerPixel
-        buffer.write_u16::<LittleEndian>(1)?; // receive8BitsPerPixel
-        buffer.write_u16::<LittleEndian>(self.desktop_width)?;
-        buffer.write_u16::<LittleEndian>(self.desktop_height)?;
-        buffer.write_u16::<LittleEndian>(0)?; // padding
-        buffer.write_u16::<LittleEndian>(u16::from(self.desktop_resize_flag))?;
-        buffer.write_u16::<LittleEndian>(1)?; // bitmapCompressionFlag
-        buffer.write_u8(0)?; // highColorFlags
-        buffer.write_u8(self.drawing_flags.bits())?;
-        buffer.write_u16::<LittleEndian>(1)?; // multipleRectangleSupport
-        buffer.write_u16::<LittleEndian>(0)?; // padding
-
-        Ok(())
-    }
-
-    fn buffer_length(&self) -> usize {
-        BITMAP_LENGTH
-    }
 }
+
+impl_pdu_parsing!(Bitmap);

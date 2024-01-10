@@ -145,15 +145,24 @@ impl PduParsing for ClientNewLicenseRequest {
         let mut client_random = vec![0u8; RANDOM_NUMBER_SIZE];
         stream.read_exact(&mut client_random)?;
 
-        let premaster_secret_blob_header = BlobHeader::read_from_buffer(BlobType::Random, &mut stream)?;
+        let premaster_secret_blob_header = BlobHeader::from_buffer(&mut stream)?;
+        if premaster_secret_blob_header.blob_type != BlobType::Random {
+            return Err(ServerLicenseError::InvalidBlobType);
+        }
         let mut encrypted_premaster_secret = vec![0u8; premaster_secret_blob_header.length];
         stream.read_exact(&mut encrypted_premaster_secret)?;
 
-        let username_blob_header = BlobHeader::read_from_buffer(BlobType::ClientUserName, &mut stream)?;
+        let username_blob_header = BlobHeader::from_buffer(&mut stream)?;
+        if username_blob_header.blob_type != BlobType::ClientUserName {
+            return Err(ServerLicenseError::InvalidBlobType);
+        }
         let client_username =
             utils::read_string_from_stream(&mut stream, username_blob_header.length, CharacterSet::Ansi, false)?;
 
-        let machine_name_blob = BlobHeader::read_from_buffer(BlobType::ClientMachineNameBlob, &mut stream)?;
+        let machine_name_blob = BlobHeader::from_buffer(&mut stream)?;
+        if machine_name_blob.blob_type != BlobType::ClientMachineNameBlob {
+            return Err(ServerLicenseError::InvalidBlobType);
+        }
         let client_machine_name =
             utils::read_string_from_stream(&mut stream, machine_name_blob.length, CharacterSet::Ansi, false)?;
 
@@ -173,21 +182,21 @@ impl PduParsing for ClientNewLicenseRequest {
         stream.write_u32::<LittleEndian>(PLATFORM_ID)?;
         stream.write_all(&self.client_random)?;
 
-        BlobHeader::new(BlobType::Random, self.encrypted_premaster_secret.len()).write_to_buffer(&mut stream)?;
+        BlobHeader::new(BlobType::Random, self.encrypted_premaster_secret.len()).to_buffer(&mut stream)?;
         stream.write_all(&self.encrypted_premaster_secret)?;
 
         BlobHeader::new(
             BlobType::ClientUserName,
             self.client_username.len() + UTF8_NULL_TERMINATOR_SIZE,
         )
-        .write_to_buffer(&mut stream)?;
+        .to_buffer(&mut stream)?;
         utils::write_string_with_null_terminator(&mut stream, &self.client_username, CharacterSet::Ansi)?;
 
         BlobHeader::new(
             BlobType::ClientMachineNameBlob,
             self.client_machine_name.len() + UTF8_NULL_TERMINATOR_SIZE,
         )
-        .write_to_buffer(&mut stream)?;
+        .to_buffer(&mut stream)?;
         utils::write_string_with_null_terminator(&mut stream, &self.client_machine_name, CharacterSet::Ansi)?;
 
         Ok(())

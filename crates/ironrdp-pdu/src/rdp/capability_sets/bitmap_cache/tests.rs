@@ -1,6 +1,7 @@
 use lazy_static::lazy_static;
 
 use super::*;
+use crate::{decode, encode_vec};
 
 const CACHE_ENTRY_BUFFER: [u8; 4] = [0x64, 0x00, 0x32, 0x00];
 
@@ -91,78 +92,78 @@ lazy_static! {
 fn from_buffer_correctly_parses_bitmap_cache_capset() {
     let buffer = BITMAP_CACHE_BUFFER.as_ref();
 
-    assert_eq!(*BITMAP_CACHE, BitmapCache::from_buffer(buffer).unwrap());
+    assert_eq!(*BITMAP_CACHE, decode(buffer).unwrap());
 }
 
 #[test]
 fn to_buffer_correctly_serializes_bitmap_cache_capset() {
-    let mut buffer = Vec::new();
-    BITMAP_CACHE.to_buffer(&mut buffer).unwrap();
+    let bitmap_cache = BITMAP_CACHE.clone();
+
+    let buffer = encode_vec(&bitmap_cache).unwrap();
 
     assert_eq!(buffer, BITMAP_CACHE_BUFFER.as_ref());
 }
 
 #[test]
 fn buffer_length_is_correct_for_bitmap_cache_capset() {
-    assert_eq!(BITMAP_CACHE_BUFFER.len(), BITMAP_CACHE.buffer_length());
+    assert_eq!(BITMAP_CACHE_BUFFER.len(), BITMAP_CACHE.size());
 }
 
 #[test]
 fn from_buffer_correctly_parses_bitmap_cache_rev2_capset() {
     let buffer = BITMAP_CACHE_REV2_BUFFER.as_ref();
 
-    assert_eq!(*BITMAP_CACHE_REV2, BitmapCacheRev2::from_buffer(buffer).unwrap());
+    assert_eq!(*BITMAP_CACHE_REV2, decode(buffer).unwrap());
 }
 
 #[test]
 fn to_buffer_correctly_serializes_bitmap_cache_rev2_capset() {
-    let mut buffer = Vec::new();
-    BITMAP_CACHE_REV2.to_buffer(&mut buffer).unwrap();
+    let bitmap_cache = BITMAP_CACHE_REV2.clone();
+
+    let buffer = encode_vec(&bitmap_cache).unwrap();
 
     assert_eq!(buffer, BITMAP_CACHE_REV2_BUFFER.as_ref());
 }
 
 #[test]
 fn buffer_length_is_correct_for_bitmap_cache_rev2_capset() {
-    assert_eq!(BITMAP_CACHE_REV2_BUFFER.len(), BITMAP_CACHE_REV2.buffer_length());
+    assert_eq!(BITMAP_CACHE_REV2_BUFFER.len(), BITMAP_CACHE_REV2.size());
 }
 
 #[test]
 fn from_buffer_correctly_parses_cell_info() {
-    assert_eq!(*CELL_INFO, CellInfo::from_buffer(CELL_INFO_BUFFER.as_ref()).unwrap());
+    assert_eq!(*CELL_INFO, decode(CELL_INFO_BUFFER.as_ref()).unwrap());
 }
 
 #[test]
 fn to_buffer_correctly_serializes_cell_info() {
-    let mut buffer = Vec::new();
+    let cell_info = CELL_INFO.clone();
 
-    CELL_INFO.to_buffer(&mut buffer).unwrap();
+    let buffer = encode_vec(&cell_info).unwrap();
 
     assert_eq!(buffer, CELL_INFO_BUFFER.as_ref());
 }
 
 #[test]
 fn buffer_length_is_correct_for_cell_info() {
-    assert_eq!(CELL_INFO_BUFFER.len(), CELL_INFO.buffer_length());
+    assert_eq!(CELL_INFO_BUFFER.len(), CELL_INFO.size());
 }
 
 #[test]
 fn from_buffer_correctly_parses_cache_entry() {
-    assert_eq!(
-        *CACHE_ENTRY,
-        CacheEntry::from_buffer(CACHE_ENTRY_BUFFER.as_ref()).unwrap()
-    );
+    assert_eq!(*CACHE_ENTRY, decode(CACHE_ENTRY_BUFFER.as_ref()).unwrap());
 }
 
 #[test]
 fn to_buffer_correctly_serializes_cache_entry() {
-    let mut buffer = Vec::new();
-    CACHE_ENTRY.to_buffer(&mut buffer).unwrap();
+    let cache_entry = CACHE_ENTRY.clone();
+
+    let buffer = encode_vec(&cache_entry).unwrap();
 
     assert_eq!(buffer, CACHE_ENTRY_BUFFER.as_ref());
 }
 
 #[test]
 fn buffer_length_is_correct_for_cache_entry() {
-    assert_eq!(CACHE_ENTRY_BUFFER.len(), CACHE_ENTRY.buffer_length());
+    assert_eq!(CACHE_ENTRY_BUFFER.len(), CACHE_ENTRY.size());
 }

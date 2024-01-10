@@ -1,35 +1,48 @@
-use std::io;
-
 use bitflags::bitflags;
-use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 
-use crate::rdp::capability_sets::CapabilitySetsError;
-use crate::PduParsing;
+use crate::cursor::{ReadCursor, WriteCursor};
+use crate::{PduDecode, PduEncode, PduResult};
 
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub struct LargePointer {
     pub flags: LargePointerSupportFlags,
 }
 
-impl PduParsing for LargePointer {
-    type Error = CapabilitySetsError;
+impl LargePointer {
+    const NAME: &'static str = "LargePointer";
 
-    fn from_buffer(mut buffer: impl io::Read) -> Result<Self, Self::Error> {
-        let flags = LargePointerSupportFlags::from_bits_truncate(buffer.read_u16::<LittleEndian>()?);
+    const FIXED_PART_SIZE: usize = 2;
+}
 
-        Ok(Self { flags })
-    }
+impl PduEncode for LargePointer {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_fixed_part_size!(in: dst);
 
-    fn to_buffer(&self, mut buffer: impl io::Write) -> Result<(), Self::Error> {
-        buffer.write_u16::<LittleEndian>(self.flags.bits())?;
+        dst.write_u16(self.flags.bits());
 
         Ok(())
     }
 
-    fn buffer_length(&self) -> usize {
-        2
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    fn size(&self) -> usize {
+        Self::FIXED_PART_SIZE
     }
 }
+
+impl<'de> PduDecode<'de> for LargePointer {
+    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+        ensure_fixed_part_size!(in: src);
+
+        let flags = LargePointerSupportFlags::from_bits_truncate(src.read_u16());
+
+        Ok(Self { flags })
+    }
+}
+
+impl_pdu_parsing!(LargePointer);
 
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -42,6 +55,7 @@ bitflags! {
 #[cfg(test)]
 mod test {
     use super::*;
+    use crate::{decode, encode_vec};
 
     const LARGE_POINTER_PDU_BUFFER: [u8; 2] = [0x01, 0x00];
     const LARGE_POINTER_PDU: LargePointer = LargePointer {
@@ -50,23 +64,19 @@ mod test {
 
     #[test]
     fn from_buffer_correctly_parses_large_pointer() {
-        assert_eq!(
-            LARGE_POINTER_PDU,
-            LargePointer::from_buffer(LARGE_POINTER_PDU_BUFFER.as_ref()).unwrap()
-        );
+        assert_eq!(LARGE_POINTER_PDU, decode(LARGE_POINTER_PDU_BUFFER.as_ref()).unwrap());
     }
 
     #[test]
     fn to_buffer_correctly_serializes_large_pointer() {
         let expected = LARGE_POINTER_PDU_BUFFER.as_ref();
-        let mut buffer = Vec::with_capacity(expected.len());
 
-        LARGE_POINTER_PDU.to_buffer(&mut buffer).unwrap();
+        let buffer = encode_vec(&LARGE_POINTER_PDU).unwrap();
         assert_eq!(expected, buffer.as_slice());
     }
 
     #[test]
     fn buffer_length_is_correct_for_large_pointer() {
-        assert_eq!(LARGE_POINTER_PDU_BUFFER.len(), LARGE_POINTER_PDU.buffer_length());
+        assert_eq!(LARGE_POINTER_PDU_BUFFER.len(), LARGE_POINTER_PDU.size());
     }
 }

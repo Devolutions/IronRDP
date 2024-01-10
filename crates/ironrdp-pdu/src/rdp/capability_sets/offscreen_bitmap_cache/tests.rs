@@ -1,6 +1,7 @@
 use lazy_static::lazy_static;
 
 use super::*;
+use crate::{decode, encode_vec};
 
 const OFFSCREEN_BITMAP_CACHE_BUFFER: [u8; 8] = [
     0x01, 0x00, 0x00, 0x00, // offscreenSupportLevel
@@ -20,23 +21,20 @@ lazy_static! {
 fn from_buffer_correctly_parses_offscreen_bitmap_cache_capset() {
     assert_eq!(
         *OFFSCREEN_BITMAP_CACHE,
-        OffscreenBitmapCache::from_buffer(OFFSCREEN_BITMAP_CACHE_BUFFER.as_ref()).unwrap()
+        decode(OFFSCREEN_BITMAP_CACHE_BUFFER.as_ref()).unwrap()
     );
 }
 
 #[test]
 fn to_buffer_correctly_serializes_offscreen_bitmap_cache_capset() {
-    let mut buffer = Vec::new();
+    let off = OFFSCREEN_BITMAP_CACHE.clone();
 
-    OFFSCREEN_BITMAP_CACHE.to_buffer(&mut buffer).unwrap();
+    let buffer = encode_vec(&off).unwrap();
 
     assert_eq!(buffer, OFFSCREEN_BITMAP_CACHE_BUFFER.as_ref());
 }
 
 #[test]
 fn buffer_length_is_correct_for_offscreen_bitmap_cache_capset() {
-    assert_eq!(
-        OFFSCREEN_BITMAP_CACHE_BUFFER.len(),
-        OFFSCREEN_BITMAP_CACHE.buffer_length()
-    );
+    assert_eq!(OFFSCREEN_BITMAP_CACHE_BUFFER.len(), OFFSCREEN_BITMAP_CACHE.size());
 }

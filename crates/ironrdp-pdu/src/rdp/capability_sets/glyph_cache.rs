@@ -1,14 +1,11 @@
 #[cfg(test)]
 mod tests;
 
-use std::io;
-
-use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive, ToPrimitive};
 
-use crate::rdp::capability_sets::CapabilitySetsError;
-use crate::PduParsing;
+use crate::cursor::{ReadCursor, WriteCursor};
+use crate::{PduDecode, PduEncode, PduResult};
 
 pub const GLYPH_CACHE_NUM: usize = 10;
 
@@ -29,25 +26,39 @@ pub struct CacheDefinition {
     pub max_cell_size: u16,
 }
 
-impl PduParsing for CacheDefinition {
-    type Error = CapabilitySetsError;
+impl CacheDefinition {
+    const NAME: &'static str = "CacheDefinition";
 
-    fn from_buffer(mut buffer: impl io::Read) -> Result<Self, Self::Error> {
-        let entries = buffer.read_u16::<LittleEndian>()?;
-        let max_cell_size = buffer.read_u16::<LittleEndian>()?;
+    const FIXED_PART_SIZE: usize = CACHE_DEFINITION_LENGTH;
+}
 
-        Ok(CacheDefinition { entries, max_cell_size })
-    }
+impl PduEncode for CacheDefinition {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_fixed_part_size!(in: dst);
 
-    fn to_buffer(&self, mut buffer: impl io::Write) -> Result<(), Self::Error> {
-        buffer.write_u16::<LittleEndian>(self.entries)?;
-        buffer.write_u16::<LittleEndian>(self.max_cell_size)?;
+        dst.write_u16(self.entries);
+        dst.write_u16(self.max_cell_size);
 
         Ok(())
     }
 
-    fn buffer_length(&self) -> usize {
-        CACHE_DEFINITION_LENGTH
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    fn size(&self) -> usize {
+        Self::FIXED_PART_SIZE
+    }
+}
+
+impl<'de> PduDecode<'de> for CacheDefinition {
+    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+        ensure_fixed_part_size!(in: src);
+
+        let entries = src.read_u16();
+        let max_cell_size = src.read_u16();
+
+        Ok(CacheDefinition { entries, max_cell_size })
     }
 }
 
@@ -58,20 +69,51 @@ pub struct GlyphCache {
     pub glyph_support_level: GlyphSupportLevel,
 }
 
-impl PduParsing for GlyphCache {
-    type Error = CapabilitySetsError;
+impl GlyphCache {
+    const NAME: &'static str = "GlyphCache";
 
-    fn from_buffer(mut buffer: impl io::Read) -> Result<Self, Self::Error> {
+    const FIXED_PART_SIZE: usize = GLYPH_CACHE_LENGTH;
+}
+
+impl PduEncode for GlyphCache {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_fixed_part_size!(in: dst);
+
+        for glyph in self.glyph_cache.iter() {
+            glyph.encode(dst)?;
+        }
+
+        self.frag_cache.encode(dst)?;
+
+        dst.write_u16(self.glyph_support_level.to_u16().unwrap());
+        write_padding!(dst, 2);
+
+        Ok(())
+    }
+
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    fn size(&self) -> usize {
+        Self::FIXED_PART_SIZE
+    }
+}
+
+impl<'de> PduDecode<'de> for GlyphCache {
+    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+        ensure_fixed_part_size!(in: src);
+
         let mut glyph_cache = [CacheDefinition::default(); GLYPH_CACHE_NUM];
 
         for glyph in glyph_cache.iter_mut() {
-            *glyph = CacheDefinition::from_buffer(&mut buffer)?;
+            *glyph = CacheDefinition::decode(src)?;
         }
 
-        let frag_cache = CacheDefinition::from_buffer(&mut buffer)?;
-        let glyph_support_level = GlyphSupportLevel::from_u16(buffer.read_u16::<LittleEndian>()?)
-            .ok_or(CapabilitySetsError::InvalidGlyphSupportLevel)?;
-        let _padding = buffer.read_u16::<LittleEndian>()?;
+        let frag_cache = CacheDefinition::decode(src)?;
+        let glyph_support_level = GlyphSupportLevel::from_u16(src.read_u16())
+            .ok_or_else(|| invalid_message_err!("glyphSupport", "invalid glyph support level"))?;
+        let _padding = src.read_u16();
 
         Ok(GlyphCache {
             glyph_cache,
@@ -79,21 +121,6 @@ impl PduParsing for GlyphCache {
             glyph_support_level,
         })
     }
-
-    fn to_buffer(&self, mut buffer: impl io::Write) -> Result<(), Self::Error> {
-        for glyph in self.glyph_cache.iter() {
-            glyph.to_buffer(&mut buffer)?;
-        }
-
-        self.frag_cache.to_buffer(&mut buffer)?;
-
-        buffer.write_u16::<LittleEndian>(self.glyph_support_level.to_u16().unwrap())?;
-        buffer.write_u16::<LittleEndian>(0)?; // padding
-
-        Ok(())
-    }
-
-    fn buffer_length(&self) -> usize {
-        GLYPH_CACHE_LENGTH
-    }
 }
+
+impl_pdu_parsing!(GlyphCache);

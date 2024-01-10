@@ -1,10 +1,11 @@
+use std::borrow::Cow;
 use std::mem;
 use std::net::SocketAddr;
 
 use ironrdp_pdu::rdp::capability_sets::CapabilitySet;
 use ironrdp_pdu::rdp::client_info::{PerformanceFlags, TimezoneInfo};
 use ironrdp_pdu::write_buf::WriteBuf;
-use ironrdp_pdu::{gcc, mcs, nego, rdp, PduHint};
+use ironrdp_pdu::{encode_vec, gcc, mcs, nego, rdp, PduEncode, PduHint};
 use ironrdp_svc::{StaticChannelSet, StaticVirtualChannel, SvcClientProcessor};
 
 use crate::channel_connection::{ChannelConnectionSequence, ChannelConnectionState};
@@ -446,7 +447,7 @@ impl Sequence for ClientConnector {
 
                 debug!(message = ?client_info, "Send");
 
-                let written = legacy::encode_send_data_request(user_channel_id, io_channel_id, &client_info, output)?;
+                let written = encode_send_data_request(user_channel_id, io_channel_id, &client_info, output)?;
 
                 (
                     Written::from_size(written)?,
@@ -640,6 +641,25 @@ impl Sequence for ClientConnector {
 
         Ok(written)
     }
+}
+
+pub fn encode_send_data_request<T: PduEncode>(
+    initiator_id: u16,
+    channel_id: u16,
+    user_msg: &T,
+    buf: &mut WriteBuf,
+) -> ConnectorResult<usize> {
+    let user_data = encode_vec(user_msg).map_err(ConnectorError::pdu)?;
+
+    let pdu = ironrdp_pdu::mcs::SendDataRequest {
+        initiator_id,
+        channel_id,
+        user_data: Cow::Owned(user_data),
+    };
+
+    let written = ironrdp_pdu::encode_buf(&pdu, buf).map_err(ConnectorError::pdu)?;
+
+    Ok(written)
 }
 
 #[allow(single_use_lifetimes)] // anonymous lifetimes in `impl Trait` are unstable

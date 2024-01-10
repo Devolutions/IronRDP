@@ -165,14 +165,20 @@ impl PduParsing for ServerLicenseRequest {
 
         let product_info = ProductInfo::from_buffer(&mut stream)?;
 
-        let _key_exchange_algorithm_blob = BlobHeader::read_from_buffer(BlobType::KeyExchangeAlgorithm, &mut stream)?;
+        let key_exchange_algorithm_blob = BlobHeader::from_buffer(&mut stream)?;
+        if key_exchange_algorithm_blob.blob_type != BlobType::KeyExchangeAlgorithm {
+            return Err(ServerLicenseError::InvalidBlobType);
+        }
 
         let key_exchange_algorithm = stream.read_u32::<LittleEndian>()?;
         if key_exchange_algorithm != RSA_EXCHANGE_ALGORITHM {
             return Err(ServerLicenseError::InvalidKeyExchangeAlgorithm);
         }
 
-        let cert_blob = BlobHeader::read_from_buffer(BlobType::Certificate, &mut stream)?;
+        let cert_blob = BlobHeader::from_buffer(&mut stream)?;
+        if cert_blob.blob_type != BlobType::Certificate {
+            return Err(ServerLicenseError::InvalidBlobType);
+        }
 
         // The terminal server can choose not to send the certificate by setting the wblobLen field in the Licensing Binary BLOB structure to 0
         let server_certificate = if cert_blob.length != 0 {
@@ -204,11 +210,11 @@ impl PduParsing for ServerLicenseRequest {
         stream.write_all(&self.server_random)?;
         self.product_info.to_buffer(&mut stream)?;
 
-        BlobHeader::new(BlobType::KeyExchangeAlgorithm, KEY_EXCHANGE_FIELD_SIZE).write_to_buffer(&mut stream)?;
+        BlobHeader::new(BlobType::KeyExchangeAlgorithm, KEY_EXCHANGE_FIELD_SIZE).to_buffer(&mut stream)?;
         stream.write_u32::<LittleEndian>(KEY_EXCHANGE_ALGORITHM_RSA)?;
 
         let cert_size = self.server_certificate.as_ref().map(|v| v.buffer_length()).unwrap_or(0);
-        BlobHeader::new(BlobType::Certificate, cert_size).write_to_buffer(&mut stream)?;
+        BlobHeader::new(BlobType::Certificate, cert_size).to_buffer(&mut stream)?;
 
         if let Some(cert) = &self.server_certificate {
             cert.to_buffer(&mut stream)?;
@@ -242,7 +248,10 @@ impl PduParsing for Scope {
     type Error = ServerLicenseError;
 
     fn from_buffer(mut stream: impl io::Read) -> Result<Self, Self::Error> {
-        let blob_header = BlobHeader::read_from_buffer(BlobType::Scope, &mut stream)?;
+        let blob_header = BlobHeader::from_buffer(&mut stream)?;
+        if blob_header.blob_type != BlobType::Scope {
+            return Err(ServerLicenseError::InvalidBlobType);
+        }
         if blob_header.length < UTF8_NULL_TERMINATOR_SIZE {
             return Err(ServerLicenseError::BlobTooSmall);
         }
@@ -262,7 +271,7 @@ impl PduParsing for Scope {
 
     fn to_buffer(&self, mut stream: impl io::Write) -> Result<(), Self::Error> {
         let data_size = self.0.len() + UTF8_NULL_TERMINATOR_SIZE;
-        BlobHeader::new(BlobType::Scope, data_size).write_to_buffer(&mut stream)?;
+        BlobHeader::new(BlobType::Scope, data_size).to_buffer(&mut stream)?;
         stream.write_all(self.0.as_bytes())?;
         stream.write_u8(0)?; // null terminator
 

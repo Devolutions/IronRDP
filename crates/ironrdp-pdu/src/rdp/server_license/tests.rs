@@ -1,6 +1,7 @@
 use lazy_static::lazy_static;
 
 use super::*;
+use crate::{decode, encode_vec, PduErrorKind};
 
 const LICENSE_HEADER_BUFFER: [u8; 8] = [
     0x80, 0x00, // flags
@@ -54,11 +55,8 @@ lazy_static! {
 
 #[test]
 fn read_blob_header_handles_wrong_type_correctly() {
-    match BlobHeader::read_from_buffer(BlobType::Certificate, &mut BLOB_BUFFER.as_ref()) {
-        Err(ServerLicenseError::InvalidBlobType) => (),
-        Err(err) => panic!("expected {}, found {}", ServerLicenseError::InvalidBlobType, err),
-        Ok(_) => panic!("expected error, found Ok"),
-    }
+    let h = decode::<BlobHeader>(&BLOB_BUFFER).unwrap();
+    assert_ne!(h.blob_type, BlobType::Certificate);
 }
 
 #[test]
@@ -73,16 +71,16 @@ fn read_blob_header_handles_invalid_type_correctly() {
         0x00, // blob data
     ];
 
-    match BlobHeader::read_from_buffer(BlobType::Certificate, invalid_blob_buffer.as_ref()) {
-        Err(ServerLicenseError::InvalidBlobType) => (),
-        Err(err) => panic!("expected error {}, found {}", ServerLicenseError::InvalidBlobType, err),
-        Ok(_) => panic!("expected error, found Ok"),
+    match decode::<BlobHeader>(&invalid_blob_buffer) {
+        Err(e) if matches!(e.kind(), PduErrorKind::InvalidMessage { .. }) => (),
+        _ => panic!("expected invalid message error"),
     }
 }
 
 #[test]
 fn read_blob_header_reads_blob_correctly() {
-    let blob = BlobHeader::read_from_buffer(BlobType::RsaSignature, &mut BLOB_BUFFER.as_ref()).unwrap();
+    let blob = decode::<BlobHeader>(&BLOB_BUFFER).unwrap();
+    assert_eq!(blob.blob_type, BlobType::RsaSignature);
     assert_eq!(blob.length, BLOB_BUFFER.len() - 4);
 }
 
@@ -91,10 +89,8 @@ fn write_blob_header_writes_blob_header_correctly() {
     let correct_blob_header = &BLOB_BUFFER[..4];
     let blob_data = &BLOB_BUFFER[4..];
 
-    let mut buffer = Vec::new();
-    BlobHeader::new(BlobType::RsaSignature, blob_data.len())
-        .write_to_buffer(&mut buffer)
-        .unwrap();
+    let blob = BlobHeader::new(BlobType::RsaSignature, blob_data.len());
+    let buffer = encode_vec(&blob).unwrap();
 
     assert_eq!(correct_blob_header, buffer.as_slice());
 }
@@ -120,25 +116,21 @@ fn mac_data_computes_correctly() {
 #[test]
 fn from_buffer_correctly_parses_license_header() {
     assert_eq!(
-        LicenseHeader::from_buffer(LICENSE_HEADER_BUFFER.as_ref()).unwrap(),
+        decode::<LicenseHeader>(&LICENSE_HEADER_BUFFER).unwrap(),
         *LICENSE_HEADER
     );
 }
 
 #[test]
 fn to_buffer_correctly_serializes_license_header() {
-    let mut buffer = Vec::new();
-    LICENSE_HEADER.to_buffer(&mut buffer).unwrap();
+    let buffer = encode_vec(&*LICENSE_HEADER).unwrap();
 
     assert_eq!(buffer, LICENSE_HEADER_BUFFER.as_ref());
 }
 
 #[test]
 fn buffer_length_is_correct_for_license_header() {
-    assert_eq!(
-        LICENSE_HEADER.buffer_length(),
-        PREAMBLE_SIZE + BASIC_SECURITY_HEADER_SIZE
-    );
+    assert_eq!(LICENSE_HEADER.size(), PREAMBLE_SIZE + BASIC_SECURITY_HEADER_SIZE);
 }
 
 #[test]
