@@ -23,11 +23,11 @@ pub fn pdu_decode(data: &[u8]) {
     let _ = decode::<McsMessage<'_>>(data);
     let _ = ConnectInitial::from_buffer(data);
     let _ = ConnectResponse::from_buffer(data);
-    let _ = ClientInfoPdu::from_buffer(data);
-    let _ = capability_sets::CapabilitySet::from_buffer(data);
+    let _ = decode::<ClientInfoPdu>(data);
+    let _ = decode::<capability_sets::CapabilitySet>(data);
     let _ = headers::ShareControlHeader::from_buffer(data);
     let _ = decode::<pcb::PreconnectionBlob>(data);
-    let _ = server_error_info::ServerSetErrorInfoPdu::from_buffer(data);
+    let _ = decode::<server_error_info::ServerSetErrorInfoPdu>(data);
 
     let _ = gcc::ClientGccBlocks::from_buffer(data);
     let _ = gcc::ServerGccBlocks::from_buffer(data);
@@ -41,7 +41,7 @@ pub fn pdu_decode(data: &[u8]) {
     let _ = server_license::ServerLicenseRequest::from_buffer(data);
     let _ = server_license::ServerPlatformChallenge::from_buffer(data);
 
-    let _ = vc::ChannelPduHeader::from_buffer(data);
+    let _ = decode::<vc::ChannelPduHeader>(data);
 
     let _ = decode::<fast_path::FastPathHeader>(data);
     let _ = decode::<fast_path::FastPathUpdatePdu<'_>>(data);

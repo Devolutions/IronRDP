@@ -6,10 +6,10 @@ mod tests;
 use std::{io, str};
 
 use bitflags::bitflags;
-use byteorder::{LittleEndian, ReadBytesExt as _, WriteBytesExt as _};
 use thiserror::Error;
 
-use crate::{PduError, PduParsing};
+use crate::cursor::{ReadCursor, WriteCursor};
+use crate::{PduDecode, PduEncode, PduError, PduResult};
 
 const CHANNEL_PDU_HEADER_SIZE: usize = 8;
 
@@ -24,28 +24,40 @@ pub struct ChannelPduHeader {
     pub flags: ChannelControlFlags,
 }
 
-impl PduParsing for ChannelPduHeader {
-    type Error = ChannelError;
+impl ChannelPduHeader {
+    const NAME: &'static str = "ChannelPduHeader";
 
-    fn from_buffer(mut stream: impl io::Read) -> Result<Self, Self::Error> {
-        let total_length = stream.read_u32::<LittleEndian>()?;
-        let flags = ChannelControlFlags::from_bits_truncate(stream.read_u32::<LittleEndian>()?);
+    const FIXED_PART_SIZE: usize = CHANNEL_PDU_HEADER_SIZE;
+}
 
+impl PduEncode for ChannelPduHeader {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_fixed_part_size!(in: dst);
+
+        dst.write_u32(self.length);
+        dst.write_u32(self.flags.bits());
+        Ok(())
+    }
+
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    fn size(&self) -> usize {
+        Self::FIXED_PART_SIZE
+    }
+}
+
+impl<'de> PduDecode<'de> for ChannelPduHeader {
+    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+        ensure_fixed_part_size!(in: src);
+
+        let total_length = src.read_u32();
+        let flags = ChannelControlFlags::from_bits_truncate(src.read_u32());
         Ok(Self {
             length: total_length,
             flags,
         })
-    }
-
-    fn to_buffer(&self, mut stream: impl io::Write) -> Result<(), Self::Error> {
-        stream.write_u32::<LittleEndian>(self.length)?;
-        stream.write_u32::<LittleEndian>(self.flags.bits())?;
-
-        Ok(())
-    }
-
-    fn buffer_length(&self) -> usize {
-        CHANNEL_PDU_HEADER_SIZE
     }
 }
 

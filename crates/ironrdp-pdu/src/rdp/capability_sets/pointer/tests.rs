@@ -1,6 +1,7 @@
 use lazy_static::lazy_static;
 
 use super::*;
+use crate::{decode, encode_vec};
 
 const POINTER_BUFFER: [u8; 6] = [
     0x01, 0x00, // colorPointerFlag
@@ -19,16 +20,14 @@ lazy_static! {
 fn from_buffer_correctly_parses_pointer_capset() {
     let buffer = POINTER_BUFFER.as_ref();
 
-    assert_eq!(*POINTER, Pointer::from_buffer(buffer).unwrap());
+    assert_eq!(*POINTER, decode(buffer).unwrap());
 }
 
 #[test]
 fn to_buffer_correctly_serializes_pointer_capset() {
-    let mut buffer: Vec<u8> = Vec::new();
+    let capset = POINTER.clone();
 
-    let capset = &POINTER;
-
-    capset.to_buffer(&mut buffer).unwrap();
+    let buffer = encode_vec(&capset).unwrap();
 
     assert_eq!(buffer, POINTER_BUFFER.as_ref());
 }
@@ -37,5 +36,5 @@ fn to_buffer_correctly_serializes_pointer_capset() {
 fn buffer_length_is_correct_for_pointer_capset() {
     let correct_length = POINTER_BUFFER.len();
 
-    assert_eq!(correct_length, POINTER.buffer_length());
+    assert_eq!(correct_length, POINTER.size());
 }

@@ -1,11 +1,11 @@
-use ironrdp_connector::legacy::{encode_send_data_request, SendDataIndicationCtx};
+use ironrdp_connector::encode_send_data_request;
+use ironrdp_connector::legacy::SendDataIndicationCtx;
+use ironrdp_pdu::cursor::WriteCursor;
 use ironrdp_pdu::rdp::vc;
-use ironrdp_pdu::rdp::vc::ChannelError;
 use ironrdp_pdu::write_buf::WriteBuf;
-use ironrdp_pdu::PduParsing;
-use std::io::{Read, Write};
+use ironrdp_pdu::{decode, ensure_size, PduEncode, PduResult};
 
-use crate::{SessionError, SessionResult};
+use crate::{SessionError, SessionErrorExt, SessionResult};
 
 pub fn encode_dvc_message(
     initiator_id: u16,
@@ -41,25 +41,28 @@ struct DvcMessage<'a> {
     dvc_data: &'a [u8],
 }
 
-impl PduParsing for DvcMessage<'_> {
-    type Error = ChannelError;
+impl DvcMessage<'_> {
+    const NAME: &'static str = "DvcMessage";
+}
 
-    fn from_buffer(_: impl Read) -> Result<Self, Self::Error>
-    where
-        Self: Sized,
-    {
-        Err(std::io::Error::other("legacy::DvcMessage::from_buffer called – this is a bug").into())
-    }
+impl PduEncode for DvcMessage<'_> {
+    fn encode(&self, mut dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_size!(in: dst, size: self.size());
 
-    fn to_buffer(&self, mut stream: impl Write) -> Result<(), Self::Error> {
-        self.channel_header.to_buffer(&mut stream)?;
-        self.dvc_pdu.to_buffer(&mut stream)?;
-        stream.write_all(self.dvc_data)?;
+        self.channel_header.encode(dst)?;
+        self.dvc_pdu
+            .to_buffer(&mut dst)
+            .map_err(|e| ironrdp_pdu::custom_err!("DVC pdu", e))?;
+        dst.write_slice(self.dvc_data);
         Ok(())
     }
 
-    fn buffer_length(&self) -> usize {
-        self.channel_header.buffer_length() + self.dvc_pdu.buffer_length() + self.dvc_data.len()
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    fn size(&self) -> usize {
+        self.channel_header.size() + self.dvc_pdu.buffer_length() + self.dvc_data.len()
     }
 }
 
@@ -72,7 +75,7 @@ pub fn decode_dvc_message(ctx: SendDataIndicationCtx<'_>) -> SessionResult<Dynam
     let mut user_data = ctx.user_data;
 
     // [ vc::ChannelPduHeader | …
-    let channel_header = vc::ChannelPduHeader::from_buffer(&mut user_data)?;
+    let channel_header: vc::ChannelPduHeader = decode(user_data).map_err(SessionError::pdu)?;
     let dvc_data_len = user_data.len();
     debug_assert_eq!(dvc_data_len, channel_header.length as usize);
 

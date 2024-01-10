@@ -8,7 +8,7 @@ use ironrdp_svc::{StaticChannelSet, SvcServerProcessor};
 use pdu::rdp::capability_sets::CapabilitySet;
 use pdu::rdp::headers::ShareControlPdu;
 use pdu::write_buf::WriteBuf;
-use pdu::{gcc, mcs, nego, rdp, PduParsing};
+use pdu::{decode, gcc, mcs, nego, rdp, PduParsing};
 
 use super::channel_connection::ChannelConnectionSequence;
 use super::finalization::FinalizationSequence;
@@ -201,8 +201,7 @@ impl Sequence for Acceptor {
     fn step(&mut self, input: &[u8], output: &mut WriteBuf) -> ConnectorResult<Written> {
         let (written, next_state) = match std::mem::take(&mut self.state) {
             AcceptorState::InitiationWaitRequest => {
-                let connection_request =
-                    ironrdp_pdu::decode::<nego::ConnectionRequest>(input).map_err(ConnectorError::pdu)?;
+                let connection_request = decode::<nego::ConnectionRequest>(input).map_err(ConnectorError::pdu)?;
 
                 debug!(message = ?connection_request, "Received");
 
@@ -372,9 +371,8 @@ impl Sequence for Acceptor {
                 early_capability,
                 channels,
             } => {
-                let data = pdu::decode::<pdu::mcs::SendDataRequest<'_>>(input).map_err(ConnectorError::pdu)?;
-
-                let client_info = rdp::ClientInfoPdu::from_buffer(data.user_data.as_ref())?;
+                let data: pdu::mcs::SendDataRequest<'_> = decode(input).map_err(ConnectorError::pdu)?;
+                let client_info: rdp::ClientInfoPdu = decode(data.user_data.as_ref()).map_err(ConnectorError::pdu)?;
 
                 debug!(message = ?client_info, "Received");
 
@@ -469,7 +467,7 @@ impl Sequence for Acceptor {
             }
 
             AcceptorState::CapabilitiesWaitConfirm { channels } => {
-                let message = ironrdp_pdu::decode::<mcs::McsMessage<'_>>(input).map_err(ConnectorError::pdu)?;
+                let message = decode::<mcs::McsMessage<'_>>(input).map_err(ConnectorError::pdu)?;
 
                 match message {
                     mcs::McsMessage::SendDataRequest(data) => {

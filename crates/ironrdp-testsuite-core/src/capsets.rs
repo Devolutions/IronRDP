@@ -1,5 +1,5 @@
+use ironrdp_pdu::decode;
 use ironrdp_pdu::rdp::capability_sets::*;
-use ironrdp_pdu::PduParsing;
 
 pub const SERVER_DEMAND_ACTIVE_BUFFER: [u8; 357] = [
     0x04, 0x00, // source descriptor length
@@ -267,18 +267,16 @@ lazy_static! {
             source_descriptor: String::from("RDP"),
             capability_sets: vec![
                 CapabilitySet::Share(SERVER_SHARE_CAPABILITY_SET.to_vec()),
-                CapabilitySet::General(General::from_buffer(SERVER_GENERAL_CAPABILITY_SET.as_ref()).unwrap()),
-                CapabilitySet::VirtualChannel(
-                    VirtualChannel::from_buffer(SERVER_VIRTUAL_CHANNEL_CAPABILITY_SET.as_ref()).unwrap()
-                ),
+                CapabilitySet::General(decode(SERVER_GENERAL_CAPABILITY_SET.as_ref()).unwrap()),
+                CapabilitySet::VirtualChannel(decode(SERVER_VIRTUAL_CHANNEL_CAPABILITY_SET.as_ref()).unwrap()),
                 CapabilitySet::DrawGdiPlus(SERVER_DRAW_GDI_PLUS_CAPABILITY_SET.to_vec()),
                 CapabilitySet::Font(SERVER_FONT_CAPABILITY_SET.to_vec()),
-                CapabilitySet::Bitmap(Bitmap::from_buffer(SERVER_BITMAP_CAPABILITY_SET.as_ref()).unwrap()),
-                CapabilitySet::Order(Order::from_buffer(SERVER_ORDER_CAPABILITY_SET.as_ref()).unwrap()),
+                CapabilitySet::Bitmap(decode(SERVER_BITMAP_CAPABILITY_SET.as_ref()).unwrap()),
+                CapabilitySet::Order(decode(SERVER_ORDER_CAPABILITY_SET.as_ref()).unwrap()),
                 CapabilitySet::ColorCache(SERVER_COLOR_CACHE_CAPABILITY_SET.to_vec()),
                 CapabilitySet::BitmapCacheHostSupport(SERVER_BITMAP_CACHE_HOST_SUPPORT_CAPABILITY_SET.to_vec()),
-                CapabilitySet::Pointer(Pointer::from_buffer(SERVER_POINTER_CAPABILITY_SET.as_ref()).unwrap()),
-                CapabilitySet::Input(Input::from_buffer(SERVER_INPUT_CAPABILITY_SET.as_ref()).unwrap()),
+                CapabilitySet::Pointer(decode(SERVER_POINTER_CAPABILITY_SET.as_ref()).unwrap()),
+                CapabilitySet::Input(decode(SERVER_INPUT_CAPABILITY_SET.as_ref()).unwrap()),
                 CapabilitySet::Rail(SERVER_RAIL_CAPABILITY_SET.to_vec()),
                 CapabilitySet::WindowList(SERVER_WINDOW_LIST_CAPABILITY_SET.to_vec()),
             ],
@@ -289,32 +287,28 @@ lazy_static! {
         pdu: DemandActive {
             source_descriptor: String::from("MSTSC"),
             capability_sets: vec![
-                CapabilitySet::General(General::from_buffer(CLIENT_GENERAL_CAPABILITY_SET.as_ref()).unwrap()),
-                CapabilitySet::Bitmap(Bitmap::from_buffer(CLIENT_BITMAP_CAPABILITY_SET_32_BIT.as_ref()).unwrap()),
-                CapabilitySet::Order(Order::from_buffer(CLIENT_ORDER_CAPABILITY_SET_ANSI_CODE_PAGE.as_ref()).unwrap()),
-                CapabilitySet::BitmapCache(
-                    BitmapCache::from_buffer(CLIENT_BITMAP_CACHE_REV_1_CAPABILITY_SET.as_ref()).unwrap()
-                ),
+                CapabilitySet::General(decode(CLIENT_GENERAL_CAPABILITY_SET.as_ref()).unwrap()),
+                CapabilitySet::Bitmap(decode(CLIENT_BITMAP_CAPABILITY_SET_32_BIT.as_ref()).unwrap()),
+                CapabilitySet::Order(decode(CLIENT_ORDER_CAPABILITY_SET_ANSI_CODE_PAGE.as_ref()).unwrap()),
+                CapabilitySet::BitmapCache(decode(CLIENT_BITMAP_CACHE_REV_1_CAPABILITY_SET.as_ref()).unwrap()),
                 CapabilitySet::ColorCache(CLIENT_COLOR_CACHE_CAPABILITY_SET.to_vec()),
                 CapabilitySet::WindowActivation(CLIENT_WINDOW_ACTIVATION_CAPABILITY_SET.to_vec()),
                 CapabilitySet::Control(CLIENT_CONTROL_CAPABILITY_SET.to_vec()),
-                CapabilitySet::Pointer(Pointer::from_buffer(CLIENT_POINTER_CAPABILITY_SET.as_ref()).unwrap()),
+                CapabilitySet::Pointer(decode(CLIENT_POINTER_CAPABILITY_SET.as_ref()).unwrap()),
                 CapabilitySet::Share(CLIENT_SHARE_CAPABILITY_SET.to_vec()),
-                CapabilitySet::Input(Input::from_buffer(CLIENT_INPUT_CAPABILITY_SET_UNICODE.as_ref()).unwrap()),
-                CapabilitySet::Sound(Sound::from_buffer(CLIENT_SOUND_CAPABILITY_SET.as_ref()).unwrap()),
+                CapabilitySet::Input(decode(CLIENT_INPUT_CAPABILITY_SET_UNICODE.as_ref()).unwrap()),
+                CapabilitySet::Sound(decode(CLIENT_SOUND_CAPABILITY_SET.as_ref()).unwrap()),
                 CapabilitySet::Font(CLIENT_FONT_CAPABILITY_SET.to_vec()),
-                CapabilitySet::GlyphCache(GlyphCache::from_buffer(CLIENT_GLYPH_CACHE_CAPABILITY_SET.as_ref()).unwrap()),
-                CapabilitySet::Brush(Brush::from_buffer(CLIENT_BRUSH_CAPABILITY_SET.as_ref()).unwrap()),
-                CapabilitySet::OffscreenBitmapCache(
-                    OffscreenBitmapCache::from_buffer(CLIENT_OFFSCREEN_BITMAP_CAPABILITY_SET.as_ref()).unwrap()
-                ),
+                CapabilitySet::GlyphCache(decode(CLIENT_GLYPH_CACHE_CAPABILITY_SET.as_ref()).unwrap()),
+                CapabilitySet::Brush(decode(CLIENT_BRUSH_CAPABILITY_SET.as_ref()).unwrap()),
+                CapabilitySet::OffscreenBitmapCache(decode(CLIENT_OFFSCREEN_BITMAP_CAPABILITY_SET.as_ref()).unwrap()),
                 CapabilitySet::VirtualChannel(
-                    VirtualChannel::from_buffer(CLIENT_VIRTUAL_CHANNEL_CAPABILITY_SET_INCOMPLETE.as_ref()).unwrap()
+                    decode(CLIENT_VIRTUAL_CHANNEL_CAPABILITY_SET_INCOMPLETE.as_ref()).unwrap()
                 ),
                 CapabilitySet::DrawNineGridCache(CLIENT_DRAW_NINE_GRID_CACHE_CAPABILITY_SET.to_vec()),
                 CapabilitySet::DrawGdiPlus(CLIENT_DRAW_GDI_PLUS_CAPABILITY_SET.to_vec()),
                 CapabilitySet::MultiFragmentUpdate(
-                    MultifragmentUpdate::from_buffer(CLIENT_MULTI_FRAGMENT_UPDATE_CAPABILITY_SET.as_ref()).unwrap()
+                    decode(CLIENT_MULTI_FRAGMENT_UPDATE_CAPABILITY_SET.as_ref()).unwrap()
                 ),
                 CapabilitySet::WindowList(CLIENT_WINDOW_LIST_CAPABILITY_SET.to_vec()),
             ],
@@ -325,28 +319,22 @@ lazy_static! {
         pdu: DemandActive {
             source_descriptor: String::from("MSTSC"),
             capability_sets: vec![
-                CapabilitySet::General(General::from_buffer(CLIENT_GENERAL_CAPABILITY_SET.as_ref()).unwrap()),
-                CapabilitySet::Bitmap(Bitmap::from_buffer(CLIENT_BITMAP_CAPABILITY_SET.as_ref()).unwrap()),
-                CapabilitySet::Order(Order::from_buffer(CLIENT_ORDER_CAPABILITY_SET.as_ref()).unwrap()),
-                CapabilitySet::BitmapCacheRev2(
-                    BitmapCacheRev2::from_buffer(CLIENT_BITMAP_CACHE_REV_2_CAPABILITY_SET.as_ref()).unwrap()
-                ),
+                CapabilitySet::General(decode(CLIENT_GENERAL_CAPABILITY_SET.as_ref()).unwrap()),
+                CapabilitySet::Bitmap(decode(CLIENT_BITMAP_CAPABILITY_SET.as_ref()).unwrap()),
+                CapabilitySet::Order(decode(CLIENT_ORDER_CAPABILITY_SET.as_ref()).unwrap()),
+                CapabilitySet::BitmapCacheRev2(decode(CLIENT_BITMAP_CACHE_REV_2_CAPABILITY_SET.as_ref()).unwrap()),
                 CapabilitySet::ColorCache(CLIENT_COLOR_CACHE_CAPABILITY_SET.to_vec()),
                 CapabilitySet::WindowActivation(CLIENT_WINDOW_ACTIVATION_CAPABILITY_SET.to_vec()),
                 CapabilitySet::Control(CLIENT_CONTROL_CAPABILITY_SET.to_vec()),
-                CapabilitySet::Pointer(Pointer::from_buffer(CLIENT_POINTER_CAPABILITY_SET.as_ref()).unwrap()),
+                CapabilitySet::Pointer(decode(CLIENT_POINTER_CAPABILITY_SET.as_ref()).unwrap()),
                 CapabilitySet::Share(CLIENT_SHARE_CAPABILITY_SET.to_vec()),
-                CapabilitySet::Input(Input::from_buffer(CLIENT_INPUT_CAPABILITY_SET.as_ref()).unwrap()),
-                CapabilitySet::Sound(Sound::from_buffer(CLIENT_SOUND_CAPABILITY_SET.as_ref()).unwrap()),
+                CapabilitySet::Input(decode(CLIENT_INPUT_CAPABILITY_SET.as_ref()).unwrap()),
+                CapabilitySet::Sound(decode(CLIENT_SOUND_CAPABILITY_SET.as_ref()).unwrap()),
                 CapabilitySet::Font(CLIENT_FONT_CAPABILITY_SET.to_vec()),
-                CapabilitySet::GlyphCache(GlyphCache::from_buffer(CLIENT_GLYPH_CACHE_CAPABILITY_SET.as_ref()).unwrap()),
-                CapabilitySet::Brush(Brush::from_buffer(CLIENT_BRUSH_CAPABILITY_SET.as_ref()).unwrap()),
-                CapabilitySet::OffscreenBitmapCache(
-                    OffscreenBitmapCache::from_buffer(CLIENT_OFFSCREEN_BITMAP_CAPABILITY_SET.as_ref()).unwrap()
-                ),
-                CapabilitySet::VirtualChannel(
-                    VirtualChannel::from_buffer(CLIENT_VIRTUAL_CHANNEL_CAPABILITY_SET.as_ref()).unwrap()
-                ),
+                CapabilitySet::GlyphCache(decode(CLIENT_GLYPH_CACHE_CAPABILITY_SET.as_ref()).unwrap()),
+                CapabilitySet::Brush(decode(CLIENT_BRUSH_CAPABILITY_SET.as_ref()).unwrap()),
+                CapabilitySet::OffscreenBitmapCache(decode(CLIENT_OFFSCREEN_BITMAP_CAPABILITY_SET.as_ref()).unwrap()),
+                CapabilitySet::VirtualChannel(decode(CLIENT_VIRTUAL_CHANNEL_CAPABILITY_SET.as_ref()).unwrap()),
                 CapabilitySet::DrawNineGridCache(CLIENT_DRAW_NINE_GRID_CACHE_CAPABILITY_SET.to_vec()),
                 CapabilitySet::DrawGdiPlus(CLIENT_DRAW_GDI_PLUS_CAPABILITY_SET.to_vec()),
             ],

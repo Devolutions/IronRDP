@@ -1,9 +1,7 @@
-use std::io;
-
-use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
-
-use super::SessionError;
-use crate::{utils, PduParsing};
+use crate::{
+    cursor::{ReadCursor, WriteCursor},
+    utils, PduDecode, PduEncode, PduResult,
+};
 
 const DOMAIN_NAME_SIZE_FIELD_SIZE: usize = 4;
 const DOMAIN_NAME_SIZE_V1: usize = 52;
@@ -14,7 +12,6 @@ const ID_SESSION_SIZE: usize = 4;
 const SAVE_SESSION_PDU_VERSION_ONE: u16 = 0x0001;
 const LOGON_INFO_V2_SIZE: usize = 18;
 const LOGON_INFO_V2_PADDING_SIZE: usize = 558;
-const LOGON_INFO_V2_PADDING_BUFFER: [u8; LOGON_INFO_V2_PADDING_SIZE] = [0; LOGON_INFO_V2_PADDING_SIZE];
 const DOMAIN_NAME_SIZE_V2: usize = 52;
 const USER_NAME_SIZE_V2: usize = 512;
 
@@ -23,27 +20,68 @@ pub struct LogonInfoVersion1 {
     pub logon_info: LogonInfo,
 }
 
-impl PduParsing for LogonInfoVersion1 {
-    type Error = SessionError;
+impl LogonInfoVersion1 {
+    const NAME: &'static str = "LogonInfoVersion1";
 
-    fn from_buffer(mut stream: impl io::Read) -> Result<Self, Self::Error> {
-        let domain_name_size = stream.read_u32::<LittleEndian>()?;
-        if domain_name_size > DOMAIN_NAME_SIZE_V1 as u32 {
-            return Err(SessionError::InvalidDomainNameSize);
+    const FIXED_PART_SIZE: usize = DOMAIN_NAME_SIZE_FIELD_SIZE
+        + DOMAIN_NAME_SIZE_V1
+        + USER_NAME_SIZE_FIELD_SIZE
+        + USER_NAME_SIZE_V1
+        + ID_SESSION_SIZE;
+}
+
+impl PduEncode for LogonInfoVersion1 {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_size!(in: dst, size: self.size());
+
+        let mut domain_name_buffer = utils::to_utf16_bytes(self.logon_info.domain_name.as_ref());
+        domain_name_buffer.resize(DOMAIN_NAME_SIZE_V1 - 2, 0);
+        let mut user_name_buffer = utils::to_utf16_bytes(self.logon_info.user_name.as_ref());
+        user_name_buffer.resize(USER_NAME_SIZE_V1 - 2, 0);
+
+        dst.write_u32(cast_length!(
+            "domainNameSize",
+            (self.logon_info.domain_name.len() + 1) * 2
+        )?);
+        dst.write_slice(domain_name_buffer.as_ref());
+        dst.write_u16(0); // UTF-16 null terminator
+        dst.write_u32(cast_length!("userNameSize", (self.logon_info.user_name.len() + 1) * 2)?);
+        dst.write_slice(user_name_buffer.as_ref());
+        dst.write_u16(0); // UTF-16 null terminator
+        dst.write_u32(self.logon_info.session_id);
+
+        Ok(())
+    }
+
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    fn size(&self) -> usize {
+        Self::FIXED_PART_SIZE
+    }
+}
+
+impl<'de> PduDecode<'de> for LogonInfoVersion1 {
+    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+        ensure_fixed_part_size!(in: src);
+
+        let domain_name_size: usize = cast_length!("domainNameSize", src.read_u32())?;
+        if domain_name_size > DOMAIN_NAME_SIZE_V1 {
+            return Err(invalid_message_err!("domainNameSize", "invalid domain name size"));
         }
 
         let domain_name =
-            utils::read_string_from_stream(&mut stream, DOMAIN_NAME_SIZE_V1, utils::CharacterSet::Unicode, false)?;
+            utils::decode_string(src.read_slice(DOMAIN_NAME_SIZE_V1), utils::CharacterSet::Unicode, false)?;
 
-        let user_name_size = stream.read_u32::<LittleEndian>()?;
-        if user_name_size > USER_NAME_SIZE_V1 as u32 {
-            return Err(SessionError::InvalidUserNameSize);
+        let user_name_size: usize = cast_length!("userNameSize", src.read_u32())?;
+        if user_name_size > USER_NAME_SIZE_V1 {
+            return Err(invalid_message_err!("userNameSize", "invalid user name size"));
         }
 
-        let user_name =
-            utils::read_string_from_stream(&mut stream, USER_NAME_SIZE_V1, utils::CharacterSet::Unicode, false)?;
+        let user_name = utils::decode_string(src.read_slice(USER_NAME_SIZE_V1), utils::CharacterSet::Unicode, false)?;
 
-        let session_id = stream.read_u32::<LittleEndian>()?;
+        let session_id = src.read_u32();
 
         Ok(Self {
             logon_info: LogonInfo {
@@ -53,78 +91,92 @@ impl PduParsing for LogonInfoVersion1 {
             },
         })
     }
-
-    fn to_buffer(&self, mut stream: impl io::Write) -> Result<(), Self::Error> {
-        let mut domain_name_buffer = utils::to_utf16_bytes(self.logon_info.domain_name.as_ref());
-        domain_name_buffer.resize(DOMAIN_NAME_SIZE_V1 - 2, 0);
-        let mut user_name_buffer = utils::to_utf16_bytes(self.logon_info.user_name.as_ref());
-        user_name_buffer.resize(USER_NAME_SIZE_V1 - 2, 0);
-
-        stream.write_u32::<LittleEndian>(((self.logon_info.domain_name.len() + 1) * 2) as u32)?;
-        stream.write_all(domain_name_buffer.as_ref())?;
-        stream.write_u16::<LittleEndian>(0)?; // UTF-16 null terminator
-        stream.write_u32::<LittleEndian>(((self.logon_info.user_name.len() + 1) * 2) as u32)?;
-        stream.write_all(user_name_buffer.as_ref())?;
-        stream.write_u16::<LittleEndian>(0)?; // UTF-16 null terminator
-        stream.write_u32::<LittleEndian>(self.logon_info.session_id)?;
-
-        Ok(())
-    }
-
-    fn buffer_length(&self) -> usize {
-        DOMAIN_NAME_SIZE_FIELD_SIZE
-            + DOMAIN_NAME_SIZE_V1
-            + USER_NAME_SIZE_FIELD_SIZE
-            + USER_NAME_SIZE_V1
-            + ID_SESSION_SIZE
-    }
 }
+
+impl_pdu_parsing!(LogonInfoVersion1);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LogonInfoVersion2 {
     pub logon_info: LogonInfo,
 }
 
-impl PduParsing for LogonInfoVersion2 {
-    type Error = SessionError;
+impl LogonInfoVersion2 {
+    const NAME: &'static str = "LogonInfoVersion2";
 
-    fn from_buffer(mut stream: impl io::Read) -> Result<Self, Self::Error> {
-        let version = stream.read_u16::<LittleEndian>()?;
+    const FIXED_PART_SIZE: usize = LOGON_INFO_V2_SIZE + LOGON_INFO_V2_PADDING_SIZE;
+}
+
+impl PduEncode for LogonInfoVersion2 {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_size!(in: dst, size: self.size());
+
+        dst.write_u16(SAVE_SESSION_PDU_VERSION_ONE);
+        dst.write_u32(LOGON_INFO_V2_SIZE as u32);
+        dst.write_u32(self.logon_info.session_id);
+        dst.write_u32(cast_length!(
+            "domainNameSize",
+            (self.logon_info.domain_name.len() + 1) * 2
+        )?);
+        dst.write_u32(cast_length!("userNameSize", (self.logon_info.user_name.len() + 1) * 2)?);
+        write_padding!(dst, LOGON_INFO_V2_PADDING_SIZE);
+
+        utils::write_string_to_cursor(
+            dst,
+            self.logon_info.domain_name.as_ref(),
+            utils::CharacterSet::Unicode,
+            true,
+        )?;
+        utils::write_string_to_cursor(
+            dst,
+            self.logon_info.user_name.as_ref(),
+            utils::CharacterSet::Unicode,
+            true,
+        )?;
+
+        Ok(())
+    }
+
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    fn size(&self) -> usize {
+        Self::FIXED_PART_SIZE + (self.logon_info.domain_name.len() + 1) * 2 + (self.logon_info.user_name.len() + 1) * 2
+    }
+}
+
+impl<'de> PduDecode<'de> for LogonInfoVersion2 {
+    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+        ensure_fixed_part_size!(in: src);
+
+        let version = src.read_u16();
         if version != SAVE_SESSION_PDU_VERSION_ONE {
-            return Err(SessionError::InvalidLogonVersion2);
+            return Err(invalid_message_err!("version", "invalid logon version 2"));
         }
 
-        let size = stream.read_u32::<LittleEndian>()? as usize;
+        let size: usize = cast_length!("LogonInfoSize", src.read_u32())?;
         if size != LOGON_INFO_V2_SIZE {
-            return Err(SessionError::InvalidLogonVersion2Size);
+            return Err(invalid_message_err!("domainNameSize", "invalid logon info size"));
         }
 
-        let session_id = stream.read_u32::<LittleEndian>()?;
-        let domain_name_size = stream.read_u32::<LittleEndian>()?;
-        if domain_name_size > DOMAIN_NAME_SIZE_V2 as u32 {
-            return Err(SessionError::InvalidDomainNameSize);
+        let session_id = src.read_u32();
+        let domain_name_size: usize = cast_length!("domainNameSize", src.read_u32())?;
+        if domain_name_size > DOMAIN_NAME_SIZE_V2 {
+            return Err(invalid_message_err!("domainNameSize", "invalid domain name size"));
         }
 
-        let user_name_size = stream.read_u32::<LittleEndian>()?;
-        if user_name_size > USER_NAME_SIZE_V2 as u32 {
-            return Err(SessionError::InvalidUserNameSize);
+        let user_name_size: usize = cast_length!("userNameSize", src.read_u32())?;
+        if user_name_size > USER_NAME_SIZE_V2 {
+            return Err(invalid_message_err!("userNameSize", "invalid user name size"));
         }
 
-        let mut padding_buffer = [0; LOGON_INFO_V2_PADDING_SIZE];
-        stream.read_exact(&mut padding_buffer)?;
+        read_padding!(src, LOGON_INFO_V2_PADDING_SIZE);
 
-        let domain_name = utils::read_string_from_stream(
-            &mut stream,
-            domain_name_size as usize,
-            utils::CharacterSet::Unicode,
-            false,
-        )?;
-        let user_name = utils::read_string_from_stream(
-            &mut stream,
-            user_name_size as usize,
-            utils::CharacterSet::Unicode,
-            false,
-        )?;
+        ensure_size!(in: src, size: domain_name_size);
+        let domain_name = utils::decode_string(src.read_slice(domain_name_size), utils::CharacterSet::Unicode, false)?;
+
+        ensure_size!(in: src, size: user_name_size);
+        let user_name = utils::decode_string(src.read_slice(user_name_size), utils::CharacterSet::Unicode, false)?;
 
         Ok(Self {
             logon_info: LogonInfo {
@@ -133,35 +185,6 @@ impl PduParsing for LogonInfoVersion2 {
                 user_name,
             },
         })
-    }
-
-    fn to_buffer(&self, mut stream: impl io::Write) -> Result<(), Self::Error> {
-        stream.write_u16::<LittleEndian>(SAVE_SESSION_PDU_VERSION_ONE)?;
-        stream.write_u32::<LittleEndian>(LOGON_INFO_V2_SIZE as u32)?;
-        stream.write_u32::<LittleEndian>(self.logon_info.session_id)?;
-        stream.write_u32::<LittleEndian>(((self.logon_info.domain_name.len() + 1) * 2) as u32)?;
-        stream.write_u32::<LittleEndian>(((self.logon_info.user_name.len() + 1) * 2) as u32)?;
-        stream.write_all(LOGON_INFO_V2_PADDING_BUFFER.as_ref())?;
-
-        utils::write_string_with_null_terminator(
-            &mut stream,
-            self.logon_info.domain_name.as_ref(),
-            utils::CharacterSet::Unicode,
-        )?;
-        utils::write_string_with_null_terminator(
-            &mut stream,
-            self.logon_info.user_name.as_ref(),
-            utils::CharacterSet::Unicode,
-        )?;
-
-        Ok(())
-    }
-
-    fn buffer_length(&self) -> usize {
-        LOGON_INFO_V2_SIZE
-            + LOGON_INFO_V2_PADDING_SIZE
-            + (self.logon_info.domain_name.len() + 1) * 2
-            + (self.logon_info.user_name.len() + 1) * 2
     }
 }
 

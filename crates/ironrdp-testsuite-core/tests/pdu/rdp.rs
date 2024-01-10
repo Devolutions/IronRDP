@@ -1,9 +1,6 @@
-use ironrdp_pdu::rdp::capability_sets::*;
-use ironrdp_pdu::rdp::client_info::*;
 use ironrdp_pdu::rdp::headers::*;
 use ironrdp_pdu::rdp::server_license::*;
-use ironrdp_pdu::rdp::*;
-use ironrdp_pdu::PduParsing as _;
+use ironrdp_pdu::{decode, encode_vec, PduEncode, PduParsing as _};
 use ironrdp_testsuite_core::capsets::*;
 use ironrdp_testsuite_core::client_info::*;
 use ironrdp_testsuite_core::rdp::*;
@@ -12,10 +9,7 @@ use ironrdp_testsuite_core::rdp::*;
 fn from_buffer_correctly_parses_rdp_pdu_client_info() {
     let buf = CLIENT_INFO_PDU_BUFFER;
 
-    assert_eq!(
-        CLIENT_INFO_PDU.clone(),
-        ClientInfoPdu::from_buffer(buf.as_slice()).unwrap()
-    );
+    assert_eq!(CLIENT_INFO_PDU.clone(), decode(buf.as_slice()).unwrap());
 }
 
 #[test]
@@ -109,8 +103,7 @@ fn from_buffer_correctly_parses_rdp_pdu_server_monitor_layout() {
 
 #[test]
 fn to_buffer_correctly_serializes_rdp_pdu_client_info() {
-    let mut buf = Vec::new();
-    CLIENT_INFO_PDU.to_buffer(&mut buf).unwrap();
+    let buf = encode_vec(&*CLIENT_INFO_PDU).unwrap();
     assert_eq!(buf, CLIENT_INFO_PDU_BUFFER.as_slice());
 }
 
@@ -218,7 +211,7 @@ fn buffer_length_is_correct_for_rdp_pdu_client_info() {
     let pdu = CLIENT_INFO_PDU.clone();
     let expected_buf_len = CLIENT_INFO_PDU_BUFFER.len();
 
-    let len = pdu.buffer_length();
+    let len = pdu.size();
 
     assert_eq!(expected_buf_len, len);
 }
@@ -324,7 +317,7 @@ fn buffer_length_is_correct_for_rdp_pdu_server_monitor_layout() {
 fn from_buffer_correct_parses_client_info_pdu_ansi() {
     assert_eq!(
         CLIENT_INFO_ANSI.clone(),
-        ClientInfo::from_buffer(CLIENT_INFO_BUFFER_ANSI.as_ref()).unwrap()
+        decode(CLIENT_INFO_BUFFER_ANSI.as_ref()).unwrap()
     );
 }
 
@@ -332,7 +325,7 @@ fn from_buffer_correct_parses_client_info_pdu_ansi() {
 fn from_buffer_correct_parses_client_info_pdu_unicode() {
     assert_eq!(
         CLIENT_INFO_UNICODE.clone(),
-        ClientInfo::from_buffer(CLIENT_INFO_BUFFER_UNICODE.as_ref()).unwrap()
+        decode(CLIENT_INFO_BUFFER_UNICODE.as_ref()).unwrap()
     );
 }
 
@@ -340,7 +333,7 @@ fn from_buffer_correct_parses_client_info_pdu_unicode() {
 fn from_buffer_correct_parses_client_info_pdu_unicode_without_optional_fields() {
     assert_eq!(
         CLIENT_INFO_UNICODE_WITHOUT_OPTIONAL_FIELDS.clone(),
-        ClientInfo::from_buffer(CLIENT_INFO_BUFFER_UNICODE_WITHOUT_OPTIONAL_FIELDS.as_slice()).unwrap()
+        decode(CLIENT_INFO_BUFFER_UNICODE_WITHOUT_OPTIONAL_FIELDS.as_slice()).unwrap()
     );
 }
 
@@ -349,8 +342,7 @@ fn to_buffer_correct_serializes_client_info_pdu_ansi() {
     let data = CLIENT_INFO_ANSI.clone();
     let expected_buffer = CLIENT_INFO_BUFFER_ANSI.to_vec();
 
-    let mut buffer = Vec::new();
-    data.to_buffer(&mut buffer).unwrap();
+    let buffer = encode_vec(&data).unwrap();
 
     assert_eq!(expected_buffer, buffer);
 }
@@ -360,7 +352,7 @@ fn buffer_length_is_correct_for_client_info_pdu_ansi() {
     let data = CLIENT_INFO_ANSI.clone();
     let expected_buffer_len = CLIENT_INFO_BUFFER_ANSI.len();
 
-    let len = data.buffer_length();
+    let len = data.size();
 
     assert_eq!(expected_buffer_len, len);
 }
@@ -370,8 +362,7 @@ fn to_buffer_correct_serializes_client_info_pdu_unicode() {
     let data = CLIENT_INFO_UNICODE.clone();
     let expected_buffer = CLIENT_INFO_BUFFER_UNICODE.to_vec();
 
-    let mut buffer = Vec::new();
-    data.to_buffer(&mut buffer).unwrap();
+    let buffer = encode_vec(&data).unwrap();
 
     assert_eq!(expected_buffer, buffer);
 }
@@ -381,7 +372,7 @@ fn buffer_length_is_correct_for_client_info_pdu_unicode() {
     let data = CLIENT_INFO_UNICODE.clone();
     let expected_buffer_len = CLIENT_INFO_BUFFER_UNICODE.len();
 
-    let len = data.buffer_length();
+    let len = data.size();
 
     assert_eq!(expected_buffer_len, len);
 }
@@ -391,8 +382,7 @@ fn to_buffer_correct_serializes_client_info_pdu_unicode_without_optional_fields(
     let data = CLIENT_INFO_UNICODE_WITHOUT_OPTIONAL_FIELDS.clone();
     let expected_buffer = CLIENT_INFO_BUFFER_UNICODE_WITHOUT_OPTIONAL_FIELDS.to_vec();
 
-    let mut buffer = Vec::new();
-    data.to_buffer(&mut buffer).unwrap();
+    let buffer = encode_vec(&data).unwrap();
 
     assert_eq!(expected_buffer, buffer);
 }
@@ -402,7 +392,7 @@ fn buffer_length_is_correct_for_client_info_pdu_unicode_without_optional_fields(
     let data = CLIENT_INFO_UNICODE_WITHOUT_OPTIONAL_FIELDS.clone();
     let expected_buffer_len = CLIENT_INFO_BUFFER_UNICODE_WITHOUT_OPTIONAL_FIELDS.len();
 
-    let len = data.buffer_length();
+    let len = data.size();
 
     assert_eq!(expected_buffer_len, len);
 }
@@ -411,7 +401,7 @@ fn buffer_length_is_correct_for_client_info_pdu_unicode_without_optional_fields(
 fn from_buffer_correctly_parses_server_demand_active() {
     let buffer = SERVER_DEMAND_ACTIVE_BUFFER.as_ref();
 
-    assert_eq!(*SERVER_DEMAND_ACTIVE, ServerDemandActive::from_buffer(buffer).unwrap());
+    assert_eq!(*SERVER_DEMAND_ACTIVE, decode(buffer).unwrap());
 }
 
 #[test]
@@ -420,7 +410,7 @@ fn from_buffer_correctly_parses_client_demand_active_with_incomplete_capability_
 
     assert_eq!(
         *CLIENT_DEMAND_ACTIVE_WITH_INCOMPLETE_CAPABILITY_SET,
-        ClientConfirmActive::from_buffer(buffer).unwrap()
+        decode(buffer).unwrap()
     );
 }
 
@@ -428,7 +418,7 @@ fn from_buffer_correctly_parses_client_demand_active_with_incomplete_capability_
 fn from_buffer_correctly_parses_client_demand_active() {
     let buffer = CLIENT_DEMAND_ACTIVE_BUFFER.as_ref();
 
-    assert_eq!(*CLIENT_DEMAND_ACTIVE, ClientConfirmActive::from_buffer(buffer).unwrap());
+    assert_eq!(*CLIENT_DEMAND_ACTIVE, decode(buffer).unwrap());
 }
 
 #[test]
@@ -436,8 +426,7 @@ fn to_buffer_correctly_serializes_server_demand_active() {
     let data = SERVER_DEMAND_ACTIVE.clone();
     let expected_buffer = SERVER_DEMAND_ACTIVE_BUFFER.to_vec();
 
-    let mut buff = Vec::new();
-    data.to_buffer(&mut buff).unwrap();
+    let buff = encode_vec(&data).unwrap();
 
     assert_eq!(expected_buffer, buff);
 }
@@ -447,8 +436,7 @@ fn to_buffer_correctly_serializes_client_demand_active_with_incomplete_capabilit
     let data = CLIENT_DEMAND_ACTIVE_WITH_INCOMPLETE_CAPABILITY_SET.clone();
     let expected_buffer = CLIENT_DEMAND_ACTIVE_WITH_INCOMPLETE_CAPABILITY_SET_BUFFER.to_vec();
 
-    let mut buff = Vec::new();
-    data.to_buffer(&mut buff).unwrap();
+    let buff = encode_vec(&data).unwrap();
 
     assert_eq!(expected_buffer, buff);
 }
@@ -458,8 +446,7 @@ fn to_buffer_correctly_serializes_client_demand_active() {
     let data = CLIENT_DEMAND_ACTIVE.clone();
     let expected_buffer = CLIENT_DEMAND_ACTIVE_BUFFER.to_vec();
 
-    let mut buff = Vec::new();
-    data.to_buffer(&mut buff).unwrap();
+    let buff = encode_vec(&data).unwrap();
 
     assert_eq!(expected_buffer, buff);
 }
@@ -469,7 +456,7 @@ fn buffer_length_is_correct_for_server_demand_active() {
     let data = SERVER_DEMAND_ACTIVE.clone();
     let expected_buffer_len = SERVER_DEMAND_ACTIVE_BUFFER.len();
 
-    let len = data.buffer_length();
+    let len = data.size();
 
     assert_eq!(expected_buffer_len, len);
 }
@@ -479,7 +466,7 @@ fn buffer_length_is_correct_for_client_demand_active_with_incomplete_capability_
     let data = CLIENT_DEMAND_ACTIVE_WITH_INCOMPLETE_CAPABILITY_SET.clone();
     let expected_buffer_len = CLIENT_DEMAND_ACTIVE_WITH_INCOMPLETE_CAPABILITY_SET_BUFFER.len();
 
-    let len = data.buffer_length();
+    let len = data.size();
 
     assert_eq!(expected_buffer_len, len);
 }
@@ -489,7 +476,7 @@ fn buffer_length_is_correct_for_client_demand_active() {
     let data = CLIENT_DEMAND_ACTIVE.clone();
     let expected_buffer_len = CLIENT_DEMAND_ACTIVE_BUFFER.len();
 
-    let len = data.buffer_length();
+    let len = data.size();
 
     assert_eq!(expected_buffer_len, len);
 }

@@ -111,3 +111,9 @@ pub enum MonitorDataError {
     #[error("PDU error")]
     Pdu(#[from] PduError),
 }
+
+impl ironrdp_error::legacy::ErrorContext for MonitorDataError {
+    fn context(&self) -> &'static str {
+        "monitor data"
+    }
+}

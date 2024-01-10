@@ -31,7 +31,7 @@ impl PduParsing for ServerPlatformChallenge {
 
         let _connect_flags = stream.read_u32::<LittleEndian>()?;
 
-        let blob_header = BlobHeader::read_any_blob_from_buffer(&mut stream)?;
+        let blob_header = BlobHeader::from_buffer(&mut stream)?;
 
         let mut encrypted_platform_challenge = vec![0u8; blob_header.length];
         stream.read_exact(&mut encrypted_platform_challenge)?;
@@ -51,7 +51,7 @@ impl PduParsing for ServerPlatformChallenge {
 
         stream.write_u32::<LittleEndian>(0)?; // connect_flags, ignored
 
-        BlobHeader::new(BlobType::Any, self.encrypted_platform_challenge.len()).write_to_buffer(&mut stream)?;
+        BlobHeader::new(BlobType::Any, self.encrypted_platform_challenge.len()).to_buffer(&mut stream)?;
         stream.write_all(&self.encrypted_platform_challenge)?;
 
         stream.write_all(&self.mac_data)?;

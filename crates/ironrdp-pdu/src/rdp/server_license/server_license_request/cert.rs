@@ -110,10 +110,16 @@ impl PduParsing for ProprietaryCertificate {
             return Err(ServerLicenseError::InvalidPropCertKeyAlgorithmId);
         }
 
-        let _key_blob_header = BlobHeader::read_from_buffer(BlobType::RsaKey, &mut stream)?;
+        let key_blob_header = BlobHeader::from_buffer(&mut stream)?;
+        if key_blob_header.blob_type != BlobType::RsaKey {
+            return Err(ServerLicenseError::InvalidBlobType);
+        }
         let public_key = RsaPublicKey::from_buffer(&mut stream)?;
 
-        let sig_blob_header = BlobHeader::read_from_buffer(BlobType::RsaSignature, &mut stream)?;
+        let sig_blob_header = BlobHeader::from_buffer(&mut stream)?;
+        if sig_blob_header.blob_type != BlobType::RsaSignature {
+            return Err(ServerLicenseError::InvalidBlobType);
+        }
         let mut signature = vec![0u8; sig_blob_header.length];
         stream.read_exact(&mut signature)?;
 
@@ -124,10 +130,10 @@ impl PduParsing for ProprietaryCertificate {
         stream.write_u32::<LittleEndian>(SIGNATURE_ALGORITHM_RSA)?;
         stream.write_u32::<LittleEndian>(KEY_EXCHANGE_ALGORITHM_RSA)?;
 
-        BlobHeader::new(BlobType::RsaKey, self.public_key.buffer_length()).write_to_buffer(&mut stream)?;
+        BlobHeader::new(BlobType::RsaKey, self.public_key.buffer_length()).to_buffer(&mut stream)?;
         self.public_key.to_buffer(&mut stream)?;
 
-        BlobHeader::new(BlobType::RsaSignature, self.signature.len()).write_to_buffer(&mut stream)?;
+        BlobHeader::new(BlobType::RsaSignature, self.signature.len()).to_buffer(&mut stream)?;
         stream.write_all(&self.signature)?;
 
         Ok(())

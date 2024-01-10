@@ -111,12 +111,17 @@ impl PduParsing for ClientPlatformChallengeResponse {
             )));
         }
 
-        let encrypted_challenge_blob = BlobHeader::read_from_buffer(BlobType::EncryptedData, &mut stream)?;
-
+        let encrypted_challenge_blob = BlobHeader::from_buffer(&mut stream)?;
+        if encrypted_challenge_blob.blob_type != BlobType::EncryptedData {
+            return Err(ServerLicenseError::InvalidBlobType);
+        }
         let mut encrypted_challenge_response_data = vec![0u8; encrypted_challenge_blob.length];
         stream.read_exact(&mut encrypted_challenge_response_data)?;
 
-        let encrypted_hwid_blob = BlobHeader::read_from_buffer(BlobType::EncryptedData, &mut stream)?;
+        let encrypted_hwid_blob = BlobHeader::from_buffer(&mut stream)?;
+        if encrypted_hwid_blob.blob_type != BlobType::EncryptedData {
+            return Err(ServerLicenseError::InvalidBlobType);
+        }
         let mut encrypted_hwid = vec![0u8; encrypted_hwid_blob.length];
         stream.read_exact(&mut encrypted_hwid)?;
 
@@ -135,10 +140,10 @@ impl PduParsing for ClientPlatformChallengeResponse {
         self.license_header.to_buffer(&mut stream)?;
 
         BlobHeader::new(BlobType::EncryptedData, self.encrypted_challenge_response_data.len())
-            .write_to_buffer(&mut stream)?;
+            .to_buffer(&mut stream)?;
         stream.write_all(&self.encrypted_challenge_response_data)?;
 
-        BlobHeader::new(BlobType::EncryptedData, self.encrypted_hwid.len()).write_to_buffer(&mut stream)?;
+        BlobHeader::new(BlobType::EncryptedData, self.encrypted_hwid.len()).to_buffer(&mut stream)?;
         stream.write_all(&self.encrypted_hwid)?;
 
         stream.write_all(&self.mac_data)?;

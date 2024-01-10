@@ -32,7 +32,10 @@ impl PduParsing for LicensingErrorMessage {
         let state_transition = LicensingStateTransition::from_u32(stream.read_u32::<LittleEndian>()?)
             .ok_or(ServerLicenseError::InvalidStateTransition)?;
 
-        let error_info_blob = BlobHeader::read_from_buffer(BlobType::Error, &mut stream)?;
+        let error_info_blob = BlobHeader::from_buffer(&mut stream)?;
+        if error_info_blob.blob_type != BlobType::Error {
+            return Err(ServerLicenseError::InvalidBlobType);
+        }
         let error_info = vec![0u8; error_info_blob.length];
 
         Ok(Self {
@@ -46,7 +49,7 @@ impl PduParsing for LicensingErrorMessage {
         stream.write_u32::<LittleEndian>(self.error_code.to_u32().unwrap())?;
         stream.write_u32::<LittleEndian>(self.state_transition.to_u32().unwrap())?;
 
-        BlobHeader::new(BlobType::Error, self.error_info.len()).write_to_buffer(&mut stream)?;
+        BlobHeader::new(BlobType::Error, self.error_info.len()).to_buffer(&mut stream)?;
         stream.write_all(&self.error_info)?;
 
         Ok(())

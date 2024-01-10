@@ -20,7 +20,7 @@ use core::any::Any;
 use core::fmt;
 
 pub use channel_connection::{ChannelConnectionSequence, ChannelConnectionState};
-pub use connection::{ClientConnector, ClientConnectorState, ConnectionResult};
+pub use connection::{encode_send_data_request, ClientConnector, ClientConnectorState, ConnectionResult};
 pub use connection_finalization::{ConnectionFinalizationSequence, ConnectionFinalizationState};
 use ironrdp_pdu::rdp::capability_sets;
 use ironrdp_pdu::write_buf::WriteBuf;

@@ -57,7 +57,10 @@ impl PduParsing for ServerUpgradeLicense {
             )));
         }
 
-        let encrypted_license_info_blob = BlobHeader::read_from_buffer(BlobType::EncryptedData, &mut stream)?;
+        let encrypted_license_info_blob = BlobHeader::from_buffer(&mut stream)?;
+        if encrypted_license_info_blob.blob_type != BlobType::EncryptedData {
+            return Err(ServerLicenseError::InvalidBlobType);
+        }
 
         let mut encrypted_license_info = vec![0u8; encrypted_license_info_blob.length];
         stream.read_exact(&mut encrypted_license_info)?;
@@ -75,7 +78,7 @@ impl PduParsing for ServerUpgradeLicense {
     fn to_buffer(&self, mut stream: impl io::Write) -> Result<(), Self::Error> {
         self.license_header.to_buffer(&mut stream)?;
 
-        BlobHeader::new(BlobType::EncryptedData, self.encrypted_license_info.len()).write_to_buffer(&mut stream)?;
+        BlobHeader::new(BlobType::EncryptedData, self.encrypted_license_info.len()).to_buffer(&mut stream)?;
         stream.write_all(&self.encrypted_license_info)?;
 
         stream.write_all(&self.mac_data)?;

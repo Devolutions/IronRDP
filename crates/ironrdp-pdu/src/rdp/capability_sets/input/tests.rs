@@ -1,6 +1,7 @@
 use lazy_static::lazy_static;
 
 use super::*;
+use crate::{decode, encode_vec};
 
 const INPUT_BUFFER: [u8; 84] = [
     0x15, 0x00, // inputFlags
@@ -28,19 +29,19 @@ lazy_static! {
 
 #[test]
 fn from_buffer_correctly_parses_input_capset() {
-    assert_eq!(*INPUT, Input::from_buffer(INPUT_BUFFER.as_ref()).unwrap());
+    assert_eq!(*INPUT, decode(INPUT_BUFFER.as_ref()).unwrap());
 }
 
 #[test]
 fn to_buffer_correctly_serializes_input_capset() {
-    let mut buffer = Vec::new();
+    let input = INPUT.clone();
 
-    INPUT.to_buffer(&mut buffer).unwrap();
+    let buffer = encode_vec(&input).unwrap();
 
     assert_eq!(buffer, INPUT_BUFFER.as_ref());
 }
 
 #[test]
 fn buffer_length_is_correct_for_input_capset() {
-    assert_eq!(INPUT_BUFFER.len(), INPUT.buffer_length());
+    assert_eq!(INPUT_BUFFER.len(), INPUT.size());
 }

@@ -1,6 +1,7 @@
 use lazy_static::lazy_static;
 
 use super::*;
+use crate::{decode, encode_vec};
 
 const GENERAL_CAPSET_BUFFER: [u8; 20] = [
     0x01, 0x00, // osMajorType
@@ -35,16 +36,14 @@ lazy_static! {
 fn from_buffer_correctly_parses_general_capset() {
     let buffer = GENERAL_CAPSET_BUFFER.as_ref();
 
-    assert_eq!(*CAPSET_GENERAL, General::from_buffer(buffer).unwrap());
+    assert_eq!(*CAPSET_GENERAL, decode(buffer).unwrap());
 }
 
 #[test]
 fn to_buffer_correctly_serializes_general_capset() {
-    let mut buffer = Vec::new();
+    let capset = CAPSET_GENERAL.clone();
 
-    let capset = &CAPSET_GENERAL;
-
-    capset.to_buffer(&mut buffer).unwrap();
+    let buffer = encode_vec(&capset).unwrap();
 
     assert_eq!(buffer, GENERAL_CAPSET_BUFFER.as_ref());
 }
@@ -53,5 +52,5 @@ fn to_buffer_correctly_serializes_general_capset() {
 fn buffer_length_is_correct_for_general_capset() {
     let correct_buffer_length = GENERAL_CAPSET_BUFFER.len();
 
-    assert_eq!(correct_buffer_length, CAPSET_GENERAL.buffer_length());
+    assert_eq!(correct_buffer_length, CAPSET_GENERAL.size());
 }

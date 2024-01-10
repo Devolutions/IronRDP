@@ -1,13 +1,12 @@
 #[cfg(test)]
 mod tests;
 
-use std::{fmt, io};
+use std::fmt;
 
 use bitflags::bitflags;
-use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 
-use crate::rdp::capability_sets::CapabilitySetsError;
-use crate::PduParsing;
+use crate::cursor::{ReadCursor, WriteCursor};
+use crate::{PduDecode, PduEncode, PduResult};
 
 const GENERAL_LENGTH: usize = 20;
 pub const PROTOCOL_VER: u16 = 0x0200;
@@ -103,6 +102,12 @@ pub struct General {
     pub suppress_output_support: bool,
 }
 
+impl General {
+    const NAME: &'static str = "General";
+
+    const FIXED_PART_SIZE: usize = GENERAL_LENGTH;
+}
+
 impl Default for General {
     fn default() -> Self {
         Self {
@@ -116,41 +121,72 @@ impl Default for General {
     }
 }
 
-impl PduParsing for General {
-    type Error = CapabilitySetsError;
+impl PduEncode for General {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_fixed_part_size!(in: dst);
 
-    fn from_buffer(mut buffer: impl io::Read) -> Result<Self, Self::Error> {
-        let major_platform_type = MajorPlatformType(buffer.read_u16::<LittleEndian>()?);
-        let minor_platform_type = MinorPlatformType(buffer.read_u16::<LittleEndian>()?);
+        dst.write_u16(self.major_platform_type.0);
+        dst.write_u16(self.minor_platform_type.0);
+        dst.write_u16(PROTOCOL_VER);
+        dst.write_u16(0); // padding
+        dst.write_u16(0); // generalCompressionTypes
+        dst.write_u16(self.extra_flags.bits());
+        dst.write_u16(0); // updateCapabilityFlag
+        dst.write_u16(0); // remoteUnshareFlag
+        dst.write_u16(0); // generalCompressionLevel
+        dst.write_u8(u8::from(self.refresh_rect_support));
+        dst.write_u8(u8::from(self.suppress_output_support));
 
-        let protocol_version = buffer.read_u16::<LittleEndian>()?;
+        Ok(())
+    }
 
-        let _padding = buffer.read_u16::<LittleEndian>()?;
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
 
-        let compression_types = buffer.read_u16::<LittleEndian>()?;
+    fn size(&self) -> usize {
+        Self::FIXED_PART_SIZE
+    }
+}
+
+impl<'de> PduDecode<'de> for General {
+    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+        ensure_fixed_part_size!(in: src);
+
+        let major_platform_type = MajorPlatformType(src.read_u16());
+        let minor_platform_type = MinorPlatformType(src.read_u16());
+
+        let protocol_version = src.read_u16();
+
+        let _padding = src.read_u16();
+
+        let compression_types = src.read_u16();
         if compression_types != 0 {
-            return Err(CapabilitySetsError::InvalidCompressionTypes);
+            return Err(invalid_message_err!("compressionTypes", "invalid compression types"));
         }
 
-        let extra_flags = GeneralExtraFlags::from_bits_truncate(buffer.read_u16::<LittleEndian>()?);
+        let extra_flags = GeneralExtraFlags::from_bits_truncate(src.read_u16());
 
-        let update_cap_flags = buffer.read_u16::<LittleEndian>()?;
+        let update_cap_flags = src.read_u16();
         if update_cap_flags != 0 {
-            return Err(CapabilitySetsError::InvalidUpdateCapFlag);
+            return Err(invalid_message_err!("updateCapFlags", "invalid update cap flags"));
         }
 
-        let remote_unshare_flag = buffer.read_u16::<LittleEndian>()?;
+        let remote_unshare_flag = src.read_u16();
         if remote_unshare_flag != 0 {
-            return Err(CapabilitySetsError::InvalidRemoteUnshareFlag);
+            return Err(invalid_message_err!(
+                "remoteUnshareFlags",
+                "invalid remote unshare flag"
+            ));
         }
 
-        let compression_level = buffer.read_u16::<LittleEndian>()?;
+        let compression_level = src.read_u16();
         if compression_level != 0 {
-            return Err(CapabilitySetsError::InvalidCompressionLevel);
+            return Err(invalid_message_err!("compressionLevel", "invalid compression level"));
         }
 
-        let refresh_rect_support = buffer.read_u8()? != 0;
-        let suppress_output_support = buffer.read_u8()? != 0;
+        let refresh_rect_support = src.read_u8() != 0;
+        let suppress_output_support = src.read_u8() != 0;
 
         Ok(General {
             major_platform_type,
@@ -161,24 +197,6 @@ impl PduParsing for General {
             suppress_output_support,
         })
     }
-
-    fn to_buffer(&self, mut buffer: impl io::Write) -> Result<(), Self::Error> {
-        buffer.write_u16::<LittleEndian>(self.major_platform_type.0)?;
-        buffer.write_u16::<LittleEndian>(self.minor_platform_type.0)?;
-        buffer.write_u16::<LittleEndian>(PROTOCOL_VER)?;
-        buffer.write_u16::<LittleEndian>(0)?; // padding
-        buffer.write_u16::<LittleEndian>(0)?; // generalCompressionTypes
-        buffer.write_u16::<LittleEndian>(self.extra_flags.bits())?;
-        buffer.write_u16::<LittleEndian>(0)?; // updateCapabilityFlag
-        buffer.write_u16::<LittleEndian>(0)?; // remoteUnshareFlag
-        buffer.write_u16::<LittleEndian>(0)?; // generalCompressionLevel
-        buffer.write_u8(u8::from(self.refresh_rect_support))?;
-        buffer.write_u8(u8::from(self.suppress_output_support))?;
-
-        Ok(())
-    }
-
-    fn buffer_length(&self) -> usize {
-        GENERAL_LENGTH
-    }
 }
+
+impl_pdu_parsing!(General);

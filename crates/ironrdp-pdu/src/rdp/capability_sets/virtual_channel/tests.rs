@@ -1,6 +1,7 @@
 use lazy_static::lazy_static;
 
 use super::*;
+use crate::{decode, encode_vec};
 
 const VIRTUAL_CHANNEL_INCOMPLETE_BUFFER: [u8; 4] = [
     0x01, 0x00, 0x00, 0x00, // flags
@@ -26,32 +27,29 @@ lazy_static! {
 fn from_buffer_correctly_parses_virtual_channel_incomplete_capset() {
     assert_eq!(
         *VIRTUAL_CHANNEL_INCOMPLETE,
-        VirtualChannel::from_buffer(VIRTUAL_CHANNEL_INCOMPLETE_BUFFER.as_ref()).unwrap()
+        decode(VIRTUAL_CHANNEL_INCOMPLETE_BUFFER.as_ref()).unwrap()
     );
 }
 
 #[test]
 fn from_buffer_correctly_parses_virtual_channel_capset() {
-    assert_eq!(
-        *VIRTUAL_CHANNEL,
-        VirtualChannel::from_buffer(VIRTUAL_CHANNEL_BUFFER.as_ref()).unwrap()
-    );
+    assert_eq!(*VIRTUAL_CHANNEL, decode(VIRTUAL_CHANNEL_BUFFER.as_ref()).unwrap());
 }
 
 #[test]
 fn to_buffer_correctly_serializes_virtual_channel_incomplete_capset() {
-    let mut buffer = Vec::new();
+    let c = VIRTUAL_CHANNEL_INCOMPLETE.clone();
 
-    VIRTUAL_CHANNEL_INCOMPLETE.to_buffer(&mut buffer).unwrap();
+    let buffer = encode_vec(&c).unwrap();
 
     assert_eq!(buffer, VIRTUAL_CHANNEL_INCOMPLETE_BUFFER.as_ref());
 }
 
 #[test]
 fn to_buffer_correctly_serializes_virtual_channel_capset() {
-    let mut buffer = Vec::new();
+    let c = VIRTUAL_CHANNEL.clone();
 
-    VIRTUAL_CHANNEL.to_buffer(&mut buffer).unwrap();
+    let buffer = encode_vec(&c).unwrap();
 
     assert_eq!(buffer, VIRTUAL_CHANNEL_BUFFER.as_ref());
 }
@@ -60,11 +58,11 @@ fn to_buffer_correctly_serializes_virtual_channel_capset() {
 fn buffer_length_is_correct_for_virtual_channel_incomplete_capset() {
     assert_eq!(
         VIRTUAL_CHANNEL_INCOMPLETE_BUFFER.len(),
-        VIRTUAL_CHANNEL_INCOMPLETE.buffer_length()
+        VIRTUAL_CHANNEL_INCOMPLETE.size()
     );
 }
 
 #[test]
 fn buffer_length_is_correct_for_virtual_channel_capset() {
-    assert_eq!(VIRTUAL_CHANNEL_BUFFER.len(), VIRTUAL_CHANNEL.buffer_length());
+    assert_eq!(VIRTUAL_CHANNEL_BUFFER.len(), VIRTUAL_CHANNEL.size());
 }

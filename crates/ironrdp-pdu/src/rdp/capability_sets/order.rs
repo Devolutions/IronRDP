@@ -1,13 +1,10 @@
 #[cfg(test)]
 mod tests;
 
-use std::io;
-
 use bitflags::bitflags;
-use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 
-use crate::rdp::capability_sets::CapabilitySetsError;
-use crate::PduParsing;
+use crate::cursor::{ReadCursor, WriteCursor};
+use crate::{PduDecode, PduEncode, PduResult};
 
 const ORDER_LENGTH: usize = 84;
 const ORD_LEVEL_1_ORDERS: u16 = 1;
@@ -68,6 +65,10 @@ pub struct Order {
 }
 
 impl Order {
+    const NAME: &'static str = "Order";
+
+    const FIXED_PART_SIZE: usize = ORDER_LENGTH;
+
     pub fn new(
         order_flags: OrderFlags,
         order_support_ex_flags: OrderSupportExFlags,
@@ -92,33 +93,66 @@ impl Order {
     }
 }
 
-impl PduParsing for Order {
-    type Error = CapabilitySetsError;
+impl PduEncode for Order {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_fixed_part_size!(in: dst);
 
-    fn from_buffer(mut buffer: impl io::Read) -> Result<Self, Self::Error> {
-        let _terminal_descriptor = buffer.read_u128::<LittleEndian>()?;
-        let _padding = buffer.read_u32::<LittleEndian>()?;
-        let _desktop_save_x_granularity = buffer.read_u16::<LittleEndian>()?;
-        let _desktop_save_y_granularity = buffer.read_u16::<LittleEndian>()?;
-        let _padding = buffer.read_u16::<LittleEndian>()?;
-        let _max_order_level = buffer.read_u16::<LittleEndian>()?;
-        let _num_fonts = buffer.read_u16::<LittleEndian>()?;
+        dst.write_u128(0);
 
-        let order_flags = OrderFlags::from_bits_truncate(buffer.read_u16::<LittleEndian>()?);
+        dst.write_u32(0); // padding
+        dst.write_u16(1); // desktopSaveXGranularity
+        dst.write_u16(DESKTOP_SAVE_Y_GRAN_VAL);
+        dst.write_u16(0); // padding
+        dst.write_u16(ORD_LEVEL_1_ORDERS); // maximumOrderLevel
+        dst.write_u16(0); // numberFonts
+        dst.write_u16(self.order_flags.bits());
+        dst.write_slice(&self.order_support);
+        dst.write_u16(0); // textFlags
+        dst.write_u16(self.order_support_ex_flags.bits());
+        dst.write_u32(0); // padding
+        dst.write_u32(self.desktop_save_size);
+        dst.write_u16(0); // padding
+        dst.write_u16(0); // padding
+        dst.write_u16(self.text_ansi_code_page);
+        dst.write_u16(0); // padding
 
-        let mut order_support = [0u8; SUPPORT_ARRAY_LEN];
-        buffer.read_exact(&mut order_support)?;
+        Ok(())
+    }
 
-        let _text_flags = buffer.read_u16::<LittleEndian>()?;
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
 
-        let order_support_ex_flags = OrderSupportExFlags::from_bits_truncate(buffer.read_u16::<LittleEndian>()?);
+    fn size(&self) -> usize {
+        Self::FIXED_PART_SIZE
+    }
+}
 
-        let _padding = buffer.read_u32::<LittleEndian>()?;
-        let desktop_save_size = buffer.read_u32::<LittleEndian>()?;
-        let _padding = buffer.read_u16::<LittleEndian>()?;
-        let _padding = buffer.read_u16::<LittleEndian>()?;
-        let text_ansi_code_page = buffer.read_u16::<LittleEndian>()?;
-        let _padding = buffer.read_u16::<LittleEndian>()?;
+impl<'de> PduDecode<'de> for Order {
+    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+        ensure_fixed_part_size!(in: src);
+
+        let _terminal_descriptor = src.read_u128();
+        let _padding = src.read_u32();
+        let _desktop_save_x_granularity = src.read_u16();
+        let _desktop_save_y_granularity = src.read_u16();
+        let _padding = src.read_u16();
+        let _max_order_level = src.read_u16();
+        let _num_fonts = src.read_u16();
+
+        let order_flags = OrderFlags::from_bits_truncate(src.read_u16());
+        let order_support = src.read_array();
+
+        let _text_flags = src.read_u16();
+
+        let order_support_ex_flags = OrderSupportExFlags::from_bits_truncate(src.read_u16());
+
+        let _padding = src.read_u32();
+        let desktop_save_size = src.read_u32();
+        let _padding = src.read_u16();
+        let _padding = src.read_u16();
+        let text_ansi_code_page = src.read_u16();
+        let _padding = src.read_u16();
 
         Ok(Order {
             order_flags,
@@ -128,31 +162,6 @@ impl PduParsing for Order {
             text_ansi_code_page,
         })
     }
-
-    fn to_buffer(&self, mut buffer: impl io::Write) -> Result<(), Self::Error> {
-        buffer.write_u128::<LittleEndian>(0)?;
-
-        buffer.write_u32::<LittleEndian>(0)?; // padding
-        buffer.write_u16::<LittleEndian>(1)?; // desktopSaveXGranularity
-        buffer.write_u16::<LittleEndian>(DESKTOP_SAVE_Y_GRAN_VAL)?;
-        buffer.write_u16::<LittleEndian>(0)?; // padding
-        buffer.write_u16::<LittleEndian>(ORD_LEVEL_1_ORDERS)?; // maximumOrderLevel
-        buffer.write_u16::<LittleEndian>(0)?; // numberFonts
-        buffer.write_u16::<LittleEndian>(self.order_flags.bits())?;
-        buffer.write_all(&self.order_support)?;
-        buffer.write_u16::<LittleEndian>(0)?; // textFlags
-        buffer.write_u16::<LittleEndian>(self.order_support_ex_flags.bits())?;
-        buffer.write_u32::<LittleEndian>(0)?; // padding
-        buffer.write_u32::<LittleEndian>(self.desktop_save_size)?;
-        buffer.write_u16::<LittleEndian>(0)?; // padding
-        buffer.write_u16::<LittleEndian>(0)?; // padding
-        buffer.write_u16::<LittleEndian>(self.text_ansi_code_page)?;
-        buffer.write_u16::<LittleEndian>(0)?; // padding
-
-        Ok(())
-    }
-
-    fn buffer_length(&self) -> usize {
-        ORDER_LENGTH
-    }
 }
+
+impl_pdu_parsing!(Order);
