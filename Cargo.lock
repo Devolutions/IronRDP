@@ -1889,6 +1889,7 @@ dependencies = [
  "ironrdp-acceptor",
  "ironrdp-ainput",
  "ironrdp-cliprdr",
+ "ironrdp-dvc",
  "ironrdp-graphics",
  "ironrdp-pdu",
  "ironrdp-svc",

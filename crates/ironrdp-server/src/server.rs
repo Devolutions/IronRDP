@@ -5,11 +5,12 @@ use std::sync::{Arc, Mutex};
 use anyhow::{bail, Result};
 use ironrdp_acceptor::{self, Acceptor, AcceptorResult, BeginResult};
 use ironrdp_cliprdr::{backend::CliprdrBackendFactory, CliprdrServer};
+use ironrdp_dvc as dvc;
 use ironrdp_pdu::input::fast_path::{FastPathInput, FastPathInputEvent};
 use ironrdp_pdu::input::InputEventPdu;
 use ironrdp_pdu::mcs::SendDataRequest;
 use ironrdp_pdu::rdp::capability_sets::{CapabilitySet, CmdFlags, GeneralExtraFlags};
-use ironrdp_pdu::{self, mcs, nego, rdp, Action, PduParsing};
+use ironrdp_pdu::{self, decode, mcs, nego, rdp, Action, PduParsing, PduResult};
 use ironrdp_svc::{server_encode_svc_messages, StaticChannelSet};
 use ironrdp_tokio::{Framed, FramedRead, FramedWrite, TokioFramed};
 use tokio::net::{TcpListener, TcpStream};
@@ -40,6 +41,41 @@ impl RdpServerSecurity {
         }
     }
 }
+
+struct AInputHandler {
+    handler: Arc<Mutex<Box<dyn RdpServerInputHandler>>>,
+}
+
+impl dvc::DvcProcessor for AInputHandler {
+    fn channel_name(&self) -> &str {
+        ironrdp_ainput::CHANNEL_NAME
+    }
+
+    fn start(&mut self, _channel_id: u32) -> PduResult<dvc::DvcMessages> {
+        use ironrdp_ainput::{ServerPdu, VersionPdu};
+
+        let pdu = ServerPdu::Version(VersionPdu::default());
+
+        Ok(vec![Box::new(pdu)])
+    }
+
+    fn close(&mut self, _channel_id: u32) {}
+
+    fn process(&mut self, _channel_id: u32, payload: &[u8]) -> PduResult<dvc::DvcMessages> {
+        use ironrdp_ainput::ClientPdu;
+
+        match decode(payload)? {
+            ClientPdu::Mouse(pdu) => {
+                let mut handler = self.handler.lock().unwrap();
+                handler.mouse(pdu.into());
+            }
+        }
+
+        Ok(vec![])
+    }
+}
+
+impl dvc::DvcServerProcessor for AInputHandler {}
 
 /// RDP Server
 ///
@@ -143,6 +179,11 @@ impl RdpServer {
 
             acceptor.attach_static_channel(cliprdr);
         }
+
+        let dvc = dvc::DrdynvcServer::new().with_dynamic_channel(AInputHandler {
+            handler: Arc::clone(&self.handler),
+        });
+        acceptor.attach_static_channel(dvc);
 
         match ironrdp_acceptor::accept_begin(framed, &mut acceptor).await {
             Ok(BeginResult::ShouldUpgrade(stream)) => {
@@ -386,7 +427,7 @@ impl RdpServer {
     where
         S: FramedWrite,
     {
-        let message = ironrdp_pdu::decode::<mcs::McsMessage<'_>>(frame)?;
+        let message = decode::<mcs::McsMessage<'_>>(frame)?;
         match message {
             mcs::McsMessage::SendDataRequest(data) => {
                 debug!(?data, "McsMessage::SendDataRequest");
