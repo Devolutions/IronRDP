@@ -34,7 +34,7 @@ fn main() -> anyhow::Result<()> {
     // NOTE: we need to keep `win_clipboard` alive, otherwise it will be dropped before IronRDP
     // starts and clipboard functionality will not be available.
     #[cfg(windows)]
-    let mut win_clipboard = None;
+    let _win_clipboard;
 
     let cliprdr_factory = match config.clipboard_type {
         ClipboardType::Stub => {
@@ -61,7 +61,7 @@ fn main() -> anyhow::Result<()> {
             };
 
             let factory = cliprdr.backend_factory();
-            win_clipboard = Some(cliprdr);
+            _win_clipboard = cliprdr;
             Some(factory)
         }
         _ => None,
@@ -78,9 +78,6 @@ fn main() -> anyhow::Result<()> {
     std::thread::spawn(move || {
         rt.block_on(client.run());
     });
-
-    #[cfg(windows)]
-    drop(win_clipboard);
 
     debug!("Run GUI");
     gui.run(input_event_sender);
