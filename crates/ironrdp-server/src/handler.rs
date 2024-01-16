@@ -70,7 +70,7 @@ pub enum MouseEvent {
 ///     }
 /// }
 /// ```
-pub trait RdpServerInputHandler {
+pub trait RdpServerInputHandler: Send {
     fn keyboard(&mut self, event: KeyboardEvent);
     fn mouse(&mut self, event: MouseEvent);
 }
