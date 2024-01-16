@@ -53,9 +53,8 @@ pub enum MouseEvent {
 ///
 /// pub struct InputHandler;
 ///
-/// #[async_trait::async_trait]
 /// impl RdpServerInputHandler for InputHandler {
-///     async fn keyboard(&mut self, event: KeyboardEvent) {
+///     fn keyboard(&mut self, event: KeyboardEvent) {
 ///         match event {
 ///             KeyboardEvent::Pressed { code, .. } => println!("Pressed {}", code),
 ///             KeyboardEvent::Released { code, .. } => println!("Released {}", code),
@@ -63,7 +62,7 @@ pub enum MouseEvent {
 ///         };
 ///     }
 ///
-///     async fn mouse(&mut self, event: MouseEvent) {
+///     fn mouse(&mut self, event: MouseEvent) {
 ///         let result = match event {
 ///             MouseEvent::Move { x, y } => println!("Moved mouse to {} {}", x, y),
 ///             other => println!("unhandled event: {:?}", other),
@@ -71,10 +70,9 @@ pub enum MouseEvent {
 ///     }
 /// }
 /// ```
-#[async_trait::async_trait]
 pub trait RdpServerInputHandler {
-    async fn keyboard(&mut self, event: KeyboardEvent);
-    async fn mouse(&mut self, event: MouseEvent);
+    fn keyboard(&mut self, event: KeyboardEvent);
+    fn mouse(&mut self, event: MouseEvent);
 }
 
 impl From<(u8, fast_path::KeyboardFlags)> for KeyboardEvent {
