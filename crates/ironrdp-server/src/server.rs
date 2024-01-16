@@ -1,5 +1,6 @@
 use std::io::Cursor;
 use std::net::SocketAddr;
+use std::sync::{Arc, Mutex};
 
 use anyhow::{bail, Result};
 use ironrdp_acceptor::{self, Acceptor, AcceptorResult, BeginResult};
@@ -101,7 +102,8 @@ impl RdpServerSecurity {
 /// ```
 pub struct RdpServer {
     opts: RdpServerOptions,
-    handler: Box<dyn RdpServerInputHandler>,
+    // FIXME: replace with a channel and poll/process the handler?
+    handler: Arc<Mutex<Box<dyn RdpServerInputHandler>>>,
     display: Box<dyn RdpServerDisplay>,
     static_channels: StaticChannelSet,
     cliprdr_factory: Option<Box<dyn CliprdrBackendFactory + Send>>,
@@ -116,7 +118,7 @@ impl RdpServer {
     ) -> Self {
         Self {
             opts,
-            handler,
+            handler: Arc::new(Mutex::new(handler)),
             display,
             static_channels: StaticChannelSet::new(),
             cliprdr_factory,
@@ -315,29 +317,30 @@ impl RdpServer {
 
     async fn handle_fastpath(&mut self, input: FastPathInput) {
         for event in input.0 {
+            let mut handler = self.handler.lock().unwrap();
             match event {
                 FastPathInputEvent::KeyboardEvent(flags, key) => {
-                    self.handler.keyboard((key, flags).into());
+                    handler.keyboard((key, flags).into());
                 }
 
                 FastPathInputEvent::UnicodeKeyboardEvent(flags, key) => {
-                    self.handler.keyboard((key, flags).into());
+                    handler.keyboard((key, flags).into());
                 }
 
                 FastPathInputEvent::SyncEvent(flags) => {
-                    self.handler.keyboard(flags.into());
+                    handler.keyboard(flags.into());
                 }
 
                 FastPathInputEvent::MouseEvent(mouse) => {
-                    self.handler.mouse(mouse.into());
+                    handler.mouse(mouse.into());
                 }
 
                 FastPathInputEvent::MouseEventEx(mouse) => {
-                    self.handler.mouse(mouse.into());
+                    handler.mouse(mouse.into());
                 }
 
                 FastPathInputEvent::MouseEventRel(mouse) => {
-                    self.handler.mouse(mouse.into());
+                    handler.mouse(mouse.into());
                 }
 
                 FastPathInputEvent::QoeEvent(quality) => {
@@ -414,29 +417,30 @@ impl RdpServer {
 
     async fn handle_input_event(&mut self, input: InputEventPdu) {
         for event in input.0 {
+            let mut handler = self.handler.lock().unwrap();
             match event {
                 ironrdp_pdu::input::InputEvent::ScanCode(key) => {
-                    self.handler.keyboard((key.key_code, key.flags).into());
+                    handler.keyboard((key.key_code, key.flags).into());
                 }
 
                 ironrdp_pdu::input::InputEvent::Unicode(key) => {
-                    self.handler.keyboard((key.unicode_code, key.flags).into());
+                    handler.keyboard((key.unicode_code, key.flags).into());
                 }
 
                 ironrdp_pdu::input::InputEvent::Sync(sync) => {
-                    self.handler.keyboard(sync.flags.into());
+                    handler.keyboard(sync.flags.into());
                 }
 
                 ironrdp_pdu::input::InputEvent::Mouse(mouse) => {
-                    self.handler.mouse(mouse.into());
+                    handler.mouse(mouse.into());
                 }
 
                 ironrdp_pdu::input::InputEvent::MouseX(mouse) => {
-                    self.handler.mouse(mouse.into());
+                    handler.mouse(mouse.into());
                 }
 
                 ironrdp_pdu::input::InputEvent::MouseRel(mouse) => {
-                    self.handler.mouse(mouse.into());
+                    handler.mouse(mouse.into());
                 }
 
                 ironrdp_pdu::input::InputEvent::Unused(_) => {}
