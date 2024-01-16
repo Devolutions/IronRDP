@@ -30,7 +30,7 @@ impl<'a> ReadCursor<'a> {
 
     #[inline]
     #[track_caller]
-    pub fn remaining(&self) -> &[u8] {
+    pub fn remaining(&self) -> &'a [u8] {
         let idx = core::cmp::min(self.pos, self.inner.len());
         &self.inner[idx..]
     }
