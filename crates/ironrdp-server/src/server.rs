@@ -55,10 +55,9 @@ impl RdpServerSecurity {
 ///# use ironrdp_server::{DisplayUpdate, DesktopSize, KeyboardEvent, MouseEvent};
 ///# use tokio_rustls::TlsAcceptor;
 ///# struct NoopInputHandler;
-///# #[async_trait::async_trait]
 ///# impl RdpServerInputHandler for NoopInputHandler {
-///#     async fn keyboard(&mut self, _: KeyboardEvent) {}
-///#     async fn mouse(&mut self, _: MouseEvent) {}
+///#     fn keyboard(&mut self, _: KeyboardEvent) {}
+///#     fn mouse(&mut self, _: MouseEvent) {}
 ///# }
 ///# struct NoopDisplay;
 ///# #[async_trait::async_trait]
@@ -318,27 +317,27 @@ impl RdpServer {
         for event in input.0 {
             match event {
                 FastPathInputEvent::KeyboardEvent(flags, key) => {
-                    self.handler.keyboard((key, flags).into()).await;
+                    self.handler.keyboard((key, flags).into());
                 }
 
                 FastPathInputEvent::UnicodeKeyboardEvent(flags, key) => {
-                    self.handler.keyboard((key, flags).into()).await;
+                    self.handler.keyboard((key, flags).into());
                 }
 
                 FastPathInputEvent::SyncEvent(flags) => {
-                    self.handler.keyboard(flags.into()).await;
+                    self.handler.keyboard(flags.into());
                 }
 
                 FastPathInputEvent::MouseEvent(mouse) => {
-                    self.handler.mouse(mouse.into()).await;
+                    self.handler.mouse(mouse.into());
                 }
 
                 FastPathInputEvent::MouseEventEx(mouse) => {
-                    self.handler.mouse(mouse.into()).await;
+                    self.handler.mouse(mouse.into());
                 }
 
                 FastPathInputEvent::MouseEventRel(mouse) => {
-                    self.handler.mouse(mouse.into()).await;
+                    self.handler.mouse(mouse.into());
                 }
 
                 FastPathInputEvent::QoeEvent(quality) => {
@@ -417,27 +416,27 @@ impl RdpServer {
         for event in input.0 {
             match event {
                 ironrdp_pdu::input::InputEvent::ScanCode(key) => {
-                    self.handler.keyboard((key.key_code, key.flags).into()).await;
+                    self.handler.keyboard((key.key_code, key.flags).into());
                 }
 
                 ironrdp_pdu::input::InputEvent::Unicode(key) => {
-                    self.handler.keyboard((key.unicode_code, key.flags).into()).await;
+                    self.handler.keyboard((key.unicode_code, key.flags).into());
                 }
 
                 ironrdp_pdu::input::InputEvent::Sync(sync) => {
-                    self.handler.keyboard(sync.flags.into()).await;
+                    self.handler.keyboard(sync.flags.into());
                 }
 
                 ironrdp_pdu::input::InputEvent::Mouse(mouse) => {
-                    self.handler.mouse(mouse.into()).await;
+                    self.handler.mouse(mouse.into());
                 }
 
                 ironrdp_pdu::input::InputEvent::MouseX(mouse) => {
-                    self.handler.mouse(mouse.into()).await;
+                    self.handler.mouse(mouse.into());
                 }
 
                 ironrdp_pdu::input::InputEvent::MouseRel(mouse) => {
-                    self.handler.mouse(mouse.into()).await;
+                    self.handler.mouse(mouse.into());
                 }
 
                 ironrdp_pdu::input::InputEvent::Unused(_) => {}

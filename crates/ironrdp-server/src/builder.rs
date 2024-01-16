@@ -149,10 +149,9 @@ impl RdpServerBuilder<BuilderDone> {
 
 struct NoopInputHandler;
 
-#[async_trait::async_trait]
 impl RdpServerInputHandler for NoopInputHandler {
-    async fn keyboard(&mut self, _: KeyboardEvent) {}
-    async fn mouse(&mut self, _: MouseEvent) {}
+    fn keyboard(&mut self, _: KeyboardEvent) {}
+    fn mouse(&mut self, _: MouseEvent) {}
 }
 
 struct NoopDisplay;

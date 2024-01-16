@@ -130,13 +130,12 @@ impl Handler {
     }
 }
 
-#[async_trait::async_trait]
 impl RdpServerInputHandler for Handler {
-    async fn keyboard(&mut self, event: KeyboardEvent) {
+    fn keyboard(&mut self, event: KeyboardEvent) {
         info!(?event, "keyboard");
     }
 
-    async fn mouse(&mut self, event: MouseEvent) {
+    fn mouse(&mut self, event: MouseEvent) {
         info!(?event, "mouse");
     }
 }
