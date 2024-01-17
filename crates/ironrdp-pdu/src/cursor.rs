@@ -36,6 +36,28 @@ impl<'a> ReadCursor<'a> {
     }
 
     #[inline]
+    #[track_caller]
+    #[must_use]
+    pub const fn split_at_peek(&self, mid: usize) -> (ReadCursor<'a>, ReadCursor<'a>) {
+        let (left, right) = self.inner.split_at(self.pos + mid);
+        let left = ReadCursor {
+            inner: left,
+            pos: self.pos,
+        };
+        let right = ReadCursor { inner: right, pos: 0 };
+        (left, right)
+    }
+
+    #[inline]
+    #[track_caller]
+    #[must_use]
+    pub fn split_at(&mut self, mid: usize) -> (ReadCursor<'a>, ReadCursor<'a>) {
+        let res = self.split_at_peek(mid);
+        self.pos = self.inner.len();
+        res
+    }
+
+    #[inline]
     pub const fn inner(&self) -> &[u8] {
         self.inner
     }
