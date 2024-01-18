@@ -97,13 +97,20 @@ fn setup_logging() -> anyhow::Result<()> {
 }
 
 fn acceptor(cert_path: &str, key_path: &str) -> anyhow::Result<TlsAcceptor> {
-    let cert = certs(&mut BufReader::new(File::open(cert_path)?))?[0].clone();
-    let key = pkcs8_private_keys(&mut BufReader::new(File::open(key_path)?))?[0].clone();
+    let cert = certs(&mut BufReader::new(File::open(cert_path)?))
+        .next()
+        .context("no certificate")??;
+    let key = pkcs8_private_keys(&mut BufReader::new(File::open(key_path)?))
+        .next()
+        .context("no private key")??;
 
     let mut server_config = ServerConfig::builder()
         .with_safe_defaults()
         .with_no_client_auth()
-        .with_single_cert(vec![rustls::Certificate(cert)], rustls::PrivateKey(key))
+        .with_single_cert(
+            vec![rustls::Certificate(cert.as_ref().to_vec())],
+            rustls::PrivateKey(key.secret_pkcs8_der().to_vec()),
+        )
         .expect("bad certificate/key");
 
     // This adds support for the SSLKEYLOGFILE env variable (https://wiki.wireshark.org/TLS#using-the-pre-master-secret)
