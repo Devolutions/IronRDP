@@ -65,7 +65,7 @@ tracing-subscriber = { version = "0.3", features = ["time"] }
 
 # Utils
 anyhow = "1"
-smallvec = "1.11"
+smallvec = "1.13"
 x509-cert = { version = "0.2", default-features = false, features = ["std"] }
 tap = "1"
 semver = "1"
