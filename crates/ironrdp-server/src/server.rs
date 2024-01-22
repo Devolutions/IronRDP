@@ -10,7 +10,7 @@ use ironrdp_pdu::input::fast_path::{FastPathInput, FastPathInputEvent};
 use ironrdp_pdu::input::InputEventPdu;
 use ironrdp_pdu::mcs::SendDataRequest;
 use ironrdp_pdu::rdp::capability_sets::{CapabilitySet, CmdFlags, GeneralExtraFlags};
-use ironrdp_pdu::{self, decode, mcs, nego, rdp, Action, PduParsing, PduResult};
+use ironrdp_pdu::{self, custom_err, decode, mcs, nego, rdp, Action, PduParsing, PduResult};
 use ironrdp_svc::{server_encode_svc_messages, StaticChannelSet};
 use ironrdp_tokio::{Framed, FramedRead, FramedWrite, TokioFramed};
 use tokio::net::{TcpListener, TcpStream};
@@ -41,6 +41,41 @@ impl RdpServerSecurity {
         }
     }
 }
+
+struct DisplayControlHandler {}
+
+impl dvc::DvcProcessor for DisplayControlHandler {
+    fn channel_name(&self) -> &str {
+        ironrdp_pdu::dvc::display::CHANNEL_NAME
+    }
+
+    fn start(&mut self, _channel_id: u32) -> PduResult<dvc::DvcMessages> {
+        use ironrdp_pdu::dvc::display::{DisplayControlCapsPdu, ServerPdu};
+
+        let pdu = ServerPdu::DisplayControlCaps(DisplayControlCapsPdu {
+            max_num_monitors: 1,
+            max_monitor_area_factora: 3840,
+            max_monitor_area_factorb: 2400,
+        });
+
+        let mut buf = vec![];
+        pdu.to_buffer(&mut buf).map_err(|e| custom_err!(e))?;
+        Ok(vec![Box::new(buf)])
+    }
+
+    fn process(&mut self, _channel_id: u32, payload: &[u8]) -> PduResult<dvc::DvcMessages> {
+        use ironrdp_pdu::dvc::display::ClientPdu;
+
+        match ClientPdu::from_buffer(payload).map_err(|e| custom_err!(e))? {
+            ClientPdu::DisplayControlMonitorLayout(layout) => {
+                debug!(?layout);
+            }
+        }
+        Ok(vec![])
+    }
+}
+
+impl dvc::DvcServerProcessor for DisplayControlHandler {}
 
 struct AInputHandler {
     handler: Arc<Mutex<Box<dyn RdpServerInputHandler>>>,
@@ -180,9 +215,11 @@ impl RdpServer {
             acceptor.attach_static_channel(cliprdr);
         }
 
-        let dvc = dvc::DrdynvcServer::new().with_dynamic_channel(AInputHandler {
-            handler: Arc::clone(&self.handler),
-        });
+        let dvc = dvc::DrdynvcServer::new()
+            .with_dynamic_channel(AInputHandler {
+                handler: Arc::clone(&self.handler),
+            })
+            .with_dynamic_channel(DisplayControlHandler {});
         acceptor.attach_static_channel(dvc);
 
         match ironrdp_acceptor::accept_begin(framed, &mut acceptor).await {
