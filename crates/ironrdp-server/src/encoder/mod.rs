@@ -9,6 +9,8 @@ use ironrdp_pdu::rdp::capability_sets::CmdFlags;
 use ironrdp_pdu::surface_commands::{ExtendedBitmapDataPdu, SurfaceBitsPdu, SurfaceCommand};
 use ironrdp_pdu::PduEncode;
 
+use crate::PixelOrder;
+
 use self::bitmap::BitmapEncoder;
 use super::BitmapUpdate;
 
@@ -54,6 +56,17 @@ impl UpdateEncoder {
             return Some(UpdateFragmenter::new(UpdateCode::Bitmap, &self.buffer[..len]));
         }
 
+        let data = match bitmap.order {
+            PixelOrder::BottomToTop => bitmap.data,
+            PixelOrder::TopToBottom => {
+                let row_len = usize::from(bitmap.width.get()) * usize::from(bitmap.format.bytes_per_pixel());
+                let mut data = Vec::with_capacity(bitmap.data.len());
+                for row in bitmap.data.chunks(row_len).rev() {
+                    data.extend_from_slice(row);
+                }
+                data
+            }
+        };
         let destination = ExclusiveRectangle {
             left: bitmap.left,
             top: bitmap.top,
@@ -66,7 +79,7 @@ impl UpdateEncoder {
             height: bitmap.height.get(),
             codec_id: 0,
             header: None,
-            data: &bitmap.data,
+            data: &data,
         };
         let pdu = SurfaceBitsPdu {
             destination,
