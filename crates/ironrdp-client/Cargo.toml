@@ -53,7 +53,7 @@ tokio = { version = "1", features = ["full"]}
 # Utils
 whoami = "1.4"
 anyhow = "1"
-smallvec = "1.11"
+smallvec = "1.13"
 tap = "1"
 semver = "1"
 reqwest = "0.11.23"
