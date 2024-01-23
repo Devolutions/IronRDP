@@ -334,8 +334,8 @@ impl Processor {
                     let destination = InclusiveRectangle {
                         left: destination.left,
                         top: destination.top,
-                        right: destination.right,
-                        bottom: destination.bottom,
+                        right: destination.right - 1,
+                        bottom: destination.bottom - 1,
                     };
                     match codec_id {
                         CodecId::None => {
