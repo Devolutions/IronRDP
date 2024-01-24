@@ -122,8 +122,9 @@ impl dvc::DvcServerProcessor for AInputHandler {}
 /// # Example
 ///
 /// ```
-/// use ironrdp_server::{RdpServer, RdpServerInputHandler, RdpServerDisplay};
+/// use ironrdp_server::{RdpServer, RdpServerInputHandler, RdpServerDisplay, RdpServerDisplayUpdates};
 ///
+///# use anyhow::Result;
 ///# use ironrdp_server::{DisplayUpdate, DesktopSize, KeyboardEvent, MouseEvent};
 ///# use tokio_rustls::TlsAcceptor;
 ///# struct NoopInputHandler;
@@ -137,7 +138,7 @@ impl dvc::DvcServerProcessor for AInputHandler {}
 ///#     async fn size(&mut self) -> DesktopSize {
 ///#         todo!()
 ///#     }
-///#     async fn get_update(&mut self) -> Option<DisplayUpdate> {
+///#     async fn updates(&mut self) -> Result<Box<dyn RdpServerDisplayUpdates>> {
 ///#         todo!()
 ///#     }
 ///# }
@@ -310,6 +311,8 @@ impl RdpServer {
         let mut buffer = vec![0u8; 4096];
         let mut encoder = UpdateEncoder::new(surface_flags);
 
+        let mut display_updates = self.display.updates().await?;
+
         'main: loop {
             tokio::select! {
                 frame = framed.read_pdu() => {
@@ -339,7 +342,7 @@ impl RdpServer {
                     }
                 },
 
-                Some(update) = self.display.get_update() => {
+                Some(update) = display_updates.next_update() => {
                     let fragmenter = match update {
                         DisplayUpdate::Bitmap(bitmap) => encoder.bitmap(bitmap)
                     };
