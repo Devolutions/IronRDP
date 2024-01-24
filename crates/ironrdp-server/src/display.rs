@@ -1,3 +1,4 @@
+use anyhow::Result;
 use std::num::NonZeroU16;
 
 pub use ironrdp_acceptor::DesktopSize;
@@ -35,20 +36,44 @@ pub struct BitmapUpdate {
     pub data: Vec<u8>,
 }
 
-/// Display Update receiver for an RDP server
+/// Display Updates receiver for an RDP server
 ///
-/// The RDP server will repeatedly call the `get_update` method to receive display updates
-/// which will then be encoded and sent to the client
+/// The RDP server will repeatedly call the `next_update` method to receive
+/// display updates which will then be encoded and sent to the client
+///
+/// See [`RdpServerDisplay`] example.
+#[async_trait::async_trait]
+pub trait RdpServerDisplayUpdates {
+    /// # Cancel safety
+    ///
+    /// This method MUST be cancellation safe because it is used in a
+    /// `tokio::select!` statement. If some other branch completes first, it
+    /// MUST be guaranteed that no data is lost.
+    async fn next_update(&mut self) -> Option<DisplayUpdate>;
+}
+
+/// Display for an RDP server
 ///
 /// # Example
 ///
 /// ```
-/// use ironrdp_server::{DesktopSize, DisplayUpdate, RdpServerDisplay};
+///# use anyhow::Result;
+/// use ironrdp_server::{DesktopSize, DisplayUpdate, RdpServerDisplay, RdpServerDisplayUpdates};
+///
+/// pub struct DisplayUpdates {
+///     receiver: tokio::sync::mpsc::Receiver<DisplayUpdate>,
+/// }
+///
+/// #[async_trait::async_trait]
+/// impl RdpServerDisplayUpdates for DisplayUpdates {
+///     async fn next_update(&mut self) -> Option<DisplayUpdate> {
+///         self.receiver.recv().await
+///     }
+/// }
 ///
 /// pub struct DisplayHandler {
 ///     width: u16,
 ///     height: u16,
-///     receiver: tokio::sync::mpsc::Receiver<DisplayUpdate>,
 /// }
 ///
 /// #[async_trait::async_trait]
@@ -57,8 +82,8 @@ pub struct BitmapUpdate {
 ///         DesktopSize { width: self.width, height: self.height }
 ///     }
 ///
-///     async fn get_update(&mut self) -> Option<DisplayUpdate> {
-///         self.receiver.recv().await
+///     async fn updates(&mut self) -> Result<Box<dyn RdpServerDisplayUpdates>> {
+///         Ok(Box::new(DisplayUpdates { receiver: todo!() }))
 ///     }
 /// }
 /// ```
@@ -69,9 +94,6 @@ pub trait RdpServerDisplay {
     /// so the size returned by this method will be enforced.
     async fn size(&mut self) -> DesktopSize;
 
-    /// # Cancel safety
-    ///
-    /// This method MUST be cancellation safe because it is used in a `tokio::select!` statement.
-    /// If some other branch completes first, it MUST be guaranteed that no data is lost.
-    async fn get_update(&mut self) -> Option<DisplayUpdate>;
+    /// Return a display updates receiver
+    async fn updates(&mut self) -> Result<Box<dyn RdpServerDisplayUpdates>>;
 }

@@ -1,10 +1,13 @@
 use std::net::SocketAddr;
 
+use anyhow::Result;
 use ironrdp_cliprdr::backend::CliprdrBackendFactory;
 
 use tokio_rustls::TlsAcceptor;
 
-use super::display::{DesktopSize, DisplayUpdate, RdpServerDisplay};
+use crate::{DisplayUpdate, RdpServerDisplayUpdates};
+
+use super::display::{DesktopSize, RdpServerDisplay};
 use super::handler::{KeyboardEvent, MouseEvent, RdpServerInputHandler};
 use super::server::*;
 
@@ -154,6 +157,16 @@ impl RdpServerInputHandler for NoopInputHandler {
     fn mouse(&mut self, _: MouseEvent) {}
 }
 
+struct NoopDisplayUpdates;
+
+#[async_trait::async_trait]
+impl RdpServerDisplayUpdates for NoopDisplayUpdates {
+    async fn next_update(&mut self) -> Option<DisplayUpdate> {
+        let () = std::future::pending().await;
+        unreachable!()
+    }
+}
+
 struct NoopDisplay;
 
 #[async_trait::async_trait]
@@ -161,8 +174,8 @@ impl RdpServerDisplay for NoopDisplay {
     async fn size(&mut self) -> DesktopSize {
         DesktopSize { width: 0, height: 0 }
     }
-    async fn get_update(&mut self) -> Option<DisplayUpdate> {
-        let () = std::future::pending().await;
-        unreachable!()
+
+    async fn updates(&mut self) -> Result<Box<dyn RdpServerDisplayUpdates>> {
+        Ok(Box::new(NoopDisplayUpdates {}))
     }
 }

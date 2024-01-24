@@ -14,7 +14,7 @@ use ironrdp_cliprdr_native::StubClipboard;
 use ironrdp_connector::DesktopSize;
 use ironrdp_server::{
     BitmapUpdate, DisplayUpdate, KeyboardEvent, MouseEvent, PixelFormat, PixelOrder, RdpServer, RdpServerDisplay,
-    RdpServerInputHandler,
+    RdpServerDisplayUpdates, RdpServerInputHandler,
 };
 use rand::prelude::*;
 use rustls::ServerConfig;
@@ -120,13 +120,11 @@ fn acceptor(cert_path: &str, key_path: &str) -> anyhow::Result<TlsAcceptor> {
 }
 
 #[derive(Clone, Debug)]
-struct Handler {
-    count: usize,
-}
+struct Handler {}
 
 impl Handler {
     fn new() -> Self {
-        Self { count: 0 }
+        Self {}
     }
 }
 
@@ -143,17 +141,11 @@ impl RdpServerInputHandler for Handler {
 const WIDTH: u16 = 1920;
 const HEIGHT: u16 = 1080;
 
-#[async_trait::async_trait]
-impl RdpServerDisplay for Handler {
-    async fn size(&mut self) -> DesktopSize {
-        DesktopSize {
-            width: WIDTH,
-            height: HEIGHT,
-        }
-    }
+struct DisplayUpdates;
 
-    async fn get_update(&mut self) -> Option<DisplayUpdate> {
-        self.count += 1;
+#[async_trait::async_trait]
+impl RdpServerDisplayUpdates for DisplayUpdates {
+    async fn next_update(&mut self) -> Option<DisplayUpdate> {
         sleep(Duration::from_millis(100)).await;
         let mut rng = rand::thread_rng();
 
@@ -180,6 +172,20 @@ impl RdpServerDisplay for Handler {
             data,
         };
         Some(DisplayUpdate::Bitmap(bitmap))
+    }
+}
+
+#[async_trait::async_trait]
+impl RdpServerDisplay for Handler {
+    async fn size(&mut self) -> DesktopSize {
+        DesktopSize {
+            width: WIDTH,
+            height: HEIGHT,
+        }
+    }
+
+    async fn updates(&mut self) -> anyhow::Result<Box<dyn RdpServerDisplayUpdates>> {
+        Ok(Box::new(DisplayUpdates {}))
     }
 }
 
