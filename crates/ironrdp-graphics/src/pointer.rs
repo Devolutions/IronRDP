@@ -1,9 +1,9 @@
 //! This module implements logic to decode pointer PDUs into RGBA bitmaps ready for rendering.
 //!
 //! # References:
-//! - Drawing pointers: https://learn.microsoft.com/en-us/windows-hardware/drivers/display/pointer-drawing
-//! - Drawing color pointers: https://learn.microsoft.com/en-us/windows-hardware/drivers/display/drawing-color-pointers
-//! -Drawing monochrome pointers https://learn.microsoft.com/en-us/windows-hardware/drivers/display/drawing-monochrome-pointers
+//! - Drawing pointers: <https://learn.microsoft.com/en-us/windows-hardware/drivers/display/pointer-drawing>
+//! - Drawing color pointers: <https://learn.microsoft.com/en-us/windows-hardware/drivers/display/drawing-color-pointers>
+//! - Drawing monochrome pointers <https://learn.microsoft.com/en-us/windows-hardware/drivers/display/drawing-monochrome-pointers>
 //!
 //!
 //! # Notes on xor/and masks encoding:
