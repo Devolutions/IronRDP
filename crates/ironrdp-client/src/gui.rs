@@ -119,9 +119,12 @@ impl GuiContext {
                         send_fast_path_events(&input_event_sender, input_events);
                     }
                     WindowEvent::CursorMoved { position, .. } => {
+                        // FIXME: allow physical position for HiDPI remote
+                        // + should take display scale into account
+                        let sf = window.scale_factor();
                         let operation = ironrdp::input::Operation::MouseMove(ironrdp::input::MousePosition {
-                            x: position.x as u16,
-                            y: position.y as u16,
+                            x: (position.x / sf) as u16,
+                            y: (position.y / sf) as u16,
                         });
 
                         let input_events = input_database.apply(std::iter::once(operation));
