@@ -318,7 +318,7 @@ impl SessionBuilder {
         spawn_local(writer_task(writer_rx, rdp_writer));
 
         Ok(Session {
-            desktop_size: connection_result.desktop_size.clone(),
+            desktop_size: connection_result.desktop_size,
             input_database: RefCell::new(ironrdp::input::Database::new()),
             writer_tx,
             input_events_tx,
