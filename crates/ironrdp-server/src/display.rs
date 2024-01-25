@@ -25,7 +25,7 @@ pub enum PixelOrder {
 /// Bitmap updates are encoded using RDP 6.0 compression, fragmented and sent using
 /// Fastpath Server Updates
 ///
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct BitmapUpdate {
     pub top: u16,
     pub left: u16,
@@ -34,6 +34,19 @@ pub struct BitmapUpdate {
     pub format: PixelFormat,
     pub order: PixelOrder,
     pub data: Vec<u8>,
+}
+
+impl std::fmt::Debug for BitmapUpdate {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BitmapUpdate")
+            .field("top", &self.top)
+            .field("left", &self.left)
+            .field("width", &self.width)
+            .field("height", &self.height)
+            .field("format", &self.format)
+            .field("order", &self.order)
+            .finish()
+    }
 }
 
 /// Display Updates receiver for an RDP server
