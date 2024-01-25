@@ -205,7 +205,7 @@ impl RdpServer {
         let framed = TokioFramed::new(stream);
 
         let size = self.display.size().await;
-        let capabilities = capabilities::capabilities(&self.opts, size.clone());
+        let capabilities = capabilities::capabilities(&self.opts, size);
         let mut acceptor = Acceptor::new(self.opts.security.flag(), size, capabilities);
 
         if let Some(cliprdr_factory) = self.cliprdr_factory.as_deref() {
