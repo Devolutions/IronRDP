@@ -389,6 +389,8 @@ mod legacy {
     use crate::{PduEncode, PduResult, WriteCursor};
     use thiserror::Error;
 
+    pub const MAX_PDU_SIZE: usize = 100 * 1024; // 100 kB
+
     pub trait PduParsing {
         type Error;
 
