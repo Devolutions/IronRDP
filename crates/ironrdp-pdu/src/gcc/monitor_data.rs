@@ -4,7 +4,7 @@ use bitflags::bitflags;
 use byteorder::{LittleEndian, ReadBytesExt as _, WriteBytesExt as _};
 use thiserror::Error;
 
-use crate::PduParsing;
+use crate::{PduError, PduParsing};
 
 pub const MONITOR_COUNT_SIZE: usize = 4;
 pub const MONITOR_SIZE: usize = 20;
@@ -108,4 +108,6 @@ pub enum MonitorDataError {
     InvalidMonitorCount,
     #[error("invalid monitor flags field")]
     InvalidMonitorFlags,
+    #[error("PDU error")]
+    Pdu(#[from] PduError),
 }
