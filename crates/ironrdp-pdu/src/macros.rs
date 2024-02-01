@@ -325,3 +325,62 @@ macro_rules! try_write_optional {
         }
     };
 }
+
+#[macro_export]
+macro_rules! from_buffer {
+    ($stream:expr, size: $expected:expr) => {{
+        let mut buf = [0; $expected];
+        let len = match $stream.read(&mut buf) {
+            Ok(len) => len,
+            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
+                return Err(not_enough_bytes_err!(0, $expected));
+            }
+            Err(e) => return Err(custom_err!(e)),
+        };
+        $crate::decode(&buf[0..len])
+    }};
+}
+
+#[macro_export]
+macro_rules! to_buffer {
+    ($self:expr, $stream:expr, size: $expected:expr) => {{
+        let mut buf = vec![0; $expected];
+        let len = $crate::encode($self, &mut buf)?;
+        $stream.write_all(&buf[0..len]).map_err(|e| custom_err!(e))?;
+        Ok(())
+    }};
+}
+
+#[macro_export]
+macro_rules! impl_pdu_parsing {
+    ($pdu_ty:ty, $size:expr) => {
+        impl $crate::PduParsing for $pdu_ty {
+            type Error = $crate::PduError;
+
+            fn from_buffer(mut stream: impl std::io::Read) -> Result<Self, Self::Error> {
+                from_buffer!(stream, size: $size)
+            }
+
+            fn to_buffer(&self, mut stream: impl std::io::Write) -> Result<(), Self::Error> {
+                to_buffer!(self, stream, size: self.size())
+            }
+
+            fn buffer_length(&self) -> usize {
+                self.size()
+            }
+        }
+    };
+    ($pdu_ty:ty) => {
+        $crate::impl_pdu_parsing!($pdu_ty, Self::FIXED_PART_SIZE);
+    };
+}
+
+// This is only suitable for temporary code translation, as it will "eat"
+// MAX_PDU_SIZE input data...
+#[deprecated(note = "FIXME: this macro will eat too much data!")]
+#[macro_export]
+macro_rules! impl_pdu_parsing_max {
+    ($pdu_ty:ty) => {
+        $crate::impl_pdu_parsing!($pdu_ty, $crate::legacy::MAX_PDU_SIZE);
+    };
+}
