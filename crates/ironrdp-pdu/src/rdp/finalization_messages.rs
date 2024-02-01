@@ -6,7 +6,7 @@ use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive as _, ToPrimitive as _};
 use thiserror::Error;
 
-use crate::{gcc, PduParsing};
+use crate::{gcc, PduError, PduParsing};
 
 const SYNCHRONIZE_PDU_SIZE: usize = 2 + 2;
 const CONTROL_PDU_SIZE: usize = 2 + 2 + 4;
@@ -208,4 +208,12 @@ pub enum FinalizationMessagesError {
     InvalidListFlags,
     #[error("invalid monitor count field: {0}")]
     InvalidMonitorCount(u32),
+    #[error("PDU error: {0}")]
+    Pdu(PduError),
+}
+
+impl From<PduError> for FinalizationMessagesError {
+    fn from(e: PduError) -> Self {
+        Self::Pdu(e)
+    }
 }

@@ -9,7 +9,7 @@ use crate::rdp::finalization_messages::FinalizationMessagesError;
 use crate::rdp::headers::{BasicSecurityHeader, BasicSecurityHeaderFlags, ShareControlPduType, ShareDataPduType};
 use crate::rdp::server_error_info::ServerSetErrorInfoError;
 use crate::rdp::server_license::ServerLicenseError;
-use crate::PduParsing;
+use crate::{PduError, PduParsing};
 
 pub mod capability_sets;
 pub mod client_info;
@@ -91,6 +91,14 @@ pub enum RdpError {
     InputEventError(#[from] InputEventError),
     #[error("not enough bytes")]
     NotEnoughBytes,
+    #[error("PDU error: {0}")]
+    Pdu(PduError),
+}
+
+impl From<PduError> for RdpError {
+    fn from(e: PduError) -> Self {
+        Self::Pdu(e)
+    }
 }
 
 impl From<RdpError> for io::Error {

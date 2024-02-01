@@ -17,7 +17,7 @@ use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive as _, ToPrimitive as _};
 use thiserror::Error;
 
-use crate::PduParsing;
+use crate::{PduError, PduParsing};
 
 const RDP_GFX_HEADER_SIZE: usize = 8;
 
@@ -312,6 +312,14 @@ pub enum GraphicsPipelineError {
     InvalidResetGraphicsPduSize { expected: usize, actual: usize },
     #[error("invalid PDU length: expected ({expected}) != actual ({actual})")]
     InvalidPduLength { expected: usize, actual: usize },
+    #[error("PDU error: {0}")]
+    Pdu(PduError),
+}
+
+impl From<PduError> for GraphicsPipelineError {
+    fn from(e: PduError) -> Self {
+        Self::Pdu(e)
+    }
 }
 
 #[cfg(feature = "std")]

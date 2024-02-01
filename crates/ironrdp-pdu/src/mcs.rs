@@ -1147,6 +1147,14 @@ mod legacy {
         InvalidPdu(String),
         #[error("invalid invalid MCS channel id")]
         UnexpectedChannelId(String),
+        #[error("PDU error: {0}")]
+        Pdu(PduError),
+    }
+
+    impl From<PduError> for McsError {
+        fn from(e: PduError) -> Self {
+            Self::Pdu(e)
+        }
     }
 
     impl From<McsError> for io::Error {

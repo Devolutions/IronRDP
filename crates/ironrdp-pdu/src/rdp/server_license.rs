@@ -8,7 +8,7 @@ use num_traits::{FromPrimitive, ToPrimitive};
 use thiserror::Error;
 
 use crate::rdp::headers::{BasicSecurityHeader, BasicSecurityHeaderFlags, BASIC_SECURITY_HEADER_SIZE};
-use crate::PduParsing;
+use crate::{PduError, PduParsing};
 
 #[cfg(test)]
 mod tests;
@@ -241,6 +241,14 @@ pub enum ServerLicenseError {
     InvalidCertificateLength(u32),
     #[error("blob too small")]
     BlobTooSmall,
+    #[error("PDU error: {0}")]
+    Pdu(PduError),
+}
+
+impl From<PduError> for ServerLicenseError {
+    fn from(e: PduError) -> Self {
+        Self::Pdu(e)
+    }
 }
 
 #[cfg(feature = "std")]

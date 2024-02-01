@@ -5,6 +5,8 @@ use std::io;
 
 use thiserror::Error;
 
+use crate::PduError;
+
 const VERSION_SIZE: usize = 4;
 
 #[repr(transparent)]
@@ -65,4 +67,12 @@ pub enum CoreDataError {
     InvalidConnectionType,
     #[error("invalid server security protocol field")]
     InvalidServerSecurityProtocol,
+    #[error("PDU error: {0}")]
+    Pdu(PduError),
+}
+
+impl From<PduError> for CoreDataError {
+    fn from(e: PduError) -> Self {
+        Self::Pdu(e)
+    }
 }

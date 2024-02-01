@@ -8,7 +8,7 @@ use num_traits::{FromPrimitive as _, ToPrimitive as _};
 use thiserror::Error;
 
 use crate::utils::CharacterSet;
-use crate::{try_read_optional, try_write_optional, utils, PduParsing};
+use crate::{try_read_optional, try_write_optional, utils, PduError, PduParsing};
 
 const RECONNECT_COOKIE_LEN: usize = 28;
 const TIMEZONE_INFO_NAME_LEN: usize = 64;
@@ -620,6 +620,14 @@ pub enum ClientInfoError {
     InvalidPerformanceFlags,
     #[error("invalid reconnect cookie field")]
     InvalidReconnectCookie,
+    #[error("PDU error: {0}")]
+    Pdu(PduError),
+}
+
+impl From<PduError> for ClientInfoError {
+    fn from(e: PduError) -> Self {
+        Self::Pdu(e)
+    }
 }
 
 fn string_len(value: &str, character_set: CharacterSet) -> u16 {

@@ -5,7 +5,7 @@ use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive as _, ToPrimitive as _};
 use thiserror::Error;
 
-use crate::PduParsing;
+use crate::{PduError, PduParsing};
 
 mod bitmap;
 mod bitmap_cache;
@@ -588,4 +588,12 @@ pub enum CapabilitySetsError {
     InvalidPropertyLength,
     #[error("invalid data length")]
     InvalidLength,
+    #[error("PDU error: {0}")]
+    Pdu(PduError),
+}
+
+impl From<PduError> for CapabilitySetsError {
+    fn from(e: PduError) -> Self {
+        Self::Pdu(e)
+    }
 }

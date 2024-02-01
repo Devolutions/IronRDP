@@ -5,7 +5,7 @@ use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive, ToPrimitive};
 use thiserror::Error;
 
-use crate::PduParsing;
+use crate::{PduError, PduParsing};
 
 pub mod conference_create;
 
@@ -395,4 +395,12 @@ pub enum GccError {
     RequiredClientDataBlockIsAbsent(ClientGccType),
     #[error("a client did not send the required GCC data block: {0:?}")]
     RequiredServerDataBlockIsAbsent(ServerGccType),
+    #[error("PDU error: {0}")]
+    Pdu(PduError),
+}
+
+impl From<PduError> for GccError {
+    fn from(e: PduError) -> Self {
+        Self::Pdu(e)
+    }
 }

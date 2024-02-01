@@ -22,7 +22,7 @@ pub use server::{
 
 use super::RDP_GFX_HEADER_SIZE;
 use crate::gcc::MonitorDataError;
-use crate::PduParsing;
+use crate::{PduError, PduParsing};
 
 const CAPABILITY_SET_HEADER_SIZE: usize = 8;
 
@@ -307,4 +307,12 @@ pub enum GraphicsMessagesError {
     InvalidCapabilitiesVersion,
     #[error("both luma and chroma packets specified but length is missing")]
     InvalidAvcEncoding,
+    #[error("PDU error: {0}")]
+    Pdu(PduError),
+}
+
+impl From<PduError> for GraphicsMessagesError {
+    fn from(e: PduError) -> Self {
+        Self::Pdu(e)
+    }
 }
