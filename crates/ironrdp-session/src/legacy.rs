@@ -46,13 +46,11 @@ impl DvcMessage<'_> {
 }
 
 impl PduEncode for DvcMessage<'_> {
-    fn encode(&self, mut dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
         ensure_size!(in: dst, size: self.size());
 
         self.channel_header.encode(dst)?;
-        self.dvc_pdu
-            .to_buffer(&mut dst)
-            .map_err(|e| ironrdp_pdu::custom_err!("DVC pdu", e))?;
+        self.dvc_pdu.encode(dst)?;
         dst.write_slice(self.dvc_data);
         Ok(())
     }
@@ -62,7 +60,7 @@ impl PduEncode for DvcMessage<'_> {
     }
 
     fn size(&self) -> usize {
-        self.channel_header.size() + self.dvc_pdu.buffer_length() + self.dvc_data.len()
+        self.channel_header.size() + self.dvc_pdu.size() + self.dvc_data.len()
     }
 }
 
@@ -80,7 +78,7 @@ pub fn decode_dvc_message(ctx: SendDataIndicationCtx<'_>) -> SessionResult<Dynam
     debug_assert_eq!(dvc_data_len, channel_header.length as usize);
 
     // … | dvc::ServerPdu | …
-    let dvc_pdu = vc::dvc::ServerPdu::from_buffer(&mut user_data, dvc_data_len)?;
+    let dvc_pdu = vc::dvc::ServerPdu::from_buffer(&mut user_data, dvc_data_len).map_err(SessionError::pdu)?;
 
     // … | DvcData ]
     let dvc_data = user_data;

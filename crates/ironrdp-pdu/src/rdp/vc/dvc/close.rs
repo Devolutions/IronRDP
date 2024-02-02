@@ -1,11 +1,9 @@
 #[cfg(test)]
 mod tests;
 
-use std::io;
-
 use super::{FieldType, Header, PduType, HEADER_SIZE, UNUSED_U8};
-use crate::rdp::vc::ChannelError;
-use crate::PduParsing;
+use crate::cursor::{ReadCursor, WriteCursor};
+use crate::{PduEncode, PduResult};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClosePdu {
@@ -14,29 +12,38 @@ pub struct ClosePdu {
 }
 
 impl ClosePdu {
-    pub fn from_buffer(mut stream: impl io::Read, channel_id_type: FieldType) -> Result<Self, ChannelError> {
-        let channel_id = channel_id_type.read_buffer_according_to_type(&mut stream)?;
+    const NAME: &'static str = "DvcClosePdu";
+
+    pub(crate) fn decode(src: &mut ReadCursor<'_>, channel_id_type: FieldType) -> PduResult<Self> {
+        let channel_id = channel_id_type.read_according_to_type(src)?;
 
         Ok(Self {
             channel_id_type,
             channel_id,
         })
     }
+}
 
-    pub fn to_buffer(&self, mut stream: impl io::Write) -> Result<(), ChannelError> {
+impl PduEncode for ClosePdu {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_size!(in: dst, size: self.size());
+
         let dvc_header = Header {
             channel_id_type: self.channel_id_type as u8,
             pdu_dependent: UNUSED_U8,
             pdu_type: PduType::Close,
         };
-        dvc_header.to_buffer(&mut stream)?;
-        self.channel_id_type
-            .to_buffer_according_to_type(&mut stream, self.channel_id)?;
+        dvc_header.encode(dst)?;
+        self.channel_id_type.write_according_to_type(dst, self.channel_id)?;
 
         Ok(())
     }
 
-    pub fn buffer_length(&self) -> usize {
-        HEADER_SIZE + self.channel_id_type.get_type_size()
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    fn size(&self) -> usize {
+        HEADER_SIZE + self.channel_id_type.size()
     }
 }

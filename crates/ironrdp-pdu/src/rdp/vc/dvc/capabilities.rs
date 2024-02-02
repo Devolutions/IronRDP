@@ -1,15 +1,12 @@
 #[cfg(test)]
 mod tests;
 
-use std::io;
-
-use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive, ToPrimitive};
 
 use super::{Header, PduType, HEADER_SIZE, UNUSED_U8};
-use crate::rdp::vc::ChannelError;
-use crate::PduParsing;
+use crate::cursor::{ReadCursor, WriteCursor};
+use crate::{PduDecode, PduEncode, PduResult};
 
 const DVC_CAPABILITIES_PAD_SIZE: usize = 1;
 const DVC_CAPABILITIES_VERSION_SIZE: usize = 2;
@@ -35,50 +32,38 @@ pub enum CapabilitiesRequestPdu {
     },
 }
 
-impl PduParsing for CapabilitiesRequestPdu {
-    type Error = ChannelError;
+impl CapabilitiesRequestPdu {
+    const NAME: &'static str = "CapabilitiesRequestPdu";
 
-    fn from_buffer(mut stream: impl io::Read) -> Result<Self, Self::Error> {
-        let _pad = stream.read_u8()?;
-        let version = CapsVersion::from_u16(stream.read_u16::<LittleEndian>()?)
-            .ok_or(ChannelError::InvalidDvcCapabilitiesVersion)?;
+    const FIXED_PART_SIZE: usize = HEADER_SIZE + DVC_CAPABILITIES_PAD_SIZE + DVC_CAPABILITIES_VERSION_SIZE;
+}
 
-        match version {
-            CapsVersion::V1 => Ok(Self::V1),
-            CapsVersion::V2 => {
-                let mut charges = [0; DVC_CAPABILITIES_CHARGE_COUNT];
-                stream.read_u16_into::<LittleEndian>(&mut charges)?;
-                Ok(Self::V2 { charges })
-            }
-            CapsVersion::V3 => {
-                let mut charges = [0; DVC_CAPABILITIES_CHARGE_COUNT];
-                stream.read_u16_into::<LittleEndian>(&mut charges)?;
-                Ok(Self::V3 { charges })
-            }
-        }
-    }
+impl_pdu_parsing!(CapabilitiesRequestPdu);
 
-    fn to_buffer(&self, mut stream: impl io::Write) -> Result<(), Self::Error> {
+impl PduEncode for CapabilitiesRequestPdu {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_size!(in: dst, size: self.size());
+
         let dvc_header = Header {
             channel_id_type: UNUSED_U8,
             pdu_dependent: UNUSED_U8,
             pdu_type: PduType::Capabilities,
         };
-        dvc_header.to_buffer(&mut stream)?;
-        stream.write_u8(UNUSED_U8)?;
+        dvc_header.encode(dst)?;
+        dst.write_u8(UNUSED_U8);
 
         match self {
-            CapabilitiesRequestPdu::V1 => stream.write_u16::<LittleEndian>(CapsVersion::V1.to_u16().unwrap())?,
+            CapabilitiesRequestPdu::V1 => dst.write_u16(CapsVersion::V1.to_u16().unwrap()),
             CapabilitiesRequestPdu::V2 { charges } => {
-                stream.write_u16::<LittleEndian>(CapsVersion::V2.to_u16().unwrap())?;
+                dst.write_u16(CapsVersion::V2.to_u16().unwrap());
                 for charge in charges.iter() {
-                    stream.write_u16::<LittleEndian>(*charge)?;
+                    dst.write_u16(*charge);
                 }
             }
             CapabilitiesRequestPdu::V3 { charges } => {
-                stream.write_u16::<LittleEndian>(CapsVersion::V3.to_u16().unwrap())?;
+                dst.write_u16(CapsVersion::V3.to_u16().unwrap());
                 for charge in charges.iter() {
-                    stream.write_u16::<LittleEndian>(*charge)?;
+                    dst.write_u16(*charge);
                 }
             }
         }
@@ -86,7 +71,11 @@ impl PduParsing for CapabilitiesRequestPdu {
         Ok(())
     }
 
-    fn buffer_length(&self) -> usize {
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    fn size(&self) -> usize {
         let charges_length = match self {
             CapabilitiesRequestPdu::V1 => 0,
             CapabilitiesRequestPdu::V2 { charges } | CapabilitiesRequestPdu::V3 { charges } => {
@@ -94,7 +83,35 @@ impl PduParsing for CapabilitiesRequestPdu {
             }
         };
 
-        HEADER_SIZE + DVC_CAPABILITIES_PAD_SIZE + DVC_CAPABILITIES_VERSION_SIZE + charges_length
+        Self::FIXED_PART_SIZE + charges_length
+    }
+}
+
+impl<'de> PduDecode<'de> for CapabilitiesRequestPdu {
+    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+        ensure_size!(in: src, size: Self::FIXED_PART_SIZE - HEADER_SIZE);
+
+        let _pad = src.read_u8();
+        let version = CapsVersion::from_u16(src.read_u16())
+            .ok_or_else(|| invalid_message_err!("DvcCapabilities", "invalid version"))?;
+
+        match version {
+            CapsVersion::V1 => Ok(Self::V1),
+            CapsVersion::V2 => {
+                let mut charges = [0; DVC_CAPABILITIES_CHARGE_COUNT];
+                for c in charges.iter_mut() {
+                    *c = src.read_u16();
+                }
+                Ok(Self::V2 { charges })
+            }
+            CapsVersion::V3 => {
+                let mut charges = [0; DVC_CAPABILITIES_CHARGE_COUNT];
+                for c in charges.iter_mut() {
+                    *c = src.read_u16();
+                }
+                Ok(Self::V3 { charges })
+            }
+        }
     }
 }
 
@@ -103,31 +120,47 @@ pub struct CapabilitiesResponsePdu {
     pub version: CapsVersion,
 }
 
-impl PduParsing for CapabilitiesResponsePdu {
-    type Error = ChannelError;
+impl_pdu_parsing!(CapabilitiesResponsePdu);
 
-    fn from_buffer(mut stream: impl io::Read) -> Result<Self, Self::Error> {
-        let _pad = stream.read_u8()?;
-        let version = CapsVersion::from_u16(stream.read_u16::<LittleEndian>()?)
-            .ok_or(ChannelError::InvalidDvcCapabilitiesVersion)?;
+impl CapabilitiesResponsePdu {
+    const NAME: &'static str = "CapabilitiesResponsePdu";
 
-        Ok(Self { version })
-    }
+    const FIXED_PART_SIZE: usize = HEADER_SIZE + DVC_CAPABILITIES_PAD_SIZE + DVC_CAPABILITIES_VERSION_SIZE;
+}
 
-    fn to_buffer(&self, mut stream: impl io::Write) -> Result<(), Self::Error> {
+impl PduEncode for CapabilitiesResponsePdu {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_fixed_part_size!(in: dst);
+
         let dvc_header = Header {
             channel_id_type: UNUSED_U8,
             pdu_dependent: UNUSED_U8,
             pdu_type: PduType::Capabilities,
         };
-        dvc_header.to_buffer(&mut stream)?;
-        stream.write_u8(UNUSED_U8)?;
-        stream.write_u16::<LittleEndian>(self.version.to_u16().unwrap())?;
+        dvc_header.encode(dst)?;
+        dst.write_u8(UNUSED_U8);
+        dst.write_u16(self.version.to_u16().unwrap());
 
         Ok(())
     }
 
-    fn buffer_length(&self) -> usize {
-        HEADER_SIZE + DVC_CAPABILITIES_PAD_SIZE + DVC_CAPABILITIES_VERSION_SIZE
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    fn size(&self) -> usize {
+        Self::FIXED_PART_SIZE
+    }
+}
+
+impl<'de> PduDecode<'de> for CapabilitiesResponsePdu {
+    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+        ensure_size!(in: src, size: Self::FIXED_PART_SIZE - HEADER_SIZE);
+
+        let _pad = src.read_u8();
+        let version = CapsVersion::from_u16(src.read_u16())
+            .ok_or_else(|| invalid_message_err!("DvcCapabilities", "invalid version"))?;
+
+        Ok(Self { version })
     }
 }

@@ -1,13 +1,9 @@
-use std::io;
-
 use bit_field::BitField;
-use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive, ToPrimitive};
 
-use super::ChannelError;
 use crate::cursor::{ReadCursor, WriteCursor};
-use crate::{PduParsing, PduResult};
+use crate::{decode_cursor, PduDecode, PduEncode, PduError, PduResult};
 
 #[cfg(test)]
 mod tests;
@@ -52,75 +48,86 @@ pub enum ServerPdu {
 }
 
 impl ServerPdu {
-    pub fn from_buffer(mut stream: impl io::Read, mut dvc_data_size: usize) -> Result<Self, ChannelError> {
-        let dvc_header = Header::from_buffer(&mut stream)?;
-        let channel_id_type =
-            FieldType::from_u8(dvc_header.channel_id_type).ok_or(ChannelError::InvalidDVChannelIdLength)?;
+    const NAME: &'static str = "DvcServerPdu";
+}
 
-        dvc_data_size -= HEADER_SIZE;
-
-        match dvc_header.pdu_type {
-            PduType::Capabilities => Ok(ServerPdu::CapabilitiesRequest(CapabilitiesRequestPdu::from_buffer(
-                &mut stream,
-            )?)),
-            PduType::Create => Ok(ServerPdu::CreateRequest(CreateRequestPdu::from_buffer(
-                &mut stream,
-                channel_id_type,
-                dvc_data_size,
-            )?)),
-            PduType::DataFirst => {
-                let data_length_type =
-                    FieldType::from_u8(dvc_header.pdu_dependent).ok_or(ChannelError::InvalidDvcDataLength)?;
-
-                Ok(ServerPdu::DataFirst(DataFirstPdu::from_buffer(
-                    &mut stream,
-                    channel_id_type,
-                    data_length_type,
-                    dvc_data_size,
-                )?))
-            }
-            PduType::Data => Ok(ServerPdu::Data(DataPdu::from_buffer(
-                &mut stream,
-                channel_id_type,
-                dvc_data_size,
-            )?)),
-            PduType::Close => Ok(ServerPdu::CloseRequest(ClosePdu::from_buffer(
-                &mut stream,
-                channel_id_type,
-            )?)),
-        }
-    }
-
-    pub fn to_buffer(&self, mut stream: impl io::Write) -> Result<(), ChannelError> {
+impl PduEncode for ServerPdu {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
         match self {
-            ServerPdu::CapabilitiesRequest(caps_request) => caps_request.to_buffer(&mut stream)?,
-            ServerPdu::CreateRequest(create_request) => create_request.to_buffer(&mut stream)?,
-            ServerPdu::DataFirst(data_first) => data_first.to_buffer(&mut stream)?,
-            ServerPdu::Data(data) => data.to_buffer(&mut stream)?,
-            ServerPdu::CloseRequest(close_request) => close_request.to_buffer(&mut stream)?,
+            ServerPdu::CapabilitiesRequest(caps_request) => caps_request.encode(dst)?,
+            ServerPdu::CreateRequest(create_request) => create_request.encode(dst)?,
+            ServerPdu::DataFirst(data_first) => data_first.encode(dst)?,
+            ServerPdu::Data(data) => data.encode(dst)?,
+            ServerPdu::CloseRequest(close_request) => close_request.encode(dst)?,
         };
 
         Ok(())
     }
 
-    pub fn buffer_length(&self) -> usize {
-        match self {
-            ServerPdu::CapabilitiesRequest(caps_request) => caps_request.buffer_length(),
-            ServerPdu::CreateRequest(create_request) => create_request.buffer_length(),
-            ServerPdu::DataFirst(data_first) => data_first.buffer_length(),
-            ServerPdu::Data(data) => data.buffer_length(),
-            ServerPdu::CloseRequest(close_request) => close_request.buffer_length(),
-        }
+    fn name(&self) -> &'static str {
+        Self::NAME
     }
 
-    pub fn as_short_name(&self) -> &str {
+    fn size(&self) -> usize {
         match self {
-            ServerPdu::CapabilitiesRequest(_) => "Capabilities Request PDU",
-            ServerPdu::CreateRequest(_) => "Create Request PDU",
-            ServerPdu::DataFirst(_) => "Data First PDU",
-            ServerPdu::Data(_) => "Data PDU",
-            ServerPdu::CloseRequest(_) => "Close Request PDU",
+            ServerPdu::CapabilitiesRequest(caps_request) => caps_request.size(),
+            ServerPdu::CreateRequest(create_request) => create_request.size(),
+            ServerPdu::DataFirst(data_first) => data_first.size(),
+            ServerPdu::Data(data) => data.size(),
+            ServerPdu::CloseRequest(close_request) => close_request.size(),
         }
+    }
+}
+
+impl ServerPdu {
+    pub fn decode(src: &mut ReadCursor<'_>, mut dvc_data_size: usize) -> PduResult<Self> {
+        let dvc_header: Header = decode_cursor(src)?;
+        let channel_id_type = FieldType::from_u8(dvc_header.channel_id_type)
+            .ok_or_else(|| invalid_message_err!("DvcHeader", "invalid channel ID type"))?;
+
+        dvc_data_size -= HEADER_SIZE;
+
+        let res = match dvc_header.pdu_type {
+            PduType::Capabilities => ServerPdu::CapabilitiesRequest(CapabilitiesRequestPdu::decode(src)?),
+            PduType::Create => ServerPdu::CreateRequest(CreateRequestPdu::decode(src, channel_id_type, dvc_data_size)?),
+            PduType::DataFirst => {
+                let data_length_type = FieldType::from_u8(dvc_header.pdu_dependent)
+                    .ok_or_else(|| invalid_message_err!("DvcHeader", "data length type"))?;
+
+                ServerPdu::DataFirst(DataFirstPdu::decode(
+                    src,
+                    channel_id_type,
+                    data_length_type,
+                    dvc_data_size,
+                )?)
+            }
+            PduType::Data => ServerPdu::Data(DataPdu::decode(src, channel_id_type, dvc_data_size)?),
+            PduType::Close => ServerPdu::CloseRequest(ClosePdu::decode(src, channel_id_type)?),
+        };
+
+        Ok(res)
+    }
+
+    pub fn from_buffer(mut stream: impl std::io::Read, dvc_data_size: usize) -> Result<Self, PduError> {
+        let mut buf = [0; crate::legacy::MAX_PDU_SIZE];
+        let len = match stream.read(&mut buf) {
+            // if not enough data is read, decode will through NotEnoughBytes
+            Ok(len) => len,
+            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
+                return Err(not_enough_bytes_err!(0, crate::legacy::MAX_PDU_SIZE));
+            }
+            Err(e) => return Err(custom_err!(e)),
+        };
+        let mut cur = ReadCursor::new(&buf[0..len]);
+        Self::decode(&mut cur, dvc_data_size)
+    }
+
+    pub fn to_buffer(&self, mut stream: impl std::io::Write) -> Result<(), PduError> {
+        to_buffer!(self, stream, size: self.size())
+    }
+
+    pub fn buffer_length(&self) -> usize {
+        self.size()
     }
 }
 
@@ -134,73 +141,83 @@ pub enum ClientPdu {
 }
 
 impl ClientPdu {
-    pub fn from_buffer(mut stream: impl io::Read, mut dvc_data_size: usize) -> Result<Self, ChannelError> {
-        let dvc_header = Header::from_buffer(&mut stream)?;
-        let channel_id_type =
-            FieldType::from_u8(dvc_header.channel_id_type).ok_or(ChannelError::InvalidDVChannelIdLength)?;
+    const NAME: &'static str = "ClientPdu";
+
+    pub fn decode(src: &mut ReadCursor<'_>, mut dvc_data_size: usize) -> PduResult<Self> {
+        let dvc_header = Header::decode(src)?;
+        let channel_id_type = FieldType::from_u8(dvc_header.channel_id_type)
+            .ok_or_else(|| invalid_message_err!("DvcHeader", "invalid channel ID type"))?;
 
         dvc_data_size -= HEADER_SIZE;
 
-        match dvc_header.pdu_type {
-            PduType::Capabilities => Ok(ClientPdu::CapabilitiesResponse(CapabilitiesResponsePdu::from_buffer(
-                &mut stream,
-            )?)),
-            PduType::Create => Ok(ClientPdu::CreateResponse(CreateResponsePdu::from_buffer(
-                &mut stream,
-                channel_id_type,
-            )?)),
+        let res = match dvc_header.pdu_type {
+            PduType::Capabilities => ClientPdu::CapabilitiesResponse(CapabilitiesResponsePdu::decode(src)?),
+            PduType::Create => ClientPdu::CreateResponse(CreateResponsePdu::decode(src, channel_id_type)?),
             PduType::DataFirst => {
-                let data_length_type =
-                    FieldType::from_u8(dvc_header.pdu_dependent).ok_or(ChannelError::InvalidDvcDataLength)?;
+                let data_length_type = FieldType::from_u8(dvc_header.pdu_dependent)
+                    .ok_or_else(|| invalid_message_err!("DvcHeader", "data length type"))?;
 
-                Ok(ClientPdu::DataFirst(DataFirstPdu::from_buffer(
-                    &mut stream,
+                ClientPdu::DataFirst(DataFirstPdu::decode(
+                    src,
                     channel_id_type,
                     data_length_type,
                     dvc_data_size,
-                )?))
+                )?)
             }
-            PduType::Data => Ok(ClientPdu::Data(DataPdu::from_buffer(
-                &mut stream,
-                channel_id_type,
-                dvc_data_size,
-            )?)),
-            PduType::Close => Ok(ClientPdu::CloseResponse(ClosePdu::from_buffer(
-                &mut stream,
-                channel_id_type,
-            )?)),
-        }
+            PduType::Data => ClientPdu::Data(DataPdu::decode(src, channel_id_type, dvc_data_size)?),
+            PduType::Close => ClientPdu::CloseResponse(ClosePdu::decode(src, channel_id_type)?),
+        };
+
+        Ok(res)
     }
 
-    pub fn to_buffer(&self, mut stream: impl io::Write) -> Result<(), ChannelError> {
+    pub fn from_buffer(mut stream: impl std::io::Read, dvc_data_size: usize) -> Result<Self, PduError> {
+        let mut buf = [0; crate::legacy::MAX_PDU_SIZE];
+        let len = match stream.read(&mut buf) {
+            // if not enough data is read, decode will through NotEnoughBytes
+            Ok(len) => len,
+            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
+                return Err(not_enough_bytes_err!(0, crate::legacy::MAX_PDU_SIZE));
+            }
+            Err(e) => return Err(custom_err!(e)),
+        };
+        let mut cur = ReadCursor::new(&buf[0..len]);
+        Self::decode(&mut cur, dvc_data_size)
+    }
+
+    pub fn to_buffer(&self, mut stream: impl std::io::Write) -> Result<(), PduError> {
+        to_buffer!(self, stream, size: self.size())
+    }
+
+    pub fn buffer_length(&self) -> usize {
+        self.size()
+    }
+}
+
+impl PduEncode for ClientPdu {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
         match self {
-            ClientPdu::CapabilitiesResponse(caps_request) => caps_request.to_buffer(&mut stream)?,
-            ClientPdu::CreateResponse(create_request) => create_request.to_buffer(&mut stream)?,
-            ClientPdu::DataFirst(data_first) => data_first.to_buffer(&mut stream)?,
-            ClientPdu::Data(data) => data.to_buffer(&mut stream)?,
-            ClientPdu::CloseResponse(close_response) => close_response.to_buffer(&mut stream)?,
+            ClientPdu::CapabilitiesResponse(caps_request) => caps_request.encode(dst)?,
+            ClientPdu::CreateResponse(create_request) => create_request.encode(dst)?,
+            ClientPdu::DataFirst(data_first) => data_first.encode(dst)?,
+            ClientPdu::Data(data) => data.encode(dst)?,
+            ClientPdu::CloseResponse(close_response) => close_response.encode(dst)?,
         };
 
         Ok(())
     }
 
-    pub fn buffer_length(&self) -> usize {
-        match self {
-            ClientPdu::CapabilitiesResponse(caps_request) => caps_request.buffer_length(),
-            ClientPdu::CreateResponse(create_request) => create_request.buffer_length(),
-            ClientPdu::DataFirst(data_first) => data_first.buffer_length(),
-            ClientPdu::Data(data) => data.buffer_length(),
-            ClientPdu::CloseResponse(close_response) => close_response.buffer_length(),
-        }
+    fn name(&self) -> &'static str {
+        Self::NAME
     }
 
-    pub fn as_short_name(&self) -> &str {
+    fn size(&self) -> usize {
         match self {
-            ClientPdu::CapabilitiesResponse(_) => "Capabilities Response PDU",
-            ClientPdu::CreateResponse(_) => "Create Response PDU",
-            ClientPdu::DataFirst(_) => "Data First PDU",
-            ClientPdu::Data(_) => "Data PDU",
-            ClientPdu::CloseResponse(_) => "Close Response PDU",
+            ClientPdu::CapabilitiesResponse(caps_request) => caps_request.size(),
+            ClientPdu::CreateResponse(create_request) => create_request.size(),
+            ClientPdu::DataFirst(data_first) => data_first.size(),
+            ClientPdu::Data(data) => data.size(),
+            ClientPdu::CloseResponse(close_response) => close_response.size(),
         }
     }
 }
@@ -245,30 +262,6 @@ impl FieldType {
             FieldType::U32 => 4,
         }
     }
-
-    pub fn read_buffer_according_to_type(self, mut stream: impl io::Read) -> Result<u32, io::Error> {
-        let value = match self {
-            FieldType::U8 => u32::from(stream.read_u8()?),
-            FieldType::U16 => u32::from(stream.read_u16::<LittleEndian>()?),
-            FieldType::U32 => stream.read_u32::<LittleEndian>()?,
-        };
-
-        Ok(value)
-    }
-
-    pub fn to_buffer_according_to_type(self, mut stream: impl io::Write, value: u32) -> Result<(), io::Error> {
-        match self {
-            FieldType::U8 => stream.write_u8(value as u8)?,
-            FieldType::U16 => stream.write_u16::<LittleEndian>(value as u16)?,
-            FieldType::U32 => stream.write_u32::<LittleEndian>(value)?,
-        };
-
-        Ok(())
-    }
-
-    pub fn get_type_size(self) -> usize {
-        self.size()
-    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -278,14 +271,43 @@ struct Header {
     pdu_type: PduType,   // 4 bit
 }
 
-impl PduParsing for Header {
-    type Error = ChannelError;
+impl Header {
+    const NAME: &'static str = "DvcHeader";
 
-    fn from_buffer(mut stream: impl io::Read) -> Result<Self, Self::Error> {
-        let dvc_header = stream.read_u8()?;
+    const FIXED_PART_SIZE: usize = 1 /* header */;
+}
+
+impl PduEncode for Header {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_fixed_part_size!(in: dst);
+
+        let mut dvc_header: u8 = 0;
+        dvc_header.set_bits(0..2, self.channel_id_type);
+        dvc_header.set_bits(2..4, self.pdu_dependent);
+        dvc_header.set_bits(4..8, self.pdu_type.to_u8().unwrap());
+        dst.write_u8(dvc_header);
+
+        Ok(())
+    }
+
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    fn size(&self) -> usize {
+        Self::FIXED_PART_SIZE
+    }
+}
+
+impl<'de> PduDecode<'de> for Header {
+    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+        ensure_fixed_part_size!(in: src);
+
+        let dvc_header = src.read_u8();
         let channel_id_type = dvc_header.get_bits(0..2);
         let pdu_dependent = dvc_header.get_bits(2..4);
-        let pdu_type = PduType::from_u8(dvc_header.get_bits(4..8)).ok_or(ChannelError::InvalidDvcPduType)?;
+        let pdu_type = PduType::from_u8(dvc_header.get_bits(4..8))
+            .ok_or_else(|| invalid_message_err!("DvcHeader", "invalid Cmd"))?;
 
         Ok(Self {
             channel_id_type,
@@ -293,18 +315,6 @@ impl PduParsing for Header {
             pdu_type,
         })
     }
-
-    fn to_buffer(&self, mut stream: impl io::Write) -> Result<(), Self::Error> {
-        let mut dvc_header: u8 = 0;
-        dvc_header.set_bits(0..2, self.channel_id_type);
-        dvc_header.set_bits(2..4, self.pdu_dependent);
-        dvc_header.set_bits(4..8, self.pdu_type.to_u8().unwrap());
-        stream.write_u8(dvc_header)?;
-
-        Ok(())
-    }
-
-    fn buffer_length(&self) -> usize {
-        HEADER_SIZE
-    }
 }
+
+impl_pdu_parsing!(Header);

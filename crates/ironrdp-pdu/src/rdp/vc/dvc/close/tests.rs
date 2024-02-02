@@ -1,6 +1,7 @@
 use lazy_static::lazy_static;
 
 use super::*;
+use crate::encode_vec;
 
 const DVC_TEST_CHANNEL_ID_U16: u32 = 0x0303;
 
@@ -16,18 +17,15 @@ lazy_static! {
 
 #[test]
 fn from_buffer_correct_parses_dvc_close_pdu() {
-    assert_eq!(
-        DVC_CLOSE.clone(),
-        ClosePdu::from_buffer(&DVC_CLOSE_BUFFER[1..], FieldType::U16).unwrap(),
-    );
+    let mut cur = ReadCursor::new(&DVC_CLOSE_BUFFER[1..]);
+    assert_eq!(DVC_CLOSE.clone(), ClosePdu::decode(&mut cur, FieldType::U16).unwrap(),);
 }
 
 #[test]
 fn to_buffer_correct_serializes_dvc_close_pdu() {
     let close = DVC_CLOSE.clone();
 
-    let mut buffer = Vec::new();
-    close.to_buffer(&mut buffer).unwrap();
+    let buffer = encode_vec(&close).unwrap();
 
     assert_eq!(DVC_CLOSE_BUFFER.as_ref(), buffer.as_slice());
 }
@@ -37,7 +35,7 @@ fn buffer_length_is_correct_for_dvc_close_pdu() {
     let close = DVC_CLOSE.clone();
     let expected_buf_len = DVC_CLOSE_BUFFER.len();
 
-    let len = close.buffer_length();
+    let len = close.size();
 
     assert_eq!(expected_buf_len, len);
 }

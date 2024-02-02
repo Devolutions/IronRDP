@@ -1,6 +1,7 @@
 use lazy_static::lazy_static;
 
 use super::*;
+use crate::{decode, encode_vec, PduErrorKind};
 
 const DVC_CAPABILITIES_REQUEST_V1_SIZE: usize = 4;
 const DVC_CAPABILITIES_REQUEST_V1_BUFFER: [u8; DVC_CAPABILITIES_REQUEST_V1_SIZE] = [0x50, 0x00, 0x01, 0x00];
@@ -24,9 +25,9 @@ lazy_static! {
 
 #[test]
 fn from_buffer_parsing_for_dvc_caps_request_pdu_with_invalid_caps_version_fails() {
-    let buffer_with_invalid_caps_version = vec![0x00, 0x01, 0x01];
-    match CapabilitiesRequestPdu::from_buffer(buffer_with_invalid_caps_version.as_slice()) {
-        Err(ChannelError::InvalidDvcCapabilitiesVersion) => (),
+    let buffer_with_invalid_caps_version = [0x00, 0x01, 0x01];
+    match decode::<CapabilitiesRequestPdu>(buffer_with_invalid_caps_version.as_ref()) {
+        Err(e) if matches!(e.kind(), PduErrorKind::InvalidMessage { .. }) => (),
         res => panic!("Expected InvalidDvcCapabilitiesVersion error, got: {res:?}"),
     };
 }
@@ -35,7 +36,7 @@ fn from_buffer_parsing_for_dvc_caps_request_pdu_with_invalid_caps_version_fails(
 fn from_buffer_correct_parses_dvc_capabilities_request_pdu_v1() {
     assert_eq!(
         DVC_CAPABILITIES_REQUEST_V1.clone(),
-        CapabilitiesRequestPdu::from_buffer(&DVC_CAPABILITIES_REQUEST_V1_BUFFER[1..]).unwrap(),
+        decode::<CapabilitiesRequestPdu>(&DVC_CAPABILITIES_REQUEST_V1_BUFFER[1..]).unwrap(),
     );
 }
 
@@ -43,8 +44,7 @@ fn from_buffer_correct_parses_dvc_capabilities_request_pdu_v1() {
 fn to_buffer_correct_serializes_dvc_capabilities_request_pdu_v1() {
     let dvc_capabilities_request_pdu_v1 = DVC_CAPABILITIES_REQUEST_V1.clone();
 
-    let mut buffer = Vec::new();
-    dvc_capabilities_request_pdu_v1.to_buffer(&mut buffer).unwrap();
+    let buffer = encode_vec(&dvc_capabilities_request_pdu_v1).unwrap();
 
     assert_eq!(DVC_CAPABILITIES_REQUEST_V1_BUFFER.as_ref(), buffer.as_slice());
 }
@@ -54,7 +54,7 @@ fn buffer_length_is_correct_for_dvc_capabilities_request_pdu_v1() {
     let dvc_capabilities_request_pdu_v1 = DVC_CAPABILITIES_REQUEST_V1.clone();
     let expected_buf_len = DVC_CAPABILITIES_REQUEST_V1_BUFFER.len();
 
-    let len = dvc_capabilities_request_pdu_v1.buffer_length();
+    let len = dvc_capabilities_request_pdu_v1.size();
 
     assert_eq!(expected_buf_len, len);
 }
@@ -63,7 +63,7 @@ fn buffer_length_is_correct_for_dvc_capabilities_request_pdu_v1() {
 fn from_buffer_correct_parses_dvc_capabilities_request_pdu_v2() {
     assert_eq!(
         DVC_CAPABILITIES_REQUEST_V2.clone(),
-        CapabilitiesRequestPdu::from_buffer(&DVC_CAPABILITIES_REQUEST_V2_BUFFER[1..]).unwrap(),
+        decode::<CapabilitiesRequestPdu>(&DVC_CAPABILITIES_REQUEST_V2_BUFFER[1..]).unwrap(),
     );
 }
 
@@ -71,8 +71,7 @@ fn from_buffer_correct_parses_dvc_capabilities_request_pdu_v2() {
 fn to_buffer_correct_serializes_dvc_capabilities_request_pdu_v2() {
     let dvc_capabilities_request_pdu_v2 = DVC_CAPABILITIES_REQUEST_V2.clone();
 
-    let mut buffer = Vec::new();
-    dvc_capabilities_request_pdu_v2.to_buffer(&mut buffer).unwrap();
+    let buffer = encode_vec(&dvc_capabilities_request_pdu_v2).unwrap();
 
     assert_eq!(DVC_CAPABILITIES_REQUEST_V2_BUFFER.as_ref(), buffer.as_slice());
 }
@@ -82,16 +81,16 @@ fn buffer_length_is_correct_for_dvc_capabilities_request_pdu_v2() {
     let dvc_capabilities_request_pdu_v2 = DVC_CAPABILITIES_REQUEST_V2.clone();
     let expected_buf_len = DVC_CAPABILITIES_REQUEST_V2_BUFFER.len();
 
-    let len = dvc_capabilities_request_pdu_v2.buffer_length();
+    let len = dvc_capabilities_request_pdu_v2.size();
 
     assert_eq!(expected_buf_len, len);
 }
 
 #[test]
 fn from_buffer_parsing_for_dvc_caps_response_pdu_with_invalid_caps_version_fails() {
-    let buffer_with_invalid_caps_version = vec![0x00, 0x01, 0x01];
-    match CapabilitiesResponsePdu::from_buffer(buffer_with_invalid_caps_version.as_slice()) {
-        Err(ChannelError::InvalidDvcCapabilitiesVersion) => (),
+    let buffer_with_invalid_caps_version = [0x00, 0x01, 0x01];
+    match decode::<CapabilitiesResponsePdu>(buffer_with_invalid_caps_version.as_ref()) {
+        Err(e) if matches!(e.kind(), PduErrorKind::InvalidMessage { .. }) => (),
         res => panic!("Expected InvalidDvcCapabilitiesVersion error, got: {res:?}"),
     };
 }
@@ -100,7 +99,7 @@ fn from_buffer_parsing_for_dvc_caps_response_pdu_with_invalid_caps_version_fails
 fn from_buffer_correct_parses_dvc_capabilities_response() {
     assert_eq!(
         DVC_CAPABILITIES_RESPONSE.clone(),
-        CapabilitiesResponsePdu::from_buffer(&DVC_CAPABILITIES_RESPONSE_BUFFER[1..]).unwrap(),
+        decode::<CapabilitiesResponsePdu>(&DVC_CAPABILITIES_RESPONSE_BUFFER[1..]).unwrap(),
     );
 }
 
@@ -108,8 +107,7 @@ fn from_buffer_correct_parses_dvc_capabilities_response() {
 fn to_buffer_correct_serializes_dvc_capabilities_response() {
     let capabilities_response = DVC_CAPABILITIES_RESPONSE.clone();
 
-    let mut buffer = Vec::new();
-    capabilities_response.to_buffer(&mut buffer).unwrap();
+    let buffer = encode_vec(&capabilities_response).unwrap();
 
     assert_eq!(DVC_CAPABILITIES_RESPONSE_BUFFER.as_ref(), buffer.as_slice());
 }
@@ -119,7 +117,7 @@ fn buffer_length_is_correct_for_dvc_capabilities_response() {
     let capabilities_response = DVC_CAPABILITIES_RESPONSE.clone();
     let expected_buf_len = DVC_CAPABILITIES_RESPONSE_BUFFER.len();
 
-    let len = capabilities_response.buffer_length();
+    let len = capabilities_response.size();
 
     assert_eq!(expected_buf_len, len);
 }

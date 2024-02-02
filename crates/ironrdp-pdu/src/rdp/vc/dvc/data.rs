@@ -1,11 +1,9 @@
 #[cfg(test)]
 mod tests;
 
-use std::io;
-
 use super::{FieldType, Header, PduType, HEADER_SIZE, PDU_WITH_DATA_MAX_SIZE, UNUSED_U8};
-use crate::rdp::vc::ChannelError;
-use crate::PduParsing;
+use crate::cursor::{ReadCursor, WriteCursor};
+use crate::{PduEncode, PduResult};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DataPdu {
@@ -15,6 +13,8 @@ pub struct DataPdu {
 }
 
 impl DataPdu {
+    const NAME: &'static str = "DvcDataPdu";
+
     pub fn new(channel_id: u32, data_size: usize) -> Self {
         Self {
             channel_id_type: FieldType::U32,
@@ -23,18 +23,18 @@ impl DataPdu {
         }
     }
 
-    pub fn from_buffer(
-        mut stream: impl io::Read,
+    pub(crate) fn decode(
+        src: &mut ReadCursor<'_>,
         channel_id_type: FieldType,
         mut data_size: usize,
-    ) -> Result<Self, ChannelError> {
-        let channel_id = channel_id_type.read_buffer_according_to_type(&mut stream)?;
-        data_size -= channel_id_type.get_type_size();
+    ) -> PduResult<Self> {
+        let channel_id = channel_id_type.read_according_to_type(src)?;
+        data_size -= channel_id_type.size();
 
-        let expected_max_data_size = PDU_WITH_DATA_MAX_SIZE - (HEADER_SIZE + channel_id_type.get_type_size());
+        let expected_max_data_size = PDU_WITH_DATA_MAX_SIZE - (HEADER_SIZE + channel_id_type.size());
 
         if data_size > expected_max_data_size {
-            Err(ChannelError::InvalidDvcMessageSize)
+            Err(invalid_message_err!("DvcDataPdu", "invalid message size"))
         } else {
             Ok(Self {
                 channel_id_type,
@@ -43,21 +43,26 @@ impl DataPdu {
             })
         }
     }
+}
 
-    pub fn to_buffer(&self, mut stream: impl io::Write) -> Result<(), ChannelError> {
+impl PduEncode for DataPdu {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
         let dvc_header = Header {
             channel_id_type: self.channel_id_type as u8,
             pdu_dependent: UNUSED_U8,
             pdu_type: PduType::Data,
         };
-        dvc_header.to_buffer(&mut stream)?;
-        self.channel_id_type
-            .to_buffer_according_to_type(&mut stream, self.channel_id)?;
+        dvc_header.encode(dst)?;
+        self.channel_id_type.write_according_to_type(dst, self.channel_id)?;
 
         Ok(())
     }
 
-    pub fn buffer_length(&self) -> usize {
-        HEADER_SIZE + self.channel_id_type.get_type_size()
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    fn size(&self) -> usize {
+        HEADER_SIZE + self.channel_id_type.size()
     }
 }
