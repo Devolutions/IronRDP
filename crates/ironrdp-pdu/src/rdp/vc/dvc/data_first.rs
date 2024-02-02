@@ -1,11 +1,9 @@
 #[cfg(test)]
 mod tests;
 
-use std::io;
-
 use super::{FieldType, Header, PduType, HEADER_SIZE, PDU_WITH_DATA_MAX_SIZE};
-use crate::rdp::vc::ChannelError;
-use crate::PduParsing;
+use crate::cursor::{ReadCursor, WriteCursor};
+use crate::{PduEncode, PduResult};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DataFirstPdu {
@@ -17,6 +15,8 @@ pub struct DataFirstPdu {
 }
 
 impl DataFirstPdu {
+    const NAME: &'static str = "DvcDataFirstPdu";
+
     pub fn new(channel_id: u32, total_data_size: u32, data_size: usize) -> Self {
         Self {
             channel_id_type: FieldType::U32,
@@ -26,29 +26,52 @@ impl DataFirstPdu {
             data_size,
         }
     }
+}
 
-    pub fn from_buffer(
-        mut stream: impl io::Read,
+impl PduEncode for DataFirstPdu {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        let dvc_header = Header {
+            channel_id_type: self.channel_id_type as u8,
+            pdu_dependent: self.total_data_size_type as u8,
+            pdu_type: PduType::DataFirst,
+        };
+        dvc_header.encode(dst)?;
+        self.channel_id_type.write_according_to_type(dst, self.channel_id)?;
+        self.total_data_size_type
+            .write_according_to_type(dst, self.total_data_size)?;
+
+        Ok(())
+    }
+
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    fn size(&self) -> usize {
+        HEADER_SIZE + self.channel_id_type.size() + self.total_data_size_type.size()
+    }
+}
+
+impl DataFirstPdu {
+    pub(crate) fn decode(
+        src: &mut ReadCursor<'_>,
         channel_id_type: FieldType,
         total_data_size_type: FieldType,
         mut data_size: usize,
-    ) -> Result<Self, ChannelError> {
-        let channel_id = channel_id_type.read_buffer_according_to_type(&mut stream)?;
-        let total_data_size = total_data_size_type.read_buffer_according_to_type(&mut stream)?;
+    ) -> PduResult<Self> {
+        let channel_id = channel_id_type.read_according_to_type(src)?;
+        let total_data_size = total_data_size_type.read_according_to_type(src)?;
 
-        data_size -= channel_id_type.get_type_size() + total_data_size_type.get_type_size();
+        data_size -= channel_id_type.size() + total_data_size_type.size();
         if data_size > total_data_size as usize {
-            return Err(ChannelError::InvalidDvcTotalMessageSize {
-                actual: data_size,
-                expected: total_data_size as usize,
-            });
+            return Err(not_enough_bytes_err!(total_data_size as usize, data_size));
         }
 
-        let expected_max_data_size = PDU_WITH_DATA_MAX_SIZE
-            - (HEADER_SIZE + channel_id_type.get_type_size() + total_data_size_type.get_type_size());
+        let expected_max_data_size =
+            PDU_WITH_DATA_MAX_SIZE - (HEADER_SIZE + channel_id_type.size() + total_data_size_type.size());
 
         if data_size > expected_max_data_size {
-            Err(ChannelError::InvalidDvcMessageSize)
+            Err(invalid_message_err!("DvcDataFirst", "invalid message size"))
         } else {
             Ok(Self {
                 channel_id_type,
@@ -58,24 +81,5 @@ impl DataFirstPdu {
                 data_size,
             })
         }
-    }
-
-    pub fn to_buffer(&self, mut stream: impl io::Write) -> Result<(), ChannelError> {
-        let dvc_header = Header {
-            channel_id_type: self.channel_id_type as u8,
-            pdu_dependent: self.total_data_size_type as u8,
-            pdu_type: PduType::DataFirst,
-        };
-        dvc_header.to_buffer(&mut stream)?;
-        self.channel_id_type
-            .to_buffer_according_to_type(&mut stream, self.channel_id)?;
-        self.total_data_size_type
-            .to_buffer_according_to_type(&mut stream, self.total_data_size)?;
-
-        Ok(())
-    }
-
-    pub fn buffer_length(&self) -> usize {
-        HEADER_SIZE + self.channel_id_type.get_type_size() + self.total_data_size_type.get_type_size()
     }
 }

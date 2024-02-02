@@ -1,6 +1,7 @@
 use lazy_static::lazy_static;
 
 use super::*;
+use crate::{encode_vec, PduErrorKind};
 
 const DVC_TEST_CHANNEL_ID_U8: u32 = 0x03;
 
@@ -28,22 +29,20 @@ lazy_static! {
 
 #[test]
 fn from_buffer_parsing_for_dvc_data_pdu_with_invalid_message_size_fails() {
-    match DataPdu::from_buffer(
-        DVC_INVALID_DATA_MESSAGE_BUFFER.as_ref(),
-        FieldType::U8,
-        PDU_WITH_DATA_MAX_SIZE,
-    ) {
-        Err(ChannelError::InvalidDvcMessageSize) => (),
+    let mut cur = ReadCursor::new(DVC_INVALID_DATA_MESSAGE_BUFFER.as_ref());
+    match DataPdu::decode(&mut cur, FieldType::U8, PDU_WITH_DATA_MAX_SIZE) {
+        Err(e) if matches!(e.kind(), PduErrorKind::InvalidMessage { .. }) => (),
         res => panic!("Expected InvalidDvcMessageSize error, got: {res:?}"),
     };
 }
 
 #[test]
 fn from_buffer_correct_parses_dvc_data_pdu() {
+    let mut cur = ReadCursor::new(&DVC_FULL_DATA_BUFFER[1..]);
     assert_eq!(
         DVC_DATA.clone(),
-        DataPdu::from_buffer(
-            &DVC_FULL_DATA_BUFFER[1..],
+        DataPdu::decode(
+            &mut cur,
             FieldType::U8,
             DVC_FULL_DATA_BUFFER_SIZE - DVC_TEST_HEADER_SIZE
         )
@@ -55,8 +54,7 @@ fn from_buffer_correct_parses_dvc_data_pdu() {
 fn to_buffer_correct_serializes_dvc_data_pdu() {
     let data = DVC_DATA.clone();
 
-    let mut buffer = Vec::new();
-    data.to_buffer(&mut buffer).unwrap();
+    let buffer = encode_vec(&data).unwrap();
 
     assert_eq!(DVC_DATA_PREFIX.to_vec(), buffer);
 }
@@ -66,7 +64,7 @@ fn buffer_length_is_correct_for_dvc_data_pdu() {
     let data = DVC_DATA.clone();
     let expected_buf_len = DVC_DATA_PREFIX.len();
 
-    let len = data.buffer_length();
+    let len = data.size();
 
     assert_eq!(expected_buf_len, len);
 }

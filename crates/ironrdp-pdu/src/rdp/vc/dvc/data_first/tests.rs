@@ -2,6 +2,7 @@ use lazy_static::lazy_static;
 
 use super::*;
 use crate::rdp::vc::dvc::ClientPdu;
+use crate::{encode_vec, PduErrorKind};
 
 const DVC_TEST_CHANNEL_ID_U8: u32 = 0x03;
 const DVC_TEST_DATA_LENGTH: u32 = 0x0000_0C7B;
@@ -138,36 +139,34 @@ lazy_static! {
 
 #[test]
 fn from_buffer_parsing_for_dvc_data_first_pdu_with_invalid_message_size_fails() {
-    match DataFirstPdu::from_buffer(
-        DVC_INVALID_DATA_MESSAGE_BUFFER.as_ref(),
-        FieldType::U8,
-        FieldType::U16,
-        PDU_WITH_DATA_MAX_SIZE,
-    ) {
-        Err(ChannelError::InvalidDvcMessageSize) => (),
-        res => panic!("Expected InvalidDvcMessageSize error, got: {res:?}"),
+    let mut cur = ReadCursor::new(DVC_INVALID_DATA_MESSAGE_BUFFER.as_ref());
+    match DataFirstPdu::decode(&mut cur, FieldType::U8, FieldType::U16, PDU_WITH_DATA_MAX_SIZE) {
+        Err(e) if matches!(e.kind(), PduErrorKind::InvalidMessage { .. }) => (),
+        res => panic!("Expected InvalidMessage error, got: {res:?}"),
     };
 }
 
 #[test]
 fn from_buffer_parsing_for_dvc_data_first_pdu_with_invalid_total_message_size_fails() {
-    match DataFirstPdu::from_buffer(
-        DVC_DATA_FIRST_WITH_INVALID_TOTAL_MESSAGE_SIZE_BUFFER.as_ref(),
+    let mut cur = ReadCursor::new(DVC_DATA_FIRST_WITH_INVALID_TOTAL_MESSAGE_SIZE_BUFFER.as_ref());
+    match DataFirstPdu::decode(
+        &mut cur,
         FieldType::U8,
         FieldType::U8,
         DVC_DATA_FIRST_WITH_INVALID_TOTAL_MESSAGE_SIZE_BUFFER_SIZE,
     ) {
-        Err(ChannelError::InvalidDvcTotalMessageSize { .. }) => (),
-        res => panic!("Expected InvalidDvcTotalMessageSize error, got: {res:?}"),
+        Err(e) if matches!(e.kind(), PduErrorKind::NotEnoughBytes { .. }) => (),
+        res => panic!("Expected NotEnoughBytes error, got: {res:?}"),
     };
 }
 
 #[test]
 fn from_buffer_correct_parses_dvc_data_first_pdu() {
+    let mut cur = ReadCursor::new(&DVC_FULL_DATA_FIRST_BUFFER[1..]);
     assert_eq!(
         *DVC_DATA_FIRST,
-        DataFirstPdu::from_buffer(
-            &DVC_FULL_DATA_FIRST_BUFFER[1..],
+        DataFirstPdu::decode(
+            &mut cur,
             FieldType::U8,
             FieldType::U16,
             DVC_FULL_DATA_FIRST_BUFFER_SIZE - DVC_TEST_HEADER_SIZE
@@ -180,28 +179,28 @@ fn from_buffer_correct_parses_dvc_data_first_pdu() {
 fn to_buffer_correct_serializes_dvc_data_first_pdu() {
     let data_first = &*DVC_DATA_FIRST;
 
-    let mut buffer = Vec::new();
-    data_first.to_buffer(&mut buffer).unwrap();
+    let buffer = encode_vec(data_first).unwrap();
 
     assert_eq!(DVC_DATA_FIRST_PREFIX.as_ref(), buffer.as_slice());
 }
 
 #[test]
 fn buffer_length_is_correct_for_dvc_data_first_pdu() {
-    let data_first = DVC_DATA_FIRST.clone();
+    let data_first = &*DVC_DATA_FIRST;
     let expected_buf_len = DVC_DATA_FIRST_PREFIX.len();
 
-    let len = data_first.buffer_length();
+    let len = data_first.size();
 
     assert_eq!(expected_buf_len, len);
 }
 
 #[test]
 fn from_buffer_correct_parses_dvc_server_pdu_with_data_first_where_total_length_equals_to_buffer_length() {
+    let mut cur = ReadCursor::new(FULL_DATA_FIRST_WHERE_TOTAL_LENGTH_EQUALS_TO_BUFFER_LENGTH_BUFFER.as_slice());
     assert_eq!(
         *DATA_FIRST_WHERE_TOTAL_LENGTH_EQUALS_TO_BUFFER_LENGTH,
-        ClientPdu::from_buffer(
-            FULL_DATA_FIRST_WHERE_TOTAL_LENGTH_EQUALS_TO_BUFFER_LENGTH_BUFFER.as_slice(),
+        ClientPdu::decode(
+            &mut cur,
             FULL_DATA_FIRST_WHERE_TOTAL_LENGTH_EQUALS_TO_BUFFER_LENGTH_BUFFER.len(),
         )
         .unwrap(),
@@ -212,8 +211,7 @@ fn from_buffer_correct_parses_dvc_server_pdu_with_data_first_where_total_length_
 fn to_buffer_correct_serializes_dvc_server_pdu_with_data_first_where_total_length_equals_to_buffer_length() {
     let data_first = &*DATA_FIRST_WHERE_TOTAL_LENGTH_EQUALS_TO_BUFFER_LENGTH;
 
-    let mut buffer = Vec::new();
-    data_first.to_buffer(&mut buffer).unwrap();
+    let buffer = encode_vec(data_first).unwrap();
 
     assert_eq!(
         DATA_FIRST_WHERE_TOTAL_LENGTH_EQUALS_TO_BUFFER_LENGTH_PREFIX.as_ref(),
@@ -226,7 +224,7 @@ fn buffer_length_is_correct_for_dvc_server_pdu_with_data_first_where_total_lengt
     let data_first = &*DATA_FIRST_WHERE_TOTAL_LENGTH_EQUALS_TO_BUFFER_LENGTH;
     let expected_buf_len = DATA_FIRST_WHERE_TOTAL_LENGTH_EQUALS_TO_BUFFER_LENGTH_PREFIX.len();
 
-    let len = data_first.buffer_length();
+    let len = data_first.size();
 
     assert_eq!(expected_buf_len, len);
 }
