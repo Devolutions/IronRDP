@@ -1,18 +1,14 @@
 mod client;
 mod server;
 
-use std::io;
 mod avc_messages;
 use bitflags::bitflags;
-use byteorder::{LittleEndian, ReadBytesExt as _, WriteBytesExt as _};
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive as _, ToPrimitive as _};
-use thiserror::Error;
 
 #[rustfmt::skip] // do not re-order this
 pub use avc_messages::{Avc420BitmapStream, Avc444BitmapStream, Encoding, QuantQuality};
 pub use client::{CacheImportReplyPdu, CapabilitiesAdvertisePdu, FrameAcknowledgePdu, QueueDepth};
-pub(crate) use server::RESET_GRAPHICS_PDU_SIZE;
 pub use server::{
     CacheToSurfacePdu, CapabilitiesConfirmPdu, Codec1Type, Codec2Type, CreateSurfacePdu, DeleteEncodingContextPdu,
     DeleteSurfacePdu, EndFramePdu, EvictCacheEntryPdu, MapSurfaceToOutputPdu, MapSurfaceToScaledOutputPdu,
@@ -21,8 +17,8 @@ pub use server::{
 };
 
 use super::RDP_GFX_HEADER_SIZE;
-use crate::gcc::MonitorDataError;
-use crate::{PduError, PduParsing};
+use crate::cursor::{ReadCursor, WriteCursor};
+use crate::{PduDecode, PduEncode, PduResult};
 
 const CAPABILITY_SET_HEADER_SIZE: usize = 8;
 
@@ -63,79 +59,42 @@ impl CapabilitySet {
     }
 }
 
-impl PduParsing for CapabilitySet {
-    type Error = GraphicsMessagesError;
+impl CapabilitySet {
+    const NAME: &'static str = "GfxCapabilitySet";
 
-    fn from_buffer(mut stream: impl io::Read) -> Result<Self, GraphicsMessagesError> {
-        let version = CapabilityVersion::from_u32(stream.read_u32::<LittleEndian>()?)
-            .ok_or(GraphicsMessagesError::InvalidCapabilitiesVersion)?;
-        let data_length = stream.read_u32::<LittleEndian>()?;
+    const FIXED_PART_SIZE: usize = CAPABILITY_SET_HEADER_SIZE;
+}
 
-        let mut data = vec![0; data_length as usize];
-        stream.read_exact(data.as_mut())?;
+impl PduEncode for CapabilitySet {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_size!(in: dst, size: self.size());
 
-        match version {
-            CapabilityVersion::V8 => Ok(CapabilitySet::V8 {
-                flags: CapabilitiesV8Flags::from_bits_truncate(data.as_slice().read_u32::<LittleEndian>()?),
-            }),
-            CapabilityVersion::V8_1 => Ok(CapabilitySet::V8_1 {
-                flags: CapabilitiesV81Flags::from_bits_truncate(data.as_slice().read_u32::<LittleEndian>()?),
-            }),
-            CapabilityVersion::V10 => Ok(CapabilitySet::V10 {
-                flags: CapabilitiesV10Flags::from_bits_truncate(data.as_slice().read_u32::<LittleEndian>()?),
-            }),
-            CapabilityVersion::V10_1 => {
-                data.as_slice().read_u128::<LittleEndian>()?;
-
-                Ok(CapabilitySet::V10_1)
-            }
-            CapabilityVersion::V10_2 => Ok(CapabilitySet::V10_2 {
-                flags: CapabilitiesV10Flags::from_bits_truncate(data.as_slice().read_u32::<LittleEndian>()?),
-            }),
-            CapabilityVersion::V10_3 => Ok(CapabilitySet::V10_3 {
-                flags: CapabilitiesV103Flags::from_bits_truncate(data.as_slice().read_u32::<LittleEndian>()?),
-            }),
-            CapabilityVersion::V10_4 => Ok(CapabilitySet::V10_4 {
-                flags: CapabilitiesV104Flags::from_bits_truncate(data.as_slice().read_u32::<LittleEndian>()?),
-            }),
-            CapabilityVersion::V10_5 => Ok(CapabilitySet::V10_5 {
-                flags: CapabilitiesV104Flags::from_bits_truncate(data.as_slice().read_u32::<LittleEndian>()?),
-            }),
-            CapabilityVersion::V10_6 => Ok(CapabilitySet::V10_6 {
-                flags: CapabilitiesV104Flags::from_bits_truncate(data.as_slice().read_u32::<LittleEndian>()?),
-            }),
-            CapabilityVersion::V10_6Err => Ok(CapabilitySet::V10_6Err {
-                flags: CapabilitiesV104Flags::from_bits_truncate(data.as_slice().read_u32::<LittleEndian>()?),
-            }),
-            CapabilityVersion::V10_7 => Ok(CapabilitySet::V10_7 {
-                flags: CapabilitiesV107Flags::from_bits_truncate(data.as_slice().read_u32::<LittleEndian>()?),
-            }),
-            CapabilityVersion::Unknown => Ok(CapabilitySet::Unknown(data)),
-        }
-    }
-
-    fn to_buffer(&self, mut stream: impl io::Write) -> Result<(), GraphicsMessagesError> {
-        stream.write_u32::<LittleEndian>(self.version().to_u32().unwrap())?;
-        stream.write_u32::<LittleEndian>((self.buffer_length() - CAPABILITY_SET_HEADER_SIZE) as u32)?;
+        dst.write_u32(self.version().to_u32().unwrap());
+        dst.write_u32(cast_length!("dataLength", self.size() - CAPABILITY_SET_HEADER_SIZE)?);
 
         match self {
-            CapabilitySet::V8 { flags } => stream.write_u32::<LittleEndian>(flags.bits())?,
-            CapabilitySet::V8_1 { flags } => stream.write_u32::<LittleEndian>(flags.bits())?,
-            CapabilitySet::V10 { flags } => stream.write_u32::<LittleEndian>(flags.bits())?,
-            CapabilitySet::V10_1 => stream.write_u128::<LittleEndian>(V10_1_RESERVED)?,
-            CapabilitySet::V10_2 { flags } => stream.write_u32::<LittleEndian>(flags.bits())?,
-            CapabilitySet::V10_3 { flags } => stream.write_u32::<LittleEndian>(flags.bits())?,
-            CapabilitySet::V10_4 { flags } => stream.write_u32::<LittleEndian>(flags.bits())?,
-            CapabilitySet::V10_5 { flags } => stream.write_u32::<LittleEndian>(flags.bits())?,
-            CapabilitySet::V10_6 { flags } => stream.write_u32::<LittleEndian>(flags.bits())?,
-            CapabilitySet::V10_6Err { flags } => stream.write_u32::<LittleEndian>(flags.bits())?,
-            CapabilitySet::V10_7 { flags } => stream.write_u32::<LittleEndian>(flags.bits())?,
-            CapabilitySet::Unknown(data) => stream.write_all(data)?,
+            CapabilitySet::V8 { flags } => dst.write_u32(flags.bits()),
+            CapabilitySet::V8_1 { flags } => dst.write_u32(flags.bits()),
+            CapabilitySet::V10 { flags } => dst.write_u32(flags.bits()),
+            CapabilitySet::V10_1 => dst.write_u128(V10_1_RESERVED),
+            CapabilitySet::V10_2 { flags } => dst.write_u32(flags.bits()),
+            CapabilitySet::V10_3 { flags } => dst.write_u32(flags.bits()),
+            CapabilitySet::V10_4 { flags } => dst.write_u32(flags.bits()),
+            CapabilitySet::V10_5 { flags } => dst.write_u32(flags.bits()),
+            CapabilitySet::V10_6 { flags } => dst.write_u32(flags.bits()),
+            CapabilitySet::V10_6Err { flags } => dst.write_u32(flags.bits()),
+            CapabilitySet::V10_7 { flags } => dst.write_u32(flags.bits()),
+            CapabilitySet::Unknown(data) => dst.write_slice(data),
         }
 
         Ok(())
     }
-    fn buffer_length(&self) -> usize {
+
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    fn size(&self) -> usize {
         CAPABILITY_SET_HEADER_SIZE
             + match self {
                 CapabilitySet::V8 { .. }
@@ -154,6 +113,75 @@ impl PduParsing for CapabilitySet {
     }
 }
 
+impl<'de> PduDecode<'de> for CapabilitySet {
+    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+        ensure_fixed_part_size!(in: src);
+
+        let version = CapabilityVersion::from_u32(src.read_u32())
+            .ok_or_else(|| invalid_message_err!("version", "unhandled version"))?;
+        let data_length: usize = cast_length!("dataLength", src.read_u32())?;
+
+        ensure_size!(in: src, size: data_length);
+        let data = src.read_slice(data_length);
+        let mut cur = ReadCursor::new(data);
+
+        let size = match version {
+            CapabilityVersion::V8
+            | CapabilityVersion::V8_1
+            | CapabilityVersion::V10
+            | CapabilityVersion::V10_2
+            | CapabilityVersion::V10_3
+            | CapabilityVersion::V10_4
+            | CapabilityVersion::V10_5
+            | CapabilityVersion::V10_6
+            | CapabilityVersion::V10_6Err
+            | CapabilityVersion::V10_7 => 4,
+            CapabilityVersion::V10_1 => 16,
+            CapabilityVersion::Unknown => 0,
+        };
+
+        ensure_size!(in: cur, size: size);
+        match version {
+            CapabilityVersion::V8 => Ok(CapabilitySet::V8 {
+                flags: CapabilitiesV8Flags::from_bits_truncate(cur.read_u32()),
+            }),
+            CapabilityVersion::V8_1 => Ok(CapabilitySet::V8_1 {
+                flags: CapabilitiesV81Flags::from_bits_truncate(cur.read_u32()),
+            }),
+            CapabilityVersion::V10 => Ok(CapabilitySet::V10 {
+                flags: CapabilitiesV10Flags::from_bits_truncate(cur.read_u32()),
+            }),
+            CapabilityVersion::V10_1 => {
+                cur.read_u128();
+
+                Ok(CapabilitySet::V10_1)
+            }
+            CapabilityVersion::V10_2 => Ok(CapabilitySet::V10_2 {
+                flags: CapabilitiesV10Flags::from_bits_truncate(cur.read_u32()),
+            }),
+            CapabilityVersion::V10_3 => Ok(CapabilitySet::V10_3 {
+                flags: CapabilitiesV103Flags::from_bits_truncate(cur.read_u32()),
+            }),
+            CapabilityVersion::V10_4 => Ok(CapabilitySet::V10_4 {
+                flags: CapabilitiesV104Flags::from_bits_truncate(cur.read_u32()),
+            }),
+            CapabilityVersion::V10_5 => Ok(CapabilitySet::V10_5 {
+                flags: CapabilitiesV104Flags::from_bits_truncate(cur.read_u32()),
+            }),
+            CapabilityVersion::V10_6 => Ok(CapabilitySet::V10_6 {
+                flags: CapabilitiesV104Flags::from_bits_truncate(cur.read_u32()),
+            }),
+            CapabilityVersion::V10_6Err => Ok(CapabilitySet::V10_6Err {
+                flags: CapabilitiesV104Flags::from_bits_truncate(cur.read_u32()),
+            }),
+            CapabilityVersion::V10_7 => Ok(CapabilitySet::V10_7 {
+                flags: CapabilitiesV107Flags::from_bits_truncate(cur.read_u32()),
+            }),
+            CapabilityVersion::Unknown => Ok(CapabilitySet::Unknown(data.to_vec())),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Color {
     pub b: u8,
@@ -162,29 +190,43 @@ pub struct Color {
     pub xa: u8,
 }
 
-impl PduParsing for Color {
-    type Error = GraphicsMessagesError;
+impl Color {
+    const NAME: &'static str = "GfxColor";
 
-    fn from_buffer(mut stream: impl io::Read) -> Result<Self, Self::Error> {
-        let b = stream.read_u8()?;
-        let g = stream.read_u8()?;
-        let r = stream.read_u8()?;
-        let xa = stream.read_u8()?;
+    const FIXED_PART_SIZE: usize = 4 /* BGRA */;
+}
 
-        Ok(Self { b, g, r, xa })
-    }
+impl PduEncode for Color {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_fixed_part_size!(in: dst);
 
-    fn to_buffer(&self, mut stream: impl io::Write) -> Result<(), Self::Error> {
-        stream.write_u8(self.b)?;
-        stream.write_u8(self.g)?;
-        stream.write_u8(self.r)?;
-        stream.write_u8(self.xa)?;
+        dst.write_u8(self.b);
+        dst.write_u8(self.g);
+        dst.write_u8(self.r);
+        dst.write_u8(self.xa);
 
         Ok(())
     }
 
-    fn buffer_length(&self) -> usize {
-        4
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    fn size(&self) -> usize {
+        Self::FIXED_PART_SIZE
+    }
+}
+
+impl<'de> PduDecode<'de> for Color {
+    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+        ensure_fixed_part_size!(in: src);
+
+        let b = src.read_u8();
+        let g = src.read_u8();
+        let r = src.read_u8();
+        let xa = src.read_u8();
+
+        Ok(Self { b, g, r, xa })
     }
 }
 
@@ -194,25 +236,39 @@ pub struct Point {
     pub y: u16,
 }
 
-impl PduParsing for Point {
-    type Error = GraphicsMessagesError;
+impl Point {
+    const NAME: &'static str = "GfxPoint";
 
-    fn from_buffer(mut stream: impl io::Read) -> Result<Self, Self::Error> {
-        let x = stream.read_u16::<LittleEndian>()?;
-        let y = stream.read_u16::<LittleEndian>()?;
+    const FIXED_PART_SIZE: usize = 2 /* X */ + 2 /* Y */;
+}
 
-        Ok(Self { x, y })
-    }
+impl PduEncode for Point {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_fixed_part_size!(in: dst);
 
-    fn to_buffer(&self, mut stream: impl io::Write) -> Result<(), Self::Error> {
-        stream.write_u16::<LittleEndian>(self.x)?;
-        stream.write_u16::<LittleEndian>(self.y)?;
+        dst.write_u16(self.x);
+        dst.write_u16(self.y);
 
         Ok(())
     }
 
-    fn buffer_length(&self) -> usize {
-        4
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    fn size(&self) -> usize {
+        Self::FIXED_PART_SIZE
+    }
+}
+
+impl<'de> PduDecode<'de> for Point {
+    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+        ensure_fixed_part_size!(in: src);
+
+        let x = src.read_u16();
+        let y = src.read_u16();
+
+        Ok(Self { x, y })
     }
 }
 
@@ -282,37 +338,5 @@ bitflags! {
         const AVC_DISABLED = 0x20;
         const AVC_THIN_CLIENT = 0x40;
         const SCALEDMAP_DISABLE = 0x80;
-    }
-}
-
-#[derive(Debug, Error)]
-pub enum GraphicsMessagesError {
-    #[error("IO error")]
-    IOError(#[from] io::Error),
-    #[error("invalid codec ID version 1")]
-    InvalidCodec1Id,
-    #[error("invalid codec ID version 2")]
-    InvalidCodec2Id,
-    #[error("invalid pixel format")]
-    InvalidPixelFormat,
-    #[error("monitor error")]
-    MonitorError(#[from] MonitorDataError),
-    #[error("invalid ResetGraphics PDU width: {} > MAX ({})", actual, max)]
-    InvalidResetGraphicsPduWidth { actual: u32, max: u32 },
-    #[error("invalid ResetGraphics PDU height: {} > MAX ({})", actual, max)]
-    InvalidResetGraphicsPduHeight { actual: u32, max: u32 },
-    #[error("invalid ResetGraphics PDU monitors count: {} > MAX ({})", actual, max)]
-    InvalidResetGraphicsPduMonitorsCount { actual: u32, max: u32 },
-    #[error("invalid capabilities version")]
-    InvalidCapabilitiesVersion,
-    #[error("both luma and chroma packets specified but length is missing")]
-    InvalidAvcEncoding,
-    #[error("PDU error: {0}")]
-    Pdu(PduError),
-}
-
-impl From<PduError> for GraphicsMessagesError {
-    fn from(e: PduError) -> Self {
-        Self::Pdu(e)
     }
 }

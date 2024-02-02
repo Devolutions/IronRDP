@@ -6,10 +6,10 @@ use ironrdp_pdu::dvc::gfx::{
     CapabilitiesV10Flags, CapabilitiesV81Flags, CapabilitiesV8Flags, CapabilitySet, ClientPdu, FrameAcknowledgePdu,
     QueueDepth, ServerPdu,
 };
-use ironrdp_pdu::PduParsing;
+use ironrdp_pdu::{decode, encode_vec};
 
 use crate::x224::DynamicChannelDataHandler;
-use crate::SessionResult;
+use crate::{SessionError, SessionErrorExt, SessionResult};
 
 pub trait GfxHandler {
     fn on_message(&self, message: ServerPdu) -> SessionResult<Option<ClientPdu>>;
@@ -39,9 +39,9 @@ impl DynamicChannelDataHandler for Handler {
         self.decompressed_buffer.clear();
         self.decompressor
             .decompress(complete_data.as_slice(), &mut self.decompressed_buffer)?;
-        let mut slice = &mut self.decompressed_buffer.as_slice();
+        let slice = &mut self.decompressed_buffer.as_slice();
         while !slice.is_empty() {
-            let gfx_pdu = ServerPdu::from_buffer(&mut slice)?;
+            let gfx_pdu: ServerPdu = decode(slice).map_err(SessionError::pdu)?;
             debug!("Got GFX PDU: {:?}", gfx_pdu);
 
             if let ServerPdu::EndFrame(end_frame_pdu) = &gfx_pdu {
@@ -53,8 +53,7 @@ impl DynamicChannelDataHandler for Handler {
                     total_frames_decoded: self.frames_decoded,
                 });
                 debug!("Sending GFX PDU: {:?}", client_pdu);
-                client_pdu_buffer.reserve(client_pdu_buffer.len() + client_pdu.buffer_length());
-                client_pdu.to_buffer(&mut client_pdu_buffer)?;
+                client_pdu_buffer.append(&mut encode_vec(&client_pdu).map_err(SessionError::pdu)?);
             } else {
                 // Handle the normal PDU
             }
@@ -65,8 +64,7 @@ impl DynamicChannelDataHandler for Handler {
                 let client_pdu = handler.on_message(gfx_pdu)?;
 
                 if let Some(client_pdu) = client_pdu {
-                    client_pdu_buffer.reserve(client_pdu_buffer.len() + client_pdu.buffer_length());
-                    client_pdu.to_buffer(&mut client_pdu_buffer)?;
+                    client_pdu_buffer.append(&mut encode_vec(&client_pdu).map_err(SessionError::pdu)?);
                 }
             }
         }
@@ -195,8 +193,6 @@ pub(crate) fn create_capabilities_advertise(graphics_config: &Option<GraphicsCon
     }
     info!(?capabilities);
     let capabilities_advertise = ClientPdu::CapabilitiesAdvertise(CapabilitiesAdvertisePdu(capabilities));
-    let mut capabilities_advertise_buffer = Vec::with_capacity(capabilities_advertise.buffer_length());
-    capabilities_advertise.to_buffer(&mut capabilities_advertise_buffer)?;
 
-    Ok(capabilities_advertise_buffer)
+    encode_vec(&capabilities_advertise).map_err(SessionError::pdu)
 }

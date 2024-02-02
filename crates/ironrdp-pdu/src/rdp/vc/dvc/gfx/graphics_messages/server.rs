@@ -1,14 +1,14 @@
-use std::{fmt, io};
+use std::{fmt, mem};
 
 use bit_field::BitField;
-use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive, ToPrimitive};
 
-use super::{CapabilitySet, Color, GraphicsMessagesError, Point, RDP_GFX_HEADER_SIZE};
-use crate::gcc::{Monitor, MonitorDataError};
+use super::{CapabilitySet, Color, Point, RDP_GFX_HEADER_SIZE};
+use crate::cursor::{ReadCursor, WriteCursor};
+use crate::gcc::Monitor;
 use crate::geometry::InclusiveRectangle;
-use crate::PduParsing;
+use crate::{decode_cursor, PduDecode, PduEncode, PduResult};
 
 pub(crate) const RESET_GRAPHICS_PDU_SIZE: usize = 340;
 
@@ -36,18 +36,49 @@ impl fmt::Debug for WireToSurface1Pdu {
     }
 }
 
-impl PduParsing for WireToSurface1Pdu {
-    type Error = GraphicsMessagesError;
+impl WireToSurface1Pdu {
+    const NAME: &'static str = "WireToSurface1Pdu";
 
-    fn from_buffer(mut stream: impl io::Read) -> Result<Self, Self::Error> {
-        let surface_id = stream.read_u16::<LittleEndian>()?;
+    const FIXED_PART_SIZE: usize = 2 /* SurfaceId */ + 2 /* CodecId */ + 1 /* PixelFormat */ + InclusiveRectangle::FIXED_PART_SIZE /* Dest */ + 4 /* BitmapDataLen */;
+}
+
+impl PduEncode for WireToSurface1Pdu {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_size!(in: dst, size: self.size());
+
+        dst.write_u16(self.surface_id);
+        dst.write_u16(self.codec_id.to_u16().unwrap());
+        dst.write_u8(self.pixel_format.to_u8().unwrap());
+        self.destination_rectangle.encode(dst)?;
+        dst.write_u32(cast_length!("BitmapDataLen", self.bitmap_data.len())?);
+        dst.write_slice(&self.bitmap_data);
+        Ok(())
+    }
+
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    fn size(&self) -> usize {
+        Self::FIXED_PART_SIZE + self.bitmap_data.len()
+    }
+}
+
+impl<'a> PduDecode<'a> for WireToSurface1Pdu {
+    fn decode(src: &mut ReadCursor<'a>) -> PduResult<Self> {
+        ensure_fixed_part_size!(in: src);
+
+        let surface_id = src.read_u16();
         let codec_id =
-            Codec1Type::from_u16(stream.read_u16::<LittleEndian>()?).ok_or(GraphicsMessagesError::InvalidCodec1Id)?;
-        let pixel_format = PixelFormat::from_u8(stream.read_u8()?).ok_or(GraphicsMessagesError::InvalidPixelFormat)?;
-        let destination_rectangle = InclusiveRectangle::from_buffer(&mut stream)?;
-        let bitmap_data_length = stream.read_u32::<LittleEndian>()? as usize;
-        let mut bitmap_data = vec![0; bitmap_data_length];
-        stream.read_exact(&mut bitmap_data)?;
+            Codec1Type::from_u16(src.read_u16()).ok_or_else(|| invalid_message_err!("CodecId", "invalid codec ID"))?;
+        let pixel_format = PixelFormat::from_u8(src.read_u8())
+            .ok_or_else(|| invalid_message_err!("PixelFormat", "invalid pixel format"))?;
+        let destination_rectangle = InclusiveRectangle::decode(src)?;
+        let bitmap_data_length = cast_length!("BitmapDataLen", src.read_u32())?;
+
+        ensure_size!(in: src, size: bitmap_data_length);
+        let bitmap_data = src.read_slice(bitmap_data_length).to_vec();
+
         Ok(Self {
             surface_id,
             codec_id,
@@ -55,20 +86,6 @@ impl PduParsing for WireToSurface1Pdu {
             destination_rectangle,
             bitmap_data,
         })
-    }
-
-    fn to_buffer(&self, mut stream: impl io::Write) -> Result<(), Self::Error> {
-        stream.write_u16::<LittleEndian>(self.surface_id)?;
-        stream.write_u16::<LittleEndian>(self.codec_id.to_u16().unwrap())?;
-        stream.write_u8(self.pixel_format.to_u8().unwrap())?;
-        self.destination_rectangle.to_buffer(&mut stream)?;
-        stream.write_u32::<LittleEndian>(self.bitmap_data.len() as u32)?;
-        stream.write_all(&self.bitmap_data)?;
-        Ok(())
-    }
-
-    fn buffer_length(&self) -> usize {
-        17 + self.bitmap_data.len()
     }
 }
 
@@ -93,18 +110,49 @@ impl fmt::Debug for WireToSurface2Pdu {
     }
 }
 
-impl PduParsing for WireToSurface2Pdu {
-    type Error = GraphicsMessagesError;
+impl WireToSurface2Pdu {
+    const NAME: &'static str = "WireToSurface2Pdu";
 
-    fn from_buffer(mut stream: impl io::Read) -> Result<Self, Self::Error> {
-        let surface_id = stream.read_u16::<LittleEndian>()?;
+    const FIXED_PART_SIZE: usize = 2 /* SurfaceId */ + 2 /* CodecId */ + 4 /* ContextId */ + 1 /* PixelFormat */ + 4 /* BitmapDataLen */;
+}
+
+impl PduEncode for WireToSurface2Pdu {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_size!(in: dst, size: self.size());
+
+        dst.write_u16(self.surface_id);
+        dst.write_u16(self.codec_id.to_u16().unwrap());
+        dst.write_u32(self.codec_context_id);
+        dst.write_u8(self.pixel_format.to_u8().unwrap());
+        dst.write_u32(cast_length!("BitmapDataLen", self.bitmap_data.len())?);
+        dst.write_slice(&self.bitmap_data);
+
+        Ok(())
+    }
+
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    fn size(&self) -> usize {
+        Self::FIXED_PART_SIZE + self.bitmap_data.len()
+    }
+}
+
+impl<'a> PduDecode<'a> for WireToSurface2Pdu {
+    fn decode(src: &mut ReadCursor<'a>) -> PduResult<Self> {
+        ensure_fixed_part_size!(in: src);
+
+        let surface_id = src.read_u16();
         let codec_id =
-            Codec2Type::from_u16(stream.read_u16::<LittleEndian>()?).ok_or(GraphicsMessagesError::InvalidCodec2Id)?;
-        let codec_context_id = stream.read_u32::<LittleEndian>()?;
-        let pixel_format = PixelFormat::from_u8(stream.read_u8()?).ok_or(GraphicsMessagesError::InvalidPixelFormat)?;
-        let bitmap_data_length = stream.read_u32::<LittleEndian>()? as usize;
-        let mut bitmap_data = vec![0; bitmap_data_length];
-        stream.read_exact(&mut bitmap_data)?;
+            Codec2Type::from_u16(src.read_u16()).ok_or_else(|| invalid_message_err!("CodecId", "invalid codec ID"))?;
+        let codec_context_id = src.read_u32();
+        let pixel_format = PixelFormat::from_u8(src.read_u8())
+            .ok_or_else(|| invalid_message_err!("PixelFormat", "invalid pixel format"))?;
+        let bitmap_data_length = cast_length!("BitmapDataLen", src.read_u32())?;
+
+        ensure_size!(in: src, size: bitmap_data_length);
+        let bitmap_data = src.read_slice(bitmap_data_length).to_vec();
 
         Ok(Self {
             surface_id,
@@ -114,21 +162,6 @@ impl PduParsing for WireToSurface2Pdu {
             bitmap_data,
         })
     }
-
-    fn to_buffer(&self, mut stream: impl io::Write) -> Result<(), Self::Error> {
-        stream.write_u16::<LittleEndian>(self.surface_id)?;
-        stream.write_u16::<LittleEndian>(self.codec_id.to_u16().unwrap())?;
-        stream.write_u32::<LittleEndian>(self.codec_context_id)?;
-        stream.write_u8(self.pixel_format.to_u8().unwrap())?;
-        stream.write_u32::<LittleEndian>(self.bitmap_data.len() as u32)?;
-        stream.write_all(&self.bitmap_data)?;
-
-        Ok(())
-    }
-
-    fn buffer_length(&self) -> usize {
-        13 + self.bitmap_data.len()
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -137,28 +170,42 @@ pub struct DeleteEncodingContextPdu {
     pub codec_context_id: u32,
 }
 
-impl PduParsing for DeleteEncodingContextPdu {
-    type Error = GraphicsMessagesError;
+impl DeleteEncodingContextPdu {
+    const NAME: &'static str = "DeleteEncodingContextPdu";
 
-    fn from_buffer(mut stream: impl io::Read) -> Result<Self, Self::Error> {
-        let surface_id = stream.read_u16::<LittleEndian>()?;
-        let codec_context_id = stream.read_u32::<LittleEndian>()?;
+    const FIXED_PART_SIZE: usize = 2 /* SurfaceId */ + 4 /* CodecContextId */;
+}
+
+impl PduEncode for DeleteEncodingContextPdu {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_fixed_part_size!(in: dst);
+
+        dst.write_u16(self.surface_id);
+        dst.write_u32(self.codec_context_id);
+
+        Ok(())
+    }
+
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    fn size(&self) -> usize {
+        Self::FIXED_PART_SIZE
+    }
+}
+
+impl<'a> PduDecode<'a> for DeleteEncodingContextPdu {
+    fn decode(src: &mut ReadCursor<'a>) -> PduResult<Self> {
+        ensure_fixed_part_size!(in: src);
+
+        let surface_id = src.read_u16();
+        let codec_context_id = src.read_u32();
 
         Ok(Self {
             surface_id,
             codec_context_id,
         })
-    }
-
-    fn to_buffer(&self, mut stream: impl io::Write) -> Result<(), Self::Error> {
-        stream.write_u16::<LittleEndian>(self.surface_id)?;
-        stream.write_u32::<LittleEndian>(self.codec_context_id)?;
-
-        Ok(())
-    }
-
-    fn buffer_length(&self) -> usize {
-        6
     }
 }
 
@@ -169,38 +216,54 @@ pub struct SolidFillPdu {
     pub rectangles: Vec<InclusiveRectangle>,
 }
 
-impl PduParsing for SolidFillPdu {
-    type Error = GraphicsMessagesError;
+impl SolidFillPdu {
+    const NAME: &'static str = "CacheToSurfacePdu";
 
-    fn from_buffer(mut stream: impl io::Read) -> Result<Self, Self::Error> {
-        let surface_id = stream.read_u16::<LittleEndian>()?;
-        let fill_pixel = Color::from_buffer(&mut stream)?;
-        let rectangles_count = stream.read_u16::<LittleEndian>()?;
+    const FIXED_PART_SIZE: usize = 2 /* SurfaceId */ + Color::FIXED_PART_SIZE /* Color */ + 2 /* RectCount */;
+}
 
+impl PduEncode for SolidFillPdu {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_size!(in: dst, size: self.size());
+
+        dst.write_u16(self.surface_id);
+        self.fill_pixel.encode(dst)?;
+        dst.write_u16(self.rectangles.len() as u16);
+
+        for rectangle in self.rectangles.iter() {
+            rectangle.encode(dst)?;
+        }
+
+        Ok(())
+    }
+
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    fn size(&self) -> usize {
+        Self::FIXED_PART_SIZE + self.rectangles.iter().map(|r| r.size()).sum::<usize>()
+    }
+}
+
+impl<'a> PduDecode<'a> for SolidFillPdu {
+    fn decode(src: &mut ReadCursor<'a>) -> PduResult<Self> {
+        ensure_fixed_part_size!(in: src);
+
+        let surface_id = src.read_u16();
+        let fill_pixel = Color::decode(src)?;
+        let rectangles_count = src.read_u16();
+
+        ensure_size!(in: src, size: usize::from(rectangles_count) * InclusiveRectangle::FIXED_PART_SIZE);
         let rectangles = (0..rectangles_count)
-            .map(|_| InclusiveRectangle::from_buffer(&mut stream).map_err(GraphicsMessagesError::from))
-            .collect::<Result<Vec<_>, Self::Error>>()?;
+            .map(|_| InclusiveRectangle::decode(src))
+            .collect::<Result<_, _>>()?;
 
         Ok(Self {
             surface_id,
             fill_pixel,
             rectangles,
         })
-    }
-
-    fn to_buffer(&self, mut stream: impl io::Write) -> Result<(), Self::Error> {
-        stream.write_u16::<LittleEndian>(self.surface_id)?;
-        self.fill_pixel.to_buffer(&mut stream)?;
-        stream.write_u16::<LittleEndian>(self.rectangles.len() as u16)?;
-        for rectangle in self.rectangles.iter() {
-            rectangle.to_buffer(&mut stream)?;
-        }
-
-        Ok(())
-    }
-
-    fn buffer_length(&self) -> usize {
-        8 + self.rectangles.iter().map(|r| r.buffer_length()).sum::<usize>()
     }
 }
 
@@ -212,18 +275,49 @@ pub struct SurfaceToSurfacePdu {
     pub destination_points: Vec<Point>,
 }
 
-impl PduParsing for SurfaceToSurfacePdu {
-    type Error = GraphicsMessagesError;
+impl SurfaceToSurfacePdu {
+    const NAME: &'static str = "SurfaceToSurfacePdu";
 
-    fn from_buffer(mut stream: impl io::Read) -> Result<Self, Self::Error> {
-        let source_surface_id = stream.read_u16::<LittleEndian>()?;
-        let destination_surface_id = stream.read_u16::<LittleEndian>()?;
-        let source_rectangle = InclusiveRectangle::from_buffer(&mut stream)?;
-        let destination_points_count = stream.read_u16::<LittleEndian>()?;
+    const FIXED_PART_SIZE: usize = 2 /* SourceId */ + 2 /* DestId */ + InclusiveRectangle::FIXED_PART_SIZE /* SourceRect */ + 2 /* DestPointsCount */;
+}
+
+impl PduEncode for SurfaceToSurfacePdu {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_size!(in: dst, size: self.size());
+
+        dst.write_u16(self.source_surface_id);
+        dst.write_u16(self.destination_surface_id);
+        self.source_rectangle.encode(dst)?;
+
+        dst.write_u16(cast_length!("DestinationPoints", self.destination_points.len())?);
+        for rectangle in self.destination_points.iter() {
+            rectangle.encode(dst)?;
+        }
+
+        Ok(())
+    }
+
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    fn size(&self) -> usize {
+        Self::FIXED_PART_SIZE + self.destination_points.iter().map(|r| r.size()).sum::<usize>()
+    }
+}
+
+impl<'a> PduDecode<'a> for SurfaceToSurfacePdu {
+    fn decode(src: &mut ReadCursor<'a>) -> PduResult<Self> {
+        ensure_fixed_part_size!(in: src);
+
+        let source_surface_id = src.read_u16();
+        let destination_surface_id = src.read_u16();
+        let source_rectangle = InclusiveRectangle::decode(src)?;
+        let destination_points_count = src.read_u16();
 
         let destination_points = (0..destination_points_count)
-            .map(|_| Point::from_buffer(&mut stream))
-            .collect::<Result<Vec<_>, Self::Error>>()?;
+            .map(|_| Point::decode(src))
+            .collect::<Result<_, _>>()?;
 
         Ok(Self {
             source_surface_id,
@@ -231,24 +325,6 @@ impl PduParsing for SurfaceToSurfacePdu {
             source_rectangle,
             destination_points,
         })
-    }
-
-    fn to_buffer(&self, mut stream: impl io::Write) -> Result<(), Self::Error> {
-        stream.write_u16::<LittleEndian>(self.source_surface_id)?;
-        stream.write_u16::<LittleEndian>(self.destination_surface_id)?;
-        self.source_rectangle.to_buffer(&mut stream)?;
-
-        stream.write_u16::<LittleEndian>(self.destination_points.len() as u16)?;
-        for rectangle in self.destination_points.iter() {
-            rectangle.to_buffer(&mut stream)?;
-        }
-
-        Ok(())
-    }
-
-    fn buffer_length(&self) -> usize {
-        6 + self.source_rectangle.buffer_length()
-            + self.destination_points.iter().map(|r| r.buffer_length()).sum::<usize>()
     }
 }
 
@@ -260,14 +336,41 @@ pub struct SurfaceToCachePdu {
     pub source_rectangle: InclusiveRectangle,
 }
 
-impl PduParsing for SurfaceToCachePdu {
-    type Error = GraphicsMessagesError;
+impl SurfaceToCachePdu {
+    const NAME: &'static str = "SurfaceToCachePdu";
 
-    fn from_buffer(mut stream: impl io::Read) -> Result<Self, Self::Error> {
-        let surface_id = stream.read_u16::<LittleEndian>()?;
-        let cache_key = stream.read_u64::<LittleEndian>()?;
-        let cache_slot = stream.read_u16::<LittleEndian>()?;
-        let source_rectangle = InclusiveRectangle::from_buffer(&mut stream)?;
+    const FIXED_PART_SIZE: usize = 2 /* SurfaceId */ + 8 /* CacheKey */ + 2 /* CacheSlot */ + InclusiveRectangle::FIXED_PART_SIZE /* SourceRect */;
+}
+
+impl PduEncode for SurfaceToCachePdu {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_fixed_part_size!(in: dst);
+
+        dst.write_u16(self.surface_id);
+        dst.write_u64(self.cache_key);
+        dst.write_u16(self.cache_slot);
+        self.source_rectangle.encode(dst)?;
+
+        Ok(())
+    }
+
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    fn size(&self) -> usize {
+        Self::FIXED_PART_SIZE
+    }
+}
+
+impl<'a> PduDecode<'a> for SurfaceToCachePdu {
+    fn decode(src: &mut ReadCursor<'a>) -> PduResult<Self> {
+        ensure_fixed_part_size!(in: src);
+
+        let surface_id = src.read_u16();
+        let cache_key = src.read_u64();
+        let cache_slot = src.read_u16();
+        let source_rectangle = InclusiveRectangle::decode(src)?;
 
         Ok(Self {
             surface_id,
@@ -275,19 +378,6 @@ impl PduParsing for SurfaceToCachePdu {
             cache_slot,
             source_rectangle,
         })
-    }
-
-    fn to_buffer(&self, mut stream: impl io::Write) -> Result<(), Self::Error> {
-        stream.write_u16::<LittleEndian>(self.surface_id)?;
-        stream.write_u64::<LittleEndian>(self.cache_key)?;
-        stream.write_u16::<LittleEndian>(self.cache_slot)?;
-        self.source_rectangle.to_buffer(&mut stream)?;
-
-        Ok(())
-    }
-
-    fn buffer_length(&self) -> usize {
-        12 + self.source_rectangle.buffer_length()
     }
 }
 
@@ -298,38 +388,52 @@ pub struct CacheToSurfacePdu {
     pub destination_points: Vec<Point>,
 }
 
-impl PduParsing for CacheToSurfacePdu {
-    type Error = GraphicsMessagesError;
+impl CacheToSurfacePdu {
+    const NAME: &'static str = "CacheToSurfacePdu";
 
-    fn from_buffer(mut stream: impl io::Read) -> Result<Self, Self::Error> {
-        let cache_slot = stream.read_u16::<LittleEndian>()?;
-        let surface_id = stream.read_u16::<LittleEndian>()?;
-        let destination_points_count = stream.read_u16::<LittleEndian>()?;
+    const FIXED_PART_SIZE: usize = mem::size_of::<u16>() * 3;
+}
+
+impl PduEncode for CacheToSurfacePdu {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_size!(in: dst, size: self.size());
+
+        dst.write_u16(self.cache_slot);
+        dst.write_u16(self.surface_id);
+        dst.write_u16(cast_length!("npoints", self.destination_points.len())?);
+        for point in self.destination_points.iter() {
+            point.encode(dst)?;
+        }
+
+        Ok(())
+    }
+
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    fn size(&self) -> usize {
+        Self::FIXED_PART_SIZE + self.destination_points.iter().map(|p| p.size()).sum::<usize>()
+    }
+}
+
+impl<'de> PduDecode<'de> for CacheToSurfacePdu {
+    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+        ensure_fixed_part_size!(in: src);
+
+        let cache_slot = src.read_u16();
+        let surface_id = src.read_u16();
+        let destination_points_count = src.read_u16();
 
         let destination_points = (0..destination_points_count)
-            .map(|_| Point::from_buffer(&mut stream))
-            .collect::<Result<Vec<_>, Self::Error>>()?;
+            .map(|_| decode_cursor(src))
+            .collect::<Result<_, _>>()?;
 
         Ok(Self {
             cache_slot,
             surface_id,
             destination_points,
         })
-    }
-
-    fn to_buffer(&self, mut stream: impl io::Write) -> Result<(), Self::Error> {
-        stream.write_u16::<LittleEndian>(self.cache_slot)?;
-        stream.write_u16::<LittleEndian>(self.surface_id)?;
-        stream.write_u16::<LittleEndian>(self.destination_points.len() as u16)?;
-        for point in self.destination_points.iter() {
-            point.to_buffer(&mut stream)?;
-        }
-
-        Ok(())
-    }
-
-    fn buffer_length(&self) -> usize {
-        6 + self.destination_points.iter().map(|p| p.buffer_length()).sum::<usize>()
     }
 }
 
@@ -341,14 +445,42 @@ pub struct CreateSurfacePdu {
     pub pixel_format: PixelFormat,
 }
 
-impl PduParsing for CreateSurfacePdu {
-    type Error = GraphicsMessagesError;
+impl CreateSurfacePdu {
+    const NAME: &'static str = "CreateSurfacePdu";
 
-    fn from_buffer(mut stream: impl io::Read) -> Result<Self, Self::Error> {
-        let surface_id = stream.read_u16::<LittleEndian>()?;
-        let width = stream.read_u16::<LittleEndian>()?;
-        let height = stream.read_u16::<LittleEndian>()?;
-        let pixel_format = PixelFormat::from_u8(stream.read_u8()?).ok_or(GraphicsMessagesError::InvalidPixelFormat)?;
+    const FIXED_PART_SIZE: usize = 2 /* SurfaceId */ + 2 /* Width */ + 2 /* Height */ + 1 /* PixelFormat */;
+}
+
+impl PduEncode for CreateSurfacePdu {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_fixed_part_size!(in: dst);
+
+        dst.write_u16(self.surface_id);
+        dst.write_u16(self.width);
+        dst.write_u16(self.height);
+        dst.write_u8(self.pixel_format.to_u8().unwrap());
+
+        Ok(())
+    }
+
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    fn size(&self) -> usize {
+        Self::FIXED_PART_SIZE
+    }
+}
+
+impl<'a> PduDecode<'a> for CreateSurfacePdu {
+    fn decode(src: &mut ReadCursor<'a>) -> PduResult<Self> {
+        ensure_fixed_part_size!(in: src);
+
+        let surface_id = src.read_u16();
+        let width = src.read_u16();
+        let height = src.read_u16();
+        let pixel_format = PixelFormat::from_u8(src.read_u8())
+            .ok_or_else(|| invalid_message_err!("pixelFormat", "invalid pixel format"))?;
 
         Ok(Self {
             surface_id,
@@ -357,19 +489,6 @@ impl PduParsing for CreateSurfacePdu {
             pixel_format,
         })
     }
-
-    fn to_buffer(&self, mut stream: impl io::Write) -> Result<(), Self::Error> {
-        stream.write_u16::<LittleEndian>(self.surface_id)?;
-        stream.write_u16::<LittleEndian>(self.width)?;
-        stream.write_u16::<LittleEndian>(self.height)?;
-        stream.write_u8(self.pixel_format.to_u8().unwrap())?;
-
-        Ok(())
-    }
-
-    fn buffer_length(&self) -> usize {
-        7
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -377,23 +496,37 @@ pub struct DeleteSurfacePdu {
     pub surface_id: u16,
 }
 
-impl PduParsing for DeleteSurfacePdu {
-    type Error = GraphicsMessagesError;
+impl DeleteSurfacePdu {
+    const NAME: &'static str = "DeleteSurfacePdu";
 
-    fn from_buffer(mut stream: impl io::Read) -> Result<Self, Self::Error> {
-        let surface_id = stream.read_u16::<LittleEndian>()?;
+    const FIXED_PART_SIZE: usize = 2 /* SurfaceId */;
+}
 
-        Ok(Self { surface_id })
-    }
+impl PduEncode for DeleteSurfacePdu {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_fixed_part_size!(in: dst);
 
-    fn to_buffer(&self, mut stream: impl io::Write) -> Result<(), Self::Error> {
-        stream.write_u16::<LittleEndian>(self.surface_id)?;
+        dst.write_u16(self.surface_id);
 
         Ok(())
     }
 
-    fn buffer_length(&self) -> usize {
-        2
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    fn size(&self) -> usize {
+        Self::FIXED_PART_SIZE
+    }
+}
+
+impl<'a> PduDecode<'a> for DeleteSurfacePdu {
+    fn decode(src: &mut ReadCursor<'a>) -> PduResult<Self> {
+        ensure_fixed_part_size!(in: src);
+
+        let surface_id = src.read_u16();
+
+        Ok(Self { surface_id })
     }
 }
 
@@ -405,45 +538,59 @@ pub struct ResetGraphicsPdu {
 }
 
 impl ResetGraphicsPdu {
-    fn padding_size(&self) -> usize {
-        RESET_GRAPHICS_PDU_SIZE
-            - RDP_GFX_HEADER_SIZE
-            - 12
-            - self.monitors.iter().map(|m| m.buffer_length()).sum::<usize>()
+    const NAME: &'static str = "ResetGraphicsPdu";
+
+    const FIXED_PART_SIZE: usize = 4 /* Width */ + 4 /* Height */;
+}
+
+impl PduEncode for ResetGraphicsPdu {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_size!(in: dst, size: self.size());
+
+        dst.write_u32(self.width);
+        dst.write_u32(self.height);
+        dst.write_u32(cast_length!("nMonitors", self.monitors.len())?);
+
+        for monitor in self.monitors.iter() {
+            monitor.encode(dst)?;
+        }
+
+        write_padding!(dst, self.padding_size());
+
+        Ok(())
+    }
+
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    fn size(&self) -> usize {
+        RESET_GRAPHICS_PDU_SIZE - RDP_GFX_HEADER_SIZE
     }
 }
 
-impl PduParsing for ResetGraphicsPdu {
-    type Error = GraphicsMessagesError;
+impl<'a> PduDecode<'a> for ResetGraphicsPdu {
+    fn decode(src: &mut ReadCursor<'a>) -> PduResult<Self> {
+        ensure_fixed_part_size!(in: src);
 
-    fn from_buffer(mut stream: impl io::Read) -> Result<Self, Self::Error> {
-        let width = stream.read_u32::<LittleEndian>()?;
+        let width = src.read_u32();
         if width > MAX_RESET_GRAPHICS_WIDTH_HEIGHT {
-            return Err(GraphicsMessagesError::InvalidResetGraphicsPduWidth {
-                actual: width,
-                max: MAX_RESET_GRAPHICS_WIDTH_HEIGHT,
-            });
+            return Err(invalid_message_err!("width", "invalid reset graphics width"));
         }
 
-        let height = stream.read_u32::<LittleEndian>()?;
+        let height = src.read_u32();
         if height > MAX_RESET_GRAPHICS_WIDTH_HEIGHT {
-            return Err(GraphicsMessagesError::InvalidResetGraphicsPduHeight {
-                actual: height,
-                max: MAX_RESET_GRAPHICS_WIDTH_HEIGHT,
-            });
+            return Err(invalid_message_err!("height", "invalid reset graphics height"));
         }
 
-        let monitor_count = stream.read_u32::<LittleEndian>()?;
+        let monitor_count = src.read_u32();
         if monitor_count > MONITOR_COUNT_MAX {
-            return Err(GraphicsMessagesError::InvalidResetGraphicsPduMonitorsCount {
-                actual: monitor_count,
-                max: MAX_RESET_GRAPHICS_WIDTH_HEIGHT,
-            });
+            return Err(invalid_message_err!("height", "invalid reset graphics monitor count"));
         }
 
         let monitors = (0..monitor_count)
-            .map(|_| Monitor::from_buffer(&mut stream))
-            .collect::<Result<Vec<_>, MonitorDataError>>()?;
+            .map(|_| Monitor::decode(src))
+            .collect::<Result<Vec<_>, _>>()?;
 
         let pdu = Self {
             width,
@@ -451,29 +598,15 @@ impl PduParsing for ResetGraphicsPdu {
             monitors,
         };
 
-        let mut padding = vec![0; pdu.padding_size()];
-        stream.read_exact(padding.as_mut())?;
+        read_padding!(src, pdu.padding_size());
 
         Ok(pdu)
     }
+}
 
-    fn to_buffer(&self, mut stream: impl io::Write) -> Result<(), Self::Error> {
-        stream.write_u32::<LittleEndian>(self.width)?;
-        stream.write_u32::<LittleEndian>(self.height)?;
-        stream.write_u32::<LittleEndian>(self.monitors.len() as u32)?;
-
-        for monitor in self.monitors.iter() {
-            monitor.to_buffer(&mut stream)?;
-        }
-
-        let padding = vec![0; self.padding_size()];
-        stream.write_all(padding.as_slice())?;
-
-        Ok(())
-    }
-
-    fn buffer_length(&self) -> usize {
-        RESET_GRAPHICS_PDU_SIZE - RDP_GFX_HEADER_SIZE
+impl ResetGraphicsPdu {
+    fn padding_size(&self) -> usize {
+        RESET_GRAPHICS_PDU_SIZE - RDP_GFX_HEADER_SIZE - 12 - self.monitors.iter().map(|m| m.size()).sum::<usize>()
     }
 }
 
@@ -484,33 +617,47 @@ pub struct MapSurfaceToOutputPdu {
     pub output_origin_y: u32,
 }
 
-impl PduParsing for MapSurfaceToOutputPdu {
-    type Error = GraphicsMessagesError;
+impl MapSurfaceToOutputPdu {
+    const NAME: &'static str = "MapSurfaceToOutputPdu";
 
-    fn from_buffer(mut stream: impl io::Read) -> Result<Self, Self::Error> {
-        let surface_id = stream.read_u16::<LittleEndian>()?;
-        let _reserved = stream.read_u16::<LittleEndian>()?;
-        let output_origin_x = stream.read_u32::<LittleEndian>()?;
-        let output_origin_y = stream.read_u32::<LittleEndian>()?;
+    const FIXED_PART_SIZE: usize = 2 /* surfaceId */ + 2 /* reserved */ + 4 /* OutOriginX */ + 4 /* OutOriginY */;
+}
+
+impl PduEncode for MapSurfaceToOutputPdu {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_fixed_part_size!(in: dst);
+
+        dst.write_u16(self.surface_id);
+        dst.write_u16(0); // reserved
+        dst.write_u32(self.output_origin_x);
+        dst.write_u32(self.output_origin_y);
+
+        Ok(())
+    }
+
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    fn size(&self) -> usize {
+        Self::FIXED_PART_SIZE
+    }
+}
+
+impl<'a> PduDecode<'a> for MapSurfaceToOutputPdu {
+    fn decode(src: &mut ReadCursor<'a>) -> PduResult<Self> {
+        ensure_fixed_part_size!(in: src);
+
+        let surface_id = src.read_u16();
+        let _reserved = src.read_u16();
+        let output_origin_x = src.read_u32();
+        let output_origin_y = src.read_u32();
 
         Ok(Self {
             surface_id,
             output_origin_x,
             output_origin_y,
         })
-    }
-
-    fn to_buffer(&self, mut stream: impl io::Write) -> Result<(), Self::Error> {
-        stream.write_u16::<LittleEndian>(self.surface_id)?;
-        stream.write_u16::<LittleEndian>(0)?; // reserved
-        stream.write_u32::<LittleEndian>(self.output_origin_x)?;
-        stream.write_u32::<LittleEndian>(self.output_origin_y)?;
-
-        Ok(())
-    }
-
-    fn buffer_length(&self) -> usize {
-        12
     }
 }
 
@@ -523,16 +670,45 @@ pub struct MapSurfaceToScaledOutputPdu {
     pub target_height: u32,
 }
 
-impl PduParsing for MapSurfaceToScaledOutputPdu {
-    type Error = GraphicsMessagesError;
+impl MapSurfaceToScaledOutputPdu {
+    const NAME: &'static str = "MapSurfaceToScaledOutputPdu";
 
-    fn from_buffer(mut stream: impl io::Read) -> Result<Self, Self::Error> {
-        let surface_id = stream.read_u16::<LittleEndian>()?;
-        let _reserved = stream.read_u16::<LittleEndian>()?;
-        let output_origin_x = stream.read_u32::<LittleEndian>()?;
-        let output_origin_y = stream.read_u32::<LittleEndian>()?;
-        let target_width = stream.read_u32::<LittleEndian>()?;
-        let target_height = stream.read_u32::<LittleEndian>()?;
+    const FIXED_PART_SIZE: usize = 2 /* SurfaceId */ + 2 /* reserved */ + 4 /* OutOriginX */ + 4 /* OutOriginY */ + 4 /* TargetWidth */ + 4 /* TargetHeight */;
+}
+
+impl PduEncode for MapSurfaceToScaledOutputPdu {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_fixed_part_size!(in: dst);
+
+        dst.write_u16(self.surface_id);
+        dst.write_u16(0); // reserved
+        dst.write_u32(self.output_origin_x);
+        dst.write_u32(self.output_origin_y);
+        dst.write_u32(self.target_width);
+        dst.write_u32(self.target_height);
+
+        Ok(())
+    }
+
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    fn size(&self) -> usize {
+        Self::FIXED_PART_SIZE
+    }
+}
+
+impl<'a> PduDecode<'a> for MapSurfaceToScaledOutputPdu {
+    fn decode(src: &mut ReadCursor<'a>) -> PduResult<Self> {
+        ensure_fixed_part_size!(in: src);
+
+        let surface_id = src.read_u16();
+        let _reserved = src.read_u16();
+        let output_origin_x = src.read_u32();
+        let output_origin_y = src.read_u32();
+        let target_width = src.read_u32();
+        let target_height = src.read_u32();
 
         Ok(Self {
             surface_id,
@@ -541,21 +717,6 @@ impl PduParsing for MapSurfaceToScaledOutputPdu {
             target_width,
             target_height,
         })
-    }
-
-    fn to_buffer(&self, mut stream: impl io::Write) -> Result<(), Self::Error> {
-        stream.write_u16::<LittleEndian>(self.surface_id)?;
-        stream.write_u16::<LittleEndian>(0)?; // reserved
-        stream.write_u32::<LittleEndian>(self.output_origin_x)?;
-        stream.write_u32::<LittleEndian>(self.output_origin_y)?;
-        stream.write_u32::<LittleEndian>(self.target_width)?;
-        stream.write_u32::<LittleEndian>(self.target_height)?;
-
-        Ok(())
-    }
-
-    fn buffer_length(&self) -> usize {
-        20
     }
 }
 
@@ -569,16 +730,43 @@ pub struct MapSurfaceToScaledWindowPdu {
     pub target_height: u32,
 }
 
-impl PduParsing for MapSurfaceToScaledWindowPdu {
-    type Error = GraphicsMessagesError;
+impl MapSurfaceToScaledWindowPdu {
+    const NAME: &'static str = "MapSurfaceToScaledWindowPdu";
 
-    fn from_buffer(mut stream: impl io::Read) -> Result<Self, Self::Error> {
-        let surface_id = stream.read_u16::<LittleEndian>()?;
-        let window_id = stream.read_u64::<LittleEndian>()?;
-        let mapped_width = stream.read_u32::<LittleEndian>()?;
-        let mapped_height = stream.read_u32::<LittleEndian>()?;
-        let target_width = stream.read_u32::<LittleEndian>()?;
-        let target_height = stream.read_u32::<LittleEndian>()?;
+    const FIXED_PART_SIZE: usize = 2 /* SurfaceId */ + 8 /* WindowId */ + 4 /* MappedWidth */ + 4 /* MappedHeight */ + 4 /* TargetWidth */ + 4 /* TargetHeight */;
+}
+
+impl PduEncode for MapSurfaceToScaledWindowPdu {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        dst.write_u16(self.surface_id);
+        dst.write_u64(self.window_id); // reserved
+        dst.write_u32(self.mapped_width);
+        dst.write_u32(self.mapped_height);
+        dst.write_u32(self.target_width);
+        dst.write_u32(self.target_height);
+
+        Ok(())
+    }
+
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    fn size(&self) -> usize {
+        Self::FIXED_PART_SIZE
+    }
+}
+
+impl<'a> PduDecode<'a> for MapSurfaceToScaledWindowPdu {
+    fn decode(src: &mut ReadCursor<'a>) -> PduResult<Self> {
+        ensure_fixed_part_size!(in: src);
+
+        let surface_id = src.read_u16();
+        let window_id = src.read_u64();
+        let mapped_width = src.read_u32();
+        let mapped_height = src.read_u32();
+        let target_width = src.read_u32();
+        let target_height = src.read_u32();
 
         Ok(Self {
             surface_id,
@@ -589,21 +777,6 @@ impl PduParsing for MapSurfaceToScaledWindowPdu {
             target_height,
         })
     }
-
-    fn to_buffer(&self, mut stream: impl io::Write) -> Result<(), Self::Error> {
-        stream.write_u16::<LittleEndian>(self.surface_id)?;
-        stream.write_u64::<LittleEndian>(self.window_id)?; // reserved
-        stream.write_u32::<LittleEndian>(self.mapped_width)?;
-        stream.write_u32::<LittleEndian>(self.mapped_height)?;
-        stream.write_u32::<LittleEndian>(self.target_width)?;
-        stream.write_u32::<LittleEndian>(self.target_height)?;
-
-        Ok(())
-    }
-
-    fn buffer_length(&self) -> usize {
-        26
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -611,23 +784,37 @@ pub struct EvictCacheEntryPdu {
     pub cache_slot: u16,
 }
 
-impl PduParsing for EvictCacheEntryPdu {
-    type Error = GraphicsMessagesError;
+impl EvictCacheEntryPdu {
+    const NAME: &'static str = "EvictCacheEntryPdu";
 
-    fn from_buffer(mut stream: impl io::Read) -> Result<Self, Self::Error> {
-        let cache_slot = stream.read_u16::<LittleEndian>()?;
+    const FIXED_PART_SIZE: usize = 2;
+}
 
-        Ok(Self { cache_slot })
-    }
+impl PduEncode for EvictCacheEntryPdu {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_fixed_part_size!(in: dst);
 
-    fn to_buffer(&self, mut stream: impl io::Write) -> Result<(), Self::Error> {
-        stream.write_u16::<LittleEndian>(self.cache_slot)?;
+        dst.write_u16(self.cache_slot);
 
         Ok(())
     }
 
-    fn buffer_length(&self) -> usize {
-        2
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    fn size(&self) -> usize {
+        Self::FIXED_PART_SIZE
+    }
+}
+
+impl<'a> PduDecode<'a> for EvictCacheEntryPdu {
+    fn decode(src: &mut ReadCursor<'a>) -> PduResult<Self> {
+        ensure_fixed_part_size!(in: src);
+
+        let cache_slot = src.read_u16();
+
+        Ok(Self { cache_slot })
     }
 }
 
@@ -637,25 +824,39 @@ pub struct StartFramePdu {
     pub frame_id: u32,
 }
 
-impl PduParsing for StartFramePdu {
-    type Error = GraphicsMessagesError;
+impl StartFramePdu {
+    const NAME: &'static str = "StartFramePdu";
 
-    fn from_buffer(mut stream: impl io::Read) -> Result<Self, Self::Error> {
-        let timestamp = Timestamp::from_buffer(&mut stream)?;
-        let frame_id = stream.read_u32::<LittleEndian>()?;
+    const FIXED_PART_SIZE: usize = Timestamp::FIXED_PART_SIZE + 4 /* FrameId */;
+}
 
-        Ok(Self { timestamp, frame_id })
-    }
+impl PduEncode for StartFramePdu {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_fixed_part_size!(in: dst);
 
-    fn to_buffer(&self, mut stream: impl io::Write) -> Result<(), Self::Error> {
-        self.timestamp.to_buffer(&mut stream)?;
-        stream.write_u32::<LittleEndian>(self.frame_id)?;
+        self.timestamp.encode(dst)?;
+        dst.write_u32(self.frame_id);
 
         Ok(())
     }
 
-    fn buffer_length(&self) -> usize {
-        8
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    fn size(&self) -> usize {
+        Self::FIXED_PART_SIZE
+    }
+}
+
+impl<'a> PduDecode<'a> for StartFramePdu {
+    fn decode(src: &mut ReadCursor<'a>) -> PduResult<Self> {
+        ensure_fixed_part_size!(in: src);
+
+        let timestamp = Timestamp::decode(src)?;
+        let frame_id = src.read_u32();
+
+        Ok(Self { timestamp, frame_id })
     }
 }
 
@@ -664,44 +865,66 @@ pub struct EndFramePdu {
     pub frame_id: u32,
 }
 
-impl PduParsing for EndFramePdu {
-    type Error = GraphicsMessagesError;
+impl EndFramePdu {
+    const NAME: &'static str = "EndFramePdu";
 
-    fn from_buffer(mut stream: impl io::Read) -> Result<Self, Self::Error> {
-        let frame_id = stream.read_u32::<LittleEndian>()?;
+    const FIXED_PART_SIZE: usize = 4;
+}
 
-        Ok(Self { frame_id })
-    }
+impl PduEncode for EndFramePdu {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_fixed_part_size!(in: dst);
 
-    fn to_buffer(&self, mut stream: impl io::Write) -> Result<(), Self::Error> {
-        stream.write_u32::<LittleEndian>(self.frame_id)?;
+        dst.write_u32(self.frame_id);
 
         Ok(())
     }
 
-    fn buffer_length(&self) -> usize {
-        4
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    fn size(&self) -> usize {
+        Self::FIXED_PART_SIZE
+    }
+}
+
+impl<'a> PduDecode<'a> for EndFramePdu {
+    fn decode(src: &mut ReadCursor<'a>) -> PduResult<Self> {
+        ensure_fixed_part_size!(in: src);
+
+        let frame_id = src.read_u32();
+
+        Ok(Self { frame_id })
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CapabilitiesConfirmPdu(pub CapabilitySet);
 
-impl PduParsing for CapabilitiesConfirmPdu {
-    type Error = GraphicsMessagesError;
+impl CapabilitiesConfirmPdu {
+    const NAME: &'static str = "CapabilitiesConfirmPdu";
+}
 
-    fn from_buffer(mut stream: impl io::Read) -> Result<Self, Self::Error> {
-        let capability_set = CapabilitySet::from_buffer(&mut stream)?;
+impl PduEncode for CapabilitiesConfirmPdu {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        self.0.encode(dst)
+    }
+
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    fn size(&self) -> usize {
+        self.0.size()
+    }
+}
+
+impl<'a> PduDecode<'a> for CapabilitiesConfirmPdu {
+    fn decode(src: &mut ReadCursor<'a>) -> PduResult<Self> {
+        let capability_set = CapabilitySet::decode(src)?;
 
         Ok(Self(capability_set))
-    }
-
-    fn to_buffer(&self, mut stream: impl io::Write) -> Result<(), Self::Error> {
-        self.0.to_buffer(&mut stream)
-    }
-
-    fn buffer_length(&self) -> usize {
-        self.0.buffer_length()
     }
 }
 
@@ -739,11 +962,42 @@ pub struct Timestamp {
     pub hours: u16,
 }
 
-impl PduParsing for Timestamp {
-    type Error = GraphicsMessagesError;
+impl Timestamp {
+    const NAME: &'static str = "Timestamp";
 
-    fn from_buffer(mut stream: impl io::Read) -> Result<Self, Self::Error> {
-        let timestamp = stream.read_u32::<LittleEndian>()?;
+    const FIXED_PART_SIZE: usize = 4;
+}
+
+impl PduEncode for Timestamp {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_fixed_part_size!(in: dst);
+
+        let mut timestamp: u32 = 0;
+
+        timestamp.set_bits(..10, u32::from(self.milliseconds));
+        timestamp.set_bits(10..16, u32::from(self.seconds));
+        timestamp.set_bits(16..22, u32::from(self.minutes));
+        timestamp.set_bits(22.., u32::from(self.hours));
+
+        dst.write_u32(timestamp);
+
+        Ok(())
+    }
+
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    fn size(&self) -> usize {
+        Self::FIXED_PART_SIZE
+    }
+}
+
+impl<'a> PduDecode<'a> for Timestamp {
+    fn decode(src: &mut ReadCursor<'a>) -> PduResult<Self> {
+        ensure_fixed_part_size!(in: src);
+
+        let timestamp = src.read_u32();
 
         let milliseconds = timestamp.get_bits(..10) as u16;
         let seconds = timestamp.get_bits(10..16) as u8;
@@ -756,22 +1010,5 @@ impl PduParsing for Timestamp {
             minutes,
             hours,
         })
-    }
-
-    fn to_buffer(&self, mut stream: impl io::Write) -> Result<(), Self::Error> {
-        let mut timestamp: u32 = 0;
-
-        timestamp.set_bits(..10, u32::from(self.milliseconds));
-        timestamp.set_bits(10..16, u32::from(self.seconds));
-        timestamp.set_bits(16..22, u32::from(self.minutes));
-        timestamp.set_bits(22.., u32::from(self.hours));
-
-        stream.write_u32::<LittleEndian>(timestamp)?;
-
-        Ok(())
-    }
-
-    fn buffer_length(&self) -> usize {
-        4
     }
 }

@@ -38,8 +38,6 @@ impl CapabilitiesRequestPdu {
     const FIXED_PART_SIZE: usize = HEADER_SIZE + DVC_CAPABILITIES_PAD_SIZE + DVC_CAPABILITIES_VERSION_SIZE;
 }
 
-impl_pdu_parsing!(CapabilitiesRequestPdu);
-
 impl PduEncode for CapabilitiesRequestPdu {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
         ensure_size!(in: dst, size: self.size());
@@ -119,8 +117,6 @@ impl<'de> PduDecode<'de> for CapabilitiesRequestPdu {
 pub struct CapabilitiesResponsePdu {
     pub version: CapsVersion,
 }
-
-impl_pdu_parsing!(CapabilitiesResponsePdu);
 
 impl CapabilitiesResponsePdu {
     const NAME: &'static str = "CapabilitiesResponsePdu";
