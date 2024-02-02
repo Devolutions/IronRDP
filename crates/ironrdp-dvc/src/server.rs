@@ -5,13 +5,13 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use core::any::Any;
 use core::fmt;
-use pdu::dvc::{CreateRequestPdu, DataFirstPdu, DataPdu};
 use slab::Slab;
 
 use ironrdp_pdu as pdu;
 
 use ironrdp_svc::{impl_as_any, ChannelFlags, CompressionCondition, SvcMessage, SvcProcessor, SvcServerProcessor};
-use pdu::cursor::WriteCursor;
+use pdu::cursor::{ReadCursor, WriteCursor};
+use pdu::dvc::{CreateRequestPdu, DataFirstPdu, DataPdu};
 use pdu::gcc::ChannelName;
 use pdu::rdp::vc;
 use pdu::write_buf::WriteBuf;
@@ -203,24 +203,18 @@ struct DynamicChannelCtx<'a> {
 }
 
 fn decode_dvc_message(user_data: &[u8]) -> PduResult<DynamicChannelCtx<'_>> {
-    let mut user_data = user_data;
-    let user_data_len = user_data.len();
-
     // … | dvc::ClientPdu | …
-    let dvc_pdu =
-        vc::dvc::ClientPdu::from_buffer(&mut user_data, user_data_len).map_err(|e| custom_err!("DVC client PDU", e))?;
+    let mut cur = ReadCursor::new(user_data);
+    let dvc_pdu = vc::dvc::ClientPdu::decode(&mut cur, user_data.len())?;
 
     // … | DvcData ]
-    let dvc_data = user_data;
+    let dvc_data = cur.remaining();
 
     Ok(DynamicChannelCtx { dvc_pdu, dvc_data })
 }
 
 fn encode_dvc_message(pdu: vc::dvc::ServerPdu) -> PduResult<SvcMessage> {
-    // FIXME: use PduEncode instead
-    let mut buf = Vec::new();
-    pdu.to_buffer(&mut buf).map_err(|e| custom_err!("DVC server pdu", e))?;
-    Ok(SvcMessage::from(buf).with_flags(ChannelFlags::SHOW_PROTOCOL))
+    Ok(SvcMessage::from(pdu).with_flags(ChannelFlags::SHOW_PROTOCOL))
 }
 
 fn encode_dvc_data(channel_id: u32, messages: DvcMessages) -> PduResult<Vec<SvcMessage>> {
@@ -245,8 +239,7 @@ fn encode_dvc_data(channel_id: u32, messages: DvcMessages) -> PduResult<Vec<SvcM
             let end = off
                 .checked_add(size)
                 .ok_or_else(|| other_err!("encode_dvc_data", "overflow occurred"))?;
-            let mut data = Vec::new();
-            pdu.to_buffer(&mut data).map_err(|e| custom_err!("DVC server pdu", e))?;
+            let mut data = encode_vec(&pdu)?;
             data.extend_from_slice(&msg[off..end]);
             res.push(SvcMessage::from(data).with_flags(ChannelFlags::SHOW_PROTOCOL));
             off = end;

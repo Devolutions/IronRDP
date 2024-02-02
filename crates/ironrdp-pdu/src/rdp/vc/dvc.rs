@@ -3,7 +3,7 @@ use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive, ToPrimitive};
 
 use crate::cursor::{ReadCursor, WriteCursor};
-use crate::{decode_cursor, PduDecode, PduEncode, PduError, PduResult};
+use crate::{decode_cursor, PduDecode, PduEncode, PduResult};
 
 #[cfg(test)]
 mod tests;
@@ -107,28 +107,6 @@ impl ServerPdu {
 
         Ok(res)
     }
-
-    pub fn from_buffer(mut stream: impl std::io::Read, dvc_data_size: usize) -> Result<Self, PduError> {
-        let mut buf = [0; crate::legacy::MAX_PDU_SIZE];
-        let len = match stream.read(&mut buf) {
-            // if not enough data is read, decode will through NotEnoughBytes
-            Ok(len) => len,
-            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
-                return Err(not_enough_bytes_err!(0, crate::legacy::MAX_PDU_SIZE));
-            }
-            Err(e) => return Err(custom_err!(e)),
-        };
-        let mut cur = ReadCursor::new(&buf[0..len]);
-        Self::decode(&mut cur, dvc_data_size)
-    }
-
-    pub fn to_buffer(&self, mut stream: impl std::io::Write) -> Result<(), PduError> {
-        to_buffer!(self, stream, size: self.size())
-    }
-
-    pub fn buffer_length(&self) -> usize {
-        self.size()
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -169,28 +147,6 @@ impl ClientPdu {
         };
 
         Ok(res)
-    }
-
-    pub fn from_buffer(mut stream: impl std::io::Read, dvc_data_size: usize) -> Result<Self, PduError> {
-        let mut buf = [0; crate::legacy::MAX_PDU_SIZE];
-        let len = match stream.read(&mut buf) {
-            // if not enough data is read, decode will through NotEnoughBytes
-            Ok(len) => len,
-            Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => {
-                return Err(not_enough_bytes_err!(0, crate::legacy::MAX_PDU_SIZE));
-            }
-            Err(e) => return Err(custom_err!(e)),
-        };
-        let mut cur = ReadCursor::new(&buf[0..len]);
-        Self::decode(&mut cur, dvc_data_size)
-    }
-
-    pub fn to_buffer(&self, mut stream: impl std::io::Write) -> Result<(), PduError> {
-        to_buffer!(self, stream, size: self.size())
-    }
-
-    pub fn buffer_length(&self) -> usize {
-        self.size()
     }
 }
 
@@ -316,5 +272,3 @@ impl<'de> PduDecode<'de> for Header {
         })
     }
 }
-
-impl_pdu_parsing!(Header);

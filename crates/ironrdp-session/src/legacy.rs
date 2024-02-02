@@ -1,9 +1,9 @@
 use ironrdp_connector::encode_send_data_request;
 use ironrdp_connector::legacy::SendDataIndicationCtx;
-use ironrdp_pdu::cursor::WriteCursor;
+use ironrdp_pdu::cursor::{ReadCursor, WriteCursor};
 use ironrdp_pdu::rdp::vc;
 use ironrdp_pdu::write_buf::WriteBuf;
-use ironrdp_pdu::{decode, ensure_size, PduEncode, PduResult};
+use ironrdp_pdu::{decode, PduEncode, PduResult};
 
 use crate::{SessionError, SessionErrorExt, SessionResult};
 
@@ -14,7 +14,7 @@ pub fn encode_dvc_message(
     dvc_data: &[u8],
     buf: &mut WriteBuf,
 ) -> SessionResult<()> {
-    let dvc_length = dvc_pdu.buffer_length() + dvc_data.len();
+    let dvc_length = dvc_pdu.size() + dvc_data.len();
 
     let channel_header = vc::ChannelPduHeader {
         length: u32::try_from(dvc_length).expect("dvc message size"),
@@ -47,7 +47,7 @@ impl DvcMessage<'_> {
 
 impl PduEncode for DvcMessage<'_> {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
-        ensure_size!(in: dst, size: self.size());
+        ironrdp_pdu::ensure_size!(in: dst, size: self.size());
 
         self.channel_header.encode(dst)?;
         self.dvc_pdu.encode(dst)?;
@@ -70,7 +70,7 @@ pub struct DynamicChannelCtx<'a> {
 }
 
 pub fn decode_dvc_message(ctx: SendDataIndicationCtx<'_>) -> SessionResult<DynamicChannelCtx<'_>> {
-    let mut user_data = ctx.user_data;
+    let user_data = ctx.user_data;
 
     // [ vc::ChannelPduHeader | …
     let channel_header: vc::ChannelPduHeader = decode(user_data).map_err(SessionError::pdu)?;
@@ -78,10 +78,11 @@ pub fn decode_dvc_message(ctx: SendDataIndicationCtx<'_>) -> SessionResult<Dynam
     debug_assert_eq!(dvc_data_len, channel_header.length as usize);
 
     // … | dvc::ServerPdu | …
-    let dvc_pdu = vc::dvc::ServerPdu::from_buffer(&mut user_data, dvc_data_len).map_err(SessionError::pdu)?;
+    let mut cur = ReadCursor::new(user_data);
+    let dvc_pdu = vc::dvc::ServerPdu::decode(&mut cur, dvc_data_len).map_err(SessionError::pdu)?;
 
     // … | DvcData ]
-    let dvc_data = user_data;
+    let dvc_data = cur.remaining();
 
     Ok(DynamicChannelCtx { dvc_pdu, dvc_data })
 }

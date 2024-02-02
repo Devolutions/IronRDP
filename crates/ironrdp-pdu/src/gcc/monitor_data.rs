@@ -1,10 +1,7 @@
-use std::io;
-
 use bitflags::bitflags;
-use byteorder::{LittleEndian, ReadBytesExt as _, WriteBytesExt as _};
-use thiserror::Error;
 
-use crate::{PduError, PduParsing};
+use crate::cursor::{ReadCursor, WriteCursor};
+use crate::{PduDecode, PduEncode, PduResult};
 
 pub const MONITOR_COUNT_SIZE: usize = 4;
 pub const MONITOR_SIZE: usize = 20;
@@ -17,39 +14,56 @@ pub struct ClientMonitorData {
     pub monitors: Vec<Monitor>,
 }
 
-impl PduParsing for ClientMonitorData {
-    type Error = MonitorDataError;
+impl ClientMonitorData {
+    const NAME: &'static str = "ClientMonitorData";
 
-    fn from_buffer(mut buffer: impl io::Read) -> Result<Self, Self::Error> {
-        let _flags = buffer.read_u32::<LittleEndian>()?; // is unused
-        let monitor_count = buffer.read_u32::<LittleEndian>()?;
+    const FIXED_PART_SIZE: usize = 4 /* flags */ + 4 /* count */;
+}
 
-        if monitor_count > MONITOR_COUNT_MAX as u32 {
-            return Err(MonitorDataError::InvalidMonitorCount);
-        }
+impl PduEncode for ClientMonitorData {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_fixed_part_size!(in: dst);
 
-        let mut monitors = Vec::with_capacity(monitor_count as usize);
-        for _ in 0..monitor_count {
-            monitors.push(Monitor::from_buffer(&mut buffer)?);
-        }
-
-        Ok(Self { monitors })
-    }
-    fn to_buffer(&self, mut buffer: impl io::Write) -> Result<(), Self::Error> {
-        buffer.write_u32::<LittleEndian>(0)?; // flags
-        buffer.write_u32::<LittleEndian>(self.monitors.len() as u32)?;
+        dst.write_u32(0); // flags
+        dst.write_u32(cast_length!("nMonitors", self.monitors.len())?);
 
         for monitor in self.monitors.iter().take(MONITOR_COUNT_MAX) {
-            monitor.to_buffer(&mut buffer)?;
+            monitor.encode(dst)?;
         }
 
         Ok(())
     }
 
-    fn buffer_length(&self) -> usize {
-        MONITOR_FLAGS_SIZE + MONITOR_COUNT_SIZE + self.monitors.len() * MONITOR_SIZE
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    fn size(&self) -> usize {
+        Self::FIXED_PART_SIZE + self.monitors.len() * Monitor::FIXED_PART_SIZE
     }
 }
+
+impl<'de> PduDecode<'de> for ClientMonitorData {
+    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+        ensure_fixed_part_size!(in: src);
+
+        let _flags = src.read_u32(); // is unused
+        let monitor_count = src.read_u32();
+
+        if monitor_count > MONITOR_COUNT_MAX as u32 {
+            return Err(invalid_message_err!("nMonitors", "too many monitors"));
+        }
+
+        let mut monitors = Vec::with_capacity(monitor_count as usize);
+        for _ in 0..monitor_count {
+            monitors.push(Monitor::decode(src)?);
+        }
+
+        Ok(Self { monitors })
+    }
+}
+
+impl_pdu_parsing_max!(ClientMonitorData);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Monitor {
@@ -60,16 +74,44 @@ pub struct Monitor {
     pub flags: MonitorFlags,
 }
 
-impl PduParsing for Monitor {
-    type Error = MonitorDataError;
+impl Monitor {
+    const NAME: &'static str = "Monitor";
 
-    fn from_buffer(mut buffer: impl io::Read) -> Result<Self, Self::Error> {
-        let left = buffer.read_i32::<LittleEndian>()?;
-        let top = buffer.read_i32::<LittleEndian>()?;
-        let right = buffer.read_i32::<LittleEndian>()?;
-        let bottom = buffer.read_i32::<LittleEndian>()?;
-        let flags =
-            MonitorFlags::from_bits(buffer.read_u32::<LittleEndian>()?).ok_or(MonitorDataError::InvalidMonitorFlags)?;
+    const FIXED_PART_SIZE: usize = 4 /* left */ + 4 /* top */ + 4 /* right */ + 4 /* bottom */ + 4 /* flags */;
+}
+
+impl PduEncode for Monitor {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_fixed_part_size!(in: dst);
+
+        dst.write_i32(self.left);
+        dst.write_i32(self.top);
+        dst.write_i32(self.right);
+        dst.write_i32(self.bottom);
+        dst.write_u32(self.flags.bits());
+
+        Ok(())
+    }
+
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    fn size(&self) -> usize {
+        Self::FIXED_PART_SIZE
+    }
+}
+
+impl<'de> PduDecode<'de> for Monitor {
+    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+        ensure_fixed_part_size!(in: src);
+
+        let left = src.read_i32();
+        let top = src.read_i32();
+        let right = src.read_i32();
+        let bottom = src.read_i32();
+        let flags = MonitorFlags::from_bits(src.read_u32())
+            .ok_or_else(|| invalid_message_err!("flags", "invalid monitor flags"))?;
 
         Ok(Self {
             left,
@@ -79,41 +121,13 @@ impl PduParsing for Monitor {
             flags,
         })
     }
-    fn to_buffer(&self, mut buffer: impl io::Write) -> Result<(), Self::Error> {
-        buffer.write_i32::<LittleEndian>(self.left)?;
-        buffer.write_i32::<LittleEndian>(self.top)?;
-        buffer.write_i32::<LittleEndian>(self.right)?;
-        buffer.write_i32::<LittleEndian>(self.bottom)?;
-        buffer.write_u32::<LittleEndian>(self.flags.bits())?;
-
-        Ok(())
-    }
-    fn buffer_length(&self) -> usize {
-        MONITOR_SIZE
-    }
 }
+
+impl_pdu_parsing!(Monitor);
 
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
     pub struct MonitorFlags: u32 {
         const PRIMARY = 1;
-    }
-}
-
-#[derive(Debug, Error)]
-pub enum MonitorDataError {
-    #[error("IO error")]
-    IOError(#[from] io::Error),
-    #[error("invalid monitor count field")]
-    InvalidMonitorCount,
-    #[error("invalid monitor flags field")]
-    InvalidMonitorFlags,
-    #[error("PDU error")]
-    Pdu(#[from] PduError),
-}
-
-impl ironrdp_error::legacy::ErrorContext for MonitorDataError {
-    fn context(&self) -> &'static str {
-        "monitor data"
     }
 }

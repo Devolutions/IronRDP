@@ -9,7 +9,7 @@ use core::fmt;
 use ironrdp_pdu as pdu;
 
 use ironrdp_svc::{impl_as_any, CompressionCondition, SvcClientProcessor, SvcMessage, SvcProcessor};
-use pdu::cursor::WriteCursor;
+use pdu::cursor::{ReadCursor, WriteCursor};
 use pdu::gcc::ChannelName;
 use pdu::rdp::vc;
 use pdu::{decode, dvc, PduEncode, PduResult};
@@ -239,11 +239,11 @@ fn decode_dvc_message(user_data: &[u8]) -> PduResult<DynamicChannelCtx<'_>> {
     debug_assert_eq!(user_data_len, channel_header.length as usize);
 
     // … | dvc::ServerPdu | …
-    let dvc_pdu =
-        vc::dvc::ServerPdu::from_buffer(user_data, user_data_len).map_err(|e| custom_err!("DVC server PDU", e))?;
+    let mut cursor = ReadCursor::new(user_data);
+    let dvc_pdu = vc::dvc::ServerPdu::decode(&mut cursor, user_data_len)?;
 
     // … | DvcData ]
-    let dvc_data = user_data;
+    let dvc_data = cursor.remaining();
 
     Ok(DynamicChannelCtx { dvc_pdu, dvc_data })
 }

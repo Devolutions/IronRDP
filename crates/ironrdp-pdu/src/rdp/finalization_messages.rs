@@ -199,7 +199,7 @@ impl PduEncode for MonitorLayoutPdu {
         dst.write_u32(cast_length!("nMonitors", self.monitors.len())?);
 
         for monitor in self.monitors.iter() {
-            crate::PduParsing::to_buffer(&monitor, &mut *dst)?;
+            monitor.encode(dst)?;
         }
 
         Ok(())
@@ -225,7 +225,7 @@ impl<'de> PduDecode<'de> for MonitorLayoutPdu {
 
         let mut monitors = Vec::with_capacity(monitor_count as usize);
         for _ in 0..monitor_count {
-            monitors.push(<gcc::Monitor as crate::PduParsing>::from_buffer(&mut *src)?);
+            monitors.push(gcc::Monitor::decode(src)?);
         }
 
         Ok(Self { monitors })

@@ -28,7 +28,7 @@ pub use self::core_data::server::{ServerCoreData, ServerCoreOptionalData, Server
 pub use self::core_data::{CoreDataError, RdpVersion};
 pub use self::message_channel_data::{ClientMessageChannelData, ServerMessageChannelData};
 pub use self::monitor_data::{
-    ClientMonitorData, Monitor, MonitorDataError, MonitorFlags, MONITOR_COUNT_SIZE, MONITOR_FLAGS_SIZE, MONITOR_SIZE,
+    ClientMonitorData, Monitor, MonitorFlags, MONITOR_COUNT_SIZE, MONITOR_FLAGS_SIZE, MONITOR_SIZE,
 };
 pub use self::monitor_extended_data::{
     ClientMonitorExtendedData, ExtendedMonitorInfo, MonitorExtendedDataError, MonitorOrientation,
@@ -379,8 +379,6 @@ pub enum GccError {
     NetworkError(#[from] NetworkDataError),
     #[error("cluster data block error")]
     ClusterError(#[from] ClusterDataError),
-    #[error("monitor data block error")]
-    MonitorError(#[from] MonitorDataError),
     #[error("multi-transport channel data block error")]
     MultiTransportChannelError(#[from] MultiTransportChannelDataError),
     #[error("monitor extended data block error")]
