@@ -137,18 +137,18 @@ fn to_buffer_according_to_type_u32_test() {
 
 #[test]
 fn get_length_according_to_type_u8_test() {
-    let length = FieldType::U8.get_type_size();
-    assert_eq!(mem::size_of::<u8>(), length);
+    let length = FieldType::U8.size();
+    assert_eq!(1, length);
 }
 
 #[test]
 fn get_length_according_to_type_u16_test() {
-    let length = FieldType::U16.get_type_size();
-    assert_eq!(mem::size_of::<u16>(), length);
+    let length = FieldType::U16.size();
+    assert_eq!(2, length);
 }
 
 #[test]
 fn get_length_according_to_type_u32_test() {
-    let length = FieldType::U32.get_type_size();
-    assert_eq!(mem::size_of::<u32>(), length);
+    let length = FieldType::U32.size();
+    assert_eq!(4, length);
 }
