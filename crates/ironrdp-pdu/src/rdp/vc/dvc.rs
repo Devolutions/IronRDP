@@ -1,4 +1,4 @@
-use std::{io, mem};
+use std::io;
 
 use bit_field::BitField;
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
@@ -6,7 +6,8 @@ use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive, ToPrimitive};
 
 use super::ChannelError;
-use crate::PduParsing;
+use crate::cursor::{ReadCursor, WriteCursor};
+use crate::{PduParsing, PduResult};
 
 #[cfg(test)]
 mod tests;
@@ -213,6 +214,38 @@ pub enum FieldType {
 }
 
 impl FieldType {
+    pub fn read_according_to_type(self, src: &mut ReadCursor<'_>) -> PduResult<u32> {
+        ensure_size!(in: src, size: self.size());
+
+        let value = match self {
+            FieldType::U8 => u32::from(src.read_u8()),
+            FieldType::U16 => u32::from(src.read_u16()),
+            FieldType::U32 => src.read_u32(),
+        };
+
+        Ok(value)
+    }
+
+    pub fn write_according_to_type(self, dst: &mut WriteCursor<'_>, value: u32) -> PduResult<()> {
+        ensure_size!(in: dst, size: self.size());
+
+        match self {
+            FieldType::U8 => dst.write_u8(value as u8),
+            FieldType::U16 => dst.write_u16(value as u16),
+            FieldType::U32 => dst.write_u32(value),
+        };
+
+        Ok(())
+    }
+
+    pub fn size(self) -> usize {
+        match self {
+            FieldType::U8 => 1,
+            FieldType::U16 => 2,
+            FieldType::U32 => 4,
+        }
+    }
+
     pub fn read_buffer_according_to_type(self, mut stream: impl io::Read) -> Result<u32, io::Error> {
         let value = match self {
             FieldType::U8 => u32::from(stream.read_u8()?),
@@ -234,11 +267,7 @@ impl FieldType {
     }
 
     pub fn get_type_size(self) -> usize {
-        match self {
-            FieldType::U8 => mem::size_of::<u8>(),
-            FieldType::U16 => mem::size_of::<u16>(),
-            FieldType::U32 => mem::size_of::<u32>(),
-        }
+        self.size()
     }
 }
 
