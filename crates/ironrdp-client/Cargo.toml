@@ -56,7 +56,7 @@ anyhow = "1"
 smallvec = "1.13"
 tap = "1"
 semver = "1"
-reqwest = "0.11.23"
+reqwest = "0.11.24"
 url = "2.5.0"
 
 [target.'cfg(windows)'.dependencies]
