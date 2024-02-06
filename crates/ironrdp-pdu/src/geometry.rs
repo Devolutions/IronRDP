@@ -171,7 +171,8 @@ impl Rectangle for ExclusiveRectangle {
 
 impl InclusiveRectangle {
     const NAME: &'static str = "InclusiveRectangle";
-    const FIXED_PART_SIZE: usize = std::mem::size_of::<u16>() * 4;
+
+    pub const FIXED_PART_SIZE: usize = std::mem::size_of::<u16>() * 4;
 
     pub const ENCODED_SIZE: usize = Self::FIXED_PART_SIZE;
 }
