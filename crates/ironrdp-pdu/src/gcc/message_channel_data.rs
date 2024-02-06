@@ -1,8 +1,5 @@
-use std::io;
-
-use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
-
-use crate::PduParsing;
+use crate::cursor::{ReadCursor, WriteCursor};
+use crate::{PduDecode, PduEncode, PduResult};
 
 const CLIENT_FLAGS_SIZE: usize = 4;
 const SERVER_MCS_MESSAGE_CHANNEL_ID_SIZE: usize = 2;
@@ -10,45 +7,79 @@ const SERVER_MCS_MESSAGE_CHANNEL_ID_SIZE: usize = 2;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClientMessageChannelData;
 
-impl PduParsing for ClientMessageChannelData {
-    type Error = io::Error;
+impl ClientMessageChannelData {
+    const NAME: &'static str = "ClientMessageChannelData";
 
-    fn from_buffer(mut buffer: impl io::Read) -> Result<Self, Self::Error> {
-        let _flags = buffer.read_u32::<LittleEndian>()?; // is unused
+    const FIXED_PART_SIZE: usize = CLIENT_FLAGS_SIZE;
+}
 
-        Ok(Self {})
-    }
-    fn to_buffer(&self, mut buffer: impl io::Write) -> Result<(), Self::Error> {
-        buffer.write_u32::<LittleEndian>(0)?; // flags
+impl PduEncode for ClientMessageChannelData {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_fixed_part_size!(in: dst);
+
+        dst.write_u32(0); // flags
 
         Ok(())
     }
 
-    fn buffer_length(&self) -> usize {
-        CLIENT_FLAGS_SIZE
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    fn size(&self) -> usize {
+        Self::FIXED_PART_SIZE
     }
 }
+
+impl<'de> PduDecode<'de> for ClientMessageChannelData {
+    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+        ensure_fixed_part_size!(in: src);
+
+        let _flags = src.read_u32(); // is unused
+
+        Ok(Self {})
+    }
+}
+
+impl_pdu_parsing!(ClientMessageChannelData);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServerMessageChannelData {
     pub mcs_message_channel_id: u16,
 }
 
-impl PduParsing for ServerMessageChannelData {
-    type Error = io::Error;
+impl ServerMessageChannelData {
+    const NAME: &'static str = "ServerMessageChannelData";
 
-    fn from_buffer(mut buffer: impl io::Read) -> Result<Self, Self::Error> {
-        let mcs_message_channel_id = buffer.read_u16::<LittleEndian>()?;
+    const FIXED_PART_SIZE: usize = SERVER_MCS_MESSAGE_CHANNEL_ID_SIZE;
+}
 
-        Ok(Self { mcs_message_channel_id })
-    }
-    fn to_buffer(&self, mut buffer: impl io::Write) -> Result<(), Self::Error> {
-        buffer.write_u16::<LittleEndian>(self.mcs_message_channel_id)?;
+impl PduEncode for ServerMessageChannelData {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_fixed_part_size!(in: dst);
+
+        dst.write_u16(self.mcs_message_channel_id);
 
         Ok(())
     }
 
-    fn buffer_length(&self) -> usize {
-        SERVER_MCS_MESSAGE_CHANNEL_ID_SIZE
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    fn size(&self) -> usize {
+        Self::FIXED_PART_SIZE
     }
 }
+
+impl<'de> PduDecode<'de> for ServerMessageChannelData {
+    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+        ensure_fixed_part_size!(in: src);
+
+        let mcs_message_channel_id = src.read_u16();
+
+        Ok(Self { mcs_message_channel_id })
+    }
+}
+
+impl_pdu_parsing!(ServerMessageChannelData);
