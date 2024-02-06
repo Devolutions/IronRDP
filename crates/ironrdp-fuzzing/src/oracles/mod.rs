@@ -29,11 +29,11 @@ pub fn pdu_decode(data: &[u8]) {
     let _ = decode::<pcb::PreconnectionBlob>(data);
     let _ = decode::<server_error_info::ServerSetErrorInfoPdu>(data);
 
-    let _ = gcc::ClientGccBlocks::from_buffer(data);
-    let _ = gcc::ServerGccBlocks::from_buffer(data);
-    let _ = gcc::ClientClusterData::from_buffer(data);
-    let _ = gcc::ConferenceCreateRequest::from_buffer(data);
-    let _ = gcc::ConferenceCreateResponse::from_buffer(data);
+    let _ = decode::<gcc::ClientGccBlocks>(data);
+    let _ = decode::<gcc::ServerGccBlocks>(data);
+    let _ = decode::<gcc::ClientClusterData>(data);
+    let _ = decode::<gcc::ConferenceCreateRequest>(data);
+    let _ = decode::<gcc::ConferenceCreateResponse>(data);
 
     let _ = server_license::ClientNewLicenseRequest::from_buffer(data);
     let _ = server_license::ClientPlatformChallengeResponse::from_buffer(data);

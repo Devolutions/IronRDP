@@ -63,8 +63,6 @@ impl<'de> PduDecode<'de> for ClientMonitorData {
     }
 }
 
-impl_pdu_parsing_max!(ClientMonitorData);
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Monitor {
     pub left: i32,

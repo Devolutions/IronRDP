@@ -1,14 +1,12 @@
-use std::io;
-
 use bitflags::bitflags;
-use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive, ToPrimitive};
 use tap::Pipe as _;
 
-use super::{CoreDataError, RdpVersion, VERSION_SIZE};
+use super::{RdpVersion, VERSION_SIZE};
+use crate::cursor::{ReadCursor, WriteCursor};
 use crate::nego::SecurityProtocol;
-use crate::{utils, PduParsing};
+use crate::{utils, PduDecode, PduEncode, PduResult};
 
 pub const IME_FILE_NAME_SIZE: usize = 64;
 
@@ -59,6 +57,21 @@ pub struct ClientCoreData {
 }
 
 impl ClientCoreData {
+    const NAME: &'static str = "ClientCoreData";
+
+    const FIXED_PART_SIZE: usize = VERSION_SIZE
+        + DESKTOP_WIDTH_SIZE
+        + DESKTOP_HEIGHT_SIZE
+        + COLOR_DEPTH_SIZE
+        + SEC_ACCESS_SEQUENCE_SIZE
+        + KEYBOARD_LAYOUT_SIZE
+        + CLIENT_BUILD_SIZE
+        + CLIENT_NAME_SIZE
+        + KEYBOARD_TYPE_SIZE
+        + KEYBOARD_SUB_TYPE_SIZE
+        + KEYBOARD_FUNCTIONAL_KEYS_COUNT_SIZE
+        + IME_FILE_NAME_SIZE;
+
     pub fn client_color_depth(&self) -> ClientColorDepth {
         if let Some(high_color_depth) = self.optional_data.high_color_depth {
             if let Some(early_capability_flags) = self.optional_data.early_capability_flags {
@@ -78,44 +91,78 @@ impl ClientCoreData {
     }
 }
 
-impl PduParsing for ClientCoreData {
-    type Error = CoreDataError;
+impl PduEncode for ClientCoreData {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_size!(in: dst, size: self.size());
 
-    fn from_buffer(mut buffer: impl io::Read) -> Result<Self, Self::Error> {
-        let version = buffer.read_u32::<LittleEndian>()?.pipe(RdpVersion);
-        let desktop_width = buffer.read_u16::<LittleEndian>()?;
-        let desktop_height = buffer.read_u16::<LittleEndian>()?;
-        let color_depth = buffer
-            .read_u16::<LittleEndian>()?
+        let mut client_name_dst = utils::to_utf16_bytes(self.client_name.as_ref());
+        client_name_dst.resize(CLIENT_NAME_SIZE - 2, 0);
+        let mut ime_file_name_dst = utils::to_utf16_bytes(self.ime_file_name.as_ref());
+        ime_file_name_dst.resize(IME_FILE_NAME_SIZE - 2, 0);
+
+        dst.write_u32(self.version.0);
+        dst.write_u16(self.desktop_width);
+        dst.write_u16(self.desktop_height);
+        dst.write_u16(self.color_depth.to_u16().unwrap());
+        dst.write_u16(self.sec_access_sequence.to_u16().unwrap());
+        dst.write_u32(self.keyboard_layout);
+        dst.write_u32(self.client_build);
+        dst.write_slice(client_name_dst.as_ref());
+        dst.write_u16(0); // client name UTF-16 null terminator
+        dst.write_u32(self.keyboard_type.to_u32().unwrap());
+        dst.write_u32(self.keyboard_subtype);
+        dst.write_u32(self.keyboard_functional_keys_count);
+        dst.write_slice(ime_file_name_dst.as_ref());
+        dst.write_u16(0); // ime file name UTF-16 null terminator
+
+        self.optional_data.encode(dst)
+    }
+
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    fn size(&self) -> usize {
+        Self::FIXED_PART_SIZE + self.optional_data.size()
+    }
+}
+
+impl<'de> PduDecode<'de> for ClientCoreData {
+    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+        ensure_fixed_part_size!(in: src);
+
+        let version = src.read_u32().pipe(RdpVersion);
+        let desktop_width = src.read_u16();
+        let desktop_height = src.read_u16();
+        let color_depth = src
+            .read_u16()
             .pipe(ColorDepth::from_u16)
-            .ok_or(CoreDataError::InvalidColorDepth)?;
-        let sec_access_sequence = buffer
-            .read_u16::<LittleEndian>()?
+            .ok_or_else(|| invalid_message_err!("colorDepth", "invalid color depth"))?;
+        let sec_access_sequence = src
+            .read_u16()
             .pipe(SecureAccessSequence::from_u16)
-            .ok_or(CoreDataError::InvalidSecureAccessSequence)?;
-        let keyboard_layout = buffer.read_u32::<LittleEndian>()?;
-        let client_build = buffer.read_u32::<LittleEndian>()?;
+            .ok_or_else(|| invalid_message_err!("secAccessSequence", "invalid secure access sequence"))?;
+        let keyboard_layout = src.read_u32();
+        let client_build = src.read_u32();
 
-        let mut client_name_buffer = [0; CLIENT_NAME_SIZE];
-        buffer.read_exact(&mut client_name_buffer)?;
-        let client_name = utils::from_utf16_bytes(client_name_buffer.as_ref())
+        let client_name_buffer = src.read_slice(CLIENT_NAME_SIZE);
+        let client_name = utils::from_utf16_bytes(client_name_buffer)
             .trim_end_matches('\u{0}')
             .into();
 
-        let keyboard_type = buffer
-            .read_u32::<LittleEndian>()?
+        let keyboard_type = src
+            .read_u32()
             .pipe(KeyboardType::from_u32)
-            .ok_or(CoreDataError::InvalidKeyboardType)?;
-        let keyboard_subtype = buffer.read_u32::<LittleEndian>()?;
-        let keyboard_functional_keys_count = buffer.read_u32::<LittleEndian>()?;
+            .ok_or_else(|| invalid_message_err!("keyboardType", "invalid keyboard type"))?;
+        let keyboard_subtype = src.read_u32();
+        let keyboard_functional_keys_count = src.read_u32();
 
-        let mut ime_file_name_buffer = [0; IME_FILE_NAME_SIZE];
-        buffer.read_exact(&mut ime_file_name_buffer)?;
-        let ime_file_name = utils::from_utf16_bytes(ime_file_name_buffer.as_ref())
+        let ime_file_name_buffer = src.read_slice(IME_FILE_NAME_SIZE);
+        let ime_file_name = utils::from_utf16_bytes(ime_file_name_buffer)
             .trim_end_matches('\u{0}')
             .into();
 
-        let optional_data = ClientCoreOptionalData::from_buffer(&mut buffer)?;
+        let optional_data = ClientCoreOptionalData::decode(src)?;
 
         Ok(Self {
             version,
@@ -132,46 +179,6 @@ impl PduParsing for ClientCoreData {
             ime_file_name,
             optional_data,
         })
-    }
-
-    fn to_buffer(&self, mut buffer: impl io::Write) -> Result<(), Self::Error> {
-        let mut client_name_buffer = utils::to_utf16_bytes(self.client_name.as_ref());
-        client_name_buffer.resize(CLIENT_NAME_SIZE - 2, 0);
-        let mut ime_file_name_buffer = utils::to_utf16_bytes(self.ime_file_name.as_ref());
-        ime_file_name_buffer.resize(IME_FILE_NAME_SIZE - 2, 0);
-
-        buffer.write_u32::<LittleEndian>(self.version.0)?;
-        buffer.write_u16::<LittleEndian>(self.desktop_width)?;
-        buffer.write_u16::<LittleEndian>(self.desktop_height)?;
-        buffer.write_u16::<LittleEndian>(self.color_depth.to_u16().unwrap())?;
-        buffer.write_u16::<LittleEndian>(self.sec_access_sequence.to_u16().unwrap())?;
-        buffer.write_u32::<LittleEndian>(self.keyboard_layout)?;
-        buffer.write_u32::<LittleEndian>(self.client_build)?;
-        buffer.write_all(client_name_buffer.as_ref())?;
-        buffer.write_u16::<LittleEndian>(0)?; // client name UTF-16 null terminator
-        buffer.write_u32::<LittleEndian>(self.keyboard_type.to_u32().unwrap())?;
-        buffer.write_u32::<LittleEndian>(self.keyboard_subtype)?;
-        buffer.write_u32::<LittleEndian>(self.keyboard_functional_keys_count)?;
-        buffer.write_all(ime_file_name_buffer.as_ref())?;
-        buffer.write_u16::<LittleEndian>(0)?; // ime file name UTF-16 null terminator
-
-        self.optional_data.to_buffer(&mut buffer)
-    }
-
-    fn buffer_length(&self) -> usize {
-        VERSION_SIZE
-            + DESKTOP_WIDTH_SIZE
-            + DESKTOP_HEIGHT_SIZE
-            + COLOR_DEPTH_SIZE
-            + SEC_ACCESS_SEQUENCE_SIZE
-            + KEYBOARD_LAYOUT_SIZE
-            + CLIENT_BUILD_SIZE
-            + CLIENT_NAME_SIZE
-            + KEYBOARD_TYPE_SIZE
-            + KEYBOARD_SUB_TYPE_SIZE
-            + KEYBOARD_FUNCTIONAL_KEYS_COUNT_SIZE
-            + IME_FILE_NAME_SIZE
-            + self.optional_data.buffer_length()
     }
 }
 
@@ -197,126 +204,83 @@ pub struct ClientCoreOptionalData {
     pub device_scale_factor: Option<u32>,
 }
 
-impl PduParsing for ClientCoreOptionalData {
-    type Error = CoreDataError;
+impl ClientCoreOptionalData {
+    const NAME: &'static str = "ClientCoreOptionalData";
+}
 
-    fn from_buffer(mut buffer: impl io::Read) -> Result<Self, Self::Error> {
-        let mut optional_data = Self::default();
+impl PduEncode for ClientCoreOptionalData {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_size!(in: dst, size: self.size());
 
-        optional_data.post_beta2_color_depth = Some(
-            ColorDepth::from_u16(try_read_optional!(buffer.read_u16::<LittleEndian>(), optional_data))
-                .ok_or(CoreDataError::InvalidPostBetaColorDepth)?,
-        );
+        if let Some(value) = self.post_beta2_color_depth {
+            dst.write_u16(value.to_u16().unwrap());
+        }
 
-        optional_data.client_product_id = Some(try_read_optional!(buffer.read_u16::<LittleEndian>(), optional_data));
-        optional_data.serial_number = Some(try_read_optional!(buffer.read_u32::<LittleEndian>(), optional_data));
+        if let Some(value) = self.client_product_id {
+            dst.write_u16(value);
+        }
 
-        optional_data.high_color_depth = Some(
-            HighColorDepth::from_u16(try_read_optional!(buffer.read_u16::<LittleEndian>(), optional_data))
-                .ok_or(CoreDataError::InvalidHighColorDepth)?,
-        );
+        if let Some(value) = self.serial_number {
+            dst.write_u32(value);
+        }
 
-        optional_data.supported_color_depths = Some(
-            SupportedColorDepths::from_bits(try_read_optional!(buffer.read_u16::<LittleEndian>(), optional_data))
-                .ok_or(CoreDataError::InvalidSupportedColorDepths)?,
-        );
+        if let Some(value) = self.high_color_depth {
+            dst.write_u16(value.to_u16().unwrap());
+        }
 
-        optional_data.early_capability_flags = Some(
-            ClientEarlyCapabilityFlags::from_bits(try_read_optional!(buffer.read_u16::<LittleEndian>(), optional_data))
-                .ok_or(CoreDataError::InvalidEarlyCapabilityFlags)?,
-        );
+        if let Some(value) = self.supported_color_depths {
+            dst.write_u16(value.bits());
+        }
 
-        let mut dig_product_id_buffer = [0; DIG_PRODUCT_ID_SIZE];
-        try_read_optional!(buffer.read_exact(&mut dig_product_id_buffer), optional_data);
-        optional_data.dig_product_id = Some(
-            utils::from_utf16_bytes(dig_product_id_buffer.as_ref())
-                .trim_end_matches('\u{0}')
-                .into(),
-        );
+        if let Some(value) = self.early_capability_flags {
+            dst.write_u16(value.bits());
+        }
 
-        optional_data.connection_type = Some(
-            ConnectionType::from_u8(try_read_optional!(buffer.read_u8(), optional_data))
-                .ok_or(CoreDataError::InvalidConnectionType)?,
-        );
-
-        try_read_optional!(buffer.read_u8(), optional_data); // pad1octet
-
-        optional_data.server_selected_protocol = Some(
-            SecurityProtocol::from_bits(try_read_optional!(buffer.read_u32::<LittleEndian>(), optional_data))
-                .ok_or(CoreDataError::InvalidServerSecurityProtocol)?,
-        );
-
-        optional_data.desktop_physical_width =
-            Some(try_read_optional!(buffer.read_u32::<LittleEndian>(), optional_data));
-        // physical height must be present, if the physical width is present
-        optional_data.desktop_physical_height = Some(buffer.read_u32::<LittleEndian>()?);
-
-        optional_data.desktop_orientation = Some(try_read_optional!(buffer.read_u16::<LittleEndian>(), optional_data));
-        optional_data.desktop_scale_factor = Some(try_read_optional!(buffer.read_u32::<LittleEndian>(), optional_data));
-        // device scale factor must be present, if the desktop scale factor is present
-        optional_data.device_scale_factor = Some(buffer.read_u32::<LittleEndian>()?);
-
-        Ok(optional_data)
-    }
-
-    fn to_buffer(&self, mut buffer: impl io::Write) -> Result<(), Self::Error> {
-        try_write_optional!(self.post_beta2_color_depth, |value: &ColorDepth| {
-            buffer.write_u16::<LittleEndian>(value.to_u16().unwrap())
-        });
-
-        try_write_optional!(self.client_product_id, |value: &u16| buffer
-            .write_u16::<LittleEndian>(*value));
-
-        try_write_optional!(self.serial_number, |value: &u32| buffer
-            .write_u32::<LittleEndian>(*value));
-
-        try_write_optional!(self.high_color_depth, |value: &HighColorDepth| buffer
-            .write_u16::<LittleEndian>(value.to_u16().unwrap()));
-
-        try_write_optional!(self.supported_color_depths, |value: &SupportedColorDepths| buffer
-            .write_u16::<LittleEndian>(
-            value.bits()
-        ));
-
-        try_write_optional!(self.early_capability_flags, |value: &ClientEarlyCapabilityFlags| buffer
-            .write_u16::<LittleEndian>(value.bits()));
-
-        try_write_optional!(self.dig_product_id, |value: &str| {
+        if let Some(ref value) = self.dig_product_id {
             let mut dig_product_id_buffer = utils::to_utf16_bytes(value);
             dig_product_id_buffer.resize(DIG_PRODUCT_ID_SIZE - 2, 0);
             dig_product_id_buffer.extend_from_slice([0; 2].as_ref()); // UTF-16 null terminator
 
-            buffer.write_all(dig_product_id_buffer.as_ref())
-        });
+            dst.write_slice(dig_product_id_buffer.as_ref())
+        }
 
-        try_write_optional!(self.connection_type, |value: &ConnectionType| buffer
-            .write_u8(value.to_u8().unwrap()));
+        if let Some(value) = self.connection_type {
+            dst.write_u8(value.to_u8().unwrap());
+            write_padding!(dst, 1);
+        }
 
-        buffer.write_u8(0)?; // pad1octet
+        if let Some(value) = self.server_selected_protocol {
+            dst.write_u32(value.bits())
+        }
 
-        try_write_optional!(self.server_selected_protocol, |value: &SecurityProtocol| {
-            buffer.write_u32::<LittleEndian>(value.bits())
-        });
+        if let Some(value) = self.desktop_physical_width {
+            dst.write_u32(value);
+        }
 
-        try_write_optional!(self.desktop_physical_width, |value: &u32| buffer
-            .write_u32::<LittleEndian>(*value));
+        if let Some(value) = self.desktop_physical_height {
+            dst.write_u32(value);
+        }
 
-        try_write_optional!(self.desktop_physical_height, |value: &u32| buffer
-            .write_u32::<LittleEndian>(*value));
+        if let Some(value) = self.desktop_orientation {
+            dst.write_u16(value);
+        }
 
-        try_write_optional!(self.desktop_orientation, |value: &u16| buffer
-            .write_u16::<LittleEndian>(*value));
+        if let Some(value) = self.desktop_scale_factor {
+            dst.write_u32(value);
+        }
 
-        try_write_optional!(self.desktop_scale_factor, |value: &u32| buffer
-            .write_u32::<LittleEndian>(*value));
-
-        try_write_optional!(self.device_scale_factor, |value: &u32| buffer
-            .write_u32::<LittleEndian>(*value));
+        if let Some(value) = self.device_scale_factor {
+            dst.write_u32(value);
+        }
 
         Ok(())
     }
 
-    fn buffer_length(&self) -> usize {
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    fn size(&self) -> usize {
         let mut size = 0;
 
         if self.post_beta2_color_depth.is_some() {
@@ -363,6 +327,82 @@ impl PduParsing for ClientCoreOptionalData {
         }
 
         size
+    }
+}
+
+macro_rules! try_or_return {
+    ($expr:expr, $ret:expr) => {
+        match $expr {
+            Ok(v) => v,
+            Err(_) => return Ok($ret),
+        }
+    };
+}
+
+impl<'de> PduDecode<'de> for ClientCoreOptionalData {
+    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+        let mut optional_data = Self::default();
+
+        optional_data.post_beta2_color_depth = Some(
+            ColorDepth::from_u16(try_or_return!(src.try_read_u16("postBeta2ColorDepth"), optional_data))
+                .ok_or_else(|| invalid_message_err!("postBeta2ColorDepth", "invalid color depth"))?,
+        );
+
+        optional_data.client_product_id = Some(try_or_return!(src.try_read_u16("clientProductId"), optional_data));
+        optional_data.serial_number = Some(try_or_return!(src.try_read_u32("serialNumber"), optional_data));
+
+        optional_data.high_color_depth = Some(
+            HighColorDepth::from_u16(try_or_return!(src.try_read_u16("highColorDepth"), optional_data))
+                .ok_or_else(|| invalid_message_err!("highColorDepth", "invalid color depth"))?,
+        );
+
+        optional_data.supported_color_depths = Some(
+            SupportedColorDepths::from_bits(try_or_return!(src.try_read_u16("supportedColorDepths"), optional_data))
+                .ok_or_else(|| invalid_message_err!("supportedColorDepths", "invalid supported color depths"))?,
+        );
+
+        optional_data.early_capability_flags = Some(
+            ClientEarlyCapabilityFlags::from_bits(try_or_return!(
+                src.try_read_u16("earlyCapabilityFlags"),
+                optional_data
+            ))
+            .ok_or_else(|| invalid_message_err!("earlyCapabilityFlags", "invalid early capability flags"))?,
+        );
+
+        if src.len() < DIG_PRODUCT_ID_SIZE {
+            return Ok(optional_data);
+        }
+
+        let dig_product_id = src.read_slice(DIG_PRODUCT_ID_SIZE);
+        optional_data.dig_product_id = Some(utils::from_utf16_bytes(dig_product_id).trim_end_matches('\u{0}').into());
+
+        optional_data.connection_type = Some(
+            ConnectionType::from_u8(try_or_return!(src.try_read_u8("connectionType"), optional_data))
+                .ok_or_else(|| invalid_message_err!("connectionType", "invalid connection type"))?,
+        );
+
+        try_or_return!(src.try_read_u8("pad1octet"), optional_data);
+
+        optional_data.server_selected_protocol = Some(
+            SecurityProtocol::from_bits(try_or_return!(
+                src.try_read_u32("serverSelectedProtocol"),
+                optional_data
+            ))
+            .ok_or_else(|| invalid_message_err!("serverSelectedProtocol", "invalid security protocol"))?,
+        );
+
+        optional_data.desktop_physical_width =
+            Some(try_or_return!(src.try_read_u32("desktopPhysicalWidth"), optional_data));
+        // physical height must be present, if the physical width is present
+        optional_data.desktop_physical_height = Some(src.read_u32());
+
+        optional_data.desktop_orientation = Some(try_or_return!(src.try_read_u16("desktopOrientation"), optional_data));
+        optional_data.desktop_scale_factor =
+            Some(try_or_return!(src.try_read_u32("desktopScaleFactor"), optional_data));
+        // device scale factor must be present, if the desktop scale factor is present
+        optional_data.device_scale_factor = Some(src.read_u32());
+
+        Ok(optional_data)
     }
 }
 
