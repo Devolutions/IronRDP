@@ -1,11 +1,11 @@
 use std::io;
 
-use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive, ToPrimitive};
 use thiserror::Error;
 
-use crate::PduParsing;
+use crate::cursor::{ReadCursor, WriteCursor};
+use crate::{PduDecode, PduEncode, PduResult};
 
 pub mod fast_path;
 pub mod mouse;
@@ -27,35 +27,51 @@ pub use self::unused::UnusedPdu;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InputEventPdu(pub Vec<InputEvent>);
 
-impl PduParsing for InputEventPdu {
-    type Error = InputEventError;
+impl InputEventPdu {
+    const NAME: &'static str = "InputEventPdu";
 
-    fn from_buffer(mut stream: impl io::Read) -> Result<Self, Self::Error> {
-        let number_of_events = stream.read_u16::<LittleEndian>()?;
-        let _padding = stream.read_u16::<LittleEndian>()?;
+    const FIXED_PART_SIZE: usize = 4 /* nEvents */;
+}
 
-        let events = (0..number_of_events)
-            .map(|_| InputEvent::from_buffer(&mut stream))
-            .collect::<Result<Vec<_>, _>>()?;
+impl PduEncode for InputEventPdu {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_size!(in: dst, size: self.size());
 
-        Ok(Self(events))
-    }
-
-    fn to_buffer(&self, mut stream: impl io::Write) -> Result<(), Self::Error> {
-        stream.write_u16::<LittleEndian>(self.0.len() as u16)?;
-        stream.write_u16::<LittleEndian>(0)?; // padding
+        dst.write_u16(self.0.len() as u16);
+        write_padding!(dst, 2);
 
         for event in self.0.iter() {
-            event.to_buffer(&mut stream)?;
+            event.encode(dst)?;
         }
 
         Ok(())
     }
 
-    fn buffer_length(&self) -> usize {
-        4 + self.0.iter().map(PduParsing::buffer_length).sum::<usize>()
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    fn size(&self) -> usize {
+        4 + self.0.iter().map(PduEncode::size).sum::<usize>()
     }
 }
+
+impl<'de> PduDecode<'de> for InputEventPdu {
+    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+        ensure_fixed_part_size!(in: src);
+
+        let number_of_events = src.read_u16();
+        read_padding!(src, 2);
+
+        let events = (0..number_of_events)
+            .map(|_| InputEvent::decode(src))
+            .collect::<Result<Vec<_>, _>>()?;
+
+        Ok(Self(events))
+    }
+}
+
+impl_pdu_parsing_max!(InputEventPdu);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InputEvent {
@@ -68,53 +84,70 @@ pub enum InputEvent {
     MouseRel(MouseRelPdu),
 }
 
-impl PduParsing for InputEvent {
-    type Error = InputEventError;
+impl InputEvent {
+    const NAME: &'static str = "InputEvent";
 
-    fn from_buffer(mut stream: impl io::Read) -> Result<Self, Self::Error> {
-        let _event_time = stream.read_u32::<LittleEndian>()?; // ignored by a server
-        let event_type = stream.read_u16::<LittleEndian>()?;
-        let event_type =
-            InputEventType::from_u16(event_type).ok_or(InputEventError::InvalidInputEventType(event_type))?;
+    const FIXED_PART_SIZE: usize = 4 /* eventTime */ + 2 /* eventType */;
+}
 
-        match event_type {
-            InputEventType::Sync => Ok(Self::Sync(SyncPdu::from_buffer(&mut stream)?)),
-            InputEventType::Unused => Ok(Self::Unused(UnusedPdu::from_buffer(&mut stream)?)),
-            InputEventType::ScanCode => Ok(Self::ScanCode(ScanCodePdu::from_buffer(&mut stream)?)),
-            InputEventType::Unicode => Ok(Self::Unicode(UnicodePdu::from_buffer(&mut stream)?)),
-            InputEventType::Mouse => Ok(Self::Mouse(MousePdu::from_buffer(&mut stream)?)),
-            InputEventType::MouseX => Ok(Self::MouseX(MouseXPdu::from_buffer(&mut stream)?)),
-            InputEventType::MouseRel => Ok(Self::MouseRel(MouseRelPdu::from_buffer(&mut stream)?)),
-        }
-    }
+impl PduEncode for InputEvent {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_fixed_part_size!(in: dst);
 
-    fn to_buffer(&self, mut stream: impl io::Write) -> Result<(), Self::Error> {
-        stream.write_u32::<LittleEndian>(0)?; // event time is ignored by a server
-        stream.write_u16::<LittleEndian>(InputEventType::from(self).to_u16().unwrap())?;
+        dst.write_u32(0); // event time is ignored by a server
+        dst.write_u16(InputEventType::from(self).to_u16().unwrap());
 
         match self {
-            Self::Sync(pdu) => pdu.to_buffer(&mut stream),
-            Self::Unused(pdu) => pdu.to_buffer(&mut stream),
-            Self::ScanCode(pdu) => pdu.to_buffer(&mut stream),
-            Self::Unicode(pdu) => pdu.to_buffer(&mut stream),
-            Self::Mouse(pdu) => pdu.to_buffer(&mut stream),
-            Self::MouseX(pdu) => pdu.to_buffer(&mut stream),
-            Self::MouseRel(pdu) => pdu.to_buffer(&mut stream),
+            Self::Sync(pdu) => pdu.encode(dst),
+            Self::Unused(pdu) => pdu.encode(dst),
+            Self::ScanCode(pdu) => pdu.encode(dst),
+            Self::Unicode(pdu) => pdu.encode(dst),
+            Self::Mouse(pdu) => pdu.encode(dst),
+            Self::MouseX(pdu) => pdu.encode(dst),
+            Self::MouseRel(pdu) => pdu.encode(dst),
         }
     }
 
-    fn buffer_length(&self) -> usize {
-        6 + match self {
-            Self::Sync(pdu) => pdu.buffer_length(),
-            Self::Unused(pdu) => pdu.buffer_length(),
-            Self::ScanCode(pdu) => pdu.buffer_length(),
-            Self::Unicode(pdu) => pdu.buffer_length(),
-            Self::Mouse(pdu) => pdu.buffer_length(),
-            Self::MouseX(pdu) => pdu.buffer_length(),
-            Self::MouseRel(pdu) => pdu.buffer_length(),
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    fn size(&self) -> usize {
+        Self::FIXED_PART_SIZE
+            + match self {
+                Self::Sync(pdu) => pdu.size(),
+                Self::Unused(pdu) => pdu.size(),
+                Self::ScanCode(pdu) => pdu.size(),
+                Self::Unicode(pdu) => pdu.size(),
+                Self::Mouse(pdu) => pdu.size(),
+                Self::MouseX(pdu) => pdu.size(),
+                Self::MouseRel(pdu) => pdu.size(),
+            }
+    }
+}
+
+impl<'de> PduDecode<'de> for InputEvent {
+    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+        ensure_fixed_part_size!(in: src);
+
+        let _event_time = src.read_u32(); // ignored by a server
+        let event_type = src.read_u16();
+        let event_type = InputEventType::from_u16(event_type)
+            .ok_or_else(|| invalid_message_err!("eventType", "invalid input event type"))?;
+
+        match event_type {
+            InputEventType::Sync => Ok(Self::Sync(SyncPdu::decode(src)?)),
+            InputEventType::Unused => Ok(Self::Unused(UnusedPdu::decode(src)?)),
+            InputEventType::ScanCode => Ok(Self::ScanCode(ScanCodePdu::decode(src)?)),
+            InputEventType::Unicode => Ok(Self::Unicode(UnicodePdu::decode(src)?)),
+            InputEventType::Mouse => Ok(Self::Mouse(MousePdu::decode(src)?)),
+            InputEventType::MouseX => Ok(Self::MouseX(MouseXPdu::decode(src)?)),
+            InputEventType::MouseRel => Ok(Self::MouseRel(MouseRelPdu::decode(src)?)),
         }
     }
 }
+
+impl_pdu_parsing!(InputEvent);
 
 #[derive(Debug, Copy, Clone, PartialEq, FromPrimitive, ToPrimitive)]
 #[repr(u16)]

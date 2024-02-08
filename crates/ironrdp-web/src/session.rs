@@ -652,13 +652,11 @@ impl Session {
         kana_lock: bool,
     ) -> Result<(), IronRdpError> {
         use ironrdp::pdu::input::fast_path::FastPathInput;
-        use ironrdp::pdu::PduParsing as _;
 
         let event = ironrdp::input::synchronize_event(scroll_lock, num_lock, caps_lock, kana_lock);
         let fastpath_input = FastPathInput(vec![event]);
 
-        let mut frame = Vec::new();
-        fastpath_input.to_buffer(&mut frame).context("FastPathInput encoding")?;
+        let frame = ironrdp::pdu::encode_vec(&fastpath_input).context("FastPathInput encoding")?;
 
         self.writer_tx
             .unbounded_send(frame)
