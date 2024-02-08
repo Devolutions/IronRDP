@@ -321,7 +321,7 @@ impl RdpServer {
 
                     match action {
                         Action::FastPath => {
-                            let input = FastPathInput::from_buffer(Cursor::new(&bytes))?;
+                            let input = decode(&bytes)?;
                             self.handle_fastpath(input).await;
                         }
 
@@ -378,7 +378,7 @@ impl RdpServer {
         for frame in frames {
             match Action::from_fp_output_header(frame[0]) {
                 Ok(Action::FastPath) => {
-                    let input = FastPathInput::from_buffer(Cursor::new(&frame))?;
+                    let input = decode(&frame)?;
                     self.handle_fastpath(input).await;
                 }
 

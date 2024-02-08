@@ -1,10 +1,9 @@
-use std::io;
-
 use bitflags::bitflags;
-use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 
-use super::InputEventError;
-use crate::PduParsing;
+use crate::{
+    cursor::{ReadCursor, WriteCursor},
+    PduDecode, PduEncode, PduResult,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MouseXPdu {
@@ -13,13 +12,39 @@ pub struct MouseXPdu {
     pub y_position: u16,
 }
 
-impl PduParsing for MouseXPdu {
-    type Error = InputEventError;
+impl MouseXPdu {
+    const NAME: &'static str = "MouseXPdu";
 
-    fn from_buffer(mut stream: impl io::Read) -> Result<Self, Self::Error> {
-        let flags = PointerXFlags::from_bits_truncate(stream.read_u16::<LittleEndian>()?);
-        let x_position = stream.read_u16::<LittleEndian>()?;
-        let y_position = stream.read_u16::<LittleEndian>()?;
+    const FIXED_PART_SIZE: usize = 2 /* flags */ + 2 /* x */ + 2 /* y */;
+}
+
+impl PduEncode for MouseXPdu {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_fixed_part_size!(in: dst);
+
+        dst.write_u16(self.flags.bits());
+        dst.write_u16(self.x_position);
+        dst.write_u16(self.y_position);
+
+        Ok(())
+    }
+
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    fn size(&self) -> usize {
+        Self::FIXED_PART_SIZE
+    }
+}
+
+impl<'de> PduDecode<'de> for MouseXPdu {
+    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+        ensure_fixed_part_size!(in: src);
+
+        let flags = PointerXFlags::from_bits_truncate(src.read_u16());
+        let x_position = src.read_u16();
+        let y_position = src.read_u16();
 
         Ok(Self {
             flags,
@@ -27,19 +52,9 @@ impl PduParsing for MouseXPdu {
             y_position,
         })
     }
-
-    fn to_buffer(&self, mut stream: impl io::Write) -> Result<(), Self::Error> {
-        stream.write_u16::<LittleEndian>(self.flags.bits())?;
-        stream.write_u16::<LittleEndian>(self.x_position)?;
-        stream.write_u16::<LittleEndian>(self.y_position)?;
-
-        Ok(())
-    }
-
-    fn buffer_length(&self) -> usize {
-        6
-    }
 }
+
+impl_pdu_parsing!(MouseXPdu);
 
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]

@@ -1,10 +1,9 @@
-use std::io;
-
 use bitflags::bitflags;
-use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 
-use super::InputEventError;
-use crate::PduParsing;
+use crate::{
+    cursor::{ReadCursor, WriteCursor},
+    PduDecode, PduEncode, PduResult,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MouseRelPdu {
@@ -13,13 +12,39 @@ pub struct MouseRelPdu {
     pub y_delta: i16,
 }
 
-impl PduParsing for MouseRelPdu {
-    type Error = InputEventError;
+impl MouseRelPdu {
+    const NAME: &'static str = "MouseRelPdu";
 
-    fn from_buffer(mut stream: impl io::Read) -> Result<Self, Self::Error> {
-        let flags = PointerRelFlags::from_bits_truncate(stream.read_u16::<LittleEndian>()?);
-        let x_delta = stream.read_i16::<LittleEndian>()?;
-        let y_delta = stream.read_i16::<LittleEndian>()?;
+    const FIXED_PART_SIZE: usize = 2 /* flags */ + 2 /* x */ + 2 /* y */;
+}
+
+impl PduEncode for MouseRelPdu {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_fixed_part_size!(in: dst);
+
+        dst.write_u16(self.flags.bits());
+        dst.write_i16(self.x_delta);
+        dst.write_i16(self.y_delta);
+
+        Ok(())
+    }
+
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    fn size(&self) -> usize {
+        Self::FIXED_PART_SIZE
+    }
+}
+
+impl<'de> PduDecode<'de> for MouseRelPdu {
+    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+        ensure_fixed_part_size!(in: src);
+
+        let flags = PointerRelFlags::from_bits_truncate(src.read_u16());
+        let x_delta = src.read_i16();
+        let y_delta = src.read_i16();
 
         Ok(Self {
             flags,
@@ -27,19 +52,9 @@ impl PduParsing for MouseRelPdu {
             y_delta,
         })
     }
-
-    fn to_buffer(&self, mut stream: impl io::Write) -> Result<(), Self::Error> {
-        stream.write_u16::<LittleEndian>(self.flags.bits())?;
-        stream.write_i16::<LittleEndian>(self.x_delta)?;
-        stream.write_i16::<LittleEndian>(self.y_delta)?;
-
-        Ok(())
-    }
-
-    fn buffer_length(&self) -> usize {
-        6
-    }
 }
+
+impl_pdu_parsing!(MouseRelPdu);
 
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]

@@ -1,7 +1,8 @@
+use ironrdp_pdu::cursor::ReadCursor;
 use ironrdp_pdu::input::fast_path::{FastPathInput, FastPathInputEvent};
 use ironrdp_pdu::input::mouse::PointerFlags;
 use ironrdp_pdu::input::MousePdu;
-use ironrdp_pdu::PduParsing;
+use ironrdp_pdu::{decode_cursor, encode_vec};
 
 const FASTPATH_INPUT_MESSAGE: [u8; 44] = [
     0x18, 0x2c, 0x20, 0x0, 0x90, 0x1a, 0x0, 0x26, 0x4, 0x20, 0x0, 0x8, 0x1b, 0x0, 0x26, 0x4, 0x20, 0x0, 0x10, 0x1b,
@@ -52,16 +53,16 @@ lazy_static::lazy_static! {
 
 #[test]
 fn from_buffer_correctly_parses_fastpath_input_message() {
-    let mut buffer = FASTPATH_INPUT_MESSAGE.as_ref();
+    let buffer = FASTPATH_INPUT_MESSAGE.as_ref();
 
-    assert_eq!(*FASTPATH_INPUT, FastPathInput::from_buffer(&mut buffer).unwrap());
-    assert!(buffer.is_empty());
+    let mut cursor = ReadCursor::new(buffer);
+    assert_eq!(*FASTPATH_INPUT, decode_cursor(&mut cursor).unwrap());
+    assert!(cursor.is_empty());
 }
 
 #[test]
 fn to_buffer_correctly_serializes_fastpath_input_message() {
-    let mut buffer = Vec::with_capacity(1024);
-    FASTPATH_INPUT.to_buffer(&mut buffer).unwrap();
+    let buffer = encode_vec(&*FASTPATH_INPUT).unwrap();
 
     assert_eq!(buffer, FASTPATH_INPUT_MESSAGE.as_ref());
 }
