@@ -65,7 +65,7 @@ pub fn pdu_decode(data: &[u8]) {
     let _ = decode::<surface_commands::BitmapDataHeader>(data);
 
     let _ = codecs::rfx::Headers::from_buffer(data);
-    let _ = codecs::rfx::FrameAcknowledgePdu::from_buffer(data);
+    let _ = decode::<codecs::rfx::FrameAcknowledgePdu>(data);
     let _ = codecs::rfx::ContextPdu::from_buffer(data);
     let _ = codecs::rfx::FrameBeginPdu::from_buffer(data);
     let _ = codecs::rfx::FrameEndPdu::from_buffer(data);
