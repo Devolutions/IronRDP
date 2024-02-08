@@ -738,7 +738,8 @@ fn create_client_info_pdu(config: &Config, routing_addr: &SocketAddr) -> rdp::Cl
         | ClientInfoFlags::LOGON_NOTIFY
         | ClientInfoFlags::LOGON_ERRORS
         | ClientInfoFlags::NO_AUDIO_PLAYBACK
-        | ClientInfoFlags::VIDEO_DISABLE;
+        | ClientInfoFlags::VIDEO_DISABLE
+        | ClientInfoFlags::ENABLE_WINDOWS_KEY;
 
     if config.autologon {
         flags |= ClientInfoFlags::AUTOLOGON;
