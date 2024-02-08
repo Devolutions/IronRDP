@@ -9,7 +9,7 @@ use ironrdp_svc::{StaticChannelSet, SvcServerProcessor};
 use pdu::rdp::capability_sets::CapabilitySet;
 use pdu::rdp::headers::ShareControlPdu;
 use pdu::write_buf::WriteBuf;
-use pdu::{decode, gcc, mcs, nego, rdp, PduParsing};
+use pdu::{decode, gcc, mcs, nego, rdp};
 
 use super::channel_connection::ChannelConnectionSequence;
 use super::finalization::FinalizationSequence;
@@ -427,7 +427,7 @@ impl Sequence for Acceptor {
 
                 debug!(message = ?demand_active, "Send");
 
-                let written = util::legacy::encode_send_data_indication(
+                let written = util::encode_send_data_indication(
                     self.user_channel_id,
                     self.io_channel_id,
                     &demand_active,
@@ -460,12 +460,8 @@ impl Sequence for Acceptor {
 
                 let share_data = wrap_share_data(monitor_layout, self.io_channel_id);
 
-                let written = util::legacy::encode_send_data_indication(
-                    self.user_channel_id,
-                    self.io_channel_id,
-                    &share_data,
-                    output,
-                )?;
+                let written =
+                    util::encode_send_data_indication(self.user_channel_id, self.io_channel_id, &share_data, output)?;
 
                 (
                     Written::from_size(written)?,
@@ -478,8 +474,8 @@ impl Sequence for Acceptor {
 
                 match message {
                     mcs::McsMessage::SendDataRequest(data) => {
-                        let capabilities_confirm =
-                            rdp::headers::ShareControlHeader::from_buffer(data.user_data.as_ref())?;
+                        let capabilities_confirm = decode::<rdp::headers::ShareControlHeader>(data.user_data.as_ref())
+                            .map_err(ConnectorError::pdu)?;
 
                         debug!(message = ?capabilities_confirm, "Received");
 

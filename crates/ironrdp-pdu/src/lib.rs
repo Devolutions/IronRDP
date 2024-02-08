@@ -386,8 +386,9 @@ pub use legacy::*;
 
 // TODO: Delete these traits at some point
 mod legacy {
-    use crate::{PduEncode, PduResult, WriteCursor};
     use thiserror::Error;
+
+    use crate::{PduEncode, PduResult, WriteCursor};
 
     pub const MAX_PDU_SIZE: usize = 100 * 1024; // 100 kB
 

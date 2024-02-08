@@ -1,5 +1,4 @@
-use ironrdp_pdu::rdp::headers::*;
-use ironrdp_pdu::{decode, encode_vec, PduEncode, PduParsing as _};
+use ironrdp_pdu::{decode, encode_vec, PduEncode};
 use ironrdp_testsuite_core::capsets::*;
 use ironrdp_testsuite_core::client_info::*;
 use ironrdp_testsuite_core::rdp::*;
@@ -20,81 +19,63 @@ fn from_buffer_correctly_parses_rdp_pdu_server_license() {
 fn from_buffer_correctly_parses_rdp_pdu_server_demand_active() {
     let buf = SERVER_DEMAND_ACTIVE_PDU_BUFFER;
 
-    assert_eq!(
-        SERVER_DEMAND_ACTIVE_PDU.clone(),
-        ShareControlHeader::from_buffer(buf.as_slice()).unwrap()
-    );
+    assert_eq!(SERVER_DEMAND_ACTIVE_PDU.clone(), decode(buf.as_slice()).unwrap());
 }
 
 #[test]
 fn from_buffer_correctly_parses_rdp_pdu_client_demand_active() {
     let buf = CLIENT_DEMAND_ACTIVE_PDU_BUFFER;
 
-    assert_eq!(
-        CLIENT_DEMAND_ACTIVE_PDU.clone(),
-        ShareControlHeader::from_buffer(buf.as_slice()).unwrap()
-    );
+    assert_eq!(CLIENT_DEMAND_ACTIVE_PDU.clone(), decode(buf.as_slice()).unwrap());
 }
 
 #[test]
 fn from_buffer_correctly_parses_rdp_pdu_client_synchronize() {
     let buf = CLIENT_SYNCHRONIZE_BUFFER.as_ref();
 
-    assert_eq!(
-        CLIENT_SYNCHRONIZE.clone(),
-        ShareControlHeader::from_buffer(buf).unwrap()
-    );
+    assert_eq!(CLIENT_SYNCHRONIZE.clone(), decode(buf).unwrap());
 }
 
 #[test]
 fn from_buffer_correctly_parses_rdp_pdu_client_control_cooperate() {
     let buf = CONTROL_COOPERATE_BUFFER.as_ref();
 
-    assert_eq!(CONTROL_COOPERATE.clone(), ShareControlHeader::from_buffer(buf).unwrap());
+    assert_eq!(CONTROL_COOPERATE.clone(), decode(buf).unwrap());
 }
 
 #[test]
 fn from_buffer_correctly_parses_rdp_pdu_client_control_request_control() {
     let buf = CONTROL_REQUEST_CONTROL_BUFFER.as_ref();
 
-    assert_eq!(
-        CONTROL_REQUEST_CONTROL.clone(),
-        ShareControlHeader::from_buffer(buf).unwrap()
-    );
+    assert_eq!(CONTROL_REQUEST_CONTROL.clone(), decode(buf).unwrap());
 }
 
 #[test]
 fn from_buffer_correctly_parses_rdp_pdu_server_control_granted_control() {
     let buf = SERVER_GRANTED_CONTROL_BUFFER.as_ref();
 
-    assert_eq!(
-        SERVER_GRANTED_CONTROL.clone(),
-        ShareControlHeader::from_buffer(buf).unwrap()
-    );
+    assert_eq!(SERVER_GRANTED_CONTROL.clone(), decode(buf).unwrap());
 }
 
 #[test]
 fn from_buffer_correctly_parses_rdp_pdu_client_font_list() {
     let buf = CLIENT_FONT_LIST_BUFFER.as_ref();
 
-    assert_eq!(CLIENT_FONT_LIST.clone(), ShareControlHeader::from_buffer(buf).unwrap());
+    assert_eq!(CLIENT_FONT_LIST.clone(), decode(buf).unwrap());
 }
 
 #[test]
 fn from_buffer_correctly_parses_rdp_pdu_server_font_map() {
     let buf = SERVER_FONT_MAP_BUFFER.as_ref();
 
-    assert_eq!(SERVER_FONT_MAP.clone(), ShareControlHeader::from_buffer(buf).unwrap());
+    assert_eq!(SERVER_FONT_MAP.clone(), decode(buf).unwrap());
 }
 
 #[test]
 fn from_buffer_correctly_parses_rdp_pdu_server_monitor_layout() {
     let buf = MONITOR_LAYOUT_PDU_BUFFER.clone();
 
-    assert_eq!(
-        MONITOR_LAYOUT_PDU.clone(),
-        ShareControlHeader::from_buffer(buf.as_slice()).unwrap()
-    );
+    assert_eq!(MONITOR_LAYOUT_PDU.clone(), decode(buf.as_slice()).unwrap());
 }
 
 #[test]
@@ -112,15 +93,13 @@ fn to_buffer_correctly_serializes_rdp_pdu_server_license() {
 
 #[test]
 fn to_buffer_correctly_serializes_rdp_pdu_server_demand_active() {
-    let mut buf = Vec::new();
-    SERVER_DEMAND_ACTIVE_PDU.to_buffer(&mut buf).unwrap();
+    let buf = encode_vec(&*SERVER_DEMAND_ACTIVE_PDU).unwrap();
     assert_eq!(buf, SERVER_DEMAND_ACTIVE_PDU_BUFFER.as_slice());
 }
 
 #[test]
 fn to_buffer_correctly_serializes_rdp_pdu_client_demand_active() {
-    let mut buf = Vec::new();
-    CLIENT_DEMAND_ACTIVE_PDU.to_buffer(&mut buf).unwrap();
+    let buf = encode_vec(&*CLIENT_DEMAND_ACTIVE_PDU).unwrap();
     assert_eq!(buf, CLIENT_DEMAND_ACTIVE_PDU_BUFFER.as_slice());
 }
 
@@ -129,8 +108,7 @@ fn to_buffer_correctly_serializes_rdp_pdu_client_synchronize() {
     let pdu = CLIENT_SYNCHRONIZE.clone();
     let expected_buf = CLIENT_SYNCHRONIZE_BUFFER.to_vec();
 
-    let mut buf = Vec::new();
-    pdu.to_buffer(&mut buf).unwrap();
+    let buf = encode_vec(&pdu).unwrap();
 
     assert_eq!(expected_buf, buf);
 }
@@ -140,8 +118,7 @@ fn to_buffer_correctly_serializes_rdp_pdu_client_control_cooperate() {
     let pdu = CONTROL_COOPERATE.clone();
     let expected_buf = CONTROL_COOPERATE_BUFFER.to_vec();
 
-    let mut buf = Vec::new();
-    pdu.to_buffer(&mut buf).unwrap();
+    let buf = encode_vec(&pdu).unwrap();
 
     assert_eq!(expected_buf, buf);
 }
@@ -151,8 +128,7 @@ fn to_buffer_correctly_serializes_rdp_pdu_client_control_request_control() {
     let pdu = CONTROL_REQUEST_CONTROL.clone();
     let expected_buf = CONTROL_REQUEST_CONTROL_BUFFER.to_vec();
 
-    let mut buf = Vec::new();
-    pdu.to_buffer(&mut buf).unwrap();
+    let buf = encode_vec(&pdu).unwrap();
 
     assert_eq!(expected_buf, buf);
 }
@@ -162,8 +138,7 @@ fn to_buffer_correctly_serializes_rdp_pdu_server_control_granted_control() {
     let pdu = SERVER_GRANTED_CONTROL.clone();
     let expected_buf = SERVER_GRANTED_CONTROL_BUFFER.to_vec();
 
-    let mut buf = Vec::new();
-    pdu.to_buffer(&mut buf).unwrap();
+    let buf = encode_vec(&pdu).unwrap();
 
     assert_eq!(expected_buf, buf);
 }
@@ -173,8 +148,7 @@ fn to_buffer_correctly_serializes_rdp_pdu_client_font_list() {
     let pdu = CLIENT_FONT_LIST.clone();
     let expected_buf = CLIENT_FONT_LIST_BUFFER.to_vec();
 
-    let mut buf = Vec::new();
-    pdu.to_buffer(&mut buf).unwrap();
+    let buf = encode_vec(&pdu).unwrap();
 
     assert_eq!(expected_buf, buf);
 }
@@ -184,8 +158,7 @@ fn to_buffer_correctly_serializes_rdp_pdu_server_font_map() {
     let pdu = SERVER_FONT_MAP.clone();
     let expected_buf = SERVER_FONT_MAP_BUFFER.to_vec();
 
-    let mut buf = Vec::new();
-    pdu.to_buffer(&mut buf).unwrap();
+    let buf = encode_vec(&pdu).unwrap();
 
     assert_eq!(expected_buf, buf);
 }
@@ -195,8 +168,7 @@ fn to_buffer_correctly_serializes_rdp_pdu_server_monitor_layout() {
     let pdu = MONITOR_LAYOUT_PDU.clone();
     let expected_buf = MONITOR_LAYOUT_PDU_BUFFER.to_vec();
 
-    let mut buf = Vec::new();
-    pdu.to_buffer(&mut buf).unwrap();
+    let buf = encode_vec(&pdu).unwrap();
 
     assert_eq!(expected_buf, buf);
 }
@@ -223,7 +195,7 @@ fn buffer_length_is_correct_for_rdp_pdu_server_demand_active() {
     let pdu = SERVER_DEMAND_ACTIVE_PDU.clone();
     let expected_buf_len = SERVER_DEMAND_ACTIVE_PDU_BUFFER.len();
 
-    let len = pdu.buffer_length();
+    let len = pdu.size();
 
     assert_eq!(expected_buf_len, len);
 }
@@ -233,7 +205,7 @@ fn buffer_length_is_correct_for_rdp_pdu_client_demand_active() {
     let pdu = CLIENT_DEMAND_ACTIVE_PDU.clone();
     let expected_buf_len = CLIENT_DEMAND_ACTIVE_PDU_BUFFER.len();
 
-    let len = pdu.buffer_length();
+    let len = pdu.size();
 
     assert_eq!(expected_buf_len, len);
 }
@@ -243,7 +215,7 @@ fn buffer_length_is_correct_for_rdp_pdu_client_synchronize() {
     let pdu = CLIENT_SYNCHRONIZE.clone();
     let expected_buf_len = CLIENT_SYNCHRONIZE_BUFFER.len();
 
-    let len = pdu.buffer_length();
+    let len = pdu.size();
 
     assert_eq!(expected_buf_len, len);
 }
@@ -253,7 +225,7 @@ fn buffer_length_is_correct_for_rdp_pdu_client_control_cooperate() {
     let pdu = CONTROL_COOPERATE.clone();
     let expected_buf_len = CONTROL_COOPERATE_BUFFER.len();
 
-    let len = pdu.buffer_length();
+    let len = pdu.size();
 
     assert_eq!(expected_buf_len, len);
 }
@@ -263,7 +235,7 @@ fn buffer_length_is_correct_for_rdp_pdu_client_control_request_control() {
     let pdu = CONTROL_REQUEST_CONTROL.clone();
     let expected_buf_len = CONTROL_REQUEST_CONTROL_BUFFER.len();
 
-    let len = pdu.buffer_length();
+    let len = pdu.size();
 
     assert_eq!(expected_buf_len, len);
 }
@@ -273,7 +245,7 @@ fn buffer_length_is_correct_for_rdp_pdu_server_control_granted_control() {
     let pdu = SERVER_GRANTED_CONTROL.clone();
     let expected_buf_len = SERVER_GRANTED_CONTROL_BUFFER.len();
 
-    let len = pdu.buffer_length();
+    let len = pdu.size();
 
     assert_eq!(expected_buf_len, len);
 }
@@ -283,7 +255,7 @@ fn buffer_length_is_correct_for_rdp_pdu_client_font_list() {
     let pdu = CLIENT_FONT_LIST.clone();
     let expected_buf_len = CLIENT_FONT_LIST_BUFFER.len();
 
-    let len = pdu.buffer_length();
+    let len = pdu.size();
 
     assert_eq!(expected_buf_len, len);
 }
@@ -293,7 +265,7 @@ fn buffer_length_is_correct_for_rdp_pdu_server_font_map() {
     let pdu = SERVER_FONT_MAP.clone();
     let expected_buf_len = SERVER_FONT_MAP_BUFFER.len();
 
-    let len = pdu.buffer_length();
+    let len = pdu.size();
 
     assert_eq!(expected_buf_len, len);
 }
@@ -303,7 +275,7 @@ fn buffer_length_is_correct_for_rdp_pdu_server_monitor_layout() {
     let pdu = MONITOR_LAYOUT_PDU.clone();
     let expected_buf_len = MONITOR_LAYOUT_PDU_BUFFER.len();
 
-    let len = pdu.buffer_length();
+    let len = pdu.size();
 
     assert_eq!(expected_buf_len, len);
 }

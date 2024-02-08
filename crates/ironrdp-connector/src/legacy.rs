@@ -3,7 +3,7 @@
 use std::borrow::Cow;
 
 use ironrdp_pdu::write_buf::WriteBuf;
-use ironrdp_pdu::{decode, rdp, x224, PduDecode, PduParsing};
+use ironrdp_pdu::{decode, encode_vec, rdp, x224, PduDecode, PduEncode, PduParsing};
 
 use crate::{ConnectorError, ConnectorErrorExt as _, ConnectorResult};
 
@@ -43,13 +43,9 @@ pub fn encode_send_data_request<T>(
     buf: &mut WriteBuf,
 ) -> ConnectorResult<usize>
 where
-    T: PduParsing,
-    ConnectorError: From<T::Error>,
+    T: PduEncode,
 {
-    let user_data_len = user_msg.buffer_length();
-    let mut user_data = Vec::with_capacity(user_data_len);
-
-    user_msg.to_buffer(&mut user_data)?;
+    let user_data = encode_vec(user_msg).map_err(ConnectorError::pdu)?;
 
     let pdu = ironrdp_pdu::mcs::SendDataRequest {
         initiator_id,
@@ -76,15 +72,6 @@ impl<'a> SendDataIndicationCtx<'a> {
         'a: 'de,
     {
         let msg = decode::<T>(self.user_data).map_err(ConnectorError::pdu)?;
-        Ok(msg)
-    }
-
-    pub fn from_buffer_user_data<T>(&self) -> ConnectorResult<T>
-    where
-        T: PduParsing,
-        ConnectorError: From<T::Error>,
-    {
-        let msg = T::from_buffer(self.user_data)?;
         Ok(msg)
     }
 }
@@ -147,7 +134,7 @@ pub struct ShareControlCtx {
 }
 
 pub fn decode_share_control(ctx: SendDataIndicationCtx<'_>) -> ConnectorResult<ShareControlCtx> {
-    let user_msg = ctx.from_buffer_user_data::<rdp::headers::ShareControlHeader>()?;
+    let user_msg = ctx.decode_user_data::<rdp::headers::ShareControlHeader>()?;
 
     Ok(ShareControlCtx {
         initiator_id: ctx.initiator_id,

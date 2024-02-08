@@ -1,4 +1,3 @@
-use std::io::Cursor;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 
@@ -11,7 +10,7 @@ use ironrdp_pdu::input::fast_path::{FastPathInput, FastPathInputEvent};
 use ironrdp_pdu::input::InputEventPdu;
 use ironrdp_pdu::mcs::SendDataRequest;
 use ironrdp_pdu::rdp::capability_sets::{CapabilitySet, CmdFlags, GeneralExtraFlags};
-use ironrdp_pdu::{self, decode, mcs, nego, rdp, Action, PduParsing, PduResult};
+use ironrdp_pdu::{self, decode, mcs, nego, rdp, Action, PduResult};
 use ironrdp_svc::{server_encode_svc_messages, StaticChannelSet};
 use ironrdp_tokio::{Framed, FramedRead, FramedWrite, TokioFramed};
 use tokio::net::{TcpListener, TcpStream};
@@ -431,7 +430,7 @@ impl RdpServer {
     }
 
     async fn handle_io_channel_data(&mut self, data: SendDataRequest<'_>) -> Result<bool> {
-        let control = rdp::headers::ShareControlHeader::from_buffer(Cursor::new(data.user_data))?;
+        let control: rdp::headers::ShareControlHeader = decode(data.user_data.as_ref())?;
 
         match control.share_control_pdu {
             rdp::headers::ShareControlPdu::Data(header) => match header.share_data_pdu {
