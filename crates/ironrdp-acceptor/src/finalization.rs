@@ -1,9 +1,7 @@
-use std::io::Cursor;
-
 use ironrdp_connector::{ConnectorError, ConnectorErrorExt, ConnectorResult, Sequence, State, Written};
 use ironrdp_pdu as pdu;
+use pdu::rdp;
 use pdu::write_buf::WriteBuf;
-use pdu::{rdp, PduParsing};
 
 use crate::util::{self, wrap_share_data};
 
@@ -125,12 +123,8 @@ impl Sequence for FinalizationSequence {
                 debug!(message = ?synchronize_confirm, "Send");
 
                 let share_data = wrap_share_data(synchronize_confirm, self.io_channel_id);
-                let written = util::legacy::encode_send_data_indication(
-                    self.user_channel_id,
-                    self.io_channel_id,
-                    &share_data,
-                    output,
-                )?;
+                let written =
+                    util::encode_send_data_indication(self.user_channel_id, self.io_channel_id, &share_data, output)?;
 
                 (
                     Written::from_size(written)?,
@@ -144,12 +138,8 @@ impl Sequence for FinalizationSequence {
                 debug!(message = ?cooperate_confirm, "Send");
 
                 let share_data = wrap_share_data(cooperate_confirm, self.io_channel_id);
-                let written = util::legacy::encode_send_data_indication(
-                    self.user_channel_id,
-                    self.io_channel_id,
-                    &share_data,
-                    output,
-                )?;
+                let written =
+                    util::encode_send_data_indication(self.user_channel_id, self.io_channel_id, &share_data, output)?;
 
                 (
                     Written::from_size(written)?,
@@ -163,12 +153,8 @@ impl Sequence for FinalizationSequence {
                 debug!(message = ?control_confirm, "Send");
 
                 let share_data = wrap_share_data(control_confirm, self.io_channel_id);
-                let written = util::legacy::encode_send_data_indication(
-                    self.user_channel_id,
-                    self.io_channel_id,
-                    &share_data,
-                    output,
-                )?;
+                let written =
+                    util::encode_send_data_indication(self.user_channel_id, self.io_channel_id, &share_data, output)?;
 
                 (Written::from_size(written)?, FinalizationState::SendFontMap)
             }
@@ -179,12 +165,8 @@ impl Sequence for FinalizationSequence {
                 debug!(message = ?font_map, "Send");
 
                 let share_data = wrap_share_data(font_map, self.io_channel_id);
-                let written = util::legacy::encode_send_data_indication(
-                    self.user_channel_id,
-                    self.io_channel_id,
-                    &share_data,
-                    output,
-                )?;
+                let written =
+                    util::encode_send_data_indication(self.user_channel_id, self.io_channel_id, &share_data, output)?;
 
                 (Written::from_size(written)?, FinalizationState::Finished)
             }
@@ -238,7 +220,8 @@ fn create_font_map() -> rdp::headers::ShareDataPdu {
 
 fn decode_share_control(input: &[u8]) -> ConnectorResult<rdp::headers::ShareControlHeader> {
     let data_request = pdu::decode::<pdu::mcs::SendDataRequest<'_>>(input).map_err(ConnectorError::pdu)?;
-    let share_control = rdp::headers::ShareControlHeader::from_buffer(Cursor::new(data_request.user_data))?;
+    let share_control = pdu::decode::<rdp::headers::ShareControlHeader>(data_request.user_data.as_ref())
+        .map_err(ConnectorError::pdu)?;
     Ok(share_control)
 }
 
