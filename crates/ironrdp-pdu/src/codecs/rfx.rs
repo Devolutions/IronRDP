@@ -8,7 +8,10 @@ use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive as _, ToPrimitive as _};
 use thiserror::Error;
 
-use crate::{PduBufferParsing, PduParsing};
+use crate::{
+    cursor::{ReadCursor, WriteCursor},
+    PduBufferParsing, PduDecode, PduEncode, PduResult,
+};
 
 #[rustfmt::skip]
 pub use self::data_messages::{
@@ -168,25 +171,40 @@ pub struct FrameAcknowledgePdu {
     pub frame_id: u32,
 }
 
-impl PduParsing for FrameAcknowledgePdu {
-    type Error = io::Error;
+impl FrameAcknowledgePdu {
+    const NAME: &'static str = "FrameAcknowledgePdu";
 
-    fn from_buffer(mut stream: impl io::Read) -> Result<Self, Self::Error> {
-        let frame_id = stream.read_u32::<LittleEndian>()?;
+    const FIXED_PART_SIZE: usize = 4 /* frameId */;
+}
 
-        Ok(Self { frame_id })
-    }
+impl PduEncode for FrameAcknowledgePdu {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_fixed_part_size!(in: dst);
 
-    fn to_buffer(&self, mut stream: impl io::Write) -> Result<(), Self::Error> {
-        stream.write_u32::<LittleEndian>(self.frame_id)?;
-
+        dst.write_u32(self.frame_id);
         Ok(())
     }
 
-    fn buffer_length(&self) -> usize {
-        4
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    fn size(&self) -> usize {
+        Self::FIXED_PART_SIZE
     }
 }
+
+impl<'de> PduDecode<'de> for FrameAcknowledgePdu {
+    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+        ensure_fixed_part_size!(in: src);
+
+        let frame_id = src.read_u32();
+
+        Ok(Self { frame_id })
+    }
+}
+
+impl_pdu_parsing!(FrameAcknowledgePdu);
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive, ToPrimitive)]
 #[repr(u16)]
