@@ -1765,6 +1765,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "ironrdp-displaycontrol"
+version = "0.1.0"
+dependencies = [
+ "ironrdp-pdu",
+]
+
+[[package]]
 name = "ironrdp-dvc"
 version = "0.1.0"
 dependencies = [

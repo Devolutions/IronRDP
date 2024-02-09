@@ -4,7 +4,6 @@ use ironrdp_cliprdr::pdu::{
     FormatDataResponse, LockDataId,
 };
 use ironrdp_svc::impl_as_any;
-
 use tracing::debug;
 
 pub struct StubClipboard {}

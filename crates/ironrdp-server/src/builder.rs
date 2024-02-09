@@ -2,7 +2,6 @@ use std::net::SocketAddr;
 
 use anyhow::Result;
 use ironrdp_cliprdr::backend::CliprdrBackendFactory;
-
 use tokio_rustls::TlsAcceptor;
 
 use crate::{DisplayUpdate, RdpServerDisplayUpdates};
