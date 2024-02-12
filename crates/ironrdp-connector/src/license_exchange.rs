@@ -97,7 +97,7 @@ impl Sequence for LicenseExchangeSequence {
             LicenseExchangeState::NewLicenseRequest => {
                 let send_data_indication_ctx = legacy::decode_send_data_indication(input)?;
                 let initial_server_license = send_data_indication_ctx
-                    .decode_user_data::<server_license::InitialServerLicenseMessage>()
+                    .from_buffer_user_data::<server_license::InitialServerLicenseMessage>()
                     .with_context("decode initial server license PDU")?;
 
                 debug!(message = ?initial_server_license, "Received");
@@ -170,7 +170,7 @@ impl Sequence for LicenseExchangeSequence {
                 let send_data_indication_ctx = legacy::decode_send_data_indication(input)?;
 
                 match send_data_indication_ctx
-                    .decode_user_data::<server_license::ServerPlatformChallenge>()
+                    .from_buffer_user_data::<server_license::ServerPlatformChallenge>()
                     .with_context("decode SERVER_PLATFORM_CHALLENGE")
                 {
                     Ok(challenge) => {
@@ -216,7 +216,7 @@ impl Sequence for LicenseExchangeSequence {
                 // It’s expected that fixing #263 will also lead to a better alternative here.
 
                 match send_data_indication_ctx
-                    .decode_user_data::<server_license::ServerUpgradeLicense>()
+                    .from_buffer_user_data::<server_license::ServerUpgradeLicense>()
                     .with_context("decode SERVER_NEW_LICENSE/SERVER_UPGRADE_LICENSE")
                 {
                     Ok(upgrade_license) => {
