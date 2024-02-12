@@ -1,7 +1,6 @@
-// Specification: [MS-RDPEDISP]: Remote Desktop Protocol: Display Update Virtual Channel Extension
-// Display Update Virtual Channel Extension PDUs  [MS-RDPEDISP][1].
-//
-// [1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpedisp/d2954508-f487-48bc-8731-39743e0854a9
+//! Display Update Virtual Channel Extension PDUs  [MS-RDPEDISP][1] implementation.
+//!
+//! [1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpedisp/d2954508-f487-48bc-8731-39743e0854a9
 
 use ironrdp_pdu::cursor::{ReadCursor, WriteCursor};
 use ironrdp_pdu::{ensure_fixed_part_size, invalid_message_err, PduDecode, PduEncode, PduResult};
@@ -11,6 +10,17 @@ const DISPLAYCONTROL_PDU_TYPE_MONITOR_LAYOUT: u32 = 0x00000002;
 
 const DISPLAYCONTROL_MONITOR_PRIMARY: u32 = 0x00000001;
 
+// Set out expectations about supported PDU values. 1024 monitors with 8k*8k pixel area is
+// already excessive, (this extension only supports displays up to 8k*8k) therefore we could safely
+// use those limits to detect ill-formed PDUs and set out invariants.
+const MAX_SUPPORTED_MONITORS: u16 = 1024;
+const MAX_MONITOR_AREA_FACTOR: u16 = 1024 * 16;
+
+/// Display Update Virtual Channel message (PDU prefixed with `DISPLAYCONTROL_HEADER`)
+///
+/// INVARIANTS: size of encoded inner PDU is always less than `u32::MAX - Self::FIXED_PART_SIZE`
+///     (See [`DisplayControlCapabilities`] & [`DisplayControlMonitorLayout`] invariants)
+#[derive(Debug, Clone)]
 pub enum DisplayControlPdu {
     Caps(DisplayControlCapabilities),
     MonitorLayout(DisplayControlMonitorLayout),
@@ -30,9 +40,10 @@ impl PduEncode for DisplayControlPdu {
             DisplayControlPdu::MonitorLayout(layout) => (DISPLAYCONTROL_PDU_TYPE_MONITOR_LAYOUT, layout.size()),
         };
 
-        // Write `DISPLAYCONTROL_HEADER` fields.
+        // This will never overflow as per invariants.
+        let pdu_size = payload_length.checked_add(Self::FIXED_PART_SIZE).unwrap();
 
-        let pdu_size = payload_length + Self::FIXED_PART_SIZE;
+        // Write `DISPLAYCONTROL_HEADER` fields.
         dst.write_u32(kind);
         dst.write_u32(pdu_size.try_into().unwrap());
 
@@ -79,8 +90,13 @@ impl<'de> PduDecode<'de> for DisplayControlPdu {
     }
 }
 
-/// INVARIANT: The maximum monitor area that can be supported by the server should fit into a u64,
-/// otherwise PDU is reported as invalid.
+/// Display control channel capabilities PDU.
+///
+/// INVARIANTS:
+///     0 <= max_num_monitors <= MAX_SUPPORTED_MONITORS
+///     0 <= max_monitor_area_factor_a <= MAX_MONITOR_AREA_FACTOR
+///     0 <= max_monitor_area_factor_b <= MAX_MONITOR_AREA_FACTOR
+#[derive(Debug, Clone)]
 pub struct DisplayControlCapabilities {
     max_num_monitors: u32,
     max_monitor_area_factor_a: u32,
@@ -154,6 +170,11 @@ impl<'de> PduDecode<'de> for DisplayControlCapabilities {
     }
 }
 
+/// Sent from client to server to notify about new monitor layout (e.g screen resize).
+///
+/// INVARIANTS:
+///     0 <= monitors.length() <= MAX_SUPPORTED_MONITORS
+#[derive(Debug, Clone)]
 pub struct DisplayControlMonitorLayout {
     monitors: Vec<MonitorLayoutEntry>,
 }
@@ -163,6 +184,10 @@ impl DisplayControlMonitorLayout {
     const FIXED_PART_SIZE: usize = 4 /* MonitorLayoutSize */ + 4 /* NumMonitors */;
 
     pub fn new(monitors: &[MonitorLayoutEntry]) -> PduResult<Self> {
+        if monitors.len() > MAX_SUPPORTED_MONITORS.into() {
+            return Err(invalid_message_err!("NumMonitors", "Too many monitors",));
+        }
+
         let primary_monitors_count = monitors.iter().filter(|monitor| monitor.is_primary()).count();
 
         if primary_monitors_count != 1 {
@@ -208,7 +233,12 @@ impl PduEncode for DisplayControlMonitorLayout {
     }
 
     fn size(&self) -> usize {
-        Self::FIXED_PART_SIZE + self.monitors.iter().map(|monitor| monitor.size()).sum::<usize>()
+        // As per invariants: This will never overflow:
+        // 0 <= Self::FIXED_PART_SIZE + MAX_SUPPORTED_MONITORS * MonitorLayoutEntry::FIXED_PART_SIZE < u16::MAX
+
+        Self::FIXED_PART_SIZE
+            .checked_add(self.monitors.iter().map(|monitor| monitor.size()).sum::<usize>())
+            .unwrap()
     }
 }
 
@@ -227,7 +257,11 @@ impl<'de> PduDecode<'de> for DisplayControlMonitorLayout {
 
         let num_monitors = src.read_u32();
 
-        let mut monitors = Vec::with_capacity(num_monitors as usize);
+        if num_monitors > MAX_SUPPORTED_MONITORS.into() {
+            return Err(invalid_message_err!("NumMonitors", "Too many monitors"));
+        }
+
+        let mut monitors = Vec::with_capacity(usize::try_from(num_monitors).unwrap());
         for _ in 0..num_monitors {
             let monitor = MonitorLayoutEntry::decode(src)?;
             monitors.push(monitor);
@@ -266,16 +300,7 @@ impl MonitorLayoutEntry {
     const NAME: &'static str = "DISPLAYCONTROL_MONITOR_LAYOUT";
 
     fn new_impl(width: u32, height: u32) -> PduResult<Self> {
-        // Validate mandatory parameters
-        if !(200..=8192).contains(&width) {
-            return Err(invalid_message_err!("Width", "Monitor width is out of range"));
-        }
-        if width % 2 != 0 {
-            return Err(invalid_message_err!("Width", "Monitor width cannot be odd"));
-        }
-        if !(200..=8192).contains(&height) {
-            return Err(invalid_message_err!("Height", "Monitor height is out of range"));
-        }
+        validate_dimensions(width, height)?;
 
         Ok(Self {
             is_primary: false,
@@ -303,18 +328,18 @@ impl MonitorLayoutEntry {
         Self::new_impl(width, height)
     }
 
+    /// Sets the monitor's orientation. (Default is [`MonitorOrientation::Landscape`])
+    #[must_use]
     pub fn with_orientation(mut self, orientation: MonitorOrientation) -> Self {
         self.orientation = orientation.angle();
         self
     }
 
+    /// Sets the monitor's position (left, top) in pixels. (Default is (0, 0))
+    ///
+    /// Note: The primary monitor position must be always (0, 0).
     pub fn with_position(mut self, left: u32, top: u32) -> PduResult<Self> {
-        if self.is_primary && (left != 0 || top != 0) {
-            return Err(invalid_message_err!(
-                "Position",
-                "Primary monitor position must be (0, 0)"
-            ));
-        }
+        validate_position(left, top, self.is_primary)?;
 
         self.left = left;
         self.top = top;
@@ -322,45 +347,31 @@ impl MonitorLayoutEntry {
         Ok(self)
     }
 
-    /// Sets the monitor's device scale factor in percent.
+    /// Sets the monitor's device scale factor in percent. (Default is [`DeviceScaleFactor::Scale100Percent`])
+    #[must_use]
     pub fn with_device_scale_factor(mut self, device_scale_factor: DeviceScaleFactor) -> Self {
         self.device_scale_factor = device_scale_factor.value();
         self
     }
 
-    /// Sets the monitor's desktop scale factor in percent.
-    /// The scale factor must be in the range from 100 to 500 percent.
+    /// Sets the monitor's desktop scale factor in percent. (Default is `100`)
+    ///
+    /// NOTE: As specified in [MS-RDPEDISP], if the desktop scale factor is not in the valid range
+    /// (100..=500 percent), the monitor desktop scale factor is considered invalid and should be ignored.
     pub fn with_desktop_scale_factor(mut self, desktop_scale_factor: u32) -> PduResult<Self> {
-        if self.device_scale_factor().is_none() {
-            return Err(invalid_message_err!(
-                "DesktopScaleFactor",
-                "Cannot set desktop scale factor when device scale factor in invalid"
-            ));
-        }
-
-        if !(100..=500).contains(&desktop_scale_factor) {
-            return Err(invalid_message_err!(
-                "DesktopScaleFactor",
-                "Desktop scale factor is out of range"
-            ));
-        }
+        validate_desktop_scale_factor(desktop_scale_factor)?;
 
         self.desktop_scale_factor = desktop_scale_factor;
         Ok(self)
     }
 
     /// Sets the monitor's physical dimensions in millimeters.
-    /// The dimensions must be in the range from 10 to 10000 millimeters.
+    ///
+    /// NOTE: As specified in [MS-RDPEDISP], if the physical dimensions are not in the valid range
+    /// (10..=10000 millimeters), the monitor physical dimensions are considered invalid and
+    /// should be ignored.
     pub fn with_physical_dimensions(mut self, physical_width: u32, physical_height: u32) -> PduResult<Self> {
-        if !(10..=10000).contains(&physical_width) {
-            return Err(invalid_message_err!("PhysicalWidth", "Physical width is out of range"));
-        }
-        if !(10..=10000).contains(&physical_height) {
-            return Err(invalid_message_err!(
-                "PhysicalHeight",
-                "Physical height is out of range"
-            ));
-        }
+        validate_physical_dimensions(physical_width, physical_height)?;
 
         self.physical_width = physical_width;
         self.physical_height = physical_height;
@@ -372,8 +383,10 @@ impl MonitorLayoutEntry {
     }
 
     /// Returns the monitor's position (left, top) in pixels.
-    pub fn position(&self) -> (u32, u32) {
-        (self.left, self.top)
+    pub fn position(&self) -> Option<(u32, u32)> {
+        validate_position(self.left, self.top, self.is_primary).ok()?;
+
+        Some((self.left, self.top))
     }
 
     /// Returns the monitor's dimensions (width, height) in pixels.
@@ -382,31 +395,40 @@ impl MonitorLayoutEntry {
     }
 
     /// Returns the monitor's orientation if it is valid.
+    ///
+    /// NOTE: As specified in [MS-RDPEDISP], if the orientation is not one of the valid values
+    /// (0, 90, 180, 270), the monitor orientation is considered invalid and should be ignored.
     pub fn orientation(&self) -> Option<MonitorOrientation> {
-        match self.orientation {
-            0 => Some(MonitorOrientation::Landscape),
-            90 => Some(MonitorOrientation::Portrait),
-            180 => Some(MonitorOrientation::LandscapeFlipped),
-            270 => Some(MonitorOrientation::PortraitFlipped),
-            _ => None,
-        }
+        MonitorOrientation::from_angle(self.orientation)
     }
 
     /// Returns the monitor's physical dimensions (width, height) in millimeters.
-    pub fn physical_dimensions(&self) -> (u32, u32) {
-        (self.physical_width, self.physical_height)
+    ///
+    /// NOTE: As specified in [MS-RDPEDISP], if the physical dimensions are not in the valid range
+    /// (10..=10000 millimeters), the monitor physical dimensions are considered invalid and
+    /// should be ignored.
+    pub fn physical_dimensions(&self) -> Option<(u32, u32)> {
+        validate_physical_dimensions(self.physical_width, self.physical_height).ok()?;
+        Some((self.physical_width, self.physical_height))
     }
 
     /// Returns the monitor's device scale factor in percent if it is valid.
+    ///
+    /// NOTE: As specified in [MS-RDPEDISP], if the desktop scale factor is not in the valid range
+    /// (100..=500 percent), the monitor desktop scale factor is considered invalid and should be ignored.
+    ///
+    /// IMPORTANT: When processing scale factors, make sure that both desktop and device scale factors
+    /// are valid, otherwise they both should be ignored.
     pub fn desktop_scale_factor(&self) -> Option<u32> {
-        if self.device_scale_factor < 100 || self.device_scale_factor > 500 {
-            return None;
-        }
+        validate_desktop_scale_factor(self.desktop_scale_factor).ok()?;
 
         Some(self.desktop_scale_factor)
     }
 
     /// Returns the monitor's device scale factor in percent if it is valid.
+    ///
+    /// IMPORTANT: When processing scale factors, make sure that both desktop and device scale factors
+    /// are valid, otherwise they both should be ignored.
     pub fn device_scale_factor(&self) -> Option<DeviceScaleFactor> {
         match self.device_scale_factor {
             100 => Some(DeviceScaleFactor::Scale100Percent),
@@ -464,13 +486,7 @@ impl<'de> PduDecode<'de> for MonitorLayoutEntry {
         let desktop_scale_factor = src.read_u32();
         let device_scale_factor = src.read_u32();
 
-        if !(200..=8192).contains(&width) {
-            return Err(invalid_message_err!("Width", "Monitor width is out of range"));
-        }
-
-        if !(200..=8192).contains(&height) {
-            return Err(invalid_message_err!("Height", "Monitor height is out of range"));
-        }
+        validate_dimensions(width, height)?;
 
         Ok(Self {
             is_primary: flags & DISPLAYCONTROL_MONITOR_PRIMARY != 0,
@@ -487,6 +503,7 @@ impl<'de> PduDecode<'de> for MonitorLayoutEntry {
     }
 }
 
+/// Valid monitor orientations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MonitorOrientation {
     Landscape,
@@ -496,6 +513,16 @@ pub enum MonitorOrientation {
 }
 
 impl MonitorOrientation {
+    pub fn from_angle(angle: u32) -> Option<Self> {
+        match angle {
+            0 => Some(Self::Landscape),
+            90 => Some(Self::Portrait),
+            180 => Some(Self::LandscapeFlipped),
+            270 => Some(Self::PortraitFlipped),
+            _ => None,
+        }
+    }
+
     pub fn angle(&self) -> u32 {
         match self {
             Self::Landscape => 0,
@@ -506,6 +533,7 @@ impl MonitorOrientation {
     }
 }
 
+/// Valid device scale factors for monitors.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DeviceScaleFactor {
     Scale100Percent,
@@ -523,13 +551,78 @@ impl DeviceScaleFactor {
     }
 }
 
+fn validate_position(left: u32, top: u32, is_primary: bool) -> PduResult<()> {
+    if is_primary && (left != 0 || top != 0) {
+        return Err(invalid_message_err!(
+            "Position",
+            "Primary monitor position must be (0, 0)"
+        ));
+    }
+
+    Ok(())
+}
+
+fn validate_dimensions(width: u32, height: u32) -> PduResult<()> {
+    if !(200..=8192).contains(&width) {
+        return Err(invalid_message_err!("Width", "Monitor width is out of range"));
+    }
+    if width % 2 != 0 {
+        return Err(invalid_message_err!("Width", "Monitor width cannot be odd"));
+    }
+    if !(200..=8192).contains(&height) {
+        return Err(invalid_message_err!("Height", "Monitor height is out of range"));
+    }
+
+    Ok(())
+}
+
+fn validate_desktop_scale_factor(desktop_scale_factor: u32) -> PduResult<()> {
+    if !(100..=500).contains(&desktop_scale_factor) {
+        return Err(invalid_message_err!(
+            "DesktopScaleFactor",
+            "Desktop scale factor is out of range"
+        ));
+    }
+
+    Ok(())
+}
+
+fn validate_physical_dimensions(physical_width: u32, physical_height: u32) -> PduResult<()> {
+    if !(10..=10000).contains(&physical_width) {
+        return Err(invalid_message_err!("PhysicalWidth", "Physical width is out of range"));
+    }
+    if !(10..=10000).contains(&physical_height) {
+        return Err(invalid_message_err!(
+            "PhysicalHeight",
+            "Physical height is out of range"
+        ));
+    }
+
+    Ok(())
+}
+
 fn calculate_monitor_area(
     max_num_monitors: u32,
     max_monitor_area_factor_a: u32,
     max_monitor_area_factor_b: u32,
 ) -> PduResult<u64> {
-    (max_monitor_area_factor_a as u64)
-        .checked_mul(max_monitor_area_factor_b as u64)
-        .and_then(|monitor_area| monitor_area.checked_mul(max_num_monitors as u64))
-        .ok_or_else(|| invalid_message_err!("MonitorArea", "Monitor area parameters are too big"))
+    if max_num_monitors > MAX_SUPPORTED_MONITORS.into() {
+        return Err(invalid_message_err!("NumMonitors", "Too many monitors"));
+    }
+
+    if max_monitor_area_factor_a > MAX_MONITOR_AREA_FACTOR.into()
+        || max_monitor_area_factor_b > MAX_MONITOR_AREA_FACTOR.into()
+    {
+        return Err(invalid_message_err!(
+            "MaxMonitorAreaFactor",
+            "Invalid monitor area factor"
+        ));
+    }
+
+    // As per invariants: This multiplication would never overflow.
+    // 0 <= MAX_MONITOR_AREA_FACTOR * MAX_MONITOR_AREA_FACTOR * MAX_SUPPORTED_MONITORS <= u64::MAX
+    Ok((u64::from(max_monitor_area_factor_a))
+        .checked_mul(u64::from(max_monitor_area_factor_b))
+        .and_then(|monitor_area| monitor_area.checked_mul(u64::from(max_num_monitors)))
+        .unwrap())
 }
