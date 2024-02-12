@@ -10,6 +10,7 @@
 //! binaries themselves are run sequentally.
 
 mod clipboard;
+mod displaycontrol;
 mod graphics;
 mod input;
 mod pcb;

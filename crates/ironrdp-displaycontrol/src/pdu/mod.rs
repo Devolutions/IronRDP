@@ -20,7 +20,7 @@ const MAX_MONITOR_AREA_FACTOR: u16 = 1024 * 16;
 ///
 /// INVARIANTS: size of encoded inner PDU is always less than `u32::MAX - Self::FIXED_PART_SIZE`
 ///     (See [`DisplayControlCapabilities`] & [`DisplayControlMonitorLayout`] invariants)
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DisplayControlPdu {
     Caps(DisplayControlCapabilities),
     MonitorLayout(DisplayControlMonitorLayout),
@@ -60,7 +60,11 @@ impl PduEncode for DisplayControlPdu {
     }
 
     fn size(&self) -> usize {
-        Self::FIXED_PART_SIZE
+        // As per invariants: This will never overflow.
+        Self::FIXED_PART_SIZE.checked_add(match self {
+            DisplayControlPdu::Caps(caps) => caps.size(),
+            DisplayControlPdu::MonitorLayout(layout) => layout.size(),
+        }).unwrap()
     }
 }
 
@@ -96,7 +100,7 @@ impl<'de> PduDecode<'de> for DisplayControlPdu {
 ///     0 <= max_num_monitors <= MAX_SUPPORTED_MONITORS
 ///     0 <= max_monitor_area_factor_a <= MAX_MONITOR_AREA_FACTOR
 ///     0 <= max_monitor_area_factor_b <= MAX_MONITOR_AREA_FACTOR
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DisplayControlCapabilities {
     max_num_monitors: u32,
     max_monitor_area_factor_a: u32,
@@ -174,7 +178,7 @@ impl<'de> PduDecode<'de> for DisplayControlCapabilities {
 ///
 /// INVARIANTS:
 ///     0 <= monitors.length() <= MAX_SUPPORTED_MONITORS
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DisplayControlMonitorLayout {
     monitors: Vec<MonitorLayoutEntry>,
 }
@@ -271,11 +275,11 @@ impl<'de> PduDecode<'de> for DisplayControlMonitorLayout {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MonitorLayoutEntry {
     is_primary: bool,
-    left: u32,
-    top: u32,
+    left: i32,
+    top: i32,
     width: u32,
     height: u32,
     physical_width: u32,
@@ -338,7 +342,7 @@ impl MonitorLayoutEntry {
     /// Sets the monitor's position (left, top) in pixels. (Default is (0, 0))
     ///
     /// Note: The primary monitor position must be always (0, 0).
-    pub fn with_position(mut self, left: u32, top: u32) -> PduResult<Self> {
+    pub fn with_position(mut self, left: i32, top: i32) -> PduResult<Self> {
         validate_position(left, top, self.is_primary)?;
 
         self.left = left;
@@ -383,7 +387,7 @@ impl MonitorLayoutEntry {
     }
 
     /// Returns the monitor's position (left, top) in pixels.
-    pub fn position(&self) -> Option<(u32, u32)> {
+    pub fn position(&self) -> Option<(i32, i32)> {
         validate_position(self.left, self.top, self.is_primary).ok()?;
 
         Some((self.left, self.top))
@@ -449,8 +453,8 @@ impl PduEncode for MonitorLayoutEntry {
             0
         };
         dst.write_u32(flags);
-        dst.write_u32(self.left);
-        dst.write_u32(self.top);
+        dst.write_i32(self.left);
+        dst.write_i32(self.top);
         dst.write_u32(self.width);
         dst.write_u32(self.height);
         dst.write_u32(self.physical_width);
@@ -476,8 +480,8 @@ impl<'de> PduDecode<'de> for MonitorLayoutEntry {
         ensure_fixed_part_size!(in: src);
 
         let flags = src.read_u32();
-        let left = src.read_u32();
-        let top = src.read_u32();
+        let left = src.read_i32();
+        let top = src.read_i32();
         let width = src.read_u32();
         let height = src.read_u32();
         let physical_width = src.read_u32();
@@ -551,7 +555,7 @@ impl DeviceScaleFactor {
     }
 }
 
-fn validate_position(left: u32, top: u32, is_primary: bool) -> PduResult<()> {
+fn validate_position(left: i32, top: i32, is_primary: bool) -> PduResult<()> {
     if is_primary && (left != 0 || top != 0) {
         return Err(invalid_message_err!(
             "Position",
