@@ -8,7 +8,7 @@ use thiserror::Error;
 
 use crate::cursor::{ReadCursor, WriteCursor};
 use crate::rdp::headers::{BasicSecurityHeader, BasicSecurityHeaderFlags, BASIC_SECURITY_HEADER_SIZE};
-use crate::{PduDecode, PduEncode, PduError, PduParsing, PduResult};
+use crate::{PduDecode, PduEncode, PduError, PduResult};
 
 #[cfg(test)]
 mod tests;
@@ -342,9 +342,9 @@ fn compute_mac_data(mac_salt_key: &[u8], data: &[u8]) -> Vec<u8> {
 
 fn read_license_header(
     required_preamble_message_type: PreambleType,
-    mut stream: impl io::Read,
-) -> Result<LicenseHeader, ServerLicenseError> {
-    let license_header = LicenseHeader::from_buffer(&mut stream)?;
+    src: &mut ReadCursor<'_>,
+) -> Result<LicenseHeader, PduError> {
+    let license_header = LicenseHeader::decode(src)?;
 
     // FIXME(#269): ERROR_ALERT licensing packets should not be returned as error by the parser.
     // Such packets should be handled by the caller, and the caller is responsible for turning
@@ -356,20 +356,20 @@ fn read_license_header(
 
     if license_header.preamble_message_type != required_preamble_message_type {
         if license_header.preamble_message_type == PreambleType::ErrorAlert {
-            let license_error = LicensingErrorMessage::from_buffer(&mut stream)?;
+            let license_error = LicensingErrorMessage::decode(src)?;
 
             if license_error.error_code == LicenseErrorCode::StatusValidClient
                 && license_error.state_transition == LicensingStateTransition::NoTransition
             {
-                return Err(ServerLicenseError::ValidClientStatus(license_error));
+                return Err(invalid_message_err!(
+                    "preambleType",
+                    "the server has returned STATUS_VALID_CLIENT (not an error)"
+                ));
             } else {
-                return Err(ServerLicenseError::UnexpectedServerError(license_error));
+                return Err(invalid_message_err!("preambleType", "invalid preamble type"));
             }
         } else {
-            return Err(ServerLicenseError::InvalidPreamble(format!(
-                "Got {:?} but expected {:?}",
-                license_header.preamble_message_type, required_preamble_message_type
-            )));
+            return Err(invalid_message_err!("preambleType", "got unexptected preamble type"));
         }
     }
 

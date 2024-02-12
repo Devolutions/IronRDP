@@ -2,7 +2,7 @@ use std::borrow::Cow;
 
 use ironrdp_connector::{ConnectorError, ConnectorErrorExt, ConnectorResult};
 use ironrdp_pdu::write_buf::WriteBuf;
-use ironrdp_pdu::{rdp, PduParsing};
+use ironrdp_pdu::{rdp, PduParsing, PduEncode, encode_vec};
 
 pub(crate) fn encode_send_data_indication<T>(
     initiator_id: u16,
@@ -11,23 +11,49 @@ pub(crate) fn encode_send_data_indication<T>(
     buf: &mut WriteBuf,
 ) -> ConnectorResult<usize>
 where
-    T: PduParsing,
-    ConnectorError: From<T::Error>,
+    T: PduEncode,
 {
-    let user_data_len = user_msg.buffer_length();
-    let mut user_data = Vec::with_capacity(user_data_len);
+        let user_data = encode_vec(user_msg).map_err(ConnectorError::pdu)?;
 
-    user_msg.to_buffer(&mut user_data)?;
+        let pdu = ironrdp_pdu::mcs::SendDataIndication {
+            initiator_id,
+            channel_id,
+            user_data: Cow::Owned(user_data),
+        };
 
-    let pdu = ironrdp_pdu::mcs::SendDataIndication {
-        initiator_id,
-        channel_id,
-        user_data: Cow::Owned(user_data),
-    };
+        let written = ironrdp_pdu::encode_buf(&pdu, buf).map_err(ConnectorError::pdu)?;
 
-    let written = ironrdp_pdu::encode_buf(&pdu, buf).map_err(ConnectorError::pdu)?;
+        Ok(written)
+}
 
-    Ok(written)
+pub mod legacy {
+    use super::*;
+
+    pub(crate) fn encode_send_data_indication<T>(
+        initiator_id: u16,
+        channel_id: u16,
+        user_msg: &T,
+        buf: &mut WriteBuf,
+    ) -> ConnectorResult<usize>
+    where
+        T: PduParsing,
+        ConnectorError: From<T::Error>,
+    {
+        let user_data_len = user_msg.buffer_length();
+        let mut user_data = Vec::with_capacity(user_data_len);
+
+        user_msg.to_buffer(&mut user_data)?;
+
+        let pdu = ironrdp_pdu::mcs::SendDataIndication {
+            initiator_id,
+            channel_id,
+            user_data: Cow::Owned(user_data),
+        };
+
+        let written = ironrdp_pdu::encode_buf(&pdu, buf).map_err(ConnectorError::pdu)?;
+
+        Ok(written)
+    }
 }
 
 pub(crate) fn wrap_share_data(pdu: rdp::headers::ShareDataPdu, io_channel_id: u16) -> rdp::headers::ShareControlHeader {

@@ -4,6 +4,7 @@ use super::*;
 use crate::rdp::server_license::{
     BasicSecurityHeader, BasicSecurityHeaderFlags, PreambleFlags, PreambleVersion, BASIC_SECURITY_HEADER_SIZE,
 };
+use crate::{decode, encode_vec};
 
 const PLATFORM_CHALLENGE_BUFFER: [u8; 42] = [
     0x80, 0x00, // flags
@@ -42,18 +43,12 @@ lazy_static! {
 
 #[test]
 fn from_buffer_correctly_parses_server_platform_challenge() {
-    assert_eq!(
-        *PLATFORM_CHALLENGE,
-        ServerPlatformChallenge::from_buffer(PLATFORM_CHALLENGE_BUFFER.as_ref()).unwrap()
-    );
+    assert_eq!(*PLATFORM_CHALLENGE, decode(PLATFORM_CHALLENGE_BUFFER.as_ref()).unwrap());
 }
 
 #[test]
 fn to_buffer_correctly_serializes_server_platform_challenge() {
-    let mut serialized_platform_challenge = Vec::new();
-    PLATFORM_CHALLENGE
-        .to_buffer(&mut serialized_platform_challenge)
-        .unwrap();
+    let serialized_platform_challenge = encode_vec(&*PLATFORM_CHALLENGE).unwrap();
 
     assert_eq!(
         PLATFORM_CHALLENGE_BUFFER.as_ref(),
@@ -63,5 +58,5 @@ fn to_buffer_correctly_serializes_server_platform_challenge() {
 
 #[test]
 fn buffer_length_is_correct_for_server_platform_challenge() {
-    assert_eq!(PLATFORM_CHALLENGE_BUFFER.len(), PLATFORM_CHALLENGE.buffer_length());
+    assert_eq!(PLATFORM_CHALLENGE_BUFFER.len(), PLATFORM_CHALLENGE.size());
 }

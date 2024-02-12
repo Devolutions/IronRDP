@@ -1,17 +1,14 @@
 #[cfg(test)]
 mod tests;
 
-use std::io;
-
-use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
-
 use super::{
     read_license_header, BlobHeader, BlobType, LicenseEncryptionData, LicenseHeader, PreambleType, ServerLicenseError,
     BLOB_LENGTH_SIZE, BLOB_TYPE_SIZE, MAC_SIZE, UTF16_NULL_TERMINATOR_SIZE, UTF8_NULL_TERMINATOR_SIZE,
 };
 use crate::crypto::rc4::Rc4;
+use crate::cursor::{ReadCursor, WriteCursor};
 use crate::utils::CharacterSet;
-use crate::{utils, PduParsing};
+use crate::{utils, PduDecode, PduEncode, PduResult};
 
 const NEW_LICENSE_INFO_STATIC_FIELDS_SIZE: usize = 20;
 
@@ -40,33 +37,51 @@ impl ServerUpgradeLicense {
     }
 }
 
-impl PduParsing for ServerUpgradeLicense {
-    type Error = ServerLicenseError;
+impl ServerUpgradeLicense {
+    const NAME: &'static str = "ServerUpgradeLicense";
+}
 
-    fn from_buffer(mut stream: impl io::Read) -> Result<Self, Self::Error> {
-        let license_header = read_license_header(PreambleType::NewLicense, &mut stream)?;
+impl PduEncode for ServerUpgradeLicense {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_size!(in: dst, size: self.size());
+
+        self.license_header.encode(dst)?;
+        BlobHeader::new(BlobType::EncryptedData, self.encrypted_license_info.len()).encode(dst)?;
+        dst.write_slice(&self.encrypted_license_info);
+        dst.write_slice(&self.mac_data);
+
+        Ok(())
+    }
+
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    fn size(&self) -> usize {
+        self.license_header.size() + BLOB_LENGTH_SIZE + BLOB_TYPE_SIZE + self.encrypted_license_info.len() + MAC_SIZE
+    }
+}
+
+impl<'de> PduDecode<'de> for ServerUpgradeLicense {
+    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+        let license_header = read_license_header(PreambleType::NewLicense, src)?;
 
         if license_header.preamble_message_type != PreambleType::UpgradeLicense
             && license_header.preamble_message_type != PreambleType::NewLicense
         {
-            return Err(ServerLicenseError::InvalidPreamble(format!(
-                "Got {:?} but expected {:?} or {:?}",
-                license_header.preamble_message_type,
-                PreambleType::UpgradeLicense,
-                PreambleType::NewLicense
-            )));
+            return Err(invalid_message_err!(
+                "preambleType",
+                "got unexpected message preamble type"
+            ));
         }
 
-        let encrypted_license_info_blob = BlobHeader::from_buffer(&mut stream)?;
+        let encrypted_license_info_blob = BlobHeader::decode(src)?;
         if encrypted_license_info_blob.blob_type != BlobType::EncryptedData {
-            return Err(ServerLicenseError::InvalidBlobType);
+            return Err(invalid_message_err!("blobType", "unexpected blob type"));
         }
 
-        let mut encrypted_license_info = vec![0u8; encrypted_license_info_blob.length];
-        stream.read_exact(&mut encrypted_license_info)?;
-
-        let mut mac_data = vec![0u8; MAC_SIZE];
-        stream.read_exact(&mut mac_data)?;
+        let encrypted_license_info = src.read_slice(encrypted_license_info_blob.length).into();
+        let mac_data = src.read_slice(MAC_SIZE).into();
 
         Ok(Self {
             license_header,
@@ -74,26 +89,9 @@ impl PduParsing for ServerUpgradeLicense {
             mac_data,
         })
     }
-
-    fn to_buffer(&self, mut stream: impl io::Write) -> Result<(), Self::Error> {
-        self.license_header.to_buffer(&mut stream)?;
-
-        BlobHeader::new(BlobType::EncryptedData, self.encrypted_license_info.len()).to_buffer(&mut stream)?;
-        stream.write_all(&self.encrypted_license_info)?;
-
-        stream.write_all(&self.mac_data)?;
-
-        Ok(())
-    }
-
-    fn buffer_length(&self) -> usize {
-        self.license_header.buffer_length()
-            + BLOB_LENGTH_SIZE
-            + BLOB_TYPE_SIZE
-            + self.encrypted_license_info.len()
-            + MAC_SIZE
-    }
 }
+
+impl_pdu_parsing_max!(ServerUpgradeLicense);
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct NewLicenseInformation {
@@ -104,39 +102,75 @@ pub struct NewLicenseInformation {
     pub license_info: Vec<u8>,
 }
 
-impl PduParsing for NewLicenseInformation {
-    type Error = ServerLicenseError;
+impl NewLicenseInformation {
+    const NAME: &'static str = "NewLicenseInformation";
 
-    fn from_buffer(mut stream: impl io::Read) -> Result<Self, Self::Error> {
-        let version = stream.read_u32::<LittleEndian>()?;
+    const FIXED_PART_SIZE: usize = NEW_LICENSE_INFO_STATIC_FIELDS_SIZE;
+}
 
-        let scope_len = stream.read_u32::<LittleEndian>()?;
-        let scope = utils::read_string_from_stream(
-            &mut stream,
-            scope_len as usize - UTF8_NULL_TERMINATOR_SIZE,
-            CharacterSet::Ansi,
-            true,
-        )?;
+impl PduEncode for NewLicenseInformation {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_size!(in: dst, size: self.size());
 
-        let company_name_len = stream.read_u32::<LittleEndian>()?;
-        let company_name = utils::read_string_from_stream(
-            &mut stream,
-            company_name_len as usize - UTF16_NULL_TERMINATOR_SIZE,
-            CharacterSet::Unicode,
-            true,
-        )?;
+        dst.write_u32(self.version);
 
-        let product_id_len = stream.read_u32::<LittleEndian>()?;
-        let product_id = utils::read_string_from_stream(
-            &mut stream,
-            product_id_len as usize - UTF16_NULL_TERMINATOR_SIZE,
-            CharacterSet::Unicode,
-            true,
-        )?;
+        dst.write_u32(cast_length!("scopeLen", self.scope.len() + UTF8_NULL_TERMINATOR_SIZE)?);
+        utils::write_string_to_cursor(dst, &self.scope, CharacterSet::Ansi, true)?;
 
-        let license_info_len = stream.read_u32::<LittleEndian>()?;
-        let mut license_info = vec![0u8; license_info_len as usize];
-        stream.read_exact(&mut license_info)?;
+        dst.write_u32(cast_length!(
+            "companyLen",
+            self.company_name.len() * 2 + UTF16_NULL_TERMINATOR_SIZE
+        )?);
+        utils::write_string_to_cursor(dst, &self.company_name, CharacterSet::Unicode, true)?;
+
+        dst.write_u32(cast_length!(
+            "produceIdLen",
+            self.product_id.len() * 2 + UTF16_NULL_TERMINATOR_SIZE
+        )?);
+        utils::write_string_to_cursor(dst, &self.product_id, CharacterSet::Unicode, true)?;
+
+        dst.write_u32(cast_length!("licenseInfoLen", self.license_info.len())?);
+        dst.write_slice(self.license_info.as_slice());
+
+        Ok(())
+    }
+
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    fn size(&self) -> usize {
+        Self::FIXED_PART_SIZE
+            + self.scope.len() + UTF8_NULL_TERMINATOR_SIZE
+            + self.company_name.len() * 2 // utf16
+            + UTF16_NULL_TERMINATOR_SIZE
+            + self.product_id.len() * 2 // utf16
+            + UTF16_NULL_TERMINATOR_SIZE
+            + self.license_info.len()
+    }
+}
+
+impl<'de> PduDecode<'de> for NewLicenseInformation {
+    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+        ensure_fixed_part_size!(in: src);
+
+        let version = src.read_u32();
+
+        let scope_len: usize = cast_length!("scopeLen", src.read_u32())?;
+        ensure_size!(in: src, size: scope_len);
+        let scope = utils::decode_string(src.read_slice(scope_len), CharacterSet::Ansi, true)?;
+
+        let company_name_len: usize = cast_length!("companyLen", src.read_u32())?;
+        ensure_size!(in: src, size: company_name_len);
+        let company_name = utils::decode_string(src.read_slice(company_name_len), CharacterSet::Unicode, true)?;
+
+        let product_id_len: usize = cast_length!("productIdLen", src.read_u32())?;
+        ensure_size!(in: src, size: product_id_len);
+        let product_id = utils::decode_string(src.read_slice(product_id_len), CharacterSet::Unicode, true)?;
+
+        let license_info_len = cast_length!("licenseInfoLen", src.read_u32())?;
+        ensure_size!(in: src, size: license_info_len);
+        let license_info = src.read_slice(license_info_len).into();
 
         Ok(Self {
             version,
@@ -146,31 +180,6 @@ impl PduParsing for NewLicenseInformation {
             license_info,
         })
     }
-
-    fn to_buffer(&self, mut stream: impl io::Write) -> Result<(), Self::Error> {
-        stream.write_u32::<LittleEndian>(self.version)?;
-
-        stream.write_u32::<LittleEndian>((self.scope.len() + UTF8_NULL_TERMINATOR_SIZE) as u32)?;
-        utils::write_string_with_null_terminator(&mut stream, &self.scope, CharacterSet::Ansi)?;
-
-        stream.write_u32::<LittleEndian>((self.company_name.len() * 2 + UTF16_NULL_TERMINATOR_SIZE) as u32)?;
-        utils::write_string_with_null_terminator(&mut stream, &self.company_name, CharacterSet::Unicode)?;
-
-        stream.write_u32::<LittleEndian>((self.product_id.len() * 2 + UTF16_NULL_TERMINATOR_SIZE) as u32)?;
-        utils::write_string_with_null_terminator(&mut stream, &self.product_id, CharacterSet::Unicode)?;
-
-        stream.write_u32::<LittleEndian>(self.license_info.len() as u32)?;
-        stream.write_all(self.license_info.as_slice())?;
-
-        Ok(())
-    }
-
-    fn buffer_length(&self) -> usize {
-        NEW_LICENSE_INFO_STATIC_FIELDS_SIZE + self.scope.len() + UTF8_NULL_TERMINATOR_SIZE
-        + self.company_name.len() * 2 // utf16
-        + UTF16_NULL_TERMINATOR_SIZE
-        + self.product_id.len() * 2 // utf16
-        + UTF16_NULL_TERMINATOR_SIZE
-        + self.license_info.len()
-    }
 }
+
+impl_pdu_parsing_max!(NewLicenseInformation);

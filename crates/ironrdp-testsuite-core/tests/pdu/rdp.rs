@@ -1,5 +1,4 @@
 use ironrdp_pdu::rdp::headers::*;
-use ironrdp_pdu::rdp::server_license::*;
 use ironrdp_pdu::{decode, encode_vec, PduEncode, PduParsing as _};
 use ironrdp_testsuite_core::capsets::*;
 use ironrdp_testsuite_core::client_info::*;
@@ -16,7 +15,7 @@ fn from_buffer_correctly_parses_rdp_pdu_client_info() {
 fn from_buffer_correctly_parses_rdp_pdu_server_license() {
     assert_eq!(
         *SERVER_LICENSE_PDU,
-        InitialServerLicenseMessage::from_buffer(SERVER_LICENSE_BUFFER.as_ref()).unwrap()
+        decode(&SERVER_LICENSE_BUFFER).unwrap()
     );
 }
 
@@ -109,8 +108,7 @@ fn to_buffer_correctly_serializes_rdp_pdu_client_info() {
 
 #[test]
 fn to_buffer_correctly_serializes_rdp_pdu_server_license() {
-    let mut buf = Vec::new();
-    SERVER_LICENSE_PDU.to_buffer(&mut buf).unwrap();
+    let buf = encode_vec(&*SERVER_LICENSE_PDU).unwrap();
 
     assert_eq!(SERVER_LICENSE_BUFFER.as_ref(), buf.as_slice());
 }
@@ -218,7 +216,7 @@ fn buffer_length_is_correct_for_rdp_pdu_client_info() {
 
 #[test]
 fn buffer_length_is_correct_for_rdp_pdu_server_license() {
-    let len = SERVER_LICENSE_PDU.buffer_length();
+    let len = SERVER_LICENSE_PDU.size();
 
     assert_eq!(SERVER_LICENSE_BUFFER.len(), len);
 }
