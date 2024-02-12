@@ -61,10 +61,12 @@ impl PduEncode for DisplayControlPdu {
 
     fn size(&self) -> usize {
         // As per invariants: This will never overflow.
-        Self::FIXED_PART_SIZE.checked_add(match self {
-            DisplayControlPdu::Caps(caps) => caps.size(),
-            DisplayControlPdu::MonitorLayout(layout) => layout.size(),
-        }).unwrap()
+        Self::FIXED_PART_SIZE
+            .checked_add(match self {
+                DisplayControlPdu::Caps(caps) => caps.size(),
+                DisplayControlPdu::MonitorLayout(layout) => layout.size(),
+            })
+            .unwrap()
     }
 }
 

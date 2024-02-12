@@ -3,7 +3,7 @@ use ironrdp_displaycontrol::pdu;
 use ironrdp_pdu::decode;
 use ironrdp_testsuite_core::encode_decode_test;
 
-encode_decode_test!{
+encode_decode_test! {
     capabilities: pdu::DisplayControlPdu::Caps(pdu::DisplayControlCapabilities::new(
         3, 1920, 1080
     ).unwrap()),
@@ -69,50 +69,45 @@ encode_decode_test!{
 
 #[test]
 fn invalid_caps() {
-    pdu::DisplayControlCapabilities::new(2000, 100, 100)
-        .expect_err("more than 1024 monitors should not be allowed");
+    pdu::DisplayControlCapabilities::new(2000, 100, 100).expect_err("more than 1024 monitors should not be allowed");
 
-    pdu::DisplayControlCapabilities::new(100, 32*1024, 100)
+    pdu::DisplayControlCapabilities::new(100, 32 * 1024, 100)
         .expect_err("resolution more than 8k should not be a valid value");
 }
 
 #[test]
 fn invalid_monitor_layout_entry() {
-    pdu::MonitorLayoutEntry::new_primary(32*1024, 32*1024)
+    pdu::MonitorLayoutEntry::new_primary(32 * 1024, 32 * 1024)
         .expect_err("resolution more than 8k should not be allowed");
 
-    pdu::MonitorLayoutEntry::new_primary(1023, 1024)
-        .expect_err("only width which is power of two is allowed");
+    pdu::MonitorLayoutEntry::new_primary(1023, 1024).expect_err("only width which is power of two is allowed");
 
-    pdu::MonitorLayoutEntry::new_primary(1024, 1024).unwrap()
+    pdu::MonitorLayoutEntry::new_primary(1024, 1024)
+        .unwrap()
         .with_position(-1, 1)
         .expect_err("primary monitor should always have (0, 0) position");
 
-    pdu::MonitorLayoutEntry::new_primary(1024, 1024).unwrap()
+    pdu::MonitorLayoutEntry::new_primary(1024, 1024)
+        .unwrap()
         .with_position(-1, 1)
         .expect_err("primary monitor should always have (0, 0) position");
 
-    pdu::MonitorLayoutEntry::new_primary(1024, 1024).unwrap()
+    pdu::MonitorLayoutEntry::new_primary(1024, 1024)
+        .unwrap()
         .with_desktop_scale_factor(999)
         .expect_err("invalid desktop factor should be rejected");
 
-    pdu::MonitorLayoutEntry::new_primary(1024, 1024).unwrap()
+    pdu::MonitorLayoutEntry::new_primary(1024, 1024)
+        .unwrap()
         .with_physical_dimensions(1, 9999)
         .expect_err("invalid physical dimensions should be rejected");
 }
 
 #[test]
-fn only_non_optional_layout_fields_requried_to_be_valid() {
+fn only_non_optional_layout_fields_required_to_be_valid() {
     let encoded = [
-        0x01, 0x00, 0x00, 0x00,
-        0x01, 0x00, 0x00, 0x00,
-        0x02, 0x00, 0x00, 0x00,
-        0x80, 0x07, 0x00, 0x00,
-        0x38, 0x04, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x00,
-        0x01, 0x00, 0x00, 0x00,
-        0x01, 0x00, 0x00, 0x00,
+        0x01, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x80, 0x07, 0x00, 0x00, 0x38, 0x04,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00,
         0x01, 0x00, 0x00, 0x00,
     ];
 
