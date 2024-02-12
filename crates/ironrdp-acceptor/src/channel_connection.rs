@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-use ironrdp_connector::{ConnectorError, ConnectorErrorExt, ConnectorResult, Sequence, State, Written};
+use ironrdp_connector::{reason_err, ConnectorError, ConnectorErrorExt, ConnectorResult, Sequence, State, Written};
 use ironrdp_pdu as pdu;
 use pdu::mcs;
 use pdu::write_buf::WriteBuf;
@@ -9,7 +9,7 @@ use pdu::write_buf::WriteBuf;
 pub struct ChannelConnectionSequence {
     state: ChannelConnectionState,
     user_channel_id: u16,
-    channels: HashSet<u16>,
+    channel_ids: Option<HashSet<u16>>,
 }
 
 #[derive(Default, Debug)]
@@ -21,10 +21,10 @@ pub enum ChannelConnectionState {
     WaitAttachUserRequest,
     SendAttachUserConfirm,
     WaitChannelJoinRequest {
-        joined: HashSet<u16>,
+        remaining: HashSet<u16>,
     },
     SendChannelJoinConfirm {
-        joined: HashSet<u16>,
+        remaining: HashSet<u16>,
         channel_id: u16,
     },
     AllJoined,
@@ -61,7 +61,7 @@ impl Sequence for ChannelConnectionSequence {
             ChannelConnectionState::SendAttachUserConfirm => None,
             ChannelConnectionState::WaitChannelJoinRequest { .. } => Some(&pdu::X224_HINT),
             ChannelConnectionState::SendChannelJoinConfirm { .. } => None,
-            ChannelConnectionState::AllJoined { .. } => None,
+            ChannelConnectionState::AllJoined => None,
         }
     }
 
@@ -99,28 +99,41 @@ impl Sequence for ChannelConnectionSequence {
 
                 let written = ironrdp_pdu::encode_buf(&attach_user_confirm, output).map_err(ConnectorError::pdu)?;
 
-                (
-                    Written::from_size(written)?,
-                    ChannelConnectionState::WaitChannelJoinRequest { joined: HashSet::new() },
-                )
+                let next_state = match self.channel_ids.take() {
+                    Some(channel_ids) => ChannelConnectionState::WaitChannelJoinRequest { remaining: channel_ids },
+                    None => ChannelConnectionState::AllJoined,
+                };
+
+                (Written::from_size(written)?, next_state)
             }
 
-            // TODO(#165): support RNS_UD_CS_SUPPORT_SKIP_CHANNELJOIN
-            ChannelConnectionState::WaitChannelJoinRequest { joined } => {
+            ChannelConnectionState::WaitChannelJoinRequest { mut remaining } => {
                 let channel_request =
                     ironrdp_pdu::decode::<mcs::ChannelJoinRequest>(input).map_err(ConnectorError::pdu)?;
 
                 debug!(message = ?channel_request, "Received");
 
-                let channel_id = channel_request.channel_id;
+                let is_expected = remaining.remove(&channel_request.channel_id);
+
+                if !is_expected {
+                    return Err(reason_err!(
+                        "ChannelJoinConfirm",
+                        "unexpected channel_id in MCS Channel Join Request: got {}, expected one of: {:?}",
+                        channel_request.channel_id,
+                        remaining,
+                    ));
+                }
 
                 (
                     Written::Nothing,
-                    ChannelConnectionState::SendChannelJoinConfirm { joined, channel_id },
+                    ChannelConnectionState::SendChannelJoinConfirm {
+                        remaining,
+                        channel_id: channel_request.channel_id,
+                    },
                 )
             }
 
-            ChannelConnectionState::SendChannelJoinConfirm { mut joined, channel_id } => {
+            ChannelConnectionState::SendChannelJoinConfirm { remaining, channel_id } => {
                 let channel_confirm = mcs::ChannelJoinConfirm {
                     result: 0,
                     initiator_id: self.user_channel_id,
@@ -132,15 +145,13 @@ impl Sequence for ChannelConnectionSequence {
 
                 let written = ironrdp_pdu::encode_buf(&channel_confirm, output).map_err(ConnectorError::pdu)?;
 
-                joined.insert(channel_id);
-
-                let state = if joined != self.channels {
-                    ChannelConnectionState::WaitChannelJoinRequest { joined }
+                let next_state = if remaining.is_empty() {
+                    ChannelConnectionState::AllJoined
                 } else {
-                    ChannelConnectionState::AllJoined {}
+                    ChannelConnectionState::WaitChannelJoinRequest { remaining }
                 };
 
-                (Written::from_size(written)?, state)
+                (Written::from_size(written)?, next_state)
             }
 
             _ => unreachable!(),
@@ -156,10 +167,20 @@ impl ChannelConnectionSequence {
         Self {
             state: ChannelConnectionState::WaitErectDomainRequest,
             user_channel_id,
-            channels: vec![user_channel_id, io_channel_id]
-                .into_iter()
-                .chain(other_channels)
-                .collect(),
+            channel_ids: Some(
+                vec![user_channel_id, io_channel_id]
+                    .into_iter()
+                    .chain(other_channels)
+                    .collect(),
+            ),
+        }
+    }
+
+    pub fn skip_channel_join(user_channel_id: u16) -> Self {
+        Self {
+            state: ChannelConnectionState::WaitErectDomainRequest,
+            user_channel_id,
+            channel_ids: None,
         }
     }
 
