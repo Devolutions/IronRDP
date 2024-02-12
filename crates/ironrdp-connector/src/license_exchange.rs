@@ -7,7 +7,9 @@ use ironrdp_pdu::PduHint;
 use rand_core::{OsRng, RngCore as _};
 
 use super::legacy;
-use crate::{ConnectorError, ConnectorResult, ConnectorResultExt as _, Sequence, State, Written};
+use crate::{
+    encode_send_data_request, ConnectorError, ConnectorResult, ConnectorResultExt as _, Sequence, State, Written,
+};
 
 #[derive(Default, Debug)]
 #[non_exhaustive]
@@ -97,7 +99,7 @@ impl Sequence for LicenseExchangeSequence {
             LicenseExchangeState::NewLicenseRequest => {
                 let send_data_indication_ctx = legacy::decode_send_data_indication(input)?;
                 let initial_server_license = send_data_indication_ctx
-                    .from_buffer_user_data::<server_license::InitialServerLicenseMessage>()
+                    .decode_user_data::<server_license::InitialServerLicenseMessage>()
                     .with_context("decode initial server license PDU")?;
 
                 debug!(message = ?initial_server_license, "Received");
@@ -121,7 +123,7 @@ impl Sequence for LicenseExchangeSequence {
                                 trace!(?encryption_data, "Successfully generated Client New License Request");
                                 info!(message = ?new_license_request, "Send");
 
-                                let written = legacy::encode_send_data_request(
+                                let written = encode_send_data_request(
                                     send_data_indication_ctx.initiator_id,
                                     send_data_indication_ctx.channel_id,
                                     &new_license_request,
@@ -170,7 +172,7 @@ impl Sequence for LicenseExchangeSequence {
                 let send_data_indication_ctx = legacy::decode_send_data_indication(input)?;
 
                 match send_data_indication_ctx
-                    .from_buffer_user_data::<server_license::ServerPlatformChallenge>()
+                    .decode_user_data::<server_license::ServerPlatformChallenge>()
                     .with_context("decode SERVER_PLATFORM_CHALLENGE")
                 {
                     Ok(challenge) => {
@@ -186,7 +188,7 @@ impl Sequence for LicenseExchangeSequence {
 
                         debug!(message = ?challenge_response, "Send");
 
-                        let written = legacy::encode_send_data_request(
+                        let written = encode_send_data_request(
                             send_data_indication_ctx.initiator_id,
                             send_data_indication_ctx.channel_id,
                             &challenge_response,
@@ -216,7 +218,7 @@ impl Sequence for LicenseExchangeSequence {
                 // It’s expected that fixing #263 will also lead to a better alternative here.
 
                 match send_data_indication_ctx
-                    .from_buffer_user_data::<server_license::ServerUpgradeLicense>()
+                    .decode_user_data::<server_license::ServerUpgradeLicense>()
                     .with_context("decode SERVER_NEW_LICENSE/SERVER_UPGRADE_LICENSE")
                 {
                     Ok(upgrade_license) => {

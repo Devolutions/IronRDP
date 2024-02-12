@@ -1,10 +1,9 @@
 #[cfg(test)]
 mod test;
 
-use std::io;
 use std::io::Write;
 
-use byteorder::{LittleEndian, ReadBytesExt as _, WriteBytesExt as _};
+use byteorder::{LittleEndian, WriteBytesExt as _};
 use md5::Digest;
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive as _, ToPrimitive as _};
@@ -15,7 +14,8 @@ use super::{
     BLOB_TYPE_SIZE, MAC_SIZE, PLATFORM_ID, PREAMBLE_SIZE,
 };
 use crate::crypto::rc4::Rc4;
-use crate::PduParsing;
+use crate::cursor::{ReadCursor, WriteCursor};
+use crate::{PduDecode, PduEncode, PduResult};
 
 const RESPONSE_DATA_VERSION: u16 = 0x100;
 const RESPONSE_DATA_STATIC_FIELDS_SIZE: usize = 8;
@@ -34,6 +34,8 @@ pub struct ClientPlatformChallengeResponse {
 }
 
 impl ClientPlatformChallengeResponse {
+    const NAME: &'static str = "ClientPlatformChallengeResponse";
+
     pub fn from_server_platform_challenge(
         platform_challenge: &ServerPlatformChallenge,
         hostname: &str,
@@ -98,35 +100,59 @@ impl ClientPlatformChallengeResponse {
     }
 }
 
-impl PduParsing for ClientPlatformChallengeResponse {
-    type Error = ServerLicenseError;
+impl PduEncode for ClientPlatformChallengeResponse {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_size!(in: dst, size: self.size());
 
-    fn from_buffer(mut stream: impl io::Read) -> Result<Self, Self::Error> {
-        let license_header = LicenseHeader::from_buffer(&mut stream)?;
+        self.license_header.encode(dst)?;
+
+        BlobHeader::new(BlobType::EncryptedData, self.encrypted_challenge_response_data.len()).encode(dst)?;
+        dst.write_slice(&self.encrypted_challenge_response_data);
+
+        BlobHeader::new(BlobType::EncryptedData, self.encrypted_hwid.len()).encode(dst)?;
+        dst.write_slice(&self.encrypted_hwid);
+
+        dst.write_slice(&self.mac_data);
+
+        Ok(())
+    }
+
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    fn size(&self) -> usize {
+        self.license_header.size()
+        + (BLOB_TYPE_SIZE + BLOB_LENGTH_SIZE) * 2 // 2 blobs in this structure
+        + MAC_SIZE + self.encrypted_challenge_response_data.len() + self.encrypted_hwid.len()
+    }
+}
+
+impl<'de> PduDecode<'de> for ClientPlatformChallengeResponse {
+    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+        let license_header = LicenseHeader::decode(src)?;
         if license_header.preamble_message_type != PreambleType::PlatformChallengeResponse {
-            return Err(ServerLicenseError::InvalidPreamble(format!(
-                "Got {:?} but expected {:?}",
-                license_header.preamble_message_type,
-                PreambleType::PlatformChallengeResponse
-            )));
+            return Err(invalid_message_err!(
+                "preambleMessageType",
+                "unexpected preamble message type"
+            ));
         }
 
-        let encrypted_challenge_blob = BlobHeader::from_buffer(&mut stream)?;
+        let encrypted_challenge_blob = BlobHeader::decode(src)?;
         if encrypted_challenge_blob.blob_type != BlobType::EncryptedData {
-            return Err(ServerLicenseError::InvalidBlobType);
+            return Err(invalid_message_err!("blobType", "unexpected blob type"));
         }
-        let mut encrypted_challenge_response_data = vec![0u8; encrypted_challenge_blob.length];
-        stream.read_exact(&mut encrypted_challenge_response_data)?;
+        ensure_size!(in: src, size: encrypted_challenge_blob.length);
+        let encrypted_challenge_response_data = src.read_slice(encrypted_challenge_blob.length).into();
 
-        let encrypted_hwid_blob = BlobHeader::from_buffer(&mut stream)?;
+        let encrypted_hwid_blob = BlobHeader::decode(src)?;
         if encrypted_hwid_blob.blob_type != BlobType::EncryptedData {
-            return Err(ServerLicenseError::InvalidBlobType);
+            return Err(invalid_message_err!("blobType", "unexpected blob type"));
         }
-        let mut encrypted_hwid = vec![0u8; encrypted_hwid_blob.length];
-        stream.read_exact(&mut encrypted_hwid)?;
+        ensure_size!(in: src, size: encrypted_hwid_blob.length);
+        let encrypted_hwid = src.read_slice(encrypted_hwid_blob.length).into();
 
-        let mut mac_data = vec![0u8; MAC_SIZE];
-        stream.read_exact(&mut mac_data)?;
+        let mac_data = src.read_slice(MAC_SIZE).into();
 
         Ok(Self {
             license_header,
@@ -135,28 +161,9 @@ impl PduParsing for ClientPlatformChallengeResponse {
             mac_data,
         })
     }
-
-    fn to_buffer(&self, mut stream: impl Write) -> Result<(), Self::Error> {
-        self.license_header.to_buffer(&mut stream)?;
-
-        BlobHeader::new(BlobType::EncryptedData, self.encrypted_challenge_response_data.len())
-            .to_buffer(&mut stream)?;
-        stream.write_all(&self.encrypted_challenge_response_data)?;
-
-        BlobHeader::new(BlobType::EncryptedData, self.encrypted_hwid.len()).to_buffer(&mut stream)?;
-        stream.write_all(&self.encrypted_hwid)?;
-
-        stream.write_all(&self.mac_data)?;
-
-        Ok(())
-    }
-
-    fn buffer_length(&self) -> usize {
-        self.license_header.buffer_length()
-        + (BLOB_TYPE_SIZE + BLOB_LENGTH_SIZE) * 2 // 2 blobs in this structure
-        + MAC_SIZE + self.encrypted_challenge_response_data.len() + self.encrypted_hwid.len()
-    }
 }
+
+impl_pdu_parsing_max!(ClientPlatformChallengeResponse);
 
 #[derive(Debug, PartialEq, FromPrimitive, ToPrimitive)]
 enum ClientType {
@@ -180,24 +187,52 @@ pub(crate) struct PlatformChallengeResponseData {
     challenge: Vec<u8>,
 }
 
-impl PduParsing for PlatformChallengeResponseData {
-    type Error = ServerLicenseError;
+impl PlatformChallengeResponseData {
+    const NAME: &'static str = "PlatformChallengeResponseData";
 
-    fn from_buffer(mut stream: impl io::Read) -> Result<Self, Self::Error> {
-        let version = stream.read_u16::<LittleEndian>()?;
+    const FIXED_PART_SIZE: usize = RESPONSE_DATA_STATIC_FIELDS_SIZE;
+}
+
+impl PduEncode for PlatformChallengeResponseData {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_size!(in: dst, size: self.size());
+
+        dst.write_u16(RESPONSE_DATA_VERSION);
+        dst.write_u16(self.client_type.to_u16().unwrap());
+        dst.write_u16(self.license_detail_level.to_u16().unwrap());
+        dst.write_u16(cast_length!("len", self.challenge.len())?);
+        dst.write_slice(&self.challenge);
+
+        Ok(())
+    }
+
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    fn size(&self) -> usize {
+        Self::FIXED_PART_SIZE + self.challenge.len()
+    }
+}
+
+impl<'de> PduDecode<'de> for PlatformChallengeResponseData {
+    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+        ensure_fixed_part_size!(in: src);
+
+        let version = src.read_u16();
         if version != RESPONSE_DATA_VERSION {
-            return Err(ServerLicenseError::InvalidChallengeResponseDataVersion);
+            return Err(invalid_message_err!("version", "invalid challenge response version"));
         }
 
-        let client_type = ClientType::from_u16(stream.read_u16::<LittleEndian>()?)
-            .ok_or(ServerLicenseError::InvalidChallengeResponseDataClientType)?;
+        let client_type = ClientType::from_u16(src.read_u16())
+            .ok_or_else(|| invalid_message_err!("clientType", "invalid client type"))?;
 
-        let license_detail_level = LicenseDetailLevel::from_u16(stream.read_u16::<LittleEndian>()?)
-            .ok_or(ServerLicenseError::InvalidChallengeResponseDataLicenseDetail)?;
+        let license_detail_level = LicenseDetailLevel::from_u16(src.read_u16())
+            .ok_or_else(|| invalid_message_err!("licenseDetailLevel", "invalid license detail level"))?;
 
-        let challenge_len = stream.read_u16::<LittleEndian>()?;
-        let mut challenge = vec![0u8; challenge_len as usize];
-        stream.read_exact(&mut challenge)?;
+        let challenge_len: usize = cast_length!("len", src.read_u16())?;
+        ensure_size!(in: src, size: challenge_len);
+        let challenge = src.read_slice(challenge_len).into();
 
         Ok(Self {
             client_type,
@@ -205,21 +240,9 @@ impl PduParsing for PlatformChallengeResponseData {
             challenge,
         })
     }
-
-    fn to_buffer(&self, mut stream: impl Write) -> Result<(), Self::Error> {
-        stream.write_u16::<LittleEndian>(RESPONSE_DATA_VERSION)?;
-        stream.write_u16::<LittleEndian>(self.client_type.to_u16().unwrap())?;
-        stream.write_u16::<LittleEndian>(self.license_detail_level.to_u16().unwrap())?;
-        stream.write_u16::<LittleEndian>(self.challenge.len() as u16)?;
-        stream.write_all(&self.challenge)?;
-
-        Ok(())
-    }
-
-    fn buffer_length(&self) -> usize {
-        RESPONSE_DATA_STATIC_FIELDS_SIZE + self.challenge.len()
-    }
 }
+
+impl_pdu_parsing_max!(PlatformChallengeResponseData);
 
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct ClientHardwareIdentification {
@@ -227,26 +250,40 @@ pub(crate) struct ClientHardwareIdentification {
     pub(crate) data: Vec<u8>,
 }
 
-impl PduParsing for ClientHardwareIdentification {
-    type Error = ServerLicenseError;
+impl ClientHardwareIdentification {
+    const NAME: &'static str = "ClientHardwareIdentification";
 
-    fn from_buffer(mut stream: impl io::Read) -> Result<Self, Self::Error> {
-        let platform_id = stream.read_u32::<LittleEndian>()?;
+    const FIXED_PART_SIZE: usize = CLIENT_HARDWARE_IDENTIFICATION_SIZE;
+}
 
-        let mut data = vec![0u8; MAC_SIZE];
-        stream.read_exact(&mut data)?;
+impl PduEncode for ClientHardwareIdentification {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_fixed_part_size!(in: dst);
 
-        Ok(Self { platform_id, data })
-    }
-
-    fn to_buffer(&self, mut stream: impl Write) -> Result<(), Self::Error> {
-        stream.write_u32::<LittleEndian>(self.platform_id)?;
-        stream.write_all(&self.data)?;
+        dst.write_u32(self.platform_id);
+        dst.write_slice(&self.data);
 
         Ok(())
     }
 
-    fn buffer_length(&self) -> usize {
-        CLIENT_HARDWARE_IDENTIFICATION_SIZE
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    fn size(&self) -> usize {
+        Self::FIXED_PART_SIZE
     }
 }
+
+impl<'de> PduDecode<'de> for ClientHardwareIdentification {
+    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+        ensure_fixed_part_size!(in: src);
+
+        let platform_id = src.read_u32();
+        let data = src.read_slice(MAC_SIZE).into();
+
+        Ok(Self { platform_id, data })
+    }
+}
+
+impl_pdu_parsing!(ClientHardwareIdentification);

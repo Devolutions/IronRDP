@@ -424,7 +424,7 @@ impl Sequence for Acceptor {
 
                 debug!(message = ?demand_active, "Send");
 
-                let written = util::encode_send_data_indication(
+                let written = util::legacy::encode_send_data_indication(
                     self.user_channel_id,
                     self.io_channel_id,
                     &demand_active,
@@ -457,8 +457,12 @@ impl Sequence for Acceptor {
 
                 let share_data = wrap_share_data(monitor_layout, self.io_channel_id);
 
-                let written =
-                    util::encode_send_data_indication(self.user_channel_id, self.io_channel_id, &share_data, output)?;
+                let written = util::legacy::encode_send_data_indication(
+                    self.user_channel_id,
+                    self.io_channel_id,
+                    &share_data,
+                    output,
+                )?;
 
                 (
                     Written::from_size(written)?,

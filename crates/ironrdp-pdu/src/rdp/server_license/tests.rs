@@ -135,23 +135,21 @@ fn buffer_length_is_correct_for_license_header() {
 
 #[test]
 fn read_license_header_reads_correctly() {
-    ServerPlatformChallenge::from_buffer(PLATFORM_CHALLENGE_BUFFER.as_ref()).unwrap();
+    decode::<ServerPlatformChallenge>(&PLATFORM_CHALLENGE_BUFFER).unwrap();
 }
 
 #[test]
 fn read_license_header_handles_valid_client_correctly() {
-    match ServerPlatformChallenge::from_buffer(STATUS_VALID_CLIENT_BUFFER.as_ref()) {
-        Err(ServerLicenseError::ValidClientStatus(_)) => (),
-        _ => panic!("The function has return an invalid error"),
+    match decode::<ServerPlatformChallenge>(&STATUS_VALID_CLIENT_BUFFER) {
+        Err(e) if matches!(e.kind(), PduErrorKind::InvalidMessage { .. }) => (),
+        e => panic!("The function has return an invalid error: {:?}", e),
     }
 }
 
 #[test]
 fn read_license_header_handles_unexpected_error_correctly() {
-    match ServerPlatformChallenge::from_buffer(UNEXPECTED_ERROR_BUFFER.as_ref()) {
-        Err(ServerLicenseError::UnexpectedServerError(error)) => {
-            assert_ne!(error.error_code, LicenseErrorCode::StatusValidClient);
-        }
-        _ => panic!("The function has return an invalid error"),
+    match decode::<ServerPlatformChallenge>(&UNEXPECTED_ERROR_BUFFER) {
+        Err(e) if matches!(e.kind(), PduErrorKind::InvalidMessage { .. }) => (),
+        e => panic!("The function has return an invalid error: {:?}", e),
     }
 }
