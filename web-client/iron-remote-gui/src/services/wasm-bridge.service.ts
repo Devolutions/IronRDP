@@ -365,9 +365,9 @@ export class WasmBridgeService {
     }
 
     private ctrlAltDel() {
-        const ctrl = scanCode('ControlLeft', OS.WINDOWS);
-        const alt = scanCode('AltLeft', OS.WINDOWS);
-        const suppr = scanCode('Delete', OS.WINDOWS);
+        const ctrl = parseInt('0x001D', 16);
+        const alt = parseInt('0x0038', 16);
+        const suppr = parseInt('0xE053', 16);
 
         this.doTransactionFromDeviceEvents([
             DeviceEvent.new_key_pressed(ctrl),
@@ -380,14 +380,8 @@ export class WasmBridgeService {
     }
 
     private sendMeta() {
-        const ctrl = scanCode('ControlLeft', OS.WINDOWS);
-        const escape = scanCode('Escape', OS.WINDOWS);
+        const meta = parseInt('0xE05B', 16);
 
-        this.doTransactionFromDeviceEvents([
-            DeviceEvent.new_key_pressed(ctrl),
-            DeviceEvent.new_key_pressed(escape),
-            DeviceEvent.new_key_released(ctrl),
-            DeviceEvent.new_key_released(escape),
-        ]);
+        this.doTransactionFromDeviceEvents([DeviceEvent.new_key_pressed(meta), DeviceEvent.new_key_released(meta)]);
     }
 }
