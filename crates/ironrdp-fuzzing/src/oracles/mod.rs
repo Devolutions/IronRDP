@@ -21,8 +21,8 @@ pub fn pdu_decode(data: &[u8]) {
     let _ = decode::<ConnectionRequest>(data);
     let _ = decode::<ConnectionConfirm>(data);
     let _ = decode::<McsMessage<'_>>(data);
-    let _ = ConnectInitial::from_buffer(data);
-    let _ = ConnectResponse::from_buffer(data);
+    let _ = decode::<ConnectInitial>(data);
+    let _ = decode::<ConnectResponse>(data);
     let _ = decode::<ClientInfoPdu>(data);
     let _ = decode::<capability_sets::CapabilitySet>(data);
     let _ = headers::ShareControlHeader::from_buffer(data);

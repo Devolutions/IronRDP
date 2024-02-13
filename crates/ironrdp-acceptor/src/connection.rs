@@ -1,7 +1,8 @@
 use std::mem;
 
 use ironrdp_connector::{
-    legacy, reason_err, ConnectorError, ConnectorErrorExt, ConnectorResult, DesktopSize, Sequence, State, Written,
+    encode_x224_packet, reason_err, ConnectorError, ConnectorErrorExt, ConnectorResult, DesktopSize, Sequence, State,
+    Written,
 };
 use ironrdp_pdu as pdu;
 use ironrdp_svc::{StaticChannelSet, SvcServerProcessor};
@@ -235,7 +236,9 @@ impl Sequence for Acceptor {
             ),
 
             AcceptorState::BasicSettingsWaitInitial { requested_protocol } => {
-                let settings_initial = legacy::decode_x224_packet::<mcs::ConnectInitial>(input)?;
+                let x224_payload = decode::<pdu::x224::X224Data<'_>>(input).map_err(ConnectorError::pdu)?;
+                let settings_initial =
+                    decode::<mcs::ConnectInitial>(x224_payload.data.as_ref()).map_err(ConnectorError::pdu)?;
 
                 debug!(message = ?settings_initial, "Received");
 
@@ -316,7 +319,7 @@ impl Sequence for Acceptor {
 
                 debug!(message = ?settings_response, "Send");
 
-                let written = legacy::encode_x224_packet(&settings_response, output)?;
+                let written = encode_x224_packet(&settings_response, output)?;
                 let channels = channels.into_iter().filter_map(|(i, c)| c.map(|c| (i, c))).collect();
 
                 (
