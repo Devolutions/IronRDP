@@ -292,6 +292,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "ironrdp-displaycontrol"
+version = "0.1.0"
+dependencies = [
+ "ironrdp-pdu",
+]
+
+[[package]]
 name = "ironrdp-error"
 version = "0.1.0"
 
@@ -310,6 +317,7 @@ dependencies = [
  "arbitrary",
  "ironrdp-cliprdr",
  "ironrdp-cliprdr-format",
+ "ironrdp-displaycontrol",
  "ironrdp-graphics",
  "ironrdp-pdu",
  "ironrdp-rdpdr",
