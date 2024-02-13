@@ -17,7 +17,6 @@ mod image;
 mod input;
 mod network_client;
 mod session;
-mod websocket;
 
 use wasm_bindgen::prelude::*;
 
