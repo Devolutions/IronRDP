@@ -1307,6 +1307,7 @@ checksum = "43aaa242d1239a8822c15c645f02166398da4f8b5c4bae795c1f5b44e9eee173"
 dependencies = [
  "futures-channel",
  "futures-core",
+ "futures-io",
  "futures-sink",
  "gloo-utils",
  "http",
