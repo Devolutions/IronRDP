@@ -13,10 +13,7 @@ fn from_buffer_correctly_parses_rdp_pdu_client_info() {
 
 #[test]
 fn from_buffer_correctly_parses_rdp_pdu_server_license() {
-    assert_eq!(
-        *SERVER_LICENSE_PDU,
-        decode(&SERVER_LICENSE_BUFFER).unwrap()
-    );
+    assert_eq!(*SERVER_LICENSE_PDU, decode(&SERVER_LICENSE_BUFFER).unwrap());
 }
 
 #[test]

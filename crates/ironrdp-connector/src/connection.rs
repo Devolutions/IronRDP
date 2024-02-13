@@ -5,14 +5,15 @@ use std::net::SocketAddr;
 use ironrdp_pdu::rdp::capability_sets::CapabilitySet;
 use ironrdp_pdu::rdp::client_info::{PerformanceFlags, TimezoneInfo};
 use ironrdp_pdu::write_buf::WriteBuf;
-use ironrdp_pdu::{encode_vec, gcc, mcs, nego, rdp, PduEncode, PduHint};
+use ironrdp_pdu::{decode, encode_vec, gcc, mcs, nego, rdp, PduEncode, PduHint};
 use ironrdp_svc::{StaticChannelSet, StaticVirtualChannel, SvcClientProcessor};
 
 use crate::channel_connection::{ChannelConnectionSequence, ChannelConnectionState};
 use crate::connection_finalization::ConnectionFinalizationSequence;
 use crate::license_exchange::LicenseExchangeSequence;
 use crate::{
-    legacy, Config, ConnectorError, ConnectorErrorExt as _, ConnectorResult, DesktopSize, Sequence, State, Written,
+    encode_x224_packet, legacy, Config, ConnectorError, ConnectorErrorExt as _, ConnectorResult, DesktopSize, Sequence,
+    State, Written,
 };
 
 const DEFAULT_POINTER_CACHE_SIZE: u16 = 32;
@@ -270,8 +271,7 @@ impl Sequence for ClientConnector {
                 )
             }
             ClientConnectorState::ConnectionInitiationWaitConfirm { requested_protocol } => {
-                let connection_confirm =
-                    ironrdp_pdu::decode::<nego::ConnectionConfirm>(input).map_err(ConnectorError::pdu)?;
+                let connection_confirm = decode::<nego::ConnectionConfirm>(input).map_err(ConnectorError::pdu)?;
 
                 debug!(message = ?connection_confirm, "Received");
 
@@ -333,7 +333,7 @@ impl Sequence for ClientConnector {
 
                 debug!(message = ?connect_initial, "Send");
 
-                let written = legacy::encode_x224_packet(&connect_initial, output)?;
+                let written = encode_x224_packet(&connect_initial, output)?;
 
                 (
                     Written::from_size(written)?,
@@ -341,7 +341,9 @@ impl Sequence for ClientConnector {
                 )
             }
             ClientConnectorState::BasicSettingsExchangeWaitResponse { connect_initial } => {
-                let connect_response = legacy::decode_x224_packet::<mcs::ConnectResponse>(input)?;
+                let x224_payload = decode::<crate::x224::X224Data<'_>>(input).map_err(ConnectorError::pdu)?;
+                let connect_response =
+                    decode::<mcs::ConnectResponse>(x224_payload.data.as_ref()).map_err(ConnectorError::pdu)?;
 
                 debug!(message = ?connect_response, "Received");
 

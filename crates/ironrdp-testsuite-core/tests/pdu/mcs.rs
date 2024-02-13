@@ -1,6 +1,6 @@
 use expect_test::expect;
-use ironrdp_pdu::mcs::*;
-use ironrdp_pdu::PduParsing as _;
+use ironrdp_pdu::{decode, PduEncode};
+use ironrdp_pdu::{encode_vec, mcs::*};
 use ironrdp_testsuite_core::mcs::*;
 use ironrdp_testsuite_core::mcs_encode_decode_test;
 
@@ -41,38 +41,36 @@ mcs_encode_decode_test! {
 
 #[test]
 fn from_buffer_correct_parses_connect_initial() {
-    let blocks = ConnectInitial::from_buffer(CONNECT_INITIAL_BUFFER.as_slice()).unwrap();
+    let blocks: ConnectInitial = decode(CONNECT_INITIAL_BUFFER.as_slice()).unwrap();
     assert_eq!(blocks, *CONNECT_INITIAL);
 }
 
 #[test]
 fn to_buffer_correct_serializes_connect_initial() {
-    let mut buf = Vec::new();
-    CONNECT_INITIAL.to_buffer(&mut buf).unwrap();
+    let buf = encode_vec(&*CONNECT_INITIAL).unwrap();
     assert_eq!(buf, CONNECT_INITIAL_BUFFER);
 }
 
 #[test]
 fn buffer_length_is_correct_for_connect_initial() {
-    let len = CONNECT_INITIAL.buffer_length();
+    let len = CONNECT_INITIAL.size();
     assert_eq!(len, CONNECT_INITIAL_BUFFER.len());
 }
 
 #[test]
 fn from_buffer_correct_parses_connect_response() {
-    let blocks = ConnectResponse::from_buffer(CONNECT_RESPONSE_BUFFER.as_slice()).unwrap();
+    let blocks: ConnectResponse = decode(CONNECT_RESPONSE_BUFFER.as_slice()).unwrap();
     assert_eq!(blocks, *CONNECT_RESPONSE);
 }
 
 #[test]
 fn to_buffer_correct_serializes_connect_response() {
-    let mut buf = Vec::new();
-    CONNECT_RESPONSE.to_buffer(&mut buf).unwrap();
+    let buf = encode_vec(&*CONNECT_RESPONSE).unwrap();
     assert_eq!(buf, CONNECT_RESPONSE_BUFFER);
 }
 
 #[test]
 fn buffer_length_is_correct_for_connect_response() {
-    let len = CONNECT_RESPONSE.buffer_length();
+    let len = CONNECT_RESPONSE.size();
     assert_eq!(len, CONNECT_RESPONSE_BUFFER.len());
 }

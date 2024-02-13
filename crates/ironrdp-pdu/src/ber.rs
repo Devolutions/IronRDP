@@ -1,6 +1,7 @@
-use std::io;
-
-use byteorder::{BigEndian, ReadBytesExt, WriteBytesExt};
+use crate::{
+    cursor::{ReadCursor, WriteCursor},
+    PduResult,
+};
 
 #[repr(u8)]
 #[allow(unused)]
@@ -31,26 +32,26 @@ enum Tag {
     Sequence = 0x10,
 }
 
-pub(crate) const SIZEOF_ENUMERATED: u16 = 3;
-pub(crate) const SIZEOF_BOOL: u16 = 3;
+pub(crate) const SIZEOF_ENUMERATED: usize = 3;
+pub(crate) const SIZEOF_BOOL: usize = 3;
 
 const TAG_MASK: u8 = 0x1F;
 
-pub(crate) fn sizeof_application_tag(tagnum: u8, length: u16) -> u16 {
+pub(crate) fn sizeof_application_tag(tagnum: u8, length: u16) -> usize {
     let tag_len = if tagnum > 0x1E { 2 } else { 1 };
 
     sizeof_length(length) + tag_len
 }
 
-pub(crate) fn sizeof_sequence_tag(length: u16) -> u16 {
+pub(crate) fn sizeof_sequence_tag(length: u16) -> usize {
     1 + sizeof_length(length)
 }
 
-pub(crate) fn sizeof_octet_string(length: u16) -> u16 {
-    1 + sizeof_length(length) + length
+pub(crate) fn sizeof_octet_string(length: u16) -> usize {
+    1 + sizeof_length(length) + length as usize
 }
 
-pub(crate) fn sizeof_integer(value: u32) -> u16 {
+pub(crate) fn sizeof_integer(value: u32) -> usize {
     if value < 0x0000_0080 {
         3
     } else if value < 0x0000_8000 {
@@ -62,244 +63,252 @@ pub(crate) fn sizeof_integer(value: u32) -> u16 {
     }
 }
 
-pub(crate) fn write_sequence_tag(mut stream: impl io::Write, length: u16) -> io::Result<usize> {
-    write_universal_tag(&mut stream, Tag::Sequence, Pc::Construct)?;
+pub(crate) fn write_sequence_tag(stream: &mut WriteCursor<'_>, length: u16) -> PduResult<usize> {
+    write_universal_tag(stream, Tag::Sequence, Pc::Construct)?;
+
     write_length(stream, length).map(|length| length + 1)
 }
 
-pub(crate) fn read_sequence_tag(mut stream: impl io::Read) -> io::Result<u16> {
-    let identifier = stream.read_u8()?;
+pub(crate) fn read_sequence_tag(stream: &mut ReadCursor<'_>) -> PduResult<u16> {
+    ensure_size!(in: stream, size: 1);
+    let identifier = stream.read_u8();
 
     if identifier != Class::Universal as u8 | Pc::Construct as u8 | (TAG_MASK & Tag::Sequence as u8) {
-        Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "invalid sequence tag identifier",
-        ))
+        Err(invalid_message_err!("identifier", "invalid sequence tag identifier"))
     } else {
         read_length(stream)
     }
 }
 
-pub(crate) fn write_application_tag(mut stream: impl io::Write, tagnum: u8, length: u16) -> io::Result<usize> {
+pub(crate) fn write_application_tag(stream: &mut WriteCursor<'_>, tagnum: u8, length: u16) -> PduResult<usize> {
+    ensure_size!(in: stream, size: sizeof_application_tag(tagnum, length));
+
     let taglen = if tagnum > 0x1E {
-        stream.write_u8(Class::Application as u8 | Pc::Construct as u8 | TAG_MASK)?;
-        stream.write_u8(tagnum)?;
+        stream.write_u8(Class::Application as u8 | Pc::Construct as u8 | TAG_MASK);
+        stream.write_u8(tagnum);
         2
     } else {
-        stream.write_u8(Class::Application as u8 | Pc::Construct as u8 | (TAG_MASK & tagnum))?;
+        stream.write_u8(Class::Application as u8 | Pc::Construct as u8 | (TAG_MASK & tagnum));
         1
     };
 
     write_length(stream, length).map(|length| length + taglen)
 }
 
-pub(crate) fn read_application_tag(mut stream: impl io::Read, tagnum: u8) -> io::Result<u16> {
-    let identifier = stream.read_u8()?;
+pub(crate) fn read_application_tag(stream: &mut ReadCursor<'_>, tagnum: u8) -> PduResult<u16> {
+    ensure_size!(in: stream, size: 1);
+    let identifier = stream.read_u8();
 
     if tagnum > 0x1E {
         if identifier != Class::Application as u8 | Pc::Construct as u8 | TAG_MASK {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "invalid application tag identifier",
-            ));
+            return Err(invalid_message_err!("identifier", "invalid application tag identifier"));
         }
-        if stream.read_u8()? != tagnum {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "invalid application tag identifier",
-            ));
+        ensure_size!(in: stream, size: 1);
+        if stream.read_u8() != tagnum {
+            return Err(invalid_message_err!("tagnum", "invalid application tag identifier"));
         }
     } else if identifier != Class::Application as u8 | Pc::Construct as u8 | (TAG_MASK & tagnum) {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "invalid application tag identifier",
-        ));
+        return Err(invalid_message_err!("identifier", "invalid application tag identifier"));
     }
 
     read_length(stream)
 }
 
-pub(crate) fn write_enumerated(mut stream: impl io::Write, enumerated: u8) -> io::Result<usize> {
+pub(crate) fn write_enumerated(stream: &mut WriteCursor<'_>, enumerated: u8) -> PduResult<usize> {
     let mut size = 0;
-    size += write_universal_tag(&mut stream, Tag::Enumerated, Pc::Primitive)?;
-    size += write_length(&mut stream, 1)?;
-    stream.write_u8(enumerated)?;
+    size += write_universal_tag(stream, Tag::Enumerated, Pc::Primitive)?;
+    size += write_length(stream, 1)?;
+    ensure_size!(in: stream, size: 1);
+    stream.write_u8(enumerated);
     size += 1;
 
     Ok(size)
 }
 
-pub(crate) fn read_enumerated(mut stream: impl io::Read, count: u8) -> io::Result<u8> {
-    read_universal_tag(&mut stream, Tag::Enumerated, Pc::Primitive)?;
+pub(crate) fn read_enumerated(stream: &mut ReadCursor<'_>, count: u8) -> PduResult<u8> {
+    read_universal_tag(stream, Tag::Enumerated, Pc::Primitive)?;
 
-    let length = read_length(&mut stream)?;
+    let length = read_length(stream)?;
     if length != 1 {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "invalid enumerated len"));
+        return Err(invalid_message_err!("len", "invalid enumerated len"));
     }
 
-    let enumerated = stream.read_u8()?;
-    if enumerated == std::u8::MAX || enumerated + 1 > count {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "invalid enumerated value"));
+    let enumerated = stream.read_u8();
+    if enumerated == u8::MAX || enumerated + 1 > count {
+        return Err(invalid_message_err!("enumerated", "invalid enumerated value"));
     }
 
     Ok(enumerated)
 }
 
-pub(crate) fn write_integer(mut stream: impl io::Write, value: u32) -> io::Result<usize> {
-    write_universal_tag(&mut stream, Tag::Integer, Pc::Primitive)?;
+pub(crate) fn write_integer(stream: &mut WriteCursor<'_>, value: u32) -> PduResult<usize> {
+    write_universal_tag(stream, Tag::Integer, Pc::Primitive)?;
 
     if value < 0x0000_0080 {
-        write_length(&mut stream, 1)?;
-        stream.write_u8(value as u8)?;
+        write_length(stream, 1)?;
+        ensure_size!(in: stream, size: 1);
+        stream.write_u8(value as u8);
 
         Ok(3)
     } else if value < 0x0000_8000 {
-        write_length(&mut stream, 2)?;
-        stream.write_u16::<BigEndian>(value as u16)?;
+        write_length(stream, 2)?;
+        ensure_size!(in: stream, size: 2);
+        stream.write_u16_be(value as u16);
 
         Ok(4)
     } else if value < 0x0080_0000 {
-        write_length(&mut stream, 3)?;
-        stream.write_u8((value >> 16) as u8)?;
-        stream.write_u16::<BigEndian>((value & 0xFFFF) as u16)?;
+        write_length(stream, 3)?;
+        ensure_size!(in: stream, size: 3);
+        stream.write_u8((value >> 16) as u8);
+        stream.write_u16_be((value & 0xFFFF) as u16);
 
         Ok(5)
     } else {
-        write_length(&mut stream, 4)?;
-        stream.write_u32::<BigEndian>(value)?;
+        write_length(stream, 4)?;
+        ensure_size!(in: stream, size: 4);
+        stream.write_u32_be(value);
 
         Ok(6)
     }
 }
 
-pub(crate) fn read_integer(mut stream: impl io::Read) -> io::Result<u64> {
-    read_universal_tag(&mut stream, Tag::Integer, Pc::Primitive)?;
-    let length = read_length(&mut stream)?;
+pub(crate) fn read_integer(stream: &mut ReadCursor<'_>) -> PduResult<u64> {
+    read_universal_tag(stream, Tag::Integer, Pc::Primitive)?;
+    let length = read_length(stream)?;
 
     if length == 1 {
-        stream.read_u8().map(u64::from)
+        ensure_size!(in: stream, size: 1);
+        Ok(u64::from(stream.read_u8()))
     } else if length == 2 {
-        stream.read_u16::<BigEndian>().map(u64::from)
+        ensure_size!(in: stream, size: 2);
+        Ok(u64::from(stream.read_u16_be()))
     } else if length == 3 {
-        let a = stream.read_u8()?;
-        let b = stream.read_u16::<BigEndian>()?;
+        ensure_size!(in: stream, size: 3);
+        let a = stream.read_u8();
+        let b = stream.read_u16_be();
 
         Ok(u64::from(b) + (u64::from(a) << 16))
     } else if length == 4 {
-        stream.read_u32::<BigEndian>().map(u64::from)
+        ensure_size!(in: stream, size: 4);
+        Ok(u64::from(stream.read_u32_be()))
     } else if length == 8 {
-        stream.read_u64::<BigEndian>()
+        ensure_size!(in: stream, size: 8);
+        Ok(stream.read_u64_be())
     } else {
-        Err(io::Error::new(io::ErrorKind::InvalidData, "invalid integer len"))
+        Err(invalid_message_err!("len", "invalid integer len"))
     }
 }
 
-pub(crate) fn write_bool(mut stream: impl io::Write, value: bool) -> io::Result<usize> {
+pub(crate) fn write_bool(stream: &mut WriteCursor<'_>, value: bool) -> PduResult<usize> {
     let mut size = 0;
-    size += write_universal_tag(&mut stream, Tag::Boolean, Pc::Primitive)?;
-    size += write_length(&mut stream, 1)?;
-    stream.write_u8(if value { 0xFF } else { 0x00 })?;
+    size += write_universal_tag(stream, Tag::Boolean, Pc::Primitive)?;
+    size += write_length(stream, 1)?;
+    stream.write_u8(if value { 0xFF } else { 0x00 });
     size += 1;
 
     Ok(size)
 }
 
-pub(crate) fn read_bool(mut stream: impl io::Read) -> io::Result<bool> {
-    read_universal_tag(&mut stream, Tag::Boolean, Pc::Primitive)?;
-    let length = read_length(&mut stream)?;
+pub(crate) fn read_bool(stream: &mut ReadCursor<'_>) -> PduResult<bool> {
+    read_universal_tag(stream, Tag::Boolean, Pc::Primitive)?;
+    let length = read_length(stream)?;
 
     if length != 1 {
-        return Err(io::Error::new(io::ErrorKind::InvalidData, "invalid integer len"));
+        return Err(invalid_message_err!("len", "invalid integer len"));
     }
 
-    Ok(stream.read_u8()? != 0)
+    Ok(stream.read_u8() != 0)
 }
 
-pub(crate) fn write_octet_string(mut stream: impl io::Write, value: &[u8]) -> io::Result<usize> {
-    let tag_size = write_octet_string_tag(&mut stream, value.len() as u16)?;
-    stream.write_all(value)?;
+pub(crate) fn write_octet_string(stream: &mut WriteCursor<'_>, value: &[u8]) -> PduResult<usize> {
+    let tag_size = write_octet_string_tag(stream, cast_length!("len", value.len())?)?;
+    ensure_size!(in: stream, size: value.len());
+    stream.write_slice(value);
     Ok(tag_size + value.len())
 }
 
-pub(crate) fn write_octet_string_tag(mut stream: impl io::Write, length: u16) -> io::Result<usize> {
-    write_universal_tag(&mut stream, Tag::OctetString, Pc::Primitive)?;
-    write_length(&mut stream, length).map(|length| length + 1)
+pub(crate) fn write_octet_string_tag(stream: &mut WriteCursor<'_>, length: u16) -> PduResult<usize> {
+    write_universal_tag(stream, Tag::OctetString, Pc::Primitive)?;
+    write_length(stream, length).map(|length| length + 1)
 }
 
-pub(crate) fn read_octet_string(mut stream: impl io::Read) -> io::Result<Vec<u8>> {
-    let length = read_octet_string_tag(&mut stream)?;
+pub(crate) fn read_octet_string(stream: &mut ReadCursor<'_>) -> PduResult<Vec<u8>> {
+    let length = cast_length!("len", read_octet_string_tag(stream)?)?;
 
-    let mut buffer = vec![0; length as usize];
-    stream.read_exact(&mut buffer)?;
+    ensure_size!(in: stream, size: length);
+    let buffer = stream.read_slice(length);
 
-    Ok(buffer)
+    Ok(buffer.into())
 }
 
-pub(crate) fn read_octet_string_tag(mut stream: impl io::Read) -> io::Result<u16> {
-    read_universal_tag(&mut stream, Tag::OctetString, Pc::Primitive)?;
+pub(crate) fn read_octet_string_tag(stream: &mut ReadCursor<'_>) -> PduResult<u16> {
+    read_universal_tag(stream, Tag::OctetString, Pc::Primitive)?;
     read_length(stream)
 }
 
-fn write_universal_tag(mut stream: impl io::Write, tag: Tag, pc: Pc) -> io::Result<usize> {
+fn write_universal_tag(stream: &mut WriteCursor<'_>, tag: Tag, pc: Pc) -> PduResult<usize> {
+    ensure_size!(in: stream, size: 1);
+
     let identifier = Class::Universal as u8 | pc as u8 | (TAG_MASK & tag as u8);
-    stream.write_u8(identifier)?;
+    stream.write_u8(identifier);
 
     Ok(1)
 }
 
-fn read_universal_tag(mut stream: impl io::Read, tag: Tag, pc: Pc) -> io::Result<()> {
-    let identifier = stream.read_u8()?;
+fn read_universal_tag(stream: &mut ReadCursor<'_>, tag: Tag, pc: Pc) -> PduResult<()> {
+    ensure_size!(in: stream, size: 1);
+
+    let identifier = stream.read_u8();
 
     if identifier != Class::Universal as u8 | pc as u8 | (TAG_MASK & tag as u8) {
-        Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "invalid universal tag identifier",
-        ))
+        Err(invalid_message_err!("identifier", "invalid universal tag identifier"))
     } else {
         Ok(())
     }
 }
 
-fn write_length(mut stream: impl io::Write, length: u16) -> io::Result<usize> {
+fn write_length(stream: &mut WriteCursor<'_>, length: u16) -> PduResult<usize> {
+    ensure_size!(in: stream, size: sizeof_length(length));
+
     if length > 0xFF {
-        stream.write_u8(0x80 ^ 0x2)?;
-        stream.write_u16::<BigEndian>(length)?;
+        stream.write_u8(0x80 ^ 0x2);
+        stream.write_u16_be(length);
 
         Ok(3)
     } else if length > 0x7F {
-        stream.write_u8(0x80 ^ 0x1)?;
-        stream.write_u8(length as u8)?;
+        stream.write_u8(0x80 ^ 0x1);
+        stream.write_u8(length as u8);
 
         Ok(2)
     } else {
-        stream.write_u8(length as u8)?;
+        stream.write_u8(length as u8);
 
         Ok(1)
     }
 }
 
-fn read_length(mut stream: impl io::Read) -> io::Result<u16> {
-    let byte = stream.read_u8()?;
+fn read_length(stream: &mut ReadCursor<'_>) -> PduResult<u16> {
+    ensure_size!(in: stream, size: 1);
+    let byte = stream.read_u8();
 
     if byte & 0x80 != 0 {
         let len = byte & !0x80;
 
         if len == 1 {
-            stream.read_u8().map(u16::from)
+            ensure_size!(in: stream, size: 1);
+            Ok(u16::from(stream.read_u8()))
         } else if len == 2 {
-            stream.read_u16::<BigEndian>()
+            ensure_size!(in: stream, size: 2);
+            Ok(stream.read_u16_be())
         } else {
-            Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "invalid length of the length",
-            ))
+            Err(invalid_message_err!("len", "invalid length of the length"))
         }
     } else {
         Ok(u16::from(byte))
     }
 }
 
-fn sizeof_length(length: u16) -> u16 {
+fn sizeof_length(length: u16) -> usize {
     if length > 0xff {
         3
     } else if length > 0x7f {
@@ -311,334 +320,381 @@ fn sizeof_length(length: u16) -> u16 {
 
 #[cfg(test)]
 mod tests {
+    use crate::PduErrorKind;
+
     use super::*;
 
     #[test]
     fn write_sequence_tag_is_correct() {
-        let mut buf = Vec::new();
-        assert_eq!(write_sequence_tag(&mut buf, 0x100).unwrap(), 4);
-        assert_eq!(buf, vec![0x30, 0x82, 0x01, 0x00]);
+        let mut buf = [0x0; 4];
+        let mut cur = WriteCursor::new(&mut buf);
+        assert_eq!(write_sequence_tag(&mut cur, 0x100).unwrap(), 4);
+        assert_eq!(buf, [0x30, 0x82, 0x01, 0x00]);
     }
 
     #[test]
     fn read_sequence_tag_returns_correct_length() {
-        let buf = vec![0x30, 0x82, 0x01, 0x00];
-        assert_eq!(read_sequence_tag(&mut buf.as_slice()).unwrap(), 0x100);
+        let buf = [0x30, 0x82, 0x01, 0x00];
+        let mut cur = ReadCursor::new(&buf);
+        assert_eq!(read_sequence_tag(&mut cur).unwrap(), 0x100);
     }
 
     #[test]
     fn read_sequence_tag_returns_error_on_invalid_tag() {
-        let buf = vec![0x3a, 0x82, 0x01, 0x00];
-        assert_eq!(
-            read_sequence_tag(&mut buf.as_slice()).unwrap_err().kind(),
-            io::ErrorKind::InvalidData
-        );
+        let buf = [0x3a, 0x82, 0x01, 0x00];
+        let mut cur = ReadCursor::new(&buf);
+        assert!(matches!(
+            read_sequence_tag(&mut cur).unwrap_err().kind(),
+            PduErrorKind::InvalidMessage { .. }
+        ));
     }
 
     #[test]
     fn write_application_tag_is_correct_with_long_tag() {
-        let mut buf = Vec::new();
-        assert_eq!(write_application_tag(&mut buf, 0x1F, 0x0F).unwrap(), 3);
-        assert_eq!(buf, vec![0x7F, 0x1F, 0x0F]);
+        let mut buf = [0x0; 3];
+        let mut cur = WriteCursor::new(&mut buf);
+        assert_eq!(write_application_tag(&mut cur, 0x1F, 0x0F).unwrap(), 3);
+        assert_eq!(buf, [0x7F, 0x1F, 0x0F]);
     }
 
     #[test]
     fn write_application_tag_is_correct_with_short_tag() {
-        let mut buf = Vec::new();
-        assert_eq!(write_application_tag(&mut buf, 0x08, 0x100).unwrap(), 4);
-        assert_eq!(buf, vec![0x68, 0x82, 0x01, 0x00]);
+        let mut buf = [0x0; 4];
+        let mut cur = WriteCursor::new(&mut buf);
+        assert_eq!(write_application_tag(&mut cur, 0x08, 0x100).unwrap(), 4);
+        assert_eq!(buf, [0x68, 0x82, 0x01, 0x00]);
     }
 
     #[test]
     fn read_application_tag_is_correct_with_long_tag() {
-        let buf = vec![0x7F, 0x1F, 0x0F];
-        assert_eq!(read_application_tag(&mut buf.as_slice(), 0x1F).unwrap(), 0x0F);
+        let buf = [0x7F, 0x1F, 0x0F];
+        let mut cur = ReadCursor::new(&buf);
+        assert_eq!(read_application_tag(&mut cur, 0x1F).unwrap(), 0x0F);
     }
 
     #[test]
     fn read_application_tag_is_correct_with_short_tag() {
-        let buf = vec![0x68, 0x82, 0x01, 0x00];
-        assert_eq!(read_application_tag(&mut buf.as_slice(), 0x08).unwrap(), 0x100);
+        let buf = [0x68, 0x82, 0x01, 0x00];
+        let mut cur = ReadCursor::new(&buf);
+        assert_eq!(read_application_tag(&mut cur, 0x08).unwrap(), 0x100);
     }
 
     #[test]
     fn read_application_tag_returns_error_on_invalid_long_tag() {
-        let buf = vec![0x68, 0x1B, 0x0F];
-        assert_eq!(
-            read_application_tag(&mut buf.as_slice(), 0x1F).unwrap_err().kind(),
-            io::ErrorKind::InvalidData
-        );
+        let buf = [0x68, 0x1B, 0x0F];
+        let mut cur = ReadCursor::new(&buf);
+        assert!(matches!(
+            read_application_tag(&mut cur, 0x1F).unwrap_err().kind(),
+            PduErrorKind::InvalidMessage { .. }
+        ));
     }
 
     #[test]
     fn read_application_tag_returns_error_on_invalid_long_tag_value() {
-        let buf = vec![0x7F, 0x1B, 0x0F];
-        assert_eq!(
-            read_application_tag(&mut buf.as_slice(), 0x1F).unwrap_err().kind(),
-            io::ErrorKind::InvalidData
-        );
+        let buf = [0x7F, 0x1B, 0x0F];
+        let mut cur = ReadCursor::new(&buf);
+        assert!(matches!(
+            read_application_tag(&mut cur, 0x1F).unwrap_err().kind(),
+            PduErrorKind::InvalidMessage { .. }
+        ));
     }
 
     #[test]
     fn read_application_tag_returns_error_on_invalid_short_tag() {
-        let buf = vec![0x67, 0x0F];
-        assert_eq!(
-            read_application_tag(&mut buf.as_slice(), 0x08).unwrap_err().kind(),
-            io::ErrorKind::InvalidData
-        );
+        let buf = [0x67, 0x0F];
+        let mut cur = ReadCursor::new(&buf);
+        assert!(matches!(
+            read_application_tag(&mut cur, 0x08).unwrap_err().kind(),
+            PduErrorKind::InvalidMessage { .. }
+        ));
     }
 
     #[test]
     fn write_enumerated_is_correct() {
-        let mut buf = Vec::new();
-        assert_eq!(write_enumerated(&mut buf, 0x0F).unwrap(), 3);
-        assert_eq!(buf, vec![0x0A, 0x01, 0x0F]);
+        let mut buf = [0x0; 3];
+        let mut cur = WriteCursor::new(&mut buf);
+        assert_eq!(write_enumerated(&mut cur, 0x0F).unwrap(), 3);
+        assert_eq!(buf, [0x0A, 0x01, 0x0F]);
     }
 
     #[test]
     fn read_enumerated_is_correct() {
-        let buf = vec![0x0A, 0x01, 0x0F];
-        assert_eq!(read_enumerated(&mut buf.as_slice(), 0x10).unwrap(), 0x0F);
+        let buf = [0x0A, 0x01, 0x0F];
+        let mut cur = ReadCursor::new(&buf);
+        assert_eq!(read_enumerated(&mut cur, 0x10).unwrap(), 0x0F);
     }
 
     #[test]
     fn read_enumerated_returns_error_on_wrong_tag() {
-        let buf = vec![0x0B, 0x01, 0x0F];
-        assert_eq!(
-            read_enumerated(&mut buf.as_slice(), 0x10).unwrap_err().kind(),
-            io::ErrorKind::InvalidData
-        );
+        let buf = [0x0B, 0x01, 0x0F];
+        let mut cur = ReadCursor::new(&buf);
+        assert!(matches!(
+            read_enumerated(&mut cur, 0x10).unwrap_err().kind(),
+            PduErrorKind::InvalidMessage { .. }
+        ));
     }
 
     #[test]
     fn read_enumerated_returns_error_on_invalid_len() {
-        let buf = vec![0x0A, 0x02, 0x0F];
-        assert_eq!(
-            read_enumerated(&mut buf.as_slice(), 0x10).unwrap_err().kind(),
-            io::ErrorKind::InvalidData
-        );
+        let buf = [0x0A, 0x02, 0x0F];
+        let mut cur = ReadCursor::new(&buf);
+        assert!(matches!(
+            read_enumerated(&mut cur, 0x10).unwrap_err().kind(),
+            PduErrorKind::InvalidMessage { .. }
+        ));
     }
 
     #[test]
     fn read_enumerated_returns_error_on_invalid_variant() {
-        let buf = vec![0x0A, 0x01, 0x0F];
-        assert_eq!(
-            read_enumerated(&mut buf.as_slice(), 0x05).unwrap_err().kind(),
-            io::ErrorKind::InvalidData
-        );
+        let buf = [0x0A, 0x01, 0x0F];
+        let mut cur = ReadCursor::new(&buf);
+        assert!(matches!(
+            read_enumerated(&mut cur, 0x05).unwrap_err().kind(),
+            PduErrorKind::InvalidMessage { .. }
+        ));
     }
 
     #[test]
     fn write_bool_true_is_correct() {
-        let mut buf = Vec::new();
-        assert_eq!(write_bool(&mut buf, true).unwrap(), 3);
-        assert_eq!(buf, vec![0x01, 0x01, 0xFF]);
+        let mut buf = [0x0; 3];
+        let mut cur = WriteCursor::new(&mut buf);
+        assert_eq!(write_bool(&mut cur, true).unwrap(), 3);
+        assert_eq!(buf, [0x01, 0x01, 0xFF]);
     }
 
     #[test]
     fn write_bool_false_is_correct() {
-        let mut buf = Vec::new();
-        assert_eq!(write_bool(&mut buf, false).unwrap(), 3);
-        assert_eq!(buf, vec![0x01, 0x01, 0x00]);
+        let mut buf = [0x0; 3];
+        let mut cur = WriteCursor::new(&mut buf);
+        assert_eq!(write_bool(&mut cur, false).unwrap(), 3);
+        assert_eq!(buf, [0x01, 0x01, 0x00]);
     }
 
     #[test]
     fn read_bool_true_is_correct() {
         let buf = vec![0x01, 0x01, 0xFF];
-        assert!(read_bool(&mut buf.as_slice()).unwrap());
+        let mut cur = ReadCursor::new(&buf);
+        assert!(read_bool(&mut cur).unwrap());
     }
 
     #[test]
     fn read_bool_false_is_correct() {
-        let buf = vec![0x01, 0x01, 0x00];
-        assert!(!read_bool(&mut buf.as_slice()).unwrap());
+        let buf = [0x01, 0x01, 0x00];
+        let mut cur = ReadCursor::new(&buf);
+        assert!(!read_bool(&mut cur).unwrap());
     }
 
     #[test]
     fn read_bool_returns_error_on_wrong_tag() {
-        let buf = vec![0x0A, 0x01, 0xFF];
-        assert_eq!(
-            read_bool(&mut buf.as_slice()).unwrap_err().kind(),
-            io::ErrorKind::InvalidData
-        );
+        let buf = [0x0A, 0x01, 0xFF];
+        let mut cur = ReadCursor::new(&buf);
+        assert!(matches!(
+            read_bool(&mut cur).unwrap_err().kind(),
+            PduErrorKind::InvalidMessage { .. }
+        ));
     }
 
     #[test]
     fn read_bool_returns_error_on_invalid_len() {
-        let buf = vec![0x01, 0x02, 0x0F];
-        assert_eq!(
-            read_bool(&mut buf.as_slice()).unwrap_err().kind(),
-            io::ErrorKind::InvalidData
-        );
+        let buf = [0x01, 0x02, 0x0F];
+        let mut cur = ReadCursor::new(&buf);
+        assert!(matches!(
+            read_bool(&mut cur).unwrap_err().kind(),
+            PduErrorKind::InvalidMessage { .. }
+        ));
     }
 
     #[test]
     fn write_octet_string_tag_is_correct() {
-        let mut buf = Vec::new();
-        assert_eq!(write_octet_string_tag(&mut buf, 0x0F).unwrap(), 2);
-        assert_eq!(buf, vec![0x04, 0x0F]);
+        let mut buf = [0x0; 2];
+        let mut cur = WriteCursor::new(&mut buf);
+        assert_eq!(write_octet_string_tag(&mut cur, 0x0F).unwrap(), 2);
+        assert_eq!(buf, [0x04, 0x0F]);
     }
 
     #[test]
     fn read_octet_string_tag_is_correct() {
-        let buf = vec![0x04, 0x0F];
-        assert_eq!(read_octet_string_tag(&mut buf.as_slice()).unwrap(), 0x0F);
+        let buf = [0x04, 0x0F];
+        let mut cur = ReadCursor::new(&buf);
+        assert_eq!(read_octet_string_tag(&mut cur).unwrap(), 0x0F);
     }
 
     #[test]
     fn read_octet_string_tag_returns_error_on_wrong_tag() {
-        let buf = vec![0x05, 0x0F];
-        assert_eq!(
-            read_octet_string_tag(&mut buf.as_slice()).unwrap_err().kind(),
-            io::ErrorKind::InvalidData
-        );
+        let buf = [0x05, 0x0F];
+        let mut cur = ReadCursor::new(&buf);
+        assert!(matches!(
+            read_octet_string_tag(&mut cur).unwrap_err().kind(),
+            PduErrorKind::InvalidMessage { .. }
+        ));
     }
 
     #[test]
     fn write_octet_string_is_correct() {
-        let mut buf = Vec::new();
+        let mut buf = [0x0; 7];
+        let mut cur = WriteCursor::new(&mut buf);
         let string = [0x68, 0x65, 0x6c, 0x6c, 0x6f];
         let expected: Vec<_> = [0x04, 0x05].iter().chain(string.iter()).cloned().collect();
-        assert_eq!(write_octet_string(&mut buf, &string).unwrap(), 7);
-        assert_eq!(buf, expected);
+        assert_eq!(write_octet_string(&mut cur, &string).unwrap(), 7);
+        assert_eq!(buf, expected.as_slice());
     }
 
     #[test]
     fn read_octet_string_is_correct() {
-        let buf = vec![0x04, 0x03, 0x00, 0x01, 0x02];
-        assert_eq!(read_octet_string(&mut buf.as_slice()).unwrap(), vec![0x00, 0x01, 0x02]);
+        let buf = [0x04, 0x03, 0x00, 0x01, 0x02];
+        let mut cur = ReadCursor::new(&buf);
+        assert_eq!(read_octet_string(&mut cur).unwrap(), vec![0x00, 0x01, 0x02]);
     }
 
     #[test]
     fn write_length_is_correct_with_3_byte_length() {
-        let mut buf = Vec::new();
-        assert_eq!(write_length(&mut buf, 0x100).unwrap(), 3);
-        assert_eq!(buf, vec![0x82, 0x01, 0x00]);
+        let mut buf = [0x0; 3];
+        let mut cur = WriteCursor::new(&mut buf);
+        assert_eq!(write_length(&mut cur, 0x100).unwrap(), 3);
+        assert_eq!(buf, [0x82, 0x01, 0x00]);
     }
 
     #[test]
     fn write_length_is_correct_with_2_byte_length() {
-        let mut buf = Vec::new();
-        assert_eq!(write_length(&mut buf, 0xFA).unwrap(), 2);
-        assert_eq!(buf, vec![0x81, 0xFA]);
+        let mut buf = [0x0; 2];
+        let mut cur = WriteCursor::new(&mut buf);
+        assert_eq!(write_length(&mut cur, 0xFA).unwrap(), 2);
+        assert_eq!(buf, [0x81, 0xFA]);
     }
 
     #[test]
     fn write_length_is_correct_with_1_byte_length() {
-        let mut buf = Vec::new();
-        assert_eq!(write_length(&mut buf, 0x70).unwrap(), 1);
-        assert_eq!(buf, vec![0x70]);
+        let mut buf = [0x0];
+        let mut cur = WriteCursor::new(&mut buf);
+        assert_eq!(write_length(&mut cur, 0x70).unwrap(), 1);
+        assert_eq!(buf, [0x70]);
     }
 
     #[test]
     fn read_length_is_correct_with_3_byte_length() {
-        let buf = vec![0x82, 0x01, 0x00];
-        assert_eq!(read_length(&mut buf.as_slice()).unwrap(), 0x100);
+        let buf = [0x82, 0x01, 0x00];
+        let mut cur = ReadCursor::new(&buf);
+        assert_eq!(read_length(&mut cur).unwrap(), 0x100);
     }
 
     #[test]
     fn read_length_is_correct_with_2_byte_length() {
-        let buf = vec![0x81, 0xFA];
-        assert_eq!(read_length(&mut buf.as_slice()).unwrap(), 0xFA);
+        let buf = [0x81, 0xFA];
+        let mut cur = ReadCursor::new(&buf);
+        assert_eq!(read_length(&mut cur).unwrap(), 0xFA);
     }
 
     #[test]
     fn read_length_is_correct_with_1_byte_length() {
-        let buf = vec![0x70];
-        assert_eq!(read_length(&mut buf.as_slice()).unwrap(), 0x70);
+        let buf = [0x70];
+        let mut cur = ReadCursor::new(&buf);
+        assert_eq!(read_length(&mut cur).unwrap(), 0x70);
     }
 
     #[test]
     fn read_length_returns_error_on_invalid_length() {
-        let buf = vec![0x8a, 0x1];
-        assert_eq!(
-            read_length(&mut buf.as_slice()).unwrap_err().kind(),
-            io::ErrorKind::InvalidData
-        );
+        let buf = [0x8a, 0x1];
+        let mut cur = ReadCursor::new(&buf);
+        assert!(matches!(
+            read_length(&mut cur).unwrap_err().kind(),
+            PduErrorKind::InvalidMessage { .. }
+        ));
     }
 
     #[test]
     fn write_integer_is_correct_with_4_byte_integer() {
-        let mut buf = Vec::new();
-        assert_eq!(write_integer(&mut buf, 0x0080_0000).unwrap(), 6);
-        assert_eq!(buf, vec![0x02, 0x04, 0x00, 0x80, 0x00, 0x00]);
+        let mut buf = [0x0; 6];
+        let mut cur = WriteCursor::new(&mut buf);
+        assert_eq!(write_integer(&mut cur, 0x0080_0000).unwrap(), 6);
+        assert_eq!(buf, [0x02, 0x04, 0x00, 0x80, 0x00, 0x00]);
     }
 
     #[test]
     fn write_integer_is_correct_with_3_byte_integer() {
-        let mut buf = Vec::new();
-        assert_eq!(write_integer(&mut buf, 0x80000).unwrap(), 5);
-        assert_eq!(buf, vec![0x02, 0x03, 0x08, 0x00, 0x00]);
+        let mut buf = [0x0; 5];
+        let mut cur = WriteCursor::new(&mut buf);
+        assert_eq!(write_integer(&mut cur, 0x80000).unwrap(), 5);
+        assert_eq!(buf, [0x02, 0x03, 0x08, 0x00, 0x00]);
     }
 
     #[test]
     fn write_integer_is_correct_with_2_byte_integer() {
-        let mut buf = Vec::new();
-        assert_eq!(write_integer(&mut buf, 0x800).unwrap(), 4);
-        assert_eq!(buf, vec![0x02, 0x02, 0x08, 0x00]);
+        let mut buf = [0x0; 4];
+        let mut cur = WriteCursor::new(&mut buf);
+        assert_eq!(write_integer(&mut cur, 0x800).unwrap(), 4);
+        assert_eq!(buf, [0x02, 0x02, 0x08, 0x00]);
     }
 
     #[test]
     fn write_integer_is_correct_with_1_byte_integer() {
-        let mut buf = Vec::new();
-        assert_eq!(write_integer(&mut buf, 0x79).unwrap(), 3);
-        assert_eq!(buf, vec![0x02, 0x01, 0x79]);
+        let mut buf = [0x0; 3];
+        let mut cur = WriteCursor::new(&mut buf);
+        assert_eq!(write_integer(&mut cur, 0x79).unwrap(), 3);
+        assert_eq!(buf, [0x02, 0x01, 0x79]);
     }
 
     #[test]
     fn read_integer_is_correct_with_8_byte_integer() {
-        let buf = vec![0x02, 0x08, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
-        assert_eq!(read_integer(&mut buf.as_slice()).unwrap(), 0x0080_0000_0000_0000);
+        let buf = [0x02, 0x08, 0x00, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
+        let mut cur = ReadCursor::new(&buf);
+        assert_eq!(read_integer(&mut cur).unwrap(), 0x0080_0000_0000_0000);
     }
 
     #[test]
     fn read_integer_is_correct_with_4_byte_integer() {
-        let buf = vec![0x02, 0x04, 0x00, 0x80, 0x00, 0x00];
-        assert_eq!(read_integer(&mut buf.as_slice()).unwrap(), 0x0080_0000);
+        let buf = [0x02, 0x04, 0x00, 0x80, 0x00, 0x00];
+        let mut cur = ReadCursor::new(&buf);
+        assert_eq!(read_integer(&mut cur).unwrap(), 0x0080_0000);
     }
 
     #[test]
     fn read_integer_is_correct_with_3_byte_integer() {
-        let buf = vec![0x02, 0x03, 0x08, 0x00, 0x00];
-        assert_eq!(read_integer(&mut buf.as_slice()).unwrap(), 0x80000);
+        let buf = [0x02, 0x03, 0x08, 0x00, 0x00];
+        let mut cur = ReadCursor::new(&buf);
+        assert_eq!(read_integer(&mut cur).unwrap(), 0x80000);
     }
 
     #[test]
     fn read_integer_is_correct_with_2_byte_integer() {
-        let buf = vec![0x02, 0x02, 0x08, 0x00];
-        assert_eq!(read_integer(&mut buf.as_slice()).unwrap(), 0x800);
+        let buf = [0x02, 0x02, 0x08, 0x00];
+        let mut cur = ReadCursor::new(&buf);
+        assert_eq!(read_integer(&mut cur).unwrap(), 0x800);
     }
 
     #[test]
     fn read_integer_is_correct_with_1_byte_integer() {
-        let buf = vec![0x02, 0x01, 0x79];
-        assert_eq!(read_integer(&mut buf.as_slice()).unwrap(), 0x79);
+        let buf = [0x02, 0x01, 0x79];
+        let mut cur = ReadCursor::new(&buf);
+        assert_eq!(read_integer(&mut cur).unwrap(), 0x79);
     }
 
     #[test]
     fn read_integer_returns_error_on_incorrect_len() {
-        let buf = vec![0x02, 0x06, 0x79];
-        assert_eq!(
-            read_integer(&mut buf.as_slice()).unwrap_err().kind(),
-            io::ErrorKind::InvalidData
-        );
+        let buf = [0x02, 0x06, 0x79];
+        let mut cur = ReadCursor::new(&buf);
+        assert!(matches!(
+            read_integer(&mut cur).unwrap_err().kind(),
+            PduErrorKind::InvalidMessage { .. }
+        ));
     }
 
     #[test]
     fn write_universal_tag_primitive_integer_is_correct() {
-        let mut buf = Vec::new();
-        assert_eq!(write_universal_tag(&mut buf, Tag::Integer, Pc::Primitive).unwrap(), 1);
-        assert_eq!(buf, vec![0x02]);
+        let mut buf = [0x0];
+        let mut cur = WriteCursor::new(&mut buf);
+        assert_eq!(write_universal_tag(&mut cur, Tag::Integer, Pc::Primitive).unwrap(), 1);
+        assert_eq!(buf, [0x02]);
     }
 
     #[test]
     fn write_universal_tag_construct_enumerated_is_correct() {
-        let mut buf = Vec::new();
+        let mut buf = [0x0];
+        let mut cur = WriteCursor::new(&mut buf);
         assert_eq!(
-            write_universal_tag(&mut buf, Tag::Enumerated, Pc::Construct).unwrap(),
+            write_universal_tag(&mut cur, Tag::Enumerated, Pc::Construct).unwrap(),
             1
         );
-        assert_eq!(buf, vec![0x2A]);
+        assert_eq!(buf, [0x2A]);
     }
 
     #[test]

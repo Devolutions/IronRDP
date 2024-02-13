@@ -125,8 +125,12 @@ impl Sequence for FinalizationSequence {
                 debug!(message = ?synchronize_confirm, "Send");
 
                 let share_data = wrap_share_data(synchronize_confirm, self.io_channel_id);
-                let written =
-                    util::legacy::encode_send_data_indication(self.user_channel_id, self.io_channel_id, &share_data, output)?;
+                let written = util::legacy::encode_send_data_indication(
+                    self.user_channel_id,
+                    self.io_channel_id,
+                    &share_data,
+                    output,
+                )?;
 
                 (
                     Written::from_size(written)?,
@@ -140,8 +144,12 @@ impl Sequence for FinalizationSequence {
                 debug!(message = ?cooperate_confirm, "Send");
 
                 let share_data = wrap_share_data(cooperate_confirm, self.io_channel_id);
-                let written =
-                    util::legacy::encode_send_data_indication(self.user_channel_id, self.io_channel_id, &share_data, output)?;
+                let written = util::legacy::encode_send_data_indication(
+                    self.user_channel_id,
+                    self.io_channel_id,
+                    &share_data,
+                    output,
+                )?;
 
                 (
                     Written::from_size(written)?,
@@ -155,8 +163,12 @@ impl Sequence for FinalizationSequence {
                 debug!(message = ?control_confirm, "Send");
 
                 let share_data = wrap_share_data(control_confirm, self.io_channel_id);
-                let written =
-                    util::legacy::encode_send_data_indication(self.user_channel_id, self.io_channel_id, &share_data, output)?;
+                let written = util::legacy::encode_send_data_indication(
+                    self.user_channel_id,
+                    self.io_channel_id,
+                    &share_data,
+                    output,
+                )?;
 
                 (Written::from_size(written)?, FinalizationState::SendFontMap)
             }
@@ -167,8 +179,12 @@ impl Sequence for FinalizationSequence {
                 debug!(message = ?font_map, "Send");
 
                 let share_data = wrap_share_data(font_map, self.io_channel_id);
-                let written =
-                    util::legacy::encode_send_data_indication(self.user_channel_id, self.io_channel_id, &share_data, output)?;
+                let written = util::legacy::encode_send_data_indication(
+                    self.user_channel_id,
+                    self.io_channel_id,
+                    &share_data,
+                    output,
+                )?;
 
                 (Written::from_size(written)?, FinalizationState::Finished)
             }
