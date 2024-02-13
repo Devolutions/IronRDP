@@ -121,8 +121,6 @@ impl<'de> PduDecode<'de> for Monitor {
     }
 }
 
-impl_pdu_parsing!(Monitor);
-
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
     pub struct MonitorFlags: u32 {

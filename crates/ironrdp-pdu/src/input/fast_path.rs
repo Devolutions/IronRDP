@@ -222,8 +222,6 @@ impl<'de> PduDecode<'de> for FastPathInputEvent {
     }
 }
 
-impl_pdu_parsing!(FastPathInputEvent);
-
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
     pub struct KeyboardFlags: u8 {
@@ -298,5 +296,3 @@ impl<'de> PduDecode<'de> for FastPathInput {
         Ok(Self(events))
     }
 }
-
-impl_pdu_parsing_max!(FastPathInput);

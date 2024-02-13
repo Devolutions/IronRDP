@@ -63,8 +63,6 @@ impl<'de> PduDecode<'de> for BitmapCache {
     }
 }
 
-impl_pdu_parsing!(BitmapCache);
-
 #[derive(Debug, PartialEq, Eq, Copy, Clone, Default)]
 pub struct CacheEntry {
     pub entries: u16,
@@ -177,8 +175,6 @@ impl<'de> PduDecode<'de> for BitmapCacheRev2 {
         })
     }
 }
-
-impl_pdu_parsing!(BitmapCacheRev2);
 
 #[derive(Debug, PartialEq, Eq, Copy, Clone, Default)]
 pub struct CellInfo {

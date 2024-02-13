@@ -222,8 +222,6 @@ impl<'de> PduDecode<'de> for ClientNewLicenseRequest {
     }
 }
 
-impl_pdu_parsing_max!(ClientNewLicenseRequest);
-
 fn salted_hash(salt: &[u8], salt_first: &[u8], salt_second: &[u8], input: &[u8]) -> Vec<u8> {
     let mut hasher = sha1::Sha1::new();
     hasher.update([input, salt, salt_first, salt_second].concat().as_slice());

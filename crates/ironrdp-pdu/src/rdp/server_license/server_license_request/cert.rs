@@ -97,8 +97,6 @@ impl<'de> PduDecode<'de> for X509CertificateChain {
     }
 }
 
-impl_pdu_parsing_max!(X509CertificateChain);
-
 /// [2.2.1.4.3.1.1] Server Proprietary Certificate (PROPRIETARYSERVERCERTIFICATE)
 ///
 /// [2.2.1.4.3.1.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/a37d449a-73ac-4f00-9b9d-56cefc954634
@@ -167,8 +165,6 @@ impl<'de> PduDecode<'de> for ProprietaryCertificate {
         Ok(Self { public_key, signature })
     }
 }
-
-impl_pdu_parsing!(ProprietaryCertificate);
 
 #[derive(PartialEq, Eq, Debug, Clone)]
 pub struct RsaPublicKey {
@@ -245,5 +241,3 @@ impl<'de> PduDecode<'de> for RsaPublicKey {
         })
     }
 }
-
-impl_pdu_parsing_max!(RsaPublicKey);

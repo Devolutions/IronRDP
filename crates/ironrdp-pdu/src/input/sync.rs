@@ -46,8 +46,6 @@ impl<'de> PduDecode<'de> for SyncPdu {
     }
 }
 
-impl_pdu_parsing!(SyncPdu);
-
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
     pub struct SyncToggleFlags: u32 {

@@ -54,5 +54,3 @@ impl<'de> PduDecode<'de> for OffscreenBitmapCache {
         })
     }
 }
-
-impl_pdu_parsing!(OffscreenBitmapCache);

@@ -42,8 +42,6 @@ impl<'de> PduDecode<'de> for LargePointer {
     }
 }
 
-impl_pdu_parsing!(LargePointer);
-
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
     pub struct LargePointerSupportFlags: u16 {

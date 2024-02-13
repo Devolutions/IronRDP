@@ -68,5 +68,3 @@ impl<'de> PduDecode<'de> for ServerPlatformChallenge {
         })
     }
 }
-
-impl_pdu_parsing!(ServerPlatformChallenge);

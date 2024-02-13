@@ -91,8 +91,6 @@ impl<'de> PduDecode<'de> for ServerUpgradeLicense {
     }
 }
 
-impl_pdu_parsing_max!(ServerUpgradeLicense);
-
 #[derive(Debug, PartialEq, Eq)]
 pub struct NewLicenseInformation {
     pub version: u32,
@@ -181,5 +179,3 @@ impl<'de> PduDecode<'de> for NewLicenseInformation {
         })
     }
 }
-
-impl_pdu_parsing_max!(NewLicenseInformation);

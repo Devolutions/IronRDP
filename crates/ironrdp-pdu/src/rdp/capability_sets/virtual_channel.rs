@@ -88,5 +88,3 @@ impl<'de> PduDecode<'de> for VirtualChannel {
         Ok(virtual_channel_pdu)
     }
 }
-
-impl_pdu_parsing_max!(VirtualChannel);

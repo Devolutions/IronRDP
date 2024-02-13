@@ -163,5 +163,3 @@ impl<'de> PduDecode<'de> for Order {
         })
     }
 }
-
-impl_pdu_parsing!(Order);

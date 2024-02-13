@@ -42,8 +42,6 @@ impl<'de> PduDecode<'de> for FrameAcknowledge {
     }
 }
 
-impl_pdu_parsing!(FrameAcknowledge);
-
 #[cfg(test)]
 mod test {
     use super::*;

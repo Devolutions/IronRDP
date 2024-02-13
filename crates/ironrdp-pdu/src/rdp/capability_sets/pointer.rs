@@ -52,5 +52,3 @@ impl<'de> PduDecode<'de> for Pointer {
         })
     }
 }
-
-impl_pdu_parsing!(Pointer);

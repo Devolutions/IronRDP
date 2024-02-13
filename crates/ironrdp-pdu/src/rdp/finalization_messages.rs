@@ -56,8 +56,6 @@ impl<'de> PduDecode<'de> for SynchronizePdu {
     }
 }
 
-impl_pdu_parsing!(SynchronizePdu);
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ControlPdu {
     pub action: ControlAction,
@@ -107,8 +105,6 @@ impl<'de> PduDecode<'de> for ControlPdu {
         })
     }
 }
-
-impl_pdu_parsing!(ControlPdu);
 
 /// [2.2.1.22.1] Font Map PDU Data (TS_FONT_MAP_PDU)
 ///
@@ -179,8 +175,6 @@ impl<'de> PduDecode<'de> for FontPdu {
     }
 }
 
-impl_pdu_parsing!(FontPdu);
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MonitorLayoutPdu {
     pub monitors: Vec<gcc::Monitor>,
@@ -231,8 +225,6 @@ impl<'de> PduDecode<'de> for MonitorLayoutPdu {
         Ok(Self { monitors })
     }
 }
-
-impl_pdu_parsing_max!(MonitorLayoutPdu);
 
 #[repr(u16)]
 #[derive(Debug, Clone, PartialEq, Eq, FromPrimitive, ToPrimitive)]

@@ -49,8 +49,6 @@ impl<'de> PduDecode<'de> for ScanCodePdu {
     }
 }
 
-impl_pdu_parsing!(ScanCodePdu);
-
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
     pub struct KeyboardFlags: u16 {

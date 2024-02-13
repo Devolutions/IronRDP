@@ -41,8 +41,6 @@ impl<'de> PduDecode<'de> for ClientMessageChannelData {
     }
 }
 
-impl_pdu_parsing!(ClientMessageChannelData);
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServerMessageChannelData {
     pub mcs_message_channel_id: u16,
@@ -81,5 +79,3 @@ impl<'de> PduDecode<'de> for ServerMessageChannelData {
         Ok(Self { mcs_message_channel_id })
     }
 }
-
-impl_pdu_parsing!(ServerMessageChannelData);

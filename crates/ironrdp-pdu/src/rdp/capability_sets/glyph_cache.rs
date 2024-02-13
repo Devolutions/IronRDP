@@ -122,5 +122,3 @@ impl<'de> PduDecode<'de> for GlyphCache {
         })
     }
 }
-
-impl_pdu_parsing!(GlyphCache);

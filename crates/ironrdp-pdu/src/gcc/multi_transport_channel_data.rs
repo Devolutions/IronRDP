@@ -43,8 +43,6 @@ impl<'de> PduDecode<'de> for MultiTransportChannelData {
     }
 }
 
-impl_pdu_parsing!(MultiTransportChannelData);
-
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
     pub struct MultiTransportFlags: u32 {

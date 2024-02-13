@@ -172,8 +172,6 @@ impl<'de> PduDecode<'de> for ConferenceCreateRequest {
     }
 }
 
-impl_pdu_parsing_max!(ConferenceCreateRequest);
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ConferenceCreateResponse {
     pub user_id: u16,
@@ -322,5 +320,3 @@ impl<'de> PduDecode<'de> for ConferenceCreateResponse {
         Ok(Self { user_id, gcc_blocks })
     }
 }
-
-impl_pdu_parsing_max!(ConferenceCreateResponse);

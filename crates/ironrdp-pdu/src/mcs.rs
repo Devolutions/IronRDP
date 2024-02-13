@@ -1154,8 +1154,6 @@ mod legacy {
         }
     }
 
-    impl_pdu_parsing_max!(DomainParameters);
-
     #[derive(Debug, Error)]
     pub enum McsError {
         #[error("IO error")]

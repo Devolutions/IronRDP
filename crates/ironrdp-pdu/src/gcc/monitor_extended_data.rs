@@ -131,8 +131,6 @@ impl<'de> PduDecode<'de> for ExtendedMonitorInfo {
     }
 }
 
-impl_pdu_parsing!(ExtendedMonitorInfo);
-
 #[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive, ToPrimitive)]
 pub enum MonitorOrientation {
     Landscape = 0,

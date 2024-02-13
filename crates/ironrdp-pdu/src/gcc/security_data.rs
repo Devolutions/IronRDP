@@ -71,8 +71,6 @@ impl<'de> PduDecode<'de> for ClientSecurityData {
     }
 }
 
-impl_pdu_parsing!(ClientSecurityData);
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServerSecurityData {
     pub encryption_method: EncryptionMethod,

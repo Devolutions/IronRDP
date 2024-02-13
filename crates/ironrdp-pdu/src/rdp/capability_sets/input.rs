@@ -104,5 +104,3 @@ impl<'de> PduDecode<'de> for Input {
         })
     }
 }
-
-impl_pdu_parsing!(Input);

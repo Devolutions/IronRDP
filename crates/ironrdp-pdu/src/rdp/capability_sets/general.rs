@@ -198,5 +198,3 @@ impl<'de> PduDecode<'de> for General {
         })
     }
 }
-
-impl_pdu_parsing!(General);

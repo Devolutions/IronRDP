@@ -45,8 +45,6 @@ impl<'de> PduDecode<'de> for ServerSetErrorInfoPdu {
     }
 }
 
-impl_pdu_parsing!(ServerSetErrorInfoPdu);
-
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum ErrorInfo {
     ProtocolIndependentCode(ProtocolIndependentCode),

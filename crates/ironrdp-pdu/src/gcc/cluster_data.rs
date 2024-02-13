@@ -68,8 +68,6 @@ impl<'de> PduDecode<'de> for ClientClusterData {
     }
 }
 
-impl_pdu_parsing!(ClientClusterData);
-
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
     pub struct RedirectionFlags: u32 {

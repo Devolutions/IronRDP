@@ -37,5 +37,3 @@ impl<'de> PduDecode<'de> for UnusedPdu {
         Ok(Self)
     }
 }
-
-impl_pdu_parsing!(UnusedPdu);
