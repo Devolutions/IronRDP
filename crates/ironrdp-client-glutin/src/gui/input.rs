@@ -7,7 +7,6 @@ use glutin::event::{ElementState, Event, WindowEvent};
 use ironrdp::pdu::input::fast_path::{FastPathInput, FastPathInputEvent, KeyboardFlags};
 use ironrdp::pdu::input::mouse::PointerFlags;
 use ironrdp::pdu::input::MousePdu;
-use ironrdp::pdu::PduParsing;
 use ironrdp::session::ErasedWriter;
 use tokio::sync::Mutex;
 

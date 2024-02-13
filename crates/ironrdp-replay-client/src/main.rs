@@ -14,7 +14,6 @@ use glutin::dpi::PhysicalSize;
 use glutin::event::{Event, WindowEvent};
 use glutin::event_loop::ControlFlow;
 use ironrdp::pdu::dvc::gfx::{GraphicsPipelineError, ServerPdu};
-use ironrdp::pdu::PduParsing;
 use ironrdp_glutin_renderer::renderer::Renderer;
 
 pub type Error = Box<dyn std::error::Error + Send + Sync + 'static>;

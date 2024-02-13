@@ -1,40 +1,9 @@
-//! Legacy compat layer based on the old PduParsing trait
-
 use std::borrow::Cow;
 
 use ironrdp_pdu::write_buf::WriteBuf;
-use ironrdp_pdu::{decode, encode_vec, rdp, x224, PduDecode, PduEncode, PduParsing};
+use ironrdp_pdu::{decode, encode_vec, rdp, PduDecode, PduEncode};
 
 use crate::{ConnectorError, ConnectorErrorExt as _, ConnectorResult};
-
-pub fn encode_x224_packet<T>(x224_msg: &T, buf: &mut WriteBuf) -> ConnectorResult<usize>
-where
-    T: PduParsing,
-    ConnectorError: From<T::Error>,
-{
-    let x224_msg_len = x224_msg.buffer_length();
-    let mut x224_msg_buf = Vec::with_capacity(x224_msg_len);
-
-    x224_msg.to_buffer(&mut x224_msg_buf)?;
-
-    let pdu = x224::X224Data {
-        data: Cow::Owned(x224_msg_buf),
-    };
-
-    let written = ironrdp_pdu::encode_buf(&pdu, buf).map_err(ConnectorError::pdu)?;
-
-    Ok(written)
-}
-
-pub fn decode_x224_packet<T>(src: &[u8]) -> ConnectorResult<T>
-where
-    T: PduParsing,
-    ConnectorError: From<T::Error>,
-{
-    let x224_payload = ironrdp_pdu::decode::<x224::X224Data<'_>>(src).map_err(ConnectorError::pdu)?;
-    let x224_msg = T::from_buffer(x224_payload.data.as_ref())?;
-    Ok(x224_msg)
-}
 
 pub fn encode_send_data_request<T>(
     initiator_id: u16,
