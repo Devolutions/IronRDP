@@ -315,7 +315,7 @@ export class WasmBridgeService {
                 // IMPORTANT: We need to make proxy `Image` object to actually load the image and
                 // make it usable for CSS property. Without this proxy object, URL will be rejected.
                 const image = new Image();
-                image.src = style;
+                image.src = data;
 
                 const rounded_hotspot_x = Math.round(hotspot_x);
                 const rounded_hotspot_y = Math.round(hotspot_y);
