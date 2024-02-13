@@ -15,7 +15,7 @@ use pdu::dvc::{CreateRequestPdu, DataFirstPdu, DataPdu};
 use pdu::gcc::ChannelName;
 use pdu::rdp::vc;
 use pdu::write_buf::WriteBuf;
-use pdu::{cast_length, custom_err, encode_vec, invalid_message_err, other_err, PduEncode, PduParsing};
+use pdu::{cast_length, custom_err, encode_vec, invalid_message_err, other_err, PduEncode};
 use pdu::{dvc, PduResult};
 
 use crate::{CompleteData, DvcMessages, DvcProcessor};

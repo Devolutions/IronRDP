@@ -10,7 +10,6 @@ use glutin::dpi::PhysicalSize;
 use ironrdp::pdu::dvc::gfx;
 use ironrdp::pdu::dvc::gfx::{Codec1Type, ServerPdu};
 use ironrdp::pdu::geometry::Rectangle;
-use ironrdp::pdu::PduParsing;
 use thiserror::Error;
 
 use crate::surface::{DataBuffer, SurfaceDecoders, Surfaces};

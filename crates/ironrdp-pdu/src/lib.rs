@@ -390,40 +390,6 @@ mod legacy {
 
     use crate::{PduEncode, PduResult, WriteCursor};
 
-    pub const MAX_PDU_SIZE: usize = 100 * 1024; // 100 kB
-
-    pub trait PduParsing {
-        type Error;
-
-        fn from_buffer(stream: impl std::io::Read) -> Result<Self, Self::Error>
-        where
-            Self: Sized;
-        fn to_buffer(&self, stream: impl std::io::Write) -> Result<(), Self::Error>;
-        fn buffer_length(&self) -> usize;
-    }
-
-    /// Blanket implementation for references to types implementing PduParsing. Only encoding is supported.
-    ///
-    /// This helps removing a few copies.
-    impl<T: PduParsing> PduParsing for &T {
-        type Error = T::Error;
-
-        fn from_buffer(_: impl std::io::Read) -> Result<Self, Self::Error>
-        where
-            Self: Sized,
-        {
-            panic!("Can’t return a reference to a local value")
-        }
-
-        fn to_buffer(&self, stream: impl std::io::Write) -> Result<(), Self::Error> {
-            T::to_buffer(self, stream)
-        }
-
-        fn buffer_length(&self) -> usize {
-            T::buffer_length(self)
-        }
-    }
-
     pub trait PduBufferParsing<'a>: Sized {
         type Error;
 

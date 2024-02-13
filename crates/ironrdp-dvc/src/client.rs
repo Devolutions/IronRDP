@@ -229,8 +229,6 @@ struct DynamicChannelCtx<'a> {
 }
 
 fn decode_dvc_message(user_data: &[u8]) -> PduResult<DynamicChannelCtx<'_>> {
-    use ironrdp_pdu::{custom_err, PduParsing as _};
-
     let mut user_data = user_data;
     let user_data_len = user_data.len();
 
