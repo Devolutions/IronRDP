@@ -68,13 +68,13 @@ where
     }
 }
 
-pub type SingleThreadedTokioFramed<S> = Framed<SingleThreadedTokioStream<S>>;
+pub type LocalTokioFramed<S> = Framed<LocalTokioStream<S>>;
 
-pub struct SingleThreadedTokioStream<S> {
+pub struct LocalTokioStream<S> {
     inner: S,
 }
 
-impl<S> StreamWrapper for SingleThreadedTokioStream<S> {
+impl<S> StreamWrapper for LocalTokioStream<S> {
     type InnerStream = S;
 
     fn from_inner(stream: Self::InnerStream) -> Self {
@@ -94,7 +94,7 @@ impl<S> StreamWrapper for SingleThreadedTokioStream<S> {
     }
 }
 
-impl<S> FramedRead for SingleThreadedTokioStream<S>
+impl<S> FramedRead for LocalTokioStream<S>
 where
     S: Unpin + AsyncRead,
 {
@@ -109,7 +109,7 @@ where
     }
 }
 
-impl<S> FramedWrite for SingleThreadedTokioStream<S>
+impl<S> FramedWrite for LocalTokioStream<S>
 where
     S: Unpin + AsyncWrite,
 {

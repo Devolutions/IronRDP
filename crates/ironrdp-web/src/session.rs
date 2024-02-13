@@ -405,7 +405,7 @@ impl Session {
 
         let mut clipboard = self.clipboard.borrow_mut().take().expect("run called only once");
 
-        let mut framed = ironrdp_futures::SingleThreadedFuturesFramed::new(rdp_reader);
+        let mut framed = ironrdp_futures::LocalFuturesFramed::new(rdp_reader);
 
         debug!("Initialize canvas");
 
@@ -786,7 +786,7 @@ async fn connect(
     kdc_proxy_url: Option<String>,
     clipboard_backend: Option<WasmClipboardBackend>,
 ) -> Result<(connector::ConnectionResult, WebSocket), IronRdpError> {
-    let mut framed = ironrdp_futures::SingleThreadedFuturesFramed::new(ws);
+    let mut framed = ironrdp_futures::LocalFuturesFramed::new(ws);
 
     let mut connector = connector::ClientConnector::new(config);
 
