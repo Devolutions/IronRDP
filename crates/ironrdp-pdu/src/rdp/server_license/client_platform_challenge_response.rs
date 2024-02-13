@@ -163,8 +163,6 @@ impl<'de> PduDecode<'de> for ClientPlatformChallengeResponse {
     }
 }
 
-impl_pdu_parsing_max!(ClientPlatformChallengeResponse);
-
 #[derive(Debug, PartialEq, FromPrimitive, ToPrimitive)]
 enum ClientType {
     Win32 = 0x0100,
@@ -242,8 +240,6 @@ impl<'de> PduDecode<'de> for PlatformChallengeResponseData {
     }
 }
 
-impl_pdu_parsing_max!(PlatformChallengeResponseData);
-
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) struct ClientHardwareIdentification {
     pub(crate) platform_id: u32,
@@ -285,5 +281,3 @@ impl<'de> PduDecode<'de> for ClientHardwareIdentification {
         Ok(Self { platform_id, data })
     }
 }
-
-impl_pdu_parsing!(ClientHardwareIdentification);

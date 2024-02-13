@@ -204,8 +204,6 @@ impl<'de> PduDecode<'de> for FrameAcknowledgePdu {
     }
 }
 
-impl_pdu_parsing!(FrameAcknowledgePdu);
-
 #[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive, ToPrimitive)]
 #[repr(u16)]
 pub enum BlockType {

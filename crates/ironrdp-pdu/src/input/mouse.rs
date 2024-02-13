@@ -76,8 +76,6 @@ impl<'de> PduDecode<'de> for MousePdu {
         })
     }
 }
-impl_pdu_parsing!(MousePdu);
-
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
     pub struct PointerFlags: u16 {

@@ -143,8 +143,6 @@ impl<'de> PduDecode<'de> for BitmapCodecs {
     }
 }
 
-impl_pdu_parsing!(BitmapCodecs);
-
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub struct Codec {
     pub id: u8,

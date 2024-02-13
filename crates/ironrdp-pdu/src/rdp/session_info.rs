@@ -97,8 +97,6 @@ impl<'de> PduDecode<'de> for SaveSessionInfoPdu {
     }
 }
 
-impl_pdu_parsing!(SaveSessionInfoPdu);
-
 #[repr(u32)]
 #[derive(Debug, Clone, PartialEq, Eq, FromPrimitive, ToPrimitive)]
 pub enum InfoType {

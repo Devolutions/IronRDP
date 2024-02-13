@@ -135,8 +135,6 @@ impl<'de> PduDecode<'de> for InitialServerLicenseMessage {
     }
 }
 
-// impl_pdu_parsing_max!(InitialServerLicenseMessage);
-
 /// [2.2.2.1] Server License Request (SERVER_LICENSE_REQUEST)
 ///
 /// [2.2.2.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpele/e17772e9-9642-4bb6-a2bc-82875dd6da7c
@@ -249,8 +247,6 @@ impl<'de> PduDecode<'de> for ServerLicenseRequest {
     }
 }
 
-impl_pdu_parsing_max!(ServerLicenseRequest);
-
 #[derive(Debug, PartialEq, Eq)]
 pub struct Scope(pub String);
 
@@ -301,8 +297,6 @@ impl<'de> PduDecode<'de> for Scope {
         }
     }
 }
-
-impl_pdu_parsing!(Scope);
 
 /// [2.2.1.4.3.1] Server Certificate (SERVER_CERTIFICATE)
 ///
@@ -419,8 +413,6 @@ impl<'de> PduDecode<'de> for ServerCertificate {
     }
 }
 
-impl_pdu_parsing!(ServerCertificate);
-
 #[derive(Debug, PartialEq, Eq)]
 pub struct ProductInfo {
     pub version: u32,
@@ -505,5 +497,3 @@ impl<'de> PduDecode<'de> for ProductInfo {
         })
     }
 }
-
-impl_pdu_parsing_max!(ProductInfo);

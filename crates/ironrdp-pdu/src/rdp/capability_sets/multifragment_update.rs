@@ -40,8 +40,6 @@ impl<'de> PduDecode<'de> for MultifragmentUpdate {
     }
 }
 
-impl_pdu_parsing!(MultifragmentUpdate);
-
 #[cfg(test)]
 mod test {
     use super::*;

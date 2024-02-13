@@ -107,5 +107,3 @@ impl<'de> PduDecode<'de> for Bitmap {
         })
     }
 }
-
-impl_pdu_parsing!(Bitmap);

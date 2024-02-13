@@ -74,8 +74,6 @@ impl<'de> PduDecode<'de> for LicensingErrorMessage {
     }
 }
 
-impl_pdu_parsing_max!(LicensingErrorMessage);
-
 #[derive(Debug, PartialEq, Eq, FromPrimitive, ToPrimitive)]
 pub enum LicenseErrorCode {
     InvalidServerCertificate = 0x01,

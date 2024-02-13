@@ -93,8 +93,6 @@ impl<'de> PduDecode<'de> for LogonInfoVersion1 {
     }
 }
 
-impl_pdu_parsing!(LogonInfoVersion1);
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LogonInfoVersion2 {
     pub logon_info: LogonInfo,

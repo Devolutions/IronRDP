@@ -70,8 +70,6 @@ impl<'de> PduDecode<'de> for BasicSecurityHeader {
     }
 }
 
-impl_pdu_parsing!(BasicSecurityHeader);
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ShareControlHeader {
     pub share_control_pdu: ShareControlPdu,
@@ -154,8 +152,6 @@ impl<'de> PduDecode<'de> for ShareControlHeader {
         Ok(header)
     }
 }
-
-impl_pdu_parsing!(ShareControlHeader);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ShareControlPdu {
@@ -302,8 +298,6 @@ impl<'de> PduDecode<'de> for ShareDataHeader {
         })
     }
 }
-
-impl_pdu_parsing!(ShareDataHeader);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ShareDataPdu {

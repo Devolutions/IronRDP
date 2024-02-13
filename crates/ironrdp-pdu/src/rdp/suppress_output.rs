@@ -87,5 +87,3 @@ impl<'de> PduDecode<'de> for SuppressOutputPdu {
         Ok(Self { desktop_rect })
     }
 }
-
-impl_pdu_parsing!(SuppressOutputPdu);

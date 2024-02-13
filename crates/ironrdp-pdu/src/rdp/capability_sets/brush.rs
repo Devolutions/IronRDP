@@ -55,5 +55,3 @@ impl<'de> PduDecode<'de> for Brush {
         Ok(Brush { support_level })
     }
 }
-
-impl_pdu_parsing!(Brush);

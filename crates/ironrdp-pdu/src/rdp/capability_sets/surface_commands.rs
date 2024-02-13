@@ -57,5 +57,3 @@ impl<'de> PduDecode<'de> for SurfaceCommands {
         Ok(SurfaceCommands { flags })
     }
 }
-
-impl_pdu_parsing!(SurfaceCommands);

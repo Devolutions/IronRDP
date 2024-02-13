@@ -100,8 +100,6 @@ impl<'de> PduDecode<'de> for ServerDemandActive {
     }
 }
 
-impl_pdu_parsing_max!(ServerDemandActive);
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClientConfirmActive {
     /// According to [MSDN](https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/4e9722c3-ad83-43f5-af5a-529f73d88b48),
@@ -148,8 +146,6 @@ impl<'de> PduDecode<'de> for ClientConfirmActive {
         Ok(Self { originator_id, pdu })
     }
 }
-
-impl_pdu_parsing_max!(ClientConfirmActive);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DemandActive {

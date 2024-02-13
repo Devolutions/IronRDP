@@ -71,8 +71,6 @@ impl<'de> PduDecode<'de> for InputEventPdu {
     }
 }
 
-impl_pdu_parsing_max!(InputEventPdu);
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InputEvent {
     Sync(SyncPdu),
@@ -146,8 +144,6 @@ impl<'de> PduDecode<'de> for InputEvent {
         }
     }
 }
-
-impl_pdu_parsing!(InputEvent);
 
 #[derive(Debug, Copy, Clone, PartialEq, FromPrimitive, ToPrimitive)]
 #[repr(u16)]

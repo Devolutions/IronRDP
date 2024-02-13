@@ -60,5 +60,3 @@ impl<'de> PduDecode<'de> for RefreshRectanglePdu {
         Ok(Self { areas_to_refresh })
     }
 }
-
-impl_pdu_parsing!(RefreshRectanglePdu);

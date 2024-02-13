@@ -55,5 +55,3 @@ impl<'de> PduDecode<'de> for Sound {
         Ok(Sound { flags })
     }
 }
-
-impl_pdu_parsing!(Sound);

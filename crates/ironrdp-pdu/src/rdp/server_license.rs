@@ -126,8 +126,6 @@ impl<'de> PduDecode<'de> for LicenseHeader {
     }
 }
 
-impl_pdu_parsing!(LicenseHeader);
-
 /// [2.2.1.12.1.1] Licensing Preamble (LICENSE_PREAMBLE)
 ///
 /// [2.2.1.12.1.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/73170ca2-5f82-4a2d-9d1b-b439f3d8dadc
@@ -312,8 +310,6 @@ impl<'de> PduDecode<'de> for BlobHeader {
         Ok(Self { blob_type, length })
     }
 }
-
-impl_pdu_parsing!(BlobHeader);
 
 fn compute_mac_data(mac_salt_key: &[u8], data: &[u8]) -> Vec<u8> {
     let data_len_buffer = (data.len() as u32).to_le_bytes();

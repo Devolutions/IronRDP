@@ -267,8 +267,6 @@ impl<'de> PduDecode<'de> for ChannelDef {
     }
 }
 
-impl_pdu_parsing!(ChannelDef);
-
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
     pub struct ChannelOptions: u32 {
