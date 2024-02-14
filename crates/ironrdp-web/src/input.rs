@@ -46,6 +46,14 @@ impl DeviceEvent {
     pub fn new_key_released(scancode: u16) -> Self {
         Self(Operation::KeyReleased(Scancode::from_u16(scancode)))
     }
+
+    pub fn new_unicode_pressed(unicode: char) -> Self {
+        Self(Operation::UnicodeKeyPressed(unicode))
+    }
+
+    pub fn new_unicode_released(unicode: char) -> Self {
+        Self(Operation::UnicodeKeyReleased(unicode))
+    }
 }
 
 #[wasm_bindgen]

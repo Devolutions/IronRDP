@@ -41,6 +41,7 @@ export class WasmBridgeService {
     private scale: BehaviorSubject<ScreenScale> = new BehaviorSubject(ScreenScale.Fit as ScreenScale);
     private canvas?: HTMLCanvasElement;
     private keyboardActive: boolean = false;
+    private keyboardUnicodeMode: boolean = false;
     private onRemoteClipboardChanged?: OnRemoteClipboardChanged;
     private onRemoteReceivedFormatList?: OnRemoteReceivedFormatsList;
     private onForceClipboardUpdate?: OnForceClipboardUpdate;
@@ -258,35 +259,89 @@ export class WasmBridgeService {
         return onClipboardChangedPromise();
     }
 
+    setKeyboardUnicodeMode(use_unicode: boolean) {
+        this.keyboardUnicodeMode = use_unicode;
+    }
+
     private releaseAllInputs() {
         this.session?.release_all_inputs();
     }
 
+    private supportsUnicodeKeyboardShortcuts() : boolean {
+        if (this.session?.supports_unicode_keyboard_shortcuts) {
+            return this.session?.supports_unicode_keyboard_shortcuts();
+        }
+
+        // By default we use unicode keyboard shortcuts for backends
+        return true;
+    }
+
     private sendKeyboard(evt: KeyboardEvent) {
+
+        if (!this.keyboardUnicodeMode) {
+            console.error('Keyboard unicode mode is not enabled.');
+        }
+
         evt.preventDefault();
 
         let keyEvent;
+        let unicodeEvent;
 
         if (evt.type === 'keydown') {
             keyEvent = DeviceEvent.new_key_pressed;
+            unicodeEvent = DeviceEvent.new_unicode_pressed;
         } else if (evt.type === 'keyup') {
             keyEvent = DeviceEvent.new_key_released;
+            unicodeEvent = DeviceEvent.new_unicode_released;
         }
 
-        if (keyEvent) {
-            const isModifierKey = evt.code in ModifierKey;
-            const isLockKey = evt.code in LockKey;
+        let sendAsUnicode = true;
 
-            if (isModifierKey) {
-                this.updateModifierKeyState(evt);
+        if (!this.supportsUnicodeKeyboardShortcuts()) {
+            for (const modifier of ['Alt', 'Control', 'Meta', 'AltGraph', 'OS']) {
+                if (evt.getModifierState(modifier)) {
+                    sendAsUnicode = false;
+                    break;
+                }
+            }
+        }
+
+        const isModifierKey = evt.code in ModifierKey;
+        const isLockKey = evt.code in LockKey;
+
+        if (isModifierKey) {
+            this.updateModifierKeyState(evt);
+        }
+
+        if (isLockKey) {
+            this.syncModifier(evt);
+        }
+
+        if (!evt.repeat || (!isModifierKey && !isLockKey)) {
+            const keyScanCode = scanCode(evt.code, OS.WINDOWS);
+            let unknownScanCode = Number.isNaN(keyScanCode);
+
+            if (!this.keyboardUnicodeMode && keyEvent && !unknownScanCode) {
+                this.doTransactionFromDeviceEvents([keyEvent(keyScanCode)]);
+                return;
             }
 
-            if (isLockKey) {
-                this.syncModifier(evt);
-            }
+            if (this.keyboardUnicodeMode && unicodeEvent && keyEvent) {
+                // `Dead` and `Unidentified` keys should be ignored
+                if (evt.key in ['Dead', 'Unidentified']) {
+                    return;
+                }
 
-            if (!evt.repeat || (!isModifierKey && !isLockKey)) {
-                this.doTransactionFromDeviceEvents([keyEvent(scanCode(evt.code, OS.WINDOWS))]);
+                const keyCode = scanCode(evt.key, OS.WINDOWS);
+                const isUnicodeCharacter = Number.isNaN(keyCode) && evt.key.length === 1;
+
+                if (isUnicodeCharacter && sendAsUnicode) {
+                    this.doTransactionFromDeviceEvents([unicodeEvent(evt.key)]);
+                } else if (!unknownScanCode) {
+                    // Use scancode insdead of key code for non-unicode character values
+                    this.doTransactionFromDeviceEvents([keyEvent(keyScanCode)]);
+                }
+                return;
             }
         }
     }
