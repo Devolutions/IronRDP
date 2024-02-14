@@ -277,10 +277,6 @@ export class WasmBridgeService {
     }
 
     private sendKeyboard(evt: KeyboardEvent) {
-        if (!this.keyboardUnicodeMode) {
-            console.error('Keyboard unicode mode is not enabled.');
-        }
-
         evt.preventDefault();
 
         let keyEvent;
