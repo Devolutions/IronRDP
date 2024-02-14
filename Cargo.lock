@@ -1766,6 +1766,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "ironrdp-displaycontrol"
+version = "0.1.0"
+dependencies = [
+ "ironrdp-pdu",
+]
+
+[[package]]
 name = "ironrdp-dvc"
 version = "0.1.0"
 dependencies = [
@@ -1795,6 +1802,7 @@ dependencies = [
  "arbitrary",
  "ironrdp-cliprdr",
  "ironrdp-cliprdr-format",
+ "ironrdp-displaycontrol",
  "ironrdp-graphics",
  "ironrdp-pdu",
  "ironrdp-rdpdr",
@@ -1936,6 +1944,7 @@ dependencies = [
  "ironrdp-cliprdr",
  "ironrdp-cliprdr-format",
  "ironrdp-connector",
+ "ironrdp-displaycontrol",
  "ironrdp-fuzzing",
  "ironrdp-graphics",
  "ironrdp-input",
