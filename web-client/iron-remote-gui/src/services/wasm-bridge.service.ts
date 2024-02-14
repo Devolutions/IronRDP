@@ -267,7 +267,7 @@ export class WasmBridgeService {
         this.session?.release_all_inputs();
     }
 
-    private supportsUnicodeKeyboardShortcuts() : boolean {
+    private supportsUnicodeKeyboardShortcuts(): boolean {
         if (this.session?.supports_unicode_keyboard_shortcuts) {
             return this.session?.supports_unicode_keyboard_shortcuts();
         }
@@ -277,7 +277,6 @@ export class WasmBridgeService {
     }
 
     private sendKeyboard(evt: KeyboardEvent) {
-
         if (!this.keyboardUnicodeMode) {
             console.error('Keyboard unicode mode is not enabled.');
         }
