@@ -314,7 +314,7 @@ export class WasmBridgeService {
 
         if (!evt.repeat || (!isModifierKey && !isLockKey)) {
             const keyScanCode = scanCode(evt.code, OS.WINDOWS);
-            let unknownScanCode = Number.isNaN(keyScanCode);
+            const unknownScanCode = Number.isNaN(keyScanCode);
 
             if (!this.keyboardUnicodeMode && keyEvent && !unknownScanCode) {
                 this.doTransactionFromDeviceEvents([keyEvent(keyScanCode)]);
