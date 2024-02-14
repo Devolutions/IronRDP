@@ -711,6 +711,7 @@ impl Session {
         Ok(())
     }
 
+    #[allow(clippy::unused_self)]
     pub fn supports_unicode_keyboard_shortcuts(&self) -> bool {
         // RDP does not support Unicode keyboard shortcuts (When key combinations are executed, only
         // plain scancode events are allowed to function correctly).
