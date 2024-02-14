@@ -41,7 +41,8 @@ impl PduEncode for DisplayControlPdu {
         };
 
         // This will never overflow as per invariants.
-        let pdu_size = payload_length.checked_add(Self::FIXED_PART_SIZE).unwrap();
+        #[allow(clippy::arithmetic_side_effects)]
+        let pdu_size = payload_length + Self::FIXED_PART_SIZE;
 
         // Write `DISPLAYCONTROL_HEADER` fields.
         dst.write_u32(kind);
@@ -61,12 +62,14 @@ impl PduEncode for DisplayControlPdu {
 
     fn size(&self) -> usize {
         // As per invariants: This will never overflow.
-        Self::FIXED_PART_SIZE
-            .checked_add(match self {
+        #[allow(clippy::arithmetic_side_effects)]
+        let size = Self::FIXED_PART_SIZE
+            + match self {
                 DisplayControlPdu::Caps(caps) => caps.size(),
                 DisplayControlPdu::MonitorLayout(layout) => layout.size(),
-            })
-            .unwrap()
+            };
+
+        size
     }
 }
 
@@ -241,10 +244,10 @@ impl PduEncode for DisplayControlMonitorLayout {
     fn size(&self) -> usize {
         // As per invariants: This will never overflow:
         // 0 <= Self::FIXED_PART_SIZE + MAX_SUPPORTED_MONITORS * MonitorLayoutEntry::FIXED_PART_SIZE < u16::MAX
+        #[allow(clippy::arithmetic_side_effects)]
+        let size = Self::FIXED_PART_SIZE + self.monitors.iter().map(|monitor| monitor.size()).sum::<usize>();
 
-        Self::FIXED_PART_SIZE
-            .checked_add(self.monitors.iter().map(|monitor| monitor.size()).sum::<usize>())
-            .unwrap()
+        size
     }
 }
 
@@ -627,8 +630,6 @@ fn calculate_monitor_area(
 
     // As per invariants: This multiplication would never overflow.
     // 0 <= MAX_MONITOR_AREA_FACTOR * MAX_MONITOR_AREA_FACTOR * MAX_SUPPORTED_MONITORS <= u64::MAX
-    Ok((u64::from(max_monitor_area_factor_a))
-        .checked_mul(u64::from(max_monitor_area_factor_b))
-        .and_then(|monitor_area| monitor_area.checked_mul(u64::from(max_num_monitors)))
-        .unwrap())
+    #[allow(clippy::arithmetic_side_effects)]
+    Ok(u64::from(max_monitor_area_factor_a) * u64::from(max_monitor_area_factor_b) * u64::from(max_num_monitors))
 }
