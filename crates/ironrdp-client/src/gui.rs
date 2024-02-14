@@ -78,7 +78,16 @@ impl GuiContext {
                         // TODO(#110): File upload
                     }
                     WindowEvent::ReceivedCharacter(_) => {
-                        // TODO(#106): Unicode mode
+                        // Sadly, we can't use this winit event to send RDP unicode events because
+                        // of the several reasons:
+                        // 1. `ReceivedCharacter` event doesn't provide a way to distinguish between
+                        //    key press and key release, therefore the only way to use it is to send
+                        //    a key press + release events sequentially, which will not allow to
+                        //    handle long press and key repeat events.
+                        // 2. This event do not fire for non-printable keys (e.g. Control, Alt, etc.)
+                        // 3. This event fies BEFORE `KeyboardInput` event, so we can't make a
+                        //    reasonable workaround for `1` and `2` by collecting physical key press
+                        //    information first via `KeyboardInput` before processing `ReceivedCharacter`.
                     }
                     WindowEvent::KeyboardInput { input, .. } => {
                         let scancode = ironrdp::input::Scancode::from_u16(u16::try_from(input.scancode).unwrap());
