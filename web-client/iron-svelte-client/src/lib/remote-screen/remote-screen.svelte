@@ -66,9 +66,7 @@
         </button>
         <button on:click={() => uiService.shutdown()}>Terminate Session</button>
         <label style="color: white;">
-            <input
-            on:click={(e) => onUnicodeModeChange(e) }
-            type="checkbox"/>
+            <input on:click={(e) => onUnicodeModeChange(e)} type="checkbox" />
             Unicode keyboard mode
         </label>
     </div>
