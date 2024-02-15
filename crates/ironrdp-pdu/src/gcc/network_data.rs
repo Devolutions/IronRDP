@@ -223,7 +223,7 @@ impl PduParsing for ChannelDef {
     }
 
     fn buffer_length(&self) -> usize {
-        SERVER_CHANNEL_SIZE
+        CLIENT_CHANNEL_SIZE
     }
 }
 
