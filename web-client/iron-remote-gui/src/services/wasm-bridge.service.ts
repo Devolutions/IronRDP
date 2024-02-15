@@ -42,6 +42,7 @@ export class WasmBridgeService {
     private canvas?: HTMLCanvasElement;
     private keyboardActive: boolean = false;
     private keyboardUnicodeMode: boolean = false;
+    private backendSupportsUnicodeKeyboardShortcuts: boolean | undefined = undefined;
     private onRemoteClipboardChanged?: OnRemoteClipboardChanged;
     private onRemoteReceivedFormatList?: OnRemoteReceivedFormatsList;
     private onForceClipboardUpdate?: OnForceClipboardUpdate;
@@ -268,8 +269,14 @@ export class WasmBridgeService {
     }
 
     private supportsUnicodeKeyboardShortcuts(): boolean {
+        // Use cached value to reduce FFI calls
+        if (this.backendSupportsUnicodeKeyboardShortcuts !== undefined) {
+            return this.backendSupportsUnicodeKeyboardShortcuts;
+        }
+
         if (this.session?.supports_unicode_keyboard_shortcuts) {
-            return this.session?.supports_unicode_keyboard_shortcuts();
+            this.backendSupportsUnicodeKeyboardShortcuts = this.session?.supports_unicode_keyboard_shortcuts();
+            return this.backendSupportsUnicodeKeyboardShortcuts;
         }
 
         // By default we use unicode keyboard shortcuts for backends

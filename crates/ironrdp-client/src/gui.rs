@@ -88,6 +88,12 @@ impl GuiContext {
                         // 3. This event fies BEFORE `KeyboardInput` event, so we can't make a
                         //    reasonable workaround for `1` and `2` by collecting physical key press
                         //    information first via `KeyboardInput` before processing `ReceivedCharacter`.
+                        //
+                        // However, all of these issues can be solved by updating `winit` to the
+                        // newer version.
+                        //
+                        // TODO(#376): Update winit
+                        // TODO(#376): Implement unicode input in native client
                     }
                     WindowEvent::KeyboardInput { input, .. } => {
                         let scancode = ironrdp::input::Scancode::from_u16(u16::try_from(input.scancode).unwrap());
