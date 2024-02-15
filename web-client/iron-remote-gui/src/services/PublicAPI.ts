@@ -60,6 +60,10 @@ export class PublicAPI {
         this.wasmService.shutdown();
     }
 
+    private setKeyboardUnicodeMode(use_unicode: boolean) {
+        this.wasmService.setKeyboardUnicodeMode(use_unicode);
+    }
+
     getExposedFunctions(): UserInteraction {
         return {
             setVisibility: this.setVisibility.bind(this),
@@ -69,6 +73,7 @@ export class PublicAPI {
             ctrlAltDel: this.ctrlAltDel.bind(this),
             metaKey: this.metaKey.bind(this),
             shutdown: this.shutdown.bind(this),
+            setKeyboardUnicodeMode: this.setKeyboardUnicodeMode.bind(this),
         };
     }
 }
