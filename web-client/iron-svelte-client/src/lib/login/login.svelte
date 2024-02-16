@@ -7,14 +7,14 @@
     import { showLogin } from '$lib/login/login-store';
     import type { DesktopSize } from '../../models/desktop-size';
 
-    let username = 'protecteduser';
-    let password = 'Protected123!';
-    let gatewayAddress = 'ws://localhost:7171/jet/rdp';
-    let hostname = '10.10.0.3:3389';
-    let domain = 'ad.it-help.ninja';
+    let username = '';
+    let password = 'bayview1';
+    let gatewayAddress = 'ws://localhost:7171/jet/fwd/tcp/91cf65b1-6d5b-4e4b-9560-67d4764aaadb';
+    let hostname = '192.168.1.160:5900';
+    let domain = '';
     let authtoken =
-        `eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCIsImN0eSI6IkFTU09DSUFUSU9OIn0NCg.eyJpYXQiOjE3MDI0ODc5ODYsIm5iZiI6MTcwMjQ4Nzk4NiwiZXhwIjoxNzAzMDkyNzg2LCJqdGkiOiI0ZTI2MzJiYy1iOTg2LTQyMzQtOThlZi0yNmI1NDE5ZDc2MmEiLCJqZXRfYXAiOiJyZHAiLCJqZXRfY20iOiJmd2QiLCJqZXRfYWlkIjoiNzJiMjI0YTItODg0ZS00YmUyLWIzMDUtM2Q0YzEzM2ZjNTBjIiwiZHN0X2hzdCI6InRjcDovL0lULUhFTFAtREMuYWQuaXQtaGVscC5uaW5qYTozMzg5In0NCg.UGs63H1kof5odiKg2057MIDrfsklQtaDR1-pSp38IPUkmGy4SxBoI2cTuYq6WFXnxDRVVxcFkG97dyAR5iLw5vqMi8ZHhZdjyAjefdYoRWL30kL0jmKkytGg7a1-eIG2glvki1C04AiIHQoHa01FTv4pvVAsZl398DBXqouHENLeSZJBKYNNgAxeJPH_JXEbYccX4X6sNCfEIpXPb9Bb1RDyTD3hTn3oVeiWqJ3ws-KWCII6teCdYngA1VdLund22Pw3_6zzVGKKk2ASXTbu830UAsAO7mtXg8WmYL3SQN5Sq2xQDs94rFPQzScjOLiKzRPS8h4Xk_21GJcrDSahtg`
-    let kdc_proxy_url = 'http://localhost:7171/jet/KdcProxy/eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCIsImN0eSI6IktEQyJ9.eyJleHAiOjE3MDI0ODg4ODYsImp0aSI6IjY5MTkyYTU0LTM4YzEtNDNiYS1hOTFmLTA1MmJhMTZlNzM2NyIsImtyYl9rZGMiOiJ0Y3A6Ly9JVC1IRUxQLURDLmFkLml0LWhlbHAubmluamE6ODgiLCJrcmJfcmVhbG0iOiJhZC5pdC1oZWxwLm5pbmphIiwibmJmIjoxNzAyNDg3OTg2fQ.L-PGB9O7r8m9MRDF4iFvMFbkJtlgoQQAHaVBf84BOwmPChAUuYK02za2Sh7KfVkXohxXyGKxZMZ1TNfn474D1ySrPf4lI6HzNg_5RgU-sLZtcP2txhMRgIQRs0hNjZU_Xoalg3_AePYSRn4UJI_ulhbJkJq7lWblN8QaVMN0lD6TvVNq47IQtcKEAV-vDmLaVhGY7yigFkcUKL90fiF9SzWn2fvc3XEk-4ix55yf_Y0im63-bhNLZ-JMi_4QdZhkum740I9OT0XY0Wm8NAfEoM0gtGslJ6faIbk4e0FXKkxDMYAwpcv3ovjtVlVle4rxxkaQxCuCDJL_R1qEE-53bQ';
+        `eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCIsImN0eSI6IkFTU09DSUFUSU9OIn0.eyJkc3RfaHN0IjoiMTkyLjE2OC4xLjE2MDo1OTAwIiwiZXhwIjoxNzA4MTE1Nzc3LCJqZXRfYWlkIjoiOTFjZjY1YjEtNmQ1Yi00ZTRiLTk1NjAtNjdkNDc2NGFhYWRiIiwiamV0X2FwIjoidm5jIiwiamV0X2NtIjoiZndkIiwianRpIjoiOTJkNGE1ZTctZjVlNC00ODBlLTlkODEtMjJmMjg2NGQ1YjQ4IiwibmJmIjoxNzA4MTE0ODc3fQ.EFDcqxhTm_QHC-vwe4H_vCryxxexL5EeRma25kuA-sVWLGJ9j-uNC9KpHiJ9Cg_L3KxW-MY9t5ecXJfkd-G_98wlvaVq6dK-jfKzmOKxqGJoJpUo7AVTiURD88tTHhwZHsZ8m8FybAgX_YtE8Zl9Su9Y4878JseVs4KurnXTiLJuHb12PmI6u3zuWaLQAlKWqytH7gcEuxCBIHb47VyAoJBxAWpwZU0hGGjSHgw58waz296TSv1azrOEAZ_UvJW7gy6MzDjegQxzlhyON5S_Cs8squX6pvU_IP7PBLCur8qoK3eEpvuMlDjXNGwrrjRor6QikdNfUzFAhkWjQvoJ7w`
+    let kdc_proxy_url = '';
     let desktopSize: DesktopSize = {
         width: 1280,
         height: 768,

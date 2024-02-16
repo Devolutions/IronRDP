@@ -15,6 +15,7 @@
     export let verbose = 'false';
     export let debugwasm: 'OFF' | 'ERROR' | 'WARN' | 'INFO' | 'DEBUG' | 'TRACE' = 'INFO';
     export let flexcenter = 'true';
+    export let use: 'rdp' | 'vnc';
 
     let isVisible: boolean = false;
     let capturingInputs = false;
@@ -637,7 +638,7 @@
         canvas.height = 600;
 
         const logLevel = LogType[debugwasm] ?? LogType.INFO;
-        await wasmService.init(logLevel);
+        await wasmService.init(logLevel, use);
         wasmService.setCanvas(canvas);
 
         initListeners();

@@ -1,15 +1,4 @@
 import { BehaviorSubject, from, Observable, of, Subject } from 'rxjs';
-import init, {
-    DesktopSize,
-    DeviceEvent,
-    InputTransaction,
-    ironrdp_init,
-    IronRdpError,
-    Session,
-    SessionBuilder,
-    ClipboardTransaction,
-    SessionTerminationInfo,
-} from '../../../../crates/ironrdp-web/pkg/ironrdp_web';
 import { loggingService } from './logging.service';
 import { catchError, filter, map } from 'rxjs/operators';
 import { scanCode } from '../lib/scancodes';
@@ -25,7 +14,12 @@ import { ScreenScale } from '../enums/ScreenScale';
 import type { MousePosition } from '../interfaces/MousePosition';
 import type { SessionEvent, UserIronRdpErrorKind } from '../interfaces/session-event';
 import type { DesktopSize as IDesktopSize } from '../interfaces/DesktopSize';
+import { Session } from '../ironrdp/pkg/ironrdp_web';
+import init, { type DeviceEvent, type RemoteConnectionError, type SessionTerminationInfo } from './wasmSwitcher';
+import type * as RDP from '../ironrdp/pkg/ironrdp_web';
+import type * as VNC from '../ironvnc/pkg/ironvnc_web';
 
+type ClipboardTransaction = RDP.ClipboardTransaction | VNC.ClipboardTransaction;
 type OnRemoteClipboardChanged = (transaction: ClipboardTransaction) => void;
 type OnRemoteReceivedFormatsList = () => void;
 type OnForceClipboardUpdate = () => void;
@@ -55,16 +49,18 @@ export class WasmBridgeService {
     sessionObserver: Observable<SessionEvent> = this.sessionEvent.asObservable();
     scaleObserver: Observable<ScreenScale> = this.scale.asObservable();
 
+    wasm?: typeof import('../ironrdp/pkg/ironrdp_web') | typeof import('../ironvnc/pkg/ironvnc_web');
+
     constructor() {
         this.resize = this._resize.asObservable();
         loggingService.info('Web bridge initialized.');
     }
 
-    async init(debug: LogType) {
+    async init(debug: LogType, use: 'rdp' | 'vnc' = 'rdp') {
         loggingService.info('Loading wasm file.');
-        await init();
+        this.wasm = await init(use);
         loggingService.info('Initializing IronRDP.');
-        ironrdp_init(LogType[debug]);
+        this.wasm.ironrdp_init(LogType[debug]);
     }
 
     /// Callback to set the local clipboard content to data received from the remote.
@@ -107,7 +103,10 @@ export class WasmBridgeService {
         if (preventDefault) {
             event.preventDefault(); // prevent default behavior (context menu, etc)
         }
-        const mouseFnc = isDown ? DeviceEvent.new_mouse_button_pressed : DeviceEvent.new_mouse_button_released;
+        const mouseFnc = isDown
+            ? this.wasm!.DeviceEvent.new_mouse_button_pressed
+            : this.wasm!.DeviceEvent.new_mouse_button_released;
+
         this.doTransactionFromDeviceEvents([mouseFnc(event.button)]);
     }
 
@@ -115,7 +114,7 @@ export class WasmBridgeService {
         if (!this.keyboardActive) {
             this.keyboardActive = true;
         }
-        this.doTransactionFromDeviceEvents([DeviceEvent.new_mouse_move(position.x, position.y)]);
+        this.doTransactionFromDeviceEvents([this.wasm!.DeviceEvent.new_mouse_move(position.x, position.y)]);
         this.mousePosition.next(position);
     }
 
@@ -130,7 +129,7 @@ export class WasmBridgeService {
         preConnectionBlob?: string,
         kdc_proxy_url?: string,
     ): Observable<NewSessionInfo> {
-        const sessionBuilder = SessionBuilder.new();
+        const sessionBuilder = this.wasm!.SessionBuilder.new();
         sessionBuilder.proxy_address(proxyAddress);
         sessionBuilder.destination(destination);
         sessionBuilder.server_domain(serverDomain);
@@ -156,16 +155,16 @@ export class WasmBridgeService {
         }
 
         if (desktopSize != null) {
-            sessionBuilder.desktop_size(DesktopSize.new(desktopSize.width, desktopSize.height));
+            sessionBuilder.desktop_size(this.wasm!.DesktopSize.new(desktopSize.width, desktopSize.height));
         }
 
         // Type guard to filter out errors
-        function isSession(result: IronRdpError | Session): result is Session {
+        function isSession(result: RemoteConnectionError | Session): result is Session {
             return result instanceof Session;
         }
 
         return from(sessionBuilder.connect()).pipe(
-            catchError((err: IronRdpError) => {
+            catchError((err: RemoteConnectionError) => {
                 this.raiseSessionEvent({
                     type: SessionEventType.ERROR,
                     data: {
@@ -236,7 +235,7 @@ export class WasmBridgeService {
     mouseWheel(event: WheelEvent) {
         const vertical = event.deltaY !== 0;
         const rotation = vertical ? event.deltaY : event.deltaX;
-        this.doTransactionFromDeviceEvents([DeviceEvent.new_wheel_rotations(vertical, -rotation)]);
+        this.doTransactionFromDeviceEvents([this.wasm!.DeviceEvent.new_wheel_rotations(vertical, -rotation)]);
     }
 
     setVisibility(state: boolean) {
@@ -260,90 +259,39 @@ export class WasmBridgeService {
         return onClipboardChangedPromise();
     }
 
-    setKeyboardUnicodeMode(use_unicode: boolean) {
-        this.keyboardUnicodeMode = use_unicode;
-    }
-
     private releaseAllInputs() {
         this.session?.release_all_inputs();
     }
 
-    private supportsUnicodeKeyboardShortcuts(): boolean {
-        // Use cached value to reduce FFI calls
-        if (this.backendSupportsUnicodeKeyboardShortcuts !== undefined) {
-            return this.backendSupportsUnicodeKeyboardShortcuts;
-        }
-
-        if (this.session?.supports_unicode_keyboard_shortcuts) {
-            this.backendSupportsUnicodeKeyboardShortcuts = this.session?.supports_unicode_keyboard_shortcuts();
-            return this.backendSupportsUnicodeKeyboardShortcuts;
-        }
-
-        // By default we use unicode keyboard shortcuts for backends
-        return true;
+    setKeyboardUnicodeMode(use_unicode: boolean) {
+        this.keyboardUnicodeMode = use_unicode;
     }
 
     private sendKeyboard(evt: KeyboardEvent) {
         evt.preventDefault();
 
         let keyEvent;
-        let unicodeEvent;
 
         if (evt.type === 'keydown') {
-            keyEvent = DeviceEvent.new_key_pressed;
-            unicodeEvent = DeviceEvent.new_unicode_pressed;
+            keyEvent = this.wasm!.DeviceEvent.new_key_pressed;
         } else if (evt.type === 'keyup') {
-            keyEvent = DeviceEvent.new_key_released;
-            unicodeEvent = DeviceEvent.new_unicode_released;
+            keyEvent = this.wasm!.DeviceEvent.new_key_released;
         }
 
-        let sendAsUnicode = true;
+        if (keyEvent) {
+            const isModifierKey = evt.code in ModifierKey;
+            const isLockKey = evt.code in LockKey;
 
-        if (!this.supportsUnicodeKeyboardShortcuts()) {
-            for (const modifier of ['Alt', 'Control', 'Meta', 'AltGraph', 'OS']) {
-                if (evt.getModifierState(modifier)) {
-                    sendAsUnicode = false;
-                    break;
-                }
-            }
-        }
-
-        const isModifierKey = evt.code in ModifierKey;
-        const isLockKey = evt.code in LockKey;
-
-        if (isModifierKey) {
-            this.updateModifierKeyState(evt);
-        }
-
-        if (isLockKey) {
-            this.syncModifier(evt);
-        }
-
-        if (!evt.repeat || (!isModifierKey && !isLockKey)) {
-            const keyScanCode = scanCode(evt.code, OS.WINDOWS);
-            const unknownScanCode = Number.isNaN(keyScanCode);
-
-            if (!this.keyboardUnicodeMode && keyEvent && !unknownScanCode) {
-                this.doTransactionFromDeviceEvents([keyEvent(keyScanCode)]);
-                return;
+            if (isModifierKey) {
+                this.updateModifierKeyState(evt);
             }
 
-            if (this.keyboardUnicodeMode && unicodeEvent && keyEvent) {
-                // `Dead` and `Unidentified` keys should be ignored
-                if (evt.key in ['Dead', 'Unidentified']) {
-                    return;
-                }
+            if (isLockKey) {
+                this.syncModifier(evt);
+            }
 
-                const keyCode = scanCode(evt.key, OS.WINDOWS);
-                const isUnicodeCharacter = Number.isNaN(keyCode) && evt.key.length === 1;
-
-                if (isUnicodeCharacter && sendAsUnicode) {
-                    this.doTransactionFromDeviceEvents([unicodeEvent(evt.key)]);
-                } else if (!unknownScanCode) {
-                    // Use scancode insdead of key code for non-unicode character values
-                    this.doTransactionFromDeviceEvents([keyEvent(keyScanCode)]);
-                }
-                return;
+            if (!evt.repeat || (!isModifierKey && !isLockKey)) {
+                this.doTransactionFromDeviceEvents([keyEvent(scanCode(evt.code, OS.WINDOWS))]);
             }
         }
     }
@@ -372,7 +320,7 @@ export class WasmBridgeService {
                 // IMPORTANT: We need to make proxy `Image` object to actually load the image and
                 // make it usable for CSS property. Without this proxy object, URL will be rejected.
                 const image = new Image();
-                image.src = data;
+                image.src = style;
 
                 const rounded_hotspot_x = Math.round(hotspot_x);
                 const rounded_hotspot_y = Math.round(hotspot_y);
@@ -416,29 +364,35 @@ export class WasmBridgeService {
     }
 
     private doTransactionFromDeviceEvents(deviceEvents: DeviceEvent[]) {
-        const transaction = InputTransaction.new();
+        const transaction = this.wasm!.InputTransaction.new();
         deviceEvents.forEach((event) => transaction.add_event(event));
         this.session?.apply_inputs(transaction);
     }
 
     private ctrlAltDel() {
-        const ctrl = parseInt('0x001D', 16);
-        const alt = parseInt('0x0038', 16);
-        const suppr = parseInt('0xE053', 16);
+        const ctrl = scanCode('ControlLeft', OS.WINDOWS);
+        const alt = scanCode('AltLeft', OS.WINDOWS);
+        const suppr = scanCode('Delete', OS.WINDOWS);
 
         this.doTransactionFromDeviceEvents([
-            DeviceEvent.new_key_pressed(ctrl),
-            DeviceEvent.new_key_pressed(alt),
-            DeviceEvent.new_key_pressed(suppr),
-            DeviceEvent.new_key_released(ctrl),
-            DeviceEvent.new_key_released(alt),
-            DeviceEvent.new_key_released(suppr),
+            this.wasm!.DeviceEvent.new_key_pressed(ctrl),
+            this.wasm!.DeviceEvent.new_key_pressed(alt),
+            this.wasm!.DeviceEvent.new_key_pressed(suppr),
+            this.wasm!.DeviceEvent.new_key_released(ctrl),
+            this.wasm!.DeviceEvent.new_key_released(alt),
+            this.wasm!.DeviceEvent.new_key_released(suppr),
         ]);
     }
 
     private sendMeta() {
-        const meta = parseInt('0xE05B', 16);
+        const ctrl = scanCode('ControlLeft', OS.WINDOWS);
+        const escape = scanCode('Escape', OS.WINDOWS);
 
-        this.doTransactionFromDeviceEvents([DeviceEvent.new_key_pressed(meta), DeviceEvent.new_key_released(meta)]);
+        this.doTransactionFromDeviceEvents([
+            this.wasm!.DeviceEvent.new_key_pressed(ctrl),
+            this.wasm!.DeviceEvent.new_key_pressed(escape),
+            this.wasm!.DeviceEvent.new_key_released(ctrl),
+            this.wasm!.DeviceEvent.new_key_released(escape),
+        ]);
     }
 }
