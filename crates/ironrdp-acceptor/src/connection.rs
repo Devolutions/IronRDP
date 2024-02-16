@@ -4,7 +4,7 @@ use ironrdp_connector::{
     legacy, reason_err, ConnectorError, ConnectorErrorExt, ConnectorResult, DesktopSize, Sequence, State, Written,
 };
 use ironrdp_pdu as pdu;
-use ironrdp_svc::{StaticChannelSet, StaticVirtualChannelProcessor};
+use ironrdp_svc::{StaticChannelSet, SvcServerProcessor};
 use pdu::rdp::capability_sets::CapabilitySet;
 use pdu::rdp::headers::ShareControlPdu;
 use pdu::write_buf::WriteBuf;
@@ -51,7 +51,7 @@ impl Acceptor {
 
     pub fn attach_static_channel<T>(&mut self, channel: T)
     where
-        T: StaticVirtualChannelProcessor + 'static,
+        T: SvcServerProcessor + 'static,
     {
         self.static_channels.insert(channel);
     }

@@ -8,6 +8,8 @@ use thiserror::Error;
 
 use crate::PduParsing;
 
+pub const CHANNEL_NAME: &str = "Microsoft::Windows::RDS::DisplayControl";
+
 const RDP_DISPLAY_HEADER_SIZE: usize = 8;
 
 #[derive(Debug, Clone, PartialEq, Eq)]

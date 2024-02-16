@@ -11,7 +11,7 @@ extern crate tracing;
 use ironrdp_pdu::cursor::ReadCursor;
 use ironrdp_pdu::gcc::ChannelName;
 use ironrdp_pdu::{decode_cursor, other_err, PduResult};
-use ironrdp_svc::{impl_as_any, CompressionCondition, StaticVirtualChannelProcessor, SvcMessage};
+use ironrdp_svc::{impl_as_any, CompressionCondition, SvcClientProcessor, SvcMessage, SvcProcessor};
 use pdu::efs::{
     Capabilities, ClientDeviceListAnnounce, ClientNameRequest, ClientNameRequestUnicodeFlag, CoreCapability,
     CoreCapabilityKind, DeviceControlRequest, DeviceIoRequest, DeviceType, Devices, ServerDeviceAnnounceResponse,
@@ -178,7 +178,7 @@ impl Rdpdr {
     }
 }
 
-impl StaticVirtualChannelProcessor for Rdpdr {
+impl SvcProcessor for Rdpdr {
     fn channel_name(&self) -> ChannelName {
         Self::NAME
     }
@@ -223,3 +223,5 @@ impl StaticVirtualChannelProcessor for Rdpdr {
         }
     }
 }
+
+impl SvcClientProcessor for Rdpdr {}

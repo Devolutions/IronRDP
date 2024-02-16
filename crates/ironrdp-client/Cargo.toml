@@ -39,7 +39,7 @@ winit = "0.28"
 softbuffer = "0.3"
 
 # CLI
-clap = { version = "4.4", features = ["derive", "cargo"] }
+clap = { version = "4.5", features = ["derive", "cargo"] }
 proc-exit = "2"
 inquire = "0.6"
 
@@ -53,10 +53,10 @@ tokio = { version = "1", features = ["full"]}
 # Utils
 whoami = "1.4"
 anyhow = "1"
-smallvec = "1.11"
+smallvec = "1.13"
 tap = "1"
 semver = "1"
-reqwest = "0.11.22"
+reqwest = "0.11.24"
 url = "2.5.0"
 
 [target.'cfg(windows)'.dependencies]

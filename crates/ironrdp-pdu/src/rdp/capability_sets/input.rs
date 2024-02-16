@@ -22,7 +22,7 @@ bitflags! {
         const UNICODE = 0x0010;
         const FASTPATH_INPUT_2 = 0x0020;
         const UNUSED_1 = 0x0040;
-        const UNUSED_2 = 0x0080;
+        const MOUSE_RELATIVE = 0x0080;
         const TS_MOUSE_HWHEEL = 0x0100;
         const TS_QOE_TIMESTAMPS = 0x0200;
     }

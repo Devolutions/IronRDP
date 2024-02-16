@@ -75,13 +75,13 @@ where
     }
 }
 
-pub type SingleThreadedFuturesFramed<S> = Framed<SingleThreadedFuturesStream<S>>;
+pub type LocalFuturesFramed<S> = Framed<LocalFuturesStream<S>>;
 
-pub struct SingleThreadedFuturesStream<S> {
+pub struct LocalFuturesStream<S> {
     inner: S,
 }
 
-impl<S> StreamWrapper for SingleThreadedFuturesStream<S> {
+impl<S> StreamWrapper for LocalFuturesStream<S> {
     type InnerStream = S;
 
     fn from_inner(stream: Self::InnerStream) -> Self {
@@ -101,7 +101,7 @@ impl<S> StreamWrapper for SingleThreadedFuturesStream<S> {
     }
 }
 
-impl<S> FramedRead for SingleThreadedFuturesStream<S>
+impl<S> FramedRead for LocalFuturesStream<S>
 where
     S: Unpin + AsyncRead,
 {
@@ -123,7 +123,7 @@ where
     }
 }
 
-impl<S> FramedWrite for SingleThreadedFuturesStream<S>
+impl<S> FramedWrite for LocalFuturesStream<S>
 where
     S: Unpin + AsyncWrite,
 {

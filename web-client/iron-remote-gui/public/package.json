@@ -9,7 +9,7 @@
     "Zacharia Ellaham"
   ],
   "description": "Web Component providing agnostic implementation for Iron Wasm base client.",
-  "version": "0.11.1",
+  "version": "0.11.3",
   "main": "iron-remote-gui.umd.cjs",
   "types": "index.d.ts",
   "files": [

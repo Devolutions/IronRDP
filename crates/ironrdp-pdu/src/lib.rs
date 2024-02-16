@@ -386,6 +386,7 @@ pub use legacy::*;
 
 // TODO: Delete these traits at some point
 mod legacy {
+    use crate::{PduEncode, PduResult, WriteCursor};
     use thiserror::Error;
 
     pub trait PduParsing {
@@ -429,6 +430,25 @@ mod legacy {
         fn from_buffer_consume(buffer: &mut &'a [u8]) -> Result<Self, Self::Error>;
         fn to_buffer_consume(&self, buffer: &mut &mut [u8]) -> Result<(), Self::Error>;
         fn buffer_length(&self) -> usize;
+    }
+
+    impl PduEncode for Vec<u8> {
+        fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+            ensure_size!(in: dst, size: self.len());
+
+            dst.write_slice(self);
+            Ok(())
+        }
+
+        /// Returns the associated PDU name associated.
+        fn name(&self) -> &'static str {
+            "legacy-pdu-encode"
+        }
+
+        /// Computes the size in bytes for this PDU.
+        fn size(&self) -> usize {
+            self.len()
+        }
     }
 
     #[derive(Debug, Error)]

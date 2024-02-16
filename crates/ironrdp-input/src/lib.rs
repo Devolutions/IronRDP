@@ -5,8 +5,7 @@ use ironrdp_pdu::input::mouse::PointerFlags;
 use ironrdp_pdu::input::mouse_x::PointerXFlags;
 use ironrdp_pdu::input::{MousePdu, MouseXPdu};
 use smallvec::SmallVec;
-
-// TODO(#106): unicode keyboard event support
+use std::collections::BTreeSet;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u8)]
@@ -136,6 +135,8 @@ pub enum Operation {
     WheelRotations(WheelRotations),
     KeyPressed(Scancode),
     KeyReleased(Scancode),
+    UnicodeKeyPressed(char),
+    UnicodeKeyReleased(char),
 }
 
 pub type KeyboardState = BitArr!(for 512);
@@ -143,6 +144,7 @@ pub type MouseButtonsState = BitArr!(for 5);
 
 /// In-memory database for maintaining the current keyboard and mouse state.
 pub struct Database {
+    unicode_keyboard_state: BTreeSet<char>,
     keyboard: KeyboardState,
     mouse_buttons: MouseButtonsState,
     mouse_position: MousePosition,
@@ -160,7 +162,12 @@ impl Database {
             keyboard: BitArray::ZERO,
             mouse_buttons: BitArray::ZERO,
             mouse_position: MousePosition { x: 0, y: 0 },
+            unicode_keyboard_state: BTreeSet::new(),
         }
+    }
+
+    pub fn is_unicode_key_pressed(&self, character: char) -> bool {
+        self.unicode_keyboard_state.contains(&character)
     }
 
     pub fn is_key_pressed(&self, scancode: Scancode) -> bool {
@@ -293,6 +300,34 @@ impl Database {
                         events.push(FastPathInputEvent::KeyboardEvent(flags, scancode.code));
                     }
                 }
+                Operation::UnicodeKeyPressed(character) => {
+                    let was_pressed = !self.unicode_keyboard_state.insert(character);
+
+                    let mut utf16_buffer = [0u16; 2];
+                    let utf16_code_units = character.encode_utf16(&mut utf16_buffer);
+
+                    if was_pressed {
+                        for code in utf16_code_units.iter() {
+                            events.push(FastPathInputEvent::UnicodeKeyboardEvent(KeyboardFlags::RELEASE, *code));
+                        }
+                    }
+
+                    for code in utf16_code_units {
+                        events.push(FastPathInputEvent::UnicodeKeyboardEvent(KeyboardFlags::empty(), *code));
+                    }
+                }
+                Operation::UnicodeKeyReleased(character) => {
+                    let was_pressed = self.unicode_keyboard_state.remove(&character);
+
+                    let mut utf16_buffer = [0u16; 2];
+                    let utf16_code_units = character.encode_utf16(&mut utf16_buffer);
+
+                    if was_pressed {
+                        for code in utf16_code_units {
+                            events.push(FastPathInputEvent::UnicodeKeyboardEvent(KeyboardFlags::RELEASE, *code));
+                        }
+                    }
+                }
             }
         }
 
@@ -338,6 +373,15 @@ impl Database {
             };
 
             events.push(FastPathInputEvent::KeyboardEvent(flags, scancode));
+        }
+
+        for character in std::mem::take(&mut self.unicode_keyboard_state).into_iter() {
+            let mut utf16_buffer = [0u16; 2];
+            let utf16_code_units = character.encode_utf16(&mut utf16_buffer);
+
+            for code in utf16_code_units {
+                events.push(FastPathInputEvent::UnicodeKeyboardEvent(KeyboardFlags::RELEASE, *code));
+            }
         }
 
         self.mouse_buttons = BitArray::ZERO;

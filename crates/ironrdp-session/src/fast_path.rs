@@ -1,5 +1,6 @@
 use std::rc::Rc;
 
+use ironrdp_graphics::image_processing::PixelFormat;
 use ironrdp_graphics::pointer::{DecodedPointer, PointerBitmapTarget};
 use ironrdp_graphics::rdp6::BitmapStreamDecoder;
 use ironrdp_graphics::rle::RlePixelFormat;
@@ -334,15 +335,15 @@ impl Processor {
                     let destination = InclusiveRectangle {
                         left: destination.left,
                         top: destination.top,
-                        right: destination.right,
-                        bottom: destination.bottom,
+                        right: destination.right - 1,
+                        bottom: destination.bottom - 1,
                     };
                     match codec_id {
                         CodecId::None => {
                             let ext_data = bits.extended_bitmap_data;
                             match ext_data.bpp {
                                 32 => {
-                                    image.apply_rgb32_bitmap(ext_data.data, &destination)?;
+                                    image.apply_rgb32_bitmap(ext_data.data, PixelFormat::BgrX32, &destination)?;
                                 }
                                 bpp => {
                                     warn!("Unsupported bpp: {bpp}")

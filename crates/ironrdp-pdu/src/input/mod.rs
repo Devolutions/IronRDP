@@ -9,6 +9,7 @@ use crate::PduParsing;
 
 pub mod fast_path;
 pub mod mouse;
+pub mod mouse_rel;
 pub mod mouse_x;
 pub mod scan_code;
 pub mod sync;
@@ -16,6 +17,7 @@ pub mod unicode;
 pub mod unused;
 
 pub use self::mouse::MousePdu;
+pub use self::mouse_rel::MouseRelPdu;
 pub use self::mouse_x::MouseXPdu;
 pub use self::scan_code::ScanCodePdu;
 pub use self::sync::SyncPdu;
@@ -63,6 +65,7 @@ pub enum InputEvent {
     Unicode(UnicodePdu),
     Mouse(MousePdu),
     MouseX(MouseXPdu),
+    MouseRel(MouseRelPdu),
 }
 
 impl PduParsing for InputEvent {
@@ -81,6 +84,7 @@ impl PduParsing for InputEvent {
             InputEventType::Unicode => Ok(Self::Unicode(UnicodePdu::from_buffer(&mut stream)?)),
             InputEventType::Mouse => Ok(Self::Mouse(MousePdu::from_buffer(&mut stream)?)),
             InputEventType::MouseX => Ok(Self::MouseX(MouseXPdu::from_buffer(&mut stream)?)),
+            InputEventType::MouseRel => Ok(Self::MouseRel(MouseRelPdu::from_buffer(&mut stream)?)),
         }
     }
 
@@ -95,6 +99,7 @@ impl PduParsing for InputEvent {
             Self::Unicode(pdu) => pdu.to_buffer(&mut stream),
             Self::Mouse(pdu) => pdu.to_buffer(&mut stream),
             Self::MouseX(pdu) => pdu.to_buffer(&mut stream),
+            Self::MouseRel(pdu) => pdu.to_buffer(&mut stream),
         }
     }
 
@@ -106,6 +111,7 @@ impl PduParsing for InputEvent {
             Self::Unicode(pdu) => pdu.buffer_length(),
             Self::Mouse(pdu) => pdu.buffer_length(),
             Self::MouseX(pdu) => pdu.buffer_length(),
+            Self::MouseRel(pdu) => pdu.buffer_length(),
         }
     }
 }
@@ -119,6 +125,7 @@ enum InputEventType {
     Unicode = 0x0005,
     Mouse = 0x8001,
     MouseX = 0x8002,
+    MouseRel = 0x8004,
 }
 
 impl From<&InputEvent> for InputEventType {
@@ -130,6 +137,7 @@ impl From<&InputEvent> for InputEventType {
             InputEvent::Unicode(_) => Self::Unicode,
             InputEvent::Mouse(_) => Self::Mouse,
             InputEvent::MouseX(_) => Self::MouseX,
+            InputEvent::MouseRel(_) => Self::MouseRel,
         }
     }
 }

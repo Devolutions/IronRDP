@@ -7,7 +7,7 @@ use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive, ToPrimitive};
 
 use crate::fast_path::EncryptionFlags;
-use crate::input::{InputEventError, MousePdu, MouseXPdu};
+use crate::input::{InputEventError, MousePdu, MouseRelPdu, MouseXPdu};
 use crate::{per, PduParsing};
 
 /// Implements the Fast-Path RDP message header PDU.
@@ -78,6 +78,7 @@ pub enum FastpathInputEventType {
     MouseX = 0x0002,
     Sync = 0x0003,
     Unicode = 0x0004,
+    MouseRel = 0x0005,
     QoeTimestamp = 0x0006,
 }
 
@@ -87,6 +88,7 @@ pub enum FastPathInputEvent {
     UnicodeKeyboardEvent(KeyboardFlags, u16),
     MouseEvent(MousePdu),
     MouseEventEx(MouseXPdu),
+    MouseEventRel(MouseRelPdu),
     QoeEvent(u32),
     SyncEvent(SynchronizeFlags),
 }
@@ -114,6 +116,10 @@ impl PduParsing for FastPathInputEvent {
                 let mouse_event = MouseXPdu::from_buffer(stream)?;
                 FastPathInputEvent::MouseEventEx(mouse_event)
             }
+            FastpathInputEventType::MouseRel => {
+                let mouse_event = MouseRelPdu::from_buffer(stream)?;
+                FastPathInputEvent::MouseEventRel(mouse_event)
+            }
             FastpathInputEventType::Sync => {
                 let flags =
                     SynchronizeFlags::from_bits(flags).ok_or(InputEventError::SynchronizeFlagsUnsupported(flags))?;
@@ -139,6 +145,7 @@ impl PduParsing for FastPathInputEvent {
             FastPathInputEvent::UnicodeKeyboardEvent(flags, _) => (flags.bits(), FastpathInputEventType::Unicode),
             FastPathInputEvent::MouseEvent(_) => (0, FastpathInputEventType::Mouse),
             FastPathInputEvent::MouseEventEx(_) => (0, FastpathInputEventType::MouseX),
+            FastPathInputEvent::MouseEventRel(_) => (0, FastpathInputEventType::MouseRel),
             FastPathInputEvent::QoeEvent(_) => (0, FastpathInputEventType::QoeTimestamp),
             FastPathInputEvent::SyncEvent(flags) => (flags.bits(), FastpathInputEventType::Sync),
         };
@@ -172,6 +179,7 @@ impl PduParsing for FastPathInputEvent {
             FastPathInputEvent::UnicodeKeyboardEvent(_, _) => 2,
             FastPathInputEvent::MouseEvent(pdu) => pdu.buffer_length(),
             FastPathInputEvent::MouseEventEx(pdu) => pdu.buffer_length(),
+            FastPathInputEvent::MouseEventRel(pdu) => pdu.buffer_length(),
             FastPathInputEvent::QoeEvent(_) => 4,
             FastPathInputEvent::SyncEvent(_) => 0,
         }

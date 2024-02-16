@@ -4,7 +4,7 @@ use std::net::SocketAddr;
 use ironrdp_pdu::rdp::capability_sets::CapabilitySet;
 use ironrdp_pdu::write_buf::WriteBuf;
 use ironrdp_pdu::{gcc, mcs, nego, rdp, PduHint};
-use ironrdp_svc::{StaticChannelSet, StaticVirtualChannel, StaticVirtualChannelProcessor};
+use ironrdp_svc::{StaticChannelSet, StaticVirtualChannel, SvcClientProcessor};
 
 use crate::channel_connection::{ChannelConnectionSequence, ChannelConnectionState};
 use crate::connection_finalization::ConnectionFinalizationSequence;
@@ -150,7 +150,7 @@ impl ClientConnector {
     #[must_use]
     pub fn with_static_channel<T>(mut self, channel: T) -> Self
     where
-        T: StaticVirtualChannelProcessor + 'static,
+        T: SvcClientProcessor + 'static,
     {
         self.static_channels.insert(channel);
         self
@@ -158,7 +158,7 @@ impl ClientConnector {
 
     pub fn attach_static_channel<T>(&mut self, channel: T)
     where
-        T: StaticVirtualChannelProcessor + 'static,
+        T: SvcClientProcessor + 'static,
     {
         self.static_channels.insert(channel);
     }
@@ -738,7 +738,8 @@ fn create_client_info_pdu(config: &Config, routing_addr: &SocketAddr) -> rdp::Cl
         | ClientInfoFlags::LOGON_NOTIFY
         | ClientInfoFlags::LOGON_ERRORS
         | ClientInfoFlags::NO_AUDIO_PLAYBACK
-        | ClientInfoFlags::VIDEO_DISABLE;
+        | ClientInfoFlags::VIDEO_DISABLE
+        | ClientInfoFlags::ENABLE_WINDOWS_KEY;
 
     if config.autologon {
         flags |= ClientInfoFlags::AUTOLOGON;

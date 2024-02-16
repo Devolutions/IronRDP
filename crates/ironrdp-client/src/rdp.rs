@@ -104,7 +104,7 @@ async fn connect(
 
     let mut connector = connector::ClientConnector::new(config.connector.clone())
         .with_server_addr(server_addr)
-        // .with_static_channel(ironrdp::dvc::Drdynvc::new()) // FIXME(#61): drdynvc is not working
+        // .with_static_channel(ironrdp::dvc::DrdynvcClient::new()) // FIXME(#61): drdynvc is not working
         .with_static_channel(rdpsnd::Rdpsnd::new())
         .with_static_channel(rdpdr::Rdpdr::new(Box::new(NoopRdpdrBackend {}), "IronRDP".to_owned()).with_smartcard(0));
 
@@ -201,7 +201,7 @@ async fn active_session(
                         active_stage.graceful_shutdown()?
                     }
                     RdpInputEvent::Clipboard(event) => {
-                        if let Some(cliprdr) = active_stage.get_svc_processor::<ironrdp::cliprdr::Cliprdr>() {
+                        if let Some(cliprdr) = active_stage.get_svc_processor::<ironrdp::cliprdr::CliprdrClient>() {
                             if let Some(svc_messages) = match event {
                                 ClipboardMessage::SendInitiateCopy(formats) => {
                                     Some(cliprdr.initiate_copy(&formats)

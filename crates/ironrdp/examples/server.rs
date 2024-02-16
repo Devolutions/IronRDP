@@ -10,10 +10,11 @@ use std::num::NonZeroU16;
 use std::sync::Arc;
 
 use anyhow::Context as _;
+use ironrdp_cliprdr_native::StubClipboard;
 use ironrdp_connector::DesktopSize;
 use ironrdp_server::{
     BitmapUpdate, DisplayUpdate, KeyboardEvent, MouseEvent, PixelFormat, PixelOrder, RdpServer, RdpServerDisplay,
-    RdpServerInputHandler,
+    RdpServerDisplayUpdates, RdpServerInputHandler,
 };
 use rand::prelude::*;
 use rustls::ServerConfig;
@@ -96,13 +97,20 @@ fn setup_logging() -> anyhow::Result<()> {
 }
 
 fn acceptor(cert_path: &str, key_path: &str) -> anyhow::Result<TlsAcceptor> {
-    let cert = certs(&mut BufReader::new(File::open(cert_path)?))?[0].clone();
-    let key = pkcs8_private_keys(&mut BufReader::new(File::open(key_path)?))?[0].clone();
+    let cert = certs(&mut BufReader::new(File::open(cert_path)?))
+        .next()
+        .context("no certificate")??;
+    let key = pkcs8_private_keys(&mut BufReader::new(File::open(key_path)?))
+        .next()
+        .context("no private key")??;
 
     let mut server_config = ServerConfig::builder()
         .with_safe_defaults()
         .with_no_client_auth()
-        .with_single_cert(vec![rustls::Certificate(cert)], rustls::PrivateKey(key))
+        .with_single_cert(
+            vec![rustls::Certificate(cert.as_ref().to_vec())],
+            rustls::PrivateKey(key.secret_pkcs8_der().to_vec()),
+        )
         .expect("bad certificate/key");
 
     // This adds support for the SSLKEYLOGFILE env variable (https://wiki.wireshark.org/TLS#using-the-pre-master-secret)
@@ -112,23 +120,20 @@ fn acceptor(cert_path: &str, key_path: &str) -> anyhow::Result<TlsAcceptor> {
 }
 
 #[derive(Clone, Debug)]
-struct Handler {
-    count: usize,
-}
+struct Handler {}
 
 impl Handler {
     fn new() -> Self {
-        Self { count: 0 }
+        Self {}
     }
 }
 
-#[async_trait::async_trait]
 impl RdpServerInputHandler for Handler {
-    async fn keyboard(&mut self, event: KeyboardEvent) {
+    fn keyboard(&mut self, event: KeyboardEvent) {
         info!(?event, "keyboard");
     }
 
-    async fn mouse(&mut self, event: MouseEvent) {
+    fn mouse(&mut self, event: MouseEvent) {
         info!(?event, "mouse");
     }
 }
@@ -136,17 +141,11 @@ impl RdpServerInputHandler for Handler {
 const WIDTH: u16 = 1920;
 const HEIGHT: u16 = 1080;
 
-#[async_trait::async_trait]
-impl RdpServerDisplay for Handler {
-    async fn size(&mut self) -> DesktopSize {
-        DesktopSize {
-            width: WIDTH,
-            height: HEIGHT,
-        }
-    }
+struct DisplayUpdates;
 
-    async fn get_update(&mut self) -> Option<DisplayUpdate> {
-        self.count += 1;
+#[async_trait::async_trait]
+impl RdpServerDisplayUpdates for DisplayUpdates {
+    async fn next_update(&mut self) -> Option<DisplayUpdate> {
         sleep(Duration::from_millis(100)).await;
         let mut rng = rand::thread_rng();
 
@@ -176,6 +175,20 @@ impl RdpServerDisplay for Handler {
     }
 }
 
+#[async_trait::async_trait]
+impl RdpServerDisplay for Handler {
+    async fn size(&mut self) -> DesktopSize {
+        DesktopSize {
+            width: WIDTH,
+            height: HEIGHT,
+        }
+    }
+
+    async fn updates(&mut self) -> anyhow::Result<Box<dyn RdpServerDisplayUpdates>> {
+        Ok(Box::new(DisplayUpdates {}))
+    }
+}
+
 async fn run(host: String, port: u16, cert: Option<String>, key: Option<String>) -> anyhow::Result<()> {
     info!(host, port, cert, key, "run");
     let handler = Handler::new();
@@ -193,9 +206,13 @@ async fn run(host: String, port: u16, cert: Option<String>, key: Option<String>)
     } else {
         server.with_no_security()
     };
+
+    let cliprdr = StubClipboard::new();
+
     let mut server = server
         .with_input_handler(handler.clone())
         .with_display_handler(handler.clone())
+        .with_cliprdr_factory(Some(cliprdr.backend_factory()))
         .build();
 
     server.run().await

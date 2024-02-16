@@ -4,7 +4,7 @@
 extern crate tracing;
 
 use anyhow::Context as _;
-use ironrdp_client::config::Config;
+use ironrdp_client::config::{ClipboardType, Config};
 use ironrdp_client::gui::GuiContext;
 use ironrdp_client::rdp::{RdpClient, RdpInputEvent};
 use tokio::runtime;
@@ -31,30 +31,40 @@ fn main() -> anyhow::Result<()> {
 
     let (input_event_sender, input_event_receiver) = RdpInputEvent::create_channel();
 
-    #[cfg(not(windows))]
-    let cliprdr_factory = None;
-
+    // NOTE: we need to keep `win_clipboard` alive, otherwise it will be dropped before IronRDP
+    // starts and clipboard functionality will not be available.
     #[cfg(windows)]
-    let (_win_clipboard, cliprdr_factory) = {
-        use ironrdp_client::clipboard::ClientClipboardMessageProxy;
-        use ironrdp_cliprdr_native::WinClipboard;
-        use windows::Win32::Foundation::HWND;
-        use winit::platform::windows::WindowExtWindows;
+    let _win_clipboard;
 
-        // SAFETY: provided window handle from `winit` is valid and is guaranteed to be alive
-        // while the gui window is still open.
-        let win_clipboard = unsafe {
-            WinClipboard::new(
-                HWND(gui.window().hwnd()),
-                ClientClipboardMessageProxy::new(input_event_sender.clone()),
-            )?
-        };
+    let cliprdr_factory = match config.clipboard_type {
+        ClipboardType::Stub => {
+            use ironrdp_cliprdr_native::StubClipboard;
 
-        let factory = Some(win_clipboard.backend_factory());
+            let cliprdr = StubClipboard::new();
+            let factory = cliprdr.backend_factory();
+            Some(factory)
+        }
+        #[cfg(windows)]
+        ClipboardType::Windows => {
+            use ironrdp_client::clipboard::ClientClipboardMessageProxy;
+            use ironrdp_cliprdr_native::WinClipboard;
+            use windows::Win32::Foundation::HWND;
+            use winit::platform::windows::WindowExtWindows;
 
-        // NOTE: we need to keep `win_clipboard` alive, otherwise it will be dropped before IronRDP
-        // starts and clipboard functionality will not be available.
-        (win_clipboard, factory)
+            // SAFETY: provided window handle from `winit` is valid and is guaranteed to be alive
+            // while the gui window is still open.
+            let cliprdr = unsafe {
+                WinClipboard::new(
+                    HWND(gui.window().hwnd()),
+                    ClientClipboardMessageProxy::new(input_event_sender.clone()),
+                )?
+            };
+
+            let factory = cliprdr.backend_factory();
+            _win_clipboard = cliprdr;
+            Some(factory)
+        }
+        _ => None,
     };
 
     let client = RdpClient {

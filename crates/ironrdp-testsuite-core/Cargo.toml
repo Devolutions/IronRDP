@@ -32,6 +32,7 @@ ironrdp-graphics.workspace = true
 ironrdp-input.workspace = true
 ironrdp-rdcleanpath.workspace = true
 ironrdp-session.workspace = true
+ironrdp-displaycontrol.workspace = true
 pretty_assertions = "1.4"
 proptest.workspace = true
 rstest.workspace = true

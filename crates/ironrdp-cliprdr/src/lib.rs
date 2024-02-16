@@ -12,7 +12,8 @@ use backend::CliprdrBackend;
 use ironrdp_pdu::gcc::ChannelName;
 use ironrdp_pdu::{decode, PduResult};
 use ironrdp_svc::{
-    impl_as_any, ChannelFlags, CompressionCondition, StaticVirtualChannelProcessor, SvcMessage, SvcProcessorMessages,
+    AsAny, ChannelFlags, CompressionCondition, SvcClientProcessor, SvcMessage, SvcProcessor, SvcProcessorMessages,
+    SvcServerProcessor,
 };
 use pdu::{
     Capabilities, ClientTemporaryDirectory, ClipboardFormat, ClipboardFormatId, ClipboardGeneralCapabilityFlags,
@@ -26,7 +27,7 @@ use tracing::{error, info};
 use crate::pdu::FormatList;
 
 /// PDUs for sending to the server on the CLIPRDR channel.
-pub type CliprdrSvcMessages = SvcProcessorMessages<Cliprdr>;
+pub type CliprdrSvcMessages<R> = SvcProcessorMessages<Cliprdr<R>>;
 
 #[derive(Debug, Error)]
 enum ClipboardError {
@@ -37,22 +38,43 @@ enum ClipboardError {
     FormatListRejected,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 enum CliprdrState {
     Initialization,
     Ready,
     Failed,
 }
 
-/// CLIPRDR static virtual channel client endpoint implementation
+pub trait Role: std::fmt::Debug + Send + 'static {
+    fn is_server() -> bool;
+}
+
+/// CLIPRDR static virtual channel endpoint implementation
 #[derive(Debug)]
-pub struct Cliprdr {
+pub struct Cliprdr<R: Role> {
     backend: Box<dyn CliprdrBackend>,
     capabilities: Capabilities,
     state: CliprdrState,
+    _marker: std::marker::PhantomData<R>,
 }
 
-impl_as_any!(Cliprdr);
+pub type CliprdrClient = Cliprdr<Client>;
+pub type CliprdrServer = Cliprdr<Server>;
+
+impl SvcClientProcessor for CliprdrClient {}
+impl SvcServerProcessor for CliprdrServer {}
+
+impl<R: Role> AsAny for Cliprdr<R> {
+    #[inline]
+    fn as_any(&self) -> &dyn core::any::Any {
+        self
+    }
+
+    #[inline]
+    fn as_any_mut(&mut self) -> &mut dyn core::any::Any {
+        self
+    }
+}
 
 macro_rules! ready_guard {
         ($self:ident, $function:ident) => {{
@@ -65,7 +87,7 @@ macro_rules! ready_guard {
         }};
     }
 
-impl Cliprdr {
+impl<R: Role> Cliprdr<R> {
     const CHANNEL_NAME: ChannelName = ChannelName::from_static(b"cliprdr\0");
 
     pub fn new(backend: Box<dyn CliprdrBackend>) -> Self {
@@ -76,6 +98,7 @@ impl Cliprdr {
             backend,
             state: CliprdrState::Initialization,
             capabilities: Capabilities::new(ClipboardProtocolVersion::V2, flags),
+            _marker: std::marker::PhantomData,
         }
     }
 
@@ -125,11 +148,13 @@ impl Cliprdr {
     fn handle_format_list_response(&mut self, response: FormatListResponse) -> PduResult<Vec<SvcMessage>> {
         match response {
             FormatListResponse::Ok => {
-                if self.state == CliprdrState::Initialization {
-                    info!("CLIPRDR(clipboard) virtual channel has been initialized");
-                    self.state = CliprdrState::Ready;
-                } else {
-                    info!("CLIPRDR(clipboard) Remote has received format list successfully");
+                if !R::is_server() {
+                    if self.state == CliprdrState::Initialization {
+                        info!("CLIPRDR(clipboard) virtual channel has been initialized");
+                        self.state = CliprdrState::Ready;
+                    } else {
+                        info!("CLIPRDR(clipboard) Remote has received format list successfully");
+                    }
                 }
 
                 self.backend.on_format_list_received();
@@ -158,7 +183,7 @@ impl Cliprdr {
     /// [`CliprdrBackend::on_format_data_request`] is called by [`Cliprdr`].
     ///
     /// If data is not available anymore, an error response should be sent instead.
-    pub fn submit_format_data(&self, response: OwnedFormatDataResponse) -> PduResult<CliprdrSvcMessages> {
+    pub fn submit_format_data(&self, response: OwnedFormatDataResponse) -> PduResult<CliprdrSvcMessages<R>> {
         ready_guard!(self, submit_format_data);
 
         let pdu = ClipboardPdu::FormatDataResponse(response);
@@ -173,7 +198,7 @@ impl Cliprdr {
     /// by [`Cliprdr`].
     ///
     /// If data is not available anymore, an error response should be sent instead.
-    pub fn submit_file_contents(&self, response: FileContentsResponse<'static>) -> PduResult<CliprdrSvcMessages> {
+    pub fn submit_file_contents(&self, response: FileContentsResponse<'static>) -> PduResult<CliprdrSvcMessages<R>> {
         ready_guard!(self, submit_file_contents);
 
         let pdu = ClipboardPdu::FileContentsResponse(response);
@@ -181,25 +206,42 @@ impl Cliprdr {
         Ok(vec![into_cliprdr_message(pdu)].into())
     }
 
+    pub fn capabilities(&self) -> PduResult<SvcMessage> {
+        let pdu = ClipboardPdu::Capabilities(self.capabilities.clone());
+
+        Ok(into_cliprdr_message(pdu))
+    }
+
+    pub fn monitor_ready(&self) -> PduResult<SvcMessage> {
+        let pdu = ClipboardPdu::MonitorReady;
+
+        Ok(into_cliprdr_message(pdu))
+    }
+
     /// Starts processing of `CLIPRDR` copy command. Should be called by the clipboard
     /// implementation when user performs OS-specific copy command (e.g. `Ctrl+C` shortcut on
     /// keyboard)
-    pub fn initiate_copy(&self, available_formats: &[ClipboardFormat]) -> PduResult<CliprdrSvcMessages> {
-        let pdus = match self.state {
-            // During initialization state, first copy action is synthetic and should be sent along with
-            // capabilities and temporary directory PDUs.
-            CliprdrState::Initialization => vec![
-                ClipboardPdu::Capabilities(self.capabilities.clone()),
-                ClipboardPdu::TemporaryDirectory(ClientTemporaryDirectory::new(self.backend.temporary_directory())?),
-                ClipboardPdu::FormatList(self.build_format_list(available_formats).unwrap()),
-            ],
+    pub fn initiate_copy(&self, available_formats: &[ClipboardFormat]) -> PduResult<CliprdrSvcMessages<R>> {
+        let mut pdus = vec![];
+
+        match (self.state, R::is_server()) {
             // When user initiates copy, we should send format list to server.
-            CliprdrState::Ready => vec![ClipboardPdu::FormatList(self.build_format_list(available_formats)?)],
-            CliprdrState::Failed => {
-                error!(?self.state, "Attempted to initiate copy in incorrect state");
-                Vec::new()
+            (CliprdrState::Ready, _) => {
+                pdus.push(ClipboardPdu::FormatList(self.build_format_list(available_formats)?));
             }
-        };
+            (CliprdrState::Initialization, false) => {
+                // During initialization state, first copy action is synthetic and should be sent along with
+                // capabilities and temporary directory PDUs.
+                pdus.push(ClipboardPdu::Capabilities(self.capabilities.clone()));
+                pdus.push(ClipboardPdu::TemporaryDirectory(ClientTemporaryDirectory::new(
+                    self.backend.temporary_directory(),
+                )?));
+                pdus.push(ClipboardPdu::FormatList(self.build_format_list(available_formats)?));
+            }
+            _ => {
+                error!(?self.state, "Attempted to initiate copy in incorrect state");
+            }
+        }
 
         Ok(pdus.into_iter().map(into_cliprdr_message).collect::<Vec<_>>().into())
     }
@@ -207,7 +249,7 @@ impl Cliprdr {
     /// Starts processing of `CLIPRDR` paste command. Should be called by the clipboard
     /// implementation when user performs OS-specific paste command (e.g. `Ctrl+V` shortcut on
     /// keyboard)
-    pub fn initiate_paste(&self, requested_format: ClipboardFormatId) -> PduResult<CliprdrSvcMessages> {
+    pub fn initiate_paste(&self, requested_format: ClipboardFormatId) -> PduResult<CliprdrSvcMessages<R>> {
         ready_guard!(self, initiate_paste);
 
         // When user initiates paste, we should send format data request to server, and expect to
@@ -220,9 +262,21 @@ impl Cliprdr {
     }
 }
 
-impl StaticVirtualChannelProcessor for Cliprdr {
+impl<R: Role> SvcProcessor for Cliprdr<R> {
     fn channel_name(&self) -> ChannelName {
         Self::CHANNEL_NAME
+    }
+
+    fn start(&mut self) -> PduResult<Vec<SvcMessage>> {
+        if self.state != CliprdrState::Initialization {
+            error!("Attempted to start clipboard static virtual channel in invalid state");
+        }
+
+        if R::is_server() {
+            Ok(vec![self.capabilities()?, self.monitor_ready()?])
+        } else {
+            Ok(vec![])
+        }
     }
 
     fn process(&mut self, payload: &[u8]) -> PduResult<Vec<SvcMessage>> {
@@ -280,4 +334,22 @@ fn into_cliprdr_message(pdu: ClipboardPdu<'static>) -> SvcMessage {
     // Adding [`CHANNEL_FLAG_SHOW_PROTOCOL`] is a must for clipboard svc messages, because they
     // contain chunked data. This is the requirement from `MS_RDPBCGR` specification.
     SvcMessage::from(pdu).with_flags(ChannelFlags::SHOW_PROTOCOL)
+}
+
+#[derive(Debug)]
+pub struct Client {}
+
+impl Role for Client {
+    fn is_server() -> bool {
+        false
+    }
+}
+
+#[derive(Debug)]
+pub struct Server {}
+
+impl Role for Server {
+    fn is_server() -> bool {
+        true
+    }
 }

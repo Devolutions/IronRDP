@@ -21,6 +21,8 @@ export interface UserInteraction {
         kdc_proxy_url?: string,
     ): Observable<NewSessionInfo>;
 
+    setKeyboardUnicodeMode(use_unicode: boolean): void;
+
     ctrlAltDel(): void;
 
     metaKey(): void;

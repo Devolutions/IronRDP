@@ -1,13 +1,18 @@
 use std::io::Cursor;
 use std::net::SocketAddr;
+use std::sync::{Arc, Mutex};
 
 use anyhow::{bail, Result};
 use ironrdp_acceptor::{self, Acceptor, AcceptorResult, BeginResult};
+use ironrdp_cliprdr::backend::CliprdrBackendFactory;
+use ironrdp_cliprdr::CliprdrServer;
+use ironrdp_dvc as dvc;
 use ironrdp_pdu::input::fast_path::{FastPathInput, FastPathInputEvent};
 use ironrdp_pdu::input::InputEventPdu;
 use ironrdp_pdu::mcs::SendDataRequest;
 use ironrdp_pdu::rdp::capability_sets::{CapabilitySet, CmdFlags, GeneralExtraFlags};
-use ironrdp_pdu::{self, mcs, nego, rdp, Action, PduParsing};
+use ironrdp_pdu::{self, custom_err, decode, mcs, nego, rdp, Action, PduParsing, PduResult};
+use ironrdp_svc::{server_encode_svc_messages, StaticChannelSet};
 use ironrdp_tokio::{Framed, FramedRead, FramedWrite, TokioFramed};
 use tokio::net::{TcpListener, TcpStream};
 use tokio_rustls::TlsAcceptor;
@@ -38,6 +43,76 @@ impl RdpServerSecurity {
     }
 }
 
+struct DisplayControlHandler {}
+
+impl dvc::DvcProcessor for DisplayControlHandler {
+    fn channel_name(&self) -> &str {
+        ironrdp_pdu::dvc::display::CHANNEL_NAME
+    }
+
+    fn start(&mut self, _channel_id: u32) -> PduResult<dvc::DvcMessages> {
+        use ironrdp_pdu::dvc::display::{DisplayControlCapsPdu, ServerPdu};
+
+        let pdu = ServerPdu::DisplayControlCaps(DisplayControlCapsPdu {
+            max_num_monitors: 1,
+            max_monitor_area_factora: 3840,
+            max_monitor_area_factorb: 2400,
+        });
+
+        let mut buf = vec![];
+        pdu.to_buffer(&mut buf).map_err(|e| custom_err!(e))?;
+        Ok(vec![Box::new(buf)])
+    }
+
+    fn process(&mut self, _channel_id: u32, payload: &[u8]) -> PduResult<dvc::DvcMessages> {
+        use ironrdp_pdu::dvc::display::ClientPdu;
+
+        match ClientPdu::from_buffer(payload).map_err(|e| custom_err!(e))? {
+            ClientPdu::DisplayControlMonitorLayout(layout) => {
+                debug!(?layout);
+            }
+        }
+        Ok(vec![])
+    }
+}
+
+impl dvc::DvcServerProcessor for DisplayControlHandler {}
+
+struct AInputHandler {
+    handler: Arc<Mutex<Box<dyn RdpServerInputHandler>>>,
+}
+
+impl dvc::DvcProcessor for AInputHandler {
+    fn channel_name(&self) -> &str {
+        ironrdp_ainput::CHANNEL_NAME
+    }
+
+    fn start(&mut self, _channel_id: u32) -> PduResult<dvc::DvcMessages> {
+        use ironrdp_ainput::{ServerPdu, VersionPdu};
+
+        let pdu = ServerPdu::Version(VersionPdu::default());
+
+        Ok(vec![Box::new(pdu)])
+    }
+
+    fn close(&mut self, _channel_id: u32) {}
+
+    fn process(&mut self, _channel_id: u32, payload: &[u8]) -> PduResult<dvc::DvcMessages> {
+        use ironrdp_ainput::ClientPdu;
+
+        match decode(payload)? {
+            ClientPdu::Mouse(pdu) => {
+                let mut handler = self.handler.lock().unwrap();
+                handler.mouse(pdu.into());
+            }
+        }
+
+        Ok(vec![])
+    }
+}
+
+impl dvc::DvcServerProcessor for AInputHandler {}
+
 /// RDP Server
 ///
 /// A server is created to listen for connections.
@@ -48,15 +123,15 @@ impl RdpServerSecurity {
 /// # Example
 ///
 /// ```
-/// use ironrdp_server::{RdpServer, RdpServerInputHandler, RdpServerDisplay};
+/// use ironrdp_server::{RdpServer, RdpServerInputHandler, RdpServerDisplay, RdpServerDisplayUpdates};
 ///
+///# use anyhow::Result;
 ///# use ironrdp_server::{DisplayUpdate, DesktopSize, KeyboardEvent, MouseEvent};
 ///# use tokio_rustls::TlsAcceptor;
 ///# struct NoopInputHandler;
-///# #[async_trait::async_trait]
 ///# impl RdpServerInputHandler for NoopInputHandler {
-///#     async fn keyboard(&mut self, _: KeyboardEvent) {}
-///#     async fn mouse(&mut self, _: MouseEvent) {}
+///#     fn keyboard(&mut self, _: KeyboardEvent) {}
+///#     fn mouse(&mut self, _: MouseEvent) {}
 ///# }
 ///# struct NoopDisplay;
 ///# #[async_trait::async_trait]
@@ -64,7 +139,7 @@ impl RdpServerSecurity {
 ///#     async fn size(&mut self) -> DesktopSize {
 ///#         todo!()
 ///#     }
-///#     async fn get_update(&mut self) -> Option<DisplayUpdate> {
+///#     async fn updates(&mut self) -> Result<Box<dyn RdpServerDisplayUpdates>> {
 ///#         todo!()
 ///#     }
 ///# }
@@ -100,8 +175,11 @@ impl RdpServerSecurity {
 /// ```
 pub struct RdpServer {
     opts: RdpServerOptions,
-    handler: Box<dyn RdpServerInputHandler>,
+    // FIXME: replace with a channel and poll/process the handler?
+    handler: Arc<Mutex<Box<dyn RdpServerInputHandler>>>,
     display: Box<dyn RdpServerDisplay>,
+    static_channels: StaticChannelSet,
+    cliprdr_factory: Option<Box<dyn CliprdrBackendFactory + Send>>,
 }
 
 impl RdpServer {
@@ -109,8 +187,15 @@ impl RdpServer {
         opts: RdpServerOptions,
         handler: Box<dyn RdpServerInputHandler>,
         display: Box<dyn RdpServerDisplay>,
+        cliprdr_factory: Option<Box<dyn CliprdrBackendFactory + Send>>,
     ) -> Self {
-        Self { opts, handler, display }
+        Self {
+            opts,
+            handler: Arc::new(Mutex::new(handler)),
+            display,
+            static_channels: StaticChannelSet::new(),
+            cliprdr_factory,
+        }
     }
 
     pub fn builder() -> builder::RdpServerBuilder<builder::WantsAddr> {
@@ -121,8 +206,23 @@ impl RdpServer {
         let framed = TokioFramed::new(stream);
 
         let size = self.display.size().await;
-        let capabilities = capabilities::capabilities(&self.opts, size.clone());
+        let capabilities = capabilities::capabilities(&self.opts, size);
         let mut acceptor = Acceptor::new(self.opts.security.flag(), size, capabilities);
+
+        if let Some(cliprdr_factory) = self.cliprdr_factory.as_deref() {
+            let backend = cliprdr_factory.build_cliprdr_backend();
+
+            let cliprdr = CliprdrServer::new(backend);
+
+            acceptor.attach_static_channel(cliprdr);
+        }
+
+        let dvc = dvc::DrdynvcServer::new()
+            .with_dynamic_channel(AInputHandler {
+                handler: Arc::clone(&self.handler),
+            })
+            .with_dynamic_channel(DisplayControlHandler {});
+        acceptor.attach_static_channel(dvc);
 
         match ironrdp_acceptor::accept_begin(framed, &mut acceptor).await {
             Ok(BeginResult::ShouldUpgrade(stream)) => {
@@ -174,8 +274,23 @@ impl RdpServer {
 
         if !result.input_events.is_empty() {
             debug!("Handling input event backlog from acceptor sequence");
-            self.handle_input_backlog(result.io_channel_id, result.input_events)
-                .await?;
+            self.handle_input_backlog(
+                &mut framed,
+                result.io_channel_id,
+                result.user_channel_id,
+                result.input_events,
+            )
+            .await?;
+        }
+
+        self.static_channels = result.static_channels;
+        for (_type_id, channel, channel_id) in self.static_channels.iter_mut() {
+            let Some(channel_id) = channel_id else {
+                continue;
+            };
+            let svc_responses = channel.start()?;
+            let response = server_encode_svc_messages(svc_responses, channel_id, result.user_channel_id)?;
+            framed.write_all(&response).await?;
         }
 
         let mut surface_flags = CmdFlags::empty();
@@ -197,6 +312,8 @@ impl RdpServer {
         let mut buffer = vec![0u8; 4096];
         let mut encoder = UpdateEncoder::new(surface_flags);
 
+        let mut display_updates = self.display.updates().await?;
+
         'main: loop {
             tokio::select! {
                 frame = framed.read_pdu() => {
@@ -211,7 +328,7 @@ impl RdpServer {
                         }
 
                         Action::X224 => {
-                            match self.handle_x224(result.io_channel_id, &bytes).await {
+                            match self.handle_x224(&mut framed, result.io_channel_id, result.user_channel_id, &bytes).await {
                                 Ok(disconnect) => {
                                     if disconnect {
                                         break 'main;
@@ -226,7 +343,7 @@ impl RdpServer {
                     }
                 },
 
-                Some(update) = self.display.get_update() => {
+                Some(update) = display_updates.next_update() => {
                     let fragmenter = match update {
                         DisplayUpdate::Bitmap(bitmap) => encoder.bitmap(bitmap)
                     };
@@ -250,7 +367,16 @@ impl RdpServer {
         Ok(())
     }
 
-    async fn handle_input_backlog(&mut self, io_channel_id: u16, frames: Vec<Vec<u8>>) -> Result<()> {
+    async fn handle_input_backlog<S>(
+        &mut self,
+        framed: &mut Framed<S>,
+        io_channel_id: u16,
+        user_channel_id: u16,
+        frames: Vec<Vec<u8>>,
+    ) -> Result<()>
+    where
+        S: FramedWrite,
+    {
         for frame in frames {
             match Action::from_fp_output_header(frame[0]) {
                 Ok(Action::FastPath) => {
@@ -259,7 +385,7 @@ impl RdpServer {
                 }
 
                 Ok(Action::X224) => {
-                    let _ = self.handle_x224(io_channel_id, &frame).await;
+                    let _ = self.handle_x224(framed, io_channel_id, user_channel_id, &frame).await;
                 }
 
                 // the frame here is always valid, because otherwise it would
@@ -273,25 +399,30 @@ impl RdpServer {
 
     async fn handle_fastpath(&mut self, input: FastPathInput) {
         for event in input.0 {
+            let mut handler = self.handler.lock().unwrap();
             match event {
                 FastPathInputEvent::KeyboardEvent(flags, key) => {
-                    self.handler.keyboard((key, flags).into()).await;
+                    handler.keyboard((key, flags).into());
                 }
 
                 FastPathInputEvent::UnicodeKeyboardEvent(flags, key) => {
-                    self.handler.keyboard((key, flags).into()).await;
+                    handler.keyboard((key, flags).into());
                 }
 
                 FastPathInputEvent::SyncEvent(flags) => {
-                    self.handler.keyboard(flags.into()).await;
+                    handler.keyboard(flags.into());
                 }
 
                 FastPathInputEvent::MouseEvent(mouse) => {
-                    self.handler.mouse(mouse.into()).await;
+                    handler.mouse(mouse.into());
                 }
 
                 FastPathInputEvent::MouseEventEx(mouse) => {
-                    self.handler.mouse(mouse.into()).await;
+                    handler.mouse(mouse.into());
+                }
+
+                FastPathInputEvent::MouseEventRel(mouse) => {
+                    handler.mouse(mouse.into());
                 }
 
                 FastPathInputEvent::QoeEvent(quality) => {
@@ -327,13 +458,28 @@ impl RdpServer {
         Ok(false)
     }
 
-    async fn handle_x224(&mut self, io_channel_id: u16, frame: &[u8]) -> Result<bool> {
-        let message = ironrdp_pdu::decode::<mcs::McsMessage<'_>>(frame)?;
+    async fn handle_x224<S>(
+        &mut self,
+        framed: &mut Framed<S>,
+        io_channel_id: u16,
+        user_channel_id: u16,
+        frame: &[u8],
+    ) -> Result<bool>
+    where
+        S: FramedWrite,
+    {
+        let message = decode::<mcs::McsMessage<'_>>(frame)?;
         match message {
             mcs::McsMessage::SendDataRequest(data) => {
                 debug!(?data, "McsMessage::SendDataRequest");
                 if data.channel_id == io_channel_id {
                     return self.handle_io_channel_data(data).await;
+                } else if let Some(svc) = self.static_channels.get_by_channel_id_mut(data.channel_id) {
+                    let response_pdus = svc.process(&data.user_data)?;
+                    let response = server_encode_svc_messages(response_pdus, data.channel_id, user_channel_id)?;
+                    framed.write_all(&response).await?;
+                } else {
+                    warn!(channel_id = data.channel_id, "Unexpected channel received: ID",);
                 }
             }
 
@@ -353,25 +499,30 @@ impl RdpServer {
 
     async fn handle_input_event(&mut self, input: InputEventPdu) {
         for event in input.0 {
+            let mut handler = self.handler.lock().unwrap();
             match event {
                 ironrdp_pdu::input::InputEvent::ScanCode(key) => {
-                    self.handler.keyboard((key.key_code, key.flags).into()).await;
+                    handler.keyboard((key.key_code, key.flags).into());
                 }
 
                 ironrdp_pdu::input::InputEvent::Unicode(key) => {
-                    self.handler.keyboard((key.unicode_code, key.flags).into()).await;
+                    handler.keyboard((key.unicode_code, key.flags).into());
                 }
 
                 ironrdp_pdu::input::InputEvent::Sync(sync) => {
-                    self.handler.keyboard(sync.flags.into()).await;
+                    handler.keyboard(sync.flags.into());
                 }
 
                 ironrdp_pdu::input::InputEvent::Mouse(mouse) => {
-                    self.handler.mouse(mouse.into()).await;
+                    handler.mouse(mouse.into());
                 }
 
                 ironrdp_pdu::input::InputEvent::MouseX(mouse) => {
-                    self.handler.mouse(mouse.into()).await;
+                    handler.mouse(mouse.into());
+                }
+
+                ironrdp_pdu::input::InputEvent::MouseRel(mouse) => {
+                    handler.mouse(mouse.into());
                 }
 
                 ironrdp_pdu::input::InputEvent::Unused(_) => {}

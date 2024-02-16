@@ -576,6 +576,7 @@ impl DecodedImage {
     pub(crate) fn apply_rgb32_bitmap(
         &mut self,
         rgb32: &[u8],
+        format: PixelFormat,
         update_rectangle: &InclusiveRectangle,
     ) -> SessionResult<InclusiveRectangle> {
         const SRC_COLOR_DEPTH: usize = 4;
@@ -588,20 +589,36 @@ impl DecodedImage {
 
         let pointer_rendering_state = self.pointer_rendering_begin(update_rectangle)?;
 
-        rgb32
-            .chunks_exact(rectangle_width * SRC_COLOR_DEPTH)
-            .rev()
-            .enumerate()
-            .for_each(|(row_idx, row)| {
-                row.chunks_exact(SRC_COLOR_DEPTH)
-                    .enumerate()
-                    .for_each(|(col_idx, src_pixel)| {
-                        let dst_idx = ((top + row_idx) * image_width + left + col_idx) * DST_COLOR_DEPTH;
+        if format == self.pixel_format {
+            rgb32
+                .chunks_exact(rectangle_width * SRC_COLOR_DEPTH)
+                .rev()
+                .enumerate()
+                .for_each(|(row_idx, row)| {
+                    row.chunks_exact(SRC_COLOR_DEPTH)
+                        .enumerate()
+                        .for_each(|(col_idx, src_pixel)| {
+                            let dst_idx = ((top + row_idx) * image_width + left + col_idx) * DST_COLOR_DEPTH;
 
-                        // Copy RGB channels as is
-                        self.data[dst_idx..dst_idx + SRC_COLOR_DEPTH].copy_from_slice(src_pixel);
-                    })
-            });
+                            self.data[dst_idx..dst_idx + SRC_COLOR_DEPTH].copy_from_slice(src_pixel);
+                        })
+                });
+        } else {
+            rgb32
+                .chunks_exact(rectangle_width * SRC_COLOR_DEPTH)
+                .rev()
+                .enumerate()
+                .for_each(|(row_idx, row)| {
+                    row.chunks_exact(SRC_COLOR_DEPTH)
+                        .enumerate()
+                        .for_each(|(col_idx, src_pixel)| {
+                            let dst_idx = ((top + row_idx) * image_width + left + col_idx) * DST_COLOR_DEPTH;
+
+                            let c = format.read_color(src_pixel).unwrap();
+                            self.data[dst_idx..dst_idx + SRC_COLOR_DEPTH].copy_from_slice(&[c.r, c.g, c.b, c.a]);
+                        })
+                });
+        }
 
         let update_rectangle = self.pointer_rendering_end(pointer_rendering_state)?;
 

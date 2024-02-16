@@ -3,48 +3,45 @@
 Web-based frontend using [`SvelteKit`](https://kit.svelte.dev/) and [`Material`](https://material.io) frameworks.
 This is a simple wrapper around the `iron-remote-gui` Web Component demonstrating how to use the API.
 
+Note that this demonstration client is not intended to be used in production as-is.
+Devolutions is shipping well-integrated, production-ready IronRDP web clients as part of:
+
+- [Devolutions Gateway](https://github.com/Devolutions/devolutions-gateway/)’s [Standalone Web Interface](https://github.com/Devolutions/devolutions-gateway/tree/master/webapp) which is a completely free product (shipped since v2024.1.0).
+- [Devolutions Server](https://devolutions.net/server/), our self-hosted credential manager.
+- [Devolutions Hub](https://devolutions.net/password-hub/), our cloud-based credential manager.
+
 ## Requirements
 
 - A Devolutions Gateway with network access to this machine up and running
-- A token signed using the provisioner key the Devolutions Gateway is expecting
+- A token signed using the provisioner key configured on the Devolutions Gateway
 
 ### Devolutions Gateway setup
 
-Web client is using a special extension to RDP protocol.
-This extension is available starting Devolutions Gateway v2023.1.1.
-However, this version not yet officially published.
+The IronRDP web client is relying on an extension to the RDP protocol ("RDCleanPath").
+This enables us to avoid the redundant TLS layer, or "TLS-in-TLS" problem found in other RDP web clients.
+This redundant TLS layer is typically required to circumvent the restriction imposed by web browsers.
+Indeed, it’s not possible to open a plain TCP socket using the API provided by web browsers.
+Instead, we need a middleware service to unpack the WebSocket payload and forward it over a plain TCP transport.
+Other web clients are using a Secure WebSocket transport (WebSocket over TLS) to communicate with the middleware,
+and inside this secure transport another protocol-level, extra TLS transport is opened.
+With our extension, the middleware service inspects the RDP handshake and perform the TLS upgrade on its end, removing the need for the redundant client-side TLS encryption.
+The extension is supported by the [Devolutions Gateway](https://github.com/Devolutions/devolutions-gateway/) (v2023.1.1 and later).
 
-Therefore, you need to either:
+You need to install and configure it in order to use the web client.
+You can follow the instructions found on the dedicated repository.
 
-- Download a binary prebuilt from master such as [this one](https://devolutions.sharepoint.com/:f:/s/Prereleases/En3Y3T3OIuFFpYknTZYZfIYBXo_OpCubXBKd8wpjZ7Qrtg?e=MBVz53).
-- Build [master](https://github.com/Devolutions/devolutions-gateway/tree/master) yourself.
-  Simply [install the Rust toolchain](https://rustup.rs/) and run `cargo build --release`. Binary will be found in the `./target/release` folder.
-
-Create a new folder somewhere on your system. For instance `/home/david/Documents/gateway-config`.
-We’ll store Devolutions Gateway configuration inside this folder.
-
-Set the `DGATEWAY_CONFIG_PATH` environment variable to this path.
-
-PowerShell:
-
-```pwsh
-$ $Env:DGATEWAY_CONFIG_PATH = "/home/david/Documents/gateway-config"
-```
-
-bash / zsh /other bash-like shells:
-
-```bash
-$ export DGATEWAY_CONFIG_PATH=/home/david/Documents/gateway-config
-```
-
-Generate a default configuration using the Devolutions Gateway executable:
+You will need to generate a key pair, that we call the "provisioner" key pair.
+You can generate an RSA key pair using `openssl` by running the following commands:
 
 ```shell
-$ ./DevolutionsGateway --config-init-only # Linux / macOS
-$ ./DevolutionsGateway.exe --config-init-only # Windows
+$ openssl genrsa -out provisioner.key 2048
+$ openssl rsa -in provisioner.key -outform PEM -pubout -out provisioner.pem
 ```
 
-For convenience, modify the freshly generated `gateway.json` like so:
+Where `provisioner.key` is the private part and `provisioner.pem` the public counterpart.
+The public one must be installed on the Devolutions Gateway.
+
+Once installed, you can optionally modify the `gateway.json` config file to add the following debug option:
 
 ```json
 {
@@ -57,25 +54,7 @@ For convenience, modify the freshly generated `gateway.json` like so:
 
 That way, you can later reuse the same token multiple times (convenient at development time).
 
-Notice that the configuration file refers to a public (provisioner) key file called `provisioner.pem`.
-We need to generate this file.
-
-You can generate an RSA key pair using `openssl` by running the following commands:
-
-```shell
-$ openssl genrsa -out provisioner.key 2048
-$ openssl rsa -in provisioner.key -outform PEM -pubout -out provisioner.pem
-```
-
-Where `provisioner.key` is our private key and `provisioner.pem` the public counterpart.
-
-Congratulations, your Devolutions Gateway setup is complete.
-Assuming the environment variable is properly set, you can run the executable:
-
-```shell
-$ ./DevolutionsGateway # Linux / macOS
-$ ./DevolutionsGateway.exe # Windows
-```
+Make sure to start or restart the service before proceeding further.
 
 ### Token generation
 
@@ -92,10 +71,13 @@ You can then run the following:
 $ New-DGatewayToken -Type ASSOCIATION -PrivateKeyFile <PRIVATE KEY PATH> -DestinationHost <TARGET HOST> -ApplicationProtocol rdp
 ```
 
-## Run in dev mode
+If you have a Rust toolchain available, you can use the [`tokengen`][tokengen] tool found in Devolutions Gateway repository.
 
-First, run `npm install` in the [iron-remote-gui](../iron-remote-gui/) folder,
-and then `npm install` in [iron-svelte-client](./) folder.
+[tokengen]: https://github.com/Devolutions/devolutions-gateway/tree/master/tools/tokengen
+
+## Run in development mode
+
+First, run `npm install` in the [iron-remote-gui](../iron-remote-gui/) folder, and then `npm install` in [iron-svelte-client](./) folder.
 
 You can then start the dev server with either:
 
@@ -104,4 +86,4 @@ You can then start the dev server with either:
 - `npm run dev-no-wasm` - Only builds `iron-remote-gui` prior to starting the dev server.
 
 You can build distribution files with `npm run build`.
-Files are to be found in `./iron-svelte-client/build/browser`
+Files are to be found in `./iron-svelte-client/build/browser`.

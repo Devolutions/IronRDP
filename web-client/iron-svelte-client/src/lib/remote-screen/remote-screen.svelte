@@ -20,6 +20,20 @@
         }
     });
 
+    function onUnicodeModeChange(e: MouseEvent) {
+        if (e.target == null) {
+            return;
+        }
+
+        let element = e.target as HTMLInputElement;
+
+        if (element == null) {
+            return;
+        }
+
+        uiService.setKeyboardUnicodeMode(element.checked);
+    }
+
     onMount(async () => {
         let el = document.querySelector('iron-remote-gui');
 
@@ -51,6 +65,10 @@
             </svg>
         </button>
         <button on:click={() => uiService.shutdown()}>Terminate Session</button>
+        <label style="color: white;">
+            <input on:click={(e) => onUnicodeModeChange(e)} type="checkbox" />
+            Unicode keyboard mode
+        </label>
     </div>
     <iron-remote-gui debugwasm="INFO" verbose="true" scale="fit" flexcenter="true" />
 </div>

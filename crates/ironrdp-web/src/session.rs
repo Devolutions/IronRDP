@@ -7,11 +7,11 @@ use anyhow::Context as _;
 use base64::Engine as _;
 use futures_channel::mpsc;
 use futures_util::io::{ReadHalf, WriteHalf};
-use futures_util::{select, AsyncReadExt as _, AsyncWriteExt as _, FutureExt as _, StreamExt as _};
+use futures_util::{select, AsyncWriteExt as _, FutureExt as _, StreamExt as _};
 use gloo_net::websocket;
 use gloo_net::websocket::futures::WebSocket;
 use ironrdp::cliprdr::backend::ClipboardMessage;
-use ironrdp::cliprdr::Cliprdr;
+use ironrdp::cliprdr::CliprdrClient;
 use ironrdp::connector::credssp::KerberosConfig;
 use ironrdp::connector::{self, ClientConnector, Credentials};
 use ironrdp::graphics::image_processing::PixelFormat;
@@ -31,7 +31,6 @@ use crate::error::{IronRdpError, IronRdpErrorKind};
 use crate::image::extract_partial_image;
 use crate::input::InputTransaction;
 use crate::network_client::WasmNetworkClient;
-use crate::websocket::WebSocketCompat;
 use crate::{clipboard, DesktopSize};
 
 const DEFAULT_WIDTH: u16 = 1280;
@@ -296,8 +295,6 @@ impl SessionBuilder {
             }
         }
 
-        let ws = WebSocketCompat::new(ws);
-
         let (connection_result, ws) = connect(
             ws,
             config,
@@ -311,14 +308,14 @@ impl SessionBuilder {
 
         info!("Connected!");
 
-        let (rdp_reader, rdp_writer) = ws.split();
+        let (rdp_reader, rdp_writer) = futures_util::AsyncReadExt::split(ws);
 
         let (writer_tx, writer_rx) = mpsc::unbounded();
 
         spawn_local(writer_task(writer_rx, rdp_writer));
 
         Ok(Session {
-            desktop_size: connection_result.desktop_size.clone(),
+            desktop_size: connection_result.desktop_size,
             input_database: RefCell::new(ironrdp::input::Database::new()),
             writer_tx,
             input_events_tx,
@@ -381,7 +378,7 @@ pub struct Session {
     // Consumed when `run` is called
     input_events_rx: RefCell<Option<mpsc::UnboundedReceiver<RdpInputEvent>>>,
     connection_result: RefCell<Option<connector::ConnectionResult>>,
-    rdp_reader: RefCell<Option<ReadHalf<WebSocketCompat>>>,
+    rdp_reader: RefCell<Option<ReadHalf<WebSocket>>>,
     clipboard: RefCell<Option<Option<WasmClipboard>>>,
 }
 
@@ -408,7 +405,7 @@ impl Session {
 
         let mut clipboard = self.clipboard.borrow_mut().take().expect("run called only once");
 
-        let mut framed = ironrdp_futures::SingleThreadedFuturesFramed::new(rdp_reader);
+        let mut framed = ironrdp_futures::LocalFuturesFramed::new(rdp_reader);
 
         debug!("Initialize canvas");
 
@@ -444,7 +441,7 @@ impl Session {
 
                     match event {
                         RdpInputEvent::Cliprdr(message) => {
-                            if let Some(cliprdr) = active_stage.get_svc_processor::<Cliprdr>() {
+                            if let Some(cliprdr) = active_stage.get_svc_processor::<CliprdrClient>() {
                                 if let Some(svc_messages) = match message {
                                     ClipboardMessage::SendInitiateCopy(formats) => Some(
                                         cliprdr.initiate_copy(&formats)
@@ -713,6 +710,13 @@ impl Session {
 
         Ok(())
     }
+
+    #[allow(clippy::unused_self)]
+    pub fn supports_unicode_keyboard_shortcuts(&self) -> bool {
+        // RDP does not support Unicode keyboard shortcuts (When key combinations are executed, only
+        // plain scancode events are allowed to function correctly).
+        false
+    }
 }
 
 fn build_config(
@@ -759,12 +763,12 @@ fn build_config(
     }
 }
 
-async fn writer_task(rx: mpsc::UnboundedReceiver<Vec<u8>>, rdp_writer: WriteHalf<WebSocketCompat>) {
+async fn writer_task(rx: mpsc::UnboundedReceiver<Vec<u8>>, rdp_writer: WriteHalf<WebSocket>) {
     debug!("writer task started");
 
     async fn inner(
         mut rx: mpsc::UnboundedReceiver<Vec<u8>>,
-        mut rdp_writer: WriteHalf<WebSocketCompat>,
+        mut rdp_writer: WriteHalf<WebSocket>,
     ) -> anyhow::Result<()> {
         while let Some(frame) = rx.next().await {
             rdp_writer.write_all(&frame).await.context("Couldn’t write frame")?;
@@ -781,20 +785,20 @@ async fn writer_task(rx: mpsc::UnboundedReceiver<Vec<u8>>, rdp_writer: WriteHalf
 }
 
 async fn connect(
-    ws: WebSocketCompat,
+    ws: WebSocket,
     config: connector::Config,
     proxy_auth_token: String,
     destination: String,
     pcb: Option<String>,
     kdc_proxy_url: Option<String>,
     clipboard_backend: Option<WasmClipboardBackend>,
-) -> Result<(connector::ConnectionResult, WebSocketCompat), IronRdpError> {
-    let mut framed = ironrdp_futures::SingleThreadedFuturesFramed::new(ws);
+) -> Result<(connector::ConnectionResult, WebSocket), IronRdpError> {
+    let mut framed = ironrdp_futures::LocalFuturesFramed::new(ws);
 
     let mut connector = connector::ClientConnector::new(config);
 
     if let Some(clipboard_backend) = clipboard_backend {
-        connector.attach_static_channel(Cliprdr::new(Box::new(clipboard_backend)));
+        connector.attach_static_channel(CliprdrClient::new(Box::new(clipboard_backend)));
     }
 
     let (upgraded, server_public_key) =
