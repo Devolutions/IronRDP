@@ -1,0 +1,31 @@
+{
+  "name": "ironvnc-web",
+  "collaborators": [
+    "Devolutions Inc. <infos@devolutions.net>"
+  ],
+  "description": "WebAssembly high-level bindings targeting web browsers",
+  "version": "0.1.0",
+  "license": "MIT/Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Devolutions/IronVNC"
+  },
+  "files": [
+    "ironvnc_web_bg.wasm",
+    "ironvnc_web.js",
+    "ironvnc_web.d.ts"
+  ],
+  "module": "ironvnc_web.js",
+  "homepage": "https://github.com/Devolutions/IronVNC",
+  "types": "ironvnc_web.d.ts",
+  "sideEffects": [
+    "./snippets/*"
+  ],
+  "keywords": [
+    "vnc",
+    "rfb",
+    "remote-desktop",
+    "network",
+    "protocol"
+  ]
+}

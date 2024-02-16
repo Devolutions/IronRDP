@@ -1,4 +1,4 @@
 /target
 /bin
-/pkg
+./pkg
 /wasm-pack.log
