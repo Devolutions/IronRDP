@@ -9,4 +9,4 @@ Devolutions is shipping well-integrated, production-ready IronRDP web clients as
 
 - [Devolutions Gateway](https://github.com/Devolutions/devolutions-gateway/)’s [Standalone Web Interface](https://github.com/Devolutions/devolutions-gateway/tree/master/webapp) which is a completely free product (shipped since v2024.1.0).
 - [Devolutions Server](https://devolutions.net/server/), our self-hosted credential manager.
-- [Devolutions Hub](https://devolutions.net/server/), our cloud-based credential manager.
+- [Devolutions Hub](https://devolutions.net/password-hub/), our cloud-based credential manager.
