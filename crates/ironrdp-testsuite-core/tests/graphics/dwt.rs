@@ -1,5 +1,41 @@
 use ironrdp_graphics::dwt::*;
 
+// ignore: this test gives the same result as freerdp dwt implementation
+// but not reversible with what what decode does here
+#[ignore]
+#[test]
+fn encode_works_for_min_values() {
+    let mut buffer = [0; 4096];
+    let expected = [-32768; 4096];
+
+    let mut temp = vec![0; 4096];
+    encode(&mut buffer, temp.as_mut_slice());
+    assert_eq!(expected.as_ref(), buffer.as_ref());
+}
+
+// this test gives the same result as freerdp dwt implementation
+// but not reversible with what what decode does here
+#[ignore]
+#[test]
+fn encode_works_for_max_values() {
+    let mut buffer = DECODED_DWT_FOR_MAX_VALUES;
+    let expected = [32767; 4096];
+
+    let mut temp = vec![0; 4096];
+    encode(&mut buffer, temp.as_mut_slice());
+    assert_eq!(expected.as_ref(), buffer.as_ref());
+}
+
+#[test]
+fn encode_works_for_regular_values() {
+    let mut buffer = DECODED_DWT;
+    let expected = ENCODED_DWT;
+
+    let mut temp = vec![0; 4096];
+    encode(&mut buffer, temp.as_mut_slice());
+    assert_eq!(expected.as_ref(), buffer.as_ref());
+}
+
 #[test]
 fn decode_works_for_min_values() {
     let mut buffer = [-32768; 4096];
