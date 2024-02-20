@@ -330,7 +330,7 @@ export class WasmBridgeService {
 
             if (this.keyboardUnicodeMode && unicodeEvent && keyEvent) {
                 // `Dead` and `Unidentified` keys should be ignored
-                if (evt.key in ['Dead', 'Unidentified']) {
+                if (['Dead', 'Unidentified'].indexOf(evt.key) != -1) {
                     return;
                 }
 
