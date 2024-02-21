@@ -17,3 +17,19 @@ pub mod subband_reconstruction;
 pub mod zgfx;
 
 mod utils;
+
+pub fn rfx_encode_component(
+    input: &mut [i16],
+    output: &mut [u8],
+    quant: &ironrdp_pdu::codecs::rfx::Quant,
+    mode: ironrdp_pdu::codecs::rfx::EntropyAlgorithm,
+) -> Result<usize, rlgr::RlgrError> {
+    assert_eq!(input.len(), 64 * 64);
+
+    let mut temp = [0; 64 * 64]; // size = 8k, too big?
+
+    dwt::encode(input, temp.as_mut_slice());
+    quantization::encode(input, quant);
+    subband_reconstruction::encode(&mut input[4032..]);
+    rlgr::encode(mode, input, output)
+}
