@@ -1,7 +1,9 @@
+use std::io::{Read, Write};
 use ironrdp_connector::legacy::{encode_send_data_request, SendDataIndicationCtx};
 use ironrdp_pdu::rdp::vc;
 use ironrdp_pdu::write_buf::WriteBuf;
-use ironrdp_pdu::PduParsing as _;
+use ironrdp_pdu::PduParsing;
+use ironrdp_pdu::rdp::vc::ChannelError;
 
 use crate::{SessionError, SessionResult};
 
@@ -10,7 +12,7 @@ pub fn encode_dvc_message(
     drdynvc_id: u16,
     dvc_pdu: vc::dvc::ClientPdu,
     dvc_data: &[u8],
-    mut buf: &mut WriteBuf,
+    buf: &mut WriteBuf,
 ) -> SessionResult<()> {
     let dvc_length = dvc_pdu.buffer_length() + dvc_data.len();
 
@@ -19,19 +21,39 @@ pub fn encode_dvc_message(
         flags: vc::ChannelControlFlags::FLAG_FIRST | vc::ChannelControlFlags::FLAG_LAST,
     };
 
-    // [ TPKT | TPDU | SendDataRequest | vc::ChannelPduHeader | …
-    let written = encode_send_data_request(initiator_id, drdynvc_id, &channel_header, buf).map_err(map_error)?;
-    debug_assert_eq!(written, buf.filled_len());
+    let dvc_message = DvcMessage { channel_header, dvc_pdu, dvc_data };
 
-    // … | dvc::ClientPdu | …
-    dvc_pdu.to_buffer(&mut buf)?;
-
-    // … | DvcData ]
-    buf.write_slice(dvc_data);
-
-    debug_assert_eq!(buf.filled_len(), written + dvc_length);
+    let previous_length = buf.filled_len();
+    // [ TPKT | TPDU | SendDataRequest | vc::ChannelPduHeader | vc::dvc::ClientPdu | DvcData ]
+    let written = encode_send_data_request(initiator_id, drdynvc_id, &dvc_message, buf).map_err(map_error)?;
+    debug_assert_eq!(written, buf.filled_len()-previous_length);
 
     Ok(())
+}
+
+struct DvcMessage<'a> {
+    channel_header: vc::ChannelPduHeader,
+    dvc_pdu: vc::dvc::ClientPdu,
+    dvc_data: &'a[u8],
+}
+
+impl PduParsing for DvcMessage<'_> {
+    type Error = ChannelError;
+
+    fn from_buffer(_: impl Read) -> Result<Self, Self::Error> where Self: Sized {
+        todo!()
+    }
+
+    fn to_buffer(&self, mut stream: impl Write) -> Result<(), Self::Error> {
+        self.channel_header.to_buffer(&mut stream)?;
+        self.dvc_pdu.to_buffer(&mut stream)?;
+        stream.write(self.dvc_data)?;
+        Ok(())
+    }
+
+    fn buffer_length(&self) -> usize {
+        self.channel_header.buffer_length() + self.dvc_pdu.buffer_length() + self.dvc_data.len()
+    }
 }
 
 pub struct DynamicChannelCtx<'a> {
