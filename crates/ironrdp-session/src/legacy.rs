@@ -48,7 +48,7 @@ impl PduParsing for DvcMessage<'_> {
     where
         Self: Sized,
     {
-        todo!()
+        Err(std::io::Error::other("legacy::DvcMessage::from_buffer called – this is a bug").into())
     }
 
     fn to_buffer(&self, mut stream: impl Write) -> Result<(), Self::Error> {
