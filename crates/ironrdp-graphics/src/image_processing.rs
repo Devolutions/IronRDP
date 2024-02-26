@@ -1,4 +1,4 @@
-use std::io;
+use std::{cmp, io};
 
 use byteorder::WriteBytesExt;
 use ironrdp_pdu::geometry::{InclusiveRectangle, Rectangle as _};
@@ -24,8 +24,10 @@ pub struct ImageRegion<'a> {
 
 impl ImageRegion<'_> {
     pub fn copy_to(&self, other: &mut ImageRegionMut<'_>) -> io::Result<()> {
-        let width = usize::from(other.region.width());
-        let height = usize::from(other.region.height());
+        let width = cmp::min(self.region.width(), other.region.width());
+        let height = cmp::min(self.region.height(), other.region.height());
+        let width = usize::from(width);
+        let height = usize::from(height);
 
         let dst_point = Point {
             x: usize::from(other.region.left),
@@ -51,12 +53,11 @@ impl ImageRegion<'_> {
         };
 
         if self.pixel_format.eq_no_alpha(other.pixel_format) {
-            let dst_width = width * dst_byte;
+            let width = width * dst_byte;
             for y in 0..height {
                 let src_start = (y + src_point.y) * src_step + src_point.x * src_byte;
                 let dst_start = (y + dst_point.y) * dst_step + dst_point.x * dst_byte;
-                other.data[dst_start..dst_start + dst_width]
-                    .clone_from_slice(&self.data[src_start..src_start + dst_width]);
+                other.data[dst_start..dst_start + width].clone_from_slice(&self.data[src_start..src_start + width]);
             }
         } else {
             for y in 0..height {
