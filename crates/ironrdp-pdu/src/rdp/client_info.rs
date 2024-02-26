@@ -600,6 +600,7 @@ bitflags! {
 #[repr(u16)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive, ToPrimitive)]
 pub enum AddressFamily {
+    Invalid = 0x0000, // value given by MS Remote Desktop for Android 10.0.18.1251
     INet = 0x0002,
     INet6 = 0x0017,
 }
