@@ -452,7 +452,6 @@ impl DecodedImage {
         tile_output: &[u8],
         clipping_rectangles: &Region,
         update_rectangle: &InclusiveRectangle,
-        width: u16,
     ) -> SessionResult<InclusiveRectangle> {
         debug!("Tile: {:?}", update_rectangle);
 
@@ -476,7 +475,7 @@ impl DecodedImage {
 
             let mut destination_image_region = ImageRegionMut {
                 region: region_rectangle.clone(),
-                step: width * u16::from(self.pixel_format.bytes_per_pixel()),
+                step: self.width() * u16::from(self.pixel_format.bytes_per_pixel()),
                 pixel_format: self.pixel_format,
                 data: &mut self.data,
             };
