@@ -1,4 +1,5 @@
 pub(crate) mod bitmap;
+pub(crate) mod rfx;
 
 use std::cmp;
 
