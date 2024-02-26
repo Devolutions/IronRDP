@@ -38,10 +38,9 @@ impl ImageRegion<'_> {
 
         let src_byte = usize::from(self.pixel_format.bytes_per_pixel());
         let dst_byte = usize::from(other.pixel_format.bytes_per_pixel());
-        let dst_width = width * dst_byte;
 
         let src_step = if self.step == 0 {
-            width * src_byte
+            usize::from(self.region.width()) * src_byte
         } else {
             usize::from(self.step)
         };
@@ -52,6 +51,7 @@ impl ImageRegion<'_> {
         };
 
         if self.pixel_format.eq_no_alpha(other.pixel_format) {
+            let dst_width = width * dst_byte;
             for y in 0..height {
                 let src_start = (y + src_point.y) * src_step + src_point.x * src_byte;
                 let dst_start = (y + dst_point.y) * dst_step + dst_point.x * dst_byte;
