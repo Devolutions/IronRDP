@@ -38,6 +38,26 @@ pub struct DecodedImage {
     height: u16,
 }
 
+impl std::fmt::Debug for DecodedImage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DecodedImage")
+            .field("pixel_format", &self.pixel_format)
+            .field("data_len", &self.data.len())
+            .field("pointer_src_rect", &self.pointer_src_rect)
+            .field("pointer_draw_x", &self.pointer_draw_x)
+            .field("pointer_draw_y", &self.pointer_draw_y)
+            .field("pointer_x", &self.pointer_x)
+            .field("pointer_y", &self.pointer_y)
+            .field("pointer", &self.pointer)
+            .field("pointer_backbuffer", &self.pointer_backbuffer)
+            .field("show_pointer", &self.show_pointer)
+            .field("pointer_visible_on_screen", &self.pointer_visible_on_screen)
+            .field("width", &self.width)
+            .field("height", &self.height)
+            .finish()
+    }
+}
+
 #[derive(PartialEq, Eq)]
 enum PointerLayer {
     Background,

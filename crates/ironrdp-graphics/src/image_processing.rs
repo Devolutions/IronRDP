@@ -15,11 +15,33 @@ pub struct ImageRegionMut<'a> {
     pub data: &'a mut [u8],
 }
 
+impl std::fmt::Debug for ImageRegionMut<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ImageRegionMut")
+            .field("region", &self.region)
+            .field("step", &self.step)
+            .field("pixel_format", &self.pixel_format)
+            .field("data_len", &self.data.len())
+            .finish()
+    }
+}
+
 pub struct ImageRegion<'a> {
     pub region: InclusiveRectangle,
     pub step: u16,
     pub pixel_format: PixelFormat,
     pub data: &'a [u8],
+}
+
+impl std::fmt::Debug for ImageRegion<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ImageRegion")
+            .field("region", &self.region)
+            .field("step", &self.step)
+            .field("pixel_format", &self.pixel_format)
+            .field("data_len", &self.data.len())
+            .finish()
+    }
 }
 
 impl ImageRegion<'_> {
