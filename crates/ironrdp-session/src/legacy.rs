@@ -54,7 +54,7 @@ impl PduParsing for DvcMessage<'_> {
     fn to_buffer(&self, mut stream: impl Write) -> Result<(), Self::Error> {
         self.channel_header.to_buffer(&mut stream)?;
         self.dvc_pdu.to_buffer(&mut stream)?;
-        stream.write(self.dvc_data)?;
+        stream.write_all(self.dvc_data)?;
         Ok(())
     }
 
