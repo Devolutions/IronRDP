@@ -295,7 +295,17 @@ impl Sequence for Acceptor {
                 channels,
             } => {
                 let channel_ids: Vec<u16> = channels.iter().map(|&(i, _)| i).collect();
-                let server_blocks = create_gcc_blocks(self.io_channel_id, channel_ids.clone(), requested_protocol);
+
+                let skip_channel_join = early_capability
+                    .is_some_and(|client| client.contains(gcc::ClientEarlyCapabilityFlags::SUPPORT_SKIP_CHANNELJOIN));
+
+                let server_blocks = create_gcc_blocks(
+                    self.io_channel_id,
+                    channel_ids.clone(),
+                    requested_protocol,
+                    skip_channel_join,
+                );
+
                 let settings_response = mcs::ConnectResponse {
                     conference_create_response: gcc::ConferenceCreateResponse {
                         user_id: self.user_channel_id,
@@ -315,11 +325,11 @@ impl Sequence for Acceptor {
                     AcceptorState::ChannelConnection {
                         early_capability,
                         channels,
-                        connection: ChannelConnectionSequence::new(
-                            self.user_channel_id,
-                            self.io_channel_id,
-                            channel_ids,
-                        ),
+                        connection: if skip_channel_join {
+                            ChannelConnectionSequence::skip_channel_join(self.user_channel_id)
+                        } else {
+                            ChannelConnectionSequence::new(self.user_channel_id, self.io_channel_id, channel_ids)
+                        },
                     },
                 )
             }
@@ -530,13 +540,15 @@ fn create_gcc_blocks(
     io_channel: u16,
     channel_ids: Vec<u16>,
     requested: nego::SecurityProtocol,
+    skip_channel_join: bool,
 ) -> gcc::ServerGccBlocks {
     pdu::gcc::ServerGccBlocks {
         core: gcc::ServerCoreData {
             version: gcc::RdpVersion::V5_PLUS,
             optional_data: gcc::ServerCoreOptionalData {
                 client_requested_protocols: Some(requested),
-                early_capability_flags: None,
+                early_capability_flags: skip_channel_join
+                    .then_some(gcc::ServerEarlyCapabilityFlags::SKIP_CHANNELJOIN_SUPPORTED),
             },
         },
         security: gcc::ServerSecurityData::no_security(),

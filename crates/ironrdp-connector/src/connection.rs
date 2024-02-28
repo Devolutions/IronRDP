@@ -377,11 +377,21 @@ impl Sequence for ClientConnector {
                     self.static_channels.attach_channel_id(channel, channel_id);
                 });
 
+                let skip_channel_join = server_gcc_blocks
+                    .core
+                    .optional_data
+                    .early_capability_flags
+                    .is_some_and(|c| c.contains(gcc::ServerEarlyCapabilityFlags::SKIP_CHANNELJOIN_SUPPORTED));
+
                 (
                     Written::Nothing,
                     ClientConnectorState::ChannelConnection {
                         io_channel_id,
-                        channel_connection: ChannelConnectionSequence::new(io_channel_id, static_channel_ids),
+                        channel_connection: if skip_channel_join {
+                            ChannelConnectionSequence::skip_channel_join()
+                        } else {
+                            ChannelConnectionSequence::new(io_channel_id, static_channel_ids)
+                        },
                     },
                 )
             }
@@ -677,7 +687,8 @@ fn create_gcc_blocks<'a>(
                 early_capability_flags: {
                     let mut early_capability_flags = ClientEarlyCapabilityFlags::VALID_CONNECTION_TYPE
                         | ClientEarlyCapabilityFlags::SUPPORT_ERR_INFO_PDU
-                        | ClientEarlyCapabilityFlags::STRONG_ASYMMETRIC_KEYS;
+                        | ClientEarlyCapabilityFlags::STRONG_ASYMMETRIC_KEYS
+                        | ClientEarlyCapabilityFlags::SUPPORT_SKIP_CHANNELJOIN;
 
                     // TODO(#136): support for ClientEarlyCapabilityFlags::SUPPORT_STATUS_INFO_PDU
 

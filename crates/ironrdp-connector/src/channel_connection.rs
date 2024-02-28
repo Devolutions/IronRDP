@@ -18,9 +18,11 @@ pub enum ChannelConnectionState {
     WaitAttachUserConfirm,
     SendChannelJoinRequest {
         user_channel_id: u16,
+        join_channel_ids: HashSet<u16>,
     },
     WaitChannelJoinConfirm {
         user_channel_id: u16,
+        remaining_channel_ids: HashSet<u16>,
     },
     AllJoined {
         user_channel_id: u16,
@@ -53,7 +55,7 @@ impl State for ChannelConnectionState {
 #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct ChannelConnectionSequence {
     pub state: ChannelConnectionState,
-    pub channel_ids: HashSet<u16>,
+    pub channel_ids: Option<HashSet<u16>>,
 }
 
 impl ChannelConnectionSequence {
@@ -65,7 +67,14 @@ impl ChannelConnectionSequence {
 
         Self {
             state: ChannelConnectionState::SendErectDomainRequest,
-            channel_ids,
+            channel_ids: Some(channel_ids),
+        }
+    }
+
+    pub fn skip_channel_join() -> Self {
+        Self {
+            state: ChannelConnectionState::SendErectDomainRequest,
+            channel_ids: None,
         }
     }
 }
@@ -126,17 +135,23 @@ impl Sequence for ChannelConnectionSequence {
 
                 let user_channel_id = attach_user_confirm.initiator_id;
 
-                // User channel ID must also be joined.
-                self.channel_ids.insert(user_channel_id);
-
                 debug!(message = ?attach_user_confirm, user_channel_id, "Received");
 
-                debug_assert!(!self.channel_ids.is_empty());
+                let next = match self.channel_ids.take() {
+                    Some(mut channel_ids) => {
+                        // User channel ID must also be joined.
+                        channel_ids.insert(user_channel_id);
 
-                (
-                    Written::Nothing,
-                    ChannelConnectionState::SendChannelJoinRequest { user_channel_id },
-                )
+                        ChannelConnectionState::SendChannelJoinRequest {
+                            user_channel_id,
+                            join_channel_ids: channel_ids,
+                        }
+                    }
+
+                    None => ChannelConnectionState::AllJoined { user_channel_id },
+                };
+
+                (Written::Nothing, next)
             }
 
             // Send all the join requests in a single batch.
@@ -145,10 +160,15 @@ impl Sequence for ChannelConnectionSequence {
             // > Channel Join Confirm for a previously sent request has been received. RDP 8.1,
             // > 10.0, and 10.1 clients send all of the Channel Join Requests to the server in a
             // > single batch to minimize the overall connection sequence time.
-            ChannelConnectionState::SendChannelJoinRequest { user_channel_id } => {
+            ChannelConnectionState::SendChannelJoinRequest {
+                user_channel_id,
+                join_channel_ids,
+            } => {
                 let mut total_written: usize = 0;
 
-                for channel_id in self.channel_ids.iter().copied() {
+                debug_assert!(!join_channel_ids.is_empty());
+
+                for channel_id in join_channel_ids.iter().copied() {
                     let channel_join_request = mcs::ChannelJoinRequest {
                         initiator_id: user_channel_id,
                         channel_id,
@@ -164,11 +184,17 @@ impl Sequence for ChannelConnectionSequence {
 
                 (
                     Written::from_size(total_written)?,
-                    ChannelConnectionState::WaitChannelJoinConfirm { user_channel_id },
+                    ChannelConnectionState::WaitChannelJoinConfirm {
+                        user_channel_id,
+                        remaining_channel_ids: join_channel_ids,
+                    },
                 )
             }
 
-            ChannelConnectionState::WaitChannelJoinConfirm { user_channel_id } => {
+            ChannelConnectionState::WaitChannelJoinConfirm {
+                user_channel_id,
+                mut remaining_channel_ids,
+            } => {
                 let channel_join_confirm =
                     ironrdp_pdu::decode::<mcs::ChannelJoinConfirm>(input).map_err(ConnectorError::pdu)?;
 
@@ -181,14 +207,14 @@ impl Sequence for ChannelConnectionSequence {
                     )
                 }
 
-                let is_expected = self.channel_ids.remove(&channel_join_confirm.requested_channel_id);
+                let is_expected = remaining_channel_ids.remove(&channel_join_confirm.requested_channel_id);
 
                 if !is_expected {
                     return Err(reason_err!(
                         "ChannelJoinConfirm",
                         "unexpected requested_channel_id in MCS Channel Join Confirm: got {}, expected one of: {:?}",
                         channel_join_confirm.requested_channel_id,
-                        self.channel_ids,
+                        remaining_channel_ids,
                     ));
                 }
 
@@ -202,10 +228,13 @@ impl Sequence for ChannelConnectionSequence {
                     ));
                 }
 
-                let next_state = if self.channel_ids.is_empty() {
+                let next_state = if remaining_channel_ids.is_empty() {
                     ChannelConnectionState::AllJoined { user_channel_id }
                 } else {
-                    ChannelConnectionState::WaitChannelJoinConfirm { user_channel_id }
+                    ChannelConnectionState::WaitChannelJoinConfirm {
+                        user_channel_id,
+                        remaining_channel_ids,
+                    }
                 };
 
                 (Written::Nothing, next_state)
