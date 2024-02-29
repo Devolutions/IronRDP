@@ -2,7 +2,7 @@ use std::mem;
 use std::net::SocketAddr;
 
 use ironrdp_pdu::rdp::capability_sets::CapabilitySet;
-use ironrdp_pdu::rdp::client_info::PerformanceFlags;
+use ironrdp_pdu::rdp::client_info::{PerformanceFlags, TimezoneInfo};
 use ironrdp_pdu::write_buf::WriteBuf;
 use ironrdp_pdu::{gcc, mcs, nego, rdp, PduHint};
 use ironrdp_svc::{StaticChannelSet, StaticVirtualChannel, SvcClientProcessor};
@@ -780,6 +780,16 @@ fn create_client_info_pdu(config: &Config, routing_addr: &SocketAddr) -> rdp::Cl
             address: routing_addr.ip().to_string(),
             dir: config.client_dir.clone(),
             optional_data: ExtendedClientOptionalInfo {
+                timezone: Some(TimezoneInfo {
+                    bias: 0,
+                    standard_name: String::new(),
+                    standard_date: None,
+                    standard_bias: 0,
+                    daylight_name: String::new(),
+                    daylight_date: None,
+                    daylight_bias: 0,
+                }),
+                session_id: Some(0),
                 performance_flags: Some(
                     PerformanceFlags::DISABLE_FULLWINDOWDRAG
                         | PerformanceFlags::DISABLE_MENUANIMATIONS
