@@ -567,7 +567,7 @@ impl rpce::HeaderlessDecode for EstablishContextCall {
     }
 }
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone, Copy)]
 #[repr(u32)]
 pub enum Scope {
     User = 0x0000_0000,
