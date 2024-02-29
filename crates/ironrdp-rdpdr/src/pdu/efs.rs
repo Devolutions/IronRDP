@@ -17,7 +17,7 @@ use ironrdp_pdu::{
 use super::esc::rpce;
 use super::{PacketId, SharedHeader};
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone, Copy)]
 pub enum VersionAndIdPduKind {
     /// [2.2.2.2] Server Announce Request (DR_CORE_SERVER_ANNOUNCE_REQ)
     ///
@@ -46,7 +46,7 @@ impl VersionAndIdPduKind {
 /// VersionAndIdPDU is a fixed size structure representing multiple PDUs.
 ///
 /// The kind field is used to determine the actual PDU type, see [`VersionAndIdPduKind`].
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct VersionAndIdPdu {
     /// This field MUST be set to 0x0001 ([`VERSION_MAJOR`]).
     pub version_major: u16,
@@ -121,7 +121,7 @@ impl VersionAndIdPdu {
 /// [2.2.2.4] Client Name Request (DR_CORE_CLIENT_NAME_REQ)
 ///
 /// [2.2.2.4]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/902497f1-3b1c-4aee-95f8-1668f9b7b7d2
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum ClientNameRequest {
     Ascii(String),
     Unicode(String),
@@ -170,7 +170,7 @@ impl ClientNameRequest {
 }
 
 #[repr(u32)]
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, PartialEq, Clone, Copy)]
 pub enum ClientNameRequestUnicodeFlag {
     Ascii = 0x0,
     Unicode = 0x1,
@@ -196,7 +196,7 @@ impl From<ClientNameRequestUnicodeFlag> for u32 {
 ///
 /// [2.2.2.7]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/702789c3-b924-4bc2-9280-3221bc7d6797
 /// [2.2.2.8]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/f513bf87-cca0-488a-ac5c-18cf18f4a7e1
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct CoreCapability {
     pub capabilities: Vec<CapabilityMessage>,
     pub kind: CoreCapabilityKind,
@@ -263,7 +263,7 @@ impl CoreCapability {
     }
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Clone, Copy)]
 pub enum CoreCapabilityKind {
     /// [2.2.2.7] Server Core Capability Request (DR_CORE_CAPABILITY_REQ)
     ///
@@ -284,7 +284,7 @@ impl CoreCapabilityKind {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct Capabilities(Vec<CapabilityMessage>);
 
 impl Capabilities {
@@ -338,7 +338,7 @@ impl Default for Capabilities {
 /// [2.2.1.2.1] Capability Message (CAPABILITY_SET)
 ///
 /// [2.2.1.2.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/f1b9dd1d-2c37-4aac-9836-4b0df02369ba
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, PartialEq, Clone, Copy)]
 pub struct CapabilityMessage {
     header: CapabilityHeader,
     capability_data: CapabilityData,
@@ -416,7 +416,7 @@ impl CapabilityMessage {
 /// [2.2.1.2] Capability Header (CAPABILITY_HEADER)
 ///
 /// [2.2.1.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/b3c3304a-2e1b-4667-97e9-3bce49544907
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, PartialEq, Clone, Copy)]
 struct CapabilityHeader {
     cap_type: CapabilityType,
     length: u16,
@@ -472,7 +472,7 @@ impl CapabilityHeader {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, PartialEq, Copy)]
 #[repr(u16)]
 enum CapabilityType {
     /// CAP_GENERAL_TYPE
@@ -515,7 +515,7 @@ impl TryFrom<u16> for CapabilityType {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, PartialEq, Clone, Copy)]
 enum CapabilityData {
     General(GeneralCapabilitySet),
     Printer,
@@ -559,7 +559,7 @@ impl CapabilityData {
 /// [2.2.2.7.1] General Capability Set (GENERAL_CAPS_SET)
 ///
 /// [2.2.2.7.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/06c7cb30-303d-4fa2-b396-806df8ac1501
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, PartialEq, Clone, Copy)]
 struct GeneralCapabilitySet {
     /// MUST be ignored.
     os_type: u32,
@@ -646,7 +646,7 @@ bitflags! {
     /// If the bit is set, the I/O request is allowed. The requests are identified by the MajorFunction field
     /// in the Device I/O Request (section 2.2.1.4) header. This field MUST be set to a valid combination of
     /// the following values.
-    #[derive(Debug, Clone, Copy)]
+    #[derive(Debug, PartialEq, Clone, Copy)]
     struct IoCode1: u32 {
         /// Unused, always set.
         const RDPDR_IRP_MJ_CREATE = 0x0000_0001;
@@ -703,7 +703,7 @@ bitflags! {
 bitflags! {
     /// A 32-bit unsigned integer that specifies extended PDU flags.
     /// This field MUST be set as a bitmask of the following values.
-    #[derive(Debug, Clone, Copy)]
+    #[derive(Debug, PartialEq, Clone, Copy)]
     struct ExtendedPdu: u32 {
         /// Allow the client to send Client Drive Device List Remove packets.
         const RDPDR_DEVICE_REMOVE_PDUS = 0x0000_0001;
@@ -717,7 +717,7 @@ bitflags! {
 bitflags! {
     /// A 32-bit unsigned integer that specifies extended flags.
     /// The extraFlags1 field MUST be set as a bitmask of the following value.
-    #[derive(Debug, Clone, Copy)]
+    #[derive(Debug, PartialEq, Clone, Copy)]
     struct ExtraFlags1: u32 {
         /// Optionally present only in the Client Core Capability Response.
         /// Allows the server to send multiple simultaneous read or write requests
@@ -742,7 +742,7 @@ const VERSION_MAJOR: u16 = 0x0001;
 ///
 /// [2.2.2.9]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/10ef9ada-cba2-4384-ab60-7b6290ed4a9a
 /// [2.2.3.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/d8b2bc1c-0207-4c15-abe3-62eaa2afcaf1
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct ClientDeviceListAnnounce {
     pub device_list: Vec<DeviceAnnounceHeader>,
 }
@@ -780,7 +780,7 @@ impl ClientDeviceListAnnounce {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct Devices(Vec<DeviceAnnounceHeader>);
 
 impl Devices {
@@ -827,7 +827,7 @@ impl Default for Devices {
 /// [2.2.1.3] Device Announce Header (DEVICE_ANNOUNCE)
 ///
 /// [2.2.1.3]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/32e34332-774b-4ead-8c9d-5d64720d6bf9
-#[derive(Debug, Clone)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct DeviceAnnounceHeader {
     device_type: DeviceType,
     device_id: u32,
@@ -896,7 +896,7 @@ impl DeviceAnnounceHeader {
 /// If DeviceType is set to RDPDR_DTYP_SMARTCARD, the PreferredDosName MUST be set to "SCARD".
 ///
 /// Note A column character, ":", is valid only when present at the end of the PreferredDosName field, otherwise it is also considered invalid.
-#[derive(Debug, Clone)]
+#[derive(Debug, PartialEq, Clone)]
 struct PreferredDosName(String);
 
 impl PreferredDosName {
@@ -953,7 +953,7 @@ impl TryFrom<u32> for DeviceType {
 /// [2.2.2.1] Server Device Announce Response (DR_CORE_DEVICE_ANNOUNCE_RSP)
 ///
 /// [2.2.2.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/a4c0b619-6e87-4721-bdc4-5d2db7f485f3
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct ServerDeviceAnnounceResponse {
     pub device_id: u32,
     pub result_code: NtStatus,
@@ -1052,7 +1052,7 @@ impl From<NtStatus> for u32 {
 /// [2.2.1.4] Device I/O Request (DR_DEVICE_IOREQUEST)
 ///
 /// [2.2.1.4]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/a087ffa8-d0d5-4874-ac7b-0494f63e2d5d
-#[derive(Debug, Clone)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct DeviceIoRequest {
     pub device_id: u32,
     pub file_id: u32,
@@ -1202,7 +1202,7 @@ impl From<MinorFunction> for u8 {
 /// [2.2.1.4.5] Device Control Request (DR_CONTROL_REQ)
 ///
 /// [2.2.1.4.5]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/30662c80-ec6e-4ed1-9004-2e6e367bb59f
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct DeviceControlRequest<T: IoCtlCode> {
     pub header: DeviceIoRequest,
     pub output_buffer_length: u32,
@@ -1244,7 +1244,7 @@ pub trait IoCtlCode: TryFrom<u32> {}
 
 /// An IoCtlCode that can be used when the IoCtlCode is not known
 /// or not important.
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct AnyIoCtlCode(pub u32);
 
 impl TryFrom<u32> for AnyIoCtlCode {
@@ -1268,6 +1268,47 @@ pub struct DeviceControlResponse {
     ///
     /// [here]: https://github.com/FreeRDP/FreeRDP/blob/511444a65e7aa2f537c5e531fa68157a50c1bd4d/channels/drive/client/drive_main.c#L677-L684
     pub output_buffer: Option<Box<dyn rpce::Encode>>,
+}
+
+impl PartialEq for DeviceControlResponse {
+    fn eq(&self, other: &Self) -> bool {
+        if (self.device_io_reply != other.device_io_reply)
+            || (self.output_buffer.is_some() != other.output_buffer.is_some())
+        {
+            return false;
+        }
+
+        // If both are `None`, they are equal.
+        if self.output_buffer.is_none() && other.output_buffer.is_none() {
+            return true;
+        }
+
+        // device_io_reply is equal and both output_buffers are Some
+
+        // If the sizes are different, the buffers are not equal.
+        let self_size = self.output_buffer.as_ref().unwrap().size();
+        let other_size = other.output_buffer.as_ref().unwrap().size();
+        if self_size != other_size {
+            return false;
+        }
+
+        // Sizes are the same. Last check is to encode the output buffers and compare the encoded bytes directly.
+        let mut self_buf = vec![0u8; self_size];
+        let mut other_buf = vec![0u8; other_size];
+        self.output_buffer
+            .as_ref()
+            .unwrap()
+            .encode(&mut WriteCursor::new(self_buf.as_mut_slice()))
+            .unwrap();
+        other
+            .output_buffer
+            .as_ref()
+            .unwrap()
+            .encode(&mut WriteCursor::new(other_buf.as_mut_slice()))
+            .unwrap();
+
+        self_buf == other_buf
+    }
 }
 
 impl DeviceControlResponse {
@@ -1327,7 +1368,7 @@ impl DeviceControlResponse {
 /// [2.2.1.5] Device I/O Response (DR_DEVICE_IOCOMPLETION)
 ///
 /// [2.2.1.5]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/1c412a84-0776-4984-b35c-3f0445fcae65
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct DeviceIoResponse {
     pub device_id: u32,
     pub completion_id: u32,
@@ -1374,7 +1415,7 @@ impl DeviceIoResponse {
 /// [2.2.3.3] Server Drive I/O Request (DR_DRIVE_CORE_DEVICE_IOREQUEST)
 ///
 /// [2.2.3.3]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/89bb51af-c54d-40fb-81c1-d1bb353c4536
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum ServerDriveIoRequest {
     ServerCreateDriveRequest(DeviceCreateRequest),
     ServerDriveQueryInformationRequest(ServerDriveQueryInformationRequest),
@@ -1497,7 +1538,7 @@ impl From<ServerDriveLockControlRequest> for ServerDriveIoRequest {
 ///
 /// [2.2.3.3.1]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/95b16fd0-d530-407c-a310-adedc85e9897
 /// [2.2.1.4.1]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/5f71f6d2-d9ff-40c2-bdb5-a739447d3c3e
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct DeviceCreateRequest {
     /// The MajorFunction field in this header MUST be set to IRP_MJ_CREATE.
     pub device_io_request: DeviceIoRequest,
@@ -1557,7 +1598,7 @@ bitflags! {
     ///
     /// [2.2.13.1.1]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-smb2/77b36d0f-6016-458a-a7a0-0f4a72ae1534
     /// [2.2.13.1.2]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-smb2/0a5934b1-80f1-4da0-b1bf-5e021c309b71
-    #[derive(Debug, Clone)]
+    #[derive(Debug, PartialEq, Clone)]
     pub struct DesiredAccess: u32 {
         /// This value indicates the right to read data from the file or named pipe.
         ///
@@ -1614,7 +1655,7 @@ bitflags! {
     /// [2.6] File Attributes \[MS-FSCC\]
     ///
     /// [2.6]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-fscc/ca28ec38-f155-4768-81d6-4bfeb8586fc9
-    #[derive(Debug, Clone)]
+    #[derive(Debug, PartialEq, Clone)]
     pub struct FileAttributes: u32 {
         const FILE_ATTRIBUTE_READONLY = 0x00000001;
         const FILE_ATTRIBUTE_HIDDEN = 0x00000002;
@@ -1644,7 +1685,7 @@ bitflags! {
     /// Specified in [2.2.13] SMB2 CREATE Request
     ///
     /// [2.2.13]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-smb2/e8fb45c1-a03d-44ca-b7ae-47385cfd7997
-    #[derive(Debug, Clone)]
+    #[derive(Debug, PartialEq, Clone)]
     pub struct SharedAccess: u32 {
         const FILE_SHARE_READ = 0x00000001;
         const FILE_SHARE_WRITE = 0x00000002;
@@ -1674,7 +1715,7 @@ bitflags! {
     /// Defined in [2.2.13] SMB2 CREATE Request
     ///
     /// [2.2.13]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-smb2/e8fb45c1-a03d-44ca-b7ae-47385cfd7997
-    #[derive(Debug, Clone)]
+    #[derive(Debug, PartialEq, Clone)]
     pub struct CreateOptions: u32 {
         const FILE_DIRECTORY_FILE = 0x00000001;
         const FILE_WRITE_THROUGH = 0x00000002;
@@ -1703,7 +1744,7 @@ bitflags! {
 /// [2.2.1.5.1] Device Create Response (DR_CREATE_RSP)
 ///
 /// [2.2.1.5.1]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/99e5fca5-b37a-41e4-bc69-8d7da7860f76
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct DeviceCreateResponse {
     pub device_io_reply: DeviceIoResponse,
     pub file_id: u32,
@@ -1736,7 +1777,7 @@ bitflags! {
     /// Defined in [2.2.1.5.1] Device Create Response (DR_CREATE_RSP)
     ///
     /// [2.2.1.5.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/99e5fca5-b37a-41e4-bc69-8d7da7860f76
-    #[derive(Debug)]
+    #[derive(Debug, PartialEq, Clone)]
     pub struct Information: u8 {
         /// A new file was created.
         const FILE_SUPERSEDED = 0x00000000;
@@ -1753,7 +1794,7 @@ bitflags! {
 ///
 /// [2.2.3.3.8]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/e43dcd68-2980-40a9-9238-344b6cf94946
 /// [analogous code in FreeRDP]: https://github.com/FreeRDP/FreeRDP/blob/511444a65e7aa2f537c5e531fa68157a50c1bd4d/channels/drive/client/drive_main.c#L384
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct ServerDriveQueryInformationRequest {
     pub device_io_request: DeviceIoRequest,
     pub file_info_class_lvl: FileInformationClassLevel,
@@ -1851,7 +1892,7 @@ impl From<FileInformationClassLevel> for u32 {
 /// [2.2.3.4.8] Client Drive Query Information Response (DR_DRIVE_QUERY_INFORMATION_RSP)
 ///
 /// [2.2.3.4.8]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/37ef4fb1-6a95-4200-9fbf-515464f034a4
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct ClientDriveQueryInformationResponse {
     pub device_io_response: DeviceIoResponse,
     /// If [`Self::device_io_response`] has an `io_status` besides [`NtStatus::SUCCESS`],
@@ -1896,7 +1937,7 @@ impl ClientDriveQueryInformationResponse {
 /// [2.4] File Information Classes \[MS-FSCC\]
 ///
 /// [2.4]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-fscc/4718fc40-e539-4014-8e33-b675af74e3e1
-#[derive(Debug, Clone)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum FileInformationClass {
     Basic(FileBasicInformation),
     Standard(FileStandardInformation),
@@ -2059,7 +2100,7 @@ impl From<FileAllocationInformation> for FileInformationClass {
 /// [2.4.7] FileBasicInformation \[MS-FSCC\]
 ///
 /// [2.4.7]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-fscc/16023025-8a78-492f-8b96-c873b042ac50
-#[derive(Debug, Clone)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct FileBasicInformation {
     pub creation_time: i64,
     pub last_access_time: i64,
@@ -2109,7 +2150,7 @@ impl FileBasicInformation {
 /// [2.4.41] FileStandardInformation \[MS-FSCC\]
 ///
 /// [2.4.41]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-fscc/5afa7f66-619c-48f3-955f-68c4ece704ae
-#[derive(Debug, Clone)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct FileStandardInformation {
     pub allocation_size: i64,
     pub end_of_file: i64,
@@ -2173,7 +2214,7 @@ impl From<u8> for Boolean {
 /// [2.4.6] FileAttributeTagInformation \[MS-FSCC\]
 ///
 /// [2.4.6]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-fscc/d295752f-ce89-4b98-8553-266d37c84f0e?redirectedfrom=MSDN
-#[derive(Debug, Clone)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct FileAttributeTagInformation {
     pub file_attributes: FileAttributes,
     pub reparse_tag: u32,
@@ -2196,7 +2237,7 @@ impl FileAttributeTagInformation {
 /// [2.4.8] FileBothDirectoryInformation \[MS-FSCC\]
 ///
 /// [2.4.8]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-fscc/270df317-9ba5-4ccb-ba00-8d22be139bc5
-#[derive(Debug, Clone)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct FileBothDirectoryInformation {
     pub next_entry_offset: u32,
     pub file_index: u32,
@@ -2290,7 +2331,7 @@ impl FileBothDirectoryInformation {
 /// [2.4.14] FileFullDirectoryInformation \[MS-FSCC\]
 ///
 /// [2.4.14]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-fscc/e8d926d1-3a22-4654-be9c-58317a85540b
-#[derive(Debug, Clone)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct FileFullDirectoryInformation {
     pub next_entry_offset: u32,
     pub file_index: u32,
@@ -2372,7 +2413,7 @@ impl FileFullDirectoryInformation {
 /// [2.4.28] FileNamesInformation \[MS-FSCC\]
 ///
 /// [2.4.28]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-fscc/a289f7a8-83d2-4927-8c88-b2d328dde5a5?redirectedfrom=MSDN
-#[derive(Debug, Clone)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct FileNamesInformation {
     pub next_entry_offset: u32,
     pub file_index: u32,
@@ -2414,7 +2455,7 @@ impl FileNamesInformation {
 /// [2.4.10] FileDirectoryInformation \[MS-FSCC\]
 ///
 /// [2.4.10]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-fscc/b38bf518-9057-4c88-9ddd-5e2d3976a64b
-#[derive(Debug, Clone)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct FileDirectoryInformation {
     pub next_entry_offset: u32,
     pub file_index: u32,
@@ -2492,7 +2533,7 @@ impl FileDirectoryInformation {
 /// [2.2.1.4.2] Device Close Request (DR_CLOSE_REQ)
 ///
 /// [2.2.1.4.2]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/3ec6627f-9e0f-4941-a828-3fc6ed63d9e7
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct DeviceCloseRequest {
     pub device_io_request: DeviceIoRequest,
     // Padding (32 bytes): ignored as per FreeRDP:
@@ -2510,7 +2551,7 @@ impl DeviceCloseRequest {
 /// [2.2.1.5.2] Device Close Response (DR_CLOSE_RSP)
 ///
 /// [2.2.1.5.2]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/0dae7031-cfd8-4f14-908c-ec06e14997b5
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct DeviceCloseResponse {
     pub device_io_response: DeviceIoResponse,
     // Padding (4 bytes):  An array of 4 bytes. Reserved. This field can be set to any value and MUST be ignored.
@@ -2539,7 +2580,7 @@ impl DeviceCloseResponse {
 /// [2.2.3.3.10] Server Drive Query Directory Request (DR_DRIVE_QUERY_DIRECTORY_REQ)
 ///
 /// [2.2.3.3.10]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/458019d2-5d5a-4fd4-92ef-8c05f8d7acb1
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct ServerDriveQueryDirectoryRequest {
     pub device_io_request: DeviceIoRequest,
     pub file_info_class_lvl: FileInformationClassLevel,
@@ -2589,7 +2630,7 @@ impl ServerDriveQueryDirectoryRequest {
 /// 2.2.3.3.11 Server Drive NotifyChange Directory Request (DR_DRIVE_NOTIFY_CHANGE_DIRECTORY_REQ)
 ///
 /// [2.2.3.3.11]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/ed05e73d-e53e-4261-a1e1-365a70ba6512
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct ServerDriveNotifyChangeDirectoryRequest {
     pub device_io_request: DeviceIoRequest,
     pub watch_tree: u8,
@@ -2617,7 +2658,7 @@ impl ServerDriveNotifyChangeDirectoryRequest {
 /// [2.2.3.4.10] Client Drive Query Directory Response (DR_DRIVE_QUERY_DIRECTORY_RSP)
 ///
 /// [2.2.3.4.10]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/9c929407-a833-4893-8f20-90c984756140
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct ClientDriveQueryDirectoryResponse {
     pub device_io_reply: DeviceIoResponse,
     pub buffer: Option<FileInformationClass>,
@@ -2668,7 +2709,7 @@ impl ClientDriveQueryDirectoryResponse {
 /// https://github.com/FreeRDP/FreeRDP/blob/511444a65e7aa2f537c5e531fa68157a50c1bd4d/channels/drive/client/drive_main.c#L464
 ///
 /// [2.2.3.3.6]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/484e622d-0e2b-423c-8461-7de38878effb
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct ServerDriveQueryVolumeInformationRequest {
     pub device_io_request: DeviceIoRequest,
     pub fs_info_class_lvl: FileSystemInformationClassLevel,
@@ -2715,7 +2756,7 @@ impl ServerDriveQueryVolumeInformationRequest {
 /// [2.5] File System Information Classes [MS-FSCC]
 ///
 /// [2.5] https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-fscc/ee12042a-9352-46e3-9f67-c094b75fe6c3
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, Clone)]
 pub struct FileSystemInformationClassLevel(u32);
 
 impl FileSystemInformationClassLevel {
@@ -2752,7 +2793,7 @@ impl From<u32> for FileSystemInformationClassLevel {
 /// [2.5] File System Information Classes
 ///
 /// [2.5]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-fscc/ee12042a-9352-46e3-9f67-c094b75fe6c3
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Clone)]
 pub enum FileSystemInformationClass {
     FileFsVolumeInformation(FileFsVolumeInformation),
     FileFsSizeInformation(FileFsSizeInformation),
@@ -2817,7 +2858,7 @@ impl From<FileFsDeviceInformation> for FileSystemInformationClass {
 /// [2.5.9] FileFsVolumeInformation
 ///
 /// [2.5.9]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-fscc/bf691378-c34e-4a13-976e-404ea1a87738
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct FileFsVolumeInformation {
     pub volume_creation_time: i64,
     pub volume_serial_number: u32,
@@ -2854,7 +2895,7 @@ impl FileFsVolumeInformation {
 /// [2.5.8] FileFsSizeInformation
 ///
 /// [2.5.8]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-fscc/e13e068c-e3a7-4dd4-94fd-3892b492e6e7
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct FileFsSizeInformation {
     pub total_alloc_units: i64,
     pub available_alloc_units: i64,
@@ -2883,7 +2924,7 @@ impl FileFsSizeInformation {
 /// [2.5.1] FileFsAttributeInformation
 ///
 /// [2.5.1]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-fscc/ebc7e6e5-4650-4e54-b17c-cf60f6fbeeaa
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct FileFsAttributeInformation {
     pub file_system_attributes: FileSystemAttributes,
     pub max_component_name_len: u32,
@@ -2915,7 +2956,7 @@ impl FileFsAttributeInformation {
 /// [2.5.4] FileFsFullSizeInformation
 ///
 /// [2.5.4]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-fscc/63768db7-9012-4209-8cca-00781e7322f5
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct FileFsFullSizeInformation {
     pub total_alloc_units: i64,
     pub caller_available_alloc_units: i64,
@@ -2947,7 +2988,7 @@ impl FileFsFullSizeInformation {
 /// [2.5.10] FileFsDeviceInformation
 ///
 /// [2.5.10]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-fscc/616b66d5-b335-4e1c-8f87-b4a55e8d3e4a
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct FileFsDeviceInformation {
     pub device_type: u32,
     pub characteristics: Characteristics,
@@ -2971,7 +3012,7 @@ bitflags! {
     /// See [2.5.1] FileFsAttributeInformation.
     ///
     /// [2.5.1]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-fscc/ebc7e6e5-4650-4e54-b17c-cf60f6fbeeaa
-    #[derive(Debug)]
+    #[derive(Debug, PartialEq, Clone)]
     pub struct FileSystemAttributes: u32 {
         const FILE_SUPPORTS_USN_JOURNAL = 0x02000000;
         const FILE_SUPPORTS_OPEN_BY_FILE_ID = 0x01000000;
@@ -3003,7 +3044,7 @@ bitflags! {
     /// See [2.5.10] FileFsDeviceInformation.
     ///
     /// [2.5.10]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-fscc/616b66d5-b335-4e1c-8f87-b4a55e8d3e4a
-    #[derive(Debug)]
+    #[derive(Debug, PartialEq, Clone)]
     pub struct Characteristics: u32 {
         const FILE_REMOVABLE_MEDIA = 0x00000001;
         const FILE_READ_ONLY_DEVICE = 0x00000002;
@@ -3023,7 +3064,7 @@ bitflags! {
 /// [2.2.3.4.6] Client Drive Query Volume Information Response (DR_DRIVE_QUERY_VOLUME_INFORMATION_RSP)
 ///
 /// [2.2.3.4.6]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/fbdc7db8-a268-4420-8b5e-ce689ad1d4ac
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct ClientDriveQueryVolumeInformationResponse {
     pub device_io_reply: DeviceIoResponse,
     pub buffer: Option<FileSystemInformationClass>,
@@ -3080,7 +3121,7 @@ impl ClientDriveQueryVolumeInformationResponse {
 /// [2.2.1.4.3] Device Read Request (DR_READ_REQ)
 ///
 /// [2.2.1.4.3]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/3192516d-36a6-47c5-987a-55c214aa0441
-#[derive(Debug, Clone)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct DeviceReadRequest {
     pub device_io_request: DeviceIoRequest,
     pub length: u32,
@@ -3147,6 +3188,7 @@ impl Debug for DeviceReadResponse {
 /// [2.2.1.4.4] Device Write Request (DR_WRITE_REQ)
 ///
 /// [2.2.1.4.4]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/2e25f0aa-a4ce-4ff3-ad62-ab6098280a3a
+#[derive(PartialEq, Clone)]
 pub struct DeviceWriteRequest {
     pub device_io_request: DeviceIoRequest,
     pub offset: u64,
@@ -3187,7 +3229,7 @@ impl Debug for DeviceWriteRequest {
 /// [2.2.1.5.4] Device Write Response (DR_WRITE_RSP)
 ///
 /// [2.2.1.5.4]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/58160a47-2379-4c4a-a99d-24a1a666c02a
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct DeviceWriteResponse {
     pub device_io_reply: DeviceIoResponse,
     pub length: u32,
@@ -3218,7 +3260,7 @@ impl DeviceWriteResponse {
 /// [2.2.3.3.9] Server Drive Set Information Request (DR_DRIVE_SET_INFORMATION_REQ)
 ///
 /// [2.2.3.3.9]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/b5d3104b-0e42-4cf8-9059-e9fe86615e5c
-#[derive(Debug, Clone)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct ServerDriveSetInformationRequest {
     pub device_io_request: DeviceIoRequest,
     pub set_buffer: FileInformationClass,
@@ -3263,7 +3305,7 @@ impl ServerDriveSetInformationRequest {
 /// 2.4.13 FileEndOfFileInformation
 ///
 /// [2.4.13]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-fscc/75241cca-3167-472f-8058-a52d77c6bb17
-#[derive(Debug, Clone)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct FileEndOfFileInformation {
     pub end_of_file: i64,
 }
@@ -3285,7 +3327,7 @@ impl FileEndOfFileInformation {
 /// [2.4.11] FileDispositionInformation
 ///
 /// [2.4.11]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-fscc/12c3dd1c-14f6-4229-9d29-75fb2cb392f6
-#[derive(Debug, Clone)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct FileDispositionInformation {
     pub delete_pending: u8,
 }
@@ -3312,7 +3354,7 @@ impl FileDispositionInformation {
 /// [2.4.37] FileRenameInformation
 ///
 /// [2.4.37]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-fscc/1d2673a8-8fb9-4868-920a-775ccaa30cf8
-#[derive(Debug, Clone)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct FileRenameInformation {
     pub replace_if_exists: Boolean,
     /// `file_name` is the relative path to the new location of the file
@@ -3345,7 +3387,7 @@ impl FileRenameInformation {
 /// [2.4.4] FileAllocationInformation
 ///
 /// [2.4.4]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-fscc/0201c69b-50db-412d-bab3-dd97aeede13b
-#[derive(Debug, Clone)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct FileAllocationInformation {
     pub allocation_size: i64,
 }
@@ -3367,7 +3409,7 @@ impl FileAllocationInformation {
 /// [2.2.3.4.9] Client Drive Set Information Response (DR_DRIVE_SET_INFORMATION_RSP)
 ///
 /// [2.2.3.4.9]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/16b893d5-5d8b-49d1-8dcb-ee21e7612970
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct ClientDriveSetInformationResponse {
     device_io_reply: DeviceIoResponse,
     /// This field MUST be equal to the Length field in the Server Drive Set Information Request (section 2.2.3.3.9).
@@ -3404,7 +3446,7 @@ impl ClientDriveSetInformationResponse {
 /// 2.2.3.3.12 Server Drive Lock Control Request (DR_DRIVE_LOCK_REQ)
 ///
 /// [2.2.3.3.12]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/a96fe85c-620c-40ce-8858-a6bc38609b0a
-#[derive(Debug, Clone)]
+#[derive(Debug, PartialEq, Clone)]
 pub struct ServerDriveLockControlRequest {
     pub device_io_request: DeviceIoRequest,
 }
