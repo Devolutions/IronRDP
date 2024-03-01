@@ -779,8 +779,8 @@ fn create_client_info_pdu(config: &Config, routing_addr: &SocketAddr) -> rdp::Cl
             },
             address: routing_addr.ip().to_string(),
             dir: config.client_dir.clone(),
-            optional_data: ExtendedClientOptionalInfo {
-                timezone: Some(TimezoneInfo {
+            optional_data: ExtendedClientOptionalInfo::builder()
+                .timezone(TimezoneInfo {
                     bias: 0,
                     standard_name: String::new(),
                     standard_date: None,
@@ -788,15 +788,14 @@ fn create_client_info_pdu(config: &Config, routing_addr: &SocketAddr) -> rdp::Cl
                     daylight_name: String::new(),
                     daylight_date: None,
                     daylight_bias: 0,
-                }),
-                session_id: Some(0),
-                performance_flags: Some(
+                })
+                .session_id(0)
+                .performance_flags(
                     PerformanceFlags::DISABLE_FULLWINDOWDRAG
                         | PerformanceFlags::DISABLE_MENUANIMATIONS
                         | PerformanceFlags::ENABLE_FONT_SMOOTHING,
-                ),
-                ..Default::default()
-            },
+                )
+                .build(),
         },
     };
 

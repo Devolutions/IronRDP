@@ -231,13 +231,109 @@ impl ExtendedClientInfo {
     }
 }
 
+pub mod extended_client_optional_info {
+    use super::*;
+    use std::marker::PhantomData;
+
+    pub struct BuilderStateSetTimeZone;
+    pub struct BuilderStateSetSessionId;
+    pub struct BuilderStateSetPerformanceFlags;
+    pub struct BuilderStateSetReconnectCookie;
+    pub struct BuilderStateFinal;
+
+    // State machine-based builder for [`ExtendedClientOptionalInfo`].
+    //
+    // [`ExtendedClientOptionalInfo`] strictly requires to set all preceding optional fields before
+    // setting the next one, therefore we use a state machine to enforce this during the compile time.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub struct Builder<State> {
+        pub(super) inner: ExtendedClientOptionalInfo,
+        pub(super) _phantom_data: PhantomData<State>,
+    }
+
+    impl<State> Builder<State> {
+        pub fn build(self) -> ExtendedClientOptionalInfo {
+            self.inner
+        }
+    }
+
+    impl Builder<BuilderStateSetTimeZone> {
+        pub fn timezone(mut self, timezone: TimezoneInfo) -> Builder<BuilderStateSetSessionId> {
+            self.inner.timezone = Some(timezone);
+            Builder {
+                inner: self.inner,
+                _phantom_data: Default::default(),
+            }
+        }
+    }
+
+    impl Builder<BuilderStateSetSessionId> {
+        pub fn session_id(mut self, session_id: u32) -> Builder<BuilderStateSetPerformanceFlags> {
+            self.inner.session_id = Some(session_id);
+            Builder {
+                inner: self.inner,
+                _phantom_data: Default::default(),
+            }
+        }
+    }
+
+    impl Builder<BuilderStateSetPerformanceFlags> {
+        pub fn performance_flags(
+            mut self,
+            performance_flags: PerformanceFlags,
+        ) -> Builder<BuilderStateSetReconnectCookie> {
+            self.inner.performance_flags = Some(performance_flags);
+            Builder {
+                inner: self.inner,
+                _phantom_data: Default::default(),
+            }
+        }
+    }
+
+    impl Builder<BuilderStateSetReconnectCookie> {
+        pub fn reconnect_cookie(mut self, reconnect_cookie: [u8; RECONNECT_COOKIE_LEN]) -> Builder<BuilderStateFinal> {
+            self.inner.reconnect_cookie = Some(reconnect_cookie);
+            Builder {
+                inner: self.inner,
+                _phantom_data: Default::default(),
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ExtendedClientOptionalInfo {
-    pub timezone: Option<TimezoneInfo>,
-    pub session_id: Option<u32>,
-    pub performance_flags: Option<PerformanceFlags>,
-    pub reconnect_cookie: Option<[u8; RECONNECT_COOKIE_LEN]>,
+    timezone: Option<TimezoneInfo>,
+    session_id: Option<u32>,
+    performance_flags: Option<PerformanceFlags>,
+    reconnect_cookie: Option<[u8; RECONNECT_COOKIE_LEN]>,
     // other fields are read by RdpVersion::Ten+
+}
+
+impl ExtendedClientOptionalInfo {
+    /// Creates a new builder for [`ExtendedClientOptionalInfo`].
+    pub fn builder() -> extended_client_optional_info::Builder<extended_client_optional_info::BuilderStateSetTimeZone> {
+        extended_client_optional_info::Builder::<extended_client_optional_info::BuilderStateSetTimeZone> {
+            inner: Self::default(),
+            _phantom_data: Default::default(),
+        }
+    }
+
+    pub fn timezone(&self) -> Option<&TimezoneInfo> {
+        self.timezone.as_ref()
+    }
+
+    pub fn session_id(&self) -> Option<u32> {
+        self.session_id
+    }
+
+    pub fn performance_flags(&self) -> Option<PerformanceFlags> {
+        self.performance_flags
+    }
+
+    pub fn reconnect_cookie(&self) -> Option<&[u8; RECONNECT_COOKIE_LEN]> {
+        self.reconnect_cookie.as_ref()
+    }
 }
 
 impl PduParsing for ExtendedClientOptionalInfo {

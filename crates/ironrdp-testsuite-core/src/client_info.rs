@@ -99,8 +99,8 @@ lazy_static::lazy_static! {
             address_family: AddressFamily::INet,
             address: String::from("157.59.242.156"),
             dir: String::from("C:\\depots\\w2k3_1\\termsrv\\newclient\\lib\\win32\\obj\\i386\\mstscax.dll"),
-            optional_data: ExtendedClientOptionalInfo {
-                timezone: Some(TimezoneInfo {
+            optional_data: ExtendedClientOptionalInfo::builder()
+                .timezone(TimezoneInfo {
                     bias: 0x01e0,
                     standard_name: String::from("Pacific Standard Time"),
                     standard_date: Some(SystemTime {
@@ -124,11 +124,10 @@ lazy_static::lazy_static! {
                         milliseconds: 0,
                     }),
                     daylight_bias: 0xffff_ffc4,
-                }),
-                session_id: Some(0),
-                performance_flags: Some(PerformanceFlags::DISABLE_WALLPAPER),
-                reconnect_cookie: None,
-            },
+                })
+                .session_id(0)
+                .performance_flags(PerformanceFlags::DISABLE_WALLPAPER)
+                .build(),
         },
     };
 
