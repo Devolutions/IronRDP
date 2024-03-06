@@ -38,6 +38,8 @@ pub struct Processor {
     user_channel_id: u16,
     io_channel_id: u16,
     drdynvc_channel_id: Option<u16>,
+    /// Indicates whether the DVC capabilities response has been sent.
+    drdynvc_initialized: bool,
     graphics_config: Option<GraphicsConfig>,
     graphics_handler: Option<Box<dyn GfxHandler + Send>>,
 }
@@ -65,6 +67,7 @@ impl Processor {
             user_channel_id,
             io_channel_id,
             drdynvc_channel_id,
+            drdynvc_initialized: false,
             graphics_config,
             graphics_handler,
         }
@@ -175,6 +178,20 @@ impl Processor {
         }
     }
 
+    fn send_drdynvc_capabilities_response(
+        &mut self,
+        data_ctx: SendDataIndicationCtx<'_>,
+        buf: &mut WriteBuf,
+    ) -> SessionResult<()> {
+        let caps_response = dvc::ClientPdu::CapabilitiesResponse(dvc::CapabilitiesResponsePdu {
+            version: dvc::CapsVersion::V1,
+        });
+        debug!("Send DVC Capabilities Response PDU: {caps_response:?}");
+        crate::legacy::encode_dvc_message(data_ctx.initiator_id, data_ctx.channel_id, caps_response, &[], buf)?;
+        self.drdynvc_initialized = true;
+        Ok(())
+    }
+
     fn process_dyvc(&mut self, data_ctx: SendDataIndicationCtx<'_>) -> SessionResult<Vec<u8>> {
         debug_assert_eq!(Some(data_ctx.channel_id), self.drdynvc_channel_id);
 
@@ -185,21 +202,25 @@ impl Processor {
         match dvc_ctx.dvc_pdu {
             dvc::ServerPdu::CapabilitiesRequest(caps_request) => {
                 debug!("Got DVC Capabilities Request PDU: {caps_request:?}");
-                let caps_response = dvc::ClientPdu::CapabilitiesResponse(dvc::CapabilitiesResponsePdu {
-                    version: dvc::CapsVersion::V1,
-                });
-
-                debug!("Send DVC Capabilities Response PDU: {caps_response:?}");
-                crate::legacy::encode_dvc_message(
-                    data_ctx.initiator_id,
-                    data_ctx.channel_id,
-                    caps_response,
-                    &[],
-                    &mut buf,
-                )?;
+                self.send_drdynvc_capabilities_response(data_ctx, &mut buf)?;
             }
             dvc::ServerPdu::CreateRequest(create_request) => {
                 debug!("Got DVC Create Request PDU: {create_request:?}");
+
+                /*
+                 * For some reason the server does not always send the
+                 * capabilities pdu as it should. When this happens,
+                 * send a capabilities response.
+                 * https://github.com/FreeRDP/FreeRDP/blob/ba8cf8cf2158018fb7abbedb51ab245f369be813/channels/drdynvc/client/drdynvc_main.c#L1165-L1169
+                 */
+                if !self.drdynvc_initialized {
+                    debug!(
+                        "Got DVC Create Request PDU before a Capabilities Request PDU. \
+                        Sending Capabilities Response PDU before the Create Response PDU."
+                    );
+
+                    self.send_drdynvc_capabilities_response(data_ctx, &mut buf)?;
+                }
 
                 let creation_status = if let Some(dynamic_channel) = create_dvc(
                     create_request.channel_name.as_str(),
@@ -259,6 +280,7 @@ impl Processor {
                 self.dynamic_channels.remove(&close_request.channel_id);
             }
             dvc::ServerPdu::DataFirst(data) => {
+                debug!("Got DVC Data First PDU: {data:?}");
                 let channel_id_type = data.channel_id_type;
                 let channel_id = data.channel_id;
 
@@ -287,6 +309,7 @@ impl Processor {
                 }
             }
             dvc::ServerPdu::Data(data) => {
+                debug!("Got DVC Data PDU: {data:?}");
                 let channel_id_type = data.channel_id_type;
                 let channel_id = data.channel_id;
 
