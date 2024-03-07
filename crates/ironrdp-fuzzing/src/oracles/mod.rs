@@ -41,11 +41,25 @@ pub fn pdu_decode(data: &[u8]) {
     let _ = server_license::ServerLicenseRequest::from_buffer(data);
     let _ = server_license::ServerPlatformChallenge::from_buffer(data);
 
+    let _ = server_license::NewLicenseInformation::from_buffer(data);
+    let _ = server_license::ServerUpgradeLicense::from_buffer(data);
+
     let _ = vc::ChannelPduHeader::from_buffer(data);
 
     let _ = decode::<fast_path::FastPathHeader>(data);
     let _ = decode::<fast_path::FastPathUpdatePdu<'_>>(data);
+    let _ = fast_path::FastPathUpdate::decode_with_code(data, fast_path::UpdateCode::Orders);
+    let _ = fast_path::FastPathUpdate::decode_with_code(data, fast_path::UpdateCode::Bitmap);
+    let _ = fast_path::FastPathUpdate::decode_with_code(data, fast_path::UpdateCode::Palette);
+    let _ = fast_path::FastPathUpdate::decode_with_code(data, fast_path::UpdateCode::Synchronize);
     let _ = fast_path::FastPathUpdate::decode_with_code(data, fast_path::UpdateCode::SurfaceCommands);
+    let _ = fast_path::FastPathUpdate::decode_with_code(data, fast_path::UpdateCode::HiddenPointer);
+    let _ = fast_path::FastPathUpdate::decode_with_code(data, fast_path::UpdateCode::DefaultPointer);
+    let _ = fast_path::FastPathUpdate::decode_with_code(data, fast_path::UpdateCode::PositionPointer);
+    let _ = fast_path::FastPathUpdate::decode_with_code(data, fast_path::UpdateCode::ColorPointer);
+    let _ = fast_path::FastPathUpdate::decode_with_code(data, fast_path::UpdateCode::CachedPointer);
+    let _ = fast_path::FastPathUpdate::decode_with_code(data, fast_path::UpdateCode::NewPointer);
+    let _ = fast_path::FastPathUpdate::decode_with_code(data, fast_path::UpdateCode::LargePointer);
 
     let _ = decode::<surface_commands::SurfaceCommand<'_>>(data);
     let _ = decode::<surface_commands::SurfaceBitsPdu<'_>>(data);
@@ -135,4 +149,12 @@ pub fn cliprdr_format(input: &[u8]) {
     if let Ok(input) = core::str::from_utf8(input) {
         let _ = plain_html_to_cf_html(input);
     }
+}
+
+pub fn channel_process(input: &[u8]) {
+    use ironrdp_svc::SvcProcessor;
+
+    let mut rdpdr = ironrdp_rdpdr::Rdpdr::new(Box::new(ironrdp_rdpdr::NoopRdpdrBackend), "Backend".to_string()).with_smartcard(1).with_drives(None);
+
+    let _ = rdpdr.process(input);
 }
