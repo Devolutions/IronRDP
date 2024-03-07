@@ -33,7 +33,7 @@ pub const CARGO: &str = env!("CARGO");
 
 pub const WASM_PACKAGES: &[&str] = &["ironrdp-web"];
 
-pub const FUZZ_TARGETS: &[&str] = &["pdu_decoding", "rle_decompression", "bitmap_stream"];
+pub const FUZZ_TARGETS: &[&str] = &["pdu_decoding", "rle_decompression", "bitmap_stream", "cliprdr_format"];
 
 fn main() -> anyhow::Result<()> {
     let args = match cli::parse_args() {
