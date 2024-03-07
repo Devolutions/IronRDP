@@ -154,7 +154,9 @@ pub fn cliprdr_format(input: &[u8]) {
 pub fn channel_process(input: &[u8]) {
     use ironrdp_svc::SvcProcessor;
 
-    let mut rdpdr = ironrdp_rdpdr::Rdpdr::new(Box::new(ironrdp_rdpdr::NoopRdpdrBackend), "Backend".to_string()).with_smartcard(1).with_drives(None);
+    let mut rdpdr = ironrdp_rdpdr::Rdpdr::new(Box::new(ironrdp_rdpdr::NoopRdpdrBackend), "Backend".to_string())
+        .with_smartcard(1)
+        .with_drives(None);
 
     let _ = rdpdr.process(input);
 }
