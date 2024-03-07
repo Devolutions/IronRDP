@@ -41,7 +41,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        target: [ pdu_decoding, rle_decompression, bitmap_stream, cliprdr_format ]
+        target: [ pdu_decoding, rle_decompression, bitmap_stream, cliprdr_format, channel_processing.rs ]
 
     steps:
       - uses: actions/checkout@v3
