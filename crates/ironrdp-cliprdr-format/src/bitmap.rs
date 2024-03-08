@@ -206,7 +206,7 @@ impl BitmapInfoHeader {
             .ok_or_else(|| invalid_message_err!("biWidth", "width is too big"))?;
 
         let height = src.read_i32();
-        check_invariant(width != i32::MIN && height.abs() <= 10_000)
+        check_invariant(height != i32::MIN && height.abs() <= 10_000)
             .ok_or_else(|| invalid_message_err!("biHeight", "height is too big"))?;
 
         let planes = src.read_u16();
