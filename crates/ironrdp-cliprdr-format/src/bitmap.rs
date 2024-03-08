@@ -200,10 +200,14 @@ impl BitmapInfoHeader {
         let size = src.read_u32();
 
         let width = src.read_i32();
-        check_invariant(width.abs() <= 10_000).ok_or_else(|| invalid_message_err!("biWidth", "width is too big"))?;
+
+        // NOTE: .abs() could panic on i32::MIN, therefore we have a check for it first.
+        check_invariant(width != i32::MIN && width.abs() <= 10_000)
+            .ok_or_else(|| invalid_message_err!("biWidth", "width is too big"))?;
 
         let height = src.read_i32();
-        check_invariant(height.abs() <= 10_000).ok_or_else(|| invalid_message_err!("biHeight", "height is too big"))?;
+        check_invariant(width != i32::MIN && height.abs() <= 10_000)
+            .ok_or_else(|| invalid_message_err!("biHeight", "height is too big"))?;
 
         let planes = src.read_u16();
         if planes != 1 {
