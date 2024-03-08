@@ -239,18 +239,18 @@ impl BitmapInfoHeader {
         Ok((header, size))
     }
 
-    // INVARIANT: output (width) < 10_000
+    // INVARIANT: output (width) <= 10_000
     fn width(&self) -> u16 {
         let abs = self.width.abs();
-        debug_assert!(abs < 10_000);
+        debug_assert!(abs <= 10_000);
         // Per the invariant on self.width, this cast is infaillible.
         u16::try_from(abs).unwrap()
     }
 
-    // INVARIANT: output (height) < 10_000
+    // INVARIANT: output (height) <= 10_000
     fn height(&self) -> u16 {
         let abs = self.height.abs();
-        debug_assert!(abs < 10_000);
+        debug_assert!(abs <= 10_000);
         // Per the invariant on self.height, this cast is infaillible.
         u16::try_from(abs).unwrap()
     }
