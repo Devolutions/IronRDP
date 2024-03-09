@@ -1,4 +1,4 @@
-use std::io;
+use std::io::{self, Read, Write};
 
 use bitflags::bitflags;
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
@@ -15,6 +15,8 @@ use crate::rdp::session_info::SaveSessionInfoPdu;
 use crate::rdp::suppress_output::SuppressOutputPdu;
 use crate::rdp::{client_info, RdpError};
 use crate::PduParsing;
+
+use super::capability_sets::CapabilitySetsError;
 
 pub const BASIC_SECURITY_HEADER_SIZE: usize = 4;
 pub const SHARE_DATA_HEADER_COMPRESSION_MASK: u8 = 0xF;
@@ -133,6 +135,7 @@ pub enum ShareControlPdu {
     ServerDemandActive(ServerDemandActive),
     ClientConfirmActive(ClientConfirmActive),
     Data(ShareDataHeader),
+    ServerDeactivateAll(ServerDeactivateAll),
 }
 
 impl ShareControlPdu {
@@ -141,6 +144,7 @@ impl ShareControlPdu {
             ShareControlPdu::ServerDemandActive(_) => "Server Demand Active PDU",
             ShareControlPdu::ClientConfirmActive(_) => "Client Confirm Active PDU",
             ShareControlPdu::Data(_) => "Data PDU",
+            ShareControlPdu::ServerDeactivateAll(_) => "Server Deactivate All PDU",
         }
     }
 }
@@ -155,6 +159,9 @@ impl ShareControlPdu {
                 ClientConfirmActive::from_buffer(&mut stream)?,
             )),
             ShareControlPduType::DataPdu => Ok(ShareControlPdu::Data(ShareDataHeader::from_buffer(&mut stream)?)),
+            ShareControlPduType::DeactivateAllPdu => Ok(ShareControlPdu::ServerDeactivateAll(
+                ServerDeactivateAll::from_buffer(&mut stream)?,
+            )),
             _ => Err(RdpError::UnexpectedShareControlPdu(share_type)),
         }
     }
@@ -163,6 +170,7 @@ impl ShareControlPdu {
             ShareControlPdu::ServerDemandActive(pdu) => pdu.to_buffer(&mut stream).map_err(RdpError::from),
             ShareControlPdu::ClientConfirmActive(pdu) => pdu.to_buffer(&mut stream).map_err(RdpError::from),
             ShareControlPdu::Data(share_data_header) => share_data_header.to_buffer(&mut stream),
+            ShareControlPdu::ServerDeactivateAll(pdu) => pdu.to_buffer(&mut stream).map_err(RdpError::from),
         }
     }
     pub fn buffer_length(&self) -> usize {
@@ -170,6 +178,7 @@ impl ShareControlPdu {
             ShareControlPdu::ServerDemandActive(pdu) => pdu.buffer_length(),
             ShareControlPdu::ClientConfirmActive(pdu) => pdu.buffer_length(),
             ShareControlPdu::Data(share_data_header) => share_data_header.buffer_length(),
+            ShareControlPdu::ServerDeactivateAll(pdu) => pdu.buffer_length(),
         }
     }
     pub fn share_header_type(&self) -> ShareControlPduType {
@@ -177,6 +186,7 @@ impl ShareControlPdu {
             ShareControlPdu::ServerDemandActive(_) => ShareControlPduType::DemandActivePdu,
             ShareControlPdu::ClientConfirmActive(_) => ShareControlPduType::ConfirmActivePdu,
             ShareControlPdu::Data(_) => ShareControlPduType::DataPdu,
+            ShareControlPdu::ServerDeactivateAll(_) => ShareControlPduType::DeactivateAllPdu,
         }
     }
 }
@@ -460,5 +470,36 @@ bitflags! {
         const COMPRESSED = 0x20;
         const AT_FRONT = 0x40;
         const FLUSHED = 0x80;
+    }
+}
+
+/// 2.2.3.1 Server Deactivate All PDU
+///
+/// [2.2.3.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/8a29971a-df3c-48da-add2-8ed9a05edc89
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerDeactivateAll;
+
+impl PduParsing for ServerDeactivateAll {
+    type Error = CapabilitySetsError;
+
+    fn from_buffer(mut stream: impl Read) -> Result<Self, Self::Error> {
+        // A 16-bit, unsigned integer. The size in bytes of the sourceDescriptor field.
+        let length_source_descriptor = stream.read_u16::<LittleEndian>()?;
+        let mut v = vec![0u8; length_source_descriptor.into()];
+        // Variable number of bytes. The source descriptor. This field SHOULD be set to 0x00.
+        stream.read_exact(v.as_mut_slice())?;
+        Ok(ServerDeactivateAll {})
+    }
+
+    fn to_buffer(&self, mut stream: impl Write) -> Result<(), Self::Error> {
+        // A 16-bit, unsigned integer. The size in bytes of the sourceDescriptor field.
+        stream.write_u16::<LittleEndian>(1)?;
+        // Variable number of bytes. The source descriptor. This field SHOULD be set to 0x00.
+        stream.write_u8(0x00)?;
+        Ok(())
+    }
+
+    fn buffer_length(&self) -> usize {
+        2 /* length_source_descriptor */ + 1 /* source_descriptor */
     }
 }

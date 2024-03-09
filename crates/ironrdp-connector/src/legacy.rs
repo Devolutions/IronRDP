@@ -2,6 +2,7 @@
 
 use std::borrow::Cow;
 
+use ironrdp_pdu::rdp::headers::ServerDeactivateAll;
 use ironrdp_pdu::write_buf::WriteBuf;
 use ironrdp_pdu::{rdp, x224, PduParsing};
 
@@ -182,7 +183,7 @@ pub fn decode_share_data(ctx: SendDataIndicationCtx<'_>) -> ConnectorResult<Shar
 
     let rdp::headers::ShareControlPdu::Data(share_data_header) = ctx.pdu else {
         return Err(general_err!(
-            "received unexpected Share Control Pdu (expected SHare Data Header)"
+            "received unexpected Share Control Pdu (expected Share Data Header)"
         ));
     };
 
@@ -193,6 +194,35 @@ pub fn decode_share_data(ctx: SendDataIndicationCtx<'_>) -> ConnectorResult<Shar
         pdu_source: ctx.pdu_source,
         pdu: share_data_header.share_data_pdu,
     })
+}
+
+pub enum IoChannelPdu {
+    Data(ShareDataCtx),
+    DeactivateAll(ServerDeactivateAll),
+}
+
+pub fn decode_io_channel(ctx: SendDataIndicationCtx<'_>) -> ConnectorResult<IoChannelPdu> {
+    let ctx = decode_share_control(ctx)?;
+
+    match ctx.pdu {
+        rdp::headers::ShareControlPdu::ServerDeactivateAll(deactivate_all) => {
+            Ok(IoChannelPdu::DeactivateAll(deactivate_all))
+        }
+        rdp::headers::ShareControlPdu::Data(share_data_header) => {
+            let share_data_ctx = ShareDataCtx {
+                initiator_id: ctx.initiator_id,
+                channel_id: ctx.channel_id,
+                share_id: ctx.share_id,
+                pdu_source: ctx.pdu_source,
+                pdu: share_data_header.share_data_pdu,
+            };
+
+            Ok(IoChannelPdu::Data(share_data_ctx))
+        }
+        _ => Err(general_err!(
+            "received unexpected Share Control Pdu (expected Share Data Header or Server Deactivate All)"
+        )),
+    }
 }
 
 impl ironrdp_error::legacy::CatchAllKind for crate::ConnectorErrorKind {

@@ -59,6 +59,9 @@ const ORIGINATOR_ID_FIELD_SIZE: usize = 2;
 
 const NULL_TERMINATOR: &str = "\0";
 
+/// [2.2.1.13.1] Server Demand Active PDU
+///
+/// [2.2.1.13.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/a07abad1-38bb-4a1a-96c9-253e3d5440df
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServerDemandActive {
     pub pdu: DemandActive,
@@ -86,6 +89,9 @@ impl PduParsing for ServerDemandActive {
     }
 }
 
+/// [2.2.1.13.2] Client Confirm Active PDU
+///
+/// [2.2.1.13.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/4c3c2710-0bf0-4c54-8e69-aff40ffcde66
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClientConfirmActive {
     /// According to [MSDN](https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/4e9722c3-ad83-43f5-af5a-529f73d88b48),
@@ -119,6 +125,9 @@ impl PduParsing for ClientConfirmActive {
     }
 }
 
+/// 2.2.1.13.1.1 Demand Active PDU Data (TS_DEMAND_ACTIVE_PDU)
+///
+/// [2.2.1.13.1.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/bd612af5-cb54-43a2-9646-438bc3ecf5db
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DemandActive {
     pub source_descriptor: String,

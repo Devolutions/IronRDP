@@ -5,7 +5,7 @@ use std::cmp;
 use std::collections::HashMap;
 
 use ironrdp_connector::legacy::SendDataIndicationCtx;
-use ironrdp_connector::GraphicsConfig;
+use ironrdp_connector::{ClientConnector, GraphicsConfig};
 use ironrdp_pdu::dvc::FieldType;
 use ironrdp_pdu::mcs::{DisconnectProviderUltimatum, DisconnectReason, McsMessage};
 use ironrdp_pdu::rdp::headers::ShareDataPdu;
@@ -29,6 +29,8 @@ pub enum ProcessorOutput {
     ResponseFrame(Vec<u8>),
     /// A graceful disconnect notification. Client should close the connection upon receiving this.
     Disconnect(DisconnectReason),
+    /// Received a [`ironrdp_pdu::rdp::headers::ServerDeactivateAll`] PDU.
+    DeactivateAll(ClientConnector),
 }
 
 pub struct Processor {
@@ -123,58 +125,63 @@ impl Processor {
     fn process_io_channel(&self, data_ctx: SendDataIndicationCtx<'_>) -> SessionResult<Vec<ProcessorOutput>> {
         debug_assert_eq!(data_ctx.channel_id, self.io_channel_id);
 
-        let ctx = ironrdp_connector::legacy::decode_share_data(data_ctx).map_err(crate::legacy::map_error)?;
+        let io_channel = ironrdp_connector::legacy::decode_io_channel(data_ctx).map_err(crate::legacy::map_error)?;
 
-        match ctx.pdu {
-            ShareDataPdu::SaveSessionInfo(session_info) => {
-                debug!("Got Session Save Info PDU: {session_info:?}");
-                Ok(Vec::new())
-            }
-            ShareDataPdu::ServerSetErrorInfo(ServerSetErrorInfoPdu(ErrorInfo::ProtocolIndependentCode(
-                ProtocolIndependentCode::None,
-            ))) => {
-                debug!("Received None server error");
-                Ok(Vec::new())
-            }
-            ShareDataPdu::ServerSetErrorInfo(ServerSetErrorInfoPdu(e)) => {
-                // This is a part of server-side graceful disconnect procedure defined
-                // in [MS-RDPBCGR].
-                //
-                // [MS-RDPBCGR]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/149070b0-ecec-4c20-af03-934bbc48adb8
-                let graceful_disconnect = error_info_to_graceful_disconnect_reason(&e);
+        match io_channel {
+            ironrdp_connector::legacy::IoChannelPdu::Data(ctx) => {
+                match ctx.pdu {
+                    ShareDataPdu::SaveSessionInfo(session_info) => {
+                        debug!("Got Session Save Info PDU: {session_info:?}");
+                        Ok(Vec::new())
+                    }
+                    ShareDataPdu::ServerSetErrorInfo(ServerSetErrorInfoPdu(ErrorInfo::ProtocolIndependentCode(
+                        ProtocolIndependentCode::None,
+                    ))) => {
+                        debug!("Received None server error");
+                        Ok(Vec::new())
+                    }
+                    ShareDataPdu::ServerSetErrorInfo(ServerSetErrorInfoPdu(e)) => {
+                        // This is a part of server-side graceful disconnect procedure defined
+                        // in [MS-RDPBCGR].
+                        //
+                        // [MS-RDPBCGR]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/149070b0-ecec-4c20-af03-934bbc48adb8
+                        let graceful_disconnect = error_info_to_graceful_disconnect_reason(&e);
 
-                if let Some(reason) = graceful_disconnect {
-                    debug!("Received server-side graceful disconnect request: {reason}");
+                        if let Some(reason) = graceful_disconnect {
+                            debug!("Received server-side graceful disconnect request: {reason}");
 
-                    Ok(vec![ProcessorOutput::Disconnect(reason)])
-                } else {
-                    Err(reason_err!("ServerSetErrorInfo", "{}", e.description()))
+                            Ok(vec![ProcessorOutput::Disconnect(reason)])
+                        } else {
+                            Err(reason_err!("ServerSetErrorInfo", "{}", e.description()))
+                        }
+                    }
+                    ShareDataPdu::ShutdownDenied => {
+                        debug!("ShutdownDenied received, session will be closed");
+
+                        // As defined in [MS-RDPBCGR], when `ShareDataPdu::ShutdownDenied` is received, we
+                        // need to send a disconnect ultimatum to the server if we want to proceed with the
+                        // session shutdown.
+                        //
+                        // [MS-RDPBCGR]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/27915739-8f77-487e-9927-55008af7fd68
+                        let ultimatum = McsMessage::DisconnectProviderUltimatum(
+                            DisconnectProviderUltimatum::from_reason(DisconnectReason::UserRequested),
+                        );
+
+                        let encoded_pdu = ironrdp_pdu::encode_vec(&ultimatum).map_err(SessionError::pdu);
+
+                        Ok(vec![
+                            ProcessorOutput::ResponseFrame(encoded_pdu?),
+                            ProcessorOutput::Disconnect(DisconnectReason::UserRequested),
+                        ])
+                    }
+                    _ => Err(reason_err!(
+                        "IO channel",
+                        "unexpected PDU: expected Session Save Info PDU, got: {:?}",
+                        ctx.pdu.as_short_name()
+                    )),
                 }
             }
-            ShareDataPdu::ShutdownDenied => {
-                debug!("ShutdownDenied received, session will be closed");
-
-                // As defined in [MS-RDPBCGR], when `ShareDataPdu::ShutdownDenied` is received, we
-                // need to send a disconnect ultimatum to the server if we want to proceed with the
-                // session shutdown.
-                //
-                // [MS-RDPBCGR]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/27915739-8f77-487e-9927-55008af7fd68
-                let ultimatum = McsMessage::DisconnectProviderUltimatum(DisconnectProviderUltimatum::from_reason(
-                    DisconnectReason::UserRequested,
-                ));
-
-                let encoded_pdu = ironrdp_pdu::encode_vec(&ultimatum).map_err(SessionError::pdu);
-
-                Ok(vec![
-                    ProcessorOutput::ResponseFrame(encoded_pdu?),
-                    ProcessorOutput::Disconnect(DisconnectReason::UserRequested),
-                ])
-            }
-            _ => Err(reason_err!(
-                "IO channel",
-                "unexpected PDU: expected Session Save Info PDU, got: {:?}",
-                ctx.pdu.as_short_name()
-            )),
+            ironrdp_connector::legacy::IoChannelPdu::DeactivateAll(_) => todo!(),
         }
     }
 
