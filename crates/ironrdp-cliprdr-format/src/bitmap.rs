@@ -703,7 +703,12 @@ fn decode_png(mut input: &[u8]) -> Result<(png::OutputInfo, Vec<u8>), BitmapErro
     decoder.set_transformations(png::Transformations::ALPHA | png::Transformations::EXPAND);
 
     let mut reader = decoder.read_info()?;
-    let mut buffer = vec![0; reader.output_buffer_size()];
+    let output_buffer_len = reader.output_buffer_size();
+
+    // Prevent allocation of huge buffers.
+    ensure(output_buffer_len <= MAX_BUFFER_SIZE).ok_or(BitmapError::BufferTooBig)?;
+
+    let mut buffer = vec![0; output_buffer_len];
     let info = reader.next_frame(&mut buffer)?;
     buffer.truncate(info.buffer_size());
 
