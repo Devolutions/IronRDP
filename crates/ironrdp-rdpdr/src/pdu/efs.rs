@@ -1215,12 +1215,12 @@ where
     T::Error: ironrdp_error::Source,
 {
     fn headerless_size() -> usize {
-        size_of::<u32>() * 3 // OutputBufferLength, InputBufferLength, IoControlCode
+        size_of::<u32>() * 3 + 20 // OutputBufferLength, InputBufferLength, IoControlCode, Padding (20 bytes)
     }
 
     pub fn decode(header: DeviceIoRequest, src: &mut ReadCursor<'_>) -> PduResult<Self> {
         // Ensure the input size includes an additional 20 bytes for padding
-        ensure_size!(ctx: "DeviceControlRequest", in: src, size: Self::headerless_size() + 20);
+        ensure_size!(ctx: "DeviceControlRequest", in: src, size: Self::headerless_size());
         let output_buffer_length = src.read_u32();
         let input_buffer_length = src.read_u32();
         let io_control_code = T::try_from(src.read_u32()).map_err(|e| {
