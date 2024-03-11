@@ -45,6 +45,7 @@ pub struct Processor {
     drdynvc_initialized: bool,
     graphics_config: Option<GraphicsConfig>,
     graphics_handler: Option<Box<dyn GfxHandler + Send>>,
+    connection_activation: ConnectionActivationSequence,
 }
 
 impl Processor {
@@ -54,6 +55,7 @@ impl Processor {
         io_channel_id: u16,
         graphics_config: Option<GraphicsConfig>,
         graphics_handler: Option<Box<dyn GfxHandler + Send>>,
+        connection_activation: ConnectionActivationSequence,
     ) -> Self {
         let drdynvc_channel_id = static_channels.iter().find_map(|(type_id, channel)| {
             if channel.is_drdynvc() {
@@ -73,6 +75,7 @@ impl Processor {
             drdynvc_initialized: false,
             graphics_config,
             graphics_handler,
+            connection_activation,
         }
     }
 
@@ -182,7 +185,9 @@ impl Processor {
                     )),
                 }
             }
-            ironrdp_connector::legacy::IoChannelPdu::DeactivateAll(_) => todo!(),
+            ironrdp_connector::legacy::IoChannelPdu::DeactivateAll(_) => Ok(vec![ProcessorOutput::DeactivateAll(
+                self.connection_activation.reset_clone(),
+            )]),
         }
     }
 
