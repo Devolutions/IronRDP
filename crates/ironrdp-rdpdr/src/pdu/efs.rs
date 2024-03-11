@@ -1219,7 +1219,8 @@ where
     }
 
     pub fn decode(header: DeviceIoRequest, src: &mut ReadCursor<'_>) -> PduResult<Self> {
-        ensure_size!(ctx: "DeviceControlRequest", in: src, size: Self::headerless_size());
+        // Ensure the input size includes an additional 20 bytes for padding
+        ensure_size!(ctx: "DeviceControlRequest", in: src, size: Self::headerless_size() + 20);
         let output_buffer_length = src.read_u32();
         let input_buffer_length = src.read_u32();
         let io_control_code = T::try_from(src.read_u32()).map_err(|e| {
