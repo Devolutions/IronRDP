@@ -217,6 +217,8 @@ pub enum ServerLicenseError {
     InvalidRsaPublicKeyLength,
     #[error("invalid RSA public key data length")]
     InvalidRsaPublicKeyDataLength,
+    #[error("invalid RSA public key bit length")]
+    InvalidRsaPublicKeyBitLength,
     #[error("invalid License Header security flags")]
     InvalidSecurityFlags,
     #[error("the server returned unexpected error: {0:?}")]
