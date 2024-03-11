@@ -11,6 +11,7 @@ pub mod legacy;
 
 mod channel_connection;
 mod connection;
+pub mod connection_activation;
 mod connection_finalization;
 pub mod credssp;
 mod license_exchange;

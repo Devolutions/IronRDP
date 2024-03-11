@@ -1,20 +1,17 @@
 use std::mem;
 use std::net::SocketAddr;
 
-use ironrdp_pdu::rdp::capability_sets::CapabilitySet;
 use ironrdp_pdu::rdp::client_info::{PerformanceFlags, TimezoneInfo};
 use ironrdp_pdu::write_buf::WriteBuf;
 use ironrdp_pdu::{gcc, mcs, nego, rdp, PduHint};
 use ironrdp_svc::{StaticChannelSet, StaticVirtualChannel, SvcClientProcessor};
 
 use crate::channel_connection::{ChannelConnectionSequence, ChannelConnectionState};
-use crate::connection_finalization::ConnectionFinalizationSequence;
+use crate::connection_activation::{ConnectionActivationSequence, ConnectionActivationState};
 use crate::license_exchange::LicenseExchangeSequence;
 use crate::{
     legacy, Config, ConnectorError, ConnectorErrorExt as _, ConnectorResult, DesktopSize, Sequence, State, Written,
 };
-
-const DEFAULT_POINTER_CACHE_SIZE: u16 = 32;
 
 #[derive(Debug)]
 #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
@@ -73,14 +70,10 @@ pub enum ClientConnectorState {
         user_channel_id: u16,
     },
     CapabilitiesExchange {
-        io_channel_id: u16,
-        user_channel_id: u16,
+        connection_activation: ConnectionActivationSequence,
     },
     ConnectionFinalization {
-        io_channel_id: u16,
-        user_channel_id: u16,
-        desktop_size: DesktopSize,
-        connection_finalization: ConnectionFinalizationSequence,
+        connection_activation: ConnectionActivationSequence,
     },
     Connected {
         result: ConnectionResult,
@@ -102,8 +95,12 @@ impl State for ClientConnectorState {
             Self::ConnectTimeAutoDetection { .. } => "ConnectTimeAutoDetection",
             Self::LicensingExchange { .. } => "LicensingExchange",
             Self::MultitransportBootstrapping { .. } => "MultitransportBootstrapping",
-            Self::CapabilitiesExchange { .. } => "CapabilitiesExchange",
-            Self::ConnectionFinalization { .. } => "ConnectionFinalization",
+            Self::CapabilitiesExchange {
+                connection_activation, ..
+            } => connection_activation.state().name(),
+            Self::ConnectionFinalization {
+                connection_activation, ..
+            } => connection_activation.state().name(),
             Self::Connected { .. } => "Connected",
         }
     }
@@ -201,11 +198,12 @@ impl Sequence for ClientConnector {
             ClientConnectorState::ConnectTimeAutoDetection { .. } => None,
             ClientConnectorState::LicensingExchange { license_exchange, .. } => license_exchange.next_pdu_hint(),
             ClientConnectorState::MultitransportBootstrapping { .. } => None,
-            ClientConnectorState::CapabilitiesExchange { .. } => Some(&ironrdp_pdu::X224_HINT),
+            ClientConnectorState::CapabilitiesExchange {
+                connection_activation, ..
+            } => connection_activation.next_pdu_hint(),
             ClientConnectorState::ConnectionFinalization {
-                connection_finalization,
-                ..
-            } => connection_finalization.next_pdu_hint(),
+                connection_activation, ..
+            } => connection_activation.next_pdu_hint(),
             ClientConnectorState::Connected { .. } => None,
         }
     }
@@ -511,120 +509,57 @@ impl Sequence for ClientConnector {
             } => (
                 Written::Nothing,
                 ClientConnectorState::CapabilitiesExchange {
-                    io_channel_id,
-                    user_channel_id,
+                    connection_activation: ConnectionActivationSequence::new(
+                        self.config.clone(),
+                        io_channel_id,
+                        user_channel_id,
+                    ),
                 },
             ),
 
             //== Capabilities Exchange ==/
             // The server sends the set of capabilities it supports to the client.
             ClientConnectorState::CapabilitiesExchange {
-                io_channel_id,
-                user_channel_id,
+                mut connection_activation,
             } => {
-                debug!("Capabilities Exchange");
-
-                let send_data_indication_ctx = legacy::decode_send_data_indication(input)?;
-                let share_control_ctx = legacy::decode_share_control(send_data_indication_ctx)?;
-
-                debug!(message = ?share_control_ctx.pdu, "Received");
-
-                if share_control_ctx.channel_id != io_channel_id {
-                    warn!(
-                        io_channel_id,
-                        share_control_ctx.channel_id, "Unexpected channel ID for received Share Control Pdu"
-                    );
+                let written = connection_activation.step(input, output)?;
+                match connection_activation.state {
+                    ConnectionActivationState::ConnectionFinalization { .. } => (
+                        written,
+                        ClientConnectorState::ConnectionFinalization { connection_activation },
+                    ),
+                    _ => return Err(general_err!("invalid state (this is a bug)")),
                 }
-
-                let capability_sets = if let rdp::headers::ShareControlPdu::ServerDemandActive(server_demand_active) =
-                    share_control_ctx.pdu
-                {
-                    server_demand_active.pdu.capability_sets
-                } else {
-                    return Err(general_err!(
-                        "unexpected Share Control Pdu (expected ServerDemandActive)",
-                    ));
-                };
-
-                for c in &capability_sets {
-                    if let rdp::capability_sets::CapabilitySet::General(g) = c {
-                        if g.protocol_version != rdp::capability_sets::PROTOCOL_VER {
-                            warn!(version = g.protocol_version, "Unexpected protocol version");
-                        }
-                        break;
-                    }
-                }
-
-                let desktop_size = capability_sets
-                    .iter()
-                    .find_map(|c| match c {
-                        rdp::capability_sets::CapabilitySet::Bitmap(b) => Some(DesktopSize {
-                            width: b.desktop_width,
-                            height: b.desktop_height,
-                        }),
-                        _ => None,
-                    })
-                    .unwrap_or(DesktopSize {
-                        width: self.config.desktop_size.width,
-                        height: self.config.desktop_size.height,
-                    });
-
-                let client_confirm_active = rdp::headers::ShareControlPdu::ClientConfirmActive(
-                    create_client_confirm_active(&self.config, capability_sets),
-                );
-
-                debug!(message = ?client_confirm_active, "Send");
-
-                let written = legacy::encode_share_control(
-                    user_channel_id,
-                    io_channel_id,
-                    share_control_ctx.share_id,
-                    client_confirm_active,
-                    output,
-                )?;
-
-                (
-                    Written::from_size(written)?,
-                    ClientConnectorState::ConnectionFinalization {
-                        io_channel_id,
-                        user_channel_id,
-                        desktop_size,
-                        connection_finalization: ConnectionFinalizationSequence::new(io_channel_id, user_channel_id),
-                    },
-                )
             }
 
             //== Connection Finalization ==//
             // Client and server exchange a few PDUs in order to finalize the connection.
             // Client may send PDUs one after the other without waiting for a response in order to speed up the process.
             ClientConnectorState::ConnectionFinalization {
-                io_channel_id,
-                user_channel_id,
-                desktop_size,
-                mut connection_finalization,
+                mut connection_activation,
             } => {
-                debug!("Connection Finalization");
+                let written = connection_activation.step(input, output)?;
 
-                let written = connection_finalization.step(input, output)?;
-
-                let next_state = if connection_finalization.state.is_terminal() {
-                    ClientConnectorState::Connected {
-                        result: ConnectionResult {
+                let next_state = if !connection_activation.state.is_terminal() {
+                    ClientConnectorState::ConnectionFinalization { connection_activation }
+                } else {
+                    match connection_activation.state {
+                        ConnectionActivationState::Finalized {
                             io_channel_id,
                             user_channel_id,
-                            static_channels: mem::take(&mut self.static_channels),
                             desktop_size,
-                            graphics_config: self.config.graphics.clone(),
-                            no_server_pointer: self.config.no_server_pointer,
-                            pointer_software_rendering: self.config.pointer_software_rendering,
+                        } => ClientConnectorState::Connected {
+                            result: ConnectionResult {
+                                io_channel_id,
+                                user_channel_id,
+                                static_channels: mem::take(&mut self.static_channels),
+                                desktop_size,
+                                graphics_config: self.config.graphics.clone(),
+                                no_server_pointer: self.config.no_server_pointer,
+                                pointer_software_rendering: self.config.pointer_software_rendering,
+                            },
                         },
-                    }
-                } else {
-                    ClientConnectorState::ConnectionFinalization {
-                        io_channel_id,
-                        user_channel_id,
-                        desktop_size,
-                        connection_finalization,
+                        _ => return Err(general_err!("invalid state (this is a bug)")),
                     }
                 };
 
@@ -802,133 +737,5 @@ fn create_client_info_pdu(config: &Config, routing_addr: &SocketAddr) -> rdp::Cl
     ClientInfoPdu {
         security_header,
         client_info,
-    }
-}
-
-fn create_client_confirm_active(
-    config: &Config,
-    mut server_capability_sets: Vec<CapabilitySet>,
-) -> rdp::capability_sets::ClientConfirmActive {
-    use ironrdp_pdu::rdp::capability_sets::*;
-
-    server_capability_sets.retain(|capability_set| matches!(capability_set, CapabilitySet::MultiFragmentUpdate(_)));
-
-    let lossy_bitmap_compression = config
-        .bitmap
-        .as_ref()
-        .map(|bitmap| bitmap.lossy_compression)
-        .unwrap_or(false);
-
-    let drawing_flags = if lossy_bitmap_compression {
-        BitmapDrawingFlags::ALLOW_SKIP_ALPHA
-            | BitmapDrawingFlags::ALLOW_DYNAMIC_COLOR_FIDELITY
-            | BitmapDrawingFlags::ALLOW_COLOR_SUBSAMPLING
-    } else {
-        BitmapDrawingFlags::ALLOW_SKIP_ALPHA
-    };
-
-    server_capability_sets.extend_from_slice(&[
-        CapabilitySet::General(General {
-            major_platform_type: config.platform,
-            extra_flags: GeneralExtraFlags::FASTPATH_OUTPUT_SUPPORTED | GeneralExtraFlags::NO_BITMAP_COMPRESSION_HDR,
-            ..Default::default()
-        }),
-        CapabilitySet::Bitmap(Bitmap {
-            pref_bits_per_pix: 32,
-            desktop_width: config.desktop_size.width,
-            desktop_height: config.desktop_size.height,
-            desktop_resize_flag: false,
-            drawing_flags,
-        }),
-        CapabilitySet::Order(Order::new(
-            OrderFlags::NEGOTIATE_ORDER_SUPPORT | OrderFlags::ZERO_BOUNDS_DELTAS_SUPPORT,
-            OrderSupportExFlags::empty(),
-            0,
-            0,
-        )),
-        CapabilitySet::BitmapCache(BitmapCache {
-            caches: [CacheEntry {
-                entries: 0,
-                max_cell_size: 0,
-            }; BITMAP_CACHE_ENTRIES_NUM],
-        }),
-        CapabilitySet::Input(Input {
-            input_flags: InputFlags::all(),
-            keyboard_layout: 0,
-            keyboard_type: Some(config.keyboard_type),
-            keyboard_subtype: config.keyboard_subtype,
-            keyboard_function_key: config.keyboard_functional_keys_count,
-            keyboard_ime_filename: config.ime_file_name.clone(),
-        }),
-        CapabilitySet::Pointer(Pointer {
-            // Pointer cache should be set to non-zero value to enable client-side pointer rendering.
-            color_pointer_cache_size: DEFAULT_POINTER_CACHE_SIZE,
-            pointer_cache_size: DEFAULT_POINTER_CACHE_SIZE,
-        }),
-        CapabilitySet::Brush(Brush {
-            support_level: SupportLevel::Default,
-        }),
-        CapabilitySet::GlyphCache(GlyphCache {
-            glyph_cache: [CacheDefinition {
-                entries: 0,
-                max_cell_size: 0,
-            }; GLYPH_CACHE_NUM],
-            frag_cache: CacheDefinition {
-                entries: 0,
-                max_cell_size: 0,
-            },
-            glyph_support_level: GlyphSupportLevel::None,
-        }),
-        CapabilitySet::OffscreenBitmapCache(OffscreenBitmapCache {
-            is_supported: false,
-            cache_size: 0,
-            cache_entries: 0,
-        }),
-        CapabilitySet::VirtualChannel(VirtualChannel {
-            flags: VirtualChannelFlags::NO_COMPRESSION,
-            chunk_size: Some(0), // ignored
-        }),
-        CapabilitySet::Sound(Sound {
-            flags: SoundFlags::empty(),
-        }),
-        CapabilitySet::LargePointer(LargePointer {
-            // Setting `LargePointerSupportFlags::UP_TO_384X384_PIXELS` allows server to send
-            // `TS_FP_LARGEPOINTERATTRIBUTE` update messages, which are required for client-side
-            // rendering of pointers bigger than 96x96 pixels.
-            flags: LargePointerSupportFlags::UP_TO_384X384_PIXELS,
-        }),
-        CapabilitySet::SurfaceCommands(SurfaceCommands {
-            flags: CmdFlags::SET_SURFACE_BITS | CmdFlags::STREAM_SURFACE_BITS | CmdFlags::FRAME_MARKER,
-        }),
-        CapabilitySet::BitmapCodecs(BitmapCodecs(vec![Codec {
-            id: 0x03, // RemoteFX
-            property: CodecProperty::RemoteFx(RemoteFxContainer::ClientContainer(RfxClientCapsContainer {
-                capture_flags: CaptureFlags::empty(),
-                caps_data: RfxCaps(RfxCapset(vec![RfxICap {
-                    flags: RfxICapFlags::empty(),
-                    entropy_bits: EntropyBits::Rlgr3,
-                }])),
-            })),
-        }])),
-        CapabilitySet::FrameAcknowledge(FrameAcknowledge {
-            max_unacknowledged_frame_count: 2,
-        }),
-    ]);
-
-    if !server_capability_sets
-        .iter()
-        .any(|c| matches!(&c, CapabilitySet::MultiFragmentUpdate(_)))
-    {
-        server_capability_sets.push(CapabilitySet::MultiFragmentUpdate(MultifragmentUpdate {
-            max_request_size: 1024,
-        }));
-    }
-
-    ClientConfirmActive {
-        originator_id: SERVER_CHANNEL_ID,
-        pdu: DemandActive {
-            source_descriptor: "IRONRDP".to_owned(),
-            capability_sets: server_capability_sets,
-        },
     }
 }

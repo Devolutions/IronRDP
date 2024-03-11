@@ -280,6 +280,7 @@ async fn active_session(
                 ActiveStageOutput::PointerBitmap(_) => {
                     // Not applicable, because we use the software cursor rendering.
                 }
+                ActiveStageOutput::DeactivateAll(_) => todo!(),
                 ActiveStageOutput::Terminate(reason) => break 'outer reason,
             }
         }

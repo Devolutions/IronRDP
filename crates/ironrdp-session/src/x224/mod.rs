@@ -4,8 +4,9 @@ mod gfx;
 use std::cmp;
 use std::collections::HashMap;
 
+use ironrdp_connector::connection_activation::ConnectionActivationSequence;
 use ironrdp_connector::legacy::SendDataIndicationCtx;
-use ironrdp_connector::{ClientConnector, GraphicsConfig};
+use ironrdp_connector::GraphicsConfig;
 use ironrdp_pdu::dvc::FieldType;
 use ironrdp_pdu::mcs::{DisconnectProviderUltimatum, DisconnectReason, McsMessage};
 use ironrdp_pdu::rdp::headers::ShareDataPdu;
@@ -30,7 +31,7 @@ pub enum ProcessorOutput {
     /// A graceful disconnect notification. Client should close the connection upon receiving this.
     Disconnect(DisconnectReason),
     /// Received a [`ironrdp_pdu::rdp::headers::ServerDeactivateAll`] PDU.
-    DeactivateAll(ClientConnector),
+    DeactivateAll(ConnectionActivationSequence),
 }
 
 pub struct Processor {

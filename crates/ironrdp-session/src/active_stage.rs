@@ -1,5 +1,6 @@
 use std::rc::Rc;
 
+use ironrdp_connector::connection_activation::ConnectionActivationSequence;
 use ironrdp_connector::ConnectionResult;
 use ironrdp_graphics::pointer::DecodedPointer;
 use ironrdp_pdu::geometry::InclusiveRectangle;
@@ -201,6 +202,7 @@ pub enum ActiveStageOutput {
     PointerPosition { x: u16, y: u16 },
     PointerBitmap(Rc<DecodedPointer>),
     Terminate(GracefulDisconnectReason),
+    DeactivateAll(ConnectionActivationSequence),
 }
 
 impl TryFrom<x224::ProcessorOutput> for ActiveStageOutput {
@@ -218,6 +220,7 @@ impl TryFrom<x224::ProcessorOutput> for ActiveStageOutput {
 
                 Ok(Self::Terminate(reason))
             }
+            x224::ProcessorOutput::DeactivateAll(cas) => Ok(Self::DeactivateAll(cas)),
         }
     }
 }
