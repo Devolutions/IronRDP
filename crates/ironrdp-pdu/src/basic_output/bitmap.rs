@@ -155,6 +155,14 @@ impl<'de> PduDecode<'de> for BitmapData<'de> {
         let (compressed_data_header, buffer_length) = if compression_flags.contains(Compression::BITMAP_COMPRESSION)
             && !compression_flags.contains(Compression::NO_BITMAP_COMPRESSION_HDR)
         {
+            // Check if encoded_bitmap_data_length is at least CompressedDataHeader::ENCODED_SIZE
+            if encoded_bitmap_data_length < CompressedDataHeader::ENCODED_SIZE as u16 {
+                return Err(invalid_message_err!(
+                    "cbCompEncodedBitmapDataLength",
+                    "length is less than CompressedDataHeader::ENCODED_SIZE"
+                ));
+            }
+
             let buffer_length = encoded_bitmap_data_length as usize - CompressedDataHeader::ENCODED_SIZE;
             (Some(CompressedDataHeader::decode(src)?), buffer_length)
         } else {

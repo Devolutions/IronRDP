@@ -66,6 +66,9 @@ impl ColorPointerAttribute<'_> {
         const XOR_MASK_SIZE_FIELD: &str = "lengthXorMask";
 
         let check_mask = |mask: &[u8], field: &'static str| {
+            if pointer_height == 0 {
+                return Err(invalid_message_err!(field, "pointer height cannot be zero"));
+            }
             if large_ptr && (mask.len() > u32::MAX as usize) {
                 return Err(invalid_message_err!(field, "pointer mask is too big for u32 size"));
             }
@@ -130,7 +133,8 @@ impl<'a> PduDecode<'a> for ColorPointerAttribute<'a> {
         let length_and_mask = src.read_u16();
         let length_xor_mask = src.read_u16();
 
-        let expected_masks_size = (length_and_mask + length_xor_mask) as usize;
+        // Convert to usize during the addition to prevent overflow and match expected type
+        let expected_masks_size = (length_and_mask as usize) + (length_xor_mask as usize);
         ensure_size!(in: src, size: expected_masks_size);
 
         let xor_mask = src.read_slice(length_xor_mask as usize);
@@ -287,14 +291,15 @@ impl<'a> PduDecode<'a> for LargePointerAttribute<'a> {
         let hot_spot = Point16::decode(src)?;
         let width = src.read_u16();
         let height = src.read_u16();
-        let length_and_mask = src.read_u32();
-        let length_xor_mask = src.read_u32();
+        // Convert to usize to prevent overflow during addition
+        let length_and_mask = src.read_u32() as usize;
+        let length_xor_mask = src.read_u32() as usize;
 
-        let expected_masks_size = (length_and_mask + length_xor_mask) as usize;
+        let expected_masks_size = length_and_mask + length_xor_mask;
         ensure_size!(in: src, size: expected_masks_size);
 
-        let xor_mask = src.read_slice(length_xor_mask as usize);
-        let and_mask = src.read_slice(length_and_mask as usize);
+        let xor_mask = src.read_slice(length_xor_mask);
+        let and_mask = src.read_slice(length_and_mask);
 
         ColorPointerAttribute::check_masks_alignment(and_mask, xor_mask, height, true)?;
 

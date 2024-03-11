@@ -45,7 +45,18 @@ pub fn pdu_decode(data: &[u8]) {
 
     let _ = decode::<fast_path::FastPathHeader>(data);
     let _ = decode::<fast_path::FastPathUpdatePdu<'_>>(data);
+    let _ = fast_path::FastPathUpdate::decode_with_code(data, fast_path::UpdateCode::Orders);
+    let _ = fast_path::FastPathUpdate::decode_with_code(data, fast_path::UpdateCode::Bitmap);
+    let _ = fast_path::FastPathUpdate::decode_with_code(data, fast_path::UpdateCode::Palette);
+    let _ = fast_path::FastPathUpdate::decode_with_code(data, fast_path::UpdateCode::Synchronize);
     let _ = fast_path::FastPathUpdate::decode_with_code(data, fast_path::UpdateCode::SurfaceCommands);
+    let _ = fast_path::FastPathUpdate::decode_with_code(data, fast_path::UpdateCode::HiddenPointer);
+    let _ = fast_path::FastPathUpdate::decode_with_code(data, fast_path::UpdateCode::DefaultPointer);
+    let _ = fast_path::FastPathUpdate::decode_with_code(data, fast_path::UpdateCode::PositionPointer);
+    let _ = fast_path::FastPathUpdate::decode_with_code(data, fast_path::UpdateCode::ColorPointer);
+    let _ = fast_path::FastPathUpdate::decode_with_code(data, fast_path::UpdateCode::CachedPointer);
+    let _ = fast_path::FastPathUpdate::decode_with_code(data, fast_path::UpdateCode::NewPointer);
+    let _ = fast_path::FastPathUpdate::decode_with_code(data, fast_path::UpdateCode::LargePointer);
 
     let _ = decode::<surface_commands::SurfaceCommand<'_>>(data);
     let _ = decode::<surface_commands::SurfaceBitsPdu<'_>>(data);
