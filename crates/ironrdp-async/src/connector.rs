@@ -2,8 +2,8 @@ use ironrdp_connector::credssp::{CredsspProcessGenerator, CredsspSequence, Kerbe
 use ironrdp_connector::sspi::credssp::ClientState;
 use ironrdp_connector::sspi::generator::GeneratorState;
 use ironrdp_connector::{
-    custom_err, ClientConnector, ClientConnectorState, ConnectionResult, ConnectorError, ConnectorResult,
-    Sequence as _, ServerName, State as _,
+    custom_err, ClientConnector, ClientConnectorState, ConnectionResult, ConnectorError, ConnectorResult, Sequence,
+    ServerName, State as _, Written,
 };
 use ironrdp_pdu::write_buf::WriteBuf;
 
@@ -187,10 +187,23 @@ where
     S: FramedWrite + FramedRead,
 {
     buf.clear();
+    let written = single_connect_step_read(framed, connector, buf).await?;
+    single_connect_step_write(framed, buf, written).await
+}
 
-    let written = if let Some(next_pdu_hint) = connector.next_pdu_hint() {
+pub async fn single_connect_step_read<S>(
+    framed: &mut Framed<S>,
+    connector: &mut dyn Sequence,
+    buf: &mut WriteBuf,
+) -> ConnectorResult<Written>
+where
+    S: FramedRead,
+{
+    buf.clear();
+
+    if let Some(next_pdu_hint) = connector.next_pdu_hint() {
         debug!(
-            connector.state = connector.state.name(),
+            connector.state = connector.state().name(),
             hint = ?next_pdu_hint,
             "Wait for PDU"
         );
@@ -202,11 +215,20 @@ where
 
         trace!(length = pdu.len(), "PDU received");
 
-        connector.step(&pdu, buf)?
+        connector.step(&pdu, buf)
     } else {
-        connector.step_no_input(buf)?
-    };
+        connector.step_no_input(buf)
+    }
+}
 
+async fn single_connect_step_write<S>(
+    framed: &mut Framed<S>,
+    buf: &mut WriteBuf,
+    written: Written,
+) -> ConnectorResult<()>
+where
+    S: FramedWrite,
+{
     if let Some(response_len) = written.size() {
         debug_assert_eq!(buf.filled_len(), response_len);
         let response = buf.filled();

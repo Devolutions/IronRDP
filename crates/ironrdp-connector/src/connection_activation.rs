@@ -32,6 +32,37 @@ impl ConnectionActivationSequence {
             config,
         }
     }
+
+    pub fn reset_clone(&self) -> Self {
+        self.clone().reset()
+    }
+
+    fn reset(mut self) -> Self {
+        match &self.state {
+            ConnectionActivationState::CapabilitiesExchange {
+                io_channel_id,
+                user_channel_id,
+            }
+            | ConnectionActivationState::ConnectionFinalization {
+                io_channel_id,
+                user_channel_id,
+                ..
+            }
+            | ConnectionActivationState::Finalized {
+                io_channel_id,
+                user_channel_id,
+                ..
+            } => {
+                self.state = ConnectionActivationState::CapabilitiesExchange {
+                    io_channel_id: *io_channel_id,
+                    user_channel_id: *user_channel_id,
+                };
+
+                self
+            }
+            ConnectionActivationState::Consumed => self,
+        }
+    }
 }
 
 impl Sequence for ConnectionActivationSequence {
@@ -53,12 +84,10 @@ impl Sequence for ConnectionActivationSequence {
 
     fn step(&mut self, input: &[u8], output: &mut ironrdp_pdu::write_buf::WriteBuf) -> ConnectorResult<Written> {
         let (written, next_state) = match mem::take(&mut self.state) {
-            // Invalid state
-            ConnectionActivationState::Consumed => {
-                return Err(general_err!("connector sequence state is consumed (this is a bug)"))
-            }
-            ConnectionActivationState::Finalized { .. } => {
-                return Err(general_err!("connector sequence state is finalized (this is a bug)"))
+            ConnectionActivationState::Consumed | ConnectionActivationState::Finalized { .. } => {
+                return Err(general_err!(
+                    "connector sequence state is finalized or consumed (this is a bug)"
+                ));
             }
             ConnectionActivationState::CapabilitiesExchange {
                 io_channel_id,

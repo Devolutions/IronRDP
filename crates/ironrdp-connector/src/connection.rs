@@ -23,6 +23,7 @@ pub struct ConnectionResult {
     pub graphics_config: Option<crate::GraphicsConfig>,
     pub no_server_pointer: bool,
     pub pointer_software_rendering: bool,
+    pub connection_activation: ConnectionActivationSequence,
 }
 
 #[derive(Default, Debug)]
@@ -557,6 +558,7 @@ impl Sequence for ClientConnector {
                                 graphics_config: self.config.graphics.clone(),
                                 no_server_pointer: self.config.no_server_pointer,
                                 pointer_software_rendering: self.config.pointer_software_rendering,
+                                connection_activation,
                             },
                         },
                         _ => return Err(general_err!("invalid state (this is a bug)")),

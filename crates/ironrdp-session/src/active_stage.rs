@@ -29,6 +29,7 @@ impl ActiveStage {
             connection_result.io_channel_id,
             connection_result.graphics_config,
             graphics_handler,
+            connection_result.connection_activation,
         );
 
         let fast_path_processor = fast_path::ProcessorBuilder {
