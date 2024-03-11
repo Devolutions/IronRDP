@@ -40,3 +40,10 @@ name = "cliprdr_format"
 path = "fuzz_targets/cliprdr_format.rs"
 test = false
 doc = false
+
+[[bin]]
+name = "channel_processing"
+path = "fuzz_targets/channel_processing.rs"
+test = false
+doc = false
+bench = false
