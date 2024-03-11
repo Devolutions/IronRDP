@@ -161,7 +161,7 @@ impl PduParsing for RsaPublicKey {
         }
 
         let datalen = stream.read_u32::<LittleEndian>()?;
-        if datalen != (bitlen / 8) - 1 {
+        if bitlen < 8 || datalen != (bitlen / 8) - 1 {
             return Err(ServerLicenseError::InvalidRsaPublicKeyDataLength);
         }
 
