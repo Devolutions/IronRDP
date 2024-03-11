@@ -1220,7 +1220,6 @@ where
         + 20; // Additional 20 bytes for padding
 
     pub fn decode(header: DeviceIoRequest, src: &mut ReadCursor<'_>) -> PduResult<Self> {
-        // Ensure the input size includes an additional 20 bytes for padding
         ensure_size!(ctx: "DeviceControlRequest", in: src, size: Self::HEADERLESS_SIZE);
         let output_buffer_length = src.read_u32();
         let input_buffer_length = src.read_u32();
