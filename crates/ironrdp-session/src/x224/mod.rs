@@ -30,7 +30,10 @@ pub enum ProcessorOutput {
     ResponseFrame(Vec<u8>),
     /// A graceful disconnect notification. Client should close the connection upon receiving this.
     Disconnect(DisconnectReason),
-    /// Received a [`ironrdp_pdu::rdp::headers::ServerDeactivateAll`] PDU.
+    /// Received a [`ironrdp_pdu::rdp::headers::ServerDeactivateAll`] PDU. Client should execute the
+    /// [Deactivation-Reactivation Sequence].
+    ///
+    /// [Deactivation-Reactivation Sequence]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/dfc234ce-481a-4674-9a5d-2a7bafb14432
     DeactivateAll(ConnectionActivationSequence),
 }
 

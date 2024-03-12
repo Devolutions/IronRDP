@@ -76,6 +76,11 @@ pub struct BlockHeader {
 }
 
 impl BlockHeader {
+    pub fn from_buffer_consume(buffer: &mut &[u8]) -> Result<Self, RfxError> {
+        let ty = BlockType::from_buffer(buffer)?;
+        Self::from_buffer_consume_with_type(buffer, ty)
+    }
+
     fn from_buffer_consume_with_type(buffer: &mut &[u8], ty: BlockType) -> Result<Self, RfxError> {
         let block_length = buffer.read_u32::<LittleEndian>()? as usize;
 
@@ -98,8 +103,7 @@ impl BlockHeader {
     }
 
     fn from_buffer_consume_with_expected_type(buffer: &mut &[u8], expected_type: BlockType) -> Result<Self, RfxError> {
-        let ty = buffer.read_u16::<LittleEndian>()?;
-        let ty = BlockType::from_u16(ty).ok_or(RfxError::InvalidBlockType(ty))?;
+        let ty = BlockType::from_buffer(buffer)?;
         if ty != expected_type {
             return Err(RfxError::UnexpectedBlockType {
                 expected: expected_type,
@@ -218,6 +222,14 @@ pub enum BlockType {
     FrameEnd = 0xCCC5,
     Region = 0xCCC6,
     Extension = 0xCCC7,
+}
+
+impl BlockType {
+    fn from_buffer(buffer: &mut &[u8]) -> Result<Self, RfxError> {
+        let ty = buffer.read_u16::<LittleEndian>()?;
+        let ty = BlockType::from_u16(ty).ok_or(RfxError::InvalidBlockType(ty))?;
+        Ok(ty)
+    }
 }
 
 #[derive(Debug, Error)]

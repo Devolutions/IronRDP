@@ -15,7 +15,6 @@ const TILE_SIZE: u16 = 64;
 pub type FrameId = u32;
 
 pub struct DecodingContext {
-    state: SequenceState,
     context: rfx::ContextPdu,
     channels: rfx::ChannelsPdu,
     decoding_tiles: DecodingTileContext,
@@ -24,7 +23,6 @@ pub struct DecodingContext {
 impl Default for DecodingContext {
     fn default() -> Self {
         Self {
-            state: SequenceState::HeaderMessages,
             context: rfx::ContextPdu {
                 flags: rfx::OperatingMode::empty(),
                 entropy_algorithm: rfx::EntropyAlgorithm::Rlgr1,
@@ -47,20 +45,31 @@ impl DecodingContext {
         input: &mut &[u8],
     ) -> SessionResult<(FrameId, InclusiveRectangle)> {
         loop {
-            match self.state {
-                SequenceState::HeaderMessages => {
-                    self.process_headers(input)?;
+            let block_header = rfx::BlockHeader::from_buffer_consume(input)?;
+            match block_header.ty {
+                rfx::BlockType::Sync => {
+                    self.process_sync(input, block_header)?;
                 }
-                SequenceState::DataMessages => {
-                    return self.process_data_messages(image, destination, input);
+                rfx::BlockType::FrameBegin => {
+                    return self.process_frame(input, block_header, image, destination);
+                }
+                _ => {
+                    return Err(reason_err!(
+                        "rfx::DecodingContext",
+                        "unexpected RFX block type: {:?}",
+                        block_header.ty
+                    ));
                 }
             }
         }
     }
 
-    fn process_headers(&mut self, input: &mut &[u8]) -> SessionResult<()> {
-        let _sync = rfx::SyncPdu::from_buffer_consume(input)?;
+    fn process_sync(&mut self, input: &mut &[u8], header: rfx::BlockHeader) -> SessionResult<()> {
+        let _sync = rfx::SyncPdu::from_buffer_consume_with_header(input, header)?;
+        self.process_headers(input)
+    }
 
+    fn process_headers(&mut self, input: &mut &[u8]) -> SessionResult<()> {
         let mut context = None;
         let mut channels = None;
 
@@ -81,24 +90,24 @@ impl DecodingContext {
 
         self.context = context;
         self.channels = channels;
-        self.state = SequenceState::DataMessages;
 
         Ok(())
     }
 
     #[instrument(skip_all)]
-    fn process_data_messages(
+    fn process_frame(
         &mut self,
+        input: &mut &[u8],
+        header: rfx::BlockHeader,
         image: &mut DecodedImage,
         destination: &InclusiveRectangle,
-        input: &mut &[u8],
     ) -> SessionResult<(FrameId, InclusiveRectangle)> {
         let channel = self.channels.0.first().unwrap();
         let width = channel.width.as_u16();
         let height = channel.height.as_u16();
         let entropy_algorithm = self.context.entropy_algorithm;
 
-        let frame_begin = rfx::FrameBeginPdu::from_buffer_consume(input)?;
+        let frame_begin = rfx::FrameBeginPdu::from_buffer_consume_with_header(input, header)?;
         let mut region = rfx::RegionPdu::from_buffer_consume(input)?;
         let tile_set = rfx::TileSetPdu::from_buffer_consume(input)?;
         let _frame_end = rfx::FrameEndPdu::from_buffer_consume(input)?;
@@ -143,10 +152,6 @@ impl DecodingContext {
             )?;
 
             final_update_rectangle = final_update_rectangle.union(&current_update_rectangle);
-        }
-
-        if self.context.flags.contains(rfx::OperatingMode::IMAGE_MODE) {
-            self.state = SequenceState::HeaderMessages;
         }
 
         Ok((frame_begin.index, final_update_rectangle))
@@ -257,9 +262,4 @@ fn map_tiles_data<'a>(tiles: &[Tile<'a>], quants: &[Quant]) -> Vec<TileData<'a>>
 struct TileData<'a> {
     quants: [Quant; 3],
     data: [&'a [u8]; 3],
-}
-
-enum SequenceState {
-    HeaderMessages,
-    DataMessages,
 }
