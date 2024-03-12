@@ -273,7 +273,8 @@ fn create_client_confirm_active(
             pref_bits_per_pix: 32,
             desktop_width: config.desktop_size.width,
             desktop_height: config.desktop_size.height,
-            desktop_resize_flag: false,
+            // This is required to be true in order for the Microsoft::Windows::RDS::DisplayControl DVC to work.
+            desktop_resize_flag: true,
             drawing_flags,
         }),
         CapabilitySet::Order(Order::new(
