@@ -48,14 +48,11 @@ impl PduParsing for DvcMessage<'_> {
     where
         Self: Sized,
     {
-        Err(std::io::Error::other("legacy::DvcMessage::from_buffer called – this is a bug").into())
+        Err(std::io::Error::other("legacy::DvcMessage::from_buffer called - this is a bug").into())
     }
 
-    fn to_buffer(&self, mut stream: impl Write) -> Result<(), Self::Error> {
-        self.channel_header.to_buffer(&mut stream)?;
-        self.dvc_pdu.to_buffer(&mut stream)?;
-        stream.write_all(self.dvc_data)?;
-        Ok(())
+    fn to_buffer(&self, mut _stream: impl Write) -> Result<(), Self::Error> {
+        Err(std::io::Error::other("legacy::DvcMessage::to_buffer called - this is a bug").into())
     }
 
     fn buffer_length(&self) -> usize {

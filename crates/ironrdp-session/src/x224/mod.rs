@@ -117,9 +117,6 @@ impl Processor {
 
         if channel_id == self.io_channel_id {
             self.process_io_channel(data_ctx)
-        } else if self.drdynvc_channel_id == Some(channel_id) {
-            self.process_dyvc(data_ctx)
-                .map(|data| vec![ProcessorOutput::ResponseFrame(data)])
         } else if let Some(svc) = self.static_channels.get_by_channel_id_mut(channel_id) {
             let response_pdus = svc.process(data_ctx.user_data).map_err(crate::SessionError::pdu)?;
             process_svc_messages(response_pdus, channel_id, data_ctx.initiator_id)

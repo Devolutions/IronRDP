@@ -2,6 +2,7 @@ use alloc::borrow::ToOwned;
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::string::String;
+use alloc::vec;
 use alloc::vec::Vec;
 use core::any::Any;
 use core::fmt;
@@ -24,6 +25,8 @@ pub trait DvcClientProcessor: DvcProcessor {}
 /// It adds support for dynamic virtual channels (DVC).
 pub struct DrdynvcClient {
     dynamic_channels: BTreeMap<String, Box<dyn DvcClientProcessor>>,
+    /// Indicates whether the capability request/response handshake has been completed.
+    cap_handshake_done: bool,
 }
 
 impl fmt::Debug for DrdynvcClient {
@@ -47,6 +50,7 @@ impl DrdynvcClient {
     pub fn new() -> Self {
         Self {
             dynamic_channels: BTreeMap::new(),
+            cap_handshake_done: false,
         }
     }
 
@@ -60,6 +64,18 @@ impl DrdynvcClient {
         let channel_name = channel.channel_name().to_owned();
         self.dynamic_channels.insert(channel_name, Box::new(channel));
         self
+    }
+
+    fn create_capabilities_response(&mut self) -> SvcMessage {
+        let caps_response = dvc::ClientPdu::CapabilitiesResponse(dvc::CapabilitiesResponsePdu {
+            version: dvc::CapsVersion::V1,
+        });
+        debug!("Send DVC Capabilities Response PDU: {caps_response:?}");
+        self.cap_handshake_done = true;
+        SvcMessage::from(DvcMessage {
+            dvc_pdu: caps_response,
+            dvc_data: &[],
+        })
     }
 }
 
@@ -82,19 +98,23 @@ impl SvcProcessor for DrdynvcClient {
 
     fn process(&mut self, payload: &[u8]) -> PduResult<Vec<SvcMessage>> {
         let dvc_ctx = decode_dvc_message(payload)?;
+        let mut responses = Vec::new();
 
         match dvc_ctx.dvc_pdu {
             dvc::ServerPdu::CapabilitiesRequest(caps_request) => {
                 debug!("Got DVC Capabilities Request PDU: {caps_request:?}");
-                let caps_response = dvc::ClientPdu::CapabilitiesResponse(dvc::CapabilitiesResponsePdu {
-                    version: dvc::CapsVersion::V1,
-                });
-
-                debug!("Send DVC Capabilities Response PDU: {caps_response:?}");
-                // crate::legacy::encode_dvc_message(initiator_id, channel_id, caps_response, &[], output)?;
+                responses.push(self.create_capabilities_response());
             }
             dvc::ServerPdu::CreateRequest(create_request) => {
                 debug!("Got DVC Create Request PDU: {create_request:?}");
+
+                if !self.cap_handshake_done {
+                    debug!(
+                        "Got DVC Create Request PDU before a Capabilities Request PDU. \
+                        Sending Capabilities Response PDU before the Create Response PDU."
+                    );
+                    responses.push(self.create_capabilities_response());
+                }
 
                 // let creation_status = if let Some(dynamic_channel) = create_dvc(
                 //     create_request.channel_name.as_str(),
@@ -211,10 +231,14 @@ impl SvcProcessor for DrdynvcClient {
             }
         }
 
-        Err(ironrdp_pdu::other_err!(
-            "DRDYNVC",
-            "ironrdp-dvc::DrdynvcClient implementation is not yet ready"
-        ))
+        if !responses.is_empty() {
+            Ok(responses)
+        } else {
+            Err(ironrdp_pdu::other_err!(
+                "DRDYNVC",
+                "ironrdp-dvc::DrdynvcClient implementation is not yet ready"
+            ))
+        }
     }
 
     fn is_drdynvc(&self) -> bool {
@@ -235,10 +259,6 @@ fn decode_dvc_message(user_data: &[u8]) -> PduResult<DynamicChannelCtx<'_>> {
     let mut user_data = user_data;
     let user_data_len = user_data.len();
 
-    // [ vc::ChannelPduHeader | …
-    let channel_header = vc::ChannelPduHeader::from_buffer(&mut user_data).map_err(|e| custom_err!("DVC header", e))?;
-    debug_assert_eq!(user_data_len, channel_header.length as usize);
-
     // … | dvc::ServerPdu | …
     let dvc_pdu =
         vc::dvc::ServerPdu::from_buffer(&mut user_data, user_data_len).map_err(|e| custom_err!("DVC server PDU", e))?;
@@ -247,4 +267,25 @@ fn decode_dvc_message(user_data: &[u8]) -> PduResult<DynamicChannelCtx<'_>> {
     let dvc_data = user_data;
 
     Ok(DynamicChannelCtx { dvc_pdu, dvc_data })
+}
+
+struct DvcMessage<'a> {
+    dvc_pdu: vc::dvc::ClientPdu,
+    dvc_data: &'a [u8],
+}
+
+impl PduEncode for DvcMessage<'_> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        self.dvc_pdu.to_buffer(dst)?;
+        dst.write_slice(self.dvc_data);
+        Ok(())
+    }
+
+    fn name(&self) -> &'static str {
+        self.dvc_pdu.as_short_name()
+    }
+
+    fn size(&self) -> usize {
+        self.dvc_pdu.buffer_length() + self.dvc_data.len()
+    }
 }

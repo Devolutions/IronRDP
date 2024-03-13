@@ -88,6 +88,10 @@ impl fmt::Display for PduErrorKind {
     }
 }
 
+impl ironrdp_error::legacy::CatchAllKind for PduErrorKind {
+    const CATCH_ALL_VALUE: Self = Self::Custom;
+}
+
 pub trait PduErrorExt {
     fn not_enough_bytes(context: &'static str, received: usize, expected: usize) -> Self;
     fn invalid_message(context: &'static str, field: &'static str, reason: &'static str) -> Self;

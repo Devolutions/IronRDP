@@ -219,7 +219,7 @@ impl<'de> PduDecode<'de> for ClipboardPdu<'de> {
     fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
         ensure_fixed_part_size!(in: src);
 
-        let read_empty_pdu = |src: &mut ReadCursor<'de>| {
+        let read_empty_pdu = |src: &mut ReadCursor<'de>| -> PduResult<()> {
             let _header = PartialHeader::decode(src)?;
             Ok(())
         };

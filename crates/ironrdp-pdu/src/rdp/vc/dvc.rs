@@ -6,6 +6,7 @@ use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive, ToPrimitive};
 
 use super::ChannelError;
+use crate::cursor::WriteCursor;
 use crate::PduParsing;
 
 #[cfg(test)]
@@ -171,7 +172,7 @@ impl ClientPdu {
         }
     }
 
-    pub fn to_buffer(&self, mut stream: impl io::Write) -> Result<(), ChannelError> {
+    pub fn to_buffer(&self, mut stream: &mut WriteCursor<'_>) -> Result<(), ChannelError> {
         match self {
             ClientPdu::CapabilitiesResponse(caps_request) => caps_request.to_buffer(&mut stream)?,
             ClientPdu::CreateResponse(create_request) => create_request.to_buffer(&mut stream)?,
@@ -193,7 +194,7 @@ impl ClientPdu {
         }
     }
 
-    pub fn as_short_name(&self) -> &str {
+    pub fn as_short_name(&self) -> &'static str {
         match self {
             ClientPdu::CapabilitiesResponse(_) => "Capabilities Response PDU",
             ClientPdu::CreateResponse(_) => "Create Response PDU",
