@@ -223,7 +223,8 @@ fn encode_dvc_message(pdu: vc::dvc::ServerPdu) -> PduResult<SvcMessage> {
     Ok(SvcMessage::from(buf).with_flags(ChannelFlags::SHOW_PROTOCOL))
 }
 
-fn encode_dvc_data(channel_id: u32, messages: DvcMessages) -> PduResult<Vec<SvcMessage>> {
+// TODO: This is used by both client and server, so it should be moved to a common place
+pub fn encode_dvc_data(channel_id: u32, messages: DvcMessages) -> PduResult<Vec<SvcMessage>> {
     let mut res = Vec::new();
     for msg in messages {
         let total_size = msg.size();
@@ -237,6 +238,8 @@ fn encode_dvc_data(channel_id: u32, messages: DvcMessages) -> PduResult<Vec<SvcM
 
             let pdu = if off == 0 && total_size >= DATA_MAX_SIZE {
                 let total_size = cast_length!("encode_dvc_data", "totalDataSize", total_size)?;
+                // TODO: DataFirst and Data pdus are common for both client and server,
+                // so they should be unified. In fact all DVC pdu types should be unified.
                 vc::dvc::ServerPdu::DataFirst(DataFirstPdu::new(channel_id, total_size, DATA_MAX_SIZE))
             } else {
                 vc::dvc::ServerPdu::Data(DataPdu::new(channel_id, size))
