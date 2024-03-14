@@ -35,7 +35,7 @@ enum ChannelState {
 struct DynamicChannel {
     state: ChannelState,
     processor: Box<dyn DvcProcessor>,
-    data: CompleteData,
+    complete_data: CompleteData,
 }
 
 impl DynamicChannel {
@@ -46,7 +46,7 @@ impl DynamicChannel {
         Self {
             state: ChannelState::Closed,
             processor: Box::new(processor),
-            data: CompleteData::new(),
+            complete_data: CompleteData::new(),
         }
     }
 }
@@ -166,27 +166,26 @@ impl SvcProcessor for DrdynvcServer {
                 }
                 c.state = ChannelState::Closed;
             }
-            dvc::ClientPdu::DataFirst(data) => {
-                let c = self.channel_by_id(data.channel_id)?;
+            dvc::ClientPdu::Common(dvc::CommonPdu::DataFirst(data)) => {
+                let channel_id = data.channel_id;
+                let c = self.channel_by_id(channel_id)?;
                 if c.state != ChannelState::Opened {
                     return Err(invalid_message_err!("DRDYNVC", "", "invalid channel state"));
                 }
-                if let Some(complete) = c
-                    .data
-                    .process_data_first_pdu(data.total_data_size as usize, dvc_ctx.dvc_data.into())
-                {
-                    let msg = c.processor.process(data.channel_id, &complete)?;
-                    resp.extend(encode_dvc_data(data.channel_id, msg)?);
+                if let Some(complete) = c.complete_data.process_data(data.into(), dvc_ctx.dvc_data.into()) {
+                    let msg = c.processor.process(channel_id, &complete)?;
+                    resp.extend(encode_dvc_data(channel_id, msg)?);
                 }
             }
-            dvc::ClientPdu::Data(data) => {
-                let c = self.channel_by_id(data.channel_id)?;
+            dvc::ClientPdu::Common(dvc::CommonPdu::Data(data)) => {
+                let channel_id = data.channel_id;
+                let c = self.channel_by_id(channel_id)?;
                 if c.state != ChannelState::Opened {
                     return Err(invalid_message_err!("DRDYNVC", "", "invalid channel state"));
                 }
-                if let Some(complete) = c.data.process_data_pdu(dvc_ctx.dvc_data.into()) {
-                    let msg = c.processor.process(data.channel_id, &complete)?;
-                    resp.extend(encode_dvc_data(data.channel_id, msg)?);
+                if let Some(complete) = c.complete_data.process_data(data.into(), dvc_ctx.dvc_data.into()) {
+                    let msg = c.processor.process(channel_id, &complete)?;
+                    resp.extend(encode_dvc_data(channel_id, msg)?);
                 }
             }
         }
@@ -238,11 +237,9 @@ pub fn encode_dvc_data(channel_id: u32, messages: DvcMessages) -> PduResult<Vec<
 
             let pdu = if off == 0 && total_size >= DATA_MAX_SIZE {
                 let total_size = cast_length!("encode_dvc_data", "totalDataSize", total_size)?;
-                // TODO: DataFirst and Data pdus are common for both client and server,
-                // so they should be unified. In fact all DVC pdu types should be unified.
-                vc::dvc::ServerPdu::DataFirst(DataFirstPdu::new(channel_id, total_size, DATA_MAX_SIZE))
+                dvc::CommonPdu::DataFirst(DataFirstPdu::new(channel_id, total_size, DATA_MAX_SIZE))
             } else {
-                vc::dvc::ServerPdu::Data(DataPdu::new(channel_id, size))
+                dvc::CommonPdu::Data(DataPdu::new(channel_id, size))
             };
 
             let end = off

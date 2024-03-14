@@ -8,7 +8,6 @@ use ironrdp_pdu::dvc::gfx::{
 };
 use ironrdp_pdu::PduParsing;
 
-use crate::x224::DynamicChannelDataHandler;
 use crate::SessionResult;
 
 pub trait GfxHandler {
@@ -33,7 +32,7 @@ impl Handler {
     }
 }
 
-impl DynamicChannelDataHandler for Handler {
+impl Handler {
     fn process_complete_data(&mut self, complete_data: Vec<u8>) -> SessionResult<Option<Vec<u8>>> {
         let mut client_pdu_buffer: Vec<u8> = Vec::new();
         self.decompressed_buffer.clear();

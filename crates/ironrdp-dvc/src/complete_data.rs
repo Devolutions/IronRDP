@@ -1,5 +1,6 @@
 use alloc::vec::Vec;
 use core::cmp;
+use ironrdp_pdu::dvc;
 
 #[derive(Debug, PartialEq)]
 pub(crate) struct CompleteData {
@@ -15,7 +16,14 @@ impl CompleteData {
         }
     }
 
-    pub(crate) fn process_data_first_pdu(&mut self, total_data_size: usize, data: Vec<u8>) -> Option<Vec<u8>> {
+    pub(crate) fn process_data(&mut self, pdu: dvc::CommonPdu, data: Vec<u8>) -> Option<Vec<u8>> {
+        match pdu {
+            dvc::CommonPdu::DataFirst(df) => self.process_data_first_pdu(df.total_data_size as usize, data),
+            dvc::CommonPdu::Data(_) => self.process_data_pdu(data),
+        }
+    }
+
+    fn process_data_first_pdu(&mut self, total_data_size: usize, data: Vec<u8>) -> Option<Vec<u8>> {
         if self.total_size != 0 || !self.data.is_empty() {
             error!("Incomplete DVC message, it will be skipped");
 
@@ -32,7 +40,7 @@ impl CompleteData {
         }
     }
 
-    pub(crate) fn process_data_pdu(&mut self, mut data: Vec<u8>) -> Option<Vec<u8>> {
+    fn process_data_pdu(&mut self, mut data: Vec<u8>) -> Option<Vec<u8>> {
         if self.total_size == 0 && self.data.is_empty() {
             // message is not fragmented
             Some(data)
@@ -68,4 +76,9 @@ impl CompleteData {
             }
         }
     }
+}
+
+pub(crate) enum Chunk {
+    DataFirstPdu(dvc::DataFirstPdu),
+    DataPdu(dvc::DataPdu),
 }

@@ -12,7 +12,7 @@ use ironrdp_pdu::input::InputEventPdu;
 use ironrdp_pdu::mcs::SendDataRequest;
 use ironrdp_pdu::rdp::capability_sets::{CapabilitySet, CmdFlags, GeneralExtraFlags};
 use ironrdp_pdu::{self, custom_err, decode, mcs, nego, rdp, Action, PduParsing, PduResult};
-use ironrdp_svc::{server_encode_svc_messages, StaticChannelSet};
+use ironrdp_svc::{impl_as_any, server_encode_svc_messages, StaticChannelSet};
 use ironrdp_tokio::{Framed, FramedRead, FramedWrite, TokioFramed};
 use tokio::net::{TcpListener, TcpStream};
 use tokio_rustls::TlsAcceptor;
@@ -44,6 +44,8 @@ impl RdpServerSecurity {
 }
 
 struct DisplayControlHandler {}
+
+impl_as_any!(DisplayControlHandler);
 
 impl dvc::DvcProcessor for DisplayControlHandler {
     fn channel_name(&self) -> &str {
@@ -81,6 +83,8 @@ impl dvc::DvcServerProcessor for DisplayControlHandler {}
 struct AInputHandler {
     handler: Arc<Mutex<Box<dyn RdpServerInputHandler>>>,
 }
+
+impl_as_any!(AInputHandler);
 
 impl dvc::DvcProcessor for AInputHandler {
     fn channel_name(&self) -> &str {

@@ -156,7 +156,7 @@ impl SvcProcessor for DrdynvcClient {
                 responses.push(SvcMessage::from(DvcMessage::new(close_response, &[])));
                 self.dynamic_channels.remove_by_channel_id(&close_request.channel_id);
             }
-            dvc::ServerPdu::DataFirst(data) => {
+            dvc::ServerPdu::Common(dvc::CommonPdu::DataFirst(data)) => {
                 let channel_id = data.channel_id;
                 let dvc_data = dvc_ctx.dvc_data;
 
@@ -168,7 +168,7 @@ impl SvcProcessor for DrdynvcClient {
 
                 responses.extend(encode_dvc_data(channel_id, messages)?);
             }
-            dvc::ServerPdu::Data(data) => {
+            dvc::ServerPdu::Common(dvc::CommonPdu::Data(data)) => {
                 // TODO: identical to DataFirst, create a helper function
                 let channel_id = data.channel_id;
                 let dvc_data = dvc_ctx.dvc_data;
@@ -243,14 +243,12 @@ impl PduEncode for DvcMessage<'_> {
 }
 
 pub struct DynamicVirtualChannel {
-    id: DynamicChannelId,
     handler: Box<dyn DvcProcessor + Send>,
 }
 
 impl DynamicVirtualChannel {
     fn new<T: DvcProcessor + 'static>(handler: T) -> Self {
         Self {
-            id: 0, //TODO: is this correct?
             handler: Box::new(handler),
         }
     }
@@ -307,15 +305,14 @@ impl DynamicChannelSet {
 
     pub fn attach_channel_id(&mut self, name: DynamicChannelName, id: DynamicChannelId) -> Option<DynamicChannelId> {
         let channel = self.get_by_channel_name_mut(&name)?;
-        channel.id = id;
         self.id_to_name.insert(id, name.clone());
         self.name_to_id.insert(name, id)
     }
 
-    pub fn remove_by_channel_id(&mut self, id: &DynamicChannelId) -> Option<DynamicVirtualChannel> {
+    pub fn remove_by_channel_id(&mut self, id: &DynamicChannelId) -> Option<DynamicChannelId> {
         if let Some(name) = self.id_to_name.remove(id) {
-            self.name_to_id.remove(&name);
-            return self.channels.remove(&name);
+            return self.name_to_id.remove(&name);
+            // Channels are retained in the `self.channels` map to allow potential re-addition by the server.
         }
         None
     }

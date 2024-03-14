@@ -603,7 +603,7 @@ impl Session {
                             hotspot_y,
                         })?;
                     }
-                    ActiveStageOutput::DeactivateAll(_) => todo!(),
+                    ActiveStageOutput::DeactivateAll(_) => todo!("DeactivateAll"),
                     ActiveStageOutput::Terminate(reason) => break 'outer reason,
                 }
             }

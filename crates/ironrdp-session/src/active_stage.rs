@@ -27,8 +27,6 @@ impl ActiveStage {
             connection_result.static_channels,
             connection_result.user_channel_id,
             connection_result.io_channel_id,
-            connection_result.graphics_config,
-            graphics_handler,
             connection_result.connection_activation,
         );
 
@@ -166,10 +164,10 @@ impl ActiveStage {
         Ok(vec![ActiveStageOutput::ResponseFrame(frame.into_inner())])
     }
 
-    /// Sends a PDU on the dynamic channel.
-    pub fn encode_dynamic(&self, output: &mut WriteBuf, channel_name: &str, dvc_data: &[u8]) -> SessionResult<()> {
-        self.x224_processor.encode_dynamic(output, channel_name, dvc_data)
-    }
+    // /// Sends a PDU on the dynamic channel.
+    // pub fn encode_dynamic(&self, output: &mut WriteBuf, channel_name: &str, dvc_data: &[u8]) -> SessionResult<()> {
+    //     self.x224_processor.encode_dynamic(output, channel_name, dvc_data)
+    // }
 
     /// Send a pdu on the static global channel. Typically used to send input events
     pub fn encode_static(&self, output: &mut WriteBuf, pdu: ShareDataPdu) -> SessionResult<usize> {

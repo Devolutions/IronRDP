@@ -14,6 +14,7 @@ use alloc::vec::Vec;
 // Re-export ironrdp_pdu crate for convenience
 #[rustfmt::skip] // do not re-order this pub use
 pub use ironrdp_pdu as pdu;
+use ironrdp_svc::AsAny;
 use pdu::write_buf::WriteBuf;
 use pdu::{assert_obj_safe, PduEncode, PduResult};
 
@@ -34,7 +35,7 @@ pub type DvcMessages = Vec<Box<dyn PduEncode + Send>>;
 /// The Dynamic Virtual Channel APIs exist to address limitations of Static Virtual Channels:
 ///   - Limited number of channels
 ///   - Packet reconstruction
-pub trait DvcProcessor: Send + Sync {
+pub trait DvcProcessor: AsAny + Send + Sync {
     fn channel_name(&self) -> &str;
 
     fn start(&mut self, _channel_id: u32) -> PduResult<DvcMessages>;
