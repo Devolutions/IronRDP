@@ -18,9 +18,7 @@ use pdu::write_buf::WriteBuf;
 use pdu::{cast_length, custom_err, encode_vec, invalid_message_err, other_err, PduEncode, PduParsing};
 use pdu::{dvc, PduResult};
 
-use crate::{CompleteData, DvcMessages, DvcProcessor};
-
-const DATA_MAX_SIZE: usize = 1590;
+use crate::{encode_dvc_messages, CompleteData, DvcMessages, DvcProcessor};
 
 pub trait DvcServerProcessor: DvcProcessor {}
 
@@ -156,7 +154,11 @@ impl SvcProcessor for DrdynvcServer {
                 }
                 c.state = ChannelState::Opened;
                 let msg = c.processor.start(create_resp.channel_id)?;
-                resp.extend(encode_dvc_data(id, msg)?);
+                resp.extend(encode_dvc_messages(
+                    id,
+                    msg,
+                    Some(ironrdp_svc::ChannelFlags::SHOW_PROTOCOL),
+                )?);
             }
             dvc::ClientPdu::CloseResponse(close_resp) => {
                 debug!("Got DVC Close Response PDU: {close_resp:?}");
@@ -174,7 +176,11 @@ impl SvcProcessor for DrdynvcServer {
                 }
                 if let Some(complete) = c.complete_data.process_data(data.into(), dvc_ctx.dvc_data.into()) {
                     let msg = c.processor.process(channel_id, &complete)?;
-                    resp.extend(encode_dvc_data(channel_id, msg)?);
+                    resp.extend(encode_dvc_messages(
+                        channel_id,
+                        msg,
+                        Some(ironrdp_svc::ChannelFlags::SHOW_PROTOCOL),
+                    )?);
                 }
             }
             dvc::ClientPdu::Common(dvc::CommonPdu::Data(data)) => {
@@ -185,7 +191,11 @@ impl SvcProcessor for DrdynvcServer {
                 }
                 if let Some(complete) = c.complete_data.process_data(data.into(), dvc_ctx.dvc_data.into()) {
                     let msg = c.processor.process(channel_id, &complete)?;
-                    resp.extend(encode_dvc_data(channel_id, msg)?);
+                    resp.extend(encode_dvc_messages(
+                        channel_id,
+                        msg,
+                        Some(ironrdp_svc::ChannelFlags::SHOW_PROTOCOL),
+                    )?);
                 }
             }
         }
@@ -220,38 +230,4 @@ fn encode_dvc_message(pdu: vc::dvc::ServerPdu) -> PduResult<SvcMessage> {
     let mut buf = Vec::new();
     pdu.to_buffer(&mut buf).map_err(|e| custom_err!("DVC server pdu", e))?;
     Ok(SvcMessage::from(buf).with_flags(ChannelFlags::SHOW_PROTOCOL))
-}
-
-// TODO: This is used by both client and server, so it should be moved to a common place
-pub fn encode_dvc_data(channel_id: u32, messages: DvcMessages) -> PduResult<Vec<SvcMessage>> {
-    let mut res = Vec::new();
-    for msg in messages {
-        let total_size = msg.size();
-
-        let msg = encode_vec(msg.as_ref())?;
-        let mut off = 0;
-
-        while off < total_size {
-            let rem = total_size.checked_sub(off).unwrap();
-            let size = core::cmp::min(rem, DATA_MAX_SIZE);
-
-            let pdu = if off == 0 && total_size >= DATA_MAX_SIZE {
-                let total_size = cast_length!("encode_dvc_data", "totalDataSize", total_size)?;
-                dvc::CommonPdu::DataFirst(DataFirstPdu::new(channel_id, total_size, DATA_MAX_SIZE))
-            } else {
-                dvc::CommonPdu::Data(DataPdu::new(channel_id, size))
-            };
-
-            let end = off
-                .checked_add(size)
-                .ok_or_else(|| other_err!("encode_dvc_data", "overflow occurred"))?;
-            let mut data = Vec::new();
-            pdu.to_buffer(&mut data).map_err(|e| custom_err!("DVC server pdu", e))?;
-            data.extend_from_slice(&msg[off..end]);
-            res.push(SvcMessage::from(data).with_flags(ChannelFlags::SHOW_PROTOCOL));
-            off = end;
-        }
-    }
-
-    Ok(res)
 }

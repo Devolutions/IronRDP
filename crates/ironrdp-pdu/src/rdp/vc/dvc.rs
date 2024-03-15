@@ -98,6 +98,13 @@ impl CommonPdu {
             CommonPdu::Data(_) => "Data PDU",
         }
     }
+
+    pub fn channel_id(&self) -> u32 {
+        match self {
+            CommonPdu::DataFirst(data_first) => data_first.channel_id,
+            CommonPdu::Data(data) => data.channel_id,
+        }
+    }
 }
 
 impl From<DataFirstPdu> for CommonPdu {
@@ -144,7 +151,7 @@ impl ServerPdu {
                 channel_id_type,
             )?)),
             PduType::Data => Ok(ServerPdu::Common(CommonPdu::from_buffer(
-                PduType::DataFirst,
+                PduType::Data,
                 &mut stream,
                 dvc_data_size,
                 channel_id_type,
@@ -217,7 +224,7 @@ impl ClientPdu {
                 channel_id_type,
             )?)),
             PduType::Data => Ok(ClientPdu::Common(CommonPdu::from_buffer(
-                PduType::DataFirst,
+                PduType::Data,
                 &mut stream,
                 dvc_data_size,
                 channel_id_type,

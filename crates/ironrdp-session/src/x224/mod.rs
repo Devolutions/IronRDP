@@ -5,6 +5,7 @@ use std::collections::HashMap;
 
 use ironrdp_connector::connection_activation::ConnectionActivationSequence;
 use ironrdp_connector::legacy::SendDataIndicationCtx;
+use ironrdp_dvc::{DrdynvcClient, DvcProcessor};
 use ironrdp_pdu::mcs::{DisconnectProviderUltimatum, DisconnectReason, McsMessage};
 use ironrdp_pdu::rdp::headers::ShareDataPdu;
 use ironrdp_pdu::rdp::server_error_info::{ErrorInfo, ProtocolIndependentCode, ServerSetErrorInfoPdu};
@@ -68,7 +69,7 @@ impl Processor {
         }
     }
 
-    pub fn get_svc_processor<T: SvcProcessor + 'static>(&mut self) -> Option<&T> {
+    pub fn get_svc_processor<T: SvcProcessor + 'static>(&self) -> Option<&T> {
         self.static_channels
             .get_by_type::<T>()
             .and_then(|svc| svc.channel_processor_downcast_ref())
@@ -92,6 +93,11 @@ impl Processor {
             .ok_or_else(|| reason_err!("SVC", "channel not found"))?;
 
         process_svc_messages(messages.into(), channel_id, self.user_channel_id)
+    }
+
+    pub fn get_dvc_processor<T: DvcProcessor + 'static>(&self) -> Option<&T> {
+        self.get_svc_processor::<DrdynvcClient>()?
+            .get_dynamic_channel_by_type_id::<T>()
     }
 
     /// Processes a received PDU. Returns a vector of [`ProcessorOutput`] that must be processed

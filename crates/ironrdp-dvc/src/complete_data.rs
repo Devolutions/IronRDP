@@ -77,8 +77,3 @@ impl CompleteData {
         }
     }
 }
-
-pub(crate) enum Chunk {
-    DataFirstPdu(dvc::DataFirstPdu),
-    DataPdu(dvc::DataPdu),
-}

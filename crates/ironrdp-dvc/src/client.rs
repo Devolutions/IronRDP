@@ -4,7 +4,7 @@ use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
-use core::any::Any;
+use core::any::{Any, TypeId};
 use core::{cmp, fmt};
 
 use ironrdp_pdu as pdu;
@@ -17,7 +17,7 @@ use pdu::{dvc, PduResult};
 use pdu::{other_err, PduEncode};
 
 use crate::complete_data::CompleteData;
-use crate::{encode_dvc_data, DvcMessages, DvcProcessor};
+use crate::{encode_dvc_messages, DvcMessages, DvcProcessor};
 
 pub trait DvcClientProcessor: DvcProcessor {}
 
@@ -60,10 +60,19 @@ impl DrdynvcClient {
     #[must_use]
     pub fn with_dynamic_channel<T>(mut self, channel: T) -> Self
     where
-        T: DvcClientProcessor + 'static,
+        T: DvcProcessor + 'static,
     {
         self.dynamic_channels.insert(channel);
         self
+    }
+
+    pub fn get_dynamic_channel_by_type_id<T>(&self) -> Option<&T>
+    where
+        T: DvcProcessor,
+    {
+        self.dynamic_channels
+            .get_by_type_id(TypeId::of::<T>())
+            .and_then(|channel| channel.channel_processor_downcast_ref().map(|channel| channel as &T))
     }
 
     fn create_capabilities_response(&mut self) -> SvcMessage {
@@ -141,7 +150,7 @@ impl SvcProcessor for DrdynvcClient {
 
                 // If this DVC has start messages, send them.
                 if !start_messages.is_empty() {
-                    responses.extend(encode_dvc_data(channel_id, start_messages)?);
+                    responses.extend(encode_dvc_messages(channel_id, start_messages, None)?);
                 }
             }
             dvc::ServerPdu::CloseRequest(close_request) => {
@@ -156,30 +165,17 @@ impl SvcProcessor for DrdynvcClient {
                 responses.push(SvcMessage::from(DvcMessage::new(close_response, &[])));
                 self.dynamic_channels.remove_by_channel_id(&close_request.channel_id);
             }
-            dvc::ServerPdu::Common(dvc::CommonPdu::DataFirst(data)) => {
-                let channel_id = data.channel_id;
+            dvc::ServerPdu::Common(common) => {
+                let channel_id = common.channel_id();
                 let dvc_data = dvc_ctx.dvc_data;
 
                 let messages = self
                     .dynamic_channels
                     .get_by_channel_id_mut(&channel_id)
                     .ok_or_else(|| other_err!("DVC", "access to non existing channel"))?
-                    .process(channel_id, dvc_data)?;
+                    .process(common, dvc_data)?;
 
-                responses.extend(encode_dvc_data(channel_id, messages)?);
-            }
-            dvc::ServerPdu::Common(dvc::CommonPdu::Data(data)) => {
-                // TODO: identical to DataFirst, create a helper function
-                let channel_id = data.channel_id;
-                let dvc_data = dvc_ctx.dvc_data;
-
-                let messages = self
-                    .dynamic_channels
-                    .get_by_channel_id_mut(&channel_id)
-                    .ok_or_else(|| other_err!("DVC", "access to non existing channel"))?
-                    .process(channel_id, dvc_data)?;
-
-                responses.extend(encode_dvc_data(channel_id, messages)?);
+                responses.extend(encode_dvc_messages(channel_id, messages, None)?);
             }
         }
 
@@ -243,33 +239,54 @@ impl PduEncode for DvcMessage<'_> {
 }
 
 pub struct DynamicVirtualChannel {
-    handler: Box<dyn DvcProcessor + Send>,
+    channel_processor: Box<dyn DvcProcessor + Send>,
+    complete_data: CompleteData,
 }
 
 impl DynamicVirtualChannel {
     fn new<T: DvcProcessor + 'static>(handler: T) -> Self {
         Self {
-            handler: Box::new(handler),
+            channel_processor: Box::new(handler),
+            complete_data: CompleteData::new(),
         }
     }
 
     fn start(&mut self, channel_id: DynamicChannelId) -> PduResult<DvcMessages> {
-        self.handler.start(channel_id)
+        self.channel_processor.start(channel_id)
     }
 
-    fn process(&mut self, channel_id: DynamicChannelId, data: &[u8]) -> PduResult<DvcMessages> {
-        self.handler.process(channel_id, data)
+    fn process(&mut self, pdu: dvc::CommonPdu, data: &[u8]) -> PduResult<DvcMessages> {
+        let channel_id = pdu.channel_id();
+        let complete_data = self.complete_data.process_data(pdu, data.into());
+        if let Some(complete_data) = complete_data {
+            self.channel_processor.process(channel_id, &complete_data)
+        } else {
+            Ok(vec![])
+        }
+    }
+
+    fn set_id(&mut self, id: DynamicChannelId) {
+        self.channel_processor.set_id(id);
     }
 
     fn channel_name(&self) -> &str {
-        self.handler.channel_name()
+        self.channel_processor.channel_name()
+    }
+
+    fn channel_processor_downcast_ref<T: DvcProcessor>(&self) -> Option<&T> {
+        self.channel_processor.as_any().downcast_ref()
+    }
+
+    fn channel_processor_downcast_mut<T: DvcProcessor>(&mut self) -> Option<&mut T> {
+        self.channel_processor.as_any_mut().downcast_mut()
     }
 }
 
 struct DynamicChannelSet {
     channels: BTreeMap<DynamicChannelName, DynamicVirtualChannel>,
-    name_to_id: BTreeMap<DynamicChannelName, DynamicChannelId>,
-    id_to_name: BTreeMap<DynamicChannelId, DynamicChannelName>,
+    name_to_channel_id: BTreeMap<DynamicChannelName, DynamicChannelId>,
+    channel_id_to_name: BTreeMap<DynamicChannelId, DynamicChannelName>,
+    type_id_to_name: BTreeMap<TypeId, DynamicChannelName>,
 }
 
 impl DynamicChannelSet {
@@ -277,14 +294,22 @@ impl DynamicChannelSet {
     fn new() -> Self {
         Self {
             channels: BTreeMap::new(),
-            name_to_id: BTreeMap::new(),
-            id_to_name: BTreeMap::new(),
+            name_to_channel_id: BTreeMap::new(),
+            channel_id_to_name: BTreeMap::new(),
+            type_id_to_name: BTreeMap::new(),
         }
     }
 
-    pub fn insert<T: DvcProcessor + 'static>(&mut self, channel: T) -> Option<DynamicVirtualChannel> {
+    fn insert<T: DvcProcessor + 'static>(&mut self, channel: T) -> Option<DynamicVirtualChannel> {
         let name = channel.channel_name().to_owned();
+        self.type_id_to_name.insert(TypeId::of::<T>(), name.clone());
         self.channels.insert(name, DynamicVirtualChannel::new(channel))
+    }
+
+    pub fn get_by_type_id(&self, type_id: TypeId) -> Option<&DynamicVirtualChannel> {
+        self.type_id_to_name
+            .get(&type_id)
+            .and_then(|name| self.channels.get(name))
     }
 
     pub fn get_by_channel_name(&self, name: &DynamicChannelName) -> Option<&DynamicVirtualChannel> {
@@ -296,23 +321,27 @@ impl DynamicChannelSet {
     }
 
     pub fn get_by_channel_id(&self, id: &DynamicChannelId) -> Option<&DynamicVirtualChannel> {
-        self.id_to_name.get(id).and_then(|name| self.channels.get(name))
+        self.channel_id_to_name.get(id).and_then(|name| self.channels.get(name))
     }
 
     pub fn get_by_channel_id_mut(&mut self, id: &DynamicChannelId) -> Option<&mut DynamicVirtualChannel> {
-        self.id_to_name.get(id).and_then(|name| self.channels.get_mut(name))
+        self.channel_id_to_name
+            .get(id)
+            .and_then(|name| self.channels.get_mut(name))
     }
 
     pub fn attach_channel_id(&mut self, name: DynamicChannelName, id: DynamicChannelId) -> Option<DynamicChannelId> {
         let channel = self.get_by_channel_name_mut(&name)?;
-        self.id_to_name.insert(id, name.clone());
-        self.name_to_id.insert(name, id)
+        channel.set_id(id);
+        self.channel_id_to_name.insert(id, name.clone());
+        self.name_to_channel_id.insert(name, id)
     }
 
     pub fn remove_by_channel_id(&mut self, id: &DynamicChannelId) -> Option<DynamicChannelId> {
-        if let Some(name) = self.id_to_name.remove(id) {
-            return self.name_to_id.remove(&name);
-            // Channels are retained in the `self.channels` map to allow potential re-addition by the server.
+        if let Some(name) = self.channel_id_to_name.remove(id) {
+            return self.name_to_channel_id.remove(&name);
+            // Channels are retained in the `self.channels` and `self.type_id_to_name` map to allow potential
+            // dynamic re-addition by the server.
         }
         None
     }

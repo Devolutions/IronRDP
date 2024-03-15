@@ -1,12 +1,11 @@
 use std::io;
 
+use crate::{cursor::WriteCursor, PduEncode, PduParsing, PduResult};
 use bitflags::bitflags;
 use byteorder::{LittleEndian, ReadBytesExt as _, WriteBytesExt as _};
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive as _, ToPrimitive as _};
 use thiserror::Error;
-
-use crate::PduParsing;
 
 pub const CHANNEL_NAME: &str = "Microsoft::Windows::RDS::DisplayControl";
 
@@ -280,6 +279,23 @@ impl PduParsing for ClientPdu {
             + match self {
                 ClientPdu::DisplayControlMonitorLayout(pdu) => pdu.buffer_length(),
             }
+    }
+}
+
+impl PduEncode for ClientPdu {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        self.to_buffer(dst).map_err(DisplayPipelineError::from)?;
+        Ok(())
+    }
+
+    fn name(&self) -> &'static str {
+        match self {
+            ClientPdu::DisplayControlMonitorLayout(_) => "DISPLAYCONTROL_MONITOR_LAYOUT_PDU",
+        }
+    }
+
+    fn size(&self) -> usize {
+        self.buffer_length()
     }
 }
 

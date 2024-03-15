@@ -1915,6 +1915,7 @@ version = "0.1.0"
 dependencies = [
  "bitflags 2.4.2",
  "ironrdp-connector",
+ "ironrdp-dvc",
  "ironrdp-error",
  "ironrdp-graphics",
  "ironrdp-pdu",

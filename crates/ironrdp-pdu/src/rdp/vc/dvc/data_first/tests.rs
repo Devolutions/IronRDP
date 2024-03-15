@@ -1,7 +1,7 @@
 use lazy_static::lazy_static;
 
 use super::*;
-use crate::rdp::vc::dvc::ClientPdu;
+use crate::{cursor::WriteCursor, dvc::CommonPdu, rdp::vc::dvc::ClientPdu};
 
 const DVC_TEST_CHANNEL_ID_U8: u32 = 0x03;
 const DVC_TEST_DATA_LENGTH: u32 = 0x0000_0C7B;
@@ -127,13 +127,14 @@ lazy_static! {
         total_data_size: DVC_TEST_DATA_LENGTH,
         data_size: DVC_DATA_FIRST_BUFFER.len()
     };
-    static ref DATA_FIRST_WHERE_TOTAL_LENGTH_EQUALS_TO_BUFFER_LENGTH: ClientPdu = ClientPdu::DataFirst(DataFirstPdu {
-        channel_id_type: FieldType::U8,
-        channel_id: 0x7,
-        total_data_size_type: FieldType::U16,
-        total_data_size: 0x639,
-        data_size: DATA_FIRST_WHERE_TOTAL_LENGTH_EQUALS_TO_BUFFER_LENGTH_BUFFER.len(),
-    });
+    static ref DATA_FIRST_WHERE_TOTAL_LENGTH_EQUALS_TO_BUFFER_LENGTH: ClientPdu =
+        ClientPdu::Common(CommonPdu::DataFirst(DataFirstPdu {
+            channel_id_type: FieldType::U8,
+            channel_id: 0x7,
+            total_data_size_type: FieldType::U16,
+            total_data_size: 0x639,
+            data_size: DATA_FIRST_WHERE_TOTAL_LENGTH_EQUALS_TO_BUFFER_LENGTH_BUFFER.len(),
+        }));
 }
 
 #[test]
@@ -212,12 +213,13 @@ fn from_buffer_correct_parses_dvc_server_pdu_with_data_first_where_total_length_
 fn to_buffer_correct_serializes_dvc_server_pdu_with_data_first_where_total_length_equals_to_buffer_length() {
     let data_first = &*DATA_FIRST_WHERE_TOTAL_LENGTH_EQUALS_TO_BUFFER_LENGTH;
 
-    let mut buffer = Vec::new();
+    let mut b = vec![0x00; data_first.buffer_length()];
+    let mut buffer = WriteCursor::new(&mut b);
     data_first.to_buffer(&mut buffer).unwrap();
 
     assert_eq!(
         DATA_FIRST_WHERE_TOTAL_LENGTH_EQUALS_TO_BUFFER_LENGTH_PREFIX.as_ref(),
-        buffer.as_slice()
+        buffer.inner()
     );
 }
 

@@ -12,7 +12,6 @@ use ironrdp_svc::{SvcProcessor, SvcProcessorMessages};
 
 use crate::fast_path::UpdateKind;
 use crate::image::DecodedImage;
-use crate::x224::GfxHandler;
 use crate::{fast_path, x224, SessionError, SessionResult};
 
 pub struct ActiveStage {
@@ -22,7 +21,7 @@ pub struct ActiveStage {
 }
 
 impl ActiveStage {
-    pub fn new(connection_result: ConnectionResult, graphics_handler: Option<Box<dyn GfxHandler + Send>>) -> Self {
+    pub fn new(connection_result: ConnectionResult) -> Self {
         let x224_processor = x224::Processor::new(
             connection_result.static_channels,
             connection_result.user_channel_id,
