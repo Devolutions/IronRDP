@@ -23,8 +23,8 @@ byteorder.workspace = true
 ironrdp-error.workspace = true
 ironrdp-pdu = { workspace = true, features = ["std"] }
 lazy_static = "1.4"
-num-derive = "0.4"
-num-traits = "0.2"
+num-derive.workspace = true
+num-traits.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]

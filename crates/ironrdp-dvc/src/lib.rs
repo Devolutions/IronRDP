@@ -30,6 +30,8 @@ pub use client::*;
 mod server;
 pub use server::*;
 
+pub mod display;
+
 pub type DvcMessages = Vec<Box<dyn PduEncode + Send>>;
 
 /// A type that is a Dynamic Virtual Channel (DVC)
@@ -41,13 +43,6 @@ pub type DvcMessages = Vec<Box<dyn PduEncode + Send>>;
 pub trait DvcProcessor: AsAny + Send + Sync {
     /// The name of the channel, e.g. "Microsoft::Windows::RDS::DisplayControl"
     fn channel_name(&self) -> &str;
-
-    /// The ID of the channel. Optional because
-    /// ID's are assigned dynamically by the server.
-    fn id(&self) -> Option<u32>;
-
-    /// Sets the ID of the channel.
-    fn set_id(&mut self, id: u32);
 
     /// Returns any messages that should be sent immediately
     /// upon the channel being created.
@@ -79,7 +74,7 @@ pub(crate) fn encode_dvc_messages(
             let size = core::cmp::min(rem, DATA_MAX_SIZE);
 
             let pdu = if off == 0 && total_size >= DATA_MAX_SIZE {
-                let total_size = cast_length!("encode_dvc_data", "totalDataSize", total_size)?;
+                let total_size = cast_length!("encode_dvc_messages", "totalDataSize", total_size)?;
                 dvc::CommonPdu::DataFirst(dvc::DataFirstPdu::new(channel_id, total_size, DATA_MAX_SIZE))
             } else {
                 dvc::CommonPdu::Data(dvc::DataPdu::new(channel_id, size))
@@ -87,7 +82,7 @@ pub(crate) fn encode_dvc_messages(
 
             let end = off
                 .checked_add(size)
-                .ok_or_else(|| other_err!("encode_dvc_data", "overflow occurred"))?;
+                .ok_or_else(|| other_err!("encode_dvc_messages", "overflow occurred"))?;
             let mut data = Vec::new();
             pdu.to_buffer(&mut data)
                 .map_err(|e| custom_err!("encode_dvc_messages", e))?;
@@ -102,58 +97,4 @@ pub(crate) fn encode_dvc_messages(
     }
 
     Ok(res)
-}
-
-pub struct DisplayControlClient {
-    id: Option<u32>,
-}
-
-impl_as_any!(DisplayControlClient);
-
-impl DvcProcessor for DisplayControlClient {
-    fn channel_name(&self) -> &str {
-        dvc::display::CHANNEL_NAME
-    }
-
-    fn id(&self) -> Option<u32> {
-        self.id
-    }
-
-    fn set_id(&mut self, id: u32) {
-        self.id = Some(id);
-    }
-
-    fn start(&mut self, _channel_id: u32) -> PduResult<DvcMessages> {
-        Ok(Vec::new())
-    }
-
-    fn process(&mut self, channel_id: u32, payload: &[u8]) -> PduResult<DvcMessages> {
-        // TODO: We can parse the payload here for completeness sake,
-        // in practice we don't need to do anything with the payload.
-        debug!("Got Display PDU of length: {}", payload.len());
-        Ok(Vec::new())
-    }
-}
-
-impl DvcClientProcessor for DisplayControlClient {}
-
-impl DisplayControlClient {
-    pub fn new() -> Self {
-        Self { id: None }
-    }
-
-    pub fn encode_monitors(&self, monitors: Vec<dvc::display::Monitor>) -> PduResult<Vec<SvcMessage>> {
-        if self.id.is_none() {
-            return Err(other_err!("encode_monitors", "channel id is not set"));
-        }
-        let mut buf = WriteBuf::new();
-        let pdu = dvc::display::ClientPdu::DisplayControlMonitorLayout(dvc::display::MonitorLayoutPdu { monitors });
-        encode_dvc_messages(self.id.unwrap(), vec![Box::new(pdu)], None)
-    }
-}
-
-impl Default for DisplayControlClient {
-    fn default() -> Self {
-        Self::new()
-    }
 }

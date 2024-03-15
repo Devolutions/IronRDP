@@ -19,5 +19,5 @@ test = false
 ironrdp-pdu.workspace = true
 bitflags.workspace = true
 
-num-derive = "0.4"
-num-traits = "0.2"
+num-derive.workspace = true
+num-traits.workspace = true

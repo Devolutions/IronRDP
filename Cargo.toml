@@ -60,6 +60,8 @@ thiserror = "1.0"
 png = "0.17"
 bitflags = "2.4"
 byteorder = "1.5"
+num-derive = "0.4"
+num-traits = "0.2"
 
 [profile.dev]
 opt-level = 1

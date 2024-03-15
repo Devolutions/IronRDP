@@ -1,15 +1,12 @@
-mod display;
 mod gfx;
-
-use std::collections::HashMap;
 
 use ironrdp_connector::connection_activation::ConnectionActivationSequence;
 use ironrdp_connector::legacy::SendDataIndicationCtx;
+use ironrdp_dvc::DynamicChannelId;
 use ironrdp_dvc::{DrdynvcClient, DvcProcessor};
 use ironrdp_pdu::mcs::{DisconnectProviderUltimatum, DisconnectReason, McsMessage};
 use ironrdp_pdu::rdp::headers::ShareDataPdu;
 use ironrdp_pdu::rdp::server_error_info::{ErrorInfo, ProtocolIndependentCode, ServerSetErrorInfoPdu};
-use ironrdp_pdu::rdp::vc::dvc;
 use ironrdp_pdu::write_buf::WriteBuf;
 use ironrdp_svc::{client_encode_svc_messages, StaticChannelSet, SvcMessage, SvcProcessor, SvcProcessorMessages};
 
@@ -17,9 +14,6 @@ use crate::{SessionError, SessionErrorExt as _, SessionResult};
 
 #[rustfmt::skip]
 pub use self::gfx::GfxHandler;
-
-pub const RDP8_GRAPHICS_PIPELINE_NAME: &str = "Microsoft::Windows::RDS::Graphics";
-pub const RDP8_DISPLAY_PIPELINE_NAME: &str = "Microsoft::Windows::RDS::DisplayControl";
 
 /// X224 Processor output
 #[derive(Debug, Clone)]
@@ -36,11 +30,9 @@ pub enum ProcessorOutput {
 }
 
 pub struct Processor {
-    channel_map: HashMap<String, u32>,
     static_channels: StaticChannelSet,
     user_channel_id: u16,
     io_channel_id: u16,
-    drdynvc_channel_id: Option<u16>,
     connection_activation: ConnectionActivationSequence,
 }
 
@@ -51,20 +43,10 @@ impl Processor {
         io_channel_id: u16,
         connection_activation: ConnectionActivationSequence,
     ) -> Self {
-        let drdynvc_channel_id = static_channels.iter().find_map(|(type_id, channel)| {
-            if channel.is_drdynvc() {
-                static_channels.get_channel_id_by_type_id(type_id)
-            } else {
-                None
-            }
-        });
-
         Self {
             static_channels,
-            channel_map: HashMap::new(),
             user_channel_id,
             io_channel_id,
-            drdynvc_channel_id,
             connection_activation,
         }
     }
@@ -95,7 +77,7 @@ impl Processor {
         process_svc_messages(messages.into(), channel_id, self.user_channel_id)
     }
 
-    pub fn get_dvc_processor<T: DvcProcessor + 'static>(&self) -> Option<&T> {
+    pub fn get_dvc_processor<T: DvcProcessor + 'static>(&self) -> Option<(&T, Option<DynamicChannelId>)> {
         self.get_svc_processor::<DrdynvcClient>()?
             .get_dynamic_channel_by_type_id::<T>()
     }
@@ -182,39 +164,6 @@ impl Processor {
             )]),
         }
     }
-
-    /// Sends a PDU on the dynamic channel.
-    // pub fn encode_dynamic(&self, output: &mut WriteBuf, channel_name: &str, dvc_data: &[u8]) -> SessionResult<()> {
-    //     let drdynvc_channel_id = self
-    //         .drdynvc_channel_id
-    //         .ok_or_else(|| general_err!("dynamic virtual channel not connected"))?;
-
-    //     let dvc_channel_id = self
-    //         .channel_map
-    //         .get(channel_name)
-    //         .ok_or_else(|| reason_err!("DVC", "access to non existing channel name: {}", channel_name))?;
-
-    //     let dvc_channel = self
-    //         .dynamic_channels
-    //         .get(dvc_channel_id)
-    //         .ok_or_else(|| reason_err!("DVC", "access to non existing channel: {}", dvc_channel_id))?;
-
-    //     let dvc_client_data = dvc::ClientPdu::Common(dvc::CommonPdu::Data(dvc::DataPdu {
-    //         channel_id_type: dvc_channel.channel_id_type,
-    //         channel_id: dvc_channel.channel_id,
-    //         data_size: dvc_data.len(),
-    //     }));
-
-    //     crate::legacy::encode_dvc_message(
-    //         self.user_channel_id,
-    //         drdynvc_channel_id,
-    //         dvc_client_data,
-    //         dvc_data,
-    //         output,
-    //     )?;
-
-    //     Ok(())
-    // }
 
     /// Send a pdu on the static global channel. Typically used to send input events
     pub fn encode_static(&self, output: &mut WriteBuf, pdu: ShareDataPdu) -> SessionResult<usize> {

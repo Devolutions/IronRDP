@@ -32,9 +32,9 @@ der-parser = "8.2"
 thiserror.workspace = true
 md5 = { package = "md-5", version = "0.10" }
 num-bigint = "0.4"
-num-derive = "0.4"
+num-derive.workspace = true
 num-integer = "0.1"
-num-traits = "0.2"
+num-traits.workspace = true
 sha1 = "0.10"
 x509-cert = { version = "0.2", default-features = false, features = ["std"] }
 pkcs1 = "0.7"

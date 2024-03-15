@@ -66,13 +66,17 @@ impl DrdynvcClient {
         self
     }
 
-    pub fn get_dynamic_channel_by_type_id<T>(&self) -> Option<&T>
+    pub fn get_dynamic_channel_by_type_id<T>(&self) -> Option<(&T, Option<DynamicChannelId>)>
     where
         T: DvcProcessor,
     {
         self.dynamic_channels
             .get_by_type_id(TypeId::of::<T>())
-            .and_then(|channel| channel.channel_processor_downcast_ref().map(|channel| channel as &T))
+            .and_then(|(channel, channel_id)| {
+                channel
+                    .channel_processor_downcast_ref()
+                    .map(|channel| (channel as &T, channel_id))
+            })
     }
 
     fn create_capabilities_response(&mut self) -> SvcMessage {
@@ -265,10 +269,6 @@ impl DynamicVirtualChannel {
         }
     }
 
-    fn set_id(&mut self, id: DynamicChannelId) {
-        self.channel_processor.set_id(id);
-    }
-
     fn channel_name(&self) -> &str {
         self.channel_processor.channel_name()
     }
@@ -306,10 +306,18 @@ impl DynamicChannelSet {
         self.channels.insert(name, DynamicVirtualChannel::new(channel))
     }
 
-    pub fn get_by_type_id(&self, type_id: TypeId) -> Option<&DynamicVirtualChannel> {
-        self.type_id_to_name
-            .get(&type_id)
-            .and_then(|name| self.channels.get(name))
+    pub fn attach_channel_id(&mut self, name: DynamicChannelName, id: DynamicChannelId) -> Option<DynamicChannelId> {
+        let channel = self.get_by_channel_name_mut(&name)?;
+        self.channel_id_to_name.insert(id, name.clone());
+        self.name_to_channel_id.insert(name, id)
+    }
+
+    pub fn get_by_type_id(&self, type_id: TypeId) -> Option<(&DynamicVirtualChannel, Option<DynamicChannelId>)> {
+        self.type_id_to_name.get(&type_id).and_then(|name| {
+            self.channels
+                .get(name)
+                .map(|channel| (channel, self.name_to_channel_id.get(name).copied()))
+        })
     }
 
     pub fn get_by_channel_name(&self, name: &DynamicChannelName) -> Option<&DynamicVirtualChannel> {
@@ -330,13 +338,6 @@ impl DynamicChannelSet {
             .and_then(|name| self.channels.get_mut(name))
     }
 
-    pub fn attach_channel_id(&mut self, name: DynamicChannelName, id: DynamicChannelId) -> Option<DynamicChannelId> {
-        let channel = self.get_by_channel_name_mut(&name)?;
-        channel.set_id(id);
-        self.channel_id_to_name.insert(id, name.clone());
-        self.name_to_channel_id.insert(name, id)
-    }
-
     pub fn remove_by_channel_id(&mut self, id: &DynamicChannelId) -> Option<DynamicChannelId> {
         if let Some(name) = self.channel_id_to_name.remove(id) {
             return self.name_to_channel_id.remove(&name);
@@ -352,5 +353,5 @@ impl DynamicChannelSet {
     }
 }
 
-type DynamicChannelName = String;
-type DynamicChannelId = u32;
+pub type DynamicChannelName = String;
+pub type DynamicChannelId = u32;
