@@ -32,7 +32,14 @@ pub use server::*;
 
 pub mod display;
 
-pub type DvcMessages = Vec<Box<dyn PduEncode + Send>>;
+/// Represents a message that, when encoded, forms a complete PDU for a given dynamic virtual channel.
+/// This means a message that is ready to be wrapped in [`dvc::CommonPdu::DataFirst`] and [`dvc::CommonPdu::Data`] PDUs
+/// (being split into multiple of such PDUs if necessary).
+pub trait DvcPduEncode: PduEncode {}
+pub type DvcMessages = Vec<Box<dyn DvcPduEncode + Send>>;
+
+/// For legacy reasons, we implement [`DvcPduEncode`] for [`Vec<u8>`].
+impl DvcPduEncode for Vec<u8> {}
 
 /// A type that is a Dynamic Virtual Channel (DVC)
 ///

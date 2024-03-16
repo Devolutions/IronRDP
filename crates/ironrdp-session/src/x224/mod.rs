@@ -1,5 +1,3 @@
-mod gfx;
-
 use ironrdp_connector::connection_activation::ConnectionActivationSequence;
 use ironrdp_connector::legacy::SendDataIndicationCtx;
 use ironrdp_dvc::DynamicChannelId;
@@ -11,9 +9,6 @@ use ironrdp_pdu::write_buf::WriteBuf;
 use ironrdp_svc::{client_encode_svc_messages, StaticChannelSet, SvcMessage, SvcProcessor, SvcProcessorMessages};
 
 use crate::{SessionError, SessionErrorExt as _, SessionResult};
-
-#[rustfmt::skip]
-pub use self::gfx::GfxHandler;
 
 /// X224 Processor output
 #[derive(Debug, Clone)]

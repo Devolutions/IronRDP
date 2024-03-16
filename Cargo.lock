@@ -1667,6 +1667,7 @@ name = "ironrdp-ainput"
 version = "0.1.0"
 dependencies = [
  "bitflags 2.4.2",
+ "ironrdp-dvc",
  "ironrdp-pdu",
  "num-derive",
  "num-traits",
@@ -1776,6 +1777,7 @@ dependencies = [
 name = "ironrdp-dvc"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.4.2",
  "ironrdp-pdu",
  "ironrdp-svc",
  "slab",

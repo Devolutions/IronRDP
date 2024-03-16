@@ -1,4 +1,5 @@
 use bitflags::bitflags;
+use ironrdp_dvc::DvcPduEncode;
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive as _, ToPrimitive as _};
 
@@ -138,6 +139,8 @@ impl PduEncode for ServerPdu {
             .expect("never overflow")
     }
 }
+
+impl DvcPduEncode for ServerPdu {}
 
 impl<'de> PduDecode<'de> for ServerPdu {
     fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
