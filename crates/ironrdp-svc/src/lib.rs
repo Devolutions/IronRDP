@@ -54,11 +54,19 @@ impl<P: SvcProcessor> From<SvcProcessorMessages<P>> for Vec<SvcMessage> {
     }
 }
 
+/// Represents a message that, when encoded, forms a complete PDU for a given static virtual channel, sans any [`ChannelPduHeader`].
+/// In other words, this marker should be applied to a message that is ready to be chunkified (have [`ChannelPduHeader`]s added,
+/// splitting it into chunks if necessary) and wrapped in MCS, x224, and tpkt headers for sending over the wire.
+pub trait SvcPduEncode: PduEncode + Send {}
+
+/// For legacy reasons, we implement [`SvcPduEncode`] for [`Vec<u8>`].
+impl SvcPduEncode for Vec<u8> {}
+
 /// Encodable PDU to be sent over a static virtual channel.
 ///
 /// Additional SVC header flags can be added via [`SvcMessage::with_flags`] method.
 pub struct SvcMessage {
-    pdu: Box<dyn PduEncode + Send>,
+    pdu: Box<dyn SvcPduEncode>,
     flags: ChannelFlags,
 }
 
@@ -73,7 +81,7 @@ impl SvcMessage {
 
 impl<T> From<T> for SvcMessage
 where
-    T: PduEncode + Send + 'static,
+    T: SvcPduEncode + 'static,
 {
     fn from(pdu: T) -> Self {
         Self {

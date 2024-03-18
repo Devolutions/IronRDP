@@ -9,7 +9,7 @@ use core::{cmp, fmt};
 
 use ironrdp_pdu as pdu;
 
-use ironrdp_svc::{impl_as_any, CompressionCondition, SvcClientProcessor, SvcMessage, SvcProcessor};
+use ironrdp_svc::{impl_as_any, CompressionCondition, SvcClientProcessor, SvcMessage, SvcPduEncode, SvcProcessor};
 use pdu::cursor::WriteCursor;
 use pdu::gcc::ChannelName;
 use pdu::rdp::vc;
@@ -17,7 +17,7 @@ use pdu::{dvc, PduResult};
 use pdu::{other_err, PduEncode};
 
 use crate::complete_data::CompleteData;
-use crate::{encode_dvc_messages, DvcMessages, DvcProcessor};
+use crate::{encode_dvc_messages, DvcMessages, DvcProcessor, DynamicChannelId, DynamicChannelSet};
 
 pub trait DvcClientProcessor: DvcProcessor {}
 
@@ -242,116 +242,5 @@ impl PduEncode for DvcMessage<'_> {
     }
 }
 
-pub struct DynamicVirtualChannel {
-    channel_processor: Box<dyn DvcProcessor + Send>,
-    complete_data: CompleteData,
-}
-
-impl DynamicVirtualChannel {
-    fn new<T: DvcProcessor + 'static>(handler: T) -> Self {
-        Self {
-            channel_processor: Box::new(handler),
-            complete_data: CompleteData::new(),
-        }
-    }
-
-    fn start(&mut self, channel_id: DynamicChannelId) -> PduResult<DvcMessages> {
-        self.channel_processor.start(channel_id)
-    }
-
-    fn process(&mut self, pdu: dvc::CommonPdu, data: &[u8]) -> PduResult<DvcMessages> {
-        let channel_id = pdu.channel_id();
-        let complete_data = self.complete_data.process_data(pdu, data.into());
-        if let Some(complete_data) = complete_data {
-            self.channel_processor.process(channel_id, &complete_data)
-        } else {
-            Ok(vec![])
-        }
-    }
-
-    fn channel_name(&self) -> &str {
-        self.channel_processor.channel_name()
-    }
-
-    fn channel_processor_downcast_ref<T: DvcProcessor>(&self) -> Option<&T> {
-        self.channel_processor.as_any().downcast_ref()
-    }
-
-    fn channel_processor_downcast_mut<T: DvcProcessor>(&mut self) -> Option<&mut T> {
-        self.channel_processor.as_any_mut().downcast_mut()
-    }
-}
-
-struct DynamicChannelSet {
-    channels: BTreeMap<DynamicChannelName, DynamicVirtualChannel>,
-    name_to_channel_id: BTreeMap<DynamicChannelName, DynamicChannelId>,
-    channel_id_to_name: BTreeMap<DynamicChannelId, DynamicChannelName>,
-    type_id_to_name: BTreeMap<TypeId, DynamicChannelName>,
-}
-
-impl DynamicChannelSet {
-    #[inline]
-    fn new() -> Self {
-        Self {
-            channels: BTreeMap::new(),
-            name_to_channel_id: BTreeMap::new(),
-            channel_id_to_name: BTreeMap::new(),
-            type_id_to_name: BTreeMap::new(),
-        }
-    }
-
-    fn insert<T: DvcProcessor + 'static>(&mut self, channel: T) -> Option<DynamicVirtualChannel> {
-        let name = channel.channel_name().to_owned();
-        self.type_id_to_name.insert(TypeId::of::<T>(), name.clone());
-        self.channels.insert(name, DynamicVirtualChannel::new(channel))
-    }
-
-    pub fn attach_channel_id(&mut self, name: DynamicChannelName, id: DynamicChannelId) -> Option<DynamicChannelId> {
-        let channel = self.get_by_channel_name_mut(&name)?;
-        self.channel_id_to_name.insert(id, name.clone());
-        self.name_to_channel_id.insert(name, id)
-    }
-
-    pub fn get_by_type_id(&self, type_id: TypeId) -> Option<(&DynamicVirtualChannel, Option<DynamicChannelId>)> {
-        self.type_id_to_name.get(&type_id).and_then(|name| {
-            self.channels
-                .get(name)
-                .map(|channel| (channel, self.name_to_channel_id.get(name).copied()))
-        })
-    }
-
-    pub fn get_by_channel_name(&self, name: &DynamicChannelName) -> Option<&DynamicVirtualChannel> {
-        self.channels.get(name)
-    }
-
-    pub fn get_by_channel_name_mut(&mut self, name: &DynamicChannelName) -> Option<&mut DynamicVirtualChannel> {
-        self.channels.get_mut(name)
-    }
-
-    pub fn get_by_channel_id(&self, id: &DynamicChannelId) -> Option<&DynamicVirtualChannel> {
-        self.channel_id_to_name.get(id).and_then(|name| self.channels.get(name))
-    }
-
-    pub fn get_by_channel_id_mut(&mut self, id: &DynamicChannelId) -> Option<&mut DynamicVirtualChannel> {
-        self.channel_id_to_name
-            .get(id)
-            .and_then(|name| self.channels.get_mut(name))
-    }
-
-    pub fn remove_by_channel_id(&mut self, id: &DynamicChannelId) -> Option<DynamicChannelId> {
-        if let Some(name) = self.channel_id_to_name.remove(id) {
-            return self.name_to_channel_id.remove(&name);
-            // Channels are retained in the `self.channels` and `self.type_id_to_name` map to allow potential
-            // dynamic re-addition by the server.
-        }
-        None
-    }
-
-    #[inline]
-    pub fn values(&self) -> impl Iterator<Item = &DynamicVirtualChannel> {
-        self.channels.values()
-    }
-}
-
-pub type DynamicChannelName = String;
-pub type DynamicChannelId = u32;
+/// Fully encoded Dynamic Virtual Channel PDUs are sent over a static virtual channel, so they must be `SvcPduEncode`.
+impl SvcPduEncode for DvcMessage<'_> {}
