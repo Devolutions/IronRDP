@@ -185,10 +185,6 @@ impl SvcProcessor for DrdynvcClient {
 
         Ok(responses)
     }
-
-    fn is_drdynvc(&self) -> bool {
-        true
-    }
 }
 
 impl SvcClientProcessor for DrdynvcClient {}

@@ -143,10 +143,6 @@ impl StaticVirtualChannel {
         ChunkProcessor::chunkify(messages, CHANNEL_CHUNK_LENGTH)
     }
 
-    pub fn is_drdynvc(&self) -> bool {
-        self.channel_processor.is_drdynvc()
-    }
-
     pub fn channel_processor_downcast_ref<T: SvcProcessor + 'static>(&self) -> Option<&T> {
         self.channel_processor.as_any().downcast_ref()
     }
@@ -249,12 +245,6 @@ pub trait SvcProcessor: AsAny + fmt::Debug + Send {
     ///
     /// Returns a list of PDUs to be sent back.
     fn process(&mut self, payload: &[u8]) -> PduResult<Vec<SvcMessage>>;
-
-    #[doc(hidden)]
-    fn is_drdynvc(&self) -> bool {
-        // FIXME(#61): temporary method that will be removed once drdynvc is ported to the new API
-        false
-    }
 }
 
 assert_obj_safe!(SvcProcessor);

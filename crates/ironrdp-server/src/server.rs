@@ -478,7 +478,9 @@ impl RdpServer {
                 debug!(?data, "McsMessage::SendDataRequest");
                 if data.channel_id == io_channel_id {
                     return self.handle_io_channel_data(data).await;
-                } else if let Some(svc) = self.static_channels.get_by_channel_id_mut(data.channel_id) {
+                }
+
+                if let Some(svc) = self.static_channels.get_by_channel_id_mut(data.channel_id) {
                     let response_pdus = svc.process(&data.user_data)?;
                     let response = server_encode_svc_messages(response_pdus, data.channel_id, user_channel_id)?;
                     framed.write_all(&response).await?;
