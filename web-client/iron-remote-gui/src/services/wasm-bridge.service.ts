@@ -46,6 +46,8 @@ export class WasmBridgeService {
     private onRemoteClipboardChanged?: OnRemoteClipboardChanged;
     private onRemoteReceivedFormatList?: OnRemoteReceivedFormatsList;
     private onForceClipboardUpdate?: OnForceClipboardUpdate;
+    private cursorHasOverride: boolean = false;
+    private lastCursorStyle: string = 'default';
 
     resize: Observable<ResizeEvent>;
     session?: Session;
@@ -264,6 +266,16 @@ export class WasmBridgeService {
         this.keyboardUnicodeMode = use_unicode;
     }
 
+    setCursorStyleOverride(style: string | null) {
+        if (style == null) {
+            this.canvas!.style.cursor = this.lastCursorStyle;
+            this.cursorHasOverride = false;
+        } else {
+            this.canvas!.style.cursor = style;
+            this.cursorHasOverride = true;
+        }
+    }
+
     private releaseAllInputs() {
         this.session?.release_all_inputs();
     }
@@ -354,13 +366,15 @@ export class WasmBridgeService {
         hotspot_x: number | undefined,
         hotspot_y: number | undefined,
     ) {
+        let cssStyle;
+
         switch (style) {
             case 'hidden': {
-                this.canvas!.style.cursor = 'none';
+                cssStyle = 'none';
                 break;
             }
             case 'default': {
-                this.canvas!.style.cursor = 'default';
+                cssStyle = 'default';
                 break;
             }
             case 'url': {
@@ -377,13 +391,20 @@ export class WasmBridgeService {
                 const rounded_hotspot_x = Math.round(hotspot_x);
                 const rounded_hotspot_y = Math.round(hotspot_y);
 
-                this.canvas!.style.cursor = `url(${data}) ${rounded_hotspot_x} ${rounded_hotspot_y}, default`;
+                cssStyle = `url(${data}) ${rounded_hotspot_x} ${rounded_hotspot_y}, default`;
 
                 break;
             }
             default: {
                 console.error(`Unsupported cursor style: ${style}.`);
+                return;
             }
+        }
+
+        this.lastCursorStyle = cssStyle;
+
+        if (!this.cursorHasOverride) {
+            this.canvas!.style.cursor = cssStyle;
         }
     }
 

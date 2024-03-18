@@ -5,6 +5,7 @@
     import type { UserInteraction } from '../../../static/iron-remote-gui';
 
     let uiService: UserInteraction;
+    let cursorOverrideActive = false;
 
     userInteractionService.subscribe((uis) => {
         if (uis != null) {
@@ -32,6 +33,16 @@
         }
 
         uiService.setKeyboardUnicodeMode(element.checked);
+    }
+
+    function toggleCursorKind() {
+        if (cursorOverrideActive) {
+            uiService.setCursorStyleOverride(null);
+        } else {
+            uiService.setCursorStyleOverride('url("crosshair.png") 7 7, default');
+        }
+
+        cursorOverrideActive = !cursorOverrideActive;
     }
 
     onMount(async () => {
@@ -64,6 +75,7 @@
                 <path d="M216,69.7,32,96V249H216V69.7Z" />
             </svg>
         </button>
+        <button on:click={() => toggleCursorKind()}>Toggle cursor kind</button>
         <button on:click={() => uiService.shutdown()}>Terminate Session</button>
         <label style="color: white;">
             <input on:click={(e) => onUnicodeModeChange(e)} type="checkbox" />

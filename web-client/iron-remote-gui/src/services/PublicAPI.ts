@@ -64,6 +64,10 @@ export class PublicAPI {
         this.wasmService.setKeyboardUnicodeMode(use_unicode);
     }
 
+    private setCursorStyleOverride(style: string | null) {
+        this.wasmService.setCursorStyleOverride(style);
+    }
+
     getExposedFunctions(): UserInteraction {
         return {
             setVisibility: this.setVisibility.bind(this),
@@ -74,6 +78,7 @@ export class PublicAPI {
             metaKey: this.metaKey.bind(this),
             shutdown: this.shutdown.bind(this),
             setKeyboardUnicodeMode: this.setKeyboardUnicodeMode.bind(this),
+            setCursorStyleOverride: this.setCursorStyleOverride.bind(this),
         };
     }
 }

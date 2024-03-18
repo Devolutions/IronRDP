@@ -29,5 +29,7 @@ export interface UserInteraction {
 
     shutdown(): void;
 
+    setCursorStyleOverride(style: string | null): void;
+
     sessionListener: Observable<SessionEvent>;
 }
