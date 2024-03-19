@@ -17,6 +17,7 @@ use pdu::{dvc, PduResult};
 use pdu::{other_err, PduEncode};
 
 use crate::complete_data::CompleteData;
+use crate::pdu::{CapabilitiesResponsePdu, CapsVersion, ClosePdu, CreateResponsePdu, CreationStatus, DrdynvcPdu};
 use crate::{encode_dvc_messages, DvcMessages, DvcProcessor, DynamicChannelId, DynamicChannelSet};
 
 pub trait DvcClientProcessor: DvcProcessor {}
@@ -80,15 +81,10 @@ impl DrdynvcClient {
     }
 
     fn create_capabilities_response(&mut self) -> SvcMessage {
-        let caps_response = dvc::ClientPdu::CapabilitiesResponse(dvc::CapabilitiesResponsePdu {
-            version: dvc::CapsVersion::V1,
-        });
+        let caps_response = DrdynvcPdu::CapabilitiesResponse(CapabilitiesResponsePdu::new(CapsVersion::V1));
         debug!("Send DVC Capabilities Response PDU: {caps_response:?}");
         self.cap_handshake_done = true;
-        SvcMessage::from(DvcMessage {
-            dvc_pdu: caps_response,
-            dvc_data: &[],
-        })
+        SvcMessage::from(caps_response)
     }
 }
 
@@ -138,19 +134,14 @@ impl SvcProcessor for DrdynvcClient {
                     self.dynamic_channels
                         .attach_channel_id(channel_name.clone(), channel_id);
                     let dynamic_channel = self.dynamic_channels.get_by_channel_name_mut(&channel_name).unwrap();
-                    (dvc::DVC_CREATION_STATUS_OK, dynamic_channel.start(channel_id)?)
+                    (CreationStatus::OK, dynamic_channel.start(channel_id)?)
                 } else {
-                    (dvc::DVC_CREATION_STATUS_NO_LISTENER, vec![])
+                    (CreationStatus::NO_LISTENER, vec![])
                 };
 
-                // Send the Create Response PDU.
-                let create_response = dvc::ClientPdu::CreateResponse(dvc::CreateResponsePdu {
-                    channel_id_type: create_request.channel_id_type,
-                    channel_id,
-                    creation_status,
-                });
+                let create_response = DrdynvcPdu::CreateResponse(CreateResponsePdu::new(channel_id, creation_status));
                 debug!("Send DVC Create Response PDU: {create_response:?}");
-                responses.push(SvcMessage::from(DvcMessage::new(create_response, &[])));
+                responses.push(SvcMessage::from(create_response));
 
                 // If this DVC has start messages, send them.
                 if !start_messages.is_empty() {
@@ -159,15 +150,12 @@ impl SvcProcessor for DrdynvcClient {
             }
             dvc::ServerPdu::CloseRequest(close_request) => {
                 debug!("Got DVC Close Request PDU: {close_request:?}");
+                self.dynamic_channels.remove_by_channel_id(&close_request.channel_id);
 
-                let close_response = dvc::ClientPdu::CloseResponse(dvc::ClosePdu {
-                    channel_id_type: close_request.channel_id_type,
-                    channel_id: close_request.channel_id,
-                });
+                let close_response = DrdynvcPdu::Close(ClosePdu::new(close_request.channel_id));
 
                 debug!("Send DVC Close Response PDU: {close_response:?}");
-                responses.push(SvcMessage::from(DvcMessage::new(close_response, &[])));
-                self.dynamic_channels.remove_by_channel_id(&close_request.channel_id);
+                responses.push(SvcMessage::from(close_response));
             }
             dvc::ServerPdu::Common(common) => {
                 let channel_id = common.channel_id();
@@ -209,34 +197,3 @@ fn decode_dvc_message(user_data: &[u8]) -> PduResult<DynamicChannelCtx<'_>> {
 
     Ok(DynamicChannelCtx { dvc_pdu, dvc_data })
 }
-
-/// TODO: this is the same as server.rs's `DynamicChannelCtx`, can we unify them?
-struct DvcMessage<'a> {
-    dvc_pdu: vc::dvc::ClientPdu,
-    dvc_data: &'a [u8],
-}
-
-impl<'a> DvcMessage<'a> {
-    fn new(dvc_pdu: vc::dvc::ClientPdu, dvc_data: &'a [u8]) -> Self {
-        Self { dvc_pdu, dvc_data }
-    }
-}
-
-impl PduEncode for DvcMessage<'_> {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
-        self.dvc_pdu.to_buffer(dst)?;
-        dst.write_slice(self.dvc_data);
-        Ok(())
-    }
-
-    fn name(&self) -> &'static str {
-        self.dvc_pdu.as_short_name()
-    }
-
-    fn size(&self) -> usize {
-        self.dvc_pdu.buffer_length() + self.dvc_data.len()
-    }
-}
-
-/// Fully encoded Dynamic Virtual Channel PDUs are sent over a static virtual channel, so they must be `SvcPduEncode`.
-impl SvcPduEncode for DvcMessage<'_> {}
