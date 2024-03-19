@@ -1,3 +1,8 @@
+use crate::pdu::{
+    CapabilitiesRequestPdu, CapsVersion, CreateRequestPdu, CreationStatus, DrdynvcClientPdu, DrdynvcDataPdu,
+    DrdynvcServerPdu,
+};
+use crate::{encode_dvc_messages, CompleteData, DvcMessages, DvcProcessor};
 use alloc::borrow::ToOwned;
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
@@ -5,20 +10,16 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use core::any::Any;
 use core::fmt;
-use pdu::dvc::{CreateRequestPdu, DataFirstPdu, DataPdu};
-use slab::Slab;
-
 use ironrdp_pdu as pdu;
-
 use ironrdp_svc::{impl_as_any, ChannelFlags, CompressionCondition, SvcMessage, SvcProcessor, SvcServerProcessor};
-use pdu::cursor::WriteCursor;
+use pdu::cursor::{ReadCursor, WriteCursor};
 use pdu::gcc::ChannelName;
 use pdu::rdp::vc;
 use pdu::write_buf::WriteBuf;
+use pdu::PduDecode as _;
+use pdu::PduResult;
 use pdu::{cast_length, custom_err, encode_vec, invalid_message_err, other_err, PduEncode, PduParsing};
-use pdu::{dvc, PduResult};
-
-use crate::{encode_dvc_messages, CompleteData, DvcMessages, DvcProcessor};
+use slab::Slab;
 
 pub trait DvcServerProcessor: DvcProcessor {}
 
@@ -116,40 +117,40 @@ impl SvcProcessor for DrdynvcServer {
     }
 
     fn start(&mut self) -> PduResult<Vec<SvcMessage>> {
-        let cap = dvc::CapabilitiesRequestPdu::V1;
-        let req = dvc::ServerPdu::CapabilitiesRequest(cap);
-        let msg = encode_dvc_message(req)?;
+        let cap = CapabilitiesRequestPdu::new(CapsVersion::V1);
+        let req = DrdynvcServerPdu::Capabilities(cap);
+        let msg = as_svc_msg_with_flag(req)?;
         Ok(alloc::vec![msg])
     }
 
     fn process(&mut self, payload: &[u8]) -> PduResult<Vec<SvcMessage>> {
-        let dvc_ctx = decode_dvc_message(payload)?;
+        let pdu = decode_dvc_message(payload)?;
         let mut resp = Vec::new();
 
-        match dvc_ctx.dvc_pdu {
-            dvc::ClientPdu::CapabilitiesResponse(caps_resp) => {
+        match pdu {
+            DrdynvcClientPdu::Capabilities(caps_resp) => {
                 debug!("Got DVC Capabilities Response PDU: {caps_resp:?}");
                 for (id, c) in self.dynamic_channels.iter_mut() {
                     if c.state != ChannelState::Closed {
                         continue;
                     }
-                    let req = dvc::ServerPdu::CreateRequest(CreateRequestPdu::new(
+                    let req = DrdynvcServerPdu::Create(CreateRequestPdu::new(
                         id.try_into().map_err(|e| custom_err!("invalid channel id", e))?,
                         c.processor.channel_name().into(),
                     ));
                     c.state = ChannelState::Creation;
-                    resp.push(encode_dvc_message(req)?);
+                    resp.push(as_svc_msg_with_flag(req)?);
                 }
             }
-            dvc::ClientPdu::CreateResponse(create_resp) => {
+            DrdynvcClientPdu::Create(create_resp) => {
                 debug!("Got DVC Create Response PDU: {create_resp:?}");
                 let id = create_resp.channel_id;
                 let c = self.channel_by_id(id)?;
                 if c.state != ChannelState::Creation {
                     return Err(invalid_message_err!("DRDYNVC", "", "invalid channel state"));
                 }
-                if create_resp.creation_status != dvc::DVC_CREATION_STATUS_OK {
-                    c.state = ChannelState::CreationFailed(create_resp.creation_status);
+                if create_resp.creation_status != CreationStatus::OK {
+                    c.state = ChannelState::CreationFailed(create_resp.creation_status.into());
                     return Ok(resp);
                 }
                 c.state = ChannelState::Opened;
@@ -160,7 +161,7 @@ impl SvcProcessor for DrdynvcServer {
                     Some(ironrdp_svc::ChannelFlags::SHOW_PROTOCOL),
                 )?);
             }
-            dvc::ClientPdu::CloseResponse(close_resp) => {
+            DrdynvcClientPdu::Close(close_resp) => {
                 debug!("Got DVC Close Response PDU: {close_resp:?}");
                 let c = self.channel_by_id(close_resp.channel_id)?;
                 if c.state != ChannelState::Opened {
@@ -168,28 +169,13 @@ impl SvcProcessor for DrdynvcServer {
                 }
                 c.state = ChannelState::Closed;
             }
-            dvc::ClientPdu::Common(dvc::CommonPdu::DataFirst(data)) => {
-                let channel_id = data.channel_id;
+            DrdynvcClientPdu::Data(data) => {
+                let channel_id = data.channel_id();
                 let c = self.channel_by_id(channel_id)?;
                 if c.state != ChannelState::Opened {
                     return Err(invalid_message_err!("DRDYNVC", "", "invalid channel state"));
                 }
-                if let Some(complete) = c.complete_data.process_data(data.into(), dvc_ctx.dvc_data.into()) {
-                    let msg = c.processor.process(channel_id, &complete)?;
-                    resp.extend(encode_dvc_messages(
-                        channel_id,
-                        msg,
-                        Some(ironrdp_svc::ChannelFlags::SHOW_PROTOCOL),
-                    )?);
-                }
-            }
-            dvc::ClientPdu::Common(dvc::CommonPdu::Data(data)) => {
-                let channel_id = data.channel_id;
-                let c = self.channel_by_id(channel_id)?;
-                if c.state != ChannelState::Opened {
-                    return Err(invalid_message_err!("DRDYNVC", "", "invalid channel state"));
-                }
-                if let Some(complete) = c.complete_data.process_data(data.into(), dvc_ctx.dvc_data.into()) {
+                if let Some(complete) = c.complete_data.process_data(data)? {
                     let msg = c.processor.process(channel_id, &complete)?;
                     resp.extend(encode_dvc_messages(
                         channel_id,
@@ -206,28 +192,10 @@ impl SvcProcessor for DrdynvcServer {
 
 impl SvcServerProcessor for DrdynvcServer {}
 
-struct DynamicChannelCtx<'a> {
-    dvc_pdu: vc::dvc::ClientPdu,
-    dvc_data: &'a [u8],
+fn decode_dvc_message(user_data: &[u8]) -> PduResult<DrdynvcClientPdu> {
+    DrdynvcClientPdu::decode(&mut ReadCursor::new(user_data))
 }
 
-fn decode_dvc_message(user_data: &[u8]) -> PduResult<DynamicChannelCtx<'_>> {
-    let mut user_data = user_data;
-    let user_data_len = user_data.len();
-
-    // … | dvc::ClientPdu | …
-    let dvc_pdu =
-        vc::dvc::ClientPdu::from_buffer(&mut user_data, user_data_len).map_err(|e| custom_err!("DVC client PDU", e))?;
-
-    // … | DvcData ]
-    let dvc_data = user_data;
-
-    Ok(DynamicChannelCtx { dvc_pdu, dvc_data })
-}
-
-fn encode_dvc_message(pdu: vc::dvc::ServerPdu) -> PduResult<SvcMessage> {
-    // FIXME: use PduEncode instead
-    let mut buf = Vec::new();
-    pdu.to_buffer(&mut buf).map_err(|e| custom_err!("DVC server pdu", e))?;
-    Ok(SvcMessage::from(buf).with_flags(ChannelFlags::SHOW_PROTOCOL))
+fn as_svc_msg_with_flag(pdu: DrdynvcServerPdu) -> PduResult<SvcMessage> {
+    Ok(SvcMessage::from(pdu).with_flags(ChannelFlags::SHOW_PROTOCOL))
 }

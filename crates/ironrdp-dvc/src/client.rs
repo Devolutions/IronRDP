@@ -1,3 +1,9 @@
+use crate::complete_data::CompleteData;
+use crate::pdu::{
+    CapabilitiesResponsePdu, CapsVersion, ClosePdu, CreateResponsePdu, CreationStatus, DrdynvcClientPdu,
+    DrdynvcDataPdu, DrdynvcServerPdu,
+};
+use crate::{encode_dvc_messages, DvcMessages, DvcProcessor, DynamicChannelId, DynamicChannelSet};
 use alloc::borrow::ToOwned;
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
@@ -6,19 +12,14 @@ use alloc::vec;
 use alloc::vec::Vec;
 use core::any::{Any, TypeId};
 use core::{cmp, fmt};
-
 use ironrdp_pdu as pdu;
-
 use ironrdp_svc::{impl_as_any, CompressionCondition, SvcClientProcessor, SvcMessage, SvcPduEncode, SvcProcessor};
-use pdu::cursor::WriteCursor;
+use pdu::cursor::{ReadCursor, WriteCursor};
 use pdu::gcc::ChannelName;
 use pdu::rdp::vc;
+use pdu::PduDecode as _;
 use pdu::{dvc, PduResult};
 use pdu::{other_err, PduEncode};
-
-use crate::complete_data::CompleteData;
-use crate::pdu::{CapabilitiesResponsePdu, CapsVersion, ClosePdu, CreateResponsePdu, CreationStatus, DrdynvcPdu};
-use crate::{encode_dvc_messages, DvcMessages, DvcProcessor, DynamicChannelId, DynamicChannelSet};
 
 pub trait DvcClientProcessor: DvcProcessor {}
 
@@ -81,7 +82,7 @@ impl DrdynvcClient {
     }
 
     fn create_capabilities_response(&mut self) -> SvcMessage {
-        let caps_response = DrdynvcPdu::CapabilitiesResponse(CapabilitiesResponsePdu::new(CapsVersion::V1));
+        let caps_response = DrdynvcClientPdu::Capabilities(CapabilitiesResponsePdu::new(CapsVersion::V1));
         debug!("Send DVC Capabilities Response PDU: {caps_response:?}");
         self.cap_handshake_done = true;
         SvcMessage::from(caps_response)
@@ -106,15 +107,15 @@ impl SvcProcessor for DrdynvcClient {
     }
 
     fn process(&mut self, payload: &[u8]) -> PduResult<Vec<SvcMessage>> {
-        let dvc_ctx = decode_dvc_message(payload)?;
+        let pdu = decode_dvc_message(payload)?;
         let mut responses = Vec::new();
 
-        match dvc_ctx.dvc_pdu {
-            dvc::ServerPdu::CapabilitiesRequest(caps_request) => {
+        match pdu {
+            DrdynvcServerPdu::Capabilities(caps_request) => {
                 debug!("Got DVC Capabilities Request PDU: {caps_request:?}");
                 responses.push(self.create_capabilities_response());
             }
-            dvc::ServerPdu::CreateRequest(create_request) => {
+            DrdynvcServerPdu::Create(create_request) => {
                 debug!("Got DVC Create Request PDU: {create_request:?}");
                 let channel_name = create_request.channel_name.clone();
                 let channel_id = create_request.channel_id;
@@ -139,7 +140,7 @@ impl SvcProcessor for DrdynvcClient {
                     (CreationStatus::NO_LISTENER, vec![])
                 };
 
-                let create_response = DrdynvcPdu::CreateResponse(CreateResponsePdu::new(channel_id, creation_status));
+                let create_response = DrdynvcClientPdu::Create(CreateResponsePdu::new(channel_id, creation_status));
                 debug!("Send DVC Create Response PDU: {create_response:?}");
                 responses.push(SvcMessage::from(create_response));
 
@@ -148,24 +149,23 @@ impl SvcProcessor for DrdynvcClient {
                     responses.extend(encode_dvc_messages(channel_id, start_messages, None)?);
                 }
             }
-            dvc::ServerPdu::CloseRequest(close_request) => {
+            DrdynvcServerPdu::Close(close_request) => {
                 debug!("Got DVC Close Request PDU: {close_request:?}");
                 self.dynamic_channels.remove_by_channel_id(&close_request.channel_id);
 
-                let close_response = DrdynvcPdu::Close(ClosePdu::new(close_request.channel_id));
+                let close_response = DrdynvcClientPdu::Close(ClosePdu::new(close_request.channel_id));
 
                 debug!("Send DVC Close Response PDU: {close_response:?}");
                 responses.push(SvcMessage::from(close_response));
             }
-            dvc::ServerPdu::Common(common) => {
-                let channel_id = common.channel_id();
-                let dvc_data = dvc_ctx.dvc_data;
+            DrdynvcServerPdu::Data(data) => {
+                let channel_id = data.channel_id();
 
                 let messages = self
                     .dynamic_channels
                     .get_by_channel_id_mut(&channel_id)
                     .ok_or_else(|| other_err!("DVC", "access to non existing channel"))?
-                    .process(common, dvc_data)?;
+                    .process(data)?;
 
                 responses.extend(encode_dvc_messages(channel_id, messages, None)?);
             }
@@ -177,23 +177,6 @@ impl SvcProcessor for DrdynvcClient {
 
 impl SvcClientProcessor for DrdynvcClient {}
 
-struct DynamicChannelCtx<'a> {
-    dvc_pdu: vc::dvc::ServerPdu,
-    dvc_data: &'a [u8],
-}
-
-fn decode_dvc_message(user_data: &[u8]) -> PduResult<DynamicChannelCtx<'_>> {
-    use ironrdp_pdu::{custom_err, PduParsing as _};
-
-    let mut user_data = user_data;
-    let user_data_len = user_data.len();
-
-    // … | dvc::ServerPdu | …
-    let dvc_pdu =
-        vc::dvc::ServerPdu::from_buffer(&mut user_data, user_data_len).map_err(|e| custom_err!("DVC server PDU", e))?;
-
-    // … | DvcData ]
-    let dvc_data = user_data;
-
-    Ok(DynamicChannelCtx { dvc_pdu, dvc_data })
+fn decode_dvc_message(user_data: &[u8]) -> PduResult<DrdynvcServerPdu> {
+    DrdynvcServerPdu::decode(&mut ReadCursor::new(user_data))
 }

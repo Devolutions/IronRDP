@@ -61,6 +61,10 @@ impl<'a> ReadCursor<'a> {
         bytes
     }
 
+    pub fn read_remaining(&mut self) -> &[u8] {
+        self.read_slice(self.len())
+    }
+
     #[inline]
     #[track_caller]
     pub fn read_u8(&mut self) -> u8 {

@@ -12,11 +12,9 @@ use crate::DvcProcessor;
 use crate::PduResult;
 use crate::SvcMessage;
 use crate::Vec;
-
 use bitflags::bitflags;
 use ironrdp_pdu::cast_length;
 use ironrdp_pdu::cursor::WriteCursor;
-use ironrdp_pdu::dvc;
 use ironrdp_pdu::ensure_size;
 use ironrdp_pdu::other_err;
 use ironrdp_pdu::write_buf::WriteBuf;

@@ -11,6 +11,7 @@ extern crate alloc;
 
 use alloc::string::String;
 use core::any::TypeId;
+use pdu::DrdynvcDataPdu;
 
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
@@ -20,8 +21,6 @@ use alloc::vec::Vec;
 // Re-export ironrdp_pdu crate for convenience
 #[rustfmt::skip] // do not re-order this pub use
 pub use ironrdp_pdu;
-use ironrdp_pdu::dvc::gfx::ServerPdu;
-use ironrdp_pdu::dvc::{self, DataFirstPdu, DataPdu};
 use ironrdp_pdu::write_buf::WriteBuf;
 use ironrdp_pdu::{
     assert_obj_safe, cast_length, custom_err, encode_vec, ensure_size, other_err, PduEncode, PduParsing as _, PduResult,
@@ -62,11 +61,11 @@ pub trait DvcProcessor: AsAny + Send + Sync {
 
     /// Returns any messages that should be sent immediately
     /// upon the channel being created.
-    fn start(&mut self, _channel_id: u32) -> PduResult<DvcMessages>;
+    fn start(&mut self, channel_id: u32) -> PduResult<DvcMessages>;
 
     fn process(&mut self, channel_id: u32, payload: &[u8]) -> PduResult<DvcMessages>;
 
-    fn close(&mut self, _channel_id: u32) {}
+    fn close(&mut self, channel_id: u32) {}
 }
 
 assert_obj_safe!(DvcProcessor);
@@ -95,13 +94,13 @@ pub(crate) fn encode_dvc_messages(
                 .ok_or_else(|| other_err!("encode_dvc_messages", "overflow occurred"))?;
 
             let pdu = if needs_splitting && first {
-                pdu::DrdynvcPdu::DataFirst(pdu::DataFirstPdu::new(
+                pdu::DrdynvcDataPdu::DataFirst(pdu::DataFirstPdu::new(
                     channel_id,
-                    total_length as u8,
+                    cast_length!("total_length", total_length)?,
                     msg[off..end].to_vec(),
                 ))
             } else {
-                pdu::DrdynvcPdu::Data(pdu::DataPdu::new(channel_id, msg[off..end].to_vec()))
+                pdu::DrdynvcDataPdu::Data(pdu::DataPdu::new(channel_id, msg[off..end].to_vec()))
             };
 
             let mut svc = SvcMessage::from(pdu);
@@ -133,9 +132,9 @@ impl DynamicVirtualChannel {
         self.channel_processor.start(channel_id)
     }
 
-    fn process(&mut self, pdu: dvc::CommonPdu, data: &[u8]) -> PduResult<DvcMessages> {
+    fn process(&mut self, pdu: DrdynvcDataPdu) -> PduResult<DvcMessages> {
         let channel_id = pdu.channel_id();
-        let complete_data = self.complete_data.process_data(pdu, data.into());
+        let complete_data = self.complete_data.process_data(pdu)?;
         if let Some(complete_data) = complete_data {
             self.channel_processor.process(channel_id, &complete_data)
         } else {

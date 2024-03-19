@@ -1,63 +1,178 @@
-use crate::{DynamicChannelId, Vec};
-use ironrdp_pdu::{cast_length, cursor::WriteCursor, ensure_size, PduEncode, PduResult};
+use crate::{DynamicChannelId, String, Vec};
+use alloc::format;
+use ironrdp_pdu::{
+    cast_length,
+    cursor::{ReadCursor, WriteCursor},
+    ensure_fixed_part_size, ensure_size, invalid_message_err, unexpected_message_type_err, unsupported_pdu_err,
+    utils::{encoded_str_len, read_string_from_cursor, write_string_to_cursor, CharacterSet},
+    PduDecode, PduEncode, PduError, PduResult,
+};
 use ironrdp_svc::SvcPduEncode;
 
-// TODO: The rest of the PDU's currently in `ironrdp-pdu/src/rdp/vc/dvc.rs` should ultimately be moved here.
+/// Dynamic Virtual Channel PDU's that are sent by both client and server.
 #[derive(Debug)]
-pub enum DrdynvcPdu {
-    CapabilitiesResponse(CapabilitiesResponsePdu),
-    CreateResponse(CreateResponsePdu),
+pub enum DrdynvcDataPdu {
     DataFirst(DataFirstPdu),
     Data(DataPdu),
-    Close(ClosePdu),
 }
 
-impl PduEncode for DrdynvcPdu {
+impl DrdynvcDataPdu {
+    pub fn channel_id(&self) -> DynamicChannelId {
+        match self {
+            DrdynvcDataPdu::DataFirst(pdu) => pdu.channel_id,
+            DrdynvcDataPdu::Data(pdu) => pdu.channel_id,
+        }
+    }
+}
+
+impl PduEncode for DrdynvcDataPdu {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
         match self {
-            DrdynvcPdu::DataFirst(pdu) => pdu.encode(dst),
-            DrdynvcPdu::Data(pdu) => pdu.encode(dst),
-            DrdynvcPdu::CreateResponse(pdu) => pdu.encode(dst),
-            DrdynvcPdu::Close(pdu) => pdu.encode(dst),
-            DrdynvcPdu::CapabilitiesResponse(pdu) => pdu.encode(dst),
+            DrdynvcDataPdu::DataFirst(pdu) => pdu.encode(dst),
+            DrdynvcDataPdu::Data(pdu) => pdu.encode(dst),
         }
     }
 
     fn name(&self) -> &'static str {
         match self {
-            DrdynvcPdu::DataFirst(pdu) => pdu.name(),
-            DrdynvcPdu::Data(pdu) => pdu.name(),
-            DrdynvcPdu::CreateResponse(pdu) => pdu.name(),
-            DrdynvcPdu::Close(pdu) => pdu.name(),
-            DrdynvcPdu::CapabilitiesResponse(pdu) => pdu.name(),
+            DrdynvcDataPdu::DataFirst(pdu) => pdu.name(),
+            DrdynvcDataPdu::Data(pdu) => pdu.name(),
         }
     }
 
     fn size(&self) -> usize {
         match self {
-            DrdynvcPdu::DataFirst(pdu) => pdu.size(),
-            DrdynvcPdu::Data(pdu) => pdu.size(),
-            DrdynvcPdu::CreateResponse(pdu) => pdu.size(),
-            DrdynvcPdu::Close(pdu) => pdu.size(),
-            DrdynvcPdu::CapabilitiesResponse(pdu) => pdu.size(),
+            DrdynvcDataPdu::DataFirst(pdu) => pdu.size(),
+            DrdynvcDataPdu::Data(pdu) => pdu.size(),
         }
     }
 }
 
-/// Dynamic virtual channel PDU's are sent over a static virtual channel, so they are `SvcPduEncode`.
-impl SvcPduEncode for DrdynvcPdu {}
+/// Dynamic Virtual Channel PDU's that are sent by the client.
+#[derive(Debug)]
+pub enum DrdynvcClientPdu {
+    Capabilities(CapabilitiesResponsePdu),
+    Create(CreateResponsePdu),
+    Close(ClosePdu),
+    Data(DrdynvcDataPdu),
+}
+
+impl PduEncode for DrdynvcClientPdu {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        match self {
+            DrdynvcClientPdu::Capabilities(pdu) => pdu.encode(dst),
+            DrdynvcClientPdu::Create(pdu) => pdu.encode(dst),
+            DrdynvcClientPdu::Data(pdu) => pdu.encode(dst),
+            DrdynvcClientPdu::Close(pdu) => pdu.encode(dst),
+        }
+    }
+
+    fn name(&self) -> &'static str {
+        match self {
+            DrdynvcClientPdu::Capabilities(pdu) => pdu.name(),
+            DrdynvcClientPdu::Create(pdu) => pdu.name(),
+            DrdynvcClientPdu::Data(pdu) => pdu.name(),
+            DrdynvcClientPdu::Close(pdu) => pdu.name(),
+        }
+    }
+
+    fn size(&self) -> usize {
+        match self {
+            DrdynvcClientPdu::Capabilities(pdu) => pdu.size(),
+            DrdynvcClientPdu::Create(pdu) => pdu.size(),
+            DrdynvcClientPdu::Data(pdu) => pdu.size(),
+            DrdynvcClientPdu::Close(pdu) => pdu.size(),
+        }
+    }
+}
+
+impl PduDecode<'_> for DrdynvcClientPdu {
+    fn decode(src: &mut ReadCursor<'_>) -> PduResult<Self> {
+        let header = Header::decode(src)?;
+        match header.cmd {
+            Cmd::Create => Ok(Self::Create(CreateResponsePdu::decode(header, src)?)),
+            Cmd::DataFirst => Ok(Self::Data(DrdynvcDataPdu::DataFirst(DataFirstPdu::decode(
+                header, src,
+            )?))),
+            Cmd::Data => Ok(Self::Data(DrdynvcDataPdu::Data(DataPdu::decode(header, src)?))),
+            Cmd::Close => Ok(Self::Close(ClosePdu::decode(header, src)?)),
+            Cmd::Capability => Ok(Self::Capabilities(CapabilitiesResponsePdu::decode(header, src)?)),
+            _ => Err(unsupported_pdu_err!("Cmd", header.cmd.into())),
+        }
+    }
+}
+
+/// Dynamic Virtual Channel PDU's that are sent by the server.
+#[derive(Debug)]
+pub enum DrdynvcServerPdu {
+    Capabilities(CapabilitiesRequestPdu),
+    Create(CreateRequestPdu),
+    Close(ClosePdu),
+    Data(DrdynvcDataPdu),
+}
+
+impl PduEncode for DrdynvcServerPdu {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        match self {
+            DrdynvcServerPdu::Data(pdu) => pdu.encode(dst),
+            DrdynvcServerPdu::Capabilities(pdu) => pdu.encode(dst),
+            DrdynvcServerPdu::Create(pdu) => pdu.encode(dst),
+            DrdynvcServerPdu::Close(pdu) => pdu.encode(dst),
+        }
+    }
+
+    fn name(&self) -> &'static str {
+        match self {
+            DrdynvcServerPdu::Data(pdu) => pdu.name(),
+            DrdynvcServerPdu::Capabilities(pdu) => pdu.name(),
+            DrdynvcServerPdu::Create(pdu) => pdu.name(),
+            DrdynvcServerPdu::Close(pdu) => pdu.name(),
+        }
+    }
+
+    fn size(&self) -> usize {
+        match self {
+            DrdynvcServerPdu::Data(pdu) => pdu.size(),
+            DrdynvcServerPdu::Capabilities(pdu) => pdu.size(),
+            DrdynvcServerPdu::Create(pdu) => pdu.size(),
+            DrdynvcServerPdu::Close(pdu) => pdu.size(),
+        }
+    }
+}
+
+impl PduDecode<'_> for DrdynvcServerPdu {
+    fn decode(src: &mut ReadCursor<'_>) -> PduResult<Self> {
+        let header = Header::decode(src)?;
+        match header.cmd {
+            Cmd::Create => Ok(Self::Create(CreateRequestPdu::decode(header, src)?)),
+            Cmd::DataFirst => Ok(Self::Data(DrdynvcDataPdu::DataFirst(DataFirstPdu::decode(
+                header, src,
+            )?))),
+            Cmd::Data => Ok(Self::Data(DrdynvcDataPdu::Data(DataPdu::decode(header, src)?))),
+            Cmd::Close => Ok(Self::Close(ClosePdu::decode(header, src)?)),
+            Cmd::Capability => Ok(Self::Capabilities(CapabilitiesRequestPdu::decode(header, src)?)),
+            _ => Err(unsupported_pdu_err!("Cmd", header.cmd.into())),
+        }
+    }
+}
+
+// Dynamic virtual channel PDU's are sent over a static virtual channel, so they are `SvcPduEncode`.
+impl SvcPduEncode for DrdynvcDataPdu {}
+impl SvcPduEncode for DrdynvcClientPdu {}
+impl SvcPduEncode for DrdynvcServerPdu {}
 
 /// [2.2] Message Syntax
 ///
 /// [2.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpedyc/0b07a750-bf51-4042-bcf2-a991b6729d6e
 #[derive(Debug)]
-struct Header {
+pub struct Header {
     cb_id: FieldType, // 2 bit
     sp: FieldType,    // 2 bit; meaning depends on the cmd field
     cmd: Cmd,         // 4 bit
 }
 
 impl Header {
+    pub const FIXED_PART_SIZE: usize = 1;
     /// Create a new `Header` with the given `cb_id_val`, `sp_val`, and `cmd`.
     ///
     /// If `cb_id_val` or `sp_val` is not relevant for a given `cmd`, it should be set to 0 respectively.
@@ -71,12 +186,26 @@ impl Header {
 
     fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
         ensure_size!(in: dst, size: Self::size());
-        dst.write_u8((self.cmd as u8) << 4 | (self.sp as u8) << 2 | (self.cb_id as u8));
+        dst.write_u8((self.cmd as u8) << 4 | Into::<u8>::into(self.sp) << 2 | Into::<u8>::into(self.cb_id));
         Ok(())
     }
 
+    fn decode(src: &mut ReadCursor<'_>) -> PduResult<Self> {
+        ensure_size!(in: src, size: Self::size());
+        let byte = src.read_u8();
+        debug!("Decoded byte: {:08b}", byte);
+        let cmd = Cmd::try_from(byte >> 4)?;
+        debug!("Decoded cmd: {:?}", cmd);
+        debug!("(byte >> 2): {:08b}", (byte >> 2));
+        debug!("((byte >> 2) & 0b11): {:08b}", (byte >> 2) & 0b11);
+        let sp = FieldType::from((byte >> 2) & 0b11);
+        debug!("(byte & 0b11): {:08b}", byte & 0b11);
+        let cb_id = FieldType::from(byte & 0b11);
+        Ok(Self { cb_id, sp, cmd })
+    }
+
     fn size() -> usize {
-        1
+        Self::FIXED_PART_SIZE
     }
 }
 
@@ -84,7 +213,7 @@ impl Header {
 ///
 /// [2.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpedyc/0b07a750-bf51-4042-bcf2-a991b6729d6e
 #[repr(u8)]
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, PartialEq)]
 enum Cmd {
     Create = 0x01,
     DataFirst = 0x02,
@@ -97,18 +226,43 @@ enum Cmd {
     SoftSyncResponse = 0x09,
 }
 
+impl TryFrom<u8> for Cmd {
+    type Error = PduError;
+
+    fn try_from(byte: u8) -> Result<Self, Self::Error> {
+        match byte {
+            0x01 => Ok(Self::Create),
+            0x02 => Ok(Self::DataFirst),
+            0x03 => Ok(Self::Data),
+            0x04 => Ok(Self::Close),
+            0x05 => Ok(Self::Capability),
+            0x06 => Ok(Self::DataFirstCompressed),
+            0x07 => Ok(Self::DataCompressed),
+            0x08 => Ok(Self::SoftSyncRequest),
+            0x09 => Ok(Self::SoftSyncResponse),
+            _ => Err(invalid_message_err!("Cmd", "invalid cmd")),
+        }
+    }
+}
+
+impl From<Cmd> for String {
+    fn from(val: Cmd) -> Self {
+        format!("{:?}", val)
+    }
+}
+
 /// 2.2.3.1 DVC Data First PDU (DYNVC_DATA_FIRST)
 ///
 /// [2.2.3.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpedyc/69377767-56a6-4ab8-996b-7758676e9261
 #[derive(Debug)]
 pub struct DataFirstPdu {
     header: Header,
-    channel_id: DynamicChannelId,
+    pub channel_id: DynamicChannelId,
     /// Length is the *total* length of the data to be sent, including the length
     /// of the data that will be sent by subsequent DVC_DATA PDUs.
-    length: u8,
+    pub length: u32,
     /// Data is just the data to be sent in this PDU.
-    data: Vec<u8>,
+    pub data: Vec<u8>,
 }
 
 impl DataFirstPdu {
@@ -118,22 +272,35 @@ impl DataFirstPdu {
     /// of the data that will be sent by subsequent `DataPdu`s.
     ///
     /// `data` is just the data to be sent in this PDU.
-    pub fn new(channel_id: DynamicChannelId, total_length: u8, data: Vec<u8>) -> Self {
+    pub fn new(channel_id: DynamicChannelId, total_length: u32, data: Vec<u8>) -> Self {
         Self {
-            header: Header::new(channel_id, total_length.into(), Cmd::DataFirst),
+            header: Header::new(channel_id, total_length, Cmd::DataFirst),
             channel_id,
             length: total_length,
             data,
         }
     }
 
+    fn decode(header: Header, src: &mut ReadCursor<'_>) -> PduResult<Self> {
+        ensure_size!(in: src, size: header.cb_id.size_of_val() + header.sp.size_of_val());
+        let channel_id = header.cb_id.decode_val(src)?;
+        let length = header.sp.decode_val(src)?;
+        let data = src.read_remaining().to_vec();
+        Ok(Self {
+            header,
+            channel_id,
+            length,
+            data,
+        })
+    }
+
     fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
         ensure_size!(in: dst, size: self.size());
         self.header.encode(dst)?;
-        self.header.cb_id.encode(self.channel_id, dst)?;
+        self.header.cb_id.encode_val(self.channel_id, dst)?;
         self.header
             .sp
-            .encode(cast_length!("DataFirstPdu::Length", self.length)?, dst)?;
+            .encode_val(cast_length!("DataFirstPdu::Length", self.length)?, dst)?;
         dst.write_slice(&self.data);
         Ok(())
     }
@@ -150,31 +317,42 @@ impl DataFirstPdu {
     }
 }
 
-#[repr(u8)]
-#[derive(Debug, Copy, Clone)]
-pub enum FieldType {
-    U8 = 0x00,
-    U16 = 0x01,
-    U32 = 0x02,
-}
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub struct FieldType(u8);
 
 impl FieldType {
-    fn encode(&self, value: u32, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    pub const U8: Self = Self(0x00);
+    pub const U16: Self = Self(0x01);
+    pub const U32: Self = Self(0x02);
+
+    fn encode_val(&self, value: u32, dst: &mut WriteCursor<'_>) -> PduResult<()> {
         ensure_size!(in: dst, size: self.size_of_val());
-        match self {
+        match *self {
             FieldType::U8 => dst.write_u8(cast_length!("FieldType::encode", value)?),
             FieldType::U16 => dst.write_u16(cast_length!("FieldType::encode", value)?),
             FieldType::U32 => dst.write_u32(value),
+            _ => return Err(invalid_message_err!("FieldType", "invalid field type")),
         };
         Ok(())
     }
 
+    fn decode_val(&self, src: &mut ReadCursor<'_>) -> PduResult<u32> {
+        ensure_size!(in: src, size: self.size_of_val());
+        match *self {
+            FieldType::U8 => Ok(src.read_u8() as u32),
+            FieldType::U16 => Ok(src.read_u16() as u32),
+            FieldType::U32 => Ok(src.read_u32()),
+            _ => Err(invalid_message_err!("FieldType", "invalid field type")),
+        }
+    }
+
     /// Returns the size of the value in bytes.
     fn size_of_val(&self) -> usize {
-        match self {
+        match *self {
             FieldType::U8 => 1,
             FieldType::U16 => 2,
             FieldType::U32 => 4,
+            _ => 0,
         }
     }
 
@@ -189,14 +367,31 @@ impl FieldType {
     }
 }
 
+impl From<u8> for FieldType {
+    fn from(byte: u8) -> Self {
+        match byte {
+            0x00 => Self::U8,
+            0x01 => Self::U16,
+            0x02 => Self::U32,
+            _ => Self(byte),
+        }
+    }
+}
+
+impl From<FieldType> for u8 {
+    fn from(field_type: FieldType) -> Self {
+        field_type.0
+    }
+}
+
 /// 2.2.3.2 DVC Data PDU (DYNVC_DATA)
 ///
 /// [2.2.3.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpedyc/15b59886-db44-47f1-8da3-47c8fcd82803
 #[derive(Debug)]
 pub struct DataPdu {
     header: Header,
-    channel_id: DynamicChannelId,
-    data: Vec<u8>,
+    pub channel_id: DynamicChannelId,
+    pub data: Vec<u8>,
 }
 
 impl DataPdu {
@@ -208,10 +403,21 @@ impl DataPdu {
         }
     }
 
+    fn decode(header: Header, src: &mut ReadCursor<'_>) -> PduResult<Self> {
+        ensure_size!(in: src, size: header.cb_id.size_of_val());
+        let channel_id = header.cb_id.decode_val(src)?;
+        let data = src.read_remaining().to_vec();
+        Ok(Self {
+            header,
+            channel_id,
+            data,
+        })
+    }
+
     fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
         ensure_size!(in: dst, size: self.size());
         self.header.encode(dst)?;
-        self.header.cb_id.encode(self.channel_id, dst)?;
+        self.header.cb_id.encode_val(self.channel_id, dst)?;
         dst.write_slice(&self.data);
         Ok(())
     }
@@ -233,8 +439,8 @@ impl DataPdu {
 #[derive(Debug)]
 pub struct CreateResponsePdu {
     header: Header,
-    channel_id: DynamicChannelId,
-    creation_status: CreationStatus,
+    pub channel_id: DynamicChannelId,
+    pub creation_status: CreationStatus,
 }
 
 impl CreateResponsePdu {
@@ -250,10 +456,21 @@ impl CreateResponsePdu {
         "DYNVC_CREATE_RSP"
     }
 
+    fn decode(header: Header, src: &mut ReadCursor<'_>) -> PduResult<Self> {
+        ensure_size!(in: src, size: header.cb_id.size_of_val() + CreationStatus::size());
+        let channel_id = header.cb_id.decode_val(src)?;
+        let creation_status = CreationStatus(src.read_u32());
+        Ok(Self {
+            header,
+            channel_id,
+            creation_status,
+        })
+    }
+
     fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
         ensure_size!(in: dst, size: self.size());
         self.header.encode(dst)?;
-        self.header.cb_id.encode(self.channel_id, dst)?;
+        self.header.cb_id.encode_val(self.channel_id, dst)?;
         self.creation_status.encode(dst)?;
         Ok(())
     }
@@ -265,7 +482,7 @@ impl CreateResponsePdu {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Copy, Clone, PartialEq)]
 pub struct CreationStatus(u32);
 
 impl CreationStatus {
@@ -283,13 +500,19 @@ impl CreationStatus {
     }
 }
 
+impl From<CreationStatus> for u32 {
+    fn from(val: CreationStatus) -> Self {
+        val.0
+    }
+}
+
 /// 2.2.4 Closing a DVC (DYNVC_CLOSE)
 ///
 /// [2.2.4]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpedyc/c02dfd21-ccbc-4254-985b-3ef6dd115dec
 #[derive(Debug)]
 pub struct ClosePdu {
     header: Header,
-    channel_id: DynamicChannelId,
+    pub channel_id: DynamicChannelId,
 }
 
 impl ClosePdu {
@@ -300,10 +523,15 @@ impl ClosePdu {
         }
     }
 
+    fn decode(header: Header, src: &mut ReadCursor<'_>) -> PduResult<Self> {
+        let channel_id = header.cb_id.decode_val(src)?;
+        Ok(Self { header, channel_id })
+    }
+
     fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
         ensure_size!(in: dst, size: self.size());
         self.header.encode(dst)?;
-        self.header.cb_id.encode(self.channel_id, dst)?;
+        self.header.cb_id.encode_val(self.channel_id, dst)?;
         Ok(())
     }
 
@@ -331,6 +559,13 @@ impl CapabilitiesResponsePdu {
             header: Header::new(0, 0, Cmd::Capability),
             version,
         }
+    }
+
+    fn decode(header: Header, src: &mut ReadCursor<'_>) -> PduResult<Self> {
+        ensure_size!(in: src, size: 1 /* Pad */ + CapsVersion::size());
+        let _pad = src.read_u8();
+        let version = CapsVersion::try_from(src.read_u16())?;
+        Ok(Self { header, version })
     }
 
     fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
@@ -367,5 +602,175 @@ impl CapsVersion {
 
     fn size() -> usize {
         2
+    }
+}
+
+impl TryFrom<u16> for CapsVersion {
+    type Error = PduError;
+
+    fn try_from(value: u16) -> Result<Self, Self::Error> {
+        match value {
+            0x0001 => Ok(Self::V1),
+            0x0002 => Ok(Self::V2),
+            0x0003 => Ok(Self::V3),
+            _ => Err(invalid_message_err!("CapsVersion", "invalid version")),
+        }
+    }
+}
+
+impl From<CapsVersion> for u16 {
+    fn from(version: CapsVersion) -> Self {
+        version as u16
+    }
+}
+
+/// 2.2.1.1 DVC Capabilities Request PDU
+///
+/// [2.2.1.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpedyc/c07b15ae-304e-46b8-befe-39c6d95c25e0
+#[derive(Debug)]
+pub enum CapabilitiesRequestPdu {
+    V1 {
+        header: Header,
+    },
+    V2 {
+        header: Header,
+        charges: [u16; CapabilitiesRequestPdu::PRIORITY_CHARGE_COUNT],
+    },
+    V3 {
+        header: Header,
+        charges: [u16; CapabilitiesRequestPdu::PRIORITY_CHARGE_COUNT],
+    },
+}
+
+impl CapabilitiesRequestPdu {
+    const HEADERLESS_FIXED_PART_SIZE: usize = 1 /* Pad */ + 2 /* Version */;
+    const FIXED_PART_SIZE: usize = Header::FIXED_PART_SIZE + Self::HEADERLESS_FIXED_PART_SIZE;
+    const PRIORITY_CHARGE_SIZE: usize = 2; // 2 bytes for each priority charge
+    const PRIORITY_CHARGE_COUNT: usize = 4; // 4 priority charges
+    const PRIORITY_CHARGES_SIZE: usize = Self::PRIORITY_CHARGE_COUNT * Self::PRIORITY_CHARGE_SIZE;
+
+    pub fn new(version: CapsVersion) -> Self {
+        let header = Header::new(0, 0, Cmd::Capability);
+        match version {
+            CapsVersion::V1 => Self::V1 { header },
+            CapsVersion::V2 => Self::V2 {
+                header,
+                charges: [0; Self::PRIORITY_CHARGE_COUNT],
+            },
+            CapsVersion::V3 => Self::V3 {
+                header,
+                charges: [0; Self::PRIORITY_CHARGE_COUNT],
+            },
+        }
+    }
+
+    fn decode(header: Header, src: &mut ReadCursor<'_>) -> PduResult<Self> {
+        ensure_size!(in: src, size: Self::HEADERLESS_FIXED_PART_SIZE);
+        let _pad = src.read_u8();
+        let version = CapsVersion::try_from(src.read_u16())?;
+        match version {
+            CapsVersion::V1 => Ok(Self::V1 { header }),
+            _ => {
+                ensure_size!(in: src, size: Self::PRIORITY_CHARGES_SIZE);
+                let mut charges = [0u16; Self::PRIORITY_CHARGE_COUNT];
+                for charge in charges.iter_mut() {
+                    *charge = src.read_u16();
+                }
+
+                match version {
+                    CapsVersion::V2 => Ok(Self::V2 { header, charges }),
+                    CapsVersion::V3 => Ok(Self::V3 { header, charges }),
+                    _ => unreachable!(),
+                }
+            }
+        }
+    }
+
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_size!(in: dst, size: self.size());
+        match self {
+            CapabilitiesRequestPdu::V1 { header }
+            | CapabilitiesRequestPdu::V2 { header, .. }
+            | CapabilitiesRequestPdu::V3 { header, .. } => header.encode(dst),
+        };
+        dst.write_u8(0x00); // Pad, MUST be 0x00
+        match self {
+            CapabilitiesRequestPdu::V1 { .. } => dst.write_u16(CapsVersion::V1.into()),
+            CapabilitiesRequestPdu::V2 { .. } => dst.write_u16(CapsVersion::V2.into()),
+            CapabilitiesRequestPdu::V3 { .. } => dst.write_u16(CapsVersion::V3.into()),
+        }
+        match self {
+            CapabilitiesRequestPdu::V1 { .. } => {}
+            CapabilitiesRequestPdu::V2 { charges, .. } | CapabilitiesRequestPdu::V3 { charges, .. } => {
+                for charge in charges.iter() {
+                    dst.write_u16(*charge);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn size(&self) -> usize {
+        match self {
+            Self::V1 { header } => Self::FIXED_PART_SIZE,
+            _ => Self::FIXED_PART_SIZE + Self::PRIORITY_CHARGES_SIZE,
+        }
+    }
+
+    fn name(&self) -> &'static str {
+        match self {
+            Self::V1 { .. } => "DYNVC_CAPS_VERSION1",
+            Self::V2 { .. } => "DYNVC_CAPS_VERSION2",
+            Self::V3 { .. } => "DYNVC_CAPS_VERSION3",
+        }
+    }
+}
+
+/// 2.2.2.1 DVC Create Request PDU (DYNVC_CREATE_REQ)
+///
+/// [2.2.2.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpedyc/4448ba4d-9a72-429f-8b65-6f4ec44f2985
+#[derive(Debug)]
+pub struct CreateRequestPdu {
+    header: Header,
+    pub channel_id: DynamicChannelId,
+    pub channel_name: String,
+}
+
+impl CreateRequestPdu {
+    pub fn new(channel_id: DynamicChannelId, channel_name: String) -> Self {
+        Self {
+            header: Header::new(channel_id, 0, Cmd::Create),
+            channel_id,
+            channel_name,
+        }
+    }
+
+    fn decode(header: Header, src: &mut ReadCursor<'_>) -> PduResult<Self> {
+        ensure_size!(in: src, size: header.cb_id.size_of_val());
+        let channel_id = header.cb_id.decode_val(src)?;
+        let channel_name = read_string_from_cursor(src, CharacterSet::Ansi, true)?;
+        Ok(Self {
+            header,
+            channel_id,
+            channel_name,
+        })
+    }
+
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_size!(in: dst, size: self.size());
+        self.header.encode(dst)?;
+        self.header.cb_id.encode_val(self.channel_id, dst)?;
+        write_string_to_cursor(dst, &self.channel_name, CharacterSet::Ansi, true);
+        Ok(())
+    }
+
+    fn name(&self) -> &'static str {
+        "DYNVC_CREATE_REQ"
+    }
+
+    fn size(&self) -> usize {
+        Header::size() +
+        self.header.cb_id.size_of_val() + // ChannelId
+        encoded_str_len(&self.channel_name, CharacterSet::Ansi, true) // ChannelName + Null terminator
     }
 }
