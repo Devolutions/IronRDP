@@ -1,3 +1,6 @@
+#[cfg(test)]
+mod test;
+
 use crate::{DynamicChannelId, String, Vec};
 use alloc::format;
 use ironrdp_pdu::{
@@ -164,7 +167,7 @@ impl SvcPduEncode for DrdynvcServerPdu {}
 /// [2.2] Message Syntax
 ///
 /// [2.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpedyc/0b07a750-bf51-4042-bcf2-a991b6729d6e
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub struct Header {
     cb_id: FieldType, // 2 bit
     sp: FieldType,    // 2 bit; meaning depends on the cmd field
@@ -193,13 +196,8 @@ impl Header {
     fn decode(src: &mut ReadCursor<'_>) -> PduResult<Self> {
         ensure_size!(in: src, size: Self::size());
         let byte = src.read_u8();
-        debug!("Decoded byte: {:08b}", byte);
         let cmd = Cmd::try_from(byte >> 4)?;
-        debug!("Decoded cmd: {:?}", cmd);
-        debug!("(byte >> 2): {:08b}", (byte >> 2));
-        debug!("((byte >> 2) & 0b11): {:08b}", (byte >> 2) & 0b11);
         let sp = FieldType::from((byte >> 2) & 0b11);
-        debug!("(byte & 0b11): {:08b}", byte & 0b11);
         let cb_id = FieldType::from(byte & 0b11);
         Ok(Self { cb_id, sp, cmd })
     }
@@ -254,7 +252,7 @@ impl From<Cmd> for String {
 /// 2.2.3.1 DVC Data First PDU (DYNVC_DATA_FIRST)
 ///
 /// [2.2.3.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpedyc/69377767-56a6-4ab8-996b-7758676e9261
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub struct DataFirstPdu {
     header: Header,
     pub channel_id: DynamicChannelId,

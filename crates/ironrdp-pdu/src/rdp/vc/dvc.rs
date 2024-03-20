@@ -6,7 +6,6 @@ use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive, ToPrimitive};
 
 use super::ChannelError;
-use crate::cursor::WriteCursor;
 use crate::PduParsing;
 
 #[cfg(test)]
@@ -43,88 +42,12 @@ pub enum PduType {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum CommonPdu {
-    DataFirst(DataFirstPdu),
-    Data(DataPdu),
-}
-
-impl CommonPdu {
-    pub fn from_buffer(
-        pdu_type: PduType,
-        mut stream: impl io::Read,
-        dvc_data_size: usize,
-        channel_id_type: FieldType,
-    ) -> Result<Self, ChannelError> {
-        match pdu_type {
-            PduType::DataFirst => {
-                let data_length_type =
-                    FieldType::from_u8(channel_id_type as u8).ok_or(ChannelError::InvalidDvcDataLength)?;
-
-                Ok(CommonPdu::DataFirst(DataFirstPdu::from_buffer(
-                    &mut stream,
-                    channel_id_type,
-                    data_length_type,
-                    dvc_data_size,
-                )?))
-            }
-            PduType::Data => Ok(CommonPdu::Data(DataPdu::from_buffer(
-                &mut stream,
-                channel_id_type,
-                dvc_data_size,
-            )?)),
-            _ => Err(ChannelError::InvalidDvcPduType),
-        }
-    }
-
-    pub fn to_buffer(&self, mut stream: impl io::Write) -> Result<(), ChannelError> {
-        match self {
-            CommonPdu::DataFirst(data_first) => data_first.to_buffer(&mut stream)?,
-            CommonPdu::Data(data) => data.to_buffer(&mut stream)?,
-        };
-
-        Ok(())
-    }
-
-    pub fn buffer_length(&self) -> usize {
-        match self {
-            CommonPdu::DataFirst(data_first) => data_first.buffer_length(),
-            CommonPdu::Data(data) => data.buffer_length(),
-        }
-    }
-
-    pub fn as_short_name(&self) -> &'static str {
-        match self {
-            CommonPdu::DataFirst(_) => "Data First PDU",
-            CommonPdu::Data(_) => "Data PDU",
-        }
-    }
-
-    pub fn channel_id(&self) -> u32 {
-        match self {
-            CommonPdu::DataFirst(data_first) => data_first.channel_id,
-            CommonPdu::Data(data) => data.channel_id,
-        }
-    }
-}
-
-impl From<DataFirstPdu> for CommonPdu {
-    fn from(data_first: DataFirstPdu) -> Self {
-        CommonPdu::DataFirst(data_first)
-    }
-}
-
-impl From<DataPdu> for CommonPdu {
-    fn from(data: DataPdu) -> Self {
-        CommonPdu::Data(data)
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ServerPdu {
     CapabilitiesRequest(CapabilitiesRequestPdu),
     CreateRequest(CreateRequestPdu),
+    DataFirst(DataFirstPdu),
+    Data(DataPdu),
     CloseRequest(ClosePdu),
-    Common(CommonPdu),
 }
 
 impl ServerPdu {
@@ -144,17 +67,21 @@ impl ServerPdu {
                 channel_id_type,
                 dvc_data_size,
             )?)),
-            PduType::DataFirst => Ok(ServerPdu::Common(CommonPdu::from_buffer(
-                PduType::DataFirst,
+            PduType::DataFirst => {
+                let data_length_type =
+                    FieldType::from_u8(dvc_header.pdu_dependent).ok_or(ChannelError::InvalidDvcDataLength)?;
+
+                Ok(ServerPdu::DataFirst(DataFirstPdu::from_buffer(
+                    &mut stream,
+                    channel_id_type,
+                    data_length_type,
+                    dvc_data_size,
+                )?))
+            }
+            PduType::Data => Ok(ServerPdu::Data(DataPdu::from_buffer(
                 &mut stream,
-                dvc_data_size,
                 channel_id_type,
-            )?)),
-            PduType::Data => Ok(ServerPdu::Common(CommonPdu::from_buffer(
-                PduType::Data,
-                &mut stream,
                 dvc_data_size,
-                channel_id_type,
             )?)),
             PduType::Close => Ok(ServerPdu::CloseRequest(ClosePdu::from_buffer(
                 &mut stream,
@@ -167,7 +94,8 @@ impl ServerPdu {
         match self {
             ServerPdu::CapabilitiesRequest(caps_request) => caps_request.to_buffer(&mut stream)?,
             ServerPdu::CreateRequest(create_request) => create_request.to_buffer(&mut stream)?,
-            ServerPdu::Common(common) => common.to_buffer(&mut stream)?,
+            ServerPdu::DataFirst(data_first) => data_first.to_buffer(&mut stream)?,
+            ServerPdu::Data(data) => data.to_buffer(&mut stream)?,
             ServerPdu::CloseRequest(close_request) => close_request.to_buffer(&mut stream)?,
         };
 
@@ -178,16 +106,18 @@ impl ServerPdu {
         match self {
             ServerPdu::CapabilitiesRequest(caps_request) => caps_request.buffer_length(),
             ServerPdu::CreateRequest(create_request) => create_request.buffer_length(),
-            ServerPdu::Common(common) => common.buffer_length(),
+            ServerPdu::DataFirst(data_first) => data_first.buffer_length(),
+            ServerPdu::Data(data) => data.buffer_length(),
             ServerPdu::CloseRequest(close_request) => close_request.buffer_length(),
         }
     }
 
-    pub fn as_short_name(&self) -> &'static str {
+    pub fn as_short_name(&self) -> &str {
         match self {
             ServerPdu::CapabilitiesRequest(_) => "Capabilities Request PDU",
             ServerPdu::CreateRequest(_) => "Create Request PDU",
-            ServerPdu::Common(common) => common.as_short_name(),
+            ServerPdu::DataFirst(_) => "Data First PDU",
+            ServerPdu::Data(_) => "Data PDU",
             ServerPdu::CloseRequest(_) => "Close Request PDU",
         }
     }
@@ -197,8 +127,9 @@ impl ServerPdu {
 pub enum ClientPdu {
     CapabilitiesResponse(CapabilitiesResponsePdu),
     CreateResponse(CreateResponsePdu),
+    DataFirst(DataFirstPdu),
+    Data(DataPdu),
     CloseResponse(ClosePdu),
-    Common(CommonPdu),
 }
 
 impl ClientPdu {
@@ -217,17 +148,21 @@ impl ClientPdu {
                 &mut stream,
                 channel_id_type,
             )?)),
-            PduType::DataFirst => Ok(ClientPdu::Common(CommonPdu::from_buffer(
-                PduType::DataFirst,
+            PduType::DataFirst => {
+                let data_length_type =
+                    FieldType::from_u8(dvc_header.pdu_dependent).ok_or(ChannelError::InvalidDvcDataLength)?;
+
+                Ok(ClientPdu::DataFirst(DataFirstPdu::from_buffer(
+                    &mut stream,
+                    channel_id_type,
+                    data_length_type,
+                    dvc_data_size,
+                )?))
+            }
+            PduType::Data => Ok(ClientPdu::Data(DataPdu::from_buffer(
                 &mut stream,
-                dvc_data_size,
                 channel_id_type,
-            )?)),
-            PduType::Data => Ok(ClientPdu::Common(CommonPdu::from_buffer(
-                PduType::Data,
-                &mut stream,
                 dvc_data_size,
-                channel_id_type,
             )?)),
             PduType::Close => Ok(ClientPdu::CloseResponse(ClosePdu::from_buffer(
                 &mut stream,
@@ -236,11 +171,12 @@ impl ClientPdu {
         }
     }
 
-    pub fn to_buffer(&self, mut stream: &mut WriteCursor<'_>) -> Result<(), ChannelError> {
+    pub fn to_buffer(&self, mut stream: impl io::Write) -> Result<(), ChannelError> {
         match self {
             ClientPdu::CapabilitiesResponse(caps_request) => caps_request.to_buffer(&mut stream)?,
             ClientPdu::CreateResponse(create_request) => create_request.to_buffer(&mut stream)?,
-            ClientPdu::Common(common) => common.to_buffer(&mut stream)?,
+            ClientPdu::DataFirst(data_first) => data_first.to_buffer(&mut stream)?,
+            ClientPdu::Data(data) => data.to_buffer(&mut stream)?,
             ClientPdu::CloseResponse(close_response) => close_response.to_buffer(&mut stream)?,
         };
 
@@ -251,16 +187,18 @@ impl ClientPdu {
         match self {
             ClientPdu::CapabilitiesResponse(caps_request) => caps_request.buffer_length(),
             ClientPdu::CreateResponse(create_request) => create_request.buffer_length(),
-            ClientPdu::Common(common) => common.buffer_length(),
+            ClientPdu::DataFirst(data_first) => data_first.buffer_length(),
+            ClientPdu::Data(data) => data.buffer_length(),
             ClientPdu::CloseResponse(close_response) => close_response.buffer_length(),
         }
     }
 
-    pub fn as_short_name(&self) -> &'static str {
+    pub fn as_short_name(&self) -> &str {
         match self {
             ClientPdu::CapabilitiesResponse(_) => "Capabilities Response PDU",
             ClientPdu::CreateResponse(_) => "Create Response PDU",
-            ClientPdu::Common(common) => common.as_short_name(),
+            ClientPdu::DataFirst(_) => "Data First PDU",
+            ClientPdu::Data(_) => "Data PDU",
             ClientPdu::CloseResponse(_) => "Close Response PDU",
         }
     }

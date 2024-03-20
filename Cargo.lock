@@ -1780,6 +1780,7 @@ dependencies = [
  "bitflags 2.4.2",
  "ironrdp-pdu",
  "ironrdp-svc",
+ "lazy_static",
  "slab",
  "tracing",
 ]
