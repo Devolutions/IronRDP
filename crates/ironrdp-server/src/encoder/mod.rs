@@ -52,6 +52,26 @@ impl UpdateEncoder {
         }
     }
 
+    fn encode_pdu(&mut self, pdu: impl PduEncode) -> Option<usize> {
+        loop {
+            let mut cursor = WriteCursor::new(self.buffer.as_mut_slice());
+            match pdu.encode(&mut cursor) {
+                Err(e) => match e.kind() {
+                    ironrdp_pdu::PduErrorKind::NotEnoughBytes { .. } => {
+                        self.buffer.resize(self.buffer.len() * 2, 0);
+                        debug!("encoder buffer resized to: {}", self.buffer.len() * 2);
+                    }
+
+                    _ => {
+                        debug!("encode error: {:?}", e);
+                        return None;
+                    }
+                },
+                Ok(()) => return Some(cursor.pos()),
+            }
+        }
+    }
+
     pub(crate) fn bitmap(&mut self, bitmap: BitmapUpdate) -> Option<UpdateFragmenter<'_>> {
         let update = self.update;
 
@@ -99,23 +119,10 @@ impl UpdateEncoder {
             extended_bitmap_data,
         };
         let cmd = SurfaceCommand::SetSurfaceBits(pdu);
-        let len = loop {
-            let mut cursor = WriteCursor::new(self.buffer.as_mut_slice());
-            match cmd.encode(&mut cursor) {
-                Err(e) => match e.kind() {
-                    ironrdp_pdu::PduErrorKind::NotEnoughBytes { .. } => {
-                        self.buffer.resize(self.buffer.len() * 2, 0);
-                        debug!("encoder buffer resized to: {}", self.buffer.len() * 2);
-                    }
-
-                    _ => {
-                        debug!("bitmap encode error: {:?}", e);
-                        return None;
-                    }
-                },
-                Ok(()) => break cursor.pos(),
-            }
+        let Some(len) = self.encode_pdu(cmd) else {
+            return None;
         };
+
         Some(UpdateFragmenter::new(UpdateCode::SurfaceCommands, &self.buffer[..len]))
     }
 
