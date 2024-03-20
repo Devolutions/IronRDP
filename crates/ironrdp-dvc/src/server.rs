@@ -18,7 +18,7 @@ use pdu::rdp::vc;
 use pdu::write_buf::WriteBuf;
 use pdu::PduDecode as _;
 use pdu::PduResult;
-use pdu::{cast_length, custom_err, encode_vec, invalid_message_err, other_err, PduEncode, PduParsing};
+use pdu::{cast_length, custom_err, encode_vec, invalid_message_err, other_err, PduEncode};
 use slab::Slab;
 
 pub trait DvcServerProcessor: DvcProcessor {}

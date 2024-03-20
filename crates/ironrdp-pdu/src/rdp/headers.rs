@@ -14,8 +14,6 @@ use crate::rdp::session_info::SaveSessionInfoPdu;
 use crate::rdp::suppress_output::SuppressOutputPdu;
 use crate::{PduDecode, PduEncode, PduResult};
 
-use super::capability_sets::CapabilitySetsError;
-
 pub const BASIC_SECURITY_HEADER_SIZE: usize = 4;
 pub const SHARE_DATA_HEADER_COMPRESSION_MASK: u8 = 0xF;
 const SHARE_CONTROL_HEADER_MASK: u16 = 0xF;

@@ -22,9 +22,7 @@ use alloc::vec::Vec;
 #[rustfmt::skip] // do not re-order this pub use
 pub use ironrdp_pdu;
 use ironrdp_pdu::write_buf::WriteBuf;
-use ironrdp_pdu::{
-    assert_obj_safe, cast_length, custom_err, encode_vec, ensure_size, other_err, PduEncode, PduParsing as _, PduResult,
-};
+use ironrdp_pdu::{assert_obj_safe, cast_length, custom_err, encode_vec, ensure_size, other_err, PduEncode, PduResult};
 use ironrdp_svc::{self, impl_as_any, AsAny, SvcMessage};
 
 mod complete_data;
