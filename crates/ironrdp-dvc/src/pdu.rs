@@ -434,7 +434,7 @@ impl DataPdu {
 /// 2.2.2.2 DVC Create Response PDU (DYNVC_CREATE_RSP)
 ///
 /// [2.2.2.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpedyc/8f284ea3-54f3-4c24-8168-8a001c63b581
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub struct CreateResponsePdu {
     header: Header,
     pub channel_id: DynamicChannelId,
@@ -727,7 +727,7 @@ impl CapabilitiesRequestPdu {
 /// 2.2.2.1 DVC Create Request PDU (DYNVC_CREATE_REQ)
 ///
 /// [2.2.2.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpedyc/4448ba4d-9a72-429f-8b65-6f4ec44f2985
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub struct CreateRequestPdu {
     header: Header,
     pub channel_id: DynamicChannelId,

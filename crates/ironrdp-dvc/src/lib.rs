@@ -37,7 +37,7 @@ mod server;
 pub use server::*;
 
 pub mod display;
-mod pdu;
+pub mod pdu;
 
 /// Represents a message that, when encoded, forms a complete PDU for a given dynamic virtual channel.
 /// This means a message that is ready to be wrapped in [`dvc::CommonPdu::DataFirst`] and [`dvc::CommonPdu::Data`] PDUs

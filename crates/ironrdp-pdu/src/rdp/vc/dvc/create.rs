@@ -1,6 +1,3 @@
-#[cfg(test)]
-mod tests;
-
 use std::io;
 
 use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
