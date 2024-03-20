@@ -3,11 +3,8 @@ use ironrdp_dvc::DvcPduEncode;
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive as _, ToPrimitive as _};
 
-use ironrdp_pdu::{
-    cursor::{ReadCursor, WriteCursor},
-    ensure_fixed_part_size, invalid_message_err, PduDecode, PduEncode, PduResult,
-};
-
+use ironrdp_pdu::cursor::{ReadCursor, WriteCursor};
+use ironrdp_pdu::{ensure_fixed_part_size, invalid_message_err, PduDecode, PduEncode, PduResult};
 // Advanced Input channel as defined from Freerdp, [here]:
 //
 // [here]: https://github.com/FreeRDP/FreeRDP/blob/master/include/freerdp/channels/ainput.h

@@ -1,34 +1,47 @@
-use std::io;
-
-use byteorder::{LittleEndian, ReadBytesExt as _, WriteBytesExt as _};
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive, ToPrimitive};
-use thiserror::Error;
 
-use crate::PduParsing;
+use crate::{
+    cursor::{ReadCursor, WriteCursor},
+    PduDecode, PduEncode, PduResult,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServerSetErrorInfoPdu(pub ErrorInfo);
 
-impl PduParsing for ServerSetErrorInfoPdu {
-    type Error = ServerSetErrorInfoError;
+impl ServerSetErrorInfoPdu {
+    const NAME: &'static str = "ServerSetErrorInfoPdu";
 
-    fn from_buffer(mut buffer: impl io::Read) -> Result<Self, Self::Error> {
-        let error_info = buffer.read_u32::<LittleEndian>()?;
-        let error_info =
-            ErrorInfo::from_u32(error_info).ok_or(ServerSetErrorInfoError::UnexpectedInfoCode(error_info))?;
+    const FIXED_PART_SIZE: usize = 4 /* errorInfo */;
+}
 
-        Ok(Self(error_info))
-    }
+impl PduEncode for ServerSetErrorInfoPdu {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_fixed_part_size!(in: dst);
 
-    fn to_buffer(&self, mut buffer: impl io::Write) -> Result<(), Self::Error> {
-        buffer.write_u32::<LittleEndian>(self.0.to_u32().unwrap())?;
+        dst.write_u32(self.0.to_u32().unwrap());
 
         Ok(())
     }
 
-    fn buffer_length(&self) -> usize {
-        4
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    fn size(&self) -> usize {
+        Self::FIXED_PART_SIZE
+    }
+}
+
+impl<'de> PduDecode<'de> for ServerSetErrorInfoPdu {
+    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+        ensure_fixed_part_size!(in: src);
+
+        let error_info = src.read_u32();
+        let error_info =
+            ErrorInfo::from_u32(error_info).ok_or_else(|| invalid_message_err!("errorInfo", "unexpected info code"))?;
+
+        Ok(Self(error_info))
     }
 }
 
@@ -385,16 +398,10 @@ impl RdpSpecificCode {
     }
 }
 
-#[derive(Debug, Error)]
-pub enum ServerSetErrorInfoError {
-    #[error("IO error")]
-    IoError(#[from] io::Error),
-    #[error("unexpected info code: {0}")]
-    UnexpectedInfoCode(u32),
-}
-
 #[cfg(test)]
 mod tests {
+    use crate::{decode, encode_vec};
+
     use super::*;
 
     const SERVER_SET_ERROR_INFO_BUFFER: [u8; 4] = [0x00, 0x01, 0x00, 0x00];
@@ -407,24 +414,20 @@ mod tests {
     fn from_buffer_correctly_parses_server_set_error_info() {
         assert_eq!(
             SERVER_SET_ERROR_INFO,
-            ServerSetErrorInfoPdu::from_buffer(SERVER_SET_ERROR_INFO_BUFFER.as_ref()).unwrap()
+            decode(SERVER_SET_ERROR_INFO_BUFFER.as_ref()).unwrap()
         );
     }
 
     #[test]
     fn to_buffer_correctly_serializes_server_set_error_info() {
         let expected = SERVER_SET_ERROR_INFO_BUFFER.as_ref();
-        let mut buffer = vec![0; expected.len()];
 
-        SERVER_SET_ERROR_INFO.to_buffer(buffer.as_mut_slice()).unwrap();
+        let buffer = encode_vec(&SERVER_SET_ERROR_INFO).unwrap();
         assert_eq!(expected, buffer.as_slice());
     }
 
     #[test]
     fn buffer_length_is_correct_for_server_set_error_info() {
-        assert_eq!(
-            SERVER_SET_ERROR_INFO_BUFFER.len(),
-            SERVER_SET_ERROR_INFO.buffer_length()
-        );
+        assert_eq!(SERVER_SET_ERROR_INFO_BUFFER.len(), SERVER_SET_ERROR_INFO.size());
     }
 }

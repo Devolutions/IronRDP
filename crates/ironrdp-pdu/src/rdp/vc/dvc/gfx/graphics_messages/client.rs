@@ -1,38 +1,51 @@
-use std::io;
-
-use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
-
-use super::{CapabilitySet, GraphicsMessagesError};
-use crate::PduParsing;
+use super::CapabilitySet;
+use crate::cursor::{ReadCursor, WriteCursor};
+use crate::{PduDecode, PduEncode, PduResult};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CapabilitiesAdvertisePdu(pub Vec<CapabilitySet>);
 
-impl PduParsing for CapabilitiesAdvertisePdu {
-    type Error = GraphicsMessagesError;
+impl CapabilitiesAdvertisePdu {
+    const NAME: &'static str = "CapabilitiesAdvertisePdu";
 
-    fn from_buffer(mut stream: impl io::Read) -> Result<Self, Self::Error> {
-        let capabilities_count = stream.read_u16::<LittleEndian>()? as usize;
+    const FIXED_PART_SIZE: usize  = 2 /* Count */;
+}
 
-        let capabilities = (0..capabilities_count)
-            .map(|_| CapabilitySet::from_buffer(&mut stream))
-            .collect::<Result<Vec<_>, Self::Error>>()?;
+impl PduEncode for CapabilitiesAdvertisePdu {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_size!(in: dst, size: self.size());
 
-        Ok(Self(capabilities))
-    }
-
-    fn to_buffer(&self, mut stream: impl io::Write) -> Result<(), Self::Error> {
-        stream.write_u16::<LittleEndian>(self.0.len() as u16)?;
+        dst.write_u16(cast_length!("Count", self.0.len())?);
 
         for capability_set in self.0.iter() {
-            capability_set.to_buffer(&mut stream)?;
+            capability_set.encode(dst)?;
         }
 
         Ok(())
     }
 
-    fn buffer_length(&self) -> usize {
-        2 + self.0.iter().map(|c| c.buffer_length()).sum::<usize>()
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    fn size(&self) -> usize {
+        Self::FIXED_PART_SIZE + self.0.iter().map(|c| c.size()).sum::<usize>()
+    }
+}
+
+impl<'a> PduDecode<'a> for CapabilitiesAdvertisePdu {
+    fn decode(src: &mut ReadCursor<'a>) -> PduResult<Self> {
+        ensure_fixed_part_size!(in: src);
+
+        let capabilities_count = cast_length!("Count", src.read_u16())?;
+
+        ensure_size!(in: src, size: capabilities_count * CapabilitySet::FIXED_PART_SIZE);
+
+        let capabilities = (0..capabilities_count)
+            .map(|_| CapabilitySet::decode(src))
+            .collect::<Result<_, _>>()?;
+
+        Ok(Self(capabilities))
     }
 }
 
@@ -43,31 +56,45 @@ pub struct FrameAcknowledgePdu {
     pub total_frames_decoded: u32,
 }
 
-impl PduParsing for FrameAcknowledgePdu {
-    type Error = GraphicsMessagesError;
+impl FrameAcknowledgePdu {
+    const NAME: &'static str = "FrameAcknowledgePdu";
 
-    fn from_buffer(mut stream: impl io::Read) -> Result<Self, Self::Error> {
-        let queue_depth = QueueDepth::from_u32(stream.read_u32::<LittleEndian>()?);
-        let frame_id = stream.read_u32::<LittleEndian>()?;
-        let total_frames_decoded = stream.read_u32::<LittleEndian>()?;
+    const FIXED_PART_SIZE: usize = 4 /* QueueDepth */ + 4 /* FrameId */ + 4 /* TotalFramesDecoded */;
+}
+
+impl PduEncode for FrameAcknowledgePdu {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_fixed_part_size!(in: dst);
+
+        dst.write_u32(self.queue_depth.to_u32());
+        dst.write_u32(self.frame_id);
+        dst.write_u32(self.total_frames_decoded);
+
+        Ok(())
+    }
+
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    fn size(&self) -> usize {
+        Self::FIXED_PART_SIZE
+    }
+}
+
+impl<'a> PduDecode<'a> for FrameAcknowledgePdu {
+    fn decode(src: &mut ReadCursor<'a>) -> PduResult<Self> {
+        ensure_fixed_part_size!(in: src);
+
+        let queue_depth = QueueDepth::from_u32(src.read_u32());
+        let frame_id = src.read_u32();
+        let total_frames_decoded = src.read_u32();
 
         Ok(Self {
             queue_depth,
             frame_id,
             total_frames_decoded,
         })
-    }
-
-    fn to_buffer(&self, mut stream: impl io::Write) -> Result<(), Self::Error> {
-        stream.write_u32::<LittleEndian>(self.queue_depth.to_u32())?;
-        stream.write_u32::<LittleEndian>(self.frame_id)?;
-        stream.write_u32::<LittleEndian>(self.total_frames_decoded)?;
-
-        Ok(())
-    }
-
-    fn buffer_length(&self) -> usize {
-        12
     }
 }
 
@@ -76,31 +103,43 @@ pub struct CacheImportReplyPdu {
     pub cache_slots: Vec<u16>,
 }
 
-impl PduParsing for CacheImportReplyPdu {
-    type Error = GraphicsMessagesError;
+impl CacheImportReplyPdu {
+    const NAME: &'static str = "CacheImportReplyPdu";
 
-    fn from_buffer(mut stream: impl io::Read) -> Result<Self, Self::Error> {
-        let entries_count = stream.read_u16::<LittleEndian>()? as usize;
+    const FIXED_PART_SIZE: usize = 2 /* Count */;
+}
 
-        let cache_slots = (0..entries_count)
-            .map(|_| stream.read_u16::<LittleEndian>())
-            .collect::<io::Result<Vec<_>>>()?;
+impl PduEncode for CacheImportReplyPdu {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_size!(in: dst, size: self.size());
 
-        Ok(Self { cache_slots })
-    }
-
-    fn to_buffer(&self, mut stream: impl io::Write) -> Result<(), Self::Error> {
-        stream.write_u16::<LittleEndian>(self.cache_slots.len() as u16)?;
+        dst.write_u16(cast_length!("Count", self.cache_slots.len())?);
 
         for cache_slot in self.cache_slots.iter() {
-            stream.write_u16::<LittleEndian>(*cache_slot)?;
+            dst.write_u16(*cache_slot);
         }
 
         Ok(())
     }
 
-    fn buffer_length(&self) -> usize {
-        2 + self.cache_slots.iter().map(|_| 2).sum::<usize>()
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    fn size(&self) -> usize {
+        Self::FIXED_PART_SIZE + self.cache_slots.iter().map(|_| 2).sum::<usize>()
+    }
+}
+
+impl<'a> PduDecode<'a> for CacheImportReplyPdu {
+    fn decode(src: &mut ReadCursor<'a>) -> PduResult<Self> {
+        ensure_fixed_part_size!(in: src);
+
+        let entries_count = src.read_u16();
+
+        let cache_slots = (0..entries_count).map(|_| src.read_u16()).collect();
+
+        Ok(Self { cache_slots })
     }
 }
 

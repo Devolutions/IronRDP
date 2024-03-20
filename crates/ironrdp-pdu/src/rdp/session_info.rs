@@ -1,11 +1,11 @@
 use std::io;
 
-use byteorder::{LittleEndian, ReadBytesExt as _, WriteBytesExt as _};
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive as _, ToPrimitive as _};
 use thiserror::Error;
 
-use crate::PduParsing;
+use crate::cursor::{ReadCursor, WriteCursor};
+use crate::{PduDecode, PduEncode, PduError, PduResult};
 
 #[cfg(test)]
 mod tests;
@@ -21,7 +21,6 @@ pub use self::logon_info::{LogonInfo, LogonInfoVersion1, LogonInfoVersion2};
 
 const INFO_TYPE_FIELD_SIZE: usize = 4;
 const PLAIN_NOTIFY_PADDING_SIZE: usize = 576;
-const PLAIN_NOTIFY_PADDING_BUFFER: [u8; PLAIN_NOTIFY_PADDING_SIZE] = [0; PLAIN_NOTIFY_PADDING_SIZE];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SaveSessionInfoPdu {
@@ -29,57 +28,72 @@ pub struct SaveSessionInfoPdu {
     pub info_data: InfoData,
 }
 
-impl PduParsing for SaveSessionInfoPdu {
-    type Error = SessionError;
+impl SaveSessionInfoPdu {
+    const NAME: &'static str = "SaveSessionInfoPdu";
 
-    fn from_buffer(mut stream: impl io::Read) -> Result<Self, Self::Error> {
-        let info_type =
-            InfoType::from_u32(stream.read_u32::<LittleEndian>()?).ok_or(SessionError::InvalidSaveSessionInfoType)?;
+    const FIXED_PART_SIZE: usize = INFO_TYPE_FIELD_SIZE;
+}
 
-        let info_data = match info_type {
-            InfoType::Logon => InfoData::LogonInfoV1(LogonInfoVersion1::from_buffer(&mut stream)?),
-            InfoType::LogonLong => InfoData::LogonInfoV2(LogonInfoVersion2::from_buffer(&mut stream)?),
-            InfoType::PlainNotify => {
-                let mut padding_buffer = [0; PLAIN_NOTIFY_PADDING_SIZE];
-                stream.read_exact(&mut padding_buffer)?;
+impl PduEncode for SaveSessionInfoPdu {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_fixed_part_size!(in: dst);
 
-                InfoData::PlainNotify
-            }
-            InfoType::LogonExtended => InfoData::LogonExtended(LogonInfoExtended::from_buffer(&mut stream)?),
-        };
-
-        Ok(Self { info_type, info_data })
-    }
-
-    fn to_buffer(&self, mut stream: impl io::Write) -> Result<(), Self::Error> {
-        stream.write_u32::<LittleEndian>(self.info_type.to_u32().unwrap())?;
+        dst.write_u32(self.info_type.to_u32().unwrap());
         match self.info_data {
             InfoData::LogonInfoV1(ref info_v1) => {
-                info_v1.to_buffer(&mut stream)?;
+                info_v1.encode(dst)?;
             }
             InfoData::LogonInfoV2(ref info_v2) => {
-                info_v2.to_buffer(&mut stream)?;
+                info_v2.encode(dst)?;
             }
             InfoData::PlainNotify => {
-                stream.write_all(PLAIN_NOTIFY_PADDING_BUFFER.as_ref())?;
+                ensure_size!(in: dst, size: PLAIN_NOTIFY_PADDING_SIZE);
+                write_padding!(dst, PLAIN_NOTIFY_PADDING_SIZE);
             }
             InfoData::LogonExtended(ref extended) => {
-                extended.to_buffer(&mut stream)?;
+                extended.encode(dst)?;
             }
         }
 
         Ok(())
     }
 
-    fn buffer_length(&self) -> usize {
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    fn size(&self) -> usize {
         let info_data_size = match self.info_data {
-            InfoData::LogonInfoV1(ref info_v1) => info_v1.buffer_length(),
-            InfoData::LogonInfoV2(ref info_v2) => info_v2.buffer_length(),
+            InfoData::LogonInfoV1(ref info_v1) => info_v1.size(),
+            InfoData::LogonInfoV2(ref info_v2) => info_v2.size(),
             InfoData::PlainNotify => PLAIN_NOTIFY_PADDING_SIZE,
-            InfoData::LogonExtended(ref extended) => extended.buffer_length(),
+            InfoData::LogonExtended(ref extended) => extended.size(),
         };
 
-        INFO_TYPE_FIELD_SIZE + info_data_size
+        Self::FIXED_PART_SIZE + info_data_size
+    }
+}
+
+impl<'de> PduDecode<'de> for SaveSessionInfoPdu {
+    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+        ensure_fixed_part_size!(in: src);
+
+        let info_type = InfoType::from_u32(src.read_u32())
+            .ok_or_else(|| invalid_message_err!("infoType", "invalid save session info type"))?;
+
+        let info_data = match info_type {
+            InfoType::Logon => InfoData::LogonInfoV1(LogonInfoVersion1::decode(src)?),
+            InfoType::LogonLong => InfoData::LogonInfoV2(LogonInfoVersion2::decode(src)?),
+            InfoType::PlainNotify => {
+                ensure_size!(in: src, size: PLAIN_NOTIFY_PADDING_SIZE);
+                read_padding!(src, PLAIN_NOTIFY_PADDING_SIZE);
+
+                InfoData::PlainNotify
+            }
+            InfoType::LogonExtended => InfoData::LogonExtended(LogonInfoExtended::decode(src)?),
+        };
+
+        Ok(Self { info_type, info_data })
     }
 }
 
@@ -122,4 +136,12 @@ pub enum SessionError {
     InvalidLogonErrorType,
     #[error("invalid logon error data value")]
     InvalidLogonErrorData,
+    #[error("PDU error: {0}")]
+    Pdu(PduError),
+}
+
+impl From<PduError> for SessionError {
+    fn from(e: PduError) -> Self {
+        Self::Pdu(e)
+    }
 }

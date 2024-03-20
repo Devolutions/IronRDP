@@ -1,9 +1,8 @@
-use std::io;
-
-use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
-
-use super::{BlobHeader, BlobType, ServerLicenseError, KEY_EXCHANGE_ALGORITHM_RSA};
-use crate::PduParsing;
+use super::{BlobHeader, BlobType, KEY_EXCHANGE_ALGORITHM_RSA};
+use crate::{
+    cursor::{ReadCursor, WriteCursor},
+    PduDecode, PduEncode, PduResult,
+};
 
 pub const SIGNATURE_ALGORITHM_RSA: u32 = 1;
 pub const PROP_CERT_NO_BLOBS_SIZE: usize = 8;
@@ -14,9 +13,9 @@ pub const RSA_KEY_PADDING_LENGTH: u32 = 8;
 pub const RSA_SENTINEL: u32 = 0x3141_5352;
 pub const RSA_KEY_SIZE_WITHOUT_MODULUS: usize = 20;
 
-const MIN_CERTIFICATE_AMOUNT: u32 = 2;
-const MAX_CERTIFICATE_AMOUNT: u32 = 200;
-const MAX_CERTIFICATE_LEN: u32 = 4096;
+const MIN_CERTIFICATE_AMOUNT: usize = 2;
+const MAX_CERTIFICATE_AMOUNT: usize = 200;
+const MAX_CERTIFICATE_LEN: usize = 4096;
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum CertificateType {
@@ -32,51 +31,32 @@ pub struct X509CertificateChain {
     pub certificate_array: Vec<Vec<u8>>,
 }
 
-impl PduParsing for X509CertificateChain {
-    type Error = ServerLicenseError;
+impl X509CertificateChain {
+    const NAME: &'static str = "X509CertificateChain";
+}
 
-    fn from_buffer(mut stream: impl io::Read) -> Result<Self, Self::Error> {
-        let certificate_count = stream.read_u32::<LittleEndian>()?;
-        if !(MIN_CERTIFICATE_AMOUNT..MAX_CERTIFICATE_AMOUNT).contains(&certificate_count) {
-            return Err(ServerLicenseError::InvalidX509CertificatesAmount);
-        }
+impl PduEncode for X509CertificateChain {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_size!(in: dst, size: self.size());
 
-        let certificate_array: Vec<_> = (0..certificate_count)
-            .map(|_| {
-                let certificate_len = stream.read_u32::<LittleEndian>()?;
-                if certificate_len > MAX_CERTIFICATE_LEN {
-                    return Err(ServerLicenseError::InvalidCertificateLength(certificate_len));
-                }
-
-                let mut certificate = vec![0u8; certificate_len as usize];
-                stream.read_exact(&mut certificate)?;
-
-                Ok(certificate)
-            })
-            .collect::<Result<_, Self::Error>>()?;
-
-        let mut padding = vec![0u8; (8 + 4 * certificate_count) as usize]; // MSDN: A byte array of the length 8 + 4*NumCertBlobs
-        stream.read_exact(&mut padding)?;
-
-        Ok(Self { certificate_array })
-    }
-
-    fn to_buffer(&self, mut stream: impl io::Write) -> Result<(), Self::Error> {
-        stream.write_u32::<LittleEndian>(self.certificate_array.len() as u32)?;
+        dst.write_u32(cast_length!("certArrayLen", self.certificate_array.len())?);
 
         for certificate in &self.certificate_array {
-            stream.write_u32::<LittleEndian>(certificate.len() as u32)?;
-            stream.write_all(certificate)?;
+            dst.write_u32(cast_length!("certLen", certificate.len())?);
+            dst.write_slice(certificate);
         }
 
         let padding_len = 8 + 4 * self.certificate_array.len(); // MSDN: A byte array of the length 8 + 4*NumCertBlobs
-        let padding = vec![0u8; padding_len];
-        stream.write_all(padding.as_slice())?;
+        write_padding!(dst, padding_len);
 
         Ok(())
     }
 
-    fn buffer_length(&self) -> usize {
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    fn size(&self) -> usize {
         let certificates_length: usize = self
             .certificate_array
             .iter()
@@ -84,6 +64,36 @@ impl PduParsing for X509CertificateChain {
             .sum();
         let padding: usize = 8 + 4 * self.certificate_array.len();
         X509_CERT_COUNT + certificates_length + padding
+    }
+}
+
+impl<'de> PduDecode<'de> for X509CertificateChain {
+    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+        let certificate_count = cast_length!("certArrayLen", src.read_u32())?;
+        if !(MIN_CERTIFICATE_AMOUNT..MAX_CERTIFICATE_AMOUNT).contains(&certificate_count) {
+            return Err(invalid_message_err!("certArrayLen", "invalid x509 certificate amount"));
+        }
+
+        let certificate_array: Vec<_> = (0..certificate_count)
+            .map(|_| {
+                ensure_size!(in: src, size: 4);
+                let certificate_len = cast_length!("certLen", src.read_u32())?;
+                if certificate_len > MAX_CERTIFICATE_LEN {
+                    return Err(invalid_message_err!("certLen", "invalid x509 certificate length"));
+                }
+
+                ensure_size!(in: src, size: certificate_len);
+                let certificate = src.read_slice(certificate_len).into();
+
+                Ok(certificate)
+            })
+            .collect::<Result<_, _>>()?;
+
+        let padding = 8 + 4 * certificate_count; // MSDN: A byte array of the length 8 + 4*NumCertBlobs
+        ensure_size!(in: src, size: padding);
+        read_padding!(src, padding);
+
+        Ok(Self { certificate_array })
     }
 }
 
@@ -96,45 +106,63 @@ pub struct ProprietaryCertificate {
     pub signature: Vec<u8>,
 }
 
-impl PduParsing for ProprietaryCertificate {
-    type Error = ServerLicenseError;
+impl ProprietaryCertificate {
+    const NAME: &'static str = "ProprietaryCertificate";
 
-    fn from_buffer(mut stream: impl io::Read) -> Result<Self, Self::Error> {
-        let signature_algorithm_id = stream.read_u32::<LittleEndian>()?;
-        if signature_algorithm_id != SIGNATURE_ALGORITHM_RSA {
-            return Err(ServerLicenseError::InvalidPropCertSignatureAlgorithmId);
-        }
+    const FIXED_PART_SIZE: usize = PROP_CERT_BLOBS_HEADERS_SIZE + PROP_CERT_NO_BLOBS_SIZE;
+}
 
-        let key_algorithm_id = stream.read_u32::<LittleEndian>()?;
-        if key_algorithm_id != KEY_EXCHANGE_ALGORITHM_RSA {
-            return Err(ServerLicenseError::InvalidPropCertKeyAlgorithmId);
-        }
+impl PduEncode for ProprietaryCertificate {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_size!(in: dst, size: self.size());
 
-        let _key_blob_header = BlobHeader::read_from_buffer(BlobType::RsaKey, &mut stream)?;
-        let public_key = RsaPublicKey::from_buffer(&mut stream)?;
+        dst.write_u32(SIGNATURE_ALGORITHM_RSA);
+        dst.write_u32(KEY_EXCHANGE_ALGORITHM_RSA);
 
-        let sig_blob_header = BlobHeader::read_from_buffer(BlobType::RsaSignature, &mut stream)?;
-        let mut signature = vec![0u8; sig_blob_header.length];
-        stream.read_exact(&mut signature)?;
+        BlobHeader::new(BlobType::RsaKey, self.public_key.size()).encode(dst)?;
+        self.public_key.encode(dst)?;
 
-        Ok(Self { public_key, signature })
-    }
-
-    fn to_buffer(&self, mut stream: impl io::Write) -> Result<(), Self::Error> {
-        stream.write_u32::<LittleEndian>(SIGNATURE_ALGORITHM_RSA)?;
-        stream.write_u32::<LittleEndian>(KEY_EXCHANGE_ALGORITHM_RSA)?;
-
-        BlobHeader::new(BlobType::RsaKey, self.public_key.buffer_length()).write_to_buffer(&mut stream)?;
-        self.public_key.to_buffer(&mut stream)?;
-
-        BlobHeader::new(BlobType::RsaSignature, self.signature.len()).write_to_buffer(&mut stream)?;
-        stream.write_all(&self.signature)?;
+        BlobHeader::new(BlobType::RsaSignature, self.signature.len()).encode(dst)?;
+        dst.write_slice(&self.signature);
 
         Ok(())
     }
 
-    fn buffer_length(&self) -> usize {
-        PROP_CERT_BLOBS_HEADERS_SIZE + PROP_CERT_NO_BLOBS_SIZE + self.public_key.buffer_length() + self.signature.len()
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    fn size(&self) -> usize {
+        Self::FIXED_PART_SIZE + self.public_key.size() + self.signature.len()
+    }
+}
+
+impl<'de> PduDecode<'de> for ProprietaryCertificate {
+    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+        let signature_algorithm_id = src.read_u32();
+        if signature_algorithm_id != SIGNATURE_ALGORITHM_RSA {
+            return Err(invalid_message_err!("sigAlgId", "invalid signature algorithm ID"));
+        }
+
+        let key_algorithm_id = src.read_u32();
+        if key_algorithm_id != KEY_EXCHANGE_ALGORITHM_RSA {
+            return Err(invalid_message_err!("keyAlgId", "invalid key algorithm ID"));
+        }
+
+        let key_blob_header = BlobHeader::decode(src)?;
+        if key_blob_header.blob_type != BlobType::RsaKey {
+            return Err(invalid_message_err!("blobType", "invalid blob type"));
+        }
+        let public_key = RsaPublicKey::decode(src)?;
+
+        let sig_blob_header = BlobHeader::decode(src)?;
+        if sig_blob_header.blob_type != BlobType::RsaSignature {
+            return Err(invalid_message_err!("blobType", "invalid blob type"));
+        }
+        ensure_size!(in: src, size: sig_blob_header.length);
+        let signature = src.read_slice(sig_blob_header.length).into();
+
+        Ok(Self { public_key, signature })
     }
 }
 
@@ -144,58 +172,72 @@ pub struct RsaPublicKey {
     pub modulus: Vec<u8>,
 }
 
-impl PduParsing for RsaPublicKey {
-    type Error = ServerLicenseError;
+impl RsaPublicKey {
+    const NAME: &'static str = "RsaPublicKey";
 
-    fn from_buffer(mut stream: impl io::Read) -> Result<Self, Self::Error> {
-        let magic = stream.read_u32::<LittleEndian>()?;
+    const FIXED_PART_SIZE: usize = RSA_KEY_SIZE_WITHOUT_MODULUS;
+}
+
+impl PduEncode for RsaPublicKey {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_size!(in: dst, size: self.size());
+
+        let keylen = cast_length!("modulusLen", self.modulus.len())?;
+        let bitlen = (keylen - RSA_KEY_PADDING_LENGTH) * 8;
+        let datalen = bitlen / 8 - 1;
+
+        dst.write_u32(RSA_SENTINEL); // magic
+        dst.write_u32(keylen);
+        dst.write_u32(bitlen);
+        dst.write_u32(datalen);
+        dst.write_u32(self.public_exponent);
+        dst.write_slice(&self.modulus);
+
+        Ok(())
+    }
+
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    fn size(&self) -> usize {
+        Self::FIXED_PART_SIZE + self.modulus.len()
+    }
+}
+
+impl<'de> PduDecode<'de> for RsaPublicKey {
+    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+        ensure_fixed_part_size!(in: src);
+
+        let magic = src.read_u32();
         if magic != RSA_SENTINEL {
-            return Err(ServerLicenseError::InvalidRsaPublicKeyMagic);
+            return Err(invalid_message_err!("magic", "invalid RSA public key magic"));
         }
 
-        let keylen = stream.read_u32::<LittleEndian>()?;
+        let keylen = cast_length!("keyLen", src.read_u32())?;
 
-        let bitlen = stream.read_u32::<LittleEndian>()?;
+        let bitlen: usize = cast_length!("bitlen", src.read_u32())?;
         if keylen != (bitlen / 8) + 8 {
-            return Err(ServerLicenseError::InvalidRsaPublicKeyLength);
+            return Err(invalid_message_err!("bitlen", "invalid RSA public key length"));
         }
 
         if bitlen < 8 {
-            return Err(ServerLicenseError::InvalidRsaPublicKeyBitLength);
+            return Err(invalid_message_err!("bitlen", "invalid RSA public key length"));
         }
 
-        let datalen = stream.read_u32::<LittleEndian>()?;
+        let datalen: usize = cast_length!("dataLen", src.read_u32())?;
         if datalen != (bitlen / 8) - 1 {
-            return Err(ServerLicenseError::InvalidRsaPublicKeyDataLength);
+            return Err(invalid_message_err!("dataLen", "invalid RSA public key data length"));
         }
 
-        let public_exponent = stream.read_u32::<LittleEndian>()?;
+        let public_exponent = src.read_u32();
 
-        let mut modulus = vec![0u8; keylen as usize];
-        stream.read_exact(&mut modulus)?;
+        ensure_size!(in: src, size: keylen);
+        let modulus = src.read_slice(keylen).into();
 
         Ok(Self {
             public_exponent,
             modulus,
         })
-    }
-
-    fn to_buffer(&self, mut stream: impl io::Write) -> Result<(), Self::Error> {
-        let keylen = self.modulus.len() as u32;
-        let bitlen = (keylen - RSA_KEY_PADDING_LENGTH) * 8;
-        let datalen = bitlen / 8 - 1;
-
-        stream.write_u32::<LittleEndian>(RSA_SENTINEL)?; // magic
-        stream.write_u32::<LittleEndian>(keylen)?;
-        stream.write_u32::<LittleEndian>(bitlen)?;
-        stream.write_u32::<LittleEndian>(datalen)?;
-        stream.write_u32::<LittleEndian>(self.public_exponent)?;
-        stream.write_all(&self.modulus)?;
-
-        Ok(())
-    }
-
-    fn buffer_length(&self) -> usize {
-        RSA_KEY_SIZE_WITHOUT_MODULUS + self.modulus.len()
     }
 }

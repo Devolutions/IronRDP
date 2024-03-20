@@ -1,14 +1,11 @@
 #[cfg(test)]
 mod tests;
 
-use std::io;
-
-use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive, ToPrimitive};
 
-use crate::rdp::capability_sets::CapabilitySetsError;
-use crate::PduParsing;
+use crate::cursor::{ReadCursor, WriteCursor};
+use crate::{PduDecode, PduEncode, PduResult};
 
 const BRUSH_LENGTH: usize = 4;
 
@@ -24,23 +21,37 @@ pub struct Brush {
     pub support_level: SupportLevel,
 }
 
-impl PduParsing for Brush {
-    type Error = CapabilitySetsError;
+impl Brush {
+    const NAME: &'static str = "Brush";
 
-    fn from_buffer(mut buffer: impl io::Read) -> Result<Self, Self::Error> {
-        let support_level = SupportLevel::from_u32(buffer.read_u32::<LittleEndian>()?)
-            .ok_or(CapabilitySetsError::InvalidBrushSupportLevel)?;
+    const FIXED_PART_SIZE: usize = BRUSH_LENGTH;
+}
 
-        Ok(Brush { support_level })
-    }
+impl PduEncode for Brush {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_fixed_part_size!(in: dst);
 
-    fn to_buffer(&self, mut buffer: impl io::Write) -> Result<(), Self::Error> {
-        buffer.write_u32::<LittleEndian>(self.support_level.to_u32().unwrap())?;
+        dst.write_u32(self.support_level.to_u32().unwrap());
 
         Ok(())
     }
 
-    fn buffer_length(&self) -> usize {
-        BRUSH_LENGTH
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    fn size(&self) -> usize {
+        Self::FIXED_PART_SIZE
+    }
+}
+
+impl<'de> PduDecode<'de> for Brush {
+    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+        ensure_fixed_part_size!(in: src);
+
+        let support_level = SupportLevel::from_u32(src.read_u32())
+            .ok_or_else(|| invalid_message_err!("supportLevel", "invalid brush support level"))?;
+
+        Ok(Brush { support_level })
     }
 }

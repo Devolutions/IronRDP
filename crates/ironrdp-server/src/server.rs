@@ -1,4 +1,3 @@
-use std::io::Cursor;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 
@@ -61,15 +60,13 @@ impl dvc::DvcProcessor for DisplayControlHandler {
             max_monitor_area_factorb: 2400,
         });
 
-        let mut buf = vec![];
-        pdu.to_buffer(&mut buf).map_err(|e| custom_err!(e))?;
-        Ok(vec![Box::new(buf)])
+        Ok(vec![Box::new(pdu)])
     }
 
     fn process(&mut self, _channel_id: u32, payload: &[u8]) -> PduResult<dvc::DvcMessages> {
         use ironrdp_pdu::dvc::display::ClientPdu;
 
-        match ClientPdu::from_buffer(payload).map_err(|e| custom_err!(e))? {
+        match decode(payload)? {
             ClientPdu::DisplayControlMonitorLayout(layout) => {
                 debug!(?layout);
             }
@@ -327,7 +324,7 @@ impl RdpServer {
 
                     match action {
                         Action::FastPath => {
-                            let input = FastPathInput::from_buffer(Cursor::new(&bytes))?;
+                            let input = decode(&bytes)?;
                             self.handle_fastpath(input).await;
                         }
 
@@ -384,7 +381,7 @@ impl RdpServer {
         for frame in frames {
             match Action::from_fp_output_header(frame[0]) {
                 Ok(Action::FastPath) => {
-                    let input = FastPathInput::from_buffer(Cursor::new(&frame))?;
+                    let input = decode(&frame)?;
                     self.handle_fastpath(input).await;
                 }
 
@@ -437,7 +434,7 @@ impl RdpServer {
     }
 
     async fn handle_io_channel_data(&mut self, data: SendDataRequest<'_>) -> Result<bool> {
-        let control = rdp::headers::ShareControlHeader::from_buffer(Cursor::new(data.user_data))?;
+        let control: rdp::headers::ShareControlHeader = decode(data.user_data.as_ref())?;
 
         match control.share_control_pdu {
             rdp::headers::ShareControlPdu::Data(header) => match header.share_data_pdu {

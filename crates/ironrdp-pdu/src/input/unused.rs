@@ -1,31 +1,39 @@
-use std::io;
-
-use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
-
-use super::InputEventError;
-use crate::PduParsing;
+use crate::{
+    cursor::{ReadCursor, WriteCursor},
+    PduDecode, PduEncode, PduResult,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UnusedPdu;
 
-impl PduParsing for UnusedPdu {
-    type Error = InputEventError;
+impl UnusedPdu {
+    const NAME: &'static str = "UnusedPdu";
 
-    fn from_buffer(mut stream: impl io::Read) -> Result<Self, Self::Error> {
-        let _padding = stream.read_u32::<LittleEndian>()?;
-        let _padding = stream.read_u16::<LittleEndian>()?;
+    const FIXED_PART_SIZE: usize = 6 /* padding */;
+}
 
-        Ok(Self)
-    }
+impl PduEncode for UnusedPdu {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_fixed_part_size!(in: dst);
 
-    fn to_buffer(&self, mut stream: impl io::Write) -> Result<(), Self::Error> {
-        stream.write_u32::<LittleEndian>(0)?; // padding
-        stream.write_u16::<LittleEndian>(0)?; // padding
-
+        write_padding!(dst, 6);
         Ok(())
     }
 
-    fn buffer_length(&self) -> usize {
-        6
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    fn size(&self) -> usize {
+        Self::FIXED_PART_SIZE
+    }
+}
+
+impl<'de> PduDecode<'de> for UnusedPdu {
+    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+        ensure_fixed_part_size!(in: src);
+
+        read_padding!(src, 6);
+        Ok(Self)
     }
 }

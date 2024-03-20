@@ -192,7 +192,7 @@ where
 /// Same as `encode` but allocates and returns a new buffer each time.
 ///
 /// This is a convenience function, but it’s not very resource efficient.
-#[cfg(feature = "alloc")]
+#[cfg(any(feature = "alloc", test))]
 pub fn encode_vec<T>(pdu: &T) -> PduResult<Vec<u8>>
 where
     T: PduEncode + ?Sized,
@@ -386,40 +386,9 @@ pub use legacy::*;
 
 // TODO: Delete these traits at some point
 mod legacy {
-    use crate::{PduEncode, PduResult, WriteCursor};
     use thiserror::Error;
 
-    pub trait PduParsing {
-        type Error;
-
-        fn from_buffer(stream: impl std::io::Read) -> Result<Self, Self::Error>
-        where
-            Self: Sized;
-        fn to_buffer(&self, stream: impl std::io::Write) -> Result<(), Self::Error>;
-        fn buffer_length(&self) -> usize;
-    }
-
-    /// Blanket implementation for references to types implementing PduParsing. Only encoding is supported.
-    ///
-    /// This helps removing a few copies.
-    impl<T: PduParsing> PduParsing for &T {
-        type Error = T::Error;
-
-        fn from_buffer(_: impl std::io::Read) -> Result<Self, Self::Error>
-        where
-            Self: Sized,
-        {
-            panic!("Can’t return a reference to a local value")
-        }
-
-        fn to_buffer(&self, stream: impl std::io::Write) -> Result<(), Self::Error> {
-            T::to_buffer(self, stream)
-        }
-
-        fn buffer_length(&self) -> usize {
-            T::buffer_length(self)
-        }
-    }
+    use crate::{PduEncode, PduResult, WriteCursor};
 
     pub trait PduBufferParsing<'a>: Sized {
         type Error;
@@ -457,5 +426,9 @@ mod legacy {
         IOError(#[from] std::io::Error),
         #[error("received invalid action code: {0}")]
         InvalidActionCode(u8),
+    }
+
+    impl ironrdp_error::legacy::CatchAllKind for crate::PduErrorKind {
+        const CATCH_ALL_VALUE: Self = crate::PduErrorKind::Custom;
     }
 }

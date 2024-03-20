@@ -1,14 +1,12 @@
-use std::io::{self};
-
 use bit_field::BitField;
 use bitflags::bitflags;
-use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive, ToPrimitive};
 
+use crate::cursor::{ReadCursor, WriteCursor};
 use crate::fast_path::EncryptionFlags;
-use crate::input::{InputEventError, MousePdu, MouseRelPdu, MouseXPdu};
-use crate::{per, PduParsing};
+use crate::input::{MousePdu, MouseRelPdu, MouseXPdu};
+use crate::{per, PduDecode, PduEncode, PduResult};
 
 /// Implements the Fast-Path RDP message header PDU.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -18,21 +16,60 @@ pub struct FastPathInputHeader {
     pub num_events: u8,
 }
 
-impl PduParsing for FastPathInputHeader {
-    type Error = InputEventError;
+impl FastPathInputHeader {
+    const NAME: &'static str = "FastPathInputHeader";
 
-    fn from_buffer(mut stream: impl io::Read) -> Result<Self, Self::Error> {
-        let header = stream.read_u8()?;
+    const FIXED_PART_SIZE: usize = 1 /* header */;
+}
+
+impl PduEncode for FastPathInputHeader {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_size!(in: dst, size: self.size());
+
+        let mut header = 0u8;
+        header.set_bits(0..2, 0); // fast-path action
+        if self.num_events < 16 {
+            header.set_bits(2..7, self.num_events);
+        }
+        header.set_bits(6..8, self.flags.bits());
+        dst.write_u8(header);
+
+        per::write_length(dst, cast_length!("len", self.data_length + self.size())?);
+        if self.num_events > 15 {
+            dst.write_u8(self.num_events);
+        }
+
+        Ok(())
+    }
+
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    fn size(&self) -> usize {
+        let num_events_length = if self.num_events < 16 { 0 } else { 1 };
+        Self::FIXED_PART_SIZE
+            + per::sizeof_length(self.data_length as u16 + num_events_length as u16 + 1)
+            + num_events_length
+    }
+}
+
+impl<'de> PduDecode<'de> for FastPathInputHeader {
+    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+        ensure_fixed_part_size!(in: src);
+
+        let header = src.read_u8();
         let flags = EncryptionFlags::from_bits_truncate(header.get_bits(6..8));
         let mut num_events = header.get_bits(2..6);
-        let (length, sizeof_length) = per::legacy::read_length(&mut stream)?;
+        let (length, sizeof_length) = per::read_length(src).map_err(|e| custom_err!("perLen", e))?;
 
         if !flags.is_empty() {
-            return Err(InputEventError::EncryptionNotSupported);
+            return Err(invalid_message_err!("flags", "encryption not supported"));
         }
 
         let num_events_length = if num_events == 0 {
-            num_events = stream.read_u8()?;
+            ensure_size!(in: src, size: 1);
+            num_events = src.read_u8();
             1
         } else {
             0
@@ -45,28 +82,6 @@ impl PduParsing for FastPathInputHeader {
             data_length,
             num_events,
         })
-    }
-
-    fn to_buffer(&self, mut stream: impl io::Write) -> Result<(), Self::Error> {
-        let mut header = 0u8;
-        header.set_bits(0..2, 0); // fast-path action
-        if self.num_events < 16 {
-            header.set_bits(2..7, self.num_events);
-        }
-        header.set_bits(6..8, self.flags.bits());
-        stream.write_u8(header)?;
-
-        per::legacy::write_length(&mut stream, (self.data_length + self.buffer_length()) as u16)?;
-        if self.num_events > 15 {
-            stream.write_u8(self.num_events)?;
-        }
-
-        Ok(())
-    }
-
-    fn buffer_length(&self) -> usize {
-        let num_events_length = if self.num_events < 16 { 0 } else { 1 };
-        1 + per::sizeof_length(self.data_length as u16 + num_events_length as u16 + 1) + num_events_length
     }
 }
 
@@ -93,52 +108,16 @@ pub enum FastPathInputEvent {
     SyncEvent(SynchronizeFlags),
 }
 
-impl PduParsing for FastPathInputEvent {
-    type Error = InputEventError;
+impl FastPathInputEvent {
+    const NAME: &'static str = "FastPathInputEvent";
 
-    fn from_buffer(mut stream: impl io::Read) -> Result<Self, Self::Error> {
-        let header = stream.read_u8()?;
-        let flags = header.get_bits(0..5);
-        let code = header.get_bits(5..8);
-        let code: FastpathInputEventType =
-            FastpathInputEventType::from_u8(code).ok_or(InputEventError::EventCodeUnsupported(code))?;
-        let event = match code {
-            FastpathInputEventType::ScanCode => {
-                let code = stream.read_u8()?;
-                let flags = KeyboardFlags::from_bits(flags).ok_or(InputEventError::KeyboardFlagsUnsupported(flags))?;
-                FastPathInputEvent::KeyboardEvent(flags, code)
-            }
-            FastpathInputEventType::Mouse => {
-                let mouse_event = MousePdu::from_buffer(stream)?;
-                FastPathInputEvent::MouseEvent(mouse_event)
-            }
-            FastpathInputEventType::MouseX => {
-                let mouse_event = MouseXPdu::from_buffer(stream)?;
-                FastPathInputEvent::MouseEventEx(mouse_event)
-            }
-            FastpathInputEventType::MouseRel => {
-                let mouse_event = MouseRelPdu::from_buffer(stream)?;
-                FastPathInputEvent::MouseEventRel(mouse_event)
-            }
-            FastpathInputEventType::Sync => {
-                let flags =
-                    SynchronizeFlags::from_bits(flags).ok_or(InputEventError::SynchronizeFlagsUnsupported(flags))?;
-                FastPathInputEvent::SyncEvent(flags)
-            }
-            FastpathInputEventType::Unicode => {
-                let code = stream.read_u16::<LittleEndian>()?;
-                let flags = KeyboardFlags::from_bits(flags).ok_or(InputEventError::KeyboardFlagsUnsupported(flags))?;
-                FastPathInputEvent::UnicodeKeyboardEvent(flags, code)
-            }
-            FastpathInputEventType::QoeTimestamp => {
-                let code = stream.read_u32::<LittleEndian>()?;
-                FastPathInputEvent::QoeEvent(code)
-            }
-        };
-        Ok(event)
-    }
+    const FIXED_PART_SIZE: usize = 1 /* header */;
+}
 
-    fn to_buffer(&self, mut stream: impl io::Write) -> Result<(), Self::Error> {
+impl PduEncode for FastPathInputEvent {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_size!(in: dst, size: self.size());
+
         let mut header = 0u8;
         let (flags, code) = match self {
             FastPathInputEvent::KeyboardEvent(flags, _) => (flags.bits(), FastpathInputEventType::ScanCode),
@@ -151,38 +130,95 @@ impl PduParsing for FastPathInputEvent {
         };
         header.set_bits(0..5, flags);
         header.set_bits(5..8, code.to_u8().unwrap());
-        stream.write_u8(header)?;
+        dst.write_u8(header);
         match self {
             FastPathInputEvent::KeyboardEvent(_, code) => {
-                stream.write_u8(*code)?;
+                dst.write_u8(*code);
             }
             FastPathInputEvent::UnicodeKeyboardEvent(_, code) => {
-                stream.write_u16::<LittleEndian>(*code)?;
+                dst.write_u16(*code);
             }
             FastPathInputEvent::MouseEvent(pdu) => {
-                pdu.to_buffer(stream)?;
+                pdu.encode(dst)?;
             }
             FastPathInputEvent::MouseEventEx(pdu) => {
-                pdu.to_buffer(stream)?;
+                pdu.encode(dst)?;
             }
             FastPathInputEvent::QoeEvent(stamp) => {
-                stream.write_u32::<LittleEndian>(*stamp)?;
+                dst.write_u32(*stamp);
             }
             _ => {}
         };
+
         Ok(())
     }
 
-    fn buffer_length(&self) -> usize {
-        1 + match self {
-            FastPathInputEvent::KeyboardEvent(_, _) => 1,
-            FastPathInputEvent::UnicodeKeyboardEvent(_, _) => 2,
-            FastPathInputEvent::MouseEvent(pdu) => pdu.buffer_length(),
-            FastPathInputEvent::MouseEventEx(pdu) => pdu.buffer_length(),
-            FastPathInputEvent::MouseEventRel(pdu) => pdu.buffer_length(),
-            FastPathInputEvent::QoeEvent(_) => 4,
-            FastPathInputEvent::SyncEvent(_) => 0,
-        }
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    fn size(&self) -> usize {
+        Self::FIXED_PART_SIZE
+            + match self {
+                FastPathInputEvent::KeyboardEvent(_, _) => 1,
+                FastPathInputEvent::UnicodeKeyboardEvent(_, _) => 2,
+                FastPathInputEvent::MouseEvent(pdu) => pdu.size(),
+                FastPathInputEvent::MouseEventEx(pdu) => pdu.size(),
+                FastPathInputEvent::MouseEventRel(pdu) => pdu.size(),
+                FastPathInputEvent::QoeEvent(_) => 4,
+                FastPathInputEvent::SyncEvent(_) => 0,
+            }
+    }
+}
+
+impl<'de> PduDecode<'de> for FastPathInputEvent {
+    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+        ensure_fixed_part_size!(in: src);
+
+        let header = src.read_u8();
+        let flags = header.get_bits(0..5);
+        let code = header.get_bits(5..8);
+        let code: FastpathInputEventType = FastpathInputEventType::from_u8(code)
+            .ok_or_else(|| invalid_message_err!("code", "input event code unsupported"))?;
+        let event = match code {
+            FastpathInputEventType::ScanCode => {
+                ensure_size!(in: src, size: 1);
+                let code = src.read_u8();
+                let flags = KeyboardFlags::from_bits(flags)
+                    .ok_or_else(|| invalid_message_err!("flags", "input keyboard flags unsupported"))?;
+                FastPathInputEvent::KeyboardEvent(flags, code)
+            }
+            FastpathInputEventType::Mouse => {
+                let mouse_event = MousePdu::decode(src)?;
+                FastPathInputEvent::MouseEvent(mouse_event)
+            }
+            FastpathInputEventType::MouseX => {
+                let mouse_event = MouseXPdu::decode(src)?;
+                FastPathInputEvent::MouseEventEx(mouse_event)
+            }
+            FastpathInputEventType::MouseRel => {
+                let mouse_event = MouseRelPdu::decode(src)?;
+                FastPathInputEvent::MouseEventRel(mouse_event)
+            }
+            FastpathInputEventType::Sync => {
+                let flags = SynchronizeFlags::from_bits(flags)
+                    .ok_or_else(|| invalid_message_err!("flags", "input synchronize flags unsupported"))?;
+                FastPathInputEvent::SyncEvent(flags)
+            }
+            FastpathInputEventType::Unicode => {
+                ensure_size!(in: src, size: 2);
+                let code = src.read_u16();
+                let flags = KeyboardFlags::from_bits(flags)
+                    .ok_or_else(|| invalid_message_err!("flags", "input keyboard flags unsupported"))?;
+                FastPathInputEvent::UnicodeKeyboardEvent(flags, code)
+            }
+            FastpathInputEventType::QoeTimestamp => {
+                ensure_size!(in: src, size: 4);
+                let code = src.read_u32();
+                FastPathInputEvent::QoeEvent(code)
+            }
+        };
+        Ok(event)
     }
 }
 
@@ -208,45 +244,55 @@ bitflags! {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FastPathInput(pub Vec<FastPathInputEvent>);
 
-impl PduParsing for FastPathInput {
-    type Error = InputEventError;
+impl FastPathInput {
+    const NAME: &'static str = "FastPathInput";
+}
 
-    fn from_buffer(mut stream: impl io::Read) -> Result<Self, Self::Error> {
-        let header = FastPathInputHeader::from_buffer(&mut stream)?;
-        let events = (0..header.num_events)
-            .map(|_| FastPathInputEvent::from_buffer(&mut stream))
-            .collect::<Result<Vec<_>, _>>()?;
+impl PduEncode for FastPathInput {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_size!(in: dst, size: self.size());
 
-        Ok(Self(events))
-    }
-
-    fn to_buffer(&self, mut stream: impl io::Write) -> Result<(), Self::Error> {
         if self.0.is_empty() {
-            return Err(InputEventError::EmptyFastPathInput);
+            return Err(other_err!("Empty fast-path input"));
         }
 
-        let data_length = self.0.iter().map(PduParsing::buffer_length).sum::<usize>();
+        let data_length = self.0.iter().map(PduEncode::size).sum::<usize>();
         let header = FastPathInputHeader {
             num_events: self.0.len() as u8,
             flags: EncryptionFlags::empty(),
             data_length,
         };
-        header.to_buffer(&mut stream)?;
+        header.encode(dst)?;
 
         for event in self.0.iter() {
-            event.to_buffer(&mut stream)?;
+            event.encode(dst)?;
         }
 
         Ok(())
     }
 
-    fn buffer_length(&self) -> usize {
-        let data_length = self.0.iter().map(PduParsing::buffer_length).sum::<usize>();
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    fn size(&self) -> usize {
+        let data_length = self.0.iter().map(PduEncode::size).sum::<usize>();
         let header = FastPathInputHeader {
             num_events: self.0.len() as u8,
             flags: EncryptionFlags::empty(),
             data_length,
         };
-        header.buffer_length() + data_length
+        header.size() + data_length
+    }
+}
+
+impl<'de> PduDecode<'de> for FastPathInput {
+    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+        let header = FastPathInputHeader::decode(src)?;
+        let events = (0..header.num_events)
+            .map(|_| FastPathInputEvent::decode(src))
+            .collect::<Result<Vec<_>, _>>()?;
+
+        Ok(Self(events))
     }
 }

@@ -1,15 +1,13 @@
 #[cfg(test)]
 mod test;
 
-use std::io;
-
-use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
-
 use super::{
-    read_license_header, BlobHeader, BlobType, LicenseHeader, PreambleType, ServerLicenseError, BLOB_LENGTH_SIZE,
-    BLOB_TYPE_SIZE, MAC_SIZE,
+    read_license_header, BlobHeader, BlobType, LicenseHeader, PreambleType, BLOB_LENGTH_SIZE, BLOB_TYPE_SIZE, MAC_SIZE,
 };
-use crate::PduParsing;
+use crate::{
+    cursor::{ReadCursor, WriteCursor},
+    PduDecode, PduEncode, PduResult,
+};
 
 const CONNECT_FLAGS_FIELD_SIZE: usize = 4;
 
@@ -23,48 +21,50 @@ pub struct ServerPlatformChallenge {
     pub mac_data: Vec<u8>,
 }
 
-impl PduParsing for ServerPlatformChallenge {
-    type Error = ServerLicenseError;
+impl ServerPlatformChallenge {
+    const NAME: &'static str = "ServerPlatformChallenge";
 
-    fn from_buffer(mut stream: impl io::Read) -> Result<Self, Self::Error> {
-        let license_header = read_license_header(PreambleType::PlatformChallenge, &mut stream)?;
+    const FIXED_PART_SIZE: usize = CONNECT_FLAGS_FIELD_SIZE + MAC_SIZE + BLOB_LENGTH_SIZE + BLOB_TYPE_SIZE;
+}
 
-        let _connect_flags = stream.read_u32::<LittleEndian>()?;
+impl PduEncode for ServerPlatformChallenge {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_size!(in: dst, size: self.size());
 
-        let blob_header = BlobHeader::read_any_blob_from_buffer(&mut stream)?;
+        self.license_header.encode(dst)?;
+        dst.write_u32(0); // connect_flags, ignored
+        BlobHeader::new(BlobType::Any, self.encrypted_platform_challenge.len()).encode(dst)?;
+        dst.write_slice(&self.encrypted_platform_challenge);
+        dst.write_slice(&self.mac_data);
 
-        let mut encrypted_platform_challenge = vec![0u8; blob_header.length];
-        stream.read_exact(&mut encrypted_platform_challenge)?;
+        Ok(())
+    }
 
-        let mut mac_data = vec![0u8; MAC_SIZE];
-        stream.read_exact(&mut mac_data)?;
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    fn size(&self) -> usize {
+        Self::FIXED_PART_SIZE + self.license_header.size() + self.encrypted_platform_challenge.len()
+    }
+}
+
+impl<'de> PduDecode<'de> for ServerPlatformChallenge {
+    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+        let license_header = read_license_header(PreambleType::PlatformChallenge, src)?;
+
+        ensure_size!(in: src, size: 4);
+        let _connect_flags = src.read_u32();
+        let blob_header = BlobHeader::decode(src)?;
+        ensure_size!(in: src, size: blob_header.length);
+        let encrypted_platform_challenge = src.read_slice(blob_header.length).into();
+        ensure_size!(in: src, size: MAC_SIZE);
+        let mac_data = src.read_slice(MAC_SIZE).into();
 
         Ok(Self {
             license_header,
             encrypted_platform_challenge,
             mac_data,
         })
-    }
-
-    fn to_buffer(&self, mut stream: impl io::Write) -> Result<(), Self::Error> {
-        self.license_header.to_buffer(&mut stream)?;
-
-        stream.write_u32::<LittleEndian>(0)?; // connect_flags, ignored
-
-        BlobHeader::new(BlobType::Any, self.encrypted_platform_challenge.len()).write_to_buffer(&mut stream)?;
-        stream.write_all(&self.encrypted_platform_challenge)?;
-
-        stream.write_all(&self.mac_data)?;
-
-        Ok(())
-    }
-
-    fn buffer_length(&self) -> usize {
-        self.license_header.buffer_length()
-            + CONNECT_FLAGS_FIELD_SIZE
-            + MAC_SIZE
-            + BLOB_LENGTH_SIZE
-            + BLOB_TYPE_SIZE
-            + self.encrypted_platform_challenge.len()
     }
 }

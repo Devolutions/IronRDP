@@ -1,6 +1,7 @@
 use lazy_static::lazy_static;
 
 use super::*;
+use crate::{decode, decode_cursor, encode_vec, PduErrorKind};
 
 const GUID_BUFFER: [u8; 16] = [
     0xb9, 0x1b, 0x8d, 0xca, 0x0f, 0x00, 0x4f, 0x15, 0x58, 0x9f, 0xae, 0x2d, 0x1a, 0x87, 0xe2, 0xd6,
@@ -266,183 +267,150 @@ lazy_static! {
 
 #[test]
 fn from_buffer_correctly_parses_guid() {
-    assert_eq!(*GUID, Guid::from_buffer(GUID_BUFFER.as_ref()).unwrap());
+    assert_eq!(*GUID, decode(GUID_BUFFER.as_ref()).unwrap());
 }
 
 #[test]
 fn to_buffer_correctly_serializes_guid() {
-    let mut buffer = Vec::new();
-    GUID.to_buffer(&mut buffer).unwrap();
+    let buffer = encode_vec(&*GUID).unwrap();
     assert_eq!(buffer, GUID_BUFFER.as_ref());
 }
 
 #[test]
 fn buffer_length_is_correct_for_guid() {
-    assert_eq!(GUID_BUFFER.len(), GUID.buffer_length());
+    assert_eq!(GUID_BUFFER.len(), GUID.size());
 }
 
 #[test]
 fn from_buffer_correctly_parses_rfx_icap() {
-    assert_eq!(*RFX_ICAP, RfxICap::from_buffer(RFX_ICAP_BUFFER.as_ref()).unwrap());
+    assert_eq!(*RFX_ICAP, decode(RFX_ICAP_BUFFER.as_ref()).unwrap());
 }
 
 #[test]
 fn to_buffer_correctly_serializes_rfx_icap() {
-    let mut buffer = Vec::new();
-
-    RFX_ICAP.to_buffer(&mut buffer).unwrap();
-
+    let buffer = encode_vec(&*RFX_ICAP).unwrap();
     assert_eq!(buffer, RFX_ICAP_BUFFER.as_ref());
 }
 
 #[test]
 fn buffer_length_is_correct_for_rfx_icap() {
-    assert_eq!(RFX_ICAP_BUFFER.len(), RFX_ICAP.buffer_length());
+    assert_eq!(RFX_ICAP_BUFFER.len(), RFX_ICAP.size());
 }
 
 #[test]
 fn from_buffer_correctly_parses_rfx_capset() {
-    assert_eq!(*RFX_CAPSET, RfxCapset::from_buffer(RFX_CAPSET_BUFFER.as_ref()).unwrap());
+    assert_eq!(*RFX_CAPSET, decode(RFX_CAPSET_BUFFER.as_ref()).unwrap());
 }
 
 #[test]
 fn to_buffer_correctly_serializes_rfx_capset() {
-    let mut buffer = Vec::new();
-
-    RFX_CAPSET.to_buffer(&mut buffer).unwrap();
+    let buffer = encode_vec(&*RFX_CAPSET).unwrap();
 
     assert_eq!(buffer, RFX_CAPSET_BUFFER.as_ref());
 }
 
 #[test]
 fn buffer_length_is_correct_for_rfx_capset() {
-    assert_eq!(RFX_CAPSET_BUFFER.len(), RFX_CAPSET.buffer_length());
+    assert_eq!(RFX_CAPSET_BUFFER.len(), RFX_CAPSET.size());
 }
 
 #[test]
 fn from_buffer_correctly_parses_rfx_caps() {
-    assert_eq!(*RFX_CAPS, RfxCaps::from_buffer(RFX_CAPS_BUFFER.as_ref()).unwrap());
+    assert_eq!(*RFX_CAPS, decode(RFX_CAPS_BUFFER.as_ref()).unwrap());
 }
 
 #[test]
 fn to_buffer_correctly_serializes_rfx_caps() {
-    let mut buffer = Vec::new();
-
-    RFX_CAPS.to_buffer(&mut buffer).unwrap();
-
+    let buffer = encode_vec(&*RFX_CAPS).unwrap();
     assert_eq!(buffer, RFX_CAPS_BUFFER.as_ref());
 }
 
 #[test]
 fn buffer_length_is_correct_for_rfx_caps() {
-    assert_eq!(RFX_CAPS_BUFFER.len(), RFX_CAPS.buffer_length());
+    assert_eq!(RFX_CAPS_BUFFER.len(), RFX_CAPS.size());
 }
 
 #[test]
 fn from_buffer_correctly_parses_rfx_client_caps_container() {
     assert_eq!(
         *RFX_CLIENT_CAPS_CONTAINER,
-        RfxClientCapsContainer::from_buffer(RFX_CLIENT_CAPS_CONTAINER_BUFFER.as_ref()).unwrap()
+        decode(RFX_CLIENT_CAPS_CONTAINER_BUFFER.as_ref()).unwrap()
     );
 }
 
 #[test]
 fn to_buffer_correctly_serializes_rfx_client_caps_container() {
-    let mut buffer = Vec::new();
-
-    RFX_CLIENT_CAPS_CONTAINER.to_buffer(&mut buffer).unwrap();
-
+    let buffer = encode_vec(&*RFX_CLIENT_CAPS_CONTAINER).unwrap();
     assert_eq!(buffer, RFX_CLIENT_CAPS_CONTAINER_BUFFER.as_ref());
 }
 
 #[test]
 fn buffer_length_is_correct_for_rfx_client_caps_container() {
-    assert_eq!(
-        RFX_CLIENT_CAPS_CONTAINER_BUFFER.len(),
-        RFX_CLIENT_CAPS_CONTAINER.buffer_length()
-    );
+    assert_eq!(RFX_CLIENT_CAPS_CONTAINER_BUFFER.len(), RFX_CLIENT_CAPS_CONTAINER.size());
 }
 
 #[test]
 fn from_buffer_correctly_parses_nscodec() {
-    assert_eq!(*NSCODEC, NsCodec::from_buffer(NSCODEC_BUFFER.as_ref()).unwrap());
+    assert_eq!(*NSCODEC, decode(NSCODEC_BUFFER.as_ref()).unwrap());
 }
 
 #[test]
 fn to_buffer_correctly_serializes_nscodec() {
-    let mut buffer = Vec::new();
-
-    NSCODEC.to_buffer(&mut buffer).unwrap();
-
+    let buffer = encode_vec(&*NSCODEC).unwrap();
     assert_eq!(buffer, NSCODEC_BUFFER.as_ref());
 }
 
 #[test]
 fn buffer_length_is_correct_for_nscodec() {
-    assert_eq!(NSCODEC_BUFFER.len(), NSCODEC.buffer_length());
+    assert_eq!(NSCODEC_BUFFER.len(), NSCODEC.size());
 }
 
 #[test]
 fn from_buffer_correctly_parses_codec() {
-    assert_eq!(*CODEC, Codec::from_buffer(CODEC_BUFFER.as_ref()).unwrap());
+    assert_eq!(*CODEC, decode(CODEC_BUFFER.as_ref()).unwrap());
 }
 
 #[test]
 fn to_buffer_correctly_serializes_codec() {
-    let mut buffer = Vec::new();
-
-    CODEC.to_buffer(&mut buffer).unwrap();
-
+    let buffer = encode_vec(&*CODEC).unwrap();
     assert_eq!(buffer, CODEC_BUFFER.as_ref());
 }
 
 #[test]
 fn buffer_length_is_correct_for_codec() {
-    assert_eq!(CODEC_BUFFER.len(), CODEC.buffer_length());
+    assert_eq!(CODEC_BUFFER.len(), CODEC.size());
 }
 
 #[test]
 fn from_buffer_correctly_parses_codec_server_mode() {
-    assert_eq!(
-        *CODEC_SERVER_MODE,
-        Codec::from_buffer(CODEC_SERVER_MODE_BUFFER.as_ref()).unwrap()
-    );
+    assert_eq!(*CODEC_SERVER_MODE, decode(CODEC_SERVER_MODE_BUFFER.as_ref()).unwrap());
 }
 
 #[test]
 fn to_buffer_correctly_serializes_codec_server_mode() {
-    let mut buffer = Vec::new();
-
-    CODEC_SERVER_MODE.to_buffer(&mut buffer).unwrap();
-
+    let buffer = encode_vec(&*CODEC_SERVER_MODE).unwrap();
     assert_eq!(buffer, CODEC_SERVER_MODE_BUFFER.as_ref());
 }
 
 #[test]
 fn buffer_length_is_correct_for_codec_server_mode() {
-    assert_eq!(CODEC_BUFFER.len(), CODEC.buffer_length());
+    assert_eq!(CODEC_BUFFER.len(), CODEC.size());
 }
 
 #[test]
 fn from_buffer_correctly_parses_bitmap_codecs() {
-    assert_eq!(
-        *BITMAP_CODECS,
-        BitmapCodecs::from_buffer(BITMAP_CODECS_BUFFER.as_ref()).unwrap()
-    );
+    assert_eq!(*BITMAP_CODECS, decode(BITMAP_CODECS_BUFFER.as_ref()).unwrap());
 }
 
 #[test]
 fn to_buffer_correctly_serializes_bitmap_codes() {
-    let mut buffer = Vec::new();
-
-    BITMAP_CODECS.to_buffer(&mut buffer).unwrap();
-
+    let buffer = encode_vec(&*BITMAP_CODECS).unwrap();
     assert_eq!(buffer, BITMAP_CODECS_BUFFER.as_ref());
 }
 
 #[test]
 fn buffer_length_is_correct_for_bitmap_codec() {
-    assert_eq!(BITMAP_CODECS_BUFFER.len(), BITMAP_CODECS.buffer_length());
+    assert_eq!(BITMAP_CODECS_BUFFER.len(), BITMAP_CODECS.size());
 }
 
 #[test]
@@ -477,8 +445,8 @@ fn codec_with_invalid_property_length_handles_correctly() {
         0x04, // entropy_bits
     ];
 
-    match Codec::from_buffer(codec_buffer.as_ref()) {
-        Err(CapabilitySetsError::InvalidPropertyLength) => (),
+    match decode::<Codec>(codec_buffer.as_ref()) {
+        Err(e) if matches!(e.kind(), PduErrorKind::InvalidMessage { .. }) => (),
         Err(e) => panic!("wrong error type: {e}"),
         _ => panic!("error expected"),
     }
@@ -497,7 +465,7 @@ fn codec_with_empty_property_length_and_ignore_guid_handles_correctly() {
         property: CodecProperty::Ignore,
     };
 
-    assert_eq!(codec, Codec::from_buffer(codec_buffer.as_ref()).unwrap());
+    assert_eq!(codec, decode(codec_buffer.as_ref()).unwrap());
 }
 
 #[test]
@@ -514,10 +482,10 @@ fn codec_with_property_length_and_ignore_guid_handled_correctly() {
         property: CodecProperty::Ignore,
     };
 
-    let mut slice = codec_buffer.as_slice();
-
-    assert_eq!(codec, Codec::from_buffer(&mut slice).unwrap());
-    assert!(slice.is_empty());
+    let slice = codec_buffer.as_slice();
+    let mut cur = ReadCursor::new(slice);
+    assert_eq!(codec, decode_cursor(&mut cur).unwrap());
+    assert!(cur.is_empty());
 }
 
 #[test]
@@ -540,7 +508,7 @@ fn ns_codec_with_too_high_color_loss_level_handled_correctly() {
         }),
     };
 
-    assert_eq!(codec, Codec::from_buffer(&mut codec_buffer.as_slice()).unwrap());
+    assert_eq!(codec, decode(&mut codec_buffer.as_slice()).unwrap());
 }
 
 #[test]
@@ -563,5 +531,5 @@ fn ns_codec_with_too_low_color_loss_level_handled_correctly() {
         }),
     };
 
-    assert_eq!(codec, Codec::from_buffer(&mut codec_buffer.as_slice()).unwrap());
+    assert_eq!(codec, decode(&mut codec_buffer.as_slice()).unwrap());
 }

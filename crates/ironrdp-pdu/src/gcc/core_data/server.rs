@@ -1,12 +1,10 @@
-use std::io;
-
 use bitflags::bitflags;
-use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use tap::Pipe as _;
 
-use super::{CoreDataError, RdpVersion, VERSION_SIZE};
+use super::RdpVersion;
+use crate::cursor::{ReadCursor, WriteCursor};
 use crate::nego::SecurityProtocol;
-use crate::PduParsing;
+use crate::{PduDecode, PduEncode, PduResult};
 
 const CLIENT_REQUESTED_PROTOCOL_SIZE: usize = 4;
 const EARLY_CAPABILITY_FLAGS_SIZE: usize = 4;
@@ -17,23 +15,37 @@ pub struct ServerCoreData {
     pub optional_data: ServerCoreOptionalData,
 }
 
-impl PduParsing for ServerCoreData {
-    type Error = CoreDataError;
+impl ServerCoreData {
+    const NAME: &'static str = "ServerCoreData";
 
-    fn from_buffer(mut buffer: impl io::Read) -> Result<Self, Self::Error> {
-        let version = buffer.read_u32::<LittleEndian>()?.pipe(RdpVersion);
-        let optional_data = ServerCoreOptionalData::from_buffer(&mut buffer)?;
+    const FIXED_PART_SIZE: usize = 4 /* rdpVersion */;
+}
+
+impl PduEncode for ServerCoreData {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_size!(in: dst, size: self.size());
+
+        dst.write_u32(self.version.0);
+        self.optional_data.encode(dst)
+    }
+
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    fn size(&self) -> usize {
+        Self::FIXED_PART_SIZE + self.optional_data.size()
+    }
+}
+
+impl<'de> PduDecode<'de> for ServerCoreData {
+    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+        ensure_fixed_part_size!(in: src);
+
+        let version = src.read_u32().pipe(RdpVersion);
+        let optional_data = ServerCoreOptionalData::decode(src)?;
 
         Ok(Self { version, optional_data })
-    }
-
-    fn to_buffer(&self, mut buffer: impl io::Write) -> Result<(), Self::Error> {
-        buffer.write_u32::<LittleEndian>(self.version.0)?;
-        self.optional_data.to_buffer(&mut buffer)
-    }
-
-    fn buffer_length(&self) -> usize {
-        VERSION_SIZE + self.optional_data.buffer_length()
     }
 }
 
@@ -43,37 +55,30 @@ pub struct ServerCoreOptionalData {
     pub early_capability_flags: Option<ServerEarlyCapabilityFlags>,
 }
 
-impl PduParsing for ServerCoreOptionalData {
-    type Error = CoreDataError;
+impl ServerCoreOptionalData {
+    const NAME: &'static str = "ServerCoreOptionalData";
+}
 
-    fn from_buffer(mut buffer: impl io::Read) -> Result<Self, Self::Error> {
-        let mut optional_data = Self::default();
+impl PduEncode for ServerCoreOptionalData {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_size!(in: dst, size: self.size());
 
-        optional_data.client_requested_protocols = Some(
-            SecurityProtocol::from_bits(try_read_optional!(buffer.read_u32::<LittleEndian>(), optional_data))
-                .ok_or(CoreDataError::InvalidServerSecurityProtocol)?,
-        );
+        if let Some(value) = self.client_requested_protocols {
+            dst.write_u32(value.bits());
+        };
 
-        optional_data.early_capability_flags = Some(
-            ServerEarlyCapabilityFlags::from_bits(try_read_optional!(buffer.read_u32::<LittleEndian>(), optional_data))
-                .ok_or(CoreDataError::InvalidEarlyCapabilityFlags)?,
-        );
-
-        Ok(optional_data)
-    }
-
-    fn to_buffer(&self, mut buffer: impl io::Write) -> Result<(), Self::Error> {
-        try_write_optional!(self.client_requested_protocols, |value: &SecurityProtocol| {
-            buffer.write_u32::<LittleEndian>(value.bits())
-        });
-
-        try_write_optional!(self.early_capability_flags, |value: &ServerEarlyCapabilityFlags| buffer
-            .write_u32::<LittleEndian>(value.bits()));
+        if let Some(value) = self.early_capability_flags {
+            dst.write_u32(value.bits());
+        }
 
         Ok(())
     }
 
-    fn buffer_length(&self) -> usize {
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    fn size(&self) -> usize {
         let mut size = 0;
 
         if self.client_requested_protocols.is_some() {
@@ -84,6 +89,33 @@ impl PduParsing for ServerCoreOptionalData {
         }
 
         size
+    }
+}
+
+macro_rules! try_or_return {
+    ($expr:expr, $ret:expr) => {
+        match $expr {
+            Ok(v) => v,
+            Err(_) => return Ok($ret),
+        }
+    };
+}
+
+impl<'de> PduDecode<'de> for ServerCoreOptionalData {
+    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+        let mut optional_data = Self::default();
+
+        optional_data.client_requested_protocols = Some(
+            SecurityProtocol::from_bits(try_or_return!(src.try_read_u32("clientReqProtocols"), optional_data))
+                .ok_or_else(|| invalid_message_err!("clientReqProtocols", "invalid server security protocol"))?,
+        );
+
+        optional_data.early_capability_flags = Some(
+            ServerEarlyCapabilityFlags::from_bits(try_or_return!(src.try_read_u32("earlyCapFlags"), optional_data))
+                .ok_or_else(|| invalid_message_err!("earlyCapFlags", "invalid early capability flags"))?,
+        );
+
+        Ok(optional_data)
     }
 }
 

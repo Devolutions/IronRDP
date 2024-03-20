@@ -7,12 +7,13 @@ use ironrdp_pdu::geometry::InclusiveRectangle;
 use ironrdp_pdu::input::fast_path::{FastPathInput, FastPathInputEvent};
 use ironrdp_pdu::rdp::headers::ShareDataPdu;
 use ironrdp_pdu::write_buf::WriteBuf;
-use ironrdp_pdu::{mcs, Action, PduParsing};
+use ironrdp_pdu::{mcs, Action};
 use ironrdp_svc::{SvcProcessor, SvcProcessorMessages};
 
 use crate::fast_path::UpdateKind;
 use crate::image::DecodedImage;
-use crate::{fast_path, x224, SessionError, SessionResult};
+use crate::x224::GfxHandler;
+use crate::{fast_path, x224, SessionError, SessionErrorExt, SessionResult};
 
 pub struct ActiveStage {
     x224_processor: x224::Processor,
@@ -66,10 +67,7 @@ impl ActiveStage {
         // Encoding fastpath response frame
         // PERF: unnecessary copy
         let fastpath_input = FastPathInput(events.to_vec());
-        let mut frame = Vec::new();
-        fastpath_input
-            .to_buffer(&mut frame)
-            .map_err(|e| custom_err!("FastPathInput encode", e))?;
+        let frame = ironrdp_pdu::encode_vec(&fastpath_input).map_err(SessionError::pdu)?;
         output.push(ActiveStageOutput::ResponseFrame(frame));
 
         // If pointer rendering is disabled - we can skip the rest

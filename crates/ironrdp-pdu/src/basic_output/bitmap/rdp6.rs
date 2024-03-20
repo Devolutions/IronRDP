@@ -131,7 +131,7 @@ impl<'a> PduDecode<'a> for BitmapStream<'a> {
             src.len()
         };
 
-        let color_planes = src.peek_slice(color_planes_size);
+        let color_planes = src.read_slice(color_planes_size);
 
         Ok(Self { header, color_planes })
     }
@@ -162,6 +162,7 @@ impl PduEncode for BitmapStream<'_> {
 }
 
 #[cfg(test)]
+#[cfg(feature = "alloc")]
 mod tests {
     use expect_test::{expect, Expect};
 

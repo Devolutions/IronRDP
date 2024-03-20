@@ -21,27 +21,27 @@ pub fn pdu_decode(data: &[u8]) {
     let _ = decode::<ConnectionRequest>(data);
     let _ = decode::<ConnectionConfirm>(data);
     let _ = decode::<McsMessage<'_>>(data);
-    let _ = ConnectInitial::from_buffer(data);
-    let _ = ConnectResponse::from_buffer(data);
-    let _ = ClientInfoPdu::from_buffer(data);
-    let _ = capability_sets::CapabilitySet::from_buffer(data);
-    let _ = headers::ShareControlHeader::from_buffer(data);
+    let _ = decode::<ConnectInitial>(data);
+    let _ = decode::<ConnectResponse>(data);
+    let _ = decode::<ClientInfoPdu>(data);
+    let _ = decode::<capability_sets::CapabilitySet>(data);
+    let _ = decode::<headers::ShareControlHeader>(data);
     let _ = decode::<pcb::PreconnectionBlob>(data);
-    let _ = server_error_info::ServerSetErrorInfoPdu::from_buffer(data);
+    let _ = decode::<server_error_info::ServerSetErrorInfoPdu>(data);
 
-    let _ = gcc::ClientGccBlocks::from_buffer(data);
-    let _ = gcc::ServerGccBlocks::from_buffer(data);
-    let _ = gcc::ClientClusterData::from_buffer(data);
-    let _ = gcc::ConferenceCreateRequest::from_buffer(data);
-    let _ = gcc::ConferenceCreateResponse::from_buffer(data);
+    let _ = decode::<gcc::ClientGccBlocks>(data);
+    let _ = decode::<gcc::ServerGccBlocks>(data);
+    let _ = decode::<gcc::ClientClusterData>(data);
+    let _ = decode::<gcc::ConferenceCreateRequest>(data);
+    let _ = decode::<gcc::ConferenceCreateResponse>(data);
 
-    let _ = server_license::ClientNewLicenseRequest::from_buffer(data);
-    let _ = server_license::ClientPlatformChallengeResponse::from_buffer(data);
-    let _ = server_license::InitialServerLicenseMessage::from_buffer(data);
-    let _ = server_license::ServerLicenseRequest::from_buffer(data);
-    let _ = server_license::ServerPlatformChallenge::from_buffer(data);
+    let _ = decode::<server_license::ClientNewLicenseRequest>(data);
+    let _ = decode::<server_license::ClientPlatformChallengeResponse>(data);
+    let _ = decode::<server_license::InitialServerLicenseMessage>(data);
+    let _ = decode::<server_license::ServerLicenseRequest>(data);
+    let _ = decode::<server_license::ServerPlatformChallenge>(data);
 
-    let _ = vc::ChannelPduHeader::from_buffer(data);
+    let _ = decode::<vc::ChannelPduHeader>(data);
 
     let _ = decode::<fast_path::FastPathHeader>(data);
     let _ = decode::<fast_path::FastPathUpdatePdu<'_>>(data);
@@ -65,7 +65,7 @@ pub fn pdu_decode(data: &[u8]) {
     let _ = decode::<surface_commands::BitmapDataHeader>(data);
 
     let _ = codecs::rfx::Headers::from_buffer(data);
-    let _ = codecs::rfx::FrameAcknowledgePdu::from_buffer(data);
+    let _ = decode::<codecs::rfx::FrameAcknowledgePdu>(data);
     let _ = codecs::rfx::ContextPdu::from_buffer(data);
     let _ = codecs::rfx::FrameBeginPdu::from_buffer(data);
     let _ = codecs::rfx::FrameEndPdu::from_buffer(data);
@@ -79,8 +79,8 @@ pub fn pdu_decode(data: &[u8]) {
     let _ = codecs::rfx::ChannelsPdu::from_buffer(data);
     let _ = codecs::rfx::RfxChannel::from_buffer(data);
 
-    let _ = input::InputEventPdu::from_buffer(data);
-    let _ = input::InputEvent::from_buffer(data);
+    let _ = decode::<input::InputEventPdu>(data);
+    let _ = decode::<input::InputEvent>(data);
 
     let _ = decode::<bitmap::rdp6::BitmapStream<'_>>(data);
 

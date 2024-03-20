@@ -1,35 +1,48 @@
-use std::io;
-
 use bitflags::bitflags;
-use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 
-use super::InputEventError;
-use crate::PduParsing;
+use crate::{
+    cursor::{ReadCursor, WriteCursor},
+    PduDecode, PduEncode, PduResult,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SyncPdu {
     pub flags: SyncToggleFlags,
 }
 
-impl PduParsing for SyncPdu {
-    type Error = InputEventError;
+impl SyncPdu {
+    const NAME: &'static str = "SyncPdu";
 
-    fn from_buffer(mut stream: impl io::Read) -> Result<Self, Self::Error> {
-        let _padding = stream.read_u16::<LittleEndian>()?;
-        let flags = SyncToggleFlags::from_bits_truncate(stream.read_u32::<LittleEndian>()?);
+    const FIXED_PART_SIZE: usize = 2 /* padding */ + 4 /* flags */;
+}
 
-        Ok(Self { flags })
-    }
+impl PduEncode for SyncPdu {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_fixed_part_size!(in: dst);
 
-    fn to_buffer(&self, mut stream: impl io::Write) -> Result<(), Self::Error> {
-        stream.write_u16::<LittleEndian>(0)?; // padding
-        stream.write_u32::<LittleEndian>(self.flags.bits())?;
+        write_padding!(dst, 2);
+        dst.write_u32(self.flags.bits());
 
         Ok(())
     }
 
-    fn buffer_length(&self) -> usize {
-        6
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    fn size(&self) -> usize {
+        Self::FIXED_PART_SIZE
+    }
+}
+
+impl<'de> PduDecode<'de> for SyncPdu {
+    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+        ensure_fixed_part_size!(in: src);
+
+        read_padding!(src, 2);
+        let flags = SyncToggleFlags::from_bits_truncate(src.read_u32());
+
+        Ok(Self { flags })
     }
 }
 

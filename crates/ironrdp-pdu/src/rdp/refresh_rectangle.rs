@@ -1,14 +1,6 @@
-use std::io;
-
-use byteorder::{ReadBytesExt as _, WriteBytesExt as _};
-
+use crate::cursor::{ReadCursor, WriteCursor};
 use crate::geometry::InclusiveRectangle;
-use crate::PduParsing;
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RefreshRectanglePdu {
-    pub areas_to_refresh: Vec<InclusiveRectangle>,
-}
+use crate::{PduDecode, PduEncode, PduResult};
 
 /// [2.2.11.2.1] Refresh Rect PDU Data (TS_REFRESH_RECT_PDU)
 ///
@@ -19,41 +11,52 @@ pub struct RefreshRectanglePdu {
 /// Capability Set (section [2.2.7.1.1].
 ///
 /// [2.2.11.2.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/fe04a39d-dc10-489f-bea7-08dad5538547
-impl PduParsing for RefreshRectanglePdu {
-    type Error = io::Error;
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RefreshRectanglePdu {
+    pub areas_to_refresh: Vec<InclusiveRectangle>,
+}
 
-    fn from_buffer(mut stream: impl io::Read) -> Result<Self, Self::Error> {
-        let number_of_areas = stream.read_u8()?;
-        let _padding = stream.read_u8()?; // padding
-        let _padding = stream.read_u8()?; // padding
-        let _padding = stream.read_u8()?; // padding
-        let areas_to_refresh = (0..number_of_areas)
-            .map(|_| InclusiveRectangle::from_buffer(&mut stream))
-            .collect::<Result<Vec<_>, Self::Error>>()?;
+impl RefreshRectanglePdu {
+    const NAME: &'static str = "RefreshRectanglePdu";
 
-        Ok(Self { areas_to_refresh })
-    }
+    const FIXED_PART_SIZE: usize = 1 /* numberOfAreas */ + 3 /* pad3Octets */;
+}
 
-    fn to_buffer(&self, mut stream: impl io::Write) -> Result<(), Self::Error> {
-        // NOTE: use `cast_length!` when migrated to `PduEncode` trait.
-        let n_areas =
-            u8::try_from(self.areas_to_refresh.len()).map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
+impl PduEncode for RefreshRectanglePdu {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_size!(in: dst, size: self.size());
 
-        stream.write_u8(n_areas)?;
-        stream.write_u8(0)?; // padding
-        stream.write_u8(0)?; // padding
-        stream.write_u8(0)?; // padding
+        let n_areas = cast_length!("nAreas", self.areas_to_refresh.len())?;
+
+        dst.write_u8(n_areas);
+        write_padding!(dst, 3);
         for rectangle in self.areas_to_refresh.iter() {
-            rectangle.to_buffer(&mut stream)?;
+            rectangle.encode(dst)?;
         }
 
         Ok(())
     }
 
-    fn buffer_length(&self) -> usize {
-        1 // numberOfAreas
-        + 3 // pad3Octets
-        + self.areas_to_refresh.iter().map(|r| r.buffer_length()).sum::<usize>()
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    fn size(&self) -> usize {
+        Self::FIXED_PART_SIZE + self.areas_to_refresh.iter().map(|r| r.size()).sum::<usize>()
         // areasToRefresh
+    }
+}
+
+impl<'de> PduDecode<'de> for RefreshRectanglePdu {
+    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+        ensure_fixed_part_size!(in: src);
+
+        let number_of_areas = src.read_u8();
+        read_padding!(src, 3);
+        let areas_to_refresh = (0..number_of_areas)
+            .map(|_| InclusiveRectangle::decode(src))
+            .collect::<Result<Vec<_>, _>>()?;
+
+        Ok(Self { areas_to_refresh })
     }
 }

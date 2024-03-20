@@ -1,41 +1,10 @@
-//! Legacy compat layer based on the old PduParsing trait
-
 use std::borrow::Cow;
 
 use ironrdp_pdu::rdp::headers::ServerDeactivateAll;
 use ironrdp_pdu::write_buf::WriteBuf;
-use ironrdp_pdu::{rdp, x224, PduParsing};
+use ironrdp_pdu::{decode, encode_vec, rdp, PduDecode, PduEncode};
 
 use crate::{ConnectorError, ConnectorErrorExt as _, ConnectorResult};
-
-pub fn encode_x224_packet<T>(x224_msg: &T, buf: &mut WriteBuf) -> ConnectorResult<usize>
-where
-    T: PduParsing,
-    ConnectorError: From<T::Error>,
-{
-    let x224_msg_len = x224_msg.buffer_length();
-    let mut x224_msg_buf = Vec::with_capacity(x224_msg_len);
-
-    x224_msg.to_buffer(&mut x224_msg_buf)?;
-
-    let pdu = x224::X224Data {
-        data: Cow::Owned(x224_msg_buf),
-    };
-
-    let written = ironrdp_pdu::encode_buf(&pdu, buf).map_err(ConnectorError::pdu)?;
-
-    Ok(written)
-}
-
-pub fn decode_x224_packet<T>(src: &[u8]) -> ConnectorResult<T>
-where
-    T: PduParsing,
-    ConnectorError: From<T::Error>,
-{
-    let x224_payload = ironrdp_pdu::decode::<x224::X224Data<'_>>(src).map_err(ConnectorError::pdu)?;
-    let x224_msg = T::from_buffer(x224_payload.data.as_ref())?;
-    Ok(x224_msg)
-}
 
 pub fn encode_send_data_request<T>(
     initiator_id: u16,
@@ -44,13 +13,9 @@ pub fn encode_send_data_request<T>(
     buf: &mut WriteBuf,
 ) -> ConnectorResult<usize>
 where
-    T: PduParsing,
-    ConnectorError: From<T::Error>,
+    T: PduEncode,
 {
-    let user_data_len = user_msg.buffer_length();
-    let mut user_data = Vec::with_capacity(user_data_len);
-
-    user_msg.to_buffer(&mut user_data)?;
+    let user_data = encode_vec(user_msg).map_err(ConnectorError::pdu)?;
 
     let pdu = ironrdp_pdu::mcs::SendDataRequest {
         initiator_id,
@@ -70,13 +35,13 @@ pub struct SendDataIndicationCtx<'a> {
     pub user_data: &'a [u8],
 }
 
-impl SendDataIndicationCtx<'_> {
-    pub fn decode_user_data<T>(&self) -> ConnectorResult<T>
+impl<'a> SendDataIndicationCtx<'a> {
+    pub fn decode_user_data<'de, T>(&self) -> ConnectorResult<T>
     where
-        T: PduParsing,
-        ConnectorError: From<T::Error>,
+        T: PduDecode<'de>,
+        'a: 'de,
     {
-        let msg = T::from_buffer(self.user_data)?;
+        let msg = decode::<T>(self.user_data).map_err(ConnectorError::pdu)?;
         Ok(msg)
     }
 }
@@ -84,7 +49,7 @@ impl SendDataIndicationCtx<'_> {
 pub fn decode_send_data_indication(src: &[u8]) -> ConnectorResult<SendDataIndicationCtx<'_>> {
     use ironrdp_pdu::mcs::McsMessage;
 
-    let mcs_msg = ironrdp_pdu::decode::<McsMessage<'_>>(src).map_err(ConnectorError::pdu)?;
+    let mcs_msg = decode::<McsMessage<'_>>(src).map_err(ConnectorError::pdu)?;
 
     match mcs_msg {
         McsMessage::SendDataIndication(msg) => {

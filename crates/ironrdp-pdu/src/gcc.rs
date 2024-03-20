@@ -1,11 +1,11 @@
 use std::io;
 
-use byteorder::{LittleEndian, ReadBytesExt as _, WriteBytesExt as _};
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive, ToPrimitive};
 use thiserror::Error;
 
-use crate::PduParsing;
+use crate::cursor::{ReadCursor, WriteCursor};
+use crate::{decode, PduDecode, PduEncode, PduError, PduErrorKind, PduResult};
 
 pub mod conference_create;
 
@@ -28,14 +28,10 @@ pub use self::core_data::server::{ServerCoreData, ServerCoreOptionalData, Server
 pub use self::core_data::{CoreDataError, RdpVersion};
 pub use self::message_channel_data::{ClientMessageChannelData, ServerMessageChannelData};
 pub use self::monitor_data::{
-    ClientMonitorData, Monitor, MonitorDataError, MonitorFlags, MONITOR_COUNT_SIZE, MONITOR_FLAGS_SIZE, MONITOR_SIZE,
+    ClientMonitorData, Monitor, MonitorFlags, MONITOR_COUNT_SIZE, MONITOR_FLAGS_SIZE, MONITOR_SIZE,
 };
-pub use self::monitor_extended_data::{
-    ClientMonitorExtendedData, ExtendedMonitorInfo, MonitorExtendedDataError, MonitorOrientation,
-};
-pub use self::multi_transport_channel_data::{
-    MultiTransportChannelData, MultiTransportChannelDataError, MultiTransportFlags,
-};
+pub use self::monitor_extended_data::{ClientMonitorExtendedData, ExtendedMonitorInfo, MonitorOrientation};
+pub use self::multi_transport_channel_data::{MultiTransportChannelData, MultiTransportFlags};
 pub use self::network_data::{
     ChannelDef, ChannelName, ChannelOptions, ClientNetworkData, NetworkDataError, ServerNetworkData,
 };
@@ -47,13 +43,12 @@ macro_rules! user_header_try {
     ($e:expr) => {
         match $e {
             Ok(user_header) => user_header,
-            Err(GccError::IOError(ref e)) if e.kind() == io::ErrorKind::UnexpectedEof => break,
+            Err(e) if matches!(e.kind(), PduErrorKind::NotEnoughBytes { .. }) => break,
             Err(e) => return Err(e),
         }
     };
 }
 
-const GCC_TYPE_SIZE: usize = 2;
 const USER_DATA_HEADER_SIZE: usize = 4;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -74,15 +69,74 @@ pub struct ClientGccBlocks {
 }
 
 impl ClientGccBlocks {
+    const NAME: &'static str = "ClientGccBlocks";
+
     pub fn channel_names(&self) -> Option<Vec<ChannelDef>> {
         self.network.as_ref().map(|network| network.channels.clone())
     }
 }
 
-impl PduParsing for ClientGccBlocks {
-    type Error = GccError;
+impl PduEncode for ClientGccBlocks {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_size!(in: dst, size: self.size());
 
-    fn from_buffer(mut buffer: impl io::Read) -> Result<Self, Self::Error> {
+        UserDataHeader::encode(dst, ClientGccType::CoreData, &self.core)?;
+        UserDataHeader::encode(dst, ClientGccType::SecurityData, &self.security)?;
+
+        if let Some(ref network) = self.network {
+            UserDataHeader::encode(dst, ClientGccType::NetworkData, network)?;
+        }
+        if let Some(ref cluster) = self.cluster {
+            UserDataHeader::encode(dst, ClientGccType::ClusterData, cluster)?;
+        }
+        if let Some(ref monitor) = self.monitor {
+            UserDataHeader::encode(dst, ClientGccType::MonitorData, monitor)?;
+        }
+        if let Some(ref message_channel) = self.message_channel {
+            UserDataHeader::encode(dst, ClientGccType::MessageChannelData, message_channel)?;
+        }
+        if let Some(ref multi_transport_channel) = self.multi_transport_channel {
+            UserDataHeader::encode(dst, ClientGccType::MultiTransportChannelData, multi_transport_channel)?;
+        }
+        if let Some(ref monitor_extended) = self.monitor_extended {
+            UserDataHeader::encode(dst, ClientGccType::MonitorExtendedData, monitor_extended)?;
+        }
+
+        Ok(())
+    }
+
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    fn size(&self) -> usize {
+        let mut size = self.core.size() + self.security.size() + USER_DATA_HEADER_SIZE * 2;
+
+        if let Some(ref network) = self.network {
+            size += network.size() + USER_DATA_HEADER_SIZE;
+        }
+        if let Some(ref cluster) = self.cluster {
+            size += cluster.size() + USER_DATA_HEADER_SIZE;
+        }
+        if let Some(ref monitor) = self.monitor {
+            size += monitor.size() + USER_DATA_HEADER_SIZE;
+        }
+        if let Some(ref message_channel) = self.message_channel {
+            size += message_channel.size() + USER_DATA_HEADER_SIZE;
+        }
+        if let Some(ref multi_transport_channel) = self.multi_transport_channel {
+            size += multi_transport_channel.size() + USER_DATA_HEADER_SIZE;
+        }
+        if let Some(ref monitor_extended) = self.monitor_extended {
+            size += monitor_extended.size() + USER_DATA_HEADER_SIZE;
+        }
+
+        size
+    }
+}
+
+impl<'de> PduDecode<'de> for ClientGccBlocks {
+    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
         let mut core = None;
         let mut security = None;
         let mut network = None;
@@ -93,43 +147,23 @@ impl PduParsing for ClientGccBlocks {
         let mut monitor_extended = None;
 
         loop {
-            let user_header = user_header_try!(UserDataHeader::<ClientGccType>::from_buffer(&mut buffer));
+            let (ty, cur) = user_header_try!(UserDataHeader::decode(src));
 
-            match user_header.block_type {
-                ClientGccType::CoreData => core = Some(ClientCoreData::from_buffer(user_header.block_data.as_slice())?),
-                ClientGccType::SecurityData => {
-                    security = Some(ClientSecurityData::from_buffer(user_header.block_data.as_slice())?)
-                }
-                ClientGccType::NetworkData => {
-                    network = Some(ClientNetworkData::from_buffer(user_header.block_data.as_slice())?)
-                }
-                ClientGccType::ClusterData => {
-                    cluster = Some(ClientClusterData::from_buffer(user_header.block_data.as_slice())?)
-                }
-                ClientGccType::MonitorData => {
-                    monitor = Some(ClientMonitorData::from_buffer(user_header.block_data.as_slice())?)
-                }
-                ClientGccType::MessageChannelData => {
-                    message_channel = Some(ClientMessageChannelData::from_buffer(
-                        user_header.block_data.as_slice(),
-                    )?)
-                }
-                ClientGccType::MonitorExtendedData => {
-                    monitor_extended = Some(ClientMonitorExtendedData::from_buffer(
-                        user_header.block_data.as_slice(),
-                    )?)
-                }
-                ClientGccType::MultiTransportChannelData => {
-                    multi_transport_channel = Some(MultiTransportChannelData::from_buffer(
-                        user_header.block_data.as_slice(),
-                    )?)
-                }
+            match ty {
+                ClientGccType::CoreData => core = Some(decode(cur)?),
+                ClientGccType::SecurityData => security = Some(decode(cur)?),
+                ClientGccType::NetworkData => network = Some(decode(cur)?),
+                ClientGccType::ClusterData => cluster = Some(decode(cur)?),
+                ClientGccType::MonitorData => monitor = Some(decode(cur)?),
+                ClientGccType::MessageChannelData => message_channel = Some(decode(cur)?),
+                ClientGccType::MonitorExtendedData => monitor_extended = Some(decode(cur)?),
+                ClientGccType::MultiTransportChannelData => multi_transport_channel = Some(decode(cur)?),
             };
         }
 
         Ok(Self {
-            core: core.ok_or(GccError::RequiredClientDataBlockIsAbsent(ClientGccType::CoreData))?,
-            security: security.ok_or(GccError::RequiredClientDataBlockIsAbsent(ClientGccType::SecurityData))?,
+            core: core.ok_or_else(|| invalid_message_err!("core", "required GCC core is absent"))?,
+            security: security.ok_or_else(|| invalid_message_err!("security", "required GCC security is absent"))?,
             network,
             cluster,
             monitor,
@@ -137,60 +171,6 @@ impl PduParsing for ClientGccBlocks {
             multi_transport_channel,
             monitor_extended,
         })
-    }
-
-    fn to_buffer(&self, mut buffer: impl io::Write) -> Result<(), Self::Error> {
-        UserDataHeader::from_gcc_block(ClientGccType::CoreData, &self.core)?.to_buffer(&mut buffer)?;
-        UserDataHeader::from_gcc_block(ClientGccType::SecurityData, &self.security)?.to_buffer(&mut buffer)?;
-
-        if let Some(ref network) = self.network {
-            UserDataHeader::from_gcc_block(ClientGccType::NetworkData, network)?.to_buffer(&mut buffer)?;
-        }
-        if let Some(ref cluster) = self.cluster {
-            UserDataHeader::from_gcc_block(ClientGccType::ClusterData, cluster)?.to_buffer(&mut buffer)?;
-        }
-        if let Some(ref monitor) = self.monitor {
-            UserDataHeader::from_gcc_block(ClientGccType::MonitorData, monitor)?.to_buffer(&mut buffer)?;
-        }
-        if let Some(ref message_channel) = self.message_channel {
-            UserDataHeader::from_gcc_block(ClientGccType::MessageChannelData, message_channel)?
-                .to_buffer(&mut buffer)?;
-        }
-        if let Some(ref multi_transport_channel) = self.multi_transport_channel {
-            UserDataHeader::from_gcc_block(ClientGccType::MultiTransportChannelData, multi_transport_channel)?
-                .to_buffer(&mut buffer)?;
-        }
-        if let Some(ref monitor_extended) = self.monitor_extended {
-            UserDataHeader::from_gcc_block(ClientGccType::MonitorExtendedData, monitor_extended)?
-                .to_buffer(&mut buffer)?;
-        }
-
-        Ok(())
-    }
-
-    fn buffer_length(&self) -> usize {
-        let mut size = self.core.buffer_length() + self.security.buffer_length() + USER_DATA_HEADER_SIZE * 2;
-
-        if let Some(ref network) = self.network {
-            size += network.buffer_length() + USER_DATA_HEADER_SIZE;
-        }
-        if let Some(ref cluster) = self.cluster {
-            size += cluster.buffer_length() + USER_DATA_HEADER_SIZE;
-        }
-        if let Some(ref monitor) = self.monitor {
-            size += monitor.buffer_length() + USER_DATA_HEADER_SIZE;
-        }
-        if let Some(ref message_channel) = self.message_channel {
-            size += message_channel.buffer_length() + USER_DATA_HEADER_SIZE;
-        }
-        if let Some(ref multi_transport_channel) = self.multi_transport_channel {
-            size += multi_transport_channel.buffer_length() + USER_DATA_HEADER_SIZE;
-        }
-        if let Some(ref monitor_extended) = self.monitor_extended {
-            size += monitor_extended.buffer_length() + USER_DATA_HEADER_SIZE;
-        }
-
-        size
     }
 }
 
@@ -204,6 +184,8 @@ pub struct ServerGccBlocks {
 }
 
 impl ServerGccBlocks {
+    const NAME: &'static str = "ServerGccBlocks";
+
     pub fn channel_ids(&self) -> Vec<u16> {
         self.network.channel_ids.clone()
     }
@@ -212,10 +194,42 @@ impl ServerGccBlocks {
     }
 }
 
-impl PduParsing for ServerGccBlocks {
-    type Error = GccError;
+impl PduEncode for ServerGccBlocks {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        UserDataHeader::encode(dst, ServerGccType::CoreData, &self.core)?;
+        UserDataHeader::encode(dst, ServerGccType::NetworkData, &self.network)?;
+        UserDataHeader::encode(dst, ServerGccType::SecurityData, &self.security)?;
 
-    fn from_buffer(mut buffer: impl io::Read) -> Result<Self, Self::Error> {
+        if let Some(ref message_channel) = self.message_channel {
+            UserDataHeader::encode(dst, ServerGccType::MessageChannelData, message_channel)?;
+        }
+        if let Some(ref multi_transport_channel) = self.multi_transport_channel {
+            UserDataHeader::encode(dst, ServerGccType::MultiTransportChannelData, multi_transport_channel)?;
+        }
+
+        Ok(())
+    }
+
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    fn size(&self) -> usize {
+        let mut size = self.core.size() + self.network.size() + self.security.size() + USER_DATA_HEADER_SIZE * 3;
+
+        if let Some(ref message_channel) = self.message_channel {
+            size += message_channel.size() + USER_DATA_HEADER_SIZE;
+        }
+        if let Some(ref multi_transport_channel) = self.multi_transport_channel {
+            size += multi_transport_channel.size() + USER_DATA_HEADER_SIZE;
+        }
+
+        size
+    }
+}
+
+impl<'de> PduDecode<'de> for ServerGccBlocks {
+    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
         let mut core = None;
         let mut network = None;
         let mut security = None;
@@ -223,69 +237,24 @@ impl PduParsing for ServerGccBlocks {
         let mut multi_transport_channel = None;
 
         loop {
-            let user_header = user_header_try!(UserDataHeader::<ServerGccType>::from_buffer(&mut buffer));
+            let (ty, cur) = user_header_try!(UserDataHeader::decode(src));
 
-            match user_header.block_type {
-                ServerGccType::CoreData => core = Some(ServerCoreData::from_buffer(user_header.block_data.as_slice())?),
-                ServerGccType::NetworkData => {
-                    network = Some(ServerNetworkData::from_buffer(user_header.block_data.as_slice())?)
-                }
-                ServerGccType::SecurityData => {
-                    security = Some(ServerSecurityData::from_buffer(user_header.block_data.as_slice())?)
-                }
-                ServerGccType::MessageChannelData => {
-                    message_channel = Some(ServerMessageChannelData::from_buffer(
-                        user_header.block_data.as_slice(),
-                    )?)
-                }
-                ServerGccType::MultiTransportChannelData => {
-                    multi_transport_channel = Some(MultiTransportChannelData::from_buffer(
-                        user_header.block_data.as_slice(),
-                    )?)
-                }
+            match ty {
+                ServerGccType::CoreData => core = Some(decode(cur)?),
+                ServerGccType::NetworkData => network = Some(decode(cur)?),
+                ServerGccType::SecurityData => security = Some(decode(cur)?),
+                ServerGccType::MessageChannelData => message_channel = Some(decode(cur)?),
+                ServerGccType::MultiTransportChannelData => multi_transport_channel = Some(decode(cur)?),
             };
         }
 
         Ok(Self {
-            core: core.ok_or(GccError::RequiredServerDataBlockIsAbsent(ServerGccType::CoreData))?,
-            network: network.ok_or(GccError::RequiredServerDataBlockIsAbsent(ServerGccType::NetworkData))?,
-            security: security.ok_or(GccError::RequiredServerDataBlockIsAbsent(ServerGccType::SecurityData))?,
+            core: core.ok_or_else(|| invalid_message_err!("core", "required GCC core is absent"))?,
+            network: network.ok_or_else(|| invalid_message_err!("network", "required GCC network is absent"))?,
+            security: security.ok_or_else(|| invalid_message_err!("security", "required GCC security is absent"))?,
             message_channel,
             multi_transport_channel,
         })
-    }
-
-    fn to_buffer(&self, mut buffer: impl io::Write) -> Result<(), Self::Error> {
-        UserDataHeader::from_gcc_block(ServerGccType::CoreData, &self.core)?.to_buffer(&mut buffer)?;
-        UserDataHeader::from_gcc_block(ServerGccType::NetworkData, &self.network)?.to_buffer(&mut buffer)?;
-        UserDataHeader::from_gcc_block(ServerGccType::SecurityData, &self.security)?.to_buffer(&mut buffer)?;
-
-        if let Some(ref message_channel) = self.message_channel {
-            UserDataHeader::from_gcc_block(ServerGccType::MessageChannelData, message_channel)?
-                .to_buffer(&mut buffer)?;
-        }
-        if let Some(ref multi_transport_channel) = self.multi_transport_channel {
-            UserDataHeader::from_gcc_block(ServerGccType::MultiTransportChannelData, multi_transport_channel)?
-                .to_buffer(&mut buffer)?;
-        }
-
-        Ok(())
-    }
-
-    fn buffer_length(&self) -> usize {
-        let mut size = self.core.buffer_length()
-            + self.network.buffer_length()
-            + self.security.buffer_length()
-            + USER_DATA_HEADER_SIZE * 3;
-
-        if let Some(ref message_channel) = self.message_channel {
-            size += message_channel.buffer_length() + USER_DATA_HEADER_SIZE;
-        }
-        if let Some(ref multi_transport_channel) = self.multi_transport_channel {
-            size += multi_transport_channel.buffer_length() + USER_DATA_HEADER_SIZE;
-        }
-
-        size
     }
 }
 
@@ -313,57 +282,43 @@ pub enum ServerGccType {
 }
 
 #[derive(Debug)]
-pub struct UserDataHeader<T: FromPrimitive + ToPrimitive> {
-    block_type: T,
-    block_data: Vec<u8>,
-}
+pub struct UserDataHeader;
 
-impl<T: FromPrimitive + ToPrimitive> UserDataHeader<T> {
-    fn from_gcc_block<B: PduParsing>(block_type: T, gcc_block: &B) -> Result<Self, GccError>
+impl UserDataHeader {
+    const FIXED_PART_SIZE: usize = 2 /* blockType */ + 2 /* blockLen */;
+
+    pub fn encode<T, B>(dst: &mut WriteCursor<'_>, block_type: T, block: &B) -> PduResult<()>
     where
-        GccError: From<<B as PduParsing>::Error>,
+        T: ToPrimitive,
+        B: PduEncode,
     {
-        let mut block_data = Vec::with_capacity(gcc_block.buffer_length());
-        gcc_block.to_buffer(&mut block_data)?;
+        ensure_fixed_part_size!(in: dst);
 
-        Ok(Self { block_type, block_data })
-    }
-
-    fn block_length(&self) -> usize {
-        self.block_data.len() + USER_DATA_HEADER_SIZE
-    }
-}
-
-impl<T: FromPrimitive + ToPrimitive> PduParsing for UserDataHeader<T> {
-    type Error = GccError;
-
-    fn from_buffer(mut buffer: impl io::Read) -> Result<Self, Self::Error> {
-        let block_type = T::from_u16(buffer.read_u16::<LittleEndian>()?).ok_or(GccError::InvalidGccType)?;
-        let block_length = buffer.read_u16::<LittleEndian>()?;
-
-        if block_length <= USER_DATA_HEADER_SIZE as u16 {
-            return Err(GccError::IOError(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "invalid UserDataHeader length",
-            )));
-        }
-
-        let mut block_data = vec![0; block_length as usize - USER_DATA_HEADER_SIZE];
-        buffer.read_exact(&mut block_data)?;
-
-        Ok(Self { block_type, block_data })
-    }
-
-    fn to_buffer(&self, mut buffer: impl io::Write) -> Result<(), Self::Error> {
-        buffer.write_u16::<LittleEndian>(self.block_type.to_u16().unwrap())?;
-        buffer.write_u16::<LittleEndian>(self.block_length() as u16)?;
-        buffer.write_all(self.block_data.as_ref())?;
+        dst.write_u16(block_type.to_u16().unwrap());
+        dst.write_u16(cast_length!("blockLen", block.size() + USER_DATA_HEADER_SIZE)?);
+        block.encode(dst)?;
 
         Ok(())
     }
 
-    fn buffer_length(&self) -> usize {
-        GCC_TYPE_SIZE + self.block_data.len()
+    pub fn decode<'de, T>(src: &mut ReadCursor<'de>) -> PduResult<(T, &'de [u8])>
+    where
+        T: FromPrimitive,
+    {
+        ensure_fixed_part_size!(in: src);
+
+        let block_type =
+            T::from_u16(src.read_u16()).ok_or_else(|| invalid_message_err!("blockType", "invalid GCC type"))?;
+        let block_length: usize = cast_length!("blockLen", src.read_u16())?;
+
+        if block_length <= USER_DATA_HEADER_SIZE {
+            return Err(invalid_message_err!("blockLen", "invalid UserDataHeader length"));
+        }
+
+        let len = block_length - USER_DATA_HEADER_SIZE;
+        ensure_size!(in: src, size: len);
+
+        Ok((block_type, src.read_slice(len)))
     }
 }
 
@@ -379,12 +334,6 @@ pub enum GccError {
     NetworkError(#[from] NetworkDataError),
     #[error("cluster data block error")]
     ClusterError(#[from] ClusterDataError),
-    #[error("monitor data block error")]
-    MonitorError(#[from] MonitorDataError),
-    #[error("multi-transport channel data block error")]
-    MultiTransportChannelError(#[from] MultiTransportChannelDataError),
-    #[error("monitor extended data block error")]
-    MonitorExtendedError(#[from] MonitorExtendedDataError),
     #[error("invalid GCC block type")]
     InvalidGccType,
     #[error("invalid conference create request: {0}")]
@@ -395,4 +344,12 @@ pub enum GccError {
     RequiredClientDataBlockIsAbsent(ClientGccType),
     #[error("a client did not send the required GCC data block: {0:?}")]
     RequiredServerDataBlockIsAbsent(ServerGccType),
+    #[error("PDU error: {0}")]
+    Pdu(PduError),
+}
+
+impl From<PduError> for GccError {
+    fn from(e: PduError) -> Self {
+        Self::Pdu(e)
+    }
 }

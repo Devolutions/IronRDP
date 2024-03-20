@@ -1,13 +1,10 @@
 #[cfg(test)]
 mod tests;
 
-use std::io;
-
 use bitflags::bitflags;
-use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 
-use crate::rdp::capability_sets::CapabilitySetsError;
-use crate::{try_read_optional, try_write_optional, PduParsing};
+use crate::cursor::WriteCursor;
+use crate::{PduDecode, PduEncode, PduResult};
 
 const FLAGS_FIELD_SIZE: usize = 4;
 const CHUNK_SIZE_FIELD_SIZE: usize = 4;
@@ -38,36 +35,56 @@ pub struct VirtualChannel {
     pub chunk_size: Option<u32>,
 }
 
-impl PduParsing for VirtualChannel {
-    type Error = CapabilitySetsError;
+impl VirtualChannel {
+    const NAME: &'static str = "VirtualChannel";
 
-    fn from_buffer(mut buffer: impl io::Read) -> Result<Self, Self::Error> {
-        let flags = VirtualChannelFlags::from_bits_truncate(buffer.read_u32::<LittleEndian>()?);
+    const FIXED_PART_SIZE: usize = FLAGS_FIELD_SIZE;
+}
+
+impl PduEncode for VirtualChannel {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_size!(in: dst, size: self.size());
+
+        dst.write_u32(self.flags.bits());
+
+        if let Some(value) = self.chunk_size {
+            dst.write_u32(value);
+        }
+
+        Ok(())
+    }
+
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    fn size(&self) -> usize {
+        Self::FIXED_PART_SIZE + self.chunk_size.map(|_| CHUNK_SIZE_FIELD_SIZE).unwrap_or(0)
+    }
+}
+
+macro_rules! try_or_return {
+    ($expr:expr, $ret:expr) => {
+        match $expr {
+            Ok(v) => v,
+            Err(_) => return Ok($ret),
+        }
+    };
+}
+
+impl<'de> PduDecode<'de> for VirtualChannel {
+    fn decode(src: &mut crate::cursor::ReadCursor<'de>) -> PduResult<Self> {
+        ensure_fixed_part_size!(in: src);
+
+        let flags = VirtualChannelFlags::from_bits_truncate(src.read_u32());
 
         let mut virtual_channel_pdu = Self {
             flags,
             chunk_size: None,
         };
 
-        virtual_channel_pdu.chunk_size = Some(try_read_optional!(
-            buffer.read_u32::<LittleEndian>(),
-            virtual_channel_pdu
-        ));
+        virtual_channel_pdu.chunk_size = Some(try_or_return!(src.try_read_u32("chunkSize"), virtual_channel_pdu));
 
         Ok(virtual_channel_pdu)
-    }
-
-    fn to_buffer(&self, mut buffer: impl io::Write) -> Result<(), Self::Error> {
-        buffer.write_u32::<LittleEndian>(self.flags.bits())?;
-
-        try_write_optional!(self.chunk_size, |value: &u32| {
-            buffer.write_u32::<LittleEndian>(*value)
-        });
-
-        Ok(())
-    }
-
-    fn buffer_length(&self) -> usize {
-        FLAGS_FIELD_SIZE + self.chunk_size.map(|_| CHUNK_SIZE_FIELD_SIZE).unwrap_or(0)
     }
 }

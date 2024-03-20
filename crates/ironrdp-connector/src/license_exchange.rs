@@ -7,7 +7,9 @@ use ironrdp_pdu::PduHint;
 use rand_core::{OsRng, RngCore as _};
 
 use super::legacy;
-use crate::{ConnectorError, ConnectorResult, ConnectorResultExt as _, Sequence, State, Written};
+use crate::{
+    encode_send_data_request, ConnectorError, ConnectorResult, ConnectorResultExt as _, Sequence, State, Written,
+};
 
 #[derive(Default, Debug)]
 #[non_exhaustive]
@@ -121,7 +123,7 @@ impl Sequence for LicenseExchangeSequence {
                                 trace!(?encryption_data, "Successfully generated Client New License Request");
                                 info!(message = ?new_license_request, "Send");
 
-                                let written = legacy::encode_send_data_request(
+                                let written = encode_send_data_request(
                                     send_data_indication_ctx.initiator_id,
                                     send_data_indication_ctx.channel_id,
                                     &new_license_request,
@@ -186,7 +188,7 @@ impl Sequence for LicenseExchangeSequence {
 
                         debug!(message = ?challenge_response, "Send");
 
-                        let written = legacy::encode_send_data_request(
+                        let written = encode_send_data_request(
                             send_data_indication_ctx.initiator_id,
                             send_data_indication_ctx.channel_id,
                             &challenge_response,

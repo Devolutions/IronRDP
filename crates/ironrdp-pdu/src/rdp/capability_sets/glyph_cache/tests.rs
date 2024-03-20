@@ -1,6 +1,7 @@
 use lazy_static::lazy_static;
 
 use super::*;
+use crate::{decode, encode_vec};
 
 const GLYPH_CACHE_BUFFER: [u8; 48] = [
     0xfe, 0x00, 0x04, 0x00, 0xfe, 0x00, 0x04, 0x00, 0xfe, 0x00, 0x08, 0x00, 0xfe, 0x00, 0x08, 0x00, 0xfe, 0x00, 0x10,
@@ -71,44 +72,38 @@ lazy_static! {
 
 #[test]
 fn from_buffer_correctly_parses_glyph_cache_capset() {
-    assert_eq!(
-        GlyphCache::from_buffer(GLYPH_CACHE_BUFFER.as_ref()).unwrap(),
-        *GLYPH_CACHE
-    );
+    assert_eq!(*GLYPH_CACHE, decode(GLYPH_CACHE_BUFFER.as_ref()).unwrap(),);
 }
 
 #[test]
 fn to_buffer_correctly_serializes_glyph_cache_capset() {
-    let mut buffer = Vec::new();
+    let glyph_cache = GLYPH_CACHE.clone();
 
-    GLYPH_CACHE.to_buffer(&mut buffer).unwrap();
+    let buffer = encode_vec(&glyph_cache).unwrap();
 
     assert_eq!(buffer, GLYPH_CACHE_BUFFER.as_ref());
 }
 
 #[test]
 fn buffer_length_is_correct_for_glyph_cache_capset() {
-    assert_eq!(GLYPH_CACHE_BUFFER.len(), GLYPH_CACHE.buffer_length());
+    assert_eq!(GLYPH_CACHE_BUFFER.len(), GLYPH_CACHE.size());
 }
 
 #[test]
 fn from_buffer_correctly_parses_cache_definition() {
-    assert_eq!(
-        *CACHE_DEFINITION,
-        CacheDefinition::from_buffer(CACHE_DEFINITION_BUFFER.as_ref()).unwrap()
-    );
+    assert_eq!(*CACHE_DEFINITION, decode(CACHE_DEFINITION_BUFFER.as_ref()).unwrap());
 }
 
 #[test]
 fn to_buffer_correctly_serializes_cache_definition() {
-    let mut buffer = Vec::new();
+    let cache_def = CACHE_DEFINITION.clone();
 
-    CACHE_DEFINITION.to_buffer(&mut buffer).unwrap();
+    let buffer = encode_vec(&cache_def).unwrap();
 
     assert_eq!(buffer, CACHE_DEFINITION_BUFFER.as_ref());
 }
 
 #[test]
 fn buffer_length_is_correct_for_cache_definition() {
-    assert_eq!(CACHE_DEFINITION_BUFFER.len(), CACHE_DEFINITION.buffer_length());
+    assert_eq!(CACHE_DEFINITION_BUFFER.len(), CACHE_DEFINITION.size());
 }

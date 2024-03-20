@@ -1,10 +1,9 @@
-use std::io;
-
 use bitflags::bitflags;
-use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 
-use super::InputEventError;
-use crate::PduParsing;
+use crate::{
+    cursor::{ReadCursor, WriteCursor},
+    PduDecode, PduEncode, PduResult,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MousePdu {
@@ -14,11 +13,47 @@ pub struct MousePdu {
     pub y_position: u16,
 }
 
-impl PduParsing for MousePdu {
-    type Error = InputEventError;
+impl MousePdu {
+    const NAME: &'static str = "MousePdu";
 
-    fn from_buffer(mut stream: impl io::Read) -> Result<Self, Self::Error> {
-        let flags_raw = stream.read_u16::<LittleEndian>()?;
+    const FIXED_PART_SIZE: usize = 2 /* flags */ + 2 /* x */ + 2 /* y */;
+}
+
+impl PduEncode for MousePdu {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_fixed_part_size!(in: dst);
+
+        let wheel_negative_bit = if self.number_of_wheel_rotation_units < 0 {
+            PointerFlags::WHEEL_NEGATIVE.bits()
+        } else {
+            PointerFlags::empty().bits()
+        };
+
+        let wheel_rotations_bits = u16::from(self.number_of_wheel_rotation_units as u8); // truncate
+
+        let flags = self.flags.bits() | wheel_negative_bit | wheel_rotations_bits;
+
+        dst.write_u16(flags);
+        dst.write_u16(self.x_position);
+        dst.write_u16(self.y_position);
+
+        Ok(())
+    }
+
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    fn size(&self) -> usize {
+        Self::FIXED_PART_SIZE
+    }
+}
+
+impl<'de> PduDecode<'de> for MousePdu {
+    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+        ensure_fixed_part_size!(in: src);
+
+        let flags_raw = src.read_u16();
 
         let flags = PointerFlags::from_bits_truncate(flags_raw);
 
@@ -30,8 +65,8 @@ impl PduParsing for MousePdu {
             i16::from(wheel_rotations_bits)
         };
 
-        let x_position = stream.read_u16::<LittleEndian>()?;
-        let y_position = stream.read_u16::<LittleEndian>()?;
+        let x_position = src.read_u16();
+        let y_position = src.read_u16();
 
         Ok(Self {
             flags,
@@ -40,30 +75,7 @@ impl PduParsing for MousePdu {
             y_position,
         })
     }
-
-    fn to_buffer(&self, mut stream: impl io::Write) -> Result<(), Self::Error> {
-        let wheel_negative_bit = if self.number_of_wheel_rotation_units < 0 {
-            PointerFlags::WHEEL_NEGATIVE.bits()
-        } else {
-            PointerFlags::empty().bits()
-        };
-
-        let wheel_rotations_bits = u16::from(self.number_of_wheel_rotation_units as u8); // truncate
-
-        let flags = self.flags.bits() | wheel_negative_bit | wheel_rotations_bits;
-
-        stream.write_u16::<LittleEndian>(flags)?;
-        stream.write_u16::<LittleEndian>(self.x_position)?;
-        stream.write_u16::<LittleEndian>(self.y_position)?;
-
-        Ok(())
-    }
-
-    fn buffer_length(&self) -> usize {
-        6
-    }
 }
-
 bitflags! {
     #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
     pub struct PointerFlags: u16 {

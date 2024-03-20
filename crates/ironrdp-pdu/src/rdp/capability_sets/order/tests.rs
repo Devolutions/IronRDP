@@ -1,6 +1,7 @@
 use lazy_static::lazy_static;
 
 use super::*;
+use crate::{decode, encode_vec};
 
 const ORDER_BUFFER: [u8; 84] = [
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
@@ -64,15 +65,14 @@ lazy_static! {
 fn from_buffer_correctly_parses_order_capset() {
     let buffer = ORDER_BUFFER.as_ref();
 
-    assert_eq!(*ORDER, Order::from_buffer(buffer).unwrap());
+    assert_eq!(*ORDER, decode(buffer).unwrap());
 }
 
 #[test]
 fn to_buffer_correctly_serializes_order_capset() {
-    let mut buffer = Vec::new();
+    let capset = ORDER.clone();
 
-    let capset = &ORDER;
-    capset.to_buffer(&mut buffer).unwrap();
+    let buffer = encode_vec(&capset).unwrap();
 
     assert_eq!(buffer, ORDER_BUFFER.as_ref());
 }
@@ -81,5 +81,5 @@ fn to_buffer_correctly_serializes_order_capset() {
 fn buffer_length_is_correct_for_order_capset() {
     let correct_buffer_length = ORDER_BUFFER.len();
 
-    assert_eq!(correct_buffer_length, ORDER.buffer_length());
+    assert_eq!(correct_buffer_length, ORDER.size());
 }

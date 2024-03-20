@@ -2,6 +2,7 @@ use lazy_static::lazy_static;
 
 use super::cert::{RsaPublicKey, PROP_CERT_BLOBS_HEADERS_SIZE, PROP_CERT_NO_BLOBS_SIZE, RSA_KEY_SIZE_WITHOUT_MODULUS};
 use super::*;
+use crate::{decode, encode_vec, PduEncode};
 
 const SERVER_RANDOM_BUFFER: [u8; 32] = [
     0x84, 0xef, 0xae, 0x20, 0xb1, 0xd5, 0x9e, 0x36, 0x49, 0x1a, 0xe8, 0x2e, 0x0a, 0x99, 0x89, 0xac, 0x49, 0xa6, 0x47,
@@ -264,10 +265,7 @@ fn from_buffer_correctly_parses_server_license_request() {
     ]
     .concat();
 
-    assert_eq!(
-        *SERVER_LICENSE_REQUEST,
-        ServerLicenseRequest::from_buffer(&mut request_buffer.as_slice()).unwrap()
-    );
+    assert_eq!(*SERVER_LICENSE_REQUEST, decode(&request_buffer).unwrap());
 }
 
 #[test]
@@ -297,10 +295,7 @@ fn from_buffer_correctly_parses_server_license_request_no_certificate() {
         scope_list: vec![Scope(String::from("microsoft.com"))],
     };
 
-    assert_eq!(
-        request,
-        ServerLicenseRequest::from_buffer(&mut request_buffer.as_slice()).unwrap()
-    );
+    assert_eq!(request, decode(&request_buffer).unwrap());
 }
 
 #[test]
@@ -335,8 +330,7 @@ fn to_buffer_correctly_serializes_server_license_request() {
         scope_list: vec![Scope(String::from("microsoft.com"))],
     };
 
-    let mut serialized_request = Vec::new();
-    request.to_buffer(&mut serialized_request).unwrap();
+    let serialized_request = encode_vec(&request).unwrap();
 
     assert_eq!(serialized_request, request_buffer);
 }
@@ -357,7 +351,7 @@ fn buffer_length_is_correct_for_server_license_request() {
     ]
     .concat();
 
-    assert_eq!(request_buffer.len(), SERVER_LICENSE_REQUEST.buffer_length());
+    assert_eq!(request_buffer.len(), SERVER_LICENSE_REQUEST.size());
 }
 
 #[test]
@@ -372,7 +366,7 @@ fn from_buffer_correctly_parses_rsa_public_key() {
     ]
     .concat();
 
-    assert_eq!(*PUBLIC_KEY, RsaPublicKey::from_buffer(&mut buffer.as_slice()).unwrap());
+    assert_eq!(*PUBLIC_KEY, decode(&buffer).unwrap());
 }
 
 #[test]
@@ -387,15 +381,14 @@ fn to_buffer_correctly_serializes_rsa_public_key() {
     ]
     .concat();
 
-    let mut serialized_rsa_key = Vec::new();
-    PUBLIC_KEY.to_buffer(&mut serialized_rsa_key).unwrap();
+    let serialized_rsa_key = encode_vec(&*PUBLIC_KEY).unwrap();
 
     assert_eq!(&serialized_rsa_key, &buffer);
 }
 
 #[test]
 fn buffer_length_is_correct_for_rsa_public_key() {
-    assert_eq!(PUBLIC_KEY.buffer_length(), RSA_KEY_SIZE_WITHOUT_MODULUS + MODULUS.len());
+    assert_eq!(PUBLIC_KEY.size(), RSA_KEY_SIZE_WITHOUT_MODULUS + MODULUS.len());
 }
 
 #[test]
@@ -408,10 +401,7 @@ fn from_buffer_correctly_parses_proprietary_certificate() {
     ]
     .concat();
 
-    assert_eq!(
-        *PROPRIETARY_CERTIFICATE,
-        ProprietaryCertificate::from_buffer(&mut certificate_buffer.as_slice()).unwrap()
-    );
+    assert_eq!(*PROPRIETARY_CERTIFICATE, decode(&certificate_buffer).unwrap());
 }
 
 #[test]
@@ -424,8 +414,7 @@ fn to_buffer_correctly_serializes_proprietary_certificate() {
     ]
     .concat();
 
-    let mut serialized_certificate = Vec::new();
-    PROPRIETARY_CERTIFICATE.to_buffer(&mut serialized_certificate).unwrap();
+    let serialized_certificate = encode_vec(&*PROPRIETARY_CERTIFICATE).unwrap();
 
     assert_eq!(serialized_certificate, certificate_buffer);
 }
@@ -438,17 +427,14 @@ fn buffer_length_is_correct_for_proprietary_certificate() {
     };
 
     assert_eq!(
-        certificate.buffer_length(),
-        PUBLIC_KEY.buffer_length() + SIGNATURE.len() + PROP_CERT_NO_BLOBS_SIZE + PROP_CERT_BLOBS_HEADERS_SIZE
+        certificate.size(),
+        PUBLIC_KEY.size() + SIGNATURE.len() + PROP_CERT_NO_BLOBS_SIZE + PROP_CERT_BLOBS_HEADERS_SIZE
     );
 }
 
 #[test]
 fn from_buffer_correctly_parses_product_information() {
-    assert_eq!(
-        *PRODUCT_INFO,
-        ProductInfo::from_buffer(&mut PRODUCT_INFO_BUFFER.as_ref()).unwrap()
-    );
+    assert_eq!(*PRODUCT_INFO, decode(&PRODUCT_INFO_BUFFER).unwrap());
 }
 
 #[test]
@@ -461,20 +447,19 @@ fn from_buffer_product_info_handles_invalid_strings_correctly() {
               // product id
     ];
 
-    assert!(ProductInfo::from_buffer(product_info_buffer.as_ref()).is_err());
+    assert!(decode::<ProductInfo>(product_info_buffer.as_ref()).is_err());
 }
 
 #[test]
 fn to_buffer_correctly_serializes_product_information() {
-    let mut buffer = Vec::new();
-    PRODUCT_INFO.to_buffer(&mut buffer).unwrap();
+    let buffer = encode_vec(&*PRODUCT_INFO).unwrap();
 
     assert_eq!(buffer, PRODUCT_INFO_BUFFER.as_ref());
 }
 
 #[test]
 fn buffer_length_is_correct_for_product_information() {
-    assert_eq!(PRODUCT_INFO.buffer_length(), PRODUCT_INFO_BUFFER.len());
+    assert_eq!(PRODUCT_INFO.size(), PRODUCT_INFO_BUFFER.len());
 }
 
 #[test]
@@ -515,10 +500,7 @@ fn from_buffer_correctly_parses_server_certificate() {
     ]
     .concat();
 
-    assert_eq!(
-        *X509_CERTIFICATE,
-        ServerCertificate::from_buffer(&mut certificate_buffer.as_slice()).unwrap()
-    );
+    assert_eq!(*X509_CERTIFICATE, decode(&certificate_buffer).unwrap());
 }
 
 #[test]
@@ -533,8 +515,7 @@ fn to_buffer_correctly_serializes_server_certificate() {
     ]
     .concat();
 
-    let mut serialized_certificate = Vec::new();
-    X509_CERTIFICATE.to_buffer(&mut serialized_certificate).unwrap();
+    let serialized_certificate = encode_vec(&*X509_CERTIFICATE).unwrap();
 
     assert_eq!(serialized_certificate, certificate_buffer);
 }
@@ -551,25 +532,24 @@ fn buffer_length_is_correct_for_server_certificate() {
     ]
     .concat();
 
-    assert_eq!(X509_CERTIFICATE.buffer_length(), certificate_buffer.len());
+    assert_eq!(X509_CERTIFICATE.size(), certificate_buffer.len());
 }
 
 #[test]
 fn from_buffer_correctly_parses_scope() {
-    assert_eq!(*SCOPE, Scope::from_buffer(&mut SCOPE_BUFFER.as_ref()).unwrap());
+    assert_eq!(*SCOPE, decode(&SCOPE_BUFFER).unwrap());
 }
 
 #[test]
 fn to_buffer_correctly_serializes_scope() {
-    let mut serialized_scope = Vec::new();
-    SCOPE.to_buffer(&mut serialized_scope).unwrap();
+    let serialized_scope = encode_vec(&*SCOPE).unwrap();
 
     assert_eq!(serialized_scope, SCOPE_BUFFER.as_ref());
 }
 
 #[test]
 fn buffer_length_is_correct_for_scope() {
-    assert_eq!(SCOPE_BUFFER.len(), SCOPE.buffer_length());
+    assert_eq!(SCOPE_BUFFER.len(), SCOPE.size());
 }
 
 #[test]
@@ -583,10 +563,7 @@ fn from_buffer_correctly_parses_x509_certificate_chain() {
     ]
     .concat();
 
-    assert_eq!(
-        *CERT_CHAIN,
-        X509CertificateChain::from_buffer(&mut chain_buffer.as_slice()).unwrap()
-    );
+    assert_eq!(*CERT_CHAIN, decode(&chain_buffer).unwrap());
 }
 
 #[test]
@@ -600,8 +577,7 @@ fn to_buffer_correctly_serializes_x509_certificate_chain() {
     ]
     .concat();
 
-    let mut serialized_chain = Vec::new();
-    CERT_CHAIN.to_buffer(&mut serialized_chain).unwrap();
+    let serialized_chain = encode_vec(&*CERT_CHAIN).unwrap();
 
     assert_eq!(chain_buffer, serialized_chain);
 }
@@ -617,5 +593,5 @@ fn buffer_length_is_correct_for_x509_certificate_chain() {
     ]
     .concat();
 
-    assert_eq!(CERT_CHAIN.buffer_length(), chain_buffer.len());
+    assert_eq!(CERT_CHAIN.size(), chain_buffer.len());
 }

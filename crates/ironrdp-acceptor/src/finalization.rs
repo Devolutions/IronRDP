@@ -1,9 +1,7 @@
-use std::io::Cursor;
-
 use ironrdp_connector::{ConnectorError, ConnectorErrorExt, ConnectorResult, Sequence, State, Written};
 use ironrdp_pdu as pdu;
+use pdu::rdp;
 use pdu::write_buf::WriteBuf;
-use pdu::{rdp, PduParsing};
 
 use crate::util::{self, wrap_share_data};
 
@@ -222,7 +220,8 @@ fn create_font_map() -> rdp::headers::ShareDataPdu {
 
 fn decode_share_control(input: &[u8]) -> ConnectorResult<rdp::headers::ShareControlHeader> {
     let data_request = pdu::decode::<pdu::mcs::SendDataRequest<'_>>(input).map_err(ConnectorError::pdu)?;
-    let share_control = rdp::headers::ShareControlHeader::from_buffer(Cursor::new(data_request.user_data))?;
+    let share_control = pdu::decode::<rdp::headers::ShareControlHeader>(data_request.user_data.as_ref())
+        .map_err(ConnectorError::pdu)?;
     Ok(share_control)
 }
 

@@ -30,9 +30,31 @@ impl<'a> ReadCursor<'a> {
 
     #[inline]
     #[track_caller]
-    pub fn remaining(&self) -> &[u8] {
+    pub fn remaining(&self) -> &'a [u8] {
         let idx = core::cmp::min(self.pos, self.inner.len());
         &self.inner[idx..]
+    }
+
+    #[inline]
+    #[track_caller]
+    #[must_use]
+    pub const fn split_at_peek(&self, mid: usize) -> (ReadCursor<'a>, ReadCursor<'a>) {
+        let (left, right) = self.inner.split_at(self.pos + mid);
+        let left = ReadCursor {
+            inner: left,
+            pos: self.pos,
+        };
+        let right = ReadCursor { inner: right, pos: 0 };
+        (left, right)
+    }
+
+    #[inline]
+    #[track_caller]
+    #[must_use]
+    pub fn split_at(&mut self, mid: usize) -> (ReadCursor<'a>, ReadCursor<'a>) {
+        let res = self.split_at_peek(mid);
+        self.pos = self.inner.len();
+        res
     }
 
     #[inline]
@@ -75,6 +97,30 @@ impl<'a> ReadCursor<'a> {
     pub fn try_read_u8(&mut self, ctx: &'static str) -> PduResult<u8> {
         ensure_size!(ctx: ctx, in: self, size: 1);
         Ok(self.read_array::<1>()[0])
+    }
+
+    #[inline]
+    #[track_caller]
+    pub fn read_i16(&mut self) -> i16 {
+        i16::from_le_bytes(self.read_array::<2>())
+    }
+
+    #[inline]
+    #[track_caller]
+    pub fn read_i16_be(&mut self) -> i16 {
+        i16::from_be_bytes(self.read_array::<2>())
+    }
+
+    #[inline]
+    pub fn try_read_i16(&mut self, ctx: &'static str) -> PduResult<i16> {
+        ensure_size!(ctx: ctx, in: self, size: 2);
+        Ok(i16::from_le_bytes(self.read_array::<2>()))
+    }
+
+    #[inline]
+    pub fn try_read_i16_be(&mut self, ctx: &'static str) -> PduResult<i16> {
+        ensure_size!(ctx: ctx, in: self, size: 2);
+        Ok(i16::from_be_bytes(self.read_array::<2>()))
     }
 
     #[inline]
@@ -191,6 +237,28 @@ impl<'a> ReadCursor<'a> {
     pub fn try_read_i64_be(&mut self, ctx: &'static str) -> PduResult<i64> {
         ensure_size!(ctx: ctx, in: self, size: 8);
         Ok(i64::from_be_bytes(self.read_array::<8>()))
+    }
+
+    #[inline]
+    pub fn read_u128(&mut self) -> u128 {
+        u128::from_le_bytes(self.read_array::<16>())
+    }
+
+    #[inline]
+    pub fn read_u128_be(&mut self) -> u128 {
+        u128::from_be_bytes(self.read_array::<16>())
+    }
+
+    #[inline]
+    pub fn try_read_u128(&mut self, ctx: &'static str) -> PduResult<u128> {
+        ensure_size!(ctx: ctx, in: self, size: 16);
+        Ok(u128::from_le_bytes(self.read_array::<16>()))
+    }
+
+    #[inline]
+    pub fn try_read_u128_be(&mut self, ctx: &'static str) -> PduResult<u128> {
+        ensure_size!(ctx: ctx, in: self, size: 16);
+        Ok(u128::from_be_bytes(self.read_array::<16>()))
     }
 
     #[inline]
@@ -430,6 +498,18 @@ impl<'a> WriteCursor<'a> {
 
     #[inline]
     #[track_caller]
+    pub fn write_i16(&mut self, value: i16) {
+        self.write_array(value.to_le_bytes())
+    }
+
+    #[inline]
+    #[track_caller]
+    pub fn write_i16_be(&mut self, value: i16) {
+        self.write_array(value.to_be_bytes())
+    }
+
+    #[inline]
+    #[track_caller]
     pub fn write_u32(&mut self, value: u32) {
         self.write_array(value.to_le_bytes())
     }
@@ -467,6 +547,18 @@ impl<'a> WriteCursor<'a> {
     #[inline]
     #[track_caller]
     pub fn write_i64_be(&mut self, value: i64) {
+        self.write_array(value.to_be_bytes())
+    }
+
+    #[inline]
+    #[track_caller]
+    pub fn write_u128(&mut self, value: u128) {
+        self.write_array(value.to_le_bytes())
+    }
+
+    #[inline]
+    #[track_caller]
+    pub fn write_u128_be(&mut self, value: u128) {
         self.write_array(value.to_be_bytes())
     }
 

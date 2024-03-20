@@ -1,9 +1,11 @@
+use byteorder::{LittleEndian, WriteBytesExt};
 use lazy_static::lazy_static;
 
 use super::*;
 use crate::rdp::server_license::server_license_request::cert::{CertificateType, X509CertificateChain};
 use crate::rdp::server_license::server_license_request::{ProductInfo, Scope, ServerCertificate};
 use crate::rdp::server_license::PREAMBLE_SIZE;
+use crate::{decode, encode_vec};
 
 const LICENSE_HEADER_BUFFER_NO_SIZE: [u8; 6] = [
     0x80, 0x00, // flags
@@ -264,21 +266,20 @@ lazy_static! {
 fn from_buffer_correctly_parses_client_new_license_request() {
     assert_eq!(
         *CLIENT_NEW_LICENSE_REQUEST,
-        ClientNewLicenseRequest::from_buffer(&mut REQUEST_BUFFER.as_slice()).unwrap()
+        decode(&mut REQUEST_BUFFER.as_slice()).unwrap()
     );
 }
 
 #[test]
 fn to_buffer_correctly_serializes_client_new_license_request() {
-    let mut serialized_request = Vec::new();
-    CLIENT_NEW_LICENSE_REQUEST.to_buffer(&mut serialized_request).unwrap();
+    let serialized_request = encode_vec(&*CLIENT_NEW_LICENSE_REQUEST).unwrap();
 
     assert_eq!(REQUEST_BUFFER.as_slice(), serialized_request.as_slice());
 }
 
 #[test]
 fn buffer_length_is_correct_for_client_new_license_request() {
-    assert_eq!(REQUEST_BUFFER.len(), CLIENT_NEW_LICENSE_REQUEST.buffer_length());
+    assert_eq!(REQUEST_BUFFER.len(), CLIENT_NEW_LICENSE_REQUEST.size());
 }
 
 #[test]

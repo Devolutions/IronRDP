@@ -21,11 +21,11 @@ use core::any::Any;
 use core::fmt;
 
 pub use channel_connection::{ChannelConnectionSequence, ChannelConnectionState};
-pub use connection::{ClientConnector, ClientConnectorState, ConnectionResult};
+pub use connection::{encode_send_data_request, ClientConnector, ClientConnectorState, ConnectionResult};
 pub use connection_finalization::{ConnectionFinalizationSequence, ConnectionFinalizationState};
 use ironrdp_pdu::rdp::capability_sets;
 use ironrdp_pdu::write_buf::WriteBuf;
-use ironrdp_pdu::{gcc, PduHint};
+use ironrdp_pdu::{encode_buf, encode_vec, gcc, x224, PduEncode, PduHint};
 pub use license_exchange::{LicenseExchangeSequence, LicenseExchangeState};
 pub use server_name::ServerName;
 pub use sspi;
@@ -321,4 +321,19 @@ impl<T> ConnectorResultExt for ConnectorResult<T> {
     {
         self.map_err(|e| e.with_source(source))
     }
+}
+
+pub fn encode_x224_packet<T>(x224_msg: &T, buf: &mut WriteBuf) -> ConnectorResult<usize>
+where
+    T: PduEncode,
+{
+    let x224_msg_buf = encode_vec(x224_msg).map_err(ConnectorError::pdu)?;
+
+    let pdu = x224::X224Data {
+        data: std::borrow::Cow::Owned(x224_msg_buf),
+    };
+
+    let written = encode_buf(&pdu, buf).map_err(ConnectorError::pdu)?;
+
+    Ok(written)
 }

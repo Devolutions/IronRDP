@@ -1,16 +1,18 @@
+use std::borrow::Cow;
 use std::mem;
 use std::net::SocketAddr;
 
 use ironrdp_pdu::rdp::client_info::{PerformanceFlags, TimezoneInfo};
 use ironrdp_pdu::write_buf::WriteBuf;
-use ironrdp_pdu::{gcc, mcs, nego, rdp, PduHint};
+use ironrdp_pdu::{decode, encode_vec, gcc, mcs, nego, rdp, PduEncode, PduHint};
 use ironrdp_svc::{StaticChannelSet, StaticVirtualChannel, SvcClientProcessor};
 
 use crate::channel_connection::{ChannelConnectionSequence, ChannelConnectionState};
 use crate::connection_activation::{ConnectionActivationSequence, ConnectionActivationState};
 use crate::license_exchange::LicenseExchangeSequence;
 use crate::{
-    legacy, Config, ConnectorError, ConnectorErrorExt as _, ConnectorResult, DesktopSize, Sequence, State, Written,
+    encode_x224_packet, Config, ConnectorError, ConnectorErrorExt as _, ConnectorResult, DesktopSize, Sequence, State,
+    Written,
 };
 
 #[derive(Debug)]
@@ -268,8 +270,7 @@ impl Sequence for ClientConnector {
                 )
             }
             ClientConnectorState::ConnectionInitiationWaitConfirm { requested_protocol } => {
-                let connection_confirm =
-                    ironrdp_pdu::decode::<nego::ConnectionConfirm>(input).map_err(ConnectorError::pdu)?;
+                let connection_confirm = decode::<nego::ConnectionConfirm>(input).map_err(ConnectorError::pdu)?;
 
                 debug!(message = ?connection_confirm, "Received");
 
@@ -331,7 +332,7 @@ impl Sequence for ClientConnector {
 
                 debug!(message = ?connect_initial, "Send");
 
-                let written = legacy::encode_x224_packet(&connect_initial, output)?;
+                let written = encode_x224_packet(&connect_initial, output)?;
 
                 (
                     Written::from_size(written)?,
@@ -339,7 +340,9 @@ impl Sequence for ClientConnector {
                 )
             }
             ClientConnectorState::BasicSettingsExchangeWaitResponse { connect_initial } => {
-                let connect_response = legacy::decode_x224_packet::<mcs::ConnectResponse>(input)?;
+                let x224_payload = decode::<crate::x224::X224Data<'_>>(input).map_err(ConnectorError::pdu)?;
+                let connect_response =
+                    decode::<mcs::ConnectResponse>(x224_payload.data.as_ref()).map_err(ConnectorError::pdu)?;
 
                 debug!(message = ?connect_response, "Received");
 
@@ -445,7 +448,7 @@ impl Sequence for ClientConnector {
 
                 debug!(message = ?client_info, "Send");
 
-                let written = legacy::encode_send_data_request(user_channel_id, io_channel_id, &client_info, output)?;
+                let written = encode_send_data_request(user_channel_id, io_channel_id, &client_info, output)?;
 
                 (
                     Written::from_size(written)?,
@@ -577,6 +580,25 @@ impl Sequence for ClientConnector {
 
         Ok(written)
     }
+}
+
+pub fn encode_send_data_request<T: PduEncode>(
+    initiator_id: u16,
+    channel_id: u16,
+    user_msg: &T,
+    buf: &mut WriteBuf,
+) -> ConnectorResult<usize> {
+    let user_data = encode_vec(user_msg).map_err(ConnectorError::pdu)?;
+
+    let pdu = ironrdp_pdu::mcs::SendDataRequest {
+        initiator_id,
+        channel_id,
+        user_data: Cow::Owned(user_data),
+    };
+
+    let written = ironrdp_pdu::encode_buf(&pdu, buf).map_err(ConnectorError::pdu)?;
+
+    Ok(written)
 }
 
 #[allow(single_use_lifetimes)] // anonymous lifetimes in `impl Trait` are unstable

@@ -1,9 +1,6 @@
-use std::io;
-
-use byteorder::{ReadBytesExt as _, WriteBytesExt as _};
-
+use crate::cursor::{ReadCursor, WriteCursor};
 use crate::geometry::InclusiveRectangle;
-use crate::PduParsing;
+use crate::{PduDecode, PduEncode, PduResult};
 
 #[repr(u8)]
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -40,44 +37,53 @@ pub struct SuppressOutputPdu {
     pub desktop_rect: Option<InclusiveRectangle>,
 }
 
-impl PduParsing for SuppressOutputPdu {
-    type Error = io::Error;
+impl SuppressOutputPdu {
+    const NAME: &'static str = "SuppressOutputPdu";
 
-    fn from_buffer(mut stream: impl io::Read) -> Result<Self, Self::Error> {
-        let allow_display_updates = AllowDisplayUpdatesType::from_u8(stream.read_u8()?)
-            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "invalid display update type"))?;
-        let _padding = stream.read_u8()?; // padding
-        let _padding = stream.read_u8()?; // padding
-        let _padding = stream.read_u8()?; // padding
-        let desktop_rect = if allow_display_updates == AllowDisplayUpdatesType::AllowDisplayUpdates {
-            Some(InclusiveRectangle::from_buffer(&mut stream)?)
-        } else {
-            None
-        };
-        Ok(Self { desktop_rect })
-    }
+    const FIXED_PART_SIZE: usize = 1 /* allowDisplayUpdates */ + 3 /* pad */;
+}
 
-    fn to_buffer(&self, mut stream: impl io::Write) -> Result<(), Self::Error> {
+impl PduEncode for SuppressOutputPdu {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_size!(in: dst, size: self.size());
+
         let allow_display_updates = if self.desktop_rect.is_some() {
             AllowDisplayUpdatesType::AllowDisplayUpdates
         } else {
             AllowDisplayUpdatesType::SuppressDisplayUpdates
         };
 
-        stream.write_u8(allow_display_updates.as_u8())?;
-        stream.write_u8(0)?; // padding
-        stream.write_u8(0)?; // padding
-        stream.write_u8(0)?; // padding
+        dst.write_u8(allow_display_updates.as_u8());
+        write_padding!(dst, 3);
         if let Some(rect) = &self.desktop_rect {
-            rect.to_buffer(&mut stream)?;
+            rect.encode(dst)?;
         }
 
         Ok(())
     }
 
-    fn buffer_length(&self) -> usize {
-        1 // allowDisplayUpdates
-        + 3 // pad3Octets
-        + self.desktop_rect.as_ref().map_or(0, |r| r.buffer_length()) // desktopRect
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    fn size(&self) -> usize {
+        Self::FIXED_PART_SIZE + self.desktop_rect.as_ref().map_or(0, |r| r.size())
+        // desktopRect
+    }
+}
+
+impl<'de> PduDecode<'de> for SuppressOutputPdu {
+    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+        ensure_fixed_part_size!(in: src);
+
+        let allow_display_updates = AllowDisplayUpdatesType::from_u8(src.read_u8())
+            .ok_or_else(|| invalid_message_err!("allowDisplayUpdates", "invalid display update type"))?;
+        read_padding!(src, 3);
+        let desktop_rect = if allow_display_updates == AllowDisplayUpdatesType::AllowDisplayUpdates {
+            Some(InclusiveRectangle::decode(src)?)
+        } else {
+            None
+        };
+        Ok(Self { desktop_rect })
     }
 }

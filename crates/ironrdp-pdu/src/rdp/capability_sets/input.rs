@@ -1,15 +1,12 @@
 #[cfg(test)]
 mod tests;
 
-use std::io;
-
 use bitflags::bitflags;
-use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use num_traits::{FromPrimitive, ToPrimitive};
 
+use crate::cursor::{ReadCursor, WriteCursor};
 use crate::gcc::{KeyboardType, IME_FILE_NAME_SIZE};
-use crate::rdp::capability_sets::CapabilitySetsError;
-use crate::{utils, PduParsing};
+use crate::{utils, PduDecode, PduEncode, PduResult};
 
 const INPUT_LENGTH: usize = 84;
 
@@ -38,24 +35,64 @@ pub struct Input {
     pub keyboard_ime_filename: String,
 }
 
-impl PduParsing for Input {
-    type Error = CapabilitySetsError;
+impl Input {
+    const NAME: &'static str = "Input";
 
-    fn from_buffer(mut buffer: impl io::Read) -> Result<Self, Self::Error> {
-        let input_flags = InputFlags::from_bits_truncate(buffer.read_u16::<LittleEndian>()?);
-        let _padding = buffer.read_u16::<LittleEndian>()?;
-        let keyboard_layout = buffer.read_u32::<LittleEndian>()?;
+    const FIXED_PART_SIZE: usize = INPUT_LENGTH;
+}
 
-        let keyboard_type = KeyboardType::from_u32(buffer.read_u32::<LittleEndian>()?);
+impl PduEncode for Input {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_fixed_part_size!(in: dst);
 
-        let keyboard_subtype = buffer.read_u32::<LittleEndian>()?;
-        let keyboard_function_key = buffer.read_u32::<LittleEndian>()?;
+        dst.write_u16(self.input_flags.bits());
+        write_padding!(dst, 2);
+        dst.write_u32(self.keyboard_layout);
 
-        let mut ime_buffer = [0; IME_FILE_NAME_SIZE];
-        buffer.read_exact(&mut ime_buffer)?;
-        let keyboard_ime_filename = utils::from_utf16_bytes(ime_buffer.as_ref())
-            .trim_end_matches('\u{0}')
-            .into();
+        let type_buffer = match self.keyboard_type.as_ref() {
+            Some(value) => value.to_u32().unwrap_or(0),
+            None => 0,
+        };
+        dst.write_u32(type_buffer);
+
+        dst.write_u32(self.keyboard_subtype);
+        dst.write_u32(self.keyboard_function_key);
+
+        utils::encode_string(
+            dst.remaining_mut(),
+            &self.keyboard_ime_filename,
+            utils::CharacterSet::Unicode,
+            true,
+        )?;
+        dst.advance(IME_FILE_NAME_SIZE);
+
+        Ok(())
+    }
+
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    fn size(&self) -> usize {
+        Self::FIXED_PART_SIZE
+    }
+}
+
+impl<'de> PduDecode<'de> for Input {
+    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+        ensure_fixed_part_size!(in: src);
+
+        let input_flags = InputFlags::from_bits_truncate(src.read_u16());
+        read_padding!(src, 2);
+        let keyboard_layout = src.read_u32();
+
+        let keyboard_type = KeyboardType::from_u32(src.read_u32());
+
+        let keyboard_subtype = src.read_u32();
+        let keyboard_function_key = src.read_u32();
+
+        let keyboard_ime_filename =
+            utils::decode_string(src.read_slice(IME_FILE_NAME_SIZE), utils::CharacterSet::Unicode, false)?;
 
         Ok(Input {
             input_flags,
@@ -65,31 +102,5 @@ impl PduParsing for Input {
             keyboard_function_key,
             keyboard_ime_filename,
         })
-    }
-
-    fn to_buffer(&self, mut buffer: impl io::Write) -> Result<(), Self::Error> {
-        buffer.write_u16::<LittleEndian>(self.input_flags.bits())?;
-        buffer.write_u16::<LittleEndian>(0)?; // padding
-        buffer.write_u32::<LittleEndian>(self.keyboard_layout)?;
-
-        let type_buffer = match self.keyboard_type.as_ref() {
-            Some(value) => value.to_u32().unwrap_or(0),
-            None => 0,
-        };
-        buffer.write_u32::<LittleEndian>(type_buffer)?;
-
-        buffer.write_u32::<LittleEndian>(self.keyboard_subtype)?;
-        buffer.write_u32::<LittleEndian>(self.keyboard_function_key)?;
-
-        let mut keyboard_ime_file_name_buffer = utils::to_utf16_bytes(self.keyboard_ime_filename.as_ref());
-        keyboard_ime_file_name_buffer.resize(IME_FILE_NAME_SIZE - 2, 0);
-        buffer.write_all(keyboard_ime_file_name_buffer.as_ref())?;
-        buffer.write_u16::<LittleEndian>(0)?; // ime file name null terminator
-
-        Ok(())
-    }
-
-    fn buffer_length(&self) -> usize {
-        INPUT_LENGTH
     }
 }

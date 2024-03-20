@@ -1,12 +1,8 @@
 #[cfg(test)]
 mod tests;
 
-use std::io;
-
-use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
-
-use crate::rdp::capability_sets::CapabilitySetsError;
-use crate::PduParsing;
+use crate::cursor::{ReadCursor, WriteCursor};
+use crate::{PduDecode, PduEncode, PduResult};
 
 const POINTER_LENGTH: usize = 6;
 
@@ -16,29 +12,43 @@ pub struct Pointer {
     pub pointer_cache_size: u16,
 }
 
-impl PduParsing for Pointer {
-    type Error = CapabilitySetsError;
+impl Pointer {
+    const NAME: &'static str = "Pointer";
 
-    fn from_buffer(mut buffer: impl io::Read) -> Result<Self, Self::Error> {
-        let _color_pointer_flag = buffer.read_u16::<LittleEndian>()? != 0;
-        let color_pointer_cache_size = buffer.read_u16::<LittleEndian>()?;
-        let pointer_cache_size = buffer.read_u16::<LittleEndian>()?;
+    const FIXED_PART_SIZE: usize = POINTER_LENGTH;
+}
+
+impl PduEncode for Pointer {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_fixed_part_size!(in: dst);
+
+        dst.write_u16(1); // color pointer flag
+        dst.write_u16(self.color_pointer_cache_size);
+        dst.write_u16(self.pointer_cache_size);
+
+        Ok(())
+    }
+
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    fn size(&self) -> usize {
+        Self::FIXED_PART_SIZE
+    }
+}
+
+impl<'de> PduDecode<'de> for Pointer {
+    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+        ensure_fixed_part_size!(in: src);
+
+        let _color_pointer_flag = src.read_u16() != 0;
+        let color_pointer_cache_size = src.read_u16();
+        let pointer_cache_size = src.read_u16();
 
         Ok(Pointer {
             color_pointer_cache_size,
             pointer_cache_size,
         })
-    }
-
-    fn to_buffer(&self, mut buffer: impl io::Write) -> Result<(), Self::Error> {
-        buffer.write_u16::<LittleEndian>(1)?; // color pointer flag
-        buffer.write_u16::<LittleEndian>(self.color_pointer_cache_size)?;
-        buffer.write_u16::<LittleEndian>(self.pointer_cache_size)?;
-
-        Ok(())
-    }
-
-    fn buffer_length(&self) -> usize {
-        POINTER_LENGTH
     }
 }

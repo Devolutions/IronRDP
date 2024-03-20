@@ -1,13 +1,10 @@
 #[cfg(test)]
 mod tests;
 
-use std::io;
-
 use bitflags::bitflags;
-use byteorder::{LittleEndian, ReadBytesExt as _, WriteBytesExt as _};
 
-use crate::rdp::capability_sets::CapabilitySetsError;
-use crate::PduParsing;
+use crate::cursor::{ReadCursor, WriteCursor};
+use crate::{PduDecode, PduEncode, PduResult};
 
 const SURFACE_COMMANDS_LENGTH: usize = 8;
 
@@ -25,24 +22,38 @@ pub struct SurfaceCommands {
     pub flags: CmdFlags,
 }
 
-impl PduParsing for SurfaceCommands {
-    type Error = CapabilitySetsError;
+impl SurfaceCommands {
+    const NAME: &'static str = "SurfaceCommands";
 
-    fn from_buffer(mut buffer: impl io::Read) -> Result<Self, Self::Error> {
-        let flags = CmdFlags::from_bits_truncate(buffer.read_u32::<LittleEndian>()?);
-        let _reserved = buffer.read_u32::<LittleEndian>()?;
+    const FIXED_PART_SIZE: usize = SURFACE_COMMANDS_LENGTH;
+}
 
-        Ok(SurfaceCommands { flags })
-    }
+impl PduEncode for SurfaceCommands {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_fixed_part_size!(in: dst);
 
-    fn to_buffer(&self, mut buffer: impl io::Write) -> Result<(), Self::Error> {
-        buffer.write_u32::<LittleEndian>(self.flags.bits())?;
-        buffer.write_u32::<LittleEndian>(0)?; // reserved
+        dst.write_u32(self.flags.bits());
+        dst.write_u32(0); // reserved
 
         Ok(())
     }
 
-    fn buffer_length(&self) -> usize {
-        SURFACE_COMMANDS_LENGTH
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    fn size(&self) -> usize {
+        Self::FIXED_PART_SIZE
+    }
+}
+
+impl<'de> PduDecode<'de> for SurfaceCommands {
+    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+        ensure_fixed_part_size!(in: src);
+
+        let flags = CmdFlags::from_bits_truncate(src.read_u32());
+        let _reserved = src.read_u32();
+
+        Ok(SurfaceCommands { flags })
     }
 }

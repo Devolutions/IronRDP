@@ -1,12 +1,8 @@
 #[cfg(test)]
 mod tests;
 
-use std::io;
-
-use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
-
-use crate::rdp::capability_sets::CapabilitySetsError;
-use crate::PduParsing;
+use crate::cursor::{ReadCursor, WriteCursor};
+use crate::{PduDecode, PduEncode, PduResult};
 
 const OFFSCREEN_BITMAP_CACHE_LENGTH: usize = 8;
 
@@ -17,30 +13,44 @@ pub struct OffscreenBitmapCache {
     pub cache_entries: u16,
 }
 
-impl PduParsing for OffscreenBitmapCache {
-    type Error = CapabilitySetsError;
+impl OffscreenBitmapCache {
+    const NAME: &'static str = "OffscreenBitmapCache";
 
-    fn from_buffer(mut buffer: impl io::Read) -> Result<Self, Self::Error> {
-        let is_supported = buffer.read_u32::<LittleEndian>()? != 0;
-        let cache_size = buffer.read_u16::<LittleEndian>()?;
-        let cache_entries = buffer.read_u16::<LittleEndian>()?;
+    const FIXED_PART_SIZE: usize = OFFSCREEN_BITMAP_CACHE_LENGTH;
+}
+
+impl PduEncode for OffscreenBitmapCache {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_fixed_part_size!(in: dst);
+
+        dst.write_u32(u32::from(self.is_supported));
+        dst.write_u16(self.cache_size);
+        dst.write_u16(self.cache_entries);
+
+        Ok(())
+    }
+
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    fn size(&self) -> usize {
+        Self::FIXED_PART_SIZE
+    }
+}
+
+impl<'de> PduDecode<'de> for OffscreenBitmapCache {
+    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+        ensure_fixed_part_size!(in: src);
+
+        let is_supported = src.read_u32() != 0;
+        let cache_size = src.read_u16();
+        let cache_entries = src.read_u16();
 
         Ok(OffscreenBitmapCache {
             is_supported,
             cache_size,
             cache_entries,
         })
-    }
-
-    fn to_buffer(&self, mut buffer: impl io::Write) -> Result<(), Self::Error> {
-        buffer.write_u32::<LittleEndian>(u32::from(self.is_supported))?;
-        buffer.write_u16::<LittleEndian>(self.cache_size)?;
-        buffer.write_u16::<LittleEndian>(self.cache_entries)?;
-
-        Ok(())
-    }
-
-    fn buffer_length(&self) -> usize {
-        OFFSCREEN_BITMAP_CACHE_LENGTH
     }
 }

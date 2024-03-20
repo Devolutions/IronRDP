@@ -1,6 +1,7 @@
 use lazy_static::lazy_static;
 
 use super::*;
+use crate::{decode, encode_vec};
 
 const BITMAP_BUFFER: [u8; 24] = [
     0x18, 0x00, // preferredBitsPerPixel
@@ -32,16 +33,14 @@ lazy_static! {
 fn from_buffer_correctly_parses_bitmap_capset() {
     let buffer = BITMAP_BUFFER.as_ref();
 
-    assert_eq!(*BITMAP, Bitmap::from_buffer(buffer).unwrap());
+    assert_eq!(*BITMAP, decode(buffer).unwrap());
 }
 
 #[test]
 fn to_buffer_correctly_serializes_bitmap_capset() {
-    let mut buffer = Vec::new();
+    let capset = BITMAP.clone();
 
-    let capset = &BITMAP;
-
-    capset.to_buffer(&mut buffer).unwrap();
+    let buffer = encode_vec(&capset).unwrap();
 
     assert_eq!(buffer, BITMAP_BUFFER.as_ref());
 }
@@ -50,5 +49,5 @@ fn to_buffer_correctly_serializes_bitmap_capset() {
 fn buffer_length_is_correct_for_bitmap_capset() {
     let correct_buffer_length = BITMAP_BUFFER.len();
 
-    assert_eq!(correct_buffer_length, BITMAP.buffer_length());
+    assert_eq!(correct_buffer_length, BITMAP.size());
 }

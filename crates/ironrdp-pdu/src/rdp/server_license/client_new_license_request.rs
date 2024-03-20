@@ -4,7 +4,6 @@ mod tests;
 use std::io;
 
 use bitflags::bitflags;
-use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use md5::Digest;
 
 use super::{
@@ -13,8 +12,9 @@ use super::{
     PREAMBLE_SIZE, RANDOM_NUMBER_SIZE, UTF8_NULL_TERMINATOR_SIZE,
 };
 use crate::crypto::rsa::encrypt_with_public_key;
+use crate::cursor::{ReadCursor, WriteCursor};
 use crate::utils::{self, CharacterSet};
-use crate::PduParsing;
+use crate::{PduDecode, PduEncode, PduResult};
 
 const LICENSE_REQUEST_STATIC_FIELDS_SIZE: usize = 20;
 
@@ -51,6 +51,8 @@ pub struct ClientNewLicenseRequest {
 }
 
 impl ClientNewLicenseRequest {
+    const NAME: &'static str = "ClientNewLicenseRequest";
+
     pub fn from_server_license_request(
         license_request: &ServerLicenseRequest,
         client_random: &[u8],
@@ -122,40 +124,93 @@ impl ClientNewLicenseRequest {
     }
 }
 
-impl PduParsing for ClientNewLicenseRequest {
-    type Error = ServerLicenseError;
+impl PduEncode for ClientNewLicenseRequest {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_size!(in: dst, size: self.size());
 
-    fn from_buffer(mut stream: impl io::Read) -> Result<Self, Self::Error> {
-        let license_header = LicenseHeader::from_buffer(&mut stream)?;
+        self.license_header.encode(dst)?;
+
+        dst.write_u32(KEY_EXCHANGE_ALGORITHM_RSA);
+        dst.write_u32(PLATFORM_ID);
+        dst.write_slice(&self.client_random);
+
+        BlobHeader::new(BlobType::Random, self.encrypted_premaster_secret.len()).encode(dst)?;
+        dst.write_slice(&self.encrypted_premaster_secret);
+
+        BlobHeader::new(
+            BlobType::ClientUserName,
+            self.client_username.len() + UTF8_NULL_TERMINATOR_SIZE,
+        )
+        .encode(dst)?;
+        utils::write_string_to_cursor(dst, &self.client_username, CharacterSet::Ansi, true)?;
+
+        BlobHeader::new(
+            BlobType::ClientMachineNameBlob,
+            self.client_machine_name.len() + UTF8_NULL_TERMINATOR_SIZE,
+        )
+        .encode(dst)?;
+        utils::write_string_to_cursor(dst, &self.client_machine_name, CharacterSet::Ansi, true)?;
+
+        Ok(())
+    }
+
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    fn size(&self) -> usize {
+        self.license_header.size()
+            + LICENSE_REQUEST_STATIC_FIELDS_SIZE
+            + RANDOM_NUMBER_SIZE
+            + self.encrypted_premaster_secret.len()
+            + self.client_machine_name.len()
+            + UTF8_NULL_TERMINATOR_SIZE
+            + self.client_username.len()
+            + UTF8_NULL_TERMINATOR_SIZE
+    }
+}
+
+impl<'de> PduDecode<'de> for ClientNewLicenseRequest {
+    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+        let license_header = LicenseHeader::decode(src)?;
         if license_header.preamble_message_type != PreambleType::NewLicenseRequest {
-            return Err(ServerLicenseError::InvalidPreamble(format!(
-                "Got {:?} but expected {:?}",
-                license_header.preamble_message_type,
-                PreambleType::NewLicenseRequest
-            )));
+            return Err(invalid_message_err!("preambleMessageType", "unexpected preamble type"));
         }
 
-        let key_exchange_algorithm = stream.read_u32::<LittleEndian>()?;
+        ensure_size!(in: src, size: LICENSE_REQUEST_STATIC_FIELDS_SIZE + RANDOM_NUMBER_SIZE);
+        let key_exchange_algorithm = src.read_u32();
         if key_exchange_algorithm != KEY_EXCHANGE_ALGORITHM_RSA {
-            return Err(ServerLicenseError::InvalidKeyExchangeValue);
+            return Err(invalid_message_err!(
+                "keyExchangeAlgo",
+                "invalid key exchange algorithm"
+            ));
         }
 
-        let _platform_id = stream.read_u32::<LittleEndian>()?;
+        let _platform_id = src.read_u32();
+        let client_random = src.read_slice(RANDOM_NUMBER_SIZE).into();
 
-        let mut client_random = vec![0u8; RANDOM_NUMBER_SIZE];
-        stream.read_exact(&mut client_random)?;
+        let premaster_secret_blob_header = BlobHeader::decode(src)?;
+        if premaster_secret_blob_header.blob_type != BlobType::Random {
+            return Err(invalid_message_err!("blobType", "invalid blob type"));
+        }
+        ensure_size!(in: src, size: premaster_secret_blob_header.length);
+        let encrypted_premaster_secret = src.read_slice(premaster_secret_blob_header.length).into();
 
-        let premaster_secret_blob_header = BlobHeader::read_from_buffer(BlobType::Random, &mut stream)?;
-        let mut encrypted_premaster_secret = vec![0u8; premaster_secret_blob_header.length];
-        stream.read_exact(&mut encrypted_premaster_secret)?;
-
-        let username_blob_header = BlobHeader::read_from_buffer(BlobType::ClientUserName, &mut stream)?;
+        let username_blob_header = BlobHeader::decode(src)?;
+        if username_blob_header.blob_type != BlobType::ClientUserName {
+            return Err(invalid_message_err!("blobType", "invalid blob type"));
+        }
+        ensure_size!(in: src, size: username_blob_header.length);
         let client_username =
-            utils::read_string_from_stream(&mut stream, username_blob_header.length, CharacterSet::Ansi, false)?;
+            utils::decode_string(src.read_slice(username_blob_header.length), CharacterSet::Ansi, false)?;
 
-        let machine_name_blob = BlobHeader::read_from_buffer(BlobType::ClientMachineNameBlob, &mut stream)?;
+        let machine_name_blob = BlobHeader::decode(src)?;
+        if machine_name_blob.blob_type != BlobType::ClientMachineNameBlob {
+            return Err(invalid_message_err!("blobType", "invalid blob type"));
+        }
+        ensure_size!(in: src, size: machine_name_blob.length);
         let client_machine_name =
-            utils::read_string_from_stream(&mut stream, machine_name_blob.length, CharacterSet::Ansi, false)?;
+            utils::decode_string(src.read_slice(machine_name_blob.length), CharacterSet::Ansi, false)?;
 
         Ok(Self {
             license_header,
@@ -164,44 +219,6 @@ impl PduParsing for ClientNewLicenseRequest {
             client_username,
             client_machine_name,
         })
-    }
-
-    fn to_buffer(&self, mut stream: impl io::Write) -> Result<(), Self::Error> {
-        self.license_header.to_buffer(&mut stream)?;
-
-        stream.write_u32::<LittleEndian>(KEY_EXCHANGE_ALGORITHM_RSA)?;
-        stream.write_u32::<LittleEndian>(PLATFORM_ID)?;
-        stream.write_all(&self.client_random)?;
-
-        BlobHeader::new(BlobType::Random, self.encrypted_premaster_secret.len()).write_to_buffer(&mut stream)?;
-        stream.write_all(&self.encrypted_premaster_secret)?;
-
-        BlobHeader::new(
-            BlobType::ClientUserName,
-            self.client_username.len() + UTF8_NULL_TERMINATOR_SIZE,
-        )
-        .write_to_buffer(&mut stream)?;
-        utils::write_string_with_null_terminator(&mut stream, &self.client_username, CharacterSet::Ansi)?;
-
-        BlobHeader::new(
-            BlobType::ClientMachineNameBlob,
-            self.client_machine_name.len() + UTF8_NULL_TERMINATOR_SIZE,
-        )
-        .write_to_buffer(&mut stream)?;
-        utils::write_string_with_null_terminator(&mut stream, &self.client_machine_name, CharacterSet::Ansi)?;
-
-        Ok(())
-    }
-
-    fn buffer_length(&self) -> usize {
-        self.license_header.buffer_length()
-            + LICENSE_REQUEST_STATIC_FIELDS_SIZE
-            + RANDOM_NUMBER_SIZE
-            + self.encrypted_premaster_secret.len()
-            + self.client_machine_name.len()
-            + UTF8_NULL_TERMINATOR_SIZE
-            + self.client_username.len()
-            + UTF8_NULL_TERMINATOR_SIZE
     }
 }
 

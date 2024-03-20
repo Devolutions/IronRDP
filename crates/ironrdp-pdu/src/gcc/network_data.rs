@@ -2,15 +2,13 @@ use std::borrow::Cow;
 use std::{io, str};
 
 use bitflags::bitflags;
-use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use num_integer::Integer;
 use thiserror::Error;
 
-use crate::{try_read_optional, PduParsing};
+use crate::cursor::{ReadCursor, WriteCursor};
+use crate::{PduDecode, PduEncode, PduResult};
 
 const CHANNELS_MAX: usize = 31;
-
-const CLIENT_CHANNEL_COUNT_SIZE: usize = 4;
 
 const CLIENT_CHANNEL_OPTIONS_SIZE: usize = 4;
 const CLIENT_CHANNEL_SIZE: usize = ChannelName::SIZE + CLIENT_CHANNEL_OPTIONS_SIZE;
@@ -100,36 +98,50 @@ pub struct ClientNetworkData {
     pub channels: Vec<ChannelDef>,
 }
 
-impl PduParsing for ClientNetworkData {
-    type Error = NetworkDataError;
+impl ClientNetworkData {
+    const NAME: &'static str = "ClientNetworkData";
 
-    fn from_buffer(mut buffer: impl io::Read) -> Result<Self, Self::Error> {
-        let channel_count = buffer.read_u32::<LittleEndian>()?;
+    const FIXED_PART_SIZE: usize = 4 /* channelCount */;
+}
 
-        if channel_count > CHANNELS_MAX as u32 {
-            return Err(NetworkDataError::InvalidChannelCount);
-        }
+impl PduEncode for ClientNetworkData {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_fixed_part_size!(in: dst);
 
-        let mut channels = Vec::with_capacity(channel_count as usize);
-        for _ in 0..channel_count {
-            channels.push(ChannelDef::from_buffer(&mut buffer)?);
-        }
-
-        Ok(Self { channels })
-    }
-
-    fn to_buffer(&self, mut buffer: impl io::Write) -> Result<(), Self::Error> {
-        buffer.write_u32::<LittleEndian>(self.channels.len() as u32)?;
+        dst.write_u32(cast_length!("channelCount", self.channels.len())?);
 
         for channel in self.channels.iter().take(CHANNELS_MAX) {
-            channel.to_buffer(&mut buffer)?;
+            channel.encode(dst)?;
         }
 
         Ok(())
     }
 
-    fn buffer_length(&self) -> usize {
-        CLIENT_CHANNEL_COUNT_SIZE + self.channels.len() * CLIENT_CHANNEL_SIZE
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    fn size(&self) -> usize {
+        Self::FIXED_PART_SIZE + self.channels.len() * CLIENT_CHANNEL_SIZE
+    }
+}
+
+impl<'de> PduDecode<'de> for ClientNetworkData {
+    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+        ensure_fixed_part_size!(in: src);
+
+        let channel_count = cast_length!("channelCount", src.read_u32())?;
+
+        if channel_count > CHANNELS_MAX {
+            return Err(invalid_message_err!("channelCount", "invalid channel count"));
+        }
+
+        let mut channels = Vec::with_capacity(channel_count);
+        for _ in 0..channel_count {
+            channels.push(ChannelDef::decode(src)?);
+        }
+
+        Ok(Self { channels })
     }
 }
 
@@ -140,39 +152,24 @@ pub struct ServerNetworkData {
 }
 
 impl ServerNetworkData {
+    const NAME: &'static str = "ServerNetworkData";
+
+    const FIXED_PART_SIZE: usize = SERVER_IO_CHANNEL_SIZE + SERVER_CHANNEL_COUNT_SIZE;
+
     fn write_padding(&self) -> bool {
         self.channel_ids.len().is_odd()
     }
 }
 
-impl PduParsing for ServerNetworkData {
-    type Error = NetworkDataError;
+impl PduEncode for ServerNetworkData {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_size!(in: dst, size: self.size());
 
-    fn from_buffer(mut buffer: impl io::Read) -> Result<Self, Self::Error> {
-        let io_channel = buffer.read_u16::<LittleEndian>()?;
-        let channel_count = buffer.read_u16::<LittleEndian>()?;
-
-        let mut channel_ids = Vec::with_capacity(channel_count as usize);
-        for _ in 0..channel_count {
-            channel_ids.push(buffer.read_u16::<LittleEndian>()?);
-        }
-
-        let result = Self {
-            io_channel,
-            channel_ids,
-        };
-
-        let _pad = try_read_optional!(buffer.read_u16::<LittleEndian>(), result);
-
-        Ok(result)
-    }
-
-    fn to_buffer(&self, mut buffer: impl io::Write) -> Result<(), Self::Error> {
-        buffer.write_u16::<LittleEndian>(self.io_channel)?;
-        buffer.write_u16::<LittleEndian>(self.channel_ids.len() as u16)?;
+        dst.write_u16(self.io_channel);
+        dst.write_u16(cast_length!("channelIdLen", self.channel_ids.len())?);
 
         for channel_id in self.channel_ids.iter() {
-            buffer.write_u16::<LittleEndian>(*channel_id)?;
+            dst.write_u16(*channel_id);
         }
 
         // The size in bytes of the Server Network Data structure MUST be a multiple of 4.
@@ -181,16 +178,46 @@ impl PduParsing for ServerNetworkData {
         // In this scenario, the Pad field MUST be present and it is used to add an additional
         // 2 bytes to the size of the Server Network Data structure.
         if self.write_padding() {
-            buffer.write_u16::<LittleEndian>(0)?; // pad
+            dst.write_u16(0); // pad
         }
 
         Ok(())
     }
 
-    fn buffer_length(&self) -> usize {
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    fn size(&self) -> usize {
         let padding_size = if self.write_padding() { 2 } else { 0 };
 
-        SERVER_IO_CHANNEL_SIZE + SERVER_CHANNEL_COUNT_SIZE + self.channel_ids.len() * SERVER_CHANNEL_SIZE + padding_size
+        Self::FIXED_PART_SIZE + self.channel_ids.len() * SERVER_CHANNEL_SIZE + padding_size
+    }
+}
+
+impl<'de> PduDecode<'de> for ServerNetworkData {
+    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+        ensure_fixed_part_size!(in: src);
+
+        let io_channel = src.read_u16();
+        let channel_count = cast_length!("channelCount", src.read_u16())?;
+
+        ensure_size!(in: src, size: channel_count * 2);
+        let mut channel_ids = Vec::with_capacity(channel_count);
+        for _ in 0..channel_count {
+            channel_ids.push(src.read_u16());
+        }
+
+        let result = Self {
+            io_channel,
+            channel_ids,
+        };
+
+        if src.len() >= 2 {
+            read_padding!(src, 2);
+        }
+
+        Ok(result)
     }
 }
 
@@ -201,29 +228,42 @@ pub struct ChannelDef {
     pub options: ChannelOptions,
 }
 
-impl PduParsing for ChannelDef {
-    type Error = NetworkDataError;
+impl ChannelDef {
+    const NAME: &'static str = "ChannelDef";
 
-    fn from_buffer(mut buffer: impl io::Read) -> Result<Self, Self::Error> {
-        let mut name = [0; ChannelName::SIZE];
-        buffer.read_exact(&mut name)?;
-        let name = ChannelName::new(name);
+    const FIXED_PART_SIZE: usize = CLIENT_CHANNEL_SIZE;
+}
 
-        let options = ChannelOptions::from_bits(buffer.read_u32::<LittleEndian>()?)
-            .ok_or(NetworkDataError::InvalidChannelOptions)?;
+impl PduEncode for ChannelDef {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_fixed_part_size!(in: dst);
 
-        Ok(Self { name, options })
-    }
-
-    fn to_buffer(&self, mut buffer: impl io::Write) -> Result<(), Self::Error> {
-        buffer.write_all(self.name.as_bytes())?;
-        buffer.write_u32::<LittleEndian>(self.options.bits())?;
+        dst.write_slice(self.name.as_bytes());
+        dst.write_u32(self.options.bits());
 
         Ok(())
     }
 
-    fn buffer_length(&self) -> usize {
-        SERVER_CHANNEL_SIZE
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    fn size(&self) -> usize {
+        Self::FIXED_PART_SIZE
+    }
+}
+
+impl<'de> PduDecode<'de> for ChannelDef {
+    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+        ensure_fixed_part_size!(in: src);
+
+        let name = src.read_array();
+        let name = ChannelName::new(name);
+
+        let options = ChannelOptions::from_bits(src.read_u32())
+            .ok_or_else(|| invalid_message_err!("options", "invalid channel options"))?;
+
+        Ok(Self { name, options })
     }
 }
 

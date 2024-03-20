@@ -1,11 +1,8 @@
-use std::io;
-
-use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive, ToPrimitive};
-use thiserror::Error;
 
-use crate::PduParsing;
+use crate::cursor::{ReadCursor, WriteCursor};
+use crate::{PduDecode, PduEncode, PduResult};
 
 const MONITOR_COUNT_MAX: usize = 16;
 const MONITOR_ATTRIBUTE_SIZE: u32 = 20;
@@ -20,47 +17,59 @@ pub struct ClientMonitorExtendedData {
     pub extended_monitors_info: Vec<ExtendedMonitorInfo>,
 }
 
-impl PduParsing for ClientMonitorExtendedData {
-    type Error = MonitorExtendedDataError;
+impl ClientMonitorExtendedData {
+    const NAME: &'static str = "ClientMonitorExtendedData";
 
-    fn from_buffer(mut buffer: impl io::Read) -> Result<Self, Self::Error> {
-        let _flags = buffer.read_u32::<LittleEndian>()?; // is unused
+    const FIXED_PART_SIZE: usize = FLAGS_SIZE + MONITOR_ATTRIBUTE_SIZE_FIELD_SIZE + MONITOR_COUNT;
+}
 
-        let monitor_attribute_size = buffer.read_u32::<LittleEndian>()?;
-        if monitor_attribute_size != MONITOR_ATTRIBUTE_SIZE {
-            return Err(MonitorExtendedDataError::InvalidMonitorAttributeSize);
-        }
+impl PduEncode for ClientMonitorExtendedData {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_size!(in: dst, size: self.size());
 
-        let monitor_count = buffer.read_u32::<LittleEndian>()?;
-
-        if monitor_count > MONITOR_COUNT_MAX as u32 {
-            return Err(MonitorExtendedDataError::InvalidMonitorCount);
-        }
-
-        let mut extended_monitors_info = Vec::with_capacity(monitor_count as usize);
-        for _ in 0..monitor_count {
-            extended_monitors_info.push(ExtendedMonitorInfo::from_buffer(&mut buffer)?);
-        }
-
-        Ok(Self { extended_monitors_info })
-    }
-    fn to_buffer(&self, mut buffer: impl io::Write) -> Result<(), Self::Error> {
-        buffer.write_u32::<LittleEndian>(0)?; // flags
-        buffer.write_u32::<LittleEndian>(MONITOR_ATTRIBUTE_SIZE)?; // flags
-        buffer.write_u32::<LittleEndian>(self.extended_monitors_info.len() as u32)?;
+        dst.write_u32(0); // flags
+        dst.write_u32(MONITOR_ATTRIBUTE_SIZE); // flags
+        dst.write_u32(cast_length!("nMonitors", self.extended_monitors_info.len())?);
 
         for extended_monitor_info in self.extended_monitors_info.iter().take(MONITOR_COUNT_MAX) {
-            extended_monitor_info.to_buffer(&mut buffer)?;
+            extended_monitor_info.encode(dst)?;
         }
 
         Ok(())
     }
 
-    fn buffer_length(&self) -> usize {
-        FLAGS_SIZE
-            + MONITOR_ATTRIBUTE_SIZE_FIELD_SIZE
-            + MONITOR_COUNT
-            + self.extended_monitors_info.len() * MONITOR_SIZE
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    fn size(&self) -> usize {
+        Self::FIXED_PART_SIZE + self.extended_monitors_info.len() * MONITOR_SIZE
+    }
+}
+
+impl<'de> PduDecode<'de> for ClientMonitorExtendedData {
+    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+        ensure_fixed_part_size!(in: src);
+
+        let _flags = src.read_u32(); // is unused
+
+        let monitor_attribute_size = src.read_u32();
+        if monitor_attribute_size != MONITOR_ATTRIBUTE_SIZE {
+            return Err(invalid_message_err!("monitorAttributeSize", "invalid size"));
+        }
+
+        let monitor_count = cast_length!("monitorCount", src.read_u32())?;
+
+        if monitor_count > MONITOR_COUNT_MAX {
+            return Err(invalid_message_err!("monitorCount", "invalid monitor count"));
+        }
+
+        let mut extended_monitors_info = Vec::with_capacity(monitor_count);
+        for _ in 0..monitor_count {
+            extended_monitors_info.push(ExtendedMonitorInfo::decode(src)?);
+        }
+
+        Ok(Self { extended_monitors_info })
     }
 }
 
@@ -73,16 +82,44 @@ pub struct ExtendedMonitorInfo {
     pub device_scale_factor: u32,
 }
 
-impl PduParsing for ExtendedMonitorInfo {
-    type Error = MonitorExtendedDataError;
+impl ExtendedMonitorInfo {
+    const NAME: &'static str = "ExtendedMonitorInfo";
 
-    fn from_buffer(mut buffer: impl io::Read) -> Result<Self, Self::Error> {
-        let physical_width = buffer.read_u32::<LittleEndian>()?;
-        let physical_height = buffer.read_u32::<LittleEndian>()?;
-        let orientation = MonitorOrientation::from_u32(buffer.read_u32::<LittleEndian>()?)
-            .ok_or(MonitorExtendedDataError::InvalidMonitorOrientation)?;
-        let desktop_scale_factor = buffer.read_u32::<LittleEndian>()?;
-        let device_scale_factor = buffer.read_u32::<LittleEndian>()?;
+    const FIXED_PART_SIZE: usize = MONITOR_SIZE;
+}
+
+impl PduEncode for ExtendedMonitorInfo {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_fixed_part_size!(in: dst);
+
+        dst.write_u32(self.physical_width);
+        dst.write_u32(self.physical_height);
+        dst.write_u32(self.orientation.to_u32().unwrap());
+        dst.write_u32(self.desktop_scale_factor);
+        dst.write_u32(self.device_scale_factor);
+
+        Ok(())
+    }
+
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    fn size(&self) -> usize {
+        Self::FIXED_PART_SIZE
+    }
+}
+
+impl<'de> PduDecode<'de> for ExtendedMonitorInfo {
+    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+        ensure_fixed_part_size!(in: src);
+
+        let physical_width = src.read_u32();
+        let physical_height = src.read_u32();
+        let orientation = MonitorOrientation::from_u32(src.read_u32())
+            .ok_or_else(|| invalid_message_err!("orientation", "invalid monitor orientation"))?;
+        let desktop_scale_factor = src.read_u32();
+        let device_scale_factor = src.read_u32();
 
         Ok(Self {
             physical_width,
@@ -92,18 +129,6 @@ impl PduParsing for ExtendedMonitorInfo {
             device_scale_factor,
         })
     }
-    fn to_buffer(&self, mut buffer: impl io::Write) -> Result<(), Self::Error> {
-        buffer.write_u32::<LittleEndian>(self.physical_width)?;
-        buffer.write_u32::<LittleEndian>(self.physical_height)?;
-        buffer.write_u32::<LittleEndian>(self.orientation.to_u32().unwrap())?;
-        buffer.write_u32::<LittleEndian>(self.desktop_scale_factor)?;
-        buffer.write_u32::<LittleEndian>(self.device_scale_factor)?;
-
-        Ok(())
-    }
-    fn buffer_length(&self) -> usize {
-        MONITOR_SIZE
-    }
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive, ToPrimitive)]
@@ -112,16 +137,4 @@ pub enum MonitorOrientation {
     Portrait = 90,
     LandscapeFlipped = 180,
     PortraitFlipped = 270,
-}
-
-#[derive(Debug, Error)]
-pub enum MonitorExtendedDataError {
-    #[error("IO error")]
-    IOError(#[from] io::Error),
-    #[error("invalid monitor attribute size field")]
-    InvalidMonitorAttributeSize,
-    #[error("invalid monitor orientation field")]
-    InvalidMonitorOrientation,
-    #[error("invalid monitor count field")]
-    InvalidMonitorCount,
 }
