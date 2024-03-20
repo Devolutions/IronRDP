@@ -5,16 +5,16 @@ use ironrdp_pdu::cursor::{ReadCursor, WriteCursor};
 use ironrdp_pdu::PduDecode;
 use lazy_static::lazy_static;
 
-const DATA_FIRST_DATA_LENGTH: u32 = 0xC7B;
-const DATA_FIRST_CHANNEL_ID: u32 = 0x03;
-const DATA_FIRST_PREFIX: [u8; 4] = [0x24, 0x03, 0x7b, 0x0c];
-const DATA_FIRST_DATA: [u8; 12] = [0x71, 0x71, 0x71, 0x71, 0x71, 0x71, 0x71, 0x71, 0x71, 0x71, 0x71, 0x71];
+const LENGTH: u32 = 0xC7B;
+const CHANNEL_ID: u32 = 0x03;
+const PREFIX: [u8; 4] = [0x24, 0x03, 0x7b, 0x0c];
+const DATA: [u8; 12] = [0x71, 0x71, 0x71, 0x71, 0x71, 0x71, 0x71, 0x71, 0x71, 0x71, 0x71, 0x71];
 
 // Edge case is when the total length is equal to data length
-const DATA_FIRST_EDGE_CASE_DATA_LENGTH: u32 = 0x639;
-const DATA_FIRST_EDGE_CASE_CHANNEL_ID: u32 = 0x07;
-const DATA_FIRST_EDGE_CASE_PREFIX: [u8; 4] = [0x24, 0x7, 0x39, 0x6];
-const DATA_FIRST_EDGE_CASE_DATA: [u8; DATA_FIRST_EDGE_CASE_DATA_LENGTH as usize] = [
+const EDGE_CASE_LENGTH: u32 = 0x639;
+const EDGE_CASE_CHANNEL_ID: u32 = 0x07;
+const EDGE_CASE_PREFIX: [u8; 4] = [0x24, 0x7, 0x39, 0x6];
+const EDGE_CASE_DATA: [u8; EDGE_CASE_LENGTH as usize] = [
     0xe0, 0x24, 0xa9, 0xba, 0xe0, 0x68, 0xa9, 0xba, 0x8a, 0x73, 0x41, 0x25, 0x12, 0x12, 0x1c, 0x28, 0x3b, 0xa6, 0x34,
     0x8, 0x8, 0x7a, 0x38, 0x34, 0x2c, 0xe8, 0xf8, 0xd0, 0xef, 0x18, 0xc2, 0xc, 0x27, 0x1f, 0xb1, 0x83, 0x3c, 0x58,
     0x8a, 0x67, 0x1, 0x58, 0x9d, 0x50, 0x8b, 0x8c, 0x60, 0x31, 0x53, 0x55, 0x54, 0xd8, 0x51, 0x32, 0x23, 0x54, 0xd9,
@@ -102,28 +102,24 @@ const DATA_FIRST_EDGE_CASE_DATA: [u8; DATA_FIRST_EDGE_CASE_DATA_LENGTH as usize]
 ];
 
 lazy_static! {
-    static ref DATA_FIRST_ENCODED: Vec<u8> = {
-        let mut result = DATA_FIRST_PREFIX.to_vec();
-        result.extend(DATA_FIRST_DATA);
+    static ref ENCODED: Vec<u8> = {
+        let mut result = PREFIX.to_vec();
+        result.extend(DATA);
         result
     };
-    static ref DATA_FIRST_DECODED: DataFirstPdu = {
-        let mut res = DataFirstPdu::new(DATA_FIRST_CHANNEL_ID, DATA_FIRST_DATA_LENGTH, DATA_FIRST_DATA.to_vec());
+    static ref DECODED: DataFirstPdu = {
+        let mut res = DataFirstPdu::new(CHANNEL_ID, LENGTH, DATA.to_vec());
         res.header.cb_id = FieldType::U8;
         res.header.sp = FieldType::U16;
         res
     };
-    static ref DATA_FIRST_EDGE_CASE_ENCODED: Vec<u8> = {
-        let mut result = DATA_FIRST_EDGE_CASE_PREFIX.to_vec();
-        result.append(&mut DATA_FIRST_EDGE_CASE_DATA.to_vec());
+    static ref EDGE_CASE_ENCODED: Vec<u8> = {
+        let mut result = EDGE_CASE_PREFIX.to_vec();
+        result.append(&mut EDGE_CASE_DATA.to_vec());
         result
     };
-    static ref DATA_FIRST_EDGE_CASE_DECODED: DataFirstPdu = {
-        let mut res = DataFirstPdu::new(
-            DATA_FIRST_EDGE_CASE_CHANNEL_ID,
-            DATA_FIRST_EDGE_CASE_DATA_LENGTH,
-            DATA_FIRST_EDGE_CASE_DATA.to_vec(),
-        );
+    static ref EDGE_CASE_DECODED: DataFirstPdu = {
+        let mut res = DataFirstPdu::new(EDGE_CASE_CHANNEL_ID, EDGE_CASE_LENGTH, EDGE_CASE_DATA.to_vec());
         res.header.cb_id = FieldType::U8;
         res.header.sp = FieldType::U16;
         res
@@ -132,48 +128,48 @@ lazy_static! {
 
 #[test]
 fn decodes_data_first_pdu() {
-    let mut src = ReadCursor::new(&DATA_FIRST_ENCODED);
+    let mut src = ReadCursor::new(&ENCODED);
     match DrdynvcClientPdu::decode(&mut src).unwrap() {
-        DrdynvcClientPdu::Data(DrdynvcDataPdu::DataFirst(df)) => assert_eq!(*DATA_FIRST_DECODED, df),
+        DrdynvcClientPdu::Data(DrdynvcDataPdu::DataFirst(df)) => assert_eq!(*DECODED, df),
         _ => panic!("Expected DataFirst"),
     }
 
-    let mut src = ReadCursor::new(&DATA_FIRST_ENCODED);
+    let mut src = ReadCursor::new(&ENCODED);
     match DrdynvcServerPdu::decode(&mut src).unwrap() {
-        DrdynvcServerPdu::Data(DrdynvcDataPdu::DataFirst(df)) => assert_eq!(*DATA_FIRST_DECODED, df),
+        DrdynvcServerPdu::Data(DrdynvcDataPdu::DataFirst(df)) => assert_eq!(*DECODED, df),
         _ => panic!("Expected DataFirst"),
     }
 }
 
 #[test]
 fn encodes_data_first_pdu() {
-    let data_first = &*DATA_FIRST_DECODED;
+    let data_first = &*DECODED;
     let mut buffer = vec![0x00; data_first.size()];
     let mut cursor = WriteCursor::new(&mut buffer);
     data_first.encode(&mut cursor).unwrap();
-    assert_eq!(DATA_FIRST_ENCODED.as_slice(), buffer.as_slice());
+    assert_eq!(ENCODED.as_slice(), buffer.as_slice());
 }
 
 #[test]
 fn decodes_data_first_edge_case() {
-    let mut src = ReadCursor::new(&DATA_FIRST_EDGE_CASE_ENCODED);
+    let mut src = ReadCursor::new(&EDGE_CASE_ENCODED);
     match DrdynvcClientPdu::decode(&mut src).unwrap() {
-        DrdynvcClientPdu::Data(DrdynvcDataPdu::DataFirst(df)) => assert_eq!(*DATA_FIRST_EDGE_CASE_DECODED, df),
+        DrdynvcClientPdu::Data(DrdynvcDataPdu::DataFirst(df)) => assert_eq!(*EDGE_CASE_DECODED, df),
         _ => panic!("Expected DataFirst"),
     }
 
-    let mut src = ReadCursor::new(&DATA_FIRST_EDGE_CASE_ENCODED);
+    let mut src = ReadCursor::new(&EDGE_CASE_ENCODED);
     match DrdynvcServerPdu::decode(&mut src).unwrap() {
-        DrdynvcServerPdu::Data(DrdynvcDataPdu::DataFirst(df)) => assert_eq!(*DATA_FIRST_EDGE_CASE_DECODED, df),
+        DrdynvcServerPdu::Data(DrdynvcDataPdu::DataFirst(df)) => assert_eq!(*EDGE_CASE_DECODED, df),
         _ => panic!("Expected DataFirst"),
     }
 }
 
 #[test]
 fn encodes_data_first_edge_case() {
-    let data_first = &*DATA_FIRST_EDGE_CASE_DECODED;
+    let data_first = &*EDGE_CASE_DECODED;
     let mut buffer = vec![0x00; data_first.size()];
     let mut cursor = WriteCursor::new(&mut buffer);
     data_first.encode(&mut cursor).unwrap();
-    assert_eq!(DATA_FIRST_EDGE_CASE_ENCODED.as_slice(), buffer.as_slice());
+    assert_eq!(EDGE_CASE_ENCODED.as_slice(), buffer.as_slice());
 }
