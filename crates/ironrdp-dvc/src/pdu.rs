@@ -1,5 +1,5 @@
 #[cfg(test)]
-mod test;
+mod tests;
 
 use crate::{DynamicChannelId, String, Vec};
 use alloc::format;
@@ -385,7 +385,7 @@ impl From<FieldType> for u8 {
 /// 2.2.3.2 DVC Data PDU (DYNVC_DATA)
 ///
 /// [2.2.3.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpedyc/15b59886-db44-47f1-8da3-47c8fcd82803
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub struct DataPdu {
     header: Header,
     pub channel_id: DynamicChannelId,
