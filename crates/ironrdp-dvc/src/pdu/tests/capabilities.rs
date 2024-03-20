@@ -19,7 +19,7 @@ fn decodes_request_v1() {
     let mut src = ReadCursor::new(&REQ_V1_ENCODED);
     match DrdynvcServerPdu::decode(&mut src).unwrap() {
         DrdynvcServerPdu::Capabilities(pdu) => assert_eq!(*REQ_V1_DECODED, pdu),
-        _ => panic!("Expected DataFirst"),
+        _ => panic!("Expected Capabilities"),
     }
 }
 
@@ -37,7 +37,7 @@ fn decodes_request_v2() {
     let mut src = ReadCursor::new(&REQ_V2_ENCODED);
     match DrdynvcServerPdu::decode(&mut src).unwrap() {
         DrdynvcServerPdu::Capabilities(pdu) => assert_eq!(*REQ_V2_DECODED, pdu),
-        _ => panic!("Expected DataFirst"),
+        _ => panic!("Expected Capabilities"),
     }
 }
 
@@ -55,7 +55,7 @@ fn decodes_response_v1() {
     let mut src = ReadCursor::new(&RESP_V1_ENCODED);
     match DrdynvcClientPdu::decode(&mut src).unwrap() {
         DrdynvcClientPdu::Capabilities(pdu) => assert_eq!(*RESP_V1_DECODED, pdu),
-        _ => panic!("Expected DataFirst"),
+        _ => panic!("Expected Capabilities"),
     }
 }
 

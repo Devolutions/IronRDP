@@ -16,7 +16,7 @@ fn decodes_create_request() {
     let mut src = ReadCursor::new(&REQ_ENCODED);
     match DrdynvcServerPdu::decode(&mut src).unwrap() {
         DrdynvcServerPdu::Create(pdu) => assert_eq!(*REQ_DECODED, pdu),
-        _ => panic!("Expected DataFirst"),
+        _ => panic!("Expected Create"),
     }
 }
 
@@ -34,7 +34,7 @@ fn decodes_create_response() {
     let mut src = ReadCursor::new(&RESP_ENCODED);
     match DrdynvcClientPdu::decode(&mut src).unwrap() {
         DrdynvcClientPdu::Create(pdu) => assert_eq!(*RESP_DECODED, pdu),
-        _ => panic!("Expected DataFirst"),
+        _ => panic!("Expected Create"),
     }
 }
 

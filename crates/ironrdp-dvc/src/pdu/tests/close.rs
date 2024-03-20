@@ -19,13 +19,13 @@ fn decodes_close() {
     let mut src = ReadCursor::new(&ENCODED);
     match DrdynvcClientPdu::decode(&mut src).unwrap() {
         DrdynvcClientPdu::Close(pdu) => assert_eq!(*DECODED, pdu),
-        _ => panic!("Expected DataFirst"),
+        _ => panic!("Expected Close"),
     }
 
     let mut src = ReadCursor::new(&ENCODED);
     match DrdynvcServerPdu::decode(&mut src).unwrap() {
         DrdynvcServerPdu::Close(pdu) => assert_eq!(*DECODED, pdu),
-        _ => panic!("Expected DataFirst"),
+        _ => panic!("Expected Close"),
     }
 }
 

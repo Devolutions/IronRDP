@@ -20,13 +20,13 @@ fn decodes_data() {
     let mut src = ReadCursor::new(&ENCODED);
     match DrdynvcClientPdu::decode(&mut src).unwrap() {
         DrdynvcClientPdu::Data(DrdynvcDataPdu::Data(d)) => assert_eq!(*DECODED, d),
-        _ => panic!("Expected DataFirst"),
+        _ => panic!("Expected Data"),
     }
 
     let mut src = ReadCursor::new(&ENCODED);
     match DrdynvcServerPdu::decode(&mut src).unwrap() {
         DrdynvcServerPdu::Data(DrdynvcDataPdu::Data(d)) => assert_eq!(*DECODED, d),
-        _ => panic!("Expected DataFirst"),
+        _ => panic!("Expected Data"),
     }
 }
 
