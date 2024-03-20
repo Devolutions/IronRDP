@@ -117,7 +117,7 @@ impl SvcProcessor for DrdynvcServer {
     }
 
     fn start(&mut self) -> PduResult<Vec<SvcMessage>> {
-        let cap = CapabilitiesRequestPdu::new(CapsVersion::V1);
+        let cap = CapabilitiesRequestPdu::new(CapsVersion::V1, None);
         let req = DrdynvcServerPdu::Capabilities(cap);
         let msg = as_svc_msg_with_flag(req)?;
         Ok(alloc::vec![msg])

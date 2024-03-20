@@ -545,7 +545,7 @@ impl ClosePdu {
 /// 2.2.1.2 DVC Capabilities Response PDU (DYNVC_CAPS_RSP)
 ///
 /// [2.2.1.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpedyc/d45cb2a6-e7bd-453e-8603-9c57600e24ce
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub struct CapabilitiesResponsePdu {
     header: Header,
     version: CapsVersion,
@@ -584,7 +584,7 @@ impl CapabilitiesResponsePdu {
 }
 
 #[repr(u16)]
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, PartialEq)]
 pub enum CapsVersion {
     V1 = 0x0001,
     V2 = 0x0002,
@@ -625,7 +625,7 @@ impl From<CapsVersion> for u16 {
 /// 2.2.1.1 DVC Capabilities Request PDU
 ///
 /// [2.2.1.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpedyc/c07b15ae-304e-46b8-befe-39c6d95c25e0
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub enum CapabilitiesRequestPdu {
     V1 {
         header: Header,
@@ -647,18 +647,14 @@ impl CapabilitiesRequestPdu {
     const PRIORITY_CHARGE_COUNT: usize = 4; // 4 priority charges
     const PRIORITY_CHARGES_SIZE: usize = Self::PRIORITY_CHARGE_COUNT * Self::PRIORITY_CHARGE_SIZE;
 
-    pub fn new(version: CapsVersion) -> Self {
+    pub fn new(version: CapsVersion, charges: Option<[u16; Self::PRIORITY_CHARGE_COUNT]>) -> Self {
         let header = Header::new(0, 0, Cmd::Capability);
+        let charges = charges.unwrap_or([0; Self::PRIORITY_CHARGE_COUNT]);
+
         match version {
             CapsVersion::V1 => Self::V1 { header },
-            CapsVersion::V2 => Self::V2 {
-                header,
-                charges: [0; Self::PRIORITY_CHARGE_COUNT],
-            },
-            CapsVersion::V3 => Self::V3 {
-                header,
-                charges: [0; Self::PRIORITY_CHARGE_COUNT],
-            },
+            CapsVersion::V2 => Self::V2 { header, charges },
+            CapsVersion::V3 => Self::V3 { header, charges },
         }
     }
 
