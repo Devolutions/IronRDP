@@ -8,7 +8,7 @@ use ironrdp_pdu::PduHint;
 
 use crate::{legacy, ConnectorResult, Sequence, State, Written};
 
-#[derive(Default, Debug)]
+#[derive(Default, Debug, Clone)]
 #[non_exhaustive]
 #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub enum ConnectionFinalizationState {
@@ -47,7 +47,7 @@ impl State for ConnectionFinalizationState {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct ConnectionFinalizationSequence {
     pub state: ConnectionFinalizationState,

@@ -73,6 +73,9 @@ pub enum Orientation {
     PortraitFlipped = 270,
 }
 
+/// [2.2.2.2.1] DISPLAYCONTROL_MONITOR_LAYOUT_PDU
+///
+/// [2.2.2.2.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpedisp/ea2de591-9203-42cd-9908-be7a55237d1c
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Monitor {
     pub flags: MonitorFlags,
@@ -154,6 +157,9 @@ impl<'de> PduDecode<'de> for Monitor {
     }
 }
 
+/// [2.2.2.2] DISPLAYCONTROL_MONITOR_LAYOUT_PDU
+///
+/// [2.2.2.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpedisp/22741217-12a0-4fb8-b5a0-df43905aaf06
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MonitorLayoutPdu {
     pub monitors: Vec<Monitor>,
