@@ -18,7 +18,7 @@ use pdu::cursor::{ReadCursor, WriteCursor};
 use pdu::gcc::ChannelName;
 use pdu::rdp::vc;
 use pdu::PduDecode as _;
-use pdu::{dvc, PduResult};
+use pdu::PduResult;
 use pdu::{other_err, PduEncode};
 
 pub trait DvcClientProcessor: DvcProcessor {}

@@ -22,6 +22,8 @@ use ironrdp_pdu::PduEncode;
 use ironrdp_pdu::PduParsing;
 use ironrdp_svc::impl_as_any;
 
+pub const CHANNEL_NAME: &str = "Microsoft::Windows::RDS::DisplayControl";
+
 /// A client for the Display Control Virtual Channel.
 pub struct DisplayControlClient {}
 
@@ -29,7 +31,7 @@ impl_as_any!(DisplayControlClient);
 
 impl DvcProcessor for DisplayControlClient {
     fn channel_name(&self) -> &str {
-        "Microsoft::Windows::RDS::DisplayControl"
+        CHANNEL_NAME
     }
 
     fn start(&mut self, _channel_id: u32) -> PduResult<DvcMessages> {
