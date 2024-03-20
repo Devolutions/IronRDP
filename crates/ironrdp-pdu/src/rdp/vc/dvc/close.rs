@@ -1,6 +1,3 @@
-#[cfg(test)]
-mod tests;
-
 use std::io;
 
 use super::{FieldType, Header, PduType, HEADER_SIZE, UNUSED_U8};

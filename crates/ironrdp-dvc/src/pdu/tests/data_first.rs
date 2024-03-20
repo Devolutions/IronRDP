@@ -127,7 +127,7 @@ lazy_static! {
 }
 
 #[test]
-fn decodes_data_first_pdu() {
+fn decodes_data_first() {
     let mut src = ReadCursor::new(&ENCODED);
     match DrdynvcClientPdu::decode(&mut src).unwrap() {
         DrdynvcClientPdu::Data(DrdynvcDataPdu::DataFirst(df)) => assert_eq!(*DECODED, df),
@@ -142,7 +142,7 @@ fn decodes_data_first_pdu() {
 }
 
 #[test]
-fn encodes_data_first_pdu() {
+fn encodes_data_first() {
     let data_first = &*DECODED;
     let mut buffer = vec![0x00; data_first.size()];
     let mut cursor = WriteCursor::new(&mut buffer);

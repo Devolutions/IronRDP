@@ -1,37 +1,36 @@
-use super::*;
 use crate::vec;
 use lazy_static::lazy_static;
 
-const CHANNEL_ID: u32 = 0x03;
-const PREFIX: [u8; 2] = [0x30, 0x03];
-const DATA: [u8; 12] = [0x71; 12];
+use super::*;
+
+const CHANNEL_ID: u32 = 0x0303;
+const ENCODED: [u8; 3] = [0x41, 0x03, 0x03];
 
 lazy_static! {
-    static ref ENCODED: Vec<u8> = {
-        let mut result = PREFIX.to_vec();
-        result.extend(DATA);
-        result
+    static ref DECODED: ClosePdu = {
+        let mut pdu = ClosePdu::new(CHANNEL_ID);
+        pdu.header.cb_id = FieldType::U16;
+        pdu
     };
-    static ref DECODED: DataPdu = DataPdu::new(CHANNEL_ID, DATA.to_vec());
 }
 
 #[test]
-fn decodes_data() {
+fn decodes_close() {
     let mut src = ReadCursor::new(&ENCODED);
     match DrdynvcClientPdu::decode(&mut src).unwrap() {
-        DrdynvcClientPdu::Data(DrdynvcDataPdu::Data(d)) => assert_eq!(*DECODED, d),
+        DrdynvcClientPdu::Close(pdu) => assert_eq!(*DECODED, pdu),
         _ => panic!("Expected DataFirst"),
     }
 
     let mut src = ReadCursor::new(&ENCODED);
     match DrdynvcServerPdu::decode(&mut src).unwrap() {
-        DrdynvcServerPdu::Data(DrdynvcDataPdu::Data(d)) => assert_eq!(*DECODED, d),
+        DrdynvcServerPdu::Close(pdu) => assert_eq!(*DECODED, pdu),
         _ => panic!("Expected DataFirst"),
     }
 }
 
 #[test]
-fn encodes_data() {
+fn encodes_close() {
     let data = &*DECODED;
     let mut buffer = vec![0x00; data.size()];
     let mut cursor = WriteCursor::new(&mut buffer);

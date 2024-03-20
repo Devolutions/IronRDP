@@ -507,7 +507,7 @@ impl From<CreationStatus> for u32 {
 /// 2.2.4 Closing a DVC (DYNVC_CLOSE)
 ///
 /// [2.2.4]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpedyc/c02dfd21-ccbc-4254-985b-3ef6dd115dec
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub struct ClosePdu {
     header: Header,
     pub channel_id: DynamicChannelId,
