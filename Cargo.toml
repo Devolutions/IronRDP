@@ -59,6 +59,7 @@ tracing = { version = "0.1", features = ["log"] }
 thiserror = "1.0"
 png = "0.17"
 bitflags = "2.4"
+byteorder = "1.5"
 
 [profile.dev]
 opt-level = 1
