@@ -66,7 +66,7 @@ const DATA_MAX_SIZE: usize = 1590;
 pub fn encode_dvc_messages(
     channel_id: u32,
     messages: Vec<DvcMessage>,
-    flags: Option<ironrdp_svc::ChannelFlags>,
+    flags: ironrdp_svc::ChannelFlags,
 ) -> PduResult<Vec<SvcMessage>> {
     let mut res = Vec::new();
     for msg in messages {
@@ -94,10 +94,8 @@ pub fn encode_dvc_messages(
                 pdu::DrdynvcDataPdu::Data(pdu::DataPdu::new(channel_id, msg[off..end].to_vec()))
             };
 
-            let mut svc = SvcMessage::from(pdu);
-            if let Some(flags) = flags {
-                svc = svc.with_flags(flags);
-            }
+            let svc = SvcMessage::from(pdu).with_flags(flags);
+
             res.push(svc);
             off = end;
         }

@@ -4,7 +4,7 @@ use crate::{
 };
 use ironrdp_dvc::{encode_dvc_messages, DvcClientProcessor, DvcMessage, DvcProcessor};
 use ironrdp_pdu::PduResult;
-use ironrdp_svc::{impl_as_any, SvcMessage};
+use ironrdp_svc::{impl_as_any, ChannelFlags, SvcMessage};
 use tracing::debug;
 
 /// A client for the Display Control Virtual Channel.
@@ -39,7 +39,7 @@ impl DisplayControlClient {
     /// Fully encodes a [`MonitorLayoutPdu`] with the given monitors.
     pub fn encode_monitors(&self, channel_id: u32, monitors: Vec<MonitorLayoutEntry>) -> PduResult<Vec<SvcMessage>> {
         let pdu: DisplayControlPdu = DisplayControlMonitorLayout::new(&monitors)?.into();
-        encode_dvc_messages(channel_id, vec![Box::new(pdu)], None)
+        encode_dvc_messages(channel_id, vec![Box::new(pdu)], ChannelFlags::empty())
     }
 }
 

@@ -148,11 +148,7 @@ impl SvcProcessor for DrdynvcServer {
                 }
                 c.state = ChannelState::Opened;
                 let msg = c.processor.start(create_resp.channel_id)?;
-                resp.extend(encode_dvc_messages(
-                    id,
-                    msg,
-                    Some(ironrdp_svc::ChannelFlags::SHOW_PROTOCOL),
-                )?);
+                resp.extend(encode_dvc_messages(id, msg, ironrdp_svc::ChannelFlags::SHOW_PROTOCOL)?);
             }
             DrdynvcClientPdu::Close(close_resp) => {
                 debug!("Got DVC Close Response PDU: {close_resp:?}");
@@ -173,7 +169,7 @@ impl SvcProcessor for DrdynvcServer {
                     resp.extend(encode_dvc_messages(
                         channel_id,
                         msg,
-                        Some(ironrdp_svc::ChannelFlags::SHOW_PROTOCOL),
+                        ironrdp_svc::ChannelFlags::SHOW_PROTOCOL,
                     )?);
                 }
             }

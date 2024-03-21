@@ -8,7 +8,7 @@ use alloc::vec::Vec;
 use core::any::TypeId;
 use core::fmt;
 use ironrdp_pdu as pdu;
-use ironrdp_svc::{impl_as_any, CompressionCondition, SvcClientProcessor, SvcMessage, SvcProcessor};
+use ironrdp_svc::{impl_as_any, ChannelFlags, CompressionCondition, SvcClientProcessor, SvcMessage, SvcProcessor};
 use pdu::cursor::ReadCursor;
 use pdu::gcc::ChannelName;
 use pdu::other_err;
@@ -140,7 +140,7 @@ impl SvcProcessor for DrdynvcClient {
 
                 // If this DVC has start messages, send them.
                 if !start_messages.is_empty() {
-                    responses.extend(encode_dvc_messages(channel_id, start_messages, None)?);
+                    responses.extend(encode_dvc_messages(channel_id, start_messages, ChannelFlags::empty())?);
                 }
             }
             DrdynvcServerPdu::Close(close_request) => {
@@ -161,7 +161,7 @@ impl SvcProcessor for DrdynvcClient {
                     .ok_or_else(|| other_err!("DVC", "access to non existing channel"))?
                     .process(data)?;
 
-                responses.extend(encode_dvc_messages(channel_id, messages, None)?);
+                responses.extend(encode_dvc_messages(channel_id, messages, ChannelFlags::empty())?);
             }
         }
 
