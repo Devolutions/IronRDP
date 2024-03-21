@@ -61,8 +61,6 @@ pub trait DvcProcessor: AsAny + Send + Sync {
 
 assert_obj_safe!(DvcProcessor);
 
-const DATA_MAX_SIZE: usize = 1590;
-
 pub fn encode_dvc_messages(
     channel_id: u32,
     messages: Vec<DvcMessage>,
@@ -71,7 +69,7 @@ pub fn encode_dvc_messages(
     let mut res = Vec::new();
     for msg in messages {
         let total_length = msg.size();
-        let needs_splitting = total_length >= DATA_MAX_SIZE;
+        let needs_splitting = total_length >= DrdynvcDataPdu::MAX_DATA_SIZE;
 
         let msg = encode_vec(msg.as_ref())?;
         let mut off = 0;
@@ -79,7 +77,7 @@ pub fn encode_dvc_messages(
         while off < total_length {
             let first = off == 0;
             let rem = total_length.checked_sub(off).unwrap();
-            let size = core::cmp::min(rem, DATA_MAX_SIZE);
+            let size = core::cmp::min(rem, DrdynvcDataPdu::MAX_DATA_SIZE);
             let end = off
                 .checked_add(size)
                 .ok_or_else(|| other_err!("encode_dvc_messages", "overflow occurred"))?;

@@ -20,6 +20,9 @@ pub enum DrdynvcDataPdu {
 }
 
 impl DrdynvcDataPdu {
+    /// Maximum size of the `data` field in `DrdynvcDataPdu`.
+    pub const MAX_DATA_SIZE: usize = 1590;
+
     pub fn channel_id(&self) -> DynamicChannelId {
         match self {
             DrdynvcDataPdu::DataFirst(pdu) => pdu.channel_id,
