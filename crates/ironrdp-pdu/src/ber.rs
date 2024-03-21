@@ -133,6 +133,7 @@ pub(crate) fn read_enumerated(stream: &mut ReadCursor<'_>, count: u8) -> PduResu
         return Err(invalid_message_err!("len", "invalid enumerated len"));
     }
 
+    ensure_size!(in: stream, size: 1);
     let enumerated = stream.read_u8();
     if enumerated == u8::MAX || enumerated + 1 > count {
         return Err(invalid_message_err!("enumerated", "invalid enumerated value"));
@@ -203,6 +204,8 @@ pub(crate) fn write_bool(stream: &mut WriteCursor<'_>, value: bool) -> PduResult
     let mut size = 0;
     size += write_universal_tag(stream, Tag::Boolean, Pc::Primitive)?;
     size += write_length(stream, 1)?;
+
+    ensure_size!(in: stream, size: 1);
     stream.write_u8(if value { 0xFF } else { 0x00 });
     size += 1;
 
@@ -217,6 +220,7 @@ pub(crate) fn read_bool(stream: &mut ReadCursor<'_>) -> PduResult<bool> {
         return Err(invalid_message_err!("len", "invalid integer len"));
     }
 
+    ensure_size!(in: stream, size: 1);
     Ok(stream.read_u8() != 0)
 }
 
