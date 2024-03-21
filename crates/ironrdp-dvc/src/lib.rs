@@ -12,7 +12,6 @@ use pdu::DrdynvcDataPdu;
 
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
-use alloc::vec;
 use alloc::vec::Vec;
 // Re-export ironrdp_pdu crate for convenience
 #[rustfmt::skip] // do not re-order this pub use
@@ -125,7 +124,7 @@ impl DynamicVirtualChannel {
         if let Some(complete_data) = complete_data {
             self.channel_processor.process(channel_id, &complete_data)
         } else {
-            Ok(vec![])
+            Ok(Vec::new())
         }
     }
 

@@ -1,4 +1,4 @@
-use crate::vec;
+use alloc::vec;
 use lazy_static::lazy_static;
 
 use super::*;

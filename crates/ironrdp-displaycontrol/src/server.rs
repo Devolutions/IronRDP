@@ -33,7 +33,7 @@ impl DvcProcessor for DisplayControlServer {
                 debug!(?caps);
             }
         }
-        Ok(vec![])
+        Ok(Vec::new())
     }
 }
 

@@ -3,7 +3,6 @@ use crate::pdu::{
     DrdynvcServerPdu,
 };
 use crate::{encode_dvc_messages, DvcProcessor, DynamicChannelId, DynamicChannelSet};
-use alloc::vec;
 use alloc::vec::Vec;
 use core::any::TypeId;
 use core::fmt;
@@ -131,7 +130,7 @@ impl SvcProcessor for DrdynvcClient {
                     let dynamic_channel = self.dynamic_channels.get_by_channel_name_mut(&channel_name).unwrap();
                     (CreationStatus::OK, dynamic_channel.start(channel_id)?)
                 } else {
-                    (CreationStatus::NO_LISTENER, vec![])
+                    (CreationStatus::NO_LISTENER, Vec::new())
                 };
 
                 let create_response = DrdynvcClientPdu::Create(CreateResponsePdu::new(channel_id, creation_status));

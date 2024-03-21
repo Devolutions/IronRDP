@@ -74,7 +74,7 @@ impl dvc::DvcProcessor for AInputHandler {
             }
         }
 
-        Ok(vec![])
+        Ok(Vec::new())
     }
 }
 

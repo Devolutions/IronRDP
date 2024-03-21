@@ -1,6 +1,6 @@
 use super::*;
-
-use crate::{vec, Vec};
+use crate::Vec;
+use alloc::vec;
 use ironrdp_pdu::cursor::{ReadCursor, WriteCursor};
 use ironrdp_pdu::PduDecode;
 use lazy_static::lazy_static;

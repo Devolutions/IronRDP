@@ -1,5 +1,5 @@
 use super::*;
-use crate::vec;
+use alloc::vec;
 use lazy_static::lazy_static;
 
 const CHANNEL_ID: u32 = 0x03;

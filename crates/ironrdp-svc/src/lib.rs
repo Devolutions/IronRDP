@@ -237,7 +237,7 @@ pub trait SvcProcessor: AsAny + fmt::Debug + Send {
     ///
     /// Returns a list of PDUs to be sent back.
     fn start(&mut self) -> PduResult<Vec<SvcMessage>> {
-        Ok(vec![])
+        Ok(Vec::new())
     }
 
     /// Processes a payload received on the virtual channel. The `payload` is expected
