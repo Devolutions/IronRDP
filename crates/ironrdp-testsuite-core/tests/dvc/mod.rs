@@ -9,7 +9,7 @@ use ironrdp_pdu::{
     cursor::{ReadCursor, WriteCursor},
     PduDecode,
 };
-use lazy_static::lazy_static;
+use std::sync::OnceLock;
 
 // TODO: This likely generalizes to many tests and can thus be reused outside of this module.
 fn test_encodes<T: PduEncode>(data: &T, expected: &[u8]) {

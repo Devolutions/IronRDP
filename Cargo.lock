@@ -1782,7 +1782,6 @@ version = "0.1.0"
 dependencies = [
  "ironrdp-pdu",
  "ironrdp-svc",
- "lazy_static",
  "slab",
  "tracing",
 ]

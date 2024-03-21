@@ -24,6 +24,3 @@ ironrdp-svc.workspace = true
 ironrdp-pdu = { workspace = true, features = ["alloc"] }
 tracing.workspace = true
 slab = "0.4.9"
-
-[dev-dependencies]
-lazy_static.workspace = true # TODO: remove

@@ -22,7 +22,7 @@ bitvec = "1.0"
 byteorder.workspace = true # TODO: remove
 ironrdp-error.workspace = true
 ironrdp-pdu = { workspace = true, features = ["std"] }
-lazy_static.workspace = true # TODO: remove
+lazy_static.workspace = true # TODO: remove in favor of https://doc.rust-lang.org/std/sync/struct.OnceLock.html
 num-derive.workspace = true # TODO: remove
 num-traits.workspace = true # TODO: remove
 thiserror.workspace = true

@@ -96,59 +96,89 @@ const EDGE_CASE_DATA: [u8; EDGE_CASE_LENGTH as usize] = [
     0x74, 0x36, 0x76, 0xa6, 0x53, 0x9f, 0x33, 0x56, 0x98, 0x88, 0x92, 0x2a, 0xd1, 0x90, 0x1,
 ];
 
-lazy_static! {
-    static ref ENCODED: Vec<u8> = {
+static ENCODED: OnceLock<Vec<u8>> = OnceLock::new();
+static DECODED_CLIENT: OnceLock<DrdynvcClientPdu> = OnceLock::new();
+static DECODED_SERVER: OnceLock<DrdynvcServerPdu> = OnceLock::new();
+static EDGE_CASE_ENCODED: OnceLock<Vec<u8>> = OnceLock::new();
+static EDGE_CASE_DECODED_CLIENT: OnceLock<DrdynvcClientPdu> = OnceLock::new();
+static EDGE_CASE_DECODED_SERVER: OnceLock<DrdynvcServerPdu> = OnceLock::new();
+
+fn encoded() -> &'static Vec<u8> {
+    ENCODED.get_or_init(|| {
         let mut result = PREFIX.to_vec();
         result.extend(DATA);
         result
-    };
-    static ref DECODED_CLIENT: DrdynvcClientPdu = DrdynvcClientPdu::Data(DrdynvcDataPdu::DataFirst(
-        DataFirstPdu::new(CHANNEL_ID, LENGTH, DATA.to_vec())
-            .with_cb_id_type(FieldType::U8)
-            .with_sp_type(FieldType::U16)
-    ));
-    static ref DECODED_SERVER: DrdynvcServerPdu = DrdynvcServerPdu::Data(DrdynvcDataPdu::DataFirst(
-        DataFirstPdu::new(CHANNEL_ID, LENGTH, DATA.to_vec())
-            .with_cb_id_type(FieldType::U8)
-            .with_sp_type(FieldType::U16)
-    ));
-    static ref EDGE_CASE_ENCODED: Vec<u8> = {
+    })
+}
+
+fn decoded_client() -> &'static DrdynvcClientPdu {
+    DECODED_CLIENT.get_or_init(|| {
+        DrdynvcClientPdu::Data(DrdynvcDataPdu::DataFirst(
+            DataFirstPdu::new(CHANNEL_ID, LENGTH, DATA.to_vec())
+                .with_cb_id_type(FieldType::U8)
+                .with_sp_type(FieldType::U16),
+        ))
+    })
+}
+
+fn decoded_server() -> &'static DrdynvcServerPdu {
+    DECODED_SERVER.get_or_init(|| {
+        DrdynvcServerPdu::Data(DrdynvcDataPdu::DataFirst(
+            DataFirstPdu::new(CHANNEL_ID, LENGTH, DATA.to_vec())
+                .with_cb_id_type(FieldType::U8)
+                .with_sp_type(FieldType::U16),
+        ))
+    })
+}
+
+fn edge_case_encoded() -> &'static Vec<u8> {
+    EDGE_CASE_ENCODED.get_or_init(|| {
         let mut result = EDGE_CASE_PREFIX.to_vec();
         result.append(&mut EDGE_CASE_DATA.to_vec());
         result
-    };
-    static ref EDGE_CASE_DECODED_CLIENT: DrdynvcClientPdu = DrdynvcClientPdu::Data(DrdynvcDataPdu::DataFirst(
-        DataFirstPdu::new(EDGE_CASE_CHANNEL_ID, EDGE_CASE_LENGTH, EDGE_CASE_DATA.to_vec())
-            .with_cb_id_type(FieldType::U8)
-            .with_sp_type(FieldType::U16)
-    ));
-    static ref EDGE_CASE_DECODED_SERVER: DrdynvcServerPdu = DrdynvcServerPdu::Data(DrdynvcDataPdu::DataFirst(
-        DataFirstPdu::new(EDGE_CASE_CHANNEL_ID, EDGE_CASE_LENGTH, EDGE_CASE_DATA.to_vec())
-            .with_cb_id_type(FieldType::U8)
-            .with_sp_type(FieldType::U16)
-    ));
+    })
+}
+
+fn edge_case_decoded_client() -> &'static DrdynvcClientPdu {
+    EDGE_CASE_DECODED_CLIENT.get_or_init(|| {
+        DrdynvcClientPdu::Data(DrdynvcDataPdu::DataFirst(
+            DataFirstPdu::new(EDGE_CASE_CHANNEL_ID, EDGE_CASE_LENGTH, EDGE_CASE_DATA.to_vec())
+                .with_cb_id_type(FieldType::U8)
+                .with_sp_type(FieldType::U16),
+        ))
+    })
+}
+
+fn edge_case_decoded_server() -> &'static DrdynvcServerPdu {
+    EDGE_CASE_DECODED_SERVER.get_or_init(|| {
+        DrdynvcServerPdu::Data(DrdynvcDataPdu::DataFirst(
+            DataFirstPdu::new(EDGE_CASE_CHANNEL_ID, EDGE_CASE_LENGTH, EDGE_CASE_DATA.to_vec())
+                .with_cb_id_type(FieldType::U8)
+                .with_sp_type(FieldType::U16),
+        ))
+    })
 }
 
 #[test]
 fn decodes_data_first() {
-    test_decodes(&ENCODED, &*DECODED_CLIENT);
-    test_decodes(&ENCODED, &*DECODED_SERVER);
+    test_decodes(encoded(), decoded_client());
+    test_decodes(encoded(), decoded_server());
 }
 
 #[test]
 fn encodes_data_first() {
-    test_encodes(&*DECODED_CLIENT, &ENCODED);
-    test_encodes(&*DECODED_SERVER, &ENCODED);
+    test_encodes(decoded_client(), encoded());
+    test_encodes(decoded_server(), encoded());
 }
 
 #[test]
 fn decodes_data_first_edge_case() {
-    test_decodes(&EDGE_CASE_ENCODED, &*EDGE_CASE_DECODED_CLIENT);
-    test_decodes(&EDGE_CASE_ENCODED, &*EDGE_CASE_DECODED_SERVER);
+    test_decodes(edge_case_encoded(), edge_case_decoded_client());
+    test_decodes(edge_case_encoded(), edge_case_decoded_server());
 }
 
 #[test]
 fn encodes_data_first_edge_case() {
-    test_encodes(&*EDGE_CASE_DECODED_CLIENT, &EDGE_CASE_ENCODED);
-    test_encodes(&*EDGE_CASE_DECODED_SERVER, &EDGE_CASE_ENCODED);
+    test_encodes(edge_case_decoded_client(), edge_case_encoded());
+    test_encodes(edge_case_decoded_server(), edge_case_encoded());
 }
