@@ -1,12 +1,14 @@
 #[cfg(test)]
 mod tests;
 
-use crate::{DynamicChannelId, String, Vec};
 use alloc::format;
+use core::fmt;
+
+use crate::{DynamicChannelId, String, Vec};
 use ironrdp_pdu::{
     cast_length,
     cursor::{ReadCursor, WriteCursor},
-    ensure_size, invalid_message_err, unsupported_pdu_err,
+    ensure_fixed_part_size, ensure_size, invalid_message_err, unsupported_pdu_err,
     utils::{encoded_str_len, read_string_from_cursor, write_string_to_cursor, CharacterSet},
     PduDecode, PduEncode, PduError, PduResult,
 };
@@ -191,7 +193,7 @@ impl Header {
     }
 
     fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
-        ensure_size!(in: dst, size: Self::size());
+        ensure_fixed_part_size!(in: dst);
         dst.write_u8((self.cmd as u8) << 4 | Into::<u8>::into(self.sp) << 2 | Into::<u8>::into(self.cb_id));
         Ok(())
     }
@@ -246,9 +248,25 @@ impl TryFrom<u8> for Cmd {
     }
 }
 
+impl fmt::Display for Cmd {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Cmd::Create => "Create",
+            Cmd::DataFirst => "DataFirst",
+            Cmd::Data => "Data",
+            Cmd::Close => "Close",
+            Cmd::Capability => "Capability",
+            Cmd::DataFirstCompressed => "DataFirstCompressed",
+            Cmd::DataCompressed => "DataCompressed",
+            Cmd::SoftSyncRequest => "SoftSyncRequest",
+            Cmd::SoftSyncResponse => "SoftSyncResponse",
+        })
+    }
+}
+
 impl From<Cmd> for String {
-    fn from(val: Cmd) -> Self {
-        format!("{:?}", val)
+    fn from(cmd: Cmd) -> Self {
+        format!("{:?}", cmd)
     }
 }
 
