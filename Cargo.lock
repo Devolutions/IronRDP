@@ -1770,7 +1770,10 @@ dependencies = [
 name = "ironrdp-displaycontrol"
 version = "0.1.0"
 dependencies = [
+ "ironrdp-dvc",
  "ironrdp-pdu",
+ "ironrdp-svc",
+ "tracing",
 ]
 
 [[package]]
@@ -1902,6 +1905,7 @@ dependencies = [
  "ironrdp-acceptor",
  "ironrdp-ainput",
  "ironrdp-cliprdr",
+ "ironrdp-displaycontrol",
  "ironrdp-dvc",
  "ironrdp-graphics",
  "ironrdp-pdu",

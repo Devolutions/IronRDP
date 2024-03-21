@@ -1,13 +1,12 @@
-use crate::vec;
-use crate::Box;
-use crate::DvcServerProcessor;
-use ironrdp_pdu::decode;
-use ironrdp_pdu::PduResult;
+use ironrdp_dvc::{DvcMessages, DvcProcessor, DvcServerProcessor};
+use ironrdp_pdu::{decode, PduResult};
 use ironrdp_svc::impl_as_any;
+use tracing::debug;
 
-use crate::{DvcMessages, DvcProcessor};
-
-use super::{DisplayControlCapsPdu, DisplayControlPdu, CHANNEL_NAME};
+use crate::{
+    pdu::{DisplayControlCapabilities, DisplayControlPdu},
+    CHANNEL_NAME,
+};
 
 /// A server for the Display Control Virtual Channel.
 pub struct DisplayControlServer {}
@@ -20,7 +19,7 @@ impl DvcProcessor for DisplayControlServer {
     }
 
     fn start(&mut self, _channel_id: u32) -> PduResult<DvcMessages> {
-        let pdu: DisplayControlPdu = DisplayControlCapsPdu::new(1, 3840, 2400).into();
+        let pdu: DisplayControlPdu = DisplayControlCapabilities::new(1, 3840, 2400)?.into();
 
         Ok(vec![Box::new(pdu)])
     }

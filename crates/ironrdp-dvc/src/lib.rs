@@ -34,7 +34,6 @@ pub use client::*;
 mod server;
 pub use server::*;
 
-pub mod display;
 pub mod pdu;
 
 /// Represents a message that, when encoded, forms a complete PDU for a given dynamic virtual channel.
@@ -70,7 +69,7 @@ assert_obj_safe!(DvcProcessor);
 
 const DATA_MAX_SIZE: usize = 1590;
 
-pub(crate) fn encode_dvc_messages(
+pub fn encode_dvc_messages(
     channel_id: u32,
     messages: DvcMessages,
     flags: Option<ironrdp_svc::ChannelFlags>,

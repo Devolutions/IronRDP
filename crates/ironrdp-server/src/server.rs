@@ -2,10 +2,10 @@ use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 
 use anyhow::{bail, Result};
-use dvc::display::server::DisplayControlServer;
 use ironrdp_acceptor::{self, Acceptor, AcceptorResult, BeginResult};
 use ironrdp_cliprdr::backend::CliprdrBackendFactory;
 use ironrdp_cliprdr::CliprdrServer;
+use ironrdp_displaycontrol::server::DisplayControlServer;
 use ironrdp_dvc as dvc;
 use ironrdp_pdu::input::fast_path::{FastPathInput, FastPathInputEvent};
 use ironrdp_pdu::input::InputEventPdu;

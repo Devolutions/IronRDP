@@ -46,33 +46,33 @@ impl CompleteData {
     fn process_data_pdu(&mut self, mut data: DataPdu) -> PduResult<Option<Vec<u8>>> {
         if self.total_size == 0 && self.data.is_empty() {
             // message is not fragmented
-            Ok(Some(data.data))
-        } else {
-            // message is fragmented so need to reassemble it
-            match self.data.len().checked_add(data.data.len()) {
-                Some(actual_data_length) => {
-                    match actual_data_length.cmp(&(self.total_size)) {
-                        cmp::Ordering::Less => {
-                            // this is one of the fragmented messages, just append it
-                            self.data.append(&mut data.data);
-                            Ok(None)
-                        }
-                        cmp::Ordering::Equal => {
-                            // this is the last fragmented message, need to return the whole reassembled message
-                            self.total_size = 0;
-                            self.data.append(&mut data.data);
-                            Ok(Some(self.data.drain(..).collect()))
-                        }
-                        cmp::Ordering::Greater => {
-                            error!("Actual DVC message size is grater than expected total DVC message size");
-                            self.total_size = 0;
-                            self.data.clear();
-                            Ok(None)
-                        }
+            return Ok(Some(data.data));
+        }
+
+        // message is fragmented so need to reassemble it
+        match self.data.len().checked_add(data.data.len()) {
+            Some(actual_data_length) => {
+                match actual_data_length.cmp(&(self.total_size)) {
+                    cmp::Ordering::Less => {
+                        // this is one of the fragmented messages, just append it
+                        self.data.append(&mut data.data);
+                        Ok(None)
+                    }
+                    cmp::Ordering::Equal => {
+                        // this is the last fragmented message, need to return the whole reassembled message
+                        self.total_size = 0;
+                        self.data.append(&mut data.data);
+                        Ok(Some(self.data.drain(..).collect()))
+                    }
+                    cmp::Ordering::Greater => {
+                        error!("Actual DVC message size is grater than expected total DVC message size");
+                        self.total_size = 0;
+                        self.data.clear();
+                        Ok(None)
                     }
                 }
-                _ => Err(invalid_message_err!("DVC message", "data", "overflow occurred")),
             }
+            _ => Err(invalid_message_err!("DVC message", "data", "overflow occurred")),
         }
     }
 }
