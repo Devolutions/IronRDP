@@ -581,7 +581,7 @@ impl CapabilitiesResponsePdu {
     }
 
     fn decode(header: Header, src: &mut ReadCursor<'_>) -> PduResult<Self> {
-        ensure_size!(in: src, size: 1 /* Pad */ + CapsVersion::size());
+        ensure_size!(in: src, size: Self::headerless_size());
         let _pad = src.read_u8();
         let version = CapsVersion::try_from(src.read_u16())?;
         Ok(Self { header, version })
@@ -599,8 +599,12 @@ impl CapabilitiesResponsePdu {
         "DYNVC_CAPS_RSP"
     }
 
+    fn headerless_size() -> usize {
+        1 /* Pad */ + CapsVersion::size()
+    }
+
     fn size(&self) -> usize {
-        Header::size() + 1 /* Pad */ + CapsVersion::size()
+        Header::size() + Self::headerless_size()
     }
 }
 
