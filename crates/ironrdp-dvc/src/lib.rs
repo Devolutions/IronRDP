@@ -36,9 +36,6 @@ pub mod pdu;
 pub trait DvcPduEncode: PduEncode + Send {}
 pub type DvcMessage = Box<dyn DvcPduEncode>;
 
-/// We implement `DvcPduEncode` for `Vec<u8>` for legacy reasons.
-impl DvcPduEncode for Vec<u8> {}
-
 /// A type that is a Dynamic Virtual Channel (DVC)
 ///
 /// Dynamic virtual channels may be created at any point during the RDP session.

@@ -346,9 +346,9 @@ impl DataFirstPdu {
 struct FieldType(u8);
 
 impl FieldType {
-    pub const U8: Self = Self(0x00);
-    pub const U16: Self = Self(0x01);
-    pub const U32: Self = Self(0x02);
+    const U8: Self = Self(0x00);
+    const U16: Self = Self(0x01);
+    const U32: Self = Self(0x02);
 
     fn encode_val(&self, value: u32, dst: &mut WriteCursor<'_>) -> PduResult<()> {
         ensure_size!(in: dst, size: self.size_of_val());
