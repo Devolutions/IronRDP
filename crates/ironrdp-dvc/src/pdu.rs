@@ -1,6 +1,3 @@
-#[cfg(test)]
-mod tests;
-
 use alloc::format;
 use core::fmt;
 
@@ -18,7 +15,7 @@ use ironrdp_pdu::{
 use ironrdp_svc::SvcPduEncode;
 
 /// Dynamic Virtual Channel PDU's that are sent by both client and server.
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub enum DrdynvcDataPdu {
     DataFirst(DataFirstPdu),
     Data(DataPdu),
@@ -60,7 +57,7 @@ impl PduEncode for DrdynvcDataPdu {
 }
 
 /// Dynamic Virtual Channel PDU's that are sent by the client.
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub enum DrdynvcClientPdu {
     Capabilities(CapabilitiesResponsePdu),
     Create(CreateResponsePdu),
@@ -114,7 +111,7 @@ impl PduDecode<'_> for DrdynvcClientPdu {
 }
 
 /// Dynamic Virtual Channel PDU's that are sent by the server.
-#[derive(Debug)]
+#[derive(Debug, PartialEq)]
 pub enum DrdynvcServerPdu {
     Capabilities(CapabilitiesRequestPdu),
     Create(CreateRequestPdu),
@@ -193,6 +190,14 @@ impl Header {
             sp: FieldType::for_val(sp_val),
             cmd,
         }
+    }
+
+    fn with_cb_id(self, cb_id: FieldType) -> Self {
+        Self { cb_id, ..self }
+    }
+
+    fn with_sp(self, sp: FieldType) -> Self {
+        Self { sp, ..self }
     }
 
     fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
@@ -303,6 +308,22 @@ impl DataFirstPdu {
         }
     }
 
+    #[must_use]
+    pub fn with_cb_id_type(self, cb_id: FieldType) -> Self {
+        Self {
+            header: self.header.with_cb_id(cb_id),
+            ..self
+        }
+    }
+
+    #[must_use]
+    pub fn with_sp_type(self, sp: FieldType) -> Self {
+        Self {
+            header: self.header.with_sp(sp),
+            ..self
+        }
+    }
+
     fn decode(header: Header, src: &mut ReadCursor<'_>) -> PduResult<Self> {
         let fixed_part_size = checked_sum(&[header.cb_id.size_of_val(), header.sp.size_of_val()])?;
         ensure_size!(in: src, size: fixed_part_size);
@@ -343,12 +364,12 @@ impl DataFirstPdu {
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
-struct FieldType(u8);
+pub struct FieldType(u8);
 
 impl FieldType {
-    const U8: Self = Self(0x00);
-    const U16: Self = Self(0x01);
-    const U32: Self = Self(0x02);
+    pub const U8: Self = Self(0x00);
+    pub const U16: Self = Self(0x01);
+    pub const U32: Self = Self(0x02);
 
     fn encode_val(&self, value: u32, dst: &mut WriteCursor<'_>) -> PduResult<()> {
         ensure_size!(in: dst, size: self.size_of_val());
@@ -552,6 +573,14 @@ impl ClosePdu {
         Self {
             header: Header::new(channel_id, 0, Cmd::Close),
             channel_id,
+        }
+    }
+
+    #[must_use]
+    pub fn with_cb_id_type(self, cb_id: FieldType) -> Self {
+        Self {
+            header: self.header.with_cb_id(cb_id),
+            ..self
         }
     }
 

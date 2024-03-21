@@ -1,9 +1,4 @@
 use super::*;
-use crate::Vec;
-use alloc::vec;
-use ironrdp_pdu::cursor::{ReadCursor, WriteCursor};
-use ironrdp_pdu::PduDecode;
-use lazy_static::lazy_static;
 
 const LENGTH: u32 = 0xC7B;
 const CHANNEL_ID: u32 = 0x03;
@@ -107,69 +102,53 @@ lazy_static! {
         result.extend(DATA);
         result
     };
-    static ref DECODED: DataFirstPdu = {
-        let mut res = DataFirstPdu::new(CHANNEL_ID, LENGTH, DATA.to_vec());
-        res.header.cb_id = FieldType::U8;
-        res.header.sp = FieldType::U16;
-        res
-    };
+    static ref DECODED_CLIENT: DrdynvcClientPdu = DrdynvcClientPdu::Data(DrdynvcDataPdu::DataFirst(
+        DataFirstPdu::new(CHANNEL_ID, LENGTH, DATA.to_vec())
+            .with_cb_id_type(FieldType::U8)
+            .with_sp_type(FieldType::U16)
+    ));
+    static ref DECODED_SERVER: DrdynvcServerPdu = DrdynvcServerPdu::Data(DrdynvcDataPdu::DataFirst(
+        DataFirstPdu::new(CHANNEL_ID, LENGTH, DATA.to_vec())
+            .with_cb_id_type(FieldType::U8)
+            .with_sp_type(FieldType::U16)
+    ));
     static ref EDGE_CASE_ENCODED: Vec<u8> = {
         let mut result = EDGE_CASE_PREFIX.to_vec();
         result.append(&mut EDGE_CASE_DATA.to_vec());
         result
     };
-    static ref EDGE_CASE_DECODED: DataFirstPdu = {
-        let mut res = DataFirstPdu::new(EDGE_CASE_CHANNEL_ID, EDGE_CASE_LENGTH, EDGE_CASE_DATA.to_vec());
-        res.header.cb_id = FieldType::U8;
-        res.header.sp = FieldType::U16;
-        res
-    };
+    static ref EDGE_CASE_DECODED_CLIENT: DrdynvcClientPdu = DrdynvcClientPdu::Data(DrdynvcDataPdu::DataFirst(
+        DataFirstPdu::new(EDGE_CASE_CHANNEL_ID, EDGE_CASE_LENGTH, EDGE_CASE_DATA.to_vec())
+            .with_cb_id_type(FieldType::U8)
+            .with_sp_type(FieldType::U16)
+    ));
+    static ref EDGE_CASE_DECODED_SERVER: DrdynvcServerPdu = DrdynvcServerPdu::Data(DrdynvcDataPdu::DataFirst(
+        DataFirstPdu::new(EDGE_CASE_CHANNEL_ID, EDGE_CASE_LENGTH, EDGE_CASE_DATA.to_vec())
+            .with_cb_id_type(FieldType::U8)
+            .with_sp_type(FieldType::U16)
+    ));
 }
 
 #[test]
 fn decodes_data_first() {
-    let mut src = ReadCursor::new(&ENCODED);
-    match DrdynvcClientPdu::decode(&mut src).unwrap() {
-        DrdynvcClientPdu::Data(DrdynvcDataPdu::DataFirst(df)) => assert_eq!(*DECODED, df),
-        _ => panic!("Expected DataFirst"),
-    }
-
-    let mut src = ReadCursor::new(&ENCODED);
-    match DrdynvcServerPdu::decode(&mut src).unwrap() {
-        DrdynvcServerPdu::Data(DrdynvcDataPdu::DataFirst(df)) => assert_eq!(*DECODED, df),
-        _ => panic!("Expected DataFirst"),
-    }
+    test_decodes(&ENCODED, &*DECODED_CLIENT);
+    test_decodes(&ENCODED, &*DECODED_SERVER);
 }
 
 #[test]
 fn encodes_data_first() {
-    let data_first = &*DECODED;
-    let mut buffer = vec![0x00; data_first.size()];
-    let mut cursor = WriteCursor::new(&mut buffer);
-    data_first.encode(&mut cursor).unwrap();
-    assert_eq!(ENCODED.as_slice(), buffer.as_slice());
+    test_encodes(&*DECODED_CLIENT, &ENCODED);
+    test_encodes(&*DECODED_SERVER, &ENCODED);
 }
 
 #[test]
 fn decodes_data_first_edge_case() {
-    let mut src = ReadCursor::new(&EDGE_CASE_ENCODED);
-    match DrdynvcClientPdu::decode(&mut src).unwrap() {
-        DrdynvcClientPdu::Data(DrdynvcDataPdu::DataFirst(df)) => assert_eq!(*EDGE_CASE_DECODED, df),
-        _ => panic!("Expected DataFirst"),
-    }
-
-    let mut src = ReadCursor::new(&EDGE_CASE_ENCODED);
-    match DrdynvcServerPdu::decode(&mut src).unwrap() {
-        DrdynvcServerPdu::Data(DrdynvcDataPdu::DataFirst(df)) => assert_eq!(*EDGE_CASE_DECODED, df),
-        _ => panic!("Expected DataFirst"),
-    }
+    test_decodes(&EDGE_CASE_ENCODED, &*EDGE_CASE_DECODED_CLIENT);
+    test_decodes(&EDGE_CASE_ENCODED, &*EDGE_CASE_DECODED_SERVER);
 }
 
 #[test]
 fn encodes_data_first_edge_case() {
-    let data_first = &*EDGE_CASE_DECODED;
-    let mut buffer = vec![0x00; data_first.size()];
-    let mut cursor = WriteCursor::new(&mut buffer);
-    data_first.encode(&mut cursor).unwrap();
-    assert_eq!(EDGE_CASE_ENCODED.as_slice(), buffer.as_slice());
+    test_encodes(&*EDGE_CASE_DECODED_CLIENT, &EDGE_CASE_ENCODED);
+    test_encodes(&*EDGE_CASE_DECODED_SERVER, &EDGE_CASE_ENCODED);
 }
