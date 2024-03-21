@@ -54,7 +54,7 @@ impl dvc::DvcProcessor for AInputHandler {
         ironrdp_ainput::CHANNEL_NAME
     }
 
-    fn start(&mut self, _channel_id: u32) -> PduResult<dvc::DvcMessages> {
+    fn start(&mut self, _channel_id: u32) -> PduResult<Vec<dvc::DvcMessage>> {
         use ironrdp_ainput::{ServerPdu, VersionPdu};
 
         let pdu = ServerPdu::Version(VersionPdu::default());
@@ -64,7 +64,7 @@ impl dvc::DvcProcessor for AInputHandler {
 
     fn close(&mut self, _channel_id: u32) {}
 
-    fn process(&mut self, _channel_id: u32, payload: &[u8]) -> PduResult<dvc::DvcMessages> {
+    fn process(&mut self, _channel_id: u32, payload: &[u8]) -> PduResult<Vec<dvc::DvcMessage>> {
         use ironrdp_ainput::ClientPdu;
 
         match decode(payload)? {

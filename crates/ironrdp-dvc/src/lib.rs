@@ -1,7 +1,4 @@
 #![cfg_attr(not(feature = "std"), no_std)]
-#![allow(unused)] // FIXME(#61): remove this annotation
-
-// TODO: this crate is WIP
 
 use crate::alloc::borrow::ToOwned;
 #[macro_use]
@@ -17,13 +14,11 @@ use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::vec;
 use alloc::vec::Vec;
-
 // Re-export ironrdp_pdu crate for convenience
 #[rustfmt::skip] // do not re-order this pub use
 pub use ironrdp_pdu;
-use ironrdp_pdu::write_buf::WriteBuf;
-use ironrdp_pdu::{assert_obj_safe, cast_length, custom_err, encode_vec, ensure_size, other_err, PduEncode, PduResult};
-use ironrdp_svc::{self, impl_as_any, AsAny, SvcMessage};
+use ironrdp_pdu::{assert_obj_safe, cast_length, encode_vec, other_err, PduEncode, PduResult};
+use ironrdp_svc::{self, AsAny, SvcMessage};
 
 mod complete_data;
 use complete_data::CompleteData;
@@ -41,7 +36,6 @@ pub mod pdu;
 /// (being split into multiple of such PDUs if necessary).
 pub trait DvcPduEncode: PduEncode + Send {}
 pub type DvcMessage = Box<dyn DvcPduEncode>;
-pub type DvcMessages = Vec<DvcMessage>;
 
 /// We implement `DvcPduEncode` for `Vec<u8>` for legacy reasons.
 impl DvcPduEncode for Vec<u8> {}
@@ -58,11 +52,11 @@ pub trait DvcProcessor: AsAny + Send + Sync {
 
     /// Returns any messages that should be sent immediately
     /// upon the channel being created.
-    fn start(&mut self, channel_id: u32) -> PduResult<DvcMessages>;
+    fn start(&mut self, channel_id: u32) -> PduResult<Vec<DvcMessage>>;
 
-    fn process(&mut self, channel_id: u32, payload: &[u8]) -> PduResult<DvcMessages>;
+    fn process(&mut self, channel_id: u32, payload: &[u8]) -> PduResult<Vec<DvcMessage>>;
 
-    fn close(&mut self, channel_id: u32) {}
+    fn close(&mut self, _channel_id: u32) {}
 }
 
 assert_obj_safe!(DvcProcessor);
@@ -71,7 +65,7 @@ const DATA_MAX_SIZE: usize = 1590;
 
 pub fn encode_dvc_messages(
     channel_id: u32,
-    messages: DvcMessages,
+    messages: Vec<DvcMessage>,
     flags: Option<ironrdp_svc::ChannelFlags>,
 ) -> PduResult<Vec<SvcMessage>> {
     let mut res = Vec::new();
@@ -125,11 +119,11 @@ impl DynamicVirtualChannel {
         }
     }
 
-    fn start(&mut self, channel_id: DynamicChannelId) -> PduResult<DvcMessages> {
+    fn start(&mut self, channel_id: DynamicChannelId) -> PduResult<Vec<DvcMessage>> {
         self.channel_processor.start(channel_id)
     }
 
-    fn process(&mut self, pdu: DrdynvcDataPdu) -> PduResult<DvcMessages> {
+    fn process(&mut self, pdu: DrdynvcDataPdu) -> PduResult<Vec<DvcMessage>> {
         let channel_id = pdu.channel_id();
         let complete_data = self.complete_data.process_data(pdu)?;
         if let Some(complete_data) = complete_data {
@@ -145,10 +139,6 @@ impl DynamicVirtualChannel {
 
     fn channel_processor_downcast_ref<T: DvcProcessor>(&self) -> Option<&T> {
         self.channel_processor.as_any().downcast_ref()
-    }
-
-    fn channel_processor_downcast_mut<T: DvcProcessor>(&mut self) -> Option<&mut T> {
-        self.channel_processor.as_any_mut().downcast_mut()
     }
 }
 
@@ -177,7 +167,6 @@ impl DynamicChannelSet {
     }
 
     pub fn attach_channel_id(&mut self, name: DynamicChannelName, id: DynamicChannelId) -> Option<DynamicChannelId> {
-        let channel = self.get_by_channel_name_mut(&name)?;
         self.channel_id_to_name.insert(id, name.clone());
         self.name_to_channel_id.insert(name, id)
     }
@@ -196,10 +185,6 @@ impl DynamicChannelSet {
 
     pub fn get_by_channel_name_mut(&mut self, name: &DynamicChannelName) -> Option<&mut DynamicVirtualChannel> {
         self.channels.get_mut(name)
-    }
-
-    pub fn get_by_channel_id(&self, id: &DynamicChannelId) -> Option<&DynamicVirtualChannel> {
-        self.channel_id_to_name.get(id).and_then(|name| self.channels.get(name))
     }
 
     pub fn get_by_channel_id_mut(&mut self, id: &DynamicChannelId) -> Option<&mut DynamicVirtualChannel> {

@@ -1,4 +1,4 @@
-use ironrdp_dvc::{DvcMessages, DvcProcessor, DvcServerProcessor};
+use ironrdp_dvc::{DvcMessage, DvcProcessor, DvcServerProcessor};
 use ironrdp_pdu::{decode, PduResult};
 use ironrdp_svc::impl_as_any;
 use tracing::debug;
@@ -18,13 +18,13 @@ impl DvcProcessor for DisplayControlServer {
         CHANNEL_NAME
     }
 
-    fn start(&mut self, _channel_id: u32) -> PduResult<DvcMessages> {
+    fn start(&mut self, _channel_id: u32) -> PduResult<Vec<DvcMessage>> {
         let pdu: DisplayControlPdu = DisplayControlCapabilities::new(1, 3840, 2400)?.into();
 
         Ok(vec![Box::new(pdu)])
     }
 
-    fn process(&mut self, _channel_id: u32, payload: &[u8]) -> PduResult<DvcMessages> {
+    fn process(&mut self, _channel_id: u32, payload: &[u8]) -> PduResult<Vec<DvcMessage>> {
         match decode(payload)? {
             DisplayControlPdu::MonitorLayout(layout) => {
                 debug!(?layout);

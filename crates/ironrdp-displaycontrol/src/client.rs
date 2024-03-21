@@ -2,7 +2,7 @@ use crate::{
     pdu::{DisplayControlMonitorLayout, DisplayControlPdu, MonitorLayoutEntry},
     CHANNEL_NAME,
 };
-use ironrdp_dvc::{encode_dvc_messages, DvcClientProcessor, DvcMessages, DvcProcessor};
+use ironrdp_dvc::{encode_dvc_messages, DvcClientProcessor, DvcMessage, DvcProcessor};
 use ironrdp_pdu::PduResult;
 use ironrdp_svc::{impl_as_any, SvcMessage};
 use tracing::debug;
@@ -17,11 +17,11 @@ impl DvcProcessor for DisplayControlClient {
         CHANNEL_NAME
     }
 
-    fn start(&mut self, _channel_id: u32) -> PduResult<DvcMessages> {
+    fn start(&mut self, _channel_id: u32) -> PduResult<Vec<DvcMessage>> {
         Ok(Vec::new())
     }
 
-    fn process(&mut self, _channel_id: u32, payload: &[u8]) -> PduResult<DvcMessages> {
+    fn process(&mut self, _channel_id: u32, payload: &[u8]) -> PduResult<Vec<DvcMessage>> {
         // TODO: We can parse the payload here for completeness sake,
         // in practice we don't need to do anything with the payload.
         debug!("Got Display PDU of length: {}", payload.len());

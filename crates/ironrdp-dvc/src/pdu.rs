@@ -6,7 +6,7 @@ use alloc::format;
 use ironrdp_pdu::{
     cast_length,
     cursor::{ReadCursor, WriteCursor},
-    ensure_fixed_part_size, ensure_size, invalid_message_err, unexpected_message_type_err, unsupported_pdu_err,
+    ensure_size, invalid_message_err, unsupported_pdu_err,
     utils::{encoded_str_len, read_string_from_cursor, write_string_to_cursor, CharacterSet},
     PduDecode, PduEncode, PduError, PduResult,
 };
@@ -685,7 +685,7 @@ impl CapabilitiesRequestPdu {
         match self {
             CapabilitiesRequestPdu::V1 { header }
             | CapabilitiesRequestPdu::V2 { header, .. }
-            | CapabilitiesRequestPdu::V3 { header, .. } => header.encode(dst),
+            | CapabilitiesRequestPdu::V3 { header, .. } => header.encode(dst)?,
         };
         dst.write_u8(0x00); // Pad, MUST be 0x00
         match self {
@@ -706,7 +706,7 @@ impl CapabilitiesRequestPdu {
 
     fn size(&self) -> usize {
         match self {
-            Self::V1 { header } => Self::FIXED_PART_SIZE,
+            Self::V1 { .. } => Self::FIXED_PART_SIZE,
             _ => Self::FIXED_PART_SIZE + Self::PRIORITY_CHARGES_SIZE,
         }
     }
@@ -754,7 +754,7 @@ impl CreateRequestPdu {
         ensure_size!(in: dst, size: self.size());
         self.header.encode(dst)?;
         self.header.cb_id.encode_val(self.channel_id, dst)?;
-        write_string_to_cursor(dst, &self.channel_name, CharacterSet::Ansi, true);
+        write_string_to_cursor(dst, &self.channel_name, CharacterSet::Ansi, true)?;
         Ok(())
     }
 
