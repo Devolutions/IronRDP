@@ -46,23 +46,3 @@ fn encodes_create_response() {
     data.encode(&mut cursor).unwrap();
     assert_eq!(RESP_ENCODED.as_slice(), buffer.as_slice());
 }
-
-// #[test]
-// fn to_buffer_correct_serializes_dvc_create_response_pdu() {
-//     let create_response = DVC_CREATE_RESPONSE.clone();
-
-//     let mut buffer = Vec::new();
-//     create_response.to_buffer(&mut buffer).unwrap();
-
-//     assert_eq!(RESP_ENCODED.as_ref(), buffer.as_slice());
-// }
-
-// #[test]
-// fn buffer_length_is_correct_for_dvc_create_response_pdu() {
-//     let create_response = DVC_CREATE_RESPONSE.clone();
-//     let expected_buf_len = RESP_ENCODED.len();
-
-//     let len = create_response.buffer_length();
-
-//     assert_eq!(expected_buf_len, len);
-// }
