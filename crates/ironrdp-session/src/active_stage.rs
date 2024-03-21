@@ -149,6 +149,10 @@ impl ActiveStage {
         Ok(stage_outputs)
     }
 
+    pub fn set_fastpath_processor(&mut self, processor: fast_path::Processor) {
+        self.fast_path_processor = processor;
+    }
+
     /// Encodes client-side graceful shutdown request. Note that upon sending this request,
     /// client should wait for server's ShutdownDenied PDU before closing the connection.
     ///
