@@ -343,7 +343,7 @@ impl DataFirstPdu {
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
-pub struct FieldType(u8);
+struct FieldType(u8);
 
 impl FieldType {
     pub const U8: Self = Self(0x00);
