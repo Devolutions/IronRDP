@@ -51,15 +51,20 @@ ironrdp-tls = { version = "0.1", path = "crates/ironrdp-tls" }
 ironrdp-tokio = { version = "0.1", path = "crates/ironrdp-tokio" }
 ironrdp = { version = "0.5", path = "crates/ironrdp" }
 
+bitflags = "2.4"
 expect-test = "1"
+png = "0.17"
 proptest = "1.4"
 rstest = "0.18"
 sspi = "0.11"
 tracing = { version = "0.1", features = ["log"] }
 thiserror = "1.0"
-png = "0.17"
-bitflags = "2.4"
+
+# Note: we are trying to move away from using these crates.
+# They are being kept around for now for legacy compatibility,
+# but new usage should be avoided.
 byteorder = "1.5"
+lazy_static = "1.4" # prefer https://doc.rust-lang.org/std/sync/struct.OnceLock.html
 num-derive = "0.4"
 num-traits = "0.2"
 

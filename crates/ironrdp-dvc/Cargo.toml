@@ -26,4 +26,4 @@ tracing.workspace = true
 slab = "0.4.9"
 
 [dev-dependencies]
-lazy_static = "1.4"
+lazy_static.workspace = true # TODO: remove
