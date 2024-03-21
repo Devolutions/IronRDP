@@ -33,6 +33,7 @@ impl ConnectionActivationSequence {
         }
     }
 
+    #[must_use]
     pub fn reset_clone(&self) -> Self {
         self.clone().reset()
     }

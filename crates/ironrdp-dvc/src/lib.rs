@@ -161,12 +161,12 @@ impl DynamicChannelSet {
         self.channels.insert(name, DynamicVirtualChannel::new(channel))
     }
 
-    pub fn attach_channel_id(&mut self, name: DynamicChannelName, id: DynamicChannelId) -> Option<DynamicChannelId> {
+    fn attach_channel_id(&mut self, name: DynamicChannelName, id: DynamicChannelId) -> Option<DynamicChannelId> {
         self.channel_id_to_name.insert(id, name.clone());
         self.name_to_channel_id.insert(name, id)
     }
 
-    pub fn get_by_type_id(&self, type_id: TypeId) -> Option<(&DynamicVirtualChannel, Option<DynamicChannelId>)> {
+    fn get_by_type_id(&self, type_id: TypeId) -> Option<(&DynamicVirtualChannel, Option<DynamicChannelId>)> {
         self.type_id_to_name.get(&type_id).and_then(|name| {
             self.channels
                 .get(name)
@@ -174,21 +174,21 @@ impl DynamicChannelSet {
         })
     }
 
-    pub fn get_by_channel_name(&self, name: &DynamicChannelName) -> Option<&DynamicVirtualChannel> {
+    fn get_by_channel_name(&self, name: &DynamicChannelName) -> Option<&DynamicVirtualChannel> {
         self.channels.get(name)
     }
 
-    pub fn get_by_channel_name_mut(&mut self, name: &DynamicChannelName) -> Option<&mut DynamicVirtualChannel> {
+    fn get_by_channel_name_mut(&mut self, name: &DynamicChannelName) -> Option<&mut DynamicVirtualChannel> {
         self.channels.get_mut(name)
     }
 
-    pub fn get_by_channel_id_mut(&mut self, id: &DynamicChannelId) -> Option<&mut DynamicVirtualChannel> {
+    fn get_by_channel_id_mut(&mut self, id: &DynamicChannelId) -> Option<&mut DynamicVirtualChannel> {
         self.channel_id_to_name
             .get(id)
             .and_then(|name| self.channels.get_mut(name))
     }
 
-    pub fn remove_by_channel_id(&mut self, id: &DynamicChannelId) -> Option<DynamicChannelId> {
+    fn remove_by_channel_id(&mut self, id: &DynamicChannelId) -> Option<DynamicChannelId> {
         if let Some(name) = self.channel_id_to_name.remove(id) {
             return self.name_to_channel_id.remove(&name);
             // Channels are retained in the `self.channels` and `self.type_id_to_name` map to allow potential
@@ -198,7 +198,7 @@ impl DynamicChannelSet {
     }
 
     #[inline]
-    pub fn values(&self) -> impl Iterator<Item = &DynamicVirtualChannel> {
+    fn values(&self) -> impl Iterator<Item = &DynamicVirtualChannel> {
         self.channels.values()
     }
 }

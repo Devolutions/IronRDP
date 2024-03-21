@@ -428,6 +428,7 @@ mod legacy {
         InvalidActionCode(u8),
     }
 
+    #[cfg(feature = "std")]
     impl ironrdp_error::legacy::CatchAllKind for crate::PduErrorKind {
         const CATCH_ALL_VALUE: Self = crate::PduErrorKind::Custom;
     }

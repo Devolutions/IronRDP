@@ -110,7 +110,7 @@ impl SvcProcessor for DrdynvcClient {
             }
             DrdynvcServerPdu::Create(create_request) => {
                 debug!("Got DVC Create Request PDU: {create_request:?}");
-                let channel_name = create_request.channel_name.clone();
+                let channel_name = create_request.channel_name;
                 let channel_id = create_request.channel_id;
 
                 if !self.cap_handshake_done {

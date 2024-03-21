@@ -9,7 +9,10 @@ use ironrdp_pdu::{
     cast_length,
     cursor::{ReadCursor, WriteCursor},
     ensure_fixed_part_size, ensure_size, invalid_message_err, unsupported_pdu_err,
-    utils::{encoded_str_len, read_string_from_cursor, write_string_to_cursor, CharacterSet},
+    utils::{
+        checked_sum, checked_sum_or_panic, encoded_str_len, read_string_from_cursor, write_string_to_cursor,
+        CharacterSet,
+    },
     PduDecode, PduEncode, PduError, PduResult,
 };
 use ironrdp_svc::SvcPduEncode;
@@ -43,8 +46,8 @@ impl PduEncode for DrdynvcDataPdu {
 
     fn name(&self) -> &'static str {
         match self {
-            DrdynvcDataPdu::DataFirst(pdu) => pdu.name(),
-            DrdynvcDataPdu::Data(pdu) => pdu.name(),
+            DrdynvcDataPdu::DataFirst(_) => DataFirstPdu::name(),
+            DrdynvcDataPdu::Data(_) => DataPdu::name(),
         }
     }
 
@@ -77,16 +80,16 @@ impl PduEncode for DrdynvcClientPdu {
 
     fn name(&self) -> &'static str {
         match self {
-            DrdynvcClientPdu::Capabilities(pdu) => pdu.name(),
-            DrdynvcClientPdu::Create(pdu) => pdu.name(),
+            DrdynvcClientPdu::Capabilities(_) => CapabilitiesResponsePdu::name(),
+            DrdynvcClientPdu::Create(_) => CreateResponsePdu::name(),
             DrdynvcClientPdu::Data(pdu) => pdu.name(),
-            DrdynvcClientPdu::Close(pdu) => pdu.name(),
+            DrdynvcClientPdu::Close(_) => ClosePdu::name(),
         }
     }
 
     fn size(&self) -> usize {
         match self {
-            DrdynvcClientPdu::Capabilities(pdu) => pdu.size(),
+            DrdynvcClientPdu::Capabilities(_) => CapabilitiesResponsePdu::size(),
             DrdynvcClientPdu::Create(pdu) => pdu.size(),
             DrdynvcClientPdu::Data(pdu) => pdu.size(),
             DrdynvcClientPdu::Close(pdu) => pdu.size(),
@@ -133,8 +136,8 @@ impl PduEncode for DrdynvcServerPdu {
         match self {
             DrdynvcServerPdu::Data(pdu) => pdu.name(),
             DrdynvcServerPdu::Capabilities(pdu) => pdu.name(),
-            DrdynvcServerPdu::Create(pdu) => pdu.name(),
-            DrdynvcServerPdu::Close(pdu) => pdu.name(),
+            DrdynvcServerPdu::Create(_) => CreateRequestPdu::name(),
+            DrdynvcServerPdu::Close(_) => ClosePdu::name(),
         }
     }
 
@@ -301,7 +304,8 @@ impl DataFirstPdu {
     }
 
     fn decode(header: Header, src: &mut ReadCursor<'_>) -> PduResult<Self> {
-        ensure_size!(in: src, size: header.cb_id.size_of_val() + header.sp.size_of_val());
+        let fixed_part_size = checked_sum(&[header.cb_id.size_of_val(), header.sp.size_of_val()])?;
+        ensure_size!(in: src, size: fixed_part_size);
         let channel_id = header.cb_id.decode_val(src)?;
         let length = header.sp.decode_val(src)?;
         let data = src.read_remaining().to_vec();
@@ -324,15 +328,17 @@ impl DataFirstPdu {
         Ok(())
     }
 
-    fn name(&self) -> &'static str {
+    fn name() -> &'static str {
         "DYNVC_DATA_FIRST"
     }
 
     fn size(&self) -> usize {
-        Header::size() +
-        self.header.cb_id.size_of_val() + // ChannelId
-        self.header.sp.size_of_val() + // Length
-        self.data.len() // Data
+        checked_sum_or_panic(&[
+            Header::size(),
+            self.header.cb_id.size_of_val(),
+            self.header.sp.size_of_val(),
+            self.data.len(),
+        ])
     }
 }
 
@@ -358,8 +364,8 @@ impl FieldType {
     fn decode_val(&self, src: &mut ReadCursor<'_>) -> PduResult<u32> {
         ensure_size!(in: src, size: self.size_of_val());
         match *self {
-            FieldType::U8 => Ok(src.read_u8() as u32),
-            FieldType::U16 => Ok(src.read_u16() as u32),
+            FieldType::U8 => Ok(u32::from(src.read_u8())),
+            FieldType::U16 => Ok(u32::from(src.read_u16())),
             FieldType::U32 => Ok(src.read_u32()),
             _ => Err(invalid_message_err!("FieldType", "invalid field type")),
         }
@@ -376,9 +382,9 @@ impl FieldType {
     }
 
     fn for_val(value: u32) -> Self {
-        if value <= u8::MAX as u32 {
+        if u8::try_from(value).is_ok() {
             FieldType::U8
-        } else if value <= u16::MAX as u32 {
+        } else if u16::try_from(value).is_ok() {
             FieldType::U16
         } else {
             FieldType::U32
@@ -441,14 +447,16 @@ impl DataPdu {
         Ok(())
     }
 
-    fn name(&self) -> &'static str {
+    fn name() -> &'static str {
         "DYNVC_DATA"
     }
 
     fn size(&self) -> usize {
-        Header::size() +
-        self.header.cb_id.size_of_val() + // ChannelId
-        self.data.len() // Data
+        checked_sum_or_panic(&[
+            Header::size(),
+            self.header.cb_id.size_of_val(), // ChannelId
+            self.data.len(),                 // Data
+        ])
     }
 }
 
@@ -471,12 +479,12 @@ impl CreateResponsePdu {
         }
     }
 
-    fn name(&self) -> &'static str {
+    fn name() -> &'static str {
         "DYNVC_CREATE_RSP"
     }
 
     fn decode(header: Header, src: &mut ReadCursor<'_>) -> PduResult<Self> {
-        ensure_size!(in: src, size: header.cb_id.size_of_val() + CreationStatus::size());
+        ensure_size!(in: src, size: Self::headerless_size(&header));
         let channel_id = header.cb_id.decode_val(src)?;
         let creation_status = CreationStatus(src.read_u32());
         Ok(Self {
@@ -494,10 +502,15 @@ impl CreateResponsePdu {
         Ok(())
     }
 
+    fn headerless_size(header: &Header) -> usize {
+        checked_sum_or_panic(&[
+            header.cb_id.size_of_val(), // ChannelId
+            CreationStatus::size(),     // CreationStatus
+        ])
+    }
+
     fn size(&self) -> usize {
-        Header::size() +
-        self.header.cb_id.size_of_val() + // ChannelId
-        CreationStatus::size() // CreationStatus
+        checked_sum_or_panic(&[Header::size(), Self::headerless_size(&self.header)])
     }
 }
 
@@ -543,6 +556,7 @@ impl ClosePdu {
     }
 
     fn decode(header: Header, src: &mut ReadCursor<'_>) -> PduResult<Self> {
+        ensure_size!(in: src, size: Self::headerless_size(&header));
         let channel_id = header.cb_id.decode_val(src)?;
         Ok(Self { header, channel_id })
     }
@@ -554,12 +568,16 @@ impl ClosePdu {
         Ok(())
     }
 
-    fn name(&self) -> &'static str {
+    fn name() -> &'static str {
         "DYNVC_CLOSE"
     }
 
+    fn headerless_size(header: &Header) -> usize {
+        header.cb_id.size_of_val()
+    }
+
     fn size(&self) -> usize {
-        Header::size() + self.header.cb_id.size_of_val()
+        checked_sum_or_panic(&[Header::size(), Self::headerless_size(&self.header)])
     }
 }
 
@@ -573,6 +591,9 @@ pub struct CapabilitiesResponsePdu {
 }
 
 impl CapabilitiesResponsePdu {
+    const HEADERLESS_FIXED_PART_SIZE: usize = 1 /* Pad */ + CapsVersion::FIXED_PART_SIZE /* Version */;
+    const FIXED_PART_SIZE: usize = Header::FIXED_PART_SIZE + Self::HEADERLESS_FIXED_PART_SIZE;
+
     pub fn new(version: CapsVersion) -> Self {
         Self {
             header: Header::new(0, 0, Cmd::Capability),
@@ -581,30 +602,26 @@ impl CapabilitiesResponsePdu {
     }
 
     fn decode(header: Header, src: &mut ReadCursor<'_>) -> PduResult<Self> {
-        ensure_size!(in: src, size: Self::headerless_size());
+        ensure_size!(in: src, size: Self::HEADERLESS_FIXED_PART_SIZE);
         let _pad = src.read_u8();
         let version = CapsVersion::try_from(src.read_u16())?;
         Ok(Self { header, version })
     }
 
     fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
-        ensure_size!(in: dst, size: self.size());
+        ensure_size!(in: dst, size: Self::size());
         self.header.encode(dst)?;
         dst.write_u8(0x00); // Pad, MUST be 0x00
         self.version.encode(dst)?;
         Ok(())
     }
 
-    fn name(&self) -> &'static str {
+    fn name() -> &'static str {
         "DYNVC_CAPS_RSP"
     }
 
-    fn headerless_size() -> usize {
-        1 /* Pad */ + CapsVersion::size()
-    }
-
-    fn size(&self) -> usize {
-        Header::size() + Self::headerless_size()
+    fn size() -> usize {
+        Self::FIXED_PART_SIZE
     }
 }
 
@@ -617,6 +634,8 @@ pub enum CapsVersion {
 }
 
 impl CapsVersion {
+    const FIXED_PART_SIZE: usize = 2;
+
     fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
         ensure_size!(in: dst, size: Self::size());
         dst.write_u16(*self as u16);
@@ -624,7 +643,7 @@ impl CapsVersion {
     }
 
     fn size() -> usize {
-        2
+        Self::FIXED_PART_SIZE
     }
 }
 
@@ -765,7 +784,7 @@ impl CreateRequestPdu {
     }
 
     fn decode(header: Header, src: &mut ReadCursor<'_>) -> PduResult<Self> {
-        ensure_size!(in: src, size: header.cb_id.size_of_val());
+        ensure_size!(in: src, size: Self::headerless_fixed_part_size(&header));
         let channel_id = header.cb_id.decode_val(src)?;
         let channel_name = read_string_from_cursor(src, CharacterSet::Ansi, true)?;
         Ok(Self {
@@ -783,13 +802,19 @@ impl CreateRequestPdu {
         Ok(())
     }
 
-    fn name(&self) -> &'static str {
+    fn name() -> &'static str {
         "DYNVC_CREATE_REQ"
     }
 
+    fn headerless_fixed_part_size(header: &Header) -> usize {
+        header.cb_id.size_of_val() // ChannelId
+    }
+
     fn size(&self) -> usize {
-        Header::size() +
-        self.header.cb_id.size_of_val() + // ChannelId
-        encoded_str_len(&self.channel_name, CharacterSet::Ansi, true) // ChannelName + Null terminator
+        checked_sum_or_panic(&[
+            Header::size(),
+            Self::headerless_fixed_part_size(&self.header), // ChannelId
+            encoded_str_len(&self.channel_name, CharacterSet::Ansi, true), // ChannelName + Null terminator
+        ])
     }
 }

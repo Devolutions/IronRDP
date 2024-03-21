@@ -61,7 +61,7 @@ fn decodes_response_v1() {
 #[test]
 fn encodes_response_v1() {
     let data = &*RESP_V1_DECODED;
-    let mut buffer = vec![0x00; data.size()];
+    let mut buffer = vec![0x00; CapabilitiesResponsePdu::size()];
     let mut cursor = WriteCursor::new(&mut buffer);
     data.encode(&mut cursor).unwrap();
     assert_eq!(RESP_V1_ENCODED.as_ref(), buffer.as_slice());

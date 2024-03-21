@@ -1780,7 +1780,6 @@ dependencies = [
 name = "ironrdp-dvc"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.4.2",
  "ironrdp-pdu",
  "ironrdp-svc",
  "lazy_static",
@@ -1920,7 +1919,6 @@ dependencies = [
 name = "ironrdp-session"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.4.2",
  "ironrdp-connector",
  "ironrdp-dvc",
  "ironrdp-error",
