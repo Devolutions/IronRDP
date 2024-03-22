@@ -630,6 +630,7 @@ impl Session {
                                 pointer_software_rendering,
                             } = connection_activation.state
                             {
+                                debug!("Deactivation-Reactivation Sequence completed");
                                 // Reset the image we decode fastpath frames into with
                                 // potentially updated session size.
                                 //
