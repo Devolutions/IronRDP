@@ -611,7 +611,7 @@ impl Session {
                         // https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/dfc234ce-481a-4674-9a5d-2a7bafb14432
                         debug!("Received Server Deactivate All PDU, executing Deactivation-Reactivation Sequence");
                         let mut buf = WriteBuf::new();
-                        loop {
+                        'activation_seq: loop {
                             let written =
                                 single_connect_step_read(&mut framed, &mut connection_activation, &mut buf).await?;
 
@@ -649,6 +649,7 @@ impl Session {
                                     }
                                     .build(),
                                 );
+                                break 'activation_seq;
                             }
                         }
                     }
