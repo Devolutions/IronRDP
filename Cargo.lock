@@ -859,6 +859,39 @@ dependencies = [
 ]
 
 [[package]]
+name = "diplomat"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a31672b3ebc3c7866c3c98726f7a9a5ac8f13962e77d3c8225f6be49a7b8c5f2"
+dependencies = [
+ "diplomat_core",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.48",
+]
+
+[[package]]
+name = "diplomat-runtime"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f7b0f23d549a46540e26e5490cd44c64ced0d762959f1ffdec6ab0399634cf3c"
+
+[[package]]
+name = "diplomat_core"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bfaa5e13e8b8735d2338f2836c06cd8643902ab87dda1dd07dbb351998ddc127"
+dependencies = [
+ "lazy_static",
+ "proc-macro2",
+ "quote",
+ "serde",
+ "smallvec",
+ "strck_ident",
+ "syn 2.0.48",
+]
+
+[[package]]
 name = "dispatch"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1071,6 +1104,16 @@ checksum = "ded41244b729663b1e574f1b4fb731469f69f79c17667b5d776b16cda0479449"
 dependencies = [
  "rand_core",
  "subtle",
+]
+
+[[package]]
+name = "ffi"
+version = "0.1.0"
+dependencies = [
+ "diplomat",
+ "diplomat-runtime",
+ "ironrdp",
+ "tracing",
 ]
 
 [[package]]
@@ -3756,6 +3799,22 @@ dependencies = [
  "windows-sys 0.48.0",
  "winreg 0.51.0",
  "zeroize",
+]
+
+[[package]]
+name = "strck"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "be91090ded9d8f979d9fe921777342d37e769e0b6b7296843a7a38247240e917"
+
+[[package]]
+name = "strck_ident"
+version = "0.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e1c3802b169b3858a44667f221c9a0b3136e6019936ea926fc97fbad8af77202"
+dependencies = [
+ "strck",
+ "unicode-ident",
 ]
 
 [[package]]
