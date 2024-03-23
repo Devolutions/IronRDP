@@ -171,6 +171,7 @@ impl<'de> PduDecode<'de> for ServerSecurityData {
                 ));
             }
 
+            ensure_size!(in: src, size: SERVER_RANDOM_LEN);
             let server_random = src.read_array();
 
             ensure_size!(in: src, size: server_cert_len);
