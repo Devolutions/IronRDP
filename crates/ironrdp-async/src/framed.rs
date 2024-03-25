@@ -1,7 +1,8 @@
 use std::io;
 
 use bytes::{Bytes, BytesMut};
-use ironrdp_pdu::PduHint;
+use ironrdp_connector::{ConnectorResult, Sequence, Written};
+use ironrdp_pdu::{write_buf::WriteBuf, PduHint};
 
 // TODO: investigate if we could use static async fn / return position impl trait in traits when stabilized:
 // https://github.com/rust-lang/rust/issues/91611
@@ -212,4 +213,68 @@ where
     pub async fn write_all(&mut self, buf: &[u8]) -> io::Result<()> {
         self.stream.write_all(buf).await
     }
+}
+
+pub async fn single_sequence_step<S>(
+    framed: &mut Framed<S>,
+    sequence: &mut dyn Sequence,
+    buf: &mut WriteBuf,
+) -> ConnectorResult<()>
+where
+    S: FramedWrite + FramedRead,
+{
+    buf.clear();
+    let written = single_sequence_step_read(framed, sequence, buf).await?;
+    single_sequence_step_write(framed, buf, written).await
+}
+
+pub async fn single_sequence_step_read<S>(
+    framed: &mut Framed<S>,
+    sequence: &mut dyn Sequence,
+    buf: &mut WriteBuf,
+) -> ConnectorResult<Written>
+where
+    S: FramedRead,
+{
+    buf.clear();
+
+    if let Some(next_pdu_hint) = sequence.next_pdu_hint() {
+        debug!(
+            connector.state = sequence.state().name(),
+            hint = ?next_pdu_hint,
+            "Wait for PDU"
+        );
+
+        let pdu = framed
+            .read_by_hint(next_pdu_hint)
+            .await
+            .map_err(|e| ironrdp_connector::custom_err!("read frame by hint", e))?;
+
+        trace!(length = pdu.len(), "PDU received");
+
+        sequence.step(&pdu, buf)
+    } else {
+        sequence.step_no_input(buf)
+    }
+}
+
+async fn single_sequence_step_write<S>(
+    framed: &mut Framed<S>,
+    buf: &mut WriteBuf,
+    written: Written,
+) -> ConnectorResult<()>
+where
+    S: FramedWrite,
+{
+    if let Some(response_len) = written.size() {
+        debug_assert_eq!(buf.filled_len(), response_len);
+        let response = buf.filled();
+        trace!(response_len, "Send response");
+        framed
+            .write_all(response)
+            .await
+            .map_err(|e| ironrdp_connector::custom_err!("write all", e))?;
+    }
+
+    Ok(())
 }
