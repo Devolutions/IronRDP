@@ -386,6 +386,10 @@ pub struct Session {
 
 #[wasm_bindgen]
 impl Session {
+    // #[allow(unused_assignments)] is required here in order to silence a false
+    // positive about an unused assignment below, which is actually used. Search
+    // for "unused_assignments" in a comment in this function to find the specific
+    // assignment that is being falsely reported as unused.
     #[allow(unused_assignments)]
     pub async fn run(&self) -> Result<SessionTerminationInfo, IronRdpError> {
         let rdp_reader = self
