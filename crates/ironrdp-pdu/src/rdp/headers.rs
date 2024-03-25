@@ -518,7 +518,7 @@ bitflags! {
 ///
 /// [2.2.3.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/8a29971a-df3c-48da-add2-8ed9a05edc89
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ServerDeactivateAll {}
+pub struct ServerDeactivateAll;
 
 impl ServerDeactivateAll {
     const FIXED_PART_SIZE: usize = 2 /* length_source_descriptor */ + 1 /* source_descriptor */;
