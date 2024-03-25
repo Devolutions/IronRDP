@@ -1,5 +1,5 @@
 
-defalt: bindings
+default: bindings
 
 dotnet_generated_path := "./dotnet/Devolutions.IronRdp/Generated/"
 dotnet_diplomat_config := "./dotnet-interop-conf.toml"
@@ -7,7 +7,7 @@ dotnet_diplomat_config := "./dotnet-interop-conf.toml"
 dotnet_dll_name := "DevolutionsIronRdp.dll"
 rust_built_dll_name := "ironrdp.dll"
 
-rust_build_result_diretory := "../target/debug/"
+rust_build_result_directory := "../target/debug/"
 
 bindings:
     -rm {{dotnet_generated_path}}*.cs
@@ -16,4 +16,4 @@ bindings:
 
 build-dll:
     cargo build
-    cp {{rust_build_result_diretory}}{{rust_built_dll_name}} {{rust_build_result_diretory}}{{dotnet_dll_name}}
+    cp {{rust_build_result_directory}}{{rust_built_dll_name}} {{rust_build_result_directory}}{{dotnet_dll_name}}

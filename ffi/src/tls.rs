@@ -61,7 +61,7 @@ pub mod ffi {
     }
 }
 
-/// Copy and pased this code from the screenshot example, this is temporary and should be replaced with something more configurable
+/// Copy and parsed this code from the screenshot example, this is temporary and should be replaced with something more configurable
 /// Need to put more thought into this
 /// FIXME/TODO, Implement better TLS FFI interface
 fn tls_upgrade(
