@@ -29,6 +29,18 @@ public partial class Config: IDisposable
         _inner = handle;
     }
 
+    /// <returns>
+    /// A <c>ConfigBuilder</c> allocated on Rust side.
+    /// </returns>
+    public static ConfigBuilder GetBuilder()
+    {
+        unsafe
+        {
+            Raw.ConfigBuilder* retVal = Raw.Config.GetBuilder();
+            return new ConfigBuilder(retVal);
+        }
+    }
+
     /// <summary>
     /// Returns the underlying raw handle.
     /// </summary>

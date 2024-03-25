@@ -16,6 +16,9 @@ public partial struct SocketAddr
 {
     private const string NativeLib = "DevolutionsIronRdp";
 
+    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "SocketAddr_look_up", ExactSpelling = true)]
+    public static unsafe extern UtilsFfiResultBoxSocketAddrBoxIronRdpError LookUp(byte* host, nuint hostSz, ushort port);
+
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "SocketAddr_destroy", ExactSpelling = true)]
     public static unsafe extern void Destroy(SocketAddr* self);
 }

@@ -11,12 +11,12 @@ namespace Devolutions.IronRdp;
 
 #nullable enable
 
-public partial class PduHintResult: IDisposable
+public partial class OptionalUsize: IDisposable
 {
-    private unsafe Raw.PduHintResult* _inner;
+    private unsafe Raw.OptionalUsize* _inner;
 
     /// <summary>
-    /// Creates a managed <c>PduHintResult</c> from a raw handle.
+    /// Creates a managed <c>OptionalUsize</c> from a raw handle.
     /// </summary>
     /// <remarks>
     /// Safety: you should not build two managed objects using the same raw handle (may causes use-after-free and double-free).
@@ -24,7 +24,7 @@ public partial class PduHintResult: IDisposable
     /// This constructor assumes the raw struct is allocated on Rust side.
     /// If implemented, the custom Drop implementation on Rust side WILL run on destruction.
     /// </remarks>
-    public unsafe PduHintResult(Raw.PduHintResult* handle)
+    public unsafe OptionalUsize(Raw.OptionalUsize* handle)
     {
         _inner = handle;
     }
@@ -35,49 +35,36 @@ public partial class PduHintResult: IDisposable
         {
             if (_inner == null)
             {
-                throw new ObjectDisposedException("PduHintResult");
+                throw new ObjectDisposedException("OptionalUsize");
             }
-            bool retVal = Raw.PduHintResult.IsSome(_inner);
+            bool retVal = Raw.OptionalUsize.IsSome(_inner);
             return retVal;
         }
     }
 
     /// <exception cref="IronRdpException"></exception>
-    /// <returns>
-    /// A <c>OptionalUsize</c> allocated on Rust side.
-    /// </returns>
-    public OptionalUsize FindSize(VecU8 buffer)
+    public nuint Get()
     {
         unsafe
         {
             if (_inner == null)
             {
-                throw new ObjectDisposedException("PduHintResult");
+                throw new ObjectDisposedException("OptionalUsize");
             }
-            Raw.VecU8* bufferRaw;
-            bufferRaw = buffer.AsFFI();
-            if (bufferRaw == null)
-            {
-                throw new ObjectDisposedException("VecU8");
-            }
-            Raw.ConnectorFfiResultOptBoxOptionalUsizeBoxIronRdpError result = Raw.PduHintResult.FindSize(_inner, bufferRaw);
+            Raw.UtilsFfiResultUsizeBoxIronRdpError result = Raw.OptionalUsize.Get(_inner);
             if (!result.isOk)
             {
                 throw new IronRdpException(new IronRdpError(result.Err));
             }
-            Raw.OptionalUsize* retVal = result.Ok;
-            if (retVal == null)
-            {
-                return null;
-            }
-            return new OptionalUsize(retVal);
+            nuint retVal = result.Ok;
+            return retVal;
         }
     }
 
     /// <summary>
     /// Returns the underlying raw handle.
     /// </summary>
-    public unsafe Raw.PduHintResult* AsFFI()
+    public unsafe Raw.OptionalUsize* AsFFI()
     {
         return _inner;
     }
@@ -94,14 +81,14 @@ public partial class PduHintResult: IDisposable
                 return;
             }
 
-            Raw.PduHintResult.Destroy(_inner);
+            Raw.OptionalUsize.Destroy(_inner);
             _inner = null;
 
             GC.SuppressFinalize(this);
         }
     }
 
-    ~PduHintResult()
+    ~OptionalUsize()
     {
         Dispose();
     }

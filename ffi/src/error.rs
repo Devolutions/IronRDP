@@ -125,7 +125,10 @@ impl NullPointerError {
 
 impl ToString for NullPointerError {
     fn to_string(&self) -> String {
-        format!("{}: {:?}", self.item, self.reason)
+        if let Some(reason) = &self.reason {
+            return format!("{}: {}", self.item, reason);
+        }
+        format!("{}: is consumed or never constructed", self.item)
     }
 }
 

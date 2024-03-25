@@ -12,13 +12,13 @@ namespace Devolutions.IronRdp.Raw;
 #nullable enable
 
 [StructLayout(LayoutKind.Sequential)]
-public partial struct ConnectorFfiResultOptBoxUsizeBoxIronRdpError
+public partial struct UtilsFfiResultBoxSocketAddrBoxIronRdpError
 {
     [StructLayout(LayoutKind.Explicit)]
     private unsafe struct InnerUnion
     {
         [FieldOffset(0)]
-        internal nuint* ok;
+        internal SocketAddr* ok;
         [FieldOffset(0)]
         internal IronRdpError* err;
     }
@@ -28,7 +28,7 @@ public partial struct ConnectorFfiResultOptBoxUsizeBoxIronRdpError
     [MarshalAs(UnmanagedType.U1)]
     public bool isOk;
 
-    public unsafe nuint* Ok
+    public unsafe SocketAddr* Ok
     {
         get
         {

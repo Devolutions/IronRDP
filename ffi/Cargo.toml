@@ -9,6 +9,13 @@ authors.workspace = true
 keywords.workspace = true
 categories.workspace = true
 
+[lib]
+name = "ironrdp"
+crate-type = ["staticlib", "cdylib"]
+doc = false
+test = false
+doctest = false
+
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 [dependencies]
 anyhow = "1.0.81"
@@ -22,3 +29,6 @@ rustls-pemfile = "2.1"
 sspi = { workspace = true, features = ["network_client"] }
 thiserror.workspace = true
 tracing.workspace = true
+
+[target.'cfg(windows)'.build-dependencies]
+embed-resource = "2.2.0"

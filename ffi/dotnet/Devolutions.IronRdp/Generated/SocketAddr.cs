@@ -29,6 +29,29 @@ public partial class SocketAddr: IDisposable
         _inner = handle;
     }
 
+    /// <exception cref="IronRdpException"></exception>
+    /// <returns>
+    /// A <c>SocketAddr</c> allocated on Rust side.
+    /// </returns>
+    public static SocketAddr LookUp(string host, ushort port)
+    {
+        unsafe
+        {
+            byte[] hostBuf = DiplomatUtils.StringToUtf8(host);
+            nuint hostBufLength = (nuint)hostBuf.Length;
+            fixed (byte* hostBufPtr = hostBuf)
+            {
+                Raw.UtilsFfiResultBoxSocketAddrBoxIronRdpError result = Raw.SocketAddr.LookUp(hostBufPtr, hostBufLength, port);
+                if (!result.isOk)
+                {
+                    throw new IronRdpException(new IronRdpError(result.Err));
+                }
+                Raw.SocketAddr* retVal = result.Ok;
+                return new SocketAddr(retVal);
+            }
+        }
+    }
+
     /// <summary>
     /// Returns the underlying raw handle.
     /// </summary>

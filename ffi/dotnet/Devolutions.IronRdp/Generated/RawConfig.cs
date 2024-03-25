@@ -16,6 +16,9 @@ public partial struct Config
 {
     private const string NativeLib = "DevolutionsIronRdp";
 
+    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "Config_get_builder", ExactSpelling = true)]
+    public static unsafe extern ConfigBuilder* GetBuilder();
+
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "Config_destroy", ExactSpelling = true)]
     public static unsafe extern void Destroy(Config* self);
 }

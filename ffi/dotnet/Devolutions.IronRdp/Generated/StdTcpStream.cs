@@ -29,6 +29,47 @@ public partial class StdTcpStream: IDisposable
         _inner = handle;
     }
 
+    /// <exception cref="IronRdpException"></exception>
+    /// <returns>
+    /// A <c>StdTcpStream</c> allocated on Rust side.
+    /// </returns>
+    public static StdTcpStream Connect(SocketAddr addr)
+    {
+        unsafe
+        {
+            Raw.SocketAddr* addrRaw;
+            addrRaw = addr.AsFFI();
+            if (addrRaw == null)
+            {
+                throw new ObjectDisposedException("SocketAddr");
+            }
+            Raw.UtilsFfiResultBoxStdTcpStreamBoxIronRdpError result = Raw.StdTcpStream.Connect(addrRaw);
+            if (!result.isOk)
+            {
+                throw new IronRdpException(new IronRdpError(result.Err));
+            }
+            Raw.StdTcpStream* retVal = result.Ok;
+            return new StdTcpStream(retVal);
+        }
+    }
+
+    /// <exception cref="IronRdpException"></exception>
+    public void SetReadTimeout()
+    {
+        unsafe
+        {
+            if (_inner == null)
+            {
+                throw new ObjectDisposedException("StdTcpStream");
+            }
+            Raw.UtilsFfiResultVoidBoxIronRdpError result = Raw.StdTcpStream.SetReadTimeout(_inner);
+            if (!result.isOk)
+            {
+                throw new IronRdpException(new IronRdpError(result.Err));
+            }
+        }
+    }
+
     /// <summary>
     /// Returns the underlying raw handle.
     /// </summary>

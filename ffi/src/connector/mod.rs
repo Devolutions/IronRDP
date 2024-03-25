@@ -1,4 +1,5 @@
 pub mod result;
+pub mod config;
 
 #[diplomat::bridge]
 pub mod ffi {
@@ -7,15 +8,18 @@ pub mod ffi {
     use std::fmt::Write;
 
     use crate::{
-        error::{ffi::{IronRdpError, IronRdpErrorKind}, NullPointerError},
+        error::{
+            ffi::{IronRdpError, IronRdpErrorKind},
+            NullPointerError,
+        },
         utils::ffi::{SocketAddr, VecU8},
     };
+
+    use super::config::ffi::Config;
 
     #[diplomat::opaque] // We must use Option here, as ClientConnector is not Clone and have functions that consume it
     pub struct ClientConnector(pub Option<ironrdp::connector::ClientConnector>);
 
-    #[diplomat::opaque]
-    pub struct Config(pub ironrdp::connector::Config);
 
     #[diplomat::opaque]
     pub struct ClientConnectorState(pub ironrdp::connector::ClientConnectorState);
@@ -115,14 +119,14 @@ pub mod ffi {
             self.0.is_some()
         }
 
-        pub fn find_size(&'a self, buffer: &VecU8) -> Result<Option<Box<usize>>, Box<IronRdpError>> {
+        pub fn find_size(&'a self, buffer: &VecU8) -> Result<Option<Box<crate::utils::ffi::OptionalUsize>>, Box<IronRdpError>> {
             let Some(pdu_hint) = self.0 else {
                 return Ok(None);
             };
 
             let size = pdu_hint.find_size(buffer.0.as_slice())?;
 
-            size.map(|size| Ok(Box::new(size))).transpose()
+            Ok(Some(Box::new(crate::utils::ffi::OptionalUsize(size))))
         }
     }
 
@@ -167,16 +171,4 @@ pub mod ffi {
         }
     }
 
-    #[diplomat::opaque]
-    pub struct DesktopSize(pub ironrdp::connector::DesktopSize);
-
-    impl DesktopSize {
-        pub fn get_width(&self) -> u16 {
-            self.0.width
-        }
-
-        pub fn get_height(&self) -> u16 {
-            self.0.height
-        }
-    }
 }

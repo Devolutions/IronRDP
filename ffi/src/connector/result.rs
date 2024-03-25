@@ -1,6 +1,7 @@
 #[diplomat::bridge]
 pub mod ffi {
-    use crate::connector::ffi::DesktopSize;
+    use crate::connector::config::ffi::DesktopSize;
+
 
     #[diplomat::opaque]
     pub struct ConnectionResult(pub ironrdp::connector::ConnectionResult);

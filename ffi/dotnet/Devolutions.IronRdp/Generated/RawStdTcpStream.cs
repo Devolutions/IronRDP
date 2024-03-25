@@ -16,6 +16,12 @@ public partial struct StdTcpStream
 {
     private const string NativeLib = "DevolutionsIronRdp";
 
+    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "StdTcpStream_connect", ExactSpelling = true)]
+    public static unsafe extern UtilsFfiResultBoxStdTcpStreamBoxIronRdpError Connect(SocketAddr* addr);
+
+    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "StdTcpStream_set_read_timeout", ExactSpelling = true)]
+    public static unsafe extern UtilsFfiResultVoidBoxIronRdpError SetReadTimeout(StdTcpStream* self);
+
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "StdTcpStream_destroy", ExactSpelling = true)]
     public static unsafe extern void Destroy(StdTcpStream* self);
 }
