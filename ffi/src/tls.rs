@@ -6,7 +6,10 @@ pub type TlsStream = rustls::StreamOwned<rustls::ClientConnection, TcpStream>;
 
 #[diplomat::bridge]
 pub mod ffi {
-    use crate::{error::{ffi::IronRdpError, NullPointerError}, utils::ffi::VecU8};
+    use crate::{
+        error::{ffi::IronRdpError, NullPointerError},
+        utils::ffi::VecU8,
+    };
 
     use super::TlsStream;
 
@@ -23,7 +26,6 @@ pub mod ffi {
     pub struct UpgradedStream(pub Option<TlsStream>);
 
     impl TlsUpgradeResult {
-        
         pub fn get_upgraded_stream(&mut self) -> Result<Box<UpgradedStream>, Box<IronRdpError>> {
             let Some(tls_stream) = self.tls_stream.take() else {
                 return Err(NullPointerError::for_item("tls_stream")
@@ -37,7 +39,6 @@ pub mod ffi {
         pub fn get_server_public_key(&self) -> Box<VecU8> {
             VecU8::from_byte(&self.server_public_key)
         }
-        
     }
 
     impl Tls {
@@ -54,7 +55,7 @@ pub mod ffi {
 
             Ok(Box::new(TlsUpgradeResult {
                 tls_stream: Some(tls_stream),
-                server_public_key: server_public_key,
+                server_public_key,
             }))
         }
     }

@@ -12,7 +12,7 @@ pub mod ffi {
 
     impl Config {
         pub fn get_builder() -> Box<crate::connector::config::ffi::ConfigBuilder> {
-            Box::new(crate::connector::config::ffi::ConfigBuilder::default())
+            Box::<ConfigBuilder>::default()
         }
     }
 
@@ -66,7 +66,7 @@ pub mod ffi {
 
     impl ConfigBuilder {
         pub fn new() -> Box<Self> {
-            Box::new(Self::default())
+            Box::<ConfigBuilder>::default()
         }
 
         pub fn with_username_and_passwrord(&mut self, username: &str, password: &str) {
@@ -109,10 +109,7 @@ pub mod ffi {
         }
 
         pub fn set_desktop_size(&mut self, height: u16, width: u16) {
-            self.desktop_size = Some(ironrdp::connector::DesktopSize {
-                width,
-                height,
-            });
+            self.desktop_size = Some(ironrdp::connector::DesktopSize { width, height });
         }
 
         pub fn set_graphics(&mut self, graphics: &crate::connector::result::ffi::GraphicsConfig) {
@@ -159,7 +156,7 @@ pub mod ffi {
                 keyboard_functional_keys_count: self.keyboard_functional_keys_count.unwrap_or(12),
                 ime_file_name: self.ime_file_name.clone().unwrap_or_default(),
                 dig_product_id: self.dig_product_id.clone().unwrap_or_default(),
-                desktop_size: self.desktop_size.clone().ok_or("Desktop size not set")?,
+                desktop_size: self.desktop_size.ok_or("Desktop size not set")?,
                 graphics: self.graphics.clone(),
                 bitmap: None,
                 client_build: self.client_build.unwrap_or(0),

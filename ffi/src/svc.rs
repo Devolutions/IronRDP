@@ -1,4 +1,3 @@
-
 #[diplomat::bridge]
 pub mod ffi {
 

@@ -2,9 +2,9 @@ use ironrdp::connector::ConnectorError;
 
 use self::ffi::IronRdpErrorKind;
 
-impl Into<ffi::IronRdpErrorKind> for ConnectorError {
-    fn into(self) -> ffi::IronRdpErrorKind {
-        match self.kind {
+impl From<ConnectorError> for ffi::IronRdpErrorKind {
+    fn from(val: ConnectorError) -> Self {
+        match val.kind {
             ironrdp::connector::ConnectorErrorKind::Pdu(_) => todo!(),
             ironrdp::connector::ConnectorErrorKind::Credssp(_) => todo!(),
             ironrdp::connector::ConnectorErrorKind::Reason(_) => todo!(),
@@ -16,30 +16,26 @@ impl Into<ffi::IronRdpErrorKind> for ConnectorError {
     }
 }
 
-impl Into<ffi::IronRdpErrorKind> for &str {
-    fn into(self) -> ffi::IronRdpErrorKind {
+impl From<&str> for ffi::IronRdpErrorKind {
+    fn from(_val: &str) -> Self {
         ffi::IronRdpErrorKind::Generic
     }
 }
 
-impl Into<ffi::IronRdpErrorKind> for ironrdp::pdu::PduError {
-    fn into(self) -> ffi::IronRdpErrorKind {
-        match self {
-            _ => ffi::IronRdpErrorKind::PduError,
-        }
+impl From<ironrdp::pdu::PduError> for ffi::IronRdpErrorKind {
+    fn from(_val: ironrdp::pdu::PduError) -> Self {
+        ffi::IronRdpErrorKind::PduError
     }
 }
 
-impl Into<ffi::IronRdpErrorKind> for std::io::Error {
-    fn into(self) -> ffi::IronRdpErrorKind {
-        match self.kind() {
-            _ => ffi::IronRdpErrorKind::IO,
-        }
+impl From<std::io::Error> for ffi::IronRdpErrorKind {
+    fn from(_: std::io::Error) -> Self {
+        ffi::IronRdpErrorKind::IO
     }
 }
 
-impl Into<ffi::IronRdpErrorKind> for std::fmt::Error {
-    fn into(self) -> ffi::IronRdpErrorKind {
+impl From<std::fmt::Error> for ffi::IronRdpErrorKind {
+    fn from(_val: std::fmt::Error) -> Self {
         ffi::IronRdpErrorKind::Generic
     }
 }
@@ -102,9 +98,8 @@ pub mod ffi {
     }
 }
 
-
 #[derive(Debug)]
-pub struct NullPointerError{
+pub struct NullPointerError {
     item: String,
     reason: Option<String>,
 }
@@ -132,8 +127,8 @@ impl ToString for NullPointerError {
     }
 }
 
-impl Into<IronRdpErrorKind> for NullPointerError {
-    fn into(self) -> IronRdpErrorKind {
+impl From<NullPointerError> for IronRdpErrorKind {
+    fn from(_val: NullPointerError) -> Self {
         IronRdpErrorKind::NullPointer
     }
 }

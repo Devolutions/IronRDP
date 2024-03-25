@@ -156,7 +156,7 @@ pub mod ffi {
             };
 
             let server_name = server_name.0.clone();
-            let mut network_client = network_client::reqwest_network_client::ReqwestNetworkClient::default();
+            let mut network_client = network_client::reqwest_network_client::ReqwestNetworkClient;
 
             let kerberos_config = kerberos_config.as_ref().map(|config| config.0.clone());
 

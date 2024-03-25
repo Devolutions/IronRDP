@@ -1,5 +1,5 @@
-pub mod result;
 pub mod config;
+pub mod result;
 
 #[diplomat::bridge]
 pub mod ffi {
@@ -20,7 +20,6 @@ pub mod ffi {
     #[diplomat::opaque] // We must use Option here, as ClientConnector is not Clone and have functions that consume it
     pub struct ClientConnector(pub Option<ironrdp::connector::ClientConnector>);
 
-
     #[diplomat::opaque]
     pub struct ClientConnectorState(pub ironrdp::connector::ClientConnectorState);
 
@@ -40,7 +39,7 @@ pub mod ffi {
             let Some(connector) = self.0.take() else {
                 return Err(IronRdpErrorKind::NullPointer.into());
             };
-            let server_addr = server_addr.0.clone();
+            let server_addr = server_addr.0;
             self.0 = Some(connector.with_server_addr(server_addr));
 
             Ok(())
@@ -92,7 +91,8 @@ pub mod ffi {
             let Some(connector) = self.0.as_mut() else {
                 return Err(NullPointerError::for_item("connector").into());
             };
-            Ok(connector.mark_security_upgrade_as_done())
+            connector.mark_security_upgrade_as_done();
+            Ok(())
         }
 
         pub fn should_perform_credssp(&self) -> Result<bool, Box<IronRdpError>> {
@@ -107,7 +107,8 @@ pub mod ffi {
             let Some(connector) = self.0.as_mut() else {
                 return Err(NullPointerError::for_item("connector").into());
             };
-            Ok(connector.mark_credssp_as_done())
+            connector.mark_credssp_as_done();
+            Ok(())
         }
     }
 
@@ -119,7 +120,10 @@ pub mod ffi {
             self.0.is_some()
         }
 
-        pub fn find_size(&'a self, buffer: &VecU8) -> Result<Option<Box<crate::utils::ffi::OptionalUsize>>, Box<IronRdpError>> {
+        pub fn find_size(
+            &'a self,
+            buffer: &VecU8,
+        ) -> Result<Option<Box<crate::utils::ffi::OptionalUsize>>, Box<IronRdpError>> {
             let Some(pdu_hint) = self.0 else {
                 return Ok(None);
             };
@@ -150,14 +154,14 @@ pub mod ffi {
     }
 
     impl ClientConnector {
-        pub fn next_pdu_hint<'a>(&'a self) -> Box<PduHintResult<'a>> {
+        pub fn next_pdu_hint(&self) -> Box<PduHintResult<'_>> {
             let Some(connector) = self.0.as_ref() else {
                 panic!("Inner value is None")
             };
             Box::new(PduHintResult(connector.next_pdu_hint()))
         }
 
-        pub fn state<'a>(&'a self) -> Box<State<'a>> {
+        pub fn state(&self) -> Box<State<'_>> {
             let Some(connector) = self.0.as_ref() else {
                 panic!("Inner value is None")
             };
@@ -170,5 +174,4 @@ pub mod ffi {
             Box::new(ServerName(ironrdp::connector::ServerName::new(name)))
         }
     }
-
 }

@@ -12,7 +12,7 @@ pub mod ffi {
             let addr = (host, port)
                 .to_socket_addrs()?
                 .next()
-                .ok_or_else(|| "Failed to resolve address")?;
+                .ok_or("Failed to resolve address")?;
             Ok(Box::new(SocketAddr(addr)))
         }
     }
@@ -46,7 +46,7 @@ pub mod ffi {
 
     impl StdTcpStream {
         pub fn connect(addr: &SocketAddr) -> Result<Box<StdTcpStream>, Box<IronRdpError>> {
-            let stream = std::net::TcpStream::connect(addr.0.clone())?;
+            let stream = std::net::TcpStream::connect(addr.0)?;
             Ok(Box::new(StdTcpStream(Some(stream))))
         }
 
@@ -60,7 +60,6 @@ pub mod ffi {
         }
     }
 
-
     #[diplomat::opaque]
     pub struct OptionalUsize(pub Option<usize>);
 
@@ -69,9 +68,8 @@ pub mod ffi {
             self.0.is_some()
         }
 
-        pub fn get(&self) -> Result<usize,Box<IronRdpError>> {
+        pub fn get(&self) -> Result<usize, Box<IronRdpError>> {
             self.0.ok_or_else(|| "Value is None".into())
         }
-        
     }
 }

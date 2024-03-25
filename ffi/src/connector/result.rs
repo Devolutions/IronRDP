@@ -2,7 +2,6 @@
 pub mod ffi {
     use crate::connector::config::ffi::DesktopSize;
 
-
     #[diplomat::opaque]
     pub struct ConnectionResult(pub ironrdp::connector::ConnectionResult);
 
@@ -15,7 +14,7 @@ pub mod ffi {
             self.0.user_channel_id
         }
 
-        pub fn get_static_channels<'a>(&'a self) -> Box<crate::svc::ffi::StaticChannelSet<'a>> {
+        pub fn get_static_channels(&self) -> Box<crate::svc::ffi::StaticChannelSet<'_>> {
             Box::new(crate::svc::ffi::StaticChannelSet(&self.0.static_channels))
         }
 
@@ -40,7 +39,6 @@ pub mod ffi {
     pub struct GraphicsConfig(pub ironrdp::connector::GraphicsConfig);
 
     impl GraphicsConfig {
-
         pub fn get_avc444(&self) -> bool {
             self.0.avc444
         }
@@ -60,6 +58,5 @@ pub mod ffi {
         pub fn get_capabilities(&self) -> u32 {
             self.0.capabilities
         }
-        
     }
 }
