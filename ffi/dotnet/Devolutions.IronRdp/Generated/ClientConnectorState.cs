@@ -4,19 +4,19 @@
 using System;
 using System.Runtime.InteropServices;
 
-using Interop.Diplomat;
+using Devolutions.IronRdp.Diplomat;
 #pragma warning restore 0105
 
-namespace Interop;
+namespace Devolutions.IronRdp;
 
 #nullable enable
 
-public partial class Config: IDisposable
+public partial class ClientConnectorState: IDisposable
 {
-    private unsafe Raw.Config* _inner;
+    private unsafe Raw.ClientConnectorState* _inner;
 
     /// <summary>
-    /// Creates a managed <c>Config</c> from a raw handle.
+    /// Creates a managed <c>ClientConnectorState</c> from a raw handle.
     /// </summary>
     /// <remarks>
     /// Safety: you should not build two managed objects using the same raw handle (may causes use-after-free and double-free).
@@ -24,7 +24,7 @@ public partial class Config: IDisposable
     /// This constructor assumes the raw struct is allocated on Rust side.
     /// If implemented, the custom Drop implementation on Rust side WILL run on destruction.
     /// </remarks>
-    public unsafe Config(Raw.Config* handle)
+    public unsafe ClientConnectorState(Raw.ClientConnectorState* handle)
     {
         _inner = handle;
     }
@@ -32,7 +32,7 @@ public partial class Config: IDisposable
     /// <summary>
     /// Returns the underlying raw handle.
     /// </summary>
-    public unsafe Raw.Config* AsFFI()
+    public unsafe Raw.ClientConnectorState* AsFFI()
     {
         return _inner;
     }
@@ -49,14 +49,14 @@ public partial class Config: IDisposable
                 return;
             }
 
-            Raw.Config.Destroy(_inner);
+            Raw.ClientConnectorState.Destroy(_inner);
             _inner = null;
 
             GC.SuppressFinalize(this);
         }
     }
 
-    ~Config()
+    ~ClientConnectorState()
     {
         Dispose();
     }

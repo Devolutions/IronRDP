@@ -1,4 +1,26 @@
-use std::fmt;
+use ironrdp::connector::ConnectorError;
+
+use self::ffi::IronRdpErrorKind;
+
+impl Into<ffi::IronRdpErrorKind> for ConnectorError {
+    fn into(self) -> ffi::IronRdpErrorKind {
+        match self.kind {
+            ironrdp::connector::ConnectorErrorKind::Pdu(_) => todo!(),
+            ironrdp::connector::ConnectorErrorKind::Credssp(_) => todo!(),
+            ironrdp::connector::ConnectorErrorKind::Reason(_) => todo!(),
+            ironrdp::connector::ConnectorErrorKind::AccessDenied => todo!(),
+            ironrdp::connector::ConnectorErrorKind::General => todo!(),
+            ironrdp::connector::ConnectorErrorKind::Custom => todo!(),
+            _ => todo!(),
+        }
+    }
+}
+
+impl Into<ffi::IronRdpErrorKind> for &str {
+    fn into(self) -> ffi::IronRdpErrorKind {
+        ffi::IronRdpErrorKind::Generic
+    }
+}
 
 impl Into<ffi::IronRdpErrorKind> for ironrdp::pdu::PduError {
     fn into(self) -> ffi::IronRdpErrorKind {
@@ -43,12 +65,17 @@ pub mod ffi {
     use diplomat_runtime::DiplomatWriteable;
     use std::fmt::Write as _;
 
-    /// Kind associated to a Picky Error
-    #[derive(Clone, Copy)]
+    #[derive(Debug, Clone, Copy, thiserror::Error)]
     pub enum IronRdpErrorKind {
-        /// Generic Picky error
+        #[error("Generic error")]
         Generic,
+        #[error("PDU error")]
         PduError,
+        #[error("CredSSP error")]
+        SspiError,
+        #[error("Null pointer error")]
+        NullPointer,
+        #[error("IO error")]
         IO,
     }
 
@@ -72,5 +99,38 @@ pub mod ffi {
         pub fn get_kind(&self) -> IronRdpErrorKind {
             self.0.kind
         }
+    }
+}
+
+
+#[derive(Debug)]
+pub struct NullPointerError{
+    item: String,
+    reason: Option<String>,
+}
+
+impl NullPointerError {
+    pub fn for_item(item: &str) -> NullPointerError {
+        NullPointerError {
+            item: item.to_string(),
+            reason: None,
+        }
+    }
+
+    pub fn reason(mut self, reason: &str) -> NullPointerError {
+        self.reason = Some(reason.to_string());
+        self
+    }
+}
+
+impl ToString for NullPointerError {
+    fn to_string(&self) -> String {
+        format!("{}: {:?}", self.item, self.reason)
+    }
+}
+
+impl Into<IronRdpErrorKind> for NullPointerError {
+    fn into(self) -> IronRdpErrorKind {
+        IronRdpErrorKind::NullPointer
     }
 }

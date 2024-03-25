@@ -1,12 +1,4 @@
-macro_rules! take_if_not_none {
-    ($expr:expr) => {{
-        if let Some(value) = $expr.take() {
-            value
-        } else {
-            panic!("Inner value is None")
-        }
-    }};
-}
+pub mod result;
 
 #[diplomat::bridge]
 pub mod ffi {
@@ -15,7 +7,7 @@ pub mod ffi {
     use std::fmt::Write;
 
     use crate::{
-        error::ffi::IronRdpError,
+        error::{ffi::{IronRdpError, IronRdpErrorKind}, NullPointerError},
         utils::ffi::{SocketAddr, VecU8},
     };
 
@@ -28,6 +20,9 @@ pub mod ffi {
     #[diplomat::opaque]
     pub struct ClientConnectorState(pub ironrdp::connector::ClientConnectorState);
 
+    #[diplomat::opaque]
+    pub struct ServerName(pub ironrdp::connector::ServerName);
+
     // Basic Impl for ClientConnector
     impl ClientConnector {
         pub fn new(config: &Config) -> Box<ClientConnector> {
@@ -37,23 +32,38 @@ pub mod ffi {
         }
 
         /// Must use
-        pub fn with_server_addr(&mut self, server_addr: &SocketAddr) {
-            let connector = take_if_not_none!(self.0);
+        pub fn with_server_addr(&mut self, server_addr: &SocketAddr) -> Result<(), Box<IronRdpError>> {
+            let Some(connector) = self.0.take() else {
+                return Err(IronRdpErrorKind::NullPointer.into());
+            };
             let server_addr = server_addr.0.clone();
             self.0 = Some(connector.with_server_addr(server_addr));
+
+            Ok(())
         }
 
         // FIXME: We need to create opaque for ironrdp::svc::StaticChannelSet
         /// Must use
-        pub fn with_static_channel_rdp_snd(&mut self) {
-            let connector = take_if_not_none!(self.0);
+        pub fn with_static_channel_rdp_snd(&mut self) -> Result<(), Box<IronRdpError>> {
+            let Some(connector) = self.0.take() else {
+                return Err(IronRdpErrorKind::NullPointer.into());
+            };
+
             self.0 = Some(connector.with_static_channel(ironrdp::rdpsnd::Rdpsnd::new()));
+
+            Ok(())
         }
 
         // FIXME: We need to create opaque for ironrdp::rdpdr::Rdpdr
         /// Must use
-        pub fn with_static_channel_rdpdr(&mut self, computer_name: &str, smart_card_device_id: u32) {
-            let connector = take_if_not_none!(self.0);
+        pub fn with_static_channel_rdpdr(
+            &mut self,
+            computer_name: &str,
+            smart_card_device_id: u32,
+        ) -> Result<(), Box<IronRdpError>> {
+            let Some(connector) = self.0.take() else {
+                return Err(IronRdpErrorKind::NullPointer.into());
+            };
             self.0 = Some(
                 connector.with_static_channel(
                     ironrdp::rdpdr::Rdpdr::new(
@@ -63,34 +73,37 @@ pub mod ffi {
                     .with_smartcard(smart_card_device_id),
                 ),
             );
+
+            Ok(())
         }
 
-        pub fn should_perform_security_upgrade(&self) -> bool {
+        pub fn should_perform_security_upgrade(&self) -> Result<bool, Box<IronRdpError>> {
             let Some(connector) = self.0.as_ref() else {
-                panic!("Inner value is None")
+                return Err(NullPointerError::for_item("connector").into());
             };
-            connector.should_perform_security_upgrade()
+            Ok(connector.should_perform_security_upgrade())
         }
 
-        pub fn mark_security_upgrade_as_done(&mut self) {
+        pub fn mark_security_upgrade_as_done(&mut self) -> Result<(), Box<IronRdpError>> {
             let Some(connector) = self.0.as_mut() else {
-                panic!("Inner value is None")
+                return Err(NullPointerError::for_item("connector").into());
             };
-            connector.mark_security_upgrade_as_done();
+            Ok(connector.mark_security_upgrade_as_done())
         }
 
-        pub fn should_perform_credssp(&self) -> bool {
+        pub fn should_perform_credssp(&self) -> Result<bool, Box<IronRdpError>> {
             let Some(connector) = self.0.as_ref() else {
-                panic!("Inner value is None")
+                return Err(NullPointerError::for_item("connector").into());
             };
-            connector.should_perform_credssp()
+
+            Ok(connector.should_perform_credssp())
         }
 
-        pub fn mark_credssp_as_done(&mut self) {
+        pub fn mark_credssp_as_done(&mut self) -> Result<(), Box<IronRdpError>> {
             let Some(connector) = self.0.as_mut() else {
-                panic!("Inner value is None")
+                return Err(NullPointerError::for_item("connector").into());
             };
-            connector.mark_credssp_as_done();
+            Ok(connector.mark_credssp_as_done())
         }
     }
 
@@ -102,14 +115,14 @@ pub mod ffi {
             self.0.is_some()
         }
 
-        pub fn find_size(&'a self, buffer: &VecU8) -> Result<Option<usize>, Box<IronRdpError>> {
+        pub fn find_size(&'a self, buffer: &VecU8) -> Result<Option<Box<usize>>, Box<IronRdpError>> {
             let Some(pdu_hint) = self.0 else {
                 return Ok(None);
             };
 
             let size = pdu_hint.find_size(buffer.0.as_slice())?;
 
-            Ok(size)
+            size.map(|size| Ok(Box::new(size))).transpose()
         }
     }
 
@@ -117,7 +130,7 @@ pub mod ffi {
     pub struct State<'a>(pub &'a dyn ironrdp::connector::State);
 
     impl<'a> State<'a> {
-        pub fn get_name(&'a self,writeable:&'a mut DiplomatWriteable) -> Result<(), Box<IronRdpError>>{
+        pub fn get_name(&'a self, writeable: &'a mut DiplomatWriteable) -> Result<(), Box<IronRdpError>> {
             let name = self.0.name();
             write!(writeable, "{}", name)?;
             Ok(())
@@ -127,22 +140,20 @@ pub mod ffi {
             self.0.is_terminal()
         }
 
-        pub fn as_any(&'a self) -> Box<crate::utils::ffi::Any> {
+        pub fn as_any(&'a self) -> Box<crate::utils::ffi::Any<'a>> {
             Box::new(crate::utils::ffi::Any(self.0.as_any()))
         }
-        
     }
 
-
     impl ClientConnector {
-        pub fn next_pdu_hint(&self) -> Box<PduHintResult> {
+        pub fn next_pdu_hint<'a>(&'a self) -> Box<PduHintResult<'a>> {
             let Some(connector) = self.0.as_ref() else {
                 panic!("Inner value is None")
             };
             Box::new(PduHintResult(connector.next_pdu_hint()))
         }
 
-        pub fn state(&self) -> Box<State> {
+        pub fn state<'a>(&'a self) -> Box<State<'a>> {
             let Some(connector) = self.0.as_ref() else {
                 panic!("Inner value is None")
             };
@@ -150,4 +161,22 @@ pub mod ffi {
         }
     }
 
+    impl ServerName {
+        pub fn new(name: &str) -> Box<ServerName> {
+            Box::new(ServerName(ironrdp::connector::ServerName::new(name)))
+        }
+    }
+
+    #[diplomat::opaque]
+    pub struct DesktopSize(pub ironrdp::connector::DesktopSize);
+
+    impl DesktopSize {
+        pub fn get_width(&self) -> u16 {
+            self.0.width
+        }
+
+        pub fn get_height(&self) -> u16 {
+            self.0.height
+        }
+    }
 }

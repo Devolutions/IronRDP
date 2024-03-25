@@ -1,0 +1,10 @@
+
+defalt: bindings
+
+dotnet_generated_path := "./dotnet/Devolutions.IronRdp/Generated/"
+dotnet_diplomat_config := "./dotnet-interop-conf.toml"
+
+bindings:
+    -rm {{dotnet_generated_path}}*.cs
+    diplomat-tool dotnet {{dotnet_generated_path}} -l {{dotnet_diplomat_config}}
+    @echo ">> .NET wrapper generated at {{dotnet_generated_path}}"

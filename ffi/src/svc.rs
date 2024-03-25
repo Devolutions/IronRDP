@@ -3,5 +3,5 @@
 pub mod ffi {
 
     #[diplomat::opaque]
-    pub struct StaticChannelSet(pub ironrdp::svc::StaticChannelSet);
+    pub struct StaticChannelSet<'a>(pub &'a ironrdp::svc::StaticChannelSet);
 }

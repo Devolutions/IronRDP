@@ -6,7 +6,7 @@ using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using System.Text;
 
-namespace Interop.Diplomat;
+namespace Devolutions.IronRdp.Diplomat;
 
 #nullable enable
 

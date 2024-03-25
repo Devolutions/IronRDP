@@ -31,4 +31,7 @@ pub mod ffi {
     #[diplomat::opaque]
     pub struct Any<'a>(pub &'a dyn std::any::Any);
 
+    #[diplomat::opaque]
+    pub struct StdTcpStream(pub Option<std::net::TcpStream>);
+
 }

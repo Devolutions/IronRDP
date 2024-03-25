@@ -3,3 +3,7 @@ pub mod connector;
 pub mod svc;
 pub mod dvc;
 pub mod error;
+pub mod pdu;
+pub mod ironrdp_blocking;
+pub mod credssp;
+pub mod tls;

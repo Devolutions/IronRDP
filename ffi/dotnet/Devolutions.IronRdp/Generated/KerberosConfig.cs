@@ -4,19 +4,19 @@
 using System;
 using System.Runtime.InteropServices;
 
-using Interop.Diplomat;
+using Devolutions.IronRdp.Diplomat;
 #pragma warning restore 0105
 
-namespace Interop;
+namespace Devolutions.IronRdp;
 
 #nullable enable
 
-public partial class StaticChannelSet: IDisposable
+public partial class KerberosConfig: IDisposable
 {
-    private unsafe Raw.StaticChannelSet* _inner;
+    private unsafe Raw.KerberosConfig* _inner;
 
     /// <summary>
-    /// Creates a managed <c>StaticChannelSet</c> from a raw handle.
+    /// Creates a managed <c>KerberosConfig</c> from a raw handle.
     /// </summary>
     /// <remarks>
     /// Safety: you should not build two managed objects using the same raw handle (may causes use-after-free and double-free).
@@ -24,7 +24,7 @@ public partial class StaticChannelSet: IDisposable
     /// This constructor assumes the raw struct is allocated on Rust side.
     /// If implemented, the custom Drop implementation on Rust side WILL run on destruction.
     /// </remarks>
-    public unsafe StaticChannelSet(Raw.StaticChannelSet* handle)
+    public unsafe KerberosConfig(Raw.KerberosConfig* handle)
     {
         _inner = handle;
     }
@@ -32,7 +32,7 @@ public partial class StaticChannelSet: IDisposable
     /// <summary>
     /// Returns the underlying raw handle.
     /// </summary>
-    public unsafe Raw.StaticChannelSet* AsFFI()
+    public unsafe Raw.KerberosConfig* AsFFI()
     {
         return _inner;
     }
@@ -49,14 +49,14 @@ public partial class StaticChannelSet: IDisposable
                 return;
             }
 
-            Raw.StaticChannelSet.Destroy(_inner);
+            Raw.KerberosConfig.Destroy(_inner);
             _inner = null;
 
             GC.SuppressFinalize(this);
         }
     }
 
-    ~StaticChannelSet()
+    ~KerberosConfig()
     {
         Dispose();
     }

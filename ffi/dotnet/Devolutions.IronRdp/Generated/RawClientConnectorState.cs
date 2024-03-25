@@ -4,17 +4,17 @@
 using System;
 using System.Runtime.InteropServices;
 
-using Interop.Diplomat;
+using Devolutions.IronRdp.Diplomat;
 #pragma warning restore 0105
 
-namespace Interop.Raw;
+namespace Devolutions.IronRdp.Raw;
 
 #nullable enable
 
 [StructLayout(LayoutKind.Sequential)]
 public partial struct ClientConnectorState
 {
-    private const string NativeLib = "rust";
+    private const string NativeLib = "DevolutionsIronRdp";
 
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ClientConnectorState_destroy", ExactSpelling = true)]
     public static unsafe extern void Destroy(ClientConnectorState* self);

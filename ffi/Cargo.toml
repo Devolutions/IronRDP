@@ -10,9 +10,15 @@ keywords.workspace = true
 categories.workspace = true
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
-
 [dependencies]
+anyhow = "1.0.81"
 diplomat = "0.7.0"
 diplomat-runtime = "0.7.0"
-ironrdp = {workspace = true, features = ["connector","dvc","svc"]}
+ironrdp = { workspace = true, features = ["connector", "dvc", "svc","rdpdr","rdpsnd"] }
+ironrdp-blocking = { path = "../crates/ironrdp-blocking" }
+rustls = "0.21"
+x509-cert = { version = "0.2", default-features = false, features = ["std"] }
+rustls-pemfile = "2.1"
+sspi = { workspace = true, features = ["network_client"] }
+thiserror.workspace = true
 tracing.workspace = true
