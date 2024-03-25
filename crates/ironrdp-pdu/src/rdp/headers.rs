@@ -528,6 +528,7 @@ impl PduDecode<'_> for ServerDeactivateAll {
     fn decode(src: &mut ReadCursor<'_>) -> PduResult<Self> {
         ensure_fixed_part_size!(in: src);
         let length_source_descriptor = src.read_u16();
+        ensure_size!(in: src, size: length_source_descriptor.into());
         let _ = src.read_slice(length_source_descriptor.into());
         Ok(Self {})
     }
