@@ -1773,6 +1773,7 @@ dependencies = [
  "ironrdp-dvc",
  "ironrdp-pdu",
  "ironrdp-svc",
+ "tokio",
  "tracing",
 ]
 

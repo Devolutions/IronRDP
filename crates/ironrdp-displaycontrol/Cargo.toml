@@ -15,4 +15,5 @@ categories.workspace = true
 ironrdp-dvc.workspace = true
 ironrdp-pdu.workspace = true
 ironrdp-svc.workspace = true
+tokio = "1"
 tracing.workspace = true
