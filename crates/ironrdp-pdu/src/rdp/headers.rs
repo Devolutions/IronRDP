@@ -520,16 +520,23 @@ bitflags! {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServerDeactivateAll;
 
+impl ServerDeactivateAll {
+    const FIXED_PART_SIZE: usize = 2 /* length_source_descriptor */ + 1 /* source_descriptor */;
+}
+
 impl PduDecode<'_> for ServerDeactivateAll {
     fn decode(src: &mut ReadCursor<'_>) -> PduResult<Self> {
+        ensure_fixed_part_size!(in: src);
         let length_source_descriptor = src.read_u16();
+        ensure_size!(in: src, size: length_source_descriptor.into());
         let _ = src.read_slice(length_source_descriptor.into());
-        Ok(Self)
+        Ok(Self {})
     }
 }
 
 impl PduEncode for ServerDeactivateAll {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_fixed_part_size!(in: dst);
         // A 16-bit, unsigned integer. The size in bytes of the sourceDescriptor field.
         dst.write_u16(1);
         // Variable number of bytes. The source descriptor. This field SHOULD be set to 0x00.
@@ -542,6 +549,6 @@ impl PduEncode for ServerDeactivateAll {
     }
 
     fn size(&self) -> usize {
-        2 /* length_source_descriptor */ + 1 /* source_descriptor */
+        Self::FIXED_PART_SIZE
     }
 }

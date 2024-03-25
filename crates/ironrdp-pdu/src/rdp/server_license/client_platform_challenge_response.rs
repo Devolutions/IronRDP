@@ -152,6 +152,7 @@ impl<'de> PduDecode<'de> for ClientPlatformChallengeResponse {
         ensure_size!(in: src, size: encrypted_hwid_blob.length);
         let encrypted_hwid = src.read_slice(encrypted_hwid_blob.length).into();
 
+        ensure_size!(in: src, size: MAC_SIZE);
         let mac_data = src.read_slice(MAC_SIZE).into();
 
         Ok(Self {

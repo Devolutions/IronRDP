@@ -8,7 +8,7 @@ use ironrdp_connector::{
 use ironrdp_pdu::write_buf::WriteBuf;
 
 use crate::framed::{Framed, FramedRead, FramedWrite};
-use crate::AsyncNetworkClient;
+use crate::{single_sequence_step, AsyncNetworkClient};
 
 #[non_exhaustive]
 pub struct ShouldUpgrade;
@@ -23,7 +23,7 @@ where
     info!("Begin connection procedure");
 
     while !connector.should_perform_security_upgrade() {
-        single_connect_step(framed, connector, &mut buf).await?;
+        single_sequence_step(framed, connector, &mut buf).await?;
     }
 
     Ok(ShouldUpgrade)
@@ -73,7 +73,7 @@ where
     }
 
     let result = loop {
-        single_connect_step(framed, &mut connector, &mut buf).await?;
+        single_sequence_step(framed, &mut connector, &mut buf).await?;
 
         if let ClientConnectorState::Connected { result } = connector.state {
             break result;
