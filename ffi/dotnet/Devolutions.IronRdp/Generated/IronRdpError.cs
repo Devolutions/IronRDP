@@ -75,21 +75,6 @@ public partial class IronRdpError: IDisposable
     }
 
     /// <summary>
-    /// Prints the error string.
-    /// </summary>
-    public void Print()
-    {
-        unsafe
-        {
-            if (_inner == null)
-            {
-                throw new ObjectDisposedException("IronRdpError");
-            }
-            Raw.IronRdpError.Print(_inner);
-        }
-    }
-
-    /// <summary>
     /// Returns the error kind.
     /// </summary>
     /// <returns>

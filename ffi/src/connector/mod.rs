@@ -1,3 +1,4 @@
+#![allow(clippy::unnecessary_box_returns)] // Diplomat requires returning Boxed types
 pub mod config;
 pub mod result;
 
@@ -10,7 +11,7 @@ pub mod ffi {
     use crate::{
         error::{
             ffi::{IronRdpError, IronRdpErrorKind},
-            NullPointerError,
+            ValueConsumedError,
         },
         utils::ffi::{SocketAddr, VecU8},
     };
@@ -37,7 +38,7 @@ pub mod ffi {
         /// Must use
         pub fn with_server_addr(&mut self, server_addr: &SocketAddr) -> Result<(), Box<IronRdpError>> {
             let Some(connector) = self.0.take() else {
-                return Err(IronRdpErrorKind::NullPointer.into());
+                return Err(IronRdpErrorKind::Consumed.into());
             };
             let server_addr = server_addr.0;
             self.0 = Some(connector.with_server_addr(server_addr));
@@ -49,7 +50,7 @@ pub mod ffi {
         /// Must use
         pub fn with_static_channel_rdp_snd(&mut self) -> Result<(), Box<IronRdpError>> {
             let Some(connector) = self.0.take() else {
-                return Err(IronRdpErrorKind::NullPointer.into());
+                return Err(IronRdpErrorKind::Consumed.into());
             };
 
             self.0 = Some(connector.with_static_channel(ironrdp::rdpsnd::Rdpsnd::new()));
@@ -65,13 +66,13 @@ pub mod ffi {
             smart_card_device_id: u32,
         ) -> Result<(), Box<IronRdpError>> {
             let Some(connector) = self.0.take() else {
-                return Err(IronRdpErrorKind::NullPointer.into());
+                return Err(ValueConsumedError::for_item("connector").into());
             };
             self.0 = Some(
                 connector.with_static_channel(
                     ironrdp::rdpdr::Rdpdr::new(
                         Box::new(ironrdp::rdpdr::NoopRdpdrBackend {}),
-                        computer_name.to_string(),
+                        computer_name.to_owned(),
                     )
                     .with_smartcard(smart_card_device_id),
                 ),
@@ -82,14 +83,14 @@ pub mod ffi {
 
         pub fn should_perform_security_upgrade(&self) -> Result<bool, Box<IronRdpError>> {
             let Some(connector) = self.0.as_ref() else {
-                return Err(NullPointerError::for_item("connector").into());
+                return Err(ValueConsumedError::for_item("connector").into());
             };
             Ok(connector.should_perform_security_upgrade())
         }
 
         pub fn mark_security_upgrade_as_done(&mut self) -> Result<(), Box<IronRdpError>> {
             let Some(connector) = self.0.as_mut() else {
-                return Err(NullPointerError::for_item("connector").into());
+                return Err(ValueConsumedError::for_item("connector").into());
             };
             connector.mark_security_upgrade_as_done();
             Ok(())
@@ -97,7 +98,7 @@ pub mod ffi {
 
         pub fn should_perform_credssp(&self) -> Result<bool, Box<IronRdpError>> {
             let Some(connector) = self.0.as_ref() else {
-                return Err(NullPointerError::for_item("connector").into());
+                return Err(ValueConsumedError::for_item("connector").into());
             };
 
             Ok(connector.should_perform_credssp())
@@ -105,7 +106,7 @@ pub mod ffi {
 
         pub fn mark_credssp_as_done(&mut self) -> Result<(), Box<IronRdpError>> {
             let Some(connector) = self.0.as_mut() else {
-                return Err(NullPointerError::for_item("connector").into());
+                return Err(ValueConsumedError::for_item("connector").into());
             };
             connector.mark_credssp_as_done();
             Ok(())
@@ -154,18 +155,18 @@ pub mod ffi {
     }
 
     impl ClientConnector {
-        pub fn next_pdu_hint(&self) -> Box<PduHintResult<'_>> {
+        pub fn next_pdu_hint(&self) -> Result<Box<PduHintResult<'_>>, Box<IronRdpError>> {
             let Some(connector) = self.0.as_ref() else {
-                panic!("Inner value is None")
+                return Err(ValueConsumedError::for_item("connector").into());
             };
-            Box::new(PduHintResult(connector.next_pdu_hint()))
+            Ok(Box::new(PduHintResult(connector.next_pdu_hint())))
         }
 
-        pub fn state(&self) -> Box<State<'_>> {
+        pub fn state(&self) -> Result<Box<State<'_>>, Box<IronRdpError>> {
             let Some(connector) = self.0.as_ref() else {
-                panic!("Inner value is None")
+                return Err(ValueConsumedError::for_item("connector").into());
             };
-            Box::new(State(connector.state()))
+            Ok(Box::new(State(connector.state())))
         }
     }
 

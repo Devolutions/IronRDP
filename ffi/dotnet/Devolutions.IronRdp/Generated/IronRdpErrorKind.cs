@@ -16,6 +16,7 @@ public enum IronRdpErrorKind
     Generic = 0,
     PduError = 1,
     SspiError = 2,
-    NullPointer = 3,
+    Consumed = 3,
     IO = 4,
+    AccessDenied = 5,
 }

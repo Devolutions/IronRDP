@@ -21,7 +21,10 @@ mod win {
         let company_name = "Devolutions Inc.";
         let legal_copyright = format!("Copyright 2019-2022 {}", company_name);
 
-        let version_number = env::var("CARGO_PKG_VERSION").unwrap() + ".0";
+        let mut cargo_version = env::var("CARGO_PKG_VERSION").unwrap();
+        cargo_version.push_str(".0");
+
+        let version_number = cargo_version;
         let version_commas = version_number.replace('.', ",");
         let file_description = output_name;
         let file_version = version_number.clone();
@@ -82,7 +85,7 @@ END
         version_rc
     }
 
-    pub fn main_stub() {
+    pub(crate) fn main_stub() {
         let out_dir = env::var("OUT_DIR").unwrap();
         let version_rc_file = format!("{}/version.rc", out_dir);
         let version_rc_data = generate_version_rc();

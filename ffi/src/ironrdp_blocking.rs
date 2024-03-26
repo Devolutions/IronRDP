@@ -7,7 +7,7 @@ pub mod ffi {
         connector::result::ffi::ConnectionResult,
         error::{
             ffi::{IronRdpError, IronRdpErrorKind},
-            NullPointerError,
+            ValueConsumedError,
         },
         tls::TlsStream,
         utils::ffi::{StdTcpStream, VecU8},
@@ -19,7 +19,7 @@ pub mod ffi {
     impl BlockingTcpFrame {
         pub fn from_tcp_stream(stream: &mut StdTcpStream) -> Result<Box<BlockingTcpFrame>, Box<IronRdpError>> {
             let Some(stream) = stream.0.take() else {
-                return Err(NullPointerError::for_item("tcp_stream")
+                return Err(ValueConsumedError::for_item("tcp_stream")
                     .reason("tcp stream has been consumed")
                     .into());
             };
@@ -31,7 +31,7 @@ pub mod ffi {
 
         pub fn into_tcp_steam_no_leftover(&mut self) -> Result<Box<StdTcpStream>, Box<IronRdpError>> {
             let Some(stream) = self.0.take() else {
-                return Err(NullPointerError::for_item("BlockingTcpFrame")
+                return Err(ValueConsumedError::for_item("BlockingTcpFrame")
                     .reason("BlockingTcpFrame has been consumed")
                     .into());
             };
@@ -50,7 +50,7 @@ pub mod ffi {
             stream: &mut crate::tls::ffi::UpgradedStream,
         ) -> Result<Box<BlockingUpgradedFrame>, Box<IronRdpError>> {
             let Some(stream) = stream.0.take() else {
-                return Err(NullPointerError::for_item("upgraded_stream")
+                return Err(ValueConsumedError::for_item("upgraded_stream")
                     .reason("upgraded stream has been consumed")
                     .into());
             };
@@ -80,11 +80,11 @@ pub mod ffi {
             connector: &mut crate::connector::ffi::ClientConnector,
         ) -> Result<Box<ShouldUpgrade>, Box<IronRdpError>> {
             let Some(ref mut connector) = connector.0 else {
-                return Err(IronRdpErrorKind::NullPointer.into());
+                return Err(IronRdpErrorKind::Consumed.into());
             };
 
             let Some(framed) = framed.0.as_mut() else {
-                return Err(NullPointerError::for_item("framed")
+                return Err(ValueConsumedError::for_item("framed")
                     .reason("framed has been consumed")
                     .into());
             };
@@ -99,13 +99,13 @@ pub mod ffi {
             connector: &mut crate::connector::ffi::ClientConnector,
         ) -> Result<Box<Upgraded>, Box<IronRdpError>> {
             let Some(ref mut connector) = connector.0 else {
-                return Err(NullPointerError::for_item("connector")
+                return Err(ValueConsumedError::for_item("connector")
                     .reason("inner connector is missing")
                     .into());
             };
 
             let Some(should_upgrade) = should_upgrade.0.take() else {
-                return Err(NullPointerError::for_item("should_upgrade")
+                return Err(ValueConsumedError::for_item("should_upgrade")
                     .reason("ShouldUpgrade is missing, Note: ShouldUpgrade should be used only once")
                     .into());
             };
@@ -119,7 +119,7 @@ pub mod ffi {
             connector: &mut crate::connector::ffi::ClientConnector,
         ) -> Result<Box<ShouldUpgrade>, Box<IronRdpError>> {
             let Some(ref mut connector) = connector.0 else {
-                return Err(NullPointerError::for_item("connector")
+                return Err(ValueConsumedError::for_item("connector")
                     .reason("inner connector is missing")
                     .into());
             };
@@ -138,19 +138,19 @@ pub mod ffi {
             kerberos_config: Option<&crate::credssp::ffi::KerberosConfig>,
         ) -> Result<Box<ConnectionResult>, Box<IronRdpError>> {
             let Some(connector) = connector.0.take() else {
-                return Err(NullPointerError::for_item("connector")
+                return Err(ValueConsumedError::for_item("connector")
                     .reason("inner connector is missing")
                     .into());
             };
 
             let Some(upgraded) = upgraded.0.take() else {
-                return Err(NullPointerError::for_item("upgraded")
+                return Err(ValueConsumedError::for_item("upgraded")
                     .reason("Upgraded inner is missing, Note: Upgraded should be used only once")
                     .into());
             };
 
             let Some(framed) = upgraded_framed.0.as_mut() else {
-                return Err(NullPointerError::for_item("framed")
+                return Err(ValueConsumedError::for_item("framed")
                     .reason("framed has been consumed")
                     .into());
             };

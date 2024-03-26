@@ -1,7 +1,7 @@
 #[diplomat::bridge]
 pub mod ffi {
 
-    use crate::error::{ffi::IronRdpError, NullPointerError};
+    use crate::error::{ffi::IronRdpError, ValueConsumedError};
 
     #[diplomat::opaque]
     pub struct SocketAddr(pub std::net::SocketAddr);
@@ -13,6 +13,12 @@ pub mod ffi {
                 .to_socket_addrs()?
                 .next()
                 .ok_or("Failed to resolve address")?;
+            Ok(Box::new(SocketAddr(addr)))
+        }
+
+        // named from_ffi_str to avoid conflict with std::net::SocketAddr::from_str
+        pub fn from_ffi_str(addr: &str) -> Result<Box<SocketAddr>, Box<IronRdpError>> {
+            let addr = addr.parse().map_err(|_| "Failed to parse address")?;
             Ok(Box::new(SocketAddr(addr)))
         }
     }
@@ -54,7 +60,7 @@ pub mod ffi {
             let stream = self
                 .0
                 .as_ref()
-                .ok_or_else(|| NullPointerError::for_item("StdTcpStream"))?;
+                .ok_or_else(|| ValueConsumedError::for_item("StdTcpStream"))?;
             stream.set_read_timeout(Some(std::time::Duration::from_secs(5)))?;
             Ok(())
         }

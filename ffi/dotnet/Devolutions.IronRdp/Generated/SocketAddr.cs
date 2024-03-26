@@ -52,6 +52,29 @@ public partial class SocketAddr: IDisposable
         }
     }
 
+    /// <exception cref="IronRdpException"></exception>
+    /// <returns>
+    /// A <c>SocketAddr</c> allocated on Rust side.
+    /// </returns>
+    public static SocketAddr FromFfiStr(string addr)
+    {
+        unsafe
+        {
+            byte[] addrBuf = DiplomatUtils.StringToUtf8(addr);
+            nuint addrBufLength = (nuint)addrBuf.Length;
+            fixed (byte* addrBufPtr = addrBuf)
+            {
+                Raw.UtilsFfiResultBoxSocketAddrBoxIronRdpError result = Raw.SocketAddr.FromFfiStr(addrBufPtr, addrBufLength);
+                if (!result.isOk)
+                {
+                    throw new IronRdpException(new IronRdpError(result.Err));
+                }
+                Raw.SocketAddr* retVal = result.Ok;
+                return new SocketAddr(retVal);
+            }
+        }
+    }
+
     /// <summary>
     /// Returns the underlying raw handle.
     /// </summary>

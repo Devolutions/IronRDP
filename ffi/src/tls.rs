@@ -7,7 +7,7 @@ pub type TlsStream = rustls::StreamOwned<rustls::ClientConnection, TcpStream>;
 #[diplomat::bridge]
 pub mod ffi {
     use crate::{
-        error::{ffi::IronRdpError, NullPointerError},
+        error::{ffi::IronRdpError, ValueConsumedError},
         utils::ffi::VecU8,
     };
 
@@ -28,7 +28,7 @@ pub mod ffi {
     impl TlsUpgradeResult {
         pub fn get_upgraded_stream(&mut self) -> Result<Box<UpgradedStream>, Box<IronRdpError>> {
             let Some(tls_stream) = self.tls_stream.take() else {
-                return Err(NullPointerError::for_item("tls_stream")
+                return Err(ValueConsumedError::for_item("tls_stream")
                     .reason("tls_stream is missing")
                     .into());
             };
@@ -47,7 +47,7 @@ pub mod ffi {
             server_name: &str,
         ) -> Result<Box<TlsUpgradeResult>, Box<IronRdpError>> {
             let Some(stream) = stream.0.take() else {
-                return Err(NullPointerError::for_item("stream")
+                return Err(ValueConsumedError::for_item("stream")
                     .reason("inner stream is missing")
                     .into());
             };

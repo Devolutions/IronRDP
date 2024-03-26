@@ -190,6 +190,7 @@ public partial class ClientConnector: IDisposable
         }
     }
 
+    /// <exception cref="IronRdpException"></exception>
     /// <returns>
     /// A <c>PduHintResult</c> allocated on Rust side.
     /// </returns>
@@ -201,11 +202,17 @@ public partial class ClientConnector: IDisposable
             {
                 throw new ObjectDisposedException("ClientConnector");
             }
-            Raw.PduHintResult* retVal = Raw.ClientConnector.NextPduHint(_inner);
+            Raw.ConnectorFfiResultBoxPduHintResultBoxIronRdpError result = Raw.ClientConnector.NextPduHint(_inner);
+            if (!result.isOk)
+            {
+                throw new IronRdpException(new IronRdpError(result.Err));
+            }
+            Raw.PduHintResult* retVal = result.Ok;
             return new PduHintResult(retVal);
         }
     }
 
+    /// <exception cref="IronRdpException"></exception>
     /// <returns>
     /// A <c>State</c> allocated on Rust side.
     /// </returns>
@@ -217,7 +224,12 @@ public partial class ClientConnector: IDisposable
             {
                 throw new ObjectDisposedException("ClientConnector");
             }
-            Raw.State* retVal = Raw.ClientConnector.State(_inner);
+            Raw.ConnectorFfiResultBoxStateBoxIronRdpError result = Raw.ClientConnector.State(_inner);
+            if (!result.isOk)
+            {
+                throw new IronRdpException(new IronRdpError(result.Err));
+            }
+            Raw.State* retVal = result.Ok;
             return new State(retVal);
         }
     }

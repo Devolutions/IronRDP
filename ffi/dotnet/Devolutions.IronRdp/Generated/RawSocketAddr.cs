@@ -19,6 +19,9 @@ public partial struct SocketAddr
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "SocketAddr_look_up", ExactSpelling = true)]
     public static unsafe extern UtilsFfiResultBoxSocketAddrBoxIronRdpError LookUp(byte* host, nuint hostSz, ushort port);
 
+    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "SocketAddr_from_ffi_str", ExactSpelling = true)]
+    public static unsafe extern UtilsFfiResultBoxSocketAddrBoxIronRdpError FromFfiStr(byte* addr, nuint addrSz);
+
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "SocketAddr_destroy", ExactSpelling = true)]
     public static unsafe extern void Destroy(SocketAddr* self);
 }

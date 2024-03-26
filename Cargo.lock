@@ -1131,7 +1131,6 @@ dependencies = [
  "ironrdp",
  "ironrdp-blocking",
  "rustls",
- "rustls-pemfile 2.1.0",
  "sspi",
  "thiserror",
  "tracing",

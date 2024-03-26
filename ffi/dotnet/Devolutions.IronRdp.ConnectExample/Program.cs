@@ -32,7 +32,6 @@ namespace Devolutions.IronRdp.ConnectExample
 
             ConfigBuilder configBuilder = ConfigBuilder.New();
 
-            // Password is wrong
             configBuilder.WithUsernameAndPasswrord(username, password);
             configBuilder.SetDomain(domain);
             configBuilder.SetDesktopSize(800, 600);

@@ -26,12 +26,6 @@ public partial struct IronRdpError
     public static unsafe extern void ToDisplay(IronRdpError* self, DiplomatWriteable* writeable);
 
     /// <summary>
-    /// Prints the error string.
-    /// </summary>
-    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "IronRdpError_print", ExactSpelling = true)]
-    public static unsafe extern void Print(IronRdpError* self);
-
-    /// <summary>
     /// Returns the error kind.
     /// </summary>
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "IronRdpError_get_kind", ExactSpelling = true)]

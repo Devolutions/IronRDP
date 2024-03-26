@@ -11,7 +11,7 @@ pub mod ffi {
     pub struct Config(pub ironrdp::connector::Config);
 
     impl Config {
-        pub fn get_builder() -> Box<crate::connector::config::ffi::ConfigBuilder> {
+        pub fn get_builder() -> Box<ConfigBuilder> {
             Box::<ConfigBuilder>::default()
         }
     }
@@ -71,13 +71,13 @@ pub mod ffi {
 
         pub fn with_username_and_passwrord(&mut self, username: &str, password: &str) {
             self.credentials = Some(Credentials::UsernamePassword {
-                username: username.to_string(),
-                password: password.to_string(),
+                username: username.to_owned(),
+                password: password.to_owned(),
             });
         }
 
         pub fn set_domain(&mut self, domain: &str) {
-            self.domain = Some(domain.to_string());
+            self.domain = Some(domain.to_owned());
         }
 
         pub fn set_enable_tls(&mut self, enable_tls: bool) {
@@ -101,11 +101,11 @@ pub mod ffi {
         }
 
         pub fn set_ime_file_name(&mut self, ime_file_name: &str) {
-            self.ime_file_name = Some(ime_file_name.to_string());
+            self.ime_file_name = Some(ime_file_name.to_owned());
         }
 
         pub fn set_dig_product_id(&mut self, dig_product_id: &str) {
-            self.dig_product_id = Some(dig_product_id.to_string());
+            self.dig_product_id = Some(dig_product_id.to_owned());
         }
 
         pub fn set_desktop_size(&mut self, height: u16, width: u16) {
@@ -123,11 +123,11 @@ pub mod ffi {
         }
 
         pub fn set_client_name(&mut self, client_name: &str) {
-            self.client_name = Some(client_name.to_string());
+            self.client_name = Some(client_name.to_owned());
         }
 
         pub fn set_client_dir(&mut self, client_dir: &str) {
-            self.client_dir = Some(client_dir.to_string());
+            self.client_dir = Some(client_dir.to_owned());
         }
 
         pub fn set_no_server_pointer(&mut self, no_server_pointer: bool) {
