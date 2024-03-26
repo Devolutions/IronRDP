@@ -12,32 +12,28 @@ pub struct DisplayControlClient {
     /// A callback that will be called when capabilities are received from the server.
     /// If no callback is set, a default (inert) callback will be used.
     on_capabilities_received: OnCapabilitiesReceived,
-}
-
-impl Default for DisplayControlClient {
-    fn default() -> Self {
-        Self::new()
-    }
+    /// Indicates whether the capabilities have been received from the server.
+    ready: bool,
 }
 
 impl DisplayControlClient {
-    pub fn new() -> Self {
-        Self {
-            on_capabilities_received: Box::new(|_| {
-                debug!("No capabilities received callback set, ignoring.");
-                Ok(Vec::new())
-            }),
-        }
-    }
-
-    /// Sets a callback that will be called when capabilities are received from the server.
-    #[must_use]
-    pub fn with_capabilities_received_callback<F>(mut self, callback: F) -> Self
+    /// Creates a new [`DisplayControlClient`] with the given `callback`.
+    ///
+    /// The `callback` will be called when capabilities are received from the server.
+    /// It is important to note that the channel will not be fully operational until the capabilities are received.
+    /// Attempting to send messages before the capabilities are received will result in an error or a silent failure.
+    pub fn new<F>(callback: F) -> Self
     where
         F: Fn(DisplayControlCapabilities) -> PduResult<Vec<DvcMessage>> + Send + Sync + 'static,
     {
-        self.on_capabilities_received = Box::new(callback);
-        self
+        Self {
+            on_capabilities_received: Box::new(callback),
+            ready: false,
+        }
+    }
+
+    pub fn ready(&self) -> bool {
+        self.ready
     }
 
     /// Builds a [`DisplayControlPdu::MonitorLayout`] as an [`SvcMessage`] for a monitor with the given dimensions.
@@ -61,6 +57,7 @@ impl DvcProcessor for DisplayControlClient {
     fn process(&mut self, _channel_id: u32, payload: &[u8]) -> PduResult<Vec<DvcMessage>> {
         let caps = DisplayControlCapabilities::decode(&mut ReadCursor::new(payload))?;
         debug!("received {:?}", caps);
+        self.ready = true;
         (self.on_capabilities_received)(caps)
     }
 }
