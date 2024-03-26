@@ -149,6 +149,10 @@ impl ActiveStage {
         Ok(stage_outputs)
     }
 
+    pub fn set_fastpath_processor(&mut self, processor: fast_path::Processor) {
+        self.fast_path_processor = processor;
+    }
+
     /// Encodes client-side graceful shutdown request. Note that upon sending this request,
     /// client should wait for server's ShutdownDenied PDU before closing the connection.
     ///
@@ -200,7 +204,7 @@ pub enum ActiveStageOutput {
     PointerPosition { x: u16, y: u16 },
     PointerBitmap(Rc<DecodedPointer>),
     Terminate(GracefulDisconnectReason),
-    DeactivateAll(ConnectionActivationSequence),
+    DeactivateAll(Box<ConnectionActivationSequence>),
 }
 
 impl TryFrom<x224::ProcessorOutput> for ActiveStageOutput {
