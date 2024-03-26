@@ -30,6 +30,18 @@ pub enum DisplayControlPdu {
 impl DisplayControlPdu {
     const NAME: &'static str = "DISPLAYCONTROL_HEADER";
     const FIXED_PART_SIZE: usize = 4 /* Type */ + 4 /* Length */;
+
+    /// Creates a new [`DisplayControlPdu::MonitorLayout`] PDU for a single monitor with the given width and height.
+    pub fn create_monitor_layout_pdu(width: u32, height: u32) -> PduResult<Self> {
+        let monitors = vec![
+            MonitorLayoutEntry::new_primary(width, height)?.with_orientation(if width > height {
+                MonitorOrientation::Landscape
+            } else {
+                MonitorOrientation::Portrait
+            }),
+        ];
+        Ok(DisplayControlMonitorLayout::new(&monitors).unwrap().into())
+    }
 }
 
 impl PduEncode for DisplayControlPdu {
