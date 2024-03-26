@@ -97,5 +97,5 @@ END
 
 #[cfg(not(target_os = "windows"))]
 mod other {
-    pub fn main_stub() {}
+    pub(crate) fn main_stub() {}
 }
