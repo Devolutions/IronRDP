@@ -204,7 +204,7 @@ pub enum ActiveStageOutput {
     PointerPosition { x: u16, y: u16 },
     PointerBitmap(Rc<DecodedPointer>),
     Terminate(GracefulDisconnectReason),
-    DeactivateAll(ConnectionActivationSequence),
+    DeactivateAll(Box<ConnectionActivationSequence>),
 }
 
 impl TryFrom<x224::ProcessorOutput> for ActiveStageOutput {

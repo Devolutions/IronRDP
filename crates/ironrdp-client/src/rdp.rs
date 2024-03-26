@@ -1,10 +1,13 @@
 use ironrdp::cliprdr::backend::{ClipboardMessage, CliprdrBackendFactory};
+use ironrdp::connector::connection_activation::ConnectionActivationState;
 use ironrdp::connector::{ConnectionResult, ConnectorResult};
 use ironrdp::graphics::image_processing::PixelFormat;
 use ironrdp::pdu::input::fast_path::FastPathInputEvent;
+use ironrdp::pdu::write_buf::WriteBuf;
 use ironrdp::session::image::DecodedImage;
-use ironrdp::session::{ActiveStage, ActiveStageOutput, GracefulDisconnectReason, SessionResult};
+use ironrdp::session::{fast_path, ActiveStage, ActiveStageOutput, GracefulDisconnectReason, SessionResult};
 use ironrdp::{cliprdr, connector, rdpdr, rdpsnd, session};
+use ironrdp_tokio::single_connect_step_read;
 use rdpdr::NoopRdpdrBackend;
 use smallvec::SmallVec;
 use tokio::net::TcpStream;
@@ -280,7 +283,54 @@ async fn active_session(
                 ActiveStageOutput::PointerBitmap(_) => {
                     // Not applicable, because we use the software cursor rendering.
                 }
-                ActiveStageOutput::DeactivateAll(_) => todo!("DeactivateAll"),
+                ActiveStageOutput::DeactivateAll(mut connection_activation) => {
+                    // Execute the Deactivation-Reactivation Sequence:
+                    // https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/dfc234ce-481a-4674-9a5d-2a7bafb14432
+                    debug!("Received Server Deactivate All PDU, executing Deactivation-Reactivation Sequence");
+                    let mut buf = WriteBuf::new();
+                    'activation_seq: loop {
+                        let written = single_connect_step_read(&mut framed, &mut *connection_activation, &mut buf)
+                            .await
+                            .map_err(|e| session::custom_err!("read deactivation-reactivation sequence step", e))?;
+
+                        if written.size().is_some() {
+                            framed.write_all(buf.filled()).await.map_err(|e| {
+                                session::custom_err!("write deactivation-reactivation sequence step", e)
+                            })?;
+                        }
+
+                        if let ConnectionActivationState::Finalized {
+                            io_channel_id,
+                            user_channel_id,
+                            desktop_size,
+                            graphics_config: _,
+                            no_server_pointer,
+                            pointer_software_rendering,
+                        } = connection_activation.state
+                        {
+                            debug!("Deactivation-Reactivation Sequence completed");
+                            // Reset the image we decode fastpath frames into with
+                            // potentially updated session size.
+                            //
+                            // Note: the compiler apparently loses track of the control flow here,
+                            // hence the need for #[allow(unused_assignments)] at the top of this
+                            // function.
+                            image = DecodedImage::new(PixelFormat::RgbA32, desktop_size.width, desktop_size.height);
+                            // Create a new [`FastPathProcessor`] with potentially updated
+                            // io/user channel ids.
+                            active_stage.set_fastpath_processor(
+                                fast_path::ProcessorBuilder {
+                                    io_channel_id,
+                                    user_channel_id,
+                                    no_server_pointer,
+                                    pointer_software_rendering,
+                                }
+                                .build(),
+                            );
+                            break 'activation_seq;
+                        }
+                    }
+                }
                 ActiveStageOutput::Terminate(reason) => break 'outer reason,
             }
         }

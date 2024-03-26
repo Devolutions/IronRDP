@@ -610,14 +610,15 @@ impl Session {
                             hotspot_y,
                         })?;
                     }
-                    ActiveStageOutput::DeactivateAll(mut connection_activation) => {
+                    ActiveStageOutput::DeactivateAll(mut box_connection_activation) => {
                         // Execute the Deactivation-Reactivation Sequence:
                         // https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/dfc234ce-481a-4674-9a5d-2a7bafb14432
                         debug!("Received Server Deactivate All PDU, executing Deactivation-Reactivation Sequence");
                         let mut buf = WriteBuf::new();
                         'activation_seq: loop {
                             let written =
-                                single_connect_step_read(&mut framed, &mut connection_activation, &mut buf).await?;
+                                single_connect_step_read(&mut framed, &mut *box_connection_activation, &mut buf)
+                                    .await?;
 
                             if written.size().is_some() {
                                 self.writer_tx
@@ -632,7 +633,7 @@ impl Session {
                                 graphics_config: _,
                                 no_server_pointer,
                                 pointer_software_rendering,
-                            } = connection_activation.state
+                            } = box_connection_activation.state
                             {
                                 debug!("Deactivation-Reactivation Sequence completed");
                                 // Reset the image we decode fastpath frames into with
