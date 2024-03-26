@@ -3,7 +3,6 @@ use ironrdp::connector::ConnectorError;
 
 use self::ffi::IronRdpErrorKind;
 
-
 impl From<ConnectorError> for IronRdpErrorKind {
     fn from(val: ConnectorError) -> Self {
         match val.kind {

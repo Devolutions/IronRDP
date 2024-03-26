@@ -70,11 +70,8 @@ pub mod ffi {
             };
             self.0 = Some(
                 connector.with_static_channel(
-                    ironrdp::rdpdr::Rdpdr::new(
-                        Box::new(ironrdp::rdpdr::NoopRdpdrBackend {}),
-                        computer_name.to_owned(),
-                    )
-                    .with_smartcard(smart_card_device_id),
+                    ironrdp::rdpdr::Rdpdr::new(Box::new(ironrdp::rdpdr::NoopRdpdrBackend {}), computer_name.to_owned())
+                        .with_smartcard(smart_card_device_id),
                 ),
             );
 
