@@ -56,7 +56,7 @@ impl DvcProcessor for DisplayControlClient {
 
     fn process(&mut self, _channel_id: u32, payload: &[u8]) -> PduResult<Vec<DvcMessage>> {
         let caps = DisplayControlCapabilities::decode(&mut ReadCursor::new(payload))?;
-        debug!("received {:?}", caps);
+        debug!("Received {:?}", caps);
         self.ready = true;
         (self.on_capabilities_received)(caps)
     }
