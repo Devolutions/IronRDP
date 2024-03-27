@@ -148,7 +148,6 @@ impl DecodingContext {
                 &self.decoding_tiles.tile_output,
                 &clipping_rectangles,
                 &update_rectangle,
-                width,
             )?;
 
             final_update_rectangle = final_update_rectangle.union(&current_update_rectangle);

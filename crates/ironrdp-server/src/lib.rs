@@ -9,6 +9,7 @@ mod display;
 mod encoder;
 mod handler;
 mod server;
+mod utils;
 
 pub use display::*;
 pub use handler::*;

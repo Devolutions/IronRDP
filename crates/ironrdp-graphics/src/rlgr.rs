@@ -3,6 +3,7 @@ use std::io;
 
 use bitvec::field::BitField as _;
 use bitvec::order::Msb0;
+use bitvec::prelude::*;
 use bitvec::slice::BitSlice;
 use ironrdp_pdu::codecs::rfx::EntropyAlgorithm;
 use thiserror::Error;
@@ -35,6 +36,135 @@ macro_rules! try_split_bits {
             $bits.split_to($n)
         }
     };
+}
+
+struct BitStream<'a> {
+    bits: &'a mut BitSlice<u8, Msb0>,
+    idx: usize,
+}
+
+impl<'a> BitStream<'a> {
+    fn new(slice: &'a mut [u8]) -> Self {
+        let bits = slice.view_bits_mut::<Msb0>();
+        Self { bits, idx: 0 }
+    }
+
+    fn output_bit(&mut self, count: usize, val: bool) {
+        self.bits[self.idx..self.idx + count].fill(val);
+        self.idx += count;
+    }
+
+    fn output_bits(&mut self, num_bits: usize, val: u32) {
+        self.bits[self.idx..self.idx + num_bits].store_be(val);
+        self.idx += num_bits;
+    }
+
+    fn len(&self) -> usize {
+        self.idx.div_ceil(8)
+    }
+}
+
+pub fn encode(mode: EntropyAlgorithm, input: &[i16], tile: &mut [u8]) -> Result<usize, RlgrError> {
+    let mut k: u32 = 1;
+    let kr: u32 = 1;
+    let mut kp: u32 = k << LS_GR;
+    let mut krp: u32 = kr << LS_GR;
+
+    if input.is_empty() {
+        return Err(RlgrError::EmptyTile);
+    }
+
+    let mut bits = BitStream::new(tile);
+    let mut input = input.iter().peekable();
+    while input.peek().is_some() {
+        match CompressionMode::from(k) {
+            CompressionMode::RunLength => {
+                let mut nz = 0;
+                while let Some(&&x) = input.peek() {
+                    if x == 0 {
+                        nz += 1;
+                        input.next();
+                    } else {
+                        break;
+                    }
+                }
+                let mut runmax: u32 = 1 << k;
+                while nz >= runmax {
+                    bits.output_bit(1, false);
+                    nz -= runmax;
+                    kp = min(kp + UP_GR, KP_MAX);
+                    k = kp >> LS_GR;
+                    runmax = 1 << k;
+                }
+                bits.output_bit(1, true);
+                bits.output_bits(k as usize, nz);
+
+                if let Some(val) = input.next() {
+                    let mag = val.unsigned_abs() as u32;
+                    bits.output_bit(1, *val < 0);
+                    code_gr(&mut bits, &mut krp, mag - 1);
+                }
+                kp = kp.saturating_sub(DN_GR);
+                k = kp >> LS_GR;
+            }
+            CompressionMode::GolombRice => match mode {
+                EntropyAlgorithm::Rlgr1 => {
+                    let two_ms = get_2magsign(*input.next().unwrap());
+                    code_gr(&mut bits, &mut krp, two_ms);
+                    if two_ms == 0 {
+                        kp = min(kp + UP_GR, KP_MAX);
+                    } else {
+                        kp = kp.saturating_sub(DQ_GR);
+                    }
+                    k = kp >> LS_GR;
+                }
+                EntropyAlgorithm::Rlgr3 => {
+                    let two_ms1 = input.next().map(|&n| get_2magsign(n)).unwrap();
+                    let two_ms2 = input.next().map(|&n| get_2magsign(n)).unwrap_or(1);
+                    let sum2ms = two_ms1 + two_ms2;
+                    code_gr(&mut bits, &mut krp, sum2ms);
+
+                    let m = 32 - sum2ms.leading_zeros() as usize;
+                    if m != 0 {
+                        bits.output_bits(m, two_ms1);
+                    }
+
+                    if two_ms1 != 0 && two_ms2 != 0 {
+                        kp = kp.saturating_sub(2 * DQ_GR);
+                        k = kp >> LS_GR;
+                    } else if two_ms1 == 0 && two_ms2 == 0 {
+                        kp = min(kp + 2 * UQ_GR, KP_MAX);
+                        k = kp >> LS_GR;
+                    }
+                }
+            },
+        }
+    }
+
+    Ok(bits.len())
+}
+
+fn get_2magsign(val: i16) -> u32 {
+    let sign = if val < 0 { 1 } else { 0 };
+
+    (val.unsigned_abs() as u32) * 2 - sign
+}
+
+fn code_gr(bits: &mut BitStream<'_>, krp: &mut u32, val: u32) {
+    let kr = (*krp >> LS_GR) as usize;
+    let vk = (val >> kr) as usize;
+
+    bits.output_bit(vk, true);
+    bits.output_bit(1, false);
+    if kr != 0 {
+        let remainder = val & ((1 << kr) - 1);
+        bits.output_bits(kr, remainder);
+    }
+    if vk == 0 {
+        *krp = krp.saturating_sub(2);
+    } else if vk > 1 {
+        *krp = min(*krp + vk as u32, KP_MAX);
+    }
 }
 
 pub fn decode(mode: EntropyAlgorithm, tile: &[u8], mut output: &mut [i16]) -> Result<(), RlgrError> {

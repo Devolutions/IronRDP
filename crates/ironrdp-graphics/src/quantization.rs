@@ -37,9 +37,81 @@ fn decode_block(buffer: &mut [i16], factor: i16) {
     }
 }
 
+fn encode_block(buffer: &mut [i16], factor: i16) {
+    if factor > 0 {
+        for value in buffer {
+            *value >>= factor;
+        }
+    }
+}
+
+pub fn encode(buffer: &mut [i16], quant: &Quant) {
+    let (first_level, buffer) = buffer.split_at_mut(FIRST_LEVEL_SUBBANDS_COUNT * FIRST_LEVEL_SIZE);
+    let (second_level, third_level) = buffer.split_at_mut(SECOND_LEVEL_SUBBANDS_COUNT * SECOND_LEVEL_SIZE);
+
+    let encode_chunk = |a: (&mut [i16], u8)| encode_block(a.0, a.1 as i16 - 1);
+
+    first_level
+        .chunks_mut(FIRST_LEVEL_SIZE)
+        .zip([quant.hl1, quant.lh1, quant.hh1].iter().copied())
+        .for_each(encode_chunk);
+
+    second_level
+        .chunks_mut(SECOND_LEVEL_SIZE)
+        .zip([quant.hl2, quant.lh2, quant.hh2].iter().copied())
+        .for_each(encode_chunk);
+
+    third_level
+        .chunks_mut(THIRD_LEVEL_SIZE)
+        .zip([quant.hl3, quant.lh3, quant.hh3, quant.ll3].iter().copied())
+        .for_each(encode_chunk);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn encode_does_not_change_buffer_with_null_quant_values() {
+        let mut buffer = DEQUANTIZED_BUFFER;
+        let expected = DEQUANTIZED_BUFFER;
+        let quant = Quant {
+            ll3: 0,
+            lh3: 0,
+            hl3: 0,
+            hh3: 0,
+            lh2: 0,
+            hl2: 0,
+            hh2: 0,
+            lh1: 0,
+            hl1: 0,
+            hh1: 0,
+        };
+
+        encode(&mut buffer, &quant);
+        assert_eq!(expected.as_ref(), buffer.as_ref());
+    }
+
+    #[test]
+    fn encode_works_with_not_empty_quant_values() {
+        let mut buffer = DEQUANTIZED_BUFFER;
+        let expected = QUANTIZED_BUFFER.as_ref();
+        let quant = Quant {
+            ll3: 6,
+            lh3: 6,
+            hl3: 6,
+            hh3: 6,
+            lh2: 7,
+            hl2: 7,
+            hh2: 8,
+            lh1: 8,
+            hl1: 8,
+            hh1: 9,
+        };
+
+        encode(&mut buffer, &quant);
+        assert_eq!(expected, buffer.as_ref());
+    }
 
     #[test]
     fn decode_does_not_change_buffer_with_null_quant_values() {

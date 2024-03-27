@@ -461,6 +461,29 @@ pub struct Quant {
     pub hh1: u8,
 }
 
+// The quantization values control the compression rate and quality. The value
+// range is between 6 and 15. The higher value, the higher compression rate and
+// lower quality.
+//
+// This is the default values being use by the MS RDP server, and we will also
+// use it as our default values for the encoder.
+impl Default for Quant {
+    fn default() -> Self {
+        Self {
+            ll3: 6,
+            lh3: 6,
+            hl3: 6,
+            hh3: 6,
+            lh2: 7,
+            hl2: 7,
+            hh2: 8,
+            lh1: 8,
+            hl1: 8,
+            hh1: 9,
+        }
+    }
+}
+
 impl PduBufferParsing<'_> for Quant {
     type Error = RfxError;
 

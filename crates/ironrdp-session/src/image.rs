@@ -38,6 +38,26 @@ pub struct DecodedImage {
     height: u16,
 }
 
+impl std::fmt::Debug for DecodedImage {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DecodedImage")
+            .field("pixel_format", &self.pixel_format)
+            .field("data_len", &self.data.len())
+            .field("pointer_src_rect", &self.pointer_src_rect)
+            .field("pointer_draw_x", &self.pointer_draw_x)
+            .field("pointer_draw_y", &self.pointer_draw_y)
+            .field("pointer_x", &self.pointer_x)
+            .field("pointer_y", &self.pointer_y)
+            .field("pointer", &self.pointer)
+            .field("pointer_backbuffer", &self.pointer_backbuffer)
+            .field("show_pointer", &self.show_pointer)
+            .field("pointer_visible_on_screen", &self.pointer_visible_on_screen)
+            .field("width", &self.width)
+            .field("height", &self.height)
+            .finish()
+    }
+}
+
 #[derive(PartialEq, Eq)]
 enum PointerLayer {
     Background,
@@ -452,7 +472,6 @@ impl DecodedImage {
         tile_output: &[u8],
         clipping_rectangles: &Region,
         update_rectangle: &InclusiveRectangle,
-        width: u16,
     ) -> SessionResult<InclusiveRectangle> {
         debug!("Tile: {:?}", update_rectangle);
 
@@ -476,7 +495,7 @@ impl DecodedImage {
 
             let mut destination_image_region = ImageRegionMut {
                 region: region_rectangle.clone(),
-                step: width * u16::from(self.pixel_format.bytes_per_pixel()),
+                step: self.width() * u16::from(self.pixel_format.bytes_per_pixel()),
                 pixel_format: self.pixel_format,
                 data: &mut self.data,
             };

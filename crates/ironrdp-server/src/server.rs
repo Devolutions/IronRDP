@@ -9,7 +9,7 @@ use ironrdp_dvc as dvc;
 use ironrdp_pdu::input::fast_path::{FastPathInput, FastPathInputEvent};
 use ironrdp_pdu::input::InputEventPdu;
 use ironrdp_pdu::mcs::SendDataRequest;
-use ironrdp_pdu::rdp::capability_sets::{CapabilitySet, CmdFlags, GeneralExtraFlags};
+use ironrdp_pdu::rdp::capability_sets::{BitmapCodecs, CapabilitySet, CmdFlags, GeneralExtraFlags};
 use ironrdp_pdu::{self, decode, mcs, nego, rdp, Action, PduResult};
 use ironrdp_svc::{server_encode_svc_messages, StaticChannelSet};
 use ironrdp_tokio::{Framed, FramedRead, FramedWrite, TokioFramed};
@@ -290,6 +290,7 @@ impl RdpServer {
             framed.write_all(&response).await?;
         }
 
+        let mut rfxcodec = None;
         let mut surface_flags = CmdFlags::empty();
         for c in result.capabilities {
             match c {
@@ -302,12 +303,35 @@ impl RdpServer {
                 CapabilitySet::SurfaceCommands(c) => {
                     surface_flags = c.flags;
                 }
+                CapabilitySet::BitmapCodecs(BitmapCodecs(codecs)) => {
+                    for codec in codecs {
+                        match codec.property {
+                            // FIXME: encoder operates in image mode anyway
+                            rdp::capability_sets::CodecProperty::RemoteFx(
+                                rdp::capability_sets::RemoteFxContainer::ClientContainer(c),
+                            ) => {
+                                for caps in c.caps_data.0 .0 {
+                                    rfxcodec = Some((caps.entropy_bits, codec.id));
+                                }
+                            }
+                            rdp::capability_sets::CodecProperty::ImageRemoteFx(
+                                rdp::capability_sets::RemoteFxContainer::ClientContainer(c),
+                            ) => {
+                                for caps in c.caps_data.0 .0 {
+                                    rfxcodec = Some((caps.entropy_bits, codec.id));
+                                }
+                            }
+                            rdp::capability_sets::CodecProperty::NsCodec(_) => (),
+                            _ => (),
+                        }
+                    }
+                }
                 _ => {}
             }
         }
 
         let mut buffer = vec![0u8; 4096];
-        let mut encoder = UpdateEncoder::new(surface_flags);
+        let mut encoder = UpdateEncoder::new(surface_flags, rfxcodec);
 
         let mut display_updates = self.display.updates().await?;
 
