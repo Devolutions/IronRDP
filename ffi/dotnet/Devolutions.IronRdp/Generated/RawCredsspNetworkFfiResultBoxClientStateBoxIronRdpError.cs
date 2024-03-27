@@ -12,13 +12,13 @@ namespace Devolutions.IronRdp.Raw;
 #nullable enable
 
 [StructLayout(LayoutKind.Sequential)]
-public partial struct IronrdpBlockingFfiResultBoxStdTcpStreamBoxIronRdpError
+public partial struct CredsspNetworkFfiResultBoxClientStateBoxIronRdpError
 {
     [StructLayout(LayoutKind.Explicit)]
     private unsafe struct InnerUnion
     {
         [FieldOffset(0)]
-        internal StdTcpStream* ok;
+        internal ClientState* ok;
         [FieldOffset(0)]
         internal IronRdpError* err;
     }
@@ -28,7 +28,7 @@ public partial struct IronrdpBlockingFfiResultBoxStdTcpStreamBoxIronRdpError
     [MarshalAs(UnmanagedType.U1)]
     public bool isOk;
 
-    public unsafe StdTcpStream* Ok
+    public unsafe ClientState* Ok
     {
         get
         {

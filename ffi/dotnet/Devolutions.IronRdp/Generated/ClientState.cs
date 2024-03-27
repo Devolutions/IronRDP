@@ -11,12 +11,20 @@ namespace Devolutions.IronRdp;
 
 #nullable enable
 
-public partial class PduHintResult: IDisposable
+public partial class ClientState: IDisposable
 {
-    private unsafe Raw.PduHintResult* _inner;
+    private unsafe Raw.ClientState* _inner;
+
+    public TsRequest TsRequest
+    {
+        get
+        {
+            return GetTsRequest();
+        }
+    }
 
     /// <summary>
-    /// Creates a managed <c>PduHintResult</c> from a raw handle.
+    /// Creates a managed <c>ClientState</c> from a raw handle.
     /// </summary>
     /// <remarks>
     /// Safety: you should not build two managed objects using the same raw handle (may causes use-after-free and double-free).
@@ -24,60 +32,63 @@ public partial class PduHintResult: IDisposable
     /// This constructor assumes the raw struct is allocated on Rust side.
     /// If implemented, the custom Drop implementation on Rust side WILL run on destruction.
     /// </remarks>
-    public unsafe PduHintResult(Raw.PduHintResult* handle)
+    public unsafe ClientState(Raw.ClientState* handle)
     {
         _inner = handle;
     }
 
-    public bool IsSome()
+    public bool IsReplyNeeded()
     {
         unsafe
         {
             if (_inner == null)
             {
-                throw new ObjectDisposedException("PduHintResult");
+                throw new ObjectDisposedException("ClientState");
             }
-            bool retVal = Raw.PduHintResult.IsSome(_inner);
+            bool retVal = Raw.ClientState.IsReplyNeeded(_inner);
+            return retVal;
+        }
+    }
+
+    public bool IsFinalMessage()
+    {
+        unsafe
+        {
+            if (_inner == null)
+            {
+                throw new ObjectDisposedException("ClientState");
+            }
+            bool retVal = Raw.ClientState.IsFinalMessage(_inner);
             return retVal;
         }
     }
 
     /// <exception cref="IronRdpException"></exception>
     /// <returns>
-    /// A <c>OptionalUsize</c> allocated on Rust side.
+    /// A <c>TsRequest</c> allocated on Rust side.
     /// </returns>
-    public OptionalUsize FindSize(VecU8 buffer)
+    public TsRequest GetTsRequest()
     {
         unsafe
         {
             if (_inner == null)
             {
-                throw new ObjectDisposedException("PduHintResult");
+                throw new ObjectDisposedException("ClientState");
             }
-            Raw.VecU8* bufferRaw;
-            bufferRaw = buffer.AsFFI();
-            if (bufferRaw == null)
-            {
-                throw new ObjectDisposedException("VecU8");
-            }
-            Raw.ConnectorFfiResultOptBoxOptionalUsizeBoxIronRdpError result = Raw.PduHintResult.FindSize(_inner, bufferRaw);
+            Raw.CredsspNetworkFfiResultBoxTsRequestBoxIronRdpError result = Raw.ClientState.GetTsRequest(_inner);
             if (!result.isOk)
             {
                 throw new IronRdpException(new IronRdpError(result.Err));
             }
-            Raw.OptionalUsize* retVal = result.Ok;
-            if (retVal == null)
-            {
-                return null;
-            }
-            return new OptionalUsize(retVal);
+            Raw.TsRequest* retVal = result.Ok;
+            return new TsRequest(retVal);
         }
     }
 
     /// <summary>
     /// Returns the underlying raw handle.
     /// </summary>
-    public unsafe Raw.PduHintResult* AsFFI()
+    public unsafe Raw.ClientState* AsFFI()
     {
         return _inner;
     }
@@ -94,14 +105,14 @@ public partial class PduHintResult: IDisposable
                 return;
             }
 
-            Raw.PduHintResult.Destroy(_inner);
+            Raw.ClientState.Destroy(_inner);
             _inner = null;
 
             GC.SuppressFinalize(this);
         }
     }
 
-    ~PduHintResult()
+    ~ClientState()
     {
         Dispose();
     }

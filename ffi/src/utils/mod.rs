@@ -42,6 +42,10 @@ pub mod ffi {
             }
             buffer.copy_from_slice(&self.0)
         }
+
+        pub fn new_empty() -> Box<VecU8> {
+            Box::new(VecU8(Vec::new()))
+        }
     }
 
     #[diplomat::opaque]

@@ -12,10 +12,10 @@ namespace Devolutions.IronRdp.Raw;
 #nullable enable
 
 [StructLayout(LayoutKind.Sequential)]
-public partial struct Upgraded
+public partial struct NetworkRequest
 {
     private const string NativeLib = "DevolutionsIronRdp";
 
-    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "Upgraded_destroy", ExactSpelling = true)]
-    public static unsafe extern void Destroy(Upgraded* self);
+    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "NetworkRequest_destroy", ExactSpelling = true)]
+    public static unsafe extern void Destroy(NetworkRequest* self);
 }

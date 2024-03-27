@@ -13,6 +13,7 @@ pub mod ffi {
             ffi::{IronRdpError, IronRdpErrorKind},
             ValueConsumedError,
         },
+        pdu::ffi::WriteBuf,
         utils::ffi::{SocketAddr, VecU8},
     };
 
@@ -108,12 +109,20 @@ pub mod ffi {
             connector.mark_credssp_as_done();
             Ok(())
         }
+
+        pub fn step(&mut self, input: &VecU8, write_buf: &mut WriteBuf) -> Result<(), Box<IronRdpError>> {
+            let Some(connector) = self.0.as_mut() else {
+                return Err(ValueConsumedError::for_item("connector").into());
+            };
+            connector.step(input.0.as_ref(), &mut write_buf.0)?;
+            Ok(())
+        }
     }
 
     #[diplomat::opaque]
-    pub struct PduHintResult<'a>(pub Option<&'a dyn ironrdp::pdu::PduHint>);
+    pub struct PduHint<'a>(pub Option<&'a dyn ironrdp::pdu::PduHint>);
 
-    impl<'a> PduHintResult<'a> {
+    impl<'a> PduHint<'a> {
         pub fn is_some(&'a self) -> bool {
             self.0.is_some()
         }
@@ -152,11 +161,11 @@ pub mod ffi {
     }
 
     impl ClientConnector {
-        pub fn next_pdu_hint(&self) -> Result<Box<PduHintResult<'_>>, Box<IronRdpError>> {
+        pub fn next_pdu_hint(&self) -> Result<Box<PduHint<'_>>, Box<IronRdpError>> {
             let Some(connector) = self.0.as_ref() else {
                 return Err(ValueConsumedError::for_item("connector").into());
             };
-            Ok(Box::new(PduHintResult(connector.next_pdu_hint())))
+            Ok(Box::new(PduHint(connector.next_pdu_hint())))
         }
 
         pub fn state(&self) -> Result<Box<State<'_>>, Box<IronRdpError>> {

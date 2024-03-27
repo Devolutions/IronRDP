@@ -7,7 +7,7 @@ impl From<ConnectorError> for IronRdpErrorKind {
     fn from(val: ConnectorError) -> Self {
         match val.kind {
             ironrdp::connector::ConnectorErrorKind::Pdu(_) => IronRdpErrorKind::PduError,
-            ironrdp::connector::ConnectorErrorKind::Credssp(_) => IronRdpErrorKind::SspiError,
+            ironrdp::connector::ConnectorErrorKind::Credssp(_) => IronRdpErrorKind::CredsspError,
             ironrdp::connector::ConnectorErrorKind::AccessDenied => IronRdpErrorKind::AccessDenied,
             _ => IronRdpErrorKind::Generic,
         }
@@ -17,6 +17,12 @@ impl From<ConnectorError> for IronRdpErrorKind {
 impl From<&str> for IronRdpErrorKind {
     fn from(_val: &str) -> Self {
         IronRdpErrorKind::Generic
+    }
+}
+
+impl From<sspi::Error> for IronRdpErrorKind {
+    fn from(_val: sspi::Error) -> Self {
+        IronRdpErrorKind::CredsspError
     }
 }
 
@@ -66,7 +72,7 @@ pub mod ffi {
         #[error("PDU error")]
         PduError,
         #[error("CredSSP error")]
-        SspiError,
+        CredsspError,
         #[error("Value is consumed")]
         Consumed,
         #[error("IO error")]

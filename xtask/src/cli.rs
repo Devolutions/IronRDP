@@ -37,7 +37,8 @@ TASKS:
   web install             Install dependencies required to build and run Web Client
   web run                 Run SvelteKit-based standalone Web Client
   ffi build [--release]   Build DLL for FFI (default is debug)
-  ffi bindings            Generate C# bindings for FFI
+  ffi bindings [--skip-dotnet-build]            
+                          Generate C# bindings for FFI, optionally skipping the .NET build
 ";
 
 pub fn print_help() {
@@ -88,9 +89,11 @@ pub enum Action {
     WebInstall,
     WebRun,
     FfiBuildDll {
-        debug: bool,
+        release: bool,
     },
-    FfiBuildBindings,
+    FfiBuildBindings {
+        skip_dotnet_build: bool,
+    },
 }
 
 pub fn parse_args() -> anyhow::Result<Args> {
@@ -160,9 +163,11 @@ pub fn parse_args() -> anyhow::Result<Args> {
             },
             Some("ffi") => match args.subcommand()?.as_deref() {
                 Some("build") => Action::FfiBuildDll {
-                    debug: !args.contains("--release"),
+                    release: args.contains("--release"),
                 },
-                Some("bindings") => Action::FfiBuildBindings,
+                Some("bindings") => Action::FfiBuildBindings {
+                    skip_dotnet_build: args.contains("--skip-dotnet-build"),
+                },
                 Some(unknown) => anyhow::bail!("unknown ffi action: {unknown}"),
                 None => Action::ShowHelp,
             },

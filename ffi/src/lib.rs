@@ -3,10 +3,9 @@ pub mod connector;
 pub mod credssp;
 pub mod dvc;
 pub mod error;
-pub mod ironrdp_blocking;
 pub mod svc;
 pub mod tls;
 pub mod utils;
+pub mod pdu;
 
-use sspi as _; // we need this for network_client and avoid CI failure
 use tracing as _; // need this in the future

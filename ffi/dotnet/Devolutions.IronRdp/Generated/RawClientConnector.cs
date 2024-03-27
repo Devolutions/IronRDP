@@ -49,8 +49,11 @@ public partial struct ClientConnector
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ClientConnector_mark_credssp_as_done", ExactSpelling = true)]
     public static unsafe extern ConnectorFfiResultVoidBoxIronRdpError MarkCredsspAsDone(ClientConnector* self);
 
+    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ClientConnector_step", ExactSpelling = true)]
+    public static unsafe extern ConnectorFfiResultVoidBoxIronRdpError Step(ClientConnector* self, VecU8* input, WriteBuf* writeBuf);
+
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ClientConnector_next_pdu_hint", ExactSpelling = true)]
-    public static unsafe extern ConnectorFfiResultBoxPduHintResultBoxIronRdpError NextPduHint(ClientConnector* self);
+    public static unsafe extern ConnectorFfiResultBoxPduHintBoxIronRdpError NextPduHint(ClientConnector* self);
 
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ClientConnector_state", ExactSpelling = true)]
     public static unsafe extern ConnectorFfiResultBoxStateBoxIronRdpError State(ClientConnector* self);

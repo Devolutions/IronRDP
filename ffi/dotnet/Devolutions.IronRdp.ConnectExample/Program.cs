@@ -1,4 +1,7 @@
 ﻿using System;
+using System.IO.Compression;
+using System.Net;
+using System.Net.Sockets;
 using Devolutions.IronRdp;
 namespace Devolutions.IronRdp.ConnectExample
 {
@@ -22,13 +25,9 @@ namespace Devolutions.IronRdp.ConnectExample
             }
         }
 
-        static void Connect(String servername, String username, String password, String domain)
+        static async void Connect(String servername, String username, String password, String domain)
         {
             SocketAddr serverAddr = SocketAddr.LookUp(servername, 3389);
-
-            StdTcpStream stream = StdTcpStream.Connect(serverAddr);
-
-            BlockingTcpFrame tcpFrame = BlockingTcpFrame.FromTcpStream(stream);
 
             ConfigBuilder configBuilder = ConfigBuilder.New();
 
@@ -43,22 +42,46 @@ namespace Devolutions.IronRdp.ConnectExample
             ClientConnector connector = ClientConnector.New(config);
             connector.WithServerAddr(serverAddr);
 
-            ShouldUpgrade shouldUpgrade = IronRdpBlocking.ConnectBegin(tcpFrame, connector);
+            var writeBuf = WriteBuf.New();
 
-            var tcpStream = tcpFrame.IntoTcpSteamNoLeftover();
+            var stream = await CreateTcpConnection(servername, 3389);
 
-            var tlsUpgradeResult = Tls.TlsUpgrade(tcpStream, servername);
-            var upgraded = IronRdpBlocking.MarkAsUpgraded(shouldUpgrade, connector);
+            while (!connector.ShouldPerformSecurityUpgrade())
+            {
+                SingleConnectStep(connector, writeBuf,stream);
+            }
+        }
 
-            var upgradedStream = tlsUpgradeResult.GetUpgradedStream();
-            var serverPublicKey = tlsUpgradeResult.GetServerPublicKey();
+        static void SingleConnectStep(ClientConnector connector, WriteBuf writeBuf, NetworkStream stream)
+        {
+            var pduHint = connector.NextPduHint();
 
-            var upgradedFrame = BlockingUpgradedFrame.FromUpgradedStream(upgradedStream);
+            if (pduHint.IsSome()) {
+                var pdu = ReadByHints(stream, pduHint);
+                connector.Step(pdu, writeBuf);
+            } else {
+                // connector.Setp
+            }
 
-            var serverName = ServerName.New(servername);
 
-            var connectorResult = IronRdpBlocking.ConnectFinalize(upgraded, upgradedFrame, connector, serverName, serverPublicKey, null);
+        }
+        static async Task<NetworkStream> CreateTcpConnection(String servername, int port)
+        {
+            IPHostEntry ipHostInfo = await Dns.GetHostEntryAsync(servername);
+            IPAddress ipAddress = ipHostInfo.AddressList[0];
+            IPEndPoint ipEndPoint = new(ipAddress, port);
 
+            using TcpClient client = new();
+
+            await client.ConnectAsync(ipEndPoint);
+            using NetworkStream stream = client.GetStream();
+
+            return stream;
+        }
+
+        static VecU8 ReadByHints(NetworkStream stream ,PduHint pduHint) {
+            // TODO: Implement ReadByHints
+            return VecU8.NewEmpty();
         }
     }
 }

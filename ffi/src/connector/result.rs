@@ -1,6 +1,22 @@
 #[diplomat::bridge]
 pub mod ffi {
-    use crate::connector::config::ffi::DesktopSize;
+    use crate::{connector::config::ffi::DesktopSize, utils::ffi::OptionalUsize};
+
+    #[diplomat::opaque]
+    pub struct Written(pub ironrdp::connector::Written);
+
+    impl Written {
+        pub fn is_nothing(&self) -> bool {
+            matches!(self.0, ironrdp::connector::Written::Nothing)
+        }
+
+        pub fn get_size(&self) -> Box<OptionalUsize> {
+            match &self.0 {
+                ironrdp::connector::Written::Size(size) => Box::new(OptionalUsize(Some(size.get()))),
+                ironrdp::connector::Written::Nothing => Box::new(OptionalUsize(None)),
+            }
+        }
+    }
 
     #[diplomat::opaque]
     pub struct ConnectionResult(pub ironrdp::connector::ConnectionResult);

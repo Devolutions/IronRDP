@@ -1,6 +1,6 @@
-pub(crate) fn build_dll(sh: &xshell::Shell, debug: bool) -> anyhow::Result<()> {
+pub(crate) fn build_dll(sh: &xshell::Shell, release: bool) -> anyhow::Result<()> {
     let mut args = vec!["build", "--package", "ffi"];
-    if !debug {
+    if release {
         args.push("--release");
     }
     sh.cmd("cargo").args(&args).run()?;
@@ -11,7 +11,7 @@ pub(crate) fn build_dll(sh: &xshell::Shell, debug: bool) -> anyhow::Result<()> {
 use std::fs;
 use std::path::Path;
 
-pub(crate) fn build_bindings(sh: &xshell::Shell) -> anyhow::Result<()> {
+pub(crate) fn build_bindings(sh: &xshell::Shell, skip_dotnet_build: bool) -> anyhow::Result<()> {
     let dotnet_generated_path = "./dotnet/Devolutions.IronRdp/Generated/";
     let diplomat_config = "./dotnet-interop-conf.toml";
 
@@ -29,6 +29,17 @@ pub(crate) fn build_bindings(sh: &xshell::Shell) -> anyhow::Result<()> {
         .arg(dotnet_generated_path)
         .arg("-l")
         .arg(diplomat_config)
+        .run()?;
+
+    if skip_dotnet_build {
+        return Ok(());
+    }
+
+    sh.change_dir("./dotnet");
+    sh.change_dir("./Devolutions.IronRdp");
+
+    sh.cmd("dotnet")
+        .arg("build")
         .run()?;
 
     Ok(())

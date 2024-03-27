@@ -11,12 +11,12 @@ namespace Devolutions.IronRdp;
 
 #nullable enable
 
-public partial class ShouldUpgrade: IDisposable
+public partial class TsRequest: IDisposable
 {
-    private unsafe Raw.ShouldUpgrade* _inner;
+    private unsafe Raw.TsRequest* _inner;
 
     /// <summary>
-    /// Creates a managed <c>ShouldUpgrade</c> from a raw handle.
+    /// Creates a managed <c>TsRequest</c> from a raw handle.
     /// </summary>
     /// <remarks>
     /// Safety: you should not build two managed objects using the same raw handle (may causes use-after-free and double-free).
@@ -24,7 +24,7 @@ public partial class ShouldUpgrade: IDisposable
     /// This constructor assumes the raw struct is allocated on Rust side.
     /// If implemented, the custom Drop implementation on Rust side WILL run on destruction.
     /// </remarks>
-    public unsafe ShouldUpgrade(Raw.ShouldUpgrade* handle)
+    public unsafe TsRequest(Raw.TsRequest* handle)
     {
         _inner = handle;
     }
@@ -32,7 +32,7 @@ public partial class ShouldUpgrade: IDisposable
     /// <summary>
     /// Returns the underlying raw handle.
     /// </summary>
-    public unsafe Raw.ShouldUpgrade* AsFFI()
+    public unsafe Raw.TsRequest* AsFFI()
     {
         return _inner;
     }
@@ -49,14 +49,14 @@ public partial class ShouldUpgrade: IDisposable
                 return;
             }
 
-            Raw.ShouldUpgrade.Destroy(_inner);
+            Raw.TsRequest.Destroy(_inner);
             _inner = null;
 
             GC.SuppressFinalize(this);
         }
     }
 
-    ~ShouldUpgrade()
+    ~TsRequest()
     {
         Dispose();
     }

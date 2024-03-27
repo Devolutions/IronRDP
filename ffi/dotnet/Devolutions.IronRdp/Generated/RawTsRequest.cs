@@ -12,10 +12,10 @@ namespace Devolutions.IronRdp.Raw;
 #nullable enable
 
 [StructLayout(LayoutKind.Sequential)]
-public partial struct ShouldUpgrade
+public partial struct TsRequest
 {
     private const string NativeLib = "DevolutionsIronRdp";
 
-    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ShouldUpgrade_destroy", ExactSpelling = true)]
-    public static unsafe extern void Destroy(ShouldUpgrade* self);
+    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "TsRequest_destroy", ExactSpelling = true)]
+    public static unsafe extern void Destroy(TsRequest* self);
 }

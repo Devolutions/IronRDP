@@ -12,13 +12,13 @@ namespace Devolutions.IronRdp.Raw;
 #nullable enable
 
 [StructLayout(LayoutKind.Sequential)]
-public partial struct IronrdpBlockingFfiResultBoxBlockingUpgradedFrameBoxIronRdpError
+public partial struct CredsspFfiResultBoxCredsspSequenceBoxIronRdpError
 {
     [StructLayout(LayoutKind.Explicit)]
     private unsafe struct InnerUnion
     {
         [FieldOffset(0)]
-        internal BlockingUpgradedFrame* ok;
+        internal CredsspSequence* ok;
         [FieldOffset(0)]
         internal IronRdpError* err;
     }
@@ -28,7 +28,7 @@ public partial struct IronrdpBlockingFfiResultBoxBlockingUpgradedFrameBoxIronRdp
     [MarshalAs(UnmanagedType.U1)]
     public bool isOk;
 
-    public unsafe BlockingUpgradedFrame* Ok
+    public unsafe CredsspSequence* Ok
     {
         get
         {

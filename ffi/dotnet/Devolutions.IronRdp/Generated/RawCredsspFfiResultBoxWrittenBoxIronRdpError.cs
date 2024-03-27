@@ -12,13 +12,13 @@ namespace Devolutions.IronRdp.Raw;
 #nullable enable
 
 [StructLayout(LayoutKind.Sequential)]
-public partial struct IronrdpBlockingFfiResultBoxConnectionResultBoxIronRdpError
+public partial struct CredsspFfiResultBoxWrittenBoxIronRdpError
 {
     [StructLayout(LayoutKind.Explicit)]
     private unsafe struct InnerUnion
     {
         [FieldOffset(0)]
-        internal ConnectionResult* ok;
+        internal Written* ok;
         [FieldOffset(0)]
         internal IronRdpError* err;
     }
@@ -28,7 +28,7 @@ public partial struct IronrdpBlockingFfiResultBoxConnectionResultBoxIronRdpError
     [MarshalAs(UnmanagedType.U1)]
     public bool isOk;
 
-    public unsafe ConnectionResult* Ok
+    public unsafe Written* Ok
     {
         get
         {

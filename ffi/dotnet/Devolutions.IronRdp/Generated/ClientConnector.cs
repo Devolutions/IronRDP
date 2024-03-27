@@ -191,10 +191,7 @@ public partial class ClientConnector: IDisposable
     }
 
     /// <exception cref="IronRdpException"></exception>
-    /// <returns>
-    /// A <c>PduHintResult</c> allocated on Rust side.
-    /// </returns>
-    public PduHintResult NextPduHint()
+    public void Step(VecU8 input, WriteBuf writeBuf)
     {
         unsafe
         {
@@ -202,13 +199,45 @@ public partial class ClientConnector: IDisposable
             {
                 throw new ObjectDisposedException("ClientConnector");
             }
-            Raw.ConnectorFfiResultBoxPduHintResultBoxIronRdpError result = Raw.ClientConnector.NextPduHint(_inner);
+            Raw.VecU8* inputRaw;
+            inputRaw = input.AsFFI();
+            if (inputRaw == null)
+            {
+                throw new ObjectDisposedException("VecU8");
+            }
+            Raw.WriteBuf* writeBufRaw;
+            writeBufRaw = writeBuf.AsFFI();
+            if (writeBufRaw == null)
+            {
+                throw new ObjectDisposedException("WriteBuf");
+            }
+            Raw.ConnectorFfiResultVoidBoxIronRdpError result = Raw.ClientConnector.Step(_inner, inputRaw, writeBufRaw);
             if (!result.isOk)
             {
                 throw new IronRdpException(new IronRdpError(result.Err));
             }
-            Raw.PduHintResult* retVal = result.Ok;
-            return new PduHintResult(retVal);
+        }
+    }
+
+    /// <exception cref="IronRdpException"></exception>
+    /// <returns>
+    /// A <c>PduHint</c> allocated on Rust side.
+    /// </returns>
+    public PduHint NextPduHint()
+    {
+        unsafe
+        {
+            if (_inner == null)
+            {
+                throw new ObjectDisposedException("ClientConnector");
+            }
+            Raw.ConnectorFfiResultBoxPduHintBoxIronRdpError result = Raw.ClientConnector.NextPduHint(_inner);
+            if (!result.isOk)
+            {
+                throw new IronRdpException(new IronRdpError(result.Err));
+            }
+            Raw.PduHint* retVal = result.Ok;
+            return new PduHint(retVal);
         }
     }
 

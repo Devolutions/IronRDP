@@ -25,6 +25,9 @@ public partial struct VecU8
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "VecU8_fill", ExactSpelling = true)]
     public static unsafe extern void Fill(VecU8* self, byte* buffer, nuint bufferSz);
 
+    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "VecU8_new_empty", ExactSpelling = true)]
+    public static unsafe extern VecU8* NewEmpty();
+
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "VecU8_destroy", ExactSpelling = true)]
     public static unsafe extern void Destroy(VecU8* self);
 }

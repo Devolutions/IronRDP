@@ -11,12 +11,12 @@ namespace Devolutions.IronRdp;
 
 #nullable enable
 
-public partial class BlockingUpgradedFrame: IDisposable
+public partial class PduHint: IDisposable
 {
-    private unsafe Raw.BlockingUpgradedFrame* _inner;
+    private unsafe Raw.PduHint* _inner;
 
     /// <summary>
-    /// Creates a managed <c>BlockingUpgradedFrame</c> from a raw handle.
+    /// Creates a managed <c>PduHint</c> from a raw handle.
     /// </summary>
     /// <remarks>
     /// Safety: you should not build two managed objects using the same raw handle (may causes use-after-free and double-free).
@@ -24,39 +24,60 @@ public partial class BlockingUpgradedFrame: IDisposable
     /// This constructor assumes the raw struct is allocated on Rust side.
     /// If implemented, the custom Drop implementation on Rust side WILL run on destruction.
     /// </remarks>
-    public unsafe BlockingUpgradedFrame(Raw.BlockingUpgradedFrame* handle)
+    public unsafe PduHint(Raw.PduHint* handle)
     {
         _inner = handle;
     }
 
-    /// <exception cref="IronRdpException"></exception>
-    /// <returns>
-    /// A <c>BlockingUpgradedFrame</c> allocated on Rust side.
-    /// </returns>
-    public static BlockingUpgradedFrame FromUpgradedStream(UpgradedStream stream)
+    public bool IsSome()
     {
         unsafe
         {
-            Raw.UpgradedStream* streamRaw;
-            streamRaw = stream.AsFFI();
-            if (streamRaw == null)
+            if (_inner == null)
             {
-                throw new ObjectDisposedException("UpgradedStream");
+                throw new ObjectDisposedException("PduHint");
             }
-            Raw.IronrdpBlockingFfiResultBoxBlockingUpgradedFrameBoxIronRdpError result = Raw.BlockingUpgradedFrame.FromUpgradedStream(streamRaw);
+            bool retVal = Raw.PduHint.IsSome(_inner);
+            return retVal;
+        }
+    }
+
+    /// <exception cref="IronRdpException"></exception>
+    /// <returns>
+    /// A <c>OptionalUsize</c> allocated on Rust side.
+    /// </returns>
+    public OptionalUsize FindSize(VecU8 buffer)
+    {
+        unsafe
+        {
+            if (_inner == null)
+            {
+                throw new ObjectDisposedException("PduHint");
+            }
+            Raw.VecU8* bufferRaw;
+            bufferRaw = buffer.AsFFI();
+            if (bufferRaw == null)
+            {
+                throw new ObjectDisposedException("VecU8");
+            }
+            Raw.ConnectorFfiResultOptBoxOptionalUsizeBoxIronRdpError result = Raw.PduHint.FindSize(_inner, bufferRaw);
             if (!result.isOk)
             {
                 throw new IronRdpException(new IronRdpError(result.Err));
             }
-            Raw.BlockingUpgradedFrame* retVal = result.Ok;
-            return new BlockingUpgradedFrame(retVal);
+            Raw.OptionalUsize* retVal = result.Ok;
+            if (retVal == null)
+            {
+                return null;
+            }
+            return new OptionalUsize(retVal);
         }
     }
 
     /// <summary>
     /// Returns the underlying raw handle.
     /// </summary>
-    public unsafe Raw.BlockingUpgradedFrame* AsFFI()
+    public unsafe Raw.PduHint* AsFFI()
     {
         return _inner;
     }
@@ -73,14 +94,14 @@ public partial class BlockingUpgradedFrame: IDisposable
                 return;
             }
 
-            Raw.BlockingUpgradedFrame.Destroy(_inner);
+            Raw.PduHint.Destroy(_inner);
             _inner = null;
 
             GC.SuppressFinalize(this);
         }
     }
 
-    ~BlockingUpgradedFrame()
+    ~PduHint()
     {
         Dispose();
     }

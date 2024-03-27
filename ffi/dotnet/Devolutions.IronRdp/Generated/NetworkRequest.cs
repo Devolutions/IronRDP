@@ -11,12 +11,12 @@ namespace Devolutions.IronRdp;
 
 #nullable enable
 
-public partial class Upgraded: IDisposable
+public partial class NetworkRequest: IDisposable
 {
-    private unsafe Raw.Upgraded* _inner;
+    private unsafe Raw.NetworkRequest* _inner;
 
     /// <summary>
-    /// Creates a managed <c>Upgraded</c> from a raw handle.
+    /// Creates a managed <c>NetworkRequest</c> from a raw handle.
     /// </summary>
     /// <remarks>
     /// Safety: you should not build two managed objects using the same raw handle (may causes use-after-free and double-free).
@@ -24,7 +24,7 @@ public partial class Upgraded: IDisposable
     /// This constructor assumes the raw struct is allocated on Rust side.
     /// If implemented, the custom Drop implementation on Rust side WILL run on destruction.
     /// </remarks>
-    public unsafe Upgraded(Raw.Upgraded* handle)
+    public unsafe NetworkRequest(Raw.NetworkRequest* handle)
     {
         _inner = handle;
     }
@@ -32,7 +32,7 @@ public partial class Upgraded: IDisposable
     /// <summary>
     /// Returns the underlying raw handle.
     /// </summary>
-    public unsafe Raw.Upgraded* AsFFI()
+    public unsafe Raw.NetworkRequest* AsFFI()
     {
         return _inner;
     }
@@ -49,14 +49,14 @@ public partial class Upgraded: IDisposable
                 return;
             }
 
-            Raw.Upgraded.Destroy(_inner);
+            Raw.NetworkRequest.Destroy(_inner);
             _inner = null;
 
             GC.SuppressFinalize(this);
         }
     }
 
-    ~Upgraded()
+    ~NetworkRequest()
     {
         Dispose();
     }

@@ -11,12 +11,28 @@ namespace Devolutions.IronRdp;
 
 #nullable enable
 
-public partial class BlockingTcpFrame: IDisposable
+public partial class CredsspSequenceInitResult: IDisposable
 {
-    private unsafe Raw.BlockingTcpFrame* _inner;
+    private unsafe Raw.CredsspSequenceInitResult* _inner;
+
+    public CredsspSequence CredsspSequence
+    {
+        get
+        {
+            return GetCredsspSequence();
+        }
+    }
+
+    public TsRequest TsRequest
+    {
+        get
+        {
+            return GetTsRequest();
+        }
+    }
 
     /// <summary>
-    /// Creates a managed <c>BlockingTcpFrame</c> from a raw handle.
+    /// Creates a managed <c>CredsspSequenceInitResult</c> from a raw handle.
     /// </summary>
     /// <remarks>
     /// Safety: you should not build two managed objects using the same raw handle (may causes use-after-free and double-free).
@@ -24,61 +40,59 @@ public partial class BlockingTcpFrame: IDisposable
     /// This constructor assumes the raw struct is allocated on Rust side.
     /// If implemented, the custom Drop implementation on Rust side WILL run on destruction.
     /// </remarks>
-    public unsafe BlockingTcpFrame(Raw.BlockingTcpFrame* handle)
+    public unsafe CredsspSequenceInitResult(Raw.CredsspSequenceInitResult* handle)
     {
         _inner = handle;
     }
 
     /// <exception cref="IronRdpException"></exception>
     /// <returns>
-    /// A <c>BlockingTcpFrame</c> allocated on Rust side.
+    /// A <c>CredsspSequence</c> allocated on Rust side.
     /// </returns>
-    public static BlockingTcpFrame FromTcpStream(StdTcpStream stream)
-    {
-        unsafe
-        {
-            Raw.StdTcpStream* streamRaw;
-            streamRaw = stream.AsFFI();
-            if (streamRaw == null)
-            {
-                throw new ObjectDisposedException("StdTcpStream");
-            }
-            Raw.IronrdpBlockingFfiResultBoxBlockingTcpFrameBoxIronRdpError result = Raw.BlockingTcpFrame.FromTcpStream(streamRaw);
-            if (!result.isOk)
-            {
-                throw new IronRdpException(new IronRdpError(result.Err));
-            }
-            Raw.BlockingTcpFrame* retVal = result.Ok;
-            return new BlockingTcpFrame(retVal);
-        }
-    }
-
-    /// <exception cref="IronRdpException"></exception>
-    /// <returns>
-    /// A <c>StdTcpStream</c> allocated on Rust side.
-    /// </returns>
-    public StdTcpStream IntoTcpSteamNoLeftover()
+    public CredsspSequence GetCredsspSequence()
     {
         unsafe
         {
             if (_inner == null)
             {
-                throw new ObjectDisposedException("BlockingTcpFrame");
+                throw new ObjectDisposedException("CredsspSequenceInitResult");
             }
-            Raw.IronrdpBlockingFfiResultBoxStdTcpStreamBoxIronRdpError result = Raw.BlockingTcpFrame.IntoTcpSteamNoLeftover(_inner);
+            Raw.CredsspFfiResultBoxCredsspSequenceBoxIronRdpError result = Raw.CredsspSequenceInitResult.GetCredsspSequence(_inner);
             if (!result.isOk)
             {
                 throw new IronRdpException(new IronRdpError(result.Err));
             }
-            Raw.StdTcpStream* retVal = result.Ok;
-            return new StdTcpStream(retVal);
+            Raw.CredsspSequence* retVal = result.Ok;
+            return new CredsspSequence(retVal);
+        }
+    }
+
+    /// <exception cref="IronRdpException"></exception>
+    /// <returns>
+    /// A <c>TsRequest</c> allocated on Rust side.
+    /// </returns>
+    public TsRequest GetTsRequest()
+    {
+        unsafe
+        {
+            if (_inner == null)
+            {
+                throw new ObjectDisposedException("CredsspSequenceInitResult");
+            }
+            Raw.CredsspFfiResultBoxTsRequestBoxIronRdpError result = Raw.CredsspSequenceInitResult.GetTsRequest(_inner);
+            if (!result.isOk)
+            {
+                throw new IronRdpException(new IronRdpError(result.Err));
+            }
+            Raw.TsRequest* retVal = result.Ok;
+            return new TsRequest(retVal);
         }
     }
 
     /// <summary>
     /// Returns the underlying raw handle.
     /// </summary>
-    public unsafe Raw.BlockingTcpFrame* AsFFI()
+    public unsafe Raw.CredsspSequenceInitResult* AsFFI()
     {
         return _inner;
     }
@@ -95,14 +109,14 @@ public partial class BlockingTcpFrame: IDisposable
                 return;
             }
 
-            Raw.BlockingTcpFrame.Destroy(_inner);
+            Raw.CredsspSequenceInitResult.Destroy(_inner);
             _inner = null;
 
             GC.SuppressFinalize(this);
         }
     }
 
-    ~BlockingTcpFrame()
+    ~CredsspSequenceInitResult()
     {
         Dispose();
     }

@@ -11,11 +11,11 @@ namespace Devolutions.IronRdp;
 
 #nullable enable
 
-public partial class VecU8: IDisposable
+public partial class Written: IDisposable
 {
-    private unsafe Raw.VecU8* _inner;
+    private unsafe Raw.Written* _inner;
 
-    public nuint Size
+    public OptionalUsize Size
     {
         get
         {
@@ -24,7 +24,7 @@ public partial class VecU8: IDisposable
     }
 
     /// <summary>
-    /// Creates a managed <c>VecU8</c> from a raw handle.
+    /// Creates a managed <c>Written</c> from a raw handle.
     /// </summary>
     /// <remarks>
     /// Safety: you should not build two managed objects using the same raw handle (may causes use-after-free and double-free).
@@ -32,72 +32,44 @@ public partial class VecU8: IDisposable
     /// This constructor assumes the raw struct is allocated on Rust side.
     /// If implemented, the custom Drop implementation on Rust side WILL run on destruction.
     /// </remarks>
-    public unsafe VecU8(Raw.VecU8* handle)
+    public unsafe Written(Raw.Written* handle)
     {
         _inner = handle;
     }
 
-    /// <returns>
-    /// A <c>VecU8</c> allocated on Rust side.
-    /// </returns>
-    public static VecU8 FromByte(byte[] bytes)
-    {
-        unsafe
-        {
-            nuint bytesLength = (nuint)bytes.Length;
-            fixed (byte* bytesPtr = bytes)
-            {
-                Raw.VecU8* retVal = Raw.VecU8.FromByte(bytesPtr, bytesLength);
-                return new VecU8(retVal);
-            }
-        }
-    }
-
-    public nuint GetSize()
+    public bool IsNothing()
     {
         unsafe
         {
             if (_inner == null)
             {
-                throw new ObjectDisposedException("VecU8");
+                throw new ObjectDisposedException("Written");
             }
-            nuint retVal = Raw.VecU8.GetSize(_inner);
+            bool retVal = Raw.Written.IsNothing(_inner);
             return retVal;
         }
     }
 
-    public void Fill(byte[] buffer)
+    /// <returns>
+    /// A <c>OptionalUsize</c> allocated on Rust side.
+    /// </returns>
+    public OptionalUsize GetSize()
     {
         unsafe
         {
             if (_inner == null)
             {
-                throw new ObjectDisposedException("VecU8");
+                throw new ObjectDisposedException("Written");
             }
-            nuint bufferLength = (nuint)buffer.Length;
-            fixed (byte* bufferPtr = buffer)
-            {
-                Raw.VecU8.Fill(_inner, bufferPtr, bufferLength);
-            }
-        }
-    }
-
-    /// <returns>
-    /// A <c>VecU8</c> allocated on Rust side.
-    /// </returns>
-    public static VecU8 NewEmpty()
-    {
-        unsafe
-        {
-            Raw.VecU8* retVal = Raw.VecU8.NewEmpty();
-            return new VecU8(retVal);
+            Raw.OptionalUsize* retVal = Raw.Written.GetSize(_inner);
+            return new OptionalUsize(retVal);
         }
     }
 
     /// <summary>
     /// Returns the underlying raw handle.
     /// </summary>
-    public unsafe Raw.VecU8* AsFFI()
+    public unsafe Raw.Written* AsFFI()
     {
         return _inner;
     }
@@ -114,14 +86,14 @@ public partial class VecU8: IDisposable
                 return;
             }
 
-            Raw.VecU8.Destroy(_inner);
+            Raw.Written.Destroy(_inner);
             _inner = null;
 
             GC.SuppressFinalize(this);
         }
     }
 
-    ~VecU8()
+    ~Written()
     {
         Dispose();
     }
