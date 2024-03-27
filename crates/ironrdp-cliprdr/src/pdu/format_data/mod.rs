@@ -166,6 +166,10 @@ impl<'a> FormatDataResponse<'a> {
     pub fn into_owned(self) -> OwnedFormatDataResponse {
         self.into_owned_pdu()
     }
+
+    pub fn into_data(self) -> Cow<'a, [u8]> {
+        self.data
+    }
 }
 
 impl PduEncode for FormatDataResponse<'_> {
