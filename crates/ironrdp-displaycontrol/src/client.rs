@@ -24,7 +24,7 @@ impl DisplayControlClient {
     /// Attempting to send messages before the capabilities are received will result in an error or a silent failure.
     pub fn new<F>(callback: F) -> Self
     where
-        F: Fn(DisplayControlCapabilities) -> PduResult<Vec<DvcMessage>> + Send + Sync + 'static,
+        F: Fn(DisplayControlCapabilities) -> PduResult<Vec<DvcMessage>> + Send + 'static,
     {
         Self {
             on_capabilities_received: Box::new(callback),
@@ -64,4 +64,4 @@ impl DvcProcessor for DisplayControlClient {
 
 impl DvcClientProcessor for DisplayControlClient {}
 
-type OnCapabilitiesReceived = Box<dyn Fn(DisplayControlCapabilities) -> PduResult<Vec<DvcMessage>> + Send + Sync>;
+type OnCapabilitiesReceived = Box<dyn Fn(DisplayControlCapabilities) -> PduResult<Vec<DvcMessage>> + Send>;
