@@ -2,6 +2,7 @@
 members = [
   "crates/*",
   "xtask",
+  "ffi",
 ]
 resolver = "2"
 
