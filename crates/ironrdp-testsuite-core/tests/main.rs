@@ -11,6 +11,7 @@
 
 mod clipboard;
 mod displaycontrol;
+mod dvc;
 mod fuzz_regression;
 mod graphics;
 mod input;

@@ -2,6 +2,7 @@
 //!
 //! [1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpedisp/d2954508-f487-48bc-8731-39743e0854a9
 
+use ironrdp_dvc::DvcPduEncode;
 use ironrdp_pdu::cursor::{ReadCursor, WriteCursor};
 use ironrdp_pdu::{ensure_fixed_part_size, invalid_message_err, PduDecode, PduEncode, PduResult};
 
@@ -73,6 +74,8 @@ impl PduEncode for DisplayControlPdu {
     }
 }
 
+impl DvcPduEncode for DisplayControlPdu {}
+
 impl<'de> PduDecode<'de> for DisplayControlPdu {
     fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
         ensure_fixed_part_size!(in: src);
@@ -99,12 +102,28 @@ impl<'de> PduDecode<'de> for DisplayControlPdu {
     }
 }
 
+impl From<DisplayControlCapabilities> for DisplayControlPdu {
+    fn from(caps: DisplayControlCapabilities) -> Self {
+        Self::Caps(caps)
+    }
+}
+
+impl From<DisplayControlMonitorLayout> for DisplayControlPdu {
+    fn from(layout: DisplayControlMonitorLayout) -> Self {
+        Self::MonitorLayout(layout)
+    }
+}
+
+/// 2.2.2.1 DISPLAYCONTROL_CAPS_PDU
+///
 /// Display control channel capabilities PDU.
 ///
 /// INVARIANTS:
 ///     0 <= max_num_monitors <= MAX_SUPPORTED_MONITORS
 ///     0 <= max_monitor_area_factor_a <= MAX_MONITOR_AREA_FACTOR
 ///     0 <= max_monitor_area_factor_b <= MAX_MONITOR_AREA_FACTOR
+///
+/// [2.2.2.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpedisp/8989a211-984e-4ecc-80f3-60694fc4b476
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DisplayControlCapabilities {
     max_num_monitors: u32,
@@ -179,10 +198,14 @@ impl<'de> PduDecode<'de> for DisplayControlCapabilities {
     }
 }
 
+/// [2.2.2.2] DISPLAYCONTROL_MONITOR_LAYOUT_PDU
+///
 /// Sent from client to server to notify about new monitor layout (e.g screen resize).
 ///
 /// INVARIANTS:
 ///     0 <= monitors.length() <= MAX_SUPPORTED_MONITORS
+///
+/// [2.2.2.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpedisp/22741217-12a0-4fb8-b5a0-df43905aaf06
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DisplayControlMonitorLayout {
     monitors: Vec<MonitorLayoutEntry>,
@@ -280,6 +303,9 @@ impl<'de> PduDecode<'de> for DisplayControlMonitorLayout {
     }
 }
 
+/// [2.2.2.2.1] DISPLAYCONTROL_MONITOR_LAYOUT_PDU
+///
+/// [2.2.2.2.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpedisp/ea2de591-9203-42cd-9908-be7a55237d1c
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MonitorLayoutEntry {
     is_primary: bool,

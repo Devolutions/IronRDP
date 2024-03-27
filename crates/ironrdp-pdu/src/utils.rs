@@ -1,5 +1,7 @@
 use byteorder::{LittleEndian, ReadBytesExt as _};
 use num_derive::{FromPrimitive, ToPrimitive};
+use std::fmt::Debug;
+use std::ops::Add;
 
 use crate::cursor::{ReadCursor, WriteCursor};
 use crate::PduResult;
@@ -247,4 +249,45 @@ impl<T> SplitTo for &mut [T] {
 
         a
     }
+}
+
+pub trait CheckedAdd: Sized + Add<Output = Self> {
+    fn checked_add(self, rhs: Self) -> Option<Self>;
+}
+
+// Implement the trait for usize and u32
+impl CheckedAdd for usize {
+    fn checked_add(self, rhs: Self) -> Option<Self> {
+        usize::checked_add(self, rhs)
+    }
+}
+
+impl CheckedAdd for u32 {
+    fn checked_add(self, rhs: Self) -> Option<Self> {
+        u32::checked_add(self, rhs)
+    }
+}
+
+// Utility function for checked addition that returns a PduResult
+pub fn checked_sum<T>(values: &[T]) -> PduResult<T>
+where
+    T: CheckedAdd + Copy + Debug,
+{
+    values.split_first().map_or_else(
+        || Err(other_err!("Empty array provided to checked_sum")),
+        |(&first, rest)| {
+            rest.iter().try_fold(first, |acc, &val| {
+                acc.checked_add(val)
+                    .ok_or_else(|| other_err!("Overflow detected during addition"))
+            })
+        },
+    )
+}
+
+// Utility function that panics on overflow
+pub fn checked_sum_or_panic<T>(values: &[T]) -> T
+where
+    T: CheckedAdd + Copy + Debug,
+{
+    checked_sum::<T>(values).expect("Overflow detected during addition")
 }

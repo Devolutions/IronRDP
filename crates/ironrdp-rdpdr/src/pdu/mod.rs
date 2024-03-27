@@ -3,6 +3,7 @@ use std::mem::size_of;
 
 use ironrdp_pdu::cursor::{ReadCursor, WriteCursor};
 use ironrdp_pdu::{ensure_size, invalid_message_err, unsupported_pdu_err, PduDecode, PduEncode, PduError, PduResult};
+use ironrdp_svc::SvcPduEncode;
 
 use self::efs::{
     ClientDeviceListAnnounce, ClientDriveQueryDirectoryResponse, ClientDriveQueryInformationResponse,
@@ -186,6 +187,8 @@ impl PduEncode for RdpdrPdu {
             }
     }
 }
+
+impl SvcPduEncode for RdpdrPdu {}
 
 impl fmt::Debug for RdpdrPdu {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

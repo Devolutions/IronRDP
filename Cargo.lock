@@ -1667,6 +1667,7 @@ name = "ironrdp-ainput"
 version = "0.1.0"
 dependencies = [
  "bitflags 2.4.2",
+ "ironrdp-dvc",
  "ironrdp-pdu",
  "num-derive",
  "num-traits",
@@ -1769,7 +1770,10 @@ dependencies = [
 name = "ironrdp-displaycontrol"
 version = "0.1.0"
 dependencies = [
+ "ironrdp-dvc",
  "ironrdp-pdu",
+ "ironrdp-svc",
+ "tracing",
 ]
 
 [[package]]
@@ -1899,6 +1903,7 @@ dependencies = [
  "ironrdp-acceptor",
  "ironrdp-ainput",
  "ironrdp-cliprdr",
+ "ironrdp-displaycontrol",
  "ironrdp-dvc",
  "ironrdp-graphics",
  "ironrdp-pdu",
@@ -1913,8 +1918,8 @@ dependencies = [
 name = "ironrdp-session"
 version = "0.1.0"
 dependencies = [
- "bitflags 2.4.2",
  "ironrdp-connector",
+ "ironrdp-dvc",
  "ironrdp-error",
  "ironrdp-graphics",
  "ironrdp-pdu",
@@ -1946,6 +1951,7 @@ dependencies = [
  "ironrdp-cliprdr-format",
  "ironrdp-connector",
  "ironrdp-displaycontrol",
+ "ironrdp-dvc",
  "ironrdp-fuzzing",
  "ironrdp-graphics",
  "ironrdp-input",

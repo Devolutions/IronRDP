@@ -19,6 +19,7 @@ pub use self::lock::*;
 use bitflags::bitflags;
 use ironrdp_pdu::cursor::{ReadCursor, WriteCursor};
 use ironrdp_pdu::{ensure_fixed_part_size, invalid_message_err, PduDecode, PduEncode, PduResult};
+use ironrdp_svc::SvcPduEncode;
 
 const MSG_TYPE_MONITOR_READY: u16 = 0x0001;
 const MSG_TYPE_FORMAT_LIST: u16 = 0x0002;
@@ -214,6 +215,8 @@ impl PduEncode for ClipboardPdu<'_> {
         Self::FIXED_PART_SIZE + variable_size
     }
 }
+
+impl SvcPduEncode for ClipboardPdu<'_> {}
 
 impl<'de> PduDecode<'de> for ClipboardPdu<'de> {
     fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {

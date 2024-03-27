@@ -222,7 +222,7 @@ impl<R: Role> Cliprdr<R> {
     /// implementation when user performs OS-specific copy command (e.g. `Ctrl+C` shortcut on
     /// keyboard)
     pub fn initiate_copy(&self, available_formats: &[ClipboardFormat]) -> PduResult<CliprdrSvcMessages<R>> {
-        let mut pdus = vec![];
+        let mut pdus = Vec::new();
 
         match (self.state, R::is_server()) {
             // When user initiates copy, we should send format list to server.
@@ -275,7 +275,7 @@ impl<R: Role> SvcProcessor for Cliprdr<R> {
         if R::is_server() {
             Ok(vec![self.capabilities()?, self.monitor_ready()?])
         } else {
-            Ok(vec![])
+            Ok(Vec::new())
         }
     }
 

@@ -264,10 +264,7 @@ lazy_static! {
 
 #[test]
 fn from_buffer_correctly_parses_client_new_license_request() {
-    assert_eq!(
-        *CLIENT_NEW_LICENSE_REQUEST,
-        decode(&mut REQUEST_BUFFER.as_slice()).unwrap()
-    );
+    assert_eq!(*CLIENT_NEW_LICENSE_REQUEST, decode(REQUEST_BUFFER.as_slice()).unwrap());
 }
 
 #[test]
