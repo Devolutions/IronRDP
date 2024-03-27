@@ -35,7 +35,7 @@ ironrdp-tokio.workspace = true
 sspi = { workspace = true, features = ["network_client", "dns_resolver"] } # enable additional features
 
 # Windowing and rendering
-winit = "0.28"
+winit = "0.29"
 softbuffer = "0.3"
 
 # CLI
