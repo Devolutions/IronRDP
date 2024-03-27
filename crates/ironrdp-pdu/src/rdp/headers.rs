@@ -158,6 +158,7 @@ pub enum ShareControlPdu {
     ServerDemandActive(ServerDemandActive),
     ClientConfirmActive(ClientConfirmActive),
     Data(ShareDataHeader),
+    ServerDeactivateAll(ServerDeactivateAll),
 }
 
 impl ShareControlPdu {
@@ -168,6 +169,7 @@ impl ShareControlPdu {
             ShareControlPdu::ServerDemandActive(_) => "Server Demand Active PDU",
             ShareControlPdu::ClientConfirmActive(_) => "Client Confirm Active PDU",
             ShareControlPdu::Data(_) => "Data PDU",
+            ShareControlPdu::ServerDeactivateAll(_) => "Server Deactivate All PDU",
         }
     }
 
@@ -176,6 +178,7 @@ impl ShareControlPdu {
             ShareControlPdu::ServerDemandActive(_) => ShareControlPduType::DemandActivePdu,
             ShareControlPdu::ClientConfirmActive(_) => ShareControlPduType::ConfirmActivePdu,
             ShareControlPdu::Data(_) => ShareControlPduType::DataPdu,
+            ShareControlPdu::ServerDeactivateAll(_) => ShareControlPduType::DeactivateAllPdu,
         }
     }
 
@@ -188,6 +191,9 @@ impl ShareControlPdu {
                 Ok(ShareControlPdu::ClientConfirmActive(ClientConfirmActive::decode(src)?))
             }
             ShareControlPduType::DataPdu => Ok(ShareControlPdu::Data(ShareDataHeader::decode(src)?)),
+            ShareControlPduType::DeactivateAllPdu => {
+                Ok(ShareControlPdu::ServerDeactivateAll(ServerDeactivateAll::decode(src)?))
+            }
             _ => Err(invalid_message_err!("share_type", "unexpected share control PDU type")),
         }
     }
@@ -199,6 +205,7 @@ impl PduEncode for ShareControlPdu {
             ShareControlPdu::ServerDemandActive(pdu) => pdu.encode(dst),
             ShareControlPdu::ClientConfirmActive(pdu) => pdu.encode(dst),
             ShareControlPdu::Data(share_data_header) => share_data_header.encode(dst),
+            ShareControlPdu::ServerDeactivateAll(deactivate_all) => deactivate_all.encode(dst),
         }
     }
 
@@ -211,6 +218,7 @@ impl PduEncode for ShareControlPdu {
             ShareControlPdu::ServerDemandActive(pdu) => pdu.size(),
             ShareControlPdu::ClientConfirmActive(pdu) => pdu.size(),
             ShareControlPdu::Data(share_data_header) => share_data_header.size(),
+            ShareControlPdu::ServerDeactivateAll(deactivate_all) => deactivate_all.size(),
         }
     }
 }
@@ -503,5 +511,44 @@ bitflags! {
         const COMPRESSED = 0x20;
         const AT_FRONT = 0x40;
         const FLUSHED = 0x80;
+    }
+}
+
+/// 2.2.3.1 Server Deactivate All PDU
+///
+/// [2.2.3.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/8a29971a-df3c-48da-add2-8ed9a05edc89
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServerDeactivateAll;
+
+impl ServerDeactivateAll {
+    const FIXED_PART_SIZE: usize = 2 /* length_source_descriptor */ + 1 /* source_descriptor */;
+}
+
+impl PduDecode<'_> for ServerDeactivateAll {
+    fn decode(src: &mut ReadCursor<'_>) -> PduResult<Self> {
+        ensure_fixed_part_size!(in: src);
+        let length_source_descriptor = src.read_u16();
+        ensure_size!(in: src, size: length_source_descriptor.into());
+        let _ = src.read_slice(length_source_descriptor.into());
+        Ok(Self {})
+    }
+}
+
+impl PduEncode for ServerDeactivateAll {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        ensure_fixed_part_size!(in: dst);
+        // A 16-bit, unsigned integer. The size in bytes of the sourceDescriptor field.
+        dst.write_u16(1);
+        // Variable number of bytes. The source descriptor. This field SHOULD be set to 0x00.
+        dst.write_u8(0);
+        Ok(())
+    }
+
+    fn name(&self) -> &'static str {
+        "Server Deactivate All"
+    }
+
+    fn size(&self) -> usize {
+        Self::FIXED_PART_SIZE
     }
 }

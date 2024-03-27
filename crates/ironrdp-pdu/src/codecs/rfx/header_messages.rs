@@ -16,11 +16,8 @@ const CHANNEL_SIZE: usize = 5;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SyncPdu;
 
-impl PduBufferParsing<'_> for SyncPdu {
-    type Error = RfxError;
-
-    fn from_buffer_consume(buffer: &mut &[u8]) -> Result<Self, Self::Error> {
-        let header = BlockHeader::from_buffer_consume_with_expected_type(buffer, BlockType::Sync)?;
+impl SyncPdu {
+    pub fn from_buffer_consume_with_header(buffer: &mut &[u8], header: BlockHeader) -> Result<Self, RfxError> {
         let mut buffer = buffer.split_to(header.data_length);
 
         let magic = buffer.read_u32::<LittleEndian>()?;
@@ -33,6 +30,15 @@ impl PduBufferParsing<'_> for SyncPdu {
         } else {
             Ok(Self)
         }
+    }
+}
+
+impl PduBufferParsing<'_> for SyncPdu {
+    type Error = RfxError;
+
+    fn from_buffer_consume(buffer: &mut &[u8]) -> Result<Self, Self::Error> {
+        let header = BlockHeader::from_buffer_consume_with_expected_type(buffer, BlockType::Sync)?;
+        Self::from_buffer_consume_with_header(buffer, header)
     }
 
     fn to_buffer_consume(&self, buffer: &mut &mut [u8]) -> Result<(), Self::Error> {

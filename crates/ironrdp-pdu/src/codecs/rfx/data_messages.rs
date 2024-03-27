@@ -120,11 +120,8 @@ pub struct FrameBeginPdu {
     pub number_of_regions: i16,
 }
 
-impl PduBufferParsing<'_> for FrameBeginPdu {
-    type Error = RfxError;
-
-    fn from_buffer_consume(buffer: &mut &[u8]) -> Result<Self, Self::Error> {
-        let header = BlockHeader::from_buffer_consume_with_expected_type(buffer, BlockType::FrameBegin)?;
+impl FrameBeginPdu {
+    pub fn from_buffer_consume_with_header(buffer: &mut &[u8], header: BlockHeader) -> Result<Self, RfxError> {
         CodecChannelHeader::from_buffer_consume_with_type(buffer, BlockType::FrameBegin)?;
         let mut buffer = buffer.split_to(header.data_length);
 
@@ -135,6 +132,15 @@ impl PduBufferParsing<'_> for FrameBeginPdu {
             index,
             number_of_regions,
         })
+    }
+}
+
+impl PduBufferParsing<'_> for FrameBeginPdu {
+    type Error = RfxError;
+
+    fn from_buffer_consume(buffer: &mut &[u8]) -> Result<Self, Self::Error> {
+        let header = BlockHeader::from_buffer_consume_with_expected_type(buffer, BlockType::FrameBegin)?;
+        Self::from_buffer_consume_with_header(buffer, header)
     }
 
     fn to_buffer_consume(&self, buffer: &mut &mut [u8]) -> Result<(), Self::Error> {
