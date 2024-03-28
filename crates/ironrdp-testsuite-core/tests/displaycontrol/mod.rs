@@ -76,11 +76,18 @@ fn invalid_caps() {
 }
 
 #[test]
+fn monitor_layout_entry_odd_dimensions_adjustment() {
+    let odd_value = 1023;
+    let entry = pdu::MonitorLayoutEntry::new_primary(odd_value, odd_value).expect("valid entry should be created");
+    let (width, height) = entry.dimensions();
+    assert_eq!(width, odd_value - 1);
+    assert_eq!(height, odd_value);
+}
+
+#[test]
 fn invalid_monitor_layout_entry() {
     pdu::MonitorLayoutEntry::new_primary(32 * 1024, 32 * 1024)
         .expect_err("resolution more than 8k should not be allowed");
-
-    pdu::MonitorLayoutEntry::new_primary(1023, 1024).expect_err("only width which is power of two is allowed");
 
     pdu::MonitorLayoutEntry::new_primary(1024, 1024)
         .unwrap()

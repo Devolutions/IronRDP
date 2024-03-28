@@ -190,7 +190,7 @@ impl SvcProcessor for Rdpdr {
     fn process(&mut self, src: &[u8]) -> PduResult<Vec<SvcMessage>> {
         let mut src = ReadCursor::new(src);
         let pdu = decode_cursor::<RdpdrPdu>(&mut src)?;
-        debug!("received {:?}", pdu);
+        debug!("Received {:?}", pdu);
 
         match pdu {
             RdpdrPdu::VersionAndIdPdu(pdu) if pdu.kind == VersionAndIdPduKind::ServerAnnounceRequest => {

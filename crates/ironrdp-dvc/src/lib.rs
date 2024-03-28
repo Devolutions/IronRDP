@@ -42,7 +42,7 @@ pub type DvcMessage = Box<dyn DvcPduEncode>;
 /// The Dynamic Virtual Channel APIs exist to address limitations of Static Virtual Channels:
 ///   - Limited number of channels
 ///   - Packet reconstruction
-pub trait DvcProcessor: AsAny + Send + Sync {
+pub trait DvcProcessor: AsAny + Send {
     /// The name of the channel, e.g. "Microsoft::Windows::RDS::DisplayControl"
     fn channel_name(&self) -> &str;
 
