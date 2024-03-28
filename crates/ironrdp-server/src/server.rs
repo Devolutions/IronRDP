@@ -348,6 +348,11 @@ impl RdpServer {
                 Some(update) = display_updates.next_update() => {
                     let fragmenter = match update {
                         DisplayUpdate::Bitmap(bitmap) => encoder.bitmap(bitmap),
+                        DisplayUpdate::PointerPosition(pos) => { encoder.pointer_position(pos) },
+                        DisplayUpdate::RGBAPointer(ptr) => { encoder.rgba_pointer(ptr) },
+                        DisplayUpdate::ColorPointer(ptr) => { encoder.color_pointer(ptr) },
+                        DisplayUpdate::HidePointer => { encoder.hide_pointer() },
+                        DisplayUpdate::DefaultPointer => { encoder.default_pointer() },
                     };
 
                     let mut fragmenter = match fragmenter {
