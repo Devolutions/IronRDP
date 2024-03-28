@@ -1,5 +1,5 @@
 use crate::{
-    pdu::{DisplayControlCapabilities, DisplayControlPdu},
+    pdu::{DisplayControlCapabilities, DisplayControlMonitorLayout, DisplayControlPdu},
     CHANNEL_NAME,
 };
 use ironrdp_dvc::{encode_dvc_messages, DvcClientProcessor, DvcMessage, DvcProcessor};
@@ -10,7 +10,6 @@ use tracing::debug;
 /// A client for the Display Control Virtual Channel.
 pub struct DisplayControlClient {
     /// A callback that will be called when capabilities are received from the server.
-    /// If no callback is set, a default (inert) callback will be used.
     on_capabilities_received: OnCapabilitiesReceived,
     /// Indicates whether the capabilities have been received from the server.
     ready: bool,
@@ -36,9 +35,15 @@ impl DisplayControlClient {
         self.ready
     }
 
-    /// Builds a [`DisplayControlPdu::MonitorLayout`] as an [`SvcMessage`] for a monitor with the given dimensions.
-    pub fn encode_monitor(&self, channel_id: u32, width: u32, height: u32) -> PduResult<Vec<SvcMessage>> {
-        let pdu = DisplayControlPdu::create_monitor_layout_pdu(width, height)?;
+    /// Builds a [`DisplayControlPdu::MonitorLayout`] with a single primary monitor
+    /// with the given `width` and `height`, and wraps it as an [`SvcMessage`].
+    pub fn encode_single_primary_monitor(
+        &self,
+        channel_id: u32,
+        width: u32,
+        height: u32,
+    ) -> PduResult<Vec<SvcMessage>> {
+        let pdu: DisplayControlPdu = DisplayControlMonitorLayout::new_single_primary_monitor(width, height)?.into();
         encode_dvc_messages(channel_id, vec![Box::new(pdu)], ChannelFlags::empty())
     }
 }
