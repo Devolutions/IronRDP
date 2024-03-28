@@ -15,6 +15,7 @@ use ironrdp_pdu::{self, decode, mcs, nego, rdp, Action, PduResult};
 use ironrdp_svc::{impl_as_any, server_encode_svc_messages, StaticChannelSet};
 use ironrdp_tokio::{Framed, FramedRead, FramedWrite, TokioFramed};
 use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::mpsc;
 use tokio_rustls::TlsAcceptor;
 
 use crate::display::{DisplayUpdate, RdpServerDisplay};
@@ -147,6 +148,17 @@ pub struct RdpServer {
     display: Box<dyn RdpServerDisplay>,
     static_channels: StaticChannelSet,
     cliprdr_factory: Option<Box<dyn CliprdrBackendFactory + Send>>,
+    ev_sender: mpsc::UnboundedSender<ServerEvent>,
+    ev_receiver: mpsc::UnboundedReceiver<ServerEvent>,
+}
+
+#[derive(Debug)]
+pub enum ServerEvent {}
+
+impl ServerEvent {
+    pub fn create_channel() -> (mpsc::UnboundedSender<Self>, mpsc::UnboundedReceiver<Self>) {
+        mpsc::unbounded_channel()
+    }
 }
 
 impl RdpServer {
@@ -156,17 +168,24 @@ impl RdpServer {
         display: Box<dyn RdpServerDisplay>,
         cliprdr_factory: Option<Box<dyn CliprdrBackendFactory + Send>>,
     ) -> Self {
+        let (ev_sender, ev_receiver) = ServerEvent::create_channel();
         Self {
             opts,
             handler: Arc::new(Mutex::new(handler)),
             display,
             static_channels: StaticChannelSet::new(),
             cliprdr_factory,
+            ev_sender,
+            ev_receiver,
         }
     }
 
     pub fn builder() -> builder::RdpServerBuilder<builder::WantsAddr> {
         builder::RdpServerBuilder::new()
+    }
+
+    pub fn event_sender(&self) -> &mpsc::UnboundedSender<ServerEvent> {
+        &self.ev_sender
     }
 
     pub async fn run_connection(&mut self, stream: TcpStream) -> Result<()> {
@@ -372,6 +391,11 @@ impl RdpServer {
                             error!(?error, "Write display update error");
                             break;
                         };
+                    }
+                }
+
+                Some(event) = self.ev_receiver.recv() => {
+                    match event {
                     }
                 }
             }
