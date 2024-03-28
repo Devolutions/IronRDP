@@ -21,7 +21,7 @@ public partial struct PduHint
     public static unsafe extern bool IsSome(PduHint* self);
 
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "PduHint_find_size", ExactSpelling = true)]
-    public static unsafe extern ConnectorFfiResultOptBoxOptionalUsizeBoxIronRdpError FindSize(PduHint* self, VecU8* buffer);
+    public static unsafe extern ConnectorFfiResultOptBoxOptionalUsizeBoxIronRdpError FindSize(PduHint* self, byte* bytes, nuint bytesSz);
 
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "PduHint_destroy", ExactSpelling = true)]
     public static unsafe extern void Destroy(PduHint* self);

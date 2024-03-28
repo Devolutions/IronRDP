@@ -14,10 +14,10 @@ pub mod ffi {
             ValueConsumedError,
         },
         pdu::ffi::WriteBuf,
-        utils::ffi::{SocketAddr, VecU8},
+        utils::ffi::SocketAddr,
     };
 
-    use super::config::ffi::Config;
+    use super::{config::ffi::Config, result::ffi::Written};
 
     #[diplomat::opaque] // We must use Option here, as ClientConnector is not Clone and have functions that consume it
     pub struct ClientConnector(pub Option<ironrdp::connector::ClientConnector>);
@@ -110,12 +110,20 @@ pub mod ffi {
             Ok(())
         }
 
-        pub fn step(&mut self, input: &VecU8, write_buf: &mut WriteBuf) -> Result<(), Box<IronRdpError>> {
+        pub fn step(&mut self, input: &[u8], write_buf: &mut WriteBuf) -> Result<Box<Written>, Box<IronRdpError>> {
             let Some(connector) = self.0.as_mut() else {
                 return Err(ValueConsumedError::for_item("connector").into());
             };
-            connector.step(input.0.as_ref(), &mut write_buf.0)?;
-            Ok(())
+            let written = connector.step(input, &mut write_buf.0)?;
+            Ok(Written(written)).map(Box::new)
+        }
+
+        pub fn step_no_input(&mut self, write_buf: &mut WriteBuf) -> Result<Box<Written>, Box<IronRdpError>> {
+            let Some(connector) = self.0.as_mut() else {
+                return Err(ValueConsumedError::for_item("connector").into());
+            };
+            let written = connector.step_no_input(&mut write_buf.0)?;
+            Ok(Written(written)).map(Box::new)
         }
     }
 
@@ -129,13 +137,13 @@ pub mod ffi {
 
         pub fn find_size(
             &'a self,
-            buffer: &VecU8,
+            bytes: &[u8],
         ) -> Result<Option<Box<crate::utils::ffi::OptionalUsize>>, Box<IronRdpError>> {
             let Some(pdu_hint) = self.0 else {
                 return Ok(None);
             };
 
-            let size = pdu_hint.find_size(buffer.0.as_slice())?;
+            let size = pdu_hint.find_size(bytes)?;
 
             Ok(Some(Box::new(crate::utils::ffi::OptionalUsize(size))))
         }

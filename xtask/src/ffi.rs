@@ -5,6 +5,29 @@ pub(crate) fn build_dll(sh: &xshell::Shell, release: bool) -> anyhow::Result<()>
     }
     sh.cmd("cargo").args(&args).run()?;
 
+    let target_dir = if release {
+        "release"
+    } else {
+        "debug"
+    };
+
+    let mut path = sh.current_dir().clone();
+    path.push("target");
+    path.push(target_dir);
+
+    let dll_name = "ironrdp.dll";
+    let devolution_dll_name = "DevolutionsIronRdp.dll";
+
+    let mut dll_path = path.clone();
+    dll_path.push(dll_name);
+
+    let mut devolution_dll_path = path.clone();
+    devolution_dll_path.push(devolution_dll_name);
+
+    // copy dll_path to devolution_dll_path
+    std::fs::copy(&dll_path, &devolution_dll_path)?;
+    println!("Copied {:?} to {:?}", dll_path, devolution_dll_path);
+
     Ok(())
 }
 

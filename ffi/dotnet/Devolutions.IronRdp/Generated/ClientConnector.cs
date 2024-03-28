@@ -191,7 +191,10 @@ public partial class ClientConnector: IDisposable
     }
 
     /// <exception cref="IronRdpException"></exception>
-    public void Step(VecU8 input, WriteBuf writeBuf)
+    /// <returns>
+    /// A <c>Written</c> allocated on Rust side.
+    /// </returns>
+    public Written Step(byte[] input, WriteBuf writeBuf)
     {
         unsafe
         {
@@ -199,11 +202,37 @@ public partial class ClientConnector: IDisposable
             {
                 throw new ObjectDisposedException("ClientConnector");
             }
-            Raw.VecU8* inputRaw;
-            inputRaw = input.AsFFI();
-            if (inputRaw == null)
+            nuint inputLength = (nuint)input.Length;
+            Raw.WriteBuf* writeBufRaw;
+            writeBufRaw = writeBuf.AsFFI();
+            if (writeBufRaw == null)
             {
-                throw new ObjectDisposedException("VecU8");
+                throw new ObjectDisposedException("WriteBuf");
+            }
+            fixed (byte* inputPtr = input)
+            {
+                Raw.ConnectorFfiResultBoxWrittenBoxIronRdpError result = Raw.ClientConnector.Step(_inner, inputPtr, inputLength, writeBufRaw);
+                if (!result.isOk)
+                {
+                    throw new IronRdpException(new IronRdpError(result.Err));
+                }
+                Raw.Written* retVal = result.Ok;
+                return new Written(retVal);
+            }
+        }
+    }
+
+    /// <exception cref="IronRdpException"></exception>
+    /// <returns>
+    /// A <c>Written</c> allocated on Rust side.
+    /// </returns>
+    public Written StepNoInput(WriteBuf writeBuf)
+    {
+        unsafe
+        {
+            if (_inner == null)
+            {
+                throw new ObjectDisposedException("ClientConnector");
             }
             Raw.WriteBuf* writeBufRaw;
             writeBufRaw = writeBuf.AsFFI();
@@ -211,11 +240,13 @@ public partial class ClientConnector: IDisposable
             {
                 throw new ObjectDisposedException("WriteBuf");
             }
-            Raw.ConnectorFfiResultVoidBoxIronRdpError result = Raw.ClientConnector.Step(_inner, inputRaw, writeBufRaw);
+            Raw.ConnectorFfiResultBoxWrittenBoxIronRdpError result = Raw.ClientConnector.StepNoInput(_inner, writeBufRaw);
             if (!result.isOk)
             {
                 throw new IronRdpException(new IronRdpError(result.Err));
             }
+            Raw.Written* retVal = result.Ok;
+            return new Written(retVal);
         }
     }
 

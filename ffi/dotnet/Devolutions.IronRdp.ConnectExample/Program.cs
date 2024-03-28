@@ -1,13 +1,10 @@
-﻿using System;
-using System.IO.Compression;
-using System.Net;
+﻿using System.Net;
 using System.Net.Sockets;
-using Devolutions.IronRdp;
 namespace Devolutions.IronRdp.ConnectExample
 {
     class Program
     {
-        static void Main(string[] args)
+        static async Task Main(string[] args)
         {
             try
             {
@@ -16,7 +13,7 @@ namespace Devolutions.IronRdp.ConnectExample
                 var password = "DevoLabs123!";
                 var domain = "ad.it-help.ninja";
 
-                Connect(serverName, username, password, domain);
+                await Connect(serverName, username, password, domain);
             }
             catch (IronRdpException e)
             {
@@ -25,7 +22,7 @@ namespace Devolutions.IronRdp.ConnectExample
             }
         }
 
-        static async void Connect(String servername, String username, String password, String domain)
+        static async Task Connect(String servername, String username, String password, String domain)
         {
             SocketAddr serverAddr = SocketAddr.LookUp(servername, 3389);
 
@@ -43,45 +40,67 @@ namespace Devolutions.IronRdp.ConnectExample
             connector.WithServerAddr(serverAddr);
 
             var writeBuf = WriteBuf.New();
-
             var stream = await CreateTcpConnection(servername, 3389);
-
+            Console.WriteLine("Connected to server");
+            var framed = new Framed<NetworkStream>(stream);
             while (!connector.ShouldPerformSecurityUpgrade())
             {
-                SingleConnectStep(connector, writeBuf,stream);
+                await SingleConnectStep(connector, writeBuf, framed);
             }
+
+            Console.WriteLine("need to perform security upgrade");
         }
 
-        static void SingleConnectStep(ClientConnector connector, WriteBuf writeBuf, NetworkStream stream)
+        static async Task SingleConnectStep(ClientConnector connector, WriteBuf buf, Framed<NetworkStream> framed)
         {
-            var pduHint = connector.NextPduHint();
+            buf.Clear();
 
-            if (pduHint.IsSome()) {
-                var pdu = ReadByHints(stream, pduHint);
-                connector.Step(pdu, writeBuf);
-            } else {
-                // connector.Setp
+            var pduHint = connector.NextPduHint();
+            Written written;
+            if (pduHint.IsSome())
+            {
+                byte[] pdu = await framed.ReadByHint(pduHint);
+                written = connector.Step(pdu,buf);
+            }
+            else
+            {
+                written = connector.StepNoInput(buf);
             }
 
+            if (written.IsNothing())
+            {
+                Console.WriteLine("Written is nothing");
+                return;
+            }
 
+            var size = written.GetSize();
+
+            if (!size.IsSome())
+            {
+                Console.WriteLine("Size is nothing");
+                return;
+            }
+            var actualSize = size.Get();
+
+            var response = new byte[actualSize];
+            buf.ReadIntoBuf(response);
+
+            await framed.Write(response);
         }
+
         static async Task<NetworkStream> CreateTcpConnection(String servername, int port)
         {
             IPHostEntry ipHostInfo = await Dns.GetHostEntryAsync(servername);
             IPAddress ipAddress = ipHostInfo.AddressList[0];
             IPEndPoint ipEndPoint = new(ipAddress, port);
 
-            using TcpClient client = new();
+            TcpClient client = new TcpClient();
 
             await client.ConnectAsync(ipEndPoint);
-            using NetworkStream stream = client.GetStream();
+            NetworkStream stream = client.GetStream();
 
             return stream;
         }
 
-        static VecU8 ReadByHints(NetworkStream stream ,PduHint pduHint) {
-            // TODO: Implement ReadByHints
-            return VecU8.NewEmpty();
-        }
     }
 }

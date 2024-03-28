@@ -53,6 +53,27 @@ public partial class WriteBuf: IDisposable
         }
     }
 
+    /// <exception cref="IronRdpException"></exception>
+    public void ReadIntoBuf(byte[] buf)
+    {
+        unsafe
+        {
+            if (_inner == null)
+            {
+                throw new ObjectDisposedException("WriteBuf");
+            }
+            nuint bufLength = (nuint)buf.Length;
+            fixed (byte* bufPtr = buf)
+            {
+                Raw.PduFfiResultVoidBoxIronRdpError result = Raw.WriteBuf.ReadIntoBuf(_inner, bufPtr, bufLength);
+                if (!result.isOk)
+                {
+                    throw new IronRdpException(new IronRdpError(result.Err));
+                }
+            }
+        }
+    }
+
     /// <summary>
     /// Returns the underlying raw handle.
     /// </summary>

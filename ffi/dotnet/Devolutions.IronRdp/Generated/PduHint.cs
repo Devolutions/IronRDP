@@ -46,7 +46,7 @@ public partial class PduHint: IDisposable
     /// <returns>
     /// A <c>OptionalUsize</c> allocated on Rust side.
     /// </returns>
-    public OptionalUsize FindSize(VecU8 buffer)
+    public OptionalUsize FindSize(byte[] bytes)
     {
         unsafe
         {
@@ -54,23 +54,21 @@ public partial class PduHint: IDisposable
             {
                 throw new ObjectDisposedException("PduHint");
             }
-            Raw.VecU8* bufferRaw;
-            bufferRaw = buffer.AsFFI();
-            if (bufferRaw == null)
+            nuint bytesLength = (nuint)bytes.Length;
+            fixed (byte* bytesPtr = bytes)
             {
-                throw new ObjectDisposedException("VecU8");
+                Raw.ConnectorFfiResultOptBoxOptionalUsizeBoxIronRdpError result = Raw.PduHint.FindSize(_inner, bytesPtr, bytesLength);
+                if (!result.isOk)
+                {
+                    throw new IronRdpException(new IronRdpError(result.Err));
+                }
+                Raw.OptionalUsize* retVal = result.Ok;
+                if (retVal == null)
+                {
+                    return null;
+                }
+                return new OptionalUsize(retVal);
             }
-            Raw.ConnectorFfiResultOptBoxOptionalUsizeBoxIronRdpError result = Raw.PduHint.FindSize(_inner, bufferRaw);
-            if (!result.isOk)
-            {
-                throw new IronRdpException(new IronRdpError(result.Err));
-            }
-            Raw.OptionalUsize* retVal = result.Ok;
-            if (retVal == null)
-            {
-                return null;
-            }
-            return new OptionalUsize(retVal);
         }
     }
 
