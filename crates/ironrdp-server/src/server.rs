@@ -252,6 +252,7 @@ impl RdpServer {
 
         self.static_channels = result.static_channels;
         for (_type_id, channel, channel_id) in self.static_channels.iter_mut() {
+            debug!(?channel, ?channel_id, "Start");
             let Some(channel_id) = channel_id else {
                 continue;
             };
@@ -313,10 +314,11 @@ impl RdpServer {
 
         let mut display_updates = self.display.updates().await?;
 
-        'main: loop {
+        loop {
             tokio::select! {
                 frame = framed.read_pdu() => {
                     let Ok((action, bytes)) = frame else {
+                        debug!(?frame, "disconnecting");
                         break;
                     };
 
@@ -330,7 +332,8 @@ impl RdpServer {
                             match self.handle_x224(&mut framed, result.io_channel_id, result.user_channel_id, &bytes).await {
                                 Ok(disconnect) => {
                                     if disconnect {
-                                        break 'main;
+                                        debug!("Got disconnect request");
+                                        break;
                                     }
                                 },
 
@@ -362,6 +365,8 @@ impl RdpServer {
                 }
             }
         }
+
+        debug!("End of client loop");
 
         Ok(())
     }
