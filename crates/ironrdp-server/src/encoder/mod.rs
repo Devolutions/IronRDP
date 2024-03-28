@@ -1,6 +1,7 @@
 pub(crate) mod bitmap;
 pub(crate) mod rfx;
 
+use anyhow::{Context, Result};
 use std::{cmp, mem};
 
 use ironrdp_pdu::cursor::WriteCursor;
@@ -31,7 +32,7 @@ pub(crate) struct UpdateEncoder {
     buffer: Vec<u8>,
     bitmap: BitmapEncoder,
     remotefx: Option<(RfxEncoder, u8)>,
-    update: for<'a> fn(&'a mut UpdateEncoder, BitmapUpdate) -> Option<UpdateFragmenter<'a>>,
+    update: for<'a> fn(&'a mut UpdateEncoder, BitmapUpdate) -> Result<UpdateFragmenter<'a>>,
 }
 
 impl UpdateEncoder {
@@ -52,7 +53,7 @@ impl UpdateEncoder {
         }
     }
 
-    fn encode_pdu(&mut self, pdu: impl PduEncode) -> Option<usize> {
+    fn encode_pdu(&mut self, pdu: impl PduEncode) -> Result<usize> {
         loop {
             let mut cursor = WriteCursor::new(self.buffer.as_mut_slice());
             match pdu.encode(&mut cursor) {
@@ -62,23 +63,20 @@ impl UpdateEncoder {
                         debug!("encoder buffer resized to: {}", self.buffer.len() * 2);
                     }
 
-                    _ => {
-                        debug!("encode error: {:?}", e);
-                        return None;
-                    }
+                    _ => Err(e).context("PDU encode error")?,
                 },
-                Ok(()) => return Some(cursor.pos()),
+                Ok(()) => return Ok(cursor.pos()),
             }
         }
     }
 
-    pub(crate) fn bitmap(&mut self, bitmap: BitmapUpdate) -> Option<UpdateFragmenter<'_>> {
+    pub(crate) fn bitmap(&mut self, bitmap: BitmapUpdate) -> Result<UpdateFragmenter<'_>> {
         let update = self.update;
 
         update(self, bitmap)
     }
 
-    fn bitmap_update(&mut self, bitmap: BitmapUpdate) -> Option<UpdateFragmenter<'_>> {
+    fn bitmap_update(&mut self, bitmap: BitmapUpdate) -> Result<UpdateFragmenter<'_>> {
         let len = loop {
             match self.bitmap.encode(&bitmap, self.buffer.as_mut_slice()) {
                 Err(e) => match e.kind() {
@@ -87,19 +85,16 @@ impl UpdateEncoder {
                         debug!("encoder buffer resized to: {}", self.buffer.len() * 2);
                     }
 
-                    _ => {
-                        debug!("bitmap encode error: {:?}", e);
-                        return None;
-                    }
+                    _ => Err(e).context("bitmap encode error")?,
                 },
                 Ok(len) => break len,
             }
         };
 
-        return Some(UpdateFragmenter::new(UpdateCode::Bitmap, &self.buffer[..len]));
+        Ok(UpdateFragmenter::new(UpdateCode::Bitmap, &self.buffer[..len]))
     }
 
-    fn set_surface(&mut self, bitmap: BitmapUpdate, codec_id: u8, data: Vec<u8>) -> Option<UpdateFragmenter<'_>> {
+    fn set_surface(&mut self, bitmap: BitmapUpdate, codec_id: u8, data: Vec<u8>) -> Result<UpdateFragmenter<'_>> {
         let destination = ExclusiveRectangle {
             left: bitmap.left,
             top: bitmap.top,
@@ -119,28 +114,19 @@ impl UpdateEncoder {
             extended_bitmap_data,
         };
         let cmd = SurfaceCommand::SetSurfaceBits(pdu);
-        let Some(len) = self.encode_pdu(cmd) else {
-            return None;
-        };
-
-        Some(UpdateFragmenter::new(UpdateCode::SurfaceCommands, &self.buffer[..len]))
+        let len = self.encode_pdu(cmd)?;
+        Ok(UpdateFragmenter::new(UpdateCode::SurfaceCommands, &self.buffer[..len]))
     }
 
-    fn remotefx_update(&mut self, bitmap: BitmapUpdate) -> Option<UpdateFragmenter<'_>> {
+    fn remotefx_update(&mut self, bitmap: BitmapUpdate) -> Result<UpdateFragmenter<'_>> {
         let (remotefx, codec_id) = self.remotefx.as_mut().unwrap();
         let codec_id = *codec_id;
-        let data = match remotefx.encode(&bitmap) {
-            Ok(data) => data,
-            Err(e) => {
-                debug!("remotefx encode error: {:?}", e);
-                return None;
-            }
-        };
+        let data = remotefx.encode(&bitmap).context("RemoteFX encoding")?;
 
         self.set_surface(bitmap, codec_id, data)
     }
 
-    fn none_update(&mut self, mut bitmap: BitmapUpdate) -> Option<UpdateFragmenter<'_>> {
+    fn none_update(&mut self, mut bitmap: BitmapUpdate) -> Result<UpdateFragmenter<'_>> {
         let data = match bitmap.order {
             PixelOrder::BottomToTop => mem::take(&mut bitmap.data),
             PixelOrder::TopToBottom => {
