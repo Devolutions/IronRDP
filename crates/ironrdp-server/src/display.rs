@@ -1,4 +1,5 @@
 use anyhow::Result;
+use ironrdp_pdu::pointer::PointerPositionAttribute;
 use std::num::NonZeroU16;
 
 pub use ironrdp_acceptor::DesktopSize;
@@ -12,12 +13,36 @@ pub use ironrdp_graphics::image_processing::PixelFormat;
 #[derive(Debug, Clone)]
 pub enum DisplayUpdate {
     Bitmap(BitmapUpdate),
+    PointerPosition(PointerPositionAttribute),
+    ColorPointer(ColorPointer),
+    RGBAPointer(RGBAPointer),
+    HidePointer,
+    DefaultPointer,
 }
 
 #[derive(Debug, Clone, Copy)]
 pub enum PixelOrder {
     TopToBottom,
     BottomToTop,
+}
+
+#[derive(Debug, Clone)]
+pub struct RGBAPointer {
+    pub width: u16,
+    pub height: u16,
+    pub hot_x: u16,
+    pub hot_y: u16,
+    pub data: Vec<u8>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ColorPointer {
+    pub width: u16,
+    pub height: u16,
+    pub hot_x: u16,
+    pub hot_y: u16,
+    pub and_mask: Vec<u8>,
+    pub xor_mask: Vec<u8>,
 }
 
 /// Bitmap Display Update

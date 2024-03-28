@@ -7,11 +7,12 @@ use std::{cmp, mem};
 use ironrdp_pdu::cursor::WriteCursor;
 use ironrdp_pdu::fast_path::{EncryptionFlags, FastPathHeader, FastPathUpdatePdu, Fragmentation, UpdateCode};
 use ironrdp_pdu::geometry::ExclusiveRectangle;
+use ironrdp_pdu::pointer::{ColorPointerAttribute, Point16, PointerAttribute, PointerPositionAttribute};
 use ironrdp_pdu::rdp::capability_sets::{CmdFlags, EntropyBits};
 use ironrdp_pdu::surface_commands::{ExtendedBitmapDataPdu, SurfaceBitsPdu, SurfaceCommand};
 use ironrdp_pdu::PduEncode;
 
-use crate::PixelOrder;
+use crate::{ColorPointer, PixelOrder, RGBAPointer};
 
 use self::bitmap::BitmapEncoder;
 use self::rfx::RfxEncoder;
@@ -68,6 +69,61 @@ impl UpdateEncoder {
                 Ok(()) => return Ok(cursor.pos()),
             }
         }
+    }
+
+    pub(crate) fn rgba_pointer(&mut self, ptr: RGBAPointer) -> Result<UpdateFragmenter<'_>> {
+        let xor_mask = ptr.data;
+
+        let hot_spot = Point16 {
+            x: ptr.hot_x,
+            y: ptr.hot_y,
+        };
+        let color_pointer = ColorPointerAttribute {
+            cache_index: 0,
+            hot_spot,
+            width: ptr.width,
+            height: ptr.height,
+            xor_mask: &xor_mask,
+            and_mask: &[],
+        };
+        let ptr = PointerAttribute {
+            xor_bpp: 32,
+            color_pointer,
+        };
+        let len = self.encode_pdu(ptr)?;
+        Ok(UpdateFragmenter::new(UpdateCode::NewPointer, &self.buffer[..len]))
+    }
+
+    pub(crate) fn color_pointer(&mut self, ptr: ColorPointer) -> Result<UpdateFragmenter<'_>> {
+        let hot_spot = Point16 {
+            x: ptr.hot_x,
+            y: ptr.hot_y,
+        };
+        let ptr = ColorPointerAttribute {
+            cache_index: 0,
+            hot_spot,
+            width: ptr.width,
+            height: ptr.height,
+            xor_mask: &ptr.xor_mask,
+            and_mask: &ptr.and_mask,
+        };
+        let len = self.encode_pdu(ptr)?;
+        Ok(UpdateFragmenter::new(UpdateCode::ColorPointer, &self.buffer[..len]))
+    }
+
+    #[allow(clippy::unused_self)]
+    pub(crate) fn default_pointer(&mut self) -> Result<UpdateFragmenter<'_>> {
+        Ok(UpdateFragmenter::new(UpdateCode::DefaultPointer, &[]))
+    }
+
+    #[allow(clippy::unused_self)]
+    pub(crate) fn hide_pointer(&mut self) -> Result<UpdateFragmenter<'_>> {
+        Ok(UpdateFragmenter::new(UpdateCode::HiddenPointer, &[]))
+    }
+
+    pub(crate) fn pointer_position(&mut self, pos: PointerPositionAttribute) -> Result<UpdateFragmenter<'_>> {
+        let len = self.encode_pdu(pos)?;
+        Ok(UpdateFragmenter::new(UpdateCode::PositionPointer, &self.buffer[..len]))
     }
 
     pub(crate) fn bitmap(&mut self, bitmap: BitmapUpdate) -> Result<UpdateFragmenter<'_>> {
