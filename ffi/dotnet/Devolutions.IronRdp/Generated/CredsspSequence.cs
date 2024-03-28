@@ -53,10 +53,11 @@ public partial class CredsspSequence: IDisposable
     /// <returns>
     /// A <c>CredsspSequenceInitResult</c> allocated on Rust side.
     /// </returns>
-    public static CredsspSequenceInitResult Init(ClientConnector connector, ServerName serverName, VecU8 serverPublicKey, KerberosConfig? kerberoConfigs)
+    public static CredsspSequenceInitResult Init(ClientConnector connector, ServerName serverName, byte[] serverPublicKey, KerberosConfig? kerberoConfigs)
     {
         unsafe
         {
+            nuint serverPublicKeyLength = (nuint)serverPublicKey.Length;
             Raw.ClientConnector* connectorRaw;
             connectorRaw = connector.AsFFI();
             if (connectorRaw == null)
@@ -68,12 +69,6 @@ public partial class CredsspSequence: IDisposable
             if (serverNameRaw == null)
             {
                 throw new ObjectDisposedException("ServerName");
-            }
-            Raw.VecU8* serverPublicKeyRaw;
-            serverPublicKeyRaw = serverPublicKey.AsFFI();
-            if (serverPublicKeyRaw == null)
-            {
-                throw new ObjectDisposedException("VecU8");
             }
             Raw.KerberosConfig* kerberoConfigsRaw;
             if (kerberoConfigs == null)
@@ -88,13 +83,16 @@ public partial class CredsspSequence: IDisposable
                     throw new ObjectDisposedException("KerberosConfig");
                 }
             }
-            Raw.CredsspFfiResultBoxCredsspSequenceInitResultBoxIronRdpError result = Raw.CredsspSequence.Init(connectorRaw, serverNameRaw, serverPublicKeyRaw, kerberoConfigsRaw);
-            if (!result.isOk)
+            fixed (byte* serverPublicKeyPtr = serverPublicKey)
             {
-                throw new IronRdpException(new IronRdpError(result.Err));
+                Raw.CredsspFfiResultBoxCredsspSequenceInitResultBoxIronRdpError result = Raw.CredsspSequence.Init(connectorRaw, serverNameRaw, serverPublicKeyPtr, serverPublicKeyLength, kerberoConfigsRaw);
+                if (!result.isOk)
+                {
+                    throw new IronRdpException(new IronRdpError(result.Err));
+                }
+                Raw.CredsspSequenceInitResult* retVal = result.Ok;
+                return new CredsspSequenceInitResult(retVal);
             }
-            Raw.CredsspSequenceInitResult* retVal = result.Ok;
-            return new CredsspSequenceInitResult(retVal);
         }
     }
 
@@ -102,7 +100,7 @@ public partial class CredsspSequence: IDisposable
     /// <returns>
     /// A <c>TsRequest</c> allocated on Rust side.
     /// </returns>
-    public TsRequest DecodeServerMessage(VecU8 pdu)
+    public TsRequest DecodeServerMessage(byte[] pdu)
     {
         unsafe
         {
@@ -110,23 +108,21 @@ public partial class CredsspSequence: IDisposable
             {
                 throw new ObjectDisposedException("CredsspSequence");
             }
-            Raw.VecU8* pduRaw;
-            pduRaw = pdu.AsFFI();
-            if (pduRaw == null)
+            nuint pduLength = (nuint)pdu.Length;
+            fixed (byte* pduPtr = pdu)
             {
-                throw new ObjectDisposedException("VecU8");
+                Raw.CredsspFfiResultOptBoxTsRequestBoxIronRdpError result = Raw.CredsspSequence.DecodeServerMessage(_inner, pduPtr, pduLength);
+                if (!result.isOk)
+                {
+                    throw new IronRdpException(new IronRdpError(result.Err));
+                }
+                Raw.TsRequest* retVal = result.Ok;
+                if (retVal == null)
+                {
+                    return null;
+                }
+                return new TsRequest(retVal);
             }
-            Raw.CredsspFfiResultOptBoxTsRequestBoxIronRdpError result = Raw.CredsspSequence.DecodeServerMessage(_inner, pduRaw);
-            if (!result.isOk)
-            {
-                throw new IronRdpException(new IronRdpError(result.Err));
-            }
-            Raw.TsRequest* retVal = result.Ok;
-            if (retVal == null)
-            {
-                return null;
-            }
-            return new TsRequest(retVal);
         }
     }
 

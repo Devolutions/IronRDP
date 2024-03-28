@@ -20,10 +20,10 @@ public partial struct CredsspSequence
     public static unsafe extern PduHint* NextPduHint(CredsspSequence* self);
 
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "CredsspSequence_init", ExactSpelling = true)]
-    public static unsafe extern CredsspFfiResultBoxCredsspSequenceInitResultBoxIronRdpError Init(ClientConnector* connector, ServerName* serverName, VecU8* serverPublicKey, KerberosConfig* kerberoConfigs);
+    public static unsafe extern CredsspFfiResultBoxCredsspSequenceInitResultBoxIronRdpError Init(ClientConnector* connector, ServerName* serverName, byte* serverPublicKey, nuint serverPublicKeySz, KerberosConfig* kerberoConfigs);
 
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "CredsspSequence_decode_server_message", ExactSpelling = true)]
-    public static unsafe extern CredsspFfiResultOptBoxTsRequestBoxIronRdpError DecodeServerMessage(CredsspSequence* self, VecU8* pdu);
+    public static unsafe extern CredsspFfiResultOptBoxTsRequestBoxIronRdpError DecodeServerMessage(CredsspSequence* self, byte* pdu, nuint pduSz);
 
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "CredsspSequence_process_ts_request", ExactSpelling = true)]
     public static unsafe extern CredsspFfiResultBoxCredsspProcessGeneratorBoxIronRdpError ProcessTsRequest(CredsspSequence* self, TsRequest* tsRequest);

@@ -54,7 +54,7 @@ pub mod ffi {
         pub fn init(
             connector: &ClientConnector,
             server_name: &ServerName,
-            server_public_key: &VecU8,
+            server_public_key: &[u8],
             kerbero_configs: Option<&KerberosConfig>,
         ) -> Result<Box<CredsspSequenceInitResult>, Box<IronRdpError>> {
             let Some(connector) = connector.0.as_ref() else {
@@ -64,7 +64,7 @@ pub mod ffi {
             let (credssp_sequence, ts_request) = ironrdp::connector::credssp::CredsspSequence::init(
                 connector,
                 server_name.0.clone(),
-                server_public_key.0.clone(),
+                server_public_key.to_owned(),
                 kerbero_configs.map(|config| config.0.clone()),
             )?;
 
@@ -75,8 +75,8 @@ pub mod ffi {
             .map(Box::new);
         }
 
-        pub fn decode_server_message(&mut self, pdu: &VecU8) -> Result<Option<Box<TsRequest>>, Box<IronRdpError>> {
-            let ts_request = self.0.decode_server_message(&pdu.0)?;
+        pub fn decode_server_message(&mut self, pdu: &[u8]) -> Result<Option<Box<TsRequest>>, Box<IronRdpError>> {
+            let ts_request = self.0.decode_server_message(&pdu)?;
             Ok(ts_request.map(|ts_request| Box::new(TsRequest(ts_request))))
         }
 

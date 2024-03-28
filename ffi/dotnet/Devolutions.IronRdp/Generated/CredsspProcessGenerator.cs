@@ -55,7 +55,7 @@ public partial class CredsspProcessGenerator: IDisposable
     /// <returns>
     /// A <c>GeneratorState</c> allocated on Rust side.
     /// </returns>
-    public GeneratorState Resume(VecU8 response)
+    public GeneratorState Resume(byte[] response)
     {
         unsafe
         {
@@ -63,19 +63,17 @@ public partial class CredsspProcessGenerator: IDisposable
             {
                 throw new ObjectDisposedException("CredsspProcessGenerator");
             }
-            Raw.VecU8* responseRaw;
-            responseRaw = response.AsFFI();
-            if (responseRaw == null)
+            nuint responseLength = (nuint)response.Length;
+            fixed (byte* responsePtr = response)
             {
-                throw new ObjectDisposedException("VecU8");
+                Raw.CredsspNetworkFfiResultBoxGeneratorStateBoxIronRdpError result = Raw.CredsspProcessGenerator.Resume(_inner, responsePtr, responseLength);
+                if (!result.isOk)
+                {
+                    throw new IronRdpException(new IronRdpError(result.Err));
+                }
+                Raw.GeneratorState* retVal = result.Ok;
+                return new GeneratorState(retVal);
             }
-            Raw.CredsspNetworkFfiResultBoxGeneratorStateBoxIronRdpError result = Raw.CredsspProcessGenerator.Resume(_inner, responseRaw);
-            if (!result.isOk)
-            {
-                throw new IronRdpException(new IronRdpError(result.Err));
-            }
-            Raw.GeneratorState* retVal = result.Ok;
-            return new GeneratorState(retVal);
         }
     }
 

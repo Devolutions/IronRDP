@@ -21,12 +21,18 @@ public class Framed<S> where S : Stream
         return this.buffer.ToArray();
     }
 
-    public async Task ReadExact(nuint size)
+    public async Task<byte[]> ReadExact(nuint size)
     {
-        var buffer = new byte[size];
-        Memory<byte> memory = buffer;
-        await this.stream.ReadExactlyAsync(memory);
-        this.buffer.AddRange(buffer);
+        while (true) {
+            if (buffer.Count >= (int)size) {
+                return this.buffer.Skip((int)size).ToArray();
+            }
+
+            var len = await this.Read();
+            if (len == 0) {
+                throw new Exception("EOF");
+            }
+        }
     }
 
     async Task<int> Read() {

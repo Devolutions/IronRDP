@@ -1,6 +1,7 @@
 #![allow(clippy::unnecessary_box_returns)] // Diplomat requires returning Boxed types
 pub mod config;
 pub mod result;
+pub mod state;
 
 #[diplomat::bridge]
 pub mod ffi {
@@ -21,9 +22,6 @@ pub mod ffi {
 
     #[diplomat::opaque] // We must use Option here, as ClientConnector is not Clone and have functions that consume it
     pub struct ClientConnector(pub Option<ironrdp::connector::ClientConnector>);
-
-    #[diplomat::opaque]
-    pub struct ClientConnectorState(pub ironrdp::connector::ClientConnectorState);
 
     #[diplomat::opaque]
     pub struct ServerName(pub ironrdp::connector::ServerName);

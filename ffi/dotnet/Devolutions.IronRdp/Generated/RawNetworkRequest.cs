@@ -16,6 +16,15 @@ public partial struct NetworkRequest
 {
     private const string NativeLib = "DevolutionsIronRdp";
 
+    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "NetworkRequest_get_data", ExactSpelling = true)]
+    public static unsafe extern VecU8* GetData(NetworkRequest* self);
+
+    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "NetworkRequest_get_protocol", ExactSpelling = true)]
+    public static unsafe extern NetworkRequestProtocol GetProtocol(NetworkRequest* self);
+
+    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "NetworkRequest_get_url", ExactSpelling = true)]
+    public static unsafe extern CredsspNetworkFfiResultVoidBoxIronRdpError GetUrl(NetworkRequest* self, DiplomatWriteable* writeable);
+
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "NetworkRequest_destroy", ExactSpelling = true)]
     public static unsafe extern void Destroy(NetworkRequest* self);
 }

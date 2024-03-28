@@ -17,6 +17,14 @@ pub mod ffi {
     #[diplomat::opaque]
     pub struct NetworkRequest<'a>(pub &'a sspi::generator::NetworkRequest);
 
+    #[diplomat::enum_convert(sspi::network_client::NetworkProtocol)]
+    pub enum NetworkRequestProtocol {
+        Tcp,
+        Udp,
+        Http,
+        Https,
+    }
+
     #[diplomat::opaque]
     pub struct ClientState(pub sspi::credssp::ClientState);
 
@@ -26,8 +34,8 @@ pub mod ffi {
             Ok(Box::new(GeneratorState(state)))
         }
 
-        pub fn resume(&mut self, response: &VecU8) -> Result<Box<GeneratorState>, Box<IronRdpError>> {
-            let state = self.0.resume(Ok(response.0.clone()));
+        pub fn resume(&mut self, response: &[u8]) -> Result<Box<GeneratorState>, Box<IronRdpError>> {
+            let state = self.0.resume(Ok(response.to_owned()));
             Ok(Box::new(GeneratorState(state)))
         }
     }
@@ -71,6 +79,23 @@ pub mod ffi {
                 sspi::credssp::ClientState::ReplyNeeded(ts_request) => Ok(Box::new(TsRequest(ts_request.clone()))),
                 sspi::credssp::ClientState::FinalMessage(ts_request) => Ok(Box::new(TsRequest(ts_request.clone()))),
             }
+        }
+    }
+
+    impl<'a> NetworkRequest<'a> {
+        pub fn get_data(&self) -> Box<VecU8> {
+            Box::new(VecU8(self.0.data.to_vec()))
+        }
+
+        pub fn get_protocol(&self) -> NetworkRequestProtocol {
+            self.0.protocol.into()
+        }
+
+        pub fn get_url(&self, writeable: &mut diplomat_runtime::DiplomatWriteable) -> Result<(), Box<IronRdpError>> {
+            use std::fmt::Write;
+            let url: &str = self.0.url.as_ref();
+            write!(writeable, "{}", url)?;
+            Ok(())
         }
     }
 }

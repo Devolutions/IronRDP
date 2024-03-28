@@ -1,5 +1,7 @@
 ﻿using System.Net;
+using System.Net.Security;
 using System.Net.Sockets;
+using System.Security.Cryptography.X509Certificates;
 namespace Devolutions.IronRdp.ConnectExample
 {
     class Program
@@ -48,10 +50,129 @@ namespace Devolutions.IronRdp.ConnectExample
                 await SingleConnectStep(connector, writeBuf, framed);
             }
 
+
             Console.WriteLine("need to perform security upgrade");
+            var (streamRequireUpgrade, _) = framed.GetInner();
+            byte[] serverpubkey = new byte[0];
+
+            var promise = new TaskCompletionSource<bool>();
+            var sslStream = new SslStream(streamRequireUpgrade, false, (sender, certificate, chain, sslPolicyErrors) =>
+            {
+                serverpubkey = certificate!.GetPublicKey();
+                promise.SetResult(true);
+                return true;
+            });
+            await sslStream.AuthenticateAsClientAsync(servername);
+            await promise.Task;
+
+            var framedSsl = new Framed<SslStream>(sslStream);
+            connector.MarkSecurityUpgradeAsDone();
+            Console.WriteLine("Security upgrade done");
+            if (connector.ShouldPerformCredssp())
+            {
+                Console.WriteLine("Performing CredSSP");
+                await PerformCredsspSteps(connector, ServerName.New(servername), writeBuf, framedSsl, serverpubkey);
+            }
+
+            Console.WriteLine("Performing RDP");
+            while (!connector.State().IsTerminal())
+            {
+                await SingleConnectStep(connector, writeBuf, framedSsl);
+            }
+
+
         }
 
-        static async Task SingleConnectStep(ClientConnector connector, WriteBuf buf, Framed<NetworkStream> framed)
+        private static async Task PerformCredsspSteps(ClientConnector connector, ServerName serverName, WriteBuf writeBuf, Framed<SslStream> framedSsl, byte[] serverpubkey)
+        {
+            var credsspSequenceInitResult = CredsspSequence.Init(connector, serverName, serverpubkey, null);
+            var credsspSequence = credsspSequenceInitResult.GetCredsspSequence();
+            var tsRequest = credsspSequenceInitResult.GetTsRequest();
+            TcpClient tcpClient = new TcpClient();
+            while (true)
+            {
+                var generator = credsspSequence.ProcessTsRequest(tsRequest);
+                Console.WriteLine("Resolving generator");
+                var clientState = await ResolveGenerator(generator,tcpClient);
+                Console.WriteLine("Generator resolved");
+                writeBuf.Clear();
+                var written = credsspSequence.HandleProcessResult(clientState, writeBuf);
+
+                if (written.GetSize().IsSome())
+                {
+                    var actualSize = (int)written.GetSize().Get();
+                    var response = new byte[actualSize];
+                    writeBuf.ReadIntoBuf(response);
+                    await framedSsl.Write(response);
+                }
+
+                var pduHint = credsspSequence.NextPduHint()!;
+                if (!pduHint.IsSome())
+                {
+                    break;
+                }
+
+                var pdu = await framedSsl.ReadByHint(pduHint);
+                var decoded = credsspSequence.DecodeServerMessage(pdu);
+
+                if (null == decoded)
+                {
+                    break;
+                }
+
+                tsRequest = decoded;
+            }
+        }
+
+        private static async Task<ClientState> ResolveGenerator(CredsspProcessGenerator generator, TcpClient tcpClient)
+        {
+            var state = generator.Start();
+            Console.WriteLine("Starting generator");
+            NetworkStream stream = null;
+            while (true)
+            {
+                if (state.IsSuspended())
+                {
+                    Console.WriteLine("Generator is suspended");
+                    var request = state.GetNetworkRequestIfSuspended()!;
+                    var protocol = request.GetProtocol();
+                    var url = request.GetUrl();
+                    var data = request.GetData();
+                    Console.WriteLine("Sending request to " + url);
+                    if (null == stream)
+                    {
+                        url = url.Replace("tcp://", "");
+                        var split = url.Split(":");
+                        Console.WriteLine("Connecting to " + split[0] + " on port " + split[1]);
+                        await tcpClient.ConnectAsync(split[0], int.Parse(split[1]));
+                        stream = tcpClient.GetStream();
+                        
+                    }
+                    if (protocol == NetworkRequestProtocol.Tcp)
+                    {
+                        stream.Write(Utils.Vecu8ToByte(data));
+                        var readBuf = new byte[8096];
+                        var readlen = await stream.ReadAsync(readBuf, 0, readBuf.Length);
+                        var actuallyRead = new byte[readlen];
+                        Array.Copy(readBuf, actuallyRead, readlen);
+                        state = generator.Resume(actuallyRead);
+                    }
+                    else
+                    {
+                        throw new Exception("Unimplemented protocol");
+                    }
+                }
+                else
+                {
+                    Console.WriteLine("Generator is done");
+                    var client_state = state.GetClientStateIfCompleted();
+                    return client_state;
+                }
+            }
+        }
+
+        static async Task SingleConnectStep<T>(ClientConnector connector, WriteBuf buf, Framed<T> framed)
+        where T : Stream
         {
             buf.Clear();
 
@@ -60,7 +181,7 @@ namespace Devolutions.IronRdp.ConnectExample
             if (pduHint.IsSome())
             {
                 byte[] pdu = await framed.ReadByHint(pduHint);
-                written = connector.Step(pdu,buf);
+                written = connector.Step(pdu, buf);
             }
             else
             {
@@ -103,4 +224,17 @@ namespace Devolutions.IronRdp.ConnectExample
         }
 
     }
+
+    public static class Utils
+    {
+        public static byte[] Vecu8ToByte(VecU8 vecU8)
+        {
+            var len = vecU8.GetSize();
+            byte[] buffer = new byte[len];
+            vecU8.Fill(buffer);
+            return buffer;
+        }
+    }
 }
+
+

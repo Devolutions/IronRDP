@@ -15,6 +15,30 @@ public partial class NetworkRequest: IDisposable
 {
     private unsafe Raw.NetworkRequest* _inner;
 
+    public VecU8 Data
+    {
+        get
+        {
+            return GetData();
+        }
+    }
+
+    public NetworkRequestProtocol Protocol
+    {
+        get
+        {
+            return GetProtocol();
+        }
+    }
+
+    public string Url
+    {
+        get
+        {
+            return GetUrl();
+        }
+    }
+
     /// <summary>
     /// Creates a managed <c>NetworkRequest</c> from a raw handle.
     /// </summary>
@@ -27,6 +51,76 @@ public partial class NetworkRequest: IDisposable
     public unsafe NetworkRequest(Raw.NetworkRequest* handle)
     {
         _inner = handle;
+    }
+
+    /// <returns>
+    /// A <c>VecU8</c> allocated on Rust side.
+    /// </returns>
+    public VecU8 GetData()
+    {
+        unsafe
+        {
+            if (_inner == null)
+            {
+                throw new ObjectDisposedException("NetworkRequest");
+            }
+            Raw.VecU8* retVal = Raw.NetworkRequest.GetData(_inner);
+            return new VecU8(retVal);
+        }
+    }
+
+    /// <returns>
+    /// A <c>NetworkRequestProtocol</c> allocated on C# side.
+    /// </returns>
+    public NetworkRequestProtocol GetProtocol()
+    {
+        unsafe
+        {
+            if (_inner == null)
+            {
+                throw new ObjectDisposedException("NetworkRequest");
+            }
+            Raw.NetworkRequestProtocol retVal = Raw.NetworkRequest.GetProtocol(_inner);
+            return (NetworkRequestProtocol)retVal;
+        }
+    }
+
+    /// <exception cref="IronRdpException"></exception>
+    public void GetUrl(DiplomatWriteable writeable)
+    {
+        unsafe
+        {
+            if (_inner == null)
+            {
+                throw new ObjectDisposedException("NetworkRequest");
+            }
+            Raw.CredsspNetworkFfiResultVoidBoxIronRdpError result = Raw.NetworkRequest.GetUrl(_inner, &writeable);
+            if (!result.isOk)
+            {
+                throw new IronRdpException(new IronRdpError(result.Err));
+            }
+        }
+    }
+
+    /// <exception cref="IronRdpException"></exception>
+    public string GetUrl()
+    {
+        unsafe
+        {
+            if (_inner == null)
+            {
+                throw new ObjectDisposedException("NetworkRequest");
+            }
+            DiplomatWriteable writeable = new DiplomatWriteable();
+            Raw.CredsspNetworkFfiResultVoidBoxIronRdpError result = Raw.NetworkRequest.GetUrl(_inner, &writeable);
+            if (!result.isOk)
+            {
+                throw new IronRdpException(new IronRdpError(result.Err));
+            }
+            string retVal = writeable.ToUnicode();
+            writeable.Dispose();
+            return retVal;
+        }
     }
 
     /// <summary>

@@ -20,7 +20,7 @@ public partial struct CredsspProcessGenerator
     public static unsafe extern CredsspNetworkFfiResultBoxGeneratorStateBoxIronRdpError Start(CredsspProcessGenerator* self);
 
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "CredsspProcessGenerator_resume", ExactSpelling = true)]
-    public static unsafe extern CredsspNetworkFfiResultBoxGeneratorStateBoxIronRdpError Resume(CredsspProcessGenerator* self, VecU8* response);
+    public static unsafe extern CredsspNetworkFfiResultBoxGeneratorStateBoxIronRdpError Resume(CredsspProcessGenerator* self, byte* response, nuint responseSz);
 
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "CredsspProcessGenerator_destroy", ExactSpelling = true)]
     public static unsafe extern void Destroy(CredsspProcessGenerator* self);
