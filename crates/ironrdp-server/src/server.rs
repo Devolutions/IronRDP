@@ -1,9 +1,9 @@
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 
-use anyhow::{bail, Result};
+use anyhow::{anyhow, bail, Result};
 use ironrdp_acceptor::{self, Acceptor, AcceptorResult, BeginResult};
-use ironrdp_cliprdr::backend::CliprdrBackendFactory;
+use ironrdp_cliprdr::backend::{ClipboardMessage, CliprdrBackendFactory};
 use ironrdp_cliprdr::CliprdrServer;
 use ironrdp_displaycontrol::server::DisplayControlServer;
 use ironrdp_dvc as dvc;
@@ -12,7 +12,7 @@ use ironrdp_pdu::input::InputEventPdu;
 use ironrdp_pdu::mcs::SendDataRequest;
 use ironrdp_pdu::rdp::capability_sets::{BitmapCodecs, CapabilitySet, CmdFlags, GeneralExtraFlags};
 use ironrdp_pdu::{self, decode, mcs, nego, rdp, Action, PduResult};
-use ironrdp_svc::{impl_as_any, server_encode_svc_messages, StaticChannelSet};
+use ironrdp_svc::{impl_as_any, server_encode_svc_messages, StaticChannelId, StaticChannelSet, SvcProcessor};
 use ironrdp_tokio::{Framed, FramedRead, FramedWrite, TokioFramed};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
@@ -153,7 +153,9 @@ pub struct RdpServer {
 }
 
 #[derive(Debug)]
-pub enum ServerEvent {}
+pub enum ServerEvent {
+    Clipboard(ClipboardMessage),
+}
 
 impl ServerEvent {
     pub fn create_channel() -> (mpsc::UnboundedSender<Self>, mpsc::UnboundedReceiver<Self>) {
@@ -250,6 +252,16 @@ impl RdpServer {
         }
 
         Ok(())
+    }
+
+    pub fn get_svc_processor<T: SvcProcessor + 'static>(&self) -> Option<&T> {
+        self.static_channels
+            .get_by_type::<T>()
+            .and_then(|svc| svc.channel_processor_downcast_ref())
+    }
+
+    pub fn get_channel_id_by_type<T: SvcProcessor + 'static>(&self) -> Option<StaticChannelId> {
+        self.static_channels.get_channel_id_by_type::<T>()
     }
 
     async fn client_loop<S>(&mut self, mut framed: Framed<S>, result: AcceptorResult) -> Result<()>
@@ -396,6 +408,39 @@ impl RdpServer {
 
                 Some(event) = self.ev_receiver.recv() => {
                     match event {
+                        ServerEvent::Clipboard(c) => {
+                            let Some(cliprdr) = self.get_svc_processor::<CliprdrServer>() else {
+                                warn!("No clipboard channel, dropping event");
+                                continue;
+                            };
+                            let res = match c {
+                                ClipboardMessage::SendInitiateCopy(formats) => {
+                                    cliprdr.initiate_copy(&formats)
+                                },
+                                ClipboardMessage::SendFormatData(data) => {
+                                    cliprdr.submit_format_data(data)
+                                },
+                                ClipboardMessage::SendInitiatePaste(format) => {
+                                    cliprdr.initiate_paste(format)
+                                },
+                                ClipboardMessage::Error(error) => {
+                                    error!(?error, "Handling clipboard event");
+                                    continue;
+                                },
+                            };
+                            match res {
+                                Ok(msgs) => {
+                                    let channel_id = self.get_channel_id_by_type::<CliprdrServer>().ok_or_else(|| anyhow!("SVC channel not found"))?;
+                                    let data = server_encode_svc_messages(msgs.into(), channel_id, result.user_channel_id)?;
+                                    framed.write_all(&data).await?;
+                                },
+                                Err(error) => {
+                                    error!(?error, "Sending clipboard event");
+                                    break;
+                                }
+                            }
+                        }
+
                     }
                 }
             }
