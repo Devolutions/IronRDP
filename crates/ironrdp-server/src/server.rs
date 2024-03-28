@@ -347,20 +347,26 @@ impl RdpServer {
 
                 Some(update) = display_updates.next_update() => {
                     let fragmenter = match update {
-                        DisplayUpdate::Bitmap(bitmap) => encoder.bitmap(bitmap)
+                        DisplayUpdate::Bitmap(bitmap) => encoder.bitmap(bitmap),
                     };
 
-                    if let Some(mut fragmenter) = fragmenter {
-                        if fragmenter.size_hint() > buffer.len() {
-                            buffer.resize(fragmenter.size_hint(), 0);
+                    let mut fragmenter = match fragmenter {
+                        Ok(fragmenter) => fragmenter,
+                        Err(error) => {
+                            error!(?error, "Error during update encoding");
+                            break;
                         }
+                    };
 
-                        while let Some(len) = fragmenter.next(&mut buffer) {
-                            if let Err(error) = framed.write_all(&buffer[..len]).await {
-                                error!(?error, "Write display update error");
-                                break;
-                            };
-                        }
+                    if fragmenter.size_hint() > buffer.len() {
+                        buffer.resize(fragmenter.size_hint(), 0);
+                    }
+
+                    while let Some(len) = fragmenter.next(&mut buffer) {
+                        if let Err(error) = framed.write_all(&buffer[..len]).await {
+                            error!(?error, "Write display update error");
+                            break;
+                        };
                     }
                 }
             }
