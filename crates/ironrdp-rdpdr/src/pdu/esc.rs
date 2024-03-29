@@ -12,7 +12,7 @@ use ironrdp_pdu::cursor::{ReadCursor, WriteCursor};
 use ironrdp_pdu::utils::{
     encoded_multistring_len, read_multistring_from_cursor, write_multistring_to_cursor, CharacterSet,
 };
-use ironrdp_pdu::{cast_length, ensure_size, invalid_message_err, PduError, PduResult};
+use ironrdp_pdu::{cast_length, ensure_size, invalid_message_err, other_err, PduError, PduResult};
 
 use super::efs::IoCtlCode;
 use crate::pdu::esc::ndr::{Decode as _, Encode as _};
@@ -45,9 +45,30 @@ impl ScardCall {
                 ScardAccessStartedEventCall::decode(src)?,
             )),
             ScardIoCtlCode::EstablishContext => Ok(ScardCall::EstablishContextCall(EstablishContextCall::decode(src)?)),
-            ScardIoCtlCode::ListReadersW => Ok(ScardCall::ListReadersCall(ListReadersCall::decode(src)?)),
-            ScardIoCtlCode::GetStatusChangeW => Ok(ScardCall::GetStatusChangeCall(GetStatusChangeCall::decode(src)?)),
-            ScardIoCtlCode::ConnectW => Ok(ScardCall::ConnectCall(ConnectCall::decode(src)?)),
+            ScardIoCtlCode::ListReadersW => Ok(ScardCall::ListReadersCall(ListReadersCall::decode(
+                src,
+                Some(CharacterSet::Unicode),
+            )?)),
+            ScardIoCtlCode::ListReadersA => Ok(ScardCall::ListReadersCall(ListReadersCall::decode(
+                src,
+                Some(CharacterSet::Ansi),
+            )?)),
+            ScardIoCtlCode::GetStatusChangeW => Ok(ScardCall::GetStatusChangeCall(GetStatusChangeCall::decode(
+                src,
+                Some(CharacterSet::Unicode),
+            )?)),
+            ScardIoCtlCode::GetStatusChangeA => Ok(ScardCall::GetStatusChangeCall(GetStatusChangeCall::decode(
+                src,
+                Some(CharacterSet::Ansi),
+            )?)),
+            ScardIoCtlCode::ConnectW => Ok(ScardCall::ConnectCall(ConnectCall::decode(
+                src,
+                Some(CharacterSet::Unicode),
+            )?)),
+            ScardIoCtlCode::ConnectA => Ok(ScardCall::ConnectCall(ConnectCall::decode(
+                src,
+                Some(CharacterSet::Ansi),
+            )?)),
             ScardIoCtlCode::BeginTransaction => Ok(ScardCall::HCardAndDispositionCall(
                 HCardAndDispositionCall::decode(src)?,
             )),
@@ -63,8 +84,22 @@ impl ScardCall {
             ScardIoCtlCode::Cancel => Ok(ScardCall::ContextCall(ContextCall::decode(src)?)),
             ScardIoCtlCode::IsValidContext => Ok(ScardCall::ContextCall(ContextCall::decode(src)?)),
             ScardIoCtlCode::GetDeviceTypeId => Ok(ScardCall::GetDeviceTypeIdCall(GetDeviceTypeIdCall::decode(src)?)),
-            ScardIoCtlCode::ReadCacheW => Ok(ScardCall::ReadCacheCall(ReadCacheCall::decode(src)?)),
-            ScardIoCtlCode::WriteCacheW => Ok(ScardCall::WriteCacheCall(WriteCacheCall::decode(src)?)),
+            ScardIoCtlCode::ReadCacheW => Ok(ScardCall::ReadCacheCall(ReadCacheCall::decode(
+                src,
+                Some(CharacterSet::Unicode),
+            )?)),
+            ScardIoCtlCode::ReadCacheA => Ok(ScardCall::ReadCacheCall(ReadCacheCall::decode(
+                src,
+                Some(CharacterSet::Ansi),
+            )?)),
+            ScardIoCtlCode::WriteCacheW => Ok(ScardCall::WriteCacheCall(WriteCacheCall::decode(
+                src,
+                Some(CharacterSet::Unicode),
+            )?)),
+            ScardIoCtlCode::WriteCacheA => Ok(ScardCall::WriteCacheCall(WriteCacheCall::decode(
+                src,
+                Some(CharacterSet::Ansi),
+            )?)),
             ScardIoCtlCode::GetReaderIcon => Ok(ScardCall::GetReaderIconCall(GetReaderIconCall::decode(src)?)),
             _ => {
                 warn!(?io_ctl_code, "Unsupported ScardIoCtlCode");
@@ -134,7 +169,8 @@ impl ndr::Decode for ScardContext {
         Ok(Self { value: 0 })
     }
 
-    fn decode_value(&mut self, src: &mut ReadCursor<'_>) -> PduResult<()> {
+    fn decode_value(&mut self, src: &mut ReadCursor<'_>, charset: Option<CharacterSet>) -> PduResult<()> {
+        expect_no_charset(charset)?;
         ensure_size!(in: src, size: size_of::<u32>() * 2);
         let length = src.read_u32();
         if length != Self::VALUE_LENGTH {
@@ -168,8 +204,9 @@ impl ndr::Decode for ReaderState {
         })
     }
 
-    fn decode_value(&mut self, src: &mut ReadCursor<'_>) -> PduResult<()> {
-        self.reader = ndr::read_string_from_cursor(src)?;
+    fn decode_value(&mut self, src: &mut ReadCursor<'_>, charset: Option<CharacterSet>) -> PduResult<()> {
+        let charset = expect_charset(charset)?;
+        self.reader = ndr::read_string_from_cursor(src, charset)?;
         Ok(())
     }
 }
@@ -551,7 +588,7 @@ pub struct EstablishContextCall {
 
 impl EstablishContextCall {
     pub fn decode(src: &mut ReadCursor<'_>) -> PduResult<Self> {
-        Ok(rpce::Pdu::<Self>::decode(src)?.into_inner())
+        Ok(rpce::Pdu::<Self>::decode(src, None)?.into_inner())
     }
 
     fn size() -> usize {
@@ -560,7 +597,8 @@ impl EstablishContextCall {
 }
 
 impl rpce::HeaderlessDecode for EstablishContextCall {
-    fn decode(src: &mut ReadCursor<'_>) -> PduResult<Self> {
+    fn decode(src: &mut ReadCursor<'_>, charset: Option<CharacterSet>) -> PduResult<Self> {
+        expect_no_charset(charset)?;
         ensure_size!(in: src, size: Self::size());
         let scope = Scope::try_from(src.read_u32())?;
         Ok(Self { scope })
@@ -648,13 +686,14 @@ pub struct ListReadersCall {
 }
 
 impl ListReadersCall {
-    pub fn decode(src: &mut ReadCursor<'_>) -> PduResult<Self> {
-        Ok(rpce::Pdu::<Self>::decode(src)?.into_inner())
+    pub fn decode(src: &mut ReadCursor<'_>, charset: Option<CharacterSet>) -> PduResult<Self> {
+        Ok(rpce::Pdu::<Self>::decode(src, charset)?.into_inner())
     }
 }
 
 impl rpce::HeaderlessDecode for ListReadersCall {
-    fn decode(src: &mut ReadCursor<'_>) -> PduResult<Self> {
+    fn decode(src: &mut ReadCursor<'_>, charset: Option<CharacterSet>) -> PduResult<Self> {
+        let charset = expect_charset(charset)?;
         let mut index = 0;
         let mut context = ScardContext::decode_ptr(src, &mut index)?;
 
@@ -667,7 +706,7 @@ impl rpce::HeaderlessDecode for ListReadersCall {
         let readers_is_null = (src.read_u32()) == 0x0000_0001;
         let readers_size = src.read_u32();
 
-        context.decode_value(src)?;
+        context.decode_value(src, None)?;
 
         if groups_ptr == 0 {
             return Ok(Self {
@@ -690,7 +729,7 @@ impl rpce::HeaderlessDecode for ListReadersCall {
             ));
         }
 
-        let groups = read_multistring_from_cursor(src, CharacterSet::Unicode)?;
+        let groups = read_multistring_from_cursor(src, charset)?;
 
         Ok(Self {
             context,
@@ -763,13 +802,13 @@ pub struct GetStatusChangeCall {
 }
 
 impl GetStatusChangeCall {
-    pub fn decode(src: &mut ReadCursor<'_>) -> PduResult<Self> {
-        Ok(rpce::Pdu::<Self>::decode(src)?.into_inner())
+    pub fn decode(src: &mut ReadCursor<'_>, charset: Option<CharacterSet>) -> PduResult<Self> {
+        Ok(rpce::Pdu::<Self>::decode(src, charset)?.into_inner())
     }
 }
 
 impl rpce::HeaderlessDecode for GetStatusChangeCall {
-    fn decode(src: &mut ReadCursor<'_>) -> PduResult<Self> {
+    fn decode(src: &mut ReadCursor<'_>, charset: Option<CharacterSet>) -> PduResult<Self> {
         let mut index = 0;
         let mut context = ScardContext::decode_ptr(src, &mut index)?;
 
@@ -779,7 +818,7 @@ impl rpce::HeaderlessDecode for GetStatusChangeCall {
 
         let states_ptr = ndr::decode_ptr(src, &mut index)?;
 
-        context.decode_value(src)?;
+        context.decode_value(src, None)?;
 
         ensure_size!(in: src, size: size_of::<u32>());
         let states_length = src.read_u32();
@@ -790,7 +829,7 @@ impl rpce::HeaderlessDecode for GetStatusChangeCall {
             states.push(state);
         }
         for state in states.iter_mut() {
-            state.decode_value(src)?;
+            state.decode_value(src, charset)?;
         }
 
         Ok(Self {
@@ -920,18 +959,19 @@ pub struct ConnectCall {
 }
 
 impl ConnectCall {
-    pub fn decode(src: &mut ReadCursor<'_>) -> PduResult<Self> {
-        Ok(rpce::Pdu::<Self>::decode(src)?.into_inner())
+    pub fn decode(src: &mut ReadCursor<'_>, charset: Option<CharacterSet>) -> PduResult<Self> {
+        Ok(rpce::Pdu::<Self>::decode(src, charset)?.into_inner())
     }
 }
 
 impl rpce::HeaderlessDecode for ConnectCall {
-    fn decode(src: &mut ReadCursor<'_>) -> PduResult<Self> {
+    fn decode(src: &mut ReadCursor<'_>, charset: Option<CharacterSet>) -> PduResult<Self> {
+        let charset = expect_charset(charset)?;
         let mut index = 0;
         let _reader_ptr = ndr::decode_ptr(src, &mut index)?;
         let mut common = ConnectCommon::decode_ptr(src, &mut index)?;
-        let reader = ndr::read_string_from_cursor(src)?;
-        common.decode_value(src)?;
+        let reader = ndr::read_string_from_cursor(src, charset)?;
+        common.decode_value(src, None)?;
         Ok(Self { reader, common })
     }
 }
@@ -962,8 +1002,9 @@ impl ndr::Decode for ConnectCommon {
         })
     }
 
-    fn decode_value(&mut self, src: &mut ReadCursor<'_>) -> PduResult<()> {
-        self.context.decode_value(src)
+    fn decode_value(&mut self, src: &mut ReadCursor<'_>, charset: Option<CharacterSet>) -> PduResult<()> {
+        expect_no_charset(charset)?;
+        self.context.decode_value(src, None)
     }
 }
 
@@ -1022,8 +1063,9 @@ impl ndr::Decode for ScardHandle {
         Ok(Self { context, value: 0 })
     }
 
-    fn decode_value(&mut self, src: &mut ReadCursor<'_>) -> PduResult<()> {
-        self.context.decode_value(src)?;
+    fn decode_value(&mut self, src: &mut ReadCursor<'_>, charset: Option<CharacterSet>) -> PduResult<()> {
+        expect_no_charset(charset)?;
+        self.context.decode_value(src, None)?;
         ensure_size!(in: src, size: size_of::<u32>());
         let length = src.read_u32();
         if length != Self::VALUE_LENGTH {
@@ -1116,17 +1158,18 @@ pub struct HCardAndDispositionCall {
 
 impl HCardAndDispositionCall {
     pub fn decode(src: &mut ReadCursor<'_>) -> PduResult<Self> {
-        Ok(rpce::Pdu::<Self>::decode(src)?.into_inner())
+        Ok(rpce::Pdu::<Self>::decode(src, None)?.into_inner())
     }
 }
 
 impl rpce::HeaderlessDecode for HCardAndDispositionCall {
-    fn decode(src: &mut ReadCursor<'_>) -> PduResult<Self> {
+    fn decode(src: &mut ReadCursor<'_>, charset: Option<CharacterSet>) -> PduResult<Self> {
+        expect_no_charset(charset)?;
         let mut index = 0;
         let mut handle = ScardHandle::decode_ptr(src, &mut index)?;
         ensure_size!(in: src, size: size_of::<u32>());
         let disposition = src.read_u32();
-        handle.decode_value(src)?;
+        handle.decode_value(src, None)?;
         Ok(Self { handle, disposition })
     }
 }
@@ -1147,12 +1190,13 @@ pub struct TransmitCall {
 
 impl TransmitCall {
     pub fn decode(src: &mut ReadCursor<'_>) -> PduResult<Self> {
-        Ok(rpce::Pdu::<Self>::decode(src)?.into_inner())
+        Ok(rpce::Pdu::<Self>::decode(src, None)?.into_inner())
     }
 }
 
 impl rpce::HeaderlessDecode for TransmitCall {
-    fn decode(src: &mut ReadCursor<'_>) -> PduResult<Self> {
+    fn decode(src: &mut ReadCursor<'_>, charset: Option<CharacterSet>) -> PduResult<Self> {
+        expect_no_charset(charset)?;
         let mut index = 0;
         let mut handle = ScardHandle::decode_ptr(src, &mut index)?;
         let mut send_pci = SCardIORequest::decode_ptr(src, &mut index)?;
@@ -1164,8 +1208,8 @@ impl rpce::HeaderlessDecode for TransmitCall {
         let recv_buffer_is_null = src.read_u32() == 1;
         let recv_length = src.read_u32();
 
-        handle.decode_value(src)?;
-        send_pci.decode_value(src)?;
+        handle.decode_value(src, None)?;
+        send_pci.decode_value(src, None)?;
 
         ensure_size!(in: src, size: size_of::<u32>());
         let send_length = src.read_u32();
@@ -1175,7 +1219,7 @@ impl rpce::HeaderlessDecode for TransmitCall {
 
         let recv_pci = if recv_pci_ptr != 0 {
             let mut recv_pci = SCardIORequest::decode_ptr(src, &mut index)?;
-            recv_pci.decode_value(src)?;
+            recv_pci.decode_value(src, None)?;
             Some(recv_pci)
         } else {
             None
@@ -1220,7 +1264,8 @@ impl ndr::Decode for SCardIORequest {
         })
     }
 
-    fn decode_value(&mut self, src: &mut ReadCursor<'_>) -> PduResult<()> {
+    fn decode_value(&mut self, src: &mut ReadCursor<'_>, charset: Option<CharacterSet>) -> PduResult<()> {
+        expect_no_charset(charset)?;
         let extra_bytes_length: usize = cast_length!("TransmitCall", "extra_bytes_length", self.extra_bytes_length)?;
         ensure_size!(in: src, size: extra_bytes_length);
         self.extra_bytes = src.read_slice(extra_bytes_length).to_vec();
@@ -1323,19 +1368,20 @@ pub struct StatusCall {
 
 impl StatusCall {
     pub fn decode(src: &mut ReadCursor<'_>) -> PduResult<Self> {
-        Ok(rpce::Pdu::<Self>::decode(src)?.into_inner())
+        Ok(rpce::Pdu::<Self>::decode(src, None)?.into_inner())
     }
 }
 
 impl rpce::HeaderlessDecode for StatusCall {
-    fn decode(src: &mut ReadCursor<'_>) -> PduResult<Self> {
+    fn decode(src: &mut ReadCursor<'_>, charset: Option<CharacterSet>) -> PduResult<Self> {
+        expect_no_charset(charset)?;
         let mut index = 0;
         let mut handle = ScardHandle::decode_ptr(src, &mut index)?;
         ensure_size!(in: src, size: size_of::<u32>() * 3);
         let reader_names_is_null = src.read_u32() == 1;
         let reader_length = src.read_u32();
         let atr_length = src.read_u32();
-        handle.decode_value(src)?;
+        handle.decode_value(src, None)?;
         Ok(Self {
             handle,
             reader_names_is_null,
@@ -1453,15 +1499,16 @@ pub struct ContextCall {
 
 impl ContextCall {
     pub fn decode(src: &mut ReadCursor<'_>) -> PduResult<Self> {
-        Ok(rpce::Pdu::<Self>::decode(src)?.into_inner())
+        Ok(rpce::Pdu::<Self>::decode(src, None)?.into_inner())
     }
 }
 
 impl rpce::HeaderlessDecode for ContextCall {
-    fn decode(src: &mut ReadCursor<'_>) -> PduResult<Self> {
+    fn decode(src: &mut ReadCursor<'_>, charset: Option<CharacterSet>) -> PduResult<Self> {
+        expect_no_charset(charset)?;
         let mut index = 0;
         let mut context = ScardContext::decode_ptr(src, &mut index)?;
-        context.decode_value(src)?;
+        context.decode_value(src, None)?;
         Ok(Self { context })
     }
 }
@@ -1478,17 +1525,18 @@ pub struct GetDeviceTypeIdCall {
 
 impl GetDeviceTypeIdCall {
     pub fn decode(src: &mut ReadCursor<'_>) -> PduResult<Self> {
-        Ok(rpce::Pdu::<Self>::decode(src)?.into_inner())
+        Ok(rpce::Pdu::<Self>::decode(src, None)?.into_inner())
     }
 }
 
 impl rpce::HeaderlessDecode for GetDeviceTypeIdCall {
-    fn decode(src: &mut ReadCursor<'_>) -> PduResult<Self> {
+    fn decode(src: &mut ReadCursor<'_>, charset: Option<CharacterSet>) -> PduResult<Self> {
+        expect_no_charset(charset)?;
         let mut index = 0;
         let mut context = ScardContext::decode_ptr(src, &mut index)?;
         let reader_ptr = ndr::decode_ptr(src, &mut index)?;
-        context.decode_value(src)?;
-        let reader_name = ndr::read_string_from_cursor(src)?;
+        context.decode_value(src, None)?;
+        let reader_name = ndr::read_string_from_cursor(src, CharacterSet::Unicode)?;
         Ok(Self {
             context,
             reader_ptr,
@@ -1545,18 +1593,19 @@ pub struct ReadCacheCall {
 }
 
 impl ReadCacheCall {
-    pub fn decode(src: &mut ReadCursor<'_>) -> PduResult<Self> {
-        Ok(rpce::Pdu::<Self>::decode(src)?.into_inner())
+    pub fn decode(src: &mut ReadCursor<'_>, charset: Option<CharacterSet>) -> PduResult<Self> {
+        Ok(rpce::Pdu::<Self>::decode(src, charset)?.into_inner())
     }
 }
 
 impl rpce::HeaderlessDecode for ReadCacheCall {
-    fn decode(src: &mut ReadCursor<'_>) -> PduResult<Self> {
+    fn decode(src: &mut ReadCursor<'_>, charset: Option<CharacterSet>) -> PduResult<Self> {
+        let charset = expect_charset(charset)?;
         let mut index = 0;
         let _lookup_name_ptr = ndr::decode_ptr(src, &mut index)?;
         let mut common = ReadCacheCommon::decode_ptr(src, &mut index)?;
-        let lookup_name = ndr::read_string_from_cursor(src)?;
-        common.decode_value(src)?;
+        let lookup_name = ndr::read_string_from_cursor(src, charset)?;
+        common.decode_value(src, None)?;
         Ok(Self { lookup_name, common })
     }
 }
@@ -1594,8 +1643,9 @@ impl ndr::Decode for ReadCacheCommon {
         })
     }
 
-    fn decode_value(&mut self, src: &mut ReadCursor<'_>) -> PduResult<()> {
-        self.context.decode_value(src)?;
+    fn decode_value(&mut self, src: &mut ReadCursor<'_>, charset: Option<CharacterSet>) -> PduResult<()> {
+        expect_no_charset(charset)?;
+        self.context.decode_value(src, None)?;
         ensure_size!(in: src, size: 16);
         self.card_uuid = src.read_slice(16).to_vec();
         Ok(())
@@ -1653,18 +1703,19 @@ pub struct WriteCacheCall {
 }
 
 impl WriteCacheCall {
-    pub fn decode(src: &mut ReadCursor<'_>) -> PduResult<Self> {
-        Ok(rpce::Pdu::<Self>::decode(src)?.into_inner())
+    pub fn decode(src: &mut ReadCursor<'_>, charset: Option<CharacterSet>) -> PduResult<Self> {
+        Ok(rpce::Pdu::<Self>::decode(src, charset)?.into_inner())
     }
 }
 
 impl rpce::HeaderlessDecode for WriteCacheCall {
-    fn decode(src: &mut ReadCursor<'_>) -> PduResult<Self> {
+    fn decode(src: &mut ReadCursor<'_>, charset: Option<CharacterSet>) -> PduResult<Self> {
+        let charset = expect_charset(charset)?;
         let mut index = 0;
         let _lookup_name_ptr = ndr::decode_ptr(src, &mut index)?;
         let mut common = WriteCacheCommon::decode_ptr(src, &mut index)?;
-        let lookup_name = ndr::read_string_from_cursor(src)?;
-        common.decode_value(src)?;
+        let lookup_name = ndr::read_string_from_cursor(src, charset)?;
+        common.decode_value(src, None)?;
         Ok(Self { lookup_name, common })
     }
 }
@@ -1700,8 +1751,9 @@ impl ndr::Decode for WriteCacheCommon {
         })
     }
 
-    fn decode_value(&mut self, src: &mut ReadCursor<'_>) -> PduResult<()> {
-        self.context.decode_value(src)?;
+    fn decode_value(&mut self, src: &mut ReadCursor<'_>, charset: Option<CharacterSet>) -> PduResult<()> {
+        expect_no_charset(charset)?;
+        self.context.decode_value(src, None)?;
         ensure_size!(in: src, size: 16);
         self.card_uuid = src.read_slice(16).to_vec();
         ensure_size!(in: src, size: size_of::<u32>());
@@ -1723,19 +1775,20 @@ pub struct GetReaderIconCall {
 
 impl GetReaderIconCall {
     pub fn decode(src: &mut ReadCursor<'_>) -> PduResult<Self> {
-        Ok(rpce::Pdu::<Self>::decode(src)?.into_inner())
+        Ok(rpce::Pdu::<Self>::decode(src, None)?.into_inner())
     }
 }
 
 impl rpce::HeaderlessDecode for GetReaderIconCall {
-    fn decode(src: &mut ReadCursor<'_>) -> PduResult<Self> {
+    fn decode(src: &mut ReadCursor<'_>, charset: Option<CharacterSet>) -> PduResult<Self> {
+        expect_no_charset(charset)?;
         let mut index = 0;
         let mut context = ScardContext::decode_ptr(src, &mut index)?;
 
         let _reader_ptr = ndr::decode_ptr(src, &mut index)?;
 
-        context.decode_value(src)?;
-        let reader_name = ndr::read_string_from_cursor(src)?;
+        context.decode_value(src, None)?;
+        let reader_name = ndr::read_string_from_cursor(src, CharacterSet::Unicode)?;
         Ok(Self { context, reader_name })
     }
 }
@@ -1779,4 +1832,20 @@ impl rpce::HeaderlessEncode for GetReaderIconReturn {
         + size_of::<u32>() // dst.write_u32(data_len);
         + self.data.len() // dst.write_slice(&self.data);
     }
+}
+
+fn expect_charset(charset: Option<CharacterSet>) -> PduResult<CharacterSet> {
+    if charset.is_none() {
+        return Err(other_err!("internal error: missing character set"));
+    }
+    Ok(charset.unwrap())
+}
+
+fn expect_no_charset(charset: Option<CharacterSet>) -> PduResult<()> {
+    if charset.is_some() {
+        return Err(other_err!(
+            "internal error: character set given where none was expected"
+        ));
+    }
+    Ok(())
 }

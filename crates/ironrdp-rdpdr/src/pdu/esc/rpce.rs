@@ -5,6 +5,7 @@
 use std::mem::size_of;
 
 use ironrdp_pdu::cursor::{ReadCursor, WriteCursor};
+use ironrdp_pdu::utils::CharacterSet;
 use ironrdp_pdu::{cast_length, ensure_size, invalid_message_err, PduEncode, PduError, PduResult};
 
 /// Wrapper struct for [MS-RPCE] PDUs that allows for common [`PduEncode`], [`Encode`], and [`Self::decode`] implementations.
@@ -93,13 +94,13 @@ impl<T> Pdu<T> {
 
 impl<T: HeaderlessDecode> Pdu<T> {
     /// Decodes the instance from a buffer stripping it of its [`StreamHeader`] and [`TypeHeader`].
-    pub fn decode(src: &mut ReadCursor<'_>) -> PduResult<Pdu<T>> {
+    pub fn decode(src: &mut ReadCursor<'_>, charset: Option<CharacterSet>) -> PduResult<Pdu<T>> {
         // We expect `StreamHeader::decode`, `TypeHeader::decode`, and `T::decode` to each
         // call `ensure_size!` to ensure that the buffer is large enough, so we can safely
         // omit that check here.
         let _stream_header = StreamHeader::decode(src)?;
         let _type_header = TypeHeader::decode(src)?;
-        let pdu = T::decode(src)?;
+        let pdu = T::decode(src, charset)?;
         Ok(Self(pdu))
     }
 }
@@ -159,7 +160,11 @@ pub trait HeaderlessEncode: Send + std::fmt::Debug {
 /// details and an example.
 pub trait HeaderlessDecode: Sized {
     /// Decodes the instance from a buffer sans its [`StreamHeader`] and [`TypeHeader`].
-    fn decode(src: &mut ReadCursor<'_>) -> PduResult<Self>;
+    ///
+    /// `charset` is an optional parameter that can be used to specify the character set
+    /// when relevant. This is useful for accounting for the "A" vs "W" variants of certain
+    /// opcodes e.g. [`ListReadersA`][`super::ScardIoCtlCode::ListReadersA`] vs [`ListReadersW`][`super::ScardIoCtlCode::ListReadersW`].
+    fn decode(src: &mut ReadCursor<'_>, charset: Option<CharacterSet>) -> PduResult<Self>;
 }
 
 /// [2.2.6.1] Common Type Header for the Serialization Stream
