@@ -275,7 +275,7 @@ fn active_stage(
     mut framed: UpgradedFramed,
     image: &mut DecodedImage,
 ) -> anyhow::Result<()> {
-    let mut active_stage = ActiveStage::new(connection_result, None);
+    let mut active_stage = ActiveStage::new(connection_result);
 
     'outer: loop {
         let (action, payload) = match framed.read_pdu() {

@@ -1,25 +1,15 @@
-use lazy_static::lazy_static;
-
 use super::*;
-use crate::rdp::vc::dvc::ClientPdu;
-use crate::{encode_vec, PduErrorKind};
 
-const DVC_TEST_CHANNEL_ID_U8: u32 = 0x03;
-const DVC_TEST_DATA_LENGTH: u32 = 0x0000_0C7B;
+const LENGTH: u32 = 0xC7B;
+const CHANNEL_ID: u32 = 0x03;
+const PREFIX: [u8; 4] = [0x24, 0x03, 0x7b, 0x0c];
+const DATA: [u8; 12] = [0x71, 0x71, 0x71, 0x71, 0x71, 0x71, 0x71, 0x71, 0x71, 0x71, 0x71, 0x71];
 
-const DVC_FULL_DATA_FIRST_BUFFER_SIZE: usize = 16;
-const DVC_DATA_FIRST_PREFIX: [u8; 4] = [0x24, 0x03, 0x7b, 0x0c];
-const DVC_DATA_FIRST_BUFFER: [u8; 12] = [0x71, 0x71, 0x71, 0x71, 0x71, 0x71, 0x71, 0x71, 0x71, 0x71, 0x71, 0x71];
-
-const DVC_DATA_FIRST_WITH_INVALID_TOTAL_MESSAGE_SIZE_BUFFER_SIZE: usize = 0x06;
-const DVC_DATA_FIRST_WITH_INVALID_TOTAL_MESSAGE_SIZE_BUFFER: [u8;
-    DVC_DATA_FIRST_WITH_INVALID_TOTAL_MESSAGE_SIZE_BUFFER_SIZE] = [0x03, 0x03, 0x71, 0x71, 0x71, 0x71];
-
-const DVC_INVALID_DATA_MESSAGE_BUFFER: [u8; PDU_WITH_DATA_MAX_SIZE] = [0x77; PDU_WITH_DATA_MAX_SIZE];
-
-const DATA_FIRST_WHERE_TOTAL_LENGTH_EQUALS_TO_BUFFER_LENGTH_PREFIX: [u8; 4] = [0x24, 0x7, 0x39, 0x6];
-
-const DATA_FIRST_WHERE_TOTAL_LENGTH_EQUALS_TO_BUFFER_LENGTH_BUFFER: [u8; 1593] = [
+// Edge case is when the total length is equal to data length
+const EDGE_CASE_LENGTH: u32 = 0x639;
+const EDGE_CASE_CHANNEL_ID: u32 = 0x07;
+const EDGE_CASE_PREFIX: [u8; 4] = [0x24, 0x7, 0x39, 0x6];
+const EDGE_CASE_DATA: [u8; EDGE_CASE_LENGTH as usize] = [
     0xe0, 0x24, 0xa9, 0xba, 0xe0, 0x68, 0xa9, 0xba, 0x8a, 0x73, 0x41, 0x25, 0x12, 0x12, 0x1c, 0x28, 0x3b, 0xa6, 0x34,
     0x8, 0x8, 0x7a, 0x38, 0x34, 0x2c, 0xe8, 0xf8, 0xd0, 0xef, 0x18, 0xc2, 0xc, 0x27, 0x1f, 0xb1, 0x83, 0x3c, 0x58,
     0x8a, 0x67, 0x1, 0x58, 0x9d, 0x50, 0x8b, 0x8c, 0x60, 0x31, 0x53, 0x55, 0x54, 0xd8, 0x51, 0x32, 0x23, 0x54, 0xd9,
@@ -106,125 +96,89 @@ const DATA_FIRST_WHERE_TOTAL_LENGTH_EQUALS_TO_BUFFER_LENGTH_BUFFER: [u8; 1593] =
     0x74, 0x36, 0x76, 0xa6, 0x53, 0x9f, 0x33, 0x56, 0x98, 0x88, 0x92, 0x2a, 0xd1, 0x90, 0x1,
 ];
 
-const DVC_TEST_HEADER_SIZE: usize = 0x01;
+static ENCODED: OnceLock<Vec<u8>> = OnceLock::new();
+static DECODED_CLIENT: OnceLock<DrdynvcClientPdu> = OnceLock::new();
+static DECODED_SERVER: OnceLock<DrdynvcServerPdu> = OnceLock::new();
+static EDGE_CASE_ENCODED: OnceLock<Vec<u8>> = OnceLock::new();
+static EDGE_CASE_DECODED_CLIENT: OnceLock<DrdynvcClientPdu> = OnceLock::new();
+static EDGE_CASE_DECODED_SERVER: OnceLock<DrdynvcServerPdu> = OnceLock::new();
 
-lazy_static! {
-    static ref DVC_FULL_DATA_FIRST_BUFFER: Vec<u8> = {
-        let mut result = DVC_DATA_FIRST_PREFIX.to_vec();
-        result.extend(DVC_DATA_FIRST_BUFFER);
-
+fn encoded() -> &'static Vec<u8> {
+    ENCODED.get_or_init(|| {
+        let mut result = PREFIX.to_vec();
+        result.extend(DATA);
         result
-    };
-    static ref FULL_DATA_FIRST_WHERE_TOTAL_LENGTH_EQUALS_TO_BUFFER_LENGTH_BUFFER: Vec<u8> = {
-        let mut result = DATA_FIRST_WHERE_TOTAL_LENGTH_EQUALS_TO_BUFFER_LENGTH_PREFIX.to_vec();
-        result.append(&mut DATA_FIRST_WHERE_TOTAL_LENGTH_EQUALS_TO_BUFFER_LENGTH_BUFFER.to_vec());
+    })
+}
 
+fn decoded_client() -> &'static DrdynvcClientPdu {
+    DECODED_CLIENT.get_or_init(|| {
+        DrdynvcClientPdu::Data(DrdynvcDataPdu::DataFirst(
+            DataFirstPdu::new(CHANNEL_ID, LENGTH, DATA.to_vec())
+                .with_cb_id_type(FieldType::U8)
+                .with_sp_type(FieldType::U16),
+        ))
+    })
+}
+
+fn decoded_server() -> &'static DrdynvcServerPdu {
+    DECODED_SERVER.get_or_init(|| {
+        DrdynvcServerPdu::Data(DrdynvcDataPdu::DataFirst(
+            DataFirstPdu::new(CHANNEL_ID, LENGTH, DATA.to_vec())
+                .with_cb_id_type(FieldType::U8)
+                .with_sp_type(FieldType::U16),
+        ))
+    })
+}
+
+fn edge_case_encoded() -> &'static Vec<u8> {
+    EDGE_CASE_ENCODED.get_or_init(|| {
+        let mut result = EDGE_CASE_PREFIX.to_vec();
+        result.append(&mut EDGE_CASE_DATA.to_vec());
         result
-    };
-    static ref DVC_DATA_FIRST: DataFirstPdu = DataFirstPdu {
-        channel_id_type: FieldType::U8,
-        channel_id: DVC_TEST_CHANNEL_ID_U8,
-        total_data_size_type: FieldType::U16,
-        total_data_size: DVC_TEST_DATA_LENGTH,
-        data_size: DVC_DATA_FIRST_BUFFER.len()
-    };
-    static ref DATA_FIRST_WHERE_TOTAL_LENGTH_EQUALS_TO_BUFFER_LENGTH: ClientPdu = ClientPdu::DataFirst(DataFirstPdu {
-        channel_id_type: FieldType::U8,
-        channel_id: 0x7,
-        total_data_size_type: FieldType::U16,
-        total_data_size: 0x639,
-        data_size: DATA_FIRST_WHERE_TOTAL_LENGTH_EQUALS_TO_BUFFER_LENGTH_BUFFER.len(),
-    });
+    })
+}
+
+fn edge_case_decoded_client() -> &'static DrdynvcClientPdu {
+    EDGE_CASE_DECODED_CLIENT.get_or_init(|| {
+        DrdynvcClientPdu::Data(DrdynvcDataPdu::DataFirst(
+            DataFirstPdu::new(EDGE_CASE_CHANNEL_ID, EDGE_CASE_LENGTH, EDGE_CASE_DATA.to_vec())
+                .with_cb_id_type(FieldType::U8)
+                .with_sp_type(FieldType::U16),
+        ))
+    })
+}
+
+fn edge_case_decoded_server() -> &'static DrdynvcServerPdu {
+    EDGE_CASE_DECODED_SERVER.get_or_init(|| {
+        DrdynvcServerPdu::Data(DrdynvcDataPdu::DataFirst(
+            DataFirstPdu::new(EDGE_CASE_CHANNEL_ID, EDGE_CASE_LENGTH, EDGE_CASE_DATA.to_vec())
+                .with_cb_id_type(FieldType::U8)
+                .with_sp_type(FieldType::U16),
+        ))
+    })
 }
 
 #[test]
-fn from_buffer_parsing_for_dvc_data_first_pdu_with_invalid_message_size_fails() {
-    let mut cur = ReadCursor::new(DVC_INVALID_DATA_MESSAGE_BUFFER.as_ref());
-    match DataFirstPdu::decode(&mut cur, FieldType::U8, FieldType::U16, PDU_WITH_DATA_MAX_SIZE) {
-        Err(e) if matches!(e.kind(), PduErrorKind::InvalidMessage { .. }) => (),
-        res => panic!("Expected InvalidMessage error, got: {res:?}"),
-    };
+fn decodes_data_first() {
+    test_decodes(encoded(), decoded_client());
+    test_decodes(encoded(), decoded_server());
 }
 
 #[test]
-fn from_buffer_parsing_for_dvc_data_first_pdu_with_invalid_total_message_size_fails() {
-    let mut cur = ReadCursor::new(DVC_DATA_FIRST_WITH_INVALID_TOTAL_MESSAGE_SIZE_BUFFER.as_ref());
-    match DataFirstPdu::decode(
-        &mut cur,
-        FieldType::U8,
-        FieldType::U8,
-        DVC_DATA_FIRST_WITH_INVALID_TOTAL_MESSAGE_SIZE_BUFFER_SIZE,
-    ) {
-        Err(e) if matches!(e.kind(), PduErrorKind::NotEnoughBytes { .. }) => (),
-        res => panic!("Expected NotEnoughBytes error, got: {res:?}"),
-    };
+fn encodes_data_first() {
+    test_encodes(decoded_client(), encoded());
+    test_encodes(decoded_server(), encoded());
 }
 
 #[test]
-fn from_buffer_correct_parses_dvc_data_first_pdu() {
-    let mut cur = ReadCursor::new(&DVC_FULL_DATA_FIRST_BUFFER[1..]);
-    assert_eq!(
-        *DVC_DATA_FIRST,
-        DataFirstPdu::decode(
-            &mut cur,
-            FieldType::U8,
-            FieldType::U16,
-            DVC_FULL_DATA_FIRST_BUFFER_SIZE - DVC_TEST_HEADER_SIZE
-        )
-        .unwrap(),
-    );
+fn decodes_data_first_edge_case() {
+    test_decodes(edge_case_encoded(), edge_case_decoded_client());
+    test_decodes(edge_case_encoded(), edge_case_decoded_server());
 }
 
 #[test]
-fn to_buffer_correct_serializes_dvc_data_first_pdu() {
-    let data_first = &*DVC_DATA_FIRST;
-
-    let buffer = encode_vec(data_first).unwrap();
-
-    assert_eq!(DVC_DATA_FIRST_PREFIX.as_ref(), buffer.as_slice());
-}
-
-#[test]
-fn buffer_length_is_correct_for_dvc_data_first_pdu() {
-    let data_first = &*DVC_DATA_FIRST;
-    let expected_buf_len = DVC_DATA_FIRST_PREFIX.len();
-
-    let len = data_first.size();
-
-    assert_eq!(expected_buf_len, len);
-}
-
-#[test]
-fn from_buffer_correct_parses_dvc_server_pdu_with_data_first_where_total_length_equals_to_buffer_length() {
-    let mut cur = ReadCursor::new(FULL_DATA_FIRST_WHERE_TOTAL_LENGTH_EQUALS_TO_BUFFER_LENGTH_BUFFER.as_slice());
-    assert_eq!(
-        *DATA_FIRST_WHERE_TOTAL_LENGTH_EQUALS_TO_BUFFER_LENGTH,
-        ClientPdu::decode(
-            &mut cur,
-            FULL_DATA_FIRST_WHERE_TOTAL_LENGTH_EQUALS_TO_BUFFER_LENGTH_BUFFER.len(),
-        )
-        .unwrap(),
-    );
-}
-
-#[test]
-fn to_buffer_correct_serializes_dvc_server_pdu_with_data_first_where_total_length_equals_to_buffer_length() {
-    let data_first = &*DATA_FIRST_WHERE_TOTAL_LENGTH_EQUALS_TO_BUFFER_LENGTH;
-
-    let buffer = encode_vec(data_first).unwrap();
-
-    assert_eq!(
-        DATA_FIRST_WHERE_TOTAL_LENGTH_EQUALS_TO_BUFFER_LENGTH_PREFIX.as_ref(),
-        buffer.as_slice()
-    );
-}
-
-#[test]
-fn buffer_length_is_correct_for_dvc_server_pdu_with_data_first_where_total_length_equals_to_buffer_length() {
-    let data_first = &*DATA_FIRST_WHERE_TOTAL_LENGTH_EQUALS_TO_BUFFER_LENGTH;
-    let expected_buf_len = DATA_FIRST_WHERE_TOTAL_LENGTH_EQUALS_TO_BUFFER_LENGTH_PREFIX.len();
-
-    let len = data_first.size();
-
-    assert_eq!(expected_buf_len, len);
+fn encodes_data_first_edge_case() {
+    test_encodes(edge_case_decoded_client(), edge_case_encoded());
+    test_encodes(edge_case_decoded_server(), edge_case_encoded());
 }

@@ -18,7 +18,7 @@ harness = true
 [dependencies]
 array-concat = "0.5"
 ironrdp-pdu.workspace = true
-lazy_static = "1.4"
+lazy_static.workspace = true # TODO: remove in favor of https://doc.rust-lang.org/std/sync/struct.OnceLock.html
 paste = "1"
 
 [dev-dependencies]
@@ -27,6 +27,7 @@ hex = "0.4"
 ironrdp-cliprdr.workspace = true
 ironrdp-cliprdr-format.workspace = true
 ironrdp-connector.workspace = true
+ironrdp-dvc.workspace = true
 ironrdp-fuzzing.workspace = true
 ironrdp-graphics.workspace = true
 ironrdp-input.workspace = true
