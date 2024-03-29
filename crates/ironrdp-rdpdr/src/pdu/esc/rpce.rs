@@ -5,7 +5,7 @@
 use std::mem::size_of;
 
 use ironrdp_pdu::cursor::{ReadCursor, WriteCursor};
-use ironrdp_pdu::{cast_length, ensure_size, invalid_message_err, PduDecode, PduEncode, PduError, PduResult};
+use ironrdp_pdu::{cast_length, ensure_size, invalid_message_err, PduEncode, PduError, PduResult};
 
 /// Wrapper struct for [MS-RPCE] PDUs that allows for common [`PduEncode`], [`Encode`], and [`Self::decode`] implementations.
 ///
@@ -91,9 +91,9 @@ impl<T> Pdu<T> {
     }
 }
 
-impl<T: HeaderlessDecode> PduDecode<'_> for Pdu<T> {
+impl<T: HeaderlessDecode> Pdu<T> {
     /// Decodes the instance from a buffer stripping it of its [`StreamHeader`] and [`TypeHeader`].
-    fn decode(src: &mut ReadCursor<'_>) -> PduResult<Pdu<T>> {
+    pub fn decode(src: &mut ReadCursor<'_>) -> PduResult<Pdu<T>> {
         // We expect `StreamHeader::decode`, `TypeHeader::decode`, and `T::decode` to each
         // call `ensure_size!` to ensure that the buffer is large enough, so we can safely
         // omit that check here.

@@ -12,7 +12,7 @@ use ironrdp_pdu::cursor::{ReadCursor, WriteCursor};
 use ironrdp_pdu::utils::{
     encoded_multistring_len, read_multistring_from_cursor, write_multistring_to_cursor, CharacterSet,
 };
-use ironrdp_pdu::{cast_length, ensure_size, invalid_message_err, PduDecode, PduError, PduResult};
+use ironrdp_pdu::{cast_length, ensure_size, invalid_message_err, PduError, PduResult};
 
 use super::efs::IoCtlCode;
 use crate::pdu::esc::ndr::{Decode as _, Encode as _};
