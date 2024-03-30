@@ -99,7 +99,8 @@ fn null_size() {
         .err()
         .unwrap();
 
-    expect![[r#"
+    expect![
+        [r#"
             Error {
                 context: "PreconnectionBlob",
                 kind: InvalidMessage {
@@ -108,7 +109,8 @@ fn null_size() {
                 },
                 source: None,
             }
-        "#]]
+        "#]
+    ]
     .assert_debug_eq(&e);
 }
 
