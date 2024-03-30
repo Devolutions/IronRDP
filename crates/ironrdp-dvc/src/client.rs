@@ -1,20 +1,18 @@
-use alloc::borrow::ToOwned;
-use alloc::boxed::Box;
-use alloc::collections::BTreeMap;
-use alloc::string::String;
+use crate::pdu::{
+    CapabilitiesResponsePdu, CapsVersion, ClosePdu, CreateResponsePdu, CreationStatus, DrdynvcClientPdu,
+    DrdynvcServerPdu,
+};
+use crate::{encode_dvc_messages, DvcProcessor, DynamicChannelId, DynamicChannelSet};
 use alloc::vec::Vec;
-use core::any::Any;
+use core::any::TypeId;
 use core::fmt;
-
 use ironrdp_pdu as pdu;
-
-use ironrdp_svc::{impl_as_any, CompressionCondition, SvcClientProcessor, SvcMessage, SvcProcessor};
-use pdu::cursor::{ReadCursor, WriteCursor};
+use ironrdp_svc::{impl_as_any, ChannelFlags, CompressionCondition, SvcClientProcessor, SvcMessage, SvcProcessor};
+use pdu::cursor::ReadCursor;
 use pdu::gcc::ChannelName;
-use pdu::rdp::vc;
-use pdu::{decode, dvc, PduEncode, PduResult};
-
-use crate::DvcProcessor;
+use pdu::other_err;
+use pdu::PduDecode as _;
+use pdu::PduResult;
 
 pub trait DvcClientProcessor: DvcProcessor {}
 
@@ -22,7 +20,9 @@ pub trait DvcClientProcessor: DvcProcessor {}
 ///
 /// It adds support for dynamic virtual channels (DVC).
 pub struct DrdynvcClient {
-    dynamic_channels: BTreeMap<String, Box<dyn DvcClientProcessor>>,
+    dynamic_channels: DynamicChannelSet,
+    /// Indicates whether the capability request/response handshake has been completed.
+    cap_handshake_done: bool,
 }
 
 impl fmt::Debug for DrdynvcClient {
@@ -45,7 +45,8 @@ impl DrdynvcClient {
 
     pub fn new() -> Self {
         Self {
-            dynamic_channels: BTreeMap::new(),
+            dynamic_channels: DynamicChannelSet::new(),
+            cap_handshake_done: false,
         }
     }
 
@@ -54,11 +55,30 @@ impl DrdynvcClient {
     #[must_use]
     pub fn with_dynamic_channel<T>(mut self, channel: T) -> Self
     where
-        T: DvcClientProcessor + 'static,
+        T: DvcProcessor + 'static,
     {
-        let channel_name = channel.channel_name().to_owned();
-        self.dynamic_channels.insert(channel_name, Box::new(channel));
+        self.dynamic_channels.insert(channel);
         self
+    }
+
+    pub fn get_dynamic_channel_by_type_id<T>(&self) -> Option<(&T, Option<DynamicChannelId>)>
+    where
+        T: DvcProcessor,
+    {
+        self.dynamic_channels
+            .get_by_type_id(TypeId::of::<T>())
+            .and_then(|(channel, channel_id)| {
+                channel
+                    .channel_processor_downcast_ref()
+                    .map(|channel| (channel as &T, channel_id))
+            })
+    }
+
+    fn create_capabilities_response(&mut self) -> SvcMessage {
+        let caps_response = DrdynvcClientPdu::Capabilities(CapabilitiesResponsePdu::new(CapsVersion::V1));
+        debug!("Send DVC Capabilities Response PDU: {caps_response:?}");
+        self.cap_handshake_done = true;
+        SvcMessage::from(caps_response)
     }
 }
 
@@ -80,168 +100,76 @@ impl SvcProcessor for DrdynvcClient {
     }
 
     fn process(&mut self, payload: &[u8]) -> PduResult<Vec<SvcMessage>> {
-        let dvc_ctx = decode_dvc_message(payload)?;
+        let pdu = decode_dvc_message(payload)?;
+        let mut responses = Vec::new();
 
-        match dvc_ctx.dvc_pdu {
-            dvc::ServerPdu::CapabilitiesRequest(caps_request) => {
+        match pdu {
+            DrdynvcServerPdu::Capabilities(caps_request) => {
                 debug!("Got DVC Capabilities Request PDU: {caps_request:?}");
-                let caps_response = dvc::ClientPdu::CapabilitiesResponse(dvc::CapabilitiesResponsePdu {
-                    version: dvc::CapsVersion::V1,
-                });
-
-                debug!("Send DVC Capabilities Response PDU: {caps_response:?}");
-                // crate::legacy::encode_dvc_message(initiator_id, channel_id, caps_response, &[], output)?;
+                responses.push(self.create_capabilities_response());
             }
-            dvc::ServerPdu::CreateRequest(create_request) => {
+            DrdynvcServerPdu::Create(create_request) => {
                 debug!("Got DVC Create Request PDU: {create_request:?}");
+                let channel_name = create_request.channel_name;
+                let channel_id = create_request.channel_id;
 
-                // let creation_status = if let Some(dynamic_channel) = create_dvc(
-                //     create_request.channel_name.as_str(),
-                //     create_request.channel_id,
-                //     create_request.channel_id_type,
-                //     &mut self.graphics_handler,
-                // ) {
-                //     self.dynamic_channels.insert(create_request.channel_id, dynamic_channel);
-                //     self.channel_map
-                //         .insert(create_request.channel_name.clone(), create_request.channel_id);
+                if !self.cap_handshake_done {
+                    debug!(
+                        "Got DVC Create Request PDU before a Capabilities Request PDU. \
+                        Sending Capabilities Response PDU before the Create Response PDU."
+                    );
+                    responses.push(self.create_capabilities_response());
+                }
 
-                //     dvc::DVC_CREATION_STATUS_OK
-                // } else {
-                //     dvc::DVC_CREATION_STATUS_NO_LISTENER
-                // };
+                let channel_exists = self.dynamic_channels.get_by_channel_name(&channel_name).is_some();
+                let (creation_status, start_messages) = if channel_exists {
+                    // If we have a handler for this channel, attach the channel ID
+                    // and get any start messages.
+                    self.dynamic_channels
+                        .attach_channel_id(channel_name.clone(), channel_id);
+                    let dynamic_channel = self.dynamic_channels.get_by_channel_name_mut(&channel_name).unwrap();
+                    (CreationStatus::OK, dynamic_channel.start(channel_id)?)
+                } else {
+                    (CreationStatus::NO_LISTENER, Vec::new())
+                };
 
-                // let create_response = dvc::ClientPdu::CreateResponse(dvc::CreateResponsePdu {
-                //     channel_id_type: create_request.channel_id_type,
-                //     channel_id: create_request.channel_id,
-                //     creation_status,
-                // });
+                let create_response = DrdynvcClientPdu::Create(CreateResponsePdu::new(channel_id, creation_status));
+                debug!("Send DVC Create Response PDU: {create_response:?}");
+                responses.push(SvcMessage::from(create_response));
 
-                // debug!("Send DVC Create Response PDU: {create_response:?}");
-                // crate::legacy::encode_dvc_message(
-                //     data_ctx.initiator_id,
-                //     data_ctx.channel_id,
-                //     create_response,
-                //     &[],
-                //     &mut buf,
-                // )?;
-
-                // negotiate_dvc(
-                //     &create_request,
-                //     data_ctx.initiator_id,
-                //     data_ctx.channel_id,
-                //     &mut buf,
-                //     &self.graphics_config,
-                // )?;
+                // If this DVC has start messages, send them.
+                if !start_messages.is_empty() {
+                    responses.extend(encode_dvc_messages(channel_id, start_messages, ChannelFlags::empty())?);
+                }
             }
-            dvc::ServerPdu::CloseRequest(close_request) => {
+            DrdynvcServerPdu::Close(close_request) => {
                 debug!("Got DVC Close Request PDU: {close_request:?}");
+                self.dynamic_channels.remove_by_channel_id(&close_request.channel_id);
 
-                let close_response = dvc::ClientPdu::CloseResponse(dvc::ClosePdu {
-                    channel_id_type: close_request.channel_id_type,
-                    channel_id: close_request.channel_id,
-                });
+                let close_response = DrdynvcClientPdu::Close(ClosePdu::new(close_request.channel_id));
 
-                // debug!("Send DVC Close Response PDU: {close_response:?}");
-                // crate::legacy::encode_dvc_message(
-                //     data_ctx.initiator_id,
-                //     data_ctx.channel_id,
-                //     close_response,
-                //     &[],
-                //     &mut buf,
-                // )?;
-
-                // self.dynamic_channels.remove(&close_request.channel_id);
+                debug!("Send DVC Close Response PDU: {close_response:?}");
+                responses.push(SvcMessage::from(close_response));
             }
-            dvc::ServerPdu::DataFirst(data) => {
-                let channel_id_type = data.channel_id_type;
-                let channel_id = data.channel_id;
+            DrdynvcServerPdu::Data(data) => {
+                let channel_id = data.channel_id();
 
-                let dvc_data = dvc_ctx.dvc_data;
+                let messages = self
+                    .dynamic_channels
+                    .get_by_channel_id_mut(&channel_id)
+                    .ok_or_else(|| other_err!("DVC", "access to non existing channel"))?
+                    .process(data)?;
 
-                // // FIXME(perf): copy with data_buf.to_vec()
-                // if let Some(dvc_data) = self
-                //     .dynamic_channels
-                //     .get_mut(&data.channel_id)
-                //     .ok_or_else(|| reason_err!("DVC", "access to non existing channel: {}", data.channel_id))?
-                //     .process_data_first_pdu(data.total_data_size as usize, dvc_data.to_vec())?
-                // {
-                //     let client_data = dvc::ClientPdu::Data(dvc::DataPdu {
-                //         channel_id_type,
-                //         channel_id,
-                //         data_size: dvc_data.len(),
-                //     });
-
-                //     crate::legacy::encode_dvc_message(
-                //         data_ctx.initiator_id,
-                //         data_ctx.channel_id,
-                //         client_data,
-                //         &dvc_data,
-                //         &mut buf,
-                //     )?;
-                // }
-            }
-            dvc::ServerPdu::Data(data) => {
-                let channel_id_type = data.channel_id_type;
-                let channel_id = data.channel_id;
-
-                let dvc_data = dvc_ctx.dvc_data;
-
-                // // FIXME(perf): copy with data_buf.to_vec()
-                // if let Some(dvc_data) = self
-                //     .dynamic_channels
-                //     .get_mut(&data.channel_id)
-                //     .ok_or_else(|| reason_err!("DVC", "access to non existing channel: {}", data.channel_id))?
-                //     .process_data_pdu(dvc_data.to_vec())?
-                // {
-                //     let client_data = dvc::ClientPdu::Data(dvc::DataPdu {
-                //         channel_id_type,
-                //         channel_id,
-                //         data_size: dvc_data.len(),
-                //     });
-
-                //     crate::legacy::encode_dvc_message(
-                //         data_ctx.initiator_id,
-                //         data_ctx.channel_id,
-                //         client_data,
-                //         &dvc_data,
-                //         &mut buf,
-                //     )?;
-                // }
+                responses.extend(encode_dvc_messages(channel_id, messages, ChannelFlags::empty())?);
             }
         }
 
-        Err(ironrdp_pdu::other_err!(
-            "DRDYNVC",
-            "ironrdp-dvc::DrdynvcClient implementation is not yet ready"
-        ))
-    }
-
-    fn is_drdynvc(&self) -> bool {
-        true
+        Ok(responses)
     }
 }
 
 impl SvcClientProcessor for DrdynvcClient {}
 
-struct DynamicChannelCtx<'a> {
-    dvc_pdu: vc::dvc::ServerPdu,
-    dvc_data: &'a [u8],
-}
-
-fn decode_dvc_message(user_data: &[u8]) -> PduResult<DynamicChannelCtx<'_>> {
-    let mut user_data = user_data;
-    let user_data_len = user_data.len();
-
-    // [ vc::ChannelPduHeader | …
-    let channel_header: vc::ChannelPduHeader = decode(user_data)?;
-    debug_assert_eq!(user_data_len, channel_header.length as usize);
-
-    // … | dvc::ServerPdu | …
-    let mut cursor = ReadCursor::new(user_data);
-    let dvc_pdu = vc::dvc::ServerPdu::decode(&mut cursor, user_data_len)?;
-
-    // … | DvcData ]
-    let dvc_data = cursor.remaining();
-
-    Ok(DynamicChannelCtx { dvc_pdu, dvc_data })
+fn decode_dvc_message(user_data: &[u8]) -> PduResult<DrdynvcServerPdu> {
+    DrdynvcServerPdu::decode(&mut ReadCursor::new(user_data))
 }

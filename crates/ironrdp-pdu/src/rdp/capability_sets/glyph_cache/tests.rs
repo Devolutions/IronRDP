@@ -96,7 +96,7 @@ fn from_buffer_correctly_parses_cache_definition() {
 
 #[test]
 fn to_buffer_correctly_serializes_cache_definition() {
-    let cache_def = CACHE_DEFINITION.clone();
+    let cache_def = *CACHE_DEFINITION;
 
     let buffer = encode_vec(&cache_def).unwrap();
 

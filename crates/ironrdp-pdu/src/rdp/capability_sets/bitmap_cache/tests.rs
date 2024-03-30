@@ -137,7 +137,7 @@ fn from_buffer_correctly_parses_cell_info() {
 
 #[test]
 fn to_buffer_correctly_serializes_cell_info() {
-    let cell_info = CELL_INFO.clone();
+    let cell_info = *CELL_INFO;
 
     let buffer = encode_vec(&cell_info).unwrap();
 
@@ -156,7 +156,7 @@ fn from_buffer_correctly_parses_cache_entry() {
 
 #[test]
 fn to_buffer_correctly_serializes_cache_entry() {
-    let cache_entry = CACHE_ENTRY.clone();
+    let cache_entry = *CACHE_ENTRY;
 
     let buffer = encode_vec(&cache_entry).unwrap();
 

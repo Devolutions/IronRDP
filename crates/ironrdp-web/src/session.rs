@@ -433,7 +433,7 @@ impl Session {
             connection_result.desktop_size.height,
         );
 
-        let mut active_stage = ActiveStage::new(connection_result, None);
+        let mut active_stage = ActiveStage::new(connection_result);
 
         let disconnect_reason = 'outer: loop {
             let outputs = select! {
