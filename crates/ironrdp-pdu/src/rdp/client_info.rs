@@ -599,9 +599,7 @@ bitflags! {
 
 impl Default for PerformanceFlags {
     fn default() -> Self {
-        Self::DISABLE_FULLWINDOWDRAG
-            | Self::DISABLE_MENUANIMATIONS
-            | Self::ENABLE_FONT_SMOOTHING
+        Self::DISABLE_FULLWINDOWDRAG | Self::DISABLE_MENUANIMATIONS | Self::ENABLE_FONT_SMOOTHING
     }
 }
 
