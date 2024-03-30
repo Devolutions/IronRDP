@@ -28,7 +28,7 @@ tap = "1"
 # TODO: get rid of these dependencies (related code should probably go into another crate)
 bit_field = "0.10"
 byteorder.workspace = true # TODO: remove
-der-parser = "8.2"
+der-parser = "9.0"
 thiserror.workspace = true
 md5 = { package = "md-5", version = "0.10" }
 num-bigint = "0.4"
