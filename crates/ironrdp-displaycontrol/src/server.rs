@@ -9,7 +9,7 @@ use crate::{
 };
 
 /// A server for the Display Control Virtual Channel.
-pub struct DisplayControlServer {}
+pub struct DisplayControlServer;
 
 impl_as_any!(DisplayControlServer);
 

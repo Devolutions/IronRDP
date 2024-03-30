@@ -1,11 +1,11 @@
 #![cfg_attr(not(feature = "std"), no_std)]
 
-use crate::alloc::borrow::ToOwned;
 #[macro_use]
 extern crate tracing;
 
 extern crate alloc;
 
+use crate::alloc::borrow::ToOwned;
 use alloc::string::String;
 use core::any::TypeId;
 use pdu::DrdynvcDataPdu;

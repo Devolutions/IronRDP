@@ -199,9 +199,7 @@ impl<I: Iterator<Item = u8>> Iterator for RleEncoderScanlineIterator<I> {
     type Item = I::Item;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let Some((idx, mut next)) = self.inner.next() else {
-            return None;
-        };
+        let (idx, mut next) = self.inner.next()?;
 
         let prev = std::mem::replace(&mut self.prev_scanline[idx % self.width], next);
         if idx >= self.width {

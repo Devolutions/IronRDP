@@ -530,7 +530,7 @@ impl PduDecode<'_> for ServerDeactivateAll {
         let length_source_descriptor = src.read_u16();
         ensure_size!(in: src, size: length_source_descriptor.into());
         let _ = src.read_slice(length_source_descriptor.into());
-        Ok(Self {})
+        Ok(Self)
     }
 }
 

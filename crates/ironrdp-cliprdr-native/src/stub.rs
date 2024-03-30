@@ -6,11 +6,11 @@ use ironrdp_cliprdr::pdu::{
 use ironrdp_svc::impl_as_any;
 use tracing::debug;
 
-pub struct StubClipboard {}
+pub struct StubClipboard;
 
 impl StubClipboard {
     pub fn new() -> Self {
-        Self {}
+        Self
     }
 
     pub fn backend_factory(&self) -> Box<dyn CliprdrBackendFactory + Send> {
@@ -33,13 +33,13 @@ impl CliprdrBackendFactory for StubCliprdrBackendFactory {
 }
 
 #[derive(Debug)]
-pub(crate) struct StubCliprdrBackend {}
+pub(crate) struct StubCliprdrBackend;
 
 impl_as_any!(StubCliprdrBackend);
 
 impl StubCliprdrBackend {
     pub(crate) fn new() -> Self {
-        Self {}
+        Self
     }
 }
 

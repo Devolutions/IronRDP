@@ -14,7 +14,7 @@ const EXTRA_LINTS: &[&str] = &[
     "clippy::fn_to_numeric_cast_any",
     "clippy::ptr_cast_constness",
     // == Correctness == //
-    "unused_tuple_struct_fields",
+    "dead_code",
     "clippy::arithmetic_side_effects",
     "clippy::cast_lossless",
     "clippy::cast_possible_truncation",

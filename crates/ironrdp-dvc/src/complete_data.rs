@@ -49,7 +49,7 @@ impl CompleteData {
             return Ok(Some(data.data));
         }
 
-        // message is fragmented so need to reassemble it
+        // The message is fragmented and needs to be reassembled.
         match self.data.len().checked_add(data.data.len()) {
             Some(actual_data_length) => {
                 match actual_data_length.cmp(&(self.total_size)) {
