@@ -42,8 +42,18 @@ impl DisplayControlClient {
         channel_id: u32,
         width: u32,
         height: u32,
+        scale_factor: u32,
+        physical_width: u32,
+        physical_height: u32,
     ) -> PduResult<Vec<SvcMessage>> {
-        let pdu: DisplayControlPdu = DisplayControlMonitorLayout::new_single_primary_monitor(width, height)?.into();
+        let pdu: DisplayControlPdu = DisplayControlMonitorLayout::new_single_primary_monitor(
+            width,
+            height,
+            scale_factor,
+            physical_width,
+            physical_height,
+        )?
+        .into();
         encode_dvc_messages(channel_id, vec![Box::new(pdu)], ChannelFlags::empty())
     }
 }
