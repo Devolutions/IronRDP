@@ -31,6 +31,7 @@ use ironrdp::pdu::gcc::KeyboardType;
 use ironrdp::pdu::rdp::capability_sets::MajorPlatformType;
 use ironrdp::session::image::DecodedImage;
 use ironrdp::session::{ActiveStage, ActiveStageOutput};
+use ironrdp_pdu::rdp::client_info::PerformanceFlags;
 
 const HELP: &str = "\
 USAGE:
@@ -216,6 +217,7 @@ fn build_config(username: String, password: String, domain: Option<String>) -> c
         no_server_pointer: true,
         autologon: false,
         pointer_software_rendering: true,
+        performance_flags: PerformanceFlags::default(),
     }
 }
 

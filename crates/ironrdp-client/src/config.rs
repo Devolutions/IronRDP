@@ -7,6 +7,7 @@ use clap::clap_derive::ValueEnum;
 use clap::Parser;
 use ironrdp::connector::{self, Credentials};
 use ironrdp::pdu::rdp::capability_sets::MajorPlatformType;
+use ironrdp::pdu::rdp::client_info::PerformanceFlags;
 use tap::prelude::*;
 
 const DEFAULT_WIDTH: u16 = 1920;
@@ -337,6 +338,7 @@ impl Config {
             no_server_pointer: args.no_server_pointer,
             autologon: args.autologon,
             pointer_software_rendering: true,
+            performance_flags: PerformanceFlags::default(),
         };
 
         Ok(Self {

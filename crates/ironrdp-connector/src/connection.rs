@@ -2,7 +2,7 @@ use std::borrow::Cow;
 use std::mem;
 use std::net::SocketAddr;
 
-use ironrdp_pdu::rdp::client_info::{PerformanceFlags, TimezoneInfo};
+use ironrdp_pdu::rdp::client_info::TimezoneInfo;
 use ironrdp_pdu::write_buf::WriteBuf;
 use ironrdp_pdu::{decode, encode_vec, gcc, mcs, nego, rdp, PduEncode, PduHint};
 use ironrdp_svc::{StaticChannelSet, StaticVirtualChannel, SvcClientProcessor};
@@ -749,11 +749,7 @@ fn create_client_info_pdu(config: &Config, routing_addr: &SocketAddr) -> rdp::Cl
                     daylight_bias: 0,
                 })
                 .session_id(0)
-                .performance_flags(
-                    PerformanceFlags::DISABLE_FULLWINDOWDRAG
-                        | PerformanceFlags::DISABLE_MENUANIMATIONS
-                        | PerformanceFlags::ENABLE_FONT_SMOOTHING,
-                )
+                .performance_flags(config.performance_flags)
                 .build(),
         },
     };

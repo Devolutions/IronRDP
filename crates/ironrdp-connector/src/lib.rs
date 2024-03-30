@@ -24,6 +24,7 @@ pub use channel_connection::{ChannelConnectionSequence, ChannelConnectionState};
 pub use connection::{encode_send_data_request, ClientConnector, ClientConnectorState, ConnectionResult};
 pub use connection_finalization::{ConnectionFinalizationSequence, ConnectionFinalizationState};
 use ironrdp_pdu::rdp::capability_sets;
+use ironrdp_pdu::rdp::client_info::PerformanceFlags;
 use ironrdp_pdu::write_buf::WriteBuf;
 use ironrdp_pdu::{encode_buf, encode_vec, gcc, x224, PduEncode, PduHint};
 pub use license_exchange::{LicenseExchangeSequence, LicenseExchangeState};
@@ -150,6 +151,7 @@ pub struct Config {
     // FIXME(@CBenoit): these are client-only options, not part of the connector.
     pub no_server_pointer: bool,
     pub pointer_software_rendering: bool,
+    pub performance_flags: PerformanceFlags,
 }
 
 ironrdp_pdu::assert_impl!(Config: Send, Sync);
