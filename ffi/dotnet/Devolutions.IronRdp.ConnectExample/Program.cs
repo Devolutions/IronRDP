@@ -26,8 +26,51 @@ namespace Devolutions.IronRdp.ConnectExample
 
         static async Task Connect(String servername, String username, String password, String domain)
         {
-            SocketAddr serverAddr = SocketAddr.LookUp(servername, 3389);
+            SocketAddr serverAddr;
+            Config config = buildConfig(servername, username, password, domain, out serverAddr);
 
+            var stream = await CreateTcpConnection(servername, 3389);
+            var framed = new Framed<NetworkStream>(stream);
+
+            ClientConnector connector = ClientConnector.New(config);
+            connector.WithServerAddr(serverAddr);
+
+            await connect_begin(framed, connector);
+            var (serverPublicKey, framedSsl) = await sercurityUpgrade(servername, framed, connector);
+            await ConnectFinalize(servername, connector, serverPublicKey, framedSsl);
+        }
+
+        private static async Task<(byte[], Framed<SslStream>)> sercurityUpgrade(string servername, Framed<NetworkStream> framed, ClientConnector connector)
+        {
+            byte[] serverPublicKey;
+            Framed<SslStream> framedSsl;
+            var (streamRequireUpgrade, _) = framed.GetInner();
+            var promise = new TaskCompletionSource<byte[]>();
+            var sslStream = new SslStream(streamRequireUpgrade, false, (sender, certificate, chain, sslPolicyErrors) =>
+            {
+                promise.SetResult(certificate!.GetPublicKey());
+                return true;
+            });
+            await sslStream.AuthenticateAsClientAsync(servername);
+            serverPublicKey = await promise.Task;
+            framedSsl = new Framed<SslStream>(sslStream);
+            connector.MarkSecurityUpgradeAsDone();
+
+            return (serverPublicKey, framedSsl);
+        }
+
+        private static async Task connect_begin(Framed<NetworkStream> framed, ClientConnector connector)
+        {
+            var writeBuf = WriteBuf.New();
+            while (!connector.ShouldPerformSecurityUpgrade())
+            {
+                await SingleConnectStep(connector, writeBuf, framed);
+            }
+        }
+
+        private static Config buildConfig(string servername, string username, string password, string domain, out SocketAddr serverAddr)
+        {
+            serverAddr = SocketAddr.LookUp(servername, 3389);
             ConfigBuilder configBuilder = ConfigBuilder.New();
 
             configBuilder.WithUsernameAndPasswrord(username, password);
@@ -36,51 +79,22 @@ namespace Devolutions.IronRdp.ConnectExample
             configBuilder.SetClientName("IronRdp");
             configBuilder.SetClientDir("C:\\");
 
-            Config config = configBuilder.Build();
+            return configBuilder.Build();
+        }
 
-            ClientConnector connector = ClientConnector.New(config);
-            connector.WithServerAddr(serverAddr);
-
-            var writeBuf = WriteBuf.New();
-            var stream = await CreateTcpConnection(servername, 3389);
-            Console.WriteLine("Connected to server");
-            var framed = new Framed<NetworkStream>(stream);
-            while (!connector.ShouldPerformSecurityUpgrade())
-            {
-                await SingleConnectStep(connector, writeBuf, framed);
-            }
-
-
-            Console.WriteLine("need to perform security upgrade");
-            var (streamRequireUpgrade, _) = framed.GetInner();
-            byte[] serverpubkey = new byte[0];
-
-            var promise = new TaskCompletionSource<bool>();
-            var sslStream = new SslStream(streamRequireUpgrade, false, (sender, certificate, chain, sslPolicyErrors) =>
-            {
-                serverpubkey = certificate!.GetPublicKey();
-                promise.SetResult(true);
-                return true;
-            });
-            await sslStream.AuthenticateAsClientAsync(servername);
-            await promise.Task;
-
-            var framedSsl = new Framed<SslStream>(sslStream);
-            connector.MarkSecurityUpgradeAsDone();
-            Console.WriteLine("Security upgrade done");
+        private static async Task ConnectFinalize(string servername, ClientConnector connector, byte[] serverpubkey, Framed<SslStream> framedSsl)
+        {
+            Console.WriteLine("============ Connect Finalize Start ============");
+            var writeBuf2 = WriteBuf.New();
             if (connector.ShouldPerformCredssp())
             {
-                Console.WriteLine("Performing CredSSP");
-                await PerformCredsspSteps(connector, ServerName.New(servername), writeBuf, framedSsl, serverpubkey);
+                await PerformCredsspSteps(connector, ServerName.New(servername), writeBuf2, framedSsl, serverpubkey);
             }
-
-            Console.WriteLine("Performing RDP");
+            Console.WriteLine("============ Connect Finalize: CredSSP Is Done ============");
             while (!connector.State().IsTerminal())
             {
-                await SingleConnectStep(connector, writeBuf, framedSsl);
+                await SingleConnectStep(connector, writeBuf2, framedSsl);
             }
-
-
         }
 
         private static async Task PerformCredsspSteps(ClientConnector connector, ServerName serverName, WriteBuf writeBuf, Framed<SslStream> framedSsl, byte[] serverpubkey)
@@ -92,9 +106,7 @@ namespace Devolutions.IronRdp.ConnectExample
             while (true)
             {
                 var generator = credsspSequence.ProcessTsRequest(tsRequest);
-                Console.WriteLine("Resolving generator");
-                var clientState = await ResolveGenerator(generator,tcpClient);
-                Console.WriteLine("Generator resolved");
+                var clientState = await ResolveGenerator(generator, tcpClient);
                 writeBuf.Clear();
                 var written = credsspSequence.HandleProcessResult(clientState, writeBuf);
 
@@ -107,12 +119,12 @@ namespace Devolutions.IronRdp.ConnectExample
                 }
 
                 var pduHint = credsspSequence.NextPduHint()!;
-                if (pduHint != null)
+                if (pduHint == null)
                 {
                     break;
                 }
 
-                var pdu = await framedSsl.ReadByHint(pduHint!);
+                var pdu = await framedSsl.ReadByHint(pduHint);
                 var decoded = credsspSequence.DecodeServerMessage(pdu);
 
                 if (null == decoded)
@@ -127,7 +139,6 @@ namespace Devolutions.IronRdp.ConnectExample
         private static async Task<ClientState> ResolveGenerator(CredsspProcessGenerator generator, TcpClient tcpClient)
         {
             var state = generator.Start();
-            Console.WriteLine("Starting generator");
             NetworkStream stream = null;
             while (true)
             {
@@ -146,7 +157,7 @@ namespace Devolutions.IronRdp.ConnectExample
                         Console.WriteLine("Connecting to " + split[0] + " on port " + split[1]);
                         await tcpClient.ConnectAsync(split[0], int.Parse(split[1]));
                         stream = tcpClient.GetStream();
-                        
+
                     }
                     if (protocol == NetworkRequestProtocol.Tcp)
                     {
@@ -164,7 +175,6 @@ namespace Devolutions.IronRdp.ConnectExample
                 }
                 else
                 {
-                    Console.WriteLine("Generator is done");
                     var client_state = state.GetClientStateIfCompleted();
                     return client_state;
                 }
@@ -188,21 +198,15 @@ namespace Devolutions.IronRdp.ConnectExample
                 written = connector.StepNoInput(buf);
             }
 
-            if (written.IsNothing())
+            if (written.GetWrittenType() == WrittenType.Nothing)
             {
                 return;
             }
 
-            var size = written.GetSize();
+            // will throw if size is not set
+            var size = written.GetSize().Get();
 
-            if (!size.IsSome())
-            {
-                Console.WriteLine("Size is nothing");
-                return;
-            }
-            var actualSize = size.Get();
-
-            var response = new byte[actualSize];
+            var response = new byte[size];
             buf.ReadIntoBuf(response);
 
             await framed.Write(response);

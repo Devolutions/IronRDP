@@ -23,6 +23,14 @@ public partial class Written: IDisposable
         }
     }
 
+    public WrittenType WrittenType
+    {
+        get
+        {
+            return GetWrittenType();
+        }
+    }
+
     /// <summary>
     /// Creates a managed <c>Written</c> from a raw handle.
     /// </summary>
@@ -37,7 +45,10 @@ public partial class Written: IDisposable
         _inner = handle;
     }
 
-    public bool IsNothing()
+    /// <returns>
+    /// A <c>WrittenType</c> allocated on C# side.
+    /// </returns>
+    public WrittenType GetWrittenType()
     {
         unsafe
         {
@@ -45,8 +56,8 @@ public partial class Written: IDisposable
             {
                 throw new ObjectDisposedException("Written");
             }
-            bool retVal = Raw.Written.IsNothing(_inner);
-            return retVal;
+            Raw.WrittenType retVal = Raw.Written.GetWrittenType(_inner);
+            return (WrittenType)retVal;
         }
     }
 

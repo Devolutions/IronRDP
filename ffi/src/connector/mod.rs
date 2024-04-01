@@ -109,7 +109,6 @@ pub mod ffi {
         }
 
         pub fn step(&mut self, input: &[u8], write_buf: &mut WriteBuf) -> Result<Box<Written>, Box<IronRdpError>> {
-            println!("==========step input = {:#X?} =========", input);
             let Some(connector) = self.0.as_mut() else {
                 return Err(ValueConsumedError::for_item("connector").into());
             };
@@ -130,10 +129,7 @@ pub mod ffi {
     pub struct PduHint<'a>(pub &'a dyn ironrdp::pdu::PduHint);
 
     impl<'a> PduHint<'a> {
-        pub fn find_size(
-            &'a self,
-            bytes: &[u8],
-        ) -> Result<Box<crate::utils::ffi::OptionalUsize>, Box<IronRdpError>> {
+        pub fn find_size(&'a self, bytes: &[u8]) -> Result<Box<crate::utils::ffi::OptionalUsize>, Box<IronRdpError>> {
             let pdu_hint = self.0;
             let size = pdu_hint.find_size(bytes)?;
             Ok(Box::new(crate::utils::ffi::OptionalUsize(size)))
@@ -164,7 +160,7 @@ pub mod ffi {
             let Some(connector) = self.0.as_ref() else {
                 return Err(ValueConsumedError::for_item("connector").into());
             };
-            Ok(connector.next_pdu_hint().map(|hint| Box::new(PduHint(hint))))
+            Ok(connector.next_pdu_hint().map(PduHint).map(Box::new))
         }
 
         pub fn state(&self) -> Result<Box<State<'_>>, Box<IronRdpError>> {

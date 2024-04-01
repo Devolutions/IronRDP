@@ -5,9 +5,17 @@ pub mod ffi {
     #[diplomat::opaque]
     pub struct Written(pub ironrdp::connector::Written);
 
+    pub enum WrittenType {
+        Size,
+        Nothing,
+    }
+
     impl Written {
-        pub fn is_nothing(&self) -> bool {
-            matches!(self.0, ironrdp::connector::Written::Nothing)
+        pub fn get_written_type(&self) -> WrittenType {
+            match &self.0 {
+                ironrdp::connector::Written::Size(_) => WrittenType::Size,
+                ironrdp::connector::Written::Nothing => WrittenType::Nothing,
+            }
         }
 
         pub fn get_size(&self) -> Box<OptionalUsize> {

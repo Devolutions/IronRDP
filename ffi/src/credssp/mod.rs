@@ -10,7 +10,6 @@ pub mod ffi {
         },
         error::{ffi::IronRdpError, ValueConsumedError},
         pdu::ffi::WriteBuf,
-        utils::ffi::VecU8,
     };
 
     use super::network::ffi::{ClientState, CredsspProcessGenerator};
