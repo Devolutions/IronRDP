@@ -60,6 +60,7 @@ impl<P: SvcProcessor> From<SvcProcessorMessages<P>> for Vec<SvcMessage> {
 pub trait SvcPduEncode: PduEncode + Send {}
 
 /// For legacy reasons, we implement [`SvcPduEncode`] for [`Vec<u8>`].
+// FIXME: legacy code
 impl SvcPduEncode for Vec<u8> {}
 
 /// Encodable PDU to be sent over a static virtual channel.

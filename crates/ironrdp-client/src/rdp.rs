@@ -303,7 +303,6 @@ async fn active_session(
                             io_channel_id,
                             user_channel_id,
                             desktop_size,
-                            graphics_config: _,
                             no_server_pointer,
                             pointer_software_rendering,
                         } = connection_activation.state

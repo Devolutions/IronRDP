@@ -188,7 +188,7 @@ impl RdpServer {
             .with_dynamic_channel(AInputHandler {
                 handler: Arc::clone(&self.handler),
             })
-            .with_dynamic_channel(DisplayControlServer {});
+            .with_dynamic_channel(DisplayControlServer);
         acceptor.attach_static_channel(dvc);
 
         match ironrdp_acceptor::accept_begin(framed, &mut acceptor).await {

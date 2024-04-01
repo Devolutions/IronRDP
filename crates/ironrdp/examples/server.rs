@@ -120,11 +120,11 @@ fn acceptor(cert_path: &str, key_path: &str) -> anyhow::Result<TlsAcceptor> {
 }
 
 #[derive(Clone, Debug)]
-struct Handler {}
+struct Handler;
 
 impl Handler {
     fn new() -> Self {
-        Self {}
+        Self
     }
 }
 

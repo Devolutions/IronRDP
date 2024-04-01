@@ -8,7 +8,7 @@ use ironrdp_svc::{impl_as_any, ChannelFlags, SvcMessage};
 use tracing::debug;
 
 /// A client for the Display Control Virtual Channel.
-pub struct DisplayControlClient {}
+pub struct DisplayControlClient;
 
 impl_as_any!(DisplayControlClient);
 
@@ -33,7 +33,7 @@ impl DvcClientProcessor for DisplayControlClient {}
 
 impl DisplayControlClient {
     pub fn new() -> Self {
-        Self {}
+        Self
     }
 
     /// Fully encodes a [`MonitorLayoutPdu`] with the given monitors.

@@ -6,10 +6,7 @@ use ironrdp_pdu::{
     cast_length,
     cursor::{ReadCursor, WriteCursor},
     ensure_fixed_part_size, ensure_size, invalid_message_err, unsupported_pdu_err,
-    utils::{
-        checked_sum, checked_sum_or_panic, encoded_str_len, read_string_from_cursor, write_string_to_cursor,
-        CharacterSet,
-    },
+    utils::{checked_sum, encoded_str_len, read_string_from_cursor, strict_sum, write_string_to_cursor, CharacterSet},
     PduDecode, PduEncode, PduError, PduResult,
 };
 use ironrdp_svc::SvcPduEncode;
@@ -354,7 +351,7 @@ impl DataFirstPdu {
     }
 
     fn size(&self) -> usize {
-        checked_sum_or_panic(&[
+        strict_sum(&[
             Header::size(),
             self.header.cb_id.size_of_val(),
             self.header.sp.size_of_val(),
@@ -473,7 +470,7 @@ impl DataPdu {
     }
 
     fn size(&self) -> usize {
-        checked_sum_or_panic(&[
+        strict_sum(&[
             Header::size(),
             self.header.cb_id.size_of_val(), // ChannelId
             self.data.len(),                 // Data
@@ -524,14 +521,14 @@ impl CreateResponsePdu {
     }
 
     fn headerless_size(header: &Header) -> usize {
-        checked_sum_or_panic(&[
+        strict_sum(&[
             header.cb_id.size_of_val(), // ChannelId
             CreationStatus::size(),     // CreationStatus
         ])
     }
 
     fn size(&self) -> usize {
-        checked_sum_or_panic(&[Header::size(), Self::headerless_size(&self.header)])
+        strict_sum(&[Header::size(), Self::headerless_size(&self.header)])
     }
 }
 
@@ -606,7 +603,7 @@ impl ClosePdu {
     }
 
     fn size(&self) -> usize {
-        checked_sum_or_panic(&[Header::size(), Self::headerless_size(&self.header)])
+        strict_sum(&[Header::size(), Self::headerless_size(&self.header)])
     }
 }
 
@@ -840,7 +837,7 @@ impl CreateRequestPdu {
     }
 
     fn size(&self) -> usize {
-        checked_sum_or_panic(&[
+        strict_sum(&[
             Header::size(),
             Self::headerless_fixed_part_size(&self.header), // ChannelId
             encoded_str_len(&self.channel_name, CharacterSet::Ansi, true), // ChannelName + Null terminator
