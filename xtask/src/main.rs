@@ -113,7 +113,7 @@ fn main() -> anyhow::Result<()> {
         Action::WebInstall => web::install(&sh)?,
         Action::WebRun => web::run(&sh)?,
         Action::FfiBuildDll { release: debug } => ffi::build_dll(&sh, debug)?,
-        Action::FfiBuildBindings { skip_dotnet_build } => ffi::build_bindings(&sh,skip_dotnet_build)?,
+        Action::FfiBuildBindings { skip_dotnet_build } => ffi::build_bindings(&sh, skip_dotnet_build)?,
     }
 
     Ok(())

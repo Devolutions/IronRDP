@@ -5,11 +5,7 @@ pub(crate) fn build_dll(sh: &xshell::Shell, release: bool) -> anyhow::Result<()>
     }
     sh.cmd("cargo").args(&args).run()?;
 
-    let target_dir = if release {
-        "release"
-    } else {
-        "debug"
-    };
+    let target_dir = if release { "release" } else { "debug" };
 
     let mut path = sh.current_dir().clone();
     path.push("target");
@@ -61,9 +57,7 @@ pub(crate) fn build_bindings(sh: &xshell::Shell, skip_dotnet_build: bool) -> any
     sh.change_dir("./dotnet");
     sh.change_dir("./Devolutions.IronRdp");
 
-    sh.cmd("dotnet")
-        .arg("build")
-        .run()?;
+    sh.cmd("dotnet").arg("build").run()?;
 
     Ok(())
 }
