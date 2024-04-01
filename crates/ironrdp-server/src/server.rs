@@ -5,13 +5,14 @@ use anyhow::{bail, Result};
 use ironrdp_acceptor::{self, Acceptor, AcceptorResult, BeginResult};
 use ironrdp_cliprdr::backend::CliprdrBackendFactory;
 use ironrdp_cliprdr::CliprdrServer;
+use ironrdp_displaycontrol::server::DisplayControlServer;
 use ironrdp_dvc as dvc;
 use ironrdp_pdu::input::fast_path::{FastPathInput, FastPathInputEvent};
 use ironrdp_pdu::input::InputEventPdu;
 use ironrdp_pdu::mcs::SendDataRequest;
 use ironrdp_pdu::rdp::capability_sets::{CapabilitySet, CmdFlags, GeneralExtraFlags};
 use ironrdp_pdu::{self, decode, mcs, nego, rdp, Action, PduResult};
-use ironrdp_svc::{server_encode_svc_messages, StaticChannelSet};
+use ironrdp_svc::{impl_as_any, server_encode_svc_messages, StaticChannelSet};
 use ironrdp_tokio::{Framed, FramedRead, FramedWrite, TokioFramed};
 use tokio::net::{TcpListener, TcpStream};
 use tokio_rustls::TlsAcceptor;
@@ -42,49 +43,18 @@ impl RdpServerSecurity {
     }
 }
 
-struct DisplayControlHandler {}
-
-impl dvc::DvcProcessor for DisplayControlHandler {
-    fn channel_name(&self) -> &str {
-        ironrdp_pdu::dvc::display::CHANNEL_NAME
-    }
-
-    fn start(&mut self, _channel_id: u32) -> PduResult<dvc::DvcMessages> {
-        use ironrdp_pdu::dvc::display::{DisplayControlCapsPdu, ServerPdu};
-
-        let pdu = ServerPdu::DisplayControlCaps(DisplayControlCapsPdu {
-            max_num_monitors: 1,
-            max_monitor_area_factora: 3840,
-            max_monitor_area_factorb: 2400,
-        });
-
-        Ok(vec![Box::new(pdu)])
-    }
-
-    fn process(&mut self, _channel_id: u32, payload: &[u8]) -> PduResult<dvc::DvcMessages> {
-        use ironrdp_pdu::dvc::display::ClientPdu;
-
-        match decode(payload)? {
-            ClientPdu::DisplayControlMonitorLayout(layout) => {
-                debug!(?layout);
-            }
-        }
-        Ok(vec![])
-    }
-}
-
-impl dvc::DvcServerProcessor for DisplayControlHandler {}
-
 struct AInputHandler {
     handler: Arc<Mutex<Box<dyn RdpServerInputHandler>>>,
 }
+
+impl_as_any!(AInputHandler);
 
 impl dvc::DvcProcessor for AInputHandler {
     fn channel_name(&self) -> &str {
         ironrdp_ainput::CHANNEL_NAME
     }
 
-    fn start(&mut self, _channel_id: u32) -> PduResult<dvc::DvcMessages> {
+    fn start(&mut self, _channel_id: u32) -> PduResult<Vec<dvc::DvcMessage>> {
         use ironrdp_ainput::{ServerPdu, VersionPdu};
 
         let pdu = ServerPdu::Version(VersionPdu::default());
@@ -94,7 +64,7 @@ impl dvc::DvcProcessor for AInputHandler {
 
     fn close(&mut self, _channel_id: u32) {}
 
-    fn process(&mut self, _channel_id: u32, payload: &[u8]) -> PduResult<dvc::DvcMessages> {
+    fn process(&mut self, _channel_id: u32, payload: &[u8]) -> PduResult<Vec<dvc::DvcMessage>> {
         use ironrdp_ainput::ClientPdu;
 
         match decode(payload)? {
@@ -104,7 +74,7 @@ impl dvc::DvcProcessor for AInputHandler {
             }
         }
 
-        Ok(vec![])
+        Ok(Vec::new())
     }
 }
 
@@ -218,7 +188,7 @@ impl RdpServer {
             .with_dynamic_channel(AInputHandler {
                 handler: Arc::clone(&self.handler),
             })
-            .with_dynamic_channel(DisplayControlHandler {});
+            .with_dynamic_channel(DisplayControlServer);
         acceptor.attach_static_channel(dvc);
 
         match ironrdp_acceptor::accept_begin(framed, &mut acceptor).await {
@@ -471,7 +441,9 @@ impl RdpServer {
                 debug!(?data, "McsMessage::SendDataRequest");
                 if data.channel_id == io_channel_id {
                     return self.handle_io_channel_data(data).await;
-                } else if let Some(svc) = self.static_channels.get_by_channel_id_mut(data.channel_id) {
+                }
+
+                if let Some(svc) = self.static_channels.get_by_channel_id_mut(data.channel_id) {
                     let response_pdus = svc.process(&data.user_data)?;
                     let response = server_encode_svc_messages(response_pdus, data.channel_id, user_channel_id)?;
                     framed.write_all(&response).await?;

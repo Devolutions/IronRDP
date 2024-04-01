@@ -69,6 +69,7 @@ impl PduEncode for X509CertificateChain {
 
 impl<'de> PduDecode<'de> for X509CertificateChain {
     fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+        ensure_size!(in: src, size: 4);
         let certificate_count = cast_length!("certArrayLen", src.read_u32())?;
         if !(MIN_CERTIFICATE_AMOUNT..MAX_CERTIFICATE_AMOUNT).contains(&certificate_count) {
             return Err(invalid_message_err!("certArrayLen", "invalid x509 certificate amount"));
@@ -139,6 +140,8 @@ impl PduEncode for ProprietaryCertificate {
 
 impl<'de> PduDecode<'de> for ProprietaryCertificate {
     fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+        ensure_size!(in: src, size: PROP_CERT_NO_BLOBS_SIZE);
+
         let signature_algorithm_id = src.read_u32();
         if signature_algorithm_id != SIGNATURE_ALGORITHM_RSA {
             return Err(invalid_message_err!("sigAlgId", "invalid signature algorithm ID"));

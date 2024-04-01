@@ -508,7 +508,7 @@ fn ns_codec_with_too_high_color_loss_level_handled_correctly() {
         }),
     };
 
-    assert_eq!(codec, decode(&mut codec_buffer.as_slice()).unwrap());
+    assert_eq!(codec, decode(codec_buffer.as_slice()).unwrap());
 }
 
 #[test]
@@ -531,5 +531,5 @@ fn ns_codec_with_too_low_color_loss_level_handled_correctly() {
         }),
     };
 
-    assert_eq!(codec, decode(&mut codec_buffer.as_slice()).unwrap());
+    assert_eq!(codec, decode(codec_buffer.as_slice()).unwrap());
 }

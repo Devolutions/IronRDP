@@ -54,11 +54,20 @@ impl<P: SvcProcessor> From<SvcProcessorMessages<P>> for Vec<SvcMessage> {
     }
 }
 
+/// Represents a message that, when encoded, forms a complete PDU for a given static virtual channel, sans any [`ChannelPduHeader`].
+/// In other words, this marker should be applied to a message that is ready to be chunkified (have [`ChannelPduHeader`]s added,
+/// splitting it into chunks if necessary) and wrapped in MCS, x224, and tpkt headers for sending over the wire.
+pub trait SvcPduEncode: PduEncode + Send {}
+
+/// For legacy reasons, we implement [`SvcPduEncode`] for [`Vec<u8>`].
+// FIXME: legacy code
+impl SvcPduEncode for Vec<u8> {}
+
 /// Encodable PDU to be sent over a static virtual channel.
 ///
 /// Additional SVC header flags can be added via [`SvcMessage::with_flags`] method.
 pub struct SvcMessage {
-    pdu: Box<dyn PduEncode + Send>,
+    pdu: Box<dyn SvcPduEncode>,
     flags: ChannelFlags,
 }
 
@@ -73,7 +82,7 @@ impl SvcMessage {
 
 impl<T> From<T> for SvcMessage
 where
-    T: PduEncode + Send + 'static,
+    T: SvcPduEncode + 'static,
 {
     fn from(pdu: T) -> Self {
         Self {
@@ -133,10 +142,6 @@ impl StaticVirtualChannel {
 
     pub fn chunkify(messages: Vec<SvcMessage>) -> PduResult<Vec<WriteBuf>> {
         ChunkProcessor::chunkify(messages, CHANNEL_CHUNK_LENGTH)
-    }
-
-    pub fn is_drdynvc(&self) -> bool {
-        self.channel_processor.is_drdynvc()
     }
 
     pub fn channel_processor_downcast_ref<T: SvcProcessor + 'static>(&self) -> Option<&T> {
@@ -233,7 +238,7 @@ pub trait SvcProcessor: AsAny + fmt::Debug + Send {
     ///
     /// Returns a list of PDUs to be sent back.
     fn start(&mut self) -> PduResult<Vec<SvcMessage>> {
-        Ok(vec![])
+        Ok(Vec::new())
     }
 
     /// Processes a payload received on the virtual channel. The `payload` is expected
@@ -241,12 +246,6 @@ pub trait SvcProcessor: AsAny + fmt::Debug + Send {
     ///
     /// Returns a list of PDUs to be sent back.
     fn process(&mut self, payload: &[u8]) -> PduResult<Vec<SvcMessage>>;
-
-    #[doc(hidden)]
-    fn is_drdynvc(&self) -> bool {
-        // FIXME(#61): temporary method that will be removed once drdynvc is ported to the new API
-        false
-    }
 }
 
 assert_obj_safe!(SvcProcessor);

@@ -13,7 +13,7 @@ impl Rdpsnd {
     pub const NAME: ChannelName = ChannelName::from_static(b"rdpsnd\0\0");
 
     pub fn new() -> Self {
-        Self {}
+        Self
     }
 }
 

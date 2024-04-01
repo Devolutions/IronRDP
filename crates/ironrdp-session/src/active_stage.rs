@@ -1,5 +1,6 @@
 use std::rc::Rc;
 
+use ironrdp_connector::connection_activation::ConnectionActivationSequence;
 use ironrdp_connector::ConnectionResult;
 use ironrdp_graphics::pointer::DecodedPointer;
 use ironrdp_pdu::geometry::InclusiveRectangle;
@@ -11,7 +12,6 @@ use ironrdp_svc::{SvcProcessor, SvcProcessorMessages};
 
 use crate::fast_path::UpdateKind;
 use crate::image::DecodedImage;
-use crate::x224::GfxHandler;
 use crate::{fast_path, x224, SessionError, SessionErrorExt, SessionResult};
 
 pub struct ActiveStage {
@@ -21,13 +21,12 @@ pub struct ActiveStage {
 }
 
 impl ActiveStage {
-    pub fn new(connection_result: ConnectionResult, graphics_handler: Option<Box<dyn GfxHandler + Send>>) -> Self {
+    pub fn new(connection_result: ConnectionResult) -> Self {
         let x224_processor = x224::Processor::new(
             connection_result.static_channels,
             connection_result.user_channel_id,
             connection_result.io_channel_id,
-            connection_result.graphics_config,
-            graphics_handler,
+            connection_result.connection_activation,
         );
 
         let fast_path_processor = fast_path::ProcessorBuilder {
@@ -161,11 +160,6 @@ impl ActiveStage {
         Ok(vec![ActiveStageOutput::ResponseFrame(frame.into_inner())])
     }
 
-    /// Sends a PDU on the dynamic channel.
-    pub fn encode_dynamic(&self, output: &mut WriteBuf, channel_name: &str, dvc_data: &[u8]) -> SessionResult<()> {
-        self.x224_processor.encode_dynamic(output, channel_name, dvc_data)
-    }
-
     /// Send a pdu on the static global channel. Typically used to send input events
     pub fn encode_static(&self, output: &mut WriteBuf, pdu: ShareDataPdu) -> SessionResult<usize> {
         self.x224_processor.encode_static(output, pdu)
@@ -198,6 +192,7 @@ pub enum ActiveStageOutput {
     PointerPosition { x: u16, y: u16 },
     PointerBitmap(Rc<DecodedPointer>),
     Terminate(GracefulDisconnectReason),
+    DeactivateAll(ConnectionActivationSequence),
 }
 
 impl TryFrom<x224::ProcessorOutput> for ActiveStageOutput {
@@ -215,6 +210,7 @@ impl TryFrom<x224::ProcessorOutput> for ActiveStageOutput {
 
                 Ok(Self::Terminate(reason))
             }
+            x224::ProcessorOutput::DeactivateAll(cas) => Ok(Self::DeactivateAll(cas)),
         }
     }
 }

@@ -16,6 +16,7 @@ use ironrdp::connector::credssp::KerberosConfig;
 use ironrdp::connector::{self, ClientConnector, Credentials};
 use ironrdp::graphics::image_processing::PixelFormat;
 use ironrdp::pdu::input::fast_path::FastPathInputEvent;
+use ironrdp::pdu::rdp::client_info::PerformanceFlags;
 use ironrdp::pdu::write_buf::WriteBuf;
 use ironrdp::session::image::DecodedImage;
 use ironrdp::session::{ActiveStage, ActiveStageOutput, GracefulDisconnectReason};
@@ -426,7 +427,7 @@ impl Session {
             connection_result.desktop_size.height,
         );
 
-        let mut active_stage = ActiveStage::new(connection_result, None);
+        let mut active_stage = ActiveStage::new(connection_result);
 
         let disconnect_reason = 'outer: loop {
             let outputs = select! {
@@ -603,6 +604,7 @@ impl Session {
                             hotspot_y,
                         })?;
                     }
+                    ActiveStageOutput::DeactivateAll(_) => todo!("DeactivateAll"),
                     ActiveStageOutput::Terminate(reason) => break 'outer reason,
                 }
             }
@@ -739,7 +741,6 @@ fn build_config(
             width: desktop_size.width,
             height: desktop_size.height,
         },
-        graphics: None,
         bitmap: Some(connector::BitmapConfig {
             color_depth: 16,
             lossy_compression: true,
@@ -758,6 +759,7 @@ fn build_config(
         no_server_pointer: false,
         autologon: false,
         pointer_software_rendering: false,
+        performance_flags: PerformanceFlags::default(),
     }
 }
 
