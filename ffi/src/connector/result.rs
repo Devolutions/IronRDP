@@ -1,6 +1,9 @@
 #[diplomat::bridge]
 pub mod ffi {
-    use crate::{connector::config::ffi::DesktopSize, utils::ffi::OptionalUsize};
+    use crate::{
+        connector::config::ffi::{DesktopSize, GraphicsConfig},
+        utils::ffi::OptionalUsize,
+    };
 
     #[diplomat::opaque]
     pub struct Written(pub ironrdp::connector::Written);
@@ -56,31 +59,6 @@ pub mod ffi {
 
         pub fn get_graphics_config(&self) -> Option<Box<GraphicsConfig>> {
             self.0.graphics_config.clone().map(GraphicsConfig).map(Box::new)
-        }
-    }
-
-    #[diplomat::opaque]
-    pub struct GraphicsConfig(pub ironrdp::connector::GraphicsConfig);
-
-    impl GraphicsConfig {
-        pub fn get_avc444(&self) -> bool {
-            self.0.avc444
-        }
-
-        pub fn get_h264(&self) -> bool {
-            self.0.h264
-        }
-
-        pub fn get_thin_client(&self) -> bool {
-            self.0.thin_client
-        }
-
-        pub fn get_small_cache(&self) -> bool {
-            self.0.small_cache
-        }
-
-        pub fn get_capabilities(&self) -> u32 {
-            self.0.capabilities
         }
     }
 }
