@@ -84,13 +84,11 @@ namespace Devolutions.IronRdp.ConnectExample
 
         private static async Task ConnectFinalize(string servername, ClientConnector connector, byte[] serverpubkey, Framed<SslStream> framedSsl)
         {
-            Console.WriteLine("============ Connect Finalize Start ============");
             var writeBuf2 = WriteBuf.New();
             if (connector.ShouldPerformCredssp())
             {
                 await PerformCredsspSteps(connector, ServerName.New(servername), writeBuf2, framedSsl, serverpubkey);
             }
-            Console.WriteLine("============ Connect Finalize: CredSSP Is Done ============");
             while (!connector.State().IsTerminal())
             {
                 await SingleConnectStep(connector, writeBuf2, framedSsl);
@@ -144,17 +142,14 @@ namespace Devolutions.IronRdp.ConnectExample
             {
                 if (state.IsSuspended())
                 {
-                    Console.WriteLine("Generator is suspended");
                     var request = state.GetNetworkRequestIfSuspended()!;
                     var protocol = request.GetProtocol();
                     var url = request.GetUrl();
                     var data = request.GetData();
-                    Console.WriteLine("Sending request to " + url);
                     if (null == stream)
                     {
                         url = url.Replace("tcp://", "");
                         var split = url.Split(":");
-                        Console.WriteLine("Connecting to " + split[0] + " on port " + split[1]);
                         await tcpClient.ConnectAsync(split[0], int.Parse(split[1]));
                         stream = tcpClient.GetStream();
 
