@@ -81,9 +81,9 @@ pub mod ffi {
 
         pub fn process_ts_request<'a>(
             &'a mut self,
-            ts_request: Box<TsRequest>,
+            ts_request: &TsRequest,
         ) -> Result<Box<CredsspProcessGenerator<'a>>, Box<IronRdpError>> {
-            let ts_request = ts_request.0;
+            let ts_request = ts_request.0.clone();
             let generator = self.0.process_ts_request(ts_request);
             Ok(Box::new(CredsspProcessGenerator(generator)))
         }

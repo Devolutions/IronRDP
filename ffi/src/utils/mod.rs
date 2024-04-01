@@ -1,7 +1,7 @@
 #[diplomat::bridge]
 pub mod ffi {
 
-    use crate::error::{ffi::IronRdpError, ValueConsumedError};
+    use crate::error::ffi::IronRdpError;
 
     #[diplomat::opaque]
     pub struct SocketAddr(pub std::net::SocketAddr);
@@ -50,25 +50,6 @@ pub mod ffi {
 
     #[diplomat::opaque]
     pub struct Any<'a>(pub &'a dyn std::any::Any);
-
-    #[diplomat::opaque]
-    pub struct StdTcpStream(pub Option<std::net::TcpStream>);
-
-    impl StdTcpStream {
-        pub fn connect(addr: &SocketAddr) -> Result<Box<StdTcpStream>, Box<IronRdpError>> {
-            let stream = std::net::TcpStream::connect(addr.0)?;
-            Ok(Box::new(StdTcpStream(Some(stream))))
-        }
-
-        pub fn set_read_timeout(&mut self) -> Result<(), Box<IronRdpError>> {
-            let stream = self
-                .0
-                .as_ref()
-                .ok_or_else(|| ValueConsumedError::for_item("StdTcpStream"))?;
-            stream.set_read_timeout(Some(std::time::Duration::from_secs(5)))?;
-            Ok(())
-        }
-    }
 
     #[diplomat::opaque]
     pub struct OptionalUsize(pub Option<usize>);

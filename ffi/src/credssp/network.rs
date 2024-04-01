@@ -58,7 +58,7 @@ pub mod ffi {
 
         pub fn get_client_state_if_completed(&self) -> Result<Box<ClientState>, Box<IronRdpError>> {
             match &self.0 {
-                CredsspGeneratorState::Completed(Ok(res)) => Ok(res.clone()).map(ClientState).map(Box::new),
+                CredsspGeneratorState::Completed(Ok(res)) => Ok(Box::new(ClientState(res.clone()))),
                 CredsspGeneratorState::Completed(Err(e)) => Err(e.to_owned().into()),
                 _ => Err("Generator is not completed".into()),
             }
