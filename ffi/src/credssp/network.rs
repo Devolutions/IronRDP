@@ -1,3 +1,5 @@
+#![allow(single_use_lifetimes)]// Diplomat requires lifetimes
+
 pub type CredsspGeneratorState =
     sspi::generator::GeneratorState<sspi::generator::NetworkRequest, sspi::Result<sspi::credssp::ClientState>>;
 
@@ -84,7 +86,7 @@ pub mod ffi {
 
     impl<'a> NetworkRequest<'a> {
         pub fn get_data(&self) -> Box<VecU8> {
-            Box::new(VecU8(self.0.data.to_vec()))
+            Box::new(VecU8(self.0.data.clone()))
         }
 
         pub fn get_protocol(&self) -> NetworkRequestProtocol {

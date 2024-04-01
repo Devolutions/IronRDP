@@ -1124,17 +1124,13 @@ dependencies = [
 name = "ffi"
 version = "0.1.0"
 dependencies = [
- "anyhow",
  "diplomat",
  "diplomat-runtime",
  "embed-resource",
  "ironrdp",
- "ironrdp-blocking",
- "rustls",
  "sspi",
  "thiserror",
  "tracing",
- "x509-cert",
 ]
 
 [[package]]

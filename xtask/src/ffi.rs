@@ -7,7 +7,7 @@ pub(crate) fn build_dll(sh: &xshell::Shell, release: bool) -> anyhow::Result<()>
 
     let target_dir = if release { "release" } else { "debug" };
 
-    let mut path = sh.current_dir().clone();
+    let mut path = sh.current_dir();
     path.push("target");
     path.push(target_dir);
 
