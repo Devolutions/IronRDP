@@ -36,9 +36,6 @@ public partial struct ConnectionResult
     [return: MarshalAs(UnmanagedType.U1)]
     public static unsafe extern bool GetPointerSoftwareRendering(ConnectionResult* self);
 
-    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ConnectionResult_get_graphics_config", ExactSpelling = true)]
-    public static unsafe extern GraphicsConfig* GetGraphicsConfig(ConnectionResult* self);
-
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ConnectionResult_destroy", ExactSpelling = true)]
     public static unsafe extern void Destroy(ConnectionResult* self);
 }

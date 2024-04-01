@@ -49,8 +49,8 @@ public partial struct ConfigBuilder
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ConfigBuilder_set_desktop_size", ExactSpelling = true)]
     public static unsafe extern void SetDesktopSize(ConfigBuilder* self, ushort height, ushort width);
 
-    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ConfigBuilder_set_graphics", ExactSpelling = true)]
-    public static unsafe extern void SetGraphics(ConfigBuilder* self, GraphicsConfig* graphics);
+    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ConfigBuilder_set_performance_flags", ExactSpelling = true)]
+    public static unsafe extern void SetPerformanceFlags(ConfigBuilder* self, PerformanceFlags* performanceFlags);
 
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ConfigBuilder_set_client_build", ExactSpelling = true)]
     public static unsafe extern void SetClientBuild(ConfigBuilder* self, uint clientBuild);

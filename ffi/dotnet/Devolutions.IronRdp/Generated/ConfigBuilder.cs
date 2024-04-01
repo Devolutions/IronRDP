@@ -79,14 +79,6 @@ public partial class ConfigBuilder: IDisposable
         }
     }
 
-    public GraphicsConfig Graphics
-    {
-        set
-        {
-            SetGraphics(value);
-        }
-    }
-
     public string ImeFileName
     {
         set
@@ -124,6 +116,14 @@ public partial class ConfigBuilder: IDisposable
         set
         {
             SetNoServerPointer(value);
+        }
+    }
+
+    public PerformanceFlags PerformanceFlags
+    {
+        set
+        {
+            SetPerformanceFlags(value);
         }
     }
 
@@ -308,7 +308,7 @@ public partial class ConfigBuilder: IDisposable
         }
     }
 
-    public void SetGraphics(GraphicsConfig graphics)
+    public void SetPerformanceFlags(PerformanceFlags performanceFlags)
     {
         unsafe
         {
@@ -316,13 +316,13 @@ public partial class ConfigBuilder: IDisposable
             {
                 throw new ObjectDisposedException("ConfigBuilder");
             }
-            Raw.GraphicsConfig* graphicsRaw;
-            graphicsRaw = graphics.AsFFI();
-            if (graphicsRaw == null)
+            Raw.PerformanceFlags* performanceFlagsRaw;
+            performanceFlagsRaw = performanceFlags.AsFFI();
+            if (performanceFlagsRaw == null)
             {
-                throw new ObjectDisposedException("GraphicsConfig");
+                throw new ObjectDisposedException("PerformanceFlags");
             }
-            Raw.ConfigBuilder.SetGraphics(_inner, graphicsRaw);
+            Raw.ConfigBuilder.SetPerformanceFlags(_inner, performanceFlagsRaw);
         }
     }
 

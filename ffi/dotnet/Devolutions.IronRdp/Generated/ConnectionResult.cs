@@ -23,14 +23,6 @@ public partial class ConnectionResult: IDisposable
         }
     }
 
-    public GraphicsConfig? GraphicsConfig
-    {
-        get
-        {
-            return GetGraphicsConfig();
-        }
-    }
-
     public ushort IoChannelId
     {
         get
@@ -166,26 +158,6 @@ public partial class ConnectionResult: IDisposable
             }
             bool retVal = Raw.ConnectionResult.GetPointerSoftwareRendering(_inner);
             return retVal;
-        }
-    }
-
-    /// <returns>
-    /// A <c>GraphicsConfig</c> allocated on Rust side.
-    /// </returns>
-    public GraphicsConfig? GetGraphicsConfig()
-    {
-        unsafe
-        {
-            if (_inner == null)
-            {
-                throw new ObjectDisposedException("ConnectionResult");
-            }
-            Raw.GraphicsConfig* retVal = Raw.ConnectionResult.GetGraphicsConfig(_inner);
-            if (retVal == null)
-            {
-                return null;
-            }
-            return new GraphicsConfig(retVal);
         }
     }
 

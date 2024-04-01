@@ -1,3 +1,7 @@
+use ironrdp::pdu::rdp::client_info::PerformanceFlags;
+
+use self::ffi::PerformanceFlagsType;
+
 #[diplomat::bridge]
 pub mod ffi {
     use ironrdp::{
@@ -29,7 +33,6 @@ pub mod ffi {
         pub ime_file_name: Option<String>,
         pub dig_product_id: Option<String>,
         pub desktop_size: Option<ironrdp::connector::DesktopSize>,
-        pub graphics: Option<ironrdp::connector::GraphicsConfig>,
         pub bitmap: Option<BitmapConfig>,
         pub client_build: Option<u32>,
         pub client_name: Option<String>,
@@ -38,6 +41,7 @@ pub mod ffi {
         pub no_server_pointer: Option<bool>,
         pub autologon: Option<bool>,
         pub pointer_software_rendering: Option<bool>,
+        pub performance_flags: Option<ironrdp::pdu::rdp::client_info::PerformanceFlags>,
     }
 
     #[diplomat::enum_convert(ironrdp::pdu::gcc::KeyboardType)]
@@ -112,8 +116,8 @@ pub mod ffi {
             self.desktop_size = Some(ironrdp::connector::DesktopSize { width, height });
         }
 
-        pub fn set_graphics(&mut self, graphics: &GraphicsConfig) {
-            self.graphics = Some(graphics.0.clone());
+        pub fn set_performance_flags(&mut self, performance_flags: &PerformanceFlags) {
+            self.performance_flags = Some(performance_flags.0);
         }
 
         // TODO: set bitmap
@@ -157,7 +161,6 @@ pub mod ffi {
                 ime_file_name: self.ime_file_name.clone().unwrap_or_default(),
                 dig_product_id: self.dig_product_id.clone().unwrap_or_default(),
                 desktop_size: self.desktop_size.ok_or("Desktop size not set")?,
-                graphics: self.graphics.clone(),
                 bitmap: None,
                 client_build: self.client_build.unwrap_or(0),
                 client_name: self.client_name.clone().ok_or("Client name not set")?,
@@ -185,6 +188,7 @@ pub mod ffi {
                 no_server_pointer: self.no_server_pointer.unwrap_or(false),
                 autologon: self.autologon.unwrap_or(false),
                 pointer_software_rendering: self.pointer_software_rendering.unwrap_or(false),
+                performance_flags: self.performance_flags.ok_or("Performance flag is missing")?,
             };
 
             Ok(Box::new(Config(inner_config)))
@@ -192,27 +196,52 @@ pub mod ffi {
     }
 
     #[diplomat::opaque]
-    pub struct GraphicsConfig(pub ironrdp::connector::GraphicsConfig);
+    #[derive(Default)]
+    pub struct PerformanceFlags(pub ironrdp::pdu::rdp::client_info::PerformanceFlags);
 
-    impl GraphicsConfig {
-        pub fn get_avc444(&self) -> bool {
-            self.0.avc444
+    pub enum PerformanceFlagsType {
+        DisableWallpaper,
+        DisableFullWindowDrag,
+        DisableMenuAnimations,
+        DisableTheming,
+        Reserved1,
+        DisableCursorShadow,
+        DisableCursorSettings,
+        EnableFontSmoothing,
+        EnableDesktopComposition,
+        Reserved2,
+    }
+
+    impl PerformanceFlags {
+        pub fn new_default() -> Box<Self> {
+            Box::<PerformanceFlags>::default()
         }
 
-        pub fn get_h264(&self) -> bool {
-            self.0.h264
+        pub fn new_empty() -> Box<Self> {
+            Box::new(PerformanceFlags(
+                ironrdp::pdu::rdp::client_info::PerformanceFlags::empty(),
+            ))
         }
 
-        pub fn get_thin_client(&self) -> bool {
-            self.0.thin_client
+        pub fn add_flag(&mut self, flag: PerformanceFlagsType) {
+            self.0.insert(flag.into());
         }
+    }
+}
 
-        pub fn get_small_cache(&self) -> bool {
-            self.0.small_cache
-        }
-
-        pub fn get_capabilities(&self) -> u32 {
-            self.0.capabilities
+impl From<PerformanceFlagsType> for PerformanceFlags {
+    fn from(val: PerformanceFlagsType) -> Self {
+        match val {
+            PerformanceFlagsType::DisableCursorSettings => PerformanceFlags::DISABLE_CURSORSETTINGS,
+            PerformanceFlagsType::DisableCursorShadow => PerformanceFlags::DISABLE_CURSOR_SHADOW,
+            PerformanceFlagsType::DisableFullWindowDrag => PerformanceFlags::DISABLE_FULLWINDOWDRAG,
+            PerformanceFlagsType::DisableMenuAnimations => PerformanceFlags::DISABLE_MENUANIMATIONS,
+            PerformanceFlagsType::DisableTheming => PerformanceFlags::DISABLE_THEMING,
+            PerformanceFlagsType::DisableWallpaper => PerformanceFlags::DISABLE_WALLPAPER,
+            PerformanceFlagsType::EnableDesktopComposition => PerformanceFlags::ENABLE_DESKTOP_COMPOSITION,
+            PerformanceFlagsType::EnableFontSmoothing => PerformanceFlags::ENABLE_DESKTOP_COMPOSITION,
+            PerformanceFlagsType::Reserved1 => PerformanceFlags::RESERVED1,
+            PerformanceFlagsType::Reserved2 => PerformanceFlags::RESERVED2,
         }
     }
 }

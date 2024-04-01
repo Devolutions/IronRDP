@@ -1,9 +1,6 @@
 #[diplomat::bridge]
 pub mod ffi {
-    use crate::{
-        connector::config::ffi::{DesktopSize, GraphicsConfig},
-        utils::ffi::OptionalUsize,
-    };
+    use crate::{connector::config::ffi::DesktopSize, utils::ffi::OptionalUsize};
 
     #[diplomat::opaque]
     pub struct Written(pub ironrdp::connector::Written);
@@ -55,10 +52,6 @@ pub mod ffi {
 
         pub fn get_pointer_software_rendering(&self) -> bool {
             self.0.pointer_software_rendering
-        }
-
-        pub fn get_graphics_config(&self) -> Option<Box<GraphicsConfig>> {
-            self.0.graphics_config.clone().map(GraphicsConfig).map(Box::new)
         }
     }
 }
