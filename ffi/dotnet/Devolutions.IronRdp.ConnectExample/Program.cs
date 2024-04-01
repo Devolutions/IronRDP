@@ -36,11 +36,11 @@ namespace Devolutions.IronRdp.ConnectExample
             connector.WithServerAddr(serverAddr);
 
             await connect_begin(framed, connector);
-            var (serverPublicKey, framedSsl) = await sercurityUpgrade(servername, framed, connector);
+            var (serverPublicKey, framedSsl) = await securityUpgrade(servername, framed, connector);
             await ConnectFinalize(servername, connector, serverPublicKey, framedSsl);
         }
 
-        private static async Task<(byte[], Framed<SslStream>)> sercurityUpgrade(string servername, Framed<NetworkStream> framed, ClientConnector connector)
+        private static async Task<(byte[], Framed<SslStream>)> securityUpgrade(string servername, Framed<NetworkStream> framed, ClientConnector connector)
         {
             byte[] serverPublicKey;
             Framed<SslStream> framedSsl;
