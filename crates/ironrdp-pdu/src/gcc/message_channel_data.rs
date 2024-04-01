@@ -37,7 +37,7 @@ impl<'de> PduDecode<'de> for ClientMessageChannelData {
 
         let _flags = src.read_u32(); // is unused
 
-        Ok(Self {})
+        Ok(Self)
     }
 }
 

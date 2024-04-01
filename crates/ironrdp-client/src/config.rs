@@ -181,14 +181,6 @@ struct Args {
     #[clap(long, value_parser, default_value_t = String::from(""))]
     dig_product_id: String,
 
-    /// Enable AVC444
-    #[clap(long, group = "avc")]
-    avc444: bool,
-
-    /// Enable H264
-    #[clap(long, group = "avc")]
-    h264: bool,
-
     /// Enable thin client
     #[clap(long)]
     thin_client: bool,
@@ -277,18 +269,6 @@ impl Config {
             None
         };
 
-        let graphics = if args.avc444 || args.h264 {
-            Some(connector::GraphicsConfig {
-                avc444: args.avc444,
-                h264: args.h264,
-                thin_client: args.thin_client,
-                small_cache: args.small_cache,
-                capabilities: args.capabilities,
-            })
-        } else {
-            None
-        };
-
         let clipboard_type = if args.clipboard_type == ClipboardType::Default {
             #[cfg(windows)]
             {
@@ -316,7 +296,6 @@ impl Config {
                 width: DEFAULT_WIDTH,
                 height: DEFAULT_HEIGHT,
             },
-            graphics,
             bitmap,
             client_build: semver::Version::parse(env!("CARGO_PKG_VERSION"))
                 .map(|version| version.major * 100 + version.minor * 10 + version.patch)

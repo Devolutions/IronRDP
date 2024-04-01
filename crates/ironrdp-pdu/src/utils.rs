@@ -274,20 +274,20 @@ where
     T: CheckedAdd + Copy + Debug,
 {
     values.split_first().map_or_else(
-        || Err(other_err!("Empty array provided to checked_sum")),
+        || Err(other_err!("empty array provided to checked_sum")),
         |(&first, rest)| {
             rest.iter().try_fold(first, |acc, &val| {
                 acc.checked_add(val)
-                    .ok_or_else(|| other_err!("Overflow detected during addition"))
+                    .ok_or_else(|| other_err!("overflow detected during addition"))
             })
         },
     )
 }
 
 // Utility function that panics on overflow
-pub fn checked_sum_or_panic<T>(values: &[T]) -> T
+pub fn strict_sum<T>(values: &[T]) -> T
 where
     T: CheckedAdd + Copy + Debug,
 {
-    checked_sum::<T>(values).expect("Overflow detected during addition")
+    checked_sum::<T>(values).expect("overflow detected during addition")
 }

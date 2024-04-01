@@ -188,7 +188,6 @@ fn build_config(username: String, password: String, domain: Option<String>) -> c
             width: 1280,
             height: 1024,
         },
-        graphics: None,
         bitmap: None,
         client_build: 0,
         client_name: "ironrdp-screenshot-example".to_owned(),
