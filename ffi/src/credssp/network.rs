@@ -1,4 +1,4 @@
-#![allow(single_use_lifetimes)]// Diplomat requires lifetimes
+#![allow(single_use_lifetimes)] // Diplomat requires lifetimes
 
 pub type CredsspGeneratorState =
     sspi::generator::GeneratorState<sspi::generator::NetworkRequest, sspi::Result<sspi::credssp::ClientState>>;
