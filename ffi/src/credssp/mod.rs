@@ -1,3 +1,4 @@
+#![allow(clippy::needless_lifetimes)] // Diplomat requires lifetimes
 pub mod network;
 
 #[diplomat::bridge]
@@ -67,15 +68,14 @@ pub mod ffi {
                 kerbero_configs.map(|config| config.0.clone()),
             )?;
 
-            return Ok(CredsspSequenceInitResult {
+            Ok(Box::new(CredsspSequenceInitResult {
                 credssp_sequence: Some(Box::new(CredsspSequence(credssp_sequence))),
                 ts_request: Some(Box::new(TsRequest(ts_request))),
-            })
-            .map(Box::new);
+            }))
         }
 
         pub fn decode_server_message(&mut self, pdu: &[u8]) -> Result<Option<Box<TsRequest>>, Box<IronRdpError>> {
-            let ts_request = self.0.decode_server_message(&pdu)?;
+            let ts_request = self.0.decode_server_message(pdu)?;
             Ok(ts_request.map(|ts_request| Box::new(TsRequest(ts_request))))
         }
 

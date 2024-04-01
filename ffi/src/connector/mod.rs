@@ -113,7 +113,7 @@ pub mod ffi {
                 return Err(ValueConsumedError::for_item("connector").into());
             };
             let written = connector.step(input, &mut write_buf.0)?;
-            Ok(Written(written)).map(Box::new)
+            Ok(Box::new(Written(written)))
         }
 
         pub fn step_no_input(&mut self, write_buf: &mut WriteBuf) -> Result<Box<Written>, Box<IronRdpError>> {
@@ -121,7 +121,7 @@ pub mod ffi {
                 return Err(ValueConsumedError::for_item("connector").into());
             };
             let written = connector.step_no_input(&mut write_buf.0)?;
-            Ok(Written(written)).map(Box::new)
+            Ok(Box::new(Written(written)))
         }
     }
 
