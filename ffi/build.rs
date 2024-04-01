@@ -19,7 +19,7 @@ mod win {
         let output_name = "DevolutionsIronRdp";
         let filename = format!("{}.dll", output_name);
         let company_name = "Devolutions Inc.";
-        let legal_copyright = format!("Copyright 2019-2022 {}", company_name);
+        let legal_copyright = format!("Copyright 2019-2024 {}", company_name);
 
         let mut cargo_version = env::var("CARGO_PKG_VERSION").unwrap();
         cargo_version.push_str(".0");
