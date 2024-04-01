@@ -107,12 +107,12 @@ namespace Devolutions.IronRdp.ConnectExample
                 }
 
                 var pduHint = credsspSequence.NextPduHint()!;
-                if (!pduHint.IsSome())
+                if (pduHint != null)
                 {
                     break;
                 }
 
-                var pdu = await framedSsl.ReadByHint(pduHint);
+                var pdu = await framedSsl.ReadByHint(pduHint!);
                 var decoded = credsspSequence.DecodeServerMessage(pdu);
 
                 if (null == decoded)
@@ -178,7 +178,7 @@ namespace Devolutions.IronRdp.ConnectExample
 
             var pduHint = connector.NextPduHint();
             Written written;
-            if (pduHint.IsSome())
+            if (pduHint != null)
             {
                 byte[] pdu = await framed.ReadByHint(pduHint);
                 written = connector.Step(pdu, buf);
@@ -190,7 +190,6 @@ namespace Devolutions.IronRdp.ConnectExample
 
             if (written.IsNothing())
             {
-                Console.WriteLine("Written is nothing");
                 return;
             }
 

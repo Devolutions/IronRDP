@@ -21,21 +21,28 @@ public class Framed<S> where S : Stream
         return this.buffer.ToArray();
     }
 
+    // read from 0 to size bytes from the front of the buffer, and remove them from the buffer,keep the rest
     public async Task<byte[]> ReadExact(nuint size)
     {
-        while (true) {
-            if (buffer.Count >= (int)size) {
-                return this.buffer.Skip((int)size).ToArray();
+        while (true)
+        {
+            if (buffer.Count >= (int)size)
+            {
+                var res = this.buffer.Take((int)size).ToArray();
+                this.buffer = this.buffer.Skip((int)size).ToList();
+                return res;
             }
 
             var len = await this.Read();
-            if (len == 0) {
+            if (len == 0)
+            {
                 throw new Exception("EOF");
             }
         }
     }
 
-    async Task<int> Read() {
+    async Task<int> Read()
+    {
         var buffer = new byte[1024];
         Memory<byte> memory = buffer;
         var size = await this.stream.ReadAsync(memory);
@@ -50,17 +57,20 @@ public class Framed<S> where S : Stream
     }
 
 
-    public async Task<byte[]> ReadByHint(PduHint pduHint) {
-        while(true) {
-
+    public async Task<byte[]> ReadByHint(PduHint pduHint)
+    {
+        while (true)
+        {
             var size = pduHint.FindSize(this.buffer.ToArray());
-
-            if (size.IsSome()) {
-                await this.ReadExact(size.Get());
-                return this.buffer.ToArray();
-            }else {
+            if (size.IsSome())
+            {
+                return await this.ReadExact(size.Get());
+            }
+            else
+            {
                 var len = await this.Read();
-                if (len == 0) {
+                if (len == 0)
+                {
                     throw new Exception("EOF");
                 }
             }

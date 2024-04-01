@@ -12,7 +12,7 @@ namespace Devolutions.IronRdp.Raw;
 #nullable enable
 
 [StructLayout(LayoutKind.Sequential)]
-public partial struct ConnectorFfiResultBoxPduHintBoxIronRdpError
+public partial struct ConnectorFfiResultOptBoxPduHintBoxIronRdpError
 {
     [StructLayout(LayoutKind.Explicit)]
     private unsafe struct InnerUnion

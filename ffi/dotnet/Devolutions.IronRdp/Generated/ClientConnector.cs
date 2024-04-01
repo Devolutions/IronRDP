@@ -262,12 +262,16 @@ public partial class ClientConnector: IDisposable
             {
                 throw new ObjectDisposedException("ClientConnector");
             }
-            Raw.ConnectorFfiResultBoxPduHintBoxIronRdpError result = Raw.ClientConnector.NextPduHint(_inner);
+            Raw.ConnectorFfiResultOptBoxPduHintBoxIronRdpError result = Raw.ClientConnector.NextPduHint(_inner);
             if (!result.isOk)
             {
                 throw new IronRdpException(new IronRdpError(result.Err));
             }
             Raw.PduHint* retVal = result.Ok;
+            if (retVal == null)
+            {
+                return null;
+            }
             return new PduHint(retVal);
         }
     }

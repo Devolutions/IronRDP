@@ -29,19 +29,6 @@ public partial class PduHint: IDisposable
         _inner = handle;
     }
 
-    public bool IsSome()
-    {
-        unsafe
-        {
-            if (_inner == null)
-            {
-                throw new ObjectDisposedException("PduHint");
-            }
-            bool retVal = Raw.PduHint.IsSome(_inner);
-            return retVal;
-        }
-    }
-
     /// <exception cref="IronRdpException"></exception>
     /// <returns>
     /// A <c>OptionalUsize</c> allocated on Rust side.
@@ -57,16 +44,12 @@ public partial class PduHint: IDisposable
             nuint bytesLength = (nuint)bytes.Length;
             fixed (byte* bytesPtr = bytes)
             {
-                Raw.ConnectorFfiResultOptBoxOptionalUsizeBoxIronRdpError result = Raw.PduHint.FindSize(_inner, bytesPtr, bytesLength);
+                Raw.ConnectorFfiResultBoxOptionalUsizeBoxIronRdpError result = Raw.PduHint.FindSize(_inner, bytesPtr, bytesLength);
                 if (!result.isOk)
                 {
                     throw new IronRdpException(new IronRdpError(result.Err));
                 }
                 Raw.OptionalUsize* retVal = result.Ok;
-                if (retVal == null)
-                {
-                    return null;
-                }
                 return new OptionalUsize(retVal);
             }
         }

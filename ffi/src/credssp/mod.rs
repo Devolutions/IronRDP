@@ -48,7 +48,7 @@ pub mod ffi {
 
     impl CredsspSequence {
         pub fn next_pdu_hint<'a>(&'a self) -> Option<Box<PduHint<'a>>> {
-            self.0.next_pdu_hint().map(|hint| Box::new(PduHint(Some(hint))))
+            self.0.next_pdu_hint().map(|hint| Box::new(PduHint(hint)))
         }
 
         pub fn init(
