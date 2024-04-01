@@ -2,7 +2,7 @@ use std::borrow::Cow;
 use std::mem;
 use std::net::SocketAddr;
 
-use ironrdp_pdu::rdp::client_info::{PerformanceFlags, TimezoneInfo};
+use ironrdp_pdu::rdp::client_info::TimezoneInfo;
 use ironrdp_pdu::write_buf::WriteBuf;
 use ironrdp_pdu::{decode, encode_vec, gcc, mcs, nego, rdp, PduEncode, PduHint};
 use ironrdp_svc::{StaticChannelSet, StaticVirtualChannel, SvcClientProcessor};
@@ -22,7 +22,6 @@ pub struct ConnectionResult {
     pub user_channel_id: u16,
     pub static_channels: StaticChannelSet,
     pub desktop_size: DesktopSize,
-    pub graphics_config: Option<crate::GraphicsConfig>,
     pub no_server_pointer: bool,
     pub pointer_software_rendering: bool,
     pub connection_activation: ConnectionActivationSequence,
@@ -558,7 +557,6 @@ impl Sequence for ClientConnector {
                                 user_channel_id,
                                 static_channels: mem::take(&mut self.static_channels),
                                 desktop_size,
-                                graphics_config: self.config.graphics.clone(),
                                 no_server_pointer: self.config.no_server_pointer,
                                 pointer_software_rendering: self.config.pointer_software_rendering,
                                 connection_activation,
@@ -650,10 +648,6 @@ fn create_gcc_blocks<'a>(
                         | ClientEarlyCapabilityFlags::SUPPORT_SKIP_CHANNELJOIN;
 
                     // TODO(#136): support for ClientEarlyCapabilityFlags::SUPPORT_STATUS_INFO_PDU
-
-                    if config.graphics.is_some() {
-                        early_capability_flags |= ClientEarlyCapabilityFlags::SUPPORT_DYN_VC_GFX_PROTOCOL;
-                    }
 
                     if max_color_depth == 32 {
                         early_capability_flags |= ClientEarlyCapabilityFlags::WANT_32_BPP_SESSION;
@@ -749,11 +743,7 @@ fn create_client_info_pdu(config: &Config, routing_addr: &SocketAddr) -> rdp::Cl
                     daylight_bias: 0,
                 })
                 .session_id(0)
-                .performance_flags(
-                    PerformanceFlags::DISABLE_FULLWINDOWDRAG
-                        | PerformanceFlags::DISABLE_MENUANIMATIONS
-                        | PerformanceFlags::ENABLE_FONT_SMOOTHING,
-                )
+                .performance_flags(config.performance_flags)
                 .build(),
         },
     };

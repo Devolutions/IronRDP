@@ -24,6 +24,7 @@ pub use channel_connection::{ChannelConnectionSequence, ChannelConnectionState};
 pub use connection::{encode_send_data_request, ClientConnector, ClientConnectorState, ConnectionResult};
 pub use connection_finalization::{ConnectionFinalizationSequence, ConnectionFinalizationState};
 use ironrdp_pdu::rdp::capability_sets;
+use ironrdp_pdu::rdp::client_info::PerformanceFlags;
 use ironrdp_pdu::write_buf::WriteBuf;
 use ironrdp_pdu::{encode_buf, encode_vec, gcc, x224, PduEncode, PduHint};
 pub use license_exchange::{LicenseExchangeSequence, LicenseExchangeState};
@@ -35,16 +36,6 @@ pub use sspi;
 pub struct DesktopSize {
     pub width: u16,
     pub height: u16,
-}
-
-#[derive(Debug, Clone)]
-#[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
-pub struct GraphicsConfig {
-    pub avc444: bool,
-    pub h264: bool,
-    pub thin_client: bool,
-    pub small_cache: bool,
-    pub capabilities: u32,
 }
 
 #[derive(Debug, Clone)]
@@ -139,7 +130,6 @@ pub struct Config {
     pub keyboard_subtype: u32,
     pub keyboard_functional_keys_count: u32,
     pub ime_file_name: String,
-    pub graphics: Option<GraphicsConfig>,
     pub bitmap: Option<BitmapConfig>,
     pub dig_product_id: String,
     pub client_dir: String,
@@ -150,6 +140,7 @@ pub struct Config {
     // FIXME(@CBenoit): these are client-only options, not part of the connector.
     pub no_server_pointer: bool,
     pub pointer_software_rendering: bool,
+    pub performance_flags: PerformanceFlags,
 }
 
 ironrdp_pdu::assert_impl!(Config: Send, Sync);
