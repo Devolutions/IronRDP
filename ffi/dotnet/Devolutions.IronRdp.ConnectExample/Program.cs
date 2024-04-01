@@ -1,27 +1,99 @@
 ﻿using System.Net;
 using System.Net.Security;
 using System.Net.Sockets;
-using System.Security.Cryptography.X509Certificates;
 namespace Devolutions.IronRdp.ConnectExample
 {
     class Program
     {
         static async Task Main(string[] args)
         {
+            var arguments = ParseArguments(args);
+
+            if (arguments == null) 
+            {
+                return; 
+            }
+
+            var serverName = arguments["--serverName"];
+            var username = arguments["--username"];
+            var password = arguments["--password"];
+            var domain = arguments["--domain"];
             try
             {
-                var serverName = "IT-HELP-DC.ad.it-help.ninja";
-                var username = "Administrator";
-                var password = "DevoLabs123!";
-                var domain = "ad.it-help.ninja";
-
                 await Connect(serverName, username, password, domain);
             }
-            catch (IronRdpException e)
+            catch (Exception e) 
             {
-                var err = e.Inner.ToDisplay();
-                Console.WriteLine(err);
+                Console.WriteLine($"An error occurred: {e.Message}");
             }
+        }
+
+        static Dictionary<string, string> ParseArguments(string[] args)
+        {
+            if (args.Length == 0 || Array.Exists(args, arg => arg == "--help"))
+            {
+                PrintHelp();
+                return null;
+            }
+
+            var arguments = new Dictionary<string, string>();
+            string lastKey = null;
+            foreach (var arg in args)
+            {
+                if (arg.StartsWith("--"))
+                {
+                    if (lastKey != null)
+                    {
+                        Console.WriteLine($"Error: Missing value for {lastKey}.");
+                        PrintHelp();
+                        return null;
+                    }
+                    if (!IsValidArgument(arg))
+                    {
+                        Console.WriteLine($"Error: Unknown argument {arg}.");
+                        PrintHelp();
+                        return null;
+                    }
+                    lastKey = arg;
+                }
+                else
+                {
+                    if (lastKey == null)
+                    {
+                        Console.WriteLine("Error: Value without a preceding flag.");
+                        PrintHelp();
+                        return null;
+                    }
+                    arguments[lastKey] = arg;
+                    lastKey = null;
+                }
+            }
+
+            if (lastKey != null)
+            {
+                Console.WriteLine($"Error: Missing value for {lastKey}.");
+                PrintHelp();
+                return null;
+            }
+
+            return arguments;
+        }
+
+        static bool IsValidArgument(string argument)
+        {
+            var validArguments = new List<string> { "--serverName", "--username", "--password", "--domain" };
+            return validArguments.Contains(argument);
+        }
+
+        static void PrintHelp()
+        {
+            Console.WriteLine("Usage: dotnet run -- [OPTIONS]");
+            Console.WriteLine("Options:");
+            Console.WriteLine("  --serverName <serverName>  The name of the server to connect to.");
+            Console.WriteLine("  --username <username>      The username for connection.");
+            Console.WriteLine("  --password <password>      The password for connection.");
+            Console.WriteLine("  --domain <domain>          The domain of the server.");
+            Console.WriteLine("  --help                     Show this message and exit.");
         }
 
         static async Task Connect(String servername, String username, String password, String domain)
