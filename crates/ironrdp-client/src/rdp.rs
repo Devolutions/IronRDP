@@ -7,7 +7,7 @@ use ironrdp::pdu::write_buf::WriteBuf;
 use ironrdp::session::image::DecodedImage;
 use ironrdp::session::{fast_path, ActiveStage, ActiveStageOutput, GracefulDisconnectReason, SessionResult};
 use ironrdp::{cliprdr, connector, rdpdr, rdpsnd, session};
-use ironrdp_tokio::single_connect_step_read;
+use ironrdp_tokio::single_sequence_step_read;
 use rdpdr::NoopRdpdrBackend;
 use smallvec::SmallVec;
 use tokio::net::TcpStream;
@@ -289,7 +289,7 @@ async fn active_session(
                     debug!("Received Server Deactivate All PDU, executing Deactivation-Reactivation Sequence");
                     let mut buf = WriteBuf::new();
                     'activation_seq: loop {
-                        let written = single_connect_step_read(&mut framed, &mut *connection_activation, &mut buf)
+                        let written = single_sequence_step_read(&mut framed, &mut *connection_activation, &mut buf)
                             .await
                             .map_err(|e| session::custom_err!("read deactivation-reactivation sequence step", e))?;
 

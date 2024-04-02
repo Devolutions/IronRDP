@@ -21,7 +21,7 @@ use ironrdp::pdu::rdp::client_info::PerformanceFlags;
 use ironrdp::pdu::write_buf::WriteBuf;
 use ironrdp::session::image::DecodedImage;
 use ironrdp::session::{fast_path, ActiveStage, ActiveStageOutput, GracefulDisconnectReason};
-use ironrdp_futures::single_connect_step_read;
+use ironrdp_futures::single_sequence_step_read;
 use rgb::AsPixels as _;
 use tap::prelude::*;
 use wasm_bindgen::prelude::*;
@@ -618,7 +618,7 @@ impl Session {
                         let mut buf = WriteBuf::new();
                         'activation_seq: loop {
                             let written =
-                                single_connect_step_read(&mut framed, &mut *box_connection_activation, &mut buf)
+                                single_sequence_step_read(&mut framed, &mut *box_connection_activation, &mut buf)
                                     .await?;
 
                             if written.size().is_some() {
