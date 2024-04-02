@@ -16,7 +16,6 @@ doc = false
 test = false
 doctest = false
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 [dependencies]
 diplomat = "0.7.0"
 diplomat-runtime = "0.7.0"
