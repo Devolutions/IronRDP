@@ -387,11 +387,6 @@ pub struct Session {
 
 #[wasm_bindgen]
 impl Session {
-    // #[allow(unused_assignments)] is required here in order to silence a false
-    // positive about an unused assignment below, which is actually used. Search
-    // for "unused_assignments" in a comment in this function to find the specific
-    // assignment that is being falsely reported as unused.
-    #[allow(unused_assignments)]
     pub async fn run(&self) -> Result<SessionTerminationInfo, IronRdpError> {
         let rdp_reader = self
             .rdp_reader
@@ -636,12 +631,6 @@ impl Session {
                             } = box_connection_activation.state
                             {
                                 debug!("Deactivation-Reactivation Sequence completed");
-                                // Reset the image we decode fastpath frames into with
-                                // potentially updated session size.
-                                //
-                                // Note: the compiler apparently loses track of the control flow here,
-                                // hence the need for #[allow(unused_assignments)] at the top of this
-                                // function.
                                 image = DecodedImage::new(PixelFormat::RgbA32, desktop_size.width, desktop_size.height);
                                 // Create a new [`FastPathProcessor`] with potentially updated
                                 // io/user channel ids.

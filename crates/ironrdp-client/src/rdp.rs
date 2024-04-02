@@ -308,12 +308,6 @@ async fn active_session(
                         } = connection_activation.state
                         {
                             debug!("Deactivation-Reactivation Sequence completed");
-                            // Reset the image we decode fastpath frames into with
-                            // potentially updated session size.
-                            //
-                            // Note: the compiler apparently loses track of the control flow here,
-                            // hence the need for #[allow(unused_assignments)] at the top of this
-                            // function.
                             image = DecodedImage::new(PixelFormat::RgbA32, desktop_size.width, desktop_size.height);
                             // Create a new [`FastPathProcessor`] with potentially updated
                             // io/user channel ids.
