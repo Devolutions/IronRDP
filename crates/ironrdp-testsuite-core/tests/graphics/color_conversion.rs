@@ -1,4 +1,49 @@
-use ironrdp_graphics::color_conversion::*;
+use ironrdp_graphics::{color_conversion::*, image_processing::PixelFormat};
+
+#[test]
+fn to_64x64_ycbcr() {
+    let input = [0u8; 4];
+
+    let mut y = vec![0; 4096];
+    let mut cb = vec![0; 4096];
+    let mut cr = vec![0; 4096];
+    to_64x64_ycbcr_tile(&input, 1, 1, 4, PixelFormat::ABgr32, &mut y, &mut cb, &mut cr);
+}
+
+#[test]
+fn ycbcr_from_rgb_works_for_zeros() {
+    let rgb = Rgb { r: 0, g: 0, b: 0 };
+    let expected = YCbCr { y: -4096, cb: 0, cr: 0 };
+
+    let actual = YCbCr::from(rgb);
+    assert_eq!(expected, actual);
+}
+
+#[test]
+fn ycbcr_from_rgb_works_for_max_values() {
+    let rgb = Rgb { r: 255, g: 255, b: 255 };
+    let expected = YCbCr { y: 4063, cb: 0, cr: 0 };
+
+    let actual = YCbCr::from(rgb);
+    assert_eq!(expected, actual);
+}
+
+#[ignore]
+#[test]
+fn rgb_to_ycbcr_converts_large_buffer() {
+    let rgba = RGB_BUFFER.as_ref();
+    let expected = YCbCrBuffer {
+        y: YCBCR_BUFFER_Y.as_ref(),
+        cb: YCBCR_BUFFER_CB.as_ref(),
+        cr: YCBCR_BUFFER_CR.as_ref(),
+    };
+
+    let mut y = vec![0; 4096];
+    let mut cb = vec![0; 4096];
+    let mut cr = vec![0; 4096];
+    to_ycbcr(rgba, 64, 64, 64 * 4, PixelFormat::BgrA32, &mut y, &mut cb, &mut cr);
+    assert_eq!(expected.y, y.as_slice());
+}
 
 #[test]
 fn rgb_from_ycbcr_works_for_zeros() {
