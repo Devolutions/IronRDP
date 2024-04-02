@@ -1965,6 +1965,7 @@ dependencies = [
 name = "ironrdp-rdpsnd"
 version = "0.1.0"
 dependencies = [
+ "bitflags 2.4.2",
  "ironrdp-pdu",
  "ironrdp-svc",
 ]
@@ -2033,6 +2034,7 @@ dependencies = [
  "ironrdp-input",
  "ironrdp-pdu",
  "ironrdp-rdcleanpath",
+ "ironrdp-rdpsnd",
  "ironrdp-session",
  "lazy_static",
  "paste",
