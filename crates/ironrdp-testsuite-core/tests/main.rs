@@ -18,5 +18,6 @@ mod input;
 mod pcb;
 mod pdu;
 mod rdcleanpath;
+mod rdpsnd;
 mod server_name;
 mod session;
