@@ -1130,7 +1130,6 @@ dependencies = [
  "ironrdp",
  "sspi",
  "thiserror",
- "tracing",
 ]
 
 [[package]]

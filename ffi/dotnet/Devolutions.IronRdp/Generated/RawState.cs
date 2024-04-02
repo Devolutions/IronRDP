@@ -23,9 +23,6 @@ public partial struct State
     [return: MarshalAs(UnmanagedType.U1)]
     public static unsafe extern bool IsTerminal(State* self);
 
-    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "State_as_any", ExactSpelling = true)]
-    public static unsafe extern Any* AsAny(State* self);
-
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "State_destroy", ExactSpelling = true)]
     public static unsafe extern void Destroy(State* self);
 }

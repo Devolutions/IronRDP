@@ -27,7 +27,7 @@ pub mod ffi {
     pub struct VecU8(pub Vec<u8>);
 
     impl VecU8 {
-        pub fn from_byte(bytes: &[u8]) -> Box<VecU8> {
+        pub fn from_bytes(bytes: &[u8]) -> Box<VecU8> {
             Box::new(VecU8(bytes.to_vec()))
         }
 
@@ -47,9 +47,6 @@ pub mod ffi {
             Box::new(VecU8(Vec::new()))
         }
     }
-
-    #[diplomat::opaque]
-    pub struct Any<'a>(pub &'a dyn std::any::Any);
 
     #[diplomat::opaque]
     pub struct OptionalUsize(pub Option<usize>);

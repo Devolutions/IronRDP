@@ -23,9 +23,6 @@ pub mod ffi {
     #[diplomat::opaque] // We must use Option here, as ClientConnector is not Clone and have functions that consume it
     pub struct ClientConnector(pub Option<ironrdp::connector::ClientConnector>);
 
-    #[diplomat::opaque]
-    pub struct ServerName(pub ironrdp::connector::ServerName);
-
     // Basic Impl for ClientConnector
     impl ClientConnector {
         pub fn new(config: &Config) -> Box<ClientConnector> {
@@ -149,10 +146,6 @@ pub mod ffi {
         pub fn is_terminal(&'a self) -> bool {
             self.0.is_terminal()
         }
-
-        pub fn as_any(&'a self) -> Box<crate::utils::ffi::Any<'a>> {
-            Box::new(crate::utils::ffi::Any(self.0.as_any()))
-        }
     }
 
     impl ClientConnector {
@@ -168,12 +161,6 @@ pub mod ffi {
                 return Err(ValueConsumedError::for_item("connector").into());
             };
             Ok(Box::new(State(connector.state())))
-        }
-    }
-
-    impl ServerName {
-        pub fn new(name: &str) -> Box<ServerName> {
-            Box::new(ServerName(ironrdp::connector::ServerName::new(name)))
         }
     }
 }

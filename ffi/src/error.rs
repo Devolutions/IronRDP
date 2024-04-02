@@ -1,4 +1,6 @@
 #![allow(clippy::return_self_not_must_use)]
+use std::fmt::Display;
+
 use ironrdp::connector::ConnectorError;
 
 use self::ffi::IronRdpErrorKind;
@@ -119,12 +121,13 @@ impl ValueConsumedError {
     }
 }
 
-impl ToString for ValueConsumedError {
-    fn to_string(&self) -> String {
+impl Display for ValueConsumedError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         if let Some(reason) = &self.reason {
-            return format!("{}: {}", self.item, reason);
+            write!(f, "{}: {}", self.item, reason)
+        } else {
+            write!(f, "{}: is consumed or never constructed", self.item)
         }
-        format!("{}: is consumed or never constructed", self.item)
     }
 }
 

@@ -6,5 +6,3 @@ pub mod error;
 pub mod pdu;
 pub mod svc;
 pub mod utils;
-
-use tracing as _; // need this in the future

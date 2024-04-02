@@ -16,8 +16,8 @@ public partial struct VecU8
 {
     private const string NativeLib = "DevolutionsIronRdp";
 
-    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "VecU8_from_byte", ExactSpelling = true)]
-    public static unsafe extern VecU8* FromByte(byte* bytes, nuint bytesSz);
+    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "VecU8_from_bytes", ExactSpelling = true)]
+    public static unsafe extern VecU8* FromBytes(byte* bytes, nuint bytesSz);
 
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "VecU8_get_size", ExactSpelling = true)]
     public static unsafe extern nuint GetSize(VecU8* self);

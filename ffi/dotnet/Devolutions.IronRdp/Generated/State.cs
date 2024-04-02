@@ -88,22 +88,6 @@ public partial class State: IDisposable
         }
     }
 
-    /// <returns>
-    /// A <c>Any</c> allocated on Rust side.
-    /// </returns>
-    public Any AsAny()
-    {
-        unsafe
-        {
-            if (_inner == null)
-            {
-                throw new ObjectDisposedException("State");
-            }
-            Raw.Any* retVal = Raw.State.AsAny(_inner);
-            return new Any(retVal);
-        }
-    }
-
     /// <summary>
     /// Returns the underlying raw handle.
     /// </summary>

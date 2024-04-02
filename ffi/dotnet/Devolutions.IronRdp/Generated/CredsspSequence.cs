@@ -53,22 +53,18 @@ public partial class CredsspSequence: IDisposable
     /// <returns>
     /// A <c>CredsspSequenceInitResult</c> allocated on Rust side.
     /// </returns>
-    public static CredsspSequenceInitResult Init(ClientConnector connector, ServerName serverName, byte[] serverPublicKey, KerberosConfig? kerberoConfigs)
+    public static CredsspSequenceInitResult Init(ClientConnector connector, string serverName, byte[] serverPublicKey, KerberosConfig? kerberoConfigs)
     {
         unsafe
         {
+            byte[] serverNameBuf = DiplomatUtils.StringToUtf8(serverName);
             nuint serverPublicKeyLength = (nuint)serverPublicKey.Length;
+            nuint serverNameBufLength = (nuint)serverNameBuf.Length;
             Raw.ClientConnector* connectorRaw;
             connectorRaw = connector.AsFFI();
             if (connectorRaw == null)
             {
                 throw new ObjectDisposedException("ClientConnector");
-            }
-            Raw.ServerName* serverNameRaw;
-            serverNameRaw = serverName.AsFFI();
-            if (serverNameRaw == null)
-            {
-                throw new ObjectDisposedException("ServerName");
             }
             Raw.KerberosConfig* kerberoConfigsRaw;
             if (kerberoConfigs == null)
@@ -85,13 +81,16 @@ public partial class CredsspSequence: IDisposable
             }
             fixed (byte* serverPublicKeyPtr = serverPublicKey)
             {
-                Raw.CredsspFfiResultBoxCredsspSequenceInitResultBoxIronRdpError result = Raw.CredsspSequence.Init(connectorRaw, serverNameRaw, serverPublicKeyPtr, serverPublicKeyLength, kerberoConfigsRaw);
-                if (!result.isOk)
+                fixed (byte* serverNameBufPtr = serverNameBuf)
                 {
-                    throw new IronRdpException(new IronRdpError(result.Err));
+                    Raw.CredsspFfiResultBoxCredsspSequenceInitResultBoxIronRdpError result = Raw.CredsspSequence.Init(connectorRaw, serverNameBufPtr, serverNameBufLength, serverPublicKeyPtr, serverPublicKeyLength, kerberoConfigsRaw);
+                    if (!result.isOk)
+                    {
+                        throw new IronRdpException(new IronRdpError(result.Err));
+                    }
+                    Raw.CredsspSequenceInitResult* retVal = result.Ok;
+                    return new CredsspSequenceInitResult(retVal);
                 }
-                Raw.CredsspSequenceInitResult* retVal = result.Ok;
-                return new CredsspSequenceInitResult(retVal);
             }
         }
     }

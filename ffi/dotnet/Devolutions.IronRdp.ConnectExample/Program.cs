@@ -107,7 +107,7 @@ namespace Devolutions.IronRdp.ConnectExample
             ClientConnector connector = ClientConnector.New(config);
             connector.WithServerAddr(serverAddr);
 
-            await connect_begin(framed, connector);
+            await connectBegin(framed, connector);
             var (serverPublicKey, framedSsl) = await securityUpgrade(servername, framed, connector);
             await ConnectFinalize(servername, connector, serverPublicKey, framedSsl);
         }
@@ -131,7 +131,7 @@ namespace Devolutions.IronRdp.ConnectExample
             return (serverPublicKey, framedSsl);
         }
 
-        private static async Task connect_begin(Framed<NetworkStream> framed, ClientConnector connector)
+        private static async Task connectBegin(Framed<NetworkStream> framed, ClientConnector connector)
         {
             var writeBuf = WriteBuf.New();
             while (!connector.ShouldPerformSecurityUpgrade())
@@ -159,7 +159,7 @@ namespace Devolutions.IronRdp.ConnectExample
             var writeBuf2 = WriteBuf.New();
             if (connector.ShouldPerformCredssp())
             {
-                await PerformCredsspSteps(connector, ServerName.New(servername), writeBuf2, framedSsl, serverpubkey);
+                await PerformCredsspSteps(connector, servername, writeBuf2, framedSsl, serverpubkey);
             }
             while (!connector.State().IsTerminal())
             {
@@ -167,7 +167,7 @@ namespace Devolutions.IronRdp.ConnectExample
             }
         }
 
-        private static async Task PerformCredsspSteps(ClientConnector connector, ServerName serverName, WriteBuf writeBuf, Framed<SslStream> framedSsl, byte[] serverpubkey)
+        private static async Task PerformCredsspSteps(ClientConnector connector, string serverName, WriteBuf writeBuf, Framed<SslStream> framedSsl, byte[] serverpubkey)
         {
             var credsspSequenceInitResult = CredsspSequence.Init(connector, serverName, serverpubkey, null);
             var credsspSequence = credsspSequenceInitResult.GetCredsspSequence();

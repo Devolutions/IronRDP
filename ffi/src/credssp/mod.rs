@@ -6,7 +6,7 @@ pub mod ffi {
 
     use crate::{
         connector::{
-            ffi::{ClientConnector, PduHint, ServerName},
+            ffi::{ClientConnector, PduHint},
             result::ffi::Written,
         },
         error::{ffi::IronRdpError, ValueConsumedError},
@@ -53,7 +53,7 @@ pub mod ffi {
 
         pub fn init(
             connector: &ClientConnector,
-            server_name: &ServerName,
+            server_name: &str,
             server_public_key: &[u8],
             kerbero_configs: Option<&KerberosConfig>,
         ) -> Result<Box<CredsspSequenceInitResult>, Box<IronRdpError>> {
@@ -63,7 +63,7 @@ pub mod ffi {
 
             let (credssp_sequence, ts_request) = ironrdp::connector::credssp::CredsspSequence::init(
                 connector,
-                server_name.0.clone(),
+                server_name.into(),
                 server_public_key.to_owned(),
                 kerbero_configs.map(|config| config.0.clone()),
             )?;

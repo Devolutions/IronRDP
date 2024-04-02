@@ -40,14 +40,14 @@ public partial class VecU8: IDisposable
     /// <returns>
     /// A <c>VecU8</c> allocated on Rust side.
     /// </returns>
-    public static VecU8 FromByte(byte[] bytes)
+    public static VecU8 FromBytes(byte[] bytes)
     {
         unsafe
         {
             nuint bytesLength = (nuint)bytes.Length;
             fixed (byte* bytesPtr = bytes)
             {
-                Raw.VecU8* retVal = Raw.VecU8.FromByte(bytesPtr, bytesLength);
+                Raw.VecU8* retVal = Raw.VecU8.FromBytes(bytesPtr, bytesLength);
                 return new VecU8(retVal);
             }
         }
