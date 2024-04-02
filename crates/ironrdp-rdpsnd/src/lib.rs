@@ -1,6 +1,10 @@
 use ironrdp_pdu::gcc::ChannelName;
 use ironrdp_pdu::PduResult;
-use ironrdp_svc::{impl_as_any, CompressionCondition, SvcClientProcessor, SvcMessage, SvcProcessor};
+use ironrdp_svc::{
+    impl_as_any, CompressionCondition, SvcClientProcessor, SvcMessage, SvcProcessor, SvcServerProcessor,
+};
+
+pub mod pdu;
 
 /// We currently don't implement any of rdpsnd, however it's required
 /// for rdpdr to work: [\[MS-RDPEFS\] Appendix A<1>]
@@ -43,3 +47,5 @@ impl SvcProcessor for Rdpsnd {
 }
 
 impl SvcClientProcessor for Rdpsnd {}
+
+impl SvcServerProcessor for Rdpsnd {}
