@@ -5,6 +5,7 @@
 use ironrdp_dvc::DvcPduEncode;
 use ironrdp_pdu::cursor::{ReadCursor, WriteCursor};
 use ironrdp_pdu::{ensure_fixed_part_size, invalid_message_err, PduDecode, PduEncode, PduResult};
+use tracing::warn;
 
 const DISPLAYCONTROL_PDU_TYPE_CAPS: u32 = 0x00000005;
 const DISPLAYCONTROL_PDU_TYPE_MONITOR_LAYOUT: u32 = 0x00000002;
@@ -234,6 +235,19 @@ impl DisplayControlMonitorLayout {
         })
     }
 
+    /// Creates a new [`DisplayControlMonitorLayout`] with a single primary monitor
+    /// with the given `width` and `height`.
+    pub fn new_single_primary_monitor(width: u32, height: u32) -> PduResult<Self> {
+        let monitors = vec![
+            MonitorLayoutEntry::new_primary(width, height)?.with_orientation(if width > height {
+                MonitorOrientation::Landscape
+            } else {
+                MonitorOrientation::Portrait
+            }),
+        ];
+        Ok(DisplayControlMonitorLayout::new(&monitors).unwrap())
+    }
+
     pub fn monitors(&self) -> &[MonitorLayoutEntry] {
         &self.monitors
     }
@@ -334,7 +348,20 @@ impl MonitorLayoutEntry {
 
     const NAME: &'static str = "DISPLAYCONTROL_MONITOR_LAYOUT";
 
-    fn new_impl(width: u32, height: u32) -> PduResult<Self> {
+    /// Creates a new [`MonitorLayoutEntry`].
+    ///
+    /// - `width` and `height` MUST be >= 200 and <= 8192.
+    /// - `width` SHOULD be even. If it is odd, it will be adjusted
+    ///   to the nearest even number by subtracting 1.
+    fn new_impl(mut width: u32, height: u32) -> PduResult<Self> {
+        if width % 2 != 0 {
+            let prev_width = width;
+            width = width.saturating_sub(1);
+            warn!(
+                "Monitor width cannot be odd, adjusting from {} to {}",
+                prev_width, width
+            )
+        }
         validate_dimensions(width, height)?;
 
         Ok(Self {
