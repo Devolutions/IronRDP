@@ -7,7 +7,7 @@ on:
         description: 'Dry run'
         required: true
         type: boolean
-        default: 'true'
+        default: true
   schedule:
     - cron: '48 3 * * 1' # 3:48 AM UTC every Monday
 
@@ -39,7 +39,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Setup wasm-pack
         shell: bash
@@ -71,7 +71,7 @@ jobs:
           Get-ChildItem -Path ./web-client/ -Recurse *.tgz | ForEach { Copy-Item $_ "./npm-packages" }
 
       - name: Upload package artifact
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: npm
           path: npm-packages/*.tgz
@@ -87,7 +87,7 @@ jobs:
 
     steps:
       - name: Download NPM packages artifact
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@v4
         with:
           name: npm
           path: npm-packages
