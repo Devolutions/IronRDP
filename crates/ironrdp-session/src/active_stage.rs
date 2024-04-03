@@ -2,6 +2,7 @@ use std::rc::Rc;
 
 use ironrdp_connector::connection_activation::ConnectionActivationSequence;
 use ironrdp_connector::ConnectionResult;
+use ironrdp_dvc::{DvcProcessor, DynamicChannelId};
 use ironrdp_graphics::pointer::DecodedPointer;
 use ironrdp_pdu::geometry::InclusiveRectangle;
 use ironrdp_pdu::input::fast_path::{FastPathInput, FastPathInputEvent};
@@ -175,6 +176,10 @@ impl ActiveStage {
 
     pub fn get_svc_processor_mut<T: SvcProcessor + 'static>(&mut self) -> Option<&mut T> {
         self.x224_processor.get_svc_processor_mut()
+    }
+
+    pub fn get_dvc_processor<T: DvcProcessor + 'static>(&mut self) -> Option<(&T, Option<DynamicChannelId>)> {
+        self.x224_processor.get_dvc_processor()
     }
 
     /// Completes user's SVC request with data, required to sent it over the network and returns

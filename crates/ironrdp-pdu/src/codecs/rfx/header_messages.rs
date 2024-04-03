@@ -196,7 +196,7 @@ impl RfxChannelHeight {
         (1..=2048)
             .contains(&value)
             .then_some(Self(value))
-            .ok_or(RfxError::InvalidChannelWidth(value))
+            .ok_or(RfxError::InvalidChannelHeight(value))
     }
 
     pub fn as_u16(self) -> u16 {

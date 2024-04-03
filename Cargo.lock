@@ -1631,6 +1631,7 @@ dependencies = [
  "ironrdp-cliprdr",
  "ironrdp-cliprdr-native",
  "ironrdp-connector",
+ "ironrdp-displaycontrol",
  "ironrdp-dvc",
  "ironrdp-graphics",
  "ironrdp-input",

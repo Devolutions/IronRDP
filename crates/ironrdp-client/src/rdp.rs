@@ -1,11 +1,14 @@
 use ironrdp::cliprdr::backend::{ClipboardMessage, CliprdrBackendFactory};
 use ironrdp::connector::connection_activation::ConnectionActivationState;
 use ironrdp::connector::{ConnectionResult, ConnectorResult};
+use ironrdp::displaycontrol::client::DisplayControlClient;
+use ironrdp::dvc::DrdynvcClient;
 use ironrdp::graphics::image_processing::PixelFormat;
 use ironrdp::pdu::input::fast_path::FastPathInputEvent;
 use ironrdp::pdu::write_buf::WriteBuf;
 use ironrdp::session::image::DecodedImage;
 use ironrdp::session::{fast_path, ActiveStage, ActiveStageOutput, GracefulDisconnectReason, SessionResult};
+use ironrdp::svc::SvcProcessorMessages;
 use ironrdp::{cliprdr, connector, rdpdr, rdpsnd, session};
 use ironrdp_tokio::single_sequence_step_read;
 use rdpdr::NoopRdpdrBackend;
@@ -107,7 +110,9 @@ async fn connect(
 
     let mut connector = connector::ClientConnector::new(config.connector.clone())
         .with_server_addr(server_addr)
-        .with_static_channel(ironrdp::dvc::DrdynvcClient::new())
+        .with_static_channel(
+            ironrdp::dvc::DrdynvcClient::new().with_dynamic_channel(DisplayControlClient::new(|_| Ok(Vec::new()))),
+        )
         .with_static_channel(rdpsnd::Rdpsnd::new())
         .with_static_channel(rdpdr::Rdpdr::new(Box::new(NoopRdpdrBackend {}), "IronRDP".to_owned()).with_smartcard(0));
 
@@ -178,10 +183,6 @@ async fn active_session(
 
                 match input_event {
                     RdpInputEvent::Resize { mut width, mut height } => {
-                        // TODO(#105): Add support for Display Update Virtual Channel Extension
-                        // https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpedisp/d2954508-f487-48bc-8731-39743e0854a9
-                        // One approach when this extension is not available is to perform a connection from scratch again.
-
                         // Find the last resize event
                         while let Ok(newer_event) = input_event_receiver.try_recv() {
                             if let RdpInputEvent::Resize { width: newer_width, height: newer_height } = newer_event {
@@ -190,11 +191,24 @@ async fn active_session(
                             }
                         }
 
-                        // TODO(#271): use the "auto-reconnect cookie": https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/15b0d1c9-2891-4adb-a45e-deb4aeeeab7c
-
                         info!(width, height, "resize event");
 
-                        return Ok(RdpControlFlow::ReconnectWithNewSize { width, height })
+                        if let Some((display_client, channel_id)) = active_stage.get_dvc_processor::<DisplayControlClient>() {
+                            if let Some(channel_id) = channel_id {
+                                let svc_messages = display_client.encode_single_primary_monitor(channel_id, width.into(), height.into())
+                                    .map_err(|e| session::custom_err!("DisplayControl", e))?;
+                                let frame = active_stage.process_svc_processor_messages(SvcProcessorMessages::<DrdynvcClient>::new(svc_messages))?;
+                                vec![ActiveStageOutput::ResponseFrame(frame)]
+                            } else {
+                                // TODO: could add a mechanism that withholds the resize event until the channel is created rather than reconnecting
+                                debug!("Display Control Virtual Channel is not yet connected, reconnecting with new size");
+                                return Ok(RdpControlFlow::ReconnectWithNewSize { width, height })
+                            }
+                        } else {
+                            // TODO(#271): use the "auto-reconnect cookie": https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/15b0d1c9-2891-4adb-a45e-deb4aeeeab7c
+                            debug!("Display Control Virtual Channel is not available, reconnecting with new size");
+                            return Ok(RdpControlFlow::ReconnectWithNewSize { width, height })
+                        }
                     },
                     RdpInputEvent::FastPath(events) => {
                         trace!(?events);
