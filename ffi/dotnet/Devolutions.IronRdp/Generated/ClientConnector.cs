@@ -51,7 +51,7 @@ public partial class ClientConnector: IDisposable
     /// Must use
     /// </summary>
     /// <exception cref="IronRdpException"></exception>
-    public void WithServerAddr(SocketAddr serverAddr)
+    public void WithServerAddr(string serverAddr)
     {
         unsafe
         {
@@ -59,16 +59,15 @@ public partial class ClientConnector: IDisposable
             {
                 throw new ObjectDisposedException("ClientConnector");
             }
-            Raw.SocketAddr* serverAddrRaw;
-            serverAddrRaw = serverAddr.AsFFI();
-            if (serverAddrRaw == null)
+            byte[] serverAddrBuf = DiplomatUtils.StringToUtf8(serverAddr);
+            nuint serverAddrBufLength = (nuint)serverAddrBuf.Length;
+            fixed (byte* serverAddrBufPtr = serverAddrBuf)
             {
-                throw new ObjectDisposedException("SocketAddr");
-            }
-            Raw.ConnectorFfiResultVoidBoxIronRdpError result = Raw.ClientConnector.WithServerAddr(_inner, serverAddrRaw);
-            if (!result.isOk)
-            {
-                throw new IronRdpException(new IronRdpError(result.Err));
+                Raw.ConnectorFfiResultVoidBoxIronRdpError result = Raw.ClientConnector.WithServerAddr(_inner, serverAddrBufPtr, serverAddrBufLength);
+                if (!result.isOk)
+                {
+                    throw new IronRdpException(new IronRdpError(result.Err));
+                }
             }
         }
     }

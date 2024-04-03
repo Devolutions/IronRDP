@@ -66,6 +66,7 @@ public partial class VecU8: IDisposable
         }
     }
 
+    /// <exception cref="IronRdpException"></exception>
     public void Fill(byte[] buffer)
     {
         unsafe
@@ -77,7 +78,11 @@ public partial class VecU8: IDisposable
             nuint bufferLength = (nuint)buffer.Length;
             fixed (byte* bufferPtr = buffer)
             {
-                Raw.VecU8.Fill(_inner, bufferPtr, bufferLength);
+                Raw.UtilsFfiResultVoidBoxIronRdpError result = Raw.VecU8.Fill(_inner, bufferPtr, bufferLength);
+                if (!result.isOk)
+                {
+                    throw new IronRdpException(new IronRdpError(result.Err));
+                }
             }
         }
     }

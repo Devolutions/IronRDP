@@ -15,7 +15,6 @@ pub mod ffi {
             ValueConsumedError,
         },
         pdu::ffi::WriteBuf,
-        utils::ffi::SocketAddr,
     };
 
     use super::{config::ffi::Config, result::ffi::Written};
@@ -32,11 +31,11 @@ pub mod ffi {
         }
 
         /// Must use
-        pub fn with_server_addr(&mut self, server_addr: &SocketAddr) -> Result<(), Box<IronRdpError>> {
+        pub fn with_server_addr(&mut self, server_addr: &str) -> Result<(), Box<IronRdpError>> {
             let Some(connector) = self.0.take() else {
                 return Err(IronRdpErrorKind::Consumed.into());
             };
-            let server_addr = server_addr.0;
+            let server_addr = server_addr.parse().map_err(|_| IronRdpErrorKind::Generic)?;
             self.0 = Some(connector.with_server_addr(server_addr));
 
             Ok(())

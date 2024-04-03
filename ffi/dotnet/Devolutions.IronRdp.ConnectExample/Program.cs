@@ -98,14 +98,21 @@ namespace Devolutions.IronRdp.ConnectExample
 
         static async Task Connect(String servername, String username, String password, String domain)
         {
-            SocketAddr serverAddr;
-            Config config = buildConfig(servername, username, password, domain, out serverAddr);
+            Config config = buildConfig(servername, username, password, domain);
 
             var stream = await CreateTcpConnection(servername, 3389);
             var framed = new Framed<NetworkStream>(stream);
 
             ClientConnector connector = ClientConnector.New(config);
-            connector.WithServerAddr(serverAddr);
+
+            var ip = await Dns.GetHostAddressesAsync(servername);
+            if (ip.Length == 0)
+            {
+                throw new Exception("Could not resolve server address");
+            }
+
+            var socketAddrString = ip[0].ToString()+":3389";
+            connector.WithServerAddr(socketAddrString);
 
             await connectBegin(framed, connector);
             var (serverPublicKey, framedSsl) = await securityUpgrade(servername, framed, connector);
@@ -140,9 +147,8 @@ namespace Devolutions.IronRdp.ConnectExample
             }
         }
 
-        private static Config buildConfig(string servername, string username, string password, string domain, out SocketAddr serverAddr)
+        private static Config buildConfig(string servername, string username, string password, string domain)
         {
-            serverAddr = SocketAddr.LookUp(servername, 3389);
             ConfigBuilder configBuilder = ConfigBuilder.New();
 
             configBuilder.WithUsernameAndPasswrord(username, password);
@@ -150,6 +156,7 @@ namespace Devolutions.IronRdp.ConnectExample
             configBuilder.SetDesktopSize(800, 600);
             configBuilder.SetClientName("IronRdp");
             configBuilder.SetClientDir("C:\\");
+            configBuilder.SetPerformanceFlags(PerformanceFlags.NewDefault());
 
             return configBuilder.Build();
         }

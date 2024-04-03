@@ -23,7 +23,7 @@ public partial struct VecU8
     public static unsafe extern nuint GetSize(VecU8* self);
 
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "VecU8_fill", ExactSpelling = true)]
-    public static unsafe extern void Fill(VecU8* self, byte* buffer, nuint bufferSz);
+    public static unsafe extern UtilsFfiResultVoidBoxIronRdpError Fill(VecU8* self, byte* buffer, nuint bufferSz);
 
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "VecU8_new_empty", ExactSpelling = true)]
     public static unsafe extern VecU8* NewEmpty();
