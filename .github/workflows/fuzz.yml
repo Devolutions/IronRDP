@@ -21,13 +21,13 @@ jobs:
       AZURE_STORAGE_KEY: ${{ secrets.CORPUS_AZURE_STORAGE_KEY }}
 
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
 
       - name: Download fuzzing corpus
         run: cargo xtask fuzz corpus-fetch -v
 
       - name: Save corpus
-        uses: actions/cache/save@v3
+        uses: actions/cache/save@v4
         with:
           path: |
             ./fuzz/corpus
@@ -44,10 +44,10 @@ jobs:
         target: [ pdu_decoding, rle_decompression, bitmap_stream, cliprdr_format, channel_processing ]
 
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
 
       - name: Download corpus
-        uses: actions/cache/restore@v3
+        uses: actions/cache/restore@v4
         with:
           fail-on-cache-miss: true
           path: |
@@ -61,12 +61,12 @@ jobs:
           tree ./fuzz/artifacts
 
       - name: Rust cache
-        uses: Swatinem/rust-cache@v2.3.0
+        uses: Swatinem/rust-cache@v2.7.3
         with:
           workspaces: fuzz -> target
 
       - name: Binary cache
-        uses: actions/cache@v3
+        uses: actions/cache@v4
         with:
           path: ./.cargo/local_root/bin
           key: ${{ runner.os }}-bin-${{ github.job }}-${{ hashFiles('xtask/src/bin_version.rs') }}
@@ -98,7 +98,7 @@ jobs:
 
       - name: Upload minified corpus
         if: ${{ always() && !cancelled() }}
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           retention-days: 7
           name: minified-corpus
@@ -115,10 +115,10 @@ jobs:
       AZURE_STORAGE_KEY: ${{ secrets.CORPUS_AZURE_STORAGE_KEY }}
 
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
 
       - name: Download updated corpus
-        uses: actions/download-artifact@v3
+        uses: actions/download-artifact@v4
         with:
           name: minified-corpus
           path: ./fuzz/

@@ -30,7 +30,7 @@ jobs:
     runs-on: ubuntu-20.04
 
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
 
       - name: Check formatting
         run: cargo xtask check fmt -v
@@ -40,10 +40,10 @@ jobs:
     runs-on: ubuntu-20.04
 
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
 
       - name: Binary cache
-        uses: actions/cache@v3
+        uses: actions/cache@v4
         with:
           path: ./.cargo/local_root/bin
           key: ${{ runner.os }}-bin-${{ github.job }}-${{ hashFiles('xtask/src/bin_version.rs') }}
@@ -69,13 +69,13 @@ jobs:
             runner: ubuntu-22.04 # 22.04 because we need a recent wabt version
 
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
 
       - name: Rust cache
         uses: Swatinem/rust-cache@v2.3.0
 
       - name: Binary cache
-        uses: actions/cache@v3
+        uses: actions/cache@v4
         with:
           path: ./.cargo/local_root/bin
           key: ${{ runner.os }}-bin-${{ github.job }}-${{ hashFiles('xtask/src/bin_version.rs') }}
@@ -106,7 +106,7 @@ jobs:
     needs: formatting
 
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
 
       - name: Rust cache
         uses: Swatinem/rust-cache@v2.3.0
@@ -114,7 +114,7 @@ jobs:
           workspaces: fuzz -> target
 
       - name: Binary cache
-        uses: actions/cache@v3
+        uses: actions/cache@v4
         with:
           path: ./.cargo/local_root/bin
           key: ${{ runner.os }}-bin-${{ github.job }}-${{ hashFiles('xtask/src/bin_version.rs') }}
@@ -135,13 +135,13 @@ jobs:
     needs: formatting
 
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
 
       - name: Rust cache
-        uses: Swatinem/rust-cache@v2.3.0
+        uses: Swatinem/rust-cache@v2.7.3
 
       - name: Binary cache
-        uses: actions/cache@v3
+        uses: actions/cache@v4
         with:
           path: ./.cargo/local_root/bin
           key: ${{ runner.os }}-bin-${{ github.job }}-${{ hashFiles('xtask/src/bin_version.rs') }}
