@@ -147,7 +147,7 @@ pub struct RdpServer {
     handler: Arc<Mutex<Box<dyn RdpServerInputHandler>>>,
     display: Box<dyn RdpServerDisplay>,
     static_channels: StaticChannelSet,
-    cliprdr_factory: Option<Box<dyn CliprdrBackendFactory + Send>>,
+    cliprdr_factory: Option<Box<dyn CliprdrBackendFactory>>,
     ev_sender: mpsc::UnboundedSender<ServerEvent>,
     ev_receiver: mpsc::UnboundedReceiver<ServerEvent>,
 }
@@ -166,7 +166,7 @@ impl RdpServer {
         opts: RdpServerOptions,
         handler: Box<dyn RdpServerInputHandler>,
         display: Box<dyn RdpServerDisplay>,
-        cliprdr_factory: Option<Box<dyn CliprdrBackendFactory + Send>>,
+        cliprdr_factory: Option<Box<dyn CliprdrBackendFactory>>,
     ) -> Self {
         let (ev_sender, ev_receiver) = ServerEvent::create_channel();
         Self {
