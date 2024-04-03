@@ -16,4 +16,4 @@ mod windows;
 pub use crate::windows::{WinClipboard, WinCliprdrError, WinCliprdrResult};
 
 mod stub;
-pub use crate::stub::StubClipboard;
+pub use crate::stub::{StubClipboard, StubCliprdrBackend};

@@ -33,13 +33,19 @@ impl CliprdrBackendFactory for StubCliprdrBackendFactory {
 }
 
 #[derive(Debug)]
-pub(crate) struct StubCliprdrBackend;
+pub struct StubCliprdrBackend;
 
 impl_as_any!(StubCliprdrBackend);
 
 impl StubCliprdrBackend {
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         Self
+    }
+}
+
+impl Default for StubCliprdrBackend {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
