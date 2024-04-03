@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex};
 
 use anyhow::{anyhow, bail, Result};
 use ironrdp_acceptor::{self, Acceptor, AcceptorResult, BeginResult};
-use ironrdp_cliprdr::backend::{ClipboardMessage, CliprdrBackendFactory};
+use ironrdp_cliprdr::backend::ClipboardMessage;
 use ironrdp_cliprdr::CliprdrServer;
 use ironrdp_displaycontrol::server::DisplayControlServer;
 use ironrdp_dvc as dvc;
@@ -18,6 +18,7 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
 use tokio_rustls::TlsAcceptor;
 
+use crate::clipboard::CliprdrServerFactory;
 use crate::display::{DisplayUpdate, RdpServerDisplay};
 use crate::encoder::UpdateEncoder;
 use crate::handler::RdpServerInputHandler;
@@ -147,7 +148,7 @@ pub struct RdpServer {
     handler: Arc<Mutex<Box<dyn RdpServerInputHandler>>>,
     display: Box<dyn RdpServerDisplay>,
     static_channels: StaticChannelSet,
-    cliprdr_factory: Option<Box<dyn CliprdrBackendFactory>>,
+    cliprdr_factory: Option<Box<dyn CliprdrServerFactory>>,
     ev_sender: mpsc::UnboundedSender<ServerEvent>,
     ev_receiver: mpsc::UnboundedReceiver<ServerEvent>,
 }
@@ -155,6 +156,10 @@ pub struct RdpServer {
 #[derive(Debug)]
 pub enum ServerEvent {
     Clipboard(ClipboardMessage),
+}
+
+pub trait ServerEventSender {
+    fn set_sender(&mut self, sender: mpsc::UnboundedSender<ServerEvent>);
 }
 
 impl ServerEvent {
@@ -168,9 +173,12 @@ impl RdpServer {
         opts: RdpServerOptions,
         handler: Box<dyn RdpServerInputHandler>,
         display: Box<dyn RdpServerDisplay>,
-        cliprdr_factory: Option<Box<dyn CliprdrBackendFactory>>,
+        mut cliprdr_factory: Option<Box<dyn CliprdrServerFactory>>,
     ) -> Self {
         let (ev_sender, ev_receiver) = ServerEvent::create_channel();
+        if let Some(cliprdr) = cliprdr_factory.as_mut() {
+            cliprdr.set_sender(ev_sender.clone());
+        }
         Self {
             opts,
             handler: Arc::new(Mutex::new(handler)),
