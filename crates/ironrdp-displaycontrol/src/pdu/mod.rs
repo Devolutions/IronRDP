@@ -237,14 +237,22 @@ impl DisplayControlMonitorLayout {
 
     /// Creates a new [`DisplayControlMonitorLayout`] with a single primary monitor
     /// with the given `width` and `height`.
-    pub fn new_single_primary_monitor(width: u32, height: u32) -> PduResult<Self> {
-        let monitors = vec![
-            MonitorLayoutEntry::new_primary(width, height)?.with_orientation(if width > height {
-                MonitorOrientation::Landscape
-            } else {
-                MonitorOrientation::Portrait
-            }),
-        ];
+    pub fn new_single_primary_monitor(
+        width: u32,
+        height: u32,
+        scale_factor: u32,
+        physical_width: u32,
+        physical_height: u32,
+    ) -> PduResult<Self> {
+        let monitors =
+            vec![
+                MonitorLayoutEntry::new_primary(width, height, scale_factor, physical_width, physical_height)?
+                    .with_orientation(if width > height {
+                        MonitorOrientation::Landscape
+                    } else {
+                        MonitorOrientation::Portrait
+                    }),
+            ];
         Ok(DisplayControlMonitorLayout::new(&monitors).unwrap())
     }
 
@@ -353,7 +361,13 @@ impl MonitorLayoutEntry {
     /// - `width` and `height` MUST be >= 200 and <= 8192.
     /// - `width` SHOULD be even. If it is odd, it will be adjusted
     ///   to the nearest even number by subtracting 1.
-    fn new_impl(mut width: u32, height: u32) -> PduResult<Self> {
+    fn new_impl(
+        mut width: u32,
+        height: u32,
+        desktop_scale_factor: u32,
+        physical_width: u32,
+        physical_height: u32,
+    ) -> PduResult<Self> {
         if width % 2 != 0 {
             let prev_width = width;
             width = width.saturating_sub(1);
@@ -370,24 +384,36 @@ impl MonitorLayoutEntry {
             top: 0,
             width,
             height,
-            physical_width: 0,
-            physical_height: 0,
+            physical_width,
+            physical_height,
             orientation: 0,
-            desktop_scale_factor: 100,
+            desktop_scale_factor,
             device_scale_factor: 100,
         })
     }
 
     /// Creates a new primary monitor layout entry.
-    pub fn new_primary(width: u32, height: u32) -> PduResult<Self> {
-        let mut entry = Self::new_impl(width, height)?;
+    pub fn new_primary(
+        width: u32,
+        height: u32,
+        desktop_scale_factor: u32,
+        physical_width: u32,
+        physical_height: u32,
+    ) -> PduResult<Self> {
+        let mut entry = Self::new_impl(width, height, desktop_scale_factor, physical_width, physical_height)?;
         entry.is_primary = true;
         Ok(entry)
     }
 
     /// Creates a new secondary monitor layout entry.
-    pub fn new_secondary(width: u32, height: u32) -> PduResult<Self> {
-        Self::new_impl(width, height)
+    pub fn new_secondary(
+        width: u32,
+        height: u32,
+        desktop_scale_factor: u32,
+        physical_width: u32,
+        physical_height: u32,
+    ) -> PduResult<Self> {
+        Self::new_impl(width, height, desktop_scale_factor, physical_width, physical_height)
     }
 
     /// Sets the monitor's orientation. (Default is [`MonitorOrientation::Landscape`])

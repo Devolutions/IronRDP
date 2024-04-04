@@ -31,7 +31,13 @@ pub enum RdpOutputEvent {
 
 #[derive(Debug)]
 pub enum RdpInputEvent {
-    Resize { width: u16, height: u16 },
+    Resize {
+        width: u16,
+        height: u16,
+        scale_factor: u32,
+        physical_width: u32,
+        physical_height: u32,
+    },
     FastPath(SmallVec<[FastPathInputEvent; 2]>),
     Close,
     Clipboard(ClipboardMessage),
@@ -108,13 +114,12 @@ async fn connect(
 
     let mut framed = ironrdp_tokio::TokioFramed::new(stream);
 
-    let mut connector = connector::ClientConnector::new(config.connector.clone())
-        .with_server_addr(server_addr)
-        .with_static_channel(
-            ironrdp::dvc::DrdynvcClient::new().with_dynamic_channel(DisplayControlClient::new(|_| Ok(Vec::new()))),
-        )
-        .with_static_channel(rdpsnd::Rdpsnd::new())
-        .with_static_channel(rdpdr::Rdpdr::new(Box::new(NoopRdpdrBackend {}), "IronRDP".to_owned()).with_smartcard(0));
+    let mut connector = connector::ClientConnector::new(config.connector.clone()).with_server_addr(server_addr);
+    .with_static_channel(
+        ironrdp::dvc::DrdynvcClient::new().with_dynamic_channel(DisplayControlClient::new(|_| Ok(Vec::new()))),
+    )
+    .with_static_channel(rdpsnd::Rdpsnd::new())
+    .with_static_channel(rdpdr::Rdpdr::new(Box::new(NoopRdpdrBackend {}), "IronRDP".to_owned()).with_smartcard(0));
 
     if let Some(builder) = cliprdr_factory {
         let backend = builder.build_cliprdr_backend();
@@ -182,12 +187,15 @@ async fn active_session(
                 let input_event = input_event.ok_or_else(|| session::general_err!("GUI is stopped"))?;
 
                 match input_event {
-                    RdpInputEvent::Resize { mut width, mut height } => {
+                    RdpInputEvent::Resize { mut width, mut height, mut scale_factor, mut physical_width, mut physical_height } => {
                         // Find the last resize event
                         while let Ok(newer_event) = input_event_receiver.try_recv() {
-                            if let RdpInputEvent::Resize { width: newer_width, height: newer_height } = newer_event {
+                            if let RdpInputEvent::Resize { width: newer_width, height: newer_height, scale_factor: newer_scale_factor, physical_width: newer_physical_width, physical_height: newer_physical_height } = newer_event {
                                 width = newer_width;
                                 height = newer_height;
+                                scale_factor = newer_scale_factor;
+                                physical_width = newer_physical_width;
+                                physical_height = newer_physical_height;
                             }
                         }
 
@@ -195,7 +203,7 @@ async fn active_session(
 
                         if let Some((display_client, channel_id)) = active_stage.get_dvc_processor::<DisplayControlClient>() {
                             if let Some(channel_id) = channel_id {
-                                let svc_messages = display_client.encode_single_primary_monitor(channel_id, width.into(), height.into())
+                                let svc_messages = display_client.encode_single_primary_monitor(channel_id, width.into(), height.into(), scale_factor, physical_width, physical_height)
                                     .map_err(|e| session::custom_err!("DisplayControl", e))?;
                                 let frame = active_stage.process_svc_processor_messages(SvcProcessorMessages::<DrdynvcClient>::new(svc_messages))?;
                                 vec![ActiveStageOutput::ResponseFrame(frame)]
