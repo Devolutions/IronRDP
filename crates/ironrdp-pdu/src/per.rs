@@ -122,6 +122,10 @@ pub(crate) fn sizeof_length(length: u16) -> usize {
     }
 }
 
+pub(crate) fn sizeof_long_length() -> usize {
+    2
+}
+
 pub(crate) fn sizeof_u32(value: u32) -> usize {
     if value <= 0xff {
         2
