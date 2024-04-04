@@ -360,11 +360,13 @@ impl MonitorLayoutEntry {
     ///
     /// - `width` and `height` MUST be >= 200 and <= 8192.
     /// - `width` SHOULD be even. If it is odd, it will be adjusted
-    ///   to the nearest even number by subtracting 1.
+    ///    to the nearest even number by subtracting 1.
+    /// - `desktop_scale_factor` SHOULD be >= 100 and <= 500. If it is not,
+    ///    it will be adjusted to the nearest valid value.
     fn new_impl(
         mut width: u32,
         height: u32,
-        desktop_scale_factor: u32,
+        mut desktop_scale_factor: u32,
         physical_width: u32,
         physical_height: u32,
     ) -> PduResult<Self> {
@@ -372,10 +374,27 @@ impl MonitorLayoutEntry {
             let prev_width = width;
             width = width.saturating_sub(1);
             warn!(
-                "Monitor width cannot be odd, adjusting from {} to {}",
+                "Monitor width cannot be odd, adjusting from [{}] to [{}]",
                 prev_width, width
             )
         }
+
+        if desktop_scale_factor < 100 {
+            warn!(
+                "Desktop scale factor [{}] is less than 100, adjusting to 100",
+                desktop_scale_factor
+            );
+            desktop_scale_factor = 100;
+        }
+
+        if desktop_scale_factor > 500 {
+            warn!(
+                "Desktop scale factor [{}] is greater than 500, adjusting to 500",
+                desktop_scale_factor
+            );
+            desktop_scale_factor = 500;
+        }
+
         validate_dimensions(width, height)?;
 
         Ok(Self {

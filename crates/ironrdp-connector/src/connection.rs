@@ -700,7 +700,9 @@ fn create_client_info_pdu(config: &Config, routing_addr: &SocketAddr) -> rdp::Cl
     };
 
     // Default flags for all sessions
-    let mut flags = ClientInfoFlags::UNICODE
+    let mut flags = ClientInfoFlags::MOUSE
+        | ClientInfoFlags::MOUSE_HAS_WHEEL
+        | ClientInfoFlags::UNICODE
         | ClientInfoFlags::DISABLE_CTRL_ALT_DEL
         | ClientInfoFlags::LOGON_NOTIFY
         | ClientInfoFlags::LOGON_ERRORS
