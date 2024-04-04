@@ -50,7 +50,7 @@ pub mod ffi {
                 return Err(IronRdpErrorKind::Consumed.into());
             };
 
-            self.0 = Some(connector.with_static_channel(ironrdp::rdpsnd::Rdpsnd::new()));
+            self.0 = Some(connector.with_static_channel(ironrdp::rdpsnd::client::Rdpsnd::new()));
 
             Ok(())
         }
