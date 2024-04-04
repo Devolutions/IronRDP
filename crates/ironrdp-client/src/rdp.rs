@@ -118,7 +118,7 @@ async fn connect(
         .with_static_channel(
             ironrdp::dvc::DrdynvcClient::new().with_dynamic_channel(DisplayControlClient::new(|_| Ok(Vec::new()))),
         )
-        .with_static_channel(rdpsnd::Rdpsnd::new())
+        .with_static_channel(rdpsnd::client::Rdpsnd::new())
         .with_static_channel(rdpdr::Rdpdr::new(Box::new(NoopRdpdrBackend {}), "IronRDP".to_owned()).with_smartcard(0));
 
     if let Some(builder) = cliprdr_factory {

@@ -21,5 +21,6 @@ std = []
 
 [dependencies]
 bitflags.workspace = true
+tracing.workspace = true
 ironrdp-svc.workspace = true
 ironrdp-pdu = { workspace = true, features = ["alloc"] }

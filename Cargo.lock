@@ -1972,6 +1972,7 @@ dependencies = [
  "bitflags 2.5.0",
  "ironrdp-pdu",
  "ironrdp-svc",
+ "tracing",
 ]
 
 [[package]]
