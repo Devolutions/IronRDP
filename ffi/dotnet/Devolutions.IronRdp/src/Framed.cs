@@ -28,7 +28,7 @@ public class Framed<S> where S : Stream
     }
 
     /// <summary>
-    /// read from 0 to size bytes from the front of the buffer, and remove them from the buffer,keep the rest
+    /// Reads from 0 to size bytes from the front of the buffer, and remove them from the buffer keeping the rest.
     /// </summary>
     /// <param name="size">The number of bytes to read.</param>
     /// <returns>An array of bytes containing the read data.</returns>
