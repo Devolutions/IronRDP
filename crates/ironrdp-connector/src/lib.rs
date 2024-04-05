@@ -38,7 +38,7 @@ pub struct DesktopSize {
     pub height: u16,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct BitmapConfig {
     pub lossy_compression: bool,

@@ -187,6 +187,8 @@ impl Sequence for ConnectionActivationSequence {
                         io_channel_id,
                         user_channel_id,
                         desktop_size,
+                        no_server_pointer: self.config.no_server_pointer,
+                        pointer_software_rendering: self.config.pointer_software_rendering,
                     }
                 };
 
@@ -218,6 +220,8 @@ pub enum ConnectionActivationState {
         io_channel_id: u16,
         user_channel_id: u16,
         desktop_size: DesktopSize,
+        no_server_pointer: bool,
+        pointer_software_rendering: bool,
     },
 }
 

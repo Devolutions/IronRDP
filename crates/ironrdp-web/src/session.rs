@@ -12,6 +12,7 @@ use gloo_net::websocket;
 use gloo_net::websocket::futures::WebSocket;
 use ironrdp::cliprdr::backend::ClipboardMessage;
 use ironrdp::cliprdr::CliprdrClient;
+use ironrdp::connector::connection_activation::ConnectionActivationState;
 use ironrdp::connector::credssp::KerberosConfig;
 use ironrdp::connector::{self, ClientConnector, Credentials};
 use ironrdp::graphics::image_processing::PixelFormat;
@@ -19,7 +20,8 @@ use ironrdp::pdu::input::fast_path::FastPathInputEvent;
 use ironrdp::pdu::rdp::client_info::PerformanceFlags;
 use ironrdp::pdu::write_buf::WriteBuf;
 use ironrdp::session::image::DecodedImage;
-use ironrdp::session::{ActiveStage, ActiveStageOutput, GracefulDisconnectReason};
+use ironrdp::session::{fast_path, ActiveStage, ActiveStageOutput, GracefulDisconnectReason};
+use ironrdp_futures::single_sequence_step_read;
 use rgb::AsPixels as _;
 use tap::prelude::*;
 use wasm_bindgen::prelude::*;
@@ -604,7 +606,47 @@ impl Session {
                             hotspot_y,
                         })?;
                     }
-                    ActiveStageOutput::DeactivateAll(_) => todo!("DeactivateAll"),
+                    ActiveStageOutput::DeactivateAll(mut box_connection_activation) => {
+                        // Execute the Deactivation-Reactivation Sequence:
+                        // https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/dfc234ce-481a-4674-9a5d-2a7bafb14432
+                        debug!("Received Server Deactivate All PDU, executing Deactivation-Reactivation Sequence");
+                        let mut buf = WriteBuf::new();
+                        'activation_seq: loop {
+                            let written =
+                                single_sequence_step_read(&mut framed, &mut *box_connection_activation, &mut buf)
+                                    .await?;
+
+                            if written.size().is_some() {
+                                self.writer_tx
+                                    .unbounded_send(buf.filled().to_vec())
+                                    .context("Send frame to writer task")?;
+                            }
+
+                            if let ConnectionActivationState::Finalized {
+                                io_channel_id,
+                                user_channel_id,
+                                desktop_size,
+                                no_server_pointer,
+                                pointer_software_rendering,
+                            } = box_connection_activation.state
+                            {
+                                debug!("Deactivation-Reactivation Sequence completed");
+                                image = DecodedImage::new(PixelFormat::RgbA32, desktop_size.width, desktop_size.height);
+                                // Create a new [`FastPathProcessor`] with potentially updated
+                                // io/user channel ids.
+                                active_stage.set_fastpath_processor(
+                                    fast_path::ProcessorBuilder {
+                                        io_channel_id,
+                                        user_channel_id,
+                                        no_server_pointer,
+                                        pointer_software_rendering,
+                                    }
+                                    .build(),
+                                );
+                                break 'activation_seq;
+                            }
+                        }
+                    }
                     ActiveStageOutput::Terminate(reason) => break 'outer reason,
                 }
             }

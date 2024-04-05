@@ -25,7 +25,7 @@ where
     info!("Begin connection procedure");
 
     while !connector.should_perform_security_upgrade() {
-        single_connect_step(framed, connector, &mut buf)?;
+        single_sequence_step(framed, connector, &mut buf)?;
     }
 
     Ok(ShouldUpgrade)
@@ -78,7 +78,7 @@ where
     debug!("Remaining of connection sequence");
 
     let result = loop {
-        single_connect_step(framed, &mut connector, &mut buf)?;
+        single_sequence_step(framed, &mut connector, &mut buf)?;
 
         if let ClientConnectorState::Connected { result } = connector.state {
             break result;
@@ -173,7 +173,7 @@ where
     Ok(())
 }
 
-pub fn single_connect_step<S>(
+pub fn single_sequence_step<S>(
     framed: &mut Framed<S>,
     connector: &mut ClientConnector,
     buf: &mut WriteBuf,

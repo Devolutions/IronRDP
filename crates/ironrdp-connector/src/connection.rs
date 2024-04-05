@@ -551,14 +551,16 @@ impl Sequence for ClientConnector {
                             io_channel_id,
                             user_channel_id,
                             desktop_size,
+                            no_server_pointer,
+                            pointer_software_rendering,
                         } => ClientConnectorState::Connected {
                             result: ConnectionResult {
                                 io_channel_id,
                                 user_channel_id,
                                 static_channels: mem::take(&mut self.static_channels),
                                 desktop_size,
-                                no_server_pointer: self.config.no_server_pointer,
-                                pointer_software_rendering: self.config.pointer_software_rendering,
+                                no_server_pointer,
+                                pointer_software_rendering,
                                 connection_activation,
                             },
                         },

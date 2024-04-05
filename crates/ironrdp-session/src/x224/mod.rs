@@ -21,7 +21,7 @@ pub enum ProcessorOutput {
     /// [Deactivation-Reactivation Sequence].
     ///
     /// [Deactivation-Reactivation Sequence]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/dfc234ce-481a-4674-9a5d-2a7bafb14432
-    DeactivateAll(ConnectionActivationSequence),
+    DeactivateAll(Box<ConnectionActivationSequence>),
 }
 
 pub struct Processor {
@@ -155,7 +155,7 @@ impl Processor {
                 }
             }
             ironrdp_connector::legacy::IoChannelPdu::DeactivateAll(_) => Ok(vec![ProcessorOutput::DeactivateAll(
-                self.connection_activation.reset_clone(),
+                Box::new(self.connection_activation.reset_clone()),
             )]),
         }
     }
