@@ -162,9 +162,6 @@ pub mod ffi {
         }
     }
 
-
-
-
     #[diplomat::opaque]
     pub struct ChannelConnectionSequence(pub ironrdp::connector::ChannelConnectionSequence);
 

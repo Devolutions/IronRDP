@@ -15,6 +15,78 @@ public partial class ClientConnectorState: IDisposable
 {
     private unsafe Raw.ClientConnectorState* _inner;
 
+    public SecurityProtocol BasicSettingsExchangeSendInitialSelectedProtocol
+    {
+        get
+        {
+            return GetBasicSettingsExchangeSendInitialSelectedProtocol();
+        }
+    }
+
+    public ConnectInitial BasicSettingsExchangeWaitResponseConnectInitial
+    {
+        get
+        {
+            return GetBasicSettingsExchangeWaitResponseConnectInitial();
+        }
+    }
+
+    public ushort ChannelConnectionIoChannelId
+    {
+        get
+        {
+            return GetChannelConnectionIoChannelId();
+        }
+    }
+
+    public ConnectionResult ConnectedResult
+    {
+        get
+        {
+            return GetConnectedResult();
+        }
+    }
+
+    public SecurityProtocol ConnectionInitiationWaitConfirmRequestedProtocol
+    {
+        get
+        {
+            return GetConnectionInitiationWaitConfirmRequestedProtocol();
+        }
+    }
+
+    public SecurityProtocol CredsspSelectedProtocol
+    {
+        get
+        {
+            return GetCredsspSelectedProtocol();
+        }
+    }
+
+    public SecurityProtocol EnhancedSecurityUpgradeSelectedProtocol
+    {
+        get
+        {
+            return GetEnhancedSecurityUpgradeSelectedProtocol();
+        }
+    }
+
+    public ushort SecureSettingsExchangeIoChannelId
+    {
+        get
+        {
+            return GetSecureSettingsExchangeIoChannelId();
+        }
+    }
+
+    public ClientConnectorStateType Type
+    {
+        get
+        {
+            return GetType();
+        }
+    }
+
     /// <summary>
     /// Creates a managed <c>ClientConnectorState</c> from a raw handle.
     /// </summary>
@@ -27,6 +99,198 @@ public partial class ClientConnectorState: IDisposable
     public unsafe ClientConnectorState(Raw.ClientConnectorState* handle)
     {
         _inner = handle;
+    }
+
+    /// <exception cref="IronRdpException"></exception>
+    /// <returns>
+    /// A <c>ClientConnectorStateType</c> allocated on C# side.
+    /// </returns>
+    public ClientConnectorStateType GetType()
+    {
+        unsafe
+        {
+            if (_inner == null)
+            {
+                throw new ObjectDisposedException("ClientConnectorState");
+            }
+            Raw.ConnectorStateFfiResultClientConnectorStateTypeBoxIronRdpError result = Raw.ClientConnectorState.GetType(_inner);
+            if (!result.isOk)
+            {
+                throw new IronRdpException(new IronRdpError(result.Err));
+            }
+            Raw.ClientConnectorStateType retVal = result.Ok;
+            return (ClientConnectorStateType)retVal;
+        }
+    }
+
+    /// <exception cref="IronRdpException"></exception>
+    /// <returns>
+    /// A <c>SecurityProtocol</c> allocated on Rust side.
+    /// </returns>
+    public SecurityProtocol GetConnectionInitiationWaitConfirmRequestedProtocol()
+    {
+        unsafe
+        {
+            if (_inner == null)
+            {
+                throw new ObjectDisposedException("ClientConnectorState");
+            }
+            Raw.ConnectorStateFfiResultBoxSecurityProtocolBoxIronRdpError result = Raw.ClientConnectorState.GetConnectionInitiationWaitConfirmRequestedProtocol(_inner);
+            if (!result.isOk)
+            {
+                throw new IronRdpException(new IronRdpError(result.Err));
+            }
+            Raw.SecurityProtocol* retVal = result.Ok;
+            return new SecurityProtocol(retVal);
+        }
+    }
+
+    /// <exception cref="IronRdpException"></exception>
+    /// <returns>
+    /// A <c>SecurityProtocol</c> allocated on Rust side.
+    /// </returns>
+    public SecurityProtocol GetEnhancedSecurityUpgradeSelectedProtocol()
+    {
+        unsafe
+        {
+            if (_inner == null)
+            {
+                throw new ObjectDisposedException("ClientConnectorState");
+            }
+            Raw.ConnectorStateFfiResultBoxSecurityProtocolBoxIronRdpError result = Raw.ClientConnectorState.GetEnhancedSecurityUpgradeSelectedProtocol(_inner);
+            if (!result.isOk)
+            {
+                throw new IronRdpException(new IronRdpError(result.Err));
+            }
+            Raw.SecurityProtocol* retVal = result.Ok;
+            return new SecurityProtocol(retVal);
+        }
+    }
+
+    /// <exception cref="IronRdpException"></exception>
+    /// <returns>
+    /// A <c>SecurityProtocol</c> allocated on Rust side.
+    /// </returns>
+    public SecurityProtocol GetCredsspSelectedProtocol()
+    {
+        unsafe
+        {
+            if (_inner == null)
+            {
+                throw new ObjectDisposedException("ClientConnectorState");
+            }
+            Raw.ConnectorStateFfiResultBoxSecurityProtocolBoxIronRdpError result = Raw.ClientConnectorState.GetCredsspSelectedProtocol(_inner);
+            if (!result.isOk)
+            {
+                throw new IronRdpException(new IronRdpError(result.Err));
+            }
+            Raw.SecurityProtocol* retVal = result.Ok;
+            return new SecurityProtocol(retVal);
+        }
+    }
+
+    /// <exception cref="IronRdpException"></exception>
+    /// <returns>
+    /// A <c>SecurityProtocol</c> allocated on Rust side.
+    /// </returns>
+    public SecurityProtocol GetBasicSettingsExchangeSendInitialSelectedProtocol()
+    {
+        unsafe
+        {
+            if (_inner == null)
+            {
+                throw new ObjectDisposedException("ClientConnectorState");
+            }
+            Raw.ConnectorStateFfiResultBoxSecurityProtocolBoxIronRdpError result = Raw.ClientConnectorState.GetBasicSettingsExchangeSendInitialSelectedProtocol(_inner);
+            if (!result.isOk)
+            {
+                throw new IronRdpException(new IronRdpError(result.Err));
+            }
+            Raw.SecurityProtocol* retVal = result.Ok;
+            return new SecurityProtocol(retVal);
+        }
+    }
+
+    /// <exception cref="IronRdpException"></exception>
+    /// <returns>
+    /// A <c>ConnectInitial</c> allocated on Rust side.
+    /// </returns>
+    public ConnectInitial GetBasicSettingsExchangeWaitResponseConnectInitial()
+    {
+        unsafe
+        {
+            if (_inner == null)
+            {
+                throw new ObjectDisposedException("ClientConnectorState");
+            }
+            Raw.ConnectorStateFfiResultBoxConnectInitialBoxIronRdpError result = Raw.ClientConnectorState.GetBasicSettingsExchangeWaitResponseConnectInitial(_inner);
+            if (!result.isOk)
+            {
+                throw new IronRdpException(new IronRdpError(result.Err));
+            }
+            Raw.ConnectInitial* retVal = result.Ok;
+            return new ConnectInitial(retVal);
+        }
+    }
+
+    /// <exception cref="IronRdpException"></exception>
+    public ushort GetChannelConnectionIoChannelId()
+    {
+        unsafe
+        {
+            if (_inner == null)
+            {
+                throw new ObjectDisposedException("ClientConnectorState");
+            }
+            Raw.ConnectorStateFfiResultU16BoxIronRdpError result = Raw.ClientConnectorState.GetChannelConnectionIoChannelId(_inner);
+            if (!result.isOk)
+            {
+                throw new IronRdpException(new IronRdpError(result.Err));
+            }
+            ushort retVal = result.Ok;
+            return retVal;
+        }
+    }
+
+    /// <exception cref="IronRdpException"></exception>
+    public ushort GetSecureSettingsExchangeIoChannelId()
+    {
+        unsafe
+        {
+            if (_inner == null)
+            {
+                throw new ObjectDisposedException("ClientConnectorState");
+            }
+            Raw.ConnectorStateFfiResultU16BoxIronRdpError result = Raw.ClientConnectorState.GetSecureSettingsExchangeIoChannelId(_inner);
+            if (!result.isOk)
+            {
+                throw new IronRdpException(new IronRdpError(result.Err));
+            }
+            ushort retVal = result.Ok;
+            return retVal;
+        }
+    }
+
+    /// <exception cref="IronRdpException"></exception>
+    /// <returns>
+    /// A <c>ConnectionResult</c> allocated on Rust side.
+    /// </returns>
+    public ConnectionResult GetConnectedResult()
+    {
+        unsafe
+        {
+            if (_inner == null)
+            {
+                throw new ObjectDisposedException("ClientConnectorState");
+            }
+            Raw.ConnectorStateFfiResultBoxConnectionResultBoxIronRdpError result = Raw.ClientConnectorState.GetConnectedResult(_inner);
+            if (!result.isOk)
+            {
+                throw new IronRdpException(new IronRdpError(result.Err));
+            }
+            Raw.ConnectionResult* retVal = result.Ok;
+            return new ConnectionResult(retVal);
+        }
     }
 
     /// <summary>

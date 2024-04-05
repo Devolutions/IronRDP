@@ -161,7 +161,7 @@ public partial class ConfigBuilder: IDisposable
         }
     }
 
-    public void WithUsernameAndPasswrord(string username, string password)
+    public void WithUsernameAndPassword(string username, string password)
     {
         unsafe
         {
@@ -177,7 +177,7 @@ public partial class ConfigBuilder: IDisposable
             {
                 fixed (byte* passwordBufPtr = passwordBuf)
                 {
-                    Raw.ConfigBuilder.WithUsernameAndPasswrord(_inner, usernameBufPtr, usernameBufLength, passwordBufPtr, passwordBufLength);
+                    Raw.ConfigBuilder.WithUsernameAndPassword(_inner, usernameBufPtr, usernameBufLength, passwordBufPtr, passwordBufLength);
                 }
             }
         }

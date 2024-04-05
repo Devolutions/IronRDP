@@ -1,6 +1,6 @@
 #[diplomat::bridge]
 pub mod ffi {
-    use crate::pdu::ffi::SecurityProtocol;
+    use crate::{error::ffi::IronRdpError, pdu::ffi::SecurityProtocol};
 
     #[diplomat::opaque]
     pub struct ClientConnectorState(pub ironrdp::connector::ClientConnectorState);
@@ -24,7 +24,7 @@ pub mod ffi {
     }
 
     impl ClientConnectorState {
-        pub fn get_type(&self) -> Result<ClientConnectorStateType, Box<crate::error::ffi::IronRdpError>> {
+        pub fn get_type(&self) -> Result<ClientConnectorStateType, Box<IronRdpError>> {
             let res = match &self.0 {
                 ironrdp::connector::ClientConnectorState::Consumed => ClientConnectorStateType::Consumed,
                 ironrdp::connector::ClientConnectorState::ConnectionInitiationSendRequest => {
@@ -73,7 +73,7 @@ pub mod ffi {
 
         pub fn get_connection_initiation_wait_confirm_requested_protocol(
             &self,
-        ) -> Result<Box<SecurityProtocol>, Box<crate::error::ffi::IronRdpError>> {
+        ) -> Result<Box<SecurityProtocol>, Box<IronRdpError>> {
             match &self.0 {
                 ironrdp::connector::ClientConnectorState::ConnectionInitiationWaitConfirm { requested_protocol } => {
                     Ok(SecurityProtocol(*requested_protocol))
@@ -85,7 +85,7 @@ pub mod ffi {
 
         pub fn get_enhanced_security_upgrade_selected_protocol(
             &self,
-        ) -> Result<Box<SecurityProtocol>, Box<crate::error::ffi::IronRdpError>> {
+        ) -> Result<Box<SecurityProtocol>, Box<IronRdpError>> {
             match &self.0 {
                 ironrdp::connector::ClientConnectorState::EnhancedSecurityUpgrade { selected_protocol } => {
                     Ok(SecurityProtocol(*selected_protocol))
@@ -97,7 +97,7 @@ pub mod ffi {
 
         pub fn get_credssp_selected_protocol(
             &self,
-        ) -> Result<Box<SecurityProtocol>, Box<crate::error::ffi::IronRdpError>> {
+        ) -> Result<Box<SecurityProtocol>, Box<IronRdpError>> {
             match &self.0 {
                 ironrdp::connector::ClientConnectorState::Credssp { selected_protocol } => {
                     Ok(SecurityProtocol(*selected_protocol))
@@ -109,7 +109,7 @@ pub mod ffi {
 
         pub fn get_basic_settings_exchange_send_initial_selected_protocol(
             &self,
-        ) -> Result<Box<SecurityProtocol>, Box<crate::error::ffi::IronRdpError>> {
+        ) -> Result<Box<SecurityProtocol>, Box<IronRdpError>> {
             match &self.0 {
                 ironrdp::connector::ClientConnectorState::BasicSettingsExchangeSendInitial { selected_protocol } => {
                     Ok(SecurityProtocol(*selected_protocol))
@@ -121,7 +121,7 @@ pub mod ffi {
 
         pub fn get_basic_settings_exchange_wait_response_connect_initial(
             &self,
-        ) -> Result<Box<crate::pdu::ffi::ConnectInitial>, Box<crate::error::ffi::IronRdpError>> {
+        ) -> Result<Box<crate::pdu::ffi::ConnectInitial>, Box<IronRdpError>> {
             match &self.0 {
                 ironrdp::connector::ClientConnectorState::BasicSettingsExchangeWaitResponse { connect_initial } => {
                     Ok(crate::pdu::ffi::ConnectInitial(connect_initial.clone()))
@@ -131,14 +131,14 @@ pub mod ffi {
             .map(Box::new)
         }
 
-        pub fn get_channel_connection_io_channel_id(&self) -> Result<u16, Box<crate::error::ffi::IronRdpError>> {
+        pub fn get_channel_connection_io_channel_id(&self) -> Result<u16, Box<IronRdpError>> {
             match &self.0 {
                 ironrdp::connector::ClientConnectorState::ChannelConnection { io_channel_id, .. } => Ok(*io_channel_id),
                 _ => Err("Not in ChannelConnection state".into()),
             }
         }
 
-        pub fn get_secure_settings_exchange_io_channel_id(&self) -> Result<u16, Box<crate::error::ffi::IronRdpError>> {
+        pub fn get_secure_settings_exchange_io_channel_id(&self) -> Result<u16, Box<IronRdpError>> {
             match &self.0 {
                 ironrdp::connector::ClientConnectorState::SecureSettingsExchange { io_channel_id, .. } => {
                     Ok(*io_channel_id)
@@ -149,68 +149,17 @@ pub mod ffi {
 
         // TODO: Add more getters for other states
 
-        pub fn get_connected_result(
-            &self,
-        ) -> Result<Box<crate::connector::result::ffi::ConnectionResult>, Box<crate::error::ffi::IronRdpError>>
+        pub fn get_connected_result<'a>(
+            &'a self,
+        ) -> Result<Box<crate::connector::result::ffi::ConnectionResult<'a>>, Box<IronRdpError>>
         {
             match &self.0 {
                 ironrdp::connector::ClientConnectorState::Connected { result } => Ok(Box::new(
-                    crate::connector::result::ffi::ConnectionResult(result.clone()),
+                    crate::connector::result::ffi::ConnectionResult(result),
                 )),
                 _ => Err("Not in Connected state".into()),
             }
         }
     }
 
-    // pub enum ClientConnectorState {
-    // #[default]
-    // Consumed,
-
-    // ConnectionInitiationSendRequest,
-    // ConnectionInitiationWaitConfirm {
-    //     requested_protocol: nego::SecurityProtocol,
-    // },
-    // EnhancedSecurityUpgrade {
-    //     selected_protocol: nego::SecurityProtocol,
-    // },
-    // Credssp {
-    //     selected_protocol: nego::SecurityProtocol,
-    // },
-    // BasicSettingsExchangeSendInitial {
-    //     selected_protocol: nego::SecurityProtocol,
-    // },
-    // BasicSettingsExchangeWaitResponse {
-    //     connect_initial: mcs::ConnectInitial,
-    // },
-    // ChannelConnection {
-    //     io_channel_id: u16,
-    //     channel_connection: ChannelConnectionSequence,
-    // },
-    // SecureSettingsExchange {
-    //     io_channel_id: u16,
-    //     user_channel_id: u16,
-    // },
-    // ConnectTimeAutoDetection {
-    //     io_channel_id: u16,
-    //     user_channel_id: u16,
-    // },
-    // LicensingExchange {
-    //     io_channel_id: u16,
-    //     user_channel_id: u16,
-    //     license_exchange: LicenseExchangeSequence,
-    // },
-    // MultitransportBootstrapping {
-    //     io_channel_id: u16,
-    //     user_channel_id: u16,
-    // },
-    // CapabilitiesExchange {
-    //     connection_activation: ConnectionActivationSequence,
-    // },
-    // ConnectionFinalization {
-    //     connection_activation: ConnectionActivationSequence,
-    // },
-    // Connected {
-    //     result: ConnectionResult,
-    // },
-    // }
 }
