@@ -17,6 +17,11 @@ public class Framed<S> where S : Stream
         return (this.stream, this.buffer);
     }
 
+    /// <summary>
+    /// Returns a span that represents a portion of the underlying buffer without modifying it.
+    /// </summary>
+    /// <remarks>Memory Safe:The Framed instance should not be modified (any read opeartions) while span is in use.</remarks>
+    /// <returns>A span that represents a portion of the underlying buffer.</returns>
     public Span<byte> Peek()
     {
         return CollectionsMarshal.AsSpan(this.buffer);
