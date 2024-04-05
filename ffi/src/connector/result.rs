@@ -27,9 +27,9 @@ pub mod ffi {
     }
 
     #[diplomat::opaque]
-    pub struct ConnectionResult(pub ironrdp::connector::ConnectionResult);
+    pub struct ConnectionResult<'a>(pub &'a ironrdp::connector::ConnectionResult);
 
-    impl ConnectionResult {
+    impl<'a> ConnectionResult<'a> {
         pub fn get_io_channel_id(&self) -> u16 {
             self.0.io_channel_id
         }
@@ -38,7 +38,7 @@ pub mod ffi {
             self.0.user_channel_id
         }
 
-        pub fn get_static_channels(&self) -> Box<crate::svc::ffi::StaticChannelSet<'_>> {
+        pub fn get_static_channels(&'a self) -> Box<crate::svc::ffi::StaticChannelSet<'a>> {
             Box::new(crate::svc::ffi::StaticChannelSet(&self.0.static_channels))
         }
 

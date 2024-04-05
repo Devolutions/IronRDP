@@ -20,4 +20,10 @@ pub mod ffi {
             Ok(())
         }
     }
+
+    #[diplomat::opaque]
+    pub struct SecurityProtocol(pub ironrdp::pdu::nego::SecurityProtocol);
+
+    #[diplomat::opaque]
+    pub struct ConnectInitial(pub ironrdp::pdu::mcs::ConnectInitial);
 }

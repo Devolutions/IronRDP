@@ -161,4 +161,16 @@ pub mod ffi {
             Ok(Box::new(State(connector.state())))
         }
     }
+
+
+
+
+    #[diplomat::opaque]
+    pub struct ChannelConnectionSequence(pub ironrdp::connector::ChannelConnectionSequence);
+
+    #[diplomat::opaque]
+    pub struct LicenseExchangeSequence(pub ironrdp::connector::LicenseExchangeSequence);
+
+    #[diplomat::opaque]
+    pub struct ConnectionActivationSequence(pub ironrdp::connector::connection_activation::ConnectionActivationSequence);
 }
