@@ -73,7 +73,7 @@ pub mod ffi {
             Box::<ConfigBuilder>::default()
         }
 
-        pub fn with_username_and_passwrord(&mut self, username: &str, password: &str) {
+        pub fn with_username_and_password(&mut self, username: &str, password: &str) {
             self.credentials = Some(Credentials::UsernamePassword {
                 username: username.to_owned(),
                 password: password.to_owned(),
