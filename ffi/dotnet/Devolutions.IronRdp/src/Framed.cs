@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices;
 using Devolutions.IronRdp;
 
 public class Framed<S> where S : Stream
@@ -16,12 +17,16 @@ public class Framed<S> where S : Stream
         return (this.stream, this.buffer);
     }
 
-    public byte[] Peek()
+    public Span<byte> Peek()
     {
-        return this.buffer.ToArray();
+        return CollectionsMarshal.AsSpan(this.buffer);
     }
 
-    // read from 0 to size bytes from the front of the buffer, and remove them from the buffer,keep the rest
+    /// <summary>
+    /// read from 0 to size bytes from the front of the buffer, and remove them from the buffer,keep the rest
+    /// </summary>
+    /// <param name="size">The number of bytes to read.</param>
+    /// <returns>An array of bytes containing the read data.</returns>
     public async Task<byte[]> ReadExact(nuint size)
     {
         while (true)
@@ -57,6 +62,11 @@ public class Framed<S> where S : Stream
     }
 
 
+    /// <summary>
+    /// Reads data from the buffer based on the provided PduHint.
+    /// </summary>
+    /// <param name="pduHint">The PduHint object used to determine the size of the data to read.</param>
+    /// <returns>An asynchronous task that represents the operation. The task result contains the read data as a byte array.</returns>
     public async Task<byte[]> ReadByHint(PduHint pduHint)
     {
         while (true)
