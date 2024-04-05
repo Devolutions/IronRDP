@@ -1,4 +1,5 @@
 #![allow(clippy::unnecessary_box_returns)] // Diplomat requires returning Boxed types
+
 pub mod config;
 pub mod result;
 pub mod state;
