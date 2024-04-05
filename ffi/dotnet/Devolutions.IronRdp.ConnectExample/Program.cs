@@ -1,6 +1,7 @@
 ﻿using System.Net;
 using System.Net.Security;
 using System.Net.Sockets;
+
 namespace Devolutions.IronRdp.ConnectExample
 {
     class Program
