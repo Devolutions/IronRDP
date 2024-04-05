@@ -20,7 +20,7 @@ public partial struct ActiveStageOutput
     public static unsafe extern ActiveStageOutputType GetType(ActiveStageOutput* self);
 
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ActiveStageOutput_get_response_frame", ExactSpelling = true)]
-    public static unsafe extern BytesArray* GetResponseFrame(ActiveStageOutput* self);
+    public static unsafe extern BytesSlice* GetResponseFrame(ActiveStageOutput* self);
 
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ActiveStageOutput_get_graphics_update", ExactSpelling = true)]
     public static unsafe extern InclusiveRectangle* GetGraphicsUpdate(ActiveStageOutput* self);

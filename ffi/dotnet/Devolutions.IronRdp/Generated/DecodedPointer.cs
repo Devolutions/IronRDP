@@ -15,7 +15,7 @@ public partial class DecodedPointer: IDisposable
 {
     private unsafe Raw.DecodedPointer* _inner;
 
-    public BytesArray Data
+    public BytesSlice Data
     {
         get
         {
@@ -122,9 +122,9 @@ public partial class DecodedPointer: IDisposable
     }
 
     /// <returns>
-    /// A <c>BytesArray</c> allocated on Rust side.
+    /// A <c>BytesSlice</c> allocated on Rust side.
     /// </returns>
-    public BytesArray GetData()
+    public BytesSlice GetData()
     {
         unsafe
         {
@@ -132,8 +132,8 @@ public partial class DecodedPointer: IDisposable
             {
                 throw new ObjectDisposedException("DecodedPointer");
             }
-            Raw.BytesArray* retVal = Raw.DecodedPointer.GetData(_inner);
-            return new BytesArray(retVal);
+            Raw.BytesSlice* retVal = Raw.DecodedPointer.GetData(_inner);
+            return new BytesSlice(retVal);
         }
     }
 

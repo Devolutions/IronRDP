@@ -29,7 +29,7 @@ public partial struct DecodedPointer
     public static unsafe extern ushort GetHotspotY(DecodedPointer* self);
 
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "DecodedPointer_get_data", ExactSpelling = true)]
-    public static unsafe extern BytesArray* GetData(DecodedPointer* self);
+    public static unsafe extern BytesSlice* GetData(DecodedPointer* self);
 
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "DecodedPointer_destroy", ExactSpelling = true)]
     public static unsafe extern void Destroy(DecodedPointer* self);

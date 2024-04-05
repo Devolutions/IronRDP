@@ -9,3 +9,4 @@ pub mod svc;
 pub mod utils;
 pub mod session;
 pub mod graphics;
+pub mod input;

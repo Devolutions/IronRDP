@@ -1,8 +1,6 @@
 #[diplomat::bridge]
 pub mod ffi {
 
-    use ironrdp::pdu::Pdu;
-
     use crate::error::ffi::IronRdpError;
 
     #[diplomat::opaque]

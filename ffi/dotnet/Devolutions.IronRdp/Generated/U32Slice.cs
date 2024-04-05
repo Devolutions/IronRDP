@@ -11,36 +11,20 @@ namespace Devolutions.IronRdp;
 
 #nullable enable
 
-public partial class DecodedImage: IDisposable
+public partial class U32Slice: IDisposable
 {
-    private unsafe Raw.DecodedImage* _inner;
+    private unsafe Raw.U32Slice* _inner;
 
-    public BytesSlice Data
+    public nuint Size
     {
         get
         {
-            return GetData();
-        }
-    }
-
-    public ushort Height
-    {
-        get
-        {
-            return GetHeight();
-        }
-    }
-
-    public ushort Width
-    {
-        get
-        {
-            return GetWidth();
+            return GetSize();
         }
     }
 
     /// <summary>
-    /// Creates a managed <c>DecodedImage</c> from a raw handle.
+    /// Creates a managed <c>U32Slice</c> from a raw handle.
     /// </summary>
     /// <remarks>
     /// Safety: you should not build two managed objects using the same raw handle (may causes use-after-free and double-free).
@@ -48,57 +32,49 @@ public partial class DecodedImage: IDisposable
     /// This constructor assumes the raw struct is allocated on Rust side.
     /// If implemented, the custom Drop implementation on Rust side WILL run on destruction.
     /// </remarks>
-    public unsafe DecodedImage(Raw.DecodedImage* handle)
+    public unsafe U32Slice(Raw.U32Slice* handle)
     {
         _inner = handle;
     }
 
-    /// <returns>
-    /// A <c>BytesSlice</c> allocated on Rust side.
-    /// </returns>
-    public BytesSlice GetData()
+    public nuint GetSize()
     {
         unsafe
         {
             if (_inner == null)
             {
-                throw new ObjectDisposedException("DecodedImage");
+                throw new ObjectDisposedException("U32Slice");
             }
-            Raw.BytesSlice* retVal = Raw.DecodedImage.GetData(_inner);
-            return new BytesSlice(retVal);
-        }
-    }
-
-    public ushort GetWidth()
-    {
-        unsafe
-        {
-            if (_inner == null)
-            {
-                throw new ObjectDisposedException("DecodedImage");
-            }
-            ushort retVal = Raw.DecodedImage.GetWidth(_inner);
+            nuint retVal = Raw.U32Slice.GetSize(_inner);
             return retVal;
         }
     }
 
-    public ushort GetHeight()
+    /// <exception cref="IronRdpException"></exception>
+    public void Fill(uint[] buffer)
     {
         unsafe
         {
             if (_inner == null)
             {
-                throw new ObjectDisposedException("DecodedImage");
+                throw new ObjectDisposedException("U32Slice");
             }
-            ushort retVal = Raw.DecodedImage.GetHeight(_inner);
-            return retVal;
+            nuint bufferLength = (nuint)buffer.Length;
+            fixed (uint* bufferPtr = buffer)
+            {
+                Raw.UtilsFfiResultVoidBoxIronRdpError result = Raw.U32Slice.Fill(_inner, bufferPtr, bufferLength);
+                if (!result.isOk)
+                {
+                    throw new IronRdpException(new IronRdpError(result.Err));
+                }
+            }
         }
     }
 
     /// <summary>
     /// Returns the underlying raw handle.
     /// </summary>
-    public unsafe Raw.DecodedImage* AsFFI()
+    public unsafe Raw.U32Slice* AsFFI()
     {
         return _inner;
     }
@@ -115,14 +91,14 @@ public partial class DecodedImage: IDisposable
                 return;
             }
 
-            Raw.DecodedImage.Destroy(_inner);
+            Raw.U32Slice.Destroy(_inner);
             _inner = null;
 
             GC.SuppressFinalize(this);
         }
     }
 
-    ~DecodedImage()
+    ~U32Slice()
     {
         Dispose();
     }

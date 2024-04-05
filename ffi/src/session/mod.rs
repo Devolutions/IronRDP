@@ -4,7 +4,7 @@ pub mod image;
 pub mod ffi {
 
     use crate::{
-        connector::ffi::ConnectionActivationSequence, error::ffi::IronRdpError, graphics::ffi::DecodedPointer, pdu::ffi::{Action, InclusiveRectangle}, utils::ffi::{BytesArray, Position}
+        connector::ffi::ConnectionActivationSequence, error::ffi::IronRdpError, graphics::ffi::DecodedPointer, pdu::ffi::{Action, InclusiveRectangle}, utils::ffi::{BytesSlice, Position}
     };
 
     use super::image::ffi::DecodedImage;
@@ -65,9 +65,9 @@ pub mod ffi {
             }
         }
 
-        pub fn get_response_frame<'a>(&'a self) -> Option<Box<BytesArray<'a>>> {
+        pub fn get_response_frame<'a>(&'a self) -> Option<Box<BytesSlice<'a>>> {
             match &self.0 {
-                ironrdp::session::ActiveStageOutput::ResponseFrame(frame) => Some(Box::new(BytesArray(frame))),
+                ironrdp::session::ActiveStageOutput::ResponseFrame(frame) => Some(Box::new(BytesSlice(frame))),
                 _ => None,
             }
         }

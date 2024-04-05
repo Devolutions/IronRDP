@@ -29,9 +29,9 @@ pub mod ffi {
     }
 
     #[diplomat::opaque]
-    pub struct BytesArray<'a>(pub &'a [u8]);
+    pub struct BytesSlice<'a>(pub &'a [u8]);
 
-    impl<'a> BytesArray<'a> {
+    impl<'a> BytesSlice<'a> {
         pub fn get_size(&'a self) -> usize {
             self.0.len()
         }
@@ -43,7 +43,24 @@ pub mod ffi {
             buffer.copy_from_slice(&self.0);
             Ok(())
         }
-        
+
+    }
+
+    #[diplomat::opaque]
+    pub struct U32Slice<'a>(pub &'a [u32]);
+
+    impl<'a> U32Slice<'a> {
+        pub fn get_size(&'a self) -> usize {
+            self.0.len()
+        }
+
+        pub fn fill(&'a self, buffer: &'a mut [u32]) -> Result<(), Box<IronRdpError>> {
+            if buffer.len() < self.0.len() {
+                return Err("Buffer is too small".into());
+            }
+            buffer.copy_from_slice(&self.0);
+            Ok(())
+        }
     }
 
     #[diplomat::opaque]
@@ -74,4 +91,5 @@ pub mod ffi {
             self.0.ok_or_else(|| "Value is None".into())
         }
     }
+
 }

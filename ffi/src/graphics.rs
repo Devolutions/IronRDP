@@ -3,7 +3,7 @@
 pub mod ffi {
     use std::rc::Rc;
 
-    use crate::utils::ffi::BytesArray;
+    use crate::utils::ffi::BytesSlice;
 
     #[diplomat::opaque]
     pub struct DecodedPointer(pub Rc<ironrdp::graphics::pointer::DecodedPointer>);
@@ -25,8 +25,8 @@ pub mod ffi {
             self.0.hotspot_y
         }
 
-        pub fn get_data<'a>(&'a self) -> Box<BytesArray<'a>> {
-            Box::new(BytesArray(&self.0.bitmap_data))
+        pub fn get_data<'a>(&'a self) -> Box<BytesSlice<'a>> {
+            Box::new(BytesSlice(&self.0.bitmap_data))
         }
     }
 }

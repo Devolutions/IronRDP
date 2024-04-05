@@ -11,9 +11,9 @@ namespace Devolutions.IronRdp;
 
 #nullable enable
 
-public partial class BytesArray: IDisposable
+public partial class BytesSlice: IDisposable
 {
-    private unsafe Raw.BytesArray* _inner;
+    private unsafe Raw.BytesSlice* _inner;
 
     public nuint Size
     {
@@ -24,7 +24,7 @@ public partial class BytesArray: IDisposable
     }
 
     /// <summary>
-    /// Creates a managed <c>BytesArray</c> from a raw handle.
+    /// Creates a managed <c>BytesSlice</c> from a raw handle.
     /// </summary>
     /// <remarks>
     /// Safety: you should not build two managed objects using the same raw handle (may causes use-after-free and double-free).
@@ -32,7 +32,7 @@ public partial class BytesArray: IDisposable
     /// This constructor assumes the raw struct is allocated on Rust side.
     /// If implemented, the custom Drop implementation on Rust side WILL run on destruction.
     /// </remarks>
-    public unsafe BytesArray(Raw.BytesArray* handle)
+    public unsafe BytesSlice(Raw.BytesSlice* handle)
     {
         _inner = handle;
     }
@@ -43,9 +43,9 @@ public partial class BytesArray: IDisposable
         {
             if (_inner == null)
             {
-                throw new ObjectDisposedException("BytesArray");
+                throw new ObjectDisposedException("BytesSlice");
             }
-            nuint retVal = Raw.BytesArray.GetSize(_inner);
+            nuint retVal = Raw.BytesSlice.GetSize(_inner);
             return retVal;
         }
     }
@@ -57,12 +57,12 @@ public partial class BytesArray: IDisposable
         {
             if (_inner == null)
             {
-                throw new ObjectDisposedException("BytesArray");
+                throw new ObjectDisposedException("BytesSlice");
             }
             nuint bufferLength = (nuint)buffer.Length;
             fixed (byte* bufferPtr = buffer)
             {
-                Raw.UtilsFfiResultVoidBoxIronRdpError result = Raw.BytesArray.Fill(_inner, bufferPtr, bufferLength);
+                Raw.UtilsFfiResultVoidBoxIronRdpError result = Raw.BytesSlice.Fill(_inner, bufferPtr, bufferLength);
                 if (!result.isOk)
                 {
                     throw new IronRdpException(new IronRdpError(result.Err));
@@ -74,7 +74,7 @@ public partial class BytesArray: IDisposable
     /// <summary>
     /// Returns the underlying raw handle.
     /// </summary>
-    public unsafe Raw.BytesArray* AsFFI()
+    public unsafe Raw.BytesSlice* AsFFI()
     {
         return _inner;
     }
@@ -91,14 +91,14 @@ public partial class BytesArray: IDisposable
                 return;
             }
 
-            Raw.BytesArray.Destroy(_inner);
+            Raw.BytesSlice.Destroy(_inner);
             _inner = null;
 
             GC.SuppressFinalize(this);
         }
     }
 
-    ~BytesArray()
+    ~BytesSlice()
     {
         Dispose();
     }

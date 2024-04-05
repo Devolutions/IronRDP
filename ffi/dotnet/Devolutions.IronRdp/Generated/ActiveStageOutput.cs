@@ -47,7 +47,7 @@ public partial class ActiveStageOutput: IDisposable
         }
     }
 
-    public BytesArray? ResponseFrame
+    public BytesSlice? ResponseFrame
     {
         get
         {
@@ -102,9 +102,9 @@ public partial class ActiveStageOutput: IDisposable
     }
 
     /// <returns>
-    /// A <c>BytesArray</c> allocated on Rust side.
+    /// A <c>BytesSlice</c> allocated on Rust side.
     /// </returns>
-    public BytesArray? GetResponseFrame()
+    public BytesSlice? GetResponseFrame()
     {
         unsafe
         {
@@ -112,12 +112,12 @@ public partial class ActiveStageOutput: IDisposable
             {
                 throw new ObjectDisposedException("ActiveStageOutput");
             }
-            Raw.BytesArray* retVal = Raw.ActiveStageOutput.GetResponseFrame(_inner);
+            Raw.BytesSlice* retVal = Raw.ActiveStageOutput.GetResponseFrame(_inner);
             if (retVal == null)
             {
                 return null;
             }
-            return new BytesArray(retVal);
+            return new BytesSlice(retVal);
         }
     }
 
