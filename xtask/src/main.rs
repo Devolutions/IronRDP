@@ -12,6 +12,7 @@ mod check;
 mod clean;
 mod cli;
 mod cov;
+mod ffi;
 mod fuzz;
 mod prelude;
 mod section;
@@ -111,6 +112,8 @@ fn main() -> anyhow::Result<()> {
         Action::WebCheck => web::check(&sh)?,
         Action::WebInstall => web::install(&sh)?,
         Action::WebRun => web::run(&sh)?,
+        Action::FfiBuildDll { release: debug } => ffi::build_dll(&sh, debug)?,
+        Action::FfiBuildBindings { skip_dotnet_build } => ffi::build_bindings(&sh, skip_dotnet_build)?,
     }
 
     Ok(())

@@ -1,0 +1,10 @@
+namespace = "Devolutions.IronRdp"
+native_lib = "DevolutionsIronRdp"
+
+[exceptions]
+trim_suffix = "Error"
+error_message_method = "ToDisplay"
+
+[properties]
+setters_prefix = "set_"
+getters_prefix = "get_"
