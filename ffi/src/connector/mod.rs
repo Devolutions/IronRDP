@@ -169,5 +169,5 @@ pub mod ffi {
     pub struct LicenseExchangeSequence(pub ironrdp::connector::LicenseExchangeSequence);
 
     #[diplomat::opaque]
-    pub struct ConnectionActivationSequence(pub ironrdp::connector::connection_activation::ConnectionActivationSequence);
+    pub struct ConnectionActivationSequence(pub Box<ironrdp::connector::connection_activation::ConnectionActivationSequence>);
 }

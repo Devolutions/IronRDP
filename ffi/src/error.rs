@@ -1,7 +1,7 @@
 #![allow(clippy::return_self_not_must_use)]
 use std::fmt::Display;
 
-use ironrdp::connector::ConnectorError;
+use ironrdp::{connector::ConnectorError, session::SessionError};
 
 use self::ffi::IronRdpErrorKind;
 
@@ -43,6 +43,15 @@ impl From<std::io::Error> for IronRdpErrorKind {
 impl From<std::fmt::Error> for IronRdpErrorKind {
     fn from(_val: std::fmt::Error) -> Self {
         IronRdpErrorKind::Generic
+    }
+}
+
+impl From<SessionError> for IronRdpErrorKind {
+    fn from(value: SessionError) -> Self {
+        match value.kind() {
+            ironrdp::session::SessionErrorKind::Pdu(_) => IronRdpErrorKind::PduError,
+            _ => IronRdpErrorKind::Generic,
+        }
     }
 }
 

@@ -11,12 +11,12 @@ namespace Devolutions.IronRdp;
 
 #nullable enable
 
-public partial class ActiveStage: IDisposable
+public partial class IronRdpPdu: IDisposable
 {
-    private unsafe Raw.ActiveStage* _inner;
+    private unsafe Raw.IronRdpPdu* _inner;
 
     /// <summary>
-    /// Creates a managed <c>ActiveStage</c> from a raw handle.
+    /// Creates a managed <c>IronRdpPdu</c> from a raw handle.
     /// </summary>
     /// <remarks>
     /// Safety: you should not build two managed objects using the same raw handle (may causes use-after-free and double-free).
@@ -24,45 +24,37 @@ public partial class ActiveStage: IDisposable
     /// This constructor assumes the raw struct is allocated on Rust side.
     /// If implemented, the custom Drop implementation on Rust side WILL run on destruction.
     /// </remarks>
-    public unsafe ActiveStage(Raw.ActiveStage* handle)
+    public unsafe IronRdpPdu(Raw.IronRdpPdu* handle)
     {
         _inner = handle;
     }
 
     /// <exception cref="IronRdpException"></exception>
     /// <returns>
-    /// A <c>ActiveStageOutputIterator</c> allocated on Rust side.
+    /// A <c>PduInfo</c> allocated on Rust side.
     /// </returns>
-    public ActiveStageOutputIterator Process(DecodedImage image, Action action, byte[] payload)
+    public PduInfo FindSize(byte[] bytes)
     {
         unsafe
         {
             if (_inner == null)
             {
-                throw new ObjectDisposedException("ActiveStage");
+                throw new ObjectDisposedException("IronRdpPdu");
             }
-            nuint payloadLength = (nuint)payload.Length;
-            Raw.DecodedImage* imageRaw;
-            imageRaw = image.AsFFI();
-            if (imageRaw == null)
+            nuint bytesLength = (nuint)bytes.Length;
+            fixed (byte* bytesPtr = bytes)
             {
-                throw new ObjectDisposedException("DecodedImage");
-            }
-            Raw.Action* actionRaw;
-            actionRaw = action.AsFFI();
-            if (actionRaw == null)
-            {
-                throw new ObjectDisposedException("Action");
-            }
-            fixed (byte* payloadPtr = payload)
-            {
-                Raw.SessionFfiResultBoxActiveStageOutputIteratorBoxIronRdpError result = Raw.ActiveStage.Process(_inner, imageRaw, actionRaw, payloadPtr, payloadLength);
+                Raw.PduFfiResultOptBoxPduInfoBoxIronRdpError result = Raw.IronRdpPdu.FindSize(_inner, bytesPtr, bytesLength);
                 if (!result.isOk)
                 {
                     throw new IronRdpException(new IronRdpError(result.Err));
                 }
-                Raw.ActiveStageOutputIterator* retVal = result.Ok;
-                return new ActiveStageOutputIterator(retVal);
+                Raw.PduInfo* retVal = result.Ok;
+                if (retVal == null)
+                {
+                    return null;
+                }
+                return new PduInfo(retVal);
             }
         }
     }
@@ -70,7 +62,7 @@ public partial class ActiveStage: IDisposable
     /// <summary>
     /// Returns the underlying raw handle.
     /// </summary>
-    public unsafe Raw.ActiveStage* AsFFI()
+    public unsafe Raw.IronRdpPdu* AsFFI()
     {
         return _inner;
     }
@@ -87,14 +79,14 @@ public partial class ActiveStage: IDisposable
                 return;
             }
 
-            Raw.ActiveStage.Destroy(_inner);
+            Raw.IronRdpPdu.Destroy(_inner);
             _inner = null;
 
             GC.SuppressFinalize(this);
         }
     }
 
-    ~ActiveStage()
+    ~IronRdpPdu()
     {
         Dispose();
     }

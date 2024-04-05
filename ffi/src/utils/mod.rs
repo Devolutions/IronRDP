@@ -29,6 +29,40 @@ pub mod ffi {
     }
 
     #[diplomat::opaque]
+    pub struct BytesArray<'a>(pub &'a [u8]);
+
+    impl<'a> BytesArray<'a> {
+        pub fn get_size(&'a self) -> usize {
+            self.0.len()
+        }
+
+        pub fn fill(&'a self, buffer: &'a mut [u8]) -> Result<(), Box<IronRdpError>> {
+            if buffer.len() < self.0.len() {
+                return Err("Buffer is too small".into());
+            }
+            buffer.copy_from_slice(&self.0);
+            Ok(())
+        }
+        
+    }
+
+    #[diplomat::opaque]
+    pub struct Position{
+        pub x: u16,
+        pub y: u16
+    }
+
+    impl Position {
+        pub fn get_x(&self) -> u16 {
+            self.x
+        }
+
+        pub fn get_y(&self) -> u16 {
+            self.y
+        }
+    }
+
+    #[diplomat::opaque]
     pub struct OptionalUsize(pub Option<usize>);
 
     impl OptionalUsize {
