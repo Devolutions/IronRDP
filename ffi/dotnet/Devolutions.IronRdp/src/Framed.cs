@@ -20,7 +20,7 @@ public class Framed<S> where S : Stream
     /// <summary>
     /// Returns a span that represents a portion of the underlying buffer without modifying it.
     /// </summary>
-    /// <remarks>Memory Safe:The Framed instance should not be modified (any read operations) while span is in use.</remarks>
+    /// <remarks>Memory safety: the Framed instance should not be modified (any read operations) while span is in use.</remarks>
     /// <returns>A span that represents a portion of the underlying buffer.</returns>
     public Span<byte> Peek()
     {
