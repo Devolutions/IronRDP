@@ -161,11 +161,11 @@ impl PduEncode for ServerLicenseRequest {
         dst.write_slice(&self.server_random);
         self.product_info.encode(dst)?;
 
-        BlobHeader::new(BlobType::KeyExchangeAlgorithm, KEY_EXCHANGE_FIELD_SIZE).encode(dst)?;
+        BlobHeader::new(BlobType::KEY_EXCHANGE_ALGORITHM, KEY_EXCHANGE_FIELD_SIZE).encode(dst)?;
         dst.write_u32(KEY_EXCHANGE_ALGORITHM_RSA);
 
         let cert_size = self.server_certificate.as_ref().map(|v| v.size()).unwrap_or(0);
-        BlobHeader::new(BlobType::Certificate, cert_size).encode(dst)?;
+        BlobHeader::new(BlobType::CERTIFICATE, cert_size).encode(dst)?;
 
         if let Some(cert) = &self.server_certificate {
             cert.encode(dst)?;
@@ -204,7 +204,7 @@ impl<'de> PduDecode<'de> for ServerLicenseRequest {
         let product_info = ProductInfo::decode(src)?;
 
         let key_exchange_algorithm_blob = BlobHeader::decode(src)?;
-        if key_exchange_algorithm_blob.blob_type != BlobType::KeyExchangeAlgorithm {
+        if key_exchange_algorithm_blob.blob_type != BlobType::KEY_EXCHANGE_ALGORITHM {
             return Err(invalid_message_err!("blobType", "invalid blob type"));
         }
 
@@ -215,7 +215,7 @@ impl<'de> PduDecode<'de> for ServerLicenseRequest {
         }
 
         let cert_blob = BlobHeader::decode(src)?;
-        if cert_blob.blob_type != BlobType::Certificate {
+        if cert_blob.blob_type != BlobType::CERTIFICATE {
             return Err(invalid_message_err!("blobType", "invalid blob type"));
         }
 
@@ -261,7 +261,7 @@ impl PduEncode for Scope {
         ensure_size!(in: dst, size: self.size());
 
         let data_size = self.0.len() + UTF8_NULL_TERMINATOR_SIZE;
-        BlobHeader::new(BlobType::Scope, data_size).encode(dst)?;
+        BlobHeader::new(BlobType::SCOPE, data_size).encode(dst)?;
         dst.write_slice(self.0.as_bytes());
         dst.write_u8(0); // null terminator
 
@@ -280,7 +280,7 @@ impl PduEncode for Scope {
 impl<'de> PduDecode<'de> for Scope {
     fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
         let blob_header = BlobHeader::decode(src)?;
-        if blob_header.blob_type != BlobType::Scope {
+        if blob_header.blob_type != BlobType::SCOPE {
             return Err(invalid_message_err!("blobType", "invalid blob type"));
         }
         if blob_header.length < UTF8_NULL_TERMINATOR_SIZE {

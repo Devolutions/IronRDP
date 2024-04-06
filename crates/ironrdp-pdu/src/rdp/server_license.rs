@@ -155,20 +155,22 @@ pub enum PreambleVersion {
     V3 = 3, // RDP 5.0, 5.1, 5.2, 6.0, 6.1, 7.0, 7.1, 8.0, 8.1, 10.0, 10.1, 10.2, 10.3, 10.4, and 10.5
 }
 
-#[derive(Debug, PartialEq, Eq, FromPrimitive, ToPrimitive)]
-pub enum BlobType {
-    Any = 0x00,
-    Data = 0x01,
-    Random = 0x02,
-    Certificate = 0x03,
-    Error = 0x04,
-    RsaKey = 0x06,
-    EncryptedData = 0x09,
-    RsaSignature = 0x08,
-    KeyExchangeAlgorithm = 0x0d,
-    Scope = 0x0e,
-    ClientUserName = 0x0f,
-    ClientMachineNameBlob = 0x10,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BlobType(u16);
+
+impl BlobType {
+    pub const ANY: Self = Self(0x00);
+    pub const DATA: Self = Self(0x01);
+    pub const RANDOM: Self = Self(0x02);
+    pub const CERTIFICATE: Self = Self(0x03);
+    pub const ERROR: Self = Self(0x04);
+    pub const RSA_KEY: Self = Self(0x06);
+    pub const ENCRYPTED_DATA: Self = Self(0x09);
+    pub const RSA_SIGNATURE: Self = Self(0x08);
+    pub const KEY_EXCHANGE_ALGORITHM: Self = Self(0x0d);
+    pub const SCOPE: Self = Self(0x0e);
+    pub const CLIENT_USER_NAME: Self = Self(0x0f);
+    pub const CLIENT_MACHINE_NAME_BLOB: Self = Self(0x10);
 }
 
 #[derive(Debug, Error)]
@@ -282,7 +284,7 @@ impl PduEncode for BlobHeader {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
         ensure_fixed_part_size!(in: dst);
 
-        dst.write_u16(self.blob_type.to_u16().unwrap());
+        dst.write_u16(self.blob_type.0);
         dst.write_u16(cast_length!("len", self.length)?);
 
         Ok(())
@@ -301,10 +303,7 @@ impl<'de> PduDecode<'de> for BlobHeader {
     fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
         ensure_fixed_part_size!(in: src);
 
-        let blob_type = src.read_u16();
-        let blob_type =
-            BlobType::from_u16(blob_type).ok_or_else(|| invalid_message_err!("blobType", "invalid blob type"))?;
-
+        let blob_type = BlobType(src.read_u16());
         let length = cast_length!("len", src.read_u16())?;
 
         Ok(Self { blob_type, length })

@@ -36,7 +36,7 @@ impl PduEncode for LicensingErrorMessage {
         dst.write_u32(self.error_code.to_u32().unwrap());
         dst.write_u32(self.state_transition.to_u32().unwrap());
 
-        BlobHeader::new(BlobType::Error, self.error_info.len()).encode(dst)?;
+        BlobHeader::new(BlobType::ERROR, self.error_info.len()).encode(dst)?;
         dst.write_slice(&self.error_info);
 
         Ok(())
@@ -61,7 +61,7 @@ impl<'de> PduDecode<'de> for LicensingErrorMessage {
             .ok_or_else(|| invalid_message_err!("stateTransition", "invalid state transition"))?;
 
         let error_info_blob = BlobHeader::decode(src)?;
-        if error_info_blob.blob_type != BlobType::Error {
+        if error_info_blob.blob_type != BlobType::ERROR {
             return Err(invalid_message_err!("blobType", "invalid blob type"));
         }
         let error_info = vec![0u8; error_info_blob.length];

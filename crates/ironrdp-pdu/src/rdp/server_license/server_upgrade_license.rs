@@ -46,7 +46,7 @@ impl PduEncode for ServerUpgradeLicense {
         ensure_size!(in: dst, size: self.size());
 
         self.license_header.encode(dst)?;
-        BlobHeader::new(BlobType::EncryptedData, self.encrypted_license_info.len()).encode(dst)?;
+        BlobHeader::new(BlobType::ENCRYPTED_DATA, self.encrypted_license_info.len()).encode(dst)?;
         dst.write_slice(&self.encrypted_license_info);
         dst.write_slice(&self.mac_data);
 
@@ -76,7 +76,7 @@ impl<'de> PduDecode<'de> for ServerUpgradeLicense {
         }
 
         let encrypted_license_info_blob = BlobHeader::decode(src)?;
-        if encrypted_license_info_blob.blob_type != BlobType::EncryptedData {
+        if encrypted_license_info_blob.blob_type != BlobType::ENCRYPTED_DATA {
             return Err(invalid_message_err!("blobType", "unexpected blob type"));
         }
 

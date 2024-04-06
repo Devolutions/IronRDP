@@ -106,10 +106,10 @@ impl PduEncode for ClientPlatformChallengeResponse {
 
         self.license_header.encode(dst)?;
 
-        BlobHeader::new(BlobType::EncryptedData, self.encrypted_challenge_response_data.len()).encode(dst)?;
+        BlobHeader::new(BlobType::ENCRYPTED_DATA, self.encrypted_challenge_response_data.len()).encode(dst)?;
         dst.write_slice(&self.encrypted_challenge_response_data);
 
-        BlobHeader::new(BlobType::EncryptedData, self.encrypted_hwid.len()).encode(dst)?;
+        BlobHeader::new(BlobType::ENCRYPTED_DATA, self.encrypted_hwid.len()).encode(dst)?;
         dst.write_slice(&self.encrypted_hwid);
 
         dst.write_slice(&self.mac_data);
@@ -139,14 +139,14 @@ impl<'de> PduDecode<'de> for ClientPlatformChallengeResponse {
         }
 
         let encrypted_challenge_blob = BlobHeader::decode(src)?;
-        if encrypted_challenge_blob.blob_type != BlobType::EncryptedData {
+        if encrypted_challenge_blob.blob_type != BlobType::ENCRYPTED_DATA {
             return Err(invalid_message_err!("blobType", "unexpected blob type"));
         }
         ensure_size!(in: src, size: encrypted_challenge_blob.length);
         let encrypted_challenge_response_data = src.read_slice(encrypted_challenge_blob.length).into();
 
         let encrypted_hwid_blob = BlobHeader::decode(src)?;
-        if encrypted_hwid_blob.blob_type != BlobType::EncryptedData {
+        if encrypted_hwid_blob.blob_type != BlobType::ENCRYPTED_DATA {
             return Err(invalid_message_err!("blobType", "unexpected blob type"));
         }
         ensure_size!(in: src, size: encrypted_hwid_blob.length);

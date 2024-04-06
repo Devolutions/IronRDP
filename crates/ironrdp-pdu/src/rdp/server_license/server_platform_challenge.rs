@@ -33,7 +33,7 @@ impl PduEncode for ServerPlatformChallenge {
 
         self.license_header.encode(dst)?;
         dst.write_u32(0); // connect_flags, ignored
-        BlobHeader::new(BlobType::Any, self.encrypted_platform_challenge.len()).encode(dst)?;
+        BlobHeader::new(BlobType::ANY, self.encrypted_platform_challenge.len()).encode(dst)?;
         dst.write_slice(&self.encrypted_platform_challenge);
         dst.write_slice(&self.mac_data);
 

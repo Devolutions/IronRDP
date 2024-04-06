@@ -56,7 +56,7 @@ lazy_static! {
 #[test]
 fn read_blob_header_handles_wrong_type_correctly() {
     let h = decode::<BlobHeader>(&BLOB_BUFFER).unwrap();
-    assert_ne!(h.blob_type, BlobType::Certificate);
+    assert_ne!(h.blob_type, BlobType::CERTIFICATE);
 }
 
 #[test]
@@ -80,7 +80,7 @@ fn read_blob_header_handles_invalid_type_correctly() {
 #[test]
 fn read_blob_header_reads_blob_correctly() {
     let blob = decode::<BlobHeader>(&BLOB_BUFFER).unwrap();
-    assert_eq!(blob.blob_type, BlobType::RsaSignature);
+    assert_eq!(blob.blob_type, BlobType::RSA_SIGNATURE);
     assert_eq!(blob.length, BLOB_BUFFER.len() - 4);
 }
 
@@ -89,7 +89,7 @@ fn write_blob_header_writes_blob_header_correctly() {
     let correct_blob_header = &BLOB_BUFFER[..4];
     let blob_data = &BLOB_BUFFER[4..];
 
-    let blob = BlobHeader::new(BlobType::RsaSignature, blob_data.len());
+    let blob = BlobHeader::new(BlobType::RSA_SIGNATURE, blob_data.len());
     let buffer = encode_vec(&blob).unwrap();
 
     assert_eq!(correct_blob_header, buffer.as_slice());
