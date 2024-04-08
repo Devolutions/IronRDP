@@ -21,7 +21,7 @@ namespace Devolutions.IronRdp.ConnectExample
             var domain = arguments["--domain"];
             try
             {
-                var (res, framed) = await Connection.Connect(serverName, username, password, domain, 1980, 1080);
+                var (res, framed) = await Connection.Connect(buildConfig(serverName, username, password, domain, 1980, 1080), serverName);
                 var decodedImage = DecodedImage.New(PixelFormat.RgbA32, res.GetDesktopSize().GetWidth(), res.GetDesktopSize().GetHeight());
                 var activeState = ActiveStage.New(res);
                 var keepLooping = true;
@@ -175,6 +175,22 @@ namespace Devolutions.IronRdp.ConnectExample
             Console.WriteLine("  --password <password>      The password for connection.");
             Console.WriteLine("  --domain <domain>          The domain of the server.");
             Console.WriteLine("  --help                     Show this message and exit.");
+        }
+
+
+
+        private static Config buildConfig(string servername, string username, string password, string domain, int width, int height)
+        {
+            ConfigBuilder configBuilder = ConfigBuilder.New();
+
+            configBuilder.WithUsernameAndPassword(username, password);
+            configBuilder.SetDomain(domain);
+            configBuilder.SetDesktopSize((ushort)height, (ushort)width);
+            configBuilder.SetClientName("IronRdp");
+            configBuilder.SetClientDir("C:\\");
+            configBuilder.SetPerformanceFlags(PerformanceFlags.NewDefault());
+
+            return configBuilder.Build();
         }
 
     }

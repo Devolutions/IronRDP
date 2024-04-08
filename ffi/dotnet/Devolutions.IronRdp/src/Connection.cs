@@ -7,9 +7,8 @@ using Devolutions.IronRdp;
 public class Connection
 {
 
-    public static async Task<(ConnectionResult,Framed<SslStream>)> Connect(string servername, string username, string password, string domain, int width, int height)
+    public static async Task<(ConnectionResult,Framed<SslStream>)> Connect(Config config,string servername)
     {
-        Config config = buildConfig(servername, username, password, domain, width, height);
 
         var stream = await CreateTcpConnection(servername, 3389);
         var framed = new Framed<NetworkStream>(stream);
@@ -59,19 +58,6 @@ public class Connection
         }
     }
 
-    private static Config buildConfig(string servername, string username, string password, string domain, int width, int height)
-    {
-        ConfigBuilder configBuilder = ConfigBuilder.New();
-
-        configBuilder.WithUsernameAndPassword(username, password);
-        configBuilder.SetDomain(domain);
-        configBuilder.SetDesktopSize((ushort)height, (ushort)width);
-        configBuilder.SetClientName("IronRdp");
-        configBuilder.SetClientDir("C:\\");
-        configBuilder.SetPerformanceFlags(PerformanceFlags.NewDefault());
-
-        return configBuilder.Build();
-    }
 
     private static async Task<ConnectionResult> ConnectFinalize(string servername, ClientConnector connector, byte[] serverpubkey, Framed<SslStream> framedSsl)
     {
