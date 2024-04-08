@@ -110,6 +110,7 @@ jobs:
     name: Corpus merge artifacts
     runs-on: ubuntu-latest
     needs: fuzz
+    if: ${{ always() && !cancelled() }}
 
     steps:
       - name: Merge Artifacts
