@@ -660,11 +660,15 @@ fn create_gcc_blocks<'a>(
                 dig_product_id: Some(config.dig_product_id.clone()),
                 connection_type: Some(ConnectionType::Lan),
                 server_selected_protocol: Some(selected_protocol),
-                desktop_physical_width: None,
-                desktop_physical_height: None,
-                desktop_orientation: None,
-                desktop_scale_factor: None,
-                device_scale_factor: None,
+                desktop_physical_width: Some(0),
+                desktop_physical_height: Some(0),
+                desktop_orientation: if config.desktop_size.width > config.desktop_size.height {
+                    Some(MonitorOrientation::Landscape as u16)
+                } else {
+                    Some(MonitorOrientation::Portrait as u16)
+                },
+                desktop_scale_factor: Some(config.desktop_scale_factor),
+                device_scale_factor: Some(100),
             },
         },
         security: ClientSecurityData {

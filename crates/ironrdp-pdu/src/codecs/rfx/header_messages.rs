@@ -171,10 +171,7 @@ pub struct RfxChannelWidth(i16);
 
 impl RfxChannelWidth {
     pub fn new(value: i16) -> Result<Self, RfxError> {
-        (1..=4096)
-            .contains(&value)
-            .then_some(Self(value))
-            .ok_or(RfxError::InvalidChannelWidth(value))
+        Ok(Self(value))
     }
 
     pub fn as_u16(self) -> u16 {
@@ -193,10 +190,7 @@ pub struct RfxChannelHeight(i16);
 
 impl RfxChannelHeight {
     pub fn new(value: i16) -> Result<Self, RfxError> {
-        (1..=2048)
-            .contains(&value)
-            .then_some(Self(value))
-            .ok_or(RfxError::InvalidChannelHeight(value))
+        Ok(Self(value))
     }
 
     pub fn as_u16(self) -> u16 {

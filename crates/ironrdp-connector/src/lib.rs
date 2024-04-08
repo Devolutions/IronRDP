@@ -72,6 +72,7 @@ impl Credentials {
 pub struct Config {
     /// The initial desktop size to request
     pub desktop_size: DesktopSize,
+    pub desktop_scale_factor: u32,
     /// TLS + Graphical login (legacy)
     ///
     /// Also called SSL or TLS security protocol.
