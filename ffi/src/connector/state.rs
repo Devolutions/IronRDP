@@ -1,9 +1,12 @@
 #[diplomat::bridge]
 pub mod ffi {
-    use crate::{error::ffi::IronRdpError, pdu::ffi::SecurityProtocol};
+    use crate::{
+        error::{ffi::IronRdpError, ValueConsumedError},
+        pdu::ffi::SecurityProtocol,
+    };
 
     #[diplomat::opaque]
-    pub struct ClientConnectorState(pub ironrdp::connector::ClientConnectorState);
+    pub struct ClientConnectorState(pub Option<ironrdp::connector::ClientConnectorState>);
 
     pub enum ClientConnectorStateType {
         Consumed,
@@ -25,7 +28,11 @@ pub mod ffi {
 
     impl ClientConnectorState {
         pub fn get_type(&self) -> Result<ClientConnectorStateType, Box<IronRdpError>> {
-            let res = match &self.0 {
+            let res = match &self
+                .0
+                .as_ref()
+                .ok_or_else(|| ValueConsumedError::for_item("ClientConnectorState"))?
+            {
                 ironrdp::connector::ClientConnectorState::Consumed => ClientConnectorStateType::Consumed,
                 ironrdp::connector::ClientConnectorState::ConnectionInitiationSendRequest => {
                     ClientConnectorStateType::ConnectionInitiationSendRequest
@@ -72,11 +79,15 @@ pub mod ffi {
         }
 
         pub fn get_connection_initiation_wait_confirm_requested_protocol(
-            &self,
+            &mut self,
         ) -> Result<Box<SecurityProtocol>, Box<IronRdpError>> {
-            match &self.0 {
+            match self
+                .0
+                .take()
+                .ok_or_else(|| ValueConsumedError::for_item("ClientConnectorState"))?
+            {
                 ironrdp::connector::ClientConnectorState::ConnectionInitiationWaitConfirm { requested_protocol } => {
-                    Ok(SecurityProtocol(*requested_protocol))
+                    Ok(SecurityProtocol(requested_protocol))
                 }
                 _ => Err("Not in ConnectionInitiationWaitConfirm state".into()),
             }
@@ -84,23 +95,29 @@ pub mod ffi {
         }
 
         pub fn get_enhanced_security_upgrade_selected_protocol(
-            &self,
+            &mut self,
         ) -> Result<Box<SecurityProtocol>, Box<IronRdpError>> {
-            match &self.0 {
+            match self
+                .0
+                .take()
+                .ok_or_else(|| ValueConsumedError::for_item("ClientConnectorState"))?
+            {
                 ironrdp::connector::ClientConnectorState::EnhancedSecurityUpgrade { selected_protocol } => {
-                    Ok(SecurityProtocol(*selected_protocol))
+                    Ok(SecurityProtocol(selected_protocol))
                 }
                 _ => Err("Not in EnhancedSecurityUpgrade state".into()),
             }
             .map(Box::new)
         }
 
-        pub fn get_credssp_selected_protocol(
-            &self,
-        ) -> Result<Box<SecurityProtocol>, Box<IronRdpError>> {
-            match &self.0 {
+        pub fn get_credssp_selected_protocol(&mut self) -> Result<Box<SecurityProtocol>, Box<IronRdpError>> {
+            match self
+                .0
+                .take()
+                .ok_or_else(|| ValueConsumedError::for_item("ClientConnectorState"))?
+            {
                 ironrdp::connector::ClientConnectorState::Credssp { selected_protocol } => {
-                    Ok(SecurityProtocol(*selected_protocol))
+                    Ok(SecurityProtocol(selected_protocol))
                 }
                 _ => Err("Not in Credssp state".into()),
             }
@@ -108,11 +125,15 @@ pub mod ffi {
         }
 
         pub fn get_basic_settings_exchange_send_initial_selected_protocol(
-            &self,
+            &mut self,
         ) -> Result<Box<SecurityProtocol>, Box<IronRdpError>> {
-            match &self.0 {
+            match self
+                .0
+                .take()
+                .ok_or_else(|| ValueConsumedError::for_item("ClientConnectorState"))?
+            {
                 ironrdp::connector::ClientConnectorState::BasicSettingsExchangeSendInitial { selected_protocol } => {
-                    Ok(SecurityProtocol(*selected_protocol))
+                    Ok(SecurityProtocol(selected_protocol))
                 }
                 _ => Err("Not in BasicSettingsExchangeSendInitial state".into()),
             }
@@ -120,46 +141,36 @@ pub mod ffi {
         }
 
         pub fn get_basic_settings_exchange_wait_response_connect_initial(
-            &self,
+            &mut self,
         ) -> Result<Box<crate::pdu::ffi::ConnectInitial>, Box<IronRdpError>> {
-            match &self.0 {
+            match self
+                .0
+                .take()
+                .ok_or_else(|| ValueConsumedError::for_item("ClientConnectorState"))?
+            {
                 ironrdp::connector::ClientConnectorState::BasicSettingsExchangeWaitResponse { connect_initial } => {
-                    Ok(crate::pdu::ffi::ConnectInitial(connect_initial.clone()))
+                    Ok(crate::pdu::ffi::ConnectInitial(connect_initial))
                 }
                 _ => Err("Not in BasicSettingsExchangeWaitResponse state".into()),
             }
             .map(Box::new)
         }
 
-        pub fn get_channel_connection_io_channel_id(&self) -> Result<u16, Box<IronRdpError>> {
-            match &self.0 {
-                ironrdp::connector::ClientConnectorState::ChannelConnection { io_channel_id, .. } => Ok(*io_channel_id),
-                _ => Err("Not in ChannelConnection state".into()),
-            }
-        }
-
-        pub fn get_secure_settings_exchange_io_channel_id(&self) -> Result<u16, Box<IronRdpError>> {
-            match &self.0 {
-                ironrdp::connector::ClientConnectorState::SecureSettingsExchange { io_channel_id, .. } => {
-                    Ok(*io_channel_id)
-                }
-                _ => Err("Not in SecureSettingsExchange state".into()),
-            }
-        }
-
         // TODO: Add more getters for other states
 
-        pub fn get_connected_result<'a>(
-            &'a self,
-        ) -> Result<Box<crate::connector::result::ffi::ConnectionResult<'a>>, Box<IronRdpError>>
-        {
-            match &self.0 {
-                ironrdp::connector::ClientConnectorState::Connected { result } => Ok(Box::new(
-                    crate::connector::result::ffi::ConnectionResult(result),
-                )),
+        pub fn get_connected_result(
+            &mut self,
+        ) -> Result<Box<crate::connector::result::ffi::ConnectionResult>, Box<IronRdpError>> {
+            match self
+                .0
+                .take()
+                .ok_or_else(|| ValueConsumedError::for_item("ClientConnectorState"))?
+            {
+                ironrdp::connector::ClientConnectorState::Connected { result } => {
+                    Ok(Box::new(crate::connector::result::ffi::ConnectionResult(Some(result))))
+                }
                 _ => Err("Not in Connected state".into()),
             }
         }
     }
-
 }

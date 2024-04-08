@@ -1,4 +1,3 @@
-
 #[diplomat::bridge]
 pub mod ffi {
     use std::rc::Rc;
@@ -25,7 +24,7 @@ pub mod ffi {
             self.0.hotspot_y
         }
 
-        pub fn get_data<'a>(&'a self) -> Box<BytesSlice<'a>> {
+        pub fn get_data(&self) -> Box<BytesSlice<'_>> {
             Box::new(BytesSlice(&self.0.bitmap_data))
         }
     }

@@ -19,6 +19,10 @@ public partial struct ActiveStageOutputIterator
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ActiveStageOutputIterator_len", ExactSpelling = true)]
     public static unsafe extern nuint Len(ActiveStageOutputIterator* self);
 
+    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ActiveStageOutputIterator_is_empty", ExactSpelling = true)]
+    [return: MarshalAs(UnmanagedType.U1)]
+    public static unsafe extern bool IsEmpty(ActiveStageOutputIterator* self);
+
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ActiveStageOutputIterator_next", ExactSpelling = true)]
     public static unsafe extern ActiveStageOutput* Next(ActiveStageOutputIterator* self);
 

@@ -16,6 +16,9 @@ public partial struct IronRdpPdu
 {
     private const string NativeLib = "DevolutionsIronRdp";
 
+    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "IronRdpPdu_new", ExactSpelling = true)]
+    public static unsafe extern IronRdpPdu* New();
+
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "IronRdpPdu_find_size", ExactSpelling = true)]
     public static unsafe extern PduFfiResultOptBoxPduInfoBoxIronRdpError FindSize(IronRdpPdu* self, byte* bytes, nuint bytesSz);
 

@@ -34,12 +34,6 @@ public partial struct ClientConnectorState
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ClientConnectorState_get_basic_settings_exchange_wait_response_connect_initial", ExactSpelling = true)]
     public static unsafe extern ConnectorStateFfiResultBoxConnectInitialBoxIronRdpError GetBasicSettingsExchangeWaitResponseConnectInitial(ClientConnectorState* self);
 
-    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ClientConnectorState_get_channel_connection_io_channel_id", ExactSpelling = true)]
-    public static unsafe extern ConnectorStateFfiResultU16BoxIronRdpError GetChannelConnectionIoChannelId(ClientConnectorState* self);
-
-    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ClientConnectorState_get_secure_settings_exchange_io_channel_id", ExactSpelling = true)]
-    public static unsafe extern ConnectorStateFfiResultU16BoxIronRdpError GetSecureSettingsExchangeIoChannelId(ClientConnectorState* self);
-
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ClientConnectorState_get_connected_result", ExactSpelling = true)]
     public static unsafe extern ConnectorStateFfiResultBoxConnectionResultBoxIronRdpError GetConnectedResult(ClientConnectorState* self);
 

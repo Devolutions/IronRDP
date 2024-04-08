@@ -42,6 +42,19 @@ public partial class ActiveStageOutputIterator: IDisposable
         }
     }
 
+    public bool IsEmpty()
+    {
+        unsafe
+        {
+            if (_inner == null)
+            {
+                throw new ObjectDisposedException("ActiveStageOutputIterator");
+            }
+            bool retVal = Raw.ActiveStageOutputIterator.IsEmpty(_inner);
+            return retVal;
+        }
+    }
+
     /// <returns>
     /// A <c>ActiveStageOutput</c> allocated on Rust side.
     /// </returns>

@@ -31,14 +31,6 @@ public partial class ClientConnectorState: IDisposable
         }
     }
 
-    public ushort ChannelConnectionIoChannelId
-    {
-        get
-        {
-            return GetChannelConnectionIoChannelId();
-        }
-    }
-
     public ConnectionResult ConnectedResult
     {
         get
@@ -68,14 +60,6 @@ public partial class ClientConnectorState: IDisposable
         get
         {
             return GetEnhancedSecurityUpgradeSelectedProtocol();
-        }
-    }
-
-    public ushort SecureSettingsExchangeIoChannelId
-    {
-        get
-        {
-            return GetSecureSettingsExchangeIoChannelId();
         }
     }
 
@@ -230,44 +214,6 @@ public partial class ClientConnectorState: IDisposable
             }
             Raw.ConnectInitial* retVal = result.Ok;
             return new ConnectInitial(retVal);
-        }
-    }
-
-    /// <exception cref="IronRdpException"></exception>
-    public ushort GetChannelConnectionIoChannelId()
-    {
-        unsafe
-        {
-            if (_inner == null)
-            {
-                throw new ObjectDisposedException("ClientConnectorState");
-            }
-            Raw.ConnectorStateFfiResultU16BoxIronRdpError result = Raw.ClientConnectorState.GetChannelConnectionIoChannelId(_inner);
-            if (!result.isOk)
-            {
-                throw new IronRdpException(new IronRdpError(result.Err));
-            }
-            ushort retVal = result.Ok;
-            return retVal;
-        }
-    }
-
-    /// <exception cref="IronRdpException"></exception>
-    public ushort GetSecureSettingsExchangeIoChannelId()
-    {
-        unsafe
-        {
-            if (_inner == null)
-            {
-                throw new ObjectDisposedException("ClientConnectorState");
-            }
-            Raw.ConnectorStateFfiResultU16BoxIronRdpError result = Raw.ClientConnectorState.GetSecureSettingsExchangeIoChannelId(_inner);
-            if (!result.isOk)
-            {
-                throw new IronRdpException(new IronRdpError(result.Err));
-            }
-            ushort retVal = result.Ok;
-            return retVal;
         }
     }
 

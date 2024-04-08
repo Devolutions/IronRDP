@@ -54,6 +54,20 @@ public partial class DecodedImage: IDisposable
     }
 
     /// <returns>
+    /// A <c>DecodedImage</c> allocated on Rust side.
+    /// </returns>
+    public static DecodedImage New(PixelFormat pixelFormat, ushort width, ushort height)
+    {
+        unsafe
+        {
+            Raw.PixelFormat pixelFormatRaw;
+            pixelFormatRaw = (Raw.PixelFormat)pixelFormat;
+            Raw.DecodedImage* retVal = Raw.DecodedImage.New(pixelFormatRaw, width, height);
+            return new DecodedImage(retVal);
+        }
+    }
+
+    /// <returns>
     /// A <c>BytesSlice</c> allocated on Rust side.
     /// </returns>
     public BytesSlice GetData()

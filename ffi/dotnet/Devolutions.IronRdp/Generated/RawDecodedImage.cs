@@ -16,6 +16,9 @@ public partial struct DecodedImage
 {
     private const string NativeLib = "DevolutionsIronRdp";
 
+    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "DecodedImage_new", ExactSpelling = true)]
+    public static unsafe extern DecodedImage* New(PixelFormat pixelFormat, ushort width, ushort height);
+
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "DecodedImage_get_data", ExactSpelling = true)]
     public static unsafe extern BytesSlice* GetData(DecodedImage* self);
 

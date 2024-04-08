@@ -31,6 +31,30 @@ public partial class ActiveStage: IDisposable
 
     /// <exception cref="IronRdpException"></exception>
     /// <returns>
+    /// A <c>ActiveStage</c> allocated on Rust side.
+    /// </returns>
+    public static ActiveStage New(ConnectionResult connectionResult)
+    {
+        unsafe
+        {
+            Raw.ConnectionResult* connectionResultRaw;
+            connectionResultRaw = connectionResult.AsFFI();
+            if (connectionResultRaw == null)
+            {
+                throw new ObjectDisposedException("ConnectionResult");
+            }
+            Raw.SessionFfiResultBoxActiveStageBoxIronRdpError result = Raw.ActiveStage.New(connectionResultRaw);
+            if (!result.isOk)
+            {
+                throw new IronRdpException(new IronRdpError(result.Err));
+            }
+            Raw.ActiveStage* retVal = result.Ok;
+            return new ActiveStage(retVal);
+        }
+    }
+
+    /// <exception cref="IronRdpException"></exception>
+    /// <returns>
     /// A <c>ActiveStageOutputIterator</c> allocated on Rust side.
     /// </returns>
     public ActiveStageOutputIterator Process(DecodedImage image, Action action, byte[] payload)

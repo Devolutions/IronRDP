@@ -29,6 +29,18 @@ public partial class IronRdpPdu: IDisposable
         _inner = handle;
     }
 
+    /// <returns>
+    /// A <c>IronRdpPdu</c> allocated on Rust side.
+    /// </returns>
+    public static IronRdpPdu New()
+    {
+        unsafe
+        {
+            Raw.IronRdpPdu* retVal = Raw.IronRdpPdu.New();
+            return new IronRdpPdu(retVal);
+        }
+    }
+
     /// <exception cref="IronRdpException"></exception>
     /// <returns>
     /// A <c>PduInfo</c> allocated on Rust side.

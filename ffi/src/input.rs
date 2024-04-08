@@ -1,4 +1,3 @@
-
 #[diplomat::bridge]
 pub mod ffi {
     #[diplomat::opaque]
@@ -8,6 +7,5 @@ pub mod ffi {
         pub fn new() -> Box<Database> {
             Box::new(Database(ironrdp::input::Database::new()))
         }
-
     }
 }

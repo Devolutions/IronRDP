@@ -12,13 +12,13 @@ namespace Devolutions.IronRdp.Raw;
 #nullable enable
 
 [StructLayout(LayoutKind.Sequential)]
-public partial struct ConnectorStateFfiResultU16BoxIronRdpError
+public partial struct ConnectorFfiResultBoxDynClientConnectorStateBoxIronRdpError
 {
     [StructLayout(LayoutKind.Explicit)]
     private unsafe struct InnerUnion
     {
         [FieldOffset(0)]
-        internal ushort ok;
+        internal DynClientConnectorState* ok;
         [FieldOffset(0)]
         internal IronRdpError* err;
     }
@@ -28,7 +28,7 @@ public partial struct ConnectorStateFfiResultU16BoxIronRdpError
     [MarshalAs(UnmanagedType.U1)]
     public bool isOk;
 
-    public unsafe ushort Ok
+    public unsafe DynClientConnectorState* Ok
     {
         get
         {

@@ -1,10 +1,15 @@
+#![allow(clippy::should_implement_trait)] // Diplomat doesn't support traits yet
 pub mod image;
 
 #[diplomat::bridge]
 pub mod ffi {
 
     use crate::{
-        connector::ffi::ConnectionActivationSequence, error::ffi::IronRdpError, graphics::ffi::DecodedPointer, pdu::ffi::{Action, InclusiveRectangle}, utils::ffi::{BytesSlice, Position}
+        connector::{ffi::ConnectionActivationSequence, result::ffi::ConnectionResult},
+        error::{ffi::IronRdpError, ValueConsumedError},
+        graphics::ffi::DecodedPointer,
+        pdu::ffi::{Action, InclusiveRectangle},
+        utils::ffi::{BytesSlice, Position},
     };
 
     use super::image::ffi::DecodedImage;
@@ -23,19 +28,32 @@ pub mod ffi {
             self.0.len()
         }
 
+        pub fn is_empty(&self) -> bool {
+            self.0.is_empty()
+        }
+
         pub fn next(&mut self) -> Option<Box<ActiveStageOutput>> {
             self.0.pop().map(ActiveStageOutput).map(Box::new)
         }
     }
 
     impl ActiveStage {
+        pub fn new(connection_result: &mut ConnectionResult) -> Result<Box<Self>, Box<IronRdpError>> {
+            Ok(Box::new(ActiveStage(ironrdp::session::ActiveStage::new(
+                connection_result
+                    .0
+                    .take()
+                    .ok_or_else(|| ValueConsumedError::for_item("connection_result"))?,
+            ))))
+        }
+
         pub fn process(
             &mut self,
             image: &mut DecodedImage,
             action: &Action,
             payload: &[u8],
         ) -> Result<Box<ActiveStageOutputIterator>, Box<IronRdpError>> {
-            let outputs = self.0.process(image.0, action.0, payload)?;
+            let outputs = self.0.process(&mut image.0, action.0, payload)?;
             Ok(Box::new(ActiveStageOutputIterator(outputs)))
         }
     }
@@ -65,7 +83,7 @@ pub mod ffi {
             }
         }
 
-        pub fn get_response_frame<'a>(&'a self) -> Option<Box<BytesSlice<'a>>> {
+        pub fn get_response_frame(&self) -> Option<Box<BytesSlice<'_>>> {
             match &self.0 {
                 ironrdp::session::ActiveStageOutput::ResponseFrame(frame) => Some(Box::new(BytesSlice(frame))),
                 _ => None,
@@ -92,24 +110,29 @@ pub mod ffi {
         pub fn get_pointer_butmap(&self) -> Option<Box<DecodedPointer>> {
             match &self.0 {
                 ironrdp::session::ActiveStageOutput::PointerBitmap(decoded_pointer) => {
-                    Some(DecodedPointer(decoded_pointer.clone()))
+                    Some(DecodedPointer(std::rc::Rc::clone(decoded_pointer)))
                 }
                 _ => None,
-            }.map(Box::new)
+            }
+            .map(Box::new)
         }
 
         pub fn get_terminate(&self) -> Option<Box<GracefulDisconnectReason>> {
             match &self.0 {
-                ironrdp::session::ActiveStageOutput::Terminate(reason) => Some(GracefulDisconnectReason(reason.clone())),
+                ironrdp::session::ActiveStageOutput::Terminate(reason) => Some(GracefulDisconnectReason(*reason)),
                 _ => None,
-            }.map(Box::new)
+            }
+            .map(Box::new)
         }
 
         pub fn get_deactivate_all(&self) -> Option<Box<ConnectionActivationSequence>> {
             match &self.0 {
-                ironrdp::session::ActiveStageOutput::DeactivateAll(cas) => Some(ConnectionActivationSequence(cas.clone())),
+                ironrdp::session::ActiveStageOutput::DeactivateAll(cas) => {
+                    Some(ConnectionActivationSequence(cas.clone()))
+                }
                 _ => None,
-            }.map(Box::new)
+            }
+            .map(Box::new)
         }
     }
 

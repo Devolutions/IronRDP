@@ -40,10 +40,9 @@ pub mod ffi {
             if buffer.len() < self.0.len() {
                 return Err("Buffer is too small".into());
             }
-            buffer.copy_from_slice(&self.0);
+            buffer.copy_from_slice(self.0);
             Ok(())
         }
-
     }
 
     #[diplomat::opaque]
@@ -58,15 +57,15 @@ pub mod ffi {
             if buffer.len() < self.0.len() {
                 return Err("Buffer is too small".into());
             }
-            buffer.copy_from_slice(&self.0);
+            buffer.copy_from_slice(self.0);
             Ok(())
         }
     }
 
     #[diplomat::opaque]
-    pub struct Position{
+    pub struct Position {
         pub x: u16,
-        pub y: u16
+        pub y: u16,
     }
 
     impl Position {
@@ -91,5 +90,4 @@ pub mod ffi {
             self.0.ok_or_else(|| "Value is None".into())
         }
     }
-
 }

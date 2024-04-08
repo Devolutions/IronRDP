@@ -50,6 +50,10 @@ pub mod ffi {
     pub struct Action(pub ironrdp::pdu::Action);
 
     impl IronRdpPdu {
+        pub fn new() -> Box<IronRdpPdu> {
+            Box::new(IronRdpPdu)
+        }
+
         pub fn find_size(&self, bytes: &[u8]) -> Result<Option<Box<PduInfo>>, Box<IronRdpError>> {
             Ok(ironrdp::pdu::find_size(bytes)?.map(PduInfo).map(Box::new))
         }
