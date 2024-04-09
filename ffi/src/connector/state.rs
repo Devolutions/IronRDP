@@ -89,7 +89,7 @@ pub mod ffi {
                 ironrdp::connector::ClientConnectorState::ConnectionInitiationWaitConfirm { requested_protocol } => {
                     Ok(SecurityProtocol(requested_protocol))
                 }
-                _ => Err("Not in ConnectionInitiationWaitConfirm state".into()),
+                _ => Err("not in ConnectionInitiationWaitConfirm state".into()),
             }
             .map(Box::new)
         }
