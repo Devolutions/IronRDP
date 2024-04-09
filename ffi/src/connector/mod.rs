@@ -161,7 +161,7 @@ pub mod ffi {
             Ok(Box::new(DynClientConnectorState(connector.state())))
         }
 
-        pub fn consume_self_and_get_state(&mut self) -> Result<Box<ClientConnectorState>, Box<IronRdpError>> {
+        pub fn consume_and_cast_to_client_connector_state(&mut self) -> Result<Box<ClientConnectorState>, Box<IronRdpError>> {
             let Some(connector) = self.0.take() else {
                 return Err(ValueConsumedError::for_item("connector").into());
             };
