@@ -1,4 +1,4 @@
-#![allow(clippy::should_implement_trait)] // Diplomat doesn't support traits yet
+#![allow(clippy::should_implement_trait)] // Implementing extra traits is not useful for FFI
 pub mod image;
 
 #[diplomat::bridge]
