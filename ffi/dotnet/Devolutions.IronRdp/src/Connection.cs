@@ -197,8 +197,15 @@ public class Connection
 
     static async Task<NetworkStream> CreateTcpConnection(String servername, int port)
     {
-        IPHostEntry ipHostInfo = await Dns.GetHostEntryAsync(servername);
-        IPAddress ipAddress = ipHostInfo.AddressList[0];
+        IPAddress ipAddress;
+
+        try {
+            ipAddress = IPAddress.Parse(servername);
+        } catch (FormatException) {
+            IPHostEntry ipHostInfo = await Dns.GetHostEntryAsync(servername);
+            ipAddress = ipHostInfo.AddressList[0];
+        }
+
         IPEndPoint ipEndPoint = new(ipAddress, port);
 
         TcpClient client = new TcpClient();
