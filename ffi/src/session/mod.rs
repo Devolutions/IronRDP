@@ -107,7 +107,7 @@ pub mod ffi {
             .map(Box::new)
         }
 
-        pub fn get_pointer_butmap(&self) -> Option<Box<DecodedPointer>> {
+        pub fn get_pointer_bitmap(&self) -> Option<Box<DecodedPointer>> {
             match &self.0 {
                 ironrdp::session::ActiveStageOutput::PointerBitmap(decoded_pointer) => {
                     Some(DecodedPointer(std::rc::Rc::clone(decoded_pointer)))
