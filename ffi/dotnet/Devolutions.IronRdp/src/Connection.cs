@@ -7,7 +7,7 @@ using Devolutions.IronRdp;
 public class Connection
 {
 
-    public static async Task<(ConnectionResult,Framed<SslStream>)> Connect(Config config,string servername)
+    public static async Task<(ConnectionResult, Framed<SslStream>)> Connect(Config config, string servername)
     {
 
         var stream = await CreateTcpConnection(servername, 3389);
@@ -26,7 +26,7 @@ public class Connection
 
         await connectBegin(framed, connector);
         var (serverPublicKey, framedSsl) = await securityUpgrade(servername, framed, connector);
-        var result =  await ConnectFinalize(servername, connector, serverPublicKey, framedSsl);
+        var result = await ConnectFinalize(servername, connector, serverPublicKey, framedSsl);
         return (result, framedSsl);
     }
 
