@@ -68,7 +68,7 @@ namespace Devolutions.IronRdp.ConnectExample
             }
             catch (Exception e)
             {
-                Console.WriteLine($"An error occurred: {e.Message}");
+                Console.WriteLine($"An error occurred: {e.Message}\n\nStackTrace:\n{e.StackTrace}");
             }
         }
 
@@ -80,6 +80,7 @@ namespace Devolutions.IronRdp.ConnectExample
 
             var bytes = new byte[data.GetSize()];
             data.Fill(bytes);
+
             for (int i = 0; i < bytes.Length; i += 4)
             {
                 byte temp = bytes[i]; // Store the original Blue value
@@ -87,6 +88,7 @@ namespace Devolutions.IronRdp.ConnectExample
                 bytes[i + 2] = temp; // Move original Blue to Red's position
                                      // Green (bytes[i+1]) and Alpha (bytes[i+3]) remain unchanged
             }
+
 #if WINDOWS // Bitmap is only available on Windows
             using (var bmp = new Bitmap(width, height))
             {
@@ -175,8 +177,6 @@ namespace Devolutions.IronRdp.ConnectExample
             Console.WriteLine("  --domain <domain>          The domain of the server.");
             Console.WriteLine("  --help                     Show this message and exit.");
         }
-
-
 
         private static Config buildConfig(string servername, string username, string password, string domain, int width, int height)
         {
