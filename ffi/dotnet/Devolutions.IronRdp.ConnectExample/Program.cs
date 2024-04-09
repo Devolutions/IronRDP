@@ -87,7 +87,7 @@ namespace Devolutions.IronRdp.ConnectExample
                 bytes[i + 2] = temp; // Move original Blue to Red's position
                                      // Green (bytes[i+1]) and Alpha (bytes[i+3]) remain unchanged
             }
-            #if WINDOWS // Bitmap is only available on Windows
+#if WINDOWS // Bitmap is only available on Windows
             using (var bmp = new Bitmap(width, height))
             {
                 // Lock the bits of the bitmap.
@@ -104,7 +104,7 @@ namespace Devolutions.IronRdp.ConnectExample
                 // Save the bitmap to the specified output path
                 bmp.Save("./output.bmp", ImageFormat.Bmp);
             }
-            #endif
+#endif
 
         }
 

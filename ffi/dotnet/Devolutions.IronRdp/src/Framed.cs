@@ -18,19 +18,25 @@ public class Framed<S> where S : Stream
         return (this.stream, this.buffer);
     }
 
-    public async Task<(Devolutions.IronRdp.Action,byte[])> ReadPdu() {
+    public async Task<(Devolutions.IronRdp.Action, byte[])> ReadPdu()
+    {
 
-        while(true) {
+        while (true)
+        {
             var pduInfo = IronRdpPdu.New().FindSize(this.buffer.ToArray());
-            if (null != pduInfo) {
+            if (null != pduInfo)
+            {
                 var frame = await this.ReadExact(pduInfo.GetLength());
                 var action = pduInfo.GetAction();
-                return (action,frame);
-            }else {
+                return (action, frame);
+            }
+            else
+            {
                 var len = await this.Read();
 
-                if (len == 0) {
-                    throw new IronRdpLibException(IronRdpLibExceptionType.EndOfFile,"EOF on ReadPdu");
+                if (len == 0)
+                {
+                    throw new IronRdpLibException(IronRdpLibExceptionType.EndOfFile, "EOF on ReadPdu");
                 }
             }
         }
