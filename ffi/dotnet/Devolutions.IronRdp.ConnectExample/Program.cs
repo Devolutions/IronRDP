@@ -39,8 +39,7 @@ namespace Devolutions.IronRdp.ConnectExample
                     else
                     {
                         Console.WriteLine("Timeout");
-                        keepLooping = false;
-                        continue;
+                        break;
                     }
                     var outputIterator = activeState.Process(decodedImage, action, payload);
 
