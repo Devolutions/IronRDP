@@ -199,9 +199,12 @@ public class Connection
     {
         IPAddress ipAddress;
 
-        try {
+        try
+        {
             ipAddress = IPAddress.Parse(servername);
-        } catch (FormatException) {
+        }
+        catch (FormatException)
+        {
             IPHostEntry ipHostInfo = await Dns.GetHostEntryAsync(servername);
             ipAddress = ipHostInfo.AddressList[0];
         }

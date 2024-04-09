@@ -1,5 +1,5 @@
-﻿using System.Drawing;
-using System.Drawing.Imaging;
+﻿using SixLabors.ImageSharp;
+using SixLabors.ImageSharp.PixelFormats;
 
 namespace Devolutions.IronRdp.ConnectExample
 {
@@ -81,33 +81,27 @@ namespace Devolutions.IronRdp.ConnectExample
             var bytes = new byte[data.GetSize()];
             data.Fill(bytes);
 
-            for (int i = 0; i < bytes.Length; i += 4)
+            using Image<Rgba32> image = new Image<Rgba32>(width, height);
+
+            // We’ll mutate this struct instead of creating a new one for performance reasons.
+            Rgba32 color = new Rgba32(0, 0, 0);
+
+            for (int col = 0; col < width; ++col)
             {
-                byte temp = bytes[i]; // Store the original Blue value
-                bytes[i] = bytes[i + 2]; // Move Red to Blue's position
-                bytes[i + 2] = temp; // Move original Blue to Red's position
-                                     // Green (bytes[i+1]) and Alpha (bytes[i+3]) remain unchanged
+                for (int row = 0; row < height; ++row)
+                {
+                    var idx = (row * width + col) * 4;
+
+                    color.R = bytes[idx];
+                    color.G = bytes[idx + 1];
+                    color.B = bytes[idx + 2];
+
+                    image[col, row] = color;
+                }
             }
 
-#if WINDOWS // Bitmap is only available on Windows
-            using (var bmp = new Bitmap(width, height))
-            {
-                // Lock the bits of the bitmap.
-                var bmpData = bmp.LockBits(new Rectangle(0, 0, bmp.Width, bmp.Height),
-                    ImageLockMode.WriteOnly, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
-
-                // Get the address of the first line.
-                IntPtr ptr = bmpData.Scan0;
-                // Copy the RGBA values back to the bitmap
-                System.Runtime.InteropServices.Marshal.Copy(bytes, 0, ptr, bytes.Length);
-                // Unlock the bits.
-                bmp.UnlockBits(bmpData);
-
-                // Save the bitmap to the specified output path
-                bmp.Save("./output.bmp", ImageFormat.Bmp);
-            }
-#endif
-
+            // Save the image as bitmap.
+            image.Save("./output.bmp");
         }
 
         static Dictionary<string, string>? ParseArguments(string[] args)
