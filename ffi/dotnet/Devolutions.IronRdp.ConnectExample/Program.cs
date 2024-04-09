@@ -1,6 +1,5 @@
 ﻿using System.Drawing;
 using System.Drawing.Imaging;
-using Devolutions.IronRdp;
 
 namespace Devolutions.IronRdp.ConnectExample
 {
@@ -89,6 +88,7 @@ namespace Devolutions.IronRdp.ConnectExample
                 bytes[i + 2] = temp; // Move original Blue to Red's position
                                      // Green (bytes[i+1]) and Alpha (bytes[i+3]) remain unchanged
             }
+            #if WINDOWS // Bitmap is only available on Windows
             using (var bmp = new Bitmap(width, height))
             {
                 // Lock the bits of the bitmap.
@@ -105,7 +105,7 @@ namespace Devolutions.IronRdp.ConnectExample
                 // Save the bitmap to the specified output path
                 bmp.Save("./output.bmp", ImageFormat.Bmp);
             }
-
+            #endif
 
         }
 
@@ -118,7 +118,7 @@ namespace Devolutions.IronRdp.ConnectExample
             }
 
             var arguments = new Dictionary<string, string>();
-            string lastKey = null;
+            string? lastKey = null;
             foreach (var arg in args)
             {
                 if (arg.StartsWith("--"))
