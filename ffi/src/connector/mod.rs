@@ -16,7 +16,7 @@ pub mod ffi {
         pdu::ffi::WriteBuf,
     };
 
-    use super::{config::ffi::Config, result::ffi::Written};
+    use super::{config::ffi::Config, result::ffi::Written, state::ffi::ClientConnectorState};
 
     #[diplomat::opaque] // We must use Option here, as ClientConnector is not Clone and have functions that consume it
     pub struct ClientConnector(pub Option<ironrdp::connector::ClientConnector>);
@@ -132,9 +132,9 @@ pub mod ffi {
     }
 
     #[diplomat::opaque]
-    pub struct State<'a>(pub &'a dyn ironrdp::connector::State);
+    pub struct DynState<'a>(pub &'a dyn ironrdp::connector::State);
 
-    impl<'a> State<'a> {
+    impl<'a> DynState<'a> {
         pub fn get_name(&'a self, writeable: &'a mut DiplomatWriteable) -> Result<(), Box<IronRdpError>> {
             let name = self.0.name();
             write!(writeable, "{}", name)?;
@@ -154,11 +154,31 @@ pub mod ffi {
             Ok(connector.next_pdu_hint().map(PduHint).map(Box::new))
         }
 
-        pub fn state(&self) -> Result<Box<State<'_>>, Box<IronRdpError>> {
+        pub fn get_dyn_state(&self) -> Result<Box<DynState<'_>>, Box<IronRdpError>> {
             let Some(connector) = self.0.as_ref() else {
                 return Err(ValueConsumedError::for_item("connector").into());
             };
-            Ok(Box::new(State(connector.state())))
+            Ok(Box::new(DynState(connector.state())))
+        }
+
+        pub fn consume_and_cast_to_client_connector_state(
+            &mut self,
+        ) -> Result<Box<ClientConnectorState>, Box<IronRdpError>> {
+            let Some(connector) = self.0.take() else {
+                return Err(ValueConsumedError::for_item("connector").into());
+            };
+            Ok(Box::new(ClientConnectorState(Some(connector.state))))
         }
     }
+
+    #[diplomat::opaque]
+    pub struct ChannelConnectionSequence(pub ironrdp::connector::ChannelConnectionSequence);
+
+    #[diplomat::opaque]
+    pub struct LicenseExchangeSequence(pub ironrdp::connector::LicenseExchangeSequence);
+
+    #[diplomat::opaque]
+    pub struct ConnectionActivationSequence(
+        pub Box<ironrdp::connector::connection_activation::ConnectionActivationSequence>,
+    );
 }

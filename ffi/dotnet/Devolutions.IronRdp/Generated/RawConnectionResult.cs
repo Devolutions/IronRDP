@@ -17,24 +17,19 @@ public partial struct ConnectionResult
     private const string NativeLib = "DevolutionsIronRdp";
 
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ConnectionResult_get_io_channel_id", ExactSpelling = true)]
-    public static unsafe extern ushort GetIoChannelId(ConnectionResult* self);
+    public static unsafe extern ConnectorResultFfiResultU16BoxIronRdpError GetIoChannelId(ConnectionResult* self);
 
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ConnectionResult_get_user_channel_id", ExactSpelling = true)]
-    public static unsafe extern ushort GetUserChannelId(ConnectionResult* self);
-
-    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ConnectionResult_get_static_channels", ExactSpelling = true)]
-    public static unsafe extern StaticChannelSet* GetStaticChannels(ConnectionResult* self);
+    public static unsafe extern ConnectorResultFfiResultU16BoxIronRdpError GetUserChannelId(ConnectionResult* self);
 
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ConnectionResult_get_desktop_size", ExactSpelling = true)]
-    public static unsafe extern DesktopSize* GetDesktopSize(ConnectionResult* self);
+    public static unsafe extern ConnectorResultFfiResultBoxDesktopSizeBoxIronRdpError GetDesktopSize(ConnectionResult* self);
 
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ConnectionResult_get_no_server_pointer", ExactSpelling = true)]
-    [return: MarshalAs(UnmanagedType.U1)]
-    public static unsafe extern bool GetNoServerPointer(ConnectionResult* self);
+    public static unsafe extern ConnectorResultFfiResultBoolBoxIronRdpError GetNoServerPointer(ConnectionResult* self);
 
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ConnectionResult_get_pointer_software_rendering", ExactSpelling = true)]
-    [return: MarshalAs(UnmanagedType.U1)]
-    public static unsafe extern bool GetPointerSoftwareRendering(ConnectionResult* self);
+    public static unsafe extern ConnectorResultFfiResultBoolBoxIronRdpError GetPointerSoftwareRendering(ConnectionResult* self);
 
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ConnectionResult_destroy", ExactSpelling = true)]
     public static unsafe extern void Destroy(ConnectionResult* self);

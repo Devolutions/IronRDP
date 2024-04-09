@@ -10,5 +10,9 @@
   <ItemGroup>
     <ProjectReference Include="../Devolutions.IronRdp/Devolutions.IronRdp.csproj" />
   </ItemGroup>
-  
+
+  <ItemGroup>
+    <PackageReference Include="System.Drawing.Common" Version="8.0.3" />
+  </ItemGroup>
+
 </Project>

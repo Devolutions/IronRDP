@@ -20,4 +20,42 @@ pub mod ffi {
             Ok(())
         }
     }
+
+    #[diplomat::opaque]
+    pub struct SecurityProtocol(pub ironrdp::pdu::nego::SecurityProtocol);
+
+    #[diplomat::opaque]
+    pub struct ConnectInitial(pub ironrdp::pdu::mcs::ConnectInitial);
+
+    #[diplomat::opaque]
+    pub struct InclusiveRectangle(pub ironrdp::pdu::geometry::InclusiveRectangle);
+
+    #[diplomat::opaque]
+    pub struct IronRdpPdu; // A struct representing the ironrdp_pdu crate
+
+    #[diplomat::opaque]
+    pub struct PduInfo(pub ironrdp::pdu::PduInfo);
+
+    impl PduInfo {
+        pub fn get_action(&self) -> Box<Action> {
+            Box::new(Action(self.0.action))
+        }
+
+        pub fn get_length(&self) -> usize {
+            self.0.length
+        }
+    }
+
+    #[diplomat::opaque]
+    pub struct Action(pub ironrdp::pdu::Action);
+
+    impl IronRdpPdu {
+        pub fn new() -> Box<IronRdpPdu> {
+            Box::new(IronRdpPdu)
+        }
+
+        pub fn find_size(&self, bytes: &[u8]) -> Result<Option<Box<PduInfo>>, Box<IronRdpError>> {
+            Ok(ironrdp::pdu::find_size(bytes)?.map(PduInfo).map(Box::new))
+        }
+    }
 }

@@ -47,14 +47,6 @@ public partial class ConnectionResult: IDisposable
         }
     }
 
-    public StaticChannelSet StaticChannels
-    {
-        get
-        {
-            return GetStaticChannels();
-        }
-    }
-
     public ushort UserChannelId
     {
         get
@@ -77,6 +69,7 @@ public partial class ConnectionResult: IDisposable
         _inner = handle;
     }
 
+    /// <exception cref="IronRdpException"></exception>
     public ushort GetIoChannelId()
     {
         unsafe
@@ -85,11 +78,17 @@ public partial class ConnectionResult: IDisposable
             {
                 throw new ObjectDisposedException("ConnectionResult");
             }
-            ushort retVal = Raw.ConnectionResult.GetIoChannelId(_inner);
+            Raw.ConnectorResultFfiResultU16BoxIronRdpError result = Raw.ConnectionResult.GetIoChannelId(_inner);
+            if (!result.isOk)
+            {
+                throw new IronRdpException(new IronRdpError(result.Err));
+            }
+            ushort retVal = result.Ok;
             return retVal;
         }
     }
 
+    /// <exception cref="IronRdpException"></exception>
     public ushort GetUserChannelId()
     {
         unsafe
@@ -98,27 +97,17 @@ public partial class ConnectionResult: IDisposable
             {
                 throw new ObjectDisposedException("ConnectionResult");
             }
-            ushort retVal = Raw.ConnectionResult.GetUserChannelId(_inner);
+            Raw.ConnectorResultFfiResultU16BoxIronRdpError result = Raw.ConnectionResult.GetUserChannelId(_inner);
+            if (!result.isOk)
+            {
+                throw new IronRdpException(new IronRdpError(result.Err));
+            }
+            ushort retVal = result.Ok;
             return retVal;
         }
     }
 
-    /// <returns>
-    /// A <c>StaticChannelSet</c> allocated on Rust side.
-    /// </returns>
-    public StaticChannelSet GetStaticChannels()
-    {
-        unsafe
-        {
-            if (_inner == null)
-            {
-                throw new ObjectDisposedException("ConnectionResult");
-            }
-            Raw.StaticChannelSet* retVal = Raw.ConnectionResult.GetStaticChannels(_inner);
-            return new StaticChannelSet(retVal);
-        }
-    }
-
+    /// <exception cref="IronRdpException"></exception>
     /// <returns>
     /// A <c>DesktopSize</c> allocated on Rust side.
     /// </returns>
@@ -130,11 +119,17 @@ public partial class ConnectionResult: IDisposable
             {
                 throw new ObjectDisposedException("ConnectionResult");
             }
-            Raw.DesktopSize* retVal = Raw.ConnectionResult.GetDesktopSize(_inner);
+            Raw.ConnectorResultFfiResultBoxDesktopSizeBoxIronRdpError result = Raw.ConnectionResult.GetDesktopSize(_inner);
+            if (!result.isOk)
+            {
+                throw new IronRdpException(new IronRdpError(result.Err));
+            }
+            Raw.DesktopSize* retVal = result.Ok;
             return new DesktopSize(retVal);
         }
     }
 
+    /// <exception cref="IronRdpException"></exception>
     public bool GetNoServerPointer()
     {
         unsafe
@@ -143,11 +138,17 @@ public partial class ConnectionResult: IDisposable
             {
                 throw new ObjectDisposedException("ConnectionResult");
             }
-            bool retVal = Raw.ConnectionResult.GetNoServerPointer(_inner);
+            Raw.ConnectorResultFfiResultBoolBoxIronRdpError result = Raw.ConnectionResult.GetNoServerPointer(_inner);
+            if (!result.isOk)
+            {
+                throw new IronRdpException(new IronRdpError(result.Err));
+            }
+            bool retVal = result.Ok;
             return retVal;
         }
     }
 
+    /// <exception cref="IronRdpException"></exception>
     public bool GetPointerSoftwareRendering()
     {
         unsafe
@@ -156,7 +157,12 @@ public partial class ConnectionResult: IDisposable
             {
                 throw new ObjectDisposedException("ConnectionResult");
             }
-            bool retVal = Raw.ConnectionResult.GetPointerSoftwareRendering(_inner);
+            Raw.ConnectorResultFfiResultBoolBoxIronRdpError result = Raw.ConnectionResult.GetPointerSoftwareRendering(_inner);
+            if (!result.isOk)
+            {
+                throw new IronRdpException(new IronRdpError(result.Err));
+            }
+            bool retVal = result.Ok;
             return retVal;
         }
     }

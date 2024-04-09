@@ -1,3 +1,4 @@
+using System.Linq.Expressions;
 using System.Runtime.InteropServices;
 using Devolutions.IronRdp;
 
@@ -15,6 +16,24 @@ public class Framed<S> where S : Stream
     public (S, List<byte>) GetInner()
     {
         return (this.stream, this.buffer);
+    }
+
+    public async Task<(Devolutions.IronRdp.Action,byte[])> ReadPdu() {
+
+        while(true) {
+            var pduInfo = IronRdpPdu.New().FindSize(this.buffer.ToArray());
+            if (null != pduInfo) {
+                var frame = await this.ReadExact(pduInfo.GetLength());
+                var action = pduInfo.GetAction();
+                return (action,frame);
+            }else {
+                var len = await this.Read();
+
+                if (len == 0) {
+                    throw new IronRdpLibException(IronRdpLibExceptionType.EndOfFile,"EOF on ReadPdu");
+                }
+            }
+        }
     }
 
     /// <summary>
