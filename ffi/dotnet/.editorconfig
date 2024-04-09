@@ -1,0 +1,12 @@
+root = true
+
+# Indentation and spacing
+indent_size = 4
+tab_width = 4
+
+# New line preferences
+end_of_line = lf
+insert_final_newline = false
+
+[src/Picky/Generated/*.cs]
+generated_code = true
