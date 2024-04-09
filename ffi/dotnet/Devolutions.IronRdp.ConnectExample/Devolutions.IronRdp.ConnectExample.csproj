@@ -9,10 +9,14 @@
 
   <ItemGroup>
     <ProjectReference Include="../Devolutions.IronRdp/Devolutions.IronRdp.csproj" />
-  </ItemGroup>
 
-  <ItemGroup>
-    <PackageReference Include="System.Drawing.Common" Version="8.0.3" />
+    <!--
+    System.Drawing.Common NuGet package is only supported on Windows operating systems.
+    One of the recommended alternatives include ImageSharp.
+
+    https://learn.microsoft.com/en-us/dotnet/api/system.drawing?view=net-8.0
+    -->
+    <PackageReference Include="SixLabors.ImageSharp" Version="3.1.3" />
   </ItemGroup>
 
 </Project>
