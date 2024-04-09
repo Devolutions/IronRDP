@@ -11,12 +11,12 @@ namespace Devolutions.IronRdp;
 
 #nullable enable
 
-public partial class Database: IDisposable
+public partial class InputDatabase: IDisposable
 {
-    private unsafe Raw.Database* _inner;
+    private unsafe Raw.InputDatabase* _inner;
 
     /// <summary>
-    /// Creates a managed <c>Database</c> from a raw handle.
+    /// Creates a managed <c>InputDatabase</c> from a raw handle.
     /// </summary>
     /// <remarks>
     /// Safety: you should not build two managed objects using the same raw handle (may causes use-after-free and double-free).
@@ -24,27 +24,27 @@ public partial class Database: IDisposable
     /// This constructor assumes the raw struct is allocated on Rust side.
     /// If implemented, the custom Drop implementation on Rust side WILL run on destruction.
     /// </remarks>
-    public unsafe Database(Raw.Database* handle)
+    public unsafe InputDatabase(Raw.InputDatabase* handle)
     {
         _inner = handle;
     }
 
     /// <returns>
-    /// A <c>Database</c> allocated on Rust side.
+    /// A <c>InputDatabase</c> allocated on Rust side.
     /// </returns>
-    public static Database New()
+    public static InputDatabase New()
     {
         unsafe
         {
-            Raw.Database* retVal = Raw.Database.New();
-            return new Database(retVal);
+            Raw.InputDatabase* retVal = Raw.InputDatabase.New();
+            return new InputDatabase(retVal);
         }
     }
 
     /// <summary>
     /// Returns the underlying raw handle.
     /// </summary>
-    public unsafe Raw.Database* AsFFI()
+    public unsafe Raw.InputDatabase* AsFFI()
     {
         return _inner;
     }
@@ -61,14 +61,14 @@ public partial class Database: IDisposable
                 return;
             }
 
-            Raw.Database.Destroy(_inner);
+            Raw.InputDatabase.Destroy(_inner);
             _inner = null;
 
             GC.SuppressFinalize(this);
         }
     }
 
-    ~Database()
+    ~InputDatabase()
     {
         Dispose();
     }

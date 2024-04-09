@@ -59,10 +59,10 @@ public partial struct ClientConnector
     public static unsafe extern ConnectorFfiResultOptBoxPduHintBoxIronRdpError NextPduHint(ClientConnector* self);
 
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ClientConnector_get_dyn_state", ExactSpelling = true)]
-    public static unsafe extern ConnectorFfiResultBoxDynClientConnectorStateBoxIronRdpError GetDynState(ClientConnector* self);
+    public static unsafe extern ConnectorFfiResultBoxDynStateBoxIronRdpError GetDynState(ClientConnector* self);
 
-    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ClientConnector_consume_self_and_get_state", ExactSpelling = true)]
-    public static unsafe extern ConnectorFfiResultBoxClientConnectorStateBoxIronRdpError ConsumeSelfAndGetState(ClientConnector* self);
+    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ClientConnector_consume_and_cast_to_client_connector_state", ExactSpelling = true)]
+    public static unsafe extern ConnectorFfiResultBoxClientConnectorStateBoxIronRdpError ConsumeAndCastToClientConnectorState(ClientConnector* self);
 
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ClientConnector_destroy", ExactSpelling = true)]
     public static unsafe extern void Destroy(ClientConnector* self);

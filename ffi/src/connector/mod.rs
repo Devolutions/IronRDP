@@ -132,9 +132,9 @@ pub mod ffi {
     }
 
     #[diplomat::opaque]
-    pub struct DynClientConnectorState<'a>(pub &'a dyn ironrdp::connector::State);
+    pub struct DynState<'a>(pub &'a dyn ironrdp::connector::State);
 
-    impl<'a> DynClientConnectorState<'a> {
+    impl<'a> DynState<'a> {
         pub fn get_name(&'a self, writeable: &'a mut DiplomatWriteable) -> Result<(), Box<IronRdpError>> {
             let name = self.0.name();
             write!(writeable, "{}", name)?;
@@ -154,14 +154,16 @@ pub mod ffi {
             Ok(connector.next_pdu_hint().map(PduHint).map(Box::new))
         }
 
-        pub fn get_dyn_state(&self) -> Result<Box<DynClientConnectorState<'_>>, Box<IronRdpError>> {
+        pub fn get_dyn_state(&self) -> Result<Box<DynState<'_>>, Box<IronRdpError>> {
             let Some(connector) = self.0.as_ref() else {
                 return Err(ValueConsumedError::for_item("connector").into());
             };
-            Ok(Box::new(DynClientConnectorState(connector.state())))
+            Ok(Box::new(DynState(connector.state())))
         }
 
-        pub fn consume_and_cast_to_client_connector_state(&mut self) -> Result<Box<ClientConnectorState>, Box<IronRdpError>> {
+        pub fn consume_and_cast_to_client_connector_state(
+            &mut self,
+        ) -> Result<Box<ClientConnectorState>, Box<IronRdpError>> {
             let Some(connector) = self.0.take() else {
                 return Err(ValueConsumedError::for_item("connector").into());
             };

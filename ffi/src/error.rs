@@ -90,6 +90,8 @@ pub mod ffi {
         IO,
         #[error("Access denied")]
         AccessDenied,
+        #[error("Incorrect rust enum type")]
+        IncorrectEnumType,
     }
 
     /// Stringified Picky error along with an error kind.
@@ -143,5 +145,45 @@ impl Display for ValueConsumedError {
 impl From<ValueConsumedError> for IronRdpErrorKind {
     fn from(_val: ValueConsumedError) -> Self {
         IronRdpErrorKind::Consumed
+    }
+}
+
+pub struct IncorrectEnumTypeError {
+    expected: &'static str,
+    enum_name: &'static str,
+}
+
+impl IncorrectEnumTypeError {
+    pub fn on_variant(variant: &'static str) -> IncorrectEnumTypeErrorBuilder {
+        IncorrectEnumTypeErrorBuilder { expected: variant }
+    }
+}
+
+pub struct IncorrectEnumTypeErrorBuilder {
+    expected: &'static str,
+}
+
+impl IncorrectEnumTypeErrorBuilder {
+    pub fn of_enum(self, enum_name: &'static str) -> IncorrectEnumTypeError {
+        IncorrectEnumTypeError {
+            expected: self.expected,
+            enum_name,
+        }
+    }
+}
+
+impl Display for IncorrectEnumTypeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "expected enum variable {}, of enum {}",
+            self.expected, self.enum_name
+        )
+    }
+}
+
+impl From<IncorrectEnumTypeError> for IronRdpErrorKind {
+    fn from(_val: IncorrectEnumTypeError) -> Self {
+        IronRdpErrorKind::IncorrectEnumType
     }
 }

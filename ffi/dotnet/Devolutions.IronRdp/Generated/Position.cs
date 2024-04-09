@@ -11,15 +11,25 @@ namespace Devolutions.IronRdp;
 
 #nullable enable
 
-public partial class Position: IDisposable
+public partial class Position
 {
-    private unsafe Raw.Position* _inner;
+    private Raw.Position _inner;
 
     public ushort X
     {
         get
         {
-            return GetX();
+            unsafe
+            {
+                return _inner.x;
+            }
+        }
+        set
+        {
+            unsafe
+            {
+                _inner.x = value;
+            }
         }
     }
 
@@ -27,79 +37,33 @@ public partial class Position: IDisposable
     {
         get
         {
-            return GetY();
+            unsafe
+            {
+                return _inner.y;
+            }
+        }
+        set
+        {
+            unsafe
+            {
+                _inner.y = value;
+            }
         }
     }
 
     /// <summary>
-    /// Creates a managed <c>Position</c> from a raw handle.
+    /// Creates a managed <c>Position</c> from the raw representation.
     /// </summary>
-    /// <remarks>
-    /// Safety: you should not build two managed objects using the same raw handle (may causes use-after-free and double-free).
-    /// <br/>
-    /// This constructor assumes the raw struct is allocated on Rust side.
-    /// If implemented, the custom Drop implementation on Rust side WILL run on destruction.
-    /// </remarks>
-    public unsafe Position(Raw.Position* handle)
+    public unsafe Position(Raw.Position data)
     {
-        _inner = handle;
-    }
-
-    public ushort GetX()
-    {
-        unsafe
-        {
-            if (_inner == null)
-            {
-                throw new ObjectDisposedException("Position");
-            }
-            ushort retVal = Raw.Position.GetX(_inner);
-            return retVal;
-        }
-    }
-
-    public ushort GetY()
-    {
-        unsafe
-        {
-            if (_inner == null)
-            {
-                throw new ObjectDisposedException("Position");
-            }
-            ushort retVal = Raw.Position.GetY(_inner);
-            return retVal;
-        }
+        _inner = data;
     }
 
     /// <summary>
-    /// Returns the underlying raw handle.
+    /// Returns a copy of the underlying raw representation.
     /// </summary>
-    public unsafe Raw.Position* AsFFI()
+    public Raw.Position AsFFI()
     {
         return _inner;
-    }
-
-    /// <summary>
-    /// Destroys the underlying object immediately.
-    /// </summary>
-    public void Dispose()
-    {
-        unsafe
-        {
-            if (_inner == null)
-            {
-                return;
-            }
-
-            Raw.Position.Destroy(_inner);
-            _inner = null;
-
-            GC.SuppressFinalize(this);
-        }
-    }
-
-    ~Position()
-    {
-        Dispose();
     }
 }

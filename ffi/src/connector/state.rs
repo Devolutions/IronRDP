@@ -1,7 +1,7 @@
 #[diplomat::bridge]
 pub mod ffi {
     use crate::{
-        error::{ffi::IronRdpError, ValueConsumedError},
+        error::{ffi::IronRdpError, IncorrectEnumTypeError, ValueConsumedError},
         pdu::ffi::SecurityProtocol,
     };
 
@@ -89,7 +89,9 @@ pub mod ffi {
                 ironrdp::connector::ClientConnectorState::ConnectionInitiationWaitConfirm { requested_protocol } => {
                     Ok(SecurityProtocol(requested_protocol))
                 }
-                _ => Err("not in ConnectionInitiationWaitConfirm state".into()),
+                _ => Err(IncorrectEnumTypeError::on_variant("ConnectionInitiationWaitConfirm")
+                    .of_enum("ClientConnectorState")
+                    .into()),
             }
             .map(Box::new)
         }
@@ -105,7 +107,9 @@ pub mod ffi {
                 ironrdp::connector::ClientConnectorState::EnhancedSecurityUpgrade { selected_protocol } => {
                     Ok(SecurityProtocol(selected_protocol))
                 }
-                _ => Err("Not in EnhancedSecurityUpgrade state".into()),
+                _ => Err(IncorrectEnumTypeError::on_variant("EnhancedSecurityUpgrade")
+                    .of_enum("ClientConnectorState")
+                    .into()),
             }
             .map(Box::new)
         }
@@ -119,7 +123,9 @@ pub mod ffi {
                 ironrdp::connector::ClientConnectorState::Credssp { selected_protocol } => {
                     Ok(SecurityProtocol(selected_protocol))
                 }
-                _ => Err("Not in Credssp state".into()),
+                _ => Err(IncorrectEnumTypeError::on_variant("Credssp")
+                    .of_enum("ClientConnectorState")
+                    .into()),
             }
             .map(Box::new)
         }
@@ -135,7 +141,9 @@ pub mod ffi {
                 ironrdp::connector::ClientConnectorState::BasicSettingsExchangeSendInitial { selected_protocol } => {
                     Ok(SecurityProtocol(selected_protocol))
                 }
-                _ => Err("Not in BasicSettingsExchangeSendInitial state".into()),
+                _ => Err(IncorrectEnumTypeError::on_variant("BasicSettingsExchangeSendInitial")
+                    .of_enum("ClientConnectorState")
+                    .into()),
             }
             .map(Box::new)
         }
@@ -151,7 +159,9 @@ pub mod ffi {
                 ironrdp::connector::ClientConnectorState::BasicSettingsExchangeWaitResponse { connect_initial } => {
                     Ok(crate::pdu::ffi::ConnectInitial(connect_initial))
                 }
-                _ => Err("Not in BasicSettingsExchangeWaitResponse state".into()),
+                _ => Err(IncorrectEnumTypeError::on_variant("BasicSettingsExchangeWaitResponse")
+                    .of_enum("ClientConnectorState")
+                    .into()),
             }
             .map(Box::new)
         }
@@ -169,7 +179,9 @@ pub mod ffi {
                 ironrdp::connector::ClientConnectorState::Connected { result } => {
                     Ok(Box::new(crate::connector::result::ffi::ConnectionResult(Some(result))))
                 }
-                _ => Err("Not in Connected state".into()),
+                _ => Err(IncorrectEnumTypeError::on_variant("Connected")
+                    .of_enum("ClientConnectorState")
+                    .into()),
             }
         }
     }

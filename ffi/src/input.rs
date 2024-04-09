@@ -1,11 +1,11 @@
 #[diplomat::bridge]
 pub mod ffi {
     #[diplomat::opaque]
-    pub struct Database(pub ironrdp::input::Database);
+    pub struct InputDatabase(pub ironrdp::input::Database);
 
-    impl Database {
-        pub fn new() -> Box<Database> {
-            Box::new(Database(ironrdp::input::Database::new()))
+    impl InputDatabase {
+        pub fn new() -> Box<InputDatabase> {
+            Box::new(InputDatabase(ironrdp::input::Database::new()))
         }
     }
 }

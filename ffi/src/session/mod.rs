@@ -1,4 +1,3 @@
-#![allow(clippy::should_implement_trait)] // Implementing extra traits is not useful for FFI
 pub mod image;
 
 #[diplomat::bridge]
@@ -6,7 +5,7 @@ pub mod ffi {
 
     use crate::{
         connector::{ffi::ConnectionActivationSequence, result::ffi::ConnectionResult},
-        error::{ffi::IronRdpError, ValueConsumedError},
+        error::{ffi::IronRdpError, IncorrectEnumTypeError, ValueConsumedError},
         graphics::ffi::DecodedPointer,
         pdu::ffi::{Action, InclusiveRectangle},
         utils::ffi::{BytesSlice, Position},
@@ -83,54 +82,65 @@ pub mod ffi {
             }
         }
 
-        pub fn get_response_frame(&self) -> Option<Box<BytesSlice<'_>>> {
+        pub fn get_response_frame(&self) -> Result<Box<BytesSlice<'_>>, Box<IronRdpError>> {
             match &self.0 {
-                ironrdp::session::ActiveStageOutput::ResponseFrame(frame) => Some(Box::new(BytesSlice(frame))),
-                _ => None,
+                ironrdp::session::ActiveStageOutput::ResponseFrame(frame) => Ok(Box::new(BytesSlice(frame))),
+                _ => Err(IncorrectEnumTypeError::on_variant("ResponseFrame")
+                    .of_enum("ActiveStageOutput")
+                    .into()),
             }
         }
 
-        pub fn get_graphics_update(&self) -> Option<Box<InclusiveRectangle>> {
+        pub fn get_graphics_update(&self) -> Result<Box<InclusiveRectangle>, Box<IronRdpError>> {
             match &self.0 {
                 ironrdp::session::ActiveStageOutput::GraphicsUpdate(rect) => {
-                    Some(Box::new(InclusiveRectangle(rect.clone())))
+                    Ok(Box::new(InclusiveRectangle(rect.clone())))
                 }
-                _ => None,
+                _ => Err(IncorrectEnumTypeError::on_variant("GraphicsUpdate")
+                    .of_enum("ActiveStageOutput")
+                    .into()),
             }
         }
 
-        pub fn get_pointer_position(&self) -> Option<Box<Position>> {
+        pub fn get_pointer_position(&self) -> Result<Position, Box<IronRdpError>> {
             match &self.0 {
-                ironrdp::session::ActiveStageOutput::PointerPosition { x, y } => Some(Position { x: *x, y: *y }),
-                _ => None,
+                ironrdp::session::ActiveStageOutput::PointerPosition { x, y } => Ok(Position { x: *x, y: *y }),
+                _ => Err(IncorrectEnumTypeError::on_variant("PointerPosition")
+                    .of_enum("ActiveStageOutput")
+                    .into()),
             }
-            .map(Box::new)
         }
 
-        pub fn get_pointer_bitmap(&self) -> Option<Box<DecodedPointer>> {
+        pub fn get_pointer_bitmap(&self) -> Result<Box<DecodedPointer>, Box<IronRdpError>> {
             match &self.0 {
                 ironrdp::session::ActiveStageOutput::PointerBitmap(decoded_pointer) => {
-                    Some(DecodedPointer(std::rc::Rc::clone(decoded_pointer)))
+                    Ok(DecodedPointer(std::rc::Rc::clone(decoded_pointer)))
                 }
-                _ => None,
+                _ => Err(IncorrectEnumTypeError::on_variant("PointerBitmap")
+                    .of_enum("ActiveStageOutput")
+                    .into()),
             }
             .map(Box::new)
         }
 
-        pub fn get_terminate(&self) -> Option<Box<GracefulDisconnectReason>> {
+        pub fn get_terminate(&self) -> Result<Box<GracefulDisconnectReason>, Box<IronRdpError>> {
             match &self.0 {
-                ironrdp::session::ActiveStageOutput::Terminate(reason) => Some(GracefulDisconnectReason(*reason)),
-                _ => None,
+                ironrdp::session::ActiveStageOutput::Terminate(reason) => Ok(GracefulDisconnectReason(*reason)),
+                _ => Err(IncorrectEnumTypeError::on_variant("Terminate")
+                    .of_enum("ActiveStageOutput")
+                    .into()),
             }
             .map(Box::new)
         }
 
-        pub fn get_deactivate_all(&self) -> Option<Box<ConnectionActivationSequence>> {
+        pub fn get_deactivate_all(&self) -> Result<Box<ConnectionActivationSequence>, Box<IronRdpError>> {
             match &self.0 {
                 ironrdp::session::ActiveStageOutput::DeactivateAll(cas) => {
-                    Some(ConnectionActivationSequence(cas.clone()))
+                    Ok(ConnectionActivationSequence(cas.clone()))
                 }
-                _ => None,
+                _ => Err(IncorrectEnumTypeError::on_variant("DeactivateAll")
+                    .of_enum("ActiveStageOutput")
+                    .into()),
             }
             .map(Box::new)
         }

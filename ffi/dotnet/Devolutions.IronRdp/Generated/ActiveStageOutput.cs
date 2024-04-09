@@ -15,7 +15,7 @@ public partial class ActiveStageOutput: IDisposable
 {
     private unsafe Raw.ActiveStageOutput* _inner;
 
-    public ConnectionActivationSequence? DeactivateAll
+    public ConnectionActivationSequence DeactivateAll
     {
         get
         {
@@ -23,7 +23,7 @@ public partial class ActiveStageOutput: IDisposable
         }
     }
 
-    public InclusiveRectangle? GraphicsUpdate
+    public InclusiveRectangle GraphicsUpdate
     {
         get
         {
@@ -31,15 +31,15 @@ public partial class ActiveStageOutput: IDisposable
         }
     }
 
-    public DecodedPointer? PointerButmap
+    public DecodedPointer PointerBitmap
     {
         get
         {
-            return GetPointerButmap();
+            return GetPointerBitmap();
         }
     }
 
-    public Position? PointerPosition
+    public Position PointerPosition
     {
         get
         {
@@ -47,7 +47,7 @@ public partial class ActiveStageOutput: IDisposable
         }
     }
 
-    public BytesSlice? ResponseFrame
+    public BytesSlice ResponseFrame
     {
         get
         {
@@ -55,7 +55,7 @@ public partial class ActiveStageOutput: IDisposable
         }
     }
 
-    public GracefulDisconnectReason? Terminate
+    public GracefulDisconnectReason Terminate
     {
         get
         {
@@ -101,10 +101,11 @@ public partial class ActiveStageOutput: IDisposable
         }
     }
 
+    /// <exception cref="IronRdpException"></exception>
     /// <returns>
     /// A <c>BytesSlice</c> allocated on Rust side.
     /// </returns>
-    public BytesSlice? GetResponseFrame()
+    public BytesSlice GetResponseFrame()
     {
         unsafe
         {
@@ -112,19 +113,21 @@ public partial class ActiveStageOutput: IDisposable
             {
                 throw new ObjectDisposedException("ActiveStageOutput");
             }
-            Raw.BytesSlice* retVal = Raw.ActiveStageOutput.GetResponseFrame(_inner);
-            if (retVal == null)
+            Raw.SessionFfiResultBoxBytesSliceBoxIronRdpError result = Raw.ActiveStageOutput.GetResponseFrame(_inner);
+            if (!result.isOk)
             {
-                return null;
+                throw new IronRdpException(new IronRdpError(result.Err));
             }
+            Raw.BytesSlice* retVal = result.Ok;
             return new BytesSlice(retVal);
         }
     }
 
+    /// <exception cref="IronRdpException"></exception>
     /// <returns>
     /// A <c>InclusiveRectangle</c> allocated on Rust side.
     /// </returns>
-    public InclusiveRectangle? GetGraphicsUpdate()
+    public InclusiveRectangle GetGraphicsUpdate()
     {
         unsafe
         {
@@ -132,19 +135,21 @@ public partial class ActiveStageOutput: IDisposable
             {
                 throw new ObjectDisposedException("ActiveStageOutput");
             }
-            Raw.InclusiveRectangle* retVal = Raw.ActiveStageOutput.GetGraphicsUpdate(_inner);
-            if (retVal == null)
+            Raw.SessionFfiResultBoxInclusiveRectangleBoxIronRdpError result = Raw.ActiveStageOutput.GetGraphicsUpdate(_inner);
+            if (!result.isOk)
             {
-                return null;
+                throw new IronRdpException(new IronRdpError(result.Err));
             }
+            Raw.InclusiveRectangle* retVal = result.Ok;
             return new InclusiveRectangle(retVal);
         }
     }
 
+    /// <exception cref="IronRdpException"></exception>
     /// <returns>
-    /// A <c>Position</c> allocated on Rust side.
+    /// A <c>Position</c> allocated on C# side.
     /// </returns>
-    public Position? GetPointerPosition()
+    public Position GetPointerPosition()
     {
         unsafe
         {
@@ -152,19 +157,21 @@ public partial class ActiveStageOutput: IDisposable
             {
                 throw new ObjectDisposedException("ActiveStageOutput");
             }
-            Raw.Position* retVal = Raw.ActiveStageOutput.GetPointerPosition(_inner);
-            if (retVal == null)
+            Raw.SessionFfiResultPositionBoxIronRdpError result = Raw.ActiveStageOutput.GetPointerPosition(_inner);
+            if (!result.isOk)
             {
-                return null;
+                throw new IronRdpException(new IronRdpError(result.Err));
             }
+            Raw.Position retVal = result.Ok;
             return new Position(retVal);
         }
     }
 
+    /// <exception cref="IronRdpException"></exception>
     /// <returns>
     /// A <c>DecodedPointer</c> allocated on Rust side.
     /// </returns>
-    public DecodedPointer? GetPointerButmap()
+    public DecodedPointer GetPointerBitmap()
     {
         unsafe
         {
@@ -172,19 +179,21 @@ public partial class ActiveStageOutput: IDisposable
             {
                 throw new ObjectDisposedException("ActiveStageOutput");
             }
-            Raw.DecodedPointer* retVal = Raw.ActiveStageOutput.GetPointerButmap(_inner);
-            if (retVal == null)
+            Raw.SessionFfiResultBoxDecodedPointerBoxIronRdpError result = Raw.ActiveStageOutput.GetPointerBitmap(_inner);
+            if (!result.isOk)
             {
-                return null;
+                throw new IronRdpException(new IronRdpError(result.Err));
             }
+            Raw.DecodedPointer* retVal = result.Ok;
             return new DecodedPointer(retVal);
         }
     }
 
+    /// <exception cref="IronRdpException"></exception>
     /// <returns>
     /// A <c>GracefulDisconnectReason</c> allocated on Rust side.
     /// </returns>
-    public GracefulDisconnectReason? GetTerminate()
+    public GracefulDisconnectReason GetTerminate()
     {
         unsafe
         {
@@ -192,19 +201,21 @@ public partial class ActiveStageOutput: IDisposable
             {
                 throw new ObjectDisposedException("ActiveStageOutput");
             }
-            Raw.GracefulDisconnectReason* retVal = Raw.ActiveStageOutput.GetTerminate(_inner);
-            if (retVal == null)
+            Raw.SessionFfiResultBoxGracefulDisconnectReasonBoxIronRdpError result = Raw.ActiveStageOutput.GetTerminate(_inner);
+            if (!result.isOk)
             {
-                return null;
+                throw new IronRdpException(new IronRdpError(result.Err));
             }
+            Raw.GracefulDisconnectReason* retVal = result.Ok;
             return new GracefulDisconnectReason(retVal);
         }
     }
 
+    /// <exception cref="IronRdpException"></exception>
     /// <returns>
     /// A <c>ConnectionActivationSequence</c> allocated on Rust side.
     /// </returns>
-    public ConnectionActivationSequence? GetDeactivateAll()
+    public ConnectionActivationSequence GetDeactivateAll()
     {
         unsafe
         {
@@ -212,11 +223,12 @@ public partial class ActiveStageOutput: IDisposable
             {
                 throw new ObjectDisposedException("ActiveStageOutput");
             }
-            Raw.ConnectionActivationSequence* retVal = Raw.ActiveStageOutput.GetDeactivateAll(_inner);
-            if (retVal == null)
+            Raw.SessionFfiResultBoxConnectionActivationSequenceBoxIronRdpError result = Raw.ActiveStageOutput.GetDeactivateAll(_inner);
+            if (!result.isOk)
             {
-                return null;
+                throw new IronRdpException(new IronRdpError(result.Err));
             }
+            Raw.ConnectionActivationSequence* retVal = result.Ok;
             return new ConnectionActivationSequence(retVal);
         }
     }

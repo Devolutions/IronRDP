@@ -20,22 +20,22 @@ public partial struct ActiveStageOutput
     public static unsafe extern ActiveStageOutputType GetType(ActiveStageOutput* self);
 
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ActiveStageOutput_get_response_frame", ExactSpelling = true)]
-    public static unsafe extern BytesSlice* GetResponseFrame(ActiveStageOutput* self);
+    public static unsafe extern SessionFfiResultBoxBytesSliceBoxIronRdpError GetResponseFrame(ActiveStageOutput* self);
 
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ActiveStageOutput_get_graphics_update", ExactSpelling = true)]
-    public static unsafe extern InclusiveRectangle* GetGraphicsUpdate(ActiveStageOutput* self);
+    public static unsafe extern SessionFfiResultBoxInclusiveRectangleBoxIronRdpError GetGraphicsUpdate(ActiveStageOutput* self);
 
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ActiveStageOutput_get_pointer_position", ExactSpelling = true)]
-    public static unsafe extern Position* GetPointerPosition(ActiveStageOutput* self);
+    public static unsafe extern SessionFfiResultPositionBoxIronRdpError GetPointerPosition(ActiveStageOutput* self);
 
-    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ActiveStageOutput_get_pointer_butmap", ExactSpelling = true)]
-    public static unsafe extern DecodedPointer* GetPointerButmap(ActiveStageOutput* self);
+    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ActiveStageOutput_get_pointer_bitmap", ExactSpelling = true)]
+    public static unsafe extern SessionFfiResultBoxDecodedPointerBoxIronRdpError GetPointerBitmap(ActiveStageOutput* self);
 
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ActiveStageOutput_get_terminate", ExactSpelling = true)]
-    public static unsafe extern GracefulDisconnectReason* GetTerminate(ActiveStageOutput* self);
+    public static unsafe extern SessionFfiResultBoxGracefulDisconnectReasonBoxIronRdpError GetTerminate(ActiveStageOutput* self);
 
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ActiveStageOutput_get_deactivate_all", ExactSpelling = true)]
-    public static unsafe extern ConnectionActivationSequence* GetDeactivateAll(ActiveStageOutput* self);
+    public static unsafe extern SessionFfiResultBoxConnectionActivationSequenceBoxIronRdpError GetDeactivateAll(ActiveStageOutput* self);
 
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ActiveStageOutput_destroy", ExactSpelling = true)]
     public static unsafe extern void Destroy(ActiveStageOutput* self);

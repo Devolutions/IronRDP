@@ -71,7 +71,7 @@ public class Connection
             await SingleConnectStep(connector, writeBuf2, framedSsl);
         }
 
-        ClientConnectorState state = connector.ConsumeSelfAndGetState();
+        ClientConnectorState state = connector.ConsumeAndCastToClientConnectorState();
 
         if (state.GetType() == ClientConnectorStateType.Connected)
         {
@@ -125,7 +125,7 @@ public class Connection
     private static async Task<ClientState> ResolveGenerator(CredsspProcessGenerator generator, TcpClient tcpClient)
     {
         var state = generator.Start();
-        NetworkStream stream = null;
+        NetworkStream? stream = null;
         while (true)
         {
             if (state.IsSuspended())

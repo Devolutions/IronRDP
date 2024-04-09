@@ -16,12 +16,7 @@ public partial struct Position
 {
     private const string NativeLib = "DevolutionsIronRdp";
 
-    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "Position_get_x", ExactSpelling = true)]
-    public static unsafe extern ushort GetX(Position* self);
+    public ushort x;
 
-    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "Position_get_y", ExactSpelling = true)]
-    public static unsafe extern ushort GetY(Position* self);
-
-    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "Position_destroy", ExactSpelling = true)]
-    public static unsafe extern void Destroy(Position* self);
+    public ushort y;
 }
