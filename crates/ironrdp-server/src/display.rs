@@ -81,7 +81,7 @@ impl std::fmt::Debug for BitmapUpdate {
 ///
 /// See [`RdpServerDisplay`] example.
 #[async_trait::async_trait]
-pub trait RdpServerDisplayUpdates {
+pub trait RdpServerDisplayUpdates: Send {
     /// # Cancel safety
     ///
     /// This method MUST be cancellation safe because it is used in a
@@ -126,7 +126,7 @@ pub trait RdpServerDisplayUpdates {
 /// }
 /// ```
 #[async_trait::async_trait]
-pub trait RdpServerDisplay {
+pub trait RdpServerDisplay: Send {
     /// This method should return the current size of the display.
     /// Currently, there is no way for the client to negotiate resolution,
     /// so the size returned by this method will be enforced.

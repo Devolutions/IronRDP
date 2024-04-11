@@ -96,9 +96,9 @@ impl<S> StreamWrapper for LocalTokioStream<S> {
 
 impl<S> FramedRead for LocalTokioStream<S>
 where
-    S: Unpin + AsyncRead,
+    S: Unpin + AsyncRead + Send,
 {
-    type ReadFut<'read> = Pin<Box<dyn std::future::Future<Output = io::Result<usize>> + 'read>>
+    type ReadFut<'read> = Pin<Box<dyn std::future::Future<Output = io::Result<usize>> + Send + 'read>>
     where
         Self: 'read;
 
@@ -111,9 +111,9 @@ where
 
 impl<S> FramedWrite for LocalTokioStream<S>
 where
-    S: Unpin + AsyncWrite,
+    S: Unpin + AsyncWrite + Send,
 {
-    type WriteAllFut<'write> = Pin<Box<dyn std::future::Future<Output = io::Result<()>> + 'write>>
+    type WriteAllFut<'write> = Pin<Box<dyn std::future::Future<Output = io::Result<()>> + Send + 'write>>
     where
         Self: 'write;
 

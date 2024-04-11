@@ -2,8 +2,8 @@ use ironrdp_connector::credssp::{CredsspProcessGenerator, CredsspSequence, Kerbe
 use ironrdp_connector::sspi::credssp::ClientState;
 use ironrdp_connector::sspi::generator::GeneratorState;
 use ironrdp_connector::{
-    custom_err, ClientConnector, ClientConnectorState, ConnectionResult, ConnectorError, ConnectorResult, ServerName,
-    State as _,
+    custom_err, sspi, ClientConnector, ClientConnectorState, ConnectionResult, ConnectorError, ConnectorResult,
+    ServerName, State as _,
 };
 use ironrdp_pdu::write_buf::WriteBuf;
 
@@ -50,7 +50,7 @@ pub async fn connect_finalize<S>(
     framed: &mut Framed<S>,
     mut connector: ClientConnector,
     server_name: ServerName,
-    server_public_key: Vec<u8>,
+    server_public_key: Option<Vec<u8>>,
     network_client: Option<&mut dyn AsyncNetworkClient>,
     kerberos_config: Option<KerberosConfig>,
 ) -> ConnectorResult<ConnectionResult>
@@ -60,16 +60,26 @@ where
     let mut buf = WriteBuf::new();
 
     if connector.should_perform_credssp() {
-        perform_credssp_step(
-            framed,
-            &mut connector,
-            &mut buf,
-            server_name,
-            server_public_key,
-            network_client,
-            kerberos_config,
-        )
-        .await?;
+        if let Some(server_public_key) = server_public_key {
+            perform_credssp_step(
+                framed,
+                &mut connector,
+                &mut buf,
+                server_name,
+                server_public_key,
+                network_client,
+                kerberos_config,
+            )
+            .await?;
+        } else {
+            return Err(ConnectorError::new(
+                "CredSSP",
+                ironrdp_connector::ConnectorErrorKind::Credssp(sspi::Error::new(
+                    sspi::ErrorKind::InternalError,
+                    "Server public key is None".to_owned(),
+                )),
+            ));
+        }
     }
 
     let result = loop {

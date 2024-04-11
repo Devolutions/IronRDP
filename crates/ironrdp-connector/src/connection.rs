@@ -245,10 +245,6 @@ impl Sequence for ClientConnector {
                     security_protocol.insert(nego::SecurityProtocol::HYBRID | nego::SecurityProtocol::HYBRID_EX);
                 }
 
-                if security_protocol.is_standard_rdp_security() {
-                    return Err(reason_err!("Initiation", "standard RDP security is not supported",));
-                }
-
                 let connection_request = nego::ConnectionRequest {
                     nego_data: Some(nego::NegoRequestData::cookie(
                         self.config.credentials.username().to_owned(),
@@ -283,7 +279,7 @@ impl Sequence for ClientConnector {
 
                 info!(?selected_protocol, ?flags, "Server confirmed connection");
 
-                if !selected_protocol.intersects(requested_protocol) {
+                if !selected_protocol.is_standard_rdp_security() && !selected_protocol.intersects(requested_protocol) {
                     return Err(reason_err!(
                         "Initiation",
                         "client advertised {requested_protocol}, but server selected {selected_protocol}",

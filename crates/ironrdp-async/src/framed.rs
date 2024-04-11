@@ -8,7 +8,7 @@ use ironrdp_pdu::{write_buf::WriteBuf, PduHint};
 // https://github.com/rust-lang/rust/issues/91611
 
 pub trait FramedRead {
-    type ReadFut<'read>: std::future::Future<Output = io::Result<usize>> + 'read
+    type ReadFut<'read>: std::future::Future<Output = io::Result<usize>> + Send + 'read
     where
         Self: 'read;
 
@@ -23,7 +23,7 @@ pub trait FramedRead {
 }
 
 pub trait FramedWrite {
-    type WriteAllFut<'write>: std::future::Future<Output = io::Result<()>> + 'write
+    type WriteAllFut<'write>: std::future::Future<Output = io::Result<()>> + Send + 'write
     where
         Self: 'write;
 

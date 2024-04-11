@@ -14,6 +14,7 @@ use ironrdp_pdu::rdp::capability_sets::{BitmapCodecs, CapabilitySet, CmdFlags, G
 use ironrdp_pdu::{self, decode, mcs, nego, rdp, Action, PduResult};
 use ironrdp_svc::{impl_as_any, server_encode_svc_messages, StaticChannelId, StaticChannelSet, SvcProcessor};
 use ironrdp_tokio::{Framed, FramedRead, FramedWrite, TokioFramed};
+use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
 use tokio_rustls::TlsAcceptor;
@@ -198,7 +199,10 @@ impl RdpServer {
         &self.ev_sender
     }
 
-    pub async fn run_connection(&mut self, stream: TcpStream) -> Result<()> {
+    pub async fn run_connection<S>(&mut self, stream: S) -> Result<()>
+    where
+        S: Send + Sync + Unpin + AsyncRead + AsyncWrite,
+    {
         let framed = TokioFramed::new(stream);
 
         let size = self.display.size().await;
