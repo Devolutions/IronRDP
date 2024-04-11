@@ -7,21 +7,24 @@ use std::fs::File;
 use std::io::BufReader;
 use std::net::{IpAddr, SocketAddr};
 use std::num::NonZeroU16;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use anyhow::Context as _;
 use ironrdp_cliprdr::backend::{CliprdrBackend, CliprdrBackendFactory};
 use ironrdp_cliprdr_native::StubCliprdrBackend;
 use ironrdp_connector::DesktopSize;
+use ironrdp_rdpsnd::pdu::ClientAudioFormatPdu;
+use ironrdp_rdpsnd::server::{RdpsndServerHandler, RdpsndServerMessage};
 use ironrdp_server::{
     BitmapUpdate, CliprdrServerFactory, DisplayUpdate, KeyboardEvent, MouseEvent, PixelFormat, PixelOrder, RdpServer,
     RdpServerDisplay, RdpServerDisplayUpdates, RdpServerInputHandler, ServerEvent, ServerEventSender,
+    SoundServerFactory,
 };
 use rand::prelude::*;
 use rustls::ServerConfig;
 use rustls_pemfile::{certs, pkcs8_private_keys};
-use tokio::sync::mpsc::UnboundedSender;
-use tokio::time::{sleep, Duration};
+use tokio::sync::mpsc::{self, UnboundedSender};
+use tokio::time::{self, sleep, Duration};
 use tokio_rustls::TlsAcceptor;
 
 const HELP: &str = "\
@@ -205,6 +208,101 @@ impl ServerEventSender for StubCliprdrServerFactory {
 
 impl CliprdrServerFactory for StubCliprdrServerFactory {}
 
+#[derive(Debug)]
+pub struct Inner {
+    ev_sender: Option<mpsc::UnboundedSender<ServerEvent>>,
+}
+
+struct StubSoundServerFactory {
+    inner: Arc<Mutex<Inner>>,
+}
+
+impl ServerEventSender for StubSoundServerFactory {
+    fn set_sender(&mut self, sender: UnboundedSender<ServerEvent>) {
+        let mut inner = self.inner.lock().unwrap();
+
+        inner.ev_sender = Some(sender);
+    }
+}
+
+impl SoundServerFactory for StubSoundServerFactory {
+    fn build_backend(&self) -> Box<dyn RdpsndServerHandler> {
+        Box::new(SndHandler {
+            inner: self.inner.clone(),
+            task: None,
+        })
+    }
+}
+
+#[derive(Debug)]
+struct SndHandler {
+    inner: Arc<Mutex<Inner>>,
+    task: Option<tokio::task::JoinHandle<()>>,
+}
+
+impl RdpsndServerHandler for SndHandler {
+    fn get_formats(&self) -> &[ironrdp_rdpsnd::pdu::AudioFormat] {
+        use ironrdp_rdpsnd::pdu::{AudioFormat, WaveFormat};
+
+        &[AudioFormat {
+            format: WaveFormat::PCM,
+            n_channels: 2,
+            n_samples_per_sec: 44100,
+            n_avg_bytes_per_sec: 176400,
+            n_block_align: 4,
+            bits_per_sample: 16,
+            data: None,
+        }]
+    }
+
+    fn start(&mut self, client_format: &ClientAudioFormatPdu) -> Option<u16> {
+        async fn generate_sine_wave(sample_rate: u32, frequency: f32, duration_ms: u64) -> Vec<u8> {
+            use std::f32::consts::PI;
+
+            let total_samples = (sample_rate as u64 * duration_ms) / 1000;
+            let samples_per_wave_length = sample_rate as f32 / frequency;
+            let amplitude = 32767.0; // Max amplitude for 16-bit audio
+
+            let mut samples = Vec::with_capacity(total_samples as usize * 2 * 2);
+
+            for n in 0..total_samples {
+                let t = (n as f32 % samples_per_wave_length) / samples_per_wave_length;
+                let sample = (t * 2.0 * PI).sin();
+                let sample = (sample * amplitude) as i16;
+                samples.extend_from_slice(&sample.to_le_bytes());
+                samples.extend_from_slice(&sample.to_le_bytes());
+            }
+
+            samples
+        }
+
+        let inner = self.inner.clone();
+        self.task = Some(tokio::spawn(async move {
+            let mut interval = time::interval(Duration::from_millis(100));
+            let mut ts = 0;
+            loop {
+                interval.tick().await;
+                let data = generate_sine_wave(44100, 440.0, 100).await;
+                let inner = inner.lock().unwrap();
+                if let Some(sender) = inner.ev_sender.as_ref() {
+                    let _ = sender.send(ServerEvent::Rdpsnd(RdpsndServerMessage::Wave(data, ts)));
+                }
+                ts += 100;
+            }
+        }));
+
+        debug!(?client_format);
+        Some(0)
+    }
+
+    fn stop(&mut self) {
+        let Some(task) = self.task.take() else {
+            return;
+        };
+        task.abort();
+    }
+}
+
 async fn run(host: String, port: u16, cert: Option<String>, key: Option<String>) -> anyhow::Result<()> {
     info!(host, port, cert, key, "run");
     let handler = Handler::new();
@@ -224,11 +322,15 @@ async fn run(host: String, port: u16, cert: Option<String>, key: Option<String>)
     };
 
     let cliprdr = Box::new(StubCliprdrServerFactory {});
+    let sound = Box::new(StubSoundServerFactory {
+        inner: Arc::new(Mutex::new(Inner { ev_sender: None })),
+    });
 
     let mut server = server
         .with_input_handler(handler.clone())
         .with_display_handler(handler.clone())
         .with_cliprdr_factory(Some(cliprdr))
+        .with_sound_factory(Some(sound))
         .build();
 
     server.run().await
