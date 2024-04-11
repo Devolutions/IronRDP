@@ -3,7 +3,7 @@ use std::net::SocketAddr;
 use anyhow::Result;
 use tokio_rustls::TlsAcceptor;
 
-use crate::{DisplayUpdate, RdpServerDisplayUpdates};
+use crate::{DisplayUpdate, RdpServerDisplayUpdates, SoundServerFactory};
 
 use super::clipboard::CliprdrServerFactory;
 use super::display::{DesktopSize, RdpServerDisplay};
@@ -29,6 +29,7 @@ pub struct BuilderDone {
     handler: Box<dyn RdpServerInputHandler>,
     display: Box<dyn RdpServerDisplay>,
     cliprdr_factory: Option<Box<dyn CliprdrServerFactory>>,
+    sound_factory: Option<Box<dyn SoundServerFactory>>,
 }
 
 pub struct RdpServerBuilder<State> {
@@ -112,6 +113,7 @@ impl RdpServerBuilder<WantsDisplay> {
                 security: self.state.security,
                 handler: self.state.handler,
                 display: Box::new(display),
+                sound_factory: None,
                 cliprdr_factory: None,
             },
         }
@@ -124,6 +126,7 @@ impl RdpServerBuilder<WantsDisplay> {
                 security: self.state.security,
                 handler: self.state.handler,
                 display: Box::new(NoopDisplay),
+                sound_factory: None,
                 cliprdr_factory: None,
             },
         }
@@ -136,6 +139,11 @@ impl RdpServerBuilder<BuilderDone> {
         self
     }
 
+    pub fn with_sound_factory(mut self, sound: Option<Box<dyn SoundServerFactory>>) -> Self {
+        self.state.sound_factory = sound;
+        self
+    }
+
     pub fn build(self) -> RdpServer {
         RdpServer::new(
             RdpServerOptions {
@@ -144,6 +152,7 @@ impl RdpServerBuilder<BuilderDone> {
             },
             self.state.handler,
             self.state.display,
+            self.state.sound_factory,
             self.state.cliprdr_factory,
         )
     }

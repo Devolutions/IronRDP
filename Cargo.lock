@@ -1988,6 +1988,7 @@ dependencies = [
  "ironrdp-dvc",
  "ironrdp-graphics",
  "ironrdp-pdu",
+ "ironrdp-rdpsnd",
  "ironrdp-svc",
  "ironrdp-tokio",
  "tokio",
