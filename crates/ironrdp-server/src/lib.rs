@@ -10,8 +10,10 @@ mod display;
 mod encoder;
 mod handler;
 mod server;
+mod sound;
 
 pub use clipboard::*;
 pub use display::*;
 pub use handler::*;
 pub use server::*;
+pub use sound::*;
