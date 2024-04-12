@@ -2,8 +2,8 @@
 mod tests;
 
 use super::{
-    read_license_header, BlobHeader, BlobType, LicenseEncryptionData, LicenseHeader, PreambleType, ServerLicenseError,
-    BLOB_LENGTH_SIZE, BLOB_TYPE_SIZE, MAC_SIZE, UTF16_NULL_TERMINATOR_SIZE, UTF8_NULL_TERMINATOR_SIZE,
+    BlobHeader, BlobType, LicenseEncryptionData, LicenseHeader, PreambleType, ServerLicenseError, BLOB_LENGTH_SIZE,
+    BLOB_TYPE_SIZE, MAC_SIZE, UTF16_NULL_TERMINATOR_SIZE, UTF8_NULL_TERMINATOR_SIZE,
 };
 use crate::crypto::rc4::Rc4;
 use crate::cursor::{ReadCursor, WriteCursor};
@@ -62,10 +62,8 @@ impl PduEncode for ServerUpgradeLicense {
     }
 }
 
-impl<'de> PduDecode<'de> for ServerUpgradeLicense {
-    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
-        let license_header = read_license_header(PreambleType::NewLicense, src)?;
-
+impl ServerUpgradeLicense {
+    pub fn decode(license_header: LicenseHeader, src: &mut ReadCursor<'_>) -> PduResult<Self> {
         if license_header.preamble_message_type != PreambleType::UpgradeLicense
             && license_header.preamble_message_type != PreambleType::NewLicense
         {

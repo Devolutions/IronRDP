@@ -160,34 +160,37 @@ impl Sequence for ConnectionFinalizationSequence {
                         debug!("Server Synchronize");
                         ConnectionFinalizationState::WaitForResponse
                     }
-                    ShareDataPdu::Control(control_pdu) => match control_pdu.action {
-                        finalization_messages::ControlAction::Cooperate => {
-                            if control_pdu.grant_id == 0 && control_pdu.control_id == 0 {
-                                debug!("Server Control (Cooperate)");
+                    ShareDataPdu::Control(control_pdu) => {
+                        match control_pdu.action {
+                            finalization_messages::ControlAction::Cooperate => {
+                                if control_pdu.grant_id == 0 && control_pdu.control_id == 0 {
+                                    debug!("Server Control (Cooperate)");
+                                } else {
+                                    warn!("Server Control (Cooperate) had invalid grant_id or control_id, expected 0,0 but got {},{}", control_pdu.grant_id, control_pdu.control_id);
+                                }
                                 ConnectionFinalizationState::WaitForResponse
-                            } else {
-                                return Err(general_err!("invalid Control Cooperate PDU"));
                             }
-                        }
-                        finalization_messages::ControlAction::GrantedControl => {
-                            debug!(
-                                control_pdu.grant_id,
-                                control_pdu.control_id,
-                                user_channel_id = self.user_channel_id,
-                                SERVER_CHANNEL_ID
-                            );
+                            finalization_messages::ControlAction::GrantedControl => {
+                                debug!(
+                                    control_pdu.grant_id,
+                                    control_pdu.control_id,
+                                    user_channel_id = self.user_channel_id,
+                                    SERVER_CHANNEL_ID
+                                );
 
-                            if control_pdu.grant_id == self.user_channel_id
-                                && control_pdu.control_id == u32::from(SERVER_CHANNEL_ID)
-                            {
-                                debug!("Server Control (Granted Control)");
+                                if control_pdu.grant_id != self.user_channel_id {
+                                    warn!("Server Control (Granted Control) had invalid grant_id, expected {}, but got {}", self.user_channel_id, control_pdu.grant_id);
+                                }
+
+                                if control_pdu.control_id != u32::from(SERVER_CHANNEL_ID) {
+                                    warn!("Server Control (Granted Control) had invalid control_id, expected {}, but got {}", SERVER_CHANNEL_ID, control_pdu.control_id);
+                                }
+
                                 ConnectionFinalizationState::WaitForResponse
-                            } else {
-                                return Err(general_err!("invalid Granted Control PDU"));
                             }
+                            _ => return Err(general_err!("unexpected control action")),
                         }
-                        _ => return Err(general_err!("unexpected control action")),
-                    },
+                    }
                     ShareDataPdu::ServerSetErrorInfo(server_error_info::ServerSetErrorInfoPdu(error_info)) => {
                         match error_info {
                             server_error_info::ErrorInfo::ProtocolIndependentCode(

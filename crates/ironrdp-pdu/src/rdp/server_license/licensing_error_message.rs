@@ -4,9 +4,10 @@ mod test;
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive, ToPrimitive};
 
-use super::{BlobHeader, BlobType, BLOB_LENGTH_SIZE, BLOB_TYPE_SIZE};
+use super::{BlobHeader, BlobType, LicenseHeader, BLOB_LENGTH_SIZE, BLOB_TYPE_SIZE};
 use crate::{
     cursor::{ReadCursor, WriteCursor},
+    rdp::server_license::PreambleType,
     PduDecode, PduEncode, PduResult,
 };
 
@@ -51,19 +52,23 @@ impl PduEncode for LicensingErrorMessage {
     }
 }
 
-impl<'de> PduDecode<'de> for LicensingErrorMessage {
-    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
-        ensure_fixed_part_size!(in: src);
+impl LicensingErrorMessage {
+    pub fn decode(license_header: LicenseHeader, src: &mut ReadCursor<'_>) -> PduResult<Self> {
+        if license_header.preamble_message_type != PreambleType::ErrorAlert {
+            return Err(invalid_message_err!("preambleMessageType", "unexpected preamble type"));
+        }
 
+        ensure_fixed_part_size!(in: src);
         let error_code = LicenseErrorCode::from_u32(src.read_u32())
             .ok_or_else(|| invalid_message_err!("errorCode", "invalid error code"))?;
         let state_transition = LicensingStateTransition::from_u32(src.read_u32())
             .ok_or_else(|| invalid_message_err!("stateTransition", "invalid state transition"))?;
 
         let error_info_blob = BlobHeader::decode(src)?;
-        if error_info_blob.blob_type != BlobType::ERROR {
+        if error_info_blob.length != 0 && error_info_blob.blob_type != BlobType::ERROR {
             return Err(invalid_message_err!("blobType", "invalid blob type"));
         }
+
         let error_info = vec![0u8; error_info_blob.length];
 
         Ok(Self {

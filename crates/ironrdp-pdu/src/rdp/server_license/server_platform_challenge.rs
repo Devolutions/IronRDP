@@ -1,9 +1,7 @@
 #[cfg(test)]
 mod test;
 
-use super::{
-    read_license_header, BlobHeader, BlobType, LicenseHeader, PreambleType, BLOB_LENGTH_SIZE, BLOB_TYPE_SIZE, MAC_SIZE,
-};
+use super::{BlobHeader, BlobType, LicenseHeader, PreambleType, BLOB_LENGTH_SIZE, BLOB_TYPE_SIZE, MAC_SIZE};
 use crate::{
     cursor::{ReadCursor, WriteCursor},
     PduDecode, PduEncode, PduResult,
@@ -49,9 +47,11 @@ impl PduEncode for ServerPlatformChallenge {
     }
 }
 
-impl<'de> PduDecode<'de> for ServerPlatformChallenge {
-    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
-        let license_header = read_license_header(PreambleType::PlatformChallenge, src)?;
+impl ServerPlatformChallenge {
+    pub fn decode(license_header: LicenseHeader, src: &mut ReadCursor<'_>) -> PduResult<Self> {
+        if license_header.preamble_message_type != PreambleType::PlatformChallenge {
+            return Err(invalid_message_err!("preambleMessageType", "unexpected preamble type"));
+        }
 
         ensure_size!(in: src, size: 4);
         let _connect_flags = src.read_u32();

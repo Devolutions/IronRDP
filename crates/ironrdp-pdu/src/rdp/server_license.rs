@@ -23,9 +23,7 @@ mod server_upgrade_license;
 pub use self::client_new_license_request::{ClientNewLicenseRequest, PLATFORM_ID};
 pub use self::client_platform_challenge_response::ClientPlatformChallengeResponse;
 pub use self::licensing_error_message::{LicenseErrorCode, LicensingErrorMessage, LicensingStateTransition};
-pub use self::server_license_request::{
-    cert, InitialMessageType, InitialServerLicenseMessage, ProductInfo, Scope, ServerCertificate, ServerLicenseRequest,
-};
+pub use self::server_license_request::{cert, ProductInfo, Scope, ServerCertificate, ServerLicenseRequest};
 pub use self::server_platform_challenge::ServerPlatformChallenge;
 pub use self::server_upgrade_license::{NewLicenseInformation, ServerUpgradeLicense};
 
@@ -258,6 +256,12 @@ impl From<PduError> for ServerLicenseError {
     }
 }
 
+impl From<LicensingErrorMessage> for ServerLicenseError {
+    fn from(e: LicensingErrorMessage) -> Self {
+        Self::UnexpectedError(e)
+    }
+}
+
 #[cfg(feature = "std")]
 impl ironrdp_error::legacy::ErrorContext for ServerLicenseError {
     fn context(&self) -> &'static str {
@@ -335,38 +339,47 @@ fn compute_mac_data(mac_salt_key: &[u8], data: &[u8]) -> Vec<u8> {
     md5.finalize().to_vec()
 }
 
-fn read_license_header(
-    required_preamble_message_type: PreambleType,
-    src: &mut ReadCursor<'_>,
-) -> Result<LicenseHeader, PduError> {
-    let license_header = LicenseHeader::decode(src)?;
+#[derive(Debug)]
+pub enum LicensePdu {
+    ClientNewLicenseRequest(ClientNewLicenseRequest),
+    ClientPlatformChallengeResponse(ClientPlatformChallengeResponse),
+    ServerLicenseRequest(ServerLicenseRequest),
+    ServerPlatformChallenge(ServerPlatformChallenge),
+    ServerUpgradeLicense(ServerUpgradeLicense),
+    LicensingErrorMessage(LicensingErrorMessage),
+}
 
-    // FIXME(#269): ERROR_ALERT licensing packets should not be returned as error by the parser.
-    // Such packets should be handled by the caller, and the caller is responsible for turning
-    // those into "Result::Err" if necessary. It should be possible to decode a `LICENSE_ERROR_MESSAGE`
-    // structure like any other PDU.
-    // Otherwise it requires the caller to match on the error kind in order to check for variants that are
-    // not actual errors, it makes the flow of control harder to write correctly and less obvious.
-    // See `ConnectionConfirm` from the `nego` module for prior art.
+impl<'de> PduDecode<'de> for LicensePdu {
+    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+        let license_header = LicenseHeader::decode(src)?;
 
-    if license_header.preamble_message_type != required_preamble_message_type {
-        if license_header.preamble_message_type == PreambleType::ErrorAlert {
-            let license_error = LicensingErrorMessage::decode(src)?;
-
-            if license_error.error_code == LicenseErrorCode::StatusValidClient
-                && license_error.state_transition == LicensingStateTransition::NoTransition
-            {
-                return Err(invalid_message_err!(
-                    "preambleType",
-                    "the server has returned STATUS_VALID_CLIENT (not an error)"
-                ));
-            } else {
-                return Err(invalid_message_err!("preambleType", "invalid preamble type"));
-            }
-        } else {
-            return Err(invalid_message_err!("preambleType", "got unexptected preamble type"));
+        match license_header.preamble_message_type {
+            PreambleType::LicenseRequest => Ok(Self::ServerLicenseRequest(ServerLicenseRequest::decode(
+                license_header,
+                src,
+            )?)),
+            PreambleType::PlatformChallenge => Ok(Self::ServerPlatformChallenge(ServerPlatformChallenge::decode(
+                license_header,
+                src,
+            )?)),
+            PreambleType::NewLicense | PreambleType::UpgradeLicense => Ok(Self::ServerUpgradeLicense(
+                ServerUpgradeLicense::decode(license_header, src)?,
+            )),
+            PreambleType::LicenseInfo => Err(unsupported_pdu_err!(
+                "LicensPdu::LicenseInfo",
+                "LicenseInfo is not supported".to_owned()
+            )),
+            PreambleType::NewLicenseRequest => Ok(Self::ClientNewLicenseRequest(ClientNewLicenseRequest::decode(
+                license_header,
+                src,
+            )?)),
+            PreambleType::PlatformChallengeResponse => Ok(Self::ClientPlatformChallengeResponse(
+                ClientPlatformChallengeResponse::decode(license_header, src)?,
+            )),
+            PreambleType::ErrorAlert => Ok(Self::LicensingErrorMessage(LicensingErrorMessage::decode(
+                license_header,
+                src,
+            )?)),
         }
     }
-
-    Ok(license_header)
 }

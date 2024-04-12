@@ -170,9 +170,8 @@ impl PduEncode for ClientNewLicenseRequest {
     }
 }
 
-impl<'de> PduDecode<'de> for ClientNewLicenseRequest {
-    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
-        let license_header = LicenseHeader::decode(src)?;
+impl ClientNewLicenseRequest {
+    pub fn decode(license_header: LicenseHeader, src: &mut ReadCursor<'_>) -> PduResult<Self> {
         if license_header.preamble_message_type != PreambleType::NewLicenseRequest {
             return Err(invalid_message_err!("preambleMessageType", "unexpected preamble type"));
         }

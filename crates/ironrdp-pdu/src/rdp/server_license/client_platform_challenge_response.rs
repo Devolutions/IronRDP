@@ -128,9 +128,8 @@ impl PduEncode for ClientPlatformChallengeResponse {
     }
 }
 
-impl<'de> PduDecode<'de> for ClientPlatformChallengeResponse {
-    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
-        let license_header = LicenseHeader::decode(src)?;
+impl ClientPlatformChallengeResponse {
+    pub fn decode(license_header: LicenseHeader, src: &mut ReadCursor<'_>) -> PduResult<Self> {
         if license_header.preamble_message_type != PreambleType::PlatformChallengeResponse {
             return Err(invalid_message_err!(
                 "preambleMessageType",

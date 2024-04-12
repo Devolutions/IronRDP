@@ -227,6 +227,7 @@ impl<'de> PduDecode<'de> for DemandActive {
         let _padding = src.read_u16();
 
         let mut capability_sets = Vec::with_capacity(capability_sets_count);
+
         for _ in 0..capability_sets_count {
             capability_sets.push(CapabilitySet::decode(src)?);
         }
@@ -267,12 +268,13 @@ pub enum CapabilitySet {
     BitmapCodecs(BitmapCodecs),
 
     // other
+    FrameAcknowledge(FrameAcknowledge),
     ColorCache(Vec<u8>),
     DrawNineGridCache(Vec<u8>),
     DrawGdiPlus(Vec<u8>),
     Rail(Vec<u8>),
     WindowList(Vec<u8>),
-    FrameAcknowledge(FrameAcknowledge),
+    BitmapCacheV3(Vec<u8>),
 }
 
 impl CapabilitySet {
@@ -485,7 +487,8 @@ impl PduEncode for CapabilitySet {
                 | CapabilitySet::DrawNineGridCache(buffer)
                 | CapabilitySet::DrawGdiPlus(buffer)
                 | CapabilitySet::Rail(buffer)
-                | CapabilitySet::WindowList(buffer) => buffer.len(),
+                | CapabilitySet::WindowList(buffer)
+                | CapabilitySet::BitmapCacheV3(buffer) => buffer.len(),
             }
     }
 }
@@ -494,8 +497,13 @@ impl<'de> PduDecode<'de> for CapabilitySet {
     fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
         ensure_fixed_part_size!(in: src);
 
-        let capability_set_type = CapabilitySetType::from_u16(src.read_u16())
-            .ok_or_else(|| invalid_message_err!("capabilitySetType", "invalid capability set type"))?;
+        let capability_set_type_raw = src.read_u16();
+        let capability_set_type = CapabilitySetType::from_u16(capability_set_type_raw).ok_or_else(|| {
+            unsupported_pdu_err!(
+                "capabilitySetType",
+                format!("invalid capability set type: {}", capability_set_type_raw)
+            )
+        })?;
 
         let length = src.read_u16() as usize;
 
@@ -545,6 +553,7 @@ impl<'de> PduDecode<'de> for CapabilitySet {
             CapabilitySetType::Rail => Ok(CapabilitySet::Rail(capability_set_buffer.into())),
             CapabilitySetType::WindowList => Ok(CapabilitySet::WindowList(capability_set_buffer.into())),
             CapabilitySetType::FrameAcknowledge => Ok(CapabilitySet::FrameAcknowledge(decode(capability_set_buffer)?)),
+            CapabilitySetType::BitmapCacheV3CodecID => Ok(CapabilitySet::BitmapCacheV3(capability_set_buffer.into())),
         }
     }
 }
@@ -556,6 +565,7 @@ enum CapabilitySetType {
     Order = 0x03,
     BitmapCache = 0x04,
     Control = 0x05,
+    BitmapCacheV3CodecID = 0x06,
     WindowActivation = 0x07,
     Pointer = 0x08,
     Share = 0x09,

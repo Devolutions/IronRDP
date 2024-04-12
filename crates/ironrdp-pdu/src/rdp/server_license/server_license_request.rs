@@ -6,10 +6,8 @@ mod tests;
 use cert::{CertificateType, ProprietaryCertificate, X509CertificateChain};
 
 use super::{
-    BasicSecurityHeader, BasicSecurityHeaderFlags, BlobHeader, BlobType, LicenseErrorCode, LicenseHeader,
-    LicensingErrorMessage, LicensingStateTransition, PreambleFlags, PreambleType, PreambleVersion, ServerLicenseError,
-    BLOB_LENGTH_SIZE, BLOB_TYPE_SIZE, KEY_EXCHANGE_ALGORITHM_RSA, PREAMBLE_SIZE, RANDOM_NUMBER_SIZE,
-    UTF16_NULL_TERMINATOR_SIZE, UTF8_NULL_TERMINATOR_SIZE,
+    BlobHeader, BlobType, LicenseHeader, PreambleType, ServerLicenseError, BLOB_LENGTH_SIZE, BLOB_TYPE_SIZE,
+    KEY_EXCHANGE_ALGORITHM_RSA, RANDOM_NUMBER_SIZE, UTF16_NULL_TERMINATOR_SIZE, UTF8_NULL_TERMINATOR_SIZE,
 };
 use crate::{
     cursor::{ReadCursor, WriteCursor},
@@ -27,113 +25,6 @@ const MAX_COMPANY_NAME_LEN: usize = 1024;
 const MAX_PRODUCT_ID_LEN: usize = 1024;
 
 const RSA_EXCHANGE_ALGORITHM: u32 = 1;
-
-#[derive(Debug, PartialEq, Eq)]
-pub enum InitialMessageType {
-    LicenseRequest(ServerLicenseRequest),
-    StatusValidClient(LicensingErrorMessage),
-}
-
-// FIXME(#269): this is a helper structure which tries to detect if a
-// SERVER_LICENSE_REQUEST PDU is received from the server, or if a
-// STATUS_VALID_CLIENT error code is received instead (no need to negotiate
-// a license). I think this could be refactored into a more generic struct / enum,
-// without trying to be too smart by, e.g., returning errors when a LICENSE_ERROR_MESSAGE
-// is received depending on the error code. Parsing code should lend the data received
-// from the network without making too much decisions.
-
-/// Either a SERVER_LICENSE_REQUEST or a LICENSE_ERROR_MESSAGE with the STATUS_VALID_CLIENT code
-#[derive(Debug, PartialEq, Eq)]
-pub struct InitialServerLicenseMessage {
-    pub license_header: LicenseHeader,
-    pub message_type: InitialMessageType,
-}
-
-impl InitialServerLicenseMessage {
-    const NAME: &'static str = "InitialServerLicenseMessage";
-
-    pub fn new_status_valid_client_message() -> Self {
-        let valid_client_message = LicensingErrorMessage {
-            error_code: LicenseErrorCode::StatusValidClient,
-            state_transition: LicensingStateTransition::NoTransition,
-            error_info: Vec::new(),
-        };
-
-        Self {
-            license_header: LicenseHeader {
-                security_header: BasicSecurityHeader {
-                    flags: BasicSecurityHeaderFlags::LICENSE_PKT,
-                },
-                preamble_message_type: PreambleType::ErrorAlert,
-                preamble_flags: PreambleFlags::empty(),
-                preamble_version: PreambleVersion::V3,
-                preamble_message_size: (PREAMBLE_SIZE + valid_client_message.size()) as u16,
-            },
-            message_type: InitialMessageType::StatusValidClient(valid_client_message),
-        }
-    }
-}
-
-impl PduEncode for InitialServerLicenseMessage {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
-        self.license_header.encode(dst)?;
-
-        match &self.message_type {
-            InitialMessageType::LicenseRequest(license_request) => {
-                license_request.encode(dst)?;
-            }
-            InitialMessageType::StatusValidClient(valid_client) => {
-                valid_client.encode(dst)?;
-            }
-        }
-
-        Ok(())
-    }
-
-    fn name(&self) -> &'static str {
-        Self::NAME
-    }
-
-    fn size(&self) -> usize {
-        self.license_header.size()
-            + match &self.message_type {
-                InitialMessageType::LicenseRequest(license_request) => license_request.size(),
-                InitialMessageType::StatusValidClient(valid_client) => valid_client.size(),
-            }
-    }
-}
-
-impl<'de> PduDecode<'de> for InitialServerLicenseMessage {
-    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
-        let license_header = LicenseHeader::decode(src)?;
-
-        match license_header.preamble_message_type {
-            PreambleType::LicenseRequest => {
-                let license_request = ServerLicenseRequest::decode(src)?;
-
-                Ok(Self {
-                    license_header,
-                    message_type: InitialMessageType::LicenseRequest(license_request),
-                })
-            }
-            PreambleType::ErrorAlert => {
-                let license_error = LicensingErrorMessage::decode(src)?;
-
-                if license_error.error_code == LicenseErrorCode::StatusValidClient
-                    && license_error.state_transition == LicensingStateTransition::NoTransition
-                {
-                    Ok(Self {
-                        license_header,
-                        message_type: InitialMessageType::StatusValidClient(license_error),
-                    })
-                } else {
-                    Err(invalid_message_err!("errorCode", "unexpected error"))
-                }
-            }
-            _ => Err(invalid_message_err!("preambleMessageType", "invalid preamble")),
-        }
-    }
-}
 
 /// [2.2.2.1] Server License Request (SERVER_LICENSE_REQUEST)
 ///
@@ -196,8 +87,12 @@ impl PduEncode for ServerLicenseRequest {
     }
 }
 
-impl<'de> PduDecode<'de> for ServerLicenseRequest {
-    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+impl ServerLicenseRequest {
+    pub fn decode(license_header: LicenseHeader, src: &mut ReadCursor<'_>) -> PduResult<Self> {
+        if license_header.preamble_message_type != PreambleType::LicenseRequest {
+            return Err(invalid_message_err!("preambleMessageType", "unexpected preamble type"));
+        }
+
         ensure_size!(in: src, size: RANDOM_NUMBER_SIZE);
         let server_random = src.read_slice(RANDOM_NUMBER_SIZE).into();
 
