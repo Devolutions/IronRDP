@@ -25,8 +25,8 @@ impl ServerPlatformChallenge {
     const FIXED_PART_SIZE: usize = CONNECT_FLAGS_FIELD_SIZE + MAC_SIZE + BLOB_LENGTH_SIZE + BLOB_TYPE_SIZE;
 }
 
-impl PduEncode for ServerPlatformChallenge {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+impl ServerPlatformChallenge {
+    pub fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
         ensure_size!(in: dst, size: self.size());
 
         self.license_header.encode(dst)?;
@@ -38,11 +38,11 @@ impl PduEncode for ServerPlatformChallenge {
         Ok(())
     }
 
-    fn name(&self) -> &'static str {
+    pub fn name(&self) -> &'static str {
         Self::NAME
     }
 
-    fn size(&self) -> usize {
+    pub fn size(&self) -> usize {
         Self::FIXED_PART_SIZE + self.license_header.size() + self.encrypted_platform_challenge.len()
     }
 }

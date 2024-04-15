@@ -2,8 +2,8 @@ use lazy_static::lazy_static;
 
 use super::*;
 use crate::rdp::server_license::{
-    BasicSecurityHeader, BasicSecurityHeaderFlags, PreambleFlags, PreambleVersion, BASIC_SECURITY_HEADER_SIZE,
-    PREAMBLE_SIZE,
+    BasicSecurityHeader, BasicSecurityHeaderFlags, LicensePdu, PreambleFlags, PreambleVersion,
+    BASIC_SECURITY_HEADER_SIZE, PREAMBLE_SIZE,
 };
 use crate::{decode, encode_vec};
 
@@ -252,7 +252,7 @@ lazy_static! {
         product_id: "A02".to_string(),
         license_info: Vec::from(&NEW_LICENSE_INFORMATION_BUFFER[NEW_LICENSE_INFORMATION_BUFFER.len() - 0x0799..]),
     };
-    pub static ref SERVER_UPGRADE_LICENSE: ServerUpgradeLicense = ServerUpgradeLicense {
+    pub static ref SERVER_UPGRADE_LICENSE: LicensePdu = ServerUpgradeLicense {
         license_header: LicenseHeader {
             security_header: BasicSecurityHeader {
                 flags: BasicSecurityHeaderFlags::LICENSE_PKT,
@@ -266,7 +266,8 @@ lazy_static! {
             &SERVER_UPGRADE_LICENSE_BUFFER[12..SERVER_UPGRADE_LICENSE_BUFFER.len() - MAC_SIZE]
         ),
         mac_data: Vec::from(MAC_DATA.as_ref()),
-    };
+    }
+    .into();
 }
 
 #[test]

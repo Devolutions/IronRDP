@@ -1,7 +1,7 @@
 use lazy_static::lazy_static;
 
 use super::*;
-use crate::{decode, encode_vec, PduErrorKind};
+use crate::{decode, encode_vec};
 
 const LICENSE_HEADER_BUFFER: [u8; 8] = [
     0x80, 0x00, // flags
@@ -35,12 +35,6 @@ pub const STATUS_VALID_CLIENT_BUFFER: [u8; 20] = [
     0xff, 0x03, 0x10, 0x00, 0x07, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00,
 ];
 
-pub const UNEXPECTED_ERROR_BUFFER: [u8; 20] = [
-    0x80, 0x00, // flags
-    0x00, 0x00, // flagsHi
-    0xff, 0x03, 0x10, 0x00, 0x0b, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00,
-];
-
 lazy_static! {
     pub static ref LICENSE_HEADER: LicenseHeader = LicenseHeader {
         security_header: BasicSecurityHeader {
@@ -71,10 +65,14 @@ fn read_blob_header_handles_invalid_type_correctly() {
         0x00, // blob data
     ];
 
-    match decode::<BlobHeader>(&invalid_blob_buffer) {
-        Err(e) if matches!(e.kind(), PduErrorKind::InvalidMessage { .. }) => (),
-        _ => panic!("expected invalid message error"),
-    }
+    let header = decode::<BlobHeader>(&invalid_blob_buffer).unwrap();
+    assert_eq!(
+        header,
+        BlobHeader {
+            blob_type: BlobType(0x99),
+            length: 0x48
+        }
+    )
 }
 
 #[test]
@@ -135,21 +133,28 @@ fn buffer_length_is_correct_for_license_header() {
 
 #[test]
 fn read_license_header_reads_correctly() {
-    decode::<ServerPlatformChallenge>(&PLATFORM_CHALLENGE_BUFFER).unwrap();
+    decode::<LicensePdu>(&PLATFORM_CHALLENGE_BUFFER).unwrap();
 }
 
 #[test]
 fn read_license_header_handles_valid_client_correctly() {
-    match decode::<ServerPlatformChallenge>(&STATUS_VALID_CLIENT_BUFFER) {
-        Err(e) if matches!(e.kind(), PduErrorKind::InvalidMessage { .. }) => (),
-        e => panic!("The function has return an invalid error: {:?}", e),
-    }
-}
-
-#[test]
-fn read_license_header_handles_unexpected_error_correctly() {
-    match decode::<ServerPlatformChallenge>(&UNEXPECTED_ERROR_BUFFER) {
-        Err(e) if matches!(e.kind(), PduErrorKind::InvalidMessage { .. }) => (),
-        e => panic!("The function has return an invalid error: {:?}", e),
-    }
+    let pdu = decode::<LicensePdu>(&STATUS_VALID_CLIENT_BUFFER).unwrap();
+    assert_eq!(
+        pdu,
+        LicensingErrorMessage {
+            license_header: LicenseHeader {
+                security_header: BasicSecurityHeader {
+                    flags: BasicSecurityHeaderFlags::LICENSE_PKT,
+                },
+                preamble_message_type: PreambleType::ErrorAlert,
+                preamble_flags: PreambleFlags::empty(),
+                preamble_version: PreambleVersion::V3,
+                preamble_message_size: 0x10,
+            },
+            error_code: LicenseErrorCode::StatusValidClient,
+            state_transition: LicensingStateTransition::NoTransition,
+            error_info: Vec::new()
+        }
+        .into()
+    );
 }

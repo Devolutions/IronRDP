@@ -31,6 +31,7 @@ const RSA_EXCHANGE_ALGORITHM: u32 = 1;
 /// [2.2.2.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpele/e17772e9-9642-4bb6-a2bc-82875dd6da7c
 #[derive(Debug, PartialEq, Eq)]
 pub struct ServerLicenseRequest {
+    pub license_header: LicenseHeader,
     pub server_random: Vec<u8>,
     pub product_info: ProductInfo,
     pub server_certificate: Option<ServerCertificate>,
@@ -45,9 +46,11 @@ impl ServerLicenseRequest {
     }
 }
 
-impl PduEncode for ServerLicenseRequest {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+impl ServerLicenseRequest {
+    pub fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
         ensure_size!(in: dst, size: self.size());
+
+        self.license_header.encode(dst)?;
 
         dst.write_slice(&self.server_random);
         self.product_info.encode(dst)?;
@@ -71,12 +74,13 @@ impl PduEncode for ServerLicenseRequest {
         Ok(())
     }
 
-    fn name(&self) -> &'static str {
+    pub fn name(&self) -> &'static str {
         Self::NAME
     }
 
-    fn size(&self) -> usize {
-        RANDOM_NUMBER_SIZE
+    pub fn size(&self) -> usize {
+        self.license_header.size()
+            + RANDOM_NUMBER_SIZE
             + self.product_info.size()
             + BLOB_LENGTH_SIZE * 2 // KeyExchangeBlob + CertificateBlob
             + BLOB_TYPE_SIZE * 2 // KeyExchangeBlob + CertificateBlob
@@ -134,6 +138,7 @@ impl ServerLicenseRequest {
         }
 
         Ok(Self {
+            license_header,
             server_random,
             product_info,
             server_certificate,

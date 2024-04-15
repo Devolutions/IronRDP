@@ -2,7 +2,8 @@ use lazy_static::lazy_static;
 
 use super::*;
 use crate::rdp::server_license::{
-    BasicSecurityHeader, BasicSecurityHeaderFlags, PreambleFlags, PreambleVersion, BASIC_SECURITY_HEADER_SIZE,
+    BasicSecurityHeader, BasicSecurityHeaderFlags, LicensePdu, PreambleFlags, PreambleVersion,
+    BASIC_SECURITY_HEADER_SIZE,
 };
 use crate::{decode, encode_vec};
 
@@ -11,7 +12,7 @@ const PLATFORM_CHALLENGE_BUFFER: [u8; 42] = [
     0x00, 0x00, // flagsHi
     0x02, 0x03, 0x26, 0x00, // preamble
     0x00, 0x00, 0x00, 0x00, // connect_flags (ignored)
-    0xbe, 0xef, // blob_type, ignored; use a junk value here to confirm resilient parsing
+    0x00, 0x00, // blob_type, ignored;
     0x0a, 0x00, // blob len
     0x46, 0x37, 0x85, 0x54, 0x8e, 0xc5, 0x91, 0x34, 0x97, 0x5d, // challenge
     0x38, 0x23, 0x62, 0x5d, 0x10, 0x8b, 0x93, 0xc3, 0xf1, 0xe4, 0x67, 0x1f, 0x4a, 0xb6, 0x00, 0x0a, // mac data
@@ -26,7 +27,7 @@ const MAC_DATA_BUFFER: [u8; MAC_SIZE] = [
 ];
 
 lazy_static! {
-    pub static ref PLATFORM_CHALLENGE: ServerPlatformChallenge = ServerPlatformChallenge {
+    pub static ref PLATFORM_CHALLENGE: LicensePdu = ServerPlatformChallenge {
         license_header: LicenseHeader {
             security_header: BasicSecurityHeader {
                 flags: BasicSecurityHeaderFlags::LICENSE_PKT,
@@ -38,12 +39,22 @@ lazy_static! {
         },
         encrypted_platform_challenge: Vec::from(CHALLENGE_BUFFER.as_ref()),
         mac_data: Vec::from(MAC_DATA_BUFFER.as_ref()),
-    };
+    }
+    .into();
 }
 
 #[test]
 fn from_buffer_correctly_parses_server_platform_challenge() {
     assert_eq!(*PLATFORM_CHALLENGE, decode(PLATFORM_CHALLENGE_BUFFER.as_ref()).unwrap());
+}
+
+#[test]
+fn from_buffer_correctly_parses_server_platform_challenge_resiliently() {
+    let mut buffer = PLATFORM_CHALLENGE_BUFFER;
+    // Change blob type to junk value 0xbeef
+    buffer[12] = 0xbe;
+    buffer[13] = 0xef;
+    assert_eq!(*PLATFORM_CHALLENGE, decode(buffer.as_ref()).unwrap());
 }
 
 #[test]

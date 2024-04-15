@@ -124,8 +124,8 @@ impl ClientNewLicenseRequest {
     }
 }
 
-impl PduEncode for ClientNewLicenseRequest {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+impl ClientNewLicenseRequest {
+    pub fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
         ensure_size!(in: dst, size: self.size());
 
         self.license_header.encode(dst)?;
@@ -154,11 +154,11 @@ impl PduEncode for ClientNewLicenseRequest {
         Ok(())
     }
 
-    fn name(&self) -> &'static str {
+    pub fn name(&self) -> &'static str {
         Self::NAME
     }
 
-    fn size(&self) -> usize {
+    pub fn size(&self) -> usize {
         self.license_header.size()
             + LICENSE_REQUEST_STATIC_FIELDS_SIZE
             + RANDOM_NUMBER_SIZE

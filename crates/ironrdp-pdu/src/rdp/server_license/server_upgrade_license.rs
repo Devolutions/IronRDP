@@ -41,8 +41,8 @@ impl ServerUpgradeLicense {
     const NAME: &'static str = "ServerUpgradeLicense";
 }
 
-impl PduEncode for ServerUpgradeLicense {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+impl ServerUpgradeLicense {
+    pub fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
         ensure_size!(in: dst, size: self.size());
 
         self.license_header.encode(dst)?;
@@ -53,11 +53,11 @@ impl PduEncode for ServerUpgradeLicense {
         Ok(())
     }
 
-    fn name(&self) -> &'static str {
+    pub fn name(&self) -> &'static str {
         Self::NAME
     }
 
-    fn size(&self) -> usize {
+    pub fn size(&self) -> usize {
         self.license_header.size() + BLOB_LENGTH_SIZE + BLOB_TYPE_SIZE + self.encrypted_license_info.len() + MAC_SIZE
     }
 }

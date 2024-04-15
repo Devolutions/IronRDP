@@ -142,7 +142,10 @@ pub const SERVER_FONT_MAP_BUFFER: [u8; 26] = [
 pub const SERVER_LICENSE_BUFFER: [u8; 20] = [
     0x80, 0x00, // flags
     0x00, 0x00, // flagsHi
-    0xff, 0x03, 0x10, 0x00, 0x07, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00,
+    0xff, // preamble_message_type
+    0x03, // preamble_flags | preamble_version
+    0x14, // preamble_message_size
+    0x00, 0x07, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00,
 ];
 
 lazy_static! {
@@ -152,21 +155,23 @@ lazy_static! {
         },
         client_info: CLIENT_INFO_UNICODE.clone(),
     };
-    pub static ref SERVER_LICENSE_PDU: InitialServerLicenseMessage = InitialServerLicenseMessage {
-        license_header: LicenseHeader {
-            security_header: BasicSecurityHeader {
-                flags: BasicSecurityHeaderFlags::LICENSE_PKT,
+    pub static ref SERVER_LICENSE_PDU: LicensePdu = {
+        let mut pdu = LicensingErrorMessage {
+            license_header: LicenseHeader {
+                security_header: BasicSecurityHeader {
+                    flags: BasicSecurityHeaderFlags::LICENSE_PKT,
+                },
+                preamble_message_type: PreambleType::ErrorAlert,
+                preamble_flags: PreambleFlags::empty(),
+                preamble_version: PreambleVersion::V3,
+                preamble_message_size: 0,
             },
-            preamble_message_type: PreambleType::ErrorAlert,
-            preamble_flags: PreambleFlags::empty(),
-            preamble_version: PreambleVersion::V3,
-            preamble_message_size: (SERVER_LICENSE_BUFFER.len() - BASIC_SECURITY_HEADER_SIZE) as u16
-        },
-        message_type: InitialMessageType::StatusValidClient(LicensingErrorMessage {
             error_code: LicenseErrorCode::StatusValidClient,
             state_transition: LicensingStateTransition::NoTransition,
             error_info: Vec::new(),
-        })
+        };
+        pdu.license_header.preamble_message_size = pdu.size() as u16;
+        pdu.into()
     };
     pub static ref SERVER_DEMAND_ACTIVE_PDU: ShareControlHeader = ShareControlHeader {
         share_control_pdu: ShareControlPdu::ServerDemandActive(SERVER_DEMAND_ACTIVE.clone()),
