@@ -101,15 +101,29 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           retention-days: 7
-          name: minified-corpus
+          name: minified-corpus-${{ matrix.target }}
           path: |
             ${{ runner.temp }}/corpus
             ${{ runner.temp }}/artifacts
 
+  corpus-merge:
+    name: Corpus merge artifacts
+    runs-on: ubuntu-latest
+    needs: fuzz
+    if: ${{ always() && !cancelled() }}
+
+    steps:
+      - name: Merge Artifacts
+        uses: actions/upload-artifact/merge@v4
+        with:
+          name: minified-corpus
+          pattern: minified-corpus-*
+          delete-merged: true
+
   corpus-upload:
     name: Upload corpus
     runs-on: ubuntu-20.04
-    needs: fuzz
+    needs: corpus-merge
     if: ${{ always() && !cancelled() }}
     env:
       AZURE_STORAGE_KEY: ${{ secrets.CORPUS_AZURE_STORAGE_KEY }}

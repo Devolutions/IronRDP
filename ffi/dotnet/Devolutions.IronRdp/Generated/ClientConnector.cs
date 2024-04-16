@@ -15,6 +15,14 @@ public partial class ClientConnector: IDisposable
 {
     private unsafe Raw.ClientConnector* _inner;
 
+    public DynState DynState
+    {
+        get
+        {
+            return GetDynState();
+        }
+    }
+
     /// <summary>
     /// Creates a managed <c>ClientConnector</c> from a raw handle.
     /// </summary>
@@ -277,9 +285,9 @@ public partial class ClientConnector: IDisposable
 
     /// <exception cref="IronRdpException"></exception>
     /// <returns>
-    /// A <c>State</c> allocated on Rust side.
+    /// A <c>DynState</c> allocated on Rust side.
     /// </returns>
-    public State State()
+    public DynState GetDynState()
     {
         unsafe
         {
@@ -287,13 +295,35 @@ public partial class ClientConnector: IDisposable
             {
                 throw new ObjectDisposedException("ClientConnector");
             }
-            Raw.ConnectorFfiResultBoxStateBoxIronRdpError result = Raw.ClientConnector.State(_inner);
+            Raw.ConnectorFfiResultBoxDynStateBoxIronRdpError result = Raw.ClientConnector.GetDynState(_inner);
             if (!result.isOk)
             {
                 throw new IronRdpException(new IronRdpError(result.Err));
             }
-            Raw.State* retVal = result.Ok;
-            return new State(retVal);
+            Raw.DynState* retVal = result.Ok;
+            return new DynState(retVal);
+        }
+    }
+
+    /// <exception cref="IronRdpException"></exception>
+    /// <returns>
+    /// A <c>ClientConnectorState</c> allocated on Rust side.
+    /// </returns>
+    public ClientConnectorState ConsumeAndCastToClientConnectorState()
+    {
+        unsafe
+        {
+            if (_inner == null)
+            {
+                throw new ObjectDisposedException("ClientConnector");
+            }
+            Raw.ConnectorFfiResultBoxClientConnectorStateBoxIronRdpError result = Raw.ClientConnector.ConsumeAndCastToClientConnectorState(_inner);
+            if (!result.isOk)
+            {
+                throw new IronRdpException(new IronRdpError(result.Err));
+            }
+            Raw.ClientConnectorState* retVal = result.Ok;
+            return new ClientConnectorState(retVal);
         }
     }
 

@@ -19,8 +19,8 @@ public partial struct ConfigBuilder
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ConfigBuilder_new", ExactSpelling = true)]
     public static unsafe extern ConfigBuilder* New();
 
-    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ConfigBuilder_with_username_and_passwrord", ExactSpelling = true)]
-    public static unsafe extern void WithUsernameAndPasswrord(ConfigBuilder* self, byte* username, nuint usernameSz, byte* password, nuint passwordSz);
+    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ConfigBuilder_with_username_and_password", ExactSpelling = true)]
+    public static unsafe extern void WithUsernameAndPassword(ConfigBuilder* self, byte* username, nuint usernameSz, byte* password, nuint passwordSz);
 
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ConfigBuilder_set_domain", ExactSpelling = true)]
     public static unsafe extern void SetDomain(ConfigBuilder* self, byte* domain, nuint domainSz);

@@ -1,6 +1,10 @@
 #[diplomat::bridge]
 pub mod ffi {
-    use crate::{connector::config::ffi::DesktopSize, utils::ffi::OptionalUsize};
+    use crate::{
+        connector::config::ffi::DesktopSize,
+        error::{ffi::IronRdpError, ValueConsumedError},
+        utils::ffi::OptionalUsize,
+    };
 
     #[diplomat::opaque]
     pub struct Written(pub ironrdp::connector::Written);
@@ -27,31 +31,48 @@ pub mod ffi {
     }
 
     #[diplomat::opaque]
-    pub struct ConnectionResult(pub ironrdp::connector::ConnectionResult);
+    pub struct ConnectionResult(pub Option<ironrdp::connector::ConnectionResult>);
 
     impl ConnectionResult {
-        pub fn get_io_channel_id(&self) -> u16 {
-            self.0.io_channel_id
+        pub fn get_io_channel_id(&self) -> Result<u16, Box<IronRdpError>> {
+            Ok(self
+                .0
+                .as_ref()
+                .ok_or_else(|| ValueConsumedError::for_item("ConnectionResult"))?
+                .io_channel_id)
         }
 
-        pub fn get_user_channel_id(&self) -> u16 {
-            self.0.user_channel_id
+        pub fn get_user_channel_id(&self) -> Result<u16, Box<IronRdpError>> {
+            Ok(self
+                .0
+                .as_ref()
+                .ok_or_else(|| ValueConsumedError::for_item("ConnectionResult"))?
+                .user_channel_id)
         }
 
-        pub fn get_static_channels(&self) -> Box<crate::svc::ffi::StaticChannelSet<'_>> {
-            Box::new(crate::svc::ffi::StaticChannelSet(&self.0.static_channels))
+        pub fn get_desktop_size(&self) -> Result<Box<DesktopSize>, Box<IronRdpError>> {
+            Ok(Box::new(DesktopSize(
+                self.0
+                    .as_ref()
+                    .ok_or_else(|| ValueConsumedError::for_item("ConnectionResult"))?
+                    .desktop_size,
+            )))
         }
 
-        pub fn get_desktop_size(&self) -> Box<DesktopSize> {
-            Box::new(DesktopSize(self.0.desktop_size))
+        pub fn get_no_server_pointer(&self) -> Result<bool, Box<IronRdpError>> {
+            Ok(self
+                .0
+                .as_ref()
+                .ok_or_else(|| ValueConsumedError::for_item("ConnectionResult"))?
+                .no_server_pointer)
         }
 
-        pub fn get_no_server_pointer(&self) -> bool {
-            self.0.no_server_pointer
-        }
-
-        pub fn get_pointer_software_rendering(&self) -> bool {
-            self.0.pointer_software_rendering
+        pub fn get_pointer_software_rendering(&self) -> Result<bool, Box<IronRdpError>> {
+            Ok(self
+                .0
+                .as_ref()
+                .ok_or_else(|| ValueConsumedError::for_item("ConnectionResult"))?
+                .pointer_software_rendering)
         }
     }
 }

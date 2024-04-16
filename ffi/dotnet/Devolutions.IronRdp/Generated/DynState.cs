@@ -11,9 +11,9 @@ namespace Devolutions.IronRdp;
 
 #nullable enable
 
-public partial class State: IDisposable
+public partial class DynState: IDisposable
 {
-    private unsafe Raw.State* _inner;
+    private unsafe Raw.DynState* _inner;
 
     public string Name
     {
@@ -24,7 +24,7 @@ public partial class State: IDisposable
     }
 
     /// <summary>
-    /// Creates a managed <c>State</c> from a raw handle.
+    /// Creates a managed <c>DynState</c> from a raw handle.
     /// </summary>
     /// <remarks>
     /// Safety: you should not build two managed objects using the same raw handle (may causes use-after-free and double-free).
@@ -32,7 +32,7 @@ public partial class State: IDisposable
     /// This constructor assumes the raw struct is allocated on Rust side.
     /// If implemented, the custom Drop implementation on Rust side WILL run on destruction.
     /// </remarks>
-    public unsafe State(Raw.State* handle)
+    public unsafe DynState(Raw.DynState* handle)
     {
         _inner = handle;
     }
@@ -44,9 +44,9 @@ public partial class State: IDisposable
         {
             if (_inner == null)
             {
-                throw new ObjectDisposedException("State");
+                throw new ObjectDisposedException("DynState");
             }
-            Raw.ConnectorFfiResultVoidBoxIronRdpError result = Raw.State.GetName(_inner, &writeable);
+            Raw.ConnectorFfiResultVoidBoxIronRdpError result = Raw.DynState.GetName(_inner, &writeable);
             if (!result.isOk)
             {
                 throw new IronRdpException(new IronRdpError(result.Err));
@@ -61,10 +61,10 @@ public partial class State: IDisposable
         {
             if (_inner == null)
             {
-                throw new ObjectDisposedException("State");
+                throw new ObjectDisposedException("DynState");
             }
             DiplomatWriteable writeable = new DiplomatWriteable();
-            Raw.ConnectorFfiResultVoidBoxIronRdpError result = Raw.State.GetName(_inner, &writeable);
+            Raw.ConnectorFfiResultVoidBoxIronRdpError result = Raw.DynState.GetName(_inner, &writeable);
             if (!result.isOk)
             {
                 throw new IronRdpException(new IronRdpError(result.Err));
@@ -81,9 +81,9 @@ public partial class State: IDisposable
         {
             if (_inner == null)
             {
-                throw new ObjectDisposedException("State");
+                throw new ObjectDisposedException("DynState");
             }
-            bool retVal = Raw.State.IsTerminal(_inner);
+            bool retVal = Raw.DynState.IsTerminal(_inner);
             return retVal;
         }
     }
@@ -91,7 +91,7 @@ public partial class State: IDisposable
     /// <summary>
     /// Returns the underlying raw handle.
     /// </summary>
-    public unsafe Raw.State* AsFFI()
+    public unsafe Raw.DynState* AsFFI()
     {
         return _inner;
     }
@@ -108,14 +108,14 @@ public partial class State: IDisposable
                 return;
             }
 
-            Raw.State.Destroy(_inner);
+            Raw.DynState.Destroy(_inner);
             _inner = null;
 
             GC.SuppressFinalize(this);
         }
     }
 
-    ~State()
+    ~DynState()
     {
         Dispose();
     }

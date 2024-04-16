@@ -1,34 +1,55 @@
+use std::fs;
+use std::path::Path;
+
+use anyhow::Context as _;
+
+#[cfg(target_os = "windows")]
+const OUTPUT_LIB_NAME: &str = "ironrdp.dll";
+#[cfg(not(target_os = "windows"))]
+const OUTPUT_LIB_NAME: &str = "libironrdp.so";
+
+#[cfg(target_os = "windows")]
+const DOTNET_NATIVE_LIB_NAME: &str = "DevolutionsIronRdp.dll";
+#[cfg(not(target_os = "windows"))]
+const DOTNET_NATIVE_LIB_NAME: &str = "libDevolutionsIronRdp.so";
+
 pub(crate) fn build_dll(sh: &xshell::Shell, release: bool) -> anyhow::Result<()> {
+    println!("Build IronRDP DLL");
+
     let mut args = vec!["build", "--package", "ffi"];
     if release {
         args.push("--release");
     }
     sh.cmd("cargo").args(&args).run()?;
 
-    let target_dir = if release { "release" } else { "debug" };
+    let profile_dir = if release { "release" } else { "debug" };
 
-    let mut path = sh.current_dir();
-    path.push("target");
-    path.push(target_dir);
+    let mut output_dir = sh.current_dir();
+    output_dir.push("target");
+    output_dir.push(profile_dir);
 
-    let dll_name = "ironrdp.dll";
-    let devolution_dll_name = "DevolutionsIronRdp.dll";
+    let output_lib_path = output_dir.join(OUTPUT_LIB_NAME);
+    let dotnet_native_lib_path = output_dir.join(DOTNET_NATIVE_LIB_NAME);
 
-    let mut dll_path = path.clone();
-    dll_path.push(dll_name);
+    // Copy build artifact to the proper native lib folder.
+    // FIXME(@CBenoit): destination should follow the standard structure (e.g.: dependencies/runtimes/win-x64/native/DevolutionsPicky.dll)
+    // See Picky FFI justfile for reference.
+    std::fs::copy(&output_lib_path, &dotnet_native_lib_path).with_context(|| {
+        format!(
+            "failed to copy {} to {}",
+            output_lib_path.display(),
+            dotnet_native_lib_path.display()
+        )
+    })?;
 
-    let mut devolution_dll_path = path.clone();
-    devolution_dll_path.push(devolution_dll_name);
-
-    // copy dll_path to devolution_dll_path
-    std::fs::copy(&dll_path, &devolution_dll_path)?;
-    println!("Copied {:?} to {:?}", dll_path, devolution_dll_path);
+    println!(
+        "Copied {} to {}",
+        output_lib_path.display(),
+        dotnet_native_lib_path.display()
+    );
 
     Ok(())
 }
-
-use std::fs;
-use std::path::Path;
 
 pub(crate) fn build_bindings(sh: &xshell::Shell, skip_dotnet_build: bool) -> anyhow::Result<()> {
     let dotnet_generated_path = "./dotnet/Devolutions.IronRdp/Generated/";
@@ -54,8 +75,7 @@ pub(crate) fn build_bindings(sh: &xshell::Shell, skip_dotnet_build: bool) -> any
         return Ok(());
     }
 
-    sh.change_dir("./dotnet");
-    sh.change_dir("./Devolutions.IronRdp");
+    sh.change_dir("./dotnet/Devolutions.IronRdp/");
 
     sh.cmd("dotnet").arg("build").run()?;
 
@@ -74,5 +94,6 @@ fn remove_cs_files(dir: &Path) -> anyhow::Result<()> {
             }
         }
     }
+
     Ok(())
 }

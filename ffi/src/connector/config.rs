@@ -148,7 +148,7 @@ pub mod ffi {
 
         pub fn build(&self) -> Result<Box<Config>, Box<IronRdpError>> {
             let inner_config = ironrdp::connector::Config {
-                credentials: self.credentials.clone().ok_or("Credentials not set")?,
+                credentials: self.credentials.clone().ok_or("credentials not set")?,
                 domain: self.domain.clone(),
                 enable_tls: self.enable_tls.unwrap_or(false),
                 enable_credssp: self.enable_credssp.unwrap_or(true),
@@ -160,11 +160,11 @@ pub mod ffi {
                 keyboard_functional_keys_count: self.keyboard_functional_keys_count.unwrap_or(12),
                 ime_file_name: self.ime_file_name.clone().unwrap_or_default(),
                 dig_product_id: self.dig_product_id.clone().unwrap_or_default(),
-                desktop_size: self.desktop_size.ok_or("Desktop size not set")?,
+                desktop_size: self.desktop_size.ok_or("desktop size not set")?,
                 bitmap: None,
                 client_build: self.client_build.unwrap_or(0),
-                client_name: self.client_name.clone().ok_or("Client name not set")?,
-                client_dir: self.client_dir.clone().ok_or("Client dir not set")?,
+                client_name: self.client_name.clone().ok_or("client name not set")?,
+                client_dir: self.client_dir.clone().ok_or("client dir not set")?,
 
                 #[cfg(windows)]
                 platform: MajorPlatformType::WINDOWS,
@@ -188,7 +188,7 @@ pub mod ffi {
                 no_server_pointer: self.no_server_pointer.unwrap_or(false),
                 autologon: self.autologon.unwrap_or(false),
                 pointer_software_rendering: self.pointer_software_rendering.unwrap_or(false),
-                performance_flags: self.performance_flags.ok_or("Performance flag is missing")?,
+                performance_flags: self.performance_flags.ok_or("performance flag is missing")?,
             };
 
             Ok(Box::new(Config(inner_config)))
