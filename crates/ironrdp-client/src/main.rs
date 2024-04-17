@@ -19,7 +19,7 @@ fn main() -> anyhow::Result<()> {
     debug!("GUI context initialized");
 
     let window_size = gui.window().inner_size();
-    config.connector.desktop_scale_factor = (gui.window().scale_factor() * 100.0) as u32;
+    config.connector.desktop_scale_factor = 0; // TODO: should this be `(gui.window().scale_factor() * 100.0) as u32`?
     config.connector.desktop_size.width = u16::try_from(window_size.width).unwrap();
     config.connector.desktop_size.height = u16::try_from(window_size.height).unwrap();
 

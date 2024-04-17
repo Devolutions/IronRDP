@@ -2,7 +2,8 @@ use std::rc::Rc;
 
 use ironrdp_connector::connection_activation::ConnectionActivationSequence;
 use ironrdp_connector::ConnectionResult;
-use ironrdp_dvc::{DvcProcessor, DynamicChannelId};
+use ironrdp_displaycontrol::client::DisplayControlClient;
+use ironrdp_dvc::{DrdynvcClient, DvcProcessor, DynamicChannelId};
 use ironrdp_graphics::pointer::DecodedPointer;
 use ironrdp_pdu::geometry::InclusiveRectangle;
 use ironrdp_pdu::input::fast_path::{FastPathInput, FastPathInputEvent};
@@ -151,6 +152,10 @@ impl ActiveStage {
         self.fast_path_processor = processor;
     }
 
+    pub fn set_no_server_pointer(&mut self, no_server_pointer: bool) {
+        self.no_server_pointer = no_server_pointer;
+    }
+
     /// Encodes client-side graceful shutdown request. Note that upon sending this request,
     /// client should wait for server's ShutdownDenied PDU before closing the connection.
     ///
@@ -189,6 +194,39 @@ impl ActiveStage {
         messages: SvcProcessorMessages<C>,
     ) -> SessionResult<Vec<u8>> {
         self.x224_processor.process_svc_processor_messages(messages)
+    }
+
+    pub fn encode_resize(
+        &mut self,
+        width: u16,
+        height: u16,
+        scale_factor: Option<u32>,
+        physical_dims: Option<(u32, u32)>,
+    ) -> Option<SessionResult<Vec<u8>>> {
+        if let Some((display_client, channel_id)) = self.get_dvc_processor::<DisplayControlClient>() {
+            if let Some(channel_id) = channel_id {
+                let svc_messages = match display_client.encode_single_primary_monitor(
+                    channel_id,
+                    width.into(),
+                    height.into(),
+                    scale_factor,
+                    physical_dims,
+                ) {
+                    Ok(messages) => messages,
+                    Err(e) => return Some(Err(SessionError::pdu(e))),
+                };
+
+                return Some(
+                    self.process_svc_processor_messages(SvcProcessorMessages::<DrdynvcClient>::new(svc_messages)),
+                );
+            } else {
+                debug!("Could not encode a resize: Display Control Virtual Channel is not yet connected");
+            }
+        } else {
+            debug!("Could not encode a resize: Display Control Virtual Channel is not available");
+        }
+
+        None
     }
 }
 

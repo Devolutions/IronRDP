@@ -2,13 +2,11 @@ use ironrdp::cliprdr::backend::{ClipboardMessage, CliprdrBackendFactory};
 use ironrdp::connector::connection_activation::ConnectionActivationState;
 use ironrdp::connector::{ConnectionResult, ConnectorResult};
 use ironrdp::displaycontrol::client::DisplayControlClient;
-use ironrdp::dvc::DrdynvcClient;
 use ironrdp::graphics::image_processing::PixelFormat;
 use ironrdp::pdu::input::fast_path::FastPathInputEvent;
 use ironrdp::pdu::write_buf::WriteBuf;
 use ironrdp::session::image::DecodedImage;
 use ironrdp::session::{fast_path, ActiveStage, ActiveStageOutput, GracefulDisconnectReason, SessionResult};
-use ironrdp::svc::SvcProcessorMessages;
 use ironrdp::{cliprdr, connector, rdpdr, rdpsnd, session};
 use ironrdp_tokio::single_sequence_step_read;
 use rdpdr::NoopRdpdrBackend;
@@ -188,34 +186,26 @@ async fn active_session(
                 let input_event = input_event.ok_or_else(|| session::general_err!("GUI is stopped"))?;
 
                 match input_event {
-                    RdpInputEvent::Resize { mut width, mut height, mut scale_factor, mut physical_width, mut physical_height } => {
+                    RdpInputEvent::Resize { mut width, mut height, .. } => {
                         // Find the last resize event
                         while let Ok(newer_event) = input_event_receiver.try_recv() {
-                            if let RdpInputEvent::Resize { width: newer_width, height: newer_height, scale_factor: newer_scale_factor, physical_width: newer_physical_width, physical_height: newer_physical_height } = newer_event {
+                            if let RdpInputEvent::Resize {
+                                width: newer_width,
+                                height: newer_height,
+                                ..
+                            } = newer_event {
                                 width = newer_width;
                                 height = newer_height;
-                                scale_factor = newer_scale_factor;
-                                physical_width = newer_physical_width;
-                                physical_height = newer_physical_height;
                             }
                         }
 
                         info!(width, height, "resize event");
 
-                        if let Some((display_client, channel_id)) = active_stage.get_dvc_processor::<DisplayControlClient>() {
-                            if let Some(channel_id) = channel_id {
-                                let svc_messages = display_client.encode_single_primary_monitor(channel_id, width.into(), height.into(), scale_factor, physical_width, physical_height)
-                                    .map_err(|e| session::custom_err!("DisplayControl", e))?;
-                                let frame = active_stage.process_svc_processor_messages(SvcProcessorMessages::<DrdynvcClient>::new(svc_messages))?;
-                                vec![ActiveStageOutput::ResponseFrame(frame)]
-                            } else {
-                                // TODO: could add a mechanism that withholds the resize event until the channel is created rather than reconnecting
-                                debug!("Display Control Virtual Channel is not yet connected, reconnecting with new size");
-                                return Ok(RdpControlFlow::ReconnectWithNewSize { width, height })
-                            }
+                        if let Some(response_frame) = active_stage.encode_resize(width, height, None, None) {
+                            vec![ActiveStageOutput::ResponseFrame(response_frame?)]
                         } else {
                             // TODO(#271): use the "auto-reconnect cookie": https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/15b0d1c9-2891-4adb-a45e-deb4aeeeab7c
-                            debug!("Display Control Virtual Channel is not available, reconnecting with new size");
+                            debug!("Reconnecting with new size");
                             return Ok(RdpControlFlow::ReconnectWithNewSize { width, height })
                         }
                     },
@@ -330,10 +320,10 @@ async fn active_session(
                             pointer_software_rendering,
                         } = connection_activation.state
                         {
-                            debug!("Deactivation-Reactivation Sequence completed");
+                            debug!(?desktop_size, "Deactivation-Reactivation Sequence completed");
+                            // Update image size with the new desktop size.
                             image = DecodedImage::new(PixelFormat::RgbA32, desktop_size.width, desktop_size.height);
-                            // Create a new [`FastPathProcessor`] with potentially updated
-                            // io/user channel ids.
+                            // Update the active stage with the new channel IDs and pointer settings.
                             active_stage.set_fastpath_processor(
                                 fast_path::ProcessorBuilder {
                                     io_channel_id,
@@ -343,6 +333,7 @@ async fn active_session(
                                 }
                                 .build(),
                             );
+                            active_stage.set_no_server_pointer(no_server_pointer);
                             break 'activation_seq;
                         }
                     }

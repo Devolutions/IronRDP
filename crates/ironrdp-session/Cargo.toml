@@ -22,4 +22,5 @@ ironrdp-dvc.workspace = true
 ironrdp-error.workspace = true
 ironrdp-graphics.workspace = true
 ironrdp-pdu = { workspace = true, features = ["std"] }
+ironrdp-displaycontrol.workspace = true
 tracing.workspace = true

@@ -236,24 +236,38 @@ impl DisplayControlMonitorLayout {
     }
 
     /// Creates a new [`DisplayControlMonitorLayout`] with a single primary monitor
-    /// with the given `width` and `height`.
+    /// with the given `width` and `height`. `width` and `height` MUST be >= 200 and <= 8192,
+    /// and if `width` is odd, it will be adjusted to the nearest even number by subtracting 1.
+    ///
+    /// - If `scale_factor` is provided, it MUST be in the valid range (100..=500 percent).
+    /// - If `physical_dims` are provided, they MUST be in the valid range (10..=10000 millimeters).
     pub fn new_single_primary_monitor(
         width: u32,
         height: u32,
-        scale_factor: u32,
-        physical_width: u32,
-        physical_height: u32,
+        scale_factor: Option<u32>,
+        physical_dims: Option<(u32, u32)>,
     ) -> PduResult<Self> {
-        let monitors =
-            vec![
-                MonitorLayoutEntry::new_primary(width, height, scale_factor, physical_width, physical_height)?
-                    .with_orientation(if width > height {
-                        MonitorOrientation::Landscape
-                    } else {
-                        MonitorOrientation::Portrait
-                    }),
-            ];
-        Ok(DisplayControlMonitorLayout::new(&monitors).unwrap())
+        let entry = MonitorLayoutEntry::new_primary(width, height)?.with_orientation(if width > height {
+            MonitorOrientation::Landscape
+        } else {
+            MonitorOrientation::Portrait
+        });
+
+        let entry = if let Some(scale_factor) = scale_factor {
+            entry
+                .with_desktop_scale_factor(scale_factor)?
+                .with_device_scale_factor(DeviceScaleFactor::Scale100Percent)
+        } else {
+            entry
+        };
+
+        let entry = if let Some((physical_width, physical_height)) = physical_dims {
+            entry.with_physical_dimensions(physical_width, physical_height)?
+        } else {
+            entry
+        };
+
+        Ok(DisplayControlMonitorLayout::new(&[entry]).unwrap())
     }
 
     pub fn monitors(&self) -> &[MonitorLayoutEntry] {
@@ -363,13 +377,7 @@ impl MonitorLayoutEntry {
     ///    to the nearest even number by subtracting 1.
     /// - `desktop_scale_factor` SHOULD be >= 100 and <= 500. If it is not,
     ///    it will be adjusted to the nearest valid value.
-    fn new_impl(
-        mut width: u32,
-        height: u32,
-        mut desktop_scale_factor: u32,
-        physical_width: u32,
-        physical_height: u32,
-    ) -> PduResult<Self> {
+    fn new_impl(mut width: u32, height: u32) -> PduResult<Self> {
         if width % 2 != 0 {
             let prev_width = width;
             width = width.saturating_sub(1);
@@ -377,22 +385,6 @@ impl MonitorLayoutEntry {
                 "Monitor width cannot be odd, adjusting from [{}] to [{}]",
                 prev_width, width
             )
-        }
-
-        if desktop_scale_factor < 100 {
-            warn!(
-                "Desktop scale factor [{}] is less than 100, adjusting to 100",
-                desktop_scale_factor
-            );
-            desktop_scale_factor = 100;
-        }
-
-        if desktop_scale_factor > 500 {
-            warn!(
-                "Desktop scale factor [{}] is greater than 500, adjusting to 500",
-                desktop_scale_factor
-            );
-            desktop_scale_factor = 500;
         }
 
         validate_dimensions(width, height)?;
@@ -403,36 +395,24 @@ impl MonitorLayoutEntry {
             top: 0,
             width,
             height,
-            physical_width,
-            physical_height,
+            physical_width: 0,
+            physical_height: 0,
             orientation: 0,
-            desktop_scale_factor,
-            device_scale_factor: 100,
+            desktop_scale_factor: 0,
+            device_scale_factor: 0,
         })
     }
 
     /// Creates a new primary monitor layout entry.
-    pub fn new_primary(
-        width: u32,
-        height: u32,
-        desktop_scale_factor: u32,
-        physical_width: u32,
-        physical_height: u32,
-    ) -> PduResult<Self> {
-        let mut entry = Self::new_impl(width, height, desktop_scale_factor, physical_width, physical_height)?;
+    pub fn new_primary(width: u32, height: u32) -> PduResult<Self> {
+        let mut entry = Self::new_impl(width, height)?;
         entry.is_primary = true;
         Ok(entry)
     }
 
     /// Creates a new secondary monitor layout entry.
-    pub fn new_secondary(
-        width: u32,
-        height: u32,
-        desktop_scale_factor: u32,
-        physical_width: u32,
-        physical_height: u32,
-    ) -> PduResult<Self> {
-        Self::new_impl(width, height, desktop_scale_factor, physical_width, physical_height)
+    pub fn new_secondary(width: u32, height: u32) -> PduResult<Self> {
+        Self::new_impl(width, height)
     }
 
     /// Sets the monitor's orientation. (Default is [`MonitorOrientation::Landscape`])
@@ -461,7 +441,7 @@ impl MonitorLayoutEntry {
         self
     }
 
-    /// Sets the monitor's desktop scale factor in percent. (Default is `100`)
+    /// Sets the monitor's desktop scale factor in percent.
     ///
     /// NOTE: As specified in [MS-RDPEDISP], if the desktop scale factor is not in the valid range
     /// (100..=500 percent), the monitor desktop scale factor is considered invalid and should be ignored.

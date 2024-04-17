@@ -19,7 +19,7 @@ use crate::{legacy, Config, ConnectionFinalizationSequence, ConnectorResult, Des
 #[derive(Debug, Clone)]
 pub struct ConnectionActivationSequence {
     pub state: ConnectionActivationState,
-    pub config: Config,
+    config: Config,
 }
 
 impl ConnectionActivationSequence {
@@ -127,6 +127,15 @@ impl Sequence for ConnectionActivationSequence {
                     }
                 }
 
+                // At this point we have already sent a requested desktop size to the server -- either as a part of the
+                // [`TS_UD_CS_CORE`] (on initial connection) or the [`DISPLAYCONTROL_MONITOR_LAYOUT`] (on resize event).
+                //
+                // The server is therefore responding with a desktop size here, which will be close to the requested size but
+                // may be slightly different due to server-side constraints. We should use this negotiated size for the rest of
+                // the session.
+                //
+                // [TS_UD_CS_CORE]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/00f1da4a-ee9c-421a-852f-c19f92343d73
+                // [DISPLAYCONTROL_MONITOR_LAYOUT]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpedisp/ea2de591-9203-42cd-9908-be7a55237d1c
                 let desktop_size = capability_sets
                     .iter()
                     .find_map(|c| match c {
@@ -142,7 +151,7 @@ impl Sequence for ConnectionActivationSequence {
                     });
 
                 let client_confirm_active = rdp::headers::ShareControlPdu::ClientConfirmActive(
-                    create_client_confirm_active(&self.config, capability_sets),
+                    create_client_confirm_active(&self.config, capability_sets, desktop_size),
                 );
 
                 debug!(message = ?client_confirm_active, "Send");
@@ -249,6 +258,7 @@ const DEFAULT_POINTER_CACHE_SIZE: u16 = 32;
 fn create_client_confirm_active(
     config: &Config,
     mut server_capability_sets: Vec<CapabilitySet>,
+    desktop_size: DesktopSize,
 ) -> rdp::capability_sets::ClientConfirmActive {
     use ironrdp_pdu::rdp::capability_sets::*;
 
@@ -276,8 +286,8 @@ fn create_client_confirm_active(
         }),
         CapabilitySet::Bitmap(Bitmap {
             pref_bits_per_pix: 32,
-            desktop_width: config.desktop_size.width,
-            desktop_height: config.desktop_size.height,
+            desktop_width: desktop_size.width,
+            desktop_height: desktop_size.height,
             // This is required to be true in order for the Microsoft::Windows::RDS::DisplayControl DVC to work.
             desktop_resize_flag: true,
             drawing_flags,
@@ -362,7 +372,7 @@ fn create_client_confirm_active(
         .any(|c| matches!(&c, CapabilitySet::MultiFragmentUpdate(_)))
     {
         server_capability_sets.push(CapabilitySet::MultiFragmentUpdate(MultifragmentUpdate {
-            max_request_size: 1024,
+            max_request_size: 8 * 1024 * 1024, // 8 MB
         }));
     }
 

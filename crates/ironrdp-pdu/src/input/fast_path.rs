@@ -34,7 +34,7 @@ impl PduEncode for FastPathInputHeader {
         header.set_bits(6..8, self.flags.bits());
         dst.write_u8(header);
 
-        per::write_long_length(dst, cast_length!("len", self.data_length + self.size())?);
+        per::write_length(dst, cast_length!("len", self.data_length + self.size())?);
         if self.num_events > 15 {
             dst.write_u8(self.num_events);
         }
@@ -48,7 +48,9 @@ impl PduEncode for FastPathInputHeader {
 
     fn size(&self) -> usize {
         let num_events_length = if self.num_events < 16 { 0 } else { 1 };
-        Self::FIXED_PART_SIZE + per::sizeof_long_length() + num_events_length
+        Self::FIXED_PART_SIZE
+            + per::sizeof_length(self.data_length as u16 + num_events_length as u16 + 1)
+            + num_events_length
     }
 }
 

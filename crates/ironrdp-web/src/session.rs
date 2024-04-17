@@ -643,6 +643,7 @@ impl Session {
                                     }
                                     .build(),
                                 );
+                                active_stage.set_no_server_pointer(no_server_pointer);
                                 break 'activation_seq;
                             }
                         }
@@ -802,6 +803,7 @@ fn build_config(
         autologon: false,
         pointer_software_rendering: false,
         performance_flags: PerformanceFlags::default(),
+        desktop_scale_factor: 0,
     }
 }
 

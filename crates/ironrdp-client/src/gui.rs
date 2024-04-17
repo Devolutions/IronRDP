@@ -233,6 +233,8 @@ impl GuiContext {
                     // TODO: is there something we should handle here?
                 }
                 Event::UserEvent(RdpOutputEvent::Image { buffer, width, height }) => {
+                    debug!(width = ?width, height = ?height, "Received image with size");
+                    debug!(window_physical_size = ?window.inner_size(), "Drawing image to the window with size");
                     surface
                         .resize(
                             NonZeroU32::new(u32::from(width)).unwrap(),
