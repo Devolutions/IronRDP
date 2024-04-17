@@ -27,7 +27,7 @@ pub mod ffi {
     }
 
     impl ClientConnectorState {
-        pub fn get_type(&self) -> Result<ClientConnectorStateType, Box<IronRdpError>> {
+        pub fn get_enum_type(&self) -> Result<ClientConnectorStateType, Box<IronRdpError>> {
             let res = match &self
                 .0
                 .as_ref()

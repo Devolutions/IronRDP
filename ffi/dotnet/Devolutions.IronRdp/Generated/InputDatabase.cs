@@ -41,6 +41,28 @@ public partial class InputDatabase: IDisposable
         }
     }
 
+    /// <returns>
+    /// A <c>FastPathInputEventIterator</c> allocated on Rust side.
+    /// </returns>
+    public FastPathInputEventIterator Apply(Operation operation)
+    {
+        unsafe
+        {
+            if (_inner == null)
+            {
+                throw new ObjectDisposedException("InputDatabase");
+            }
+            Raw.Operation* operationRaw;
+            operationRaw = operation.AsFFI();
+            if (operationRaw == null)
+            {
+                throw new ObjectDisposedException("Operation");
+            }
+            Raw.FastPathInputEventIterator* retVal = Raw.InputDatabase.Apply(_inner, operationRaw);
+            return new FastPathInputEventIterator(retVal);
+        }
+    }
+
     /// <summary>
     /// Returns the underlying raw handle.
     /// </summary>

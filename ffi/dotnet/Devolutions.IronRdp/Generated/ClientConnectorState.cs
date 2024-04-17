@@ -63,11 +63,11 @@ public partial class ClientConnectorState: IDisposable
         }
     }
 
-    public ClientConnectorStateType Type
+    public ClientConnectorStateType EnumType
     {
         get
         {
-            return GetType();
+            return GetEnumType();
         }
     }
 
@@ -89,7 +89,7 @@ public partial class ClientConnectorState: IDisposable
     /// <returns>
     /// A <c>ClientConnectorStateType</c> allocated on C# side.
     /// </returns>
-    public ClientConnectorStateType GetType()
+    public ClientConnectorStateType GetEnumType()
     {
         unsafe
         {
@@ -97,7 +97,7 @@ public partial class ClientConnectorState: IDisposable
             {
                 throw new ObjectDisposedException("ClientConnectorState");
             }
-            Raw.ConnectorStateFfiResultClientConnectorStateTypeBoxIronRdpError result = Raw.ClientConnectorState.GetType(_inner);
+            Raw.ConnectorStateFfiResultClientConnectorStateTypeBoxIronRdpError result = Raw.ClientConnectorState.GetEnumType(_inner);
             if (!result.isOk)
             {
                 throw new IronRdpException(new IronRdpError(result.Err));

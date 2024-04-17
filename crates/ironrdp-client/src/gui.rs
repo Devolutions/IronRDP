@@ -141,7 +141,6 @@ impl GuiContext {
                             x: (position.x / sf) as u16,
                             y: (position.y / sf) as u16,
                         });
-
                         let input_events = input_database.apply(std::iter::once(operation));
 
                         send_fast_path_events(&input_event_sender, input_events);

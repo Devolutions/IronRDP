@@ -7,7 +7,7 @@ pub mod ffi {
         connector::{ffi::ConnectionActivationSequence, result::ffi::ConnectionResult},
         error::{ffi::IronRdpError, IncorrectEnumTypeError, ValueConsumedError},
         graphics::ffi::DecodedPointer,
-        pdu::ffi::{Action, InclusiveRectangle},
+        pdu::ffi::{Action, FastPathInputEventIterator, InclusiveRectangle},
         utils::ffi::{BytesSlice, Position},
     };
 
@@ -55,6 +55,17 @@ pub mod ffi {
             let outputs = self.0.process(&mut image.0, action.0, payload)?;
             Ok(Box::new(ActiveStageOutputIterator(outputs)))
         }
+
+        pub fn process_fastpath_input(
+            &mut self,
+            image: &mut DecodedImage,
+            fastpath_input: &FastPathInputEventIterator,
+        ) -> Result<Box<ActiveStageOutputIterator>, Box<IronRdpError>> {
+            Ok(self
+                .0
+                .process_fastpath_input(&mut image.0, &fastpath_input.0)
+                .map(|outputs| Box::new(ActiveStageOutputIterator(outputs)))?)
+        }
     }
 
     pub enum ActiveStageOutputType {
@@ -69,7 +80,7 @@ pub mod ffi {
     }
 
     impl ActiveStageOutput {
-        pub fn get_type(&self) -> ActiveStageOutputType {
+        pub fn get_enum_type(&self) -> ActiveStageOutputType {
             match &self.0 {
                 ironrdp::session::ActiveStageOutput::ResponseFrame { .. } => ActiveStageOutputType::ResponseFrame,
                 ironrdp::session::ActiveStageOutput::GraphicsUpdate { .. } => ActiveStageOutputType::GraphicsUpdate,

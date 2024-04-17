@@ -58,4 +58,18 @@ pub mod ffi {
             Ok(ironrdp::pdu::find_size(bytes)?.map(PduInfo).map(Box::new))
         }
     }
+
+    #[diplomat::opaque]
+    pub struct FastPathInputEvent(pub ironrdp::pdu::input::fast_path::FastPathInputEvent);
+
+    #[diplomat::opaque]
+    pub struct FastPathInputEventIterator(pub Vec<ironrdp::pdu::input::fast_path::FastPathInputEvent>);
+
+    
+}
+
+impl From<Vec<ironrdp::pdu::input::fast_path::FastPathInputEvent>> for ffi::FastPathInputEventIterator{
+    fn from(value: Vec<ironrdp::pdu::input::fast_path::FastPathInputEvent>) -> Self {
+        ffi::FastPathInputEventIterator(value)
+    }
 }

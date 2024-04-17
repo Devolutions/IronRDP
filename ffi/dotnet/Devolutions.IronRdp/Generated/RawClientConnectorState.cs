@@ -16,8 +16,8 @@ public partial struct ClientConnectorState
 {
     private const string NativeLib = "DevolutionsIronRdp";
 
-    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ClientConnectorState_get_type", ExactSpelling = true)]
-    public static unsafe extern ConnectorStateFfiResultClientConnectorStateTypeBoxIronRdpError GetType(ClientConnectorState* self);
+    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ClientConnectorState_get_enum_type", ExactSpelling = true)]
+    public static unsafe extern ConnectorStateFfiResultClientConnectorStateTypeBoxIronRdpError GetEnumType(ClientConnectorState* self);
 
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ClientConnectorState_get_connection_initiation_wait_confirm_requested_protocol", ExactSpelling = true)]
     public static unsafe extern ConnectorStateFfiResultBoxSecurityProtocolBoxIronRdpError GetConnectionInitiationWaitConfirmRequestedProtocol(ClientConnectorState* self);

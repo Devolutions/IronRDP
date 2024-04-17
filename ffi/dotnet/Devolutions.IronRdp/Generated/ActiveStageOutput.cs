@@ -23,6 +23,14 @@ public partial class ActiveStageOutput: IDisposable
         }
     }
 
+    public ActiveStageOutputType EnumType
+    {
+        get
+        {
+            return GetEnumType();
+        }
+    }
+
     public InclusiveRectangle GraphicsUpdate
     {
         get
@@ -63,14 +71,6 @@ public partial class ActiveStageOutput: IDisposable
         }
     }
 
-    public ActiveStageOutputType Type
-    {
-        get
-        {
-            return GetType();
-        }
-    }
-
     /// <summary>
     /// Creates a managed <c>ActiveStageOutput</c> from a raw handle.
     /// </summary>
@@ -88,7 +88,7 @@ public partial class ActiveStageOutput: IDisposable
     /// <returns>
     /// A <c>ActiveStageOutputType</c> allocated on C# side.
     /// </returns>
-    public ActiveStageOutputType GetType()
+    public ActiveStageOutputType GetEnumType()
     {
         unsafe
         {
@@ -96,7 +96,7 @@ public partial class ActiveStageOutput: IDisposable
             {
                 throw new ObjectDisposedException("ActiveStageOutput");
             }
-            Raw.ActiveStageOutputType retVal = Raw.ActiveStageOutput.GetType(_inner);
+            Raw.ActiveStageOutputType retVal = Raw.ActiveStageOutput.GetEnumType(_inner);
             return (ActiveStageOutputType)retVal;
         }
     }
