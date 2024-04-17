@@ -37,7 +37,9 @@ const DESKTOP_ORIENTATION_SIZE: usize = 2;
 const DESKTOP_SCALE_FACTOR_SIZE: usize = 4;
 const DEVICE_SCALE_FACTOR_SIZE: usize = 4;
 
-/// TS_UD_CS_CORE (required part)
+/// 2.2.1.3.2 Client Core Data (TS_UD_CS_CORE) (required part)
+///
+/// [2.2.1.3.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/00f1da4a-ee9c-421a-852f-c19f92343d73
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClientCoreData {
     pub version: RdpVersion,
@@ -182,7 +184,12 @@ impl<'de> PduDecode<'de> for ClientCoreData {
     }
 }
 
-/// TS_UD_CS_CORE (optional part)
+/// 2.2.1.3.2 Client Core Data (TS_UD_CS_CORE) (optional part)
+///
+/// For every field in this structure, the previous fields MUST be present in order to be a valid structure.
+/// It is incumbent on the user of this structure to ensure that the structure is valid.
+///
+/// [2.2.1.3.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/00f1da4a-ee9c-421a-852f-c19f92343d73
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ClientCoreOptionalData {
     /// The requested color depth. Values in this field MUST be ignored if the highColorDepth field is present.
@@ -217,26 +224,56 @@ impl PduEncode for ClientCoreOptionalData {
         }
 
         if let Some(value) = self.client_product_id {
+            if self.post_beta2_color_depth.is_none() {
+                return Err(invalid_message_err!(
+                    "postBeta2ColorDepth",
+                    "postBeta2ColorDepth must be present"
+                ));
+            }
             dst.write_u16(value);
         }
 
         if let Some(value) = self.serial_number {
+            if self.client_product_id.is_none() {
+                return Err(invalid_message_err!(
+                    "clientProductId",
+                    "clientProductId must be present"
+                ));
+            }
             dst.write_u32(value);
         }
 
         if let Some(value) = self.high_color_depth {
+            if self.serial_number.is_none() {
+                return Err(invalid_message_err!("serialNumber", "serialNumber must be present"));
+            }
             dst.write_u16(value.to_u16().unwrap());
         }
 
         if let Some(value) = self.supported_color_depths {
+            if self.high_color_depth.is_none() {
+                return Err(invalid_message_err!("highColorDepth", "highColorDepth must be present"));
+            }
             dst.write_u16(value.bits());
         }
 
         if let Some(value) = self.early_capability_flags {
+            if self.supported_color_depths.is_none() {
+                return Err(invalid_message_err!(
+                    "supportedColorDepths",
+                    "supportedColorDepths must be present"
+                ));
+            }
             dst.write_u16(value.bits());
         }
 
         if let Some(ref value) = self.dig_product_id {
+            if self.early_capability_flags.is_none() {
+                return Err(invalid_message_err!(
+                    "earlyCapabilityFlags",
+                    "earlyCapabilityFlags must be present"
+                ));
+            }
             let mut dig_product_id_buffer = utils::to_utf16_bytes(value);
             dig_product_id_buffer.resize(DIG_PRODUCT_ID_SIZE - 2, 0);
             dig_product_id_buffer.extend_from_slice([0; 2].as_ref()); // UTF-16 null terminator
@@ -245,31 +282,67 @@ impl PduEncode for ClientCoreOptionalData {
         }
 
         if let Some(value) = self.connection_type {
+            if self.dig_product_id.is_none() {
+                return Err(invalid_message_err!("digProductId", "digProductId must be present"));
+            }
             dst.write_u8(value.to_u8().unwrap());
             write_padding!(dst, 1);
         }
 
         if let Some(value) = self.server_selected_protocol {
+            if self.connection_type.is_none() {
+                return Err(invalid_message_err!("connectionType", "connectionType must be present"));
+            }
             dst.write_u32(value.bits())
         }
 
         if let Some(value) = self.desktop_physical_width {
+            if self.server_selected_protocol.is_none() {
+                return Err(invalid_message_err!(
+                    "serverSelectedProtocol",
+                    "serverSelectedProtocol must be present"
+                ));
+            }
             dst.write_u32(value);
         }
 
         if let Some(value) = self.desktop_physical_height {
+            if self.desktop_physical_width.is_none() {
+                return Err(invalid_message_err!(
+                    "desktopPhysicalWidth",
+                    "desktopPhysicalWidth must be present"
+                ));
+            }
             dst.write_u32(value);
         }
 
         if let Some(value) = self.desktop_orientation {
+            if self.desktop_physical_height.is_none() {
+                return Err(invalid_message_err!(
+                    "desktopPhysicalHeight",
+                    "desktopPhysicalHeight must be present"
+                ));
+            }
             dst.write_u16(value);
         }
 
         if let Some(value) = self.desktop_scale_factor {
+            if self.desktop_orientation.is_none() {
+                return Err(invalid_message_err!(
+                    "desktopOrientation",
+                    "desktopOrientation must be present"
+                ));
+            }
             dst.write_u32(value);
         }
 
         if let Some(value) = self.device_scale_factor {
+            if self.desktop_scale_factor.is_none() {
+                return Err(invalid_message_err!(
+                    "desktopScaleFactor",
+                    "desktopScaleFactor must be present"
+                ));
+            }
             dst.write_u32(value);
         }
 
