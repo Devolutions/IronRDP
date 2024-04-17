@@ -203,8 +203,8 @@ public partial class MainWindow : Window
             return;
         }
         Console.WriteLine($"Key pressed: {e!.Key}");
-        Key key = e.Key;
-        var keyOperation = Scancode.FromU16((ushort)e.Key).AsOperationKeyPressed();
+        PhysicalKey physicalKey = e.PhysicalKey;
+        var keyOperation = Scancode.FromU16(KeyCodeMapper.GetScancode(physicalKey)).AsOperationKeyPressed();
         var fastpath = inputDatabase!.Apply(keyOperation);
         var output = activeStage.ProcessFastpathInput(decodedImage, fastpath);
         var _ = HandleActiveStageOutput(output);
