@@ -438,16 +438,16 @@ fn create_client_confirm_active(
             0x00, 0x00, // helpExtendedKeyFlag
             0x00, 0x00, // windowManagerKeyFlag
         ]),
-        CapabilitySet::OffscreenBitmapCache(OffscreenBitmapCache {
-            is_supported: false,
-            cache_size: 0,
-            cache_entries: 0,
-        }),
         CapabilitySet::LargePointer(LargePointer {
             // Setting `LargePointerSupportFlags::UP_TO_384X384_PIXELS` allows server to send
             // `TS_FP_LARGEPOINTERATTRIBUTE` update messages, which are required for client-side
             // rendering of pointers bigger than 96x96 pixels.
-            flags: LargePointerSupportFlags::UP_TO_384X384_PIXELS,
+            flags: LargePointerSupportFlags::UP_TO_96X96_PIXELS | LargePointerSupportFlags::UP_TO_384X384_PIXELS,
+        }),
+        CapabilitySet::OffscreenBitmapCache(OffscreenBitmapCache {
+            is_supported: false,
+            cache_size: 0,
+            cache_entries: 0,
         }),
         CapabilitySet::SurfaceCommands(SurfaceCommands {
             flags: CmdFlags::SET_SURFACE_BITS | CmdFlags::STREAM_SURFACE_BITS | CmdFlags::FRAME_MARKER,
