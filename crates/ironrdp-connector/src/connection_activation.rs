@@ -368,13 +368,51 @@ fn create_client_confirm_active(
             support_level: SupportLevel::ColorFull,
         }),
         CapabilitySet::GlyphCache(GlyphCache {
-            glyph_cache: [CacheDefinition {
-                entries: 0,
-                max_cell_size: 0,
-            }; GLYPH_CACHE_NUM],
+            glyph_cache: [
+                CacheDefinition {
+                    entries: 254,
+                    max_cell_size: 4,
+                },
+                CacheDefinition {
+                    entries: 254,
+                    max_cell_size: 4,
+                },
+                CacheDefinition {
+                    entries: 254,
+                    max_cell_size: 8,
+                },
+                CacheDefinition {
+                    entries: 254,
+                    max_cell_size: 8,
+                },
+                CacheDefinition {
+                    entries: 254,
+                    max_cell_size: 16,
+                },
+                CacheDefinition {
+                    entries: 254,
+                    max_cell_size: 32,
+                },
+                CacheDefinition {
+                    entries: 254,
+                    max_cell_size: 64,
+                },
+                CacheDefinition {
+                    entries: 254,
+                    max_cell_size: 128,
+                },
+                CacheDefinition {
+                    entries: 254,
+                    max_cell_size: 256,
+                },
+                CacheDefinition {
+                    entries: 254,
+                    max_cell_size: 256,
+                },
+            ],
             frag_cache: CacheDefinition {
-                entries: 0,
-                max_cell_size: 0,
+                entries: 256,
+                max_cell_size: 256,
             },
             glyph_support_level: GlyphSupportLevel::None,
         }),
