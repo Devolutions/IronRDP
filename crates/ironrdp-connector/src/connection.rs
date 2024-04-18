@@ -699,12 +699,12 @@ fn create_gcc_blocks<'a>(
         } else {
             Some(ClientNetworkData { channels })
         },
-        // TODO(#139): support for Some(ClientClusterData { flags: RedirectionFlags::REDIRECTION_SUPPORTED, redirection_version: RedirectionVersion::V4, redirected_session_id: 0, }),
-        monitor: None,
         // TODO(#140): support for Client Message Channel Data (https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/f50e791c-de03-4b25-b17e-e914c9020bc3)
-        message_channel: None,
+        message_channel: Some(ClientMessageChannelData {}),
         // TODO(#140): support for Some(MultiTransportChannelData { flags: MultiTransportFlags::empty(), })
         multi_transport_channel: None,
+        // TODO(#139): support for Some(ClientClusterData { flags: RedirectionFlags::REDIRECTION_SUPPORTED, redirection_version: RedirectionVersion::V4, redirected_session_id: 0, }),
+        monitor: None,
         monitor_extended: None,
     }
 }

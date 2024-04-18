@@ -65,9 +65,9 @@ pub struct ClientGccBlocks {
     /// and what is surprising - Windows RDP server accepts this GCC block.
     /// Because of this, the Network GCC block is made optional in IronRDP.
     pub network: Option<ClientNetworkData>,
-    pub monitor: Option<ClientMonitorData>,
     pub message_channel: Option<ClientMessageChannelData>,
     pub multi_transport_channel: Option<MultiTransportChannelData>,
+    pub monitor: Option<ClientMonitorData>,
     pub monitor_extended: Option<ClientMonitorExtendedData>,
 }
 
@@ -95,16 +95,16 @@ impl PduEncode for ClientGccBlocks {
             UserDataHeader::encode(dst, ClientGccType::NetworkData, network)?;
         }
 
-        if let Some(ref monitor) = self.monitor {
-            UserDataHeader::encode(dst, ClientGccType::MonitorData, monitor)?;
-        }
-
         if let Some(ref message_channel) = self.message_channel {
             UserDataHeader::encode(dst, ClientGccType::MessageChannelData, message_channel)?;
         }
 
         if let Some(ref multi_transport_channel) = self.multi_transport_channel {
             UserDataHeader::encode(dst, ClientGccType::MultiTransportChannelData, multi_transport_channel)?;
+        }
+
+        if let Some(ref monitor) = self.monitor {
+            UserDataHeader::encode(dst, ClientGccType::MonitorData, monitor)?;
         }
 
         if let Some(ref monitor_extended) = self.monitor_extended {
