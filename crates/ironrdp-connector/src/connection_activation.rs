@@ -432,6 +432,12 @@ fn create_client_confirm_active(
         }),
         CapabilitySet::Control(Control::default()),
         CapabilitySet::ColorCache(ColorCache::default()),
+        CapabilitySet::WindowActivation(vec![
+            0x00, 0x00, // helpKeyFlag
+            0x00, 0x00, // helpKeyIndexFlag
+            0x00, 0x00, // helpExtendedKeyFlag
+            0x00, 0x00, // windowManagerKeyFlag
+        ]),
         CapabilitySet::OffscreenBitmapCache(OffscreenBitmapCache {
             is_supported: false,
             cache_size: 0,
