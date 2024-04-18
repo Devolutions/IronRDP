@@ -1,3 +1,4 @@
+use core::fmt;
 use std::borrow::Cow;
 use std::{io, str};
 
@@ -22,7 +23,7 @@ const SERVER_CHANNEL_SIZE: usize = 2;
 ///
 /// In RDP, an ANSI character is a 8-bit Windows-1252 character set unit. ANSI character set
 /// is using all the code values from 0 to 255, as such any u8 value is a valid ANSI character.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Clone, PartialEq, Eq, Hash)]
 pub struct ChannelName {
     inner: Cow<'static, [u8; Self::SIZE]>,
 }
@@ -90,6 +91,21 @@ impl ChannelName {
         } else {
             None
         }
+    }
+}
+
+impl fmt::Display for ChannelName {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // Convert the inner bytes to a string, stopping at the first null terminator if present.
+        let string = self.as_str().unwrap_or_default();
+        write!(f, "{}", string)
+    }
+}
+
+impl fmt::Debug for ChannelName {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // Use the Display implementation for Debug to show it as an ASCII string.
+        write!(f, "{}", self)
     }
 }
 
