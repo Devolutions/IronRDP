@@ -416,14 +416,14 @@ fn create_client_confirm_active(
             },
             glyph_support_level: GlyphSupportLevel::None,
         }),
+        CapabilitySet::VirtualChannel(VirtualChannel {
+            flags: VirtualChannelFlags::NO_COMPRESSION,
+            chunk_size: Some(0x00000640), // ignored
+        }),
         CapabilitySet::OffscreenBitmapCache(OffscreenBitmapCache {
             is_supported: false,
             cache_size: 0,
             cache_entries: 0,
-        }),
-        CapabilitySet::VirtualChannel(VirtualChannel {
-            flags: VirtualChannelFlags::NO_COMPRESSION,
-            chunk_size: Some(0), // ignored
         }),
         CapabilitySet::Sound(Sound {
             flags: SoundFlags::empty(),
