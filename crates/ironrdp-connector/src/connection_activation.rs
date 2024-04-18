@@ -1,6 +1,9 @@
 use std::mem;
 
-use ironrdp_pdu::rdp::{self, capability_sets::CapabilitySet};
+use ironrdp_pdu::{
+    gcc::KeyboardType,
+    rdp::{self, capability_sets::CapabilitySet},
+};
 
 use crate::{legacy, Config, ConnectionFinalizationSequence, ConnectorResult, DesktopSize, Sequence, State, Written};
 
@@ -348,11 +351,17 @@ fn create_client_confirm_active(
             pointer_cache_size: DEFAULT_POINTER_CACHE_SIZE,
         }),
         CapabilitySet::Input(Input {
-            input_flags: InputFlags::all(),
+            // InputFlags(SCANCODES | MOUSEX | FASTPATH_INPUT | FASTPATH_INPUT_2 | TS_MOUSE_HWHEEL | TS_QOE_TIMESTAMPS)
+            input_flags: InputFlags::SCANCODES
+                | InputFlags::MOUSEX
+                | InputFlags::FASTPATH_INPUT
+                | InputFlags::FASTPATH_INPUT_2
+                | InputFlags::TS_MOUSE_HWHEEL
+                | InputFlags::TS_QOE_TIMESTAMPS,
             keyboard_layout: 0,
-            keyboard_type: Some(config.keyboard_type),
-            keyboard_subtype: config.keyboard_subtype,
-            keyboard_function_key: config.keyboard_functional_keys_count,
+            keyboard_type: Some(KeyboardType::IbmEnhanced),
+            keyboard_subtype: 0,
+            keyboard_function_key: 0x0000000C,
             keyboard_ime_filename: config.ime_file_name.clone(),
         }),
         CapabilitySet::Brush(Brush {
