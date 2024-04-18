@@ -33,6 +33,7 @@ pub use self::bitmap_codecs::{
     RfxCapset, RfxClientCapsContainer, RfxICap, RfxICapFlags,
 };
 pub use self::brush::{Brush, SupportLevel};
+pub use self::control::Control;
 pub use self::font::{Font, FontSupportFlags};
 pub use self::frame_acknowledge::FrameAcknowledge;
 pub use self::general::{General, GeneralExtraFlags, MajorPlatformType, MinorPlatformType, PROTOCOL_VER};
@@ -431,9 +432,16 @@ impl PduEncode for CapabilitySet {
                 )?);
                 capset.encode(dst)?;
             }
+            CapabilitySet::Control(capset) => {
+                dst.write_u16(CapabilitySetType::Control.to_u16().unwrap());
+                dst.write_u16(cast_length!(
+                    "len",
+                    capset.size() + CAPABILITY_SET_TYPE_FIELD_SIZE + CAPABILITY_SET_LENGTH_FIELD_SIZE
+                )?);
+                capset.encode(dst)?;
+            }
             _ => {
                 let (capability_set_type, capability_set_buffer) = match self {
-                    CapabilitySet::Control(buffer) => (CapabilitySetType::Control, buffer),
                     CapabilitySet::WindowActivation(buffer) => (CapabilitySetType::WindowActivation, buffer),
                     CapabilitySet::Share(buffer) => (CapabilitySetType::Share, buffer),
                     CapabilitySet::BitmapCacheHostSupport(buffer) => {
@@ -484,8 +492,8 @@ impl PduEncode for CapabilitySet {
                 CapabilitySet::LargePointer(capset) => capset.size(),
                 CapabilitySet::FrameAcknowledge(capset) => capset.size(),
                 CapabilitySet::Font(capset) => capset.size(),
-                CapabilitySet::Control(buffer)
-                | CapabilitySet::WindowActivation(buffer)
+                CapabilitySet::Control(capset) => capset.size(),
+                CapabilitySet::WindowActivation(buffer)
                 | CapabilitySet::Share(buffer)
                 | CapabilitySet::BitmapCacheHostSupport(buffer)
                 | CapabilitySet::DesktopComposition(buffer)
@@ -533,8 +541,8 @@ impl<'de> PduDecode<'de> for CapabilitySet {
             CapabilitySetType::SurfaceCommands => Ok(CapabilitySet::SurfaceCommands(decode(capability_set_buffer)?)),
             CapabilitySetType::BitmapCodecs => Ok(CapabilitySet::BitmapCodecs(decode(capability_set_buffer)?)),
             CapabilitySetType::Font => Ok(CapabilitySet::Font(decode(capability_set_buffer)?)),
+            CapabilitySetType::Control => Ok(CapabilitySet::Control(decode(capability_set_buffer)?)),
 
-            CapabilitySetType::Control => Ok(CapabilitySet::Control(capability_set_buffer.into())),
             CapabilitySetType::WindowActivation => Ok(CapabilitySet::WindowActivation(capability_set_buffer.into())),
             CapabilitySetType::Share => Ok(CapabilitySet::Share(capability_set_buffer.into())),
             CapabilitySetType::BitmapCacheHostSupport => {
@@ -704,6 +712,79 @@ mod font {
             let font_support_flags = FontSupportFlags(src.read_u16());
             src.read_u16(); // pad2octets
             Ok(Self { font_support_flags })
+        }
+    }
+}
+
+mod control {
+    use crate::{
+        cursor::{ReadCursor, WriteCursor},
+        PduDecode, PduEncode, PduResult,
+    };
+
+    /// 2.2.7.2.2 Control Capability Set (TS_CONTROL_CAPABILITYSET)
+    ///
+    /// [2.2.7.2.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/e0add8ac-1546-4091-85ba-0ea77f54f2c7
+    #[derive(Debug, PartialEq, Eq, Clone)]
+    pub struct Control {
+        control_flags: u16,
+        remote_detach_flag: u16,
+        control_interest: u16,
+        detach_interest: u16,
+    }
+
+    impl Default for Control {
+        fn default() -> Self {
+            Self::new()
+        }
+    }
+
+    impl Control {
+        const FIXED_PART_SIZE: usize = 8;
+        const NAME: &'static str = "Control";
+
+        pub fn new() -> Self {
+            Self {
+                control_flags: 0x0000,      // SHOULD be set to zero.
+                remote_detach_flag: 0x0000, // SHOULD be set to FALSE (0x0000).
+                control_interest: 0x0002,   // SHOULD be set to CONTROLPRIORITY_NEVER (0x0002).
+                detach_interest: 0x0002,    // SHOULD be set to CONTROLPRIORITY_NEVER (0x0002).
+            }
+        }
+    }
+
+    impl PduEncode for Control {
+        fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+            ensure_fixed_part_size!(in: dst);
+            dst.write_u16(self.control_flags);
+            dst.write_u16(self.remote_detach_flag);
+            dst.write_u16(self.control_interest);
+            dst.write_u16(self.detach_interest);
+            Ok(())
+        }
+
+        fn name(&self) -> &'static str {
+            Self::NAME
+        }
+
+        fn size(&self) -> usize {
+            Self::FIXED_PART_SIZE
+        }
+    }
+
+    impl<'de> PduDecode<'de> for Control {
+        fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+            ensure_fixed_part_size!(in: src);
+            let control_flags = src.read_u16();
+            let remote_detach_flag = src.read_u16();
+            let control_interest = src.read_u16();
+            let detach_interest = src.read_u16();
+            Ok(Self {
+                control_flags,
+                remote_detach_flag,
+                control_interest,
+                detach_interest,
+            })
         }
     }
 }

@@ -430,6 +430,7 @@ fn create_client_confirm_active(
         CapabilitySet::Font(Font {
             font_support_flags: FontSupportFlags::FONTSUPPORT_FONTLIST,
         }),
+        CapabilitySet::Control(Control::default()),
         CapabilitySet::OffscreenBitmapCache(OffscreenBitmapCache {
             is_supported: false,
             cache_size: 0,
