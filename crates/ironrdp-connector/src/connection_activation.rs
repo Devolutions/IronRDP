@@ -420,13 +420,13 @@ fn create_client_confirm_active(
             flags: VirtualChannelFlags::NO_COMPRESSION,
             chunk_size: Some(0x00000640), // ignored
         }),
+        CapabilitySet::Sound(Sound {
+            flags: SoundFlags::BEEPS,
+        }),
         CapabilitySet::OffscreenBitmapCache(OffscreenBitmapCache {
             is_supported: false,
             cache_size: 0,
             cache_entries: 0,
-        }),
-        CapabilitySet::Sound(Sound {
-            flags: SoundFlags::empty(),
         }),
         CapabilitySet::LargePointer(LargePointer {
             // Setting `LargePointerSupportFlags::UP_TO_384X384_PIXELS` allows server to send
