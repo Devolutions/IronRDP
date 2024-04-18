@@ -365,7 +365,7 @@ fn create_client_confirm_active(
             keyboard_ime_filename: config.ime_file_name.clone(),
         }),
         CapabilitySet::Brush(Brush {
-            support_level: SupportLevel::Default,
+            support_level: SupportLevel::ColorFull,
         }),
         CapabilitySet::GlyphCache(GlyphCache {
             glyph_cache: [CacheDefinition {
