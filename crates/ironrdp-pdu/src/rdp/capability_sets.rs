@@ -33,6 +33,7 @@ pub use self::bitmap_codecs::{
     RfxCapset, RfxClientCapsContainer, RfxICap, RfxICapFlags,
 };
 pub use self::brush::{Brush, SupportLevel};
+pub use self::font::{Font, FontSupportFlags};
 pub use self::frame_acknowledge::FrameAcknowledge;
 pub use self::general::{General, GeneralExtraFlags, MajorPlatformType, MinorPlatformType, PROTOCOL_VER};
 pub use self::glyph_cache::{CacheDefinition, GlyphCache, GlyphSupportLevel, GLYPH_CACHE_NUM};
@@ -255,10 +256,10 @@ pub enum CapabilitySet {
     VirtualChannel(VirtualChannel),
 
     // optional
-    Control(Vec<u8>),
+    Control(Control),
     WindowActivation(Vec<u8>),
     Share(Vec<u8>),
-    Font(Vec<u8>),
+    Font(Font),
     BitmapCacheHostSupport(Vec<u8>),
     DesktopComposition(Vec<u8>),
     MultiFragmentUpdate(MultifragmentUpdate),
@@ -422,12 +423,19 @@ impl PduEncode for CapabilitySet {
                 )?);
                 capset.encode(dst)?;
             }
+            CapabilitySet::Font(capset) => {
+                dst.write_u16(CapabilitySetType::Font.to_u16().unwrap());
+                dst.write_u16(cast_length!(
+                    "len",
+                    capset.size() + CAPABILITY_SET_TYPE_FIELD_SIZE + CAPABILITY_SET_LENGTH_FIELD_SIZE
+                )?);
+                capset.encode(dst)?;
+            }
             _ => {
                 let (capability_set_type, capability_set_buffer) = match self {
                     CapabilitySet::Control(buffer) => (CapabilitySetType::Control, buffer),
                     CapabilitySet::WindowActivation(buffer) => (CapabilitySetType::WindowActivation, buffer),
                     CapabilitySet::Share(buffer) => (CapabilitySetType::Share, buffer),
-                    CapabilitySet::Font(buffer) => (CapabilitySetType::Font, buffer),
                     CapabilitySet::BitmapCacheHostSupport(buffer) => {
                         (CapabilitySetType::BitmapCacheHostSupport, buffer)
                     }
@@ -475,10 +483,10 @@ impl PduEncode for CapabilitySet {
                 CapabilitySet::MultiFragmentUpdate(capset) => capset.size(),
                 CapabilitySet::LargePointer(capset) => capset.size(),
                 CapabilitySet::FrameAcknowledge(capset) => capset.size(),
+                CapabilitySet::Font(capset) => capset.size(),
                 CapabilitySet::Control(buffer)
                 | CapabilitySet::WindowActivation(buffer)
                 | CapabilitySet::Share(buffer)
-                | CapabilitySet::Font(buffer)
                 | CapabilitySet::BitmapCacheHostSupport(buffer)
                 | CapabilitySet::DesktopComposition(buffer)
                 | CapabilitySet::ColorCache(buffer)
@@ -524,11 +532,11 @@ impl<'de> PduDecode<'de> for CapabilitySet {
             CapabilitySetType::VirtualChannel => Ok(CapabilitySet::VirtualChannel(decode(capability_set_buffer)?)),
             CapabilitySetType::SurfaceCommands => Ok(CapabilitySet::SurfaceCommands(decode(capability_set_buffer)?)),
             CapabilitySetType::BitmapCodecs => Ok(CapabilitySet::BitmapCodecs(decode(capability_set_buffer)?)),
+            CapabilitySetType::Font => Ok(CapabilitySet::Font(decode(capability_set_buffer)?)),
 
             CapabilitySetType::Control => Ok(CapabilitySet::Control(capability_set_buffer.into())),
             CapabilitySetType::WindowActivation => Ok(CapabilitySet::WindowActivation(capability_set_buffer.into())),
             CapabilitySetType::Share => Ok(CapabilitySet::Share(capability_set_buffer.into())),
-            CapabilitySetType::Font => Ok(CapabilitySet::Font(capability_set_buffer.into())),
             CapabilitySetType::BitmapCacheHostSupport => {
                 Ok(CapabilitySet::BitmapCacheHostSupport(capability_set_buffer.into()))
             }
@@ -644,5 +652,58 @@ pub enum CapabilitySetsError {
 impl From<PduError> for CapabilitySetsError {
     fn from(e: PduError) -> Self {
         Self::Pdu(e)
+    }
+}
+
+mod font {
+    use crate::{
+        cursor::{ReadCursor, WriteCursor},
+        PduDecode, PduEncode, PduResult,
+    };
+
+    #[derive(Debug, PartialEq, Eq, Clone)]
+    pub struct FontSupportFlags(u16);
+
+    impl FontSupportFlags {
+        pub const FONTSUPPORT_FONTLIST: Self = Self(0x0001);
+    }
+
+    /// 2.2.7.2.5 Font Capability Set (TS_FONT_CAPABILITYSET)
+    ///
+    /// [2.2.7.2.5]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/18b4ccdc-e5b0-43c4-a453-cfa8c9feb2a4
+    #[derive(Debug, PartialEq, Eq, Clone)]
+    pub struct Font {
+        pub font_support_flags: FontSupportFlags,
+    }
+
+    impl Font {
+        const FIXED_PART_SIZE: usize = 4;
+        const NAME: &'static str = "Font";
+    }
+
+    impl PduEncode for Font {
+        fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+            ensure_fixed_part_size!(in: dst);
+            dst.write_u16(self.font_support_flags.0);
+            dst.write_u16(0); // pad2octets
+            Ok(())
+        }
+
+        fn name(&self) -> &'static str {
+            Self::NAME
+        }
+
+        fn size(&self) -> usize {
+            Self::FIXED_PART_SIZE
+        }
+    }
+
+    impl<'de> PduDecode<'de> for Font {
+        fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+            ensure_fixed_part_size!(in: src);
+            let font_support_flags = FontSupportFlags(src.read_u16());
+            src.read_u16(); // pad2octets
+            Ok(Self { font_support_flags })
+        }
     }
 }

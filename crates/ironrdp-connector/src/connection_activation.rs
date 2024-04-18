@@ -427,6 +427,9 @@ fn create_client_confirm_active(
             0x00, 0x00, // nodeID
             0x00, 0x00, // pad2octets
         ]),
+        CapabilitySet::Font(Font {
+            font_support_flags: FontSupportFlags::FONTSUPPORT_FONTLIST,
+        }),
         CapabilitySet::OffscreenBitmapCache(OffscreenBitmapCache {
             is_supported: false,
             cache_size: 0,
