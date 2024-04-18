@@ -97,12 +97,11 @@ impl PduEncode for Order {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
         ensure_fixed_part_size!(in: dst);
 
-        dst.write_u128(0);
-
-        dst.write_u32(0); // padding
+        dst.write_u128(0); // terminalDescriptor
+        dst.write_u32(0); // pad4octetsA
         dst.write_u16(1); // desktopSaveXGranularity
         dst.write_u16(DESKTOP_SAVE_Y_GRAN_VAL);
-        dst.write_u16(0); // padding
+        dst.write_u16(0); // pad2octetsA
         dst.write_u16(ORD_LEVEL_1_ORDERS); // maximumOrderLevel
         dst.write_u16(0); // numberFonts
         dst.write_u16(self.order_flags.bits());

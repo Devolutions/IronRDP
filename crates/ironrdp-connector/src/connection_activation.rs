@@ -278,6 +278,22 @@ fn create_client_confirm_active(
         BitmapDrawingFlags::ALLOW_SKIP_ALPHA
     };
 
+    let mut order = Order::new(
+        OrderFlags::NEGOTIATE_ORDER_SUPPORT
+            | OrderFlags::ZERO_BOUNDS_DELTAS_SUPPORT
+            | OrderFlags::COLOR_INDEX_SUPPORT
+            | OrderFlags::ORDER_FLAGS_EXTRA_FLAGS,
+        OrderSupportExFlags::ALTSEC_FRAME_MARKER_SUPPORT,
+        0x00038400,
+        0xFDE9,
+    );
+    order.set_support_flag(OrderSupportIndex::DstBlt, true);
+    order.set_support_flag(OrderSupportIndex::PatBlt, true);
+    order.set_support_flag(OrderSupportIndex::ScrBlt, true);
+    order.set_support_flag(OrderSupportIndex::LineTo, true);
+    order.set_support_flag(OrderSupportIndex::MultiOpaqueRect, true);
+    order.set_support_flag(OrderSupportIndex::Polyline, true);
+
     server_capability_sets.extend_from_slice(&[
         CapabilitySet::General(General {
             major_platform_type: MajorPlatformType::UNIX,
@@ -299,12 +315,7 @@ fn create_client_confirm_active(
             desktop_resize_flag: true,
             drawing_flags: BitmapDrawingFlags::ALLOW_DYNAMIC_COLOR_FIDELITY | BitmapDrawingFlags::ALLOW_SKIP_ALPHA,
         }),
-        CapabilitySet::Order(Order::new(
-            OrderFlags::NEGOTIATE_ORDER_SUPPORT | OrderFlags::ZERO_BOUNDS_DELTAS_SUPPORT,
-            OrderSupportExFlags::empty(),
-            0,
-            0,
-        )),
+        CapabilitySet::Order(order),
         CapabilitySet::BitmapCache(BitmapCache {
             caches: [CacheEntry {
                 entries: 0,
