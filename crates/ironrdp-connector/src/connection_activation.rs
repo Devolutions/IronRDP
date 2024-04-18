@@ -265,7 +265,13 @@ fn create_client_confirm_active(
 ) -> rdp::capability_sets::ClientConfirmActive {
     use ironrdp_pdu::rdp::capability_sets::*;
 
-    server_capability_sets.retain(|capability_set| matches!(capability_set, CapabilitySet::MultiFragmentUpdate(_)));
+    let multifrag_max_request_size = server_capability_sets
+        .iter()
+        .find_map(|c| match c {
+            CapabilitySet::MultiFragmentUpdate(m) => Some(m.max_request_size),
+            _ => None,
+        })
+        .unwrap_or(8 * 1024 * 1024); // Default to 8 MB if not found
 
     let lossy_bitmap_compression = config
         .bitmap
@@ -444,6 +450,9 @@ fn create_client_confirm_active(
             // rendering of pointers bigger than 96x96 pixels.
             flags: LargePointerSupportFlags::UP_TO_96X96_PIXELS | LargePointerSupportFlags::UP_TO_384X384_PIXELS,
         }),
+        CapabilitySet::MultiFragmentUpdate(MultifragmentUpdate {
+            max_request_size: multifrag_max_request_size,
+        }),
         CapabilitySet::OffscreenBitmapCache(OffscreenBitmapCache {
             is_supported: false,
             cache_size: 0,
@@ -466,15 +475,6 @@ fn create_client_confirm_active(
             max_unacknowledged_frame_count: 2,
         }),
     ]);
-
-    if !server_capability_sets
-        .iter()
-        .any(|c| matches!(&c, CapabilitySet::MultiFragmentUpdate(_)))
-    {
-        server_capability_sets.push(CapabilitySet::MultiFragmentUpdate(MultifragmentUpdate {
-            max_request_size: 8 * 1024 * 1024, // 8 MB
-        }));
-    }
 
     ClientConfirmActive {
         originator_id: SERVER_CHANNEL_ID,
