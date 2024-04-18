@@ -280,9 +280,16 @@ fn create_client_confirm_active(
 
     server_capability_sets.extend_from_slice(&[
         CapabilitySet::General(General {
-            major_platform_type: config.platform,
-            extra_flags: GeneralExtraFlags::FASTPATH_OUTPUT_SUPPORTED | GeneralExtraFlags::NO_BITMAP_COMPRESSION_HDR,
-            ..Default::default()
+            major_platform_type: MajorPlatformType::UNIX,
+            minor_platform_type: MinorPlatformType(0xFFFD),
+            protocol_version: 0x0000,
+            extra_flags: GeneralExtraFlags::FASTPATH_OUTPUT_SUPPORTED
+                | GeneralExtraFlags::NO_BITMAP_COMPRESSION_HDR
+                | GeneralExtraFlags::LONG_CREDENTIALS_SUPPORTED
+                | GeneralExtraFlags::AUTORECONNECT_SUPPORTED
+                | GeneralExtraFlags::ENC_SALTED_CHECKSUM,
+            refresh_rect_support: true,
+            suppress_output_support: true,
         }),
         CapabilitySet::Bitmap(Bitmap {
             pref_bits_per_pix: 32,

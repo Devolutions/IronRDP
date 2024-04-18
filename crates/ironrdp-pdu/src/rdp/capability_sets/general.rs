@@ -46,7 +46,7 @@ impl MajorPlatformType {
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-pub struct MinorPlatformType(u16);
+pub struct MinorPlatformType(pub u16);
 
 impl fmt::Debug for MinorPlatformType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
