@@ -253,7 +253,7 @@ impl State for ConnectionActivationState {
     }
 }
 
-const DEFAULT_POINTER_CACHE_SIZE: u16 = 32;
+const DEFAULT_POINTER_CACHE_SIZE: u16 = 0x0019;
 
 fn create_client_confirm_active(
     config: &Config,
@@ -342,6 +342,11 @@ fn create_client_confirm_active(
                 },
             ],
         }),
+        CapabilitySet::Pointer(Pointer {
+            // Pointer cache should be set to non-zero value to enable client-side pointer rendering.
+            color_pointer_cache_size: DEFAULT_POINTER_CACHE_SIZE,
+            pointer_cache_size: DEFAULT_POINTER_CACHE_SIZE,
+        }),
         CapabilitySet::Input(Input {
             input_flags: InputFlags::all(),
             keyboard_layout: 0,
@@ -349,11 +354,6 @@ fn create_client_confirm_active(
             keyboard_subtype: config.keyboard_subtype,
             keyboard_function_key: config.keyboard_functional_keys_count,
             keyboard_ime_filename: config.ime_file_name.clone(),
-        }),
-        CapabilitySet::Pointer(Pointer {
-            // Pointer cache should be set to non-zero value to enable client-side pointer rendering.
-            color_pointer_cache_size: DEFAULT_POINTER_CACHE_SIZE,
-            pointer_cache_size: DEFAULT_POINTER_CACHE_SIZE,
         }),
         CapabilitySet::Brush(Brush {
             support_level: SupportLevel::Default,
