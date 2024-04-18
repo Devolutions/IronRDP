@@ -2,6 +2,7 @@ use std::borrow::Cow;
 use std::mem;
 use std::net::SocketAddr;
 
+use ironrdp_pdu::nego::SecurityProtocol;
 use ironrdp_pdu::rdp::client_info::TimezoneInfo;
 use ironrdp_pdu::write_buf::WriteBuf;
 use ironrdp_pdu::{decode, encode_vec, gcc, mcs, nego, rdp, PduEncode, PduHint};
@@ -631,50 +632,60 @@ fn create_gcc_blocks<'a>(
             color_depth: ColorDepth::Bpp8, // ignored because we use the optional core data below
             sec_access_sequence: SecureAccessSequence::Del,
             keyboard_layout: 0, // the server SHOULD use the default active input locale identifier
-            client_build: config.client_build,
-            client_name: config.client_name.clone(),
-            keyboard_type: config.keyboard_type,
-            keyboard_subtype: config.keyboard_subtype,
-            keyboard_functional_keys_count: config.keyboard_functional_keys_count,
-            ime_file_name: config.ime_file_name.clone(),
+            client_build: 18363,
+            client_name: "Isaiahs-MacBook".to_owned(),
+            keyboard_type: KeyboardType::IbmEnhanced,
+            keyboard_subtype: 0,
+            keyboard_functional_keys_count: 12,
+            ime_file_name: "".to_owned(),
             optional_data: ClientCoreOptionalData {
                 post_beta2_color_depth: Some(ColorDepth::Bpp8), // ignored because we set high_color_depth
                 client_product_id: Some(1),
                 serial_number: Some(0),
                 high_color_depth: Some(HighColorDepth::Bpp24),
-                supported_color_depths: Some(supported_color_depths),
+                supported_color_depths: Some(
+                    SupportedColorDepths::BPP15
+                        | SupportedColorDepths::BPP16
+                        | SupportedColorDepths::BPP24
+                        | SupportedColorDepths::BPP32,
+                ),
                 early_capability_flags: {
-                    let mut early_capability_flags = ClientEarlyCapabilityFlags::VALID_CONNECTION_TYPE
-                        | ClientEarlyCapabilityFlags::SUPPORT_ERR_INFO_PDU
-                        | ClientEarlyCapabilityFlags::STRONG_ASYMMETRIC_KEYS
+                    let mut early_capability_flags = ClientEarlyCapabilityFlags::WANT_32_BPP_SESSION
+                        | ClientEarlyCapabilityFlags::RELATIVE_MOUSE_INPUT
+                        | ClientEarlyCapabilityFlags::VALID_CONNECTION_TYPE
+                        | ClientEarlyCapabilityFlags::SUPPORT_NET_CHAR_AUTODETECT
+                        | ClientEarlyCapabilityFlags::SUPPORT_HEART_BEAT_PDU
                         | ClientEarlyCapabilityFlags::SUPPORT_SKIP_CHANNELJOIN;
 
                     // TODO(#136): support for ClientEarlyCapabilityFlags::SUPPORT_STATUS_INFO_PDU
 
-                    if max_color_depth == 32 {
-                        early_capability_flags |= ClientEarlyCapabilityFlags::WANT_32_BPP_SESSION;
-                    }
+                    // if max_color_depth == 32 {
+                    //     early_capability_flags |= ClientEarlyCapabilityFlags::WANT_32_BPP_SESSION;
+                    // }
 
                     Some(early_capability_flags)
                 },
-                dig_product_id: Some(config.dig_product_id.clone()),
+                dig_product_id: Some("".to_owned()),
                 connection_type: Some(ConnectionType::Lan),
-                server_selected_protocol: Some(selected_protocol),
-                desktop_physical_width: Some(0),  // 0 per FreeRDP
-                desktop_physical_height: Some(0), // 0 per FreeRDP
-                desktop_orientation: if config.desktop_size.width > config.desktop_size.height {
-                    Some(MonitorOrientation::Landscape as u16)
-                } else {
-                    Some(MonitorOrientation::Portrait as u16)
-                },
-                desktop_scale_factor: Some(config.desktop_scale_factor),
-                device_scale_factor: if config.desktop_scale_factor >= 100 && config.desktop_scale_factor <= 500 {
-                    Some(100)
-                } else {
-                    Some(0)
-                },
+                server_selected_protocol: Some(SecurityProtocol::HYBRID_EX), // not aligned with freerdp
+                desktop_physical_width: Some(0),                             // 0 per FreeRDP
+                desktop_physical_height: Some(0),                            // 0 per FreeRDP
+                desktop_orientation: Some(0),
+                // if config.desktop_size.width > config.desktop_size.height {
+                //     Some(MonitorOrientation::Landscape as u16)
+                // } else {
+                //     Some(MonitorOrientation::Portrait as u16)
+                // },
+                desktop_scale_factor: Some(0),
+                device_scale_factor: Some(0),
+                // if config.desktop_scale_factor >= 100 && config.desktop_scale_factor <= 500 {
+                //     Some(100)
+                // } else {
+                //     Some(0)
+                // },
             },
         },
+        cluster: None,
         security: ClientSecurityData {
             encryption_methods: EncryptionMethod::empty(),
             ext_encryption_methods: 0,
@@ -685,7 +696,6 @@ fn create_gcc_blocks<'a>(
             Some(ClientNetworkData { channels })
         },
         // TODO(#139): support for Some(ClientClusterData { flags: RedirectionFlags::REDIRECTION_SUPPORTED, redirection_version: RedirectionVersion::V4, redirected_session_id: 0, }),
-        cluster: None,
         monitor: None,
         // TODO(#140): support for Client Message Channel Data (https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/f50e791c-de03-4b25-b17e-e914c9020bc3)
         message_channel: None,

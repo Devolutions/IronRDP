@@ -592,3 +592,15 @@ bitflags! {
         const _ = !0;
     }
 }
+
+#[cfg(test)]
+mod client_early_capability_flags_tests {
+    use super::*;
+
+    #[test]
+    fn test_print_client_early_capability_flags_value() {
+        let flags_value = 3250; // Decimal value equivalent to 0x0CB2
+        let flags = ClientEarlyCapabilityFlags::from_bits_truncate(flags_value);
+        println!("{:?}", flags);
+    }
+}

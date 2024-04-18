@@ -57,6 +57,7 @@ const USER_DATA_HEADER_SIZE: usize = 4;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClientGccBlocks {
     pub core: ClientCoreData,
+    pub cluster: Option<ClientClusterData>,
     pub security: ClientSecurityData,
     /// According to [MSDN](https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/c1bea8bd-069c-4437-9769-db5d27935225),
     /// the Client GCC blocks MUST contain Core, Security, Network GCC blocks.
@@ -64,7 +65,6 @@ pub struct ClientGccBlocks {
     /// and what is surprising - Windows RDP server accepts this GCC block.
     /// Because of this, the Network GCC block is made optional in IronRDP.
     pub network: Option<ClientNetworkData>,
-    pub cluster: Option<ClientClusterData>,
     pub monitor: Option<ClientMonitorData>,
     pub message_channel: Option<ClientMessageChannelData>,
     pub multi_transport_channel: Option<MultiTransportChannelData>,
@@ -84,23 +84,29 @@ impl PduEncode for ClientGccBlocks {
         ensure_size!(in: dst, size: self.size());
 
         UserDataHeader::encode(dst, ClientGccType::CoreData, &self.core)?;
+
+        if let Some(ref cluster) = self.cluster {
+            UserDataHeader::encode(dst, ClientGccType::ClusterData, cluster)?;
+        }
+
         UserDataHeader::encode(dst, ClientGccType::SecurityData, &self.security)?;
 
         if let Some(ref network) = self.network {
             UserDataHeader::encode(dst, ClientGccType::NetworkData, network)?;
         }
-        if let Some(ref cluster) = self.cluster {
-            UserDataHeader::encode(dst, ClientGccType::ClusterData, cluster)?;
-        }
+
         if let Some(ref monitor) = self.monitor {
             UserDataHeader::encode(dst, ClientGccType::MonitorData, monitor)?;
         }
+
         if let Some(ref message_channel) = self.message_channel {
             UserDataHeader::encode(dst, ClientGccType::MessageChannelData, message_channel)?;
         }
+
         if let Some(ref multi_transport_channel) = self.multi_transport_channel {
             UserDataHeader::encode(dst, ClientGccType::MultiTransportChannelData, multi_transport_channel)?;
         }
+
         if let Some(ref monitor_extended) = self.monitor_extended {
             UserDataHeader::encode(dst, ClientGccType::MonitorExtendedData, monitor_extended)?;
         }
