@@ -455,11 +455,6 @@ fn create_client_confirm_active(
         CapabilitySet::MultiFragmentUpdate(MultifragmentUpdate {
             max_request_size: multifrag_max_request_size,
         }),
-        CapabilitySet::OffscreenBitmapCache(OffscreenBitmapCache {
-            is_supported: false,
-            cache_size: 0,
-            cache_entries: 0,
-        }),
         CapabilitySet::SurfaceCommands(SurfaceCommands {
             flags: CmdFlags::SET_SURFACE_BITS | CmdFlags::STREAM_SURFACE_BITS | CmdFlags::FRAME_MARKER,
         }),
