@@ -297,7 +297,7 @@ fn create_client_confirm_active(
             desktop_height: desktop_size.height,
             // This is required to be true in order for the Microsoft::Windows::RDS::DisplayControl DVC to work.
             desktop_resize_flag: true,
-            drawing_flags,
+            drawing_flags: BitmapDrawingFlags::ALLOW_DYNAMIC_COLOR_FIDELITY | BitmapDrawingFlags::ALLOW_SKIP_ALPHA,
         }),
         CapabilitySet::Order(Order::new(
             OrderFlags::NEGOTIATE_ORDER_SUPPORT | OrderFlags::ZERO_BOUNDS_DELTAS_SUPPORT,
