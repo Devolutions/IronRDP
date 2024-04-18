@@ -685,7 +685,11 @@ fn create_gcc_blocks<'a>(
                 // },
             },
         },
-        cluster: None,
+        cluster: Some(ClientClusterData {
+            flags: RedirectionFlags::REDIRECTION_SUPPORTED,
+            redirection_version: RedirectionVersion::V6,
+            redirected_session_id: 0,
+        }),
         security: ClientSecurityData {
             encryption_methods: EncryptionMethod::empty(),
             ext_encryption_methods: 0,

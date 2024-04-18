@@ -77,6 +77,18 @@ bitflags! {
     }
 }
 
+#[cfg(test)]
+mod redirection_flags_tests {
+    use super::*;
+
+    #[test]
+    fn test_print_redirection_flags_value() {
+        let flags_value = 0x00000015;
+        let flags = RedirectionFlags::from_bits_truncate(flags_value);
+        println!("{:?}", flags);
+    }
+}
+
 #[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive, ToPrimitive)]
 pub enum RedirectionVersion {
     V1 = 0,
