@@ -316,11 +316,31 @@ fn create_client_confirm_active(
             drawing_flags: BitmapDrawingFlags::ALLOW_DYNAMIC_COLOR_FIDELITY | BitmapDrawingFlags::ALLOW_SKIP_ALPHA,
         }),
         CapabilitySet::Order(order),
-        CapabilitySet::BitmapCache(BitmapCache {
-            caches: [CacheEntry {
-                entries: 0,
-                max_cell_size: 0,
-            }; BITMAP_CACHE_ENTRIES_NUM],
+        CapabilitySet::BitmapCacheRev2(BitmapCacheRev2 {
+            cache_flags: CacheFlags::ALLOW_CACHE_WAITING_LIST_FLAG,
+            num_cell_caches: 0x05,
+            cache_cell_info: [
+                CellInfo {
+                    num_entries: 600,
+                    is_cache_persistent: false,
+                },
+                CellInfo {
+                    num_entries: 600,
+                    is_cache_persistent: false,
+                },
+                CellInfo {
+                    num_entries: 2048,
+                    is_cache_persistent: false,
+                },
+                CellInfo {
+                    num_entries: 4096,
+                    is_cache_persistent: false,
+                },
+                CellInfo {
+                    num_entries: 2048,
+                    is_cache_persistent: false,
+                },
+            ],
         }),
         CapabilitySet::Input(Input {
             input_flags: InputFlags::all(),
