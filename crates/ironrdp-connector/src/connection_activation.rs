@@ -423,6 +423,10 @@ fn create_client_confirm_active(
         CapabilitySet::Sound(Sound {
             flags: SoundFlags::BEEPS,
         }),
+        CapabilitySet::Share(vec![
+            0x00, 0x00, // nodeID
+            0x00, 0x00, // pad2octets
+        ]),
         CapabilitySet::OffscreenBitmapCache(OffscreenBitmapCache {
             is_supported: false,
             cache_size: 0,
