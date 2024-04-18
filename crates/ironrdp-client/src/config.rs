@@ -276,7 +276,7 @@ impl Config {
             }
             #[cfg(not(windows))]
             {
-                ClipboardType::None
+                ClipboardType::Stub
             }
         } else {
             args.clipboard_type
