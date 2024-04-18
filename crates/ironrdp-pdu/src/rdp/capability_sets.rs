@@ -33,6 +33,7 @@ pub use self::bitmap_codecs::{
     RfxCapset, RfxClientCapsContainer, RfxICap, RfxICapFlags,
 };
 pub use self::brush::{Brush, SupportLevel};
+pub use self::color_cache::ColorCache;
 pub use self::control::Control;
 pub use self::font::{Font, FontSupportFlags};
 pub use self::frame_acknowledge::FrameAcknowledge;
@@ -269,7 +270,7 @@ pub enum CapabilitySet {
     BitmapCodecs(BitmapCodecs),
 
     // other
-    ColorCache(Vec<u8>),
+    ColorCache(ColorCache),
     DrawNineGridCache(Vec<u8>),
     DrawGdiPlus(Vec<u8>),
     Rail(Vec<u8>),
@@ -440,6 +441,14 @@ impl PduEncode for CapabilitySet {
                 )?);
                 capset.encode(dst)?;
             }
+            CapabilitySet::ColorCache(capset) => {
+                dst.write_u16(CapabilitySetType::ColorCache.to_u16().unwrap());
+                dst.write_u16(cast_length!(
+                    "len",
+                    capset.size() + CAPABILITY_SET_TYPE_FIELD_SIZE + CAPABILITY_SET_LENGTH_FIELD_SIZE
+                )?);
+                capset.encode(dst)?;
+            }
             _ => {
                 let (capability_set_type, capability_set_buffer) = match self {
                     CapabilitySet::WindowActivation(buffer) => (CapabilitySetType::WindowActivation, buffer),
@@ -448,7 +457,6 @@ impl PduEncode for CapabilitySet {
                         (CapabilitySetType::BitmapCacheHostSupport, buffer)
                     }
                     CapabilitySet::DesktopComposition(buffer) => (CapabilitySetType::DesktopComposition, buffer),
-                    CapabilitySet::ColorCache(buffer) => (CapabilitySetType::ColorCache, buffer),
                     CapabilitySet::DrawNineGridCache(buffer) => (CapabilitySetType::DrawNineGridCache, buffer),
                     CapabilitySet::DrawGdiPlus(buffer) => (CapabilitySetType::DrawGdiPlus, buffer),
                     CapabilitySet::Rail(buffer) => (CapabilitySetType::Rail, buffer),
@@ -493,11 +501,11 @@ impl PduEncode for CapabilitySet {
                 CapabilitySet::FrameAcknowledge(capset) => capset.size(),
                 CapabilitySet::Font(capset) => capset.size(),
                 CapabilitySet::Control(capset) => capset.size(),
+                CapabilitySet::ColorCache(capset) => capset.size(),
                 CapabilitySet::WindowActivation(buffer)
                 | CapabilitySet::Share(buffer)
                 | CapabilitySet::BitmapCacheHostSupport(buffer)
                 | CapabilitySet::DesktopComposition(buffer)
-                | CapabilitySet::ColorCache(buffer)
                 | CapabilitySet::DrawNineGridCache(buffer)
                 | CapabilitySet::DrawGdiPlus(buffer)
                 | CapabilitySet::Rail(buffer)
@@ -542,6 +550,9 @@ impl<'de> PduDecode<'de> for CapabilitySet {
             CapabilitySetType::BitmapCodecs => Ok(CapabilitySet::BitmapCodecs(decode(capability_set_buffer)?)),
             CapabilitySetType::Font => Ok(CapabilitySet::Font(decode(capability_set_buffer)?)),
             CapabilitySetType::Control => Ok(CapabilitySet::Control(decode(capability_set_buffer)?)),
+            CapabilitySetType::ColorCache => Ok(CapabilitySet::ColorCache(decode(capability_set_buffer)?)),
+            CapabilitySetType::LargePointer => Ok(CapabilitySet::LargePointer(decode(capability_set_buffer)?)),
+            CapabilitySetType::FrameAcknowledge => Ok(CapabilitySet::FrameAcknowledge(decode(capability_set_buffer)?)),
 
             CapabilitySetType::WindowActivation => Ok(CapabilitySet::WindowActivation(capability_set_buffer.into())),
             CapabilitySetType::Share => Ok(CapabilitySet::Share(capability_set_buffer.into())),
@@ -554,13 +565,10 @@ impl<'de> PduDecode<'de> for CapabilitySet {
             CapabilitySetType::MultiFragmentUpdate => {
                 Ok(CapabilitySet::MultiFragmentUpdate(decode(capability_set_buffer)?))
             }
-            CapabilitySetType::LargePointer => Ok(CapabilitySet::LargePointer(decode(capability_set_buffer)?)),
-            CapabilitySetType::ColorCache => Ok(CapabilitySet::ColorCache(capability_set_buffer.into())),
             CapabilitySetType::DrawNineGridCache => Ok(CapabilitySet::DrawNineGridCache(capability_set_buffer.into())),
             CapabilitySetType::DrawGdiPlus => Ok(CapabilitySet::DrawGdiPlus(capability_set_buffer.into())),
             CapabilitySetType::Rail => Ok(CapabilitySet::Rail(capability_set_buffer.into())),
             CapabilitySetType::WindowList => Ok(CapabilitySet::WindowList(capability_set_buffer.into())),
-            CapabilitySetType::FrameAcknowledge => Ok(CapabilitySet::FrameAcknowledge(decode(capability_set_buffer)?)),
         }
     }
 }
@@ -785,6 +793,64 @@ mod control {
                 control_interest,
                 detach_interest,
             })
+        }
+    }
+}
+
+mod color_cache {
+    use crate::{
+        cursor::{ReadCursor, WriteCursor},
+        PduDecode, PduEncode, PduResult,
+    };
+
+    /// 2.2.1.1 Color Table Cache Capability Set (TS_COLORTABLE_CAPABILITYSET)
+    ///
+    /// [2.2.1.1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpegdi/2b7c6946-3612-4291-95a8-03b7b1387eaf
+    #[derive(Debug, PartialEq, Eq, Clone)]
+    pub struct ColorCache {
+        pub color_cache_table_size: u16,
+    }
+
+    impl Default for ColorCache {
+        fn default() -> Self {
+            Self::new()
+        }
+    }
+
+    impl ColorCache {
+        const FIXED_PART_SIZE: usize = 4;
+        const NAME: &'static str = "ColorCache";
+
+        pub fn new() -> Self {
+            Self {
+                color_cache_table_size: 0x0006, // MUST be ignored during capability exchange and is assumed to be 0x0006.
+            }
+        }
+    }
+
+    impl PduEncode for ColorCache {
+        fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+            ensure_fixed_part_size!(in: dst);
+            dst.write_u16(self.color_cache_table_size);
+            dst.write_u16(0); // pad2octets
+            Ok(())
+        }
+
+        fn name(&self) -> &'static str {
+            Self::NAME
+        }
+
+        fn size(&self) -> usize {
+            Self::FIXED_PART_SIZE
+        }
+    }
+
+    impl<'de> PduDecode<'de> for ColorCache {
+        fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+            ensure_fixed_part_size!(in: src);
+            let color_cache_table_size = src.read_u16();
+            src.read_u16(); // pad2octets
+            Ok(Self { color_cache_table_size })
         }
     }
 }
