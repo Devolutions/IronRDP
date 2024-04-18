@@ -465,11 +465,11 @@ fn create_client_confirm_active(
                 caps_data: RfxCaps(RfxCapset(vec![
                     RfxICap {
                         flags: RfxICapFlags::empty(),
-                        entropy_bits: EntropyBits::Rlgr3,
+                        entropy_bits: EntropyBits::Rlgr1,
                     },
                     RfxICap {
                         flags: RfxICapFlags::empty(),
-                        entropy_bits: EntropyBits::Rlgr1,
+                        entropy_bits: EntropyBits::Rlgr3,
                     },
                 ])),
             })),
@@ -482,7 +482,7 @@ fn create_client_confirm_active(
     ClientConfirmActive {
         originator_id: SERVER_CHANNEL_ID,
         pdu: DemandActive {
-            source_descriptor: "IRONRDP".to_owned(),
+            source_descriptor: "FREERDP".to_owned(),
             capability_sets,
         },
     }
