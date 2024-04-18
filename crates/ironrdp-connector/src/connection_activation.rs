@@ -265,6 +265,8 @@ fn create_client_confirm_active(
 ) -> rdp::capability_sets::ClientConfirmActive {
     use ironrdp_pdu::rdp::capability_sets::*;
 
+    server_capability_sets.retain(|capability_set| matches!(capability_set, CapabilitySet::MultiFragmentUpdate(_)));
+
     let multifrag_max_request_size = server_capability_sets
         .iter()
         .find_map(|c| match c {
@@ -303,7 +305,7 @@ fn create_client_confirm_active(
     order.set_support_flag(OrderSupportIndex::MultiOpaqueRect, true);
     order.set_support_flag(OrderSupportIndex::Polyline, true);
 
-    server_capability_sets.extend_from_slice(&[
+    let capability_sets = vec![
         CapabilitySet::General(General {
             major_platform_type: MajorPlatformType::UNIX,
             minor_platform_type: MinorPlatformType(0xFFFD),
@@ -464,23 +466,29 @@ fn create_client_confirm_active(
         CapabilitySet::BitmapCodecs(BitmapCodecs(vec![Codec {
             id: 0x03, // RemoteFX
             property: CodecProperty::RemoteFx(RemoteFxContainer::ClientContainer(RfxClientCapsContainer {
-                capture_flags: CaptureFlags::empty(),
-                caps_data: RfxCaps(RfxCapset(vec![RfxICap {
-                    flags: RfxICapFlags::empty(),
-                    entropy_bits: EntropyBits::Rlgr3,
-                }])),
+                capture_flags: CaptureFlags::CARDP_CAPS_CAPTURE_NON_CAC,
+                caps_data: RfxCaps(RfxCapset(vec![
+                    RfxICap {
+                        flags: RfxICapFlags::empty(),
+                        entropy_bits: EntropyBits::Rlgr3,
+                    },
+                    RfxICap {
+                        flags: RfxICapFlags::empty(),
+                        entropy_bits: EntropyBits::Rlgr1,
+                    },
+                ])),
             })),
         }])),
         CapabilitySet::FrameAcknowledge(FrameAcknowledge {
             max_unacknowledged_frame_count: 2,
         }),
-    ]);
+    ];
 
     ClientConfirmActive {
         originator_id: SERVER_CHANNEL_ID,
         pdu: DemandActive {
             source_descriptor: "IRONRDP".to_owned(),
-            capability_sets: server_capability_sets,
+            capability_sets,
         },
     }
 }
