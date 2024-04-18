@@ -127,7 +127,7 @@ impl PduEncode for General {
 
         dst.write_u16(self.major_platform_type.0);
         dst.write_u16(self.minor_platform_type.0);
-        dst.write_u16(PROTOCOL_VER);
+        dst.write_u16(self.protocol_version);
         dst.write_u16(0); // padding
         dst.write_u16(0); // generalCompressionTypes
         dst.write_u16(self.extra_flags.bits());
