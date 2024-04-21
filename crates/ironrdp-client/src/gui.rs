@@ -57,24 +57,31 @@ impl GuiContext {
 
         let mut input_database = ironrdp::input::Database::new();
 
+        // The window always "resizes" at the very start of the process, but we don't want to reconnect on this first pseudo-resize.
+        let mut initial_resize = true;
+
         event_loop.run(move |event, _, control_flow| {
             *control_flow = ControlFlow::Wait;
 
             match event {
                 Event::WindowEvent { window_id, event } if window_id == window.id() => match event {
                     WindowEvent::Resized(size) => {
-                        let scale_factor = (window.scale_factor() * 100.0) as u32;
-                        // TODO: it should be possible to get the physical size here, however winit doesn't make it straightforward.
-                        // FreeRDP does it based on DPI reading grabbed via [`SDL_GetDisplayDPI`](https://wiki.libsdl.org/SDL2/SDL_GetDisplayDPI):
-                        // https://github.com/FreeRDP/FreeRDP/blob/ba8cf8cf2158018fb7abbedb51ab245f369be813/client/SDL/sdl_monitor.cpp#L250-L262
-                        let (physical_width, physical_height) = (0, 0);
-                        let _ = input_event_sender.send(RdpInputEvent::Resize {
-                            width: u16::try_from(size.width).unwrap(),
-                            height: u16::try_from(size.height).unwrap(),
-                            scale_factor,
-                            physical_width,
-                            physical_height,
-                        });
+                        if !initial_resize {
+                            let scale_factor = (window.scale_factor() * 100.0) as u32;
+                            // TODO: it should be possible to get the physical size here, however winit doesn't make it straightforward.
+                            // FreeRDP does it based on DPI reading grabbed via [`SDL_GetDisplayDPI`](https://wiki.libsdl.org/SDL2/SDL_GetDisplayDPI):
+                            // https://github.com/FreeRDP/FreeRDP/blob/ba8cf8cf2158018fb7abbedb51ab245f369be813/client/SDL/sdl_monitor.cpp#L250-L262
+                            let (physical_width, physical_height) = (0, 0);
+                            let _ = input_event_sender.send(RdpInputEvent::Resize {
+                                width: u16::try_from(size.width).unwrap(),
+                                height: u16::try_from(size.height).unwrap(),
+                                scale_factor,
+                                physical_width,
+                                physical_height,
+                            });
+                        } else {
+                            initial_resize = false;
+                        }
                     }
                     WindowEvent::CloseRequested => {
                         if input_event_sender.send(RdpInputEvent::Close).is_err() {
