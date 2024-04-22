@@ -29,8 +29,6 @@ public partial class MainWindow : Window
 
     private void OnOpened(object? sender, EventArgs e)
     {
-        Console.WriteLine("OnOpened");
-
         var username = "Administrator";
         var password = "DevoLabs123!";
         var domain = "ad.it-help.ninja";
@@ -64,35 +62,31 @@ public partial class MainWindow : Window
         });
     }
 
-    private void WriteDecodedImageToCanvas()
+    private async void WriteDecodedImageToCanvas()
     {
-        Dispatcher.UIThread.InvokeAsync(() =>
+        await Dispatcher.UIThread.InvokeAsync(() =>
         {
             var data = decodedImage!.GetData();
-            var buffer_size = (int)data.GetSize();
-            var buffer = new byte[buffer_size];
+            var bufferSize = (int)data.GetSize();
+
+            var buffer = new byte[bufferSize];
             data.Fill(buffer);
 
             using (var bitmap = this.bitmap!.Lock())
             {
                 unsafe
                 {
-                    fixed (byte* p = buffer)
-                    {
-                        var src = (uint*)p;
-                        var dst = (uint*)bitmap.Address;
-                        for (var i = 0; i < buffer_size / 4; i++)
-                        {
-                            dst[i] = src[i];
-                        }
-                    }
+                    var bitmapSpan = new Span<byte>((void*)bitmap.Address, bufferSize);
+                    var bufferSpan = new Span<byte>(buffer);
+                    bufferSpan.CopyTo(bitmapSpan);
                 }
             }
 
-            // Assuming `image` is the Image control that needs to be updated.
-            image!.InvalidateVisual(); // Force redraw of image
+            image!.InvalidateVisual(); 
         });
     }
+
+
 
 
     private void ReadPduAndProcessActiveStage()
@@ -102,7 +96,6 @@ public partial class MainWindow : Window
             var keepLooping = true;
             while (keepLooping)
             {
-                Console.WriteLine("Reading PDU , updateCounter = " + updateCounter);
                 var readPduTask = await framed!.ReadPdu();
                 Action action = readPduTask.Item1;
                 byte[] payload = readPduTask.Item2;
@@ -202,9 +195,9 @@ public partial class MainWindow : Window
         {
             return;
         }
-        Console.WriteLine($"Key pressed: {e!.Key}");
-        PhysicalKey physicalKey = e.PhysicalKey;
-        var keyOperation = Scancode.FromU16(KeyCodeMapper.GetScancode(physicalKey)).AsOperationKeyPressed();
+        PhysicalKey physicalKey = e!.PhysicalKey;
+
+        var keyOperation = Scancode.FromU16((ushort)KeyCodeMapper.GetScancode(physicalKey)!).AsOperationKeyPressed();
         var fastpath = inputDatabase!.Apply(keyOperation);
         var output = activeStage.ProcessFastpathInput(decodedImage, fastpath);
         var _ = HandleActiveStageOutput(output);
@@ -216,15 +209,13 @@ public partial class MainWindow : Window
         {
             return;
         }
-        Console.WriteLine($"Key released: {e!.Key}");
-        Key key = e.Key;
+        Key key = e!.Key;
         var keyOperation = Scancode.FromU16((ushort)key).AsOperationKeyReleased();
         var fastpath = inputDatabase!.Apply(keyOperation);
         var output = activeStage.ProcessFastpathInput(decodedImage, fastpath);
         var _ = HandleActiveStageOutput(output);
     }
 
-    private ulong updateCounter = 0;
     private async Task<bool> HandleActiveStageOutput(ActiveStageOutputIterator outputIterator)
     {
         try
@@ -233,7 +224,6 @@ public partial class MainWindow : Window
             while (!outputIterator.IsEmpty())
             {
                 var output = outputIterator.Next()!; // outputIterator.Next() is not null since outputIterator.IsEmpty() is false
-                Console.WriteLine("Handling output = " + updateCounter++, "output type " + output.GetEnumType());
                 if (output.GetEnumType() == ActiveStageOutputType.Terminate)
                 {
                     return false;

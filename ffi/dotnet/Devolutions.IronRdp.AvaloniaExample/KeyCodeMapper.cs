@@ -1,4 +1,5 @@
 using Avalonia.Input;
+using System;
 using System.Collections.Generic;
 
 public static class KeyCodeMapper
@@ -92,12 +93,12 @@ public static class KeyCodeMapper
     };
 
 
-    public static ushort GetScancode(PhysicalKey key)
+    public static ushort? GetScancode(PhysicalKey key)
     {
         if (KeyToScancodeMap.TryGetValue(key, out ushort scancode))
         {
             return scancode;
         }
-        throw new KeyNotFoundException($"Key {key} not found in the map");
+        return null;
     }
 }
