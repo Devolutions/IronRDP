@@ -30,7 +30,7 @@ public partial class MainWindow : Window
 
     private void OnOpened(object? sender, EventArgs e)
     {
-        
+        WindowState = WindowState.Maximized;
 
         var username = Environment.GetEnvironmentVariable("IRONRDP_USERNAME");
         var password = Environment.GetEnvironmentVariable("IRONRDP_PASSWORD");
