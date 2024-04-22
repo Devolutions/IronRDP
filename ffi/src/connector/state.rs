@@ -192,7 +192,7 @@ pub mod ffi {
                 .ok_or_else(|| ValueConsumedError::for_item("ClientConnectorState"))?
             {
                 ironrdp::connector::ClientConnectorState::ConnectionFinalization { connection_activation } => Ok(
-                    crate::connector::ffi::ConnectionActivationSequence(Box::new(connection_activation.clone())),
+                    crate::connector::ffi::ConnectionActivationSequence(Box::new(connection_activation)),
                 ),
                 _ => Err(IncorrectEnumTypeError::on_variant("ConnectionFinalization")
                     .of_enum("ClientConnectorState")
