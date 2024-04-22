@@ -13,8 +13,12 @@ class Program
     public static void Main(string[] args)
     {
         InitializeLogging();
-        BuildAvaloniaApp()
-        .StartWithClassicDesktopLifetime(args);
+        try{
+            BuildAvaloniaApp()
+            .StartWithClassicDesktopLifetime(args);
+        }catch(Exception e){
+            Trace.TraceError(e.Message);
+        }
     }
 
     // Avalonia configuration, don't remove; also used by visual designer.
