@@ -5,6 +5,7 @@ using Avalonia.Media.Imaging;
 using Avalonia.Platform;
 using Avalonia.Threading;
 using System;
+using System.Diagnostics;
 using System.Net.Security;
 using System.Threading.Tasks;
 
@@ -29,10 +30,20 @@ public partial class MainWindow : Window
 
     private void OnOpened(object? sender, EventArgs e)
     {
-        var username = "Administrator";
-        var password = "DevoLabs123!";
-        var domain = "ad.it-help.ninja";
-        var server = "IT-HELP-DC.ad.it-help.ninja";
+        
+
+        var username = Environment.GetEnvironmentVariable("IRONRDP_USERNAME");
+        var password = Environment.GetEnvironmentVariable("IRONRDP_PASSWORD");
+        var domain = Environment.GetEnvironmentVariable("IRONRDP_DOMAIN");
+        var server = Environment.GetEnvironmentVariable("IRONRDP_SERVER");
+
+        if (username == null || password == null || domain == null || server == null)
+        {
+            Trace.TraceError("Please set the IRONRDP_USERNAME, IRONRDP_PASSWORD, IRONRDP_DOMAIN, and IRONRDP_SERVER environment variables");
+            Close();
+            return;
+        }
+
         var width = 1280;
         var height = 800;
 
