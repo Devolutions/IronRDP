@@ -36,16 +36,11 @@ pub struct Processor {
     bitmap_stream_decoder: BitmapStreamDecoder,
     pointer_cache: PointerCache,
     use_system_pointer: bool,
-    mouse_pos_update: Option<(u16, u16)>,
     no_server_pointer: bool,
     pointer_software_rendering: bool,
 }
 
 impl Processor {
-    pub fn update_mouse_pos(&mut self, x: u16, y: u16) {
-        self.mouse_pos_update = Some((x, y));
-    }
-
     /// Process input fast path frame and return list of updates.
     pub fn process(
         &mut self,
@@ -54,12 +49,6 @@ impl Processor {
         output: &mut WriteBuf,
     ) -> SessionResult<Vec<UpdateKind>> {
         let mut processor_updates = Vec::new();
-
-        if let Some((x, y)) = self.mouse_pos_update.take() {
-            if let Some(rect) = image.move_pointer(x, y)? {
-                processor_updates.push(UpdateKind::Region(rect));
-            }
-        }
 
         let mut input = ReadCursor::new(input);
 
@@ -394,7 +383,6 @@ impl ProcessorBuilder {
             bitmap_stream_decoder: BitmapStreamDecoder::default(),
             pointer_cache: PointerCache::default(),
             use_system_pointer: true,
-            mouse_pos_update: None,
             no_server_pointer: self.no_server_pointer,
             pointer_software_rendering: self.pointer_software_rendering,
         }

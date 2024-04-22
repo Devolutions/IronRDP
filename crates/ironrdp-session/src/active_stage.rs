@@ -46,10 +46,6 @@ impl ActiveStage {
         }
     }
 
-    pub fn update_mouse_pos(&mut self, x: u16, y: u16) {
-        self.fast_path_processor.update_mouse_pos(x, y);
-    }
-
     /// Encodes outgoing input events and modifies image if necessary (e.g for client-side pointer
     /// rendering).
     pub fn process_fastpath_input(
