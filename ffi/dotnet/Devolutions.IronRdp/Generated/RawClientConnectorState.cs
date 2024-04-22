@@ -37,6 +37,9 @@ public partial struct ClientConnectorState
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ClientConnectorState_get_connected_result", ExactSpelling = true)]
     public static unsafe extern ConnectorStateFfiResultBoxConnectionResultBoxIronRdpError GetConnectedResult(ClientConnectorState* self);
 
+    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ClientConnectorState_get_connection_finalization_result", ExactSpelling = true)]
+    public static unsafe extern ConnectorStateFfiResultBoxConnectionActivationSequenceBoxIronRdpError GetConnectionFinalizationResult(ClientConnectorState* self);
+
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ClientConnectorState_destroy", ExactSpelling = true)]
     public static unsafe extern void Destroy(ClientConnectorState* self);
 }
