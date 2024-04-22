@@ -63,6 +63,9 @@ public partial class MainWindow : Window
         {
             if (t.IsFaulted)
             {
+                Exception e = t.Exception!;
+                Trace.TraceError("Error connecting to server: " + e.Message);
+                Close();
                 return;
             }
             var (res, framed) = t.Result;
