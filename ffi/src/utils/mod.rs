@@ -79,5 +79,4 @@ pub mod ffi {
             self.0.ok_or_else(|| "value is None".into())
         }
     }
-
 }

@@ -64,11 +64,9 @@ pub mod ffi {
 
     #[diplomat::opaque]
     pub struct FastPathInputEventIterator(pub Vec<ironrdp::pdu::input::fast_path::FastPathInputEvent>);
-
-    
 }
 
-impl From<Vec<ironrdp::pdu::input::fast_path::FastPathInputEvent>> for ffi::FastPathInputEventIterator{
+impl From<Vec<ironrdp::pdu::input::fast_path::FastPathInputEvent>> for ffi::FastPathInputEventIterator {
     fn from(value: Vec<ironrdp::pdu::input::fast_path::FastPathInputEvent>) -> Self {
         ffi::FastPathInputEventIterator(value)
     }
