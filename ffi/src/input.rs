@@ -38,7 +38,7 @@ pub mod ffi {
             Box::new(MousePosition(ironrdp::input::MousePosition { x, y }))
         }
 
-        pub fn as_operation(&self) -> Box<Operation> {
+        pub fn as_move_operation(&self) -> Box<Operation> {
             Box::new(Operation(ironrdp::input::Operation::MouseMove(self.0)))
         }
     }
