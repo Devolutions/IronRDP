@@ -117,7 +117,7 @@ pub mod ffi {
             self.performance_flags = Some(performance_flags.0);
         }
 
-        pub fn set_bitmap(&mut self, bitmap: &BitmapConfig) {
+        pub fn set_bitmap_config(&mut self, bitmap: &BitmapConfig) {
             self.bitmap = Some(bitmap.0);
         }
 
