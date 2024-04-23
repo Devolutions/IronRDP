@@ -168,7 +168,7 @@ public partial class MainWindow : Window
         var position = e.GetPosition((Visual?)sender);
         var x = (ushort)position.X;
         var y = (ushort)position.Y;
-        var mouseMovedEvent = MousePosition.New(x, y).AsOperation();
+        var mouseMovedEvent = MousePosition.New(x, y).AsMoveOperation();
         var fastpath = inputDatabase!.Apply(mouseMovedEvent);
         var output = activeStage.ProcessFastpathInput(decodedImage, fastpath);
         var _ = HandleActiveStageOutput(output);
