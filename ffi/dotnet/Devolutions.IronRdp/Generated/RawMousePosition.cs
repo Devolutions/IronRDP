@@ -19,8 +19,8 @@ public partial struct MousePosition
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "MousePosition_new", ExactSpelling = true)]
     public static unsafe extern MousePosition* New(ushort x, ushort y);
 
-    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "MousePosition_as_operation", ExactSpelling = true)]
-    public static unsafe extern Operation* AsOperation(MousePosition* self);
+    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "MousePosition_as_move_operation", ExactSpelling = true)]
+    public static unsafe extern Operation* AsMoveOperation(MousePosition* self);
 
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "MousePosition_destroy", ExactSpelling = true)]
     public static unsafe extern void Destroy(MousePosition* self);

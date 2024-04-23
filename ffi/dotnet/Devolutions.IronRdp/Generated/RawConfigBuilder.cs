@@ -52,8 +52,8 @@ public partial struct ConfigBuilder
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ConfigBuilder_set_performance_flags", ExactSpelling = true)]
     public static unsafe extern void SetPerformanceFlags(ConfigBuilder* self, PerformanceFlags* performanceFlags);
 
-    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ConfigBuilder_set_bitmap", ExactSpelling = true)]
-    public static unsafe extern void SetBitmap(ConfigBuilder* self, BitmapConfig* bitmap);
+    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ConfigBuilder_set_bitmap_config", ExactSpelling = true)]
+    public static unsafe extern void SetBitmapConfig(ConfigBuilder* self, BitmapConfig* bitmap);
 
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ConfigBuilder_set_client_build", ExactSpelling = true)]
     public static unsafe extern void SetClientBuild(ConfigBuilder* self, uint clientBuild);

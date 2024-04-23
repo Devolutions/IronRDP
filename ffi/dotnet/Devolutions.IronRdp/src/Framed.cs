@@ -23,11 +23,9 @@ public class Framed<S> where S : Stream
     {
         while (true)
         {
-            Console.WriteLine("ReadPdu, buffer size: " + this.buffer.Count);
             var pduInfo = IronRdpPdu.New().FindSize(this.buffer.ToArray());
             if (null != pduInfo)
             {
-                Console.WriteLine("ReadPdu: ReadExact, pduInfo.GetLength()=" + pduInfo.GetLength());
                 var frame = await this.ReadExact(pduInfo.GetLength());
                 var action = pduInfo.GetAction();
                 return (action, frame);
@@ -35,8 +33,6 @@ public class Framed<S> where S : Stream
             else
             {
                 var len = await this.Read();
-                Console.WriteLine("ReadPdu: Read, len=" + len);
-
                 if (len == 0)
                 {
                     throw new IronRdpLibException(IronRdpLibExceptionType.EndOfFile, "EOF on ReadPdu");
@@ -66,14 +62,12 @@ public class Framed<S> where S : Stream
         {
             if (buffer.Count >= (int)size)
             {
-                Console.WriteLine("ReadExact: Take, size=" + size);
                 var res = this.buffer.Take((int)size).ToArray();
                 this.buffer = this.buffer.Skip((int)size).ToList();
                 return res;
             }
 
             var len = await this.Read();
-            Console.WriteLine("ReadExact: Read, len = " + len);
             if (len == 0)
             {
                 throw new Exception("EOF");
@@ -100,7 +94,7 @@ public class Framed<S> where S : Stream
         }
         catch (Exception e)
         {
-            Console.WriteLine("Write error: " + e.Message);
+            throw e;
         }
         finally
         {

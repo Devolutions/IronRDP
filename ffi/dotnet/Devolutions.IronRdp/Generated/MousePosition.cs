@@ -44,7 +44,7 @@ public partial class MousePosition: IDisposable
     /// <returns>
     /// A <c>Operation</c> allocated on Rust side.
     /// </returns>
-    public Operation AsOperation()
+    public Operation AsMoveOperation()
     {
         unsafe
         {
@@ -52,7 +52,7 @@ public partial class MousePosition: IDisposable
             {
                 throw new ObjectDisposedException("MousePosition");
             }
-            Raw.Operation* retVal = Raw.MousePosition.AsOperation(_inner);
+            Raw.Operation* retVal = Raw.MousePosition.AsMoveOperation(_inner);
             return new Operation(retVal);
         }
     }

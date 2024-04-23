@@ -23,11 +23,11 @@ public partial class ConfigBuilder: IDisposable
         }
     }
 
-    public BitmapConfig Bitmap
+    public BitmapConfig BitmapConfig
     {
         set
         {
-            SetBitmap(value);
+            SetBitmapConfig(value);
         }
     }
 
@@ -334,7 +334,7 @@ public partial class ConfigBuilder: IDisposable
         }
     }
 
-    public void SetBitmap(BitmapConfig bitmap)
+    public void SetBitmapConfig(BitmapConfig bitmap)
     {
         unsafe
         {
@@ -348,7 +348,7 @@ public partial class ConfigBuilder: IDisposable
             {
                 throw new ObjectDisposedException("BitmapConfig");
             }
-            Raw.ConfigBuilder.SetBitmap(_inner, bitmapRaw);
+            Raw.ConfigBuilder.SetBitmapConfig(_inner, bitmapRaw);
         }
     }
 
