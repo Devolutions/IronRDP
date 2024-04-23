@@ -135,7 +135,6 @@ public partial class MainWindow : Window
 
     private void Canvas_OnPointerPressed(object sender, Avalonia.Input.PointerPressedEventArgs e)
     {
-        Console.WriteLine("Mouse pressed");
         PointerUpdateKind mouseButton = e.GetCurrentPoint((Visual?)sender).Properties.PointerUpdateKind;
 
         MouseButtonType buttonType = mouseButton switch
@@ -172,13 +171,11 @@ public partial class MainWindow : Window
         var mouseMovedEvent = MousePosition.New(x, y).AsOperation();
         var fastpath = inputDatabase!.Apply(mouseMovedEvent);
         var output = activeStage.ProcessFastpathInput(decodedImage, fastpath);
-        Console.WriteLine($"Pointer moved to X: {x}, Y: {y}");
         var _ = HandleActiveStageOutput(output);
     }
 
     private void Canvas_PointerReleased(object sender, PointerReleasedEventArgs e)
     {
-        Console.WriteLine("Mouse released");
         PointerUpdateKind mouseButton = e.GetCurrentPoint((Visual?)sender).Properties.PointerUpdateKind;
 
         MouseButtonType buttonType = mouseButton switch
@@ -264,16 +261,11 @@ public partial class MainWindow : Window
                 {
                     WriteDecodedImageToCanvas();
                 }
-                else
-                {
-                    Console.WriteLine("Unhandled output type " + output.GetEnumType());
-                }
             }
             return true;
         }
         catch (Exception e)
         {
-            Console.WriteLine("Error handling output: " + e.Message);
             return false;
         }
     }
