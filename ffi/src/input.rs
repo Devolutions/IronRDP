@@ -1,6 +1,6 @@
 #[diplomat::bridge]
 pub mod ffi {
-    use crate::pdu::ffi::FastPathInputEventIterator;
+    use crate::{error::ffi::IronRdpError, pdu::ffi::FastPathInputEventIterator};
 
     #[diplomat::opaque]
     pub struct InputDatabase(pub ironrdp::input::Database);
@@ -114,8 +114,10 @@ pub mod ffi {
     pub struct Char(pub char);
 
     impl Char {
-        pub fn new(c: char) -> Box<Char> {
-            Box::new(Char(c))
+        pub fn new(c: u32) -> Result<Box<Char>, Box<IronRdpError>> {
+            char::from_u32(c)
+                .map(|c| Box::new(Char(c)))
+                .ok_or_else(|| "Invalid unicode character".into())
         }
 
         pub fn as_operation_unicode_key_pressed(&self) -> Box<Operation> {

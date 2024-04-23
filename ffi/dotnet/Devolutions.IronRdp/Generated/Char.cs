@@ -29,6 +29,7 @@ public partial class Char: IDisposable
         _inner = handle;
     }
 
+    /// <exception cref="IronRdpException"></exception>
     /// <returns>
     /// A <c>Char</c> allocated on Rust side.
     /// </returns>
@@ -36,7 +37,12 @@ public partial class Char: IDisposable
     {
         unsafe
         {
-            Raw.Char* retVal = Raw.Char.New(c);
+            Raw.InputFfiResultBoxCharBoxIronRdpError result = Raw.Char.New(c);
+            if (!result.isOk)
+            {
+                throw new IronRdpException(new IronRdpError(result.Err));
+            }
+            Raw.Char* retVal = result.Ok;
             return new Char(retVal);
         }
     }

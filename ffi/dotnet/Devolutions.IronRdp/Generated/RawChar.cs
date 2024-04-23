@@ -17,7 +17,7 @@ public partial struct Char
     private const string NativeLib = "DevolutionsIronRdp";
 
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "Char_new", ExactSpelling = true)]
-    public static unsafe extern Char* New(uint c);
+    public static unsafe extern InputFfiResultBoxCharBoxIronRdpError New(uint c);
 
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "Char_as_operation_unicode_key_pressed", ExactSpelling = true)]
     public static unsafe extern Operation* AsOperationUnicodeKeyPressed(Char* self);
