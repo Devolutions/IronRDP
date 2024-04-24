@@ -337,7 +337,9 @@ fn create_client_confirm_active(
             // Setting `LargePointerSupportFlags::UP_TO_384X384_PIXELS` allows server to send
             // `TS_FP_LARGEPOINTERATTRIBUTE` update messages, which are required for client-side
             // rendering of pointers bigger than 96x96 pixels.
-            flags: LargePointerSupportFlags::UP_TO_384X384_PIXELS,
+            // `LargePointerSupportFlags::UP_TO_96X96_PIXELS` is needed for proper cursor behavior
+            // in Windows 2019 and older
+            flags: LargePointerSupportFlags::UP_TO_96X96_PIXELS | LargePointerSupportFlags::UP_TO_384X384_PIXELS,
         }),
         CapabilitySet::SurfaceCommands(SurfaceCommands {
             flags: CmdFlags::SET_SURFACE_BITS | CmdFlags::STREAM_SURFACE_BITS | CmdFlags::FRAME_MARKER,

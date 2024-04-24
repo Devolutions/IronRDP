@@ -4,10 +4,7 @@ use self::ffi::PerformanceFlagsType;
 
 #[diplomat::bridge]
 pub mod ffi {
-    use ironrdp::{
-        connector::{BitmapConfig, Credentials},
-        pdu::rdp::capability_sets::MajorPlatformType,
-    };
+    use ironrdp::{connector::Credentials, pdu::rdp::capability_sets::MajorPlatformType};
 
     use crate::error::ffi::IronRdpError;
 
@@ -33,7 +30,7 @@ pub mod ffi {
         pub ime_file_name: Option<String>,
         pub dig_product_id: Option<String>,
         pub desktop_size: Option<ironrdp::connector::DesktopSize>,
-        pub bitmap: Option<BitmapConfig>,
+        pub bitmap: Option<ironrdp::connector::BitmapConfig>,
         pub client_build: Option<u32>,
         pub client_name: Option<String>,
         pub client_dir: Option<String>,
@@ -120,7 +117,9 @@ pub mod ffi {
             self.performance_flags = Some(performance_flags.0);
         }
 
-        // TODO: set bitmap
+        pub fn set_bitmap_config(&mut self, bitmap: &BitmapConfig) {
+            self.bitmap = Some(bitmap.0);
+        }
 
         pub fn set_client_build(&mut self, client_build: u32) {
             self.client_build = Some(client_build);
@@ -227,6 +226,9 @@ pub mod ffi {
             self.0.insert(flag.into());
         }
     }
+
+    #[diplomat::opaque]
+    pub struct BitmapConfig(pub ironrdp::connector::BitmapConfig);
 }
 
 impl From<PerformanceFlagsType> for PerformanceFlags {

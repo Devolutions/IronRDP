@@ -16,8 +16,8 @@ public partial struct ClientConnectorState
 {
     private const string NativeLib = "DevolutionsIronRdp";
 
-    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ClientConnectorState_get_type", ExactSpelling = true)]
-    public static unsafe extern ConnectorStateFfiResultClientConnectorStateTypeBoxIronRdpError GetType(ClientConnectorState* self);
+    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ClientConnectorState_get_enum_type", ExactSpelling = true)]
+    public static unsafe extern ConnectorStateFfiResultClientConnectorStateTypeBoxIronRdpError GetEnumType(ClientConnectorState* self);
 
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ClientConnectorState_get_connection_initiation_wait_confirm_requested_protocol", ExactSpelling = true)]
     public static unsafe extern ConnectorStateFfiResultBoxSecurityProtocolBoxIronRdpError GetConnectionInitiationWaitConfirmRequestedProtocol(ClientConnectorState* self);
@@ -36,6 +36,9 @@ public partial struct ClientConnectorState
 
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ClientConnectorState_get_connected_result", ExactSpelling = true)]
     public static unsafe extern ConnectorStateFfiResultBoxConnectionResultBoxIronRdpError GetConnectedResult(ClientConnectorState* self);
+
+    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ClientConnectorState_get_connection_finalization_result", ExactSpelling = true)]
+    public static unsafe extern ConnectorStateFfiResultBoxConnectionActivationSequenceBoxIronRdpError GetConnectionFinalizationResult(ClientConnectorState* self);
 
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ClientConnectorState_destroy", ExactSpelling = true)]
     public static unsafe extern void Destroy(ClientConnectorState* self);

@@ -16,8 +16,8 @@ public partial struct ActiveStageOutput
 {
     private const string NativeLib = "DevolutionsIronRdp";
 
-    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ActiveStageOutput_get_type", ExactSpelling = true)]
-    public static unsafe extern ActiveStageOutputType GetType(ActiveStageOutput* self);
+    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ActiveStageOutput_get_enum_type", ExactSpelling = true)]
+    public static unsafe extern ActiveStageOutputType GetEnumType(ActiveStageOutput* self);
 
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ActiveStageOutput_get_response_frame", ExactSpelling = true)]
     public static unsafe extern SessionFfiResultBoxBytesSliceBoxIronRdpError GetResponseFrame(ActiveStageOutput* self);

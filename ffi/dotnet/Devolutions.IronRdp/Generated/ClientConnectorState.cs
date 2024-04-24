@@ -39,6 +39,14 @@ public partial class ClientConnectorState: IDisposable
         }
     }
 
+    public ConnectionActivationSequence ConnectionFinalizationResult
+    {
+        get
+        {
+            return GetConnectionFinalizationResult();
+        }
+    }
+
     public SecurityProtocol ConnectionInitiationWaitConfirmRequestedProtocol
     {
         get
@@ -63,11 +71,11 @@ public partial class ClientConnectorState: IDisposable
         }
     }
 
-    public ClientConnectorStateType Type
+    public ClientConnectorStateType EnumType
     {
         get
         {
-            return GetType();
+            return GetEnumType();
         }
     }
 
@@ -89,7 +97,7 @@ public partial class ClientConnectorState: IDisposable
     /// <returns>
     /// A <c>ClientConnectorStateType</c> allocated on C# side.
     /// </returns>
-    public ClientConnectorStateType GetType()
+    public ClientConnectorStateType GetEnumType()
     {
         unsafe
         {
@@ -97,7 +105,7 @@ public partial class ClientConnectorState: IDisposable
             {
                 throw new ObjectDisposedException("ClientConnectorState");
             }
-            Raw.ConnectorStateFfiResultClientConnectorStateTypeBoxIronRdpError result = Raw.ClientConnectorState.GetType(_inner);
+            Raw.ConnectorStateFfiResultClientConnectorStateTypeBoxIronRdpError result = Raw.ClientConnectorState.GetEnumType(_inner);
             if (!result.isOk)
             {
                 throw new IronRdpException(new IronRdpError(result.Err));
@@ -236,6 +244,28 @@ public partial class ClientConnectorState: IDisposable
             }
             Raw.ConnectionResult* retVal = result.Ok;
             return new ConnectionResult(retVal);
+        }
+    }
+
+    /// <exception cref="IronRdpException"></exception>
+    /// <returns>
+    /// A <c>ConnectionActivationSequence</c> allocated on Rust side.
+    /// </returns>
+    public ConnectionActivationSequence GetConnectionFinalizationResult()
+    {
+        unsafe
+        {
+            if (_inner == null)
+            {
+                throw new ObjectDisposedException("ClientConnectorState");
+            }
+            Raw.ConnectorStateFfiResultBoxConnectionActivationSequenceBoxIronRdpError result = Raw.ClientConnectorState.GetConnectionFinalizationResult(_inner);
+            if (!result.isOk)
+            {
+                throw new IronRdpException(new IronRdpError(result.Err));
+            }
+            Raw.ConnectionActivationSequence* retVal = result.Ok;
+            return new ConnectionActivationSequence(retVal);
         }
     }
 
