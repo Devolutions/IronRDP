@@ -1,0 +1,28 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Devolutions.IronRdp", "Devolutions.IronRdp\Devolutions.IronRdp.csproj", "{BEB4C7E4-6A07-4BBC-9843-D87684723B51}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Devolutions.IronRdp.ConnectExample", "Devolutions.IronRdp.ConnectExample\Devolutions.IronRdp.ConnectExample.csproj", "{0AB621EB-F508-4879-9397-E33AF5649229}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{BEB4C7E4-6A07-4BBC-9843-D87684723B51}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{BEB4C7E4-6A07-4BBC-9843-D87684723B51}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{BEB4C7E4-6A07-4BBC-9843-D87684723B51}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{BEB4C7E4-6A07-4BBC-9843-D87684723B51}.Release|Any CPU.Build.0 = Release|Any CPU
+		{0AB621EB-F508-4879-9397-E33AF5649229}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{0AB621EB-F508-4879-9397-E33AF5649229}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{0AB621EB-F508-4879-9397-E33AF5649229}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{0AB621EB-F508-4879-9397-E33AF5649229}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+EndGlobal

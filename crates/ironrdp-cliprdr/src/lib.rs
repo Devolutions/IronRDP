@@ -168,6 +168,11 @@ impl<R: Role> Cliprdr<R> {
     }
 
     fn handle_format_list(&mut self, format_list: FormatList<'_>) -> PduResult<Vec<SvcMessage>> {
+        if R::is_server() && self.state == CliprdrState::Initialization {
+            info!("CLIPRDR(clipboard) virtual channel has been initialized");
+            self.state = CliprdrState::Ready;
+        }
+
         let formats = format_list.get_formats(self.are_long_format_names_enabled())?;
         self.backend.on_remote_copy(&formats);
 

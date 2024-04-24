@@ -1,9 +1,9 @@
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 
-use anyhow::{bail, Result};
+use anyhow::{anyhow, bail, Result};
 use ironrdp_acceptor::{self, Acceptor, AcceptorResult, BeginResult};
-use ironrdp_cliprdr::backend::CliprdrBackendFactory;
+use ironrdp_cliprdr::backend::ClipboardMessage;
 use ironrdp_cliprdr::CliprdrServer;
 use ironrdp_displaycontrol::server::DisplayControlServer;
 use ironrdp_dvc as dvc;
@@ -12,11 +12,13 @@ use ironrdp_pdu::input::InputEventPdu;
 use ironrdp_pdu::mcs::SendDataRequest;
 use ironrdp_pdu::rdp::capability_sets::{BitmapCodecs, CapabilitySet, CmdFlags, GeneralExtraFlags};
 use ironrdp_pdu::{self, decode, mcs, nego, rdp, Action, PduResult};
-use ironrdp_svc::{impl_as_any, server_encode_svc_messages, StaticChannelSet};
+use ironrdp_svc::{impl_as_any, server_encode_svc_messages, StaticChannelId, StaticChannelSet, SvcProcessor};
 use ironrdp_tokio::{Framed, FramedRead, FramedWrite, TokioFramed};
 use tokio::net::{TcpListener, TcpStream};
+use tokio::sync::mpsc;
 use tokio_rustls::TlsAcceptor;
 
+use crate::clipboard::CliprdrServerFactory;
 use crate::display::{DisplayUpdate, RdpServerDisplay};
 use crate::encoder::UpdateEncoder;
 use crate::handler::RdpServerInputHandler;
@@ -146,7 +148,24 @@ pub struct RdpServer {
     handler: Arc<Mutex<Box<dyn RdpServerInputHandler>>>,
     display: Box<dyn RdpServerDisplay>,
     static_channels: StaticChannelSet,
-    cliprdr_factory: Option<Box<dyn CliprdrBackendFactory + Send>>,
+    cliprdr_factory: Option<Box<dyn CliprdrServerFactory>>,
+    ev_sender: mpsc::UnboundedSender<ServerEvent>,
+    ev_receiver: mpsc::UnboundedReceiver<ServerEvent>,
+}
+
+#[derive(Debug)]
+pub enum ServerEvent {
+    Clipboard(ClipboardMessage),
+}
+
+pub trait ServerEventSender {
+    fn set_sender(&mut self, sender: mpsc::UnboundedSender<ServerEvent>);
+}
+
+impl ServerEvent {
+    pub fn create_channel() -> (mpsc::UnboundedSender<Self>, mpsc::UnboundedReceiver<Self>) {
+        mpsc::unbounded_channel()
+    }
 }
 
 impl RdpServer {
@@ -154,19 +173,29 @@ impl RdpServer {
         opts: RdpServerOptions,
         handler: Box<dyn RdpServerInputHandler>,
         display: Box<dyn RdpServerDisplay>,
-        cliprdr_factory: Option<Box<dyn CliprdrBackendFactory + Send>>,
+        mut cliprdr_factory: Option<Box<dyn CliprdrServerFactory>>,
     ) -> Self {
+        let (ev_sender, ev_receiver) = ServerEvent::create_channel();
+        if let Some(cliprdr) = cliprdr_factory.as_mut() {
+            cliprdr.set_sender(ev_sender.clone());
+        }
         Self {
             opts,
             handler: Arc::new(Mutex::new(handler)),
             display,
             static_channels: StaticChannelSet::new(),
             cliprdr_factory,
+            ev_sender,
+            ev_receiver,
         }
     }
 
     pub fn builder() -> builder::RdpServerBuilder<builder::WantsAddr> {
         builder::RdpServerBuilder::new()
+    }
+
+    pub fn event_sender(&self) -> &mpsc::UnboundedSender<ServerEvent> {
+        &self.ev_sender
     }
 
     pub async fn run_connection(&mut self, stream: TcpStream) -> Result<()> {
@@ -233,6 +262,16 @@ impl RdpServer {
         Ok(())
     }
 
+    pub fn get_svc_processor<T: SvcProcessor + 'static>(&self) -> Option<&T> {
+        self.static_channels
+            .get_by_type::<T>()
+            .and_then(|svc| svc.channel_processor_downcast_ref())
+    }
+
+    pub fn get_channel_id_by_type<T: SvcProcessor + 'static>(&self) -> Option<StaticChannelId> {
+        self.static_channels.get_channel_id_by_type::<T>()
+    }
+
     async fn client_loop<S>(&mut self, mut framed: Framed<S>, result: AcceptorResult) -> Result<()>
     where
         S: FramedWrite + FramedRead,
@@ -252,6 +291,7 @@ impl RdpServer {
 
         self.static_channels = result.static_channels;
         for (_type_id, channel, channel_id) in self.static_channels.iter_mut() {
+            debug!(?channel, ?channel_id, "Start");
             let Some(channel_id) = channel_id else {
                 continue;
             };
@@ -313,10 +353,11 @@ impl RdpServer {
 
         let mut display_updates = self.display.updates().await?;
 
-        'main: loop {
+        loop {
             tokio::select! {
                 frame = framed.read_pdu() => {
                     let Ok((action, bytes)) = frame else {
+                        debug!(?frame, "disconnecting");
                         break;
                     };
 
@@ -330,7 +371,8 @@ impl RdpServer {
                             match self.handle_x224(&mut framed, result.io_channel_id, result.user_channel_id, &bytes).await {
                                 Ok(disconnect) => {
                                     if disconnect {
-                                        break 'main;
+                                        debug!("Got disconnect request");
+                                        break;
                                     }
                                 },
 
@@ -344,24 +386,75 @@ impl RdpServer {
 
                 Some(update) = display_updates.next_update() => {
                     let fragmenter = match update {
-                        DisplayUpdate::Bitmap(bitmap) => encoder.bitmap(bitmap)
+                        DisplayUpdate::Bitmap(bitmap) => encoder.bitmap(bitmap),
+                        DisplayUpdate::PointerPosition(pos) => { encoder.pointer_position(pos) },
+                        DisplayUpdate::RGBAPointer(ptr) => { encoder.rgba_pointer(ptr) },
+                        DisplayUpdate::ColorPointer(ptr) => { encoder.color_pointer(ptr) },
+                        DisplayUpdate::HidePointer => { encoder.hide_pointer() },
+                        DisplayUpdate::DefaultPointer => { encoder.default_pointer() },
                     };
 
-                    if let Some(mut fragmenter) = fragmenter {
-                        if fragmenter.size_hint() > buffer.len() {
-                            buffer.resize(fragmenter.size_hint(), 0);
+                    let mut fragmenter = match fragmenter {
+                        Ok(fragmenter) => fragmenter,
+                        Err(error) => {
+                            error!(?error, "Error during update encoding");
+                            break;
+                        }
+                    };
+
+                    if fragmenter.size_hint() > buffer.len() {
+                        buffer.resize(fragmenter.size_hint(), 0);
+                    }
+
+                    while let Some(len) = fragmenter.next(&mut buffer) {
+                        if let Err(error) = framed.write_all(&buffer[..len]).await {
+                            error!(?error, "Write display update error");
+                            break;
+                        };
+                    }
+                }
+
+                Some(event) = self.ev_receiver.recv() => {
+                    match event {
+                        ServerEvent::Clipboard(c) => {
+                            let Some(cliprdr) = self.get_svc_processor::<CliprdrServer>() else {
+                                warn!("No clipboard channel, dropping event");
+                                continue;
+                            };
+                            let res = match c {
+                                ClipboardMessage::SendInitiateCopy(formats) => {
+                                    cliprdr.initiate_copy(&formats)
+                                },
+                                ClipboardMessage::SendFormatData(data) => {
+                                    cliprdr.submit_format_data(data)
+                                },
+                                ClipboardMessage::SendInitiatePaste(format) => {
+                                    cliprdr.initiate_paste(format)
+                                },
+                                ClipboardMessage::Error(error) => {
+                                    error!(?error, "Handling clipboard event");
+                                    continue;
+                                },
+                            };
+                            match res {
+                                Ok(msgs) => {
+                                    let channel_id = self.get_channel_id_by_type::<CliprdrServer>().ok_or_else(|| anyhow!("SVC channel not found"))?;
+                                    let data = server_encode_svc_messages(msgs.into(), channel_id, result.user_channel_id)?;
+                                    framed.write_all(&data).await?;
+                                },
+                                Err(error) => {
+                                    error!(?error, "Sending clipboard event");
+                                    break;
+                                }
+                            }
                         }
 
-                        while let Some(len) = fragmenter.next(&mut buffer) {
-                            if let Err(error) = framed.write_all(&buffer[..len]).await {
-                                error!(?error, "Write display update error");
-                                break;
-                            };
-                        }
                     }
                 }
             }
         }
+
+        debug!("End of client loop");
 
         Ok(())
     }

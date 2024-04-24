@@ -23,10 +23,10 @@ jobs:
     if: github.event.pull_request.head.repo.full_name == github.repository || github.event_name != 'pull_request'
 
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
 
       - name: Rust cache
-        uses: Swatinem/rust-cache@v2.3.0
+        uses: Swatinem/rust-cache@v2.7.3
 
       - name: Prepare runner
         run: cargo xtask cov install -v

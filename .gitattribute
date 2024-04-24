@@ -1,0 +1,8 @@
+*.rs text eol=lf
+*.toml text eol=lf
+*.cs text eol=lf
+*.js text eol=lf
+*.ps1 text eol=lf
+*.sln text eol=crlf
+
+ffi/dotnet/Devolutions.IronRdp/Generated/** linguist-generated merge=binary

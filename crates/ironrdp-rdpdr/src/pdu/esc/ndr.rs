@@ -31,7 +31,7 @@ pub trait Decode {
     fn decode_ptr(src: &mut ReadCursor<'_>, index: &mut u32) -> PduResult<Self>
     where
         Self: Sized;
-    fn decode_value(&mut self, src: &mut ReadCursor<'_>) -> PduResult<()>;
+    fn decode_value(&mut self, src: &mut ReadCursor<'_>, charset: Option<CharacterSet>) -> PduResult<()>;
 }
 
 pub trait Encode {
@@ -82,13 +82,13 @@ pub fn ptr_size(with_length: bool) -> usize {
 /// A special read_string_from_cursor which reads and ignores the additional length and
 /// offset fields prefixing the string, as well as any extra padding for a 4-byte aligned
 /// NULL-terminated string.
-pub fn read_string_from_cursor(cursor: &mut ReadCursor<'_>) -> PduResult<String> {
+pub fn read_string_from_cursor(cursor: &mut ReadCursor<'_>, charset: CharacterSet) -> PduResult<String> {
     ensure_size!(ctx: "ndr::read_string_from_cursor", in: cursor, size: size_of::<u32>() * 3);
     let length = cursor.read_u32();
     let _offset = cursor.read_u32();
     let _length2 = cursor.read_u32();
 
-    let string = utils::read_string_from_cursor(cursor, CharacterSet::Unicode, true)?;
+    let string = utils::read_string_from_cursor(cursor, charset, true)?;
 
     // Skip padding for 4-byte aligned NULL-terminated string.
     if length % 2 != 0 {

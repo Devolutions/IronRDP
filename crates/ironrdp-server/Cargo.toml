@@ -17,7 +17,7 @@ test = false
 
 [dependencies]
 anyhow = "1.0"
-tokio = { version = "1", features = ["net", "macros"] }
+tokio = { version = "1", features = ["net", "macros", "sync"] }
 tokio-rustls = "0.24"
 async-trait = "0.1"
 ironrdp-ainput.workspace = true

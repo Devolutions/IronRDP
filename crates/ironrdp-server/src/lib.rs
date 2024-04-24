@@ -5,11 +5,13 @@ extern crate tracing;
 
 mod builder;
 mod capabilities;
+mod clipboard;
 mod display;
 mod encoder;
 mod handler;
 mod server;
 
+pub use clipboard::*;
 pub use display::*;
 pub use handler::*;
 pub use server::*;

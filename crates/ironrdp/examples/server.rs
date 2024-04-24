@@ -10,15 +10,17 @@ use std::num::NonZeroU16;
 use std::sync::Arc;
 
 use anyhow::Context as _;
-use ironrdp_cliprdr_native::StubClipboard;
+use ironrdp_cliprdr::backend::{CliprdrBackend, CliprdrBackendFactory};
+use ironrdp_cliprdr_native::StubCliprdrBackend;
 use ironrdp_connector::DesktopSize;
 use ironrdp_server::{
-    BitmapUpdate, DisplayUpdate, KeyboardEvent, MouseEvent, PixelFormat, PixelOrder, RdpServer, RdpServerDisplay,
-    RdpServerDisplayUpdates, RdpServerInputHandler,
+    BitmapUpdate, CliprdrServerFactory, DisplayUpdate, KeyboardEvent, MouseEvent, PixelFormat, PixelOrder, RdpServer,
+    RdpServerDisplay, RdpServerDisplayUpdates, RdpServerInputHandler, ServerEvent, ServerEventSender,
 };
 use rand::prelude::*;
 use rustls::ServerConfig;
 use rustls_pemfile::{certs, pkcs8_private_keys};
+use tokio::sync::mpsc::UnboundedSender;
 use tokio::time::{sleep, Duration};
 use tokio_rustls::TlsAcceptor;
 
@@ -189,6 +191,20 @@ impl RdpServerDisplay for Handler {
     }
 }
 
+struct StubCliprdrServerFactory {}
+
+impl CliprdrBackendFactory for StubCliprdrServerFactory {
+    fn build_cliprdr_backend(&self) -> Box<dyn CliprdrBackend> {
+        Box::new(StubCliprdrBackend::new())
+    }
+}
+
+impl ServerEventSender for StubCliprdrServerFactory {
+    fn set_sender(&mut self, _sender: UnboundedSender<ServerEvent>) {}
+}
+
+impl CliprdrServerFactory for StubCliprdrServerFactory {}
+
 async fn run(host: String, port: u16, cert: Option<String>, key: Option<String>) -> anyhow::Result<()> {
     info!(host, port, cert, key, "run");
     let handler = Handler::new();
@@ -207,12 +223,12 @@ async fn run(host: String, port: u16, cert: Option<String>, key: Option<String>)
         server.with_no_security()
     };
 
-    let cliprdr = StubClipboard::new();
+    let cliprdr = Box::new(StubCliprdrServerFactory {});
 
     let mut server = server
         .with_input_handler(handler.clone())
         .with_display_handler(handler.clone())
-        .with_cliprdr_factory(Some(cliprdr.backend_factory()))
+        .with_cliprdr_factory(Some(cliprdr))
         .build();
 
     server.run().await
