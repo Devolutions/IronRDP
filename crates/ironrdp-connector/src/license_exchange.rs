@@ -158,15 +158,14 @@ impl Sequence for LicenseExchangeSequence {
                         }
                     }
                     LicensePdu::LicensingErrorMessage(error_message) => {
-                        if error_message.error_code == server_license::LicenseErrorCode::StatusValidClient {
-                            info!("Server did not initiate license exchange");
-                            (Written::Nothing, LicenseExchangeState::LicenseExchanged)
-                        } else {
+                        if error_message.error_code != server_license::LicenseErrorCode::StatusValidClient {
                             return Err(custom_err!(
                                 "LicensingErrorMessage",
                                 ServerLicenseError::from(error_message)
                             ));
                         }
+                        info!("Server did not initiate license exchange");
+                        (Written::Nothing, LicenseExchangeState::LicenseExchanged)
                     }
                     _ => {
                         return Err(general_err!(
@@ -210,16 +209,15 @@ impl Sequence for LicenseExchangeSequence {
                         )
                     }
                     LicensePdu::LicensingErrorMessage(error_message) => {
-                        if error_message.error_code == server_license::LicenseErrorCode::StatusValidClient {
-                            debug!(message = ?error_message, "Received");
-                            info!("Client licensing completed");
-                            (Written::Nothing, LicenseExchangeState::LicenseExchanged)
-                        } else {
+                        if error_message.error_code != server_license::LicenseErrorCode::StatusValidClient {
                             return Err(custom_err!(
                                 "LicensingErrorMessage",
                                 ServerLicenseError::from(error_message)
                             ));
                         }
+                        debug!(message = ?error_message, "Received");
+                        info!("Client licensing completed");
+                        (Written::Nothing, LicenseExchangeState::LicenseExchanged)
                     }
                     _ => {
                         return Err(general_err!(
@@ -247,15 +245,15 @@ impl Sequence for LicenseExchangeSequence {
                         debug!("License verified with success");
                     }
                     LicensePdu::LicensingErrorMessage(error_message) => {
-                        if error_message.error_code == server_license::LicenseErrorCode::StatusValidClient {
-                            debug!(message = ?error_message, "Received");
-                            info!("Client licensing completed");
-                        } else {
+                        if error_message.error_code != server_license::LicenseErrorCode::StatusValidClient {
                             return Err(custom_err!(
                                 "LicensingErrorMessage",
                                 ServerLicenseError::from(error_message)
                             ));
                         }
+
+                        debug!(message = ?error_message, "Received");
+                        info!("Client licensing completed");
                     }
                     _ => {
                         return Err(general_err!(

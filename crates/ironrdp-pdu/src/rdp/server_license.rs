@@ -355,32 +355,20 @@ impl<'de> PduDecode<'de> for LicensePdu {
         let license_header = LicenseHeader::decode(src)?;
 
         match license_header.preamble_message_type {
-            PreambleType::LicenseRequest => Ok(Self::ServerLicenseRequest(ServerLicenseRequest::decode(
-                license_header,
-                src,
-            )?)),
-            PreambleType::PlatformChallenge => Ok(Self::ServerPlatformChallenge(ServerPlatformChallenge::decode(
-                license_header,
-                src,
-            )?)),
-            PreambleType::NewLicense | PreambleType::UpgradeLicense => Ok(Self::ServerUpgradeLicense(
-                ServerUpgradeLicense::decode(license_header, src)?,
-            )),
+            PreambleType::LicenseRequest => Ok(ServerLicenseRequest::decode(license_header, src)?.into()),
+            PreambleType::PlatformChallenge => Ok(ServerPlatformChallenge::decode(license_header, src)?.into()),
+            PreambleType::NewLicense | PreambleType::UpgradeLicense => {
+                Ok(ServerUpgradeLicense::decode(license_header, src)?.into())
+            }
             PreambleType::LicenseInfo => Err(unsupported_pdu_err!(
                 "LicensePdu::LicenseInfo",
                 "LicenseInfo is not supported".to_owned()
             )),
-            PreambleType::NewLicenseRequest => Ok(Self::ClientNewLicenseRequest(ClientNewLicenseRequest::decode(
-                license_header,
-                src,
-            )?)),
-            PreambleType::PlatformChallengeResponse => Ok(Self::ClientPlatformChallengeResponse(
-                ClientPlatformChallengeResponse::decode(license_header, src)?,
-            )),
-            PreambleType::ErrorAlert => Ok(Self::LicensingErrorMessage(LicensingErrorMessage::decode(
-                license_header,
-                src,
-            )?)),
+            PreambleType::NewLicenseRequest => Ok(ClientNewLicenseRequest::decode(license_header, src)?.into()),
+            PreambleType::PlatformChallengeResponse => {
+                Ok(ClientPlatformChallengeResponse::decode(license_header, src)?.into())
+            }
+            PreambleType::ErrorAlert => Ok(LicensingErrorMessage::decode(license_header, src)?.into()),
         }
     }
 }

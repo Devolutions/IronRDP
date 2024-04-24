@@ -166,7 +166,12 @@ impl Sequence for ConnectionFinalizationSequence {
                                 if control_pdu.grant_id == 0 && control_pdu.control_id == 0 {
                                     debug!("Server Control (Cooperate)");
                                 } else {
-                                    warn!("Server Control (Cooperate) had invalid grant_id or control_id, expected 0,0 but got {},{}", control_pdu.grant_id, control_pdu.control_id);
+                                    warn!(
+                                        control_pdu.grant_id,
+                                        control_pdu.control_id,
+                                        user_channel_id = self.user_channel_id,
+                                        "Server Control (Cooperate) has non-zero grant_id or control_id",
+                                    );
                                 }
                                 ConnectionFinalizationState::WaitForResponse
                             }
