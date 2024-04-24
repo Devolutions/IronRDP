@@ -184,7 +184,7 @@ impl ActiveStage {
     }
 
     pub fn get_dvc<T: DvcProcessor + 'static>(&mut self) -> Option<DynamicVirtualChannel<'_, T>> {
-        self.x224_processor.get_dvc_processor()
+        self.x224_processor.get_dvc()
     }
 
     /// Completes user's SVC request with data, required to sent it over the network and returns

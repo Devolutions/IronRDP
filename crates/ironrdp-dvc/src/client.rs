@@ -61,7 +61,7 @@ impl DrdynvcClient {
         self
     }
 
-    pub fn get_dynamic_channel_by_type_id<T>(&self) -> Option<DynamicVirtualChannel<'_, T>>
+    pub fn get_dvc_by_type_id<T>(&self) -> Option<DynamicVirtualChannel<'_, T>>
     where
         T: DvcProcessor,
     {

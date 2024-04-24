@@ -375,8 +375,6 @@ impl MonitorLayoutEntry {
     /// - `width` and `height` MUST be >= 200 and <= 8192.
     /// - `width` SHOULD be even. If it is odd, it will be adjusted
     ///    to the nearest even number by subtracting 1.
-    /// - `desktop_scale_factor` SHOULD be >= 100 and <= 500. If it is not,
-    ///    it will be adjusted to the nearest valid value.
     fn new_impl(mut width: u32, height: u32) -> PduResult<Self> {
         if width % 2 != 0 {
             let prev_width = width;
