@@ -1,0 +1,14 @@
+<Window xmlns="https://github.com/avaloniaui"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+    mc:Ignorable="d" d:DesignWidth="1980" d:DesignHeight="1080"
+    x:Class="Devolutions.IronRdp.AvaloniaExample.MainWindow"
+    Title="Devolutions.IronRdp.AvaloniaExample">
+
+    <Canvas Name="MainCanvas" Width="1280" Height="800" Background="Black" 
+        PointerPressed="Canvas_OnPointerPressed" PointerMoved="Canvas_PointerMoved" PointerReleased="Canvas_PointerReleased"
+        HorizontalAlignment="Center"
+        VerticalAlignment="Center"
+    />
+</Window>

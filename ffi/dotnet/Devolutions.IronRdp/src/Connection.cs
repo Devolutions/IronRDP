@@ -73,7 +73,7 @@ public class Connection
 
         ClientConnectorState state = connector.ConsumeAndCastToClientConnectorState();
 
-        if (state.GetType() == ClientConnectorStateType.Connected)
+        if (state.GetEnumType() == ClientConnectorStateType.Connected)
         {
             return state.GetConnectedResult();
         }

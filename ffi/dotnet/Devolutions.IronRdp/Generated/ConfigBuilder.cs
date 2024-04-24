@@ -23,6 +23,14 @@ public partial class ConfigBuilder: IDisposable
         }
     }
 
+    public BitmapConfig BitmapConfig
+    {
+        set
+        {
+            SetBitmapConfig(value);
+        }
+    }
+
     public uint ClientBuild
     {
         set
@@ -323,6 +331,24 @@ public partial class ConfigBuilder: IDisposable
                 throw new ObjectDisposedException("PerformanceFlags");
             }
             Raw.ConfigBuilder.SetPerformanceFlags(_inner, performanceFlagsRaw);
+        }
+    }
+
+    public void SetBitmapConfig(BitmapConfig bitmap)
+    {
+        unsafe
+        {
+            if (_inner == null)
+            {
+                throw new ObjectDisposedException("ConfigBuilder");
+            }
+            Raw.BitmapConfig* bitmapRaw;
+            bitmapRaw = bitmap.AsFFI();
+            if (bitmapRaw == null)
+            {
+                throw new ObjectDisposedException("BitmapConfig");
+            }
+            Raw.ConfigBuilder.SetBitmapConfig(_inner, bitmapRaw);
         }
     }
 

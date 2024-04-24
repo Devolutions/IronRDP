@@ -19,6 +19,9 @@ public partial struct InputDatabase
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "InputDatabase_new", ExactSpelling = true)]
     public static unsafe extern InputDatabase* New();
 
+    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "InputDatabase_apply", ExactSpelling = true)]
+    public static unsafe extern FastPathInputEventIterator* Apply(InputDatabase* self, Operation* operation);
+
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "InputDatabase_destroy", ExactSpelling = true)]
     public static unsafe extern void Destroy(InputDatabase* self);
 }

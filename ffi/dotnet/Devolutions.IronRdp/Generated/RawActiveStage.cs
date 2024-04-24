@@ -22,6 +22,9 @@ public partial struct ActiveStage
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ActiveStage_process", ExactSpelling = true)]
     public static unsafe extern SessionFfiResultBoxActiveStageOutputIteratorBoxIronRdpError Process(ActiveStage* self, DecodedImage* image, Action* action, byte* payload, nuint payloadSz);
 
+    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ActiveStage_process_fastpath_input", ExactSpelling = true)]
+    public static unsafe extern SessionFfiResultBoxActiveStageOutputIteratorBoxIronRdpError ProcessFastpathInput(ActiveStage* self, DecodedImage* image, FastPathInputEventIterator* fastpathInput);
+
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ActiveStage_destroy", ExactSpelling = true)]
     public static unsafe extern void Destroy(ActiveStage* self);
 }

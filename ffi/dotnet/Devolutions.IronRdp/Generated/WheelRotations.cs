@@ -11,12 +11,12 @@ namespace Devolutions.IronRdp;
 
 #nullable enable
 
-public partial class InputDatabase: IDisposable
+public partial class WheelRotations: IDisposable
 {
-    private unsafe Raw.InputDatabase* _inner;
+    private unsafe Raw.WheelRotations* _inner;
 
     /// <summary>
-    /// Creates a managed <c>InputDatabase</c> from a raw handle.
+    /// Creates a managed <c>WheelRotations</c> from a raw handle.
     /// </summary>
     /// <remarks>
     /// Safety: you should not build two managed objects using the same raw handle (may causes use-after-free and double-free).
@@ -24,49 +24,43 @@ public partial class InputDatabase: IDisposable
     /// This constructor assumes the raw struct is allocated on Rust side.
     /// If implemented, the custom Drop implementation on Rust side WILL run on destruction.
     /// </remarks>
-    public unsafe InputDatabase(Raw.InputDatabase* handle)
+    public unsafe WheelRotations(Raw.WheelRotations* handle)
     {
         _inner = handle;
     }
 
     /// <returns>
-    /// A <c>InputDatabase</c> allocated on Rust side.
+    /// A <c>WheelRotations</c> allocated on Rust side.
     /// </returns>
-    public static InputDatabase New()
+    public static WheelRotations New(bool isVertical, short rotationUnits)
     {
         unsafe
         {
-            Raw.InputDatabase* retVal = Raw.InputDatabase.New();
-            return new InputDatabase(retVal);
+            Raw.WheelRotations* retVal = Raw.WheelRotations.New(isVertical, rotationUnits);
+            return new WheelRotations(retVal);
         }
     }
 
     /// <returns>
-    /// A <c>FastPathInputEventIterator</c> allocated on Rust side.
+    /// A <c>Operation</c> allocated on Rust side.
     /// </returns>
-    public FastPathInputEventIterator Apply(Operation operation)
+    public Operation AsOperation()
     {
         unsafe
         {
             if (_inner == null)
             {
-                throw new ObjectDisposedException("InputDatabase");
+                throw new ObjectDisposedException("WheelRotations");
             }
-            Raw.Operation* operationRaw;
-            operationRaw = operation.AsFFI();
-            if (operationRaw == null)
-            {
-                throw new ObjectDisposedException("Operation");
-            }
-            Raw.FastPathInputEventIterator* retVal = Raw.InputDatabase.Apply(_inner, operationRaw);
-            return new FastPathInputEventIterator(retVal);
+            Raw.Operation* retVal = Raw.WheelRotations.AsOperation(_inner);
+            return new Operation(retVal);
         }
     }
 
     /// <summary>
     /// Returns the underlying raw handle.
     /// </summary>
-    public unsafe Raw.InputDatabase* AsFFI()
+    public unsafe Raw.WheelRotations* AsFFI()
     {
         return _inner;
     }
@@ -83,14 +77,14 @@ public partial class InputDatabase: IDisposable
                 return;
             }
 
-            Raw.InputDatabase.Destroy(_inner);
+            Raw.WheelRotations.Destroy(_inner);
             _inner = null;
 
             GC.SuppressFinalize(this);
         }
     }
 
-    ~InputDatabase()
+    ~WheelRotations()
     {
         Dispose();
     }

@@ -1,0 +1,16 @@
+# Ignore directories
+bin/
+obj/
+
+# Ignore files
+*.user
+*.userosscache
+*.suo
+*.userprefs
+*.dll
+*.exe
+*.pdb
+*.cache
+*.vsp
+*.vspx
+*.sap

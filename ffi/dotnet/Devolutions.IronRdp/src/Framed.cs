@@ -6,6 +6,7 @@ public class Framed<S> where S : Stream
 {
     private S stream;
     private List<byte> buffer;
+    private readonly Mutex writeLock = new Mutex();
 
     public Framed(S stream)
     {
@@ -20,7 +21,6 @@ public class Framed<S> where S : Stream
 
     public async Task<(Devolutions.IronRdp.Action, byte[])> ReadPdu()
     {
-
         while (true)
         {
             var pduInfo = IronRdpPdu.New().FindSize(this.buffer.ToArray());
@@ -33,7 +33,6 @@ public class Framed<S> where S : Stream
             else
             {
                 var len = await this.Read();
-
                 if (len == 0)
                 {
                     throw new IronRdpLibException(IronRdpLibExceptionType.EndOfFile, "EOF on ReadPdu");
@@ -78,7 +77,7 @@ public class Framed<S> where S : Stream
 
     async Task<int> Read()
     {
-        var buffer = new byte[1024];
+        var buffer = new byte[8096];
         Memory<byte> memory = buffer;
         var size = await this.stream.ReadAsync(memory);
         this.buffer.AddRange(buffer.Take(size));
@@ -87,8 +86,20 @@ public class Framed<S> where S : Stream
 
     public async Task Write(byte[] data)
     {
-        ReadOnlyMemory<byte> memory = data;
-        await this.stream.WriteAsync(memory);
+        writeLock.WaitOne();
+        try
+        {
+            ReadOnlyMemory<byte> memory = data;
+            await this.stream.WriteAsync(memory);
+        }
+        catch (Exception e)
+        {
+            throw e;
+        }
+        finally
+        {
+            writeLock.ReleaseMutex();
+        }
     }
 
 

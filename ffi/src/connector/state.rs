@@ -27,7 +27,7 @@ pub mod ffi {
     }
 
     impl ClientConnectorState {
-        pub fn get_type(&self) -> Result<ClientConnectorStateType, Box<IronRdpError>> {
+        pub fn get_enum_type(&self) -> Result<ClientConnectorStateType, Box<IronRdpError>> {
             let res = match &self
                 .0
                 .as_ref()
@@ -166,8 +166,6 @@ pub mod ffi {
             .map(Box::new)
         }
 
-        // TODO: Add more getters for other states
-
         pub fn get_connected_result(
             &mut self,
         ) -> Result<Box<crate::connector::result::ffi::ConnectionResult>, Box<IronRdpError>> {
@@ -183,6 +181,24 @@ pub mod ffi {
                     .of_enum("ClientConnectorState")
                     .into()),
             }
+        }
+
+        pub fn get_connection_finalization_result(
+            &mut self,
+        ) -> Result<Box<crate::connector::ffi::ConnectionActivationSequence>, Box<IronRdpError>> {
+            match self
+                .0
+                .take()
+                .ok_or_else(|| ValueConsumedError::for_item("ClientConnectorState"))?
+            {
+                ironrdp::connector::ClientConnectorState::ConnectionFinalization { connection_activation } => Ok(
+                    crate::connector::ffi::ConnectionActivationSequence(Box::new(connection_activation)),
+                ),
+                _ => Err(IncorrectEnumTypeError::on_variant("ConnectionFinalization")
+                    .of_enum("ClientConnectorState")
+                    .into()),
+            }
+            .map(Box::new)
         }
     }
 }

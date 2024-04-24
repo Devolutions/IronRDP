@@ -11,12 +11,12 @@ namespace Devolutions.IronRdp;
 
 #nullable enable
 
-public partial class InputDatabase: IDisposable
+public partial class MousePosition: IDisposable
 {
-    private unsafe Raw.InputDatabase* _inner;
+    private unsafe Raw.MousePosition* _inner;
 
     /// <summary>
-    /// Creates a managed <c>InputDatabase</c> from a raw handle.
+    /// Creates a managed <c>MousePosition</c> from a raw handle.
     /// </summary>
     /// <remarks>
     /// Safety: you should not build two managed objects using the same raw handle (may causes use-after-free and double-free).
@@ -24,49 +24,43 @@ public partial class InputDatabase: IDisposable
     /// This constructor assumes the raw struct is allocated on Rust side.
     /// If implemented, the custom Drop implementation on Rust side WILL run on destruction.
     /// </remarks>
-    public unsafe InputDatabase(Raw.InputDatabase* handle)
+    public unsafe MousePosition(Raw.MousePosition* handle)
     {
         _inner = handle;
     }
 
     /// <returns>
-    /// A <c>InputDatabase</c> allocated on Rust side.
+    /// A <c>MousePosition</c> allocated on Rust side.
     /// </returns>
-    public static InputDatabase New()
+    public static MousePosition New(ushort x, ushort y)
     {
         unsafe
         {
-            Raw.InputDatabase* retVal = Raw.InputDatabase.New();
-            return new InputDatabase(retVal);
+            Raw.MousePosition* retVal = Raw.MousePosition.New(x, y);
+            return new MousePosition(retVal);
         }
     }
 
     /// <returns>
-    /// A <c>FastPathInputEventIterator</c> allocated on Rust side.
+    /// A <c>Operation</c> allocated on Rust side.
     /// </returns>
-    public FastPathInputEventIterator Apply(Operation operation)
+    public Operation AsMoveOperation()
     {
         unsafe
         {
             if (_inner == null)
             {
-                throw new ObjectDisposedException("InputDatabase");
+                throw new ObjectDisposedException("MousePosition");
             }
-            Raw.Operation* operationRaw;
-            operationRaw = operation.AsFFI();
-            if (operationRaw == null)
-            {
-                throw new ObjectDisposedException("Operation");
-            }
-            Raw.FastPathInputEventIterator* retVal = Raw.InputDatabase.Apply(_inner, operationRaw);
-            return new FastPathInputEventIterator(retVal);
+            Raw.Operation* retVal = Raw.MousePosition.AsMoveOperation(_inner);
+            return new Operation(retVal);
         }
     }
 
     /// <summary>
     /// Returns the underlying raw handle.
     /// </summary>
-    public unsafe Raw.InputDatabase* AsFFI()
+    public unsafe Raw.MousePosition* AsFFI()
     {
         return _inner;
     }
@@ -83,14 +77,14 @@ public partial class InputDatabase: IDisposable
                 return;
             }
 
-            Raw.InputDatabase.Destroy(_inner);
+            Raw.MousePosition.Destroy(_inner);
             _inner = null;
 
             GC.SuppressFinalize(this);
         }
     }
 
-    ~InputDatabase()
+    ~MousePosition()
     {
         Dispose();
     }

@@ -47,13 +47,13 @@ namespace Devolutions.IronRdp.ConnectExample
                     {
                         var output = outputIterator.Next()!; // outputIterator.Next() is not null since outputIterator.IsEmpty() is false
                         Console.WriteLine($"Output type: {output.GetType()}");
-                        if (output.GetType() == ActiveStageOutputType.Terminate)
+                        if (output.GetEnumType() == ActiveStageOutputType.Terminate)
                         {
                             Console.WriteLine("Connection terminated.");
                             keepLooping = false;
                         }
 
-                        if (output.GetType() == ActiveStageOutputType.ResponseFrame)
+                        if (output.GetEnumType() == ActiveStageOutputType.ResponseFrame)
                         {
                             var responseFrame = output.GetResponseFrame()!;
                             byte[] responseFrameBytes = new byte[responseFrame.GetSize()];

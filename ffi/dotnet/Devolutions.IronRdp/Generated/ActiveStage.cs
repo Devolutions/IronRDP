@@ -91,6 +91,40 @@ public partial class ActiveStage: IDisposable
         }
     }
 
+    /// <exception cref="IronRdpException"></exception>
+    /// <returns>
+    /// A <c>ActiveStageOutputIterator</c> allocated on Rust side.
+    /// </returns>
+    public ActiveStageOutputIterator ProcessFastpathInput(DecodedImage image, FastPathInputEventIterator fastpathInput)
+    {
+        unsafe
+        {
+            if (_inner == null)
+            {
+                throw new ObjectDisposedException("ActiveStage");
+            }
+            Raw.DecodedImage* imageRaw;
+            imageRaw = image.AsFFI();
+            if (imageRaw == null)
+            {
+                throw new ObjectDisposedException("DecodedImage");
+            }
+            Raw.FastPathInputEventIterator* fastpathInputRaw;
+            fastpathInputRaw = fastpathInput.AsFFI();
+            if (fastpathInputRaw == null)
+            {
+                throw new ObjectDisposedException("FastPathInputEventIterator");
+            }
+            Raw.SessionFfiResultBoxActiveStageOutputIteratorBoxIronRdpError result = Raw.ActiveStage.ProcessFastpathInput(_inner, imageRaw, fastpathInputRaw);
+            if (!result.isOk)
+            {
+                throw new IronRdpException(new IronRdpError(result.Err));
+            }
+            Raw.ActiveStageOutputIterator* retVal = result.Ok;
+            return new ActiveStageOutputIterator(retVal);
+        }
+    }
+
     /// <summary>
     /// Returns the underlying raw handle.
     /// </summary>
