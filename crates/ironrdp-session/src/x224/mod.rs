@@ -1,6 +1,6 @@
 use ironrdp_connector::connection_activation::ConnectionActivationSequence;
 use ironrdp_connector::legacy::SendDataIndicationCtx;
-use ironrdp_dvc::DynamicChannelId;
+use ironrdp_dvc::DynamicVirtualChannel;
 use ironrdp_dvc::{DrdynvcClient, DvcProcessor};
 use ironrdp_pdu::mcs::{DisconnectProviderUltimatum, DisconnectReason, McsMessage};
 use ironrdp_pdu::rdp::headers::ShareDataPdu;
@@ -72,7 +72,7 @@ impl Processor {
         process_svc_messages(messages.into(), channel_id, self.user_channel_id)
     }
 
-    pub fn get_dvc_processor<T: DvcProcessor + 'static>(&self) -> Option<(&T, Option<DynamicChannelId>)> {
+    pub fn get_dvc_processor<T: DvcProcessor + 'static>(&self) -> Option<DynamicVirtualChannel<'_, T>> {
         self.get_svc_processor::<DrdynvcClient>()?
             .get_dynamic_channel_by_type_id::<T>()
     }

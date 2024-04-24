@@ -2,7 +2,7 @@ use crate::pdu::{
     CapabilitiesResponsePdu, CapsVersion, ClosePdu, CreateResponsePdu, CreationStatus, DrdynvcClientPdu,
     DrdynvcServerPdu,
 };
-use crate::{encode_dvc_messages, DvcProcessor, DynamicChannelId, DynamicChannelSet};
+use crate::{encode_dvc_messages, DvcProcessor, DynamicChannelSet, DynamicVirtualChannel};
 use alloc::vec::Vec;
 use core::any::TypeId;
 use core::fmt;
@@ -61,17 +61,13 @@ impl DrdynvcClient {
         self
     }
 
-    pub fn get_dynamic_channel_by_type_id<T>(&self) -> Option<(&T, Option<DynamicChannelId>)>
+    pub fn get_dynamic_channel_by_type_id<T>(&self) -> Option<DynamicVirtualChannel<'_, T>>
     where
         T: DvcProcessor,
     {
-        self.dynamic_channels
-            .get_by_type_id(TypeId::of::<T>())
-            .and_then(|(channel, channel_id)| {
-                channel
-                    .channel_processor_downcast_ref()
-                    .map(|channel| (channel as &T, channel_id))
-            })
+        Some(DynamicVirtualChannel::<T>::new(
+            self.dynamic_channels.get_by_type_id(TypeId::of::<T>())?,
+        ))
     }
 
     fn create_capabilities_response(&mut self) -> SvcMessage {
@@ -128,7 +124,7 @@ impl SvcProcessor for DrdynvcClient {
                     self.dynamic_channels
                         .attach_channel_id(channel_name.clone(), channel_id);
                     let dynamic_channel = self.dynamic_channels.get_by_channel_name_mut(&channel_name).unwrap();
-                    (CreationStatus::OK, dynamic_channel.start(channel_id)?)
+                    (CreationStatus::OK, dynamic_channel.start()?)
                 } else {
                     (CreationStatus::NO_LISTENER, Vec::new())
                 };

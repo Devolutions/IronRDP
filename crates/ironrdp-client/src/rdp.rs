@@ -201,7 +201,7 @@ async fn active_session(
 
                         info!(width, height, "resize event");
 
-                        if let Some(response_frame) = active_stage.encode_resize(width, height, None, None) {
+                        if let Some(response_frame) = active_stage.encode_resize(width, height, None, Some((width.into(), height.into()))) { // Set physical width and height to the same as the pixel width and heighbbt per FreeRDP
                             vec![ActiveStageOutput::ResponseFrame(response_frame?)]
                         } else {
                             // TODO(#271): use the "auto-reconnect cookie": https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/15b0d1c9-2891-4adb-a45e-deb4aeeeab7c

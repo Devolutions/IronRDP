@@ -3,7 +3,7 @@ use std::rc::Rc;
 use ironrdp_connector::connection_activation::ConnectionActivationSequence;
 use ironrdp_connector::ConnectionResult;
 use ironrdp_displaycontrol::client::DisplayControlClient;
-use ironrdp_dvc::{DrdynvcClient, DvcProcessor, DynamicChannelId};
+use ironrdp_dvc::{DrdynvcClient, DvcProcessor, DynamicVirtualChannel};
 use ironrdp_graphics::pointer::DecodedPointer;
 use ironrdp_pdu::geometry::InclusiveRectangle;
 use ironrdp_pdu::input::fast_path::{FastPathInput, FastPathInputEvent};
@@ -183,7 +183,7 @@ impl ActiveStage {
         self.x224_processor.get_svc_processor_mut()
     }
 
-    pub fn get_dvc_processor<T: DvcProcessor + 'static>(&mut self) -> Option<(&T, Option<DynamicChannelId>)> {
+    pub fn get_dvc<T: DvcProcessor + 'static>(&mut self) -> Option<DynamicVirtualChannel<'_, T>> {
         self.x224_processor.get_dvc_processor()
     }
 
@@ -196,6 +196,10 @@ impl ActiveStage {
         self.x224_processor.process_svc_processor_messages(messages)
     }
 
+    /// Fully encodes a resize request for sending over the Display Control Virtual Channel.
+    ///
+    /// If the Display Control Virtual Channel is not available, or not yet connected, this method
+    /// will return `None`.
     pub fn encode_resize(
         &mut self,
         width: u16,
@@ -203,9 +207,17 @@ impl ActiveStage {
         scale_factor: Option<u32>,
         physical_dims: Option<(u32, u32)>,
     ) -> Option<SessionResult<Vec<u8>>> {
-        if let Some((display_client, channel_id)) = self.get_dvc_processor::<DisplayControlClient>() {
-            if let Some(channel_id) = channel_id {
-                let svc_messages = match display_client.encode_single_primary_monitor(
+        if let Some(dvc) = self.get_dvc::<DisplayControlClient>() {
+            if dvc.is_open() {
+                let display_control = match dvc.channel_processor_downcast_ref() {
+                    Ok(display_control) => display_control,
+                    Err(e) => return Some(Err(SessionError::pdu(e))),
+                };
+                let channel_id = match dvc.channel_id() {
+                    Ok(channel_id) => channel_id,
+                    Err(e) => return Some(Err(SessionError::pdu(e))),
+                };
+                let svc_messages = match display_control.encode_single_primary_monitor(
                     channel_id,
                     width.into(),
                     height.into(),
