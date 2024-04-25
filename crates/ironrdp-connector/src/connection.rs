@@ -625,7 +625,7 @@ fn create_gcc_blocks<'a>(
 
     ClientGccBlocks {
         core: ClientCoreData {
-            version: RdpVersion::V10_12,
+            version: RdpVersion::V5_PLUS,
             desktop_width: config.desktop_size.width,
             desktop_height: config.desktop_size.height,
             color_depth: ColorDepth::Bpp8, // ignored because we use the optional core data below
