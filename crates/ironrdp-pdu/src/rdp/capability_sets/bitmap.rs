@@ -88,13 +88,11 @@ impl<'de> PduDecode<'de> for Bitmap {
         let _high_color_flags = src.read_u8();
         let drawing_flags = BitmapDrawingFlags::from_bits_truncate(src.read_u8());
 
-        let is_multiple_rect_supported = src.read_u16() != 0;
-        if !is_multiple_rect_supported {
-            return Err(invalid_message_err!(
-                "isMultipleRectSupported",
-                "invalid multiple rect support"
-            ));
-        }
+        // According to the spec:
+        // "This field MUST be set to TRUE (0x0001) because multiple rectangle support is required for a connection to proceed."
+        // however like FreeRDP, we will ignore this field.
+        // https://github.com/FreeRDP/FreeRDP/blob/ba8cf8cf2158018fb7abbedb51ab245f369be813/libfreerdp/core/capabilities.c#L391
+        let _ = src.read_u16();
 
         read_padding!(src, 2);
 

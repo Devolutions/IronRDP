@@ -23,9 +23,7 @@ mod server_upgrade_license;
 pub use self::client_new_license_request::{ClientNewLicenseRequest, PLATFORM_ID};
 pub use self::client_platform_challenge_response::ClientPlatformChallengeResponse;
 pub use self::licensing_error_message::{LicenseErrorCode, LicensingErrorMessage, LicensingStateTransition};
-pub use self::server_license_request::{
-    cert, InitialMessageType, InitialServerLicenseMessage, ProductInfo, Scope, ServerCertificate, ServerLicenseRequest,
-};
+pub use self::server_license_request::{cert, ProductInfo, Scope, ServerCertificate, ServerLicenseRequest};
 pub use self::server_platform_challenge::ServerPlatformChallenge;
 pub use self::server_upgrade_license::{NewLicenseInformation, ServerUpgradeLicense};
 
@@ -155,20 +153,22 @@ pub enum PreambleVersion {
     V3 = 3, // RDP 5.0, 5.1, 5.2, 6.0, 6.1, 7.0, 7.1, 8.0, 8.1, 10.0, 10.1, 10.2, 10.3, 10.4, and 10.5
 }
 
-#[derive(Debug, PartialEq, Eq, FromPrimitive, ToPrimitive)]
-pub enum BlobType {
-    Any = 0x00,
-    Data = 0x01,
-    Random = 0x02,
-    Certificate = 0x03,
-    Error = 0x04,
-    RsaKey = 0x06,
-    EncryptedData = 0x09,
-    RsaSignature = 0x08,
-    KeyExchangeAlgorithm = 0x0d,
-    Scope = 0x0e,
-    ClientUserName = 0x0f,
-    ClientMachineNameBlob = 0x10,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BlobType(u16);
+
+impl BlobType {
+    pub const ANY: Self = Self(0x00);
+    pub const DATA: Self = Self(0x01);
+    pub const RANDOM: Self = Self(0x02);
+    pub const CERTIFICATE: Self = Self(0x03);
+    pub const ERROR: Self = Self(0x04);
+    pub const RSA_KEY: Self = Self(0x06);
+    pub const ENCRYPTED_DATA: Self = Self(0x09);
+    pub const RSA_SIGNATURE: Self = Self(0x08);
+    pub const KEY_EXCHANGE_ALGORITHM: Self = Self(0x0d);
+    pub const SCOPE: Self = Self(0x0e);
+    pub const CLIENT_USER_NAME: Self = Self(0x0f);
+    pub const CLIENT_MACHINE_NAME_BLOB: Self = Self(0x10);
 }
 
 #[derive(Debug, Error)]
@@ -256,6 +256,12 @@ impl From<PduError> for ServerLicenseError {
     }
 }
 
+impl From<LicensingErrorMessage> for ServerLicenseError {
+    fn from(e: LicensingErrorMessage) -> Self {
+        Self::UnexpectedError(e)
+    }
+}
+
 #[cfg(feature = "std")]
 impl ironrdp_error::legacy::ErrorContext for ServerLicenseError {
     fn context(&self) -> &'static str {
@@ -263,6 +269,7 @@ impl ironrdp_error::legacy::ErrorContext for ServerLicenseError {
     }
 }
 
+#[derive(Debug, PartialEq)]
 pub struct BlobHeader {
     pub blob_type: BlobType,
     pub length: usize,
@@ -282,7 +289,7 @@ impl PduEncode for BlobHeader {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
         ensure_fixed_part_size!(in: dst);
 
-        dst.write_u16(self.blob_type.to_u16().unwrap());
+        dst.write_u16(self.blob_type.0);
         dst.write_u16(cast_length!("len", self.length)?);
 
         Ok(())
@@ -301,10 +308,7 @@ impl<'de> PduDecode<'de> for BlobHeader {
     fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
         ensure_fixed_part_size!(in: src);
 
-        let blob_type = src.read_u16();
-        let blob_type =
-            BlobType::from_u16(blob_type).ok_or_else(|| invalid_message_err!("blobType", "invalid blob type"))?;
-
+        let blob_type = BlobType(src.read_u16());
         let length = cast_length!("len", src.read_u16())?;
 
         Ok(Self { blob_type, length })
@@ -336,38 +340,106 @@ fn compute_mac_data(mac_salt_key: &[u8], data: &[u8]) -> Vec<u8> {
     md5.finalize().to_vec()
 }
 
-fn read_license_header(
-    required_preamble_message_type: PreambleType,
-    src: &mut ReadCursor<'_>,
-) -> Result<LicenseHeader, PduError> {
-    let license_header = LicenseHeader::decode(src)?;
+#[derive(Debug, PartialEq)]
+pub enum LicensePdu {
+    ClientNewLicenseRequest(ClientNewLicenseRequest),
+    ClientPlatformChallengeResponse(ClientPlatformChallengeResponse),
+    ServerLicenseRequest(ServerLicenseRequest),
+    ServerPlatformChallenge(ServerPlatformChallenge),
+    ServerUpgradeLicense(ServerUpgradeLicense),
+    LicensingErrorMessage(LicensingErrorMessage),
+}
 
-    // FIXME(#269): ERROR_ALERT licensing packets should not be returned as error by the parser.
-    // Such packets should be handled by the caller, and the caller is responsible for turning
-    // those into "Result::Err" if necessary. It should be possible to decode a `LICENSE_ERROR_MESSAGE`
-    // structure like any other PDU.
-    // Otherwise it requires the caller to match on the error kind in order to check for variants that are
-    // not actual errors, it makes the flow of control harder to write correctly and less obvious.
-    // See `ConnectionConfirm` from the `nego` module for prior art.
+impl<'de> PduDecode<'de> for LicensePdu {
+    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+        let license_header = LicenseHeader::decode(src)?;
 
-    if license_header.preamble_message_type != required_preamble_message_type {
-        if license_header.preamble_message_type == PreambleType::ErrorAlert {
-            let license_error = LicensingErrorMessage::decode(src)?;
-
-            if license_error.error_code == LicenseErrorCode::StatusValidClient
-                && license_error.state_transition == LicensingStateTransition::NoTransition
-            {
-                return Err(invalid_message_err!(
-                    "preambleType",
-                    "the server has returned STATUS_VALID_CLIENT (not an error)"
-                ));
-            } else {
-                return Err(invalid_message_err!("preambleType", "invalid preamble type"));
+        match license_header.preamble_message_type {
+            PreambleType::LicenseRequest => Ok(ServerLicenseRequest::decode(license_header, src)?.into()),
+            PreambleType::PlatformChallenge => Ok(ServerPlatformChallenge::decode(license_header, src)?.into()),
+            PreambleType::NewLicense | PreambleType::UpgradeLicense => {
+                Ok(ServerUpgradeLicense::decode(license_header, src)?.into())
             }
-        } else {
-            return Err(invalid_message_err!("preambleType", "got unexptected preamble type"));
+            PreambleType::LicenseInfo => Err(unsupported_pdu_err!(
+                "LicensePdu::LicenseInfo",
+                "LicenseInfo is not supported".to_owned()
+            )),
+            PreambleType::NewLicenseRequest => Ok(ClientNewLicenseRequest::decode(license_header, src)?.into()),
+            PreambleType::PlatformChallengeResponse => {
+                Ok(ClientPlatformChallengeResponse::decode(license_header, src)?.into())
+            }
+            PreambleType::ErrorAlert => Ok(LicensingErrorMessage::decode(license_header, src)?.into()),
+        }
+    }
+}
+
+impl PduEncode for LicensePdu {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        match self {
+            Self::ClientNewLicenseRequest(ref pdu) => pdu.encode(dst),
+            Self::ClientPlatformChallengeResponse(ref pdu) => pdu.encode(dst),
+            Self::ServerLicenseRequest(ref pdu) => pdu.encode(dst),
+            Self::ServerPlatformChallenge(ref pdu) => pdu.encode(dst),
+            Self::ServerUpgradeLicense(ref pdu) => pdu.encode(dst),
+            Self::LicensingErrorMessage(ref pdu) => pdu.encode(dst),
         }
     }
 
-    Ok(license_header)
+    fn name(&self) -> &'static str {
+        match self {
+            Self::ClientNewLicenseRequest(pdu) => pdu.name(),
+            Self::ClientPlatformChallengeResponse(pdu) => pdu.name(),
+            Self::ServerLicenseRequest(pdu) => pdu.name(),
+            Self::ServerPlatformChallenge(pdu) => pdu.name(),
+            Self::ServerUpgradeLicense(pdu) => pdu.name(),
+            Self::LicensingErrorMessage(pdu) => pdu.name(),
+        }
+    }
+
+    fn size(&self) -> usize {
+        match self {
+            Self::ClientNewLicenseRequest(pdu) => pdu.size(),
+            Self::ClientPlatformChallengeResponse(pdu) => pdu.size(),
+            Self::ServerLicenseRequest(pdu) => pdu.size(),
+            Self::ServerPlatformChallenge(pdu) => pdu.size(),
+            Self::ServerUpgradeLicense(pdu) => pdu.size(),
+            Self::LicensingErrorMessage(pdu) => pdu.size(),
+        }
+    }
+}
+
+impl From<ClientNewLicenseRequest> for LicensePdu {
+    fn from(pdu: ClientNewLicenseRequest) -> Self {
+        Self::ClientNewLicenseRequest(pdu)
+    }
+}
+
+impl From<ClientPlatformChallengeResponse> for LicensePdu {
+    fn from(pdu: ClientPlatformChallengeResponse) -> Self {
+        Self::ClientPlatformChallengeResponse(pdu)
+    }
+}
+
+impl From<ServerLicenseRequest> for LicensePdu {
+    fn from(pdu: ServerLicenseRequest) -> Self {
+        Self::ServerLicenseRequest(pdu)
+    }
+}
+
+impl From<ServerPlatformChallenge> for LicensePdu {
+    fn from(pdu: ServerPlatformChallenge) -> Self {
+        Self::ServerPlatformChallenge(pdu)
+    }
+}
+
+impl From<ServerUpgradeLicense> for LicensePdu {
+    fn from(pdu: ServerUpgradeLicense) -> Self {
+        Self::ServerUpgradeLicense(pdu)
+    }
+}
+
+impl From<LicensingErrorMessage> for LicensePdu {
+    fn from(pdu: LicensingErrorMessage) -> Self {
+        Self::LicensingErrorMessage(pdu)
+    }
 }

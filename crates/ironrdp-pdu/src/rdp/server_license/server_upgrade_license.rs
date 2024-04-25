@@ -2,8 +2,8 @@
 mod tests;
 
 use super::{
-    read_license_header, BlobHeader, BlobType, LicenseEncryptionData, LicenseHeader, PreambleType, ServerLicenseError,
-    BLOB_LENGTH_SIZE, BLOB_TYPE_SIZE, MAC_SIZE, UTF16_NULL_TERMINATOR_SIZE, UTF8_NULL_TERMINATOR_SIZE,
+    BlobHeader, BlobType, LicenseEncryptionData, LicenseHeader, PreambleType, ServerLicenseError, BLOB_LENGTH_SIZE,
+    BLOB_TYPE_SIZE, MAC_SIZE, UTF16_NULL_TERMINATOR_SIZE, UTF8_NULL_TERMINATOR_SIZE,
 };
 use crate::crypto::rc4::Rc4;
 use crate::cursor::{ReadCursor, WriteCursor};
@@ -41,31 +41,29 @@ impl ServerUpgradeLicense {
     const NAME: &'static str = "ServerUpgradeLicense";
 }
 
-impl PduEncode for ServerUpgradeLicense {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+impl ServerUpgradeLicense {
+    pub fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
         ensure_size!(in: dst, size: self.size());
 
         self.license_header.encode(dst)?;
-        BlobHeader::new(BlobType::EncryptedData, self.encrypted_license_info.len()).encode(dst)?;
+        BlobHeader::new(BlobType::ENCRYPTED_DATA, self.encrypted_license_info.len()).encode(dst)?;
         dst.write_slice(&self.encrypted_license_info);
         dst.write_slice(&self.mac_data);
 
         Ok(())
     }
 
-    fn name(&self) -> &'static str {
+    pub fn name(&self) -> &'static str {
         Self::NAME
     }
 
-    fn size(&self) -> usize {
+    pub fn size(&self) -> usize {
         self.license_header.size() + BLOB_LENGTH_SIZE + BLOB_TYPE_SIZE + self.encrypted_license_info.len() + MAC_SIZE
     }
 }
 
-impl<'de> PduDecode<'de> for ServerUpgradeLicense {
-    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
-        let license_header = read_license_header(PreambleType::NewLicense, src)?;
-
+impl ServerUpgradeLicense {
+    pub fn decode(license_header: LicenseHeader, src: &mut ReadCursor<'_>) -> PduResult<Self> {
         if license_header.preamble_message_type != PreambleType::UpgradeLicense
             && license_header.preamble_message_type != PreambleType::NewLicense
         {
@@ -76,7 +74,7 @@ impl<'de> PduDecode<'de> for ServerUpgradeLicense {
         }
 
         let encrypted_license_info_blob = BlobHeader::decode(src)?;
-        if encrypted_license_info_blob.blob_type != BlobType::EncryptedData {
+        if encrypted_license_info_blob.blob_type != BlobType::ENCRYPTED_DATA {
             return Err(invalid_message_err!("blobType", "unexpected blob type"));
         }
 

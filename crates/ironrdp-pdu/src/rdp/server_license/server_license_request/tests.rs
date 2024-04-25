@@ -2,7 +2,12 @@ use lazy_static::lazy_static;
 
 use super::cert::{RsaPublicKey, PROP_CERT_BLOBS_HEADERS_SIZE, PROP_CERT_NO_BLOBS_SIZE, RSA_KEY_SIZE_WITHOUT_MODULUS};
 use super::*;
+use crate::rdp::headers::{BasicSecurityHeader, BasicSecurityHeaderFlags};
+use crate::rdp::server_license::{LicensePdu, PreambleFlags, PreambleVersion};
 use crate::{decode, encode_vec, PduEncode};
+
+const LICENSE_HEADER_BUFFER_WITH_CERT: [u8; 8] = [0x80, 0x00, 0x00, 0x00, 0x01, 0x03, 0x9C, 0x08];
+const LICENSE_HEADER_BUFFER_NO_CERT: [u8; 8] = [0x80, 0x00, 0x00, 0x00, 0x01, 0x03, 0x8A, 0x00];
 
 const SERVER_RANDOM_BUFFER: [u8; 32] = [
     0x84, 0xef, 0xae, 0x20, 0xb1, 0xd5, 0x9e, 0x36, 0x49, 0x1a, 0xe8, 0x2e, 0x0a, 0x99, 0x89, 0xac, 0x49, 0xa6, 0x47,
@@ -222,20 +227,33 @@ lazy_static! {
         public_exponent: 0x0001_0001,
         modulus: Vec::from(MODULUS.as_ref()),
     };
-    pub static ref SERVER_LICENSE_REQUEST: ServerLicenseRequest = ServerLicenseRequest {
-        server_random: Vec::from(SERVER_RANDOM_BUFFER.as_ref()),
-        product_info: ProductInfo {
-            version: 0x60000,
-            company_name: "Microsoft Corporation".to_string(),
-            product_id: "A02".to_string(),
-        },
-        server_certificate: Some(ServerCertificate {
-            issued_permanently: true,
-            certificate: CertificateType::X509(X509CertificateChain {
-                certificate_array: vec![Vec::from(CERT_1_BUFFER.as_ref()), Vec::from(CERT_2_BUFFER.as_ref()),],
+    pub static ref SERVER_LICENSE_REQUEST: LicensePdu = {
+        let mut req = ServerLicenseRequest {
+            license_header: LicenseHeader {
+                security_header: BasicSecurityHeader {
+                    flags: BasicSecurityHeaderFlags::LICENSE_PKT,
+                },
+                preamble_message_type: PreambleType::LicenseRequest,
+                preamble_flags: PreambleFlags::empty(),
+                preamble_version: PreambleVersion::V3,
+                preamble_message_size: 0,
+            },
+            server_random: Vec::from(SERVER_RANDOM_BUFFER.as_ref()),
+            product_info: ProductInfo {
+                version: 0x60000,
+                company_name: "Microsoft Corporation".to_string(),
+                product_id: "A02".to_string(),
+            },
+            server_certificate: Some(ServerCertificate {
+                issued_permanently: true,
+                certificate: CertificateType::X509(X509CertificateChain {
+                    certificate_array: vec![Vec::from(CERT_1_BUFFER.as_ref()), Vec::from(CERT_2_BUFFER.as_ref())],
+                }),
             }),
-        }),
-        scope_list: vec![Scope(String::from("microsoft.com"))],
+            scope_list: vec![Scope(String::from("microsoft.com"))],
+        };
+        req.license_header.preamble_message_size = req.size() as u16;
+        req.into()
     };
     pub static ref X509_CERTIFICATE: ServerCertificate = ServerCertificate {
         issued_permanently: true,
@@ -252,6 +270,7 @@ lazy_static! {
 #[test]
 fn from_buffer_correctly_parses_server_license_request() {
     let request_buffer = [
+        &LICENSE_HEADER_BUFFER_WITH_CERT[..],
         &SERVER_RANDOM_BUFFER[..],
         &PRODUCT_INFO_BUFFER[..],
         &KEY_EXCHANGE_LIST_BUFFER[..],
@@ -276,6 +295,7 @@ fn from_buffer_correctly_parses_server_license_request_no_certificate() {
     ];
 
     let request_buffer = [
+        &LICENSE_HEADER_BUFFER_NO_CERT[..],
         &SERVER_RANDOM_BUFFER[..],
         &PRODUCT_INFO_BUFFER[..],
         &KEY_EXCHANGE_LIST_BUFFER[..],
@@ -284,7 +304,16 @@ fn from_buffer_correctly_parses_server_license_request_no_certificate() {
     ]
     .concat();
 
-    let request = ServerLicenseRequest {
+    let mut request = ServerLicenseRequest {
+        license_header: LicenseHeader {
+            security_header: BasicSecurityHeader {
+                flags: BasicSecurityHeaderFlags::LICENSE_PKT,
+            },
+            preamble_message_type: PreambleType::LicenseRequest,
+            preamble_flags: PreambleFlags::empty(),
+            preamble_version: PreambleVersion::V3,
+            preamble_message_size: 0,
+        },
         server_random: Vec::from(SERVER_RANDOM_BUFFER.as_ref()),
         product_info: ProductInfo {
             version: 0x60000,
@@ -294,6 +323,8 @@ fn from_buffer_correctly_parses_server_license_request_no_certificate() {
         server_certificate: None,
         scope_list: vec![Scope(String::from("microsoft.com"))],
     };
+    request.license_header.preamble_message_size = request.size() as u16;
+    let request: LicensePdu = request.into();
 
     assert_eq!(request, decode(&request_buffer).unwrap());
 }
@@ -301,6 +332,7 @@ fn from_buffer_correctly_parses_server_license_request_no_certificate() {
 #[test]
 fn to_buffer_correctly_serializes_server_license_request() {
     let request_buffer = [
+        &LICENSE_HEADER_BUFFER_WITH_CERT[..],
         &SERVER_RANDOM_BUFFER[..],
         &PRODUCT_INFO_BUFFER[..],
         &KEY_EXCHANGE_LIST_BUFFER[..],
@@ -314,7 +346,16 @@ fn to_buffer_correctly_serializes_server_license_request() {
     ]
     .concat();
 
-    let request = ServerLicenseRequest {
+    let mut request = ServerLicenseRequest {
+        license_header: LicenseHeader {
+            security_header: BasicSecurityHeader {
+                flags: BasicSecurityHeaderFlags::LICENSE_PKT,
+            },
+            preamble_message_type: PreambleType::LicenseRequest,
+            preamble_flags: PreambleFlags::empty(),
+            preamble_version: PreambleVersion::V3,
+            preamble_message_size: 0,
+        },
         server_random: Vec::from(SERVER_RANDOM_BUFFER.as_ref()),
         product_info: ProductInfo {
             version: 0x60000,
@@ -329,6 +370,8 @@ fn to_buffer_correctly_serializes_server_license_request() {
         }),
         scope_list: vec![Scope(String::from("microsoft.com"))],
     };
+    request.license_header.preamble_message_size = request.size() as u16;
+    let request: LicensePdu = request.into();
 
     let serialized_request = encode_vec(&request).unwrap();
 
@@ -338,6 +381,7 @@ fn to_buffer_correctly_serializes_server_license_request() {
 #[test]
 fn buffer_length_is_correct_for_server_license_request() {
     let request_buffer = [
+        &LICENSE_HEADER_BUFFER_WITH_CERT[..],
         &SERVER_RANDOM_BUFFER[..],
         &PRODUCT_INFO_BUFFER[..],
         &KEY_EXCHANGE_LIST_BUFFER[..],

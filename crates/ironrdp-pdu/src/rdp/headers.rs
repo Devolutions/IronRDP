@@ -322,6 +322,18 @@ pub enum ShareDataPdu {
     ShutdownDenied,
     SuppressOutput(SuppressOutputPdu),
     RefreshRectangle(RefreshRectanglePdu),
+    Update(Vec<u8>),
+    Pointer(Vec<u8>),
+    PlaySound(Vec<u8>),
+    SetKeyboardIndicators(Vec<u8>),
+    BitmapCachePersistentList(Vec<u8>),
+    BitmapCacheErrorPdu(Vec<u8>),
+    SetKeyboardImeStatus(Vec<u8>),
+    OffscreenCacheErrorPdu(Vec<u8>),
+    DrawNineGridErrorPdu(Vec<u8>),
+    DrawGdiPusErrorPdu(Vec<u8>),
+    ArcStatusPdu(Vec<u8>),
+    StatusInfoPdu(Vec<u8>),
 }
 
 impl ShareDataPdu {
@@ -342,6 +354,18 @@ impl ShareDataPdu {
             ShareDataPdu::ShutdownDenied => "Shutdown Denied PDU",
             ShareDataPdu::SuppressOutput(_) => "Suppress Output PDU",
             ShareDataPdu::RefreshRectangle(_) => "Refresh Rectangle PDU",
+            ShareDataPdu::Update(_) => "Update PDU",
+            ShareDataPdu::Pointer(_) => "Pointer PDU",
+            ShareDataPdu::PlaySound(_) => "Play Sound PDU",
+            ShareDataPdu::SetKeyboardIndicators(_) => "Set Keyboard Indicators PDU",
+            ShareDataPdu::BitmapCachePersistentList(_) => "Bitmap Cache Persistent List PDU",
+            ShareDataPdu::BitmapCacheErrorPdu(_) => "Bitmap Cache Error PDU",
+            ShareDataPdu::SetKeyboardImeStatus(_) => "Set Keyboard IME Status PDU",
+            ShareDataPdu::OffscreenCacheErrorPdu(_) => "Offscreen Cache Error PDU",
+            ShareDataPdu::DrawNineGridErrorPdu(_) => "Draw Nine Grid Error PDU",
+            ShareDataPdu::DrawGdiPusErrorPdu(_) => "Draw GDI PUS Error PDU",
+            ShareDataPdu::ArcStatusPdu(_) => "Arc Status PDU",
+            ShareDataPdu::StatusInfoPdu(_) => "Status Info PDU",
         }
     }
 
@@ -360,6 +384,18 @@ impl ShareDataPdu {
             ShareDataPdu::ShutdownDenied => ShareDataPduType::ShutdownDenied,
             ShareDataPdu::SuppressOutput(_) => ShareDataPduType::SuppressOutput,
             ShareDataPdu::RefreshRectangle(_) => ShareDataPduType::RefreshRectangle,
+            ShareDataPdu::Update(_) => ShareDataPduType::Update,
+            ShareDataPdu::Pointer(_) => ShareDataPduType::Pointer,
+            ShareDataPdu::PlaySound(_) => ShareDataPduType::PlaySound,
+            ShareDataPdu::SetKeyboardIndicators(_) => ShareDataPduType::SetKeyboardIndicators,
+            ShareDataPdu::BitmapCachePersistentList(_) => ShareDataPduType::BitmapCachePersistentList,
+            ShareDataPdu::BitmapCacheErrorPdu(_) => ShareDataPduType::BitmapCacheErrorPdu,
+            ShareDataPdu::SetKeyboardImeStatus(_) => ShareDataPduType::SetKeyboardImeStatus,
+            ShareDataPdu::OffscreenCacheErrorPdu(_) => ShareDataPduType::OffscreenCacheErrorPdu,
+            ShareDataPdu::DrawNineGridErrorPdu(_) => ShareDataPduType::DrawNineGridErrorPdu,
+            ShareDataPdu::DrawGdiPusErrorPdu(_) => ShareDataPduType::DrawGdiPusErrorPdu,
+            ShareDataPdu::ArcStatusPdu(_) => ShareDataPduType::ArcStatusPdu,
+            ShareDataPdu::StatusInfoPdu(_) => ShareDataPduType::StatusInfoPdu,
         }
     }
 
@@ -382,18 +418,24 @@ impl ShareDataPdu {
             ShareDataPduType::ShutdownDenied => Ok(ShareDataPdu::ShutdownDenied),
             ShareDataPduType::SuppressOutput => Ok(ShareDataPdu::SuppressOutput(SuppressOutputPdu::decode(src)?)),
             ShareDataPduType::RefreshRectangle => Ok(ShareDataPdu::RefreshRectangle(RefreshRectanglePdu::decode(src)?)),
-            ShareDataPduType::Update
-            | ShareDataPduType::Pointer
-            | ShareDataPduType::PlaySound
-            | ShareDataPduType::SetKeyboardIndicators
-            | ShareDataPduType::BitmapCachePersistentList
-            | ShareDataPduType::BitmapCacheErrorPdu
-            | ShareDataPduType::SetKeyboardImeStatus
-            | ShareDataPduType::OffscreenCacheErrorPdu
-            | ShareDataPduType::DrawNineGridErrorPdu
-            | ShareDataPduType::DrawGdiPusErrorPdu
-            | ShareDataPduType::ArcStatusPdu
-            | ShareDataPduType::StatusInfoPdu => Err(other_err!("unsupported share data PDU")),
+            ShareDataPduType::Update => Ok(ShareDataPdu::Update(src.remaining().to_vec())),
+            ShareDataPduType::Pointer => Ok(ShareDataPdu::Pointer(src.remaining().to_vec())),
+            ShareDataPduType::PlaySound => Ok(ShareDataPdu::PlaySound(src.remaining().to_vec())),
+            ShareDataPduType::SetKeyboardIndicators => {
+                Ok(ShareDataPdu::SetKeyboardIndicators(src.remaining().to_vec()))
+            }
+            ShareDataPduType::BitmapCachePersistentList => {
+                Ok(ShareDataPdu::BitmapCachePersistentList(src.remaining().to_vec()))
+            }
+            ShareDataPduType::BitmapCacheErrorPdu => Ok(ShareDataPdu::BitmapCacheErrorPdu(src.remaining().to_vec())),
+            ShareDataPduType::SetKeyboardImeStatus => Ok(ShareDataPdu::SetKeyboardImeStatus(src.remaining().to_vec())),
+            ShareDataPduType::OffscreenCacheErrorPdu => {
+                Ok(ShareDataPdu::OffscreenCacheErrorPdu(src.remaining().to_vec()))
+            }
+            ShareDataPduType::DrawNineGridErrorPdu => Ok(ShareDataPdu::DrawNineGridErrorPdu(src.remaining().to_vec())),
+            ShareDataPduType::DrawGdiPusErrorPdu => Ok(ShareDataPdu::DrawGdiPusErrorPdu(src.remaining().to_vec())),
+            ShareDataPduType::ArcStatusPdu => Ok(ShareDataPdu::ArcStatusPdu(src.remaining().to_vec())),
+            ShareDataPduType::StatusInfoPdu => Ok(ShareDataPdu::StatusInfoPdu(src.remaining().to_vec())),
         }
     }
 }
@@ -412,6 +454,7 @@ impl PduEncode for ShareDataPdu {
             ShareDataPdu::ShutdownRequest | ShareDataPdu::ShutdownDenied => Ok(()),
             ShareDataPdu::SuppressOutput(pdu) => pdu.encode(dst),
             ShareDataPdu::RefreshRectangle(pdu) => pdu.encode(dst),
+            _ => Err(other_err!("Encoding not implemented")),
         }
     }
 
@@ -432,6 +475,18 @@ impl PduEncode for ShareDataPdu {
             ShareDataPdu::ShutdownRequest | ShareDataPdu::ShutdownDenied => 0,
             ShareDataPdu::SuppressOutput(pdu) => pdu.size(),
             ShareDataPdu::RefreshRectangle(pdu) => pdu.size(),
+            ShareDataPdu::Update(buffer)
+            | ShareDataPdu::Pointer(buffer)
+            | ShareDataPdu::PlaySound(buffer)
+            | ShareDataPdu::SetKeyboardIndicators(buffer)
+            | ShareDataPdu::BitmapCachePersistentList(buffer)
+            | ShareDataPdu::BitmapCacheErrorPdu(buffer)
+            | ShareDataPdu::SetKeyboardImeStatus(buffer)
+            | ShareDataPdu::OffscreenCacheErrorPdu(buffer)
+            | ShareDataPdu::DrawNineGridErrorPdu(buffer)
+            | ShareDataPdu::DrawGdiPusErrorPdu(buffer)
+            | ShareDataPdu::ArcStatusPdu(buffer)
+            | ShareDataPdu::StatusInfoPdu(buffer) => buffer.len(),
         }
     }
 }

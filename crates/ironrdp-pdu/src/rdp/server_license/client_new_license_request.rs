@@ -124,8 +124,8 @@ impl ClientNewLicenseRequest {
     }
 }
 
-impl PduEncode for ClientNewLicenseRequest {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+impl ClientNewLicenseRequest {
+    pub fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
         ensure_size!(in: dst, size: self.size());
 
         self.license_header.encode(dst)?;
@@ -134,18 +134,18 @@ impl PduEncode for ClientNewLicenseRequest {
         dst.write_u32(PLATFORM_ID);
         dst.write_slice(&self.client_random);
 
-        BlobHeader::new(BlobType::Random, self.encrypted_premaster_secret.len()).encode(dst)?;
+        BlobHeader::new(BlobType::RANDOM, self.encrypted_premaster_secret.len()).encode(dst)?;
         dst.write_slice(&self.encrypted_premaster_secret);
 
         BlobHeader::new(
-            BlobType::ClientUserName,
+            BlobType::CLIENT_USER_NAME,
             self.client_username.len() + UTF8_NULL_TERMINATOR_SIZE,
         )
         .encode(dst)?;
         utils::write_string_to_cursor(dst, &self.client_username, CharacterSet::Ansi, true)?;
 
         BlobHeader::new(
-            BlobType::ClientMachineNameBlob,
+            BlobType::CLIENT_MACHINE_NAME_BLOB,
             self.client_machine_name.len() + UTF8_NULL_TERMINATOR_SIZE,
         )
         .encode(dst)?;
@@ -154,11 +154,11 @@ impl PduEncode for ClientNewLicenseRequest {
         Ok(())
     }
 
-    fn name(&self) -> &'static str {
+    pub fn name(&self) -> &'static str {
         Self::NAME
     }
 
-    fn size(&self) -> usize {
+    pub fn size(&self) -> usize {
         self.license_header.size()
             + LICENSE_REQUEST_STATIC_FIELDS_SIZE
             + RANDOM_NUMBER_SIZE
@@ -170,9 +170,8 @@ impl PduEncode for ClientNewLicenseRequest {
     }
 }
 
-impl<'de> PduDecode<'de> for ClientNewLicenseRequest {
-    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
-        let license_header = LicenseHeader::decode(src)?;
+impl ClientNewLicenseRequest {
+    pub fn decode(license_header: LicenseHeader, src: &mut ReadCursor<'_>) -> PduResult<Self> {
         if license_header.preamble_message_type != PreambleType::NewLicenseRequest {
             return Err(invalid_message_err!("preambleMessageType", "unexpected preamble type"));
         }
@@ -190,14 +189,14 @@ impl<'de> PduDecode<'de> for ClientNewLicenseRequest {
         let client_random = src.read_slice(RANDOM_NUMBER_SIZE).into();
 
         let premaster_secret_blob_header = BlobHeader::decode(src)?;
-        if premaster_secret_blob_header.blob_type != BlobType::Random {
+        if premaster_secret_blob_header.blob_type != BlobType::RANDOM {
             return Err(invalid_message_err!("blobType", "invalid blob type"));
         }
         ensure_size!(in: src, size: premaster_secret_blob_header.length);
         let encrypted_premaster_secret = src.read_slice(premaster_secret_blob_header.length).into();
 
         let username_blob_header = BlobHeader::decode(src)?;
-        if username_blob_header.blob_type != BlobType::ClientUserName {
+        if username_blob_header.blob_type != BlobType::CLIENT_USER_NAME {
             return Err(invalid_message_err!("blobType", "invalid blob type"));
         }
         ensure_size!(in: src, size: username_blob_header.length);
@@ -205,7 +204,7 @@ impl<'de> PduDecode<'de> for ClientNewLicenseRequest {
             utils::decode_string(src.read_slice(username_blob_header.length), CharacterSet::Ansi, false)?;
 
         let machine_name_blob = BlobHeader::decode(src)?;
-        if machine_name_blob.blob_type != BlobType::ClientMachineNameBlob {
+        if machine_name_blob.blob_type != BlobType::CLIENT_MACHINE_NAME_BLOB {
             return Err(invalid_message_err!("blobType", "invalid blob type"));
         }
         ensure_size!(in: src, size: machine_name_blob.length);

@@ -2,8 +2,8 @@ use lazy_static::lazy_static;
 
 use super::*;
 use crate::rdp::server_license::{
-    BasicSecurityHeader, BasicSecurityHeaderFlags, LicenseHeader, PreambleFlags, PreambleType, PreambleVersion,
-    BASIC_SECURITY_HEADER_SIZE, PREAMBLE_SIZE,
+    BasicSecurityHeader, BasicSecurityHeaderFlags, LicenseHeader, LicensePdu, PreambleFlags, PreambleType,
+    PreambleVersion, BASIC_SECURITY_HEADER_SIZE, PREAMBLE_SIZE,
 };
 use crate::{decode, encode_vec};
 
@@ -57,8 +57,8 @@ lazy_static! {
         platform_id: HARDWARE_ID,
         data: Vec::from(DATA_BUFFER.as_ref()),
     };
-    pub(crate) static ref CLIENT_PLATFORM_CHALLENGE_RESPONSE: ClientPlatformChallengeResponse =
-        ClientPlatformChallengeResponse {
+    pub(crate) static ref CLIENT_PLATFORM_CHALLENGE_RESPONSE: LicensePdu =
+        LicensePdu::ClientPlatformChallengeResponse(ClientPlatformChallengeResponse {
             license_header: LicenseHeader {
                 security_header: BasicSecurityHeader {
                     flags: BasicSecurityHeaderFlags::LICENSE_PKT,
@@ -74,7 +74,7 @@ lazy_static! {
             mac_data: Vec::from(
                 &CLIENT_PLATFORM_CHALLENGE_RESPONSE_BUFFER[CLIENT_PLATFORM_CHALLENGE_RESPONSE_BUFFER.len() - 16..]
             ),
-        };
+        });
 }
 
 #[test]

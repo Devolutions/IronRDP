@@ -8,6 +8,7 @@ use ironrdp_pdu as pdu;
 use ironrdp_svc::{StaticChannelSet, SvcServerProcessor};
 use pdu::rdp::capability_sets::CapabilitySet;
 use pdu::rdp::headers::ShareControlPdu;
+use pdu::rdp::server_license::{LicensePdu, LicensingErrorMessage};
 use pdu::write_buf::WriteBuf;
 use pdu::{decode, gcc, mcs, nego, rdp};
 
@@ -392,7 +393,9 @@ impl Sequence for Acceptor {
                 early_capability,
                 channels,
             } => {
-                let license = rdp::server_license::InitialServerLicenseMessage::new_status_valid_client_message();
+                let license: LicensePdu = LicensingErrorMessage::new_valid_client()
+                    .map_err(ConnectorError::pdu)?
+                    .into();
 
                 debug!(message = ?license, "Send");
 

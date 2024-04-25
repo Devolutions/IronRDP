@@ -149,7 +149,7 @@ impl Processor {
                     }
                     _ => Err(reason_err!(
                         "IO channel",
-                        "unexpected PDU: expected Session Save Info PDU, got: {:?}",
+                        "unhandled PDU: {:?}",
                         ctx.pdu.as_short_name()
                     )),
                 }

@@ -120,10 +120,10 @@ impl PduEncode for ProprietaryCertificate {
         dst.write_u32(SIGNATURE_ALGORITHM_RSA);
         dst.write_u32(KEY_EXCHANGE_ALGORITHM_RSA);
 
-        BlobHeader::new(BlobType::RsaKey, self.public_key.size()).encode(dst)?;
+        BlobHeader::new(BlobType::RSA_KEY, self.public_key.size()).encode(dst)?;
         self.public_key.encode(dst)?;
 
-        BlobHeader::new(BlobType::RsaSignature, self.signature.len()).encode(dst)?;
+        BlobHeader::new(BlobType::RSA_SIGNATURE, self.signature.len()).encode(dst)?;
         dst.write_slice(&self.signature);
 
         Ok(())
@@ -153,13 +153,13 @@ impl<'de> PduDecode<'de> for ProprietaryCertificate {
         }
 
         let key_blob_header = BlobHeader::decode(src)?;
-        if key_blob_header.blob_type != BlobType::RsaKey {
+        if key_blob_header.blob_type != BlobType::RSA_KEY {
             return Err(invalid_message_err!("blobType", "invalid blob type"));
         }
         let public_key = RsaPublicKey::decode(src)?;
 
         let sig_blob_header = BlobHeader::decode(src)?;
-        if sig_blob_header.blob_type != BlobType::RsaSignature {
+        if sig_blob_header.blob_type != BlobType::RSA_SIGNATURE {
             return Err(invalid_message_err!("blobType", "invalid blob type"));
         }
         ensure_size!(in: src, size: sig_blob_header.length);

@@ -1,9 +1,7 @@
 #[cfg(test)]
 mod test;
 
-use super::{
-    read_license_header, BlobHeader, BlobType, LicenseHeader, PreambleType, BLOB_LENGTH_SIZE, BLOB_TYPE_SIZE, MAC_SIZE,
-};
+use super::{BlobHeader, BlobType, LicenseHeader, PreambleType, BLOB_LENGTH_SIZE, BLOB_TYPE_SIZE, MAC_SIZE};
 use crate::{
     cursor::{ReadCursor, WriteCursor},
     PduDecode, PduEncode, PduResult,
@@ -27,31 +25,33 @@ impl ServerPlatformChallenge {
     const FIXED_PART_SIZE: usize = CONNECT_FLAGS_FIELD_SIZE + MAC_SIZE + BLOB_LENGTH_SIZE + BLOB_TYPE_SIZE;
 }
 
-impl PduEncode for ServerPlatformChallenge {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+impl ServerPlatformChallenge {
+    pub fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
         ensure_size!(in: dst, size: self.size());
 
         self.license_header.encode(dst)?;
         dst.write_u32(0); // connect_flags, ignored
-        BlobHeader::new(BlobType::Any, self.encrypted_platform_challenge.len()).encode(dst)?;
+        BlobHeader::new(BlobType::ANY, self.encrypted_platform_challenge.len()).encode(dst)?;
         dst.write_slice(&self.encrypted_platform_challenge);
         dst.write_slice(&self.mac_data);
 
         Ok(())
     }
 
-    fn name(&self) -> &'static str {
+    pub fn name(&self) -> &'static str {
         Self::NAME
     }
 
-    fn size(&self) -> usize {
+    pub fn size(&self) -> usize {
         Self::FIXED_PART_SIZE + self.license_header.size() + self.encrypted_platform_challenge.len()
     }
 }
 
-impl<'de> PduDecode<'de> for ServerPlatformChallenge {
-    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
-        let license_header = read_license_header(PreambleType::PlatformChallenge, src)?;
+impl ServerPlatformChallenge {
+    pub fn decode(license_header: LicenseHeader, src: &mut ReadCursor<'_>) -> PduResult<Self> {
+        if license_header.preamble_message_type != PreambleType::PlatformChallenge {
+            return Err(invalid_message_err!("preambleMessageType", "unexpected preamble type"));
+        }
 
         ensure_size!(in: src, size: 4);
         let _connect_flags = src.read_u32();

@@ -35,11 +35,7 @@ pub fn pdu_decode(data: &[u8]) {
     let _ = decode::<gcc::ConferenceCreateRequest>(data);
     let _ = decode::<gcc::ConferenceCreateResponse>(data);
 
-    let _ = decode::<server_license::ClientNewLicenseRequest>(data);
-    let _ = decode::<server_license::ClientPlatformChallengeResponse>(data);
-    let _ = decode::<server_license::InitialServerLicenseMessage>(data);
-    let _ = decode::<server_license::ServerLicenseRequest>(data);
-    let _ = decode::<server_license::ServerPlatformChallenge>(data);
+    let _ = decode::<server_license::LicensePdu>(data);
 
     let _ = decode::<vc::ChannelPduHeader>(data);
 

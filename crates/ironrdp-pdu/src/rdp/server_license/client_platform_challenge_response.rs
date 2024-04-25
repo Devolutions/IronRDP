@@ -100,16 +100,16 @@ impl ClientPlatformChallengeResponse {
     }
 }
 
-impl PduEncode for ClientPlatformChallengeResponse {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+impl ClientPlatformChallengeResponse {
+    pub fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
         ensure_size!(in: dst, size: self.size());
 
         self.license_header.encode(dst)?;
 
-        BlobHeader::new(BlobType::EncryptedData, self.encrypted_challenge_response_data.len()).encode(dst)?;
+        BlobHeader::new(BlobType::ENCRYPTED_DATA, self.encrypted_challenge_response_data.len()).encode(dst)?;
         dst.write_slice(&self.encrypted_challenge_response_data);
 
-        BlobHeader::new(BlobType::EncryptedData, self.encrypted_hwid.len()).encode(dst)?;
+        BlobHeader::new(BlobType::ENCRYPTED_DATA, self.encrypted_hwid.len()).encode(dst)?;
         dst.write_slice(&self.encrypted_hwid);
 
         dst.write_slice(&self.mac_data);
@@ -117,20 +117,19 @@ impl PduEncode for ClientPlatformChallengeResponse {
         Ok(())
     }
 
-    fn name(&self) -> &'static str {
+    pub fn name(&self) -> &'static str {
         Self::NAME
     }
 
-    fn size(&self) -> usize {
+    pub fn size(&self) -> usize {
         self.license_header.size()
         + (BLOB_TYPE_SIZE + BLOB_LENGTH_SIZE) * 2 // 2 blobs in this structure
         + MAC_SIZE + self.encrypted_challenge_response_data.len() + self.encrypted_hwid.len()
     }
 }
 
-impl<'de> PduDecode<'de> for ClientPlatformChallengeResponse {
-    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
-        let license_header = LicenseHeader::decode(src)?;
+impl ClientPlatformChallengeResponse {
+    pub fn decode(license_header: LicenseHeader, src: &mut ReadCursor<'_>) -> PduResult<Self> {
         if license_header.preamble_message_type != PreambleType::PlatformChallengeResponse {
             return Err(invalid_message_err!(
                 "preambleMessageType",
@@ -139,14 +138,14 @@ impl<'de> PduDecode<'de> for ClientPlatformChallengeResponse {
         }
 
         let encrypted_challenge_blob = BlobHeader::decode(src)?;
-        if encrypted_challenge_blob.blob_type != BlobType::EncryptedData {
+        if encrypted_challenge_blob.blob_type != BlobType::ENCRYPTED_DATA {
             return Err(invalid_message_err!("blobType", "unexpected blob type"));
         }
         ensure_size!(in: src, size: encrypted_challenge_blob.length);
         let encrypted_challenge_response_data = src.read_slice(encrypted_challenge_blob.length).into();
 
         let encrypted_hwid_blob = BlobHeader::decode(src)?;
-        if encrypted_hwid_blob.blob_type != BlobType::EncryptedData {
+        if encrypted_hwid_blob.blob_type != BlobType::ENCRYPTED_DATA {
             return Err(invalid_message_err!("blobType", "unexpected blob type"));
         }
         ensure_size!(in: src, size: encrypted_hwid_blob.length);
