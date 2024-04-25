@@ -56,6 +56,7 @@ impl DisplayControlClient {
         scale_factor: Option<u32>,
         physical_dims: Option<(u32, u32)>,
     ) -> PduResult<Vec<SvcMessage>> {
+        // TODO: prevent resolution with values greater than max monitor area received in caps.
         let pdu: DisplayControlPdu =
             DisplayControlMonitorLayout::new_single_primary_monitor(width, height, scale_factor, physical_dims)?.into();
         debug!(?pdu, "Sending monitor layout");
