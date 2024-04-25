@@ -401,14 +401,22 @@ impl MonitorLayoutEntry {
         })
     }
 
-    /// Creates a new primary monitor layout entry.
+    /// Creates a new primary [`MonitorLayoutEntry`].
+    ///
+    /// - `width` and `height` MUST be >= 200 and <= 8192.
+    /// - `width` SHOULD be even. If it is odd, it will be adjusted
+    ///    to the nearest even number by subtracting 1.
     pub fn new_primary(width: u32, height: u32) -> PduResult<Self> {
         let mut entry = Self::new_impl(width, height)?;
         entry.is_primary = true;
         Ok(entry)
     }
 
-    /// Creates a new secondary monitor layout entry.
+    /// Creates a new secondary [`MonitorLayoutEntry`].
+    ///
+    /// - `width` and `height` MUST be >= 200 and <= 8192.
+    /// - `width` SHOULD be even. If it is odd, it will be adjusted
+    ///    to the nearest even number by subtracting 1.
     pub fn new_secondary(width: u32, height: u32) -> PduResult<Self> {
         Self::new_impl(width, height)
     }
