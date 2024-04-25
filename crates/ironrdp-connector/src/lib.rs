@@ -129,6 +129,7 @@ pub struct Config {
     pub keyboard_type: gcc::KeyboardType,
     pub keyboard_subtype: u32,
     pub keyboard_functional_keys_count: u32,
+    pub keyboard_layout: u32,
     pub ime_file_name: String,
     pub bitmap: Option<BitmapConfig>,
     pub dig_product_id: String,

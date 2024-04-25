@@ -29,6 +29,7 @@ pub mod ffi {
         pub enable_credssp: Option<bool>,
         pub keyboard_type: Option<ironrdp::pdu::gcc::KeyboardType>,
         pub keyboard_subtype: Option<u32>,
+        pub keyboard_layout: Option<u32>,
         pub keyboard_functional_keys_count: Option<u32>,
         pub ime_file_name: Option<String>,
         pub dig_product_id: Option<String>,
@@ -92,6 +93,10 @@ pub mod ffi {
             self.enable_credssp = Some(enable_credssp);
         }
 
+        pub fn set_keyboard_layout(&mut self, keyboard_layout: u32) {
+            self.keyboard_layout = Some(keyboard_layout);
+        }
+
         pub fn set_keyboard_type(&mut self, keyboard_type: KeyboardType) {
             self.keyboard_type = Some(keyboard_type.into());
         }
@@ -152,7 +157,7 @@ pub mod ffi {
                 domain: self.domain.clone(),
                 enable_tls: self.enable_tls.unwrap_or(false),
                 enable_credssp: self.enable_credssp.unwrap_or(true),
-
+                keyboard_layout: self.keyboard_layout.unwrap_or(0),
                 keyboard_type: self
                     .keyboard_type
                     .unwrap_or(ironrdp::pdu::gcc::KeyboardType::IbmEnhanced),
