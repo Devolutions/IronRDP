@@ -98,40 +98,7 @@ pub fn encode_dvc_messages(
     Ok(res)
 }
 
-pub struct DynamicVirtualChannel<'a, T: DvcProcessor> {
-    internal: &'a DynamicVirtualChannelInternal,
-    _marker: core::marker::PhantomData<T>,
-}
-
-impl<'a, T: DvcProcessor> DynamicVirtualChannel<'a, T> {
-    pub(crate) fn new(internal: &'a DynamicVirtualChannelInternal) -> Self {
-        Self {
-            internal,
-            _marker: core::marker::PhantomData,
-        }
-    }
-
-    pub fn is_open(&self) -> bool {
-        self.internal.is_open()
-    }
-
-    pub fn channel_id(&self) -> PduResult<DynamicChannelId> {
-        self.internal
-            .channel_id
-            .ok_or_else(|| other_err!("DynamicVirtualChannel::channel_id", "channel ID not set"))
-    }
-
-    pub fn channel_processor_downcast_ref(&self) -> PduResult<&T> {
-        self.internal.channel_processor_downcast_ref().ok_or_else(|| {
-            other_err!(
-                "DynamicVirtualChannel::channel_processor_downcast_ref",
-                "downcast failed"
-            )
-        })
-    }
-}
-
-struct DynamicVirtualChannelInternal {
+pub struct DynamicVirtualChannel {
     channel_processor: Box<dyn DvcProcessor + Send>,
     complete_data: CompleteData,
     /// The channel ID assigned by the server.
@@ -140,7 +107,7 @@ struct DynamicVirtualChannelInternal {
     channel_id: Option<DynamicChannelId>,
 }
 
-impl DynamicVirtualChannelInternal {
+impl DynamicVirtualChannel {
     fn new<T: DvcProcessor + 'static>(handler: T) -> Self {
         Self {
             channel_processor: Box::new(handler),
@@ -149,8 +116,16 @@ impl DynamicVirtualChannelInternal {
         }
     }
 
-    fn is_open(&self) -> bool {
+    pub fn is_open(&self) -> bool {
         self.channel_id.is_some()
+    }
+
+    pub fn channel_id(&self) -> Option<DynamicChannelId> {
+        self.channel_id
+    }
+
+    pub fn channel_processor_downcast_ref<T: DvcProcessor>(&self) -> Option<&T> {
+        self.channel_processor.as_any().downcast_ref()
     }
 
     fn start(&mut self) -> PduResult<Vec<DvcMessage>> {
@@ -174,14 +149,10 @@ impl DynamicVirtualChannelInternal {
     fn channel_name(&self) -> &str {
         self.channel_processor.channel_name()
     }
-
-    fn channel_processor_downcast_ref<T: DvcProcessor>(&self) -> Option<&T> {
-        self.channel_processor.as_any().downcast_ref()
-    }
 }
 
 struct DynamicChannelSet {
-    channels: BTreeMap<DynamicChannelName, DynamicVirtualChannelInternal>,
+    channels: BTreeMap<DynamicChannelName, DynamicVirtualChannel>,
     name_to_channel_id: BTreeMap<DynamicChannelName, DynamicChannelId>,
     channel_id_to_name: BTreeMap<DynamicChannelId, DynamicChannelName>,
     type_id_to_name: BTreeMap<TypeId, DynamicChannelName>,
@@ -198,10 +169,10 @@ impl DynamicChannelSet {
         }
     }
 
-    fn insert<T: DvcProcessor + 'static>(&mut self, channel: T) -> Option<DynamicVirtualChannelInternal> {
+    fn insert<T: DvcProcessor + 'static>(&mut self, channel: T) -> Option<DynamicVirtualChannel> {
         let name = channel.channel_name().to_owned();
         self.type_id_to_name.insert(TypeId::of::<T>(), name.clone());
-        self.channels.insert(name, DynamicVirtualChannelInternal::new(channel))
+        self.channels.insert(name, DynamicVirtualChannel::new(channel))
     }
 
     fn attach_channel_id(&mut self, name: DynamicChannelName, id: DynamicChannelId) -> Option<DynamicChannelId> {
@@ -212,21 +183,21 @@ impl DynamicChannelSet {
         Some(id)
     }
 
-    fn get_by_type_id(&self, type_id: TypeId) -> Option<&DynamicVirtualChannelInternal> {
+    fn get_by_type_id(&self, type_id: TypeId) -> Option<&DynamicVirtualChannel> {
         self.type_id_to_name
             .get(&type_id)
             .and_then(|name| self.channels.get(name))
     }
 
-    fn get_by_channel_name(&self, name: &DynamicChannelName) -> Option<&DynamicVirtualChannelInternal> {
+    fn get_by_channel_name(&self, name: &DynamicChannelName) -> Option<&DynamicVirtualChannel> {
         self.channels.get(name)
     }
 
-    fn get_by_channel_name_mut(&mut self, name: &DynamicChannelName) -> Option<&mut DynamicVirtualChannelInternal> {
+    fn get_by_channel_name_mut(&mut self, name: &DynamicChannelName) -> Option<&mut DynamicVirtualChannel> {
         self.channels.get_mut(name)
     }
 
-    fn get_by_channel_id_mut(&mut self, id: &DynamicChannelId) -> Option<&mut DynamicVirtualChannelInternal> {
+    fn get_by_channel_id_mut(&mut self, id: &DynamicChannelId) -> Option<&mut DynamicVirtualChannel> {
         self.channel_id_to_name
             .get(id)
             .and_then(|name| self.channels.get_mut(name))
@@ -242,7 +213,7 @@ impl DynamicChannelSet {
     }
 
     #[inline]
-    fn values(&self) -> impl Iterator<Item = &DynamicVirtualChannelInternal> {
+    fn values(&self) -> impl Iterator<Item = &DynamicVirtualChannel> {
         self.channels.values()
     }
 }

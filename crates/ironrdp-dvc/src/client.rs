@@ -61,13 +61,11 @@ impl DrdynvcClient {
         self
     }
 
-    pub fn get_dvc_by_type_id<T>(&self) -> Option<DynamicVirtualChannel<'_, T>>
+    pub fn get_dvc_by_type_id<T>(&self) -> Option<&DynamicVirtualChannel>
     where
         T: DvcProcessor,
     {
-        Some(DynamicVirtualChannel::<T>::new(
-            self.dynamic_channels.get_by_type_id(TypeId::of::<T>())?,
-        ))
+        self.dynamic_channels.get_by_type_id(TypeId::of::<T>())
     }
 
     fn create_capabilities_response(&mut self) -> SvcMessage {

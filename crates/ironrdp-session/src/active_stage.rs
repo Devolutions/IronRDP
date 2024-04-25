@@ -183,8 +183,8 @@ impl ActiveStage {
         self.x224_processor.get_svc_processor_mut()
     }
 
-    pub fn get_dvc<T: DvcProcessor + 'static>(&mut self) -> Option<DynamicVirtualChannel<'_, T>> {
-        self.x224_processor.get_dvc()
+    pub fn get_dvc<T: DvcProcessor + 'static>(&mut self) -> Option<&DynamicVirtualChannel> {
+        self.x224_processor.get_dvc::<T>()
     }
 
     /// Completes user's SVC request with data, required to sent it over the network and returns
@@ -209,14 +209,8 @@ impl ActiveStage {
     ) -> Option<SessionResult<Vec<u8>>> {
         if let Some(dvc) = self.get_dvc::<DisplayControlClient>() {
             if dvc.is_open() {
-                let display_control = match dvc.channel_processor_downcast_ref() {
-                    Ok(display_control) => display_control,
-                    Err(e) => return Some(Err(SessionError::pdu(e))),
-                };
-                let channel_id = match dvc.channel_id() {
-                    Ok(channel_id) => channel_id,
-                    Err(e) => return Some(Err(SessionError::pdu(e))),
-                };
+                let display_control = dvc.channel_processor_downcast_ref::<DisplayControlClient>()?;
+                let channel_id = dvc.channel_id().unwrap(); // Safe to unwrap, as we checked if the channel is open
                 let svc_messages = match display_control.encode_single_primary_monitor(
                     channel_id,
                     width.into(),
