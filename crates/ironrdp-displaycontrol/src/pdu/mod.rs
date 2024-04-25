@@ -236,11 +236,17 @@ impl DisplayControlMonitorLayout {
     }
 
     /// Creates a new [`DisplayControlMonitorLayout`] with a single primary monitor
-    /// with the given `width` and `height`. `width` and `height` MUST be >= 200 and <= 8192,
-    /// and if `width` is odd, it will be adjusted to the nearest even number by subtracting 1.
     ///
-    /// - If `scale_factor` is provided, it MUST be in the valid range (100..=500 percent).
-    /// - If `physical_dims` are provided, they MUST be in the valid range (10..=10000 millimeters).
+    /// Per [2.2.2.2.1]:
+    /// - The `width` MUST be greater than or equal to 200 pixels and less than or equal to 8192 pixels, and MUST NOT be an odd value.
+    /// - The `height` MUST be greater than or equal to 200 pixels and less than or equal to 8192 pixels.
+    /// - The `scale_factor` MUST be ignored if it is less than 100 percent or greater than 500 percent.
+    /// - The `physical_dims` (width, height) MUST be ignored if either is less than 10 mm or greater than 10,000 mm.
+    ///
+    /// Use [`MonitorLayoutEntry::adjust_display_size`] to adjust `width` and `height` before calling this function
+    /// to ensure the display size is within the valid range.
+    ///
+    /// [2.2.2.2.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpedisp/ea2de591-9203-42cd-9908-be7a55237d1c
     pub fn new_single_primary_monitor(
         width: u32,
         height: u32,
@@ -372,9 +378,11 @@ impl MonitorLayoutEntry {
 
     /// Creates a new [`MonitorLayoutEntry`].
     ///
-    /// - `width` and `height` MUST be >= 200 and <= 8192.
-    /// - `width` SHOULD be even. If it is odd, it will be adjusted
-    ///    to the nearest even number by subtracting 1.
+    /// Per [2.2.2.2.1]:
+    /// - The `width` MUST be greater than or equal to 200 pixels and less than or equal to 8192 pixels, and MUST NOT be an odd value.
+    /// - The `height` MUST be greater than or equal to 200 pixels and less than or equal to 8192 pixels.
+    ///
+    /// [2.2.2.2.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpedisp/ea2de591-9203-42cd-9908-be7a55237d1c
     fn new_impl(mut width: u32, height: u32) -> PduResult<Self> {
         if width % 2 != 0 {
             let prev_width = width;
@@ -401,22 +409,58 @@ impl MonitorLayoutEntry {
         })
     }
 
+    /// Adjusts the display size to be within the valid range.
+    ///
+    /// Per [2.2.2.2.1]:
+    /// - The `width` MUST be greater than or equal to 200 pixels and less than or equal to 8192 pixels, and MUST NOT be an odd value.
+    /// - The `height` MUST be greater than or equal to 200 pixels and less than or equal to 8192 pixels.
+    ///
+    /// Functions that create [`MonitorLayoutEntry`] should typically use this function to adjust the display size first.
+    ///
+    /// [2.2.2.2.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpedisp/ea2de591-9203-42cd-9908-be7a55237d1c
+    pub fn adjust_display_size(width: u32, height: u32) -> (u32, u32) {
+        fn constrain(value: u32) -> u32 {
+            if value < 200 {
+                200
+            } else if value > 8192 {
+                8192
+            } else {
+                value
+            }
+        }
+
+        let mut width = width;
+        if width % 2 != 0 {
+            width = width.saturating_sub(1);
+        }
+
+        (constrain(width), constrain(height))
+    }
+
     /// Creates a new primary [`MonitorLayoutEntry`].
     ///
-    /// - `width` and `height` MUST be >= 200 and <= 8192.
-    /// - `width` SHOULD be even. If it is odd, it will be adjusted
-    ///    to the nearest even number by subtracting 1.
+    /// Per [2.2.2.2.1]:
+    /// - The `width` MUST be greater than or equal to 200 pixels and less than or equal to 8192 pixels, and MUST NOT be an odd value.
+    /// - The `height` MUST be greater than or equal to 200 pixels and less than or equal to 8192 pixels.
+    ///
+    /// Use [`MonitorLayoutEntry::adjust_display_size`] before calling this function to ensure the display size is within the valid range.
+    ///
+    /// [2.2.2.2.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpedisp/ea2de591-9203-42cd-9908-be7a55237d1c
     pub fn new_primary(width: u32, height: u32) -> PduResult<Self> {
         let mut entry = Self::new_impl(width, height)?;
         entry.is_primary = true;
         Ok(entry)
     }
 
-    /// Creates a new secondary [`MonitorLayoutEntry`].
+    /// Creates a new primary [`MonitorLayoutEntry`].
     ///
-    /// - `width` and `height` MUST be >= 200 and <= 8192.
-    /// - `width` SHOULD be even. If it is odd, it will be adjusted
-    ///    to the nearest even number by subtracting 1.
+    /// Per [2.2.2.2.1]:
+    /// - The `width` MUST be greater than or equal to 200 pixels and less than or equal to 8192 pixels, and MUST NOT be an odd value.
+    /// - The `height` MUST be greater than or equal to 200 pixels and less than or equal to 8192 pixels.
+    ///
+    /// Use [`MonitorLayoutEntry::adjust_display_size`] before calling this function to ensure the display size is within the valid range.
+    ///
+    /// [2.2.2.2.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpedisp/ea2de591-9203-42cd-9908-be7a55237d1c
     pub fn new_secondary(width: u32, height: u32) -> PduResult<Self> {
         Self::new_impl(width, height)
     }

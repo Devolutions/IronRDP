@@ -200,10 +200,21 @@ impl ActiveStage {
     ///
     /// If the Display Control Virtual Channel is not available, or not yet connected, this method
     /// will return `None`.
+    ///
+    /// Per [2.2.2.2.1]:
+    /// - The `width` MUST be greater than or equal to 200 pixels and less than or equal to 8192 pixels, and MUST NOT be an odd value.
+    /// - The `height` MUST be greater than or equal to 200 pixels and less than or equal to 8192 pixels.
+    /// - The `scale_factor` MUST be ignored if it is less than 100 percent or greater than 500 percent.
+    /// - The `physical_dims` (width, height) MUST be ignored if either is less than 10 mm or greater than 10,000 mm.
+    ///
+    /// Use [`ironrdp_displaycontrol::pdu::MonitorLayoutEntry::adjust_display_size`] to adjust `width` and `height` before calling this function
+    /// to ensure the display size is within the valid range.
+    ///
+    /// [2.2.2.2.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpedisp/ea2de591-9203-42cd-9908-be7a55237d1c
     pub fn encode_resize(
         &mut self,
-        width: u16,
-        height: u16,
+        width: u32,
+        height: u32,
         scale_factor: Option<u32>,
         physical_dims: Option<(u32, u32)>,
     ) -> Option<SessionResult<Vec<u8>>> {

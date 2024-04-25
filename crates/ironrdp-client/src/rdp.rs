@@ -2,6 +2,7 @@ use ironrdp::cliprdr::backend::{ClipboardMessage, CliprdrBackendFactory};
 use ironrdp::connector::connection_activation::ConnectionActivationState;
 use ironrdp::connector::{ConnectionResult, ConnectorResult};
 use ironrdp::displaycontrol::client::DisplayControlClient;
+use ironrdp::displaycontrol::pdu::MonitorLayoutEntry;
 use ironrdp::graphics::image_processing::PixelFormat;
 use ironrdp::pdu::input::fast_path::FastPathInputEvent;
 use ironrdp::pdu::write_buf::WriteBuf;
@@ -200,13 +201,15 @@ async fn active_session(
                         }
 
                         info!(width, height, "resize event");
+                        let (width, height) = MonitorLayoutEntry::adjust_display_size(width.into(), height.into());
+                        debug!(width, height, "Adjusted display size");
 
-                        if let Some(response_frame) = active_stage.encode_resize(width, height, None, Some((width.into(), height.into()))) { // Set physical width and height to the same as the pixel width and heighbbt per FreeRDP
+                        if let Some(response_frame) = active_stage.encode_resize(width, height, None, Some((width, height))) { // Set physical width and height to the same as the pixel width and heighbbt per FreeRDP
                             vec![ActiveStageOutput::ResponseFrame(response_frame?)]
                         } else {
                             // TODO(#271): use the "auto-reconnect cookie": https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/15b0d1c9-2891-4adb-a45e-deb4aeeeab7c
                             debug!("Reconnecting with new size");
-                            return Ok(RdpControlFlow::ReconnectWithNewSize { width, height })
+                            return Ok(RdpControlFlow::ReconnectWithNewSize { width: width.try_into().unwrap(), height: height.try_into().unwrap() })
                         }
                     },
                     RdpInputEvent::FastPath(events) => {
