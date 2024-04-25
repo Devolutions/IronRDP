@@ -179,8 +179,9 @@ impl DynamicChannelSet {
         self.channel_id_to_name.insert(id, name.clone());
         self.name_to_channel_id.insert(name.clone(), id);
         let dvc = self.get_by_channel_name_mut(&name)?;
+        let old_id = dvc.channel_id;
         dvc.channel_id = Some(id);
-        Some(id)
+        old_id
     }
 
     fn get_by_type_id(&self, type_id: TypeId) -> Option<&DynamicVirtualChannel> {
