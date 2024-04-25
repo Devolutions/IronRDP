@@ -224,8 +224,8 @@ impl ActiveStage {
                 let channel_id = dvc.channel_id().unwrap(); // Safe to unwrap, as we checked if the channel is open
                 let svc_messages = match display_control.encode_single_primary_monitor(
                     channel_id,
-                    width.into(),
-                    height.into(),
+                    width,
+                    height,
                     scale_factor,
                     physical_dims,
                 ) {
