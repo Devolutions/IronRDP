@@ -365,7 +365,7 @@ fn create_client_confirm_active(
             })),
         }])),
         CapabilitySet::FrameAcknowledge(FrameAcknowledge {
-            // TODO: Revert this to 2 per FreeRDP.
+            // FIXME(#447): Revert this to 2 per FreeRDP.
             // This is a temporary hack to fix a resize bug, see:
             // https://github.com/Devolutions/IronRDP/issues/447
             max_unacknowledged_frame_count: 20,
