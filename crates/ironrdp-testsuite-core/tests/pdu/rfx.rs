@@ -253,8 +253,8 @@ const FRAME_END_PDU: FrameEndPdu = FrameEndPdu;
 
 lazy_static::lazy_static! {
     static ref CHANNELS_PDU: ChannelsPdu = ChannelsPdu(vec![
-        RfxChannel { width: RfxChannelWidth::new(64).unwrap(), height: RfxChannelHeight::new(64).unwrap() },
-        RfxChannel { width: RfxChannelWidth::new(32).unwrap(), height: RfxChannelHeight::new(32).unwrap() }
+        RfxChannel { width: RfxChannelWidth::new(64), height: RfxChannelHeight::new(64) },
+        RfxChannel { width: RfxChannelWidth::new(32), height: RfxChannelHeight::new(32) }
     ]);
     static ref REGION_PDU: RegionPdu = RegionPdu {
         rectangles: vec![

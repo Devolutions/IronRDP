@@ -37,8 +37,8 @@ impl RfxEncoder {
         };
         let context = rfx::Headers::Context(context);
         let channels = rfx::ChannelsPdu(vec![RfxChannel {
-            width: RfxChannelWidth::new(width).map_err(|e| custom_err!("width", e))?,
-            height: RfxChannelHeight::new(height).map_err(|e| custom_err!("height", e))?,
+            width: RfxChannelWidth::new(width),
+            height: RfxChannelHeight::new(height),
         }]);
         let channels = rfx::Headers::Channels(channels);
         let version = rfx::CodecVersionsPdu;

@@ -170,8 +170,8 @@ pub struct RfxChannel {
 pub struct RfxChannelWidth(i16);
 
 impl RfxChannelWidth {
-    pub fn new(value: i16) -> Result<Self, RfxError> {
-        Ok(Self(value))
+    pub fn new(value: i16) -> Self {
+        Self(value)
     }
 
     pub fn as_u16(self) -> u16 {
@@ -189,8 +189,8 @@ impl RfxChannelWidth {
 pub struct RfxChannelHeight(i16);
 
 impl RfxChannelHeight {
-    pub fn new(value: i16) -> Result<Self, RfxError> {
-        Ok(Self(value))
+    pub fn new(value: i16) -> Self {
+        Self(value)
     }
 
     pub fn as_u16(self) -> u16 {
@@ -212,10 +212,10 @@ impl PduBufferParsing<'_> for RfxChannel {
         }
 
         let width = buffer.read_i16::<LittleEndian>()?;
-        let width = RfxChannelWidth::new(width)?;
+        let width = RfxChannelWidth::new(width);
 
         let height = buffer.read_i16::<LittleEndian>()?;
-        let height = RfxChannelHeight::new(height)?;
+        let height = RfxChannelHeight::new(height);
 
         Ok(Self { width, height })
     }
