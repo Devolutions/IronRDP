@@ -1702,6 +1702,7 @@ dependencies = [
  "ironrdp-cliprdr",
  "ironrdp-cliprdr-native",
  "ironrdp-connector",
+ "ironrdp-displaycontrol",
  "ironrdp-dvc",
  "ironrdp-graphics",
  "ironrdp-input",
@@ -1990,6 +1991,7 @@ name = "ironrdp-session"
 version = "0.1.0"
 dependencies = [
  "ironrdp-connector",
+ "ironrdp-displaycontrol",
  "ironrdp-dvc",
  "ironrdp-error",
  "ironrdp-graphics",

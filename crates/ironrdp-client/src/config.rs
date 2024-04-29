@@ -296,6 +296,7 @@ impl Config {
                 width: DEFAULT_WIDTH,
                 height: DEFAULT_HEIGHT,
             },
+            desktop_scale_factor: 0, // Default to 0 per FreeRDP
             bitmap,
             client_build: semver::Version::parse(env!("CARGO_PKG_VERSION"))
                 .map(|version| version.major * 100 + version.minor * 10 + version.patch)

@@ -2,6 +2,8 @@ use std::rc::Rc;
 
 use ironrdp_connector::connection_activation::ConnectionActivationSequence;
 use ironrdp_connector::ConnectionResult;
+use ironrdp_displaycontrol::client::DisplayControlClient;
+use ironrdp_dvc::{DrdynvcClient, DvcProcessor, DynamicVirtualChannel};
 use ironrdp_graphics::pointer::DecodedPointer;
 use ironrdp_pdu::geometry::InclusiveRectangle;
 use ironrdp_pdu::input::fast_path::{FastPathInput, FastPathInputEvent};
@@ -150,6 +152,10 @@ impl ActiveStage {
         self.fast_path_processor = processor;
     }
 
+    pub fn set_no_server_pointer(&mut self, no_server_pointer: bool) {
+        self.no_server_pointer = no_server_pointer;
+    }
+
     /// Encodes client-side graceful shutdown request. Note that upon sending this request,
     /// client should wait for server's ShutdownDenied PDU before closing the connection.
     ///
@@ -177,6 +183,10 @@ impl ActiveStage {
         self.x224_processor.get_svc_processor_mut()
     }
 
+    pub fn get_dvc<T: DvcProcessor + 'static>(&mut self) -> Option<&DynamicVirtualChannel> {
+        self.x224_processor.get_dvc::<T>()
+    }
+
     /// Completes user's SVC request with data, required to sent it over the network and returns
     /// a buffer with encoded data.
     pub fn process_svc_processor_messages<C: SvcProcessor + 'static>(
@@ -184,6 +194,56 @@ impl ActiveStage {
         messages: SvcProcessorMessages<C>,
     ) -> SessionResult<Vec<u8>> {
         self.x224_processor.process_svc_processor_messages(messages)
+    }
+
+    /// Fully encodes a resize request for sending over the Display Control Virtual Channel.
+    ///
+    /// If the Display Control Virtual Channel is not available, or not yet connected, this method
+    /// will return `None`.
+    ///
+    /// Per [2.2.2.2.1]:
+    /// - The `width` MUST be greater than or equal to 200 pixels and less than or equal to 8192 pixels, and MUST NOT be an odd value.
+    /// - The `height` MUST be greater than or equal to 200 pixels and less than or equal to 8192 pixels.
+    /// - The `scale_factor` MUST be ignored if it is less than 100 percent or greater than 500 percent.
+    /// - The `physical_dims` (width, height) MUST be ignored if either is less than 10 mm or greater than 10,000 mm.
+    ///
+    /// Use [`ironrdp_displaycontrol::pdu::MonitorLayoutEntry::adjust_display_size`] to adjust `width` and `height` before calling this function
+    /// to ensure the display size is within the valid range.
+    ///
+    /// [2.2.2.2.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpedisp/ea2de591-9203-42cd-9908-be7a55237d1c
+    pub fn encode_resize(
+        &mut self,
+        width: u32,
+        height: u32,
+        scale_factor: Option<u32>,
+        physical_dims: Option<(u32, u32)>,
+    ) -> Option<SessionResult<Vec<u8>>> {
+        if let Some(dvc) = self.get_dvc::<DisplayControlClient>() {
+            if dvc.is_open() {
+                let display_control = dvc.channel_processor_downcast_ref::<DisplayControlClient>()?;
+                let channel_id = dvc.channel_id().unwrap(); // Safe to unwrap, as we checked if the channel is open
+                let svc_messages = match display_control.encode_single_primary_monitor(
+                    channel_id,
+                    width,
+                    height,
+                    scale_factor,
+                    physical_dims,
+                ) {
+                    Ok(messages) => messages,
+                    Err(e) => return Some(Err(SessionError::pdu(e))),
+                };
+
+                return Some(
+                    self.process_svc_processor_messages(SvcProcessorMessages::<DrdynvcClient>::new(svc_messages)),
+                );
+            } else {
+                debug!("Could not encode a resize: Display Control Virtual Channel is not yet connected");
+            }
+        } else {
+            debug!("Could not encode a resize: Display Control Virtual Channel is not available");
+        }
+
+        None
     }
 }
 

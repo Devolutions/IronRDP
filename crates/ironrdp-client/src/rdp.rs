@@ -1,6 +1,8 @@
 use ironrdp::cliprdr::backend::{ClipboardMessage, CliprdrBackendFactory};
 use ironrdp::connector::connection_activation::ConnectionActivationState;
 use ironrdp::connector::{ConnectionResult, ConnectorResult};
+use ironrdp::displaycontrol::client::DisplayControlClient;
+use ironrdp::displaycontrol::pdu::MonitorLayoutEntry;
 use ironrdp::graphics::image_processing::PixelFormat;
 use ironrdp::pdu::input::fast_path::FastPathInputEvent;
 use ironrdp::pdu::write_buf::WriteBuf;
@@ -28,7 +30,13 @@ pub enum RdpOutputEvent {
 
 #[derive(Debug)]
 pub enum RdpInputEvent {
-    Resize { width: u16, height: u16 },
+    Resize {
+        width: u16,
+        height: u16,
+        scale_factor: u32,
+        physical_width: u32,
+        physical_height: u32,
+    },
     FastPath(SmallVec<[FastPathInputEvent; 2]>),
     Close,
     Clipboard(ClipboardMessage),
@@ -107,7 +115,9 @@ async fn connect(
 
     let mut connector = connector::ClientConnector::new(config.connector.clone())
         .with_server_addr(server_addr)
-        .with_static_channel(ironrdp::dvc::DrdynvcClient::new())
+        .with_static_channel(
+            ironrdp::dvc::DrdynvcClient::new().with_dynamic_channel(DisplayControlClient::new(|_| Ok(Vec::new()))),
+        )
         .with_static_channel(rdpsnd::Rdpsnd::new())
         .with_static_channel(rdpdr::Rdpdr::new(Box::new(NoopRdpdrBackend {}), "IronRDP".to_owned()).with_smartcard(0));
 
@@ -177,24 +187,30 @@ async fn active_session(
                 let input_event = input_event.ok_or_else(|| session::general_err!("GUI is stopped"))?;
 
                 match input_event {
-                    RdpInputEvent::Resize { mut width, mut height } => {
-                        // TODO(#105): Add support for Display Update Virtual Channel Extension
-                        // https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpedisp/d2954508-f487-48bc-8731-39743e0854a9
-                        // One approach when this extension is not available is to perform a connection from scratch again.
-
+                    RdpInputEvent::Resize { mut width, mut height, .. } => {
                         // Find the last resize event
                         while let Ok(newer_event) = input_event_receiver.try_recv() {
-                            if let RdpInputEvent::Resize { width: newer_width, height: newer_height } = newer_event {
+                            if let RdpInputEvent::Resize {
+                                width: newer_width,
+                                height: newer_height,
+                                ..
+                            } = newer_event {
                                 width = newer_width;
                                 height = newer_height;
                             }
                         }
 
-                        // TODO(#271): use the "auto-reconnect cookie": https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/15b0d1c9-2891-4adb-a45e-deb4aeeeab7c
-
                         info!(width, height, "resize event");
+                        let (width, height) = MonitorLayoutEntry::adjust_display_size(width.into(), height.into());
+                        debug!(width, height, "Adjusted display size");
 
-                        return Ok(RdpControlFlow::ReconnectWithNewSize { width, height })
+                        if let Some(response_frame) = active_stage.encode_resize(width, height, None, Some((width, height))) { // Set physical width and height to the same as the pixel width and heighbbt per FreeRDP
+                            vec![ActiveStageOutput::ResponseFrame(response_frame?)]
+                        } else {
+                            // TODO(#271): use the "auto-reconnect cookie": https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/15b0d1c9-2891-4adb-a45e-deb4aeeeab7c
+                            debug!("Reconnecting with new size");
+                            return Ok(RdpControlFlow::ReconnectWithNewSize { width: width.try_into().unwrap(), height: height.try_into().unwrap() })
+                        }
                     },
                     RdpInputEvent::FastPath(events) => {
                         trace!(?events);
@@ -307,10 +323,10 @@ async fn active_session(
                             pointer_software_rendering,
                         } = connection_activation.state
                         {
-                            debug!("Deactivation-Reactivation Sequence completed");
+                            debug!(?desktop_size, "Deactivation-Reactivation Sequence completed");
+                            // Update image size with the new desktop size.
                             image = DecodedImage::new(PixelFormat::RgbA32, desktop_size.width, desktop_size.height);
-                            // Create a new [`FastPathProcessor`] with potentially updated
-                            // io/user channel ids.
+                            // Update the active stage with the new channel IDs and pointer settings.
                             active_stage.set_fastpath_processor(
                                 fast_path::ProcessorBuilder {
                                     io_channel_id,
@@ -320,6 +336,7 @@ async fn active_session(
                                 }
                                 .build(),
                             );
+                            active_stage.set_no_server_pointer(no_server_pointer);
                             break 'activation_seq;
                         }
                     }

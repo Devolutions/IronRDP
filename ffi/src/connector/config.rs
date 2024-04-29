@@ -188,6 +188,7 @@ pub mod ffi {
                 autologon: self.autologon.unwrap_or(false),
                 pointer_software_rendering: self.pointer_software_rendering.unwrap_or(false),
                 performance_flags: self.performance_flags.ok_or("performance flag is missing")?,
+                desktop_scale_factor: 0,
             };
 
             Ok(Box::new(Config(inner_config)))
