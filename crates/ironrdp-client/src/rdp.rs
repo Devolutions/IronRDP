@@ -34,8 +34,8 @@ pub enum RdpInputEvent {
         width: u16,
         height: u16,
         scale_factor: u32,
-        physical_width: u32,
-        physical_height: u32,
+        /// The physical size of the display in millimeters (width, height).
+        physical_size: Option<(u32, u32)>,
     },
     FastPath(SmallVec<[FastPathInputEvent; 2]>),
     Close,

@@ -64,16 +64,15 @@ impl GuiContext {
                 Event::WindowEvent { window_id, event } if window_id == window.id() => match event {
                     WindowEvent::Resized(size) => {
                         let scale_factor = (window.scale_factor() * 100.0) as u32;
-                        // TODO: it should be possible to get the physical size here, however winit doesn't make it straightforward.
-                        // FreeRDP does it based on DPI reading grabbed via [`SDL_GetDisplayDPI`](https://wiki.libsdl.org/SDL2/SDL_GetDisplayDPI):
-                        // https://github.com/FreeRDP/FreeRDP/blob/ba8cf8cf2158018fb7abbedb51ab245f369be813/client/SDL/sdl_monitor.cpp#L250-L262
-                        let (physical_width, physical_height) = (0, 0);
+
                         let _ = input_event_sender.send(RdpInputEvent::Resize {
                             width: u16::try_from(size.width).unwrap(),
                             height: u16::try_from(size.height).unwrap(),
                             scale_factor,
-                            physical_width,
-                            physical_height,
+                            // TODO: it should be possible to get the physical size here, however winit doesn't make it straightforward.
+                            // FreeRDP does it based on DPI reading grabbed via [`SDL_GetDisplayDPI`](https://wiki.libsdl.org/SDL2/SDL_GetDisplayDPI):
+                            // https://github.com/FreeRDP/FreeRDP/blob/ba8cf8cf2158018fb7abbedb51ab245f369be813/client/SDL/sdl_monitor.cpp#L250-L262
+                            physical_size: None,
                         });
                     }
                     WindowEvent::CloseRequested => {

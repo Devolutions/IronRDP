@@ -3,7 +3,7 @@
 use ironrdp::pdu::geometry::{InclusiveRectangle, Rectangle as _};
 use ironrdp::session::image::DecodedImage;
 
-pub(crate) fn extract_partial_image(image: &DecodedImage, region: InclusiveRectangle) -> (InclusiveRectangle, Vec<u8>) {
+pub fn extract_partial_image(image: &DecodedImage, region: InclusiveRectangle) -> (InclusiveRectangle, Vec<u8>) {
     // PERF: needs actual benchmark to find a better heuristic
     if region.height() > 64 || region.width() > 512 {
         extract_whole_rows(image, region)
