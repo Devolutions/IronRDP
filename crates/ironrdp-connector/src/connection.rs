@@ -630,7 +630,7 @@ fn create_gcc_blocks<'a>(
             desktop_height: config.desktop_size.height,
             color_depth: ColorDepth::Bpp8, // ignored because we use the optional core data below
             sec_access_sequence: SecureAccessSequence::Del,
-            keyboard_layout: 0, // the server SHOULD use the default active input locale identifier
+            keyboard_layout: config.keyboard_layout,
             client_build: config.client_build,
             client_name: config.client_name.clone(),
             keyboard_type: config.keyboard_type,

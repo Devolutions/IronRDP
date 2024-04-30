@@ -289,6 +289,7 @@ impl Config {
             enable_credssp: !args.no_credssp,
             keyboard_type: KeyboardType::parse(args.keyboard_type),
             keyboard_subtype: args.keyboard_subtype,
+            keyboard_layout: 0, // the server SHOULD use the default active input locale identifier
             keyboard_functional_keys_count: args.keyboard_functional_keys_count,
             ime_file_name: args.ime_file_name,
             dig_product_id: args.dig_product_id,
