@@ -7,10 +7,10 @@ using Devolutions.IronRdp;
 public class Connection
 {
 
-    public static async Task<(ConnectionResult, Framed<SslStream>)> Connect(Config config, string servername)
+    public static async Task<(ConnectionResult, Framed<SslStream>)> Connect(Config config, string servername, ushort port = 3389)
     {
 
-        var stream = await CreateTcpConnection(servername, 3389);
+        var stream = await CreateTcpConnection(servername, port);
         var framed = new Framed<NetworkStream>(stream);
 
         ClientConnector connector = ClientConnector.New(config);
@@ -21,7 +21,7 @@ public class Connection
             throw new IronRdpLibException(IronRdpLibExceptionType.CannotResolveDns, "Cannot resolve DNS to " + servername);
         }
 
-        var socketAddrString = ip[0].ToString() + ":3389";
+        var socketAddrString = ip[0].ToString() + ":" + port.ToString();
         connector.WithServerAddr(socketAddrString);
 
         await connectBegin(framed, connector);
