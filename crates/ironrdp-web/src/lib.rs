@@ -13,7 +13,7 @@ extern crate tracing;
 mod canvas;
 mod clipboard;
 mod error;
-pub mod image;
+mod image;
 mod input;
 mod network_client;
 mod session;
