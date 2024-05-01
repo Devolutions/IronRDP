@@ -7,19 +7,19 @@ namespace Devolutions.IronRdp.ConnectExample
     {
         static async Task Main(string[] args)
         {
+            var arguments = ParseArguments(args);
+
             Log.InitLogWithEnv();
 
-            var username = Environment.GetEnvironmentVariable("IRONRDP_USERNAME");
-            var password = Environment.GetEnvironmentVariable("IRONRDP_PASSWORD");
-            var domain = Environment.GetEnvironmentVariable("IRONRDP_DOMAIN");
-            var serverName = Environment.GetEnvironmentVariable("IRONRDP_SERVER");
-
-            if (string.IsNullOrEmpty(username) || string.IsNullOrEmpty(password) || string.IsNullOrEmpty(domain) || string.IsNullOrEmpty(serverName))
+            if (arguments == null)
             {
-                Console.WriteLine("Please set the following environment variables: IRONRDP_USERNAME, IRONRDP_PASSWORD, IRONRDP_DOMAIN, IRONRDP_SERVER");
                 return;
             }
 
+            var serverName = arguments["--serverName"];
+            var username = arguments["--username"];
+            var password = arguments["--password"];
+            var domain = arguments["--domain"];
             try
             {
                 var (res, framed) = await Connection.Connect(buildConfig(serverName, username, password, domain, 1980, 1080), serverName);
@@ -104,6 +104,74 @@ namespace Devolutions.IronRdp.ConnectExample
 
             // Save the image as bitmap.
             image.Save("./output.bmp");
+        }
+
+        static Dictionary<string, string>? ParseArguments(string[] args)
+        {
+            if (args.Length == 0 || Array.Exists(args, arg => arg == "--help"))
+            {
+                PrintHelp();
+                return null;
+            }
+
+            var arguments = new Dictionary<string, string>();
+            string? lastKey = null;
+            foreach (var arg in args)
+            {
+                if (arg.StartsWith("--"))
+                {
+                    if (lastKey != null)
+                    {
+                        Console.WriteLine($"Error: Missing value for {lastKey}.");
+                        PrintHelp();
+                        return null;
+                    }
+                    if (!IsValidArgument(arg))
+                    {
+                        Console.WriteLine($"Error: Unknown argument {arg}.");
+                        PrintHelp();
+                        return null;
+                    }
+                    lastKey = arg;
+                }
+                else
+                {
+                    if (lastKey == null)
+                    {
+                        Console.WriteLine("Error: Value without a preceding flag.");
+                        PrintHelp();
+                        return null;
+                    }
+                    arguments[lastKey] = arg;
+                    lastKey = null;
+                }
+            }
+
+            if (lastKey != null)
+            {
+                Console.WriteLine($"Error: Missing value for {lastKey}.");
+                PrintHelp();
+                return null;
+            }
+
+            return arguments;
+        }
+
+        static bool IsValidArgument(string argument)
+        {
+            var validArguments = new List<string> { "--serverName", "--username", "--password", "--domain" };
+            return validArguments.Contains(argument);
+        }
+
+        static void PrintHelp()
+        {
+            Console.WriteLine("Usage: dotnet run -- [OPTIONS]");
+            Console.WriteLine("Options:");
+            Console.WriteLine("  --serverName <serverName>  The name of the server to connect to.");
+            Console.WriteLine("  --username <username>      The username for connection.");
+            Console.WriteLine("  --password <password>      The password for connection.");
+            Console.WriteLine("  --domain <domain>          The domain of the server.");
+            Console.WriteLine("  --help                     Show this message and exit.");
         }
 
         private static Config buildConfig(string servername, string username, string password, string domain, int width, int height)
