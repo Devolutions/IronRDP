@@ -22,6 +22,8 @@ diplomat-runtime = "0.7.0"
 ironrdp = { workspace = true, features = ["connector", "dvc", "svc","rdpdr","rdpsnd","graphics","input"] }
 sspi = { workspace = true, features = ["network_client"] }
 thiserror.workspace = true
+tracing.workspace = true
+tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
 
 [target.'cfg(windows)'.build-dependencies]
 embed-resource = "2.2.0"
