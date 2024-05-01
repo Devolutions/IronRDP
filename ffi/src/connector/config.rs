@@ -189,7 +189,7 @@ pub mod ffi {
                 pointer_software_rendering: self.pointer_software_rendering.unwrap_or(false),
                 performance_flags: self.performance_flags.ok_or("performance flag is missing")?,
             };
-
+            tracing::debug!(config=?inner_config, "Built config");
             Ok(Box::new(Config(inner_config)))
         }
     }

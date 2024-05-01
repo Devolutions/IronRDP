@@ -151,6 +151,7 @@ pub mod ffi {
             let Some(connector) = self.0.as_ref() else {
                 return Err(ValueConsumedError::for_item("connector").into());
             };
+            tracing::trace!(pduhint=?connector.next_pdu_hint(), "Reading next PDU hint");
             Ok(connector.next_pdu_hint().map(PduHint).map(Box::new))
         }
 
