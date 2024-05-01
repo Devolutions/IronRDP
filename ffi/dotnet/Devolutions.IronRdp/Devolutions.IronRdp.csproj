@@ -7,19 +7,4 @@
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
 
-
-  <ItemGroup Condition="$([MSBuild]::IsOSPlatform('Windows'))">
-    <Content Include="../../../target/release/DevolutionsIronRdp.dll">
-      <Link>DevolutionsIronRdp.dll</Link>
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-      <PackagePath>runtimes/win-x64/native/</PackagePath>
-      <Pack>true</Pack>
-    </Content>
-  </ItemGroup>
-
-  <Target Name="CopyDll" AfterTargets="Build">
-    <Copy Condition="$([MSBuild]::IsOSPlatform('Windows'))" SourceFiles="../../../target/release/DevolutionsIronRdp.dll" DestinationFolder="$(OutputPath)runtimes\win-x64\native\" />
-  </Target>
-
-
 </Project>
