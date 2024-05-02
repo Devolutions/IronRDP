@@ -11,7 +11,7 @@ pub mod ffi {
     pub struct Log;
 
     impl Log {
-        pub fn init_log_with_env() {
+        pub fn init_with_env() {
             if LOG_INITED.load(std::sync::atomic::Ordering::Relaxed) {
                 return;
             }
