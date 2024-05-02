@@ -31,6 +31,7 @@ public partial class MainWindow : Window
     private void OnOpened(object? sender, EventArgs e)
     {
         Log.InitLogWithEnv();
+
         WindowState = WindowState.Maximized;
 
         var username = Environment.GetEnvironmentVariable("IRONRDP_USERNAME");
