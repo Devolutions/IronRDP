@@ -30,7 +30,7 @@ public partial class MainWindow : Window
 
     private void OnOpened(object? sender, EventArgs e)
     {
-        Log.InitLogWithEnv();
+        Log.InitWithEnv();
 
         WindowState = WindowState.Maximized;
 

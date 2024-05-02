@@ -9,7 +9,7 @@ namespace Devolutions.IronRdp.ConnectExample
         {
             var arguments = ParseArguments(args);
 
-            Log.InitLogWithEnv();
+            Log.InitWithEnv();
 
             if (arguments == null)
             {
