@@ -78,6 +78,7 @@ impl ServerUpgradeLicense {
             return Err(invalid_message_err!("blobType", "unexpected blob type"));
         }
 
+        ensure_size!(in: src, size: encrypted_license_info_blob.length + MAC_SIZE);
         let encrypted_license_info = src.read_slice(encrypted_license_info_blob.length).into();
         let mac_data = src.read_slice(MAC_SIZE).into();
 
