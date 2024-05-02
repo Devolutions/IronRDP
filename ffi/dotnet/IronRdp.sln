@@ -7,6 +7,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Devolutions.IronRdp", "Devo
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Devolutions.IronRdp.ConnectExample", "Devolutions.IronRdp.ConnectExample\Devolutions.IronRdp.ConnectExample.csproj", "{0AB621EB-F508-4879-9397-E33AF5649229}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Devolutions.IronRdp.AvaloniaExample", "Devolutions.IronRdp.AvaloniaExample\Devolutions.IronRdp.AvaloniaExample.csproj", "{6BB8B946-60BA-4DB8-B3DB-EF9CB6CF8A14}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -24,5 +26,9 @@ Global
 		{0AB621EB-F508-4879-9397-E33AF5649229}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{0AB621EB-F508-4879-9397-E33AF5649229}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{0AB621EB-F508-4879-9397-E33AF5649229}.Release|Any CPU.Build.0 = Release|Any CPU
+		{6BB8B946-60BA-4DB8-B3DB-EF9CB6CF8A14}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{6BB8B946-60BA-4DB8-B3DB-EF9CB6CF8A14}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{6BB8B946-60BA-4DB8-B3DB-EF9CB6CF8A14}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{6BB8B946-60BA-4DB8-B3DB-EF9CB6CF8A14}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 EndGlobal
