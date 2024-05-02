@@ -16,8 +16,8 @@ public partial struct Log
 {
     private const string NativeLib = "DevolutionsIronRdp";
 
-    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "Log_init_log_with_env", ExactSpelling = true)]
-    public static unsafe extern void InitLogWithEnv();
+    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "Log_init_with_env", ExactSpelling = true)]
+    public static unsafe extern void InitWithEnv();
 
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "Log_destroy", ExactSpelling = true)]
     public static unsafe extern void Destroy(Log* self);

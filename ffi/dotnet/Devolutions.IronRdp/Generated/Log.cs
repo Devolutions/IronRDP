@@ -29,11 +29,11 @@ public partial class Log: IDisposable
         _inner = handle;
     }
 
-    public static void InitLogWithEnv()
+    public static void InitWithEnv()
     {
         unsafe
         {
-            Raw.Log.InitLogWithEnv();
+            Raw.Log.InitWithEnv();
         }
     }
 
