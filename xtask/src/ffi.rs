@@ -1,19 +1,30 @@
-use std::fs;
-use std::path::Path;
+use std::fs::{self, create_dir_all};
+use std::path::{Path, PathBuf};
 
 use anyhow::Context as _;
 
 #[cfg(target_os = "windows")]
 const OUTPUT_LIB_NAME: &str = "ironrdp.dll";
-#[cfg(not(target_os = "windows"))]
+#[cfg(target_os = "linux")]
 const OUTPUT_LIB_NAME: &str = "libironrdp.so";
+#[cfg(target_os = "macos")]
+const OUTPUT_LIB_NAME: &str = "libironrdp.dylib";
 
 #[cfg(target_os = "windows")]
 const DOTNET_NATIVE_LIB_NAME: &str = "DevolutionsIronRdp.dll";
-#[cfg(not(target_os = "windows"))]
+#[cfg(target_os = "linux")]
 const DOTNET_NATIVE_LIB_NAME: &str = "libDevolutionsIronRdp.so";
+#[cfg(target_os = "macos")]
+const DOTNET_NATIVE_LIB_NAME: &str = "libDevolutionsIronRdp.dylib";
 
-pub(crate) fn build_dll(sh: &xshell::Shell, release: bool) -> anyhow::Result<()> {
+#[cfg(target_os = "windows")]
+const DOTNET_NATIVE_LIB_PATH: &str = "dependencies/runtimes/win-x64/native/";
+#[cfg(target_os = "linux")]
+const DOTNET_NATIVE_LIB_PATH: &str = "dependencies/runtimes/linux-x64/native/";
+#[cfg(target_os = "macos")]
+const DOTNET_NATIVE_LIB_PATH: &str = "dependencies/runtimes/osx-x64/native/";
+
+pub(crate) fn build_dynamic_lib(sh: &xshell::Shell, release: bool) -> anyhow::Result<()> {
     println!("Build IronRDP DLL");
 
     let mut args = vec!["build", "--package", "ffi"];
@@ -24,16 +35,18 @@ pub(crate) fn build_dll(sh: &xshell::Shell, release: bool) -> anyhow::Result<()>
 
     let profile_dir = if release { "release" } else { "debug" };
 
-    let mut output_dir = sh.current_dir();
-    output_dir.push("target");
-    output_dir.push(profile_dir);
+    let root_dir = sh.current_dir();
+    let target_dir = root_dir.join("target");
+    let profile_dir = target_dir.join(profile_dir);
 
-    let output_lib_path = output_dir.join(OUTPUT_LIB_NAME);
-    let dotnet_native_lib_path = output_dir.join(DOTNET_NATIVE_LIB_NAME);
+    let output_lib_path = profile_dir.join(OUTPUT_LIB_NAME);
 
-    // Copy build artifact to the proper native lib folder.
-    // FIXME(@CBenoit): destination should follow the standard structure (e.g.: dependencies/runtimes/win-x64/native/DevolutionsPicky.dll)
-    // See Picky FFI justfile for reference.
+    let dotnet_native_lib_dir_path: PathBuf = DOTNET_NATIVE_LIB_PATH.parse()?;
+    let dotnet_native_lib_path = root_dir.join(&dotnet_native_lib_dir_path).join(DOTNET_NATIVE_LIB_NAME);
+
+    create_dir_all(&dotnet_native_lib_dir_path)
+        .with_context(|| format!("failed to create directory {}", dotnet_native_lib_dir_path.display()))?;
+
     std::fs::copy(&output_lib_path, &dotnet_native_lib_path).with_context(|| {
         format!(
             "failed to copy {} to {}",
