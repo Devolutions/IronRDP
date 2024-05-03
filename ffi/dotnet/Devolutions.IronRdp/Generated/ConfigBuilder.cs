@@ -103,6 +103,14 @@ public partial class ConfigBuilder: IDisposable
         }
     }
 
+    public uint KeyboardLayout
+    {
+        set
+        {
+            SetKeyboardLayout(value);
+        }
+    }
+
     public uint KeyboardSubtype
     {
         set
@@ -229,6 +237,18 @@ public partial class ConfigBuilder: IDisposable
                 throw new ObjectDisposedException("ConfigBuilder");
             }
             Raw.ConfigBuilder.SetEnableCredssp(_inner, enableCredssp);
+        }
+    }
+
+    public void SetKeyboardLayout(uint keyboardLayout)
+    {
+        unsafe
+        {
+            if (_inner == null)
+            {
+                throw new ObjectDisposedException("ConfigBuilder");
+            }
+            Raw.ConfigBuilder.SetKeyboardLayout(_inner, keyboardLayout);
         }
     }
 
