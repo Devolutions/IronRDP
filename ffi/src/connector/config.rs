@@ -195,7 +195,7 @@ pub mod ffi {
                 performance_flags: self.performance_flags.ok_or("performance flag is missing")?,
                 desktop_scale_factor: 0,
             };
-
+            tracing::debug!(config=?inner_config, "Built config");
             Ok(Box::new(Config(inner_config)))
         }
     }
