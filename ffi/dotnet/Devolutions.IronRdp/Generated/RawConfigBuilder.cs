@@ -31,6 +31,9 @@ public partial struct ConfigBuilder
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ConfigBuilder_set_enable_credssp", ExactSpelling = true)]
     public static unsafe extern void SetEnableCredssp(ConfigBuilder* self, [MarshalAs(UnmanagedType.U1)] bool enableCredssp);
 
+    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ConfigBuilder_set_keyboard_layout", ExactSpelling = true)]
+    public static unsafe extern void SetKeyboardLayout(ConfigBuilder* self, uint keyboardLayout);
+
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ConfigBuilder_set_keyboard_type", ExactSpelling = true)]
     public static unsafe extern void SetKeyboardType(ConfigBuilder* self, KeyboardType keyboardType);
 
