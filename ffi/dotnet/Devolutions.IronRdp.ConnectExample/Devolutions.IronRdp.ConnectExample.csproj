@@ -8,6 +8,7 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <ProjectReference Include="../Devolutions.IronRdp/Devolutions.IronRdp.csproj" />
 
     <!--
     System.Drawing.Common NuGet package is only supported on Windows operating systems.
@@ -15,7 +16,6 @@
 
     https://learn.microsoft.com/en-us/dotnet/api/system.drawing?view=net-8.0
     -->
-    <PackageReference Include="Devolutions.IronRdp" Version="1.0.1" />
     <PackageReference Include="SixLabors.ImageSharp" Version="3.1.3" />
   </ItemGroup>
 
