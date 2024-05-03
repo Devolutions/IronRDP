@@ -7,9 +7,9 @@ namespace Devolutions.IronRdp.ConnectExample
     {
         static async Task Main(string[] args)
         {
-            var arguments = ParseArguments(args);
-
             Log.InitWithEnv();
+
+            var arguments = ParseArguments(args);
 
             if (arguments == null)
             {

@@ -1,6 +1,6 @@
 # Build artifacts
 /target
-
+/dependencies
 # Local cargo root
 /.cargo/local_root
 

@@ -5,6 +5,24 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
+    <SuppressDependenciesWhenPacking>false</SuppressDependenciesWhenPacking>
+
+    <PackageId>Devolutions.IronRdp</PackageId>
+    <Version>1.0.1</Version>
+    <Description>Dotnet bindings for the IronRDP project</Description>
   </PropertyGroup>
+
+  <PropertyGroup>
+    <RuntimesPath>../../../dependencies/runtimes</RuntimesPath>
+    <NativeLibPath_win_x64>$(RuntimesPath)/win-x64/native/DevolutionsIronRdp.dll</NativeLibPath_win_x64>
+  </PropertyGroup>
+
+  <ItemGroup Condition="Exists('$(NativeLibPath_win_x64)')">
+    <None Include="$(NativeLibPath_win_x64)" Link="runtimes/win-x64/native/%(Filename)%(Extension)"
+      CopyToOutputDirectory="PreserveNewest"
+      Pack="true" PackagePath="runtimes/win-x64/native/%(Filename)%(Extension)"
+    />
+  </ItemGroup>
 
 </Project>
