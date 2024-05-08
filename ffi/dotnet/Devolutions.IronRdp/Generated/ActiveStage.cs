@@ -15,6 +15,14 @@ public partial class ActiveStage: IDisposable
 {
     private unsafe Raw.ActiveStage* _inner;
 
+    public CliprdrReference SvcProcessorCliprdr
+    {
+        get
+        {
+            return GetSvcProcessorCliprdr();
+        }
+    }
+
     /// <summary>
     /// Creates a managed <c>ActiveStage</c> from a raw handle.
     /// </summary>
@@ -122,6 +130,60 @@ public partial class ActiveStage: IDisposable
             }
             Raw.ActiveStageOutputIterator* retVal = result.Ok;
             return new ActiveStageOutputIterator(retVal);
+        }
+    }
+
+    /// <exception cref="IronRdpException"></exception>
+    /// <returns>
+    /// A <c>CliprdrReference</c> allocated on Rust side.
+    /// </returns>
+    public CliprdrReference GetSvcProcessorCliprdr()
+    {
+        unsafe
+        {
+            if (_inner == null)
+            {
+                throw new ObjectDisposedException("ActiveStage");
+            }
+            Raw.SessionFfiResultOptBoxCliprdrReferenceBoxIronRdpError result = Raw.ActiveStage.GetSvcProcessorCliprdr(_inner);
+            if (!result.isOk)
+            {
+                throw new IronRdpException(new IronRdpError(result.Err));
+            }
+            Raw.CliprdrReference* retVal = result.Ok;
+            if (retVal == null)
+            {
+                return null;
+            }
+            return new CliprdrReference(retVal);
+        }
+    }
+
+    /// <exception cref="IronRdpException"></exception>
+    /// <returns>
+    /// A <c>VecU8</c> allocated on Rust side.
+    /// </returns>
+    public VecU8 ProcessSvcProcessorMessageCliprdr(ClipboardSvgMessage svcMessage)
+    {
+        unsafe
+        {
+            if (_inner == null)
+            {
+                throw new ObjectDisposedException("ActiveStage");
+            }
+            Raw.ClipboardSvgMessage* svcMessageRaw;
+            svcMessageRaw = svcMessage.AsFFI();
+            if (svcMessageRaw == null)
+            {
+                throw new ObjectDisposedException("ClipboardSvgMessage");
+            }
+            Raw.SessionFfiResultBoxVecU8BoxIronRdpError result = Raw.ActiveStage.ProcessSvcProcessorMessageCliprdr(_inner, svcMessageRaw);
+            if (!result.isOk)
+            {
+                throw new IronRdpException(new IronRdpError(result.Err));
+            }
+            Raw.VecU8* retVal = result.Ok;
+            return new VecU8(retVal);
         }
     }
 

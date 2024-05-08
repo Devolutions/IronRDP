@@ -1,7 +1,8 @@
 #![allow(clippy::return_self_not_must_use)]
 use std::fmt::Display;
 
-use ironrdp::{connector::ConnectorError, session::SessionError};
+use ironrdp::{cliprdr::backend::ClipboardError, connector::ConnectorError, session::SessionError};
+use ironrdp_cliprdr_native::WinCliprdrError;
 
 use self::ffi::IronRdpErrorKind;
 
@@ -55,6 +56,18 @@ impl From<SessionError> for IronRdpErrorKind {
     }
 }
 
+impl From<&dyn ClipboardError> for IronRdpErrorKind {
+    fn from(_val: &dyn ClipboardError) -> Self {
+        IronRdpErrorKind::ClipboardError
+    }
+}
+
+impl From<WinCliprdrError> for IronRdpErrorKind {
+    fn from(_val: WinCliprdrError) -> Self {
+        IronRdpErrorKind::ClipboardError
+    }
+}
+
 impl<T> From<T> for Box<ffi::IronRdpError>
 where
     T: Into<IronRdpErrorKind> + ToString,
@@ -92,6 +105,8 @@ pub mod ffi {
         AccessDenied,
         #[error("Incorrect rust enum type")]
         IncorrectEnumType,
+        #[error("Clipboard error")]
+        ClipboardError,
     }
 
     /// Stringified Picky error along with an error kind.

@@ -55,6 +55,9 @@ public partial struct ClientConnector
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ClientConnector_step_no_input", ExactSpelling = true)]
     public static unsafe extern ConnectorFfiResultBoxWrittenBoxIronRdpError StepNoInput(ClientConnector* self, WriteBuf* writeBuf);
 
+    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ClientConnector_attach_static_cliprdr", ExactSpelling = true)]
+    public static unsafe extern ConnectorFfiResultVoidBoxIronRdpError AttachStaticCliprdr(ClientConnector* self, Cliprdr* cliprdr);
+
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ClientConnector_next_pdu_hint", ExactSpelling = true)]
     public static unsafe extern ConnectorFfiResultOptBoxPduHintBoxIronRdpError NextPduHint(ClientConnector* self);
 

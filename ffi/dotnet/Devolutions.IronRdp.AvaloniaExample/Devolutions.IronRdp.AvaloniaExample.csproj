@@ -16,6 +16,7 @@
     <PackageReference Include="Avalonia.Fonts.Inter" Version="11.0.10" />
     <!--Condition below is needed to remove Avalonia.Diagnostics package from build output in Release configuration.-->
     <PackageReference Condition="'$(Configuration)' == 'Debug'" Include="Avalonia.Diagnostics" Version="11.0.10" />
+    <PackageReference Include="Avalonia.Win32" Version="11.0.10" />
     <ProjectReference Include="../Devolutions.IronRdp/Devolutions.IronRdp.csproj" />
   </ItemGroup>
 </Project>

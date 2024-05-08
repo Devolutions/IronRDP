@@ -19,7 +19,8 @@ doctest = false
 [dependencies]
 diplomat = "0.7.0"
 diplomat-runtime = "0.7.0"
-ironrdp = { workspace = true, features = ["connector", "dvc", "svc","rdpdr","rdpsnd","graphics","input"] }
+ironrdp = { workspace = true, features = ["connector", "dvc", "svc","rdpdr","rdpsnd","graphics","input","cliprdr"] }
+ironrdp-cliprdr-native = { workspace = true }
 sspi = { workspace = true, features = ["network_client"] }
 thiserror.workspace = true
 tracing.workspace = true
@@ -27,3 +28,8 @@ tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
 
 [target.'cfg(windows)'.build-dependencies]
 embed-resource = "2.2.0"
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.48", features = [
+    "Win32_Foundation",
+] }

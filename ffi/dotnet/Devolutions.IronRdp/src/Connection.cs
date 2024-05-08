@@ -2,12 +2,12 @@
 using System.Net;
 using System.Net.Security;
 using System.Net.Sockets;
-using Devolutions.IronRdp;
 
-public class Connection
+namespace Devolutions.IronRdp;
+public static class Connection
 {
 
-    public static async Task<(ConnectionResult, Framed<SslStream>)> Connect(Config config, string servername)
+    public static async Task<(ConnectionResult, Framed<SslStream>)> Connect(Config config, string servername, CliprdrBackendFactory? factory)
     {
 
         var stream = await CreateTcpConnection(servername, 3389);
@@ -23,6 +23,12 @@ public class Connection
 
         var socketAddrString = ip[0].ToString() + ":3389";
         connector.WithServerAddr(socketAddrString);
+        
+        if (factory != null)
+        {
+            var cliprdr = factory.BuildCliprdr();
+            connector.AttachStaticCliprdr(cliprdr);
+        }
 
         await connectBegin(framed, connector);
         var (serverPublicKey, framedSsl) = await securityUpgrade(servername, framed, connector);
@@ -104,7 +110,7 @@ public class Connection
                 await framedSsl.Write(response);
             }
 
-            var pduHint = credsspSequence.NextPduHint()!;
+            var pduHint = credsspSequence.NextPduHint();
             if (pduHint == null)
             {
                 break;
@@ -144,7 +150,7 @@ public class Connection
                 }
                 if (protocol == NetworkRequestProtocol.Tcp)
                 {
-                    stream.Write(Utils.Vecu8ToByte(data));
+                    stream.Write(Utils.VecU8ToByte(data));
                     var readBuf = new byte[8096];
                     var readlen = await stream.ReadAsync(readBuf, 0, readBuf.Length);
                     var actuallyRead = new byte[readlen];
@@ -158,8 +164,8 @@ public class Connection
             }
             else
             {
-                var client_state = state.GetClientStateIfCompleted();
-                return client_state;
+                var clientState = state.GetClientStateIfCompleted();
+                return clientState;
             }
         }
     }
@@ -223,7 +229,7 @@ public class Connection
 
 public static class Utils
 {
-    public static byte[] Vecu8ToByte(VecU8 vecU8)
+    public static byte[] VecU8ToByte(VecU8 vecU8)
     {
         var len = vecU8.GetSize();
         byte[] buffer = new byte[len];

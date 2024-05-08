@@ -4,11 +4,12 @@ pub mod image;
 pub mod ffi {
 
     use crate::{
+        clipboard::ffi::{ClipboardSvgMessage, CliprdrReference},
         connector::{ffi::ConnectionActivationSequence, result::ffi::ConnectionResult},
         error::{ffi::IronRdpError, IncorrectEnumTypeError, ValueConsumedError},
         graphics::ffi::DecodedPointer,
         pdu::ffi::{Action, FastPathInputEventIterator, InclusiveRectangle},
-        utils::ffi::{BytesSlice, Position},
+        utils::ffi::{BytesSlice, Position, VecU8},
     };
 
     use super::image::ffi::DecodedImage;
@@ -65,6 +66,27 @@ pub mod ffi {
                 .0
                 .process_fastpath_input(&mut image.0, &fastpath_input.0)
                 .map(|outputs| Box::new(ActiveStageOutputIterator(outputs)))?)
+        }
+
+        pub fn get_svc_processor_cliprdr<'a>(
+            &'a mut self,
+        ) -> Result<Option<Box<CliprdrReference<'a>>>, Box<IronRdpError>> {
+            let cliprdr_ref = self.0.get_svc_processor::<ironrdp::cliprdr::CliprdrClient>();
+            cliprdr_ref
+                .map(|cliprdr| Box::new(CliprdrReference(cliprdr)))
+                .map(Some)
+                .map_or(Ok(None), Ok)
+        }
+
+        pub fn process_svc_processor_message_cliprdr(
+            &mut self,
+            svc_message: &mut ClipboardSvgMessage,
+        ) -> Result<Box<VecU8>, Box<IronRdpError>> {
+            let Some(cliprdr_message) = svc_message.0.take() else {
+                return Err(ValueConsumedError::for_item("svc_message").into());
+            };
+            let vec = self.0.process_svc_processor_messages(cliprdr_message)?;
+            Ok(Box::new(VecU8(vec)))
         }
     }
 

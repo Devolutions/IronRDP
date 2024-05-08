@@ -258,6 +258,29 @@ public partial class ClientConnector: IDisposable
     }
 
     /// <exception cref="IronRdpException"></exception>
+    public void AttachStaticCliprdr(Cliprdr cliprdr)
+    {
+        unsafe
+        {
+            if (_inner == null)
+            {
+                throw new ObjectDisposedException("ClientConnector");
+            }
+            Raw.Cliprdr* cliprdrRaw;
+            cliprdrRaw = cliprdr.AsFFI();
+            if (cliprdrRaw == null)
+            {
+                throw new ObjectDisposedException("Cliprdr");
+            }
+            Raw.ConnectorFfiResultVoidBoxIronRdpError result = Raw.ClientConnector.AttachStaticCliprdr(_inner, cliprdrRaw);
+            if (!result.isOk)
+            {
+                throw new IronRdpException(new IronRdpError(result.Err));
+            }
+        }
+    }
+
+    /// <exception cref="IronRdpException"></exception>
     /// <returns>
     /// A <c>PduHint</c> allocated on Rust side.
     /// </returns>

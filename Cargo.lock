@@ -1134,10 +1134,12 @@ dependencies = [
  "diplomat-runtime",
  "embed-resource",
  "ironrdp",
+ "ironrdp-cliprdr-native",
  "sspi",
  "thiserror",
  "tracing",
  "tracing-subscriber",
+ "windows 0.48.0",
 ]
 
 [[package]]
