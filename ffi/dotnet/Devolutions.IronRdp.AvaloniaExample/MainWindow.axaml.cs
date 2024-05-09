@@ -9,7 +9,6 @@ using System.Diagnostics;
 using System.Net.Security;
 using System.Threading.Tasks;
 using Avalonia.Markup.Xaml;
-using Avalonia.Platform;
 
 namespace Devolutions.IronRdp.AvaloniaExample;
 
@@ -64,7 +63,7 @@ public partial class MainWindow : Window
             var handle = GetWindowHandle();
             // check if the system is 32 or 64 bit
             _cliprdr = WinCliprdr.New(IntPtr.Size == 4 ? Hwnd.New((uint)handle.ToInt32()) : Hwnd.New((uint)handle.ToInt64()));
-            factory = _cliprdr.BackendFacotry();
+            factory = _cliprdr.BackendFactory();
 #endif
 
         var task = Connection.Connect(config, server, factory);
