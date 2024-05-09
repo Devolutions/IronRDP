@@ -23,7 +23,7 @@ public partial class ClipboardMessage: IDisposable
         }
     }
 
-    public OwndFormatDataResponse? SendFormatData
+    public FormatDataResponse? SendFormatData
     {
         get
         {
@@ -98,9 +98,9 @@ public partial class ClipboardMessage: IDisposable
     }
 
     /// <returns>
-    /// A <c>OwndFormatDataResponse</c> allocated on Rust side.
+    /// A <c>FormatDataResponse</c> allocated on Rust side.
     /// </returns>
-    public OwndFormatDataResponse? GetSendFormatData()
+    public FormatDataResponse? GetSendFormatData()
     {
         unsafe
         {
@@ -108,12 +108,12 @@ public partial class ClipboardMessage: IDisposable
             {
                 throw new ObjectDisposedException("ClipboardMessage");
             }
-            Raw.OwndFormatDataResponse* retVal = Raw.ClipboardMessage.GetSendFormatData(_inner);
+            Raw.FormatDataResponse* retVal = Raw.ClipboardMessage.GetSendFormatData(_inner);
             if (retVal == null)
             {
                 return null;
             }
-            return new OwndFormatDataResponse(retVal);
+            return new FormatDataResponse(retVal);
         }
     }
 

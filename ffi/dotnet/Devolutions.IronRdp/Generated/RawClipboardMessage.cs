@@ -23,7 +23,7 @@ public partial struct ClipboardMessage
     public static unsafe extern ClipboardFormatIterator* GetSendInitiateCopy(ClipboardMessage* self);
 
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ClipboardMessage_get_send_format_data", ExactSpelling = true)]
-    public static unsafe extern OwndFormatDataResponse* GetSendFormatData(ClipboardMessage* self);
+    public static unsafe extern FormatDataResponse* GetSendFormatData(ClipboardMessage* self);
 
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ClipboardMessage_get_send_initiate_paste", ExactSpelling = true)]
     public static unsafe extern ClipboardFormatId* GetSendInitiatePaste(ClipboardMessage* self);

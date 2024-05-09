@@ -23,7 +23,7 @@ public partial struct CliprdrReference
     public static unsafe extern ClipboardFfiResultBoxClipboardSvgMessageBoxIronRdpError InitiatePaste(CliprdrReference* self, ClipboardFormatId* formatId);
 
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "CliprdrReference_submit_format_data", ExactSpelling = true)]
-    public static unsafe extern ClipboardFfiResultBoxClipboardSvgMessageBoxIronRdpError SubmitFormatData(CliprdrReference* self, OwndFormatDataResponse* owndFormatDataResponse);
+    public static unsafe extern ClipboardFfiResultBoxClipboardSvgMessageBoxIronRdpError SubmitFormatData(CliprdrReference* self, FormatDataResponse* owndFormatDataResponse);
 
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "CliprdrReference_destroy", ExactSpelling = true)]
     public static unsafe extern void Destroy(CliprdrReference* self);

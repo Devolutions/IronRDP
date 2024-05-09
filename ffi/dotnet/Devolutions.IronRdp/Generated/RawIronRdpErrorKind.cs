@@ -20,5 +20,5 @@ public enum IronRdpErrorKind
     IO = 4,
     AccessDenied = 5,
     IncorrectEnumType = 6,
-    ClipboardError = 7,
+    Clipboard = 7,
 }

@@ -89,7 +89,7 @@ public partial class CliprdrReference: IDisposable
     /// <returns>
     /// A <c>ClipboardSvgMessage</c> allocated on Rust side.
     /// </returns>
-    public ClipboardSvgMessage SubmitFormatData(OwndFormatDataResponse owndFormatDataResponse)
+    public ClipboardSvgMessage SubmitFormatData(FormatDataResponse owndFormatDataResponse)
     {
         unsafe
         {
@@ -97,11 +97,11 @@ public partial class CliprdrReference: IDisposable
             {
                 throw new ObjectDisposedException("CliprdrReference");
             }
-            Raw.OwndFormatDataResponse* owndFormatDataResponseRaw;
+            Raw.FormatDataResponse* owndFormatDataResponseRaw;
             owndFormatDataResponseRaw = owndFormatDataResponse.AsFFI();
             if (owndFormatDataResponseRaw == null)
             {
-                throw new ObjectDisposedException("OwndFormatDataResponse");
+                throw new ObjectDisposedException("FormatDataResponse");
             }
             Raw.ClipboardFfiResultBoxClipboardSvgMessageBoxIronRdpError result = Raw.CliprdrReference.SubmitFormatData(_inner, owndFormatDataResponseRaw);
             if (!result.isOk)
