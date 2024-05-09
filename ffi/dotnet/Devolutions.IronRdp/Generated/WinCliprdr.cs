@@ -65,10 +65,11 @@ public partial class WinCliprdr: IDisposable
         }
     }
 
+    /// <exception cref="IronRdpException"></exception>
     /// <returns>
     /// A <c>ClipboardMessage</c> allocated on Rust side.
     /// </returns>
-    public ClipboardMessage? NextClipboardMessage()
+    public ClipboardMessage NextClipboardMessage()
     {
         unsafe
         {
@@ -76,7 +77,12 @@ public partial class WinCliprdr: IDisposable
             {
                 throw new ObjectDisposedException("WinCliprdr");
             }
-            Raw.ClipboardMessage* retVal = Raw.WinCliprdr.NextClipboardMessage(_inner);
+            Raw.ClipboardWindowsFfiResultOptBoxClipboardMessageBoxIronRdpError result = Raw.WinCliprdr.NextClipboardMessage(_inner);
+            if (!result.isOk)
+            {
+                throw new IronRdpException(new IronRdpError(result.Err));
+            }
+            Raw.ClipboardMessage* retVal = result.Ok;
             if (retVal == null)
             {
                 return null;
@@ -107,6 +113,7 @@ public partial class WinCliprdr: IDisposable
         }
     }
 
+    /// <exception cref="IronRdpException"></exception>
     /// <returns>
     /// A <c>CliprdrBackendFactory</c> allocated on Rust side.
     /// </returns>
@@ -118,7 +125,12 @@ public partial class WinCliprdr: IDisposable
             {
                 throw new ObjectDisposedException("WinCliprdr");
             }
-            Raw.CliprdrBackendFactory* retVal = Raw.WinCliprdr.BackendFactory(_inner);
+            Raw.ClipboardWindowsFfiResultBoxCliprdrBackendFactoryBoxIronRdpError result = Raw.WinCliprdr.BackendFactory(_inner);
+            if (!result.isOk)
+            {
+                throw new IronRdpException(new IronRdpError(result.Err));
+            }
+            Raw.CliprdrBackendFactory* retVal = result.Ok;
             return new CliprdrBackendFactory(retVal);
         }
     }

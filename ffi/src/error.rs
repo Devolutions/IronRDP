@@ -2,6 +2,7 @@
 use std::fmt::Display;
 
 use ironrdp::{cliprdr::backend::ClipboardError, connector::ConnectorError, session::SessionError};
+#[cfg(target_os = "windows")]
 use ironrdp_cliprdr_native::WinCliprdrError;
 
 use self::ffi::IronRdpErrorKind;
@@ -62,6 +63,7 @@ impl From<&dyn ClipboardError> for IronRdpErrorKind {
     }
 }
 
+#[cfg(target_os = "windows")]
 impl From<WinCliprdrError> for IronRdpErrorKind {
     fn from(_val: WinCliprdrError) -> Self {
         IronRdpErrorKind::Clipboard

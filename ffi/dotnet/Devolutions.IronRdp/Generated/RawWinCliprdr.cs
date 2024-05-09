@@ -23,13 +23,13 @@ public partial struct WinCliprdr
     public static unsafe extern ClipboardWindowsFfiResultBoxWinCliprdrBoxIronRdpError New64bit(ulong hwnd);
 
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "WinCliprdr_next_clipboard_message", ExactSpelling = true)]
-    public static unsafe extern ClipboardMessage* NextClipboardMessage(WinCliprdr* self);
+    public static unsafe extern ClipboardWindowsFfiResultOptBoxClipboardMessageBoxIronRdpError NextClipboardMessage(WinCliprdr* self);
 
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "WinCliprdr_next_clipboard_message_blocking", ExactSpelling = true)]
     public static unsafe extern ClipboardWindowsFfiResultBoxClipboardMessageBoxIronRdpError NextClipboardMessageBlocking(WinCliprdr* self);
 
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "WinCliprdr_backend_factory", ExactSpelling = true)]
-    public static unsafe extern CliprdrBackendFactory* BackendFactory(WinCliprdr* self);
+    public static unsafe extern ClipboardWindowsFfiResultBoxCliprdrBackendFactoryBoxIronRdpError BackendFactory(WinCliprdr* self);
 
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "WinCliprdr_destroy", ExactSpelling = true)]
     public static unsafe extern void Destroy(WinCliprdr* self);
