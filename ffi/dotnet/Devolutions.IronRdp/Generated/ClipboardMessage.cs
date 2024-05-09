@@ -15,11 +15,11 @@ public partial class ClipboardMessage: IDisposable
 {
     private unsafe Raw.ClipboardMessage* _inner;
 
-    public ClipboardMessageType EnumType
+    public ClipboardMessageType MessageType
     {
         get
         {
-            return GetEnumType();
+            return GetMessageType();
         }
     }
 
@@ -64,7 +64,7 @@ public partial class ClipboardMessage: IDisposable
     /// <returns>
     /// A <c>ClipboardMessageType</c> allocated on C# side.
     /// </returns>
-    public ClipboardMessageType GetEnumType()
+    public ClipboardMessageType GetMessageType()
     {
         unsafe
         {
@@ -72,7 +72,7 @@ public partial class ClipboardMessage: IDisposable
             {
                 throw new ObjectDisposedException("ClipboardMessage");
             }
-            Raw.ClipboardMessageType retVal = Raw.ClipboardMessage.GetEnumType(_inner);
+            Raw.ClipboardMessageType retVal = Raw.ClipboardMessage.GetMessageType(_inner);
             return (ClipboardMessageType)retVal;
         }
     }

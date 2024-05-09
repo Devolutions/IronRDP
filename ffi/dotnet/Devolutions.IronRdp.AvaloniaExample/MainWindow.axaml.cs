@@ -59,10 +59,15 @@ public partial class MainWindow : Window
 
         var config = BuildConfig(username, password, domain, width, height);
 
-        var handle = GetWindowHandle();
-        // check if the system is 32 or 64 bit
-        _cliprdr = WinCliprdr.New(IntPtr.Size == 4 ? Hwnd.New((uint)handle.ToInt32()) : Hwnd.New((uint)handle.ToInt64()));
-        var task = Connection.Connect(config, server, _cliprdr.BackendFacotry());
+        CliprdrBackendFactory? factory = null;
+#if WINDOWS
+            var handle = GetWindowHandle();
+            // check if the system is 32 or 64 bit
+            _cliprdr = WinCliprdr.New(IntPtr.Size == 4 ? Hwnd.New((uint)handle.ToInt32()) : Hwnd.New((uint)handle.ToInt64()));
+            factory = _cliprdr.BackendFacotry();
+#endif
+
+        var task = Connection.Connect(config, server, factory);
 
         PostConnectSetup(width, height);
 
@@ -157,7 +162,7 @@ public partial class MainWindow : Window
 
                 var clipBoard = _activeStage!.GetSvcProcessorCliprdr();
                 VecU8 frame;
-                var messageType = message.GetEnumType();
+                var messageType = message.GetMessageType();
                 Trace.TraceInformation("Clipboard message type: " + messageType);
                 if (messageType == ClipboardMessageType.SendFormatData)
                 {
@@ -185,7 +190,7 @@ public partial class MainWindow : Window
 
                 var toWriteBack = new byte[frame.GetSize()];
                 frame.Fill(toWriteBack);
-                
+
                 await _framed!.Write(toWriteBack);
             }
         });
@@ -346,7 +351,7 @@ public partial class MainWindow : Window
         }
     }
 
-
+#if WINDOWS
     public IntPtr GetWindowHandle()
     {
         var handle = this.TryGetPlatformHandle();
@@ -357,4 +362,5 @@ public partial class MainWindow : Window
 
         return handle.Handle;
     }
+#endif
 }

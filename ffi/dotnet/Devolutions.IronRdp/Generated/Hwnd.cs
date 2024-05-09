@@ -37,7 +37,7 @@ public partial class Hwnd: IDisposable
     {
         unsafe
         {
-            Raw.ClipboardFfiResultBoxHwndBoxIronRdpError result = Raw.Hwnd.New(hwnd);
+            Raw.ClipboardWindowsFfiResultBoxHwndBoxIronRdpError result = Raw.Hwnd.New(hwnd);
             if (!result.isOk)
             {
                 throw new IronRdpException(new IronRdpError(result.Err));
@@ -55,7 +55,7 @@ public partial class Hwnd: IDisposable
     {
         unsafe
         {
-            Raw.ClipboardFfiResultBoxHwndBoxIronRdpError result = Raw.Hwnd.New(hwnd);
+            Raw.ClipboardWindowsFfiResultBoxHwndBoxIronRdpError result = Raw.Hwnd.New(hwnd);
             if (!result.isOk)
             {
                 throw new IronRdpException(new IronRdpError(result.Err));

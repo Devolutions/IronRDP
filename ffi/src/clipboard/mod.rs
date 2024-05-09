@@ -1,63 +1,15 @@
 pub mod message;
 
+
+#[cfg(target_os = "windows")]
+pub mod windows;
+
 #[diplomat::bridge]
 pub mod ffi {
 
-    use super::{
-        message::ffi::{ClipboardFormatId, ClipboardFormatIterator, ClipboardMessage, OwndFormatDataResponse},
-        FfiClipbarodMessageProxy,
-    };
+    use super::message::ffi::{ClipboardFormatId, ClipboardFormatIterator, FormatDataResponse};
     use crate::error::{ffi::IronRdpError, ValueConsumedError};
     use ironrdp::cliprdr::Client;
-    use windows::Win32::Foundation::HWND;
-
-    #[diplomat::opaque]
-    pub struct WinCliprdr {
-        pub clipboard: ironrdp_cliprdr_native::WinClipboard,
-        pub receiver: std::sync::mpsc::Receiver<ironrdp::cliprdr::backend::ClipboardMessage>,
-    }
-
-    impl WinCliprdr {
-        pub fn new(hwnd: &Hwnd) -> Result<Box<WinCliprdr>, Box<IronRdpError>> {
-            let (sender, receiver) = std::sync::mpsc::channel();
-
-            let proxy = FfiClipbarodMessageProxy { sender };
-
-            // SAFETY: `hwnd` must be a valid window handle
-            let clipboard = unsafe { ironrdp_cliprdr_native::WinClipboard::new(HWND(hwnd.0), proxy) }?;
-
-            Ok(Box::new(WinCliprdr { clipboard, receiver }))
-        }
-
-        pub fn next_clipboard_message(&self) -> Option<Box<ClipboardMessage>> {
-            self.receiver.try_recv().ok().map(ClipboardMessage).map(Box::new)
-        }
-
-        pub fn backend_facotry(&self) -> Box<CliprdrBackendFactory> {
-            Box::new(CliprdrBackendFactory(self.clipboard.backend_factory()))
-        }
-    }
-
-    #[diplomat::opaque]
-    pub struct Hwnd(pub isize);
-
-    impl Hwnd {
-        #[cfg(target_pointer_width = "32")]
-        pub fn new(hwnd: u32) -> Result<Box<Hwnd>, Box<IronRdpError>> {
-            isize::try_from(hwnd)
-                .map(Hwnd)
-                .map(Box::new)
-                .map_err(|_| "cannot convert from u64 input".into())
-        }
-
-        #[cfg(target_pointer_width = "64")]
-        pub fn new(hwnd: u64) -> Result<Box<Hwnd>, Box<IronRdpError>> {
-            isize::try_from(hwnd)
-                .map(Hwnd)
-                .map(Box::new)
-                .map_err(|_| "cannot convert from u64 input".into())
-        }
-    }
 
     #[diplomat::opaque]
     pub struct CliprdrBackendFactory(pub Box<dyn ironrdp::cliprdr::backend::CliprdrBackendFactory>);
@@ -97,7 +49,7 @@ pub mod ffi {
 
         pub fn submit_format_data(
             &self,
-            ownd_format_data_response: &mut OwndFormatDataResponse,
+            ownd_format_data_response: &mut FormatDataResponse,
         ) -> Result<Box<ClipboardSvgMessage>, Box<IronRdpError>> {
             let Some(data) = ownd_format_data_response.0.take() else {
                 return Err(ValueConsumedError::for_item("ownd_format_data_response").into());

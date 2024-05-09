@@ -58,13 +58,13 @@ impl From<SessionError> for IronRdpErrorKind {
 
 impl From<&dyn ClipboardError> for IronRdpErrorKind {
     fn from(_val: &dyn ClipboardError) -> Self {
-        IronRdpErrorKind::ClipboardError
+        IronRdpErrorKind::Clipboard
     }
 }
 
 impl From<WinCliprdrError> for IronRdpErrorKind {
     fn from(_val: WinCliprdrError) -> Self {
-        IronRdpErrorKind::ClipboardError
+        IronRdpErrorKind::Clipboard
     }
 }
 
@@ -106,7 +106,7 @@ pub mod ffi {
         #[error("Incorrect rust enum type")]
         IncorrectEnumType,
         #[error("Clipboard error")]
-        ClipboardError,
+        Clipboard,
     }
 
     /// Stringified Picky error along with an error kind.

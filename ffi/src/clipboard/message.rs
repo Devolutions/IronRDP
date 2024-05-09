@@ -5,7 +5,7 @@ pub mod ffi {
     pub struct ClipboardMessage(pub ironrdp::cliprdr::backend::ClipboardMessage);
 
     impl ClipboardMessage {
-        pub fn get_enum_type(&self) -> ClipboardMessageType {
+        pub fn get_message_type(&self) -> ClipboardMessageType {
             match &self.0 {
                 ironrdp::cliprdr::backend::ClipboardMessage::SendInitiateCopy(_) => {
                     ClipboardMessageType::SendInitiateCopy
@@ -27,13 +27,13 @@ pub mod ffi {
             .map(Box::new)
         }
 
-        pub fn get_send_format_data(&self) -> Option<Box<OwndFormatDataResponse>> {
+        pub fn get_send_format_data(&self) -> Option<Box<FormatDataResponse>> {
             match &self.0 {
                 ironrdp::cliprdr::backend::ClipboardMessage::SendFormatData(val) => Some(val.clone()),
                 _ => None,
             }
             .map(Some)
-            .map(OwndFormatDataResponse)
+            .map(FormatDataResponse)
             .map(Box::new)
         }
 
@@ -58,7 +58,7 @@ pub mod ffi {
     pub struct ClipboardFormatIterator(pub Vec<ironrdp::cliprdr::pdu::ClipboardFormat>);
 
     #[diplomat::opaque]
-    pub struct OwndFormatDataResponse(pub Option<ironrdp::cliprdr::pdu::OwnedFormatDataResponse>);
+    pub struct FormatDataResponse(pub Option<ironrdp::cliprdr::pdu::OwnedFormatDataResponse>);
 
     #[diplomat::opaque]
     pub struct ClipboardFormatId(pub ironrdp::cliprdr::pdu::ClipboardFormatId);

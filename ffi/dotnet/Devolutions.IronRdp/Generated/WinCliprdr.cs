@@ -43,7 +43,7 @@ public partial class WinCliprdr: IDisposable
             {
                 throw new ObjectDisposedException("Hwnd");
             }
-            Raw.ClipboardFfiResultBoxWinCliprdrBoxIronRdpError result = Raw.WinCliprdr.New(hwndRaw);
+            Raw.ClipboardWindowsFfiResultBoxWinCliprdrBoxIronRdpError result = Raw.WinCliprdr.New(hwndRaw);
             if (!result.isOk)
             {
                 throw new IronRdpException(new IronRdpError(result.Err));

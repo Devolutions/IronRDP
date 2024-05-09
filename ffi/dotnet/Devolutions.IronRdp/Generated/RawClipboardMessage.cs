@@ -16,8 +16,8 @@ public partial struct ClipboardMessage
 {
     private const string NativeLib = "DevolutionsIronRdp";
 
-    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ClipboardMessage_get_enum_type", ExactSpelling = true)]
-    public static unsafe extern ClipboardMessageType GetEnumType(ClipboardMessage* self);
+    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ClipboardMessage_get_message_type", ExactSpelling = true)]
+    public static unsafe extern ClipboardMessageType GetMessageType(ClipboardMessage* self);
 
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ClipboardMessage_get_send_initiate_copy", ExactSpelling = true)]
     public static unsafe extern ClipboardFormatIterator* GetSendInitiateCopy(ClipboardMessage* self);

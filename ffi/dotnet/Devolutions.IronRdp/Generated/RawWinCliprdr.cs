@@ -17,7 +17,7 @@ public partial struct WinCliprdr
     private const string NativeLib = "DevolutionsIronRdp";
 
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "WinCliprdr_new", ExactSpelling = true)]
-    public static unsafe extern ClipboardFfiResultBoxWinCliprdrBoxIronRdpError New(Hwnd* hwnd);
+    public static unsafe extern ClipboardWindowsFfiResultBoxWinCliprdrBoxIronRdpError New(Hwnd* hwnd);
 
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "WinCliprdr_next_clipboard_message", ExactSpelling = true)]
     public static unsafe extern ClipboardMessage* NextClipboardMessage(WinCliprdr* self);

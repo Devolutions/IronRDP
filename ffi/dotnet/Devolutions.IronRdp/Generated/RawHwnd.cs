@@ -17,10 +17,10 @@ public partial struct Hwnd
     private const string NativeLib = "DevolutionsIronRdp";
 
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "Hwnd_new", ExactSpelling = true)]
-    public static unsafe extern ClipboardFfiResultBoxHwndBoxIronRdpError New(uint hwnd);
+    public static unsafe extern ClipboardWindowsFfiResultBoxHwndBoxIronRdpError New(uint hwnd);
 
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "Hwnd_new", ExactSpelling = true)]
-    public static unsafe extern ClipboardFfiResultBoxHwndBoxIronRdpError New(ulong hwnd);
+    public static unsafe extern ClipboardWindowsFfiResultBoxHwndBoxIronRdpError New(ulong hwnd);
 
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "Hwnd_destroy", ExactSpelling = true)]
     public static unsafe extern void Destroy(Hwnd* self);
