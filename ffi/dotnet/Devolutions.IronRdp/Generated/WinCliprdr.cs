@@ -33,17 +33,29 @@ public partial class WinCliprdr: IDisposable
     /// <returns>
     /// A <c>WinCliprdr</c> allocated on Rust side.
     /// </returns>
-    public static WinCliprdr New(Hwnd hwnd)
+    public static WinCliprdr New32bit(uint hwnd)
     {
         unsafe
         {
-            Raw.Hwnd* hwndRaw;
-            hwndRaw = hwnd.AsFFI();
-            if (hwndRaw == null)
+            Raw.ClipboardWindowsFfiResultBoxWinCliprdrBoxIronRdpError result = Raw.WinCliprdr.New32bit(hwnd);
+            if (!result.isOk)
             {
-                throw new ObjectDisposedException("Hwnd");
+                throw new IronRdpException(new IronRdpError(result.Err));
             }
-            Raw.ClipboardWindowsFfiResultBoxWinCliprdrBoxIronRdpError result = Raw.WinCliprdr.New(hwndRaw);
+            Raw.WinCliprdr* retVal = result.Ok;
+            return new WinCliprdr(retVal);
+        }
+    }
+
+    /// <exception cref="IronRdpException"></exception>
+    /// <returns>
+    /// A <c>WinCliprdr</c> allocated on Rust side.
+    /// </returns>
+    public static WinCliprdr New64bit(ulong hwnd)
+    {
+        unsafe
+        {
+            Raw.ClipboardWindowsFfiResultBoxWinCliprdrBoxIronRdpError result = Raw.WinCliprdr.New64bit(hwnd);
             if (!result.isOk)
             {
                 throw new IronRdpException(new IronRdpError(result.Err));

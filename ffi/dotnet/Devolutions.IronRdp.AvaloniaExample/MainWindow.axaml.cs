@@ -7,6 +7,7 @@ using Avalonia.Threading;
 using System;
 using System.Diagnostics;
 using System.Net.Security;
+using System.Runtime.InteropServices;
 using System.Threading.Tasks;
 using Avalonia.Markup.Xaml;
 
@@ -59,12 +60,27 @@ public partial class MainWindow : Window
         var config = BuildConfig(username, password, domain, width, height);
 
         CliprdrBackendFactory? factory = null;
-#if WINDOWS
-            var handle = GetWindowHandle();
-            // check if the system is 32 or 64 bit
-            _cliprdr = WinCliprdr.New(IntPtr.Size == 4 ? Hwnd.New((uint)handle.ToInt32()) : Hwnd.New((uint)handle.ToInt64()));
-            factory = _cliprdr.BackendFactory();
-#endif
+        var handle = GetWindowHandle();
+        if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows) && handle != null)
+        {
+            switch (RuntimeInformation.ProcessArchitecture)
+            {
+                case Architecture.X64:
+                case Architecture.Arm64:
+                    _cliprdr = WinCliprdr.New64bit((ulong)handle.Value.ToInt64());
+                    break;
+                case Architecture.X86:
+                case Architecture.Arm:
+                    _cliprdr = WinCliprdr.New32bit((uint)handle.Value.ToInt32());
+                    break;
+            }
+
+            if (_cliprdr != null)
+            {
+                factory = _cliprdr.BackendFactory();
+            }
+        }
+
 
         var task = Connection.Connect(config, server, factory);
 
@@ -87,6 +103,14 @@ public partial class MainWindow : Window
             this._framed = framed;
             ReadPduAndProcessActiveStage();
             HandleClipboardEvents();
+        }).ContinueWith(t =>
+        {
+            if (t.IsFaulted)
+            {
+                Trace.TraceError("Error processing active stage: " + t.Exception!.Message);
+                Close();
+            }
+            return;
         });
     }
 
@@ -153,11 +177,7 @@ public partial class MainWindow : Window
                     continue;
                 }
 
-                var message = _cliprdr.NextClipboardMessage();
-                if (message == null)
-                {
-                    continue;
-                }
+                var message = _cliprdr.NextClipboardMessageBlocking();
 
                 var clipBoard = _activeStage!.GetSvcProcessorCliprdr();
                 VecU8 frame;
@@ -350,16 +370,14 @@ public partial class MainWindow : Window
         }
     }
 
-#if WINDOWS
-    public IntPtr GetWindowHandle()
+    IntPtr? GetWindowHandle()
     {
         var handle = this.TryGetPlatformHandle();
         if (handle == null)
         {
-            throw new Exception("Could not get window handle");
+            return null;
         }
 
         return handle.Handle;
     }
-#endif
 }

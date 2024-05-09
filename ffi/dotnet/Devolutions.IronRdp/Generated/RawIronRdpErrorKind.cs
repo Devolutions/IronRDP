@@ -21,4 +21,6 @@ public enum IronRdpErrorKind
     AccessDenied = 5,
     IncorrectEnumType = 6,
     Clipboard = 7,
+    WrongOS = 8,
+    WrongPointWidth = 9,
 }

@@ -1,6 +1,5 @@
 pub mod message;
 
-#[cfg(target_os = "windows")]
 pub mod windows;
 
 #[diplomat::bridge]

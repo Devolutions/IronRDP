@@ -68,6 +68,18 @@ impl From<WinCliprdrError> for IronRdpErrorKind {
     }
 }
 
+impl From<WrongOSError> for IronRdpErrorKind {
+    fn from(_val: WrongOSError) -> Self {
+        IronRdpErrorKind::WrongOS
+    }
+}
+
+impl From<WrongPointWidthError> for IronRdpErrorKind {
+    fn from(_val: WrongPointWidthError) -> Self {
+        IronRdpErrorKind::WrongPointWidth
+    }
+}
+
 impl<T> From<T> for Box<ffi::IronRdpError>
 where
     T: Into<IronRdpErrorKind> + ToString,
@@ -107,6 +119,10 @@ pub mod ffi {
         IncorrectEnumType,
         #[error("Clipboard error")]
         Clipboard,
+        #[error("wrong platform error")]
+        WrongOS,
+        #[error("Wrong point width")]
+        WrongPointWidth,
     }
 
     /// Stringified Picky error along with an error kind.
@@ -200,5 +216,59 @@ impl Display for IncorrectEnumTypeError {
 impl From<IncorrectEnumTypeError> for IronRdpErrorKind {
     fn from(_val: IncorrectEnumTypeError) -> Self {
         IronRdpErrorKind::IncorrectEnumType
+    }
+}
+
+pub struct WrongOSError {
+    expected: &'static str,
+    custom_message: Option<String>,
+}
+
+impl WrongOSError {
+    pub fn expected_platform(expected: &'static str) -> WrongOSError {
+        WrongOSError {
+            expected,
+            custom_message: None,
+        }
+    }
+
+    pub fn with_custom_message(mut self, message: &str) -> WrongOSError {
+        self.custom_message = Some(message.to_owned());
+        self
+    }
+}
+
+impl Display for WrongOSError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if let Some(custom_message) = &self.custom_message {
+            write!(f, "{}", custom_message)?;
+        }
+        write!(f, "expected platform {}", self.expected)
+    }
+}
+
+pub struct WrongPointWidthError {
+    expected: PointWidth,
+}
+
+#[derive(Debug)]
+pub enum PointWidth {
+    Width32,
+    Width64,
+}
+
+impl WrongPointWidthError {
+    pub fn expected_width(expected: PointWidth) -> WrongPointWidthError {
+        WrongPointWidthError { expected }
+    }
+}
+
+impl Display for WrongPointWidthError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let width = match &self.expected {
+            PointWidth::Width32 => "32",
+            PointWidth::Width64 => "64",
+        };
+        write!(f, "expected point width {}", width)
     }
 }
