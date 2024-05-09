@@ -76,12 +76,6 @@ impl From<WrongOSError> for IronRdpErrorKind {
     }
 }
 
-impl From<WrongPointWidthError> for IronRdpErrorKind {
-    fn from(_val: WrongPointWidthError) -> Self {
-        IronRdpErrorKind::WrongPointWidth
-    }
-}
-
 impl<T> From<T> for Box<ffi::IronRdpError>
 where
     T: Into<IronRdpErrorKind> + ToString,
@@ -123,8 +117,6 @@ pub mod ffi {
         Clipboard,
         #[error("wrong platform error")]
         WrongOS,
-        #[error("Wrong point width")]
-        WrongPointWidth,
     }
 
     /// Stringified Picky error along with an error kind.
@@ -246,31 +238,5 @@ impl Display for WrongOSError {
             write!(f, "{}", custom_message)?;
         }
         write!(f, "expected platform {}", self.expected)
-    }
-}
-
-pub struct WrongPointWidthError {
-    expected: PointWidth,
-}
-
-#[derive(Debug)]
-pub enum PointWidth {
-    Width32,
-    Width64,
-}
-
-impl WrongPointWidthError {
-    pub fn expected_width(expected: PointWidth) -> WrongPointWidthError {
-        WrongPointWidthError { expected }
-    }
-}
-
-impl Display for WrongPointWidthError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let width = match &self.expected {
-            PointWidth::Width32 => "32",
-            PointWidth::Width64 => "64",
-        };
-        write!(f, "expected point width {}", width)
     }
 }

@@ -23,7 +23,6 @@ pub mod ffi {
     use crate::clipboard::ffi::CliprdrBackendFactory;
     use crate::clipboard::message::ffi::ClipboardMessage;
     use crate::error::ffi::IronRdpError;
-    use crate::error::{PointWidth, WrongPointWidthError};
 
     use super::WinCliprdrInner;
 
@@ -31,18 +30,8 @@ pub mod ffi {
     pub struct WinCliprdr(WinCliprdrInner);
 
     impl WinCliprdr {
-        pub fn new_32bit(hwnd: u32) -> Result<Box<WinCliprdr>, Box<IronRdpError>> {
-            let pointer =
-                isize::try_from(hwnd).map_err(|_| WrongPointWidthError::expected_width(PointWidth::Width32))?;
-
-            WinCliprdrInner::new(pointer).map(WinCliprdr).map(Box::new)
-        }
-
-        pub fn new_64bit(hwnd: u64) -> Result<Box<WinCliprdr>, Box<IronRdpError>> {
-            let pointer =
-                isize::try_from(hwnd).map_err(|_| WrongPointWidthError::expected_width(PointWidth::Width64))?;
-
-            WinCliprdrInner::new(pointer).map(WinCliprdr).map(Box::new)
+        pub fn new(hwnd: isize) -> Result<Box<WinCliprdr>, Box<IronRdpError>> {
+            WinCliprdrInner::new(hwnd).map(WinCliprdr).map(Box::new)
         }
 
         pub fn next_clipboard_message(&self) -> Result<Option<Box<ClipboardMessage>>, Box<IronRdpError>> {

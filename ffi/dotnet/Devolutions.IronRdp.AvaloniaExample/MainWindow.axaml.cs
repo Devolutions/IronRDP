@@ -63,18 +63,7 @@ public partial class MainWindow : Window
         var handle = GetWindowHandle();
         if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows) && handle != null)
         {
-            switch (RuntimeInformation.ProcessArchitecture)
-            {
-                case Architecture.X64:
-                case Architecture.Arm64:
-                    _cliprdr = WinCliprdr.New64bit((ulong)handle.Value.ToInt64());
-                    break;
-                case Architecture.X86:
-                case Architecture.Arm:
-                    _cliprdr = WinCliprdr.New32bit((uint)handle.Value.ToInt32());
-                    break;
-            }
-
+            _cliprdr = WinCliprdr.New(handle.Value);
             if (_cliprdr != null)
             {
                 factory = _cliprdr.BackendFactory();

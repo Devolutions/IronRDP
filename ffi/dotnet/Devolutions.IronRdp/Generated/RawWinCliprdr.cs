@@ -16,11 +16,8 @@ public partial struct WinCliprdr
 {
     private const string NativeLib = "DevolutionsIronRdp";
 
-    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "WinCliprdr_new_32bit", ExactSpelling = true)]
-    public static unsafe extern ClipboardWindowsFfiResultBoxWinCliprdrBoxIronRdpError New32bit(uint hwnd);
-
-    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "WinCliprdr_new_64bit", ExactSpelling = true)]
-    public static unsafe extern ClipboardWindowsFfiResultBoxWinCliprdrBoxIronRdpError New64bit(ulong hwnd);
+    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "WinCliprdr_new", ExactSpelling = true)]
+    public static unsafe extern ClipboardWindowsFfiResultBoxWinCliprdrBoxIronRdpError New(nint hwnd);
 
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "WinCliprdr_next_clipboard_message", ExactSpelling = true)]
     public static unsafe extern ClipboardWindowsFfiResultOptBoxClipboardMessageBoxIronRdpError NextClipboardMessage(WinCliprdr* self);
