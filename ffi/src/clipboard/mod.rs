@@ -21,41 +21,6 @@ pub mod ffi {
     #[diplomat::opaque]
     pub struct Cliprdr(pub Option<ironrdp::cliprdr::Cliprdr<Client>>);
 
-    // #[diplomat::opaque]
-    // pub struct CliprdrReference<'a>(pub &'a ironrdp::cliprdr::Cliprdr<Client>);
-
-    // impl CliprdrReference<'_> {
-    //     pub fn initiate_copy(
-    //         &self,
-    //         formats: &ClipboardFormatIterator,
-    //     ) -> Result<Box<ClipboardSvgMessage>, Box<IronRdpError>> {
-    //         let result = self.0.initiate_copy(&formats.0)?;
-    //         let message = ClipboardSvgMessage(Some(result));
-    //         Ok(Box::new(message))
-    //     }
-
-    //     pub fn initiate_paste(
-    //         &self,
-    //         format_id: &ClipboardFormatId,
-    //     ) -> Result<Box<ClipboardSvgMessage>, Box<IronRdpError>> {
-    //         let result = self.0.initiate_paste(format_id.0)?;
-    //         let message = ClipboardSvgMessage(Some(result));
-    //         Ok(Box::new(message))
-    //     }
-
-    //     pub fn submit_format_data(
-    //         &self,
-    //         ownd_format_data_response: &mut FormatDataResponse,
-    //     ) -> Result<Box<ClipboardSvgMessage>, Box<IronRdpError>> {
-    //         let Some(data) = ownd_format_data_response.0.take() else {
-    //             return Err(ValueConsumedError::for_item("ownd_format_data_response").into());
-    //         };
-    //         let result = self.0.submit_format_data(data)?;
-    //         let message = ClipboardSvgMessage(Some(result));
-    //         Ok(Box::new(message))
-    //     }
-    // }
-
     #[diplomat::opaque]
     pub struct ClipboardSvgMessage(pub Option<ironrdp::cliprdr::CliprdrSvcMessages<Client>>);
 }
