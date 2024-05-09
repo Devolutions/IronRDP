@@ -4,7 +4,7 @@ pub mod image;
 pub mod ffi {
 
     use crate::{
-        clipboard::ffi::{ClipboardSvgMessage, CliprdrReference},
+        clipboard::message::ffi::{ClipboardFormatId, ClipboardFormatIterator, FormatDataResponse},
         connector::{ffi::ConnectionActivationSequence, result::ffi::ConnectionResult},
         error::{ffi::IronRdpError, IncorrectEnumTypeError, ValueConsumedError},
         graphics::ffi::DecodedPointer,
@@ -68,25 +68,58 @@ pub mod ffi {
                 .map(|outputs| Box::new(ActiveStageOutputIterator(outputs)))?)
         }
 
-        pub fn get_svc_processor_cliprdr<'a>(
-            &'a mut self,
-        ) -> Result<Option<Box<CliprdrReference<'a>>>, Box<IronRdpError>> {
-            let cliprdr_ref = self.0.get_svc_processor::<ironrdp::cliprdr::CliprdrClient>();
-            cliprdr_ref
-                .map(|cliprdr| Box::new(CliprdrReference(cliprdr)))
-                .map(Some)
-                .map_or(Ok(None), Ok)
+        pub fn initiate_clipboard_copy(
+            &mut self,
+            formats: &ClipboardFormatIterator,
+        ) -> Result<Box<VecU8>, Box<IronRdpError>> {
+            let formats = formats.0.clone();
+            let clipboard = self
+                .0
+                .get_svc_processor::<ironrdp::cliprdr::CliprdrClient>()
+                .ok_or("clipboard svc processor not found in active stage")?;
+
+            let result = clipboard.initiate_copy(&formats)?;
+
+            let frame = self.0.process_svc_processor_messages(result)?;
+
+            Ok(Box::new(VecU8(frame)))
         }
 
-        pub fn process_svc_processor_message_cliprdr(
+        pub fn initiate_clipboard_paste(
             &mut self,
-            svc_message: &mut ClipboardSvgMessage,
+            format_id: &ClipboardFormatId,
         ) -> Result<Box<VecU8>, Box<IronRdpError>> {
-            let Some(cliprdr_message) = svc_message.0.take() else {
-                return Err(ValueConsumedError::for_item("svc_message").into());
-            };
-            let vec = self.0.process_svc_processor_messages(cliprdr_message)?;
-            Ok(Box::new(VecU8(vec)))
+            let format_id = format_id.0;
+            let clipboard = self
+                .0
+                .get_svc_processor::<ironrdp::cliprdr::CliprdrClient>()
+                .ok_or("clipboard svc processor not found in active stage")?;
+
+            let result = clipboard.initiate_paste(format_id)?;
+
+            let frame = self.0.process_svc_processor_messages(result)?;
+
+            Ok(Box::new(VecU8(frame)))
+        }
+
+        pub fn submit_clipboard_format_data(
+            &mut self,
+            format_data_response: &mut FormatDataResponse,
+        ) -> Result<Box<VecU8>, Box<IronRdpError>> {
+            let data = format_data_response
+                .0
+                .take()
+                .ok_or_else(|| ValueConsumedError::for_item("format_data_response"))?;
+            let clipboard = self
+                .0
+                .get_svc_processor::<ironrdp::cliprdr::CliprdrClient>()
+                .ok_or("clipboard svc processor not found in active stage")?;
+
+            let result = clipboard.submit_format_data(data)?;
+
+            let frame = self.0.process_svc_processor_messages(result)?;
+
+            Ok(Box::new(VecU8(frame)))
         }
     }
 

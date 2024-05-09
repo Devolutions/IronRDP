@@ -179,27 +179,23 @@ public partial class MainWindow : Window
 
                 var message = _cliprdr.NextClipboardMessageBlocking();
 
-                var clipBoard = _activeStage!.GetSvcProcessorCliprdr();
                 VecU8 frame;
                 var messageType = message.GetMessageType();
                 Trace.TraceInformation("Clipboard message type: " + messageType);
                 if (messageType == ClipboardMessageType.SendFormatData)
                 {
                     var formatData = message.GetSendFormatData()!;
-                    var svgMessage = clipBoard.SubmitFormatData(formatData);
-                    frame = _activeStage.ProcessSvcProcessorMessageCliprdr(svgMessage);
+                    frame = _activeStage!.SubmitClipboardFormatData(formatData);
                 }
                 else if (messageType == ClipboardMessageType.SendInitiateCopy)
                 {
                     var initiateCopy = message.GetSendInitiateCopy()!;
-                    var svgMessage = clipBoard.InitiateCopy(initiateCopy);
-                    frame = _activeStage.ProcessSvcProcessorMessageCliprdr(svgMessage);
+                    frame = _activeStage!.InitiateClipboardCopy(initiateCopy);
                 }
                 else if (messageType == ClipboardMessageType.SendInitiatePaste)
                 {
                     var initiatePaste = message.GetSendInitiatePaste()!;
-                    var svgMessage = clipBoard.InitiatePaste(initiatePaste);
-                    frame = _activeStage.ProcessSvcProcessorMessageCliprdr(svgMessage);
+                    frame = _activeStage!.InitiateClipboardPaste(initiatePaste);
                 }
                 else
                 {

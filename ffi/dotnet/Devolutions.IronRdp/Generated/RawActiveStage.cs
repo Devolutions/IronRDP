@@ -25,11 +25,14 @@ public partial struct ActiveStage
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ActiveStage_process_fastpath_input", ExactSpelling = true)]
     public static unsafe extern SessionFfiResultBoxActiveStageOutputIteratorBoxIronRdpError ProcessFastpathInput(ActiveStage* self, DecodedImage* image, FastPathInputEventIterator* fastpathInput);
 
-    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ActiveStage_get_svc_processor_cliprdr", ExactSpelling = true)]
-    public static unsafe extern SessionFfiResultOptBoxCliprdrReferenceBoxIronRdpError GetSvcProcessorCliprdr(ActiveStage* self);
+    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ActiveStage_initiate_clipboard_copy", ExactSpelling = true)]
+    public static unsafe extern SessionFfiResultBoxVecU8BoxIronRdpError InitiateClipboardCopy(ActiveStage* self, ClipboardFormatIterator* formats);
 
-    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ActiveStage_process_svc_processor_message_cliprdr", ExactSpelling = true)]
-    public static unsafe extern SessionFfiResultBoxVecU8BoxIronRdpError ProcessSvcProcessorMessageCliprdr(ActiveStage* self, ClipboardSvgMessage* svcMessage);
+    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ActiveStage_initiate_clipboard_paste", ExactSpelling = true)]
+    public static unsafe extern SessionFfiResultBoxVecU8BoxIronRdpError InitiateClipboardPaste(ActiveStage* self, ClipboardFormatId* formatId);
+
+    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ActiveStage_submit_clipboard_format_data", ExactSpelling = true)]
+    public static unsafe extern SessionFfiResultBoxVecU8BoxIronRdpError SubmitClipboardFormatData(ActiveStage* self, FormatDataResponse* formatDataResponse);
 
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ActiveStage_destroy", ExactSpelling = true)]
     public static unsafe extern void Destroy(ActiveStage* self);

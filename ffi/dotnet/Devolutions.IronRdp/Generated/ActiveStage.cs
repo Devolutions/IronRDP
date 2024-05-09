@@ -15,14 +15,6 @@ public partial class ActiveStage: IDisposable
 {
     private unsafe Raw.ActiveStage* _inner;
 
-    public CliprdrReference SvcProcessorCliprdr
-    {
-        get
-        {
-            return GetSvcProcessorCliprdr();
-        }
-    }
-
     /// <summary>
     /// Creates a managed <c>ActiveStage</c> from a raw handle.
     /// </summary>
@@ -135,9 +127,9 @@ public partial class ActiveStage: IDisposable
 
     /// <exception cref="IronRdpException"></exception>
     /// <returns>
-    /// A <c>CliprdrReference</c> allocated on Rust side.
+    /// A <c>VecU8</c> allocated on Rust side.
     /// </returns>
-    public CliprdrReference GetSvcProcessorCliprdr()
+    public VecU8 InitiateClipboardCopy(ClipboardFormatIterator formats)
     {
         unsafe
         {
@@ -145,17 +137,19 @@ public partial class ActiveStage: IDisposable
             {
                 throw new ObjectDisposedException("ActiveStage");
             }
-            Raw.SessionFfiResultOptBoxCliprdrReferenceBoxIronRdpError result = Raw.ActiveStage.GetSvcProcessorCliprdr(_inner);
+            Raw.ClipboardFormatIterator* formatsRaw;
+            formatsRaw = formats.AsFFI();
+            if (formatsRaw == null)
+            {
+                throw new ObjectDisposedException("ClipboardFormatIterator");
+            }
+            Raw.SessionFfiResultBoxVecU8BoxIronRdpError result = Raw.ActiveStage.InitiateClipboardCopy(_inner, formatsRaw);
             if (!result.isOk)
             {
                 throw new IronRdpException(new IronRdpError(result.Err));
             }
-            Raw.CliprdrReference* retVal = result.Ok;
-            if (retVal == null)
-            {
-                return null;
-            }
-            return new CliprdrReference(retVal);
+            Raw.VecU8* retVal = result.Ok;
+            return new VecU8(retVal);
         }
     }
 
@@ -163,7 +157,7 @@ public partial class ActiveStage: IDisposable
     /// <returns>
     /// A <c>VecU8</c> allocated on Rust side.
     /// </returns>
-    public VecU8 ProcessSvcProcessorMessageCliprdr(ClipboardSvgMessage svcMessage)
+    public VecU8 InitiateClipboardPaste(ClipboardFormatId formatId)
     {
         unsafe
         {
@@ -171,13 +165,41 @@ public partial class ActiveStage: IDisposable
             {
                 throw new ObjectDisposedException("ActiveStage");
             }
-            Raw.ClipboardSvgMessage* svcMessageRaw;
-            svcMessageRaw = svcMessage.AsFFI();
-            if (svcMessageRaw == null)
+            Raw.ClipboardFormatId* formatIdRaw;
+            formatIdRaw = formatId.AsFFI();
+            if (formatIdRaw == null)
             {
-                throw new ObjectDisposedException("ClipboardSvgMessage");
+                throw new ObjectDisposedException("ClipboardFormatId");
             }
-            Raw.SessionFfiResultBoxVecU8BoxIronRdpError result = Raw.ActiveStage.ProcessSvcProcessorMessageCliprdr(_inner, svcMessageRaw);
+            Raw.SessionFfiResultBoxVecU8BoxIronRdpError result = Raw.ActiveStage.InitiateClipboardPaste(_inner, formatIdRaw);
+            if (!result.isOk)
+            {
+                throw new IronRdpException(new IronRdpError(result.Err));
+            }
+            Raw.VecU8* retVal = result.Ok;
+            return new VecU8(retVal);
+        }
+    }
+
+    /// <exception cref="IronRdpException"></exception>
+    /// <returns>
+    /// A <c>VecU8</c> allocated on Rust side.
+    /// </returns>
+    public VecU8 SubmitClipboardFormatData(FormatDataResponse formatDataResponse)
+    {
+        unsafe
+        {
+            if (_inner == null)
+            {
+                throw new ObjectDisposedException("ActiveStage");
+            }
+            Raw.FormatDataResponse* formatDataResponseRaw;
+            formatDataResponseRaw = formatDataResponse.AsFFI();
+            if (formatDataResponseRaw == null)
+            {
+                throw new ObjectDisposedException("FormatDataResponse");
+            }
+            Raw.SessionFfiResultBoxVecU8BoxIronRdpError result = Raw.ActiveStage.SubmitClipboardFormatData(_inner, formatDataResponseRaw);
             if (!result.isOk)
             {
                 throw new IronRdpException(new IronRdpError(result.Err));
