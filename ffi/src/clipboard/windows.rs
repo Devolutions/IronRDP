@@ -30,6 +30,7 @@ pub mod ffi {
     pub struct WinCliprdr(WinCliprdrInner);
 
     impl WinCliprdr {
+        /// SAFETY: `hwnd` must be a valid window handle
         pub fn new(hwnd: isize) -> Result<Box<WinCliprdr>, Box<IronRdpError>> {
             WinCliprdrInner::new(hwnd).map(WinCliprdr).map(Box::new)
         }

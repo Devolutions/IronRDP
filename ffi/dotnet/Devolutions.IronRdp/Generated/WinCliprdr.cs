@@ -29,6 +29,9 @@ public partial class WinCliprdr: IDisposable
         _inner = handle;
     }
 
+    /// <summary>
+    /// SAFETY: `hwnd` must be a valid window handle
+    /// </summary>
     /// <exception cref="IronRdpException"></exception>
     /// <returns>
     /// A <c>WinCliprdr</c> allocated on Rust side.
