@@ -11,15 +11,10 @@ namespace Devolutions.IronRdp.Raw;
 
 #nullable enable
 
-public enum IronRdpErrorKind
+public enum ClipboardMessageType
 {
-    Generic = 0,
-    PduError = 1,
-    CredsspError = 2,
-    Consumed = 3,
-    IO = 4,
-    AccessDenied = 5,
-    IncorrectEnumType = 6,
-    Clipboard = 7,
-    WrongOS = 8,
+    SendInitiateCopy = 0,
+    SendFormatData = 1,
+    SendInitiatePaste = 2,
+    Error = 3,
 }

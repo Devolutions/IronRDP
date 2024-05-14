@@ -1,7 +1,9 @@
 #![allow(clippy::return_self_not_must_use)]
 use std::fmt::Display;
 
-use ironrdp::{connector::ConnectorError, session::SessionError};
+use ironrdp::{cliprdr::backend::ClipboardError, connector::ConnectorError, session::SessionError};
+#[cfg(target_os = "windows")]
+use ironrdp_cliprdr_native::WinCliprdrError;
 
 use self::ffi::IronRdpErrorKind;
 
@@ -55,6 +57,25 @@ impl From<SessionError> for IronRdpErrorKind {
     }
 }
 
+impl From<&dyn ClipboardError> for IronRdpErrorKind {
+    fn from(_val: &dyn ClipboardError) -> Self {
+        IronRdpErrorKind::Clipboard
+    }
+}
+
+#[cfg(target_os = "windows")]
+impl From<WinCliprdrError> for IronRdpErrorKind {
+    fn from(_val: WinCliprdrError) -> Self {
+        IronRdpErrorKind::Clipboard
+    }
+}
+
+impl From<WrongOSError> for IronRdpErrorKind {
+    fn from(_val: WrongOSError) -> Self {
+        IronRdpErrorKind::WrongOS
+    }
+}
+
 impl<T> From<T> for Box<ffi::IronRdpError>
 where
     T: Into<IronRdpErrorKind> + ToString,
@@ -92,6 +113,10 @@ pub mod ffi {
         AccessDenied,
         #[error("Incorrect rust enum type")]
         IncorrectEnumType,
+        #[error("Clipboard error")]
+        Clipboard,
+        #[error("wrong platform error")]
+        WrongOS,
     }
 
     /// Stringified Picky error along with an error kind.
@@ -185,5 +210,33 @@ impl Display for IncorrectEnumTypeError {
 impl From<IncorrectEnumTypeError> for IronRdpErrorKind {
     fn from(_val: IncorrectEnumTypeError) -> Self {
         IronRdpErrorKind::IncorrectEnumType
+    }
+}
+
+pub struct WrongOSError {
+    expected: &'static str,
+    custom_message: Option<String>,
+}
+
+impl WrongOSError {
+    pub fn expected_platform(expected: &'static str) -> WrongOSError {
+        WrongOSError {
+            expected,
+            custom_message: None,
+        }
+    }
+
+    pub fn with_custom_message(mut self, message: &str) -> WrongOSError {
+        self.custom_message = Some(message.to_owned());
+        self
+    }
+}
+
+impl Display for WrongOSError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        if let Some(custom_message) = &self.custom_message {
+            write!(f, "{}", custom_message)?;
+        }
+        write!(f, "expected platform {}", self.expected)
     }
 }

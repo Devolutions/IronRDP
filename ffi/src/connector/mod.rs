@@ -9,6 +9,7 @@ pub mod ffi {
     use std::fmt::Write;
 
     use crate::{
+        clipboard::ffi::Cliprdr,
         error::{
             ffi::{IronRdpError, IronRdpErrorKind},
             ValueConsumedError,
@@ -117,6 +118,19 @@ pub mod ffi {
             };
             let written = connector.step_no_input(&mut write_buf.0)?;
             Ok(Box::new(Written(written)))
+        }
+
+        pub fn attach_static_cliprdr(&mut self, cliprdr: &mut Cliprdr) -> Result<(), Box<IronRdpError>> {
+            let Some(connector) = self.0.as_mut() else {
+                return Err(ValueConsumedError::for_item("connector").into());
+            };
+
+            let Some(cliprdr) = cliprdr.0.take() else {
+                return Err(ValueConsumedError::for_item("cliprdr").into());
+            };
+
+            connector.attach_static_channel(cliprdr);
+            Ok(())
         }
     }
 
