@@ -19,7 +19,7 @@ doctest = false
 [dependencies]
 diplomat = "0.7.0"
 diplomat-runtime = "0.7.0"
-ironrdp = { workspace = true, features = ["connector", "dvc", "svc","rdpdr","rdpsnd","graphics","input","cliprdr"] }
+ironrdp = { workspace = true, features = ["connector", "dvc", "svc", "rdpdr", "rdpsnd", "graphics", "input", "cliprdr"] }
 ironrdp-cliprdr-native = { workspace = true }
 sspi = { workspace = true, features = ["network_client"] }
 thiserror.workspace = true
