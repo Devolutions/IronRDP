@@ -10,6 +10,7 @@ using System.Net.Security;
 using System.Runtime.InteropServices;
 using System.Threading.Tasks;
 using Avalonia.Markup.Xaml;
+using Avalonia.Interactivity;
 
 namespace Devolutions.IronRdp.AvaloniaExample;
 
@@ -357,12 +358,24 @@ public partial class MainWindow : Window
 
     IntPtr? GetWindowHandle()
     {
-        var handle = this.TryGetPlatformHandle();
+        var handle = TryGetPlatformHandle();
         if (handle == null)
         {
             return null;
         }
 
         return handle.Handle;
+    }
+
+    public void OnDisconnectClick(object? sender, RoutedEventArgs e)
+    {
+        var output = this._activeStage!.GracefulShutdown();
+        
+        HandleActiveStageOutput(output).ContinueWith(t=>{
+            if (t.IsFaulted)
+            {
+                Trace.TraceError("Error processing active stage: " + t.Exception!.Message);
+            }
+        });
     }
 }

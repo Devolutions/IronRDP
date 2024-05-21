@@ -209,6 +209,28 @@ public partial class ActiveStage: IDisposable
         }
     }
 
+    /// <exception cref="IronRdpException"></exception>
+    /// <returns>
+    /// A <c>ActiveStageOutputIterator</c> allocated on Rust side.
+    /// </returns>
+    public ActiveStageOutputIterator GracefulShutdown()
+    {
+        unsafe
+        {
+            if (_inner == null)
+            {
+                throw new ObjectDisposedException("ActiveStage");
+            }
+            Raw.SessionFfiResultBoxActiveStageOutputIteratorBoxIronRdpError result = Raw.ActiveStage.GracefulShutdown(_inner);
+            if (!result.isOk)
+            {
+                throw new IronRdpException(new IronRdpError(result.Err));
+            }
+            Raw.ActiveStageOutputIterator* retVal = result.Ok;
+            return new ActiveStageOutputIterator(retVal);
+        }
+    }
+
     /// <summary>
     /// Returns the underlying raw handle.
     /// </summary>
