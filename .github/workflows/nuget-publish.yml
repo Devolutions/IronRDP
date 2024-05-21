@@ -1,0 +1,361 @@
+name: Publish NuGet package
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry-run:
+        description: 'Dry run'
+        required: true
+        type: boolean
+        default: true
+  schedule:
+    - cron: '21 3 * * 1' # 3:21 AM UTC every Monday
+
+jobs:
+  preflight:
+    name: Preflight
+    runs-on: ubuntu-20.04
+    outputs:
+      dry-run: ${{ steps.get-dry-run.outputs.dry-run }}
+      project-version: ${{ steps.get-version.outputs.project-version }}
+      package-version: ${{ steps.get-version.outputs.package-version }}
+
+    steps:
+      - name: Checkout ${{ github.repository }}
+        uses: actions/checkout@v4
+
+      - name: Get dry run
+        id: get-dry-run
+        shell: pwsh
+        run: |
+          $IsDryRun = '${{ github.event.inputs.dry-run }}' -Eq 'true' -Or '${{ github.event_name }}' -Eq 'schedule'
+
+          if ($IsDryRun) {
+            echo "dry-run=true" >> $Env:GITHUB_OUTPUT
+          } else {
+            echo "dry-run=false" >> $Env:GITHUB_OUTPUT
+          }
+
+      - name: Get version
+        id: get-version
+        shell: pwsh
+        run: |
+          $CsprojXml = [Xml] (Get-Content .\ffi\dotnet\Devolutions.IronRdp\Devolutions.IronRdp.csproj)
+          $ProjectVersion = $CsprojXml.Project.PropertyGroup.Version | Select-Object -First 1
+          $PackageVersion = $ProjectVersion -Replace "^(\d+)\.(\d+)\.(\d+).(\d+)$", "`$1.`$2.`$3"
+          echo "project-version=$ProjectVersion" >> $Env:GITHUB_OUTPUT
+          echo "package-version=$PackageVersion" >> $Env:GITHUB_OUTPUT
+
+  build-native:
+    name: Native build
+    runs-on: ${{matrix.runner}}
+    needs: preflight
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ win, osx, linux, ios, android ]
+        arch: [ x86, x64, arm, arm64 ]
+        include:
+          - os: win
+            runner: windows-2022
+          - os: osx
+            runner: macos-11
+          - os: linux
+            runner: ubuntu-20.04
+          - os: ios
+            runner: macos-11
+          - os: android
+            runner: ubuntu-20.04
+        exclude:
+          - arch: arm
+            os: win
+          - arch: arm
+            os: osx
+          - arch: arm
+            os: linux
+          - arch: arm
+            os: ios
+          - arch: x86
+            os: win
+          - arch: x86
+            os: osx
+          - arch: x86
+            os: linux
+          - arch: x86
+            os: ios
+
+    steps:
+      - name: Checkout ${{ github.repository }}
+        uses: actions/checkout@v4
+
+      - name: Configure Android NDK
+        if: matrix.os == 'android'
+        shell: pwsh
+        run: |    
+          $CargoConfigFile = "~/.cargo/config"
+          $AndroidToolchain="${Env:ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64"
+
+          Get-ChildItem -Path $AndroidToolchain "libunwind.a" -Recurse | ForEach-Object {
+            $libunwind = $_.FullName
+            $libgcc = Join-Path $_.DirectoryName "libgcc.a"
+            if (-Not (Test-Path $libgcc)) {
+                Write-Host $libgcc
+                Copy-Item $libunwind $libgcc
+            }
+          }
+
+          echo "[target.i686-linux-android]" >> $CargoConfigFile
+          echo "linker=`"$AndroidToolchain/bin/i686-linux-android19-clang`"" >> $CargoConfigFile
+          echo "[target.x86_64-linux-android]" >> $CargoConfigFile
+          echo "linker=`"$AndroidToolchain/bin/x86_64-linux-android21-clang`"" >> $CargoConfigFile
+          echo "[target.armv7-linux-androideabi]" >> $CargoConfigFile
+          echo "linker=`"$AndroidToolchain/bin/armv7a-linux-androideabi21-clang`"" >> $CargoConfigFile
+          echo "[target.aarch64-linux-android]" >> $CargoConfigFile
+          echo "linker=`"$AndroidToolchain/bin/aarch64-linux-android21-clang`"" >> $CargoConfigFile
+
+      - name: Setup build environment
+        shell: pwsh
+        run: |
+          if ('${{ matrix.os }}' -Eq 'osx') {
+            echo "MACOSX_DEPLOYMENT_TARGET=10.10" | Out-File -FilePath $Env:GITHUB_ENV -Encoding utf8 -Append
+          } elseif ('${{ matrix.os }}' -Eq 'ios') {
+            echo "IPHONEOS_DEPLOYMENT_TARGET=12.1" | Out-File -FilePath $Env:GITHUB_ENV -Encoding utf8 -Append
+          }
+
+      - name: Build native lib (${{matrix.os}}-${{matrix.arch}})
+        shell: pwsh
+        run: |
+          $DotNetOs = '${{matrix.os}}'
+          $DotNetArch = '${{matrix.arch}}'
+          $DotNetRid = '${{matrix.os}}-${{matrix.arch}}'
+          $RustArch = @{'x64'='x86_64';'arm64'='aarch64';
+            'x86'='i686';'arm'='armv7'}[$DotNetArch]
+          $RustPlatform = @{'win'='pc-windows-msvc';
+            'osx'='apple-darwin';'ios'='apple-ios';
+            'linux'='unknown-linux-gnu';'android'='linux-android'}[$DotNetOs]
+          $LibPrefix = @{'win'='';'osx'='lib';'ios'='lib';
+            'linux'='lib';'android'='lib'}[$DotNetOs]
+          $LibSuffix = @{'win'='.dll';'osx'='.dylib';'ios'='.dylib';
+            'linux'='.so';'android'='.so'}[$DotNetOs]
+          $RustTarget = "$RustArch-$RustPlatform"
+
+          if (($DotNetOs -eq 'android') -and ($DotNetArch -eq 'arm')) {
+            $RustTarget = "armv7-linux-androideabi"
+          }
+
+          rustup target add $RustTarget
+
+          if ($DotNetOs -eq 'win') {
+            $Env:RUSTFLAGS="-C target-feature=+crt-static"
+          }
+
+          if ($RustTarget -eq 'aarch64-unknown-linux-gnu') {
+            sudo apt update
+            sudo apt install gcc-aarch64-linux-gnu
+            $Env:RUSTFLAGS="-C linker=aarch64-linux-gnu-gcc"
+          }
+
+          $ProjectVersion = '${{ needs.preflight.outputs.project-version }}'
+          $PackageVersion = '${{ needs.preflight.outputs.package-version }}'
+
+          $CargoToml = Get-Content .\ffi\Cargo.toml
+          $CargoToml = $CargoToml | ForEach-Object {
+            if ($_.StartsWith("version =")) { "version = `"$PackageVersion`"" } else { $_ }
+          }
+          Set-Content -Path .\ffi\Cargo.toml -Value $CargoToml
+
+          $CargoParams = @(
+              "build",
+              "-p", "ffi",
+              "--release",
+              "--target", "$RustTarget"
+          )
+
+          & cargo $CargoParams
+
+          $OutputLibraryName = "${LibPrefix}ironrdp$LibSuffix"
+          $RenamedLibraryName = "${LibPrefix}DevolutionsIronRdp$LibSuffix"
+          $OutputLibrary = Join-Path "target" $RustTarget 'release' $OutputLibraryName
+          $OutputPath = Join-Path "dependencies" "runtimes" $DotNetRid "native"
+          New-Item -ItemType Directory -Path $OutputPath | Out-Null
+          Copy-Item $OutputLibrary $(Join-Path $OutputPath $RenamedLibraryName)
+
+      - name: Upload native components
+        uses: actions/upload-artifact@v4
+        with:
+          name: ironrdp-${{matrix.os}}-${{matrix.arch}}
+          path: dependencies/runtimes/${{matrix.os}}-${{matrix.arch}}
+
+  build-universal:
+    name: Universal build
+    runs-on: ubuntu-20.04
+    needs: [preflight, build-native]
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ osx, ios ]
+
+    steps:
+      - name: Checkout ${{ github.repository }}
+        uses: actions/checkout@v4
+
+      - name: Configure runner
+        shell: pwsh
+        run: |
+          wget -q https://github.com/awakecoding/llvm-prebuilt/releases/download/v2021.2.4/cctools-x86_64-ubuntu-20.04.tar.xz
+          tar -xf cctools-x86_64-ubuntu-20.04.tar.xz -C /tmp
+          sudo mv /tmp/cctools-x86_64-ubuntu-20.04/bin/lipo /usr/local/bin
+          sudo mv /tmp/cctools-x86_64-ubuntu-20.04/bin/install_name_tool /usr/local/bin
+
+      - name: Download native components
+        uses: actions/download-artifact@v4
+        with:
+          path: dependencies/runtimes
+
+      - name: Lipo native components
+        shell: pwsh
+        run: |
+          Set-Location "dependencies/runtimes"
+          # No RID for universal binaries, see: https://github.com/dotnet/runtime/issues/53156
+          $OutputPath = Join-Path "${{ matrix.os }}-universal" "native"
+          New-Item -ItemType Directory -Path $OutputPath | Out-Null
+          $Libraries = Get-ChildItem -Recurse -Path "ironrdp-${{ matrix.os }}-*" -Filter "*.dylib" | Foreach-Object { $_.FullName } | Select -Unique
+          $LipoCmd = $(@('lipo', '-create', '-output', (Join-Path -Path $OutputPath -ChildPath "libDevolutionsIronRdp.dylib")) + $Libraries) -Join ' '
+          Write-Host $LipoCmd
+          Invoke-Expression $LipoCmd
+
+      - name: Framework
+        shell: pwsh
+        if: ${{ matrix.os == 'ios' }}
+        run: |
+          $Version = '${{ needs.preflight.outputs.project-version }}'
+          $ShortVersion = '${{ needs.preflight.outputs.package-version }}'
+          $BundleName = "libDevolutionsIronRdp"
+          $RuntimesDir = Join-Path "dependencies" "runtimes" "ios-universal" "native"
+          $FrameworkDir = Join-Path "$RuntimesDir" "$BundleName.framework"
+          New-Item -Path $FrameworkDir -ItemType "directory" -Force
+          $FrameworkExecutable = Join-Path $FrameworkDir $BundleName
+          Copy-Item -Path (Join-Path "$RuntimesDir" "$BundleName.dylib") -Destination $FrameworkExecutable -Force
+
+          $RPathCmd = $(@('install_name_tool', '-id', "@rpath/$BundleName.framework/$BundleName", "$FrameworkExecutable")) -Join ' '
+          Write-Host $RPathCmd
+          Invoke-Expression $RPathCmd
+
+          [xml] $InfoPlistXml = Get-Content (Join-Path "ffi" "dotnet" "Devolutions.IronRdp" "Info.plist")
+          Select-Xml -xml $InfoPlistXml -XPath "/plist/dict/key[. = 'CFBundleIdentifier']/following-sibling::string[1]" |
+          %{ 	
+          $_.Node.InnerXml = "com.devolutions.ironrdp"
+          }
+          Select-Xml -xml $InfoPlistXml -XPath "/plist/dict/key[. = 'CFBundleExecutable']/following-sibling::string[1]" |
+          %{ 	
+          $_.Node.InnerXml = $BundleName
+          }
+          Select-Xml -xml $InfoPlistXml -XPath "/plist/dict/key[. = 'CFBundleVersion']/following-sibling::string[1]" |
+          %{ 	
+          $_.Node.InnerXml = $Version
+          }
+          Select-Xml -xml $InfoPlistXml -XPath "/plist/dict/key[. = 'CFBundleShortVersionString']/following-sibling::string[1]" |
+          %{ 	
+          $_.Node.InnerXml = $ShortVersion
+          }
+
+          # Write the plist *without* a BOM
+          $Encoding = New-Object System.Text.UTF8Encoding($false)
+          $Writer = New-Object System.IO.StreamWriter((Join-Path $FrameworkDir "Info.plist"), $false, $Encoding)
+          $InfoPlistXml.Save($Writer)
+          $Writer.Close()
+
+          # .NET XML document inserts two square brackets at the end of the DOCTYPE tag
+          # It's perfectly valid XML, but we're dealing with plists here and dyld will not be able to read the file
+          ((Get-Content -Path (Join-Path $FrameworkDir "Info.plist") -Raw) -Replace 'PropertyList-1.0.dtd"\[\]', 'PropertyList-1.0.dtd"') | Set-Content -Path (Join-Path $FrameworkDir "Info.plist")
+
+      - name: Upload native components
+        uses: actions/upload-artifact@v4
+        with:
+          name: ironrdp-${{ matrix.os }}-universal
+          path: dependencies/runtimes/${{ matrix.os }}-universal
+
+  build-managed:
+    name: Managed build
+    runs-on: windows-2022
+    needs: build-universal
+
+    steps:
+      - name: Check out ${{ github.repository }}
+        uses: actions/checkout@v4
+
+      - name: Add msbuild to PATH
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Install ios workload
+        run: dotnet workload install ios
+
+      - name: Prepare dependencies
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path "dependencies/runtimes" | Out-Null
+
+      - name: Download native components
+        uses: actions/download-artifact@v4
+        with:
+          path: dependencies/runtimes
+
+      - name: Rename dependencies
+        shell: pwsh
+        run: |
+          Set-Location "dependencies/runtimes"
+          $(Get-Item ".\ironrdp-*") | ForEach-Object { Rename-Item $_ $_.Name.Replace("ironrdp-", "") }
+          Get-ChildItem * -Recurse
+
+      - name: Build Devolutionus.IronRdp (managed)
+        shell: pwsh
+        run: |
+          # netstandard2.0 / Xamarin.iOS10 targets packaged as Devolutions.IronRdp
+          msbuild .\ffi\dotnet\Devolutions.IronRdp.sln -t:restore,build -p:RestorePackagesConfig=true /p:Configuration=Release
+          # net8.0-ios target packaged as Devolutions.IronRdp.iOS
+          dotnet build .\ffi\dotnet\Devolutions.IronRdp\Devolutions.IronRdp.csproj -c Release /p:PackageId=Devolutions.IronRdp.iOS
+
+      - name: Upload managed components
+        uses: actions/upload-artifact@v4
+        with:
+          name: ironrdp-nupkg
+          path: ffi/dotnet/Devolutions.IronRdp/bin/Release/*.nupkg
+
+  publish:
+    name: Publish NuGet package
+    runs-on: ubuntu-20.04
+    environment: nuget-publish
+    if: needs.preflight.outputs.dry-run == 'false'
+    needs:
+      - preflight
+      - build-managed
+
+    steps:
+      - name: Download NuGet package artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ironrdp-nupkg
+          path: package
+
+      - name: Publish to nuget.org
+        shell: pwsh
+        run: |
+          $Files = Get-ChildItem -Recurse package/*.nupkg
+    
+          foreach ($File in $Files) {
+            $PushCmd = @(
+              'dotnet', 
+              'nuget', 
+              'push', 
+              "$File",
+              '--api-key',
+              '${{ secrets.NUGET_API_KEY }}',
+              '--source',
+              'https://api.nuget.org/v3/index.json',
+              '--skip-duplicate'
+            )
+
+            Write-Host "Publishing $($File.Name)..."
+            $PushCmd = $PushCmd -Join ' '
+            Invoke-Expression $PushCmd
+          }
