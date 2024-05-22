@@ -1,0 +1,98 @@
+<?xml version="1.0"?>
+<Project ToolsVersion="12.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup>
+    <IsPowerShell Condition="$(DefineConstants.Contains('__POWERSHELL__'))">true</IsPowerShell>
+    <IsAndroid Condition="$(TargetFramework.ToUpper().Contains('ANDROID'))">true</IsAndroid>
+    <IsIOS Condition="'$(Platform)' == 'iPhone' or '$(Platform)' == 'iPhoneSimulator'">true</IsIOS>
+  </PropertyGroup>
+  <ItemGroup>
+  
+    <!-- Windows or PowerShell -->
+    <Content Condition="$([MSBuild]::IsOSPlatform('Windows')) OR '$(IsPowerShell)' == 'true'" Include="$(MSBuildThisFileDirectory)\..\runtimes\win-x64\native\DevolutionsIronRdp.dll">
+      <Link>runtimes\win-x64\native\DevolutionsIronRdp.dll</Link>
+      <PublishState>Included</PublishState>
+      <Visible>False</Visible>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <IncludeInVsix>true</IncludeInVsix>
+      <Pack>false</Pack>
+    </Content>
+    <Content Condition="$([MSBuild]::IsOSPlatform('Windows')) OR '$(IsPowerShell)' == 'true'" Include="$(MSBuildThisFileDirectory)\..\runtimes\win-arm64\native\DevolutionsIronRdp.dll">
+      <Link>runtimes\win-arm64\native\DevolutionsIronRdp.dll</Link>
+      <PublishState>Included</PublishState>
+      <Visible>False</Visible>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <IncludeInVsix>true</IncludeInVsix>
+      <Pack>false</Pack>
+    </Content>
+
+    <!-- Linux or PowerShell -->
+    <Content Condition="$([MSBuild]::IsOSPlatform('Linux')) OR '$(IsPowerShell)' == 'true'" Include="$(MSBuildThisFileDirectory)\..\runtimes\linux-x64\native\libDevolutionsIronRdp.so">
+      <Link>runtimes\linux-x64\native\libDevolutionsIronRdp.so</Link>
+      <PublishState>Included</PublishState>
+      <Visible>False</Visible>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <IncludeInVsix>true</IncludeInVsix>
+      <Pack>false</Pack>
+    </Content>
+    <Content Condition="$([MSBuild]::IsOSPlatform('Linux')) OR '$(IsPowerShell)' == 'true'" Include="$(MSBuildThisFileDirectory)\..\runtimes\linux-arm64\native\libDevolutionsIronRdp.so">
+      <Link>runtimes\linux-arm64\native\libDevolutionsIronRdp.so</Link>
+      <PublishState>Included</PublishState>
+      <Visible>False</Visible>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <IncludeInVsix>true</IncludeInVsix>
+      <Pack>false</Pack>
+    </Content>
+
+    <!-- PowerShell -->
+    <Content Condition="'$(IsPowerShell)' == 'true'" Include="$(MSBuildThisFileDirectory)\..\runtimes\osx-x64\native\libDevolutionsIronRdp.dylib">
+      <Link>runtimes\osx-x64\native\libDevolutionsIronRdp.dylib</Link>
+      <PublishState>Included</PublishState>
+      <Visible>False</Visible>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <IncludeInVsix>true</IncludeInVsix>
+      <Pack>false</Pack>
+    </Content>
+    <Content Condition="'$(IsPowerShell)' == 'true'" Include="$(MSBuildThisFileDirectory)\..\runtimes\osx-arm64\native\libDevolutionsIronRdp.dylib">
+      <Link>runtimes\osx-arm64\native\libDevolutionsIronRdp.dylib</Link>
+      <PublishState>Included</PublishState>
+      <Visible>False</Visible>
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <IncludeInVsix>true</IncludeInVsix>
+      <Pack>false</Pack>
+    </Content>
+  </ItemGroup>
+
+  <!-- Xamarin.Mac -->
+  <ItemGroup Condition="$([MSBuild]::IsOSPlatform('OSX')) AND '$(IsPowerShell)' != 'true' AND '$(IsIOS)' != 'true' AND '$(IsAndroid)' != 'true' AND !$(TargetFramework.Contains('net'))">
+    <NativeReference Include="$(MSBuildThisFileDirectory)\..\runtimes\osx-universal\native\libDevolutionsIronRdp.dylib">
+      <Kind>Dynamic</Kind>
+      <SmartLink>False</SmartLink>
+    </NativeReference>
+  </ItemGroup>
+
+  <!-- Xamarin.Android or net6.0-android -->
+  <ItemGroup Condition="$(AndroidSupportedAbis.Contains('armeabi-v7a')) or $(RuntimeIdentifiers.Contains('android-arm'))">
+      <AndroidNativeLibrary Include="$(MSBuildThisFileDirectory)\..\runtimes\android-arm\native\libDevolutionsIronRdp.so">
+          <Link>%(Filename)%(Extension)</Link>
+          <Abi>armeabi-v7a</Abi>
+      </AndroidNativeLibrary>
+  </ItemGroup>
+    <ItemGroup Condition="$(AndroidSupportedAbis.Contains('arm64-v8a')) or $(RuntimeIdentifiers.Contains('android-arm64'))">
+      <AndroidNativeLibrary Include="$(MSBuildThisFileDirectory)\..\runtimes\android-arm64\native\libDevolutionsIronRdp.so">
+          <Link>%(Filename)%(Extension)</Link>
+          <Abi>arm64-v8a</Abi>
+      </AndroidNativeLibrary>
+  </ItemGroup>
+  <ItemGroup Condition="$(AndroidSupportedAbis.Contains('x86')) or $(RuntimeIdentifiers.Contains('android-x86'))">
+      <AndroidNativeLibrary Include="$(MSBuildThisFileDirectory)\..\runtimes\android-x86\native\libDevolutionsIronRdp.so">
+          <Link>%(Filename)%(Extension)</Link>
+          <Abi>x86</Abi>
+      </AndroidNativeLibrary>
+  </ItemGroup>
+  <ItemGroup Condition="$(AndroidSupportedAbis.Contains('x86_64')) or $(RuntimeIdentifiers.Contains('android-x64'))">
+      <AndroidNativeLibrary Include="$(MSBuildThisFileDirectory)\..\runtimes\android-x64\native\libDevolutionsIronRdp.so">
+          <Link>%(Filename)%(Extension)</Link>
+          <Abi>x86_64</Abi>
+      </AndroidNativeLibrary>
+  </ItemGroup> 
+</Project>

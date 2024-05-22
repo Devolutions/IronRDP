@@ -1,0 +1,22 @@
+<Project>
+  <PropertyGroup Condition="$(PackageId.EndsWith('iOS'))">
+    <TargetFrameworks>net8.0-ios</TargetFrameworks>
+    <SupportedOSPlatformVersion>12.1</SupportedOSPlatformVersion>
+  </PropertyGroup>
+
+  <ItemGroup Condition="Exists('$(NativeLibPath_ios_framework)')">
+    <None Include="$(RuntimesPath)/ios-universal/native/*.framework/**">
+      <PackagePath>runtimes/ios/native/</PackagePath>
+      <Pack>true</Pack>
+      <CopyToOutputDirectory>Never</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+
+  <ItemGroup Condition="!$(PackageId.EndsWith('iOS'))">
+    <Content Include="Devolutions.IronRdp.iOS.props" PackagePath="build/Devolutions.IronRdp.props" Pack="true" />
+  </ItemGroup>
+
+  <ItemGroup Condition="$(PackageId.EndsWith('iOS'))">
+    <Content Include="Devolutions.IronRdp.iOS.props" PackagePath="build/Devolutions.IronRdp.iOS.props" Pack="true" />
+  </ItemGroup>
+</Project>
