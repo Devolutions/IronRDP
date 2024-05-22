@@ -1,0 +1,24 @@
+[package]
+name = "ironrdp-rdpsnd-native"
+version = "0.1.0"
+description = "Native RDPSND static channel backend implementations for IronRDP"
+edition.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[lib]
+doctest = false
+test = false
+
+[dependencies]
+anyhow = "1.0.82"
+cpal = "0.15.3"
+ironrdp-rdpsnd.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
