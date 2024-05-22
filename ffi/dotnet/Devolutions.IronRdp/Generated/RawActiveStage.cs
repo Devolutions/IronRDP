@@ -34,6 +34,9 @@ public partial struct ActiveStage
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ActiveStage_submit_clipboard_format_data", ExactSpelling = true)]
     public static unsafe extern SessionFfiResultBoxVecU8BoxIronRdpError SubmitClipboardFormatData(ActiveStage* self, FormatDataResponse* formatDataResponse);
 
+    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ActiveStage_graceful_shutdown", ExactSpelling = true)]
+    public static unsafe extern SessionFfiResultBoxActiveStageOutputIteratorBoxIronRdpError GracefulShutdown(ActiveStage* self);
+
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ActiveStage_destroy", ExactSpelling = true)]
     public static unsafe extern void Destroy(ActiveStage* self);
 }

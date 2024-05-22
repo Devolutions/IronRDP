@@ -6,9 +6,16 @@
     x:Class="Devolutions.IronRdp.AvaloniaExample.MainWindow"
     Title="Devolutions.IronRdp.AvaloniaExample">
 
-    <Canvas Name="MainCanvas" Width="1280" Height="800" Background="Black" 
-        PointerPressed="Canvas_OnPointerPressed" PointerMoved="Canvas_PointerMoved" PointerReleased="Canvas_PointerReleased"
-        HorizontalAlignment="Center"
-        VerticalAlignment="Center"
-    />
+    <DockPanel>
+        <!-- Disconnect button at the top -->
+        <Button Content="Disconnect" DockPanel.Dock="Top" HorizontalAlignment="Right"
+            Margin="10" Click="OnDisconnectClick" />
+
+        <!-- Canvas adjusted to fill the remaining space -->
+        <Canvas Name="MainCanvas" Width="1280" Height="800" Background="Black"
+            PointerPressed="Canvas_OnPointerPressed" PointerMoved="Canvas_PointerMoved"
+            PointerReleased="Canvas_PointerReleased"
+            HorizontalAlignment="Center"
+            VerticalAlignment="Center" />
+    </DockPanel>
 </Window>

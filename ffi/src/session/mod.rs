@@ -121,6 +121,11 @@ pub mod ffi {
 
             Ok(Box::new(VecU8(frame)))
         }
+
+        pub fn graceful_shutdown(&mut self) -> Result<Box<ActiveStageOutputIterator>, Box<IronRdpError>> {
+            let outputs = self.0.graceful_shutdown()?;
+            Ok(Box::new(ActiveStageOutputIterator(outputs)))
+        }
     }
 
     pub enum ActiveStageOutputType {

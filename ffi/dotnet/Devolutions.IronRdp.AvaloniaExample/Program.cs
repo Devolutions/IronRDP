@@ -18,6 +18,7 @@ class Program
             .StartWithClassicDesktopLifetime(args);
         }catch(Exception e){
             Trace.TraceError(e.Message);
+            Trace.TraceError(e.StackTrace);
         }
     }
 
