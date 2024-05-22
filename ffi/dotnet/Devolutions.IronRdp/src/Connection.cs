@@ -47,7 +47,10 @@ public static class Connection
             promise.SetResult(certificate!.GetPublicKey());
             return true;
         });
-        await sslStream.AuthenticateAsClientAsync(servername);
+        await sslStream.AuthenticateAsClientAsync(new SslClientAuthenticationOptions()
+        {
+            AllowTlsResume = false
+        });
         serverPublicKey = await promise.Task;
         framedSsl = new Framed<SslStream>(sslStream);
         connector.MarkSecurityUpgradeAsDone();
