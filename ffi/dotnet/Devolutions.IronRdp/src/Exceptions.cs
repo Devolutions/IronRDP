@@ -1,11 +1,13 @@
+namespace Devolutions.IronRdp;
+
 [Serializable]
 public class IronRdpLibException : Exception
 {
-    public IronRdpLibExceptionType type { get; private set; }
+    public IronRdpLibExceptionType Type { get; private set; }
 
     public IronRdpLibException(IronRdpLibExceptionType type, string message) : base(message)
     {
-        this.type = type;
+        Type = type;
     }
 
 }

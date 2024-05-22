@@ -1,48 +1,47 @@
-
 using System.Net;
 using System.Net.Security;
 using System.Net.Sockets;
 
 namespace Devolutions.IronRdp;
+
 public static class Connection
 {
-
-    public static async Task<(ConnectionResult, Framed<SslStream>)> Connect(Config config, string servername, CliprdrBackendFactory? factory, int port = 3389)
+    public static async Task<(ConnectionResult, Framed<SslStream>)> Connect(Config config, string serverName,
+        CliprdrBackendFactory? factory, int port = 3389)
     {
-
-        var stream = await CreateTcpConnection(servername, port);
+        var stream = await CreateTcpConnection(serverName, port);
         var framed = new Framed<NetworkStream>(stream);
 
-        ClientConnector connector = ClientConnector.New(config);
+        var connector = ClientConnector.New(config);
 
-        var ip = await Dns.GetHostAddressesAsync(servername);
+        var ip = await Dns.GetHostAddressesAsync(serverName);
         if (ip.Length == 0)
         {
-            throw new IronRdpLibException(IronRdpLibExceptionType.CannotResolveDns, "Cannot resolve DNS to " + servername);
+            throw new IronRdpLibException(IronRdpLibExceptionType.CannotResolveDns,
+                "Cannot resolve DNS to " + serverName);
         }
 
-        var socketAddrString = ip[0].ToString() + ":" + port;
-        connector.WithServerAddr(socketAddrString);
-        
+        var serverAddr = ip[0] + ":" + port;
+        connector.WithServerAddr(serverAddr);
+
         if (factory != null)
         {
             var cliprdr = factory.BuildCliprdr();
             connector.AttachStaticCliprdr(cliprdr);
         }
 
-        await connectBegin(framed, connector);
-        var (serverPublicKey, framedSsl) = await securityUpgrade(servername, framed, connector);
-        var result = await ConnectFinalize(servername, connector, serverPublicKey, framedSsl);
+        await ConnectBegin(framed, connector);
+        var (serverPublicKey, framedSsl) = await SecurityUpgrade(framed, connector);
+        var result = await ConnectFinalize(serverName, connector, serverPublicKey, framedSsl);
         return (result, framedSsl);
     }
 
-    private static async Task<(byte[], Framed<SslStream>)> securityUpgrade(string servername, Framed<NetworkStream> framed, ClientConnector connector)
+    private static async Task<(byte[], Framed<SslStream>)> SecurityUpgrade(Framed<NetworkStream> framed,
+        ClientConnector connector)
     {
-        byte[] serverPublicKey;
-        Framed<SslStream> framedSsl;
         var (streamRequireUpgrade, _) = framed.GetInner();
         var promise = new TaskCompletionSource<byte[]>();
-        var sslStream = new SslStream(streamRequireUpgrade, false, (sender, certificate, chain, sslPolicyErrors) =>
+        var sslStream = new SslStream(streamRequireUpgrade, false, (_, certificate, _, _) =>
         {
             promise.SetResult(certificate!.GetPublicKey());
             return true;
@@ -51,14 +50,14 @@ public static class Connection
         {
             AllowTlsResume = false
         });
-        serverPublicKey = await promise.Task;
-        framedSsl = new Framed<SslStream>(sslStream);
+        var serverPublicKey = await promise.Task;
+        Framed<SslStream> framedSsl = new(sslStream);
         connector.MarkSecurityUpgradeAsDone();
 
         return (serverPublicKey, framedSsl);
     }
 
-    private static async Task connectBegin(Framed<NetworkStream> framed, ClientConnector connector)
+    private static async Task ConnectBegin(Framed<NetworkStream> framed, ClientConnector connector)
     {
         var writeBuf = WriteBuf.New();
         while (!connector.ShouldPerformSecurityUpgrade())
@@ -68,13 +67,15 @@ public static class Connection
     }
 
 
-    private static async Task<ConnectionResult> ConnectFinalize(string servername, ClientConnector connector, byte[] serverpubkey, Framed<SslStream> framedSsl)
+    private static async Task<ConnectionResult> ConnectFinalize(string serverName, ClientConnector connector,
+        byte[] serverPubKey, Framed<SslStream> framedSsl)
     {
         var writeBuf2 = WriteBuf.New();
         if (connector.ShouldPerformCredssp())
         {
-            await PerformCredsspSteps(connector, servername, writeBuf2, framedSsl, serverpubkey);
+            await PerformCredsspSteps(connector, serverName, writeBuf2, framedSsl, serverPubKey);
         }
+
         while (!connector.GetDynState().IsTerminal())
         {
             await SingleConnectStep(connector, writeBuf2, framedSsl);
@@ -92,12 +93,13 @@ public static class Connection
         }
     }
 
-    private static async Task PerformCredsspSteps(ClientConnector connector, string serverName, WriteBuf writeBuf, Framed<SslStream> framedSsl, byte[] serverpubkey)
+    private static async Task PerformCredsspSteps(ClientConnector connector, string serverName, WriteBuf writeBuf,
+        Framed<SslStream> framedSsl, byte[] serverpubkey)
     {
         var credsspSequenceInitResult = CredsspSequence.Init(connector, serverName, serverpubkey, null);
         var credsspSequence = credsspSequenceInitResult.GetCredsspSequence();
         var tsRequest = credsspSequenceInitResult.GetTsRequest();
-        TcpClient tcpClient = new TcpClient();
+        var tcpClient = new TcpClient();
         while (true)
         {
             var generator = credsspSequence.ProcessTsRequest(tsRequest);
@@ -122,6 +124,7 @@ public static class Connection
             var pdu = await framedSsl.ReadByHint(pduHint);
             var decoded = credsspSequence.DecodeServerMessage(pdu);
 
+            // Don't remove, DecodeServerMessage is generated, and it can return null
             if (null == decoded)
             {
                 break;
@@ -149,8 +152,8 @@ public static class Connection
                     var split = url.Split(":");
                     await tcpClient.ConnectAsync(split[0], int.Parse(split[1]));
                     stream = tcpClient.GetStream();
-
                 }
+
                 if (protocol == NetworkRequestProtocol.Tcp)
                 {
                     stream.Write(Utils.VecU8ToByte(data));
@@ -174,12 +177,14 @@ public static class Connection
     }
 
     static async Task SingleConnectStep<T>(ClientConnector connector, WriteBuf buf, Framed<T> framed)
-    where T : Stream
+        where T : Stream
     {
         buf.Clear();
 
         var pduHint = connector.NextPduHint();
         Written written;
+
+        // Don't remove, NextPduHint is generated, and it can return null
         if (pduHint != null)
         {
             byte[] pdu = await framed.ReadByHint(pduHint);
@@ -227,7 +232,6 @@ public static class Connection
 
         return stream;
     }
-
 }
 
 public static class Utils
@@ -235,7 +239,7 @@ public static class Utils
     public static byte[] VecU8ToByte(VecU8 vecU8)
     {
         var len = vecU8.GetSize();
-        byte[] buffer = new byte[len];
+        var buffer = new byte[len];
         vecU8.Fill(buffer);
         return buffer;
     }
