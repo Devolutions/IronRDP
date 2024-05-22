@@ -116,6 +116,17 @@ impl SvcProcessor for DrdynvcServer {
         Ok(alloc::vec![msg])
     }
 
+    fn reset(&mut self) {
+        for (id, c) in self.dynamic_channels.iter_mut() {
+            if let Ok(id) = id.try_into() {
+                c.processor.close(id);
+            } else {
+                error!("Invalid channel id: {id}");
+            }
+            c.state = ChannelState::Closed;
+        }
+    }
+
     fn process(&mut self, payload: &[u8]) -> PduResult<Vec<SvcMessage>> {
         let pdu = decode_dvc_message(payload)?;
         let mut resp = Vec::new();

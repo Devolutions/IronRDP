@@ -130,6 +130,10 @@ impl StaticVirtualChannel {
         self.channel_processor.start()
     }
 
+    pub fn reset(&mut self) {
+        self.channel_processor.reset();
+    }
+
     /// Processes a payload received on the virtual channel. Returns a vector of PDUs to be sent back
     /// to the server. If no PDUs are to be sent, an empty vector is returned.
     pub fn process(&mut self, payload: &[u8]) -> PduResult<Vec<SvcMessage>> {
@@ -240,6 +244,9 @@ pub trait SvcProcessor: AsAny + fmt::Debug + Send {
     fn start(&mut self) -> PduResult<Vec<SvcMessage>> {
         Ok(Vec::new())
     }
+
+    /// Reset a channel, after the connection is disconnected or deactivated.
+    fn reset(&mut self);
 
     /// Processes a payload received on the virtual channel. The `payload` is expected
     /// to be a fully de-chunkified PDU.

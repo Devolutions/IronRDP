@@ -136,6 +136,12 @@ impl DynamicVirtualChannel {
         }
     }
 
+    fn reset(&mut self) {
+        if let Some(channel_id) = self.channel_id {
+            self.channel_processor.close(channel_id)
+        }
+    }
+
     fn process(&mut self, pdu: DrdynvcDataPdu) -> PduResult<Vec<DvcMessage>> {
         let channel_id = pdu.channel_id();
         let complete_data = self.complete_data.process_data(pdu)?;

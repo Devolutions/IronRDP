@@ -284,6 +284,13 @@ impl<R: Role> SvcProcessor for Cliprdr<R> {
         }
     }
 
+    fn reset(&mut self) {
+        // This CLIPRDR implementation supports long format names by default
+        let flags = ClipboardGeneralCapabilityFlags::USE_LONG_FORMAT_NAMES | self.backend.client_capabilities();
+        self.capabilities = Capabilities::new(ClipboardProtocolVersion::V2, flags);
+        self.state = CliprdrState::Initialization;
+    }
+
     fn process(&mut self, payload: &[u8]) -> PduResult<Vec<SvcMessage>> {
         let pdu = decode::<ClipboardPdu<'_>>(payload)?;
 

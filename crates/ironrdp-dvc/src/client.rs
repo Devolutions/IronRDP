@@ -160,6 +160,12 @@ impl SvcProcessor for DrdynvcClient {
 
         Ok(responses)
     }
+
+    fn reset(&mut self) {
+        for c in self.dynamic_channels.values_mut() {
+            c.reset();
+        }
+    }
 }
 
 impl SvcClientProcessor for DrdynvcClient {}

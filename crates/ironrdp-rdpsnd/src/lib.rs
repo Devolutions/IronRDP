@@ -40,6 +40,8 @@ impl SvcProcessor for Rdpsnd {
             "ironrdp-rdpsnd::Rdpsnd is not implemented"
         ))
     }
+
+    fn reset(&mut self) {}
 }
 
 impl SvcClientProcessor for Rdpsnd {}
