@@ -9,6 +9,7 @@ use ironrdp::pdu::write_buf::WriteBuf;
 use ironrdp::session::image::DecodedImage;
 use ironrdp::session::{fast_path, ActiveStage, ActiveStageOutput, GracefulDisconnectReason, SessionResult};
 use ironrdp::{cliprdr, connector, rdpdr, rdpsnd, session};
+use ironrdp_rdpsnd_native::cpal;
 use ironrdp_tokio::single_sequence_step_read;
 use rdpdr::NoopRdpdrBackend;
 use smallvec::SmallVec;
@@ -118,7 +119,7 @@ async fn connect(
         .with_static_channel(
             ironrdp::dvc::DrdynvcClient::new().with_dynamic_channel(DisplayControlClient::new(|_| Ok(Vec::new()))),
         )
-        .with_static_channel(rdpsnd::client::Rdpsnd::new(Box::new(rdpsnd::client::NoopRdpsndBackend)))
+        .with_static_channel(rdpsnd::client::Rdpsnd::new(Box::new(cpal::RdpsndBackend::new())))
         .with_static_channel(rdpdr::Rdpdr::new(Box::new(NoopRdpdrBackend {}), "IronRDP".to_owned()).with_smartcard(0));
 
     if let Some(builder) = cliprdr_factory {
