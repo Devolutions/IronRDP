@@ -6,18 +6,10 @@ namespace Devolutions.IronRdp;
 
 public static class Connection
 {
-<<<<<<< HEAD
     public static async Task<(ConnectionResult, Framed<SslStream>)> Connect(Config config, string serverName,
         CliprdrBackendFactory? factory, int port = 3389)
     {
         var stream = await CreateTcpConnection(serverName, port);
-=======
-
-    public static async Task<(ConnectionResult, Framed<SslStream>)> Connect(Config config, string serverName, CliprdrBackendFactory? factory)
-    {
-
-        var stream = await CreateTcpConnection(serverName, 3389);
->>>>>>> b492fc2 (revert unrelated changes)
         var framed = new Framed<NetworkStream>(stream);
 
         var connector = ClientConnector.New(config);
@@ -29,15 +21,8 @@ public static class Connection
                 "Cannot resolve DNS to " + serverName);
         }
 
-<<<<<<< HEAD
         var serverAddr = ip[0] + ":" + port;
         connector.WithServerAddr(serverAddr);
-
-=======
-        var socketAdderString = ip[0] + ":" + 3390;
-        connector.WithServerAddr(socketAdderString);
-        
->>>>>>> b492fc2 (revert unrelated changes)
         if (factory != null)
         {
             var cliprdr = factory.BuildCliprdr();
