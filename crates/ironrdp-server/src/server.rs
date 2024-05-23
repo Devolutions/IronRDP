@@ -456,6 +456,10 @@ impl RdpServer {
 
         debug!("End of client loop");
 
+        for (_type_id, channel, _channel_id) in self.static_channels.iter_mut() {
+            channel.reset();
+        }
+
         Ok(())
     }
 
