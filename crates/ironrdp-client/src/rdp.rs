@@ -303,6 +303,7 @@ async fn active_session(
                     // Execute the Deactivation-Reactivation Sequence:
                     // https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/dfc234ce-481a-4674-9a5d-2a7bafb14432
                     debug!("Received Server Deactivate All PDU, executing Deactivation-Reactivation Sequence");
+                    active_stage.deactivate();
                     let mut buf = WriteBuf::new();
                     'activation_seq: loop {
                         let written = single_sequence_step_read(&mut framed, &mut *connection_activation, &mut buf)
@@ -345,6 +346,8 @@ async fn active_session(
             }
         }
     };
+
+    active_stage.deactivate();
 
     Ok(RdpControlFlow::TerminatedGracefully(disconnect_reason))
 }

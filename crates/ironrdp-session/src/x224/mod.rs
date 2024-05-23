@@ -166,6 +166,12 @@ impl Processor {
                 .map_err(crate::legacy::map_error)?;
         Ok(written)
     }
+
+    pub(crate) fn deactivate(&mut self) {
+        for (_, c, _) in self.static_channels.iter_mut() {
+            c.reset();
+        }
+    }
 }
 
 /// Processes a vector of [`SvcMessage`] in preparation for sending them to the server on the `channel_id` channel.
