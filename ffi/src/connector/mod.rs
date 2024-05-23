@@ -46,11 +46,13 @@ pub mod ffi {
         // FIXME: We need to create opaque for ironrdp::svc::StaticChannelSet
         /// Must use
         pub fn with_static_channel_rdp_snd(&mut self) -> Result<(), Box<IronRdpError>> {
+            use ironrdp::rdpsnd::client::{NoopRdpsndBackend, Rdpsnd};
+
             let Some(connector) = self.0.take() else {
                 return Err(IronRdpErrorKind::Consumed.into());
             };
 
-            self.0 = Some(connector.with_static_channel(ironrdp::rdpsnd::client::Rdpsnd::new()));
+            self.0 = Some(connector.with_static_channel(Rdpsnd::new(Box::new(NoopRdpsndBackend {}))));
 
             Ok(())
         }
