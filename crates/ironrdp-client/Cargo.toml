@@ -51,7 +51,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tokio = { version = "1", features = ["full"]}
 
 # Utils
-whoami = "1.4"
+whoami = "1.5"
 anyhow = "1"
 smallvec = "1.13"
 tap = "1"
