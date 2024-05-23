@@ -456,6 +456,8 @@ impl RdpServer {
 
         debug!("End of client loop");
 
+        self.static_channels = StaticChannelSet::new();
+
         Ok(())
     }
 
