@@ -1909,6 +1909,7 @@ dependencies = [
  "inquire",
  "ironrdp",
  "ironrdp-cliprdr-native",
+ "ironrdp-rdpsnd-native",
  "ironrdp-tls",
  "ironrdp-tokio",
  "proc-exit",
