@@ -217,6 +217,11 @@ impl DynamicChannelSet {
     fn values(&self) -> impl Iterator<Item = &DynamicVirtualChannel> {
         self.channels.values()
     }
+
+    #[inline]
+    fn values_mut(&mut self) -> impl Iterator<Item = &mut DynamicVirtualChannel> {
+        self.channels.values_mut()
+    }
 }
 
 pub type DynamicChannelName = String;
