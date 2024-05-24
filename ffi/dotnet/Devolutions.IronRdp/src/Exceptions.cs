@@ -3,11 +3,11 @@ namespace Devolutions.IronRdp;
 [Serializable]
 public class IronRdpLibException : Exception
 {
-    public IronRdpLibExceptionType Type { get; private set; }
+    public IronRdpLibExceptionType ErrorType { get; private set; }
 
-    public IronRdpLibException(IronRdpLibExceptionType type, string message) : base(message)
+    public IronRdpLibException(IronRdpLibExceptionType errorType, string message) : base(message)
     {
-        Type = type;
+        ErrorType = errorType;
     }
 
 }
