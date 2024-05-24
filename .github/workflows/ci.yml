@@ -69,7 +69,13 @@ jobs:
             runner: ubuntu-22.04 # 22.04 because we need a recent wabt version
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install devel packages
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get -y install libasound2-dev
 
       - name: Rust cache
         uses: Swatinem/rust-cache@v2.7.3
