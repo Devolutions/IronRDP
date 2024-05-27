@@ -2067,7 +2067,7 @@ name = "ironrdp-web"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "base64 0.21.7",
+ "base64 0.22.0",
  "chrono",
  "console_error_panic_hook",
  "futures-channel",
