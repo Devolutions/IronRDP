@@ -193,11 +193,11 @@ export class WasmBridgeService {
                             });
                             return of(err);
                         }),
-                        map((termination_info: SessionTerminationInfo) => {
+                        map((termination_info: IronRdpError) => {
                             this.setVisibility(false);
                             this.raiseSessionEvent({
                                 type: SessionEventType.TERMINATED,
-                                data: 'Session was terminated: ' + termination_info.reason() + '.',
+                                data: 'Session was terminated: ' + termination_info.backtrace() + '.',
                             });
                         }),
                     )
