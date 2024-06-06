@@ -191,13 +191,13 @@ export class WasmBridgeService {
                                 type: SessionEventType.TERMINATED,
                                 data: 'Session was terminated.',
                             });
-                            return of(err);
+                            throw err;
                         }),
-                        map((termination_info: IronRdpError) => {
+                        map((termination_info: SessionTerminationInfo) => {
                             this.setVisibility(false);
                             this.raiseSessionEvent({
                                 type: SessionEventType.TERMINATED,
-                                data: 'Session was terminated: ' + termination_info.backtrace() + '.',
+                                data: 'Session was terminated: ' + termination_info.reason() + '.',
                             });
                         }),
                     )
