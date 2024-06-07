@@ -3,8 +3,6 @@ pub mod image;
 #[diplomat::bridge]
 pub mod ffi {
 
-    
-
     use crate::{
         clipboard::message::ffi::{ClipboardFormatId, ClipboardFormatIterator, FormatDataResponse},
         connector::{activation::ffi::ConnectionActivationSequence, result::ffi::ConnectionResult},

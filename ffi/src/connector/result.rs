@@ -3,7 +3,7 @@ pub mod ffi {
     use crate::{
         connector::config::ffi::DesktopSize,
         error::{ffi::IronRdpError, ValueConsumedError},
-        utils::ffi::{OptionalUsize},
+        utils::ffi::OptionalUsize,
     };
 
     #[diplomat::opaque]
