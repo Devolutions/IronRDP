@@ -84,7 +84,8 @@ public partial class MainWindow : Window
 
         if (username == null || password == null || domain == null || server == null)
         {
-            var errorMessage = "Please set the IRONRDP_USERNAME, IRONRDP_PASSWORD, IRONRDP_DOMAIN, and RONRDP_SERVER environment variables";
+            var errorMessage =
+                "Please set the IRONRDP_USERNAME, IRONRDP_PASSWORD, IRONRDP_DOMAIN, and RONRDP_SERVER environment variables";
             Trace.TraceError(errorMessage);
             Close();
             throw new InvalidProgramException(errorMessage);
@@ -114,7 +115,6 @@ public partial class MainWindow : Window
             ReadPduAndProcessActiveStage();
             HandleClipboardEvents();
         });
-
     }
 
     private void BeforeConnectSetup()
@@ -140,7 +140,6 @@ public partial class MainWindow : Window
         {
             try
             {
-
                 var data = _decodedImage!.GetData();
                 var bufferSize = (int)data.GetSize();
 
@@ -155,7 +154,9 @@ public partial class MainWindow : Window
                 var currentBitmapSize = writableBitmap.Size.Width * writableBitmap.Size.Height * 4;
                 if (Math.Abs(bufferSize - currentBitmapSize) > 1)
                 {
-                    var newBitmap = new WriteableBitmap(new PixelSize(_decodedImage.GetWidth(), _decodedImage.GetHeight()), new Vector(96, 96), Avalonia.Platform.PixelFormat.Rgba8888, AlphaFormat.Opaque);
+                    var newBitmap =
+                        new WriteableBitmap(new PixelSize(_decodedImage.GetWidth(), _decodedImage.GetHeight()),
+                            new Vector(96, 96), Avalonia.Platform.PixelFormat.Rgba8888, AlphaFormat.Opaque);
                     _imageControl.Source = newBitmap;
                     writableBitmap = newBitmap;
                 }
@@ -164,7 +165,8 @@ public partial class MainWindow : Window
                 {
                     unsafe
                     {
-                        var bitmapSpan = new Span<byte>((void*)bitmap.Address, bitmap.Size.Width * bitmap.Size.Height * (bitmap.Format.BitsPerPixel / 8));
+                        var bitmapSpan = new Span<byte>((void*)bitmap.Address,
+                            bitmap.Size.Width * bitmap.Size.Height * (bitmap.Format.BitsPerPixel / 8));
                         bitmapSpan.Clear();
                         var bufferSpan = new Span<byte>(buffer);
                         if (bufferSize > bitmapSpan.Length)
@@ -177,6 +179,7 @@ public partial class MainWindow : Window
                         }
                     }
                 }
+
                 _imageControl!.InvalidateVisual();
             }
             catch
