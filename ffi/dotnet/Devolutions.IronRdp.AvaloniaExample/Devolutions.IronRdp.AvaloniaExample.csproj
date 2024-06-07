@@ -7,7 +7,6 @@
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <AvaloniaUseCompiledBindingsByDefault>true</AvaloniaUseCompiledBindingsByDefault>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
-    
   </PropertyGroup>
 
 
@@ -26,8 +25,6 @@
   <ItemGroup Condition="'$([System.OperatingSystem]::IsWindows())'">
     <PackageReference Include="Avalonia.Win32" Version="11.0.10" />
   </ItemGroup>
-  
-  
 
 
 </Project>

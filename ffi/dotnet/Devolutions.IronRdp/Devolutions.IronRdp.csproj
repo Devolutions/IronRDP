@@ -9,7 +9,7 @@
     <SuppressDependenciesWhenPacking>false</SuppressDependenciesWhenPacking>
 
     <PackageId>Devolutions.IronRdp</PackageId>
-    <Version>1.0.6</Version>
+    <Version>1.0.1</Version>
     <Description>Dotnet bindings for the IronRDP project</Description>
   </PropertyGroup>
 
