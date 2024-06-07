@@ -91,7 +91,7 @@ pub mod ffi {
                 } => Ok(Box::new(ConnectionActivationStateConnectionFinalization {
                     io_channel_id: *io_channel_id,
                     user_channel_id: *user_channel_id,
-                    desktop_size: desktop_size.clone(),
+                    desktop_size: *desktop_size,
                     connection_finalization: connection_finalization.clone(),
                 })),
                 _ => Err(IncorrectEnumTypeError::on_variant("ConnectionFinalization")
@@ -111,7 +111,7 @@ pub mod ffi {
                 } => Ok(Box::new(ConnectionActivationStateFinalized {
                     io_channel_id: *io_channel_id,
                     user_channel_id: *user_channel_id,
-                    desktop_size: desktop_size.clone(),
+                    desktop_size: *desktop_size,
                     no_server_pointer: *no_server_pointer,
                     pointer_software_rendering: *pointer_software_rendering,
                 })),
@@ -156,7 +156,7 @@ pub mod ffi {
         }
 
         pub fn get_desktop_size(&self) -> Box<DesktopSize> {
-            Box::new(DesktopSize(self.desktop_size.clone()))
+            Box::new(DesktopSize(self.desktop_size))
         }
     }
 
@@ -179,7 +179,7 @@ pub mod ffi {
         }
 
         pub fn get_desktop_size(&self) -> Box<DesktopSize> {
-            Box::new(DesktopSize(self.desktop_size.clone()))
+            Box::new(DesktopSize(self.desktop_size))
         }
 
         pub fn get_no_server_pointer(&self) -> bool {

@@ -96,5 +96,4 @@ pub mod ffi {
             self.0 .1
         }
     }
-
 }

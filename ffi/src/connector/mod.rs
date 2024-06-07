@@ -1,7 +1,7 @@
+pub mod activation;
 pub mod config;
 pub mod result;
 pub mod state;
-pub mod activation;
 
 #[diplomat::bridge]
 pub mod ffi {
@@ -209,5 +209,4 @@ pub mod ffi {
 
     #[diplomat::opaque]
     pub struct LicenseExchangeSequence(pub ironrdp::connector::LicenseExchangeSequence);
-
 }

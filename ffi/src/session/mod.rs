@@ -3,7 +3,7 @@ pub mod image;
 #[diplomat::bridge]
 pub mod ffi {
 
-    use ironrdp::pdu::input::fast_path;
+    
 
     use crate::{
         clipboard::message::ffi::{ClipboardFormatId, ClipboardFormatIterator, FormatDataResponse},
