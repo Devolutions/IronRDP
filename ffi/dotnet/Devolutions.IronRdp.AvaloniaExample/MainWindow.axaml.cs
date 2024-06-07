@@ -484,38 +484,6 @@ public partial class MainWindow : Window
             }
         });
     }
-
-    private void OnCtrlAltDelClick(object? sender, RoutedEventArgs e)
-    {
-        var ctrlScanCode = KeyCodeMapper.GetScancode(PhysicalKey.ControlLeft);
-        var altScanCode = KeyCodeMapper.GetScancode(PhysicalKey.AltLeft);
-        var delScanCode = KeyCodeMapper.GetScancode(PhysicalKey.Delete);
-
-        if (ctrlScanCode == null || altScanCode == null || delScanCode == null)
-        {
-            Trace.TraceError("Error getting scancodes for Ctrl, Alt, and Del keys");
-            throw new ApplicationException("should not happen, check KeyCodeMapper.cs");
-        }
-
-        var ctrlOperation = Scancode.FromU16(ctrlScanCode.Value).AsOperationKeyPressed();
-        var altOperation = Scancode.FromU16(altScanCode.Value).AsOperationKeyPressed();
-        var delOperation = Scancode.FromU16(delScanCode.Value).AsOperationKeyPressed();
-
-        var ctrlFastpath = _inputDatabase!.Apply(ctrlOperation);
-        var altFastpath = _inputDatabase!.Apply(altOperation);
-        var delFastpath = _inputDatabase!.Apply(delOperation);
-
-        var ctrlOutput = _activeStage!.ProcessFastpathInput(_decodedImage, ctrlFastpath);
-        var altOutput = _activeStage!.ProcessFastpathInput(_decodedImage, altFastpath);
-        var delOutput = _activeStage!.ProcessFastpathInput(_decodedImage, delFastpath);
-
-        Task.Run(async () =>
-        {
-            await HandleActiveStageOutput(ctrlOutput);
-            await HandleActiveStageOutput(altOutput);
-            await HandleActiveStageOutput(delOutput);
-        });
-    }
 }
 
 public sealed class RendererModel : INotifyPropertyChanged

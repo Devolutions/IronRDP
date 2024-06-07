@@ -14,7 +14,6 @@
         <!-- ToolBar at the top -->
         <DockPanel DockPanel.Dock="Top" Height="50" Width="800" Margin="5">
             <Button Content="Disconnect" Margin="5" Click="OnDisconnectClick" />
-            <Button Content="Ctrl+Alt+Del" Margin="5" Click="OnCtrlAltDelClick" />
         </DockPanel>
 
         <Grid DockPanel.Dock="Bottom">
