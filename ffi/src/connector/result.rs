@@ -3,7 +3,7 @@ pub mod ffi {
     use crate::{
         connector::config::ffi::DesktopSize,
         error::{ffi::IronRdpError, ValueConsumedError},
-        utils::ffi::OptionalUsize,
+        utils::ffi::{OptionalUsize, VecU8},
     };
 
     #[diplomat::opaque]
@@ -28,6 +28,7 @@ pub mod ffi {
                 ironrdp::connector::Written::Nothing => Box::new(OptionalUsize(None)),
             }
         }
+
     }
 
     #[diplomat::opaque]

@@ -185,14 +185,14 @@ pub mod ffi {
 
         pub fn get_connection_finalization_result(
             &mut self,
-        ) -> Result<Box<crate::connector::ffi::ConnectionActivationSequence>, Box<IronRdpError>> {
+        ) -> Result<Box<crate::connector::activation::ffi::ConnectionActivationSequence>, Box<IronRdpError>> {
             match self
                 .0
                 .take()
                 .ok_or_else(|| ValueConsumedError::for_item("ClientConnectorState"))?
             {
                 ironrdp::connector::ClientConnectorState::ConnectionFinalization { connection_activation } => Ok(
-                    crate::connector::ffi::ConnectionActivationSequence(Box::new(connection_activation)),
+                    crate::connector::activation::ffi::ConnectionActivationSequence(Box::new(connection_activation)),
                 ),
                 _ => Err(IncorrectEnumTypeError::on_variant("ConnectionFinalization")
                     .of_enum("ClientConnectorState")

@@ -13,10 +13,13 @@ class Program
     public static void Main(string[] args)
     {
         InitializeLogging();
-        try{
+        try
+        {
             BuildAvaloniaApp()
-            .StartWithClassicDesktopLifetime(args);
-        }catch(Exception e){
+                .StartWithClassicDesktopLifetime(args);
+        }
+        catch (Exception e)
+        {
             Trace.TraceError(e.Message);
             Trace.TraceError(e.StackTrace);
         }
@@ -32,8 +35,9 @@ class Program
     public static void InitializeLogging()
     {
         Trace.AutoFlush = true;
-        TextWriterTraceListener myListener = new TextWriterTraceListener(System.IO.File.CreateText("AvaloniaExample.log"));
+        TextWriterTraceListener myListener = new TextWriterTraceListener(
+            System.IO.File.CreateText(
+                "C:\\Users\\jou\\code\\IronRDP\\ffi\\dotnet\\Devolutions.IronRdp\\AvaloniaExample.log"));
         Trace.Listeners.Add(myListener);
     }
-
 }

@@ -16,6 +16,18 @@ public partial struct ConnectionActivationSequence
 {
     private const string NativeLib = "DevolutionsIronRdp";
 
+    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ConnectionActivationSequence_get_state", ExactSpelling = true)]
+    public static unsafe extern ConnectionActivationState* GetState(ConnectionActivationSequence* self);
+
+    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ConnectionActivationSequence_next_pdu_hint", ExactSpelling = true)]
+    public static unsafe extern ConnectorActivationFfiResultOptBoxPduHintBoxIronRdpError NextPduHint(ConnectionActivationSequence* self);
+
+    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ConnectionActivationSequence_step", ExactSpelling = true)]
+    public static unsafe extern ConnectorActivationFfiResultBoxWrittenBoxIronRdpError Step(ConnectionActivationSequence* self, byte* pduHint, nuint pduHintSz, WriteBuf* buf);
+
+    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ConnectionActivationSequence_step_no_input", ExactSpelling = true)]
+    public static unsafe extern ConnectorActivationFfiResultBoxWrittenBoxIronRdpError StepNoInput(ConnectionActivationSequence* self, WriteBuf* buf);
+
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ConnectionActivationSequence_destroy", ExactSpelling = true)]
     public static unsafe extern void Destroy(ConnectionActivationSequence* self);
 }

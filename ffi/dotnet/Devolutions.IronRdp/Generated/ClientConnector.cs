@@ -126,6 +126,23 @@ public partial class ClientConnector: IDisposable
     }
 
     /// <exception cref="IronRdpException"></exception>
+    public void WithDynamicChannelDisplayControl()
+    {
+        unsafe
+        {
+            if (_inner == null)
+            {
+                throw new ObjectDisposedException("ClientConnector");
+            }
+            Raw.ConnectorFfiResultVoidBoxIronRdpError result = Raw.ClientConnector.WithDynamicChannelDisplayControl(_inner);
+            if (!result.isOk)
+            {
+                throw new IronRdpException(new IronRdpError(result.Err));
+            }
+        }
+    }
+
+    /// <exception cref="IronRdpException"></exception>
     public bool ShouldPerformSecurityUpgrade()
     {
         unsafe

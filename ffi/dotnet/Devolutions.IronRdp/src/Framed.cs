@@ -24,7 +24,7 @@ public class Framed<TS> where TS : Stream
         while (true)
         {
             var pduInfo = IronRdpPdu.New().FindSize(this._buffer.ToArray());
-            
+
             // Don't remove, FindSize is generated and can return null
             if (null != pduInfo)
             {
@@ -100,6 +100,15 @@ public class Framed<TS> where TS : Stream
         }
     }
 
+    public async Task Write(WriteBuf buf)
+    {
+        var vecU8 = buf.GetFilled();
+        var size = vecU8.GetSize();
+        var bytesArray = new byte[size];
+        vecU8.Fill(bytesArray);
+        await Write(bytesArray);
+    }
+
 
     /// <summary>
     /// Reads data from the buffer based on the provided PduHint.
@@ -123,7 +132,6 @@ public class Framed<TS> where TS : Stream
                     throw new Exception("EOF");
                 }
             }
-
         }
     }
 }

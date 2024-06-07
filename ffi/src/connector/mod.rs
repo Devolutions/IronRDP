@@ -1,12 +1,14 @@
 pub mod config;
 pub mod result;
 pub mod state;
+pub mod activation;
 
 #[diplomat::bridge]
 pub mod ffi {
     use diplomat_runtime::DiplomatWriteable;
-    use ironrdp::connector::Sequence as _;
+    use ironrdp::{connector::Sequence as _, displaycontrol::client::DisplayControlClient};
     use std::fmt::Write;
+    use tracing::info;
 
     use crate::{
         clipboard::ffi::Cliprdr,
@@ -68,6 +70,22 @@ pub mod ffi {
                     ironrdp::rdpdr::Rdpdr::new(Box::new(ironrdp::rdpdr::NoopRdpdrBackend {}), computer_name.to_owned())
                         .with_smartcard(smart_card_device_id),
                 ),
+            );
+
+            Ok(())
+        }
+
+        pub fn with_dynamic_channel_display_control(&mut self) -> Result<(), Box<IronRdpError>> {
+            let Some(connector) = self.0.take() else {
+                return Err(ValueConsumedError::for_item("connector").into());
+            };
+            self.0 = Some(
+                connector.with_static_channel(ironrdp::dvc::DrdynvcClient::new().with_dynamic_channel(
+                    DisplayControlClient::new(|c| {
+                        info!(DisplayCountrolCapabilities = ?c, "DisplayControl capabilities received");
+                        Ok(Vec::new())
+                    }),
+                )),
             );
 
             Ok(())
@@ -192,8 +210,4 @@ pub mod ffi {
     #[diplomat::opaque]
     pub struct LicenseExchangeSequence(pub ironrdp::connector::LicenseExchangeSequence);
 
-    #[diplomat::opaque]
-    pub struct ConnectionActivationSequence(
-        pub Box<ironrdp::connector::connection_activation::ConnectionActivationSequence>,
-    );
 }

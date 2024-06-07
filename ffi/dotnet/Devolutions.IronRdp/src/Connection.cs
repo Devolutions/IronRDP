@@ -23,16 +23,37 @@ public static class Connection
 
         var serverAddr = ip[0] + ":" + port;
         connector.WithServerAddr(serverAddr);
+        connector.WithDynamicChannelDisplayControl();
         if (factory != null)
         {
             var cliprdr = factory.BuildCliprdr();
             connector.AttachStaticCliprdr(cliprdr);
         }
-
+        
         await ConnectBegin(framed, connector);
         var (serverPublicKey, framedSsl) = await SecurityUpgrade(framed, connector);
         var result = await ConnectFinalize(serverName, connector, serverPublicKey, framedSsl);
         return (result, framedSsl);
+    }
+    
+    public static async Task<Written> SingleSequenceStepRead<TStream>(Framed<TStream> frame, ConnectionActivationSequence sequence, WriteBuf buf)
+    where TStream: Stream
+    {
+        buf.Clear();
+
+        var pudHint = sequence.NextPduHint();
+        
+        // Don't remove, NextPduHint is generated and can return null
+        if (null != pudHint)
+        {
+
+            var pdu = await frame.ReadByHint(pudHint);
+
+            return sequence.Step(pdu, buf);
+        }
+
+
+        return sequence.StepNoInput(buf);
     }
 
     private static async Task<(byte[], Framed<SslStream>)> SecurityUpgrade(Framed<NetworkStream> framed,
@@ -218,7 +239,7 @@ public static class Connection
         }
         catch (FormatException)
         {
-            IPHostEntry ipHostInfo = await Dns.GetHostEntryAsync(servername);
+            IPHostEntry ipHostInfo = await Dns.GetHostEntryAsync(servername).WaitAsync(TimeSpan.FromSeconds(5));
             ipAddress = ipHostInfo.AddressList[0];
         }
 

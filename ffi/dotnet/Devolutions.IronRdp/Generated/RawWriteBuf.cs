@@ -25,6 +25,9 @@ public partial struct WriteBuf
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "WriteBuf_read_into_buf", ExactSpelling = true)]
     public static unsafe extern PduFfiResultVoidBoxIronRdpError ReadIntoBuf(WriteBuf* self, byte* buf, nuint bufSz);
 
+    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "WriteBuf_get_filled", ExactSpelling = true)]
+    public static unsafe extern VecU8* GetFilled(WriteBuf* self);
+
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "WriteBuf_destroy", ExactSpelling = true)]
     public static unsafe extern void Destroy(WriteBuf* self);
 }

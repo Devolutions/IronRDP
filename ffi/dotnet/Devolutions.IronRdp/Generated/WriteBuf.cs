@@ -15,6 +15,14 @@ public partial class WriteBuf: IDisposable
 {
     private unsafe Raw.WriteBuf* _inner;
 
+    public VecU8 Filled
+    {
+        get
+        {
+            return GetFilled();
+        }
+    }
+
     /// <summary>
     /// Creates a managed <c>WriteBuf</c> from a raw handle.
     /// </summary>
@@ -71,6 +79,22 @@ public partial class WriteBuf: IDisposable
                     throw new IronRdpException(new IronRdpError(result.Err));
                 }
             }
+        }
+    }
+
+    /// <returns>
+    /// A <c>VecU8</c> allocated on Rust side.
+    /// </returns>
+    public VecU8 GetFilled()
+    {
+        unsafe
+        {
+            if (_inner == null)
+            {
+                throw new ObjectDisposedException("WriteBuf");
+            }
+            Raw.VecU8* retVal = Raw.WriteBuf.GetFilled(_inner);
+            return new VecU8(retVal);
         }
     }
 

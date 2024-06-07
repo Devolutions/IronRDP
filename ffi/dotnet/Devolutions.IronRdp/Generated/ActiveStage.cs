@@ -15,6 +15,14 @@ public partial class ActiveStage: IDisposable
 {
     private unsafe Raw.ActiveStage* _inner;
 
+    public bool NoServerPointer
+    {
+        set
+        {
+            SetNoServerPointer(value);
+        }
+    }
+
     /// <summary>
     /// Creates a managed <c>ActiveStage</c> from a raw handle.
     /// </summary>
@@ -228,6 +236,56 @@ public partial class ActiveStage: IDisposable
             }
             Raw.ActiveStageOutputIterator* retVal = result.Ok;
             return new ActiveStageOutputIterator(retVal);
+        }
+    }
+
+    /// <exception cref="IronRdpException"></exception>
+    /// <returns>
+    /// A <c>ActiveStageOutputIterator</c> allocated on Rust side.
+    /// </returns>
+    public ActiveStageOutputIterator EncodedResize(uint width, uint height)
+    {
+        unsafe
+        {
+            if (_inner == null)
+            {
+                throw new ObjectDisposedException("ActiveStage");
+            }
+            Raw.SessionFfiResultOptBoxActiveStageOutputIteratorBoxIronRdpError result = Raw.ActiveStage.EncodedResize(_inner, width, height);
+            if (!result.isOk)
+            {
+                throw new IronRdpException(new IronRdpError(result.Err));
+            }
+            Raw.ActiveStageOutputIterator* retVal = result.Ok;
+            if (retVal == null)
+            {
+                return null;
+            }
+            return new ActiveStageOutputIterator(retVal);
+        }
+    }
+
+    public void SetFastpathProcessor(ushort ioChannelId, ushort userChannelId, bool noServerPointer, bool pointerSoftwareRendering)
+    {
+        unsafe
+        {
+            if (_inner == null)
+            {
+                throw new ObjectDisposedException("ActiveStage");
+            }
+            Raw.ActiveStage.SetFastpathProcessor(_inner, ioChannelId, userChannelId, noServerPointer, pointerSoftwareRendering);
+        }
+    }
+
+    public void SetNoServerPointer(bool noServerPointer)
+    {
+        unsafe
+        {
+            if (_inner == null)
+            {
+                throw new ObjectDisposedException("ActiveStage");
+            }
+            Raw.ActiveStage.SetNoServerPointer(_inner, noServerPointer);
         }
     }
 
