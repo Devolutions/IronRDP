@@ -1,21 +1,39 @@
 <Window xmlns="https://github.com/avaloniaui"
-    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-    xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
-    xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
-    mc:Ignorable="d" d:DesignWidth="1980" d:DesignHeight="1080"
-    x:Class="Devolutions.IronRdp.AvaloniaExample.MainWindow"
-    Title="Devolutions.IronRdp.AvaloniaExample">
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:avaloniaExample="clr-namespace:Devolutions.IronRdp.AvaloniaExample"
+        mc:Ignorable="d" d:DesignWidth="1980" d:DesignHeight="1080"
+        x:Class="Devolutions.IronRdp.AvaloniaExample.MainWindow"
+        Title="Devolutions.IronRdp.AvaloniaExample"
+        KeyDown="OnKeyDown"
+        KeyUp="OnKeyUp"
+        Name="Window">
+    <DockPanel
+        x:DataType="avaloniaExample:RendererModel">
+        <!-- ToolBar at the top -->
+        <DockPanel DockPanel.Dock="Top" Height="50" Width="800" Margin="5">
+            <Button Content="Disconnect" Margin="5" Click="OnDisconnectClick" />
+        </DockPanel>
 
-    <DockPanel>
-        <!-- Disconnect button at the top -->
-        <Button Content="Disconnect" DockPanel.Dock="Top" HorizontalAlignment="Right"
-            Margin="10" Click="OnDisconnectClick" />
-
-        <!-- Canvas adjusted to fill the remaining space -->
-        <Canvas Name="MainCanvas" Width="1280" Height="800" Background="Black"
-            PointerPressed="Canvas_OnPointerPressed" PointerMoved="Canvas_PointerMoved"
-            PointerReleased="Canvas_PointerReleased"
-            HorizontalAlignment="Center"
-            VerticalAlignment="Center" />
+        <Grid DockPanel.Dock="Bottom">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="*" />  <!-- Responsive height -->
+            </Grid.RowDefinitions>
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />  <!-- Responsive width -->
+            </Grid.ColumnDefinitions>
+            <Image
+                x:Name="RdpImage"
+                Grid.Row="0"
+                Grid.Column="0"
+                Width="{Binding Width, Mode=TwoWay}"
+                Height="{Binding Height, Mode=TwoWay}"
+                Stretch="UniformToFill"
+                PointerMoved="OnPointerMoved"
+                PointerPressed="OnPointerPressed"
+                PointerReleased="OnPointerReleased"
+                ></Image>
+        </Grid>
     </DockPanel>
 </Window>

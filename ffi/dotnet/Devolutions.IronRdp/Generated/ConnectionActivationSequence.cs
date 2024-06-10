@@ -15,6 +15,14 @@ public partial class ConnectionActivationSequence: IDisposable
 {
     private unsafe Raw.ConnectionActivationSequence* _inner;
 
+    public ConnectionActivationState State
+    {
+        get
+        {
+            return GetState();
+        }
+    }
+
     /// <summary>
     /// Creates a managed <c>ConnectionActivationSequence</c> from a raw handle.
     /// </summary>
@@ -27,6 +35,108 @@ public partial class ConnectionActivationSequence: IDisposable
     public unsafe ConnectionActivationSequence(Raw.ConnectionActivationSequence* handle)
     {
         _inner = handle;
+    }
+
+    /// <returns>
+    /// A <c>ConnectionActivationState</c> allocated on Rust side.
+    /// </returns>
+    public ConnectionActivationState GetState()
+    {
+        unsafe
+        {
+            if (_inner == null)
+            {
+                throw new ObjectDisposedException("ConnectionActivationSequence");
+            }
+            Raw.ConnectionActivationState* retVal = Raw.ConnectionActivationSequence.GetState(_inner);
+            return new ConnectionActivationState(retVal);
+        }
+    }
+
+    /// <exception cref="IronRdpException"></exception>
+    /// <returns>
+    /// A <c>PduHint</c> allocated on Rust side.
+    /// </returns>
+    public PduHint NextPduHint()
+    {
+        unsafe
+        {
+            if (_inner == null)
+            {
+                throw new ObjectDisposedException("ConnectionActivationSequence");
+            }
+            Raw.ConnectorActivationFfiResultOptBoxPduHintBoxIronRdpError result = Raw.ConnectionActivationSequence.NextPduHint(_inner);
+            if (!result.isOk)
+            {
+                throw new IronRdpException(new IronRdpError(result.Err));
+            }
+            Raw.PduHint* retVal = result.Ok;
+            if (retVal == null)
+            {
+                return null;
+            }
+            return new PduHint(retVal);
+        }
+    }
+
+    /// <exception cref="IronRdpException"></exception>
+    /// <returns>
+    /// A <c>Written</c> allocated on Rust side.
+    /// </returns>
+    public Written Step(byte[] pduHint, WriteBuf buf)
+    {
+        unsafe
+        {
+            if (_inner == null)
+            {
+                throw new ObjectDisposedException("ConnectionActivationSequence");
+            }
+            nuint pduHintLength = (nuint)pduHint.Length;
+            Raw.WriteBuf* bufRaw;
+            bufRaw = buf.AsFFI();
+            if (bufRaw == null)
+            {
+                throw new ObjectDisposedException("WriteBuf");
+            }
+            fixed (byte* pduHintPtr = pduHint)
+            {
+                Raw.ConnectorActivationFfiResultBoxWrittenBoxIronRdpError result = Raw.ConnectionActivationSequence.Step(_inner, pduHintPtr, pduHintLength, bufRaw);
+                if (!result.isOk)
+                {
+                    throw new IronRdpException(new IronRdpError(result.Err));
+                }
+                Raw.Written* retVal = result.Ok;
+                return new Written(retVal);
+            }
+        }
+    }
+
+    /// <exception cref="IronRdpException"></exception>
+    /// <returns>
+    /// A <c>Written</c> allocated on Rust side.
+    /// </returns>
+    public Written StepNoInput(WriteBuf buf)
+    {
+        unsafe
+        {
+            if (_inner == null)
+            {
+                throw new ObjectDisposedException("ConnectionActivationSequence");
+            }
+            Raw.WriteBuf* bufRaw;
+            bufRaw = buf.AsFFI();
+            if (bufRaw == null)
+            {
+                throw new ObjectDisposedException("WriteBuf");
+            }
+            Raw.ConnectorActivationFfiResultBoxWrittenBoxIronRdpError result = Raw.ConnectionActivationSequence.StepNoInput(_inner, bufRaw);
+            if (!result.isOk)
+            {
+                throw new IronRdpException(new IronRdpError(result.Err));
+            }
+            Raw.Written* retVal = result.Ok;
+            return new Written(retVal);
+        }
     }
 
     /// <summary>

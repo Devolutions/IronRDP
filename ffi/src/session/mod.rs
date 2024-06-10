@@ -5,7 +5,7 @@ pub mod ffi {
 
     use crate::{
         clipboard::message::ffi::{ClipboardFormatId, ClipboardFormatIterator, FormatDataResponse},
-        connector::{ffi::ConnectionActivationSequence, result::ffi::ConnectionResult},
+        connector::{activation::ffi::ConnectionActivationSequence, result::ffi::ConnectionResult},
         error::{ffi::IronRdpError, IncorrectEnumTypeError, ValueConsumedError},
         graphics::ffi::DecodedPointer,
         pdu::ffi::{Action, FastPathInputEventIterator, InclusiveRectangle},
@@ -125,6 +125,47 @@ pub mod ffi {
         pub fn graceful_shutdown(&mut self) -> Result<Box<ActiveStageOutputIterator>, Box<IronRdpError>> {
             let outputs = self.0.graceful_shutdown()?;
             Ok(Box::new(ActiveStageOutputIterator(outputs)))
+        }
+
+        pub fn encoded_resize(
+            &mut self,
+            width: u32,
+            height: u32,
+        ) -> Result<Option<Box<ActiveStageOutputIterator>>, Box<IronRdpError>> {
+            let (width, height) = ironrdp::displaycontrol::pdu::MonitorLayoutEntry::adjust_display_size(width, height);
+            Ok(self
+                .0
+                .encode_resize(width, height, None, Some((width, height)))
+                .map(|outputs| {
+                    outputs.map(|outputs| {
+                        Box::new(ActiveStageOutputIterator(vec![
+                            ironrdp::session::ActiveStageOutput::ResponseFrame(outputs),
+                        ]))
+                    })
+                })
+                .transpose()?)
+        }
+
+        pub fn set_fastpath_processor(
+            &mut self,
+            io_channel_id: u16,
+            user_channel_id: u16,
+            no_server_pointer: bool,
+            pointer_software_rendering: bool,
+        ) {
+            self.0.set_fastpath_processor(
+                ironrdp::session::fast_path::ProcessorBuilder {
+                    io_channel_id,
+                    user_channel_id,
+                    no_server_pointer,
+                    pointer_software_rendering,
+                }
+                .build(),
+            );
+        }
+
+        pub fn set_no_server_pointer(&mut self, no_server_pointer: bool) {
+            self.0.set_no_server_pointer(no_server_pointer);
         }
     }
 

@@ -1,7 +1,7 @@
 #[diplomat::bridge]
 pub mod ffi {
 
-    use crate::error::ffi::IronRdpError;
+    use crate::{error::ffi::IronRdpError, utils::ffi::VecU8};
 
     #[diplomat::opaque]
     pub struct WriteBuf(pub ironrdp::pdu::write_buf::WriteBuf);
@@ -18,6 +18,10 @@ pub mod ffi {
         pub fn read_into_buf(&mut self, buf: &mut [u8]) -> Result<(), Box<IronRdpError>> {
             buf.copy_from_slice(&self.0[..buf.len()]);
             Ok(())
+        }
+
+        pub fn get_filled(&self) -> Box<VecU8> {
+            Box::new(VecU8(self.0.filled().to_vec()))
         }
     }
 
