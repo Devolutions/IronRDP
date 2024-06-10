@@ -239,7 +239,7 @@ public static class Connection
         }
         catch (FormatException)
         {
-            IPHostEntry ipHostInfo = await Dns.GetHostEntryAsync(servername).WaitAsync(TimeSpan.FromSeconds(5));
+            IPHostEntry ipHostInfo = await Dns.GetHostEntryAsync(servername).WaitAsync(TimeSpan.FromSeconds(10));
             ipAddress = ipHostInfo.AddressList[0];
         }
 
