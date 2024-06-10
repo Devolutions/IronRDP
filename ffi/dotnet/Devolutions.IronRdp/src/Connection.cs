@@ -41,13 +41,13 @@ public static class Connection
     {
         buf.Clear();
 
-        var pudHint = sequence.NextPduHint();
+        var pduHint = sequence.NextPduHint();
         
         // Don't remove, NextPduHint is generated and can return null
-        if (null != pudHint)
+        if (null != pduHint)
         {
 
-            var pdu = await frame.ReadByHint(pudHint);
+            var pdu = await frame.ReadByHint(pduHint);
 
             return sequence.Step(pdu, buf);
         }
