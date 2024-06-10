@@ -79,21 +79,4 @@ pub mod ffi {
             self.0.ok_or_else(|| "value is None".into())
         }
     }
-
-    #[diplomat::opaque]
-    pub struct TupleU32s(pub (u32, u32));
-
-    impl TupleU32s {
-        pub fn new(first: u32, second: u32) -> Box<TupleU32s> {
-            Box::new(TupleU32s((first, second)))
-        }
-
-        pub fn get_first(&self) -> u32 {
-            self.0 .0
-        }
-
-        pub fn get_second(&self) -> u32 {
-            self.0 .1
-        }
-    }
 }

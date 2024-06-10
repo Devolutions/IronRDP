@@ -43,7 +43,7 @@ public static class Connection
 
         var pduHint = sequence.NextPduHint();
         
-        // Don't remove, NextPduHint is generated and can return null
+        // FIXME: The NextPduHint() function signature is incorrectly generated: the return value is nullable, so this check is necessary.
         if (null != pduHint)
         {
 
