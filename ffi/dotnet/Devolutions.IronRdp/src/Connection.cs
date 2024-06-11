@@ -29,31 +29,11 @@ public static class Connection
             var cliprdr = factory.BuildCliprdr();
             connector.AttachStaticCliprdr(cliprdr);
         }
-        
+
         await ConnectBegin(framed, connector);
         var (serverPublicKey, framedSsl) = await SecurityUpgrade(framed, connector);
         var result = await ConnectFinalize(serverName, connector, serverPublicKey, framedSsl);
         return (result, framedSsl);
-    }
-    
-    public static async Task<Written> SingleSequenceStepRead<TStream>(Framed<TStream> frame, ConnectionActivationSequence sequence, WriteBuf buf)
-    where TStream: Stream
-    {
-        buf.Clear();
-
-        var pduHint = sequence.NextPduHint();
-        
-        // FIXME: The NextPduHint() function signature is incorrectly generated: the return value is nullable, so this check is necessary.
-        if (null != pduHint)
-        {
-
-            var pdu = await frame.ReadByHint(pduHint);
-
-            return sequence.Step(pdu, buf);
-        }
-
-
-        return sequence.StepNoInput(buf);
     }
 
     private static async Task<(byte[], Framed<SslStream>)> SecurityUpgrade(Framed<NetworkStream> framed,
@@ -82,7 +62,7 @@ public static class Connection
         var writeBuf = WriteBuf.New();
         while (!connector.ShouldPerformSecurityUpgrade())
         {
-            await SingleConnectStep(connector, writeBuf, framed);
+            await SingleSequenceStep(connector, writeBuf, framed);
         }
     }
 
@@ -98,7 +78,7 @@ public static class Connection
 
         while (!connector.GetDynState().IsTerminal())
         {
-            await SingleConnectStep(connector, writeBuf2, framedSsl);
+            await SingleSequenceStep(connector, writeBuf2, framedSsl);
         }
 
         ClientConnectorState state = connector.ConsumeAndCastToClientConnectorState();
@@ -196,23 +176,23 @@ public static class Connection
         }
     }
 
-    static async Task SingleConnectStep<T>(ClientConnector connector, WriteBuf buf, Framed<T> framed)
+    static async Task SingleSequenceStep<S, T>(S sequence, WriteBuf buf, Framed<T> framed)
         where T : Stream
+        where S : ISequence
     {
         buf.Clear();
 
-        var pduHint = connector.NextPduHint();
+        var pduHint = sequence.NextPduHint();
         Written written;
 
-        // Don't remove, NextPduHint is generated, and it can return null
         if (pduHint != null)
         {
             byte[] pdu = await framed.ReadByHint(pduHint);
-            written = connector.Step(pdu, buf);
+            written = sequence.Step(pdu, buf);
         }
         else
         {
-            written = connector.StepNoInput(buf);
+            written = sequence.StepNoInput(buf);
         }
 
         if (written.GetWrittenType() == WrittenType.Nothing)
@@ -220,7 +200,7 @@ public static class Connection
             return;
         }
 
-        // will throw if size is not set
+        // Will throw an exception if the size is not set.
         var size = written.GetSize().Get();
 
         var response = new byte[size];
