@@ -33,13 +33,4 @@
 
   <Import Condition="!$(PackageId.EndsWith('iOS'))" Project="Devolutions.IronRdp.Build.props "/>
   <Import Project="Devolutions.IronRdp.Build.iOS.props "/>
-
-  <!--
-  <ItemGroup Condition="Exists('$(NativeLibPath_win_x64)')">
-    <None Include="$(NativeLibPath_win_x64)" Link="runtimes/win-x64/native/%(Filename)%(Extension)"
-      CopyToOutputDirectory="PreserveNewest"
-      Pack="true" PackagePath="runtimes/win-x64/native/%(Filename)%(Extension)"
-    />
-  </ItemGroup>
-  -->
 </Project>

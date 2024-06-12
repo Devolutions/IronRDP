@@ -1,6 +1,6 @@
 <Project>
   <PropertyGroup>
-    <TargetFrameworks>net8.0;Xamarin.iOS10</TargetFrameworks>
+    <TargetFrameworks>net8.0</TargetFrameworks>
   </PropertyGroup>
 
   <ItemGroup Condition="Exists('$(NativeLibPath_win_x64)')">

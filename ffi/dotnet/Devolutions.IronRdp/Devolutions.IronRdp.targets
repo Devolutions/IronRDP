@@ -5,8 +5,8 @@
     <IsAndroid Condition="$(TargetFramework.ToUpper().Contains('ANDROID'))">true</IsAndroid>
     <IsIOS Condition="'$(Platform)' == 'iPhone' or '$(Platform)' == 'iPhoneSimulator'">true</IsIOS>
   </PropertyGroup>
+
   <ItemGroup>
-  
     <!-- Windows or PowerShell -->
     <Content Condition="$([MSBuild]::IsOSPlatform('Windows')) OR '$(IsPowerShell)' == 'true'" Include="$(MSBuildThisFileDirectory)\..\runtimes\win-x64\native\DevolutionsIronRdp.dll">
       <Link>runtimes\win-x64\native\DevolutionsIronRdp.dll</Link>
