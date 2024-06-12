@@ -176,7 +176,7 @@ public static class Connection
         }
     }
 
-    static async Task SingleSequenceStep<S, T>(S sequence, WriteBuf buf, Framed<T> framed)
+    public static async Task SingleSequenceStep<S, T>(S sequence, WriteBuf buf, Framed<T> framed)
         where T : Stream
         where S : ISequence
     {

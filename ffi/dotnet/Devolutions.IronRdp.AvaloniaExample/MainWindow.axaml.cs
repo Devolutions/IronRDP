@@ -416,11 +416,7 @@ public partial class MainWindow : Window
                     var writeBuf = WriteBuf.New();
                     while (true)
                     {
-                        var written = await Connection.SingleSequenceStepRead(_framed!, activationSequence, writeBuf);
-                        if (written.GetSize().IsSome())
-                        {
-                            await _framed!.Write(writeBuf);
-                        }
+                        await Connection.SingleSequenceStep(activationSequence, writeBuf,_framed!);
 
                         if (activationSequence.GetState().GetType() != ConnectionActivationStateType.Finalized)
                             continue;
