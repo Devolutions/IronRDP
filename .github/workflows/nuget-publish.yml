@@ -321,8 +321,8 @@ jobs:
       - name: Build Devolutionus.IronRdp (managed)
         shell: pwsh
         run: |
-          # netstandard2.0 / Xamarin.iOS10 targets packaged as Devolutions.IronRdp
-          msbuild .\ffi\dotnet\Devolutions.IronRdp.sln -t:restore,build -p:RestorePackagesConfig=true /p:Configuration=Release
+          # net8.0 target packaged as Devolutions.IronRdp
+          dotnet build .\ffi\dotnet\Devolutions.IronRdp\Devolutions.IronRdp.csproj -c Release
           # net8.0-ios target packaged as Devolutions.IronRdp.iOS
           dotnet build .\ffi\dotnet\Devolutions.IronRdp\Devolutions.IronRdp.csproj -c Release /p:PackageId=Devolutions.IronRdp.iOS
 
