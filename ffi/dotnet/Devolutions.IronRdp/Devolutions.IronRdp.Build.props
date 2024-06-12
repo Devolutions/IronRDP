@@ -1,0 +1,108 @@
+<Project>
+  <PropertyGroup>
+    <TargetFrameworks>net8.0</TargetFrameworks>
+  </PropertyGroup>
+
+  <ItemGroup Condition="Exists('$(NativeLibPath_win_x64)')">
+    <Content Include="$(NativeLibPath_win_x64)">
+      <Link>%(Filename)%(Extension)</Link>
+      <PackagePath>runtimes/win-x64/native/%(Filename)%(Extension)</PackagePath>
+      <Pack>true</Pack>
+      <CopyToOutputDirectory>Never</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
+
+  <ItemGroup Condition="Exists('$(NativeLibPath_win_arm64)')">
+    <Content Include="$(NativeLibPath_win_arm64)">
+      <Link>%(Filename)%(Extension)</Link>
+      <PackagePath>runtimes/win-arm64/native/%(Filename)%(Extension)</PackagePath>
+      <Pack>true</Pack>
+      <CopyToOutputDirectory>Never</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
+
+  <ItemGroup Condition="Exists('$(NativeLibPath_osx_x64)')">
+    <Content Include="$(NativeLibPath_osx_x64)">
+      <Link>%(Filename)%(Extension)</Link>
+      <PackagePath>runtimes/osx-x64/native/%(Filename)%(Extension)</PackagePath>
+      <Pack>true</Pack>
+      <CopyToOutputDirectory>Never</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
+
+  <ItemGroup Condition="Exists('$(NativeLibPath_osx_arm64)')">
+    <Content Include="$(NativeLibPath_osx_arm64)">
+      <Link>%(Filename)%(Extension)</Link>
+      <PackagePath>runtimes/osx-arm64/native/%(Filename)%(Extension)</PackagePath>
+      <Pack>true</Pack>
+      <CopyToOutputDirectory>Never</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
+
+  <ItemGroup Condition="Exists('$(NativeLibPath_osx_universal)')">
+    <Content Include="$(NativeLibPath_osx_universal)">
+      <Link>%(Filename)%(Extension)</Link>
+      <PackagePath>runtimes/osx-universal/native/%(Filename)%(Extension)</PackagePath>
+      <Pack>true</Pack>
+      <CopyToOutputDirectory>Never</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
+
+  <ItemGroup Condition="Exists('$(NativeLibPath_linux_x64)')">
+    <Content Include="$(NativeLibPath_linux_x64)">
+      <Link>%(Filename)%(Extension)</Link>
+      <PackagePath>runtimes/linux-x64/native/%(Filename)%(Extension)</PackagePath>
+      <Pack>true</Pack>
+      <CopyToOutputDirectory>Never</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
+
+  <ItemGroup Condition="Exists('$(NativeLibPath_linux_arm64)')">
+    <Content Include="$(NativeLibPath_linux_arm64)">
+      <Link>%(Filename)%(Extension)</Link>
+      <PackagePath>runtimes/linux-arm64/native/%(Filename)%(Extension)</PackagePath>
+      <Pack>true</Pack>
+      <CopyToOutputDirectory>Never</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
+
+  <ItemGroup Condition="Exists('$(NativeLibPath_android_arm64)')">
+    <Content Include="$(NativeLibPath_android_arm64)">
+      <Link>%(Filename)%(Extension)</Link>
+      <PackagePath>runtimes/android-arm64/native/%(Filename)%(Extension)</PackagePath>
+      <Pack>true</Pack>
+      <CopyToOutputDirectory>Never</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
+
+  <ItemGroup Condition="Exists('$(NativeLibPath_android_arm)')">
+    <Content Include="$(NativeLibPath_android_arm)">
+      <Link>%(Filename)%(Extension)</Link>
+      <PackagePath>runtimes/android-arm/native/%(Filename)%(Extension)</PackagePath>
+      <Pack>true</Pack>
+      <CopyToOutputDirectory>Never</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
+
+  <ItemGroup Condition="Exists('$(NativeLibPath_android_x64)')">
+    <Content Include="$(NativeLibPath_android_x64)">
+      <Link>%(Filename)%(Extension)</Link>
+      <PackagePath>runtimes/android-x64/native/%(Filename)%(Extension)</PackagePath>
+      <Pack>true</Pack>
+      <CopyToOutputDirectory>Never</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
+
+  <ItemGroup Condition="Exists('$(NativeLibPath_android_x86)')">
+    <Content Include="$(NativeLibPath_android_x86)">
+      <Link>%(Filename)%(Extension)</Link>
+      <PackagePath>runtimes/android-x86/native/%(Filename)%(Extension)</PackagePath>
+      <Pack>true</Pack>
+      <CopyToOutputDirectory>Never</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
+
+  <ItemGroup>
+    <Content Include="Devolutions.IronRdp.targets" PackagePath="build/Devolutions.IronRdp.targets" Pack="true" />
+  </ItemGroup>
+</Project>
