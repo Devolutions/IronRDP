@@ -59,11 +59,11 @@ jobs:
           - os: win
             runner: windows-2022
           - os: osx
-            runner: macos-11
+            runner: macos-12
           - os: linux
             runner: ubuntu-20.04
           - os: ios
-            runner: macos-11
+            runner: macos-12
           - os: android
             runner: ubuntu-20.04
         exclude:
