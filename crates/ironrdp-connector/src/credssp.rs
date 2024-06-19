@@ -1,12 +1,13 @@
+use std::fs;
 use ironrdp_pdu::write_buf::WriteBuf;
-use ironrdp_pdu::{nego, PduHint};
+use ironrdp_pdu::{nego, PduHint, utils};
 use sspi::credssp::{self, ClientState, CredSspClient};
 use sspi::generator::{Generator, NetworkRequest};
 use sspi::negotiate::ProtocolConfig;
-use sspi::Username;
+use sspi::{Secret, Username};
 
 use crate::{
-    ClientConnector, ClientConnectorState, ConnectorError, ConnectorErrorKind, ConnectorResult, ServerName, Written,
+    ClientConnector, ClientConnectorState, ConnectorError, ConnectorErrorKind, ConnectorResult, Credentials, ServerName, Written
 };
 
 #[derive(Debug, Clone, Default)]
@@ -96,18 +97,29 @@ impl CredsspSequence {
         kerberos_config: Option<KerberosConfig>,
     ) -> ConnectorResult<(Self, credssp::TsRequest)> {
         let config = &connector.config;
-        if let crate::Credentials::SmartCard { .. } = config.credentials {
-            return Err(general_err!(
-                "CredSSP with smart card credentials is not currently supported"
-            ));
-        }
+        let key = fs::read_to_string("/Users/hesperus/work/IronRDP/desktop_user_key.pem").map_err(|e| custom_err!("can't read1", e))?;
+        let cert = fs::read("/Users/hesperus/work/IronRDP/desktop_user_cert.der").map_err(|e| custom_err!("can't read2", e))?;
+        let credentials: sspi::Credentials = match &config.credentials {
+            Credentials::UsernamePassword {username, password} => {
+                let username = Username::new(username, config.domain.as_deref())
+                    .map_err(|e| custom_err!("invalid username", e))?;
 
-        let username = Username::new(config.credentials.username(), config.domain.as_deref())
-            .map_err(|e| custom_err!("invalid username", e))?;
-
-        let credentials = sspi::AuthIdentity {
-            username,
-            password: config.credentials.secret().to_owned().into(),
+                sspi::AuthIdentity {
+                    username,
+                    password: password.to_owned().into(),
+                }.into()
+            },
+            Credentials::SmartCard {pin} => sspi::Credentials::SmartCard(Box::new(sspi::SmartCardIdentityBuffers {
+                username: utils::to_utf16_bytes("Administrator@przemkoad.teleportdemo.net"),
+                certificate: cert,
+                card_name: None,
+                reader_name: utils::to_utf16_bytes("Teleport"),
+                container_name: utils::to_utf16_bytes(""),
+                csp_name: utils::to_utf16_bytes("Microsoft Base Smart Card Crypto Provider"),
+                pin: utils::to_utf16_bytes(pin).into(),
+                private_key_file_index: None,
+                private_key_pem: Some(utils::to_utf16_bytes(&key)),
+            }.try_into().map_err(|e| custom_err!("can't convert", e))?)),
         };
 
         let server_name = server_name.into_inner();
@@ -124,7 +136,7 @@ impl CredsspSequence {
 
         let client = credssp::CredSspClient::new(
             server_public_key,
-            credentials.into(),
+            credentials,
             credssp::CredSspMode::WithCredentials,
             credssp::ClientMode::Negotiate(sspi::NegotiateConfig {
                 protocol_config: credssp_config,
