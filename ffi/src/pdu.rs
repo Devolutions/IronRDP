@@ -1,6 +1,8 @@
 #[diplomat::bridge]
 pub mod ffi {
 
+    use ironrdp::pdu::geometry::Rectangle;
+
     use crate::{error::ffi::IronRdpError, utils::ffi::VecU8};
 
     #[diplomat::opaque]
@@ -33,6 +35,32 @@ pub mod ffi {
 
     #[diplomat::opaque]
     pub struct InclusiveRectangle(pub ironrdp::pdu::geometry::InclusiveRectangle);
+
+    impl InclusiveRectangle {
+        pub fn get_left(&self) -> u16 {
+            self.0.left
+        }
+
+        pub fn get_top(&self) -> u16 {
+            self.0.top
+        }
+
+        pub fn get_right(&self) -> u16 {
+            self.0.right
+        }
+
+        pub fn get_bottom(&self) -> u16 {
+            self.0.bottom
+        }
+
+        pub fn get_width(&self) -> u16 {
+            self.0.width()
+        }
+
+        pub fn get_height(&self) -> u16 {
+            self.0.height()
+        }
+    }
 
     #[diplomat::opaque]
     pub struct IronRdpPdu; // A struct representing the ironrdp_pdu crate
