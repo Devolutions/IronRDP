@@ -106,6 +106,10 @@ impl Processor {
                         debug!("Got Session Save Info PDU: {session_info:?}");
                         Ok(Vec::new())
                     }
+                    ShareDataPdu::SetKeyboardIndicators(data) => {
+                        debug!("Got Keyboard Indicators PDU: {data:?}");
+                        Ok(Vec::new())
+                    }
                     ShareDataPdu::ServerSetErrorInfo(ServerSetErrorInfoPdu(ErrorInfo::ProtocolIndependentCode(
                         ProtocolIndependentCode::None,
                     ))) => {
