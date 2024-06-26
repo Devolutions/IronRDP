@@ -148,6 +148,11 @@ impl ActiveStage {
         Ok(stage_outputs)
     }
 
+    // tell channels that disconnect or deactivate occurred to reset their state
+    pub fn deactivate(&mut self) {
+        self.x224_processor.deactivate();
+    }
+
     pub fn set_fastpath_processor(&mut self, processor: fast_path::Processor) {
         self.fast_path_processor = processor;
     }

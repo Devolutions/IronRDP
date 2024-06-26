@@ -29,4 +29,8 @@ ironrdp-dvc.workspace = true
 ironrdp-tokio.workspace = true
 ironrdp-acceptor.workspace = true
 ironrdp-graphics.workspace = true
+ironrdp-rdpsnd.workspace = true
 tracing.workspace = true
+
+[dev-dependencies]
+tokio = { version = "1", features = ["sync"] }

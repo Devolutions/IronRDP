@@ -1,8 +1,7 @@
 [package]
-name = "ironrdp-rdpsnd"
+name = "ironrdp-rdpsnd-native"
 version = "0.1.0"
-readme = "README.md"
-description = "RDPSND static channel for audio output implemented as described in MS-RDPEA"
+description = "Native RDPSND static channel backend implementations for IronRDP"
 edition.workspace = true
 license.workspace = true
 homepage.workspace = true
@@ -15,12 +14,11 @@ categories.workspace = true
 doctest = false
 test = false
 
-[features]
-default = []
-std = []
-
 [dependencies]
-bitflags.workspace = true
+anyhow = "1.0.82"
+cpal = "0.15.3"
+ironrdp-rdpsnd.workspace = true
 tracing.workspace = true
-ironrdp-svc.workspace = true
-ironrdp-pdu = { workspace = true, features = ["alloc"] }
+
+[dev-dependencies]
+tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }

@@ -136,6 +136,12 @@ impl DynamicVirtualChannel {
         }
     }
 
+    fn reset(&mut self) {
+        if let Some(channel_id) = self.channel_id {
+            self.channel_processor.close(channel_id)
+        }
+    }
+
     fn process(&mut self, pdu: DrdynvcDataPdu) -> PduResult<Vec<DvcMessage>> {
         let channel_id = pdu.channel_id();
         let complete_data = self.complete_data.process_data(pdu)?;
@@ -216,6 +222,11 @@ impl DynamicChannelSet {
     #[inline]
     fn values(&self) -> impl Iterator<Item = &DynamicVirtualChannel> {
         self.channels.values()
+    }
+
+    #[inline]
+    fn values_mut(&mut self) -> impl Iterator<Item = &mut DynamicVirtualChannel> {
+        self.channels.values_mut()
     }
 }
 
