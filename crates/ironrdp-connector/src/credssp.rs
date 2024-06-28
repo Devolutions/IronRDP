@@ -1,10 +1,9 @@
-use std::fs;
 use ironrdp_pdu::write_buf::WriteBuf;
-use ironrdp_pdu::{nego, PduHint, utils};
+use ironrdp_pdu::{nego, PduHint};
 use sspi::credssp::{self, ClientState, CredSspClient};
 use sspi::generator::{Generator, NetworkRequest};
 use sspi::negotiate::ProtocolConfig;
-use sspi::{Secret, Username};
+use sspi::Username;
 
 use crate::{
     ClientConnector, ClientConnectorState, ConnectorError, ConnectorErrorKind, ConnectorResult, Credentials, ServerName, Written
@@ -97,8 +96,6 @@ impl CredsspSequence {
         kerberos_config: Option<KerberosConfig>,
     ) -> ConnectorResult<(Self, credssp::TsRequest)> {
         let config = &connector.config;
-        let key = fs::read_to_string("/Users/hesperus/work/IronRDP/desktop_user_key.pem").map_err(|e| custom_err!("can't read1", e))?;
-        let cert = fs::read("/Users/hesperus/work/IronRDP/desktop_user_cert.der").map_err(|e| custom_err!("can't read2", e))?;
         let credentials: sspi::Credentials = match &config.credentials {
             Credentials::UsernamePassword {username, password} => {
                 let username = Username::new(username, config.domain.as_deref())
@@ -109,19 +106,15 @@ impl CredsspSequence {
                     password: password.to_owned().into(),
                 }.into()
             },
-            Credentials::SmartCard {pin} => sspi::Credentials::SmartCard(Box::new(sspi::SmartCardIdentityBuffers {
-                username: utils::to_utf16_bytes("Administrator@przemkoad.teleportdemo.net"),
-                certificate: cert,
-                card_name: None,
-                reader_name: utils::to_utf16_bytes("Teleport"),
-                container_name: utils::to_utf16_bytes(""),
-                csp_name: utils::to_utf16_bytes("Microsoft Base Smart Card Crypto Provider"),
-                pin: utils::to_utf16_bytes(pin).into(),
-                private_key_file_index: None,
-                private_key_pem: Some(utils::to_utf16_bytes(&key)),
-            }.try_into().map_err(|e| custom_err!("can't convert", e))?)),
+            Credentials::SmartCard {pin: _, config} => match config {
+                Some(config) => sspi::Credentials::SmartCard(Box::new(config.clone())),
+                None => {
+                    return Err(general_err!("smart card configuration missing"));
+                }
+            },
         };
 
+        info!("Credentials: {:?}", credentials);
         let server_name = server_name.into_inner();
 
         let service_principal_name = format!("TERMSRV/{}", &server_name);

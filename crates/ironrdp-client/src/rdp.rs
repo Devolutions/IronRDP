@@ -62,6 +62,7 @@ impl RdpClient {
     pub async fn run(mut self) {
         self.config.connector.credentials = SmartCard {
             pin: "12345678".to_string(),
+            config: None
         };
         loop {
             let (connection_result, framed) = match connect(&self.config, self.cliprdr_factory.as_deref()).await {
@@ -151,13 +152,12 @@ async fn connect(
     let mut upgraded_framed = ironrdp_tokio::TokioFramed::new(upgraded_stream);
 
     let mut network_client = crate::network_client::ReqwestNetworkClient::new();
-    let name = (&config.destination).into();
     let kdc_url = Url::parse("tcp://ec2amaz-ju8mcfe.przemkoad.teleportdemo.net").map_err(|e| connector::custom_err!("TLS upgrade", e))?;
     let connection_result = ironrdp_tokio::connect_finalize(
         upgraded,
         &mut upgraded_framed,
         connector,
-        name,
+        (&config.destination).into(),
         server_public_key,
         Some(&mut network_client),
         Some(KerberosConfig{

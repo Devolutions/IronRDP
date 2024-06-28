@@ -57,7 +57,7 @@ expect-test = "1"
 png = "0.17"
 proptest = "1.4"
 rstest = "0.18"
-sspi = { path="/Users/hesperus/work/sspi-rs", features = ["scard"] }
+sspi = { path="/Users/hesperus/work/sspi-rs" }
 tracing = { version = "0.1", features = ["log"] }
 thiserror = "1.0"
 
@@ -70,7 +70,7 @@ num-derive = "0.4"
 num-traits = "0.2"
 
 [profile.dev]
-opt-level = 0
+opt-level = 1
 
 [profile.production]
 inherits = "release"

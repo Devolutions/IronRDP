@@ -30,6 +30,7 @@ use ironrdp_pdu::{encode_buf, encode_vec, gcc, x224, PduEncode, PduHint};
 pub use license_exchange::{LicenseExchangeSequence, LicenseExchangeState};
 pub use server_name::ServerName;
 pub use sspi;
+use sspi::SmartCardIdentity;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
@@ -48,7 +49,7 @@ pub struct BitmapConfig {
 #[derive(Debug, Clone)]
 pub enum Credentials {
     UsernamePassword { username: String, password: String },
-    SmartCard { pin: String },
+    SmartCard { pin: String, config: Option<SmartCardIdentity> },
 }
 
 impl Credentials {
