@@ -13,11 +13,15 @@ class Program
     public static void Main(string[] args)
     {
         InitializeLogging();
-        try{
+        try
+        {
             BuildAvaloniaApp()
             .StartWithClassicDesktopLifetime(args);
-        }catch(Exception e){
+        }
+        catch (Exception e)
+        {
             Trace.TraceError(e.Message);
+            Trace.TraceError(e.StackTrace);
         }
     }
 

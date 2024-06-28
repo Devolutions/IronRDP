@@ -1,0 +1,8 @@
+<?xml version="1.0"?>
+<Project ToolsVersion="12.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup Condition="(('$(Platform)' == 'iPhone')) or (('$(Platform)' == 'iPhoneSimulator'))">
+    <NativeReference Include="$(MSBuildThisFileDirectory)..\runtimes\ios\native\libDevolutionsIronRdp.framework">
+      <Kind>Framework</Kind>
+    </NativeReference>
+  </ItemGroup>
+</Project>

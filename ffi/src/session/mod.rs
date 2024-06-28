@@ -4,11 +4,12 @@ pub mod image;
 pub mod ffi {
 
     use crate::{
-        connector::{ffi::ConnectionActivationSequence, result::ffi::ConnectionResult},
+        clipboard::message::ffi::{ClipboardFormatId, ClipboardFormatIterator, FormatDataResponse},
+        connector::{activation::ffi::ConnectionActivationSequence, result::ffi::ConnectionResult},
         error::{ffi::IronRdpError, IncorrectEnumTypeError, ValueConsumedError},
         graphics::ffi::DecodedPointer,
         pdu::ffi::{Action, FastPathInputEventIterator, InclusiveRectangle},
-        utils::ffi::{BytesSlice, Position},
+        utils::ffi::{BytesSlice, Position, VecU8},
     };
 
     use super::image::ffi::DecodedImage;
@@ -65,6 +66,106 @@ pub mod ffi {
                 .0
                 .process_fastpath_input(&mut image.0, &fastpath_input.0)
                 .map(|outputs| Box::new(ActiveStageOutputIterator(outputs)))?)
+        }
+
+        pub fn initiate_clipboard_copy(
+            &mut self,
+            formats: &ClipboardFormatIterator,
+        ) -> Result<Box<VecU8>, Box<IronRdpError>> {
+            let formats = formats.0.clone();
+            let clipboard = self
+                .0
+                .get_svc_processor::<ironrdp::cliprdr::CliprdrClient>()
+                .ok_or("clipboard svc processor not found in active stage")?;
+
+            let result = clipboard.initiate_copy(&formats)?;
+
+            let frame = self.0.process_svc_processor_messages(result)?;
+
+            Ok(Box::new(VecU8(frame)))
+        }
+
+        pub fn initiate_clipboard_paste(
+            &mut self,
+            format_id: &ClipboardFormatId,
+        ) -> Result<Box<VecU8>, Box<IronRdpError>> {
+            let format_id = format_id.0;
+            let clipboard = self
+                .0
+                .get_svc_processor::<ironrdp::cliprdr::CliprdrClient>()
+                .ok_or("clipboard svc processor not found in active stage")?;
+
+            let result = clipboard.initiate_paste(format_id)?;
+
+            let frame = self.0.process_svc_processor_messages(result)?;
+
+            Ok(Box::new(VecU8(frame)))
+        }
+
+        pub fn submit_clipboard_format_data(
+            &mut self,
+            format_data_response: &mut FormatDataResponse,
+        ) -> Result<Box<VecU8>, Box<IronRdpError>> {
+            let data = format_data_response
+                .0
+                .take()
+                .ok_or_else(|| ValueConsumedError::for_item("format_data_response"))?;
+            let clipboard = self
+                .0
+                .get_svc_processor::<ironrdp::cliprdr::CliprdrClient>()
+                .ok_or("clipboard svc processor not found in active stage")?;
+
+            let result = clipboard.submit_format_data(data)?;
+
+            let frame = self.0.process_svc_processor_messages(result)?;
+
+            Ok(Box::new(VecU8(frame)))
+        }
+
+        pub fn graceful_shutdown(&mut self) -> Result<Box<ActiveStageOutputIterator>, Box<IronRdpError>> {
+            let outputs = self.0.graceful_shutdown()?;
+            Ok(Box::new(ActiveStageOutputIterator(outputs)))
+        }
+
+        pub fn encoded_resize(
+            &mut self,
+            width: u32,
+            height: u32,
+        ) -> Result<Option<Box<ActiveStageOutputIterator>>, Box<IronRdpError>> {
+            let (width, height) = ironrdp::displaycontrol::pdu::MonitorLayoutEntry::adjust_display_size(width, height);
+            Ok(self
+                .0
+                .encode_resize(width, height, None, Some((width, height)))
+                .map(|outputs| {
+                    outputs.map(|outputs| {
+                        Box::new(ActiveStageOutputIterator(vec![
+                            ironrdp::session::ActiveStageOutput::ResponseFrame(outputs),
+                        ]))
+                    })
+                })
+                .transpose()?)
+        }
+
+        pub fn set_fastpath_processor(
+            &mut self,
+            io_channel_id: u16,
+            user_channel_id: u16,
+            no_server_pointer: bool,
+            pointer_software_rendering: bool,
+        ) {
+            self.0.set_fastpath_processor(
+                ironrdp::session::fast_path::ProcessorBuilder {
+                    io_channel_id,
+                    user_channel_id,
+                    no_server_pointer,
+                    pointer_software_rendering,
+                }
+                .build(),
+            );
+        }
+
+        pub fn set_no_server_pointer(&mut self, no_server_pointer: bool) {
+            self.0.set_no_server_pointer(no_server_pointer);
         }
     }
 

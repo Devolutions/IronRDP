@@ -106,6 +106,11 @@ impl Processor {
                         debug!("Got Session Save Info PDU: {session_info:?}");
                         Ok(Vec::new())
                     }
+                    // FIXME: workaround fix to not terminate the session on "unhandled PDU: Set Keyboard Indicators PDU"
+                    ShareDataPdu::SetKeyboardIndicators(data) => {
+                        debug!("Got Keyboard Indicators PDU: {data:?}");
+                        Ok(Vec::new())
+                    }
                     ShareDataPdu::ServerSetErrorInfo(ServerSetErrorInfoPdu(ErrorInfo::ProtocolIndependentCode(
                         ProtocolIndependentCode::None,
                     ))) => {

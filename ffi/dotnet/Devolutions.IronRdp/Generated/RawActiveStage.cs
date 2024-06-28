@@ -25,6 +25,27 @@ public partial struct ActiveStage
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ActiveStage_process_fastpath_input", ExactSpelling = true)]
     public static unsafe extern SessionFfiResultBoxActiveStageOutputIteratorBoxIronRdpError ProcessFastpathInput(ActiveStage* self, DecodedImage* image, FastPathInputEventIterator* fastpathInput);
 
+    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ActiveStage_initiate_clipboard_copy", ExactSpelling = true)]
+    public static unsafe extern SessionFfiResultBoxVecU8BoxIronRdpError InitiateClipboardCopy(ActiveStage* self, ClipboardFormatIterator* formats);
+
+    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ActiveStage_initiate_clipboard_paste", ExactSpelling = true)]
+    public static unsafe extern SessionFfiResultBoxVecU8BoxIronRdpError InitiateClipboardPaste(ActiveStage* self, ClipboardFormatId* formatId);
+
+    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ActiveStage_submit_clipboard_format_data", ExactSpelling = true)]
+    public static unsafe extern SessionFfiResultBoxVecU8BoxIronRdpError SubmitClipboardFormatData(ActiveStage* self, FormatDataResponse* formatDataResponse);
+
+    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ActiveStage_graceful_shutdown", ExactSpelling = true)]
+    public static unsafe extern SessionFfiResultBoxActiveStageOutputIteratorBoxIronRdpError GracefulShutdown(ActiveStage* self);
+
+    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ActiveStage_encoded_resize", ExactSpelling = true)]
+    public static unsafe extern SessionFfiResultOptBoxActiveStageOutputIteratorBoxIronRdpError EncodedResize(ActiveStage* self, uint width, uint height);
+
+    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ActiveStage_set_fastpath_processor", ExactSpelling = true)]
+    public static unsafe extern void SetFastpathProcessor(ActiveStage* self, ushort ioChannelId, ushort userChannelId, [MarshalAs(UnmanagedType.U1)] bool noServerPointer, [MarshalAs(UnmanagedType.U1)] bool pointerSoftwareRendering);
+
+    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ActiveStage_set_no_server_pointer", ExactSpelling = true)]
+    public static unsafe extern void SetNoServerPointer(ActiveStage* self, [MarshalAs(UnmanagedType.U1)] bool noServerPointer);
+
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ActiveStage_destroy", ExactSpelling = true)]
     public static unsafe extern void Destroy(ActiveStage* self);
 }

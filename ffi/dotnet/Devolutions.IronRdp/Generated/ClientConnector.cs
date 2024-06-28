@@ -126,6 +126,23 @@ public partial class ClientConnector: IDisposable
     }
 
     /// <exception cref="IronRdpException"></exception>
+    public void WithDynamicChannelDisplayControl()
+    {
+        unsafe
+        {
+            if (_inner == null)
+            {
+                throw new ObjectDisposedException("ClientConnector");
+            }
+            Raw.ConnectorFfiResultVoidBoxIronRdpError result = Raw.ClientConnector.WithDynamicChannelDisplayControl(_inner);
+            if (!result.isOk)
+            {
+                throw new IronRdpException(new IronRdpError(result.Err));
+            }
+        }
+    }
+
+    /// <exception cref="IronRdpException"></exception>
     public bool ShouldPerformSecurityUpgrade()
     {
         unsafe
@@ -254,6 +271,29 @@ public partial class ClientConnector: IDisposable
             }
             Raw.Written* retVal = result.Ok;
             return new Written(retVal);
+        }
+    }
+
+    /// <exception cref="IronRdpException"></exception>
+    public void AttachStaticCliprdr(Cliprdr cliprdr)
+    {
+        unsafe
+        {
+            if (_inner == null)
+            {
+                throw new ObjectDisposedException("ClientConnector");
+            }
+            Raw.Cliprdr* cliprdrRaw;
+            cliprdrRaw = cliprdr.AsFFI();
+            if (cliprdrRaw == null)
+            {
+                throw new ObjectDisposedException("Cliprdr");
+            }
+            Raw.ConnectorFfiResultVoidBoxIronRdpError result = Raw.ClientConnector.AttachStaticCliprdr(_inner, cliprdrRaw);
+            if (!result.isOk)
+            {
+                throw new IronRdpException(new IronRdpError(result.Err));
+            }
         }
     }
 

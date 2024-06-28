@@ -15,6 +15,54 @@ public partial class InclusiveRectangle: IDisposable
 {
     private unsafe Raw.InclusiveRectangle* _inner;
 
+    public ushort Bottom
+    {
+        get
+        {
+            return GetBottom();
+        }
+    }
+
+    public ushort Height
+    {
+        get
+        {
+            return GetHeight();
+        }
+    }
+
+    public ushort Left
+    {
+        get
+        {
+            return GetLeft();
+        }
+    }
+
+    public ushort Right
+    {
+        get
+        {
+            return GetRight();
+        }
+    }
+
+    public ushort Top
+    {
+        get
+        {
+            return GetTop();
+        }
+    }
+
+    public ushort Width
+    {
+        get
+        {
+            return GetWidth();
+        }
+    }
+
     /// <summary>
     /// Creates a managed <c>InclusiveRectangle</c> from a raw handle.
     /// </summary>
@@ -27,6 +75,84 @@ public partial class InclusiveRectangle: IDisposable
     public unsafe InclusiveRectangle(Raw.InclusiveRectangle* handle)
     {
         _inner = handle;
+    }
+
+    public ushort GetLeft()
+    {
+        unsafe
+        {
+            if (_inner == null)
+            {
+                throw new ObjectDisposedException("InclusiveRectangle");
+            }
+            ushort retVal = Raw.InclusiveRectangle.GetLeft(_inner);
+            return retVal;
+        }
+    }
+
+    public ushort GetTop()
+    {
+        unsafe
+        {
+            if (_inner == null)
+            {
+                throw new ObjectDisposedException("InclusiveRectangle");
+            }
+            ushort retVal = Raw.InclusiveRectangle.GetTop(_inner);
+            return retVal;
+        }
+    }
+
+    public ushort GetRight()
+    {
+        unsafe
+        {
+            if (_inner == null)
+            {
+                throw new ObjectDisposedException("InclusiveRectangle");
+            }
+            ushort retVal = Raw.InclusiveRectangle.GetRight(_inner);
+            return retVal;
+        }
+    }
+
+    public ushort GetBottom()
+    {
+        unsafe
+        {
+            if (_inner == null)
+            {
+                throw new ObjectDisposedException("InclusiveRectangle");
+            }
+            ushort retVal = Raw.InclusiveRectangle.GetBottom(_inner);
+            return retVal;
+        }
+    }
+
+    public ushort GetWidth()
+    {
+        unsafe
+        {
+            if (_inner == null)
+            {
+                throw new ObjectDisposedException("InclusiveRectangle");
+            }
+            ushort retVal = Raw.InclusiveRectangle.GetWidth(_inner);
+            return retVal;
+        }
+    }
+
+    public ushort GetHeight()
+    {
+        unsafe
+        {
+            if (_inner == null)
+            {
+                throw new ObjectDisposedException("InclusiveRectangle");
+            }
+            ushort retVal = Raw.InclusiveRectangle.GetHeight(_inner);
+            return retVal;
+        }
     }
 
     /// <summary>

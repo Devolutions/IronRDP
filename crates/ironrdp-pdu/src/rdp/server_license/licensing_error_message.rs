@@ -8,7 +8,7 @@ use super::{BlobHeader, BlobType, LicenseHeader, PreambleFlags, PreambleVersion,
 use crate::{
     cursor::{ReadCursor, WriteCursor},
     rdp::{
-        headers::{BasicSecurityHeader, BasicSecurityHeaderFlags},
+        headers::{BasicSecurityHeader, BasicSecurityHeaderFlags, BASIC_SECURITY_HEADER_SIZE},
         server_license::PreambleType,
     },
     PduDecode, PduEncode, PduResult,
@@ -48,8 +48,11 @@ impl LicensingErrorMessage {
             state_transition: LicensingStateTransition::NoTransition,
             error_info: Vec::new(),
         };
-        this.license_header.preamble_message_size =
-            cast_length!("LicensingErrorMessage", "preamble_message_size", this.size())?;
+        this.license_header.preamble_message_size = cast_length!(
+            "LicensingErrorMessage",
+            "preamble_message_size",
+            this.size() - BASIC_SECURITY_HEADER_SIZE
+        )?;
         Ok(this)
     }
 }

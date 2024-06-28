@@ -5,27 +5,70 @@ using Avalonia.Media.Imaging;
 using Avalonia.Platform;
 using Avalonia.Threading;
 using System;
+using System.ComponentModel;
 using System.Diagnostics;
 using System.Net.Security;
+using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 using System.Threading.Tasks;
+using Avalonia.Markup.Xaml;
+using Avalonia.Interactivity;
+using Image = Avalonia.Controls.Image;
 
 namespace Devolutions.IronRdp.AvaloniaExample;
 
 public partial class MainWindow : Window
 {
+    readonly InputDatabase? _inputDatabase = InputDatabase.New();
+    ActiveStage? _activeStage;
+    DecodedImage? _decodedImage;
+    Framed<SslStream>? _framed;
+    WinCliprdr? _cliprdr;
+    private readonly RendererModel _renderModel;
+    private Image? _imageControl;
 
-    WriteableBitmap? bitmap;
-    Canvas? canvas;
-    Image? image;
-    InputDatabase? inputDatabase = InputDatabase.New();
-    ActiveStage? activeStage;
-    DecodedImage? decodedImage;
-    Framed<SslStream>? framed;
     public MainWindow()
     {
         InitializeComponent();
-        this.Opened += OnOpened;
+        Opened += OnOpened;
 
+        _renderModel = new RendererModel()
+        {
+            Width = 980,
+            Height = 780
+        };
+
+        this.DataContext = _renderModel;
+
+        Closing += (sender, e) => { Environment.Exit(1); };
+    }
+
+    private void InitializeComponent()
+    {
+        AvaloniaXamlLoader.Load(this);
+    }
+
+    bool _resizeTaskStarted = false;
+
+    protected override void OnSizeChanged(SizeChangedEventArgs e)
+    {
+        base.OnSizeChanged(e);
+        _renderModel.Width = (int)e.NewSize.Width;
+        _renderModel.Height = (int)e.NewSize.Height - 100;
+    }
+
+    private void Resize(double updatedWidth, double updatedHeight)
+    {
+        if (_activeStage != null)
+        {
+            var output = _activeStage.EncodedResize((uint)updatedWidth, (uint)updatedHeight);
+            if (output == null)
+            {
+                return;
+            }
+
+            Task.Run(async () => { await HandleActiveStageOutput(output); });
+        }
     }
 
     private void OnOpened(object? sender, EventArgs e)
@@ -41,87 +84,181 @@ public partial class MainWindow : Window
 
         if (username == null || password == null || domain == null || server == null)
         {
-            Trace.TraceError("Please set the IRONRDP_USERNAME, IRONRDP_PASSWORD, IRONRDP_DOMAIN, and IRONRDP_SERVER environment variables");
+            var errorMessage =
+                "Please set the IRONRDP_USERNAME, IRONRDP_PASSWORD, IRONRDP_DOMAIN, and RONRDP_SERVER environment variables";
+            Trace.TraceError(errorMessage);
             Close();
-            return;
+            throw new InvalidProgramException(errorMessage);
         }
 
-        var width = 1280;
-        var height = 800;
+        var config = BuildConfig(username, password, domain, _renderModel.Width, _renderModel.Height);
 
-        var config = buildConfig(username, password, domain, width, height);
-
-        var task = Connection.Connect(config, server);
-        bitmap = new WriteableBitmap(new PixelSize(width, height), new Vector(96, 96), Avalonia.Platform.PixelFormat.Rgba8888, AlphaFormat.Opaque);
-        canvas = this.FindControl<Canvas>("MainCanvas")!;
-        canvas.Focusable = true;
-        image = new Image { Width = width, Height = height, Source = this.bitmap };
-        canvas.Children.Add(image);
-
-        canvas.KeyDown += Canvas_KeyDown;
-        canvas.KeyUp += Canvas_KeyUp;
-
-        task.ContinueWith(t =>
+        CliprdrBackendFactory? factory = null;
+        var handle = GetWindowHandle();
+        if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows) && handle != null)
         {
-            if (t.IsFaulted)
+            _cliprdr = WinCliprdr.New(handle.Value);
+            if (_cliprdr != null)
             {
-                Exception e = t.Exception!;
-                Trace.TraceError("Error connecting to server: " + e.Message);
-                Close();
-                return;
+                factory = _cliprdr.BackendFactory();
             }
-            var (res, framed) = t.Result;
-            this.decodedImage = DecodedImage.New(PixelFormat.RgbA32, res.GetDesktopSize().GetWidth(), res.GetDesktopSize().GetHeight());
-            this.activeStage = ActiveStage.New(res);
-            this.framed = framed;
+        }
+
+        BeforeConnectSetup();
+        Task.Run(async () =>
+        {
+            var (res, framed) = await Connection.Connect(config, server, factory);
+            this._decodedImage = DecodedImage.New(PixelFormat.RgbA32, res.GetDesktopSize().GetWidth(),
+                res.GetDesktopSize().GetHeight());
+            this._activeStage = ActiveStage.New(res);
+            this._framed = framed;
             ReadPduAndProcessActiveStage();
+            HandleClipboardEvents();
         });
     }
 
-    private async void WriteDecodedImageToCanvas()
+    private void BeforeConnectSetup()
     {
-        await Dispatcher.UIThread.InvokeAsync(() =>
+        _imageControl = this.FindControl<Image>("RdpImage");
+        if (_imageControl == null)
         {
-            var data = decodedImage!.GetData();
-            var bufferSize = (int)data.GetSize();
+            Trace.TraceError("Error finding Image control");
+            throw new NullReferenceException("image control not found");
+        }
 
-            var buffer = new byte[bufferSize];
-            data.Fill(buffer);
-
-            using (var bitmap = this.bitmap!.Lock())
-            {
-                unsafe
-                {
-                    var bitmapSpan = new Span<byte>((void*)bitmap.Address, bufferSize);
-                    var bufferSpan = new Span<byte>(buffer);
-                    bufferSpan.CopyTo(bitmapSpan);
-                }
-            }
-
-            image!.InvalidateVisual(); 
-        });
+        var bitmap = new WriteableBitmap(new PixelSize(_renderModel.Width, _renderModel.Height),
+            new Vector(96, 96),
+            Avalonia.Platform.PixelFormat.Rgba8888, AlphaFormat.Opaque
+        );
+        _imageControl.Source = bitmap;
+        _imageControl.SizeChanged += (sender, e) => { Resize(e.NewSize.Width, e.NewSize.Height); };
     }
 
+    private void Render()
+    {
+        Dispatcher.UIThread.Invoke(() =>
+        {
+            try
+            {
+                var data = _decodedImage!.GetData();
+                var bufferSize = (int)data.GetSize();
 
+                var buffer = new byte[bufferSize];
+                data.Fill(buffer);
+
+                if (_imageControl is not { Source: WriteableBitmap writableBitmap })
+                {
+                    return;
+                }
+
+                var currentBitmapSize = writableBitmap.Size.Width * writableBitmap.Size.Height * 4;
+                if (Math.Abs(bufferSize - currentBitmapSize) > 1)
+                {
+                    var newBitmap =
+                        new WriteableBitmap(new PixelSize(_decodedImage.GetWidth(), _decodedImage.GetHeight()),
+                            new Vector(96, 96), Avalonia.Platform.PixelFormat.Rgba8888, AlphaFormat.Opaque);
+                    _imageControl.Source = newBitmap;
+                    writableBitmap = newBitmap;
+                }
+
+                using (var bitmap = writableBitmap.Lock())
+                {
+                    unsafe
+                    {
+                        var bitmapSpan = new Span<byte>((void*)bitmap.Address,
+                            bitmap.Size.Width * bitmap.Size.Height * (bitmap.Format.BitsPerPixel / 8));
+                        bitmapSpan.Clear();
+                        var bufferSpan = new Span<byte>(buffer);
+                        if (bufferSize > bitmapSpan.Length)
+                        {
+                            throw new InvalidOperationException("buffer size does not match");
+                        }
+                        else
+                        {
+                            bufferSpan.CopyTo(bitmapSpan);
+                        }
+                    }
+                }
+
+                _imageControl!.InvalidateVisual();
+            }
+            catch
+            {
+                Trace.TraceError("error rendering");
+            }
+        });
+    }
 
 
     private void ReadPduAndProcessActiveStage()
     {
         Task.Run(async () =>
         {
-            var keepLooping = true;
-            while (keepLooping)
+            try
             {
-                var readPduTask = await framed!.ReadPdu();
-                Action action = readPduTask.Item1;
-                byte[] payload = readPduTask.Item2;
-                var outputIterator = activeStage!.Process(decodedImage!, action, payload);
-                keepLooping = await HandleActiveStageOutput(outputIterator);
+                var keepLooping = true;
+                while (keepLooping)
+                {
+                    var (action, payload) = await _framed!.ReadPdu();
+                    var outputIterator = _activeStage!.Process(_decodedImage!, action, payload);
+                    keepLooping = await HandleActiveStageOutput(outputIterator);
+                }
+
+                Trace.TraceInformation("ReadPduAndProcessActiveStage loop ended");
+            }
+            catch (Exception e)
+            {
+                Trace.TraceError("Error reading PDU: " + e.Message);
             }
         });
     }
 
-    private static Config buildConfig(string username, string password, string domain, int width, int height)
+    private void HandleClipboardEvents()
+    {
+        Task.Run(async () =>
+        {
+            while (true)
+            {
+                if (_cliprdr == null)
+                {
+                    continue;
+                }
+
+                var message = _cliprdr.NextClipboardMessageBlocking();
+
+                VecU8 frame;
+                var messageType = message.GetMessageType();
+                Trace.TraceInformation("Clipboard message type: " + messageType);
+                if (messageType == ClipboardMessageType.SendFormatData)
+                {
+                    var formatData = message.GetSendFormatData()!;
+                    frame = _activeStage!.SubmitClipboardFormatData(formatData);
+                }
+                else if (messageType == ClipboardMessageType.SendInitiateCopy)
+                {
+                    var initiateCopy = message.GetSendInitiateCopy()!;
+                    frame = _activeStage!.InitiateClipboardCopy(initiateCopy);
+                }
+                else if (messageType == ClipboardMessageType.SendInitiatePaste)
+                {
+                    var initiatePaste = message.GetSendInitiatePaste()!;
+                    frame = _activeStage!.InitiateClipboardPaste(initiatePaste);
+                }
+                else
+                {
+                    Console.WriteLine("Error in clipboard");
+                    break;
+                }
+
+                var toWriteBack = new byte[frame.GetSize()];
+                frame.Fill(toWriteBack);
+
+                await _framed!.Write(toWriteBack);
+            }
+        });
+    }
+
+    private static Config BuildConfig(string username, string password, string domain, int width, int height)
     {
         ConfigBuilder configBuilder = ConfigBuilder.New();
 
@@ -135,7 +272,7 @@ public partial class MainWindow : Window
         return configBuilder.Build();
     }
 
-    private void Canvas_OnPointerPressed(object sender, Avalonia.Input.PointerPressedEventArgs e)
+    private void OnPointerPressed(object sender, PointerPressedEventArgs e)
     {
         PointerUpdateKind mouseButton = e.GetCurrentPoint((Visual?)sender).Properties.PointerUpdateKind;
 
@@ -156,27 +293,28 @@ public partial class MainWindow : Window
         };
 
         var buttonOperation = MouseButton.New(buttonType).AsOperationMouseButtonPressed();
-        var fastpath = inputDatabase!.Apply(buttonOperation);
-        var output = activeStage!.ProcessFastpathInput(decodedImage!, fastpath);
+        var fastpath = _inputDatabase!.Apply(buttonOperation);
+        var output = _activeStage!.ProcessFastpathInput(_decodedImage!, fastpath);
         var _ = HandleActiveStageOutput(output);
     }
 
-    private void Canvas_PointerMoved(object sender, PointerEventArgs e)
+    private void OnPointerMoved(object sender, PointerEventArgs e)
     {
-        if (this.activeStage == null || this.decodedImage == null)
+        if (this._activeStage == null || this._decodedImage == null)
         {
             return;
         }
+
         var position = e.GetPosition((Visual?)sender);
         var x = (ushort)position.X;
         var y = (ushort)position.Y;
         var mouseMovedEvent = MousePosition.New(x, y).AsMoveOperation();
-        var fastpath = inputDatabase!.Apply(mouseMovedEvent);
-        var output = activeStage.ProcessFastpathInput(decodedImage, fastpath);
+        var fastpath = _inputDatabase!.Apply(mouseMovedEvent);
+        var output = _activeStage.ProcessFastpathInput(_decodedImage, fastpath);
         var _ = HandleActiveStageOutput(output);
     }
 
-    private void Canvas_PointerReleased(object sender, PointerReleasedEventArgs e)
+    private void OnPointerReleased(object sender, PointerReleasedEventArgs e)
     {
         PointerUpdateKind mouseButton = e.GetCurrentPoint((Visual?)sender).Properties.PointerUpdateKind;
 
@@ -197,79 +335,188 @@ public partial class MainWindow : Window
         };
 
         var buttonOperation = MouseButton.New(buttonType).AsOperationMouseButtonReleased();
-        var fastpath = inputDatabase!.Apply(buttonOperation);
-        var output = activeStage!.ProcessFastpathInput(decodedImage!, fastpath);
+        var fastpath = _inputDatabase!.Apply(buttonOperation);
+        var output = _activeStage!.ProcessFastpathInput(_decodedImage!, fastpath);
         var _ = HandleActiveStageOutput(output);
     }
 
-    private void Canvas_KeyDown(object? sender, KeyEventArgs? e)
+    private void OnKeyDown(object? sender, KeyEventArgs? e)
     {
-        if (activeStage == null || decodedImage == null)
+        if (_activeStage == null || _decodedImage == null)
         {
             return;
         }
+
         PhysicalKey physicalKey = e!.PhysicalKey;
 
-        var keyOperation = Scancode.FromU16((ushort)KeyCodeMapper.GetScancode(physicalKey)!).AsOperationKeyPressed();
-        var fastpath = inputDatabase!.Apply(keyOperation);
-        var output = activeStage.ProcessFastpathInput(decodedImage, fastpath);
-        var _ = HandleActiveStageOutput(output);
-    }
+        var keycode = KeyCodeMapper.GetScancode(physicalKey);
 
-    private void Canvas_KeyUp(object? sender, KeyEventArgs? e)
-    {
-        if (this.activeStage == null || this.decodedImage == null)
+        if (keycode == null)
         {
             return;
         }
-        Key key = e!.Key;
-        var keyOperation = Scancode.FromU16((ushort)key).AsOperationKeyReleased();
-        var fastpath = inputDatabase!.Apply(keyOperation);
-        var output = activeStage.ProcessFastpathInput(decodedImage, fastpath);
+
+        var keyOperation = Scancode.FromU16(keycode.Value).AsOperationKeyPressed();
+        var fastpath = _inputDatabase!.Apply(keyOperation);
+        var output = _activeStage.ProcessFastpathInput(_decodedImage, fastpath);
+        var _ = HandleActiveStageOutput(output);
+    }
+
+    private void OnKeyUp(object? sender, KeyEventArgs? e)
+    {
+        if (_activeStage == null || _decodedImage == null)
+        {
+            return;
+        }
+
+        PhysicalKey physicalKey = e!.PhysicalKey;
+
+        var keycode = KeyCodeMapper.GetScancode(physicalKey);
+
+        if (keycode == null)
+        {
+            return;
+        }
+
+        var keyOperation = Scancode.FromU16(keycode.Value).AsOperationKeyReleased();
+        var fastpath = _inputDatabase!.Apply(keyOperation);
+        var output = _activeStage.ProcessFastpathInput(_decodedImage, fastpath);
         var _ = HandleActiveStageOutput(output);
     }
 
     private async Task<bool> HandleActiveStageOutput(ActiveStageOutputIterator outputIterator)
     {
-        try
+        while (!outputIterator.IsEmpty())
         {
-
-            while (!outputIterator.IsEmpty())
+            try
             {
-                var output = outputIterator.Next()!; // outputIterator.Next() is not null since outputIterator.IsEmpty() is false
+                var output =
+                    outputIterator
+                        .Next()!; // outputIterator.Next() is not null since outputIterator.IsEmpty() is false
                 if (output.GetEnumType() == ActiveStageOutputType.Terminate)
                 {
                     return false;
                 }
-                else if (output.GetEnumType() == ActiveStageOutputType.ResponseFrame)
+
+                if (output.GetEnumType() == ActiveStageOutputType.ResponseFrame)
                 {
-                    // render the decoded image to canvas
-                    WriteDecodedImageToCanvas();
                     // Send the response frame to the server
-                    var responseFrame = output.GetResponseFrame()!;
+                    var responseFrame = output.GetResponseFrame();
                     byte[] responseFrameBytes = new byte[responseFrame.GetSize()];
                     responseFrame.Fill(responseFrameBytes);
-                    await framed!.Write(responseFrameBytes);
+                    await _framed!.Write(responseFrameBytes);
                 }
                 else if (output.GetEnumType() == ActiveStageOutputType.GraphicsUpdate)
                 {
-                    WriteDecodedImageToCanvas();
+                    Render();
                 }
-                else if (output.GetEnumType() == ActiveStageOutputType.PointerPosition)
+                else if (output.GetEnumType() == ActiveStageOutputType.DeactivateAll)
                 {
-                    WriteDecodedImageToCanvas();
+                    var activationSequence = output.GetDeactivateAll();
+                    var writeBuf = WriteBuf.New();
+                    while (true)
+                    {
+                        await Connection.SingleSequenceStep(activationSequence, writeBuf,_framed!);
+
+                        if (activationSequence.GetState().GetType() != ConnectionActivationStateType.Finalized)
+                            continue;
+
+                        var finalized = activationSequence.GetState().GetFinalized();
+                        var desktopSize = finalized.GetDesktopSize();
+                        var ioChannelId = finalized.GetIoChannelId();
+                        var userChannelId = finalized.GetUserChannelId();
+                        var noServerPointer = finalized.GetNoServerPointer();
+                        var pointerSoftwareRendering = finalized.GetPointerSoftwareRendering();
+
+                        _decodedImage = DecodedImage.New(PixelFormat.RgbA32, desktopSize.GetWidth(),
+                            desktopSize.GetHeight());
+
+                        _activeStage!.SetFastpathProcessor(
+                            ioChannelId,
+                            userChannelId,
+                            noServerPointer,
+                            pointerSoftwareRendering
+                        );
+
+                        _activeStage.SetNoServerPointer(noServerPointer);
+
+                        break;
+                    }
                 }
-                else if (output.GetEnumType() == ActiveStageOutputType.PointerBitmap)
+                else
                 {
-                    WriteDecodedImageToCanvas();
+                    Trace.TraceError("Unhandled ActiveStageOutputType: " + output.GetEnumType());
                 }
             }
-            return true;
+            catch (Exception e)
+            {
+                Trace.TraceError("Error processing active stage output: " + e.Message);
+            }
         }
-        catch (Exception e)
+
+        return true;
+    }
+
+    IntPtr? GetWindowHandle()
+    {
+        var handle = TryGetPlatformHandle();
+        if (handle == null)
         {
-            return false;
+            return null;
+        }
+
+        return handle.Handle;
+    }
+
+    public void OnDisconnectClick(object? sender, RoutedEventArgs e)
+    {
+        var output = this._activeStage!.GracefulShutdown();
+
+        HandleActiveStageOutput(output).ContinueWith(t =>
+        {
+            if (t.IsFaulted)
+            {
+                Trace.TraceError("Error processing active stage: " + t.Exception!.Message);
+            }
+        });
+    }
+}
+
+public sealed class RendererModel : INotifyPropertyChanged
+{
+    private int _width;
+    private int _height;
+
+    public int Width
+    {
+        get => _width;
+        set
+        {
+            if (_width != value)
+            {
+                _width = value;
+                OnPropertyChanged();
+            }
         }
     }
 
+    public int Height
+    {
+        get { return _height; }
+        set
+        {
+            if (_height != value)
+            {
+                _height = value;
+                OnPropertyChanged();
+            }
+        }
+    }
+
+    public event PropertyChangedEventHandler? PropertyChanged;
+
+    private void OnPropertyChanged([CallerMemberName] string? propertyName = null)
+    {
+        PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
+    }
 }

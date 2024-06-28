@@ -15,6 +15,14 @@ public partial class ActiveStage: IDisposable
 {
     private unsafe Raw.ActiveStage* _inner;
 
+    public bool NoServerPointer
+    {
+        set
+        {
+            SetNoServerPointer(value);
+        }
+    }
+
     /// <summary>
     /// Creates a managed <c>ActiveStage</c> from a raw handle.
     /// </summary>
@@ -122,6 +130,162 @@ public partial class ActiveStage: IDisposable
             }
             Raw.ActiveStageOutputIterator* retVal = result.Ok;
             return new ActiveStageOutputIterator(retVal);
+        }
+    }
+
+    /// <exception cref="IronRdpException"></exception>
+    /// <returns>
+    /// A <c>VecU8</c> allocated on Rust side.
+    /// </returns>
+    public VecU8 InitiateClipboardCopy(ClipboardFormatIterator formats)
+    {
+        unsafe
+        {
+            if (_inner == null)
+            {
+                throw new ObjectDisposedException("ActiveStage");
+            }
+            Raw.ClipboardFormatIterator* formatsRaw;
+            formatsRaw = formats.AsFFI();
+            if (formatsRaw == null)
+            {
+                throw new ObjectDisposedException("ClipboardFormatIterator");
+            }
+            Raw.SessionFfiResultBoxVecU8BoxIronRdpError result = Raw.ActiveStage.InitiateClipboardCopy(_inner, formatsRaw);
+            if (!result.isOk)
+            {
+                throw new IronRdpException(new IronRdpError(result.Err));
+            }
+            Raw.VecU8* retVal = result.Ok;
+            return new VecU8(retVal);
+        }
+    }
+
+    /// <exception cref="IronRdpException"></exception>
+    /// <returns>
+    /// A <c>VecU8</c> allocated on Rust side.
+    /// </returns>
+    public VecU8 InitiateClipboardPaste(ClipboardFormatId formatId)
+    {
+        unsafe
+        {
+            if (_inner == null)
+            {
+                throw new ObjectDisposedException("ActiveStage");
+            }
+            Raw.ClipboardFormatId* formatIdRaw;
+            formatIdRaw = formatId.AsFFI();
+            if (formatIdRaw == null)
+            {
+                throw new ObjectDisposedException("ClipboardFormatId");
+            }
+            Raw.SessionFfiResultBoxVecU8BoxIronRdpError result = Raw.ActiveStage.InitiateClipboardPaste(_inner, formatIdRaw);
+            if (!result.isOk)
+            {
+                throw new IronRdpException(new IronRdpError(result.Err));
+            }
+            Raw.VecU8* retVal = result.Ok;
+            return new VecU8(retVal);
+        }
+    }
+
+    /// <exception cref="IronRdpException"></exception>
+    /// <returns>
+    /// A <c>VecU8</c> allocated on Rust side.
+    /// </returns>
+    public VecU8 SubmitClipboardFormatData(FormatDataResponse formatDataResponse)
+    {
+        unsafe
+        {
+            if (_inner == null)
+            {
+                throw new ObjectDisposedException("ActiveStage");
+            }
+            Raw.FormatDataResponse* formatDataResponseRaw;
+            formatDataResponseRaw = formatDataResponse.AsFFI();
+            if (formatDataResponseRaw == null)
+            {
+                throw new ObjectDisposedException("FormatDataResponse");
+            }
+            Raw.SessionFfiResultBoxVecU8BoxIronRdpError result = Raw.ActiveStage.SubmitClipboardFormatData(_inner, formatDataResponseRaw);
+            if (!result.isOk)
+            {
+                throw new IronRdpException(new IronRdpError(result.Err));
+            }
+            Raw.VecU8* retVal = result.Ok;
+            return new VecU8(retVal);
+        }
+    }
+
+    /// <exception cref="IronRdpException"></exception>
+    /// <returns>
+    /// A <c>ActiveStageOutputIterator</c> allocated on Rust side.
+    /// </returns>
+    public ActiveStageOutputIterator GracefulShutdown()
+    {
+        unsafe
+        {
+            if (_inner == null)
+            {
+                throw new ObjectDisposedException("ActiveStage");
+            }
+            Raw.SessionFfiResultBoxActiveStageOutputIteratorBoxIronRdpError result = Raw.ActiveStage.GracefulShutdown(_inner);
+            if (!result.isOk)
+            {
+                throw new IronRdpException(new IronRdpError(result.Err));
+            }
+            Raw.ActiveStageOutputIterator* retVal = result.Ok;
+            return new ActiveStageOutputIterator(retVal);
+        }
+    }
+
+    /// <exception cref="IronRdpException"></exception>
+    /// <returns>
+    /// A <c>ActiveStageOutputIterator</c> allocated on Rust side.
+    /// </returns>
+    public ActiveStageOutputIterator EncodedResize(uint width, uint height)
+    {
+        unsafe
+        {
+            if (_inner == null)
+            {
+                throw new ObjectDisposedException("ActiveStage");
+            }
+            Raw.SessionFfiResultOptBoxActiveStageOutputIteratorBoxIronRdpError result = Raw.ActiveStage.EncodedResize(_inner, width, height);
+            if (!result.isOk)
+            {
+                throw new IronRdpException(new IronRdpError(result.Err));
+            }
+            Raw.ActiveStageOutputIterator* retVal = result.Ok;
+            if (retVal == null)
+            {
+                return null;
+            }
+            return new ActiveStageOutputIterator(retVal);
+        }
+    }
+
+    public void SetFastpathProcessor(ushort ioChannelId, ushort userChannelId, bool noServerPointer, bool pointerSoftwareRendering)
+    {
+        unsafe
+        {
+            if (_inner == null)
+            {
+                throw new ObjectDisposedException("ActiveStage");
+            }
+            Raw.ActiveStage.SetFastpathProcessor(_inner, ioChannelId, userChannelId, noServerPointer, pointerSoftwareRendering);
+        }
+    }
+
+    public void SetNoServerPointer(bool noServerPointer)
+    {
+        unsafe
+        {
+            if (_inner == null)
+            {
+                throw new ObjectDisposedException("ActiveStage");
+            }
+            Raw.ActiveStage.SetNoServerPointer(_inner, noServerPointer);
         }
     }
 

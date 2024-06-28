@@ -154,3 +154,18 @@ jobs:
 
       - name: Lock files
         run: cargo xtask check locks -v
+
+  success:
+    name: Success
+    runs-on: ubuntu-latest
+    if: ${{ success() }}
+    needs:
+      - formatting
+      - typos
+      - checks
+      - fuzz
+      - web
+
+    steps:
+      - name: CI succeeded
+        run: exit 0
