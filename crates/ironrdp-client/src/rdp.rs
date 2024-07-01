@@ -14,10 +14,7 @@ use rdpdr::NoopRdpdrBackend;
 use smallvec::SmallVec;
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
-use url::Url;
 use winit::event_loop::EventLoopProxy;
-use ironrdp::connector::Credentials::SmartCard;
-use ironrdp::connector::credssp::KerberosConfig;
 
 use crate::config::Config;
 
@@ -60,10 +57,6 @@ pub struct RdpClient {
 
 impl RdpClient {
     pub async fn run(mut self) {
-        self.config.connector.credentials = SmartCard {
-            pin: "12345678".to_string(),
-            config: None
-        };
         loop {
             let (connection_result, framed) = match connect(&self.config, self.cliprdr_factory.as_deref()).await {
                 Ok(result) => result,
@@ -152,7 +145,6 @@ async fn connect(
     let mut upgraded_framed = ironrdp_tokio::TokioFramed::new(upgraded_stream);
 
     let mut network_client = crate::network_client::ReqwestNetworkClient::new();
-    let kdc_url = Url::parse("tcp://ec2amaz-ju8mcfe.przemkoad.teleportdemo.net").map_err(|e| connector::custom_err!("TLS upgrade", e))?;
     let connection_result = ironrdp_tokio::connect_finalize(
         upgraded,
         &mut upgraded_framed,
@@ -160,10 +152,7 @@ async fn connect(
         (&config.destination).into(),
         server_public_key,
         Some(&mut network_client),
-        Some(KerberosConfig{
-            kdc_proxy_url: Some(kdc_url),
-            hostname: Some("EC2AMAZ-JU8MCFE".to_string()),
-        }),
+        None,
     )
     .await?;
 

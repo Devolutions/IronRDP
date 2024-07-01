@@ -114,7 +114,6 @@ impl CredsspSequence {
             },
         };
 
-        info!("Credentials: {:?}", credentials);
         let server_name = server_name.into_inner();
 
         let service_principal_name = format!("TERMSRV/{}", &server_name);
