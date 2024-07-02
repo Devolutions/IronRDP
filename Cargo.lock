@@ -4089,6 +4089,7 @@ dependencies = [
 [[package]]
 name = "sspi"
 version = "0.12.0"
+source = "git+https://github.com/probakowski/sspi-rs?rev=13f30b3ed9535fa77bb6a7da73f79efdc0cbff51#13f30b3ed9535fa77bb6a7da73f79efdc0cbff51"
 dependencies = [
  "async-dnssd",
  "async-recursion",
@@ -5398,6 +5399,7 @@ dependencies = [
 [[package]]
 name = "winscard"
 version = "0.1.0"
+source = "git+https://github.com/probakowski/sspi-rs?rev=13f30b3ed9535fa77bb6a7da73f79efdc0cbff51#13f30b3ed9535fa77bb6a7da73f79efdc0cbff51"
 dependencies = [
  "bitflags 2.4.2",
  "iso7816",
