@@ -48,8 +48,14 @@ pub struct BitmapConfig {
 
 #[derive(Debug, Clone)]
 pub enum Credentials {
-    UsernamePassword { username: String, password: String },
-    SmartCard { pin: String, config: Option<SmartCardIdentity> },
+    UsernamePassword {
+        username: String,
+        password: String,
+    },
+    SmartCard {
+        pin: String,
+        config: Option<SmartCardIdentity>,
+    },
 }
 
 impl Credentials {

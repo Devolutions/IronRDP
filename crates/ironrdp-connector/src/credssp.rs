@@ -6,7 +6,8 @@ use sspi::negotiate::ProtocolConfig;
 use sspi::Username;
 
 use crate::{
-    ClientConnector, ClientConnectorState, ConnectorError, ConnectorErrorKind, ConnectorResult, Credentials, ServerName, Written
+    ClientConnector, ClientConnectorState, ConnectorError, ConnectorErrorKind, ConnectorResult, Credentials,
+    ServerName, Written,
 };
 
 #[derive(Debug, Clone, Default)]
@@ -97,16 +98,17 @@ impl CredsspSequence {
     ) -> ConnectorResult<(Self, credssp::TsRequest)> {
         let config = &connector.config;
         let credentials: sspi::Credentials = match &config.credentials {
-            Credentials::UsernamePassword {username, password} => {
+            Credentials::UsernamePassword { username, password } => {
                 let username = Username::new(username, config.domain.as_deref())
                     .map_err(|e| custom_err!("invalid username", e))?;
 
                 sspi::AuthIdentity {
                     username,
                     password: password.to_owned().into(),
-                }.into()
-            },
-            Credentials::SmartCard {pin: _, config} => match config {
+                }
+                .into()
+            }
+            Credentials::SmartCard { pin: _, config } => match config {
                 Some(config) => sspi::Credentials::SmartCard(Box::new(config.clone())),
                 None => {
                     return Err(general_err!("smart card configuration missing"));
