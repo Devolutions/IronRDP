@@ -61,7 +61,7 @@ tracing.workspace = true
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tokio = { version = "1.36", features = ["full"] }
 tokio-rustls = "0.24"
-rand = "0.8.3"
+rand = "0.8"
 
 [package.metadata.docs.rs]
 cargo-args = ["-Zunstable-options", "-Zrustdoc-scrape-examples"]
