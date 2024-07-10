@@ -1,6 +1,6 @@
 use ironrdp_pdu::cursor::ReadCursor;
-use ironrdp_pdu::{gcc::ChannelName, PduDecode};
-use ironrdp_pdu::{other_err, PduResult};
+use ironrdp_pdu::gcc::ChannelName;
+use ironrdp_pdu::{other_err, PduDecode, PduResult};
 use ironrdp_svc::{
     impl_as_any, CompressionCondition, SvcMessage, SvcProcessor, SvcProcessorMessages, SvcServerProcessor,
 };
@@ -72,7 +72,7 @@ impl RdpsndServer {
         let client_format = self
             .client_format
             .as_ref()
-            .ok_or(other_err!("Invalid state - no version"))?;
+            .ok_or(other_err!("invalid state - no version"))?;
 
         Ok(client_format.version)
     }
@@ -89,7 +89,7 @@ impl RdpsndServer {
 
     pub fn wave(&mut self, data: Vec<u8>, ts: u32) -> PduResult<RdpsndSvcMessages> {
         let version = self.version()?;
-        let format_no = self.format_no.ok_or(other_err!("Invalid state - no format"))?;
+        let format_no = self.format_no.ok_or(other_err!("invalid state - no format"))?;
 
         // The server doesn't wait for wave confirm, apparently FreeRDP neither.
         let msg = if version >= pdu::Version::V8 {
@@ -138,7 +138,7 @@ impl SvcProcessor for RdpsndServer {
         let msg = match self.state {
             RdpsndState::WaitingForClientFormats => {
                 let pdu::ClientAudioOutputPdu::AudioFormat(af) = pdu else {
-                    error!("Invalid pdu");
+                    error!("Invalid PDU");
                     self.state = RdpsndState::Stop;
                     return Ok(vec![]);
                 };
@@ -153,7 +153,7 @@ impl SvcProcessor for RdpsndServer {
             }
             RdpsndState::WaitingForQualityMode => {
                 let pdu::ClientAudioOutputPdu::QualityMode(pdu) = pdu else {
-                    error!("Invalid pdu");
+                    error!("Invalid PDU");
                     self.state = RdpsndState::Stop;
                     return Ok(vec![]);
                 };
@@ -163,7 +163,7 @@ impl SvcProcessor for RdpsndServer {
             }
             RdpsndState::WaitingForTrainingConfirm => {
                 let pdu::ClientAudioOutputPdu::TrainingConfirm(_) = pdu else {
-                    error!("Invalid pdu");
+                    error!("Invalid PDU");
                     self.state = RdpsndState::Stop;
                     return Ok(vec![]);
                 };

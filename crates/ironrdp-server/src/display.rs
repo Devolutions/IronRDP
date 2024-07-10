@@ -1,7 +1,9 @@
-use anyhow::Result;
-use ironrdp_pdu::pointer::PointerPositionAttribute;
 use std::num::NonZeroU16;
 
+use anyhow::Result;
+use ironrdp_pdu::pointer::PointerPositionAttribute;
+
+#[rustfmt::skip]
 pub use ironrdp_acceptor::DesktopSize;
 pub use ironrdp_graphics::image_processing::PixelFormat;
 

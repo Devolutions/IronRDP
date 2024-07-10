@@ -6,7 +6,6 @@ use std::borrow::Cow;
 use std::fmt;
 
 use bitflags::bitflags;
-
 use ironrdp_pdu::cursor::{ReadCursor, WriteCursor};
 use ironrdp_pdu::{
     cast_length, custom_err, ensure_fixed_part_size, ensure_size, invalid_message_err, read_padding, write_padding,

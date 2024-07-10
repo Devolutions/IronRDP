@@ -1,24 +1,15 @@
-use std::{
-    borrow::Cow,
-    sync::{
-        atomic::{AtomicBool, Ordering},
-        mpsc::{self, Receiver, Sender},
-        Arc,
-    },
-    thread::{self, JoinHandle},
-    time::Duration,
-};
+use std::borrow::Cow;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::Arc;
+use std::thread::{self, JoinHandle};
+use std::time::Duration;
 
 use anyhow::{bail, Context};
-use cpal::{
-    traits::{DeviceTrait, HostTrait},
-    SampleFormat, Stream, StreamConfig,
-};
-use ironrdp_rdpsnd::{
-    client::RdpsndClientHandler,
-    pdu::{AudioFormat, PitchPdu, VolumePdu, WaveFormat},
-};
-use tracing::{debug, error, info};
+use cpal::traits::{DeviceTrait, HostTrait};
+use cpal::{SampleFormat, Stream, StreamConfig};
+use ironrdp_rdpsnd::client::RdpsndClientHandler;
+use ironrdp_rdpsnd::pdu::{AudioFormat, PitchPdu, VolumePdu, WaveFormat};
 
 #[derive(Debug)]
 pub struct RdpsndBackend {
@@ -55,7 +46,7 @@ impl Drop for RdpsndBackend {
 impl RdpsndClientHandler for RdpsndBackend {
     fn wave(&mut self, format: &AudioFormat, _ts: u32, data: Cow<'_, [u8]>) {
         if Some(format) != self.format.as_ref() {
-            debug!("new audio format {format:?}");
+            debug!(?format, "New audio format");
             self.close();
         }
 
@@ -69,23 +60,23 @@ impl RdpsndClientHandler for RdpsndBackend {
             self.stream_handle = Some(thread::spawn(move || {
                 let stream = match make_stream(&format, rx) {
                     Ok(stream) => stream,
-                    Err(err) => {
-                        error!("{}", err);
+                    Err(e) => {
+                        error!(error = format!("{e:#}"));
                         return;
                     }
                 };
-                debug!("stream thread parking loop");
+                debug!("Stream thread parking loop");
                 while !stream_ended.load(Ordering::Relaxed) {
                     thread::park();
                 }
-                debug!("stream thread unparked");
+                debug!("Stream thread unparked");
                 drop(stream);
             }));
         }
 
         if let Some(ref tx) = self.tx {
-            if let Err(err) = tx.send(data.to_vec()) {
-                error!("{}", err);
+            if let Err(error) = tx.send(data.to_vec()) {
+                error!(%error);
             }
         };
     }
@@ -111,21 +102,21 @@ impl RdpsndClientHandler for RdpsndBackend {
 #[doc(hidden)]
 pub fn make_stream(rx_format: &AudioFormat, rx: Receiver<Vec<u8>>) -> anyhow::Result<Stream> {
     if rx_format.format != WaveFormat::PCM {
-        bail!("Only PCM formats supported");
+        bail!("only PCM formats supported");
     }
     let sample_format = match rx_format.bits_per_sample {
         8 => SampleFormat::U8,
         16 => SampleFormat::I16,
         _ => {
-            bail!("Only PCM 8/16 bits formats supported");
+            bail!("only PCM 8/16 bits formats supported");
         }
     };
 
     let host = cpal::default_host();
-    let device = host.default_output_device().context("No default output device")?;
+    let device = host.default_output_device().context("no default output device")?;
     let _supported_configs_range = device
         .supported_output_configs()
-        .context("No supported output config")?;
+        .context("no supported output config")?;
     let default_config = device.default_output_config()?;
     debug!(?default_config);
 
@@ -145,10 +136,10 @@ pub fn make_stream(rx_format: &AudioFormat, rx: Receiver<Vec<u8>>) -> anyhow::Re
                 let data = data.bytes_mut();
                 rx.fill(data)
             },
-            |err| error!(?err),
+            |error| error!(%error),
             None,
         )
-        .context("Failed to setup output stream")?;
+        .context("failed to setup output stream")?;
 
     Ok(stream)
 }
@@ -175,17 +166,17 @@ impl RxBuffer {
             if self.last.is_none() {
                 match self.receiver.recv_timeout(Duration::from_millis(4000)) {
                     Ok(rx) => {
-                        debug!("{}", rx.len());
+                        debug!(rx.len = rx.len());
                         self.last = Some(rx);
                     }
-                    Err(err) => {
-                        info!(?err);
+                    Err(error) => {
+                        warn!(%error);
                     }
                 }
             }
 
             let Some(ref last) = self.last else {
-                info!("playback rx underrun");
+                info!("Playback rx underrun");
                 return;
             };
 

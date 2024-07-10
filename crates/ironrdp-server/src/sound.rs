@@ -1,5 +1,4 @@
-pub use ironrdp_rdpsnd::server::RdpsndServerHandler;
-pub use ironrdp_rdpsnd::server::RdpsndServerMessage;
+pub use ironrdp_rdpsnd::server::{RdpsndServerHandler, RdpsndServerMessage};
 
 use crate::ServerEventSender;
 
