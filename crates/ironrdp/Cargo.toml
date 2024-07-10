@@ -50,9 +50,9 @@ ironrdp-displaycontrol = { workspace = true, optional = true }
 ironrdp-blocking.workspace = true
 ironrdp-server.workspace = true
 ironrdp-cliprdr-native.workspace = true
+ironrdp-tls.workspace = true
 anyhow = "1"
 async-trait = "0.1"
-rustls = "0.21"
 rustls-pemfile = "2.1"
 bmp = "0.5"
 pico-args = "0.5"
@@ -60,7 +60,7 @@ x509-cert = { version = "0.2", default-features = false, features = ["std"] }
 tracing.workspace = true
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tokio = { version = "1.36", features = ["full"] }
-tokio-rustls = "0.24"
+tokio-rustls = "0.26"
 rand = "0.8"
 
 [package.metadata.docs.rs]

@@ -21,15 +21,15 @@ use ironrdp_server::{
     SoundServerFactory,
 };
 use rand::prelude::*;
-use rustls::ServerConfig;
 use rustls_pemfile::{certs, pkcs8_private_keys};
 use tokio::sync::mpsc::{self, UnboundedSender};
 use tokio::time::{self, sleep, Duration};
+use tokio_rustls::rustls;
 use tokio_rustls::TlsAcceptor;
 
 const HELP: &str = "\
 USAGE:
-  cargo run --example=server -- --host <HOSTNAME> --port <PORT>
+  cargo run --example=server -- [--host <HOSTNAME>] [--port <PORT>] [--cert <CERTIFICATE>] [--key <CERTIFICATE KEY>]
 ";
 
 #[tokio::main]
@@ -107,16 +107,13 @@ fn acceptor(cert_path: &str, key_path: &str) -> anyhow::Result<TlsAcceptor> {
         .context("no certificate")??;
     let key = pkcs8_private_keys(&mut BufReader::new(File::open(key_path)?))
         .next()
-        .context("no private key")??;
+        .context("no private key")?
+        .map(rustls::pki_types::PrivateKeyDer::from)?;
 
-    let mut server_config = ServerConfig::builder()
-        .with_safe_defaults()
+    let mut server_config = rustls::ServerConfig::builder()
         .with_no_client_auth()
-        .with_single_cert(
-            vec![rustls::Certificate(cert.as_ref().to_vec())],
-            rustls::PrivateKey(key.secret_pkcs8_der().to_vec()),
-        )
-        .expect("bad certificate/key");
+        .with_single_cert(vec![cert], key)
+        .context("bad certificate/key")?;
 
     // This adds support for the SSLKEYLOGFILE env variable (https://wiki.wireshark.org/TLS#using-the-pre-master-secret)
     server_config.key_log = Arc::new(rustls::KeyLogFile::new());

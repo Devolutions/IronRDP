@@ -77,6 +77,14 @@ jobs:
         run: |
           sudo apt-get -y install libasound2-dev
 
+      - name: Install NASM
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          choco install nasm
+          $Env:PATH += ";$Env:ProgramFiles\NASM"
+          echo "PATH=$Env:PATH" >> $Env:GITHUB_ENV
+
       - name: Rust cache
         uses: Swatinem/rust-cache@v2.7.3
 
