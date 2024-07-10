@@ -1,9 +1,9 @@
 pub(crate) mod bitmap;
 pub(crate) mod rfx;
 
-use anyhow::{Context, Result};
 use std::{cmp, mem};
 
+use anyhow::{Context, Result};
 use ironrdp_pdu::cursor::WriteCursor;
 use ironrdp_pdu::fast_path::{EncryptionFlags, FastPathHeader, FastPathUpdatePdu, Fragmentation, UpdateCode};
 use ironrdp_pdu::geometry::ExclusiveRectangle;
@@ -12,11 +12,10 @@ use ironrdp_pdu::rdp::capability_sets::{CmdFlags, EntropyBits};
 use ironrdp_pdu::surface_commands::{ExtendedBitmapDataPdu, SurfaceBitsPdu, SurfaceCommand};
 use ironrdp_pdu::PduEncode;
 
-use crate::{ColorPointer, PixelOrder, RGBAPointer};
-
 use self::bitmap::BitmapEncoder;
 use self::rfx::RfxEncoder;
 use super::BitmapUpdate;
+use crate::{ColorPointer, PixelOrder, RGBAPointer};
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 #[repr(u8)]

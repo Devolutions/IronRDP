@@ -1,8 +1,11 @@
+use std::sync::mpsc;
+use std::thread;
+use std::time::Duration;
+
 use anyhow::Context;
 use cpal::traits::StreamTrait;
 use ironrdp_rdpsnd::pdu::{AudioFormat, WaveFormat};
 use ironrdp_rdpsnd_native::cpal::make_stream;
-use std::{sync::mpsc, thread, time::Duration};
 use tracing::debug;
 
 fn setup_logging() -> anyhow::Result<()> {
@@ -43,14 +46,14 @@ fn main() -> anyhow::Result<()> {
     let producer = thread::spawn(move || {
         let data_chunks = vec![vec![1u8, 2, 3], vec![4, 5, 6], vec![7, 8, 9]];
         for chunk in data_chunks {
-            tx.send(chunk).expect("Failed to send data chunk");
-            debug!("sent a chunk");
+            tx.send(chunk).expect("failed to send data chunk");
+            debug!("Sent a chunk");
             thread::sleep(Duration::from_secs(1)); // Simulating work
         }
     });
 
     stream.play()?;
-    std::thread::sleep(Duration::from_millis(3000));
+    std::thread::sleep(Duration::from_secs(3));
     let _ = producer.join();
 
     Ok(())

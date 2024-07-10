@@ -1,7 +1,6 @@
 use std::borrow::Cow;
 
 use ironrdp_rdpsnd::pdu;
-
 use ironrdp_testsuite_core::encode_decode_test;
 
 encode_decode_test! {

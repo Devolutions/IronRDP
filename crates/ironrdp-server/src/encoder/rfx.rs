@@ -1,10 +1,8 @@
-use ironrdp_graphics::{color_conversion::to_64x64_ycbcr_tile, rfx_encode_component};
-use ironrdp_pdu::{
-    codecs::rfx::{self, OperatingMode, RfxChannel, RfxChannelHeight, RfxChannelWidth},
-    custom_err,
-    rdp::capability_sets::EntropyBits,
-    PduBufferParsing, PduError,
-};
+use ironrdp_graphics::color_conversion::to_64x64_ycbcr_tile;
+use ironrdp_graphics::rfx_encode_component;
+use ironrdp_pdu::codecs::rfx::{self, OperatingMode, RfxChannel, RfxChannelHeight, RfxChannelWidth};
+use ironrdp_pdu::rdp::capability_sets::EntropyBits;
+use ironrdp_pdu::{custom_err, PduBufferParsing, PduError};
 
 use crate::BitmapUpdate;
 

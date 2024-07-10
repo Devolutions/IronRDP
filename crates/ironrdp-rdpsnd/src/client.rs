@@ -1,7 +1,8 @@
 use std::borrow::Cow;
 
+use ironrdp_pdu::cursor::ReadCursor;
+use ironrdp_pdu::gcc::ChannelName;
 use ironrdp_pdu::{cast_length, other_err, PduDecode, PduResult};
-use ironrdp_pdu::{cursor::ReadCursor, gcc::ChannelName};
 use ironrdp_svc::{impl_as_any, CompressionCondition, SvcClientProcessor, SvcMessage, SvcProcessor};
 use tracing::{debug, error};
 
@@ -64,19 +65,19 @@ impl Rdpsnd {
         let server_format = self
             .server_format
             .as_ref()
-            .ok_or(other_err!("Invalid state - no format"))?;
+            .ok_or(other_err!("invalid state - no format"))?;
 
         server_format
             .formats
             .get(format_no as usize)
-            .ok_or(other_err!("Invalid format"))
+            .ok_or(other_err!("invalid format"))
     }
 
     pub fn version(&self) -> PduResult<pdu::Version> {
         let server_format = self
             .server_format
             .as_ref()
-            .ok_or(other_err!("Invalid state - no version"))?;
+            .ok_or(other_err!("invalid state - no version"))?;
 
         Ok(server_format.version)
     }
@@ -85,7 +86,7 @@ impl Rdpsnd {
         let server_format = self
             .server_format
             .as_ref()
-            .ok_or(other_err!("Invalid state - no format"))?;
+            .ok_or(other_err!("invalid state - no format"))?;
 
         let pdu = pdu::ClientAudioFormatPdu {
             version: self.version()?,
@@ -164,7 +165,7 @@ impl SvcProcessor for Rdpsnd {
             }
             RdpsndState::WaitingForTraining => {
                 let pdu::ServerAudioOutputPdu::Training(pdu) = pdu else {
-                    error!("Invalid pdu");
+                    error!("Invalid PDU");
                     self.state = RdpsndState::Stop;
                     return Ok(vec![]);
                 };
@@ -190,7 +191,7 @@ impl SvcProcessor for Rdpsnd {
                         self.handler.close();
                     }
                     _ => {
-                        error!("Invalid pdu");
+                        error!("Invalid PDU");
                         self.state = RdpsndState::Stop;
                         return Ok(vec![]);
                     }
