@@ -58,6 +58,9 @@ jobs:
     name: Checks [${{ matrix.os }}]
     runs-on: ${{ matrix.runner }}
     needs: formatting
+    env:
+      # For Windows (disable NASM dependency)
+      AWS_LC_SYS_NO_ASM: true
     strategy:
       fail-fast: false
       matrix:
