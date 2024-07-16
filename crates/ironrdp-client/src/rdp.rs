@@ -201,7 +201,7 @@ async fn active_session(
                             }
                         }
 
-                        info!(width, height, "resize event");
+                        trace!(width, height, "Resize event");
                         let (width, height) = MonitorLayoutEntry::adjust_display_size(width.into(), height.into());
                         debug!(width, height, "Adjusted display size");
 
