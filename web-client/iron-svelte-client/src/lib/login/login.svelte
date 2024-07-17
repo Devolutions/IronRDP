@@ -31,7 +31,7 @@
     });
 
     const initListeners = () => {
-        userInteraction.sessionListener.subscribe((event) => {
+        userInteraction.onSessionEvent((event) => {
             if (event.type === 2) {
                 console.log('Error event', event.data);
 
