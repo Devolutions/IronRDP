@@ -37,18 +37,7 @@ export class PublicAPI {
             kdc_proxy_url,
         );
 
-        return new Promise((resolve, reject) => {
-            resultObservable.subscribe({
-                next: (sessionInfo: NewSessionInfo) => {
-                    loggingService.info('Connection successful.');
-                    resolve(sessionInfo);
-                },
-                error: (error: Error) => {
-                    loggingService.error('Connection failed.');
-                    reject(error);
-                },
-            });
-        });
+        return resultObservable.toPromise();
     }
 
     private ctrlAltDel() {
