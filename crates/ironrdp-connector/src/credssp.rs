@@ -1,5 +1,7 @@
 use ironrdp_pdu::write_buf::WriteBuf;
 use ironrdp_pdu::{nego, PduHint};
+use picky::key::PrivateKey;
+use picky_asn1_x509::{oids, Certificate, ExtensionView, GeneralName};
 use sspi::credssp::{self, ClientState, CredSspClient};
 use sspi::generator::{Generator, NetworkRequest};
 use sspi::negotiate::ProtocolConfig;
@@ -108,8 +110,27 @@ impl CredsspSequence {
                 }
                 .into()
             }
-            Credentials::SmartCard { pin: _, config } => match config {
-                Some(config) => sspi::Credentials::SmartCard(Box::new(config.clone())),
+            Credentials::SmartCard { pin, config } => match config {
+                Some(config) => {
+                    let cert: Certificate = picky_asn1_der::from_bytes(&config.certificate)
+                        .map_err(|_e| general_err!("can't parse certificate"))?;
+                    let key = PrivateKey::from_rsa_der(&config.private_key)
+                        .map_err(|_e| general_err!("can't parse private key"))?;
+                    let identity = sspi::SmartCardIdentity {
+                        username: extract_user_principal_name(&cert)
+                            .or(extract_user_name(&cert))
+                            .unwrap_or_default(),
+                        certificate: cert,
+                        reader_name: config.reader_name.clone(),
+                        card_name: None,
+                        container_name: config.container_name.clone(),
+                        csp_name: config.csp_name.clone(),
+                        pin: pin.as_bytes().to_vec().into(),
+                        private_key_file_index: None,
+                        private_key: Some(key.into()),
+                    };
+                    sspi::Credentials::SmartCard(Box::new(identity))
+                }
                 None => {
                     return Err(general_err!("smart card configuration missing"));
                 }
@@ -221,6 +242,26 @@ impl CredsspSequence {
 
         Ok(size)
     }
+}
+
+fn extract_user_name(cert: &Certificate) -> Option<String> {
+    cert.tbs_certificate.subject.find_common_name().map(ToString::to_string)
+}
+
+fn extract_user_principal_name(cert: &Certificate) -> Option<String> {
+    cert.extensions()
+        .iter()
+        .find(|ext| ext.extn_id().0 == oids::subject_alternative_name())
+        .iter()
+        .flat_map(|ext| match ext.extn_value() {
+            ExtensionView::SubjectAltName(names) => names.0,
+            _ => vec![],
+        })
+        .find_map(|name| match name {
+            GeneralName::OtherName(name) if name.type_id.0 == oids::user_principal_name() => Some(name.value),
+            _ => None,
+        })
+        .and_then(|asn1| picky_asn1_der::from_bytes(&asn1.0 .0).ok())
 }
 
 fn write_credssp_request(ts_request: credssp::TsRequest, output: &mut WriteBuf) -> ConnectorResult<usize> {
