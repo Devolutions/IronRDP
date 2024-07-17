@@ -114,11 +114,11 @@ impl CredsspSequence {
                 Some(config) => {
                     let cert: Certificate = picky_asn1_der::from_bytes(&config.certificate)
                         .map_err(|_e| general_err!("can't parse certificate"))?;
-                    let key = PrivateKey::from_rsa_der(&config.private_key)
+                    let key = PrivateKey::from_pkcs1(&config.private_key)
                         .map_err(|_e| general_err!("can't parse private key"))?;
                     let identity = sspi::SmartCardIdentity {
                         username: extract_user_principal_name(&cert)
-                            .or(extract_user_name(&cert))
+                            .or_else(|| extract_user_name(&cert))
                             .unwrap_or_default(),
                         certificate: cert,
                         reader_name: config.reader_name.clone(),
