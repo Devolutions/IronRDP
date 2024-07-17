@@ -2,7 +2,7 @@
     import { currentSession, userInteractionService } from '../../services/session.service';
     import { catchError, filter } from 'rxjs/operators';
     import type { UserInteraction, NewSessionInfo } from '../../../static/iron-remote-gui';
-    import { of } from 'rxjs';
+    import { from, of } from 'rxjs';
     import { toast } from '$lib/messages/message-store';
     import { showLogin } from '$lib/login/login-store';
     import type { DesktopSize } from '../../models/desktop-size';
@@ -53,8 +53,8 @@
             type: 'info',
             message: 'Connection in progress...',
         });
-        userInteraction
-            .connect(username, password, hostname, gatewayAddress, domain, authtoken, desktopSize, pcb, kdc_proxy_url)
+        from(userInteraction
+            .connect(username, password, hostname, gatewayAddress, domain, authtoken, desktopSize, pcb, kdc_proxy_url))
             .pipe(
                 catchError((err) => {
                     toast.set({

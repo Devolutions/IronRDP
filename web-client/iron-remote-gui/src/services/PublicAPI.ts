@@ -4,7 +4,6 @@ import { SpecialCombination } from '../enums/SpecialCombination';
 import type { WasmBridgeService } from './wasm-bridge.service';
 import type { UserInteraction } from '../interfaces/UserInteraction';
 import type { ScreenScale } from '../enums/ScreenScale';
-import type { Observable } from 'rxjs';
 import type { DesktopSize } from '../interfaces/DesktopSize';
 
 export class PublicAPI {
@@ -24,9 +23,9 @@ export class PublicAPI {
         desktopSize?: DesktopSize,
         preConnectionBlob?: string,
         kdc_proxy_url?: string,
-    ): Observable<NewSessionInfo> {
+    ): Promise<NewSessionInfo> {
         loggingService.info('Initializing connection.');
-        return this.wasmService.connect(
+        const resultObservable = this.wasmService.connect(
             username,
             password,
             destination,
@@ -37,6 +36,19 @@ export class PublicAPI {
             preConnectionBlob,
             kdc_proxy_url,
         );
+
+        return new Promise((resolve, reject) => {
+            resultObservable.subscribe({
+                next: (sessionInfo: NewSessionInfo) => {
+                    loggingService.info('Connection successful.');
+                    resolve(sessionInfo);
+                },
+                error: (error: Error) => {
+                    loggingService.error('Connection failed.');
+                    reject(error);
+                },
+            });
+        });
     }
 
     private ctrlAltDel() {
@@ -73,7 +85,9 @@ export class PublicAPI {
             setVisibility: this.setVisibility.bind(this),
             connect: this.connect.bind(this),
             setScale: this.setScale.bind(this),
-            sessionListener: this.wasmService.sessionObserver,
+            onSessionEvent: (callback) => {
+                this.wasmService.sessionObserver.subscribe(callback);
+            },
             ctrlAltDel: this.ctrlAltDel.bind(this),
             metaKey: this.metaKey.bind(this),
             shutdown: this.shutdown.bind(this),
