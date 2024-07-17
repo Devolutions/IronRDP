@@ -69,7 +69,21 @@ jobs:
             runner: ubuntu-22.04 # 22.04 because we need a recent wabt version
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install devel packages
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get -y install libasound2-dev
+
+      - name: Install NASM
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          choco install nasm
+          $Env:PATH += ";$Env:ProgramFiles\NASM"
+          echo "PATH=$Env:PATH" >> $Env:GITHUB_ENV
 
       - name: Rust cache
         uses: Swatinem/rust-cache@v2.7.3
@@ -158,7 +172,7 @@ jobs:
   success:
     name: Success
     runs-on: ubuntu-latest
-    if: ${{ success() }}
+    if: ${{ always() }}
     needs:
       - formatting
       - typos
@@ -168,4 +182,10 @@ jobs:
 
     steps:
       - name: CI succeeded
+        id: succeeded
+        if: ${{ !contains(needs.*.result, 'failure') }}
         run: exit 0
+
+      - name: CI failed
+        if: ${{ steps.succeeded.outcome == 'skipped' }}
+        run: exit 1

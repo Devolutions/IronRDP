@@ -30,14 +30,14 @@ pub(crate) fn extract_tls_server_public_key(cert: &[u8]) -> std::io::Result<Vec<
 
     use x509_cert::der::Decode as _;
 
-    let cert = x509_cert::Certificate::from_der(cert).map_err(|e| io::Error::new(io::ErrorKind::Other, e))?;
+    let cert = x509_cert::Certificate::from_der(cert).map_err(io::Error::other)?;
 
     let server_public_key = cert
         .tbs_certificate
         .subject_public_key_info
         .subject_public_key
         .as_bytes()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "subject public key BIT STRING is not aligned"))?
+        .ok_or_else(|| io::Error::other("subject public key BIT STRING is not aligned"))?
         .to_owned();
 
     Ok(server_public_key)

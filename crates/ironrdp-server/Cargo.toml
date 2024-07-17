@@ -18,7 +18,7 @@ test = false
 [dependencies]
 anyhow = "1.0"
 tokio = { version = "1", features = ["net", "macros", "sync"] }
-tokio-rustls = "0.24"
+tokio-rustls = "0.26"
 async-trait = "0.1"
 ironrdp-ainput.workspace = true
 ironrdp-pdu.workspace = true
@@ -29,4 +29,8 @@ ironrdp-dvc.workspace = true
 ironrdp-tokio.workspace = true
 ironrdp-acceptor.workspace = true
 ironrdp-graphics.workspace = true
+ironrdp-rdpsnd.workspace = true
 tracing.workspace = true
+
+[dev-dependencies]
+tokio = { version = "1", features = ["sync"] }

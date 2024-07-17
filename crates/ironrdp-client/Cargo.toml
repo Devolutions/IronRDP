@@ -30,6 +30,7 @@ native-tls = ["ironrdp-tls/native-tls"]
 # Protocols
 ironrdp = { workspace = true, features = ["input", "graphics", "dvc", "svc", "rdpdr", "rdpsnd", "cliprdr", "displaycontrol"] }
 ironrdp-cliprdr-native.workspace = true
+ironrdp-rdpsnd-native.workspace = true
 ironrdp-tls.workspace = true
 ironrdp-tokio.workspace = true
 sspi = { workspace = true, features = ["network_client", "dns_resolver"] } # enable additional features
@@ -51,13 +52,13 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tokio = { version = "1", features = ["full"]}
 
 # Utils
-whoami = "1.4"
+whoami = "1.5"
 anyhow = "1"
 smallvec = "1.13"
 tap = "1"
 semver = "1"
-reqwest = "0.11.24"
-url = "2.5.2"
+reqwest = "0.12"
+url = "2.5"
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.48", features = [

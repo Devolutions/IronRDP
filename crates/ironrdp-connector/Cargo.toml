@@ -26,7 +26,7 @@ ironrdp-pdu = { workspace = true, features = ["std"] }
 rand_core = { version = "0.6", features = ["std"] } # TODO: dependency injection?
 sspi.workspace = true
 tracing.workspace = true
-url = "2.5.2"
+url = "2.5"
 picky-asn1-der = "0.5.0"
 picky-asn1-x509 = "0.12.0"
 picky = "7.0.0-rc.8"

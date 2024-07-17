@@ -1,6 +1,7 @@
 use std::io;
 
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt as _};
+use tokio_rustls::rustls::{self, pki_types::ServerName};
 
 pub type TlsStream<S> = tokio_rustls::client::TlsStream<S>;
 
@@ -9,8 +10,8 @@ where
     S: Unpin + AsyncRead + AsyncWrite,
 {
     let mut tls_stream = {
-        let mut config = tokio_rustls::rustls::client::ClientConfig::builder()
-            .with_safe_defaults()
+        let mut config = rustls::client::ClientConfig::builder()
+            .dangerous()
             .with_custom_certificate_verifier(std::sync::Arc::new(danger::NoCertificateVerification))
             .with_no_client_auth();
 
@@ -26,11 +27,9 @@ where
 
         let config = std::sync::Arc::new(config);
 
-        let server_name = server_name.try_into().unwrap();
+        let domain = ServerName::try_from(server_name.to_owned()).map_err(io::Error::other)?;
 
-        tokio_rustls::TlsConnector::from(config)
-            .connect(server_name, stream)
-            .await?
+        tokio_rustls::TlsConnector::from(config).connect(domain, stream).await?
     };
 
     tls_stream.flush().await?;
@@ -42,31 +41,66 @@ where
             .peer_certificates()
             .and_then(|certificates| certificates.first())
             .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "peer certificate is missing"))?;
-        crate::extract_tls_server_public_key(&cert.0)?
+        crate::extract_tls_server_public_key(cert)?
     };
 
     Ok((tls_stream, server_public_key))
 }
 
 mod danger {
-    use std::time::SystemTime;
+    use tokio_rustls::rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
+    use tokio_rustls::rustls::pki_types;
+    use tokio_rustls::rustls::{DigitallySignedStruct, Error, SignatureScheme};
 
-    use tokio_rustls::rustls::client::ServerCertVerified;
-    use tokio_rustls::rustls::{Certificate, Error, ServerName};
-
+    #[derive(Debug)]
     pub(super) struct NoCertificateVerification;
 
-    impl tokio_rustls::rustls::client::ServerCertVerifier for NoCertificateVerification {
+    impl ServerCertVerifier for NoCertificateVerification {
         fn verify_server_cert(
             &self,
-            _end_entity: &Certificate,
-            _intermediates: &[Certificate],
-            _server_name: &ServerName,
-            _scts: &mut dyn Iterator<Item = &[u8]>,
-            _ocsp_response: &[u8],
-            _now: SystemTime,
+            _: &pki_types::CertificateDer<'_>,
+            _: &[pki_types::CertificateDer<'_>],
+            _: &pki_types::ServerName<'_>,
+            _: &[u8],
+            _: pki_types::UnixTime,
         ) -> Result<ServerCertVerified, Error> {
-            Ok(tokio_rustls::rustls::client::ServerCertVerified::assertion())
+            Ok(ServerCertVerified::assertion())
+        }
+
+        fn verify_tls12_signature(
+            &self,
+            _: &[u8],
+            _: &pki_types::CertificateDer<'_>,
+            _: &DigitallySignedStruct,
+        ) -> Result<HandshakeSignatureValid, Error> {
+            Ok(HandshakeSignatureValid::assertion())
+        }
+
+        fn verify_tls13_signature(
+            &self,
+            _: &[u8],
+            _: &pki_types::CertificateDer<'_>,
+            _: &DigitallySignedStruct,
+        ) -> Result<HandshakeSignatureValid, Error> {
+            Ok(HandshakeSignatureValid::assertion())
+        }
+
+        fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
+            vec![
+                SignatureScheme::RSA_PKCS1_SHA1,
+                SignatureScheme::ECDSA_SHA1_Legacy,
+                SignatureScheme::RSA_PKCS1_SHA256,
+                SignatureScheme::ECDSA_NISTP256_SHA256,
+                SignatureScheme::RSA_PKCS1_SHA384,
+                SignatureScheme::ECDSA_NISTP384_SHA384,
+                SignatureScheme::RSA_PKCS1_SHA512,
+                SignatureScheme::ECDSA_NISTP521_SHA512,
+                SignatureScheme::RSA_PSS_SHA256,
+                SignatureScheme::RSA_PSS_SHA384,
+                SignatureScheme::RSA_PSS_SHA512,
+                SignatureScheme::ED25519,
+                SignatureScheme::ED448,
+            ]
         }
     }
 }

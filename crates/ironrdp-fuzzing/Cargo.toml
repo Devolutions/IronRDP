@@ -15,6 +15,7 @@ ironrdp-graphics.workspace = true
 ironrdp-pdu.workspace = true
 ironrdp-cliprdr.workspace = true
 ironrdp-rdpdr.workspace = true
+ironrdp-rdpsnd.workspace = true
 ironrdp-cliprdr-format.workspace = true
 ironrdp-displaycontrol.workspace = true
 ironrdp-svc.workspace = true

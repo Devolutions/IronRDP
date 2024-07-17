@@ -6,7 +6,6 @@ use ironrdp_acceptor::{self, Acceptor, AcceptorResult, BeginResult};
 use ironrdp_cliprdr::backend::ClipboardMessage;
 use ironrdp_cliprdr::CliprdrServer;
 use ironrdp_displaycontrol::server::DisplayControlServer;
-use ironrdp_dvc as dvc;
 use ironrdp_pdu::input::fast_path::{FastPathInput, FastPathInputEvent};
 use ironrdp_pdu::input::InputEventPdu;
 use ironrdp_pdu::mcs::SendDataRequest;
@@ -14,15 +13,17 @@ use ironrdp_pdu::rdp::capability_sets::{BitmapCodecs, CapabilitySet, CmdFlags, G
 use ironrdp_pdu::{self, decode, mcs, nego, rdp, Action, PduResult};
 use ironrdp_svc::{impl_as_any, server_encode_svc_messages, StaticChannelId, StaticChannelSet, SvcProcessor};
 use ironrdp_tokio::{Framed, FramedRead, FramedWrite, TokioFramed};
+use rdpsnd::server::{RdpsndServer, RdpsndServerMessage};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
 use tokio_rustls::TlsAcceptor;
+use {ironrdp_dvc as dvc, ironrdp_rdpsnd as rdpsnd};
 
 use crate::clipboard::CliprdrServerFactory;
 use crate::display::{DisplayUpdate, RdpServerDisplay};
 use crate::encoder::UpdateEncoder;
 use crate::handler::RdpServerInputHandler;
-use crate::{builder, capabilities};
+use crate::{builder, capabilities, SoundServerFactory};
 
 #[derive(Clone)]
 pub struct RdpServerOptions {
@@ -148,6 +149,7 @@ pub struct RdpServer {
     handler: Arc<Mutex<Box<dyn RdpServerInputHandler>>>,
     display: Box<dyn RdpServerDisplay>,
     static_channels: StaticChannelSet,
+    sound_factory: Option<Box<dyn SoundServerFactory>>,
     cliprdr_factory: Option<Box<dyn CliprdrServerFactory>>,
     ev_sender: mpsc::UnboundedSender<ServerEvent>,
     ev_receiver: mpsc::UnboundedReceiver<ServerEvent>,
@@ -156,6 +158,7 @@ pub struct RdpServer {
 #[derive(Debug)]
 pub enum ServerEvent {
     Clipboard(ClipboardMessage),
+    Rdpsnd(RdpsndServerMessage),
 }
 
 pub trait ServerEventSender {
@@ -173,17 +176,22 @@ impl RdpServer {
         opts: RdpServerOptions,
         handler: Box<dyn RdpServerInputHandler>,
         display: Box<dyn RdpServerDisplay>,
+        mut sound_factory: Option<Box<dyn SoundServerFactory>>,
         mut cliprdr_factory: Option<Box<dyn CliprdrServerFactory>>,
     ) -> Self {
         let (ev_sender, ev_receiver) = ServerEvent::create_channel();
         if let Some(cliprdr) = cliprdr_factory.as_mut() {
             cliprdr.set_sender(ev_sender.clone());
         }
+        if let Some(snd) = sound_factory.as_mut() {
+            snd.set_sender(ev_sender.clone());
+        }
         Self {
             opts,
             handler: Arc::new(Mutex::new(handler)),
             display,
             static_channels: StaticChannelSet::new(),
+            sound_factory,
             cliprdr_factory,
             ev_sender,
             ev_receiver,
@@ -211,6 +219,12 @@ impl RdpServer {
             let cliprdr = CliprdrServer::new(backend);
 
             acceptor.attach_static_channel(cliprdr);
+        }
+
+        if let Some(factory) = self.sound_factory.as_deref() {
+            let backend = factory.build_backend();
+
+            acceptor.attach_static_channel(RdpsndServer::new(backend));
         }
 
         let dvc = dvc::DrdynvcServer::new()
@@ -262,10 +276,10 @@ impl RdpServer {
         Ok(())
     }
 
-    pub fn get_svc_processor<T: SvcProcessor + 'static>(&self) -> Option<&T> {
+    pub fn get_svc_processor<T: SvcProcessor + 'static>(&mut self) -> Option<&mut T> {
         self.static_channels
-            .get_by_type::<T>()
-            .and_then(|svc| svc.channel_processor_downcast_ref())
+            .get_by_type_mut::<T>()
+            .and_then(|svc| svc.channel_processor_downcast_mut())
     }
 
     pub fn get_channel_id_by_type<T: SvcProcessor + 'static>(&self) -> Option<StaticChannelId> {
@@ -416,6 +430,35 @@ impl RdpServer {
 
                 Some(event) = self.ev_receiver.recv() => {
                     match event {
+                        ServerEvent::Rdpsnd(s) => {
+                            let Some(rdpsnd) = self.get_svc_processor::<RdpsndServer>() else {
+                                warn!("No rdpsnd channel, dropping event");
+                                continue;
+                            };
+                            let res = match s {
+                                RdpsndServerMessage::Wave(data, ts) => {
+                                    rdpsnd.wave(data, ts)
+                                },
+                                RdpsndServerMessage::Close => {
+                                    rdpsnd.close()
+                                },
+                                RdpsndServerMessage::Error(error) => {
+                                    error!(?error, "Handling rdpsnd event");
+                                    continue;
+                                }
+                            };
+                            match res {
+                                Ok(msgs) => {
+                                    let channel_id = self.get_channel_id_by_type::<RdpsndServer>().ok_or_else(|| anyhow!("SVC channel not found"))?;
+                                    let data = server_encode_svc_messages(msgs.into(), channel_id, result.user_channel_id)?;
+                                    framed.write_all(&data).await?;
+                                },
+                                Err(error) => {
+                                    error!(?error, "Sending rdpsnd event");
+                                    break;
+                                }
+                            }
+                        },
                         ServerEvent::Clipboard(c) => {
                             let Some(cliprdr) = self.get_svc_processor::<CliprdrServer>() else {
                                 warn!("No clipboard channel, dropping event");
@@ -455,6 +498,8 @@ impl RdpServer {
         }
 
         debug!("End of client loop");
+
+        self.static_channels = StaticChannelSet::new();
 
         Ok(())
     }
