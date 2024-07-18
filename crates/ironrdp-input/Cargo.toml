@@ -16,6 +16,6 @@ doctest = false
 test = false
 
 [dependencies]
-ironrdp-pdu.workspace = true
+ironrdp-pdu = { workspace = true, features = ["std"] }
 bitvec = "1.0"
 smallvec = "1.13"
