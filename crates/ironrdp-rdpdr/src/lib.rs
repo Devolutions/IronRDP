@@ -165,9 +165,7 @@ impl Rdpdr {
 
                 debug!(?req);
 
-                self.backend.handle_drive_io_request(req)?;
-
-                Ok(Vec::new())
+                Ok(self.backend.handle_drive_io_request(req)?)
             }
             _ => {
                 // This should never happen, as we only announce devices that we support.

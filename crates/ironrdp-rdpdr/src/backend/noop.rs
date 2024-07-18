@@ -1,5 +1,5 @@
 use ironrdp_pdu::PduResult;
-use ironrdp_svc::impl_as_any;
+use ironrdp_svc::{impl_as_any, SvcMessage};
 
 use super::RdpdrBackend;
 use crate::pdu::efs::{DeviceControlRequest, ServerDeviceAnnounceResponse};
@@ -17,7 +17,7 @@ impl RdpdrBackend for NoopRdpdrBackend {
     fn handle_scard_call(&mut self, _req: DeviceControlRequest<ScardIoCtlCode>, _call: ScardCall) -> PduResult<()> {
         Ok(())
     }
-    fn handle_drive_io_request(&mut self, _req: crate::pdu::efs::ServerDriveIoRequest) -> PduResult<()> {
-        Ok(())
+    fn handle_drive_io_request(&mut self, _req: crate::pdu::efs::ServerDriveIoRequest) -> PduResult<Vec<SvcMessage>> {
+        Ok(Vec::new())
     }
 }
