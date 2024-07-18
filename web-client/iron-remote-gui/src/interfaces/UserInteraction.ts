@@ -1,5 +1,4 @@
 ﻿import type { ScreenScale } from '../enums/ScreenScale';
-import type { Observable } from 'rxjs';
 import type { NewSessionInfo } from './NewSessionInfo';
 import type { SessionEvent } from './session-event';
 import type { DesktopSize } from './DesktopSize';

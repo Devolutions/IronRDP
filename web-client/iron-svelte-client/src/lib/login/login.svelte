@@ -53,8 +53,19 @@
             type: 'info',
             message: 'Connection in progress...',
         });
-        from(userInteraction
-            .connect(username, password, hostname, gatewayAddress, domain, authtoken, desktopSize, pcb, kdc_proxy_url))
+        from(
+            userInteraction.connect(
+                username,
+                password,
+                hostname,
+                gatewayAddress,
+                domain,
+                authtoken,
+                desktopSize,
+                pcb,
+                kdc_proxy_url,
+            ),
+        )
             .pipe(
                 catchError((err) => {
                     toast.set({
