@@ -17,7 +17,7 @@ test = false
 doctest = false
 
 [dependencies]
-diplomat = "0.7"
+diplomat = "0.8"
 diplomat-runtime = "0.7"
 ironrdp = { workspace = true, features = ["connector", "dvc", "svc", "rdpdr", "rdpsnd", "graphics", "input", "cliprdr", "displaycontrol"] }
 ironrdp-cliprdr-native = { workspace = true }
