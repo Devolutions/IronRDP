@@ -168,7 +168,11 @@ fn run(
                 let g = pixel[1];
                 let b = pixel[2];
                 let _a = pixel[3];
-                bmp.set_pixel(x as u32, y as u32, bmp::Pixel::new(r, g, b));
+                bmp.set_pixel(
+                    u32::try_from(x).unwrap(),
+                    u32::try_from(y).unwrap(),
+                    bmp::Pixel::new(r, g, b),
+                );
             })
         });
 

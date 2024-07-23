@@ -73,7 +73,9 @@ fn parse_args() -> anyhow::Result<Action> {
     let action = if args.contains(["-h", "--help"]) {
         Action::ShowHelp
     } else {
-        let host = args.opt_value_from_str("--host")?.unwrap_or(String::from("localhost"));
+        let host = args
+            .opt_value_from_str("--host")?
+            .unwrap_or_else(|| String::from("localhost"));
         let port = args.opt_value_from_str("--port")?.unwrap_or(3389);
         let cert = args.opt_value_from_str("--cert")?;
         let key = args.opt_value_from_str("--key")?;
@@ -155,10 +157,15 @@ impl RdpServerDisplayUpdates for DisplayUpdates {
         let mut rng = thread_rng();
 
         let top: u16 = rng.gen_range(0..HEIGHT);
-        let height = NonZeroU16::new(rng.gen_range(1..=HEIGHT - top)).unwrap();
+        let height = NonZeroU16::new(rng.gen_range(1..=HEIGHT.checked_sub(top).unwrap())).unwrap();
         let left: u16 = rng.gen_range(0..WIDTH);
-        let width = NonZeroU16::new(rng.gen_range(1..=WIDTH - left)).unwrap();
-        let mut data = Vec::with_capacity(4 * usize::from(width.get()) * usize::from(height.get()));
+        let width = NonZeroU16::new(rng.gen_range(1..=WIDTH.checked_sub(left).unwrap())).unwrap();
+        let capacity = usize::from(width.get())
+            .checked_mul(usize::from(height.get()))
+            .unwrap()
+            .checked_mul(4)
+            .unwrap();
+        let mut data = Vec::with_capacity(capacity);
         for _ in 0..(data.capacity() / 4) {
             data.push(rng.gen());
             data.push(rng.gen());
@@ -228,7 +235,7 @@ impl ServerEventSender for StubSoundServerFactory {
 impl SoundServerFactory for StubSoundServerFactory {
     fn build_backend(&self) -> Box<dyn RdpsndServerHandler> {
         Box::new(SndHandler {
-            inner: self.inner.clone(),
+            inner: Arc::clone(&self.inner),
             task: None,
         })
     }
@@ -259,15 +266,17 @@ impl RdpsndServerHandler for SndHandler {
         async fn generate_sine_wave(sample_rate: u32, frequency: f32, duration_ms: u64) -> Vec<u8> {
             use std::f32::consts::PI;
 
-            let total_samples = (sample_rate as u64 * duration_ms) / 1000;
+            let total_samples = u64::from(sample_rate / 1000).checked_mul(duration_ms).unwrap();
             let samples_per_wave_length = sample_rate as f32 / frequency;
             let amplitude = 32767.0; // Max amplitude for 16-bit audio
 
-            let mut samples = Vec::with_capacity(total_samples as usize * 2 * 2);
+            let capacity = total_samples.checked_mul(2 + 2).unwrap();
+            let mut samples = Vec::with_capacity(usize::try_from(capacity).unwrap());
 
             for n in 0..total_samples {
                 let t = (n as f32 % samples_per_wave_length) / samples_per_wave_length;
                 let sample = (t * 2.0 * PI).sin();
+                #[allow(clippy::cast_possible_truncation)]
                 let sample = (sample * amplitude) as i16;
                 samples.extend_from_slice(&sample.to_le_bytes());
                 samples.extend_from_slice(&sample.to_le_bytes());
@@ -276,7 +285,7 @@ impl RdpsndServerHandler for SndHandler {
             samples
         }
 
-        let inner = self.inner.clone();
+        let inner = Arc::clone(&self.inner);
         self.task = Some(tokio::spawn(async move {
             let mut interval = time::interval(Duration::from_millis(100));
             let mut ts = 0;
@@ -287,7 +296,7 @@ impl RdpsndServerHandler for SndHandler {
                 if let Some(sender) = inner.ev_sender.as_ref() {
                     let _ = sender.send(ServerEvent::Rdpsnd(RdpsndServerMessage::Wave(data, ts)));
                 }
-                ts += 100;
+                ts = ts.wrapping_add(100);
             }
         }));
 
