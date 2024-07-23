@@ -18,7 +18,7 @@ pub fn lints(sh: &Shell) -> anyhow::Result<()> {
     let _s = Section::new("LINTS");
 
     // TODO: when 1.74 is released use `--keep-going`: https://doc.rust-lang.org/nightly/cargo/reference/unstable.html#keep-going
-    cmd!(sh, "{CARGO} clippy --workspace --locked -- -D warnings").run()?;
+    cmd!(sh, "{CARGO} clippy --workspace --all-targets --locked -- -D warnings").run()?;
 
     println!("All good!");
 
