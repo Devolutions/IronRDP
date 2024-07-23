@@ -1,4 +1,4 @@
-use std::cmp::{max, min};
+use std::cmp::min;
 use std::io::{self, Write};
 
 use crate::image_processing::PixelFormat;
@@ -162,7 +162,7 @@ pub fn rdp_16bit_to_rgb(color: u16) -> [u8; 3] {
 }
 
 fn clip(v: i32) -> u8 {
-    min(max(v, 0), 255) as u8
+    v.clamp(0, 255) as u8
 }
 
 #[derive(Debug)]
