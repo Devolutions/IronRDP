@@ -277,7 +277,7 @@ mod tests {
     }
 
     #[test]
-    pub fn failures_handled_gracefully() {
+    fn failures_handled_gracefully() {
         // Empty buffer
         assert_parsing_failure(
             &[],
