@@ -66,7 +66,7 @@ fn smoke_mouse_position() {
     let test_impl = |ops: Vec<MousePosition>| -> anyhow::Result<()> {
         let mut db = Database::default();
 
-        db.apply(ops.iter().cloned().map(Operation::MouseMove));
+        db.apply(ops.iter().copied().map(Operation::MouseMove));
 
         let last_position = ops.last().unwrap();
         ensure!(db.mouse_position().eq(last_position));
