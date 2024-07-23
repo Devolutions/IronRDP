@@ -222,7 +222,7 @@ pub struct FormatDataRequest {
 
 impl FormatDataRequest {
     const NAME: &'static str = "CLIPRDR_FORMAT_DATA_REQUEST";
-    const FIXED_PART_SIZE: usize = std::mem::size_of::<u32>();
+    const FIXED_PART_SIZE: usize = 4 /* format */;
 }
 
 impl PduEncode for FormatDataRequest {

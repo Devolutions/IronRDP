@@ -1,6 +1,7 @@
 use byteorder::{LittleEndian, ReadBytesExt as _};
 use num_derive::{FromPrimitive, ToPrimitive};
 use std::fmt::Debug;
+use std::mem::size_of;
 use std::ops::Add;
 
 use crate::cursor::{ReadCursor, WriteCursor};
@@ -8,7 +9,7 @@ use crate::PduResult;
 
 pub fn split_u64(value: u64) -> (u32, u32) {
     let bytes = value.to_le_bytes();
-    let (low, high) = bytes.split_at(std::mem::size_of::<u32>());
+    let (low, high) = bytes.split_at(size_of::<u32>());
     (
         u32::from_le_bytes(low.try_into().unwrap()),
         u32::from_le_bytes(high.try_into().unwrap()),
@@ -16,9 +17,9 @@ pub fn split_u64(value: u64) -> (u32, u32) {
 }
 
 pub fn combine_u64(lo: u32, hi: u32) -> u64 {
-    let mut position_bytes = [0u8; std::mem::size_of::<u64>()];
-    position_bytes[..std::mem::size_of::<u32>()].copy_from_slice(&lo.to_le_bytes());
-    position_bytes[std::mem::size_of::<u32>()..].copy_from_slice(&hi.to_le_bytes());
+    let mut position_bytes = [0u8; size_of::<u64>()];
+    position_bytes[..size_of::<u32>()].copy_from_slice(&lo.to_le_bytes());
+    position_bytes[size_of::<u32>()..].copy_from_slice(&hi.to_le_bytes());
     u64::from_le_bytes(position_bytes)
 }
 

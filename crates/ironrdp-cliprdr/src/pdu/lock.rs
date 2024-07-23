@@ -11,7 +11,7 @@ impl_pdu_pod!(LockDataId);
 
 impl LockDataId {
     const NAME: &'static str = "CLIPRDR_(UN)LOCK_CLIPDATA";
-    const FIXED_PART_SIZE: usize = std::mem::size_of::<u32>();
+    const FIXED_PART_SIZE: usize = 4 /* Id */;
 }
 
 impl PduEncode for LockDataId {

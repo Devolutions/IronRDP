@@ -50,7 +50,7 @@ impl IntoOwnedPdu for FileContentsResponse<'_> {
 
 impl<'a> FileContentsResponse<'a> {
     const NAME: &'static str = "CLIPRDR_FILECONTENTS_RESPONSE";
-    const FIXED_PART_SIZE: usize = std::mem::size_of::<u32>();
+    const FIXED_PART_SIZE: usize = 4 /* streamId */;
 
     fn inner_size(&self) -> usize {
         Self::FIXED_PART_SIZE + self.data.len()
@@ -170,11 +170,11 @@ pub struct FileContentsRequest {
 
 impl FileContentsRequest {
     const NAME: &'static str = "CLIPRDR_FILECONTENTS_REQUEST";
-    const FIXED_PART_SIZE: usize = std::mem::size_of::<u32>() * 4 + std::mem::size_of::<u64>();
+    const FIXED_PART_SIZE: usize = 4 /* streamId */ + 4 /* idx */ + 4 /* flags */ + 8 /* position */ + 4 /* reqSize */;
 
     fn inner_size(&self) -> usize {
         let data_id_size = match self.data_id {
-            Some(_) => std::mem::size_of::<u32>(),
+            Some(_) => 4,
             None => 0,
         };
 
@@ -222,7 +222,7 @@ impl<'de> PduDecode<'de> for FileContentsRequest {
 
         let mut expected_size = Self::FIXED_PART_SIZE;
         if read_data_id {
-            expected_size += std::mem::size_of::<u32>();
+            expected_size += 4;
         }
 
         ensure_size!(in: src, size: expected_size);

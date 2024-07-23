@@ -66,7 +66,7 @@ impl Acceptor {
     }
 
     pub fn get_result(&mut self) -> Option<AcceptorResult> {
-        match std::mem::take(&mut self.state) {
+        match mem::take(&mut self.state) {
             AcceptorState::Accepted {
                 channels: _channels, // TODO: what about ChannelDef?
                 client_capabilities,
@@ -201,7 +201,7 @@ impl Sequence for Acceptor {
     }
 
     fn step(&mut self, input: &[u8], output: &mut WriteBuf) -> ConnectorResult<Written> {
-        let (written, next_state) = match std::mem::take(&mut self.state) {
+        let (written, next_state) = match mem::take(&mut self.state) {
             AcceptorState::InitiationWaitRequest => {
                 let connection_request = decode::<nego::ConnectionRequest>(input).map_err(ConnectorError::pdu)?;
 
@@ -375,7 +375,7 @@ impl Sequence for Acceptor {
                 early_capability,
                 channels,
             } => {
-                let data: pdu::mcs::SendDataRequest<'_> = decode(input).map_err(ConnectorError::pdu)?;
+                let data: mcs::SendDataRequest<'_> = decode(input).map_err(ConnectorError::pdu)?;
                 let client_info: rdp::ClientInfoPdu = decode(data.user_data.as_ref()).map_err(ConnectorError::pdu)?;
 
                 debug!(message = ?client_info, "Received");
@@ -418,14 +418,12 @@ impl Sequence for Acceptor {
                 let demand_active = rdp::headers::ShareControlHeader {
                     share_id: 0,
                     pdu_source: self.io_channel_id,
-                    share_control_pdu: rdp::headers::ShareControlPdu::ServerDemandActive(
-                        rdp::capability_sets::ServerDemandActive {
-                            pdu: rdp::capability_sets::DemandActive {
-                                source_descriptor: "".into(),
-                                capability_sets: self.server_capabilities.clone(),
-                            },
+                    share_control_pdu: ShareControlPdu::ServerDemandActive(rdp::capability_sets::ServerDemandActive {
+                        pdu: rdp::capability_sets::DemandActive {
+                            source_descriptor: "".into(),
+                            capability_sets: self.server_capabilities.clone(),
                         },
-                    ),
+                    }),
                 };
 
                 debug!(message = ?demand_active, "Send");
@@ -546,7 +544,7 @@ fn create_gcc_blocks(
     requested: nego::SecurityProtocol,
     skip_channel_join: bool,
 ) -> gcc::ServerGccBlocks {
-    pdu::gcc::ServerGccBlocks {
+    gcc::ServerGccBlocks {
         core: gcc::ServerCoreData {
             version: gcc::RdpVersion::V5_PLUS,
             optional_data: gcc::ServerCoreOptionalData {

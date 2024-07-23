@@ -1,4 +1,4 @@
-use std::{fmt, mem};
+use std::fmt;
 
 use bit_field::BitField;
 use num_derive::{FromPrimitive, ToPrimitive};
@@ -391,7 +391,7 @@ pub struct CacheToSurfacePdu {
 impl CacheToSurfacePdu {
     const NAME: &'static str = "CacheToSurfacePdu";
 
-    const FIXED_PART_SIZE: usize = mem::size_of::<u16>() * 3;
+    const FIXED_PART_SIZE: usize = 2 /* cache_slot */ + 2 /* surface_id */ + 2 /* npoints */;
 }
 
 impl PduEncode for CacheToSurfacePdu {

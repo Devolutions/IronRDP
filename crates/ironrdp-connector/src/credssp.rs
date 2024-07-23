@@ -44,7 +44,7 @@ const CREDSSP_TS_REQUEST_HINT: CredsspTsRequestHint = CredsspTsRequestHint;
 
 impl PduHint for CredsspTsRequestHint {
     fn find_size(&self, bytes: &[u8]) -> ironrdp_pdu::PduResult<Option<usize>> {
-        match sspi::credssp::TsRequest::read_length(bytes) {
+        match credssp::TsRequest::read_length(bytes) {
             Ok(length) => Ok(Some(length)),
             Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => Ok(None),
             Err(e) => Err(ironrdp_pdu::custom_err!("CredsspTsRequestHint", e)),
@@ -59,7 +59,7 @@ const CREDSSP_EARLY_USER_AUTH_RESULT_HINT: CredsspEarlyUserAuthResultHint = Cred
 
 impl PduHint for CredsspEarlyUserAuthResultHint {
     fn find_size(&self, _: &[u8]) -> ironrdp_pdu::PduResult<Option<usize>> {
-        Ok(Some(sspi::credssp::EARLY_USER_AUTH_RESULT_PDU_SIZE))
+        Ok(Some(credssp::EARLY_USER_AUTH_RESULT_PDU_SIZE))
     }
 }
 
@@ -122,7 +122,7 @@ impl CredsspSequence {
         }
         debug!(?credssp_config);
 
-        let client = credssp::CredSspClient::new(
+        let client = CredSspClient::new(
             server_public_key,
             credentials.into(),
             credssp::CredSspMode::WithCredentials,
@@ -190,8 +190,8 @@ impl CredsspSequence {
         let (size, next_state) = match self.state {
             CredsspState::Ongoing => {
                 let (ts_request_from_client, next_state) = match result {
-                    credssp::ClientState::ReplyNeeded(ts_request) => (ts_request, CredsspState::Ongoing),
-                    credssp::ClientState::FinalMessage(ts_request) => (
+                    ClientState::ReplyNeeded(ts_request) => (ts_request, CredsspState::Ongoing),
+                    ClientState::FinalMessage(ts_request) => (
                         ts_request,
                         if self.selected_protocol.contains(nego::SecurityProtocol::HYBRID_EX) {
                             CredsspState::EarlyUserAuthResult

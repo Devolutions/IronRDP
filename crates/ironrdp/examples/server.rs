@@ -22,7 +22,7 @@ use ironrdp_server::{
 };
 use rand::prelude::*;
 use rustls_pemfile::{certs, pkcs8_private_keys};
-use tokio::sync::mpsc::{self, UnboundedSender};
+use tokio::sync::mpsc::UnboundedSender;
 use tokio::time::{self, sleep, Duration};
 use tokio_rustls::rustls;
 use tokio_rustls::TlsAcceptor;
@@ -149,7 +149,7 @@ struct DisplayUpdates;
 impl RdpServerDisplayUpdates for DisplayUpdates {
     async fn next_update(&mut self) -> Option<DisplayUpdate> {
         sleep(Duration::from_millis(100)).await;
-        let mut rng = rand::thread_rng();
+        let mut rng = thread_rng();
 
         let top: u16 = rng.gen_range(0..HEIGHT);
         let height = NonZeroU16::new(rng.gen_range(1..=HEIGHT - top)).unwrap();
@@ -207,7 +207,7 @@ impl CliprdrServerFactory for StubCliprdrServerFactory {}
 
 #[derive(Debug)]
 pub struct Inner {
-    ev_sender: Option<mpsc::UnboundedSender<ServerEvent>>,
+    ev_sender: Option<UnboundedSender<ServerEvent>>,
 }
 
 struct StubSoundServerFactory {
