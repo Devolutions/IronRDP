@@ -30,3 +30,7 @@ thiserror.workspace = true
 [dev-dependencies]
 bmp = "0.5"
 expect-test.workspace = true
+
+[lints]
+workspace = true
+

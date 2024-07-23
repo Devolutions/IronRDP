@@ -33,3 +33,7 @@ embed-resource = "2.4"
 windows = { version = "0.48", features = [
     "Win32_Foundation",
 ] }
+
+[lints]
+workspace = true
+

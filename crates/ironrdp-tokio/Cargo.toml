@@ -19,3 +19,7 @@ test = false
 bytes = "1"
 ironrdp-async.workspace = true
 tokio = { version = "1", features = ["io-util"] }
+
+[lints]
+workspace = true
+

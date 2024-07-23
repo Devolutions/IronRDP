@@ -13,3 +13,7 @@ anyhow = "1"
 pico-args = "0.5"
 xshell = "0.2"
 tinyjson = "2.5"
+
+[lints]
+workspace = true
+

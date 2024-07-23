@@ -34,3 +34,7 @@ tracing.workspace = true
 
 [dev-dependencies]
 tokio = { version = "1", features = ["sync"] }
+
+[lints]
+workspace = true
+

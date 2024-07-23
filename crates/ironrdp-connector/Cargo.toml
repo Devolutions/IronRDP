@@ -33,3 +33,7 @@ url = "2.5"
 # NOTE: can be removed after #260 is merged
 [target.'cfg(windows)'.dependencies]
 winapi = { version = "0.3", features = ["std"] }
+
+[lints]
+workspace = true
+
