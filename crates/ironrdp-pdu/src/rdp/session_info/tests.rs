@@ -238,15 +238,15 @@ const SESSION_ID: u32 = 0x02;
 lazy_static! {
     static ref LOGON_INFO_V1: LogonInfoVersion1 = LogonInfoVersion1 {
         logon_info: LogonInfo {
-            domain_name: DOMAIN_NAME.to_string(),
-            user_name: USER_NAME.to_string(),
+            domain_name: DOMAIN_NAME.to_owned(),
+            user_name: USER_NAME.to_owned(),
             session_id: SESSION_ID,
         },
     };
     static ref LOGON_INFO_V2: LogonInfoVersion2 = LogonInfoVersion2 {
         logon_info: LogonInfo {
-            domain_name: DOMAIN_NAME.to_string(),
-            user_name: USER_NAME.to_string(),
+            domain_name: DOMAIN_NAME.to_owned(),
+            user_name: USER_NAME.to_owned(),
             session_id: SESSION_ID,
         },
     };
