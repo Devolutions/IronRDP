@@ -21,7 +21,7 @@ pub enum HtmlError {
 /// Because of that, this function takes the input as a byte slice and finds the end of the payload itself.
 /// This is expected to be more convenient at the callsite.
 pub fn cf_html_to_plain_html(input: &[u8]) -> Result<&str, HtmlError> {
-    const EOL_CONTROL_CHARS: &[u8] = &[b'\r', b'\n'];
+    const EOL_CONTROL_CHARS: &[u8] = b"\r\n";
 
     let mut start_fragment = None;
     let mut end_fragment = None;
