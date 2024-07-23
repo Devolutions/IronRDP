@@ -11,7 +11,7 @@ fn expect_pointer_png(pointer: &DecodedPointer, expected_file_path: &str) {
     if std::env::var("UPDATE_EXPECT").unwrap_or_default() == "1" {
         let mut encoded_png = Vec::new();
 
-        let mut png = png::Encoder::new(&mut encoded_png, pointer.width as u32, pointer.height as u32);
+        let mut png = png::Encoder::new(&mut encoded_png, u32::from(pointer.width), u32::from(pointer.height));
         png.set_color(png::ColorType::Rgba);
         png.set_depth(png::BitDepth::Eight);
         png.write_header()
