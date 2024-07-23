@@ -265,7 +265,7 @@ pub struct BitmapDataHeader {
 
 impl BitmapDataHeader {
     const NAME: &'static str = "TS_COMPRESSED_BITMAP_HEADER_EX";
-    const FIXED_PART_SIZE: usize = core::mem::size_of::<u32>() * 2 + core::mem::size_of::<u64>() * 4;
+    const FIXED_PART_SIZE: usize = 4 /* highUniqueId */ + 4 /* lowUniqueId */ + 8 /* tmMilli */ + 8 /* tmSeconds */;
 
     pub const ENCODED_SIZE: usize = Self::FIXED_PART_SIZE;
 }
