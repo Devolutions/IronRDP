@@ -53,7 +53,7 @@ fn main() -> anyhow::Result<()> {
     });
 
     stream.play()?;
-    std::thread::sleep(Duration::from_secs(3));
+    thread::sleep(Duration::from_secs(3));
     let _ = producer.join();
 
     Ok(())

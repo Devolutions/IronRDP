@@ -40,8 +40,8 @@ pub enum RdpServerSecurity {
 impl RdpServerSecurity {
     pub fn flag(&self) -> nego::SecurityProtocol {
         match self {
-            RdpServerSecurity::None => ironrdp_pdu::nego::SecurityProtocol::empty(),
-            RdpServerSecurity::Tls(_) => ironrdp_pdu::nego::SecurityProtocol::SSL,
+            RdpServerSecurity::None => nego::SecurityProtocol::empty(),
+            RdpServerSecurity::Tls(_) => nego::SecurityProtocol::SSL,
         }
     }
 }

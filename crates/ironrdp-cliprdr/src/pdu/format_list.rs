@@ -234,7 +234,7 @@ impl FormatList<'_> {
     const NAME: &'static str = "CLIPRDR_FORMAT_LIST";
 
     // `CLIPRDR_SHORT_FORMAT_NAME` size
-    const SHORT_FORMAT_SIZE: usize = std::mem::size_of::<u32>() + 32;
+    const SHORT_FORMAT_SIZE: usize = 4 /* formatId */ + 32 /* name */;
 
     fn new_impl(formats: &[ClipboardFormat], use_long_format: bool, use_ascii: bool) -> PduResult<Self> {
         let charset = if use_ascii {
@@ -273,7 +273,7 @@ impl FormatList<'_> {
                     }
                 };
 
-                let required_size = std::mem::size_of::<u32>() + encoded_string.len();
+                let required_size = 4 + encoded_string.len();
                 if buffer.len() - bytes_written < required_size {
                     buffer.resize(bytes_written + required_size, 0);
                 }
@@ -331,7 +331,7 @@ impl FormatList<'_> {
 
         if use_long_format {
             // Minimal `CLIPRDR_LONG_FORMAT_NAME` size (id + null-terminated name)
-            const MINIMAL_FORMAT_SIZE: usize = std::mem::size_of::<u32>() + std::mem::size_of::<u16>();
+            const MINIMAL_FORMAT_SIZE: usize = 4 /* id */ + 2 /* null-terminated name */;
 
             let mut formats = Vec::with_capacity(16);
 

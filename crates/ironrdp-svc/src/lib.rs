@@ -653,6 +653,8 @@ struct ChannelPduHeader {
 
 impl ChannelPduHeader {
     const NAME: &'static str = "CHANNEL_PDU_HEADER";
+
+    const FIXED_PART_SIZE: usize = 4 /* len */ + 4 /* flags */;
 }
 
 impl PduEncode for ChannelPduHeader {
@@ -668,6 +670,6 @@ impl PduEncode for ChannelPduHeader {
 
     #[allow(clippy::arithmetic_side_effects)]
     fn size(&self) -> usize {
-        std::mem::size_of::<u32>() * 2
+        Self::FIXED_PART_SIZE
     }
 }

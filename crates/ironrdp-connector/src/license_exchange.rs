@@ -132,7 +132,7 @@ impl Sequence for LicenseExchangeSequence {
                                 )
                             }
                             Err(error) => {
-                                if let server_license::ServerLicenseError::InvalidX509Certificate {
+                                if let ServerLicenseError::InvalidX509Certificate {
                                     source: error,
                                     cert_der,
                                 } = &error

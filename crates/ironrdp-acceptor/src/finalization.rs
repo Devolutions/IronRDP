@@ -210,7 +210,7 @@ fn create_control_confirm(user_id: u16) -> rdp::headers::ShareDataPdu {
     rdp::headers::ShareDataPdu::Control(rdp::finalization_messages::ControlPdu {
         action: rdp::finalization_messages::ControlAction::GrantedControl,
         grant_id: user_id,
-        control_id: u32::from(pdu::rdp::capability_sets::SERVER_CHANNEL_ID),
+        control_id: u32::from(rdp::capability_sets::SERVER_CHANNEL_ID),
     })
 }
 
