@@ -164,7 +164,7 @@ impl ClientPlatformChallengeResponse {
 }
 
 #[derive(Debug, PartialEq, FromPrimitive, ToPrimitive)]
-enum ClientType {
+pub enum ClientType {
     Win32 = 0x0100,
     Win16 = 0x0200,
     WinCe = 0x0300,
@@ -172,17 +172,17 @@ enum ClientType {
 }
 
 #[derive(Debug, PartialEq, FromPrimitive, ToPrimitive)]
-enum LicenseDetailLevel {
+pub enum LicenseDetailLevel {
     Simple = 1,
     Moderate = 2,
     Detail = 3,
 }
 
 #[derive(Debug, PartialEq)]
-pub(crate) struct PlatformChallengeResponseData {
-    client_type: ClientType,
-    license_detail_level: LicenseDetailLevel,
-    challenge: Vec<u8>,
+pub struct PlatformChallengeResponseData {
+    pub client_type: ClientType,
+    pub license_detail_level: LicenseDetailLevel,
+    pub challenge: Vec<u8>,
 }
 
 impl PlatformChallengeResponseData {
@@ -241,9 +241,9 @@ impl<'de> PduDecode<'de> for PlatformChallengeResponseData {
 }
 
 #[derive(Debug, PartialEq, Eq)]
-pub(crate) struct ClientHardwareIdentification {
-    pub(crate) platform_id: u32,
-    pub(crate) data: Vec<u8>,
+pub struct ClientHardwareIdentification {
+    pub platform_id: u32,
+    pub data: Vec<u8>,
 }
 
 impl ClientHardwareIdentification {
