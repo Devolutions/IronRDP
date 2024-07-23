@@ -19,3 +19,7 @@ test = false
 ironrdp-pdu.workspace = true
 bitvec = "1.0"
 smallvec = "1.13"
+
+[lints]
+workspace = true
+

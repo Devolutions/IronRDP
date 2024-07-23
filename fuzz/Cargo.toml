@@ -47,3 +47,4 @@ path = "fuzz_targets/channel_processing.rs"
 test = false
 doc = false
 bench = false
+
