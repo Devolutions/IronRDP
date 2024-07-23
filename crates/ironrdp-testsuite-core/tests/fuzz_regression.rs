@@ -18,11 +18,11 @@ macro_rules! check {
 }
 
 #[test]
-pub fn check_pdu_decode() {
+fn check_pdu_decode() {
     check!(pdu_decode);
 }
 
 #[test]
-pub fn check_cliprdr_format() {
+fn check_cliprdr_format() {
     check!(cliprdr_format);
 }
