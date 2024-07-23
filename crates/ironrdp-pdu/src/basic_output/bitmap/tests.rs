@@ -74,6 +74,6 @@ fn to_buffer_bitmap_data_serializes_correctly() {
 #[test]
 fn bitmap_data_length_is_correct() {
     let actual = decode::<BitmapUpdateData>(BITMAP_BUFFER.as_ref()).unwrap();
-    let actual = actual.rectangles.get(0).unwrap().bitmap_data.len();
+    let actual = actual.rectangles.first().unwrap().bitmap_data.len();
     assert_eq!(BITMAP_BUFFER[30..].len(), actual)
 }
