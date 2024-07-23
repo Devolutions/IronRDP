@@ -14,6 +14,8 @@
 //! cargo run --example=screenshot -- --host <HOSTNAME> -u <USERNAME> -p <PASSWORD> -o out.bmp
 //! ```
 
+#![allow(unused_crate_dependencies)] // false positives because there is both a library and a binary
+
 #[macro_use]
 extern crate tracing;
 

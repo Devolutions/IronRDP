@@ -2238,7 +2238,6 @@ dependencies = [
  "der-parser",
  "expect-test",
  "ironrdp-error",
- "ironrdp-testsuite-core",
  "lazy_static",
  "md-5",
  "num-bigint",
