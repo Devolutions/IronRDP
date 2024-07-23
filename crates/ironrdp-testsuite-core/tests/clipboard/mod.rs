@@ -313,7 +313,7 @@ fn format_list_ms_2() {
     assert_eq!(&encoded, input);
 }
 
-fn fake_format_list(use_ascii: bool, use_long_format: bool) -> Box<FormatList<'static>> {
+fn fake_format_list(use_ascii: bool, use_long_format: bool) -> FormatList<'static> {
     let formats = vec![
         ClipboardFormat::new(ClipboardFormatId::new(42)).with_name(ClipboardFormatName::new("Hello")),
         ClipboardFormat::new(ClipboardFormatId::new(24)),
@@ -326,7 +326,7 @@ fn fake_format_list(use_ascii: bool, use_long_format: bool) -> Box<FormatList<'s
         FormatList::new_unicode(&formats, use_long_format).unwrap()
     };
 
-    Box::new(list)
+    list
 }
 
 #[test]
