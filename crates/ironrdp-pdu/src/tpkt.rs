@@ -7,7 +7,7 @@ use crate::{PduError, PduErrorExt as _, PduResult};
 ///
 /// - <https://www.rfc-editor.org/rfc/rfc1006> — RFC 1006 - ISO Transport Service on top of the TCP
 /// - <http://www.itu.int/rec/T-REC-T.123/> — ITU-T T.123 (01/2007) - Network-specific data protocol
-/// stacks for multimedia conferencing
+///   stacks for multimedia conferencing
 ///
 /// ```diagram
 ///       TPKT Header
