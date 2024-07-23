@@ -169,7 +169,7 @@ mod tests {
     use super::*;
 
     fn assert_roundtrip(buffer: &[u8], expected: Expect) {
-        let pdu = crate::decode::<BitmapStream>(buffer).unwrap();
+        let pdu = crate::decode::<BitmapStream<'_>>(buffer).unwrap();
         expected.assert_debug_eq(&pdu);
         assert_eq!(pdu.size(), buffer.len());
         let reencoded = crate::encode_vec(&pdu).unwrap();
@@ -177,7 +177,7 @@ mod tests {
     }
 
     fn assert_parsing_failure(buffer: &[u8], expected: Expect) {
-        let error = crate::decode::<BitmapStream>(buffer).err().unwrap();
+        let error = crate::decode::<BitmapStream<'_>>(buffer).err().unwrap();
         expected.assert_debug_eq(&error);
     }
 

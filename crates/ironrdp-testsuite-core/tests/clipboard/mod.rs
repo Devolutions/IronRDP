@@ -139,7 +139,7 @@ fn client_temp_dir_encode_decode_ms_1() {
     // Test blob from [MS-RDPECLIP]
     let input = include_bytes!("../../test_data/pdu/clipboard/client_temp_dir.pdu");
 
-    let decoded_pdu: ClipboardPdu = ironrdp_pdu::decode(input).unwrap();
+    let decoded_pdu: ClipboardPdu<'_> = ironrdp_pdu::decode(input).unwrap();
 
     if let ClipboardPdu::TemporaryDirectory(client_temp_dir) = &decoded_pdu {
         let path = client_temp_dir.temporary_directory_path().unwrap();
@@ -158,7 +158,7 @@ fn format_list_ms_1() {
     // Test blob from [MS-RDPECLIP]
     let input = include_bytes!("../../test_data/pdu/clipboard/format_list.pdu");
 
-    let decoded_pdu: ClipboardPdu = ironrdp_pdu::decode(input).unwrap();
+    let decoded_pdu: ClipboardPdu<'_> = ironrdp_pdu::decode(input).unwrap();
 
     if let ClipboardPdu::FormatList(format_list) = &decoded_pdu {
         let formats = format_list.get_formats(true).unwrap();
@@ -212,7 +212,7 @@ fn format_list_ms_2() {
     // Test blob from [MS-RDPECLIP]
     let input = include_bytes!("../../test_data/pdu/clipboard/format_list_2.pdu");
 
-    let decoded_pdu: ClipboardPdu = ironrdp_pdu::decode(input).unwrap();
+    let decoded_pdu: ClipboardPdu<'_> = ironrdp_pdu::decode(input).unwrap();
 
     if let ClipboardPdu::FormatList(format_list) = &decoded_pdu {
         let formats = format_list.get_formats(true).unwrap();
@@ -346,7 +346,7 @@ fn metafile_pdu_ms() {
     // Test blob from [MS-RDPECLIP]
     let input = include_bytes!("../../test_data/pdu/clipboard/metafile.pdu");
 
-    let decoded_pdu: ClipboardPdu = ironrdp_pdu::decode(input).unwrap();
+    let decoded_pdu: ClipboardPdu<'_> = ironrdp_pdu::decode(input).unwrap();
 
     if let ClipboardPdu::FormatDataResponse(response) = &decoded_pdu {
         let metafile = response.to_metafile().unwrap();
@@ -371,7 +371,7 @@ fn palette_pdu_ms() {
     // Test blob from [MS-RDPECLIP]
     let input = include_bytes!("../../test_data/pdu/clipboard/palette.pdu");
 
-    let decoded_pdu: ClipboardPdu = ironrdp_pdu::decode(input).unwrap();
+    let decoded_pdu: ClipboardPdu<'_> = ironrdp_pdu::decode(input).unwrap();
 
     if let ClipboardPdu::FormatDataResponse(response) = &decoded_pdu {
         let palette = response.to_palette().unwrap();
@@ -397,7 +397,7 @@ fn file_list_pdu_ms() {
     // Test blob from [MS-RDPECLIP]
     let input = include_bytes!("../../test_data/pdu/clipboard/file_list.pdu");
 
-    let decoded_pdu: ClipboardPdu = ironrdp_pdu::decode(input).unwrap();
+    let decoded_pdu: ClipboardPdu<'_> = ironrdp_pdu::decode(input).unwrap();
 
     if let ClipboardPdu::FormatDataResponse(response) = &decoded_pdu {
         let file_list = response.to_file_list().unwrap();
