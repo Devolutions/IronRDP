@@ -160,7 +160,7 @@ fn run(
 
     image
         .data()
-        .chunks_exact(usize::from(image.width() * 4))
+        .chunks_exact(usize::from(image.width()).checked_mul(4).expect("never overflow"))
         .enumerate()
         .for_each(|(y, row)| {
             row.chunks_exact(4).enumerate().for_each(|(x, pixel)| {
