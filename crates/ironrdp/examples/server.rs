@@ -1,6 +1,7 @@
 //! Example of utilizing `ironrdp-server` crate.
 
 #![allow(unused_crate_dependencies)] // false positives because there is both a library and a binary
+#![allow(clippy::print_stdout)]
 
 #[macro_use]
 extern crate tracing;
