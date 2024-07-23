@@ -1,6 +1,8 @@
 #[macro_use]
 extern crate tracing;
 
+pub use bytes;
+
 mod connector;
 mod framed;
 mod session;
