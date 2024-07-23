@@ -148,6 +148,12 @@ impl WriteBuf {
     }
 }
 
+impl Default for WriteBuf {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[cfg(feature = "std")]
 impl std::io::Write for WriteBuf {
     #[inline]
