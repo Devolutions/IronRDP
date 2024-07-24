@@ -20,6 +20,5 @@ test = false
 ironrdp-pdu.workspace = true
 ironrdp-svc.workspace = true
 ironrdp-rdpdr.workspace = true
-nix = { version = "0.29", features = ["fs"] }
-libc = "0.2"
+nix = { version = "0.29", features = ["fs", "dir"] }
 tracing.workspace = true

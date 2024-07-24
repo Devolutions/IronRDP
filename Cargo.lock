@@ -1975,7 +1975,6 @@ dependencies = [
  "ironrdp-pdu",
  "ironrdp-rdpdr",
  "ironrdp-svc",
- "libc",
  "nix 0.29.0",
  "tracing",
 ]

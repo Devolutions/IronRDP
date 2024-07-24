@@ -1,33 +1,33 @@
 use ironrdp_pdu::PduResult;
-use ironrdp_svc::{impl_as_any, SvcMessage};
-use libc::ftruncate;
-use nix::libc::{closedir, opendir, readdir, DIR};
-
 use ironrdp_rdpdr::pdu::efs::*;
 use ironrdp_rdpdr::pdu::esc::{ScardCall, ScardIoCtlCode};
 use ironrdp_rdpdr::pdu::RdpdrPdu;
 use ironrdp_rdpdr::RdpdrBackend;
-use std::ffi::{CStr, CString};
+use ironrdp_svc::{impl_as_any, SvcMessage};
+use nix::dir::{Dir, OwningIter};
+use std::ffi::CString;
 use std::io::Read;
 use std::io::{Seek, SeekFrom, Write};
 use std::os::fd::{AsFd, AsRawFd};
 use std::os::unix::fs::MetadataExt;
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 pub struct SimpleRdpdrBackend {
-    pub file_id: u32,
-    pub file_base: String,
-    pub file_map: std::collections::HashMap<u32, std::fs::File>,
-    pub file_path_map: std::collections::HashMap<u32, String>,
-    pub file_dir_map: std::collections::HashMap<u32, DirBox>,
+    file_id: u32,
+    file_base: String,
+    file_map: std::collections::HashMap<u32, std::fs::File>,
+    file_path_map: std::collections::HashMap<u32, String>,
+    file_dir_map: std::collections::HashMap<u32, OwningIter>,
 }
 
-#[derive(Debug)]
-pub struct DirBox {
-    pub dir: *mut DIR,
+impl SimpleRdpdrBackend {
+    pub fn new(file_base: String) -> Self {
+        Self {
+            file_base,
+            ..Default::default()
+        }
+    }
 }
-// SAFETY: it is safe to send *DIR to a different thread, and it is only accessed by one thread at one time.
-unsafe impl Send for DirBox {}
 
 impl_as_any!(SimpleRdpdrBackend);
 
@@ -123,6 +123,7 @@ pub(crate) fn write_device(
         Ok(length)
     }
 }
+
 pub(crate) fn read_device(
     backend: &mut SimpleRdpdrBackend,
     req_inner: DeviceReadRequest,
@@ -165,18 +166,14 @@ pub(crate) fn read_device(
         Ok(buf)
     }
 }
+
 pub(crate) fn close_device(
     backend: &mut SimpleRdpdrBackend,
     req_inner: DeviceCloseRequest,
 ) -> PduResult<Vec<SvcMessage>> {
     backend.file_map.remove(&req_inner.device_io_request.file_id);
     backend.file_path_map.remove(&req_inner.device_io_request.file_id);
-    if let Some(dir_box) = backend.file_dir_map.remove(&req_inner.device_io_request.file_id) {
-        // SAFETY: it is safe to close dir when we close device
-        unsafe {
-            closedir(dir_box.dir);
-        }
-    }
+    backend.file_dir_map.remove(&req_inner.device_io_request.file_id);
     let res = RdpdrPdu::DeviceCloseResponse(DeviceCloseResponse {
         device_io_response: DeviceIoResponse::new(req_inner.device_io_request, NtStatus::SUCCESS),
     });
@@ -379,6 +376,7 @@ pub(crate) fn query_volume_information(
         }
     }
 }
+
 pub(crate) fn set_information(
     backend: &mut SimpleRdpdrBackend,
     req_inner: ServerDriveSetInformationRequest,
@@ -416,7 +414,7 @@ pub(crate) fn set_information(
                     // SAFETY: it is safe to call on *nix platform
                     unsafe {
                         if let Some(file) = backend.file_map.get(&req_inner.device_io_request.file_id) {
-                            set_end_res = ftruncate(file.as_raw_fd(), info.end_of_file);
+                            set_end_res = nix::libc::ftruncate(file.as_raw_fd(), info.end_of_file);
                         }
                     }
                     if set_end_res < 0 {
@@ -446,6 +444,7 @@ pub(crate) fn set_information(
         ClientDriveSetInformationResponse::new(&req_inner, NtStatus::SUCCESS)?,
     ))])
 }
+
 // in fact, it is time in secs which is very small
 #[allow(clippy::arithmetic_side_effects)]
 pub(crate) fn transform_to_filetime(time_in_secs: i64) -> i64 {
@@ -453,6 +452,7 @@ pub(crate) fn transform_to_filetime(time_in_secs: i64) -> i64 {
     time += 116444736000000000;
     time
 }
+
 pub(crate) fn get_file_attributes(meta: &std::fs::Metadata, file_name: &str) -> FileAttributes {
     let mut file_attribute = FileAttributes::empty();
     if meta.is_dir() {
@@ -470,6 +470,7 @@ pub(crate) fn get_file_attributes(meta: &std::fs::Metadata, file_name: &str) -> 
     }
     file_attribute
 }
+
 pub(crate) fn make_query_dir_resp(
     find_file_name: Option<String>,
     device_io_request: DeviceIoRequest,
@@ -540,6 +541,7 @@ pub(crate) fn make_query_dir_resp(
         }
     }
 }
+
 pub(crate) fn query_directory(
     backend: &mut SimpleRdpdrBackend,
     req_inner: ServerDriveQueryDirectoryRequest,
@@ -555,34 +557,24 @@ pub(crate) fn query_directory(
                     // path ends with *, so its len > 0
                     #[allow(clippy::arithmetic_side_effects)]
                     parent.push_str(&query_path[0..len - 1]);
-                    let dirp = if let Ok(real_parent_c) = CString::new(parent.clone()) {
-                        // SAFETY: it is safe to call this on *nix platform
-                        unsafe { opendir(real_parent_c.as_ptr()) }
-                    } else {
-                        std::ptr::null::<DIR>().cast_mut()
-                    };
-                    if !dirp.is_null() {
-                        loop {
-                            // SAFETY: it is safe to call readdir on *nix platform
-                            let first = unsafe { readdir(dirp) };
-                            if first.is_null() {
-                                break;
-                            }
-                            // SAFETY: it is safe to call this for rdp
-                            let dir_name = unsafe { &(*first).d_name };
-                            // SAFETY: it is safe to call this for rdp
-                            let dir_name_in_rs =
-                                unsafe { CStr::from_ptr(dir_name as *const i8).to_string_lossy().into_owned() };
-                            if dir_name_in_rs == "." || dir_name_in_rs == ".." {
+                    if let Ok(dirp) = Dir::open(
+                        parent.as_str(),
+                        nix::fcntl::OFlag::O_RDONLY,
+                        nix::sys::stat::Mode::empty(),
+                    ) {
+                        let mut iter = dirp.into_iter();
+                        while let Some(Ok(first)) = iter.next() {
+                            let file_name = first.file_name();
+                            if CString::new(".").unwrap().as_c_str() == file_name
+                                || CString::new("..").unwrap().as_c_str() == file_name
+                            {
                                 continue;
                             }
-                            parent.push_str(&dir_name_in_rs);
+                            parent.push_str(file_name.to_string_lossy().into_owned().as_str());
                             find_file_name = Some(parent);
                             break;
                         }
-                        backend
-                            .file_dir_map
-                            .insert(req_inner.device_io_request.file_id, DirBox { dir: dirp });
+                        backend.file_dir_map.insert(req_inner.device_io_request.file_id, iter);
                     }
                 } else {
                     let mut full_path = backend.file_base.clone();
@@ -597,19 +589,14 @@ pub(crate) fn query_directory(
                     true,
                 )
             } else {
-                if let Some(dir_box) = backend.file_dir_map.get_mut(&req_inner.device_io_request.file_id) {
-                    // SAFETY: it is safe to call readdir in multiple threads
-                    let next = unsafe { readdir(dir_box.dir) };
-                    if !next.is_null() {
-                        // SAFETY:
-                        let file_name = unsafe { &(*next).d_name };
-                        // SAFETY: it is safe to call CStr::from_ptr(file name) for rdp
-                        let mx = unsafe { CStr::from_ptr(file_name as *const i8).to_string_lossy().into_owned() };
+                if let Some(dirp_iter) = backend.file_dir_map.get_mut(&req_inner.device_io_request.file_id) {
+                    if let Some(Ok(next)) = dirp_iter.next() {
+                        let file_name = next.file_name();
                         let mut full_path = parent_pos_for_next.clone();
                         if !full_path.ends_with('/') {
                             full_path.push('/');
                         }
-                        full_path.push_str(&mx);
+                        full_path.push_str(file_name.to_string_lossy().into_owned().as_str());
                         find_file_name = Some(full_path);
                     }
                 }
@@ -632,6 +619,7 @@ pub(crate) fn query_directory(
         }
     }
 }
+
 fn make_create_drive_resp(
     device_io_request: DeviceIoRequest,
     create_disposation: CreateDisposition,
@@ -703,7 +691,6 @@ pub(crate) fn create_drive(
         }
         Err(_) => {
             if req_inner.create_options.bits() & CreateOptions::FILE_DIRECTORY_FILE.bits() != 0 {
-                warn!("Attempt to create a directory,but it is a file");
                 if (req_inner.create_disposition == CreateDisposition::FILE_CREATE
                     || req_inner.create_disposition == CreateDisposition::FILE_OPEN_IF)
                     && std::fs::create_dir_all(path.as_str()).is_ok()
@@ -777,6 +764,7 @@ pub(crate) fn create_drive(
         }
     }
 }
+
 pub(crate) fn process_dependent_file(
     backend: &mut SimpleRdpdrBackend,
     request: DeviceIoRequest,
