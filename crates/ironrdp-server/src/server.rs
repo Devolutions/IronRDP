@@ -157,6 +157,7 @@ pub struct RdpServer {
 
 #[derive(Debug)]
 pub enum ServerEvent {
+    Quit(String),
     Clipboard(ClipboardMessage),
     Rdpsnd(RdpsndServerMessage),
 }
@@ -266,10 +267,26 @@ impl RdpServer {
         let listener = TcpListener::bind(self.opts.addr).await?;
 
         debug!("Listening for connections");
-        while let Ok((stream, peer)) = listener.accept().await {
-            debug!(?peer, "Received connection");
-            if let Err(error) = self.run_connection(stream).await {
-                error!(?error, "Connection error");
+        loop {
+            tokio::select! {
+                Some(event) = self.ev_receiver.recv() => {
+                    match event {
+                        ServerEvent::Quit(reason) => {
+                            debug!("Got quit event {reason}");
+                            break;
+                        }
+                        ev => {
+                            debug!("Unexpected event {:?}", ev);
+                        }
+                    }
+                },
+                Ok((stream, peer)) = listener.accept() => {
+                    debug!(?peer, "Received connection");
+                    if let Err(error) = self.run_connection(stream).await {
+                        error!(?error, "Connection error");
+                    }
+                }
+                else => break,
             }
         }
 
@@ -430,6 +447,10 @@ impl RdpServer {
 
                 Some(event) = self.ev_receiver.recv() => {
                     match event {
+                        ServerEvent::Quit(reason) => {
+                            debug!("Got quit event: {reason}");
+                            break;
+                        }
                         ServerEvent::Rdpsnd(s) => {
                             let Some(rdpsnd) = self.get_svc_processor::<RdpsndServer>() else {
                                 warn!("No rdpsnd channel, dropping event");
@@ -494,6 +515,7 @@ impl RdpServer {
 
                     }
                 }
+                else => break,
             }
         }
 
