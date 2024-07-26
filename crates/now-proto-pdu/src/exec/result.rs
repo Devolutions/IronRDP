@@ -1,6 +1,6 @@
 use crate::{
-    ReadCursor, WriteCursor,
     NowExecMessage, NowExecMsgKind, NowHeader, NowMessage, NowMessageClass, NowStatus, PduDecode, PduEncode, PduResult,
+    ReadCursor, WriteCursor,
 };
 
 /// The NOW_EXEC_RESULT_MSG message is used to return the result of an execution request.

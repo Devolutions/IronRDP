@@ -3,10 +3,7 @@ mod logoff;
 mod msg_box_req;
 mod msg_box_rsp;
 
-use crate::{
-    ReadCursor, WriteCursor,
-    NowHeader, PduEncode, PduResult,
-};
+use crate::{NowHeader, PduEncode, PduResult, ReadCursor, WriteCursor};
 
 pub use lock::NowSessionLockMsg;
 pub use logoff::NowSessionLogoffMsg;

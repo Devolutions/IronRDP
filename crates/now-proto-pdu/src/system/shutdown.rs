@@ -1,7 +1,6 @@
 use crate::{
-    ReadCursor, WriteCursor,
-    system::NowSystemMessageKind,
-    NowHeader, NowMessage, NowMessageClass, NowSystemMessage, NowVarStr, PduDecode as _, PduEncode, PduResult,
+    system::NowSystemMessageKind, NowHeader, NowMessage, NowMessageClass, NowSystemMessage, NowVarStr, PduDecode as _,
+    PduEncode, PduResult, ReadCursor, WriteCursor,
 };
 use bitflags::bitflags;
 

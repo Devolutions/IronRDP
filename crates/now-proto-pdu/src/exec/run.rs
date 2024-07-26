@@ -1,6 +1,6 @@
 use crate::{
-    ReadCursor, WriteCursor,
     NowExecMessage, NowExecMsgKind, NowHeader, NowMessage, NowMessageClass, NowVarStr, PduDecode, PduEncode, PduResult,
+    ReadCursor, WriteCursor,
 };
 
 /// The NOW_EXEC_RUN_MSG message is used to send a run request. This request type maps to starting

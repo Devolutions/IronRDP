@@ -1,6 +1,6 @@
 use crate::{
-    ReadCursor, WriteCursor,
     NowExecMessage, NowHeader, NowMessageClass, NowSessionMessage, NowSystemMessage, PduDecode, PduEncode, PduResult,
+    ReadCursor, WriteCursor,
 };
 
 /// Wrapper type for messages transferred over the NOW-PROTO communication channel.

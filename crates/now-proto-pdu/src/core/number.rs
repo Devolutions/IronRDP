@@ -1,8 +1,5 @@
 //! Variable-length number types.
-use crate::{
-    ReadCursor, WriteCursor,
-    PduDecode, PduEncode, PduError, PduResult,
-};
+use crate::{PduDecode, PduEncode, PduError, PduResult, ReadCursor, WriteCursor};
 
 /// Variable-length encoded u16.
 /// Value range:`[0..0x7FFF]`

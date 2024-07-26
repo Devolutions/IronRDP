@@ -1,9 +1,6 @@
 mod shutdown;
 
-use crate::{
-    ReadCursor, WriteCursor,
-    NowHeader, PduEncode, PduResult,
-};
+use crate::{NowHeader, PduEncode, PduResult, ReadCursor, WriteCursor};
 
 pub use shutdown::{NowSystemShutdownFlags, NowSystemShutdownMsg};
 

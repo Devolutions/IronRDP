@@ -3,10 +3,7 @@
 use alloc::vec::Vec;
 
 use super::VarU32;
-use crate::{
-    ReadCursor, WriteCursor,
-    PduDecode, PduEncode, PduResult,
-};
+use crate::{PduDecode, PduEncode, PduResult, ReadCursor, WriteCursor};
 
 /// String value up to 2^32 bytes long.
 ///

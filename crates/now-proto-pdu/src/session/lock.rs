@@ -1,6 +1,6 @@
 use crate::{
-    ReadCursor, WriteCursor,
     NowHeader, NowMessage, NowMessageClass, NowSessionMessage, NowSessionMessageKind, PduDecode, PduEncode, PduResult,
+    ReadCursor, WriteCursor,
 };
 
 /// The NOW_SESSION_LOCK_MSG is used to request locking the user session.

@@ -1,6 +1,6 @@
 use crate::{
-    ReadCursor, WriteCursor,
     NowExecMessage, NowExecMsgKind, NowHeader, NowMessage, NowMessageClass, PduDecode, PduEncode, PduResult,
+    ReadCursor, WriteCursor,
 };
 
 /// The NOW_EXEC_CANCEL_REQ_MSG message is used to cancel a remote execution session.

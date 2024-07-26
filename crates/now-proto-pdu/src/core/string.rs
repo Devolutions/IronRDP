@@ -2,10 +2,7 @@
 
 use alloc::string::String;
 
-use crate::{
-    ReadCursor, WriteCursor,
-    PduDecode, PduEncode, PduResult, VarU32,
-};
+use crate::{PduDecode, PduEncode, PduResult, ReadCursor, VarU32, WriteCursor};
 
 /// String value up to 2^32 bytes long.
 ///

@@ -1,7 +1,4 @@
-use crate::{
-    ReadCursor, WriteCursor,
-    PduDecode, PduEncode, PduError, PduResult,
-};
+use crate::{PduDecode, PduEncode, PduError, PduResult, ReadCursor, WriteCursor};
 
 /// Error or status severity.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

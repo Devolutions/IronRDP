@@ -19,8 +19,8 @@ mod system;
 
 mod error;
 
+pub use error::{PduError, PduErrorExt, PduErrorKind};
 pub use ironrdp_pdu::cursor::{ReadCursor, WriteCursor};
-pub use error::{PduErrorKind, PduError, PduErrorExt};
 
 pub type PduResult<T> = Result<T, PduError>;
 

@@ -12,10 +12,7 @@ mod run;
 mod shell;
 mod win_ps;
 
-use crate::{
-    ReadCursor, WriteCursor,
-    NowHeader, PduEncode, PduResult,
-};
+use crate::{NowHeader, PduEncode, PduResult, ReadCursor, WriteCursor};
 
 pub use abort::NowExecAbortMsg;
 pub use batch::NowExecBatchMsg;

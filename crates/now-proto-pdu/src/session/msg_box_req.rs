@@ -1,10 +1,9 @@
 use crate::{
-    ReadCursor, WriteCursor,
     NowHeader, NowMessage, NowMessageClass, NowSessionMessage, NowSessionMessageKind, NowVarStr, PduDecode, PduEncode,
-    PduResult,
+    PduResult, ReadCursor, WriteCursor,
 };
-use bitflags::bitflags;
 use alloc::string::String;
+use bitflags::bitflags;
 
 /// Message box style; Directly maps to the WinAPI MessageBox function message box style field.
 ///

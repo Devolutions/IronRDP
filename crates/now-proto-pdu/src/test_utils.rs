@@ -1,5 +1,5 @@
 //! Various test utilities
-use crate::{ReadCursor, NowMessage, PduDecode as _};
+use crate::{NowMessage, PduDecode as _, ReadCursor};
 use alloc::vec::Vec;
 use expect_test::Expect;
 

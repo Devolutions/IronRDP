@@ -1,6 +1,6 @@
 use crate::{
-    ReadCursor, WriteCursor,
     NowHeader, NowMessage, NowMessageClass, NowSessionMessage, NowSessionMessageKind, PduDecode, PduEncode, PduResult,
+    ReadCursor, WriteCursor,
 };
 
 /// Message box response; Directly maps to the WinAPI MessageBox function response.

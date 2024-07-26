@@ -1,7 +1,4 @@
-use crate::{
-    ReadCursor, WriteCursor,
-    PduDecode, PduEncode, PduResult,
-};
+use crate::{PduDecode, PduEncode, PduResult, ReadCursor, WriteCursor};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NowMessageClass(pub u8);
