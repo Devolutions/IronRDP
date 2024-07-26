@@ -1,0 +1,18 @@
+[package]
+name = "now-proto-pdu"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+bitflags = "2"
+ironrdp-error = { path = "../ironrdp-error" }
+ironrdp-pdu = { path = "../ironrdp-pdu" }
+
+
+[dev-dependencies]
+rstest = "0.19"
+expect-test = "1"
+
+[features]
+default = ["std"]
+std = ["ironrdp-error/std", "ironrdp-pdu/std"]
