@@ -1,8 +1,9 @@
-use crate::{
-    system::NowSystemMessageKind, NowHeader, NowMessage, NowMessageClass, NowSystemMessage, NowVarStr, PduDecode as _,
-    PduEncode, PduResult, ReadCursor, WriteCursor,
-};
 use bitflags::bitflags;
+
+use ironrdp_pdu::cursor::{ReadCursor, WriteCursor};
+use ironrdp_pdu::{PduDecode as _, PduEncode, PduResult};
+
+use crate::{system::NowSystemMessageKind, NowHeader, NowMessage, NowMessageClass, NowSystemMessage, NowVarStr};
 
 bitflags! {
     /// NOW_PROTO: NOW_SYSTEM_SHUTDOWN_FLAG_* constants.

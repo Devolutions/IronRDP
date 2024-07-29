@@ -1,4 +1,5 @@
-use crate::{PduDecode, PduEncode, PduError, PduResult, ReadCursor, WriteCursor};
+use ironrdp_pdu::cursor::{ReadCursor, WriteCursor};
+use ironrdp_pdu::{PduDecode, PduEncode, PduError, PduResult};
 
 /// Error or status severity.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -20,10 +21,6 @@ pub enum NowSeverity {
     ///
     /// NOW-PROTO: NOW_SEVERITY_FATAL
     Fatal = 3,
-}
-
-impl NowSeverity {
-    const NAME: &'static str = "NOW_STATUS_SEVERITY";
 }
 
 impl TryFrom<u8> for NowSeverity {

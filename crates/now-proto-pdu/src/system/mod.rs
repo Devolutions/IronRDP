@@ -1,6 +1,9 @@
 mod shutdown;
 
-use crate::{NowHeader, PduEncode, PduResult, ReadCursor, WriteCursor};
+use ironrdp_pdu::cursor::{ReadCursor, WriteCursor};
+use ironrdp_pdu::{PduEncode, PduResult};
+
+use crate::NowHeader;
 
 pub use shutdown::{NowSystemShutdownFlags, NowSystemShutdownMsg};
 

@@ -1,7 +1,7 @@
-use crate::{
-    NowHeader, NowMessage, NowMessageClass, NowSessionMessage, NowSessionMessageKind, PduDecode, PduEncode, PduResult,
-    ReadCursor, WriteCursor,
-};
+use ironrdp_pdu::cursor::{ReadCursor, WriteCursor};
+use ironrdp_pdu::{PduDecode, PduEncode, PduResult};
+
+use crate::{NowHeader, NowMessage, NowMessageClass, NowSessionMessage, NowSessionMessageKind};
 
 /// Message box response; Directly maps to the WinAPI MessageBox function response.
 ///

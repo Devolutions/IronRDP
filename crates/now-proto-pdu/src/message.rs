@@ -1,7 +1,7 @@
-use crate::{
-    NowExecMessage, NowHeader, NowMessageClass, NowSessionMessage, NowSystemMessage, PduDecode, PduEncode, PduResult,
-    ReadCursor, WriteCursor,
-};
+use ironrdp_pdu::cursor::{ReadCursor, WriteCursor};
+use ironrdp_pdu::{PduDecode, PduEncode, PduResult};
+
+use crate::{NowExecMessage, NowHeader, NowMessageClass, NowSessionMessage, NowSystemMessage};
 
 /// Wrapper type for messages transferred over the NOW-PROTO communication channel.
 ///

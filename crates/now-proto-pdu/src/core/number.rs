@@ -1,5 +1,6 @@
 //! Variable-length number types.
-use crate::{PduDecode, PduEncode, PduError, PduResult, ReadCursor, WriteCursor};
+use ironrdp_pdu::cursor::{ReadCursor, WriteCursor};
+use ironrdp_pdu::{PduDecode, PduEncode, PduError, PduResult};
 
 /// Variable-length encoded u16.
 /// Value range:`[0..0x7FFF]`

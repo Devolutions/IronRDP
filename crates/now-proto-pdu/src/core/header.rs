@@ -1,4 +1,5 @@
-use crate::{PduDecode, PduEncode, PduResult, ReadCursor, WriteCursor};
+use ironrdp_pdu::cursor::{ReadCursor, WriteCursor};
+use ironrdp_pdu::{PduDecode, PduEncode, PduResult};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NowMessageClass(pub u8);

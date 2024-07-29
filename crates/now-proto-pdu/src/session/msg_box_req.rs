@@ -1,9 +1,10 @@
-use crate::{
-    NowHeader, NowMessage, NowMessageClass, NowSessionMessage, NowSessionMessageKind, NowVarStr, PduDecode, PduEncode,
-    PduResult, ReadCursor, WriteCursor,
-};
 use alloc::string::String;
 use bitflags::bitflags;
+
+use ironrdp_pdu::cursor::{ReadCursor, WriteCursor};
+use ironrdp_pdu::{PduDecode, PduEncode, PduResult};
+
+use crate::{NowHeader, NowMessage, NowMessageClass, NowSessionMessage, NowSessionMessageKind, NowVarStr};
 
 /// Message box style; Directly maps to the WinAPI MessageBox function message box style field.
 ///

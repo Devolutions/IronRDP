@@ -2,7 +2,10 @@
 
 use alloc::string::String;
 
-use crate::{PduDecode, PduEncode, PduResult, ReadCursor, VarU32, WriteCursor};
+use ironrdp_pdu::cursor::{ReadCursor, WriteCursor};
+use ironrdp_pdu::{PduDecode, PduEncode, PduResult};
+
+use crate::VarU32;
 
 /// String value up to 2^32 bytes long.
 ///
