@@ -220,8 +220,8 @@ lazy_static! {
     };
     pub static ref PRODUCT_INFO: ProductInfo = ProductInfo {
         version: 0x60000,
-        company_name: "Microsoft Corporation".to_string(),
-        product_id: "A02".to_string(),
+        company_name: "Microsoft Corporation".to_owned(),
+        product_id: "A02".to_owned(),
     };
     pub static ref PUBLIC_KEY: RsaPublicKey = RsaPublicKey {
         public_exponent: 0x0001_0001,
@@ -241,8 +241,8 @@ lazy_static! {
             server_random: Vec::from(SERVER_RANDOM_BUFFER.as_ref()),
             product_info: ProductInfo {
                 version: 0x60000,
-                company_name: "Microsoft Corporation".to_string(),
-                product_id: "A02".to_string(),
+                company_name: "Microsoft Corporation".to_owned(),
+                product_id: "A02".to_owned(),
             },
             server_certificate: Some(ServerCertificate {
                 issued_permanently: true,
@@ -317,8 +317,8 @@ fn from_buffer_correctly_parses_server_license_request_no_certificate() {
         server_random: Vec::from(SERVER_RANDOM_BUFFER.as_ref()),
         product_info: ProductInfo {
             version: 0x60000,
-            company_name: "Microsoft Corporation".to_string(),
-            product_id: "A02".to_string(),
+            company_name: "Microsoft Corporation".to_owned(),
+            product_id: "A02".to_owned(),
         },
         server_certificate: None,
         scope_list: vec![Scope(String::from("microsoft.com"))],
@@ -359,8 +359,8 @@ fn to_buffer_correctly_serializes_server_license_request() {
         server_random: Vec::from(SERVER_RANDOM_BUFFER.as_ref()),
         product_info: ProductInfo {
             version: 0x60000,
-            company_name: "Microsoft Corporation".to_string(),
-            product_id: "A02".to_string(),
+            company_name: "Microsoft Corporation".to_owned(),
+            product_id: "A02".to_owned(),
         },
         server_certificate: Some(ServerCertificate {
             issued_permanently: true,

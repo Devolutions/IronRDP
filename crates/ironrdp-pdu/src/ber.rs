@@ -538,7 +538,7 @@ mod tests {
         let mut buf = [0x0; 7];
         let mut cur = WriteCursor::new(&mut buf);
         let string = [0x68, 0x65, 0x6c, 0x6c, 0x6f];
-        let expected: Vec<_> = [0x04, 0x05].iter().chain(string.iter()).cloned().collect();
+        let expected: Vec<_> = [0x04, 0x05].iter().chain(string.iter()).copied().collect();
         assert_eq!(write_octet_string(&mut cur, &string).unwrap(), 7);
         assert_eq!(buf, expected.as_slice());
     }

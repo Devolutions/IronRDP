@@ -66,7 +66,7 @@ fn smoke_mouse_position() {
     let test_impl = |ops: Vec<MousePosition>| -> anyhow::Result<()> {
         let mut db = Database::default();
 
-        db.apply(ops.iter().cloned().map(Operation::MouseMove));
+        db.apply(ops.iter().copied().map(Operation::MouseMove));
 
         let last_position = ops.last().unwrap();
         ensure!(db.mouse_position().eq(last_position));
@@ -98,24 +98,33 @@ fn smoke_keyboard() {
                         (None, None) => {}
                         (None, Some(_)) => unreachable!(),
                         (Some(pressed_packet), None) => {
-                            if let FastPathInputEvent::KeyboardEvent(flags, scancode) = pressed_packet {
+                            if let FastPathInputEvent::KeyboardEvent(flags, packet_scancode) = pressed_packet {
                                 ensure!(!flags.contains(KeyboardFlags::RELEASE));
-                                ensure!(scancode == u8::from(scancode))
+                                ensure!(
+                                    scancode
+                                        == Scancode::from_u8(flags.contains(KeyboardFlags::EXTENDED), packet_scancode)
+                                )
                             } else {
                                 bail!("unexpected packet emitted");
                             }
                         }
                         (Some(released_packet), Some(pressed_packet)) => {
-                            if let FastPathInputEvent::KeyboardEvent(flags, scancode) = released_packet {
+                            if let FastPathInputEvent::KeyboardEvent(flags, packet_scancode) = released_packet {
                                 ensure!(flags.contains(KeyboardFlags::RELEASE));
-                                ensure!(scancode == u8::from(scancode))
+                                ensure!(
+                                    scancode
+                                        == Scancode::from_u8(flags.contains(KeyboardFlags::EXTENDED), packet_scancode)
+                                )
                             } else {
                                 bail!("unexpected packet emitted");
                             }
 
-                            if let FastPathInputEvent::KeyboardEvent(flags, scancode) = pressed_packet {
+                            if let FastPathInputEvent::KeyboardEvent(flags, packet_scancode) = pressed_packet {
                                 ensure!(!flags.contains(KeyboardFlags::RELEASE));
-                                ensure!(scancode == u8::from(scancode))
+                                ensure!(
+                                    scancode
+                                        == Scancode::from_u8(flags.contains(KeyboardFlags::EXTENDED), packet_scancode)
+                                )
                             } else {
                                 bail!("unexpected packet emitted");
                             }
@@ -129,9 +138,11 @@ fn smoke_keyboard() {
                     let packet = packets.into_iter().next();
 
                     if let Some(packet) = packet {
-                        if let FastPathInputEvent::KeyboardEvent(flags, scancode) = packet {
+                        if let FastPathInputEvent::KeyboardEvent(flags, packet_scancode) = packet {
                             ensure!(flags.contains(KeyboardFlags::RELEASE));
-                            ensure!(scancode == u8::from(scancode))
+                            ensure!(
+                                scancode == Scancode::from_u8(flags.contains(KeyboardFlags::EXTENDED), packet_scancode)
+                            )
                         } else {
                             bail!("unexpected packet emitted");
                         }

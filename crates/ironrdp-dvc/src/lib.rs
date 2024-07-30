@@ -79,13 +79,13 @@ pub fn encode_dvc_messages(
                 .ok_or_else(|| other_err!("encode_dvc_messages", "overflow occurred"))?;
 
             let pdu = if needs_splitting && first {
-                pdu::DrdynvcDataPdu::DataFirst(pdu::DataFirstPdu::new(
+                DrdynvcDataPdu::DataFirst(pdu::DataFirstPdu::new(
                     channel_id,
                     cast_length!("total_length", total_length)?,
                     msg[off..end].to_vec(),
                 ))
             } else {
-                pdu::DrdynvcDataPdu::Data(pdu::DataPdu::new(channel_id, msg[off..end].to_vec()))
+                DrdynvcDataPdu::Data(pdu::DataPdu::new(channel_id, msg[off..end].to_vec()))
             };
 
             let svc = SvcMessage::from(pdu).with_flags(flags);

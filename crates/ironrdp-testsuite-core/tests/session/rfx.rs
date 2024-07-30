@@ -12,8 +12,8 @@ fn decode_decodes_valid_sequence_of_messages() {
     let destination = InclusiveRectangle {
         left: 0,
         top: 0,
-        right: IMAGE_WIDTH as u16 - 1,
-        bottom: IMAGE_HEIGHT as u16 - 1,
+        right: u16::try_from(IMAGE_WIDTH).unwrap() - 1,
+        bottom: u16::try_from(IMAGE_HEIGHT).unwrap() - 1,
     };
     let mut data = ENCODED_MESSAGES.as_ref();
     let expected = DECODED_IMAGE.as_ref();

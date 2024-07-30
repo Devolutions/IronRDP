@@ -1,5 +1,4 @@
 ﻿import type { ScreenScale } from '../enums/ScreenScale';
-import type { Observable } from 'rxjs';
 import type { NewSessionInfo } from './NewSessionInfo';
 import type { SessionEvent } from './session-event';
 import type { DesktopSize } from './DesktopSize';
@@ -19,7 +18,7 @@ export interface UserInteraction {
         desktopSize?: DesktopSize,
         preConnectionBlob?: string,
         kdc_proxy_url?: string,
-    ): Observable<NewSessionInfo>;
+    ): Promise<NewSessionInfo>;
 
     setKeyboardUnicodeMode(use_unicode: boolean): void;
 
@@ -31,5 +30,5 @@ export interface UserInteraction {
 
     setCursorStyleOverride(style: string | null): void;
 
-    sessionListener: Observable<SessionEvent>;
+    onSessionEvent(callback: (event: SessionEvent) => void): void;
 }

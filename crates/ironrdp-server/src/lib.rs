@@ -1,5 +1,8 @@
 #![allow(clippy::arithmetic_side_effects)] // TODO: should we enable this lint back?
 
+pub use tokio;
+pub use tokio_rustls;
+
 #[macro_use]
 extern crate tracing;
 

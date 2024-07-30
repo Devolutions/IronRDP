@@ -40,3 +40,7 @@ proptest.workspace = true
 rstest.workspace = true
 expect-test.workspace = true
 anyhow = "1"
+
+[lints]
+workspace = true
+

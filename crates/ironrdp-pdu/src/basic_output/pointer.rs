@@ -10,7 +10,7 @@ pub struct Point16 {
 
 impl Point16 {
     const NAME: &'static str = "TS_POINT16";
-    const FIXED_PART_SIZE: usize = core::mem::size_of::<u16>() * 2;
+    const FIXED_PART_SIZE: usize = 2 /* x */ + 2 /* y */;
 }
 
 impl PduEncode for Point16 {
@@ -59,7 +59,8 @@ pub struct ColorPointerAttribute<'a> {
 
 impl ColorPointerAttribute<'_> {
     const NAME: &'static str = "TS_COLORPOINTERATTRIBUTE";
-    const FIXED_PART_SIZE: usize = core::mem::size_of::<u16>() * 5 + Point16::FIXED_PART_SIZE;
+    const FIXED_PART_SIZE: usize =
+        2 /* cacheIdx */ + 2 /* width */ + 2 /* height */ + 2 /* lenAnd */ + 2 /* lenOr */ + Point16::FIXED_PART_SIZE;
 
     fn check_masks_alignment(and_mask: &[u8], xor_mask: &[u8], pointer_height: u16, large_ptr: bool) -> PduResult<()> {
         const AND_MASK_SIZE_FIELD: &str = "lengthAndMask";
@@ -162,7 +163,7 @@ pub struct PointerAttribute<'a> {
 
 impl PointerAttribute<'_> {
     const NAME: &'static str = "TS_POINTERATTRIBUTE";
-    const FIXED_PART_SIZE: usize = core::mem::size_of::<u16>();
+    const FIXED_PART_SIZE: usize = 2 /* xorBpp */;
 }
 
 impl PduEncode for PointerAttribute<'_> {
@@ -203,7 +204,7 @@ pub struct CachedPointerAttribute {
 
 impl CachedPointerAttribute {
     const NAME: &'static str = "TS_CACHEDPOINTERATTRIBUTE";
-    const FIXED_PART_SIZE: usize = core::mem::size_of::<u16>();
+    const FIXED_PART_SIZE: usize = 2 /* cacheIdx */;
 }
 
 impl PduEncode for CachedPointerAttribute {
@@ -249,7 +250,8 @@ pub struct LargePointerAttribute<'a> {
 impl LargePointerAttribute<'_> {
     const NAME: &'static str = "TS_FP_LARGEPOINTERATTRIBUTE";
     const FIXED_PART_SIZE: usize =
-        core::mem::size_of::<u32>() * 2 + core::mem::size_of::<u16>() * 4 + core::mem::size_of::<Point16>();
+        2 /* xorBpp */ + 2 /* cacheIdx */ + 4 /* hotSpot */ + 2 /* width */ + 2 /* height */ +
+        4 /* andMaskLen */ + 4 /* xorMaskLen */;
 }
 
 impl PduEncode for LargePointerAttribute<'_> {

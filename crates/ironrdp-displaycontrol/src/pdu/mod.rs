@@ -420,13 +420,7 @@ impl MonitorLayoutEntry {
     /// [2.2.2.2.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpedisp/ea2de591-9203-42cd-9908-be7a55237d1c
     pub fn adjust_display_size(width: u32, height: u32) -> (u32, u32) {
         fn constrain(value: u32) -> u32 {
-            if value < 200 {
-                200
-            } else if value > 8192 {
-                8192
-            } else {
-                value
-            }
+            value.clamp(200, 8192)
         }
 
         let mut width = width;

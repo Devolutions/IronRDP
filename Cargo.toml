@@ -70,6 +70,94 @@ lazy_static = "1.4" # prefer https://doc.rust-lang.org/std/sync/struct.OnceLock.
 num-derive = "0.4"
 num-traits = "0.2"
 
+[workspace.lints.rust]
+# Safer unsafe
+unsafe_op_in_unsafe_fn = "warn"
+invalid_reference_casting = "warn"
+pointer_structural_match = "warn"
+# Correctness
+unused_tuple_struct_fields = "warn"
+# Style, readability
+# https://quinedot.github.io/rust-learning/dont-hide.htm
+elided_lifetimes_in_paths = "warn"
+absolute_paths_not_starting_with_crate = "warn"
+single_use_lifetimes = "warn"
+unreachable_pub = "warn"
+unused_lifetimes = "warn"
+unused_qualifications = "warn"
+keyword_idents = "warn"
+noop_method_call = "warn"
+# TODO: NOTE(@CBenoit): we probably want to ensure this in core tier crates only
+# missing_docs = "warn"
+# Compile-time / optimization
+# Note: buggy with dev-dependencies or multiple targets
+# unused_crate_dependencies = "warn"
+unused_macro_rules = "warn"
+
+[workspace.lints.clippy]
+# Safer unsafe
+undocumented_unsafe_blocks = "warn"
+# FIXME: https://github.com/rust-lang/rust-clippy/issues/11312 (fixed for 1.75.0)
+# multiple_unsafe_ops_per_block = "warn"
+transmute_ptr_to_ptr = "warn"
+as_ptr_cast_mut = "warn"
+cast_ptr_alignment = "warn"
+fn_to_numeric_cast_any = "warn"
+ptr_cast_constness = "warn"
+# Correctness
+arithmetic_side_effects = "warn"
+cast_lossless = "warn"
+cast_possible_truncation = "warn"
+cast_possible_wrap = "warn"
+cast_sign_loss = "warn"
+float_cmp = "warn"
+as_underscore = "warn"
+# TODO: let’s either handle `None`, `Err` or use `expect` to give a reason
+# unwrap_used = "warn"
+large_stack_frames = "warn"
+# Style, readability
+# with semicolon-outside-block-ignore-multiline = true
+semicolon_outside_block = "warn"
+clone_on_ref_ptr = "warn"
+cloned_instead_of_copied = "warn"
+trait_duplication_in_bounds = "warn"
+type_repetition_in_bounds = "warn"
+checked_conversions = "warn"
+get_unwrap = "warn"
+# TODO: reduce risk of confusing similar names together, and protects against
+# typos when variable shadowing was intended
+# similar_names = "warn"
+str_to_string = "warn"
+string_to_string = "warn"
+# TODO: std_instead_of_alloc = "warn"
+# TODO: std_instead_of_core = "warn"
+separated_literal_suffix = "warn"
+unused_self = "warn"
+# TODO: use_self = "warn" # NOTE(@CBenoit): not sure about that one
+useless_let_if_seq = "warn"
+# TODO: partial_pub_fields = "warn"
+string_add = "warn"
+range_plus_one = "warn"
+# Compile-time / optimization
+inline_always = "warn"
+or_fun_call = "warn"
+unnecessary_box_returns = "warn"
+# Extra-pedantic clippy
+collection_is_never_read = "warn"
+copy_iterator = "warn"
+expl_impl_clone_on_copy = "warn"
+implicit_clone = "warn"
+large_types_passed_by_value = "warn"
+redundant_clone = "warn"
+alloc_instead_of_core = "warn"
+empty_drop = "warn"
+return_self_not_must_use = "warn"
+wildcard_dependencies = "warn"
+# Let’s not merge unintended eprint!/print! statements in libraries
+print_stderr = "warn"
+print_stdout = "warn"
+dbg_macro = "warn"
+
 [profile.dev]
 opt-level = 1
 

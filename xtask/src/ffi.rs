@@ -47,7 +47,7 @@ pub(crate) fn build_dynamic_lib(sh: &xshell::Shell, release: bool) -> anyhow::Re
     create_dir_all(&dotnet_native_lib_dir_path)
         .with_context(|| format!("failed to create directory {}", dotnet_native_lib_dir_path.display()))?;
 
-    std::fs::copy(&output_lib_path, &dotnet_native_lib_path).with_context(|| {
+    fs::copy(&output_lib_path, &dotnet_native_lib_path).with_context(|| {
         format!(
             "failed to copy {} to {}",
             output_lib_path.display(),

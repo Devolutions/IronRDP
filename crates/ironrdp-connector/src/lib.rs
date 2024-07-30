@@ -170,7 +170,7 @@ pub struct Config {
 
 ironrdp_pdu::assert_impl!(Config: Send, Sync);
 
-pub trait State: Send + core::fmt::Debug + 'static {
+pub trait State: Send + fmt::Debug + 'static {
     fn name(&self) -> &'static str;
     fn is_terminal(&self) -> bool;
     fn as_any(&self) -> &dyn Any;

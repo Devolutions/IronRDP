@@ -42,7 +42,7 @@ softbuffer = "0.3"
 # CLI
 clap = { version = "4.5", features = ["derive", "cargo"] }
 proc-exit = "2"
-inquire = "0.6"
+inquire = "0.7"
 
 # Logging
 tracing.workspace = true
@@ -64,3 +64,7 @@ url = "2.5"
 windows = { version = "0.48", features = [
     "Win32_Foundation",
 ] }
+
+[lints]
+workspace = true
+

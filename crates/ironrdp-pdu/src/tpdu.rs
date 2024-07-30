@@ -49,7 +49,7 @@ impl From<TpduCode> for u8 {
 /// TPDUs are defined in:
 ///
 /// - <http://www.itu.int/rec/T-REC-X.224-199511-I/> — X.224: Information technology - Open Systems
-/// Interconnection - Protocol for providing the connection-mode transport service
+///   Interconnection - Protocol for providing the connection-mode transport service
 /// - RDP uses only TPDUs of class 0, the "simple class" defined in section 8 of X.224
 ///
 /// ```diagram

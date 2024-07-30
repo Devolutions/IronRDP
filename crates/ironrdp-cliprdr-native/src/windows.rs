@@ -13,13 +13,15 @@ use ironrdp_cliprdr::pdu::{
 };
 use thiserror::Error;
 use tracing::error;
-use windows::Win32::Foundation::{FALSE, HWND};
+use windows::Win32::Foundation::FALSE;
 use windows::Win32::System::DataExchange::{AddClipboardFormatListener, RemoveClipboardFormatListener};
 use windows::Win32::UI::Shell::{RemoveWindowSubclass, SetWindowSubclass};
 use windows::Win32::UI::WindowsAndMessaging::WM_USER;
 
 use self::clipboard_impl::{clipboard_subproc, WinClipboardImpl};
 use self::cliprdr_backend::WinCliprdrBackend;
+
+pub use windows::Win32::Foundation::HWND;
 
 const BACKEND_CHANNEL_SIZE: usize = 8;
 const WM_CLIPRDR_BACKEND_EVENT: u32 = WM_USER;

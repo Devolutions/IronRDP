@@ -231,7 +231,7 @@ fn ycocg_with_cll_to_rgb(cll: u8, y: u8, co: u8, cg: u8) -> Rgb {
     // |B|   |1  -1/2   -1/2|   |Cg|
     let chroma_shift = (cll - 1) as usize;
 
-    let clip_i16 = |v: i16| v.max(0).min(255) as u8;
+    let clip_i16 = |v: i16| v.clamp(0, 255) as u8;
 
     let co_signed = (co << chroma_shift) as i8;
     let cg_signed = (cg << chroma_shift) as i8;

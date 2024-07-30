@@ -221,7 +221,7 @@ async fn active_session(
                         active_stage.graceful_shutdown()?
                     }
                     RdpInputEvent::Clipboard(event) => {
-                        if let Some(cliprdr) = active_stage.get_svc_processor::<ironrdp::cliprdr::CliprdrClient>() {
+                        if let Some(cliprdr) = active_stage.get_svc_processor::<cliprdr::CliprdrClient>() {
                             if let Some(svc_messages) = match event {
                                 ClipboardMessage::SendInitiateCopy(formats) => {
                                     Some(cliprdr.initiate_copy(&formats)

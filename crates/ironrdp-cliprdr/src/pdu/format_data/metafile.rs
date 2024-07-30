@@ -46,7 +46,7 @@ pub struct PackedMetafile<'a> {
 
 impl PackedMetafile<'_> {
     const NAME: &'static str = "CLIPRDR_MFPICT";
-    const FIXED_PART_SIZE: usize = std::mem::size_of::<u32>() * 3;
+    const FIXED_PART_SIZE: usize = 4 /* mode */ + 4 /* xExt */ + 4 /* yExt */;
 
     pub fn new(
         mapping_mode: PackedMetafileMappingMode,

@@ -118,13 +118,13 @@ fn buffer_length_is_correct_for_fast_path_header_with_forced_long_length() {
 fn from_buffer_correctly_parses_fast_path_update() {
     assert_eq!(
         *FAST_PATH_UPDATE_PDU,
-        decode::<FastPathUpdatePdu>(FAST_PATH_UPDATE_PDU_BUFFER.as_ref()).unwrap()
+        decode::<FastPathUpdatePdu<'_>>(FAST_PATH_UPDATE_PDU_BUFFER.as_ref()).unwrap()
     );
 }
 
 #[test]
 fn from_buffer_returns_error_on_long_length_for_fast_path_update() {
-    assert!(decode::<FastPathUpdatePdu>(FAST_PATH_UPDATE_PDU_WITH_LONG_LEN_BUFFER.as_ref()).is_err());
+    assert!(decode::<FastPathUpdatePdu<'_>>(FAST_PATH_UPDATE_PDU_WITH_LONG_LEN_BUFFER.as_ref()).is_err());
 }
 
 #[test]

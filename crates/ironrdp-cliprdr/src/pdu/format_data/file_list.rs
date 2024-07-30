@@ -165,7 +165,7 @@ impl_pdu_pod!(PackedFileList);
 
 impl PackedFileList {
     const NAME: &'static str = "CLIPRDR_FILELIST";
-    const FIXED_PART_SIZE: usize = std::mem::size_of::<u32>(); // file count
+    const FIXED_PART_SIZE: usize = 4; // file count
 }
 
 impl PduEncode for PackedFileList {

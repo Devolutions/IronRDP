@@ -13,3 +13,7 @@ test = false
 # ironrdp-session.workspace = true
 # ironrdp-pdu-generators.workspace = true
 # proptest.workspace = true
+
+[lints]
+workspace = true
+

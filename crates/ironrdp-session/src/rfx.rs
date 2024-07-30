@@ -25,7 +25,7 @@ impl Default for DecodingContext {
         Self {
             context: rfx::ContextPdu {
                 flags: rfx::OperatingMode::empty(),
-                entropy_algorithm: rfx::EntropyAlgorithm::Rlgr1,
+                entropy_algorithm: EntropyAlgorithm::Rlgr1,
             },
             channels: rfx::ChannelsPdu(Vec::new()),
             decoding_tiles: DecodingTileContext::new(),

@@ -172,7 +172,7 @@ impl Rectangle for ExclusiveRectangle {
 impl InclusiveRectangle {
     const NAME: &'static str = "InclusiveRectangle";
 
-    pub const FIXED_PART_SIZE: usize = std::mem::size_of::<u16>() * 4;
+    pub const FIXED_PART_SIZE: usize = 2 /* left */ + 2 /* top */ + 2 /* right */ + 2 /* bottom */;
 
     pub const ENCODED_SIZE: usize = Self::FIXED_PART_SIZE;
 }
@@ -218,7 +218,7 @@ impl<'de> PduDecode<'de> for InclusiveRectangle {
 
 impl ExclusiveRectangle {
     const NAME: &'static str = "ExclusiveRectangle";
-    const FIXED_PART_SIZE: usize = std::mem::size_of::<u16>() * 4;
+    const FIXED_PART_SIZE: usize = 2 /* left */ + 2 /* top */ + 2 /* right */ + 2 /* bottom */;
 
     pub const ENCODED_SIZE: usize = Self::FIXED_PART_SIZE;
 }

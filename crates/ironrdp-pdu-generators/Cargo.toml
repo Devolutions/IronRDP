@@ -12,3 +12,7 @@ test = false
 [dependencies]
 # ironrdp-pdu.workspace = true
 # proptest.workspace = true
+
+[lints]
+workspace = true
+

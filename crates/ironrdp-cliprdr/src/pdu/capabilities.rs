@@ -17,7 +17,7 @@ impl_pdu_pod!(Capabilities);
 
 impl Capabilities {
     const NAME: &'static str = "CLIPRDR_CAPS";
-    const FIXED_PART_SIZE: usize = std::mem::size_of::<u16>() * 2;
+    const FIXED_PART_SIZE: usize = 2 /* capsLen */ + 2 /* padding */;
 
     fn inner_size(&self) -> usize {
         Self::FIXED_PART_SIZE + self.capabilities.iter().map(|c| c.size()).sum::<usize>()
@@ -113,7 +113,7 @@ impl_pdu_pod!(CapabilitySet);
 
 impl CapabilitySet {
     const NAME: &'static str = "CLIPRDR_CAPS_SET";
-    const FIXED_PART_SIZE: usize = std::mem::size_of::<u16>() * 2;
+    const FIXED_PART_SIZE: usize = 2 /* type */ + 2 /* len */;
 
     const CAPSTYPE_GENERAL: u16 = 0x0001;
 
@@ -187,7 +187,7 @@ pub struct GeneralCapabilitySet {
 
 impl GeneralCapabilitySet {
     const NAME: &'static str = "CLIPRDR_GENERAL_CAPABILITY";
-    const FIXED_PART_SIZE: usize = std::mem::size_of::<u32>() * 2;
+    const FIXED_PART_SIZE: usize = 4 /* version */ + 4 /* flags */;
 }
 
 impl PduEncode for GeneralCapabilitySet {

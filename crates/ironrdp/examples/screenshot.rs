@@ -14,6 +14,9 @@
 //! cargo run --example=screenshot -- --host <HOSTNAME> -u <USERNAME> -p <PASSWORD> -o out.bmp
 //! ```
 
+#![allow(unused_crate_dependencies)] // false positives because there is both a library and a binary
+#![allow(clippy::print_stdout)]
+
 #[macro_use]
 extern crate tracing;
 
@@ -157,7 +160,7 @@ fn run(
 
     image
         .data()
-        .chunks_exact(usize::from(image.width() * 4))
+        .chunks_exact(usize::from(image.width()).checked_mul(4).expect("never overflow"))
         .enumerate()
         .for_each(|(y, row)| {
             row.chunks_exact(4).enumerate().for_each(|(x, pixel)| {
@@ -165,7 +168,11 @@ fn run(
                 let g = pixel[1];
                 let b = pixel[2];
                 let _a = pixel[3];
-                bmp.set_pixel(x as u32, y as u32, bmp::Pixel::new(r, g, b));
+                bmp.set_pixel(
+                    u32::try_from(x).unwrap(),
+                    u32::try_from(y).unwrap(),
+                    bmp::Pixel::new(r, g, b),
+                );
             })
         });
 

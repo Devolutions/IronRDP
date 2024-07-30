@@ -79,8 +79,8 @@ lazy_static! {
         },
         client_random: Vec::from(CLIENT_RANDOM_BUFFER.as_ref()),
         encrypted_premaster_secret: Vec::from(ENCRYPTED_PREMASTER_SECRET.as_ref()),
-        client_username: CLIENT_USERNAME.to_string(),
-        client_machine_name: CLIENT_MACHINE_NAME.to_string(),
+        client_username: CLIENT_USERNAME.to_owned(),
+        client_machine_name: CLIENT_MACHINE_NAME.to_owned(),
     }.into();
 
     pub static ref REQUEST_BUFFER: Vec<u8> = {
@@ -133,8 +133,8 @@ lazy_static! {
             server_random: Vec::from(SERVER_RANDOM_BUFFER.as_ref()),
             product_info: ProductInfo {
                 version: 0x60000,
-                company_name: "Microsoft Corporation".to_string(),
-                product_id: "A02".to_string(),
+                company_name: "Microsoft Corporation".to_owned(),
+                product_id: "A02".to_owned(),
             },
             server_certificate: Some(ServerCertificate {
                 issued_permanently: true,

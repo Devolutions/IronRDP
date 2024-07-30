@@ -21,7 +21,7 @@ pub enum SurfaceCommand<'a> {
 
 impl SurfaceCommand<'_> {
     const NAME: &'static str = "TS_SURFCMD";
-    const FIXED_PART_SIZE: usize = std::mem::size_of::<u16>();
+    const FIXED_PART_SIZE: usize = 2 /* cmdType */;
 }
 
 impl PduEncode for SurfaceCommand<'_> {
@@ -117,7 +117,7 @@ pub struct FrameMarkerPdu {
 
 impl FrameMarkerPdu {
     const NAME: &'static str = "TS_FRAME_MARKER_PDU";
-    const FIXED_PART_SIZE: usize = core::mem::size_of::<u16>() + core::mem::size_of::<u32>();
+    const FIXED_PART_SIZE: usize = 2 /* frameAction */ + 4 /* frameId */;
 }
 
 impl PduEncode for FrameMarkerPdu {
@@ -141,7 +141,7 @@ impl PduEncode for FrameMarkerPdu {
 
 impl<'de> PduDecode<'de> for FrameMarkerPdu {
     fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
-        ensure_size!(in: src, size: core::mem::size_of::<u16>());
+        ensure_size!(in: src, size: 2);
 
         let frame_action = src.read_u16();
 
@@ -154,7 +154,7 @@ impl<'de> PduDecode<'de> for FrameMarkerPdu {
 
             None
         } else {
-            ensure_size!(in: src, size: core::mem::size_of::<u32>());
+            ensure_size!(in: src, size: 4);
             Some(src.read_u32())
         };
 
@@ -175,8 +175,7 @@ pub struct ExtendedBitmapDataPdu<'a> {
 
 impl ExtendedBitmapDataPdu<'_> {
     const NAME: &'static str = "TS_BITMAP_DATA_EX";
-    const FIXED_PART_SIZE: usize =
-        core::mem::size_of::<u8>() * 4 + core::mem::size_of::<u16>() * 2 + core::mem::size_of::<u32>();
+    const FIXED_PART_SIZE: usize = 1 /* bpp */ + 1 /* flags */ + 1 /* reserved */ + 1 /* codecId */ + 2 /* width */ + 2 /* height */ + 4 /* len */;
 }
 
 impl PduEncode for ExtendedBitmapDataPdu<'_> {
@@ -266,7 +265,7 @@ pub struct BitmapDataHeader {
 
 impl BitmapDataHeader {
     const NAME: &'static str = "TS_COMPRESSED_BITMAP_HEADER_EX";
-    const FIXED_PART_SIZE: usize = core::mem::size_of::<u32>() * 2 + core::mem::size_of::<u64>() * 4;
+    const FIXED_PART_SIZE: usize = 4 /* highUniqueId */ + 4 /* lowUniqueId */ + 8 /* tmMilli */ + 8 /* tmSeconds */;
 
     pub const ENCODED_SIZE: usize = Self::FIXED_PART_SIZE;
 }

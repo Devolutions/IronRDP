@@ -99,7 +99,7 @@ lazy_static! {
 fn from_buffer_correctly_parses_surface_command_frame_marker() {
     assert_eq!(
         FRAME_MARKER_PDU,
-        decode::<SurfaceCommand>(FRAME_MARKER_BUFFER.as_ref()).unwrap()
+        decode::<SurfaceCommand<'_>>(FRAME_MARKER_BUFFER.as_ref()).unwrap()
     );
 }
 
@@ -121,7 +121,7 @@ fn buffer_length_is_correct_for_surface_command_frame_marker() {
 fn from_buffer_correctly_parses_surface_command_bits() {
     assert_eq!(
         *SURFACE_BITS_PDU,
-        decode::<SurfaceCommand>(SURFACE_BITS_BUFFER.as_ref()).unwrap()
+        decode::<SurfaceCommand<'_>>(SURFACE_BITS_BUFFER.as_ref()).unwrap()
     );
 }
 
