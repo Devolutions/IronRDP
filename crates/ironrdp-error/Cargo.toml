@@ -19,3 +19,7 @@ test = false
 default = []
 std = ["alloc"]
 alloc = []
+
+[lints]
+workspace = true
+

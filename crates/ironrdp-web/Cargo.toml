@@ -71,3 +71,7 @@ tap = "1"
 semver = "1"
 url = "2.5"
 base64 = "0.22"
+
+[lints]
+workspace = true
+

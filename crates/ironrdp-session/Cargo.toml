@@ -24,3 +24,7 @@ ironrdp-graphics.workspace = true
 ironrdp-pdu = { workspace = true, features = ["std"] }
 ironrdp-displaycontrol.workspace = true
 tracing.workspace = true
+
+[lints]
+workspace = true
+

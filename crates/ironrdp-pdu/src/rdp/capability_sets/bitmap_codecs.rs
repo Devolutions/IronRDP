@@ -346,7 +346,7 @@ impl<'de> PduDecode<'de> for NsCodec {
         let is_dynamic_fidelity_allowed = src.read_u8() != 0;
         let is_subsampling_allowed = src.read_u8() != 0;
 
-        let color_loss_level = src.read_u8().max(1).min(7);
+        let color_loss_level = src.read_u8().clamp(1, 7);
 
         Ok(Self {
             is_dynamic_fidelity_allowed,

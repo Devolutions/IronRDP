@@ -19,3 +19,7 @@ test = false
 bytes = "1"
 futures-util = { version = "0.3", features = ["io"] }
 ironrdp-async.workspace = true
+
+[lints]
+workspace = true
+

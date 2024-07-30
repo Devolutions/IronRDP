@@ -21,3 +21,7 @@ ironrdp-connector.workspace = true
 ironrdp-pdu.workspace = true
 # ironrdp-session.workspace = true
 tracing.workspace = true
+
+[lints]
+workspace = true
+

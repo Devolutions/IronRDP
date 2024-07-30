@@ -22,3 +22,7 @@ bitflags.workspace = true
 
 num-derive.workspace = true # TODO: remove
 num-traits.workspace = true # TODO: remove
+
+[lints]
+workspace = true
+

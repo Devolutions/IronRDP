@@ -10,7 +10,7 @@
     userInteractionService.subscribe((uis) => {
         if (uis != null) {
             uiService = uis;
-            uiService.sessionListener.subscribe((event) => {
+            uiService.onSessionEvent((event) => {
                 if (event.type === 0) {
                     uiService.setVisibility(true);
                 } else if (event.type === 1) {

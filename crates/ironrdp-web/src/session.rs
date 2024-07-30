@@ -840,7 +840,7 @@ async fn connect(
 ) -> Result<(connector::ConnectionResult, WebSocket), IronRdpError> {
     let mut framed = ironrdp_futures::LocalFuturesFramed::new(ws);
 
-    let mut connector = connector::ClientConnector::new(config);
+    let mut connector = ClientConnector::new(config);
 
     if let Some(clipboard_backend) = clipboard_backend {
         connector.attach_static_channel(CliprdrClient::new(Box::new(clipboard_backend)));
@@ -910,7 +910,7 @@ where
     {
         // RDCleanPath request
 
-        let ironrdp::connector::ClientConnectorState::ConnectionInitiationSendRequest = connector.state else {
+        let connector::ClientConnectorState::ConnectionInitiationSendRequest = connector.state else {
             return Err(anyhow::Error::msg("invalid connector state (send request)").into());
         };
 
@@ -970,7 +970,7 @@ where
 
         connector.attach_server_addr(server_addr);
 
-        let ironrdp::connector::ClientConnectorState::ConnectionInitiationWaitConfirm { .. } = connector.state else {
+        let connector::ClientConnectorState::ConnectionInitiationWaitConfirm { .. } = connector.state else {
             return Err(anyhow::Error::msg("invalid connector state (wait confirm)").into());
         };
 

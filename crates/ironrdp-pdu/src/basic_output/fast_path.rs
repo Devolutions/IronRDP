@@ -25,7 +25,7 @@ pub struct FastPathHeader {
 
 impl FastPathHeader {
     const NAME: &'static str = "TS_FP_UPDATE_PDU header";
-    const FIXED_PART_SIZE: usize = std::mem::size_of::<EncryptionFlags>();
+    const FIXED_PART_SIZE: usize = 1 /* EncryptionFlags */;
 
     pub fn new(flags: EncryptionFlags, data_length: usize) -> Self {
         Self {
@@ -117,7 +117,7 @@ pub struct FastPathUpdatePdu<'a> {
 
 impl FastPathUpdatePdu<'_> {
     const NAME: &'static str = "TS_FP_UPDATE";
-    const FIXED_PART_SIZE: usize = std::mem::size_of::<u8>();
+    const FIXED_PART_SIZE: usize = 1 /* header */;
 }
 
 impl PduEncode for FastPathUpdatePdu<'_> {
@@ -152,13 +152,9 @@ impl PduEncode for FastPathUpdatePdu<'_> {
     }
 
     fn size(&self) -> usize {
-        let compression_flags_size = if self.compression_flags.is_some() {
-            std::mem::size_of::<u8>()
-        } else {
-            0
-        };
+        let compression_flags_size = if self.compression_flags.is_some() { 1 } else { 0 };
 
-        Self::FIXED_PART_SIZE + compression_flags_size + std::mem::size_of::<u16>() + self.data.len()
+        Self::FIXED_PART_SIZE + compression_flags_size + 2 /* len */ + self.data.len()
     }
 }
 
@@ -179,7 +175,7 @@ impl<'de> PduDecode<'de> for FastPathUpdatePdu<'de> {
         let compression = Compression::from_bits_truncate(header.get_bits(6..8));
 
         let (compression_flags, compression_type) = if compression.contains(Compression::COMPRESSION_USED) {
-            let expected_size = std::mem::size_of::<u8>() + std::mem::size_of::<u16>();
+            let expected_size = 1 /* flags_with_type */ + 2 /* len */;
             ensure_size!(in: src, size: expected_size);
 
             let compression_flags_with_type = src.read_u8();
@@ -191,7 +187,7 @@ impl<'de> PduDecode<'de> for FastPathUpdatePdu<'de> {
 
             (Some(compression_flags), Some(compression_type))
         } else {
-            let expected_size = std::mem::size_of::<u16>();
+            let expected_size = 2 /* len */;
             ensure_size!(in: src, size: expected_size);
 
             (None, None)

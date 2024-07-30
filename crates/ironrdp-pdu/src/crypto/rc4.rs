@@ -75,56 +75,56 @@ mod test {
 
     #[test]
     fn check_common_case() {
-        let key = "key".to_string();
-        let message = "message".to_string();
+        let key = "key".to_owned();
+        let message = "message".to_owned();
         let expected = [0x66, 0x09, 0x47, 0x9E, 0x45, 0xE8, 0x1E];
         assert_eq!(Rc4::new(key.as_bytes()).process(message.as_bytes())[..], expected);
     }
 
     #[test]
     fn one_symbol_key() {
-        let key = "0".to_string();
-        let message = "message".to_string();
+        let key = "0".to_owned();
+        let message = "message".to_owned();
         let expected = [0xE5, 0x1A, 0xD5, 0xF3, 0xA2, 0x1C, 0xB1];
         assert_eq!(Rc4::new(key.as_bytes()).process(message.as_bytes())[..], expected);
     }
 
     #[test]
     fn one_symbol_similar_key_and_message() {
-        let key = "0".to_string();
-        let message = "0".to_string();
+        let key = "0".to_owned();
+        let message = "0".to_owned();
         let expected = [0xb8];
         assert_eq!(Rc4::new(key.as_bytes()).process(message.as_bytes())[..], expected);
     }
 
     #[test]
     fn one_symbol_key_and_message() {
-        let key = "0".to_string();
-        let message = "a".to_string();
+        let key = "0".to_owned();
+        let message = "a".to_owned();
         let expected = [0xe9];
         assert_eq!(Rc4::new(key.as_bytes()).process(message.as_bytes())[..], expected);
     }
 
     #[test]
     fn empty_message() {
-        let key = "key".to_string();
-        let message = "".to_string();
+        let key = "key".to_owned();
+        let message = "".to_owned();
         let expected = [];
         assert_eq!(Rc4::new(key.as_bytes()).process(message.as_bytes())[..], expected);
     }
 
     #[test]
     fn long_key() {
-        let key = "oigjwr984 874Y8 7W68 8&$y*%&78 4  8724JIOGROGN I4UI928 98FRUWNKRJB GRGg ergeowp".to_string();
-        let message = "message".to_string();
+        let key = "oigjwr984 874Y8 7W68 8&$y*%&78 4  8724JIOGROGN I4UI928 98FRUWNKRJB GRGg ergeowp".to_owned();
+        let message = "message".to_owned();
         let expected = [0xBE, 0x74, 0xEB, 0x88, 0x64, 0x8E, 0x6A];
         assert_eq!(Rc4::new(key.as_bytes()).process(message.as_bytes())[..], expected);
     }
 
     #[test]
     fn long_message() {
-        let key = "key".to_string();
-        let message = "oigjwr984 874Y8 7W68 8&$y*%&78 4  8724JIOGROGN I4UI928 98FRUWNKRJB GRGg ergeowp".to_string();
+        let key = "key".to_owned();
+        let message = "oigjwr984 874Y8 7W68 8&$y*%&78 4  8724JIOGROGN I4UI928 98FRUWNKRJB GRGg ergeowp".to_owned();
         let expected = [
             0x64, 0x05, 0x53, 0x87, 0x53, 0xFD, 0x42, 0x72, 0x7C, 0x6B, 0x30, 0x4C, 0x22, 0x04, 0x2A, 0xDD, 0xB8, 0x23,
             0xDB, 0x5E, 0x8B, 0xD9, 0xC5, 0xDB, 0x4F, 0xD9, 0x8D, 0x9B, 0x0E, 0xD4, 0x5B, 0xAA, 0x34, 0x1D, 0x8E, 0xB9,
@@ -138,8 +138,8 @@ mod test {
     #[test]
     fn long_key_message() {
         let key = "iogjerwo ghoreh trojtrj trjrohjigjw9iehgfwe 315 989&*$*%&*  &*^*& q 4unkregeor 847847786 ^&**^*"
-            .to_string();
-        let message = "oigjwr984 874Y8 7W68 8&$y*%&78 4  8724JIOGROGN I4UI928 98FRUWNKRJB GRGg ergeowp".to_string();
+            .to_owned();
+        let message = "oigjwr984 874Y8 7W68 8&$y*%&78 4  8724JIOGROGN I4UI928 98FRUWNKRJB GRGg ergeowp".to_owned();
         let expected = [
             0x6B, 0x92, 0x32, 0x1B, 0xAD, 0x5A, 0x3A, 0x62, 0xE4, 0xC9, 0xD4, 0x2A, 0xAF, 0x34, 0xF1, 0xA3, 0xA0, 0x23,
             0x5B, 0x8D, 0x12, 0x7B, 0x4C, 0xE6, 0x23, 0xE6, 0x13, 0x81, 0xF0, 0xDA, 0xE0, 0x02, 0x65, 0x71, 0x2B, 0x1D,

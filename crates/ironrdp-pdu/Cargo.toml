@@ -41,5 +41,8 @@ pkcs1 = "0.7"
 
 [dev-dependencies]
 expect-test.workspace = true
-ironrdp-testsuite-core.workspace = true # TODO: move more tests under ironrdp-testsuite-core itself
 lazy_static.workspace = true # TODO: remove in favor of https://doc.rust-lang.org/std/sync/struct.OnceLock.html
+
+[lints]
+workspace = true
+

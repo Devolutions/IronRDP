@@ -22,3 +22,7 @@ std = []
 [dependencies]
 ironrdp-pdu = { workspace = true, features = ["alloc"] }
 bitflags.workspace = true
+
+[lints]
+workspace = true
+

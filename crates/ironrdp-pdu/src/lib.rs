@@ -302,8 +302,8 @@ pub fn find_size(bytes: &[u8]) -> PduResult<Option<PduInfo>> {
 
     match action {
         Action::X224 => {
-            ensure_enough!(bytes, crate::tpkt::TpktHeader::SIZE);
-            let tpkt = crate::tpkt::TpktHeader::read(&mut ReadCursor::new(bytes))?;
+            ensure_enough!(bytes, tpkt::TpktHeader::SIZE);
+            let tpkt = tpkt::TpktHeader::read(&mut ReadCursor::new(bytes))?;
 
             Ok(Some(PduInfo {
                 action,
@@ -331,7 +331,7 @@ pub fn find_size(bytes: &[u8]) -> PduResult<Option<PduInfo>> {
     }
 }
 
-pub trait PduHint: Send + Sync + core::fmt::Debug + 'static {
+pub trait PduHint: Send + Sync + fmt::Debug + 'static {
     /// Finds next PDU size by reading the next few bytes.
     fn find_size(&self, bytes: &[u8]) -> PduResult<Option<usize>>;
 }

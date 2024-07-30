@@ -45,7 +45,7 @@ struct PartialHeader {
 
 impl PartialHeader {
     const NAME: &'static str = "CLIPRDR_HEADER";
-    const FIXED_PART_SIZE: usize = std::mem::size_of::<u16>() + std::mem::size_of::<u32>();
+    const FIXED_PART_SIZE: usize = 2 /* flags */ + 4 /* len */;
     const SIZE: usize = Self::FIXED_PART_SIZE;
 
     pub(crate) fn new(inner_data_length: u32) -> Self {
@@ -115,7 +115,7 @@ pub enum ClipboardPdu<'a> {
 
 impl ClipboardPdu<'_> {
     const NAME: &'static str = "ClipboardPdu";
-    const FIXED_PART_SIZE: usize = std::mem::size_of::<u16>();
+    const FIXED_PART_SIZE: usize = 2 /* type */;
 
     pub fn message_name(&self) -> &'static str {
         match self {

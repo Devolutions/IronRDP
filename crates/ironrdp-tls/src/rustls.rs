@@ -16,14 +16,14 @@ where
             .with_no_client_auth();
 
         // This adds support for the SSLKEYLOGFILE env variable (https://wiki.wireshark.org/TLS#using-the-pre-master-secret)
-        config.key_log = std::sync::Arc::new(tokio_rustls::rustls::KeyLogFile::new());
+        config.key_log = std::sync::Arc::new(rustls::KeyLogFile::new());
 
         // Disable TLS resumption because it’s not supported by some services such as CredSSP.
         //
         // > The CredSSP Protocol does not extend the TLS wire protocol. TLS session resumption is not supported.
         //
         // source: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-cssp/385a7489-d46b-464c-b224-f7340e308a5c
-        config.resumption = tokio_rustls::rustls::client::Resumption::disabled();
+        config.resumption = rustls::client::Resumption::disabled();
 
         let config = std::sync::Arc::new(config);
 

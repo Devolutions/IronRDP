@@ -119,7 +119,7 @@ impl Sequence for ConnectionActivationSequence {
                 };
 
                 for c in &capability_sets {
-                    if let rdp::capability_sets::CapabilitySet::General(g) = c {
+                    if let CapabilitySet::General(g) = c {
                         if g.protocol_version != rdp::capability_sets::PROTOCOL_VER {
                             warn!(version = g.protocol_version, "Unexpected protocol version");
                         }
@@ -139,7 +139,7 @@ impl Sequence for ConnectionActivationSequence {
                 let desktop_size = capability_sets
                     .iter()
                     .find_map(|c| match c {
-                        rdp::capability_sets::CapabilitySet::Bitmap(b) => Some(DesktopSize {
+                        CapabilitySet::Bitmap(b) => Some(DesktopSize {
                             width: b.desktop_width,
                             height: b.desktop_height,
                         }),

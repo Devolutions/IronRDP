@@ -18,3 +18,7 @@ tracing.workspace = true
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 clap = { version = "4.2", features = ["derive", "cargo"] }
 glutin = { version = "0.29" }
+
+[lints]
+workspace = true
+

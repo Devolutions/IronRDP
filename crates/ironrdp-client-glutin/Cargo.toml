@@ -43,3 +43,7 @@ anyhow = "1.0"
 # GUI
 glutin = "0.29"
 ironrdp-glutin-renderer = { path = "../glutin-renderer"}
+
+[lints]
+workspace = true
+

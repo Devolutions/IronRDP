@@ -11,7 +11,7 @@ pub struct PaletteEntry {
 }
 
 impl PaletteEntry {
-    const SIZE: usize = std::mem::size_of::<u8>() * 4;
+    const SIZE: usize = 1 /* R */ + 1 /* G */ + 1 /* B */ + 1 /* extra */;
 }
 
 /// Represents `CLIPRDR_PALETTE`

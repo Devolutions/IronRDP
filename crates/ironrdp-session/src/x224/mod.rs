@@ -86,7 +86,7 @@ impl Processor {
         if channel_id == self.io_channel_id {
             self.process_io_channel(data_ctx)
         } else if let Some(svc) = self.static_channels.get_by_channel_id_mut(channel_id) {
-            let response_pdus = svc.process(data_ctx.user_data).map_err(crate::SessionError::pdu)?;
+            let response_pdus = svc.process(data_ctx.user_data).map_err(SessionError::pdu)?;
             process_svc_messages(response_pdus, channel_id, data_ctx.initiator_id)
                 .map(|data| vec![ProcessorOutput::ResponseFrame(data)])
         } else {
@@ -180,7 +180,7 @@ impl Processor {
 ///
 /// The caller is responsible for ensuring that the `channel_id` corresponds to the correct channel.
 fn process_svc_messages(messages: Vec<SvcMessage>, channel_id: u16, initiator_id: u16) -> SessionResult<Vec<u8>> {
-    client_encode_svc_messages(messages, channel_id, initiator_id).map_err(crate::SessionError::pdu)
+    client_encode_svc_messages(messages, channel_id, initiator_id).map_err(SessionError::pdu)
 }
 
 /// Converts an [`ErrorInfo`] into a [`DisconnectReason`].

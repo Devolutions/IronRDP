@@ -59,7 +59,7 @@ lazy_static! {
 
 #[test]
 fn from_buffer_bitmap_data_parsses_correctly() {
-    let actual = decode::<BitmapUpdateData>(BITMAP_BUFFER.as_ref()).unwrap();
+    let actual = decode::<BitmapUpdateData<'_>>(BITMAP_BUFFER.as_ref()).unwrap();
     assert_eq!(*BITMAP, actual);
 }
 
@@ -73,7 +73,7 @@ fn to_buffer_bitmap_data_serializes_correctly() {
 
 #[test]
 fn bitmap_data_length_is_correct() {
-    let actual = decode::<BitmapUpdateData>(BITMAP_BUFFER.as_ref()).unwrap();
-    let actual = actual.rectangles.get(0).unwrap().bitmap_data.len();
+    let actual = decode::<BitmapUpdateData<'_>>(BITMAP_BUFFER.as_ref()).unwrap();
+    let actual = actual.rectangles.first().unwrap().bitmap_data.len();
     assert_eq!(BITMAP_BUFFER[30..].len(), actual)
 }

@@ -14,7 +14,7 @@ impl FixedCircularBuffer {
         }
     }
 
-    pub(crate) fn read_with_offset(&self, offset: usize, length: usize, mut output: impl io::Write) -> io::Result<()> {
+    pub(crate) fn read_with_offset(&self, offset: usize, length: usize, output: &mut impl io::Write) -> io::Result<()> {
         let position = (self.buffer.len() + self.position - offset) % self.buffer.len();
 
         // will take the offset if the destination length is greater than the offset,

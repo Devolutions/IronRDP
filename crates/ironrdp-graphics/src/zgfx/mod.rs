@@ -173,7 +173,7 @@ fn read_encoded_bytes(
     bits: &mut Bits<'_>,
     distance: usize,
     history: &mut FixedCircularBuffer,
-    mut output: &mut Vec<u8>,
+    output: &mut Vec<u8>,
 ) -> io::Result<usize> {
     // A match length prefix follows the token and indicates
     // how many additional bits will be needed to get the full length
@@ -195,7 +195,7 @@ fn read_encoded_bytes(
     };
 
     let output_length = output.len();
-    history.read_with_offset(distance, length, &mut output)?;
+    history.read_with_offset(distance, length, output)?;
     history
         .write_all(&output[output_length..])
         .expect("circular buffer does not fail");

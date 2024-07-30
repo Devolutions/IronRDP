@@ -590,7 +590,7 @@ pub fn encode_send_data_request<T: PduEncode>(
 ) -> ConnectorResult<usize> {
     let user_data = encode_vec(user_msg).map_err(ConnectorError::pdu)?;
 
-    let pdu = ironrdp_pdu::mcs::SendDataRequest {
+    let pdu = mcs::SendDataRequest {
         initiator_id,
         channel_id,
         user_data: Cow::Owned(user_data),

@@ -21,7 +21,9 @@ mod server_platform_challenge;
 mod server_upgrade_license;
 
 pub use self::client_new_license_request::{ClientNewLicenseRequest, PLATFORM_ID};
-pub use self::client_platform_challenge_response::ClientPlatformChallengeResponse;
+pub use self::client_platform_challenge_response::{
+    ClientHardwareIdentification, ClientPlatformChallengeResponse, PlatformChallengeResponseData,
+};
 pub use self::licensing_error_message::{LicenseErrorCode, LicensingErrorMessage, LicensingStateTransition};
 pub use self::server_license_request::{cert, ProductInfo, Scope, ServerCertificate, ServerLicenseRequest};
 pub use self::server_platform_challenge::ServerPlatformChallenge;

@@ -371,14 +371,14 @@ mod tests {
     use super::*;
 
     /// Performs decompression of 8bpp color plane into vector. Vector will be resized to fit decompressed data.
-    pub fn decompress(src: &[u8], dst: &mut Vec<u8>, width: usize, height: usize) -> Result<usize, RleDecodeError> {
+    fn decompress(src: &[u8], dst: &mut Vec<u8>, width: usize, height: usize) -> Result<usize, RleDecodeError> {
         // Ensure dest buffer have enough space for decompressed data
         dst.resize(width * height, 0);
 
         decompress_8bpp_plane(src, dst.as_mut_slice(), width, height)
     }
 
-    pub fn compress(src: &[u8], dst: &mut [u8], width: usize, height: usize) -> Result<usize, RleEncodeError> {
+    fn compress(src: &[u8], dst: &mut [u8], width: usize, height: usize) -> Result<usize, RleEncodeError> {
         compress_8bpp_plane(src.iter().copied(), &mut WriteCursor::new(dst), width, height)
     }
 
