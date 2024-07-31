@@ -410,24 +410,24 @@ pub(crate) fn set_information(
                     }
                 }
                 FileInformationClass::EndOfFile(info) => {
-                    // SAFETY: the file must has been opend with write access in the last steps, since rdp prepares to set information. In addition it is a regular file.
-                    unsafe {
-                        if let Some(file) = backend.file_map.get(&req_inner.device_io_request.file_id) {
-                            if nix::libc::ftruncate(file.as_raw_fd(), info.end_of_file) < 0 {
-                                let error = nix::errno::Errno::last();
-                                warn!(%error, "Failed to set end of file");
-                                let res = RdpdrPdu::ClientDriveSetInformationResponse(
-                                    ClientDriveSetInformationResponse::new(&req_inner, NtStatus::UNSUCCESSFUL)?,
-                                );
-                                return Ok(vec![SvcMessage::from(res)]);
-                            }
-                        } else {
-                            warn!("no such file");
+                    if let Some(file) = backend.file_map.get(&req_inner.device_io_request.file_id) {
+                        // SAFETY: the file must has been opend with write access in the last steps, since rdp prepares to set information. In addition it is a regular file.
+                        let set_end_res = unsafe { nix::libc::ftruncate(file.as_raw_fd(), info.end_of_file) };
+                        if set_end_res < 0 {
+                            let error = nix::errno::Errno::last();
+                            warn!(%error, "Failed to set end of file");
                             let res = RdpdrPdu::ClientDriveSetInformationResponse(
-                                ClientDriveSetInformationResponse::new(&req_inner, NtStatus::NO_SUCH_FILE)?,
+                                ClientDriveSetInformationResponse::new(&req_inner, NtStatus::UNSUCCESSFUL)?,
                             );
                             return Ok(vec![SvcMessage::from(res)]);
                         }
+                    } else {
+                        warn!("no such file");
+                        let res = RdpdrPdu::ClientDriveSetInformationResponse(ClientDriveSetInformationResponse::new(
+                            &req_inner,
+                            NtStatus::NO_SUCH_FILE,
+                        )?);
+                        return Ok(vec![SvcMessage::from(res)]);
                     }
                 }
                 _ => {
