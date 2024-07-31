@@ -17,4 +17,4 @@ extern crate tracing;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
 mod nix;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
-pub use nix::simple;
+pub use nix::backend;

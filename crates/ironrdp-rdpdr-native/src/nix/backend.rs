@@ -12,7 +12,7 @@ use std::os::fd::{AsFd, AsRawFd};
 use std::os::unix::fs::MetadataExt;
 
 #[derive(Debug, Default)]
-pub struct SimpleRdpdrBackend {
+pub struct NixRdpdrBackend {
     file_id: u32,
     file_base: String,
     file_map: std::collections::HashMap<u32, std::fs::File>,
@@ -20,7 +20,7 @@ pub struct SimpleRdpdrBackend {
     file_dir_map: std::collections::HashMap<u32, OwningIter>,
 }
 
-impl SimpleRdpdrBackend {
+impl NixRdpdrBackend {
     pub fn new(file_base: String) -> Self {
         Self {
             file_base,
@@ -29,9 +29,9 @@ impl SimpleRdpdrBackend {
     }
 }
 
-impl_as_any!(SimpleRdpdrBackend);
+impl_as_any!(NixRdpdrBackend);
 
-impl RdpdrBackend for SimpleRdpdrBackend {
+impl RdpdrBackend for NixRdpdrBackend {
     fn handle_server_device_announce_response(&mut self, _pdu: ServerDeviceAnnounceResponse) -> PduResult<()> {
         Ok(())
     }
@@ -69,10 +69,7 @@ impl RdpdrBackend for SimpleRdpdrBackend {
     }
 }
 
-pub(crate) fn write_device(
-    backend: &mut SimpleRdpdrBackend,
-    req_inner: DeviceWriteRequest,
-) -> PduResult<Vec<SvcMessage>> {
+pub(crate) fn write_device(backend: &mut NixRdpdrBackend, req_inner: DeviceWriteRequest) -> PduResult<Vec<SvcMessage>> {
     return process_dependent_file(
         backend,
         req_inner.device_io_request,
@@ -124,10 +121,7 @@ pub(crate) fn write_device(
     }
 }
 
-pub(crate) fn read_device(
-    backend: &mut SimpleRdpdrBackend,
-    req_inner: DeviceReadRequest,
-) -> PduResult<Vec<SvcMessage>> {
+pub(crate) fn read_device(backend: &mut NixRdpdrBackend, req_inner: DeviceReadRequest) -> PduResult<Vec<SvcMessage>> {
     return process_dependent_file(
         backend,
         req_inner.device_io_request,
@@ -167,10 +161,7 @@ pub(crate) fn read_device(
     }
 }
 
-pub(crate) fn close_device(
-    backend: &mut SimpleRdpdrBackend,
-    req_inner: DeviceCloseRequest,
-) -> PduResult<Vec<SvcMessage>> {
+pub(crate) fn close_device(backend: &mut NixRdpdrBackend, req_inner: DeviceCloseRequest) -> PduResult<Vec<SvcMessage>> {
     backend.file_map.remove(&req_inner.device_io_request.file_id);
     backend.file_path_map.remove(&req_inner.device_io_request.file_id);
     backend.file_dir_map.remove(&req_inner.device_io_request.file_id);
@@ -181,7 +172,7 @@ pub(crate) fn close_device(
 }
 
 pub(crate) fn query_information(
-    backend: &mut SimpleRdpdrBackend,
+    backend: &mut NixRdpdrBackend,
     req_inner: ServerDriveQueryInformationRequest,
 ) -> PduResult<Vec<SvcMessage>> {
     match backend.file_map.get(&req_inner.device_io_request.file_id) {
@@ -267,7 +258,7 @@ pub(crate) fn query_information(
 }
 
 pub(crate) fn query_volume_information(
-    backend: &mut SimpleRdpdrBackend,
+    backend: &mut NixRdpdrBackend,
     req_inner: ServerDriveQueryVolumeInformationRequest,
 ) -> PduResult<Vec<SvcMessage>> {
     match backend.file_map.get(&req_inner.device_io_request.file_id) {
@@ -378,7 +369,7 @@ pub(crate) fn query_volume_information(
 }
 
 pub(crate) fn set_information(
-    backend: &mut SimpleRdpdrBackend,
+    backend: &mut NixRdpdrBackend,
     req_inner: ServerDriveSetInformationRequest,
 ) -> PduResult<Vec<SvcMessage>> {
     match backend.file_path_map.get(&req_inner.device_io_request.file_id) {
@@ -547,7 +538,7 @@ pub(crate) fn make_query_dir_resp(
 }
 
 pub(crate) fn query_directory(
-    backend: &mut SimpleRdpdrBackend,
+    backend: &mut NixRdpdrBackend,
     req_inner: ServerDriveQueryDirectoryRequest,
 ) -> PduResult<Vec<SvcMessage>> {
     match backend.file_path_map.get(&req_inner.device_io_request.file_id) {
@@ -649,7 +640,7 @@ fn make_create_drive_resp(
 // in fact, index only needs to be different, so it is ok
 #[allow(clippy::arithmetic_side_effects)]
 pub(crate) fn create_drive(
-    backend: &mut SimpleRdpdrBackend,
+    backend: &mut NixRdpdrBackend,
     req_inner: DeviceCreateRequest,
 ) -> PduResult<Vec<SvcMessage>> {
     let file_id = backend.file_id;
@@ -770,7 +761,7 @@ pub(crate) fn create_drive(
 }
 
 pub(crate) fn process_dependent_file(
-    backend: &mut SimpleRdpdrBackend,
+    backend: &mut NixRdpdrBackend,
     request: DeviceIoRequest,
     error_fx: impl Fn(DeviceIoRequest) -> PduResult<Vec<SvcMessage>>,
     fx: impl Fn(&mut std::fs::File, DeviceIoRequest) -> PduResult<Vec<SvcMessage>>,
