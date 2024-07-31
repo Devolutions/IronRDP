@@ -42,6 +42,7 @@ ironrdp-pdu-generators = { path = "crates/ironrdp-pdu-generators" }
 ironrdp-pdu = { version = "0.1", path = "crates/ironrdp-pdu" }
 ironrdp-rdcleanpath = { version = "0.1", path = "crates/ironrdp-rdcleanpath" }
 ironrdp-rdpdr = { version = "0.1", path = "crates/ironrdp-rdpdr" }
+ironrdp-rdpdr-native = { version = "0.1", path = "crates/ironrdp-rdpdr-native" }
 ironrdp-rdpsnd = { version = "0.1", path = "crates/ironrdp-rdpsnd" }
 ironrdp-rdpsnd-native = { version = "0.1", path = "crates/ironrdp-rdpsnd-native" }
 ironrdp-server = { version = "0.1", path = "crates/ironrdp-server" }
