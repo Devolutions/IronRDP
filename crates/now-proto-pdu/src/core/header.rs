@@ -69,27 +69,3 @@ impl PduDecode<'_> for NowHeader {
         })
     }
 }
-
-#[cfg(all(test, feature = "std"))]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn now_header_roundtrip() {
-        let header = NowHeader {
-            size: 0x12345678,
-            class: NowMessageClass::SYSTEM,
-            kind: 0x42,
-            flags: 0x1234,
-        };
-
-        let mut buf = [0; 8];
-        let mut cursor = WriteCursor::new(&mut buf);
-        header.encode(&mut cursor).unwrap();
-
-        let mut cursor = ReadCursor::new(&buf);
-        let decoded = NowHeader::decode(&mut cursor).unwrap();
-
-        assert_eq!(header, decoded);
-    }
-}

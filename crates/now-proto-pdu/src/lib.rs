@@ -11,9 +11,6 @@ extern crate ironrdp_pdu;
 #[macro_use]
 mod macros;
 
-#[cfg(all(test, feature = "std"))]
-mod test_utils;
-
 mod core;
 mod exec;
 mod message;

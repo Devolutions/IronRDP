@@ -44,7 +44,7 @@ impl PduEncode for NowSystemMessage {
 
 /// NOW-PROTO: NOW_SYSTEM_INFO_*_ID
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct NowSystemMessageKind(u8);
+pub struct NowSystemMessageKind(pub u8);
 
 impl NowSystemMessageKind {
     // TODO: NOW_SYSTEM_INFO_REQ_ID/NOW_SYSTEM_INFO_RSP_ID when will be added to the protocol
@@ -56,26 +56,4 @@ impl NowSystemMessageKind {
     // pub const INFO_RSP: Self = Self(0x02);
     /// NOW-PROTO: NOW_SYSTEM_SHUTDOWN_ID
     pub const SHUTDOWN: Self = Self(0x03);
-}
-
-#[cfg(all(test, feature = "std"))]
-mod tests {
-    use alloc::string::ToString;
-
-    use super::*;
-    use crate::{test_utils::now_msg_roundtrip, NowVarStr};
-
-    use expect_test::expect;
-
-    #[test]
-    fn roundtip_system_shutdown() {
-        now_msg_roundtrip(
-            NowSystemShutdownMsg {
-                flags: NowSystemShutdownFlags::FORCE,
-                message: NowVarStr::new("hello".to_string()).unwrap(),
-                timeout: 0x12345678,
-            },
-            expect!["[0B, 00, 00, 00, 11, 03, 01, 00, 78, 56, 34, 12, 05, 68, 65, 6C, 6C, 6F, 00]"],
-        );
-    }
 }

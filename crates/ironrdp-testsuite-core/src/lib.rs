@@ -30,5 +30,7 @@ pub mod network_data;
 pub mod rdp;
 pub mod security_data;
 
+pub mod now_proto;
+
 #[doc(hidden)]
 pub use paste::paste;
