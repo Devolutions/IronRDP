@@ -412,13 +412,15 @@ pub(crate) fn set_information(
                 FileInformationClass::EndOfFile(info) => {
                     let mut set_end_res = -1;
                     // SAFETY: it is safe to call on *nix platform
+                    // SAFETY: `file` is a regular file that we opened with write access.
                     unsafe {
                         if let Some(file) = backend.file_map.get(&req_inner.device_io_request.file_id) {
                             set_end_res = nix::libc::ftruncate(file.as_raw_fd(), info.end_of_file);
                         }
                     }
                     if set_end_res < 0 {
-                        warn!("set file end error, code is:{}", set_end_res);
+                        let error = nix::errno::Errno::last(); // However, only call this if `ftruncate` was called.
+                        warn!(%error, "Failed to set end of file");
                         let res = RdpdrPdu::ClientDriveSetInformationResponse(ClientDriveSetInformationResponse::new(
                             &req_inner,
                             NtStatus::UNSUCCESSFUL,
