@@ -48,7 +48,7 @@ impl<Kind> Error<Kind> {
         #[cfg(feature = "alloc")]
         {
             let mut this = self;
-            this.source = Some(Box::new(source));
+            this.source = Some(alloc::boxed::Box::new(source));
             this
         }
 
