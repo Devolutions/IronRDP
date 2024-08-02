@@ -86,10 +86,6 @@ impl NowSessionMsgBoxRspMsg {
         self.response
     }
 
-    fn body_size(&self) -> usize {
-        Self::FIXED_PART_SIZE
-    }
-
     pub(super) fn decode_from_body(_header: NowHeader, src: &mut ReadCursor<'_>) -> PduResult<Self> {
         ensure_fixed_part_size!(in: src);
 
@@ -103,7 +99,7 @@ impl NowSessionMsgBoxRspMsg {
 impl PduEncode for NowSessionMsgBoxRspMsg {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
         let header = NowHeader {
-            size: cast_length!("size", self.body_size())?,
+            size: u32::try_from(Self::FIXED_PART_SIZE).unwrap(),
             class: NowMessageClass::SESSION,
             kind: NowSessionMessageKind::MSGBOX_RSP.0,
             flags: 0,
@@ -123,7 +119,7 @@ impl PduEncode for NowSessionMsgBoxRspMsg {
     }
 
     fn size(&self) -> usize {
-        NowHeader::FIXED_PART_SIZE + self.body_size()
+        NowHeader::FIXED_PART_SIZE + Self::FIXED_PART_SIZE
     }
 }
 

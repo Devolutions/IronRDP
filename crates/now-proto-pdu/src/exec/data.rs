@@ -66,6 +66,9 @@ impl NowExecDataMsg {
         &self.data
     }
 
+    // LINTS: Overall message size always fits into usize; VarBuf size always a few powers of 2 less
+    // than u32::MAX, therefore it fits into usize
+    #[allow(clippy::arithmetic_side_effects)]
     fn body_size(&self) -> usize {
         Self::FIXED_PART_SIZE + self.data.size()
     }
@@ -107,6 +110,8 @@ impl PduEncode for NowExecDataMsg {
         Self::NAME
     }
 
+    // LINTS: See body_size()
+    #[allow(clippy::arithmetic_side_effects)]
     fn size(&self) -> usize {
         NowHeader::FIXED_PART_SIZE + self.body_size()
     }

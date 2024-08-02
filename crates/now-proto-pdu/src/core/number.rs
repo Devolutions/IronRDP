@@ -34,17 +34,23 @@ impl PduEncode for VarU16 {
 
         ensure_size!(in: dst, size: encoded_size);
 
+        // LINTS: encoded_size will always be 1 or 2, therefore following arithmetic is safe
+        #[allow(clippy::arithmetic_side_effects)]
         let mut shift = (encoded_size - 1) * 8;
         let mut bytes = [0u8; 2];
 
         for byte in bytes.iter_mut().take(encoded_size) {
             *byte = ((self.0 >> shift) & 0xFF).try_into().unwrap();
 
+            // LINTS: as per code above, shift is always 8 or 16
+            #[allow(clippy::arithmetic_side_effects)]
             if shift != 0 {
                 shift -= 8;
             }
         }
 
+        // LINTS: encoded_size is always >= 1
+        #[allow(clippy::arithmetic_side_effects)]
         let c: u8 = (encoded_size - 1).try_into().unwrap();
         bytes[0] |= c << 7;
 
@@ -82,10 +88,14 @@ impl PduDecode<'_> for VarU16 {
         let bytes = src.read_slice(c);
 
         let val1 = header & 0x7F;
+        // LINTS: c is always 1 or 2
+        #[allow(clippy::arithmetic_side_effects)]
         let mut shift = c * 8;
         let mut num = u16::from(val1) << shift;
 
         // Read val2..valN
+        // LINTS: shift is always 8 or 16
+        #[allow(clippy::arithmetic_side_effects)]
         for val in bytes.iter().take(c) {
             shift -= 8;
             num |= (u16::from(*val)) << shift;
@@ -141,6 +151,8 @@ impl PduEncode for VarI16 {
 
         ensure_size!(in: dst, size: encoded_size);
 
+        // LINTS: encoded_size will always be 1 or 2, therefore following arithmetic is safe
+        #[allow(clippy::arithmetic_side_effects)]
         let mut shift = (encoded_size - 1) * 8;
         let mut bytes = [0u8; 2];
 
@@ -149,11 +161,15 @@ impl PduEncode for VarI16 {
         for byte in bytes.iter_mut().take(encoded_size) {
             *byte = ((abs_value >> shift) & 0xFF).try_into().unwrap();
 
+            // LINTS: as per code above, shift is always 8 or 16
+            #[allow(clippy::arithmetic_side_effects)]
             if shift != 0 {
                 shift -= 8;
             }
         }
 
+        // LINTS: encoded_size is always >= 1
+        #[allow(clippy::arithmetic_side_effects)]
         let c: u8 = (encoded_size - 1).try_into().unwrap();
         bytes[0] |= c << 7;
         if self.0 < 0 {
@@ -190,6 +206,9 @@ impl PduDecode<'_> for VarI16 {
 
         if c == 0 {
             let val = i16::from(header & 0x3F);
+            // LINTS: Variable integer range is always smaller than underlying type range,
+            // therefore negation is always safe
+            #[allow(clippy::arithmetic_side_effects)]
             return Ok(VarI16(if is_negative { -val } else { val }));
         }
 
@@ -197,15 +216,23 @@ impl PduDecode<'_> for VarI16 {
         let bytes = src.read_slice(c);
 
         let val1 = header & 0x3F;
+
+        // LINTS: c is always 1 or 2
+        #[allow(clippy::arithmetic_side_effects)]
         let mut shift = c * 8;
         let mut num = i16::from(val1) << shift;
 
         // Read val2..valN
+        // LINTS: shift is always 8 or 16
+        #[allow(clippy::arithmetic_side_effects)]
         for val in bytes.iter().take(c) {
             shift -= 8;
             num |= (i16::from(*val)) << shift;
         }
 
+        // LINTS: Variable integer range is always smaller than underlying type range,
+        // therefore negation is always safe
+        #[allow(clippy::arithmetic_side_effects)]
         Ok(VarI16(if is_negative { -num } else { num }))
     }
 }
@@ -256,17 +283,23 @@ impl PduEncode for VarU32 {
 
         ensure_size!(in: dst, size: encoded_size);
 
+        // LINTS: encoded_size will always be [1..4], therefore following arithmetic is safe
+        #[allow(clippy::arithmetic_side_effects)]
         let mut shift = (encoded_size - 1) * 8;
         let mut bytes = [0u8; 4];
 
         for byte in bytes.iter_mut().take(encoded_size) {
             *byte = ((self.0 >> shift) & 0xFF).try_into().unwrap();
 
+            // LINTS: as per code above, shift is always 8, 16, 24
+            #[allow(clippy::arithmetic_side_effects)]
             if shift != 0 {
                 shift -= 8;
             }
         }
 
+        // LINTS: encoded_size is always >= 1
+        #[allow(clippy::arithmetic_side_effects)]
         let c: u8 = (encoded_size - 1).try_into().unwrap();
         bytes[0] |= c << 6;
 
@@ -306,10 +339,15 @@ impl PduDecode<'_> for VarU32 {
         let bytes = src.read_slice(c);
 
         let val1 = header & 0x3F;
+
+        // LINTS: c is always [1..4]
+        #[allow(clippy::arithmetic_side_effects)]
         let mut shift = c * 8;
         let mut num = u32::from(val1) << shift;
 
         // Read val2..valN
+        // LINTS: shift is always 8, 16, 24
+        #[allow(clippy::arithmetic_side_effects)]
         for val in bytes.iter().take(c) {
             shift -= 8;
             num |= (u32::from(*val)) << shift;
@@ -365,6 +403,8 @@ impl PduEncode for VarI32 {
 
         ensure_size!(in: dst, size: encoded_size);
 
+        // LINTS: encoded_size will always be [1..4], therefore following arithmetic is safe
+        #[allow(clippy::arithmetic_side_effects)]
         let mut shift = (encoded_size - 1) * 8;
         let mut bytes = [0u8; 4];
 
@@ -373,11 +413,15 @@ impl PduEncode for VarI32 {
         for byte in bytes.iter_mut().take(encoded_size) {
             *byte = ((abs_value >> shift) & 0xFF).try_into().unwrap();
 
+            // LINTS: as per code above, shift is always 8, 16, 24
+            #[allow(clippy::arithmetic_side_effects)]
             if shift != 0 {
                 shift -= 8;
             }
         }
 
+        // LINTS: encoded_size is always >= 1
+        #[allow(clippy::arithmetic_side_effects)]
         let c: u8 = (encoded_size - 1).try_into().unwrap();
         bytes[0] |= c << 6;
         if self.0 < 0 {
@@ -416,6 +460,9 @@ impl PduDecode<'_> for VarI32 {
 
         if c == 0 {
             let val = i32::from(header & 0x1F);
+            // LINTS: Variable integer range is always smaller than underlying type range,
+            // therefore negation is always safe
+            #[allow(clippy::arithmetic_side_effects)]
             return Ok(VarI32(if is_negative { -val } else { val }));
         }
 
@@ -423,15 +470,23 @@ impl PduDecode<'_> for VarI32 {
         let bytes = src.read_slice(c);
 
         let val1 = header & 0x1F;
+
+        // LINTS: c is always [1..4]
+        #[allow(clippy::arithmetic_side_effects)]
         let mut shift = c * 8;
         let mut num = i32::from(val1) << shift;
 
         // Read val2..valN
+        // LINTS: shift is always 8, 16, 24
+        #[allow(clippy::arithmetic_side_effects)]
         for val in bytes.iter().take(c) {
             shift -= 8;
             num |= (i32::from(*val)) << shift;
         }
 
+        // LINTS: Variable integer range is always smaller than underlying type range,
+        // therefore negation is always safe
+        #[allow(clippy::arithmetic_side_effects)]
         Ok(VarI32(if is_negative { -num } else { num }))
     }
 }
@@ -482,17 +537,23 @@ impl PduEncode for VarU64 {
 
         ensure_size!(in: dst, size: encoded_size);
 
+        // LINTS: encoded_size will always be [1..8], therefore following arithmetic is safe
+        #[allow(clippy::arithmetic_side_effects)]
         let mut shift = (encoded_size - 1) * 8;
         let mut bytes = [0u8; 8];
 
         for byte in bytes.iter_mut().take(encoded_size) {
             *byte = ((self.0 >> shift) & 0xFF).try_into().unwrap();
 
+            // LINTS: as per code above, shift is always >= 8
+            #[allow(clippy::arithmetic_side_effects)]
             if shift != 0 {
                 shift -= 8;
             }
         }
 
+        // LINTS: encoded_size is always >= 1
+        #[allow(clippy::arithmetic_side_effects)]
         let c: u8 = (encoded_size - 1).try_into().unwrap();
         bytes[0] |= c << 5;
 
@@ -536,10 +597,14 @@ impl PduDecode<'_> for VarU64 {
         let bytes = src.read_slice(c);
 
         let val1 = header & 0x1F;
+        // LINTS: c is always [1..8]
+        #[allow(clippy::arithmetic_side_effects)]
         let mut shift = c * 8;
         let mut num = u64::from(val1) << shift;
 
         // Read val2..valN
+        // LINTS: shift is always >= 8
+        #[allow(clippy::arithmetic_side_effects)]
         for val in bytes.iter().take(c) {
             shift -= 8;
             num |= (u64::from(*val)) << shift;
@@ -593,6 +658,8 @@ impl PduEncode for VarI64 {
 
         ensure_size!(in: dst, size: encoded_size);
 
+        // LINTS: encoded_size will always be [1..8], therefore following arithmetic is safe
+        #[allow(clippy::arithmetic_side_effects)]
         let mut shift = (encoded_size - 1) * 8;
         let mut bytes = [0u8; 8];
 
@@ -601,11 +668,15 @@ impl PduEncode for VarI64 {
         for byte in bytes.iter_mut().take(encoded_size) {
             *byte = ((abs_value >> shift) & 0xFF).try_into().unwrap();
 
+            // LINTS: as per code above, shift is always >= 8
+            #[allow(clippy::arithmetic_side_effects)]
             if shift != 0 {
                 shift -= 8;
             }
         }
 
+        // LINTS: encoded_size is always >= 1
+        #[allow(clippy::arithmetic_side_effects)]
         let c: u8 = (encoded_size - 1).try_into().unwrap();
         bytes[0] |= c << 5;
         if self.0 < 0 {
@@ -648,6 +719,9 @@ impl PduDecode<'_> for VarI64 {
 
         if c == 0 {
             let val = i64::from(header & 0x0F);
+            // LINTS: Variable integer range is always smaller than underlying type range,
+            // therefore negation is always safe
+            #[allow(clippy::arithmetic_side_effects)]
             return Ok(VarI64(if is_negative { -val } else { val }));
         }
 
@@ -655,15 +729,22 @@ impl PduDecode<'_> for VarI64 {
         let bytes = src.read_slice(c);
 
         let val1 = header & 0x0F;
+        // LINTS: c is always [1..8]
+        #[allow(clippy::arithmetic_side_effects)]
         let mut shift = c * 8;
         let mut num = i64::from(val1) << shift;
 
         // Read val2..valN
+        // LINTS: shift is always >= 8
+        #[allow(clippy::arithmetic_side_effects)]
         for val in bytes.iter().take(c) {
             shift -= 8;
             num |= (i64::from(*val)) << shift;
         }
 
+        // LINTS: Variable integer range is always smaller than underlying type range,
+        // therefore negation is always safe
+        #[allow(clippy::arithmetic_side_effects)]
         Ok(VarI64(if is_negative { -num } else { num }))
     }
 }

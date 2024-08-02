@@ -62,31 +62,52 @@ impl NowExecWinPsMsg {
     const NAME: &'static str = "NOW_EXEC_WINPS_MSG";
     const FIXED_PART_SIZE: usize = 4;
 
-    pub fn new(session_id: u32, command: NowVarStr) -> Self {
-        Self {
+    pub fn new(session_id: u32, command: NowVarStr) -> PduResult<Self> {
+        let msg = Self {
             session_id,
             command,
             flags: NowExecWinPsFlags::empty(),
             execution_policy: NowVarStr::empty(),
             configuration_name: NowVarStr::empty(),
-        }
+        };
+
+        msg.ensure_message_size()?;
+
+        Ok(msg)
     }
 
+    fn ensure_message_size(&self) -> PduResult<()> {
+        let _message_size = Self::FIXED_PART_SIZE
+            .checked_add(self.command.size())
+            .and_then(|size| size.checked_add(self.execution_policy.size()))
+            .and_then(|size| size.checked_add(self.configuration_name.size()))
+            .ok_or_else(|| invalid_message_err!("size", "message size overflow"))?;
+
+        Ok(())
+    }
+
+    #[must_use]
     pub fn with_flags(mut self, flags: NowExecWinPsFlags) -> Self {
         self.flags = flags;
         self
     }
 
-    pub fn with_execution_policy(mut self, execution_policy: NowVarStr) -> Self {
+    pub fn with_execution_policy(mut self, execution_policy: NowVarStr) -> PduResult<Self> {
         self.execution_policy = execution_policy;
         self.flags |= NowExecWinPsFlags::EXECUTION_POLICY;
-        self
+
+        self.ensure_message_size()?;
+
+        Ok(self)
     }
 
-    pub fn with_configuration_name(mut self, configuration_name: NowVarStr) -> Self {
+    pub fn with_configuration_name(mut self, configuration_name: NowVarStr) -> PduResult<Self> {
         self.configuration_name = configuration_name;
         self.flags |= NowExecWinPsFlags::CONFIGURATION_NAME;
-        self
+
+        self.ensure_message_size()?;
+
+        Ok(self)
     }
 
     pub fn flags(&self) -> NowExecWinPsFlags {
@@ -117,6 +138,8 @@ impl NowExecWinPsMsg {
         }
     }
 
+    // LINTS: Overall message size is validated in the constructor/decode method
+    #[allow(clippy::arithmetic_side_effects)]
     fn body_size(&self) -> usize {
         Self::FIXED_PART_SIZE + self.command.size() + self.execution_policy.size() + self.configuration_name.size()
     }
@@ -130,13 +153,17 @@ impl NowExecWinPsMsg {
         let execution_policy = NowVarStr::decode(src)?;
         let configuration_name = NowVarStr::decode(src)?;
 
-        Ok(Self {
+        let msg = Self {
             flags,
             session_id,
             command,
             execution_policy,
             configuration_name,
-        })
+        };
+
+        msg.ensure_message_size()?;
+
+        Ok(msg)
     }
 }
 
@@ -164,6 +191,8 @@ impl PduEncode for NowExecWinPsMsg {
         Self::NAME
     }
 
+    // LINTS: See body_size()
+    #[allow(clippy::arithmetic_side_effects)]
     fn size(&self) -> usize {
         NowHeader::FIXED_PART_SIZE + self.body_size()
     }

@@ -19,8 +19,20 @@ impl NowExecRunMsg {
     const NAME: &'static str = "NOW_EXEC_RUN_MSG";
     const FIXED_PART_SIZE: usize = 4;
 
-    pub fn new(session_id: u32, command: NowVarStr) -> Self {
-        Self { session_id, command }
+    pub fn new(session_id: u32, command: NowVarStr) -> PduResult<Self> {
+        let msg = Self { session_id, command };
+
+        msg.ensure_message_size()?;
+
+        Ok(msg)
+    }
+
+    fn ensure_message_size(&self) -> PduResult<()> {
+        let _message_size = Self::FIXED_PART_SIZE
+            .checked_add(self.command.size())
+            .ok_or_else(|| invalid_message_err!("size", "message size overflow"))?;
+
+        Ok(())
     }
 
     pub fn session_id(&self) -> u32 {
@@ -31,6 +43,8 @@ impl NowExecRunMsg {
         &self.command
     }
 
+    // LINTS: Overall message size is validated in the constructor/decode method
+    #[allow(clippy::arithmetic_side_effects)]
     fn body_size(&self) -> usize {
         Self::FIXED_PART_SIZE + self.command.size()
     }
@@ -41,7 +55,11 @@ impl NowExecRunMsg {
         let session_id = src.read_u32();
         let command = NowVarStr::decode(src)?;
 
-        Ok(Self { session_id, command })
+        let msg = Self { session_id, command };
+
+        msg.ensure_message_size()?;
+
+        Ok(msg)
     }
 }
 
@@ -67,6 +85,8 @@ impl PduEncode for NowExecRunMsg {
         Self::NAME
     }
 
+    // LINTS: See body_size()
+    #[allow(clippy::arithmetic_side_effects)]
     fn size(&self) -> usize {
         NowHeader::FIXED_PART_SIZE + self.body_size()
     }

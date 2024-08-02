@@ -25,17 +25,39 @@ bitflags! {
 /// NOW_PROTO: NOW_SYSTEM_SHUTDOWN_MSG
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NowSystemShutdownMsg {
-    pub flags: NowSystemShutdownFlags,
+    flags: NowSystemShutdownFlags,
     /// This system shutdown timeout, in seconds.
-    pub timeout: u32,
+    timeout: u32,
     /// Optional shutdown message.
-    pub message: NowVarStr,
+    message: NowVarStr,
 }
 
 impl NowSystemShutdownMsg {
     const NAME: &'static str = "NOW_SYSTEM_SHUTDOWN_MSG";
     const FIXED_PART_SIZE: usize = 4 /* u32 timeout */;
 
+    pub fn new(flags: NowSystemShutdownFlags, timeout: u32, message: NowVarStr) -> PduResult<Self> {
+        let msg = Self {
+            flags,
+            timeout,
+            message,
+        };
+
+        msg.ensure_message_size()?;
+
+        Ok(msg)
+    }
+
+    fn ensure_message_size(&self) -> PduResult<()> {
+        let _message_size = Self::FIXED_PART_SIZE
+            .checked_add(self.message.size())
+            .ok_or_else(|| invalid_message_err!("size", "message size overflow"))?;
+
+        Ok(())
+    }
+
+    // LINTS: Overall message size is validated in the constructor/decode method
+    #[allow(clippy::arithmetic_side_effects)]
     fn body_size(&self) -> usize {
         Self::FIXED_PART_SIZE + self.message.size()
     }
@@ -46,11 +68,15 @@ impl NowSystemShutdownMsg {
         let timeout = src.read_u32();
         let message = NowVarStr::decode(src)?;
 
-        Ok(Self {
+        let msg = Self {
             flags: NowSystemShutdownFlags::from_bits_retain(header.flags),
             timeout,
             message,
-        })
+        };
+
+        msg.ensure_message_size()?;
+
+        Ok(msg)
     }
 }
 
@@ -76,6 +102,8 @@ impl PduEncode for NowSystemShutdownMsg {
         Self::NAME
     }
 
+    // LINTS: See body_size()
+    #[allow(clippy::arithmetic_side_effects)]
     fn size(&self) -> usize {
         NowHeader::FIXED_PART_SIZE + self.body_size()
     }

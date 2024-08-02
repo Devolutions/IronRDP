@@ -30,6 +30,8 @@ impl NowExecAbortMsg {
         &self.status
     }
 
+    // LINTS: Overall message size always fits into usize
+    #[allow(clippy::arithmetic_side_effects)]
     fn body_size(&self) -> usize {
         Self::FIXED_PART_SIZE + self.status.size()
     }
@@ -66,6 +68,8 @@ impl PduEncode for NowExecAbortMsg {
         Self::NAME
     }
 
+    // LINTS: Overall message size always fits into usize
+    #[allow(clippy::arithmetic_side_effects)]
     fn size(&self) -> usize {
         NowHeader::FIXED_PART_SIZE + self.body_size()
     }

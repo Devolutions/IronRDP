@@ -28,6 +28,9 @@ impl NowExecBatchMsg {
         &self.command
     }
 
+    // LINTS: Overall message size always fits into usize; VarStr size always a few powers of 2 less
+    // than u32::MAX, therefore it fits into usize
+    #[allow(clippy::arithmetic_side_effects)]
     fn body_size(&self) -> usize {
         Self::FIXED_PART_SIZE + self.command.size()
     }
@@ -64,6 +67,8 @@ impl PduEncode for NowExecBatchMsg {
         Self::NAME
     }
 
+    // LINTS: See body_size()
+    #[allow(clippy::arithmetic_side_effects)]
     fn size(&self) -> usize {
         NowHeader::FIXED_PART_SIZE + self.body_size()
     }

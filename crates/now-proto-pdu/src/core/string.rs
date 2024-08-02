@@ -26,20 +26,31 @@ impl NowLrgStr {
 
     /// Creates new `NowLrgStr`. Returns error if string is too big for the protocol.
     pub fn new(value: impl Into<String>) -> PduResult<Self> {
-        let value = value.into();
+        let value: String = value.into();
         // IMPORTANT: we need to check for encoded UTF-8 size, not the string length.
 
-        let _: u32 = value
-            .as_bytes()
-            .len()
-            .try_into()
-            .map_err(|_| invalid_message_err!("string value", "too large string"))?;
+        Self::ensure_message_size(value.as_bytes().len())?;
 
         Ok(NowLrgStr(value))
     }
 
     pub fn value(&self) -> &str {
         &self.0
+    }
+
+    fn ensure_message_size(string_size: usize) -> PduResult<()> {
+        if string_size > usize::try_from(VarU32::MAX).expect("BUG: too small usize") {
+            return Err(invalid_message_err!("data", "data is too large for NOW_LRGSTR"));
+        }
+
+        if string_size > usize::MAX - Self::FIXED_PART_SIZE - 1 {
+            return Err(invalid_message_err!(
+                "string",
+                "string size is too large to fit in 32-bit usize"
+            ));
+        }
+
+        Ok(())
     }
 }
 
@@ -62,9 +73,11 @@ impl PduEncode for NowLrgStr {
     }
 
     fn size(&self) -> usize {
-        Self::FIXED_PART_SIZE  /* u32 size */
-            + self.0.len() /* utf-8 bytes */
-            + 1 /* null termnator */
+        // <u32 size> + <data bytes> + <null terminator>
+        self.0
+            .len()
+            .checked_add(Self::FIXED_PART_SIZE + 1)
+            .expect("BUG: size overflow")
     }
 }
 
@@ -73,6 +86,8 @@ impl PduDecode<'_> for NowLrgStr {
         ensure_fixed_part_size!(in: src);
 
         let len: usize = cast_length!("len", src.read_u32())?;
+
+        Self::ensure_message_size(len)?;
 
         ensure_size!(in: src, size: len);
         let bytes = src.read_slice(len);
@@ -147,6 +162,8 @@ impl PduEncode for NowVarStr {
         Self::NAME
     }
 
+    // LINTS: Use of VarU32 ensures that the overall size value is within the bounds of usize.
+    #[allow(clippy::arithmetic_side_effects)]
     fn size(&self) -> usize {
         VarU32::new(self.0.len().try_into().unwrap()).unwrap().size() /* variable-length size */
             + self.0.len() /* utf-8 bytes */
@@ -236,6 +253,9 @@ impl<const MAX_LEN: u8> PduEncode for NowRestrictedStr<MAX_LEN> {
         Self::NAME
     }
 
+    // LINTS: Restricted string with u8 length ensures that the overall size value is within
+    // the bounds of usize.
+    #[allow(clippy::arithmetic_side_effects)]
     fn size(&self) -> usize {
         Self::FIXED_PART_SIZE  /* u8 size */
             + self.0.len() /* utf-8 bytes */

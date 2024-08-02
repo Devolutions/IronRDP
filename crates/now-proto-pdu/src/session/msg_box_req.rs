@@ -75,35 +75,62 @@ impl NowSessionMsgBoxReqMsg {
     const NAME: &'static str = "NOW_SESSION_MSGBOX_REQ_MSG";
     const FIXED_PART_SIZE: usize = 12;
 
-    pub fn new(request_id: u32, message: NowVarStr) -> Self {
-        Self {
+    pub fn new(request_id: u32, message: NowVarStr) -> PduResult<Self> {
+        let msg = Self {
             flags: NowSessionMessageBoxFlags::empty(),
             request_id,
             style: NowMessageBoxStyle::OK,
             timeout: 0,
             title: NowVarStr::new(String::new()).unwrap(),
             message,
-        }
+        };
+
+        msg.ensure_message_size()?;
+
+        Ok(msg)
     }
 
-    pub fn with_title(mut self, title: NowVarStr) -> Self {
+    fn ensure_message_size(&self) -> PduResult<()> {
+        let _message_size = Self::FIXED_PART_SIZE
+            .checked_add(self.title.size())
+            .and_then(|size| size.checked_add(self.message.size()))
+            .ok_or_else(|| invalid_message_err!("size", "message size overflow"))?;
+
+        Ok(())
+    }
+
+    pub fn with_title(mut self, title: NowVarStr) -> PduResult<Self> {
         self.flags |= NowSessionMessageBoxFlags::TITLE;
         self.title = title;
-        self
+
+        self.ensure_message_size()?;
+
+        Ok(self)
     }
 
+    pub fn with_message(mut self, message: NowVarStr) -> PduResult<Self> {
+        self.message = message;
+
+        self.ensure_message_size()?;
+
+        Ok(self)
+    }
+
+    #[must_use]
     pub fn with_style(mut self, style: NowMessageBoxStyle) -> Self {
         self.flags |= NowSessionMessageBoxFlags::STYLE;
         self.style = style;
         self
     }
 
+    #[must_use]
     pub fn with_timeout(mut self, timeout: u32) -> Self {
         self.flags |= NowSessionMessageBoxFlags::TIMEOUT;
         self.timeout = timeout;
         self
     }
 
+    #[must_use]
     pub fn with_response(mut self) -> Self {
         self.flags |= NowSessionMessageBoxFlags::RESPONSE;
         self
@@ -145,6 +172,8 @@ impl NowSessionMsgBoxReqMsg {
         self.flags.contains(NowSessionMessageBoxFlags::RESPONSE)
     }
 
+    // LINTS: Overall message size is validated in the constructor/decode method
+    #[allow(clippy::arithmetic_side_effects)]
     fn body_size(&self) -> usize {
         Self::FIXED_PART_SIZE + self.title.size() + self.message.size()
     }
@@ -159,14 +188,18 @@ impl NowSessionMsgBoxReqMsg {
         let title = NowVarStr::decode(src)?;
         let message = NowVarStr::decode(src)?;
 
-        Ok(Self {
+        let msg = Self {
             flags,
             request_id,
             style,
             timeout,
             title,
             message,
-        })
+        };
+
+        msg.ensure_message_size()?;
+
+        Ok(msg)
     }
 }
 
@@ -195,6 +228,8 @@ impl PduEncode for NowSessionMsgBoxReqMsg {
         Self::NAME
     }
 
+    // LINTS: See body_size()
+    #[allow(clippy::arithmetic_side_effects)]
     fn size(&self) -> usize {
         NowHeader::FIXED_PART_SIZE + self.body_size()
     }

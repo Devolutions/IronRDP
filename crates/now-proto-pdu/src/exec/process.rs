@@ -18,13 +18,27 @@ impl NowExecProcessMsg {
     const NAME: &'static str = "NOW_EXEC_PROCESS_MSG";
     const FIXED_PART_SIZE: usize = 4;
 
-    pub fn new(session_id: u32, filename: NowVarStr, parameters: NowVarStr, directory: NowVarStr) -> Self {
-        Self {
+    pub fn new(session_id: u32, filename: NowVarStr, parameters: NowVarStr, directory: NowVarStr) -> PduResult<Self> {
+        let msg = Self {
             session_id,
             filename,
             parameters,
             directory,
-        }
+        };
+
+        msg.ensure_message_size()?;
+
+        Ok(msg)
+    }
+
+    fn ensure_message_size(&self) -> PduResult<()> {
+        let _message_size = Self::FIXED_PART_SIZE
+            .checked_add(self.filename.size())
+            .and_then(|size| size.checked_add(self.parameters.size()))
+            .and_then(|size| size.checked_add(self.directory.size()))
+            .ok_or_else(|| invalid_message_err!("size", "message size overflow"))?;
+
+        Ok(())
     }
 
     pub fn session_id(&self) -> u32 {
@@ -43,6 +57,8 @@ impl NowExecProcessMsg {
         &self.directory
     }
 
+    // LINTS: Overall message size is validated in the constructor/decode method
+    #[allow(clippy::arithmetic_side_effects)]
     fn body_size(&self) -> usize {
         Self::FIXED_PART_SIZE + self.filename.size() + self.parameters.size() + self.directory.size()
     }
@@ -55,12 +71,16 @@ impl NowExecProcessMsg {
         let parameters = NowVarStr::decode(src)?;
         let directory = NowVarStr::decode(src)?;
 
-        Ok(Self {
+        let msg = Self {
             session_id,
             filename,
             parameters,
             directory,
-        })
+        };
+
+        msg.ensure_message_size()?;
+
+        Ok(msg)
     }
 }
 
@@ -88,6 +108,8 @@ impl PduEncode for NowExecProcessMsg {
         Self::NAME
     }
 
+    // LINTS: See body_size()
+    #[allow(clippy::arithmetic_side_effects)]
     fn size(&self) -> usize {
         NowHeader::FIXED_PART_SIZE + self.body_size()
     }
