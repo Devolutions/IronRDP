@@ -24,9 +24,9 @@ fn roundtip_session_msgbox_req() {
     now_msg_roundtrip(
         NowSessionMsgBoxReqMsg::new(
             0x76543210,
-            NowVarStr::new("hello".to_string()).unwrap(),
+            NowVarStr::new("hello".to_owned()).unwrap(),
         ).unwrap().with_response().with_style(NowMessageBoxStyle::ABORT_RETRY_IGNORE)
-        .with_title(NowVarStr::new("world".to_string()).unwrap())
+        .with_title(NowVarStr::new("world".to_owned()).unwrap())
         .unwrap()
         .with_timeout(3),
         expect!["[1A, 00, 00, 00, 12, 03, 0F, 00, 10, 32, 54, 76, 02, 00, 00, 00, 03, 00, 00, 00, 05, 77, 6F, 72, 6C, 64, 00, 05, 68, 65, 6C, 6C, 6F, 00]"]
