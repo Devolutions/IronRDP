@@ -58,7 +58,7 @@ expect-test = "1"
 png = "0.17"
 proptest = "1.4"
 rstest = "0.18"
-sspi = { git = "https://github.com/Devolutions/sspi-rs", rev = "7dc730d9d5269a356531810fd38b4a86d55881f8" }
+sspi = "0.13.0"
 tracing = { version = "0.1", features = ["log"] }
 thiserror = "1.0"
 
