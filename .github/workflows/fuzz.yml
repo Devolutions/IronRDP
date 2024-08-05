@@ -3,7 +3,7 @@ name: Fuzz
 on:
   workflow_dispatch:
   schedule:
-    - cron: '12 3 * * 0,1,6' # At 03:12 AM UTC on Sunday, Monday, and Saturday.
+    - cron: '12 3 * * 0' # At 03:12 AM UTC on Sunday.
 
 env:
   CARGO_INCREMENTAL: 0
@@ -153,3 +153,30 @@ jobs:
             -H "Authorization: Bearer ${{ github.token }}"\
             -H "X-GitHub-Api-Version: 2022-11-28" \
             "${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}/actions/caches?key=fuzz-corpus-${{ github.run_id }}"
+
+  notify:
+    name: Notify failure
+    runs-on: ubuntu-latest
+    if: ${{ always() && contains(needs.*.result, 'failure') && github.event_name == 'schedule' }}
+    needs:
+      - fuzz
+    env:
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_ARCHITECTURE }}
+      SLACK_WEBHOOK_TYPE: INCOMING_WEBHOOK
+    steps:
+      - name: Send slack notification
+        id: slack
+        uses: slackapi/slack-github-action@v1.26.0
+        with:
+          payload: |
+            {
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "*${{ github.repository }}* :warning: \n Fuzz workflow for *${{ github.repository }}* <${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|found a bug>"
+                  }
+                }
+              ]
+            }
