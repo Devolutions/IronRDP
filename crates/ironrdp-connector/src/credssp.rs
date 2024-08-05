@@ -1,12 +1,15 @@
 use ironrdp_pdu::write_buf::WriteBuf;
 use ironrdp_pdu::{nego, PduHint};
+use picky::key::PrivateKey;
+use picky_asn1_x509::{oids, Certificate, ExtensionView, GeneralName};
 use sspi::credssp::{self, ClientState, CredSspClient};
 use sspi::generator::{Generator, NetworkRequest};
 use sspi::negotiate::ProtocolConfig;
 use sspi::Username;
 
 use crate::{
-    ClientConnector, ClientConnectorState, ConnectorError, ConnectorErrorKind, ConnectorResult, ServerName, Written,
+    ClientConnector, ClientConnectorState, ConnectorError, ConnectorErrorKind, ConnectorResult, Credentials,
+    ServerName, Written,
 };
 
 #[derive(Debug, Clone, Default)]
@@ -96,18 +99,42 @@ impl CredsspSequence {
         kerberos_config: Option<KerberosConfig>,
     ) -> ConnectorResult<(Self, credssp::TsRequest)> {
         let config = &connector.config;
-        if let crate::Credentials::SmartCard { .. } = config.credentials {
-            return Err(general_err!(
-                "CredSSP with smart card credentials is not currently supported"
-            ));
-        }
+        let credentials: sspi::Credentials = match &config.credentials {
+            Credentials::UsernamePassword { username, password } => {
+                let username = Username::new(username, config.domain.as_deref())
+                    .map_err(|e| custom_err!("invalid username", e))?;
 
-        let username = Username::new(config.credentials.username(), config.domain.as_deref())
-            .map_err(|e| custom_err!("invalid username", e))?;
-
-        let credentials = sspi::AuthIdentity {
-            username,
-            password: config.credentials.secret().to_owned().into(),
+                sspi::AuthIdentity {
+                    username,
+                    password: password.to_owned().into(),
+                }
+                .into()
+            }
+            Credentials::SmartCard { pin, config } => match config {
+                Some(config) => {
+                    let cert: Certificate = picky_asn1_der::from_bytes(&config.certificate)
+                        .map_err(|_e| general_err!("can't parse certificate"))?;
+                    let key = PrivateKey::from_pkcs1(&config.private_key)
+                        .map_err(|_e| general_err!("can't parse private key"))?;
+                    let identity = sspi::SmartCardIdentity {
+                        username: extract_user_principal_name(&cert)
+                            .or_else(|| extract_user_name(&cert))
+                            .unwrap_or_default(),
+                        certificate: cert,
+                        reader_name: config.reader_name.clone(),
+                        card_name: None,
+                        container_name: config.container_name.clone(),
+                        csp_name: config.csp_name.clone(),
+                        pin: pin.as_bytes().to_vec().into(),
+                        private_key_file_index: None,
+                        private_key: Some(key.into()),
+                    };
+                    sspi::Credentials::SmartCard(Box::new(identity))
+                }
+                None => {
+                    return Err(general_err!("smart card configuration missing"));
+                }
+            },
         };
 
         let server_name = server_name.into_inner();
@@ -124,7 +151,7 @@ impl CredsspSequence {
 
         let client = CredSspClient::new(
             server_public_key,
-            credentials.into(),
+            credentials,
             credssp::CredSspMode::WithCredentials,
             credssp::ClientMode::Negotiate(sspi::NegotiateConfig {
                 protocol_config: credssp_config,
@@ -215,6 +242,26 @@ impl CredsspSequence {
 
         Ok(size)
     }
+}
+
+fn extract_user_name(cert: &Certificate) -> Option<String> {
+    cert.tbs_certificate.subject.find_common_name().map(ToString::to_string)
+}
+
+fn extract_user_principal_name(cert: &Certificate) -> Option<String> {
+    cert.extensions()
+        .iter()
+        .find(|ext| ext.extn_id().0 == oids::subject_alternative_name())
+        .iter()
+        .flat_map(|ext| match ext.extn_value() {
+            ExtensionView::SubjectAltName(names) => names.0,
+            _ => vec![],
+        })
+        .find_map(|name| match name {
+            GeneralName::OtherName(name) if name.type_id.0 == oids::user_principal_name() => Some(name.value),
+            _ => None,
+        })
+        .and_then(|asn1| picky_asn1_der::from_bytes(&asn1.0 .0).ok())
 }
 
 fn write_credssp_request(ts_request: credssp::TsRequest, output: &mut WriteBuf) -> ConnectorResult<usize> {

@@ -46,9 +46,29 @@ pub struct BitmapConfig {
 }
 
 #[derive(Debug, Clone)]
+pub struct SmartCardIdentity {
+    /// DER-encoded X509 certificate
+    pub certificate: Vec<u8>,
+    /// Smart card reader name
+    pub reader_name: String,
+    /// Smart card key container name
+    pub container_name: String,
+    /// Smart card CSP name
+    pub csp_name: String,
+    /// DER-encoded RSA 2048-bit private key
+    pub private_key: Vec<u8>,
+}
+
+#[derive(Debug, Clone)]
 pub enum Credentials {
-    UsernamePassword { username: String, password: String },
-    SmartCard { pin: String },
+    UsernamePassword {
+        username: String,
+        password: String,
+    },
+    SmartCard {
+        pin: String,
+        config: Option<Box<SmartCardIdentity>>,
+    },
 }
 
 impl Credentials {
