@@ -122,3 +122,31 @@ jobs:
             $publishCmd = $publishCmd -Join ' '
             Invoke-Expression $publishCmd
           }
+
+  notify:
+    name: Notify failure
+    runs-on: ubuntu-latest
+    if: ${{ always() && contains(needs.*.result, 'failure') && github.event_name == 'schedule' }}
+    needs:
+      - preflight
+      - build
+    env:
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_ARCHITECTURE }}
+      SLACK_WEBHOOK_TYPE: INCOMING_WEBHOOK
+    steps:
+      - name: Send slack notification
+        id: slack
+        uses: slackapi/slack-github-action@v1.26.0
+        with:
+          payload: |
+            {
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "*${{ github.repository }}* :fire::fire::fire::fire::fire: \n The scheduled build for *${{ github.repository }}* is <${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|broken>"
+                  }
+                }
+              ]
+            }

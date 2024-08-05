@@ -3,6 +3,7 @@ use std::sync::{Arc, Mutex};
 
 use anyhow::{anyhow, bail, Result};
 use ironrdp_acceptor::{self, Acceptor, AcceptorResult, BeginResult};
+use ironrdp_async::bytes;
 use ironrdp_cliprdr::backend::ClipboardMessage;
 use ironrdp_cliprdr::CliprdrServer;
 use ironrdp_displaycontrol::server::DisplayControlServer;
@@ -243,14 +244,14 @@ impl RdpServer {
                 });
 
                 match ironrdp_acceptor::accept_finalize(framed, &mut acceptor).await {
-                    Ok((framed, result)) => self.client_loop(framed, result).await?,
+                    Ok((framed, result)) => self.client_accepted(framed, result).await?,
                     Err(error) => error!(?error, "Accept finalize error"),
                 };
             }
 
             Ok(BeginResult::Continue(framed)) => {
                 match ironrdp_acceptor::accept_finalize(framed, &mut acceptor).await {
-                    Ok((framed, result)) => self.client_loop(framed, result).await?,
+                    Ok((framed, result)) => self.client_accepted(framed, result).await?,
                     Err(error) => error!(?error, "Accept finalize error"),
                 };
             }
@@ -303,11 +304,228 @@ impl RdpServer {
         self.static_channels.get_channel_id_by_type::<T>()
     }
 
-    async fn client_loop<S>(&mut self, mut framed: Framed<S>, result: AcceptorResult) -> Result<()>
+    async fn dispatch_pdu<S>(
+        &mut self,
+        action: Action,
+        bytes: bytes::BytesMut,
+        framed: &mut Framed<S>,
+        io_channel_id: u16,
+        user_channel_id: u16,
+    ) -> Result<bool>
+    where
+        S: FramedWrite + FramedRead,
+    {
+        match action {
+            Action::FastPath => {
+                let input = decode(&bytes)?;
+                self.handle_fastpath(input).await;
+            }
+
+            Action::X224 => {
+                match self.handle_x224(framed, io_channel_id, user_channel_id, &bytes).await {
+                    Ok(disconnect) => {
+                        if disconnect {
+                            debug!("Got disconnect request");
+                            return Ok(true);
+                        }
+                    }
+
+                    Err(error) => {
+                        error!(?error, "X224 input error");
+                    }
+                };
+            }
+        }
+
+        Ok(false)
+    }
+
+    async fn dispatch_display_update<S>(
+        &mut self,
+        update: DisplayUpdate,
+        framed: &mut Framed<S>,
+        buffer: &mut Vec<u8>,
+        encoder: &mut UpdateEncoder,
+    ) -> Result<bool>
+    where
+        S: FramedWrite + FramedRead,
+    {
+        let fragmenter = match update {
+            DisplayUpdate::Bitmap(bitmap) => encoder.bitmap(bitmap),
+            DisplayUpdate::PointerPosition(pos) => encoder.pointer_position(pos),
+            DisplayUpdate::RGBAPointer(ptr) => encoder.rgba_pointer(ptr),
+            DisplayUpdate::ColorPointer(ptr) => encoder.color_pointer(ptr),
+            DisplayUpdate::HidePointer => encoder.hide_pointer(),
+            DisplayUpdate::DefaultPointer => encoder.default_pointer(),
+        };
+
+        let mut fragmenter = match fragmenter {
+            Ok(fragmenter) => fragmenter,
+            Err(error) => {
+                error!(?error, "Error during update encoding");
+                return Ok(true);
+            }
+        };
+
+        if fragmenter.size_hint() > buffer.len() {
+            buffer.resize(fragmenter.size_hint(), 0);
+        }
+
+        while let Some(len) = fragmenter.next(buffer) {
+            if let Err(error) = framed.write_all(&buffer[..len]).await {
+                error!(?error, "Write display update error");
+                return Ok(true);
+            };
+        }
+
+        Ok(false)
+    }
+
+    async fn dispatch_server_events<S>(
+        &mut self,
+        events: &mut Vec<ServerEvent>,
+        framed: &mut Framed<S>,
+        user_channel_id: u16,
+    ) -> Result<bool>
+    where
+        S: FramedWrite + FramedRead,
+    {
+        // Avoid wave message queuing up and causing extra delays.
+        // This is a naive solution, better solutions should compute the actual delay, add IO priority, encode audio, use UDP etc.
+        // 4 frames should roughly corresponds to hundreds of ms in regular setups.
+        let mut wave_limit = 4;
+        for event in events.drain(..) {
+            match event {
+                ServerEvent::Quit(reason) => {
+                    debug!("Got quit event: {reason}");
+                    return Ok(true);
+                }
+                ServerEvent::Rdpsnd(s) => {
+                    let Some(rdpsnd) = self.get_svc_processor::<RdpsndServer>() else {
+                        warn!("No rdpsnd channel, dropping event");
+                        continue;
+                    };
+                    let res = match s {
+                        RdpsndServerMessage::Wave(data, ts) => {
+                            if wave_limit == 0 {
+                                continue;
+                            }
+                            wave_limit -= 1;
+                            rdpsnd.wave(data, ts)
+                        }
+                        RdpsndServerMessage::Close => rdpsnd.close(),
+                        RdpsndServerMessage::Error(error) => {
+                            error!(?error, "Handling rdpsnd event");
+                            continue;
+                        }
+                    };
+                    match res {
+                        Ok(msgs) => {
+                            let channel_id = self
+                                .get_channel_id_by_type::<RdpsndServer>()
+                                .ok_or_else(|| anyhow!("SVC channel not found"))?;
+                            let data = server_encode_svc_messages(msgs.into(), channel_id, user_channel_id)?;
+                            framed.write_all(&data).await?;
+                        }
+                        Err(error) => {
+                            error!(?error, "Sending rdpsnd event");
+                            return Ok(true);
+                        }
+                    }
+                }
+                ServerEvent::Clipboard(c) => {
+                    let Some(cliprdr) = self.get_svc_processor::<CliprdrServer>() else {
+                        warn!("No clipboard channel, dropping event");
+                        continue;
+                    };
+                    let res = match c {
+                        ClipboardMessage::SendInitiateCopy(formats) => cliprdr.initiate_copy(&formats),
+                        ClipboardMessage::SendFormatData(data) => cliprdr.submit_format_data(data),
+                        ClipboardMessage::SendInitiatePaste(format) => cliprdr.initiate_paste(format),
+                        ClipboardMessage::Error(error) => {
+                            error!(?error, "Handling clipboard event");
+                            continue;
+                        }
+                    };
+                    match res {
+                        Ok(msgs) => {
+                            let channel_id = self
+                                .get_channel_id_by_type::<CliprdrServer>()
+                                .ok_or_else(|| anyhow!("SVC channel not found"))?;
+                            let data = server_encode_svc_messages(msgs.into(), channel_id, user_channel_id)?;
+                            framed.write_all(&data).await?;
+                        }
+                        Err(error) => {
+                            error!(?error, "Sending clipboard event");
+                            return Ok(true);
+                        }
+                    }
+                }
+            }
+        }
+
+        Ok(false)
+    }
+
+    async fn client_loop<S>(
+        &mut self,
+        framed: &mut Framed<S>,
+        io_channel_id: u16,
+        user_channel_id: u16,
+        mut encoder: UpdateEncoder,
+    ) -> Result<()>
     where
         S: FramedWrite + FramedRead,
     {
         debug!("Starting client loop");
+
+        let mut buffer = vec![0u8; 4096];
+        let mut display_updates = self.display.updates().await?;
+        let mut events = Vec::with_capacity(100);
+
+        loop {
+            tokio::select! {
+                frame = framed.read_pdu() => {
+                    let Ok((action, bytes)) = frame else {
+                        debug!(?frame, "disconnecting");
+                        break;
+                    };
+                    if self.dispatch_pdu(action, bytes, framed, io_channel_id, user_channel_id).await? {
+                        break;
+                    }
+                },
+
+                Some(update) = display_updates.next_update() => {
+                    if self.dispatch_display_update(update, framed, &mut buffer, &mut encoder).await? {
+                        break;
+                    }
+                }
+
+                nevents = self.ev_receiver.recv_many(&mut events, 100) => {
+                    if nevents == 0 {
+                        debug!("No sever events.. stopping");
+                        break;
+                    }
+                    while let Ok(ev) = self.ev_receiver.try_recv() {
+                        events.push(ev);
+                    }
+                    if self.dispatch_server_events(&mut events, framed, user_channel_id).await? {
+                        break;
+                    }
+                }
+                else => break,
+            }
+        }
+
+        debug!("End of client loop");
+        Ok(())
+    }
+
+    async fn client_accepted<S>(&mut self, mut framed: Framed<S>, result: AcceptorResult) -> Result<()>
+    where
+        S: FramedWrite + FramedRead,
+    {
+        debug!("Client accepted");
 
         if !result.input_events.is_empty() {
             debug!("Handling input event backlog from acceptor sequence");
@@ -379,147 +597,14 @@ impl RdpServer {
             }
         }
 
-        let mut buffer = vec![0u8; 4096];
-        let mut encoder = UpdateEncoder::new(surface_flags, rfxcodec);
+        let encoder = UpdateEncoder::new(surface_flags, rfxcodec);
 
-        let mut display_updates = self.display.updates().await?;
-
-        loop {
-            tokio::select! {
-                frame = framed.read_pdu() => {
-                    let Ok((action, bytes)) = frame else {
-                        debug!(?frame, "disconnecting");
-                        break;
-                    };
-
-                    match action {
-                        Action::FastPath => {
-                            let input = decode(&bytes)?;
-                            self.handle_fastpath(input).await;
-                        }
-
-                        Action::X224 => {
-                            match self.handle_x224(&mut framed, result.io_channel_id, result.user_channel_id, &bytes).await {
-                                Ok(disconnect) => {
-                                    if disconnect {
-                                        debug!("Got disconnect request");
-                                        break;
-                                    }
-                                },
-
-                                Err(error) => {
-                                    error!(?error, "X224 input error");
-                                }
-                            };
-                        }
-                    }
-                },
-
-                Some(update) = display_updates.next_update() => {
-                    let fragmenter = match update {
-                        DisplayUpdate::Bitmap(bitmap) => encoder.bitmap(bitmap),
-                        DisplayUpdate::PointerPosition(pos) => { encoder.pointer_position(pos) },
-                        DisplayUpdate::RGBAPointer(ptr) => { encoder.rgba_pointer(ptr) },
-                        DisplayUpdate::ColorPointer(ptr) => { encoder.color_pointer(ptr) },
-                        DisplayUpdate::HidePointer => { encoder.hide_pointer() },
-                        DisplayUpdate::DefaultPointer => { encoder.default_pointer() },
-                    };
-
-                    let mut fragmenter = match fragmenter {
-                        Ok(fragmenter) => fragmenter,
-                        Err(error) => {
-                            error!(?error, "Error during update encoding");
-                            break;
-                        }
-                    };
-
-                    if fragmenter.size_hint() > buffer.len() {
-                        buffer.resize(fragmenter.size_hint(), 0);
-                    }
-
-                    while let Some(len) = fragmenter.next(&mut buffer) {
-                        if let Err(error) = framed.write_all(&buffer[..len]).await {
-                            error!(?error, "Write display update error");
-                            break;
-                        };
-                    }
-                }
-
-                Some(event) = self.ev_receiver.recv() => {
-                    match event {
-                        ServerEvent::Quit(reason) => {
-                            debug!("Got quit event: {reason}");
-                            break;
-                        }
-                        ServerEvent::Rdpsnd(s) => {
-                            let Some(rdpsnd) = self.get_svc_processor::<RdpsndServer>() else {
-                                warn!("No rdpsnd channel, dropping event");
-                                continue;
-                            };
-                            let res = match s {
-                                RdpsndServerMessage::Wave(data, ts) => {
-                                    rdpsnd.wave(data, ts)
-                                },
-                                RdpsndServerMessage::Close => {
-                                    rdpsnd.close()
-                                },
-                                RdpsndServerMessage::Error(error) => {
-                                    error!(?error, "Handling rdpsnd event");
-                                    continue;
-                                }
-                            };
-                            match res {
-                                Ok(msgs) => {
-                                    let channel_id = self.get_channel_id_by_type::<RdpsndServer>().ok_or_else(|| anyhow!("SVC channel not found"))?;
-                                    let data = server_encode_svc_messages(msgs.into(), channel_id, result.user_channel_id)?;
-                                    framed.write_all(&data).await?;
-                                },
-                                Err(error) => {
-                                    error!(?error, "Sending rdpsnd event");
-                                    break;
-                                }
-                            }
-                        },
-                        ServerEvent::Clipboard(c) => {
-                            let Some(cliprdr) = self.get_svc_processor::<CliprdrServer>() else {
-                                warn!("No clipboard channel, dropping event");
-                                continue;
-                            };
-                            let res = match c {
-                                ClipboardMessage::SendInitiateCopy(formats) => {
-                                    cliprdr.initiate_copy(&formats)
-                                },
-                                ClipboardMessage::SendFormatData(data) => {
-                                    cliprdr.submit_format_data(data)
-                                },
-                                ClipboardMessage::SendInitiatePaste(format) => {
-                                    cliprdr.initiate_paste(format)
-                                },
-                                ClipboardMessage::Error(error) => {
-                                    error!(?error, "Handling clipboard event");
-                                    continue;
-                                },
-                            };
-                            match res {
-                                Ok(msgs) => {
-                                    let channel_id = self.get_channel_id_by_type::<CliprdrServer>().ok_or_else(|| anyhow!("SVC channel not found"))?;
-                                    let data = server_encode_svc_messages(msgs.into(), channel_id, result.user_channel_id)?;
-                                    framed.write_all(&data).await?;
-                                },
-                                Err(error) => {
-                                    error!(?error, "Sending clipboard event");
-                                    break;
-                                }
-                            }
-                        }
-
-                    }
-                }
-                else => break,
-            }
+        if let Err(err) = self
+            .client_loop(&mut framed, result.io_channel_id, result.user_channel_id, encoder)
+            .await
+        {
+            warn!(?err, "Error in client loop");
         }
-
-        debug!("End of client loop");
 
         self.static_channels = StaticChannelSet::new();
 

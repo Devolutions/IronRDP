@@ -23,3 +23,5 @@ mod rdcleanpath;
 mod rdpsnd;
 mod server_name;
 mod session;
+
+mod now_proto;

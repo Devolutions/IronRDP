@@ -92,7 +92,7 @@ jobs:
         if: matrix.os == 'android'
         shell: pwsh
         run: |    
-          $CargoConfigFile = "~/.cargo/config"
+          $CargoConfigFile = "~/.cargo/config.toml"
           $AndroidToolchain="${Env:ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64"
 
           Get-ChildItem -Path $AndroidToolchain "libunwind.a" -Recurse | ForEach-Object {
@@ -104,9 +104,11 @@ jobs:
             }
           }
 
+          Get-ChildItem -Path "$AndroidToolchain/bin/"
+
           echo "[target.i686-linux-android]" >> $CargoConfigFile
-          echo "linker=`"$AndroidToolchain/bin/i686-linux-android19-clang`"" >> $CargoConfigFile
-          echo "CC_i686-linux-android=$AndroidToolchain/bin/i686-linux-android19-clang" >> $Env:GITHUB_ENV
+          echo "linker=`"$AndroidToolchain/bin/i686-linux-android21-clang`"" >> $CargoConfigFile
+          echo "CC_i686-linux-android=$AndroidToolchain/bin/i686-linux-android21-clang" >> $Env:GITHUB_ENV
           echo "AR_i686-linux-android=$AndroidToolchain/bin/llvm-ar" >> $Env:GITHUB_ENV
 
           echo "[target.x86_64-linux-android]" >> $CargoConfigFile
@@ -370,3 +372,33 @@ jobs:
             $PushCmd = $PushCmd -Join ' '
             Invoke-Expression $PushCmd
           }
+
+  notify:
+    name: Notify failure
+    runs-on: ubuntu-latest
+    if: ${{ always() && contains(needs.*.result, 'failure') && github.event_name == 'schedule' }}
+    needs:
+      - preflight
+      - build-native
+      - build-universal
+      - build-managed
+    env:
+      SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_ARCHITECTURE }}
+      SLACK_WEBHOOK_TYPE: INCOMING_WEBHOOK
+    steps:
+      - name: Send slack notification
+        id: slack
+        uses: slackapi/slack-github-action@v1.26.0
+        with:
+          payload: |
+            {
+              "blocks": [
+                {
+                  "type": "section",
+                  "text": {
+                    "type": "mrkdwn",
+                    "text": "*${{ github.repository }}* :fire::fire::fire::fire::fire: \n The scheduled build for *${{ github.repository }}* is <${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|broken>"
+                  }
+                }
+              ]
+            }

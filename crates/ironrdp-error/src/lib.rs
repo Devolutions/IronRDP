@@ -2,6 +2,8 @@
 
 #[cfg(feature = "alloc")]
 extern crate alloc;
+#[cfg(feature = "alloc")]
+use alloc::boxed::Box;
 
 use core::fmt;
 
@@ -24,7 +26,7 @@ pub struct Error<Kind> {
     #[cfg(feature = "std")]
     source: Option<Box<dyn std::error::Error + Sync + Send>>,
     #[cfg(all(not(feature = "std"), feature = "alloc"))]
-    source: Option<alloc::boxed::Box<dyn Source>>,
+    source: Option<Box<dyn Source>>,
 }
 
 impl<Kind> Error<Kind> {

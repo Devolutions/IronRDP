@@ -229,6 +229,20 @@ macro_rules! assert_impl {
     };
 }
 
+/// Asserts that constant expressions evaluate to `true`.
+///
+/// From <https://docs.rs/static_assertions/1.1.0/src/static_assertions/const_assert.rs.html#51-57>
+#[macro_export]
+macro_rules! const_assert {
+    ($x:expr $(,)?) => {
+        #[allow(unknown_lints, eq_op)]
+        const _: [(); 0 - !{
+            const ASSERT: bool = $x;
+            ASSERT
+        } as usize] = [];
+    };
+}
+
 /// Implements additional traits for a plain old data structure (POD).
 #[macro_export]
 macro_rules! impl_pdu_pod {

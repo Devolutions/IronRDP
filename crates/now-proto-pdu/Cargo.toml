@@ -1,0 +1,28 @@
+[package]
+name = "now-proto-pdu"
+version = "0.1.0"
+readme = "README.md"
+description = "NOW protocol PDU encoding and decoding"
+edition.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[lib]
+doctest = false
+test = false
+
+[dependencies]
+bitflags = "2"
+ironrdp-error = { path = "../ironrdp-error" }
+ironrdp-pdu = { path = "../ironrdp-pdu" }
+
+[features]
+default = ["std"]
+std = ["ironrdp-error/std", "ironrdp-pdu/std"]
+
+[lints]
+workspace = true
