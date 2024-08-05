@@ -17,16 +17,20 @@ harness = true
 
 [dependencies]
 array-concat = "0.5"
+expect-test = "1"
 ironrdp-pdu.workspace = true
 lazy_static.workspace = true # TODO: remove in favor of https://doc.rust-lang.org/std/sync/struct.OnceLock.html
+now-proto-pdu.workspace = true
 paste = "1"
 
 [dev-dependencies]
-png = "0.17"
+anyhow = "1"
+expect-test.workspace = true
 hex = "0.4"
-ironrdp-cliprdr.workspace = true
 ironrdp-cliprdr-format.workspace = true
+ironrdp-cliprdr.workspace = true
 ironrdp-connector.workspace = true
+ironrdp-displaycontrol.workspace = true
 ironrdp-dvc.workspace = true
 ironrdp-fuzzing.workspace = true
 ironrdp-graphics.workspace = true
@@ -34,13 +38,10 @@ ironrdp-input.workspace = true
 ironrdp-rdcleanpath.workspace = true
 ironrdp-rdpsnd.workspace = true
 ironrdp-session.workspace = true
-ironrdp-displaycontrol.workspace = true
+png = "0.17"
 pretty_assertions = "1.4"
 proptest.workspace = true
 rstest.workspace = true
-expect-test.workspace = true
-anyhow = "1"
 
 [lints]
 workspace = true
-

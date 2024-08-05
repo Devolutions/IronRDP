@@ -2398,6 +2398,7 @@ dependencies = [
  "ironrdp-rdpsnd",
  "ironrdp-session",
  "lazy_static",
+ "now-proto-pdu",
  "paste",
  "png",
  "pretty_assertions",
@@ -2895,6 +2896,15 @@ checksum = "d273983c5a657a70a3e8f2a01329822f3b8c8172b73826411a55751e404a0a4a"
 dependencies = [
  "memchr",
  "minimal-lexical",
+]
+
+[[package]]
+name = "now-proto-pdu"
+version = "0.1.0"
+dependencies = [
+ "bitflags 2.4.2",
+ "ironrdp-error",
+ "ironrdp-pdu",
 ]
 
 [[package]]
