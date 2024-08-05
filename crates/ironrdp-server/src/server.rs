@@ -244,14 +244,14 @@ impl RdpServer {
                 });
 
                 match ironrdp_acceptor::accept_finalize(framed, &mut acceptor).await {
-                    Ok((framed, result)) => self.client_loop(framed, result).await?,
+                    Ok((framed, result)) => self.client_accepted(framed, result).await?,
                     Err(error) => error!(?error, "Accept finalize error"),
                 };
             }
 
             Ok(BeginResult::Continue(framed)) => {
                 match ironrdp_acceptor::accept_finalize(framed, &mut acceptor).await {
-                    Ok((framed, result)) => self.client_loop(framed, result).await?,
+                    Ok((framed, result)) => self.client_accepted(framed, result).await?,
                     Err(error) => error!(?error, "Accept finalize error"),
                 };
             }
@@ -455,11 +455,57 @@ impl RdpServer {
         Ok(false)
     }
 
-    async fn client_loop<S>(&mut self, mut framed: Framed<S>, result: AcceptorResult) -> Result<()>
+    async fn client_loop<S>(
+        &mut self,
+        framed: &mut Framed<S>,
+        io_channel_id: u16,
+        user_channel_id: u16,
+        mut encoder: UpdateEncoder,
+    ) -> Result<()>
     where
         S: FramedWrite + FramedRead,
     {
         debug!("Starting client loop");
+
+        let mut buffer = vec![0u8; 4096];
+        let mut display_updates = self.display.updates().await?;
+
+        loop {
+            tokio::select! {
+                frame = framed.read_pdu() => {
+                    let Ok((action, bytes)) = frame else {
+                        debug!(?frame, "disconnecting");
+                        break;
+                    };
+                    if self.dispatch_pdu(action, bytes, framed, io_channel_id, user_channel_id).await? {
+                        break;
+                    }
+                },
+
+                Some(update) = display_updates.next_update() => {
+                    if self.dispatch_display_update(update, framed, &mut buffer, &mut encoder).await? {
+                        break;
+                    }
+                }
+
+                Some(event) = self.ev_receiver.recv() => {
+                    if self.dispatch_server_event(event, framed, user_channel_id).await? {
+                        break;
+                    }
+                }
+                else => break,
+            }
+        }
+
+        debug!("End of client loop");
+        Ok(())
+    }
+
+    async fn client_accepted<S>(&mut self, mut framed: Framed<S>, result: AcceptorResult) -> Result<()>
+    where
+        S: FramedWrite + FramedRead,
+    {
+        debug!("Client accepted");
 
         if !result.input_events.is_empty() {
             debug!("Handling input event backlog from acceptor sequence");
@@ -531,39 +577,14 @@ impl RdpServer {
             }
         }
 
-        let mut buffer = vec![0u8; 4096];
-        let mut encoder = UpdateEncoder::new(surface_flags, rfxcodec);
+        let encoder = UpdateEncoder::new(surface_flags, rfxcodec);
 
-        let mut display_updates = self.display.updates().await?;
-
-        loop {
-            tokio::select! {
-                frame = framed.read_pdu() => {
-                    let Ok((action, bytes)) = frame else {
-                        debug!(?frame, "disconnecting");
-                        break;
-                    };
-                    if self.dispatch_pdu(action, bytes, &mut framed, result.io_channel_id, result.user_channel_id).await? {
-                        break;
-                    }
-                },
-
-                Some(update) = display_updates.next_update() => {
-                    if self.dispatch_display_update(update, &mut framed, &mut buffer, &mut encoder).await? {
-                        break;
-                    }
-                }
-
-                Some(event) = self.ev_receiver.recv() => {
-                    if self.dispatch_server_event(event, &mut framed, result.user_channel_id).await? {
-                        break;
-                    }
-                }
-                else => break,
-            }
+        if let Err(err) = self
+            .client_loop(&mut framed, result.io_channel_id, result.user_channel_id, encoder)
+            .await
+        {
+            warn!(?err, "Error in client loop");
         }
-
-        debug!("End of client loop");
 
         self.static_channels = StaticChannelSet::new();
 
