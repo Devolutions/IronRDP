@@ -381,72 +381,84 @@ impl RdpServer {
         Ok(false)
     }
 
-    async fn dispatch_server_event<S>(
+    async fn dispatch_server_events<S>(
         &mut self,
-        event: ServerEvent,
+        events: &mut Vec<ServerEvent>,
         framed: &mut Framed<S>,
         user_channel_id: u16,
     ) -> Result<bool>
     where
         S: FramedWrite + FramedRead,
     {
-        match event {
-            ServerEvent::Quit(reason) => {
-                debug!("Got quit event: {reason}");
-                return Ok(true);
-            }
-            ServerEvent::Rdpsnd(s) => {
-                let Some(rdpsnd) = self.get_svc_processor::<RdpsndServer>() else {
-                    warn!("No rdpsnd channel, dropping event");
-                    return Ok(false);
-                };
-                let res = match s {
-                    RdpsndServerMessage::Wave(data, ts) => rdpsnd.wave(data, ts),
-                    RdpsndServerMessage::Close => rdpsnd.close(),
-                    RdpsndServerMessage::Error(error) => {
-                        error!(?error, "Handling rdpsnd event");
-                        return Ok(false);
-                    }
-                };
-                match res {
-                    Ok(msgs) => {
-                        let channel_id = self
-                            .get_channel_id_by_type::<RdpsndServer>()
-                            .ok_or_else(|| anyhow!("SVC channel not found"))?;
-                        let data = server_encode_svc_messages(msgs.into(), channel_id, user_channel_id)?;
-                        framed.write_all(&data).await?;
-                    }
-                    Err(error) => {
-                        error!(?error, "Sending rdpsnd event");
-                        return Ok(true);
+        // Avoid wave message queuing up and causing extra delays.
+        // This is a naive solution, better solutions should compute the actual delay, add IO priority, encode audio, use UDP etc.
+        // 4 frames should roughly corresponds to hundreds of ms in regular setups.
+        let mut wave_limit = 4;
+        for event in events.drain(..) {
+            match event {
+                ServerEvent::Quit(reason) => {
+                    debug!("Got quit event: {reason}");
+                    return Ok(true);
+                }
+                ServerEvent::Rdpsnd(s) => {
+                    let Some(rdpsnd) = self.get_svc_processor::<RdpsndServer>() else {
+                        warn!("No rdpsnd channel, dropping event");
+                        continue;
+                    };
+                    let res = match s {
+                        RdpsndServerMessage::Wave(data, ts) => {
+                            if wave_limit == 0 {
+                                continue;
+                            }
+                            wave_limit -= 1;
+                            rdpsnd.wave(data, ts)
+                        }
+                        RdpsndServerMessage::Close => rdpsnd.close(),
+                        RdpsndServerMessage::Error(error) => {
+                            error!(?error, "Handling rdpsnd event");
+                            continue;
+                        }
+                    };
+                    match res {
+                        Ok(msgs) => {
+                            let channel_id = self
+                                .get_channel_id_by_type::<RdpsndServer>()
+                                .ok_or_else(|| anyhow!("SVC channel not found"))?;
+                            let data = server_encode_svc_messages(msgs.into(), channel_id, user_channel_id)?;
+                            framed.write_all(&data).await?;
+                        }
+                        Err(error) => {
+                            error!(?error, "Sending rdpsnd event");
+                            return Ok(true);
+                        }
                     }
                 }
-            }
-            ServerEvent::Clipboard(c) => {
-                let Some(cliprdr) = self.get_svc_processor::<CliprdrServer>() else {
-                    warn!("No clipboard channel, dropping event");
-                    return Ok(false);
-                };
-                let res = match c {
-                    ClipboardMessage::SendInitiateCopy(formats) => cliprdr.initiate_copy(&formats),
-                    ClipboardMessage::SendFormatData(data) => cliprdr.submit_format_data(data),
-                    ClipboardMessage::SendInitiatePaste(format) => cliprdr.initiate_paste(format),
-                    ClipboardMessage::Error(error) => {
-                        error!(?error, "Handling clipboard event");
-                        return Ok(false);
-                    }
-                };
-                match res {
-                    Ok(msgs) => {
-                        let channel_id = self
-                            .get_channel_id_by_type::<CliprdrServer>()
-                            .ok_or_else(|| anyhow!("SVC channel not found"))?;
-                        let data = server_encode_svc_messages(msgs.into(), channel_id, user_channel_id)?;
-                        framed.write_all(&data).await?;
-                    }
-                    Err(error) => {
-                        error!(?error, "Sending clipboard event");
-                        return Ok(true);
+                ServerEvent::Clipboard(c) => {
+                    let Some(cliprdr) = self.get_svc_processor::<CliprdrServer>() else {
+                        warn!("No clipboard channel, dropping event");
+                        continue;
+                    };
+                    let res = match c {
+                        ClipboardMessage::SendInitiateCopy(formats) => cliprdr.initiate_copy(&formats),
+                        ClipboardMessage::SendFormatData(data) => cliprdr.submit_format_data(data),
+                        ClipboardMessage::SendInitiatePaste(format) => cliprdr.initiate_paste(format),
+                        ClipboardMessage::Error(error) => {
+                            error!(?error, "Handling clipboard event");
+                            continue;
+                        }
+                    };
+                    match res {
+                        Ok(msgs) => {
+                            let channel_id = self
+                                .get_channel_id_by_type::<CliprdrServer>()
+                                .ok_or_else(|| anyhow!("SVC channel not found"))?;
+                            let data = server_encode_svc_messages(msgs.into(), channel_id, user_channel_id)?;
+                            framed.write_all(&data).await?;
+                        }
+                        Err(error) => {
+                            error!(?error, "Sending clipboard event");
+                            return Ok(true);
+                        }
                     }
                 }
             }
@@ -469,6 +481,7 @@ impl RdpServer {
 
         let mut buffer = vec![0u8; 4096];
         let mut display_updates = self.display.updates().await?;
+        let mut events = Vec::with_capacity(100);
 
         loop {
             tokio::select! {
@@ -488,8 +501,15 @@ impl RdpServer {
                     }
                 }
 
-                Some(event) = self.ev_receiver.recv() => {
-                    if self.dispatch_server_event(event, framed, user_channel_id).await? {
+                nevents = self.ev_receiver.recv_many(&mut events, 100) => {
+                    if nevents == 0 {
+                        debug!("No sever events.. stopping");
+                        break;
+                    }
+                    while let Ok(ev) = self.ev_receiver.try_recv() {
+                        events.push(ev);
+                    }
+                    if self.dispatch_server_events(&mut events, framed, user_channel_id).await? {
                         break;
                     }
                 }
