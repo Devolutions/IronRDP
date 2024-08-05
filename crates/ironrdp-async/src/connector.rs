@@ -2,8 +2,8 @@ use ironrdp_connector::credssp::{CredsspProcessGenerator, CredsspSequence, Kerbe
 use ironrdp_connector::sspi::credssp::ClientState;
 use ironrdp_connector::sspi::generator::GeneratorState;
 use ironrdp_connector::{
-    custom_err, ClientConnector, ClientConnectorState, ConnectionResult, ConnectorError, ConnectorResult, ServerName,
-    State as _,
+    custom_err, general_err, ClientConnector, ClientConnectorState, ConnectionResult, ConnectorError, ConnectorResult,
+    ServerName, State as _,
 };
 use ironrdp_pdu::write_buf::WriteBuf;
 
@@ -120,8 +120,19 @@ where
 {
     assert!(connector.should_perform_credssp());
 
-    let (mut sequence, mut ts_request) =
-        CredsspSequence::init(connector, server_name, server_public_key, kerberos_config)?;
+    let selected_protocol = match connector.state {
+        ClientConnectorState::Credssp { selected_protocol, .. } => selected_protocol,
+        _ => return Err(general_err!("invalid connector state for CredSSP sequence")),
+    };
+
+    let (mut sequence, mut ts_request) = CredsspSequence::init(
+        connector.config.credentials.clone(),
+        connector.config.domain.as_deref(),
+        selected_protocol,
+        server_name,
+        server_public_key,
+        kerberos_config,
+    )?;
 
     loop {
         let client_state = {
