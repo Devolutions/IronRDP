@@ -340,6 +340,47 @@ impl RdpServer {
         Ok(false)
     }
 
+    async fn dispatch_display_update<S>(
+        &mut self,
+        update: DisplayUpdate,
+        framed: &mut Framed<S>,
+        buffer: &mut Vec<u8>,
+        encoder: &mut UpdateEncoder,
+    ) -> Result<bool>
+    where
+        S: FramedWrite + FramedRead,
+    {
+        let fragmenter = match update {
+            DisplayUpdate::Bitmap(bitmap) => encoder.bitmap(bitmap),
+            DisplayUpdate::PointerPosition(pos) => encoder.pointer_position(pos),
+            DisplayUpdate::RGBAPointer(ptr) => encoder.rgba_pointer(ptr),
+            DisplayUpdate::ColorPointer(ptr) => encoder.color_pointer(ptr),
+            DisplayUpdate::HidePointer => encoder.hide_pointer(),
+            DisplayUpdate::DefaultPointer => encoder.default_pointer(),
+        };
+
+        let mut fragmenter = match fragmenter {
+            Ok(fragmenter) => fragmenter,
+            Err(error) => {
+                error!(?error, "Error during update encoding");
+                return Ok(true);
+            }
+        };
+
+        if fragmenter.size_hint() > buffer.len() {
+            buffer.resize(fragmenter.size_hint(), 0);
+        }
+
+        while let Some(len) = fragmenter.next(buffer) {
+            if let Err(error) = framed.write_all(&buffer[..len]).await {
+                error!(?error, "Write display update error");
+                return Ok(true);
+            };
+        }
+
+        Ok(false)
+    }
+
     async fn client_loop<S>(&mut self, mut framed: Framed<S>, result: AcceptorResult) -> Result<()>
     where
         S: FramedWrite + FramedRead,
@@ -434,32 +475,8 @@ impl RdpServer {
                 },
 
                 Some(update) = display_updates.next_update() => {
-                    let fragmenter = match update {
-                        DisplayUpdate::Bitmap(bitmap) => encoder.bitmap(bitmap),
-                        DisplayUpdate::PointerPosition(pos) => { encoder.pointer_position(pos) },
-                        DisplayUpdate::RGBAPointer(ptr) => { encoder.rgba_pointer(ptr) },
-                        DisplayUpdate::ColorPointer(ptr) => { encoder.color_pointer(ptr) },
-                        DisplayUpdate::HidePointer => { encoder.hide_pointer() },
-                        DisplayUpdate::DefaultPointer => { encoder.default_pointer() },
-                    };
-
-                    let mut fragmenter = match fragmenter {
-                        Ok(fragmenter) => fragmenter,
-                        Err(error) => {
-                            error!(?error, "Error during update encoding");
-                            break;
-                        }
-                    };
-
-                    if fragmenter.size_hint() > buffer.len() {
-                        buffer.resize(fragmenter.size_hint(), 0);
-                    }
-
-                    while let Some(len) = fragmenter.next(&mut buffer) {
-                        if let Err(error) = framed.write_all(&buffer[..len]).await {
-                            error!(?error, "Write display update error");
-                            break;
-                        };
+                    if self.dispatch_display_update(update, &mut framed, &mut buffer, &mut encoder).await? {
+                        break;
                     }
                 }
 
