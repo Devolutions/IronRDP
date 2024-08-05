@@ -3,6 +3,7 @@ use std::sync::{Arc, Mutex};
 
 use anyhow::{anyhow, bail, Result};
 use ironrdp_acceptor::{self, Acceptor, AcceptorResult, BeginResult};
+use ironrdp_async::bytes;
 use ironrdp_cliprdr::backend::ClipboardMessage;
 use ironrdp_cliprdr::CliprdrServer;
 use ironrdp_displaycontrol::server::DisplayControlServer;
@@ -303,6 +304,42 @@ impl RdpServer {
         self.static_channels.get_channel_id_by_type::<T>()
     }
 
+    async fn dispatch_pdu<S>(
+        &mut self,
+        action: Action,
+        bytes: bytes::BytesMut,
+        framed: &mut Framed<S>,
+        io_channel_id: u16,
+        user_channel_id: u16,
+    ) -> Result<bool>
+    where
+        S: FramedWrite + FramedRead,
+    {
+        match action {
+            Action::FastPath => {
+                let input = decode(&bytes)?;
+                self.handle_fastpath(input).await;
+            }
+
+            Action::X224 => {
+                match self.handle_x224(framed, io_channel_id, user_channel_id, &bytes).await {
+                    Ok(disconnect) => {
+                        if disconnect {
+                            debug!("Got disconnect request");
+                            return Ok(true);
+                        }
+                    }
+
+                    Err(error) => {
+                        error!(?error, "X224 input error");
+                    }
+                };
+            }
+        }
+
+        Ok(false)
+    }
+
     async fn client_loop<S>(&mut self, mut framed: Framed<S>, result: AcceptorResult) -> Result<()>
     where
         S: FramedWrite + FramedRead,
@@ -391,27 +428,8 @@ impl RdpServer {
                         debug!(?frame, "disconnecting");
                         break;
                     };
-
-                    match action {
-                        Action::FastPath => {
-                            let input = decode(&bytes)?;
-                            self.handle_fastpath(input).await;
-                        }
-
-                        Action::X224 => {
-                            match self.handle_x224(&mut framed, result.io_channel_id, result.user_channel_id, &bytes).await {
-                                Ok(disconnect) => {
-                                    if disconnect {
-                                        debug!("Got disconnect request");
-                                        break;
-                                    }
-                                },
-
-                                Err(error) => {
-                                    error!(?error, "X224 input error");
-                                }
-                            };
-                        }
+                    if self.dispatch_pdu(action, bytes, &mut framed, result.io_channel_id, result.user_channel_id).await? {
+                        break;
                     }
                 },
 
