@@ -20,6 +20,7 @@ anyhow = "1.0"
 tokio = { version = "1", features = ["net", "macros", "sync"] }
 tokio-rustls = "0.26"
 async-trait = "0.1"
+ironrdp-async.workspace = true
 ironrdp-ainput.workspace = true
 ironrdp-pdu.workspace = true
 ironrdp-svc.workspace = true

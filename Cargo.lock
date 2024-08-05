@@ -2338,6 +2338,7 @@ dependencies = [
  "async-trait",
  "ironrdp-acceptor",
  "ironrdp-ainput",
+ "ironrdp-async",
  "ironrdp-cliprdr",
  "ironrdp-displaycontrol",
  "ironrdp-dvc",
