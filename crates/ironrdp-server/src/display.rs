@@ -22,7 +22,7 @@ pub enum DisplayUpdate {
     DefaultPointer,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum PixelOrder {
     TopToBottom,
     BottomToTop,
