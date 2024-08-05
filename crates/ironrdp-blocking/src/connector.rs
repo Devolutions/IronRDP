@@ -125,8 +125,19 @@ where
 {
     assert!(connector.should_perform_credssp());
 
-    let (mut sequence, mut ts_request) =
-        CredsspSequence::init(connector, server_name, server_public_key, kerberos_config)?;
+    let selected_protocol = match connector.state {
+        ClientConnectorState::Credssp { selected_protocol, .. } => selected_protocol,
+        _ => unreachable!(),
+    };
+
+    let (mut sequence, mut ts_request) = CredsspSequence::init(
+        connector.config.credentials.clone(),
+        connector.config.domain.as_deref(),
+        selected_protocol,
+        server_name,
+        server_public_key,
+        kerberos_config,
+    )?;
 
     loop {
         let client_state = {
