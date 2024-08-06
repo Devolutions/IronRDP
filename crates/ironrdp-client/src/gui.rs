@@ -2,33 +2,35 @@
 
 use std::num::NonZeroU32;
 
-use anyhow::Context as _;
+use raw_window_handle::{DisplayHandle, HasDisplayHandle};
 use tokio::sync::mpsc;
 use winit::dpi::LogicalPosition;
 use winit::event::{self, Event, WindowEvent};
-use winit::event_loop::{ControlFlow, EventLoop, EventLoopBuilder, EventLoopProxy};
-use winit::window::{Window, WindowBuilder};
+use winit::event_loop::{ControlFlow, EventLoop, EventLoopProxy};
+use winit::keyboard::ModifiersKeyState;
+use winit::platform::scancode::PhysicalKeyExtScancode;
+use winit::window::{Window, WindowAttributes};
 
 use crate::rdp::{RdpInputEvent, RdpOutputEvent};
 
 pub struct GuiContext {
     window: Window,
     event_loop: EventLoop<RdpOutputEvent>,
-    context: softbuffer::Context,
+    context: softbuffer::Context<DisplayHandle<'static>>,
 }
 
 impl GuiContext {
     pub fn init() -> anyhow::Result<Self> {
-        let event_loop = EventLoopBuilder::<RdpOutputEvent>::with_user_event().build();
+        let event_loop = EventLoop::<RdpOutputEvent>::with_user_event().build()?;
 
-        let window = WindowBuilder::new()
-            .with_title("IronRDP")
-            .build(&event_loop)
-            .context("unable to create winit Window")?;
+        let window_attributes = WindowAttributes::default().with_title("IronRdp");
+        let window = event_loop.create_window(window_attributes)?;
 
-        // SAFETY: both the context and the window are held by the GuiContext
-        let context = unsafe { softbuffer::Context::new(&window) }
-            .map_err(|e| anyhow::Error::msg(format!("unable to initialize softbuffer context: {e}")))?;
+        // SAFETY: we drop the context right before the event loop is stopped, thus making it safe.
+        let context = softbuffer::Context::new(unsafe {
+            std::mem::transmute::<DisplayHandle<'_>, DisplayHandle<'static>>(event_loop.display_handle().unwrap())
+        })
+        .map_err(|e| anyhow::Error::msg(format!("unable to initialize softbuffer context: {e}")))?;
 
         Ok(Self {
             window,
@@ -45,7 +47,7 @@ impl GuiContext {
         self.event_loop.create_proxy()
     }
 
-    pub fn run(self, input_event_sender: mpsc::UnboundedSender<RdpInputEvent>) -> ! {
+    pub fn run(self, input_event_sender: mpsc::UnboundedSender<RdpInputEvent>) -> anyhow::Result<()> {
         let Self {
             window,
             event_loop,
@@ -53,12 +55,13 @@ impl GuiContext {
         } = self;
 
         // SAFETY: both the context and the window are kept alive until the end of this function’s scope
-        let mut surface = unsafe { softbuffer::Surface::new(&context, &window) }.expect("surface");
+        let mut surface = softbuffer::Surface::new(&context, &window).expect("surface");
+        let mut buffer_size = (0, 0);
 
         let mut input_database = ironrdp::input::Database::new();
 
-        event_loop.run(move |event, _, control_flow| {
-            *control_flow = ControlFlow::Wait;
+        event_loop.run(|event, aloop| {
+            aloop.set_control_flow(ControlFlow::Wait);
 
             match event {
                 Event::WindowEvent { window_id, event } if window_id == window.id() => match event {
@@ -78,41 +81,43 @@ impl GuiContext {
                     WindowEvent::CloseRequested => {
                         if input_event_sender.send(RdpInputEvent::Close).is_err() {
                             error!("Failed to send graceful shutdown event, closing the window");
-                            control_flow.set_exit();
+                            aloop.exit();
                         }
                     }
                     WindowEvent::DroppedFile(_) => {
                         // TODO(#110): File upload
                     }
-                    WindowEvent::ReceivedCharacter(_) => {
-                        // Sadly, we can't use this winit event to send RDP unicode events because
-                        // of the several reasons:
-                        // 1. `ReceivedCharacter` event doesn't provide a way to distinguish between
-                        //    key press and key release, therefore the only way to use it is to send
-                        //    a key press + release events sequentially, which will not allow to
-                        //    handle long press and key repeat events.
-                        // 2. This event do not fire for non-printable keys (e.g. Control, Alt, etc.)
-                        // 3. This event fies BEFORE `KeyboardInput` event, so we can't make a
-                        //    reasonable workaround for `1` and `2` by collecting physical key press
-                        //    information first via `KeyboardInput` before processing `ReceivedCharacter`.
-                        //
-                        // However, all of these issues can be solved by updating `winit` to the
-                        // newer version.
-                        //
-                        // TODO(#376): Update winit
-                        // TODO(#376): Implement unicode input in native client
-                    }
-                    WindowEvent::KeyboardInput { input, .. } => {
-                        let scancode = ironrdp::input::Scancode::from_u16(u16::try_from(input.scancode).unwrap());
+                    // WindowEvent::ReceivedCharacter(_) => {
+                    // Sadly, we can't use this winit event to send RDP unicode events because
+                    // of the several reasons:
+                    // 1. `ReceivedCharacter` event doesn't provide a way to distinguish between
+                    //    key press and key release, therefore the only way to use it is to send
+                    //    a key press + release events sequentially, which will not allow to
+                    //    handle long press and key repeat events.
+                    // 2. This event do not fire for non-printable keys (e.g. Control, Alt, etc.)
+                    // 3. This event fies BEFORE `KeyboardInput` event, so we can't make a
+                    //    reasonable workaround for `1` and `2` by collecting physical key press
+                    //    information first via `KeyboardInput` before processing `ReceivedCharacter`.
+                    //
+                    // However, all of these issues can be solved by updating `winit` to the
+                    // newer version.
+                    //
+                    // TODO(#376): Update winit
+                    // TODO(#376): Implement unicode input in native client
+                    // }
+                    WindowEvent::KeyboardInput { event, .. } => {
+                        if let Some(scancode) = event.physical_key.to_scancode() {
+                            let scancode = ironrdp::input::Scancode::from_u16(u16::try_from(scancode).unwrap());
 
-                        let operation = match input.state {
-                            event::ElementState::Pressed => ironrdp::input::Operation::KeyPressed(scancode),
-                            event::ElementState::Released => ironrdp::input::Operation::KeyReleased(scancode),
-                        };
+                            let operation = match event.state {
+                                event::ElementState::Pressed => ironrdp::input::Operation::KeyPressed(scancode),
+                                event::ElementState::Released => ironrdp::input::Operation::KeyReleased(scancode),
+                            };
 
-                        let input_events = input_database.apply(std::iter::once(operation));
+                            let input_events = input_database.apply(std::iter::once(operation));
 
-                        send_fast_path_events(&input_event_sender, input_events);
+                            send_fast_path_events(&input_event_sender, input_events);
+                        }
                     }
                     WindowEvent::ModifiersChanged(state) => {
                         const SHIFT_LEFT: ironrdp::input::Scancode = ironrdp::input::Scancode::from_u8(false, 0x2A);
@@ -131,23 +136,20 @@ impl GuiContext {
                             operations.push(operation);
                         };
 
-                        add_operation(state.shift(), SHIFT_LEFT);
-                        add_operation(state.ctrl(), CONTROL_LEFT);
-                        add_operation(state.alt(), ALT_LEFT);
-                        add_operation(state.logo(), LOGO_LEFT);
+                        add_operation(state.lshift_state() == ModifiersKeyState::Pressed, SHIFT_LEFT);
+                        add_operation(state.lcontrol_state() == ModifiersKeyState::Pressed, CONTROL_LEFT);
+                        add_operation(state.lalt_state() == ModifiersKeyState::Pressed, ALT_LEFT);
+                        add_operation(state.lsuper_state() == ModifiersKeyState::Pressed, LOGO_LEFT);
 
                         let input_events = input_database.apply(operations);
 
                         send_fast_path_events(&input_event_sender, input_events);
                     }
                     WindowEvent::CursorMoved { position, .. } => {
-                        // FIXME: allow physical position for HiDPI remote
-                        // + should take display scale into account
-                        let sf = window.scale_factor();
-                        let operation = ironrdp::input::Operation::MouseMove(ironrdp::input::MousePosition {
-                            x: (position.x / sf) as u16,
-                            y: (position.y / sf) as u16,
-                        });
+                        let win_size = window.inner_size();
+                        let x = (position.x / win_size.width as f64 * buffer_size.0 as f64) as _;
+                        let y = (position.y / win_size.height as f64 * buffer_size.1 as f64) as _;
+                        let operation = ironrdp::input::Operation::MouseMove(ironrdp::input::MousePosition { x, y });
 
                         let input_events = input_database.apply(std::iter::once(operation));
 
@@ -206,6 +208,8 @@ impl GuiContext {
                             event::MouseButton::Left => ironrdp::input::MouseButton::Left,
                             event::MouseButton::Right => ironrdp::input::MouseButton::Right,
                             event::MouseButton::Middle => ironrdp::input::MouseButton::Middle,
+                            event::MouseButton::Back => ironrdp::input::MouseButton::X1,
+                            event::MouseButton::Forward => ironrdp::input::MouseButton::X2,
                             event::MouseButton::Other(native_button) => {
                                 if let Some(button) = ironrdp::input::MouseButton::from_native_button(native_button) {
                                     button
@@ -228,12 +232,13 @@ impl GuiContext {
                     }
                     _ => {}
                 },
-                Event::RedrawRequested(window_id) if window_id == window.id() => {
-                    // TODO: is there something we should handle here?
-                }
+                // Event::RedrawRequested(window_id) if window_id == window.id() => {
+                // TODO: is there something we should handle here?
+                // }
                 Event::UserEvent(RdpOutputEvent::Image { buffer, width, height }) => {
                     trace!(width = ?width, height = ?height, "Received image with size");
                     trace!(window_physical_size = ?window.inner_size(), "Drawing image to the window with size");
+                    buffer_size = (width, height);
                     surface
                         .resize(
                             NonZeroU32::new(u32::from(width)).unwrap(),
@@ -248,10 +253,11 @@ impl GuiContext {
                 Event::UserEvent(RdpOutputEvent::ConnectionFailure(error)) => {
                     error!(?error);
                     eprintln!("Connection error: {}", error.report());
-                    control_flow.set_exit_with_code(proc_exit::sysexits::PROTOCOL_ERR.as_raw());
+                    // TODO set proc_exit::sysexits::PROTOCOL_ERR.as_raw());
+                    aloop.exit();
                 }
                 Event::UserEvent(RdpOutputEvent::Terminated(result)) => {
-                    let exit_code = match result {
+                    let _exit_code = match result {
                         Ok(reason) => {
                             println!("Terminated gracefully: {reason}");
                             proc_exit::sysexits::OK
@@ -262,8 +268,8 @@ impl GuiContext {
                             proc_exit::sysexits::PROTOCOL_ERR
                         }
                     };
-
-                    control_flow.set_exit_with_code(exit_code.as_raw());
+                    // TODO set exit_code.as_raw());
+                    aloop.exit();
                 }
                 Event::UserEvent(RdpOutputEvent::PointerHidden) => {
                     window.set_cursor_visible(false);
@@ -276,16 +282,14 @@ impl GuiContext {
                         error!(?error, "Failed to set cursor position");
                     }
                 }
-                Event::LoopDestroyed => {
-                    let _ = input_event_sender.send(RdpInputEvent::Close);
-                }
                 _ => {}
             }
 
             if input_event_sender.is_closed() {
-                control_flow.set_exit();
+                aloop.exit();
             }
-        })
+        })?;
+        Ok(())
     }
 }
 

@@ -28,16 +28,28 @@ native-tls = ["ironrdp-tls/native-tls"]
 [dependencies]
 
 # Protocols
-ironrdp = { workspace = true, features = ["input", "graphics", "dvc", "svc", "rdpdr", "rdpsnd", "cliprdr", "displaycontrol"] }
+ironrdp = { workspace = true, features = [
+    "input",
+    "graphics",
+    "dvc",
+    "svc",
+    "rdpdr",
+    "rdpsnd",
+    "cliprdr",
+    "displaycontrol",
+] }
 ironrdp-cliprdr-native.workspace = true
 ironrdp-rdpsnd-native.workspace = true
 ironrdp-tls.workspace = true
 ironrdp-tokio.workspace = true
-sspi = { workspace = true, features = ["network_client", "dns_resolver"] } # enable additional features
+sspi = { workspace = true, features = [
+    "network_client",
+    "dns_resolver",
+] } # enable additional features
 
 # Windowing and rendering
-winit = "0.28"
-softbuffer = "0.3"
+winit = { version = "0.30", features = ["rwh_06"] }
+softbuffer = "0.4"
 
 # CLI
 clap = { version = "4.5", features = ["derive", "cargo"] }
@@ -49,7 +61,7 @@ tracing.workspace = true
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # Async, futures
-tokio = { version = "1", features = ["full"]}
+tokio = { version = "1", features = ["full"] }
 
 # Utils
 whoami = "1.5"
@@ -59,10 +71,10 @@ tap = "1"
 semver = "1"
 reqwest = "0.12"
 url = "2.5"
+raw-window-handle = "0.6.2"
 
 [target.'cfg(windows)'.dependencies]
 windows = { workspace = true, features = ["Win32_Foundation"] }
 
 [lints]
 workspace = true
-
