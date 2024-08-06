@@ -74,7 +74,7 @@ fn main() -> anyhow::Result<()> {
     });
 
     debug!("Run GUI");
-    gui.run(input_event_sender);
+    gui.run(input_event_sender)
 }
 
 fn setup_logging(log_file: Option<&str>) -> anyhow::Result<()> {
