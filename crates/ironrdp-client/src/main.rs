@@ -4,33 +4,33 @@
 extern crate tracing;
 
 use anyhow::Context as _;
+use ironrdp_client::app::App;
 use ironrdp_client::config::{ClipboardType, Config};
-use ironrdp_client::gui::GuiContext;
-use ironrdp_client::rdp::{RdpClient, RdpInputEvent};
+use ironrdp_client::rdp::{RdpClient, RdpInputEvent, RdpOutputEvent};
 use tokio::runtime;
+use winit::event_loop::EventLoop;
 
 fn main() -> anyhow::Result<()> {
     let mut config = Config::parse_args().context("CLI arguments parsing")?;
 
     setup_logging(config.log_file.as_deref()).context("unable to initialize logging")?;
 
-    debug!("Initialize GUI context");
-    let gui = GuiContext::init().context("unable to initialize GUI context")?;
-    debug!("GUI context initialized");
+    debug!("Initialize App");
+    let event_loop = EventLoop::<RdpOutputEvent>::with_user_event().build()?;
+    let event_loop_proxy = event_loop.create_proxy();
+    let (input_event_sender, input_event_receiver) = RdpInputEvent::create_channel();
+    let mut app = App::new(&event_loop, &input_event_sender).context("unable to initialize App")?;
 
-    let window_size = (1024, 768); // TODO: get window size from GUI
-    config.connector.desktop_scale_factor = 0; // TODO: should this be `(gui.window().scale_factor() * 100.0) as u32`?
+    // TODO: get window size & scale factor from GUI/App
+    let window_size = (1024, 768);
+    config.connector.desktop_scale_factor = 0;
     config.connector.desktop_size.width = u16::try_from(window_size.0).unwrap();
     config.connector.desktop_size.height = u16::try_from(window_size.1).unwrap();
-
-    let event_loop_proxy = gui.create_event_proxy();
 
     let rt = runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .context("unable to create tokio runtime")?;
-
-    let (input_event_sender, input_event_receiver) = RdpInputEvent::create_channel();
 
     // NOTE: we need to keep `win_clipboard` alive, otherwise it will be dropped before IronRDP
     // starts and clipboard functionality will not be available.
@@ -52,7 +52,7 @@ fn main() -> anyhow::Result<()> {
 
             // SAFETY: provided window handle from `winit` is valid and is guaranteed to be alive
             // while the gui window is still open.
-            let cliprdr = WinClipboard::new(ClientClipboardMessageProxy::new(input_event_sender.clone()))?;
+            let cliprdr = WinClipboard::new(ClientClipboardMessageProxy::new(input_event_sender))?;
 
             let factory = cliprdr.backend_factory();
             _win_clipboard = cliprdr;
@@ -73,8 +73,9 @@ fn main() -> anyhow::Result<()> {
         rt.block_on(client.run());
     });
 
-    debug!("Run GUI");
-    gui.run(input_event_sender)
+    debug!("Run App");
+    event_loop.run_app(&mut app)?;
+    Ok(())
 }
 
 fn setup_logging(log_file: Option<&str>) -> anyhow::Result<()> {

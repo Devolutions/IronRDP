@@ -8,47 +8,16 @@ use tokio::sync::mpsc;
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalPosition;
 use winit::event::{self, WindowEvent};
-use winit::event_loop::{ActiveEventLoop, EventLoop, EventLoopProxy};
+use winit::event_loop::{ActiveEventLoop, EventLoop};
 use winit::keyboard::ModifiersKeyState;
 use winit::platform::scancode::PhysicalKeyExtScancode;
 use winit::window::{Window, WindowAttributes};
 
 use crate::rdp::{RdpInputEvent, RdpOutputEvent};
 
-pub struct GuiContext {
-    event_loop: EventLoop<RdpOutputEvent>,
-    context: softbuffer::Context<DisplayHandle<'static>>,
-}
-
-impl GuiContext {
-    pub fn init() -> anyhow::Result<Self> {
-        let event_loop = EventLoop::<RdpOutputEvent>::with_user_event().build()?;
-
-        // SAFETY: we drop the context right before the event loop is stopped, thus making it safe.
-        let context = softbuffer::Context::new(unsafe {
-            std::mem::transmute::<DisplayHandle<'_>, DisplayHandle<'static>>(event_loop.display_handle().unwrap())
-        })
-        .map_err(|e| anyhow::Error::msg(format!("unable to initialize softbuffer context: {e}")))?;
-
-        Ok(Self { event_loop, context })
-    }
-
-    pub fn create_event_proxy(&self) -> EventLoopProxy<RdpOutputEvent> {
-        self.event_loop.create_proxy()
-    }
-
-    pub fn run(self, input_event_sender: mpsc::UnboundedSender<RdpInputEvent>) -> anyhow::Result<()> {
-        let Self { event_loop, context } = self;
-
-        let mut app = App::new(input_event_sender, context);
-        event_loop.run_app(&mut app)?;
-        Ok(())
-    }
-}
-
 type WindowSurface = (Arc<Window>, softbuffer::Surface<DisplayHandle<'static>, Arc<Window>>);
 
-struct App {
+pub struct App {
     input_event_sender: mpsc::UnboundedSender<RdpInputEvent>,
     context: softbuffer::Context<DisplayHandle<'static>>,
     window: Option<WindowSurface>,
@@ -57,18 +26,24 @@ struct App {
 }
 
 impl App {
-    fn new(
-        input_event_sender: mpsc::UnboundedSender<RdpInputEvent>,
-        context: softbuffer::Context<DisplayHandle<'static>>,
-    ) -> Self {
+    pub fn new(
+        event_loop: &EventLoop<RdpOutputEvent>,
+        input_event_sender: &mpsc::UnboundedSender<RdpInputEvent>,
+    ) -> anyhow::Result<Self> {
+        // SAFETY: we drop the context right before the event loop is stopped, thus making it safe.
+        let context = softbuffer::Context::new(unsafe {
+            std::mem::transmute::<DisplayHandle<'_>, DisplayHandle<'static>>(event_loop.display_handle().unwrap())
+        })
+        .map_err(|e| anyhow::Error::msg(format!("unable to initialize softbuffer context: {e}")))?;
+
         let input_database = ironrdp::input::Database::new();
-        Self {
-            input_event_sender,
+        Ok(Self {
+            input_event_sender: input_event_sender.clone(),
             context,
             window: None,
             buffer_size: (0, 0),
             input_database,
-        }
+        })
     }
 }
 
@@ -179,8 +154,8 @@ impl ApplicationHandler<RdpOutputEvent> for App {
             }
             WindowEvent::CursorMoved { position, .. } => {
                 let win_size = window.inner_size();
-                let x = (position.x / win_size.width as f64 * self.buffer_size.0 as f64) as _;
-                let y = (position.y / win_size.height as f64 * self.buffer_size.1 as f64) as _;
+                let x = (position.x / win_size.width as f64 * self.buffer_size.0 as f64) as u16;
+                let y = (position.y / win_size.height as f64 * self.buffer_size.1 as f64) as u16;
                 let operation = ironrdp::input::Operation::MouseMove(ironrdp::input::MousePosition { x, y });
 
                 let input_events = self.input_database.apply(std::iter::once(operation));
