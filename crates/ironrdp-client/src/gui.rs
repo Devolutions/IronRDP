@@ -16,7 +16,6 @@ use winit::window::{Window, WindowAttributes};
 use crate::rdp::{RdpInputEvent, RdpOutputEvent};
 
 pub struct GuiContext {
-    window: Window,
     event_loop: EventLoop<RdpOutputEvent>,
     context: softbuffer::Context<DisplayHandle<'static>>,
 }
@@ -25,24 +24,13 @@ impl GuiContext {
     pub fn init() -> anyhow::Result<Self> {
         let event_loop = EventLoop::<RdpOutputEvent>::with_user_event().build()?;
 
-        let window_attributes = WindowAttributes::default().with_title("IronRdp");
-        let window = event_loop.create_window(window_attributes)?;
-
         // SAFETY: we drop the context right before the event loop is stopped, thus making it safe.
         let context = softbuffer::Context::new(unsafe {
             std::mem::transmute::<DisplayHandle<'_>, DisplayHandle<'static>>(event_loop.display_handle().unwrap())
         })
         .map_err(|e| anyhow::Error::msg(format!("unable to initialize softbuffer context: {e}")))?;
 
-        Ok(Self {
-            window,
-            event_loop,
-            context,
-        })
-    }
-
-    pub fn window(&self) -> &Window {
-        &self.window
+        Ok(Self { event_loop, context })
     }
 
     pub fn create_event_proxy(&self) -> EventLoopProxy<RdpOutputEvent> {
@@ -50,58 +38,67 @@ impl GuiContext {
     }
 
     pub fn run(self, input_event_sender: mpsc::UnboundedSender<RdpInputEvent>) -> anyhow::Result<()> {
-        let Self {
-            window,
-            event_loop,
-            context,
-        } = self;
+        let Self { event_loop, context } = self;
 
-        let mut app = App::new(input_event_sender, context, window);
+        let mut app = App::new(input_event_sender, context);
         event_loop.run_app(&mut app)?;
         Ok(())
     }
 }
 
+type WindowSurface = (Arc<Window>, softbuffer::Surface<DisplayHandle<'static>, Arc<Window>>);
+
 struct App {
-    window: Arc<Window>,
-    surface: softbuffer::Surface<DisplayHandle<'static>, Arc<Window>>,
+    input_event_sender: mpsc::UnboundedSender<RdpInputEvent>,
+    context: softbuffer::Context<DisplayHandle<'static>>,
+    window: Option<WindowSurface>,
     buffer_size: (u16, u16),
     input_database: ironrdp::input::Database,
-    input_event_sender: mpsc::UnboundedSender<RdpInputEvent>,
 }
 
 impl App {
     fn new(
         input_event_sender: mpsc::UnboundedSender<RdpInputEvent>,
         context: softbuffer::Context<DisplayHandle<'static>>,
-        window: Window,
     ) -> Self {
-        let window = Arc::new(window);
         let input_database = ironrdp::input::Database::new();
-        let surface = softbuffer::Surface::new(&context, Arc::clone(&window)).expect("surface");
         Self {
-            window,
-            surface,
-            buffer_size: (0, 0),
             input_event_sender,
+            context,
+            window: None,
+            buffer_size: (0, 0),
             input_database,
         }
     }
 }
 
 impl ApplicationHandler<RdpOutputEvent> for App {
-    fn resumed(&mut self, _event_loop: &ActiveEventLoop) {
-        // TODO: create window
+    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        let window_attributes = WindowAttributes::default().with_title("IronRdp");
+        match event_loop.create_window(window_attributes) {
+            Ok(window) => {
+                let window = Arc::new(window);
+                let surface = softbuffer::Surface::new(&self.context, Arc::clone(&window)).expect("surface");
+                self.window = Some((window, surface));
+            }
+            Err(err) => {
+                error!("Failed to create window: {}", err);
+                event_loop.exit();
+            }
+        }
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, window_id: winit::window::WindowId, event: WindowEvent) {
-        if window_id != self.window.id() {
+        let Some((window, _)) = self.window.as_mut() else {
+            return;
+        };
+        if window_id != window.id() {
             return;
         }
 
         match event {
             WindowEvent::Resized(size) => {
-                let scale_factor = (self.window.scale_factor() * 100.0) as u32;
+                let scale_factor = (window.scale_factor() * 100.0) as u32;
 
                 let _ = self.input_event_sender.send(RdpInputEvent::Resize {
                     width: u16::try_from(size.width).unwrap(),
@@ -181,7 +178,7 @@ impl ApplicationHandler<RdpOutputEvent> for App {
                 send_fast_path_events(&self.input_event_sender, input_events);
             }
             WindowEvent::CursorMoved { position, .. } => {
-                let win_size = self.window.inner_size();
+                let win_size = window.inner_size();
                 let x = (position.x / win_size.width as f64 * self.buffer_size.0 as f64) as _;
                 let y = (position.y / win_size.height as f64 * self.buffer_size.1 as f64) as _;
                 let operation = ironrdp::input::Operation::MouseMove(ironrdp::input::MousePosition { x, y });
@@ -289,19 +286,22 @@ impl ApplicationHandler<RdpOutputEvent> for App {
     }
 
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: RdpOutputEvent) {
+        let Some((window, surface)) = self.window.as_mut() else {
+            return;
+        };
         match event {
             RdpOutputEvent::Image { buffer, width, height } => {
                 trace!(width = ?width, height = ?height, "Received image with size");
-                trace!(window_physical_size = ?self.window.inner_size(), "Drawing image to the window with size");
+                trace!(window_physical_size = ?window.inner_size(), "Drawing image to the window with size");
                 self.buffer_size = (width, height);
-                self.surface
+                surface
                     .resize(
                         NonZeroU32::new(u32::from(width)).unwrap(),
                         NonZeroU32::new(u32::from(height)).unwrap(),
                     )
                     .expect("surface resize");
 
-                let mut sb_buffer = self.surface.buffer_mut().expect("surface buffer");
+                let mut sb_buffer = surface.buffer_mut().expect("surface buffer");
                 sb_buffer.copy_from_slice(buffer.as_slice());
                 sb_buffer.present().expect("buffer present");
             }
@@ -327,13 +327,13 @@ impl ApplicationHandler<RdpOutputEvent> for App {
                 event_loop.exit();
             }
             RdpOutputEvent::PointerHidden => {
-                self.window.set_cursor_visible(false);
+                window.set_cursor_visible(false);
             }
             RdpOutputEvent::PointerDefault => {
-                self.window.set_cursor_visible(true);
+                window.set_cursor_visible(true);
             }
             RdpOutputEvent::PointerPosition { x, y } => {
-                if let Err(error) = self.window.set_cursor_position(LogicalPosition::new(x, y)) {
+                if let Err(error) = window.set_cursor_position(LogicalPosition::new(x, y)) {
                     error!(?error, "Failed to set cursor position");
                 }
             }
