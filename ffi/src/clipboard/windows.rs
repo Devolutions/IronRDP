@@ -30,9 +30,8 @@ pub mod ffi {
     pub struct WinCliprdr(WinCliprdrInner);
 
     impl WinCliprdr {
-        /// SAFETY: `hwnd` must be a valid window handle
-        pub fn new(hwnd: isize) -> Result<Box<WinCliprdr>, Box<IronRdpError>> {
-            WinCliprdrInner::new(hwnd).map(WinCliprdr).map(Box::new)
+        pub fn new() -> Result<Box<WinCliprdr>, Box<IronRdpError>> {
+            WinCliprdrInner::new().map(WinCliprdr).map(Box::new)
         }
 
         pub fn next_clipboard_message(&self) -> Result<Option<Box<ClipboardMessage>>, Box<IronRdpError>> {
@@ -57,7 +56,7 @@ pub struct WinCliprdrInner;
 
 #[cfg(not(windows))]
 impl WinCliprdrInner {
-    fn new(_hwnd: isize) -> Result<WinCliprdrInner, Box<IronRdpError>> {
+    fn new() -> Result<WinCliprdrInner, Box<IronRdpError>> {
         Err(WrongOSError::expected_platform("windows")
             .with_custom_message("WinCliprdr only support windows")
             .into())
@@ -92,15 +91,12 @@ pub struct WinCliprdrInner {
 
 #[cfg(windows)]
 impl WinCliprdrInner {
-    fn new(hwnd: isize) -> Result<WinCliprdrInner, Box<IronRdpError>> {
-        use windows::Win32::Foundation::HWND;
-
+    fn new() -> Result<WinCliprdrInner, Box<IronRdpError>> {
         let (sender, receiver) = std::sync::mpsc::channel();
 
         let proxy = crate::clipboard::FfiClipbarodMessageProxy { sender };
 
-        // SAFETY: `hwnd` must be a valid window handle
-        let clipboard = unsafe { ironrdp_cliprdr_native::WinClipboard::new(HWND(hwnd), proxy) }?;
+        let clipboard = ironrdp_cliprdr_native::WinClipboard::new(proxy)?;
 
         Ok(WinCliprdrInner { clipboard, receiver })
     }
