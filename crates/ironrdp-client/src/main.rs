@@ -18,10 +18,10 @@ fn main() -> anyhow::Result<()> {
     let gui = GuiContext::init().context("unable to initialize GUI context")?;
     debug!("GUI context initialized");
 
-    let window_size = gui.window().inner_size();
+    let window_size = (1024, 768); // TODO: get window size from GUI
     config.connector.desktop_scale_factor = 0; // TODO: should this be `(gui.window().scale_factor() * 100.0) as u32`?
-    config.connector.desktop_size.width = u16::try_from(window_size.width).unwrap();
-    config.connector.desktop_size.height = u16::try_from(window_size.height).unwrap();
+    config.connector.desktop_size.width = u16::try_from(window_size.0).unwrap();
+    config.connector.desktop_size.height = u16::try_from(window_size.1).unwrap();
 
     let event_loop_proxy = gui.create_event_proxy();
 
