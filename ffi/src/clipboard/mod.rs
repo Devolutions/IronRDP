@@ -1,3 +1,5 @@
+use tracing::error;
+
 pub mod message;
 
 pub mod windows;
@@ -33,7 +35,7 @@ pub struct FfiClipbarodMessageProxy {
 impl ironrdp::cliprdr::backend::ClipboardMessageProxy for FfiClipbarodMessageProxy {
     fn send_clipboard_message(&self, message: ironrdp::cliprdr::backend::ClipboardMessage) {
         if let Err(err) = self.sender.send(message) {
-            tracing::error!("Failed to send clipboard message: {:?}", err);
+            error!("Failed to send clipboard message: {:?}", err);
         }
     }
 }

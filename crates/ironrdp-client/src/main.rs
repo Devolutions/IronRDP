@@ -49,17 +49,10 @@ fn main() -> anyhow::Result<()> {
         ClipboardType::Windows => {
             use ironrdp_client::clipboard::ClientClipboardMessageProxy;
             use ironrdp_cliprdr_native::WinClipboard;
-            use windows::Win32::Foundation::HWND;
-            use winit::platform::windows::WindowExtWindows;
 
             // SAFETY: provided window handle from `winit` is valid and is guaranteed to be alive
             // while the gui window is still open.
-            let cliprdr = unsafe {
-                WinClipboard::new(
-                    HWND(gui.window().hwnd()),
-                    ClientClipboardMessageProxy::new(input_event_sender.clone()),
-                )?
-            };
+            let cliprdr = WinClipboard::new(ClientClipboardMessageProxy::new(input_event_sender.clone()))?;
 
             let factory = cliprdr.backend_factory();
             _win_clipboard = cliprdr;

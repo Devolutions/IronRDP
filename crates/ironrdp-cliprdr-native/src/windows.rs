@@ -13,10 +13,14 @@ use ironrdp_cliprdr::pdu::{
 };
 use thiserror::Error;
 use tracing::error;
-use windows::Win32::Foundation::FALSE;
+use windows::core::{s, Error};
+use windows::Win32::Foundation::*;
 use windows::Win32::System::DataExchange::{AddClipboardFormatListener, RemoveClipboardFormatListener};
+use windows::Win32::System::LibraryLoader::GetModuleHandleA;
 use windows::Win32::UI::Shell::{RemoveWindowSubclass, SetWindowSubclass};
-use windows::Win32::UI::WindowsAndMessaging::WM_USER;
+use windows::Win32::UI::WindowsAndMessaging::{
+    CreateWindowExA, DefWindowProcA, RegisterClassA, CW_USEDEFAULT, WINDOW_EX_STYLE, WM_USER, WNDCLASSA, WS_POPUP,
+};
 
 use self::clipboard_impl::{clipboard_subproc, WinClipboardImpl};
 use self::cliprdr_backend::WinCliprdrBackend;
@@ -67,7 +71,7 @@ pub enum WinCliprdrError {
     RenderFormat,
 
     #[error("WinAPI error")]
-    WinAPI(#[from] windows::core::Error),
+    WinAPI(#[from] Error),
 }
 
 /// Sent from the clipboard backend shim to the actual WinAPI subproc event loop
@@ -113,11 +117,50 @@ pub struct WinClipboard {
 impl WinClipboard {
     /// Creates new clipboard instance.
     ///
-    /// # Safety
-    ///
-    /// `window` must be a valid window handle to safely initialize clipboard processing.
-    /// The handle should be alive during the whole lifetime of the constructed clipboard instance.
-    pub unsafe fn new(window: HWND, message_proxy: impl ClipboardMessageProxy + 'static) -> WinCliprdrResult<Self> {
+    /// Under the hood, a hidden window is created for capturing the clipboard events.
+    pub fn new(message_proxy: impl ClipboardMessageProxy + 'static) -> WinCliprdrResult<Self> {
+        extern "system" fn wndproc(window: HWND, message: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+            // SAFETY: default handler
+            unsafe { DefWindowProcA(window, message, wparam, lparam) }
+        }
+
+        // SAFETY: low-level WinAPI call
+        let instance = unsafe { GetModuleHandleA(None)? };
+        let window_class = s!("IronRDPClipboardMonitor");
+        let wc = WNDCLASSA {
+            hInstance: instance,
+            lpszClassName: window_class,
+            lpfnWndProc: Some(wndproc),
+            ..Default::default()
+        };
+
+        // SAFETY: low-level WinAPI call
+        let atom = unsafe { RegisterClassA(&wc) };
+        if atom == 0 {
+            return Err(Error::from_win32())?;
+        }
+
+        // SAFETY: low-level WinAPI call
+        let window = unsafe {
+            CreateWindowExA(
+                WINDOW_EX_STYLE::default(),
+                window_class,
+                None,
+                WS_POPUP,
+                CW_USEDEFAULT,
+                CW_USEDEFAULT,
+                CW_USEDEFAULT,
+                CW_USEDEFAULT,
+                None,
+                None,
+                instance,
+                None,
+            )
+        };
+
+        if window.0 == 0 {
+            return Err(Error::from_win32())?;
+        }
         // Init clipboard processing for WinAPI event loop
         //
         // SAFETY: `window` is a valid window handle
