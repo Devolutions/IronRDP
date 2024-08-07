@@ -189,24 +189,11 @@ async fn active_session(
                 let input_event = input_event.ok_or_else(|| session::general_err!("GUI is stopped"))?;
 
                 match input_event {
-                    RdpInputEvent::Resize { mut width, mut height, .. } => {
-                        // Find the last resize event
-                        while let Ok(newer_event) = input_event_receiver.try_recv() {
-                            if let RdpInputEvent::Resize {
-                                width: newer_width,
-                                height: newer_height,
-                                ..
-                            } = newer_event {
-                                width = newer_width;
-                                height = newer_height;
-                            }
-                        }
-
+                    RdpInputEvent::Resize { width, height, scale_factor, physical_size } => {
                         trace!(width, height, "Resize event");
                         let (width, height) = MonitorLayoutEntry::adjust_display_size(width.into(), height.into());
                         debug!(width, height, "Adjusted display size");
-
-                        if let Some(response_frame) = active_stage.encode_resize(width, height, None, Some((width, height))) { // Set physical width and height to the same as the pixel width and heighbbt per FreeRDP
+                        if let Some(response_frame) = active_stage.encode_resize(width, height, Some(scale_factor), physical_size) {
                             vec![ActiveStageOutput::ResponseFrame(response_frame?)]
                         } else {
                             // TODO(#271): use the "auto-reconnect cookie": https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/15b0d1c9-2891-4adb-a45e-deb4aeeeab7c
