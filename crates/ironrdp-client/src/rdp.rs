@@ -103,14 +103,15 @@ async fn connect(
     config: &Config,
     cliprdr_factory: Option<&(dyn CliprdrBackendFactory + Send)>,
 ) -> ConnectorResult<(ConnectionResult, UpgradedFramed)> {
-    let server_addr = config
-        .destination
-        .lookup_addr()
-        .map_err(|e| connector::custom_err!("lookup addr", e))?;
+    let dest = format!("{}:{}", config.destination.name(), config.destination.port());
 
-    let stream = TcpStream::connect(&server_addr)
+    let stream = TcpStream::connect(dest)
         .await
         .map_err(|e| connector::custom_err!("TCP connect", e))?;
+
+    let server_addr = stream
+        .peer_addr()
+        .map_err(|e| connector::custom_err!("Peer address", e))?;
 
     let mut framed = ironrdp_tokio::TokioFramed::new(stream);
 
