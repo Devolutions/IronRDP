@@ -1,11 +1,12 @@
 use std::num::NonZeroU32;
 
 use ironrdp::pdu::geometry::{InclusiveRectangle, Rectangle as _};
+use softbuffer::{NoDisplayHandle, NoWindowHandle};
 use web_sys::HtmlCanvasElement;
 
 pub(crate) struct Canvas {
     width: u32,
-    surface: softbuffer::Surface,
+    surface: softbuffer::Surface<NoDisplayHandle, NoWindowHandle>,
 }
 
 impl Canvas {
@@ -21,7 +22,7 @@ impl Canvas {
 
         #[cfg(not(target_arch = "wasm32"))]
         let mut surface = {
-            fn stub(_: HtmlCanvasElement) -> softbuffer::Surface {
+            fn stub(_: HtmlCanvasElement) -> softbuffer::Surface<NoDisplayHandle, NoWindowHandle> {
                 unimplemented!()
             }
 
