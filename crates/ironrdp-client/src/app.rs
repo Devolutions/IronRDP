@@ -22,6 +22,7 @@ pub struct App {
     input_event_sender: mpsc::UnboundedSender<RdpInputEvent>,
     context: softbuffer::Context<DisplayHandle<'static>>,
     window: Option<WindowSurface>,
+    buffer: Vec<u32>,
     buffer_size: (u16, u16),
     input_database: ironrdp::input::Database,
     last_size: Option<PhysicalSize<u32>>,
@@ -46,6 +47,7 @@ impl App {
             input_event_sender: input_event_sender.clone(),
             context,
             window: None,
+            buffer: Vec::new(),
             buffer_size: (0, 0),
             input_database,
             last_size: None,
@@ -72,6 +74,18 @@ impl App {
             // See also: https://github.com/rust-windowing/winit/issues/826
             physical_size: None,
         });
+    }
+
+    fn draw(&mut self) {
+        if self.buffer.is_empty() {
+            return;
+        }
+        let Some((_, surface)) = self.window.as_mut() else {
+            return;
+        };
+        let mut sb_buffer = surface.buffer_mut().expect("surface buffer");
+        sb_buffer.copy_from_slice(self.buffer.as_slice());
+        sb_buffer.present().expect("buffer present");
     }
 }
 
@@ -265,6 +279,9 @@ impl ApplicationHandler<RdpOutputEvent> for App {
 
                 send_fast_path_events(&self.input_event_sender, input_events);
             }
+            WindowEvent::RedrawRequested => {
+                self.draw();
+            }
             WindowEvent::ActivationTokenDone { .. }
             | WindowEvent::Moved(_)
             | WindowEvent::Destroyed
@@ -283,8 +300,7 @@ impl ApplicationHandler<RdpOutputEvent> for App {
             | WindowEvent::Touch(_)
             | WindowEvent::ScaleFactorChanged { .. }
             | WindowEvent::ThemeChanged(_)
-            | WindowEvent::Occluded(_)
-            | WindowEvent::RedrawRequested => {
+            | WindowEvent::Occluded(_) => {
                 // ignore
             }
         }
@@ -299,6 +315,7 @@ impl ApplicationHandler<RdpOutputEvent> for App {
                 trace!(width = ?width, height = ?height, "Received image with size");
                 trace!(window_physical_size = ?window.inner_size(), "Drawing image to the window with size");
                 self.buffer_size = (width, height);
+                self.buffer = buffer;
                 surface
                     .resize(
                         NonZeroU32::new(u32::from(width)).unwrap(),
@@ -306,9 +323,7 @@ impl ApplicationHandler<RdpOutputEvent> for App {
                     )
                     .expect("surface resize");
 
-                let mut sb_buffer = surface.buffer_mut().expect("surface buffer");
-                sb_buffer.copy_from_slice(buffer.as_slice());
-                sb_buffer.present().expect("buffer present");
+                window.request_redraw();
             }
             RdpOutputEvent::ConnectionFailure(error) => {
                 error!(?error);
