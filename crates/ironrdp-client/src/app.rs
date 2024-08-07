@@ -2,13 +2,14 @@
 
 use std::num::NonZeroU32;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use raw_window_handle::{DisplayHandle, HasDisplayHandle};
 use tokio::sync::mpsc;
 use winit::application::ApplicationHandler;
-use winit::dpi::LogicalPosition;
+use winit::dpi::{LogicalPosition, PhysicalSize};
 use winit::event::{self, WindowEvent};
-use winit::event_loop::{ActiveEventLoop, EventLoop};
+use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::ModifiersKeyState;
 use winit::platform::scancode::PhysicalKeyExtScancode;
 use winit::window::{Window, WindowAttributes};
@@ -23,6 +24,8 @@ pub struct App {
     window: Option<WindowSurface>,
     buffer_size: (u16, u16),
     input_database: ironrdp::input::Database,
+    last_size: Option<PhysicalSize<u32>>,
+    resize_timeout: Option<Instant>,
 }
 
 impl App {
@@ -45,11 +48,45 @@ impl App {
             window: None,
             buffer_size: (0, 0),
             input_database,
+            last_size: None,
+            resize_timeout: None,
         })
+    }
+
+    fn send_resize_event(&mut self) {
+        let Some(size) = self.last_size.take() else {
+            return;
+        };
+        let Some((window, _)) = self.window.as_mut() else {
+            return;
+        };
+        let scale_factor = (window.scale_factor() * 100.0) as u32;
+
+        let _ = self.input_event_sender.send(RdpInputEvent::Resize {
+            width: u16::try_from(size.width).unwrap(),
+            height: u16::try_from(size.height).unwrap(),
+            scale_factor,
+            // TODO: it should be possible to get the physical size here, however winit doesn't make it straightforward.
+            // FreeRDP does it based on DPI reading grabbed via [`SDL_GetDisplayDPI`](https://wiki.libsdl.org/SDL2/SDL_GetDisplayDPI):
+            // https://github.com/FreeRDP/FreeRDP/blob/ba8cf8cf2158018fb7abbedb51ab245f369be813/client/SDL/sdl_monitor.cpp#L250-L262
+            // See also: https://github.com/rust-windowing/winit/issues/826
+            physical_size: None,
+        });
     }
 }
 
 impl ApplicationHandler<RdpOutputEvent> for App {
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        if let Some(timeout) = self.resize_timeout {
+            if let Some(timeout) = timeout.checked_duration_since(Instant::now()) {
+                event_loop.set_control_flow(ControlFlow::wait_duration(timeout));
+            } else {
+                self.send_resize_event();
+                self.resize_timeout = None;
+            }
+        }
+    }
+
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         let window_attributes = WindowAttributes::default().with_title("IronRDP");
         match event_loop.create_window(window_attributes) {
@@ -75,17 +112,8 @@ impl ApplicationHandler<RdpOutputEvent> for App {
 
         match event {
             WindowEvent::Resized(size) => {
-                let scale_factor = (window.scale_factor() * 100.0) as u32;
-
-                let _ = self.input_event_sender.send(RdpInputEvent::Resize {
-                    width: u16::try_from(size.width).unwrap(),
-                    height: u16::try_from(size.height).unwrap(),
-                    scale_factor,
-                    // TODO: it should be possible to get the physical size here, however winit doesn't make it straightforward.
-                    // FreeRDP does it based on DPI reading grabbed via [`SDL_GetDisplayDPI`](https://wiki.libsdl.org/SDL2/SDL_GetDisplayDPI):
-                    // https://github.com/FreeRDP/FreeRDP/blob/ba8cf8cf2158018fb7abbedb51ab245f369be813/client/SDL/sdl_monitor.cpp#L250-L262
-                    physical_size: None,
-                });
+                self.last_size = Some(size);
+                self.resize_timeout = Some(Instant::now() + Duration::from_secs(1));
             }
             WindowEvent::CloseRequested => {
                 if self.input_event_sender.send(RdpInputEvent::Close).is_err() {
