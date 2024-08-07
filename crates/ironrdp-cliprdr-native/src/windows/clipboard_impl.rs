@@ -149,7 +149,7 @@ impl WinClipboardImpl {
         let _clipboard = match OwnedOsClipboard::new(self.window) {
             Ok(clipboard) => {
                 // SAFETY: `GetClipboardOwner` is always safe to call
-                if self.window != unsafe { GetClipboardOwner() } {
+                if self.window != unsafe { GetClipboardOwner()? } {
                     // As per MSDN, we need to validate clipboard owner after opening clipboard
                     return Ok(None);
                 }
@@ -333,7 +333,7 @@ pub(crate) unsafe extern "system" fn clipboard_subproc(
         WM_CLIPBOARDUPDATE => {
             // SAFETY: `GetClipboardOwner` is always safe to call.
             let clipboard_owner = unsafe { GetClipboardOwner() };
-            let spurious_event = clipboard_owner == hwnd;
+            let spurious_event = clipboard_owner == Ok(hwnd);
 
             // We need to send copy message from remote only when window is NOT active, because if
             // it is active, then user wants to perform copy from remote instead. Also, we need to
@@ -370,8 +370,8 @@ pub(crate) unsafe extern "system" fn clipboard_subproc(
                 // Timer is one-shot, we need to stop it immediately
 
                 // SAFETY: `KillTimer` is always safe to call when `hwnd` is a valid window handle.
-                unsafe {
-                    KillTimer(hwnd, IDT_CLIPBOARD_RETRY);
+                if let Err(err) = unsafe { KillTimer(hwnd, IDT_CLIPBOARD_RETRY) } {
+                    tracing::error!("Failed to kill timer: {}", err);
                 }
 
                 if let Some(event) = ctx.retry_message.take() {

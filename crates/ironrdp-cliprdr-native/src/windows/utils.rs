@@ -1,8 +1,8 @@
 use ironrdp_cliprdr::pdu::ClipboardFormatId;
 use tracing::error;
-use windows::Win32::Foundation::{GetLastError, HANDLE, HGLOBAL, WIN32_ERROR};
+use windows::Win32::Foundation::{GetLastError, GlobalFree, HANDLE, HGLOBAL, WIN32_ERROR};
 use windows::Win32::System::DataExchange::SetClipboardData;
-use windows::Win32::System::Memory::{GlobalAlloc, GlobalFree, GlobalLock, GlobalUnlock, GMEM_MOVEABLE};
+use windows::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE};
 
 use crate::windows::WinCliprdrResult;
 
@@ -29,7 +29,9 @@ impl GlobalMemoryBuffer {
         unsafe { std::ptr::copy_nonoverlapping(data.as_ptr(), dst as *mut u8, data.len()) };
 
         // SAFETY: We called `GlobalLock` on this handle just above.
-        unsafe { GlobalUnlock(handle) };
+        if let Err(err) = unsafe { GlobalUnlock(handle) } {
+            error!("Failed to unlock memory: {}", err);
+        }
 
         Ok(Self(handle))
     }
