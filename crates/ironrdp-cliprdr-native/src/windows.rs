@@ -128,7 +128,7 @@ impl WinClipboard {
         let instance = unsafe { GetModuleHandleA(None)? };
         let window_class = s!("IronRDPClipboardMonitor");
         let wc = WNDCLASSA {
-            hInstance: instance,
+            hInstance: instance.into(),
             lpszClassName: window_class,
             lpfnWndProc: Some(wndproc),
             ..Default::default()
@@ -155,18 +155,16 @@ impl WinClipboard {
                 None,
                 instance,
                 None,
-            )
+            )?
         };
 
-        if window.0 == 0 {
+        if window.is_invalid() {
             return Err(Error::from_win32())?;
         }
         // Init clipboard processing for WinAPI event loop
         //
         // SAFETY: `window` is a valid window handle
-        if unsafe { AddClipboardFormatListener(window) } == FALSE {
-            return Err(WinCliprdrError::AddClipboardFormatListener);
-        };
+        unsafe { AddClipboardFormatListener(window)? };
 
         let (backend_tx, backend_rx) = mpsc_sync::sync_channel(BACKEND_CHANNEL_SIZE);
 
@@ -205,10 +203,14 @@ impl Drop for WinClipboard {
         // Remove clipboard processing from WinAPI event loop
 
         // SAFETY: Format listener was registered in the `new` method previously.
-        unsafe { RemoveClipboardFormatListener(self.window) };
+        if let Err(err) = unsafe { RemoveClipboardFormatListener(self.window) } {
+            error!("Failed to remove clipboard listener: {}", err)
+        }
 
         // SAFETY: Subclass was registered in the `new` method previously.
-        unsafe { RemoveWindowSubclass(self.window, Some(clipboard_subproc), 0) };
+        if !unsafe { RemoveWindowSubclass(self.window, Some(clipboard_subproc), 0) }.as_bool() {
+            error!("Failed to remove window subclass")
+        }
     }
 }
 
@@ -217,6 +219,9 @@ struct WinCliprdrBackendFactory {
     tx: mpsc_sync::SyncSender<BackendEvent>,
     window: HWND,
 }
+
+// SAFETY: window handle is thread safe for PostMessageW usage
+unsafe impl Send for WinCliprdrBackendFactory {}
 
 impl CliprdrBackendFactory for WinCliprdrBackendFactory {
     fn build_cliprdr_backend(&self) -> Box<dyn CliprdrBackend> {
