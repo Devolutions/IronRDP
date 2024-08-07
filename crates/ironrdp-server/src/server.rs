@@ -1,12 +1,13 @@
 use std::net::SocketAddr;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use anyhow::{anyhow, bail, Result};
 use ironrdp_acceptor::{self, Acceptor, AcceptorResult, BeginResult};
 use ironrdp_async::bytes;
 use ironrdp_cliprdr::backend::ClipboardMessage;
 use ironrdp_cliprdr::CliprdrServer;
-use ironrdp_displaycontrol::server::DisplayControlServer;
+use ironrdp_displaycontrol::pdu::DisplayControlMonitorLayout;
+use ironrdp_displaycontrol::server::{DisplayControlHandler, DisplayControlServer};
 use ironrdp_pdu::input::fast_path::{FastPathInput, FastPathInputEvent};
 use ironrdp_pdu::input::InputEventPdu;
 use ironrdp_pdu::mcs::SendDataRequest;
@@ -16,7 +17,8 @@ use ironrdp_svc::{impl_as_any, server_encode_svc_messages, StaticChannelId, Stat
 use ironrdp_tokio::{Framed, FramedRead, FramedWrite, TokioFramed};
 use rdpsnd::server::{RdpsndServer, RdpsndServerMessage};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Mutex};
+use tokio::task;
 use tokio_rustls::TlsAcceptor;
 use {ironrdp_dvc as dvc, ironrdp_rdpsnd as rdpsnd};
 
@@ -73,8 +75,10 @@ impl dvc::DvcProcessor for AInputHandler {
 
         match decode(payload)? {
             ClientPdu::Mouse(pdu) => {
-                let mut handler = self.handler.lock().unwrap();
-                handler.mouse(pdu.into());
+                let handler = Arc::clone(&self.handler);
+                task::spawn_blocking(move || {
+                    handler.blocking_lock().mouse(pdu.into());
+                });
             }
         }
 
@@ -83,6 +87,23 @@ impl dvc::DvcProcessor for AInputHandler {
 }
 
 impl dvc::DvcServerProcessor for AInputHandler {}
+
+struct DisplayControlBackend {
+    display: Arc<Mutex<Box<dyn RdpServerDisplay>>>,
+}
+
+impl DisplayControlBackend {
+    fn new(display: Arc<Mutex<Box<dyn RdpServerDisplay>>>) -> Self {
+        Self { display }
+    }
+}
+
+impl DisplayControlHandler for DisplayControlBackend {
+    fn monitor_layout(&self, layout: DisplayControlMonitorLayout) {
+        let display = Arc::clone(&self.display);
+        task::spawn_blocking(move || display.blocking_lock().request_layout(layout));
+    }
+}
 
 /// RDP Server
 ///
@@ -148,7 +169,7 @@ pub struct RdpServer {
     opts: RdpServerOptions,
     // FIXME: replace with a channel and poll/process the handler?
     handler: Arc<Mutex<Box<dyn RdpServerInputHandler>>>,
-    display: Box<dyn RdpServerDisplay>,
+    display: Arc<Mutex<Box<dyn RdpServerDisplay>>>,
     static_channels: StaticChannelSet,
     sound_factory: Option<Box<dyn SoundServerFactory>>,
     cliprdr_factory: Option<Box<dyn CliprdrServerFactory>>,
@@ -191,7 +212,7 @@ impl RdpServer {
         Self {
             opts,
             handler: Arc::new(Mutex::new(handler)),
-            display,
+            display: Arc::new(Mutex::new(display)),
             static_channels: StaticChannelSet::new(),
             sound_factory,
             cliprdr_factory,
@@ -211,7 +232,7 @@ impl RdpServer {
     pub async fn run_connection(&mut self, stream: TcpStream) -> Result<()> {
         let framed = TokioFramed::new(stream);
 
-        let size = self.display.size().await;
+        let size = self.display.lock().await.size().await;
         let capabilities = capabilities::capabilities(&self.opts, size);
         let mut acceptor = Acceptor::new(self.opts.security.flag(), size, capabilities);
 
@@ -229,11 +250,12 @@ impl RdpServer {
             acceptor.attach_static_channel(RdpsndServer::new(backend));
         }
 
+        let dcs_backend = DisplayControlBackend::new(Arc::clone(&self.display));
         let dvc = dvc::DrdynvcServer::new()
             .with_dynamic_channel(AInputHandler {
                 handler: Arc::clone(&self.handler),
             })
-            .with_dynamic_channel(DisplayControlServer);
+            .with_dynamic_channel(DisplayControlServer::new(Box::new(dcs_backend)));
         acceptor.attach_static_channel(dvc);
 
         match ironrdp_acceptor::accept_begin(framed, &mut acceptor).await {
@@ -480,7 +502,7 @@ impl RdpServer {
         debug!("Starting client loop");
 
         let mut buffer = vec![0u8; 4096];
-        let mut display_updates = self.display.updates().await?;
+        let mut display_updates = self.display.lock().await.updates().await?;
         let mut events = Vec::with_capacity(100);
 
         loop {
@@ -643,7 +665,7 @@ impl RdpServer {
 
     async fn handle_fastpath(&mut self, input: FastPathInput) {
         for event in input.0 {
-            let mut handler = self.handler.lock().unwrap();
+            let mut handler = self.handler.lock().await;
             match event {
                 FastPathInputEvent::KeyboardEvent(flags, key) => {
                     handler.keyboard((key, flags).into());
@@ -745,7 +767,7 @@ impl RdpServer {
 
     async fn handle_input_event(&mut self, input: InputEventPdu) {
         for event in input.0 {
-            let mut handler = self.handler.lock().unwrap();
+            let mut handler = self.handler.lock().await;
             match event {
                 ironrdp_pdu::input::InputEvent::ScanCode(key) => {
                     handler.keyboard((key.key_code, key.flags).into());

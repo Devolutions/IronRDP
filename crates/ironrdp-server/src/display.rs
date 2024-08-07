@@ -1,6 +1,7 @@
 use std::num::NonZeroU16;
 
 use anyhow::Result;
+use ironrdp_displaycontrol::pdu::DisplayControlMonitorLayout;
 use ironrdp_pdu::pointer::PointerPositionAttribute;
 
 #[rustfmt::skip]
@@ -140,7 +141,7 @@ pub trait RdpServerDisplayUpdates {
 /// }
 /// ```
 #[async_trait::async_trait]
-pub trait RdpServerDisplay {
+pub trait RdpServerDisplay: Send {
     /// This method should return the current size of the display.
     /// Currently, there is no way for the client to negotiate resolution,
     /// so the size returned by this method will be enforced.
@@ -148,4 +149,9 @@ pub trait RdpServerDisplay {
 
     /// Return a display updates receiver
     async fn updates(&mut self) -> Result<Box<dyn RdpServerDisplayUpdates>>;
+
+    /// Request a new size for the display
+    fn request_layout(&mut self, layout: DisplayControlMonitorLayout) {
+        debug!(?layout, "Requesting layout")
+    }
 }
