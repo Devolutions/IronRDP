@@ -63,6 +63,7 @@ rstest = "0.18"
 sspi = "0.13"
 tracing = { version = "0.1", features = ["log"] }
 thiserror = "1.0"
+windows = "0.58"
 
 # Note: we are trying to move away from using these crates.
 # They are being kept around for now for legacy compatibility,
