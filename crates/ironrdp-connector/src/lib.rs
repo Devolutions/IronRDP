@@ -19,6 +19,7 @@ mod server_name;
 
 use core::any::Any;
 use core::fmt;
+use std::error::Error;
 
 pub use channel_connection::{ChannelConnectionSequence, ChannelConnectionState};
 pub use connection::{encode_send_data_request, ClientConnector, ClientConnectorState, ConnectionResult};
@@ -260,17 +261,24 @@ impl fmt::Display for ConnectorErrorKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &self {
             ConnectorErrorKind::Pdu(_) => write!(f, "PDU error"),
-            ConnectorErrorKind::Credssp(_) => write!(f, "CredSSP"),
-            ConnectorErrorKind::Reason(description) => write!(f, "reason: {description}"),
-            ConnectorErrorKind::AccessDenied => write!(f, "access denied"),
-            ConnectorErrorKind::General => write!(f, "general error"),
-            ConnectorErrorKind::Custom => write!(f, "custom error"),
+            ConnectorErrorKind::Credssp(e) => write!(f, "{:?}: {}", e.error_type, e.description),
+            ConnectorErrorKind::Reason(description) => write!(f, "Reason: {description}"),
+            ConnectorErrorKind::AccessDenied => write!(f, "Access Denied"),
+            ConnectorErrorKind::General => write!(f, "General Error"),
+            ConnectorErrorKind::Custom => {
+                write!(f, "Custom Error")?;
+                if let Some(src) = self.source() {
+                    write!(f, " ({})", src)
+                } else {
+                    Ok(())
+                }
+            }
         }
     }
 }
 
-impl std::error::Error for ConnectorErrorKind {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+impl Error for ConnectorErrorKind {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
         match &self {
             ConnectorErrorKind::Pdu(e) => Some(e),
             ConnectorErrorKind::Credssp(e) => Some(e),
@@ -290,7 +298,7 @@ pub trait ConnectorErrorExt {
     fn reason(context: &'static str, reason: impl Into<String>) -> Self;
     fn custom<E>(context: &'static str, e: E) -> Self
     where
-        E: std::error::Error + Sync + Send + 'static;
+        E: Error + Sync + Send + 'static;
 }
 
 impl ConnectorErrorExt for ConnectorError {
@@ -308,7 +316,7 @@ impl ConnectorErrorExt for ConnectorError {
 
     fn custom<E>(context: &'static str, e: E) -> Self
     where
-        E: std::error::Error + Sync + Send + 'static,
+        E: Error + Sync + Send + 'static,
     {
         Self::new(context, ConnectorErrorKind::Custom).with_source(e)
     }
@@ -320,7 +328,7 @@ pub trait ConnectorResultExt {
     #[must_use]
     fn with_source<E>(self, source: E) -> Self
     where
-        E: std::error::Error + Sync + Send + 'static;
+        E: Error + Sync + Send + 'static;
 }
 
 impl<T> ConnectorResultExt for ConnectorResult<T> {
@@ -333,7 +341,7 @@ impl<T> ConnectorResultExt for ConnectorResult<T> {
 
     fn with_source<E>(self, source: E) -> Self
     where
-        E: std::error::Error + Sync + Send + 'static,
+        E: Error + Sync + Send + 'static,
     {
         self.map_err(|e| e.with_source(source))
     }
