@@ -1,6 +1,6 @@
 use ironrdp_cliprdr::pdu::{ClipboardFormat, ClipboardFormatId, ClipboardFormatName};
 use tracing::error;
-use windows::Win32::Foundation::{ERROR_ACCESS_DENIED, FALSE, HANDLE, HWND};
+use windows::Win32::Foundation::{HANDLE, HWND};
 use windows::Win32::System::DataExchange::{
     CloseClipboard, EmptyClipboard, EnumClipboardFormats, GetClipboardFormatNameW, OpenClipboard, SetClipboardData,
 };
@@ -14,16 +14,7 @@ pub(crate) struct OwnedOsClipboard;
 impl OwnedOsClipboard {
     pub(crate) fn new(window: HWND) -> Result<Self, WinCliprdrError> {
         // SAFETY: `window` is valid handle, therefore it is safe to call `OpenClipboard`.
-        if unsafe { OpenClipboard(window) } == FALSE {
-            // Retryable error
-            if get_last_winapi_error() == ERROR_ACCESS_DENIED {
-                return Err(WinCliprdrError::ClipboardAccessDenied);
-            }
-
-            // Unknown critical error
-            return Err(WinCliprdrError::ClipboardOpen);
-        }
-
+        unsafe { OpenClipboard(window)? };
         Ok(Self)
     }
 
@@ -87,9 +78,7 @@ impl OwnedOsClipboard {
     pub(crate) fn clear(&mut self) -> Result<(), WinCliprdrError> {
         // SAFETY: We own the clipboard at moment of method invocation, therefore it is safe to
         // call `EmptyClipboard`.
-        if unsafe { EmptyClipboard() } == FALSE {
-            return Err(WinCliprdrError::ClipboardEmpty);
-        }
+        unsafe { EmptyClipboard()? };
 
         Ok(())
     }
@@ -98,7 +87,7 @@ impl OwnedOsClipboard {
     pub(crate) fn delay_render(&mut self, format: ClipboardFormatId) -> Result<(), WinCliprdrError> {
         // SAFETY: We own the clipboard at moment of method invocation, therefore it is safe to
         // call `SetClipboardData`.
-        let result = unsafe { SetClipboardData(format.value(), HANDLE(0)) };
+        let result = unsafe { SetClipboardData(format.value(), HANDLE(std::ptr::null_mut())) };
 
         if let Err(err) = result {
             // `windows` crate will return `Err(..)` on err zero handle, but for `SetClipboardData`
@@ -117,8 +106,8 @@ impl Drop for OwnedOsClipboard {
     fn drop(&mut self) {
         // SAFETY: We own the clipboard at moment of method invocation, therefore it is safe to
         // call `CloseClipboard`.
-        if unsafe { CloseClipboard() } == FALSE {
-            error!("Failed to close Windows clipboard");
+        if let Err(err) = unsafe { CloseClipboard() } {
+            error!("Failed to close clipboard: {}", err);
         }
     }
 }

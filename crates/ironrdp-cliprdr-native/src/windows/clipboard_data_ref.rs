@@ -63,10 +63,12 @@ impl<'a> ClipboardDataRef<'a> {
 impl Drop for ClipboardDataRef<'_> {
     fn drop(&mut self) {
         // SAFETY: We always own non-null handle, so it is safe to call `GlobalUnlock` on it
-        unsafe {
+        if let Err(err) = unsafe {
             // Handle with data, retrieved from the clipboard, should be unlocked, but not freed
             // (it's owned by the clipboard itself)
-            GlobalUnlock(self.handle);
+            GlobalUnlock(self.handle)
+        } {
+            tracing::error!("Failed to unlock data: {}", err)
         }
     }
 }

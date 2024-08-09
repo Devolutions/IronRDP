@@ -168,7 +168,11 @@ impl DecodedPointer {
             });
         }
 
-        if data.and_mask.len() != and_stride.length * usize::from(data.height) {
+        let default_and_mask = vec![0x00; and_stride.length * usize::from(data.height)];
+        let mut and_mask = data.and_mask;
+        if and_mask.is_empty() {
+            and_mask = &default_and_mask;
+        } else if and_mask.len() != and_stride.length * usize::from(data.height) {
             return Err(PointerError::InvalidAndMaskSize {
                 expected: and_stride.length * usize::from(data.height),
                 actual: data.and_mask.len(),
@@ -183,11 +187,11 @@ impl DecodedPointer {
                 let xor_stride_cursor =
                     ReadCursor::new(&data.xor_mask[usize::from(data.height - row_idx - 1) * xor_stride.length..]);
                 let and_stride_cursor =
-                    ReadCursor::new(&data.and_mask[usize::from(data.height - row_idx - 1) * and_stride.length..]);
+                    ReadCursor::new(&and_mask[usize::from(data.height - row_idx - 1) * and_stride.length..]);
                 (xor_stride_cursor, and_stride_cursor)
             } else {
                 let xor_stride_cursor = ReadCursor::new(&data.xor_mask[usize::from(row_idx) * xor_stride.length..]);
-                let and_stride_cursor = ReadCursor::new(&data.and_mask[usize::from(row_idx) * and_stride.length..]);
+                let and_stride_cursor = ReadCursor::new(&and_mask[usize::from(row_idx) * and_stride.length..]);
                 (xor_stride_cursor, and_stride_cursor)
             };
 
