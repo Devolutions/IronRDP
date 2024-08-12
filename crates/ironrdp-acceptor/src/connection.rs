@@ -1,3 +1,4 @@
+use std::any::TypeId;
 use std::mem;
 
 use ironrdp_connector::{
@@ -27,6 +28,7 @@ pub struct Acceptor {
     desktop_size: DesktopSize,
     server_capabilities: Vec<CapabilitySet>,
     static_channels: StaticChannelSet,
+    saved_for_reactivation: AcceptorState,
 }
 
 #[derive(Debug)]
@@ -48,6 +50,42 @@ impl Acceptor {
             desktop_size,
             server_capabilities: capabilities,
             static_channels: StaticChannelSet::new(),
+            saved_for_reactivation: Default::default(),
+        }
+    }
+
+    pub fn new_deactivation_reactivation(mut consumed: Acceptor, desktop_size: DesktopSize) -> Self {
+        let AcceptorState::CapabilitiesSendServer {
+            early_capability,
+            channels,
+        } = consumed.saved_for_reactivation
+        else {
+            panic!("invalid acceptor state");
+        };
+
+        for cap in consumed.server_capabilities.iter_mut() {
+            if let CapabilitySet::Bitmap(cap) = cap {
+                cap.desktop_width = desktop_size.width;
+                cap.desktop_height = desktop_size.height;
+            }
+        }
+        let state = AcceptorState::CapabilitiesSendServer {
+            early_capability,
+            channels: channels.clone(),
+        };
+        let saved_for_reactivation = AcceptorState::CapabilitiesSendServer {
+            early_capability,
+            channels,
+        };
+        Self {
+            security: consumed.security,
+            state,
+            user_channel_id: consumed.user_channel_id,
+            io_channel_id: consumed.io_channel_id,
+            desktop_size,
+            server_capabilities: consumed.server_capabilities,
+            static_channels: StaticChannelSet::new(),
+            saved_for_reactivation,
         }
     }
 
@@ -55,7 +93,18 @@ impl Acceptor {
     where
         T: SvcServerProcessor + 'static,
     {
+        let channel_name = channel.channel_name();
+
         self.static_channels.insert(channel);
+
+        // restore channel id if it was already attached
+        if let AcceptorState::CapabilitiesSendServer { channels, .. } = &self.state {
+            for (channel_id, c) in channels {
+                if c.name == channel_name {
+                    self.static_channels.attach_channel_id(TypeId::of::<T>(), *channel_id);
+                }
+            }
+        }
     }
 
     pub fn reached_security_upgrade(&self) -> Option<nego::SecurityProtocol> {
@@ -401,6 +450,11 @@ impl Sequence for Acceptor {
 
                 let written =
                     util::encode_send_data_indication(self.user_channel_id, self.io_channel_id, &license, output)?;
+
+                self.saved_for_reactivation = AcceptorState::CapabilitiesSendServer {
+                    early_capability,
+                    channels: channels.clone(),
+                };
 
                 (
                     Written::from_size(written)?,
