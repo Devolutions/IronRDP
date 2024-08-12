@@ -28,13 +28,25 @@ pub enum PixelOrder {
     BottomToTop,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct RGBAPointer {
     pub width: u16,
     pub height: u16,
     pub hot_x: u16,
     pub hot_y: u16,
     pub data: Vec<u8>,
+}
+
+impl std::fmt::Debug for RGBAPointer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RGBAPointer")
+            .field("with", &self.width)
+            .field("height", &self.height)
+            .field("hot_x", &self.hot_x)
+            .field("hot_y", &self.hot_y)
+            .field("data_len", &self.data.len())
+            .finish()
+    }
 }
 
 #[derive(Debug, Clone)]
