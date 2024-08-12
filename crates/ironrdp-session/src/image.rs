@@ -473,7 +473,7 @@ impl DecodedImage {
         clipping_rectangles: &Region,
         update_rectangle: &InclusiveRectangle,
     ) -> SessionResult<InclusiveRectangle> {
-        debug!("Tile: {:?}", update_rectangle);
+        trace!("Tile: {:?}", update_rectangle);
 
         let pointer_rendering_state = self.pointer_rendering_begin(&clipping_rectangles.extents)?;
 
@@ -500,8 +500,8 @@ impl DecodedImage {
                 data: &mut self.data,
             };
 
-            debug!("Source image region: {:?}", source_image_region.region);
-            debug!("Destination image region: {:?}", destination_image_region.region);
+            trace!("Source image region: {:?}", source_image_region.region);
+            trace!("Destination image region: {:?}", destination_image_region.region);
 
             source_image_region
                 .copy_to(&mut destination_image_region)
