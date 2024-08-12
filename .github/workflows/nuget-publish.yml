@@ -206,10 +206,6 @@ jobs:
             $Env:RUSTFLAGS="-C target-feature=+crt-static"
           }
 
-          if ($DotNetOs -Eq 'android') {
-            $Env:AWS_LC_SYS_CMAKE_BUILDER="0"
-          }
-
           if ($RustTarget -eq 'aarch64-unknown-linux-gnu') {
             sudo apt update
             sudo apt install gcc-aarch64-linux-gnu
