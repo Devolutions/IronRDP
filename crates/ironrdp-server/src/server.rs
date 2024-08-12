@@ -2,7 +2,7 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 
 use anyhow::{anyhow, bail, Context, Result};
-use ironrdp_acceptor::{self, Acceptor, AcceptorResult, BeginResult};
+use ironrdp_acceptor::{self, Acceptor, AcceptorResult, BeginResult, DesktopSize};
 use ironrdp_async::bytes;
 use ironrdp_cliprdr::backend::ClipboardMessage;
 use ironrdp_cliprdr::CliprdrServer;
@@ -10,9 +10,10 @@ use ironrdp_displaycontrol::pdu::DisplayControlMonitorLayout;
 use ironrdp_displaycontrol::server::{DisplayControlHandler, DisplayControlServer};
 use ironrdp_pdu::input::fast_path::{FastPathInput, FastPathInputEvent};
 use ironrdp_pdu::input::InputEventPdu;
-use ironrdp_pdu::mcs::SendDataRequest;
+use ironrdp_pdu::mcs::{SendDataIndication, SendDataRequest};
 use ironrdp_pdu::rdp::capability_sets::{BitmapCodecs, CapabilitySet, CmdFlags, GeneralExtraFlags};
-use ironrdp_pdu::{self, decode, mcs, nego, rdp, Action, PduResult};
+use ironrdp_pdu::rdp::headers::{ServerDeactivateAll, ShareControlPdu};
+use ironrdp_pdu::{self, decode, encode_vec, mcs, nego, rdp, Action, PduResult};
 use ironrdp_svc::{impl_as_any, server_encode_svc_messages, StaticChannelId, StaticChannelSet, SvcProcessor};
 use ironrdp_tokio::{Framed, FramedRead, FramedWrite, TokioFramed};
 use rdpsnd::server::{RdpsndServer, RdpsndServerMessage};
@@ -198,6 +199,7 @@ impl ServerEvent {
 enum RunState {
     Continue,
     Disconnect,
+    DeactivationReactivation { desktop_size: DesktopSize },
 }
 
 impl RdpServer {
@@ -367,6 +369,8 @@ impl RdpServer {
         &mut self,
         update: DisplayUpdate,
         framed: &mut Framed<S>,
+        user_channel_id: u16,
+        io_channel_id: u16,
         buffer: &mut Vec<u8>,
         encoder: &mut UpdateEncoder,
     ) -> Result<RunState>
@@ -376,6 +380,24 @@ impl RdpServer {
         let mut fragmenter = match update {
             DisplayUpdate::Bitmap(bitmap) => encoder.bitmap(bitmap),
             DisplayUpdate::PointerPosition(pos) => encoder.pointer_position(pos),
+            DisplayUpdate::Resize(desktop_size) => {
+                debug!(?desktop_size, "Display resize");
+                let pdu = ShareControlPdu::ServerDeactivateAll(ServerDeactivateAll);
+                let pdu = rdp::headers::ShareControlHeader {
+                    share_id: 0,
+                    pdu_source: io_channel_id,
+                    share_control_pdu: pdu,
+                };
+                let user_data = encode_vec(&pdu)?.into();
+                let pdu = SendDataIndication {
+                    initiator_id: user_channel_id,
+                    channel_id: io_channel_id,
+                    user_data,
+                };
+                let msg = encode_vec(&pdu)?;
+                framed.write_all(&msg).await?;
+                return Ok(RunState::DeactivationReactivation { desktop_size });
+            }
             DisplayUpdate::RGBAPointer(ptr) => encoder.rgba_pointer(ptr),
             DisplayUpdate::ColorPointer(ptr) => encoder.color_pointer(ptr),
             DisplayUpdate::HidePointer => encoder.hide_pointer(),
@@ -498,7 +520,7 @@ impl RdpServer {
                 },
 
                 Some(update) = display_updates.next_update() => {
-                    state = self.dispatch_display_update(update, framed, &mut buffer, &mut encoder).await?;
+                    state = self.dispatch_display_update(update, framed, user_channel_id, io_channel_id, &mut buffer, &mut encoder).await?;
                 }
 
                 nevents = self.ev_receiver.recv_many(&mut events, 100) => {
@@ -784,9 +806,15 @@ impl RdpServer {
                 .await
                 .context("Failed to accept client during finalize")?;
             framed = new_framed;
+
             match self.client_accepted(&mut framed, result).await? {
                 RunState::Continue => {
                     unreachable!();
+                }
+                RunState::DeactivationReactivation { desktop_size } => {
+                    acceptor = Acceptor::new_deactivation_reactivation(acceptor, desktop_size);
+                    self.attach_channels(&mut acceptor);
+                    continue;
                 }
                 RunState::Disconnect => break,
             }
