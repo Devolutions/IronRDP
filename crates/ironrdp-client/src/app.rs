@@ -30,11 +30,13 @@ impl App {
         event_loop: &EventLoop<RdpOutputEvent>,
         input_event_sender: &mpsc::UnboundedSender<RdpInputEvent>,
     ) -> anyhow::Result<Self> {
-        // SAFETY: we drop the context right before the event loop is stopped, thus making it safe.
-        let context = softbuffer::Context::new(unsafe {
+        // SAFETY: We drop the softbuffer context right before the event loop is stopped, thus making this safe.
+        // FIXME: This is not a sufficient proof and the API is actually unsound as-is.
+        let display_handle = unsafe {
             std::mem::transmute::<DisplayHandle<'_>, DisplayHandle<'static>>(event_loop.display_handle().unwrap())
-        })
-        .map_err(|e| anyhow::Error::msg(format!("unable to initialize softbuffer context: {e}")))?;
+        };
+        let context = softbuffer::Context::new(display_handle)
+            .map_err(|e| anyhow::anyhow!("unable to initialize softbuffer context: {e}"))?;
 
         let input_database = ironrdp::input::Database::new();
         Ok(Self {
@@ -49,15 +51,15 @@ impl App {
 
 impl ApplicationHandler<RdpOutputEvent> for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        let window_attributes = WindowAttributes::default().with_title("IronRdp");
+        let window_attributes = WindowAttributes::default().with_title("IronRDP");
         match event_loop.create_window(window_attributes) {
             Ok(window) => {
                 let window = Arc::new(window);
                 let surface = softbuffer::Surface::new(&self.context, Arc::clone(&window)).expect("surface");
                 self.window = Some((window, surface));
             }
-            Err(err) => {
-                error!("Failed to create window: {}", err);
+            Err(error) => {
+                error!(%error, "Failed to create window");
                 event_loop.exit();
             }
         }
