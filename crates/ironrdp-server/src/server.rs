@@ -235,13 +235,7 @@ impl RdpServer {
         &self.ev_sender
     }
 
-    pub async fn run_connection(&mut self, stream: TcpStream) -> Result<()> {
-        let framed = TokioFramed::new(stream);
-
-        let size = self.display.lock().await.size().await;
-        let capabilities = capabilities::capabilities(&self.opts, size);
-        let mut acceptor = Acceptor::new(self.opts.security.flag(), size, capabilities);
-
+    fn attach_channels(&mut self, acceptor: &mut Acceptor) {
         if let Some(cliprdr_factory) = self.cliprdr_factory.as_deref() {
             let backend = cliprdr_factory.build_cliprdr_backend();
 
@@ -263,6 +257,16 @@ impl RdpServer {
             })
             .with_dynamic_channel(DisplayControlServer::new(Box::new(dcs_backend)));
         acceptor.attach_static_channel(dvc);
+    }
+
+    pub async fn run_connection(&mut self, stream: TcpStream) -> Result<()> {
+        let framed = TokioFramed::new(stream);
+
+        let size = self.display.lock().await.size().await;
+        let capabilities = capabilities::capabilities(&self.opts, size);
+        let mut acceptor = Acceptor::new(self.opts.security.flag(), size, capabilities);
+
+        self.attach_channels(&mut acceptor);
 
         let res = ironrdp_acceptor::accept_begin(framed, &mut acceptor)
             .await
