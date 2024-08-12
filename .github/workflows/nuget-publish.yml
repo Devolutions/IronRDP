@@ -183,17 +183,6 @@ jobs:
         if: ${{ matrix.os == 'android' }}
         run: sudo apt install gcc-multilib
 
-      # For aws-lc-sys. Error returned otherwise:
-      # > Android: Unknown processor CMAKE_SYSTEM_PROCESSOR='i686'.
-      - name: Update CMake
-        if: ${{ matrix.os == 'android' }}
-        run: |
-          sudo apt purge cmake
-          cd "${{ runner.temp }}"
-          wget https://github.com/Kitware/CMake/releases/download/v3.30.2/cmake-3.30.2-linux-x86_64.sh -O install_cmake.sh --no-verbose
-          chmod +x install_cmake.sh
-          sudo ./install_cmake.sh --prefix=/usr --skip-license
-
       - name: Build native lib (${{matrix.os}}-${{matrix.arch}})
         shell: pwsh
         run: |
