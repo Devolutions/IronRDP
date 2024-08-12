@@ -29,8 +29,8 @@ impl GlobalMemoryBuffer {
         unsafe { std::ptr::copy_nonoverlapping(data.as_ptr(), dst as *mut u8, data.len()) };
 
         // SAFETY: We called `GlobalLock` on this handle just above.
-        if let Err(err) = unsafe { GlobalUnlock(handle) } {
-            error!("Failed to unlock memory: {}", err);
+        if let Err(error) = unsafe { GlobalUnlock(handle) } {
+            error!(%error, "Failed to unlock memory");
         }
 
         Ok(Self(handle))
