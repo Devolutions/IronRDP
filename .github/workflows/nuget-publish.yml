@@ -173,6 +173,12 @@ jobs:
         if: ${{ matrix.os == 'android' }}
         run: cargo install --force --locked bindgen-cli
 
+      # For aws-lc-sys. Error returned otherwise:
+      # > Unable to generate bindings: ClangDiagnostic("/usr/include/stdint.h:26:10: fatal error: 'bits/libc-header-start.h' file not found\n")
+      - name: Install gcc-multilib
+        if: ${{ matrix.os == 'android' }}
+        run: sudo apt-get install gcc-multilib
+
       - name: Build native lib (${{matrix.os}}-${{matrix.arch}})
         shell: pwsh
         run: |
