@@ -184,12 +184,11 @@ jobs:
       - name: Update CMake
         if: ${{ matrix.os == 'android' }}
         run: |
-          sudo apt install cmake
-          # sudo apt purge cmake
-          # cd "${{ runner.temp }}"
-          # wget https://github.com/Kitware/CMake/releases/download/v3.30.2/cmake-3.30.2-linux-x86_64.sh --output-file=install_cmake.sh
-          # chmod +x install_cmake.sh
-          # ./install_cmake.sh --prefix=/usr --skip-license
+          sudo apt purge cmake
+          cd "${{ runner.temp }}"
+          wget https://github.com/Kitware/CMake/releases/download/v3.30.2/cmake-3.30.2-linux-x86_64.sh -O install_cmake.sh
+          chmod +x install_cmake.sh
+          ./install_cmake.sh --prefix=/usr --skip-license
 
       - name: Build native lib (${{matrix.os}}-${{matrix.arch}})
         shell: pwsh
