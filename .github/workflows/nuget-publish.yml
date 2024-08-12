@@ -115,25 +115,57 @@ jobs:
           echo "linker=`"$AndroidToolchain/bin/x86_64-linux-android21-clang`"" >> $CargoConfigFile
           echo "CC_x86_64-linux-android=$AndroidToolchain/bin/x86_64-linux-android21-clang" >> $Env:GITHUB_ENV
           echo "AR_x86_64-linux-android=$AndroidToolchain/bin/llvm-ar" >> $Env:GITHUB_ENV
-          
+
           echo "[target.armv7-linux-androideabi]" >> $CargoConfigFile
           echo "linker=`"$AndroidToolchain/bin/armv7a-linux-androideabi21-clang`"" >> $CargoConfigFile
           echo "CC_armv7-linux-androideabi=$AndroidToolchain/bin/armv7a-linux-androideabi21-clang" >> $Env:GITHUB_ENV
           echo "AR_armv7-linux-androideabi=$AndroidToolchain/bin/llvm-ar" >> $Env:GITHUB_ENV
-          
+
           echo "[target.aarch64-linux-android]" >> $CargoConfigFile
           echo "linker=`"$AndroidToolchain/bin/aarch64-linux-android21-clang`"" >> $CargoConfigFile
           echo "CC_aarch64-linux-android=$AndroidToolchain/bin/aarch64-linux-android21-clang" >> $Env:GITHUB_ENV
           echo "AR_aarch64-linux-android=$AndroidToolchain/bin/llvm-ar" >> $Env:GITHUB_ENV
 
-      - name: Setup build environment
+      - name: Configure macOS deployement target
+        if: ${{ matrix.os == 'osx' }}
+        shell: pwsh
+        run: Write-Out "MACOSX_DEPLOYMENT_TARGET=10.10" | Out-File -FilePath $Env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Configure iOS deployement target
+        if: ${{ matrix.os == 'ios' }}
+        shell: pwsh
+        run: Write-Out "IPHONEOS_DEPLOYMENT_TARGET=12.1" | Out-File -FilePath $Env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Update runner
+        if: ${{ matrix.os == 'linux' }}
+        run: sudo apt update
+
+      # We need a newer version of GCC because aws-lc-rs rejects versions affected
+      # by this bug: https://gcc.gnu.org/bugzilla/show_bug.cgi?id=95189
+      # These lines can be safely removed once we switch to ubuntu-22.04 runner.
+      - name: Install GCC 10.x
+        if: ${{ matrix.os == 'linux' }}
+        run: |
+          sudo apt install gcc-10
+          sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-10 60
+
+      - name: Install dependencies for rustls
+        if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          if ('${{ matrix.os }}' -Eq 'osx') {
-            echo "MACOSX_DEPLOYMENT_TARGET=10.10" | Out-File -FilePath $Env:GITHUB_ENV -Encoding utf8 -Append
-          } elseif ('${{ matrix.os }}' -Eq 'ios') {
-            echo "IPHONEOS_DEPLOYMENT_TARGET=12.1" | Out-File -FilePath $Env:GITHUB_ENV -Encoding utf8 -Append
-          }
+          choco install ninja nasm
+
+          # We need to add the NASM binary folder to the PATH manually.
+          # We don’t need to do that for ninja.
+          Write-Output "PATH=$Env:PATH;$Env:ProgramFiles\NASM" >> $Env:GITHUB_ENV
+
+          # libclang / LLVM is a requirement for AWS LC.
+          # https://aws.github.io/aws-lc-rs/requirements/windows.html#libclang--llvm
+          $VSINSTALLDIR = $(vswhere.exe -latest -requires Microsoft.VisualStudio.Component.VC.Llvm.Clang -property installationPath)
+          Write-Output "LIBCLANG_PATH=$VSINSTALLDIR\VC\Tools\Llvm\x64\bin" >> $Env:GITHUB_ENV
+
+          # Install Visual Studio Developer PowerShell Module for cmdlets such as Enter-VsDevShell
+          Install-Module VsDevShell -Force
 
       - name: Build native lib (${{matrix.os}}-${{matrix.arch}})
         shell: pwsh
@@ -202,7 +234,7 @@ jobs:
   build-universal:
     name: Universal build
     runs-on: ubuntu-20.04
-    needs: [preflight, build-native]
+    needs: [ preflight, build-native ]
     strategy:
       fail-fast: false
       matrix:
@@ -354,7 +386,7 @@ jobs:
         shell: pwsh
         run: |
           $Files = Get-ChildItem -Recurse package/*.nupkg
-    
+
           foreach ($File in $Files) {
             $PushCmd = @(
               'dotnet', 
