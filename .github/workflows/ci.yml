@@ -183,11 +183,9 @@ jobs:
       - web
 
     steps:
-      - name: CI succeeded
-        id: succeeded
-        if: ${{ !contains(needs.*.result, 'failure') }}
-        run: exit 0
-
-      - name: CI failed
-        if: ${{ steps.succeeded.outcome == 'skipped' }}
-        run: exit 1
+      - name: Check success
+        shell: pwsh
+        run: |
+          $results = '${{ toJSON(needs.*.result) }}' | ConvertFrom-Json
+          $succeeded = $($results | Where { $_ -Ne "success" }).Count -Eq 0
+          exit $(if ($succeeded) { 0 } else { 1 })
