@@ -15,6 +15,7 @@ pub use ironrdp_graphics::image_processing::PixelFormat;
 ///
 #[derive(Debug, Clone)]
 pub enum DisplayUpdate {
+    Resize(DesktopSize),
     Bitmap(BitmapUpdate),
     PointerPosition(PointerPositionAttribute),
     ColorPointer(ColorPointer),
