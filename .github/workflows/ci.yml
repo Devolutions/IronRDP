@@ -27,7 +27,7 @@ env:
 jobs:
   formatting:
     name: Check formatting
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-latest
 
     steps:
       - uses: actions/checkout@v4
@@ -37,7 +37,7 @@ jobs:
 
   typos:
     name: Check typos
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-latest
 
     steps:
       - uses: actions/checkout@v4
@@ -61,12 +61,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ windows, linux ]
+        os: [ windows, linux, macos ]
         include:
           - os: windows
-            runner: windows-2019
+            runner: windows-latest
           - os: linux
-            runner: ubuntu-22.04 # 22.04 because we need a recent wabt version
+            runner: ubuntu-latest
+          - os: macos
+            runner: macos-latest
 
     steps:
       - name: Checkout
@@ -116,7 +118,7 @@ jobs:
 
   fuzz:
     name: Fuzzing
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-latest
     needs: formatting
 
     steps:
@@ -145,7 +147,7 @@ jobs:
 
   web:
     name: Web Client
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-latest
     needs: formatting
 
     steps:
@@ -181,11 +183,9 @@ jobs:
       - web
 
     steps:
-      - name: CI succeeded
-        id: succeeded
-        if: ${{ !contains(needs.*.result, 'failure') }}
-        run: exit 0
-
-      - name: CI failed
-        if: ${{ steps.succeeded.outcome == 'skipped' }}
-        run: exit 1
+      - name: Check success
+        shell: pwsh
+        run: |
+          $results = '${{ toJSON(needs.*.result) }}' | ConvertFrom-Json
+          $succeeded = $($results | Where { $_ -Ne "success" }).Count -Eq 0
+          exit $(if ($succeeded) { 0 } else { 1 })
