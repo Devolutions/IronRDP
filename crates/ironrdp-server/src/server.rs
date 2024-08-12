@@ -1,7 +1,7 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use anyhow::{anyhow, bail, Result, Context};
+use anyhow::{anyhow, bail, Context, Result};
 use ironrdp_acceptor::{self, Acceptor, AcceptorResult, BeginResult};
 use ironrdp_async::bytes;
 use ironrdp_cliprdr::backend::ClipboardMessage;
@@ -302,6 +302,7 @@ impl RdpServer {
                     if let Err(error) = self.run_connection(stream).await {
                         error!(?error, "Connection error");
                     }
+                    self.static_channels = StaticChannelSet::new();
                 }
                 else => break,
             }
@@ -338,18 +339,14 @@ impl RdpServer {
             }
 
             Action::X224 => {
-                match self.handle_x224(framed, io_channel_id, user_channel_id, &bytes).await {
-                    Ok(disconnect) => {
-                        if disconnect {
-                            debug!("Got disconnect request");
-                            return Ok(true);
-                        }
-                    }
-
-                    Err(error) => {
-                        error!(?error, "X224 input error");
-                    }
-                };
+                if self
+                    .handle_x224(framed, io_channel_id, user_channel_id, &bytes)
+                    .await
+                    .context("X224 input error")?
+                {
+                    debug!("Got disconnect request");
+                    return Ok(true);
+                }
             }
         }
 
@@ -366,32 +363,25 @@ impl RdpServer {
     where
         S: FramedWrite + FramedRead,
     {
-        let fragmenter = match update {
+        let mut fragmenter = match update {
             DisplayUpdate::Bitmap(bitmap) => encoder.bitmap(bitmap),
             DisplayUpdate::PointerPosition(pos) => encoder.pointer_position(pos),
             DisplayUpdate::RGBAPointer(ptr) => encoder.rgba_pointer(ptr),
             DisplayUpdate::ColorPointer(ptr) => encoder.color_pointer(ptr),
             DisplayUpdate::HidePointer => encoder.hide_pointer(),
             DisplayUpdate::DefaultPointer => encoder.default_pointer(),
-        };
-
-        let mut fragmenter = match fragmenter {
-            Ok(fragmenter) => fragmenter,
-            Err(error) => {
-                error!(?error, "Error during update encoding");
-                return Ok(true);
-            }
-        };
+        }
+        .context("Error during update encoding")?;
 
         if fragmenter.size_hint() > buffer.len() {
             buffer.resize(fragmenter.size_hint(), 0);
         }
 
         while let Some(len) = fragmenter.next(buffer) {
-            if let Err(error) = framed.write_all(&buffer[..len]).await {
-                error!(?error, "Write display update error");
-                return Ok(true);
-            };
+            framed
+                .write_all(&buffer[..len])
+                .await
+                .context("Write display update error")?;
         }
 
         Ok(false)
@@ -421,7 +411,7 @@ impl RdpServer {
                         warn!("No rdpsnd channel, dropping event");
                         continue;
                     };
-                    let res = match s {
+                    let msgs = match s {
                         RdpsndServerMessage::Wave(data, ts) => {
                             if wave_limit == 0 {
                                 continue;
@@ -434,27 +424,20 @@ impl RdpServer {
                             error!(?error, "Handling rdpsnd event");
                             continue;
                         }
-                    };
-                    match res {
-                        Ok(msgs) => {
-                            let channel_id = self
-                                .get_channel_id_by_type::<RdpsndServer>()
-                                .ok_or_else(|| anyhow!("SVC channel not found"))?;
-                            let data = server_encode_svc_messages(msgs.into(), channel_id, user_channel_id)?;
-                            framed.write_all(&data).await?;
-                        }
-                        Err(error) => {
-                            error!(?error, "Sending rdpsnd event");
-                            return Ok(true);
-                        }
                     }
+                    .context("Sending rdpsnd event")?;
+                    let channel_id = self
+                        .get_channel_id_by_type::<RdpsndServer>()
+                        .ok_or_else(|| anyhow!("SVC channel not found"))?;
+                    let data = server_encode_svc_messages(msgs.into(), channel_id, user_channel_id)?;
+                    framed.write_all(&data).await?;
                 }
                 ServerEvent::Clipboard(c) => {
                     let Some(cliprdr) = self.get_svc_processor::<CliprdrServer>() else {
                         warn!("No clipboard channel, dropping event");
                         continue;
                     };
-                    let res = match c {
+                    let msgs = match c {
                         ClipboardMessage::SendInitiateCopy(formats) => cliprdr.initiate_copy(&formats),
                         ClipboardMessage::SendFormatData(data) => cliprdr.submit_format_data(data),
                         ClipboardMessage::SendInitiatePaste(format) => cliprdr.initiate_paste(format),
@@ -462,20 +445,13 @@ impl RdpServer {
                             error!(?error, "Handling clipboard event");
                             continue;
                         }
-                    };
-                    match res {
-                        Ok(msgs) => {
-                            let channel_id = self
-                                .get_channel_id_by_type::<CliprdrServer>()
-                                .ok_or_else(|| anyhow!("SVC channel not found"))?;
-                            let data = server_encode_svc_messages(msgs.into(), channel_id, user_channel_id)?;
-                            framed.write_all(&data).await?;
-                        }
-                        Err(error) => {
-                            error!(?error, "Sending clipboard event");
-                            return Ok(true);
-                        }
                     }
+                    .context("Sending clipboard event")?;
+                    let channel_id = self
+                        .get_channel_id_by_type::<CliprdrServer>()
+                        .ok_or_else(|| anyhow!("SVC channel not found"))?;
+                    let data = server_encode_svc_messages(msgs.into(), channel_id, user_channel_id)?;
+                    framed.write_all(&data).await?;
                 }
             }
         }
@@ -621,8 +597,6 @@ impl RdpServer {
         {
             warn!(?err, "Error in client loop");
         }
-
-        self.static_channels = StaticChannelSet::new();
 
         Ok(())
     }
