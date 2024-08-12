@@ -1,7 +1,7 @@
 use std::net::SocketAddr;
 use std::sync::Arc;
 
-use anyhow::{anyhow, bail, Result};
+use anyhow::{anyhow, bail, Result, Context};
 use ironrdp_acceptor::{self, Acceptor, AcceptorResult, BeginResult};
 use ironrdp_async::bytes;
 use ironrdp_cliprdr::backend::ClipboardMessage;
@@ -258,30 +258,24 @@ impl RdpServer {
             .with_dynamic_channel(DisplayControlServer::new(Box::new(dcs_backend)));
         acceptor.attach_static_channel(dvc);
 
-        match ironrdp_acceptor::accept_begin(framed, &mut acceptor).await {
-            Ok(BeginResult::ShouldUpgrade(stream)) => {
+        let res = ironrdp_acceptor::accept_begin(framed, &mut acceptor)
+            .await
+            .context("Accept begin error")?;
+
+        match res {
+            BeginResult::ShouldUpgrade(stream) => {
                 let framed = TokioFramed::new(match &self.opts.security {
                     RdpServerSecurity::Tls(acceptor) => acceptor.accept(stream).await?,
                     RdpServerSecurity::None => unreachable!(),
                 });
 
-                match ironrdp_acceptor::accept_finalize(framed, &mut acceptor).await {
-                    Ok((framed, result)) => self.client_accepted(framed, result).await?,
-                    Err(error) => error!(?error, "Accept finalize error"),
-                };
+                self.accept_finalize(framed, acceptor).await?;
             }
 
-            Ok(BeginResult::Continue(framed)) => {
-                match ironrdp_acceptor::accept_finalize(framed, &mut acceptor).await {
-                    Ok((framed, result)) => self.client_accepted(framed, result).await?,
-                    Err(error) => error!(?error, "Accept finalize error"),
-                };
+            BeginResult::Continue(framed) => {
+                self.accept_finalize(framed, acceptor).await?;
             }
-
-            Err(error) => {
-                error!(?error, "Accept begin error");
-            }
-        }
+        };
 
         Ok(())
     }
@@ -796,5 +790,17 @@ impl RdpServer {
                 ironrdp_pdu::input::InputEvent::Unused(_) => {}
             }
         }
+    }
+
+    async fn accept_finalize<S>(&mut self, mut framed: Framed<S>, mut acceptor: Acceptor) -> Result<()>
+    where
+        S: FramedRead + FramedWrite,
+    {
+        let (new_framed, result) = ironrdp_acceptor::accept_finalize(framed, &mut acceptor)
+            .await
+            .context("Failed to accept client during finalize")?;
+        framed = new_framed;
+        self.client_accepted(framed, result).await?;
+        Ok(())
     }
 }
