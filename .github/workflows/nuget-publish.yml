@@ -186,9 +186,9 @@ jobs:
         run: |
           sudo apt purge cmake
           cd "${{ runner.temp }}"
-          wget https://github.com/Kitware/CMake/releases/download/v3.30.2/cmake-3.30.2-linux-x86_64.sh -O install_cmake.sh
+          wget https://github.com/Kitware/CMake/releases/download/v3.30.2/cmake-3.30.2-linux-x86_64.sh -O install_cmake.sh --no-verbose
           chmod +x install_cmake.sh
-          ./install_cmake.sh --prefix=/usr --skip-license
+          sudo ./install_cmake.sh --prefix=/usr --skip-license
 
       - name: Build native lib (${{matrix.os}}-${{matrix.arch}})
         shell: pwsh
