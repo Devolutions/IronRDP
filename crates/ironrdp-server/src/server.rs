@@ -194,6 +194,12 @@ impl ServerEvent {
     }
 }
 
+#[derive(Debug, PartialEq)]
+enum RunState {
+    Continue,
+    Disconnect,
+}
+
 impl RdpServer {
     pub fn new(
         opts: RdpServerOptions,
@@ -328,7 +334,7 @@ impl RdpServer {
         framed: &mut Framed<S>,
         io_channel_id: u16,
         user_channel_id: u16,
-    ) -> Result<bool>
+    ) -> Result<RunState>
     where
         S: FramedWrite + FramedRead,
     {
@@ -345,12 +351,12 @@ impl RdpServer {
                     .context("X224 input error")?
                 {
                     debug!("Got disconnect request");
-                    return Ok(true);
+                    return Ok(RunState::Disconnect);
                 }
             }
         }
 
-        Ok(false)
+        Ok(RunState::Continue)
     }
 
     async fn dispatch_display_update<S>(
@@ -359,7 +365,7 @@ impl RdpServer {
         framed: &mut Framed<S>,
         buffer: &mut Vec<u8>,
         encoder: &mut UpdateEncoder,
-    ) -> Result<bool>
+    ) -> Result<RunState>
     where
         S: FramedWrite + FramedRead,
     {
@@ -384,7 +390,7 @@ impl RdpServer {
                 .context("Write display update error")?;
         }
 
-        Ok(false)
+        Ok(RunState::Continue)
     }
 
     async fn dispatch_server_events<S>(
@@ -392,7 +398,7 @@ impl RdpServer {
         events: &mut Vec<ServerEvent>,
         framed: &mut Framed<S>,
         user_channel_id: u16,
-    ) -> Result<bool>
+    ) -> Result<RunState>
     where
         S: FramedWrite + FramedRead,
     {
@@ -404,7 +410,7 @@ impl RdpServer {
             match event {
                 ServerEvent::Quit(reason) => {
                     debug!("Got quit event: {reason}");
-                    return Ok(true);
+                    return Ok(RunState::Disconnect);
                 }
                 ServerEvent::Rdpsnd(s) => {
                     let Some(rdpsnd) = self.get_svc_processor::<RdpsndServer>() else {
@@ -456,7 +462,7 @@ impl RdpServer {
             }
         }
 
-        Ok(false)
+        Ok(RunState::Continue)
     }
 
     async fn client_loop<S>(
@@ -465,7 +471,7 @@ impl RdpServer {
         io_channel_id: u16,
         user_channel_id: u16,
         mut encoder: UpdateEncoder,
-    ) -> Result<()>
+    ) -> Result<RunState>
     where
         S: FramedWrite + FramedRead,
     {
@@ -474,46 +480,47 @@ impl RdpServer {
         let mut buffer = vec![0u8; 4096];
         let mut display_updates = self.display.lock().await.updates().await?;
         let mut events = Vec::with_capacity(100);
+        let mut state = RunState::Continue;
 
-        loop {
+        while state == RunState::Continue {
             tokio::select! {
                 frame = framed.read_pdu() => {
                     let Ok((action, bytes)) = frame else {
                         debug!(?frame, "disconnecting");
+                        state = RunState::Disconnect;
                         break;
                     };
-                    if self.dispatch_pdu(action, bytes, framed, io_channel_id, user_channel_id).await? {
-                        break;
-                    }
+                    state = self.dispatch_pdu(action, bytes, framed, io_channel_id, user_channel_id).await?;
                 },
 
                 Some(update) = display_updates.next_update() => {
-                    if self.dispatch_display_update(update, framed, &mut buffer, &mut encoder).await? {
-                        break;
-                    }
+                    state = self.dispatch_display_update(update, framed, &mut buffer, &mut encoder).await?;
                 }
 
                 nevents = self.ev_receiver.recv_many(&mut events, 100) => {
                     if nevents == 0 {
                         debug!("No sever events.. stopping");
+                        state = RunState::Disconnect;
                         break;
                     }
                     while let Ok(ev) = self.ev_receiver.try_recv() {
                         events.push(ev);
                     }
-                    if self.dispatch_server_events(&mut events, framed, user_channel_id).await? {
-                        break;
-                    }
+                    state = self.dispatch_server_events(&mut events, framed, user_channel_id).await?;
                 }
-                else => break,
+
+                else => {
+                    debug!("All streams closed, disconnecting");
+                    state = RunState::Disconnect;
+                }
             }
         }
 
         debug!("End of client loop");
-        Ok(())
+        Ok(state)
     }
 
-    async fn client_accepted<S>(&mut self, mut framed: Framed<S>, result: AcceptorResult) -> Result<()>
+    async fn client_accepted<S>(&mut self, framed: &mut Framed<S>, result: AcceptorResult) -> Result<RunState>
     where
         S: FramedWrite + FramedRead,
     {
@@ -522,7 +529,7 @@ impl RdpServer {
         if !result.input_events.is_empty() {
             debug!("Handling input event backlog from acceptor sequence");
             self.handle_input_backlog(
-                &mut framed,
+                framed,
                 result.io_channel_id,
                 result.user_channel_id,
                 result.input_events,
@@ -591,14 +598,12 @@ impl RdpServer {
 
         let encoder = UpdateEncoder::new(surface_flags, rfxcodec);
 
-        if let Err(err) = self
-            .client_loop(&mut framed, result.io_channel_id, result.user_channel_id, encoder)
+        let state = self
+            .client_loop(framed, result.io_channel_id, result.user_channel_id, encoder)
             .await
-        {
-            warn!(?err, "Error in client loop");
-        }
+            .context("Error in client loop")?;
 
-        Ok(())
+        Ok(state)
     }
 
     async fn handle_input_backlog<S>(
@@ -770,11 +775,19 @@ impl RdpServer {
     where
         S: FramedRead + FramedWrite,
     {
-        let (new_framed, result) = ironrdp_acceptor::accept_finalize(framed, &mut acceptor)
-            .await
-            .context("Failed to accept client during finalize")?;
-        framed = new_framed;
-        self.client_accepted(framed, result).await?;
+        loop {
+            let (new_framed, result) = ironrdp_acceptor::accept_finalize(framed, &mut acceptor)
+                .await
+                .context("Failed to accept client during finalize")?;
+            framed = new_framed;
+            match self.client_accepted(&mut framed, result).await? {
+                RunState::Continue => {
+                    unreachable!();
+                }
+                RunState::Disconnect => break,
+            }
+        }
+
         Ok(())
     }
 }
