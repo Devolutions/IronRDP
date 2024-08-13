@@ -33,25 +33,28 @@ impl BitmapEncoder {
         let chunk_height = usize::from(u16::MAX) / row_len;
 
         let mut cursor = WriteCursor::new(output);
-        let chunks = bitmap.data.chunks(row_len * chunk_height);
+        let chunks = bitmap.data.chunks(bitmap.stride * chunk_height);
 
-        let total = u16::try_from(chunks.clone().count()).unwrap();
+        let total = u16::try_from(chunks.size_hint().0).unwrap();
         BitmapUpdateData::encode_header(total, &mut cursor)?;
 
         for (i, chunk) in chunks.enumerate() {
-            let height = chunk.len() / row_len;
+            let height = chunk.len() / bitmap.stride;
             let top = usize::from(bitmap.top) + i * chunk_height;
 
             let encoder = BitmapStreamEncoder::new(usize::from(bitmap.width.get()), height);
 
             let len = match bitmap.order {
                 PixelOrder::BottomToTop => {
-                    Self::encode_slice(encoder, bitmap.format, chunk, self.buffer.as_mut_slice())
+                    Self::encode_slice(encoder, bitmap.format, &chunk[..row_len], self.buffer.as_mut_slice())
                 }
 
                 PixelOrder::TopToBottom => {
-                    let bytes_per_pixel = usize::from(bitmap.format.bytes_per_pixel());
-                    let pixels = chunk.chunks(row_len).rev().flat_map(|row| row.chunks(bytes_per_pixel));
+                    let pixels = chunk
+                        .chunks(bitmap.stride)
+                        .map(|row| &row[..row_len])
+                        .rev()
+                        .flat_map(|row| row.chunks(bytes_per_pixel));
 
                     Self::encode_iter(encoder, bitmap.format, pixels, self.buffer.as_mut_slice())
                 }
@@ -71,7 +74,7 @@ impl BitmapEncoder {
                 compressed_data_header: Some(bitmap::CompressedDataHeader {
                     main_body_size: u16::try_from(len).unwrap(),
                     scan_width: u16::from(bitmap.width),
-                    uncompressed_size: u16::try_from(chunk.len()).unwrap(),
+                    uncompressed_size: u16::try_from(height * row_len).unwrap(),
                 }),
                 bitmap_data: &self.buffer[..len],
             };
