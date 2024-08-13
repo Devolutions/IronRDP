@@ -2,7 +2,7 @@ use ironrdp_graphics::color_conversion::to_64x64_ycbcr_tile;
 use ironrdp_graphics::rfx_encode_component;
 use ironrdp_pdu::codecs::rfx::{self, OperatingMode, RfxChannel, RfxChannelHeight, RfxChannelWidth};
 use ironrdp_pdu::rdp::capability_sets::EntropyBits;
-use ironrdp_pdu::{custom_err, PduBufferParsing, PduError};
+use ironrdp_pdu::{cast_length, custom_err, PduBufferParsing, PduError};
 
 use crate::BitmapUpdate;
 
@@ -22,8 +22,8 @@ impl RfxEncoder {
 
     // FIXME: rewrite to use WriteCursor
     pub(crate) fn encode(&mut self, bitmap: &BitmapUpdate) -> Result<Vec<u8>, PduError> {
-        let width = 2042;
-        let height = 2043;
+        let width = bitmap.width.get();
+        let height = bitmap.height.get();
         let entropy_algorithm = self.entropy_algorithm;
 
         // header messages
@@ -35,8 +35,8 @@ impl RfxEncoder {
         };
         let context = rfx::Headers::Context(context);
         let channels = rfx::ChannelsPdu(vec![RfxChannel {
-            width: RfxChannelWidth::new(width),
-            height: RfxChannelHeight::new(height),
+            width: RfxChannelWidth::new(cast_length!("width", width)?),
+            height: RfxChannelHeight::new(cast_length!("height", height)?),
         }]);
         let channels = rfx::Headers::Channels(channels);
         let version = rfx::CodecVersionsPdu;
