@@ -163,7 +163,7 @@ impl<'de> PduDecode<'de> for FrameMarkerPdu {
 }
 
 // TS_BITMAP_DATA_EX
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct ExtendedBitmapDataPdu<'a> {
     pub bpp: u8,
     pub codec_id: u8,
@@ -171,6 +171,19 @@ pub struct ExtendedBitmapDataPdu<'a> {
     pub height: u16,
     pub header: Option<BitmapDataHeader>,
     pub data: &'a [u8],
+}
+
+impl std::fmt::Debug for ExtendedBitmapDataPdu<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ExtendedBitmapDataPdu")
+            .field("bpp", &self.bpp)
+            .field("codec_id", &self.codec_id)
+            .field("width", &self.width)
+            .field("height", &self.height)
+            .field("header", &self.header)
+            .field("data_len", &self.data.len())
+            .finish()
+    }
 }
 
 impl ExtendedBitmapDataPdu<'_> {
