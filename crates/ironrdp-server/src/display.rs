@@ -75,6 +75,7 @@ pub struct BitmapUpdate {
     pub format: PixelFormat,
     pub order: PixelOrder,
     pub data: Vec<u8>,
+    pub stride: usize,
 }
 
 impl std::fmt::Debug for BitmapUpdate {
