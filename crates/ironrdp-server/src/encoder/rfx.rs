@@ -61,7 +61,6 @@ impl RfxEncoder {
         let bpp = usize::from(bitmap.format.bytes_per_pixel());
         let width = usize::from(bitmap.width.get());
         let height = usize::from(bitmap.height.get());
-        let stride = width * bpp;
 
         let tiles_x = (width + 63) / 64;
         let tiles_y = (height + 63) / 64;
@@ -77,12 +76,12 @@ impl RfxEncoder {
                 let tile_width = std::cmp::min(width - x, 64);
                 let tile_height = std::cmp::min(height - y, 64);
 
-                let input = &bitmap.data[y * stride + x * bpp..];
+                let input = &bitmap.data[y * bitmap.stride + x * bpp..];
 
                 let y = &mut [0i16; 4096];
                 let cb = &mut [0i16; 4096];
                 let cr = &mut [0i16; 4096];
-                to_64x64_ycbcr_tile(input, tile_width, tile_height, stride, bitmap.format, y, cb, cr);
+                to_64x64_ycbcr_tile(input, tile_width, tile_height, bitmap.stride, bitmap.format, y, cb, cr);
 
                 let (y_data, new_rest) = rest.split_at_mut(4096);
                 let (cb_data, new_rest) = new_rest.split_at_mut(4096);
