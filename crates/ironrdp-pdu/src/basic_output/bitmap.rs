@@ -244,6 +244,12 @@ impl PduEncode for CompressedDataHeader {
     fn encode(&self, dst: &mut crate::cursor::WriteCursor<'_>) -> PduResult<()> {
         ensure_fixed_part_size!(in: dst);
 
+        if self.scan_width % 4 != 0 {
+            return Err(invalid_message_err!(
+                "cbScanWidth",
+                "The width of the bitmap must be divisible by 4"
+            ));
+        }
         dst.write_u16(FIRST_ROW_SIZE_VALUE);
         dst.write_u16(self.main_body_size);
         dst.write_u16(self.scan_width);
