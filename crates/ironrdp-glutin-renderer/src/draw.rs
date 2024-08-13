@@ -4,10 +4,7 @@ use std::slice::from_raw_parts;
 use std::sync::Arc;
 
 use glow::*;
-use ironrdp::pdu::geometry::{
-    Rectangle as _,
-    InclusiveRectangle,
-}
+use ironrdp::pdu::geometry::{InclusiveRectangle, Rectangle as _};
 
 fn cast_as_bytes<T>(input: &[T]) -> &[u8] {
     unsafe { from_raw_parts(input.as_ptr() as *const u8, input.len() * size_of::<T>()) }
