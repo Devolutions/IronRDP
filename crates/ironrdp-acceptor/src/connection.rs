@@ -97,7 +97,7 @@ impl Acceptor {
 
         self.static_channels.insert(channel);
 
-        // restore channel id if it was already attached
+        // Restore channel id if it was already attached.
         if let AcceptorState::CapabilitiesSendServer { channels, .. } = &self.state {
             for (channel_id, c) in channels {
                 if c.name == channel_name {
@@ -316,7 +316,7 @@ impl Sequence for Acceptor {
                     })
                     .unwrap_or_default();
 
-                #[allow(clippy::arithmetic_side_effects)] // IO channel ID is not big enough for overflowing
+                #[allow(clippy::arithmetic_side_effects)] // IO channel ID is not big enough for overflowing.
                 let channels = joined
                     .into_iter()
                     .enumerate()
