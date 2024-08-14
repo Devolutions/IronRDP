@@ -1,3 +1,6 @@
+// https://github.com/rustwasm/wasm-bindgen/issues/4080
+#![allow(non_snake_case)]
+
 use core::cell::RefCell;
 use std::borrow::Cow;
 use std::rc::Rc;
