@@ -167,7 +167,7 @@ where
         );
 
         let pdu = framed
-            .read_by_hint(next_pdu_hint)
+            .read_by_hint(next_pdu_hint, None)
             .map_err(|e| ironrdp_connector::custom_err!("read frame by hint", e))?;
 
         trace!(length = pdu.len(), "PDU received");
@@ -202,7 +202,7 @@ where
         );
 
         let pdu = framed
-            .read_by_hint(next_pdu_hint)
+            .read_by_hint(next_pdu_hint, None)
             .map_err(|e| ironrdp_connector::custom_err!("read frame by hint", e))?;
 
         trace!(length = pdu.len(), "PDU received");
