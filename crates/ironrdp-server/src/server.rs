@@ -272,7 +272,7 @@ impl RdpServer {
 
         let res = ironrdp_acceptor::accept_begin(framed, &mut acceptor)
             .await
-            .context("Accept begin error")?;
+            .context("accept_begin failed")?;
 
         match res {
             BeginResult::ShouldUpgrade(stream) => {
@@ -403,7 +403,7 @@ impl RdpServer {
             DisplayUpdate::HidePointer => encoder.hide_pointer(),
             DisplayUpdate::DefaultPointer => encoder.default_pointer(),
         }
-        .context("Error during update encoding")?;
+        .context("error during update encoding")?;
 
         if fragmenter.size_hint() > buffer.len() {
             buffer.resize(fragmenter.size_hint(), 0);
@@ -413,7 +413,7 @@ impl RdpServer {
             framed
                 .write_all(&buffer[..len])
                 .await
-                .context("Write display update error")?;
+                .context("failed to write display update")?;
         }
 
         Ok(RunState::Continue)
@@ -457,7 +457,7 @@ impl RdpServer {
                             continue;
                         }
                     }
-                    .context("Sending rdpsnd event")?;
+                    .context("failed to send rdpsnd event")?;
                     let channel_id = self
                         .get_channel_id_by_type::<RdpsndServer>()
                         .ok_or_else(|| anyhow!("SVC channel not found"))?;
@@ -478,7 +478,7 @@ impl RdpServer {
                             continue;
                         }
                     }
-                    .context("Sending clipboard event")?;
+                    .context("failed to send clipboard event")?;
                     let channel_id = self
                         .get_channel_id_by_type::<CliprdrServer>()
                         .ok_or_else(|| anyhow!("SVC channel not found"))?;
@@ -627,7 +627,7 @@ impl RdpServer {
         let state = self
             .client_loop(framed, result.io_channel_id, result.user_channel_id, encoder)
             .await
-            .context("Error in client loop")?;
+            .context("client loop failure")?;
 
         Ok(state)
     }
@@ -804,7 +804,7 @@ impl RdpServer {
         loop {
             let (new_framed, result) = ironrdp_acceptor::accept_finalize(framed, &mut acceptor)
                 .await
-                .context("Failed to accept client during finalize")?;
+                .context("failed to accept client during finalize")?;
             framed = new_framed;
 
             match self.client_accepted(&mut framed, result).await? {
