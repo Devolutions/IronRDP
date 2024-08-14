@@ -41,7 +41,7 @@ where
             return Ok(result);
         }
 
-        single_sequence_step(&mut framed, acceptor, &mut buf).await?;
+        single_sequence_step(&mut framed, acceptor, &mut buf, None).await?;
     }
 }
 
@@ -59,6 +59,6 @@ where
             return Ok((framed, result));
         }
 
-        single_sequence_step(&mut framed, acceptor, &mut buf).await?;
+        single_sequence_step(&mut framed, acceptor, &mut buf, None).await?;
     }
 }

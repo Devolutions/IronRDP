@@ -23,7 +23,7 @@ where
     info!("Begin connection procedure");
 
     while !connector.should_perform_security_upgrade() {
-        single_sequence_step(framed, connector, &mut buf).await?;
+        single_sequence_step(framed, connector, &mut buf, None).await?;
     }
 
     Ok(ShouldUpgrade)
@@ -73,7 +73,7 @@ where
     }
 
     let result = loop {
-        single_sequence_step(framed, &mut connector, &mut buf).await?;
+        single_sequence_step(framed, &mut connector, &mut buf, None).await?;
 
         if let ClientConnectorState::Connected { result } = connector.state {
             break result;

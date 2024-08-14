@@ -616,7 +616,7 @@ impl Session {
                         let mut buf = WriteBuf::new();
                         'activation_seq: loop {
                             let written =
-                                single_sequence_step_read(&mut framed, &mut *box_connection_activation, &mut buf)
+                                single_sequence_step_read(&mut framed, &mut *box_connection_activation, &mut buf, None)
                                     .await?;
 
                             if written.size().is_some() {
