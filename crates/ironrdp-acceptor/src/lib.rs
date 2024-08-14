@@ -1,6 +1,7 @@
 #[macro_use]
 extern crate tracing;
 
+use ironrdp_async::bytes::Bytes;
 use ironrdp_async::{single_sequence_step, Framed, FramedRead, FramedWrite, StreamWrapper};
 use ironrdp_connector::ConnectorResult;
 use ironrdp_pdu::write_buf::WriteBuf;
@@ -48,6 +49,7 @@ where
 pub async fn accept_finalize<S>(
     mut framed: Framed<S>,
     acceptor: &mut Acceptor,
+    mut unmatched: Option<&mut Vec<Bytes>>,
 ) -> ConnectorResult<(Framed<S>, AcceptorResult)>
 where
     S: FramedRead + FramedWrite,
@@ -58,7 +60,6 @@ where
         if let Some(result) = acceptor.get_result() {
             return Ok((framed, result));
         }
-
-        single_sequence_step(&mut framed, acceptor, &mut buf, None).await?;
+        single_sequence_step(&mut framed, acceptor, &mut buf, unmatched.as_deref_mut()).await?;
     }
 }
