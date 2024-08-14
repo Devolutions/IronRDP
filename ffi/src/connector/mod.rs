@@ -160,7 +160,8 @@ pub mod ffi {
     impl<'a> PduHint<'a> {
         pub fn find_size(&'a self, bytes: &[u8]) -> Result<Box<crate::utils::ffi::OptionalUsize>, Box<IronRdpError>> {
             let pdu_hint = self.0;
-            let size = pdu_hint.find_size(bytes)?;
+            // TODO C# NuGet is only used on client-side so we probably don’t need to break the ABI for that just now.
+            let size = pdu_hint.find_size(bytes)?.map(|(_match, size)| size);
             Ok(Box::new(crate::utils::ffi::OptionalUsize(size)))
         }
     }

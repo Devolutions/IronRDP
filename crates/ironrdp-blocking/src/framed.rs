@@ -93,7 +93,7 @@ where
                 .find_size(self.peek())
                 .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?
             {
-                Some(length) => {
+                Some((_matched, length)) => {
                     return Ok(self.read_exact(length)?.freeze());
                 }
                 None => {

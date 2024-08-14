@@ -333,7 +333,10 @@ pub fn find_size(bytes: &[u8]) -> PduResult<Option<PduInfo>> {
 
 pub trait PduHint: Send + Sync + fmt::Debug + 'static {
     /// Finds next PDU size by reading the next few bytes.
-    fn find_size(&self, bytes: &[u8]) -> PduResult<Option<usize>>;
+    ///
+    /// Returns `Some((hint_matching, size))` if the size is known.
+    /// Returns `None` if the size cannot be determined yet.
+    fn find_size(&self, bytes: &[u8]) -> PduResult<Option<(bool, usize)>>;
 }
 
 // Matches both X224 and FastPath pdus
@@ -343,8 +346,8 @@ pub struct RdpHint;
 pub const RDP_HINT: RdpHint = RdpHint;
 
 impl PduHint for RdpHint {
-    fn find_size(&self, bytes: &[u8]) -> PduResult<Option<usize>> {
-        find_size(bytes).map(|opt| opt.map(|info| info.length))
+    fn find_size(&self, bytes: &[u8]) -> PduResult<Option<(bool, usize)>> {
+        find_size(bytes).map(|opt| opt.map(|info| (true, info.length)))
     }
 }
 
@@ -354,11 +357,11 @@ pub struct X224Hint;
 pub const X224_HINT: X224Hint = X224Hint;
 
 impl PduHint for X224Hint {
-    fn find_size(&self, bytes: &[u8]) -> PduResult<Option<usize>> {
+    fn find_size(&self, bytes: &[u8]) -> PduResult<Option<(bool, usize)>> {
         match find_size(bytes)? {
             Some(pdu_info) => {
-                debug_assert_eq!(pdu_info.action, Action::X224);
-                Ok(Some(pdu_info.length))
+                let res = (pdu_info.action == Action::X224, pdu_info.length);
+                Ok(Some(res))
             }
             None => Ok(None),
         }
@@ -371,11 +374,11 @@ pub struct FastPathHint;
 pub const FAST_PATH_HINT: FastPathHint = FastPathHint;
 
 impl PduHint for FastPathHint {
-    fn find_size(&self, bytes: &[u8]) -> PduResult<Option<usize>> {
+    fn find_size(&self, bytes: &[u8]) -> PduResult<Option<(bool, usize)>> {
         match find_size(bytes)? {
             Some(pdu_info) => {
-                debug_assert_eq!(pdu_info.action, Action::FastPath);
-                Ok(Some(pdu_info.length))
+                let res = (pdu_info.action == Action::FastPath, pdu_info.length);
+                Ok(Some(res))
             }
             None => Ok(None),
         }
