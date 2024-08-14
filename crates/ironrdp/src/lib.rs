@@ -8,6 +8,8 @@ pub use ironrdp_acceptor as acceptor;
 pub use ironrdp_cliprdr as cliprdr;
 #[cfg(feature = "connector")]
 pub use ironrdp_connector as connector;
+#[cfg(feature = "core")]
+pub use ironrdp_core as core;
 #[cfg(feature = "displaycontrol")]
 pub use ironrdp_displaycontrol as displaycontrol;
 #[cfg(feature = "dvc")]

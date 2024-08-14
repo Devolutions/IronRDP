@@ -16,7 +16,8 @@ doctest = false
 test = false
 
 [features]
-default = ["pdu", "connector", "session"]
+default = ["core", "pdu", "connector", "session"]
+core = ["dep:ironrdp-core"]
 pdu = ["dep:ironrdp-pdu"]
 cliprdr = ["dep:ironrdp-cliprdr"]
 connector = ["dep:ironrdp-connector"]
@@ -32,6 +33,7 @@ rdpsnd = ["dep:ironrdp-rdpsnd"]
 displaycontrol = ["dep:ironrdp-displaycontrol"]
 
 [dependencies]
+ironrdp-core = { workspace = true, optional = true }
 ironrdp-pdu = { workspace = true, optional = true }
 ironrdp-cliprdr = { workspace = true, optional = true }
 ironrdp-connector = { workspace = true, optional = true }
@@ -77,4 +79,3 @@ doc-scrape-examples = true
 
 [lints]
 workspace = true
-

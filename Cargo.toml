@@ -30,6 +30,7 @@ ironrdp-blocking = { version = "0.1", path = "crates/ironrdp-blocking" }
 ironrdp-cliprdr = { version = "0.1", path = "crates/ironrdp-cliprdr" }
 ironrdp-cliprdr-native = { version = "0.1", path = "crates/ironrdp-cliprdr-native" }
 ironrdp-cliprdr-format = { version = "0.1", path = "crates/ironrdp-cliprdr-format" }
+ironrdp-core = { version = "0.1", path = "crates/ironrdp-core" }
 ironrdp-connector = { version = "0.1", path = "crates/ironrdp-connector" }
 ironrdp-dvc = { version = "0.1", path = "crates/ironrdp-dvc" }
 ironrdp-displaycontrol = { version = "0.1", path = "crates/ironrdp-displaycontrol" }

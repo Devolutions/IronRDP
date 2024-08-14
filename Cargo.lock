@@ -1984,6 +1984,7 @@ dependencies = [
  "ironrdp-cliprdr",
  "ironrdp-cliprdr-native",
  "ironrdp-connector",
+ "ironrdp-core",
  "ironrdp-displaycontrol",
  "ironrdp-dvc",
  "ironrdp-graphics",
@@ -2123,6 +2124,13 @@ dependencies = [
  "tracing",
  "url",
  "winapi",
+]
+
+[[package]]
+name = "ironrdp-core"
+version = "0.1.0"
+dependencies = [
+ "ironrdp-error",
 ]
 
 [[package]]
