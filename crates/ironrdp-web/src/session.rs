@@ -894,9 +894,9 @@ where
     const RDCLEANPATH_HINT: RDCleanPathHint = RDCleanPathHint;
 
     impl ironrdp::pdu::PduHint for RDCleanPathHint {
-        fn find_size(&self, bytes: &[u8]) -> ironrdp::pdu::PduResult<Option<usize>> {
+        fn find_size(&self, bytes: &[u8]) -> ironrdp::pdu::PduResult<Option<(bool, usize)>> {
             match ironrdp_rdcleanpath::RDCleanPathPdu::detect(bytes) {
-                ironrdp_rdcleanpath::DetectionResult::Detected { total_length, .. } => Ok(Some(total_length)),
+                ironrdp_rdcleanpath::DetectionResult::Detected { total_length, .. } => Ok(Some((true, total_length))),
                 ironrdp_rdcleanpath::DetectionResult::NotEnoughBytes => Ok(None),
                 ironrdp_rdcleanpath::DetectionResult::Failed => Err(ironrdp::pdu::other_err!(
                     "RDCleanPathHint",
