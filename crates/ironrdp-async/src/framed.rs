@@ -230,12 +230,13 @@ pub async fn single_sequence_step<S>(
     framed: &mut Framed<S>,
     sequence: &mut dyn Sequence,
     buf: &mut WriteBuf,
+    unmatched: Option<&mut Vec<Bytes>>,
 ) -> ConnectorResult<()>
 where
     S: FramedWrite + FramedRead,
 {
     buf.clear();
-    let written = single_sequence_step_read(framed, sequence, buf).await?;
+    let written = single_sequence_step_read(framed, sequence, buf, unmatched).await?;
     single_sequence_step_write(framed, buf, written).await
 }
 
@@ -243,6 +244,7 @@ pub async fn single_sequence_step_read<S>(
     framed: &mut Framed<S>,
     sequence: &mut dyn Sequence,
     buf: &mut WriteBuf,
+    unmatched: Option<&mut Vec<Bytes>>,
 ) -> ConnectorResult<Written>
 where
     S: FramedRead,
@@ -257,7 +259,7 @@ where
         );
 
         let pdu = framed
-            .read_by_hint(next_pdu_hint, None)
+            .read_by_hint(next_pdu_hint, unmatched)
             .await
             .map_err(|e| ironrdp_connector::custom_err!("read frame by hint", e))?;
 
