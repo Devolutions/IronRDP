@@ -940,7 +940,7 @@ where
         // RDCleanPath response
 
         let rdcleanpath_res = framed
-            .read_by_hint(&RDCLEANPATH_HINT)
+            .read_by_hint(&RDCLEANPATH_HINT, None)
             .await
             .context("read RDCleanPath request")?;
 

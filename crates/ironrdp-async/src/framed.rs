@@ -164,14 +164,25 @@ where
     /// `tokio::select!` statement and some other branch
     /// completes first, then it is safe to drop the future and re-create it later.
     /// Data may have been read, but it will be stored in the internal buffer.
-    pub async fn read_by_hint(&mut self, hint: &dyn PduHint) -> io::Result<Bytes> {
+    pub async fn read_by_hint(
+        &mut self,
+        hint: &dyn PduHint,
+        mut unmatched: Option<&mut Vec<Bytes>>,
+    ) -> io::Result<Bytes> {
         loop {
             match hint
                 .find_size(self.peek())
                 .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?
             {
-                Some((_matched, length)) => {
-                    return Ok(self.read_exact(length).await?.freeze());
+                Some((matched, length)) => {
+                    let bytes = self.read_exact(length).await?.freeze();
+                    if matched {
+                        return Ok(bytes);
+                    } else if let Some(ref mut unmatched) = unmatched {
+                        unmatched.push(bytes);
+                    } else {
+                        warn!("Received and lost an unexpected PDU");
+                    }
                 }
                 None => {
                     let len = self.read().await?;
@@ -246,7 +257,7 @@ where
         );
 
         let pdu = framed
-            .read_by_hint(next_pdu_hint)
+            .read_by_hint(next_pdu_hint, None)
             .await
             .map_err(|e| ironrdp_connector::custom_err!("read frame by hint", e))?;
 
