@@ -3,7 +3,7 @@ use ironrdp_cliprdr::pdu::{
     ClipboardFormat, ClipboardGeneralCapabilityFlags, FileContentsRequest, FileContentsResponse, FormatDataRequest,
     FormatDataResponse, LockDataId,
 };
-use ironrdp_svc::impl_as_any;
+use ironrdp_core::impl_as_any;
 use tracing::debug;
 
 pub struct StubClipboard;

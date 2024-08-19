@@ -23,8 +23,8 @@ std = []
 bitflags.workspace = true
 tracing.workspace = true
 ironrdp-svc.workspace = true
+ironrdp-core = { workspace = true, features = ["alloc"] }
 ironrdp-pdu = { workspace = true, features = ["alloc"] }
 
 [lints]
 workspace = true
-

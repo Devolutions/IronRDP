@@ -22,6 +22,7 @@ tokio-rustls = "0.26"
 async-trait = "0.1"
 ironrdp-async.workspace = true
 ironrdp-ainput.workspace = true
+ironrdp-core.workspace = true
 ironrdp-pdu.workspace = true
 ironrdp-svc.workspace = true
 ironrdp-cliprdr.workspace = true
@@ -38,4 +39,3 @@ tokio = { version = "1", features = ["sync"] }
 
 [lints]
 workspace = true
-

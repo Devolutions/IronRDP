@@ -21,9 +21,9 @@ use ironrdp::cliprdr::pdu::{
     ClipboardFormat, ClipboardFormatId, ClipboardFormatName, ClipboardGeneralCapabilityFlags, FileContentsRequest,
     FileContentsResponse, FormatDataRequest, FormatDataResponse, LockDataId,
 };
-use ironrdp::svc::impl_as_any;
 use ironrdp_cliprdr_format::bitmap::{dib_to_png, dibv5_to_png, png_to_cf_dibv5};
 use ironrdp_cliprdr_format::html::{cf_html_to_plain_html, plain_html_to_cf_html};
+use ironrdp_core::impl_as_any;
 use transaction::{ClipboardContent, ClipboardContentValue};
 use wasm_bindgen::prelude::*;
 

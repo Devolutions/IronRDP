@@ -10,6 +10,12 @@ extern crate alloc;
 #[macro_use]
 mod macros;
 
+mod as_any;
+
+// Flat API hierarchy of common traits and types
+
+pub use self::as_any::*;
+
 // Trait that can only be implemented within the current module
 pub(crate) mod private {
     #[doc(hidden)]

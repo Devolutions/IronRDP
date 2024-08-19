@@ -2082,6 +2082,7 @@ name = "ironrdp-cliprdr"
 version = "0.1.0"
 dependencies = [
  "bitflags 2.6.0",
+ "ironrdp-core",
  "ironrdp-pdu",
  "ironrdp-svc",
  "thiserror",
@@ -2102,6 +2103,7 @@ name = "ironrdp-cliprdr-native"
 version = "0.1.0"
 dependencies = [
  "ironrdp-cliprdr",
+ "ironrdp-core",
  "ironrdp-svc",
  "thiserror",
  "tracing",
@@ -2138,6 +2140,7 @@ dependencies = [
 name = "ironrdp-displaycontrol"
 version = "0.1.0"
 dependencies = [
+ "ironrdp-core",
  "ironrdp-dvc",
  "ironrdp-pdu",
  "ironrdp-svc",
@@ -2250,6 +2253,7 @@ name = "ironrdp-rdpdr"
 version = "0.1.0"
 dependencies = [
  "bitflags 2.6.0",
+ "ironrdp-core",
  "ironrdp-error",
  "ironrdp-pdu",
  "ironrdp-svc",
@@ -2260,6 +2264,7 @@ dependencies = [
 name = "ironrdp-rdpdr-native"
 version = "0.1.0"
 dependencies = [
+ "ironrdp-core",
  "ironrdp-pdu",
  "ironrdp-rdpdr",
  "ironrdp-svc",
@@ -2272,6 +2277,7 @@ name = "ironrdp-rdpsnd"
 version = "0.1.0"
 dependencies = [
  "bitflags 2.6.0",
+ "ironrdp-core",
  "ironrdp-pdu",
  "ironrdp-svc",
  "tracing",
@@ -2298,6 +2304,7 @@ dependencies = [
  "ironrdp-ainput",
  "ironrdp-async",
  "ironrdp-cliprdr",
+ "ironrdp-core",
  "ironrdp-displaycontrol",
  "ironrdp-dvc",
  "ironrdp-graphics",
@@ -2400,6 +2407,7 @@ dependencies = [
  "gloo-timers",
  "ironrdp",
  "ironrdp-cliprdr-format",
+ "ironrdp-core",
  "ironrdp-futures",
  "ironrdp-rdcleanpath",
  "js-sys",

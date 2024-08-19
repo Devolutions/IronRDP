@@ -1,6 +1,6 @@
+use ironrdp_core::impl_as_any;
 use ironrdp_dvc::{DvcMessage, DvcProcessor, DvcServerProcessor};
 use ironrdp_pdu::{decode, PduResult};
-use ironrdp_svc::impl_as_any;
 use tracing::debug;
 
 use crate::{

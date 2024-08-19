@@ -9,7 +9,7 @@ pub use ironrdp_pdu as pdu;
 
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
-use core::any::{Any, TypeId};
+use core::any::TypeId;
 use core::fmt;
 use std::borrow::Cow;
 use std::marker::PhantomData;
@@ -226,7 +226,7 @@ pub fn server_encode_svc_messages(messages: Vec<SvcMessage>, channel_id: u16, in
 /// communication between client and server components over the main data connection.
 /// There are at most 31 (optional) static virtual channels that can be created for a single connection, for a
 /// total of 32 static channels when accounting for the non-optional I/O channel.
-pub trait SvcProcessor: AsAny + fmt::Debug + Send {
+pub trait SvcProcessor: ironrdp_core::AsAny + fmt::Debug + Send {
     /// Returns the name of the static virtual channel corresponding to this processor.
     fn channel_name(&self) -> ChannelName;
 
@@ -401,30 +401,6 @@ pub fn make_channel_definition(channel: &StaticVirtualChannel) -> ChannelDef {
     let name = channel.channel_name();
     let options = make_channel_options(channel);
     ChannelDef { name, options }
-}
-
-/// Type information ([`TypeId`]) may be retrieved at runtime for this type.
-pub trait AsAny: 'static {
-    fn as_any(&self) -> &dyn Any;
-
-    fn as_any_mut(&mut self) -> &mut dyn Any;
-}
-
-#[macro_export]
-macro_rules! impl_as_any {
-    ($t:ty) => {
-        impl $crate::AsAny for $t {
-            #[inline]
-            fn as_any(&self) -> &dyn core::any::Any {
-                self
-            }
-
-            #[inline]
-            fn as_any_mut(&mut self) -> &mut dyn core::any::Any {
-                self
-            }
-        }
-    };
 }
 
 /// A set holding at most one [`StaticVirtualChannel`] for any given type
