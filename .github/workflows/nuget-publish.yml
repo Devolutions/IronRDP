@@ -91,8 +91,8 @@ jobs:
       - name: Configure Android NDK
         if: matrix.os == 'android'
         shell: pwsh
-        run: |    
-          $CargoConfigFile = "~/.cargo/config"
+        run: |
+          $CargoConfigFile = "~/.cargo/config.toml"
           $AndroidToolchain="${Env:ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64"
 
           Get-ChildItem -Path $AndroidToolchain "libunwind.a" -Recurse | ForEach-Object {
@@ -105,8 +105,8 @@ jobs:
           }
 
           echo "[target.i686-linux-android]" >> $CargoConfigFile
-          echo "linker=`"$AndroidToolchain/bin/i686-linux-android19-clang`"" >> $CargoConfigFile
-          echo "CC_i686-linux-android=$AndroidToolchain/bin/i686-linux-android19-clang" >> $Env:GITHUB_ENV
+          echo "linker=`"$AndroidToolchain/bin/i686-linux-android21-clang`"" >> $CargoConfigFile
+          echo "CC_i686-linux-android=$AndroidToolchain/bin/i686-linux-android21-clang" >> $Env:GITHUB_ENV
           echo "AR_i686-linux-android=$AndroidToolchain/bin/llvm-ar" >> $Env:GITHUB_ENV
 
           echo "[target.x86_64-linux-android]" >> $CargoConfigFile
