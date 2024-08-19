@@ -59,7 +59,7 @@ pico-args = "0.5"
 x509-cert = { version = "0.2", default-features = false, features = ["std"] }
 tracing.workspace = true
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-tokio = { version = "1.36", features = ["full"] }
+tokio = { version = "1.39", features = ["full"] }
 tokio-rustls = "0.26"
 rand = "0.8"
 
