@@ -7,6 +7,9 @@
 #[cfg(feature = "alloc")]
 extern crate alloc;
 
+#[macro_use]
+mod macros;
+
 // Trait that can only be implemented within the current module
 pub(crate) mod private {
     #[doc(hidden)]

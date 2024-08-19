@@ -2113,6 +2113,7 @@ name = "ironrdp-connector"
 version = "0.1.0"
 dependencies = [
  "arbitrary",
+ "ironrdp-core",
  "ironrdp-error",
  "ironrdp-pdu",
  "ironrdp-svc",
@@ -2147,6 +2148,7 @@ dependencies = [
 name = "ironrdp-dvc"
 version = "0.1.0"
 dependencies = [
+ "ironrdp-core",
  "ironrdp-pdu",
  "ironrdp-svc",
  "slab",
@@ -2217,6 +2219,7 @@ dependencies = [
  "byteorder",
  "der-parser",
  "expect-test",
+ "ironrdp-core",
  "ironrdp-error",
  "lazy_static",
  "md-5",
@@ -2330,6 +2333,7 @@ name = "ironrdp-svc"
 version = "0.1.0"
 dependencies = [
  "bitflags 2.6.0",
+ "ironrdp-core",
  "ironrdp-pdu",
 ]
 

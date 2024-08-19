@@ -155,7 +155,7 @@ pub trait PduEncode {
     fn size(&self) -> usize;
 }
 
-assert_obj_safe!(PduEncode);
+ironrdp_core::assert_obj_safe!(PduEncode);
 
 /// Encodes the given PDU in-place into the provided buffer and returns the number of bytes written.
 pub fn encode<T>(pdu: &T, dst: &mut [u8]) -> PduResult<usize>

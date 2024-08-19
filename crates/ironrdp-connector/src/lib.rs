@@ -168,7 +168,7 @@ pub struct Config {
     pub performance_flags: PerformanceFlags,
 }
 
-ironrdp_pdu::assert_impl!(Config: Send, Sync);
+ironrdp_core::assert_impl!(Config: Send, Sync);
 
 pub trait State: Send + fmt::Debug + 'static {
     fn name(&self) -> &'static str;
@@ -176,7 +176,7 @@ pub trait State: Send + fmt::Debug + 'static {
     fn as_any(&self) -> &dyn Any;
 }
 
-ironrdp_pdu::assert_obj_safe!(State);
+ironrdp_core::assert_obj_safe!(State);
 
 pub fn state_downcast<T: State>(state: &dyn State) -> Option<&T> {
     state.as_any().downcast_ref()
@@ -241,7 +241,7 @@ pub trait Sequence: Send {
     }
 }
 
-ironrdp_pdu::assert_obj_safe!(Sequence);
+ironrdp_core::assert_obj_safe!(Sequence);
 
 pub type ConnectorResult<T> = Result<T, ConnectorError>;
 
