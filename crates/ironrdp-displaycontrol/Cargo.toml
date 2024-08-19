@@ -12,6 +12,7 @@ keywords.workspace = true
 categories.workspace = true
 
 [dependencies]
+ironrdp-core.workspace = true
 ironrdp-dvc.workspace = true
 ironrdp-pdu.workspace = true
 ironrdp-svc.workspace = true
@@ -19,4 +20,3 @@ tracing.workspace = true
 
 [lints]
 workspace = true
-

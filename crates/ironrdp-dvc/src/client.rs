@@ -6,8 +6,9 @@ use crate::{encode_dvc_messages, DvcProcessor, DynamicChannelSet, DynamicVirtual
 use alloc::vec::Vec;
 use core::any::TypeId;
 use core::fmt;
+use ironrdp_core::impl_as_any;
 use ironrdp_pdu as pdu;
-use ironrdp_svc::{impl_as_any, ChannelFlags, CompressionCondition, SvcClientProcessor, SvcMessage, SvcProcessor};
+use ironrdp_svc::{ChannelFlags, CompressionCondition, SvcClientProcessor, SvcMessage, SvcProcessor};
 use pdu::cursor::ReadCursor;
 use pdu::gcc::ChannelName;
 use pdu::other_err;

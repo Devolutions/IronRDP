@@ -24,7 +24,14 @@ panic_hook = ["dep:console_error_panic_hook"]
 [dependencies]
 
 # Protocols
-ironrdp = { workspace = true, features = ["input", "graphics", "dvc", "cliprdr",  "svc"] }
+ironrdp = { workspace = true, features = [
+    "input",
+    "graphics",
+    "dvc",
+    "cliprdr",
+    "svc",
+] }
+ironrdp-core.workspace = true
 ironrdp-cliprdr-format = { workspace = true }
 ironrdp-futures.workspace = true
 ironrdp-rdcleanpath.workspace = true
@@ -34,8 +41,14 @@ wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
 web-sys = { version = "0.3", features = ["HtmlCanvasElement"] }
 js-sys = "0.3"
-gloo-net = { version = "0.6", default-features = false, features = ["websocket", "http", "io-util"] }
-gloo-timers = { version = "0.3", default-features = false, features = ["futures"] }
+gloo-net = { version = "0.6", default-features = false, features = [
+    "websocket",
+    "http",
+    "io-util",
+] }
+gloo-timers = { version = "0.3", default-features = false, features = [
+    "futures",
+] }
 tracing-web = "0.1"
 
 # Rendering

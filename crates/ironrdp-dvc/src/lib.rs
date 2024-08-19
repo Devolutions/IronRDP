@@ -16,9 +16,9 @@ use alloc::vec::Vec;
 // Re-export ironrdp_pdu crate for convenience
 #[rustfmt::skip] // do not re-order this pub use
 pub use ironrdp_pdu;
-use ironrdp_core::assert_obj_safe;
+use ironrdp_core::{assert_obj_safe, AsAny};
 use ironrdp_pdu::{cast_length, encode_vec, other_err, PduEncode, PduResult};
-use ironrdp_svc::{self, AsAny, SvcMessage};
+use ironrdp_svc::{self, SvcMessage};
 
 mod complete_data;
 use complete_data::CompleteData;

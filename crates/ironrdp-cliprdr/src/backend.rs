@@ -1,6 +1,6 @@
 //! This module provides infrastructure for implementing OS-specific clipboard backend.
 
-use ironrdp_svc::AsAny;
+use ironrdp_core::AsAny;
 
 use crate::pdu::{
     ClipboardFormat, ClipboardFormatId, ClipboardGeneralCapabilityFlags, FileContentsRequest, FileContentsResponse,

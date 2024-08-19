@@ -17,6 +17,7 @@ doctest = false
 test = false
 
 [dependencies]
+ironrdp-core.workspace = true
 ironrdp-pdu.workspace = true
 ironrdp-svc.workspace = true
 thiserror.workspace = true
@@ -25,4 +26,3 @@ bitflags.workspace = true
 
 [lints]
 workspace = true
-

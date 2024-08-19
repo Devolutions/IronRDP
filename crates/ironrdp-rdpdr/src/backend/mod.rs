@@ -2,8 +2,8 @@ pub mod noop;
 
 use core::fmt;
 
+use ironrdp_core::AsAny;
 use ironrdp_pdu::PduResult;
-use ironrdp_svc::AsAny;
 
 use crate::pdu::efs::{DeviceControlRequest, ServerDeviceAnnounceResponse, ServerDriveIoRequest};
 use crate::pdu::esc::{ScardCall, ScardIoCtlCode};
