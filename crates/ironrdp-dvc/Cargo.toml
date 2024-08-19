@@ -20,6 +20,7 @@ default = []
 std = []
 
 [dependencies]
+ironrdp-core.workspace = true
 ironrdp-svc.workspace = true
 ironrdp-pdu = { workspace = true, features = ["alloc"] }
 tracing.workspace = true
@@ -27,4 +28,3 @@ slab = "0.4"
 
 [lints]
 workspace = true
-
