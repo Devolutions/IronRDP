@@ -6,9 +6,9 @@ use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive as _, ToPrimitive as _};
 use thiserror::Error;
 
-use crate::cursor::{ReadCursor, WriteCursor};
 use crate::utils::CharacterSet;
 use crate::{utils, PduDecode, PduEncode, PduError, PduResult};
+use ironrdp_core::{ReadCursor, WriteCursor};
 
 const RECONNECT_COOKIE_LEN: usize = 28;
 const TIMEZONE_INFO_NAME_LEN: usize = 64;

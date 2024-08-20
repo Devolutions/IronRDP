@@ -3,8 +3,8 @@ mod tests;
 
 use bitflags::bitflags;
 
-use crate::cursor::{ReadCursor, WriteCursor};
 use crate::{PduDecode, PduEncode, PduResult};
+use ironrdp_core::{ReadCursor, WriteCursor};
 
 const ORDER_LENGTH: usize = 84;
 const ORD_LEVEL_1_ORDERS: u16 = 1;

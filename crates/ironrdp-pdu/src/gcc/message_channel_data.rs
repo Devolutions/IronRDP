@@ -1,5 +1,5 @@
-use crate::cursor::{ReadCursor, WriteCursor};
 use crate::{PduDecode, PduEncode, PduResult};
+use ironrdp_core::{ReadCursor, WriteCursor};
 
 const CLIENT_FLAGS_SIZE: usize = 4;
 const SERVER_MCS_MESSAGE_CHANNEL_ID_SIZE: usize = 2;

@@ -2,9 +2,9 @@ use bitflags::bitflags;
 use tap::Pipe as _;
 
 use super::RdpVersion;
-use crate::cursor::{ReadCursor, WriteCursor};
 use crate::nego::SecurityProtocol;
 use crate::{PduDecode, PduEncode, PduResult};
+use ironrdp_core::{ReadCursor, WriteCursor};
 
 const CLIENT_REQUESTED_PROTOCOL_SIZE: usize = 4;
 const EARLY_CAPABILITY_FLAGS_SIZE: usize = 4;
@@ -106,12 +106,12 @@ impl<'de> PduDecode<'de> for ServerCoreOptionalData {
         let mut optional_data = Self::default();
 
         optional_data.client_requested_protocols = Some(
-            SecurityProtocol::from_bits(try_or_return!(src.try_read_u32("clientReqProtocols"), optional_data))
+            SecurityProtocol::from_bits(try_or_return!(src.try_read_u32(), optional_data))
                 .ok_or_else(|| invalid_message_err!("clientReqProtocols", "invalid server security protocol"))?,
         );
 
         optional_data.early_capability_flags = Some(
-            ServerEarlyCapabilityFlags::from_bits(try_or_return!(src.try_read_u32("earlyCapFlags"), optional_data))
+            ServerEarlyCapabilityFlags::from_bits(try_or_return!(src.try_read_u32(), optional_data))
                 .ok_or_else(|| invalid_message_err!("earlyCapFlags", "invalid early capability flags"))?,
         );
 

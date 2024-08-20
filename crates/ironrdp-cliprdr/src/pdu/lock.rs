@@ -1,4 +1,4 @@
-use ironrdp_pdu::cursor::{ReadCursor, WriteCursor};
+use ironrdp_core::{ReadCursor, WriteCursor};
 use ironrdp_pdu::{cast_int, ensure_fixed_part_size, impl_pdu_pod, PduDecode, PduEncode, PduResult};
 
 use crate::pdu::PartialHeader;

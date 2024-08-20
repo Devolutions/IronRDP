@@ -17,8 +17,8 @@ pub use server::{
 };
 
 use super::RDP_GFX_HEADER_SIZE;
-use crate::cursor::{ReadCursor, WriteCursor};
 use crate::{PduDecode, PduEncode, PduResult};
+use ironrdp_core::{ReadCursor, WriteCursor};
 
 const CAPABILITY_SET_HEADER_SIZE: usize = 8;
 

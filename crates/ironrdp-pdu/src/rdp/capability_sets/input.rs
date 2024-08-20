@@ -4,9 +4,9 @@ mod tests;
 use bitflags::bitflags;
 use num_traits::{FromPrimitive, ToPrimitive};
 
-use crate::cursor::{ReadCursor, WriteCursor};
 use crate::gcc::{KeyboardType, IME_FILE_NAME_SIZE};
 use crate::{utils, PduDecode, PduEncode, PduResult};
+use ironrdp_core::{ReadCursor, WriteCursor};
 
 const INPUT_LENGTH: usize = 84;
 

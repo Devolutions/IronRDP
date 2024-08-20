@@ -1,6 +1,6 @@
-use crate::cursor::{ReadCursor, WriteCursor};
 use crate::geometry::InclusiveRectangle;
 use crate::{PduDecode, PduEncode, PduResult};
+use ironrdp_core::{ReadCursor, WriteCursor};
 
 #[repr(u8)]
 #[derive(Debug, PartialEq, Eq, Clone)]

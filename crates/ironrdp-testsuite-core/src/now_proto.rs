@@ -1,7 +1,7 @@
 //! Various test utilities
 use expect_test::Expect;
 
-use ironrdp_pdu::cursor::ReadCursor;
+use ironrdp_core::ReadCursor;
 use ironrdp_pdu::PduDecode as _;
 
 use now_proto_pdu::NowMessage;

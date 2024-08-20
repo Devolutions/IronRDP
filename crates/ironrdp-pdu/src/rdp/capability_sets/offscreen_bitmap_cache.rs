@@ -1,8 +1,8 @@
 #[cfg(test)]
 mod tests;
 
-use crate::cursor::{ReadCursor, WriteCursor};
 use crate::{PduDecode, PduEncode, PduResult};
+use ironrdp_core::{ReadCursor, WriteCursor};
 
 const OFFSCREEN_BITMAP_CACHE_LENGTH: usize = 8;
 

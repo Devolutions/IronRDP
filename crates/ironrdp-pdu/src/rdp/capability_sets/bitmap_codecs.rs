@@ -5,9 +5,9 @@ use bitflags::bitflags;
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive, ToPrimitive};
 
-use crate::cursor::{ReadCursor, WriteCursor};
 use crate::decode;
 use crate::{PduDecode, PduEncode, PduResult};
+use ironrdp_core::{ReadCursor, WriteCursor};
 
 const RFX_ICAP_VERSION: u16 = 0x0100;
 const RFX_ICAP_TILE_SIZE: u16 = 0x40;

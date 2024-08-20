@@ -4,8 +4,8 @@ mod tests;
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive, ToPrimitive};
 
-use crate::cursor::{ReadCursor, WriteCursor};
 use crate::{PduDecode, PduEncode, PduResult};
+use ironrdp_core::{ReadCursor, WriteCursor};
 
 pub const GLYPH_CACHE_NUM: usize = 10;
 

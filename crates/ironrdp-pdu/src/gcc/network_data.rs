@@ -1,3 +1,4 @@
+use ironrdp_core::{ReadCursor, WriteCursor};
 use std::borrow::Cow;
 use std::{io, str};
 
@@ -5,7 +6,6 @@ use bitflags::bitflags;
 use num_integer::Integer;
 use thiserror::Error;
 
-use crate::cursor::{ReadCursor, WriteCursor};
 use crate::{PduDecode, PduEncode, PduResult};
 
 const CHANNELS_MAX: usize = 31;

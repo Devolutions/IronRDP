@@ -2022,6 +2022,7 @@ name = "ironrdp-ainput"
 version = "0.1.0"
 dependencies = [
  "bitflags 2.6.0",
+ "ironrdp-core",
  "ironrdp-dvc",
  "ironrdp-pdu",
  "num-derive",
@@ -2093,6 +2094,7 @@ dependencies = [
 name = "ironrdp-cliprdr-format"
 version = "0.1.0"
 dependencies = [
+ "ironrdp-core",
  "ironrdp-pdu",
  "png",
  "thiserror",
@@ -2196,6 +2198,7 @@ dependencies = [
  "bmp",
  "byteorder",
  "expect-test",
+ "ironrdp-core",
  "ironrdp-error",
  "ironrdp-pdu",
  "lazy_static",
@@ -2322,6 +2325,7 @@ name = "ironrdp-session"
 version = "0.1.0"
 dependencies = [
  "ironrdp-connector",
+ "ironrdp-core",
  "ironrdp-displaycontrol",
  "ironrdp-dvc",
  "ironrdp-error",
@@ -2355,6 +2359,7 @@ dependencies = [
  "ironrdp-cliprdr",
  "ironrdp-cliprdr-format",
  "ironrdp-connector",
+ "ironrdp-core",
  "ironrdp-displaycontrol",
  "ironrdp-dvc",
  "ironrdp-fuzzing",
@@ -2806,6 +2811,7 @@ name = "now-proto-pdu"
 version = "0.1.0"
 dependencies = [
  "bitflags 2.6.0",
+ "ironrdp-core",
  "ironrdp-error",
  "ironrdp-pdu",
 ]

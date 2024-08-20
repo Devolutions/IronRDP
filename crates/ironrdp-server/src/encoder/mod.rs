@@ -4,7 +4,7 @@ pub(crate) mod rfx;
 use std::{cmp, mem};
 
 use anyhow::{Context, Result};
-use ironrdp_pdu::cursor::WriteCursor;
+use ironrdp_core::WriteCursor;
 use ironrdp_pdu::fast_path::{EncryptionFlags, FastPathHeader, FastPathUpdatePdu, Fragmentation, UpdateCode};
 use ironrdp_pdu::geometry::ExclusiveRectangle;
 use ironrdp_pdu::pointer::{ColorPointerAttribute, Point16, PointerAttribute, PointerPositionAttribute};

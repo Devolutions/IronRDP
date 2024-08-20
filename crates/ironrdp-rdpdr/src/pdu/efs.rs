@@ -7,7 +7,7 @@ use std::fmt::{Debug, Display};
 use std::mem::size_of;
 
 use bitflags::bitflags;
-use ironrdp_pdu::cursor::{ReadCursor, WriteCursor};
+use ironrdp_core::{ReadCursor, WriteCursor};
 use ironrdp_pdu::utils::{decode_string, encoded_str_len, from_utf16_bytes, write_string_to_cursor, CharacterSet};
 use ironrdp_pdu::{
     cast_length, ensure_fixed_part_size, ensure_size, invalid_message_err, read_padding, unsupported_pdu_err,

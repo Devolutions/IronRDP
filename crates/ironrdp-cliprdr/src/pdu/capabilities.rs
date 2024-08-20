@@ -1,5 +1,5 @@
 use bitflags::bitflags;
-use ironrdp_pdu::cursor::{ReadCursor, WriteCursor};
+use ironrdp_core::{ReadCursor, WriteCursor};
 use ironrdp_pdu::{
     cast_int, cast_length, ensure_fixed_part_size, ensure_size, impl_pdu_pod, invalid_message_err, read_padding,
     write_padding, PduDecode, PduEncode, PduResult,

@@ -16,10 +16,10 @@ use std::marker::PhantomData;
 
 use bitflags::bitflags;
 use ironrdp_core::assert_obj_safe;
+use ironrdp_core::{ReadCursor, WriteCursor};
 use ironrdp_pdu::gcc::{ChannelName, ChannelOptions};
 use ironrdp_pdu::write_buf::WriteBuf;
 use ironrdp_pdu::{mcs, PduResult};
-use pdu::cursor::{ReadCursor, WriteCursor};
 use pdu::gcc::ChannelDef;
 use pdu::rdp::vc::ChannelControlFlags;
 use pdu::{decode_cursor, encode_buf, PduEncode};

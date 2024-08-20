@@ -8,8 +8,8 @@ use std::{io, str};
 use bitflags::bitflags;
 use thiserror::Error;
 
-use crate::cursor::{ReadCursor, WriteCursor};
 use crate::{PduDecode, PduEncode, PduError, PduResult};
+use ironrdp_core::{ReadCursor, WriteCursor};
 
 const CHANNEL_PDU_HEADER_SIZE: usize = 8;
 

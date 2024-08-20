@@ -8,7 +8,7 @@ pub mod rpce;
 use std::mem::size_of;
 
 use bitflags::bitflags;
-use ironrdp_pdu::cursor::{ReadCursor, WriteCursor};
+use ironrdp_core::{ReadCursor, WriteCursor};
 use ironrdp_pdu::utils::{
     encoded_multistring_len, read_multistring_from_cursor, write_multistring_to_cursor, CharacterSet,
 };

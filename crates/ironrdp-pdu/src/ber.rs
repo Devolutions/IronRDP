@@ -1,7 +1,5 @@
-use crate::{
-    cursor::{ReadCursor, WriteCursor},
-    PduResult,
-};
+use crate::PduResult;
+use ironrdp_core::{ReadCursor, WriteCursor};
 
 #[repr(u8)]
 #[allow(unused)]

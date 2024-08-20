@@ -1,5 +1,5 @@
 //! Variable-length number types.
-use ironrdp_pdu::cursor::{ReadCursor, WriteCursor};
+use ironrdp_core::{ReadCursor, WriteCursor};
 use ironrdp_pdu::{PduDecode, PduEncode, PduError, PduResult};
 
 /// Variable-length encoded u16.

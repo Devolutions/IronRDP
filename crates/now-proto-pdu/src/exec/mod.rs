@@ -12,7 +12,7 @@ mod run;
 mod shell;
 mod win_ps;
 
-use ironrdp_pdu::cursor::{ReadCursor, WriteCursor};
+use ironrdp_core::{ReadCursor, WriteCursor};
 use ironrdp_pdu::{PduEncode, PduResult};
 
 use crate::NowHeader;

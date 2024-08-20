@@ -22,6 +22,7 @@ bitflags.workspace = true
 
 num-derive.workspace = true # TODO: remove
 num-traits.workspace = true # TODO: remove
+ironrdp-core.workspace = true
 
 [lints]
 workspace = true

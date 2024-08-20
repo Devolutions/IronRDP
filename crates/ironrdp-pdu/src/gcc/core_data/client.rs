@@ -4,9 +4,9 @@ use num_traits::{FromPrimitive, ToPrimitive};
 use tap::Pipe as _;
 
 use super::{RdpVersion, VERSION_SIZE};
-use crate::cursor::{ReadCursor, WriteCursor};
 use crate::nego::SecurityProtocol;
 use crate::{utils, PduDecode, PduEncode, PduResult};
+use ironrdp_core::{ReadCursor, WriteCursor};
 
 pub const IME_FILE_NAME_SIZE: usize = 64;
 
@@ -417,29 +417,26 @@ impl<'de> PduDecode<'de> for ClientCoreOptionalData {
         let mut optional_data = Self::default();
 
         optional_data.post_beta2_color_depth = Some(
-            ColorDepth::from_u16(try_or_return!(src.try_read_u16("postBeta2ColorDepth"), optional_data))
+            ColorDepth::from_u16(try_or_return!(src.try_read_u16(), optional_data))
                 .ok_or_else(|| invalid_message_err!("postBeta2ColorDepth", "invalid color depth"))?,
         );
 
-        optional_data.client_product_id = Some(try_or_return!(src.try_read_u16("clientProductId"), optional_data));
-        optional_data.serial_number = Some(try_or_return!(src.try_read_u32("serialNumber"), optional_data));
+        optional_data.client_product_id = Some(try_or_return!(src.try_read_u16(), optional_data));
+        optional_data.serial_number = Some(try_or_return!(src.try_read_u32(), optional_data));
 
         optional_data.high_color_depth = Some(
-            HighColorDepth::from_u16(try_or_return!(src.try_read_u16("highColorDepth"), optional_data))
+            HighColorDepth::from_u16(try_or_return!(src.try_read_u16(), optional_data))
                 .ok_or_else(|| invalid_message_err!("highColorDepth", "invalid color depth"))?,
         );
 
         optional_data.supported_color_depths = Some(
-            SupportedColorDepths::from_bits(try_or_return!(src.try_read_u16("supportedColorDepths"), optional_data))
+            SupportedColorDepths::from_bits(try_or_return!(src.try_read_u16(), optional_data))
                 .ok_or_else(|| invalid_message_err!("supportedColorDepths", "invalid supported color depths"))?,
         );
 
         optional_data.early_capability_flags = Some(
-            ClientEarlyCapabilityFlags::from_bits(try_or_return!(
-                src.try_read_u16("earlyCapabilityFlags"),
-                optional_data
-            ))
-            .ok_or_else(|| invalid_message_err!("earlyCapabilityFlags", "invalid early capability flags"))?,
+            ClientEarlyCapabilityFlags::from_bits(try_or_return!(src.try_read_u16(), optional_data))
+                .ok_or_else(|| invalid_message_err!("earlyCapabilityFlags", "invalid early capability flags"))?,
         );
 
         if src.len() < DIG_PRODUCT_ID_SIZE {
@@ -450,28 +447,23 @@ impl<'de> PduDecode<'de> for ClientCoreOptionalData {
         optional_data.dig_product_id = Some(utils::from_utf16_bytes(dig_product_id).trim_end_matches('\u{0}').into());
 
         optional_data.connection_type = Some(
-            ConnectionType::from_u8(try_or_return!(src.try_read_u8("connectionType"), optional_data))
+            ConnectionType::from_u8(try_or_return!(src.try_read_u8(), optional_data))
                 .ok_or_else(|| invalid_message_err!("connectionType", "invalid connection type"))?,
         );
 
-        try_or_return!(src.try_read_u8("pad1octet"), optional_data);
+        try_or_return!(src.try_read_u8(), optional_data);
 
         optional_data.server_selected_protocol = Some(
-            SecurityProtocol::from_bits(try_or_return!(
-                src.try_read_u32("serverSelectedProtocol"),
-                optional_data
-            ))
-            .ok_or_else(|| invalid_message_err!("serverSelectedProtocol", "invalid security protocol"))?,
+            SecurityProtocol::from_bits(try_or_return!(src.try_read_u32(), optional_data))
+                .ok_or_else(|| invalid_message_err!("serverSelectedProtocol", "invalid security protocol"))?,
         );
 
-        optional_data.desktop_physical_width =
-            Some(try_or_return!(src.try_read_u32("desktopPhysicalWidth"), optional_data));
+        optional_data.desktop_physical_width = Some(try_or_return!(src.try_read_u32(), optional_data));
         // physical height must be present, if the physical width is present
         optional_data.desktop_physical_height = Some(src.read_u32());
 
-        optional_data.desktop_orientation = Some(try_or_return!(src.try_read_u16("desktopOrientation"), optional_data));
-        optional_data.desktop_scale_factor =
-            Some(try_or_return!(src.try_read_u32("desktopScaleFactor"), optional_data));
+        optional_data.desktop_orientation = Some(try_or_return!(src.try_read_u16(), optional_data));
+        optional_data.desktop_scale_factor = Some(try_or_return!(src.try_read_u32(), optional_data));
         // device scale factor must be present, if the desktop scale factor is present
         optional_data.device_scale_factor = Some(src.read_u32());
 

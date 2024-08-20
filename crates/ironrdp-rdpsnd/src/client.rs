@@ -1,7 +1,7 @@
 use std::borrow::Cow;
 
 use ironrdp_core::impl_as_any;
-use ironrdp_pdu::cursor::ReadCursor;
+use ironrdp_core::ReadCursor;
 use ironrdp_pdu::gcc::ChannelName;
 use ironrdp_pdu::{cast_length, other_err, PduDecode, PduResult};
 use ironrdp_svc::{CompressionCondition, SvcClientProcessor, SvcMessage, SvcProcessor};

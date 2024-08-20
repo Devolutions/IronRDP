@@ -14,8 +14,8 @@ use super::{
     BLOB_TYPE_SIZE, MAC_SIZE, PLATFORM_ID, PREAMBLE_SIZE,
 };
 use crate::crypto::rc4::Rc4;
-use crate::cursor::{ReadCursor, WriteCursor};
 use crate::{PduDecode, PduEncode, PduResult};
+use ironrdp_core::{ReadCursor, WriteCursor};
 
 const RESPONSE_DATA_VERSION: u16 = 0x100;
 const RESPONSE_DATA_STATIC_FIELDS_SIZE: usize = 8;

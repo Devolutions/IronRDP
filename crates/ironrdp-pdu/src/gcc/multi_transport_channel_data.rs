@@ -1,6 +1,6 @@
 use bitflags::bitflags;
+use ironrdp_core::{ReadCursor, WriteCursor};
 
-use crate::cursor::{ReadCursor, WriteCursor};
 use crate::{PduDecode, PduEncode, PduResult};
 
 #[derive(Debug, Clone, PartialEq, Eq)]

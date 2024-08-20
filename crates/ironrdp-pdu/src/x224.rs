@@ -1,9 +1,9 @@
 use std::borrow::Cow;
 
-use crate::cursor::{ReadCursor, WriteCursor};
 use crate::tpdu::{TpduCode, TpduHeader};
 use crate::tpkt::TpktHeader;
 use crate::{IntoOwnedPdu, Pdu, PduDecode, PduEncode, PduError, PduErrorExt as _, PduResult};
+use ironrdp_core::{ReadCursor, WriteCursor};
 
 pub trait X224Pdu<'de>: Sized {
     const X224_NAME: &'static str;

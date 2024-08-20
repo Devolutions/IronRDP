@@ -1,7 +1,7 @@
+use ironrdp_core::WriteCursor;
 use ironrdp_graphics::image_processing::PixelFormat;
 use ironrdp_graphics::rdp6::{ABgrChannels, ARgbChannels, BgrAChannels, BitmapStreamEncoder, RgbAChannels};
 use ironrdp_pdu::bitmap::{self, BitmapData, BitmapUpdateData, Compression};
-use ironrdp_pdu::cursor::WriteCursor;
 use ironrdp_pdu::geometry::InclusiveRectangle;
 use ironrdp_pdu::{invalid_message_err, PduEncode, PduError};
 

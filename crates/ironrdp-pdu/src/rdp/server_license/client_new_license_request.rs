@@ -12,9 +12,9 @@ use super::{
     PREAMBLE_SIZE, RANDOM_NUMBER_SIZE, UTF8_NULL_TERMINATOR_SIZE,
 };
 use crate::crypto::rsa::encrypt_with_public_key;
-use crate::cursor::{ReadCursor, WriteCursor};
 use crate::utils::{self, CharacterSet};
 use crate::{PduDecode, PduEncode, PduResult};
+use ironrdp_core::{ReadCursor, WriteCursor};
 
 const LICENSE_REQUEST_STATIC_FIELDS_SIZE: usize = 20;
 

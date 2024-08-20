@@ -6,13 +6,13 @@ use num_traits::{FromPrimitive, ToPrimitive};
 
 use super::{BlobHeader, BlobType, LicenseHeader, PreambleFlags, PreambleVersion, BLOB_LENGTH_SIZE, BLOB_TYPE_SIZE};
 use crate::{
-    cursor::{ReadCursor, WriteCursor},
     rdp::{
         headers::{BasicSecurityHeader, BasicSecurityHeaderFlags, BASIC_SECURITY_HEADER_SIZE},
         server_license::PreambleType,
     },
     PduDecode, PduEncode, PduResult,
 };
+use ironrdp_core::{ReadCursor, WriteCursor};
 
 const ERROR_CODE_SIZE: usize = 4;
 const STATE_TRANSITION_SIZE: usize = 4;

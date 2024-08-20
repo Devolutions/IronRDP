@@ -1,5 +1,5 @@
+use ironrdp_core::WriteCursor;
 use ironrdp_pdu::bitmap::rdp6::{BitmapStreamHeader, ColorPlaneDefinition};
-use ironrdp_pdu::cursor::WriteCursor;
 use ironrdp_pdu::PduError;
 use thiserror::Error;
 

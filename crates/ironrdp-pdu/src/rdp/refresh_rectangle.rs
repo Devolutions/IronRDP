@@ -1,6 +1,6 @@
-use crate::cursor::{ReadCursor, WriteCursor};
 use crate::geometry::InclusiveRectangle;
 use crate::{PduDecode, PduEncode, PduResult};
+use ironrdp_core::{ReadCursor, WriteCursor};
 
 /// [2.2.11.2.1] Refresh Rect PDU Data (TS_REFRESH_RECT_PDU)
 ///

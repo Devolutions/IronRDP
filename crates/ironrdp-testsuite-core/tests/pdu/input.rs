@@ -1,4 +1,4 @@
-use ironrdp_pdu::cursor::ReadCursor;
+use ironrdp_core::ReadCursor;
 use ironrdp_pdu::input::fast_path::{FastPathInput, FastPathInputEvent};
 use ironrdp_pdu::input::mouse::PointerFlags;
 use ironrdp_pdu::input::MousePdu;

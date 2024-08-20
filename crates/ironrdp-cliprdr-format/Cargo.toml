@@ -20,6 +20,7 @@ test = false
 ironrdp-pdu.workspace = true
 thiserror.workspace = true
 png = "0.17"
+ironrdp-core.workspace = true
 
 [lints]
 workspace = true

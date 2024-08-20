@@ -3,7 +3,6 @@ use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive, ToPrimitive};
 
 use crate::codecs::rfx::FrameAcknowledgePdu;
-use crate::cursor::{ReadCursor, WriteCursor};
 use crate::input::InputEventPdu;
 use crate::rdp::capability_sets::{ClientConfirmActive, ServerDemandActive};
 use crate::rdp::client_info;
@@ -13,6 +12,7 @@ use crate::rdp::server_error_info::ServerSetErrorInfoPdu;
 use crate::rdp::session_info::SaveSessionInfoPdu;
 use crate::rdp::suppress_output::SuppressOutputPdu;
 use crate::{PduDecode, PduEncode, PduResult};
+use ironrdp_core::{ReadCursor, WriteCursor};
 
 pub const BASIC_SECURITY_HEADER_SIZE: usize = 4;
 pub const SHARE_DATA_HEADER_COMPRESSION_MASK: u8 = 0xF;

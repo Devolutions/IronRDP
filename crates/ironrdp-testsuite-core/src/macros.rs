@@ -128,7 +128,7 @@ macro_rules! mcs_encode_decode_test {
                 let expected = $encoded_pdu;
 
                 let mut encoded = vec![0; expected.len()];
-                let mut cursor = ::ironrdp_pdu::cursor::WriteCursor::new(&mut encoded);
+                let mut cursor = ::ironrdp_core::WriteCursor::new(&mut encoded);
                 pdu.mcs_body_encode(&mut cursor).unwrap();
 
                 $crate::assert_eq_hex!(encoded, expected);
@@ -141,7 +141,7 @@ macro_rules! mcs_encode_decode_test {
                 let encoded = $encoded_pdu;
                 let expected = $pdu;
 
-                let mut cursor = ::ironrdp_pdu::cursor::ReadCursor::new(&encoded);
+                let mut cursor = ::ironrdp_core::ReadCursor::new(&encoded);
                 let decoded = McsPdu::mcs_body_decode(&mut cursor, encoded.len()).unwrap();
 
                 let _ = expected == decoded; // type inference trick

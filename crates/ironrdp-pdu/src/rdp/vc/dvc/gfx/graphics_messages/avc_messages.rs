@@ -3,9 +3,9 @@ use std::fmt::Debug;
 use bit_field::BitField;
 use bitflags::bitflags;
 
-use crate::cursor::{ReadCursor, WriteCursor};
 use crate::geometry::InclusiveRectangle;
 use crate::{PduDecode, PduEncode, PduResult};
+use ironrdp_core::{ReadCursor, WriteCursor};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QuantQuality {

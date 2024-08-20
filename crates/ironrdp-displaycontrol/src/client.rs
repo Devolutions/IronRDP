@@ -2,9 +2,9 @@ use crate::{
     pdu::{DisplayControlCapabilities, DisplayControlMonitorLayout, DisplayControlPdu},
     CHANNEL_NAME,
 };
-use ironrdp_core::impl_as_any;
+use ironrdp_core::{impl_as_any, ReadCursor};
 use ironrdp_dvc::{encode_dvc_messages, DvcClientProcessor, DvcMessage, DvcProcessor};
-use ironrdp_pdu::{cursor::ReadCursor, PduDecode, PduResult};
+use ironrdp_pdu::{PduDecode, PduResult};
 use ironrdp_svc::{ChannelFlags, SvcMessage};
 use tracing::debug;
 

@@ -1,6 +1,6 @@
 use super::{ClientGccBlocks, ServerGccBlocks};
-use crate::cursor::{ReadCursor, WriteCursor};
 use crate::{mcs, per, PduDecode, PduEncode, PduResult};
+use ironrdp_core::{ReadCursor, WriteCursor};
 
 const CONFERENCE_REQUEST_OBJECT_ID: [u8; 6] = [0, 0, 20, 124, 0, 1];
 const CONFERENCE_REQUEST_CLIENT_TO_SERVER_H221_NON_STANDARD: &[u8; 4] = b"Duca";

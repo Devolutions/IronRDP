@@ -17,7 +17,7 @@ pub use self::lock::*;
 
 #[rustfmt::skip]
 use bitflags::bitflags;
-use ironrdp_pdu::cursor::{ReadCursor, WriteCursor};
+use ironrdp_core::{ReadCursor, WriteCursor};
 use ironrdp_pdu::{ensure_fixed_part_size, invalid_message_err, PduDecode, PduEncode, PduResult};
 use ironrdp_svc::SvcPduEncode;
 

@@ -5,8 +5,8 @@ use std::fmt;
 
 use bitflags::bitflags;
 
-use crate::cursor::{ReadCursor, WriteCursor};
 use crate::{PduDecode, PduEncode, PduResult};
+use ironrdp_core::{ReadCursor, WriteCursor};
 
 const GENERAL_LENGTH: usize = 20;
 pub const PROTOCOL_VER: u16 = 0x0200;

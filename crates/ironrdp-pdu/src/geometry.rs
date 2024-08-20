@@ -1,7 +1,7 @@
 use std::cmp::{max, min};
 
-use crate::cursor::ReadCursor;
 use crate::{PduDecode, PduEncode, PduResult};
+use ironrdp_core::{ReadCursor, WriteCursor};
 
 pub(crate) mod private {
     pub struct BaseRectangle {
@@ -178,7 +178,7 @@ impl InclusiveRectangle {
 }
 
 impl PduEncode for InclusiveRectangle {
-    fn encode(&self, dst: &mut crate::cursor::WriteCursor<'_>) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
         ensure_fixed_part_size!(in: dst);
 
         dst.write_u16(self.left);
@@ -224,7 +224,7 @@ impl ExclusiveRectangle {
 }
 
 impl PduEncode for ExclusiveRectangle {
-    fn encode(&self, dst: &mut crate::cursor::WriteCursor<'_>) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
         ensure_fixed_part_size!(in: dst);
 
         dst.write_u16(self.left);

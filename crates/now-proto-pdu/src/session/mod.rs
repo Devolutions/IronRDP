@@ -3,7 +3,7 @@ mod logoff;
 mod msg_box_req;
 mod msg_box_rsp;
 
-use ironrdp_pdu::cursor::{ReadCursor, WriteCursor};
+use ironrdp_core::{ReadCursor, WriteCursor};
 use ironrdp_pdu::{PduEncode, PduResult};
 
 use crate::NowHeader;

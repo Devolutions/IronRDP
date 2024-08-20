@@ -5,8 +5,8 @@ use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive, ToPrimitive};
 use thiserror::Error;
 
-use crate::cursor::{ReadCursor, WriteCursor};
 use crate::{PduDecode, PduEncode, PduResult};
+use ironrdp_core::{ReadCursor, WriteCursor};
 
 const CLIENT_ENCRYPTION_METHODS_SIZE: usize = 4;
 const CLIENT_EXT_ENCRYPTION_METHODS_SIZE: usize = 4;

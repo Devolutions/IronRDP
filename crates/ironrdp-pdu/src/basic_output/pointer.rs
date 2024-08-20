@@ -1,5 +1,5 @@
-use crate::cursor::{ReadCursor, WriteCursor};
 use crate::{PduDecode, PduEncode, PduResult};
+use ironrdp_core::{ReadCursor, WriteCursor};
 
 // Represents `TS_POINT16` described in [MS-RDPBCGR] 2.2.9.1.1.4.1
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

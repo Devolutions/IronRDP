@@ -6,9 +6,9 @@ use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive, ToPrimitive};
 use thiserror::Error;
 
-use crate::cursor::{ReadCursor, WriteCursor};
 use crate::rdp::headers::{BasicSecurityHeader, BasicSecurityHeaderFlags, BASIC_SECURITY_HEADER_SIZE};
 use crate::{PduDecode, PduEncode, PduError, PduResult};
+use ironrdp_core::{ReadCursor, WriteCursor};
 
 #[cfg(test)]
 mod tests;

@@ -2,10 +2,8 @@ use bitflags::bitflags;
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive, ToPrimitive};
 
-use crate::{
-    cursor::{ReadCursor, WriteCursor},
-    PduDecode, PduEncode, PduResult,
-};
+use crate::{PduDecode, PduEncode, PduResult};
+use ironrdp_core::{ReadCursor, WriteCursor};
 
 const LOGON_EX_LENGTH_FIELD_SIZE: usize = 2;
 const LOGON_EX_FLAGS_FIELD_SIZE: usize = 4;

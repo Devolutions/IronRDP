@@ -23,7 +23,7 @@
 
 use std::mem::size_of;
 
-use ironrdp_pdu::cursor::{ReadCursor, WriteCursor};
+use ironrdp_core::{ReadCursor, WriteCursor};
 use ironrdp_pdu::utils::{self, CharacterSet};
 use ironrdp_pdu::{ensure_size, invalid_message_err, PduResult};
 
