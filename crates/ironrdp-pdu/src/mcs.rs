@@ -1185,11 +1185,4 @@ mod legacy {
             io::Error::new(io::ErrorKind::Other, format!("MCS Connection Sequence error: {e}"))
         }
     }
-
-    #[cfg(feature = "std")]
-    impl ironrdp_error::legacy::ErrorContext for McsError {
-        fn context(&self) -> &'static str {
-            "mcs"
-        }
-    }
 }

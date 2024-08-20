@@ -18,7 +18,3 @@ impl From<ironrdp_connector::ConnectorErrorKind> for crate::SessionErrorKind {
 pub(crate) fn map_error(error: ironrdp_connector::ConnectorError) -> SessionError {
     error.into_other_kind()
 }
-
-impl ironrdp_error::legacy::CatchAllKind for crate::SessionErrorKind {
-    const CATCH_ALL_VALUE: Self = crate::SessionErrorKind::General;
-}
