@@ -9,11 +9,10 @@ pub use self::palette::*;
 #[rustfmt::skip]
 use std::borrow::Cow;
 
+use ironrdp_core::IntoOwned;
 use ironrdp_core::{ReadCursor, WriteCursor};
 use ironrdp_pdu::utils::{read_string_from_cursor, to_utf16_bytes, CharacterSet};
-use ironrdp_pdu::{
-    cast_int, ensure_fixed_part_size, ensure_size, impl_pdu_borrowing, IntoOwnedPdu, PduDecode, PduEncode, PduResult,
-};
+use ironrdp_pdu::{cast_int, ensure_fixed_part_size, ensure_size, impl_pdu_borrowing, PduDecode, PduEncode, PduResult};
 
 use super::ClipboardFormatId;
 use crate::pdu::{ClipboardPduFlags, PartialHeader};
@@ -27,10 +26,10 @@ pub struct FormatDataResponse<'a> {
 
 impl_pdu_borrowing!(FormatDataResponse<'_>, OwnedFormatDataResponse);
 
-impl IntoOwnedPdu for FormatDataResponse<'_> {
+impl IntoOwned for FormatDataResponse<'_> {
     type Owned = OwnedFormatDataResponse;
 
-    fn into_owned_pdu(self) -> Self::Owned {
+    fn into_owned(self) -> Self::Owned {
         OwnedFormatDataResponse {
             is_error: self.is_error,
             data: Cow::Owned(self.data.into_owned()),
@@ -161,10 +160,6 @@ impl<'a> FormatDataResponse<'a> {
     pub fn to_unicode_string(&self) -> PduResult<String> {
         let mut cursor = ReadCursor::new(&self.data);
         read_string_from_cursor(&mut cursor, CharacterSet::Unicode, true)
-    }
-
-    pub fn into_owned(self) -> OwnedFormatDataResponse {
-        self.into_owned_pdu()
     }
 
     pub fn into_data(self) -> Cow<'a, [u8]> {

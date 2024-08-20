@@ -1,11 +1,9 @@
 use std::borrow::Cow;
 
 use bitflags::bitflags;
-use ironrdp_core::{ReadCursor, WriteCursor};
+use ironrdp_core::{IntoOwned, ReadCursor, WriteCursor};
 use ironrdp_pdu::utils::{combine_u64, split_u64};
-use ironrdp_pdu::{
-    cast_int, ensure_size, impl_pdu_borrowing, invalid_message_err, IntoOwnedPdu, PduDecode, PduEncode, PduResult,
-};
+use ironrdp_pdu::{cast_int, ensure_size, impl_pdu_borrowing, invalid_message_err, PduDecode, PduEncode, PduResult};
 
 use crate::pdu::{ClipboardPduFlags, PartialHeader};
 
@@ -36,10 +34,10 @@ pub struct FileContentsResponse<'a> {
 
 impl_pdu_borrowing!(FileContentsResponse<'_>, OwnedFileContentsResponse);
 
-impl IntoOwnedPdu for FileContentsResponse<'_> {
+impl IntoOwned for FileContentsResponse<'_> {
     type Owned = OwnedFileContentsResponse;
 
-    fn into_owned_pdu(self) -> Self::Owned {
+    fn into_owned(self) -> Self::Owned {
         OwnedFileContentsResponse {
             is_error: self.is_error,
             stream_id: self.stream_id,

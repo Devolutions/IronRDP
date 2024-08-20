@@ -5,7 +5,7 @@ use ironrdp_cliprdr::pdu::{
     ClipboardFormat, ClipboardGeneralCapabilityFlags, FileContentsRequest, FileContentsResponse, FormatDataRequest,
     FormatDataResponse, LockDataId,
 };
-use ironrdp_core::impl_as_any;
+use ironrdp_core::{impl_as_any, IntoOwned};
 use windows::Win32::Foundation::{HWND, LPARAM, WPARAM};
 use windows::Win32::UI::WindowsAndMessaging::PostMessageW;
 
