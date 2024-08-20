@@ -4,8 +4,8 @@ use crate::gcc::{ChannelDef, ClientGccBlocks, ConferenceCreateRequest, Conferenc
 use crate::tpdu::{TpduCode, TpduHeader};
 use crate::tpkt::TpktHeader;
 use crate::x224::{user_data_size, X224Pdu};
-use crate::{per, IntoOwnedPdu, PduError, PduErrorExt as _, PduResult};
-use ironrdp_core::{ReadCursor, WriteCursor};
+use crate::{per, PduError, PduErrorExt as _, PduResult};
+use ironrdp_core::{IntoOwned, ReadCursor, WriteCursor};
 
 // T.125 MCS is defined in:
 //
@@ -274,19 +274,19 @@ pub enum McsMessage<'a> {
 
 impl_pdu_borrowing!(McsMessage<'_>, OwnedMcsMessage);
 
-impl IntoOwnedPdu for McsMessage<'_> {
+impl IntoOwned for McsMessage<'_> {
     type Owned = OwnedMcsMessage;
 
-    fn into_owned_pdu(self) -> Self::Owned {
+    fn into_owned(self) -> Self::Owned {
         match self {
-            Self::ErectDomainRequest(msg) => McsMessage::ErectDomainRequest(msg.into_owned_pdu()),
-            Self::AttachUserRequest(msg) => McsMessage::AttachUserRequest(msg.into_owned_pdu()),
-            Self::AttachUserConfirm(msg) => McsMessage::AttachUserConfirm(msg.into_owned_pdu()),
-            Self::ChannelJoinRequest(msg) => McsMessage::ChannelJoinRequest(msg.into_owned_pdu()),
-            Self::ChannelJoinConfirm(msg) => McsMessage::ChannelJoinConfirm(msg.into_owned_pdu()),
-            Self::SendDataRequest(msg) => McsMessage::SendDataRequest(msg.into_owned_pdu()),
-            Self::SendDataIndication(msg) => McsMessage::SendDataIndication(msg.into_owned_pdu()),
-            Self::DisconnectProviderUltimatum(msg) => McsMessage::DisconnectProviderUltimatum(msg.into_owned_pdu()),
+            Self::ErectDomainRequest(msg) => McsMessage::ErectDomainRequest(msg.into_owned()),
+            Self::AttachUserRequest(msg) => McsMessage::AttachUserRequest(msg.into_owned()),
+            Self::AttachUserConfirm(msg) => McsMessage::AttachUserConfirm(msg.into_owned()),
+            Self::ChannelJoinRequest(msg) => McsMessage::ChannelJoinRequest(msg.into_owned()),
+            Self::ChannelJoinConfirm(msg) => McsMessage::ChannelJoinConfirm(msg.into_owned()),
+            Self::SendDataRequest(msg) => McsMessage::SendDataRequest(msg.into_owned()),
+            Self::SendDataIndication(msg) => McsMessage::SendDataIndication(msg.into_owned()),
+            Self::DisconnectProviderUltimatum(msg) => McsMessage::DisconnectProviderUltimatum(msg.into_owned()),
         }
     }
 }
@@ -557,10 +557,10 @@ pub struct SendDataRequest<'a> {
 
 impl_pdu_borrowing!(SendDataRequest<'_>, OwnedSendDataRequest);
 
-impl IntoOwnedPdu for SendDataRequest<'_> {
+impl IntoOwned for SendDataRequest<'_> {
     type Owned = OwnedSendDataRequest;
 
-    fn into_owned_pdu(self) -> Self::Owned {
+    fn into_owned(self) -> Self::Owned {
         SendDataRequest {
             user_data: Cow::Owned(self.user_data.into_owned()),
             ..self
@@ -638,10 +638,10 @@ pub struct SendDataIndication<'a> {
 
 impl_pdu_borrowing!(SendDataIndication<'_>, OwnedSendDataIndication);
 
-impl IntoOwnedPdu for SendDataIndication<'_> {
+impl IntoOwned for SendDataIndication<'_> {
     type Owned = OwnedSendDataIndication;
 
-    fn into_owned_pdu(self) -> Self::Owned {
+    fn into_owned(self) -> Self::Owned {
         SendDataIndication {
             user_data: Cow::Owned(self.user_data.into_owned()),
             ..self

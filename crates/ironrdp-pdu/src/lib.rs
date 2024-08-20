@@ -247,13 +247,6 @@ pub fn decode_owned_cursor<T: PduDecodeOwned>(src: &mut ReadCursor<'_>) -> PduRe
     T::decode_owned(src)
 }
 
-/// Trait used to produce an owned version of a given PDU.
-pub trait IntoOwnedPdu: Sized {
-    type Owned: 'static;
-
-    fn into_owned_pdu(self) -> Self::Owned;
-}
-
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 #[repr(u8)]
 pub enum Action {

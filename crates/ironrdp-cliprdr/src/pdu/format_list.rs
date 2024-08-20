@@ -1,10 +1,9 @@
 use std::borrow::Cow;
 
-use ironrdp_core::{ReadCursor, WriteCursor};
+use ironrdp_core::{IntoOwned, ReadCursor, WriteCursor};
 use ironrdp_pdu::utils::{read_string_from_cursor, to_utf16_bytes, write_string_to_cursor, CharacterSet};
 use ironrdp_pdu::{
-    cast_int, ensure_size, impl_pdu_borrowing, impl_pdu_pod, invalid_message_err, IntoOwnedPdu, PduDecode, PduEncode,
-    PduResult,
+    cast_int, ensure_size, impl_pdu_borrowing, impl_pdu_pod, invalid_message_err, PduDecode, PduEncode, PduResult,
 };
 
 use crate::pdu::{ClipboardPduFlags, PartialHeader};
@@ -219,10 +218,10 @@ pub struct FormatList<'a> {
 
 impl_pdu_borrowing!(FormatList<'_>, OwnedFormatList);
 
-impl IntoOwnedPdu for FormatList<'_> {
+impl IntoOwned for FormatList<'_> {
     type Owned = OwnedFormatList;
 
-    fn into_owned_pdu(self) -> Self::Owned {
+    fn into_owned(self) -> Self::Owned {
         OwnedFormatList {
             use_ascii: self.use_ascii,
             encoded_formats: Cow::Owned(self.encoded_formats.into_owned()),

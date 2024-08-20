@@ -223,10 +223,10 @@ macro_rules! const_assert {
 #[macro_export]
 macro_rules! impl_pdu_pod {
     ($pdu_ty:ty) => {
-        impl $crate::IntoOwnedPdu for $pdu_ty {
+        impl ::ironrdp_core::IntoOwned for $pdu_ty {
             type Owned = Self;
 
-            fn into_owned_pdu(self) -> Self::Owned {
+            fn into_owned(self) -> Self::Owned {
                 self
             }
         }
@@ -248,7 +248,7 @@ macro_rules! impl_pdu_borrowing {
         impl $crate::PduDecodeOwned for $owned_ty {
             fn decode_owned(src: &mut ReadCursor<'_>) -> $crate::PduResult<Self> {
                 let pdu = <$pdu_ty $(<$($lt),+>)? as $crate::PduDecode>::decode(src)?;
-                Ok($crate::IntoOwnedPdu::into_owned_pdu(pdu))
+                Ok(ironrdp_core::IntoOwned::into_owned(pdu))
             }
         }
     };

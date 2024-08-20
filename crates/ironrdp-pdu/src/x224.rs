@@ -2,8 +2,8 @@ use std::borrow::Cow;
 
 use crate::tpdu::{TpduCode, TpduHeader};
 use crate::tpkt::TpktHeader;
-use crate::{IntoOwnedPdu, Pdu, PduDecode, PduEncode, PduError, PduErrorExt as _, PduResult};
-use ironrdp_core::{ReadCursor, WriteCursor};
+use crate::{Pdu, PduDecode, PduEncode, PduError, PduErrorExt as _, PduResult};
+use ironrdp_core::{IntoOwned, ReadCursor, WriteCursor};
 
 pub trait X224Pdu<'de>: Sized {
     const X224_NAME: &'static str;
@@ -92,10 +92,10 @@ pub struct X224Data<'a> {
 
 impl_pdu_borrowing!(X224Data<'_>, OwnedX224Data);
 
-impl IntoOwnedPdu for X224Data<'_> {
+impl IntoOwned for X224Data<'_> {
     type Owned = OwnedX224Data;
 
-    fn into_owned_pdu(self) -> Self::Owned {
+    fn into_owned(self) -> Self::Owned {
         X224Data {
             data: Cow::Owned(self.data.into_owned()),
         }
