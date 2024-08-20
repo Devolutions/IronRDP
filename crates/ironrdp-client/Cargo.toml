@@ -72,6 +72,7 @@ semver = "1"
 reqwest = "0.12"
 url = "2.5"
 raw-window-handle = "0.6.2"
+ironrdp-core = { workspace = true, features = ["alloc"] }
 
 [target.'cfg(windows)'.dependencies]
 windows = { workspace = true, features = ["Win32_Foundation"] }

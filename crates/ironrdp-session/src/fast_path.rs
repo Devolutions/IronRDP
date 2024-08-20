@@ -1,6 +1,6 @@
 use std::rc::Rc;
 
-use ironrdp_core::ReadCursor;
+use ironrdp_core::{ReadCursor, WriteBuf};
 use ironrdp_graphics::image_processing::PixelFormat;
 use ironrdp_graphics::pointer::{DecodedPointer, PointerBitmapTarget};
 use ironrdp_graphics::rdp6::BitmapStreamDecoder;
@@ -11,7 +11,6 @@ use ironrdp_pdu::geometry::{InclusiveRectangle, Rectangle as _};
 use ironrdp_pdu::pointer::PointerUpdateData;
 use ironrdp_pdu::rdp::headers::ShareDataPdu;
 use ironrdp_pdu::surface_commands::{FrameAction, FrameMarkerPdu, SurfaceCommand};
-use ironrdp_pdu::write_buf::WriteBuf;
 use ironrdp_pdu::{decode_cursor, PduErrorKind};
 
 use crate::image::DecodedImage;

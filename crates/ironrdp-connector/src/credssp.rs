@@ -1,4 +1,4 @@
-use ironrdp_pdu::write_buf::WriteBuf;
+use ironrdp_core::WriteBuf;
 use ironrdp_pdu::{nego, PduHint};
 use picky::key::PrivateKey;
 use picky_asn1_x509::{oids, Certificate, ExtensionView, GeneralName};

@@ -1,7 +1,7 @@
 use std::collections::HashSet;
 use std::mem;
 
-use ironrdp_pdu::write_buf::WriteBuf;
+use ironrdp_core::WriteBuf;
 use ironrdp_pdu::{mcs, PduHint};
 
 use crate::{ConnectorError, ConnectorErrorExt as _, ConnectorResult, Sequence, State, Written};

@@ -5,7 +5,7 @@ use ironrdp_connector::{
     custom_err, general_err, ClientConnector, ClientConnectorState, ConnectionResult, ConnectorError, ConnectorResult,
     ServerName, State as _,
 };
-use ironrdp_pdu::write_buf::WriteBuf;
+use ironrdp_core::WriteBuf;
 
 use crate::framed::{Framed, FramedRead, FramedWrite};
 use crate::{single_sequence_step, AsyncNetworkClient};

@@ -1,9 +1,9 @@
 use std::mem;
 
+use ironrdp_core::WriteBuf;
 use ironrdp_pdu::rdp::capability_sets::SERVER_CHANNEL_ID;
 use ironrdp_pdu::rdp::headers::ShareDataPdu;
 use ironrdp_pdu::rdp::{finalization_messages, server_error_info};
-use ironrdp_pdu::write_buf::WriteBuf;
 use ironrdp_pdu::PduHint;
 
 use crate::{legacy, ConnectorResult, Sequence, State, Written};

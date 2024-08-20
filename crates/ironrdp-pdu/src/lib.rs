@@ -8,7 +8,7 @@ use core::fmt;
 use ironrdp_core::{ReadCursor, WriteCursor};
 
 #[cfg(feature = "alloc")]
-use write_buf::WriteBuf;
+use ironrdp_core::WriteBuf;
 
 #[macro_use]
 mod macros;
@@ -26,8 +26,6 @@ pub mod tpdu;
 pub mod tpkt;
 pub mod utf16;
 pub mod utils;
-#[cfg(feature = "alloc")]
-pub mod write_buf;
 pub mod x224;
 
 pub(crate) mod basic_output;

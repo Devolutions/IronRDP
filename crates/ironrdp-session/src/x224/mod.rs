@@ -1,11 +1,11 @@
 use ironrdp_connector::connection_activation::ConnectionActivationSequence;
 use ironrdp_connector::legacy::SendDataIndicationCtx;
+use ironrdp_core::WriteBuf;
 use ironrdp_dvc::DynamicVirtualChannel;
 use ironrdp_dvc::{DrdynvcClient, DvcProcessor};
 use ironrdp_pdu::mcs::{DisconnectProviderUltimatum, DisconnectReason, McsMessage};
 use ironrdp_pdu::rdp::headers::ShareDataPdu;
 use ironrdp_pdu::rdp::server_error_info::{ErrorInfo, ProtocolIndependentCode, ServerSetErrorInfoPdu};
-use ironrdp_pdu::write_buf::WriteBuf;
 use ironrdp_svc::{client_encode_svc_messages, StaticChannelSet, SvcMessage, SvcProcessor, SvcProcessorMessages};
 
 use crate::{SessionError, SessionErrorExt as _, SessionResult};

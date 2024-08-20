@@ -4,7 +4,7 @@ extern crate tracing;
 use ironrdp_async::bytes::Bytes;
 use ironrdp_async::{single_sequence_step, Framed, FramedRead, FramedWrite, StreamWrapper};
 use ironrdp_connector::ConnectorResult;
-use ironrdp_pdu::write_buf::WriteBuf;
+use ironrdp_core::WriteBuf;
 
 mod channel_connection;
 mod connection;

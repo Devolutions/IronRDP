@@ -1,9 +1,9 @@
 use std::collections::HashSet;
 
 use ironrdp_connector::{reason_err, ConnectorError, ConnectorErrorExt, ConnectorResult, Sequence, State, Written};
+use ironrdp_core::WriteBuf;
 use ironrdp_pdu as pdu;
 use pdu::mcs;
-use pdu::write_buf::WriteBuf;
 
 #[derive(Debug)]
 pub struct ChannelConnectionSequence {

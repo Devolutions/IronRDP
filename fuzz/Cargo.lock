@@ -276,6 +276,7 @@ name = "ironrdp-cliprdr"
 version = "0.1.0"
 dependencies = [
  "bitflags 2.5.0",
+ "ironrdp-core",
  "ironrdp-pdu",
  "ironrdp-svc",
  "thiserror",
@@ -286,15 +287,24 @@ dependencies = [
 name = "ironrdp-cliprdr-format"
 version = "0.1.0"
 dependencies = [
+ "ironrdp-core",
  "ironrdp-pdu",
  "png",
  "thiserror",
 ]
 
 [[package]]
+name = "ironrdp-core"
+version = "0.1.0"
+dependencies = [
+ "ironrdp-error",
+]
+
+[[package]]
 name = "ironrdp-displaycontrol"
 version = "0.1.0"
 dependencies = [
+ "ironrdp-core",
  "ironrdp-dvc",
  "ironrdp-pdu",
  "ironrdp-svc",
@@ -305,6 +315,7 @@ dependencies = [
 name = "ironrdp-dvc"
 version = "0.1.0"
 dependencies = [
+ "ironrdp-core",
  "ironrdp-pdu",
  "ironrdp-svc",
  "slab",
@@ -346,6 +357,7 @@ dependencies = [
  "bitflags 2.5.0",
  "bitvec",
  "byteorder",
+ "ironrdp-core",
  "ironrdp-error",
  "ironrdp-pdu",
  "lazy_static",
@@ -362,6 +374,7 @@ dependencies = [
  "bitflags 2.5.0",
  "byteorder",
  "der-parser",
+ "ironrdp-core",
  "ironrdp-error",
  "md-5",
  "num-bigint",
@@ -380,6 +393,7 @@ name = "ironrdp-rdpdr"
 version = "0.1.0"
 dependencies = [
  "bitflags 2.5.0",
+ "ironrdp-core",
  "ironrdp-error",
  "ironrdp-pdu",
  "ironrdp-svc",
@@ -391,6 +405,7 @@ name = "ironrdp-rdpsnd"
 version = "0.1.0"
 dependencies = [
  "bitflags 2.5.0",
+ "ironrdp-core",
  "ironrdp-pdu",
  "ironrdp-svc",
  "tracing",
@@ -401,6 +416,7 @@ name = "ironrdp-svc"
 version = "0.1.0"
 dependencies = [
  "bitflags 2.5.0",
+ "ironrdp-core",
  "ironrdp-pdu",
 ]
 

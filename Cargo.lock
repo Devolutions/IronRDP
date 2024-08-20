@@ -1347,6 +1347,7 @@ dependencies = [
  "embed-resource",
  "ironrdp",
  "ironrdp-cliprdr-native",
+ "ironrdp-core",
  "sspi",
  "thiserror",
  "tracing",
@@ -2012,6 +2013,7 @@ version = "0.1.0"
 dependencies = [
  "ironrdp-async",
  "ironrdp-connector",
+ "ironrdp-core",
  "ironrdp-pdu",
  "ironrdp-svc",
  "tracing",
@@ -2035,6 +2037,7 @@ version = "0.1.0"
 dependencies = [
  "bytes",
  "ironrdp-connector",
+ "ironrdp-core",
  "ironrdp-pdu",
  "tracing",
 ]
@@ -2045,6 +2048,7 @@ version = "0.1.0"
 dependencies = [
  "bytes",
  "ironrdp-connector",
+ "ironrdp-core",
  "ironrdp-pdu",
  "tracing",
 ]
@@ -2058,6 +2062,7 @@ dependencies = [
  "inquire",
  "ironrdp",
  "ironrdp-cliprdr-native",
+ "ironrdp-core",
  "ironrdp-rdpsnd-native",
  "ironrdp-tls",
  "ironrdp-tokio",
