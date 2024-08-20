@@ -9,7 +9,7 @@ use ironrdp_connector::{
     general_err, ClientConnector, ClientConnectorState, ConnectionResult, ConnectorError, ConnectorResult,
     Sequence as _, ServerName, State as _,
 };
-use ironrdp_pdu::write_buf::WriteBuf;
+use ironrdp_core::WriteBuf;
 
 use crate::framed::Framed;
 

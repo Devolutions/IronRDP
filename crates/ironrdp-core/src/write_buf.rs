@@ -1,3 +1,4 @@
+use alloc::vec::Vec;
 use core::ops::{Index, Range, RangeFrom, RangeFull, RangeInclusive, RangeTo, RangeToInclusive};
 
 /// Max capacity to keep for the inner Vec<u8> when `WriteBuf::clear` is called.
@@ -32,6 +33,7 @@ impl WriteBuf {
         }
     }
 
+    /// Constructs a new `WriteBuf` from a given `Vec<u8>`.
     #[inline]
     pub const fn from_vec(buffer: Vec<u8>) -> Self {
         Self {
@@ -40,6 +42,7 @@ impl WriteBuf {
         }
     }
 
+    /// Consumes the `WriteBuf`, returning the underlying `Vec<u8>`.
     #[inline]
     pub fn into_inner(self) -> Vec<u8> {
         self.inner
@@ -81,6 +84,7 @@ impl WriteBuf {
         &mut self.inner[self.filled..]
     }
 
+    /// Writes an array of bytes into the buffer.
     #[inline]
     pub fn write_array<const N: usize>(&mut self, array: [u8; N]) {
         self.initialize(N);
@@ -88,6 +92,7 @@ impl WriteBuf {
         self.filled += N;
     }
 
+    /// Writes a slice of bytes into the buffer.
     #[inline]
     pub fn write_slice(&mut self, slice: &[u8]) {
         let n = slice.len();
@@ -96,36 +101,43 @@ impl WriteBuf {
         self.filled += n;
     }
 
+    /// Writes a single byte into the buffer.
     #[inline]
     pub fn write_u8(&mut self, value: u8) {
         self.write_array(value.to_le_bytes())
     }
 
+    /// Writes a `u16` into the buffer as little-endian.
     #[inline]
     pub fn write_u16(&mut self, value: u16) {
         self.write_array(value.to_le_bytes())
     }
 
+    /// Writes a `u16` into the buffer as big-endian.
     #[inline]
     pub fn write_u16_be(&mut self, value: u16) {
         self.write_array(value.to_be_bytes())
     }
 
+    /// Writes a `u32` into the buffer as little-endian.
     #[inline]
     pub fn write_u32(&mut self, value: u32) {
         self.write_array(value.to_le_bytes())
     }
 
+    /// Writes a `u32` into the buffer as big-endian.
     #[inline]
     pub fn write_u32_be(&mut self, value: u32) {
         self.write_array(value.to_be_bytes())
     }
 
+    /// Writes a `u64` into the buffer as little-endian.
     #[inline]
     pub fn write_u64(&mut self, value: u64) {
         self.write_array(value.to_le_bytes())
     }
 
+    /// Writes a `u64` into the buffer as big-endian.
     #[inline]
     pub fn write_u64_be(&mut self, value: u64) {
         self.write_array(value.to_be_bytes())

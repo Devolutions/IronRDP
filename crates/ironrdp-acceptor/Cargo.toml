@@ -21,6 +21,7 @@ ironrdp-svc.workspace = true
 ironrdp-connector.workspace = true
 ironrdp-async.workspace = true
 tracing.workspace = true
+ironrdp-core = { workspace = true, features = ["alloc"] }
 
 [lints]
 workspace = true

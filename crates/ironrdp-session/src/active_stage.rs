@@ -2,13 +2,13 @@ use std::rc::Rc;
 
 use ironrdp_connector::connection_activation::ConnectionActivationSequence;
 use ironrdp_connector::ConnectionResult;
+use ironrdp_core::WriteBuf;
 use ironrdp_displaycontrol::client::DisplayControlClient;
 use ironrdp_dvc::{DrdynvcClient, DvcProcessor, DynamicVirtualChannel};
 use ironrdp_graphics::pointer::DecodedPointer;
 use ironrdp_pdu::geometry::InclusiveRectangle;
 use ironrdp_pdu::input::fast_path::{FastPathInput, FastPathInputEvent};
 use ironrdp_pdu::rdp::headers::ShareDataPdu;
-use ironrdp_pdu::write_buf::WriteBuf;
 use ironrdp_pdu::{mcs, Action};
 use ironrdp_svc::{SvcProcessor, SvcProcessorMessages};
 

@@ -21,6 +21,7 @@ diplomat = "0.7"
 diplomat-runtime = "0.7"
 ironrdp = { workspace = true, features = ["connector", "dvc", "svc", "rdpdr", "rdpsnd", "graphics", "input", "cliprdr", "displaycontrol"] }
 ironrdp-cliprdr-native = { workspace = true }
+ironrdp-core = { workspace = true, features = ["alloc"] }
 sspi = { workspace = true, features = ["network_client"] }
 thiserror.workspace = true
 tracing.workspace = true

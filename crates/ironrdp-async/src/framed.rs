@@ -2,7 +2,8 @@ use std::io;
 
 use bytes::{Bytes, BytesMut};
 use ironrdp_connector::{ConnectorResult, Sequence, Written};
-use ironrdp_pdu::{write_buf::WriteBuf, PduHint};
+use ironrdp_core::WriteBuf;
+use ironrdp_pdu::PduHint;
 
 // TODO: investigate if we could use static async fn / return position impl trait in traits when stabilized:
 // https://github.com/rust-lang/rust/issues/91611

@@ -1,7 +1,7 @@
 use ironrdp_connector::{ConnectorError, ConnectorErrorExt, ConnectorResult, Sequence, State, Written};
+use ironrdp_core::WriteBuf;
 use ironrdp_pdu as pdu;
 use pdu::rdp;
-use pdu::write_buf::WriteBuf;
 
 use crate::util::{self, wrap_share_data};
 

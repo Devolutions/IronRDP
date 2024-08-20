@@ -1,8 +1,8 @@
 use core::fmt;
 use std::mem;
 
+use ironrdp_core::WriteBuf;
 use ironrdp_pdu::rdp::server_license::{self, LicensePdu, ServerLicenseError};
-use ironrdp_pdu::write_buf::WriteBuf;
 use ironrdp_pdu::PduHint;
 use rand_core::{OsRng, RngCore as _};
 

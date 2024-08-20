@@ -83,7 +83,7 @@ impl Sequence for ConnectionActivationSequence {
         &self.state
     }
 
-    fn step(&mut self, input: &[u8], output: &mut ironrdp_pdu::write_buf::WriteBuf) -> ConnectorResult<Written> {
+    fn step(&mut self, input: &[u8], output: &mut ironrdp_core::WriteBuf) -> ConnectorResult<Written> {
         let (written, next_state) = match mem::take(&mut self.state) {
             ConnectionActivationState::Consumed | ConnectionActivationState::Finalized { .. } => {
                 return Err(general_err!(

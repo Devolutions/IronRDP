@@ -2,8 +2,8 @@ use std::borrow::Cow;
 use std::mem;
 use std::net::SocketAddr;
 
+use ironrdp_core::WriteBuf;
 use ironrdp_pdu::rdp::client_info::TimezoneInfo;
-use ironrdp_pdu::write_buf::WriteBuf;
 use ironrdp_pdu::{decode, encode_vec, gcc, mcs, nego, rdp, PduEncode, PduHint};
 use ironrdp_svc::{StaticChannelSet, StaticVirtualChannel, SvcClientProcessor};
 

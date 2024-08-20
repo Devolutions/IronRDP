@@ -1,7 +1,7 @@
 use std::borrow::Cow;
 
+use ironrdp_core::WriteBuf;
 use ironrdp_pdu::rdp::headers::ServerDeactivateAll;
-use ironrdp_pdu::write_buf::WriteBuf;
 use ironrdp_pdu::{decode, encode_vec, rdp, PduDecode, PduEncode};
 
 use crate::{ConnectorError, ConnectorErrorExt as _, ConnectorResult};
