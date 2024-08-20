@@ -264,13 +264,6 @@ impl From<LicensingErrorMessage> for ServerLicenseError {
     }
 }
 
-#[cfg(feature = "std")]
-impl ironrdp_error::legacy::ErrorContext for ServerLicenseError {
-    fn context(&self) -> &'static str {
-        "server license"
-    }
-}
-
 #[derive(Debug, PartialEq)]
 pub struct BlobHeader {
     pub blob_type: BlobType,

@@ -189,7 +189,3 @@ pub fn decode_io_channel(ctx: SendDataIndicationCtx<'_>) -> ConnectorResult<IoCh
         )),
     }
 }
-
-impl ironrdp_error::legacy::CatchAllKind for crate::ConnectorErrorKind {
-    const CATCH_ALL_VALUE: Self = crate::ConnectorErrorKind::General;
-}

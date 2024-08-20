@@ -114,10 +114,3 @@ impl From<ChannelError> for io::Error {
         io::Error::new(io::ErrorKind::Other, format!("Virtual channel error: {e}"))
     }
 }
-
-#[cfg(feature = "std")]
-impl ironrdp_error::legacy::ErrorContext for ChannelError {
-    fn context(&self) -> &'static str {
-        "virtual channel error"
-    }
-}

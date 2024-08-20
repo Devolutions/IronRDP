@@ -160,30 +160,3 @@ where
         Ok(())
     }
 }
-
-/// Temporary compatibility traits to smooth transition from old style
-#[cfg(feature = "std")]
-#[doc(hidden)]
-pub mod legacy {
-    #[doc(hidden)]
-    pub trait CatchAllKind {
-        const CATCH_ALL_VALUE: Self;
-    }
-
-    #[doc(hidden)]
-    pub trait ErrorContext: std::error::Error {
-        fn context(&self) -> &'static str;
-    }
-
-    #[doc(hidden)]
-    impl<E, Kind> From<E> for crate::Error<Kind>
-    where
-        E: ErrorContext + Send + Sync + 'static,
-        Kind: CatchAllKind,
-    {
-        #[cold]
-        fn from(error: E) -> Self {
-            Self::new(error.context(), Kind::CATCH_ALL_VALUE).with_source(error)
-        }
-    }
-}

@@ -447,12 +447,6 @@ pub enum ZgfxError {
     TokenBitsNotFound,
 }
 
-impl ironrdp_error::legacy::ErrorContext for ZgfxError {
-    fn context(&self) -> &'static str {
-        "zgfx"
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
