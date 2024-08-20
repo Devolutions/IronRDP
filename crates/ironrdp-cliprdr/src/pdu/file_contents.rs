@@ -1,7 +1,7 @@
 use std::borrow::Cow;
 
 use bitflags::bitflags;
-use ironrdp_pdu::cursor::{ReadCursor, WriteCursor};
+use ironrdp_core::{ReadCursor, WriteCursor};
 use ironrdp_pdu::utils::{combine_u64, split_u64};
 use ironrdp_pdu::{
     cast_int, ensure_size, impl_pdu_borrowing, invalid_message_err, IntoOwnedPdu, PduDecode, PduEncode, PduResult,

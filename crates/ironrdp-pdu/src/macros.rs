@@ -232,7 +232,7 @@ macro_rules! impl_pdu_pod {
         }
 
         impl $crate::PduDecodeOwned for $pdu_ty {
-            fn decode_owned(src: &mut $crate::cursor::ReadCursor<'_>) -> $crate::PduResult<Self> {
+            fn decode_owned(src: &mut ReadCursor<'_>) -> $crate::PduResult<Self> {
                 <Self as $crate::PduDecode>::decode(src)
             }
         }
@@ -246,7 +246,7 @@ macro_rules! impl_pdu_borrowing {
         pub type $owned_ty = $pdu_ty<'static>;
 
         impl $crate::PduDecodeOwned for $owned_ty {
-            fn decode_owned(src: &mut $crate::cursor::ReadCursor<'_>) -> $crate::PduResult<Self> {
+            fn decode_owned(src: &mut ReadCursor<'_>) -> $crate::PduResult<Self> {
                 let pdu = <$pdu_ty $(<$($lt),+>)? as $crate::PduDecode>::decode(src)?;
                 Ok($crate::IntoOwnedPdu::into_owned_pdu(pdu))
             }

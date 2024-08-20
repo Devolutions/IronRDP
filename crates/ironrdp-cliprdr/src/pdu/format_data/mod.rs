@@ -9,7 +9,7 @@ pub use self::palette::*;
 #[rustfmt::skip]
 use std::borrow::Cow;
 
-use ironrdp_pdu::cursor::{ReadCursor, WriteCursor};
+use ironrdp_core::{ReadCursor, WriteCursor};
 use ironrdp_pdu::utils::{read_string_from_cursor, to_utf16_bytes, CharacterSet};
 use ironrdp_pdu::{
     cast_int, ensure_fixed_part_size, ensure_size, impl_pdu_borrowing, IntoOwnedPdu, PduDecode, PduEncode, PduResult,

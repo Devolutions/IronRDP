@@ -1,11 +1,11 @@
 use std::borrow::Cow;
 
-use crate::cursor::{ReadCursor, WriteCursor};
 use crate::gcc::{ChannelDef, ClientGccBlocks, ConferenceCreateRequest, ConferenceCreateResponse};
 use crate::tpdu::{TpduCode, TpduHeader};
 use crate::tpkt::TpktHeader;
 use crate::x224::{user_data_size, X224Pdu};
 use crate::{per, IntoOwnedPdu, PduError, PduErrorExt as _, PduResult};
+use ironrdp_core::{ReadCursor, WriteCursor};
 
 // T.125 MCS is defined in:
 //
@@ -237,14 +237,14 @@ impl DomainMcsPdu {
 }
 
 fn read_mcspdu_header(src: &mut ReadCursor<'_>, ctx: &'static str) -> PduResult<DomainMcsPdu> {
-    let choice = src.try_read_u8(ctx)?;
+    let choice = src.try_read_u8().map_err(|e| custom_err!(ctx, e))?;
 
     DomainMcsPdu::from_choice(choice)
         .ok_or_else(|| PduError::invalid_message(ctx, "domain-mcspdu", "unexpected application tag for CHOICE"))
 }
 
 fn peek_mcspdu_header(src: &mut ReadCursor<'_>, ctx: &'static str) -> PduResult<DomainMcsPdu> {
-    let choice = src.try_peek_u8(ctx)?;
+    let choice = src.try_read_u8().map_err(|e| custom_err!(ctx, e))?;
 
     DomainMcsPdu::from_choice(choice)
         .ok_or_else(|| PduError::invalid_message(ctx, "domain-mcspdu", "unexpected application tag for CHOICE"))

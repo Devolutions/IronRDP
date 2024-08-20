@@ -1,5 +1,5 @@
-use crate::cursor::{ReadCursor, WriteCursor};
 use crate::{PduDecode, PduEncode, PduResult};
+use ironrdp_core::{ReadCursor, WriteCursor};
 
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub struct MultifragmentUpdate {

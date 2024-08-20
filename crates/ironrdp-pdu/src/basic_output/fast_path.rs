@@ -9,10 +9,10 @@ use num_traits::{FromPrimitive, ToPrimitive};
 use super::bitmap::BitmapUpdateData;
 use super::pointer::PointerUpdateData;
 use super::surface_commands::{SurfaceCommand, SURFACE_COMMAND_HEADER_SIZE};
-use crate::cursor::{ReadCursor, WriteCursor};
 use crate::rdp::client_info::CompressionType;
 use crate::rdp::headers::{CompressionFlags, SHARE_DATA_HEADER_COMPRESSION_MASK};
 use crate::{decode_cursor, per, PduDecode, PduEncode, PduResult};
+use ironrdp_core::{ReadCursor, WriteCursor};
 
 /// Implements the Fast-Path RDP message header PDU.
 /// TS_FP_UPDATE_PDU

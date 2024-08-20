@@ -4,7 +4,7 @@
 //! and message recipients should not assume padding has any particular
 //! value.
 
-use crate::cursor::{ReadCursor, WriteCursor};
+use ironrdp_core::{ReadCursor, WriteCursor};
 
 /// Writes zeroes using as few `write_u*` calls as possible.
 pub fn write(dst: &mut WriteCursor<'_>, mut n: usize) {

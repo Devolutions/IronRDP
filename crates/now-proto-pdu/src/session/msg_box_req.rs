@@ -1,7 +1,7 @@
 use alloc::string::String;
 use bitflags::bitflags;
 
-use ironrdp_pdu::cursor::{ReadCursor, WriteCursor};
+use ironrdp_core::{ReadCursor, WriteCursor};
 use ironrdp_pdu::{PduDecode, PduEncode, PduResult};
 
 use crate::{NowHeader, NowMessage, NowMessageClass, NowSessionMessage, NowSessionMessageKind, NowVarStr};

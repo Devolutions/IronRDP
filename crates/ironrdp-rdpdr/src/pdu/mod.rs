@@ -1,7 +1,7 @@
 use std::fmt::{self, Display};
 use std::mem::size_of;
 
-use ironrdp_pdu::cursor::{ReadCursor, WriteCursor};
+use ironrdp_core::{ReadCursor, WriteCursor};
 use ironrdp_pdu::{ensure_size, invalid_message_err, unsupported_pdu_err, PduDecode, PduEncode, PduError, PduResult};
 use ironrdp_svc::SvcPduEncode;
 

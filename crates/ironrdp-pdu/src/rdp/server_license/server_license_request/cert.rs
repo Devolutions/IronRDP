@@ -1,8 +1,6 @@
 use super::{BlobHeader, BlobType, KEY_EXCHANGE_ALGORITHM_RSA};
-use crate::{
-    cursor::{ReadCursor, WriteCursor},
-    PduDecode, PduEncode, PduResult,
-};
+use crate::{PduDecode, PduEncode, PduResult};
+use ironrdp_core::{ReadCursor, WriteCursor};
 
 pub const SIGNATURE_ALGORITHM_RSA: u32 = 1;
 pub const PROP_CERT_NO_BLOBS_SIZE: usize = 8;

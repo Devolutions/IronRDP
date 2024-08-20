@@ -2,8 +2,8 @@
 //!
 //! [1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpedisp/d2954508-f487-48bc-8731-39743e0854a9
 
+use ironrdp_core::{ReadCursor, WriteCursor};
 use ironrdp_dvc::DvcPduEncode;
-use ironrdp_pdu::cursor::{ReadCursor, WriteCursor};
 use ironrdp_pdu::{ensure_fixed_part_size, invalid_message_err, PduDecode, PduEncode, PduResult};
 use tracing::warn;
 

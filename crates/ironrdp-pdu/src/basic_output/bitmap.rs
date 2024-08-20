@@ -7,9 +7,9 @@ use std::fmt::{self, Debug};
 
 use bitflags::bitflags;
 
-use crate::cursor::ReadCursor;
 use crate::geometry::InclusiveRectangle;
 use crate::{PduDecode, PduEncode, PduResult};
+use ironrdp_core::{ReadCursor, WriteCursor};
 
 const FIRST_ROW_SIZE_VALUE: u16 = 0;
 
@@ -25,7 +25,7 @@ impl BitmapUpdateData<'_> {
 }
 
 impl BitmapUpdateData<'_> {
-    pub fn encode_header(rectangles: u16, dst: &mut crate::cursor::WriteCursor<'_>) -> PduResult<()> {
+    pub fn encode_header(rectangles: u16, dst: &mut WriteCursor<'_>) -> PduResult<()> {
         ensure_size!(in: dst, size: 2);
 
         dst.write_u16(BitmapFlags::BITMAP_UPDATE_TYPE.bits());
@@ -36,7 +36,7 @@ impl BitmapUpdateData<'_> {
 }
 
 impl PduEncode for BitmapUpdateData<'_> {
-    fn encode(&self, dst: &mut crate::cursor::WriteCursor<'_>) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
         ensure_size!(in: dst, size: self.size());
 
         if self.rectangles.len() > u16::MAX as usize {
@@ -105,7 +105,7 @@ impl BitmapData<'_> {
 }
 
 impl PduEncode for BitmapData<'_> {
-    fn encode(&self, dst: &mut crate::cursor::WriteCursor<'_>) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
         ensure_size!(in: dst, size: self.size());
 
         let encoded_bitmap_data_length = self.encoded_bitmap_data_length();
@@ -241,7 +241,7 @@ impl<'de> PduDecode<'de> for CompressedDataHeader {
 }
 
 impl PduEncode for CompressedDataHeader {
-    fn encode(&self, dst: &mut crate::cursor::WriteCursor<'_>) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
         ensure_fixed_part_size!(in: dst);
 
         if self.scan_width % 4 != 0 {

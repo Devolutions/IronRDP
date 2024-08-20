@@ -5,9 +5,9 @@ use bitflags::bitflags;
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive as _, ToPrimitive as _};
 
-use crate::cursor::{ReadCursor, WriteCursor};
 use crate::geometry::ExclusiveRectangle;
 use crate::{PduDecode, PduEncode, PduResult};
+use ironrdp_core::{ReadCursor, WriteCursor};
 
 pub const SURFACE_COMMAND_HEADER_SIZE: usize = 2;
 

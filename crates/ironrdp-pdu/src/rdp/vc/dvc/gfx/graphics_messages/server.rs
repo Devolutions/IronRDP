@@ -5,10 +5,10 @@ use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive, ToPrimitive};
 
 use super::{CapabilitySet, Color, Point, RDP_GFX_HEADER_SIZE};
-use crate::cursor::{ReadCursor, WriteCursor};
 use crate::gcc::Monitor;
 use crate::geometry::InclusiveRectangle;
 use crate::{decode_cursor, PduDecode, PduEncode, PduResult};
+use ironrdp_core::{ReadCursor, WriteCursor};
 
 pub(crate) const RESET_GRAPHICS_PDU_SIZE: usize = 340;
 

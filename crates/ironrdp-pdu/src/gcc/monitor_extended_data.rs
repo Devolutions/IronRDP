@@ -1,7 +1,7 @@
+use ironrdp_core::{ReadCursor, WriteCursor};
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive, ToPrimitive};
 
-use crate::cursor::{ReadCursor, WriteCursor};
 use crate::{PduDecode, PduEncode, PduResult};
 
 const MONITOR_COUNT_MAX: usize = 16;

@@ -1,7 +1,5 @@
-use crate::{
-    cursor::{ReadCursor, WriteCursor},
-    utils, PduDecode, PduEncode, PduResult,
-};
+use crate::{utils, PduDecode, PduEncode, PduResult};
+use ironrdp_core::{ReadCursor, WriteCursor};
 
 const DOMAIN_NAME_SIZE_FIELD_SIZE: usize = 4;
 const DOMAIN_NAME_SIZE_V1: usize = 52;

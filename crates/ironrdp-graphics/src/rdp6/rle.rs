@@ -1,7 +1,7 @@
 use std::io::{Read, Write};
 
 use byteorder::ReadBytesExt;
-use ironrdp_pdu::cursor::WriteCursor;
+use ironrdp_core::WriteCursor;
 use thiserror::Error;
 
 /// Maximum possible segment size is 47 (run_length = 2, raw_bytes_count = 15), which is treated as

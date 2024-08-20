@@ -1,4 +1,4 @@
-use ironrdp_pdu::cursor::ReadCursor;
+use ironrdp_core::ReadCursor;
 use ironrdp_pdu::gcc::*;
 use ironrdp_pdu::{decode, encode_vec, PduEncode, PduErrorKind};
 use ironrdp_testsuite_core::cluster_data::*;

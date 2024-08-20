@@ -2,7 +2,7 @@
 
 use alloc::vec::Vec;
 
-use ironrdp_pdu::cursor::{ReadCursor, WriteCursor};
+use ironrdp_core::{ReadCursor, WriteCursor};
 use ironrdp_pdu::{PduDecode, PduEncode, PduResult};
 
 use crate::VarU32;

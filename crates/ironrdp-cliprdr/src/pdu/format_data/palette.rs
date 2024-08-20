@@ -1,4 +1,4 @@
-use ironrdp_pdu::cursor::{ReadCursor, WriteCursor};
+use ironrdp_core::{ReadCursor, WriteCursor};
 use ironrdp_pdu::{impl_pdu_pod, PduDecode, PduEncode, PduResult};
 
 /// Represents `PALETTEENTRY`

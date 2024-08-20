@@ -1,4 +1,5 @@
-use crate::{PduDecode, PduEncode, PduResult, ReadCursor, WriteCursor};
+use crate::{PduDecode, PduEncode, PduResult};
+use ironrdp_core::{ReadCursor, WriteCursor};
 
 const NON_RLE_PADDING_SIZE: usize = 1;
 

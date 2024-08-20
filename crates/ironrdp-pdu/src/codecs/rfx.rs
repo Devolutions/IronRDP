@@ -8,10 +8,8 @@ use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive as _, ToPrimitive as _};
 use thiserror::Error;
 
-use crate::{
-    cursor::{ReadCursor, WriteCursor},
-    PduBufferParsing, PduDecode, PduEncode, PduResult,
-};
+use crate::{PduBufferParsing, PduDecode, PduEncode, PduResult};
+use ironrdp_core::{ReadCursor, WriteCursor};
 
 #[rustfmt::skip]
 pub use self::data_messages::{

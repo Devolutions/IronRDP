@@ -4,8 +4,8 @@ use std::fmt::Debug;
 use std::mem::size_of;
 use std::ops::Add;
 
-use crate::cursor::{ReadCursor, WriteCursor};
 use crate::PduResult;
+use ironrdp_core::{ReadCursor, WriteCursor};
 
 pub fn split_u64(value: u64) -> (u32, u32) {
     let bytes = value.to_le_bytes();

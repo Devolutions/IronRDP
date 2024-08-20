@@ -538,7 +538,7 @@ fn extract_run_length_mega_mega(src: &mut Buf<'_>) -> Result<usize, RleError> {
     }
 }
 
-// TODO: use ironrdp_pdu::cursor::ReadCursor instead
+// TODO: use ironrdp_core::ReadCursor instead
 struct Buf<'a> {
     inner: &'a [u8],
     pos: usize,
@@ -584,7 +584,7 @@ impl<'a> Buf<'a> {
     }
 }
 
-// TODO: use ironrdp_pdu::cursor::WriteCursor instead
+// TODO: use ironrdp_core::WriteCursor instead
 struct BufMut<'a> {
     inner: &'a mut [u8],
     pos: usize,

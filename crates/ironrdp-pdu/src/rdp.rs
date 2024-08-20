@@ -2,13 +2,13 @@ use std::io;
 
 use thiserror::Error;
 
-use crate::cursor::{ReadCursor, WriteCursor};
 use crate::input::InputEventError;
 use crate::rdp::capability_sets::CapabilitySetsError;
 use crate::rdp::client_info::{ClientInfo, ClientInfoError};
 use crate::rdp::headers::{BasicSecurityHeader, BasicSecurityHeaderFlags, ShareControlPduType, ShareDataPduType};
 use crate::rdp::server_license::ServerLicenseError;
 use crate::{PduDecode, PduEncode, PduError, PduResult};
+use ironrdp_core::{ReadCursor, WriteCursor};
 
 pub mod capability_sets;
 pub mod client_info;

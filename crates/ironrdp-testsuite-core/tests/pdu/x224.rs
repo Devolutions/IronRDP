@@ -1,5 +1,5 @@
 use expect_test::expect;
-use ironrdp_pdu::cursor::{ReadCursor, WriteCursor};
+use ironrdp_core::{ReadCursor, WriteCursor};
 use ironrdp_pdu::nego::{
     ConnectionConfirm, ConnectionRequest, Cookie, FailureCode, NegoRequestData, RequestFlags, ResponseFlags,
     RoutingToken, SecurityProtocol,

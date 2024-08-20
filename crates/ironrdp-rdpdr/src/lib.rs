@@ -9,7 +9,7 @@
 extern crate tracing;
 
 use ironrdp_core::impl_as_any;
-use ironrdp_pdu::cursor::ReadCursor;
+use ironrdp_core::ReadCursor;
 use ironrdp_pdu::gcc::ChannelName;
 use ironrdp_pdu::{decode_cursor, other_err, PduResult};
 use ironrdp_svc::{CompressionCondition, SvcClientProcessor, SvcMessage, SvcProcessor};

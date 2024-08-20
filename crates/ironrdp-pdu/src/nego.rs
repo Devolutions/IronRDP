@@ -5,11 +5,11 @@ use core::fmt;
 use bitflags::bitflags;
 use tap::prelude::*;
 
-use crate::cursor::{ReadCursor, WriteCursor};
 use crate::tpdu::{TpduCode, TpduHeader};
 use crate::tpkt::TpktHeader;
 use crate::x224::X224Pdu;
 use crate::{Pdu as _, PduError, PduErrorExt as _, PduResult};
+use ironrdp_core::{ReadCursor, WriteCursor};
 
 bitflags! {
     /// A 32-bit, unsigned integer that contains flags indicating the supported security protocols.

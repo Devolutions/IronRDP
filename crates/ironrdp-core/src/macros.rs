@@ -21,4 +21,3 @@ macro_rules! assert_impl {
         };
     };
 }
-

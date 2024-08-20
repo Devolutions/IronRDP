@@ -1,5 +1,5 @@
-use crate::cursor::{ReadCursor, WriteCursor};
 use crate::{PduError, PduErrorExt as _, PduResult};
+use ironrdp_core::{ReadCursor, WriteCursor};
 
 /// TPKT header
 ///

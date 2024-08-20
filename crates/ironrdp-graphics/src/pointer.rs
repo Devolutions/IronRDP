@@ -19,7 +19,7 @@
 //! - andMask == 1, xorMask == 0(black color) -> Transparent pixel
 //! - andMask == 1, xorMask == 1(white color) -> Pixel is inverted
 
-use ironrdp_pdu::cursor::ReadCursor;
+use ironrdp_core::ReadCursor;
 use ironrdp_pdu::pointer::{ColorPointerAttribute, LargePointerAttribute, PointerAttribute};
 use thiserror::Error;
 

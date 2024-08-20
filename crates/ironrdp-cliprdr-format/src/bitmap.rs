@@ -1,4 +1,4 @@
-use ironrdp_pdu::cursor::{ReadCursor, WriteCursor};
+use ironrdp_core::{ReadCursor, WriteCursor};
 use ironrdp_pdu::{cast_int, ensure_fixed_part_size, invalid_message_err, PduDecode, PduEncode, PduResult};
 use thiserror::Error;
 

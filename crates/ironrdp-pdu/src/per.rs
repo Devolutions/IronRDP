@@ -2,7 +2,7 @@
 
 use core::fmt;
 
-use crate::cursor::{ReadCursor, WriteCursor};
+use ironrdp_core::{ReadCursor, WriteCursor};
 
 pub(crate) const CHOICE_SIZE: usize = 1;
 pub(crate) const ENUM_SIZE: usize = 1;

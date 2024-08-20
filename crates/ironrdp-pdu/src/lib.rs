@@ -5,18 +5,15 @@
 #![allow(clippy::cast_sign_loss)] // FIXME: remove
 
 use core::fmt;
+use ironrdp_core::{ReadCursor, WriteCursor};
 
-use cursor::WriteCursor;
 #[cfg(feature = "alloc")]
 use write_buf::WriteBuf;
-
-use crate::cursor::ReadCursor;
 
 #[macro_use]
 mod macros;
 
 pub mod codecs;
-pub mod cursor;
 pub mod gcc;
 pub mod geometry;
 pub mod input;

@@ -1,4 +1,4 @@
-use ironrdp_pdu::cursor::{ReadCursor, WriteCursor};
+use ironrdp_core::{ReadCursor, WriteCursor};
 use ironrdp_pdu::{PduDecode, PduEncode, PduResult};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
