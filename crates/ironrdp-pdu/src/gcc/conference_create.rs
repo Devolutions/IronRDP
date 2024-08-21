@@ -53,7 +53,7 @@ impl PduEncode for ConferenceCreateRequest {
         // ConferenceCreateRequest::Selection: select optional userData from ConferenceCreateRequest
         per::write_selection(dst, CONFERENCE_REQUEST_USER_DATA_SELECTION);
         // ConferenceCreateRequest::ConferenceName
-        per::write_numeric_string(dst, CONFERENCE_NAME, 1).map_err(|e| custom_err!("confName", e))?;
+        per::write_numeric_string(dst, CONFERENCE_NAME, 1).map_err(|e| other_err!("confName", source: e))?;
         per::write_padding(dst, 1);
         // UserData (SET OF SEQUENCE)
         // one set of UserData
@@ -66,7 +66,7 @@ impl PduEncode for ConferenceCreateRequest {
             CONFERENCE_REQUEST_CLIENT_TO_SERVER_H221_NON_STANDARD,
             H221_NON_STANDARD_MIN_LENGTH,
         )
-        .map_err(|e| custom_err!("client-to-server", e))?;
+        .map_err(|e| other_err!("client-to-server", source: e))?;
         // H221NonStandardIdentifier (octet string)
         per::write_length(dst, cast_length!("gccBlocksLen", gcc_blocks_buffer_length)?);
         self.gcc_blocks.encode(dst)?;
@@ -105,7 +105,7 @@ impl<'de> PduDecode<'de> for ConferenceCreateRequest {
             return Err(invalid_field_err!("ConnectData::Key", "Got unexpected ConnectData key"));
         }
         // ConnectData::Key: value (OBJECT_IDENTIFIER)
-        if per::read_object_id(src).map_err(|e| custom_err!("value", e))? != CONFERENCE_REQUEST_OBJECT_ID {
+        if per::read_object_id(src).map_err(|e| other_err!("value", source: e))? != CONFERENCE_REQUEST_OBJECT_ID {
             return Err(invalid_field_err!(
                 "ConnectData::Key",
                 "Got unexpected ConnectData key value"
@@ -113,7 +113,7 @@ impl<'de> PduDecode<'de> for ConferenceCreateRequest {
         }
 
         // ConnectData::connectPDU: length
-        let _length = per::read_length(src).map_err(|e| custom_err!("len", e))?;
+        let _length = per::read_length(src).map_err(|e| other_err!("len", source: e))?;
         // ConnectGCCPDU (CHOICE): Select conferenceCreateRequest (0) of type ConferenceCreateRequest
         ensure_size!(in: src, size: per::CHOICE_SIZE);
         if per::read_choice(src) != CONNECT_GCC_PDU_CONFERENCE_REQUEST_CHOICE {
@@ -131,7 +131,7 @@ impl<'de> PduDecode<'de> for ConferenceCreateRequest {
             ));
         }
         // ConferenceCreateRequest::ConferenceName
-        per::read_numeric_string(src, 1).map_err(|e| custom_err!("confName", e))?;
+        per::read_numeric_string(src, 1).map_err(|e| other_err!("confName", source: e))?;
         // padding
         per::read_padding(src, 1);
 
@@ -153,7 +153,8 @@ impl<'de> PduDecode<'de> for ConferenceCreateRequest {
             ));
         }
         // h221NonStandard: client-to-server H.221 key, "Duca"
-        if per::read_octet_string(src, H221_NON_STANDARD_MIN_LENGTH).map_err(|e| custom_err!("client-to-server", e))?
+        if per::read_octet_string(src, H221_NON_STANDARD_MIN_LENGTH)
+            .map_err(|e| other_err!("client-to-server", source: e))?
             != CONFERENCE_REQUEST_CLIENT_TO_SERVER_H221_NON_STANDARD
         {
             return Err(invalid_field_err!(
@@ -162,7 +163,7 @@ impl<'de> PduDecode<'de> for ConferenceCreateRequest {
             ));
         }
         // H221NonStandardIdentifier (octet string)
-        let (_gcc_blocks_buffer_length, _) = per::read_length(src).map_err(|e| custom_err!("len", e))?;
+        let (_gcc_blocks_buffer_length, _) = per::read_length(src).map_err(|e| other_err!("len", source: e))?;
         let gcc_blocks = ClientGccBlocks::decode(src)?;
 
         Ok(Self { gcc_blocks })
@@ -199,7 +200,7 @@ impl PduEncode for ConferenceCreateResponse {
         // ConnectGCCPDU (CHOICE): Select conferenceCreateResponse (1) of type ConferenceCreateResponse
         per::write_choice(dst, CONNECT_GCC_PDU_CONFERENCE_RESPONSE_CHOICE);
         // ConferenceCreateResponse::nodeID (UserID)
-        per::write_u16(dst, self.user_id, CONFERENCE_REQUEST_U16_MIN).map_err(|e| custom_err!("userId", e))?;
+        per::write_u16(dst, self.user_id, CONFERENCE_REQUEST_U16_MIN).map_err(|e| other_err!("userId", source: e))?;
         // ConferenceCreateResponse::tag (INTEGER)
         per::write_u32(dst, CONFERENCE_RESPONSE_TAG);
         // ConferenceCreateResponse::result (ENUMERATED)
@@ -213,7 +214,7 @@ impl PduEncode for ConferenceCreateResponse {
             CONFERENCE_REQUEST_SERVER_TO_CLIENT_H221_NON_STANDARD,
             H221_NON_STANDARD_MIN_LENGTH,
         )
-        .map_err(|e| custom_err!("server-to-client", e))?;
+        .map_err(|e| other_err!("server-to-client", source: e))?;
         // H221NonStandardIdentifier (octet string)
         per::write_length(dst, gcc_blocks_buffer_length as u16);
         self.gcc_blocks.encode(dst)?;
@@ -250,14 +251,14 @@ impl<'de> PduDecode<'de> for ConferenceCreateResponse {
             return Err(invalid_field_err!("ConnectData::Key", "Got unexpected ConnectData key"));
         }
         // ConnectData::Key: value
-        if per::read_object_id(src).map_err(|e| custom_err!("value", e))? != CONFERENCE_REQUEST_OBJECT_ID {
+        if per::read_object_id(src).map_err(|e| other_err!("value", source: e))? != CONFERENCE_REQUEST_OBJECT_ID {
             return Err(invalid_field_err!(
                 "ConnectData::Key",
                 "Got unexpected ConnectData key value"
             ));
         };
         // ConnectData::connectPDU: length (MUST be ignored by the client according to [MS-RDPBCGR])
-        let _length = per::read_length(src).map_err(|e| custom_err!("len", e))?;
+        let _length = per::read_length(src).map_err(|e| other_err!("len", source: e))?;
         // ConnectGCCPDU (CHOICE): Select conferenceCreateResponse (1) of type ConferenceCreateResponse
         ensure_size!(in: src, size: per::CHOICE_SIZE);
         if per::read_choice(src) != CONNECT_GCC_PDU_CONFERENCE_RESPONSE_CHOICE {
@@ -267,16 +268,16 @@ impl<'de> PduDecode<'de> for ConferenceCreateResponse {
             ));
         }
         // ConferenceCreateResponse::nodeID (UserID)
-        let user_id = per::read_u16(src, CONFERENCE_REQUEST_U16_MIN).map_err(|e| custom_err!("userId", e))?;
+        let user_id = per::read_u16(src, CONFERENCE_REQUEST_U16_MIN).map_err(|e| other_err!("userId", source: e))?;
         // ConferenceCreateResponse::tag (INTEGER)
-        if per::read_u32(src).map_err(|e| custom_err!("tag", e))? != CONFERENCE_RESPONSE_TAG {
+        if per::read_u32(src).map_err(|e| other_err!("tag", source: e))? != CONFERENCE_RESPONSE_TAG {
             return Err(invalid_field_err!(
                 "ConferenceCreateResponse::tag",
                 "Got unexpected ConferenceCreateResponse tag",
             ));
         }
         // ConferenceCreateResponse::result (ENUMERATED)
-        if per::read_enum(src, mcs::RESULT_ENUM_LENGTH).map_err(|e| custom_err!("result", e))?
+        if per::read_enum(src, mcs::RESULT_ENUM_LENGTH).map_err(|e| other_err!("result", source: e))?
             != CONFERENCE_RESPONSE_RESULT
         {
             return Err(invalid_field_err!(
@@ -300,7 +301,8 @@ impl<'de> PduDecode<'de> for ConferenceCreateResponse {
             ));
         }
         // h221NonStandard, server-to-client H.221 key, "McDn"
-        if per::read_octet_string(src, H221_NON_STANDARD_MIN_LENGTH).map_err(|e| custom_err!("server-to-client", e))?
+        if per::read_octet_string(src, H221_NON_STANDARD_MIN_LENGTH)
+            .map_err(|e| other_err!("server-to-client", source: e))?
             != CONFERENCE_REQUEST_SERVER_TO_CLIENT_H221_NON_STANDARD
         {
             return Err(invalid_field_err!(
@@ -308,7 +310,7 @@ impl<'de> PduDecode<'de> for ConferenceCreateResponse {
                 "Got invalid H221NonStandard server-to-client key",
             ));
         }
-        let (_gcc_blocks_buffer_length, _) = per::read_length(src).map_err(|e| custom_err!("len", e))?;
+        let (_gcc_blocks_buffer_length, _) = per::read_length(src).map_err(|e| other_err!("len", source: e))?;
         let gcc_blocks = ServerGccBlocks::decode(src)?;
 
         Ok(Self { user_id, gcc_blocks })

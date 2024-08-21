@@ -7,12 +7,12 @@ use alloc::vec::Vec;
 use core::fmt;
 use ironrdp_core::impl_as_any;
 use ironrdp_core::ReadCursor;
-use ironrdp_pdu as pdu;
+use ironrdp_pdu::{self as pdu, other_err};
 use ironrdp_svc::{ChannelFlags, CompressionCondition, SvcMessage, SvcProcessor, SvcServerProcessor};
 use pdu::gcc::ChannelName;
 use pdu::PduDecode as _;
 use pdu::PduResult;
-use pdu::{cast_length, custom_err, invalid_field_err};
+use pdu::{cast_length, invalid_field_err};
 use slab::Slab;
 
 pub trait DvcServerProcessor: DvcProcessor {}
@@ -129,7 +129,7 @@ impl SvcProcessor for DrdynvcServer {
                         continue;
                     }
                     let req = DrdynvcServerPdu::Create(CreateRequestPdu::new(
-                        id.try_into().map_err(|e| custom_err!("invalid channel id", e))?,
+                        id.try_into().map_err(|e| other_err!("invalid channel id", source: e))?,
                         c.processor.channel_name().into(),
                     ));
                     c.state = ChannelState::Creation;

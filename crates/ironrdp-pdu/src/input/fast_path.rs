@@ -61,7 +61,7 @@ impl<'de> PduDecode<'de> for FastPathInputHeader {
         let header = src.read_u8();
         let flags = EncryptionFlags::from_bits_truncate(header.get_bits(6..8));
         let mut num_events = header.get_bits(2..6);
-        let (length, sizeof_length) = per::read_length(src).map_err(|e| custom_err!("perLen", e))?;
+        let (length, sizeof_length) = per::read_length(src).map_err(|e| other_err!("perLen", source: e))?;
 
         if !flags.is_empty() {
             return Err(invalid_field_err!("flags", "encryption not supported"));
