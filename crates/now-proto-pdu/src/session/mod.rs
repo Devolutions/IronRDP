@@ -50,7 +50,7 @@ impl NowSessionMessage {
             NowSessionMessageKind::MSGBOX_RSP => {
                 Ok(Self::MsgBoxRsp(NowSessionMsgBoxRspMsg::decode_from_body(header, src)?))
             }
-            _ => Err(unexpected_message_kind_err!(class: header.class.0, kind: header.kind)),
+            _ => Err(unsupported_message_err!(class: header.class.0, kind: header.kind)),
         }
     }
 }

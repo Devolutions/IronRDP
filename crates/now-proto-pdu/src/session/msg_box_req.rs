@@ -241,7 +241,7 @@ impl PduDecode<'_> for NowSessionMsgBoxReqMsg {
 
         match (header.class, NowSessionMessageKind(header.kind)) {
             (NowMessageClass::SESSION, NowSessionMessageKind::MSGBOX_REQ) => Self::decode_from_body(header, src),
-            _ => Err(unexpected_message_kind_err!(class: header.class.0, kind: header.kind)),
+            _ => Err(unsupported_message_err!(class: header.class.0, kind: header.kind)),
         }
     }
 }

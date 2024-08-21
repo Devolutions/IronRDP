@@ -43,7 +43,7 @@ impl PduDecode<'_> for NowSessionLockMsg {
 
         match (header.class, NowSessionMessageKind(header.kind)) {
             (NowMessageClass::SESSION, NowSessionMessageKind::LOCK) => Ok(Self::default()),
-            _ => Err(unexpected_message_kind_err!(class: header.class.0, kind: header.kind)),
+            _ => Err(unsupported_message_err!(class: header.class.0, kind: header.kind)),
         }
     }
 }

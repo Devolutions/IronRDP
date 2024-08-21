@@ -48,7 +48,7 @@ impl PduDecode<'_> for NowMessage {
             NowMessageClass::SESSION => Ok(Self::Session(NowSessionMessage::decode_from_body(header, src)?)),
             NowMessageClass::EXEC => Ok(Self::Exec(NowExecMessage::decode_from_body(header, src)?)),
             // Handle unknown class; Unknown kind is handled by underlying message type.
-            _ => Err(unexpected_message_kind_err!(class: header.class.0, kind: header.kind)),
+            _ => Err(unsupported_message_err!(class: header.class.0, kind: header.kind)),
         }
     }
 }
