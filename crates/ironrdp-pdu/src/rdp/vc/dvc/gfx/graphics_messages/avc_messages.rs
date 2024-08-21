@@ -4,7 +4,7 @@ use bit_field::BitField;
 use bitflags::bitflags;
 
 use crate::geometry::InclusiveRectangle;
-use crate::{PduDecode, PduEncode, PduResult};
+use crate::{DecodeResult, EncodeResult, PduDecode, PduEncode};
 use ironrdp_core::{ReadCursor, WriteCursor};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -21,7 +21,7 @@ impl QuantQuality {
 }
 
 impl PduEncode for QuantQuality {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
 
         let mut data = 0u8;
@@ -42,7 +42,7 @@ impl PduEncode for QuantQuality {
 }
 
 impl<'de> PduDecode<'de> for QuantQuality {
-    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+    fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
         let data = src.read_u8();
@@ -81,7 +81,7 @@ impl Avc420BitmapStream<'_> {
 }
 
 impl PduEncode for Avc420BitmapStream<'_> {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
         dst.write_u32(cast_length!("len", self.rectangles.len())?);
@@ -107,7 +107,7 @@ impl PduEncode for Avc420BitmapStream<'_> {
 }
 
 impl<'de> PduDecode<'de> for Avc420BitmapStream<'de> {
-    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+    fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
         let num_regions = src.read_u32();
@@ -151,7 +151,7 @@ impl Avc444BitmapStream<'_> {
 }
 
 impl PduEncode for Avc444BitmapStream<'_> {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
 
         let mut stream_info = 0u32;
@@ -181,7 +181,7 @@ impl PduEncode for Avc444BitmapStream<'_> {
 }
 
 impl<'de> PduDecode<'de> for Avc444BitmapStream<'de> {
-    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+    fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
         let stream_info = src.read_u32();

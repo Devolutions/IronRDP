@@ -9,7 +9,7 @@ use super::{
     BlobHeader, BlobType, LicenseHeader, PreambleType, ServerLicenseError, BLOB_LENGTH_SIZE, BLOB_TYPE_SIZE,
     KEY_EXCHANGE_ALGORITHM_RSA, RANDOM_NUMBER_SIZE, UTF16_NULL_TERMINATOR_SIZE, UTF8_NULL_TERMINATOR_SIZE,
 };
-use crate::{utils, PduDecode, PduEncode, PduResult};
+use crate::{utils, DecodeResult, EncodeResult, PduDecode, PduEncode};
 use ironrdp_core::{ReadCursor, WriteCursor};
 
 const CERT_VERSION_FIELD_SIZE: usize = 4;
@@ -45,7 +45,7 @@ impl ServerLicenseRequest {
 }
 
 impl ServerLicenseRequest {
-    pub fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    pub fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
         self.license_header.encode(dst)?;
@@ -90,7 +90,7 @@ impl ServerLicenseRequest {
 }
 
 impl ServerLicenseRequest {
-    pub fn decode(license_header: LicenseHeader, src: &mut ReadCursor<'_>) -> PduResult<Self> {
+    pub fn decode(license_header: LicenseHeader, src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
         if license_header.preamble_message_type != PreambleType::LicenseRequest {
             return Err(invalid_field_err!("preambleMessageType", "unexpected preamble type"));
         }
@@ -155,7 +155,7 @@ impl Scope {
 }
 
 impl PduEncode for Scope {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
         let data_size = self.0.len() + UTF8_NULL_TERMINATOR_SIZE;
@@ -176,7 +176,7 @@ impl PduEncode for Scope {
 }
 
 impl<'de> PduDecode<'de> for Scope {
-    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+    fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         let blob_header = BlobHeader::decode(src)?;
         if blob_header.blob_type != BlobType::SCOPE {
             return Err(invalid_field_err!("blobType", "invalid blob type"));
@@ -253,7 +253,7 @@ impl ServerCertificate {
 }
 
 impl PduEncode for ServerCertificate {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
         let cert_version: u32 = match self.certificate {
@@ -291,7 +291,7 @@ impl PduEncode for ServerCertificate {
 }
 
 impl<'de> PduDecode<'de> for ServerCertificate {
-    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+    fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
         let cert_version = src.read_u32();
@@ -325,7 +325,7 @@ impl ProductInfo {
 }
 
 impl PduEncode for ProductInfo {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
         dst.write_u32(self.version);
@@ -362,7 +362,7 @@ impl PduEncode for ProductInfo {
 }
 
 impl<'de> PduDecode<'de> for ProductInfo {
-    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+    fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
         let version = src.read_u32();

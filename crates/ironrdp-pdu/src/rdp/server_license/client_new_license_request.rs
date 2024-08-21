@@ -13,7 +13,7 @@ use super::{
 };
 use crate::crypto::rsa::encrypt_with_public_key;
 use crate::utils::{self, CharacterSet};
-use crate::{PduDecode, PduEncode, PduResult};
+use crate::{DecodeResult, EncodeResult, PduDecode, PduEncode};
 use ironrdp_core::{ReadCursor, WriteCursor};
 
 const LICENSE_REQUEST_STATIC_FIELDS_SIZE: usize = 20;
@@ -125,7 +125,7 @@ impl ClientNewLicenseRequest {
 }
 
 impl ClientNewLicenseRequest {
-    pub fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    pub fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
         self.license_header.encode(dst)?;
@@ -171,7 +171,7 @@ impl ClientNewLicenseRequest {
 }
 
 impl ClientNewLicenseRequest {
-    pub fn decode(license_header: LicenseHeader, src: &mut ReadCursor<'_>) -> PduResult<Self> {
+    pub fn decode(license_header: LicenseHeader, src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
         if license_header.preamble_message_type != PreambleType::NewLicenseRequest {
             return Err(invalid_field_err!("preambleMessageType", "unexpected preamble type"));
         }

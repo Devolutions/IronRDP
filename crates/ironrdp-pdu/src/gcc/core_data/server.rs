@@ -3,7 +3,7 @@ use tap::Pipe as _;
 
 use super::RdpVersion;
 use crate::nego::SecurityProtocol;
-use crate::{PduDecode, PduEncode, PduResult};
+use crate::{DecodeResult, EncodeResult, PduDecode, PduEncode};
 use ironrdp_core::{ReadCursor, WriteCursor};
 
 const CLIENT_REQUESTED_PROTOCOL_SIZE: usize = 4;
@@ -22,7 +22,7 @@ impl ServerCoreData {
 }
 
 impl PduEncode for ServerCoreData {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
         dst.write_u32(self.version.0);
@@ -39,7 +39,7 @@ impl PduEncode for ServerCoreData {
 }
 
 impl<'de> PduDecode<'de> for ServerCoreData {
-    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+    fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
         let version = src.read_u32().pipe(RdpVersion);
@@ -60,7 +60,7 @@ impl ServerCoreOptionalData {
 }
 
 impl PduEncode for ServerCoreOptionalData {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
         if let Some(value) = self.client_requested_protocols {
@@ -102,7 +102,7 @@ macro_rules! try_or_return {
 }
 
 impl<'de> PduDecode<'de> for ServerCoreOptionalData {
-    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+    fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         let mut optional_data = Self::default();
 
         optional_data.client_requested_protocols = Some(

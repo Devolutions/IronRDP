@@ -12,7 +12,7 @@ pub use graphics_messages::{
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive as _, ToPrimitive as _};
 
-use crate::{PduDecode, PduEncode, PduResult};
+use crate::{DecodeResult, EncodeResult, PduDecode, PduEncode};
 use ironrdp_core::{ReadCursor, WriteCursor};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -46,7 +46,7 @@ impl ServerPdu {
 }
 
 impl PduEncode for ServerPdu {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
         let buffer_length = self.size();
@@ -107,7 +107,7 @@ impl PduEncode for ServerPdu {
 }
 
 impl<'a> PduDecode<'a> for ServerPdu {
-    fn decode(src: &mut ReadCursor<'a>) -> PduResult<Self> {
+    fn decode(src: &mut ReadCursor<'a>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
         let pdu_type = ServerPduType::from_u16(src.read_u16())
@@ -171,7 +171,7 @@ impl ClientPdu {
 }
 
 impl PduEncode for ClientPdu {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
         dst.write_u16(ClientPduType::from(self).to_u16().unwrap());
@@ -198,7 +198,7 @@ impl PduEncode for ClientPdu {
 }
 
 impl<'a> PduDecode<'a> for ClientPdu {
-    fn decode(src: &mut ReadCursor<'a>) -> PduResult<Self> {
+    fn decode(src: &mut ReadCursor<'a>) -> DecodeResult<Self> {
         let pdu_type = ClientPduType::from_u16(src.read_u16())
             .ok_or_else(|| invalid_field_err!("clientPduType", "invalid pdu type"))?;
         let _flags = src.read_u16();

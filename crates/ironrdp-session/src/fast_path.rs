@@ -11,7 +11,7 @@ use ironrdp_pdu::geometry::{InclusiveRectangle, Rectangle as _};
 use ironrdp_pdu::pointer::PointerUpdateData;
 use ironrdp_pdu::rdp::headers::ShareDataPdu;
 use ironrdp_pdu::surface_commands::{FrameAction, FrameMarkerPdu, SurfaceCommand};
-use ironrdp_pdu::{decode_cursor, PduErrorKind};
+use ironrdp_pdu::{decode_cursor, DecodeErrorKind};
 
 use crate::image::DecodedImage;
 use crate::pointer::PointerCache;
@@ -62,10 +62,10 @@ impl Processor {
 
         let mut input = ReadCursor::new(input);
 
-        let header = decode_cursor::<FastPathHeader>(&mut input).map_err(SessionError::pdu)?;
+        let header = decode_cursor::<FastPathHeader>(&mut input).map_err(SessionError::decode)?;
         debug!(fast_path_header = ?header, "Received Fast-Path packet");
 
-        let update_pdu = decode_cursor::<FastPathUpdatePdu<'_>>(&mut input).map_err(SessionError::pdu)?;
+        let update_pdu = decode_cursor::<FastPathUpdatePdu<'_>>(&mut input).map_err(SessionError::decode)?;
         trace!(fast_path_update_fragmentation = ?update_pdu.fragmentation);
 
         let processed_complete_data = self
@@ -293,7 +293,7 @@ impl Processor {
                 };
             }
             Err(e) => {
-                if let PduErrorKind::InvalidField { field, reason } = e.kind {
+                if let DecodeErrorKind::InvalidField { field, reason } = e.kind {
                     warn!(field, reason, "Received invalid Fast-Path update");
                     processor_updates.push(UpdateKind::None);
                 } else {

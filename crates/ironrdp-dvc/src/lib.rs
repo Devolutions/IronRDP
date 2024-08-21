@@ -17,7 +17,7 @@ use alloc::vec::Vec;
 #[rustfmt::skip] // do not re-order this pub use
 pub use ironrdp_pdu;
 use ironrdp_core::{assert_obj_safe, AsAny};
-use ironrdp_pdu::{cast_length, encode_vec, other_err, PduEncode, PduResult};
+use ironrdp_pdu::{cast_length, decode_err, encode_vec, other_err, EncodeResult, PduEncode, PduResult};
 use ironrdp_svc::{self, SvcMessage};
 
 mod complete_data;
@@ -62,7 +62,7 @@ pub fn encode_dvc_messages(
     channel_id: u32,
     messages: Vec<DvcMessage>,
     flags: ironrdp_svc::ChannelFlags,
-) -> PduResult<Vec<SvcMessage>> {
+) -> EncodeResult<Vec<SvcMessage>> {
     let mut res = Vec::new();
     for msg in messages {
         let total_length = msg.size();
@@ -139,7 +139,7 @@ impl DynamicVirtualChannel {
 
     fn process(&mut self, pdu: DrdynvcDataPdu) -> PduResult<Vec<DvcMessage>> {
         let channel_id = pdu.channel_id();
-        let complete_data = self.complete_data.process_data(pdu)?;
+        let complete_data = self.complete_data.process_data(pdu).map_err(|e| decode_err!(e))?;
         if let Some(complete_data) = complete_data {
             self.channel_processor.process(channel_id, &complete_data)
         } else {

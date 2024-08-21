@@ -1,6 +1,6 @@
 use bitflags::bitflags;
 
-use crate::{PduDecode, PduEncode, PduResult};
+use crate::{DecodeResult, EncodeResult, PduDecode, PduEncode};
 use ironrdp_core::{ReadCursor, WriteCursor};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -18,7 +18,7 @@ impl MousePdu {
 }
 
 impl PduEncode for MousePdu {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
 
         let wheel_negative_bit = if self.number_of_wheel_rotation_units < 0 {
@@ -48,7 +48,7 @@ impl PduEncode for MousePdu {
 }
 
 impl<'de> PduDecode<'de> for MousePdu {
-    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+    fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
         let flags_raw = src.read_u16();

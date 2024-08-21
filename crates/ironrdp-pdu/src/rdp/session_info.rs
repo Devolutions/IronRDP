@@ -4,7 +4,7 @@ use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive as _, ToPrimitive as _};
 use thiserror::Error;
 
-use crate::{PduDecode, PduEncode, PduError, PduResult};
+use crate::{DecodeResult, EncodeResult, PduDecode, PduEncode, PduError};
 use ironrdp_core::{ReadCursor, WriteCursor};
 
 #[cfg(test)]
@@ -35,7 +35,7 @@ impl SaveSessionInfoPdu {
 }
 
 impl PduEncode for SaveSessionInfoPdu {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
 
         dst.write_u32(self.info_type.to_u32().unwrap());
@@ -75,7 +75,7 @@ impl PduEncode for SaveSessionInfoPdu {
 }
 
 impl<'de> PduDecode<'de> for SaveSessionInfoPdu {
-    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+    fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
         let info_type = InfoType::from_u32(src.read_u32())

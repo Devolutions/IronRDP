@@ -2,7 +2,7 @@
 mod test;
 
 use super::{BlobHeader, BlobType, LicenseHeader, PreambleType, BLOB_LENGTH_SIZE, BLOB_TYPE_SIZE, MAC_SIZE};
-use crate::{PduDecode, PduEncode, PduResult};
+use crate::{DecodeResult, EncodeResult, PduDecode, PduEncode};
 use ironrdp_core::{ReadCursor, WriteCursor};
 
 const CONNECT_FLAGS_FIELD_SIZE: usize = 4;
@@ -24,7 +24,7 @@ impl ServerPlatformChallenge {
 }
 
 impl ServerPlatformChallenge {
-    pub fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    pub fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
         self.license_header.encode(dst)?;
@@ -46,7 +46,7 @@ impl ServerPlatformChallenge {
 }
 
 impl ServerPlatformChallenge {
-    pub fn decode(license_header: LicenseHeader, src: &mut ReadCursor<'_>) -> PduResult<Self> {
+    pub fn decode(license_header: LicenseHeader, src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
         if license_header.preamble_message_type != PreambleType::PlatformChallenge {
             return Err(invalid_field_err!("preambleMessageType", "unexpected preamble type"));
         }

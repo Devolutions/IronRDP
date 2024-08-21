@@ -1,7 +1,7 @@
 use bitflags::bitflags;
 use ironrdp_core::{ReadCursor, WriteCursor};
 
-use crate::{PduDecode, PduEncode, PduResult};
+use crate::{DecodeResult, EncodeResult, PduDecode, PduEncode};
 
 pub const MONITOR_COUNT_SIZE: usize = 4;
 pub const MONITOR_SIZE: usize = 20;
@@ -21,7 +21,7 @@ impl ClientMonitorData {
 }
 
 impl PduEncode for ClientMonitorData {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
 
         dst.write_u32(0); // flags
@@ -44,7 +44,7 @@ impl PduEncode for ClientMonitorData {
 }
 
 impl<'de> PduDecode<'de> for ClientMonitorData {
-    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+    fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
         let _flags = src.read_u32(); // is unused
@@ -79,7 +79,7 @@ impl Monitor {
 }
 
 impl PduEncode for Monitor {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
 
         dst.write_i32(self.left);
@@ -101,7 +101,7 @@ impl PduEncode for Monitor {
 }
 
 impl<'de> PduDecode<'de> for Monitor {
-    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+    fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
         let left = src.read_i32();

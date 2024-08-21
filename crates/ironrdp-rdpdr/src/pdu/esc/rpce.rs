@@ -6,7 +6,7 @@ use std::mem::size_of;
 
 use ironrdp_core::{ReadCursor, WriteCursor};
 use ironrdp_pdu::utils::CharacterSet;
-use ironrdp_pdu::{cast_length, ensure_size, invalid_field_err, PduEncode, PduError, PduResult};
+use ironrdp_pdu::{cast_length, ensure_size, invalid_field_err, DecodeError, DecodeResult, EncodeResult, PduEncode};
 
 /// Wrapper struct for [MS-RPCE] PDUs that allows for common [`PduEncode`], [`Encode`], and [`Self::decode`] implementations.
 ///
@@ -28,7 +28,7 @@ use ironrdp_pdu::{cast_length, ensure_size, invalid_field_err, PduEncode, PduErr
 ///
 /// /// The underlying struct should implement `HeaderlessEncode`.
 /// impl rpce::HeaderlessEncode for RpceEncodePdu {
-///     fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+///     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
 ///         ensure_size!(in: dst, size: self.size());
 ///         dst.write_u32(self.return_code.into());
 ///         Ok(())
@@ -56,7 +56,7 @@ use ironrdp_pdu::{cast_length, ensure_size, invalid_field_err, PduEncode, PduErr
 ///
 /// impl RpceDecodePdu {
 ///     /// `decode` returns a `Pdu` wrapping the underlying struct.
-///     pub fn decode(src: &mut ReadCursor<'_>) -> PduResult<rpce::Pdu<Self>> {
+///     pub fn decode(src: &mut ReadCursor<'_>) -> DecodeResult<rpce::Pdu<Self>> {
 ///         Ok(rpce::Pdu::<Self>::decode(src)?.into_inner())
 ///     }
 ///
@@ -67,7 +67,7 @@ use ironrdp_pdu::{cast_length, ensure_size, invalid_field_err, PduEncode, PduErr
 ///
 /// /// The underlying struct should implement `HeaderlessDecode`.
 /// impl rpce::HeaderlessDecode for RpceDecodePdu {
-///    fn decode(src: &mut ReadCursor<'_>) -> PduResult<Self>
+///    fn decode(src: &mut ReadCursor<'_>) -> DecodeResult<Self>
 ///    where
 ///         Self: Sized,
 ///    {
@@ -94,7 +94,7 @@ impl<T> Pdu<T> {
 
 impl<T: HeaderlessDecode> Pdu<T> {
     /// Decodes the instance from a buffer stripping it of its [`StreamHeader`] and [`TypeHeader`].
-    pub fn decode(src: &mut ReadCursor<'_>, charset: Option<CharacterSet>) -> PduResult<Pdu<T>> {
+    pub fn decode(src: &mut ReadCursor<'_>, charset: Option<CharacterSet>) -> DecodeResult<Pdu<T>> {
         // We expect `StreamHeader::decode`, `TypeHeader::decode`, and `T::decode` to each
         // call `ensure_size!` to ensure that the buffer is large enough, so we can safely
         // omit that check here.
@@ -106,7 +106,7 @@ impl<T: HeaderlessDecode> Pdu<T> {
 }
 
 impl<T: HeaderlessEncode> PduEncode for Pdu<T> {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(ctx: self.name(), in: dst, size: self.size());
         let stream_header = StreamHeader::default();
         let type_header = TypeHeader::new(cast_length!("Pdu<T>", "size", self.size())?);
@@ -146,7 +146,7 @@ pub trait Encode: PduEncode + Send + std::fmt::Debug {}
 /// Implementers should typically implement this trait instead of [`Encode`].
 pub trait HeaderlessEncode: Send + std::fmt::Debug {
     /// Encodes the instance into a buffer sans its [`StreamHeader`] and [`TypeHeader`].
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()>;
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()>;
     /// Returns the name associated with this RPCE PDU.
     fn name(&self) -> &'static str;
     /// Returns the size of the instance sans its [`StreamHeader`] and [`TypeHeader`].
@@ -164,7 +164,7 @@ pub trait HeaderlessDecode: Sized {
     /// `charset` is an optional parameter that can be used to specify the character set
     /// when relevant. This is useful for accounting for the "A" vs "W" variants of certain
     /// opcodes e.g. [`ListReadersA`][`super::ScardIoCtlCode::ListReadersA`] vs [`ListReadersW`][`super::ScardIoCtlCode::ListReadersW`].
-    fn decode(src: &mut ReadCursor<'_>, charset: Option<CharacterSet>) -> PduResult<Self>;
+    fn decode(src: &mut ReadCursor<'_>, charset: Option<CharacterSet>) -> DecodeResult<Self>;
 }
 
 /// [2.2.6.1] Common Type Header for the Serialization Stream
@@ -189,7 +189,7 @@ impl Default for StreamHeader {
 }
 
 impl StreamHeader {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: Self::size());
         dst.write_u8(self.version);
         dst.write_u8(self.endianness.into());
@@ -198,7 +198,7 @@ impl StreamHeader {
         Ok(())
     }
 
-    fn decode(src: &mut ReadCursor<'_>) -> PduResult<Self> {
+    fn decode(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
         ensure_size!(in: src, size: Self::size());
         let version = src.read_u8();
         let endianness = Endianness::try_from(src.read_u8())?;
@@ -233,7 +233,7 @@ enum Endianness {
 }
 
 impl TryFrom<u8> for Endianness {
-    type Error = PduError;
+    type Error = DecodeError;
 
     fn try_from(value: u8) -> Result<Self, Self::Error> {
         match value {
@@ -267,14 +267,14 @@ impl TypeHeader {
         }
     }
 
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: Self::size());
         dst.write_u32(self.object_buffer_length);
         dst.write_u32(self.filler);
         Ok(())
     }
 
-    fn decode(src: &mut ReadCursor<'_>) -> PduResult<Self> {
+    fn decode(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
         ensure_size!(in: src, size: Self::size());
         let object_buffer_length = src.read_u32();
         let filler = src.read_u32();

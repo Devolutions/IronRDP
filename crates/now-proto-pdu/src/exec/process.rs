@@ -1,5 +1,5 @@
 use ironrdp_core::{ReadCursor, WriteCursor};
-use ironrdp_pdu::{PduDecode, PduEncode, PduResult};
+use ironrdp_pdu::{DecodeResult, EncodeResult, PduDecode, PduEncode};
 
 use crate::{NowExecMessage, NowExecMsgKind, NowHeader, NowMessage, NowMessageClass, NowVarStr};
 
@@ -18,7 +18,12 @@ impl NowExecProcessMsg {
     const NAME: &'static str = "NOW_EXEC_PROCESS_MSG";
     const FIXED_PART_SIZE: usize = 4;
 
-    pub fn new(session_id: u32, filename: NowVarStr, parameters: NowVarStr, directory: NowVarStr) -> PduResult<Self> {
+    pub fn new(
+        session_id: u32,
+        filename: NowVarStr,
+        parameters: NowVarStr,
+        directory: NowVarStr,
+    ) -> DecodeResult<Self> {
         let msg = Self {
             session_id,
             filename,
@@ -31,7 +36,7 @@ impl NowExecProcessMsg {
         Ok(msg)
     }
 
-    fn ensure_message_size(&self) -> PduResult<()> {
+    fn ensure_message_size(&self) -> DecodeResult<()> {
         let _message_size = Self::FIXED_PART_SIZE
             .checked_add(self.filename.size())
             .and_then(|size| size.checked_add(self.parameters.size()))
@@ -63,7 +68,7 @@ impl NowExecProcessMsg {
         Self::FIXED_PART_SIZE + self.filename.size() + self.parameters.size() + self.directory.size()
     }
 
-    pub(super) fn decode_from_body(_header: NowHeader, src: &mut ReadCursor<'_>) -> PduResult<Self> {
+    pub(super) fn decode_from_body(_header: NowHeader, src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
         let session_id = src.read_u32();
@@ -85,7 +90,7 @@ impl NowExecProcessMsg {
 }
 
 impl PduEncode for NowExecProcessMsg {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         let header = NowHeader {
             size: cast_length!("size", self.body_size())?,
             class: NowMessageClass::EXEC,
@@ -116,7 +121,7 @@ impl PduEncode for NowExecProcessMsg {
 }
 
 impl PduDecode<'_> for NowExecProcessMsg {
-    fn decode(src: &mut ReadCursor<'_>) -> PduResult<Self> {
+    fn decode(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
         let header = NowHeader::decode(src)?;
 
         match (header.class, NowExecMsgKind(header.kind)) {

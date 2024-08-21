@@ -43,7 +43,7 @@ struct CredsspTsRequestHint;
 const CREDSSP_TS_REQUEST_HINT: CredsspTsRequestHint = CredsspTsRequestHint;
 
 impl PduHint for CredsspTsRequestHint {
-    fn find_size(&self, bytes: &[u8]) -> ironrdp_pdu::PduResult<Option<(bool, usize)>> {
+    fn find_size(&self, bytes: &[u8]) -> ironrdp_pdu::DecodeResult<Option<(bool, usize)>> {
         match credssp::TsRequest::read_length(bytes) {
             Ok(length) => Ok(Some((true, length))),
             Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => Ok(None),
@@ -58,7 +58,7 @@ struct CredsspEarlyUserAuthResultHint;
 const CREDSSP_EARLY_USER_AUTH_RESULT_HINT: CredsspEarlyUserAuthResultHint = CredsspEarlyUserAuthResultHint;
 
 impl PduHint for CredsspEarlyUserAuthResultHint {
-    fn find_size(&self, _: &[u8]) -> ironrdp_pdu::PduResult<Option<(bool, usize)>> {
+    fn find_size(&self, _: &[u8]) -> ironrdp_pdu::DecodeResult<Option<(bool, usize)>> {
         Ok(Some((true, credssp::EARLY_USER_AUTH_RESULT_PDU_SIZE)))
     }
 }

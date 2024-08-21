@@ -3,7 +3,7 @@ mod tests;
 
 use bitflags::bitflags;
 
-use crate::{PduDecode, PduEncode, PduResult};
+use crate::{DecodeResult, EncodeResult, PduDecode, PduEncode};
 use ironrdp_core::{ReadCursor, WriteCursor};
 
 const FLAGS_FIELD_SIZE: usize = 4;
@@ -42,7 +42,7 @@ impl VirtualChannel {
 }
 
 impl PduEncode for VirtualChannel {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
         dst.write_u32(self.flags.bits());
@@ -73,7 +73,7 @@ macro_rules! try_or_return {
 }
 
 impl<'de> PduDecode<'de> for VirtualChannel {
-    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+    fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
         let flags = VirtualChannelFlags::from_bits_truncate(src.read_u32());

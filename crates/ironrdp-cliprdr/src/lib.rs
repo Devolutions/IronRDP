@@ -11,7 +11,7 @@ pub mod pdu;
 use backend::CliprdrBackend;
 use ironrdp_core::AsAny;
 use ironrdp_pdu::gcc::ChannelName;
-use ironrdp_pdu::{decode, PduResult};
+use ironrdp_pdu::{decode, decode_err, encode_err, EncodeResult, PduResult};
 use ironrdp_svc::{
     ChannelFlags, CompressionCondition, SvcClientProcessor, SvcMessage, SvcProcessor, SvcProcessorMessages,
     SvcServerProcessor,
@@ -117,7 +117,7 @@ impl<R: Role> Cliprdr<R> {
             .contains(ClipboardGeneralCapabilityFlags::USE_LONG_FORMAT_NAMES)
     }
 
-    fn build_format_list(&self, formats: &[ClipboardFormat]) -> PduResult<FormatList<'static>> {
+    fn build_format_list(&self, formats: &[ClipboardFormat]) -> EncodeResult<FormatList<'static>> {
         FormatList::new_unicode(formats, self.are_long_format_names_enabled())
     }
 
@@ -233,16 +233,20 @@ impl<R: Role> Cliprdr<R> {
         match (self.state, R::is_server()) {
             // When user initiates copy, we should send format list to server.
             (CliprdrState::Ready, _) => {
-                pdus.push(ClipboardPdu::FormatList(self.build_format_list(available_formats)?));
+                pdus.push(ClipboardPdu::FormatList(
+                    self.build_format_list(available_formats).map_err(|e| encode_err!(e))?,
+                ));
             }
             (CliprdrState::Initialization, false) => {
                 // During initialization state, first copy action is synthetic and should be sent along with
                 // capabilities and temporary directory PDUs.
                 pdus.push(ClipboardPdu::Capabilities(self.capabilities.clone()));
-                pdus.push(ClipboardPdu::TemporaryDirectory(ClientTemporaryDirectory::new(
-                    self.backend.temporary_directory(),
-                )?));
-                pdus.push(ClipboardPdu::FormatList(self.build_format_list(available_formats)?));
+                pdus.push(ClipboardPdu::TemporaryDirectory(
+                    ClientTemporaryDirectory::new(self.backend.temporary_directory()).map_err(|e| encode_err!(e))?,
+                ));
+                pdus.push(ClipboardPdu::FormatList(
+                    self.build_format_list(available_formats).map_err(|e| encode_err!(e))?,
+                ));
             }
             _ => {
                 error!(?self.state, "Attempted to initiate copy in incorrect state");
@@ -286,7 +290,7 @@ impl<R: Role> SvcProcessor for Cliprdr<R> {
     }
 
     fn process(&mut self, payload: &[u8]) -> PduResult<Vec<SvcMessage>> {
-        let pdu = decode::<ClipboardPdu<'_>>(payload)?;
+        let pdu = decode::<ClipboardPdu<'_>>(payload).map_err(|e| decode_err!(e))?;
 
         if self.state == CliprdrState::Failed {
             error!("Attempted to process clipboard static virtual channel in failed state");

@@ -4,7 +4,7 @@ mod tests;
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive, ToPrimitive};
 
-use crate::{PduDecode, PduEncode, PduResult};
+use crate::{DecodeResult, EncodeResult, PduDecode, PduEncode};
 use ironrdp_core::{ReadCursor, WriteCursor};
 
 const BRUSH_LENGTH: usize = 4;
@@ -28,7 +28,7 @@ impl Brush {
 }
 
 impl PduEncode for Brush {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
 
         dst.write_u32(self.support_level.to_u32().unwrap());
@@ -46,7 +46,7 @@ impl PduEncode for Brush {
 }
 
 impl<'de> PduDecode<'de> for Brush {
-    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+    fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
         let support_level = SupportLevel::from_u32(src.read_u32())

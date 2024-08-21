@@ -2,7 +2,7 @@ use alloc::string::String;
 use bitflags::bitflags;
 
 use ironrdp_core::{ReadCursor, WriteCursor};
-use ironrdp_pdu::{PduDecode, PduEncode, PduResult};
+use ironrdp_pdu::{DecodeResult, EncodeResult, PduDecode, PduEncode};
 
 use crate::{NowHeader, NowMessage, NowMessageClass, NowSessionMessage, NowSessionMessageKind, NowVarStr};
 
@@ -75,7 +75,7 @@ impl NowSessionMsgBoxReqMsg {
     const NAME: &'static str = "NOW_SESSION_MSGBOX_REQ_MSG";
     const FIXED_PART_SIZE: usize = 12;
 
-    pub fn new(request_id: u32, message: NowVarStr) -> PduResult<Self> {
+    pub fn new(request_id: u32, message: NowVarStr) -> DecodeResult<Self> {
         let msg = Self {
             flags: NowSessionMessageBoxFlags::empty(),
             request_id,
@@ -90,7 +90,7 @@ impl NowSessionMsgBoxReqMsg {
         Ok(msg)
     }
 
-    fn ensure_message_size(&self) -> PduResult<()> {
+    fn ensure_message_size(&self) -> DecodeResult<()> {
         let _message_size = Self::FIXED_PART_SIZE
             .checked_add(self.title.size())
             .and_then(|size| size.checked_add(self.message.size()))
@@ -99,7 +99,7 @@ impl NowSessionMsgBoxReqMsg {
         Ok(())
     }
 
-    pub fn with_title(mut self, title: NowVarStr) -> PduResult<Self> {
+    pub fn with_title(mut self, title: NowVarStr) -> DecodeResult<Self> {
         self.flags |= NowSessionMessageBoxFlags::TITLE;
         self.title = title;
 
@@ -108,7 +108,7 @@ impl NowSessionMsgBoxReqMsg {
         Ok(self)
     }
 
-    pub fn with_message(mut self, message: NowVarStr) -> PduResult<Self> {
+    pub fn with_message(mut self, message: NowVarStr) -> DecodeResult<Self> {
         self.message = message;
 
         self.ensure_message_size()?;
@@ -178,7 +178,7 @@ impl NowSessionMsgBoxReqMsg {
         Self::FIXED_PART_SIZE + self.title.size() + self.message.size()
     }
 
-    pub(super) fn decode_from_body(header: NowHeader, src: &mut ReadCursor<'_>) -> PduResult<Self> {
+    pub(super) fn decode_from_body(header: NowHeader, src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
         let flags = NowSessionMessageBoxFlags::from_bits_retain(header.flags);
@@ -204,7 +204,7 @@ impl NowSessionMsgBoxReqMsg {
 }
 
 impl PduEncode for NowSessionMsgBoxReqMsg {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         let header = NowHeader {
             size: cast_length!("size", self.body_size())?,
             class: NowMessageClass::SESSION,
@@ -236,7 +236,7 @@ impl PduEncode for NowSessionMsgBoxReqMsg {
 }
 
 impl PduDecode<'_> for NowSessionMsgBoxReqMsg {
-    fn decode(src: &mut ReadCursor<'_>) -> PduResult<Self> {
+    fn decode(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
         let header = NowHeader::decode(src)?;
 
         match (header.class, NowSessionMessageKind(header.kind)) {

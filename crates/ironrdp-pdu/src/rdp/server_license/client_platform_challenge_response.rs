@@ -14,7 +14,7 @@ use super::{
     BLOB_TYPE_SIZE, MAC_SIZE, PLATFORM_ID, PREAMBLE_SIZE,
 };
 use crate::crypto::rc4::Rc4;
-use crate::{PduDecode, PduEncode, PduResult};
+use crate::{DecodeResult, EncodeResult, PduDecode, PduEncode};
 use ironrdp_core::{ReadCursor, WriteCursor};
 
 const RESPONSE_DATA_VERSION: u16 = 0x100;
@@ -101,7 +101,7 @@ impl ClientPlatformChallengeResponse {
 }
 
 impl ClientPlatformChallengeResponse {
-    pub fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    pub fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
         self.license_header.encode(dst)?;
@@ -129,7 +129,7 @@ impl ClientPlatformChallengeResponse {
 }
 
 impl ClientPlatformChallengeResponse {
-    pub fn decode(license_header: LicenseHeader, src: &mut ReadCursor<'_>) -> PduResult<Self> {
+    pub fn decode(license_header: LicenseHeader, src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
         if license_header.preamble_message_type != PreambleType::PlatformChallengeResponse {
             return Err(invalid_field_err!(
                 "preambleMessageType",
@@ -192,7 +192,7 @@ impl PlatformChallengeResponseData {
 }
 
 impl PduEncode for PlatformChallengeResponseData {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
         dst.write_u16(RESPONSE_DATA_VERSION);
@@ -214,7 +214,7 @@ impl PduEncode for PlatformChallengeResponseData {
 }
 
 impl<'de> PduDecode<'de> for PlatformChallengeResponseData {
-    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+    fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
         let version = src.read_u16();
@@ -253,7 +253,7 @@ impl ClientHardwareIdentification {
 }
 
 impl PduEncode for ClientHardwareIdentification {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
 
         dst.write_u32(self.platform_id);
@@ -272,7 +272,7 @@ impl PduEncode for ClientHardwareIdentification {
 }
 
 impl<'de> PduDecode<'de> for ClientHardwareIdentification {
-    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+    fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
         let platform_id = src.read_u32();

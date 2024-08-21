@@ -1,7 +1,7 @@
 use bitflags::bitflags;
 
 use ironrdp_core::{ReadCursor, WriteCursor};
-use ironrdp_pdu::{PduDecode as _, PduEncode, PduResult};
+use ironrdp_pdu::{DecodeResult, EncodeResult, PduDecode as _, PduEncode};
 
 use crate::{system::NowSystemMessageKind, NowHeader, NowMessage, NowMessageClass, NowSystemMessage, NowVarStr};
 
@@ -36,7 +36,7 @@ impl NowSystemShutdownMsg {
     const NAME: &'static str = "NOW_SYSTEM_SHUTDOWN_MSG";
     const FIXED_PART_SIZE: usize = 4 /* u32 timeout */;
 
-    pub fn new(flags: NowSystemShutdownFlags, timeout: u32, message: NowVarStr) -> PduResult<Self> {
+    pub fn new(flags: NowSystemShutdownFlags, timeout: u32, message: NowVarStr) -> DecodeResult<Self> {
         let msg = Self {
             flags,
             timeout,
@@ -48,7 +48,7 @@ impl NowSystemShutdownMsg {
         Ok(msg)
     }
 
-    fn ensure_message_size(&self) -> PduResult<()> {
+    fn ensure_message_size(&self) -> DecodeResult<()> {
         let _message_size = Self::FIXED_PART_SIZE
             .checked_add(self.message.size())
             .ok_or_else(|| invalid_field_err!("size", "message size overflow"))?;
@@ -62,7 +62,7 @@ impl NowSystemShutdownMsg {
         Self::FIXED_PART_SIZE + self.message.size()
     }
 
-    pub fn decode_from_body(header: NowHeader, src: &mut ReadCursor<'_>) -> PduResult<Self> {
+    pub fn decode_from_body(header: NowHeader, src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
         let timeout = src.read_u32();
@@ -81,7 +81,7 @@ impl NowSystemShutdownMsg {
 }
 
 impl PduEncode for NowSystemShutdownMsg {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         let header = NowHeader {
             size: cast_length!("size", self.body_size())?,
             class: NowMessageClass::SYSTEM,

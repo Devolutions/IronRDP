@@ -1,5 +1,5 @@
 use ironrdp_core::{ReadCursor, WriteCursor};
-use ironrdp_pdu::{PduDecode, PduEncode, PduResult};
+use ironrdp_pdu::{DecodeResult, EncodeResult, PduDecode, PduEncode};
 
 use crate::{NowExecMessage, NowHeader, NowMessageClass, NowSessionMessage, NowSystemMessage};
 
@@ -18,7 +18,7 @@ impl NowMessage {
 }
 
 impl PduEncode for NowMessage {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         match self {
             Self::System(msg) => msg.encode(dst),
             Self::Session(msg) => msg.encode(dst),
@@ -40,7 +40,7 @@ impl PduEncode for NowMessage {
 }
 
 impl PduDecode<'_> for NowMessage {
-    fn decode(src: &mut ReadCursor<'_>) -> PduResult<Self> {
+    fn decode(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
         let header = NowHeader::decode(src)?;
 
         match NowMessageClass(header.class.0) {

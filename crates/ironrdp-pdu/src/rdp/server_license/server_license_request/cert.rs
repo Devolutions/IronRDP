@@ -1,5 +1,5 @@
 use super::{BlobHeader, BlobType, KEY_EXCHANGE_ALGORITHM_RSA};
-use crate::{PduDecode, PduEncode, PduResult};
+use crate::{DecodeResult, EncodeResult, PduDecode, PduEncode};
 use ironrdp_core::{ReadCursor, WriteCursor};
 
 pub const SIGNATURE_ALGORITHM_RSA: u32 = 1;
@@ -34,7 +34,7 @@ impl X509CertificateChain {
 }
 
 impl PduEncode for X509CertificateChain {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
         dst.write_u32(cast_length!("certArrayLen", self.certificate_array.len())?);
@@ -66,7 +66,7 @@ impl PduEncode for X509CertificateChain {
 }
 
 impl<'de> PduDecode<'de> for X509CertificateChain {
-    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+    fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_size!(in: src, size: 4);
         let certificate_count = cast_length!("certArrayLen", src.read_u32())?;
         if !(MIN_CERTIFICATE_AMOUNT..MAX_CERTIFICATE_AMOUNT).contains(&certificate_count) {
@@ -112,7 +112,7 @@ impl ProprietaryCertificate {
 }
 
 impl PduEncode for ProprietaryCertificate {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
         dst.write_u32(SIGNATURE_ALGORITHM_RSA);
@@ -137,7 +137,7 @@ impl PduEncode for ProprietaryCertificate {
 }
 
 impl<'de> PduDecode<'de> for ProprietaryCertificate {
-    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+    fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_size!(in: src, size: PROP_CERT_NO_BLOBS_SIZE);
 
         let signature_algorithm_id = src.read_u32();
@@ -180,7 +180,7 @@ impl RsaPublicKey {
 }
 
 impl PduEncode for RsaPublicKey {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
         let keylen = cast_length!("modulusLen", self.modulus.len())?;
@@ -207,7 +207,7 @@ impl PduEncode for RsaPublicKey {
 }
 
 impl<'de> PduDecode<'de> for RsaPublicKey {
-    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+    fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
         let magic = src.read_u32();

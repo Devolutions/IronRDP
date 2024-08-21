@@ -16,125 +16,80 @@ macro_rules! function {
     }};
 }
 
-/// Creates a `PduError` with `NotEnoughBytes` kind
-///
-/// Shorthand for
-/// ```rust
-/// <ironrdp_pdu::PduError as ironrdp_pdu::PduErrorExt>::not_enough_bytes(context, received, expected)
-/// ```
-/// and
-/// ```rust
-/// <ironrdp_pdu::PduError as ironrdp_pdu::PduErrorExt>::not_enough_bytes($crate::function!(), received, expected)
-/// ```
+#[macro_export]
+macro_rules! decode_err {
+    ($source:expr $(,)? ) => {
+        <$crate::PduError as $crate::PduErrorExt>::decode($crate::function!(), $source)
+    };
+}
+
+#[macro_export]
+macro_rules! encode_err {
+    ($source:expr $(,)? ) => {
+        <$crate::PduError as $crate::PduErrorExt>::encode($crate::function!(), $source)
+    };
+}
+
 #[macro_export]
 macro_rules! not_enough_bytes_err {
     ( $context:expr, $received:expr , $expected:expr $(,)? ) => {{
-        <$crate::PduError as $crate::PduErrorExt>::not_enough_bytes($context, $received, $expected)
+        $crate::not_enough_bytes_err($context, $received, $expected)
     }};
     ( $received:expr , $expected:expr $(,)? ) => {{
         not_enough_bytes_err!($crate::function!(), $received, $expected)
     }};
 }
 
-/// Creates a `PduError` with `InvalidField` kind
-///
-/// Shorthand for
-/// ```rust
-/// <ironrdp_pdu::PduError as ironrdp_pdu::PduErrorExt>::invalid_field(context, field, reason)
-/// ```
-/// and
-/// ```rust
-/// <ironrdp_pdu::PduError as ironrdp_pdu::PduErrorExt>::invalid_field($crate::function!(), field, reason)
-/// ```
 #[macro_export]
 macro_rules! invalid_field_err {
     ( $context:expr, $field:expr , $reason:expr $(,)? ) => {{
-        <$crate::PduError as $crate::PduErrorExt>::invalid_field($context, $field, $reason)
+        $crate::invalid_field_err($context, $field, $reason)
     }};
     ( $field:expr , $reason:expr $(,)? ) => {{
         invalid_field_err!($crate::function!(), $field, $reason)
     }};
 }
 
-/// Creates a `PduError` with `UnexpectedMessageType` kind
-///
-/// Shorthand for
-/// ```rust
-/// <ironrdp_pdu::PduError as ironrdp_pdu::PduErrorExt>::unexpected_message_type(context, got)
-/// ```
-/// and
-/// ```rust
-/// <ironrdp_pdu::PduError as ironrdp_pdu::PduErrorExt>::unexpected_message_type($crate::function!(), got)
-/// ```
 #[macro_export]
 macro_rules! unexpected_message_type_err {
     ( $context:expr, $got:expr $(,)? ) => {{
-        <$crate::PduError as $crate::PduErrorExt>::unexpected_message_type($context, $got)
+        $crate::unexpected_message_type_err($context, $got)
     }};
     ( $got:expr $(,)? ) => {{
         unexpected_message_type_err!($crate::function!(), $got)
     }};
 }
 
-/// Creates a `PduError` with `UnsupportedVersion` kind
-///
-/// Shorthand for
-/// ```rust
-/// <ironrdp_pdu::PduError as ironrdp_pdu::PduErrorExt>::unsupported_version(context, got)
-/// ```
-/// and
-/// ```rust
-/// <ironrdp_pdu::PduError as ironrdp_pdu::PduErrorExt>::unsupported_version($crate::function!(), got)
-/// ```
 #[macro_export]
 macro_rules! unsupported_version_err {
     ( $context:expr, $got:expr $(,)? ) => {{
-        <$crate::PduError as $crate::PduErrorExt>::unsupported_version($context, $got)
+        $crate::unsupported_version_err($context, $got)
     }};
     ( $got:expr $(,)? ) => {{
         unsupported_version_err!($crate::function!(), $got)
     }};
 }
 
-/// Creates a `PduError` with `UnsupportedValue` kind
-/// Shorthand for
-/// ```rust
-/// <ironrdp_pdu::PduError as ironrdp_pdu::PduErrorExt>::unsupported_value(context, name, value)
-/// ```
-/// and
-/// ```rust
-/// <ironrdp_pdu::PduError as ironrdp_pdu::PduErrorExt>::unsupported_value($crate::function!(), name, value)
-/// ```
 #[macro_export]
 macro_rules! unsupported_value_err {
     ( $context:expr, $name:expr, $value:expr $(,)? ) => {{
-        <$crate::PduError as $crate::PduErrorExt>::unsupported_value($context, $name, $value)
+        $crate::unsupported_value_err($context, $name, $value)
     }};
     ( $name:expr, $value:expr $(,)? ) => {{
         unsupported_value_err!($crate::function!(), $name, $value)
     }};
 }
 
-/// Creates a `PduError` with `Other` kind
-///
-/// Shorthand for
-/// ```rust
-/// <ironrdp_pdu::PduError as ironrdp_pdu::PduErrorExt>::other(context, description)
-/// ```
-/// and
-/// ```rust
-/// <ironrdp_pdu::PduError as ironrdp_pdu::PduErrorExt>::other($crate::function!(), description)
-/// ```
 #[macro_export]
 macro_rules! other_err {
-    ( $context:expr, $description:expr $(,)? ) => {{
-        <$crate::PduError as $crate::PduErrorExt>::other($context, $description)
+    ( $context:expr, source: $source:expr $(,)? ) => {{
+        $crate::other_err_with_source($context, "", $source)
     }};
-    ( $description:expr, source: $source:expr $(,)? ) => {{
-        other_err!($crate::function!(), $description).with_source($source)
+    ( $context:expr, $description:expr $(,)? ) => {{
+        $crate::other_err($context, $description)
     }};
     ( source: $source:expr $(,)? ) => {{
-        other_err!($crate::function!(), "").with_source($source)
+        other_err!($crate::function!(), source: $source)
     }};
     ( $description:expr $(,)? ) => {{
         other_err!($crate::function!(), $description)
@@ -147,7 +102,7 @@ macro_rules! ensure_size {
         let received = $buf.len();
         let expected = $expected;
         if !(received >= expected) {
-            return Err(<$crate::PduError as $crate::PduErrorExt>::not_enough_bytes($ctx, received, expected));
+            return Err($crate::not_enough_bytes_err($ctx, received, expected));
         }
     }};
     (in: $buf:ident, size: $expected:expr) => {{
@@ -165,9 +120,8 @@ macro_rules! ensure_fixed_part_size {
 #[macro_export]
 macro_rules! cast_length {
     ($ctx:expr, $field:expr, $len:expr) => {{
-        $len.try_into().map_err(|e| {
-            <$crate::PduError as $crate::PduErrorExt>::invalid_field($ctx, $field, "too many elements").with_source(e)
-        })
+        $len.try_into()
+            .map_err(|e| $crate::invalid_field_err_with_source($ctx, $field, "too many elements", e))
     }};
     ($field:expr, $len:expr) => {{
         $crate::cast_length!($crate::function!(), $field, $len)
@@ -178,12 +132,7 @@ macro_rules! cast_length {
 macro_rules! cast_int {
     ($ctx:expr, $field:expr, $len:expr) => {{
         $len.try_into().map_err(|e| {
-            <$crate::PduError as $crate::PduErrorExt>::invalid_field(
-                $ctx,
-                $field,
-                "out of range integral type conversion",
-            )
-            .with_source(e)
+            $crate::invalid_field_err_with_source($ctx, $field, "out of range integral type conversion", e)
         })
     }};
     ($field:expr, $len:expr) => {{
@@ -218,7 +167,7 @@ macro_rules! impl_pdu_pod {
         }
 
         impl $crate::PduDecodeOwned for $pdu_ty {
-            fn decode_owned(src: &mut ReadCursor<'_>) -> $crate::PduResult<Self> {
+            fn decode_owned(src: &mut ReadCursor<'_>) -> $crate::DecodeResult<Self> {
                 <Self as $crate::PduDecode>::decode(src)
             }
         }
@@ -232,7 +181,7 @@ macro_rules! impl_pdu_borrowing {
         pub type $owned_ty = $pdu_ty<'static>;
 
         impl $crate::PduDecodeOwned for $owned_ty {
-            fn decode_owned(src: &mut ReadCursor<'_>) -> $crate::PduResult<Self> {
+            fn decode_owned(src: &mut ReadCursor<'_>) -> $crate::DecodeResult<Self> {
                 let pdu = <$pdu_ty $(<$($lt),+>)? as $crate::PduDecode>::decode(src)?;
                 Ok(ironrdp_core::IntoOwned::into_owned(pdu))
             }

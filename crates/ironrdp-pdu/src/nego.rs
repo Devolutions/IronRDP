@@ -8,7 +8,7 @@ use tap::prelude::*;
 use crate::tpdu::{TpduCode, TpduHeader};
 use crate::tpkt::TpktHeader;
 use crate::x224::X224Pdu;
-use crate::{Pdu as _, PduError, PduErrorExt as _, PduResult};
+use crate::{invalid_field_err, DecodeResult, EncodeResult, Pdu as _};
 use ironrdp_core::{ReadCursor, WriteCursor};
 
 bitflags! {
@@ -171,14 +171,14 @@ impl NegoRequestData {
         Self::Cookie(Cookie(value))
     }
 
-    pub fn read(src: &mut ReadCursor<'_>) -> PduResult<Option<Self>> {
+    pub fn read(src: &mut ReadCursor<'_>) -> DecodeResult<Option<Self>> {
         match RoutingToken::read(src)? {
             Some(token) => Ok(Some(Self::RoutingToken(token))),
             None => Cookie::read(src)?.map(Self::Cookie).pipe(Ok),
         }
     }
 
-    pub fn write(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    pub fn write(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         match self {
             NegoRequestData::RoutingToken(token) => token.write(dst),
             NegoRequestData::Cookie(cookie) => cookie.write(dst),
@@ -199,11 +199,11 @@ pub struct Cookie(pub String);
 impl Cookie {
     const PREFIX: &'static str = "Cookie: mstshash=";
 
-    pub fn read(src: &mut ReadCursor<'_>) -> PduResult<Option<Self>> {
+    pub fn read(src: &mut ReadCursor<'_>) -> DecodeResult<Option<Self>> {
         read_nego_data(src, "Cookie", Self::PREFIX)?.map(Self).pipe(Ok)
     }
 
-    pub fn write(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    pub fn write(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         write_nego_data(dst, "Cookie", Self::PREFIX, &self.0)
     }
 
@@ -218,11 +218,11 @@ pub struct RoutingToken(pub String);
 impl RoutingToken {
     const PREFIX: &'static str = "Cookie: msts=";
 
-    pub fn read(src: &mut ReadCursor<'_>) -> PduResult<Option<Self>> {
+    pub fn read(src: &mut ReadCursor<'_>) -> DecodeResult<Option<Self>> {
         read_nego_data(src, "RoutingToken", Self::PREFIX)?.map(Self).pipe(Ok)
     }
 
-    pub fn write(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    pub fn write(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         write_nego_data(dst, "RoutingToken", Self::PREFIX, &self.0)
     }
 
@@ -270,7 +270,7 @@ impl<'de> X224Pdu<'de> for ConnectionRequest {
 
     const TPDU_CODE: TpduCode = TpduCode::CONNECTION_REQUEST;
 
-    fn x224_body_encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn x224_body_encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         if let Some(nego_data) = &self.nego_data {
             nego_data.write(dst)?;
         }
@@ -284,7 +284,7 @@ impl<'de> X224Pdu<'de> for ConnectionRequest {
 
         if self.flags.contains(RequestFlags::CORRELATION_INFO_PRESENT) {
             // TODO(#111): support for RDP_NEG_CORRELATION_INFO
-            return Err(PduError::invalid_field(
+            return Err(invalid_field_err(
                 Self::NAME,
                 "flags",
                 "CORRECTION_INFO_PRESENT flag is set, but not supported by IronRDP",
@@ -294,7 +294,7 @@ impl<'de> X224Pdu<'de> for ConnectionRequest {
         Ok(())
     }
 
-    fn x224_body_decode(src: &mut ReadCursor<'de>, _: &TpktHeader, tpdu: &TpduHeader) -> PduResult<Self> {
+    fn x224_body_decode(src: &mut ReadCursor<'de>, _: &TpktHeader, tpdu: &TpduHeader) -> DecodeResult<Self> {
         let variable_part_size = tpdu.variable_part_size();
 
         ensure_size!(in: src, size: variable_part_size);
@@ -304,7 +304,7 @@ impl<'de> X224Pdu<'de> for ConnectionRequest {
         let Some(variable_part_rest_size) =
             variable_part_size.checked_sub(nego_data.as_ref().map(|data| data.size()).unwrap_or(0))
         else {
-            return Err(PduError::invalid_field(
+            return Err(invalid_field_err(
                 Self::NAME,
                 "TPDU header variable part",
                 "advertised size too small",
@@ -315,14 +315,14 @@ impl<'de> X224Pdu<'de> for ConnectionRequest {
             let msg_type = NegoMsgType::from(src.read_u8());
 
             if msg_type != NegoMsgType::REQUEST {
-                return Err(PduError::unexpected_message_type(Self::NAME, u8::from(msg_type)));
+                return Err(unexpected_message_type_err!(Self::NAME, u8::from(msg_type)));
             }
 
             let flags = RequestFlags::from_bits_truncate(src.read_u8());
 
             if flags.contains(RequestFlags::CORRELATION_INFO_PRESENT) {
                 // TODO(#111): support for RDP_NEG_CORRELATION_INFO
-                return Err(PduError::invalid_field(
+                return Err(invalid_field_err(
                     Self::NAME,
                     "flags",
                     "CORRECTION_INFO_PRESENT flag is set, but not supported by IronRDP",
@@ -381,7 +381,7 @@ impl<'de> X224Pdu<'de> for ConnectionConfirm {
 
     const TPDU_CODE: TpduCode = TpduCode::CONNECTION_CONFIRM;
 
-    fn x224_body_encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn x224_body_encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         match self {
             ConnectionConfirm::Response { flags, protocol } => {
                 dst.write_u8(u8::from(NegoMsgType::RESPONSE));
@@ -400,7 +400,7 @@ impl<'de> X224Pdu<'de> for ConnectionConfirm {
         Ok(())
     }
 
-    fn x224_body_decode(src: &mut ReadCursor<'de>, _: &TpktHeader, tpdu: &TpduHeader) -> PduResult<Self> {
+    fn x224_body_decode(src: &mut ReadCursor<'de>, _: &TpktHeader, tpdu: &TpduHeader) -> DecodeResult<Self> {
         let variable_part_size = tpdu.variable_part_size();
 
         ensure_size!(in: src, size: variable_part_size);
@@ -423,7 +423,7 @@ impl<'de> X224Pdu<'de> for ConnectionConfirm {
 
                     Ok(Self::Failure { code })
                 }
-                unexpected => Err(PduError::unexpected_message_type(Self::X224_NAME, u8::from(unexpected))),
+                unexpected => Err(unexpected_message_type_err!(Self::X224_NAME, u8::from(unexpected))),
             }
         } else {
             Ok(Self::Response {
@@ -445,7 +445,7 @@ impl<'de> X224Pdu<'de> for ConnectionConfirm {
     }
 }
 
-fn read_nego_data(src: &mut ReadCursor<'_>, ctx: &'static str, prefix: &str) -> PduResult<Option<String>> {
+fn read_nego_data(src: &mut ReadCursor<'_>, ctx: &'static str, prefix: &str) -> DecodeResult<Option<String>> {
     if src.len() < prefix.len() + 2 {
         return Ok(None);
     }
@@ -468,13 +468,13 @@ fn read_nego_data(src: &mut ReadCursor<'_>, ctx: &'static str, prefix: &str) -> 
     src.advance(2);
 
     let data = core::str::from_utf8(&src.inner()[identifier_start..identifier_end])
-        .map_err(|_| PduError::invalid_field(ctx, "identifier", "not valid UTF-8"))?
+        .map_err(|_| invalid_field_err(ctx, "identifier", "not valid UTF-8"))?
         .to_owned();
 
     Ok(Some(data))
 }
 
-fn write_nego_data(dst: &mut WriteCursor<'_>, ctx: &'static str, prefix: &str, value: &str) -> PduResult<()> {
+fn write_nego_data(dst: &mut WriteCursor<'_>, ctx: &'static str, prefix: &str, value: &str) -> EncodeResult<()> {
     ensure_size!(ctx: ctx, in: dst, size: prefix.len() + value.len() + 2);
 
     dst.write_slice(prefix.as_bytes());

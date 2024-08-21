@@ -5,7 +5,7 @@ use std::fmt;
 
 use bitflags::bitflags;
 
-use crate::{PduDecode, PduEncode, PduResult};
+use crate::{DecodeResult, EncodeResult, PduDecode, PduEncode};
 use ironrdp_core::{ReadCursor, WriteCursor};
 
 const GENERAL_LENGTH: usize = 20;
@@ -122,7 +122,7 @@ impl Default for General {
 }
 
 impl PduEncode for General {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
 
         dst.write_u16(self.major_platform_type.0);
@@ -150,7 +150,7 @@ impl PduEncode for General {
 }
 
 impl<'de> PduDecode<'de> for General {
-    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+    fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
         let major_platform_type = MajorPlatformType(src.read_u16());

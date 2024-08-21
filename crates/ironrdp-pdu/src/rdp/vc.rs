@@ -8,7 +8,7 @@ use std::{io, str};
 use bitflags::bitflags;
 use thiserror::Error;
 
-use crate::{PduDecode, PduEncode, PduError, PduResult};
+use crate::{DecodeResult, EncodeResult, PduDecode, PduEncode, PduError};
 use ironrdp_core::{ReadCursor, WriteCursor};
 
 const CHANNEL_PDU_HEADER_SIZE: usize = 8;
@@ -31,7 +31,7 @@ impl ChannelPduHeader {
 }
 
 impl PduEncode for ChannelPduHeader {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
 
         dst.write_u32(self.length);
@@ -49,7 +49,7 @@ impl PduEncode for ChannelPduHeader {
 }
 
 impl<'de> PduDecode<'de> for ChannelPduHeader {
-    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+    fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
         let total_length = src.read_u32();

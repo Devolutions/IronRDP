@@ -25,18 +25,18 @@ use std::mem::size_of;
 
 use ironrdp_core::{ReadCursor, WriteCursor};
 use ironrdp_pdu::utils::{self, CharacterSet};
-use ironrdp_pdu::{ensure_size, invalid_field_err, PduResult};
+use ironrdp_pdu::{ensure_size, invalid_field_err, DecodeResult, EncodeResult};
 
 pub trait Decode {
-    fn decode_ptr(src: &mut ReadCursor<'_>, index: &mut u32) -> PduResult<Self>
+    fn decode_ptr(src: &mut ReadCursor<'_>, index: &mut u32) -> DecodeResult<Self>
     where
         Self: Sized;
-    fn decode_value(&mut self, src: &mut ReadCursor<'_>, charset: Option<CharacterSet>) -> PduResult<()>;
+    fn decode_value(&mut self, src: &mut ReadCursor<'_>, charset: Option<CharacterSet>) -> DecodeResult<()>;
 }
 
 pub trait Encode {
-    fn encode_ptr(&self, index: &mut u32, dst: &mut WriteCursor<'_>) -> PduResult<()>;
-    fn encode_value(&self, dst: &mut WriteCursor<'_>) -> PduResult<()>;
+    fn encode_ptr(&self, index: &mut u32, dst: &mut WriteCursor<'_>) -> EncodeResult<()>;
+    fn encode_value(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()>;
     fn size_ptr(&self) -> usize;
     fn size_value(&self) -> usize;
     fn size(&self) -> usize {
@@ -44,7 +44,7 @@ pub trait Encode {
     }
 }
 
-pub fn encode_ptr(length: Option<u32>, index: &mut u32, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+pub fn encode_ptr(length: Option<u32>, index: &mut u32, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
     ensure_size!(ctx: "encode_ptr", in: dst, size: ptr_size(length.is_some()));
     if let Some(length) = length {
         dst.write_u32(length);
@@ -55,7 +55,7 @@ pub fn encode_ptr(length: Option<u32>, index: &mut u32, dst: &mut WriteCursor<'_
     Ok(())
 }
 
-pub fn decode_ptr(src: &mut ReadCursor<'_>, index: &mut u32) -> PduResult<u32> {
+pub fn decode_ptr(src: &mut ReadCursor<'_>, index: &mut u32) -> DecodeResult<u32> {
     ensure_size!(ctx: "decode_ptr", in: src, size: size_of::<u32>());
     let ptr = src.read_u32();
     if ptr == 0 {
@@ -82,7 +82,7 @@ pub fn ptr_size(with_length: bool) -> usize {
 /// A special read_string_from_cursor which reads and ignores the additional length and
 /// offset fields prefixing the string, as well as any extra padding for a 4-byte aligned
 /// NULL-terminated string.
-pub fn read_string_from_cursor(cursor: &mut ReadCursor<'_>, charset: CharacterSet) -> PduResult<String> {
+pub fn read_string_from_cursor(cursor: &mut ReadCursor<'_>, charset: CharacterSet) -> DecodeResult<String> {
     ensure_size!(ctx: "ndr::read_string_from_cursor", in: cursor, size: size_of::<u32>() * 3);
     let length = cursor.read_u32();
     let _offset = cursor.read_u32();

@@ -20,7 +20,7 @@ default = []
 std = []
 
 [dependencies]
-ironrdp-pdu = { workspace = true, features = ["alloc"] }
+ironrdp-pdu = { workspace = true, features = ["alloc", "std"] }
 bitflags.workspace = true
 ironrdp-core.workspace = true
 

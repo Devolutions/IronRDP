@@ -4,7 +4,7 @@ use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive as _, ToPrimitive as _};
 use thiserror::Error;
 
-use crate::{decode, utils, PduDecode, PduEncode, PduError, PduResult};
+use crate::{decode, utils, DecodeResult, EncodeResult, PduDecode, PduEncode, PduError};
 use ironrdp_core::{ReadCursor, WriteCursor};
 
 mod bitmap;
@@ -74,7 +74,7 @@ impl ServerDemandActive {
 }
 
 impl PduEncode for ServerDemandActive {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
         self.pdu.encode(dst)?;
@@ -93,7 +93,7 @@ impl PduEncode for ServerDemandActive {
 }
 
 impl<'de> PduDecode<'de> for ServerDemandActive {
-    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+    fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         let pdu = DemandActive::decode(src)?;
 
         ensure_size!(in: src, size: 4);
@@ -125,7 +125,7 @@ impl ClientConfirmActive {
 }
 
 impl PduEncode for ClientConfirmActive {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
 
         dst.write_u16(self.originator_id);
@@ -143,7 +143,7 @@ impl PduEncode for ClientConfirmActive {
 }
 
 impl<'de> PduDecode<'de> for ClientConfirmActive {
-    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+    fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
         let originator_id = src.read_u16();
@@ -169,7 +169,7 @@ impl DemandActive {
 }
 
 impl PduEncode for DemandActive {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
         let combined_length = self.capability_sets.iter().map(PduEncode::size).sum::<usize>()
@@ -208,7 +208,7 @@ impl PduEncode for DemandActive {
 }
 
 impl<'de> PduDecode<'de> for DemandActive {
-    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+    fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
         let source_descriptor_length = src.read_u16() as usize;
@@ -284,7 +284,7 @@ impl CapabilitySet {
 }
 
 impl PduEncode for CapabilitySet {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
         match self {
@@ -494,7 +494,7 @@ impl PduEncode for CapabilitySet {
 }
 
 impl<'de> PduDecode<'de> for CapabilitySet {
-    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+    fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
         let capability_set_type_raw = src.read_u16();

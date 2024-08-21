@@ -1,6 +1,6 @@
 use ironrdp_core::WriteCursor;
 use ironrdp_pdu::bitmap::rdp6::{BitmapStreamHeader, ColorPlaneDefinition};
-use ironrdp_pdu::PduError;
+use ironrdp_pdu::{not_enough_bytes_err, EncodeError};
 use thiserror::Error;
 
 use crate::rdp6::rle::{compress_8bpp_plane, RleEncodeError};
@@ -10,7 +10,7 @@ pub enum BitmapEncodeError {
     #[error("failed to rle compress")]
     Rle(RleEncodeError),
     #[error("failed to encode pdu")]
-    Pdu(PduError),
+    Encode(EncodeError),
 }
 
 pub trait ColorChannels {
@@ -160,7 +160,7 @@ impl BitmapStreamEncoder {
             color_plane_definition: ColorPlaneDefinition::Argb,
         };
 
-        ironrdp_pdu::encode_cursor(&header, &mut cursor).map_err(BitmapEncodeError::Pdu)?;
+        ironrdp_pdu::encode_cursor(&header, &mut cursor).map_err(BitmapEncodeError::Encode)?;
 
         if rle {
             compress_8bpp_plane(r, &mut cursor, self.width, self.height).map_err(BitmapEncodeError::Rle)?;
@@ -170,9 +170,11 @@ impl BitmapStreamEncoder {
             let remaining = cursor.len();
             let needed = self.width * self.height * 3 + 1;
             if needed > remaining {
-                return Err(BitmapEncodeError::Pdu(
-                    <PduError as ironrdp_pdu::PduErrorExt>::not_enough_bytes("BitmapStreamData", remaining, needed),
-                ));
+                return Err(BitmapEncodeError::Encode(not_enough_bytes_err(
+                    "BitmapStreamData",
+                    remaining,
+                    needed,
+                )));
             }
 
             for byte in r.chain(g).chain(b) {
@@ -234,7 +236,7 @@ impl BitmapStreamEncoder {
             color_plane_definition: ColorPlaneDefinition::Argb,
         };
 
-        ironrdp_pdu::encode_cursor(&header, &mut cursor).map_err(BitmapEncodeError::Pdu)?;
+        ironrdp_pdu::encode_cursor(&header, &mut cursor).map_err(BitmapEncodeError::Encode)?;
 
         if rle {
             compress_8bpp_plane(a, &mut cursor, self.width, self.height).map_err(BitmapEncodeError::rle)?;
@@ -245,9 +247,11 @@ impl BitmapStreamEncoder {
             let remaining = cursor.len();
             let needed = self.width * self.height * 4 + 1;
             if needed > remaining {
-                return Err(BitmapEncodeError::Pdu(
-                    <PduError as ironrdp_pdu::PduErrorExt>::not_enough_bytes("BitmapStreamData", remaining, needed),
-                ));
+                return Err(BitmapEncodeError::Encode(not_enough_bytes_err(
+                    "BitmapStreamData",
+                    remaining,
+                    needed,
+                )));
             }
 
             for byte in a.chain(r).chain(g).chain(b) {

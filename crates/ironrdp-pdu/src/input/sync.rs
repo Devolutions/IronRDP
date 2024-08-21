@@ -1,6 +1,6 @@
 use bitflags::bitflags;
 
-use crate::{PduDecode, PduEncode, PduResult};
+use crate::{DecodeResult, EncodeResult, PduDecode, PduEncode};
 use ironrdp_core::{ReadCursor, WriteCursor};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -15,7 +15,7 @@ impl SyncPdu {
 }
 
 impl PduEncode for SyncPdu {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
 
         write_padding!(dst, 2);
@@ -34,7 +34,7 @@ impl PduEncode for SyncPdu {
 }
 
 impl<'de> PduDecode<'de> for SyncPdu {
-    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+    fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
         read_padding!(src, 2);

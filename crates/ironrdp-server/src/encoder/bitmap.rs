@@ -3,7 +3,7 @@ use ironrdp_graphics::image_processing::PixelFormat;
 use ironrdp_graphics::rdp6::{ABgrChannels, ARgbChannels, BgrAChannels, BitmapStreamEncoder, RgbAChannels};
 use ironrdp_pdu::bitmap::{self, BitmapData, BitmapUpdateData, Compression};
 use ironrdp_pdu::geometry::InclusiveRectangle;
-use ironrdp_pdu::{invalid_field_err, PduEncode, PduError};
+use ironrdp_pdu::{invalid_field_err, EncodeResult, PduEncode};
 
 use crate::{BitmapUpdate, PixelOrder};
 
@@ -19,7 +19,7 @@ impl BitmapEncoder {
         }
     }
 
-    pub(crate) fn encode(&mut self, bitmap: &BitmapUpdate, output: &mut [u8]) -> Result<usize, PduError> {
+    pub(crate) fn encode(&mut self, bitmap: &BitmapUpdate, output: &mut [u8]) -> EncodeResult<usize> {
         // FIXME: support non-multiple of 4 widths.
         //
         // It’s not clear how to achieve that yet, but generally, server uses multiple of 4-widths,

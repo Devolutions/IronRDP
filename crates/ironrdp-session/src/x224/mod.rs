@@ -144,7 +144,7 @@ impl Processor {
                             DisconnectProviderUltimatum::from_reason(DisconnectReason::UserRequested),
                         );
 
-                        let encoded_pdu = ironrdp_pdu::encode_vec(&ultimatum).map_err(SessionError::pdu);
+                        let encoded_pdu = ironrdp_pdu::encode_vec(&ultimatum).map_err(SessionError::encode);
 
                         Ok(vec![
                             ProcessorOutput::ResponseFrame(encoded_pdu?),
@@ -180,7 +180,7 @@ impl Processor {
 ///
 /// The caller is responsible for ensuring that the `channel_id` corresponds to the correct channel.
 fn process_svc_messages(messages: Vec<SvcMessage>, channel_id: u16, initiator_id: u16) -> SessionResult<Vec<u8>> {
-    client_encode_svc_messages(messages, channel_id, initiator_id).map_err(SessionError::pdu)
+    client_encode_svc_messages(messages, channel_id, initiator_id).map_err(SessionError::encode)
 }
 
 /// Converts an [`ErrorInfo`] into a [`DisconnectReason`].

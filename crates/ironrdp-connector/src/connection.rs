@@ -259,7 +259,7 @@ impl Sequence for ClientConnector {
 
                 debug!(message = ?connection_request, "Send");
 
-                let written = ironrdp_pdu::encode_buf(&connection_request, output).map_err(ConnectorError::pdu)?;
+                let written = ironrdp_pdu::encode_buf(&connection_request, output).map_err(ConnectorError::encode)?;
 
                 (
                     Written::from_size(written)?,
@@ -269,7 +269,7 @@ impl Sequence for ClientConnector {
                 )
             }
             ClientConnectorState::ConnectionInitiationWaitConfirm { requested_protocol } => {
-                let connection_confirm = decode::<nego::ConnectionConfirm>(input).map_err(ConnectorError::pdu)?;
+                let connection_confirm = decode::<nego::ConnectionConfirm>(input).map_err(ConnectorError::decode)?;
 
                 debug!(message = ?connection_confirm, "Received");
 
@@ -339,9 +339,9 @@ impl Sequence for ClientConnector {
                 )
             }
             ClientConnectorState::BasicSettingsExchangeWaitResponse { connect_initial } => {
-                let x224_payload = decode::<crate::x224::X224Data<'_>>(input).map_err(ConnectorError::pdu)?;
+                let x224_payload = decode::<crate::x224::X224Data<'_>>(input).map_err(ConnectorError::decode)?;
                 let connect_response =
-                    decode::<mcs::ConnectResponse>(x224_payload.data.as_ref()).map_err(ConnectorError::pdu)?;
+                    decode::<mcs::ConnectResponse>(x224_payload.data.as_ref()).map_err(ConnectorError::decode)?;
 
                 debug!(message = ?connect_response, "Received");
 
@@ -588,7 +588,7 @@ pub fn encode_send_data_request<T: PduEncode>(
     user_msg: &T,
     buf: &mut WriteBuf,
 ) -> ConnectorResult<usize> {
-    let user_data = encode_vec(user_msg).map_err(ConnectorError::pdu)?;
+    let user_data = encode_vec(user_msg).map_err(ConnectorError::encode)?;
 
     let pdu = mcs::SendDataRequest {
         initiator_id,
@@ -596,7 +596,7 @@ pub fn encode_send_data_request<T: PduEncode>(
         user_data: Cow::Owned(user_data),
     };
 
-    let written = ironrdp_pdu::encode_buf(&pdu, buf).map_err(ConnectorError::pdu)?;
+    let written = ironrdp_pdu::encode_buf(&pdu, buf).map_err(ConnectorError::encode)?;
 
     Ok(written)
 }

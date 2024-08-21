@@ -14,7 +14,7 @@ use ironrdp_pdu::input::InputEventPdu;
 use ironrdp_pdu::mcs::{SendDataIndication, SendDataRequest};
 use ironrdp_pdu::rdp::capability_sets::{BitmapCodecs, CapabilitySet, CmdFlags, GeneralExtraFlags};
 use ironrdp_pdu::rdp::headers::{ServerDeactivateAll, ShareControlPdu};
-use ironrdp_pdu::{self, decode, encode_vec, mcs, nego, rdp, Action, PduResult};
+use ironrdp_pdu::{self, decode, decode_err, encode_vec, mcs, nego, rdp, Action, PduResult};
 use ironrdp_svc::{server_encode_svc_messages, StaticChannelId, StaticChannelSet, SvcProcessor};
 use ironrdp_tokio::{Framed, FramedRead, FramedWrite, TokioFramed};
 use rdpsnd::server::{RdpsndServer, RdpsndServerMessage};
@@ -76,7 +76,7 @@ impl dvc::DvcProcessor for AInputHandler {
     fn process(&mut self, _channel_id: u32, payload: &[u8]) -> PduResult<Vec<dvc::DvcMessage>> {
         use ironrdp_ainput::ClientPdu;
 
-        match decode(payload)? {
+        match decode(payload).map_err(|e| decode_err!(e))? {
             ClientPdu::Mouse(pdu) => {
                 let handler = Arc::clone(&self.handler);
                 task::spawn_blocking(move || {

@@ -1,6 +1,6 @@
 //! This module contains the RDP_PRECONNECTION_PDU_V1 and RDP_PRECONNECTION_PDU_V2 structures.
 
-use crate::{Pdu, PduDecode, PduEncode, PduError, PduErrorExt as _, PduResult};
+use crate::{invalid_field_err, invalid_field_err_with_source, DecodeResult, EncodeResult, Pdu, PduDecode, PduEncode};
 use ironrdp_core::{ReadCursor, WriteCursor};
 
 /// Preconnection PDU version
@@ -42,13 +42,13 @@ impl Pdu for PreconnectionBlob {
 }
 
 impl<'de> PduDecode<'de> for PreconnectionBlob {
-    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+    fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
         let pcb_size: usize = cast_length!("cbSize", src.read_u32())?;
 
         if pcb_size < Self::FIXED_PART_SIZE {
-            return Err(PduError::invalid_field(
+            return Err(invalid_field_err(
                 Self::NAME,
                 "cbSize",
                 "advertised size too small for Preconnection PDU V1",
@@ -73,7 +73,7 @@ impl<'de> PduDecode<'de> for PreconnectionBlob {
             let cb_pcb = cch_pcb * 2;
 
             if remaining_size - 2 < cb_pcb {
-                return Err(PduError::invalid_field(
+                return Err(invalid_field_err(
                     Self::NAME,
                     "cchPCB",
                     "PCB string bigger than advertised size",
@@ -83,7 +83,7 @@ impl<'de> PduDecode<'de> for PreconnectionBlob {
             let wsz_pcb_utf16 = src.read_slice(cb_pcb);
 
             let payload = crate::utf16::read_utf16_string(wsz_pcb_utf16, Some(cch_pcb))
-                .map_err(|e| PduError::invalid_field(Self::NAME, "wszPCB", "bad UTF-16 string").with_source(e))?;
+                .map_err(|e| invalid_field_err_with_source(Self::NAME, "wszPCB", "bad UTF-16 string", e))?;
 
             let leftover_size = remaining_size - 2 - cb_pcb;
             src.advance(leftover_size); // Consume (unused) leftover data
@@ -104,9 +104,9 @@ impl<'de> PduDecode<'de> for PreconnectionBlob {
 }
 
 impl PduEncode for PreconnectionBlob {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         if self.v2_payload.is_some() && self.version == PcbVersion::V1 {
-            return Err(PduError::invalid_field(
+            return Err(invalid_field_err(
                 Self::NAME,
                 "version",
                 "there is no string payload in Preconnection PDU V1",

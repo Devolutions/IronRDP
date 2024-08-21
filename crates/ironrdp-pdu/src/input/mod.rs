@@ -4,7 +4,7 @@ use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive, ToPrimitive};
 use thiserror::Error;
 
-use crate::{PduDecode, PduEncode, PduResult};
+use crate::{DecodeResult, EncodeResult, PduDecode, PduEncode};
 use ironrdp_core::{ReadCursor, WriteCursor};
 
 pub mod fast_path;
@@ -34,7 +34,7 @@ impl InputEventPdu {
 }
 
 impl PduEncode for InputEventPdu {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
         dst.write_u16(self.0.len() as u16);
@@ -57,7 +57,7 @@ impl PduEncode for InputEventPdu {
 }
 
 impl<'de> PduDecode<'de> for InputEventPdu {
-    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+    fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
         let number_of_events = src.read_u16();
@@ -89,7 +89,7 @@ impl InputEvent {
 }
 
 impl PduEncode for InputEvent {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
 
         dst.write_u32(0); // event time is ignored by a server
@@ -125,7 +125,7 @@ impl PduEncode for InputEvent {
 }
 
 impl<'de> PduDecode<'de> for InputEvent {
-    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+    fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
         let _event_time = src.read_u32(); // ignored by a server

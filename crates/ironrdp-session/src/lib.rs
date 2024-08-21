@@ -26,6 +26,8 @@ pub type SessionResult<T> = Result<T, SessionError>;
 #[derive(Debug)]
 pub enum SessionErrorKind {
     Pdu(ironrdp_pdu::PduError),
+    Encode(ironrdp_pdu::EncodeError),
+    Decode(ironrdp_pdu::DecodeError),
     Reason(String),
     General,
     Custom,
@@ -35,6 +37,8 @@ impl fmt::Display for SessionErrorKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &self {
             SessionErrorKind::Pdu(_) => write!(f, "PDU error"),
+            SessionErrorKind::Encode(_) => write!(f, "encode error"),
+            SessionErrorKind::Decode(_) => write!(f, "decode error"),
             SessionErrorKind::Reason(description) => write!(f, "reason: {description}"),
             SessionErrorKind::General => write!(f, "general error"),
             SessionErrorKind::Custom => write!(f, "custom error"),
@@ -46,6 +50,8 @@ impl std::error::Error for SessionErrorKind {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match &self {
             SessionErrorKind::Pdu(e) => Some(e),
+            SessionErrorKind::Encode(e) => Some(e),
+            SessionErrorKind::Decode(e) => Some(e),
             SessionErrorKind::Reason(_) => None,
             SessionErrorKind::General => None,
             SessionErrorKind::Custom => None,
@@ -57,6 +63,8 @@ pub type SessionError = ironrdp_error::Error<SessionErrorKind>;
 
 pub trait SessionErrorExt {
     fn pdu(error: ironrdp_pdu::PduError) -> Self;
+    fn encode(error: ironrdp_pdu::EncodeError) -> Self;
+    fn decode(error: ironrdp_pdu::DecodeError) -> Self;
     fn general(context: &'static str) -> Self;
     fn reason(context: &'static str, reason: impl Into<String>) -> Self;
     fn custom<E>(context: &'static str, e: E) -> Self
@@ -66,7 +74,15 @@ pub trait SessionErrorExt {
 
 impl SessionErrorExt for SessionError {
     fn pdu(error: ironrdp_pdu::PduError) -> Self {
-        Self::new("invalid payload", SessionErrorKind::Pdu(error))
+        Self::new("payload error", SessionErrorKind::Pdu(error))
+    }
+
+    fn encode(error: ironrdp_pdu::EncodeError) -> Self {
+        Self::new("encode error", SessionErrorKind::Encode(error))
+    }
+
+    fn decode(error: ironrdp_pdu::DecodeError) -> Self {
+        Self::new("decode error", SessionErrorKind::Decode(error))
     }
 
     fn general(context: &'static str) -> Self {

@@ -3,7 +3,7 @@
 use alloc::vec::Vec;
 
 use ironrdp_core::{ReadCursor, WriteCursor};
-use ironrdp_pdu::{PduDecode, PduEncode, PduResult};
+use ironrdp_pdu::{DecodeResult, EncodeResult, PduDecode, PduEncode};
 
 use crate::VarU32;
 
@@ -18,7 +18,7 @@ impl NowLrgBuf {
     const FIXED_PART_SIZE: usize = 4;
 
     /// Create a new `NowLrgBuf` instance. Returns an error if the provided value is too large.
-    pub fn new(value: impl Into<Vec<u8>>) -> PduResult<Self> {
+    pub fn new(value: impl Into<Vec<u8>>) -> DecodeResult<Self> {
         let value: Vec<u8> = value.into();
 
         if value.len() > VarU32::MAX as usize {
@@ -35,7 +35,7 @@ impl NowLrgBuf {
         self.0.as_slice()
     }
 
-    fn ensure_message_size(buffer_size: usize) -> PduResult<()> {
+    fn ensure_message_size(buffer_size: usize) -> DecodeResult<()> {
         if buffer_size > usize::try_from(VarU32::MAX).expect("BUG: too small usize") {
             return Err(invalid_field_err!("data", "data is too large for NOW_LRGBUF"));
         }
@@ -52,7 +52,7 @@ impl NowLrgBuf {
 }
 
 impl PduEncode for NowLrgBuf {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         let encoded_size = self.size();
         ensure_size!(in: dst, size: encoded_size);
 
@@ -77,7 +77,7 @@ impl PduEncode for NowLrgBuf {
 }
 
 impl PduDecode<'_> for NowLrgBuf {
-    fn decode(src: &mut ReadCursor<'_>) -> PduResult<Self> {
+    fn decode(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
         let len: usize = cast_length!("len", src.read_u32())?;
@@ -107,7 +107,7 @@ impl NowVarBuf {
     const NAME: &'static str = "NOW_VARBUF";
 
     /// Create a new `NowVarBuf` instance. Returns an error if the provided value is too large.
-    pub fn new(value: impl Into<Vec<u8>>) -> PduResult<Self> {
+    pub fn new(value: impl Into<Vec<u8>>) -> DecodeResult<Self> {
         let value = value.into();
 
         let _: u32 = value
@@ -127,7 +127,7 @@ impl NowVarBuf {
 }
 
 impl PduEncode for NowVarBuf {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         let encoded_size = self.size();
         ensure_size!(in: dst, size: encoded_size);
 
@@ -154,7 +154,7 @@ impl PduEncode for NowVarBuf {
 }
 
 impl PduDecode<'_> for NowVarBuf {
-    fn decode(src: &mut ReadCursor<'_>) -> PduResult<Self> {
+    fn decode(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
         let len_u32 = VarU32::decode(src)?.value();
         let len: usize = cast_length!("len", len_u32)?;
 

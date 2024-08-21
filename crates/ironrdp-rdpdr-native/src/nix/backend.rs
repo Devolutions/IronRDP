@@ -1,5 +1,5 @@
 use ironrdp_core::impl_as_any;
-use ironrdp_pdu::PduResult;
+use ironrdp_pdu::{encode_err, PduResult};
 use ironrdp_rdpdr::pdu::efs::*;
 use ironrdp_rdpdr::pdu::esc::{ScardCall, ScardIoCtlCode};
 use ironrdp_rdpdr::pdu::RdpdrPdu;
@@ -381,10 +381,10 @@ pub(crate) fn set_information(
                     to.push_str(&info.file_name.replace('\\', "/"));
                     if let Err(error) = std::fs::rename(file, to) {
                         warn!(?error, "Rename file error");
-                        let res = RdpdrPdu::ClientDriveSetInformationResponse(ClientDriveSetInformationResponse::new(
-                            &req_inner,
-                            NtStatus::UNSUCCESSFUL,
-                        )?);
+                        let res = RdpdrPdu::ClientDriveSetInformationResponse(
+                            ClientDriveSetInformationResponse::new(&req_inner, NtStatus::UNSUCCESSFUL)
+                                .map_err(|e| encode_err!(e))?,
+                        );
                         return Ok(vec![SvcMessage::from(res)]);
                     }
                 }
@@ -394,10 +394,10 @@ pub(crate) fn set_information(
                 FileInformationClass::Disposition(_) => {
                     if let Err(error) = std::fs::remove_file(file) {
                         warn!(?error, "Remove file error");
-                        let res = RdpdrPdu::ClientDriveSetInformationResponse(ClientDriveSetInformationResponse::new(
-                            &req_inner,
-                            NtStatus::UNSUCCESSFUL,
-                        )?);
+                        let res = RdpdrPdu::ClientDriveSetInformationResponse(
+                            ClientDriveSetInformationResponse::new(&req_inner, NtStatus::UNSUCCESSFUL)
+                                .map_err(|e| encode_err!(e))?,
+                        );
                         return Ok(vec![SvcMessage::from(res)]);
                     }
                 }
@@ -409,16 +409,17 @@ pub(crate) fn set_information(
                             let error = nix::errno::Errno::last();
                             warn!(%error, "Failed to set end of file");
                             let res = RdpdrPdu::ClientDriveSetInformationResponse(
-                                ClientDriveSetInformationResponse::new(&req_inner, NtStatus::UNSUCCESSFUL)?,
+                                ClientDriveSetInformationResponse::new(&req_inner, NtStatus::UNSUCCESSFUL)
+                                    .map_err(|e| encode_err!(e))?,
                             );
                             return Ok(vec![SvcMessage::from(res)]);
                         }
                     } else {
                         warn!("no such file");
-                        let res = RdpdrPdu::ClientDriveSetInformationResponse(ClientDriveSetInformationResponse::new(
-                            &req_inner,
-                            NtStatus::NO_SUCH_FILE,
-                        )?);
+                        let res = RdpdrPdu::ClientDriveSetInformationResponse(
+                            ClientDriveSetInformationResponse::new(&req_inner, NtStatus::NO_SUCH_FILE)
+                                .map_err(|e| encode_err!(e))?,
+                        );
                         return Ok(vec![SvcMessage::from(res)]);
                     }
                 }
@@ -429,15 +430,15 @@ pub(crate) fn set_information(
         }
         None => {
             warn!("no such file");
-            let res = RdpdrPdu::ClientDriveSetInformationResponse(ClientDriveSetInformationResponse::new(
-                &req_inner,
-                NtStatus::NO_SUCH_FILE,
-            )?);
+            let res = RdpdrPdu::ClientDriveSetInformationResponse(
+                ClientDriveSetInformationResponse::new(&req_inner, NtStatus::NO_SUCH_FILE)
+                    .map_err(|e| encode_err!(e))?,
+            );
             return Ok(vec![SvcMessage::from(res)]);
         }
     }
     Ok(vec![SvcMessage::from(RdpdrPdu::ClientDriveSetInformationResponse(
-        ClientDriveSetInformationResponse::new(&req_inner, NtStatus::SUCCESS)?,
+        ClientDriveSetInformationResponse::new(&req_inner, NtStatus::SUCCESS).map_err(|e| encode_err!(e))?,
     ))])
 }
 

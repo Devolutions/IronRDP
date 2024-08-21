@@ -219,9 +219,9 @@ fn create_font_map() -> rdp::headers::ShareDataPdu {
 }
 
 fn decode_share_control(input: &[u8]) -> ConnectorResult<rdp::headers::ShareControlHeader> {
-    let data_request = pdu::decode::<pdu::mcs::SendDataRequest<'_>>(input).map_err(ConnectorError::pdu)?;
+    let data_request = pdu::decode::<pdu::mcs::SendDataRequest<'_>>(input).map_err(ConnectorError::decode)?;
     let share_control = pdu::decode::<rdp::headers::ShareControlHeader>(data_request.user_data.as_ref())
-        .map_err(ConnectorError::pdu)?;
+        .map_err(ConnectorError::decode)?;
     Ok(share_control)
 }
 

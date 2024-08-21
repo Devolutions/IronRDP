@@ -1,4 +1,4 @@
-use crate::{PduDecode, PduEncode, PduResult};
+use crate::{DecodeResult, EncodeResult, PduDecode, PduEncode};
 use ironrdp_core::{ReadCursor, WriteCursor};
 
 const CLIENT_FLAGS_SIZE: usize = 4;
@@ -14,7 +14,7 @@ impl ClientMessageChannelData {
 }
 
 impl PduEncode for ClientMessageChannelData {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
 
         dst.write_u32(0); // flags
@@ -32,7 +32,7 @@ impl PduEncode for ClientMessageChannelData {
 }
 
 impl<'de> PduDecode<'de> for ClientMessageChannelData {
-    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+    fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
         let _flags = src.read_u32(); // is unused
@@ -53,7 +53,7 @@ impl ServerMessageChannelData {
 }
 
 impl PduEncode for ServerMessageChannelData {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
 
         dst.write_u16(self.mcs_message_channel_id);
@@ -71,7 +71,7 @@ impl PduEncode for ServerMessageChannelData {
 }
 
 impl<'de> PduDecode<'de> for ServerMessageChannelData {
-    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+    fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
         let mcs_message_channel_id = src.read_u16();

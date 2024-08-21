@@ -13,7 +13,7 @@ mod shell;
 mod win_ps;
 
 use ironrdp_core::{ReadCursor, WriteCursor};
-use ironrdp_pdu::{PduEncode, PduResult};
+use ironrdp_pdu::{DecodeResult, EncodeResult, PduEncode};
 
 use crate::NowHeader;
 
@@ -50,7 +50,7 @@ pub enum NowExecMessage {
 impl NowExecMessage {
     const NAME: &'static str = "NOW_EXEC_MSG";
 
-    pub fn decode_from_body(header: NowHeader, src: &mut ReadCursor<'_>) -> PduResult<Self> {
+    pub fn decode_from_body(header: NowHeader, src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
         match NowExecMsgKind(header.kind) {
             NowExecMsgKind::CAPSET => Ok(Self::Capset(NowExecCapsetMsg::new(
                 NowExecCapsetFlags::from_bits_retain(header.flags),
@@ -72,7 +72,7 @@ impl NowExecMessage {
 }
 
 impl PduEncode for NowExecMessage {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         match self {
             Self::Capset(msg) => msg.encode(dst),
             Self::Abort(msg) => msg.encode(dst),

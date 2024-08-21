@@ -15,7 +15,7 @@ pub fn encode_send_data_request<T>(
 where
     T: PduEncode,
 {
-    let user_data = encode_vec(user_msg).map_err(ConnectorError::pdu)?;
+    let user_data = encode_vec(user_msg).map_err(ConnectorError::encode)?;
 
     let pdu = ironrdp_pdu::mcs::SendDataRequest {
         initiator_id,
@@ -23,7 +23,7 @@ where
         user_data: Cow::Owned(user_data),
     };
 
-    let written = ironrdp_pdu::encode_buf(&pdu, buf).map_err(ConnectorError::pdu)?;
+    let written = ironrdp_pdu::encode_buf(&pdu, buf).map_err(ConnectorError::encode)?;
 
     Ok(written)
 }
@@ -41,7 +41,7 @@ impl<'a> SendDataIndicationCtx<'a> {
         T: PduDecode<'de>,
         'a: 'de,
     {
-        let msg = decode::<T>(self.user_data).map_err(ConnectorError::pdu)?;
+        let msg = decode::<T>(self.user_data).map_err(ConnectorError::decode)?;
         Ok(msg)
     }
 }
@@ -49,7 +49,7 @@ impl<'a> SendDataIndicationCtx<'a> {
 pub fn decode_send_data_indication(src: &[u8]) -> ConnectorResult<SendDataIndicationCtx<'_>> {
     use ironrdp_pdu::mcs::McsMessage;
 
-    let mcs_msg = decode::<McsMessage<'_>>(src).map_err(ConnectorError::pdu)?;
+    let mcs_msg = decode::<McsMessage<'_>>(src).map_err(ConnectorError::decode)?;
 
     match mcs_msg {
         McsMessage::SendDataIndication(msg) => {

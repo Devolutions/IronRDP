@@ -1,6 +1,6 @@
 //! Variable-length number types.
 use ironrdp_core::{ReadCursor, WriteCursor};
-use ironrdp_pdu::{PduDecode, PduEncode, PduError, PduResult};
+use ironrdp_pdu::{DecodeError, DecodeResult, EncodeError, EncodeResult, PduDecode, PduEncode};
 
 /// Variable-length encoded u16.
 /// Value range:`[0..0x7FFF]`
@@ -15,7 +15,7 @@ impl VarU16 {
 
     const NAME: &'static str = "NOW_VARU16";
 
-    pub fn new(value: u16) -> PduResult<Self> {
+    pub fn new(value: u16) -> DecodeResult<Self> {
         if value > Self::MAX {
             return Err(invalid_field_err!("value", "too large number"));
         }
@@ -29,7 +29,7 @@ impl VarU16 {
 }
 
 impl PduEncode for VarU16 {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         let encoded_size = self.size();
 
         ensure_size!(in: dst, size: encoded_size);
@@ -73,7 +73,7 @@ impl PduEncode for VarU16 {
 }
 
 impl PduDecode<'_> for VarU16 {
-    fn decode(src: &mut ReadCursor<'_>) -> PduResult<Self> {
+    fn decode(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
         // Ensure we have at least 1 byte available to determine the size of the value
         ensure_size!(in: src, size: 1);
 
@@ -112,7 +112,7 @@ impl From<VarU16> for u16 {
 }
 
 impl TryFrom<u16> for VarU16 {
-    type Error = PduError;
+    type Error = DecodeError;
 
     fn try_from(value: u16) -> Result<Self, Self::Error> {
         Self::new(value)
@@ -132,7 +132,7 @@ impl VarI16 {
 
     const NAME: &'static str = "NOW_VARI16";
 
-    pub fn new(value: i16) -> PduResult<Self> {
+    pub fn new(value: i16) -> DecodeResult<Self> {
         if value.abs() > Self::MAX {
             return Err(invalid_field_err!("value", "too large number"));
         }
@@ -146,7 +146,7 @@ impl VarI16 {
 }
 
 impl PduEncode for VarI16 {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         let encoded_size = self.size();
 
         ensure_size!(in: dst, size: encoded_size);
@@ -196,7 +196,7 @@ impl PduEncode for VarI16 {
 }
 
 impl PduDecode<'_> for VarI16 {
-    fn decode(src: &mut ReadCursor<'_>) -> PduResult<Self> {
+    fn decode(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
         // Ensure we have at least 1 byte available to determine the size of the value
         ensure_size!(in: src, size: 1);
 
@@ -244,7 +244,7 @@ impl From<VarI16> for i16 {
 }
 
 impl TryFrom<i16> for VarI16 {
-    type Error = PduError;
+    type Error = DecodeError;
 
     fn try_from(value: i16) -> Result<Self, Self::Error> {
         Self::new(value)
@@ -264,7 +264,7 @@ impl VarU32 {
 
     const NAME: &'static str = "NOW_VARU32";
 
-    pub fn new(value: u32) -> PduResult<Self> {
+    pub fn new(value: u32) -> EncodeResult<Self> {
         if value > Self::MAX {
             return Err(invalid_field_err!("value", "too large number"));
         }
@@ -278,7 +278,7 @@ impl VarU32 {
 }
 
 impl PduEncode for VarU32 {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         let encoded_size = self.size();
 
         ensure_size!(in: dst, size: encoded_size);
@@ -324,7 +324,7 @@ impl PduEncode for VarU32 {
 }
 
 impl PduDecode<'_> for VarU32 {
-    fn decode(src: &mut ReadCursor<'_>) -> PduResult<Self> {
+    fn decode(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
         // Ensure we have at least 1 byte available to determine the size of the value
         ensure_size!(in: src, size: 1);
 
@@ -364,7 +364,7 @@ impl From<VarU32> for u32 {
 }
 
 impl TryFrom<u32> for VarU32 {
-    type Error = PduError;
+    type Error = EncodeError;
 
     fn try_from(value: u32) -> Result<Self, Self::Error> {
         Self::new(value)
@@ -384,7 +384,7 @@ impl VarI32 {
 
     const NAME: &'static str = "NOW_VARI32";
 
-    pub fn new(value: i32) -> PduResult<Self> {
+    pub fn new(value: i32) -> DecodeResult<Self> {
         if value.abs() > Self::MAX {
             return Err(invalid_field_err!("value", "too large number"));
         }
@@ -398,7 +398,7 @@ impl VarI32 {
 }
 
 impl PduEncode for VarI32 {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         let encoded_size = self.size();
 
         ensure_size!(in: dst, size: encoded_size);
@@ -450,7 +450,7 @@ impl PduEncode for VarI32 {
 }
 
 impl PduDecode<'_> for VarI32 {
-    fn decode(src: &mut ReadCursor<'_>) -> PduResult<Self> {
+    fn decode(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
         // Ensure we have at least 1 byte available to determine the size of the value
         ensure_size!(in: src, size: 1);
 
@@ -498,7 +498,7 @@ impl From<VarI32> for i32 {
 }
 
 impl TryFrom<i32> for VarI32 {
-    type Error = PduError;
+    type Error = DecodeError;
 
     fn try_from(value: i32) -> Result<Self, Self::Error> {
         Self::new(value)
@@ -518,7 +518,7 @@ impl VarU64 {
 
     const NAME: &'static str = "NOW_VARU64";
 
-    pub fn new(value: u64) -> PduResult<Self> {
+    pub fn new(value: u64) -> DecodeResult<Self> {
         if value > Self::MAX {
             return Err(invalid_field_err!("value", "too large number"));
         }
@@ -532,7 +532,7 @@ impl VarU64 {
 }
 
 impl PduEncode for VarU64 {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         let encoded_size = self.size();
 
         ensure_size!(in: dst, size: encoded_size);
@@ -582,7 +582,7 @@ impl PduEncode for VarU64 {
 }
 
 impl PduDecode<'_> for VarU64 {
-    fn decode(src: &mut ReadCursor<'_>) -> PduResult<Self> {
+    fn decode(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
         // Ensure we have at least 1 byte available to determine the size of the value
         ensure_size!(in: src, size: 1);
 
@@ -621,7 +621,7 @@ impl From<VarU64> for u64 {
 }
 
 impl TryFrom<u64> for VarU64 {
-    type Error = PduError;
+    type Error = DecodeError;
 
     fn try_from(value: u64) -> Result<Self, Self::Error> {
         Self::new(value)
@@ -639,7 +639,7 @@ impl VarI64 {
     const NAME: &'static str = "NOW_VARI64";
     const MAX: i64 = 0x0FFFFFFFFFFFFFFF;
 
-    pub fn new(value: i64) -> PduResult<Self> {
+    pub fn new(value: i64) -> DecodeResult<Self> {
         if value.abs() > Self::MAX {
             return Err(invalid_field_err!("value", "too large number"));
         }
@@ -653,7 +653,7 @@ impl VarI64 {
 }
 
 impl PduEncode for VarI64 {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         let encoded_size = self.size();
 
         ensure_size!(in: dst, size: encoded_size);
@@ -709,7 +709,7 @@ impl PduEncode for VarI64 {
 }
 
 impl PduDecode<'_> for VarI64 {
-    fn decode(src: &mut ReadCursor<'_>) -> PduResult<Self> {
+    fn decode(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
         // Ensure we have at least 1 byte available to determine the size of the value
         ensure_size!(in: src, size: 1);
 
@@ -756,7 +756,7 @@ impl From<VarI64> for i64 {
 }
 
 impl TryFrom<i64> for VarI64 {
-    type Error = PduError;
+    type Error = DecodeError;
 
     fn try_from(value: i64) -> Result<Self, Self::Error> {
         Self::new(value)

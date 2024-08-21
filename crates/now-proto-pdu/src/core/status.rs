@@ -1,5 +1,5 @@
 use ironrdp_core::{ReadCursor, WriteCursor};
-use ironrdp_pdu::{PduDecode, PduEncode, PduError, PduResult};
+use ironrdp_pdu::{DecodeError, DecodeResult, EncodeResult, PduDecode, PduEncode};
 
 /// Error or status severity.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -24,9 +24,9 @@ pub enum NowSeverity {
 }
 
 impl TryFrom<u8> for NowSeverity {
-    type Error = PduError;
+    type Error = DecodeError;
 
-    fn try_from(value: u8) -> PduResult<Self> {
+    fn try_from(value: u8) -> DecodeResult<Self> {
         match value {
             0 => Ok(Self::Info),
             1 => Ok(Self::Warn),
@@ -75,7 +75,7 @@ impl NowStatus {
         }
     }
 
-    pub fn with_kind(self, kind: u8) -> PduResult<Self> {
+    pub fn with_kind(self, kind: u8) -> DecodeResult<Self> {
         if kind > 0x0F {
             return Err(invalid_field_err!("type", "status type is too large"));
         }
@@ -97,7 +97,7 @@ impl NowStatus {
 }
 
 impl PduEncode for NowStatus {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
 
         // Y, Z, class fields are reserved and must be set to 0.
@@ -120,7 +120,7 @@ impl PduEncode for NowStatus {
 }
 
 impl PduDecode<'_> for NowStatus {
-    fn decode(src: &mut ReadCursor<'_>) -> PduResult<Self> {
+    fn decode(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
         let header_byte = src.read_u8();

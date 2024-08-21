@@ -5,7 +5,7 @@ use tap::Pipe as _;
 
 use super::{RdpVersion, VERSION_SIZE};
 use crate::nego::SecurityProtocol;
-use crate::{utils, PduDecode, PduEncode, PduResult};
+use crate::{utils, DecodeResult, EncodeResult, PduDecode, PduEncode};
 use ironrdp_core::{ReadCursor, WriteCursor};
 
 pub const IME_FILE_NAME_SIZE: usize = 64;
@@ -94,7 +94,7 @@ impl ClientCoreData {
 }
 
 impl PduEncode for ClientCoreData {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
         let mut client_name_dst = utils::to_utf16_bytes(self.client_name.as_ref());
@@ -130,7 +130,7 @@ impl PduEncode for ClientCoreData {
 }
 
 impl<'de> PduDecode<'de> for ClientCoreData {
-    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+    fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
         let version = src.read_u32().pipe(RdpVersion);
@@ -216,7 +216,7 @@ impl ClientCoreOptionalData {
 }
 
 impl PduEncode for ClientCoreOptionalData {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
         if let Some(value) = self.post_beta2_color_depth {
@@ -410,7 +410,7 @@ macro_rules! try_or_return {
 }
 
 impl<'de> PduDecode<'de> for ClientCoreOptionalData {
-    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+    fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         let mut optional_data = Self::default();
 
         optional_data.post_beta2_color_depth = Some(

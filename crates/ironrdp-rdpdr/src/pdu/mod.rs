@@ -2,7 +2,10 @@ use std::fmt::{self, Display};
 use std::mem::size_of;
 
 use ironrdp_core::{ReadCursor, WriteCursor};
-use ironrdp_pdu::{ensure_size, invalid_field_err, unsupported_value_err, PduDecode, PduEncode, PduError, PduResult};
+use ironrdp_pdu::{
+    ensure_size, invalid_field_err, unsupported_value_err, DecodeError, DecodeResult, EncodeResult, PduDecode,
+    PduEncode,
+};
 use ironrdp_svc::SvcPduEncode;
 
 use self::efs::{
@@ -97,7 +100,7 @@ impl RdpdrPdu {
 }
 
 impl PduDecode<'_> for RdpdrPdu {
-    fn decode(src: &mut ReadCursor<'_>) -> PduResult<Self> {
+    fn decode(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
         let header = SharedHeader::decode(src)?;
         match header.packet_id {
             PacketId::CoreServerAnnounce => Ok(RdpdrPdu::VersionAndIdPdu(VersionAndIdPdu::decode(header, src)?)),
@@ -117,7 +120,7 @@ impl PduDecode<'_> for RdpdrPdu {
 }
 
 impl PduEncode for RdpdrPdu {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         self.header().encode(dst)?;
 
         match self {
@@ -311,14 +314,14 @@ pub struct SharedHeader {
 impl SharedHeader {
     const SIZE: usize = size_of::<u16>() * 2;
 
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: Self::SIZE);
         dst.write_u16(self.component.into());
         dst.write_u16(self.packet_id.into());
         Ok(())
     }
 
-    pub fn decode(src: &mut ReadCursor<'_>) -> PduResult<Self> {
+    pub fn decode(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
         ensure_size!(in: src, size: Self::SIZE);
         Ok(Self {
             component: src.read_u16().try_into()?,
@@ -337,7 +340,7 @@ pub enum Component {
 }
 
 impl TryFrom<u16> for Component {
-    type Error = PduError;
+    type Error = DecodeError;
 
     fn try_from(value: u16) -> Result<Self, Self::Error> {
         match value {
@@ -386,7 +389,7 @@ pub enum PacketId {
 }
 
 impl TryFrom<u16> for PacketId {
-    type Error = PduError;
+    type Error = DecodeError;
 
     fn try_from(value: u16) -> Result<Self, Self::Error> {
         match value {

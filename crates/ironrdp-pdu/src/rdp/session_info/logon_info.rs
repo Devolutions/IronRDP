@@ -1,4 +1,4 @@
-use crate::{utils, PduDecode, PduEncode, PduResult};
+use crate::{utils, DecodeResult, EncodeResult, PduDecode, PduEncode};
 use ironrdp_core::{ReadCursor, WriteCursor};
 
 const DOMAIN_NAME_SIZE_FIELD_SIZE: usize = 4;
@@ -29,7 +29,7 @@ impl LogonInfoVersion1 {
 }
 
 impl PduEncode for LogonInfoVersion1 {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
         let mut domain_name_buffer = utils::to_utf16_bytes(self.logon_info.domain_name.as_ref());
@@ -61,7 +61,7 @@ impl PduEncode for LogonInfoVersion1 {
 }
 
 impl<'de> PduDecode<'de> for LogonInfoVersion1 {
-    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+    fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
         let domain_name_size: usize = cast_length!("domainNameSize", src.read_u32())?;
@@ -103,7 +103,7 @@ impl LogonInfoVersion2 {
 }
 
 impl PduEncode for LogonInfoVersion2 {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
         dst.write_u16(SAVE_SESSION_PDU_VERSION_ONE);
@@ -142,7 +142,7 @@ impl PduEncode for LogonInfoVersion2 {
 }
 
 impl<'de> PduDecode<'de> for LogonInfoVersion2 {
-    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+    fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
         let version = src.read_u16();

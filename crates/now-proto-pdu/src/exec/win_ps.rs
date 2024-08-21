@@ -1,7 +1,7 @@
 use bitflags::bitflags;
 
 use ironrdp_core::{ReadCursor, WriteCursor};
-use ironrdp_pdu::{PduDecode, PduEncode, PduResult};
+use ironrdp_pdu::{DecodeResult, EncodeResult, PduDecode, PduEncode};
 
 use crate::{NowExecMessage, NowExecMsgKind, NowHeader, NowMessage, NowMessageClass, NowVarStr};
 
@@ -62,7 +62,7 @@ impl NowExecWinPsMsg {
     const NAME: &'static str = "NOW_EXEC_WINPS_MSG";
     const FIXED_PART_SIZE: usize = 4;
 
-    pub fn new(session_id: u32, command: NowVarStr) -> PduResult<Self> {
+    pub fn new(session_id: u32, command: NowVarStr) -> DecodeResult<Self> {
         let msg = Self {
             session_id,
             command,
@@ -76,7 +76,7 @@ impl NowExecWinPsMsg {
         Ok(msg)
     }
 
-    fn ensure_message_size(&self) -> PduResult<()> {
+    fn ensure_message_size(&self) -> DecodeResult<()> {
         let _message_size = Self::FIXED_PART_SIZE
             .checked_add(self.command.size())
             .and_then(|size| size.checked_add(self.execution_policy.size()))
@@ -92,7 +92,7 @@ impl NowExecWinPsMsg {
         self
     }
 
-    pub fn with_execution_policy(mut self, execution_policy: NowVarStr) -> PduResult<Self> {
+    pub fn with_execution_policy(mut self, execution_policy: NowVarStr) -> DecodeResult<Self> {
         self.execution_policy = execution_policy;
         self.flags |= NowExecWinPsFlags::EXECUTION_POLICY;
 
@@ -101,7 +101,7 @@ impl NowExecWinPsMsg {
         Ok(self)
     }
 
-    pub fn with_configuration_name(mut self, configuration_name: NowVarStr) -> PduResult<Self> {
+    pub fn with_configuration_name(mut self, configuration_name: NowVarStr) -> DecodeResult<Self> {
         self.configuration_name = configuration_name;
         self.flags |= NowExecWinPsFlags::CONFIGURATION_NAME;
 
@@ -144,7 +144,7 @@ impl NowExecWinPsMsg {
         Self::FIXED_PART_SIZE + self.command.size() + self.execution_policy.size() + self.configuration_name.size()
     }
 
-    pub(super) fn decode_from_body(header: NowHeader, src: &mut ReadCursor<'_>) -> PduResult<Self> {
+    pub(super) fn decode_from_body(header: NowHeader, src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
         let flags = NowExecWinPsFlags::from_bits_retain(header.flags);
@@ -168,7 +168,7 @@ impl NowExecWinPsMsg {
 }
 
 impl PduEncode for NowExecWinPsMsg {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         let header = NowHeader {
             size: cast_length!("size", self.body_size())?,
             class: NowMessageClass::EXEC,
@@ -199,7 +199,7 @@ impl PduEncode for NowExecWinPsMsg {
 }
 
 impl PduDecode<'_> for NowExecWinPsMsg {
-    fn decode(src: &mut ReadCursor<'_>) -> PduResult<Self> {
+    fn decode(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
         let header = NowHeader::decode(src)?;
 
         match (header.class, NowExecMsgKind(header.kind)) {

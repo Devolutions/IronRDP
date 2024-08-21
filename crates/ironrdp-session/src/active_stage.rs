@@ -68,7 +68,7 @@ impl ActiveStage {
         // Encoding fastpath response frame
         // PERF: unnecessary copy
         let fastpath_input = FastPathInput(events.to_vec());
-        let frame = ironrdp_pdu::encode_vec(&fastpath_input).map_err(SessionError::pdu)?;
+        let frame = ironrdp_pdu::encode_vec(&fastpath_input).map_err(SessionError::encode)?;
         output.push(ActiveStageOutput::ResponseFrame(frame));
 
         // If pointer rendering is disabled - we can skip the rest
@@ -230,7 +230,7 @@ impl ActiveStage {
                     physical_dims,
                 ) {
                     Ok(messages) => messages,
-                    Err(e) => return Some(Err(SessionError::pdu(e))),
+                    Err(e) => return Some(Err(SessionError::encode(e))),
                 };
 
                 return Some(

@@ -10,6 +10,7 @@ extern crate tracing;
 
 use ironrdp_core::impl_as_any;
 use ironrdp_core::ReadCursor;
+use ironrdp_pdu::decode_err;
 use ironrdp_pdu::gcc::ChannelName;
 use ironrdp_pdu::{decode_cursor, other_err, PduResult};
 use ironrdp_svc::{CompressionCondition, SvcClientProcessor, SvcMessage, SvcProcessor};
@@ -107,7 +108,8 @@ impl Rdpdr {
     }
 
     fn handle_server_announce(&mut self, req: VersionAndIdPdu) -> PduResult<Vec<SvcMessage>> {
-        let client_announce_reply = RdpdrPdu::VersionAndIdPdu(VersionAndIdPdu::new_client_announce_reply(req)?);
+        let client_announce_reply =
+            RdpdrPdu::VersionAndIdPdu(VersionAndIdPdu::new_client_announce_reply(req).map_err(|e| decode_err!(e))?);
         trace!("sending {:?}", client_announce_reply);
 
         let client_name_request = RdpdrPdu::ClientNameRequest(ClientNameRequest::new(
@@ -149,10 +151,15 @@ impl Rdpdr {
         dev_io_req: DeviceIoRequest,
         src: &mut ReadCursor<'_>,
     ) -> PduResult<Vec<SvcMessage>> {
-        match self.device_list.for_device_type(dev_io_req.device_id)? {
+        match self
+            .device_list
+            .for_device_type(dev_io_req.device_id)
+            .map_err(|e| decode_err!(e))?
+        {
             DeviceType::Smartcard => {
-                let req = DeviceControlRequest::<ScardIoCtlCode>::decode(dev_io_req, src)?;
-                let call = ScardCall::decode(req.io_control_code, src)?;
+                let req =
+                    DeviceControlRequest::<ScardIoCtlCode>::decode(dev_io_req, src).map_err(|e| decode_err!(e))?;
+                let call = ScardCall::decode(req.io_control_code, src).map_err(|e| decode_err!(e))?;
 
                 debug!(?req);
                 debug!(?req.io_control_code, ?call);
@@ -162,7 +169,7 @@ impl Rdpdr {
                 Ok(Vec::new())
             }
             DeviceType::Filesystem => {
-                let req = ServerDriveIoRequest::decode(dev_io_req, src)?;
+                let req = ServerDriveIoRequest::decode(dev_io_req, src).map_err(|e| decode_err!(e))?;
 
                 debug!(?req);
 
@@ -188,7 +195,7 @@ impl SvcProcessor for Rdpdr {
 
     fn process(&mut self, src: &[u8]) -> PduResult<Vec<SvcMessage>> {
         let mut src = ReadCursor::new(src);
-        let pdu = decode_cursor::<RdpdrPdu>(&mut src)?;
+        let pdu = decode_cursor::<RdpdrPdu>(&mut src).map_err(|e| decode_err!(e))?;
         debug!("Received {:?}", pdu);
 
         match pdu {

@@ -1,7 +1,7 @@
 mod shutdown;
 
 use ironrdp_core::{ReadCursor, WriteCursor};
-use ironrdp_pdu::{PduEncode, PduResult};
+use ironrdp_pdu::{DecodeResult, EncodeResult, PduEncode};
 
 use crate::NowHeader;
 
@@ -16,7 +16,7 @@ pub enum NowSystemMessage {
 impl NowSystemMessage {
     const NAME: &'static str = "NOW_SYSTEM_MSG";
 
-    pub fn decode_from_body(header: NowHeader, src: &mut ReadCursor<'_>) -> PduResult<Self> {
+    pub fn decode_from_body(header: NowHeader, src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
         match NowSystemMessageKind(header.kind) {
             NowSystemMessageKind::SHUTDOWN => Ok(Self::Shutdown(NowSystemShutdownMsg::decode_from_body(header, src)?)),
             _ => Err(unsupported_message_err!(class: header.class.0, kind: header.kind)),
@@ -25,7 +25,7 @@ impl NowSystemMessage {
 }
 
 impl PduEncode for NowSystemMessage {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         match self {
             Self::Shutdown(msg) => msg.encode(dst),
         }

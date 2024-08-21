@@ -252,7 +252,7 @@ impl Sequence for Acceptor {
     fn step(&mut self, input: &[u8], output: &mut WriteBuf) -> ConnectorResult<Written> {
         let (written, next_state) = match mem::take(&mut self.state) {
             AcceptorState::InitiationWaitRequest => {
-                let connection_request = decode::<nego::ConnectionRequest>(input).map_err(ConnectorError::pdu)?;
+                let connection_request = decode::<nego::ConnectionRequest>(input).map_err(ConnectorError::decode)?;
 
                 debug!(message = ?connection_request, "Received");
 
@@ -272,7 +272,7 @@ impl Sequence for Acceptor {
 
                 debug!(message = ?connection_confirm, "Send");
 
-                let written = ironrdp_pdu::encode_buf(&connection_confirm, output).map_err(ConnectorError::pdu)?;
+                let written = ironrdp_pdu::encode_buf(&connection_confirm, output).map_err(ConnectorError::encode)?;
 
                 (
                     Written::from_size(written)?,
@@ -286,9 +286,9 @@ impl Sequence for Acceptor {
             ),
 
             AcceptorState::BasicSettingsWaitInitial { requested_protocol } => {
-                let x224_payload = decode::<pdu::x224::X224Data<'_>>(input).map_err(ConnectorError::pdu)?;
+                let x224_payload = decode::<pdu::x224::X224Data<'_>>(input).map_err(ConnectorError::decode)?;
                 let settings_initial =
-                    decode::<mcs::ConnectInitial>(x224_payload.data.as_ref()).map_err(ConnectorError::pdu)?;
+                    decode::<mcs::ConnectInitial>(x224_payload.data.as_ref()).map_err(ConnectorError::decode)?;
 
                 debug!(message = ?settings_initial, "Received");
 
@@ -424,8 +424,9 @@ impl Sequence for Acceptor {
                 early_capability,
                 channels,
             } => {
-                let data: mcs::SendDataRequest<'_> = decode(input).map_err(ConnectorError::pdu)?;
-                let client_info: rdp::ClientInfoPdu = decode(data.user_data.as_ref()).map_err(ConnectorError::pdu)?;
+                let data: mcs::SendDataRequest<'_> = decode(input).map_err(ConnectorError::decode)?;
+                let client_info: rdp::ClientInfoPdu =
+                    decode(data.user_data.as_ref()).map_err(ConnectorError::decode)?;
 
                 debug!(message = ?client_info, "Received");
 
@@ -443,7 +444,7 @@ impl Sequence for Acceptor {
                 channels,
             } => {
                 let license: LicensePdu = LicensingErrorMessage::new_valid_client()
-                    .map_err(ConnectorError::pdu)?
+                    .map_err(ConnectorError::encode)?
                     .into();
 
                 debug!(message = ?license, "Send");
@@ -525,12 +526,12 @@ impl Sequence for Acceptor {
             }
 
             AcceptorState::CapabilitiesWaitConfirm { channels } => {
-                let message = decode::<mcs::McsMessage<'_>>(input).map_err(ConnectorError::pdu)?;
+                let message = decode::<mcs::McsMessage<'_>>(input).map_err(ConnectorError::decode)?;
 
                 match message {
                     mcs::McsMessage::SendDataRequest(data) => {
                         let capabilities_confirm = decode::<rdp::headers::ShareControlHeader>(data.user_data.as_ref())
-                            .map_err(ConnectorError::pdu)?;
+                            .map_err(ConnectorError::decode)?;
 
                         debug!(message = ?capabilities_confirm, "Received");
 

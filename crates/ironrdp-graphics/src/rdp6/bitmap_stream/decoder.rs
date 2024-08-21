@@ -1,5 +1,5 @@
 use ironrdp_pdu::bitmap::rdp6::{BitmapStream as BitmapStreamPdu, ColorPlaneDefinition};
-use ironrdp_pdu::{decode, PduError};
+use ironrdp_pdu::{decode, DecodeError};
 use thiserror::Error;
 
 use crate::color_conversion::Rgb;
@@ -8,7 +8,7 @@ use crate::rdp6::rle::{decompress_8bpp_plane, RleDecodeError};
 #[derive(Debug, Error)]
 pub enum BitmapDecodeError {
     #[error("failed to decode RDP6 bitmap stream PDU: {0}")]
-    Pdu(#[from] PduError),
+    Decode(#[from] DecodeError),
     #[error("failed to perform RLE decompression of RDP6 bitmap stream: {0}")]
     Rle(#[from] RleDecodeError),
     #[error("color plane data size provided in PDU is not sufficient to reconstruct the bitmap")]

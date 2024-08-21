@@ -58,7 +58,7 @@ impl UpdateEncoder {
             let mut cursor = WriteCursor::new(self.buffer.as_mut_slice());
             match pdu.encode(&mut cursor) {
                 Err(e) => match e.kind() {
-                    ironrdp_pdu::PduErrorKind::NotEnoughBytes { .. } => {
+                    ironrdp_pdu::EncodeErrorKind::NotEnoughBytes { .. } => {
                         self.buffer.resize(self.buffer.len() * 2, 0);
                         debug!("encoder buffer resized to: {}", self.buffer.len() * 2);
                     }
@@ -135,7 +135,7 @@ impl UpdateEncoder {
         let len = loop {
             match self.bitmap.encode(&bitmap, self.buffer.as_mut_slice()) {
                 Err(e) => match e.kind() {
-                    ironrdp_pdu::PduErrorKind::NotEnoughBytes { .. } => {
+                    ironrdp_pdu::EncodeErrorKind::NotEnoughBytes { .. } => {
                         self.buffer.resize(self.buffer.len() * 2, 0);
                         debug!("encoder buffer resized to: {}", self.buffer.len() * 2);
                     }

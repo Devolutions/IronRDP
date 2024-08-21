@@ -248,7 +248,8 @@ pub type ConnectorResult<T> = Result<T, ConnectorError>;
 #[non_exhaustive]
 #[derive(Debug)]
 pub enum ConnectorErrorKind {
-    Pdu(ironrdp_pdu::PduError),
+    Encode(ironrdp_pdu::EncodeError),
+    Decode(ironrdp_pdu::DecodeError),
     Credssp(sspi::Error),
     Reason(String),
     AccessDenied,
@@ -259,7 +260,8 @@ pub enum ConnectorErrorKind {
 impl fmt::Display for ConnectorErrorKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match &self {
-            ConnectorErrorKind::Pdu(_) => write!(f, "PDU error"),
+            ConnectorErrorKind::Encode(_) => write!(f, "encode error"),
+            ConnectorErrorKind::Decode(_) => write!(f, "decode error"),
             ConnectorErrorKind::Credssp(_) => write!(f, "CredSSP"),
             ConnectorErrorKind::Reason(description) => write!(f, "reason: {description}"),
             ConnectorErrorKind::AccessDenied => write!(f, "access denied"),
@@ -272,7 +274,8 @@ impl fmt::Display for ConnectorErrorKind {
 impl std::error::Error for ConnectorErrorKind {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match &self {
-            ConnectorErrorKind::Pdu(e) => Some(e),
+            ConnectorErrorKind::Encode(e) => Some(e),
+            ConnectorErrorKind::Decode(e) => Some(e),
             ConnectorErrorKind::Credssp(e) => Some(e),
             ConnectorErrorKind::Reason(_) => None,
             ConnectorErrorKind::AccessDenied => None,
@@ -285,7 +288,8 @@ impl std::error::Error for ConnectorErrorKind {
 pub type ConnectorError = ironrdp_error::Error<ConnectorErrorKind>;
 
 pub trait ConnectorErrorExt {
-    fn pdu(error: ironrdp_pdu::PduError) -> Self;
+    fn encode(error: ironrdp_pdu::EncodeError) -> Self;
+    fn decode(error: ironrdp_pdu::DecodeError) -> Self;
     fn general(context: &'static str) -> Self;
     fn reason(context: &'static str, reason: impl Into<String>) -> Self;
     fn custom<E>(context: &'static str, e: E) -> Self
@@ -294,8 +298,12 @@ pub trait ConnectorErrorExt {
 }
 
 impl ConnectorErrorExt for ConnectorError {
-    fn pdu(error: ironrdp_pdu::PduError) -> Self {
-        Self::new("invalid payload", ConnectorErrorKind::Pdu(error))
+    fn encode(error: ironrdp_pdu::EncodeError) -> Self {
+        Self::new("encode error", ConnectorErrorKind::Encode(error))
+    }
+
+    fn decode(error: ironrdp_pdu::DecodeError) -> Self {
+        Self::new("decode error", ConnectorErrorKind::Decode(error))
     }
 
     fn general(context: &'static str) -> Self {
@@ -343,13 +351,13 @@ pub fn encode_x224_packet<T>(x224_msg: &T, buf: &mut WriteBuf) -> ConnectorResul
 where
     T: PduEncode,
 {
-    let x224_msg_buf = encode_vec(x224_msg).map_err(ConnectorError::pdu)?;
+    let x224_msg_buf = encode_vec(x224_msg).map_err(ConnectorError::encode)?;
 
     let pdu = x224::X224Data {
         data: std::borrow::Cow::Owned(x224_msg_buf),
     };
 
-    let written = encode_buf(&pdu, buf).map_err(ConnectorError::pdu)?;
+    let written = encode_buf(&pdu, buf).map_err(ConnectorError::encode)?;
 
     Ok(written)
 }
