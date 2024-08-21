@@ -2,7 +2,7 @@ use bitflags::bitflags;
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive, ToPrimitive};
 
-use crate::{PduDecode, PduEncode, PduResult};
+use crate::{DecodeResult, EncodeResult, PduDecode, PduEncode};
 use ironrdp_core::{ReadCursor, WriteCursor};
 
 const LOGON_EX_LENGTH_FIELD_SIZE: usize = 2;
@@ -38,7 +38,7 @@ impl LogonInfoExtended {
 }
 
 impl PduEncode for LogonInfoExtended {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
         dst.write_u16(cast_length!("internalSize", self.get_internal_size())?);
@@ -66,7 +66,7 @@ impl PduEncode for LogonInfoExtended {
 }
 
 impl<'de> PduDecode<'de> for LogonInfoExtended {
-    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+    fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
         let _self_length = src.read_u16();
@@ -108,7 +108,7 @@ impl ServerAutoReconnect {
 }
 
 impl PduEncode for ServerAutoReconnect {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
 
         dst.write_u32(AUTO_RECONNECT_PACKET_SIZE as u32);
@@ -130,7 +130,7 @@ impl PduEncode for ServerAutoReconnect {
 }
 
 impl<'de> PduDecode<'de> for ServerAutoReconnect {
-    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+    fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
         let _data_length = src.read_u32();
@@ -167,7 +167,7 @@ impl LogonErrorsInfo {
 }
 
 impl PduEncode for LogonErrorsInfo {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
 
         dst.write_u32(LOGON_ERRORS_INFO_SIZE as u32);
@@ -187,7 +187,7 @@ impl PduEncode for LogonErrorsInfo {
 }
 
 impl<'de> PduDecode<'de> for LogonErrorsInfo {
-    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+    fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
         let _data_length = src.read_u32();

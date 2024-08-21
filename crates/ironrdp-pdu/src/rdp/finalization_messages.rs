@@ -2,7 +2,7 @@ use bitflags::bitflags;
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive as _, ToPrimitive as _};
 
-use crate::{gcc, PduDecode, PduEncode, PduResult};
+use crate::{gcc, DecodeResult, EncodeResult, PduDecode, PduEncode};
 use ironrdp_core::{ReadCursor, WriteCursor};
 
 const SYNCHRONIZE_PDU_SIZE: usize = 2 + 2;
@@ -23,7 +23,7 @@ impl SynchronizePdu {
 }
 
 impl PduEncode for SynchronizePdu {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
 
         dst.write_u16(SYNCHRONIZE_MESSAGE_TYPE);
@@ -42,7 +42,7 @@ impl PduEncode for SynchronizePdu {
 }
 
 impl<'de> PduDecode<'de> for SynchronizePdu {
-    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+    fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
         let message_type = src.read_u16();
@@ -70,7 +70,7 @@ impl ControlPdu {
 }
 
 impl PduEncode for ControlPdu {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
 
         dst.write_u16(self.action.to_u16().unwrap());
@@ -90,7 +90,7 @@ impl PduEncode for ControlPdu {
 }
 
 impl<'de> PduDecode<'de> for ControlPdu {
-    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+    fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
         let action = ControlAction::from_u16(src.read_u16())
@@ -136,7 +136,7 @@ impl FontPdu {
 }
 
 impl PduEncode for FontPdu {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
 
         dst.write_u16(self.number);
@@ -157,7 +157,7 @@ impl PduEncode for FontPdu {
 }
 
 impl<'de> PduDecode<'de> for FontPdu {
-    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+    fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
         let number = src.read_u16();
@@ -187,7 +187,7 @@ impl MonitorLayoutPdu {
 }
 
 impl PduEncode for MonitorLayoutPdu {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
 
         dst.write_u32(cast_length!("nMonitors", self.monitors.len())?);
@@ -209,7 +209,7 @@ impl PduEncode for MonitorLayoutPdu {
 }
 
 impl<'de> PduDecode<'de> for MonitorLayoutPdu {
-    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+    fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
         let monitor_count = src.read_u32();

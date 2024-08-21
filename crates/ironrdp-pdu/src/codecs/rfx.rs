@@ -8,7 +8,7 @@ use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive as _, ToPrimitive as _};
 use thiserror::Error;
 
-use crate::{PduBufferParsing, PduDecode, PduEncode, PduResult};
+use crate::{DecodeResult, EncodeResult, PduBufferParsing, PduDecode, PduEncode};
 use ironrdp_core::{ReadCursor, WriteCursor};
 
 #[rustfmt::skip]
@@ -180,7 +180,7 @@ impl FrameAcknowledgePdu {
 }
 
 impl PduEncode for FrameAcknowledgePdu {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
 
         dst.write_u32(self.frame_id);
@@ -197,7 +197,7 @@ impl PduEncode for FrameAcknowledgePdu {
 }
 
 impl<'de> PduDecode<'de> for FrameAcknowledgePdu {
-    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+    fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
         let frame_id = src.read_u32();

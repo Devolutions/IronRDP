@@ -4,7 +4,7 @@ mod msg_box_req;
 mod msg_box_rsp;
 
 use ironrdp_core::{ReadCursor, WriteCursor};
-use ironrdp_pdu::{PduEncode, PduResult};
+use ironrdp_pdu::{DecodeResult, EncodeResult, PduEncode};
 
 use crate::NowHeader;
 
@@ -40,7 +40,7 @@ pub enum NowSessionMessage {
 impl NowSessionMessage {
     const NAME: &'static str = "NOW_SESSION_MSG";
 
-    pub fn decode_from_body(header: NowHeader, src: &mut ReadCursor<'_>) -> PduResult<Self> {
+    pub fn decode_from_body(header: NowHeader, src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
         match NowSessionMessageKind(header.kind) {
             NowSessionMessageKind::LOCK => Ok(Self::Lock(NowSessionLockMsg::default())),
             NowSessionMessageKind::LOGOFF => Ok(Self::Logoff(NowSessionLogoffMsg::default())),
@@ -56,7 +56,7 @@ impl NowSessionMessage {
 }
 
 impl PduEncode for NowSessionMessage {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         match self {
             Self::Lock(msg) => msg.encode(dst),
             Self::Logoff(msg) => msg.encode(dst),

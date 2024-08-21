@@ -6,7 +6,7 @@ use bitflags::bitflags;
 use num_integer::Integer;
 use thiserror::Error;
 
-use crate::{PduDecode, PduEncode, PduResult};
+use crate::{DecodeResult, EncodeResult, PduDecode, PduEncode};
 
 const CHANNELS_MAX: usize = 31;
 
@@ -105,7 +105,7 @@ impl ClientNetworkData {
 }
 
 impl PduEncode for ClientNetworkData {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
 
         dst.write_u32(cast_length!("channelCount", self.channels.len())?);
@@ -127,7 +127,7 @@ impl PduEncode for ClientNetworkData {
 }
 
 impl<'de> PduDecode<'de> for ClientNetworkData {
-    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+    fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
         let channel_count = cast_length!("channelCount", src.read_u32())?;
@@ -162,7 +162,7 @@ impl ServerNetworkData {
 }
 
 impl PduEncode for ServerNetworkData {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
         dst.write_u16(self.io_channel);
@@ -196,7 +196,7 @@ impl PduEncode for ServerNetworkData {
 }
 
 impl<'de> PduDecode<'de> for ServerNetworkData {
-    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+    fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
         let io_channel = src.read_u16();
@@ -235,7 +235,7 @@ impl ChannelDef {
 }
 
 impl PduEncode for ChannelDef {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
 
         dst.write_slice(self.name.as_bytes());
@@ -254,7 +254,7 @@ impl PduEncode for ChannelDef {
 }
 
 impl<'de> PduDecode<'de> for ChannelDef {
-    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+    fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
         let name = src.read_array();

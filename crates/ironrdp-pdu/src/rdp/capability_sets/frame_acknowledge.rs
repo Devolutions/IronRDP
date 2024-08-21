@@ -1,4 +1,4 @@
-use crate::{PduDecode, PduEncode, PduResult};
+use crate::{DecodeResult, EncodeResult, PduDecode, PduEncode};
 use ironrdp_core::{ReadCursor, WriteCursor};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -13,7 +13,7 @@ impl FrameAcknowledge {
 }
 
 impl PduEncode for FrameAcknowledge {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
 
         dst.write_u32(self.max_unacknowledged_frame_count);
@@ -31,7 +31,7 @@ impl PduEncode for FrameAcknowledge {
 }
 
 impl<'de> PduDecode<'de> for FrameAcknowledge {
-    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+    fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
         let max_unacknowledged_frame_count = src.read_u32();

@@ -1,5 +1,5 @@
 use super::CapabilitySet;
-use crate::{PduDecode, PduEncode, PduResult};
+use crate::{DecodeResult, EncodeResult, PduDecode, PduEncode};
 use ironrdp_core::{ReadCursor, WriteCursor};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -12,7 +12,7 @@ impl CapabilitiesAdvertisePdu {
 }
 
 impl PduEncode for CapabilitiesAdvertisePdu {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
         dst.write_u16(cast_length!("Count", self.0.len())?);
@@ -34,7 +34,7 @@ impl PduEncode for CapabilitiesAdvertisePdu {
 }
 
 impl<'a> PduDecode<'a> for CapabilitiesAdvertisePdu {
-    fn decode(src: &mut ReadCursor<'a>) -> PduResult<Self> {
+    fn decode(src: &mut ReadCursor<'a>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
         let capabilities_count = cast_length!("Count", src.read_u16())?;
@@ -63,7 +63,7 @@ impl FrameAcknowledgePdu {
 }
 
 impl PduEncode for FrameAcknowledgePdu {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
 
         dst.write_u32(self.queue_depth.to_u32());
@@ -83,7 +83,7 @@ impl PduEncode for FrameAcknowledgePdu {
 }
 
 impl<'a> PduDecode<'a> for FrameAcknowledgePdu {
-    fn decode(src: &mut ReadCursor<'a>) -> PduResult<Self> {
+    fn decode(src: &mut ReadCursor<'a>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
         let queue_depth = QueueDepth::from_u32(src.read_u32());
@@ -110,7 +110,7 @@ impl CacheImportReplyPdu {
 }
 
 impl PduEncode for CacheImportReplyPdu {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
         dst.write_u16(cast_length!("Count", self.cache_slots.len())?);
@@ -132,7 +132,7 @@ impl PduEncode for CacheImportReplyPdu {
 }
 
 impl<'a> PduDecode<'a> for CacheImportReplyPdu {
-    fn decode(src: &mut ReadCursor<'a>) -> PduResult<Self> {
+    fn decode(src: &mut ReadCursor<'a>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
         let entries_count = src.read_u16();

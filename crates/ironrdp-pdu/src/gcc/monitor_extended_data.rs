@@ -2,7 +2,7 @@ use ironrdp_core::{ReadCursor, WriteCursor};
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive, ToPrimitive};
 
-use crate::{PduDecode, PduEncode, PduResult};
+use crate::{DecodeResult, EncodeResult, PduDecode, PduEncode};
 
 const MONITOR_COUNT_MAX: usize = 16;
 const MONITOR_ATTRIBUTE_SIZE: u32 = 20;
@@ -24,7 +24,7 @@ impl ClientMonitorExtendedData {
 }
 
 impl PduEncode for ClientMonitorExtendedData {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
         dst.write_u32(0); // flags
@@ -48,7 +48,7 @@ impl PduEncode for ClientMonitorExtendedData {
 }
 
 impl<'de> PduDecode<'de> for ClientMonitorExtendedData {
-    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+    fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
         let _flags = src.read_u32(); // is unused
@@ -89,7 +89,7 @@ impl ExtendedMonitorInfo {
 }
 
 impl PduEncode for ExtendedMonitorInfo {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
 
         dst.write_u32(self.physical_width);
@@ -111,7 +111,7 @@ impl PduEncode for ExtendedMonitorInfo {
 }
 
 impl<'de> PduDecode<'de> for ExtendedMonitorInfo {
-    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+    fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
         let physical_width = src.read_u32();

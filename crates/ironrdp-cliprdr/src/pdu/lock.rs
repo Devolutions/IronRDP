@@ -1,5 +1,5 @@
 use ironrdp_core::{ReadCursor, WriteCursor};
-use ironrdp_pdu::{cast_int, ensure_fixed_part_size, impl_pdu_pod, PduDecode, PduEncode, PduResult};
+use ironrdp_pdu::{cast_int, ensure_fixed_part_size, impl_pdu_pod, DecodeResult, EncodeResult, PduDecode, PduEncode};
 
 use crate::pdu::PartialHeader;
 
@@ -15,7 +15,7 @@ impl LockDataId {
 }
 
 impl PduEncode for LockDataId {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         let header = PartialHeader::new(cast_int!("dataLen", Self::FIXED_PART_SIZE)?);
         header.encode(dst)?;
 
@@ -35,7 +35,7 @@ impl PduEncode for LockDataId {
 }
 
 impl<'de> PduDecode<'de> for LockDataId {
-    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+    fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         let _header = PartialHeader::decode(src)?;
 
         ensure_fixed_part_size!(in: src);

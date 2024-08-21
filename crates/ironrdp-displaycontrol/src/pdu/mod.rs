@@ -4,7 +4,7 @@
 
 use ironrdp_core::{ReadCursor, WriteCursor};
 use ironrdp_dvc::DvcPduEncode;
-use ironrdp_pdu::{ensure_fixed_part_size, invalid_field_err, PduDecode, PduEncode, PduResult};
+use ironrdp_pdu::{ensure_fixed_part_size, invalid_field_err, DecodeResult, EncodeResult, PduDecode, PduEncode};
 use tracing::warn;
 
 const DISPLAYCONTROL_PDU_TYPE_CAPS: u32 = 0x00000005;
@@ -34,7 +34,7 @@ impl DisplayControlPdu {
 }
 
 impl PduEncode for DisplayControlPdu {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
 
         let (kind, payload_length) = match self {
@@ -78,7 +78,7 @@ impl PduEncode for DisplayControlPdu {
 impl DvcPduEncode for DisplayControlPdu {}
 
 impl<'de> PduDecode<'de> for DisplayControlPdu {
-    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+    fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
         // Read `DISPLAYCONTROL_HEADER` fields.
@@ -143,7 +143,7 @@ impl DisplayControlCapabilities {
         max_num_monitors: u32,
         max_monitor_area_factor_a: u32,
         max_monitor_area_factor_b: u32,
-    ) -> PduResult<Self> {
+    ) -> DecodeResult<Self> {
         let max_monitor_area =
             calculate_monitor_area(max_num_monitors, max_monitor_area_factor_a, max_monitor_area_factor_b)?;
 
@@ -161,7 +161,7 @@ impl DisplayControlCapabilities {
 }
 
 impl PduEncode for DisplayControlCapabilities {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
         dst.write_u32(self.max_num_monitors);
         dst.write_u32(self.max_monitor_area_factor_a);
@@ -180,7 +180,7 @@ impl PduEncode for DisplayControlCapabilities {
 }
 
 impl<'de> PduDecode<'de> for DisplayControlCapabilities {
-    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+    fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
         let max_num_monitors = src.read_u32();
@@ -216,7 +216,7 @@ impl DisplayControlMonitorLayout {
     const NAME: &'static str = "DISPLAYCONTROL_MONITOR_LAYOUT_PDU";
     const FIXED_PART_SIZE: usize = 4 /* MonitorLayoutSize */ + 4 /* NumMonitors */;
 
-    pub fn new(monitors: &[MonitorLayoutEntry]) -> PduResult<Self> {
+    pub fn new(monitors: &[MonitorLayoutEntry]) -> EncodeResult<Self> {
         if monitors.len() > MAX_SUPPORTED_MONITORS.into() {
             return Err(invalid_field_err!("NumMonitors", "Too many monitors",));
         }
@@ -252,7 +252,7 @@ impl DisplayControlMonitorLayout {
         height: u32,
         scale_factor: Option<u32>,
         physical_dims: Option<(u32, u32)>,
-    ) -> PduResult<Self> {
+    ) -> EncodeResult<Self> {
         let entry = MonitorLayoutEntry::new_primary(width, height)?.with_orientation(if width > height {
             MonitorOrientation::Landscape
         } else {
@@ -282,7 +282,7 @@ impl DisplayControlMonitorLayout {
 }
 
 impl PduEncode for DisplayControlMonitorLayout {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
 
         dst.write_u32(MonitorLayoutEntry::FIXED_PART_SIZE.try_into().unwrap());
@@ -317,7 +317,7 @@ impl PduEncode for DisplayControlMonitorLayout {
 }
 
 impl<'de> PduDecode<'de> for DisplayControlMonitorLayout {
-    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+    fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
         let monitor_layout_size = src.read_u32();
@@ -362,6 +362,21 @@ pub struct MonitorLayoutEntry {
     device_scale_factor: u32,
 }
 
+macro_rules! validate_dimensions {
+    ($width:expr, $height:expr) => {{
+        if !(200..=8192).contains(&$width) {
+            return Err(invalid_field_err!("Width", "Monitor width is out of range"));
+        }
+        if $width % 2 != 0 {
+            return Err(invalid_field_err!("Width", "Monitor width cannot be odd"));
+        }
+        if !(200..=8192).contains(&$height) {
+            return Err(invalid_field_err!("Height", "Monitor height is out of range"));
+        }
+        Ok(())
+    }};
+}
+
 impl MonitorLayoutEntry {
     const FIXED_PART_SIZE: usize = 4 /* Flags */
         + 4 /* Left */
@@ -383,7 +398,7 @@ impl MonitorLayoutEntry {
     /// - The `height` MUST be greater than or equal to 200 pixels and less than or equal to 8192 pixels.
     ///
     /// [2.2.2.2.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpedisp/ea2de591-9203-42cd-9908-be7a55237d1c
-    fn new_impl(mut width: u32, height: u32) -> PduResult<Self> {
+    fn new_impl(mut width: u32, height: u32) -> EncodeResult<Self> {
         if width % 2 != 0 {
             let prev_width = width;
             width = width.saturating_sub(1);
@@ -393,7 +408,7 @@ impl MonitorLayoutEntry {
             )
         }
 
-        validate_dimensions(width, height)?;
+        validate_dimensions!(width, height)?;
 
         Ok(Self {
             is_primary: false,
@@ -440,7 +455,7 @@ impl MonitorLayoutEntry {
     /// Use [`MonitorLayoutEntry::adjust_display_size`] before calling this function to ensure the display size is within the valid range.
     ///
     /// [2.2.2.2.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpedisp/ea2de591-9203-42cd-9908-be7a55237d1c
-    pub fn new_primary(width: u32, height: u32) -> PduResult<Self> {
+    pub fn new_primary(width: u32, height: u32) -> EncodeResult<Self> {
         let mut entry = Self::new_impl(width, height)?;
         entry.is_primary = true;
         Ok(entry)
@@ -455,7 +470,7 @@ impl MonitorLayoutEntry {
     /// Use [`MonitorLayoutEntry::adjust_display_size`] before calling this function to ensure the display size is within the valid range.
     ///
     /// [2.2.2.2.2]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpedisp/ea2de591-9203-42cd-9908-be7a55237d1c
-    pub fn new_secondary(width: u32, height: u32) -> PduResult<Self> {
+    pub fn new_secondary(width: u32, height: u32) -> EncodeResult<Self> {
         Self::new_impl(width, height)
     }
 
@@ -469,7 +484,7 @@ impl MonitorLayoutEntry {
     /// Sets the monitor's position (left, top) in pixels. (Default is (0, 0))
     ///
     /// Note: The primary monitor position must be always (0, 0).
-    pub fn with_position(mut self, left: i32, top: i32) -> PduResult<Self> {
+    pub fn with_position(mut self, left: i32, top: i32) -> EncodeResult<Self> {
         validate_position(left, top, self.is_primary)?;
 
         self.left = left;
@@ -489,7 +504,7 @@ impl MonitorLayoutEntry {
     ///
     /// NOTE: As specified in [MS-RDPEDISP], if the desktop scale factor is not in the valid range
     /// (100..=500 percent), the monitor desktop scale factor is considered invalid and should be ignored.
-    pub fn with_desktop_scale_factor(mut self, desktop_scale_factor: u32) -> PduResult<Self> {
+    pub fn with_desktop_scale_factor(mut self, desktop_scale_factor: u32) -> EncodeResult<Self> {
         validate_desktop_scale_factor(desktop_scale_factor)?;
 
         self.desktop_scale_factor = desktop_scale_factor;
@@ -501,7 +516,7 @@ impl MonitorLayoutEntry {
     /// NOTE: As specified in [MS-RDPEDISP], if the physical dimensions are not in the valid range
     /// (10..=10000 millimeters), the monitor physical dimensions are considered invalid and
     /// should be ignored.
-    pub fn with_physical_dimensions(mut self, physical_width: u32, physical_height: u32) -> PduResult<Self> {
+    pub fn with_physical_dimensions(mut self, physical_width: u32, physical_height: u32) -> EncodeResult<Self> {
         validate_physical_dimensions(physical_width, physical_height)?;
 
         self.physical_width = physical_width;
@@ -571,7 +586,7 @@ impl MonitorLayoutEntry {
 }
 
 impl PduEncode for MonitorLayoutEntry {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
 
         let flags = if self.is_primary {
@@ -603,7 +618,7 @@ impl PduEncode for MonitorLayoutEntry {
 }
 
 impl<'de> PduDecode<'de> for MonitorLayoutEntry {
-    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+    fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
         let flags = src.read_u32();
@@ -617,7 +632,7 @@ impl<'de> PduDecode<'de> for MonitorLayoutEntry {
         let desktop_scale_factor = src.read_u32();
         let device_scale_factor = src.read_u32();
 
-        validate_dimensions(width, height)?;
+        validate_dimensions!(width, height)?;
 
         Ok(Self {
             is_primary: flags & DISPLAYCONTROL_MONITOR_PRIMARY != 0,
@@ -682,7 +697,7 @@ impl DeviceScaleFactor {
     }
 }
 
-fn validate_position(left: i32, top: i32, is_primary: bool) -> PduResult<()> {
+fn validate_position(left: i32, top: i32, is_primary: bool) -> EncodeResult<()> {
     if is_primary && (left != 0 || top != 0) {
         return Err(invalid_field_err!(
             "Position",
@@ -693,21 +708,7 @@ fn validate_position(left: i32, top: i32, is_primary: bool) -> PduResult<()> {
     Ok(())
 }
 
-fn validate_dimensions(width: u32, height: u32) -> PduResult<()> {
-    if !(200..=8192).contains(&width) {
-        return Err(invalid_field_err!("Width", "Monitor width is out of range"));
-    }
-    if width % 2 != 0 {
-        return Err(invalid_field_err!("Width", "Monitor width cannot be odd"));
-    }
-    if !(200..=8192).contains(&height) {
-        return Err(invalid_field_err!("Height", "Monitor height is out of range"));
-    }
-
-    Ok(())
-}
-
-fn validate_desktop_scale_factor(desktop_scale_factor: u32) -> PduResult<()> {
+fn validate_desktop_scale_factor(desktop_scale_factor: u32) -> EncodeResult<()> {
     if !(100..=500).contains(&desktop_scale_factor) {
         return Err(invalid_field_err!(
             "DesktopScaleFactor",
@@ -718,7 +719,7 @@ fn validate_desktop_scale_factor(desktop_scale_factor: u32) -> PduResult<()> {
     Ok(())
 }
 
-fn validate_physical_dimensions(physical_width: u32, physical_height: u32) -> PduResult<()> {
+fn validate_physical_dimensions(physical_width: u32, physical_height: u32) -> EncodeResult<()> {
     if !(10..=10000).contains(&physical_width) {
         return Err(invalid_field_err!("PhysicalWidth", "Physical width is out of range"));
     }
@@ -733,7 +734,7 @@ fn calculate_monitor_area(
     max_num_monitors: u32,
     max_monitor_area_factor_a: u32,
     max_monitor_area_factor_b: u32,
-) -> PduResult<u64> {
+) -> DecodeResult<u64> {
     if max_num_monitors > MAX_SUPPORTED_MONITORS.into() {
         return Err(invalid_field_err!("NumMonitors", "Too many monitors"));
     }

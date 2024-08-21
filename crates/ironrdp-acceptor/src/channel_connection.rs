@@ -73,7 +73,7 @@ impl Sequence for ChannelConnectionSequence {
         let (written, next_state) = match std::mem::take(&mut self.state) {
             ChannelConnectionState::WaitErectDomainRequest => {
                 let erect_domain_request =
-                    ironrdp_pdu::decode::<mcs::ErectDomainPdu>(input).map_err(ConnectorError::pdu)?;
+                    ironrdp_pdu::decode::<mcs::ErectDomainPdu>(input).map_err(ConnectorError::decode)?;
 
                 debug!(message = ?erect_domain_request, "Received");
 
@@ -82,7 +82,7 @@ impl Sequence for ChannelConnectionSequence {
 
             ChannelConnectionState::WaitAttachUserRequest => {
                 let attach_user_request =
-                    ironrdp_pdu::decode::<mcs::AttachUserRequest>(input).map_err(ConnectorError::pdu)?;
+                    ironrdp_pdu::decode::<mcs::AttachUserRequest>(input).map_err(ConnectorError::decode)?;
 
                 debug!(message = ?attach_user_request, "Received");
 
@@ -97,7 +97,7 @@ impl Sequence for ChannelConnectionSequence {
 
                 debug!(message = ?attach_user_confirm, "Send");
 
-                let written = ironrdp_pdu::encode_buf(&attach_user_confirm, output).map_err(ConnectorError::pdu)?;
+                let written = ironrdp_pdu::encode_buf(&attach_user_confirm, output).map_err(ConnectorError::encode)?;
 
                 let next_state = match self.channel_ids.take() {
                     Some(channel_ids) => ChannelConnectionState::WaitChannelJoinRequest { remaining: channel_ids },
@@ -109,7 +109,7 @@ impl Sequence for ChannelConnectionSequence {
 
             ChannelConnectionState::WaitChannelJoinRequest { mut remaining } => {
                 let channel_request =
-                    ironrdp_pdu::decode::<mcs::ChannelJoinRequest>(input).map_err(ConnectorError::pdu)?;
+                    ironrdp_pdu::decode::<mcs::ChannelJoinRequest>(input).map_err(ConnectorError::decode)?;
 
                 debug!(message = ?channel_request, "Received");
 
@@ -143,7 +143,7 @@ impl Sequence for ChannelConnectionSequence {
 
                 debug!(message = ?channel_confirm, "Send");
 
-                let written = ironrdp_pdu::encode_buf(&channel_confirm, output).map_err(ConnectorError::pdu)?;
+                let written = ironrdp_pdu::encode_buf(&channel_confirm, output).map_err(ConnectorError::encode)?;
 
                 let next_state = if remaining.is_empty() {
                     ChannelConnectionState::AllJoined

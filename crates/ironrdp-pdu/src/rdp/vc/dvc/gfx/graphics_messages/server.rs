@@ -7,7 +7,7 @@ use num_traits::{FromPrimitive, ToPrimitive};
 use super::{CapabilitySet, Color, Point, RDP_GFX_HEADER_SIZE};
 use crate::gcc::Monitor;
 use crate::geometry::InclusiveRectangle;
-use crate::{decode_cursor, PduDecode, PduEncode, PduResult};
+use crate::{decode_cursor, DecodeResult, EncodeResult, PduDecode, PduEncode};
 use ironrdp_core::{ReadCursor, WriteCursor};
 
 pub(crate) const RESET_GRAPHICS_PDU_SIZE: usize = 340;
@@ -43,7 +43,7 @@ impl WireToSurface1Pdu {
 }
 
 impl PduEncode for WireToSurface1Pdu {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
         dst.write_u16(self.surface_id);
@@ -65,7 +65,7 @@ impl PduEncode for WireToSurface1Pdu {
 }
 
 impl<'a> PduDecode<'a> for WireToSurface1Pdu {
-    fn decode(src: &mut ReadCursor<'a>) -> PduResult<Self> {
+    fn decode(src: &mut ReadCursor<'a>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
         let surface_id = src.read_u16();
@@ -117,7 +117,7 @@ impl WireToSurface2Pdu {
 }
 
 impl PduEncode for WireToSurface2Pdu {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
         dst.write_u16(self.surface_id);
@@ -140,7 +140,7 @@ impl PduEncode for WireToSurface2Pdu {
 }
 
 impl<'a> PduDecode<'a> for WireToSurface2Pdu {
-    fn decode(src: &mut ReadCursor<'a>) -> PduResult<Self> {
+    fn decode(src: &mut ReadCursor<'a>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
         let surface_id = src.read_u16();
@@ -177,7 +177,7 @@ impl DeleteEncodingContextPdu {
 }
 
 impl PduEncode for DeleteEncodingContextPdu {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
 
         dst.write_u16(self.surface_id);
@@ -196,7 +196,7 @@ impl PduEncode for DeleteEncodingContextPdu {
 }
 
 impl<'a> PduDecode<'a> for DeleteEncodingContextPdu {
-    fn decode(src: &mut ReadCursor<'a>) -> PduResult<Self> {
+    fn decode(src: &mut ReadCursor<'a>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
         let surface_id = src.read_u16();
@@ -223,7 +223,7 @@ impl SolidFillPdu {
 }
 
 impl PduEncode for SolidFillPdu {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
         dst.write_u16(self.surface_id);
@@ -247,7 +247,7 @@ impl PduEncode for SolidFillPdu {
 }
 
 impl<'a> PduDecode<'a> for SolidFillPdu {
-    fn decode(src: &mut ReadCursor<'a>) -> PduResult<Self> {
+    fn decode(src: &mut ReadCursor<'a>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
         let surface_id = src.read_u16();
@@ -282,7 +282,7 @@ impl SurfaceToSurfacePdu {
 }
 
 impl PduEncode for SurfaceToSurfacePdu {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
         dst.write_u16(self.source_surface_id);
@@ -307,7 +307,7 @@ impl PduEncode for SurfaceToSurfacePdu {
 }
 
 impl<'a> PduDecode<'a> for SurfaceToSurfacePdu {
-    fn decode(src: &mut ReadCursor<'a>) -> PduResult<Self> {
+    fn decode(src: &mut ReadCursor<'a>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
         let source_surface_id = src.read_u16();
@@ -343,7 +343,7 @@ impl SurfaceToCachePdu {
 }
 
 impl PduEncode for SurfaceToCachePdu {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
 
         dst.write_u16(self.surface_id);
@@ -364,7 +364,7 @@ impl PduEncode for SurfaceToCachePdu {
 }
 
 impl<'a> PduDecode<'a> for SurfaceToCachePdu {
-    fn decode(src: &mut ReadCursor<'a>) -> PduResult<Self> {
+    fn decode(src: &mut ReadCursor<'a>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
         let surface_id = src.read_u16();
@@ -395,7 +395,7 @@ impl CacheToSurfacePdu {
 }
 
 impl PduEncode for CacheToSurfacePdu {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
         dst.write_u16(self.cache_slot);
@@ -418,7 +418,7 @@ impl PduEncode for CacheToSurfacePdu {
 }
 
 impl<'de> PduDecode<'de> for CacheToSurfacePdu {
-    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+    fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
         let cache_slot = src.read_u16();
@@ -452,7 +452,7 @@ impl CreateSurfacePdu {
 }
 
 impl PduEncode for CreateSurfacePdu {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
 
         dst.write_u16(self.surface_id);
@@ -473,7 +473,7 @@ impl PduEncode for CreateSurfacePdu {
 }
 
 impl<'a> PduDecode<'a> for CreateSurfacePdu {
-    fn decode(src: &mut ReadCursor<'a>) -> PduResult<Self> {
+    fn decode(src: &mut ReadCursor<'a>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
         let surface_id = src.read_u16();
@@ -503,7 +503,7 @@ impl DeleteSurfacePdu {
 }
 
 impl PduEncode for DeleteSurfacePdu {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
 
         dst.write_u16(self.surface_id);
@@ -521,7 +521,7 @@ impl PduEncode for DeleteSurfacePdu {
 }
 
 impl<'a> PduDecode<'a> for DeleteSurfacePdu {
-    fn decode(src: &mut ReadCursor<'a>) -> PduResult<Self> {
+    fn decode(src: &mut ReadCursor<'a>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
         let surface_id = src.read_u16();
@@ -544,7 +544,7 @@ impl ResetGraphicsPdu {
 }
 
 impl PduEncode for ResetGraphicsPdu {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
         dst.write_u32(self.width);
@@ -570,7 +570,7 @@ impl PduEncode for ResetGraphicsPdu {
 }
 
 impl<'a> PduDecode<'a> for ResetGraphicsPdu {
-    fn decode(src: &mut ReadCursor<'a>) -> PduResult<Self> {
+    fn decode(src: &mut ReadCursor<'a>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
         let width = src.read_u32();
@@ -624,7 +624,7 @@ impl MapSurfaceToOutputPdu {
 }
 
 impl PduEncode for MapSurfaceToOutputPdu {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
 
         dst.write_u16(self.surface_id);
@@ -645,7 +645,7 @@ impl PduEncode for MapSurfaceToOutputPdu {
 }
 
 impl<'a> PduDecode<'a> for MapSurfaceToOutputPdu {
-    fn decode(src: &mut ReadCursor<'a>) -> PduResult<Self> {
+    fn decode(src: &mut ReadCursor<'a>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
         let surface_id = src.read_u16();
@@ -677,7 +677,7 @@ impl MapSurfaceToScaledOutputPdu {
 }
 
 impl PduEncode for MapSurfaceToScaledOutputPdu {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
 
         dst.write_u16(self.surface_id);
@@ -700,7 +700,7 @@ impl PduEncode for MapSurfaceToScaledOutputPdu {
 }
 
 impl<'a> PduDecode<'a> for MapSurfaceToScaledOutputPdu {
-    fn decode(src: &mut ReadCursor<'a>) -> PduResult<Self> {
+    fn decode(src: &mut ReadCursor<'a>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
         let surface_id = src.read_u16();
@@ -737,7 +737,7 @@ impl MapSurfaceToScaledWindowPdu {
 }
 
 impl PduEncode for MapSurfaceToScaledWindowPdu {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         dst.write_u16(self.surface_id);
         dst.write_u64(self.window_id); // reserved
         dst.write_u32(self.mapped_width);
@@ -758,7 +758,7 @@ impl PduEncode for MapSurfaceToScaledWindowPdu {
 }
 
 impl<'a> PduDecode<'a> for MapSurfaceToScaledWindowPdu {
-    fn decode(src: &mut ReadCursor<'a>) -> PduResult<Self> {
+    fn decode(src: &mut ReadCursor<'a>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
         let surface_id = src.read_u16();
@@ -791,7 +791,7 @@ impl EvictCacheEntryPdu {
 }
 
 impl PduEncode for EvictCacheEntryPdu {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
 
         dst.write_u16(self.cache_slot);
@@ -809,7 +809,7 @@ impl PduEncode for EvictCacheEntryPdu {
 }
 
 impl<'a> PduDecode<'a> for EvictCacheEntryPdu {
-    fn decode(src: &mut ReadCursor<'a>) -> PduResult<Self> {
+    fn decode(src: &mut ReadCursor<'a>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
         let cache_slot = src.read_u16();
@@ -831,7 +831,7 @@ impl StartFramePdu {
 }
 
 impl PduEncode for StartFramePdu {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
 
         self.timestamp.encode(dst)?;
@@ -850,7 +850,7 @@ impl PduEncode for StartFramePdu {
 }
 
 impl<'a> PduDecode<'a> for StartFramePdu {
-    fn decode(src: &mut ReadCursor<'a>) -> PduResult<Self> {
+    fn decode(src: &mut ReadCursor<'a>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
         let timestamp = Timestamp::decode(src)?;
@@ -872,7 +872,7 @@ impl EndFramePdu {
 }
 
 impl PduEncode for EndFramePdu {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
 
         dst.write_u32(self.frame_id);
@@ -890,7 +890,7 @@ impl PduEncode for EndFramePdu {
 }
 
 impl<'a> PduDecode<'a> for EndFramePdu {
-    fn decode(src: &mut ReadCursor<'a>) -> PduResult<Self> {
+    fn decode(src: &mut ReadCursor<'a>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
         let frame_id = src.read_u32();
@@ -907,7 +907,7 @@ impl CapabilitiesConfirmPdu {
 }
 
 impl PduEncode for CapabilitiesConfirmPdu {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         self.0.encode(dst)
     }
 
@@ -921,7 +921,7 @@ impl PduEncode for CapabilitiesConfirmPdu {
 }
 
 impl<'a> PduDecode<'a> for CapabilitiesConfirmPdu {
-    fn decode(src: &mut ReadCursor<'a>) -> PduResult<Self> {
+    fn decode(src: &mut ReadCursor<'a>) -> DecodeResult<Self> {
         let capability_set = CapabilitySet::decode(src)?;
 
         Ok(Self(capability_set))
@@ -969,7 +969,7 @@ impl Timestamp {
 }
 
 impl PduEncode for Timestamp {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
 
         let mut timestamp: u32 = 0;
@@ -994,7 +994,7 @@ impl PduEncode for Timestamp {
 }
 
 impl<'a> PduDecode<'a> for Timestamp {
-    fn decode(src: &mut ReadCursor<'a>) -> PduResult<Self> {
+    fn decode(src: &mut ReadCursor<'a>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
         let timestamp = src.read_u32();

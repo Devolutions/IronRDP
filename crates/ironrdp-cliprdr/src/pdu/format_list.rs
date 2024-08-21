@@ -3,7 +3,8 @@ use std::borrow::Cow;
 use ironrdp_core::{IntoOwned, ReadCursor, WriteCursor};
 use ironrdp_pdu::utils::{read_string_from_cursor, to_utf16_bytes, write_string_to_cursor, CharacterSet};
 use ironrdp_pdu::{
-    cast_int, ensure_size, impl_pdu_borrowing, impl_pdu_pod, invalid_field_err, PduDecode, PduEncode, PduResult,
+    cast_int, decode_err, ensure_size, impl_pdu_borrowing, impl_pdu_pod, invalid_field_err, DecodeResult, EncodeResult,
+    PduDecode, PduEncode, PduResult,
 };
 
 use crate::pdu::{ClipboardPduFlags, PartialHeader};
@@ -235,7 +236,7 @@ impl FormatList<'_> {
     // `CLIPRDR_SHORT_FORMAT_NAME` size
     const SHORT_FORMAT_SIZE: usize = 4 /* formatId */ + 32 /* name */;
 
-    fn new_impl(formats: &[ClipboardFormat], use_long_format: bool, use_ascii: bool) -> PduResult<Self> {
+    fn new_impl(formats: &[ClipboardFormat], use_long_format: bool, use_ascii: bool) -> EncodeResult<Self> {
         let charset = if use_ascii {
             CharacterSet::Ansi
         } else {
@@ -312,11 +313,11 @@ impl FormatList<'_> {
         }
     }
 
-    pub fn new_unicode(formats: &[ClipboardFormat], use_long_format: bool) -> PduResult<Self> {
+    pub fn new_unicode(formats: &[ClipboardFormat], use_long_format: bool) -> EncodeResult<Self> {
         Self::new_impl(formats, use_long_format, false)
     }
 
-    pub fn new_ascii(formats: &[ClipboardFormat], use_long_format: bool) -> PduResult<Self> {
+    pub fn new_ascii(formats: &[ClipboardFormat], use_long_format: bool) -> EncodeResult<Self> {
         Self::new_impl(formats, use_long_format, true)
     }
 
@@ -336,7 +337,7 @@ impl FormatList<'_> {
 
             while src.len() >= MINIMAL_FORMAT_SIZE {
                 let id = src.read_u32();
-                let name = read_string_from_cursor(&mut src, charset, true)?;
+                let name = read_string_from_cursor(&mut src, charset, true).map_err(|e| decode_err!(e))?;
 
                 let format = ClipboardFormat::new(ClipboardFormatId::new(id)).with_name(ClipboardFormatName::new(name));
 
@@ -354,7 +355,7 @@ impl FormatList<'_> {
                 let name_buffer = src.read_slice(32);
 
                 let mut name_cursor: ReadCursor<'_> = ReadCursor::new(name_buffer);
-                let name = read_string_from_cursor(&mut name_cursor, charset, true)?;
+                let name = read_string_from_cursor(&mut name_cursor, charset, true).map_err(|e| decode_err!(e))?;
 
                 let format = ClipboardFormat::new(ClipboardFormatId(id)).with_name(ClipboardFormatName::new(name));
 
@@ -367,7 +368,7 @@ impl FormatList<'_> {
 }
 
 impl<'de> PduDecode<'de> for FormatList<'de> {
-    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+    fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         let header = PartialHeader::decode(src)?;
 
         let use_ascii = header.message_flags.contains(ClipboardPduFlags::ASCII_NAMES);
@@ -383,7 +384,7 @@ impl<'de> PduDecode<'de> for FormatList<'de> {
 }
 
 impl PduEncode for FormatList<'_> {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         let header_flags = if self.use_ascii {
             ClipboardPduFlags::ASCII_NAMES
         } else {
@@ -423,7 +424,7 @@ impl FormatListResponse {
 }
 
 impl PduEncode for FormatListResponse {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         let header_flags = match self {
             FormatListResponse::Ok => ClipboardPduFlags::RESPONSE_OK,
             FormatListResponse::Fail => ClipboardPduFlags::RESPONSE_FAIL,
@@ -443,7 +444,7 @@ impl PduEncode for FormatListResponse {
 }
 
 impl<'de> PduDecode<'de> for FormatListResponse {
-    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+    fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         let header = PartialHeader::decode(src)?;
         match header.message_flags {
             ClipboardPduFlags::RESPONSE_OK => Ok(FormatListResponse::Ok),

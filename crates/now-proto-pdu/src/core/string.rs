@@ -3,7 +3,7 @@
 use alloc::string::String;
 
 use ironrdp_core::{ReadCursor, WriteCursor};
-use ironrdp_pdu::{PduDecode, PduEncode, PduResult};
+use ironrdp_pdu::{DecodeResult, EncodeResult, PduDecode, PduEncode};
 
 use crate::VarU32;
 
@@ -25,7 +25,7 @@ impl NowLrgStr {
     }
 
     /// Creates new `NowLrgStr`. Returns error if string is too big for the protocol.
-    pub fn new(value: impl Into<String>) -> PduResult<Self> {
+    pub fn new(value: impl Into<String>) -> DecodeResult<Self> {
         let value: String = value.into();
         // IMPORTANT: we need to check for encoded UTF-8 size, not the string length.
 
@@ -38,7 +38,7 @@ impl NowLrgStr {
         &self.0
     }
 
-    fn ensure_message_size(string_size: usize) -> PduResult<()> {
+    fn ensure_message_size(string_size: usize) -> DecodeResult<()> {
         if string_size > usize::try_from(VarU32::MAX).expect("BUG: too small usize") {
             return Err(invalid_field_err!("data", "data is too large for NOW_LRGSTR"));
         }
@@ -55,7 +55,7 @@ impl NowLrgStr {
 }
 
 impl PduEncode for NowLrgStr {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         let encoded_size = self.size();
         ensure_size!(in: dst, size: encoded_size);
 
@@ -82,7 +82,7 @@ impl PduEncode for NowLrgStr {
 }
 
 impl PduDecode<'_> for NowLrgStr {
-    fn decode(src: &mut ReadCursor<'_>) -> PduResult<Self> {
+    fn decode(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
         let len: usize = cast_length!("len", src.read_u32())?;
@@ -124,7 +124,7 @@ impl NowVarStr {
     }
 
     /// Creates `NowVarStr` from std string. Returns error if string is too big for the protocol.
-    pub fn new(value: impl Into<String>) -> PduResult<Self> {
+    pub fn new(value: impl Into<String>) -> EncodeResult<Self> {
         let value = value.into();
         // IMPORTANT: we need to check for encoded UTF-8 size, not the string length.
 
@@ -145,7 +145,7 @@ impl NowVarStr {
 }
 
 impl PduEncode for NowVarStr {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         let encoded_size = self.size();
         ensure_size!(in: dst, size: encoded_size);
 
@@ -172,7 +172,7 @@ impl PduEncode for NowVarStr {
 }
 
 impl PduDecode<'_> for NowVarStr {
-    fn decode(src: &mut ReadCursor<'_>) -> PduResult<Self> {
+    fn decode(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
         let len_u32 = VarU32::decode(src)?.value();
         let len: usize = cast_length!("len", len_u32)?;
 
@@ -220,7 +220,7 @@ impl<const MAX_LEN: u8> NowRestrictedStr<MAX_LEN> {
     }
 
     /// Creates `NowRestrictedStr` from std string. Returns error if string is too big for the protocol.
-    pub fn new(value: impl Into<String>) -> PduResult<Self> {
+    pub fn new(value: impl Into<String>) -> EncodeResult<Self> {
         let value = value.into();
 
         // IMPORTANT: we need to check for encoded UTF-8 size, not the string length
@@ -236,7 +236,7 @@ impl<const MAX_LEN: u8> NowRestrictedStr<MAX_LEN> {
 }
 
 impl<const MAX_LEN: u8> PduEncode for NowRestrictedStr<MAX_LEN> {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         let encoded_size = self.size();
         ensure_size!(in: dst, size: encoded_size);
 
@@ -264,7 +264,7 @@ impl<const MAX_LEN: u8> PduEncode for NowRestrictedStr<MAX_LEN> {
 }
 
 impl<const MAX_LEN: u8> PduDecode<'_> for NowRestrictedStr<MAX_LEN> {
-    fn decode(src: &mut ReadCursor<'_>) -> PduResult<Self> {
+    fn decode(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
         let len = src.read_u8();

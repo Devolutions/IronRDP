@@ -1,6 +1,6 @@
 use lazy_static::lazy_static;
 
-use crate::{decode, encode_vec, PduEncode, PduErrorKind};
+use crate::{decode, encode_vec, DecodeErrorKind, PduEncode};
 
 use super::*;
 
@@ -374,7 +374,7 @@ fn buffer_length_is_correct_for_extended_info() {
 #[test]
 fn from_buffer_parsing_with_invalid_session_info_type_fails() {
     match decode::<SaveSessionInfoPdu>(INVALID_SESSION_INFO_TYPE_BUFFER.as_ref()) {
-        Err(e) if matches!(e.kind(), PduErrorKind::InvalidField { .. }) => (),
+        Err(e) if matches!(e.kind(), DecodeErrorKind::InvalidField { .. }) => (),
         res => panic!("Expected InvalidSaveSessionInfoType error, got: {res:?}"),
     };
 }
@@ -382,7 +382,7 @@ fn from_buffer_parsing_with_invalid_session_info_type_fails() {
 #[test]
 fn from_buffer_parsing_with_invalid_domain_size_fails() {
     match decode::<LogonInfoVersion1>(LOGON_INFO_V1_WITH_INVALID_DOMAIN_SIZE_BUFFER.as_ref()) {
-        Err(e) if matches!(e.kind(), PduErrorKind::InvalidField { .. }) => (),
+        Err(e) if matches!(e.kind(), DecodeErrorKind::InvalidField { .. }) => (),
         res => panic!("Expected InvalidDomainNameSize error, got: {res:?}"),
     };
 }
@@ -390,7 +390,7 @@ fn from_buffer_parsing_with_invalid_domain_size_fails() {
 #[test]
 fn from_buffer_parsing_with_invalid_user_name_size_fails() {
     match decode::<LogonInfoVersion1>(LOGON_INFO_V1_WITH_INVALID_USER_NAME_SIZE_BUFFER.as_ref()) {
-        Err(e) if matches!(e.kind(), PduErrorKind::InvalidField { .. }) => (),
+        Err(e) if matches!(e.kind(), DecodeErrorKind::InvalidField { .. }) => (),
         res => panic!("Expected InvalidUserNameSize error, got: {res:?}"),
     };
 }
@@ -398,7 +398,7 @@ fn from_buffer_parsing_with_invalid_user_name_size_fails() {
 #[test]
 fn from_buffer_parsing_with_invalid_logon_version_fails() {
     match decode::<LogonInfoVersion2>(LOGON_INFO_V2_WITH_INVALID_LOGON_VERSION_BUFFER.as_ref()) {
-        Err(e) if matches!(e.kind(), PduErrorKind::NotEnoughBytes { .. }) => (),
+        Err(e) if matches!(e.kind(), DecodeErrorKind::NotEnoughBytes { .. }) => (),
         res => panic!("Expected InvalidLogonVersion2 error, got: {res:?}"),
     };
 }
@@ -406,7 +406,7 @@ fn from_buffer_parsing_with_invalid_logon_version_fails() {
 #[test]
 fn from_buffer_parsing_with_invalid_logon_infov2_size_fails() {
     match decode::<LogonInfoVersion2>(LOGON_INFO_V2_WITH_INVALID_LOGON_INFO_V2_SIZE_BUFFER.as_ref()) {
-        Err(e) if matches!(e.kind(), PduErrorKind::NotEnoughBytes { .. }) => (),
+        Err(e) if matches!(e.kind(), DecodeErrorKind::NotEnoughBytes { .. }) => (),
         res => panic!("Expected InvalidLogonVersion2Size error, got: {res:?}"),
     };
 }
@@ -414,7 +414,7 @@ fn from_buffer_parsing_with_invalid_logon_infov2_size_fails() {
 #[test]
 fn from_buffer_parsing_with_invalid_reconnect_packet_size_fails() {
     match decode::<LogonInfoExtended>(LOGON_EXTENDED_WITH_INVALID_RECONNECT_PACKET_SIZE_BUFFER.as_ref()) {
-        Err(e) if matches!(e.kind(), PduErrorKind::NotEnoughBytes { .. }) => (),
+        Err(e) if matches!(e.kind(), DecodeErrorKind::NotEnoughBytes { .. }) => (),
         res => panic!("Expected InvalidAutoReconnectPacketSize error, got: {res:?}"),
     };
 }
@@ -422,7 +422,7 @@ fn from_buffer_parsing_with_invalid_reconnect_packet_size_fails() {
 #[test]
 fn from_buffer_parsing_with_invalid_reconnect_version_fails() {
     match decode::<LogonInfoExtended>(LOGON_EXTENDED_WITH_INVALID_RECONNECT_VERSION_BUFFER.as_ref()) {
-        Err(e) if matches!(e.kind(), PduErrorKind::InvalidField { .. }) => (),
+        Err(e) if matches!(e.kind(), DecodeErrorKind::InvalidField { .. }) => (),
         res => panic!("Expected InvalidAutoReconnectVersion error, got: {res:?}"),
     };
 }
@@ -430,7 +430,7 @@ fn from_buffer_parsing_with_invalid_reconnect_version_fails() {
 #[test]
 fn from_buffer_parsing_with_invalid_logon_error_type_fails() {
     match decode::<LogonInfoExtended>(LOGON_EXTENDED_WITH_INVALID_LOGON_ERROR_TYPE_BUFFER.as_ref()) {
-        Err(e) if matches!(e.kind(), PduErrorKind::InvalidField { .. }) => (),
+        Err(e) if matches!(e.kind(), DecodeErrorKind::InvalidField { .. }) => (),
         res => panic!("Expected InvalidLogonErrorType error, got: {res:?}"),
     };
 }

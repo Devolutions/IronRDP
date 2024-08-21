@@ -17,7 +17,7 @@ pub use server::{
 };
 
 use super::RDP_GFX_HEADER_SIZE;
-use crate::{PduDecode, PduEncode, PduResult};
+use crate::{DecodeResult, EncodeResult, PduDecode, PduEncode};
 use ironrdp_core::{ReadCursor, WriteCursor};
 
 const CAPABILITY_SET_HEADER_SIZE: usize = 8;
@@ -66,7 +66,7 @@ impl CapabilitySet {
 }
 
 impl PduEncode for CapabilitySet {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
         dst.write_u32(self.version().to_u32().unwrap());
@@ -114,7 +114,7 @@ impl PduEncode for CapabilitySet {
 }
 
 impl<'de> PduDecode<'de> for CapabilitySet {
-    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+    fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
         let version = CapabilityVersion::from_u32(src.read_u32())
@@ -197,7 +197,7 @@ impl Color {
 }
 
 impl PduEncode for Color {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
 
         dst.write_u8(self.b);
@@ -218,7 +218,7 @@ impl PduEncode for Color {
 }
 
 impl<'de> PduDecode<'de> for Color {
-    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+    fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
         let b = src.read_u8();
@@ -243,7 +243,7 @@ impl Point {
 }
 
 impl PduEncode for Point {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
 
         dst.write_u16(self.x);
@@ -262,7 +262,7 @@ impl PduEncode for Point {
 }
 
 impl<'de> PduDecode<'de> for Point {
-    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+    fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
         let x = src.read_u16();

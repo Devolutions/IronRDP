@@ -17,7 +17,7 @@ use std::marker::PhantomData;
 use bitflags::bitflags;
 use ironrdp_core::{assert_obj_safe, ReadCursor, WriteBuf, WriteCursor};
 use ironrdp_pdu::gcc::{ChannelName, ChannelOptions};
-use ironrdp_pdu::{mcs, PduResult};
+use ironrdp_pdu::{decode_err, mcs, DecodeResult, EncodeResult, PduResult};
 use pdu::gcc::ChannelDef;
 use pdu::rdp::vc::ChannelControlFlags;
 use pdu::{decode_cursor, encode_buf, PduEncode};
@@ -132,14 +132,14 @@ impl StaticVirtualChannel {
     /// Processes a payload received on the virtual channel. Returns a vector of PDUs to be sent back
     /// to the server. If no PDUs are to be sent, an empty vector is returned.
     pub fn process(&mut self, payload: &[u8]) -> PduResult<Vec<SvcMessage>> {
-        if let Some(payload) = self.dechunkify(payload)? {
+        if let Some(payload) = self.dechunkify(payload).map_err(|e| decode_err!(e))? {
             return self.channel_processor.process(&payload);
         }
 
         Ok(Vec::new())
     }
 
-    pub fn chunkify(messages: Vec<SvcMessage>) -> PduResult<Vec<WriteBuf>> {
+    pub fn chunkify(messages: Vec<SvcMessage>) -> EncodeResult<Vec<WriteBuf>> {
         ChunkProcessor::chunkify(messages, CHANNEL_CHUNK_LENGTH)
     }
 
@@ -151,7 +151,7 @@ impl StaticVirtualChannel {
         self.channel_processor.as_any_mut().downcast_mut()
     }
 
-    fn dechunkify(&mut self, payload: &[u8]) -> PduResult<Option<Vec<u8>>> {
+    fn dechunkify(&mut self, payload: &[u8]) -> DecodeResult<Option<Vec<u8>>> {
         self.chunk_processor.dechunkify(payload)
     }
 }
@@ -161,7 +161,7 @@ fn encode_svc_messages(
     channel_id: u16,
     initiator_id: u16,
     client: bool,
-) -> PduResult<Vec<u8>> {
+) -> EncodeResult<Vec<u8>> {
     let mut fully_encoded_responses = WriteBuf::new(); // TODO(perf): reuse this buffer using `clear` and `filled` as appropriate
 
     // For each response PDU, chunkify it and add appropriate static channel headers.
@@ -204,7 +204,11 @@ fn encode_svc_messages(
 /// The messages returned here are ready to be sent to the server.
 ///
 /// The caller is responsible for ensuring that the `channel_id` corresponds to the correct channel.
-pub fn client_encode_svc_messages(messages: Vec<SvcMessage>, channel_id: u16, initiator_id: u16) -> PduResult<Vec<u8>> {
+pub fn client_encode_svc_messages(
+    messages: Vec<SvcMessage>,
+    channel_id: u16,
+    initiator_id: u16,
+) -> EncodeResult<Vec<u8>> {
     encode_svc_messages(messages, channel_id, initiator_id, true)
 }
 
@@ -214,7 +218,11 @@ pub fn client_encode_svc_messages(messages: Vec<SvcMessage>, channel_id: u16, in
 /// The messages returned here are ready to be sent to the client.
 ///
 /// The caller is responsible for ensuring that the `channel_id` corresponds to the correct channel.
-pub fn server_encode_svc_messages(messages: Vec<SvcMessage>, channel_id: u16, initiator_id: u16) -> PduResult<Vec<u8>> {
+pub fn server_encode_svc_messages(
+    messages: Vec<SvcMessage>,
+    channel_id: u16,
+    initiator_id: u16,
+) -> EncodeResult<Vec<u8>> {
     encode_svc_messages(messages, channel_id, initiator_id, false)
 }
 
@@ -275,7 +283,7 @@ impl ChunkProcessor {
     /// Takes a vector of PDUs and breaks them into chunks prefixed with a Channel PDU Header (`CHANNEL_PDU_HEADER`).
     ///
     /// Each chunk is at most `max_chunk_len` bytes long (not including the Channel PDU Header).
-    fn chunkify(messages: Vec<SvcMessage>, max_chunk_len: usize) -> PduResult<Vec<WriteBuf>> {
+    fn chunkify(messages: Vec<SvcMessage>, max_chunk_len: usize) -> EncodeResult<Vec<WriteBuf>> {
         let mut results = Vec::new();
         for message in messages {
             results.extend(Self::chunkify_one(message, max_chunk_len)?);
@@ -288,7 +296,7 @@ impl ChunkProcessor {
     /// If the payload is not chunked, returns the payload as-is.
     /// For chunked payloads, returns `Ok(None)` until the last chunk is received, at which point
     /// it returns `Ok(Some(payload))`.
-    fn dechunkify(&mut self, payload: &[u8]) -> PduResult<Option<Vec<u8>>> {
+    fn dechunkify(&mut self, payload: &[u8]) -> DecodeResult<Option<Vec<u8>>> {
         let mut cursor = ReadCursor::new(payload);
         let last = Self::process_header(&mut cursor)?;
 
@@ -306,7 +314,7 @@ impl ChunkProcessor {
     }
 
     /// Returns whether this was the last chunk based on the flags in the channel header.
-    fn process_header(payload: &mut ReadCursor<'_>) -> PduResult<bool> {
+    fn process_header(payload: &mut ReadCursor<'_>) -> DecodeResult<bool> {
         let channel_header: ironrdp_pdu::rdp::vc::ChannelPduHeader = decode_cursor(payload)?;
 
         Ok(channel_header.flags.contains(ChannelControlFlags::FLAG_LAST))
@@ -320,7 +328,7 @@ impl ChunkProcessor {
     /// return 3 chunks, each 1600 bytes long, and the last chunk will be 800 bytes long.
     ///
     /// [[ Channel PDU Header | 1600 bytes of PDU data ] [ Channel PDU Header | 1600 bytes of PDU data ] [ Channel PDU Header | 800 bytes of PDU data ]]
-    fn chunkify_one(message: SvcMessage, max_chunk_len: usize) -> PduResult<Vec<WriteBuf>> {
+    fn chunkify_one(message: SvcMessage, max_chunk_len: usize) -> EncodeResult<Vec<WriteBuf>> {
         let mut encoded_pdu = WriteBuf::new(); // TODO(perf): reuse this buffer using `clear` and `filled` as appropriate
         encode_buf(message.pdu.as_ref(), &mut encoded_pdu)?;
 
@@ -633,7 +641,7 @@ impl ChannelPduHeader {
 }
 
 impl PduEncode for ChannelPduHeader {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         dst.write_u32(self.length);
         dst.write_u32(self.flags.bits());
         Ok(())

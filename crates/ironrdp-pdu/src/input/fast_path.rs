@@ -5,7 +5,7 @@ use num_traits::{FromPrimitive, ToPrimitive};
 
 use crate::fast_path::EncryptionFlags;
 use crate::input::{MousePdu, MouseRelPdu, MouseXPdu};
-use crate::{per, PduDecode, PduEncode, PduResult};
+use crate::{per, DecodeResult, EncodeResult, PduDecode, PduEncode};
 use ironrdp_core::{ReadCursor, WriteCursor};
 
 /// Implements the Fast-Path RDP message header PDU.
@@ -23,7 +23,7 @@ impl FastPathInputHeader {
 }
 
 impl PduEncode for FastPathInputHeader {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
         let mut header = 0u8;
@@ -55,7 +55,7 @@ impl PduEncode for FastPathInputHeader {
 }
 
 impl<'de> PduDecode<'de> for FastPathInputHeader {
-    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+    fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
         let header = src.read_u8();
@@ -115,7 +115,7 @@ impl FastPathInputEvent {
 }
 
 impl PduEncode for FastPathInputEvent {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
         let mut header = 0u8;
@@ -172,7 +172,7 @@ impl PduEncode for FastPathInputEvent {
 }
 
 impl<'de> PduDecode<'de> for FastPathInputEvent {
-    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+    fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
         let header = src.read_u8();
@@ -249,7 +249,7 @@ impl FastPathInput {
 }
 
 impl PduEncode for FastPathInput {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
         if self.0.is_empty() {
@@ -287,7 +287,7 @@ impl PduEncode for FastPathInput {
 }
 
 impl<'de> PduDecode<'de> for FastPathInput {
-    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+    fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         let header = FastPathInputHeader::decode(src)?;
         let events = (0..header.num_events)
             .map(|_| FastPathInputEvent::decode(src))

@@ -1,5 +1,5 @@
 use ironrdp_core::{ReadCursor, WriteCursor};
-use ironrdp_pdu::{PduDecode, PduEncode, PduResult};
+use ironrdp_pdu::{DecodeResult, EncodeResult, PduDecode, PduEncode};
 
 use crate::{NowExecMessage, NowExecMsgKind, NowHeader, NowMessage, NowMessageClass};
 
@@ -23,7 +23,7 @@ impl NowExecCancelReqMsg {
         self.session_id
     }
 
-    pub(super) fn decode_from_body(_header: NowHeader, src: &mut ReadCursor<'_>) -> PduResult<Self> {
+    pub(super) fn decode_from_body(_header: NowHeader, src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
         let session_id = src.read_u32();
@@ -33,7 +33,7 @@ impl NowExecCancelReqMsg {
 }
 
 impl PduEncode for NowExecCancelReqMsg {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         let header = NowHeader {
             size: u32::try_from(Self::FIXED_PART_SIZE).unwrap(),
             class: NowMessageClass::EXEC,
@@ -59,7 +59,7 @@ impl PduEncode for NowExecCancelReqMsg {
 }
 
 impl PduDecode<'_> for NowExecCancelReqMsg {
-    fn decode(src: &mut ReadCursor<'_>) -> PduResult<Self> {
+    fn decode(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
         let header = NowHeader::decode(src)?;
 
         match (header.class, NowExecMsgKind(header.kind)) {

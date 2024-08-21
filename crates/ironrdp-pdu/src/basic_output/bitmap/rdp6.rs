@@ -1,4 +1,4 @@
-use crate::{PduDecode, PduEncode, PduResult};
+use crate::{DecodeResult, EncodeResult, PduDecode, PduEncode};
 use ironrdp_core::{ReadCursor, WriteCursor};
 
 const NON_RLE_PADDING_SIZE: usize = 1;
@@ -25,7 +25,7 @@ impl BitmapStreamHeader {
 }
 
 impl PduDecode<'_> for BitmapStreamHeader {
-    fn decode(src: &mut ReadCursor<'_>) -> PduResult<Self> {
+    fn decode(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
         let header = src.read_u8();
 
@@ -51,7 +51,7 @@ impl PduDecode<'_> for BitmapStreamHeader {
 }
 
 impl PduEncode for BitmapStreamHeader {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
         let mut header = ((self.enable_rle_compression as u8) << 4) | ((!self.use_alpha as u8) << 5);
@@ -115,7 +115,7 @@ impl<'a> BitmapStream<'a> {
 }
 
 impl<'a> PduDecode<'a> for BitmapStream<'a> {
-    fn decode(src: &mut ReadCursor<'a>) -> PduResult<Self> {
+    fn decode(src: &mut ReadCursor<'a>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
         let header = crate::decode_cursor::<BitmapStreamHeader>(src)?;
 
@@ -139,7 +139,7 @@ impl<'a> PduDecode<'a> for BitmapStream<'a> {
 }
 
 impl PduEncode for BitmapStream<'_> {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
         crate::encode_cursor(&self.header, dst)?;

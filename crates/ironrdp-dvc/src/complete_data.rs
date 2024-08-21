@@ -1,6 +1,6 @@
 use alloc::vec::Vec;
 use core::cmp;
-use ironrdp_pdu::{cast_length, invalid_field_err, PduResult};
+use ironrdp_pdu::{cast_length, invalid_field_err, DecodeResult};
 
 use crate::pdu::{DataFirstPdu, DataPdu, DrdynvcDataPdu};
 
@@ -18,15 +18,16 @@ impl CompleteData {
         }
     }
 
-    pub(crate) fn process_data(&mut self, pdu: DrdynvcDataPdu) -> PduResult<Option<Vec<u8>>> {
+    pub(crate) fn process_data(&mut self, pdu: DrdynvcDataPdu) -> DecodeResult<Option<Vec<u8>>> {
         match pdu {
             DrdynvcDataPdu::DataFirst(data_first) => self.process_data_first_pdu(data_first),
             DrdynvcDataPdu::Data(data) => self.process_data_pdu(data),
         }
     }
 
-    fn process_data_first_pdu(&mut self, data_first: DataFirstPdu) -> PduResult<Option<Vec<u8>>> {
-        let total_data_size = cast_length!("DataFirstPdu::length", data_first.length)?;
+    fn process_data_first_pdu(&mut self, data_first: DataFirstPdu) -> DecodeResult<Option<Vec<u8>>> {
+        let total_data_size: DecodeResult<_> = cast_length!("DataFirstPdu::length", data_first.length);
+        let total_data_size = total_data_size?;
         if self.total_size != 0 || !self.data.is_empty() {
             error!("Incomplete DVC message, it will be skipped");
 
@@ -43,7 +44,7 @@ impl CompleteData {
         }
     }
 
-    fn process_data_pdu(&mut self, mut data: DataPdu) -> PduResult<Option<Vec<u8>>> {
+    fn process_data_pdu(&mut self, mut data: DataPdu) -> DecodeResult<Option<Vec<u8>>> {
         if self.total_size == 0 && self.data.is_empty() {
             // message is not fragmented
             return Ok(Some(data.data));

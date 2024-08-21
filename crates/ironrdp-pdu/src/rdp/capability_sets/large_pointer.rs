@@ -1,6 +1,6 @@
 use bitflags::bitflags;
 
-use crate::{PduDecode, PduEncode, PduResult};
+use crate::{DecodeResult, EncodeResult, PduDecode, PduEncode};
 use ironrdp_core::{ReadCursor, WriteCursor};
 
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -15,7 +15,7 @@ impl LargePointer {
 }
 
 impl PduEncode for LargePointer {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
 
         dst.write_u16(self.flags.bits());
@@ -33,7 +33,7 @@ impl PduEncode for LargePointer {
 }
 
 impl<'de> PduDecode<'de> for LargePointer {
-    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+    fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
         let flags = LargePointerSupportFlags::from_bits_truncate(src.read_u16());

@@ -2,7 +2,7 @@ use std::borrow::Cow;
 
 use crate::tpdu::{TpduCode, TpduHeader};
 use crate::tpkt::TpktHeader;
-use crate::{Pdu, PduDecode, PduEncode, PduError, PduErrorExt as _, PduResult};
+use crate::{invalid_field_err, DecodeResult, EncodeResult, Pdu, PduDecode, PduEncode};
 use ironrdp_core::{IntoOwned, ReadCursor, WriteCursor};
 
 pub trait X224Pdu<'de>: Sized {
@@ -10,9 +10,9 @@ pub trait X224Pdu<'de>: Sized {
 
     const TPDU_CODE: TpduCode;
 
-    fn x224_body_encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()>;
+    fn x224_body_encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()>;
 
-    fn x224_body_decode(src: &mut ReadCursor<'de>, tpkt: &TpktHeader, tpdu: &TpduHeader) -> PduResult<Self>;
+    fn x224_body_decode(src: &mut ReadCursor<'de>, tpkt: &TpktHeader, tpdu: &TpduHeader) -> DecodeResult<Self>;
 
     fn tpdu_header_variable_part_size(&self) -> usize;
 
@@ -30,7 +30,7 @@ impl<'de, T> PduEncode for T
 where
     T: X224Pdu<'de>,
 {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         let packet_length = self.size();
 
         ensure_size!(in: dst, size: packet_length);
@@ -66,7 +66,7 @@ impl<'de, T> PduDecode<'de> for T
 where
     T: X224Pdu<'de>,
 {
-    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+    fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         let tpkt = TpktHeader::read(src)?;
 
         ensure_size!(in: src, size: tpkt.packet_length().saturating_sub(TpktHeader::SIZE));
@@ -75,7 +75,7 @@ where
         tpdu.code.check_expected(T::TPDU_CODE)?;
 
         if tpdu.size() < tpdu.fixed_part_size() {
-            return Err(PduError::invalid_field(
+            return Err(invalid_field_err(
                 "TpduHeader",
                 "li",
                 "fixed part bigger than total header size",
@@ -107,14 +107,14 @@ impl<'de> X224Pdu<'de> for X224Data<'de> {
 
     const TPDU_CODE: TpduCode = TpduCode::DATA;
 
-    fn x224_body_encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn x224_body_encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.data.len());
         dst.write_slice(&self.data);
 
         Ok(())
     }
 
-    fn x224_body_decode(src: &mut ReadCursor<'de>, tpkt: &TpktHeader, tpdu: &TpduHeader) -> PduResult<Self> {
+    fn x224_body_decode(src: &mut ReadCursor<'de>, tpkt: &TpktHeader, tpdu: &TpduHeader) -> DecodeResult<Self> {
         let user_data_size = user_data_size(tpkt, tpdu);
 
         ensure_size!(in: src, size: user_data_size);

@@ -4,7 +4,7 @@ use crate::gcc::{ChannelDef, ClientGccBlocks, ConferenceCreateRequest, Conferenc
 use crate::tpdu::{TpduCode, TpduHeader};
 use crate::tpkt::TpktHeader;
 use crate::x224::{user_data_size, X224Pdu};
-use crate::{per, PduError, PduErrorExt as _, PduResult};
+use crate::{invalid_field_err, per, DecodeResult, EncodeResult, PduError};
 use ironrdp_core::{IntoOwned, ReadCursor, WriteCursor};
 
 // T.125 MCS is defined in:
@@ -139,10 +139,7 @@ const SEND_DATA_PDU_DATA_PRIORITY_AND_SEGMENTATION: u8 = 0x70;
 /// ```
 macro_rules! per_field_err {
     ($field_name:expr) => {{
-        |error| {
-            <$crate::PduError as $crate::PduErrorExt>::invalid_field(Self::MCS_NAME, $field_name, "PER")
-                .with_source(error)
-        }
+        |error| $crate::invalid_field_err_with_source(Self::MCS_NAME, $field_name, "PER", error)
     }};
 }
 
@@ -150,9 +147,9 @@ macro_rules! per_field_err {
 pub trait McsPdu<'de>: Sized {
     const MCS_NAME: &'static str;
 
-    fn mcs_body_encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()>;
+    fn mcs_body_encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()>;
 
-    fn mcs_body_decode(src: &mut ReadCursor<'de>, tpdu_user_data_size: usize) -> PduResult<Self>;
+    fn mcs_body_decode(src: &mut ReadCursor<'de>, tpdu_user_data_size: usize) -> DecodeResult<Self>;
 
     fn mcs_size(&self) -> usize;
 
@@ -169,11 +166,11 @@ where
 
     const TPDU_CODE: TpduCode = TpduCode::DATA;
 
-    fn x224_body_encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn x224_body_encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         self.mcs_body_encode(dst)
     }
 
-    fn x224_body_decode(src: &mut ReadCursor<'de>, tpkt: &TpktHeader, tpdu: &TpduHeader) -> PduResult<Self> {
+    fn x224_body_decode(src: &mut ReadCursor<'de>, tpkt: &TpktHeader, tpdu: &TpduHeader) -> DecodeResult<Self> {
         let tpdu_user_data_size = user_data_size(tpkt, tpdu);
         T::mcs_body_decode(src, tpdu_user_data_size)
     }
@@ -201,9 +198,9 @@ enum DomainMcsPdu {
 }
 
 impl DomainMcsPdu {
-    fn check_expected(self, name: &'static str, expected: DomainMcsPdu) -> PduResult<()> {
+    fn check_expected(self, name: &'static str, expected: DomainMcsPdu) -> DecodeResult<()> {
         if self != expected {
-            Err(PduError::unexpected_message_type(name, self.as_u8()))
+            Err(unexpected_message_type_err!(name, self.as_u8()))
         } else {
             Ok(())
         }
@@ -236,18 +233,18 @@ impl DomainMcsPdu {
     }
 }
 
-fn read_mcspdu_header(src: &mut ReadCursor<'_>, ctx: &'static str) -> PduResult<DomainMcsPdu> {
+fn read_mcspdu_header(src: &mut ReadCursor<'_>, ctx: &'static str) -> DecodeResult<DomainMcsPdu> {
     let choice = src.try_read_u8().map_err(|e| other_err!(ctx, source: e))?;
 
     DomainMcsPdu::from_choice(choice)
-        .ok_or_else(|| PduError::invalid_field(ctx, "domain-mcspdu", "unexpected application tag for CHOICE"))
+        .ok_or_else(|| invalid_field_err(ctx, "domain-mcspdu", "unexpected application tag for CHOICE"))
 }
 
-fn peek_mcspdu_header(src: &mut ReadCursor<'_>, ctx: &'static str) -> PduResult<DomainMcsPdu> {
+fn peek_mcspdu_header(src: &mut ReadCursor<'_>, ctx: &'static str) -> DecodeResult<DomainMcsPdu> {
     let choice = src.try_read_u8().map_err(|e| other_err!(ctx, source: e))?;
 
     DomainMcsPdu::from_choice(choice)
-        .ok_or_else(|| PduError::invalid_field(ctx, "domain-mcspdu", "unexpected application tag for CHOICE"))
+        .ok_or_else(|| invalid_field_err(ctx, "domain-mcspdu", "unexpected application tag for CHOICE"))
 }
 
 fn write_mcspdu_header(dst: &mut WriteCursor<'_>, domain_mcspdu: DomainMcsPdu, options: u8) {
@@ -294,7 +291,7 @@ impl IntoOwned for McsMessage<'_> {
 impl<'de> McsPdu<'de> for McsMessage<'de> {
     const MCS_NAME: &'static str = "McsMessage";
 
-    fn mcs_body_encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn mcs_body_encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         match self {
             Self::ErectDomainRequest(msg) => msg.mcs_body_encode(dst),
             Self::AttachUserRequest(msg) => msg.mcs_body_encode(dst),
@@ -307,7 +304,7 @@ impl<'de> McsPdu<'de> for McsMessage<'de> {
         }
     }
 
-    fn mcs_body_decode(src: &mut ReadCursor<'de>, tpdu_user_data_size: usize) -> PduResult<Self> {
+    fn mcs_body_decode(src: &mut ReadCursor<'de>, tpdu_user_data_size: usize) -> DecodeResult<Self> {
         match peek_mcspdu_header(src, Self::MCS_NAME)? {
             DomainMcsPdu::ErectDomainRequest => Ok(McsMessage::ErectDomainRequest(ErectDomainPdu::mcs_body_decode(
                 src,
@@ -378,7 +375,7 @@ impl_pdu_pod!(ErectDomainPdu);
 impl<'de> McsPdu<'de> for ErectDomainPdu {
     const MCS_NAME: &'static str = "ErectDomainPdu";
 
-    fn mcs_body_encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn mcs_body_encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         write_mcspdu_header(dst, DomainMcsPdu::ErectDomainRequest, 0);
 
         per::write_u32(dst, self.sub_height);
@@ -387,7 +384,7 @@ impl<'de> McsPdu<'de> for ErectDomainPdu {
         Ok(())
     }
 
-    fn mcs_body_decode(src: &mut ReadCursor<'de>, _: usize) -> PduResult<Self> {
+    fn mcs_body_decode(src: &mut ReadCursor<'de>, _: usize) -> DecodeResult<Self> {
         read_mcspdu_header(src, Self::MCS_NAME)?.check_expected(Self::MCS_NAME, DomainMcsPdu::ErectDomainRequest)?;
 
         let sub_height = per::read_u32(src).map_err(per_field_err!("subHeight"))?;
@@ -412,13 +409,13 @@ impl_pdu_pod!(AttachUserRequest);
 impl<'de> McsPdu<'de> for AttachUserRequest {
     const MCS_NAME: &'static str = "AttachUserRequest";
 
-    fn mcs_body_encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn mcs_body_encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         write_mcspdu_header(dst, DomainMcsPdu::AttachUserRequest, 0);
 
         Ok(())
     }
 
-    fn mcs_body_decode(src: &mut ReadCursor<'de>, _: usize) -> PduResult<Self> {
+    fn mcs_body_decode(src: &mut ReadCursor<'de>, _: usize) -> DecodeResult<Self> {
         read_mcspdu_header(src, Self::MCS_NAME)?.check_expected(Self::MCS_NAME, DomainMcsPdu::AttachUserRequest)?;
 
         Ok(Self)
@@ -440,7 +437,7 @@ impl_pdu_pod!(AttachUserConfirm);
 impl<'de> McsPdu<'de> for AttachUserConfirm {
     const MCS_NAME: &'static str = "AttachUserConfirm";
 
-    fn mcs_body_encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn mcs_body_encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         write_mcspdu_header(dst, DomainMcsPdu::AttachUserConfirm, 2);
 
         per::write_enum(dst, self.result);
@@ -449,7 +446,7 @@ impl<'de> McsPdu<'de> for AttachUserConfirm {
         Ok(())
     }
 
-    fn mcs_body_decode(src: &mut ReadCursor<'de>, _: usize) -> PduResult<Self> {
+    fn mcs_body_decode(src: &mut ReadCursor<'de>, _: usize) -> DecodeResult<Self> {
         read_mcspdu_header(src, Self::MCS_NAME)?.check_expected(Self::MCS_NAME, DomainMcsPdu::AttachUserConfirm)?;
 
         let result = per::read_enum(src, RESULT_ENUM_LENGTH).map_err(per_field_err!("result"))?;
@@ -477,7 +474,7 @@ impl_pdu_pod!(ChannelJoinRequest);
 impl<'de> McsPdu<'de> for ChannelJoinRequest {
     const MCS_NAME: &'static str = "ChannelJoinRequest";
 
-    fn mcs_body_encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn mcs_body_encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         write_mcspdu_header(dst, DomainMcsPdu::ChannelJoinRequest, 0);
 
         per::write_u16(dst, self.initiator_id, BASE_CHANNEL_ID).map_err(per_field_err!("initiator"))?;
@@ -486,7 +483,7 @@ impl<'de> McsPdu<'de> for ChannelJoinRequest {
         Ok(())
     }
 
-    fn mcs_body_decode(src: &mut ReadCursor<'de>, _: usize) -> PduResult<Self> {
+    fn mcs_body_decode(src: &mut ReadCursor<'de>, _: usize) -> DecodeResult<Self> {
         read_mcspdu_header(src, Self::MCS_NAME)?.check_expected(Self::MCS_NAME, DomainMcsPdu::ChannelJoinRequest)?;
 
         let initiator_id = per::read_u16(src, BASE_CHANNEL_ID).map_err(per_field_err!("initiator"))?;
@@ -516,7 +513,7 @@ impl_pdu_pod!(ChannelJoinConfirm);
 impl<'de> McsPdu<'de> for ChannelJoinConfirm {
     const MCS_NAME: &'static str = "ChannelJoinConfirm";
 
-    fn mcs_body_encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn mcs_body_encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         write_mcspdu_header(dst, DomainMcsPdu::ChannelJoinConfirm, 2);
 
         per::write_enum(dst, self.result);
@@ -527,7 +524,7 @@ impl<'de> McsPdu<'de> for ChannelJoinConfirm {
         Ok(())
     }
 
-    fn mcs_body_decode(src: &mut ReadCursor<'de>, _: usize) -> PduResult<Self> {
+    fn mcs_body_decode(src: &mut ReadCursor<'de>, _: usize) -> DecodeResult<Self> {
         read_mcspdu_header(src, Self::MCS_NAME)?.check_expected(Self::MCS_NAME, DomainMcsPdu::ChannelJoinConfirm)?;
 
         let result = per::read_enum(src, RESULT_ENUM_LENGTH).map_err(per_field_err!("result"))?;
@@ -571,7 +568,7 @@ impl IntoOwned for SendDataRequest<'_> {
 impl<'de> McsPdu<'de> for SendDataRequest<'de> {
     const MCS_NAME: &'static str = "SendDataRequest";
 
-    fn mcs_body_encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn mcs_body_encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         write_mcspdu_header(dst, DomainMcsPdu::SendDataRequest, 0);
 
         per::write_u16(dst, self.initiator_id, BASE_CHANNEL_ID).map_err(per_field_err!("initiator"))?;
@@ -585,7 +582,7 @@ impl<'de> McsPdu<'de> for SendDataRequest<'de> {
         Ok(())
     }
 
-    fn mcs_body_decode(src: &mut ReadCursor<'de>, tpdu_user_data_size: usize) -> PduResult<Self> {
+    fn mcs_body_decode(src: &mut ReadCursor<'de>, tpdu_user_data_size: usize) -> DecodeResult<Self> {
         let src_len_before = src.len();
 
         read_mcspdu_header(src, Self::MCS_NAME)?.check_expected(Self::MCS_NAME, DomainMcsPdu::SendDataRequest)?;
@@ -603,7 +600,7 @@ impl<'de> McsPdu<'de> for SendDataRequest<'de> {
         let src_len_after = src.len();
 
         if length > tpdu_user_data_size.saturating_sub(src_len_before - src_len_after) {
-            return Err(PduError::invalid_field(
+            return Err(invalid_field_err(
                 Self::MCS_NAME,
                 "userDataLength",
                 "inconsistent with user data size advertised in TPDU",
@@ -652,7 +649,7 @@ impl IntoOwned for SendDataIndication<'_> {
 impl<'de> McsPdu<'de> for SendDataIndication<'de> {
     const MCS_NAME: &'static str = "SendDataIndication";
 
-    fn mcs_body_encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn mcs_body_encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         write_mcspdu_header(dst, DomainMcsPdu::SendDataIndication, 0);
 
         per::write_u16(dst, self.initiator_id, BASE_CHANNEL_ID).map_err(per_field_err!("initiator"))?;
@@ -666,7 +663,7 @@ impl<'de> McsPdu<'de> for SendDataIndication<'de> {
         Ok(())
     }
 
-    fn mcs_body_decode(src: &mut ReadCursor<'de>, tpdu_user_data_size: usize) -> PduResult<Self> {
+    fn mcs_body_decode(src: &mut ReadCursor<'de>, tpdu_user_data_size: usize) -> DecodeResult<Self> {
         let src_len_before = src.len();
 
         read_mcspdu_header(src, Self::MCS_NAME)?.check_expected(Self::MCS_NAME, DomainMcsPdu::SendDataIndication)?;
@@ -684,7 +681,7 @@ impl<'de> McsPdu<'de> for SendDataIndication<'de> {
         let src_len_after = src.len();
 
         if length > tpdu_user_data_size.saturating_sub(src_len_before - src_len_after) {
-            return Err(PduError::invalid_field(
+            return Err(invalid_field_err(
                 Self::MCS_NAME,
                 "userDataLength",
                 "inconsistent with user data size advertised in TPDU",
@@ -774,7 +771,7 @@ impl DisconnectProviderUltimatum {
 impl<'de> McsPdu<'de> for DisconnectProviderUltimatum {
     const MCS_NAME: &'static str = "DisconnectProviderUltimatum";
 
-    fn mcs_body_encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn mcs_body_encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         let domain_mcspdu = DomainMcsPdu::DisconnectProviderUltimatum.as_u8();
         let reason = self.reason.as_u8();
 
@@ -786,7 +783,7 @@ impl<'de> McsPdu<'de> for DisconnectProviderUltimatum {
         Ok(())
     }
 
-    fn mcs_body_decode(src: &mut ReadCursor<'de>, _: usize) -> PduResult<Self> {
+    fn mcs_body_decode(src: &mut ReadCursor<'de>, _: usize) -> DecodeResult<Self> {
         // http://msdn.microsoft.com/en-us/library/cc240872.aspx:
         //
         // PER encoded (ALIGNED variant of BASIC-PER) PDU contents:
@@ -820,14 +817,12 @@ impl<'de> McsPdu<'de> for DisconnectProviderUltimatum {
         let reason = (b1 & 0x03) << 1 | (b2 >> 7);
 
         DomainMcsPdu::from_u8(domain_mcspdu_choice)
-            .ok_or_else(|| {
-                PduError::invalid_field(Self::MCS_NAME, "domain-mcspdu", "unexpected application tag for CHOICE")
-            })?
+            .ok_or_else(|| invalid_field_err(Self::MCS_NAME, "domain-mcspdu", "unexpected application tag for CHOICE"))?
             .check_expected(Self::MCS_NAME, DomainMcsPdu::DisconnectProviderUltimatum)?;
 
         Ok(Self {
             reason: DisconnectReason::from_u8(reason)
-                .ok_or_else(|| PduError::invalid_field(Self::MCS_NAME, "reason", "unknown variant"))?,
+                .ok_or_else(|| invalid_field_err(Self::MCS_NAME, "reason", "unknown variant"))?,
         })
     }
 
@@ -945,7 +940,7 @@ mod legacy {
     use super::*;
     use crate::gcc::conference_create::{ConferenceCreateRequest, ConferenceCreateResponse};
     use crate::gcc::GccError;
-    use crate::{ber, PduDecode, PduEncode};
+    use crate::{ber, DecodeResult, EncodeResult, PduDecode, PduEncode};
 
     // impl<'de> McsPdu<'de> for ConnectInitial {
     //     const MCS_NAME: &'static str = "DisconnectProviderUltimatum";
@@ -979,7 +974,7 @@ mod legacy {
     }
 
     impl PduEncode for ConnectInitial {
-        fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
             ensure_size!(in: dst, size: self.size());
 
             ber::write_application_tag(dst, MCS_TYPE_CONNECT_INITIAL, self.fields_buffer_ber_length() as u16)?;
@@ -1008,7 +1003,7 @@ mod legacy {
     }
 
     impl<'de> PduDecode<'de> for ConnectInitial {
-        fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+        fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
             ber::read_application_tag(src, MCS_TYPE_CONNECT_INITIAL)?;
             let calling_domain_selector = ber::read_octet_string(src)?;
             let called_domain_selector = ber::read_octet_string(src)?;
@@ -1043,7 +1038,7 @@ mod legacy {
     }
 
     impl PduEncode for ConnectResponse {
-        fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
             ensure_size!(in: dst, size: self.size());
 
             ber::write_application_tag(dst, MCS_TYPE_CONNECT_RESPONSE, self.fields_buffer_ber_length() as u16)?;
@@ -1069,7 +1064,7 @@ mod legacy {
     }
 
     impl<'de> PduDecode<'de> for ConnectResponse {
-        fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+        fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
             ber::read_application_tag(src, MCS_TYPE_CONNECT_RESPONSE)?;
             ber::read_enumerated(src, RESULT_ENUM_LENGTH)?;
             let called_connect_id = ber::read_integer(src)? as u32;
@@ -1101,7 +1096,7 @@ mod legacy {
     }
 
     impl PduEncode for DomainParameters {
-        fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+        fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
             ensure_size!(in: dst, size: self.size());
 
             ber::write_sequence_tag(dst, cast_length!("seqTagLen", self.fields_buffer_ber_length())?)?;
@@ -1130,7 +1125,7 @@ mod legacy {
     }
 
     impl<'de> PduDecode<'de> for DomainParameters {
-        fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+        fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
             ber::read_sequence_tag(src)?;
             let max_channel_ids = ber::read_integer(src)? as u32;
             let max_user_ids = ber::read_integer(src)? as u32;

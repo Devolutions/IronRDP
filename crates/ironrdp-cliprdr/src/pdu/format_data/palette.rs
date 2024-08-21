@@ -1,5 +1,5 @@
 use ironrdp_core::{ReadCursor, WriteCursor};
-use ironrdp_pdu::{impl_pdu_pod, PduDecode, PduEncode, PduResult};
+use ironrdp_pdu::{impl_pdu_pod, DecodeResult, EncodeResult, PduDecode, PduEncode};
 
 /// Represents `PALETTEENTRY`
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -29,7 +29,7 @@ impl ClipboardPalette {
 }
 
 impl PduEncode for ClipboardPalette {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         for entry in &self.entries {
             dst.write_u8(entry.red);
             dst.write_u8(entry.green);
@@ -50,7 +50,7 @@ impl PduEncode for ClipboardPalette {
 }
 
 impl<'de> PduDecode<'de> for ClipboardPalette {
-    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+    fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         let entries_count = src.len() / PaletteEntry::SIZE;
 
         let mut entries = Vec::with_capacity(entries_count);

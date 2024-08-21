@@ -7,7 +7,7 @@ use super::{
 };
 use crate::crypto::rc4::Rc4;
 use crate::utils::CharacterSet;
-use crate::{utils, PduDecode, PduEncode, PduResult};
+use crate::{utils, DecodeResult, EncodeResult, PduDecode, PduEncode};
 use ironrdp_core::{ReadCursor, WriteCursor};
 
 const NEW_LICENSE_INFO_STATIC_FIELDS_SIZE: usize = 20;
@@ -42,7 +42,7 @@ impl ServerUpgradeLicense {
 }
 
 impl ServerUpgradeLicense {
-    pub fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    pub fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
         self.license_header.encode(dst)?;
@@ -63,7 +63,7 @@ impl ServerUpgradeLicense {
 }
 
 impl ServerUpgradeLicense {
-    pub fn decode(license_header: LicenseHeader, src: &mut ReadCursor<'_>) -> PduResult<Self> {
+    pub fn decode(license_header: LicenseHeader, src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
         if license_header.preamble_message_type != PreambleType::UpgradeLicense
             && license_header.preamble_message_type != PreambleType::NewLicense
         {
@@ -106,7 +106,7 @@ impl NewLicenseInformation {
 }
 
 impl PduEncode for NewLicenseInformation {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
         dst.write_u32(self.version);
@@ -148,7 +148,7 @@ impl PduEncode for NewLicenseInformation {
 }
 
 impl<'de> PduDecode<'de> for NewLicenseInformation {
-    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+    fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
         let version = src.read_u32();

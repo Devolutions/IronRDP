@@ -1,7 +1,7 @@
 use bitflags::bitflags;
 use ironrdp_core::{ReadCursor, WriteCursor};
 
-use crate::{PduDecode, PduEncode, PduResult};
+use crate::{DecodeResult, EncodeResult, PduDecode, PduEncode};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MultiTransportChannelData {
@@ -15,7 +15,7 @@ impl MultiTransportChannelData {
 }
 
 impl PduEncode for MultiTransportChannelData {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
 
         dst.write_u32(self.flags.bits());
@@ -33,7 +33,7 @@ impl PduEncode for MultiTransportChannelData {
 }
 
 impl<'de> PduDecode<'de> for MultiTransportChannelData {
-    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+    fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
         let flags = MultiTransportFlags::from_bits(src.read_u32())

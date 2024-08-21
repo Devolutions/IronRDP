@@ -1,5 +1,5 @@
 use super::{ClientGccBlocks, ServerGccBlocks};
-use crate::{mcs, per, PduDecode, PduEncode, PduResult};
+use crate::{mcs, per, DecodeResult, EncodeResult, PduDecode, PduEncode};
 use ironrdp_core::{ReadCursor, WriteCursor};
 
 const CONFERENCE_REQUEST_OBJECT_ID: [u8; 6] = [0, 0, 20, 124, 0, 1];
@@ -30,7 +30,7 @@ impl ConferenceCreateRequest {
 }
 
 impl PduEncode for ConferenceCreateRequest {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in:dst, size: self.size());
 
         let gcc_blocks_buffer_length = self.gcc_blocks.size();
@@ -80,23 +80,22 @@ impl PduEncode for ConferenceCreateRequest {
 
     fn size(&self) -> usize {
         let gcc_blocks_buffer_length = self.gcc_blocks.size();
+        let req_length: DecodeResult<u16> = cast_length!(
+            "gccBlocksLen",
+            CONFERENCE_REQUEST_CONNECT_PDU_SIZE + gcc_blocks_buffer_length
+        );
+        let length: DecodeResult<u16> = cast_length!("gccBlocksLen", gcc_blocks_buffer_length);
         per::CHOICE_SIZE
             + CONFERENCE_REQUEST_OBJECT_ID.len()
-            + per::sizeof_length(
-                cast_length!(
-                    "gccBlocksLen",
-                    CONFERENCE_REQUEST_CONNECT_PDU_SIZE + gcc_blocks_buffer_length
-                )
-                .unwrap(),
-            )
+            + per::sizeof_length(req_length.unwrap())
             + CONFERENCE_REQUEST_CONNECT_PDU_SIZE
-            + per::sizeof_length(cast_length!("gccBlocksLen", gcc_blocks_buffer_length).unwrap())
+            + per::sizeof_length(length.unwrap())
             + gcc_blocks_buffer_length
     }
 }
 
 impl<'de> PduDecode<'de> for ConferenceCreateRequest {
-    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+    fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         // ConnectData
 
         // ConnectData::Key: select object (0) of type OBJECT_IDENTIFIER
@@ -181,7 +180,7 @@ impl ConferenceCreateResponse {
 }
 
 impl PduEncode for ConferenceCreateResponse {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         let gcc_blocks_buffer_length = self.gcc_blocks.size();
 
         // ConnectData::Key: select type OBJECT_IDENTIFIER
@@ -228,23 +227,22 @@ impl PduEncode for ConferenceCreateResponse {
 
     fn size(&self) -> usize {
         let gcc_blocks_buffer_length = self.gcc_blocks.size();
+        let req_length: DecodeResult<u16> = cast_length!(
+            "gccBlocksLen",
+            CONFERENCE_RESPONSE_CONNECT_PDU_SIZE + gcc_blocks_buffer_length
+        );
+        let length: DecodeResult<u16> = cast_length!("gccBlocksLen", gcc_blocks_buffer_length);
         per::CHOICE_SIZE
             + CONFERENCE_REQUEST_OBJECT_ID.len()
-            + per::sizeof_length(
-                cast_length!(
-                    "gccBlocksLen",
-                    CONFERENCE_RESPONSE_CONNECT_PDU_SIZE + gcc_blocks_buffer_length
-                )
-                .unwrap(),
-            )
+            + per::sizeof_length(req_length.unwrap())
             + CONFERENCE_RESPONSE_CONNECT_PDU_SIZE
-            + per::sizeof_length(cast_length!("gccBlocksLen", gcc_blocks_buffer_length).unwrap())
+            + per::sizeof_length(length.unwrap())
             + gcc_blocks_buffer_length
     }
 }
 
 impl<'de> PduDecode<'de> for ConferenceCreateResponse {
-    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+    fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         // ConnectData::Key: select type OBJECT_IDENTIFIER
         ensure_size!(in: src, size: per::CHOICE_SIZE);
         if per::read_choice(src) != OBJECT_IDENTIFIER_KEY {

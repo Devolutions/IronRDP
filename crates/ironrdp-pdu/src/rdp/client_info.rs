@@ -7,7 +7,7 @@ use num_traits::{FromPrimitive as _, ToPrimitive as _};
 use thiserror::Error;
 
 use crate::utils::CharacterSet;
-use crate::{utils, PduDecode, PduEncode, PduError, PduResult};
+use crate::{utils, DecodeResult, EncodeResult, PduDecode, PduEncode, PduError};
 use ironrdp_core::{ReadCursor, WriteCursor};
 
 const RECONNECT_COOKIE_LEN: usize = 28;
@@ -57,7 +57,7 @@ impl ClientInfo {
 }
 
 impl PduEncode for ClientInfo {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
 
         let character_set = if self.flags.contains(ClientInfoFlags::UNICODE) {
@@ -119,7 +119,7 @@ impl PduEncode for ClientInfo {
 }
 
 impl<'de> PduDecode<'de> for ClientInfo {
-    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+    fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
         let code_page = src.read_u32();
@@ -202,7 +202,7 @@ pub struct ExtendedClientInfo {
 impl ExtendedClientInfo {
     // const NAME: &'static str = "ExtendedClientInfo";
 
-    fn decode(src: &mut ReadCursor<'_>, character_set: CharacterSet) -> PduResult<Self> {
+    fn decode(src: &mut ReadCursor<'_>, character_set: CharacterSet) -> DecodeResult<Self> {
         ensure_size!(in: src, size: CLIENT_ADDRESS_FAMILY_SIZE + CLIENT_ADDRESS_LENGTH_SIZE);
 
         let address_family = AddressFamily::from_u16(src.read_u16())
@@ -229,7 +229,7 @@ impl ExtendedClientInfo {
         })
     }
 
-    fn encode(&self, dst: &mut WriteCursor<'_>, character_set: CharacterSet) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>, character_set: CharacterSet) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size(character_set));
 
         dst.write_u16(self.address_family.to_u16().unwrap());
@@ -294,7 +294,7 @@ impl ExtendedClientOptionalInfo {
 }
 
 impl PduEncode for ExtendedClientOptionalInfo {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
         if let Some(ref timezone) = self.timezone {
@@ -339,7 +339,7 @@ impl PduEncode for ExtendedClientOptionalInfo {
 }
 
 impl<'de> PduDecode<'de> for ExtendedClientOptionalInfo {
-    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+    fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         let mut optional_data = Self::default();
 
         if src.len() < TimezoneInfo::FIXED_PART_SIZE {
@@ -408,7 +408,7 @@ impl TimezoneInfo {
 }
 
 impl PduEncode for TimezoneInfo {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
 
         dst.write_u32(self.bias);
@@ -440,7 +440,7 @@ impl PduEncode for TimezoneInfo {
 }
 
 impl<'de> PduDecode<'de> for TimezoneInfo {
-    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+    fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
         let bias = src.read_u32();
@@ -482,7 +482,7 @@ impl SystemTime {
 }
 
 impl PduEncode for Option<SystemTime> {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
         dst.write_u16(0); // year
@@ -511,7 +511,7 @@ impl PduEncode for Option<SystemTime> {
 }
 
 impl<'de> PduDecode<'de> for Option<SystemTime> {
-    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+    fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_size!(in: src, size: SystemTime::FIXED_PART_SIZE);
 
         let _year = src.read_u16(); // This field MUST be set to zero.

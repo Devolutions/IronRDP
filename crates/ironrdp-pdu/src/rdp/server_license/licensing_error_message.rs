@@ -10,7 +10,7 @@ use crate::{
         headers::{BasicSecurityHeader, BasicSecurityHeaderFlags, BASIC_SECURITY_HEADER_SIZE},
         server_license::PreambleType,
     },
-    PduDecode, PduEncode, PduResult,
+    DecodeResult, EncodeResult, PduDecode, PduEncode,
 };
 use ironrdp_core::{ReadCursor, WriteCursor};
 
@@ -33,7 +33,7 @@ impl LicensingErrorMessage {
 
     const FIXED_PART_SIZE: usize = ERROR_CODE_SIZE + STATE_TRANSITION_SIZE;
 
-    pub fn new_valid_client() -> PduResult<Self> {
+    pub fn new_valid_client() -> EncodeResult<Self> {
         let mut this = Self {
             license_header: LicenseHeader {
                 security_header: BasicSecurityHeader {
@@ -58,7 +58,7 @@ impl LicensingErrorMessage {
 }
 
 impl LicensingErrorMessage {
-    pub fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    pub fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
         self.license_header.encode(dst)?;
@@ -82,7 +82,7 @@ impl LicensingErrorMessage {
 }
 
 impl LicensingErrorMessage {
-    pub fn decode(license_header: LicenseHeader, src: &mut ReadCursor<'_>) -> PduResult<Self> {
+    pub fn decode(license_header: LicenseHeader, src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
         if license_header.preamble_message_type != PreambleType::ErrorAlert {
             return Err(invalid_field_err!("preambleMessageType", "unexpected preamble type"));
         }

@@ -2,7 +2,7 @@ use std::borrow::Cow;
 
 use bitflags::bitflags;
 use ironrdp_core::{ReadCursor, WriteCursor};
-use ironrdp_pdu::{ensure_fixed_part_size, ensure_size, PduDecode, PduEncode, PduResult};
+use ironrdp_pdu::{ensure_fixed_part_size, ensure_size, DecodeResult, EncodeResult, PduDecode, PduEncode};
 
 bitflags! {
     /// Represents `mappingMode` fields of `CLIPRDR_MFPICT` structure.
@@ -68,7 +68,7 @@ impl PackedMetafile<'_> {
 }
 
 impl PduEncode for PackedMetafile<'_> {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
         dst.write_u32(self.mapping_mode.bits());
@@ -89,7 +89,7 @@ impl PduEncode for PackedMetafile<'_> {
 }
 
 impl<'de> PduDecode<'de> for PackedMetafile<'de> {
-    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+    fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
         let mapping_mode = PackedMetafileMappingMode::from_bits_truncate(src.read_u32());

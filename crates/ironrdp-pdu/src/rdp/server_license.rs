@@ -7,7 +7,7 @@ use num_traits::{FromPrimitive, ToPrimitive};
 use thiserror::Error;
 
 use crate::rdp::headers::{BasicSecurityHeader, BasicSecurityHeaderFlags, BASIC_SECURITY_HEADER_SIZE};
-use crate::{PduDecode, PduEncode, PduError, PduResult};
+use crate::{DecodeResult, EncodeResult, PduDecode, PduEncode, PduError};
 use ironrdp_core::{ReadCursor, WriteCursor};
 
 #[cfg(test)]
@@ -68,7 +68,7 @@ impl LicenseHeader {
 }
 
 impl PduEncode for LicenseHeader {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
 
         self.security_header.encode(dst)?;
@@ -92,7 +92,7 @@ impl PduEncode for LicenseHeader {
 }
 
 impl<'de> PduDecode<'de> for LicenseHeader {
-    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+    fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
         let security_header = BasicSecurityHeader::decode(src)?;
@@ -281,7 +281,7 @@ impl BlobHeader {
 }
 
 impl PduEncode for BlobHeader {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
 
         dst.write_u16(self.blob_type.0);
@@ -300,7 +300,7 @@ impl PduEncode for BlobHeader {
 }
 
 impl<'de> PduDecode<'de> for BlobHeader {
-    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+    fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
         let blob_type = BlobType(src.read_u16());
@@ -346,7 +346,7 @@ pub enum LicensePdu {
 }
 
 impl<'de> PduDecode<'de> for LicensePdu {
-    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+    fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         let license_header = LicenseHeader::decode(src)?;
 
         match license_header.preamble_message_type {
@@ -369,7 +369,7 @@ impl<'de> PduDecode<'de> for LicensePdu {
 }
 
 impl PduEncode for LicensePdu {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         match self {
             Self::ClientNewLicenseRequest(ref pdu) => pdu.encode(dst),
             Self::ClientPlatformChallengeResponse(ref pdu) => pdu.encode(dst),

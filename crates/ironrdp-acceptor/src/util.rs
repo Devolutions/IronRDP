@@ -13,7 +13,7 @@ pub(crate) fn encode_send_data_indication<T>(
 where
     T: PduEncode,
 {
-    let user_data = encode_vec(user_msg).map_err(ConnectorError::pdu)?;
+    let user_data = encode_vec(user_msg).map_err(ConnectorError::encode)?;
 
     let pdu = ironrdp_pdu::mcs::SendDataIndication {
         initiator_id,
@@ -21,7 +21,7 @@ where
         user_data: Cow::Owned(user_data),
     };
 
-    let written = ironrdp_pdu::encode_buf(&pdu, buf).map_err(ConnectorError::pdu)?;
+    let written = ironrdp_pdu::encode_buf(&pdu, buf).map_err(ConnectorError::encode)?;
 
     Ok(written)
 }

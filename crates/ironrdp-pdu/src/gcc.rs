@@ -4,7 +4,7 @@ use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive, ToPrimitive};
 use thiserror::Error;
 
-use crate::{decode, PduDecode, PduEncode, PduError, PduErrorKind, PduResult};
+use crate::{decode, DecodeErrorKind, DecodeResult, EncodeResult, PduDecode, PduEncode, PduError};
 use ironrdp_core::{ReadCursor, WriteCursor};
 
 pub mod conference_create;
@@ -43,7 +43,7 @@ macro_rules! user_header_try {
     ($e:expr) => {
         match $e {
             Ok(user_header) => user_header,
-            Err(e) if matches!(e.kind(), PduErrorKind::NotEnoughBytes { .. }) => break,
+            Err(e) if matches!(e.kind(), DecodeErrorKind::NotEnoughBytes { .. }) => break,
             Err(e) => return Err(e),
         }
     };
@@ -80,7 +80,7 @@ impl ClientGccBlocks {
 }
 
 impl PduEncode for ClientGccBlocks {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
         UserDataHeader::encode(dst, ClientGccType::CoreData, &self.core)?;
@@ -139,7 +139,7 @@ impl PduEncode for ClientGccBlocks {
 }
 
 impl<'de> PduDecode<'de> for ClientGccBlocks {
-    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+    fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         let mut core = None;
         let mut security = None;
         let mut network = None;
@@ -198,7 +198,7 @@ impl ServerGccBlocks {
 }
 
 impl PduEncode for ServerGccBlocks {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         UserDataHeader::encode(dst, ServerGccType::CoreData, &self.core)?;
         UserDataHeader::encode(dst, ServerGccType::NetworkData, &self.network)?;
         UserDataHeader::encode(dst, ServerGccType::SecurityData, &self.security)?;
@@ -232,7 +232,7 @@ impl PduEncode for ServerGccBlocks {
 }
 
 impl<'de> PduDecode<'de> for ServerGccBlocks {
-    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+    fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         let mut core = None;
         let mut network = None;
         let mut security = None;
@@ -290,7 +290,7 @@ pub struct UserDataHeader;
 impl UserDataHeader {
     const FIXED_PART_SIZE: usize = 2 /* blockType */ + 2 /* blockLen */;
 
-    pub fn encode<T, B>(dst: &mut WriteCursor<'_>, block_type: T, block: &B) -> PduResult<()>
+    pub fn encode<T, B>(dst: &mut WriteCursor<'_>, block_type: T, block: &B) -> EncodeResult<()>
     where
         T: ToPrimitive,
         B: PduEncode,
@@ -304,7 +304,7 @@ impl UserDataHeader {
         Ok(())
     }
 
-    pub fn decode<'de, T>(src: &mut ReadCursor<'de>) -> PduResult<(T, &'de [u8])>
+    pub fn decode<'de, T>(src: &mut ReadCursor<'de>) -> DecodeResult<(T, &'de [u8])>
     where
         T: FromPrimitive,
     {

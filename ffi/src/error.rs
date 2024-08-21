@@ -10,7 +10,8 @@ use self::ffi::IronRdpErrorKind;
 impl From<ConnectorError> for IronRdpErrorKind {
     fn from(val: ConnectorError) -> Self {
         match val.kind {
-            ironrdp::connector::ConnectorErrorKind::Pdu(_) => IronRdpErrorKind::PduError,
+            ironrdp::connector::ConnectorErrorKind::Encode(_) => IronRdpErrorKind::EncodeError,
+            ironrdp::connector::ConnectorErrorKind::Decode(_) => IronRdpErrorKind::DecodeError,
             ironrdp::connector::ConnectorErrorKind::Credssp(_) => IronRdpErrorKind::CredsspError,
             ironrdp::connector::ConnectorErrorKind::AccessDenied => IronRdpErrorKind::AccessDenied,
             _ => IronRdpErrorKind::Generic,
@@ -36,6 +37,18 @@ impl From<ironrdp::pdu::PduError> for IronRdpErrorKind {
     }
 }
 
+impl From<ironrdp::pdu::EncodeError> for IronRdpErrorKind {
+    fn from(_val: ironrdp::pdu::EncodeError) -> Self {
+        IronRdpErrorKind::EncodeError
+    }
+}
+
+impl From<ironrdp::pdu::DecodeError> for IronRdpErrorKind {
+    fn from(_val: ironrdp::pdu::DecodeError) -> Self {
+        IronRdpErrorKind::DecodeError
+    }
+}
+
 impl From<std::io::Error> for IronRdpErrorKind {
     fn from(_: std::io::Error) -> Self {
         IronRdpErrorKind::IO
@@ -52,6 +65,8 @@ impl From<SessionError> for IronRdpErrorKind {
     fn from(value: SessionError) -> Self {
         match value.kind() {
             ironrdp::session::SessionErrorKind::Pdu(_) => IronRdpErrorKind::PduError,
+            ironrdp::session::SessionErrorKind::Encode(_) => IronRdpErrorKind::EncodeError,
+            ironrdp::session::SessionErrorKind::Decode(_) => IronRdpErrorKind::DecodeError,
             _ => IronRdpErrorKind::Generic,
         }
     }
@@ -103,6 +118,10 @@ pub mod ffi {
         Generic,
         #[error("PDU error")]
         PduError,
+        #[error("Encode error")]
+        EncodeError,
+        #[error("Decode error")]
+        DecodeError,
         #[error("CredSSP error")]
         CredsspError,
         #[error("Value is consumed")]

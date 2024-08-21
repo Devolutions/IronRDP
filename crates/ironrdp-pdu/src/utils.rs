@@ -4,7 +4,7 @@ use std::fmt::Debug;
 use std::mem::size_of;
 use std::ops::Add;
 
-use crate::PduResult;
+use crate::{DecodeResult, EncodeResult};
 use ironrdp_core::{ReadCursor, WriteCursor};
 
 pub fn split_u64(value: u64) -> (u32, u32) {
@@ -54,7 +54,7 @@ pub fn read_string_from_cursor(
     cursor: &mut ReadCursor<'_>,
     character_set: CharacterSet,
     read_null_terminator: bool,
-) -> PduResult<String> {
+) -> DecodeResult<String> {
     let size = if character_set == CharacterSet::Unicode {
         let code_units = if read_null_terminator {
             // Find null or read all if null is not found
@@ -114,14 +114,14 @@ pub fn read_string_from_cursor(
     Ok(result.trim_end_matches('\0').into())
 }
 
-pub fn decode_string(src: &[u8], character_set: CharacterSet, read_null_terminator: bool) -> PduResult<String> {
+pub fn decode_string(src: &[u8], character_set: CharacterSet, read_null_terminator: bool) -> DecodeResult<String> {
     read_string_from_cursor(&mut ReadCursor::new(src), character_set, read_null_terminator)
 }
 
 pub fn read_multistring_from_cursor(
     cursor: &mut ReadCursor<'_>,
     character_set: CharacterSet,
-) -> PduResult<Vec<String>> {
+) -> DecodeResult<Vec<String>> {
     let mut strings = Vec::new();
 
     loop {
@@ -143,7 +143,7 @@ pub fn encode_string(
     value: &str,
     character_set: CharacterSet,
     write_null_terminator: bool,
-) -> PduResult<usize> {
+) -> EncodeResult<usize> {
     let (buffer, ctx) = match character_set {
         CharacterSet::Unicode => {
             let mut buffer = to_utf16_bytes(value);
@@ -174,7 +174,7 @@ pub fn write_string_to_cursor(
     value: &str,
     character_set: CharacterSet,
     write_null_terminator: bool,
-) -> PduResult<()> {
+) -> EncodeResult<()> {
     let len = encode_string(cursor.remaining_mut(), value, character_set, write_null_terminator)?;
     cursor.advance(len);
     Ok(())
@@ -184,7 +184,7 @@ pub fn write_multistring_to_cursor(
     cursor: &mut WriteCursor<'_>,
     strings: &[String],
     character_set: CharacterSet,
-) -> PduResult<()> {
+) -> EncodeResult<()> {
     // Write each string to cursor, separated by a null terminator
     for string in strings {
         write_string_to_cursor(cursor, string, character_set, true)?;
@@ -270,7 +270,7 @@ impl CheckedAdd for u32 {
 }
 
 // Utility function for checked addition that returns a PduResult
-pub fn checked_sum<T>(values: &[T]) -> PduResult<T>
+pub fn checked_sum<T>(values: &[T]) -> DecodeResult<T>
 where
     T: CheckedAdd + Copy + Debug,
 {

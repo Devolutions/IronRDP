@@ -2,7 +2,10 @@ use std::borrow::Cow;
 
 use ironrdp_core::impl_as_any;
 use ironrdp_core::ReadCursor;
+use ironrdp_pdu::decode_err;
+use ironrdp_pdu::encode_err;
 use ironrdp_pdu::gcc::ChannelName;
+use ironrdp_pdu::EncodeResult;
 use ironrdp_pdu::{cast_length, other_err, PduDecode, PduResult};
 use ironrdp_svc::{CompressionCondition, SvcClientProcessor, SvcMessage, SvcProcessor};
 use tracing::{debug, error};
@@ -115,9 +118,11 @@ impl Rdpsnd {
     }
 
     pub fn training_confirm(&mut self, pdu: &TrainingPdu) -> PduResult<RdpsndSvcMessages> {
+        let pack_size: EncodeResult<_> = cast_length!("wPackSize", pdu.data.len());
+        let pack_size = pack_size.map_err(|e| encode_err!(e))?;
         let pdu = pdu::TrainingConfirmPdu {
             timestamp: pdu.timestamp,
-            pack_size: cast_length!("wPackSize", pdu.data.len())?,
+            pack_size,
         };
         Ok(RdpsndSvcMessages::new(vec![
             pdu::ClientAudioOutputPdu::TrainingConfirm(pdu).into(),
@@ -145,7 +150,7 @@ impl SvcProcessor for Rdpsnd {
     }
 
     fn process(&mut self, payload: &[u8]) -> PduResult<Vec<SvcMessage>> {
-        let pdu = pdu::ServerAudioOutputPdu::decode(&mut ReadCursor::new(payload))?;
+        let pdu = pdu::ServerAudioOutputPdu::decode(&mut ReadCursor::new(payload)).map_err(|e| decode_err!(e))?;
 
         debug!(?pdu, ?self.state);
         let msg = match self.state {

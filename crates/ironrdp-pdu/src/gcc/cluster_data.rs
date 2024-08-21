@@ -5,7 +5,7 @@ use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive as _, ToPrimitive as _};
 use thiserror::Error;
 
-use crate::{PduDecode, PduEncode, PduResult};
+use crate::{DecodeResult, EncodeResult, PduDecode, PduEncode};
 use ironrdp_core::{ReadCursor, WriteCursor};
 
 const REDIRECTION_VERSION_MASK: u32 = 0x0000_003C;
@@ -27,7 +27,7 @@ impl ClientClusterData {
 }
 
 impl PduEncode for ClientClusterData {
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
 
         let flags_with_version = self.flags.bits() | (self.redirection_version.to_u32().unwrap() << 2);
@@ -48,7 +48,7 @@ impl PduEncode for ClientClusterData {
 }
 
 impl<'de> PduDecode<'de> for ClientClusterData {
-    fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
+    fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
         let flags_with_version = src.read_u32();

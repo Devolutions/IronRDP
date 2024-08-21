@@ -1,7 +1,7 @@
 use lazy_static::lazy_static;
 
 use super::*;
-use crate::{decode, decode_cursor, encode_vec, PduErrorKind};
+use crate::{decode, decode_cursor, encode_vec, DecodeErrorKind};
 
 const GUID_BUFFER: [u8; 16] = [
     0xb9, 0x1b, 0x8d, 0xca, 0x0f, 0x00, 0x4f, 0x15, 0x58, 0x9f, 0xae, 0x2d, 0x1a, 0x87, 0xe2, 0xd6,
@@ -446,7 +446,7 @@ fn codec_with_invalid_property_length_handles_correctly() {
     ];
 
     match decode::<Codec>(codec_buffer.as_ref()) {
-        Err(e) if matches!(e.kind(), PduErrorKind::InvalidField { .. }) => (),
+        Err(e) if matches!(e.kind(), DecodeErrorKind::InvalidField { .. }) => (),
         Err(e) => panic!("wrong error type: {e}"),
         _ => panic!("error expected"),
     }
