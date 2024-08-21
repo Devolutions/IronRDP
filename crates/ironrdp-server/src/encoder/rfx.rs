@@ -116,24 +116,31 @@ impl RfxEncoder {
         };
         let frame_end = rfx::FrameEndPdu;
 
-        let len = sync.buffer_length()
-            + context.buffer_length()
-            + channels.buffer_length()
-            + version.buffer_length()
-            + frame_begin.buffer_length()
-            + region.buffer_length()
-            + tile_set.buffer_length()
-            + frame_end.buffer_length();
-        let mut output = vec![0; len];
-        let mut buffer = output.as_mut_slice();
-        sync.to_buffer_consume(&mut buffer).map_err(|e| custom_err!(e))?;
-        context.to_buffer_consume(&mut buffer).map_err(|e| custom_err!(e))?;
-        channels.to_buffer_consume(&mut buffer).map_err(|e| custom_err!(e))?;
-        version.to_buffer_consume(&mut buffer).map_err(|e| custom_err!(e))?;
-        frame_begin.to_buffer_consume(&mut buffer).map_err(|e| custom_err!(e))?;
-        region.to_buffer_consume(&mut buffer).map_err(|e| custom_err!(e))?;
-        tile_set.to_buffer_consume(&mut buffer).map_err(|e| custom_err!(e))?;
-        frame_end.to_buffer_consume(&mut buffer).map_err(|e| custom_err!(e))?;
-        Ok(output)
+        macro_rules! encode {
+            ($($element:expr),+) => {
+                {
+                    let len: usize = 0 $( + $element.buffer_length() )+;
+                    let mut output = vec![0; len];
+                    let mut buffer = output.as_mut_slice();
+
+                    $(
+                        $element.to_buffer_consume(&mut buffer).map_err(|e| custom_err!(e))?;
+                    )+
+
+                    Ok(output)
+                }
+            };
+        }
+
+        encode!(
+            sync,
+            context,
+            channels,
+            version,
+            frame_begin,
+            region,
+            tile_set,
+            frame_end
+        )
     }
 }
