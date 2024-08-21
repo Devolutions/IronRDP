@@ -58,7 +58,7 @@ impl<'de> PduDecode<'de> for ClientInfoPdu {
 
         let security_header = BasicSecurityHeader::decode(src)?;
         if !security_header.flags.contains(BasicSecurityHeaderFlags::INFO_PKT) {
-            return Err(invalid_message_err!("securityHeader", "got invalid security header"));
+            return Err(invalid_field_err!("securityHeader", "got invalid security header"));
         }
 
         let client_info = ClientInfo::decode(src)?;

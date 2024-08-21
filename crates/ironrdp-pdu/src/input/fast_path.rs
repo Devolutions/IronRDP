@@ -64,7 +64,7 @@ impl<'de> PduDecode<'de> for FastPathInputHeader {
         let (length, sizeof_length) = per::read_length(src).map_err(|e| custom_err!("perLen", e))?;
 
         if !flags.is_empty() {
-            return Err(invalid_message_err!("flags", "encryption not supported"));
+            return Err(invalid_field_err!("flags", "encryption not supported"));
         }
 
         let num_events_length = if num_events == 0 {
@@ -179,13 +179,13 @@ impl<'de> PduDecode<'de> for FastPathInputEvent {
         let flags = header.get_bits(0..5);
         let code = header.get_bits(5..8);
         let code: FastpathInputEventType = FastpathInputEventType::from_u8(code)
-            .ok_or_else(|| invalid_message_err!("code", "input event code unsupported"))?;
+            .ok_or_else(|| invalid_field_err!("code", "input event code unsupported"))?;
         let event = match code {
             FastpathInputEventType::ScanCode => {
                 ensure_size!(in: src, size: 1);
                 let code = src.read_u8();
                 let flags = KeyboardFlags::from_bits(flags)
-                    .ok_or_else(|| invalid_message_err!("flags", "input keyboard flags unsupported"))?;
+                    .ok_or_else(|| invalid_field_err!("flags", "input keyboard flags unsupported"))?;
                 FastPathInputEvent::KeyboardEvent(flags, code)
             }
             FastpathInputEventType::Mouse => {
@@ -202,14 +202,14 @@ impl<'de> PduDecode<'de> for FastPathInputEvent {
             }
             FastpathInputEventType::Sync => {
                 let flags = SynchronizeFlags::from_bits(flags)
-                    .ok_or_else(|| invalid_message_err!("flags", "input synchronize flags unsupported"))?;
+                    .ok_or_else(|| invalid_field_err!("flags", "input synchronize flags unsupported"))?;
                 FastPathInputEvent::SyncEvent(flags)
             }
             FastpathInputEventType::Unicode => {
                 ensure_size!(in: src, size: 2);
                 let code = src.read_u16();
                 let flags = KeyboardFlags::from_bits(flags)
-                    .ok_or_else(|| invalid_message_err!("flags", "input keyboard flags unsupported"))?;
+                    .ok_or_else(|| invalid_field_err!("flags", "input keyboard flags unsupported"))?;
                 FastPathInputEvent::UnicodeKeyboardEvent(flags, code)
             }
             FastpathInputEventType::QoeTimestamp => {

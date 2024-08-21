@@ -4,7 +4,7 @@ use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive as _, ToPrimitive as _};
 
 use ironrdp_core::{ReadCursor, WriteCursor};
-use ironrdp_pdu::{ensure_fixed_part_size, invalid_message_err, PduDecode, PduEncode, PduResult};
+use ironrdp_pdu::{ensure_fixed_part_size, invalid_field_err, PduDecode, PduEncode, PduResult};
 // Advanced Input channel as defined from Freerdp, [here]:
 //
 // [here]: https://github.com/FreeRDP/FreeRDP/blob/master/include/freerdp/channels/ainput.h
@@ -143,8 +143,8 @@ impl<'de> PduDecode<'de> for ServerPdu {
     fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
         ensure_fixed_part_size!(in: src);
 
-        let pdu_type = ServerPduType::from_u16(src.read_u16())
-            .ok_or_else(|| invalid_message_err!("pduType", "invalid pdu type"))?;
+        let pdu_type =
+            ServerPduType::from_u16(src.read_u16()).ok_or_else(|| invalid_field_err!("pduType", "invalid pdu type"))?;
 
         let server_pdu = match pdu_type {
             ServerPduType::Version => ServerPdu::Version(VersionPdu::decode(src)?),
@@ -240,8 +240,8 @@ impl<'de> PduDecode<'de> for ClientPdu {
     fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
         ensure_fixed_part_size!(in: src);
 
-        let pdu_type = ClientPduType::from_u16(src.read_u16())
-            .ok_or_else(|| invalid_message_err!("pduType", "invalid pdu type"))?;
+        let pdu_type =
+            ClientPduType::from_u16(src.read_u16()).ok_or_else(|| invalid_field_err!("pduType", "invalid pdu type"))?;
 
         let client_pdu = match pdu_type {
             ClientPduType::Mouse => ClientPdu::Mouse(MousePdu::decode(src)?),

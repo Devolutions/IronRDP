@@ -81,7 +81,7 @@ impl PduDecode<'_> for NowExecAbortMsg {
 
         match (header.class, NowExecMsgKind(header.kind)) {
             (NowMessageClass::EXEC, NowExecMsgKind::ABORT) => Self::decode_from_body(header, src),
-            _ => Err(invalid_message_err!("type", "invalid message type")),
+            _ => Err(invalid_field_err!("type", "invalid message type")),
         }
     }
 }

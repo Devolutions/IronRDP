@@ -40,7 +40,7 @@ impl PduEncode for BitmapUpdateData<'_> {
         ensure_size!(in: dst, size: self.size());
 
         if self.rectangles.len() > u16::MAX as usize {
-            return Err(invalid_message_err!("numberRectangles", "rectangle count is too big"));
+            return Err(invalid_field_err!("numberRectangles", "rectangle count is too big"));
         }
 
         Self::encode_header(self.rectangles.len() as u16, dst)?;
@@ -69,7 +69,7 @@ impl<'de> PduDecode<'de> for BitmapUpdateData<'de> {
 
         let update_type = BitmapFlags::from_bits_truncate(src.read_u16());
         if !update_type.contains(BitmapFlags::BITMAP_UPDATE_TYPE) {
-            return Err(invalid_message_err!("updateType", "invalid update type"));
+            return Err(invalid_field_err!("updateType", "invalid update type"));
         }
 
         let rectangles_number = src.read_u16() as usize;
@@ -110,7 +110,7 @@ impl PduEncode for BitmapData<'_> {
 
         let encoded_bitmap_data_length = self.encoded_bitmap_data_length();
         if encoded_bitmap_data_length > u16::MAX as usize {
-            return Err(invalid_message_err!("bitmapLength", "bitmap data length is too big"));
+            return Err(invalid_field_err!("bitmapLength", "bitmap data length is too big"));
         }
 
         self.rectangle.encode(dst)?;
@@ -157,7 +157,7 @@ impl<'de> PduDecode<'de> for BitmapData<'de> {
         {
             // Check if encoded_bitmap_data_length is at least CompressedDataHeader::ENCODED_SIZE
             if encoded_bitmap_data_length < CompressedDataHeader::ENCODED_SIZE as u16 {
-                return Err(invalid_message_err!(
+                return Err(invalid_field_err!(
                     "cbCompEncodedBitmapDataLength",
                     "length is less than CompressedDataHeader::ENCODED_SIZE"
                 ));
@@ -218,14 +218,14 @@ impl<'de> PduDecode<'de> for CompressedDataHeader {
 
         let size = src.read_u16();
         if size != FIRST_ROW_SIZE_VALUE {
-            return Err(invalid_message_err!("cbCompFirstRowSize", "invalid first row size"));
+            return Err(invalid_field_err!("cbCompFirstRowSize", "invalid first row size"));
         }
 
         let main_body_size = src.read_u16();
         let scan_width = src.read_u16();
 
         if scan_width % 4 != 0 {
-            return Err(invalid_message_err!(
+            return Err(invalid_field_err!(
                 "cbScanWidth",
                 "The width of the bitmap must be divisible by 4"
             ));
@@ -245,7 +245,7 @@ impl PduEncode for CompressedDataHeader {
         ensure_fixed_part_size!(in: dst);
 
         if self.scan_width % 4 != 0 {
-            return Err(invalid_message_err!(
+            return Err(invalid_field_err!(
                 "cbScanWidth",
                 "The width of the bitmap must be divisible by 4"
             ));

@@ -17,7 +17,7 @@ impl VarU16 {
 
     pub fn new(value: u16) -> PduResult<Self> {
         if value > Self::MAX {
-            return Err(invalid_message_err!("value", "too large number"));
+            return Err(invalid_field_err!("value", "too large number"));
         }
 
         Ok(VarU16(value))
@@ -134,7 +134,7 @@ impl VarI16 {
 
     pub fn new(value: i16) -> PduResult<Self> {
         if value.abs() > Self::MAX {
-            return Err(invalid_message_err!("value", "too large number"));
+            return Err(invalid_field_err!("value", "too large number"));
         }
 
         Ok(VarI16(value))
@@ -266,7 +266,7 @@ impl VarU32 {
 
     pub fn new(value: u32) -> PduResult<Self> {
         if value > Self::MAX {
-            return Err(invalid_message_err!("value", "too large number"));
+            return Err(invalid_field_err!("value", "too large number"));
         }
 
         Ok(VarU32(value))
@@ -386,7 +386,7 @@ impl VarI32 {
 
     pub fn new(value: i32) -> PduResult<Self> {
         if value.abs() > Self::MAX {
-            return Err(invalid_message_err!("value", "too large number"));
+            return Err(invalid_field_err!("value", "too large number"));
         }
 
         Ok(VarI32(value))
@@ -520,7 +520,7 @@ impl VarU64 {
 
     pub fn new(value: u64) -> PduResult<Self> {
         if value > Self::MAX {
-            return Err(invalid_message_err!("value", "too large number"));
+            return Err(invalid_field_err!("value", "too large number"));
         }
 
         Ok(VarU64(value))
@@ -641,7 +641,7 @@ impl VarI64 {
 
     pub fn new(value: i64) -> PduResult<Self> {
         if value.abs() > Self::MAX {
-            return Err(invalid_message_err!("value", "too large number"));
+            return Err(invalid_field_err!("value", "too large number"));
         }
 
         Ok(VarI64(value))

@@ -36,23 +36,23 @@ macro_rules! not_enough_bytes_err {
     }};
 }
 
-/// Creates a `PduError` with `InvalidMessage` kind
+/// Creates a `PduError` with `InvalidField` kind
 ///
 /// Shorthand for
 /// ```rust
-/// <ironrdp_pdu::PduError as ironrdp_pdu::PduErrorExt>::invalid_message(context, field, reason)
+/// <ironrdp_pdu::PduError as ironrdp_pdu::PduErrorExt>::invalid_field(context, field, reason)
 /// ```
 /// and
 /// ```rust
-/// <ironrdp_pdu::PduError as ironrdp_pdu::PduErrorExt>::invalid_message($crate::function!(), field, reason)
+/// <ironrdp_pdu::PduError as ironrdp_pdu::PduErrorExt>::invalid_field($crate::function!(), field, reason)
 /// ```
 #[macro_export]
-macro_rules! invalid_message_err {
+macro_rules! invalid_field_err {
     ( $context:expr, $field:expr , $reason:expr $(,)? ) => {{
-        <$crate::PduError as $crate::PduErrorExt>::invalid_message($context, $field, $reason)
+        <$crate::PduError as $crate::PduErrorExt>::invalid_field($context, $field, $reason)
     }};
     ( $field:expr , $reason:expr $(,)? ) => {{
-        invalid_message_err!($crate::function!(), $field, $reason)
+        invalid_field_err!($crate::function!(), $field, $reason)
     }};
 }
 
@@ -180,7 +180,7 @@ macro_rules! ensure_fixed_part_size {
 macro_rules! cast_length {
     ($ctx:expr, $field:expr, $len:expr) => {{
         $len.try_into().map_err(|e| {
-            <$crate::PduError as $crate::PduErrorExt>::invalid_message($ctx, $field, "too many elements").with_source(e)
+            <$crate::PduError as $crate::PduErrorExt>::invalid_field($ctx, $field, "too many elements").with_source(e)
         })
     }};
     ($field:expr, $len:expr) => {{
@@ -192,7 +192,7 @@ macro_rules! cast_length {
 macro_rules! cast_int {
     ($ctx:expr, $field:expr, $len:expr) => {{
         $len.try_into().map_err(|e| {
-            <$crate::PduError as $crate::PduErrorExt>::invalid_message(
+            <$crate::PduError as $crate::PduErrorExt>::invalid_field(
                 $ctx,
                 $field,
                 "out of range integral type conversion",

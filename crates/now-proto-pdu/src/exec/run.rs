@@ -30,7 +30,7 @@ impl NowExecRunMsg {
     fn ensure_message_size(&self) -> PduResult<()> {
         let _message_size = Self::FIXED_PART_SIZE
             .checked_add(self.command.size())
-            .ok_or_else(|| invalid_message_err!("size", "message size overflow"))?;
+            .ok_or_else(|| invalid_field_err!("size", "message size overflow"))?;
 
         Ok(())
     }
@@ -98,7 +98,7 @@ impl PduDecode<'_> for NowExecRunMsg {
 
         match (header.class, NowExecMsgKind(header.kind)) {
             (NowMessageClass::EXEC, NowExecMsgKind::RUN) => Self::decode_from_body(header, src),
-            _ => Err(invalid_message_err!("type", "invalid message type")),
+            _ => Err(invalid_field_err!("type", "invalid message type")),
         }
     }
 }

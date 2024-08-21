@@ -3,7 +3,7 @@ use std::borrow::Cow;
 use bitflags::bitflags;
 use ironrdp_core::{IntoOwned, ReadCursor, WriteCursor};
 use ironrdp_pdu::utils::{combine_u64, split_u64};
-use ironrdp_pdu::{cast_int, ensure_size, impl_pdu_borrowing, invalid_message_err, PduDecode, PduEncode, PduResult};
+use ironrdp_pdu::{cast_int, ensure_size, impl_pdu_borrowing, invalid_field_err, PduDecode, PduEncode, PduResult};
 
 use crate::pdu::{ClipboardPduFlags, PartialHeader};
 
@@ -92,7 +92,7 @@ impl<'a> FileContentsResponse<'a> {
     /// Read data as u64 size value
     pub fn data_as_size(&self) -> PduResult<u64> {
         if self.data.len() != 8 {
-            return Err(invalid_message_err!(
+            return Err(invalid_field_err!(
                 "requestedFileContentsData",
                 "Invalid data size for u64 size"
             ));
@@ -139,7 +139,7 @@ impl<'de> PduDecode<'de> for FileContentsResponse<'de> {
         ensure_size!(in: src, size: header.data_length());
 
         if header.data_length() < Self::FIXED_PART_SIZE {
-            return Err(invalid_message_err!("requestedFileContentsData", "Invalid data size"));
+            return Err(invalid_field_err!("requestedFileContentsData", "Invalid data size"));
         };
 
         let data_size = header.data_length() - Self::FIXED_PART_SIZE;

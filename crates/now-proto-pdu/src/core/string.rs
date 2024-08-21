@@ -40,11 +40,11 @@ impl NowLrgStr {
 
     fn ensure_message_size(string_size: usize) -> PduResult<()> {
         if string_size > usize::try_from(VarU32::MAX).expect("BUG: too small usize") {
-            return Err(invalid_message_err!("data", "data is too large for NOW_LRGSTR"));
+            return Err(invalid_field_err!("data", "data is too large for NOW_LRGSTR"));
         }
 
         if string_size > usize::MAX - Self::FIXED_PART_SIZE - 1 {
-            return Err(invalid_message_err!(
+            return Err(invalid_field_err!(
                 "string",
                 "string size is too large to fit in 32-bit usize"
             ));
@@ -95,7 +95,7 @@ impl PduDecode<'_> for NowLrgStr {
         let _null = src.read_u8();
 
         let string =
-            String::from_utf8(bytes.to_vec()).map_err(|_| invalid_message_err!("string value", "invalid utf-8"))?;
+            String::from_utf8(bytes.to_vec()).map_err(|_| invalid_field_err!("string value", "invalid utf-8"))?;
 
         Ok(NowLrgStr(string))
     }
@@ -134,7 +134,7 @@ impl NowVarStr {
             .try_into()
             .ok()
             .and_then(|val| if val <= VarU32::MAX { Some(val) } else { None })
-            .ok_or_else(|| invalid_message_err!("string value", "too large string"))?;
+            .ok_or_else(|| invalid_field_err!("string value", "too large string"))?;
 
         Ok(NowVarStr(value))
     }
@@ -182,7 +182,7 @@ impl PduDecode<'_> for NowVarStr {
         let _null = src.read_u8();
 
         let string =
-            String::from_utf8(bytes.to_vec()).map_err(|_| invalid_message_err!("string value", "invalid utf-8"))?;
+            String::from_utf8(bytes.to_vec()).map_err(|_| invalid_field_err!("string value", "invalid utf-8"))?;
 
         Ok(NowVarStr(string))
     }
@@ -225,7 +225,7 @@ impl<const MAX_LEN: u8> NowRestrictedStr<MAX_LEN> {
 
         // IMPORTANT: we need to check for encoded UTF-8 size, not the string length
         if value.as_bytes().len() > MAX_LEN as usize {
-            return Err(invalid_message_err!("string value", concat!("too large string")));
+            return Err(invalid_field_err!("string value", concat!("too large string")));
         }
         Ok(NowRestrictedStr(value))
     }
@@ -269,7 +269,7 @@ impl<const MAX_LEN: u8> PduDecode<'_> for NowRestrictedStr<MAX_LEN> {
 
         let len = src.read_u8();
         if len > MAX_LEN {
-            return Err(invalid_message_err!("string value", "too large string"));
+            return Err(invalid_field_err!("string value", "too large string"));
         }
 
         let len_usize = len.into();
@@ -280,7 +280,7 @@ impl<const MAX_LEN: u8> PduDecode<'_> for NowRestrictedStr<MAX_LEN> {
         let _null = src.read_u8();
 
         let string =
-            String::from_utf8(bytes.to_vec()).map_err(|_| invalid_message_err!("string value", "invalid utf-8"))?;
+            String::from_utf8(bytes.to_vec()).map_err(|_| invalid_field_err!("string value", "invalid utf-8"))?;
 
         Ok(NowRestrictedStr(string))
     }

@@ -4,7 +4,7 @@
 
 use ironrdp_core::{ReadCursor, WriteCursor};
 use ironrdp_dvc::DvcPduEncode;
-use ironrdp_pdu::{ensure_fixed_part_size, invalid_message_err, PduDecode, PduEncode, PduResult};
+use ironrdp_pdu::{ensure_fixed_part_size, invalid_field_err, PduDecode, PduEncode, PduResult};
 use tracing::warn;
 
 const DISPLAYCONTROL_PDU_TYPE_CAPS: u32 = 0x00000005;
@@ -87,7 +87,7 @@ impl<'de> PduDecode<'de> for DisplayControlPdu {
 
         let _payload_length = pdu_length
             .checked_sub(Self::FIXED_PART_SIZE.try_into().unwrap())
-            .ok_or_else(|| invalid_message_err!("Length", "Display control PDU length is too small"))?;
+            .ok_or_else(|| invalid_field_err!("Length", "Display control PDU length is too small"))?;
 
         match kind {
             DISPLAYCONTROL_PDU_TYPE_CAPS => {
@@ -98,7 +98,7 @@ impl<'de> PduDecode<'de> for DisplayControlPdu {
                 let layout = DisplayControlMonitorLayout::decode(src)?;
                 Ok(DisplayControlPdu::MonitorLayout(layout))
             }
-            _ => Err(invalid_message_err!("Type", "Unknown display control PDU type")),
+            _ => Err(invalid_field_err!("Type", "Unknown display control PDU type")),
         }
     }
 }
@@ -218,13 +218,13 @@ impl DisplayControlMonitorLayout {
 
     pub fn new(monitors: &[MonitorLayoutEntry]) -> PduResult<Self> {
         if monitors.len() > MAX_SUPPORTED_MONITORS.into() {
-            return Err(invalid_message_err!("NumMonitors", "Too many monitors",));
+            return Err(invalid_field_err!("NumMonitors", "Too many monitors",));
         }
 
         let primary_monitors_count = monitors.iter().filter(|monitor| monitor.is_primary()).count();
 
         if primary_monitors_count != 1 {
-            return Err(invalid_message_err!(
+            return Err(invalid_field_err!(
                 "PrimaryMonitor",
                 "There must be exactly one primary monitor"
             ));
@@ -291,7 +291,7 @@ impl PduEncode for DisplayControlMonitorLayout {
             .monitors
             .len()
             .try_into()
-            .map_err(|_| invalid_message_err!("NumMonitors", "Number of monitors is too big"))?;
+            .map_err(|_| invalid_field_err!("NumMonitors", "Number of monitors is too big"))?;
 
         dst.write_u32(monitors_count);
 
@@ -323,7 +323,7 @@ impl<'de> PduDecode<'de> for DisplayControlMonitorLayout {
         let monitor_layout_size = src.read_u32();
 
         if monitor_layout_size != MonitorLayoutEntry::FIXED_PART_SIZE.try_into().unwrap() {
-            return Err(invalid_message_err!(
+            return Err(invalid_field_err!(
                 "MonitorLayoutSize",
                 "Monitor layout size is invalid"
             ));
@@ -332,7 +332,7 @@ impl<'de> PduDecode<'de> for DisplayControlMonitorLayout {
         let num_monitors = src.read_u32();
 
         if num_monitors > MAX_SUPPORTED_MONITORS.into() {
-            return Err(invalid_message_err!("NumMonitors", "Too many monitors"));
+            return Err(invalid_field_err!("NumMonitors", "Too many monitors"));
         }
 
         let mut monitors = Vec::with_capacity(usize::try_from(num_monitors).unwrap());
@@ -684,7 +684,7 @@ impl DeviceScaleFactor {
 
 fn validate_position(left: i32, top: i32, is_primary: bool) -> PduResult<()> {
     if is_primary && (left != 0 || top != 0) {
-        return Err(invalid_message_err!(
+        return Err(invalid_field_err!(
             "Position",
             "Primary monitor position must be (0, 0)"
         ));
@@ -695,13 +695,13 @@ fn validate_position(left: i32, top: i32, is_primary: bool) -> PduResult<()> {
 
 fn validate_dimensions(width: u32, height: u32) -> PduResult<()> {
     if !(200..=8192).contains(&width) {
-        return Err(invalid_message_err!("Width", "Monitor width is out of range"));
+        return Err(invalid_field_err!("Width", "Monitor width is out of range"));
     }
     if width % 2 != 0 {
-        return Err(invalid_message_err!("Width", "Monitor width cannot be odd"));
+        return Err(invalid_field_err!("Width", "Monitor width cannot be odd"));
     }
     if !(200..=8192).contains(&height) {
-        return Err(invalid_message_err!("Height", "Monitor height is out of range"));
+        return Err(invalid_field_err!("Height", "Monitor height is out of range"));
     }
 
     Ok(())
@@ -709,7 +709,7 @@ fn validate_dimensions(width: u32, height: u32) -> PduResult<()> {
 
 fn validate_desktop_scale_factor(desktop_scale_factor: u32) -> PduResult<()> {
     if !(100..=500).contains(&desktop_scale_factor) {
-        return Err(invalid_message_err!(
+        return Err(invalid_field_err!(
             "DesktopScaleFactor",
             "Desktop scale factor is out of range"
         ));
@@ -720,13 +720,10 @@ fn validate_desktop_scale_factor(desktop_scale_factor: u32) -> PduResult<()> {
 
 fn validate_physical_dimensions(physical_width: u32, physical_height: u32) -> PduResult<()> {
     if !(10..=10000).contains(&physical_width) {
-        return Err(invalid_message_err!("PhysicalWidth", "Physical width is out of range"));
+        return Err(invalid_field_err!("PhysicalWidth", "Physical width is out of range"));
     }
     if !(10..=10000).contains(&physical_height) {
-        return Err(invalid_message_err!(
-            "PhysicalHeight",
-            "Physical height is out of range"
-        ));
+        return Err(invalid_field_err!("PhysicalHeight", "Physical height is out of range"));
     }
 
     Ok(())
@@ -738,13 +735,13 @@ fn calculate_monitor_area(
     max_monitor_area_factor_b: u32,
 ) -> PduResult<u64> {
     if max_num_monitors > MAX_SUPPORTED_MONITORS.into() {
-        return Err(invalid_message_err!("NumMonitors", "Too many monitors"));
+        return Err(invalid_field_err!("NumMonitors", "Too many monitors"));
     }
 
     if max_monitor_area_factor_a > MAX_MONITOR_AREA_FACTOR.into()
         || max_monitor_area_factor_b > MAX_MONITOR_AREA_FACTOR.into()
     {
-        return Err(invalid_message_err!(
+        return Err(invalid_field_err!(
             "MaxMonitorAreaFactor",
             "Invalid monitor area factor"
         ));

@@ -12,7 +12,7 @@ use ironrdp_svc::{ChannelFlags, CompressionCondition, SvcMessage, SvcProcessor, 
 use pdu::gcc::ChannelName;
 use pdu::PduDecode as _;
 use pdu::PduResult;
-use pdu::{cast_length, custom_err, invalid_message_err};
+use pdu::{cast_length, custom_err, invalid_field_err};
 use slab::Slab;
 
 pub trait DvcServerProcessor: DvcProcessor {}
@@ -89,7 +89,7 @@ impl DrdynvcServer {
         let id = cast_length!("DRDYNVC", "", id)?;
         self.dynamic_channels
             .get_mut(id)
-            .ok_or_else(|| invalid_message_err!("DRDYNVC", "", "invalid channel id"))
+            .ok_or_else(|| invalid_field_err!("DRDYNVC", "", "invalid channel id"))
     }
 }
 
@@ -141,7 +141,7 @@ impl SvcProcessor for DrdynvcServer {
                 let id = create_resp.channel_id;
                 let c = self.channel_by_id(id)?;
                 if c.state != ChannelState::Creation {
-                    return Err(invalid_message_err!("DRDYNVC", "", "invalid channel state"));
+                    return Err(invalid_field_err!("DRDYNVC", "", "invalid channel state"));
                 }
                 if create_resp.creation_status != CreationStatus::OK {
                     c.state = ChannelState::CreationFailed(create_resp.creation_status.into());
@@ -155,7 +155,7 @@ impl SvcProcessor for DrdynvcServer {
                 debug!("Got DVC Close Response PDU: {close_resp:?}");
                 let c = self.channel_by_id(close_resp.channel_id)?;
                 if c.state != ChannelState::Opened {
-                    return Err(invalid_message_err!("DRDYNVC", "", "invalid channel state"));
+                    return Err(invalid_field_err!("DRDYNVC", "", "invalid channel state"));
                 }
                 c.state = ChannelState::Closed;
             }
@@ -163,7 +163,7 @@ impl SvcProcessor for DrdynvcServer {
                 let channel_id = data.channel_id();
                 let c = self.channel_by_id(channel_id)?;
                 if c.state != ChannelState::Opened {
-                    return Err(invalid_message_err!("DRDYNVC", "", "invalid channel state"));
+                    return Err(invalid_field_err!("DRDYNVC", "", "invalid channel state"));
                 }
                 if let Some(complete) = c.complete_data.process_data(data)? {
                     let msg = c.processor.process(channel_id, &complete)?;

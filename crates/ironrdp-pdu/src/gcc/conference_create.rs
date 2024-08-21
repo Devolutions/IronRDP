@@ -102,14 +102,11 @@ impl<'de> PduDecode<'de> for ConferenceCreateRequest {
         // ConnectData::Key: select object (0) of type OBJECT_IDENTIFIER
         ensure_size!(in: src, size: per::CHOICE_SIZE);
         if per::read_choice(src) != OBJECT_IDENTIFIER_KEY {
-            return Err(invalid_message_err!(
-                "ConnectData::Key",
-                "Got unexpected ConnectData key"
-            ));
+            return Err(invalid_field_err!("ConnectData::Key", "Got unexpected ConnectData key"));
         }
         // ConnectData::Key: value (OBJECT_IDENTIFIER)
         if per::read_object_id(src).map_err(|e| custom_err!("value", e))? != CONFERENCE_REQUEST_OBJECT_ID {
-            return Err(invalid_message_err!(
+            return Err(invalid_field_err!(
                 "ConnectData::Key",
                 "Got unexpected ConnectData key value"
             ));
@@ -120,7 +117,7 @@ impl<'de> PduDecode<'de> for ConferenceCreateRequest {
         // ConnectGCCPDU (CHOICE): Select conferenceCreateRequest (0) of type ConferenceCreateRequest
         ensure_size!(in: src, size: per::CHOICE_SIZE);
         if per::read_choice(src) != CONNECT_GCC_PDU_CONFERENCE_REQUEST_CHOICE {
-            return Err(invalid_message_err!(
+            return Err(invalid_field_err!(
                 "ConnectData::connectPdu",
                 "Got invalid ConnectGCCPDU choice (expected ConferenceCreateRequest)"
             ));
@@ -128,7 +125,7 @@ impl<'de> PduDecode<'de> for ConferenceCreateRequest {
         // ConferenceCreateRequest::Selection: select optional userData from ConferenceCreateRequest
         ensure_size!(in: src, size: per::CHOICE_SIZE);
         if per::read_selection(src) != CONFERENCE_REQUEST_USER_DATA_SELECTION {
-            return Err(invalid_message_err!(
+            return Err(invalid_field_err!(
                 "ConferenceCreateRequest::Selection",
                 "Got invalid ConferenceCreateRequest selection (expected UserData)",
             ));
@@ -142,7 +139,7 @@ impl<'de> PduDecode<'de> for ConferenceCreateRequest {
         // one set of UserData
         ensure_size!(in: src, size: per::CHOICE_SIZE);
         if per::read_number_of_sets(src) != USER_DATA_NUMBER_OF_SETS {
-            return Err(invalid_message_err!(
+            return Err(invalid_field_err!(
                 "ConferenceCreateRequest",
                 "Got invalid ConferenceCreateRequest number of sets (expected 1)",
             ));
@@ -150,7 +147,7 @@ impl<'de> PduDecode<'de> for ConferenceCreateRequest {
         // select h221NonStandard
         ensure_size!(in: src, size: per::CHOICE_SIZE);
         if per::read_choice(src) != USER_DATA_H221_NON_STANDARD_CHOICE {
-            return Err(invalid_message_err!(
+            return Err(invalid_field_err!(
                 "ConferenceCreateRequest",
                 "Expected UserData H221NonStandard choice",
             ));
@@ -159,7 +156,7 @@ impl<'de> PduDecode<'de> for ConferenceCreateRequest {
         if per::read_octet_string(src, H221_NON_STANDARD_MIN_LENGTH).map_err(|e| custom_err!("client-to-server", e))?
             != CONFERENCE_REQUEST_CLIENT_TO_SERVER_H221_NON_STANDARD
         {
-            return Err(invalid_message_err!(
+            return Err(invalid_field_err!(
                 "ConferenceCreateRequest",
                 "Got invalid H221NonStandard client-to-server key",
             ));
@@ -250,14 +247,11 @@ impl<'de> PduDecode<'de> for ConferenceCreateResponse {
         // ConnectData::Key: select type OBJECT_IDENTIFIER
         ensure_size!(in: src, size: per::CHOICE_SIZE);
         if per::read_choice(src) != OBJECT_IDENTIFIER_KEY {
-            return Err(invalid_message_err!(
-                "ConnectData::Key",
-                "Got unexpected ConnectData key"
-            ));
+            return Err(invalid_field_err!("ConnectData::Key", "Got unexpected ConnectData key"));
         }
         // ConnectData::Key: value
         if per::read_object_id(src).map_err(|e| custom_err!("value", e))? != CONFERENCE_REQUEST_OBJECT_ID {
-            return Err(invalid_message_err!(
+            return Err(invalid_field_err!(
                 "ConnectData::Key",
                 "Got unexpected ConnectData key value"
             ));
@@ -267,7 +261,7 @@ impl<'de> PduDecode<'de> for ConferenceCreateResponse {
         // ConnectGCCPDU (CHOICE): Select conferenceCreateResponse (1) of type ConferenceCreateResponse
         ensure_size!(in: src, size: per::CHOICE_SIZE);
         if per::read_choice(src) != CONNECT_GCC_PDU_CONFERENCE_RESPONSE_CHOICE {
-            return Err(invalid_message_err!(
+            return Err(invalid_field_err!(
                 "ConnectData::connectPdu",
                 "Got invalid ConnectGCCPDU choice (expected ConferenceCreateResponse)"
             ));
@@ -276,7 +270,7 @@ impl<'de> PduDecode<'de> for ConferenceCreateResponse {
         let user_id = per::read_u16(src, CONFERENCE_REQUEST_U16_MIN).map_err(|e| custom_err!("userId", e))?;
         // ConferenceCreateResponse::tag (INTEGER)
         if per::read_u32(src).map_err(|e| custom_err!("tag", e))? != CONFERENCE_RESPONSE_TAG {
-            return Err(invalid_message_err!(
+            return Err(invalid_field_err!(
                 "ConferenceCreateResponse::tag",
                 "Got unexpected ConferenceCreateResponse tag",
             ));
@@ -285,14 +279,14 @@ impl<'de> PduDecode<'de> for ConferenceCreateResponse {
         if per::read_enum(src, mcs::RESULT_ENUM_LENGTH).map_err(|e| custom_err!("result", e))?
             != CONFERENCE_RESPONSE_RESULT
         {
-            return Err(invalid_message_err!(
+            return Err(invalid_field_err!(
                 "ConferenceCreateResponse::result",
                 "Got invalid ConferenceCreateResponse result",
             ));
         }
         ensure_size!(in: src, size: per::CHOICE_SIZE);
         if per::read_number_of_sets(src) != USER_DATA_NUMBER_OF_SETS {
-            return Err(invalid_message_err!(
+            return Err(invalid_field_err!(
                 "ConferenceCreateResponse",
                 "Got invalid ConferenceCreateResponse number of sets (expected 1)",
             ));
@@ -300,7 +294,7 @@ impl<'de> PduDecode<'de> for ConferenceCreateResponse {
         // select h221NonStandard
         ensure_size!(in: src, size: per::CHOICE_SIZE);
         if per::read_choice(src) != USER_DATA_H221_NON_STANDARD_CHOICE {
-            return Err(invalid_message_err!(
+            return Err(invalid_field_err!(
                 "ConferenceCreateResponse",
                 "Expected UserData H221NonStandard choice",
             ));
@@ -309,7 +303,7 @@ impl<'de> PduDecode<'de> for ConferenceCreateResponse {
         if per::read_octet_string(src, H221_NON_STANDARD_MIN_LENGTH).map_err(|e| custom_err!("server-to-client", e))?
             != CONFERENCE_REQUEST_SERVER_TO_CLIENT_H221_NON_STANDARD
         {
-            return Err(invalid_message_err!(
+            return Err(invalid_field_err!(
                 "ConferenceCreateResponse",
                 "Got invalid H221NonStandard server-to-client key",
             ));

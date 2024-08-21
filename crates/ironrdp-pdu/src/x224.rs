@@ -75,7 +75,7 @@ where
         tpdu.code.check_expected(T::TPDU_CODE)?;
 
         if tpdu.size() < tpdu.fixed_part_size() {
-            return Err(PduError::invalid_message(
+            return Err(PduError::invalid_field(
                 "TpduHeader",
                 "li",
                 "fixed part bigger than total header size",

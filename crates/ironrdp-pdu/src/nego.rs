@@ -284,7 +284,7 @@ impl<'de> X224Pdu<'de> for ConnectionRequest {
 
         if self.flags.contains(RequestFlags::CORRELATION_INFO_PRESENT) {
             // TODO(#111): support for RDP_NEG_CORRELATION_INFO
-            return Err(PduError::invalid_message(
+            return Err(PduError::invalid_field(
                 Self::NAME,
                 "flags",
                 "CORRECTION_INFO_PRESENT flag is set, but not supported by IronRDP",
@@ -304,7 +304,7 @@ impl<'de> X224Pdu<'de> for ConnectionRequest {
         let Some(variable_part_rest_size) =
             variable_part_size.checked_sub(nego_data.as_ref().map(|data| data.size()).unwrap_or(0))
         else {
-            return Err(PduError::invalid_message(
+            return Err(PduError::invalid_field(
                 Self::NAME,
                 "TPDU header variable part",
                 "advertised size too small",
@@ -322,7 +322,7 @@ impl<'de> X224Pdu<'de> for ConnectionRequest {
 
             if flags.contains(RequestFlags::CORRELATION_INFO_PRESENT) {
                 // TODO(#111): support for RDP_NEG_CORRELATION_INFO
-                return Err(PduError::invalid_message(
+                return Err(PduError::invalid_field(
                     Self::NAME,
                     "flags",
                     "CORRECTION_INFO_PRESENT flag is set, but not supported by IronRDP",
@@ -468,7 +468,7 @@ fn read_nego_data(src: &mut ReadCursor<'_>, ctx: &'static str, prefix: &str) -> 
     src.advance(2);
 
     let data = core::str::from_utf8(&src.inner()[identifier_start..identifier_end])
-        .map_err(|_| PduError::invalid_message(ctx, "identifier", "not valid UTF-8"))?
+        .map_err(|_| PduError::invalid_field(ctx, "identifier", "not valid UTF-8"))?
         .to_owned();
 
     Ok(Some(data))

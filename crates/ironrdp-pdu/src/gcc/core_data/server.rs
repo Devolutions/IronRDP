@@ -107,12 +107,12 @@ impl<'de> PduDecode<'de> for ServerCoreOptionalData {
 
         optional_data.client_requested_protocols = Some(
             SecurityProtocol::from_bits(try_or_return!(src.try_read_u32(), optional_data))
-                .ok_or_else(|| invalid_message_err!("clientReqProtocols", "invalid server security protocol"))?,
+                .ok_or_else(|| invalid_field_err!("clientReqProtocols", "invalid server security protocol"))?,
         );
 
         optional_data.early_capability_flags = Some(
             ServerEarlyCapabilityFlags::from_bits(try_or_return!(src.try_read_u32(), optional_data))
-                .ok_or_else(|| invalid_message_err!("earlyCapFlags", "invalid early capability flags"))?,
+                .ok_or_else(|| invalid_field_err!("earlyCapFlags", "invalid early capability flags"))?,
         );
 
         Ok(optional_data)

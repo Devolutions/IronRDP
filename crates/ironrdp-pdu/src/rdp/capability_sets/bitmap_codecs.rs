@@ -264,7 +264,7 @@ impl<'de> PduDecode<'de> for Codec {
         } else {
             match guid {
                 GUID_NSCODEC | GUID_REMOTEFX | GUID_IMAGE_REMOTEFX => {
-                    return Err(invalid_message_err!(
+                    return Err(invalid_field_err!(
                         "codecPropertiesLen",
                         "invalid codec property length"
                     ));
@@ -439,17 +439,17 @@ impl<'de> PduDecode<'de> for RfxCaps {
 
         let block_type = src.read_u16();
         if block_type != RFX_CAPS_BLOCK_TYPE {
-            return Err(invalid_message_err!("blockType", "invalid rfx caps block type"));
+            return Err(invalid_field_err!("blockType", "invalid rfx caps block type"));
         }
 
         let block_len = src.read_u32();
         if block_len != RFX_CAPS_BLOCK_LENGTH {
-            return Err(invalid_message_err!("blockLen", "invalid rfx caps block length"));
+            return Err(invalid_field_err!("blockLen", "invalid rfx caps block length"));
         }
 
         let num_capsets = src.read_u16();
         if num_capsets != RFX_CAPS_NUM_CAPSETS {
-            return Err(invalid_message_err!("numCapsets", "invalid rfx caps num capsets"));
+            return Err(invalid_field_err!("numCapsets", "invalid rfx caps num capsets"));
         }
 
         let capsets_data = RfxCapset::decode(src)?;
@@ -501,19 +501,19 @@ impl<'de> PduDecode<'de> for RfxCapset {
     fn decode(src: &mut ReadCursor<'de>) -> PduResult<Self> {
         let block_type = src.read_u16();
         if block_type != RFX_CAPSET_BLOCK_TYPE {
-            return Err(invalid_message_err!("blockType", "invalid rfx capset block type"));
+            return Err(invalid_field_err!("blockType", "invalid rfx capset block type"));
         }
 
         let _block_len = src.read_u32();
 
         let codec_id = src.read_u8();
         if codec_id != 1 {
-            return Err(invalid_message_err!("codecId", "invalid rfx codec ID"));
+            return Err(invalid_field_err!("codecId", "invalid rfx codec ID"));
         }
 
         let capset_type = src.read_u16();
         if capset_type != RFX_CAPSET_TYPE {
-            return Err(invalid_message_err!("capsetType", "invalid rfx capset type"));
+            return Err(invalid_field_err!("capsetType", "invalid rfx capset type"));
         }
 
         let num_icaps = src.read_u16();
@@ -569,28 +569,28 @@ impl<'de> PduDecode<'de> for RfxICap {
 
         let version = src.read_u16();
         if version != RFX_ICAP_VERSION {
-            return Err(invalid_message_err!("version", "invalid rfx icap version"));
+            return Err(invalid_field_err!("version", "invalid rfx icap version"));
         }
 
         let tile_size = src.read_u16();
         if tile_size != RFX_ICAP_TILE_SIZE {
-            return Err(invalid_message_err!("tileSize", "invalid rfx icap tile size"));
+            return Err(invalid_field_err!("tileSize", "invalid rfx icap tile size"));
         }
 
         let flags = RfxICapFlags::from_bits_truncate(src.read_u8());
 
         let color_conversion = src.read_u8();
         if color_conversion != RFX_ICAP_COLOR_CONVERSION {
-            return Err(invalid_message_err!("colorConv", "invalid rfx color conversion bits"));
+            return Err(invalid_field_err!("colorConv", "invalid rfx color conversion bits"));
         }
 
         let transform_bits = src.read_u8();
         if transform_bits != RFX_ICAP_TRANSFORM_BITS {
-            return Err(invalid_message_err!("transformBits", "invalid rfx transform bits"));
+            return Err(invalid_field_err!("transformBits", "invalid rfx transform bits"));
         }
 
         let entropy_bits = EntropyBits::from_u8(src.read_u8())
-            .ok_or_else(|| invalid_message_err!("entropyBits", "invalid rfx entropy bits"))?;
+            .ok_or_else(|| invalid_field_err!("entropyBits", "invalid rfx entropy bits"))?;
 
         Ok(RfxICap { flags, entropy_bits })
     }

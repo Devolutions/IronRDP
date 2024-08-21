@@ -118,7 +118,7 @@ impl<'de> PduDecode<'de> for CapabilitySet {
         ensure_fixed_part_size!(in: src);
 
         let version = CapabilityVersion::from_u32(src.read_u32())
-            .ok_or_else(|| invalid_message_err!("version", "unhandled version"))?;
+            .ok_or_else(|| invalid_field_err!("version", "unhandled version"))?;
         let data_length: usize = cast_length!("dataLength", src.read_u32())?;
 
         ensure_size!(in: src, size: data_length);

@@ -47,7 +47,7 @@ impl<'de> PduDecode<'de> for SynchronizePdu {
 
         let message_type = src.read_u16();
         if message_type != SYNCHRONIZE_MESSAGE_TYPE {
-            return Err(invalid_message_err!("messageType", "invalid message type"));
+            return Err(invalid_field_err!("messageType", "invalid message type"));
         }
 
         let target_user_id = src.read_u16();
@@ -94,7 +94,7 @@ impl<'de> PduDecode<'de> for ControlPdu {
         ensure_fixed_part_size!(in: src);
 
         let action = ControlAction::from_u16(src.read_u16())
-            .ok_or_else(|| invalid_message_err!("action", "invalid control action"))?;
+            .ok_or_else(|| invalid_field_err!("action", "invalid control action"))?;
         let grant_id = src.read_u16();
         let control_id = src.read_u32();
 
@@ -163,7 +163,7 @@ impl<'de> PduDecode<'de> for FontPdu {
         let number = src.read_u16();
         let total_number = src.read_u16();
         let flags = SequenceFlags::from_bits(src.read_u16())
-            .ok_or_else(|| invalid_message_err!("flags", "invalid sequence flags"))?;
+            .ok_or_else(|| invalid_field_err!("flags", "invalid sequence flags"))?;
         let entry_size = src.read_u16();
 
         Ok(Self {
@@ -214,7 +214,7 @@ impl<'de> PduDecode<'de> for MonitorLayoutPdu {
 
         let monitor_count = src.read_u32();
         if monitor_count > MAX_MONITOR_COUNT {
-            return Err(invalid_message_err!("nMonitors", "invalid monitor count"));
+            return Err(invalid_field_err!("nMonitors", "invalid monitor count"));
         }
 
         let mut monitors = Vec::with_capacity(monitor_count as usize);

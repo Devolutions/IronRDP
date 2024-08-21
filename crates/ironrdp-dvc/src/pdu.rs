@@ -4,7 +4,7 @@ use core::fmt;
 use crate::{DynamicChannelId, String, Vec};
 use ironrdp_core::{ReadCursor, WriteCursor};
 use ironrdp_pdu::{
-    cast_length, ensure_fixed_part_size, ensure_size, invalid_message_err, unsupported_pdu_err,
+    cast_length, ensure_fixed_part_size, ensure_size, invalid_field_err, unsupported_pdu_err,
     utils::{checked_sum, encoded_str_len, read_string_from_cursor, strict_sum, write_string_to_cursor, CharacterSet},
     PduDecode, PduEncode, PduError, PduResult,
 };
@@ -247,7 +247,7 @@ impl TryFrom<u8> for Cmd {
             0x07 => Ok(Self::DataCompressed),
             0x08 => Ok(Self::SoftSyncRequest),
             0x09 => Ok(Self::SoftSyncResponse),
-            _ => Err(invalid_message_err!("Cmd", "invalid cmd")),
+            _ => Err(invalid_field_err!("Cmd", "invalid cmd")),
         }
     }
 }
@@ -373,7 +373,7 @@ impl FieldType {
             FieldType::U8 => dst.write_u8(cast_length!("FieldType::encode", value)?),
             FieldType::U16 => dst.write_u16(cast_length!("FieldType::encode", value)?),
             FieldType::U32 => dst.write_u32(value),
-            _ => return Err(invalid_message_err!("FieldType", "invalid field type")),
+            _ => return Err(invalid_field_err!("FieldType", "invalid field type")),
         };
         Ok(())
     }
@@ -384,7 +384,7 @@ impl FieldType {
             FieldType::U8 => Ok(u32::from(src.read_u8())),
             FieldType::U16 => Ok(u32::from(src.read_u16())),
             FieldType::U32 => Ok(src.read_u32()),
-            _ => Err(invalid_message_err!("FieldType", "invalid field type")),
+            _ => Err(invalid_field_err!("FieldType", "invalid field type")),
         }
     }
 
@@ -680,7 +680,7 @@ impl TryFrom<u16> for CapsVersion {
             0x0001 => Ok(Self::V1),
             0x0002 => Ok(Self::V2),
             0x0003 => Ok(Self::V3),
-            _ => Err(invalid_message_err!("CapsVersion", "invalid version")),
+            _ => Err(invalid_field_err!("CapsVersion", "invalid version")),
         }
     }
 }

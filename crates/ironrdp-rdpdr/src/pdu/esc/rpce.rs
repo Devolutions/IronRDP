@@ -6,7 +6,7 @@ use std::mem::size_of;
 
 use ironrdp_core::{ReadCursor, WriteCursor};
 use ironrdp_pdu::utils::CharacterSet;
-use ironrdp_pdu::{cast_length, ensure_size, invalid_message_err, PduEncode, PduError, PduResult};
+use ironrdp_pdu::{cast_length, ensure_size, invalid_field_err, PduEncode, PduError, PduResult};
 
 /// Wrapper struct for [MS-RPCE] PDUs that allows for common [`PduEncode`], [`Encode`], and [`Self::decode`] implementations.
 ///
@@ -212,7 +212,7 @@ impl StreamHeader {
                 filler,
             })
         } else {
-            Err(invalid_message_err!(
+            Err(invalid_field_err!(
                 "decode",
                 "StreamHeader",
                 "server returned big-endian data, parsing not implemented"
@@ -239,7 +239,7 @@ impl TryFrom<u8> for Endianness {
         match value {
             0x00 => Ok(Endianness::BigEndian),
             0x10 => Ok(Endianness::LittleEndian),
-            _ => Err(invalid_message_err!("try_from", "RpceEndianness", "unsupported value")),
+            _ => Err(invalid_field_err!("try_from", "RpceEndianness", "unsupported value")),
         }
     }
 }

@@ -1,7 +1,7 @@
 use bitflags::bitflags;
 use ironrdp_core::{ReadCursor, WriteCursor};
 use ironrdp_pdu::{
-    cast_int, cast_length, ensure_fixed_part_size, ensure_size, impl_pdu_pod, invalid_message_err, read_padding,
+    cast_int, cast_length, ensure_fixed_part_size, ensure_size, impl_pdu_pod, invalid_field_err, read_padding,
     write_padding, PduDecode, PduEncode, PduResult,
 };
 
@@ -170,7 +170,7 @@ impl<'de> PduDecode<'de> for CapabilitySet {
                 let general = GeneralCapabilitySet::decode(src)?;
                 Ok(Self::General(general))
             }
-            _ => Err(invalid_message_err!(
+            _ => Err(invalid_field_err!(
                 "capabilitySetType",
                 "invalid clipboard capability set type"
             )),
@@ -258,10 +258,7 @@ impl TryFrom<u32> for ClipboardProtocolVersion {
         match value {
             Self::VERSION_VALUE_V1 => Ok(Self::V1),
             Self::VERSION_VALUE_V2 => Ok(Self::V2),
-            _ => Err(invalid_message_err!(
-                "version",
-                "Invalid clipboard capabilities version"
-            )),
+            _ => Err(invalid_field_err!("version", "Invalid clipboard capabilities version")),
         }
     }
 }

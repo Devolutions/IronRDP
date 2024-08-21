@@ -66,7 +66,7 @@ impl<'de> PduDecode<'de> for LogonInfoVersion1 {
 
         let domain_name_size: usize = cast_length!("domainNameSize", src.read_u32())?;
         if domain_name_size > DOMAIN_NAME_SIZE_V1 {
-            return Err(invalid_message_err!("domainNameSize", "invalid domain name size"));
+            return Err(invalid_field_err!("domainNameSize", "invalid domain name size"));
         }
 
         let domain_name =
@@ -74,7 +74,7 @@ impl<'de> PduDecode<'de> for LogonInfoVersion1 {
 
         let user_name_size: usize = cast_length!("userNameSize", src.read_u32())?;
         if user_name_size > USER_NAME_SIZE_V1 {
-            return Err(invalid_message_err!("userNameSize", "invalid user name size"));
+            return Err(invalid_field_err!("userNameSize", "invalid user name size"));
         }
 
         let user_name = utils::decode_string(src.read_slice(USER_NAME_SIZE_V1), utils::CharacterSet::Unicode, false)?;
@@ -147,23 +147,23 @@ impl<'de> PduDecode<'de> for LogonInfoVersion2 {
 
         let version = src.read_u16();
         if version != SAVE_SESSION_PDU_VERSION_ONE {
-            return Err(invalid_message_err!("version", "invalid logon version 2"));
+            return Err(invalid_field_err!("version", "invalid logon version 2"));
         }
 
         let size: usize = cast_length!("LogonInfoSize", src.read_u32())?;
         if size != LOGON_INFO_V2_SIZE {
-            return Err(invalid_message_err!("domainNameSize", "invalid logon info size"));
+            return Err(invalid_field_err!("domainNameSize", "invalid logon info size"));
         }
 
         let session_id = src.read_u32();
         let domain_name_size: usize = cast_length!("domainNameSize", src.read_u32())?;
         if domain_name_size > DOMAIN_NAME_SIZE_V2 {
-            return Err(invalid_message_err!("domainNameSize", "invalid domain name size"));
+            return Err(invalid_field_err!("domainNameSize", "invalid domain name size"));
         }
 
         let user_name_size: usize = cast_length!("userNameSize", src.read_u32())?;
         if user_name_size > USER_NAME_SIZE_V2 {
-            return Err(invalid_message_err!("userNameSize", "invalid user name size"));
+            return Err(invalid_field_err!("userNameSize", "invalid user name size"));
         }
 
         read_padding!(src, LOGON_INFO_V2_PADDING_SIZE);

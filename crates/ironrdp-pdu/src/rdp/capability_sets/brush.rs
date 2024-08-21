@@ -50,7 +50,7 @@ impl<'de> PduDecode<'de> for Brush {
         ensure_fixed_part_size!(in: src);
 
         let support_level = SupportLevel::from_u32(src.read_u32())
-            .ok_or_else(|| invalid_message_err!("supportLevel", "invalid brush support level"))?;
+            .ok_or_else(|| invalid_field_err!("supportLevel", "invalid brush support level"))?;
 
         Ok(Brush { support_level })
     }

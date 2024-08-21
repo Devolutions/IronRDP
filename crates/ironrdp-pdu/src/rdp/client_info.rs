@@ -126,10 +126,10 @@ impl<'de> PduDecode<'de> for ClientInfo {
         let flags_with_compression_type = src.read_u32();
 
         let flags = ClientInfoFlags::from_bits(flags_with_compression_type & !COMPRESSION_TYPE_MASK)
-            .ok_or(invalid_message_err!("flags", "invalid ClientInfoFlags"))?;
+            .ok_or(invalid_field_err!("flags", "invalid ClientInfoFlags"))?;
         let compression_type =
             CompressionType::from_u8(((flags_with_compression_type & COMPRESSION_TYPE_MASK) >> 9) as u8)
-                .ok_or(invalid_message_err!("flags", "invalid CompressionType"))?;
+                .ok_or(invalid_field_err!("flags", "invalid CompressionType"))?;
 
         let character_set = if flags.contains(ClientInfoFlags::UNICODE) {
             CharacterSet::Unicode
@@ -206,7 +206,7 @@ impl ExtendedClientInfo {
         ensure_size!(in: src, size: CLIENT_ADDRESS_FAMILY_SIZE + CLIENT_ADDRESS_LENGTH_SIZE);
 
         let address_family = AddressFamily::from_u16(src.read_u16())
-            .ok_or(invalid_message_err!("clientAddressFamily", "invalid address family"))?;
+            .ok_or(invalid_field_err!("clientAddressFamily", "invalid address family"))?;
 
         // This size includes the length of the mandatory null terminator.
         let address_size = src.read_u16() as usize;
@@ -357,7 +357,7 @@ impl<'de> PduDecode<'de> for ExtendedClientOptionalInfo {
         }
         optional_data.performance_flags = Some(
             PerformanceFlags::from_bits(src.read_u32())
-                .ok_or(invalid_message_err!("performanceFlags", "invalid performance flags"))?,
+                .ok_or(invalid_field_err!("performanceFlags", "invalid performance flags"))?,
         );
 
         if src.len() < 2 {
@@ -365,11 +365,11 @@ impl<'de> PduDecode<'de> for ExtendedClientOptionalInfo {
         }
         let reconnect_cookie_size = src.read_u16();
         if reconnect_cookie_size != RECONNECT_COOKIE_LEN as u16 && reconnect_cookie_size != 0 {
-            return Err(invalid_message_err!("cbAutoReconnectCookie", "invalid cookie size"));
+            return Err(invalid_field_err!("cbAutoReconnectCookie", "invalid cookie size"));
         }
         if reconnect_cookie_size != 0 {
             if src.len() < RECONNECT_COOKIE_LEN {
-                return Err(invalid_message_err!("cbAutoReconnectCookie", "missing cookie data"));
+                return Err(invalid_field_err!("cbAutoReconnectCookie", "missing cookie data"));
             }
             optional_data.reconnect_cookie = Some(src.read_array());
         }

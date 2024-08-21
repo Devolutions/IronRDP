@@ -131,7 +131,7 @@ impl ClientPlatformChallengeResponse {
 impl ClientPlatformChallengeResponse {
     pub fn decode(license_header: LicenseHeader, src: &mut ReadCursor<'_>) -> PduResult<Self> {
         if license_header.preamble_message_type != PreambleType::PlatformChallengeResponse {
-            return Err(invalid_message_err!(
+            return Err(invalid_field_err!(
                 "preambleMessageType",
                 "unexpected preamble message type"
             ));
@@ -139,14 +139,14 @@ impl ClientPlatformChallengeResponse {
 
         let encrypted_challenge_blob = BlobHeader::decode(src)?;
         if encrypted_challenge_blob.blob_type != BlobType::ENCRYPTED_DATA {
-            return Err(invalid_message_err!("blobType", "unexpected blob type"));
+            return Err(invalid_field_err!("blobType", "unexpected blob type"));
         }
         ensure_size!(in: src, size: encrypted_challenge_blob.length);
         let encrypted_challenge_response_data = src.read_slice(encrypted_challenge_blob.length).into();
 
         let encrypted_hwid_blob = BlobHeader::decode(src)?;
         if encrypted_hwid_blob.blob_type != BlobType::ENCRYPTED_DATA {
-            return Err(invalid_message_err!("blobType", "unexpected blob type"));
+            return Err(invalid_field_err!("blobType", "unexpected blob type"));
         }
         ensure_size!(in: src, size: encrypted_hwid_blob.length);
         let encrypted_hwid = src.read_slice(encrypted_hwid_blob.length).into();
@@ -219,14 +219,14 @@ impl<'de> PduDecode<'de> for PlatformChallengeResponseData {
 
         let version = src.read_u16();
         if version != RESPONSE_DATA_VERSION {
-            return Err(invalid_message_err!("version", "invalid challenge response version"));
+            return Err(invalid_field_err!("version", "invalid challenge response version"));
         }
 
         let client_type = ClientType::from_u16(src.read_u16())
-            .ok_or_else(|| invalid_message_err!("clientType", "invalid client type"))?;
+            .ok_or_else(|| invalid_field_err!("clientType", "invalid client type"))?;
 
         let license_detail_level = LicenseDetailLevel::from_u16(src.read_u16())
-            .ok_or_else(|| invalid_message_err!("licenseDetailLevel", "invalid license detail level"))?;
+            .ok_or_else(|| invalid_field_err!("licenseDetailLevel", "invalid license detail level"))?;
 
         let challenge_len: usize = cast_length!("len", src.read_u16())?;
         ensure_size!(in: src, size: challenge_len);

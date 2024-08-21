@@ -111,7 +111,7 @@ impl<'a> PduDecode<'a> for ServerPdu {
         ensure_fixed_part_size!(in: src);
 
         let pdu_type = ServerPduType::from_u16(src.read_u16())
-            .ok_or_else(|| invalid_message_err!("serverPduType", "invalid pdu type"))?;
+            .ok_or_else(|| invalid_field_err!("serverPduType", "invalid pdu type"))?;
         let _flags = src.read_u16();
         let pdu_length = cast_length!("pduLen", src.read_u32())?;
 
@@ -143,7 +143,7 @@ impl<'a> PduDecode<'a> for ServerPdu {
                 ServerPduType::MapSurfaceToScaledWindow => {
                     ServerPdu::MapSurfaceToScaledWindow(MapSurfaceToScaledWindowPdu::decode(src)?)
                 }
-                _ => return Err(invalid_message_err!("pduType", "invalid pdu type")),
+                _ => return Err(invalid_field_err!("pduType", "invalid pdu type")),
             };
             let buffer_length = pdu.size();
 
@@ -151,7 +151,7 @@ impl<'a> PduDecode<'a> for ServerPdu {
         };
 
         if buffer_length != pdu_length {
-            Err(invalid_message_err!("len", "invalid pdu length"))
+            Err(invalid_field_err!("len", "invalid pdu length"))
         } else {
             Ok(server_pdu)
         }
@@ -200,7 +200,7 @@ impl PduEncode for ClientPdu {
 impl<'a> PduDecode<'a> for ClientPdu {
     fn decode(src: &mut ReadCursor<'a>) -> PduResult<Self> {
         let pdu_type = ClientPduType::from_u16(src.read_u16())
-            .ok_or_else(|| invalid_message_err!("clientPduType", "invalid pdu type"))?;
+            .ok_or_else(|| invalid_field_err!("clientPduType", "invalid pdu type"))?;
         let _flags = src.read_u16();
         let pdu_length = cast_length!("bufferLen", src.read_u32())?;
 
@@ -209,11 +209,11 @@ impl<'a> PduDecode<'a> for ClientPdu {
             ClientPduType::CapabilitiesAdvertise => {
                 ClientPdu::CapabilitiesAdvertise(CapabilitiesAdvertisePdu::decode(src)?)
             }
-            _ => return Err(invalid_message_err!("pduType", "invalid pdu type")),
+            _ => return Err(invalid_field_err!("pduType", "invalid pdu type")),
         };
 
         if client_pdu.size() != pdu_length {
-            Err(invalid_message_err!("len", "invalid pdu length"))
+            Err(invalid_field_err!("len", "invalid pdu length"))
         } else {
             Ok(client_pdu)
         }

@@ -68,19 +68,19 @@ impl ColorPointerAttribute<'_> {
 
         let check_mask = |mask: &[u8], field: &'static str| {
             if pointer_height == 0 {
-                return Err(invalid_message_err!(field, "pointer height cannot be zero"));
+                return Err(invalid_field_err!(field, "pointer height cannot be zero"));
             }
             if large_ptr && (mask.len() > u32::MAX as usize) {
-                return Err(invalid_message_err!(field, "pointer mask is too big for u32 size"));
+                return Err(invalid_field_err!(field, "pointer mask is too big for u32 size"));
             }
             if !large_ptr && (mask.len() > u16::MAX as usize) {
-                return Err(invalid_message_err!(field, "pointer mask is too big for u16 size"));
+                return Err(invalid_field_err!(field, "pointer mask is too big for u16 size"));
             }
             if (mask.len() % pointer_height as usize) != 0 {
-                return Err(invalid_message_err!(field, "pointer mask have incomplete scanlines"));
+                return Err(invalid_field_err!(field, "pointer mask have incomplete scanlines"));
             }
             if (mask.len() / pointer_height as usize) % 2 != 0 {
-                return Err(invalid_message_err!(
+                return Err(invalid_field_err!(
                     field,
                     "pointer mask scanlines should be aligned to 16 bits"
                 ));

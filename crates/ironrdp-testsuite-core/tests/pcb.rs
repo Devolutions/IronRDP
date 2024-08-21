@@ -102,7 +102,7 @@ fn null_size() {
     expect![[r#"
             Error {
                 context: "PreconnectionBlob",
-                kind: InvalidMessage {
+                kind: InvalidField {
                     field: "cbSize",
                     reason: "advertised size too small for Preconnection PDU V1",
                 },
@@ -157,7 +157,7 @@ fn pcb_v2_string_too_big() {
     expect![[r#"
             Error {
                 context: "PreconnectionBlob",
-                kind: InvalidMessage {
+                kind: InvalidField {
                     field: "cchPCB",
                     reason: "PCB string bigger than advertised size",
                 },
