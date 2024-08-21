@@ -8,7 +8,7 @@ use std::fmt;
 use bitflags::bitflags;
 use ironrdp_core::{ReadCursor, WriteCursor};
 use ironrdp_pdu::{
-    cast_length, custom_err, ensure_fixed_part_size, ensure_size, invalid_field_err, read_padding, write_padding,
+    cast_length, ensure_fixed_part_size, ensure_size, invalid_field_err, other_err, read_padding, write_padding,
     PduDecode, PduEncode, PduError, PduResult,
 };
 use ironrdp_svc::SvcPduEncode;
@@ -802,7 +802,9 @@ impl PduEncode for WavePdu<'_> {
             timestamp: self.timestamp,
             format_no: self.format_no,
             block_no: self.block_no,
-            data: self.data[0..4].try_into().map_err(|e| custom_err!("invalid data", e))?,
+            data: self.data[0..4]
+                .try_into()
+                .map_err(|e| other_err!("invalid data", source: e))?,
         };
         let wave = SndWavePdu {
             data: self.data[4..].into(),

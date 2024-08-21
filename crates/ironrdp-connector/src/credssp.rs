@@ -1,5 +1,5 @@
 use ironrdp_core::WriteBuf;
-use ironrdp_pdu::{nego, PduHint};
+use ironrdp_pdu::{nego, other_err, PduHint};
 use picky::key::PrivateKey;
 use picky_asn1_x509::{oids, Certificate, ExtensionView, GeneralName};
 use sspi::credssp::{self, ClientState, CredSspClient};
@@ -47,7 +47,7 @@ impl PduHint for CredsspTsRequestHint {
         match credssp::TsRequest::read_length(bytes) {
             Ok(length) => Ok(Some((true, length))),
             Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => Ok(None),
-            Err(e) => Err(ironrdp_pdu::custom_err!("CredsspTsRequestHint", e)),
+            Err(e) => Err(other_err!("CredsspTsRequestHint", source: e)),
         }
     }
 }

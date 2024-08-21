@@ -130,28 +130,14 @@ macro_rules! other_err {
     ( $context:expr, $description:expr $(,)? ) => {{
         <$crate::PduError as $crate::PduErrorExt>::other($context, $description)
     }};
+    ( $description:expr, source: $source:expr $(,)? ) => {{
+        other_err!($crate::function!(), $description).with_source($source)
+    }};
+    ( source: $source:expr $(,)? ) => {{
+        other_err!($crate::function!(), "").with_source($source)
+    }};
     ( $description:expr $(,)? ) => {{
         other_err!($crate::function!(), $description)
-    }};
-}
-
-/// Creates a `PduError` with `Custom` kind and a source error attached to it
-///
-/// Shorthand for
-/// ```rust
-/// <ironrdp_pdu::PduError as ironrdp_pdu::PduErrorExt>::custom(context, source)
-/// ```
-/// and
-/// ```rust
-/// <ironrdp_pdu::PduError as ironrdp_pdu::PduErrorExt>::custom($crate::function!(), source)
-/// ```
-#[macro_export]
-macro_rules! custom_err {
-    ( $context:expr, $source:expr $(,)? ) => {{
-        <$crate::PduError as $crate::PduErrorExt>::custom($context, $source)
-    }};
-    ( $source:expr $(,)? ) => {{
-        custom_err!($crate::function!(), $source)
     }};
 }
 

@@ -2,7 +2,7 @@ use ironrdp_graphics::color_conversion::to_64x64_ycbcr_tile;
 use ironrdp_graphics::rfx_encode_component;
 use ironrdp_pdu::codecs::rfx::{self, OperatingMode, RfxChannel, RfxChannelHeight, RfxChannelWidth};
 use ironrdp_pdu::rdp::capability_sets::EntropyBits;
-use ironrdp_pdu::{cast_length, custom_err, PduBufferParsing, PduError};
+use ironrdp_pdu::{cast_length, other_err, PduBufferParsing, PduError};
 
 use crate::BitmapUpdate;
 
@@ -87,11 +87,14 @@ impl RfxEncoder {
                 let (cb_data, new_rest) = new_rest.split_at_mut(4096);
                 let (cr_data, new_rest) = new_rest.split_at_mut(4096);
                 rest = new_rest;
-                let len = rfx_encode_component(y, y_data, &quant, entropy_algorithm).map_err(|e| custom_err!(e))?;
+                let len = rfx_encode_component(y, y_data, &quant, entropy_algorithm)
+                    .map_err(|e| other_err!("rfxenc", source: e))?;
                 let y_data = &y_data[..len];
-                let len = rfx_encode_component(cb, cb_data, &quant, entropy_algorithm).map_err(|e| custom_err!(e))?;
+                let len = rfx_encode_component(cb, cb_data, &quant, entropy_algorithm)
+                    .map_err(|e| other_err!("rfxenc", source: e))?;
                 let cb_data = &cb_data[..len];
-                let len = rfx_encode_component(cr, cr_data, &quant, entropy_algorithm).map_err(|e| custom_err!(e))?;
+                let len = rfx_encode_component(cr, cr_data, &quant, entropy_algorithm)
+                    .map_err(|e| other_err!("rfxenc", source: e))?;
                 let cr_data = &cr_data[..len];
 
                 let tile = rfx::Tile {
@@ -124,7 +127,7 @@ impl RfxEncoder {
                     let mut buffer = output.as_mut_slice();
 
                     $(
-                        $element.to_buffer_consume(&mut buffer).map_err(|e| custom_err!(e))?;
+                        $element.to_buffer_consume(&mut buffer).map_err(|e| other_err!("rfxenc", source: e))?;
                     )+
 
                     Ok(output)

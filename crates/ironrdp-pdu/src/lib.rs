@@ -49,7 +49,6 @@ pub enum PduErrorKind {
     UnsupportedVersion { got: u8 },
     UnsupportedValue { name: &'static str, value: String },
     Other { description: &'static str },
-    Custom,
 }
 
 impl std::error::Error for PduErrorKind {}
@@ -74,10 +73,7 @@ impl fmt::Display for PduErrorKind {
                 write!(f, "unsupported {name} ({value})")
             }
             Self::Other { description } => {
-                write!(f, "{description}")
-            }
-            Self::Custom => {
-                write!(f, "custom error")
+                write!(f, "other ({description})")
             }
         }
     }
@@ -90,9 +86,6 @@ pub trait PduErrorExt {
     fn unsupported_version(context: &'static str, got: u8) -> Self;
     fn unsupported_value(context: &'static str, name: &'static str, value: String) -> Self;
     fn other(context: &'static str, description: &'static str) -> Self;
-    fn custom<E>(context: &'static str, e: E) -> Self
-    where
-        E: std::error::Error + Sync + Send + 'static;
 }
 
 impl PduErrorExt for PduError {
@@ -118,13 +111,6 @@ impl PduErrorExt for PduError {
 
     fn other(context: &'static str, description: &'static str) -> Self {
         Self::new(context, PduErrorKind::Other { description })
-    }
-
-    fn custom<E>(context: &'static str, e: E) -> Self
-    where
-        E: std::error::Error + Sync + Send + 'static,
-    {
-        Self::new(context, PduErrorKind::Custom).with_source(e)
     }
 }
 

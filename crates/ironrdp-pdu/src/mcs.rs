@@ -237,14 +237,14 @@ impl DomainMcsPdu {
 }
 
 fn read_mcspdu_header(src: &mut ReadCursor<'_>, ctx: &'static str) -> PduResult<DomainMcsPdu> {
-    let choice = src.try_read_u8().map_err(|e| custom_err!(ctx, e))?;
+    let choice = src.try_read_u8().map_err(|e| other_err!(ctx, source: e))?;
 
     DomainMcsPdu::from_choice(choice)
         .ok_or_else(|| PduError::invalid_field(ctx, "domain-mcspdu", "unexpected application tag for CHOICE"))
 }
 
 fn peek_mcspdu_header(src: &mut ReadCursor<'_>, ctx: &'static str) -> PduResult<DomainMcsPdu> {
-    let choice = src.try_read_u8().map_err(|e| custom_err!(ctx, e))?;
+    let choice = src.try_read_u8().map_err(|e| other_err!(ctx, source: e))?;
 
     DomainMcsPdu::from_choice(choice)
         .ok_or_else(|| PduError::invalid_field(ctx, "domain-mcspdu", "unexpected application tag for CHOICE"))
