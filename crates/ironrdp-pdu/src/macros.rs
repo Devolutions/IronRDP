@@ -96,22 +96,22 @@ macro_rules! unsupported_version_err {
     }};
 }
 
-/// Creates a `PduError` with `UnsupportedPdu` kind
+/// Creates a `PduError` with `UnsupportedValue` kind
 /// Shorthand for
 /// ```rust
-/// <ironrdp_pdu::PduError as ironrdp_pdu::PduErrorExt>::unsupported_pdu(context, name, value)
+/// <ironrdp_pdu::PduError as ironrdp_pdu::PduErrorExt>::unsupported_value(context, name, value)
 /// ```
 /// and
 /// ```rust
-/// <ironrdp_pdu::PduError as ironrdp_pdu::PduErrorExt>::unsupported_pdu($crate::function!(), name, value)
+/// <ironrdp_pdu::PduError as ironrdp_pdu::PduErrorExt>::unsupported_value($crate::function!(), name, value)
 /// ```
 #[macro_export]
-macro_rules! unsupported_pdu_err {
+macro_rules! unsupported_value_err {
     ( $context:expr, $name:expr, $value:expr $(,)? ) => {{
-        <$crate::PduError as $crate::PduErrorExt>::unsupported_pdu($context, $name, $value)
+        <$crate::PduError as $crate::PduErrorExt>::unsupported_value($context, $name, $value)
     }};
     ( $name:expr, $value:expr $(,)? ) => {{
-        unsupported_pdu_err!($crate::function!(), $name, $value)
+        unsupported_value_err!($crate::function!(), $name, $value)
     }};
 }
 

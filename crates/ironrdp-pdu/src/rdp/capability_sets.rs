@@ -499,7 +499,7 @@ impl<'de> PduDecode<'de> for CapabilitySet {
 
         let capability_set_type_raw = src.read_u16();
         let capability_set_type = CapabilitySetType::from_u16(capability_set_type_raw).ok_or_else(|| {
-            unsupported_pdu_err!(
+            unsupported_value_err!(
                 "capabilitySetType",
                 format!("invalid capability set type: {}", capability_set_type_raw)
             )
