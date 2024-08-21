@@ -2,7 +2,7 @@ use std::fmt::{self, Display};
 use std::mem::size_of;
 
 use ironrdp_core::{ReadCursor, WriteCursor};
-use ironrdp_pdu::{ensure_size, invalid_field_err, unsupported_pdu_err, PduDecode, PduEncode, PduError, PduResult};
+use ironrdp_pdu::{ensure_size, invalid_field_err, unsupported_value_err, PduDecode, PduEncode, PduError, PduResult};
 use ironrdp_svc::SvcPduEncode;
 
 use self::efs::{
@@ -107,7 +107,7 @@ impl PduDecode<'_> for RdpdrPdu {
                 ServerDeviceAnnounceResponse::decode(src)?,
             )),
             PacketId::CoreDeviceIoRequest => Ok(RdpdrPdu::DeviceIoRequest(DeviceIoRequest::decode(src)?)),
-            _ => Err(unsupported_pdu_err!(
+            _ => Err(unsupported_value_err!(
                 "RdpdrPdu",
                 "PacketId",
                 header.packet_id.to_string()

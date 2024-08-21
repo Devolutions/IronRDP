@@ -355,7 +355,7 @@ impl<'de> PduDecode<'de> for LicensePdu {
             PreambleType::NewLicense | PreambleType::UpgradeLicense => {
                 Ok(ServerUpgradeLicense::decode(license_header, src)?.into())
             }
-            PreambleType::LicenseInfo => Err(unsupported_pdu_err!(
+            PreambleType::LicenseInfo => Err(unsupported_value_err!(
                 "LicensePdu::LicenseInfo",
                 "LicenseInfo is not supported".to_owned()
             )),

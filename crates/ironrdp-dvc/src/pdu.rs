@@ -4,7 +4,7 @@ use core::fmt;
 use crate::{DynamicChannelId, String, Vec};
 use ironrdp_core::{ReadCursor, WriteCursor};
 use ironrdp_pdu::{
-    cast_length, ensure_fixed_part_size, ensure_size, invalid_field_err, unsupported_pdu_err,
+    cast_length, ensure_fixed_part_size, ensure_size, invalid_field_err, unsupported_value_err,
     utils::{checked_sum, encoded_str_len, read_string_from_cursor, strict_sum, write_string_to_cursor, CharacterSet},
     PduDecode, PduEncode, PduError, PduResult,
 };
@@ -101,7 +101,7 @@ impl PduDecode<'_> for DrdynvcClientPdu {
             Cmd::Data => Ok(Self::Data(DrdynvcDataPdu::Data(DataPdu::decode(header, src)?))),
             Cmd::Close => Ok(Self::Close(ClosePdu::decode(header, src)?)),
             Cmd::Capability => Ok(Self::Capabilities(CapabilitiesResponsePdu::decode(header, src)?)),
-            _ => Err(unsupported_pdu_err!("Cmd", header.cmd.into())),
+            _ => Err(unsupported_value_err!("Cmd", header.cmd.into())),
         }
     }
 }
@@ -155,7 +155,7 @@ impl PduDecode<'_> for DrdynvcServerPdu {
             Cmd::Data => Ok(Self::Data(DrdynvcDataPdu::Data(DataPdu::decode(header, src)?))),
             Cmd::Close => Ok(Self::Close(ClosePdu::decode(header, src)?)),
             Cmd::Capability => Ok(Self::Capabilities(CapabilitiesRequestPdu::decode(header, src)?)),
-            _ => Err(unsupported_pdu_err!("Cmd", header.cmd.into())),
+            _ => Err(unsupported_value_err!("Cmd", header.cmd.into())),
         }
     }
 }

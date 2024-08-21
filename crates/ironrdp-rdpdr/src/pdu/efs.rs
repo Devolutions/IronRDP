@@ -10,7 +10,7 @@ use bitflags::bitflags;
 use ironrdp_core::{ReadCursor, WriteCursor};
 use ironrdp_pdu::utils::{decode_string, encoded_str_len, from_utf16_bytes, write_string_to_cursor, CharacterSet};
 use ironrdp_pdu::{
-    cast_length, ensure_fixed_part_size, ensure_size, invalid_field_err, read_padding, unsupported_pdu_err,
+    cast_length, ensure_fixed_part_size, ensure_size, invalid_field_err, read_padding, unsupported_value_err,
     write_padding, PduError, PduResult,
 };
 
@@ -1442,7 +1442,7 @@ impl ServerDriveIoRequest {
             MajorFunction::QueryVolumeInformation => {
                 Ok(ServerDriveQueryVolumeInformationRequest::decode(dev_io_req, src)?.into())
             }
-            MajorFunction::SetVolumeInformation => Err(unsupported_pdu_err!(
+            MajorFunction::SetVolumeInformation => Err(unsupported_value_err!(
                 "ServerDriveIoRequest::decode",
                 "MajorFunction",
                 "SetVolumeInformation".to_owned()
@@ -1964,7 +1964,7 @@ impl FileInformationClass {
             Self::FullDirectory(f) => f.encode(dst),
             Self::Names(f) => f.encode(dst),
             Self::Directory(f) => f.encode(dst),
-            _ => Err(unsupported_pdu_err!(
+            _ => Err(unsupported_value_err!(
                 "FileInformationClass::encode",
                 "FileInformationClass",
                 self.to_string()
@@ -1989,7 +1989,7 @@ impl FileInformationClass {
             FileInformationClassLevel::FILE_ALLOCATION_INFORMATION => {
                 Ok(FileAllocationInformation::decode(src)?.into())
             }
-            _ => Err(unsupported_pdu_err!(
+            _ => Err(unsupported_value_err!(
                 "FileInformationClass::decode",
                 "FileInformationClassLevel",
                 file_info_class_level.to_string()
