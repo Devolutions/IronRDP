@@ -3,7 +3,7 @@ use std::borrow::Cow;
 use ironrdp_core::{IntoOwned, ReadCursor, WriteCursor};
 use ironrdp_pdu::utils::{read_string_from_cursor, to_utf16_bytes, write_string_to_cursor, CharacterSet};
 use ironrdp_pdu::{
-    cast_int, ensure_size, impl_pdu_borrowing, impl_pdu_pod, invalid_message_err, PduDecode, PduEncode, PduResult,
+    cast_int, ensure_size, impl_pdu_borrowing, impl_pdu_pod, invalid_field_err, PduDecode, PduEncode, PduResult,
 };
 
 use crate::pdu::{ClipboardPduFlags, PartialHeader};
@@ -448,7 +448,7 @@ impl<'de> PduDecode<'de> for FormatListResponse {
         match header.message_flags {
             ClipboardPduFlags::RESPONSE_OK => Ok(FormatListResponse::Ok),
             ClipboardPduFlags::RESPONSE_FAIL => Ok(FormatListResponse::Fail),
-            _ => Err(invalid_message_err!("msgFlags", "Invalid format list message flags")),
+            _ => Err(invalid_field_err!("msgFlags", "Invalid format list message flags")),
         }
     }
 }

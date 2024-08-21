@@ -190,7 +190,7 @@ impl<'de> PduDecode<'de> for Avc444BitmapStream<'de> {
 
         if stream_len == 0 {
             if encoding == Encoding::LUMA_AND_CHROMA {
-                return Err(invalid_message_err!("encoding", "invalid encoding"));
+                return Err(invalid_field_err!("encoding", "invalid encoding"));
             }
 
             let stream1 = Avc420BitmapStream::decode(src)?;

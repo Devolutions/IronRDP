@@ -77,7 +77,7 @@ impl<'de> PduDecode<'de> for SuppressOutputPdu {
         ensure_fixed_part_size!(in: src);
 
         let allow_display_updates = AllowDisplayUpdatesType::from_u8(src.read_u8())
-            .ok_or_else(|| invalid_message_err!("allowDisplayUpdates", "invalid display update type"))?;
+            .ok_or_else(|| invalid_field_err!("allowDisplayUpdates", "invalid display update type"))?;
         read_padding!(src, 3);
         let desktop_rect = if allow_display_updates == AllowDisplayUpdatesType::AllowDisplayUpdates {
             Some(InclusiveRectangle::decode(src)?)

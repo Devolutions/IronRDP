@@ -133,7 +133,7 @@ impl<'de> PduDecode<'de> for ClientNetworkData {
         let channel_count = cast_length!("channelCount", src.read_u32())?;
 
         if channel_count > CHANNELS_MAX {
-            return Err(invalid_message_err!("channelCount", "invalid channel count"));
+            return Err(invalid_field_err!("channelCount", "invalid channel count"));
         }
 
         let mut channels = Vec::with_capacity(channel_count);
@@ -261,7 +261,7 @@ impl<'de> PduDecode<'de> for ChannelDef {
         let name = ChannelName::new(name);
 
         let options = ChannelOptions::from_bits(src.read_u32())
-            .ok_or_else(|| invalid_message_err!("options", "invalid channel options"))?;
+            .ok_or_else(|| invalid_field_err!("options", "invalid channel options"))?;
 
         Ok(Self { name, options })
     }

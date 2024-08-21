@@ -51,7 +51,7 @@ impl PduEncode for FastPathHeader {
 
         let length = self.data_length + self.size();
         if length > u16::MAX as usize {
-            return Err(invalid_message_err!("length", "fastpath PDU length is too big"));
+            return Err(invalid_field_err!("length", "fastpath PDU length is too big"));
         }
 
         if self.forced_long_length {
@@ -85,9 +85,9 @@ impl<'de> PduDecode<'de> for FastPathHeader {
         let flags = EncryptionFlags::from_bits_truncate(header.get_bits(6..8));
 
         let (length, sizeof_length) = per::read_length(src)
-            .map_err(|e| invalid_message_err!("length", "Invalid encoded fast path PDU length").with_source(e))?;
+            .map_err(|e| invalid_field_err!("length", "Invalid encoded fast path PDU length").with_source(e))?;
         if (length as usize) < sizeof_length + Self::FIXED_PART_SIZE {
-            return Err(invalid_message_err!(
+            return Err(invalid_field_err!(
                 "length",
                 "received fastpath PDU length is smaller than header size"
             ));
@@ -125,7 +125,7 @@ impl PduEncode for FastPathUpdatePdu<'_> {
         ensure_size!(in: dst, size: self.size());
 
         if self.data.len() > u16::MAX as usize {
-            return Err(invalid_message_err!("data", "fastpath PDU data is too big"));
+            return Err(invalid_field_err!("data", "fastpath PDU data is too big"));
         }
 
         let mut header = 0u8;
@@ -166,11 +166,11 @@ impl<'de> PduDecode<'de> for FastPathUpdatePdu<'de> {
 
         let update_code = header.get_bits(0..4);
         let update_code =
-            UpdateCode::from_u8(update_code).ok_or(invalid_message_err!("updateHeader", "Invalid update code"))?;
+            UpdateCode::from_u8(update_code).ok_or(invalid_field_err!("updateHeader", "Invalid update code"))?;
 
         let fragmentation = header.get_bits(4..6);
-        let fragmentation = Fragmentation::from_u8(fragmentation)
-            .ok_or(invalid_message_err!("updateHeader", "Invalid fragmentation"))?;
+        let fragmentation =
+            Fragmentation::from_u8(fragmentation).ok_or(invalid_field_err!("updateHeader", "Invalid fragmentation"))?;
 
         let compression = Compression::from_bits_truncate(header.get_bits(6..8));
 
@@ -183,7 +183,7 @@ impl<'de> PduDecode<'de> for FastPathUpdatePdu<'de> {
                 CompressionFlags::from_bits_truncate(compression_flags_with_type & !SHARE_DATA_HEADER_COMPRESSION_MASK);
             let compression_type =
                 CompressionType::from_u8(compression_flags_with_type & SHARE_DATA_HEADER_COMPRESSION_MASK)
-                    .ok_or_else(|| invalid_message_err!("compressionFlags", "invalid compression type"))?;
+                    .ok_or_else(|| invalid_field_err!("compressionFlags", "invalid compression type"))?;
 
             (Some(compression_flags), Some(compression_type))
         } else {
@@ -244,7 +244,7 @@ impl<'a> FastPathUpdate<'a> {
             UpdateCode::CachedPointer => Ok(Self::Pointer(PointerUpdateData::Cached(decode_cursor(src)?))),
             UpdateCode::NewPointer => Ok(Self::Pointer(PointerUpdateData::New(decode_cursor(src)?))),
             UpdateCode::LargePointer => Ok(Self::Pointer(PointerUpdateData::Large(decode_cursor(src)?))),
-            _ => Err(invalid_message_err!("updateCode", "Invalid fast path update code")),
+            _ => Err(invalid_field_err!("updateCode", "Invalid fast path update code")),
         }
     }
 

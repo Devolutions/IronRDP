@@ -66,7 +66,7 @@ impl NowExecMessage {
             NowExecMsgKind::BATCH => Ok(Self::Batch(NowExecBatchMsg::decode_from_body(header, src)?)),
             NowExecMsgKind::WINPS => Ok(Self::WinPs(NowExecWinPsMsg::decode_from_body(header, src)?)),
             NowExecMsgKind::PWSH => Ok(Self::Pwsh(NowExecPwshMsg::decode_from_body(header, src)?)),
-            _ => Err(invalid_message_err!("type", "invalid message type")),
+            _ => Err(invalid_field_err!("type", "invalid message type")),
         }
     }
 }

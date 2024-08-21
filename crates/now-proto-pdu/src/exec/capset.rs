@@ -95,7 +95,7 @@ impl PduDecode<'_> for NowExecCapsetMsg {
             (NowMessageClass::EXEC, NowExecMsgKind::CAPSET) => Ok(Self {
                 flags: NowExecCapsetFlags::from_bits_retain(header.flags),
             }),
-            _ => Err(invalid_message_err!("type", "invalid message type")),
+            _ => Err(invalid_field_err!("type", "invalid message type")),
         }
     }
 }

@@ -18,7 +18,7 @@ pub use self::lock::*;
 #[rustfmt::skip]
 use bitflags::bitflags;
 use ironrdp_core::{ReadCursor, WriteCursor};
-use ironrdp_pdu::{ensure_fixed_part_size, invalid_message_err, PduDecode, PduEncode, PduResult};
+use ironrdp_pdu::{ensure_fixed_part_size, invalid_field_err, PduDecode, PduEncode, PduResult};
 use ironrdp_svc::SvcPduEncode;
 
 const MSG_TYPE_MONITOR_READY: u16 = 0x0001;
@@ -242,7 +242,7 @@ impl<'de> PduDecode<'de> for ClipboardPdu<'de> {
             MSG_TYPE_FILE_CONTENTS_RESPONSE => ClipboardPdu::FileContentsResponse(FileContentsResponse::decode(src)?),
             MSG_TYPE_LOCK_CLIPDATA => ClipboardPdu::LockData(LockDataId::decode(src)?),
             MSG_TYPE_UNLOCK_CLIPDATA => ClipboardPdu::UnlockData(LockDataId::decode(src)?),
-            _ => return Err(invalid_message_err!("msgType", "Unknown clipboard PDU type")),
+            _ => return Err(invalid_field_err!("msgType", "Unknown clipboard PDU type")),
         };
 
         Ok(pdu)

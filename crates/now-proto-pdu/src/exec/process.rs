@@ -36,7 +36,7 @@ impl NowExecProcessMsg {
             .checked_add(self.filename.size())
             .and_then(|size| size.checked_add(self.parameters.size()))
             .and_then(|size| size.checked_add(self.directory.size()))
-            .ok_or_else(|| invalid_message_err!("size", "message size overflow"))?;
+            .ok_or_else(|| invalid_field_err!("size", "message size overflow"))?;
 
         Ok(())
     }
@@ -121,7 +121,7 @@ impl PduDecode<'_> for NowExecProcessMsg {
 
         match (header.class, NowExecMsgKind(header.kind)) {
             (NowMessageClass::EXEC, NowExecMsgKind::PROCESS) => Self::decode_from_body(header, src),
-            _ => Err(invalid_message_err!("type", "invalid message type")),
+            _ => Err(invalid_field_err!("type", "invalid message type")),
         }
     }
 }

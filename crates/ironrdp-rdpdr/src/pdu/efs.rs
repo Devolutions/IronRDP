@@ -10,7 +10,7 @@ use bitflags::bitflags;
 use ironrdp_core::{ReadCursor, WriteCursor};
 use ironrdp_pdu::utils::{decode_string, encoded_str_len, from_utf16_bytes, write_string_to_cursor, CharacterSet};
 use ironrdp_pdu::{
-    cast_length, ensure_fixed_part_size, ensure_size, invalid_message_err, read_padding, unsupported_pdu_err,
+    cast_length, ensure_fixed_part_size, ensure_size, invalid_field_err, read_padding, unsupported_pdu_err,
     write_padding, PduError, PduResult,
 };
 
@@ -60,7 +60,7 @@ impl VersionAndIdPdu {
 
     pub fn new_client_announce_reply(req: VersionAndIdPdu) -> PduResult<Self> {
         if req.kind != VersionAndIdPduKind::ServerAnnounceRequest {
-            return Err(invalid_message_err!(
+            return Err(invalid_field_err!(
                 "VersionAndIdPdu::new_client_announce_reply",
                 "VersionAndIdPduKind",
                 "invalid value"
@@ -88,7 +88,7 @@ impl VersionAndIdPdu {
             PacketId::CoreServerAnnounce => VersionAndIdPduKind::ServerAnnounceRequest,
             PacketId::CoreClientidConfirm => VersionAndIdPduKind::ServerClientIdConfirm,
             _ => {
-                return Err(invalid_message_err!(
+                return Err(invalid_field_err!(
                     "VersionAndIdPdu::decode",
                     "PacketId",
                     "invalid value"
@@ -234,7 +234,7 @@ impl CoreCapability {
             PacketId::CoreServerCapability => CoreCapabilityKind::ServerCoreCapabilityRequest,
             PacketId::CoreClientCapability => CoreCapabilityKind::ClientCoreCapabilityResponse,
             _ => {
-                return Err(invalid_message_err!(
+                return Err(invalid_field_err!(
                     "CoreCapability::decode",
                     "PacketId",
                     "invalid value"
@@ -510,7 +510,7 @@ impl TryFrom<u16> for CapabilityType {
             0x0003 => Ok(CapabilityType::Port),
             0x0004 => Ok(CapabilityType::Drive),
             0x0005 => Ok(CapabilityType::Smartcard),
-            _ => Err(invalid_message_err!("try_from", "CapabilityType", "invalid value")),
+            _ => Err(invalid_field_err!("try_from", "CapabilityType", "invalid value")),
         }
     }
 }
@@ -801,7 +801,7 @@ impl Devices {
         if let Some(device_type) = self.0.iter().find(|d| d.device_id == device_id).map(|d| d.device_type) {
             Ok(device_type)
         } else {
-            Err(invalid_message_err!(
+            Err(invalid_field_err!(
                 "Devices::for_device_type",
                 "device_id",
                 "no device with that ID"
@@ -945,7 +945,7 @@ impl TryFrom<u32> for DeviceType {
             0x0000_0004 => Ok(DeviceType::Print),
             0x0000_0008 => Ok(DeviceType::Filesystem),
             0x0000_0020 => Ok(DeviceType::Smartcard),
-            _ => Err(invalid_message_err!("try_from", "DeviceType", "invalid value")),
+            _ => Err(invalid_field_err!("try_from", "DeviceType", "invalid value")),
         }
     }
 }
@@ -1145,7 +1145,7 @@ impl TryFrom<u32> for MajorFunction {
             0x0000_0006 => Ok(MajorFunction::SetInformation),
             0x0000_000c => Ok(MajorFunction::DirectoryControl),
             0x0000_0011 => Ok(MajorFunction::LockControl),
-            _ => Err(invalid_message_err!("try_from", "MajorFunction", "unsupported value")),
+            _ => Err(invalid_field_err!("try_from", "MajorFunction", "unsupported value")),
         }
     }
 }
@@ -1225,7 +1225,7 @@ where
         let input_buffer_length = src.read_u32();
         let io_control_code = T::try_from(src.read_u32()).map_err(|e| {
             error!("Failed to parse IoCtlCode");
-            invalid_message_err!("DeviceControlRequest", "IoCtlCode", "invalid IoCtlCode").with_source(e)
+            invalid_field_err!("DeviceControlRequest", "IoCtlCode", "invalid IoCtlCode").with_source(e)
         })?;
 
         // Padding (20 bytes): An array of 20 bytes. Reserved. This field can be set to any value and MUST be ignored.
@@ -1457,7 +1457,7 @@ impl ServerDriveIoRequest {
                     Ok(ServerDriveNotifyChangeDirectoryRequest::decode(dev_io_req, src)?.into())
                 }
                 // If MajorFunction is set to IRP_MJ_DIRECTORY_CONTROL and MinorFunction is set to any other value, we've encountered a server bug.
-                _ => Err(invalid_message_err!(
+                _ => Err(invalid_field_err!(
                     "ServerDriveIoRequest::decode",
                     "MinorFunction",
                     "invalid value"
@@ -2603,7 +2603,7 @@ impl ServerDriveQueryDirectoryRequest {
             | FileInformationClassLevel::FILE_BOTH_DIRECTORY_INFORMATION
             | FileInformationClassLevel::FILE_NAMES_INFORMATION => {}
             _ => {
-                return Err(invalid_message_err!(
+                return Err(invalid_field_err!(
                     "ServerDriveQueryDirectoryRequest::decode",
                     "file_info_class_lvl",
                     "received invalid level"
@@ -2731,7 +2731,7 @@ impl ServerDriveQueryVolumeInformationRequest {
             | FileSystemInformationClassLevel::FILE_FS_FULL_SIZE_INFORMATION
             | FileSystemInformationClassLevel::FILE_FS_DEVICE_INFORMATION => {}
             _ => {
-                return Err(invalid_message_err!(
+                return Err(invalid_field_err!(
                     "ServerDriveQueryVolumeInformationRequest::decode",
                     "fs_info_class_lvl",
                     "received invalid level"
@@ -3282,7 +3282,7 @@ impl ServerDriveSetInformationRequest {
             | FileInformationClassLevel::FILE_RENAME_INFORMATION
             | FileInformationClassLevel::FILE_ALLOCATION_INFORMATION => {}
             _ => {
-                return Err(invalid_message_err!(
+                return Err(invalid_field_err!(
                     "ServerDriveSetInformationRequest::decode",
                     "file_information_class_level",
                     "received invalid level"

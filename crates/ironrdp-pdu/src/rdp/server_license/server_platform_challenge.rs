@@ -48,7 +48,7 @@ impl ServerPlatformChallenge {
 impl ServerPlatformChallenge {
     pub fn decode(license_header: LicenseHeader, src: &mut ReadCursor<'_>) -> PduResult<Self> {
         if license_header.preamble_message_type != PreambleType::PlatformChallenge {
-            return Err(invalid_message_err!("preambleMessageType", "unexpected preamble type"));
+            return Err(invalid_field_err!("preambleMessageType", "unexpected preamble type"));
         }
 
         ensure_size!(in: src, size: 4);

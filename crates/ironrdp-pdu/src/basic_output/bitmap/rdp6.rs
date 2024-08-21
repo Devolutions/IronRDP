@@ -122,7 +122,7 @@ impl<'a> PduDecode<'a> for BitmapStream<'a> {
         let color_planes_size = if !header.enable_rle_compression {
             // Cut padding field if RLE flags is set to 0
             if src.is_empty() {
-                return Err(invalid_message_err!(
+                return Err(invalid_field_err!(
                     "padding",
                     "missing padding byte from zero-sized non-RLE bitmap data",
                 ));
@@ -300,7 +300,7 @@ mod tests {
             expect![[r#"
                 Error {
                     context: "<ironrdp_pdu::basic_output::bitmap::rdp6::BitmapStream as ironrdp_pdu::PduDecode>::decode",
-                    kind: InvalidMessage {
+                    kind: InvalidField {
                         field: "padding",
                         reason: "missing padding byte from zero-sized non-RLE bitmap data",
                     },

@@ -173,16 +173,13 @@ impl ClientNewLicenseRequest {
 impl ClientNewLicenseRequest {
     pub fn decode(license_header: LicenseHeader, src: &mut ReadCursor<'_>) -> PduResult<Self> {
         if license_header.preamble_message_type != PreambleType::NewLicenseRequest {
-            return Err(invalid_message_err!("preambleMessageType", "unexpected preamble type"));
+            return Err(invalid_field_err!("preambleMessageType", "unexpected preamble type"));
         }
 
         ensure_size!(in: src, size: LICENSE_REQUEST_STATIC_FIELDS_SIZE + RANDOM_NUMBER_SIZE);
         let key_exchange_algorithm = src.read_u32();
         if key_exchange_algorithm != KEY_EXCHANGE_ALGORITHM_RSA {
-            return Err(invalid_message_err!(
-                "keyExchangeAlgo",
-                "invalid key exchange algorithm"
-            ));
+            return Err(invalid_field_err!("keyExchangeAlgo", "invalid key exchange algorithm"));
         }
 
         let _platform_id = src.read_u32();
@@ -190,14 +187,14 @@ impl ClientNewLicenseRequest {
 
         let premaster_secret_blob_header = BlobHeader::decode(src)?;
         if premaster_secret_blob_header.blob_type != BlobType::RANDOM {
-            return Err(invalid_message_err!("blobType", "invalid blob type"));
+            return Err(invalid_field_err!("blobType", "invalid blob type"));
         }
         ensure_size!(in: src, size: premaster_secret_blob_header.length);
         let encrypted_premaster_secret = src.read_slice(premaster_secret_blob_header.length).into();
 
         let username_blob_header = BlobHeader::decode(src)?;
         if username_blob_header.blob_type != BlobType::CLIENT_USER_NAME {
-            return Err(invalid_message_err!("blobType", "invalid blob type"));
+            return Err(invalid_field_err!("blobType", "invalid blob type"));
         }
         ensure_size!(in: src, size: username_blob_header.length);
         let client_username =
@@ -205,7 +202,7 @@ impl ClientNewLicenseRequest {
 
         let machine_name_blob = BlobHeader::decode(src)?;
         if machine_name_blob.blob_type != BlobType::CLIENT_MACHINE_NAME_BLOB {
-            return Err(invalid_message_err!("blobType", "invalid blob type"));
+            return Err(invalid_field_err!("blobType", "invalid blob type"));
         }
         ensure_size!(in: src, size: machine_name_blob.length);
         let client_machine_name =

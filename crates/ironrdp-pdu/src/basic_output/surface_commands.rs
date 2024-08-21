@@ -58,7 +58,7 @@ impl<'de> PduDecode<'de> for SurfaceCommand<'de> {
 
         let cmd_type = src.read_u16();
         let cmd_type = SurfaceCommandType::from_u16(cmd_type)
-            .ok_or_else(|| invalid_message_err!("cmdType", "invalid surface command"))?;
+            .ok_or_else(|| invalid_field_err!("cmdType", "invalid surface command"))?;
 
         match cmd_type {
             SurfaceCommandType::SetSurfaceBits => Ok(Self::SetSurfaceBits(SurfaceBitsPdu::decode(src)?)),
@@ -146,7 +146,7 @@ impl<'de> PduDecode<'de> for FrameMarkerPdu {
         let frame_action = src.read_u16();
 
         let frame_action = FrameAction::from_u16(frame_action)
-            .ok_or_else(|| invalid_message_err!("frameAction", "invalid frame action"))?;
+            .ok_or_else(|| invalid_field_err!("frameAction", "invalid frame action"))?;
 
         let frame_id = if src.is_empty() {
             // Sometimes Windows 10 RDP server sends not complete FrameMarker PDU (without frame ID),
@@ -196,7 +196,7 @@ impl PduEncode for ExtendedBitmapDataPdu<'_> {
         ensure_size!(in: dst, size: self.size());
 
         if self.data.len() > u32::MAX as usize {
-            return Err(invalid_message_err!("bitmapDataLength", "bitmap data is too big"));
+            return Err(invalid_field_err!("bitmapDataLength", "bitmap data is too big"));
         }
 
         dst.write_u8(self.bpp);

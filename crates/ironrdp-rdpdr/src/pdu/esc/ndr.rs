@@ -25,7 +25,7 @@ use std::mem::size_of;
 
 use ironrdp_core::{ReadCursor, WriteCursor};
 use ironrdp_pdu::utils::{self, CharacterSet};
-use ironrdp_pdu::{ensure_size, invalid_message_err, PduResult};
+use ironrdp_pdu::{ensure_size, invalid_field_err, PduResult};
 
 pub trait Decode {
     fn decode_ptr(src: &mut ReadCursor<'_>, index: &mut u32) -> PduResult<Self>
@@ -65,7 +65,7 @@ pub fn decode_ptr(src: &mut ReadCursor<'_>, index: &mut u32) -> PduResult<u32> {
     let expect_ptr = 0x0002_0000 + *index * 4;
     *index += 1;
     if ptr != expect_ptr {
-        Err(invalid_message_err!("decode_ptr", "ptr", "ptr != expect_ptr"))
+        Err(invalid_field_err!("decode_ptr", "ptr", "ptr != expect_ptr"))
     } else {
         Ok(ptr)
     }

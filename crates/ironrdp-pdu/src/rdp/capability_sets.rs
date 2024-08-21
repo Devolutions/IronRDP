@@ -508,7 +508,7 @@ impl<'de> PduDecode<'de> for CapabilitySet {
         let length = src.read_u16() as usize;
 
         if length < CAPABILITY_SET_TYPE_FIELD_SIZE + CAPABILITY_SET_LENGTH_FIELD_SIZE {
-            return Err(invalid_message_err!("len", "invalid capability set length"));
+            return Err(invalid_field_err!("len", "invalid capability set length"));
         }
 
         let buffer_length = length - CAPABILITY_SET_TYPE_FIELD_SIZE - CAPABILITY_SET_LENGTH_FIELD_SIZE;

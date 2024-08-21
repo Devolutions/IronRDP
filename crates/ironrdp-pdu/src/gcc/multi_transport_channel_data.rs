@@ -37,7 +37,7 @@ impl<'de> PduDecode<'de> for MultiTransportChannelData {
         ensure_fixed_part_size!(in: src);
 
         let flags = MultiTransportFlags::from_bits(src.read_u32())
-            .ok_or_else(|| invalid_message_err!("flags", "invalid multitransport flags"))?;
+            .ok_or_else(|| invalid_field_err!("flags", "invalid multitransport flags"))?;
 
         Ok(Self { flags })
     }

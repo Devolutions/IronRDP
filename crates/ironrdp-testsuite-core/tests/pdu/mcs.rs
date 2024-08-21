@@ -18,7 +18,7 @@ fn invalid_domain_mcspdu() {
     expect![[r#"
         Error {
             context: "McsMessage",
-            kind: InvalidMessage {
+            kind: InvalidField {
                 field: "domain-mcspdu",
                 reason: "unexpected application tag for CHOICE",
             },

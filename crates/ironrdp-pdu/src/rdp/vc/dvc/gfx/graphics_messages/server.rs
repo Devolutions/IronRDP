@@ -70,9 +70,9 @@ impl<'a> PduDecode<'a> for WireToSurface1Pdu {
 
         let surface_id = src.read_u16();
         let codec_id =
-            Codec1Type::from_u16(src.read_u16()).ok_or_else(|| invalid_message_err!("CodecId", "invalid codec ID"))?;
+            Codec1Type::from_u16(src.read_u16()).ok_or_else(|| invalid_field_err!("CodecId", "invalid codec ID"))?;
         let pixel_format = PixelFormat::from_u8(src.read_u8())
-            .ok_or_else(|| invalid_message_err!("PixelFormat", "invalid pixel format"))?;
+            .ok_or_else(|| invalid_field_err!("PixelFormat", "invalid pixel format"))?;
         let destination_rectangle = InclusiveRectangle::decode(src)?;
         let bitmap_data_length = cast_length!("BitmapDataLen", src.read_u32())?;
 
@@ -145,10 +145,10 @@ impl<'a> PduDecode<'a> for WireToSurface2Pdu {
 
         let surface_id = src.read_u16();
         let codec_id =
-            Codec2Type::from_u16(src.read_u16()).ok_or_else(|| invalid_message_err!("CodecId", "invalid codec ID"))?;
+            Codec2Type::from_u16(src.read_u16()).ok_or_else(|| invalid_field_err!("CodecId", "invalid codec ID"))?;
         let codec_context_id = src.read_u32();
         let pixel_format = PixelFormat::from_u8(src.read_u8())
-            .ok_or_else(|| invalid_message_err!("PixelFormat", "invalid pixel format"))?;
+            .ok_or_else(|| invalid_field_err!("PixelFormat", "invalid pixel format"))?;
         let bitmap_data_length = cast_length!("BitmapDataLen", src.read_u32())?;
 
         ensure_size!(in: src, size: bitmap_data_length);
@@ -480,7 +480,7 @@ impl<'a> PduDecode<'a> for CreateSurfacePdu {
         let width = src.read_u16();
         let height = src.read_u16();
         let pixel_format = PixelFormat::from_u8(src.read_u8())
-            .ok_or_else(|| invalid_message_err!("pixelFormat", "invalid pixel format"))?;
+            .ok_or_else(|| invalid_field_err!("pixelFormat", "invalid pixel format"))?;
 
         Ok(Self {
             surface_id,
@@ -575,17 +575,17 @@ impl<'a> PduDecode<'a> for ResetGraphicsPdu {
 
         let width = src.read_u32();
         if width > MAX_RESET_GRAPHICS_WIDTH_HEIGHT {
-            return Err(invalid_message_err!("width", "invalid reset graphics width"));
+            return Err(invalid_field_err!("width", "invalid reset graphics width"));
         }
 
         let height = src.read_u32();
         if height > MAX_RESET_GRAPHICS_WIDTH_HEIGHT {
-            return Err(invalid_message_err!("height", "invalid reset graphics height"));
+            return Err(invalid_field_err!("height", "invalid reset graphics height"));
         }
 
         let monitor_count = src.read_u32();
         if monitor_count > MONITOR_COUNT_MAX {
-            return Err(invalid_message_err!("height", "invalid reset graphics monitor count"));
+            return Err(invalid_field_err!("height", "invalid reset graphics monitor count"));
         }
 
         let monitors = (0..monitor_count)

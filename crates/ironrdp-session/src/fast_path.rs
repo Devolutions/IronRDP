@@ -293,7 +293,7 @@ impl Processor {
                 };
             }
             Err(e) => {
-                if let PduErrorKind::InvalidMessage { field, reason } = e.kind {
+                if let PduErrorKind::InvalidField { field, reason } = e.kind {
                     warn!(field, reason, "Received invalid Fast-Path update");
                     processor_updates.push(UpdateKind::None);
                 } else {

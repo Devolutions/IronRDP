@@ -446,7 +446,7 @@ fn codec_with_invalid_property_length_handles_correctly() {
     ];
 
     match decode::<Codec>(codec_buffer.as_ref()) {
-        Err(e) if matches!(e.kind(), PduErrorKind::InvalidMessage { .. }) => (),
+        Err(e) if matches!(e.kind(), PduErrorKind::InvalidField { .. }) => (),
         Err(e) => panic!("wrong error type: {e}"),
         _ => panic!("error expected"),
     }

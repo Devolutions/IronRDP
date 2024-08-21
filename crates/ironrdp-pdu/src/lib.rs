@@ -44,7 +44,7 @@ pub type PduError = ironrdp_error::Error<PduErrorKind>;
 #[derive(Clone, Debug)]
 pub enum PduErrorKind {
     NotEnoughBytes { received: usize, expected: usize },
-    InvalidMessage { field: &'static str, reason: &'static str },
+    InvalidField { field: &'static str, reason: &'static str },
     UnexpectedMessageType { got: u8 },
     UnsupportedVersion { got: u8 },
     UnsupportedPdu { name: &'static str, value: String },
@@ -61,7 +61,7 @@ impl fmt::Display for PduErrorKind {
                 f,
                 "not enough bytes provided to decode: received {received} bytes, expected {expected} bytes"
             ),
-            Self::InvalidMessage { field, reason } => {
+            Self::InvalidField { field, reason } => {
                 write!(f, "invalid `{field}`: {reason}")
             }
             Self::UnexpectedMessageType { got } => {
@@ -85,7 +85,7 @@ impl fmt::Display for PduErrorKind {
 
 pub trait PduErrorExt {
     fn not_enough_bytes(context: &'static str, received: usize, expected: usize) -> Self;
-    fn invalid_message(context: &'static str, field: &'static str, reason: &'static str) -> Self;
+    fn invalid_field(context: &'static str, field: &'static str, reason: &'static str) -> Self;
     fn unexpected_message_type(context: &'static str, got: u8) -> Self;
     fn unsupported_version(context: &'static str, got: u8) -> Self;
     fn unsupported_pdu(context: &'static str, name: &'static str, value: String) -> Self;
@@ -100,8 +100,8 @@ impl PduErrorExt for PduError {
         Self::new(context, PduErrorKind::NotEnoughBytes { received, expected })
     }
 
-    fn invalid_message(context: &'static str, field: &'static str, reason: &'static str) -> Self {
-        Self::new(context, PduErrorKind::InvalidMessage { field, reason })
+    fn invalid_field(context: &'static str, field: &'static str, reason: &'static str) -> Self {
+        Self::new(context, PduErrorKind::InvalidField { field, reason })
     }
 
     fn unexpected_message_type(context: &'static str, got: u8) -> Self {

@@ -101,13 +101,13 @@ pub fn read_string_from_cursor(
                 .expect("BUG: str_buffer is always even for UTF16");
 
             String::from_utf16(&u16_buffer)
-                .map_err(|_| invalid_message_err!("UTF16 decode", "buffer", "Failed to decode UTF16 string"))?
+                .map_err(|_| invalid_field_err!("UTF16 decode", "buffer", "Failed to decode UTF16 string"))?
         }
         CharacterSet::Ansi => {
             ensure_size!(ctx: "Decode string (UTF-8)", in: cursor, size: size);
             let slice = cursor.read_slice(size);
             String::from_utf8(slice.to_vec())
-                .map_err(|_| invalid_message_err!("UTF8 decode", "buffer", "Failed to decode UTF8 string"))?
+                .map_err(|_| invalid_field_err!("UTF8 decode", "buffer", "Failed to decode UTF8 string"))?
         }
     };
 

@@ -72,7 +72,7 @@ pub(crate) fn read_sequence_tag(stream: &mut ReadCursor<'_>) -> PduResult<u16> {
     let identifier = stream.read_u8();
 
     if identifier != Class::Universal as u8 | Pc::Construct as u8 | (TAG_MASK & Tag::Sequence as u8) {
-        Err(invalid_message_err!("identifier", "invalid sequence tag identifier"))
+        Err(invalid_field_err!("identifier", "invalid sequence tag identifier"))
     } else {
         read_length(stream)
     }
@@ -99,14 +99,14 @@ pub(crate) fn read_application_tag(stream: &mut ReadCursor<'_>, tagnum: u8) -> P
 
     if tagnum > 0x1E {
         if identifier != Class::Application as u8 | Pc::Construct as u8 | TAG_MASK {
-            return Err(invalid_message_err!("identifier", "invalid application tag identifier"));
+            return Err(invalid_field_err!("identifier", "invalid application tag identifier"));
         }
         ensure_size!(in: stream, size: 1);
         if stream.read_u8() != tagnum {
-            return Err(invalid_message_err!("tagnum", "invalid application tag identifier"));
+            return Err(invalid_field_err!("tagnum", "invalid application tag identifier"));
         }
     } else if identifier != Class::Application as u8 | Pc::Construct as u8 | (TAG_MASK & tagnum) {
-        return Err(invalid_message_err!("identifier", "invalid application tag identifier"));
+        return Err(invalid_field_err!("identifier", "invalid application tag identifier"));
     }
 
     read_length(stream)
@@ -128,13 +128,13 @@ pub(crate) fn read_enumerated(stream: &mut ReadCursor<'_>, count: u8) -> PduResu
 
     let length = read_length(stream)?;
     if length != 1 {
-        return Err(invalid_message_err!("len", "invalid enumerated len"));
+        return Err(invalid_field_err!("len", "invalid enumerated len"));
     }
 
     ensure_size!(in: stream, size: 1);
     let enumerated = stream.read_u8();
     if enumerated == u8::MAX || enumerated + 1 > count {
-        return Err(invalid_message_err!("enumerated", "invalid enumerated value"));
+        return Err(invalid_field_err!("enumerated", "invalid enumerated value"));
     }
 
     Ok(enumerated)
@@ -194,7 +194,7 @@ pub(crate) fn read_integer(stream: &mut ReadCursor<'_>) -> PduResult<u64> {
         ensure_size!(in: stream, size: 8);
         Ok(stream.read_u64_be())
     } else {
-        Err(invalid_message_err!("len", "invalid integer len"))
+        Err(invalid_field_err!("len", "invalid integer len"))
     }
 }
 
@@ -215,7 +215,7 @@ pub(crate) fn read_bool(stream: &mut ReadCursor<'_>) -> PduResult<bool> {
     let length = read_length(stream)?;
 
     if length != 1 {
-        return Err(invalid_message_err!("len", "invalid integer len"));
+        return Err(invalid_field_err!("len", "invalid integer len"));
     }
 
     ensure_size!(in: stream, size: 1);
@@ -263,7 +263,7 @@ fn read_universal_tag(stream: &mut ReadCursor<'_>, tag: Tag, pc: Pc) -> PduResul
     let identifier = stream.read_u8();
 
     if identifier != Class::Universal as u8 | pc as u8 | (TAG_MASK & tag as u8) {
-        Err(invalid_message_err!("identifier", "invalid universal tag identifier"))
+        Err(invalid_field_err!("identifier", "invalid universal tag identifier"))
     } else {
         Ok(())
     }
@@ -303,7 +303,7 @@ fn read_length(stream: &mut ReadCursor<'_>) -> PduResult<u16> {
             ensure_size!(in: stream, size: 2);
             Ok(stream.read_u16_be())
         } else {
-            Err(invalid_message_err!("len", "invalid length of the length"))
+            Err(invalid_field_err!("len", "invalid length of the length"))
         }
     } else {
         Ok(u16::from(byte))
@@ -347,7 +347,7 @@ mod tests {
         let mut cur = ReadCursor::new(&buf);
         assert!(matches!(
             read_sequence_tag(&mut cur).unwrap_err().kind(),
-            PduErrorKind::InvalidMessage { .. }
+            PduErrorKind::InvalidField { .. }
         ));
     }
 
@@ -387,7 +387,7 @@ mod tests {
         let mut cur = ReadCursor::new(&buf);
         assert!(matches!(
             read_application_tag(&mut cur, 0x1F).unwrap_err().kind(),
-            PduErrorKind::InvalidMessage { .. }
+            PduErrorKind::InvalidField { .. }
         ));
     }
 
@@ -397,7 +397,7 @@ mod tests {
         let mut cur = ReadCursor::new(&buf);
         assert!(matches!(
             read_application_tag(&mut cur, 0x1F).unwrap_err().kind(),
-            PduErrorKind::InvalidMessage { .. }
+            PduErrorKind::InvalidField { .. }
         ));
     }
 
@@ -407,7 +407,7 @@ mod tests {
         let mut cur = ReadCursor::new(&buf);
         assert!(matches!(
             read_application_tag(&mut cur, 0x08).unwrap_err().kind(),
-            PduErrorKind::InvalidMessage { .. }
+            PduErrorKind::InvalidField { .. }
         ));
     }
 
@@ -432,7 +432,7 @@ mod tests {
         let mut cur = ReadCursor::new(&buf);
         assert!(matches!(
             read_enumerated(&mut cur, 0x10).unwrap_err().kind(),
-            PduErrorKind::InvalidMessage { .. }
+            PduErrorKind::InvalidField { .. }
         ));
     }
 
@@ -442,7 +442,7 @@ mod tests {
         let mut cur = ReadCursor::new(&buf);
         assert!(matches!(
             read_enumerated(&mut cur, 0x10).unwrap_err().kind(),
-            PduErrorKind::InvalidMessage { .. }
+            PduErrorKind::InvalidField { .. }
         ));
     }
 
@@ -452,7 +452,7 @@ mod tests {
         let mut cur = ReadCursor::new(&buf);
         assert!(matches!(
             read_enumerated(&mut cur, 0x05).unwrap_err().kind(),
-            PduErrorKind::InvalidMessage { .. }
+            PduErrorKind::InvalidField { .. }
         ));
     }
 
@@ -492,7 +492,7 @@ mod tests {
         let mut cur = ReadCursor::new(&buf);
         assert!(matches!(
             read_bool(&mut cur).unwrap_err().kind(),
-            PduErrorKind::InvalidMessage { .. }
+            PduErrorKind::InvalidField { .. }
         ));
     }
 
@@ -502,7 +502,7 @@ mod tests {
         let mut cur = ReadCursor::new(&buf);
         assert!(matches!(
             read_bool(&mut cur).unwrap_err().kind(),
-            PduErrorKind::InvalidMessage { .. }
+            PduErrorKind::InvalidField { .. }
         ));
     }
 
@@ -527,7 +527,7 @@ mod tests {
         let mut cur = ReadCursor::new(&buf);
         assert!(matches!(
             read_octet_string_tag(&mut cur).unwrap_err().kind(),
-            PduErrorKind::InvalidMessage { .. }
+            PduErrorKind::InvalidField { .. }
         ));
     }
 
@@ -599,7 +599,7 @@ mod tests {
         let mut cur = ReadCursor::new(&buf);
         assert!(matches!(
             read_length(&mut cur).unwrap_err().kind(),
-            PduErrorKind::InvalidMessage { .. }
+            PduErrorKind::InvalidField { .. }
         ));
     }
 
@@ -676,7 +676,7 @@ mod tests {
         let mut cur = ReadCursor::new(&buf);
         assert!(matches!(
             read_integer(&mut cur).unwrap_err().kind(),
-            PduErrorKind::InvalidMessage { .. }
+            PduErrorKind::InvalidField { .. }
         ));
     }
 

@@ -32,7 +32,7 @@ impl TryFrom<u8> for NowSeverity {
             1 => Ok(Self::Warn),
             2 => Ok(Self::Error),
             3 => Ok(Self::Fatal),
-            _ => Err(invalid_message_err!("severity", "invalid value")),
+            _ => Err(invalid_field_err!("severity", "invalid value")),
         }
     }
 }
@@ -77,7 +77,7 @@ impl NowStatus {
 
     pub fn with_kind(self, kind: u8) -> PduResult<Self> {
         if kind > 0x0F {
-            return Err(invalid_message_err!("type", "status type is too large"));
+            return Err(invalid_field_err!("type", "status type is too large"));
         }
 
         Ok(Self { kind, ..self })

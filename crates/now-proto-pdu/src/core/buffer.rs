@@ -22,7 +22,7 @@ impl NowLrgBuf {
         let value: Vec<u8> = value.into();
 
         if value.len() > VarU32::MAX as usize {
-            return Err(invalid_message_err!("data", "data is too large for NOW_LRGBUF"));
+            return Err(invalid_field_err!("data", "data is too large for NOW_LRGBUF"));
         }
 
         Self::ensure_message_size(value.len())?;
@@ -37,11 +37,11 @@ impl NowLrgBuf {
 
     fn ensure_message_size(buffer_size: usize) -> PduResult<()> {
         if buffer_size > usize::try_from(VarU32::MAX).expect("BUG: too small usize") {
-            return Err(invalid_message_err!("data", "data is too large for NOW_LRGBUF"));
+            return Err(invalid_field_err!("data", "data is too large for NOW_LRGBUF"));
         }
 
         if buffer_size > usize::MAX - Self::FIXED_PART_SIZE {
-            return Err(invalid_message_err!(
+            return Err(invalid_field_err!(
                 "data",
                 "data size is too large to fit in 32-bit usize"
             ));
@@ -115,7 +115,7 @@ impl NowVarBuf {
             .try_into()
             .ok()
             .and_then(|val| if val <= VarU32::MAX { Some(val) } else { None })
-            .ok_or_else(|| invalid_message_err!("data", "too large buffer"))?;
+            .ok_or_else(|| invalid_field_err!("data", "too large buffer"))?;
 
         Ok(NowVarBuf(value))
     }

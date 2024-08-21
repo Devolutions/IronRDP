@@ -70,7 +70,7 @@ impl<'de> PduDecode<'de> for X509CertificateChain {
         ensure_size!(in: src, size: 4);
         let certificate_count = cast_length!("certArrayLen", src.read_u32())?;
         if !(MIN_CERTIFICATE_AMOUNT..MAX_CERTIFICATE_AMOUNT).contains(&certificate_count) {
-            return Err(invalid_message_err!("certArrayLen", "invalid x509 certificate amount"));
+            return Err(invalid_field_err!("certArrayLen", "invalid x509 certificate amount"));
         }
 
         let certificate_array: Vec<_> = (0..certificate_count)
@@ -78,7 +78,7 @@ impl<'de> PduDecode<'de> for X509CertificateChain {
                 ensure_size!(in: src, size: 4);
                 let certificate_len = cast_length!("certLen", src.read_u32())?;
                 if certificate_len > MAX_CERTIFICATE_LEN {
-                    return Err(invalid_message_err!("certLen", "invalid x509 certificate length"));
+                    return Err(invalid_field_err!("certLen", "invalid x509 certificate length"));
                 }
 
                 ensure_size!(in: src, size: certificate_len);
@@ -142,23 +142,23 @@ impl<'de> PduDecode<'de> for ProprietaryCertificate {
 
         let signature_algorithm_id = src.read_u32();
         if signature_algorithm_id != SIGNATURE_ALGORITHM_RSA {
-            return Err(invalid_message_err!("sigAlgId", "invalid signature algorithm ID"));
+            return Err(invalid_field_err!("sigAlgId", "invalid signature algorithm ID"));
         }
 
         let key_algorithm_id = src.read_u32();
         if key_algorithm_id != KEY_EXCHANGE_ALGORITHM_RSA {
-            return Err(invalid_message_err!("keyAlgId", "invalid key algorithm ID"));
+            return Err(invalid_field_err!("keyAlgId", "invalid key algorithm ID"));
         }
 
         let key_blob_header = BlobHeader::decode(src)?;
         if key_blob_header.blob_type != BlobType::RSA_KEY {
-            return Err(invalid_message_err!("blobType", "invalid blob type"));
+            return Err(invalid_field_err!("blobType", "invalid blob type"));
         }
         let public_key = RsaPublicKey::decode(src)?;
 
         let sig_blob_header = BlobHeader::decode(src)?;
         if sig_blob_header.blob_type != BlobType::RSA_SIGNATURE {
-            return Err(invalid_message_err!("blobType", "invalid blob type"));
+            return Err(invalid_field_err!("blobType", "invalid blob type"));
         }
         ensure_size!(in: src, size: sig_blob_header.length);
         let signature = src.read_slice(sig_blob_header.length).into();
@@ -212,23 +212,23 @@ impl<'de> PduDecode<'de> for RsaPublicKey {
 
         let magic = src.read_u32();
         if magic != RSA_SENTINEL {
-            return Err(invalid_message_err!("magic", "invalid RSA public key magic"));
+            return Err(invalid_field_err!("magic", "invalid RSA public key magic"));
         }
 
         let keylen = cast_length!("keyLen", src.read_u32())?;
 
         let bitlen: usize = cast_length!("bitlen", src.read_u32())?;
         if keylen != (bitlen / 8) + 8 {
-            return Err(invalid_message_err!("bitlen", "invalid RSA public key length"));
+            return Err(invalid_field_err!("bitlen", "invalid RSA public key length"));
         }
 
         if bitlen < 8 {
-            return Err(invalid_message_err!("bitlen", "invalid RSA public key length"));
+            return Err(invalid_field_err!("bitlen", "invalid RSA public key length"));
         }
 
         let datalen: usize = cast_length!("dataLen", src.read_u32())?;
         if datalen != (bitlen / 8) - 1 {
-            return Err(invalid_message_err!("dataLen", "invalid RSA public key data length"));
+            return Err(invalid_field_err!("dataLen", "invalid RSA public key data length"));
         }
 
         let public_exponent = src.read_u32();

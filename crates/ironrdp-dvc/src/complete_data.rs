@@ -1,6 +1,6 @@
 use alloc::vec::Vec;
 use core::cmp;
-use ironrdp_pdu::{cast_length, invalid_message_err, PduResult};
+use ironrdp_pdu::{cast_length, invalid_field_err, PduResult};
 
 use crate::pdu::{DataFirstPdu, DataPdu, DrdynvcDataPdu};
 
@@ -72,7 +72,7 @@ impl CompleteData {
                     }
                 }
             }
-            _ => Err(invalid_message_err!("DVC message", "data", "overflow occurred")),
+            _ => Err(invalid_field_err!("DVC message", "data", "overflow occurred")),
         }
     }
 }

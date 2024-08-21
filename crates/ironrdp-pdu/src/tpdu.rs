@@ -121,7 +121,7 @@ impl TpduHeader {
         let code = TpduCode::from(src.read_u8()); // Code
 
         if usize::from(li) + 1 + TpktHeader::SIZE > usize::from(tpkt.packet_length) {
-            return Err(PduError::invalid_message(
+            return Err(PduError::invalid_field(
                 Self::NAME,
                 "li",
                 "tpdu length greater than tpkt length",
@@ -130,7 +130,7 @@ impl TpduHeader {
 
         // The value 255 (1111 1111) is reserved for possible extensions.
         if li == 0b1111_1111 {
-            return Err(PduError::invalid_message(
+            return Err(PduError::invalid_field(
                 Self::NAME,
                 "li",
                 "unsupported X.224 extension (suggested by LI field set to 255)",

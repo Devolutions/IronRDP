@@ -131,7 +131,7 @@ impl<'de> PduDecode<'de> for InputEvent {
         let _event_time = src.read_u32(); // ignored by a server
         let event_type = src.read_u16();
         let event_type = InputEventType::from_u16(event_type)
-            .ok_or_else(|| invalid_message_err!("eventType", "invalid input event type"))?;
+            .ok_or_else(|| invalid_field_err!("eventType", "invalid input event type"))?;
 
         match event_type {
             InputEventType::Sync => Ok(Self::Sync(SyncPdu::decode(src)?)),

@@ -55,10 +55,10 @@ impl<'de> PduDecode<'de> for ClientClusterData {
         let redirected_session_id = src.read_u32();
 
         let flags = RedirectionFlags::from_bits(flags_with_version & !REDIRECTION_VERSION_MASK)
-            .ok_or_else(|| invalid_message_err!("flags", "invalid redirection flags"))?;
+            .ok_or_else(|| invalid_field_err!("flags", "invalid redirection flags"))?;
         let redirection_version =
             RedirectionVersion::from_u8(((flags_with_version & REDIRECTION_VERSION_MASK) >> 2) as u8)
-                .ok_or_else(|| invalid_message_err!("redirVersion", "invalid redirection version"))?;
+                .ok_or_else(|| invalid_field_err!("redirVersion", "invalid redirection version"))?;
 
         Ok(Self {
             flags,

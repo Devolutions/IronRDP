@@ -94,7 +94,7 @@ impl NowSessionMsgBoxReqMsg {
         let _message_size = Self::FIXED_PART_SIZE
             .checked_add(self.title.size())
             .and_then(|size| size.checked_add(self.message.size()))
-            .ok_or_else(|| invalid_message_err!("size", "message size overflow"))?;
+            .ok_or_else(|| invalid_field_err!("size", "message size overflow"))?;
 
         Ok(())
     }

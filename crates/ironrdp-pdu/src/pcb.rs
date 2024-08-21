@@ -48,7 +48,7 @@ impl<'de> PduDecode<'de> for PreconnectionBlob {
         let pcb_size: usize = cast_length!("cbSize", src.read_u32())?;
 
         if pcb_size < Self::FIXED_PART_SIZE {
-            return Err(PduError::invalid_message(
+            return Err(PduError::invalid_field(
                 Self::NAME,
                 "cbSize",
                 "advertised size too small for Preconnection PDU V1",
@@ -73,7 +73,7 @@ impl<'de> PduDecode<'de> for PreconnectionBlob {
             let cb_pcb = cch_pcb * 2;
 
             if remaining_size - 2 < cb_pcb {
-                return Err(PduError::invalid_message(
+                return Err(PduError::invalid_field(
                     Self::NAME,
                     "cchPCB",
                     "PCB string bigger than advertised size",
@@ -83,7 +83,7 @@ impl<'de> PduDecode<'de> for PreconnectionBlob {
             let wsz_pcb_utf16 = src.read_slice(cb_pcb);
 
             let payload = crate::utf16::read_utf16_string(wsz_pcb_utf16, Some(cch_pcb))
-                .map_err(|e| PduError::invalid_message(Self::NAME, "wszPCB", "bad UTF-16 string").with_source(e))?;
+                .map_err(|e| PduError::invalid_field(Self::NAME, "wszPCB", "bad UTF-16 string").with_source(e))?;
 
             let leftover_size = remaining_size - 2 - cb_pcb;
             src.advance(leftover_size); // Consume (unused) leftover data
@@ -106,7 +106,7 @@ impl<'de> PduDecode<'de> for PreconnectionBlob {
 impl PduEncode for PreconnectionBlob {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> PduResult<()> {
         if self.v2_payload.is_some() && self.version == PcbVersion::V1 {
-            return Err(PduError::invalid_message(
+            return Err(PduError::invalid_field(
                 Self::NAME,
                 "version",
                 "there is no string payload in Preconnection PDU V1",

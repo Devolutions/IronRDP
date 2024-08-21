@@ -79,7 +79,7 @@ impl<'de> PduDecode<'de> for Bitmap {
 
         let is_bitmap_compress_flag_set = src.read_u16() != 0;
         if !is_bitmap_compress_flag_set {
-            return Err(invalid_message_err!(
+            return Err(invalid_field_err!(
                 "isBitmapCompressFlagSet",
                 "invalid compression flag"
             ));

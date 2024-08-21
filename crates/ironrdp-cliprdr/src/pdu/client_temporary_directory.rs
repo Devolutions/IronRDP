@@ -2,7 +2,7 @@ use std::borrow::Cow;
 
 use ironrdp_core::{IntoOwned, ReadCursor, WriteCursor};
 use ironrdp_pdu::utils::{read_string_from_cursor, write_string_to_cursor, CharacterSet};
-use ironrdp_pdu::{cast_int, ensure_size, impl_pdu_borrowing, invalid_message_err, PduDecode, PduEncode, PduResult};
+use ironrdp_pdu::{cast_int, ensure_size, impl_pdu_borrowing, invalid_field_err, PduDecode, PduEncode, PduResult};
 
 use crate::pdu::PartialHeader;
 
@@ -49,7 +49,7 @@ impl ClientTemporaryDirectory<'_> {
         let mut cursor = ReadCursor::new(&self.path_buffer);
 
         read_string_from_cursor(&mut cursor, CharacterSet::Unicode, true)
-            .map_err(|_| invalid_message_err!("wszTempDir", "failed to decode temp dir path"))
+            .map_err(|_| invalid_field_err!("wszTempDir", "failed to decode temp dir path"))
     }
 }
 

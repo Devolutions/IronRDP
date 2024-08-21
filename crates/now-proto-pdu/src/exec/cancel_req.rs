@@ -64,7 +64,7 @@ impl PduDecode<'_> for NowExecCancelReqMsg {
 
         match (header.class, NowExecMsgKind(header.kind)) {
             (NowMessageClass::EXEC, NowExecMsgKind::CANCEL_REQ) => Self::decode_from_body(header, src),
-            _ => Err(invalid_message_err!("type", "invalid message type")),
+            _ => Err(invalid_field_err!("type", "invalid message type")),
         }
     }
 }
