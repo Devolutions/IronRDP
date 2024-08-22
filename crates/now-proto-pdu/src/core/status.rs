@@ -1,5 +1,5 @@
 use ironrdp_core::{ReadCursor, WriteCursor};
-use ironrdp_pdu::{DecodeError, DecodeResult, EncodeResult, PduDecode, PduEncode};
+use ironrdp_pdu::{Decode, DecodeError, DecodeResult, Encode, EncodeResult};
 
 /// Error or status severity.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -96,7 +96,7 @@ impl NowStatus {
     }
 }
 
-impl PduEncode for NowStatus {
+impl Encode for NowStatus {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
 
@@ -119,7 +119,7 @@ impl PduEncode for NowStatus {
     }
 }
 
-impl PduDecode<'_> for NowStatus {
+impl Decode<'_> for NowStatus {
     fn decode(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 

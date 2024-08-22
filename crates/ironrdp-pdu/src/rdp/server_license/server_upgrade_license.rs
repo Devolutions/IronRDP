@@ -7,7 +7,7 @@ use super::{
 };
 use crate::crypto::rc4::Rc4;
 use crate::utils::CharacterSet;
-use crate::{utils, DecodeResult, EncodeResult, PduDecode, PduEncode};
+use crate::{utils, Decode, DecodeResult, Encode, EncodeResult};
 use ironrdp_core::{ReadCursor, WriteCursor};
 
 const NEW_LICENSE_INFO_STATIC_FIELDS_SIZE: usize = 20;
@@ -105,7 +105,7 @@ impl NewLicenseInformation {
     const FIXED_PART_SIZE: usize = NEW_LICENSE_INFO_STATIC_FIELDS_SIZE;
 }
 
-impl PduEncode for NewLicenseInformation {
+impl Encode for NewLicenseInformation {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
@@ -147,7 +147,7 @@ impl PduEncode for NewLicenseInformation {
     }
 }
 
-impl<'de> PduDecode<'de> for NewLicenseInformation {
+impl<'de> Decode<'de> for NewLicenseInformation {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 

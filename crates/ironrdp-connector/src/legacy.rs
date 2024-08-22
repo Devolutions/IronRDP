@@ -2,7 +2,7 @@ use std::borrow::Cow;
 
 use ironrdp_core::WriteBuf;
 use ironrdp_pdu::rdp::headers::ServerDeactivateAll;
-use ironrdp_pdu::{decode, encode_vec, rdp, PduDecode, PduEncode};
+use ironrdp_pdu::{decode, encode_vec, rdp, Decode, Encode};
 
 use crate::{ConnectorError, ConnectorErrorExt as _, ConnectorResult};
 
@@ -13,7 +13,7 @@ pub fn encode_send_data_request<T>(
     buf: &mut WriteBuf,
 ) -> ConnectorResult<usize>
 where
-    T: PduEncode,
+    T: Encode,
 {
     let user_data = encode_vec(user_msg).map_err(ConnectorError::encode)?;
 
@@ -38,7 +38,7 @@ pub struct SendDataIndicationCtx<'a> {
 impl<'a> SendDataIndicationCtx<'a> {
     pub fn decode_user_data<'de, T>(&self) -> ConnectorResult<T>
     where
-        T: PduDecode<'de>,
+        T: Decode<'de>,
         'a: 'de,
     {
         let msg = decode::<T>(self.user_data).map_err(ConnectorError::decode)?;

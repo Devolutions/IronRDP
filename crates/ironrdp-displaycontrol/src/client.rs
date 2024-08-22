@@ -4,7 +4,7 @@ use crate::{
 };
 use ironrdp_core::{impl_as_any, ReadCursor};
 use ironrdp_dvc::{encode_dvc_messages, DvcClientProcessor, DvcMessage, DvcProcessor};
-use ironrdp_pdu::{decode_err, EncodeResult, PduDecode, PduResult};
+use ironrdp_pdu::{decode_err, Decode, EncodeResult, PduResult};
 use ironrdp_svc::{ChannelFlags, SvcMessage};
 use tracing::debug;
 

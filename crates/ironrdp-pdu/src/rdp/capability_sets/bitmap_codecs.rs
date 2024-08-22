@@ -6,7 +6,7 @@ use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive, ToPrimitive};
 
 use crate::{decode, DecodeResult, EncodeResult};
-use crate::{PduDecode, PduEncode};
+use crate::{Decode, Encode};
 use ironrdp_core::{ReadCursor, WriteCursor};
 
 const RFX_ICAP_VERSION: u16 = 0x0100;
@@ -47,7 +47,7 @@ impl Guid {
     const FIXED_PART_SIZE: usize = 16;
 }
 
-impl PduEncode for Guid {
+impl Encode for Guid {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
 
@@ -75,7 +75,7 @@ impl PduEncode for Guid {
     }
 }
 
-impl<'de> PduDecode<'de> for Guid {
+impl<'de> Decode<'de> for Guid {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
@@ -106,7 +106,7 @@ impl BitmapCodecs {
     const FIXED_PART_SIZE: usize = 1 /* len */;
 }
 
-impl PduEncode for BitmapCodecs {
+impl Encode for BitmapCodecs {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
@@ -124,11 +124,11 @@ impl PduEncode for BitmapCodecs {
     }
 
     fn size(&self) -> usize {
-        Self::FIXED_PART_SIZE + self.0.iter().map(PduEncode::size).sum::<usize>()
+        Self::FIXED_PART_SIZE + self.0.iter().map(Encode::size).sum::<usize>()
     }
 }
 
-impl<'de> PduDecode<'de> for BitmapCodecs {
+impl<'de> Decode<'de> for BitmapCodecs {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
@@ -155,7 +155,7 @@ impl Codec {
     const FIXED_PART_SIZE: usize = CODEC_STATIC_DATA_LENGTH;
 }
 
-impl PduEncode for Codec {
+impl Encode for Codec {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
@@ -230,7 +230,7 @@ impl PduEncode for Codec {
     }
 }
 
-impl<'de> PduDecode<'de> for Codec {
+impl<'de> Decode<'de> for Codec {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
@@ -319,7 +319,7 @@ impl NsCodec {
     const FIXED_PART_SIZE: usize = NSCODEC_LENGTH;
 }
 
-impl PduEncode for NsCodec {
+impl Encode for NsCodec {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
 
@@ -339,7 +339,7 @@ impl PduEncode for NsCodec {
     }
 }
 
-impl<'de> PduDecode<'de> for NsCodec {
+impl<'de> Decode<'de> for NsCodec {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
@@ -368,7 +368,7 @@ impl RfxClientCapsContainer {
     const FIXED_PART_SIZE: usize = RFX_CLIENT_CAPS_CONTAINER_STATIC_DATA_LENGTH;
 }
 
-impl PduEncode for RfxClientCapsContainer {
+impl Encode for RfxClientCapsContainer {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
@@ -389,7 +389,7 @@ impl PduEncode for RfxClientCapsContainer {
     }
 }
 
-impl<'de> PduDecode<'de> for RfxClientCapsContainer {
+impl<'de> Decode<'de> for RfxClientCapsContainer {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         let _length = src.read_u32();
         let capture_flags = CaptureFlags::from_bits_truncate(src.read_u32());
@@ -412,7 +412,7 @@ impl RfxCaps {
     const FIXED_PART_SIZE: usize = RFX_CAPS_STATIC_DATA_LENGTH;
 }
 
-impl PduEncode for RfxCaps {
+impl Encode for RfxCaps {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
@@ -433,7 +433,7 @@ impl PduEncode for RfxCaps {
     }
 }
 
-impl<'de> PduDecode<'de> for RfxCaps {
+impl<'de> Decode<'de> for RfxCaps {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
@@ -467,7 +467,7 @@ impl RfxCapset {
     const FIXED_PART_SIZE: usize = RFX_CAPSET_STATIC_DATA_LENGTH;
 }
 
-impl PduEncode for RfxCapset {
+impl Encode for RfxCapset {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
@@ -497,7 +497,7 @@ impl PduEncode for RfxCapset {
     }
 }
 
-impl<'de> PduDecode<'de> for RfxCapset {
+impl<'de> Decode<'de> for RfxCapset {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         let block_type = src.read_u16();
         if block_type != RFX_CAPSET_BLOCK_TYPE {
@@ -540,7 +540,7 @@ impl RfxICap {
     const FIXED_PART_SIZE: usize = RFX_ICAP_LENGTH;
 }
 
-impl PduEncode for RfxICap {
+impl Encode for RfxICap {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
 
@@ -563,7 +563,7 @@ impl PduEncode for RfxICap {
     }
 }
 
-impl<'de> PduDecode<'de> for RfxICap {
+impl<'de> Decode<'de> for RfxICap {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 

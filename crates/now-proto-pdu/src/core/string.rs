@@ -3,7 +3,7 @@
 use alloc::string::String;
 
 use ironrdp_core::{ReadCursor, WriteCursor};
-use ironrdp_pdu::{DecodeResult, EncodeResult, PduDecode, PduEncode};
+use ironrdp_pdu::{Decode, DecodeResult, Encode, EncodeResult};
 
 use crate::VarU32;
 
@@ -54,7 +54,7 @@ impl NowLrgStr {
     }
 }
 
-impl PduEncode for NowLrgStr {
+impl Encode for NowLrgStr {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         let encoded_size = self.size();
         ensure_size!(in: dst, size: encoded_size);
@@ -81,7 +81,7 @@ impl PduEncode for NowLrgStr {
     }
 }
 
-impl PduDecode<'_> for NowLrgStr {
+impl Decode<'_> for NowLrgStr {
     fn decode(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
@@ -144,7 +144,7 @@ impl NowVarStr {
     }
 }
 
-impl PduEncode for NowVarStr {
+impl Encode for NowVarStr {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         let encoded_size = self.size();
         ensure_size!(in: dst, size: encoded_size);
@@ -171,7 +171,7 @@ impl PduEncode for NowVarStr {
     }
 }
 
-impl PduDecode<'_> for NowVarStr {
+impl Decode<'_> for NowVarStr {
     fn decode(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
         let len_u32 = VarU32::decode(src)?.value();
         let len: usize = cast_length!("len", len_u32)?;
@@ -235,7 +235,7 @@ impl<const MAX_LEN: u8> NowRestrictedStr<MAX_LEN> {
     }
 }
 
-impl<const MAX_LEN: u8> PduEncode for NowRestrictedStr<MAX_LEN> {
+impl<const MAX_LEN: u8> Encode for NowRestrictedStr<MAX_LEN> {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         let encoded_size = self.size();
         ensure_size!(in: dst, size: encoded_size);
@@ -263,7 +263,7 @@ impl<const MAX_LEN: u8> PduEncode for NowRestrictedStr<MAX_LEN> {
     }
 }
 
-impl<const MAX_LEN: u8> PduDecode<'_> for NowRestrictedStr<MAX_LEN> {
+impl<const MAX_LEN: u8> Decode<'_> for NowRestrictedStr<MAX_LEN> {
     fn decode(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 

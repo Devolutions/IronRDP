@@ -12,7 +12,7 @@ pub use graphics_messages::{
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive as _, ToPrimitive as _};
 
-use crate::{DecodeResult, EncodeResult, PduDecode, PduEncode};
+use crate::{Decode, DecodeResult, Encode, EncodeResult};
 use ironrdp_core::{ReadCursor, WriteCursor};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -45,7 +45,7 @@ impl ServerPdu {
     const FIXED_PART_SIZE: usize = RDP_GFX_HEADER_SIZE;
 }
 
-impl PduEncode for ServerPdu {
+impl Encode for ServerPdu {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
@@ -106,7 +106,7 @@ impl PduEncode for ServerPdu {
     }
 }
 
-impl<'a> PduDecode<'a> for ServerPdu {
+impl<'a> Decode<'a> for ServerPdu {
     fn decode(src: &mut ReadCursor<'a>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
@@ -170,7 +170,7 @@ impl ClientPdu {
     const FIXED_PART_SIZE: usize = RDP_GFX_HEADER_SIZE;
 }
 
-impl PduEncode for ClientPdu {
+impl Encode for ClientPdu {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
@@ -197,7 +197,7 @@ impl PduEncode for ClientPdu {
     }
 }
 
-impl<'a> PduDecode<'a> for ClientPdu {
+impl<'a> Decode<'a> for ClientPdu {
     fn decode(src: &mut ReadCursor<'a>) -> DecodeResult<Self> {
         let pdu_type = ClientPduType::from_u16(src.read_u16())
             .ok_or_else(|| invalid_field_err!("clientPduType", "invalid pdu type"))?;

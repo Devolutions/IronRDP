@@ -5,7 +5,7 @@ use bitflags::bitflags;
 use num_traits::{FromPrimitive, ToPrimitive};
 
 use crate::gcc::{KeyboardType, IME_FILE_NAME_SIZE};
-use crate::{utils, DecodeResult, EncodeResult, PduDecode, PduEncode};
+use crate::{utils, Decode, DecodeResult, Encode, EncodeResult};
 use ironrdp_core::{ReadCursor, WriteCursor};
 
 const INPUT_LENGTH: usize = 84;
@@ -41,7 +41,7 @@ impl Input {
     const FIXED_PART_SIZE: usize = INPUT_LENGTH;
 }
 
-impl PduEncode for Input {
+impl Encode for Input {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
 
@@ -78,7 +78,7 @@ impl PduEncode for Input {
     }
 }
 
-impl<'de> PduDecode<'de> for Input {
+impl<'de> Decode<'de> for Input {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 

@@ -1,7 +1,7 @@
 #[cfg(test)]
 mod tests;
 
-use crate::{DecodeResult, EncodeResult, PduDecode, PduEncode};
+use crate::{Decode, DecodeResult, Encode, EncodeResult};
 use ironrdp_core::{ReadCursor, WriteCursor};
 
 const OFFSCREEN_BITMAP_CACHE_LENGTH: usize = 8;
@@ -19,7 +19,7 @@ impl OffscreenBitmapCache {
     const FIXED_PART_SIZE: usize = OFFSCREEN_BITMAP_CACHE_LENGTH;
 }
 
-impl PduEncode for OffscreenBitmapCache {
+impl Encode for OffscreenBitmapCache {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
 
@@ -39,7 +39,7 @@ impl PduEncode for OffscreenBitmapCache {
     }
 }
 
-impl<'de> PduDecode<'de> for OffscreenBitmapCache {
+impl<'de> Decode<'de> for OffscreenBitmapCache {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 

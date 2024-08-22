@@ -6,7 +6,7 @@ use ironrdp_pdu::decode_err;
 use ironrdp_pdu::encode_err;
 use ironrdp_pdu::gcc::ChannelName;
 use ironrdp_pdu::EncodeResult;
-use ironrdp_pdu::{cast_length, other_err, PduDecode, PduResult};
+use ironrdp_pdu::{cast_length, other_err, Decode, PduResult};
 use ironrdp_svc::{CompressionCondition, SvcClientProcessor, SvcMessage, SvcProcessor};
 use tracing::{debug, error};
 

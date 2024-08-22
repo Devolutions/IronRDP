@@ -6,9 +6,9 @@ use std::mem::size_of;
 
 use ironrdp_core::{ReadCursor, WriteCursor};
 use ironrdp_pdu::utils::CharacterSet;
-use ironrdp_pdu::{cast_length, ensure_size, invalid_field_err, DecodeError, DecodeResult, EncodeResult, PduEncode};
+use ironrdp_pdu::{cast_length, ensure_size, invalid_field_err, DecodeError, DecodeResult, EncodeResult};
 
-/// Wrapper struct for [MS-RPCE] PDUs that allows for common [`PduEncode`], [`Encode`], and [`Self::decode`] implementations.
+/// Wrapper struct for [MS-RPCE] PDUs that allows for common [`Encode`], [`Encode`], and [`Self::decode`] implementations.
 ///
 /// Structs which are meant to be encoded into an [MS-RPCE] message should typically implement [`HeaderlessEncode`],
 /// and their `new` function should return a [`Pdu`] wrapping the underlying struct.
@@ -105,7 +105,7 @@ impl<T: HeaderlessDecode> Pdu<T> {
     }
 }
 
-impl<T: HeaderlessEncode> PduEncode for Pdu<T> {
+impl<T: HeaderlessEncode> ironrdp_pdu::Encode for Pdu<T> {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(ctx: self.name(), in: dst, size: self.size());
         let stream_header = StreamHeader::default();
@@ -139,7 +139,7 @@ impl<T: HeaderlessEncode> Encode for Pdu<T> {}
 ///
 /// Implementers should typically avoid implementing this trait directly
 /// and instead implement [`HeaderlessEncode`], and wrap it in a [`Pdu`].
-pub trait Encode: PduEncode + Send + std::fmt::Debug {}
+pub trait Encode: ironrdp_pdu::Encode + Send + std::fmt::Debug {}
 
 /// Trait for types that can be encoded into an [MS-RPCE] message.
 ///

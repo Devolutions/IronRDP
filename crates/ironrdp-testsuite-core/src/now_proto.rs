@@ -2,7 +2,7 @@
 use expect_test::Expect;
 
 use ironrdp_core::ReadCursor;
-use ironrdp_pdu::PduDecode as _;
+use ironrdp_pdu::Decode as _;
 
 use now_proto_pdu::NowMessage;
 

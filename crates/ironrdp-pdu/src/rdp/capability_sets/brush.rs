@@ -4,7 +4,7 @@ mod tests;
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive, ToPrimitive};
 
-use crate::{DecodeResult, EncodeResult, PduDecode, PduEncode};
+use crate::{Decode, DecodeResult, Encode, EncodeResult};
 use ironrdp_core::{ReadCursor, WriteCursor};
 
 const BRUSH_LENGTH: usize = 4;
@@ -27,7 +27,7 @@ impl Brush {
     const FIXED_PART_SIZE: usize = BRUSH_LENGTH;
 }
 
-impl PduEncode for Brush {
+impl Encode for Brush {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
 
@@ -45,7 +45,7 @@ impl PduEncode for Brush {
     }
 }
 
-impl<'de> PduDecode<'de> for Brush {
+impl<'de> Decode<'de> for Brush {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 

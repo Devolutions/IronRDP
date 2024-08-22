@@ -2,7 +2,7 @@ use ironrdp_core::{ReadCursor, WriteCursor};
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive, ToPrimitive};
 
-use crate::{DecodeResult, EncodeResult, PduDecode, PduEncode};
+use crate::{Decode, DecodeResult, Encode, EncodeResult};
 
 const MONITOR_COUNT_MAX: usize = 16;
 const MONITOR_ATTRIBUTE_SIZE: u32 = 20;
@@ -23,7 +23,7 @@ impl ClientMonitorExtendedData {
     const FIXED_PART_SIZE: usize = FLAGS_SIZE + MONITOR_ATTRIBUTE_SIZE_FIELD_SIZE + MONITOR_COUNT;
 }
 
-impl PduEncode for ClientMonitorExtendedData {
+impl Encode for ClientMonitorExtendedData {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
@@ -47,7 +47,7 @@ impl PduEncode for ClientMonitorExtendedData {
     }
 }
 
-impl<'de> PduDecode<'de> for ClientMonitorExtendedData {
+impl<'de> Decode<'de> for ClientMonitorExtendedData {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
@@ -88,7 +88,7 @@ impl ExtendedMonitorInfo {
     const FIXED_PART_SIZE: usize = MONITOR_SIZE;
 }
 
-impl PduEncode for ExtendedMonitorInfo {
+impl Encode for ExtendedMonitorInfo {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
 
@@ -110,7 +110,7 @@ impl PduEncode for ExtendedMonitorInfo {
     }
 }
 
-impl<'de> PduDecode<'de> for ExtendedMonitorInfo {
+impl<'de> Decode<'de> for ExtendedMonitorInfo {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 

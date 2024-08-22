@@ -5,7 +5,7 @@ use std::fmt;
 
 use bitflags::bitflags;
 
-use crate::{DecodeResult, EncodeResult, PduDecode, PduEncode};
+use crate::{Decode, DecodeResult, Encode, EncodeResult};
 use ironrdp_core::{ReadCursor, WriteCursor};
 
 const GENERAL_LENGTH: usize = 20;
@@ -121,7 +121,7 @@ impl Default for General {
     }
 }
 
-impl PduEncode for General {
+impl Encode for General {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
 
@@ -149,7 +149,7 @@ impl PduEncode for General {
     }
 }
 
-impl<'de> PduDecode<'de> for General {
+impl<'de> Decode<'de> for General {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 

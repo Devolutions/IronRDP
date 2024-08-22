@@ -3,7 +3,7 @@ mod tests;
 
 use bitflags::bitflags;
 
-use crate::{DecodeResult, EncodeResult, PduDecode, PduEncode};
+use crate::{Decode, DecodeResult, Encode, EncodeResult};
 use ironrdp_core::{ReadCursor, WriteCursor};
 
 const BITMAP_LENGTH: usize = 24;
@@ -33,7 +33,7 @@ impl Bitmap {
     const FIXED_PART_SIZE: usize = BITMAP_LENGTH;
 }
 
-impl PduEncode for Bitmap {
+impl Encode for Bitmap {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
 
@@ -63,7 +63,7 @@ impl PduEncode for Bitmap {
     }
 }
 
-impl<'de> PduDecode<'de> for Bitmap {
+impl<'de> Decode<'de> for Bitmap {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 

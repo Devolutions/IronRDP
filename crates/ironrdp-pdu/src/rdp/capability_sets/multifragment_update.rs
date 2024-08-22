@@ -1,4 +1,4 @@
-use crate::{DecodeResult, EncodeResult, PduDecode, PduEncode};
+use crate::{Decode, DecodeResult, Encode, EncodeResult};
 use ironrdp_core::{ReadCursor, WriteCursor};
 
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -12,7 +12,7 @@ impl MultifragmentUpdate {
     const FIXED_PART_SIZE: usize = 4;
 }
 
-impl PduEncode for MultifragmentUpdate {
+impl Encode for MultifragmentUpdate {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
 
@@ -30,7 +30,7 @@ impl PduEncode for MultifragmentUpdate {
     }
 }
 
-impl<'de> PduDecode<'de> for MultifragmentUpdate {
+impl<'de> Decode<'de> for MultifragmentUpdate {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 

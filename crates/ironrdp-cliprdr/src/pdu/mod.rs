@@ -20,8 +20,8 @@ use bitflags::bitflags;
 use ironrdp_core::{ReadCursor, WriteCursor};
 use ironrdp_pdu::DecodeResult;
 use ironrdp_pdu::EncodeResult;
-use ironrdp_pdu::{ensure_fixed_part_size, invalid_field_err, PduDecode, PduEncode};
-use ironrdp_svc::SvcPduEncode;
+use ironrdp_pdu::{ensure_fixed_part_size, invalid_field_err, Decode, Encode};
+use ironrdp_svc::SvcEncode;
 
 const MSG_TYPE_MONITOR_READY: u16 = 0x0001;
 const MSG_TYPE_FORMAT_LIST: u16 = 0x0002;
@@ -66,7 +66,7 @@ impl PartialHeader {
     }
 }
 
-impl<'de> PduDecode<'de> for PartialHeader {
+impl<'de> Decode<'de> for PartialHeader {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
@@ -80,7 +80,7 @@ impl<'de> PduDecode<'de> for PartialHeader {
     }
 }
 
-impl PduEncode for PartialHeader {
+impl Encode for PartialHeader {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
 
@@ -136,7 +136,7 @@ impl ClipboardPdu<'_> {
     }
 }
 
-impl PduEncode for ClipboardPdu<'_> {
+impl Encode for ClipboardPdu<'_> {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
 
@@ -218,9 +218,9 @@ impl PduEncode for ClipboardPdu<'_> {
     }
 }
 
-impl SvcPduEncode for ClipboardPdu<'_> {}
+impl SvcEncode for ClipboardPdu<'_> {}
 
-impl<'de> PduDecode<'de> for ClipboardPdu<'de> {
+impl<'de> Decode<'de> for ClipboardPdu<'de> {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 

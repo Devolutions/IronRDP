@@ -11,12 +11,12 @@ RDP PDU encoding and decoding library.
 
 ## Overview of encoding and decoding traits
 
-It’s important for `PduEncode` to be object-safe in order to enable patterns such as the one
+It’s important for `Encode` to be object-safe in order to enable patterns such as the one
 found in `ironrdp-svc`:
 
 ```rust
 pub trait SvcProcessor {
-    fn process(&mut self, payload: &[u8]) -> PduResult<Vec<Box<dyn PduEncode>>>;
+    fn process(&mut self, payload: &[u8]) -> PduResult<Vec<Box<dyn Encode>>>;
 }
 ```
 
@@ -35,7 +35,7 @@ TODO: elaborate this section
 - Be `no-std` and `no-alloc` friendly, which `std::io::Cursor` is not as of today.
 
 The underlying storage could be abstracted over, but it’s deliberately hardcoded to `&mut [u8]`
-so traits such as `PduEncode` using `WriteCursor` in their associated methods are object-safe.
+so traits such as `Encode` using `WriteCursor` in their associated methods are object-safe.
 
 `WriteBuf` is used in APIs where the required space cannot be known in advance. For instance,
 `ironrdp_connector::Sequence::step` is taking `&mut WriteBuf` instead of `&mut
@@ -90,7 +90,7 @@ is preferred in order to write `no-std` and `no-alloc` friendly code.
 `WriteCursor`, in essence, is a helper for this kind of code:
 
 ```rust
-pub fn encode_buf<T: PduEncode + ?Sized>(pdu: &T, buf: &mut Vec<u8>, filled_len: usize) -> PduResult<usize> {
+pub fn encode_buf<T: Encode + ?Sized>(pdu: &T, buf: &mut Vec<u8>, filled_len: usize) -> PduResult<usize> {
     let pdu_size = pdu.size();
 
     // Resize the buffer, making sure there is enough space to fit the serialized PDU
@@ -135,7 +135,7 @@ and a cautious approach when clearing and resizing it.
 In comparison, the same code using `WriteBuf` looks like this:
 
 ```rust
-pub fn encode_buf<T: PduEncode + ?Sized>(pdu: &T, buf: &mut WriteBuf) -> PduResult<usize> {
+pub fn encode_buf<T: Encode + ?Sized>(pdu: &T, buf: &mut WriteBuf) -> PduResult<usize> {
     let pdu_size = pdu.size();
 
     let dst = buf.unfilled_to(pdu_size);

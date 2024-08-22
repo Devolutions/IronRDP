@@ -10,7 +10,7 @@ use ironrdp_core::ReadCursor;
 use ironrdp_pdu::{self as pdu, decode_err, encode_err, other_err, DecodeResult};
 use ironrdp_svc::{ChannelFlags, CompressionCondition, SvcMessage, SvcProcessor, SvcServerProcessor};
 use pdu::gcc::ChannelName;
-use pdu::PduDecode as _;
+use pdu::Decode as _;
 use pdu::PduResult;
 use pdu::{cast_length, invalid_field_err};
 use slab::Slab;

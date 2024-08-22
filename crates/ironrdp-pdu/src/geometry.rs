@@ -1,6 +1,6 @@
 use std::cmp::{max, min};
 
-use crate::{DecodeResult, EncodeResult, PduDecode, PduEncode};
+use crate::{Decode, DecodeResult, Encode, EncodeResult};
 use ironrdp_core::{ReadCursor, WriteCursor};
 
 pub(crate) mod private {
@@ -177,7 +177,7 @@ impl InclusiveRectangle {
     pub const ENCODED_SIZE: usize = Self::FIXED_PART_SIZE;
 }
 
-impl PduEncode for InclusiveRectangle {
+impl Encode for InclusiveRectangle {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
 
@@ -198,7 +198,7 @@ impl PduEncode for InclusiveRectangle {
     }
 }
 
-impl<'de> PduDecode<'de> for InclusiveRectangle {
+impl<'de> Decode<'de> for InclusiveRectangle {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
@@ -223,7 +223,7 @@ impl ExclusiveRectangle {
     pub const ENCODED_SIZE: usize = Self::FIXED_PART_SIZE;
 }
 
-impl PduEncode for ExclusiveRectangle {
+impl Encode for ExclusiveRectangle {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
 
@@ -244,7 +244,7 @@ impl PduEncode for ExclusiveRectangle {
     }
 }
 
-impl<'de> PduDecode<'de> for ExclusiveRectangle {
+impl<'de> Decode<'de> for ExclusiveRectangle {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 

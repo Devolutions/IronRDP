@@ -3,7 +3,7 @@ mod tests;
 
 use bitflags::bitflags;
 
-use crate::{DecodeResult, EncodeResult, PduDecode, PduEncode};
+use crate::{Decode, DecodeResult, Encode, EncodeResult};
 use ironrdp_core::{ReadCursor, WriteCursor};
 
 const SURFACE_COMMANDS_LENGTH: usize = 8;
@@ -28,7 +28,7 @@ impl SurfaceCommands {
     const FIXED_PART_SIZE: usize = SURFACE_COMMANDS_LENGTH;
 }
 
-impl PduEncode for SurfaceCommands {
+impl Encode for SurfaceCommands {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
 
@@ -47,7 +47,7 @@ impl PduEncode for SurfaceCommands {
     }
 }
 
-impl<'de> PduDecode<'de> for SurfaceCommands {
+impl<'de> Decode<'de> for SurfaceCommands {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 

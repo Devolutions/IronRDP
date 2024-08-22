@@ -4,7 +4,7 @@ use std::net::SocketAddr;
 
 use ironrdp_core::WriteBuf;
 use ironrdp_pdu::rdp::client_info::TimezoneInfo;
-use ironrdp_pdu::{decode, encode_vec, gcc, mcs, nego, rdp, PduEncode, PduHint};
+use ironrdp_pdu::{decode, encode_vec, gcc, mcs, nego, rdp, Encode, PduHint};
 use ironrdp_svc::{StaticChannelSet, StaticVirtualChannel, SvcClientProcessor};
 
 use crate::channel_connection::{ChannelConnectionSequence, ChannelConnectionState};
@@ -582,7 +582,7 @@ impl Sequence for ClientConnector {
     }
 }
 
-pub fn encode_send_data_request<T: PduEncode>(
+pub fn encode_send_data_request<T: Encode>(
     initiator_id: u16,
     channel_id: u16,
     user_msg: &T,

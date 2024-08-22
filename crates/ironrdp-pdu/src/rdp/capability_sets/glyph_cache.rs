@@ -4,7 +4,7 @@ mod tests;
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive, ToPrimitive};
 
-use crate::{DecodeResult, EncodeResult, PduDecode, PduEncode};
+use crate::{Decode, DecodeResult, Encode, EncodeResult};
 use ironrdp_core::{ReadCursor, WriteCursor};
 
 pub const GLYPH_CACHE_NUM: usize = 10;
@@ -32,7 +32,7 @@ impl CacheDefinition {
     const FIXED_PART_SIZE: usize = CACHE_DEFINITION_LENGTH;
 }
 
-impl PduEncode for CacheDefinition {
+impl Encode for CacheDefinition {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
 
@@ -51,7 +51,7 @@ impl PduEncode for CacheDefinition {
     }
 }
 
-impl<'de> PduDecode<'de> for CacheDefinition {
+impl<'de> Decode<'de> for CacheDefinition {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
@@ -75,7 +75,7 @@ impl GlyphCache {
     const FIXED_PART_SIZE: usize = GLYPH_CACHE_LENGTH;
 }
 
-impl PduEncode for GlyphCache {
+impl Encode for GlyphCache {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
 
@@ -100,7 +100,7 @@ impl PduEncode for GlyphCache {
     }
 }
 
-impl<'de> PduDecode<'de> for GlyphCache {
+impl<'de> Decode<'de> for GlyphCache {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 

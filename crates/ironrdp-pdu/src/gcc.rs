@@ -4,7 +4,7 @@ use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive, ToPrimitive};
 use thiserror::Error;
 
-use crate::{decode, DecodeErrorKind, DecodeResult, EncodeResult, PduDecode, PduEncode, PduError};
+use crate::{decode, Decode, DecodeErrorKind, DecodeResult, Encode, EncodeResult, PduError};
 use ironrdp_core::{ReadCursor, WriteCursor};
 
 pub mod conference_create;
@@ -79,7 +79,7 @@ impl ClientGccBlocks {
     }
 }
 
-impl PduEncode for ClientGccBlocks {
+impl Encode for ClientGccBlocks {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
@@ -138,7 +138,7 @@ impl PduEncode for ClientGccBlocks {
     }
 }
 
-impl<'de> PduDecode<'de> for ClientGccBlocks {
+impl<'de> Decode<'de> for ClientGccBlocks {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         let mut core = None;
         let mut security = None;
@@ -197,7 +197,7 @@ impl ServerGccBlocks {
     }
 }
 
-impl PduEncode for ServerGccBlocks {
+impl Encode for ServerGccBlocks {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         UserDataHeader::encode(dst, ServerGccType::CoreData, &self.core)?;
         UserDataHeader::encode(dst, ServerGccType::NetworkData, &self.network)?;
@@ -231,7 +231,7 @@ impl PduEncode for ServerGccBlocks {
     }
 }
 
-impl<'de> PduDecode<'de> for ServerGccBlocks {
+impl<'de> Decode<'de> for ServerGccBlocks {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         let mut core = None;
         let mut network = None;
@@ -293,7 +293,7 @@ impl UserDataHeader {
     pub fn encode<T, B>(dst: &mut WriteCursor<'_>, block_type: T, block: &B) -> EncodeResult<()>
     where
         T: ToPrimitive,
-        B: PduEncode,
+        B: Encode,
     {
         ensure_fixed_part_size!(in: dst);
 

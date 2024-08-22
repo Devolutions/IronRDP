@@ -26,7 +26,7 @@ pub use connection_finalization::{ConnectionFinalizationSequence, ConnectionFina
 use ironrdp_core::WriteBuf;
 use ironrdp_pdu::rdp::capability_sets;
 use ironrdp_pdu::rdp::client_info::PerformanceFlags;
-use ironrdp_pdu::{encode_buf, encode_vec, gcc, x224, PduEncode, PduHint};
+use ironrdp_pdu::{encode_buf, encode_vec, gcc, x224, Encode, PduHint};
 pub use license_exchange::{LicenseExchangeSequence, LicenseExchangeState};
 pub use server_name::ServerName;
 pub use sspi;
@@ -349,7 +349,7 @@ impl<T> ConnectorResultExt for ConnectorResult<T> {
 
 pub fn encode_x224_packet<T>(x224_msg: &T, buf: &mut WriteBuf) -> ConnectorResult<usize>
 where
-    T: PduEncode,
+    T: Encode,
 {
     let x224_msg_buf = encode_vec(x224_msg).map_err(ConnectorError::encode)?;
 

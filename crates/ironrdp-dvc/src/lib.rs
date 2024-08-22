@@ -17,7 +17,7 @@ use alloc::vec::Vec;
 #[rustfmt::skip] // do not re-order this pub use
 pub use ironrdp_pdu;
 use ironrdp_core::{assert_obj_safe, AsAny};
-use ironrdp_pdu::{cast_length, decode_err, encode_vec, other_err, EncodeResult, PduEncode, PduResult};
+use ironrdp_pdu::{cast_length, decode_err, encode_vec, other_err, Encode, EncodeResult, PduResult};
 use ironrdp_svc::{self, SvcMessage};
 
 mod complete_data;
@@ -34,8 +34,8 @@ pub mod pdu;
 /// Represents a message that, when encoded, forms a complete PDU for a given dynamic virtual channel.
 /// This means a message that is ready to be wrapped in [`dvc::CommonPdu::DataFirst`] and [`dvc::CommonPdu::Data`] PDUs
 /// (being split into multiple of such PDUs if necessary).
-pub trait DvcPduEncode: PduEncode + Send {}
-pub type DvcMessage = Box<dyn DvcPduEncode>;
+pub trait DvcEncode: Encode + Send {}
+pub type DvcMessage = Box<dyn DvcEncode>;
 
 /// A type that is a Dynamic Virtual Channel (DVC)
 ///

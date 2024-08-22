@@ -3,8 +3,8 @@ use std::borrow::Cow;
 use ironrdp_core::{IntoOwned, ReadCursor, WriteCursor};
 use ironrdp_pdu::utils::{read_string_from_cursor, to_utf16_bytes, write_string_to_cursor, CharacterSet};
 use ironrdp_pdu::{
-    cast_int, decode_err, ensure_size, impl_pdu_borrowing, impl_pdu_pod, invalid_field_err, DecodeResult, EncodeResult,
-    PduDecode, PduEncode, PduResult,
+    cast_int, decode_err, ensure_size, impl_pdu_borrowing, impl_pdu_pod, invalid_field_err, Decode, DecodeResult,
+    Encode, EncodeResult, PduResult,
 };
 
 use crate::pdu::{ClipboardPduFlags, PartialHeader};
@@ -367,7 +367,7 @@ impl FormatList<'_> {
     }
 }
 
-impl<'de> PduDecode<'de> for FormatList<'de> {
+impl<'de> Decode<'de> for FormatList<'de> {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         let header = PartialHeader::decode(src)?;
 
@@ -383,7 +383,7 @@ impl<'de> PduDecode<'de> for FormatList<'de> {
     }
 }
 
-impl PduEncode for FormatList<'_> {
+impl Encode for FormatList<'_> {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         let header_flags = if self.use_ascii {
             ClipboardPduFlags::ASCII_NAMES
@@ -423,7 +423,7 @@ impl FormatListResponse {
     const NAME: &'static str = "FORMAT_LIST_RESPONSE";
 }
 
-impl PduEncode for FormatListResponse {
+impl Encode for FormatListResponse {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         let header_flags = match self {
             FormatListResponse::Ok => ClipboardPduFlags::RESPONSE_OK,
@@ -443,7 +443,7 @@ impl PduEncode for FormatListResponse {
     }
 }
 
-impl<'de> PduDecode<'de> for FormatListResponse {
+impl<'de> Decode<'de> for FormatListResponse {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         let header = PartialHeader::decode(src)?;
         match header.message_flags {

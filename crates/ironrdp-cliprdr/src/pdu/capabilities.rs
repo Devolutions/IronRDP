@@ -2,7 +2,7 @@ use bitflags::bitflags;
 use ironrdp_core::{ReadCursor, WriteCursor};
 use ironrdp_pdu::{
     cast_int, cast_length, ensure_fixed_part_size, ensure_size, impl_pdu_pod, invalid_field_err, read_padding,
-    write_padding, DecodeError, DecodeResult, EncodeResult, PduDecode, PduEncode,
+    write_padding, Decode, DecodeError, DecodeResult, Encode, EncodeResult,
 };
 
 use crate::pdu::PartialHeader;
@@ -58,7 +58,7 @@ impl Capabilities {
     }
 }
 
-impl PduEncode for Capabilities {
+impl Encode for Capabilities {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         let header = PartialHeader::new(cast_int!("dataLen", self.inner_size())?);
         header.encode(dst)?;
@@ -84,7 +84,7 @@ impl PduEncode for Capabilities {
     }
 }
 
-impl<'de> PduDecode<'de> for Capabilities {
+impl<'de> Decode<'de> for Capabilities {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         let _header = PartialHeader::decode(src)?;
 
@@ -130,7 +130,7 @@ impl From<GeneralCapabilitySet> for CapabilitySet {
     }
 }
 
-impl PduEncode for CapabilitySet {
+impl Encode for CapabilitySet {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         let (caps, length) = match self {
             Self::General(value) => {
@@ -158,7 +158,7 @@ impl PduEncode for CapabilitySet {
     }
 }
 
-impl<'de> PduDecode<'de> for CapabilitySet {
+impl<'de> Decode<'de> for CapabilitySet {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
@@ -190,7 +190,7 @@ impl GeneralCapabilitySet {
     const FIXED_PART_SIZE: usize = 4 /* version */ + 4 /* flags */;
 }
 
-impl PduEncode for GeneralCapabilitySet {
+impl Encode for GeneralCapabilitySet {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
 
@@ -209,7 +209,7 @@ impl PduEncode for GeneralCapabilitySet {
     }
 }
 
-impl<'de> PduDecode<'de> for GeneralCapabilitySet {
+impl<'de> Decode<'de> for GeneralCapabilitySet {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 

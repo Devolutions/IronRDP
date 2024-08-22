@@ -11,7 +11,7 @@ use super::pointer::PointerUpdateData;
 use super::surface_commands::{SurfaceCommand, SURFACE_COMMAND_HEADER_SIZE};
 use crate::rdp::client_info::CompressionType;
 use crate::rdp::headers::{CompressionFlags, SHARE_DATA_HEADER_COMPRESSION_MASK};
-use crate::{decode_cursor, per, DecodeError, DecodeResult, EncodeResult, InvalidFieldErr, PduDecode, PduEncode};
+use crate::{decode_cursor, per, Decode, DecodeError, DecodeResult, Encode, EncodeResult, InvalidFieldErr};
 use ironrdp_core::{ReadCursor, WriteCursor};
 
 /// Implements the Fast-Path RDP message header PDU.
@@ -40,7 +40,7 @@ impl FastPathHeader {
     }
 }
 
-impl PduEncode for FastPathHeader {
+impl Encode for FastPathHeader {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
@@ -77,7 +77,7 @@ impl PduEncode for FastPathHeader {
     }
 }
 
-impl<'de> PduDecode<'de> for FastPathHeader {
+impl<'de> Decode<'de> for FastPathHeader {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
@@ -121,7 +121,7 @@ impl FastPathUpdatePdu<'_> {
     const FIXED_PART_SIZE: usize = 1 /* header */;
 }
 
-impl PduEncode for FastPathUpdatePdu<'_> {
+impl Encode for FastPathUpdatePdu<'_> {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
@@ -159,7 +159,7 @@ impl PduEncode for FastPathUpdatePdu<'_> {
     }
 }
 
-impl<'de> PduDecode<'de> for FastPathUpdatePdu<'de> {
+impl<'de> Decode<'de> for FastPathUpdatePdu<'de> {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
@@ -258,7 +258,7 @@ impl<'a> FastPathUpdate<'a> {
     }
 }
 
-impl PduEncode for FastPathUpdate<'_> {
+impl Encode for FastPathUpdate<'_> {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 

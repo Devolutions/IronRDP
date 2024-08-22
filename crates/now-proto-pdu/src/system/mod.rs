@@ -1,7 +1,7 @@
 mod shutdown;
 
 use ironrdp_core::{ReadCursor, WriteCursor};
-use ironrdp_pdu::{DecodeResult, EncodeResult, PduEncode};
+use ironrdp_pdu::{DecodeResult, Encode, EncodeResult};
 
 use crate::NowHeader;
 
@@ -24,7 +24,7 @@ impl NowSystemMessage {
     }
 }
 
-impl PduEncode for NowSystemMessage {
+impl Encode for NowSystemMessage {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         match self {
             Self::Shutdown(msg) => msg.encode(dst),

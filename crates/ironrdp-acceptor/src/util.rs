@@ -2,7 +2,7 @@ use std::borrow::Cow;
 
 use ironrdp_connector::{ConnectorError, ConnectorErrorExt, ConnectorResult};
 use ironrdp_core::WriteBuf;
-use ironrdp_pdu::{encode_vec, rdp, PduEncode};
+use ironrdp_pdu::{encode_vec, rdp, Encode};
 
 pub(crate) fn encode_send_data_indication<T>(
     initiator_id: u16,
@@ -11,7 +11,7 @@ pub(crate) fn encode_send_data_indication<T>(
     buf: &mut WriteBuf,
 ) -> ConnectorResult<usize>
 where
-    T: PduEncode,
+    T: Encode,
 {
     let user_data = encode_vec(user_msg).map_err(ConnectorError::encode)?;
 

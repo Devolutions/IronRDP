@@ -14,7 +14,7 @@ use super::{
     BLOB_TYPE_SIZE, MAC_SIZE, PLATFORM_ID, PREAMBLE_SIZE,
 };
 use crate::crypto::rc4::Rc4;
-use crate::{DecodeResult, EncodeResult, PduDecode, PduEncode};
+use crate::{Decode, DecodeResult, Encode, EncodeResult};
 use ironrdp_core::{ReadCursor, WriteCursor};
 
 const RESPONSE_DATA_VERSION: u16 = 0x100;
@@ -191,7 +191,7 @@ impl PlatformChallengeResponseData {
     const FIXED_PART_SIZE: usize = RESPONSE_DATA_STATIC_FIELDS_SIZE;
 }
 
-impl PduEncode for PlatformChallengeResponseData {
+impl Encode for PlatformChallengeResponseData {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
@@ -213,7 +213,7 @@ impl PduEncode for PlatformChallengeResponseData {
     }
 }
 
-impl<'de> PduDecode<'de> for PlatformChallengeResponseData {
+impl<'de> Decode<'de> for PlatformChallengeResponseData {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
@@ -252,7 +252,7 @@ impl ClientHardwareIdentification {
     const FIXED_PART_SIZE: usize = CLIENT_HARDWARE_IDENTIFICATION_SIZE;
 }
 
-impl PduEncode for ClientHardwareIdentification {
+impl Encode for ClientHardwareIdentification {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
 
@@ -271,7 +271,7 @@ impl PduEncode for ClientHardwareIdentification {
     }
 }
 
-impl<'de> PduDecode<'de> for ClientHardwareIdentification {
+impl<'de> Decode<'de> for ClientHardwareIdentification {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 

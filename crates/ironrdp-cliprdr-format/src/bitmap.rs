@@ -1,7 +1,5 @@
 use ironrdp_core::{ReadCursor, WriteCursor};
-use ironrdp_pdu::{
-    cast_int, ensure_fixed_part_size, invalid_field_err, DecodeResult, EncodeResult, PduDecode, PduEncode,
-};
+use ironrdp_pdu::{cast_int, ensure_fixed_part_size, invalid_field_err, Decode, DecodeResult, Encode, EncodeResult};
 use thiserror::Error;
 
 /// Maximum size of PNG image that could be placed on the clipboard.
@@ -89,7 +87,7 @@ impl CiexyzTriple {
     const FIXED_PART_SIZE: usize = 4 * 3 * 3; // 4(LONG) * 3(xyz) * 3(red, green, blue)
 }
 
-impl<'a> PduDecode<'a> for CiexyzTriple {
+impl<'a> Decode<'a> for CiexyzTriple {
     fn decode(src: &mut ReadCursor<'a>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
@@ -115,7 +113,7 @@ impl<'a> PduDecode<'a> for CiexyzTriple {
     }
 }
 
-impl PduEncode for CiexyzTriple {
+impl Encode for CiexyzTriple {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
 
@@ -265,7 +263,7 @@ impl BitmapInfoHeader {
     }
 }
 
-impl PduEncode for BitmapInfoHeader {
+impl Encode for BitmapInfoHeader {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         let size = cast_int!("biSize", Self::FIXED_PART_SIZE)?;
         self.encode_with_size(dst, size)
@@ -280,7 +278,7 @@ impl PduEncode for BitmapInfoHeader {
     }
 }
 
-impl<'a> PduDecode<'a> for BitmapInfoHeader {
+impl<'a> Decode<'a> for BitmapInfoHeader {
     fn decode(src: &mut ReadCursor<'a>) -> DecodeResult<Self> {
         let (header, size) = Self::decode_with_size(src)?;
         let size: usize = cast_int!("biSize", size)?;
@@ -331,7 +329,7 @@ impl BitmapV5Header {
     const NAME: &'static str = "BITMAPV5HEADER";
 }
 
-impl PduEncode for BitmapV5Header {
+impl Encode for BitmapV5Header {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
 
@@ -364,7 +362,7 @@ impl PduEncode for BitmapV5Header {
     }
 }
 
-impl<'a> PduDecode<'a> for BitmapV5Header {
+impl<'a> Decode<'a> for BitmapV5Header {
     fn decode(src: &mut ReadCursor<'a>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 

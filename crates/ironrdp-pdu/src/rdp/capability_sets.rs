@@ -4,7 +4,7 @@ use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive as _, ToPrimitive as _};
 use thiserror::Error;
 
-use crate::{decode, utils, DecodeResult, EncodeResult, PduDecode, PduEncode, PduError};
+use crate::{decode, utils, Decode, DecodeResult, Encode, EncodeResult, PduError};
 use ironrdp_core::{ReadCursor, WriteCursor};
 
 mod bitmap;
@@ -73,7 +73,7 @@ impl ServerDemandActive {
     const FIXED_PART_SIZE: usize = SESSION_ID_FIELD_SIZE;
 }
 
-impl PduEncode for ServerDemandActive {
+impl Encode for ServerDemandActive {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
@@ -92,7 +92,7 @@ impl PduEncode for ServerDemandActive {
     }
 }
 
-impl<'de> PduDecode<'de> for ServerDemandActive {
+impl<'de> Decode<'de> for ServerDemandActive {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         let pdu = DemandActive::decode(src)?;
 
@@ -124,7 +124,7 @@ impl ClientConfirmActive {
     const FIXED_PART_SIZE: usize = ORIGINATOR_ID_FIELD_SIZE;
 }
 
-impl PduEncode for ClientConfirmActive {
+impl Encode for ClientConfirmActive {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
 
@@ -142,7 +142,7 @@ impl PduEncode for ClientConfirmActive {
     }
 }
 
-impl<'de> PduDecode<'de> for ClientConfirmActive {
+impl<'de> Decode<'de> for ClientConfirmActive {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
@@ -168,11 +168,11 @@ impl DemandActive {
     const FIXED_PART_SIZE: usize = SOURCE_DESCRIPTOR_LENGTH_FIELD_SIZE + COMBINED_CAPABILITIES_LENGTH_FIELD_SIZE;
 }
 
-impl PduEncode for DemandActive {
+impl Encode for DemandActive {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
-        let combined_length = self.capability_sets.iter().map(PduEncode::size).sum::<usize>()
+        let combined_length = self.capability_sets.iter().map(Encode::size).sum::<usize>()
             + NUMBER_CAPABILITIES_FIELD_SIZE
             + PADDING_SIZE;
 
@@ -203,11 +203,11 @@ impl PduEncode for DemandActive {
             + 1
             + NUMBER_CAPABILITIES_FIELD_SIZE
             + PADDING_SIZE
-            + self.capability_sets.iter().map(PduEncode::size).sum::<usize>()
+            + self.capability_sets.iter().map(Encode::size).sum::<usize>()
     }
 }
 
-impl<'de> PduDecode<'de> for DemandActive {
+impl<'de> Decode<'de> for DemandActive {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
@@ -283,7 +283,7 @@ impl CapabilitySet {
     const FIXED_PART_SIZE: usize = CAPABILITY_SET_TYPE_FIELD_SIZE + CAPABILITY_SET_LENGTH_FIELD_SIZE;
 }
 
-impl PduEncode for CapabilitySet {
+impl Encode for CapabilitySet {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
@@ -493,7 +493,7 @@ impl PduEncode for CapabilitySet {
     }
 }
 
-impl<'de> PduDecode<'de> for CapabilitySet {
+impl<'de> Decode<'de> for CapabilitySet {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 

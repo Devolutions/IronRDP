@@ -1,5 +1,5 @@
 use super::{ClientGccBlocks, ServerGccBlocks};
-use crate::{mcs, per, DecodeResult, EncodeResult, PduDecode, PduEncode};
+use crate::{mcs, per, Decode, DecodeResult, Encode, EncodeResult};
 use ironrdp_core::{ReadCursor, WriteCursor};
 
 const CONFERENCE_REQUEST_OBJECT_ID: [u8; 6] = [0, 0, 20, 124, 0, 1];
@@ -29,7 +29,7 @@ impl ConferenceCreateRequest {
     const NAME: &'static str = "ConferenceCreateRequest";
 }
 
-impl PduEncode for ConferenceCreateRequest {
+impl Encode for ConferenceCreateRequest {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in:dst, size: self.size());
 
@@ -94,7 +94,7 @@ impl PduEncode for ConferenceCreateRequest {
     }
 }
 
-impl<'de> PduDecode<'de> for ConferenceCreateRequest {
+impl<'de> Decode<'de> for ConferenceCreateRequest {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         // ConnectData
 
@@ -179,7 +179,7 @@ impl ConferenceCreateResponse {
     const NAME: &'static str = "ConferenceCreateResponse";
 }
 
-impl PduEncode for ConferenceCreateResponse {
+impl Encode for ConferenceCreateResponse {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         let gcc_blocks_buffer_length = self.gcc_blocks.size();
 
@@ -241,7 +241,7 @@ impl PduEncode for ConferenceCreateResponse {
     }
 }
 
-impl<'de> PduDecode<'de> for ConferenceCreateResponse {
+impl<'de> Decode<'de> for ConferenceCreateResponse {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         // ConnectData::Key: select type OBJECT_IDENTIFIER
         ensure_size!(in: src, size: per::CHOICE_SIZE);

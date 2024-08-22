@@ -4,7 +4,7 @@ use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive, ToPrimitive};
 use thiserror::Error;
 
-use crate::{DecodeResult, EncodeResult, PduDecode, PduEncode};
+use crate::{Decode, DecodeResult, Encode, EncodeResult};
 use ironrdp_core::{ReadCursor, WriteCursor};
 
 pub mod fast_path;
@@ -33,7 +33,7 @@ impl InputEventPdu {
     const FIXED_PART_SIZE: usize = 4 /* nEvents */;
 }
 
-impl PduEncode for InputEventPdu {
+impl Encode for InputEventPdu {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
@@ -52,11 +52,11 @@ impl PduEncode for InputEventPdu {
     }
 
     fn size(&self) -> usize {
-        4 + self.0.iter().map(PduEncode::size).sum::<usize>()
+        4 + self.0.iter().map(Encode::size).sum::<usize>()
     }
 }
 
-impl<'de> PduDecode<'de> for InputEventPdu {
+impl<'de> Decode<'de> for InputEventPdu {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
@@ -88,7 +88,7 @@ impl InputEvent {
     const FIXED_PART_SIZE: usize = 4 /* eventTime */ + 2 /* eventType */;
 }
 
-impl PduEncode for InputEvent {
+impl Encode for InputEvent {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
 
@@ -124,7 +124,7 @@ impl PduEncode for InputEvent {
     }
 }
 
-impl<'de> PduDecode<'de> for InputEvent {
+impl<'de> Decode<'de> for InputEvent {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 

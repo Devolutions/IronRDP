@@ -10,7 +10,7 @@ use crate::{
         headers::{BasicSecurityHeader, BasicSecurityHeaderFlags, BASIC_SECURITY_HEADER_SIZE},
         server_license::PreambleType,
     },
-    DecodeResult, EncodeResult, PduDecode, PduEncode,
+    Decode, DecodeResult, Encode, EncodeResult,
 };
 use ironrdp_core::{ReadCursor, WriteCursor};
 

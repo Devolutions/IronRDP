@@ -1,5 +1,5 @@
 use super::{BlobHeader, BlobType, KEY_EXCHANGE_ALGORITHM_RSA};
-use crate::{DecodeResult, EncodeResult, PduDecode, PduEncode};
+use crate::{Decode, DecodeResult, Encode, EncodeResult};
 use ironrdp_core::{ReadCursor, WriteCursor};
 
 pub const SIGNATURE_ALGORITHM_RSA: u32 = 1;
@@ -33,7 +33,7 @@ impl X509CertificateChain {
     const NAME: &'static str = "X509CertificateChain";
 }
 
-impl PduEncode for X509CertificateChain {
+impl Encode for X509CertificateChain {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
@@ -65,7 +65,7 @@ impl PduEncode for X509CertificateChain {
     }
 }
 
-impl<'de> PduDecode<'de> for X509CertificateChain {
+impl<'de> Decode<'de> for X509CertificateChain {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_size!(in: src, size: 4);
         let certificate_count = cast_length!("certArrayLen", src.read_u32())?;
@@ -111,7 +111,7 @@ impl ProprietaryCertificate {
     const FIXED_PART_SIZE: usize = PROP_CERT_BLOBS_HEADERS_SIZE + PROP_CERT_NO_BLOBS_SIZE;
 }
 
-impl PduEncode for ProprietaryCertificate {
+impl Encode for ProprietaryCertificate {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
@@ -136,7 +136,7 @@ impl PduEncode for ProprietaryCertificate {
     }
 }
 
-impl<'de> PduDecode<'de> for ProprietaryCertificate {
+impl<'de> Decode<'de> for ProprietaryCertificate {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_size!(in: src, size: PROP_CERT_NO_BLOBS_SIZE);
 
@@ -179,7 +179,7 @@ impl RsaPublicKey {
     const FIXED_PART_SIZE: usize = RSA_KEY_SIZE_WITHOUT_MODULUS;
 }
 
-impl PduEncode for RsaPublicKey {
+impl Encode for RsaPublicKey {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
@@ -206,7 +206,7 @@ impl PduEncode for RsaPublicKey {
     }
 }
 
-impl<'de> PduDecode<'de> for RsaPublicKey {
+impl<'de> Decode<'de> for RsaPublicKey {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 

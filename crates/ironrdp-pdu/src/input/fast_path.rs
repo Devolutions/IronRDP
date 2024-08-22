@@ -5,7 +5,7 @@ use num_traits::{FromPrimitive, ToPrimitive};
 
 use crate::fast_path::EncryptionFlags;
 use crate::input::{MousePdu, MouseRelPdu, MouseXPdu};
-use crate::{per, DecodeResult, EncodeResult, PduDecode, PduEncode};
+use crate::{per, Decode, DecodeResult, Encode, EncodeResult};
 use ironrdp_core::{ReadCursor, WriteCursor};
 
 /// Implements the Fast-Path RDP message header PDU.
@@ -22,7 +22,7 @@ impl FastPathInputHeader {
     const FIXED_PART_SIZE: usize = 1 /* header */;
 }
 
-impl PduEncode for FastPathInputHeader {
+impl Encode for FastPathInputHeader {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
@@ -54,7 +54,7 @@ impl PduEncode for FastPathInputHeader {
     }
 }
 
-impl<'de> PduDecode<'de> for FastPathInputHeader {
+impl<'de> Decode<'de> for FastPathInputHeader {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
@@ -114,7 +114,7 @@ impl FastPathInputEvent {
     const FIXED_PART_SIZE: usize = 1 /* header */;
 }
 
-impl PduEncode for FastPathInputEvent {
+impl Encode for FastPathInputEvent {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
@@ -171,7 +171,7 @@ impl PduEncode for FastPathInputEvent {
     }
 }
 
-impl<'de> PduDecode<'de> for FastPathInputEvent {
+impl<'de> Decode<'de> for FastPathInputEvent {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
@@ -248,7 +248,7 @@ impl FastPathInput {
     const NAME: &'static str = "FastPathInput";
 }
 
-impl PduEncode for FastPathInput {
+impl Encode for FastPathInput {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
@@ -256,7 +256,7 @@ impl PduEncode for FastPathInput {
             return Err(other_err!("Empty fast-path input"));
         }
 
-        let data_length = self.0.iter().map(PduEncode::size).sum::<usize>();
+        let data_length = self.0.iter().map(Encode::size).sum::<usize>();
         let header = FastPathInputHeader {
             num_events: self.0.len() as u8,
             flags: EncryptionFlags::empty(),
@@ -276,7 +276,7 @@ impl PduEncode for FastPathInput {
     }
 
     fn size(&self) -> usize {
-        let data_length = self.0.iter().map(PduEncode::size).sum::<usize>();
+        let data_length = self.0.iter().map(Encode::size).sum::<usize>();
         let header = FastPathInputHeader {
             num_events: self.0.len() as u8,
             flags: EncryptionFlags::empty(),
@@ -286,7 +286,7 @@ impl PduEncode for FastPathInput {
     }
 }
 
-impl<'de> PduDecode<'de> for FastPathInput {
+impl<'de> Decode<'de> for FastPathInput {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         let header = FastPathInputHeader::decode(src)?;
         let events = (0..header.num_events)

@@ -2,7 +2,7 @@ use bitflags::bitflags;
 use ironrdp_core::{ReadCursor, WriteCursor};
 use ironrdp_pdu::utils::{combine_u64, decode_string, encode_string, split_u64, CharacterSet};
 use ironrdp_pdu::{
-    cast_length, ensure_fixed_part_size, impl_pdu_pod, write_padding, DecodeResult, EncodeResult, PduDecode, PduEncode,
+    cast_length, ensure_fixed_part_size, impl_pdu_pod, write_padding, Decode, DecodeResult, Encode, EncodeResult,
 };
 
 const NAME_LENGTH: usize = 520;
@@ -72,7 +72,7 @@ impl FileDescriptor {
     const SIZE: usize = Self::FIXED_PART_SIZE;
 }
 
-impl PduEncode for FileDescriptor {
+impl Encode for FileDescriptor {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
 
@@ -115,7 +115,7 @@ impl PduEncode for FileDescriptor {
     }
 }
 
-impl<'de> PduDecode<'de> for FileDescriptor {
+impl<'de> Decode<'de> for FileDescriptor {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
@@ -157,7 +157,7 @@ impl<'de> PduDecode<'de> for FileDescriptor {
 
 /// Represents `CLIPRDR_FILELIST`
 ///
-/// NOTE: `PduDecode` implementation will read all remaining data in cursor as file list.
+/// NOTE: `Decode` implementation will read all remaining data in cursor as file list.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PackedFileList {
     pub files: Vec<FileDescriptor>,
@@ -170,7 +170,7 @@ impl PackedFileList {
     const FIXED_PART_SIZE: usize = 4; // file count
 }
 
-impl PduEncode for PackedFileList {
+impl Encode for PackedFileList {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
 
@@ -192,7 +192,7 @@ impl PduEncode for PackedFileList {
     }
 }
 
-impl<'de> PduDecode<'de> for PackedFileList {
+impl<'de> Decode<'de> for PackedFileList {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
         let file_count = cast_length!(Self::NAME, "cItems", src.read_u32())?;

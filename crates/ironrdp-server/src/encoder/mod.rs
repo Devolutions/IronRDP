@@ -10,7 +10,7 @@ use ironrdp_pdu::geometry::ExclusiveRectangle;
 use ironrdp_pdu::pointer::{ColorPointerAttribute, Point16, PointerAttribute, PointerPositionAttribute};
 use ironrdp_pdu::rdp::capability_sets::{CmdFlags, EntropyBits};
 use ironrdp_pdu::surface_commands::{ExtendedBitmapDataPdu, SurfaceBitsPdu, SurfaceCommand};
-use ironrdp_pdu::PduEncode;
+use ironrdp_pdu::Encode;
 
 use self::bitmap::BitmapEncoder;
 use self::rfx::RfxEncoder;
@@ -53,7 +53,7 @@ impl UpdateEncoder {
         }
     }
 
-    fn encode_pdu(&mut self, pdu: impl PduEncode) -> Result<usize> {
+    fn encode_pdu(&mut self, pdu: impl Encode) -> Result<usize> {
         loop {
             let mut cursor = WriteCursor::new(self.buffer.as_mut_slice());
             match pdu.encode(&mut cursor) {

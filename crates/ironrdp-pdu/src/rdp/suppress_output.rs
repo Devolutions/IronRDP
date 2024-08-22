@@ -1,5 +1,5 @@
 use crate::geometry::InclusiveRectangle;
-use crate::{DecodeResult, EncodeResult, PduDecode, PduEncode};
+use crate::{Decode, DecodeResult, Encode, EncodeResult};
 use ironrdp_core::{ReadCursor, WriteCursor};
 
 #[repr(u8)]
@@ -43,7 +43,7 @@ impl SuppressOutputPdu {
     const FIXED_PART_SIZE: usize = 1 /* allowDisplayUpdates */ + 3 /* pad */;
 }
 
-impl PduEncode for SuppressOutputPdu {
+impl Encode for SuppressOutputPdu {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
@@ -72,7 +72,7 @@ impl PduEncode for SuppressOutputPdu {
     }
 }
 
-impl<'de> PduDecode<'de> for SuppressOutputPdu {
+impl<'de> Decode<'de> for SuppressOutputPdu {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 

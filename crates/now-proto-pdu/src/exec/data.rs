@@ -1,7 +1,7 @@
 use bitflags::bitflags;
 
 use ironrdp_core::{ReadCursor, WriteCursor};
-use ironrdp_pdu::{DecodeResult, EncodeResult, PduDecode, PduEncode};
+use ironrdp_pdu::{Decode, DecodeResult, Encode, EncodeResult};
 
 use crate::{NowExecMessage, NowExecMsgKind, NowHeader, NowMessage, NowMessageClass, NowVarBuf};
 
@@ -88,7 +88,7 @@ impl NowExecDataMsg {
     }
 }
 
-impl PduEncode for NowExecDataMsg {
+impl Encode for NowExecDataMsg {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         let header = NowHeader {
             size: cast_length!("size", self.body_size())?,
@@ -117,7 +117,7 @@ impl PduEncode for NowExecDataMsg {
     }
 }
 
-impl PduDecode<'_> for NowExecDataMsg {
+impl Decode<'_> for NowExecDataMsg {
     fn decode(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
         let header = NowHeader::decode(src)?;
 
