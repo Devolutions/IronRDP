@@ -6,11 +6,11 @@ use std::borrow::Cow;
 use std::fmt;
 
 use bitflags::bitflags;
-use ironrdp_core::{ReadCursor, WriteCursor};
-use ironrdp_pdu::{
-    cast_length, ensure_fixed_part_size, ensure_size, invalid_field_err, other_err, read_padding, write_padding,
-    Decode, DecodeError, DecodeResult, Encode, EncodeResult,
+use ironrdp_core::{
+    cast_length, ensure_fixed_part_size, ensure_size, invalid_field_err, other_err, DecodeError, DecodeResult,
+    EncodeResult, ReadCursor, WriteCursor,
 };
+use ironrdp_pdu::{read_padding, write_padding, Decode, Encode};
 use ironrdp_svc::SvcEncode;
 
 const SNDC_FORMATS: u8 = 0x07;

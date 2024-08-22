@@ -8,8 +8,8 @@ use tap::prelude::*;
 use crate::tpdu::{TpduCode, TpduHeader};
 use crate::tpkt::TpktHeader;
 use crate::x224::X224Pdu;
-use crate::{invalid_field_err, DecodeResult, EncodeResult, Pdu as _};
-use ironrdp_core::{ReadCursor, WriteCursor};
+use crate::{DecodeResult, EncodeResult, Pdu as _};
+use ironrdp_core::{ensure_size, invalid_field_err, unexpected_message_type_err, ReadCursor, WriteCursor};
 
 bitflags! {
     /// A 32-bit, unsigned integer that contains flags indicating the supported security protocols.

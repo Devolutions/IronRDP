@@ -12,7 +12,8 @@ use ironrdp_core::impl_as_any;
 use ironrdp_core::ReadCursor;
 use ironrdp_pdu::decode_err;
 use ironrdp_pdu::gcc::ChannelName;
-use ironrdp_pdu::{decode_cursor, other_err, PduResult};
+use ironrdp_pdu::pdu_other_err;
+use ironrdp_pdu::{decode_cursor, PduResult};
 use ironrdp_svc::{CompressionCondition, SvcClientProcessor, SvcMessage, SvcProcessor};
 use pdu::efs::{
     Capabilities, ClientDeviceListAnnounce, ClientNameRequest, ClientNameRequestUnicodeFlag, CoreCapability,
@@ -225,7 +226,7 @@ impl SvcProcessor for Rdpdr {
             | RdpdrPdu::DeviceReadResponse(_)
             | RdpdrPdu::DeviceWriteResponse(_)
             | RdpdrPdu::ClientDriveSetInformationResponse(_)
-            | RdpdrPdu::EmptyResponse => Err(other_err!("Rdpdr", "received unexpected packet")),
+            | RdpdrPdu::EmptyResponse => Err(pdu_other_err!("Rdpdr", "received unexpected packet")),
         }
     }
 }

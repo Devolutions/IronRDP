@@ -1,5 +1,5 @@
-use ironrdp_core::{ReadCursor, WriteCursor};
-use ironrdp_pdu::{Decode, DecodeResult, Encode, EncodeResult};
+use ironrdp_core::{ensure_fixed_part_size, DecodeResult, EncodeResult, ReadCursor, WriteCursor};
+use ironrdp_pdu::{Decode, Encode};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NowMessageClass(pub u8);

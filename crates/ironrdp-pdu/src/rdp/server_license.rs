@@ -8,7 +8,9 @@ use thiserror::Error;
 
 use crate::rdp::headers::{BasicSecurityHeader, BasicSecurityHeaderFlags, BASIC_SECURITY_HEADER_SIZE};
 use crate::{Decode, DecodeResult, Encode, EncodeResult, PduError};
-use ironrdp_core::{ReadCursor, WriteCursor};
+use ironrdp_core::{
+    cast_length, ensure_fixed_part_size, invalid_field_err, unsupported_value_err, ReadCursor, WriteCursor,
+};
 
 #[cfg(test)]
 mod tests;

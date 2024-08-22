@@ -1,5 +1,5 @@
 use crate::{DecodeResult, EncodeResult};
-use ironrdp_core::{ReadCursor, WriteCursor};
+use ironrdp_core::{cast_length, ensure_size, invalid_field_err, ReadCursor, WriteCursor};
 
 #[repr(u8)]
 #[allow(unused)]
@@ -322,7 +322,7 @@ fn sizeof_length(length: u16) -> usize {
 
 #[cfg(test)]
 mod tests {
-    use crate::DecodeErrorKind;
+    use ironrdp_core::DecodeErrorKind;
 
     use super::*;
 

@@ -12,8 +12,8 @@ mod run;
 mod shell;
 mod win_ps;
 
-use ironrdp_core::{ReadCursor, WriteCursor};
-use ironrdp_pdu::{DecodeResult, Encode, EncodeResult};
+use ironrdp_core::{invalid_field_err, DecodeResult, EncodeResult, ReadCursor, WriteCursor};
+use ironrdp_pdu::Encode;
 
 use crate::NowHeader;
 

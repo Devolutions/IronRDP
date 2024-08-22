@@ -5,7 +5,7 @@ use bitflags::bitflags;
 
 use crate::geometry::InclusiveRectangle;
 use crate::{Decode, DecodeResult, Encode, EncodeResult};
-use ironrdp_core::{ReadCursor, WriteCursor};
+use ironrdp_core::{cast_length, ensure_fixed_part_size, ensure_size, invalid_field_err, ReadCursor, WriteCursor};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QuantQuality {

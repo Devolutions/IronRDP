@@ -1,5 +1,7 @@
-use ironrdp_core::{ReadCursor, WriteCursor};
-use ironrdp_pdu::{cast_int, ensure_fixed_part_size, invalid_field_err, Decode, DecodeResult, Encode, EncodeResult};
+use ironrdp_core::{
+    cast_int, ensure_fixed_part_size, invalid_field_err, DecodeResult, EncodeResult, ReadCursor, WriteCursor,
+};
+use ironrdp_pdu::{Decode, Encode};
 use thiserror::Error;
 
 /// Maximum size of PNG image that could be placed on the clipboard.
@@ -8,9 +10,9 @@ const MAX_BUFFER_SIZE: usize = 64 * 1024 * 1024; // 64 MB
 #[derive(Debug, Error)]
 pub enum BitmapError {
     #[error("decoding error")]
-    Decode(ironrdp_pdu::DecodeError),
+    Decode(ironrdp_core::DecodeError),
     #[error("encoding error")]
-    Encode(ironrdp_pdu::EncodeError),
+    Encode(ironrdp_core::EncodeError),
     #[error("unsupported bitmap: {0}")]
     Unsupported(&'static str),
     #[error("one of bitmap's dimensions is invalid")]

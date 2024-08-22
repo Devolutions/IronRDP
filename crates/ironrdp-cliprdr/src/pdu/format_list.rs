@@ -1,11 +1,10 @@
 use std::borrow::Cow;
 
-use ironrdp_core::{IntoOwned, ReadCursor, WriteCursor};
-use ironrdp_pdu::utils::{read_string_from_cursor, to_utf16_bytes, write_string_to_cursor, CharacterSet};
-use ironrdp_pdu::{
-    cast_int, decode_err, ensure_size, impl_pdu_borrowing, impl_pdu_pod, invalid_field_err, Decode, DecodeResult,
-    Encode, EncodeResult, PduResult,
+use ironrdp_core::{
+    cast_int, ensure_size, invalid_field_err, DecodeResult, EncodeResult, IntoOwned, ReadCursor, WriteCursor,
 };
+use ironrdp_pdu::utils::{read_string_from_cursor, to_utf16_bytes, write_string_to_cursor, CharacterSet};
+use ironrdp_pdu::{decode_err, impl_pdu_borrowing, impl_pdu_pod, Decode, Encode, PduResult};
 
 use crate::pdu::{ClipboardPduFlags, PartialHeader};
 

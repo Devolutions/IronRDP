@@ -1,7 +1,7 @@
 use bitflags::bitflags;
 
-use ironrdp_core::{ReadCursor, WriteCursor};
-use ironrdp_pdu::{Decode, DecodeResult, Encode, EncodeResult};
+use ironrdp_core::{invalid_field_err, DecodeResult, EncodeResult, ReadCursor, WriteCursor};
+use ironrdp_pdu::{Decode, Encode};
 
 use crate::{NowExecMessage, NowExecMsgKind, NowHeader, NowMessage, NowMessageClass};
 

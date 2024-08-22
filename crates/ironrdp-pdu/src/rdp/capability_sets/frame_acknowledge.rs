@@ -1,5 +1,5 @@
 use crate::{Decode, DecodeResult, Encode, EncodeResult};
-use ironrdp_core::{ReadCursor, WriteCursor};
+use ironrdp_core::{ensure_fixed_part_size, ReadCursor, WriteCursor};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FrameAcknowledge {

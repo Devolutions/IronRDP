@@ -9,7 +9,7 @@ use num_traits::{FromPrimitive as _, ToPrimitive as _};
 use thiserror::Error;
 
 use crate::{Decode, DecodeResult, Encode, EncodeResult, PduBufferParsing};
-use ironrdp_core::{ReadCursor, WriteCursor};
+use ironrdp_core::{ensure_fixed_part_size, ReadCursor, WriteCursor};
 
 #[rustfmt::skip]
 pub use self::data_messages::{

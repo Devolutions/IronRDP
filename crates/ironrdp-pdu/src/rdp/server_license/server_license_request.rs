@@ -10,7 +10,7 @@ use super::{
     KEY_EXCHANGE_ALGORITHM_RSA, RANDOM_NUMBER_SIZE, UTF16_NULL_TERMINATOR_SIZE, UTF8_NULL_TERMINATOR_SIZE,
 };
 use crate::{utils, Decode, DecodeResult, Encode, EncodeResult};
-use ironrdp_core::{ReadCursor, WriteCursor};
+use ironrdp_core::{cast_length, ensure_fixed_part_size, ensure_size, invalid_field_err, ReadCursor, WriteCursor};
 
 const CERT_VERSION_FIELD_SIZE: usize = 4;
 const KEY_EXCHANGE_FIELD_SIZE: usize = 4;

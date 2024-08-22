@@ -1,5 +1,7 @@
-use ironrdp_core::{ReadCursor, WriteCursor};
-use ironrdp_pdu::{Decode, DecodeError, DecodeResult, Encode, EncodeResult};
+use ironrdp_core::{
+    ensure_fixed_part_size, invalid_field_err, DecodeError, DecodeResult, EncodeResult, ReadCursor, WriteCursor,
+};
+use ironrdp_pdu::{Decode, Encode};
 
 /// Error or status severity.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

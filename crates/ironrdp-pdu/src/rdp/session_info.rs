@@ -5,7 +5,7 @@ use num_traits::{FromPrimitive as _, ToPrimitive as _};
 use thiserror::Error;
 
 use crate::{Decode, DecodeResult, Encode, EncodeResult, PduError};
-use ironrdp_core::{ReadCursor, WriteCursor};
+use ironrdp_core::{ensure_fixed_part_size, ensure_size, invalid_field_err, ReadCursor, WriteCursor};
 
 #[cfg(test)]
 mod tests;

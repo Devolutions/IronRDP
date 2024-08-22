@@ -3,15 +3,15 @@ mod logoff;
 mod msg_box_req;
 mod msg_box_rsp;
 
-use ironrdp_core::{ReadCursor, WriteCursor};
-use ironrdp_pdu::{DecodeResult, Encode, EncodeResult};
+use ironrdp_core::{DecodeResult, EncodeResult, ReadCursor, WriteCursor};
 
-use crate::NowHeader;
-
+use ironrdp_pdu::Encode;
 pub use lock::NowSessionLockMsg;
 pub use logoff::NowSessionLogoffMsg;
 pub use msg_box_req::{NowMessageBoxStyle, NowSessionMsgBoxReqMsg};
 pub use msg_box_rsp::{NowMsgBoxResponse, NowSessionMsgBoxRspMsg};
+
+use crate::NowHeader;
 
 /// Wrapper for the `NOW_SESSION_MSG_CLASS_ID` message class.
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -2,7 +2,7 @@ use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive, ToPrimitive};
 
 use crate::{Decode, DecodeResult, Encode, EncodeResult};
-use ironrdp_core::{ReadCursor, WriteCursor};
+use ironrdp_core::{ensure_fixed_part_size, invalid_field_err, ReadCursor, WriteCursor};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServerSetErrorInfoPdu(pub ErrorInfo);

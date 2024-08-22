@@ -2,9 +2,9 @@
 //!
 //! [1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpedisp/d2954508-f487-48bc-8731-39743e0854a9
 
-use ironrdp_core::{ReadCursor, WriteCursor};
+use ironrdp_core::{ensure_fixed_part_size, invalid_field_err, DecodeResult, EncodeResult, ReadCursor, WriteCursor};
 use ironrdp_dvc::DvcEncode;
-use ironrdp_pdu::{ensure_fixed_part_size, invalid_field_err, Decode, DecodeResult, Encode, EncodeResult};
+use ironrdp_pdu::{Decode, Encode};
 use tracing::warn;
 
 const DISPLAYCONTROL_PDU_TYPE_CAPS: u32 = 0x00000005;

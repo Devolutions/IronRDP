@@ -4,7 +4,7 @@ use ironrdp_pdu::{encode_vec, mcs::*};
 use ironrdp_testsuite_core::mcs::*;
 use ironrdp_testsuite_core::mcs_encode_decode_test;
 
-fn mcs_decode<'de, T: McsPdu<'de>>(src: &'de [u8]) -> ironrdp_pdu::DecodeResult<T> {
+fn mcs_decode<'de, T: McsPdu<'de>>(src: &'de [u8]) -> ironrdp_core::DecodeResult<T> {
     let mut cursor = ironrdp_core::ReadCursor::new(src);
     T::mcs_body_decode(&mut cursor, src.len())
 }

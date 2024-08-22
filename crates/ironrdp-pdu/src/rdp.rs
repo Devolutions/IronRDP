@@ -9,7 +9,7 @@ use crate::rdp::headers::{BasicSecurityHeader, BasicSecurityHeaderFlags, ShareCo
 use crate::rdp::server_license::ServerLicenseError;
 use crate::Encode;
 use crate::{Decode, DecodeResult, EncodeResult, PduError};
-use ironrdp_core::{ReadCursor, WriteCursor};
+use ironrdp_core::{ensure_fixed_part_size, invalid_field_err, ReadCursor, WriteCursor};
 
 pub mod capability_sets;
 pub mod client_info;

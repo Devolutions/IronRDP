@@ -26,8 +26,8 @@ pub type SessionResult<T> = Result<T, SessionError>;
 #[derive(Debug)]
 pub enum SessionErrorKind {
     Pdu(ironrdp_pdu::PduError),
-    Encode(ironrdp_pdu::EncodeError),
-    Decode(ironrdp_pdu::DecodeError),
+    Encode(ironrdp_core::EncodeError),
+    Decode(ironrdp_core::DecodeError),
     Reason(String),
     General,
     Custom,
@@ -63,8 +63,8 @@ pub type SessionError = ironrdp_error::Error<SessionErrorKind>;
 
 pub trait SessionErrorExt {
     fn pdu(error: ironrdp_pdu::PduError) -> Self;
-    fn encode(error: ironrdp_pdu::EncodeError) -> Self;
-    fn decode(error: ironrdp_pdu::DecodeError) -> Self;
+    fn encode(error: ironrdp_core::EncodeError) -> Self;
+    fn decode(error: ironrdp_core::DecodeError) -> Self;
     fn general(context: &'static str) -> Self;
     fn reason(context: &'static str, reason: impl Into<String>) -> Self;
     fn custom<E>(context: &'static str, e: E) -> Self
@@ -77,11 +77,11 @@ impl SessionErrorExt for SessionError {
         Self::new("payload error", SessionErrorKind::Pdu(error))
     }
 
-    fn encode(error: ironrdp_pdu::EncodeError) -> Self {
+    fn encode(error: ironrdp_core::EncodeError) -> Self {
         Self::new("encode error", SessionErrorKind::Encode(error))
     }
 
-    fn decode(error: ironrdp_pdu::DecodeError) -> Self {
+    fn decode(error: ironrdp_core::DecodeError) -> Self {
         Self::new("decode error", SessionErrorKind::Decode(error))
     }
 

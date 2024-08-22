@@ -4,7 +4,7 @@ use tap::Pipe as _;
 use super::RdpVersion;
 use crate::nego::SecurityProtocol;
 use crate::{Decode, DecodeResult, Encode, EncodeResult};
-use ironrdp_core::{ReadCursor, WriteCursor};
+use ironrdp_core::{ensure_fixed_part_size, ensure_size, invalid_field_err, ReadCursor, WriteCursor};
 
 const CLIENT_REQUESTED_PROTOCOL_SIZE: usize = 4;
 const EARLY_CAPABILITY_FLAGS_SIZE: usize = 4;

@@ -4,7 +4,7 @@ mod tests;
 use bitflags::bitflags;
 
 use crate::{Decode, DecodeResult, Encode, EncodeResult};
-use ironrdp_core::{ReadCursor, WriteCursor};
+use ironrdp_core::{ensure_fixed_part_size, ReadCursor, WriteCursor};
 
 pub const BITMAP_CACHE_ENTRIES_NUM: usize = 3;
 

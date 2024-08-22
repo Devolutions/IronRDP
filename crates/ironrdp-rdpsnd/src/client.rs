@@ -1,12 +1,14 @@
 use std::borrow::Cow;
 
+use ironrdp_core::cast_length;
 use ironrdp_core::impl_as_any;
+use ironrdp_core::EncodeResult;
 use ironrdp_core::ReadCursor;
 use ironrdp_pdu::decode_err;
 use ironrdp_pdu::encode_err;
 use ironrdp_pdu::gcc::ChannelName;
-use ironrdp_pdu::EncodeResult;
-use ironrdp_pdu::{cast_length, other_err, Decode, PduResult};
+use ironrdp_pdu::pdu_other_err;
+use ironrdp_pdu::{Decode, PduResult};
 use ironrdp_svc::{CompressionCondition, SvcClientProcessor, SvcMessage, SvcProcessor};
 use tracing::{debug, error};
 
@@ -69,19 +71,19 @@ impl Rdpsnd {
         let server_format = self
             .server_format
             .as_ref()
-            .ok_or(other_err!("invalid state - no format"))?;
+            .ok_or(pdu_other_err!("invalid state - no format"))?;
 
         server_format
             .formats
             .get(format_no as usize)
-            .ok_or(other_err!("invalid format"))
+            .ok_or(pdu_other_err!("invalid format"))
     }
 
     pub fn version(&self) -> PduResult<pdu::Version> {
         let server_format = self
             .server_format
             .as_ref()
-            .ok_or(other_err!("invalid state - no version"))?;
+            .ok_or(pdu_other_err!("invalid state - no version"))?;
 
         Ok(server_format.version)
     }
@@ -90,7 +92,7 @@ impl Rdpsnd {
         let server_format = self
             .server_format
             .as_ref()
-            .ok_or(other_err!("invalid state - no format"))?;
+            .ok_or(pdu_other_err!("invalid state - no format"))?;
 
         let pdu = pdu::ClientAudioFormatPdu {
             version: self.version()?,

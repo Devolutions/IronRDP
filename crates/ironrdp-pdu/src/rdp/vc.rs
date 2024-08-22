@@ -9,7 +9,7 @@ use bitflags::bitflags;
 use thiserror::Error;
 
 use crate::{Decode, DecodeResult, Encode, EncodeResult, PduError};
-use ironrdp_core::{ReadCursor, WriteCursor};
+use ironrdp_core::{ensure_fixed_part_size, ReadCursor, WriteCursor};
 
 const CHANNEL_PDU_HEADER_SIZE: usize = 8;
 

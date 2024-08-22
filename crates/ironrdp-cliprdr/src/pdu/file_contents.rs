@@ -1,11 +1,11 @@
 use std::borrow::Cow;
 
 use bitflags::bitflags;
-use ironrdp_core::{IntoOwned, ReadCursor, WriteCursor};
-use ironrdp_pdu::utils::{combine_u64, split_u64};
-use ironrdp_pdu::{
-    cast_int, ensure_size, impl_pdu_borrowing, invalid_field_err, Decode, DecodeResult, Encode, EncodeResult,
+use ironrdp_core::{
+    cast_int, ensure_size, invalid_field_err, DecodeResult, EncodeResult, IntoOwned, ReadCursor, WriteCursor,
 };
+use ironrdp_pdu::utils::{combine_u64, split_u64};
+use ironrdp_pdu::{impl_pdu_borrowing, Decode, Encode};
 
 use crate::pdu::{ClipboardPduFlags, PartialHeader};
 
