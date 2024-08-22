@@ -1,6 +1,6 @@
 use bitflags::bitflags;
 
-use crate::{DecodeResult, EncodeResult, PduDecode, PduEncode};
+use crate::{Decode, DecodeResult, Encode, EncodeResult};
 use ironrdp_core::{ReadCursor, WriteCursor};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -16,7 +16,7 @@ impl MouseXPdu {
     const FIXED_PART_SIZE: usize = 2 /* flags */ + 2 /* x */ + 2 /* y */;
 }
 
-impl PduEncode for MouseXPdu {
+impl Encode for MouseXPdu {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
 
@@ -36,7 +36,7 @@ impl PduEncode for MouseXPdu {
     }
 }
 
-impl<'de> PduDecode<'de> for MouseXPdu {
+impl<'de> Decode<'de> for MouseXPdu {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 

@@ -14,7 +14,7 @@ use ironrdp_core::{ReadCursor, WriteCursor};
 use ironrdp_pdu::utils::{read_string_from_cursor, to_utf16_bytes, CharacterSet};
 use ironrdp_pdu::DecodeResult;
 use ironrdp_pdu::EncodeResult;
-use ironrdp_pdu::{cast_int, ensure_fixed_part_size, ensure_size, impl_pdu_borrowing, PduDecode, PduEncode};
+use ironrdp_pdu::{cast_int, ensure_fixed_part_size, ensure_size, impl_pdu_borrowing, Decode, Encode};
 
 use super::ClipboardFormatId;
 use crate::pdu::{ClipboardPduFlags, PartialHeader};
@@ -169,7 +169,7 @@ impl<'a> FormatDataResponse<'a> {
     }
 }
 
-impl PduEncode for FormatDataResponse<'_> {
+impl Encode for FormatDataResponse<'_> {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         let flags = if self.is_error {
             ClipboardPduFlags::RESPONSE_FAIL
@@ -195,7 +195,7 @@ impl PduEncode for FormatDataResponse<'_> {
     }
 }
 
-impl<'de> PduDecode<'de> for FormatDataResponse<'de> {
+impl<'de> Decode<'de> for FormatDataResponse<'de> {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         let header = PartialHeader::decode(src)?;
 
@@ -222,7 +222,7 @@ impl FormatDataRequest {
     const FIXED_PART_SIZE: usize = 4 /* format */;
 }
 
-impl PduEncode for FormatDataRequest {
+impl Encode for FormatDataRequest {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         let header = PartialHeader::new(cast_int!("dataLen", Self::FIXED_PART_SIZE)?);
         header.encode(dst)?;
@@ -242,7 +242,7 @@ impl PduEncode for FormatDataRequest {
     }
 }
 
-impl<'de> PduDecode<'de> for FormatDataRequest {
+impl<'de> Decode<'de> for FormatDataRequest {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         let _header = PartialHeader::decode(src)?;
 

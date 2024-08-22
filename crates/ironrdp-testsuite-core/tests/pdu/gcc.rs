@@ -1,5 +1,5 @@
 use ironrdp_core::ReadCursor;
-use ironrdp_pdu::{decode, encode_vec, DecodeErrorKind, PduEncode};
+use ironrdp_pdu::{decode, encode_vec, DecodeErrorKind, Encode};
 use ironrdp_pdu::{gcc::*, EncodeErrorKind};
 use ironrdp_testsuite_core::cluster_data::*;
 use ironrdp_testsuite_core::conference_create::*;

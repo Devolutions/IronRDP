@@ -3,7 +3,7 @@
 use alloc::vec::Vec;
 
 use ironrdp_core::{ReadCursor, WriteCursor};
-use ironrdp_pdu::{DecodeResult, EncodeResult, PduDecode, PduEncode};
+use ironrdp_pdu::{Decode, DecodeResult, Encode, EncodeResult};
 
 use crate::VarU32;
 
@@ -51,7 +51,7 @@ impl NowLrgBuf {
     }
 }
 
-impl PduEncode for NowLrgBuf {
+impl Encode for NowLrgBuf {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         let encoded_size = self.size();
         ensure_size!(in: dst, size: encoded_size);
@@ -76,7 +76,7 @@ impl PduEncode for NowLrgBuf {
     }
 }
 
-impl PduDecode<'_> for NowLrgBuf {
+impl Decode<'_> for NowLrgBuf {
     fn decode(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
@@ -126,7 +126,7 @@ impl NowVarBuf {
     }
 }
 
-impl PduEncode for NowVarBuf {
+impl Encode for NowVarBuf {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         let encoded_size = self.size();
         ensure_size!(in: dst, size: encoded_size);
@@ -153,7 +153,7 @@ impl PduEncode for NowVarBuf {
     }
 }
 
-impl PduDecode<'_> for NowVarBuf {
+impl Decode<'_> for NowVarBuf {
     fn decode(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
         let len_u32 = VarU32::decode(src)?.value();
         let len: usize = cast_length!("len", len_u32)?;

@@ -20,7 +20,7 @@ use ironrdp_pdu::gcc::{ChannelName, ChannelOptions};
 use ironrdp_pdu::{decode_err, mcs, DecodeResult, EncodeResult, PduResult};
 use pdu::gcc::ChannelDef;
 use pdu::rdp::vc::ChannelControlFlags;
-use pdu::{decode_cursor, encode_buf, PduEncode};
+use pdu::{decode_cursor, encode_buf, Encode};
 
 /// The integer type representing a static virtual channel ID.
 pub type StaticChannelId = u16;
@@ -56,17 +56,17 @@ impl<P: SvcProcessor> From<SvcProcessorMessages<P>> for Vec<SvcMessage> {
 /// Represents a message that, when encoded, forms a complete PDU for a given static virtual channel, sans any [`ChannelPduHeader`].
 /// In other words, this marker should be applied to a message that is ready to be chunkified (have [`ChannelPduHeader`]s added,
 /// splitting it into chunks if necessary) and wrapped in MCS, x224, and tpkt headers for sending over the wire.
-pub trait SvcPduEncode: PduEncode + Send {}
+pub trait SvcEncode: Encode + Send {}
 
-/// For legacy reasons, we implement [`SvcPduEncode`] for [`Vec<u8>`].
+/// For legacy reasons, we implement [`SvcEncode`] for [`Vec<u8>`].
 // FIXME: legacy code
-impl SvcPduEncode for Vec<u8> {}
+impl SvcEncode for Vec<u8> {}
 
 /// Encodable PDU to be sent over a static virtual channel.
 ///
 /// Additional SVC header flags can be added via [`SvcMessage::with_flags`] method.
 pub struct SvcMessage {
-    pdu: Box<dyn SvcPduEncode>,
+    pdu: Box<dyn SvcEncode>,
     flags: ChannelFlags,
 }
 
@@ -81,7 +81,7 @@ impl SvcMessage {
 
 impl<T> From<T> for SvcMessage
 where
-    T: SvcPduEncode + 'static,
+    T: SvcEncode + 'static,
 {
     fn from(pdu: T) -> Self {
         Self {
@@ -167,7 +167,7 @@ fn encode_svc_messages(
     // For each response PDU, chunkify it and add appropriate static channel headers.
     let chunks = StaticVirtualChannel::chunkify(messages)?;
 
-    // SendData is [`McsPdu`], which is [`x224Pdu`], which is [`PduEncode`]. [`PduEncode`] for [`x224Pdu`]
+    // SendData is [`McsPdu`], which is [`x224Pdu`], which is [`Encode`]. [`Encode`] for [`x224Pdu`]
     // also takes care of adding the Tpkt header, so therefore we can just call `encode_buf` on each of these and
     // we will create a buffer of fully encoded PDUs ready to send to the server.
     //
@@ -640,7 +640,7 @@ impl ChannelPduHeader {
     const FIXED_PART_SIZE: usize = 4 /* len */ + 4 /* flags */;
 }
 
-impl PduEncode for ChannelPduHeader {
+impl Encode for ChannelPduHeader {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         dst.write_u32(self.length);
         dst.write_u32(self.flags.bits());

@@ -59,7 +59,7 @@ Meta crate re-exporting important crates.
 
 PDU encoding and decoding.
 
-_TODO_: talk about important types and traits such as PduDecode, PduEncode…
+_TODO_: talk about important types and traits such as Decode, Encode…
 
 _TODO_: clean up the dependencies
 

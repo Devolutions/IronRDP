@@ -4,7 +4,7 @@ use bit_field::BitField;
 use bitflags::bitflags;
 
 use crate::geometry::InclusiveRectangle;
-use crate::{DecodeResult, EncodeResult, PduDecode, PduEncode};
+use crate::{Decode, DecodeResult, Encode, EncodeResult};
 use ironrdp_core::{ReadCursor, WriteCursor};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -20,7 +20,7 @@ impl QuantQuality {
     const FIXED_PART_SIZE: usize = 1 /* data */ + 1 /* quality */;
 }
 
-impl PduEncode for QuantQuality {
+impl Encode for QuantQuality {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
 
@@ -41,7 +41,7 @@ impl PduEncode for QuantQuality {
     }
 }
 
-impl<'de> PduDecode<'de> for QuantQuality {
+impl<'de> Decode<'de> for QuantQuality {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
@@ -80,7 +80,7 @@ impl Avc420BitmapStream<'_> {
     const FIXED_PART_SIZE: usize = 4 /* nRect */;
 }
 
-impl PduEncode for Avc420BitmapStream<'_> {
+impl Encode for Avc420BitmapStream<'_> {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
@@ -106,7 +106,7 @@ impl PduEncode for Avc420BitmapStream<'_> {
     }
 }
 
-impl<'de> PduDecode<'de> for Avc420BitmapStream<'de> {
+impl<'de> Decode<'de> for Avc420BitmapStream<'de> {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
@@ -150,7 +150,7 @@ impl Avc444BitmapStream<'_> {
     const FIXED_PART_SIZE: usize = 4 /* streamInfo */;
 }
 
-impl PduEncode for Avc444BitmapStream<'_> {
+impl Encode for Avc444BitmapStream<'_> {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
 
@@ -180,7 +180,7 @@ impl PduEncode for Avc444BitmapStream<'_> {
     }
 }
 
-impl<'de> PduDecode<'de> for Avc444BitmapStream<'de> {
+impl<'de> Decode<'de> for Avc444BitmapStream<'de> {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 

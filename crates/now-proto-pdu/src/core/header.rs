@@ -1,5 +1,5 @@
 use ironrdp_core::{ReadCursor, WriteCursor};
-use ironrdp_pdu::{DecodeResult, EncodeResult, PduDecode, PduEncode};
+use ironrdp_pdu::{Decode, DecodeResult, Encode, EncodeResult};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NowMessageClass(pub u8);
@@ -31,7 +31,7 @@ impl NowHeader {
     pub const FIXED_PART_SIZE: usize = 8;
 }
 
-impl PduEncode for NowHeader {
+impl Encode for NowHeader {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
 
@@ -52,7 +52,7 @@ impl PduEncode for NowHeader {
     }
 }
 
-impl PduDecode<'_> for NowHeader {
+impl Decode<'_> for NowHeader {
     fn decode(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 

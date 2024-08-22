@@ -8,7 +8,7 @@ use std::fmt::{self, Debug};
 use bitflags::bitflags;
 
 use crate::geometry::InclusiveRectangle;
-use crate::{DecodeResult, EncodeResult, PduDecode, PduEncode};
+use crate::{Decode, DecodeResult, Encode, EncodeResult};
 use ironrdp_core::{ReadCursor, WriteCursor};
 
 const FIRST_ROW_SIZE_VALUE: u16 = 0;
@@ -35,7 +35,7 @@ impl BitmapUpdateData<'_> {
     }
 }
 
-impl PduEncode for BitmapUpdateData<'_> {
+impl Encode for BitmapUpdateData<'_> {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
@@ -63,7 +63,7 @@ impl PduEncode for BitmapUpdateData<'_> {
     }
 }
 
-impl<'de> PduDecode<'de> for BitmapUpdateData<'de> {
+impl<'de> Decode<'de> for BitmapUpdateData<'de> {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
@@ -104,7 +104,7 @@ impl BitmapData<'_> {
     }
 }
 
-impl PduEncode for BitmapData<'_> {
+impl Encode for BitmapData<'_> {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
@@ -136,7 +136,7 @@ impl PduEncode for BitmapData<'_> {
     }
 }
 
-impl<'de> PduDecode<'de> for BitmapData<'de> {
+impl<'de> Decode<'de> for BitmapData<'de> {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
@@ -212,7 +212,7 @@ impl CompressedDataHeader {
     pub const ENCODED_SIZE: usize = Self::FIXED_PART_SIZE;
 }
 
-impl<'de> PduDecode<'de> for CompressedDataHeader {
+impl<'de> Decode<'de> for CompressedDataHeader {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
@@ -240,7 +240,7 @@ impl<'de> PduDecode<'de> for CompressedDataHeader {
     }
 }
 
-impl PduEncode for CompressedDataHeader {
+impl Encode for CompressedDataHeader {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
 

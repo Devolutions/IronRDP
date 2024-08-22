@@ -4,7 +4,7 @@ mod msg_box_req;
 mod msg_box_rsp;
 
 use ironrdp_core::{ReadCursor, WriteCursor};
-use ironrdp_pdu::{DecodeResult, EncodeResult, PduEncode};
+use ironrdp_pdu::{DecodeResult, Encode, EncodeResult};
 
 use crate::NowHeader;
 
@@ -55,7 +55,7 @@ impl NowSessionMessage {
     }
 }
 
-impl PduEncode for NowSessionMessage {
+impl Encode for NowSessionMessage {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         match self {
             Self::Lock(msg) => msg.encode(dst),

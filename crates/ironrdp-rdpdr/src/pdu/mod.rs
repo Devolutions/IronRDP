@@ -3,10 +3,9 @@ use std::mem::size_of;
 
 use ironrdp_core::{ReadCursor, WriteCursor};
 use ironrdp_pdu::{
-    ensure_size, invalid_field_err, unsupported_value_err, DecodeError, DecodeResult, EncodeResult, PduDecode,
-    PduEncode,
+    ensure_size, invalid_field_err, unsupported_value_err, Decode, DecodeError, DecodeResult, Encode, EncodeResult,
 };
-use ironrdp_svc::SvcPduEncode;
+use ironrdp_svc::SvcEncode;
 
 use self::efs::{
     ClientDeviceListAnnounce, ClientDriveQueryDirectoryResponse, ClientDriveQueryInformationResponse,
@@ -99,7 +98,7 @@ impl RdpdrPdu {
     }
 }
 
-impl PduDecode<'_> for RdpdrPdu {
+impl Decode<'_> for RdpdrPdu {
     fn decode(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
         let header = SharedHeader::decode(src)?;
         match header.packet_id {
@@ -119,7 +118,7 @@ impl PduDecode<'_> for RdpdrPdu {
     }
 }
 
-impl PduEncode for RdpdrPdu {
+impl Encode for RdpdrPdu {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         self.header().encode(dst)?;
 
@@ -191,7 +190,7 @@ impl PduEncode for RdpdrPdu {
     }
 }
 
-impl SvcPduEncode for RdpdrPdu {}
+impl SvcEncode for RdpdrPdu {}
 
 impl fmt::Debug for RdpdrPdu {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {

@@ -6,7 +6,7 @@ use bitflags::bitflags;
 use num_integer::Integer;
 use thiserror::Error;
 
-use crate::{DecodeResult, EncodeResult, PduDecode, PduEncode};
+use crate::{Decode, DecodeResult, Encode, EncodeResult};
 
 const CHANNELS_MAX: usize = 31;
 
@@ -104,7 +104,7 @@ impl ClientNetworkData {
     const FIXED_PART_SIZE: usize = 4 /* channelCount */;
 }
 
-impl PduEncode for ClientNetworkData {
+impl Encode for ClientNetworkData {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
 
@@ -126,7 +126,7 @@ impl PduEncode for ClientNetworkData {
     }
 }
 
-impl<'de> PduDecode<'de> for ClientNetworkData {
+impl<'de> Decode<'de> for ClientNetworkData {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
@@ -161,7 +161,7 @@ impl ServerNetworkData {
     }
 }
 
-impl PduEncode for ServerNetworkData {
+impl Encode for ServerNetworkData {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
@@ -195,7 +195,7 @@ impl PduEncode for ServerNetworkData {
     }
 }
 
-impl<'de> PduDecode<'de> for ServerNetworkData {
+impl<'de> Decode<'de> for ServerNetworkData {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
@@ -234,7 +234,7 @@ impl ChannelDef {
     const FIXED_PART_SIZE: usize = CLIENT_CHANNEL_SIZE;
 }
 
-impl PduEncode for ChannelDef {
+impl Encode for ChannelDef {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
 
@@ -253,7 +253,7 @@ impl PduEncode for ChannelDef {
     }
 }
 
-impl<'de> PduDecode<'de> for ChannelDef {
+impl<'de> Decode<'de> for ChannelDef {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 

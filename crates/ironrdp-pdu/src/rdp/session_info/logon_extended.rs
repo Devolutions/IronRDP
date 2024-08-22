@@ -2,7 +2,7 @@ use bitflags::bitflags;
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive, ToPrimitive};
 
-use crate::{DecodeResult, EncodeResult, PduDecode, PduEncode};
+use crate::{Decode, DecodeResult, Encode, EncodeResult};
 use ironrdp_core::{ReadCursor, WriteCursor};
 
 const LOGON_EX_LENGTH_FIELD_SIZE: usize = 2;
@@ -37,7 +37,7 @@ impl LogonInfoExtended {
     }
 }
 
-impl PduEncode for LogonInfoExtended {
+impl Encode for LogonInfoExtended {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
@@ -65,7 +65,7 @@ impl PduEncode for LogonInfoExtended {
     }
 }
 
-impl<'de> PduDecode<'de> for LogonInfoExtended {
+impl<'de> Decode<'de> for LogonInfoExtended {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
@@ -107,7 +107,7 @@ impl ServerAutoReconnect {
     const FIXED_PART_SIZE: usize = AUTO_RECONNECT_PACKET_SIZE + LOGON_INFO_FIELD_DATA_SIZE;
 }
 
-impl PduEncode for ServerAutoReconnect {
+impl Encode for ServerAutoReconnect {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
 
@@ -129,7 +129,7 @@ impl PduEncode for ServerAutoReconnect {
     }
 }
 
-impl<'de> PduDecode<'de> for ServerAutoReconnect {
+impl<'de> Decode<'de> for ServerAutoReconnect {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
@@ -166,7 +166,7 @@ impl LogonErrorsInfo {
     const FIXED_PART_SIZE: usize = LOGON_ERRORS_INFO_SIZE + LOGON_INFO_FIELD_DATA_SIZE;
 }
 
-impl PduEncode for LogonErrorsInfo {
+impl Encode for LogonErrorsInfo {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
 
@@ -186,7 +186,7 @@ impl PduEncode for LogonErrorsInfo {
     }
 }
 
-impl<'de> PduDecode<'de> for LogonErrorsInfo {
+impl<'de> Decode<'de> for LogonErrorsInfo {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 

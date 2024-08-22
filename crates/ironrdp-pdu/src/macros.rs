@@ -166,9 +166,9 @@ macro_rules! impl_pdu_pod {
             }
         }
 
-        impl $crate::PduDecodeOwned for $pdu_ty {
+        impl $crate::DecodeOwned for $pdu_ty {
             fn decode_owned(src: &mut ReadCursor<'_>) -> $crate::DecodeResult<Self> {
-                <Self as $crate::PduDecode>::decode(src)
+                <Self as $crate::Decode>::decode(src)
             }
         }
     };
@@ -180,9 +180,9 @@ macro_rules! impl_pdu_borrowing {
     ($pdu_ty:ident $(<$($lt:lifetime),+>)?, $owned_ty:ident) => {
         pub type $owned_ty = $pdu_ty<'static>;
 
-        impl $crate::PduDecodeOwned for $owned_ty {
+        impl $crate::DecodeOwned for $owned_ty {
             fn decode_owned(src: &mut ReadCursor<'_>) -> $crate::DecodeResult<Self> {
-                let pdu = <$pdu_ty $(<$($lt),+>)? as $crate::PduDecode>::decode(src)?;
+                let pdu = <$pdu_ty $(<$($lt),+>)? as $crate::Decode>::decode(src)?;
                 Ok(ironrdp_core::IntoOwned::into_owned(pdu))
             }
         }

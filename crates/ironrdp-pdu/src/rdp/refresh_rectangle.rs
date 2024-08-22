@@ -1,5 +1,5 @@
 use crate::geometry::InclusiveRectangle;
-use crate::{DecodeResult, EncodeResult, PduDecode, PduEncode};
+use crate::{Decode, DecodeResult, Encode, EncodeResult};
 use ironrdp_core::{ReadCursor, WriteCursor};
 
 /// [2.2.11.2.1] Refresh Rect PDU Data (TS_REFRESH_RECT_PDU)
@@ -22,7 +22,7 @@ impl RefreshRectanglePdu {
     const FIXED_PART_SIZE: usize = 1 /* numberOfAreas */ + 3 /* pad3Octets */;
 }
 
-impl PduEncode for RefreshRectanglePdu {
+impl Encode for RefreshRectanglePdu {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
@@ -47,7 +47,7 @@ impl PduEncode for RefreshRectanglePdu {
     }
 }
 
-impl<'de> PduDecode<'de> for RefreshRectanglePdu {
+impl<'de> Decode<'de> for RefreshRectanglePdu {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 

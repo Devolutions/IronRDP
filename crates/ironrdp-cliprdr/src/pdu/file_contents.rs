@@ -4,7 +4,7 @@ use bitflags::bitflags;
 use ironrdp_core::{IntoOwned, ReadCursor, WriteCursor};
 use ironrdp_pdu::utils::{combine_u64, split_u64};
 use ironrdp_pdu::{
-    cast_int, ensure_size, impl_pdu_borrowing, invalid_field_err, DecodeResult, EncodeResult, PduDecode, PduEncode,
+    cast_int, ensure_size, impl_pdu_borrowing, invalid_field_err, Decode, DecodeResult, Encode, EncodeResult,
 };
 
 use crate::pdu::{ClipboardPduFlags, PartialHeader};
@@ -104,7 +104,7 @@ impl<'a> FileContentsResponse<'a> {
     }
 }
 
-impl PduEncode for FileContentsResponse<'_> {
+impl Encode for FileContentsResponse<'_> {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         let flags = if self.is_error {
             ClipboardPduFlags::RESPONSE_FAIL
@@ -132,7 +132,7 @@ impl PduEncode for FileContentsResponse<'_> {
     }
 }
 
-impl<'de> PduDecode<'de> for FileContentsResponse<'de> {
+impl<'de> Decode<'de> for FileContentsResponse<'de> {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         let header = PartialHeader::decode(src)?;
 
@@ -182,7 +182,7 @@ impl FileContentsRequest {
     }
 }
 
-impl PduEncode for FileContentsRequest {
+impl Encode for FileContentsRequest {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         let header = PartialHeader::new(cast_int!("dataLen", self.inner_size())?);
         header.encode(dst)?;
@@ -214,7 +214,7 @@ impl PduEncode for FileContentsRequest {
     }
 }
 
-impl<'de> PduDecode<'de> for FileContentsRequest {
+impl<'de> Decode<'de> for FileContentsRequest {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         let header = PartialHeader::decode(src)?;
 

@@ -1,6 +1,6 @@
 //! This module contains the RDP_PRECONNECTION_PDU_V1 and RDP_PRECONNECTION_PDU_V2 structures.
 
-use crate::{invalid_field_err, invalid_field_err_with_source, DecodeResult, EncodeResult, Pdu, PduDecode, PduEncode};
+use crate::{invalid_field_err, invalid_field_err_with_source, Decode, DecodeResult, Encode, EncodeResult, Pdu};
 use ironrdp_core::{ReadCursor, WriteCursor};
 
 /// Preconnection PDU version
@@ -41,7 +41,7 @@ impl Pdu for PreconnectionBlob {
     const NAME: &'static str = "PreconnectionBlob";
 }
 
-impl<'de> PduDecode<'de> for PreconnectionBlob {
+impl<'de> Decode<'de> for PreconnectionBlob {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
@@ -103,7 +103,7 @@ impl<'de> PduDecode<'de> for PreconnectionBlob {
     }
 }
 
-impl PduEncode for PreconnectionBlob {
+impl Encode for PreconnectionBlob {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         if self.v2_payload.is_some() && self.version == PcbVersion::V1 {
             return Err(invalid_field_err(

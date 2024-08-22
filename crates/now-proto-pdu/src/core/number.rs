@@ -1,6 +1,6 @@
 //! Variable-length number types.
 use ironrdp_core::{ReadCursor, WriteCursor};
-use ironrdp_pdu::{DecodeError, DecodeResult, EncodeError, EncodeResult, PduDecode, PduEncode};
+use ironrdp_pdu::{Decode, DecodeError, DecodeResult, Encode, EncodeError, EncodeResult};
 
 /// Variable-length encoded u16.
 /// Value range:`[0..0x7FFF]`
@@ -28,7 +28,7 @@ impl VarU16 {
     }
 }
 
-impl PduEncode for VarU16 {
+impl Encode for VarU16 {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         let encoded_size = self.size();
 
@@ -72,7 +72,7 @@ impl PduEncode for VarU16 {
     }
 }
 
-impl PduDecode<'_> for VarU16 {
+impl Decode<'_> for VarU16 {
     fn decode(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
         // Ensure we have at least 1 byte available to determine the size of the value
         ensure_size!(in: src, size: 1);
@@ -145,7 +145,7 @@ impl VarI16 {
     }
 }
 
-impl PduEncode for VarI16 {
+impl Encode for VarI16 {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         let encoded_size = self.size();
 
@@ -195,7 +195,7 @@ impl PduEncode for VarI16 {
     }
 }
 
-impl PduDecode<'_> for VarI16 {
+impl Decode<'_> for VarI16 {
     fn decode(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
         // Ensure we have at least 1 byte available to determine the size of the value
         ensure_size!(in: src, size: 1);
@@ -277,7 +277,7 @@ impl VarU32 {
     }
 }
 
-impl PduEncode for VarU32 {
+impl Encode for VarU32 {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         let encoded_size = self.size();
 
@@ -323,7 +323,7 @@ impl PduEncode for VarU32 {
     }
 }
 
-impl PduDecode<'_> for VarU32 {
+impl Decode<'_> for VarU32 {
     fn decode(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
         // Ensure we have at least 1 byte available to determine the size of the value
         ensure_size!(in: src, size: 1);
@@ -397,7 +397,7 @@ impl VarI32 {
     }
 }
 
-impl PduEncode for VarI32 {
+impl Encode for VarI32 {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         let encoded_size = self.size();
 
@@ -449,7 +449,7 @@ impl PduEncode for VarI32 {
     }
 }
 
-impl PduDecode<'_> for VarI32 {
+impl Decode<'_> for VarI32 {
     fn decode(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
         // Ensure we have at least 1 byte available to determine the size of the value
         ensure_size!(in: src, size: 1);
@@ -531,7 +531,7 @@ impl VarU64 {
     }
 }
 
-impl PduEncode for VarU64 {
+impl Encode for VarU64 {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         let encoded_size = self.size();
 
@@ -581,7 +581,7 @@ impl PduEncode for VarU64 {
     }
 }
 
-impl PduDecode<'_> for VarU64 {
+impl Decode<'_> for VarU64 {
     fn decode(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
         // Ensure we have at least 1 byte available to determine the size of the value
         ensure_size!(in: src, size: 1);
@@ -652,7 +652,7 @@ impl VarI64 {
     }
 }
 
-impl PduEncode for VarI64 {
+impl Encode for VarI64 {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         let encoded_size = self.size();
 
@@ -708,7 +708,7 @@ impl PduEncode for VarI64 {
     }
 }
 
-impl PduDecode<'_> for VarI64 {
+impl Decode<'_> for VarI64 {
     fn decode(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
         // Ensure we have at least 1 byte available to determine the size of the value
         ensure_size!(in: src, size: 1);

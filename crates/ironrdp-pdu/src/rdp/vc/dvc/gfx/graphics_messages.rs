@@ -17,7 +17,7 @@ pub use server::{
 };
 
 use super::RDP_GFX_HEADER_SIZE;
-use crate::{DecodeResult, EncodeResult, PduDecode, PduEncode};
+use crate::{Decode, DecodeResult, Encode, EncodeResult};
 use ironrdp_core::{ReadCursor, WriteCursor};
 
 const CAPABILITY_SET_HEADER_SIZE: usize = 8;
@@ -65,7 +65,7 @@ impl CapabilitySet {
     const FIXED_PART_SIZE: usize = CAPABILITY_SET_HEADER_SIZE;
 }
 
-impl PduEncode for CapabilitySet {
+impl Encode for CapabilitySet {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
@@ -113,7 +113,7 @@ impl PduEncode for CapabilitySet {
     }
 }
 
-impl<'de> PduDecode<'de> for CapabilitySet {
+impl<'de> Decode<'de> for CapabilitySet {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
@@ -196,7 +196,7 @@ impl Color {
     const FIXED_PART_SIZE: usize = 4 /* BGRA */;
 }
 
-impl PduEncode for Color {
+impl Encode for Color {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
 
@@ -217,7 +217,7 @@ impl PduEncode for Color {
     }
 }
 
-impl<'de> PduDecode<'de> for Color {
+impl<'de> Decode<'de> for Color {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
@@ -242,7 +242,7 @@ impl Point {
     const FIXED_PART_SIZE: usize = 2 /* X */ + 2 /* Y */;
 }
 
-impl PduEncode for Point {
+impl Encode for Point {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
 
@@ -261,7 +261,7 @@ impl PduEncode for Point {
     }
 }
 
-impl<'de> PduDecode<'de> for Point {
+impl<'de> Decode<'de> for Point {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 

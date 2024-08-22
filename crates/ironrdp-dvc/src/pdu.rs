@@ -6,9 +6,9 @@ use ironrdp_core::{ReadCursor, WriteCursor};
 use ironrdp_pdu::{
     cast_length, ensure_fixed_part_size, ensure_size, invalid_field_err, unsupported_value_err,
     utils::{checked_sum, encoded_str_len, read_string_from_cursor, strict_sum, write_string_to_cursor, CharacterSet},
-    DecodeError, DecodeResult, EncodeResult, PduDecode, PduEncode,
+    Decode, DecodeError, DecodeResult, Encode, EncodeResult,
 };
-use ironrdp_svc::SvcPduEncode;
+use ironrdp_svc::SvcEncode;
 
 /// Dynamic Virtual Channel PDU's that are sent by both client and server.
 #[derive(Debug, PartialEq)]
@@ -29,7 +29,7 @@ impl DrdynvcDataPdu {
     }
 }
 
-impl PduEncode for DrdynvcDataPdu {
+impl Encode for DrdynvcDataPdu {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         match self {
             DrdynvcDataPdu::DataFirst(pdu) => pdu.encode(dst),
@@ -61,7 +61,7 @@ pub enum DrdynvcClientPdu {
     Data(DrdynvcDataPdu),
 }
 
-impl PduEncode for DrdynvcClientPdu {
+impl Encode for DrdynvcClientPdu {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         match self {
             DrdynvcClientPdu::Capabilities(pdu) => pdu.encode(dst),
@@ -90,7 +90,7 @@ impl PduEncode for DrdynvcClientPdu {
     }
 }
 
-impl PduDecode<'_> for DrdynvcClientPdu {
+impl Decode<'_> for DrdynvcClientPdu {
     fn decode(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
         let header = Header::decode(src)?;
         match header.cmd {
@@ -115,7 +115,7 @@ pub enum DrdynvcServerPdu {
     Data(DrdynvcDataPdu),
 }
 
-impl PduEncode for DrdynvcServerPdu {
+impl Encode for DrdynvcServerPdu {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         match self {
             DrdynvcServerPdu::Data(pdu) => pdu.encode(dst),
@@ -144,7 +144,7 @@ impl PduEncode for DrdynvcServerPdu {
     }
 }
 
-impl PduDecode<'_> for DrdynvcServerPdu {
+impl Decode<'_> for DrdynvcServerPdu {
     fn decode(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
         let header = Header::decode(src)?;
         match header.cmd {
@@ -160,10 +160,10 @@ impl PduDecode<'_> for DrdynvcServerPdu {
     }
 }
 
-// Dynamic virtual channel PDU's are sent over a static virtual channel, so they are `SvcPduEncode`.
-impl SvcPduEncode for DrdynvcDataPdu {}
-impl SvcPduEncode for DrdynvcClientPdu {}
-impl SvcPduEncode for DrdynvcServerPdu {}
+// Dynamic virtual channel PDU's are sent over a static virtual channel, so they are `SvcEncode`.
+impl SvcEncode for DrdynvcDataPdu {}
+impl SvcEncode for DrdynvcClientPdu {}
+impl SvcEncode for DrdynvcServerPdu {}
 
 /// [2.2] Message Syntax
 ///

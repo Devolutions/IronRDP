@@ -1,7 +1,7 @@
 #[cfg(test)]
 mod tests;
 
-use crate::{DecodeResult, EncodeResult, PduDecode, PduEncode};
+use crate::{Decode, DecodeResult, Encode, EncodeResult};
 use ironrdp_core::{ReadCursor, WriteCursor};
 
 const POINTER_LENGTH: usize = 6;
@@ -18,7 +18,7 @@ impl Pointer {
     const FIXED_PART_SIZE: usize = POINTER_LENGTH;
 }
 
-impl PduEncode for Pointer {
+impl Encode for Pointer {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
 
@@ -38,7 +38,7 @@ impl PduEncode for Pointer {
     }
 }
 
-impl<'de> PduDecode<'de> for Pointer {
+impl<'de> Decode<'de> for Pointer {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 

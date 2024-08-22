@@ -7,7 +7,7 @@ use num_traits::{FromPrimitive, ToPrimitive};
 use thiserror::Error;
 
 use crate::rdp::headers::{BasicSecurityHeader, BasicSecurityHeaderFlags, BASIC_SECURITY_HEADER_SIZE};
-use crate::{DecodeResult, EncodeResult, PduDecode, PduEncode, PduError};
+use crate::{Decode, DecodeResult, Encode, EncodeResult, PduError};
 use ironrdp_core::{ReadCursor, WriteCursor};
 
 #[cfg(test)]
@@ -67,7 +67,7 @@ impl LicenseHeader {
     const FIXED_PART_SIZE: usize = PREAMBLE_SIZE + BASIC_SECURITY_HEADER_SIZE;
 }
 
-impl PduEncode for LicenseHeader {
+impl Encode for LicenseHeader {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
 
@@ -91,7 +91,7 @@ impl PduEncode for LicenseHeader {
     }
 }
 
-impl<'de> PduDecode<'de> for LicenseHeader {
+impl<'de> Decode<'de> for LicenseHeader {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
@@ -280,7 +280,7 @@ impl BlobHeader {
     }
 }
 
-impl PduEncode for BlobHeader {
+impl Encode for BlobHeader {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
 
@@ -299,7 +299,7 @@ impl PduEncode for BlobHeader {
     }
 }
 
-impl<'de> PduDecode<'de> for BlobHeader {
+impl<'de> Decode<'de> for BlobHeader {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
@@ -345,7 +345,7 @@ pub enum LicensePdu {
     LicensingErrorMessage(LicensingErrorMessage),
 }
 
-impl<'de> PduDecode<'de> for LicensePdu {
+impl<'de> Decode<'de> for LicensePdu {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         let license_header = LicenseHeader::decode(src)?;
 
@@ -368,7 +368,7 @@ impl<'de> PduDecode<'de> for LicensePdu {
     }
 }
 
-impl PduEncode for LicensePdu {
+impl Encode for LicensePdu {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         match self {
             Self::ClientNewLicenseRequest(ref pdu) => pdu.encode(dst),

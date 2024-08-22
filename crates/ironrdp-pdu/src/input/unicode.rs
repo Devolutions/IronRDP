@@ -1,6 +1,6 @@
 use bitflags::bitflags;
 
-use crate::{DecodeResult, EncodeResult, PduDecode, PduEncode};
+use crate::{Decode, DecodeResult, Encode, EncodeResult};
 use ironrdp_core::{ReadCursor, WriteCursor};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -15,7 +15,7 @@ impl UnicodePdu {
     const FIXED_PART_SIZE: usize = 2 /* flags */ + 2 /* code */ + 2 /* padding */;
 }
 
-impl PduEncode for UnicodePdu {
+impl Encode for UnicodePdu {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
 
@@ -35,7 +35,7 @@ impl PduEncode for UnicodePdu {
     }
 }
 
-impl<'de> PduDecode<'de> for UnicodePdu {
+impl<'de> Decode<'de> for UnicodePdu {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 

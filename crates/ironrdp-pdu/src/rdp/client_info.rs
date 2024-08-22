@@ -7,7 +7,7 @@ use num_traits::{FromPrimitive as _, ToPrimitive as _};
 use thiserror::Error;
 
 use crate::utils::CharacterSet;
-use crate::{utils, DecodeResult, EncodeResult, PduDecode, PduEncode, PduError};
+use crate::{utils, Decode, DecodeResult, Encode, EncodeResult, PduError};
 use ironrdp_core::{ReadCursor, WriteCursor};
 
 const RECONNECT_COOKIE_LEN: usize = 28;
@@ -56,7 +56,7 @@ impl ClientInfo {
         + WORK_DIR_LENGTH_SIZE;
 }
 
-impl PduEncode for ClientInfo {
+impl Encode for ClientInfo {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
 
@@ -118,7 +118,7 @@ impl PduEncode for ClientInfo {
     }
 }
 
-impl<'de> PduDecode<'de> for ClientInfo {
+impl<'de> Decode<'de> for ClientInfo {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
@@ -293,7 +293,7 @@ impl ExtendedClientOptionalInfo {
     }
 }
 
-impl PduEncode for ExtendedClientOptionalInfo {
+impl Encode for ExtendedClientOptionalInfo {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
@@ -338,7 +338,7 @@ impl PduEncode for ExtendedClientOptionalInfo {
     }
 }
 
-impl<'de> PduDecode<'de> for ExtendedClientOptionalInfo {
+impl<'de> Decode<'de> for ExtendedClientOptionalInfo {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         let mut optional_data = Self::default();
 
@@ -407,7 +407,7 @@ impl TimezoneInfo {
         + BIAS_SIZE;
 }
 
-impl PduEncode for TimezoneInfo {
+impl Encode for TimezoneInfo {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
 
@@ -439,7 +439,7 @@ impl PduEncode for TimezoneInfo {
     }
 }
 
-impl<'de> PduDecode<'de> for TimezoneInfo {
+impl<'de> Decode<'de> for TimezoneInfo {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
@@ -481,7 +481,7 @@ impl SystemTime {
     const FIXED_PART_SIZE: usize = 2 /* Year */ + 2 /* Month */ + 2 /* DoW */ + 2 /* Day */ + 2 /* Hour */ + 2 /* Minute */ + 2 /* Second */ + 2 /* Ms */;
 }
 
-impl PduEncode for Option<SystemTime> {
+impl Encode for Option<SystemTime> {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
@@ -510,7 +510,7 @@ impl PduEncode for Option<SystemTime> {
     }
 }
 
-impl<'de> PduDecode<'de> for Option<SystemTime> {
+impl<'de> Decode<'de> for Option<SystemTime> {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_size!(in: src, size: SystemTime::FIXED_PART_SIZE);
 

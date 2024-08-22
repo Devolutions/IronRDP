@@ -6,7 +6,7 @@ use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive as _, ToPrimitive as _};
 
 use crate::geometry::ExclusiveRectangle;
-use crate::{DecodeResult, EncodeResult, PduDecode, PduEncode};
+use crate::{Decode, DecodeResult, Encode, EncodeResult};
 use ironrdp_core::{ReadCursor, WriteCursor};
 
 pub const SURFACE_COMMAND_HEADER_SIZE: usize = 2;
@@ -24,7 +24,7 @@ impl SurfaceCommand<'_> {
     const FIXED_PART_SIZE: usize = 2 /* cmdType */;
 }
 
-impl PduEncode for SurfaceCommand<'_> {
+impl Encode for SurfaceCommand<'_> {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
@@ -52,7 +52,7 @@ impl PduEncode for SurfaceCommand<'_> {
     }
 }
 
-impl<'de> PduDecode<'de> for SurfaceCommand<'de> {
+impl<'de> Decode<'de> for SurfaceCommand<'de> {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
@@ -79,7 +79,7 @@ impl SurfaceBitsPdu<'_> {
     const NAME: &'static str = "TS_SURFCMD_x_SURFACE_BITS_PDU";
 }
 
-impl PduEncode for SurfaceBitsPdu<'_> {
+impl Encode for SurfaceBitsPdu<'_> {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         self.destination.encode(dst)?;
         self.extended_bitmap_data.encode(dst)?;
@@ -96,7 +96,7 @@ impl PduEncode for SurfaceBitsPdu<'_> {
     }
 }
 
-impl<'de> PduDecode<'de> for SurfaceBitsPdu<'de> {
+impl<'de> Decode<'de> for SurfaceBitsPdu<'de> {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         let destination = ExclusiveRectangle::decode(src)?;
         let extended_bitmap_data = ExtendedBitmapDataPdu::decode(src)?;
@@ -120,7 +120,7 @@ impl FrameMarkerPdu {
     const FIXED_PART_SIZE: usize = 2 /* frameAction */ + 4 /* frameId */;
 }
 
-impl PduEncode for FrameMarkerPdu {
+impl Encode for FrameMarkerPdu {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
 
@@ -139,7 +139,7 @@ impl PduEncode for FrameMarkerPdu {
     }
 }
 
-impl<'de> PduDecode<'de> for FrameMarkerPdu {
+impl<'de> Decode<'de> for FrameMarkerPdu {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_size!(in: src, size: 2);
 
@@ -191,7 +191,7 @@ impl ExtendedBitmapDataPdu<'_> {
     const FIXED_PART_SIZE: usize = 1 /* bpp */ + 1 /* flags */ + 1 /* reserved */ + 1 /* codecId */ + 2 /* width */ + 2 /* height */ + 4 /* len */;
 }
 
-impl PduEncode for ExtendedBitmapDataPdu<'_> {
+impl Encode for ExtendedBitmapDataPdu<'_> {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
@@ -228,7 +228,7 @@ impl PduEncode for ExtendedBitmapDataPdu<'_> {
     }
 }
 
-impl<'de> PduDecode<'de> for ExtendedBitmapDataPdu<'de> {
+impl<'de> Decode<'de> for ExtendedBitmapDataPdu<'de> {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
@@ -283,7 +283,7 @@ impl BitmapDataHeader {
     pub const ENCODED_SIZE: usize = Self::FIXED_PART_SIZE;
 }
 
-impl PduEncode for BitmapDataHeader {
+impl Encode for BitmapDataHeader {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
 
@@ -304,7 +304,7 @@ impl PduEncode for BitmapDataHeader {
     }
 }
 
-impl PduDecode<'_> for BitmapDataHeader {
+impl Decode<'_> for BitmapDataHeader {
     fn decode(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 

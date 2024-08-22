@@ -12,7 +12,7 @@ use ironrdp_pdu::{self as pdu, decode_err, encode_err, DecodeResult};
 use ironrdp_svc::{ChannelFlags, CompressionCondition, SvcClientProcessor, SvcMessage, SvcProcessor};
 use pdu::gcc::ChannelName;
 use pdu::other_err;
-use pdu::PduDecode as _;
+use pdu::Decode as _;
 use pdu::PduResult;
 
 pub trait DvcClientProcessor: DvcProcessor {}

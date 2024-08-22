@@ -2,7 +2,7 @@ use std::borrow::Cow;
 
 use crate::tpdu::{TpduCode, TpduHeader};
 use crate::tpkt::TpktHeader;
-use crate::{invalid_field_err, DecodeResult, EncodeResult, Pdu, PduDecode, PduEncode};
+use crate::{invalid_field_err, Decode, DecodeResult, Encode, EncodeResult, Pdu};
 use ironrdp_core::{IntoOwned, ReadCursor, WriteCursor};
 
 pub trait X224Pdu<'de>: Sized {
@@ -26,7 +26,7 @@ where
     const NAME: &'static str = T::X224_NAME;
 }
 
-impl<'de, T> PduEncode for T
+impl<'de, T> Encode for T
 where
     T: X224Pdu<'de>,
 {
@@ -62,7 +62,7 @@ where
     }
 }
 
-impl<'de, T> PduDecode<'de> for T
+impl<'de, T> Decode<'de> for T
 where
     T: X224Pdu<'de>,
 {

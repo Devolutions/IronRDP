@@ -5,7 +5,7 @@ use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive as _, ToPrimitive as _};
 use thiserror::Error;
 
-use crate::{DecodeResult, EncodeResult, PduDecode, PduEncode};
+use crate::{Decode, DecodeResult, Encode, EncodeResult};
 use ironrdp_core::{ReadCursor, WriteCursor};
 
 const REDIRECTION_VERSION_MASK: u32 = 0x0000_003C;
@@ -26,7 +26,7 @@ impl ClientClusterData {
     const FIXED_PART_SIZE: usize = FLAGS_SIZE + REDIRECTED_SESSION_ID_SIZE;
 }
 
-impl PduEncode for ClientClusterData {
+impl Encode for ClientClusterData {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
 
@@ -47,7 +47,7 @@ impl PduEncode for ClientClusterData {
     }
 }
 
-impl<'de> PduDecode<'de> for ClientClusterData {
+impl<'de> Decode<'de> for ClientClusterData {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 

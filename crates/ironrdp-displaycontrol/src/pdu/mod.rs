@@ -3,8 +3,8 @@
 //! [1]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpedisp/d2954508-f487-48bc-8731-39743e0854a9
 
 use ironrdp_core::{ReadCursor, WriteCursor};
-use ironrdp_dvc::DvcPduEncode;
-use ironrdp_pdu::{ensure_fixed_part_size, invalid_field_err, DecodeResult, EncodeResult, PduDecode, PduEncode};
+use ironrdp_dvc::DvcEncode;
+use ironrdp_pdu::{ensure_fixed_part_size, invalid_field_err, Decode, DecodeResult, Encode, EncodeResult};
 use tracing::warn;
 
 const DISPLAYCONTROL_PDU_TYPE_CAPS: u32 = 0x00000005;
@@ -33,7 +33,7 @@ impl DisplayControlPdu {
     const FIXED_PART_SIZE: usize = 4 /* Type */ + 4 /* Length */;
 }
 
-impl PduEncode for DisplayControlPdu {
+impl Encode for DisplayControlPdu {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
 
@@ -75,9 +75,9 @@ impl PduEncode for DisplayControlPdu {
     }
 }
 
-impl DvcPduEncode for DisplayControlPdu {}
+impl DvcEncode for DisplayControlPdu {}
 
-impl<'de> PduDecode<'de> for DisplayControlPdu {
+impl<'de> Decode<'de> for DisplayControlPdu {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
@@ -160,7 +160,7 @@ impl DisplayControlCapabilities {
     }
 }
 
-impl PduEncode for DisplayControlCapabilities {
+impl Encode for DisplayControlCapabilities {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
         dst.write_u32(self.max_num_monitors);
@@ -179,7 +179,7 @@ impl PduEncode for DisplayControlCapabilities {
     }
 }
 
-impl<'de> PduDecode<'de> for DisplayControlCapabilities {
+impl<'de> Decode<'de> for DisplayControlCapabilities {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
@@ -281,7 +281,7 @@ impl DisplayControlMonitorLayout {
     }
 }
 
-impl PduEncode for DisplayControlMonitorLayout {
+impl Encode for DisplayControlMonitorLayout {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
 
@@ -316,7 +316,7 @@ impl PduEncode for DisplayControlMonitorLayout {
     }
 }
 
-impl<'de> PduDecode<'de> for DisplayControlMonitorLayout {
+impl<'de> Decode<'de> for DisplayControlMonitorLayout {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
@@ -585,7 +585,7 @@ impl MonitorLayoutEntry {
     }
 }
 
-impl PduEncode for MonitorLayoutEntry {
+impl Encode for MonitorLayoutEntry {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
 
@@ -617,7 +617,7 @@ impl PduEncode for MonitorLayoutEntry {
     }
 }
 
-impl<'de> PduDecode<'de> for MonitorLayoutEntry {
+impl<'de> Decode<'de> for MonitorLayoutEntry {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 

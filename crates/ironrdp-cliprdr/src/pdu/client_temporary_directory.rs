@@ -3,7 +3,7 @@ use std::borrow::Cow;
 use ironrdp_core::{IntoOwned, ReadCursor, WriteCursor};
 use ironrdp_pdu::utils::{read_string_from_cursor, write_string_to_cursor, CharacterSet};
 use ironrdp_pdu::{
-    cast_int, ensure_size, impl_pdu_borrowing, invalid_field_err, DecodeResult, EncodeResult, PduDecode, PduEncode,
+    cast_int, ensure_size, impl_pdu_borrowing, invalid_field_err, Decode, DecodeResult, Encode, EncodeResult,
 };
 
 use crate::pdu::PartialHeader;
@@ -55,7 +55,7 @@ impl ClientTemporaryDirectory<'_> {
     }
 }
 
-impl PduEncode for ClientTemporaryDirectory<'_> {
+impl Encode for ClientTemporaryDirectory<'_> {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         let header = PartialHeader::new(cast_int!("dataLen", Self::INNER_SIZE)?);
         header.encode(dst)?;
@@ -75,7 +75,7 @@ impl PduEncode for ClientTemporaryDirectory<'_> {
     }
 }
 
-impl<'de> PduDecode<'de> for ClientTemporaryDirectory<'de> {
+impl<'de> Decode<'de> for ClientTemporaryDirectory<'de> {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         let _header = PartialHeader::decode(src)?;
 

@@ -347,7 +347,7 @@ pub trait Pdu {
 /// The resulting binary payload is a fully encoded PDU that may be sent to the peer.
 ///
 /// This trait is object-safe and may be used in a dynamic context.
-pub trait PduEncode {
+pub trait Encode {
     /// Encodes this PDU in-place using the provided `WriteCursor`.
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()>;
 
@@ -358,12 +358,12 @@ pub trait PduEncode {
     fn size(&self) -> usize;
 }
 
-ironrdp_core::assert_obj_safe!(PduEncode);
+ironrdp_core::assert_obj_safe!(Encode);
 
 /// Encodes the given PDU in-place into the provided buffer and returns the number of bytes written.
 pub fn encode<T>(pdu: &T, dst: &mut [u8]) -> EncodeResult<usize>
 where
-    T: PduEncode + ?Sized,
+    T: Encode + ?Sized,
 {
     let mut cursor = WriteCursor::new(dst);
     encode_cursor(pdu, &mut cursor)?;
@@ -373,7 +373,7 @@ where
 /// Encodes the given PDU in-place using the provided `WriteCursor`.
 pub fn encode_cursor<T>(pdu: &T, dst: &mut WriteCursor<'_>) -> EncodeResult<()>
 where
-    T: PduEncode + ?Sized,
+    T: Encode + ?Sized,
 {
     pdu.encode(dst)
 }
@@ -382,7 +382,7 @@ where
 #[cfg(feature = "alloc")]
 pub fn encode_buf<T>(pdu: &T, buf: &mut WriteBuf) -> EncodeResult<usize>
 where
-    T: PduEncode + ?Sized,
+    T: Encode + ?Sized,
 {
     let pdu_size = pdu.size();
     let dst = buf.unfilled_to(pdu_size);
@@ -398,7 +398,7 @@ where
 #[cfg(any(feature = "alloc", test))]
 pub fn encode_vec<T>(pdu: &T) -> EncodeResult<Vec<u8>>
 where
-    T: PduEncode + ?Sized,
+    T: Encode + ?Sized,
 {
     let pdu_size = pdu.size();
     let mut buf = vec![0; pdu_size];
@@ -408,25 +408,25 @@ where
 }
 
 /// Gets the name of this PDU.
-pub fn name<T: PduEncode>(pdu: &T) -> &'static str {
+pub fn name<T: Encode>(pdu: &T) -> &'static str {
     pdu.name()
 }
 
 /// Computes the size in bytes for this PDU.
-pub fn size<T: PduEncode>(pdu: &T) -> usize {
+pub fn size<T: Encode>(pdu: &T) -> usize {
     pdu.size()
 }
 
 /// PDU that can be decoded from a binary input.
 ///
 /// The binary payload must be a full PDU, not some subset of it.
-pub trait PduDecode<'de>: Sized {
+pub trait Decode<'de>: Sized {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self>;
 }
 
 pub fn decode<'de, T>(src: &'de [u8]) -> DecodeResult<T>
 where
-    T: PduDecode<'de>,
+    T: Decode<'de>,
 {
     let mut cursor = ReadCursor::new(src);
     T::decode(&mut cursor)
@@ -434,22 +434,22 @@ where
 
 pub fn decode_cursor<'de, T>(src: &mut ReadCursor<'de>) -> DecodeResult<T>
 where
-    T: PduDecode<'de>,
+    T: Decode<'de>,
 {
     T::decode(src)
 }
 
-/// Similar to `PduDecode` but unconditionally returns an owned type.
-pub trait PduDecodeOwned: Sized {
+/// Similar to `Decode` but unconditionally returns an owned type.
+pub trait DecodeOwned: Sized {
     fn decode_owned(src: &mut ReadCursor<'_>) -> DecodeResult<Self>;
 }
 
-pub fn decode_owned<T: PduDecodeOwned>(src: &[u8]) -> DecodeResult<T> {
+pub fn decode_owned<T: DecodeOwned>(src: &[u8]) -> DecodeResult<T> {
     let mut cursor = ReadCursor::new(src);
     T::decode_owned(&mut cursor)
 }
 
-pub fn decode_owned_cursor<T: PduDecodeOwned>(src: &mut ReadCursor<'_>) -> DecodeResult<T> {
+pub fn decode_owned_cursor<T: DecodeOwned>(src: &mut ReadCursor<'_>) -> DecodeResult<T> {
     T::decode_owned(src)
 }
 
@@ -587,7 +587,7 @@ pub use legacy::*;
 mod legacy {
     use thiserror::Error;
 
-    use crate::{EncodeResult, PduEncode, WriteCursor};
+    use crate::{Encode, EncodeResult, WriteCursor};
 
     pub trait PduBufferParsing<'a>: Sized {
         type Error;
@@ -600,7 +600,7 @@ mod legacy {
         fn buffer_length(&self) -> usize;
     }
 
-    impl PduEncode for Vec<u8> {
+    impl Encode for Vec<u8> {
         fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
             ensure_size!(in: dst, size: self.len());
 

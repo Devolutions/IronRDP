@@ -3,7 +3,7 @@ mod tests;
 
 use bitflags::bitflags;
 
-use crate::{DecodeResult, EncodeResult, PduDecode, PduEncode};
+use crate::{Decode, DecodeResult, Encode, EncodeResult};
 use ironrdp_core::{ReadCursor, WriteCursor};
 
 const ORDER_LENGTH: usize = 84;
@@ -93,7 +93,7 @@ impl Order {
     }
 }
 
-impl PduEncode for Order {
+impl Encode for Order {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
 
@@ -128,7 +128,7 @@ impl PduEncode for Order {
     }
 }
 
-impl<'de> PduDecode<'de> for Order {
+impl<'de> Decode<'de> for Order {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 

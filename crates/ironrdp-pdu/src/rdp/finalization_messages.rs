@@ -2,7 +2,7 @@ use bitflags::bitflags;
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive as _, ToPrimitive as _};
 
-use crate::{gcc, DecodeResult, EncodeResult, PduDecode, PduEncode};
+use crate::{gcc, Decode, DecodeResult, Encode, EncodeResult};
 use ironrdp_core::{ReadCursor, WriteCursor};
 
 const SYNCHRONIZE_PDU_SIZE: usize = 2 + 2;
@@ -22,7 +22,7 @@ impl SynchronizePdu {
     const FIXED_PART_SIZE: usize = SYNCHRONIZE_PDU_SIZE;
 }
 
-impl PduEncode for SynchronizePdu {
+impl Encode for SynchronizePdu {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
 
@@ -41,7 +41,7 @@ impl PduEncode for SynchronizePdu {
     }
 }
 
-impl<'de> PduDecode<'de> for SynchronizePdu {
+impl<'de> Decode<'de> for SynchronizePdu {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
@@ -69,7 +69,7 @@ impl ControlPdu {
     const FIXED_PART_SIZE: usize = CONTROL_PDU_SIZE;
 }
 
-impl PduEncode for ControlPdu {
+impl Encode for ControlPdu {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
 
@@ -89,7 +89,7 @@ impl PduEncode for ControlPdu {
     }
 }
 
-impl<'de> PduDecode<'de> for ControlPdu {
+impl<'de> Decode<'de> for ControlPdu {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
@@ -135,7 +135,7 @@ impl FontPdu {
     const FIXED_PART_SIZE: usize = FONT_PDU_SIZE;
 }
 
-impl PduEncode for FontPdu {
+impl Encode for FontPdu {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
 
@@ -156,7 +156,7 @@ impl PduEncode for FontPdu {
     }
 }
 
-impl<'de> PduDecode<'de> for FontPdu {
+impl<'de> Decode<'de> for FontPdu {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
@@ -186,7 +186,7 @@ impl MonitorLayoutPdu {
     const FIXED_PART_SIZE: usize = 4 /* nMonitors */;
 }
 
-impl PduEncode for MonitorLayoutPdu {
+impl Encode for MonitorLayoutPdu {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
 
@@ -208,7 +208,7 @@ impl PduEncode for MonitorLayoutPdu {
     }
 }
 
-impl<'de> PduDecode<'de> for MonitorLayoutPdu {
+impl<'de> Decode<'de> for MonitorLayoutPdu {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 

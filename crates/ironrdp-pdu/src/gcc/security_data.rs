@@ -5,7 +5,7 @@ use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive, ToPrimitive};
 use thiserror::Error;
 
-use crate::{DecodeResult, EncodeResult, PduDecode, PduEncode};
+use crate::{Decode, DecodeResult, Encode, EncodeResult};
 use ironrdp_core::{ReadCursor, WriteCursor};
 
 const CLIENT_ENCRYPTION_METHODS_SIZE: usize = 4;
@@ -37,7 +37,7 @@ impl ClientSecurityData {
     }
 }
 
-impl PduEncode for ClientSecurityData {
+impl Encode for ClientSecurityData {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
@@ -56,7 +56,7 @@ impl PduEncode for ClientSecurityData {
     }
 }
 
-impl<'de> PduDecode<'de> for ClientSecurityData {
+impl<'de> Decode<'de> for ClientSecurityData {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
@@ -94,7 +94,7 @@ impl ServerSecurityData {
     }
 }
 
-impl PduEncode for ServerSecurityData {
+impl Encode for ServerSecurityData {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
@@ -142,7 +142,7 @@ impl PduEncode for ServerSecurityData {
     }
 }
 
-impl<'de> PduDecode<'de> for ServerSecurityData {
+impl<'de> Decode<'de> for ServerSecurityData {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 

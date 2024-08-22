@@ -1,5 +1,5 @@
 use super::CapabilitySet;
-use crate::{DecodeResult, EncodeResult, PduDecode, PduEncode};
+use crate::{Decode, DecodeResult, Encode, EncodeResult};
 use ironrdp_core::{ReadCursor, WriteCursor};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -11,7 +11,7 @@ impl CapabilitiesAdvertisePdu {
     const FIXED_PART_SIZE: usize  = 2 /* Count */;
 }
 
-impl PduEncode for CapabilitiesAdvertisePdu {
+impl Encode for CapabilitiesAdvertisePdu {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
@@ -33,7 +33,7 @@ impl PduEncode for CapabilitiesAdvertisePdu {
     }
 }
 
-impl<'a> PduDecode<'a> for CapabilitiesAdvertisePdu {
+impl<'a> Decode<'a> for CapabilitiesAdvertisePdu {
     fn decode(src: &mut ReadCursor<'a>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
@@ -62,7 +62,7 @@ impl FrameAcknowledgePdu {
     const FIXED_PART_SIZE: usize = 4 /* QueueDepth */ + 4 /* FrameId */ + 4 /* TotalFramesDecoded */;
 }
 
-impl PduEncode for FrameAcknowledgePdu {
+impl Encode for FrameAcknowledgePdu {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
 
@@ -82,7 +82,7 @@ impl PduEncode for FrameAcknowledgePdu {
     }
 }
 
-impl<'a> PduDecode<'a> for FrameAcknowledgePdu {
+impl<'a> Decode<'a> for FrameAcknowledgePdu {
     fn decode(src: &mut ReadCursor<'a>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
@@ -109,7 +109,7 @@ impl CacheImportReplyPdu {
     const FIXED_PART_SIZE: usize = 2 /* Count */;
 }
 
-impl PduEncode for CacheImportReplyPdu {
+impl Encode for CacheImportReplyPdu {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
@@ -131,7 +131,7 @@ impl PduEncode for CacheImportReplyPdu {
     }
 }
 
-impl<'a> PduDecode<'a> for CacheImportReplyPdu {
+impl<'a> Decode<'a> for CacheImportReplyPdu {
     fn decode(src: &mut ReadCursor<'a>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 

@@ -940,7 +940,7 @@ mod legacy {
     use super::*;
     use crate::gcc::conference_create::{ConferenceCreateRequest, ConferenceCreateResponse};
     use crate::gcc::GccError;
-    use crate::{ber, DecodeResult, EncodeResult, PduDecode, PduEncode};
+    use crate::{ber, Decode, DecodeResult, Encode, EncodeResult};
 
     // impl<'de> McsPdu<'de> for ConnectInitial {
     //     const MCS_NAME: &'static str = "DisconnectProviderUltimatum";
@@ -973,7 +973,7 @@ mod legacy {
         }
     }
 
-    impl PduEncode for ConnectInitial {
+    impl Encode for ConnectInitial {
         fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
             ensure_size!(in: dst, size: self.size());
 
@@ -1002,7 +1002,7 @@ mod legacy {
         }
     }
 
-    impl<'de> PduDecode<'de> for ConnectInitial {
+    impl<'de> Decode<'de> for ConnectInitial {
         fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
             ber::read_application_tag(src, MCS_TYPE_CONNECT_INITIAL)?;
             let calling_domain_selector = ber::read_octet_string(src)?;
@@ -1037,7 +1037,7 @@ mod legacy {
         }
     }
 
-    impl PduEncode for ConnectResponse {
+    impl Encode for ConnectResponse {
         fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
             ensure_size!(in: dst, size: self.size());
 
@@ -1063,7 +1063,7 @@ mod legacy {
         }
     }
 
-    impl<'de> PduDecode<'de> for ConnectResponse {
+    impl<'de> Decode<'de> for ConnectResponse {
         fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
             ber::read_application_tag(src, MCS_TYPE_CONNECT_RESPONSE)?;
             ber::read_enumerated(src, RESULT_ENUM_LENGTH)?;
@@ -1095,7 +1095,7 @@ mod legacy {
         }
     }
 
-    impl PduEncode for DomainParameters {
+    impl Encode for DomainParameters {
         fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
             ensure_size!(in: dst, size: self.size());
 
@@ -1124,7 +1124,7 @@ mod legacy {
         }
     }
 
-    impl<'de> PduDecode<'de> for DomainParameters {
+    impl<'de> Decode<'de> for DomainParameters {
         fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
             ber::read_sequence_tag(src)?;
             let max_channel_ids = ber::read_integer(src)? as u32;

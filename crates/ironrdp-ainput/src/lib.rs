@@ -1,10 +1,10 @@
 use bitflags::bitflags;
-use ironrdp_dvc::DvcPduEncode;
+use ironrdp_dvc::DvcEncode;
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive as _, ToPrimitive as _};
 
 use ironrdp_core::{ReadCursor, WriteCursor};
-use ironrdp_pdu::{ensure_fixed_part_size, invalid_field_err, DecodeResult, EncodeResult, PduDecode, PduEncode};
+use ironrdp_pdu::{ensure_fixed_part_size, invalid_field_err, Decode, DecodeResult, Encode, EncodeResult};
 // Advanced Input channel as defined from Freerdp, [here]:
 //
 // [here]: https://github.com/FreeRDP/FreeRDP/blob/master/include/freerdp/channels/ainput.h
@@ -57,7 +57,7 @@ impl Default for VersionPdu {
     }
 }
 
-impl PduEncode for VersionPdu {
+impl Encode for VersionPdu {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
 
@@ -76,7 +76,7 @@ impl PduEncode for VersionPdu {
     }
 }
 
-impl<'de> PduDecode<'de> for VersionPdu {
+impl<'de> Decode<'de> for VersionPdu {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
@@ -114,7 +114,7 @@ impl ServerPdu {
     const FIXED_PART_SIZE: usize = 2 /* PduType */;
 }
 
-impl PduEncode for ServerPdu {
+impl Encode for ServerPdu {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
 
@@ -137,9 +137,9 @@ impl PduEncode for ServerPdu {
     }
 }
 
-impl DvcPduEncode for ServerPdu {}
+impl DvcEncode for ServerPdu {}
 
-impl<'de> PduDecode<'de> for ServerPdu {
+impl<'de> Decode<'de> for ServerPdu {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
@@ -168,7 +168,7 @@ impl MousePdu {
     const FIXED_PART_SIZE: usize = 8 /* Time */ + 8 /* Flags */ + 4 /* X */ + 4 /* Y */;
 }
 
-impl PduEncode for MousePdu {
+impl Encode for MousePdu {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
 
@@ -189,7 +189,7 @@ impl PduEncode for MousePdu {
     }
 }
 
-impl<'de> PduDecode<'de> for MousePdu {
+impl<'de> Decode<'de> for MousePdu {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
@@ -213,7 +213,7 @@ impl ClientPdu {
     const FIXED_PART_SIZE: usize = 2 /* PduType */;
 }
 
-impl PduEncode for ClientPdu {
+impl Encode for ClientPdu {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
 
@@ -236,7 +236,7 @@ impl PduEncode for ClientPdu {
     }
 }
 
-impl<'de> PduDecode<'de> for ClientPdu {
+impl<'de> Decode<'de> for ClientPdu {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 

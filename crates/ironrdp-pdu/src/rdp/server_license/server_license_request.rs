@@ -9,7 +9,7 @@ use super::{
     BlobHeader, BlobType, LicenseHeader, PreambleType, ServerLicenseError, BLOB_LENGTH_SIZE, BLOB_TYPE_SIZE,
     KEY_EXCHANGE_ALGORITHM_RSA, RANDOM_NUMBER_SIZE, UTF16_NULL_TERMINATOR_SIZE, UTF8_NULL_TERMINATOR_SIZE,
 };
-use crate::{utils, DecodeResult, EncodeResult, PduDecode, PduEncode};
+use crate::{utils, Decode, DecodeResult, Encode, EncodeResult};
 use ironrdp_core::{ReadCursor, WriteCursor};
 
 const CERT_VERSION_FIELD_SIZE: usize = 4;
@@ -154,7 +154,7 @@ impl Scope {
     const FIXED_PART_SIZE: usize = BLOB_TYPE_SIZE + BLOB_LENGTH_SIZE;
 }
 
-impl PduEncode for Scope {
+impl Encode for Scope {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
@@ -175,7 +175,7 @@ impl PduEncode for Scope {
     }
 }
 
-impl<'de> PduDecode<'de> for Scope {
+impl<'de> Decode<'de> for Scope {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         let blob_header = BlobHeader::decode(src)?;
         if blob_header.blob_type != BlobType::SCOPE {
@@ -252,7 +252,7 @@ impl ServerCertificate {
     }
 }
 
-impl PduEncode for ServerCertificate {
+impl Encode for ServerCertificate {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
@@ -290,7 +290,7 @@ impl PduEncode for ServerCertificate {
     }
 }
 
-impl<'de> PduDecode<'de> for ServerCertificate {
+impl<'de> Decode<'de> for ServerCertificate {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
@@ -324,7 +324,7 @@ impl ProductInfo {
     const FIXED_PART_SIZE: usize = PRODUCT_INFO_STATIC_FIELDS_SIZE;
 }
 
-impl PduEncode for ProductInfo {
+impl Encode for ProductInfo {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
@@ -361,7 +361,7 @@ impl PduEncode for ProductInfo {
     }
 }
 
-impl<'de> PduDecode<'de> for ProductInfo {
+impl<'de> Decode<'de> for ProductInfo {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 

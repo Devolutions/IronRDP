@@ -3,7 +3,7 @@ mod tests;
 
 use bitflags::bitflags;
 
-use crate::{DecodeResult, EncodeResult, PduDecode, PduEncode};
+use crate::{Decode, DecodeResult, Encode, EncodeResult};
 use ironrdp_core::{ReadCursor, WriteCursor};
 
 pub const BITMAP_CACHE_ENTRIES_NUM: usize = 3;
@@ -25,7 +25,7 @@ impl BitmapCache {
     const FIXED_PART_SIZE: usize = BITMAP_CACHE_LENGTH;
 }
 
-impl PduEncode for BitmapCache {
+impl Encode for BitmapCache {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
 
@@ -47,7 +47,7 @@ impl PduEncode for BitmapCache {
     }
 }
 
-impl<'de> PduDecode<'de> for BitmapCache {
+impl<'de> Decode<'de> for BitmapCache {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
@@ -75,7 +75,7 @@ impl CacheEntry {
     const FIXED_PART_SIZE: usize = CACHE_ENTRY_LENGTH;
 }
 
-impl PduEncode for CacheEntry {
+impl Encode for CacheEntry {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
 
@@ -94,7 +94,7 @@ impl PduEncode for CacheEntry {
     }
 }
 
-impl<'de> PduDecode<'de> for CacheEntry {
+impl<'de> Decode<'de> for CacheEntry {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
@@ -126,7 +126,7 @@ impl BitmapCacheRev2 {
     const FIXED_PART_SIZE: usize = BITMAP_CACHE_REV2_LENGTH;
 }
 
-impl PduEncode for BitmapCacheRev2 {
+impl Encode for BitmapCacheRev2 {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
 
@@ -152,7 +152,7 @@ impl PduEncode for BitmapCacheRev2 {
     }
 }
 
-impl<'de> PduDecode<'de> for BitmapCacheRev2 {
+impl<'de> Decode<'de> for BitmapCacheRev2 {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
@@ -188,7 +188,7 @@ impl CellInfo {
     const FIXED_PART_SIZE: usize = CELL_INFO_LENGTH;
 }
 
-impl PduEncode for CellInfo {
+impl Encode for CellInfo {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
 
@@ -212,7 +212,7 @@ impl PduEncode for CellInfo {
     }
 }
 
-impl<'de> PduDecode<'de> for CellInfo {
+impl<'de> Decode<'de> for CellInfo {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 

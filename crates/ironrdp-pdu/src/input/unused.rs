@@ -1,4 +1,4 @@
-use crate::{DecodeResult, EncodeResult, PduDecode, PduEncode};
+use crate::{Decode, DecodeResult, Encode, EncodeResult};
 use ironrdp_core::{ReadCursor, WriteCursor};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -10,7 +10,7 @@ impl UnusedPdu {
     const FIXED_PART_SIZE: usize = 6 /* padding */;
 }
 
-impl PduEncode for UnusedPdu {
+impl Encode for UnusedPdu {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
 
@@ -27,7 +27,7 @@ impl PduEncode for UnusedPdu {
     }
 }
 
-impl<'de> PduDecode<'de> for UnusedPdu {
+impl<'de> Decode<'de> for UnusedPdu {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 

@@ -7,8 +7,8 @@ use crate::rdp::capability_sets::CapabilitySetsError;
 use crate::rdp::client_info::{ClientInfo, ClientInfoError};
 use crate::rdp::headers::{BasicSecurityHeader, BasicSecurityHeaderFlags, ShareControlPduType, ShareDataPduType};
 use crate::rdp::server_license::ServerLicenseError;
-use crate::PduEncode;
-use crate::{DecodeResult, EncodeResult, PduDecode, PduError};
+use crate::Encode;
+use crate::{Decode, DecodeResult, EncodeResult, PduError};
 use ironrdp_core::{ReadCursor, WriteCursor};
 
 pub mod capability_sets;
@@ -34,7 +34,7 @@ impl ClientInfoPdu {
     const FIXED_PART_SIZE: usize = BasicSecurityHeader::FIXED_PART_SIZE + ClientInfo::FIXED_PART_SIZE;
 }
 
-impl PduEncode for ClientInfoPdu {
+impl Encode for ClientInfoPdu {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
 
@@ -53,7 +53,7 @@ impl PduEncode for ClientInfoPdu {
     }
 }
 
-impl<'de> PduDecode<'de> for ClientInfoPdu {
+impl<'de> Decode<'de> for ClientInfoPdu {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 

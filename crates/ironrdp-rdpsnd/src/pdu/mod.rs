@@ -9,9 +9,9 @@ use bitflags::bitflags;
 use ironrdp_core::{ReadCursor, WriteCursor};
 use ironrdp_pdu::{
     cast_length, ensure_fixed_part_size, ensure_size, invalid_field_err, other_err, read_padding, write_padding,
-    DecodeError, DecodeResult, EncodeResult, PduDecode, PduEncode,
+    Decode, DecodeError, DecodeResult, Encode, EncodeResult,
 };
-use ironrdp_svc::SvcPduEncode;
+use ironrdp_svc::SvcEncode;
 
 const SNDC_FORMATS: u8 = 0x07;
 const SNDC_QUALITYMODE: u8 = 0x0C;
@@ -232,7 +232,7 @@ impl AudioFormat {
         + 2 /* cbSize */;
 }
 
-impl PduEncode for AudioFormat {
+impl Encode for AudioFormat {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
@@ -262,7 +262,7 @@ impl PduEncode for AudioFormat {
     }
 }
 
-impl<'de> PduDecode<'de> for AudioFormat {
+impl<'de> Decode<'de> for AudioFormat {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
@@ -313,7 +313,7 @@ impl ServerAudioFormatPdu {
         + 1 /* bPad */;
 }
 
-impl PduEncode for ServerAudioFormatPdu {
+impl Encode for ServerAudioFormatPdu {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
@@ -343,7 +343,7 @@ impl PduEncode for ServerAudioFormatPdu {
     }
 }
 
-impl<'de> PduDecode<'de> for ServerAudioFormatPdu {
+impl<'de> Decode<'de> for ServerAudioFormatPdu {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
@@ -406,7 +406,7 @@ impl ClientAudioFormatPdu {
         + 1 /* bPad */;
 }
 
-impl PduEncode for ClientAudioFormatPdu {
+impl Encode for ClientAudioFormatPdu {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
@@ -437,7 +437,7 @@ impl PduEncode for ClientAudioFormatPdu {
     }
 }
 
-impl<'de> PduDecode<'de> for ClientAudioFormatPdu {
+impl<'de> Decode<'de> for ClientAudioFormatPdu {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
@@ -507,7 +507,7 @@ impl QualityModePdu {
         + 2 /* reserved */;
 }
 
-impl PduEncode for QualityModePdu {
+impl Encode for QualityModePdu {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
@@ -526,7 +526,7 @@ impl PduEncode for QualityModePdu {
     }
 }
 
-impl<'de> PduDecode<'de> for QualityModePdu {
+impl<'de> Decode<'de> for QualityModePdu {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
@@ -550,7 +550,7 @@ impl CryptKeyPdu {
         + 32 /* seed */;
 }
 
-impl PduEncode for CryptKeyPdu {
+impl Encode for CryptKeyPdu {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
@@ -569,7 +569,7 @@ impl PduEncode for CryptKeyPdu {
     }
 }
 
-impl<'de> PduDecode<'de> for CryptKeyPdu {
+impl<'de> Decode<'de> for CryptKeyPdu {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
@@ -594,7 +594,7 @@ impl TrainingPdu {
         + 2 /* wPackSize */;
 }
 
-impl PduEncode for TrainingPdu {
+impl Encode for TrainingPdu {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
@@ -616,7 +616,7 @@ impl PduEncode for TrainingPdu {
     }
 }
 
-impl<'de> PduDecode<'de> for TrainingPdu {
+impl<'de> Decode<'de> for TrainingPdu {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
@@ -643,7 +643,7 @@ impl TrainingConfirmPdu {
         + 2 /* wPackSize */;
 }
 
-impl PduEncode for TrainingConfirmPdu {
+impl Encode for TrainingConfirmPdu {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
@@ -662,7 +662,7 @@ impl PduEncode for TrainingConfirmPdu {
     }
 }
 
-impl<'de> PduDecode<'de> for TrainingConfirmPdu {
+impl<'de> Decode<'de> for TrainingConfirmPdu {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
@@ -692,7 +692,7 @@ impl WaveInfoPdu {
         + 4 /* data */;
 }
 
-impl PduEncode for WaveInfoPdu {
+impl Encode for WaveInfoPdu {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
@@ -714,7 +714,7 @@ impl PduEncode for WaveInfoPdu {
     }
 }
 
-impl<'de> PduDecode<'de> for WaveInfoPdu {
+impl<'de> Decode<'de> for WaveInfoPdu {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
@@ -744,7 +744,7 @@ impl SndWavePdu {
     const FIXED_PART_SIZE: usize = 4 /* bPad */;
 }
 
-impl PduEncode for SndWavePdu {
+impl Encode for SndWavePdu {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
@@ -796,7 +796,7 @@ impl WavePdu<'_> {
     }
 }
 
-impl PduEncode for WavePdu<'_> {
+impl Encode for WavePdu<'_> {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         let info = WaveInfoPdu {
             timestamp: self.timestamp,
@@ -862,7 +862,7 @@ impl WaveConfirmPdu {
         + 1 /* pad */;
 }
 
-impl PduEncode for WaveConfirmPdu {
+impl Encode for WaveConfirmPdu {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
@@ -882,7 +882,7 @@ impl PduEncode for WaveConfirmPdu {
     }
 }
 
-impl<'de> PduDecode<'de> for WaveConfirmPdu {
+impl<'de> Decode<'de> for WaveConfirmPdu {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
@@ -914,7 +914,7 @@ impl WaveEncryptPdu {
         + 3 /* bPad */;
 }
 
-impl PduEncode for WaveEncryptPdu {
+impl Encode for WaveEncryptPdu {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
@@ -1000,7 +1000,7 @@ impl Wave2Pdu<'_> {
         + 4 /* dwAudioTimestamp */;
 }
 
-impl PduEncode for Wave2Pdu<'_> {
+impl Encode for Wave2Pdu<'_> {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
@@ -1025,7 +1025,7 @@ impl PduEncode for Wave2Pdu<'_> {
     }
 }
 
-impl<'de> PduDecode<'de> for Wave2Pdu<'_> {
+impl<'de> Decode<'de> for Wave2Pdu<'_> {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
@@ -1058,7 +1058,7 @@ impl VolumePdu {
     const FIXED_PART_SIZE: usize = 4;
 }
 
-impl PduEncode for VolumePdu {
+impl Encode for VolumePdu {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
@@ -1077,7 +1077,7 @@ impl PduEncode for VolumePdu {
     }
 }
 
-impl<'de> PduDecode<'de> for VolumePdu {
+impl<'de> Decode<'de> for VolumePdu {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
@@ -1103,7 +1103,7 @@ impl PitchPdu {
     const FIXED_PART_SIZE: usize = 4;
 }
 
-impl PduEncode for PitchPdu {
+impl Encode for PitchPdu {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
@@ -1121,7 +1121,7 @@ impl PduEncode for PitchPdu {
     }
 }
 
-impl<'de> PduDecode<'de> for PitchPdu {
+impl<'de> Decode<'de> for PitchPdu {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
@@ -1151,7 +1151,7 @@ impl ServerAudioOutputPdu<'_> {
     const FIXED_PART_SIZE: usize = 1 /* msgType */ + 1 /* padding*/ + 2 /* bodySize */;
 }
 
-impl PduEncode for ServerAudioOutputPdu<'_> {
+impl Encode for ServerAudioOutputPdu<'_> {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
 
@@ -1207,7 +1207,7 @@ impl PduEncode for ServerAudioOutputPdu<'_> {
     }
 }
 
-impl<'de> PduDecode<'de> for ServerAudioOutputPdu<'_> {
+impl<'de> Decode<'de> for ServerAudioOutputPdu<'_> {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
@@ -1257,7 +1257,7 @@ impl<'de> PduDecode<'de> for ServerAudioOutputPdu<'_> {
     }
 }
 
-impl SvcPduEncode for ServerAudioOutputPdu<'_> {}
+impl SvcEncode for ServerAudioOutputPdu<'_> {}
 
 /// Client Audio Output Channel message (PDU prefixed with `SNDPROLOG`)
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1274,7 +1274,7 @@ impl ClientAudioOutputPdu {
     const FIXED_PART_SIZE: usize = 1 /* msgType */ + 1 /* padding*/ + 2 /* bodySize */;
 }
 
-impl PduEncode for ClientAudioOutputPdu {
+impl Encode for ClientAudioOutputPdu {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
 
@@ -1315,7 +1315,7 @@ impl PduEncode for ClientAudioOutputPdu {
     }
 }
 
-impl<'de> PduDecode<'de> for ClientAudioOutputPdu {
+impl<'de> Decode<'de> for ClientAudioOutputPdu {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
@@ -1348,4 +1348,4 @@ impl<'de> PduDecode<'de> for ClientAudioOutputPdu {
     }
 }
 
-impl SvcPduEncode for ClientAudioOutputPdu {}
+impl SvcEncode for ClientAudioOutputPdu {}

@@ -1,4 +1,4 @@
-use crate::{DecodeResult, EncodeResult, PduDecode, PduEncode};
+use crate::{Decode, DecodeResult, Encode, EncodeResult};
 use ironrdp_core::{ReadCursor, WriteCursor};
 
 // Represents `TS_POINT16` described in [MS-RDPBCGR] 2.2.9.1.1.4.1
@@ -13,7 +13,7 @@ impl Point16 {
     const FIXED_PART_SIZE: usize = 2 /* x */ + 2 /* y */;
 }
 
-impl PduEncode for Point16 {
+impl Encode for Point16 {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
@@ -31,7 +31,7 @@ impl PduEncode for Point16 {
     }
 }
 
-impl PduDecode<'_> for Point16 {
+impl Decode<'_> for Point16 {
     fn decode(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
@@ -95,7 +95,7 @@ macro_rules! check_masks_alignment {
     }};
 }
 
-impl PduEncode for ColorPointerAttribute<'_> {
+impl Encode for ColorPointerAttribute<'_> {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
@@ -125,7 +125,7 @@ impl PduEncode for ColorPointerAttribute<'_> {
     }
 }
 
-impl<'a> PduDecode<'a> for ColorPointerAttribute<'a> {
+impl<'a> Decode<'a> for ColorPointerAttribute<'a> {
     fn decode(src: &mut ReadCursor<'a>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
@@ -168,7 +168,7 @@ impl PointerAttribute<'_> {
     const FIXED_PART_SIZE: usize = 2 /* xorBpp */;
 }
 
-impl PduEncode for PointerAttribute<'_> {
+impl Encode for PointerAttribute<'_> {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
@@ -187,7 +187,7 @@ impl PduEncode for PointerAttribute<'_> {
     }
 }
 
-impl<'a> PduDecode<'a> for PointerAttribute<'a> {
+impl<'a> Decode<'a> for PointerAttribute<'a> {
     fn decode(src: &mut ReadCursor<'a>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
@@ -209,7 +209,7 @@ impl CachedPointerAttribute {
     const FIXED_PART_SIZE: usize = 2 /* cacheIdx */;
 }
 
-impl PduEncode for CachedPointerAttribute {
+impl Encode for CachedPointerAttribute {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
@@ -227,7 +227,7 @@ impl PduEncode for CachedPointerAttribute {
     }
 }
 
-impl PduDecode<'_> for CachedPointerAttribute {
+impl Decode<'_> for CachedPointerAttribute {
     fn decode(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
@@ -256,7 +256,7 @@ impl LargePointerAttribute<'_> {
         4 /* andMaskLen */ + 4 /* xorMaskLen */;
 }
 
-impl PduEncode for LargePointerAttribute<'_> {
+impl Encode for LargePointerAttribute<'_> {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
@@ -286,7 +286,7 @@ impl PduEncode for LargePointerAttribute<'_> {
     }
 }
 
-impl<'a> PduDecode<'a> for LargePointerAttribute<'a> {
+impl<'a> Decode<'a> for LargePointerAttribute<'a> {
     fn decode(src: &mut ReadCursor<'a>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 

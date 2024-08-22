@@ -11,7 +11,7 @@ use crate::rdp::refresh_rectangle::RefreshRectanglePdu;
 use crate::rdp::server_error_info::ServerSetErrorInfoPdu;
 use crate::rdp::session_info::SaveSessionInfoPdu;
 use crate::rdp::suppress_output::SuppressOutputPdu;
-use crate::{DecodeResult, EncodeResult, PduDecode, PduEncode};
+use crate::{Decode, DecodeResult, Encode, EncodeResult};
 use ironrdp_core::{ReadCursor, WriteCursor};
 
 pub const BASIC_SECURITY_HEADER_SIZE: usize = 4;
@@ -40,7 +40,7 @@ impl BasicSecurityHeader {
     pub const FIXED_PART_SIZE: usize = BASIC_SECURITY_HEADER_SIZE;
 }
 
-impl PduEncode for BasicSecurityHeader {
+impl Encode for BasicSecurityHeader {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
 
@@ -58,7 +58,7 @@ impl PduEncode for BasicSecurityHeader {
     }
 }
 
-impl<'de> PduDecode<'de> for BasicSecurityHeader {
+impl<'de> Decode<'de> for BasicSecurityHeader {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
@@ -83,7 +83,7 @@ impl ShareControlHeader {
     const FIXED_PART_SIZE: usize = SHARE_CONTROL_HEADER_SIZE;
 }
 
-impl PduEncode for ShareControlHeader {
+impl Encode for ShareControlHeader {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
@@ -109,7 +109,7 @@ impl PduEncode for ShareControlHeader {
     }
 }
 
-impl<'de> PduDecode<'de> for ShareControlHeader {
+impl<'de> Decode<'de> for ShareControlHeader {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
@@ -199,7 +199,7 @@ impl ShareControlPdu {
     }
 }
 
-impl PduEncode for ShareControlPdu {
+impl Encode for ShareControlPdu {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         match self {
             ShareControlPdu::ServerDemandActive(pdu) => pdu.encode(dst),
@@ -242,7 +242,7 @@ impl ShareDataHeader {
         + COMPRESSED_LENGTH_FIELD_SIZE;
 }
 
-impl PduEncode for ShareDataHeader {
+impl Encode for ShareDataHeader {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
@@ -277,7 +277,7 @@ impl PduEncode for ShareDataHeader {
     }
 }
 
-impl<'de> PduDecode<'de> for ShareDataHeader {
+impl<'de> Decode<'de> for ShareDataHeader {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
 
@@ -440,7 +440,7 @@ impl ShareDataPdu {
     }
 }
 
-impl PduEncode for ShareDataPdu {
+impl Encode for ShareDataPdu {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         match self {
             ShareDataPdu::Synchronize(pdu) => pdu.encode(dst),
@@ -579,7 +579,7 @@ impl ServerDeactivateAll {
     const FIXED_PART_SIZE: usize = 2 /* length_source_descriptor */ + 1 /* source_descriptor */;
 }
 
-impl PduDecode<'_> for ServerDeactivateAll {
+impl Decode<'_> for ServerDeactivateAll {
     fn decode(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
         ensure_fixed_part_size!(in: src);
         let length_source_descriptor = src.read_u16();
@@ -589,7 +589,7 @@ impl PduDecode<'_> for ServerDeactivateAll {
     }
 }
 
-impl PduEncode for ServerDeactivateAll {
+impl Encode for ServerDeactivateAll {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
         // A 16-bit, unsigned integer. The size in bytes of the sourceDescriptor field.

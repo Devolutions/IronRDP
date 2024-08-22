@@ -1,6 +1,6 @@
 use lazy_static::lazy_static;
 
-use crate::{decode, encode_vec, DecodeErrorKind, PduEncode};
+use crate::{decode, encode_vec, DecodeErrorKind, Encode};
 
 use super::*;
 
