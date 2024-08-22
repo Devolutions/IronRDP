@@ -1,8 +1,8 @@
 use std::borrow::Cow;
 
 use bitflags::bitflags;
-use ironrdp_core::{ReadCursor, WriteCursor};
-use ironrdp_pdu::{ensure_fixed_part_size, ensure_size, Decode, DecodeResult, Encode, EncodeResult};
+use ironrdp_core::{ensure_fixed_part_size, ensure_size, DecodeResult, EncodeResult, ReadCursor, WriteCursor};
+use ironrdp_pdu::{Decode, Encode};
 
 bitflags! {
     /// Represents `mappingMode` fields of `CLIPRDR_MFPICT` structure.

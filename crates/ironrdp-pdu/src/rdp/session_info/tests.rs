@@ -1,6 +1,7 @@
+use ironrdp_core::DecodeErrorKind;
 use lazy_static::lazy_static;
 
-use crate::{decode, encode_vec, DecodeErrorKind, Encode};
+use crate::{decode, encode_vec, Encode};
 
 use super::*;
 

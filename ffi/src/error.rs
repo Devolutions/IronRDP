@@ -37,14 +37,14 @@ impl From<ironrdp::pdu::PduError> for IronRdpErrorKind {
     }
 }
 
-impl From<ironrdp::pdu::EncodeError> for IronRdpErrorKind {
-    fn from(_val: ironrdp::pdu::EncodeError) -> Self {
+impl From<ironrdp::core::EncodeError> for IronRdpErrorKind {
+    fn from(_val: ironrdp::core::EncodeError) -> Self {
         IronRdpErrorKind::EncodeError
     }
 }
 
-impl From<ironrdp::pdu::DecodeError> for IronRdpErrorKind {
-    fn from(_val: ironrdp::pdu::DecodeError) -> Self {
+impl From<ironrdp::core::DecodeError> for IronRdpErrorKind {
+    fn from(_val: ironrdp::core::DecodeError) -> Self {
         IronRdpErrorKind::DecodeError
     }
 }

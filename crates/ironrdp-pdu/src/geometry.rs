@@ -1,7 +1,7 @@
 use std::cmp::{max, min};
 
 use crate::{Decode, DecodeResult, Encode, EncodeResult};
-use ironrdp_core::{ReadCursor, WriteCursor};
+use ironrdp_core::{ensure_fixed_part_size, ReadCursor, WriteCursor};
 
 pub(crate) mod private {
     pub struct BaseRectangle {

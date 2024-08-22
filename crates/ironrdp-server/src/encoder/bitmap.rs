@@ -1,9 +1,9 @@
-use ironrdp_core::WriteCursor;
+use ironrdp_core::{invalid_field_err, EncodeResult, WriteCursor};
 use ironrdp_graphics::image_processing::PixelFormat;
 use ironrdp_graphics::rdp6::{ABgrChannels, ARgbChannels, BgrAChannels, BitmapStreamEncoder, RgbAChannels};
 use ironrdp_pdu::bitmap::{self, BitmapData, BitmapUpdateData, Compression};
 use ironrdp_pdu::geometry::InclusiveRectangle;
-use ironrdp_pdu::{invalid_field_err, Encode, EncodeResult};
+use ironrdp_pdu::Encode;
 
 use crate::{BitmapUpdate, PixelOrder};
 

@@ -7,7 +7,7 @@ use num_traits::{FromPrimitive as _, ToPrimitive as _};
 
 use crate::geometry::ExclusiveRectangle;
 use crate::{Decode, DecodeResult, Encode, EncodeResult};
-use ironrdp_core::{ReadCursor, WriteCursor};
+use ironrdp_core::{ensure_fixed_part_size, ensure_size, invalid_field_err, ReadCursor, WriteCursor};
 
 pub const SURFACE_COMMAND_HEADER_SIZE: usize = 2;
 

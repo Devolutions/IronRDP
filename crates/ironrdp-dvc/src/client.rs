@@ -6,12 +6,11 @@ use crate::{encode_dvc_messages, DvcProcessor, DynamicChannelSet, DynamicVirtual
 use alloc::vec::Vec;
 use core::any::TypeId;
 use core::fmt;
-use ironrdp_core::impl_as_any;
 use ironrdp_core::ReadCursor;
-use ironrdp_pdu::{self as pdu, decode_err, encode_err, DecodeResult};
+use ironrdp_core::{impl_as_any, DecodeResult};
+use ironrdp_pdu::{self as pdu, decode_err, encode_err, pdu_other_err};
 use ironrdp_svc::{ChannelFlags, CompressionCondition, SvcClientProcessor, SvcMessage, SvcProcessor};
 use pdu::gcc::ChannelName;
-use pdu::other_err;
 use pdu::Decode as _;
 use pdu::PduResult;
 
@@ -155,7 +154,7 @@ impl SvcProcessor for DrdynvcClient {
                 let messages = self
                     .dynamic_channels
                     .get_by_channel_id_mut(&channel_id)
-                    .ok_or_else(|| other_err!("access to non existing DVC channel"))?
+                    .ok_or_else(|| pdu_other_err!("access to non existing DVC channel"))?
                     .process(data)?;
 
                 responses.extend(

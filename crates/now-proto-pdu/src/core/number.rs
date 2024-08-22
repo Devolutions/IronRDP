@@ -1,6 +1,8 @@
 //! Variable-length number types.
-use ironrdp_core::{ReadCursor, WriteCursor};
-use ironrdp_pdu::{Decode, DecodeError, DecodeResult, Encode, EncodeError, EncodeResult};
+use ironrdp_core::{
+    ensure_size, invalid_field_err, DecodeError, DecodeResult, EncodeError, EncodeResult, ReadCursor, WriteCursor,
+};
+use ironrdp_pdu::{Decode, Encode};
 
 /// Variable-length encoded u16.
 /// Value range:`[0..0x7FFF]`

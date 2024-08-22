@@ -1,6 +1,6 @@
 use ironrdp_core::WriteCursor;
+use ironrdp_core::{not_enough_bytes_err, EncodeError};
 use ironrdp_pdu::bitmap::rdp6::{BitmapStreamHeader, ColorPlaneDefinition};
-use ironrdp_pdu::{not_enough_bytes_err, EncodeError};
 use thiserror::Error;
 
 use crate::rdp6::rle::{compress_8bpp_plane, RleEncodeError};

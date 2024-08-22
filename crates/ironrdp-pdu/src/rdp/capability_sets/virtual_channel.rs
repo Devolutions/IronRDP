@@ -4,7 +4,7 @@ mod tests;
 use bitflags::bitflags;
 
 use crate::{Decode, DecodeResult, Encode, EncodeResult};
-use ironrdp_core::{ReadCursor, WriteCursor};
+use ironrdp_core::{ensure_fixed_part_size, ensure_size, ReadCursor, WriteCursor};
 
 const FLAGS_FIELD_SIZE: usize = 4;
 const CHUNK_SIZE_FIELD_SIZE: usize = 4;

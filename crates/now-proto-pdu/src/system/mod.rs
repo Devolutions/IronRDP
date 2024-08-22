@@ -1,7 +1,7 @@
 mod shutdown;
 
-use ironrdp_core::{ReadCursor, WriteCursor};
-use ironrdp_pdu::{DecodeResult, Encode, EncodeResult};
+use ironrdp_core::{DecodeResult, EncodeResult, ReadCursor, WriteCursor};
+use ironrdp_pdu::Encode;
 
 use crate::NowHeader;
 

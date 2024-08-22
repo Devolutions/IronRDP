@@ -15,9 +15,9 @@ use std::borrow::Cow;
 use std::marker::PhantomData;
 
 use bitflags::bitflags;
-use ironrdp_core::{assert_obj_safe, ReadCursor, WriteBuf, WriteCursor};
+use ironrdp_core::{assert_obj_safe, DecodeResult, EncodeResult, ReadCursor, WriteBuf, WriteCursor};
 use ironrdp_pdu::gcc::{ChannelName, ChannelOptions};
-use ironrdp_pdu::{decode_err, mcs, DecodeResult, EncodeResult, PduResult};
+use ironrdp_pdu::{decode_err, mcs, PduResult};
 use pdu::gcc::ChannelDef;
 use pdu::rdp::vc::ChannelControlFlags;
 use pdu::{decode_cursor, encode_buf, Encode};
@@ -361,7 +361,7 @@ impl ChunkProcessor {
                 flags |= message.flags;
 
                 ChannelPduHeader {
-                    length: ironrdp_pdu::cast_int!(ChannelPduHeader::NAME, "length", total_len)?,
+                    length: ironrdp_core::cast_int!(ChannelPduHeader::NAME, "length", total_len)?,
                     flags,
                 }
             };

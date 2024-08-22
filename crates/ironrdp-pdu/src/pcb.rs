@@ -1,7 +1,10 @@
 //! This module contains the RDP_PRECONNECTION_PDU_V1 and RDP_PRECONNECTION_PDU_V2 structures.
 
-use crate::{invalid_field_err, invalid_field_err_with_source, Decode, DecodeResult, Encode, EncodeResult, Pdu};
-use ironrdp_core::{ReadCursor, WriteCursor};
+use crate::{Decode, Encode, Pdu};
+use ironrdp_core::{
+    cast_length, ensure_fixed_part_size, ensure_size, invalid_field_err, invalid_field_err_with_source, DecodeResult,
+    EncodeResult, ReadCursor, WriteCursor,
+};
 
 /// Preconnection PDU version
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

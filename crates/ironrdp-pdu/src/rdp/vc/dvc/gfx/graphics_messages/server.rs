@@ -8,7 +8,7 @@ use super::{CapabilitySet, Color, Point, RDP_GFX_HEADER_SIZE};
 use crate::gcc::Monitor;
 use crate::geometry::InclusiveRectangle;
 use crate::{decode_cursor, Decode, DecodeResult, Encode, EncodeResult};
-use ironrdp_core::{ReadCursor, WriteCursor};
+use ironrdp_core::{cast_length, ensure_fixed_part_size, ensure_size, invalid_field_err, ReadCursor, WriteCursor};
 
 pub(crate) const RESET_GRAPHICS_PDU_SIZE: usize = 340;
 

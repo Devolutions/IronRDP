@@ -2,7 +2,8 @@ use ironrdp_core::impl_as_any;
 use ironrdp_core::ReadCursor;
 use ironrdp_pdu::decode_err;
 use ironrdp_pdu::gcc::ChannelName;
-use ironrdp_pdu::{other_err, Decode, PduResult};
+use ironrdp_pdu::pdu_other_err;
+use ironrdp_pdu::{Decode, PduResult};
 use ironrdp_svc::{CompressionCondition, SvcMessage, SvcProcessor, SvcProcessorMessages, SvcServerProcessor};
 use tracing::{debug, error};
 
@@ -72,7 +73,7 @@ impl RdpsndServer {
         let client_format = self
             .client_format
             .as_ref()
-            .ok_or(other_err!("invalid state - no version"))?;
+            .ok_or(pdu_other_err!("invalid state - no version"))?;
 
         Ok(client_format.version)
     }
@@ -89,7 +90,7 @@ impl RdpsndServer {
 
     pub fn wave(&mut self, data: Vec<u8>, ts: u32) -> PduResult<RdpsndSvcMessages> {
         let version = self.version()?;
-        let format_no = self.format_no.ok_or(other_err!("invalid state - no format"))?;
+        let format_no = self.format_no.ok_or(pdu_other_err!("invalid state - no format"))?;
 
         // The server doesn't wait for wave confirm, apparently FreeRDP neither.
         let msg = if version >= pdu::Version::V8 {

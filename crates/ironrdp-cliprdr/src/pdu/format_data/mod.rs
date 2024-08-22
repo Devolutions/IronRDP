@@ -9,12 +9,15 @@ pub use self::palette::*;
 #[rustfmt::skip]
 use std::borrow::Cow;
 
+use ironrdp_core::cast_int;
+use ironrdp_core::ensure_fixed_part_size;
+use ironrdp_core::ensure_size;
+use ironrdp_core::DecodeResult;
+use ironrdp_core::EncodeResult;
 use ironrdp_core::IntoOwned;
 use ironrdp_core::{ReadCursor, WriteCursor};
 use ironrdp_pdu::utils::{read_string_from_cursor, to_utf16_bytes, CharacterSet};
-use ironrdp_pdu::DecodeResult;
-use ironrdp_pdu::EncodeResult;
-use ironrdp_pdu::{cast_int, ensure_fixed_part_size, ensure_size, impl_pdu_borrowing, Decode, Encode};
+use ironrdp_pdu::{impl_pdu_borrowing, Decode, Encode};
 
 use super::ClipboardFormatId;
 use crate::pdu::{ClipboardPduFlags, PartialHeader};

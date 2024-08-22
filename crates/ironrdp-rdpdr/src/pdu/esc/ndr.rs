@@ -23,9 +23,8 @@
 
 use std::mem::size_of;
 
-use ironrdp_core::{ReadCursor, WriteCursor};
+use ironrdp_core::{ensure_size, invalid_field_err, DecodeResult, EncodeResult, ReadCursor, WriteCursor};
 use ironrdp_pdu::utils::{self, CharacterSet};
-use ironrdp_pdu::{ensure_size, invalid_field_err, DecodeResult, EncodeResult};
 
 pub trait Decode {
     fn decode_ptr(src: &mut ReadCursor<'_>, index: &mut u32) -> DecodeResult<Self>

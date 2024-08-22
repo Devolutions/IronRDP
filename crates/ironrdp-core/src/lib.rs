@@ -12,6 +12,9 @@ mod macros;
 
 mod as_any;
 mod cursor;
+mod decode;
+mod encode;
+mod error;
 mod into_owned;
 #[cfg(feature = "alloc")]
 mod write_buf;
@@ -20,12 +23,9 @@ mod write_buf;
 
 pub use self::as_any::*;
 pub use self::cursor::*;
+pub use self::decode::*;
+pub use self::encode::*;
+pub use self::error::*;
 pub use self::into_owned::*;
 #[cfg(feature = "alloc")]
 pub use self::write_buf::*;
-
-// Trait that can only be implemented within the current module
-pub(crate) mod private {
-    #[doc(hidden)]
-    pub trait Sealed {}
-}

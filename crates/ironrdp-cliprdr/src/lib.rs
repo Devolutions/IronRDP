@@ -9,9 +9,9 @@ pub mod backend;
 pub mod pdu;
 
 use backend::CliprdrBackend;
-use ironrdp_core::AsAny;
+use ironrdp_core::{AsAny, EncodeResult};
 use ironrdp_pdu::gcc::ChannelName;
-use ironrdp_pdu::{decode, decode_err, encode_err, EncodeResult, PduResult};
+use ironrdp_pdu::{decode, decode_err, encode_err, PduResult};
 use ironrdp_svc::{
     ChannelFlags, CompressionCondition, SvcClientProcessor, SvcMessage, SvcProcessor, SvcProcessorMessages,
     SvcServerProcessor,

@@ -8,7 +8,7 @@ use thiserror::Error;
 
 use crate::utils::CharacterSet;
 use crate::{utils, Decode, DecodeResult, Encode, EncodeResult, PduError};
-use ironrdp_core::{ReadCursor, WriteCursor};
+use ironrdp_core::{ensure_fixed_part_size, ensure_size, invalid_field_err, ReadCursor, WriteCursor};
 
 const RECONNECT_COOKIE_LEN: usize = 28;
 const TIMEZONE_INFO_NAME_LEN: usize = 64;

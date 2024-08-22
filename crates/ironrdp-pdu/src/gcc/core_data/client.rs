@@ -6,7 +6,7 @@ use tap::Pipe as _;
 use super::{RdpVersion, VERSION_SIZE};
 use crate::nego::SecurityProtocol;
 use crate::{utils, Decode, DecodeResult, Encode, EncodeResult};
-use ironrdp_core::{ReadCursor, WriteCursor};
+use ironrdp_core::{ensure_fixed_part_size, ensure_size, invalid_field_err, ReadCursor, WriteCursor};
 
 pub const IME_FILE_NAME_SIZE: usize = 64;
 

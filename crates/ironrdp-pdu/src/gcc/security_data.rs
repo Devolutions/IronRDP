@@ -6,7 +6,7 @@ use num_traits::{FromPrimitive, ToPrimitive};
 use thiserror::Error;
 
 use crate::{Decode, DecodeResult, Encode, EncodeResult};
-use ironrdp_core::{ReadCursor, WriteCursor};
+use ironrdp_core::{cast_length, ensure_fixed_part_size, ensure_size, invalid_field_err, ReadCursor, WriteCursor};
 
 const CLIENT_ENCRYPTION_METHODS_SIZE: usize = 4;
 const CLIENT_EXT_ENCRYPTION_METHODS_SIZE: usize = 4;

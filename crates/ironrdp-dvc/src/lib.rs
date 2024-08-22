@@ -16,8 +16,8 @@ use alloc::vec::Vec;
 // Re-export ironrdp_pdu crate for convenience
 #[rustfmt::skip] // do not re-order this pub use
 pub use ironrdp_pdu;
-use ironrdp_core::{assert_obj_safe, AsAny};
-use ironrdp_pdu::{cast_length, decode_err, encode_vec, other_err, Encode, EncodeResult, PduResult};
+use ironrdp_core::{assert_obj_safe, cast_length, other_err, AsAny, EncodeResult};
+use ironrdp_pdu::{decode_err, encode_vec, pdu_other_err, Encode, PduResult};
 use ironrdp_svc::{self, SvcMessage};
 
 mod complete_data;
@@ -133,7 +133,7 @@ impl DynamicVirtualChannel {
         if let Some(channel_id) = self.channel_id {
             self.channel_processor.start(channel_id)
         } else {
-            Err(other_err!("DynamicVirtualChannel::start", "channel ID not set"))
+            Err(pdu_other_err!("DynamicVirtualChannel::start", "channel ID not set"))
         }
     }
 

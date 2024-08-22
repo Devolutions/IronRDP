@@ -1,10 +1,11 @@
 use std::fmt::{self, Display};
 use std::mem::size_of;
 
-use ironrdp_core::{ReadCursor, WriteCursor};
-use ironrdp_pdu::{
-    ensure_size, invalid_field_err, unsupported_value_err, Decode, DecodeError, DecodeResult, Encode, EncodeResult,
+use ironrdp_core::{
+    ensure_size, invalid_field_err, unsupported_value_err, DecodeError, DecodeResult, EncodeResult, ReadCursor,
+    WriteCursor,
 };
+use ironrdp_pdu::{Decode, Encode};
 use ironrdp_svc::SvcEncode;
 
 use self::efs::{

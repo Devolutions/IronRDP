@@ -3,7 +3,7 @@ use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive as _, ToPrimitive as _};
 
 use crate::{gcc, Decode, DecodeResult, Encode, EncodeResult};
-use ironrdp_core::{ReadCursor, WriteCursor};
+use ironrdp_core::{cast_length, ensure_fixed_part_size, invalid_field_err, ReadCursor, WriteCursor};
 
 const SYNCHRONIZE_PDU_SIZE: usize = 2 + 2;
 const CONTROL_PDU_SIZE: usize = 2 + 2 + 4;

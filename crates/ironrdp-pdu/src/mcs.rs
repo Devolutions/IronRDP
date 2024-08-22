@@ -4,8 +4,11 @@ use crate::gcc::{ChannelDef, ClientGccBlocks, ConferenceCreateRequest, Conferenc
 use crate::tpdu::{TpduCode, TpduHeader};
 use crate::tpkt::TpktHeader;
 use crate::x224::{user_data_size, X224Pdu};
-use crate::{invalid_field_err, per, DecodeResult, EncodeResult, PduError};
-use ironrdp_core::{IntoOwned, ReadCursor, WriteCursor};
+use crate::{per, DecodeResult, EncodeResult, PduError};
+use ironrdp_core::{
+    cast_length, ensure_fixed_part_size, ensure_size, invalid_field_err, other_err, unexpected_message_type_err,
+    IntoOwned, ReadCursor, WriteCursor,
+};
 
 // T.125 MCS is defined in:
 //
@@ -139,7 +142,7 @@ const SEND_DATA_PDU_DATA_PRIORITY_AND_SEGMENTATION: u8 = 0x70;
 /// ```
 macro_rules! per_field_err {
     ($field_name:expr) => {{
-        |error| $crate::invalid_field_err_with_source(Self::MCS_NAME, $field_name, "PER", error)
+        |error| ironrdp_core::invalid_field_err_with_source(Self::MCS_NAME, $field_name, "PER", error)
     }};
 }
 

@@ -5,7 +5,7 @@ use std::mem::size_of;
 use std::ops::Add;
 
 use crate::{DecodeResult, EncodeResult};
-use ironrdp_core::{ReadCursor, WriteCursor};
+use ironrdp_core::{ensure_size, invalid_field_err, other_err, ReadCursor, WriteCursor};
 
 pub fn split_u64(value: u64) -> (u32, u32) {
     let bytes = value.to_le_bytes();

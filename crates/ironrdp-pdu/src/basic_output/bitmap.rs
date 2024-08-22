@@ -9,7 +9,7 @@ use bitflags::bitflags;
 
 use crate::geometry::InclusiveRectangle;
 use crate::{Decode, DecodeResult, Encode, EncodeResult};
-use ironrdp_core::{ReadCursor, WriteCursor};
+use ironrdp_core::{ensure_fixed_part_size, ensure_size, invalid_field_err, ReadCursor, WriteCursor};
 
 const FIRST_ROW_SIZE_VALUE: u16 = 0;
 
