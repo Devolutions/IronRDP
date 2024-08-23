@@ -31,6 +31,6 @@
     <NativeLibPath_ios_framework>$(RuntimesPath)/ios-universal/native/libDevolutionsIronRdp.framework</NativeLibPath_ios_framework>
   </PropertyGroup>
 
-  <Import Condition="!$(PackageId.EndsWith('iOS'))" Project="Devolutions.IronRdp.Build.props "/>
-  <Import Project="Devolutions.IronRdp.Build.iOS.props "/>
+  <Import Condition="!$(PackageId.EndsWith('iOS'))" Project="Devolutions.IronRdp.Build.props"/>
+  <Import Project="Devolutions.IronRdp.Build.iOS.props"/>
 </Project>
