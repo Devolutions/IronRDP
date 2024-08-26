@@ -66,6 +66,26 @@ macro_rules! impl_pdu_pod {
     };
 }
 
+/// Implements additional traits for a plain old data structure (POD).
+#[macro_export]
+macro_rules! impl_x224_pdu_pod {
+    ($pdu_ty:ty) => {
+        impl ::ironrdp_core::IntoOwned for $pdu_ty {
+            type Owned = Self;
+
+            fn into_owned(self) -> Self::Owned {
+                self
+            }
+        }
+
+        impl $crate::DecodeOwned for $pdu_ty {
+            fn decode_owned(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
+                <$crate::x224::X224<Self> as $crate::Decode>::decode(src).map(|p| p.0)
+            }
+        }
+    };
+}
+
 /// Implements additional traits for a borrowing PDU and defines a static-bounded owned version.
 #[macro_export]
 macro_rules! impl_pdu_borrowing {
@@ -75,7 +95,22 @@ macro_rules! impl_pdu_borrowing {
         impl $crate::DecodeOwned for $owned_ty {
             fn decode_owned(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
                 let pdu = <$pdu_ty $(<$($lt),+>)? as $crate::Decode>::decode(src)?;
-                Ok(ironrdp_core::IntoOwned::into_owned(pdu))
+                Ok(::ironrdp_core::IntoOwned::into_owned(pdu))
+            }
+        }
+    };
+}
+
+/// Implements additional traits for a borrowing PDU and defines a static-bounded owned version.
+#[macro_export]
+macro_rules! impl_x224_pdu_borrowing {
+    ($pdu_ty:ident $(<$($lt:lifetime),+>)?, $owned_ty:ident) => {
+        pub type $owned_ty = $pdu_ty<'static>;
+
+        impl $crate::DecodeOwned for $owned_ty {
+            fn decode_owned(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
+                let pdu = <$crate::x224::X224<$pdu_ty $(<$($lt),+>)?> as $crate::Decode>::decode(src).map(|r| r.0)?;
+                Ok(::ironrdp_core::IntoOwned::into_owned(pdu))
             }
         }
     };

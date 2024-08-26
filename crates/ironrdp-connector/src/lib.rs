@@ -26,6 +26,7 @@ pub use connection_finalization::{ConnectionFinalizationSequence, ConnectionFina
 use ironrdp_core::WriteBuf;
 use ironrdp_pdu::rdp::capability_sets;
 use ironrdp_pdu::rdp::client_info::PerformanceFlags;
+use ironrdp_pdu::x224::X224;
 use ironrdp_pdu::{encode_buf, encode_vec, gcc, x224, Encode, PduHint};
 pub use license_exchange::{LicenseExchangeSequence, LicenseExchangeState};
 pub use server_name::ServerName;
@@ -357,7 +358,7 @@ where
         data: std::borrow::Cow::Owned(x224_msg_buf),
     };
 
-    let written = encode_buf(&pdu, buf).map_err(ConnectorError::encode)?;
+    let written = encode_buf(&X224(pdu), buf).map_err(ConnectorError::encode)?;
 
     Ok(written)
 }

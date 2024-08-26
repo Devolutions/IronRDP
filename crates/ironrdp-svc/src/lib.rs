@@ -3,6 +3,7 @@
 
 extern crate alloc;
 
+use ironrdp_pdu::x224::X224;
 // Re-export ironrdp_pdu crate for convenience
 #[rustfmt::skip] // do not re-order this pub use
 pub use ironrdp_pdu as pdu;
@@ -182,7 +183,7 @@ fn encode_svc_messages(
                 channel_id,
                 user_data: Cow::Borrowed(chunk.filled()),
             };
-            encode_buf(&pdu, &mut fully_encoded_responses)?;
+            encode_buf(&X224(pdu), &mut fully_encoded_responses)?;
         }
     } else {
         for chunk in chunks {
@@ -191,7 +192,7 @@ fn encode_svc_messages(
                 channel_id,
                 user_data: Cow::Borrowed(chunk.filled()),
             };
-            encode_buf(&pdu, &mut fully_encoded_responses)?;
+            encode_buf(&X224(pdu), &mut fully_encoded_responses)?;
         }
     }
 

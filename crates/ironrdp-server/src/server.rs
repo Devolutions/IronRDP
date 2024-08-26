@@ -14,6 +14,7 @@ use ironrdp_pdu::input::InputEventPdu;
 use ironrdp_pdu::mcs::{SendDataIndication, SendDataRequest};
 use ironrdp_pdu::rdp::capability_sets::{BitmapCodecs, CapabilitySet, CmdFlags, GeneralExtraFlags};
 use ironrdp_pdu::rdp::headers::{ServerDeactivateAll, ShareControlPdu};
+use ironrdp_pdu::x224::X224;
 use ironrdp_pdu::{self, decode, decode_err, encode_vec, mcs, nego, rdp, Action, PduResult};
 use ironrdp_svc::{server_encode_svc_messages, StaticChannelId, StaticChannelSet, SvcProcessor};
 use ironrdp_tokio::{Framed, FramedRead, FramedWrite, TokioFramed};
@@ -396,7 +397,7 @@ impl RdpServer {
                     channel_id: io_channel_id,
                     user_data,
                 };
-                let msg = encode_vec(&pdu)?;
+                let msg = encode_vec(&X224(pdu))?;
                 framed.write_all(&msg).await?;
                 return Ok(RunState::DeactivationReactivation { desktop_size });
             }
@@ -735,8 +736,8 @@ impl RdpServer {
     where
         S: FramedWrite,
     {
-        let message = decode::<mcs::McsMessage<'_>>(frame)?;
-        match message {
+        let message = decode::<X224<mcs::McsMessage<'_>>>(frame)?;
+        match message.0 {
             mcs::McsMessage::SendDataRequest(data) => {
                 debug!(?data, "McsMessage::SendDataRequest");
                 if data.channel_id == io_channel_id {
@@ -758,8 +759,8 @@ impl RdpServer {
                 }
             }
 
-            unexpected => {
-                warn!(name = ironrdp_pdu::name(&unexpected), "Unexpected mcs message");
+            _ => {
+                warn!(name = ironrdp_pdu::name(&message), "Unexpected mcs message");
             }
         }
 

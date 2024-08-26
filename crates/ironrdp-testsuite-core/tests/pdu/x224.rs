@@ -6,7 +6,7 @@ use ironrdp_pdu::nego::{
 };
 use ironrdp_pdu::tpdu::{TpduCode, TpduHeader};
 use ironrdp_pdu::tpkt::TpktHeader;
-use ironrdp_pdu::x224::user_data_size;
+use ironrdp_pdu::x224::{user_data_size, X224};
 use ironrdp_testsuite_core::encode_decode_test;
 
 const SAMPLE_TPKT_HEADER_BINARY: [u8; 4] = [
@@ -75,11 +75,11 @@ fn tpdu_header_write() {
 
 encode_decode_test! {
     nego_connection_request_rdp_security_without_cookie:
-        ConnectionRequest {
+        X224(ConnectionRequest {
             nego_data: None,
             flags: RequestFlags::empty(),
             protocol: SecurityProtocol::empty(),
-        },
+        }),
         [
             // tpkt header
             0x03, // version
@@ -96,11 +96,11 @@ encode_decode_test! {
         ];
 
     nego_connection_request_rdp_security_with_cookie:
-        ConnectionRequest {
+        X224(ConnectionRequest {
             nego_data: Some(NegoRequestData::Cookie(Cookie("User".to_owned()))),
             flags: RequestFlags::empty(),
             protocol: SecurityProtocol::empty(),
-        },
+        }),
         [
             // tpkt header
             0x03, // version
@@ -119,11 +119,11 @@ encode_decode_test! {
         ];
 
     nego_connection_request_ssl_security_with_cookie:
-        ConnectionRequest {
+        X224(ConnectionRequest {
             nego_data: Some(NegoRequestData::Cookie(Cookie("User".to_owned()))),
             flags: RequestFlags::empty(),
             protocol: SecurityProtocol::HYBRID | SecurityProtocol::SSL,
-        },
+        }),
         [
             // tpkt header
             0x03, // version
@@ -142,11 +142,11 @@ encode_decode_test! {
         ];
 
     nego_connection_request_ssl_security_with_flags:
-        ConnectionRequest {
+        X224(ConnectionRequest {
             nego_data: Some(NegoRequestData::Cookie(Cookie("User".to_owned()))),
             flags: RequestFlags::RESTRICTED_ADMIN_MODE_REQUIRED | RequestFlags::REDIRECTED_AUTHENTICATION_MODE_REQUIRED,
             protocol: SecurityProtocol::HYBRID | SecurityProtocol::SSL,
-        },
+        }),
         [
             // tpkt header
             0x03, // version
@@ -169,10 +169,10 @@ encode_decode_test! {
         ];
 
     nego_confirm_response:
-        ConnectionConfirm::Response {
+        X224(ConnectionConfirm::Response {
             flags: ResponseFlags::from_bits_truncate(0x1F),
             protocol: SecurityProtocol::HYBRID,
-        },
+        }),
         [
             // tpkt header
             0x03, // version
@@ -192,9 +192,9 @@ encode_decode_test! {
         ];
 
     nego_confirm_failure:
-        ConnectionConfirm::Failure {
+        X224(ConnectionConfirm::Failure {
             code: FailureCode::SSL_WITH_USER_AUTH_REQUIRED_BY_SERVER,
-        },
+        }),
         [
             // tpkt header
             0x03, // version
@@ -237,7 +237,7 @@ fn nego_request_unexpected_rdp_msg_type() {
         0x03, 0x00, 0x00, 0x00, // rest
     ];
 
-    let e = ironrdp_pdu::decode::<ConnectionRequest>(&payload).err().unwrap();
+    let e = ironrdp_pdu::decode::<X224<ConnectionRequest>>(&payload).err().unwrap();
 
     expect![[r#"
         Error {
@@ -271,7 +271,7 @@ fn nego_confirm_unexpected_rdp_msg_type() {
         0x02, 0x00, 0x00, 0x00, // selected protocol
     ];
 
-    let e = ironrdp_pdu::decode::<ConnectionConfirm>(&payload).err().unwrap();
+    let e = ironrdp_pdu::decode::<X224<ConnectionConfirm>>(&payload).err().unwrap();
 
     expect![[r#"
         Error {

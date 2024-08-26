@@ -26,7 +26,10 @@ where
     const NAME: &'static str = T::X224_NAME;
 }
 
-impl<'de, T> Encode for T
+#[derive(Debug, Eq, PartialEq)]
+pub struct X224<T>(pub T);
+
+impl<'de, T> Encode for X224<T>
 where
     T: X224Pdu<'de>,
 {
@@ -41,13 +44,13 @@ where
         .write(dst)?;
 
         TpduHeader {
-            li: u8::try_from(T::TPDU_CODE.header_fixed_part_size() + self.tpdu_header_variable_part_size() - 1)
+            li: u8::try_from(T::TPDU_CODE.header_fixed_part_size() + self.0.tpdu_header_variable_part_size() - 1)
                 .unwrap(),
             code: T::TPDU_CODE,
         }
         .write(dst)?;
 
-        self.x224_body_encode(dst)
+        self.0.x224_body_encode(dst)
     }
 
     fn name(&self) -> &'static str {
@@ -57,12 +60,12 @@ where
     fn size(&self) -> usize {
         TpktHeader::SIZE
             + T::TPDU_CODE.header_fixed_part_size()
-            + self.tpdu_header_variable_part_size()
-            + self.tpdu_user_data_size()
+            + self.0.tpdu_header_variable_part_size()
+            + self.0.tpdu_user_data_size()
     }
 }
 
-impl<'de, T> Decode<'de> for T
+impl<'de, T> Decode<'de> for X224<T>
 where
     T: X224Pdu<'de>,
 {
@@ -82,7 +85,7 @@ where
             ));
         }
 
-        T::x224_body_decode(src, &tpkt, &tpdu)
+        T::x224_body_decode(src, &tpkt, &tpdu).map(X224)
     }
 }
 
@@ -90,7 +93,7 @@ pub struct X224Data<'a> {
     pub data: Cow<'a, [u8]>,
 }
 
-impl_pdu_borrowing!(X224Data<'_>, OwnedX224Data);
+impl_x224_pdu_borrowing!(X224Data<'_>, OwnedX224Data);
 
 impl IntoOwned for X224Data<'_> {
     type Owned = OwnedX224Data;

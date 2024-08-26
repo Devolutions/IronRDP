@@ -2,7 +2,7 @@ use std::collections::HashSet;
 use std::mem;
 
 use ironrdp_core::WriteBuf;
-use ironrdp_pdu::{mcs, PduHint};
+use ironrdp_pdu::{mcs, x224::X224, PduHint};
 
 use crate::{ConnectorError, ConnectorErrorExt as _, ConnectorResult, Sequence, State, Written};
 
@@ -108,7 +108,8 @@ impl Sequence for ChannelConnectionSequence {
 
                 debug!(message = ?erect_domain_request, "Send");
 
-                let written = ironrdp_pdu::encode_buf(&erect_domain_request, output).map_err(ConnectorError::encode)?;
+                let written =
+                    ironrdp_pdu::encode_buf(&X224(erect_domain_request), output).map_err(ConnectorError::encode)?;
 
                 (
                     Written::from_size(written)?,
@@ -121,7 +122,8 @@ impl Sequence for ChannelConnectionSequence {
 
                 debug!(message = ?attach_user_request, "Send");
 
-                let written = ironrdp_pdu::encode_buf(&attach_user_request, output).map_err(ConnectorError::encode)?;
+                let written =
+                    ironrdp_pdu::encode_buf(&X224(attach_user_request), output).map_err(ConnectorError::encode)?;
 
                 (
                     Written::from_size(written)?,
@@ -130,8 +132,9 @@ impl Sequence for ChannelConnectionSequence {
             }
 
             ChannelConnectionState::WaitAttachUserConfirm => {
-                let attach_user_confirm =
-                    ironrdp_pdu::decode::<mcs::AttachUserConfirm>(input).map_err(ConnectorError::decode)?;
+                let attach_user_confirm = ironrdp_pdu::decode::<X224<mcs::AttachUserConfirm>>(input)
+                    .map_err(ConnectorError::decode)
+                    .map(|p| p.0)?;
 
                 let user_channel_id = attach_user_confirm.initiator_id;
 
@@ -177,7 +180,7 @@ impl Sequence for ChannelConnectionSequence {
                     debug!(message = ?channel_join_request, "Send");
 
                     let written =
-                        ironrdp_pdu::encode_buf(&channel_join_request, output).map_err(ConnectorError::encode)?;
+                        ironrdp_pdu::encode_buf(&X224(channel_join_request), output).map_err(ConnectorError::encode)?;
 
                     total_written = total_written.checked_add(written).expect("small join request PDUs");
                 }
@@ -195,8 +198,9 @@ impl Sequence for ChannelConnectionSequence {
                 user_channel_id,
                 mut remaining_channel_ids,
             } => {
-                let channel_join_confirm =
-                    ironrdp_pdu::decode::<mcs::ChannelJoinConfirm>(input).map_err(ConnectorError::decode)?;
+                let channel_join_confirm = ironrdp_pdu::decode::<X224<mcs::ChannelJoinConfirm>>(input)
+                    .map_err(ConnectorError::decode)
+                    .map(|p| p.0)?;
 
                 debug!(message = ?channel_join_confirm, "Received");
 

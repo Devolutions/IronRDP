@@ -259,7 +259,7 @@ pub struct ConnectionRequest {
     pub protocol: SecurityProtocol,
 }
 
-impl_pdu_pod!(ConnectionRequest);
+impl_x224_pdu_pod!(ConnectionRequest);
 
 impl ConnectionRequest {
     const RDP_NEG_REQ_SIZE: u16 = 8;
@@ -368,7 +368,7 @@ pub enum ConnectionConfirm {
     },
 }
 
-impl_pdu_pod!(ConnectionConfirm);
+impl_x224_pdu_pod!(ConnectionConfirm);
 
 impl ConnectionConfirm {
     const RDP_NEG_RSP: u16 = 8;
