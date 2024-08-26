@@ -585,7 +585,6 @@ pub use legacy::*;
 
 // TODO: Delete these traits at some point
 mod legacy {
-    use thiserror::Error;
 
     use crate::{Encode, EncodeResult, WriteCursor};
 
@@ -617,13 +616,5 @@ mod legacy {
         fn size(&self) -> usize {
             self.len()
         }
-    }
-
-    #[derive(Debug, Error)]
-    pub enum RdpError {
-        #[error("IO error")]
-        IOError(#[from] std::io::Error),
-        #[error("received invalid action code: {0}")]
-        InvalidActionCode(u8),
     }
 }
