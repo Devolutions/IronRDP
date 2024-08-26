@@ -3,7 +3,7 @@ use std::mem;
 use std::net::SocketAddr;
 
 use ironrdp_core::WriteBuf;
-use ironrdp_pdu::rdp::client_info::TimezoneInfo;
+use ironrdp_pdu::rdp::client_info::{OptionalSystemTime, TimezoneInfo};
 use ironrdp_pdu::{decode, encode_vec, gcc, mcs, nego, rdp, Encode, PduHint};
 use ironrdp_svc::{StaticChannelSet, StaticVirtualChannel, SvcClientProcessor};
 
@@ -749,10 +749,10 @@ fn create_client_info_pdu(config: &Config, routing_addr: &SocketAddr) -> rdp::Cl
                 .timezone(TimezoneInfo {
                     bias: 0,
                     standard_name: String::new(),
-                    standard_date: None,
+                    standard_date: OptionalSystemTime(None),
                     standard_bias: 0,
                     daylight_name: String::new(),
-                    daylight_date: None,
+                    daylight_date: OptionalSystemTime(None),
                     daylight_bias: 0,
                 })
                 .session_id(0)
