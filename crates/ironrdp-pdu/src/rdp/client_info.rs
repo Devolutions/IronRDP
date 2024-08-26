@@ -388,10 +388,10 @@ impl<'de> Decode<'de> for ExtendedClientOptionalInfo {
 pub struct TimezoneInfo {
     pub bias: u32,
     pub standard_name: String,
-    pub standard_date: Option<SystemTime>,
+    pub standard_date: OptionalSystemTime,
     pub standard_bias: u32,
     pub daylight_name: String,
-    pub daylight_date: Option<SystemTime>,
+    pub daylight_date: OptionalSystemTime,
     pub daylight_bias: u32,
 }
 
@@ -445,11 +445,11 @@ impl<'de> Decode<'de> for TimezoneInfo {
 
         let bias = src.read_u32();
         let standard_name = utils::decode_string(src.read_slice(TIMEZONE_INFO_NAME_LEN), CharacterSet::Unicode, false)?;
-        let standard_date = <Option<SystemTime>>::decode(src)?;
+        let standard_date = OptionalSystemTime::decode(src)?;
         let standard_bias = src.read_u32();
 
         let daylight_name = utils::decode_string(src.read_slice(TIMEZONE_INFO_NAME_LEN), CharacterSet::Unicode, false)?;
-        let daylight_date = <Option<SystemTime>>::decode(src)?;
+        let daylight_date = OptionalSystemTime::decode(src)?;
         let daylight_bias = src.read_u32();
 
         Ok(Self {
@@ -481,12 +481,15 @@ impl SystemTime {
     const FIXED_PART_SIZE: usize = 2 /* Year */ + 2 /* Month */ + 2 /* DoW */ + 2 /* Day */ + 2 /* Hour */ + 2 /* Minute */ + 2 /* Second */ + 2 /* Ms */;
 }
 
-impl Encode for Option<SystemTime> {
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OptionalSystemTime(pub Option<SystemTime>);
+
+impl Encode for OptionalSystemTime {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size());
 
         dst.write_u16(0); // year
-        if let Some(st) = self {
+        if let Some(st) = &self.0 {
             dst.write_u16(st.month.to_u16().unwrap());
             dst.write_u16(st.day_of_week.to_u16().unwrap());
             dst.write_u16(st.day.to_u16().unwrap());
@@ -510,7 +513,7 @@ impl Encode for Option<SystemTime> {
     }
 }
 
-impl<'de> Decode<'de> for Option<SystemTime> {
+impl<'de> Decode<'de> for OptionalSystemTime {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         ensure_size!(in: src, size: SystemTime::FIXED_PART_SIZE);
 
@@ -528,7 +531,7 @@ impl<'de> Decode<'de> for Option<SystemTime> {
             DayOfWeek::from_u16(day_of_week),
             DayOfWeekOccurrence::from_u16(day),
         ) {
-            (Some(month), Some(day_of_week), Some(day)) => Ok(Some(SystemTime {
+            (Some(month), Some(day_of_week), Some(day)) => Ok(Self(Some(SystemTime {
                 month,
                 day_of_week,
                 day,
@@ -536,8 +539,8 @@ impl<'de> Decode<'de> for Option<SystemTime> {
                 minute,
                 second,
                 milliseconds,
-            })),
-            _ => Ok(None),
+            }))),
+            _ => Ok(Self(None)),
         }
     }
 }
