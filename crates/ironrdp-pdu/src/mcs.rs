@@ -1153,8 +1153,6 @@ mod legacy {
     pub enum McsError {
         #[error("IO error")]
         IOError(#[from] io::Error),
-        #[error("RDP error")]
-        RdpError(#[from] crate::RdpError),
         #[error("GCC block error")]
         GccError(#[from] GccError),
         #[error("invalid disconnect provider ultimatum")]
