@@ -3821,9 +3821,9 @@ dependencies = [
 
 [[package]]
 name = "resize"
-version = "0.8.5"
+version = "0.8.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a84f5827feaf48508b264176bd88e0479695af183738cf0305fadf956c796412"
+checksum = "ea66386ba48940023a28c73524b6588110884fa9daa4eb08ee8f275730b4ea5b"
 dependencies = [
  "rgb",
 ]
