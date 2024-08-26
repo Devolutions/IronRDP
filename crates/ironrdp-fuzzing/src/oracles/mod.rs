@@ -16,11 +16,12 @@ pub fn pdu_decode(data: &[u8]) {
     use ironrdp_pdu::mcs::*;
     use ironrdp_pdu::nego::*;
     use ironrdp_pdu::rdp::*;
+    use ironrdp_pdu::x224::*;
     use ironrdp_pdu::*;
 
-    let _ = decode::<ConnectionRequest>(data);
-    let _ = decode::<ConnectionConfirm>(data);
-    let _ = decode::<McsMessage<'_>>(data);
+    let _ = decode::<X224<ConnectionRequest>>(data);
+    let _ = decode::<X224<ConnectionConfirm>>(data);
+    let _ = decode::<X224<McsMessage<'_>>>(data);
     let _ = decode::<ConnectInitial>(data);
     let _ = decode::<ConnectResponse>(data);
     let _ = decode::<ClientInfoPdu>(data);

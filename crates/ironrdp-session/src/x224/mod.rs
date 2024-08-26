@@ -6,6 +6,7 @@ use ironrdp_dvc::{DrdynvcClient, DvcProcessor};
 use ironrdp_pdu::mcs::{DisconnectProviderUltimatum, DisconnectReason, McsMessage};
 use ironrdp_pdu::rdp::headers::ShareDataPdu;
 use ironrdp_pdu::rdp::server_error_info::{ErrorInfo, ProtocolIndependentCode, ServerSetErrorInfoPdu};
+use ironrdp_pdu::x224::X224;
 use ironrdp_svc::{client_encode_svc_messages, StaticChannelSet, SvcMessage, SvcProcessor, SvcProcessorMessages};
 
 use crate::{SessionError, SessionErrorExt as _, SessionResult};
@@ -144,7 +145,7 @@ impl Processor {
                             DisconnectProviderUltimatum::from_reason(DisconnectReason::UserRequested),
                         );
 
-                        let encoded_pdu = ironrdp_pdu::encode_vec(&ultimatum).map_err(SessionError::encode);
+                        let encoded_pdu = ironrdp_pdu::encode_vec(&X224(ultimatum)).map_err(SessionError::encode);
 
                         Ok(vec![
                             ProcessorOutput::ResponseFrame(encoded_pdu?),

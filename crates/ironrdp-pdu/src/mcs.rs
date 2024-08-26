@@ -272,7 +272,7 @@ pub enum McsMessage<'a> {
     DisconnectProviderUltimatum(DisconnectProviderUltimatum),
 }
 
-impl_pdu_borrowing!(McsMessage<'_>, OwnedMcsMessage);
+impl_x224_pdu_borrowing!(McsMessage<'_>, OwnedMcsMessage);
 
 impl IntoOwned for McsMessage<'_> {
     type Owned = OwnedMcsMessage;
@@ -373,7 +373,7 @@ pub struct ErectDomainPdu {
     pub sub_interval: u32,
 }
 
-impl_pdu_pod!(ErectDomainPdu);
+impl_x224_pdu_pod!(ErectDomainPdu);
 
 impl<'de> McsPdu<'de> for ErectDomainPdu {
     const MCS_NAME: &'static str = "ErectDomainPdu";
@@ -407,7 +407,7 @@ impl<'de> McsPdu<'de> for ErectDomainPdu {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AttachUserRequest;
 
-impl_pdu_pod!(AttachUserRequest);
+impl_x224_pdu_pod!(AttachUserRequest);
 
 impl<'de> McsPdu<'de> for AttachUserRequest {
     const MCS_NAME: &'static str = "AttachUserRequest";
@@ -435,7 +435,7 @@ pub struct AttachUserConfirm {
     pub initiator_id: u16,
 }
 
-impl_pdu_pod!(AttachUserConfirm);
+impl_x224_pdu_pod!(AttachUserConfirm);
 
 impl<'de> McsPdu<'de> for AttachUserConfirm {
     const MCS_NAME: &'static str = "AttachUserConfirm";
@@ -472,7 +472,7 @@ pub struct ChannelJoinRequest {
     pub channel_id: u16,
 }
 
-impl_pdu_pod!(ChannelJoinRequest);
+impl_x224_pdu_pod!(ChannelJoinRequest);
 
 impl<'de> McsPdu<'de> for ChannelJoinRequest {
     const MCS_NAME: &'static str = "ChannelJoinRequest";
@@ -511,7 +511,7 @@ pub struct ChannelJoinConfirm {
     pub channel_id: u16,
 }
 
-impl_pdu_pod!(ChannelJoinConfirm);
+impl_x224_pdu_pod!(ChannelJoinConfirm);
 
 impl<'de> McsPdu<'de> for ChannelJoinConfirm {
     const MCS_NAME: &'static str = "ChannelJoinConfirm";
@@ -555,7 +555,7 @@ pub struct SendDataRequest<'a> {
     pub user_data: Cow<'a, [u8]>,
 }
 
-impl_pdu_borrowing!(SendDataRequest<'_>, OwnedSendDataRequest);
+impl_x224_pdu_borrowing!(SendDataRequest<'_>, OwnedSendDataRequest);
 
 impl IntoOwned for SendDataRequest<'_> {
     type Owned = OwnedSendDataRequest;
@@ -636,7 +636,7 @@ pub struct SendDataIndication<'a> {
     pub user_data: Cow<'a, [u8]>,
 }
 
-impl_pdu_borrowing!(SendDataIndication<'_>, OwnedSendDataIndication);
+impl_x224_pdu_borrowing!(SendDataIndication<'_>, OwnedSendDataIndication);
 
 impl IntoOwned for SendDataIndication<'_> {
     type Owned = OwnedSendDataIndication;
@@ -759,7 +759,7 @@ pub struct DisconnectProviderUltimatum {
     pub reason: DisconnectReason,
 }
 
-impl_pdu_pod!(DisconnectProviderUltimatum);
+impl_x224_pdu_pod!(DisconnectProviderUltimatum);
 
 impl DisconnectProviderUltimatum {
     pub const NAME: &'static str = "DisconnectProviderUltimatum";
