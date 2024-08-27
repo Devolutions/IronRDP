@@ -58,9 +58,9 @@ macro_rules! impl_pdu_pod {
             }
         }
 
-        impl $crate::DecodeOwned for $pdu_ty {
+        impl ironrdp_core::DecodeOwned for $pdu_ty {
             fn decode_owned(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
-                <Self as $crate::Decode>::decode(src)
+                <Self as ironrdp_core::Decode>::decode(src)
             }
         }
     };
@@ -78,9 +78,9 @@ macro_rules! impl_x224_pdu_pod {
             }
         }
 
-        impl $crate::DecodeOwned for $pdu_ty {
+        impl ::ironrdp_core::DecodeOwned for $pdu_ty {
             fn decode_owned(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
-                <$crate::x224::X224<Self> as $crate::Decode>::decode(src).map(|p| p.0)
+                <$crate::x224::X224<Self> as ::ironrdp_core::Decode>::decode(src).map(|p| p.0)
             }
         }
     };
@@ -92,9 +92,9 @@ macro_rules! impl_pdu_borrowing {
     ($pdu_ty:ident $(<$($lt:lifetime),+>)?, $owned_ty:ident) => {
         pub type $owned_ty = $pdu_ty<'static>;
 
-        impl $crate::DecodeOwned for $owned_ty {
+        impl ironrdp_core::DecodeOwned for $owned_ty {
             fn decode_owned(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
-                let pdu = <$pdu_ty $(<$($lt),+>)? as $crate::Decode>::decode(src)?;
+                let pdu = <$pdu_ty $(<$($lt),+>)? as ::ironrdp_core::Decode>::decode(src)?;
                 Ok(::ironrdp_core::IntoOwned::into_owned(pdu))
             }
         }
@@ -107,9 +107,9 @@ macro_rules! impl_x224_pdu_borrowing {
     ($pdu_ty:ident $(<$($lt:lifetime),+>)?, $owned_ty:ident) => {
         pub type $owned_ty = $pdu_ty<'static>;
 
-        impl $crate::DecodeOwned for $owned_ty {
+        impl ::ironrdp_core::DecodeOwned for $owned_ty {
             fn decode_owned(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
-                let pdu = <$crate::x224::X224<$pdu_ty $(<$($lt),+>)?> as $crate::Decode>::decode(src).map(|r| r.0)?;
+                let pdu = <$crate::x224::X224<$pdu_ty $(<$($lt),+>)?> as ::ironrdp_core::Decode>::decode(src).map(|r| r.0)?;
                 Ok(::ironrdp_core::IntoOwned::into_owned(pdu))
             }
         }

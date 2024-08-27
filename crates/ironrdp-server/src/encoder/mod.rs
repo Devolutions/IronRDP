@@ -4,13 +4,13 @@ pub(crate) mod rfx;
 use std::{cmp, mem};
 
 use anyhow::{Context, Result};
+use ironrdp_core::Encode;
 use ironrdp_core::WriteCursor;
 use ironrdp_pdu::fast_path::{EncryptionFlags, FastPathHeader, FastPathUpdatePdu, Fragmentation, UpdateCode};
 use ironrdp_pdu::geometry::ExclusiveRectangle;
 use ironrdp_pdu::pointer::{ColorPointerAttribute, Point16, PointerAttribute, PointerPositionAttribute};
 use ironrdp_pdu::rdp::capability_sets::{CmdFlags, EntropyBits};
 use ironrdp_pdu::surface_commands::{ExtendedBitmapDataPdu, SurfaceBitsPdu, SurfaceCommand};
-use ironrdp_pdu::Encode;
 
 use self::bitmap::BitmapEncoder;
 use self::rfx::RfxEncoder;

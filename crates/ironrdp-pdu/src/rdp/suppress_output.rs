@@ -1,6 +1,6 @@
 use crate::geometry::InclusiveRectangle;
-use crate::{Decode, DecodeResult, Encode, EncodeResult};
 use ironrdp_core::{ensure_fixed_part_size, ensure_size, invalid_field_err, ReadCursor, WriteCursor};
+use ironrdp_core::{Decode, DecodeResult, Encode, EncodeResult};
 
 #[repr(u8)]
 #[derive(Debug, PartialEq, Eq, Clone)]

@@ -5,6 +5,7 @@ use ironrdp_connector::{
     encode_x224_packet, reason_err, ConnectorError, ConnectorErrorExt, ConnectorResult, DesktopSize, Sequence, State,
     Written,
 };
+use ironrdp_core::decode;
 use ironrdp_core::WriteBuf;
 use ironrdp_pdu as pdu;
 use ironrdp_pdu::x224::X224;
@@ -12,7 +13,7 @@ use ironrdp_svc::{StaticChannelSet, SvcServerProcessor};
 use pdu::rdp::capability_sets::CapabilitySet;
 use pdu::rdp::headers::ShareControlPdu;
 use pdu::rdp::server_license::{LicensePdu, LicensingErrorMessage};
-use pdu::{decode, gcc, mcs, nego, rdp};
+use pdu::{gcc, mcs, nego, rdp};
 
 use super::channel_connection::ChannelConnectionSequence;
 use super::finalization::FinalizationSequence;
@@ -276,7 +277,7 @@ impl Sequence for Acceptor {
                 debug!(message = ?connection_confirm, "Send");
 
                 let written =
-                    ironrdp_pdu::encode_buf(&X224(connection_confirm), output).map_err(ConnectorError::encode)?;
+                    ironrdp_core::encode_buf(&X224(connection_confirm), output).map_err(ConnectorError::encode)?;
 
                 (
                     Written::from_size(written)?,

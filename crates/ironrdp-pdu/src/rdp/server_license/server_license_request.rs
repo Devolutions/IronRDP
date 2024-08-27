@@ -9,8 +9,9 @@ use super::{
     BlobHeader, BlobType, LicenseHeader, PreambleType, ServerLicenseError, BLOB_LENGTH_SIZE, BLOB_TYPE_SIZE,
     KEY_EXCHANGE_ALGORITHM_RSA, RANDOM_NUMBER_SIZE, UTF16_NULL_TERMINATOR_SIZE, UTF8_NULL_TERMINATOR_SIZE,
 };
-use crate::{utils, Decode, DecodeResult, Encode, EncodeResult};
+use crate::utils;
 use ironrdp_core::{cast_length, ensure_fixed_part_size, ensure_size, invalid_field_err, ReadCursor, WriteCursor};
+use ironrdp_core::{Decode, DecodeResult, Encode, EncodeResult};
 
 const CERT_VERSION_FIELD_SIZE: usize = 4;
 const KEY_EXCHANGE_FIELD_SIZE: usize = 4;

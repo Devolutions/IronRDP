@@ -5,10 +5,11 @@ use num_traits::{FromPrimitive, ToPrimitive};
 
 use crate::fast_path::EncryptionFlags;
 use crate::input::{MousePdu, MouseRelPdu, MouseXPdu};
-use crate::{per, Decode, DecodeResult, Encode, EncodeResult};
+use crate::per;
 use ironrdp_core::{
     cast_length, ensure_fixed_part_size, ensure_size, invalid_field_err, other_err, ReadCursor, WriteCursor,
 };
+use ironrdp_core::{Decode, DecodeResult, Encode, EncodeResult};
 
 /// Implements the Fast-Path RDP message header PDU.
 #[derive(Debug, Clone, PartialEq, Eq)]

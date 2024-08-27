@@ -1,4 +1,4 @@
-use ironrdp_pdu::decode;
+use ironrdp_core::decode;
 use ironrdp_pdu::rdp::capability_sets::*;
 
 pub const SERVER_DEMAND_ACTIVE_BUFFER: [u8; 357] = [

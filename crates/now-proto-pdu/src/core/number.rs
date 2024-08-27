@@ -2,7 +2,7 @@
 use ironrdp_core::{
     ensure_size, invalid_field_err, DecodeError, DecodeResult, EncodeError, EncodeResult, ReadCursor, WriteCursor,
 };
-use ironrdp_pdu::{Decode, Encode};
+use ironrdp_core::{Decode, Encode};
 
 /// Variable-length encoded u16.
 /// Value range:`[0..0x7FFF]`

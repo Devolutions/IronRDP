@@ -1,6 +1,6 @@
+use ironrdp_core::decode;
 use ironrdp_core::DecodeError;
 use ironrdp_pdu::bitmap::rdp6::{BitmapStream as BitmapStreamPdu, ColorPlaneDefinition};
-use ironrdp_pdu::decode;
 use thiserror::Error;
 
 use crate::color_conversion::Rgb;

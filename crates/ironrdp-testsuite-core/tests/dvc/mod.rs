@@ -1,3 +1,5 @@
+use ironrdp_core::Decode;
+use ironrdp_core::Encode;
 use ironrdp_core::{ReadCursor, WriteCursor};
 use ironrdp_dvc::pdu::ClosePdu;
 use ironrdp_dvc::pdu::DataPdu;
@@ -5,8 +7,6 @@ use ironrdp_dvc::pdu::{CapabilitiesRequestPdu, CapabilitiesResponsePdu, CapsVers
 use ironrdp_dvc::pdu::{CreateRequestPdu, CreateResponsePdu, CreationStatus};
 use ironrdp_dvc::pdu::{DataFirstPdu, FieldType};
 use ironrdp_dvc::pdu::{DrdynvcClientPdu, DrdynvcDataPdu, DrdynvcServerPdu};
-use ironrdp_pdu::Decode;
-use ironrdp_pdu::Encode;
 use std::sync::OnceLock;
 
 // TODO: This likely generalizes to many tests and can thus be reused outside of this module.

@@ -17,11 +17,11 @@ use std::marker::PhantomData;
 
 use bitflags::bitflags;
 use ironrdp_core::{assert_obj_safe, DecodeResult, EncodeResult, ReadCursor, WriteBuf, WriteCursor};
+use ironrdp_core::{decode_cursor, encode_buf, Encode};
 use ironrdp_pdu::gcc::{ChannelName, ChannelOptions};
 use ironrdp_pdu::{decode_err, mcs, PduResult};
 use pdu::gcc::ChannelDef;
 use pdu::rdp::vc::ChannelControlFlags;
-use pdu::{decode_cursor, encode_buf, Encode};
 
 /// The integer type representing a static virtual channel ID.
 pub type StaticChannelId = u16;

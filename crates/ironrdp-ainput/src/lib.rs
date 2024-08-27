@@ -4,7 +4,7 @@ use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive as _, ToPrimitive as _};
 
 use ironrdp_core::{ensure_fixed_part_size, invalid_field_err, DecodeResult, EncodeResult, ReadCursor, WriteCursor};
-use ironrdp_pdu::{Decode, Encode};
+use ironrdp_core::{Decode, Encode};
 // Advanced Input channel as defined from Freerdp, [here]:
 //
 // [here]: https://github.com/FreeRDP/FreeRDP/blob/master/include/freerdp/channels/ainput.h

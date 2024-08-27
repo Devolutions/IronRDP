@@ -5,8 +5,8 @@ use std::fmt;
 
 use bitflags::bitflags;
 
-use crate::{Decode, DecodeResult, Encode, EncodeResult};
 use ironrdp_core::{ensure_fixed_part_size, invalid_field_err, ReadCursor, WriteCursor};
+use ironrdp_core::{Decode, DecodeResult, Encode, EncodeResult};
 
 const GENERAL_LENGTH: usize = 20;
 pub const PROTOCOL_VER: u16 = 0x0200;

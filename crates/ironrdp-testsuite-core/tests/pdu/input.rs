@@ -1,8 +1,8 @@
 use ironrdp_core::ReadCursor;
+use ironrdp_core::{decode_cursor, encode_vec};
 use ironrdp_pdu::input::fast_path::{FastPathInput, FastPathInputEvent};
 use ironrdp_pdu::input::mouse::PointerFlags;
 use ironrdp_pdu::input::MousePdu;
-use ironrdp_pdu::{decode_cursor, encode_vec};
 
 const FASTPATH_INPUT_MESSAGE: [u8; 44] = [
     0x18, 0x2c, 0x20, 0x0, 0x90, 0x1a, 0x0, 0x26, 0x4, 0x20, 0x0, 0x8, 0x1b, 0x0, 0x26, 0x4, 0x20, 0x0, 0x10, 0x1b,

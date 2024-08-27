@@ -7,19 +7,19 @@ use rstest::rstest;
 #[case("", &[0x00, 0x00, 0x00, 0x00, 0x00])]
 fn now_lrgstr_roundtrip(#[case] value: &str, #[case] expected_encoded: &'static [u8]) {
     let mut encoded_value = [0u8; 32];
-    let encoded_size = ironrdp_pdu::encode(&NowLrgStr::new(value).unwrap(), &mut encoded_value).unwrap();
+    let encoded_size = ironrdp_core::encode(&NowLrgStr::new(value).unwrap(), &mut encoded_value).unwrap();
 
     assert_eq!(encoded_size, expected_encoded.len());
     assert_eq!(&encoded_value[..encoded_size], expected_encoded);
 
-    let decoded_value = ironrdp_pdu::decode::<NowLrgStr>(&encoded_value).unwrap();
+    let decoded_value = ironrdp_core::decode::<NowLrgStr>(&encoded_value).unwrap();
     assert_eq!(decoded_value.value(), value);
 }
 
 #[test]
 fn decoded_now_lrgstr_invalid_utf8() {
     let encoded = [0x01, 0x00, 0x00, 0x00, 0xFF, 0x00];
-    ironrdp_pdu::decode::<NowLrgStr>(&encoded).unwrap_err();
+    ironrdp_core::decode::<NowLrgStr>(&encoded).unwrap_err();
 }
 
 #[rstest]
@@ -27,19 +27,19 @@ fn decoded_now_lrgstr_invalid_utf8() {
 #[case("", &[0x00, 0x00])]
 fn now_varstr_roundtrip(#[case] value: &str, #[case] expected_encoded: &'static [u8]) {
     let mut encoded_value = [0u8; 32];
-    let encoded_size = ironrdp_pdu::encode(&NowVarStr::new(value).unwrap(), &mut encoded_value).unwrap();
+    let encoded_size = ironrdp_core::encode(&NowVarStr::new(value).unwrap(), &mut encoded_value).unwrap();
 
     assert_eq!(encoded_size, expected_encoded.len());
     assert_eq!(&encoded_value[..encoded_size], expected_encoded);
 
-    let decoded_value = ironrdp_pdu::decode::<NowVarStr>(&encoded_value).unwrap();
+    let decoded_value = ironrdp_core::decode::<NowVarStr>(&encoded_value).unwrap();
     assert_eq!(decoded_value.value(), value);
 }
 
 #[test]
 fn decoded_now_varstr_invalid_utf8() {
     let encoded = [0x01, 0xFF, 0x00];
-    ironrdp_pdu::decode::<NowLrgStr>(&encoded).unwrap_err();
+    ironrdp_core::decode::<NowLrgStr>(&encoded).unwrap_err();
 }
 
 #[rstest]
@@ -47,12 +47,12 @@ fn decoded_now_varstr_invalid_utf8() {
 #[case("", &[0x00, 0x00])]
 fn now_restricted_string_roundtrip(#[case] value: &str, #[case] expected_encoded: &'static [u8]) {
     let mut encoded_value = [0u8; 32];
-    let encoded_size = ironrdp_pdu::encode(&NowString16::new(value).unwrap(), &mut encoded_value).unwrap();
+    let encoded_size = ironrdp_core::encode(&NowString16::new(value).unwrap(), &mut encoded_value).unwrap();
 
     assert_eq!(encoded_size, expected_encoded.len());
     assert_eq!(&encoded_value[..encoded_size], expected_encoded);
 
-    let decoded_value = ironrdp_pdu::decode::<NowString16>(&encoded_value).unwrap();
+    let decoded_value = ironrdp_core::decode::<NowString16>(&encoded_value).unwrap();
     assert_eq!(decoded_value.value(), value);
 }
 
@@ -65,5 +65,5 @@ fn now_restricted_string_too_large_constructed() {
 #[test]
 fn decoded_now_restricted_string_invalid_utf8() {
     let encoded = [0x01, 0xFF, 0x00];
-    ironrdp_pdu::decode::<NowString16>(&encoded).unwrap_err();
+    ironrdp_core::decode::<NowString16>(&encoded).unwrap_err();
 }

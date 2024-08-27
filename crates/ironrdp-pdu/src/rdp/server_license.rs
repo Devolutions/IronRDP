@@ -7,10 +7,11 @@ use num_traits::{FromPrimitive, ToPrimitive};
 use thiserror::Error;
 
 use crate::rdp::headers::{BasicSecurityHeader, BasicSecurityHeaderFlags, BASIC_SECURITY_HEADER_SIZE};
-use crate::{Decode, DecodeResult, Encode, EncodeResult, PduError};
+use crate::PduError;
 use ironrdp_core::{
     cast_length, ensure_fixed_part_size, invalid_field_err, unsupported_value_err, ReadCursor, WriteCursor,
 };
+use ironrdp_core::{Decode, DecodeResult, Encode, EncodeResult};
 
 #[cfg(test)]
 mod tests;

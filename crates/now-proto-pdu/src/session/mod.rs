@@ -5,7 +5,7 @@ mod msg_box_rsp;
 
 use ironrdp_core::{DecodeResult, EncodeResult, ReadCursor, WriteCursor};
 
-use ironrdp_pdu::Encode;
+use ironrdp_core::Encode;
 pub use lock::NowSessionLockMsg;
 pub use logoff::NowSessionLogoffMsg;
 pub use msg_box_req::{NowMessageBoxStyle, NowSessionMsgBoxReqMsg};

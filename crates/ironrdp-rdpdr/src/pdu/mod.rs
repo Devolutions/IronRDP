@@ -5,7 +5,7 @@ use ironrdp_core::{
     ensure_size, invalid_field_err, unsupported_value_err, DecodeError, DecodeResult, EncodeResult, ReadCursor,
     WriteCursor,
 };
-use ironrdp_pdu::{Decode, Encode};
+use ironrdp_core::{Decode, Encode};
 use ironrdp_svc::SvcEncode;
 
 use self::efs::{

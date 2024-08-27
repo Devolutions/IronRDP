@@ -237,7 +237,7 @@ fn nego_request_unexpected_rdp_msg_type() {
         0x03, 0x00, 0x00, 0x00, // rest
     ];
 
-    let e = ironrdp_pdu::decode::<X224<ConnectionRequest>>(&payload).err().unwrap();
+    let e = ironrdp_core::decode::<X224<ConnectionRequest>>(&payload).err().unwrap();
 
     expect![[r#"
         Error {
@@ -271,7 +271,7 @@ fn nego_confirm_unexpected_rdp_msg_type() {
         0x02, 0x00, 0x00, 0x00, // selected protocol
     ];
 
-    let e = ironrdp_pdu::decode::<X224<ConnectionConfirm>>(&payload).err().unwrap();
+    let e = ironrdp_core::decode::<X224<ConnectionConfirm>>(&payload).err().unwrap();
 
     expect![[r#"
         Error {

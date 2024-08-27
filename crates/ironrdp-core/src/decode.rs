@@ -3,13 +3,15 @@ use alloc::string::String;
 use core::fmt;
 
 use crate::{
-    InvalidFieldErr, NotEnoughBytesErr, OtherErr, UnexpectedMessageTypeErr, UnsupportedValueErr, UnsupportedVersionErr,
+    InvalidFieldErr, NotEnoughBytesErr, OtherErr, ReadCursor, UnexpectedMessageTypeErr, UnsupportedValueErr,
+    UnsupportedVersionErr,
 };
 
-/// Result type for decode operations, wrapping a value or a DecodeError.
+/// A result type for decoding operations, which can either succeed with a value of type `T`
+/// or fail with an [`DecodeError`].
 pub type DecodeResult<T> = Result<T, DecodeError>;
 
-/// Custom error type for decode operations.
+/// An error type specifically for encoding operations, wrapping an [`DecodeErrorKind`].
 pub type DecodeError = ironrdp_error::Error<DecodeErrorKind>;
 
 /// Enum representing different kinds of decode errors.
@@ -134,4 +136,112 @@ impl OtherErr for DecodeError {
     fn other(context: &'static str, description: &'static str) -> Self {
         Self::new(context, DecodeErrorKind::Other { description })
     }
+}
+
+/// Trait for types that can be decoded from a byte stream.
+///
+/// This trait is implemented by types that can be deserialized from a sequence of bytes.
+pub trait Decode<'de>: Sized {
+    /// Decodes an instance of `Self` from the given byte stream.
+    ///
+    /// # Arguments
+    ///
+    /// * `src` - A mutable reference to a `ReadCursor` containing the bytes to decode.
+    ///
+    /// # Returns
+    ///
+    /// Returns a `DecodeResult<Self>`, which is either the successfully decoded instance
+    /// or a `DecodeError` if decoding fails.
+    fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self>;
+}
+
+/// Decodes a value of type `T` from a byte slice.
+///
+/// This function creates a `ReadCursor` from the input byte slice and uses it to decode
+/// a value of type `T` that implements the `Decode` trait.
+///
+/// # Arguments
+///
+/// * `src` - A byte slice containing the data to be decoded.
+///
+/// # Returns
+///
+/// Returns a `DecodeResult<T>`, which is either the successfully decoded value
+/// or a `DecodeError` if decoding fails.
+pub fn decode<'de, T>(src: &'de [u8]) -> DecodeResult<T>
+where
+    T: Decode<'de>,
+{
+    let mut cursor = ReadCursor::new(src);
+    T::decode(&mut cursor)
+}
+
+/// Decodes a value of type `T` from a `ReadCursor`.
+///
+/// This function uses the provided `ReadCursor` to decode a value of type `T`
+/// that implements the `Decode` trait.
+///
+/// # Arguments
+///
+/// * `src` - A mutable reference to a `ReadCursor` containing the bytes to be decoded.
+///
+/// # Returns
+///
+/// Returns a `DecodeResult<T>`, which is either the successfully decoded value
+/// or a `DecodeError` if decoding fails.
+pub fn decode_cursor<'de, T>(src: &mut ReadCursor<'de>) -> DecodeResult<T>
+where
+    T: Decode<'de>,
+{
+    T::decode(src)
+}
+
+/// Similar to `Decode` but unconditionally returns an owned type.
+pub trait DecodeOwned: Sized {
+    /// Decodes an instance of `Self` from the given byte stream.
+    ///
+    /// # Arguments
+    ///
+    /// * `src` - A mutable reference to a `ReadCursor` containing the bytes to decode.
+    ///
+    /// # Returns
+    ///
+    /// Returns a `DecodeResult<Self>`, which is either the successfully decoded instance
+    /// or a `DecodeError` if decoding fails.
+    fn decode_owned(src: &mut ReadCursor<'_>) -> DecodeResult<Self>;
+}
+
+/// Decodes an owned value of type `T` from a byte slice.
+///
+/// This function creates a `ReadCursor` from the input byte slice and uses it to decode
+/// an owned value of type `T` that implements the `DecodeOwned` trait.
+///
+/// # Arguments
+///
+/// * `src` - A byte slice containing the data to be decoded.
+///
+/// # Returns
+///
+/// Returns a `DecodeResult<T>`, which is either the successfully decoded owned value
+/// or a `DecodeError` if decoding fails.
+pub fn decode_owned<T: DecodeOwned>(src: &[u8]) -> DecodeResult<T> {
+    let mut cursor = ReadCursor::new(src);
+    T::decode_owned(&mut cursor)
+}
+
+/// Decodes an owned value of type `T` from a `ReadCursor`.
+///
+/// This function uses the provided `ReadCursor` to decode an owned value of type `T`
+/// that implements the `DecodeOwned` trait.
+///
+/// # Arguments
+///
+/// * `src` - A mutable reference to a `ReadCursor` containing the bytes to be decoded.
+///
+/// # Returns
+///
+/// Returns a `DecodeResult<T>`, which is either the successfully decoded owned value
+/// or a `DecodeError` if decoding fails.
+pub fn decode_owned_cursor<T: DecodeOwned>(src: &mut ReadCursor<'_>) -> DecodeResult<T> {
+    T::decode_owned(src)
 }

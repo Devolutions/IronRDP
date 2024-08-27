@@ -2,10 +2,10 @@ use std::borrow::Cow;
 use std::mem;
 use std::net::SocketAddr;
 
-use ironrdp_core::WriteBuf;
+use ironrdp_core::{decode, encode_vec, Encode, WriteBuf};
 use ironrdp_pdu::rdp::client_info::{OptionalSystemTime, TimezoneInfo};
 use ironrdp_pdu::x224::X224;
-use ironrdp_pdu::{decode, encode_vec, gcc, mcs, nego, rdp, Encode, PduHint};
+use ironrdp_pdu::{gcc, mcs, nego, rdp, PduHint};
 use ironrdp_svc::{StaticChannelSet, StaticVirtualChannel, SvcClientProcessor};
 
 use crate::channel_connection::{ChannelConnectionSequence, ChannelConnectionState};
@@ -261,7 +261,7 @@ impl Sequence for ClientConnector {
                 debug!(message = ?connection_request, "Send");
 
                 let written =
-                    ironrdp_pdu::encode_buf(&X224(connection_request), output).map_err(ConnectorError::encode)?;
+                    ironrdp_core::encode_buf(&X224(connection_request), output).map_err(ConnectorError::encode)?;
 
                 (
                     Written::from_size(written)?,
@@ -602,7 +602,7 @@ pub fn encode_send_data_request<T: Encode>(
         user_data: Cow::Owned(user_data),
     };
 
-    let written = ironrdp_pdu::encode_buf(&X224(pdu), buf).map_err(ConnectorError::encode)?;
+    let written = ironrdp_core::encode_buf(&X224(pdu), buf).map_err(ConnectorError::encode)?;
 
     Ok(written)
 }

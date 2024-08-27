@@ -7,12 +7,12 @@ use rstest::rstest;
 #[case(0x80, &[0x80, 0x80])]
 fn var_u16_roundtrip(#[case] value: u16, #[case] expected_encoded: &'static [u8]) {
     let mut encoded_value = [0u8; 4];
-    let encoded_size = ironrdp_pdu::encode(&VarU16::new(value).unwrap(), &mut encoded_value).unwrap();
+    let encoded_size = ironrdp_core::encode(&VarU16::new(value).unwrap(), &mut encoded_value).unwrap();
 
     assert_eq!(encoded_size, expected_encoded.len());
     assert_eq!(&encoded_value[..encoded_size], expected_encoded);
 
-    let decoded_value = ironrdp_pdu::decode::<VarU16>(&encoded_value).unwrap();
+    let decoded_value = ironrdp_core::decode::<VarU16>(&encoded_value).unwrap();
     assert_eq!(decoded_value.value(), value);
 }
 
@@ -24,12 +24,12 @@ fn var_u16_roundtrip(#[case] value: u16, #[case] expected_encoded: &'static [u8]
 #[case(-0x40, &[0xC0, 0x40])]
 fn var_i16_roundtrip(#[case] value: i16, #[case] expected_encoded: &'static [u8]) {
     let mut encoded_value = [0u8; 4];
-    let encoded_size = ironrdp_pdu::encode(&VarI16::new(value).unwrap(), &mut encoded_value).unwrap();
+    let encoded_size = ironrdp_core::encode(&VarI16::new(value).unwrap(), &mut encoded_value).unwrap();
 
     assert_eq!(encoded_size, expected_encoded.len());
     assert_eq!(&encoded_value[..encoded_size], expected_encoded);
 
-    let decoded_value = ironrdp_pdu::decode::<VarI16>(&encoded_value).unwrap();
+    let decoded_value = ironrdp_core::decode::<VarI16>(&encoded_value).unwrap();
     assert_eq!(decoded_value.value(), value);
 }
 
@@ -41,12 +41,12 @@ fn var_i16_roundtrip(#[case] value: i16, #[case] expected_encoded: &'static [u8]
 #[case(0x3FFFFFFF, &[0xFF, 0xFF, 0xFF, 0xFF])]
 fn var_u32_roundtrip(#[case] value: u32, #[case] expected_encoded: &'static [u8]) {
     let mut encoded_value = [0u8; 4];
-    let encoded_size = ironrdp_pdu::encode(&VarU32::new(value).unwrap(), &mut encoded_value).unwrap();
+    let encoded_size = ironrdp_core::encode(&VarU32::new(value).unwrap(), &mut encoded_value).unwrap();
 
     assert_eq!(encoded_size, expected_encoded.len());
     assert_eq!(&encoded_value[..encoded_size], expected_encoded);
 
-    let decoded_value = ironrdp_pdu::decode::<VarU32>(&encoded_value).unwrap();
+    let decoded_value = ironrdp_core::decode::<VarU32>(&encoded_value).unwrap();
     assert_eq!(decoded_value.value(), value);
 }
 
@@ -60,12 +60,12 @@ fn var_u32_roundtrip(#[case] value: u32, #[case] expected_encoded: &'static [u8]
 #[case(-0x1FFFFFFF, &[0xFF, 0xFF, 0xFF, 0xFF])]
 fn var_i32_roundtrip(#[case] value: i32, #[case] expected_encoded: &'static [u8]) {
     let mut encoded_value = [0u8; 4];
-    let encoded_size = ironrdp_pdu::encode(&VarI32::new(value).unwrap(), &mut encoded_value).unwrap();
+    let encoded_size = ironrdp_core::encode(&VarI32::new(value).unwrap(), &mut encoded_value).unwrap();
 
     assert_eq!(encoded_size, expected_encoded.len());
     assert_eq!(&encoded_value[..encoded_size], expected_encoded);
 
-    let decoded_value = ironrdp_pdu::decode::<VarI32>(&encoded_value).unwrap();
+    let decoded_value = ironrdp_core::decode::<VarI32>(&encoded_value).unwrap();
     assert_eq!(decoded_value.value(), value);
 }
 
@@ -81,12 +81,12 @@ fn var_i32_roundtrip(#[case] value: i32, #[case] expected_encoded: &'static [u8]
 #[case(0x1FFFFFFFFFFFFFFF, &[0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF])]
 fn var_u64_roundtrip(#[case] value: u64, #[case] expected_encoded: &'static [u8]) {
     let mut encoded_value = [0u8; 8];
-    let encoded_size = ironrdp_pdu::encode(&VarU64::new(value).unwrap(), &mut encoded_value).unwrap();
+    let encoded_size = ironrdp_core::encode(&VarU64::new(value).unwrap(), &mut encoded_value).unwrap();
 
     assert_eq!(encoded_size, expected_encoded.len());
     assert_eq!(&encoded_value[..encoded_size], expected_encoded);
 
-    let decoded_value = ironrdp_pdu::decode::<VarU64>(&encoded_value).unwrap();
+    let decoded_value = ironrdp_core::decode::<VarU64>(&encoded_value).unwrap();
     assert_eq!(decoded_value.value(), value);
 }
 
@@ -104,12 +104,12 @@ fn var_u64_roundtrip(#[case] value: u64, #[case] expected_encoded: &'static [u8]
 #[case(-0x0FFFFFFF, &[0x7F, 0xFF, 0xFF, 0xFF])]
 fn var_i64_roundtrip(#[case] value: i64, #[case] expected_encoded: &'static [u8]) {
     let mut encoded_value = [0u8; 8];
-    let encoded_size = ironrdp_pdu::encode(&VarI64::new(value).unwrap(), &mut encoded_value).unwrap();
+    let encoded_size = ironrdp_core::encode(&VarI64::new(value).unwrap(), &mut encoded_value).unwrap();
 
     assert_eq!(encoded_size, expected_encoded.len());
     assert_eq!(&encoded_value[..encoded_size], expected_encoded);
 
-    let decoded_value = ironrdp_pdu::decode::<VarI64>(&encoded_value).unwrap();
+    let decoded_value = ironrdp_core::decode::<VarI64>(&encoded_value).unwrap();
     assert_eq!(decoded_value.value(), value);
 }
 

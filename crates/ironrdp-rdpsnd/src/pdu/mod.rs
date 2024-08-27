@@ -10,7 +10,8 @@ use ironrdp_core::{
     cast_length, ensure_fixed_part_size, ensure_size, invalid_field_err, other_err, DecodeError, DecodeResult,
     EncodeResult, ReadCursor, WriteCursor,
 };
-use ironrdp_pdu::{read_padding, write_padding, Decode, Encode};
+use ironrdp_core::{Decode, Encode};
+use ironrdp_pdu::{read_padding, write_padding};
 use ironrdp_svc::SvcEncode;
 
 const SNDC_FORMATS: u8 = 0x07;

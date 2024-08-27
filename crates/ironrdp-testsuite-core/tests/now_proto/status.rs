@@ -1,5 +1,5 @@
+use ironrdp_core::{Decode as _, Encode as _};
 use ironrdp_core::{ReadCursor, WriteCursor};
-use ironrdp_pdu::{Decode as _, Encode as _};
 use now_proto_pdu::{NowSeverity, NowStatus, NowStatusCode};
 
 #[test]

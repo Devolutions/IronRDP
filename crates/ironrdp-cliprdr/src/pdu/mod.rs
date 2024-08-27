@@ -21,8 +21,7 @@ use ironrdp_core::ensure_fixed_part_size;
 use ironrdp_core::invalid_field_err;
 use ironrdp_core::DecodeResult;
 use ironrdp_core::EncodeResult;
-use ironrdp_core::{ReadCursor, WriteCursor};
-use ironrdp_pdu::{Decode, Encode};
+use ironrdp_core::{Decode, Encode, ReadCursor, WriteCursor};
 use ironrdp_svc::SvcEncode;
 
 const MSG_TYPE_MONITOR_READY: u16 = 0x0001;

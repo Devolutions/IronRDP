@@ -941,9 +941,10 @@ mod legacy {
     use thiserror::Error;
 
     use super::*;
+    use crate::ber;
     use crate::gcc::conference_create::{ConferenceCreateRequest, ConferenceCreateResponse};
     use crate::gcc::GccError;
-    use crate::{ber, Decode, DecodeResult, Encode, EncodeResult};
+    use ironrdp_core::{Decode, DecodeResult, Encode, EncodeResult};
 
     // impl<'de> McsPdu<'de> for ConnectInitial {
     //     const MCS_NAME: &'static str = "DisconnectProviderUltimatum";

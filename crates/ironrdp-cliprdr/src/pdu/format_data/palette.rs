@@ -1,5 +1,5 @@
-use ironrdp_core::{DecodeResult, EncodeResult, ReadCursor, WriteCursor};
-use ironrdp_pdu::{impl_pdu_pod, Decode, Encode};
+use ironrdp_core::{Decode, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor};
+use ironrdp_pdu::impl_pdu_pod;
 
 /// Represents `PALETTEENTRY`
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

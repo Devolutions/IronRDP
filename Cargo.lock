@@ -2185,6 +2185,7 @@ dependencies = [
  "arbitrary",
  "ironrdp-cliprdr",
  "ironrdp-cliprdr-format",
+ "ironrdp-core",
  "ironrdp-displaycontrol",
  "ironrdp-graphics",
  "ironrdp-pdu",

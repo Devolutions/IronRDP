@@ -1,5 +1,5 @@
 use ironrdp_core::{ensure_fixed_part_size, DecodeResult, EncodeResult, ReadCursor, WriteCursor};
-use ironrdp_pdu::{Decode, Encode};
+use ironrdp_core::{Decode, Encode};
 
 use crate::{NowHeader, NowMessage, NowMessageClass, NowSessionMessage, NowSessionMessageKind};
 

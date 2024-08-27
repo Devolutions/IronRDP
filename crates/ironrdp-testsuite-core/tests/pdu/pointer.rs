@@ -37,11 +37,11 @@ fn expect_pointer_png(pointer: &DecodedPointer, expected_file_path: &str) {
 #[test]
 fn new_pointer_32bpp() {
     let data = include_bytes!("../../test_data/pdu/pointer/new_pointer_32bpp.bin");
-    let mut parsed = ironrdp_pdu::decode::<PointerAttribute<'_>>(data).unwrap();
+    let mut parsed = ironrdp_core::decode::<PointerAttribute<'_>>(data).unwrap();
     let decoded = DecodedPointer::decode_pointer_attribute(&parsed, PointerBitmapTarget::Software).unwrap();
     expect_pointer_png(&decoded, "pdu/pointer/new_pointer_32bpp.png");
 
-    let encoded = ironrdp_pdu::encode_vec(&parsed).unwrap();
+    let encoded = ironrdp_core::encode_vec(&parsed).unwrap();
     assert_eq!(&encoded, data);
 
     parsed.color_pointer.and_mask = &[];
@@ -68,11 +68,11 @@ fn new_pointer_32bpp() {
 #[test]
 fn large_pointer_32bpp() {
     let data = include_bytes!("../../test_data/pdu/pointer/large_pointer_32bpp.bin");
-    let mut parsed = ironrdp_pdu::decode::<LargePointerAttribute<'_>>(data).unwrap();
+    let mut parsed = ironrdp_core::decode::<LargePointerAttribute<'_>>(data).unwrap();
     let decoded = DecodedPointer::decode_large_pointer_attribute(&parsed, PointerBitmapTarget::Software).unwrap();
     expect_pointer_png(&decoded, "pdu/pointer/large_pointer_32bpp.png");
 
-    let encoded = ironrdp_pdu::encode_vec(&parsed).unwrap();
+    let encoded = ironrdp_core::encode_vec(&parsed).unwrap();
     assert_eq!(&encoded, data);
 
     parsed.and_mask = &[];
@@ -97,11 +97,11 @@ fn large_pointer_32bpp() {
 #[test]
 fn color_pointer_24bpp() {
     let data = include_bytes!("../../test_data/pdu/pointer/color_pointer_24bpp.bin");
-    let mut parsed = ironrdp_pdu::decode::<ColorPointerAttribute<'_>>(data).unwrap();
+    let mut parsed = ironrdp_core::decode::<ColorPointerAttribute<'_>>(data).unwrap();
     let decoded = DecodedPointer::decode_color_pointer_attribute(&parsed, PointerBitmapTarget::Software).unwrap();
     expect_pointer_png(&decoded, "pdu/pointer/color_pointer_24bpp.png");
 
-    let encoded = ironrdp_pdu::encode_vec(&parsed).unwrap();
+    let encoded = ironrdp_core::encode_vec(&parsed).unwrap();
     assert_eq!(&encoded, data);
 
     parsed.and_mask = &[];
@@ -148,8 +148,8 @@ fn color_pointer_1bpp() {
     };
 
     // Re-encode test
-    let encoded = ironrdp_pdu::encode_vec(&value).unwrap();
-    let decoded = ironrdp_pdu::decode::<PointerAttribute<'_>>(&encoded).unwrap();
+    let encoded = ironrdp_core::encode_vec(&value).unwrap();
+    let decoded = ironrdp_core::decode::<PointerAttribute<'_>>(&encoded).unwrap();
     assert_eq!(&decoded, &value);
 
     let decoded = DecodedPointer::decode_pointer_attribute(&value, PointerBitmapTarget::Software).unwrap();
@@ -175,8 +175,8 @@ fn color_pointer_16bpp() {
     };
 
     // Re-encode test
-    let encoded = ironrdp_pdu::encode_vec(&value).unwrap();
-    let decoded = ironrdp_pdu::decode::<PointerAttribute<'_>>(&encoded).unwrap();
+    let encoded = ironrdp_core::encode_vec(&value).unwrap();
+    let decoded = ironrdp_core::decode::<PointerAttribute<'_>>(&encoded).unwrap();
     assert_eq!(&decoded, &value);
 
     let decoded = DecodedPointer::decode_pointer_attribute(&value, PointerBitmapTarget::Software).unwrap();
@@ -186,15 +186,15 @@ fn color_pointer_16bpp() {
 #[test]
 fn cached_pointer() {
     let value = CachedPointerAttribute { cache_index: 42 };
-    let encoded = ironrdp_pdu::encode_vec(&value).unwrap();
-    let decoded = ironrdp_pdu::decode::<CachedPointerAttribute>(&encoded).unwrap();
+    let encoded = ironrdp_core::encode_vec(&value).unwrap();
+    let decoded = ironrdp_core::decode::<CachedPointerAttribute>(&encoded).unwrap();
     assert_eq!(&decoded, &value);
 }
 
 #[test]
 fn set_pointer_position() {
     let value = PointerPositionAttribute { x: 12, y: 34 };
-    let encoded = ironrdp_pdu::encode_vec(&value).unwrap();
-    let decoded = ironrdp_pdu::decode::<PointerPositionAttribute>(&encoded).unwrap();
+    let encoded = ironrdp_core::encode_vec(&value).unwrap();
+    let decoded = ironrdp_core::decode::<PointerPositionAttribute>(&encoded).unwrap();
     assert_eq!(&decoded, &value);
 }

@@ -3,8 +3,8 @@ mod tests;
 
 use bitflags::bitflags;
 
-use crate::{Decode, DecodeResult, Encode, EncodeResult};
 use ironrdp_core::{ensure_fixed_part_size, ReadCursor, WriteCursor};
+use ironrdp_core::{Decode, DecodeResult, Encode, EncodeResult};
 
 const SURFACE_COMMANDS_LENGTH: usize = 8;
 

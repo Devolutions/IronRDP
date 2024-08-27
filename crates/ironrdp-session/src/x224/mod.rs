@@ -145,7 +145,7 @@ impl Processor {
                             DisconnectProviderUltimatum::from_reason(DisconnectReason::UserRequested),
                         );
 
-                        let encoded_pdu = ironrdp_pdu::encode_vec(&X224(ultimatum)).map_err(SessionError::encode);
+                        let encoded_pdu = ironrdp_core::encode_vec(&X224(ultimatum)).map_err(SessionError::encode);
 
                         Ok(vec![
                             ProcessorOutput::ResponseFrame(encoded_pdu?),
