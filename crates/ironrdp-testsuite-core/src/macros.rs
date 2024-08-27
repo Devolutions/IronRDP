@@ -81,7 +81,7 @@ macro_rules! encode_decode_test {
                 let pdu = $pdu;
                 let expected = $encoded_pdu;
 
-                let encoded = ::ironrdp_pdu::encode_vec(&pdu).unwrap();
+                let encoded = ::ironrdp_core::encode_vec(&pdu).unwrap();
 
                 $crate::assert_eq_hex!(encoded, expected);
             }
@@ -91,7 +91,7 @@ macro_rules! encode_decode_test {
                 let encoded = $encoded_pdu;
                 let expected = $pdu;
 
-                let decoded = ::ironrdp_pdu::decode(&encoded).unwrap();
+                let decoded = ::ironrdp_core::decode(&encoded).unwrap();
 
                 let _ = expected == decoded; // type inference trick
 
@@ -103,7 +103,7 @@ macro_rules! encode_decode_test {
                 let pdu = $pdu;
                 let expected = $encoded_pdu.len();
 
-                let pdu_size = ::ironrdp_pdu::size(&pdu);
+                let pdu_size = ::ironrdp_core::size(&pdu);
 
                 $crate::assert_eq_hex!(pdu_size, expected);
             }

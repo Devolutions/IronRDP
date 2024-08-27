@@ -704,7 +704,7 @@ impl Session {
         let event = ironrdp::input::synchronize_event(scroll_lock, num_lock, caps_lock, kana_lock);
         let fastpath_input = FastPathInput(vec![event]);
 
-        let frame = ironrdp::pdu::encode_vec(&fastpath_input).context("FastPathInput encoding")?;
+        let frame = ironrdp::core::encode_vec(&fastpath_input).context("FastPathInput encoding")?;
 
         self.writer_tx
             .unbounded_send(frame)

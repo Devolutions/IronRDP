@@ -11,11 +11,11 @@ use crate::rdp::refresh_rectangle::RefreshRectanglePdu;
 use crate::rdp::server_error_info::ServerSetErrorInfoPdu;
 use crate::rdp::session_info::SaveSessionInfoPdu;
 use crate::rdp::suppress_output::SuppressOutputPdu;
-use crate::{Decode, DecodeResult, Encode, EncodeResult};
 use ironrdp_core::{
     cast_length, ensure_fixed_part_size, ensure_size, invalid_field_err, not_enough_bytes_err, other_err, ReadCursor,
     WriteCursor,
 };
+use ironrdp_core::{Decode, DecodeResult, Encode, EncodeResult};
 
 pub const BASIC_SECURITY_HEADER_SIZE: usize = 4;
 pub const SHARE_DATA_HEADER_COMPRESSION_MASK: u8 = 0xF;

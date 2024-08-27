@@ -2,7 +2,7 @@ use ironrdp_core::{cast_length, ensure_fixed_part_size, ensure_size, invalid_fie
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive, ToPrimitive};
 
-use crate::{Decode, DecodeResult, Encode, EncodeResult};
+use ironrdp_core::{Decode, DecodeResult, Encode, EncodeResult};
 
 const MONITOR_COUNT_MAX: usize = 16;
 const MONITOR_ATTRIBUTE_SIZE: u32 = 20;

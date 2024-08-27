@@ -1,5 +1,7 @@
-use ironrdp_core::{cast_int, ensure_fixed_part_size, DecodeResult, EncodeResult, ReadCursor, WriteCursor};
-use ironrdp_pdu::{impl_pdu_pod, Decode, Encode};
+use ironrdp_core::{
+    cast_int, ensure_fixed_part_size, Decode, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor,
+};
+use ironrdp_pdu::impl_pdu_pod;
 
 use crate::pdu::PartialHeader;
 

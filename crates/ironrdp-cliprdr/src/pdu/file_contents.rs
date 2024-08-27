@@ -4,8 +4,9 @@ use bitflags::bitflags;
 use ironrdp_core::{
     cast_int, ensure_size, invalid_field_err, DecodeResult, EncodeResult, IntoOwned, ReadCursor, WriteCursor,
 };
+use ironrdp_core::{Decode, Encode};
+use ironrdp_pdu::impl_pdu_borrowing;
 use ironrdp_pdu::utils::{combine_u64, split_u64};
-use ironrdp_pdu::{impl_pdu_borrowing, Decode, Encode};
 
 use crate::pdu::{ClipboardPduFlags, PartialHeader};
 

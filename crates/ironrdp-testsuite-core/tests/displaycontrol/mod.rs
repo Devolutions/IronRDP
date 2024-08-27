@@ -1,6 +1,6 @@
 use ironrdp_displaycontrol::pdu;
 
-use ironrdp_pdu::decode;
+use ironrdp_core::decode;
 use ironrdp_testsuite_core::encode_decode_test;
 
 encode_decode_test! {

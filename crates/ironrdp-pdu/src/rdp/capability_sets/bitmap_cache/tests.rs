@@ -1,7 +1,7 @@
 use lazy_static::lazy_static;
 
 use super::*;
-use crate::{decode, encode_vec};
+use ironrdp_core::{decode, encode_vec};
 
 const CACHE_ENTRY_BUFFER: [u8; 4] = [0x64, 0x00, 0x32, 0x00];
 

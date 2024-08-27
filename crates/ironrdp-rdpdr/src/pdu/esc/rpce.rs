@@ -106,7 +106,7 @@ impl<T: HeaderlessDecode> Pdu<T> {
     }
 }
 
-impl<T: HeaderlessEncode> ironrdp_pdu::Encode for Pdu<T> {
+impl<T: HeaderlessEncode> ironrdp_core::Encode for Pdu<T> {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_size!(ctx: self.name(), in: dst, size: self.size());
         let stream_header = StreamHeader::default();
@@ -140,7 +140,7 @@ impl<T: HeaderlessEncode> Encode for Pdu<T> {}
 ///
 /// Implementers should typically avoid implementing this trait directly
 /// and instead implement [`HeaderlessEncode`], and wrap it in a [`Pdu`].
-pub trait Encode: ironrdp_pdu::Encode + Send + std::fmt::Debug {}
+pub trait Encode: ironrdp_core::Encode + Send + std::fmt::Debug {}
 
 /// Trait for types that can be encoded into an [MS-RPCE] message.
 ///

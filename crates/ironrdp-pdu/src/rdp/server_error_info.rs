@@ -1,8 +1,8 @@
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive, ToPrimitive};
 
-use crate::{Decode, DecodeResult, Encode, EncodeResult};
 use ironrdp_core::{ensure_fixed_part_size, invalid_field_err, ReadCursor, WriteCursor};
+use ironrdp_core::{Decode, DecodeResult, Encode, EncodeResult};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServerSetErrorInfoPdu(pub ErrorInfo);
@@ -398,7 +398,7 @@ impl RdpSpecificCode {
 
 #[cfg(test)]
 mod tests {
-    use crate::{decode, encode_vec};
+    use ironrdp_core::{decode, encode_vec};
 
     use super::*;
 

@@ -2,7 +2,7 @@ use ironrdp_core::DecodeErrorKind;
 use lazy_static::lazy_static;
 
 use super::*;
-use crate::{decode, decode_cursor, encode_vec};
+use ironrdp_core::{decode, decode_cursor, encode_vec};
 
 const GUID_BUFFER: [u8; 16] = [
     0xb9, 0x1b, 0x8d, 0xca, 0x0f, 0x00, 0x4f, 0x15, 0x58, 0x9f, 0xae, 0x2d, 0x1a, 0x87, 0xe2, 0xd6,

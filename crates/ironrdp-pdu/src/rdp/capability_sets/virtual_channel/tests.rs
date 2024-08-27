@@ -1,7 +1,7 @@
 use lazy_static::lazy_static;
 
 use super::*;
-use crate::{decode, encode_vec};
+use ironrdp_core::{decode, encode_vec};
 
 const VIRTUAL_CHANNEL_INCOMPLETE_BUFFER: [u8; 4] = [
     0x01, 0x00, 0x00, 0x00, // flags

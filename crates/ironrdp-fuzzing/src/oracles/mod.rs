@@ -13,6 +13,7 @@
 use crate::generators::BitmapInput;
 
 pub fn pdu_decode(data: &[u8]) {
+    use ironrdp_core::*;
     use ironrdp_pdu::mcs::*;
     use ironrdp_pdu::nego::*;
     use ironrdp_pdu::rdp::*;

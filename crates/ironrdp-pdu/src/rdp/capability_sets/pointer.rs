@@ -1,8 +1,8 @@
 #[cfg(test)]
 mod tests;
 
-use crate::{Decode, DecodeResult, Encode, EncodeResult};
 use ironrdp_core::{ensure_fixed_part_size, ReadCursor, WriteCursor};
+use ironrdp_core::{Decode, DecodeResult, Encode, EncodeResult};
 
 const POINTER_LENGTH: usize = 6;
 

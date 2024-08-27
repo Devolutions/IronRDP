@@ -1,16 +1,21 @@
 #[cfg(feature = "alloc")]
+use crate::WriteBuf;
+#[cfg(feature = "alloc")]
 use alloc::string::String;
+#[cfg(feature = "alloc")]
+use alloc::{vec, vec::Vec};
 use core::fmt;
 
 use crate::{
     InvalidFieldErr, NotEnoughBytesErr, OtherErr, UnexpectedMessageTypeErr, UnsupportedValueErr, UnsupportedVersionErr,
+    WriteCursor,
 };
 
 /// A result type for encoding operations, which can either succeed with a value of type `T`
-/// or fail with an `EncodeError`.
+/// or fail with an [`EncodeError`].
 pub type EncodeResult<T> = Result<T, EncodeError>;
 
-/// An error type specifically for encoding operations, wrapping an `EncodeErrorKind`.
+/// An error type specifically for encoding operations, wrapping an [`EncodeErrorKind`].
 pub type EncodeError = ironrdp_error::Error<EncodeErrorKind>;
 
 /// Represents the different kinds of errors that can occur during encoding operations.
@@ -134,5 +139,108 @@ impl UnsupportedValueErr for EncodeError {
 impl OtherErr for EncodeError {
     fn other(context: &'static str, description: &'static str) -> Self {
         Self::new(context, EncodeErrorKind::Other { description })
+    }
+}
+
+/// PDU that can be encoded into its binary form.
+///
+/// The resulting binary payload is a fully encoded PDU that may be sent to the peer.
+///
+/// This trait is object-safe and may be used in a dynamic context.
+pub trait Encode {
+    /// Encodes this PDU in-place using the provided `WriteCursor`.
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()>;
+
+    /// Returns the associated PDU name associated.
+    fn name(&self) -> &'static str;
+
+    /// Computes the size in bytes for this PDU.
+    fn size(&self) -> usize;
+}
+
+crate::assert_obj_safe!(Encode);
+
+/// Encodes the given PDU in-place into the provided buffer and returns the number of bytes written.
+pub fn encode<T>(pdu: &T, dst: &mut [u8]) -> EncodeResult<usize>
+where
+    T: Encode + ?Sized,
+{
+    let mut cursor = WriteCursor::new(dst);
+    encode_cursor(pdu, &mut cursor)?;
+    Ok(cursor.pos())
+}
+
+/// Encodes the given PDU in-place using the provided `WriteCursor`.
+pub fn encode_cursor<T>(pdu: &T, dst: &mut WriteCursor<'_>) -> EncodeResult<()>
+where
+    T: Encode + ?Sized,
+{
+    pdu.encode(dst)
+}
+
+/// Same as `encode` but resizes the buffer when it is too small to fit the PDU.
+#[cfg(feature = "alloc")]
+pub fn encode_buf<T>(pdu: &T, buf: &mut WriteBuf) -> EncodeResult<usize>
+where
+    T: Encode + ?Sized,
+{
+    let pdu_size = pdu.size();
+    let dst = buf.unfilled_to(pdu_size);
+    let written = encode(pdu, dst)?;
+    debug_assert_eq!(written, pdu_size);
+    buf.advance(written);
+    Ok(written)
+}
+
+/// Same as `encode` but allocates and returns a new buffer each time.
+///
+/// This is a convenience function, but it’s not very resource efficient.
+#[cfg(any(feature = "alloc", test))]
+pub fn encode_vec<T>(pdu: &T) -> EncodeResult<Vec<u8>>
+where
+    T: Encode + ?Sized,
+{
+    let pdu_size = pdu.size();
+    let mut buf = vec![0; pdu_size];
+    let written = encode(pdu, buf.as_mut_slice())?;
+    debug_assert_eq!(written, pdu_size);
+    Ok(buf)
+}
+
+/// Gets the name of this PDU.
+pub fn name<T: Encode>(pdu: &T) -> &'static str {
+    pdu.name()
+}
+
+/// Computes the size in bytes for this PDU.
+pub fn size<T: Encode>(pdu: &T) -> usize {
+    pdu.size()
+}
+
+#[cfg(feature = "alloc")]
+pub use legacy::*;
+
+#[cfg(feature = "alloc")]
+mod legacy {
+    use super::{Encode, EncodeResult};
+    use crate::WriteCursor;
+
+    impl Encode for alloc::vec::Vec<u8> {
+        fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
+            ensure_size!(in: dst, size: self.len());
+
+            dst.write_slice(self);
+            Ok(())
+        }
+
+        /// Returns the associated PDU name associated.
+        fn name(&self) -> &'static str {
+            "legacy-pdu-encode"
+        }
+
+        /// Computes the size in bytes for this PDU.
+        fn size(&self) -> usize {
+            self.len()
+        }
     }
 }

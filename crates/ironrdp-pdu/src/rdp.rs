@@ -7,9 +7,10 @@ use crate::rdp::capability_sets::CapabilitySetsError;
 use crate::rdp::client_info::{ClientInfo, ClientInfoError};
 use crate::rdp::headers::{BasicSecurityHeader, BasicSecurityHeaderFlags, ShareControlPduType, ShareDataPduType};
 use crate::rdp::server_license::ServerLicenseError;
-use crate::Encode;
-use crate::{Decode, DecodeResult, EncodeResult, PduError};
+use crate::PduError;
+use ironrdp_core::Encode;
 use ironrdp_core::{ensure_fixed_part_size, invalid_field_err, ReadCursor, WriteCursor};
+use ironrdp_core::{Decode, DecodeResult, EncodeResult};
 
 pub mod capability_sets;
 pub mod client_info;

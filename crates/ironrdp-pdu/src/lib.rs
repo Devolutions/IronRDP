@@ -5,10 +5,8 @@
 #![allow(clippy::cast_sign_loss)] // FIXME: remove
 
 use core::fmt;
-use ironrdp_core::{unexpected_message_type_err, DecodeResult, EncodeResult, ReadCursor, WriteCursor};
+use ironrdp_core::{unexpected_message_type_err, DecodeResult, EncodeResult, ReadCursor};
 
-#[cfg(feature = "alloc")]
-use ironrdp_core::WriteBuf;
 use ironrdp_error::Source;
 
 #[macro_use]
@@ -87,117 +85,6 @@ impl fmt::Display for PduErrorKind {
 pub trait Pdu {
     /// Name associated to this PDU.
     const NAME: &'static str;
-}
-
-/// PDU that can be encoded into its binary form.
-///
-/// The resulting binary payload is a fully encoded PDU that may be sent to the peer.
-///
-/// This trait is object-safe and may be used in a dynamic context.
-pub trait Encode {
-    /// Encodes this PDU in-place using the provided `WriteCursor`.
-    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()>;
-
-    /// Returns the associated PDU name associated.
-    fn name(&self) -> &'static str;
-
-    /// Computes the size in bytes for this PDU.
-    fn size(&self) -> usize;
-}
-
-ironrdp_core::assert_obj_safe!(Encode);
-
-/// Encodes the given PDU in-place into the provided buffer and returns the number of bytes written.
-pub fn encode<T>(pdu: &T, dst: &mut [u8]) -> EncodeResult<usize>
-where
-    T: Encode + ?Sized,
-{
-    let mut cursor = WriteCursor::new(dst);
-    encode_cursor(pdu, &mut cursor)?;
-    Ok(cursor.pos())
-}
-
-/// Encodes the given PDU in-place using the provided `WriteCursor`.
-pub fn encode_cursor<T>(pdu: &T, dst: &mut WriteCursor<'_>) -> EncodeResult<()>
-where
-    T: Encode + ?Sized,
-{
-    pdu.encode(dst)
-}
-
-/// Same as `encode` but resizes the buffer when it is too small to fit the PDU.
-#[cfg(feature = "alloc")]
-pub fn encode_buf<T>(pdu: &T, buf: &mut WriteBuf) -> EncodeResult<usize>
-where
-    T: Encode + ?Sized,
-{
-    let pdu_size = pdu.size();
-    let dst = buf.unfilled_to(pdu_size);
-    let written = encode(pdu, dst)?;
-    debug_assert_eq!(written, pdu_size);
-    buf.advance(written);
-    Ok(written)
-}
-
-/// Same as `encode` but allocates and returns a new buffer each time.
-///
-/// This is a convenience function, but it’s not very resource efficient.
-#[cfg(any(feature = "alloc", test))]
-pub fn encode_vec<T>(pdu: &T) -> EncodeResult<Vec<u8>>
-where
-    T: Encode + ?Sized,
-{
-    let pdu_size = pdu.size();
-    let mut buf = vec![0; pdu_size];
-    let written = encode(pdu, buf.as_mut_slice())?;
-    debug_assert_eq!(written, pdu_size);
-    Ok(buf)
-}
-
-/// Gets the name of this PDU.
-pub fn name<T: Encode>(pdu: &T) -> &'static str {
-    pdu.name()
-}
-
-/// Computes the size in bytes for this PDU.
-pub fn size<T: Encode>(pdu: &T) -> usize {
-    pdu.size()
-}
-
-/// PDU that can be decoded from a binary input.
-///
-/// The binary payload must be a full PDU, not some subset of it.
-pub trait Decode<'de>: Sized {
-    fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self>;
-}
-
-pub fn decode<'de, T>(src: &'de [u8]) -> DecodeResult<T>
-where
-    T: Decode<'de>,
-{
-    let mut cursor = ReadCursor::new(src);
-    T::decode(&mut cursor)
-}
-
-pub fn decode_cursor<'de, T>(src: &mut ReadCursor<'de>) -> DecodeResult<T>
-where
-    T: Decode<'de>,
-{
-    T::decode(src)
-}
-
-/// Similar to `Decode` but unconditionally returns an owned type.
-pub trait DecodeOwned: Sized {
-    fn decode_owned(src: &mut ReadCursor<'_>) -> DecodeResult<Self>;
-}
-
-pub fn decode_owned<T: DecodeOwned>(src: &[u8]) -> DecodeResult<T> {
-    let mut cursor = ReadCursor::new(src);
-    T::decode_owned(&mut cursor)
-}
-
-pub fn decode_owned_cursor<T: DecodeOwned>(src: &mut ReadCursor<'_>) -> DecodeResult<T> {
-    T::decode_owned(src)
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
@@ -333,10 +220,6 @@ pub use legacy::*;
 // TODO: Delete these traits at some point
 mod legacy {
 
-    use ironrdp_core::ensure_size;
-
-    use crate::{Encode, EncodeResult, WriteCursor};
-
     pub trait PduBufferParsing<'a>: Sized {
         type Error;
 
@@ -346,24 +229,5 @@ mod legacy {
         fn from_buffer_consume(buffer: &mut &'a [u8]) -> Result<Self, Self::Error>;
         fn to_buffer_consume(&self, buffer: &mut &mut [u8]) -> Result<(), Self::Error>;
         fn buffer_length(&self) -> usize;
-    }
-
-    impl Encode for Vec<u8> {
-        fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
-            ensure_size!(in: dst, size: self.len());
-
-            dst.write_slice(self);
-            Ok(())
-        }
-
-        /// Returns the associated PDU name associated.
-        fn name(&self) -> &'static str {
-            "legacy-pdu-encode"
-        }
-
-        /// Computes the size in bytes for this PDU.
-        fn size(&self) -> usize {
-            self.len()
-        }
     }
 }

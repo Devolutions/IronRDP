@@ -1,5 +1,5 @@
-use crate::{Decode, DecodeResult, Encode, EncodeResult};
 use ironrdp_core::{ensure_fixed_part_size, ReadCursor, WriteCursor};
+use ironrdp_core::{Decode, DecodeResult, Encode, EncodeResult};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FrameAcknowledge {
@@ -45,7 +45,7 @@ impl<'de> Decode<'de> for FrameAcknowledge {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::{decode, encode_vec};
+    use ironrdp_core::{decode, encode_vec};
 
     const FRAME_ACKNOWLEDGE_PDU_BUFFER: [u8; 4] = [0xf4, 0xf3, 0xf2, 0xf1];
     const FRAME_ACKNOWLEDGE_PDU: FrameAcknowledge = FrameAcknowledge {

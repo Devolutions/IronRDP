@@ -1,9 +1,10 @@
 use std::borrow::Cow;
 
 use ironrdp_core::WriteBuf;
+use ironrdp_core::{decode, encode_vec, Decode, Encode};
+use ironrdp_pdu::rdp;
 use ironrdp_pdu::rdp::headers::ServerDeactivateAll;
 use ironrdp_pdu::x224::X224;
-use ironrdp_pdu::{decode, encode_vec, rdp, Decode, Encode};
 
 use crate::{ConnectorError, ConnectorErrorExt as _, ConnectorResult};
 
@@ -24,7 +25,7 @@ where
         user_data: Cow::Owned(user_data),
     };
 
-    let written = ironrdp_pdu::encode_buf(&X224(pdu), buf).map_err(ConnectorError::encode)?;
+    let written = ironrdp_core::encode_buf(&X224(pdu), buf).map_err(ConnectorError::encode)?;
 
     Ok(written)
 }
@@ -72,7 +73,7 @@ pub fn decode_send_data_indication(src: &[u8]) -> ConnectorResult<SendDataIndica
         _ => Err(reason_err!(
             "decode_send_data_indication",
             "unexpected MCS message: {}",
-            ironrdp_pdu::name(&mcs_msg)
+            ironrdp_core::name(&mcs_msg)
         )),
     }
 }

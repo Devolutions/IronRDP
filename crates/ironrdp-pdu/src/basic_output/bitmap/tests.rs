@@ -1,7 +1,7 @@
 use lazy_static::lazy_static;
 
 use super::*;
-use crate::{decode, encode};
+use ironrdp_core::{decode, encode};
 
 const BITMAP_BUFFER: [u8; 114] = [
     0x01, 0x00, // Bitmap update type = must be PDATETYPE_BITMAP (0x0001)

@@ -1,7 +1,7 @@
 use lazy_static::lazy_static;
 
 use super::*;
-use crate::{decode, encode_vec};
+use ironrdp_core::{decode, encode_vec};
 
 const LICENSE_HEADER_BUFFER: [u8; 8] = [
     0x80, 0x00, // flags

@@ -9,9 +9,10 @@ use num_traits::{FromPrimitive, ToPrimitive};
 use super::bitmap::BitmapUpdateData;
 use super::pointer::PointerUpdateData;
 use super::surface_commands::{SurfaceCommand, SURFACE_COMMAND_HEADER_SIZE};
+use crate::per;
 use crate::rdp::client_info::CompressionType;
 use crate::rdp::headers::{CompressionFlags, SHARE_DATA_HEADER_COMPRESSION_MASK};
-use crate::{decode_cursor, per, Decode, Encode};
+use ironrdp_core::{decode_cursor, Decode, Encode};
 use ironrdp_core::{
     ensure_fixed_part_size, ensure_size, invalid_field_err, DecodeError, DecodeResult, EncodeResult, InvalidFieldErr,
     ReadCursor, WriteCursor,

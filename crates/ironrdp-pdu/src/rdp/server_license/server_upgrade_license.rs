@@ -6,9 +6,10 @@ use super::{
     BLOB_TYPE_SIZE, MAC_SIZE, UTF16_NULL_TERMINATOR_SIZE, UTF8_NULL_TERMINATOR_SIZE,
 };
 use crate::crypto::rc4::Rc4;
+use crate::utils;
 use crate::utils::CharacterSet;
-use crate::{utils, Decode, DecodeResult, Encode, EncodeResult};
 use ironrdp_core::{cast_length, ensure_fixed_part_size, ensure_size, invalid_field_err, ReadCursor, WriteCursor};
+use ironrdp_core::{Decode, DecodeResult, Encode, EncodeResult};
 
 const NEW_LICENSE_INFO_STATIC_FIELDS_SIZE: usize = 20;
 

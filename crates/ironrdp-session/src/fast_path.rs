@@ -1,12 +1,12 @@
 use std::rc::Rc;
 
+use ironrdp_core::decode_cursor;
 use ironrdp_core::{DecodeErrorKind, ReadCursor, WriteBuf};
 use ironrdp_graphics::image_processing::PixelFormat;
 use ironrdp_graphics::pointer::{DecodedPointer, PointerBitmapTarget};
 use ironrdp_graphics::rdp6::BitmapStreamDecoder;
 use ironrdp_graphics::rle::RlePixelFormat;
 use ironrdp_pdu::codecs::rfx::FrameAcknowledgePdu;
-use ironrdp_pdu::decode_cursor;
 use ironrdp_pdu::fast_path::{FastPathHeader, FastPathUpdate, FastPathUpdatePdu, Fragmentation};
 use ironrdp_pdu::geometry::{InclusiveRectangle, Rectangle as _};
 use ironrdp_pdu::pointer::PointerUpdateData;

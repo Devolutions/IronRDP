@@ -1,7 +1,7 @@
 use bitflags::bitflags;
 
-use crate::{Decode, DecodeResult, Encode, EncodeResult};
 use ironrdp_core::{ensure_fixed_part_size, ReadCursor, WriteCursor};
+use ironrdp_core::{Decode, DecodeResult, Encode, EncodeResult};
 
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub struct LargePointer {
@@ -53,7 +53,7 @@ bitflags! {
 #[cfg(test)]
 mod test {
     use super::*;
-    use crate::{decode, encode_vec};
+    use ironrdp_core::{decode, encode_vec};
 
     const LARGE_POINTER_PDU_BUFFER: [u8; 2] = [0x01, 0x00];
     const LARGE_POINTER_PDU: LargePointer = LargePointer {

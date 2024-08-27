@@ -160,7 +160,7 @@ impl BitmapStreamEncoder {
             color_plane_definition: ColorPlaneDefinition::Argb,
         };
 
-        ironrdp_pdu::encode_cursor(&header, &mut cursor).map_err(BitmapEncodeError::Encode)?;
+        ironrdp_core::encode_cursor(&header, &mut cursor).map_err(BitmapEncodeError::Encode)?;
 
         if rle {
             compress_8bpp_plane(r, &mut cursor, self.width, self.height).map_err(BitmapEncodeError::Rle)?;
@@ -236,7 +236,7 @@ impl BitmapStreamEncoder {
             color_plane_definition: ColorPlaneDefinition::Argb,
         };
 
-        ironrdp_pdu::encode_cursor(&header, &mut cursor).map_err(BitmapEncodeError::Encode)?;
+        ironrdp_core::encode_cursor(&header, &mut cursor).map_err(BitmapEncodeError::Encode)?;
 
         if rle {
             compress_8bpp_plane(a, &mut cursor, self.width, self.height).map_err(BitmapEncodeError::rle)?;

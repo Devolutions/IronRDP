@@ -6,7 +6,7 @@ use bitflags::bitflags;
 use num_integer::Integer;
 use thiserror::Error;
 
-use crate::{Decode, DecodeResult, Encode, EncodeResult};
+use ironrdp_core::{Decode, DecodeResult, Encode, EncodeResult};
 
 const CHANNELS_MAX: usize = 31;
 

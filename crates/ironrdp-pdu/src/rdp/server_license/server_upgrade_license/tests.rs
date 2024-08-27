@@ -5,7 +5,7 @@ use crate::rdp::server_license::{
     BasicSecurityHeader, BasicSecurityHeaderFlags, LicensePdu, PreambleFlags, PreambleVersion,
     BASIC_SECURITY_HEADER_SIZE, PREAMBLE_SIZE,
 };
-use crate::{decode, encode_vec};
+use ironrdp_core::{decode, encode_vec};
 
 const SERVER_UPGRADE_LICENSE_BUFFER: [u8; 2059] = [
     0x80, 0x00, // flags
