@@ -376,13 +376,21 @@ impl RdpServer {
         user_channel_id: u16,
         io_channel_id: u16,
         buffer: &mut Vec<u8>,
-        encoder: &mut UpdateEncoder,
-    ) -> Result<RunState>
+        mut encoder: UpdateEncoder,
+    ) -> Result<(RunState, UpdateEncoder)>
     where
         W: FramedWrite,
     {
         let mut fragmenter = match update {
-            DisplayUpdate::Bitmap(bitmap) => encoder.bitmap(bitmap),
+            DisplayUpdate::Bitmap(bitmap) => {
+                let (enc, res) = task::spawn_blocking(move || {
+                    let res = encoder.bitmap(bitmap).map(|r| r.into_owned());
+                    (encoder, res)
+                })
+                .await?;
+                encoder = enc;
+                res.map(|r| encoder.fragmenter_from_owned(r))
+            }
             DisplayUpdate::PointerPosition(pos) => encoder.pointer_position(pos),
             DisplayUpdate::Resize(desktop_size) => {
                 debug!(?desktop_size, "Display resize");
@@ -400,7 +408,7 @@ impl RdpServer {
                 };
                 let msg = encode_vec(&X224(pdu))?;
                 writer.write_all(&msg).await?;
-                return Ok(RunState::DeactivationReactivation { desktop_size });
+                return Ok((RunState::DeactivationReactivation { desktop_size }, encoder));
             }
             DisplayUpdate::RGBAPointer(ptr) => encoder.rgba_pointer(ptr),
             DisplayUpdate::ColorPointer(ptr) => encoder.color_pointer(ptr),
@@ -420,7 +428,7 @@ impl RdpServer {
                 .context("failed to write display update")?;
         }
 
-        Ok(RunState::Continue)
+        Ok((RunState::Continue, encoder))
     }
 
     async fn dispatch_server_events<W>(
@@ -526,7 +534,7 @@ impl RdpServer {
                 },
 
                 Some(update) = display_updates.next_update() => {
-                    state = self.dispatch_display_update(update, writer, user_channel_id, io_channel_id, &mut buffer, &mut encoder).await?;
+                    (state, encoder) = self.dispatch_display_update(update, writer, user_channel_id, io_channel_id, &mut buffer, encoder).await?;
                 }
 
                 nevents = self.ev_receiver.recv_many(&mut events, 100) => {

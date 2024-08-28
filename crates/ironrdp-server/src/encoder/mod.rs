@@ -131,6 +131,14 @@ impl UpdateEncoder {
         update(self, bitmap)
     }
 
+    pub(crate) fn fragmenter_from_owned(&self, res: UpdateFragmenterOwned) -> UpdateFragmenter<'_> {
+        UpdateFragmenter {
+            code: res.code,
+            index: res.index,
+            data: &self.buffer[0..res.len],
+        }
+    }
+
     fn bitmap_update(&mut self, bitmap: BitmapUpdate) -> Result<UpdateFragmenter<'_>> {
         let len = loop {
             match self.bitmap.encode(&bitmap, self.buffer.as_mut_slice()) {
@@ -208,6 +216,12 @@ impl UpdateEncoder {
     }
 }
 
+pub(crate) struct UpdateFragmenterOwned {
+    code: UpdateCode,
+    index: usize,
+    len: usize,
+}
+
 pub(crate) struct UpdateFragmenter<'a> {
     code: UpdateCode,
     index: usize,
@@ -217,6 +231,14 @@ pub(crate) struct UpdateFragmenter<'a> {
 impl<'a> UpdateFragmenter<'a> {
     pub(crate) fn new(code: UpdateCode, data: &'a [u8]) -> Self {
         Self { code, index: 0, data }
+    }
+
+    pub(crate) fn into_owned(self) -> UpdateFragmenterOwned {
+        UpdateFragmenterOwned {
+            code: self.code,
+            index: self.index,
+            len: self.data.len(),
+        }
     }
 
     pub(crate) fn size_hint(&self) -> usize {
