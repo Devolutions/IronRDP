@@ -705,7 +705,7 @@ impl RdpServer {
         let control: rdp::headers::ShareControlHeader = decode(data.user_data.as_ref())?;
 
         match control.share_control_pdu {
-            rdp::headers::ShareControlPdu::Data(header) => match header.share_data_pdu {
+            ShareControlPdu::Data(header) => match header.share_data_pdu {
                 rdp::headers::ShareDataPdu::Input(pdu) => {
                     self.handle_input_event(pdu).await;
                 }
