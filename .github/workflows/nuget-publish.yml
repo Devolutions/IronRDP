@@ -93,7 +93,17 @@ jobs:
         shell: pwsh
         run: |    
           $CargoConfigFile = "~/.cargo/config.toml"
-          $AndroidToolchain="${Env:ANDROID_NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64"
+
+          # CMake issue with NDK 27.x: https://github.com/android/ndk/issues/2049
+          # Delete the code below once this issue is resolved and NDK updated. 
+          $Env:ANDROID_NDK_ROOT = "/usr/local/lib/android/sdk/ndk/26.3.11579264"
+          echo "ANDROID_NDK=${Env:ANDROID_NDK_ROOT}" >> $Env:GITHUB_ENV
+          echo "ANDROID_NDK_HOME=${Env:ANDROID_NDK_ROOT}" >> $Env:GITHUB_ENV
+          echo "ANDROID_NDK_LATEST_HOME=${Env:ANDROID_NDK_ROOT}" >> $Env:GITHUB_ENV
+          echo "ANDROID_NDK_ROOT=${Env:ANDROID_NDK_ROOT}" >> $Env:GITHUB_ENV
+
+          $AndroidToolchain="${Env:ANDROID_NDK_ROOT}/toolchains/llvm/prebuilt/linux-x86_64"
+          Write-Host "AndroidToolchain=$AndroidToolchain"
 
           Get-ChildItem -Path $AndroidToolchain "libunwind.a" -Recurse | ForEach-Object {
             $libunwind = $_.FullName
@@ -129,6 +139,8 @@ jobs:
           echo "CC_aarch64-linux-android=$AndroidToolchain/bin/aarch64-linux-android21-clang" >> $Env:GITHUB_ENV
           echo "CXX_aarch64-linux-android=$AndroidToolchain/bin/aarch64-linux-android21-clang++" >> $Env:GITHUB_ENV
           echo "AR_aarch64-linux-android=$AndroidToolchain/bin/llvm-ar" >> $Env:GITHUB_ENV
+
+          Get-Content -Path "$CargoConfigFile"
 
       - name: Configure macOS deployement target
         if: ${{ matrix.os == 'osx' }}
@@ -368,7 +380,7 @@ jobs:
           $(Get-Item ".\ironrdp-*") | ForEach-Object { Rename-Item $_ $_.Name.Replace("ironrdp-", "") }
           Get-ChildItem * -Recurse
 
-      - name: Build Devolutionus.IronRdp (managed)
+      - name: Build Devolutions.IronRdp (managed)
         shell: pwsh
         run: |
           # net8.0 target packaged as Devolutions.IronRdp
