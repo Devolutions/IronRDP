@@ -244,7 +244,7 @@ fn read_mcspdu_header(src: &mut ReadCursor<'_>, ctx: &'static str) -> DecodeResu
 }
 
 fn peek_mcspdu_header(src: &mut ReadCursor<'_>, ctx: &'static str) -> DecodeResult<DomainMcsPdu> {
-    let choice = src.try_read_u8().map_err(|e| other_err!(ctx, source: e))?;
+    let choice = src.try_peek_u8().map_err(|e| other_err!(ctx, source: e))?;
 
     DomainMcsPdu::from_choice(choice)
         .ok_or_else(|| invalid_field_err(ctx, "domain-mcspdu", "unexpected application tag for CHOICE"))
