@@ -462,7 +462,7 @@ impl AvcShaderProgram {
         };
         // Set parameters that are not going to change across different programs.
         // All shaders within a context share parameters and must be of the same type
-        // The paraemters here are going to remain constant
+        // The parameters here are going to remain constant
 
         let vertex_buffer = gl.create_buffer().unwrap();
         let vertex_array = gl.create_vertex_array()?;

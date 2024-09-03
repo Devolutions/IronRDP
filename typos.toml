@@ -18,11 +18,7 @@
 #     3.4. Last resort: add file ignore to `extend-exclude` list.
 
 [files]
-extend-exclude = [
-   "*.bin",
-   "*.bmp",
-   "package-lock.json",
-]
+extend-exclude = ["*.bin", "*.bmp", "package-lock.json"]
 
 [default]
 extend-ignore-re = [
@@ -39,4 +35,7 @@ extend-ignore-re = [
 
    # False-positive fix for intentional typo in ironrdp-graphics\src\zgfx\mod.rs:
    "\\bfox jumps ove\\b",
+
+   "cll",
+   "CLL",
 ]

@@ -100,7 +100,7 @@ impl Encode for FileDescriptor {
         let written = encode_string(dst.remaining_mut(), &self.name, CharacterSet::Unicode, true)?;
         dst.advance(written);
 
-        // Pad with zeroes, overidding any previously written data
+        // Pad with zeroes, overriding any previously written data
         write_padding!(dst, NAME_LENGTH - written);
 
         Ok(())
