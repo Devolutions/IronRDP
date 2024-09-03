@@ -170,7 +170,7 @@ impl Encode for NowVarStr {
     fn size(&self) -> usize {
         VarU32::new(self.0.len().try_into().unwrap()).unwrap().size() /* variable-length size */
             + self.0.len() /* utf-8 bytes */
-            + 1 /* null termnator */
+            + 1 /* null terminator */
     }
 }
 
@@ -262,7 +262,7 @@ impl<const MAX_LEN: u8> Encode for NowRestrictedStr<MAX_LEN> {
     fn size(&self) -> usize {
         Self::FIXED_PART_SIZE  /* u8 size */
             + self.0.len() /* utf-8 bytes */
-            + 1 /* null termnator */
+            + 1 /* null terminator */
     }
 }
 

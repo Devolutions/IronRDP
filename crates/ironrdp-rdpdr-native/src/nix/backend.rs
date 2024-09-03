@@ -403,7 +403,7 @@ pub(crate) fn set_information(
                 }
                 FileInformationClass::EndOfFile(info) => {
                     if let Some(file) = backend.file_map.get(&req_inner.device_io_request.file_id) {
-                        // SAFETY: the file must has been opend with write access in the last steps, since rdp prepares to set information. In addition it is a regular file.
+                        // SAFETY: the file must has been opened with write access in the last steps, since rdp prepares to set information. In addition it is a regular file.
                         let set_end_res = unsafe { nix::libc::ftruncate(file.as_raw_fd(), info.end_of_file) };
                         if set_end_res < 0 {
                             let error = nix::errno::Errno::last();

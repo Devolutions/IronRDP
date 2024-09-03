@@ -223,7 +223,7 @@ impl<'a> BitmapStreamDecoderImpl<'a> {
     }
 }
 
-/// Perform YCoCg -> RGB conversion with color loss redution (CLL) correction.
+/// Perform YCoCg -> RGB conversion with color loss reduction (CLL) correction.
 fn ycocg_with_cll_to_rgb(cll: u8, y: u8, co: u8, cg: u8) -> Rgb {
     // We decrease CLL by 1 to skip division by 2 for co & cg components during computation of
     // the following color conversion matrix:

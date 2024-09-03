@@ -421,7 +421,7 @@ impl DecodedImage {
         update_rectangle.intersect(&pointer_dest_rect).is_some() && self.show_pointer
     }
 
-    /// This method should be called BEFORE and fraebuffer updates, with the update rectangle,
+    /// This method should be called BEFORE and framebuffer updates, with the update rectangle,
     /// to determine if the pointer needs to be redrawn (overlapping with the update rectangle).
     fn pointer_rendering_begin(
         &mut self,

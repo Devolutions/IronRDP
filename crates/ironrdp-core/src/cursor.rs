@@ -560,7 +560,7 @@ impl<'a> WriteCursor<'a> {
         &mut self.inner[idx..]
     }
 
-    /// Returns the innner byte slice.
+    /// Returns the inner byte slice.
     #[inline]
     pub const fn inner(&self) -> &[u8] {
         self.inner
