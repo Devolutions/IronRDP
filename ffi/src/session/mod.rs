@@ -237,7 +237,7 @@ pub mod ffi {
 
         pub fn get_terminate(&self) -> Result<Box<GracefulDisconnectReason>, Box<IronRdpError>> {
             match &self.0 {
-                ironrdp::session::ActiveStageOutput::Terminate(reason) => Ok(GracefulDisconnectReason(*reason)),
+                ironrdp::session::ActiveStageOutput::Terminate(reason) => Ok(GracefulDisconnectReason(reason.clone())),
                 _ => Err(IncorrectEnumTypeError::on_variant("Terminate")
                     .of_enum("ActiveStageOutput")
                     .into()),
