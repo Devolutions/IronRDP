@@ -1,4 +1,5 @@
 use std::net::SocketAddr;
+use std::rc::Rc;
 use std::sync::Arc;
 
 use anyhow::{anyhow, bail, Context, Result};
@@ -179,7 +180,7 @@ pub struct RdpServer {
     sound_factory: Option<Box<dyn SoundServerFactory>>,
     cliprdr_factory: Option<Box<dyn CliprdrServerFactory>>,
     ev_sender: mpsc::UnboundedSender<ServerEvent>,
-    ev_receiver: mpsc::UnboundedReceiver<ServerEvent>,
+    ev_receiver: Arc<Mutex<mpsc::UnboundedReceiver<ServerEvent>>>,
 }
 
 #[derive(Debug)]
@@ -229,7 +230,7 @@ impl RdpServer {
             sound_factory,
             cliprdr_factory,
             ev_sender,
-            ev_receiver,
+            ev_receiver: Arc::new(Mutex::new(ev_receiver)),
         }
     }
 
@@ -301,8 +302,10 @@ impl RdpServer {
 
         debug!("Listening for connections");
         loop {
+            let ev_receiver = Arc::clone(&self.ev_receiver);
+            let mut ev_receiver = ev_receiver.lock().await;
             tokio::select! {
-                Some(event) = self.ev_receiver.recv() => {
+                Some(event) = ev_receiver.recv() => {
                     match event {
                         ServerEvent::Quit(reason) => {
                             debug!("Got quit event {reason}");
@@ -315,6 +318,7 @@ impl RdpServer {
                 },
                 Ok((stream, peer)) = listener.accept() => {
                     debug!(?peer, "Received connection");
+                    drop(ev_receiver);
                     if let Err(error) = self.run_connection(stream).await {
                         error!(?error, "Connection error");
                     }
@@ -448,6 +452,7 @@ impl RdpServer {
                     let msgs = match s {
                         RdpsndServerMessage::Wave(data, ts) => {
                             if wave_limit == 0 {
+                                debug!("Dropping wave");
                                 continue;
                             }
                             wave_limit -= 1;
@@ -506,48 +511,88 @@ impl RdpServer {
         W: FramedWrite,
     {
         debug!("Starting client loop");
-
-        let mut buffer = vec![0u8; 4096];
         let mut display_updates = self.display.lock().await.updates().await?;
-        let mut events = Vec::with_capacity(100);
-        let mut state = RunState::Continue;
+        let mut writer = SharedWriter::new(writer);
+        let mut display_writer = writer.clone();
+        let mut event_writer = writer.clone();
+        let ev_receiver = Arc::clone(&self.ev_receiver);
+        let s = Rc::new(Mutex::new(self));
 
-        while state == RunState::Continue {
-            tokio::select! {
-                frame = reader.read_pdu() => {
-                    let Ok((action, bytes)) = frame else {
-                        debug!(?frame, "disconnecting");
-                        state = RunState::Disconnect;
-                        break;
-                    };
-                    state = self.dispatch_pdu(action, bytes, writer, io_channel_id, user_channel_id).await?;
-                },
-
-                Some(update) = display_updates.next_update() => {
-                    (state, encoder) = Self::dispatch_display_update(update, writer, user_channel_id, io_channel_id, &mut buffer, encoder).await?;
-                }
-
-                nevents = self.ev_receiver.recv_many(&mut events, 100) => {
-                    if nevents == 0 {
-                        debug!("No sever events.. stopping");
-                        state = RunState::Disconnect;
-                        break;
-                    }
-                    while let Ok(ev) = self.ev_receiver.try_recv() {
-                        events.push(ev);
-                    }
-                    state = self.dispatch_server_events(&mut events, writer, user_channel_id).await?;
-                }
-
-                else => {
-                    debug!("All streams closed, disconnecting");
-                    state = RunState::Disconnect;
+        let this = Rc::clone(&s);
+        let dispatch_pdu = async move {
+            loop {
+                let (action, bytes) = reader.read_pdu().await?;
+                let mut this = this.lock().await;
+                match this
+                    .dispatch_pdu(action, bytes, &mut writer, io_channel_id, user_channel_id)
+                    .await?
+                {
+                    RunState::Continue => continue,
+                    state => break Ok(state),
                 }
             }
-        }
+        };
 
-        debug!("End of client loop");
-        Ok(state)
+        let dispatch_display = async move {
+            let mut buffer = vec![0u8; 4096];
+            loop {
+                if let Some(update) = display_updates.next_update().await {
+                    match Self::dispatch_display_update(
+                        update,
+                        &mut display_writer,
+                        user_channel_id,
+                        io_channel_id,
+                        &mut buffer,
+                        encoder,
+                    )
+                    .await?
+                    {
+                        (RunState::Continue, enc) => {
+                            encoder = enc;
+                            continue;
+                        }
+                        (state, _) => {
+                            break Ok(state);
+                        }
+                    }
+                } else {
+                    break Ok(RunState::Disconnect);
+                }
+            }
+        };
+
+        let this = Rc::clone(&s);
+        let mut ev_receiver = ev_receiver.lock().await;
+        let dispatch_events = async move {
+            let mut events = Vec::with_capacity(100);
+            loop {
+                let nevents = ev_receiver.recv_many(&mut events, 100).await;
+                if nevents == 0 {
+                    debug!("No sever events.. stopping");
+                    break Ok(RunState::Disconnect);
+                }
+                while let Ok(ev) = ev_receiver.try_recv() {
+                    events.push(ev);
+                }
+                let mut this = this.lock().await;
+                match this
+                    .dispatch_server_events(&mut events, &mut event_writer, user_channel_id)
+                    .await?
+                {
+                    RunState::Continue => continue,
+                    state => break Ok(state),
+                }
+            }
+        };
+
+        let state = tokio::select!(
+            state = dispatch_pdu => state,
+            state = dispatch_display => state,
+            state = dispatch_events => state,
+        );
+
+        debug!("End of client loop: {state:?}");
+        state
     }
 
     async fn client_accepted<R, W>(
@@ -839,5 +884,43 @@ impl RdpServer {
         }
 
         Ok(())
+    }
+}
+
+struct SharedWriter<'w, W: FramedWrite> {
+    writer: Rc<Mutex<&'w mut W>>,
+}
+
+impl<W: FramedWrite> Clone for SharedWriter<'_, W> {
+    fn clone(&self) -> Self {
+        Self {
+            writer: Rc::clone(&self.writer),
+        }
+    }
+}
+
+impl<W> FramedWrite for SharedWriter<'_, W>
+where
+    W: FramedWrite,
+{
+    type WriteAllFut<'write> = std::pin::Pin<Box<dyn std::future::Future<Output = std::io::Result<()>> + 'write>>
+    where
+        Self: 'write;
+
+    fn write_all<'a>(&'a mut self, buf: &'a [u8]) -> Self::WriteAllFut<'a> {
+        Box::pin(async {
+            let mut writer = self.writer.lock().await;
+
+            writer.write_all(buf).await?;
+            Ok(())
+        })
+    }
+}
+
+impl<'a, W: FramedWrite> SharedWriter<'a, W> {
+    fn new(writer: &'a mut W) -> Self {
+        Self {
+            writer: Rc::new(Mutex::new(writer)),
+        }
     }
 }
