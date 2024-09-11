@@ -32,7 +32,7 @@ use crate::clipboard::CliprdrServerFactory;
 use crate::display::{DisplayUpdate, RdpServerDisplay};
 use crate::encoder::UpdateEncoder;
 use crate::handler::RdpServerInputHandler;
-use crate::{builder, capabilities, SoundServerFactory};
+use crate::{builder, capabilities, time_warn, SoundServerFactory};
 
 #[derive(Clone)]
 pub struct RdpServerOptions {
@@ -417,7 +417,7 @@ impl RdpServer {
         let mut fragmenter = match update {
             DisplayUpdate::Bitmap(bitmap) => {
                 let (enc, res) = task::spawn_blocking(move || {
-                    let res = encoder.bitmap(bitmap).map(|r| r.into_owned());
+                    let res = time_warn!("Encoding bitmap", 10, encoder.bitmap(bitmap).map(|r| r.into_owned()));
                     (encoder, res)
                 })
                 .await?;
