@@ -337,16 +337,16 @@ impl RdpServer {
         self.static_channels.get_channel_id_by_type::<T>()
     }
 
-    async fn dispatch_pdu<S>(
+    async fn dispatch_pdu<W>(
         &mut self,
         action: Action,
         bytes: bytes::BytesMut,
-        framed: &mut Framed<S>,
+        writer: &mut Framed<W>,
         io_channel_id: u16,
         user_channel_id: u16,
     ) -> Result<RunState>
     where
-        S: FramedWrite + FramedRead,
+        W: FramedWrite,
     {
         match action {
             Action::FastPath => {
@@ -356,7 +356,7 @@ impl RdpServer {
 
             Action::X224 => {
                 if self
-                    .handle_x224(framed, io_channel_id, user_channel_id, &bytes)
+                    .handle_x224(writer, io_channel_id, user_channel_id, &bytes)
                     .await
                     .context("X224 input error")?
                 {
@@ -369,17 +369,17 @@ impl RdpServer {
         Ok(RunState::Continue)
     }
 
-    async fn dispatch_display_update<S>(
+    async fn dispatch_display_update<W>(
         &mut self,
         update: DisplayUpdate,
-        framed: &mut Framed<S>,
+        writer: &mut Framed<W>,
         user_channel_id: u16,
         io_channel_id: u16,
         buffer: &mut Vec<u8>,
         encoder: &mut UpdateEncoder,
     ) -> Result<RunState>
     where
-        S: FramedWrite + FramedRead,
+        W: FramedWrite,
     {
         let mut fragmenter = match update {
             DisplayUpdate::Bitmap(bitmap) => encoder.bitmap(bitmap),
@@ -399,7 +399,7 @@ impl RdpServer {
                     user_data,
                 };
                 let msg = encode_vec(&X224(pdu))?;
-                framed.write_all(&msg).await?;
+                writer.write_all(&msg).await?;
                 return Ok(RunState::DeactivationReactivation { desktop_size });
             }
             DisplayUpdate::RGBAPointer(ptr) => encoder.rgba_pointer(ptr),
@@ -414,7 +414,7 @@ impl RdpServer {
         }
 
         while let Some(len) = fragmenter.next(buffer) {
-            framed
+            writer
                 .write_all(&buffer[..len])
                 .await
                 .context("failed to write display update")?;
@@ -423,14 +423,14 @@ impl RdpServer {
         Ok(RunState::Continue)
     }
 
-    async fn dispatch_server_events<S>(
+    async fn dispatch_server_events<W>(
         &mut self,
         events: &mut Vec<ServerEvent>,
-        framed: &mut Framed<S>,
+        writer: &mut Framed<W>,
         user_channel_id: u16,
     ) -> Result<RunState>
     where
-        S: FramedWrite + FramedRead,
+        W: FramedWrite,
     {
         // Avoid wave message queuing up and causing extra delays.
         // This is a naive solution, better solutions should compute the actual delay, add IO priority, encode audio, use UDP etc.
@@ -466,7 +466,7 @@ impl RdpServer {
                         .get_channel_id_by_type::<RdpsndServer>()
                         .ok_or_else(|| anyhow!("SVC channel not found"))?;
                     let data = server_encode_svc_messages(msgs.into(), channel_id, user_channel_id)?;
-                    framed.write_all(&data).await?;
+                    writer.write_all(&data).await?;
                 }
                 ServerEvent::Clipboard(c) => {
                     let Some(cliprdr) = self.get_svc_processor::<CliprdrServer>() else {
@@ -487,7 +487,7 @@ impl RdpServer {
                         .get_channel_id_by_type::<CliprdrServer>()
                         .ok_or_else(|| anyhow!("SVC channel not found"))?;
                     let data = server_encode_svc_messages(msgs.into(), channel_id, user_channel_id)?;
-                    framed.write_all(&data).await?;
+                    writer.write_all(&data).await?;
                 }
             }
         }
@@ -636,15 +636,15 @@ impl RdpServer {
         Ok(state)
     }
 
-    async fn handle_input_backlog<S>(
+    async fn handle_input_backlog<W>(
         &mut self,
-        framed: &mut Framed<S>,
+        writer: &mut Framed<W>,
         io_channel_id: u16,
         user_channel_id: u16,
         frames: Vec<Vec<u8>>,
     ) -> Result<()>
     where
-        S: FramedWrite,
+        W: FramedWrite,
     {
         for frame in frames {
             match Action::from_fp_output_header(frame[0]) {
@@ -654,7 +654,7 @@ impl RdpServer {
                 }
 
                 Ok(Action::X224) => {
-                    let _ = self.handle_x224(framed, io_channel_id, user_channel_id, &frame).await;
+                    let _ = self.handle_x224(writer, io_channel_id, user_channel_id, &frame).await;
                 }
 
                 // the frame here is always valid, because otherwise it would
@@ -727,15 +727,15 @@ impl RdpServer {
         Ok(false)
     }
 
-    async fn handle_x224<S>(
+    async fn handle_x224<W>(
         &mut self,
-        framed: &mut Framed<S>,
+        writer: &mut Framed<W>,
         io_channel_id: u16,
         user_channel_id: u16,
         frame: &[u8],
     ) -> Result<bool>
     where
-        S: FramedWrite,
+        W: FramedWrite,
     {
         let message = decode::<X224<mcs::McsMessage<'_>>>(frame)?;
         match message.0 {
@@ -748,7 +748,7 @@ impl RdpServer {
                 if let Some(svc) = self.static_channels.get_by_channel_id_mut(data.channel_id) {
                     let response_pdus = svc.process(&data.user_data)?;
                     let response = server_encode_svc_messages(response_pdus, data.channel_id, user_channel_id)?;
-                    framed.write_all(&response).await?;
+                    writer.write_all(&response).await?;
                 } else {
                     warn!(channel_id = data.channel_id, "Unexpected channel received: ID",);
                 }
