@@ -10,7 +10,7 @@ use ironrdp::session::{fast_path, ActiveStage, ActiveStageOutput, GracefulDiscon
 use ironrdp::{cliprdr, connector, rdpdr, rdpsnd, session};
 use ironrdp_core::WriteBuf;
 use ironrdp_rdpsnd_native::cpal;
-use ironrdp_tokio::single_sequence_step_read;
+use ironrdp_tokio::{single_sequence_step_read, split_tokio_framed};
 use rdpdr::NoopRdpdrBackend;
 use smallvec::SmallVec;
 use tokio::net::TcpStream;
@@ -164,11 +164,12 @@ async fn connect(
 }
 
 async fn active_session(
-    mut framed: UpgradedFramed,
+    framed: UpgradedFramed,
     connection_result: ConnectionResult,
     event_loop_proxy: &EventLoopProxy<RdpOutputEvent>,
     input_event_receiver: &mut mpsc::UnboundedReceiver<RdpInputEvent>,
 ) -> SessionResult<RdpControlFlow> {
+    let (mut reader, mut writer) = split_tokio_framed(framed);
     let mut image = DecodedImage::new(
         PixelFormat::RgbA32,
         connection_result.desktop_size.width,
@@ -179,7 +180,7 @@ async fn active_session(
 
     let disconnect_reason = 'outer: loop {
         let outputs = tokio::select! {
-            frame = framed.read_pdu() => {
+            frame = reader.read_pdu() => {
                 let (action, payload) = frame.map_err(|e| session::custom_err!("read frame", e))?;
                 trace!(?action, frame_length = payload.len(), "Frame received");
 
@@ -246,7 +247,7 @@ async fn active_session(
 
         for out in outputs {
             match out {
-                ActiveStageOutput::ResponseFrame(frame) => framed
+                ActiveStageOutput::ResponseFrame(frame) => writer
                     .write_all(&frame)
                     .await
                     .map_err(|e| session::custom_err!("write response", e))?,
@@ -295,12 +296,12 @@ async fn active_session(
                     let mut buf = WriteBuf::new();
                     'activation_seq: loop {
                         let written =
-                            single_sequence_step_read(&mut framed, &mut *connection_activation, &mut buf, None)
+                            single_sequence_step_read(&mut reader, &mut *connection_activation, &mut buf, None)
                                 .await
                                 .map_err(|e| session::custom_err!("read deactivation-reactivation sequence step", e))?;
 
                         if written.size().is_some() {
-                            framed.write_all(buf.filled()).await.map_err(|e| {
+                            writer.write_all(buf.filled()).await.map_err(|e| {
                                 session::custom_err!("write deactivation-reactivation sequence step", e)
                             })?;
                         }
