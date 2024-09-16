@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use anyhow::{anyhow, bail, Context, Result};
 use ironrdp_acceptor::{self, Acceptor, AcceptorResult, BeginResult, DesktopSize};
-use ironrdp_async::bytes;
+use ironrdp_async::{bytes, Framed};
 use ironrdp_cliprdr::backend::ClipboardMessage;
 use ironrdp_cliprdr::CliprdrServer;
 use ironrdp_core::impl_as_any;
@@ -18,7 +18,7 @@ use ironrdp_pdu::rdp::headers::{ServerDeactivateAll, ShareControlPdu};
 use ironrdp_pdu::x224::X224;
 use ironrdp_pdu::{self, decode_err, mcs, nego, rdp, Action, PduResult};
 use ironrdp_svc::{server_encode_svc_messages, StaticChannelId, StaticChannelSet, SvcProcessor};
-use ironrdp_tokio::{Framed, FramedRead, FramedWrite, TokioFramed};
+use ironrdp_tokio::{split_tokio_framed, unsplit_tokio_framed, FramedRead, FramedWrite, TokioFramed};
 use rdpsnd::server::{RdpsndServer, RdpsndServerMessage};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::{TcpListener, TcpStream};
@@ -495,15 +495,17 @@ impl RdpServer {
         Ok(RunState::Continue)
     }
 
-    async fn client_loop<S>(
+    async fn client_loop<R, W>(
         &mut self,
-        framed: &mut Framed<S>,
+        reader: &mut Framed<R>,
+        writer: &mut Framed<W>,
         io_channel_id: u16,
         user_channel_id: u16,
         mut encoder: UpdateEncoder,
     ) -> Result<RunState>
     where
-        S: FramedWrite + FramedRead,
+        R: FramedRead,
+        W: FramedWrite,
     {
         debug!("Starting client loop");
 
@@ -514,17 +516,17 @@ impl RdpServer {
 
         while state == RunState::Continue {
             tokio::select! {
-                frame = framed.read_pdu() => {
+                frame = reader.read_pdu() => {
                     let Ok((action, bytes)) = frame else {
                         debug!(?frame, "disconnecting");
                         state = RunState::Disconnect;
                         break;
                     };
-                    state = self.dispatch_pdu(action, bytes, framed, io_channel_id, user_channel_id).await?;
+                    state = self.dispatch_pdu(action, bytes, writer, io_channel_id, user_channel_id).await?;
                 },
 
                 Some(update) = display_updates.next_update() => {
-                    state = self.dispatch_display_update(update, framed, user_channel_id, io_channel_id, &mut buffer, &mut encoder).await?;
+                    state = self.dispatch_display_update(update, writer, user_channel_id, io_channel_id, &mut buffer, &mut encoder).await?;
                 }
 
                 nevents = self.ev_receiver.recv_many(&mut events, 100) => {
@@ -536,7 +538,7 @@ impl RdpServer {
                     while let Ok(ev) = self.ev_receiver.try_recv() {
                         events.push(ev);
                     }
-                    state = self.dispatch_server_events(&mut events, framed, user_channel_id).await?;
+                    state = self.dispatch_server_events(&mut events, writer, user_channel_id).await?;
                 }
 
                 else => {
@@ -550,16 +552,22 @@ impl RdpServer {
         Ok(state)
     }
 
-    async fn client_accepted<S>(&mut self, framed: &mut Framed<S>, result: AcceptorResult) -> Result<RunState>
+    async fn client_accepted<R, W>(
+        &mut self,
+        reader: &mut Framed<R>,
+        writer: &mut Framed<W>,
+        result: AcceptorResult,
+    ) -> Result<RunState>
     where
-        S: FramedWrite + FramedRead,
+        R: FramedRead,
+        W: FramedWrite,
     {
         debug!("Client accepted");
 
         if !result.input_events.is_empty() {
             debug!("Handling input event backlog from acceptor sequence");
             self.handle_input_backlog(
-                framed,
+                writer,
                 result.io_channel_id,
                 result.user_channel_id,
                 result.input_events,
@@ -575,7 +583,7 @@ impl RdpServer {
             };
             let svc_responses = channel.start()?;
             let response = server_encode_svc_messages(svc_responses, channel_id, result.user_channel_id)?;
-            framed.write_all(&response).await?;
+            writer.write_all(&response).await?;
         }
 
         let mut rfxcodec = None;
@@ -629,7 +637,7 @@ impl RdpServer {
         let encoder = UpdateEncoder::new(surface_flags, rfxcodec);
 
         let state = self
-            .client_loop(framed, result.io_channel_id, result.user_channel_id, encoder)
+            .client_loop(reader, writer, result.io_channel_id, result.user_channel_id, encoder)
             .await
             .context("client loop failure")?;
 
@@ -821,9 +829,9 @@ impl RdpServer {
                 leftover.extend_from_slice(&previous_leftover);
             }
 
-            framed = TokioFramed::new_with_leftover(stream, leftover);
+            let (mut reader, mut writer) = split_tokio_framed(TokioFramed::new_with_leftover(stream, leftover));
 
-            match self.client_accepted(&mut framed, result).await? {
+            match self.client_accepted(&mut reader, &mut writer, result).await? {
                 RunState::Continue => {
                     unreachable!();
                 }
@@ -831,6 +839,7 @@ impl RdpServer {
                     other_pdus = Some(Vec::new());
                     acceptor = Acceptor::new_deactivation_reactivation(acceptor, desktop_size);
                     self.attach_channels(&mut acceptor);
+                    framed = unsplit_tokio_framed(reader, writer);
                     continue;
                 }
                 RunState::Disconnect => break,
