@@ -337,17 +337,14 @@ impl RdpServer {
         self.static_channels.get_channel_id_by_type::<T>()
     }
 
-    async fn dispatch_pdu<W>(
+    async fn dispatch_pdu(
         &mut self,
         action: Action,
         bytes: bytes::BytesMut,
-        writer: &mut Framed<W>,
+        writer: &mut impl FramedWrite,
         io_channel_id: u16,
         user_channel_id: u16,
-    ) -> Result<RunState>
-    where
-        W: FramedWrite,
-    {
+    ) -> Result<RunState> {
         match action {
             Action::FastPath => {
                 let input = decode(&bytes)?;
@@ -369,18 +366,14 @@ impl RdpServer {
         Ok(RunState::Continue)
     }
 
-    async fn dispatch_display_update<W>(
-        &mut self,
+    async fn dispatch_display_update(
         update: DisplayUpdate,
-        writer: &mut Framed<W>,
+        writer: &mut impl FramedWrite,
         user_channel_id: u16,
         io_channel_id: u16,
         buffer: &mut Vec<u8>,
         mut encoder: UpdateEncoder,
-    ) -> Result<(RunState, UpdateEncoder)>
-    where
-        W: FramedWrite,
-    {
+    ) -> Result<(RunState, UpdateEncoder)> {
         let mut fragmenter = match update {
             DisplayUpdate::Bitmap(bitmap) => {
                 let (enc, res) = task::spawn_blocking(move || {
@@ -431,15 +424,12 @@ impl RdpServer {
         Ok((RunState::Continue, encoder))
     }
 
-    async fn dispatch_server_events<W>(
+    async fn dispatch_server_events(
         &mut self,
         events: &mut Vec<ServerEvent>,
-        writer: &mut Framed<W>,
+        writer: &mut impl FramedWrite,
         user_channel_id: u16,
-    ) -> Result<RunState>
-    where
-        W: FramedWrite,
-    {
+    ) -> Result<RunState> {
         // Avoid wave message queuing up and causing extra delays.
         // This is a naive solution, better solutions should compute the actual delay, add IO priority, encode audio, use UDP etc.
         // 4 frames should roughly corresponds to hundreds of ms in regular setups.
@@ -534,7 +524,7 @@ impl RdpServer {
                 },
 
                 Some(update) = display_updates.next_update() => {
-                    (state, encoder) = self.dispatch_display_update(update, writer, user_channel_id, io_channel_id, &mut buffer, encoder).await?;
+                    (state, encoder) = Self::dispatch_display_update(update, writer, user_channel_id, io_channel_id, &mut buffer, encoder).await?;
                 }
 
                 nevents = self.ev_receiver.recv_many(&mut events, 100) => {
@@ -652,16 +642,13 @@ impl RdpServer {
         Ok(state)
     }
 
-    async fn handle_input_backlog<W>(
+    async fn handle_input_backlog(
         &mut self,
-        writer: &mut Framed<W>,
+        writer: &mut impl FramedWrite,
         io_channel_id: u16,
         user_channel_id: u16,
         frames: Vec<Vec<u8>>,
-    ) -> Result<()>
-    where
-        W: FramedWrite,
-    {
+    ) -> Result<()> {
         for frame in frames {
             match Action::from_fp_output_header(frame[0]) {
                 Ok(Action::FastPath) => {
@@ -743,16 +730,13 @@ impl RdpServer {
         Ok(false)
     }
 
-    async fn handle_x224<W>(
+    async fn handle_x224(
         &mut self,
-        writer: &mut Framed<W>,
+        writer: &mut impl FramedWrite,
         io_channel_id: u16,
         user_channel_id: u16,
         frame: &[u8],
-    ) -> Result<bool>
-    where
-        W: FramedWrite,
-    {
+    ) -> Result<bool> {
         let message = decode::<X224<mcs::McsMessage<'_>>>(frame)?;
         match message.0 {
             mcs::McsMessage::SendDataRequest(data) => {
