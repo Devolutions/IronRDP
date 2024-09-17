@@ -314,15 +314,19 @@ impl SessionBuilder {
             }
         }
 
+        let use_display_control = self.0.borrow().use_display_control;
+
         let (connection_result, ws) = connect(
-            ws,
-            config,
-            auth_token,
-            destination,
-            pcb,
-            kdc_proxy_url,
-            clipboard.as_ref().map(|clip| clip.backend()),
-            self.0.borrow().use_display_control,
+            ConnectParams{
+                ws,
+                config,
+                proxy_auth_token:auth_token,
+                destination,
+                pcb,
+                kdc_proxy_url,
+                clipboard_backend: clipboard.as_ref().map(|clip| clip.backend()),
+                use_display_control,
+            }
         )
         .await?;
 
@@ -807,8 +811,7 @@ impl Session {
                 height,
                 scale_factor,
                 physical_size: physical_width
-                    .map(|width| physical_height.map(|height| (width, height)))
-                    .flatten(),
+                    .and_then(|width| physical_height.map(|height| (width, height))),
             })
             .expect("send resize event to writer task");
     }
@@ -888,15 +891,28 @@ async fn writer_task(rx: mpsc::UnboundedReceiver<Vec<u8>>, rdp_writer: WriteHalf
     }
 }
 
+pub(crate) struct ConnectParams {
+    pub(crate) ws: WebSocket,
+    pub(crate) config: connector::Config,
+    pub(crate) proxy_auth_token: String,
+    pub(crate) destination: String,
+    pub(crate) pcb: Option<String>,
+    pub(crate) kdc_proxy_url: Option<String>,
+    pub(crate) clipboard_backend: Option<WasmClipboardBackend>,
+    pub(crate) use_display_control: bool,
+}
+
 async fn connect(
-    ws: WebSocket,
-    config: connector::Config,
-    proxy_auth_token: String,
-    destination: String,
-    pcb: Option<String>,
-    kdc_proxy_url: Option<String>,
-    clipboard_backend: Option<WasmClipboardBackend>,
-    use_display_control: bool,
+    ConnectParams {
+        ws,
+        config,
+        proxy_auth_token,
+        destination,
+        pcb,
+        kdc_proxy_url,
+        clipboard_backend,
+        use_display_control,
+    }: ConnectParams,
 ) -> Result<(connector::ConnectionResult, WebSocket), IronRdpError> {
     let mut framed = ironrdp_futures::LocalFuturesFramed::new(ws);
 
