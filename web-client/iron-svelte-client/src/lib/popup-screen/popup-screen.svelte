@@ -87,7 +87,7 @@
     function toggleFullScreen() {
         if (document.fullscreenElement) {
             document.exitFullscreen();
-        } else{
+        } else {
             document.documentElement.requestFullscreen();
         }
     }
