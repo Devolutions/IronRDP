@@ -87,7 +87,7 @@
                 desktopSize,
                 pcb,
                 kdc_proxy_url,
-                true
+                true,
             ),
         )
             .pipe(
@@ -175,7 +175,12 @@
                     </div>
                     <div class="field label border">
                         <div style="display: flex; height: 100%; align-items: center; font-size: 1.5em;">
-                            <input id="use_pop_up" type="checkbox" bind:value={pop_up} style="width: 1.5em; height: 1.5em; margin-right: 0.5em;">
+                            <input
+                                id="use_pop_up"
+                                type="checkbox"
+                                bind:value={pop_up}
+                                style="width: 1.5em; height: 1.5em; margin-right: 0.5em;"
+                            />
                             <label for="use_pop_up">Use Pop Up</label>
                         </div>
                     </div>
