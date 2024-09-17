@@ -316,18 +316,16 @@ impl SessionBuilder {
 
         let use_display_control = self.0.borrow().use_display_control;
 
-        let (connection_result, ws) = connect(
-            ConnectParams{
-                ws,
-                config,
-                proxy_auth_token:auth_token,
-                destination,
-                pcb,
-                kdc_proxy_url,
-                clipboard_backend: clipboard.as_ref().map(|clip| clip.backend()),
-                use_display_control,
-            }
-        )
+        let (connection_result, ws) = connect(ConnectParams {
+            ws,
+            config,
+            proxy_auth_token: auth_token,
+            destination,
+            pcb,
+            kdc_proxy_url,
+            clipboard_backend: clipboard.as_ref().map(|clip| clip.backend()),
+            use_display_control,
+        })
         .await?;
 
         info!("Connected!");
@@ -810,8 +808,7 @@ impl Session {
                 width,
                 height,
                 scale_factor,
-                physical_size: physical_width
-                    .and_then(|width| physical_height.map(|height| (width, height))),
+                physical_size: physical_width.and_then(|width| physical_height.map(|height| (width, height))),
             })
             .expect("send resize event to writer task");
     }
