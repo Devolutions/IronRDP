@@ -85,7 +85,11 @@
     }
 
     function toggleFullScreen() {
-        document.documentElement.requestFullscreen();
+        if (document.fullscreenElement) {
+            document.exitFullscreen();
+        } else{
+            document.documentElement.requestFullscreen();
+        }
     }
 
     onMount(async () => {
