@@ -209,10 +209,14 @@ where
     }
 }
 
-impl<S> Framed<S>
+impl<S> FramedWrite for Framed<S>
 where
     S: FramedWrite,
 {
+    type WriteAllFut<'write> = S::WriteAllFut<'write>
+    where
+        Self: 'write;
+
     /// Attempts to write an entire buffer into this `Framed`’s stream.
     ///
     /// # Cancel safety
@@ -222,8 +226,8 @@ where
     /// branch completes first, then the provided buffer may have been
     /// partially written, but future calls to `write_all` will start over
     /// from the beginning of the buffer.
-    pub async fn write_all(&mut self, buf: &[u8]) -> io::Result<()> {
-        self.stream.write_all(buf).await
+    fn write_all<'a>(&'a mut self, buf: &'a [u8]) -> Self::WriteAllFut<'a> {
+        self.stream.write_all(buf)
     }
 }
 

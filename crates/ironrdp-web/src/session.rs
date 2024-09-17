@@ -24,7 +24,7 @@ use ironrdp::pdu::rdp::client_info::PerformanceFlags;
 use ironrdp::session::image::DecodedImage;
 use ironrdp::session::{fast_path, ActiveStage, ActiveStageOutput, GracefulDisconnectReason};
 use ironrdp_core::WriteBuf;
-use ironrdp_futures::single_sequence_step_read;
+use ironrdp_futures::{single_sequence_step_read, FramedWrite};
 use rgb::AsPixels as _;
 use tap::prelude::*;
 use wasm_bindgen::prelude::*;
@@ -883,7 +883,7 @@ async fn connect_rdcleanpath<S>(
     pcb: Option<String>,
 ) -> Result<(ironrdp_futures::Upgraded, Vec<u8>), IronRdpError>
 where
-    S: ironrdp_futures::FramedRead + ironrdp_futures::FramedWrite,
+    S: ironrdp_futures::FramedRead + FramedWrite,
 {
     use ironrdp::connector::Sequence as _;
     use x509_cert::der::Decode as _;

@@ -10,7 +10,7 @@ use ironrdp::session::{fast_path, ActiveStage, ActiveStageOutput, GracefulDiscon
 use ironrdp::{cliprdr, connector, rdpdr, rdpsnd, session};
 use ironrdp_core::WriteBuf;
 use ironrdp_rdpsnd_native::cpal;
-use ironrdp_tokio::{single_sequence_step_read, split_tokio_framed};
+use ironrdp_tokio::{single_sequence_step_read, split_tokio_framed, FramedWrite};
 use rdpdr::NoopRdpdrBackend;
 use smallvec::SmallVec;
 use tokio::net::TcpStream;
