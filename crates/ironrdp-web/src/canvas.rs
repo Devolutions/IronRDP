@@ -36,6 +36,11 @@ impl Canvas {
         Ok(Self { width, surface })
     }
 
+    pub(crate) fn resize(&mut self, width: NonZeroU32, height: NonZeroU32) {
+        self.surface.resize(width, height).expect("surface resize");
+        self.width = width.get();
+    }
+
     pub(crate) fn draw(&mut self, buffer: &[u8], region: InclusiveRectangle) -> anyhow::Result<()> {
         let region_width = region.width();
         let region_height = region.height();

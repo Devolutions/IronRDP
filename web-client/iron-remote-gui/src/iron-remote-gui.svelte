@@ -445,6 +445,11 @@
             scaleSession(s);
         });
 
+        wasmService.dynamicResize.subscribe((evt) => {
+            loggingService.info('Dynamic resize!');
+            setViewerStyle(evt.width.toString(), evt.height.toString(), true);
+        });
+
         wasmService.changeVisibilityObservable.subscribe((val) => {
             isVisible = val;
             if (val) {

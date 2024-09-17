@@ -3,6 +3,7 @@
 
 use core::cell::RefCell;
 use std::borrow::Cow;
+use std::num::NonZeroU32;
 use std::rc::Rc;
 use std::time::Duration;
 
@@ -18,6 +19,8 @@ use ironrdp::cliprdr::CliprdrClient;
 use ironrdp::connector::connection_activation::ConnectionActivationState;
 use ironrdp::connector::credssp::KerberosConfig;
 use ironrdp::connector::{self, ClientConnector, Credentials};
+use ironrdp::displaycontrol::client::DisplayControlClient;
+use ironrdp::dvc::DrdynvcClient;
 use ironrdp::graphics::image_processing::PixelFormat;
 use ironrdp::pdu::input::fast_path::FastPathInputEvent;
 use ironrdp::pdu::rdp::client_info::PerformanceFlags;
@@ -64,6 +67,8 @@ struct SessionBuilderInner {
     remote_clipboard_changed_callback: Option<js_sys::Function>,
     remote_received_format_list_callback: Option<js_sys::Function>,
     force_clipboard_update_callback: Option<js_sys::Function>,
+    
+    use_display_control: bool,
 }
 
 impl Default for SessionBuilderInner {
@@ -89,6 +94,8 @@ impl Default for SessionBuilderInner {
             remote_clipboard_changed_callback: None,
             remote_received_format_list_callback: None,
             force_clipboard_update_callback: None,
+
+            use_display_control: false,
         }
     }
 }
@@ -209,6 +216,12 @@ impl SessionBuilder {
         self.clone()
     }
 
+    /// Optional
+    pub fn use_display_control(&self) -> SessionBuilder {
+        self.0.borrow_mut().use_display_control = true;
+        self.clone()
+    }
+
     pub async fn connect(&self) -> Result<Session, IronRdpError> {
         let (
             username,
@@ -309,6 +322,7 @@ impl SessionBuilder {
             pcb,
             kdc_proxy_url,
             clipboard.as_ref().map(|clip| clip.backend()),
+            self.0.borrow().use_display_control,
         )
         .await?;
 
@@ -345,6 +359,12 @@ pub(crate) enum RdpInputEvent {
     Cliprdr(ClipboardMessage),
     ClipboardBackend(WasmClipboardBackendMessage),
     FastPath(FastPathInputEvents),
+    Resize {
+        width: u32,
+        height: u32,
+        scale_factor: Option<u32>,
+        physical_size: Option<(u32, u32)>,
+    },
     TerminateSession,
 }
 
@@ -489,6 +509,23 @@ impl Session {
                             active_stage.process_fastpath_input(&mut image, &events)
                                 .context("fast path input events processing")?
                         }
+                        RdpInputEvent::Resize { width, height, scale_factor, physical_size } => {
+                            info!(width, height, scale_factor, "Resize event received");
+                            if width == 0 || height == 0 {
+                                warn!("Resize event ignored: width or height is zero");
+                                Vec::new()
+                            }
+                            else if let Some(response_frame) = active_stage.encode_resize(width, height, scale_factor, physical_size) {
+                                info!("Resize event processed");
+                                self.render_canvas.set_width(width);
+                                self.render_canvas.set_height(height);
+                                gui.resize(NonZeroU32::new(width).unwrap(), NonZeroU32::new(height).unwrap());
+                                vec![ActiveStageOutput::ResponseFrame(response_frame?)]
+                            }else {
+                                info!("Resize event ignored");
+                                Vec::new()
+                            }
+                        },
                         RdpInputEvent::TerminateSession => {
                             active_stage.graceful_shutdown()
                                 .context("graceful shutdown")?
@@ -507,6 +544,7 @@ impl Session {
                     ActiveStageOutput::GraphicsUpdate(region) => {
                         // PERF: some copies and conversion could be optimized
                         let (region, buffer) = extract_partial_image(&image, region);
+                        info!(width=?image.width(),height=?image.height(),?region, gui_width = ?gui.width, "Graphic Update received");
                         gui.draw(&buffer, region).context("draw updated region")?;
                     }
                     ActiveStageOutput::PointerDefault => {
@@ -757,6 +795,26 @@ impl Session {
         Ok(())
     }
 
+    pub fn resize(
+        &self,
+        width: u32,
+        height: u32,
+        scale_factor: Option<u32>,
+        physical_width: Option<u32>,
+        physical_height: Option<u32>,
+    ) {
+        self.input_events_tx
+            .unbounded_send(RdpInputEvent::Resize {
+                width,
+                height,
+                scale_factor,
+                physical_size: physical_width
+                    .map(|width| physical_height.map(|height| (width, height)))
+                    .flatten(),
+            })
+            .expect("send resize event to writer task");
+    }
+
     #[allow(clippy::unused_self)]
     pub fn supports_unicode_keyboard_shortcuts(&self) -> bool {
         // RDP does not support Unicode keyboard shortcuts (When key combinations are executed, only
@@ -840,6 +898,7 @@ async fn connect(
     pcb: Option<String>,
     kdc_proxy_url: Option<String>,
     clipboard_backend: Option<WasmClipboardBackend>,
+    use_display_control: bool,
 ) -> Result<(connector::ConnectionResult, WebSocket), IronRdpError> {
     let mut framed = ironrdp_futures::LocalFuturesFramed::new(ws);
 
@@ -847,6 +906,15 @@ async fn connect(
 
     if let Some(clipboard_backend) = clipboard_backend {
         connector.attach_static_channel(CliprdrClient::new(Box::new(clipboard_backend)));
+    }
+
+
+    if use_display_control {
+        connector.attach_static_channel(DrdynvcClient::new().with_dynamic_channel(
+            DisplayControlClient::new(|_| {
+                Ok(Vec::new())
+            }),
+        ));
     }
 
     let (upgraded, server_public_key) =

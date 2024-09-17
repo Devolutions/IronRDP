@@ -23,6 +23,7 @@ export class PublicAPI {
         desktopSize?: DesktopSize,
         preConnectionBlob?: string,
         kdc_proxy_url?: string,
+        use_display_control = false,
     ): Promise<NewSessionInfo> {
         loggingService.info('Initializing connection.');
         const resultObservable = this.wasmService.connect(
@@ -35,6 +36,7 @@ export class PublicAPI {
             desktopSize,
             preConnectionBlob,
             kdc_proxy_url,
+            use_display_control,
         );
 
         return resultObservable.toPromise();
@@ -69,6 +71,10 @@ export class PublicAPI {
         this.wasmService.setCursorStyleOverride(style);
     }
 
+    private resizeDynamic(width: number, height: number, scale?: number) {
+        this.wasmService.resizeDynamic(width, height, scale);
+    }
+
     getExposedFunctions(): UserInteraction {
         return {
             setVisibility: this.setVisibility.bind(this),
@@ -82,6 +88,7 @@ export class PublicAPI {
             shutdown: this.shutdown.bind(this),
             setKeyboardUnicodeMode: this.setKeyboardUnicodeMode.bind(this),
             setCursorStyleOverride: this.setCursorStyleOverride.bind(this),
+            resizeDynamic: this.resizeDynamic.bind(this),
         };
     }
 }

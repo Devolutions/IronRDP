@@ -18,6 +18,7 @@ export interface UserInteraction {
         desktopSize?: DesktopSize,
         preConnectionBlob?: string,
         kdc_proxy_url?: string,
+        use_display_control?: boolean,
     ): Promise<NewSessionInfo>;
 
     setKeyboardUnicodeMode(use_unicode: boolean): void;
@@ -31,4 +32,6 @@ export interface UserInteraction {
     setCursorStyleOverride(style: string | null): void;
 
     onSessionEvent(callback: (event: SessionEvent) => void): void;
+
+    resizeDynamic(width: number, height: number, scale?: number): void;
 }
