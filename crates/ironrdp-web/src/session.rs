@@ -67,7 +67,7 @@ struct SessionBuilderInner {
     remote_clipboard_changed_callback: Option<js_sys::Function>,
     remote_received_format_list_callback: Option<js_sys::Function>,
     force_clipboard_update_callback: Option<js_sys::Function>,
-    
+
     use_display_control: bool,
 }
 
@@ -544,7 +544,6 @@ impl Session {
                     ActiveStageOutput::GraphicsUpdate(region) => {
                         // PERF: some copies and conversion could be optimized
                         let (region, buffer) = extract_partial_image(&image, region);
-                        info!(width=?image.width(),height=?image.height(),?region, gui_width = ?gui.width, "Graphic Update received");
                         gui.draw(&buffer, region).context("draw updated region")?;
                     }
                     ActiveStageOutput::PointerDefault => {
@@ -908,13 +907,10 @@ async fn connect(
         connector.attach_static_channel(CliprdrClient::new(Box::new(clipboard_backend)));
     }
 
-
     if use_display_control {
-        connector.attach_static_channel(DrdynvcClient::new().with_dynamic_channel(
-            DisplayControlClient::new(|_| {
-                Ok(Vec::new())
-            }),
-        ));
+        connector.attach_static_channel(
+            DrdynvcClient::new().with_dynamic_channel(DisplayControlClient::new(|_| Ok(Vec::new()))),
+        );
     }
 
     let (upgraded, server_public_key) =
