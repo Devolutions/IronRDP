@@ -33,5 +33,5 @@ export interface UserInteraction {
 
     onSessionEvent(callback: (event: SessionEvent) => void): void;
 
-    resizeDynamic(width: number, height: number, scale?: number): void;
+    resize(width: number, height: number, scale?: number): void;
 }

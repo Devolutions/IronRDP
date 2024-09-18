@@ -57,7 +57,7 @@
     function onWindowResize() {
         const innerWidth = window.innerWidth;
         const innerHeight = window.innerHeight;
-        uiService.resizeDynamic(innerWidth, innerHeight);
+        uiService.resize(innerWidth, innerHeight);
     }
 
     function onUnicodeModeChange(e: MouseEvent) {

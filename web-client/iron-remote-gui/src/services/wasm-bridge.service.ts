@@ -136,7 +136,7 @@ export class WasmBridgeService {
         desktopSize?: IDesktopSize,
         preConnectionBlob?: string,
         kdc_proxy_url?: string,
-        use_display_control = false,
+        use_display_control = true,
     ): Observable<NewSessionInfo> {
         const sessionBuilder = SessionBuilder.new();
         sessionBuilder.proxy_address(proxyAddress);
