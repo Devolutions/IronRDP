@@ -522,7 +522,7 @@ impl Session {
                                 self.render_canvas.set_height(height);
                                 gui.resize(NonZeroU32::new(width).unwrap(), NonZeroU32::new(height).unwrap());
                                 vec![ActiveStageOutput::ResponseFrame(response_frame?)]
-                            }else {
+                            } else {
                                 debug!("Resize event ignored");
                                 Vec::new()
                             }
