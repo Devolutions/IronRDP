@@ -887,15 +887,15 @@ async fn writer_task(rx: mpsc::UnboundedReceiver<Vec<u8>>, rdp_writer: WriteHalf
     }
 }
 
-pub(crate) struct ConnectParams {
-    pub(crate) ws: WebSocket,
-    pub(crate) config: connector::Config,
-    pub(crate) proxy_auth_token: String,
-    pub(crate) destination: String,
-    pub(crate) pcb: Option<String>,
-    pub(crate) kdc_proxy_url: Option<String>,
-    pub(crate) clipboard_backend: Option<WasmClipboardBackend>,
-    pub(crate) use_display_control: bool,
+struct ConnectParams {
+    ws: WebSocket,
+    config: connector::Config,
+    proxy_auth_token: String,
+    destination: String,
+    pcb: Option<String>,
+    kdc_proxy_url: Option<String>,
+    clipboard_backend: Option<WasmClipboardBackend>,
+    use_display_control: bool,
 }
 
 async fn connect(
