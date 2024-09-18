@@ -516,8 +516,7 @@ impl Session {
                             if width == 0 || height == 0 {
                                 warn!("Resize event ignored: width or height is zero");
                                 Vec::new()
-                            }
-                            else if let Some(response_frame) = active_stage.encode_resize(width, height, scale_factor, physical_size) {
+                            } else if let Some(response_frame) = active_stage.encode_resize(width, height, scale_factor, physical_size) {
                                 self.render_canvas.set_width(width);
                                 self.render_canvas.set_height(height);
                                 gui.resize(NonZeroU32::new(width).unwrap(), NonZeroU32::new(height).unwrap());
