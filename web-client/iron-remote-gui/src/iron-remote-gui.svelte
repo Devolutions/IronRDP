@@ -446,7 +446,7 @@
         });
 
         wasmService.dynamicResize.subscribe((evt) => {
-            loggingService.info('Dynamic resize!');
+            loggingService.info(`Dynamic resize!, width: ${evt.width}, height: ${evt.height}`);
             setViewerStyle(evt.width.toString(), evt.height.toString(), true);
         });
 
