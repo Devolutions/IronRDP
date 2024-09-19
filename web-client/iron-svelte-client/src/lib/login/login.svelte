@@ -20,6 +20,7 @@
         height: 768,
     };
     let pcb: string;
+    let pop_up = false;
 
     let userInteraction: UserInteraction;
 
@@ -53,6 +54,28 @@
             type: 'info',
             message: 'Connection in progress...',
         });
+
+        if (pop_up) {
+            const data = JSON.stringify({
+                username,
+                password,
+                hostname,
+                gatewayAddress,
+                domain,
+                authtoken,
+                desktopSize,
+                pcb,
+                kdc_proxy_url,
+            });
+            const base64Data = btoa(data);
+            window.open(
+                `/popup-session?data=${base64Data}`,
+                '_blank',
+                `width=${desktopSize.width},height=${desktopSize.height},resizable=yes,scrollbars=yes,status=yes`,
+            );
+            return;
+        }
+
         from(
             userInteraction.connect(
                 username,
@@ -64,6 +87,7 @@
                 desktopSize,
                 pcb,
                 kdc_proxy_url,
+                true,
             ),
         )
             .pipe(
@@ -148,6 +172,17 @@
                     <div class="field label border">
                         <input id="kdc_proxy_url" type="text" bind:value={kdc_proxy_url} />
                         <label for="kdc_proxy_url">KDC Proxy URL</label>
+                    </div>
+                    <div class="field label border">
+                        <div style="display: flex; height: 100%; align-items: center; font-size: 1.5em;">
+                            <input
+                                id="use_pop_up"
+                                type="checkbox"
+                                bind:value={pop_up}
+                                style="width: 1.5em; height: 1.5em; margin-right: 0.5em;"
+                            />
+                            <label for="use_pop_up">Use Pop Up</label>
+                        </div>
                     </div>
                 </div>
                 <nav class="center-align">
