@@ -29,18 +29,15 @@ public partial class WinCliprdr: IDisposable
         _inner = handle;
     }
 
-    /// <summary>
-    /// SAFETY: `hwnd` must be a valid window handle
-    /// </summary>
     /// <exception cref="IronRdpException"></exception>
     /// <returns>
     /// A <c>WinCliprdr</c> allocated on Rust side.
     /// </returns>
-    public static WinCliprdr New(nint hwnd)
+    public static WinCliprdr New()
     {
         unsafe
         {
-            Raw.ClipboardWindowsFfiResultBoxWinCliprdrBoxIronRdpError result = Raw.WinCliprdr.New(hwnd);
+            Raw.ClipboardWindowsFfiResultBoxWinCliprdrBoxIronRdpError result = Raw.WinCliprdr.New();
             if (!result.isOk)
             {
                 throw new IronRdpException(new IronRdpError(result.Err));
