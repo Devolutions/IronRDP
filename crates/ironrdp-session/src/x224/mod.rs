@@ -17,12 +17,24 @@ pub enum ProcessorOutput {
     /// A buffer with encoded data to send to the server.
     ResponseFrame(Vec<u8>),
     /// A graceful disconnect notification. Client should close the connection upon receiving this.
-    Disconnect(DisconnectReason),
+    Disconnect(DisconnectDescription),
     /// Received a [`ironrdp_pdu::rdp::headers::ServerDeactivateAll`] PDU. Client should execute the
     /// [Deactivation-Reactivation Sequence].
     ///
     /// [Deactivation-Reactivation Sequence]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/dfc234ce-481a-4674-9a5d-2a7bafb14432
     DeactivateAll(Box<ConnectionActivationSequence>),
+}
+
+#[derive(Debug, Clone)]
+pub enum DisconnectDescription {
+    /// Includes the reason from the MCS Disconnect Provider Ultimatum.
+    /// This is the least-specific disconnect reason and is only used
+    /// when a more specific disconnect code is not available.
+    McsDisconnect(DisconnectReason),
+
+    /// Includes the error information sent by the RDP server when there
+    /// is a connection or disconnection failure.
+    ErrorInfo(ErrorInfo),
 }
 
 pub struct Processor {
@@ -123,15 +135,8 @@ impl Processor {
                         // in [MS-RDPBCGR].
                         //
                         // [MS-RDPBCGR]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpbcgr/149070b0-ecec-4c20-af03-934bbc48adb8
-                        let graceful_disconnect = error_info_to_graceful_disconnect_reason(&e);
-
-                        if let Some(reason) = graceful_disconnect {
-                            debug!("Received server-side graceful disconnect request: {reason}");
-
-                            Ok(vec![ProcessorOutput::Disconnect(reason)])
-                        } else {
-                            Err(reason_err!("ServerSetErrorInfo", "{}", e.description()))
-                        }
+                        let desc = DisconnectDescription::ErrorInfo(e);
+                        Ok(vec![ProcessorOutput::Disconnect(desc)])
                     }
                     ShareDataPdu::ShutdownDenied => {
                         debug!("ShutdownDenied received, session will be closed");
@@ -149,7 +154,9 @@ impl Processor {
 
                         Ok(vec![
                             ProcessorOutput::ResponseFrame(encoded_pdu?),
-                            ProcessorOutput::Disconnect(DisconnectReason::UserRequested),
+                            ProcessorOutput::Disconnect(DisconnectDescription::McsDisconnect(
+                                DisconnectReason::UserRequested,
+                            )),
                         ])
                     }
                     _ => Err(reason_err!(
@@ -182,25 +189,4 @@ impl Processor {
 /// The caller is responsible for ensuring that the `channel_id` corresponds to the correct channel.
 fn process_svc_messages(messages: Vec<SvcMessage>, channel_id: u16, initiator_id: u16) -> SessionResult<Vec<u8>> {
     client_encode_svc_messages(messages, channel_id, initiator_id).map_err(SessionError::encode)
-}
-
-/// Converts an [`ErrorInfo`] into a [`DisconnectReason`].
-///
-/// Returns `None` if the error code is not a graceful disconnect code.
-pub fn error_info_to_graceful_disconnect_reason(error_info: &ErrorInfo) -> Option<DisconnectReason> {
-    let code = if let ErrorInfo::ProtocolIndependentCode(code) = error_info {
-        code
-    } else {
-        return None;
-    };
-
-    match code {
-        ProtocolIndependentCode::RpcInitiatedDisconnect
-        | ProtocolIndependentCode::RpcInitiatedLogoff
-        | ProtocolIndependentCode::DisconnectedByOtherconnection => Some(DisconnectReason::ProviderInitiated),
-        ProtocolIndependentCode::RpcInitiatedDisconnectByuser | ProtocolIndependentCode::LogoffByUser => {
-            Some(DisconnectReason::UserRequested)
-        }
-        _ => None,
-    }
 }
