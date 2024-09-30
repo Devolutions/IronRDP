@@ -15,7 +15,7 @@ doctest = false
 test = false
 
 [dependencies]
-anyhow = "1.0.82"
+anyhow = "1.0.89"
 cpal = "0.15.3"
 ironrdp-rdpsnd.workspace = true
 tracing.workspace = true
