@@ -6,7 +6,7 @@ mod number;
 mod status;
 mod string;
 
-pub(crate) use header::{NowHeader, NowMessageClass};
+pub use header::{NowHeader, NowMessageClass};
 
 pub use buffer::{NowLrgBuf, NowVarBuf};
 pub use number::{VarI16, VarI32, VarI64, VarU16, VarU32, VarU64};

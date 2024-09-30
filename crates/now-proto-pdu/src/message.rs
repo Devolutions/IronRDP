@@ -42,7 +42,12 @@ impl Encode for NowMessage {
 impl Decode<'_> for NowMessage {
     fn decode(src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
         let header = NowHeader::decode(src)?;
+        Self::decode_from_body(header, src)
+    }
+}
 
+impl NowMessage {
+    pub fn decode_from_body(header: NowHeader, src: &mut ReadCursor<'_>) -> DecodeResult<Self> {
         match NowMessageClass(header.class.0) {
             NowMessageClass::SYSTEM => Ok(Self::System(NowSystemMessage::decode_from_body(header, src)?)),
             NowMessageClass::SESSION => Ok(Self::Session(NowSessionMessage::decode_from_body(header, src)?)),
