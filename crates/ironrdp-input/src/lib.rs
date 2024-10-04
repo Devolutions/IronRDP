@@ -1,3 +1,8 @@
+#[allow(unused)]
+mod keycode;
+#[allow(clippy::cast_possible_truncation)]
+pub mod map_scan_code;
+
 use bitvec::array::BitArray;
 use bitvec::BitArr;
 use ironrdp_pdu::input::fast_path::{FastPathInputEvent, KeyboardFlags};
@@ -6,7 +11,6 @@ use ironrdp_pdu::input::mouse_x::PointerXFlags;
 use ironrdp_pdu::input::{MousePdu, MouseXPdu};
 use smallvec::SmallVec;
 use std::collections::BTreeSet;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u8)]
 pub enum MouseButton {
