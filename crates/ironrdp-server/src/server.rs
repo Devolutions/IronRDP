@@ -7,14 +7,14 @@ use ironrdp_acceptor::{self, Acceptor, AcceptorResult, BeginResult, DesktopSize}
 use ironrdp_async::{bytes, Framed};
 use ironrdp_cliprdr::backend::ClipboardMessage;
 use ironrdp_cliprdr::CliprdrServer;
-use ironrdp_core::impl_as_any;
-use ironrdp_core::{decode, encode_vec};
+use ironrdp_core::{decode, encode_vec, impl_as_any};
 use ironrdp_displaycontrol::pdu::DisplayControlMonitorLayout;
 use ironrdp_displaycontrol::server::{DisplayControlHandler, DisplayControlServer};
 use ironrdp_pdu::input::fast_path::{FastPathInput, FastPathInputEvent};
 use ironrdp_pdu::input::InputEventPdu;
 use ironrdp_pdu::mcs::{SendDataIndication, SendDataRequest};
 use ironrdp_pdu::rdp::capability_sets::{BitmapCodecs, CapabilitySet, CmdFlags, GeneralExtraFlags};
+pub use ironrdp_pdu::rdp::client_info::Credentials;
 use ironrdp_pdu::rdp::headers::{ServerDeactivateAll, ShareControlPdu};
 use ironrdp_pdu::x224::X224;
 use ironrdp_pdu::{self, decode_err, mcs, nego, rdp, Action, PduResult};
@@ -181,6 +181,7 @@ pub struct RdpServer {
     cliprdr_factory: Option<Box<dyn CliprdrServerFactory>>,
     ev_sender: mpsc::UnboundedSender<ServerEvent>,
     ev_receiver: Arc<Mutex<mpsc::UnboundedReceiver<ServerEvent>>>,
+    creds: Option<Credentials>,
 }
 
 #[derive(Debug)]
@@ -188,6 +189,7 @@ pub enum ServerEvent {
     Quit(String),
     Clipboard(ClipboardMessage),
     Rdpsnd(RdpsndServerMessage),
+    SetCredentials(Credentials),
 }
 
 pub trait ServerEventSender {
@@ -231,6 +233,7 @@ impl RdpServer {
             cliprdr_factory,
             ev_sender,
             ev_receiver: Arc::new(Mutex::new(ev_receiver)),
+            creds: None,
         }
     }
 
@@ -271,7 +274,7 @@ impl RdpServer {
 
         let size = self.display.lock().await.size().await;
         let capabilities = capabilities::capabilities(&self.opts, size);
-        let mut acceptor = Acceptor::new(self.opts.security.flag(), size, capabilities);
+        let mut acceptor = Acceptor::new(self.opts.security.flag(), size, capabilities, self.creds.clone());
 
         self.attach_channels(&mut acceptor);
 
@@ -310,6 +313,9 @@ impl RdpServer {
                         ServerEvent::Quit(reason) => {
                             debug!("Got quit event {reason}");
                             break;
+                        }
+                        ServerEvent::SetCredentials(creds) => {
+                            self.set_credentials(Some(creds));
                         }
                         ev => {
                             debug!("Unexpected event {:?}", ev);
@@ -443,6 +449,9 @@ impl RdpServer {
                 ServerEvent::Quit(reason) => {
                     debug!("Got quit event: {reason}");
                     return Ok(RunState::Disconnect);
+                }
+                ServerEvent::SetCredentials(creds) => {
+                    self.set_credentials(Some(creds));
                 }
                 ServerEvent::Rdpsnd(s) => {
                     let Some(rdpsnd) = self.get_svc_processor::<RdpsndServer>() else {
@@ -884,6 +893,11 @@ impl RdpServer {
         }
 
         Ok(())
+    }
+
+    pub fn set_credentials(&mut self, creds: Option<Credentials>) {
+        debug!(?creds, "Changing credentials");
+        self.creds = creds
     }
 }
 

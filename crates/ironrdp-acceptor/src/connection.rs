@@ -11,7 +11,11 @@ use ironrdp_pdu as pdu;
 use ironrdp_pdu::x224::X224;
 use ironrdp_svc::{StaticChannelSet, SvcServerProcessor};
 use pdu::rdp::capability_sets::CapabilitySet;
+use pdu::rdp::client_info::Credentials;
 use pdu::rdp::headers::ShareControlPdu;
+use pdu::rdp::server_error_info::ErrorInfo;
+use pdu::rdp::server_error_info::ProtocolIndependentCode;
+use pdu::rdp::server_error_info::ServerSetErrorInfoPdu;
 use pdu::rdp::server_license::{LicensePdu, LicensingErrorMessage};
 use pdu::{gcc, mcs, nego, rdp};
 
@@ -31,6 +35,7 @@ pub struct Acceptor {
     server_capabilities: Vec<CapabilitySet>,
     static_channels: StaticChannelSet,
     saved_for_reactivation: AcceptorState,
+    creds: Option<Credentials>,
 }
 
 #[derive(Debug)]
@@ -43,7 +48,12 @@ pub struct AcceptorResult {
 }
 
 impl Acceptor {
-    pub fn new(security: nego::SecurityProtocol, desktop_size: DesktopSize, capabilities: Vec<CapabilitySet>) -> Self {
+    pub fn new(
+        security: nego::SecurityProtocol,
+        desktop_size: DesktopSize,
+        capabilities: Vec<CapabilitySet>,
+        creds: Option<Credentials>,
+    ) -> Self {
         Self {
             security,
             state: AcceptorState::InitiationWaitRequest,
@@ -53,6 +63,7 @@ impl Acceptor {
             server_capabilities: capabilities,
             static_channels: StaticChannelSet::new(),
             saved_for_reactivation: Default::default(),
+            creds,
         }
     }
 
@@ -88,6 +99,7 @@ impl Acceptor {
             server_capabilities: consumed.server_capabilities,
             static_channels: StaticChannelSet::new(),
             saved_for_reactivation,
+            creds: consumed.creds,
         }
     }
 
@@ -438,13 +450,28 @@ impl Sequence for Acceptor {
 
                 debug!(message = ?client_info, "Received");
 
-                (
-                    Written::Nothing,
-                    AcceptorState::LicensingExchange {
-                        early_capability,
-                        channels,
-                    },
-                )
+                let creds = client_info.client_info.credentials;
+
+                if self.creds.as_ref().map_or(true, |srv_creds| srv_creds != &creds) {
+                    // how authorization should be denied with standard RDP security?
+                    let info = ServerSetErrorInfoPdu(ErrorInfo::ProtocolIndependentCode(
+                        ProtocolIndependentCode::ServerDeniedConnection,
+                    ));
+
+                    debug!(message = ?info, "Send");
+
+                    util::encode_send_data_indication(self.user_channel_id, self.io_channel_id, &info, output)?;
+
+                    return Err(ConnectorError::general("invalid credentials"));
+                } else {
+                    (
+                        Written::Nothing,
+                        AcceptorState::LicensingExchange {
+                            early_capability,
+                            channels,
+                        },
+                    )
+                }
             }
 
             AcceptorState::LicensingExchange {
