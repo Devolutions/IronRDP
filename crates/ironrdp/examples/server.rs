@@ -167,9 +167,9 @@ impl RdpServerDisplayUpdates for DisplayUpdates {
             .unwrap();
         let mut data = Vec::with_capacity(capacity);
         for _ in 0..(data.capacity() / 4) {
-            data.push(rng.gen());
-            data.push(rng.gen());
-            data.push(rng.gen());
+            data.push(rng.r#gen());
+            data.push(rng.r#gen());
+            data.push(rng.r#gen());
             data.push(255);
         }
 

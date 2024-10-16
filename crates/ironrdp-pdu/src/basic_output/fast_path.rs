@@ -170,12 +170,12 @@ impl<'de> Decode<'de> for FastPathUpdatePdu<'de> {
         let header = src.read_u8();
 
         let update_code = header.get_bits(0..4);
-        let update_code =
-            UpdateCode::from_u8(update_code).ok_or(invalid_field_err!("updateHeader", "Invalid update code"))?;
+        let update_code = UpdateCode::from_u8(update_code)
+            .ok_or_else(|| invalid_field_err!("updateHeader", "Invalid update code"))?;
 
         let fragmentation = header.get_bits(4..6);
-        let fragmentation =
-            Fragmentation::from_u8(fragmentation).ok_or(invalid_field_err!("updateHeader", "Invalid fragmentation"))?;
+        let fragmentation = Fragmentation::from_u8(fragmentation)
+            .ok_or_else(|| invalid_field_err!("updateHeader", "Invalid fragmentation"))?;
 
         let compression = Compression::from_bits_truncate(header.get_bits(6..8));
 

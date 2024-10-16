@@ -218,9 +218,6 @@ pub fn size<T: Encode>(pdu: &T) -> usize {
 }
 
 #[cfg(feature = "alloc")]
-pub use legacy::*;
-
-#[cfg(feature = "alloc")]
 mod legacy {
     use super::{Encode, EncodeResult};
     use crate::WriteCursor;

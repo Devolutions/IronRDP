@@ -72,19 +72,19 @@ impl Rdpsnd {
         let server_format = self
             .server_format
             .as_ref()
-            .ok_or(pdu_other_err!("invalid state - no format"))?;
+            .ok_or_else(|| pdu_other_err!("invalid state - no format"))?;
 
         server_format
             .formats
             .get(format_no as usize)
-            .ok_or(pdu_other_err!("invalid format"))
+            .ok_or_else(|| pdu_other_err!("invalid format"))
     }
 
     pub fn version(&self) -> PduResult<pdu::Version> {
         let server_format = self
             .server_format
             .as_ref()
-            .ok_or(pdu_other_err!("invalid state - no version"))?;
+            .ok_or_else(|| pdu_other_err!("invalid state - no version"))?;
 
         Ok(server_format.version)
     }
@@ -93,7 +93,7 @@ impl Rdpsnd {
         let server_format = self
             .server_format
             .as_ref()
-            .ok_or(pdu_other_err!("invalid state - no format"))?;
+            .ok_or_else(|| pdu_other_err!("invalid state - no format"))?;
 
         let pdu = pdu::ClientAudioFormatPdu {
             version: self.version()?,
