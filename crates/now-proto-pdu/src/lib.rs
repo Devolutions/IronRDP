@@ -12,7 +12,7 @@ extern crate ironrdp_pdu;
 // to assume that NOW-PROTO will not ever be used on 8/16-bit MCUs or CPUs.
 //
 // This is required to safely cast u32 to usize without additional checks.
-const_assert!(std::mem::size_of::<usize>() >= 4);
+const_assert!(size_of::<usize>() >= 4);
 
 #[macro_use]
 mod macros;

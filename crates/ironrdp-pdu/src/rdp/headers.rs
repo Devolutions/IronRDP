@@ -66,7 +66,7 @@ impl<'de> Decode<'de> for BasicSecurityHeader {
         ensure_fixed_part_size!(in: src);
 
         let flags = BasicSecurityHeaderFlags::from_bits(src.read_u16())
-            .ok_or(invalid_field_err!("securityHeader", "invalid basic security header"))?;
+            .ok_or_else(|| invalid_field_err!("securityHeader", "invalid basic security header"))?;
         let _flags_hi = src.read_u16(); // unused
 
         Ok(Self { flags })
