@@ -2173,7 +2173,6 @@ dependencies = [
  "sspi",
  "tracing",
  "url",
- "winapi",
 ]
 
 [[package]]
