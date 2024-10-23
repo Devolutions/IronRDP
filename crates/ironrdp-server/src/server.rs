@@ -44,6 +44,8 @@ pub struct RdpServerOptions {
 pub enum RdpServerSecurity {
     None,
     Tls(TlsAcceptor),
+    // for both hybrid + hybrid-ex
+    Hybrid((TlsAcceptor, Vec<u8>)),
 }
 
 impl RdpServerSecurity {
@@ -51,6 +53,7 @@ impl RdpServerSecurity {
         match self {
             RdpServerSecurity::None => nego::SecurityProtocol::empty(),
             RdpServerSecurity::Tls(_) => nego::SecurityProtocol::SSL,
+            RdpServerSecurity::Hybrid(_) => nego::SecurityProtocol::HYBRID | nego::SecurityProtocol::HYBRID_EX,
         }
     }
 }
@@ -284,10 +287,36 @@ impl RdpServer {
 
         match res {
             BeginResult::ShouldUpgrade(stream) => {
-                let framed = TokioFramed::new(match &self.opts.security {
-                    RdpServerSecurity::Tls(acceptor) => acceptor.accept(stream).await?,
+                let tls_acceptor = match &self.opts.security {
+                    RdpServerSecurity::Tls(acceptor) => acceptor,
+                    RdpServerSecurity::Hybrid((acceptor, _)) => acceptor,
                     RdpServerSecurity::None => unreachable!(),
-                });
+                };
+                let accept = match tls_acceptor.accept(stream).await {
+                    Ok(accept) => accept,
+                    Err(e) => {
+                        warn!("Failed to TLS accept: {}", e);
+                        return Ok(());
+                    }
+                };
+                let mut framed = TokioFramed::new(accept);
+
+                acceptor.mark_security_upgrade_as_done();
+
+                if let RdpServerSecurity::Hybrid((_, pub_key)) = &self.opts.security {
+                    // how to get the client name?
+                    // doesn't seem to matter yet
+                    let client_name = framed.get_inner().0.get_ref().0.peer_addr()?.to_string();
+
+                    ironrdp_acceptor::accept_credssp(
+                        &mut framed,
+                        &mut acceptor,
+                        client_name.into(),
+                        pub_key.clone(),
+                        None,
+                    )
+                    .await?;
+                }
 
                 self.accept_finalize(framed, acceptor).await?;
             }
