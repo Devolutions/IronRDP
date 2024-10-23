@@ -32,7 +32,7 @@ use tokio_rustls::TlsAcceptor;
 
 const HELP: &str = "\
 USAGE:
-  cargo run --example=server -- [--host <HOSTNAME>] [--port <PORT>] [--cert <CERTIFICATE>] [--key <CERTIFICATE KEY>] [--user USERNAME] [--pass PASSWORD]
+  cargo run --example=server -- [--host <HOSTNAME>] [--port <PORT>] [--cert <CERTIFICATE>] [--key <CERTIFICATE KEY>] [--user USERNAME] [--pass PASSWORD] [--sec tls|hybrid]
 ";
 
 #[tokio::main]
@@ -55,11 +55,12 @@ async fn main() -> Result<(), anyhow::Error> {
         Action::Run {
             host,
             port,
-            cert,
-            key,
+            hybrid,
             user,
             pass,
-        } => run(host, port, user, pass, cert, key).await,
+            cert,
+            key,
+        } => run(host, port, hybrid, user, pass, cert, key).await,
     }
 }
 
@@ -69,6 +70,7 @@ enum Action {
     Run {
         host: String,
         port: u16,
+        hybrid: bool,
         user: String,
         pass: String,
         cert: Option<String>,
@@ -86,6 +88,12 @@ fn parse_args() -> anyhow::Result<Action> {
             .opt_value_from_str("--host")?
             .unwrap_or_else(|| String::from("localhost"));
         let port = args.opt_value_from_str("--port")?.unwrap_or(3389);
+        let sec = args.opt_value_from_str("--sec")?.unwrap_or_else(|| "hybrid".to_owned());
+        let hybrid = match sec.as_ref() {
+            "tls" => false,
+            "hybrid" => true,
+            _ => anyhow::bail!("Unhandled security: '{sec}'"),
+        };
         let cert = args.opt_value_from_str("--cert")?;
         let key = args.opt_value_from_str("--key")?;
         let user = args.opt_value_from_str("--user")?.unwrap_or_else(|| "user".to_owned());
@@ -93,6 +101,7 @@ fn parse_args() -> anyhow::Result<Action> {
         Action::Run {
             host,
             port,
+            hybrid,
             user,
             pass,
             cert,
@@ -124,10 +133,23 @@ fn setup_logging() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn acceptor(cert_path: &str, key_path: &str) -> anyhow::Result<TlsAcceptor> {
+fn acceptor(cert_path: &str, key_path: &str) -> anyhow::Result<(TlsAcceptor, Vec<u8>)> {
+    use x509_cert::der::Decode as _;
+
     let cert = certs(&mut BufReader::new(File::open(cert_path)?))
         .next()
         .context("no certificate")??;
+
+    let pub_key = {
+        let cert = x509_cert::Certificate::from_der(&cert).map_err(std::io::Error::other)?;
+        cert.tbs_certificate
+            .subject_public_key_info
+            .subject_public_key
+            .as_bytes()
+            .ok_or_else(|| std::io::Error::other("subject public key BIT STRING is not aligned"))?
+            .to_owned()
+    };
+
     let key = pkcs8_private_keys(&mut BufReader::new(File::open(key_path)?))
         .next()
         .context("no private key")?
@@ -141,7 +163,7 @@ fn acceptor(cert_path: &str, key_path: &str) -> anyhow::Result<TlsAcceptor> {
     // This adds support for the SSLKEYLOGFILE env variable (https://wiki.wireshark.org/TLS#using-the-pre-master-secret)
     server_config.key_log = Arc::new(rustls::KeyLogFile::new());
 
-    Ok(TlsAcceptor::from(Arc::new(server_config)))
+    Ok((TlsAcceptor::from(Arc::new(server_config)), pub_key))
 }
 
 #[derive(Clone, Debug)]
@@ -334,6 +356,7 @@ impl RdpsndServerHandler for SndHandler {
 async fn run(
     host: String,
     port: u16,
+    hybrid: bool,
     username: String,
     password: String,
     cert: Option<String>,
@@ -350,8 +373,12 @@ async fn run(
     let addr = SocketAddr::new(host.parse::<IpAddr>()?, port);
 
     let server = RdpServer::builder().with_addr(addr);
-    let server = if let Some(tls) = tls {
-        server.with_tls(tls)
+    let server = if let Some((tls, pub_key)) = tls {
+        if hybrid {
+            server.with_hybrid(tls, pub_key)
+        } else {
+            server.with_tls(tls)
+        }
     } else {
         server.with_no_security()
     };
