@@ -19,8 +19,8 @@ use ironrdp_connector::DesktopSize;
 use ironrdp_rdpsnd::pdu::ClientAudioFormatPdu;
 use ironrdp_rdpsnd::server::{RdpsndServerHandler, RdpsndServerMessage};
 use ironrdp_server::{
-    BitmapUpdate, CliprdrServerFactory, DisplayUpdate, KeyboardEvent, MouseEvent, PixelFormat, PixelOrder, RdpServer,
-    RdpServerDisplay, RdpServerDisplayUpdates, RdpServerInputHandler, ServerEvent, ServerEventSender,
+    BitmapUpdate, CliprdrServerFactory, Credentials, DisplayUpdate, KeyboardEvent, MouseEvent, PixelFormat, PixelOrder,
+    RdpServer, RdpServerDisplay, RdpServerDisplayUpdates, RdpServerInputHandler, ServerEvent, ServerEventSender,
     SoundServerFactory,
 };
 use rand::prelude::*;
@@ -32,7 +32,7 @@ use tokio_rustls::TlsAcceptor;
 
 const HELP: &str = "\
 USAGE:
-  cargo run --example=server -- [--host <HOSTNAME>] [--port <PORT>] [--cert <CERTIFICATE>] [--key <CERTIFICATE KEY>]
+  cargo run --example=server -- [--host <HOSTNAME>] [--port <PORT>] [--cert <CERTIFICATE>] [--key <CERTIFICATE KEY>] [--user USERNAME] [--pass PASSWORD]
 ";
 
 #[tokio::main]
@@ -52,7 +52,14 @@ async fn main() -> Result<(), anyhow::Error> {
             println!("{HELP}");
             Ok(())
         }
-        Action::Run { host, port, cert, key } => run(host, port, cert, key).await,
+        Action::Run {
+            host,
+            port,
+            cert,
+            key,
+            user,
+            pass,
+        } => run(host, port, user, pass, cert, key).await,
     }
 }
 
@@ -62,6 +69,8 @@ enum Action {
     Run {
         host: String,
         port: u16,
+        user: String,
+        pass: String,
         cert: Option<String>,
         key: Option<String>,
     },
@@ -79,7 +88,16 @@ fn parse_args() -> anyhow::Result<Action> {
         let port = args.opt_value_from_str("--port")?.unwrap_or(3389);
         let cert = args.opt_value_from_str("--cert")?;
         let key = args.opt_value_from_str("--key")?;
-        Action::Run { host, port, cert, key }
+        let user = args.opt_value_from_str("--user")?.unwrap_or_else(|| "user".to_owned());
+        let pass = args.opt_value_from_str("--pass")?.unwrap_or_else(|| "pass".to_owned());
+        Action::Run {
+            host,
+            port,
+            user,
+            pass,
+            cert,
+            key,
+        }
     };
 
     Ok(action)
@@ -313,7 +331,14 @@ impl RdpsndServerHandler for SndHandler {
     }
 }
 
-async fn run(host: String, port: u16, cert: Option<String>, key: Option<String>) -> anyhow::Result<()> {
+async fn run(
+    host: String,
+    port: u16,
+    username: String,
+    password: String,
+    cert: Option<String>,
+    key: Option<String>,
+) -> anyhow::Result<()> {
     info!(host, port, cert, key, "run");
     let handler = Handler::new();
 
@@ -342,6 +367,12 @@ async fn run(host: String, port: u16, cert: Option<String>, key: Option<String>)
         .with_cliprdr_factory(Some(cliprdr))
         .with_sound_factory(Some(sound))
         .build();
+
+    server.set_credentials(Some(Credentials {
+        username,
+        password,
+        domain: None,
+    }));
 
     server.run().await
 }
