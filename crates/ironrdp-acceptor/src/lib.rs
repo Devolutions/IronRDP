@@ -172,16 +172,16 @@ where
         Ok(())
     }
 
-    let result = match credssp_loop(framed, acceptor, buf, client_computer_name, public_key, kerberos_config).await {
-        Ok(_) => EarlyUserAuthResult::Success,
-        Err(err) => {
-            warn!("credssp: {err}");
-            EarlyUserAuthResult::AccessDenied
-        }
-    };
+    let result = credssp_loop(framed, acceptor, buf, client_computer_name, public_key, kerberos_config).await;
 
     if protocol.intersects(nego::SecurityProtocol::HYBRID_EX) {
         trace!(?result, "HYBRID_EX");
+
+        let result = if result.is_ok() {
+            EarlyUserAuthResult::Success
+        } else {
+            EarlyUserAuthResult::AccessDenied
+        };
         buf.clear();
         result
             .to_buffer(&mut *buf)
@@ -192,6 +192,8 @@ where
             .await
             .map_err(|e| ironrdp_connector::custom_err!("write all", e))?;
     }
+
+    result?;
     acceptor.mark_credssp_as_done();
 
     Ok(())
