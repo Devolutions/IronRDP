@@ -1,6 +1,6 @@
 //! Example of utilizing `ironrdp-server` crate.
 
-#![allow(unused_crate_dependencies)] // false positives because there is both a library and a binary
+#![allow(unused_crate_dependencies)] // False positives because there are both a library and a binary.
 #![allow(clippy::print_stdout)]
 
 #[macro_use]
@@ -10,14 +10,15 @@ use std::fs::File;
 use std::io::BufReader;
 use std::net::{IpAddr, SocketAddr};
 use std::num::NonZeroU16;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use anyhow::Context as _;
-use ironrdp_cliprdr::backend::{CliprdrBackend, CliprdrBackendFactory};
+use ironrdp::cliprdr::backend::{CliprdrBackend, CliprdrBackendFactory};
+use ironrdp::connector::DesktopSize;
+use ironrdp::rdpsnd::pdu::ClientAudioFormatPdu;
+use ironrdp::rdpsnd::server::{RdpsndServerHandler, RdpsndServerMessage};
 use ironrdp_cliprdr_native::StubCliprdrBackend;
-use ironrdp_connector::DesktopSize;
-use ironrdp_rdpsnd::pdu::ClientAudioFormatPdu;
-use ironrdp_rdpsnd::server::{RdpsndServerHandler, RdpsndServerMessage};
 use ironrdp_server::{
     BitmapUpdate, CliprdrServerFactory, Credentials, DisplayUpdate, KeyboardEvent, MouseEvent, PixelFormat, PixelOrder,
     RdpServer, RdpServerDisplay, RdpServerDisplayUpdates, RdpServerInputHandler, ServerEvent, ServerEventSender,
@@ -73,8 +74,8 @@ enum Action {
         hybrid: bool,
         user: String,
         pass: String,
-        cert: Option<String>,
-        key: Option<String>,
+        cert: Option<PathBuf>,
+        key: Option<PathBuf>,
     },
 }
 
@@ -88,16 +89,20 @@ fn parse_args() -> anyhow::Result<Action> {
             .opt_value_from_str("--host")?
             .unwrap_or_else(|| String::from("localhost"));
         let port = args.opt_value_from_str("--port")?.unwrap_or(3389);
+
         let sec = args.opt_value_from_str("--sec")?.unwrap_or_else(|| "hybrid".to_owned());
         let hybrid = match sec.as_ref() {
             "tls" => false,
             "hybrid" => true,
             _ => anyhow::bail!("Unhandled security: '{sec}'"),
         };
+
         let cert = args.opt_value_from_str("--cert")?;
         let key = args.opt_value_from_str("--key")?;
+
         let user = args.opt_value_from_str("--user")?.unwrap_or_else(|| "user".to_owned());
         let pass = args.opt_value_from_str("--pass")?.unwrap_or_else(|| "pass".to_owned());
+
         Action::Run {
             host,
             port,
@@ -133,37 +138,56 @@ fn setup_logging() -> anyhow::Result<()> {
     Ok(())
 }
 
-fn acceptor(cert_path: &str, key_path: &str) -> anyhow::Result<(TlsAcceptor, Vec<u8>)> {
-    use x509_cert::der::Decode as _;
+struct TlsIdentityCtx {
+    cert: rustls::pki_types::CertificateDer<'static>,
+    priv_key: rustls::pki_types::PrivateKeyDer<'static>,
+    pub_key: Vec<u8>,
+}
 
-    let cert = certs(&mut BufReader::new(File::open(cert_path)?))
-        .next()
-        .context("no certificate")??;
+impl TlsIdentityCtx {
+    fn init_from_paths(cert_path: &Path, key_path: &Path) -> anyhow::Result<Self> {
+        use x509_cert::der::Decode as _;
 
-    let pub_key = {
-        let cert = x509_cert::Certificate::from_der(&cert).map_err(std::io::Error::other)?;
-        cert.tbs_certificate
-            .subject_public_key_info
-            .subject_public_key
-            .as_bytes()
-            .ok_or_else(|| std::io::Error::other("subject public key BIT STRING is not aligned"))?
-            .to_owned()
-    };
+        let cert = certs(&mut BufReader::new(File::open(cert_path)?))
+            .next()
+            .context("no certificate")??;
 
-    let key = pkcs8_private_keys(&mut BufReader::new(File::open(key_path)?))
-        .next()
-        .context("no private key")?
-        .map(rustls::pki_types::PrivateKeyDer::from)?;
+        let pub_key = {
+            let cert = x509_cert::Certificate::from_der(&cert).map_err(std::io::Error::other)?;
+            cert.tbs_certificate
+                .subject_public_key_info
+                .subject_public_key
+                .as_bytes()
+                .ok_or_else(|| std::io::Error::other("subject public key BIT STRING is not aligned"))?
+                .to_owned()
+        };
 
+        let priv_key = pkcs8_private_keys(&mut BufReader::new(File::open(key_path)?))
+            .next()
+            .context("no private key")?
+            .map(rustls::pki_types::PrivateKeyDer::from)?;
+
+        Ok(Self {
+            cert,
+            priv_key,
+            pub_key,
+        })
+    }
+}
+
+fn acceptor(
+    cert: rustls::pki_types::CertificateDer<'static>,
+    priv_key: rustls::pki_types::PrivateKeyDer<'static>,
+) -> anyhow::Result<TlsAcceptor> {
     let mut server_config = rustls::ServerConfig::builder()
         .with_no_client_auth()
-        .with_single_cert(vec![cert], key)
+        .with_single_cert(vec![cert], priv_key)
         .context("bad certificate/key")?;
 
     // This adds support for the SSLKEYLOGFILE env variable (https://wiki.wireshark.org/TLS#using-the-pre-master-secret)
     server_config.key_log = Arc::new(rustls::KeyLogFile::new());
 
-    Ok((TlsAcceptor::from(Arc::new(server_config)), pub_key))
+    Ok(TlsAcceptor::from(Arc::new(server_config)))
 }
 
 #[derive(Clone, Debug)]
@@ -242,7 +266,7 @@ impl RdpServerDisplay for Handler {
     }
 }
 
-struct StubCliprdrServerFactory {}
+struct StubCliprdrServerFactory;
 
 impl CliprdrBackendFactory for StubCliprdrServerFactory {
     fn build_cliprdr_backend(&self) -> Box<dyn CliprdrBackend> {
@@ -359,36 +383,37 @@ async fn run(
     hybrid: bool,
     username: String,
     password: String,
-    cert: Option<String>,
-    key: Option<String>,
+    cert: Option<PathBuf>,
+    key: Option<PathBuf>,
 ) -> anyhow::Result<()> {
-    info!(host, port, cert, key, "run");
-    let handler = Handler::new();
+    info!(host, port, ?cert, ?key, "run");
 
-    let tls = cert
-        .as_ref()
-        .zip(key.as_ref())
-        .map(|(cert, key)| acceptor(cert, key).unwrap());
+    let handler = Handler::new();
 
     let addr = SocketAddr::new(host.parse::<IpAddr>()?, port);
 
-    let server = RdpServer::builder().with_addr(addr);
-    let server = if let Some((tls, pub_key)) = tls {
+    let server_builder = RdpServer::builder().with_addr(addr);
+
+    let server_builder = if let Some((cert_path, key_path)) = cert.as_deref().zip(key.as_deref()) {
+        let identity = TlsIdentityCtx::init_from_paths(cert_path, key_path).context("failed to init TLS identity")?;
+        let acceptor = acceptor(identity.cert, identity.priv_key).context("failed to build TLS acceptor")?;
+
         if hybrid {
-            server.with_hybrid(tls, pub_key)
+            server_builder.with_hybrid(acceptor, identity.pub_key)
         } else {
-            server.with_tls(tls)
+            server_builder.with_tls(acceptor)
         }
     } else {
-        server.with_no_security()
+        server_builder.with_no_security()
     };
 
-    let cliprdr = Box::new(StubCliprdrServerFactory {});
+    let cliprdr = Box::new(StubCliprdrServerFactory);
+
     let sound = Box::new(StubSoundServerFactory {
         inner: Arc::new(Mutex::new(Inner { ev_sender: None })),
     });
 
-    let mut server = server
+    let mut server = server_builder
         .with_input_handler(handler.clone())
         .with_display_handler(handler.clone())
         .with_cliprdr_factory(Some(cliprdr))
