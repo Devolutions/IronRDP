@@ -169,21 +169,18 @@ impl TlsIdentityCtx {
             pub_key,
         })
     }
-}
 
-fn acceptor(
-    cert: rustls::pki_types::CertificateDer<'static>,
-    priv_key: rustls::pki_types::PrivateKeyDer<'static>,
-) -> anyhow::Result<TlsAcceptor> {
-    let mut server_config = rustls::ServerConfig::builder()
-        .with_no_client_auth()
-        .with_single_cert(vec![cert], priv_key)
-        .context("bad certificate/key")?;
+    fn make_acceptor(&self) -> anyhow::Result<TlsAcceptor> {
+        let mut server_config = rustls::ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(vec![self.cert.clone()], self.priv_key.clone_key())
+            .context("bad certificate/key")?;
 
-    // This adds support for the SSLKEYLOGFILE env variable (https://wiki.wireshark.org/TLS#using-the-pre-master-secret)
-    server_config.key_log = Arc::new(rustls::KeyLogFile::new());
+        // This adds support for the SSLKEYLOGFILE env variable (https://wiki.wireshark.org/TLS#using-the-pre-master-secret)
+        server_config.key_log = Arc::new(rustls::KeyLogFile::new());
 
-    Ok(TlsAcceptor::from(Arc::new(server_config)))
+        Ok(TlsAcceptor::from(Arc::new(server_config)))
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -389,7 +386,7 @@ async fn run(
 
     let server_builder = if let Some((cert_path, key_path)) = cert.as_deref().zip(key.as_deref()) {
         let identity = TlsIdentityCtx::init_from_paths(cert_path, key_path).context("failed to init TLS identity")?;
-        let acceptor = acceptor(identity.cert, identity.priv_key).context("failed to build TLS acceptor")?;
+        let acceptor = identity.make_acceptor().context("failed to build TLS acceptor")?;
 
         if hybrid {
             server_builder.with_hybrid(acceptor, identity.pub_key)
