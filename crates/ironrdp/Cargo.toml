@@ -52,7 +52,7 @@ ironrdp-displaycontrol = { workspace = true, optional = true }
 ironrdp-blocking.workspace = true
 ironrdp-server.workspace = true
 ironrdp-cliprdr-native.workspace = true
-ironrdp-tls.workspace = true
+ironrdp-tls = { workspace = true, features = ["rustls"] }
 anyhow = "1"
 async-trait = "0.1"
 rustls-pemfile = "2.2"
@@ -76,6 +76,7 @@ doc-scrape-examples = true
 [[example]]
 name = "server"
 doc-scrape-examples = true
+required-features = ["cliprdr", "rdpsnd"]
 
 [lints]
 workspace = true
