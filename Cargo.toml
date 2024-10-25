@@ -61,7 +61,7 @@ expect-test = "1"
 png = "0.17"
 proptest = "1.4"
 rstest = "0.18"
-sspi = "0.14.1"
+sspi = "0.14"
 tracing = { version = "0.1", features = ["log"] }
 thiserror = "1.0"
 windows = "0.58"
