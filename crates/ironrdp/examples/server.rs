@@ -8,7 +8,7 @@ extern crate tracing;
 
 use std::fs::File;
 use std::io::BufReader;
-use std::net::{IpAddr, SocketAddr};
+use std::net::SocketAddr;
 use std::num::NonZeroU16;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -33,7 +33,7 @@ use tokio_rustls::TlsAcceptor;
 
 const HELP: &str = "\
 USAGE:
-  cargo run --example=server -- [--host <HOSTNAME>] [--port <PORT>] [--cert <CERTIFICATE>] [--key <CERTIFICATE KEY>] [--user USERNAME] [--pass PASSWORD] [--sec tls|hybrid]
+  cargo run --example=server -- [--bind-addr <SOCKET ADDRESS>] [--cert <CERTIFICATE>] [--key <CERTIFICATE KEY>] [--user USERNAME] [--pass PASSWORD] [--sec tls|hybrid]
 ";
 
 #[tokio::main]
@@ -54,14 +54,13 @@ async fn main() -> Result<(), anyhow::Error> {
             Ok(())
         }
         Action::Run {
-            host,
-            port,
+            bind_addr,
             hybrid,
             user,
             pass,
             cert,
             key,
-        } => run(host, port, hybrid, user, pass, cert, key).await,
+        } => run(bind_addr, hybrid, user, pass, cert, key).await,
     }
 }
 
@@ -69,8 +68,7 @@ async fn main() -> Result<(), anyhow::Error> {
 enum Action {
     ShowHelp,
     Run {
-        host: String,
-        port: u16,
+        bind_addr: SocketAddr,
         hybrid: bool,
         user: String,
         pass: String,
@@ -85,10 +83,9 @@ fn parse_args() -> anyhow::Result<Action> {
     let action = if args.contains(["-h", "--help"]) {
         Action::ShowHelp
     } else {
-        let host = args
-            .opt_value_from_str("--host")?
-            .unwrap_or_else(|| String::from("localhost"));
-        let port = args.opt_value_from_str("--port")?.unwrap_or(3389);
+        let bind_addr = args
+            .opt_value_from_str("--bind-addr")?
+            .unwrap_or_else(|| "127.0.0.1:3389".parse().expect("valid hardcoded SocketAddr string"));
 
         let sec = args.opt_value_from_str("--sec")?.unwrap_or_else(|| "hybrid".to_owned());
         let hybrid = match sec.as_ref() {
@@ -104,8 +101,7 @@ fn parse_args() -> anyhow::Result<Action> {
         let pass = args.opt_value_from_str("--pass")?.unwrap_or_else(|| "pass".to_owned());
 
         Action::Run {
-            host,
-            port,
+            bind_addr,
             hybrid,
             user,
             pass,
@@ -378,21 +374,18 @@ impl RdpsndServerHandler for SndHandler {
 }
 
 async fn run(
-    host: String,
-    port: u16,
+    bind_addr: SocketAddr,
     hybrid: bool,
     username: String,
     password: String,
     cert: Option<PathBuf>,
     key: Option<PathBuf>,
 ) -> anyhow::Result<()> {
-    info!(host, port, ?cert, ?key, "run");
+    info!(%bind_addr, ?cert, ?key, "run");
 
     let handler = Handler::new();
 
-    let addr = SocketAddr::new(host.parse::<IpAddr>()?, port);
-
-    let server_builder = RdpServer::builder().with_addr(addr);
+    let server_builder = RdpServer::builder().with_addr(bind_addr);
 
     let server_builder = if let Some((cert_path, key_path)) = cert.as_deref().zip(key.as_deref()) {
         let identity = TlsIdentityCtx::init_from_paths(cert_path, key_path).context("failed to init TLS identity")?;
