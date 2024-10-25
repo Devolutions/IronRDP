@@ -44,7 +44,7 @@ pub struct RdpServerOptions {
 pub enum RdpServerSecurity {
     None,
     Tls(TlsAcceptor),
-    // for both hybrid + hybrid-ex
+    /// Used for both hybrid + hybrid-ex.
     Hybrid((TlsAcceptor, Vec<u8>)),
 }
 

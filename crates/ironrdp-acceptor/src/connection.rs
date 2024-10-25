@@ -525,7 +525,8 @@ impl Sequence for Acceptor {
                     let creds = client_info.client_info.credentials;
 
                     if self.creds.as_ref().map_or(true, |srv_creds| srv_creds != &creds) {
-                        // how authorization should be denied with standard RDP security?
+                        // FIXME: How authorization should be denied with standard RDP security?
+                        // Since standard RDP security is not a priority, we just send a ServerDeniedConnection ServerSetErrorInfo PDU.
                         let info = ServerSetErrorInfoPdu(ErrorInfo::ProtocolIndependentCode(
                             ProtocolIndependentCode::ServerDeniedConnection,
                         ));
