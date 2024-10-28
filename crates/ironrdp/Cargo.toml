@@ -41,7 +41,7 @@ ironrdp-acceptor = { workspace = true, optional = true }
 ironrdp-session = { workspace = true, optional = true }
 ironrdp-graphics = { workspace = true, optional = true }
 ironrdp-input = { workspace = true, optional = true }
-ironrdp-server = { workspace = true, optional = true }
+ironrdp-server = { workspace = true, optional = true, features = ["helper"] }
 ironrdp-svc = { workspace = true, optional = true }
 ironrdp-dvc = { workspace = true, optional = true }
 ironrdp-rdpdr = { workspace = true, optional = true }
@@ -55,7 +55,6 @@ ironrdp-cliprdr-native.workspace = true
 ironrdp-tls = { workspace = true, features = ["rustls"] }
 anyhow = "1"
 async-trait = "0.1"
-rustls-pemfile = "2.2"
 bmp = "0.5"
 pico-args = "0.5"
 x509-cert = { version = "0.2", default-features = false, features = ["std"] }
