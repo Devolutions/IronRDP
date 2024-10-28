@@ -44,7 +44,7 @@ pub struct Rdpdr {
     /// The name of the computer that is running the client.
     ///
     /// Any directories shared will be displayed by File Explorer
-    /// as "<directory> on <computer_name>".
+    /// as "`<directory>` on `<computer_name>`".
     computer_name: String,
     capabilities: Capabilities,
     /// Pre-configured list of devices to announce to the server.
@@ -60,8 +60,6 @@ impl Rdpdr {
     pub const NAME: ChannelName = ChannelName::from_static(b"rdpdr\0\0\0");
 
     /// Creates a new [`Rdpdr`].
-    ///
-    /// See [`Rdpdr::computer_name`].
     pub fn new(backend: Box<dyn RdpdrBackend>, computer_name: String) -> Self {
         Self {
             computer_name,
