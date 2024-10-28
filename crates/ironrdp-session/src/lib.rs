@@ -1,3 +1,4 @@
+#![doc = include_str!("../README.md")]
 #![allow(clippy::arithmetic_side_effects)] // FIXME: remove
 
 #[macro_use]

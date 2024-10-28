@@ -1,3 +1,5 @@
+#![doc = include_str!("../README.md")]
+
 #[rustfmt::skip] // do not re-order this pub use
 pub use ironrdp_async::*;
 

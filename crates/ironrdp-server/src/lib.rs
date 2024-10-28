@@ -1,3 +1,4 @@
+#![doc = include_str!("../README.md")]
 #![allow(clippy::arithmetic_side_effects)] // TODO: should we enable this lint back?
 
 pub use tokio;
