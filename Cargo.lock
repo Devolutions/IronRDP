@@ -3861,9 +3861,9 @@ checksum = "ba39f3699c378cd8970968dcbff9c43159ea4cfbd88d43c00b22f2ef10a435d2"
 
 [[package]]
 name = "reqwest"
-version = "0.12.8"
+version = "0.12.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f713147fbe92361e52392c73b8c9e48c04c6625bce969ef54dc901e58e042a7b"
+checksum = "a77c62af46e79de0a562e1a9849205ffcb7fc1238876e9bd743357570e04046f"
 dependencies = [
  "base64",
  "bytes",
@@ -4475,9 +4475,9 @@ dependencies = [
 
 [[package]]
 name = "sspi"
-version = "0.14.1"
+version = "0.14.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "290093d0829ea7c407bb4d4435fb6a156637f9edc10462f754ebd4335c8fe5d0"
+checksum = "6871ff6392ff24abbfead3b9555a5937474b9470cbdc0ea1ea9cdd2e3de377ed"
 dependencies = [
  "async-dnssd",
  "async-recursion",
