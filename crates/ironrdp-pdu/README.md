@@ -47,19 +47,19 @@ Consider this piece of code:
 
 ```rust
 fn process(&mut self, payload: &[u8], output: &mut WriteBuf) -> PduResult<()> {
-    let server_request = ServerRequest: ironrdp_pdu::decode(payload)?;
+    let server_request: ServerRequest = ironrdp_pdu::decode(payload)?;
 
     match server_request.order {
         ServerOrder::DoThis => {
             // do this
-            let response = DoThisResponse { … };
+            let response = DoThisResponse { /* … */ };
 
             // buffer is grown, or not, as appropriate, and `DoThisResponse` is encoded in the "unfilled" region
             ironrdp_pdu::encode_buf(response, output)?;
         }
         ServerOrder::DoThat => {
             // do that
-            let response = DoThatResponse { … };
+            let response = DoThatResponse { /* … */ };
 
             // same as above
             ironrdp_pdu::encode_buf(response, output)?;
@@ -275,7 +275,7 @@ impl MyNetworkCode {
 fn handle_network_code(reader: /* … */) {
     let value = reader.read_u32();
     let code = MyNetworkCode::from_u32(value);
-    
+
     if code == MyNetworkCode::Unknown(2) {
         // The library doesn’t know about this value yet, but we need to handle it because […]
     }
@@ -312,7 +312,7 @@ impl MyNetworkCode {
 fn handle_network_code(reader: /* … */) {
     let value = reader.read_u32();
     let code = MyNetworkCode::from_u32(value);
-    
+
     if code == MyNetworkCode::Unknown(2) { // <- The library does not construct this value as it used to…
         // …  the special case is not handled anymore; no warning and no error
         // is emitted by the compiler, so it’s very easy to overlook this
