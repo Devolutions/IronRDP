@@ -16,11 +16,15 @@ mod clipboard;
 mod display;
 mod encoder;
 mod handler;
+#[cfg(feature = "helper")]
+mod helper;
 mod server;
 mod sound;
 
 pub use clipboard::*;
 pub use display::*;
 pub use handler::*;
+#[cfg(feature = "helper")]
+pub use helper::*;
 pub use server::*;
 pub use sound::*;
