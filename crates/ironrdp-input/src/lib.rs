@@ -1,3 +1,5 @@
+#![doc = include_str!("../README.md")]
+
 use bitvec::array::BitArray;
 use bitvec::BitArr;
 use ironrdp_pdu::input::fast_path::{FastPathInputEvent, KeyboardFlags};

@@ -1,3 +1,5 @@
+#![doc = include_str!("../README.md")]
+
 use bitflags::bitflags;
 use ironrdp_dvc::DvcEncode;
 use num_derive::{FromPrimitive, ToPrimitive};

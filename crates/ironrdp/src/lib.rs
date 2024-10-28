@@ -1,6 +1,4 @@
-//! Rust implementation of the Remote Desktop Protocol (RDP).
-//!
-//! This is a meta crate re-exporting other ironrdp crates for convenience.
+#![doc = include_str!("../../../README.md")]
 
 #[cfg(feature = "acceptor")]
 pub use ironrdp_acceptor as acceptor;

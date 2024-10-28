@@ -1,6 +1,4 @@
-//! This crate provides implementation of [NOW_PROTO] protocol.
-//!
-//! [NOW_PROTO]: ../../../docs/NOW-spec.md
+#![doc = include_str!("../README.md")]
 #![cfg_attr(not(feature = "std"), no_std)]
 
 extern crate alloc;
