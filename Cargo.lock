@@ -2367,9 +2367,11 @@ dependencies = [
  "ironrdp-rdpsnd",
  "ironrdp-svc",
  "ironrdp-tokio",
+ "rustls-pemfile",
  "tokio",
  "tokio-rustls",
  "tracing",
+ "x509-cert",
 ]
 
 [[package]]
