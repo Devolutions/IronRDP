@@ -182,6 +182,7 @@ where
         } else {
             EarlyUserAuthResult::AccessDenied
         };
+
         buf.clear();
         result
             .to_buffer(&mut *buf)
@@ -194,6 +195,7 @@ where
     }
 
     result?;
+
     acceptor.mark_credssp_as_done();
 
     Ok(())
