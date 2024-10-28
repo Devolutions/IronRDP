@@ -94,7 +94,7 @@ impl<T> Pdu<T> {
 }
 
 impl<T: HeaderlessDecode> Pdu<T> {
-    /// Decodes the instance from a buffer stripping it of its [`StreamHeader`] and [`TypeHeader`].
+    /// Decodes the instance from a buffer stripping it of its headers.
     pub fn decode(src: &mut ReadCursor<'_>, charset: Option<CharacterSet>) -> DecodeResult<Pdu<T>> {
         // We expect `StreamHeader::decode`, `TypeHeader::decode`, and `T::decode` to each
         // call `ensure_size!` to ensure that the buffer is large enough, so we can safely
@@ -146,11 +146,11 @@ pub trait Encode: ironrdp_core::Encode + Send + std::fmt::Debug {}
 ///
 /// Implementers should typically implement this trait instead of [`Encode`].
 pub trait HeaderlessEncode: Send + std::fmt::Debug {
-    /// Encodes the instance into a buffer sans its [`StreamHeader`] and [`TypeHeader`].
+    /// Encodes the instance into a buffer sans its headers.
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()>;
     /// Returns the name associated with this RPCE PDU.
     fn name(&self) -> &'static str;
-    /// Returns the size of the instance sans its [`StreamHeader`] and [`TypeHeader`].
+    /// Returns the size of the instance sans its headers.
     fn size(&self) -> usize;
 }
 
@@ -160,7 +160,7 @@ pub trait HeaderlessEncode: Send + std::fmt::Debug {
 /// and then call [`Pdu::decode`] to decode the instance. See [`Pdu`] for more
 /// details and an example.
 pub trait HeaderlessDecode: Sized {
-    /// Decodes the instance from a buffer sans its [`StreamHeader`] and [`TypeHeader`].
+    /// Decodes the instance from a buffer sans its headers.
     ///
     /// `charset` is an optional parameter that can be used to specify the character set
     /// when relevant. This is useful for accounting for the "A" vs "W" variants of certain

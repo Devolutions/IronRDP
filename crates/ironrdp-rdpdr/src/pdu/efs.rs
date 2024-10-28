@@ -734,8 +734,8 @@ bitflags! {
 ///
 /// [Server Client ID Confirm (section 2.2.2.6)]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/bbbb9666-6994-4cf6-8e65-0d46eb319c6e
 /// [2.2.2.3]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/d6fe6d1b-c145-4a6f-99aa-4fe3cdcea398
-const VERSION_MINOR_12: u16 = 0x000C;
-const VERSION_MAJOR: u16 = 0x0001;
+pub const VERSION_MINOR_12: u16 = 0x000C;
+pub const VERSION_MAJOR: u16 = 0x0001;
 
 /// [2.2.2.9] Client Device List Announce Request (DR_CORE_DEVICELIST_ANNOUNCE_REQ)
 /// and [2.2.3.1] Client Device List Announce (DR_DEVICELIST_ANNOUNCE)
@@ -2707,7 +2707,7 @@ impl ClientDriveQueryDirectoryResponse {
 ///
 /// We only need to read the buffer up to the FileInformationClass to get the job done, so the rest of the fields in
 /// this structure are discarded. See FreeRDP:
-/// https://github.com/FreeRDP/FreeRDP/blob/511444a65e7aa2f537c5e531fa68157a50c1bd4d/channels/drive/client/drive_main.c#L464
+/// <https://github.com/FreeRDP/FreeRDP/blob/511444a65e7aa2f537c5e531fa68157a50c1bd4d/channels/drive/client/drive_main.c#L464>
 ///
 /// [2.2.3.3.6]: https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/484e622d-0e2b-423c-8461-7de38878effb
 #[derive(Debug, PartialEq, Clone)]
@@ -2756,7 +2756,7 @@ impl ServerDriveQueryVolumeInformationRequest {
 
 /// [2.5] File System Information Classes [MS-FSCC]
 ///
-/// [2.5] https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-fscc/ee12042a-9352-46e3-9f67-c094b75fe6c3
+/// [2.5] <https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-fscc/ee12042a-9352-46e3-9f67-c094b75fe6c3>
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub struct FileSystemInformationClassLevel(u32);
 
