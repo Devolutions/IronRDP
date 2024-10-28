@@ -17,7 +17,7 @@ use std::borrow::Cow;
 use std::marker::PhantomData;
 
 use bitflags::bitflags;
-use ironrdp_core::{assert_obj_safe, DecodeResult, EncodeResult, ReadCursor, WriteBuf, WriteCursor};
+use ironrdp_core::{assert_obj_safe, AsAny, DecodeResult, EncodeResult, ReadCursor, WriteBuf, WriteCursor};
 use ironrdp_core::{decode_cursor, encode_buf, Encode};
 use ironrdp_pdu::gcc::{ChannelName, ChannelOptions};
 use ironrdp_pdu::{decode_err, mcs, PduResult};
@@ -55,8 +55,8 @@ impl<P: SvcProcessor> From<SvcProcessorMessages<P>> for Vec<SvcMessage> {
     }
 }
 
-/// Represents a message that, when encoded, forms a complete PDU for a given static virtual channel, sans any [`ChannelPduHeader`].
-/// In other words, this marker should be applied to a message that is ready to be chunkified (have [`ChannelPduHeader`]s added,
+/// Represents a message that, when encoded, forms a complete PDU for a given static virtual channel, sans any Channel PDU Header.
+/// In other words, this marker should be applied to a message that is ready to be chunkified (have channel PDU headers added,
 /// splitting it into chunks if necessary) and wrapped in MCS, x224, and tpkt headers for sending over the wire.
 pub trait SvcEncode: Encode + Send {}
 
@@ -234,7 +234,7 @@ pub fn server_encode_svc_messages(
 /// communication between client and server components over the main data connection.
 /// There are at most 31 (optional) static virtual channels that can be created for a single connection, for a
 /// total of 32 static channels when accounting for the non-optional I/O channel.
-pub trait SvcProcessor: ironrdp_core::AsAny + fmt::Debug + Send {
+pub trait SvcProcessor: AsAny + fmt::Debug + Send {
     /// Returns the name of the static virtual channel corresponding to this processor.
     fn channel_name(&self) -> ChannelName;
 
