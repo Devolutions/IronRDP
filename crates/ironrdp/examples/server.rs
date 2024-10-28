@@ -6,11 +6,9 @@
 #[macro_use]
 extern crate tracing;
 
-use std::fs::File;
-use std::io::BufReader;
 use std::net::SocketAddr;
 use std::num::NonZeroU16;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use anyhow::Context as _;
@@ -22,14 +20,11 @@ use ironrdp_cliprdr_native::StubCliprdrBackend;
 use ironrdp_server::{
     BitmapUpdate, CliprdrServerFactory, Credentials, DisplayUpdate, KeyboardEvent, MouseEvent, PixelFormat, PixelOrder,
     RdpServer, RdpServerDisplay, RdpServerDisplayUpdates, RdpServerInputHandler, ServerEvent, ServerEventSender,
-    SoundServerFactory,
+    SoundServerFactory, TlsIdentityCtx,
 };
 use rand::prelude::*;
-use rustls_pemfile::{certs, pkcs8_private_keys};
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::time::{self, sleep, Duration};
-use tokio_rustls::rustls;
-use tokio_rustls::TlsAcceptor;
 
 const HELP: &str = "\
 USAGE:
@@ -132,55 +127,6 @@ fn setup_logging() -> anyhow::Result<()> {
         .context("failed to set tracing global subscriber")?;
 
     Ok(())
-}
-
-struct TlsIdentityCtx {
-    cert: rustls::pki_types::CertificateDer<'static>,
-    priv_key: rustls::pki_types::PrivateKeyDer<'static>,
-    pub_key: Vec<u8>,
-}
-
-impl TlsIdentityCtx {
-    fn init_from_paths(cert_path: &Path, key_path: &Path) -> anyhow::Result<Self> {
-        use x509_cert::der::Decode as _;
-
-        let cert = certs(&mut BufReader::new(File::open(cert_path)?))
-            .next()
-            .context("no certificate")??;
-
-        let pub_key = {
-            let cert = x509_cert::Certificate::from_der(&cert).map_err(std::io::Error::other)?;
-            cert.tbs_certificate
-                .subject_public_key_info
-                .subject_public_key
-                .as_bytes()
-                .ok_or_else(|| std::io::Error::other("subject public key BIT STRING is not aligned"))?
-                .to_owned()
-        };
-
-        let priv_key = pkcs8_private_keys(&mut BufReader::new(File::open(key_path)?))
-            .next()
-            .context("no private key")?
-            .map(rustls::pki_types::PrivateKeyDer::from)?;
-
-        Ok(Self {
-            cert,
-            priv_key,
-            pub_key,
-        })
-    }
-
-    fn make_acceptor(&self) -> anyhow::Result<TlsAcceptor> {
-        let mut server_config = rustls::ServerConfig::builder()
-            .with_no_client_auth()
-            .with_single_cert(vec![self.cert.clone()], self.priv_key.clone_key())
-            .context("bad certificate/key")?;
-
-        // This adds support for the SSLKEYLOGFILE env variable (https://wiki.wireshark.org/TLS#using-the-pre-master-secret)
-        server_config.key_log = Arc::new(rustls::KeyLogFile::new());
-
-        Ok(TlsAcceptor::from(Arc::new(server_config)))
-    }
 }
 
 #[derive(Clone, Debug)]

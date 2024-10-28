@@ -2046,7 +2046,6 @@ dependencies = [
  "ironrdp-tls",
  "pico-args",
  "rand",
- "rustls-pemfile",
  "tokio",
  "tokio-rustls",
  "tracing",
