@@ -59,7 +59,7 @@ fn install_wasm2wat(sh: &Shell) -> anyhow::Result<()> {
     let platform_suffix = if cfg!(target_os = "windows") {
         "windows"
     } else if cfg!(target_os = "macos") {
-        "macos-12"
+        "macos-14"
     } else {
         "ubuntu"
     };
