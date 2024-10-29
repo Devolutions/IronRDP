@@ -1,4 +1,7 @@
 #![doc = include_str!("../README.md")]
+#![doc(
+    html_logo_url = "https://webdevolutions.blob.core.windows.net/images/projects/devolutions/logos/devolutions-icon-shadow.svg"
+)]
 #![allow(unused_crate_dependencies)] // false positives because there is both a library and a binary
 
 // No need to be as strict as in production libraries

@@ -1,4 +1,7 @@
 #![doc = include_str!("../README.md")]
+#![doc(
+    html_logo_url = "https://webdevolutions.blob.core.windows.net/images/projects/devolutions/logos/devolutions-icon-shadow.svg"
+)]
 #![allow(clippy::arithmetic_side_effects)] // FIXME: remove
 #![allow(clippy::cast_lossless)] // FIXME: remove
 #![allow(clippy::cast_possible_truncation)] // FIXME: remove
