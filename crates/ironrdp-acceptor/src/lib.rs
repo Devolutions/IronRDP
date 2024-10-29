@@ -11,7 +11,7 @@ use ironrdp_async::{single_sequence_step, Framed, FramedRead, FramedWrite, Strea
 use ironrdp_connector::credssp::KerberosConfig;
 use ironrdp_connector::sspi::credssp::EarlyUserAuthResult;
 use ironrdp_connector::sspi::{AuthIdentity, Username};
-use ironrdp_connector::{custom_err, ConnectorResult, ServerName};
+use ironrdp_connector::{custom_err, general_err, ConnectorResult, ServerName};
 use ironrdp_core::WriteBuf;
 
 mod channel_connection;
@@ -129,7 +129,10 @@ where
     where
         S: FramedRead + FramedWrite,
     {
-        let creds = acceptor.creds.as_ref().unwrap();
+        let creds = acceptor
+            .creds
+            .as_ref()
+            .ok_or_else(|| general_err!("no credentials while doing credssp"))?;
         let username = Username::new(&creds.username, None).map_err(|e| custom_err!("invalid username", e))?;
         let identity = AuthIdentity {
             username,
