@@ -29,6 +29,7 @@ native-tls = ["ironrdp-tls/native-tls"]
 
 # Protocols
 ironrdp = { workspace = true, features = [
+    "session",
     "input",
     "graphics",
     "dvc",

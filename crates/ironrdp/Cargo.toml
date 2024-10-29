@@ -16,7 +16,7 @@ doctest = false
 test = false
 
 [features]
-default = ["core", "pdu", "connector", "session"]
+default = ["core", "pdu"]
 core = ["dep:ironrdp-core"]
 pdu = ["dep:ironrdp-pdu"]
 cliprdr = ["dep:ironrdp-cliprdr"]
@@ -50,9 +50,7 @@ ironrdp-displaycontrol = { workspace = true, optional = true }
 
 [dev-dependencies]
 ironrdp-blocking.workspace = true
-ironrdp-server.workspace = true
 ironrdp-cliprdr-native.workspace = true
-ironrdp-tls = { workspace = true, features = ["rustls"] }
 anyhow = "1"
 async-trait = "0.1"
 bmp = "0.5"
@@ -60,7 +58,6 @@ pico-args = "0.5"
 x509-cert = { version = "0.2", default-features = false, features = ["std"] }
 tracing.workspace = true
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-tokio = { version = "1.40", features = ["full"] }
 tokio-rustls = "0.26"
 rand = "0.8"
 
@@ -71,11 +68,12 @@ all-features = true
 [[example]]
 name = "screenshot"
 doc-scrape-examples = true
+required-features = ["session"]
 
 [[example]]
 name = "server"
 doc-scrape-examples = true
-required-features = ["cliprdr", "rdpsnd"]
+required-features = ["cliprdr", "rdpsnd", "server"]
 
 [lints]
 workspace = true
