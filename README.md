@@ -17,7 +17,7 @@ Supported codecs:
 
 ## Examples
 
-### [`ironrdp-client`](./crates/ironrdp-client)
+### [`ironrdp-client`](https://github.com/Devolutions/IronRDP/tree/master/crates/ironrdp-client)
 
 A full-fledged RDP client based on IronRDP crates suite, and implemented using non-blocking, asynchronous I/O.
 
@@ -25,7 +25,7 @@ A full-fledged RDP client based on IronRDP crates suite, and implemented using n
 cargo run --bin ironrdp-client -- <HOSTNAME> --username <USERNAME> --password <PASSWORD>
 ```
 
-### [`screenshot`](./crates/ironrdp/examples/screenshot.rs)
+### [`screenshot`](https://github.com/Devolutions/IronRDP/blob/master/crates/ironrdp/examples/screenshot.rs)
 
 Example of utilizing IronRDP in a blocking, synchronous fashion.
 
@@ -64,7 +64,7 @@ Alternatively, you may change a few group policies using `gpedit.msc`:
 
 ## Architecture
 
-See the [ARCHITECTURE.md](./ARCHITECTURE.md) document.
+See the [ARCHITECTURE.md](https://github.com/Devolutions/IronRDP/blob/master/ARCHITECTURE.md) document.
 
 ## Getting help
 
