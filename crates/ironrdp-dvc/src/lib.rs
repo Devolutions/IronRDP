@@ -33,7 +33,7 @@ pub use server::*;
 pub mod pdu;
 
 /// Represents a message that, when encoded, forms a complete PDU for a given dynamic virtual channel.
-/// This means a message that is ready to be wrapped in [`dvc::CommonPdu::DataFirst`] and [`dvc::CommonPdu::Data`] PDUs
+/// This means a message that is ready to be wrapped in [`pdu::DataFirstPdu`] and [`pdu::DataPdu`] PDUs
 /// (being split into multiple of such PDUs if necessary).
 pub trait DvcEncode: Encode + Send {}
 pub type DvcMessage = Box<dyn DvcEncode>;
