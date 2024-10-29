@@ -1,5 +1,7 @@
 # IronRDP
 
+[![](https://docs.rs/ironrdp/badge.svg)](https://docs.rs/ironrdp/) [![](https://img.shields.io/crates/v/ironrdp)](https://crates.io/crates/ironrdp)
+
 A collection of Rust crates providing an implementation of the Microsoft Remote Desktop Protocol, with a focus on security.
 
 ## Demonstration
