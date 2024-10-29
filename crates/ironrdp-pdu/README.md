@@ -468,6 +468,9 @@ are considered to be known and defined. In such cases, `from_bits` also never fa
 precisely the same as `from_bits_retain`, except it’s less ergonomic because it returns a `Result`
 which must be needlessly handled.
 
+This crate is part of the [IronRDP] project.
+
+[IronRDP]: https://github.com/Devolutions/IronRDP
 [bitflags]: https://crates.io/crates/bitflags
 [from_bits]: https://docs.rs/bitflags/2.4.0/bitflags/example_generated/struct.Flags.html#method.from_bits
 [from_bits_truncate]: https://docs.rs/bitflags/2.4.0/bitflags/example_generated/struct.Flags.html#method.from_bits_truncate

@@ -57,3 +57,7 @@ ironrdp-tls = { version = "x.y.z", default-features = false }
 (This is worse when the crate is exposing other default features which are typically not disabled by default.)
 
 The stubbed backend is provided as an easy way to make the code compiles with minimal dependencies if required.
+
+This crate is part of the [IronRDP] project.
+
+[IronRDP]: https://github.com/Devolutions/IronRDP

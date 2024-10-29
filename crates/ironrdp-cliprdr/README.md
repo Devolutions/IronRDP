@@ -8,3 +8,7 @@ This library includes:
 - Clipboard backend API types for implementing OS-specific clipboard logic
 
 For concrete native clipboard backend implementations, see `ironrdp-cliprdr-native` crate.
+
+This crate is part of the [IronRDP] project.
+
+[IronRDP]: https://github.com/Devolutions/IronRDP
