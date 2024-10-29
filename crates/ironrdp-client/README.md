@@ -41,5 +41,8 @@ SSLKEYLOGFILE=/tmp/tls-secrets ironrdp-client <HOSTNAME> --username <USERNAME> -
 
 See this [awakecoding's repository][awakecoding-repository] explaining how to use the file in wireshark.
 
+This crate is part of the [IronRDP] project.
+
+[IronRDP]: https://github.com/Devolutions/IronRDP
 [awakecoding-repository]: https://github.com/awakecoding/wireshark-rdp#sslkeylogfile
 

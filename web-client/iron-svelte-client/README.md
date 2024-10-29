@@ -87,3 +87,7 @@ You can then start the dev server with either:
 
 You can build distribution files with `npm run build`.
 Files are to be found in `./iron-svelte-client/build/browser`.
+
+This crate is part of the [IronRDP] project.
+
+[IronRDP]: https://github.com/Devolutions/IronRDP

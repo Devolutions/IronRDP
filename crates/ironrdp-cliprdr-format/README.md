@@ -10,3 +10,7 @@ It would be easy to cause an overflow on a 16-bit architecture.
 However, it’s hard to imagine an RDP client running on such machines.
 Size of pointers on such architectures greatly limits the maximum size of the bitmap buffers.
 It’s likely the RDP client will choke on a big payload before overflowing because of this crate.
+
+This crate is part of the [IronRDP] project.
+
+[IronRDP]: https://github.com/Devolutions/IronRDP

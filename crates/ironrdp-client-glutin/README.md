@@ -7,3 +7,7 @@
     ```
 3. If the GUI has artifacts it can be dumped to a file using the gfx_dump_file parameter. Later the ironrdp-replay-client binary can be used to debug and fix any issues 
  in the renderer.
+
+This crate is part of the [IronRDP] project.
+
+[IronRDP]: https://github.com/Devolutions/IronRDP
