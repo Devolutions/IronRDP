@@ -4,7 +4,7 @@ A collection of Rust crates providing an implementation of the Microsoft Remote 
 
 ## Demonstration
 
-https://user-images.githubusercontent.com/3809077/202049929-76f42471-aeb0-41da-9118-0dc6ea491bd2.mp4
+<https://user-images.githubusercontent.com/3809077/202049929-76f42471-aeb0-41da-9118-0dc6ea491bd2.mp4>
 
 ## Video Codec Support
 
