@@ -1,6 +1,7 @@
 use ironrdp_core::{cast_length, other_err, EncodeResult};
 use ironrdp_graphics::color_conversion::to_64x64_ycbcr_tile;
 use ironrdp_graphics::rfx_encode_component;
+use ironrdp_graphics::rlgr::RlgrError;
 use ironrdp_pdu::codecs::rfx::{self, OperatingMode, RfxChannel, RfxChannelHeight, RfxChannelWidth};
 use ironrdp_pdu::rdp::capability_sets::EntropyBits;
 use ironrdp_pdu::PduBufferParsing;
@@ -59,58 +60,8 @@ impl RfxEncoder {
         let region = rfx::RegionPdu { rectangles };
         let quant = rfx::Quant::default();
 
-        let bpp = usize::from(bitmap.format.bytes_per_pixel());
-        let width = usize::from(bitmap.width.get());
-        let height = usize::from(bitmap.height.get());
-
-        let tiles_x = (width + 63) / 64;
-        let tiles_y = (height + 63) / 64;
-        let ntiles = tiles_x * tiles_y;
-        let mut tiles = Vec::with_capacity(ntiles);
-        let mut data = vec![0u8; 64 * 64 * 3 * ntiles];
-        let mut rest = data.as_mut_slice();
-
-        for tile_y in 0..tiles_y {
-            for tile_x in 0..tiles_x {
-                let x = tile_x * 64;
-                let y = tile_y * 64;
-                let tile_width = std::cmp::min(width - x, 64);
-                let tile_height = std::cmp::min(height - y, 64);
-
-                let input = &bitmap.data[y * bitmap.stride + x * bpp..];
-
-                let y = &mut [0i16; 4096];
-                let cb = &mut [0i16; 4096];
-                let cr = &mut [0i16; 4096];
-                to_64x64_ycbcr_tile(input, tile_width, tile_height, bitmap.stride, bitmap.format, y, cb, cr);
-
-                let (y_data, new_rest) = rest.split_at_mut(4096);
-                let (cb_data, new_rest) = new_rest.split_at_mut(4096);
-                let (cr_data, new_rest) = new_rest.split_at_mut(4096);
-                rest = new_rest;
-                let len = rfx_encode_component(y, y_data, &quant, entropy_algorithm)
-                    .map_err(|e| other_err!("rfxenc", source: e))?;
-                let y_data = &y_data[..len];
-                let len = rfx_encode_component(cb, cb_data, &quant, entropy_algorithm)
-                    .map_err(|e| other_err!("rfxenc", source: e))?;
-                let cb_data = &cb_data[..len];
-                let len = rfx_encode_component(cr, cr_data, &quant, entropy_algorithm)
-                    .map_err(|e| other_err!("rfxenc", source: e))?;
-                let cr_data = &cr_data[..len];
-
-                let tile = rfx::Tile {
-                    y_quant_index: 0,
-                    cb_quant_index: 0,
-                    cr_quant_index: 0,
-                    x: u16::try_from(tile_x).unwrap(),
-                    y: u16::try_from(tile_y).unwrap(),
-                    y_data,
-                    cb_data,
-                    cr_data,
-                };
-                tiles.push(tile);
-            }
-        }
+        let (encoder, mut data) = UpdateEncoder::new(bitmap, quant.clone(), entropy_algorithm);
+        let tiles = encoder.encode(&mut data)?;
 
         let quants = vec![quant];
         let tile_set = rfx::TileSetPdu {
@@ -146,5 +97,125 @@ impl RfxEncoder {
             tile_set,
             frame_end
         )
+    }
+}
+
+struct UpdateEncoder<'a> {
+    bitmap: &'a BitmapUpdate,
+    quant: rfx::Quant,
+    entropy_algorithm: rfx::EntropyAlgorithm,
+}
+
+struct UpdateEncoderData(Vec<u8>);
+
+struct EncodedTile<'a> {
+    y_data: &'a [u8],
+    cb_data: &'a [u8],
+    cr_data: &'a [u8],
+}
+
+impl<'a> UpdateEncoder<'a> {
+    fn new(
+        bitmap: &'a BitmapUpdate,
+        quant: rfx::Quant,
+        entropy_algorithm: rfx::EntropyAlgorithm,
+    ) -> (Self, UpdateEncoderData) {
+        let this = Self {
+            bitmap,
+            quant,
+            entropy_algorithm,
+        };
+        let data = this.alloc_data();
+
+        (this, data)
+    }
+
+    fn alloc_data(&self) -> UpdateEncoderData {
+        let (tiles_x, tiles_y) = self.tiles_xy();
+
+        UpdateEncoderData(vec![0u8; 64 * 64 * 3 * tiles_x * tiles_y])
+    }
+
+    fn tiles_xy(&self) -> (usize, usize) {
+        (
+            self.bitmap.width.get().div_ceil(64).into(),
+            self.bitmap.height.get().div_ceil(64).into(),
+        )
+    }
+
+    fn encode(&self, data: &'a mut UpdateEncoderData) -> EncodeResult<Vec<rfx::Tile<'a>>> {
+        let (tiles_x, tiles_y) = self.tiles_xy();
+
+        let chunks = data.0.chunks_mut(64 * 64 * 3);
+        let tiles: Vec<_> = (0..tiles_y).flat_map(|y| (0..tiles_x).map(move |x| (x, y))).collect();
+
+        chunks
+            .zip(tiles)
+            .map(|(buf, (tile_x, tile_y))| {
+                let EncodedTile {
+                    y_data,
+                    cb_data,
+                    cr_data,
+                } = self
+                    .encode_tile(tile_x, tile_y, buf)
+                    .map_err(|e| other_err!("rfxenc", source: e))?;
+
+                let tile = rfx::Tile {
+                    y_quant_index: 0,
+                    cb_quant_index: 0,
+                    cr_quant_index: 0,
+                    x: u16::try_from(tile_x).unwrap(),
+                    y: u16::try_from(tile_y).unwrap(),
+                    y_data,
+                    cb_data,
+                    cr_data,
+                };
+                Ok(tile)
+            })
+            .collect()
+    }
+
+    fn encode_tile<'b>(&self, tile_x: usize, tile_y: usize, buf: &'b mut [u8]) -> Result<EncodedTile<'b>, RlgrError> {
+        assert!(buf.len() >= 4096 * 3);
+
+        let bpp: usize = self.bitmap.format.bytes_per_pixel().into();
+        let width: usize = self.bitmap.width.get().into();
+        let height: usize = self.bitmap.height.get().into();
+
+        let x = tile_x * 64;
+        let y = tile_y * 64;
+        let tile_width = std::cmp::min(width - x, 64);
+        let tile_height = std::cmp::min(height - y, 64);
+        let input = &self.bitmap.data[y * self.bitmap.stride + x * bpp..];
+
+        let y = &mut [0i16; 4096];
+        let cb = &mut [0i16; 4096];
+        let cr = &mut [0i16; 4096];
+        to_64x64_ycbcr_tile(
+            input,
+            tile_width,
+            tile_height,
+            self.bitmap.stride,
+            self.bitmap.format,
+            y,
+            cb,
+            cr,
+        );
+
+        let (y_data, buf) = buf.split_at_mut(4096);
+        let (cb_data, cr_data) = buf.split_at_mut(4096);
+
+        let len = rfx_encode_component(y, y_data, &self.quant, self.entropy_algorithm)?;
+        let y_data = &y_data[..len];
+        let len = rfx_encode_component(cb, cb_data, &self.quant, self.entropy_algorithm)?;
+        let cb_data = &cb_data[..len];
+        let len = rfx_encode_component(cr, cr_data, &self.quant, self.entropy_algorithm)?;
+        let cr_data = &cr_data[..len];
+
+        Ok(EncodedTile {
+            y_data,
+            cb_data,
+            cr_data,
+        })
     }
 }
