@@ -38,6 +38,7 @@ use crate::{builder, capabilities, SoundServerFactory};
 pub struct RdpServerOptions {
     pub addr: SocketAddr,
     pub security: RdpServerSecurity,
+    pub with_remote_fx: bool,
 }
 
 #[derive(Clone)]
@@ -694,14 +695,14 @@ impl RdpServer {
                             // the last parsed here.
                             rdp::capability_sets::CodecProperty::RemoteFx(
                                 rdp::capability_sets::RemoteFxContainer::ClientContainer(c),
-                            ) => {
+                            ) if self.opts.with_remote_fx => {
                                 for caps in c.caps_data.0 .0 {
                                     rfxcodec = Some((caps.entropy_bits, codec.id));
                                 }
                             }
                             rdp::capability_sets::CodecProperty::ImageRemoteFx(
                                 rdp::capability_sets::RemoteFxContainer::ClientContainer(c),
-                            ) => {
+                            ) if self.opts.with_remote_fx => {
                                 for caps in c.caps_data.0 .0 {
                                     rfxcodec = Some((caps.entropy_bits, codec.id));
                                 }
