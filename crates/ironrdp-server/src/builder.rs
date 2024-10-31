@@ -25,6 +25,7 @@ pub struct WantsDisplay {
 pub struct BuilderDone {
     addr: SocketAddr,
     security: RdpServerSecurity,
+    with_remote_fx: bool,
     handler: Box<dyn RdpServerInputHandler>,
     display: Box<dyn RdpServerDisplay>,
     cliprdr_factory: Option<Box<dyn CliprdrServerFactory>>,
@@ -123,6 +124,7 @@ impl RdpServerBuilder<WantsDisplay> {
                 display: Box::new(display),
                 sound_factory: None,
                 cliprdr_factory: None,
+                with_remote_fx: true,
             },
         }
     }
@@ -136,6 +138,7 @@ impl RdpServerBuilder<WantsDisplay> {
                 display: Box::new(NoopDisplay),
                 sound_factory: None,
                 cliprdr_factory: None,
+                with_remote_fx: true,
             },
         }
     }
@@ -152,11 +155,17 @@ impl RdpServerBuilder<BuilderDone> {
         self
     }
 
+    pub fn with_remote_fx(mut self, enabled: bool) -> Self {
+        self.state.with_remote_fx = enabled;
+        self
+    }
+
     pub fn build(self) -> RdpServer {
         RdpServer::new(
             RdpServerOptions {
                 addr: self.state.addr,
                 security: self.state.security,
+                with_remote_fx: self.state.with_remote_fx,
             },
             self.state.handler,
             self.state.display,
