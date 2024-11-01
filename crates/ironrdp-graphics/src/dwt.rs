@@ -1,30 +1,30 @@
 use ironrdp_pdu::utils::SplitTo as _;
 
 pub fn encode(buffer: &mut [i16], temp_buffer: &mut [i16]) {
-    encode_block(&mut *buffer, temp_buffer, 32);
-    encode_block(&mut buffer[3072..], temp_buffer, 16);
-    encode_block(&mut buffer[3840..], temp_buffer, 8);
+    encode_block::<32>(&mut *buffer, temp_buffer);
+    encode_block::<16>(&mut buffer[3072..], temp_buffer);
+    encode_block::<8>(&mut buffer[3840..], temp_buffer);
 }
 
-fn encode_block(buffer: &mut [i16], temp_buffer: &mut [i16], subband_width: usize) {
-    dwt_vertical(buffer, temp_buffer, subband_width);
-    dwt_horizontal(buffer, temp_buffer, subband_width);
+fn encode_block<const SUBBAND_WIDTH: usize>(buffer: &mut [i16], temp_buffer: &mut [i16]) {
+    dwt_vertical::<SUBBAND_WIDTH>(buffer, temp_buffer);
+    dwt_horizontal::<SUBBAND_WIDTH>(buffer, temp_buffer);
 }
 
 // DWT in vertical direction, results in 2 sub-bands in L, H order in tmp buffer dwt.
-fn dwt_vertical(buffer: &[i16], dwt: &mut [i16], subband_width: usize) {
-    let total_width = subband_width * 2;
+fn dwt_vertical<const SUBBAND_WIDTH: usize>(buffer: &[i16], dwt: &mut [i16]) {
+    let total_width = SUBBAND_WIDTH * 2;
 
     for x in 0..total_width {
-        for n in 0..subband_width {
+        for n in 0..SUBBAND_WIDTH {
             let y = n * 2;
             let l_index = n * total_width + x;
-            let h_index = l_index + subband_width * total_width;
+            let h_index = l_index + SUBBAND_WIDTH * total_width;
             let src_index = y * total_width + x;
 
             dwt[h_index] = ((i32::from(buffer[src_index + total_width])
                 - ((i32::from(buffer[src_index])
-                    + i32::from(buffer[src_index + if n < subband_width - 1 { 2 * total_width } else { 0 }]))
+                    + i32::from(buffer[src_index + if n < SUBBAND_WIDTH - 1 { 2 * total_width } else { 0 }]))
                     >> 1))
                 >> 1) as i16;
             dwt[l_index] = (i32::from(buffer[src_index])
@@ -41,9 +41,9 @@ fn dwt_vertical(buffer: &[i16], dwt: &mut [i16], subband_width: usize) {
 // LL(3) order, stored in original buffer.
 // The lower part L generates LL(3) and HL(0).
 // The higher part H generates LH(1) and HH(2).
-fn dwt_horizontal(mut buffer: &mut [i16], dwt: &[i16], subband_width: usize) {
-    let total_width = subband_width * 2;
-    let squared_subband_width = subband_width.pow(2);
+fn dwt_horizontal<const SUBBAND_WIDTH: usize>(mut buffer: &mut [i16], dwt: &[i16]) {
+    let total_width = SUBBAND_WIDTH * 2;
+    let squared_subband_width = SUBBAND_WIDTH.pow(2);
 
     let mut hl = buffer.split_to(squared_subband_width);
     let mut lh = buffer.split_to(squared_subband_width);
@@ -51,14 +51,14 @@ fn dwt_horizontal(mut buffer: &mut [i16], dwt: &[i16], subband_width: usize) {
     let mut ll = buffer;
     let (mut l_src, mut h_src) = dwt.split_at(squared_subband_width * 2);
 
-    for _ in 0..subband_width {
+    for _ in 0..SUBBAND_WIDTH {
         // L
-        for n in 0..subband_width {
+        for n in 0..SUBBAND_WIDTH {
             let x = n * 2;
 
             // HL
             hl[n] = ((i32::from(l_src[x + 1])
-                - ((i32::from(l_src[x]) + i32::from(l_src[if n < subband_width - 1 { x + 2 } else { x }])) >> 1))
+                - ((i32::from(l_src[x]) + i32::from(l_src[if n < SUBBAND_WIDTH - 1 { x + 2 } else { x }])) >> 1))
                 >> 1) as i16;
             // LL
             ll[n] = (i32::from(l_src[x])
@@ -70,12 +70,12 @@ fn dwt_horizontal(mut buffer: &mut [i16], dwt: &[i16], subband_width: usize) {
         }
 
         // H
-        for n in 0..subband_width {
+        for n in 0..SUBBAND_WIDTH {
             let x = n * 2;
 
             // HH
             hh[n] = ((i32::from(h_src[x + 1])
-                - ((i32::from(h_src[x]) + i32::from(h_src[if n < subband_width - 1 { x + 2 } else { x }])) >> 1))
+                - ((i32::from(h_src[x]) + i32::from(h_src[if n < SUBBAND_WIDTH - 1 { x + 2 } else { x }])) >> 1))
                 >> 1) as i16;
             // LH
             lh[n] = (i32::from(h_src[x])
@@ -86,10 +86,10 @@ fn dwt_horizontal(mut buffer: &mut [i16], dwt: &[i16], subband_width: usize) {
                 }) as i16;
         }
 
-        hl = &mut hl[subband_width..];
-        lh = &mut lh[subband_width..];
-        hh = &mut hh[subband_width..];
-        ll = &mut ll[subband_width..];
+        hl = &mut hl[SUBBAND_WIDTH..];
+        lh = &mut lh[SUBBAND_WIDTH..];
+        hh = &mut hh[SUBBAND_WIDTH..];
+        ll = &mut ll[SUBBAND_WIDTH..];
 
         l_src = &l_src[total_width..];
         h_src = &h_src[total_width..];
