@@ -29,28 +29,44 @@ where
     }
 }
 
-fn pixel_format_to_rgb_fn(format: PixelFormat) -> fn(&[u8]) -> Rgb {
+fn xrgb_to_rgb(pixel: &[u8]) -> Rgb {
+    Rgb {
+        r: pixel[1],
+        g: pixel[2],
+        b: pixel[3],
+    }
+}
+
+fn xbgr_to_rgb(pixel: &[u8]) -> Rgb {
+    Rgb {
+        b: pixel[1],
+        g: pixel[2],
+        r: pixel[3],
+    }
+}
+
+fn bgrx_to_rgb(pixel: &[u8]) -> Rgb {
+    Rgb {
+        b: pixel[0],
+        g: pixel[1],
+        r: pixel[2],
+    }
+}
+
+fn rgbx_to_rgb(pixel: &[u8]) -> Rgb {
+    Rgb {
+        r: pixel[0],
+        g: pixel[1],
+        b: pixel[2],
+    }
+}
+
+const fn pixel_format_to_rgb_fn(format: PixelFormat) -> fn(&[u8]) -> Rgb {
     match format {
-        PixelFormat::ARgb32 | PixelFormat::XRgb32 => |pixel: &[u8]| Rgb {
-            r: pixel[1],
-            g: pixel[2],
-            b: pixel[3],
-        },
-        PixelFormat::ABgr32 | PixelFormat::XBgr32 => |pixel: &[u8]| Rgb {
-            b: pixel[1],
-            g: pixel[2],
-            r: pixel[3],
-        },
-        PixelFormat::BgrA32 | PixelFormat::BgrX32 => |pixel: &[u8]| Rgb {
-            b: pixel[0],
-            g: pixel[1],
-            r: pixel[2],
-        },
-        PixelFormat::RgbA32 | PixelFormat::RgbX32 => |pixel: &[u8]| Rgb {
-            r: pixel[0],
-            g: pixel[1],
-            b: pixel[2],
-        },
+        PixelFormat::ARgb32 | PixelFormat::XRgb32 => xrgb_to_rgb,
+        PixelFormat::ABgr32 | PixelFormat::XBgr32 => xbgr_to_rgb,
+        PixelFormat::BgrA32 | PixelFormat::BgrX32 => bgrx_to_rgb,
+        PixelFormat::RgbA32 | PixelFormat::RgbX32 => rgbx_to_rgb,
     }
 }
 
