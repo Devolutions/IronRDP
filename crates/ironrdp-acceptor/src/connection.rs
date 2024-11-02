@@ -8,6 +8,7 @@ use ironrdp_connector::{
 use ironrdp_core::decode;
 use ironrdp_core::WriteBuf;
 use ironrdp_pdu as pdu;
+use ironrdp_pdu::nego::SecurityProtocol;
 use ironrdp_pdu::x224::X224;
 use ironrdp_svc::{StaticChannelSet, SvcServerProcessor};
 use pdu::rdp::capability_sets::CapabilitySet;
@@ -28,7 +29,7 @@ const USER_CHANNEL_ID: u16 = 1002;
 
 pub struct Acceptor {
     pub(crate) state: AcceptorState,
-    security: nego::SecurityProtocol,
+    security: SecurityProtocol,
     io_channel_id: u16,
     user_channel_id: u16,
     desktop_size: DesktopSize,
@@ -49,7 +50,7 @@ pub struct AcceptorResult {
 
 impl Acceptor {
     pub fn new(
-        security: nego::SecurityProtocol,
+        security: SecurityProtocol,
         desktop_size: DesktopSize,
         capabilities: Vec<CapabilitySet>,
         creds: Option<Credentials>,
@@ -121,7 +122,7 @@ impl Acceptor {
         }
     }
 
-    pub fn reached_security_upgrade(&self) -> Option<nego::SecurityProtocol> {
+    pub fn reached_security_upgrade(&self) -> Option<SecurityProtocol> {
         match self.state {
             AcceptorState::SecurityUpgrade { .. } => Some(self.security),
             _ => None,
@@ -173,39 +174,39 @@ pub enum AcceptorState {
 
     InitiationWaitRequest,
     InitiationSendConfirm {
-        requested_protocol: nego::SecurityProtocol,
+        requested_protocol: SecurityProtocol,
     },
     SecurityUpgrade {
-        requested_protocol: nego::SecurityProtocol,
-        protocol: nego::SecurityProtocol,
+        requested_protocol: SecurityProtocol,
+        protocol: SecurityProtocol,
     },
     Credssp {
-        requested_protocol: nego::SecurityProtocol,
-        protocol: nego::SecurityProtocol,
+        requested_protocol: SecurityProtocol,
+        protocol: SecurityProtocol,
     },
     BasicSettingsWaitInitial {
-        requested_protocol: nego::SecurityProtocol,
-        protocol: nego::SecurityProtocol,
+        requested_protocol: SecurityProtocol,
+        protocol: SecurityProtocol,
     },
     BasicSettingsSendResponse {
-        requested_protocol: nego::SecurityProtocol,
-        protocol: nego::SecurityProtocol,
+        requested_protocol: SecurityProtocol,
+        protocol: SecurityProtocol,
         early_capability: Option<gcc::ClientEarlyCapabilityFlags>,
         channels: Vec<(u16, Option<gcc::ChannelDef>)>,
     },
     ChannelConnection {
-        protocol: nego::SecurityProtocol,
+        protocol: SecurityProtocol,
         early_capability: Option<gcc::ClientEarlyCapabilityFlags>,
         channels: Vec<(u16, gcc::ChannelDef)>,
         connection: ChannelConnectionSequence,
     },
     RdpSecurityCommencement {
-        protocol: nego::SecurityProtocol,
+        protocol: SecurityProtocol,
         early_capability: Option<gcc::ClientEarlyCapabilityFlags>,
         channels: Vec<(u16, gcc::ChannelDef)>,
     },
     SecureSettingsExchange {
-        protocol: nego::SecurityProtocol,
+        protocol: SecurityProtocol,
         early_capability: Option<gcc::ClientEarlyCapabilityFlags>,
         channels: Vec<(u16, gcc::ChannelDef)>,
     },
@@ -310,7 +311,16 @@ impl Sequence for Acceptor {
             }
 
             AcceptorState::InitiationSendConfirm { requested_protocol } => {
-                let protocol = requested_protocol & self.security;
+                let protocols = requested_protocol & self.security;
+                let protocol = if protocols.intersects(SecurityProtocol::HYBRID_EX) {
+                    SecurityProtocol::HYBRID_EX
+                } else if protocols.intersects(SecurityProtocol::HYBRID) {
+                    SecurityProtocol::HYBRID
+                } else if protocols.intersects(SecurityProtocol::SSL) {
+                    SecurityProtocol::SSL
+                } else {
+                    return Err(ConnectorError::general("Failed to negotiate security protocol"));
+                };
                 let connection_confirm = nego::ConnectionConfirm::Response {
                     flags: nego::ResponseFlags::empty(),
                     protocol,
@@ -335,18 +345,17 @@ impl Sequence for Acceptor {
                 protocol,
             } => {
                 debug!(?requested_protocol);
-                let next_state =
-                    if protocol.intersects(nego::SecurityProtocol::HYBRID | nego::SecurityProtocol::HYBRID_EX) {
-                        AcceptorState::Credssp {
-                            requested_protocol,
-                            protocol,
-                        }
-                    } else {
-                        AcceptorState::BasicSettingsWaitInitial {
-                            requested_protocol,
-                            protocol,
-                        }
-                    };
+                let next_state = if protocol.intersects(SecurityProtocol::HYBRID | SecurityProtocol::HYBRID_EX) {
+                    AcceptorState::Credssp {
+                        requested_protocol,
+                        protocol,
+                    }
+                } else {
+                    AcceptorState::BasicSettingsWaitInitial {
+                        requested_protocol,
+                        protocol,
+                    }
+                };
                 (Written::Nothing, next_state)
             }
 
@@ -521,7 +530,7 @@ impl Sequence for Acceptor {
 
                 debug!(message = ?client_info, "Received");
 
-                if !protocol.intersects(nego::SecurityProtocol::HYBRID | nego::SecurityProtocol::HYBRID_EX) {
+                if !protocol.intersects(SecurityProtocol::HYBRID | SecurityProtocol::HYBRID_EX) {
                     let creds = client_info.client_info.credentials;
 
                     if self.creds.as_ref().map_or(true, |srv_creds| srv_creds != &creds) {
@@ -706,7 +715,7 @@ impl Sequence for Acceptor {
 fn create_gcc_blocks(
     io_channel: u16,
     channel_ids: Vec<u16>,
-    requested: nego::SecurityProtocol,
+    requested: SecurityProtocol,
     skip_channel_join: bool,
 ) -> gcc::ServerGccBlocks {
     gcc::ServerGccBlocks {
