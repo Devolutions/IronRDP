@@ -254,24 +254,33 @@ impl From<Rgb> for YCbCr {
         // terms need to be scaled by << 5 we simply scale the final
         // sum by >> 10
         const DIVISOR: f32 = (1 << 15) as f32;
+        const Y_R: i32 = (0.299 * DIVISOR) as i32;
+        const Y_G: i32 = (0.587 * DIVISOR) as i32;
+        const Y_B: i32 = (0.114 * DIVISOR) as i32;
+        const CB_R: i32 = (0.168_935 * DIVISOR) as i32;
+        const CB_G: i32 = (0.331_665 * DIVISOR) as i32;
+        const CB_B: i32 = (0.500_59 * DIVISOR) as i32;
+        const CR_R: i32 = (0.499_813 * DIVISOR) as i32;
+        const CR_G: i32 = (0.418_531 * DIVISOR) as i32;
+        const CR_B: i32 = (0.081_282 * DIVISOR) as i32;
 
         let r = i32::from(r);
         let g = i32::from(g);
         let b = i32::from(b);
 
-        let y_r = r.overflowing_mul((0.299 * DIVISOR) as i32).0;
-        let y_g = g.overflowing_mul((0.587 * DIVISOR) as i32).0;
-        let y_b = b.overflowing_mul((0.114 * DIVISOR) as i32).0;
+        let y_r = r.overflowing_mul(Y_R).0;
+        let y_g = g.overflowing_mul(Y_G).0;
+        let y_b = b.overflowing_mul(Y_B).0;
         let y = y_r.overflowing_add(y_g).0.overflowing_add(y_b).0 >> 10;
 
-        let cb_r = r.overflowing_mul((0.168_935 * DIVISOR) as i32).0;
-        let cb_g = g.overflowing_mul((0.331_665 * DIVISOR) as i32).0;
-        let cb_b = b.overflowing_mul((0.500_59 * DIVISOR) as i32).0;
+        let cb_r = r.overflowing_mul(CB_R).0;
+        let cb_g = g.overflowing_mul(CB_G).0;
+        let cb_b = b.overflowing_mul(CB_B).0;
         let cb = cb_b.overflowing_sub(cb_g).0.overflowing_sub(cb_r).0 >> 10;
 
-        let cr_r = r.overflowing_mul((0.499_813 * DIVISOR) as i32).0;
-        let cr_g = g.overflowing_mul((0.418_531 * DIVISOR) as i32).0;
-        let cr_b = b.overflowing_mul((0.081_282 * DIVISOR) as i32).0;
+        let cr_r = r.overflowing_mul(CR_R).0;
+        let cr_g = g.overflowing_mul(CR_G).0;
+        let cr_b = b.overflowing_mul(CR_B).0;
         let cr = cr_r.overflowing_sub(cr_g).0.overflowing_sub(cr_b).0 >> 10;
 
         Self {
