@@ -18,12 +18,11 @@ test = false
 [dependencies]
 bitflags = "2"
 ironrdp-core.workspace = true
-ironrdp-error = { path = "../ironrdp-error" }
 ironrdp-pdu = { path = "../ironrdp-pdu" }
 
 [features]
 default = ["std"]
-std = ["ironrdp-error/std", "ironrdp-pdu/std", "ironrdp-core/std"]
+std = ["ironrdp-pdu/std", "ironrdp-core/std"]
 
 [lints]
 workspace = true

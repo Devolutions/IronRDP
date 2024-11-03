@@ -94,7 +94,7 @@ noop_method_call = "warn"
 # missing_docs = "warn" # TODO: NOTE(@CBenoit): we probably want to ensure this in core tier crates only
 
 # == Compile-time / optimization == #
-# TODO: unused_crate_dependencies = "warn"
+unused_crate_dependencies = "warn"
 unused_macro_rules = "warn"
 
 [workspace.lints.clippy]

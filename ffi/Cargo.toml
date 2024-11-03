@@ -30,9 +30,6 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 [target.'cfg(windows)'.build-dependencies]
 embed-resource = "2.5"
 
-[target.'cfg(windows)'.dependencies]
-windows = { workspace = true, features = ["Win32_Foundation"] }
-
 [lints]
 workspace = true
 

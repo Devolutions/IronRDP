@@ -17,11 +17,10 @@ mod dvc;
 mod fuzz_regression;
 mod graphics;
 mod input;
+mod now_proto;
 mod pcb;
 mod pdu;
 mod rdcleanpath;
 mod rdpsnd;
 mod server_name;
 mod session;
-
-mod now_proto;

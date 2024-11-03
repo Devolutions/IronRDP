@@ -17,9 +17,8 @@ doctest = false
 test = false
 
 [dependencies]
-ironrdp-core.workspace = true
 ironrdp-cliprdr.workspace = true
-ironrdp-svc.workspace = true
+ironrdp-core.workspace = true
 tracing.workspace = true
 
 [target.'cfg(windows)'.dependencies]

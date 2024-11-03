@@ -16,13 +16,11 @@ doctest = false
 test = false
 
 [dependencies]
-ironrdp-dvc.workspace = true
-ironrdp-pdu.workspace = true
 bitflags.workspace = true
-
+ironrdp-core.workspace = true
+ironrdp-dvc.workspace = true
 num-derive.workspace = true # TODO: remove
 num-traits.workspace = true # TODO: remove
-ironrdp-core.workspace = true
 
 [lints]
 workspace = true
