@@ -9,8 +9,6 @@ fn main() {
 
 #[cfg(target_os = "windows")]
 mod win {
-    extern crate embed_resource;
-
     use std::env;
     use std::fs::File;
     use std::io::Write;
