@@ -11,6 +11,10 @@ authors.workspace = true
 keywords.workspace = true
 categories.workspace = true
 
+[lib]
+doctest = false
+test = false
+
 [dependencies]
 ironrdp-core.workspace = true
 ironrdp-dvc.workspace = true
