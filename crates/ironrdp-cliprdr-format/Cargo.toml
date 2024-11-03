@@ -17,10 +17,9 @@ doctest = false
 test = false
 
 [dependencies]
-ironrdp-pdu.workspace = true
-thiserror.workspace = true
-png = "0.17"
 ironrdp-core.workspace = true
+thiserror.workspace = true # FIXME: handwrite the Error trait implementations.
+png = "0.17"
 
 [lints]
 workspace = true

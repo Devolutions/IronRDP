@@ -15,7 +15,6 @@ categories.workspace = true
 doctest = false
 test = false
 
-
 [target.'cfg(any(target_os = "macos", target_os = "linux"))'.dependencies]
 ironrdp-core.workspace = true
 ironrdp-pdu.workspace = true

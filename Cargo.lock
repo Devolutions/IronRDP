@@ -1506,7 +1506,6 @@ dependencies = [
  "thiserror",
  "tracing",
  "tracing-subscriber",
- "windows 0.58.0",
 ]
 
 [[package]]
@@ -2309,7 +2308,6 @@ dependencies = [
  "bitflags 2.6.0",
  "ironrdp-core",
  "ironrdp-dvc",
- "ironrdp-pdu",
  "num-derive",
  "num-traits",
 ]
@@ -2393,7 +2391,6 @@ name = "ironrdp-cliprdr-format"
 version = "0.1.0"
 dependencies = [
  "ironrdp-core",
- "ironrdp-pdu",
  "png",
  "thiserror",
 ]
@@ -2404,7 +2401,6 @@ version = "0.1.0"
 dependencies = [
  "ironrdp-cliprdr",
  "ironrdp-core",
- "ironrdp-svc",
  "thiserror",
  "tracing",
  "windows 0.58.0",
@@ -2497,7 +2493,6 @@ dependencies = [
  "byteorder",
  "expect-test",
  "ironrdp-core",
- "ironrdp-error",
  "ironrdp-pdu",
  "lazy_static",
  "num-derive",
@@ -3148,7 +3143,6 @@ version = "0.1.0"
 dependencies = [
  "bitflags 2.6.0",
  "ironrdp-core",
- "ironrdp-error",
  "ironrdp-pdu",
 ]
 
