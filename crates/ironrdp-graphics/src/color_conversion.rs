@@ -135,15 +135,12 @@ pub fn to_64x64_ycbcr_tile(
     height: usize,
     stride: usize,
     format: PixelFormat,
-    y: &mut [i16],
-    cb: &mut [i16],
-    cr: &mut [i16],
+    y: &mut [i16; 64 * 64],
+    cb: &mut [i16; 64 * 64],
+    cr: &mut [i16; 64 * 64],
 ) {
     assert!(width <= 64);
     assert!(height <= 64);
-    assert_eq!(y.len(), 64 * 64);
-    assert_eq!(cb.len(), 64 * 64);
-    assert_eq!(cr.len(), 64 * 64);
 
     let to_rgb = pixel_format_to_rgb_fn(format);
     let bpp = format.bytes_per_pixel() as usize;

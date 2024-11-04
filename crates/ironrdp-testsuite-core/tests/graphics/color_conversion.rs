@@ -4,9 +4,9 @@ use ironrdp_graphics::{color_conversion::*, image_processing::PixelFormat};
 fn to_64x64_ycbcr() {
     let input = [0u8; 4];
 
-    let mut y = vec![0; 4096];
-    let mut cb = vec![0; 4096];
-    let mut cr = vec![0; 4096];
+    let mut y = [0; 64 * 64];
+    let mut cb = [0; 64 * 64];
+    let mut cr = [0; 64 * 64];
     to_64x64_ycbcr_tile(&input, 1, 1, 4, PixelFormat::ABgr32, &mut y, &mut cb, &mut cr);
 }
 
