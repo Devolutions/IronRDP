@@ -17,7 +17,7 @@ pub fn ycbcr_to_bgra(input: YCbCrBuffer<'_>, mut output: &mut [u8]) -> io::Resul
 
 fn iter_to_ycbcr<'a, I, C>(input: I, y: &mut [i16], cb: &mut [i16], cr: &mut [i16], conv: C)
 where
-    I: IntoIterator<Item = &'a [u8]>,
+    I: ExactSizeIterator<Item = &'a [u8]>,
     C: Fn(&[u8]) -> Rgb,
 {
     for (i, pixel) in input.into_iter().enumerate() {
@@ -141,6 +141,12 @@ impl<'a> Iterator for TileIterator<'a> {
         }
 
         Some(&self.slice[pos..pos + self.bpp])
+    }
+}
+
+impl ExactSizeIterator for TileIterator<'_> {
+    fn len(&self) -> usize {
+        64 * 64
     }
 }
 
