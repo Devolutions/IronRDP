@@ -1,6 +1,7 @@
 use std::num::NonZero;
 
 use criterion::{criterion_group, criterion_main, Criterion};
+use ironrdp_graphics::color_conversion::to_64x64_ycbcr_tile;
 use ironrdp_pdu::codecs::rfx;
 use ironrdp_server::{
     bench::encoder::rfx::{rfx_enc, rfx_enc_tile},
@@ -39,5 +40,19 @@ pub fn rfx_enc_bench(c: &mut Criterion) {
     c.bench_function("rfx_enc", |b| b.iter(|| rfx_enc(&bitmap, &quant, algo)));
 }
 
-criterion_group!(benches, rfx_enc_tile_bench, rfx_enc_bench);
+pub fn to_ycbcr_bench(c: &mut Criterion) {
+    const WIDTH: usize = 64;
+    const HEIGHT: usize = 64;
+    let input = vec![0; WIDTH * HEIGHT * 4];
+    let stride = WIDTH * 4;
+    let mut y = [0i16; WIDTH * HEIGHT];
+    let mut cb = [0i16; WIDTH * HEIGHT];
+    let mut cr = [0i16; WIDTH * HEIGHT];
+    let format = ironrdp_graphics::image_processing::PixelFormat::ARgb32;
+    c.bench_function("to_ycbcr", |b| {
+        b.iter(|| to_64x64_ycbcr_tile(&input, WIDTH, HEIGHT, stride, format, &mut y, &mut cb, &mut cr))
+    });
+}
+
+criterion_group!(benches, rfx_enc_tile_bench, rfx_enc_bench, to_ycbcr_bench);
 criterion_main!(benches);
