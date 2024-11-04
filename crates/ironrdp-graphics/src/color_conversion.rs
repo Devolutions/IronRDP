@@ -164,11 +164,15 @@ pub fn to_64x64_ycbcr_tile(
     assert!(width <= 64);
     assert!(height <= 64);
 
-    let to_rgb = pixel_format_to_rgb_fn(format);
     let bpp = format.bytes_per_pixel() as usize;
 
     let input = TileIterator::new(input, width, height, stride, bpp);
-    iter_to_ycbcr(input, y, cb, cr, to_rgb);
+    match format {
+        PixelFormat::ARgb32 | PixelFormat::XRgb32 => iter_to_ycbcr(input, y, cb, cr, xrgb_to_rgb),
+        PixelFormat::ABgr32 | PixelFormat::XBgr32 => iter_to_ycbcr(input, y, cb, cr, xbgr_to_rgb),
+        PixelFormat::BgrA32 | PixelFormat::BgrX32 => iter_to_ycbcr(input, y, cb, cr, bgrx_to_rgb),
+        PixelFormat::RgbA32 | PixelFormat::RgbX32 => iter_to_ycbcr(input, y, cb, cr, rgbx_to_rgb),
+    };
 }
 
 /// Convert a 16-bit RDP color to RGB representation. Input value should be represented in
