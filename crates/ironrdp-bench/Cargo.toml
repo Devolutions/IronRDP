@@ -13,6 +13,7 @@ publish = false
 
 [dev-dependencies]
 criterion = "0.5"
+ironrdp-graphics.workspace = true
 ironrdp-pdu.workspace = true
 ironrdp-server = { workspace = true, features = ["__bench"] }
 
