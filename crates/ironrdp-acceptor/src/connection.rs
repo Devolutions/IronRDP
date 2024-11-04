@@ -319,7 +319,7 @@ impl Sequence for Acceptor {
                 } else if protocols.intersects(SecurityProtocol::SSL) {
                     SecurityProtocol::SSL
                 } else {
-                    return Err(ConnectorError::general("Failed to negotiate security protocol"));
+                    return Err(ConnectorError::general("failed to negotiate security protocol"));
                 };
                 let connection_confirm = nego::ConnectionConfirm::Response {
                     flags: nego::ResponseFlags::empty(),
