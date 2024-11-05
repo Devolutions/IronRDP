@@ -18,6 +18,10 @@ test = false
 [features]
 helper = ["dep:x509-cert", "dep:rustls-pemfile"]
 
+# Internal (PRIVATE!) features used to aid testing.
+# Don't rely on these whatsoever. They may disappear at any time.
+__bench = []
+
 [dependencies]
 anyhow = "1.0"
 tokio = { version = "1", features = ["net", "macros", "sync", "rt"] }

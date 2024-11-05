@@ -1,0 +1,25 @@
+[package]
+name = "ironrdp-bench"
+version = "0.0.0"
+description = "IronRDP benchmarks"
+edition.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+publish = false
+
+[dev-dependencies]
+criterion = "0.5"
+ironrdp-pdu.workspace = true
+ironrdp-server = { workspace = true, features = ["__bench"] }
+
+[[bench]]
+name = "bench"
+path = "benches/bench.rs"
+harness = false
+
+[lints]
+workspace = true
