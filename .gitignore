@@ -7,9 +7,6 @@
 # Log files
 *.log
 
-# Coverage
-/docs
-
 # Editor/IDE files
 *~
 /tags
