@@ -144,9 +144,16 @@ impl<'a> UpdateEncoder<'a> {
     }
 
     fn encode(&self, data: &'a mut UpdateEncoderData) -> EncodeResult<Vec<rfx::Tile<'a>>> {
+        #[cfg(feature = "rayon")]
+        use rayon::prelude::*;
+
         let (tiles_x, tiles_y) = self.tiles_xy();
 
+        #[cfg(not(feature = "rayon"))]
         let chunks = data.0.chunks_mut(64 * 64 * 3);
+        #[cfg(feature = "rayon")]
+        let chunks = data.0.par_chunks_mut(64 * 64 * 3);
+
         let tiles: Vec<_> = (0..tiles_y).flat_map(|y| (0..tiles_x).map(move |x| (x, y))).collect();
 
         chunks
