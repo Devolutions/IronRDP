@@ -100,7 +100,7 @@ impl RfxEncoder {
     }
 }
 
-struct UpdateEncoder<'a> {
+pub(crate) struct UpdateEncoder<'a> {
     bitmap: &'a BitmapUpdate,
     quant: rfx::Quant,
     entropy_algorithm: rfx::EntropyAlgorithm,
@@ -217,5 +217,28 @@ impl<'a> UpdateEncoder<'a> {
             cb_data,
             cr_data,
         })
+    }
+}
+
+#[cfg(feature = "__bench")]
+pub(crate) mod bench {
+    use super::*;
+
+    pub fn rfx_enc_tile(
+        bitmap: &BitmapUpdate,
+        quant: &rfx::Quant,
+        algo: rfx::EntropyAlgorithm,
+        tile_x: usize,
+        tile_y: usize,
+    ) {
+        let (enc, mut data) = UpdateEncoder::new(bitmap, quant.clone(), algo);
+
+        enc.encode_tile(tile_x, tile_y, &mut data.0).unwrap();
+    }
+
+    pub fn rfx_enc(bitmap: &BitmapUpdate, quant: &rfx::Quant, algo: rfx::EntropyAlgorithm) {
+        let (enc, mut data) = UpdateEncoder::new(bitmap, quant.clone(), algo);
+
+        enc.encode(&mut data).unwrap();
     }
 }

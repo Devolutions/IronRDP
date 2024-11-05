@@ -29,6 +29,15 @@ pub use helper::*;
 pub use server::*;
 pub use sound::*;
 
+#[cfg(feature = "__bench")]
+pub mod bench {
+    pub mod encoder {
+        pub mod rfx {
+            pub use crate::encoder::rfx::bench::{rfx_enc, rfx_enc_tile};
+        }
+    }
+}
+
 #[macro_export]
 macro_rules! time_warn {
     ($context:expr, $threshold_ms:expr, $op:expr) => {{
