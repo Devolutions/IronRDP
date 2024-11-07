@@ -1,4 +1,7 @@
-
+<!--
+This file was created using Markdown Monster (https://markdownmonster.west-wind.com), which offers
+extended formatting capabilities for markdown files, such as TOC and embedded HTML.
+-->
 # NOW-PROTO
 
 <style>
