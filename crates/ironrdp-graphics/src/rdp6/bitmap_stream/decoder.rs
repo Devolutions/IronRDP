@@ -163,6 +163,7 @@ impl<'a> BitmapStreamDecoderImpl<'a> {
     }
 
     fn write_aycocg_planes_to_rgb24(&self, params: AYCoCgParams, planes: &[u8], dst: &mut Vec<u8>) {
+        #![allow(clippy::similar_names)] // It’s hard to find better names for co, cg, etc.
         let sample_shift = params.chroma_subsampling as usize;
 
         let (y_offset, co_offset, cg_offset) = (
@@ -225,6 +226,8 @@ impl<'a> BitmapStreamDecoderImpl<'a> {
 
 /// Perform YCoCg -> RGB conversion with color loss reduction (CLL) correction.
 fn ycocg_with_cll_to_rgb(cll: u8, y: u8, co: u8, cg: u8) -> Rgb {
+    #![allow(clippy::similar_names)] // It’s hard to find better names for co, cg, etc.
+
     // We decrease CLL by 1 to skip division by 2 for co & cg components during computation of
     // the following color conversion matrix:
     // |R|   |1   1/2   -1/2|   |Y |
