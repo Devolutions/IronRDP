@@ -231,6 +231,8 @@ pub struct Rgb {
 
 impl From<YCbCr> for Rgb {
     fn from(YCbCr { y, cb, cr }: YCbCr) -> Self {
+        #![allow(clippy::similar_names)] // It’s hard to find better names here.
+
         // We scale the factors by << 16 into 32-bit integers in order to
         // avoid slower floating point multiplications.  Since the final
         // result needs to be scaled by >> 5 we will extract only the
@@ -259,6 +261,8 @@ impl From<YCbCr> for Rgb {
 
 impl From<Rgb> for YCbCr {
     fn from(Rgb { r, g, b }: Rgb) -> Self {
+        #![allow(clippy::similar_names)] // It’s hard to find better names here.
+
         // We scale the factors by << 15 into 32-bit integers in order
         // to avoid slower floating point multiplications.  Since the
         // terms need to be scaled by << 5 we simply scale the final

@@ -23,6 +23,7 @@ impl RfxEncoder {
     }
 
     // FIXME: rewrite to use WriteCursor
+    #[allow(clippy::similar_names)] // It’s hard to find better names for cr, cb, etc.
     pub(crate) fn encode(&mut self, bitmap: &BitmapUpdate) -> EncodeResult<Vec<u8>> {
         let width = bitmap.width.get();
         let height = bitmap.height.get();

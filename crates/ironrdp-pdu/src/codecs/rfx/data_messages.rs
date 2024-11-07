@@ -488,6 +488,8 @@ impl PduBufferParsing<'_> for Quant {
     type Error = RfxError;
 
     fn from_buffer_consume(buffer: &mut &[u8]) -> Result<Self, Self::Error> {
+        #![allow(clippy::similar_names)] // It’s hard to do better than ll3, lh3, etc without going overly verbose.
+
         let level3 = buffer.read_u16::<LittleEndian>()?;
         let ll3 = level3.get_bits(0..4) as u8;
         let lh3 = level3.get_bits(4..8) as u8;
@@ -565,6 +567,8 @@ impl<'a> PduBufferParsing<'a> for Tile<'a> {
     type Error = RfxError;
 
     fn from_buffer_consume(buffer: &mut &'a [u8]) -> Result<Self, Self::Error> {
+        #![allow(clippy::similar_names)] // It’s hard to find better names for cr, cb, etc.
+
         let header = BlockHeader::from_buffer_consume_with_expected_type(buffer, BlockType::Tile)?;
         let mut buffer = buffer.split_to(header.data_length);
 
