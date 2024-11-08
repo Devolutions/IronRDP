@@ -8,7 +8,7 @@
 *.log
 
 # Coverage
-/docs
+/docs/coverage
 
 # Editor/IDE files
 *~
