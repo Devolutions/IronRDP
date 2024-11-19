@@ -1,5 +1,4 @@
-use core::fmt;
-use core::mem;
+use core::{fmt, mem};
 
 use ironrdp_core::WriteBuf;
 use ironrdp_pdu::rdp::server_license::{self, LicensePdu, ServerLicenseError};

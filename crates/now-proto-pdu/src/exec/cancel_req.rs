@@ -1,5 +1,6 @@
-use ironrdp_core::{ensure_fixed_part_size, invalid_field_err, DecodeResult, EncodeResult, ReadCursor, WriteCursor};
-use ironrdp_core::{Decode, Encode};
+use ironrdp_core::{
+    ensure_fixed_part_size, invalid_field_err, Decode, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor,
+};
 
 use crate::{NowExecMessage, NowExecMsgKind, NowHeader, NowMessage, NowMessageClass};
 

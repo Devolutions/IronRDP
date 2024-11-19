@@ -9,13 +9,10 @@ pub use self::palette::*;
 #[rustfmt::skip]
 use std::borrow::Cow;
 
-use ironrdp_core::cast_int;
-use ironrdp_core::ensure_fixed_part_size;
-use ironrdp_core::ensure_size;
-use ironrdp_core::DecodeResult;
-use ironrdp_core::EncodeResult;
-use ironrdp_core::IntoOwned;
-use ironrdp_core::{Decode, Encode, ReadCursor, WriteCursor};
+use ironrdp_core::{
+    cast_int, ensure_fixed_part_size, ensure_size, Decode, DecodeResult, Encode, EncodeResult, IntoOwned, ReadCursor,
+    WriteCursor,
+};
 use ironrdp_pdu::impl_pdu_borrowing;
 use ironrdp_pdu::utils::{read_string_from_cursor, to_utf16_bytes, CharacterSet};
 

@@ -2,13 +2,12 @@
 mod tests;
 
 use bitflags::bitflags;
+use ironrdp_core::{
+    cast_length, decode, ensure_fixed_part_size, ensure_size, invalid_field_err, other_err, Decode, DecodeResult,
+    Encode, EncodeResult, ReadCursor, WriteCursor,
+};
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive, ToPrimitive};
-
-use ironrdp_core::{
-    cast_length, ensure_fixed_part_size, ensure_size, invalid_field_err, other_err, ReadCursor, WriteCursor,
-};
-use ironrdp_core::{decode, Decode, DecodeResult, Encode, EncodeResult};
 
 const RFX_ICAP_VERSION: u16 = 0x0100;
 const RFX_ICAP_TILE_SIZE: u16 = 0x40;

@@ -3,16 +3,15 @@ pub mod image;
 #[diplomat::bridge]
 pub mod ffi {
 
-    use crate::{
-        clipboard::message::ffi::{ClipboardFormatId, ClipboardFormatIterator, FormatDataResponse},
-        connector::{activation::ffi::ConnectionActivationSequence, result::ffi::ConnectionResult},
-        error::{ffi::IronRdpError, IncorrectEnumTypeError, ValueConsumedError},
-        graphics::ffi::DecodedPointer,
-        pdu::ffi::{Action, FastPathInputEventIterator, InclusiveRectangle},
-        utils::ffi::{BytesSlice, Position, VecU8},
-    };
-
     use super::image::ffi::DecodedImage;
+    use crate::clipboard::message::ffi::{ClipboardFormatId, ClipboardFormatIterator, FormatDataResponse};
+    use crate::connector::activation::ffi::ConnectionActivationSequence;
+    use crate::connector::result::ffi::ConnectionResult;
+    use crate::error::ffi::IronRdpError;
+    use crate::error::{IncorrectEnumTypeError, ValueConsumedError};
+    use crate::graphics::ffi::DecodedPointer;
+    use crate::pdu::ffi::{Action, FastPathInputEventIterator, InclusiveRectangle};
+    use crate::utils::ffi::{BytesSlice, Position, VecU8};
 
     #[diplomat::opaque]
     pub struct ActiveStage(pub ironrdp::session::ActiveStage);

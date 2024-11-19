@@ -2,12 +2,14 @@
 mod tests;
 
 use bitflags::bitflags;
+use ironrdp_core::{
+    ensure_fixed_part_size, ensure_size, invalid_field_err, Decode, DecodeResult, Encode, EncodeResult, ReadCursor,
+    WriteCursor,
+};
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive as _, ToPrimitive as _};
 
 use crate::geometry::ExclusiveRectangle;
-use ironrdp_core::{ensure_fixed_part_size, ensure_size, invalid_field_err, ReadCursor, WriteCursor};
-use ironrdp_core::{Decode, DecodeResult, Encode, EncodeResult};
 
 pub const SURFACE_COMMAND_HEADER_SIZE: usize = 2;
 

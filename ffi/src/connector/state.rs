@@ -1,9 +1,8 @@
 #[diplomat::bridge]
 pub mod ffi {
-    use crate::{
-        error::{ffi::IronRdpError, IncorrectEnumTypeError, ValueConsumedError},
-        pdu::ffi::SecurityProtocol,
-    };
+    use crate::error::ffi::IronRdpError;
+    use crate::error::{IncorrectEnumTypeError, ValueConsumedError};
+    use crate::pdu::ffi::SecurityProtocol;
 
     #[diplomat::opaque]
     pub struct ClientConnectorState(pub Option<ironrdp::connector::ClientConnectorState>);

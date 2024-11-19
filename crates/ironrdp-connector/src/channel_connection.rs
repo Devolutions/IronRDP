@@ -1,8 +1,9 @@
-use std::collections::HashSet;
 use core::mem;
+use std::collections::HashSet;
 
 use ironrdp_core::WriteBuf;
-use ironrdp_pdu::{mcs, x224::X224, PduHint};
+use ironrdp_pdu::x224::X224;
+use ironrdp_pdu::{mcs, PduHint};
 
 use crate::{ConnectorError, ConnectorErrorExt as _, ConnectorResult, Sequence, State, Written};
 

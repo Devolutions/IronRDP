@@ -1,5 +1,4 @@
-use ironrdp_core::{ensure_fixed_part_size, ReadCursor, WriteCursor};
-use ironrdp_core::{Decode, DecodeResult, Encode, EncodeResult};
+use ironrdp_core::{ensure_fixed_part_size, Decode, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor};
 
 #[derive(Debug, PartialEq, Eq, Clone)]
 pub struct MultifragmentUpdate {
@@ -42,8 +41,9 @@ impl<'de> Decode<'de> for MultifragmentUpdate {
 
 #[cfg(test)]
 mod test {
-    use super::*;
     use ironrdp_core::{decode, encode_vec};
+
+    use super::*;
 
     const MULTIFRAGMENT_UPDATE_PDU_BUFFER: [u8; 4] = [0xf4, 0xf3, 0xf2, 0xf1];
     const MULTIFRAGMENT_UPDATE_PDU: MultifragmentUpdate = MultifragmentUpdate {

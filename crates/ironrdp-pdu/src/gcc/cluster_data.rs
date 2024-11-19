@@ -1,12 +1,12 @@
 use std::io;
 
 use bitflags::bitflags;
+use ironrdp_core::{
+    ensure_fixed_part_size, invalid_field_err, Decode, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor,
+};
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive as _, ToPrimitive as _};
 use thiserror::Error;
-
-use ironrdp_core::{ensure_fixed_part_size, invalid_field_err, ReadCursor, WriteCursor};
-use ironrdp_core::{Decode, DecodeResult, Encode, EncodeResult};
 
 const REDIRECTION_VERSION_MASK: u32 = 0x0000_003C;
 

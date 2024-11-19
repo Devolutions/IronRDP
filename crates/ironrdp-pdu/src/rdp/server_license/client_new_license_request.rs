@@ -4,6 +4,9 @@ mod tests;
 use std::io;
 
 use bitflags::bitflags;
+use ironrdp_core::{
+    ensure_size, invalid_field_err, Decode, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor,
+};
 use md5::Digest;
 
 use super::{
@@ -13,8 +16,6 @@ use super::{
 };
 use crate::crypto::rsa::encrypt_with_public_key;
 use crate::utils::{self, CharacterSet};
-use ironrdp_core::{ensure_size, invalid_field_err, ReadCursor, WriteCursor};
-use ironrdp_core::{Decode, DecodeResult, Encode, EncodeResult};
 
 const LICENSE_REQUEST_STATIC_FIELDS_SIZE: usize = 20;
 

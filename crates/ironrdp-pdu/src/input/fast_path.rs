@@ -1,15 +1,15 @@
 use bit_field::BitField;
 use bitflags::bitflags;
+use ironrdp_core::{
+    cast_length, ensure_fixed_part_size, ensure_size, invalid_field_err, other_err, Decode, DecodeResult, Encode,
+    EncodeResult, ReadCursor, WriteCursor,
+};
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive, ToPrimitive};
 
 use crate::fast_path::EncryptionFlags;
 use crate::input::{MousePdu, MouseRelPdu, MouseXPdu};
 use crate::per;
-use ironrdp_core::{
-    cast_length, ensure_fixed_part_size, ensure_size, invalid_field_err, other_err, ReadCursor, WriteCursor,
-};
-use ironrdp_core::{Decode, DecodeResult, Encode, EncodeResult};
 
 /// Implements the Fast-Path RDP message header PDU.
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -1,9 +1,6 @@
 //! Various test utilities
 use expect_test::Expect;
-
-use ironrdp_core::Decode as _;
-use ironrdp_core::ReadCursor;
-
+use ironrdp_core::{Decode as _, ReadCursor};
 use now_proto_pdu::NowMessage;
 
 pub fn now_msg_roundtrip(msg: impl Into<NowMessage>, expected_bytes: Expect) {

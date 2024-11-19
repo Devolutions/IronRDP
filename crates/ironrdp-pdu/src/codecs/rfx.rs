@@ -4,13 +4,12 @@ mod header_messages;
 use std::io;
 
 use byteorder::{LittleEndian, ReadBytesExt as _, WriteBytesExt as _};
+use ironrdp_core::{ensure_fixed_part_size, Decode, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor};
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive as _, ToPrimitive as _};
 use thiserror::Error;
 
 use crate::PduBufferParsing;
-use ironrdp_core::{ensure_fixed_part_size, ReadCursor, WriteCursor};
-use ironrdp_core::{Decode, DecodeResult, Encode, EncodeResult};
 
 #[rustfmt::skip]
 pub use self::data_messages::{

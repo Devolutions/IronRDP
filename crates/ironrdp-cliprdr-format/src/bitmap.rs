@@ -1,7 +1,7 @@
 use ironrdp_core::{
-    cast_int, ensure_fixed_part_size, invalid_field_err, DecodeResult, EncodeResult, ReadCursor, WriteCursor,
+    cast_int, ensure_fixed_part_size, invalid_field_err, Decode, DecodeResult, Encode, EncodeResult, ReadCursor,
+    WriteCursor,
 };
-use ironrdp_core::{Decode, Encode};
 use thiserror::Error;
 
 /// Maximum size of PNG image that could be placed on the clipboard.

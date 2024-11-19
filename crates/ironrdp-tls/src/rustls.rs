@@ -1,7 +1,8 @@
 use std::io;
 
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt as _};
-use tokio_rustls::rustls::{self, pki_types::ServerName};
+use tokio_rustls::rustls::pki_types::ServerName;
+use tokio_rustls::rustls::{self};
 
 pub type TlsStream<S> = tokio_rustls::client::TlsStream<S>;
 
@@ -49,8 +50,7 @@ where
 
 mod danger {
     use tokio_rustls::rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
-    use tokio_rustls::rustls::pki_types;
-    use tokio_rustls::rustls::{DigitallySignedStruct, Error, SignatureScheme};
+    use tokio_rustls::rustls::{pki_types, DigitallySignedStruct, Error, SignatureScheme};
 
     #[derive(Debug)]
     pub(super) struct NoCertificateVerification;

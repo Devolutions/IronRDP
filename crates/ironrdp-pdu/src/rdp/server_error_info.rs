@@ -1,8 +1,8 @@
+use ironrdp_core::{
+    ensure_fixed_part_size, invalid_field_err, Decode, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor,
+};
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive, ToPrimitive};
-
-use ironrdp_core::{ensure_fixed_part_size, invalid_field_err, ReadCursor, WriteCursor};
-use ironrdp_core::{Decode, DecodeResult, Encode, EncodeResult};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServerSetErrorInfoPdu(pub ErrorInfo);

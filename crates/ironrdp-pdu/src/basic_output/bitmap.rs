@@ -6,10 +6,12 @@ pub mod rdp6;
 use core::fmt::{self, Debug};
 
 use bitflags::bitflags;
+use ironrdp_core::{
+    ensure_fixed_part_size, ensure_size, invalid_field_err, Decode, DecodeResult, Encode, EncodeResult, ReadCursor,
+    WriteCursor,
+};
 
 use crate::geometry::InclusiveRectangle;
-use ironrdp_core::{ensure_fixed_part_size, ensure_size, invalid_field_err, ReadCursor, WriteCursor};
-use ironrdp_core::{Decode, DecodeResult, Encode, EncodeResult};
 
 const FIRST_ROW_SIZE_VALUE: u16 = 0;
 

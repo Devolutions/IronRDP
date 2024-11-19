@@ -1,11 +1,11 @@
 use bitflags::bitflags;
-
 use ironrdp_core::{
-    cast_length, ensure_fixed_part_size, invalid_field_err, DecodeResult, EncodeResult, ReadCursor, WriteCursor,
+    cast_length, ensure_fixed_part_size, invalid_field_err, Decode as _, DecodeResult, Encode, EncodeResult,
+    ReadCursor, WriteCursor,
 };
-use ironrdp_core::{Decode as _, Encode};
 
-use crate::{system::NowSystemMessageKind, NowHeader, NowMessage, NowMessageClass, NowSystemMessage, NowVarStr};
+use crate::system::NowSystemMessageKind;
+use crate::{NowHeader, NowMessage, NowMessageClass, NowSystemMessage, NowVarStr};
 
 bitflags! {
     /// NOW_PROTO: NOW_SYSTEM_SHUTDOWN_FLAG_* constants.

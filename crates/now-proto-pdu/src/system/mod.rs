@@ -1,11 +1,9 @@
 mod shutdown;
 
-use ironrdp_core::Encode;
-use ironrdp_core::{DecodeResult, EncodeResult, ReadCursor, WriteCursor};
+use ironrdp_core::{DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor};
+pub use shutdown::{NowSystemShutdownFlags, NowSystemShutdownMsg};
 
 use crate::NowHeader;
-
-pub use shutdown::{NowSystemShutdownFlags, NowSystemShutdownMsg};
 
 // Wrapper for the `NOW_SYSTEM_MSG_CLASS_ID` message class.
 #[derive(Debug, Clone, PartialEq, Eq)]

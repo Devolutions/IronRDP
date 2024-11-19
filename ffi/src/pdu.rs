@@ -3,7 +3,8 @@ pub mod ffi {
 
     use ironrdp::pdu::geometry::Rectangle;
 
-    use crate::{error::ffi::IronRdpError, utils::ffi::VecU8};
+    use crate::error::ffi::IronRdpError;
+    use crate::utils::ffi::VecU8;
 
     #[diplomat::opaque]
     pub struct WriteBuf(pub ironrdp_core::WriteBuf);

@@ -1,11 +1,12 @@
 #![allow(clippy::unused_self)] // We want to keep the signature of the function stay the same between windows and non-windows
 
+#[cfg(not(windows))]
+use ironrdp_cliprdr_native as _;
+
 use super::ffi::CliprdrBackendFactory;
 use crate::error::ffi::IronRdpError;
 #[cfg(not(windows))]
-use crate::error::WrongOSError;
-#[cfg(not(windows))]
-use ironrdp_cliprdr_native as _; // avoid linter error, stub clipboard will be used in later commit
+use crate::error::WrongOSError; // avoid linter error, stub clipboard will be used in later commit
 
 /*
     Why are we creating a WinCliprdrInner struct and implement differently?
@@ -20,11 +21,10 @@ use ironrdp_cliprdr_native as _; // avoid linter error, stub clipboard will be u
 #[diplomat::bridge]
 pub mod ffi {
 
+    use super::WinCliprdrInner;
     use crate::clipboard::ffi::CliprdrBackendFactory;
     use crate::clipboard::message::ffi::ClipboardMessage;
     use crate::error::ffi::IronRdpError;
-
-    use super::WinCliprdrInner;
 
     #[diplomat::opaque]
     pub struct WinCliprdr(WinCliprdrInner);

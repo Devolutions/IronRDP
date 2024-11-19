@@ -1,6 +1,7 @@
 #[diplomat::bridge]
 pub mod ffi {
-    use crate::{error::ffi::IronRdpError, pdu::ffi::FastPathInputEventIterator};
+    use crate::error::ffi::IronRdpError;
+    use crate::pdu::ffi::FastPathInputEventIterator;
 
     #[diplomat::opaque]
     pub struct InputDatabase(pub ironrdp::input::Database);

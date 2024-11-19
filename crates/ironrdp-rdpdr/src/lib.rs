@@ -11,13 +11,9 @@
 #[macro_use]
 extern crate tracing;
 
-use ironrdp_core::decode_cursor;
-use ironrdp_core::impl_as_any;
-use ironrdp_core::ReadCursor;
-use ironrdp_pdu::decode_err;
+use ironrdp_core::{decode_cursor, impl_as_any, ReadCursor};
 use ironrdp_pdu::gcc::ChannelName;
-use ironrdp_pdu::pdu_other_err;
-use ironrdp_pdu::PduResult;
+use ironrdp_pdu::{decode_err, pdu_other_err, PduResult};
 use ironrdp_svc::{CompressionCondition, SvcClientProcessor, SvcMessage, SvcProcessor};
 use pdu::efs::{
     Capabilities, ClientDeviceListAnnounce, ClientNameRequest, ClientNameRequestUnicodeFlag, CoreCapability,

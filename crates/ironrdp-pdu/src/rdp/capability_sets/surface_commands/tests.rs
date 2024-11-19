@@ -1,7 +1,7 @@
+use ironrdp_core::{decode, encode_vec};
 use lazy_static::lazy_static;
 
 use super::*;
-use ironrdp_core::{decode, encode_vec};
 
 const SURFACE_COMMANDS_BUFFER: [u8; 8] = [
     0x52, 0x00, 0x00, 0x00, // flags

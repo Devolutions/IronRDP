@@ -1,14 +1,16 @@
 use std::fmt;
 
 use bit_field::BitField;
+use ironrdp_core::{
+    cast_length, decode_cursor, ensure_fixed_part_size, ensure_size, invalid_field_err, Decode, DecodeResult, Encode,
+    EncodeResult, ReadCursor, WriteCursor,
+};
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive, ToPrimitive};
 
 use super::{CapabilitySet, Color, Point, RDP_GFX_HEADER_SIZE};
 use crate::gcc::Monitor;
 use crate::geometry::InclusiveRectangle;
-use ironrdp_core::{cast_length, ensure_fixed_part_size, ensure_size, invalid_field_err, ReadCursor, WriteCursor};
-use ironrdp_core::{decode_cursor, Decode, DecodeResult, Encode, EncodeResult};
 
 pub(crate) const RESET_GRAPHICS_PDU_SIZE: usize = 340;
 

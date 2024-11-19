@@ -3,6 +3,8 @@
     html_logo_url = "https://webdevolutions.blob.core.windows.net/images/projects/devolutions/logos/devolutions-icon-shadow.svg"
 )]
 
+use std::collections::BTreeSet;
+
 use bitvec::array::BitArray;
 use bitvec::BitArr;
 use ironrdp_pdu::input::fast_path::{FastPathInputEvent, KeyboardFlags};
@@ -10,7 +12,6 @@ use ironrdp_pdu::input::mouse::PointerFlags;
 use ironrdp_pdu::input::mouse_x::PointerXFlags;
 use ironrdp_pdu::input::{MousePdu, MouseXPdu};
 use smallvec::SmallVec;
-use std::collections::BTreeSet;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u8)]

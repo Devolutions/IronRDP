@@ -1,4 +1,5 @@
-use std::{error::Error, sync::Once};
+use std::error::Error;
+use std::sync::Once;
 
 static INIT_LOG: Once = Once::new();
 
@@ -24,7 +25,9 @@ pub mod ffi {
 }
 
 fn setup_logging(log_file_path: Option<&str>) -> Result<(), Box<dyn Error>> {
-    use std::{fs::create_dir_all, fs::OpenOptions, path::PathBuf};
+    use std::fs::{create_dir_all, OpenOptions};
+    use std::path::PathBuf;
+
     use tracing::metadata::LevelFilter;
     use tracing_subscriber::prelude::*;
     use tracing_subscriber::EnvFilter;

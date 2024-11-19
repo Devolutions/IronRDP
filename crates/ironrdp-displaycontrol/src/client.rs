@@ -1,12 +1,11 @@
-use crate::{
-    pdu::{DisplayControlCapabilities, DisplayControlMonitorLayout, DisplayControlPdu},
-    CHANNEL_NAME,
-};
 use ironrdp_core::{impl_as_any, Decode, EncodeResult, ReadCursor};
 use ironrdp_dvc::{encode_dvc_messages, DvcClientProcessor, DvcMessage, DvcProcessor};
 use ironrdp_pdu::{decode_err, PduResult};
 use ironrdp_svc::{ChannelFlags, SvcMessage};
 use tracing::debug;
+
+use crate::pdu::{DisplayControlCapabilities, DisplayControlMonitorLayout, DisplayControlPdu};
+use crate::CHANNEL_NAME;
 
 /// A client for the Display Control Virtual Channel.
 pub struct DisplayControlClient {

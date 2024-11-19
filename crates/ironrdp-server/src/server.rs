@@ -947,7 +947,8 @@ impl<W> FramedWrite for SharedWriter<'_, W>
 where
     W: FramedWrite,
 {
-    type WriteAllFut<'write> = core::pin::Pin<Box<dyn core::future::Future<Output = std::io::Result<()>> + 'write>>
+    type WriteAllFut<'write>
+        = core::pin::Pin<Box<dyn core::future::Future<Output = std::io::Result<()>> + 'write>>
     where
         Self: 'write;
 

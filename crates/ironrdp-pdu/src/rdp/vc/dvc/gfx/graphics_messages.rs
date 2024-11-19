@@ -9,6 +9,10 @@ use num_traits::{FromPrimitive as _, ToPrimitive as _};
 #[rustfmt::skip] // do not re-order this
 pub use avc_messages::{Avc420BitmapStream, Avc444BitmapStream, Encoding, QuantQuality};
 pub use client::{CacheImportReplyPdu, CapabilitiesAdvertisePdu, FrameAcknowledgePdu, QueueDepth};
+use ironrdp_core::{
+    cast_length, ensure_fixed_part_size, ensure_size, invalid_field_err, Decode, DecodeResult, Encode, EncodeResult,
+    ReadCursor, WriteCursor,
+};
 pub use server::{
     CacheToSurfacePdu, CapabilitiesConfirmPdu, Codec1Type, Codec2Type, CreateSurfacePdu, DeleteEncodingContextPdu,
     DeleteSurfacePdu, EndFramePdu, EvictCacheEntryPdu, MapSurfaceToOutputPdu, MapSurfaceToScaledOutputPdu,
@@ -17,8 +21,6 @@ pub use server::{
 };
 
 use super::RDP_GFX_HEADER_SIZE;
-use ironrdp_core::{cast_length, ensure_fixed_part_size, ensure_size, invalid_field_err, ReadCursor, WriteCursor};
-use ironrdp_core::{Decode, DecodeResult, Encode, EncodeResult};
 
 const CAPABILITY_SET_HEADER_SIZE: usize = 8;
 

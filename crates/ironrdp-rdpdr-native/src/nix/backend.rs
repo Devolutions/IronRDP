@@ -1,3 +1,8 @@
+use std::ffi::CString;
+use std::io::{Read, Seek, SeekFrom, Write};
+use std::os::fd::{AsFd, AsRawFd};
+use std::os::unix::fs::MetadataExt;
+
 use ironrdp_core::impl_as_any;
 use ironrdp_pdu::{encode_err, PduResult};
 use ironrdp_rdpdr::pdu::efs::*;
@@ -6,11 +11,6 @@ use ironrdp_rdpdr::pdu::RdpdrPdu;
 use ironrdp_rdpdr::RdpdrBackend;
 use ironrdp_svc::SvcMessage;
 use nix::dir::{Dir, OwningIter};
-use std::ffi::CString;
-use std::io::Read;
-use std::io::{Seek, SeekFrom, Write};
-use std::os::fd::{AsFd, AsRawFd};
-use std::os::unix::fs::MetadataExt;
 
 #[derive(Debug, Default)]
 pub struct NixRdpdrBackend {

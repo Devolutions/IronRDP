@@ -1,3 +1,4 @@
+use ironrdp_core::{decode, encode_vec};
 use lazy_static::lazy_static;
 
 use super::*;
@@ -5,7 +6,6 @@ use crate::rdp::server_license::{
     BasicSecurityHeader, BasicSecurityHeaderFlags, LicenseHeader, LicensePdu, PreambleFlags, PreambleType,
     PreambleVersion, BASIC_SECURITY_HEADER_SIZE, PREAMBLE_SIZE,
 };
-use ironrdp_core::{decode, encode_vec};
 
 const PLATFORM_CHALLENGE_RESPONSE_DATA_BUFFER: [u8; 18] = [
     0x00, 0x01, // version

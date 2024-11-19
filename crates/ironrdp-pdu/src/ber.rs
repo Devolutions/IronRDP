@@ -1,5 +1,6 @@
-use crate::{DecodeResult, EncodeResult};
 use ironrdp_core::{cast_length, ensure_size, invalid_field_err, ReadCursor, WriteCursor};
+
+use crate::{DecodeResult, EncodeResult};
 
 #[repr(u8)]
 #[allow(unused)]

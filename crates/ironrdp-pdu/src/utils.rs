@@ -1,11 +1,12 @@
-use byteorder::{LittleEndian, ReadBytesExt as _};
-use num_derive::{FromPrimitive, ToPrimitive};
 use core::fmt::Debug;
 use core::mem::size_of;
 use core::ops::Add;
 
-use crate::{DecodeResult, EncodeResult};
+use byteorder::{LittleEndian, ReadBytesExt as _};
 use ironrdp_core::{ensure_size, invalid_field_err, other_err, ReadCursor, WriteCursor};
+use num_derive::{FromPrimitive, ToPrimitive};
+
+use crate::{DecodeResult, EncodeResult};
 
 pub fn split_u64(value: u64) -> (u32, u32) {
     let bytes = value.to_le_bytes();

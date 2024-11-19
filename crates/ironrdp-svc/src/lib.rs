@@ -16,12 +16,14 @@ use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use core::any::TypeId;
 use core::fmt;
-use std::borrow::Cow;
 use core::marker::PhantomData;
+use std::borrow::Cow;
 
 use bitflags::bitflags;
-use ironrdp_core::{assert_obj_safe, AsAny, DecodeResult, EncodeResult, ReadCursor, WriteBuf, WriteCursor};
-use ironrdp_core::{decode_cursor, encode_buf, Encode};
+use ironrdp_core::{
+    assert_obj_safe, decode_cursor, encode_buf, AsAny, DecodeResult, Encode, EncodeResult, ReadCursor, WriteBuf,
+    WriteCursor,
+};
 use ironrdp_pdu::gcc::{ChannelName, ChannelOptions};
 use ironrdp_pdu::{decode_err, mcs, PduResult};
 use pdu::gcc::ChannelDef;

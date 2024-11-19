@@ -6,8 +6,8 @@
 #[rustfmt::skip] // do not re-order this pub use
 pub use ironrdp_async::*;
 
-use std::io;
 use core::pin::Pin;
+use std::io;
 
 use bytes::BytesMut;
 use tokio::io::{AsyncRead, AsyncWrite, ReadHalf, WriteHalf};
@@ -62,7 +62,8 @@ impl<S> FramedRead for TokioStream<S>
 where
     S: Send + Sync + Unpin + AsyncRead,
 {
-    type ReadFut<'read> = Pin<Box<dyn core::future::Future<Output = io::Result<usize>> + Send + Sync + 'read>>
+    type ReadFut<'read>
+        = Pin<Box<dyn core::future::Future<Output = io::Result<usize>> + Send + Sync + 'read>>
     where
         Self: 'read;
 
@@ -77,7 +78,8 @@ impl<S> FramedWrite for TokioStream<S>
 where
     S: Send + Sync + Unpin + AsyncWrite,
 {
-    type WriteAllFut<'write> = Pin<Box<dyn core::future::Future<Output = io::Result<()>> + Send + Sync + 'write>>
+    type WriteAllFut<'write>
+        = Pin<Box<dyn core::future::Future<Output = io::Result<()>> + Send + Sync + 'write>>
     where
         Self: 'write;
 
@@ -123,7 +125,8 @@ impl<S> FramedRead for LocalTokioStream<S>
 where
     S: Unpin + AsyncRead,
 {
-    type ReadFut<'read> = Pin<Box<dyn core::future::Future<Output = io::Result<usize>> + 'read>>
+    type ReadFut<'read>
+        = Pin<Box<dyn core::future::Future<Output = io::Result<usize>> + 'read>>
     where
         Self: 'read;
 
@@ -138,7 +141,8 @@ impl<S> FramedWrite for LocalTokioStream<S>
 where
     S: Unpin + AsyncWrite,
 {
-    type WriteAllFut<'write> = Pin<Box<dyn core::future::Future<Output = io::Result<()>> + 'write>>
+    type WriteAllFut<'write>
+        = Pin<Box<dyn core::future::Future<Output = io::Result<()>> + 'write>>
     where
         Self: 'write;
 

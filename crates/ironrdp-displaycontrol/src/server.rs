@@ -3,10 +3,8 @@ use ironrdp_dvc::{DvcMessage, DvcProcessor, DvcServerProcessor};
 use ironrdp_pdu::{decode_err, PduResult};
 use tracing::debug;
 
-use crate::{
-    pdu::{DisplayControlCapabilities, DisplayControlMonitorLayout, DisplayControlPdu},
-    CHANNEL_NAME,
-};
+use crate::pdu::{DisplayControlCapabilities, DisplayControlMonitorLayout, DisplayControlPdu};
+use crate::CHANNEL_NAME;
 
 pub trait DisplayControlHandler: Send {
     fn monitor_layout(&self, layout: DisplayControlMonitorLayout) {

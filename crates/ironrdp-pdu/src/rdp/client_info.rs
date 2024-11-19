@@ -2,14 +2,16 @@ use core::fmt;
 use std::io;
 
 use bitflags::bitflags;
+use ironrdp_core::{
+    ensure_fixed_part_size, ensure_size, invalid_field_err, Decode, DecodeResult, Encode, EncodeResult, ReadCursor,
+    WriteCursor,
+};
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive as _, ToPrimitive as _};
 use thiserror::Error;
 
 use crate::utils::CharacterSet;
 use crate::{utils, PduError};
-use ironrdp_core::{ensure_fixed_part_size, ensure_size, invalid_field_err, ReadCursor, WriteCursor};
-use ironrdp_core::{Decode, DecodeResult, Encode, EncodeResult};
 
 const RECONNECT_COOKIE_LEN: usize = 28;
 const TIMEZONE_INFO_NAME_LEN: usize = 64;
@@ -703,8 +705,9 @@ fn string_len(value: &str, character_set: CharacterSet) -> u16 {
 }
 
 pub mod builder {
-    use super::*;
     use core::marker::PhantomData;
+
+    use super::*;
 
     pub struct ExtendedClientOptionalInfoBuilderStateSetTimeZone;
     pub struct ExtendedClientOptionalInfoBuilderStateSetSessionId;
