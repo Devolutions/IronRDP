@@ -1,6 +1,6 @@
+use core::num::ParseIntError;
+use core::str::FromStr;
 use std::io;
-use std::num::ParseIntError;
-use std::str::FromStr;
 
 use anyhow::Context as _;
 use clap::clap_derive::ValueEnum;

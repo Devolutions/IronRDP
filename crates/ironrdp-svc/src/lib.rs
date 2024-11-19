@@ -17,7 +17,7 @@ use alloc::collections::BTreeMap;
 use core::any::TypeId;
 use core::fmt;
 use std::borrow::Cow;
-use std::marker::PhantomData;
+use core::marker::PhantomData;
 
 use bitflags::bitflags;
 use ironrdp_core::{assert_obj_safe, AsAny, DecodeResult, EncodeResult, ReadCursor, WriteBuf, WriteCursor};
@@ -311,7 +311,7 @@ impl ChunkProcessor {
         // If this was an unchunked message, or the last in a series of chunks, return the payload
         if last {
             // Take the chunked_pdu buffer and replace it with an empty one
-            return Ok(Some(std::mem::take(&mut self.chunked_pdu)));
+            return Ok(Some(core::mem::take(&mut self.chunked_pdu)));
         }
 
         // This was an intermediate chunk, return None
@@ -341,7 +341,7 @@ impl ChunkProcessor {
 
         let total_len = encoded_pdu.filled_len();
         let mut chunk_start_index: usize = 0;
-        let mut chunk_end_index = std::cmp::min(total_len, max_chunk_len);
+        let mut chunk_end_index = core::cmp::min(total_len, max_chunk_len);
         loop {
             // Create a buffer to hold this next chunk.
             // TODO(perf): Reuse this buffer using `clear` and `filled` as appropriate.
@@ -385,7 +385,7 @@ impl ChunkProcessor {
 
             // Otherwise, update the chunk start and end indices for the next iteration.
             chunk_start_index = chunk_end_index;
-            chunk_end_index = std::cmp::min(total_len, chunk_end_index.saturating_add(max_chunk_len));
+            chunk_end_index = core::cmp::min(total_len, chunk_end_index.saturating_add(max_chunk_len));
         }
 
         Ok(chunks)

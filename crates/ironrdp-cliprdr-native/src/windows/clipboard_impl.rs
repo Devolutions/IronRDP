@@ -1,6 +1,6 @@
+use core::time::Duration;
 use std::collections::HashSet;
 use std::sync::mpsc;
-use std::time::Duration;
 
 use ironrdp_cliprdr::backend::{ClipboardMessage, ClipboardMessageProxy};
 use ironrdp_cliprdr::pdu::{ClipboardFormat, ClipboardFormatId, FormatDataRequest, FormatDataResponse};
@@ -165,7 +165,7 @@ impl WinClipboardImpl {
             }
         };
 
-        let formats = std::mem::take(&mut self.available_formats_on_remote);
+        let formats = core::mem::take(&mut self.available_formats_on_remote);
 
         // Clearing clipboard is not required, just render all available formats
 

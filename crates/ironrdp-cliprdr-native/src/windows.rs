@@ -111,7 +111,7 @@ pub struct WinClipboard {
     /// ```
     ///
     /// Therefore this type should be non-Send and non-Sync to prevent incorrect use.
-    _thread_marker: std::marker::PhantomData<*const ()>,
+    _thread_marker: core::marker::PhantomData<*const ()>,
 }
 
 impl WinClipboard {

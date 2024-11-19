@@ -1,5 +1,5 @@
 use std::collections::HashSet;
-use std::mem;
+use core::mem;
 
 use ironrdp_core::WriteBuf;
 use ironrdp_pdu::{mcs, x224::X224, PduHint};

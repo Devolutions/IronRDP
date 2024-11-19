@@ -187,14 +187,14 @@ pub fn local_bin() -> PathBuf {
     path
 }
 
-static VERBOSE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static VERBOSE: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 
 pub fn set_verbose(value: bool) {
-    VERBOSE.store(value, std::sync::atomic::Ordering::Release);
+    VERBOSE.store(value, core::sync::atomic::Ordering::Release);
 }
 
 pub fn is_verbose() -> bool {
-    VERBOSE.load(std::sync::atomic::Ordering::Acquire)
+    VERBOSE.load(core::sync::atomic::Ordering::Acquire)
 }
 
 pub fn list_files(sh: &Shell, path: impl AsRef<Path>) -> anyhow::Result<()> {

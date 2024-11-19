@@ -5,7 +5,7 @@
 pub mod ndr;
 pub mod rpce;
 
-use std::mem::size_of;
+use core::mem::size_of;
 
 use bitflags::bitflags;
 use ironrdp_core::{

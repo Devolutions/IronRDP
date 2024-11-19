@@ -1,5 +1,5 @@
 #![allow(clippy::return_self_not_must_use)]
-use std::fmt::Display;
+use core::fmt::Display;
 
 use ironrdp::{cliprdr::backend::ClipboardError, connector::ConnectorError, session::SessionError};
 #[cfg(target_os = "windows")]
@@ -55,8 +55,8 @@ impl From<std::io::Error> for IronRdpErrorKind {
     }
 }
 
-impl From<std::fmt::Error> for IronRdpErrorKind {
-    fn from(_val: std::fmt::Error) -> Self {
+impl From<core::fmt::Error> for IronRdpErrorKind {
+    fn from(_val: core::fmt::Error) -> Self {
         IronRdpErrorKind::Generic
     }
 }
@@ -110,7 +110,7 @@ struct IronRdpErrorInner {
 #[diplomat::bridge]
 pub mod ffi {
     use diplomat_runtime::DiplomatWriteable;
-    use std::fmt::Write as _;
+    use core::fmt::Write as _;
 
     #[derive(Debug, Clone, Copy, thiserror::Error)]
     pub enum IronRdpErrorKind {
@@ -177,7 +177,7 @@ impl ValueConsumedError {
 }
 
 impl Display for ValueConsumedError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         if let Some(reason) = &self.reason {
             write!(f, "{}: {}", self.item, reason)
         } else {
@@ -217,7 +217,7 @@ impl IncorrectEnumTypeErrorBuilder {
 }
 
 impl Display for IncorrectEnumTypeError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(
             f,
             "expected enum variable {}, of enum {}",
@@ -252,7 +252,7 @@ impl WrongOSError {
 }
 
 impl Display for WrongOSError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         if let Some(custom_message) = &self.custom_message {
             write!(f, "{}", custom_message)?;
         }

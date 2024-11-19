@@ -78,7 +78,7 @@ impl Sequence for FinalizationSequence {
     }
 
     fn step(&mut self, input: &[u8], output: &mut WriteBuf) -> ConnectorResult<Written> {
-        let (written, next_state) = match std::mem::take(&mut self.state) {
+        let (written, next_state) = match core::mem::take(&mut self.state) {
             FinalizationState::WaitSynchronize => {
                 let synchronize = decode_share_control(input);
 

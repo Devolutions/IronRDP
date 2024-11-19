@@ -18,7 +18,7 @@ fn test_encodes<T: Encode>(data: &T, expected: &[u8]) {
 }
 
 // TODO: This likely generalizes to many tests and can thus be reused outside of this module.
-fn test_decodes<'a, T: Decode<'a> + PartialEq + std::fmt::Debug>(encoded: &'a [u8], expected: &T) {
+fn test_decodes<'a, T: Decode<'a> + PartialEq + core::fmt::Debug>(encoded: &'a [u8], expected: &T) {
     let mut src = ReadCursor::new(encoded);
     assert_eq!(*expected, T::decode(&mut src).unwrap());
 }

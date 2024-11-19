@@ -1,8 +1,8 @@
 use byteorder::{LittleEndian, ReadBytesExt as _};
 use num_derive::{FromPrimitive, ToPrimitive};
-use std::fmt::Debug;
-use std::mem::size_of;
-use std::ops::Add;
+use core::fmt::Debug;
+use core::mem::size_of;
+use core::ops::Add;
 
 use crate::{DecodeResult, EncodeResult};
 use ironrdp_core::{ensure_size, invalid_field_err, other_err, ReadCursor, WriteCursor};
@@ -245,7 +245,7 @@ impl<T> SplitTo for &mut [T] {
     fn split_to(&mut self, n: usize) -> Self {
         assert!(n <= self.len());
 
-        let (a, b) = std::mem::take(self).split_at_mut(n);
+        let (a, b) = core::mem::take(self).split_at_mut(n);
         *self = b;
 
         a

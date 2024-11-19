@@ -1,6 +1,6 @@
-use std::future::Future;
+use core::future::Future;
+use core::pin::Pin;
 use std::net::{IpAddr, Ipv4Addr};
-use std::pin::Pin;
 
 use ironrdp::connector::{custom_err, ConnectorResult};
 use ironrdp_tokio::AsyncNetworkClient;

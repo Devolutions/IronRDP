@@ -38,8 +38,8 @@ pub struct DecodedImage {
     height: u16,
 }
 
-impl std::fmt::Debug for DecodedImage {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Debug for DecodedImage {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("DecodedImage")
             .field("pixel_format", &self.pixel_format)
             .field("data_len", &self.data.len())

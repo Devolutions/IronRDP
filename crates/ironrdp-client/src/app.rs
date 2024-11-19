@@ -1,8 +1,9 @@
 #![allow(clippy::print_stderr, clippy::print_stdout)] // allowed in this module only
 
-use std::num::NonZeroU32;
+use core::num::NonZeroU32;
+use core::time::Duration;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use raw_window_handle::{DisplayHandle, HasDisplayHandle};
 use tokio::sync::mpsc;
@@ -37,7 +38,7 @@ impl App {
         // SAFETY: We drop the softbuffer context right before the event loop is stopped, thus making this safe.
         // FIXME: This is not a sufficient proof and the API is actually unsound as-is.
         let display_handle = unsafe {
-            std::mem::transmute::<DisplayHandle<'_>, DisplayHandle<'static>>(event_loop.display_handle().unwrap())
+            core::mem::transmute::<DisplayHandle<'_>, DisplayHandle<'static>>(event_loop.display_handle().unwrap())
         };
         let context = softbuffer::Context::new(display_handle)
             .map_err(|e| anyhow::anyhow!("unable to initialize softbuffer context: {e}"))?;
@@ -165,7 +166,7 @@ impl ApplicationHandler<RdpOutputEvent> for App {
                         event::ElementState::Released => ironrdp::input::Operation::KeyReleased(scancode),
                     };
 
-                    let input_events = self.input_database.apply(std::iter::once(operation));
+                    let input_events = self.input_database.apply(core::iter::once(operation));
 
                     send_fast_path_events(&self.input_event_sender, input_events);
                 }
@@ -202,7 +203,7 @@ impl ApplicationHandler<RdpOutputEvent> for App {
                 let y = (position.y / win_size.height as f64 * self.buffer_size.1 as f64) as u16;
                 let operation = ironrdp::input::Operation::MouseMove(ironrdp::input::MousePosition { x, y });
 
-                let input_events = self.input_database.apply(std::iter::once(operation));
+                let input_events = self.input_database.apply(core::iter::once(operation));
 
                 send_fast_path_events(&self.input_event_sender, input_events);
             }
@@ -275,7 +276,7 @@ impl ApplicationHandler<RdpOutputEvent> for App {
                     event::ElementState::Released => ironrdp::input::Operation::MouseButtonReleased(mouse_button),
                 };
 
-                let input_events = self.input_database.apply(std::iter::once(operation));
+                let input_events = self.input_database.apply(core::iter::once(operation));
 
                 send_fast_path_events(&self.input_event_sender, input_events);
             }

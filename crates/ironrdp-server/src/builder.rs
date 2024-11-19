@@ -187,7 +187,7 @@ struct NoopDisplayUpdates;
 #[async_trait::async_trait]
 impl RdpServerDisplayUpdates for NoopDisplayUpdates {
     async fn next_update(&mut self) -> Option<DisplayUpdate> {
-        let () = std::future::pending().await;
+        let () = core::future::pending().await;
         unreachable!()
     }
 }

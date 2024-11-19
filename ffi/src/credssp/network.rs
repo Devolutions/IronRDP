@@ -94,7 +94,7 @@ pub mod ffi {
         }
 
         pub fn get_url(&self, writeable: &mut diplomat_runtime::DiplomatWriteable) -> Result<(), Box<IronRdpError>> {
-            use std::fmt::Write;
+            use core::fmt::Write;
             let url: &str = self.0.url.as_ref();
             write!(writeable, "{}", url)?;
             Ok(())

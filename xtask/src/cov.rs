@@ -72,7 +72,7 @@ pub fn report(sh: &Shell, html_report: bool) -> anyhow::Result<()> {
 }
 
 pub fn report_github(sh: &Shell, repo: &str, pr_id: u32) -> anyhow::Result<()> {
-    use std::fmt::Write as _;
+    use core::fmt::Write as _;
 
     const COMMENT_HEADER: &str = "## Coverage Report :robot: :gear:";
     const DIFF_THRESHOLD: f64 = 0.005;

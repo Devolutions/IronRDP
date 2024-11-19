@@ -26,7 +26,7 @@ impl GlobalMemoryBuffer {
         // - `dst` is valid for writes of `data.len()` bytes, we allocated enough above.
         // - Both `data` and `dst` are properly aligned: u8 alignment is 1
         // - Memory regions are not overlapping, `dst` was allocated by us just above.
-        unsafe { std::ptr::copy_nonoverlapping(data.as_ptr(), dst as *mut u8, data.len()) };
+        unsafe { core::ptr::copy_nonoverlapping(data.as_ptr(), dst as *mut u8, data.len()) };
 
         // SAFETY: We called `GlobalLock` on this handle just above.
         if let Err(error) = unsafe { GlobalUnlock(handle) } {
@@ -67,7 +67,7 @@ pub(crate) unsafe fn render_format(format: ClipboardFormatId, data: &[u8]) -> Wi
 
     // We successfully transferred ownership of the data to the clipboard, we don't need to
     // call drop on handle
-    std::mem::forget(global_data);
+    core::mem::forget(global_data);
 
     Ok(())
 }

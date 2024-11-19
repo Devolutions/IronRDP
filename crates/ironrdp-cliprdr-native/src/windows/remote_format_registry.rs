@@ -58,7 +58,7 @@ impl RemoteClipboardFormatRegistry {
         let format_name_utf16 = format_name
             .value()
             .encode_utf16()
-            .chain(std::iter::once(0))
+            .chain(core::iter::once(0))
             .collect::<Vec<_>>();
 
         let format_name_pcwstr = PCWSTR::from_raw(format_name_utf16.as_ptr());

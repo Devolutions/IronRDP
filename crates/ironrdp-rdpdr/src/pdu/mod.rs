@@ -1,5 +1,5 @@
-use std::fmt::{self, Display};
-use std::mem::size_of;
+use core::fmt::{self, Display};
+use core::mem::size_of;
 
 use ironrdp_core::{
     ensure_size, invalid_field_err, unsupported_value_err, DecodeError, DecodeResult, EncodeResult, ReadCursor,

@@ -3,8 +3,8 @@
 //! [\[MS-RDPEFS\]: Remote Desktop Protocol: File System Virtual Channel Extension]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpefs/34d9de58-b2b5-40b6-b970-f82d4603bdb5
 
 use core::fmt;
-use std::fmt::{Debug, Display};
-use std::mem::size_of;
+use core::fmt::{Debug, Display};
+use core::mem::size_of;
 
 use bitflags::bitflags;
 use ironrdp_core::{
@@ -3178,7 +3178,7 @@ impl DeviceReadResponse {
 }
 
 impl Debug for DeviceReadResponse {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("DeviceReadResponse")
             .field("device_io_reply", &self.device_io_reply)
             .field("read_data", &format!("Vec<u8> of length {}", self.read_data.len()))

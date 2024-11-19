@@ -1,9 +1,9 @@
 use std::borrow::Cow;
-use std::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Arc;
 use std::thread::{self, JoinHandle};
-use std::time::Duration;
+use core::time::Duration;
 
 use anyhow::{bail, Context};
 use cpal::traits::{DeviceTrait, HostTrait};

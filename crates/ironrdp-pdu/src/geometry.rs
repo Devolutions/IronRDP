@@ -1,4 +1,4 @@
-use std::cmp::{max, min};
+use core::cmp::{max, min};
 
 use ironrdp_core::{ensure_fixed_part_size, ReadCursor, WriteCursor};
 use ironrdp_core::{Decode, DecodeResult, Encode, EncodeResult};

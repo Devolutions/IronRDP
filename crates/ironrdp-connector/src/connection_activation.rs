@@ -1,4 +1,4 @@
-use std::mem;
+use core::mem;
 
 use ironrdp_pdu::rdp::{self, capability_sets::CapabilitySet};
 

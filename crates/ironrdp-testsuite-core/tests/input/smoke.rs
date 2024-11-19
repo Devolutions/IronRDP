@@ -42,7 +42,7 @@ fn smoke_mouse_buttons() {
         let mut db = Database::default();
 
         for op in ops {
-            db.apply(std::iter::once(op.clone()));
+            db.apply(core::iter::once(op.clone()));
 
             match op {
                 Operation::MouseButtonPressed(button) => {
@@ -85,7 +85,7 @@ fn smoke_keyboard() {
         let mut db = Database::default();
 
         for op in ops {
-            let packets = db.apply(std::iter::once(op.clone()));
+            let packets = db.apply(core::iter::once(op.clone()));
 
             match op {
                 Operation::KeyPressed(scancode) => {

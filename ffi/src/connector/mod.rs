@@ -7,7 +7,7 @@ pub mod state;
 pub mod ffi {
     use diplomat_runtime::DiplomatWriteable;
     use ironrdp::{connector::Sequence as _, displaycontrol::client::DisplayControlClient};
-    use std::fmt::Write;
+    use core::fmt::Write;
     use tracing::info;
 
     use crate::{

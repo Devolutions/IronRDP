@@ -3,7 +3,7 @@ mod tests;
 
 pub mod rdp6;
 
-use std::fmt::{self, Debug};
+use core::fmt::{self, Debug};
 
 use bitflags::bitflags;
 
