@@ -2,10 +2,9 @@ use core::fmt::{self, Display};
 use core::mem::size_of;
 
 use ironrdp_core::{
-    ensure_size, invalid_field_err, unsupported_value_err, DecodeError, DecodeResult, EncodeResult, ReadCursor,
-    WriteCursor,
+    ensure_size, invalid_field_err, unsupported_value_err, Decode, DecodeError, DecodeResult, Encode, EncodeResult,
+    ReadCursor, WriteCursor,
 };
-use ironrdp_core::{Decode, Encode};
 use ironrdp_svc::SvcEncode;
 
 use self::efs::{

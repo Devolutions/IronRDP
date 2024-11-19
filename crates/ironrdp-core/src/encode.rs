@@ -1,11 +1,11 @@
 #[cfg(feature = "alloc")]
-use crate::WriteBuf;
-#[cfg(feature = "alloc")]
 use alloc::string::String;
 #[cfg(feature = "alloc")]
 use alloc::{vec, vec::Vec};
 use core::fmt;
 
+#[cfg(feature = "alloc")]
+use crate::WriteBuf;
 use crate::{
     InvalidFieldErr, NotEnoughBytesErr, OtherErr, UnexpectedMessageTypeErr, UnsupportedValueErr, UnsupportedVersionErr,
     WriteCursor,

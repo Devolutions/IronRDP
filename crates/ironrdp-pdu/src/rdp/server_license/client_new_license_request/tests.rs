@@ -1,11 +1,11 @@
 use byteorder::{LittleEndian, WriteBytesExt};
+use ironrdp_core::{decode, encode_vec};
 use lazy_static::lazy_static;
 
 use super::*;
 use crate::rdp::server_license::server_license_request::cert::{CertificateType, X509CertificateChain};
 use crate::rdp::server_license::server_license_request::{ProductInfo, Scope, ServerCertificate};
 use crate::rdp::server_license::{LicensePdu, PREAMBLE_SIZE};
-use ironrdp_core::{decode, encode_vec};
 
 const LICENSE_HEADER_BUFFER_NO_SIZE: [u8; 6] = [
     0x80, 0x00, // flags

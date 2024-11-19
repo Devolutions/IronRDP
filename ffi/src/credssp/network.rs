@@ -6,9 +6,10 @@ pub type CredsspGeneratorState =
 #[diplomat::bridge]
 pub mod ffi {
 
-    use crate::{credssp::ffi::TsRequest, error::ffi::IronRdpError, utils::ffi::VecU8};
-
     use super::CredsspGeneratorState;
+    use crate::credssp::ffi::TsRequest;
+    use crate::error::ffi::IronRdpError;
+    use crate::utils::ffi::VecU8;
 
     #[diplomat::opaque]
     pub struct CredsspProcessGenerator<'a>(pub ironrdp::connector::credssp::CredsspProcessGenerator<'a>);

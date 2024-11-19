@@ -1,6 +1,10 @@
 use std::io;
 
 use bitflags::bitflags;
+use ironrdp_core::{
+    cast_length, ensure_fixed_part_size, invalid_field_err, unsupported_value_err, Decode, DecodeResult, Encode,
+    EncodeResult, ReadCursor, WriteCursor,
+};
 use md5::Digest;
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive, ToPrimitive};
@@ -8,10 +12,6 @@ use thiserror::Error;
 
 use crate::rdp::headers::{BasicSecurityHeader, BasicSecurityHeaderFlags, BASIC_SECURITY_HEADER_SIZE};
 use crate::PduError;
-use ironrdp_core::{
-    cast_length, ensure_fixed_part_size, invalid_field_err, unsupported_value_err, ReadCursor, WriteCursor,
-};
-use ironrdp_core::{Decode, DecodeResult, Encode, EncodeResult};
 
 #[cfg(test)]
 mod tests;

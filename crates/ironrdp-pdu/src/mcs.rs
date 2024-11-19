@@ -1,14 +1,15 @@
 use std::borrow::Cow;
 
+use ironrdp_core::{
+    cast_length, ensure_fixed_part_size, ensure_size, invalid_field_err, other_err, unexpected_message_type_err,
+    IntoOwned, ReadCursor, WriteCursor,
+};
+
 use crate::gcc::{ChannelDef, ClientGccBlocks, ConferenceCreateRequest, ConferenceCreateResponse};
 use crate::tpdu::{TpduCode, TpduHeader};
 use crate::tpkt::TpktHeader;
 use crate::x224::{user_data_size, X224Pdu};
 use crate::{per, DecodeResult, EncodeResult, PduError};
-use ironrdp_core::{
-    cast_length, ensure_fixed_part_size, ensure_size, invalid_field_err, other_err, unexpected_message_type_err,
-    IntoOwned, ReadCursor, WriteCursor,
-};
 
 // T.125 MCS is defined in:
 //
@@ -938,13 +939,13 @@ pub use legacy::McsError;
 mod legacy {
     use std::io;
 
+    use ironrdp_core::{Decode, DecodeResult, Encode, EncodeResult};
     use thiserror::Error;
 
     use super::*;
     use crate::ber;
     use crate::gcc::conference_create::{ConferenceCreateRequest, ConferenceCreateResponse};
     use crate::gcc::GccError;
-    use ironrdp_core::{Decode, DecodeResult, Encode, EncodeResult};
 
     // impl<'de> McsPdu<'de> for ConnectInitial {
     //     const MCS_NAME: &'static str = "DisconnectProviderUltimatum";

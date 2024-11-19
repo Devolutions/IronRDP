@@ -1,10 +1,10 @@
+use ironrdp_core::{decode, encode_vec, Encode};
 use lazy_static::lazy_static;
 
 use super::cert::{RsaPublicKey, PROP_CERT_BLOBS_HEADERS_SIZE, PROP_CERT_NO_BLOBS_SIZE, RSA_KEY_SIZE_WITHOUT_MODULUS};
 use super::*;
 use crate::rdp::headers::{BasicSecurityHeader, BasicSecurityHeaderFlags};
 use crate::rdp::server_license::{LicensePdu, PreambleFlags, PreambleVersion};
-use ironrdp_core::{decode, encode_vec, Encode};
 
 const LICENSE_HEADER_BUFFER_WITH_CERT: [u8; 8] = [0x80, 0x00, 0x00, 0x00, 0x01, 0x03, 0x9C, 0x08];
 const LICENSE_HEADER_BUFFER_NO_CERT: [u8; 8] = [0x80, 0x00, 0x00, 0x00, 0x01, 0x03, 0x8A, 0x00];

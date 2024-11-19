@@ -1,10 +1,10 @@
 use alloc::string::String;
-use bitflags::bitflags;
 
+use bitflags::bitflags;
 use ironrdp_core::{
-    cast_length, ensure_fixed_part_size, invalid_field_err, DecodeResult, EncodeResult, ReadCursor, WriteCursor,
+    cast_length, ensure_fixed_part_size, invalid_field_err, Decode, DecodeResult, Encode, EncodeResult, ReadCursor,
+    WriteCursor,
 };
-use ironrdp_core::{Decode, Encode};
 
 use crate::{NowHeader, NowMessage, NowMessageClass, NowSessionMessage, NowSessionMessageKind, NowVarStr};
 

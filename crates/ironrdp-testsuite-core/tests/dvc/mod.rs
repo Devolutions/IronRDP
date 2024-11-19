@@ -1,13 +1,10 @@
-use ironrdp_core::Decode;
-use ironrdp_core::Encode;
-use ironrdp_core::{ReadCursor, WriteCursor};
-use ironrdp_dvc::pdu::ClosePdu;
-use ironrdp_dvc::pdu::DataPdu;
-use ironrdp_dvc::pdu::{CapabilitiesRequestPdu, CapabilitiesResponsePdu, CapsVersion};
-use ironrdp_dvc::pdu::{CreateRequestPdu, CreateResponsePdu, CreationStatus};
-use ironrdp_dvc::pdu::{DataFirstPdu, FieldType};
-use ironrdp_dvc::pdu::{DrdynvcClientPdu, DrdynvcDataPdu, DrdynvcServerPdu};
 use std::sync::OnceLock;
+
+use ironrdp_core::{Decode, Encode, ReadCursor, WriteCursor};
+use ironrdp_dvc::pdu::{
+    CapabilitiesRequestPdu, CapabilitiesResponsePdu, CapsVersion, ClosePdu, CreateRequestPdu, CreateResponsePdu,
+    CreationStatus, DataFirstPdu, DataPdu, DrdynvcClientPdu, DrdynvcDataPdu, DrdynvcServerPdu, FieldType,
+};
 
 // TODO: This likely generalizes to many tests and can thus be reused outside of this module.
 fn test_encodes<T: Encode>(data: &T, expected: &[u8]) {

@@ -1,7 +1,7 @@
+use ironrdp_core::{decode, encode_vec};
 use lazy_static::lazy_static;
 
 use super::*;
-use ironrdp_core::{decode, encode_vec};
 
 const POINTER_BUFFER: [u8; 6] = [
     0x01, 0x00, // colorPointerFlag

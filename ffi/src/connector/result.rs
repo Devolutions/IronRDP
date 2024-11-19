@@ -1,10 +1,9 @@
 #[diplomat::bridge]
 pub mod ffi {
-    use crate::{
-        connector::config::ffi::DesktopSize,
-        error::{ffi::IronRdpError, ValueConsumedError},
-        utils::ffi::OptionalUsize,
-    };
+    use crate::connector::config::ffi::DesktopSize;
+    use crate::error::ffi::IronRdpError;
+    use crate::error::ValueConsumedError;
+    use crate::utils::ffi::OptionalUsize;
 
     #[diplomat::opaque]
     pub struct Written(pub ironrdp::connector::Written);

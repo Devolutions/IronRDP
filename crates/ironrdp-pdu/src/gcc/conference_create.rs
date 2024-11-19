@@ -1,7 +1,10 @@
+use ironrdp_core::{
+    cast_length, ensure_size, invalid_field_err, other_err, Decode, DecodeResult, Encode, EncodeResult, ReadCursor,
+    WriteCursor,
+};
+
 use super::{ClientGccBlocks, ServerGccBlocks};
 use crate::{mcs, per};
-use ironrdp_core::{cast_length, ensure_size, invalid_field_err, other_err, ReadCursor, WriteCursor};
-use ironrdp_core::{Decode, DecodeResult, Encode, EncodeResult};
 
 const CONFERENCE_REQUEST_OBJECT_ID: [u8; 6] = [0, 0, 20, 124, 0, 1];
 const CONFERENCE_REQUEST_CLIENT_TO_SERVER_H221_NON_STANDARD: &[u8; 4] = b"Duca";

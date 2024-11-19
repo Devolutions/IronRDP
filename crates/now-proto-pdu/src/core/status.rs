@@ -1,7 +1,7 @@
 use ironrdp_core::{
-    ensure_fixed_part_size, invalid_field_err, DecodeError, DecodeResult, EncodeResult, ReadCursor, WriteCursor,
+    ensure_fixed_part_size, invalid_field_err, Decode, DecodeError, DecodeResult, Encode, EncodeResult, ReadCursor,
+    WriteCursor,
 };
-use ironrdp_core::{Decode, Encode};
 
 /// Error or status severity.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

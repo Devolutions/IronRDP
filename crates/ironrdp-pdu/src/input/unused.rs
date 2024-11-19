@@ -1,5 +1,4 @@
-use ironrdp_core::{ensure_fixed_part_size, ReadCursor, WriteCursor};
-use ironrdp_core::{Decode, DecodeResult, Encode, EncodeResult};
+use ironrdp_core::{ensure_fixed_part_size, Decode, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UnusedPdu;

@@ -1,12 +1,13 @@
-use ironrdp_core::{cast_length, ensure_fixed_part_size, ensure_size, invalid_field_err, ReadCursor, WriteCursor};
 use std::borrow::Cow;
 use std::{io, str};
 
 use bitflags::bitflags;
+use ironrdp_core::{
+    cast_length, ensure_fixed_part_size, ensure_size, invalid_field_err, Decode, DecodeResult, Encode, EncodeResult,
+    ReadCursor, WriteCursor,
+};
 use num_integer::Integer;
 use thiserror::Error;
-
-use ironrdp_core::{Decode, DecodeResult, Encode, EncodeResult};
 
 const CHANNELS_MAX: usize = 31;
 

@@ -20,10 +20,10 @@
 #[macro_use]
 extern crate tracing;
 
+use core::time::Duration;
 use std::io::Write as _;
 use std::net::TcpStream;
 use std::path::PathBuf;
-use core::time::Duration;
 
 use anyhow::Context as _;
 use connector::Credentials;
@@ -380,8 +380,7 @@ fn extract_tls_server_public_key(cert: &[u8]) -> anyhow::Result<Vec<u8>> {
 
 mod danger {
     use tokio_rustls::rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
-    use tokio_rustls::rustls::pki_types;
-    use tokio_rustls::rustls::{DigitallySignedStruct, Error, SignatureScheme};
+    use tokio_rustls::rustls::{pki_types, DigitallySignedStruct, Error, SignatureScheme};
 
     #[derive(Debug)]
     pub(super) struct NoCertificateVerification;

@@ -3,6 +3,10 @@ mod tests;
 
 use bit_field::BitField;
 use bitflags::bitflags;
+use ironrdp_core::{
+    decode_cursor, ensure_fixed_part_size, ensure_size, invalid_field_err, Decode, DecodeError, DecodeResult, Encode,
+    EncodeResult, InvalidFieldErr, ReadCursor, WriteCursor,
+};
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive, ToPrimitive};
 
@@ -12,11 +16,6 @@ use super::surface_commands::{SurfaceCommand, SURFACE_COMMAND_HEADER_SIZE};
 use crate::per;
 use crate::rdp::client_info::CompressionType;
 use crate::rdp::headers::{CompressionFlags, SHARE_DATA_HEADER_COMPRESSION_MASK};
-use ironrdp_core::{decode_cursor, Decode, Encode};
-use ironrdp_core::{
-    ensure_fixed_part_size, ensure_size, invalid_field_err, DecodeError, DecodeResult, EncodeResult, InvalidFieldErr,
-    ReadCursor, WriteCursor,
-};
 
 /// Implements the Fast-Path RDP message header PDU.
 /// TS_FP_UPDATE_PDU

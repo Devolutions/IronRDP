@@ -1,8 +1,9 @@
-use crate::tpkt::TpktHeader;
-use crate::{DecodeResult, EncodeResult};
 use ironrdp_core::{
     ensure_fixed_part_size, ensure_size, invalid_field_err, unexpected_message_type_err, ReadCursor, WriteCursor,
 };
+
+use crate::tpkt::TpktHeader;
+use crate::{DecodeResult, EncodeResult};
 
 /// TPDU type used during X.224 messages exchange
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]

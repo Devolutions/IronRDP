@@ -1,6 +1,9 @@
+use ironrdp_core::{
+    cast_length, ensure_fixed_part_size, ensure_size, invalid_field_err, Decode, DecodeResult, Encode, EncodeResult,
+    ReadCursor, WriteCursor,
+};
+
 use crate::utils;
-use ironrdp_core::{cast_length, ensure_fixed_part_size, ensure_size, invalid_field_err, ReadCursor, WriteCursor};
-use ironrdp_core::{Decode, DecodeResult, Encode, EncodeResult};
 
 const DOMAIN_NAME_SIZE_FIELD_SIZE: usize = 4;
 const DOMAIN_NAME_SIZE_V1: usize = 52;

@@ -1,4 +1,8 @@
 use bitflags::bitflags;
+use ironrdp_core::{
+    ensure_fixed_part_size, ensure_size, invalid_field_err, Decode, DecodeResult, Encode, EncodeResult, ReadCursor,
+    WriteCursor,
+};
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive, ToPrimitive};
 use tap::Pipe as _;
@@ -6,8 +10,6 @@ use tap::Pipe as _;
 use super::{RdpVersion, VERSION_SIZE};
 use crate::nego::SecurityProtocol;
 use crate::utils;
-use ironrdp_core::{ensure_fixed_part_size, ensure_size, invalid_field_err, ReadCursor, WriteCursor};
-use ironrdp_core::{Decode, DecodeResult, Encode, EncodeResult};
 
 pub const IME_FILE_NAME_SIZE: usize = 64;
 

@@ -1,5 +1,4 @@
-use ironrdp_core::decode;
-use ironrdp_core::DecodeError;
+use ironrdp_core::{decode, DecodeError};
 use ironrdp_pdu::bitmap::rdp6::{BitmapStream as BitmapStreamPdu, ColorPlaneDefinition};
 use thiserror::Error;
 

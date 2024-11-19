@@ -1,9 +1,9 @@
 use std::borrow::Cow;
 
 use ironrdp_core::{
-    cast_int, ensure_size, invalid_field_err, DecodeResult, EncodeResult, IntoOwned, ReadCursor, WriteCursor,
+    cast_int, ensure_size, invalid_field_err, Decode, DecodeResult, Encode, EncodeResult, IntoOwned, ReadCursor,
+    WriteCursor,
 };
-use ironrdp_core::{Decode, Encode};
 use ironrdp_pdu::impl_pdu_borrowing;
 use ironrdp_pdu::utils::{read_string_from_cursor, write_string_to_cursor, CharacterSet};
 

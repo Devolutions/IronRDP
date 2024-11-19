@@ -1,7 +1,6 @@
 use std::rc::Rc;
 
-use ironrdp_core::decode_cursor;
-use ironrdp_core::{DecodeErrorKind, ReadCursor, WriteBuf};
+use ironrdp_core::{decode_cursor, DecodeErrorKind, ReadCursor, WriteBuf};
 use ironrdp_graphics::image_processing::PixelFormat;
 use ironrdp_graphics::pointer::{DecodedPointer, PointerBitmapTarget};
 use ironrdp_graphics::rdp6::BitmapStreamDecoder;

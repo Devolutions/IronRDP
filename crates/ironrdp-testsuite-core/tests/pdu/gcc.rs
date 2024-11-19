@@ -1,5 +1,4 @@
-use ironrdp_core::{decode, encode_vec, Encode};
-use ironrdp_core::{DecodeErrorKind, EncodeErrorKind, ReadCursor};
+use ironrdp_core::{decode, encode_vec, DecodeErrorKind, Encode, EncodeErrorKind, ReadCursor};
 use ironrdp_pdu::gcc::*;
 use ironrdp_testsuite_core::cluster_data::*;
 use ironrdp_testsuite_core::conference_create::*;

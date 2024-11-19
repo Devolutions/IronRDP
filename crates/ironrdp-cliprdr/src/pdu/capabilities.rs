@@ -1,9 +1,8 @@
 use bitflags::bitflags;
 use ironrdp_core::{
-    cast_int, cast_length, ensure_fixed_part_size, ensure_size, invalid_field_err, DecodeError, DecodeResult,
-    EncodeResult, ReadCursor, WriteCursor,
+    cast_int, cast_length, ensure_fixed_part_size, ensure_size, invalid_field_err, Decode, DecodeError, DecodeResult,
+    Encode, EncodeResult, ReadCursor, WriteCursor,
 };
-use ironrdp_core::{Decode, Encode};
 use ironrdp_pdu::{impl_pdu_pod, read_padding, write_padding};
 
 use crate::pdu::PartialHeader;

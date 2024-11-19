@@ -1,7 +1,9 @@
 #![allow(clippy::return_self_not_must_use)]
 use core::fmt::Display;
 
-use ironrdp::{cliprdr::backend::ClipboardError, connector::ConnectorError, session::SessionError};
+use ironrdp::cliprdr::backend::ClipboardError;
+use ironrdp::connector::ConnectorError;
+use ironrdp::session::SessionError;
 #[cfg(target_os = "windows")]
 use ironrdp_cliprdr_native::WinCliprdrError;
 
@@ -109,8 +111,9 @@ struct IronRdpErrorInner {
 
 #[diplomat::bridge]
 pub mod ffi {
-    use diplomat_runtime::DiplomatWriteable;
     use core::fmt::Write as _;
+
+    use diplomat_runtime::DiplomatWriteable;
 
     #[derive(Debug, Clone, Copy, thiserror::Error)]
     pub enum IronRdpErrorKind {

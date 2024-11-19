@@ -1,5 +1,4 @@
 use now_proto_pdu::*;
-
 use rstest::rstest;
 
 #[rstest]

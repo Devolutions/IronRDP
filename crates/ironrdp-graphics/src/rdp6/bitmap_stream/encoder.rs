@@ -1,5 +1,4 @@
-use ironrdp_core::WriteCursor;
-use ironrdp_core::{not_enough_bytes_err, EncodeError};
+use ironrdp_core::{not_enough_bytes_err, EncodeError, WriteCursor};
 use ironrdp_pdu::bitmap::rdp6::{BitmapStreamHeader, ColorPlaneDefinition};
 use thiserror::Error;
 

@@ -1,6 +1,9 @@
+use ironrdp_core::{
+    cast_length, ensure_fixed_part_size, ensure_size, Decode, DecodeResult, Encode, EncodeResult, ReadCursor,
+    WriteCursor,
+};
+
 use crate::geometry::InclusiveRectangle;
-use ironrdp_core::{cast_length, ensure_fixed_part_size, ensure_size, ReadCursor, WriteCursor};
-use ironrdp_core::{Decode, DecodeResult, Encode, EncodeResult};
 
 /// [2.2.11.2.1] Refresh Rect PDU Data (TS_REFRESH_RECT_PDU)
 ///

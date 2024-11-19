@@ -213,7 +213,8 @@ impl<S> FramedWrite for Framed<S>
 where
     S: FramedWrite,
 {
-    type WriteAllFut<'write> = S::WriteAllFut<'write>
+    type WriteAllFut<'write>
+        = S::WriteAllFut<'write>
     where
         Self: 'write;
 

@@ -6,16 +6,12 @@ pub mod ffi {
 
     use ironrdp::connector::ClientConnectorState;
 
-    use crate::{
-        connector::{
-            ffi::{ClientConnector, PduHint},
-            result::ffi::Written,
-        },
-        error::{ffi::IronRdpError, ValueConsumedError},
-        pdu::ffi::WriteBuf,
-    };
-
     use super::network::ffi::{ClientState, CredsspProcessGenerator};
+    use crate::connector::ffi::{ClientConnector, PduHint};
+    use crate::connector::result::ffi::Written;
+    use crate::error::ffi::IronRdpError;
+    use crate::error::ValueConsumedError;
+    use crate::pdu::ffi::WriteBuf;
 
     #[diplomat::opaque]
     pub struct KerberosConfig(pub ironrdp::connector::credssp::KerberosConfig);

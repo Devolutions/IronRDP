@@ -2,7 +2,8 @@ use std::borrow::Cow;
 
 use ironrdp_connector::{ConnectorError, ConnectorErrorExt, ConnectorResult};
 use ironrdp_core::{encode_vec, Encode, WriteBuf};
-use ironrdp_pdu::{rdp, x224::X224};
+use ironrdp_pdu::rdp;
+use ironrdp_pdu::x224::X224;
 
 pub(crate) fn encode_send_data_indication<T>(
     initiator_id: u16,

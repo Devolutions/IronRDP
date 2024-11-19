@@ -2,10 +2,12 @@ use core::fmt::Debug;
 
 use bit_field::BitField;
 use bitflags::bitflags;
+use ironrdp_core::{
+    cast_length, ensure_fixed_part_size, ensure_size, invalid_field_err, Decode, DecodeResult, Encode, EncodeResult,
+    ReadCursor, WriteCursor,
+};
 
 use crate::geometry::InclusiveRectangle;
-use ironrdp_core::{cast_length, ensure_fixed_part_size, ensure_size, invalid_field_err, ReadCursor, WriteCursor};
-use ironrdp_core::{Decode, DecodeResult, Encode, EncodeResult};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QuantQuality {

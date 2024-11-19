@@ -2,10 +2,10 @@
 #![allow(non_snake_case)]
 
 use core::cell::RefCell;
-use std::borrow::Cow;
 use core::num::NonZeroU32;
-use std::rc::Rc;
 use core::time::Duration;
+use std::borrow::Cow;
+use std::rc::Rc;
 
 use anyhow::Context as _;
 use base64::Engine as _;

@@ -5,21 +5,20 @@ pub mod state;
 
 #[diplomat::bridge]
 pub mod ffi {
-    use diplomat_runtime::DiplomatWriteable;
-    use ironrdp::{connector::Sequence as _, displaycontrol::client::DisplayControlClient};
     use core::fmt::Write;
+
+    use diplomat_runtime::DiplomatWriteable;
+    use ironrdp::connector::Sequence as _;
+    use ironrdp::displaycontrol::client::DisplayControlClient;
     use tracing::info;
 
-    use crate::{
-        clipboard::ffi::Cliprdr,
-        error::{
-            ffi::{IronRdpError, IronRdpErrorKind},
-            ValueConsumedError,
-        },
-        pdu::ffi::WriteBuf,
-    };
-
-    use super::{config::ffi::Config, result::ffi::Written, state::ffi::ClientConnectorState};
+    use super::config::ffi::Config;
+    use super::result::ffi::Written;
+    use super::state::ffi::ClientConnectorState;
+    use crate::clipboard::ffi::Cliprdr;
+    use crate::error::ffi::{IronRdpError, IronRdpErrorKind};
+    use crate::error::ValueConsumedError;
+    use crate::pdu::ffi::WriteBuf;
 
     #[diplomat::opaque] // We must use Option here, as ClientConnector is not Clone and have functions that consume it
     pub struct ClientConnector(pub Option<ironrdp::connector::ClientConnector>);

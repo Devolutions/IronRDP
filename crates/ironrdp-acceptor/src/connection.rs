@@ -5,8 +5,7 @@ use ironrdp_connector::{
     encode_x224_packet, reason_err, ConnectorError, ConnectorErrorExt, ConnectorResult, DesktopSize, Sequence, State,
     Written,
 };
-use ironrdp_core::decode;
-use ironrdp_core::WriteBuf;
+use ironrdp_core::{decode, WriteBuf};
 use ironrdp_pdu as pdu;
 use ironrdp_pdu::nego::SecurityProtocol;
 use ironrdp_pdu::x224::X224;
@@ -14,9 +13,7 @@ use ironrdp_svc::{StaticChannelSet, SvcServerProcessor};
 use pdu::rdp::capability_sets::CapabilitySet;
 use pdu::rdp::client_info::Credentials;
 use pdu::rdp::headers::ShareControlPdu;
-use pdu::rdp::server_error_info::ErrorInfo;
-use pdu::rdp::server_error_info::ProtocolIndependentCode;
-use pdu::rdp::server_error_info::ServerSetErrorInfoPdu;
+use pdu::rdp::server_error_info::{ErrorInfo, ProtocolIndependentCode, ServerSetErrorInfoPdu};
 use pdu::rdp::server_license::{LicensePdu, LicensingErrorMessage};
 use pdu::{gcc, mcs, nego, rdp};
 

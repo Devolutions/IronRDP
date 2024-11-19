@@ -1,5 +1,4 @@
 use expect_test::expect;
-
 use ironrdp_testsuite_core::now_proto::now_msg_roundtrip;
 use now_proto_pdu::*;
 

@@ -1,7 +1,7 @@
+use ironrdp_core::{decode, encode_vec};
 use lazy_static::lazy_static;
 
 use super::*;
-use ironrdp_core::{decode, encode_vec};
 
 const SOUND_BUFFER: [u8; 4] = [0x01, 0x00, 0x00, 0x00];
 

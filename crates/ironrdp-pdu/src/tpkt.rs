@@ -1,5 +1,6 @@
-use crate::{DecodeResult, EncodeResult};
 use ironrdp_core::{ensure_fixed_part_size, unsupported_version_err, ReadCursor, WriteCursor};
+
+use crate::{DecodeResult, EncodeResult};
 
 /// TPKT header
 ///

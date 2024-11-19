@@ -1,4 +1,5 @@
-use ironrdp_graphics::{color_conversion::*, image_processing::PixelFormat};
+use ironrdp_graphics::color_conversion::*;
+use ironrdp_graphics::image_processing::PixelFormat;
 
 #[test]
 fn to_64x64_ycbcr() {

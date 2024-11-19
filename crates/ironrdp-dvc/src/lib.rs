@@ -9,14 +9,15 @@ extern crate tracing;
 
 extern crate alloc;
 
-use crate::alloc::borrow::ToOwned;
-use alloc::string::String;
-use core::any::TypeId;
-use pdu::DrdynvcDataPdu;
-
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
+use alloc::string::String;
 use alloc::vec::Vec;
+use core::any::TypeId;
+
+use pdu::DrdynvcDataPdu;
+
+use crate::alloc::borrow::ToOwned;
 // Re-export ironrdp_pdu crate for convenience
 #[rustfmt::skip] // do not re-order this pub use
 pub use ironrdp_pdu;

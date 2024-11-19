@@ -4,7 +4,8 @@ use self::ffi::PerformanceFlagsType;
 
 #[diplomat::bridge]
 pub mod ffi {
-    use ironrdp::{connector::Credentials, pdu::rdp::capability_sets::MajorPlatformType};
+    use ironrdp::connector::Credentials;
+    use ironrdp::pdu::rdp::capability_sets::MajorPlatformType;
 
     use crate::error::ffi::IronRdpError;
 

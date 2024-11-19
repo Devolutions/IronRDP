@@ -1,8 +1,7 @@
-use ironrdp_error::Error;
-
 #[cfg(feature = "alloc")]
 use alloc::string::String;
-use ironrdp_error::Source;
+
+use ironrdp_error::{Error, Source};
 
 /// Trait for adding a source to an error type.
 pub trait WithSource {

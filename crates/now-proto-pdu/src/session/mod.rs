@@ -3,9 +3,7 @@ mod logoff;
 mod msg_box_req;
 mod msg_box_rsp;
 
-use ironrdp_core::{DecodeResult, EncodeResult, ReadCursor, WriteCursor};
-
-use ironrdp_core::Encode;
+use ironrdp_core::{DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor};
 pub use lock::NowSessionLockMsg;
 pub use logoff::NowSessionLogoffMsg;
 pub use msg_box_req::{NowMessageBoxStyle, NowSessionMsgBoxReqMsg};

@@ -1,5 +1,4 @@
-use ironrdp_core::ReadCursor;
-use ironrdp_core::{decode_cursor, encode_vec};
+use ironrdp_core::{decode_cursor, encode_vec, ReadCursor};
 use ironrdp_pdu::input::fast_path::{FastPathInput, FastPathInputEvent};
 use ironrdp_pdu::input::mouse::PointerFlags;
 use ironrdp_pdu::input::MousePdu;

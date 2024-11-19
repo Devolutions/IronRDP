@@ -1,7 +1,5 @@
-use ironrdp_core::DecodeErrorKind;
+use ironrdp_core::{decode, encode_vec, DecodeErrorKind, Encode};
 use lazy_static::lazy_static;
-
-use ironrdp_core::{decode, encode_vec, Encode};
 
 use super::*;
 

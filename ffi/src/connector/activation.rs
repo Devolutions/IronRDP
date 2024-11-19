@@ -1,12 +1,13 @@
 #[diplomat::bridge]
 pub mod ffi {
-    use crate::{
-        connector::{config::ffi::DesktopSize, ffi::PduHint, result::ffi::Written},
-        error::{ffi::IronRdpError, IncorrectEnumTypeError},
-        pdu::ffi::WriteBuf,
-    };
-
     use ironrdp::connector::Sequence;
+
+    use crate::connector::config::ffi::DesktopSize;
+    use crate::connector::ffi::PduHint;
+    use crate::connector::result::ffi::Written;
+    use crate::error::ffi::IronRdpError;
+    use crate::error::IncorrectEnumTypeError;
+    use crate::pdu::ffi::WriteBuf;
 
     #[diplomat::opaque]
     pub struct ConnectionActivationSequence(
