@@ -83,7 +83,7 @@ pub fn cf_html_to_plain_html(input: &[u8]) -> Result<&str, HtmlError> {
         }
     }
 
-    fn header_value_to_u32(value: &str) -> Result<u32, std::num::ParseIntError> {
+    fn header_value_to_u32(value: &str) -> Result<u32, core::num::ParseIntError> {
         value.trim_start_matches('0').parse::<u32>()
     }
 }

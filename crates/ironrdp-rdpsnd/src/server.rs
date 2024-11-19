@@ -28,7 +28,7 @@ pub enum RdpsndServerMessage {
     Error(Box<dyn RdpsndError>),
 }
 
-pub trait RdpsndServerHandler: Send + std::fmt::Debug {
+pub trait RdpsndServerHandler: Send + core::fmt::Debug {
     fn get_formats(&self) -> &[pdu::AudioFormat];
 
     fn start(&mut self, client_format: &ClientAudioFormatPdu) -> Option<u16>;

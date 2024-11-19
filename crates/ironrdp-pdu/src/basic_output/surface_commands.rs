@@ -173,8 +173,8 @@ pub struct ExtendedBitmapDataPdu<'a> {
     pub data: &'a [u8],
 }
 
-impl std::fmt::Debug for ExtendedBitmapDataPdu<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Debug for ExtendedBitmapDataPdu<'_> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("ExtendedBitmapDataPdu")
             .field("bpp", &self.bpp)
             .field("codec_id", &self.codec_id)

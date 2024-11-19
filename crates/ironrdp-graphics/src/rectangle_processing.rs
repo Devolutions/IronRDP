@@ -1,4 +1,4 @@
-use std::cmp::{max, min};
+use core::cmp::{max, min};
 
 use ironrdp_pdu::geometry::{InclusiveRectangle, Rectangle as _};
 

@@ -2,7 +2,7 @@
 //!
 //! [\[MS-RPCE\]: Remote Procedure Call Protocol Extensions]: https://learn.microsoft.com/en-us/openspecs/windows_protocols/ms-rpce/290c38b1-92fe-4229-91e6-4fc376610c15
 
-use std::mem::size_of;
+use core::mem::size_of;
 
 use ironrdp_core::{
     cast_length, ensure_size, invalid_field_err, DecodeError, DecodeResult, EncodeResult, ReadCursor, WriteCursor,
@@ -140,12 +140,12 @@ impl<T: HeaderlessEncode> Encode for Pdu<T> {}
 ///
 /// Implementers should typically avoid implementing this trait directly
 /// and instead implement [`HeaderlessEncode`], and wrap it in a [`Pdu`].
-pub trait Encode: ironrdp_core::Encode + Send + std::fmt::Debug {}
+pub trait Encode: ironrdp_core::Encode + Send + core::fmt::Debug {}
 
 /// Trait for types that can be encoded into an [MS-RPCE] message.
 ///
 /// Implementers should typically implement this trait instead of [`Encode`].
-pub trait HeaderlessEncode: Send + std::fmt::Debug {
+pub trait HeaderlessEncode: Send + core::fmt::Debug {
     /// Encodes the instance into a buffer sans its headers.
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()>;
     /// Returns the name associated with this RPCE PDU.

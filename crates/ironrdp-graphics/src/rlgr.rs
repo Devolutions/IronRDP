@@ -1,4 +1,4 @@
-use std::cmp::min;
+use core::cmp::min;
 use std::io;
 
 use bitvec::field::BitField as _;

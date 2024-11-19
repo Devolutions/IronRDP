@@ -21,7 +21,7 @@
 //!
 //! [smartcard_pack.c]: https://github.com/FreeRDP/FreeRDP/blob/ff303a9bda911c54ffc1b9f2471acd79c897b075/libfreerdp/utils/smartcard_pack.c
 
-use std::mem::size_of;
+use core::mem::size_of;
 
 use ironrdp_core::{ensure_size, invalid_field_err, DecodeResult, EncodeResult, ReadCursor, WriteCursor};
 use ironrdp_pdu::utils::{self, CharacterSet};

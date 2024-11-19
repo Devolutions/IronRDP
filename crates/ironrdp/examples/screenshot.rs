@@ -23,7 +23,7 @@ extern crate tracing;
 use std::io::Write as _;
 use std::net::TcpStream;
 use std::path::PathBuf;
-use std::time::Duration;
+use core::time::Duration;
 
 use anyhow::Context as _;
 use connector::Credentials;

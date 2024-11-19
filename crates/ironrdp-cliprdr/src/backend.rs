@@ -41,12 +41,12 @@ pub enum ClipboardMessage {
 
 /// Proxy to send messages from the os clipboard backend to the main application event loop
 /// (e.g. winit event loop).
-pub trait ClipboardMessageProxy: std::fmt::Debug + Send {
+pub trait ClipboardMessageProxy: core::fmt::Debug + Send {
     fn send_clipboard_message(&self, message: ClipboardMessage);
 }
 
 /// OS-specific clipboard backend interface.
-pub trait CliprdrBackend: AsAny + std::fmt::Debug + Send {
+pub trait CliprdrBackend: AsAny + core::fmt::Debug + Send {
     /// Returns path to local temporary directory where clipboard-transferred files should be
     /// stored.
     fn temporary_directory(&self) -> &str;

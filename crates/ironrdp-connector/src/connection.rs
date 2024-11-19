@@ -1,5 +1,5 @@
 use std::borrow::Cow;
-use std::mem;
+use core::mem;
 use std::net::SocketAddr;
 
 use ironrdp_core::{decode, encode_vec, Encode, WriteBuf};

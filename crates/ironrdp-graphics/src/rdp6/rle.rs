@@ -1,3 +1,4 @@
+use core::cmp;
 use std::io::{Read, Write};
 
 use byteorder::ReadBytesExt;
@@ -167,7 +168,7 @@ pub(crate) fn decompress_8bpp_plane(
 }
 
 struct RleEncoderScanlineIterator<I> {
-    inner: std::iter::Enumerate<I>,
+    inner: core::iter::Enumerate<I>,
     width: usize,
     prev_scanline: Vec<u8>,
 }
@@ -201,7 +202,7 @@ impl<I: Iterator<Item = u8>> Iterator for RleEncoderScanlineIterator<I> {
     fn next(&mut self) -> Option<Self::Item> {
         let (idx, mut next) = self.inner.next()?;
 
-        let prev = std::mem::replace(&mut self.prev_scanline[idx % self.width], next);
+        let prev = core::mem::replace(&mut self.prev_scanline[idx % self.width], next);
         if idx >= self.width {
             next = Self::delta_value(prev, next);
         }
@@ -301,7 +302,7 @@ impl RlePlaneEncoder {
             raw = &raw[15..];
         }
 
-        let control = ((raw.len() as u8) << 4) + std::cmp::min(run, 15) as u8;
+        let control = ((raw.len() as u8) << 4) + cmp::min(run, 15) as u8;
 
         ensure_size!(dst: dst, size: raw.len() + 1);
 
@@ -322,9 +323,9 @@ impl RlePlaneEncoder {
         while run >= 16 {
             ensure_size!(dst: dst, size: 1);
 
-            let current = std::cmp::min(run, MAX_DECODED_SEGMENT_SIZE) as u8;
+            let current = cmp::min(run, MAX_DECODED_SEGMENT_SIZE) as u8;
 
-            let c_raw_bytes = std::cmp::min(current / 16, 2);
+            let c_raw_bytes = cmp::min(current / 16, 2);
             let n_run_length = current - c_raw_bytes * 16;
 
             let control = (n_run_length << 4) + c_raw_bytes;

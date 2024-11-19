@@ -1,4 +1,5 @@
-use std::{cmp, io};
+use core::{cmp, fmt};
+use std::io;
 
 use byteorder::WriteBytesExt;
 use ironrdp_pdu::geometry::{InclusiveRectangle, Rectangle as _};
@@ -15,8 +16,8 @@ pub struct ImageRegionMut<'a> {
     pub data: &'a mut [u8],
 }
 
-impl std::fmt::Debug for ImageRegionMut<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Debug for ImageRegionMut<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ImageRegionMut")
             .field("region", &self.region)
             .field("step", &self.step)
@@ -33,8 +34,8 @@ pub struct ImageRegion<'a> {
     pub data: &'a [u8],
 }
 
-impl std::fmt::Debug for ImageRegion<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl fmt::Debug for ImageRegion<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ImageRegion")
             .field("region", &self.region)
             .field("step", &self.step)

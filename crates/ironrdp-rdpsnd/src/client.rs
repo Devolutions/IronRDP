@@ -16,7 +16,7 @@ use tracing::{debug, error};
 use crate::pdu::{self, AudioFormat, PitchPdu, ServerAudioFormatPdu, TrainingPdu, VolumePdu};
 use crate::server::RdpsndSvcMessages;
 
-pub trait RdpsndClientHandler: Send + std::fmt::Debug {
+pub trait RdpsndClientHandler: Send + core::fmt::Debug {
     fn wave(&mut self, format: &AudioFormat, ts: u32, data: Cow<'_, [u8]>);
 
     fn set_volume(&mut self, volume: VolumePdu);

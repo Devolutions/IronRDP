@@ -12,8 +12,8 @@ mod connector;
 mod framed;
 mod session;
 
-use std::future::Future;
-use std::pin::Pin;
+use core::future::Future;
+use core::pin::Pin;
 
 use ironrdp_connector::sspi::generator::NetworkRequest;
 use ironrdp_connector::ConnectorResult;

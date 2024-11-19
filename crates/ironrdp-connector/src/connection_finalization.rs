@@ -1,4 +1,4 @@
-use std::mem;
+use core::mem;
 
 use ironrdp_core::WriteBuf;
 use ironrdp_pdu::rdp::capability_sets::SERVER_CHANNEL_ID;

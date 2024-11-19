@@ -1,4 +1,4 @@
-use std::{fmt, ops};
+use core::{fmt, ops};
 
 #[derive(Debug, Clone)]
 pub(crate) struct Rc4 {

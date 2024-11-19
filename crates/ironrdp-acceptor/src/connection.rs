@@ -1,5 +1,5 @@
-use std::any::TypeId;
-use std::mem;
+use core::any::TypeId;
+use core::mem;
 
 use ironrdp_connector::{
     encode_x224_packet, reason_err, ConnectorError, ConnectorErrorExt, ConnectorResult, DesktopSize, Sequence, State,

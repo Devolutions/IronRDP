@@ -429,7 +429,7 @@ impl WasmClipboard {
                 .send_cliprdr_message(ClipboardMessage::SendInitiatePaste(*format));
         } else {
             // All formats were read, send clipboard to JS
-            let transaction = std::mem::take(&mut self.remote_clipboard);
+            let transaction = core::mem::take(&mut self.remote_clipboard);
             if transaction.is_empty() {
                 return Ok(());
             }

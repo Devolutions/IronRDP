@@ -1,5 +1,5 @@
 use core::fmt;
-use std::mem;
+use core::mem;
 
 use ironrdp_core::WriteBuf;
 use ironrdp_pdu::rdp::server_license::{self, LicensePdu, ServerLicenseError};

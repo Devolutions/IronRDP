@@ -87,7 +87,7 @@ impl OwnedOsClipboard {
     pub(crate) fn delay_render(&mut self, format: ClipboardFormatId) -> Result<(), WinCliprdrError> {
         // SAFETY: We own the clipboard at moment of method invocation, therefore it is safe to
         // call `SetClipboardData`.
-        let result = unsafe { SetClipboardData(format.value(), HANDLE(std::ptr::null_mut())) };
+        let result = unsafe { SetClipboardData(format.value(), HANDLE(core::ptr::null_mut())) };
 
         if let Err(err) = result {
             // `windows` crate will return `Err(..)` on err zero handle, but for `SetClipboardData`

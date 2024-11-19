@@ -1,4 +1,4 @@
-use std::cmp::min;
+use core::cmp::min;
 
 use ironrdp_graphics::color_conversion::{self, YCbCrBuffer};
 use ironrdp_graphics::rectangle_processing::Region;

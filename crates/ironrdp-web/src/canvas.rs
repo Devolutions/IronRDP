@@ -1,4 +1,4 @@
-use std::num::NonZeroU32;
+use core::num::NonZeroU32;
 
 use ironrdp::pdu::geometry::{InclusiveRectangle, Rectangle as _};
 use softbuffer::{NoDisplayHandle, NoWindowHandle};

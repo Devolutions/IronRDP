@@ -11,7 +11,7 @@ pub mod ffi {
         }
 
         pub fn apply(&mut self, operation: &Operation) -> Box<FastPathInputEventIterator> {
-            let res = self.0.apply(std::iter::once(operation.0.clone()));
+            let res = self.0.apply(core::iter::once(operation.0.clone()));
             Box::new(res.to_vec().into())
         }
     }

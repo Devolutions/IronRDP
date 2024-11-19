@@ -10,7 +10,7 @@
 //!   - [interleaved.c](https://github.com/FreeRDP/FreeRDP/blob/db98f16e5bce003c898e8c85eb7af964f22a16a8/libfreerdp/codec/interleaved.c#L3)
 //!   - [bitmap.c](https://github.com/FreeRDP/FreeRDP/blob/3a8dce07ea0262b240025bd68b63801578ca63f0/libfreerdp/codec/include/bitmap.c)
 use core::fmt;
-use std::ops::BitXor;
+use core::ops::BitXor;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RlePixelFormat {
@@ -319,7 +319,7 @@ fn decompress_impl<Mode: DepthMode>(src: &[u8], dst: &mut [u8], row_delta: usize
             let mut number_to_read = run_length;
 
             while number_to_read > 0 {
-                let c_bits = std::cmp::min(8, number_to_read);
+                let c_bits = core::cmp::min(8, number_to_read);
 
                 ensure_size!(from: src, size: 1);
                 let bitmask = src.read_u8();

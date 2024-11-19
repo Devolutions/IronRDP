@@ -56,7 +56,7 @@ impl<'a> ClipboardDataRef<'a> {
     pub(crate) fn data(&self) -> &[u8] {
         let size = self.size();
         // SAFETY: `data` pointer is valid during the lifetime of the wrapper
-        unsafe { std::slice::from_raw_parts(self.data, size) }
+        unsafe { core::slice::from_raw_parts(self.data, size) }
     }
 }
 

@@ -20,7 +20,7 @@ fn mouse_buttons(#[case] button: MouseButton, #[case] expected_flag: MouseFlags)
     let mut db = Database::default();
 
     {
-        let packets = db.apply(std::iter::once(Operation::MouseButtonPressed(button)));
+        let packets = db.apply(core::iter::once(Operation::MouseButtonPressed(button)));
         let packet = packets.into_iter().next().expect("one input event");
 
         let expected_input_event = match expected_flag {
@@ -41,7 +41,7 @@ fn mouse_buttons(#[case] button: MouseButton, #[case] expected_flag: MouseFlags)
     }
 
     {
-        let packets = db.apply(std::iter::once(Operation::MouseButtonReleased(button)));
+        let packets = db.apply(core::iter::once(Operation::MouseButtonReleased(button)));
         let packet = packets.into_iter().next().expect("one input event");
 
         let expected_input_event = match expected_flag {

@@ -380,7 +380,7 @@ impl Database {
             events.push(FastPathInputEvent::KeyboardEvent(flags, scancode));
         }
 
-        for character in std::mem::take(&mut self.unicode_keyboard_state).into_iter() {
+        for character in core::mem::take(&mut self.unicode_keyboard_state).into_iter() {
             let mut utf16_buffer = [0u16; 2];
             let utf16_code_units = character.encode_utf16(&mut utf16_buffer);
 

@@ -1,4 +1,4 @@
-use std::pin::Pin;
+use core::pin::Pin;
 
 use futures_util::Future;
 use ironrdp::connector::sspi::generator::NetworkRequest;

@@ -1,6 +1,6 @@
 use std::sync::mpsc;
 use std::thread;
-use std::time::Duration;
+use core::time::Duration;
 
 use anyhow::Context;
 use cpal::traits::StreamTrait;

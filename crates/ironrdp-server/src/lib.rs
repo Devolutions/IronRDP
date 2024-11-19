@@ -43,10 +43,10 @@ macro_rules! time_warn {
     ($context:expr, $threshold_ms:expr, $op:expr) => {{
         #[cold]
         fn warn_log(context: &str, duration: u128) {
-            use std::sync::atomic::AtomicUsize;
+            use ::core::sync::atomic::AtomicUsize;
 
             static COUNT: AtomicUsize = AtomicUsize::new(0);
-            let current_count = COUNT.fetch_add(1, ::std::sync::atomic::Ordering::Relaxed);
+            let current_count = COUNT.fetch_add(1, ::core::sync::atomic::Ordering::Relaxed);
             if current_count < 50 || current_count % 100 == 0 {
                 ::tracing::warn!("{context} took {duration} ms! (count: {current_count})");
             }

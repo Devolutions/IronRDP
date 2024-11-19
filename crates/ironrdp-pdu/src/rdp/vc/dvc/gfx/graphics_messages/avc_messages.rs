@@ -1,4 +1,4 @@
-use std::fmt::Debug;
+use core::fmt::Debug;
 
 use bit_field::BitField;
 use bitflags::bitflags;
@@ -65,7 +65,7 @@ pub struct Avc420BitmapStream<'a> {
 }
 
 impl Debug for Avc420BitmapStream<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("Avc420BitmapStream")
             .field("rectangles", &self.rectangles)
             .field("quant_qual_vals", &self.quant_qual_vals)

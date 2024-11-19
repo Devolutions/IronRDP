@@ -50,7 +50,7 @@ enum CliprdrState {
     Failed,
 }
 
-pub trait Role: std::fmt::Debug + Send + 'static {
+pub trait Role: core::fmt::Debug + Send + 'static {
     fn is_server() -> bool;
 }
 
@@ -60,7 +60,7 @@ pub struct Cliprdr<R: Role> {
     backend: Box<dyn CliprdrBackend>,
     capabilities: Capabilities,
     state: CliprdrState,
-    _marker: std::marker::PhantomData<R>,
+    _marker: core::marker::PhantomData<R>,
 }
 
 pub type CliprdrClient = Cliprdr<Client>;
@@ -103,7 +103,7 @@ impl<R: Role> Cliprdr<R> {
             backend,
             state: CliprdrState::Initialization,
             capabilities: Capabilities::new(ClipboardProtocolVersion::V2, flags),
-            _marker: std::marker::PhantomData,
+            _marker: core::marker::PhantomData,
         }
     }
 

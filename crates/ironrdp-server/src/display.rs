@@ -1,4 +1,4 @@
-use std::num::NonZeroU16;
+use core::num::NonZeroU16;
 
 use anyhow::Result;
 use ironrdp_displaycontrol::pdu::DisplayControlMonitorLayout;
@@ -39,8 +39,8 @@ pub struct RGBAPointer {
     pub data: Vec<u8>,
 }
 
-impl std::fmt::Debug for RGBAPointer {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Debug for RGBAPointer {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("RGBAPointer")
             .field("with", &self.width)
             .field("height", &self.height)
@@ -78,8 +78,8 @@ pub struct BitmapUpdate {
     pub stride: usize,
 }
 
-impl std::fmt::Debug for BitmapUpdate {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Debug for BitmapUpdate {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("BitmapUpdate")
             .field("top", &self.top)
             .field("left", &self.left)

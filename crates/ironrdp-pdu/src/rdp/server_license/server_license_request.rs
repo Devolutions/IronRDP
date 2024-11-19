@@ -189,7 +189,7 @@ impl<'de> Decode<'de> for Scope {
         let mut blob_data = src.read_slice(blob_header.length).to_vec();
         blob_data.resize(blob_data.len() - UTF8_NULL_TERMINATOR_SIZE, 0);
 
-        if let Ok(data) = std::str::from_utf8(&blob_data) {
+        if let Ok(data) = core::str::from_utf8(&blob_data) {
             Ok(Self(String::from(data)))
         } else {
             Err(invalid_field_err!("scope", "scope is not utf8"))

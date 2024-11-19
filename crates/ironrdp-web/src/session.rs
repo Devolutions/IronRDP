@@ -3,9 +3,9 @@
 
 use core::cell::RefCell;
 use std::borrow::Cow;
-use std::num::NonZeroU32;
+use core::num::NonZeroU32;
 use std::rc::Rc;
-use std::time::Duration;
+use core::time::Duration;
 
 use anyhow::Context as _;
 use base64::Engine as _;

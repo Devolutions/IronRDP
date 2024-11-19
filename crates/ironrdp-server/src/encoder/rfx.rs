@@ -23,7 +23,6 @@ impl RfxEncoder {
     }
 
     // FIXME: rewrite to use WriteCursor
-    #[allow(clippy::similar_names)] // It’s hard to find better names for cr, cb, etc.
     pub(crate) fn encode(&mut self, bitmap: &BitmapUpdate) -> EncodeResult<Vec<u8>> {
         let width = bitmap.width.get();
         let height = bitmap.height.get();
@@ -184,6 +183,8 @@ impl<'a> UpdateEncoder<'a> {
     }
 
     fn encode_tile<'b>(&self, tile_x: usize, tile_y: usize, buf: &'b mut [u8]) -> Result<EncodedTile<'b>, RlgrError> {
+        #![allow(clippy::similar_names)] // It’s hard to find better names for cr, cb, etc.
+
         assert!(buf.len() >= 4096 * 3);
 
         let bpp: usize = self.bitmap.format.bytes_per_pixel().into();
@@ -192,8 +193,8 @@ impl<'a> UpdateEncoder<'a> {
 
         let x = tile_x * 64;
         let y = tile_y * 64;
-        let tile_width = std::cmp::min(width - x, 64);
-        let tile_height = std::cmp::min(height - y, 64);
+        let tile_width = core::cmp::min(width - x, 64);
+        let tile_height = core::cmp::min(height - y, 64);
         let input = &self.bitmap.data[y * self.bitmap.stride + x * bpp..];
 
         let y = &mut [0i16; 4096];

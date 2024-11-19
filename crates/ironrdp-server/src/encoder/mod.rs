@@ -1,7 +1,7 @@
 mod bitmap;
 pub(crate) mod rfx;
 
-use std::{cmp, mem};
+use core::{cmp, mem};
 
 use anyhow::{Context, Result};
 use ironrdp_core::Encode;
