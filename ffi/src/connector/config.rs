@@ -191,6 +191,7 @@ pub mod ffi {
 
                 no_server_pointer: self.no_server_pointer.unwrap_or(false),
                 autologon: self.autologon.unwrap_or(false),
+                request_data: None,
                 pointer_software_rendering: self.pointer_software_rendering.unwrap_or(false),
                 performance_flags: self.performance_flags.ok_or("performance flag is missing")?,
                 desktop_scale_factor: 0,

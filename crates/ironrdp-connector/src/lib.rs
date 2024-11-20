@@ -23,6 +23,7 @@ use core::fmt;
 pub use channel_connection::{ChannelConnectionSequence, ChannelConnectionState};
 pub use connection::{encode_send_data_request, ClientConnector, ClientConnectorState, ConnectionResult};
 pub use connection_finalization::{ConnectionFinalizationSequence, ConnectionFinalizationState};
+use ironrdp_pdu::nego::NegoRequestData;
 use ironrdp_pdu::rdp::capability_sets;
 use ironrdp_pdu::rdp::client_info::PerformanceFlags;
 use ironrdp_pdu::write_buf::WriteBuf;
@@ -159,6 +160,9 @@ pub struct Config {
     pub dig_product_id: String,
     pub client_dir: String,
     pub platform: capability_sets::MajorPlatformType,
+    /// Optional data for the x224 connection request.
+    /// Defaults to a cookie containing the username if unspecified.
+    pub request_data: Option<NegoRequestData>,
     /// If true, the INFO_AUTOLOGON flag is set in the [`ClientInfoPdu`](ironrdp_pdu::rdp::ClientInfoPdu)
     pub autologon: bool,
 
