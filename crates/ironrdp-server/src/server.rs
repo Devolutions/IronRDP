@@ -23,7 +23,7 @@ use ironrdp_tokio::{split_tokio_framed, unsplit_tokio_framed, FramedRead, Framed
 use rdpsnd::server::{RdpsndServer, RdpsndServerMessage};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{mpsc, Mutex};
+use tokio::sync::{mpsc, oneshot, Mutex};
 use tokio::task;
 use tokio_rustls::TlsAcceptor;
 use {ironrdp_dvc as dvc, ironrdp_rdpsnd as rdpsnd};
@@ -186,6 +186,7 @@ pub struct RdpServer {
     ev_sender: mpsc::UnboundedSender<ServerEvent>,
     ev_receiver: Arc<Mutex<mpsc::UnboundedReceiver<ServerEvent>>>,
     creds: Option<Credentials>,
+    local_addr: Option<SocketAddr>,
 }
 
 #[derive(Debug)]
@@ -194,6 +195,7 @@ pub enum ServerEvent {
     Clipboard(ClipboardMessage),
     Rdpsnd(RdpsndServerMessage),
     SetCredentials(Credentials),
+    GetLocalAddr(oneshot::Sender<Option<SocketAddr>>),
 }
 
 pub trait ServerEventSender {
@@ -238,6 +240,7 @@ impl RdpServer {
             ev_sender,
             ev_receiver: Arc::new(Mutex::new(ev_receiver)),
             creds: None,
+            local_addr: None,
         }
     }
 
@@ -332,8 +335,11 @@ impl RdpServer {
 
     pub async fn run(&mut self) -> Result<()> {
         let listener = TcpListener::bind(self.opts.addr).await?;
+        let local_addr = listener.local_addr()?;
 
-        debug!("Listening for connections");
+        debug!("Listening for connections on {local_addr}");
+        self.local_addr = Some(local_addr);
+
         loop {
             let ev_receiver = Arc::clone(&self.ev_receiver);
             let mut ev_receiver = ev_receiver.lock().await;
@@ -343,6 +349,9 @@ impl RdpServer {
                         ServerEvent::Quit(reason) => {
                             debug!("Got quit event {reason}");
                             break;
+                        }
+                        ServerEvent::GetLocalAddr(tx) => {
+                            let _ = tx.send(self.local_addr);
                         }
                         ServerEvent::SetCredentials(creds) => {
                             self.set_credentials(Some(creds));
@@ -479,6 +488,9 @@ impl RdpServer {
                 ServerEvent::Quit(reason) => {
                     debug!("Got quit event: {reason}");
                     return Ok(RunState::Disconnect);
+                }
+                ServerEvent::GetLocalAddr(tx) => {
+                    let _ = tx.send(self.local_addr);
                 }
                 ServerEvent::SetCredentials(creds) => {
                     self.set_credentials(Some(creds));
