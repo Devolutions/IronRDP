@@ -251,9 +251,11 @@ impl Sequence for ClientConnector {
                 }
 
                 let connection_request = nego::ConnectionRequest {
-                    nego_data: Some(nego::NegoRequestData::cookie(
-                        self.config.credentials.username().to_owned(),
-                    )),
+                    nego_data: self.config.request_data.clone().or_else(|| {
+                        Some(nego::NegoRequestData::cookie(
+                            self.config.credentials.username().to_owned(),
+                        ))
+                    }),
                     flags: nego::RequestFlags::empty(),
                     protocol: security_protocol,
                 };
