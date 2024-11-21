@@ -55,11 +55,22 @@ Meta crate re-exporting important crates.
 
 **Architectural Invariant**: this crate re-exports other crates and does not provide anything else.
 
+#### [`crates/ironrdp-core`](./crates/ironrdp-core)
+
+Common traits and types.
+
+This crate is motivated by the fact that only a few items are required to build most of the other crates such as the virtual channels.
+To move up these crates up in the compilation tree, `ironrdp-core` must remain small, with very few dependencies.
+It contains the most "low-context" building blocks.
+
+Most notable traits are `Decode` and `Encode` which are used to define a common interface for PDU encoding and decoding.
+These are object-safe, and must remain so.
+
+Most notable types are `ReadCursor`, `WriteCursor` and `WriteBuf` which are used pervasively for encoding and decoding in a `no-std` manner.
+
 #### [`crates/ironrdp-pdu`](./crates/ironrdp-pdu)
 
 PDU encoding and decoding.
-
-_TODO_: talk about important types and traits such as Decode, Encode…
 
 _TODO_: clean up the dependencies
 
