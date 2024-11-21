@@ -71,15 +71,15 @@ pub enum Credentials {
     },
     SmartCard {
         pin: String,
-        config: Option<Box<SmartCardIdentity>>,
+        config: Option<SmartCardIdentity>,
     },
 }
 
 impl Credentials {
-    fn username(&self) -> &str {
+    fn username(&self) -> Option<&str> {
         match self {
-            Self::UsernamePassword { username, .. } => username,
-            Self::SmartCard { .. } => "", // Username is ultimately provided by the smart card certificate.
+            Self::UsernamePassword { username, .. } => Some(username),
+            Self::SmartCard { .. } => None, // Username is ultimately provided by the smart card certificate.
         }
     }
 
@@ -164,7 +164,11 @@ pub struct Config {
     pub client_dir: String,
     pub platform: capability_sets::MajorPlatformType,
     /// Optional data for the x224 connection request.
-    /// Defaults to a cookie containing the username if unspecified.
+    ///
+    /// Fallbacks to a sensible default depending on the provided credentials:
+    ///
+    /// - A cookie containing the username for a username/password.
+    /// - Nothing for a smart card.
     pub request_data: Option<NegoRequestData>,
     /// If true, the INFO_AUTOLOGON flag is set in the [`ClientInfoPdu`](ironrdp_pdu::rdp::ClientInfoPdu)
     pub autologon: bool,
