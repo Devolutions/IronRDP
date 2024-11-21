@@ -7,11 +7,6 @@
 
 extern crate alloc;
 
-use ironrdp_pdu::x224::X224;
-// Re-export ironrdp_pdu crate for convenience
-#[rustfmt::skip] // do not re-order this pub use
-pub use ironrdp_pdu as pdu;
-
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use core::any::TypeId;
@@ -24,10 +19,24 @@ use ironrdp_core::{
     assert_obj_safe, decode_cursor, encode_buf, AsAny, DecodeResult, Encode, EncodeResult, ReadCursor, WriteBuf,
     WriteCursor,
 };
+use ironrdp_pdu::gcc::ChannelDef;
 use ironrdp_pdu::gcc::{ChannelName, ChannelOptions};
+use ironrdp_pdu::rdp::vc::ChannelControlFlags;
+use ironrdp_pdu::x224::X224;
 use ironrdp_pdu::{decode_err, mcs, PduResult};
-use pdu::gcc::ChannelDef;
-use pdu::rdp::vc::ChannelControlFlags;
+
+// Re-export ironrdp_pdu crate for convenience
+#[rustfmt::skip] // Do not re-order this pub use.
+pub use ironrdp_pdu as pdu;
+
+// TODO(#583): Remove once Teleport migrated to the newer item paths.
+#[doc(hidden)]
+#[deprecated(since = "0.1.0", note = "use ironrdp-core")]
+#[rustfmt::skip] // Do not re-order this pub use.
+pub use ironrdp_core::impl_as_any;
+
+// NOTE: We may re-consider moving some types dedicated to SVC out of ironrdp_pdu in some future major version bump.
+// The idea is to reduce the amount of code required when building a static/dynamic channel to a minimum.
 
 /// The integer type representing a static virtual channel ID.
 pub type StaticChannelId = u16;
