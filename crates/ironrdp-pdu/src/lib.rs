@@ -10,7 +10,8 @@
 
 use core::fmt;
 
-use ironrdp_core::{unexpected_message_type_err, DecodeResult, EncodeResult, ReadCursor};
+// TODO(#583): uncomment once re-exports are removed.
+// use ironrdp_core::{unexpected_message_type_err, DecodeResult, EncodeResult, ReadCursor};
 use ironrdp_error::Source;
 
 #[macro_use]
@@ -239,3 +240,45 @@ mod legacy {
 // Private! Used by the macros.
 #[doc(hidden)]
 pub use ironrdp_core;
+
+// -- Temporary re-exports to ease teleport’s migration to the newer versions -- //
+// TODO(#583): remove once Teleport migrated to the newer item paths.
+// NOTE: #[deprecated] has no effect on re-exports, so this is mostly for documenting the code at this point.
+#[doc(hidden)]
+#[deprecated(since = "0.1.0", note = "use ironrdp_core::{ReadCursor, WriteCursor}")]
+pub mod cursor {
+    pub use ironrdp_core::ReadCursor;
+    pub use ironrdp_core::WriteCursor;
+}
+
+#[doc(hidden)]
+#[deprecated(since = "0.1.0", note = "use ironrdp_core::WriteBuf")]
+pub mod write_buf {
+    pub use ironrdp_core::WriteBuf;
+}
+
+#[doc(hidden)]
+#[deprecated(since = "0.1.0", note = "use ironrdp_core")]
+pub use ironrdp_core::*;
+
+#[doc(hidden)]
+#[deprecated(since = "0.1.0")]
+#[macro_export]
+macro_rules! custom_err {
+    ( $description:expr, $source:expr $(,)? ) => {{
+        $crate::PduError::new(
+            $description,
+            $crate::PduErrorKind::Other {
+                description: $description,
+            },
+        )
+        .with_source($source)
+    }};
+    ( $source:expr $(,)? ) => {{
+        $crate::custom_err!($crate::function!(), $source)
+    }};
+}
+
+#[doc(hidden)]
+#[deprecated(since = "0.1.0", note = "use ironrdp_core::other_err")]
+pub use crate::pdu_other_err as other_err;
