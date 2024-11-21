@@ -2426,7 +2426,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "ironrdp-error",
 ]
@@ -2511,7 +2511,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-pdu"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "bit_field",
  "bitflags 2.6.0",
@@ -2637,7 +2637,7 @@ version = "0.0.0"
 
 [[package]]
 name = "ironrdp-svc"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "bitflags 2.6.0",
  "ironrdp-core",
