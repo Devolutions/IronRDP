@@ -64,7 +64,7 @@ macro_rules! not_enough_bytes_err {
         $crate::not_enough_bytes_err($context, $received, $expected)
     }};
     ( $received:expr , $expected:expr $(,)? ) => {{
-        not_enough_bytes_err!($crate::function!(), $received, $expected)
+        $crate::not_enough_bytes_err!($crate::function!(), $received, $expected)
     }};
 }
 
@@ -96,7 +96,7 @@ macro_rules! invalid_field_err {
         $crate::invalid_field_err($context, $field, $reason)
     }};
     ( $field:expr , $reason:expr $(,)? ) => {{
-        invalid_field_err!($crate::function!(), $field, $reason)
+        $crate::invalid_field_err!($crate::function!(), $field, $reason)
     }};
 }
 
@@ -127,7 +127,7 @@ macro_rules! unexpected_message_type_err {
         $crate::unexpected_message_type_err($context, $got)
     }};
     ( $got:expr $(,)? ) => {{
-        unexpected_message_type_err!($crate::function!(), $got)
+        $crate::unexpected_message_type_err!($crate::function!(), $got)
     }};
 }
 
@@ -158,7 +158,7 @@ macro_rules! unsupported_version_err {
         $crate::unsupported_version_err($context, $got)
     }};
     ( $got:expr $(,)? ) => {{
-        unsupported_version_err!($crate::function!(), $got)
+        $crate::unsupported_version_err!($crate::function!(), $got)
     }};
 }
 
@@ -190,7 +190,7 @@ macro_rules! unsupported_value_err {
         $crate::unsupported_value_err($context, $name, $value)
     }};
     ( $name:expr, $value:expr $(,)? ) => {{
-        unsupported_value_err!($crate::function!(), $name, $value)
+        $crate::unsupported_value_err!($crate::function!(), $name, $value)
     }};
 }
 
@@ -237,10 +237,10 @@ macro_rules! other_err {
         $crate::other_err($context, $description)
     }};
     ( source: $source:expr $(,)? ) => {{
-        other_err!($crate::function!(), source: $source)
+        $crate::other_err!($crate::function!(), source: $source)
     }};
     ( $description:expr $(,)? ) => {{
-        other_err!($crate::function!(), $description)
+        $crate::other_err!($crate::function!(), $description)
     }};
 }
 

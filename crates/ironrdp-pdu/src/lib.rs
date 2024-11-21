@@ -235,3 +235,7 @@ mod legacy {
         fn buffer_length(&self) -> usize;
     }
 }
+
+// Private! Used by the macros.
+#[doc(hidden)]
+pub use ironrdp_core;
