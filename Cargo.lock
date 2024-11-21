@@ -2260,7 +2260,7 @@ checksum = "ddc24109865250148c2e0f3d25d4f0f479571723792d3802153c60922a4fb708"
 
 [[package]]
 name = "ironrdp"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2408,7 +2408,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-connector"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "arbitrary",
  "ironrdp-core",
@@ -2426,7 +2426,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "ironrdp-error",
 ]
@@ -2511,7 +2511,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-pdu"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "bit_field",
  "bitflags 2.6.0",
@@ -2592,7 +2592,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-server"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2637,7 +2637,7 @@ version = "0.0.0"
 
 [[package]]
 name = "ironrdp-svc"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "bitflags 2.6.0",
  "ironrdp-core",
