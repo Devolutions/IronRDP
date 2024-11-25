@@ -183,10 +183,10 @@ jobs:
           # Install Visual Studio Developer PowerShell Module for cmdlets such as Enter-VsDevShell
           Install-Module VsDevShell -Force
 
-      # No pre-generated bindings for Android as of today.
+      # No pre-generated bindings for Android and iOS.
       # https://aws.github.io/aws-lc-rs/platform_support.html#pre-generated-bindings
       - name: Install bindgen-cli for aws-lc-sys
-        if: ${{ matrix.os == 'android' }}
+        if: ${{ matrix.os == 'android' || matrix.os == 'ios' }}
         run: cargo install --force --locked bindgen-cli
 
       # For aws-lc-sys. Error returned otherwise:
