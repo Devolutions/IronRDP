@@ -2,7 +2,7 @@
 name = "ironrdp-ainput"
 version = "0.1.0"
 readme = "README.md"
-description = "dynamic channel implementation"
+description = "AInput dynamic channel implementation"
 edition.workspace = true
 license.workspace = true
 homepage.workspace = true
