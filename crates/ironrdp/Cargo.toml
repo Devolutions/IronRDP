@@ -56,6 +56,7 @@ async-trait = "0.1"
 bmp = "0.5"
 pico-args = "0.5"
 x509-cert = { version = "0.2", default-features = false, features = ["std"] }
+sspi = { workspace = true, features = ["network_client"] }
 tracing.workspace = true
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tokio-rustls = "0.26"
@@ -68,7 +69,7 @@ all-features = true
 [[example]]
 name = "screenshot"
 doc-scrape-examples = true
-required-features = ["session"]
+required-features = ["session", "connector", "graphics"]
 
 [[example]]
 name = "server"

@@ -28,13 +28,13 @@ use std::path::PathBuf;
 use anyhow::Context as _;
 use connector::Credentials;
 use ironrdp::connector;
-use ironrdp::connector::sspi::network_client::reqwest_network_client::ReqwestNetworkClient;
 use ironrdp::connector::ConnectionResult;
 use ironrdp::pdu::gcc::KeyboardType;
 use ironrdp::pdu::rdp::capability_sets::MajorPlatformType;
 use ironrdp::session::image::DecodedImage;
 use ironrdp::session::{ActiveStage, ActiveStageOutput};
 use ironrdp_pdu::rdp::client_info::PerformanceFlags;
+use sspi::network_client::reqwest_network_client::ReqwestNetworkClient;
 use tokio_rustls::rustls;
 
 const HELP: &str = "\
