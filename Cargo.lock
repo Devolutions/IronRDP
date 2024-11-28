@@ -2327,6 +2327,7 @@ dependencies = [
  "ironrdp-svc",
  "pico-args",
  "rand",
+ "sspi",
  "tokio-rustls",
  "tracing",
  "tracing-subscriber",
