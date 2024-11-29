@@ -5,7 +5,7 @@
 
 #[cfg(test)]
 use {
-    anyhow as _, async_trait as _, bmp as _, ironrdp_blocking as _, ironrdp_cliprdr_native as _, pico_args as _,
+    anyhow as _, async_trait as _, image as _, ironrdp_blocking as _, ironrdp_cliprdr_native as _, pico_args as _,
     rand as _, sspi as _, tokio_rustls as _, tracing as _, tracing_subscriber as _, x509_cert as _,
 };
 
