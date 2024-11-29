@@ -6,12 +6,12 @@
 //!
 //! In this basic client implementation, the client establishes a connection
 //! with the destination server, decodes incoming graphics updates, and saves the
-//! resulting output as a BMP image file on the disk.
+//! resulting output as a PNG image file on the disk.
 //!
 //! # Usage example
 //!
 //! ```shell
-//! cargo run --example=screenshot -- --host <HOSTNAME> -u <USERNAME> -p <PASSWORD> -o out.bmp
+//! cargo run --example=screenshot -- --host <HOSTNAME> -u <USERNAME> -p <PASSWORD> -o out.png
 //! ```
 
 #![allow(unused_crate_dependencies)] // false positives because there is both a library and a binary
@@ -99,7 +99,7 @@ fn parse_args() -> anyhow::Result<Action> {
         let password = args.value_from_str(["-p", "--password"])?;
         let output = args
             .opt_value_from_str(["-o", "--output"])?
-            .unwrap_or_else(|| PathBuf::from("out.bmp"));
+            .unwrap_or_else(|| PathBuf::from("out.png"));
         let domain = args.opt_value_from_str(["-d", "--domain"])?;
 
         Action::Run {
@@ -156,27 +156,11 @@ fn run(
 
     active_stage(connection_result, framed, &mut image).context("active stage")?;
 
-    let mut bmp = bmp::Image::new(u32::from(image.width()), u32::from(image.height()));
+    let img: image::ImageBuffer<image::Rgba<u8>, _> =
+        image::ImageBuffer::from_raw(u32::from(image.width()), u32::from(image.height()), image.data())
+            .context("invalid image")?;
 
-    image
-        .data()
-        .chunks_exact(usize::from(image.width()).checked_mul(4).expect("never overflow"))
-        .enumerate()
-        .for_each(|(y, row)| {
-            row.chunks_exact(4).enumerate().for_each(|(x, pixel)| {
-                let r = pixel[0];
-                let g = pixel[1];
-                let b = pixel[2];
-                let _a = pixel[3];
-                bmp.set_pixel(
-                    u32::try_from(x).unwrap(),
-                    u32::try_from(y).unwrap(),
-                    bmp::Pixel::new(r, g, b),
-                );
-            })
-        });
-
-    bmp.save(output).context("save BMP image to disk")?;
+    img.save(output).context("save image to disk")?;
 
     Ok(())
 }
