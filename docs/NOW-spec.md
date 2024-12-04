@@ -199,9 +199,9 @@ For successful operation this field value is operation specific.
 - If `NOW_EXEC_RESULT_ERROR` is set, this value represents error code according to
   `NOW_EXEC_RESULT_ERROR_KIND_*` value. If no error kind flags set, value of this
   field is undefined and should be ignored.
-    
+
     - `NOW_EXEC_RESULT_ERROR_KIND_NOW` codes:
-    
+
         | Value | Meaning |
         |-------|---------|
         | NOW_CODE_IN_USE<br>0x0001 | Resource (e.g. exec session id is already in use). |
@@ -211,10 +211,10 @@ For successful operation this field value is operation specific.
         | NOW_CODE_ACCESS_DENIED<br>0x0005 | Resource can't be accessed. |
         | NOW_CODE_INTERNAL<br>0x0006 | Internal error. |
         | NOW_CODE_NOT_IMPLEMENTED<br>0x0007 | Operation is not implemented on current platform. |
-    
+
     - `NOW_EXEC_RESULT_ERROR_KIND_WINAPI`: code contains standard WinAPI error.
     - `NOW_EXEC_RESULT_ERROR_KIND_UNIX`: code contains standard UNIX error code.
-   
+
 **errorMessage(variable, optional)**: this value contains optional error message if
 `NOW_EXEC_RESULT_ERROR_MESSAGE` flag is set
 
@@ -967,9 +967,6 @@ The NOW_EXEC_RUN_MSG message is used to send a run request. This request type ma
         <tr>
             <td colspan="32">command (variable)</td>
         </tr>
-        <tr>
-            <td colspan="32">parameters</td>
-        </tr>
     </tbody>
 </table>
 
@@ -1313,4 +1310,3 @@ periodically on intervals specified during negotiation phase.
 ### Version History
 - 1.0
     - Initial protocol version
- 
