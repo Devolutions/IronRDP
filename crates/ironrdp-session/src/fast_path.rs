@@ -431,9 +431,7 @@ impl CompleteData {
             Fragmentation::Last => {
                 self.append_data(data);
 
-                let complete_data = self.fragmented_data.take().unwrap();
-
-                Some(complete_data)
+                self.fragmented_data.take()
             }
         }
     }
