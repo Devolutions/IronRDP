@@ -139,7 +139,7 @@ The NOW_HEADER structure is the header common to all NOW protocol messages.
 
 | Flag                            | Meaning              |
 |---------------------------------|----------------------|
-| NOW_NEGOTIATION_MSG_CLASS_ID<br>0x10 | Protocol negotiation class |
+| NOW_CHANNEL_MSG_CLASS_ID<br>0x10 | Channel message class |
 | NOW_SYSTEM_MSG_CLASS_ID<br>0x11 | System message class |
 | NOW_SESSION_MSG_CLASS_ID<br>0x12 | Session message class |
 | NOW_EXEC_MSG_CLASS_ID<br>0x13 | Exec message class |
@@ -218,9 +218,10 @@ For successful operation this field value is operation specific.
 **errorMessage(variable, optional)**: this value contains optional error message if
 `NOW_EXEC_RESULT_ERROR_MESSAGE` flag is set
 
-### Negotiation Messages
+### Channel Messages
+Channel negotiation and life cycle messages.
 
-#### NOW_NEGOTIATION_MSG
+#### NOW_CHANNEL_MSG
 
 <table class="byte-layout">
     <thead>
@@ -251,13 +252,14 @@ For successful operation this field value is operation specific.
 
 | Value                           | Meaning              |
 |---------------------------------|----------------------|
-| NOW_NEGOTIATION_CAPSET_MSG_ID<br>0x01 | NOW_NEGOTIATION_CAPSET_MSG |
+| NOW_CHANNEL_CAPSET_MSG_ID<br>0x01 | NOW_CHANNEL_CAPSET_MSG |
+| NOW_CHANNEL_HEARTBEAT_MSG_ID<br>0x02 | NOW_CHANNEL_HEARTBEAT_MSG |
 
-#### NOW_NEGOTIATION_CAPSET_MSG
+#### NOW_CHANNEL_CAPSET_MSG
 
-This message is first set by the server side, to advertise capabilities.
+This message is first set by the client side, to advertise capabilities.
 
-Received server message should be downgraded by the client (remove non-intersecting capabilities) and sent back to the server at the start of DVC channel communications. DVC channel should be closed if protocol
+Received client message should be downgraded by the server (remove non-intersecting capabilities) and sent back to the client at the start of DVC channel communications. DVC channel should be closed if protocol
 versions are not compatible.
 
 <table class="byte-layout">
@@ -299,15 +301,15 @@ versions are not compatible.
 
 **msgSize (4 bytes)**: The message size, excluding the header size (8 bytes).
 
-**msgClass (1 byte)**: The message class (NOW_NEGOTIATION_MSG_CLASS_ID).
+**msgClass (1 byte)**: The message class (NOW_CHANNEL_MSG_CLASS_ID).
 
-**msgType (1 byte)**: The message type (NOW_NEGOTIATION_CAPSET_MSG_ID).
+**msgType (1 byte)**: The message type (NOW_CHANNEL_CAPSET_MSG_ID).
 
 **msgFlags (2 bytes)**: Message flags.
 
 | Flag | Meaning |
 |-------|---------|
-| NOW_NEGOTIATION_SET_HEATBEAT<br>0x0001 | `heartbeat` field is present. |
+| NOW_CHANNEL_SET_HEATBEAT<br>0x0001 | `heartbeat` field is present. |
 
 **versionMajor (1 byte)**: Major protocol version. Breaking changes in protocol should
 increment major version; Protocol implementations with different major version are not compatible.
@@ -344,6 +346,41 @@ increment major version; Protocol implementations with different major version a
 **heartbeatInterval (4 bytes, optional)**: A 32-bit unsigned integer, which represents
 periodic heartbeat interval *hint* for a server (60 seconds by default).
 Disables periodic heartbeat if set to `0`.
+
+
+#### NOW_CHANNEL_HEARTBEAT_MSG
+
+Periodic heartbeat message sent by the server. If the client does not receive this message within
+the specified interval, it should consider the connection as lost.
+
+<table class="byte-layout">
+    <thead>
+        <tr>
+            <th>0</th><th>1</th><th>2</th><th>3</th><th>4</th><th>5</th><th>6</th><th>7</th>
+            <th>8</th><th>9</th><th>10</th><th>1</th><th>2</th><th>3</th><th>4</th><th>5</th>
+            <th>6</th><th>7</th><th>8</th><th>9</th><th>20</th><th>1</th><th>2</th><th>3</th>
+            <th>4</th><th>5</th><th>6</th><th>7</th><th>8</th><th>9</th><th>30</th><th>1</th>
+        </tr>
+    </thead>
+    <tbody>
+        <tr>
+            <td colspan="32">msgSize</td>
+        </tr>
+        <tr>
+            <td colspan="8">msgClass</td>
+            <td colspan="8">msgType</td>
+            <td colspan="16">msgFlags</td>
+        </tr>
+    </tbody>
+</table>
+
+**msgSize (4 bytes)**: The message size, excluding the header size (8 bytes).
+
+**msgClass (1 byte)**: The message class (NOW_CHANNEL_MSG_CLASS_ID).
+
+**msgType (1 byte)**: The message type (NOW_CHANNEL_HEARTBEAT_MSG_ID).
+
+**msgFlags (2 bytes)**: The message flags.
 
 ### System Messages
 
@@ -701,13 +738,13 @@ The NOW_EXEC_MSG message is used to execute remote commands or scripts.
 | NOW_EXEC_CANCEL_RSP_MSG_ID<br>0x03 | NOW_EXEC_CANCEL_RSP_MSG |
 | NOW_EXEC_RESULT_MSG_ID<br>0x04 | NOW_EXEC_RESULT_MSG |
 | NOW_EXEC_DATA_MSG_ID<br>0x05 | NOW_EXEC_DATA_MSG |
+| NOW_EXEC_STARTED_MSG_ID<br>0x06 | NOW_EXEC_STARTED_MSG |
 | NOW_EXEC_RUN_MSG_ID<br>0x10 | NOW_EXEC_RUN_MSG |
 | NOW_EXEC_PROCESS_MSG_ID<br>0x11 | NOW_EXEC_PROCESS_MSG |
 | NOW_EXEC_SHELL_MSG_ID<br>0x12 | NOW_EXEC_SHELL_MSG |
 | NOW_EXEC_BATCH_MSG_ID<br>0x13 | NOW_EXEC_BATCH_MSG |
 | NOW_EXEC_WINPS_MSG_ID<br>0x14 | NOW_EXEC_WINPS_MSG |
 | NOW_EXEC_PWSH_MSG_ID<br>0x15 | NOW_EXEC_PWSH_MSG |
-| NOW_EXEC_HEARTBEAT_MSG_ID<br>0x20 | NOW_EXEC_HEARTBEAT_MSG |
 
 **msgFlags (2 bytes)**: The message flags.
 
@@ -938,6 +975,45 @@ flag.
 **sessionId (4 bytes)**: A 32-bit unsigned integer containing a unique remote execution session id.
 
 **data (variable)**: The input/output data represented as `NOW_VARBUF`
+
+#### NOW_EXEC_STARTED_MSG
+
+The NOW_EXEC_STARTED_MSG message is sent by the server after the execution session has been successfully
+started.
+
+<table class="byte-layout">
+    <thead>
+        <tr>
+            <th>0</th><th>1</th><th>2</th><th>3</th><th>4</th><th>5</th><th>6</th><th>7</th>
+            <th>8</th><th>9</th><th>10</th><th>1</th><th>2</th><th>3</th><th>4</th><th>5</th>
+            <th>6</th><th>7</th><th>8</th><th>9</th><th>20</th><th>1</th><th>2</th><th>3</th>
+            <th>4</th><th>5</th><th>6</th><th>7</th><th>8</th><th>9</th><th>30</th><th>1</th>
+        </tr>
+    </thead>
+    <tbody>
+        <tr>
+            <td colspan="32">msgSize</td>
+        </tr>
+        <tr>
+            <td colspan="8">msgClass</td>
+            <td colspan="8">msgType</td>
+            <td colspan="16">msgFlags</td>
+        </tr>
+        <tr>
+            <td colspan="32">sessionId</td>
+        </tr>
+    </tbody>
+</table>
+
+**msgSize (4 bytes)**: The message size, excluding the header size (8 bytes).
+
+**msgClass (1 byte)**: The message class (NOW_EXEC_MSG_CLASS_ID).
+
+**msgType (1 byte)**: The message type (NOW_EXEC_RESULT_MSG_ID).
+
+**msgFlags (2 bytes)**: The message flags.
+
+**sessionId (4 bytes)**: A 32-bit unsigned integer containing a unique remote execution session id.
 
 #### NOW_EXEC_RUN_MSG
 
@@ -1267,45 +1343,6 @@ The NOW_EXEC_PWSH_MSG message is used to execute a remote PowerShell 7 (pwsh) co
 **executionPolicy (variable, optional)**: A NOW_VARSTR structure, same as with NOW_EXEC_WINPS_MSG.
 
 **configurationName (variable, optional)**: A NOW_VARSTR structure, same as with NOW_EXEC_WINPS_MSG.
-
-#### NOW_EXEC_HEARTBEAT_MSG
-
-The NOW_EXEC_HEARTBEAT_MSG message is sent immediately after execution session has started and then is sent
-periodically on intervals specified during negotiation phase.
-
-<table class="byte-layout">
-    <thead>
-        <tr>
-            <th>0</th><th>1</th><th>2</th><th>3</th><th>4</th><th>5</th><th>6</th><th>7</th>
-            <th>8</th><th>9</th><th>10</th><th>1</th><th>2</th><th>3</th><th>4</th><th>5</th>
-            <th>6</th><th>7</th><th>8</th><th>9</th><th>20</th><th>1</th><th>2</th><th>3</th>
-            <th>4</th><th>5</th><th>6</th><th>7</th><th>8</th><th>9</th><th>30</th><th>1</th>
-        </tr>
-    </thead>
-    <tbody>
-        <tr>
-            <td colspan="32">msgSize</td>
-        </tr>
-        <tr>
-            <td colspan="8">msgClass</td>
-            <td colspan="8">msgType</td>
-            <td colspan="16">msgFlags</td>
-        </tr>
-        <tr>
-            <td colspan="32">sessionId</td>
-        </tr>
-    </tbody>
-</table>
-
-**msgSize (4 bytes)**: The message size, excluding the header size (8 bytes).
-
-**msgClass (1 byte)**: The message class (NOW_EXEC_MSG_CLASS_ID).
-
-**msgType (1 byte)**: The message type (NOW_EXEC_HEARTBEAT_MSG_ID).
-
-**msgFlags (2 bytes)**: The message flags.
-
-**sessionId (4 bytes)**: A 32-bit unsigned integer containing a unique remote execution session id.
 
 ### Version History
 - 1.0
