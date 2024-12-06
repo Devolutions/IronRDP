@@ -1,6 +1,6 @@
 [package]
 name = "ironrdp"
-version = "0.6.0"
+version = "0.7.0"
 readme = "README.md"
 description = "A meta crate re-exporting IronRDP crates for convenience"
 edition.workspace = true
