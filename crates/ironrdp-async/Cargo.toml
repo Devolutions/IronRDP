@@ -1,6 +1,6 @@
 [package]
 name = "ironrdp-async"
-version = "0.1.0"
+version = "0.2.0"
 readme = "README.md"
 description = "Provides `Future`s wrapping the IronRDP state machines conveniently"
 edition.workspace = true

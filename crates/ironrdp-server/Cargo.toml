@@ -1,6 +1,6 @@
 [package]
 name = "ironrdp-server"
-version = "0.2.0"
+version = "0.3.0"
 readme = "README.md"
 description = "Extendable skeleton for implementing custom RDP servers"
 edition.workspace = true
