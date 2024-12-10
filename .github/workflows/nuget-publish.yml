@@ -121,24 +121,28 @@ jobs:
           echo "CC_i686-linux-android=$AndroidToolchain/bin/i686-linux-android21-clang" >> $Env:GITHUB_ENV
           echo "CXX_i686-linux-android=$AndroidToolchain/bin/i686-linux-android21-clang++" >> $Env:GITHUB_ENV
           echo "AR_i686-linux-android=$AndroidToolchain/bin/llvm-ar" >> $Env:GITHUB_ENV
+          echo "rustflags = [`"-C`", `"link-args=-zmax-page-size=16384`"]"
 
           echo "[target.x86_64-linux-android]" >> $CargoConfigFile
           echo "linker=`"$AndroidToolchain/bin/x86_64-linux-android21-clang`"" >> $CargoConfigFile
           echo "CC_x86_64-linux-android=$AndroidToolchain/bin/x86_64-linux-android21-clang" >> $Env:GITHUB_ENV
           echo "CXX_x86_64-linux-android=$AndroidToolchain/bin/x86_64-linux-android21-clang++" >> $Env:GITHUB_ENV
           echo "AR_x86_64-linux-android=$AndroidToolchain/bin/llvm-ar" >> $Env:GITHUB_ENV
+          echo "rustflags = [`"-C`", `"link-args=-zmax-page-size=16384`"]"
 
           echo "[target.armv7-linux-androideabi]" >> $CargoConfigFile
           echo "linker=`"$AndroidToolchain/bin/armv7a-linux-androideabi21-clang`"" >> $CargoConfigFile
           echo "CC_armv7-linux-androideabi=$AndroidToolchain/bin/armv7a-linux-androideabi21-clang" >> $Env:GITHUB_ENV
           echo "CXX_armv7-linux-androideabi=$AndroidToolchain/bin/armv7a-linux-androideabi21-clang++" >> $Env:GITHUB_ENV
           echo "AR_armv7-linux-androideabi=$AndroidToolchain/bin/llvm-ar" >> $Env:GITHUB_ENV
+          echo "rustflags = [`"-C`", `"link-args=-zmax-page-size=16384`"]"
 
           echo "[target.aarch64-linux-android]" >> $CargoConfigFile
           echo "linker=`"$AndroidToolchain/bin/aarch64-linux-android21-clang`"" >> $CargoConfigFile
           echo "CC_aarch64-linux-android=$AndroidToolchain/bin/aarch64-linux-android21-clang" >> $Env:GITHUB_ENV
           echo "CXX_aarch64-linux-android=$AndroidToolchain/bin/aarch64-linux-android21-clang++" >> $Env:GITHUB_ENV
           echo "AR_aarch64-linux-android=$AndroidToolchain/bin/llvm-ar" >> $Env:GITHUB_ENV
+          echo "rustflags = [`"-C`", `"link-args=-zmax-page-size=16384`"]"
 
           Get-Content -Path "$CargoConfigFile"
 
