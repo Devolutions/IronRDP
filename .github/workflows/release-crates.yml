@@ -26,7 +26,7 @@ jobs:
           fetch-depth: 512
 
       - name: Run release-plz
-        uses: release-plz/action@v0.5
+        uses: release-plz/action@v0.5.86
         with:
           command: release-pr
         env:
@@ -45,7 +45,7 @@ jobs:
           fetch-depth: 512
 
       - name: Run release-plz
-        uses: release-plz/action@v0.5
+        uses: release-plz/action@v0.5.86
         with:
           command: release
         env:
