@@ -5,6 +5,7 @@ permissions:
   contents: write
 
 on:
+  workflow_dispatch:
   push:
     branches:
       - master
@@ -25,8 +26,16 @@ jobs:
         with:
           fetch-depth: 512
 
+      - name: Check out Devolutions/actions
+        uses: actions/checkout@v4
+        with:
+          repository: Devolutions/actions
+          ref: v1
+          path: ./.github/actions
+          token: ${{ secrets.DEVOLUTIONSBOT_TOKEN }}
+
       - name: Run release-plz
-        uses: release-plz/action@v0.5.86
+        uses: ./.github/workflows/release-plz
         with:
           command: release-pr
         env:
@@ -44,8 +53,16 @@ jobs:
         with:
           fetch-depth: 512
 
+      - name: Check out Devolutions/actions
+        uses: actions/checkout@v4
+        with:
+          repository: Devolutions/actions
+          ref: v1
+          path: ./.github/actions
+          token: ${{ secrets.DEVOLUTIONSBOT_TOKEN }}
+
       - name: Run release-plz
-        uses: release-plz/action@v0.5.86
+        uses: ./.github/workflows/release-plz
         with:
           command: release
         env:
