@@ -612,7 +612,8 @@ impl Default for PerformanceFlags {
 #[repr(u16)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive, ToPrimitive)]
 pub enum AddressFamily {
-    Invalid = 0x0000, // value given by MS Remote Desktop for Android 10.0.18.1251
+    Android = 0x0000, // value given by MS Remote Desktop for Android 10.0.18.1251
+    Ios = 0x0004,     // value given by Windows app for iOS 11.0.1(5500)
     INet = 0x0002,
     INet6 = 0x0017,
 }
