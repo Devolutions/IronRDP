@@ -45,7 +45,7 @@ body = """
 {%- set commit_url = "https://github.com/Devolutions/IronRDP/commit/" ~ commit.id %}
 {%- set commit_link = "[" ~ short_sha ~ "](" ~ commit_url ~ ")" %}
 
-- {{ scope }}{{ breaking }}{{ message }} ({{commit_link}}) \
+- {{ scope }}{{ breaking }}{{ message }} ({{ commit_link }}) \
   {% if commit.body %}\n\n  {{ commit.body | replace(from="\n", to="\n  ") }}{% endif %}
 {%- endfor %}
 
