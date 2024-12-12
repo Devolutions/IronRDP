@@ -12,6 +12,9 @@ keywords.workspace = true
 categories.workspace = true
 default-run = "ironrdp-client"
 
+# Not publishing for now.
+publish = false
+
 [lib]
 doctest = false
 test = false

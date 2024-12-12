@@ -11,7 +11,7 @@ authors.workspace = true
 keywords.workspace = true
 categories.workspace = true
 
-# FIXME: Will be published once moved to Devolutions/wayk-proto
+# FIXME: Will be published once moved to Devolutions/proto-proto
 publish = false
 
 [lib]
