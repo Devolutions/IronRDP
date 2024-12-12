@@ -13,9 +13,9 @@ on:
 jobs:
   # Create a PR with the new versions and changelog, preparing the next release.
   open-pr:
-    name: Release-plz PR
+    name: Open release PR
     runs-on: ubuntu-latest
-    environment: cratesio-push
+    environment: cratesio-publish
 
     concurrency:
       group: release-plz-${{ github.ref }}
@@ -31,15 +31,15 @@ jobs:
         uses: Devolutions/actions-public/release-plz@v1
         with:
           command: release-pr
-          git-user: Devolutions Bot
+          git-name: Devolutions Bot
           git-email: bot@devolutions.net
           github-token: ${{ secrets.DEVOLUTIONSBOT_WRITE_TOKEN }}
 
   # Release unpublished packages.
-  release-plz-release:
-    name: Release-plz release
+  release:
+    name: Release crates
     runs-on: ubuntu-latest
-    environment: cratesio-push
+    environment: cratesio-publish
 
     steps:
       - name: Checkout repository
