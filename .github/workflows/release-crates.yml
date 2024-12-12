@@ -51,4 +51,4 @@ jobs:
           command: release
         env:
           GITHUB_TOKEN: ${{ github.token }}
-          CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_DEVOLUTIONSBOT_API_KEY }}
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
