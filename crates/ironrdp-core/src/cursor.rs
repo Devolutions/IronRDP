@@ -36,7 +36,7 @@ impl fmt::Display for NotEnoughBytesError {
 #[cfg(feature = "std")]
 impl std::error::Error for NotEnoughBytesError {}
 
-macro_rules! ensure_size {
+macro_rules! ensure_enough_bytes {
     (in: $buf:ident, size: $expected:expr) => {{
         let received = $buf.len();
         let expected = $expected;
@@ -158,7 +158,7 @@ impl<'a> ReadCursor<'a> {
     /// Try to read a `u8`.
     #[inline]
     pub fn try_read_u8(&mut self) -> Result<u8, NotEnoughBytesError> {
-        ensure_size!(in: self, size: 1);
+        ensure_enough_bytes!(in: self, size: 1);
         Ok(self.read_array::<1>()[0])
     }
 
@@ -179,14 +179,14 @@ impl<'a> ReadCursor<'a> {
     /// Try to read a `i16`.
     #[inline]
     pub fn try_read_i16(&mut self) -> Result<i16, NotEnoughBytesError> {
-        ensure_size!(in: self, size: 2);
+        ensure_enough_bytes!(in: self, size: 2);
         Ok(i16::from_le_bytes(self.read_array::<2>()))
     }
 
     /// Try to read a `i16` in big-endian.
     #[inline]
     pub fn try_read_i16_be(&mut self) -> Result<i16, NotEnoughBytesError> {
-        ensure_size!(in: self, size: 2);
+        ensure_enough_bytes!(in: self, size: 2);
         Ok(i16::from_be_bytes(self.read_array::<2>()))
     }
 
@@ -207,14 +207,14 @@ impl<'a> ReadCursor<'a> {
     /// Try to read a `u16`.
     #[inline]
     pub fn try_read_u16(&mut self) -> Result<u16, NotEnoughBytesError> {
-        ensure_size!(in: self, size: 2);
+        ensure_enough_bytes!(in: self, size: 2);
         Ok(u16::from_le_bytes(self.read_array::<2>()))
     }
 
     /// Try to read a `u16` in big-endian.
     #[inline]
     pub fn try_read_u16_be(&mut self) -> Result<u16, NotEnoughBytesError> {
-        ensure_size!(in: self, size: 2);
+        ensure_enough_bytes!(in: self, size: 2);
         Ok(u16::from_be_bytes(self.read_array::<2>()))
     }
 
@@ -235,14 +235,14 @@ impl<'a> ReadCursor<'a> {
     /// Try to read a `u32`.
     #[inline]
     pub fn try_read_u32(&mut self) -> Result<u32, NotEnoughBytesError> {
-        ensure_size!(in: self, size: 4);
+        ensure_enough_bytes!(in: self, size: 4);
         Ok(u32::from_le_bytes(self.read_array::<4>()))
     }
 
     /// Try to read a `u32` in big-endian.
     #[inline]
     pub fn try_read_u32_be(&mut self) -> Result<u32, NotEnoughBytesError> {
-        ensure_size!(in: self, size: 4);
+        ensure_enough_bytes!(in: self, size: 4);
         Ok(u32::from_be_bytes(self.read_array::<4>()))
     }
 
@@ -263,14 +263,14 @@ impl<'a> ReadCursor<'a> {
     /// Try to read a `u64`.
     #[inline]
     pub fn try_read_u64(&mut self) -> Result<u64, NotEnoughBytesError> {
-        ensure_size!(in: self, size: 8);
+        ensure_enough_bytes!(in: self, size: 8);
         Ok(u64::from_le_bytes(self.read_array::<8>()))
     }
 
     /// Try to read a `u64` in big-endian.
     #[inline]
     pub fn try_read_u64_be(&mut self) -> Result<u64, NotEnoughBytesError> {
-        ensure_size!(in: self, size: 8);
+        ensure_enough_bytes!(in: self, size: 8);
         Ok(u64::from_be_bytes(self.read_array::<8>()))
     }
 
@@ -289,14 +289,14 @@ impl<'a> ReadCursor<'a> {
     /// Try to read a `i32`.
     #[inline]
     pub fn try_read_i32(&mut self) -> Result<i32, NotEnoughBytesError> {
-        ensure_size!(in: self, size: 4);
+        ensure_enough_bytes!(in: self, size: 4);
         Ok(i32::from_le_bytes(self.read_array::<4>()))
     }
 
     /// Try to read a `i32` in big-endian.
     #[inline]
     pub fn try_read_i32_be(&mut self) -> Result<i32, NotEnoughBytesError> {
-        ensure_size!(in: self, size: 4);
+        ensure_enough_bytes!(in: self, size: 4);
         Ok(i32::from_be_bytes(self.read_array::<4>()))
     }
 
@@ -315,14 +315,14 @@ impl<'a> ReadCursor<'a> {
     /// Try to read a `i64`.
     #[inline]
     pub fn try_read_i64(&mut self) -> Result<i64, NotEnoughBytesError> {
-        ensure_size!(in: self, size: 8);
+        ensure_enough_bytes!(in: self, size: 8);
         Ok(i64::from_le_bytes(self.read_array::<8>()))
     }
 
     /// Try to read a `i64` in big-endian.
     #[inline]
     pub fn try_read_i64_be(&mut self) -> Result<i64, NotEnoughBytesError> {
-        ensure_size!(in: self, size: 8);
+        ensure_enough_bytes!(in: self, size: 8);
         Ok(i64::from_be_bytes(self.read_array::<8>()))
     }
 
@@ -341,14 +341,14 @@ impl<'a> ReadCursor<'a> {
     /// Try to read a `u128`.
     #[inline]
     pub fn try_read_u128(&mut self) -> Result<u128, NotEnoughBytesError> {
-        ensure_size!(in: self, size: 16);
+        ensure_enough_bytes!(in: self, size: 16);
         Ok(u128::from_le_bytes(self.read_array::<16>()))
     }
 
     /// Try to read a `u128` in big-endian.
     #[inline]
     pub fn try_read_u128_be(&mut self) -> Result<u128, NotEnoughBytesError> {
-        ensure_size!(in: self, size: 16);
+        ensure_enough_bytes!(in: self, size: 16);
         Ok(u128::from_be_bytes(self.read_array::<16>()))
     }
 
@@ -376,7 +376,7 @@ impl<'a> ReadCursor<'a> {
     /// Try to peek a `u8` without consuming it.
     #[inline]
     pub fn try_peek_u8(&mut self) -> Result<u8, NotEnoughBytesError> {
-        ensure_size!(in: self, size: 1);
+        ensure_enough_bytes!(in: self, size: 1);
         Ok(self.peek::<1>()[0])
     }
 
@@ -397,14 +397,14 @@ impl<'a> ReadCursor<'a> {
     /// Try to peek a `u16` without consuming it.
     #[inline]
     pub fn try_peek_u16(&mut self) -> Result<u16, NotEnoughBytesError> {
-        ensure_size!(in: self, size: 2);
+        ensure_enough_bytes!(in: self, size: 2);
         Ok(u16::from_le_bytes(self.peek::<2>()))
     }
 
     /// Try to peek a big-endian `u16` without consuming it.
     #[inline]
     pub fn try_peek_u16_be(&mut self) -> Result<u16, NotEnoughBytesError> {
-        ensure_size!(in: self, size: 2);
+        ensure_enough_bytes!(in: self, size: 2);
         Ok(u16::from_be_bytes(self.peek::<2>()))
     }
 
@@ -425,14 +425,14 @@ impl<'a> ReadCursor<'a> {
     /// Try to peek a `u32` without consuming it.
     #[inline]
     pub fn try_peek_u32(&mut self) -> Result<u32, NotEnoughBytesError> {
-        ensure_size!(in: self, size: 4);
+        ensure_enough_bytes!(in: self, size: 4);
         Ok(u32::from_le_bytes(self.peek::<4>()))
     }
 
     /// Try to peek a big-endian `u32` without consuming it.
     #[inline]
     pub fn try_peek_u32_be(&mut self) -> Result<u32, NotEnoughBytesError> {
-        ensure_size!(in: self, size: 4);
+        ensure_enough_bytes!(in: self, size: 4);
         Ok(u32::from_be_bytes(self.peek::<4>()))
     }
 
@@ -453,14 +453,14 @@ impl<'a> ReadCursor<'a> {
     /// Try to peek a `u64` without consuming it.
     #[inline]
     pub fn try_peek_u64(&mut self) -> Result<u64, NotEnoughBytesError> {
-        ensure_size!(in: self, size: 8);
+        ensure_enough_bytes!(in: self, size: 8);
         Ok(u64::from_le_bytes(self.peek::<8>()))
     }
 
     /// Try to peek a big-endian `u64` without consuming it.
     #[inline]
     pub fn try_peek_u64_be(&mut self) -> Result<u64, NotEnoughBytesError> {
-        ensure_size!(in: self, size: 8);
+        ensure_enough_bytes!(in: self, size: 8);
         Ok(u64::from_be_bytes(self.peek::<8>()))
     }
 
