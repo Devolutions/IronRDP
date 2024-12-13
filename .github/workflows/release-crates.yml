@@ -28,12 +28,36 @@ jobs:
           fetch-depth: 512
 
       - name: Run release-plz
+        id: release-plz
         uses: Devolutions/actions-public/release-plz@v1
         with:
           command: release-pr
           git-name: Devolutions Bot
           git-email: bot@devolutions.net
           github-token: ${{ secrets.DEVOLUTIONSBOT_WRITE_TOKEN }}
+
+      - name: Update fuzz/Cargo.lock
+        shell: pwsh
+        if: ${{ steps.release-plz.outputs.did-open-pr == 'true' }}
+        run: |
+          $prRaw = '${{ steps.release-plz.outputs.pr }}'
+          Write-Host "prRaw: $prRaw"
+
+          $pr = $prRaw | ConvertFrom-Json
+          Write-Host "pr: $pr"
+
+          Write-Host "Switch to branch $($pr.head_branch)"
+          git checkout "$($pr.head_branch)"
+
+          Write-Host "Update ./fuzz/Cargo.lock"
+          cargo update --manifest-path ./fuzz/Cargo.toml
+
+          Write-Host "Update last commit"
+          git add ./fuzz/Cargo.lock
+          git commit --amend --no-edit
+
+          Write-Host "Update the release pull request"
+          git push --force
 
   # Release unpublished packages.
   release:
