@@ -46,6 +46,9 @@ jobs:
           $pr = $prRaw | ConvertFrom-Json
           Write-Host "pr: $pr"
 
+          Write-Host "Fetch branch $($pr.head_branch)"
+          git fetch origin "$($pr.head_branch)"
+
           Write-Host "Switch to branch $($pr.head_branch)"
           git checkout "$($pr.head_branch)"
 
