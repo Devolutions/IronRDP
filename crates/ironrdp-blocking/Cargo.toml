@@ -1,6 +1,6 @@
 [package]
 name = "ironrdp-blocking"
-version = "0.2.0"
+version = "0.2.1"
 readme = "README.md"
 description = "Blocking I/O abstraction wrapping the IronRDP state machines conveniently"
 edition.workspace = true
