@@ -5,3 +5,17 @@ semver_check = true
 pr_branch_prefix = "release-plz/"
 pr_name = "chore(release): prepare for publishing"
 changelog_config = "cliff.toml"
+git_release_enable = false
+release_commits = "^(feat|docs|fix|build|perf)"
+
+[[package]]
+name = "ironrdp"
+git_release_enable = true
+
+[[package]]
+name = "ironrdp-client"
+git_release_enable = true
+
+[[package]]
+name = "ironrdp-tls"
+publish_features = ["rustls"]
