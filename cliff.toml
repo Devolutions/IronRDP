@@ -27,13 +27,7 @@ body = """
 
 {%- for commit in commits %}
 
-{%- if commit.scope %}
-  {%- set scope = "_" ~ commit.scope ~ "_: " %}
-  {%- set message = commit.message %}
-{%- else %}
-  {%- set scope = "" %}
-  {%- set message = commit.message | upper_first %}
-{%- endif %}
+{%- set message = commit.message | upper_first %}
 
 {%- if commit.breaking %}
   {%- set breaking = "[**breaking**] " %}
@@ -45,7 +39,7 @@ body = """
 {%- set commit_url = "https://github.com/Devolutions/IronRDP/commit/" ~ commit.id %}
 {%- set commit_link = "[" ~ short_sha ~ "](" ~ commit_url ~ ")" %}
 
-- {{ scope }}{{ breaking }}{{ message }} ({{ commit_link }}) \
+- {{ breaking }}{{ message }} ({{ commit_link }}) \
   {% if commit.body %}\n\n  {{ commit.body | replace(from="\n", to="\n  ") }}{% endif %}
 {%- endfor %}
 
