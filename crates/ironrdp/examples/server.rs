@@ -16,9 +16,9 @@ use ironrdp::cliprdr::backend::{CliprdrBackend, CliprdrBackendFactory};
 use ironrdp::connector::DesktopSize;
 use ironrdp::rdpsnd::pdu::ClientAudioFormatPdu;
 use ironrdp::rdpsnd::server::{RdpsndServerHandler, RdpsndServerMessage};
+use ironrdp::server::tokio;
 use ironrdp::server::tokio::sync::mpsc::UnboundedSender;
 use ironrdp::server::tokio::time::{self, sleep, Duration};
-use ironrdp::server::tokio::{self};
 use ironrdp::server::{
     BitmapUpdate, CliprdrServerFactory, Credentials, DisplayUpdate, KeyboardEvent, MouseEvent, PixelFormat, PixelOrder,
     RdpServer, RdpServerDisplay, RdpServerDisplayUpdates, RdpServerInputHandler, ServerEvent, ServerEventSender,
@@ -32,7 +32,7 @@ USAGE:
   cargo run --example=server -- [--bind-addr <SOCKET ADDRESS>] [--cert <CERTIFICATE>] [--key <CERTIFICATE KEY>] [--user USERNAME] [--pass PASSWORD] [--sec tls|hybrid]
 ";
 
-#[tokio::main]
+#[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), anyhow::Error> {
     let action = match parse_args() {
         Ok(action) => action,
