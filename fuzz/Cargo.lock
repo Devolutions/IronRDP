@@ -286,7 +286,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-cliprdr-format"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "ironrdp-core",
  "png",
