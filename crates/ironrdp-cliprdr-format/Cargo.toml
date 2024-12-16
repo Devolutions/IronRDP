@@ -1,6 +1,6 @@
 [package]
 name = "ironrdp-cliprdr-format"
-version = "0.1.0"
+version = "0.1.1"
 readme = "README.md"
 description = "CLIPRDR format conversion library"
 edition.workspace = true

@@ -2435,7 +2435,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-cliprdr-format"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "ironrdp-core",
  "png",
@@ -2506,7 +2506,7 @@ version = "0.1.1"
 
 [[package]]
 name = "ironrdp-futures"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "bytes",
  "futures-util",
@@ -2586,7 +2586,7 @@ version = "0.0.0"
 
 [[package]]
 name = "ironrdp-rdcleanpath"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "der",
 ]
@@ -2605,7 +2605,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-rdpdr-native"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "ironrdp-core",
  "ironrdp-pdu",
