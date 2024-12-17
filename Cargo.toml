@@ -47,7 +47,7 @@ ironrdp-rdpdr = { version = "0.1", path = "crates/ironrdp-rdpdr" }
 ironrdp-rdpdr-native = { version = "0.1", path = "crates/ironrdp-rdpdr-native" }
 ironrdp-rdpsnd = { version = "0.1", path = "crates/ironrdp-rdpsnd" }
 ironrdp-rdpsnd-native = { version = "0.1", path = "crates/ironrdp-rdpsnd-native" }
-ironrdp-server = { version = "0.3", path = "crates/ironrdp-server" }
+ironrdp-server = { version = "0.4", path = "crates/ironrdp-server" }
 ironrdp-session-generators = { path = "crates/ironrdp-session-generators" }
 ironrdp-session = { version = "0.2", path = "crates/ironrdp-session" }
 ironrdp-svc = { version = "0.1", path = "crates/ironrdp-svc" }
