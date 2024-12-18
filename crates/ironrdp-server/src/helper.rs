@@ -21,13 +21,18 @@ impl TlsIdentityCtx {
     ///
     /// The file format can be either PEM (if the file extension ends with .pem) or DER.
     pub fn init_from_paths(cert_path: &Path, key_path: &Path) -> anyhow::Result<Self> {
-        let certs: Vec<_> = if cert_path.extension().map_or(false, |ext| ext == "pem") {
+        let certs = if cert_path.extension().map_or(false, |ext| ext == "pem") {
             CertificateDer::pem_file_iter(cert_path)
+                .context(format!("reading server cert `{cert_path:?}`"))?
+                .collect::<Result<Vec<_>, _>>()
+                .context(format!("collecting server cert `{cert_path:?}`"))?
         } else {
-            certs(&mut BufReader::new(File::open(cert_path)?))
-        }
-        .collect::<Result<_, _>>()
-        .context(format!("reading server cert `{cert_path:?}`"))?;
+            certs(&mut BufReader::new(
+                File::open(cert_path).context(format!("opening server cert `{cert_path:?}`"))?,
+            ))
+            .collect::<Result<Vec<_>, _>>()
+            .context(format!("collecting server cert `{cert_path:?}`"))?
+        };
 
         let priv_key = if key_path.extension().map_or(false, |ext| ext == "pem") {
             PrivateKeyDer::from_pem_file(key_path).context("reading server key `{key_path:?}`")?
@@ -42,7 +47,7 @@ impl TlsIdentityCtx {
             use x509_cert::der::Decode as _;
 
             let cert = certs.first().ok_or_else(|| std::io::Error::other("invalid cert"))?;
-            let cert = x509_cert::Certificate::from_der(&cert).map_err(std::io::Error::other)?;
+            let cert = x509_cert::Certificate::from_der(cert).map_err(std::io::Error::other)?;
             cert.tbs_certificate
                 .subject_public_key_info
                 .subject_public_key
