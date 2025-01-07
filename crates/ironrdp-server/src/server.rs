@@ -901,32 +901,22 @@ impl RdpServer {
     where
         S: AsyncRead + AsyncWrite + Sync + Send + Unpin,
     {
-        let mut other_pdus = None;
-
         loop {
-            let (new_framed, result) = ironrdp_acceptor::accept_finalize(framed, &mut acceptor, other_pdus.as_mut())
+            let (new_framed, result) = ironrdp_acceptor::accept_finalize(framed, &mut acceptor)
                 .await
                 .context("failed to accept client during finalize")?;
 
-            let (stream, mut leftover) = new_framed.into_inner();
-
-            if let Some(pdus) = other_pdus.take() {
-                let unmatched_frames = pdus.into_iter().flatten();
-                let previous_leftover = leftover.split();
-                leftover.extend(unmatched_frames);
-                leftover.extend_from_slice(&previous_leftover);
-            }
-
-            let (mut reader, mut writer) = split_tokio_framed(TokioFramed::new_with_leftover(stream, leftover));
+            let (mut reader, mut writer) = split_tokio_framed(new_framed);
 
             match self.client_accepted(&mut reader, &mut writer, result).await? {
                 RunState::Continue => {
                     unreachable!();
                 }
                 RunState::DeactivationReactivation { desktop_size } => {
-                    other_pdus = Some(Vec::new());
-                    acceptor = Acceptor::new_deactivation_reactivation(acceptor, desktop_size);
-                    self.attach_channels(&mut acceptor);
+                    acceptor = Acceptor::new_deactivation_reactivation(
+                        acceptor,
+                        desktop_size,
+                    );
                     framed = unsplit_tokio_framed(reader, writer);
                     continue;
                 }

@@ -34,6 +34,7 @@ pub struct Acceptor {
     static_channels: StaticChannelSet,
     saved_for_reactivation: AcceptorState,
     pub(crate) creds: Option<Credentials>,
+    reactivation: bool,
 }
 
 #[derive(Debug)]
@@ -62,6 +63,7 @@ impl Acceptor {
             static_channels: StaticChannelSet::new(),
             saved_for_reactivation: Default::default(),
             creds,
+            reactivation: false,
         }
     }
 
@@ -98,6 +100,7 @@ impl Acceptor {
             static_channels: StaticChannelSet::new(),
             saved_for_reactivation,
             creds: consumed.creds,
+            reactivation: true,
         }
     }
 
@@ -291,7 +294,9 @@ impl Sequence for Acceptor {
     }
 
     fn step(&mut self, input: &[u8], output: &mut WriteBuf) -> ConnectorResult<Written> {
-        let (written, next_state) = match mem::take(&mut self.state) {
+        let prev_state = mem::take(&mut self.state);
+
+        let (written, next_state) = match prev_state {
             AcceptorState::InitiationWaitRequest => {
                 let connection_request = decode::<X224<nego::ConnectionRequest>>(input)
                     .map_err(ConnectorError::decode)
@@ -639,15 +644,38 @@ impl Sequence for Acceptor {
                 )
             }
 
-            AcceptorState::CapabilitiesWaitConfirm { channels } => {
+            AcceptorState::CapabilitiesWaitConfirm { ref channels } => {
                 let message = decode::<X224<mcs::McsMessage<'_>>>(input)
                     .map_err(ConnectorError::decode)
-                    .map(|p| p.0)?;
-
+                    .map(|p| p.0);
+                let message = match message {
+                    Ok(msg) => msg,
+                    Err(e) => {
+                        if self.reactivation {
+                            debug!("Dropping unexpected PDU during reactivation");
+                            self.state = prev_state;
+                            return Ok(Written::Nothing);
+                        } else {
+                            return Err(e);
+                        }
+                    }
+                };
                 match message {
                     mcs::McsMessage::SendDataRequest(data) => {
                         let capabilities_confirm = decode::<rdp::headers::ShareControlHeader>(data.user_data.as_ref())
-                            .map_err(ConnectorError::decode)?;
+                            .map_err(ConnectorError::decode);
+                        let capabilities_confirm = match capabilities_confirm {
+                            Ok(capabilities_confirm) => capabilities_confirm,
+                            Err(e) => {
+                                if self.reactivation {
+                                    debug!("Dropping unexpected PDU during reactivation");
+                                    self.state = prev_state;
+                                    return Ok(Written::Nothing);
+                                } else {
+                                    return Err(e);
+                                }
+                            }
+                        };
 
                         debug!(message = ?capabilities_confirm, "Received");
 
@@ -659,7 +687,7 @@ impl Sequence for Acceptor {
                         (
                             Written::Nothing,
                             AcceptorState::ConnectionFinalization {
-                                channels,
+                                channels: channels.clone(),
                                 finalization: FinalizationSequence::new(self.user_channel_id, self.io_channel_id),
                                 client_capabilities: confirm.pdu.capability_sets,
                             },
@@ -673,7 +701,7 @@ impl Sequence for Acceptor {
                     _ => {
                         warn!(?message, "Unexpected MCS message received");
 
-                        (Written::Nothing, AcceptorState::CapabilitiesWaitConfirm { channels })
+                        (Written::Nothing, prev_state)
                     }
                 }
             }
@@ -684,6 +712,7 @@ impl Sequence for Acceptor {
                 client_capabilities,
             } => {
                 let written = finalization.step(input, output)?;
+
                 let state = if finalization.is_done() {
                     AcceptorState::Accepted {
                         channels,

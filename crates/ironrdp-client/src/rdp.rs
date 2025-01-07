@@ -295,10 +295,9 @@ async fn active_session(
                     debug!("Received Server Deactivate All PDU, executing Deactivation-Reactivation Sequence");
                     let mut buf = WriteBuf::new();
                     'activation_seq: loop {
-                        let written =
-                            single_sequence_step_read(&mut reader, &mut *connection_activation, &mut buf, None)
-                                .await
-                                .map_err(|e| session::custom_err!("read deactivation-reactivation sequence step", e))?;
+                        let written = single_sequence_step_read(&mut reader, &mut *connection_activation, &mut buf)
+                            .await
+                            .map_err(|e| session::custom_err!("read deactivation-reactivation sequence step", e))?;
 
                         if written.size().is_some() {
                             writer.write_all(buf.filled()).await.map_err(|e| {

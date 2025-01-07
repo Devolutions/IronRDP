@@ -87,7 +87,7 @@ where
     }
 
     /// Reads a frame using the provided PduHint.
-    pub fn read_by_hint(&mut self, hint: &dyn PduHint, mut unmatched: Option<&mut Vec<Bytes>>) -> io::Result<Bytes> {
+    pub fn read_by_hint(&mut self, hint: &dyn PduHint) -> io::Result<Bytes> {
         loop {
             match hint
                 .find_size(self.peek())
@@ -97,10 +97,8 @@ where
                     let bytes = self.read_exact(length)?.freeze();
                     if matched {
                         return Ok(bytes);
-                    } else if let Some(ref mut unmatched) = unmatched {
-                        unmatched.push(bytes);
                     } else {
-                        warn!("Received and lost an unexpected PDU");
+                        debug!("Received and lost an unexpected PDU");
                     }
                 }
                 None => {

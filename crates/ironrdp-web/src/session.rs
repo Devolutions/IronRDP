@@ -653,7 +653,7 @@ impl Session {
                         let mut buf = WriteBuf::new();
                         'activation_seq: loop {
                             let written =
-                                single_sequence_step_read(&mut framed, &mut *box_connection_activation, &mut buf, None)
+                                single_sequence_step_read(&mut framed, &mut *box_connection_activation, &mut buf)
                                     .await?;
 
                             if written.size().is_some() {
@@ -1018,7 +1018,7 @@ where
         // RDCleanPath response
 
         let rdcleanpath_res = framed
-            .read_by_hint(&RDCLEANPATH_HINT, None)
+            .read_by_hint(&RDCLEANPATH_HINT)
             .await
             .context("read RDCleanPath request")?;
 
