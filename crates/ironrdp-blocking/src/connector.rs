@@ -1,6 +1,5 @@
 use std::io::{Read, Write};
 
-use bytes::Bytes;
 use ironrdp_connector::credssp::{CredsspProcessGenerator, CredsspSequence, KerberosConfig};
 use ironrdp_connector::sspi::credssp::ClientState;
 use ironrdp_connector::sspi::generator::GeneratorState;
@@ -26,7 +25,7 @@ where
     info!("Begin connection procedure");
 
     while !connector.should_perform_security_upgrade() {
-        single_sequence_step(framed, connector, &mut buf, None)?;
+        single_sequence_step(framed, connector, &mut buf)?;
     }
 
     Ok(ShouldUpgrade)
@@ -79,7 +78,7 @@ where
     debug!("Remaining of connection sequence");
 
     let result = loop {
-        single_sequence_step(framed, &mut connector, &mut buf, None)?;
+        single_sequence_step(framed, &mut connector, &mut buf)?;
 
         if let ClientConnectorState::Connected { result } = connector.state {
             break result;
@@ -168,7 +167,7 @@ where
         );
 
         let pdu = framed
-            .read_by_hint(next_pdu_hint, None)
+            .read_by_hint(next_pdu_hint)
             .map_err(|e| ironrdp_connector::custom_err!("read frame by hint", e))?;
 
         trace!(length = pdu.len(), "PDU received");
@@ -189,7 +188,6 @@ pub fn single_sequence_step<S>(
     framed: &mut Framed<S>,
     connector: &mut ClientConnector,
     buf: &mut WriteBuf,
-    unmatched: Option<&mut Vec<Bytes>>,
 ) -> ConnectorResult<()>
 where
     S: Read + Write,
@@ -204,7 +202,7 @@ where
         );
 
         let pdu = framed
-            .read_by_hint(next_pdu_hint, unmatched)
+            .read_by_hint(next_pdu_hint)
             .map_err(|e| ironrdp_connector::custom_err!("read frame by hint", e))?;
 
         trace!(length = pdu.len(), "PDU received");

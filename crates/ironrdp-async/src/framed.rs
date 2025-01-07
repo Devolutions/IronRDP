@@ -165,11 +165,7 @@ where
     /// `tokio::select!` statement and some other branch
     /// completes first, then it is safe to drop the future and re-create it later.
     /// Data may have been read, but it will be stored in the internal buffer.
-    pub async fn read_by_hint(
-        &mut self,
-        hint: &dyn PduHint,
-        mut unmatched: Option<&mut Vec<Bytes>>,
-    ) -> io::Result<Bytes> {
+    pub async fn read_by_hint(&mut self, hint: &dyn PduHint) -> io::Result<Bytes> {
         loop {
             match hint
                 .find_size(self.peek())
@@ -179,10 +175,8 @@ where
                     let bytes = self.read_exact(length).await?.freeze();
                     if matched {
                         return Ok(bytes);
-                    } else if let Some(ref mut unmatched) = unmatched {
-                        unmatched.push(bytes);
                     } else {
-                        warn!("Received and lost an unexpected PDU");
+                        debug!("Received and lost an unexpected PDU");
                     }
                 }
                 None => {
@@ -236,13 +230,12 @@ pub async fn single_sequence_step<S>(
     framed: &mut Framed<S>,
     sequence: &mut dyn Sequence,
     buf: &mut WriteBuf,
-    unmatched: Option<&mut Vec<Bytes>>,
 ) -> ConnectorResult<()>
 where
     S: FramedWrite + FramedRead,
 {
     buf.clear();
-    let written = single_sequence_step_read(framed, sequence, buf, unmatched).await?;
+    let written = single_sequence_step_read(framed, sequence, buf).await?;
     single_sequence_step_write(framed, buf, written).await
 }
 
@@ -250,7 +243,6 @@ pub async fn single_sequence_step_read<S>(
     framed: &mut Framed<S>,
     sequence: &mut dyn Sequence,
     buf: &mut WriteBuf,
-    unmatched: Option<&mut Vec<Bytes>>,
 ) -> ConnectorResult<Written>
 where
     S: FramedRead,
@@ -265,7 +257,7 @@ where
         );
 
         let pdu = framed
-            .read_by_hint(next_pdu_hint, unmatched)
+            .read_by_hint(next_pdu_hint)
             .await
             .map_err(|e| ironrdp_connector::custom_err!("read frame by hint", e))?;
 
