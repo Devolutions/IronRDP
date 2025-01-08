@@ -913,8 +913,13 @@ impl RdpServer {
                     unreachable!();
                 }
                 RunState::DeactivationReactivation { desktop_size } => {
+                    // No description of such behavior was found in the
+                    // specification, but apparently, we must keep the channel
+                    // state as they were during reactivation. This fixes
+                    // various state issues during client resize.
                     acceptor = Acceptor::new_deactivation_reactivation(
                         acceptor,
+                        core::mem::take(&mut self.static_channels),
                         desktop_size,
                     );
                     framed = unsplit_tokio_framed(reader, writer);

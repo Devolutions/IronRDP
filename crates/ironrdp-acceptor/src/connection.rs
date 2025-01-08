@@ -1,4 +1,3 @@
-use core::any::TypeId;
 use core::mem;
 
 use ironrdp_connector::{
@@ -67,7 +66,11 @@ impl Acceptor {
         }
     }
 
-    pub fn new_deactivation_reactivation(mut consumed: Acceptor, desktop_size: DesktopSize) -> Self {
+    pub fn new_deactivation_reactivation(
+        mut consumed: Acceptor,
+        static_channels: StaticChannelSet,
+        desktop_size: DesktopSize,
+    ) -> Self {
         let AcceptorState::CapabilitiesSendServer {
             early_capability,
             channels,
@@ -97,7 +100,7 @@ impl Acceptor {
             io_channel_id: consumed.io_channel_id,
             desktop_size,
             server_capabilities: consumed.server_capabilities,
-            static_channels: StaticChannelSet::new(),
+            static_channels,
             saved_for_reactivation,
             creds: consumed.creds,
             reactivation: true,
@@ -108,18 +111,7 @@ impl Acceptor {
     where
         T: SvcServerProcessor + 'static,
     {
-        let channel_name = channel.channel_name();
-
         self.static_channels.insert(channel);
-
-        // Restore channel id if it was already attached.
-        if let AcceptorState::CapabilitiesSendServer { channels, .. } = &self.state {
-            for (channel_id, c) in channels {
-                if c.name == channel_name {
-                    self.static_channels.attach_channel_id(TypeId::of::<T>(), *channel_id);
-                }
-            }
-        }
     }
 
     pub fn reached_security_upgrade(&self) -> Option<SecurityProtocol> {
