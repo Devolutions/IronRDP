@@ -163,6 +163,7 @@ impl SvcProcessor for DrdynvcServer {
                 let channel_id = data.channel_id();
                 let c = self.channel_by_id(channel_id).map_err(|e| decode_err!(e))?;
                 if c.state != ChannelState::Opened {
+                    debug!(?channel_id, ?c.state, "Invalid channel state");
                     return Err(pdu_other_err!("invalid channel state"));
                 }
                 if let Some(complete) = c.complete_data.process_data(data).map_err(|e| decode_err!(e))? {
