@@ -538,6 +538,7 @@ pub struct CreationStatus(u32);
 
 impl CreationStatus {
     pub const OK: Self = Self(0x00000000);
+    pub const NOT_FOUND: Self = Self(0xC0000225);
     pub const NO_LISTENER: Self = Self(0xC0000001);
 
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
