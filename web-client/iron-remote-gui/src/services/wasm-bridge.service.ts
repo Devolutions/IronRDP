@@ -43,7 +43,7 @@ export class WasmBridgeService {
     private keyboardActive: boolean = false;
     private keyboardUnicodeMode: boolean = false;
     private backendSupportsUnicodeKeyboardShortcuts: boolean | undefined = undefined;
-    private onRemoteClipboardChanged?: OnRemoteClipboardChanged;
+    private onRemoteClipboardChanged?: OnRemoteClipboardChanged | null;
     private onRemoteReceivedFormatList?: OnRemoteReceivedFormatsList;
     private onForceClipboardUpdate?: OnForceClipboardUpdate;
     private cursorHasOverride: boolean = false;
@@ -75,7 +75,7 @@ export class WasmBridgeService {
     }
 
     /// Callback to set the local clipboard content to data received from the remote.
-    setOnRemoteClipboardChanged(callback: OnRemoteClipboardChanged) {
+    setOnRemoteClipboardChanged(callback: OnRemoteClipboardChanged | null) {
         this.onRemoteClipboardChanged = callback;
     }
 
