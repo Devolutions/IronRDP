@@ -1,7 +1,5 @@
 #![doc = include_str!("../README.md")]
-#![doc(
-    html_logo_url = "https://webdevolutions.blob.core.windows.net/images/projects/devolutions/logos/devolutions-icon-shadow.svg"
-)]
+#![doc(html_logo_url = "https://cdnweb.devolutions.net/images/projects/devolutions/logos/devolutions-icon-shadow.svg")]
 // No need to be as strict as in production libraries
 #![allow(clippy::arithmetic_side_effects)]
 #![allow(clippy::cast_lossless)]
