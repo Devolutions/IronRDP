@@ -21,7 +21,6 @@ expect-test = "1"
 ironrdp-core.workspace = true
 ironrdp-pdu.workspace = true
 lazy_static.workspace = true # TODO: remove in favor of https://doc.rust-lang.org/std/sync/struct.OnceLock.html
-now-proto-pdu.workspace = true
 paste = "1"
 
 [dev-dependencies]
