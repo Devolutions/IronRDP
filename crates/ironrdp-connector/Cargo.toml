@@ -24,6 +24,7 @@ ironrdp-svc.workspace = true
 ironrdp-core.workspace = true
 ironrdp-error.workspace = true
 ironrdp-pdu = { workspace = true, features = ["std"] }
+md5 = { package = "md-5", version = "0.10" }
 rand_core = { version = "0.6", features = [
     "std",
 ] } # TODO: dependency injection?
@@ -33,6 +34,7 @@ url = "2.5"
 picky-asn1-der = "0.5"
 picky-asn1-x509 = "0.14"
 picky = "7.0.0-rc.11"
+uuid = "1.11.0"
 
 [lints]
 workspace = true

@@ -16,6 +16,8 @@ use crate::{
     Written,
 };
 
+pub use crate::license_exchange::NoopLicenseCache;
+
 #[derive(Debug)]
 #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct ConnectionResult {
@@ -481,6 +483,8 @@ impl Sequence for ClientConnector {
                         io_channel_id,
                         self.config.credentials.username().unwrap_or("").to_owned(),
                         self.config.domain.clone(),
+                        self.config.hardware_id.clone(),
+                        self.config.license_cache.clone(),
                     ),
                 },
             ),

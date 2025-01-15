@@ -8,7 +8,6 @@ use ironrdp_core::{
     cast_length, ensure_fixed_part_size, ensure_size, invalid_field_err, Decode, DecodeResult, Encode, EncodeResult,
     ReadCursor, WriteCursor,
 };
-use md5::Digest;
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive as _, ToPrimitive as _};
 
@@ -22,7 +21,7 @@ use crate::crypto::rc4::Rc4;
 const RESPONSE_DATA_VERSION: u16 = 0x100;
 const RESPONSE_DATA_STATIC_FIELDS_SIZE: usize = 8;
 
-const CLIENT_HARDWARE_IDENTIFICATION_SIZE: usize = 20;
+pub(crate) const CLIENT_HARDWARE_IDENTIFICATION_SIZE: usize = 20;
 
 /// [2.2.2.5] Client Platform Challenge Response (CLIENT_PLATFORM_CHALLENGE_RESPONSE)
 ///
@@ -40,7 +39,7 @@ impl ClientPlatformChallengeResponse {
 
     pub fn from_server_platform_challenge(
         platform_challenge: &ServerPlatformChallenge,
-        hostname: &str,
+        hardware_data: &[u8],
         encryption_data: &LicenseEncryptionData,
     ) -> Result<Self, ServerLicenseError> {
         let mut rc4 = Rc4::new(&encryption_data.license_key);
@@ -61,10 +60,6 @@ impl ClientPlatformChallengeResponse {
         challenge_response_data.write_all(&decrypted_challenge)?;
 
         let mut hardware_id = Vec::with_capacity(CLIENT_HARDWARE_IDENTIFICATION_SIZE);
-        let mut md5 = md5::Md5::new();
-        md5.update(hostname.as_bytes());
-        let hardware_data = &md5.finalize();
-
         hardware_id.write_u32::<LittleEndian>(PLATFORM_ID)?;
         hardware_id.write_all(hardware_data)?;
 

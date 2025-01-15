@@ -1,14 +1,15 @@
 use core::num::ParseIntError;
 use core::str::FromStr;
 use std::io;
-
+use std::sync::Arc;
 use anyhow::Context as _;
 use clap::clap_derive::ValueEnum;
 use clap::Parser;
-use ironrdp::connector::{self, Credentials};
+use ironrdp::connector::{self, Credentials, NoopLicenseCache};
 use ironrdp::pdu::rdp::capability_sets::MajorPlatformType;
 use ironrdp::pdu::rdp::client_info::PerformanceFlags;
 use tap::prelude::*;
+use uuid::Uuid;
 
 const DEFAULT_WIDTH: u16 = 1920;
 const DEFAULT_HEIGHT: u16 = 1080;
@@ -316,6 +317,8 @@ impl Config {
                 whoami::Platform::Android => MajorPlatformType::ANDROID,
                 _ => MajorPlatformType::UNSPECIFIED,
             },
+            hardware_id: Uuid::default(),
+            license_cache: Arc::new(NoopLicenseCache {}),
             no_server_pointer: args.no_server_pointer,
             autologon: args.autologon,
             request_data: None,

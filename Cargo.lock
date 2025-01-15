@@ -2416,6 +2416,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "url",
+ "uuid",
  "whoami",
  "windows 0.58.0",
  "winit",
@@ -2462,6 +2463,7 @@ dependencies = [
  "ironrdp-error",
  "ironrdp-pdu",
  "ironrdp-svc",
+ "md-5",
  "picky",
  "picky-asn1-der",
  "picky-asn1-x509",
@@ -2469,6 +2471,7 @@ dependencies = [
  "sspi",
  "tracing",
  "url",
+ "uuid",
 ]
 
 [[package]]

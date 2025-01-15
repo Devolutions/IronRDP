@@ -21,7 +21,7 @@ mod server_name;
 
 use core::any::Any;
 use core::fmt;
-
+use std::sync::Arc;
 pub use channel_connection::{ChannelConnectionSequence, ChannelConnectionState};
 pub use connection::{encode_send_data_request, ClientConnector, ClientConnectorState, ConnectionResult};
 pub use connection_finalization::{ConnectionFinalizationSequence, ConnectionFinalizationState};
@@ -34,6 +34,8 @@ use ironrdp_pdu::{gcc, x224, PduHint};
 pub use license_exchange::{LicenseExchangeSequence, LicenseExchangeState};
 pub use server_name::ServerName;
 pub use sspi;
+use uuid::Uuid;
+pub use crate::license_exchange::{LicenseCache, NoopLicenseCache};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
@@ -163,6 +165,7 @@ pub struct Config {
     pub dig_product_id: String,
     pub client_dir: String,
     pub platform: capability_sets::MajorPlatformType,
+    pub hardware_id: Uuid,
     /// Optional data for the x224 connection request.
     ///
     /// Fallbacks to a sensible default depending on the provided credentials:
@@ -172,6 +175,7 @@ pub struct Config {
     pub request_data: Option<NegoRequestData>,
     /// If true, the INFO_AUTOLOGON flag is set in the [`ClientInfoPdu`](ironrdp_pdu::rdp::ClientInfoPdu)
     pub autologon: bool,
+    pub license_cache: Arc<dyn LicenseCache>,
 
     // FIXME(@CBenoit): these are client-only options, not part of the connector.
     pub no_server_pointer: bool,
