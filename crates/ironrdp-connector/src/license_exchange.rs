@@ -1,14 +1,14 @@
+use super::{legacy, ConnectorError, ConnectorErrorExt};
+use crate::{encode_send_data_request, ConnectorResult, ConnectorResultExt as _, Sequence, State, Written};
 use core::{fmt, mem};
-use std::fmt::Debug;
-use std::sync::Arc;
-use std::str;
 use ironrdp_core::WriteBuf;
 use ironrdp_pdu::rdp::server_license::{self, LicenseInformation, LicensePdu, ServerLicenseError};
 use ironrdp_pdu::PduHint;
 use rand_core::{OsRng, RngCore as _};
+use std::fmt::Debug;
+use std::str;
+use std::sync::Arc;
 use uuid::Uuid;
-use super::{legacy, ConnectorError, ConnectorErrorExt};
-use crate::{encode_send_data_request, ConnectorResult, ConnectorResultExt as _, Sequence, State, Written};
 
 #[derive(Default, Debug)]
 #[non_exhaustive]
@@ -137,19 +137,21 @@ impl Sequence for LicenseExchangeSequence {
                         let mut premaster_secret = [0u8; server_license::PREMASTER_SECRET_SIZE];
                         OsRng.fill_bytes(&mut premaster_secret);
 
-                        let license_info = license_request.scope_list.iter().map(|scope| {
-                            self.license_cache.get_license(LicenseInformation {
-                                version: license_request.product_info.version,
-                                scope: scope.0.clone(),
-                                company_name: license_request.product_info.company_name.clone(),
-                                product_id: license_request.product_info.product_id.clone(),
-                                license_info: vec![],
+                        let license_info = license_request
+                            .scope_list
+                            .iter()
+                            .map(|scope| {
+                                self.license_cache.get_license(LicenseInformation {
+                                    version: license_request.product_info.version,
+                                    scope: scope.0.clone(),
+                                    company_name: license_request.product_info.company_name.clone(),
+                                    product_id: license_request.product_info.product_id.clone(),
+                                    license_info: vec![],
+                                })
                             })
-                        })
                             .find(|res| res.is_err() || res.as_ref().is_ok_and(Option::is_some))
                             .transpose()?
                             .flatten();
-
 
                         if let Some(info) = license_info {
                             match server_license::ClientLicenseInfo::from_server_license_request(
@@ -157,7 +159,7 @@ impl Sequence for LicenseExchangeSequence {
                                 &client_random,
                                 &premaster_secret,
                                 self.hardware_id.as_bytes(),
-                                info
+                                info,
                             ) {
                                 Ok((client_license_info, encryption_data)) => {
                                     trace!(?encryption_data, "Successfully generated Client License Info");
@@ -176,9 +178,9 @@ impl Sequence for LicenseExchangeSequence {
                                         Written::from_size(written)?,
                                         LicenseExchangeState::PlatformChallenge { encryption_data },
                                     )
-                                },
+                                }
                                 Err(err) => {
-                                   return Err(custom_err!("ClientNewLicenseRequest", err));
+                                    return Err(custom_err!("ClientNewLicenseRequest", err));
                                 }
                             }
                         } else {
@@ -319,7 +321,9 @@ impl Sequence for LicenseExchangeSequence {
 
                         debug!("License verified with success");
 
-                        let license_info = upgrade_license.new_license_info(&encryption_data).map_err(ConnectorError::decode)?;
+                        let license_info = upgrade_license
+                            .new_license_info(&encryption_data)
+                            .map_err(ConnectorError::decode)?;
 
                         self.license_cache.store_license(license_info)?
                     }

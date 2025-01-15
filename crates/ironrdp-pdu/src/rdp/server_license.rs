@@ -11,19 +11,19 @@ use num_traits::{FromPrimitive, ToPrimitive};
 use thiserror::Error;
 
 use crate::rdp::headers::{BasicSecurityHeader, BasicSecurityHeaderFlags, BASIC_SECURITY_HEADER_SIZE};
-use crate::PduError;
 pub use crate::rdp::server_license::client_license_info::ClientLicenseInfo;
+use crate::PduError;
 
 #[cfg(test)]
 mod tests;
 
+mod client_license_info;
 mod client_new_license_request;
 mod client_platform_challenge_response;
 mod licensing_error_message;
 mod server_license_request;
 mod server_platform_challenge;
 mod server_upgrade_license;
-mod client_license_info;
 
 pub use self::client_new_license_request::{ClientNewLicenseRequest, PLATFORM_ID};
 pub use self::client_platform_challenge_response::{

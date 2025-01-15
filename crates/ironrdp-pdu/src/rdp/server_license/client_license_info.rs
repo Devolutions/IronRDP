@@ -13,8 +13,8 @@ use ironrdp_core::{
     ensure_size, invalid_field_err, Decode, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor,
 };
 use md5::Digest;
-use std::io::Write;
 use std::io;
+use std::io::Write;
 
 const LICENSE_INFO_STATIC_FIELDS_SIZE: usize = 20;
 
@@ -65,8 +65,8 @@ impl ClientLicenseInfo {
                 client_random,
                 license_request.server_random.as_slice(),
             ]
-                .concat()
-                .as_slice(),
+            .concat()
+            .as_slice(),
         );
         let license_key = md5.finalize().to_vec();
 

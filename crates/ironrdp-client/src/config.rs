@@ -1,13 +1,13 @@
-use core::num::ParseIntError;
-use core::str::FromStr;
-use std::io;
-use std::sync::Arc;
 use anyhow::Context as _;
 use clap::clap_derive::ValueEnum;
 use clap::Parser;
+use core::num::ParseIntError;
+use core::str::FromStr;
 use ironrdp::connector::{self, Credentials, NoopLicenseCache};
 use ironrdp::pdu::rdp::capability_sets::MajorPlatformType;
 use ironrdp::pdu::rdp::client_info::PerformanceFlags;
+use std::io;
+use std::sync::Arc;
 use tap::prelude::*;
 use uuid::Uuid;
 
