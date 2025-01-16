@@ -17,7 +17,6 @@ mod dvc;
 mod fuzz_regression;
 mod graphics;
 mod input;
-mod now_proto;
 mod pcb;
 mod pdu;
 mod rdcleanpath;
