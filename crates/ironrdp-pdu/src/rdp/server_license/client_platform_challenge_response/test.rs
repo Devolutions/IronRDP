@@ -1,6 +1,6 @@
 use ironrdp_core::{decode, encode_vec};
 use lazy_static::lazy_static;
-
+use md5::Digest;
 use super::*;
 use crate::rdp::server_license::{
     BasicSecurityHeader, BasicSecurityHeaderFlags, LicenseHeader, LicensePdu, PreambleFlags, PreambleType,
@@ -184,13 +184,10 @@ fn challenge_response_creates_from_server_challenge_and_encryption_data_correctl
         ],
     };
 
+    let hardware_data = vec![0u8; 16];
     let mut hardware_id = Vec::with_capacity(CLIENT_HARDWARE_IDENTIFICATION_SIZE);
-    let mut md5 = md5::Md5::new();
-    md5.update(b"sample-hostname");
-    let hardware_data = &md5.finalize();
-
     hardware_id.write_u32::<LittleEndian>(PLATFORM_ID).unwrap();
-    hardware_id.write_all(hardware_data).unwrap();
+    hardware_id.write_all(&hardware_data).unwrap();
 
     let mut rc4 = Rc4::new(&encryption_data.license_key);
     let encrypted_hwid = rc4.process(&hardware_id);
@@ -228,7 +225,7 @@ fn challenge_response_creates_from_server_challenge_and_encryption_data_correctl
 
     let challenge_response = ClientPlatformChallengeResponse::from_server_platform_challenge(
         &server_challenge,
-        "sample-hostname",
+        &vec![0u8; 16],
         &encryption_data,
     )
     .unwrap();

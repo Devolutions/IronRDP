@@ -24,7 +24,6 @@ use core::time::Duration;
 use std::io::Write as _;
 use std::net::TcpStream;
 use std::path::PathBuf;
-
 use anyhow::Context as _;
 use connector::Credentials;
 use ironrdp::connector;
@@ -36,6 +35,8 @@ use ironrdp::session::{ActiveStage, ActiveStageOutput};
 use ironrdp_pdu::rdp::client_info::PerformanceFlags;
 use sspi::network_client::reqwest_network_client::ReqwestNetworkClient;
 use tokio_rustls::rustls;
+use uuid::Uuid;
+use ironrdp_connector::NoopLicenseCache;
 
 const HELP: &str = "\
 USAGE:
@@ -212,6 +213,8 @@ fn build_config(username: String, password: String, domain: Option<String>) -> c
         pointer_software_rendering: true,
         performance_flags: PerformanceFlags::default(),
         desktop_scale_factor: 0,
+        hardware_id: Uuid::default(),
+        license_cache: std::sync::Arc::new(NoopLicenseCache {})
     }
 }
 
