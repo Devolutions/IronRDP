@@ -150,8 +150,8 @@ impl Sequence for LicenseExchangeSequence {
                                     })
                                     .transpose()
                             })
-                            .transpose()?
-                            .flatten();
+                            .next()
+                            .transpose()?;
 
                         if let Some(info) = license_info {
                             match server_license::ClientLicenseInfo::from_server_license_request(
