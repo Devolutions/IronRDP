@@ -1,14 +1,13 @@
 use super::{legacy, ConnectorError, ConnectorErrorExt};
 use crate::{encode_send_data_request, ConnectorResult, ConnectorResultExt as _, Sequence, State, Written};
+use core::fmt::Debug;
 use core::{fmt, mem};
 use ironrdp_core::WriteBuf;
 use ironrdp_pdu::rdp::server_license::{self, LicenseInformation, LicensePdu, ServerLicenseError};
 use ironrdp_pdu::PduHint;
 use rand_core::{OsRng, RngCore as _};
-use std::fmt::Debug;
 use std::str;
 use std::sync::Arc;
-use uuid::Uuid;
 
 #[derive(Default, Debug)]
 #[non_exhaustive]
@@ -59,7 +58,7 @@ pub struct LicenseExchangeSequence {
     pub io_channel_id: u16,
     pub username: String,
     pub domain: Option<String>,
-    pub hardware_id: Uuid,
+    pub hardware_id: [u32; 4],
     pub license_cache: Arc<dyn LicenseCache>,
 }
 
@@ -69,7 +68,7 @@ pub trait LicenseCache: Sync + Send + Debug {
 }
 
 #[derive(Debug)]
-pub struct NoopLicenseCache;
+pub(crate) struct NoopLicenseCache;
 
 impl LicenseCache for NoopLicenseCache {
     fn get_license(&self, _license_info: LicenseInformation) -> ConnectorResult<Option<Vec<u8>>> {
@@ -86,7 +85,7 @@ impl LicenseExchangeSequence {
         io_channel_id: u16,
         username: String,
         domain: Option<String>,
-        hardware_id: Uuid,
+        hardware_id: [u32; 4],
         license_cache: Arc<dyn LicenseCache>,
     ) -> Self {
         Self {
@@ -158,7 +157,7 @@ impl Sequence for LicenseExchangeSequence {
                                 &license_request,
                                 &client_random,
                                 &premaster_secret,
-                                self.hardware_id.as_bytes(),
+                                self.hardware_id,
                                 info,
                             ) {
                                 Ok((client_license_info, encryption_data)) => {
@@ -184,12 +183,13 @@ impl Sequence for LicenseExchangeSequence {
                                 }
                             }
                         } else {
+                            let hwid = self.hardware_id;
                             match server_license::ClientNewLicenseRequest::from_server_license_request(
                                 &license_request,
                                 &client_random,
                                 &premaster_secret,
                                 &self.username,
-                                &self.hardware_id.as_hyphenated().to_string(),
+                                &format!("{:X}-{:X}-{:X}-{:X}", hwid[0], hwid[1], hwid[2], hwid[3]),
                             ) {
                                 Ok((new_license_request, encryption_data)) => {
                                     trace!(?encryption_data, "Successfully generated Client New License Request");
@@ -266,7 +266,7 @@ impl Sequence for LicenseExchangeSequence {
                         let challenge_response =
                             server_license::ClientPlatformChallengeResponse::from_server_platform_challenge(
                                 &challenge,
-                                self.hardware_id.as_bytes(),
+                                self.hardware_id,
                                 &encryption_data,
                             )
                             .map_err(|e| custom_err!("ClientPlatformChallengeResponse", e))?;

@@ -864,6 +864,8 @@ fn build_config(
         pointer_software_rendering: false,
         performance_flags: PerformanceFlags::default(),
         desktop_scale_factor: 0,
+        hardware_id: None,
+        license_cache: None,
     }
 }
 

@@ -47,7 +47,6 @@ ironrdp-dvc = { workspace = true, optional = true }
 ironrdp-rdpdr = { workspace = true, optional = true }
 ironrdp-rdpsnd = { workspace = true, optional = true }
 ironrdp-displaycontrol = { workspace = true, optional = true }
-uuid = { version = "1.11.0", features = ["v4"] }
 
 [dev-dependencies]
 ironrdp-blocking.workspace = true

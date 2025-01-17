@@ -2333,7 +2333,6 @@ dependencies = [
  "tokio-rustls",
  "tracing",
  "tracing-subscriber",
- "uuid",
  "x509-cert",
 ]
 
@@ -2464,7 +2463,6 @@ dependencies = [
  "ironrdp-error",
  "ironrdp-pdu",
  "ironrdp-svc",
- "md-5",
  "picky",
  "picky-asn1-der",
  "picky-asn1-x509",
@@ -2472,7 +2470,6 @@ dependencies = [
  "sspi",
  "tracing",
  "url",
- "uuid",
 ]
 
 [[package]]

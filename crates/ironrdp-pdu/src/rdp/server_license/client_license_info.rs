@@ -14,7 +14,6 @@ use ironrdp_core::{
 };
 use md5::Digest;
 use std::io;
-use std::io::Write;
 
 const LICENSE_INFO_STATIC_FIELDS_SIZE: usize = 20;
 
@@ -38,7 +37,7 @@ impl ClientLicenseInfo {
         license_request: &ServerLicenseRequest,
         client_random: &[u8],
         premaster_secret: &[u8],
-        hardware_data: &[u8],
+        hardware_data: [u32; 4],
         license_info: Vec<u8>,
     ) -> Result<(Self, LicenseEncryptionData), ServerLicenseError> {
         let public_key = license_request.get_public_key()?
@@ -72,7 +71,9 @@ impl ClientLicenseInfo {
 
         let mut hardware_id = Vec::with_capacity(CLIENT_HARDWARE_IDENTIFICATION_SIZE);
         hardware_id.write_u32::<LittleEndian>(PLATFORM_ID)?;
-        hardware_id.write_all(hardware_data)?;
+        for data in hardware_data {
+            hardware_id.write_u32::<LittleEndian>(data)?;
+        }
 
         let mut rc4 = Rc4::new(&license_key);
         let encrypted_hwid = rc4.process(&hardware_id);

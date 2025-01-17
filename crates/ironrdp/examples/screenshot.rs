@@ -29,14 +29,12 @@ use ironrdp::pdu::gcc::KeyboardType;
 use ironrdp::pdu::rdp::capability_sets::MajorPlatformType;
 use ironrdp::session::image::DecodedImage;
 use ironrdp::session::{ActiveStage, ActiveStageOutput};
-use ironrdp_connector::NoopLicenseCache;
 use ironrdp_pdu::rdp::client_info::PerformanceFlags;
 use sspi::network_client::reqwest_network_client::ReqwestNetworkClient;
 use std::io::Write as _;
 use std::net::TcpStream;
 use std::path::PathBuf;
 use tokio_rustls::rustls;
-use uuid::Uuid;
 
 const HELP: &str = "\
 USAGE:
@@ -213,8 +211,8 @@ fn build_config(username: String, password: String, domain: Option<String>) -> c
         pointer_software_rendering: true,
         performance_flags: PerformanceFlags::default(),
         desktop_scale_factor: 0,
-        hardware_id: Uuid::default(),
-        license_cache: std::sync::Arc::new(NoopLicenseCache {}),
+        hardware_id: None,
+        license_cache: None,
     }
 }
 

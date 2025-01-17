@@ -39,7 +39,7 @@ impl ClientPlatformChallengeResponse {
 
     pub fn from_server_platform_challenge(
         platform_challenge: &ServerPlatformChallenge,
-        hardware_data: &[u8],
+        hardware_data: [u32; 4],
         encryption_data: &LicenseEncryptionData,
     ) -> Result<Self, ServerLicenseError> {
         let mut rc4 = Rc4::new(&encryption_data.license_key);
@@ -61,7 +61,9 @@ impl ClientPlatformChallengeResponse {
 
         let mut hardware_id = Vec::with_capacity(CLIENT_HARDWARE_IDENTIFICATION_SIZE);
         hardware_id.write_u32::<LittleEndian>(PLATFORM_ID)?;
-        hardware_id.write_all(hardware_data)?;
+        for data in hardware_data {
+            hardware_id.write_u32::<LittleEndian>(data)?;
+        }
 
         let mut rc4 = Rc4::new(&encryption_data.license_key);
         let encrypted_hwid = rc4.process(&hardware_id);

@@ -5,7 +5,6 @@ use crate::rdp::server_license::{
 };
 use ironrdp_core::{decode, encode_vec};
 use lazy_static::lazy_static;
-use md5::Digest;
 
 const PLATFORM_CHALLENGE_RESPONSE_DATA_BUFFER: [u8; 18] = [
     0x00, 0x01, // version
@@ -223,12 +222,9 @@ fn challenge_response_creates_from_server_challenge_and_encryption_data_correctl
         mac_data,
     };
 
-    let challenge_response = ClientPlatformChallengeResponse::from_server_platform_challenge(
-        &server_challenge,
-        &vec![0u8; 16],
-        &encryption_data,
-    )
-    .unwrap();
+    let challenge_response =
+        ClientPlatformChallengeResponse::from_server_platform_challenge(&server_challenge, [0u32; 4], &encryption_data)
+            .unwrap();
 
     assert_eq!(challenge_response, correct_challenge_response);
 }
