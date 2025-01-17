@@ -139,16 +139,17 @@ impl Sequence for LicenseExchangeSequence {
                         let license_info = license_request
                             .scope_list
                             .iter()
-                            .map(|scope| {
-                                self.license_cache.get_license(LicenseInformation {
-                                    version: license_request.product_info.version,
-                                    scope: scope.0.clone(),
-                                    company_name: license_request.product_info.company_name.clone(),
-                                    product_id: license_request.product_info.product_id.clone(),
-                                    license_info: vec![],
-                                })
+                            .filter_map(|scope| {
+                                self.license_cache
+                                    .get_license(LicenseInformation {
+                                        version: license_request.product_info.version,
+                                        scope: scope.0.clone(),
+                                        company_name: license_request.product_info.company_name.clone(),
+                                        product_id: license_request.product_info.product_id.clone(),
+                                        license_info: vec![],
+                                    })
+                                    .transpose()
                             })
-                            .find(|res| res.is_err() || res.as_ref().is_ok_and(Option::is_some))
                             .transpose()?
                             .flatten();
 
