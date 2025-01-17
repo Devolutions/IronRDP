@@ -89,7 +89,9 @@ END
         let version_rc_data = generate_version_rc();
         let mut file = File::create(&version_rc_file).expect("cannot create version.rc file");
         file.write_all(version_rc_data.as_bytes()).unwrap();
-        embed_resource::compile(&version_rc_file, embed_resource::NONE);
+        embed_resource::compile(&version_rc_file, embed_resource::NONE)
+            .manifest_required()
+            .unwrap();
     }
 }
 
