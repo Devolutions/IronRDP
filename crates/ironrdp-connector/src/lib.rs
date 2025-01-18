@@ -162,6 +162,9 @@ pub struct Config {
     pub dig_product_id: String,
     pub client_dir: String,
     pub platform: capability_sets::MajorPlatformType,
+    /// Unique identifier for the computer
+    ///
+    ///  Each 32-bit integer contains client hardware-specific data helping the server uniquely identify the client.
     pub hardware_id: Option<[u32; 4]>,
     /// Optional data for the x224 connection request.
     ///
