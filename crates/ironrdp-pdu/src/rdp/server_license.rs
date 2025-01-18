@@ -11,11 +11,13 @@ use num_traits::{FromPrimitive, ToPrimitive};
 use thiserror::Error;
 
 use crate::rdp::headers::{BasicSecurityHeader, BasicSecurityHeaderFlags, BASIC_SECURITY_HEADER_SIZE};
+pub use crate::rdp::server_license::client_license_info::ClientLicenseInfo;
 use crate::PduError;
 
 #[cfg(test)]
 mod tests;
 
+mod client_license_info;
 mod client_new_license_request;
 mod client_platform_challenge_response;
 mod licensing_error_message;
@@ -30,7 +32,7 @@ pub use self::client_platform_challenge_response::{
 pub use self::licensing_error_message::{LicenseErrorCode, LicensingErrorMessage, LicensingStateTransition};
 pub use self::server_license_request::{cert, ProductInfo, Scope, ServerCertificate, ServerLicenseRequest};
 pub use self::server_platform_challenge::ServerPlatformChallenge;
-pub use self::server_upgrade_license::{NewLicenseInformation, ServerUpgradeLicense};
+pub use self::server_upgrade_license::{LicenseInformation, ServerUpgradeLicense};
 
 pub const PREAMBLE_SIZE: usize = 4;
 pub const PREMASTER_SECRET_SIZE: usize = 48;
@@ -341,6 +343,7 @@ fn compute_mac_data(mac_salt_key: &[u8], data: &[u8]) -> Vec<u8> {
 #[derive(Debug, PartialEq)]
 pub enum LicensePdu {
     ClientNewLicenseRequest(ClientNewLicenseRequest),
+    ClientLicenseInfo(ClientLicenseInfo),
     ClientPlatformChallengeResponse(ClientPlatformChallengeResponse),
     ServerLicenseRequest(ServerLicenseRequest),
     ServerPlatformChallenge(ServerPlatformChallenge),
@@ -375,6 +378,7 @@ impl Encode for LicensePdu {
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         match self {
             Self::ClientNewLicenseRequest(ref pdu) => pdu.encode(dst),
+            Self::ClientLicenseInfo(ref pdu) => pdu.encode(dst),
             Self::ClientPlatformChallengeResponse(ref pdu) => pdu.encode(dst),
             Self::ServerLicenseRequest(ref pdu) => pdu.encode(dst),
             Self::ServerPlatformChallenge(ref pdu) => pdu.encode(dst),
@@ -386,6 +390,7 @@ impl Encode for LicensePdu {
     fn name(&self) -> &'static str {
         match self {
             Self::ClientNewLicenseRequest(pdu) => pdu.name(),
+            Self::ClientLicenseInfo(pdu) => pdu.name(),
             Self::ClientPlatformChallengeResponse(pdu) => pdu.name(),
             Self::ServerLicenseRequest(pdu) => pdu.name(),
             Self::ServerPlatformChallenge(pdu) => pdu.name(),
@@ -397,6 +402,7 @@ impl Encode for LicensePdu {
     fn size(&self) -> usize {
         match self {
             Self::ClientNewLicenseRequest(pdu) => pdu.size(),
+            Self::ClientLicenseInfo(pdu) => pdu.size(),
             Self::ClientPlatformChallengeResponse(pdu) => pdu.size(),
             Self::ServerLicenseRequest(pdu) => pdu.size(),
             Self::ServerPlatformChallenge(pdu) => pdu.size(),
@@ -409,6 +415,12 @@ impl Encode for LicensePdu {
 impl From<ClientNewLicenseRequest> for LicensePdu {
     fn from(pdu: ClientNewLicenseRequest) -> Self {
         Self::ClientNewLicenseRequest(pdu)
+    }
+}
+
+impl From<ClientLicenseInfo> for LicensePdu {
+    fn from(pdu: ClientLicenseInfo) -> Self {
+        Self::ClientLicenseInfo(pdu)
     }
 }
 

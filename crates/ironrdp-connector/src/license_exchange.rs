@@ -1,12 +1,13 @@
+use super::{legacy, ConnectorError, ConnectorErrorExt};
+use crate::{encode_send_data_request, ConnectorResult, ConnectorResultExt as _, Sequence, State, Written};
+use core::fmt::Debug;
 use core::{fmt, mem};
-
 use ironrdp_core::WriteBuf;
-use ironrdp_pdu::rdp::server_license::{self, LicensePdu, ServerLicenseError};
+use ironrdp_pdu::rdp::server_license::{self, LicenseInformation, LicensePdu, ServerLicenseError};
 use ironrdp_pdu::PduHint;
 use rand_core::{OsRng, RngCore as _};
-
-use super::legacy;
-use crate::{encode_send_data_request, ConnectorResult, ConnectorResultExt as _, Sequence, State, Written};
+use std::str;
+use std::sync::Arc;
 
 #[derive(Default, Debug)]
 #[non_exhaustive]
@@ -57,15 +58,43 @@ pub struct LicenseExchangeSequence {
     pub io_channel_id: u16,
     pub username: String,
     pub domain: Option<String>,
+    pub hardware_id: [u32; 4],
+    pub license_cache: Arc<dyn LicenseCache>,
+}
+
+pub trait LicenseCache: Sync + Send + Debug {
+    fn get_license(&self, license_info: LicenseInformation) -> ConnectorResult<Option<Vec<u8>>>;
+    fn store_license(&self, license_info: LicenseInformation) -> ConnectorResult<()>;
+}
+
+#[derive(Debug)]
+pub(crate) struct NoopLicenseCache;
+
+impl LicenseCache for NoopLicenseCache {
+    fn get_license(&self, _license_info: LicenseInformation) -> ConnectorResult<Option<Vec<u8>>> {
+        Ok(None)
+    }
+
+    fn store_license(&self, _license_info: LicenseInformation) -> ConnectorResult<()> {
+        Ok(())
+    }
 }
 
 impl LicenseExchangeSequence {
-    pub fn new(io_channel_id: u16, username: String, domain: Option<String>) -> Self {
+    pub fn new(
+        io_channel_id: u16,
+        username: String,
+        domain: Option<String>,
+        hardware_id: [u32; 4],
+        license_cache: Arc<dyn LicenseCache>,
+    ) -> Self {
         Self {
             state: LicenseExchangeState::NewLicenseRequest,
             io_channel_id,
             username,
             domain,
+            hardware_id,
+            license_cache,
         }
     }
 }
@@ -107,52 +136,102 @@ impl Sequence for LicenseExchangeSequence {
                         let mut premaster_secret = [0u8; server_license::PREMASTER_SECRET_SIZE];
                         OsRng.fill_bytes(&mut premaster_secret);
 
-                        match server_license::ClientNewLicenseRequest::from_server_license_request(
-                            &license_request,
-                            &client_random,
-                            &premaster_secret,
-                            &self.username,
-                            self.domain.as_deref().unwrap_or(""),
-                        ) {
-                            Ok((new_license_request, encryption_data)) => {
-                                trace!(?encryption_data, "Successfully generated Client New License Request");
-                                info!(message = ?new_license_request, "Send");
+                        let license_info = license_request
+                            .scope_list
+                            .iter()
+                            .filter_map(|scope| {
+                                self.license_cache
+                                    .get_license(LicenseInformation {
+                                        version: license_request.product_info.version,
+                                        scope: scope.0.clone(),
+                                        company_name: license_request.product_info.company_name.clone(),
+                                        product_id: license_request.product_info.product_id.clone(),
+                                        license_info: vec![],
+                                    })
+                                    .transpose()
+                            })
+                            .next()
+                            .transpose()?;
 
-                                let written = encode_send_data_request::<LicensePdu>(
-                                    send_data_indication_ctx.initiator_id,
-                                    send_data_indication_ctx.channel_id,
-                                    &new_license_request.into(),
-                                    output,
-                                )?;
+                        if let Some(info) = license_info {
+                            match server_license::ClientLicenseInfo::from_server_license_request(
+                                &license_request,
+                                &client_random,
+                                &premaster_secret,
+                                self.hardware_id,
+                                info,
+                            ) {
+                                Ok((client_license_info, encryption_data)) => {
+                                    trace!(?encryption_data, "Successfully generated Client License Info");
+                                    info!(message = ?client_license_info, "Send");
 
-                                (
-                                    Written::from_size(written)?,
-                                    LicenseExchangeState::PlatformChallenge { encryption_data },
-                                )
+                                    let written = encode_send_data_request::<LicensePdu>(
+                                        send_data_indication_ctx.initiator_id,
+                                        send_data_indication_ctx.channel_id,
+                                        &client_license_info.into(),
+                                        output,
+                                    )?;
+
+                                    trace!(?written, "Written ClientLicenseInfo");
+
+                                    (
+                                        Written::from_size(written)?,
+                                        LicenseExchangeState::PlatformChallenge { encryption_data },
+                                    )
+                                }
+                                Err(err) => {
+                                    return Err(custom_err!("ClientNewLicenseRequest", err));
+                                }
                             }
-                            Err(error) => {
-                                if let ServerLicenseError::InvalidX509Certificate {
-                                    source: error,
-                                    cert_der,
-                                } = &error
-                                {
-                                    struct BytesHexFormatter<'a>(&'a [u8]);
+                        } else {
+                            let hwid = self.hardware_id;
+                            match server_license::ClientNewLicenseRequest::from_server_license_request(
+                                &license_request,
+                                &client_random,
+                                &premaster_secret,
+                                &self.username,
+                                &format!("{:X}-{:X}-{:X}-{:X}", hwid[0], hwid[1], hwid[2], hwid[3]),
+                            ) {
+                                Ok((new_license_request, encryption_data)) => {
+                                    trace!(?encryption_data, "Successfully generated Client New License Request");
+                                    info!(message = ?new_license_request, "Send");
 
-                                    impl fmt::Display for BytesHexFormatter<'_> {
-                                        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                                            write!(f, "0x")?;
-                                            self.0.iter().try_for_each(|byte| write!(f, "{byte:02X}"))
+                                    let written = encode_send_data_request::<LicensePdu>(
+                                        send_data_indication_ctx.initiator_id,
+                                        send_data_indication_ctx.channel_id,
+                                        &new_license_request.into(),
+                                        output,
+                                    )?;
+
+                                    (
+                                        Written::from_size(written)?,
+                                        LicenseExchangeState::PlatformChallenge { encryption_data },
+                                    )
+                                }
+                                Err(error) => {
+                                    if let ServerLicenseError::InvalidX509Certificate {
+                                        source: error,
+                                        cert_der,
+                                    } = &error
+                                    {
+                                        struct BytesHexFormatter<'a>(&'a [u8]);
+
+                                        impl fmt::Display for BytesHexFormatter<'_> {
+                                            fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                                                write!(f, "0x")?;
+                                                self.0.iter().try_for_each(|byte| write!(f, "{byte:02X}"))
+                                            }
                                         }
+
+                                        error!(
+                                            %error,
+                                            cert_der = %BytesHexFormatter(cert_der),
+                                            "Unsupported or invalid X509 certificate received during license exchange step"
+                                        );
                                     }
 
-                                    error!(
-                                        %error,
-                                        cert_der = %BytesHexFormatter(cert_der),
-                                        "Unsupported or invalid X509 certificate received during license exchange step"
-                                    );
+                                    return Err(custom_err!("ClientNewLicenseRequest", error));
                                 }
-
-                                return Err(custom_err!("ClientNewLicenseRequest", error));
                             }
                         }
                     }
@@ -188,7 +267,7 @@ impl Sequence for LicenseExchangeSequence {
                         let challenge_response =
                             server_license::ClientPlatformChallengeResponse::from_server_platform_challenge(
                                 &challenge,
-                                self.domain.as_deref().unwrap_or(""),
+                                self.hardware_id,
                                 &encryption_data,
                             )
                             .map_err(|e| custom_err!("ClientPlatformChallengeResponse", e))?;
@@ -242,6 +321,12 @@ impl Sequence for LicenseExchangeSequence {
                             .map_err(|e| custom_err!("license verification", e))?;
 
                         debug!("License verified with success");
+
+                        let license_info = upgrade_license
+                            .new_license_info(&encryption_data)
+                            .map_err(ConnectorError::decode)?;
+
+                        self.license_cache.store_license(license_info)?
                     }
                     LicensePdu::LicensingErrorMessage(error_message) => {
                         if error_message.error_code != server_license::LicenseErrorCode::StatusValidClient {

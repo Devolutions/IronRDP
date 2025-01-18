@@ -1,16 +1,16 @@
 use core::mem;
-use std::borrow::Cow;
-use std::net::SocketAddr;
-
 use ironrdp_core::{decode, encode_vec, Encode, WriteBuf};
 use ironrdp_pdu::rdp::client_info::{OptionalSystemTime, TimezoneInfo};
 use ironrdp_pdu::x224::X224;
 use ironrdp_pdu::{gcc, mcs, nego, rdp, PduHint};
 use ironrdp_svc::{StaticChannelSet, StaticVirtualChannel, SvcClientProcessor};
+use std::borrow::Cow;
+use std::net::SocketAddr;
+use std::sync::Arc;
 
 use crate::channel_connection::{ChannelConnectionSequence, ChannelConnectionState};
 use crate::connection_activation::{ConnectionActivationSequence, ConnectionActivationState};
-use crate::license_exchange::LicenseExchangeSequence;
+use crate::license_exchange::{LicenseExchangeSequence, NoopLicenseCache};
 use crate::{
     encode_x224_packet, Config, ConnectorError, ConnectorErrorExt as _, ConnectorResult, DesktopSize, Sequence, State,
     Written,
@@ -481,6 +481,11 @@ impl Sequence for ClientConnector {
                         io_channel_id,
                         self.config.credentials.username().unwrap_or("").to_owned(),
                         self.config.domain.clone(),
+                        self.config.hardware_id.unwrap_or_default(),
+                        self.config
+                            .license_cache
+                            .clone()
+                            .unwrap_or_else(|| Arc::new(NoopLicenseCache)),
                     ),
                 },
             ),

@@ -231,7 +231,7 @@ fn salted_hash(salt: &[u8], salt_first: &[u8], salt_second: &[u8], input: &[u8])
 }
 
 // According to https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpele/88061224-4a2f-4a28-a52e-e896b75ed2d3
-fn compute_master_secret(premaster_secret: &[u8], client_random: &[u8], server_random: &[u8]) -> Vec<u8> {
+pub(crate) fn compute_master_secret(premaster_secret: &[u8], client_random: &[u8], server_random: &[u8]) -> Vec<u8> {
     [
         salted_hash(premaster_secret, client_random, server_random, b"A"),
         salted_hash(premaster_secret, client_random, server_random, b"BB"),
@@ -241,7 +241,7 @@ fn compute_master_secret(premaster_secret: &[u8], client_random: &[u8], server_r
 }
 
 // According to https://docs.microsoft.com/en-us/openspecs/windows_protocols/ms-rdpele/88061224-4a2f-4a28-a52e-e896b75ed2d3
-fn compute_session_key_blob(master_secret: &[u8], client_random: &[u8], server_random: &[u8]) -> Vec<u8> {
+pub(crate) fn compute_session_key_blob(master_secret: &[u8], client_random: &[u8], server_random: &[u8]) -> Vec<u8> {
     [
         salted_hash(master_secret, server_random, client_random, b"A"),
         salted_hash(master_secret, server_random, client_random, b"BB"),

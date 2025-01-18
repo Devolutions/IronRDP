@@ -1,13 +1,12 @@
-use core::num::ParseIntError;
-use core::str::FromStr;
-use std::io;
-
 use anyhow::Context as _;
 use clap::clap_derive::ValueEnum;
 use clap::Parser;
+use core::num::ParseIntError;
+use core::str::FromStr;
 use ironrdp::connector::{self, Credentials};
 use ironrdp::pdu::rdp::capability_sets::MajorPlatformType;
 use ironrdp::pdu::rdp::client_info::PerformanceFlags;
+use std::io;
 use tap::prelude::*;
 
 const DEFAULT_WIDTH: u16 = 1920;
@@ -316,6 +315,8 @@ impl Config {
                 whoami::Platform::Android => MajorPlatformType::ANDROID,
                 _ => MajorPlatformType::UNSPECIFIED,
             },
+            hardware_id: None,
+            license_cache: None,
             no_server_pointer: args.no_server_pointer,
             autologon: args.autologon,
             request_data: None,
