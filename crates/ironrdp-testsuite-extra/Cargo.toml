@@ -1,0 +1,27 @@
+[package]
+name = "ironrdp-testsuite-extra"
+version = "0.1.0"
+edition.workspace = true
+description = "IronRDP extra test suite"
+publish = false
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[dev-dependencies]
+anyhow = "1.0"
+async-trait = "0.1"
+ironrdp = { workspace = true, features = ["server", "pdu", "connector", "session", "connector"] }
+ironrdp-async.workspace = true
+ironrdp-tokio.workspace = true
+ironrdp-tls = { workspace = true, features = ["rustls"] }
+semver = "1.0"
+tracing.workspace = true
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tokio = { version = "1", features = ["sync", "time"] }
+
+[lints]
+workspace = true

@@ -52,6 +52,7 @@ ironrdp-session-generators = { path = "crates/ironrdp-session-generators" }
 ironrdp-session = { version = "0.2", path = "crates/ironrdp-session" }
 ironrdp-svc = { version = "0.1", path = "crates/ironrdp-svc" }
 ironrdp-testsuite-core = { path = "crates/ironrdp-testsuite-core" }
+ironrdp-testsuite-extra = { path = "crates/ironrdp-testsuite-extra" }
 ironrdp-tls = { version = "0.1", path = "crates/ironrdp-tls" }
 ironrdp-tokio = { version = "0.2", path = "crates/ironrdp-tokio" }
 ironrdp = { version = "0.7", path = "crates/ironrdp" }

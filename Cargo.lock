@@ -2722,6 +2722,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "ironrdp-testsuite-extra"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "ironrdp",
+ "ironrdp-async",
+ "ironrdp-tls",
+ "ironrdp-tokio",
+ "semver",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "ironrdp-tls"
 version = "0.1.1"
 dependencies = [
