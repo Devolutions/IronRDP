@@ -209,8 +209,6 @@ This is to keep iteration time short.
 
 Contains all integration tests for code living in the extra tier, in a single binary, organized in modules.
 
-(WIP: this crate does not exist yet.)
-
 #### [`crates/ironrdp-fuzzing`](./crates/ironrdp-fuzzing)
 
 Provides test case generators and oracles for use with fuzzing.
