@@ -43,6 +43,7 @@ pub struct AcceptorResult {
     pub input_events: Vec<Vec<u8>>,
     pub user_channel_id: u16,
     pub io_channel_id: u16,
+    pub reactivation: bool,
 }
 
 impl Acceptor {
@@ -150,6 +151,7 @@ impl Acceptor {
                 input_events,
                 user_channel_id: self.user_channel_id,
                 io_channel_id: self.io_channel_id,
+                reactivation: self.reactivation,
             }),
             previous_state => {
                 self.state = previous_state;

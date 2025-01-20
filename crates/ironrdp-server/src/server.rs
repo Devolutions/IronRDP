@@ -670,14 +670,16 @@ impl RdpServer {
         }
 
         self.static_channels = result.static_channels;
-        for (_type_id, channel, channel_id) in self.static_channels.iter_mut() {
-            debug!(?channel, ?channel_id, "Start");
-            let Some(channel_id) = channel_id else {
-                continue;
-            };
-            let svc_responses = channel.start()?;
-            let response = server_encode_svc_messages(svc_responses, channel_id, result.user_channel_id)?;
-            writer.write_all(&response).await?;
+        if !result.reactivation {
+            for (_type_id, channel, channel_id) in self.static_channels.iter_mut() {
+                debug!(?channel, ?channel_id, "Start");
+                let Some(channel_id) = channel_id else {
+                    continue;
+                };
+                let svc_responses = channel.start()?;
+                let response = server_encode_svc_messages(svc_responses, channel_id, result.user_channel_id)?;
+                writer.write_all(&response).await?;
+            }
         }
 
         let mut rfxcodec = None;
