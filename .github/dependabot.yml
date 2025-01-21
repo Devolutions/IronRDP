@@ -12,6 +12,7 @@ updates:
         patterns:
           - "md-5"
           - "md5"
+          - "sha512"
           - "sha1"
           - "pkcs1"
           - "x509-cert"
