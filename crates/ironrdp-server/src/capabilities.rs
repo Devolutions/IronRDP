@@ -28,7 +28,9 @@ fn bitmap_capabilities(size: &DesktopSize) -> capability_sets::Bitmap {
         pref_bits_per_pix: 32,
         desktop_width: size.width,
         desktop_height: size.height,
-        desktop_resize_flag: false,
+        // This makes freerdp keep the flag up and handle desktop resize/deactivation-reactivation.
+        // Likely okay to advertize if the server doesn't resize anyway.
+        desktop_resize_flag: true,
         drawing_flags: capability_sets::BitmapDrawingFlags::empty(),
     }
 }
