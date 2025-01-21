@@ -436,20 +436,7 @@ impl RdpServer {
             DisplayUpdate::PointerPosition(pos) => encoder.pointer_position(pos),
             DisplayUpdate::Resize(desktop_size) => {
                 debug!(?desktop_size, "Display resize");
-                let pdu = ShareControlPdu::ServerDeactivateAll(ServerDeactivateAll);
-                let pdu = rdp::headers::ShareControlHeader {
-                    share_id: 0,
-                    pdu_source: io_channel_id,
-                    share_control_pdu: pdu,
-                };
-                let user_data = encode_vec(&pdu)?.into();
-                let pdu = SendDataIndication {
-                    initiator_id: user_channel_id,
-                    channel_id: io_channel_id,
-                    user_data,
-                };
-                let msg = encode_vec(&X224(pdu))?;
-                writer.write_all(&msg).await?;
+                deactivate_all(io_channel_id, user_channel_id, writer).await?;
                 return Ok((RunState::DeactivationReactivation { desktop_size }, encoder));
             }
             DisplayUpdate::RGBAPointer(ptr) => encoder.rgba_pointer(ptr),
@@ -938,6 +925,28 @@ impl RdpServer {
         debug!(?creds, "Changing credentials");
         self.creds = creds
     }
+}
+
+async fn deactivate_all(
+    io_channel_id: u16,
+    user_channel_id: u16,
+    writer: &mut impl FramedWrite,
+) -> Result<(), anyhow::Error> {
+    let pdu = ShareControlPdu::ServerDeactivateAll(ServerDeactivateAll);
+    let pdu = rdp::headers::ShareControlHeader {
+        share_id: 0,
+        pdu_source: io_channel_id,
+        share_control_pdu: pdu,
+    };
+    let user_data = encode_vec(&pdu)?.into();
+    let pdu = SendDataIndication {
+        initiator_id: user_channel_id,
+        channel_id: io_channel_id,
+        user_data,
+    };
+    let msg = encode_vec(&X224(pdu))?;
+    writer.write_all(&msg).await?;
+    Ok(())
 }
 
 struct SharedWriter<'w, W: FramedWrite> {
