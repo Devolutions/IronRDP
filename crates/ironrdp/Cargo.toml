@@ -74,7 +74,7 @@ required-features = ["session", "connector", "graphics"]
 [[example]]
 name = "server"
 doc-scrape-examples = true
-required-features = ["cliprdr", "rdpsnd", "server"]
+required-features = ["cliprdr", "connector", "rdpsnd", "server"]
 
 [lints]
 workspace = true
