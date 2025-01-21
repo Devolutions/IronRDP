@@ -6,8 +6,8 @@
 #[macro_use]
 extern crate tracing;
 
+use core::num::NonZeroU16;
 use std::net::SocketAddr;
-use std::num::NonZeroU16;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
@@ -16,13 +16,12 @@ use ironrdp::cliprdr::backend::{CliprdrBackend, CliprdrBackendFactory};
 use ironrdp::connector::DesktopSize;
 use ironrdp::rdpsnd::pdu::ClientAudioFormatPdu;
 use ironrdp::rdpsnd::server::{RdpsndServerHandler, RdpsndServerMessage};
-use ironrdp::server::tokio;
 use ironrdp::server::tokio::sync::mpsc::UnboundedSender;
 use ironrdp::server::tokio::time::{self, sleep, Duration};
 use ironrdp::server::{
-    BitmapUpdate, CliprdrServerFactory, Credentials, DisplayUpdate, KeyboardEvent, MouseEvent, PixelFormat, PixelOrder,
-    RdpServer, RdpServerDisplay, RdpServerDisplayUpdates, RdpServerInputHandler, ServerEvent, ServerEventSender,
-    SoundServerFactory, TlsIdentityCtx,
+    tokio, BitmapUpdate, CliprdrServerFactory, Credentials, DisplayUpdate, KeyboardEvent, MouseEvent, PixelFormat,
+    PixelOrder, RdpServer, RdpServerDisplay, RdpServerDisplayUpdates, RdpServerInputHandler, ServerEvent,
+    ServerEventSender, SoundServerFactory, TlsIdentityCtx,
 };
 use ironrdp_cliprdr_native::StubCliprdrBackend;
 use rand::prelude::*;
@@ -269,7 +268,7 @@ impl RdpsndServerHandler for SndHandler {
 
     fn start(&mut self, client_format: &ClientAudioFormatPdu) -> Option<u16> {
         async fn generate_sine_wave(sample_rate: u32, frequency: f32, duration_ms: u64) -> Vec<u8> {
-            use std::f32::consts::PI;
+            use core::f32::consts::PI;
 
             let total_samples = u64::from(sample_rate / 1000).checked_mul(duration_ms).unwrap();
             let samples_per_wave_length = sample_rate as f32 / frequency;
