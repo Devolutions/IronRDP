@@ -679,6 +679,28 @@ impl RdpServer {
                         bail!("Fastpath output not supported!");
                     }
                 }
+                CapabilitySet::Bitmap(b) => {
+                    if !b.desktop_resize_flag {
+                        debug!("Desktop resize is not supported by the client");
+                        continue;
+                    }
+
+                    let client_size = DesktopSize {
+                        width: b.desktop_width,
+                        height: b.desktop_height,
+                    };
+                    let display_size = self.display.lock().await.size().await;
+
+                    // It's problematic when the client didn't resize, as we send bitmap updates that don't fit.
+                    // The client will likely drop the connection.
+                    if client_size.width < display_size.width || client_size.height < display_size.height {
+                        // TODO: we may have different behaviour instead, such as clipping or scaling?
+                        warn!(
+                            "Client size doesn't fit the server size: {:?} < {:?}",
+                            client_size, display_size
+                        );
+                    }
+                }
                 CapabilitySet::SurfaceCommands(c) => {
                     surface_flags = c.flags;
                 }
