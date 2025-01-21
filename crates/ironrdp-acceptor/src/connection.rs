@@ -314,6 +314,8 @@ impl Sequence for Acceptor {
                     SecurityProtocol::HYBRID
                 } else if protocols.intersects(SecurityProtocol::SSL) {
                     SecurityProtocol::SSL
+                } else if self.security.is_empty() {
+                    SecurityProtocol::empty()
                 } else {
                     return Err(ConnectorError::general("failed to negotiate security protocol"));
                 };
