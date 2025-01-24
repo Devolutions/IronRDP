@@ -9,4 +9,4 @@ pub const GRCOV: CargoPackage = CargoPackage::new("grcov", "0.8.19");
 pub const WASM_PACK: CargoPackage = CargoPackage::new("wasm-pack", "0.12.1");
 pub const TYPOS_CLI: CargoPackage = CargoPackage::new("typos-cli", "1.16.23").with_binary_name("typos");
 
-pub const WABT_VERSION: &str = "1.0.33";
+pub const WABT_VERSION: &str = "1.0.36";
