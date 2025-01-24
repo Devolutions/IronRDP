@@ -61,7 +61,7 @@ fn install_wasm2wat(sh: &Shell) -> anyhow::Result<()> {
     } else if cfg!(target_os = "macos") {
         "macos-14"
     } else {
-        "ubuntu"
+        "ubuntu-20.04"
     };
 
     let url = format!(
