@@ -15,6 +15,7 @@ use anyhow::Context as _;
 use ironrdp::cliprdr::backend::{CliprdrBackend, CliprdrBackendFactory};
 use ironrdp::connector::DesktopSize;
 use ironrdp::rdpsnd::pdu::ClientAudioFormatPdu;
+use ironrdp::rdpsnd::pdu::{AudioFormat, WaveFormat};
 use ironrdp::rdpsnd::server::{RdpsndServerHandler, RdpsndServerMessage};
 use ironrdp::server::tokio::sync::mpsc::UnboundedSender;
 use ironrdp::server::tokio::time::{self, sleep, Duration};
@@ -251,51 +252,92 @@ struct SndHandler {
     task: Option<tokio::task::JoinHandle<()>>,
 }
 
-impl RdpsndServerHandler for SndHandler {
-    fn get_formats(&self) -> &[ironrdp_rdpsnd::pdu::AudioFormat] {
-        use ironrdp_rdpsnd::pdu::{AudioFormat, WaveFormat};
+impl SndHandler {
+    fn choose_format(&self, client_formats: &[AudioFormat]) -> Option<u16> {
+        for (n, fmt) in client_formats.iter().enumerate() {
+            if self.get_formats().contains(fmt) {
+                return u16::try_from(n).ok();
+            }
+        }
+        None
+    }
+}
 
-        &[AudioFormat {
-            format: WaveFormat::PCM,
-            n_channels: 2,
-            n_samples_per_sec: 44100,
-            n_avg_bytes_per_sec: 176400,
-            n_block_align: 4,
-            bits_per_sample: 16,
-            data: None,
-        }]
+impl RdpsndServerHandler for SndHandler {
+    fn get_formats(&self) -> &[AudioFormat] {
+        &[
+            AudioFormat {
+                format: WaveFormat::OPUS,
+                n_channels: 2,
+                n_samples_per_sec: 48000,
+                n_avg_bytes_per_sec: 192000,
+                n_block_align: 4,
+                bits_per_sample: 16,
+                data: None,
+            },
+            AudioFormat {
+                format: WaveFormat::PCM,
+                n_channels: 2,
+                n_samples_per_sec: 44100,
+                n_avg_bytes_per_sec: 176400,
+                n_block_align: 4,
+                bits_per_sample: 16,
+                data: None,
+            },
+        ]
     }
 
     fn start(&mut self, client_format: &ClientAudioFormatPdu) -> Option<u16> {
-        async fn generate_sine_wave(sample_rate: u32, frequency: f32, duration_ms: u64) -> Vec<u8> {
-            use core::f32::consts::PI;
+        debug!(?client_format);
 
-            let total_samples = u64::from(sample_rate / 1000).checked_mul(duration_ms).unwrap();
-            let samples_per_wave_length = sample_rate as f32 / frequency;
-            let amplitude = 32767.0; // Max amplitude for 16-bit audio
+        let Some(nfmt) = self.choose_format(&client_format.formats) else {
+            return Some(0);
+        };
 
-            let capacity = total_samples.checked_mul(2 + 2).unwrap();
-            let mut samples = Vec::with_capacity(usize::try_from(capacity).unwrap());
+        let fmt = client_format.formats[usize::from(nfmt)].clone();
 
-            for n in 0..total_samples {
-                let t = (n as f32 % samples_per_wave_length) / samples_per_wave_length;
-                let sample = (t * 2.0 * PI).sin();
-                #[allow(clippy::cast_possible_truncation)]
-                let sample = (sample * amplitude) as i16;
-                samples.extend_from_slice(&sample.to_le_bytes());
-                samples.extend_from_slice(&sample.to_le_bytes());
+        let mut opus_enc = if fmt.format == WaveFormat::OPUS {
+            let n_channels: opus::Channels = match fmt.n_channels {
+                1 => opus::Channels::Mono,
+                2 => opus::Channels::Stereo,
+                n => {
+                    warn!("Invalid OPUS channels: {}", n);
+                    return Some(0);
+                }
+            };
+
+            match opus::Encoder::new(fmt.n_samples_per_sec, n_channels, opus::Application::Audio) {
+                Ok(enc) => Some(enc),
+                Err(err) => {
+                    warn!("Failed to create OPUS encoder: {}", err);
+                    return Some(0);
+                }
             }
-
-            samples
-        }
+        } else {
+            None
+        };
 
         let inner = Arc::clone(&self.inner);
         self.task = Some(tokio::spawn(async move {
-            let mut interval = time::interval(Duration::from_millis(100));
+            let mut interval = time::interval(Duration::from_millis(20));
             let mut ts = 0;
+            let mut phase = 0.0f32;
             loop {
                 interval.tick().await;
-                let data = generate_sine_wave(44100, 440.0, 100).await;
+                let wave = generate_sine_wave(fmt.n_samples_per_sec, 440.0, 20, &mut phase);
+
+                let data = if let Some(ref mut enc) = opus_enc {
+                    match enc.encode_vec(&wave, wave.len()) {
+                        Ok(data) => data,
+                        Err(err) => {
+                            warn!("Failed to encode with OPUS: {}", err);
+                            return;
+                        }
+                    }
+                } else {
+                    wave.into_iter().flat_map(|value| value.to_le_bytes()).collect()
+                };
+
                 let inner = inner.lock().unwrap();
                 if let Some(sender) = inner.ev_sender.as_ref() {
                     let _ = sender.send(ServerEvent::Rdpsnd(RdpsndServerMessage::Wave(data, ts)));
@@ -304,8 +346,7 @@ impl RdpsndServerHandler for SndHandler {
             }
         }));
 
-        debug!(?client_format);
-        Some(0)
+        Some(nfmt)
     }
 
     fn stop(&mut self) {
@@ -314,6 +355,33 @@ impl RdpsndServerHandler for SndHandler {
         };
         task.abort();
     }
+}
+
+fn generate_sine_wave(sample_rate: u32, frequency: f32, duration_ms: u64, phase: &mut f32) -> Vec<i16> {
+    use core::f32::consts::PI;
+
+    let total_samples = (u64::from(sample_rate) * duration_ms) / 1000;
+    let delta_phase = 2.0 * PI * frequency / sample_rate as f32;
+    let amplitude = 32767.0; // Max amplitude for 16-bit audio
+
+    let capacity = (total_samples as usize) * 2; // 2 channels
+    let mut samples = Vec::with_capacity(capacity);
+
+    for _ in 0..total_samples {
+        let sample = (*phase).sin();
+        *phase += delta_phase;
+        // Wrap phase to maintain precision and avoid overflow
+        *phase %= 2.0 * PI;
+
+        #[allow(clippy::cast_possible_truncation)]
+        let sample_i16 = (sample * amplitude) as i16;
+
+        // Write same sample to both channels (stereo)
+        samples.push(sample_i16);
+        samples.push(sample_i16);
+    }
+
+    samples
 }
 
 async fn run(
