@@ -17,6 +17,10 @@ impl<T> RdpsndError for T where T: std::error::Error + Send + Sync + 'static {}
 pub enum RdpsndServerMessage {
     /// Wave data, with timestamp
     Wave(Vec<u8>, u32),
+    SetVolume {
+        left: u16,
+        right: u16,
+    },
     Close,
     /// Failure received from the OS event loop.
     ///
@@ -70,9 +74,18 @@ impl RdpsndServer {
         let client_format = self
             .client_format
             .as_ref()
-            .ok_or_else(|| pdu_other_err!("invalid state - no version"))?;
+            .ok_or_else(|| pdu_other_err!("invalid state, client format not yet received"))?;
 
         Ok(client_format.version)
+    }
+
+    pub fn flags(&self) -> PduResult<pdu::AudioFormatFlags> {
+        let client_format = self
+            .client_format
+            .as_ref()
+            .ok_or_else(|| pdu_other_err!("invalid state, client format not yet received"))?;
+
+        Ok(client_format.flags)
     }
 
     pub fn training_pdu(&mut self) -> PduResult<RdpsndSvcMessages> {
@@ -114,6 +127,19 @@ impl RdpsndServer {
         self.block_no = self.block_no.overflowing_add(1).0;
 
         Ok(msg)
+    }
+
+    pub fn set_volume(&mut self, volume_left: u16, volume_right: u16) -> PduResult<RdpsndSvcMessages> {
+        if !self.flags()?.contains(pdu::AudioFormatFlags::VOLUME) {
+            return Err(pdu_other_err!("client doesn't support volume"));
+        }
+        let pdu = pdu::VolumePdu {
+            volume_left,
+            volume_right,
+        };
+        Ok(RdpsndSvcMessages::new(vec![
+            pdu::ServerAudioOutputPdu::Volume(pdu).into()
+        ]))
     }
 
     pub fn close(&mut self) -> PduResult<RdpsndSvcMessages> {

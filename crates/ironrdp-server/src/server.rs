@@ -496,6 +496,7 @@ impl RdpServer {
                             wave_limit -= 1;
                             rdpsnd.wave(data, ts)
                         }
+                        RdpsndServerMessage::SetVolume { left, right } => rdpsnd.set_volume(left, right),
                         RdpsndServerMessage::Close => rdpsnd.close(),
                         RdpsndServerMessage::Error(error) => {
                             error!(?error, "Handling rdpsnd event");
