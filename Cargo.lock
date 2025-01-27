@@ -2330,6 +2330,7 @@ dependencies = [
  "ironrdp-core",
  "ironrdp-displaycontrol",
  "ironrdp-dvc",
+ "ironrdp-egfx",
  "ironrdp-graphics",
  "ironrdp-input",
  "ironrdp-pdu",
@@ -2510,6 +2511,19 @@ dependencies = [
  "ironrdp-pdu",
  "ironrdp-svc",
  "slab",
+ "tracing",
+]
+
+[[package]]
+name = "ironrdp-egfx"
+version = "0.1.1"
+dependencies = [
+ "bit_field",
+ "bitflags 2.6.0",
+ "ironrdp-core",
+ "ironrdp-dvc",
+ "ironrdp-graphics",
+ "ironrdp-pdu",
  "tracing",
 ]
 

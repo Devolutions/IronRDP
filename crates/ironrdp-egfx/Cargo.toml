@@ -1,0 +1,28 @@
+[package]
+name = "ironrdp-egfx"
+version = "0.1.1"
+readme = "README.md"
+description = "Graphics pipeline dynamic channel extension implementation"
+edition.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+[lib]
+doctest = false
+test = false
+
+[dependencies]
+bit_field = "0.10.2"
+bitflags.workspace = true
+ironrdp-core.workspace = true
+ironrdp-dvc.workspace = true
+ironrdp-graphics.workspace = true
+ironrdp-pdu.workspace = true
+tracing.workspace = true
+
+[lints]
+workspace = true
