@@ -210,6 +210,7 @@ fn build_config(username: String, password: String, domain: Option<String>) -> c
         autologon: false,
         pointer_software_rendering: true,
         performance_flags: PerformanceFlags::default(),
+        support_gfx: false,
         desktop_scale_factor: 0,
         hardware_id: None,
         license_cache: None,

@@ -176,6 +176,8 @@ pub struct Config {
     /// If true, the INFO_AUTOLOGON flag is set in the [`ClientInfoPdu`](ironrdp_pdu::rdp::ClientInfoPdu)
     pub autologon: bool,
     pub license_cache: Option<Arc<dyn LicenseCache>>,
+    /// If true, the SUPPORT_DYN_VC_GFX_PROTOCOL flag is set
+    pub support_gfx: bool,
 
     // FIXME(@CBenoit): these are client-only options, not part of the connector.
     pub no_server_pointer: bool,
