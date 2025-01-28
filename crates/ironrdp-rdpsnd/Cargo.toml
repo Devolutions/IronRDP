@@ -1,6 +1,6 @@
 [package]
 name = "ironrdp-rdpsnd"
-version = "0.1.1"
+version = "0.2.0"
 readme = "README.md"
 description = "RDPSND static channel for audio output implemented as described in MS-RDPEA"
 edition.workspace = true

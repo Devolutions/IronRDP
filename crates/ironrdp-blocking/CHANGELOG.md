@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [[0.3.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-blocking-v0.2.1...ironrdp-blocking-v0.3.0)] - 2025-01-28
+
+### <!-- 4 -->Changed
+
+- Remove unmatched parameter from `Framed::read_by_hint` function ([63963182b5](https://github.com/Devolutions/IronRDP/commit/63963182b5af6ad45dc638e93de4b8a0b565c7d3))
+
+### <!-- 6 -->Documentation
+
+- Use CDN URLs instead of the blob storage URLs for Devolutions logo (#631) ([dd249909a8](https://github.com/Devolutions/IronRDP/commit/dd249909a894004d4f728d30b3a4aa77a0f8193b)) 
+
+
+
 ## [[0.2.1](https://github.com/Devolutions/IronRDP/compare/ironrdp-blocking-v0.2.0...ironrdp-blocking-v0.2.1)] - 2024-12-14
 
 ### Other
