@@ -322,7 +322,7 @@ impl Config {
             request_data: None,
             pointer_software_rendering: true,
             performance_flags: PerformanceFlags::default(),
-            support_gfx: false,
+            support_gfx: true,
         };
 
         Ok(Self {
