@@ -1,6 +1,7 @@
 use super::{legacy, ConnectorError, ConnectorErrorExt};
 use crate::{encode_send_data_request, ConnectorResult, ConnectorResultExt as _, Sequence, State, Written};
 use core::fmt::Debug;
+use core::panic::RefUnwindSafe;
 use core::{fmt, mem};
 use ironrdp_core::WriteBuf;
 use ironrdp_pdu::rdp::server_license::{self, LicenseInformation, LicensePdu, ServerLicenseError};
@@ -62,7 +63,8 @@ pub struct LicenseExchangeSequence {
     pub license_cache: Arc<dyn LicenseCache>,
 }
 
-pub trait LicenseCache: Sync + Send + Debug {
+// Use RefUnwindSafe so that types that embed LicenseCache remain UnwindSafe
+pub trait LicenseCache: Sync + Send + Debug + RefUnwindSafe {
     fn get_license(&self, license_info: LicenseInformation) -> ConnectorResult<Option<Vec<u8>>>;
     fn store_license(&self, license_info: LicenseInformation) -> ConnectorResult<()>;
 }
