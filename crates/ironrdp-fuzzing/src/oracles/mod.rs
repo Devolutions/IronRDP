@@ -88,6 +88,8 @@ pub fn pdu_decode(data: &[u8]) {
 
     let _ = decode::<ironrdp_displaycontrol::pdu::DisplayControlPdu>(data);
 
+    let _ = decode::<ironrdp_egfx::pdu::GfxPdu>(data);
+
     let _ = decode::<ironrdp_rdpsnd::pdu::ServerAudioOutputPdu<'_>>(data);
     let _ = decode::<ironrdp_rdpsnd::pdu::ClientAudioOutputPdu>(data);
 }
