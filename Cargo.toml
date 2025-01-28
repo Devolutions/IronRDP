@@ -57,7 +57,7 @@ ironrdp-tls = { version = "0.1", path = "crates/ironrdp-tls" }
 ironrdp-tokio = { version = "0.2", path = "crates/ironrdp-tokio" }
 ironrdp = { version = "0.7", path = "crates/ironrdp" }
 
-bitflags = "2.4"
+bitflags = "2.8"
 expect-test = "1"
 png = "0.17"
 proptest = "1.4"
