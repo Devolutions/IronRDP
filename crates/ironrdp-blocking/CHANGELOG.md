@@ -8,16 +8,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [[0.3.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-blocking-v0.2.1...ironrdp-blocking-v0.3.0)] - 2025-01-28
 
-### <!-- 4 -->Bug Fixes
+### <!-- 4 -->Changed
 
-- Drop unexpected PDUs during deactivation-reactivation ([63963182b5](https://github.com/Devolutions/IronRDP/commit/63963182b5af6ad45dc638e93de4b8a0b565c7d3)) 
-
-  The current behaviour of handling unmatched PDUs in fn read_by_hint()
-  isn't good enough. An unexpected PDUs may be received and fail to be
-  decoded during Acceptor::step().
-  
-  Change the code to simply drop unexpected PDUs (as opposed to attempting
-  to replay the unmatched leftover, which isn't clearly needed)
+- Remove unmatched parameter from `Framed::read_by_hint` function ([63963182b5](https://github.com/Devolutions/IronRDP/commit/63963182b5af6ad45dc638e93de4b8a0b565c7d3))
 
 ### <!-- 6 -->Documentation
 

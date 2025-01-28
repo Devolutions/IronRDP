@@ -10,12 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### <!-- 1 -->Features
 
-- Support license caching (#634) ([dd221bf224](https://github.com/Devolutions/IronRDP/commit/dd221bf22401c4635798ec012724cba7e6d503b2)) 
-
-  Adds support for license caching by storing the license obtained
-  from SERVER_UPGRADE_LICENSE message and sending
-  CLIENT_LICENSE_INFO if a license requested by the server is already
-  stored in the cache.
+- ClientLicenseInfo and other license PDU-related adjustments (#634) ([dd221bf224](https://github.com/Devolutions/IronRDP/commit/dd221bf22401c4635798ec012724cba7e6d503b2)) 
 
 ### <!-- 6 -->Documentation
 
