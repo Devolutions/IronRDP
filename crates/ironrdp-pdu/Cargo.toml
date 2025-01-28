@@ -1,6 +1,6 @@
 [package]
 name = "ironrdp-pdu"
-version = "0.1.2"
+version = "0.2.0"
 readme = "README.md"
 description = "RDP PDU encoding and decoding"
 edition.workspace = true

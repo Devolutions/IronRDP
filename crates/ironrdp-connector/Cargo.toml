@@ -1,6 +1,6 @@
 [package]
 name = "ironrdp-connector"
-version = "0.2.2"
+version = "0.3.0"
 readme = "README.md"
 description = "State machines to drive an RDP connection sequence"
 edition.workspace = true
