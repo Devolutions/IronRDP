@@ -20,8 +20,6 @@ pub mod cluster_data;
 pub mod conference_create;
 pub mod core_data;
 pub mod gcc;
-pub mod gfx;
-pub mod graphics_messages;
 pub mod mcs;
 pub mod message_channel_data;
 pub mod monitor_data;

@@ -31,6 +31,7 @@ dvc = ["dep:ironrdp-dvc"]
 rdpdr = ["dep:ironrdp-rdpdr"]
 rdpsnd = ["dep:ironrdp-rdpsnd"]
 displaycontrol = ["dep:ironrdp-displaycontrol"]
+egfx = ["dep:ironrdp-egfx"]
 
 [dependencies]
 ironrdp-core = { workspace = true, optional = true }
@@ -47,6 +48,7 @@ ironrdp-dvc = { workspace = true, optional = true }
 ironrdp-rdpdr = { workspace = true, optional = true }
 ironrdp-rdpsnd = { workspace = true, optional = true }
 ironrdp-displaycontrol = { workspace = true, optional = true }
+ironrdp-egfx = { workspace = true, optional = true }
 
 [dev-dependencies]
 ironrdp-blocking.workspace = true
