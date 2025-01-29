@@ -15,7 +15,7 @@ exclude = [
 
 [workspace.package]
 edition = "2021"
-license = "MIT/Apache-2.0"
+license = "MIT OR Apache-2.0"
 homepage = "https://github.com/Devolutions/IronRDP"
 repository = "https://github.com/Devolutions/IronRDP"
 authors = ["Devolutions Inc. <infos@devolutions.net>", "Teleport <goteleport.com>"]
