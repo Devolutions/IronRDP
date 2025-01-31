@@ -41,15 +41,27 @@ impl fmt::Debug for UpdateEncoder {
 }
 
 impl UpdateEncoder {
-    pub(crate) fn new(surface_flags: CmdFlags, remotefx: Option<(EntropyBits, u8)>) -> Self {
+    pub(crate) fn new(
+        surface_flags: CmdFlags,
+        remotefx: Option<(EntropyBits, u8)>,
+        #[cfg(feature = "qoi")] qoi_codec_id: Option<u8>,
+    ) -> Self {
         let pdu_encoder = PduEncoder::new();
-        let bitmap_updater = if !surface_flags.contains(CmdFlags::SET_SURFACE_BITS) {
-            BitmapUpdater::Bitmap(BitmapHandler::new())
-        } else if remotefx.is_some() {
-            let (algo, id) = remotefx.unwrap();
-            BitmapUpdater::RemoteFx(RemoteFxHandler::new(algo, id))
+        let bitmap_updater = if surface_flags.contains(CmdFlags::SET_SURFACE_BITS) {
+            let mut up = BitmapUpdater::None(NoneHandler);
+
+            if let Some((algo, id)) = remotefx {
+                up = BitmapUpdater::RemoteFx(RemoteFxHandler::new(algo, id));
+            }
+
+            #[cfg(feature = "qoi")]
+            if let Some(id) = qoi_codec_id {
+                up = BitmapUpdater::Qoi(QoiHandler::new(id));
+            }
+
+            up
         } else {
-            BitmapUpdater::None(NoneHandler)
+            BitmapUpdater::Bitmap(BitmapHandler::new())
         };
 
         Self {
@@ -131,6 +143,8 @@ enum BitmapUpdater {
     None(NoneHandler),
     Bitmap(BitmapHandler),
     RemoteFx(RemoteFxHandler),
+    #[cfg(feature = "qoi")]
+    Qoi(QoiHandler),
 }
 
 impl BitmapUpdater {
@@ -139,6 +153,8 @@ impl BitmapUpdater {
             Self::None(up) => up.handle(bitmap, encoder),
             Self::Bitmap(up) => up.handle(bitmap, encoder),
             Self::RemoteFx(up) => up.handle(bitmap, encoder),
+            #[cfg(feature = "qoi")]
+            Self::Qoi(up) => up.handle(bitmap, encoder),
         }
     }
 }
@@ -235,6 +251,57 @@ impl BitmapUpdateHandler for RemoteFxHandler {
     fn handle<'a>(&mut self, bitmap: BitmapUpdate, encoder: &'a mut PduEncoder) -> Result<UpdateFragmenter<'a>> {
         let data = self.remotefx.encode(&bitmap).context("RemoteFX encoding")?;
 
+        encoder.set_surface(bitmap, self.codec_id, data)
+    }
+}
+
+#[cfg(feature = "qoi")]
+#[derive(Debug)]
+struct QoiHandler {
+    codec_id: u8,
+}
+
+#[cfg(feature = "qoi")]
+impl QoiHandler {
+    fn new(codec_id: u8) -> Self {
+        Self { codec_id }
+    }
+}
+
+#[cfg(feature = "qoi")]
+impl BitmapUpdateHandler for QoiHandler {
+    fn handle<'a>(&mut self, mut bitmap: BitmapUpdate, encoder: &'a mut PduEncoder) -> Result<UpdateFragmenter<'a>> {
+        use ironrdp_graphics::image_processing::PixelFormat::*;
+
+        if usize::from(bitmap.width.get() * 4) != bitmap.stride {
+            anyhow::bail!("unsupported bitmap with stride");
+        }
+        let mut pixels = bitmap.data.as_mut_slice();
+        let n = pixels.len() / 4;
+        match bitmap.format {
+            ARgb32 => (),
+            XRgb32 => {
+                (0..n).for_each(|i| pixels.copy_within(4 * i + 1..4 * i + 4, 3 * i));
+                pixels = &mut pixels[..n * 3];
+            }
+            ABgr32 => todo!(),
+            XBgr32 => todo!(),
+            BgrA32 => pixels.chunks_exact_mut(4).for_each(|chunk| chunk.reverse()),
+            BgrX32 => {
+                dbg!();
+                (0..n).for_each(|i| {
+                    pixels[4 * i..4 * i + 3].reverse();
+                    pixels.copy_within(4 * i..4 * i + 3, 3 * i);
+                });
+                pixels = &mut pixels[..n * 3];
+            }
+            RgbA32 => todo!(),
+            RgbX32 => {
+                (0..n).for_each(|i| pixels.copy_within(4 * i..4 * i + 3, 3 * i));
+                pixels = &mut pixels[..n * 3];
+            }
+        }
+        let data = qoi::encode_to_vec(pixels, bitmap.width.get().into(), bitmap.height.get().into()).unwrap();
         encoder.set_surface(bitmap, self.codec_id, data)
     }
 }

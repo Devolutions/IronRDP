@@ -27,6 +27,7 @@ test = false
 default = ["rustls"]
 rustls = ["ironrdp-tls/rustls"]
 native-tls = ["ironrdp-tls/native-tls"]
+qoi = ["ironrdp/qoi"]
 
 [dependencies]
 
@@ -41,7 +42,7 @@ ironrdp = { workspace = true, features = [
     "rdpsnd",
     "cliprdr",
     "displaycontrol",
-    "connector"
+    "connector",
 ] }
 ironrdp-cliprdr-native.workspace = true
 ironrdp-rdpsnd-native.workspace = true
@@ -78,7 +79,7 @@ reqwest = "0.12"
 url = "2.5"
 raw-window-handle = "0.6.2"
 ironrdp-core = { workspace = true, features = ["alloc"] }
-uuid = { version = "1.12.1"}
+uuid = { version = "1.12.1" }
 
 [target.'cfg(windows)'.dependencies]
 windows = { workspace = true, features = ["Win32_Foundation"] }

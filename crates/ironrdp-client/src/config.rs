@@ -263,6 +263,8 @@ impl Config {
             Some(connector::BitmapConfig {
                 color_depth,
                 lossy_compression: true,
+                #[cfg(feature = "qoi")]
+                with_qoi: true,
             })
         } else {
             None

@@ -37,6 +37,9 @@ const GUID_REMOTEFX: Guid = Guid(0x7677_2f12, 0xbd72, 0x4463, 0xaf, 0xb3, 0xb7, 
 const GUID_IMAGE_REMOTEFX: Guid = Guid(0x2744_ccd4, 0x9d8a, 0x4e74, 0x80, 0x3c, 0x0e, 0xcb, 0xee, 0xa1, 0x9c, 0x54);
 #[rustfmt::skip]
 const GUID_IGNORE: Guid = Guid(0x9c43_51a6, 0x3535, 0x42ae, 0x91, 0x0c, 0xcd, 0xfc, 0xe5, 0x76, 0x0b, 0x58);
+#[rustfmt::skip]
+#[cfg(feature="qoi")]
+const GUID_QOI: Guid = Guid(0x4dae9af8, 0xb399, 0x4df6, 0xb4, 0x3a, 0x66, 0x2f, 0xd9, 0xc0, 0xf5, 0xd6);
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct Guid(u32, u16, u16, u8, u8, u8, u8, u8, u8, u8, u8);
@@ -164,6 +167,8 @@ impl Encode for Codec {
             CodecProperty::RemoteFx(_) => GUID_REMOTEFX,
             CodecProperty::ImageRemoteFx(_) => GUID_IMAGE_REMOTEFX,
             CodecProperty::Ignore => GUID_IGNORE,
+            #[cfg(feature = "qoi")]
+            CodecProperty::QOI => GUID_QOI,
             _ => return Err(other_err!("invalid codec")),
         };
         guid.encode(dst)?;
@@ -201,6 +206,8 @@ impl Encode for Codec {
                     }
                 };
             }
+            #[cfg(feature = "qoi")]
+            CodecProperty::QOI => dst.write_u16(0),
             CodecProperty::Ignore => dst.write_u16(0),
             CodecProperty::None => dst.write_u16(0),
         };
@@ -224,6 +231,8 @@ impl Encode for Codec {
                     RemoteFxContainer::ClientContainer(container) => container.size(),
                     RemoteFxContainer::ServerContainer(size) => *size,
                 },
+                #[cfg(feature = "qoi")]
+                CodecProperty::QOI => 0,
                 CodecProperty::Ignore => 0,
                 CodecProperty::None => 0,
             }
@@ -258,6 +267,8 @@ impl<'de> Decode<'de> for Codec {
                         _ => unreachable!(),
                     }
                 }
+                #[cfg(feature = "qoi")]
+                GUID_QOI => CodecProperty::QOI,
                 GUID_IGNORE => CodecProperty::Ignore,
                 _ => CodecProperty::None,
             }
@@ -269,6 +280,8 @@ impl<'de> Decode<'de> for Codec {
                         "invalid codec property length"
                     ));
                 }
+                #[cfg(feature = "qoi")]
+                GUID_QOI => CodecProperty::QOI,
                 GUID_IGNORE => CodecProperty::Ignore,
                 _ => CodecProperty::None,
             }
@@ -290,6 +303,8 @@ pub enum CodecProperty {
     RemoteFx(RemoteFxContainer),
     ImageRemoteFx(RemoteFxContainer),
     Ignore,
+    #[cfg(feature = "qoi")]
+    QOI,
     None,
 }
 
