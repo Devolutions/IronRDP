@@ -57,10 +57,10 @@ protect_breaking_commits = true
 sort_commits = "oldest"
 
 commit_preprocessors = [
-  # Replace issue number with the link
-  { pattern = '\((\w+\s)?#([0-9]+)\)', replace = "([#${2}](https://github.com/Devolutions/IronRDP/issues/${2}))"},
-  # Replace commit sha1 with the link
-  { pattern = '([a-f0-9]{10})([a-f0-9]{30})', replace = "[${0}](https://github.com/Devolutions/IronRDP/commit/${1}${2})" }
+  # Replace the issue number with the link.
+  { pattern = "\\(#([0-9]+)\\)", replace = "([#${1}](https://github.com/Devolutions/IronRDP/issues/${1}))" },
+  # Replace commit sha1 with the link.
+  { pattern = '([a-f0-9]{10})([a-f0-9]{30})', replace = "[${0}](https://github.com/Devolutions/IronRDP/commit/${1}${2})" },
 ]
 
 # regex for parsing and grouping commits
