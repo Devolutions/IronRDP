@@ -41,6 +41,7 @@ pub mod ffi {
         pub autologon: Option<bool>,
         pub pointer_software_rendering: Option<bool>,
         pub performance_flags: Option<ironrdp::pdu::rdp::client_info::PerformanceFlags>,
+        pub support_gfx: Option<bool>,
     }
 
     #[diplomat::enum_convert(ironrdp::pdu::gcc::KeyboardType)]
@@ -147,6 +148,10 @@ pub mod ffi {
             self.autologon = Some(autologon);
         }
 
+        pub fn set_support_gfx(&mut self, support_gfx: bool) {
+            self.support_gfx = Some(support_gfx);
+        }
+
         pub fn set_pointer_software_rendering(&mut self, pointer_software_rendering: bool) {
             self.pointer_software_rendering = Some(pointer_software_rendering);
         }
@@ -195,6 +200,7 @@ pub mod ffi {
                 request_data: None,
                 pointer_software_rendering: self.pointer_software_rendering.unwrap_or(false),
                 performance_flags: self.performance_flags.ok_or("performance flag is missing")?,
+                support_gfx: self.support_gfx.unwrap_or(false),
                 desktop_scale_factor: 0,
                 hardware_id: None,
                 license_cache: None,
