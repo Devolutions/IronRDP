@@ -12,7 +12,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Handle `WM_ACTIVATEAPP` in `clipboard_subproc` (#657) ([9b2926ea12](https://github.com/Devolutions/IronRDP/commit/9b2926ea1212d3f9dec9354334d5bdaa1bebd81e)) 
 
-  This PR adds handling of `WM_ACTIVATEAPP` in `clipboard_subproc`.
   Previously, the function handled only `WM_ACTIVATE`.
 
 
