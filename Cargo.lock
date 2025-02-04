@@ -2656,8 +2656,10 @@ name = "ironrdp-rdpsnd-native"
 version = "0.1.2"
 dependencies = [
  "anyhow",
+ "bytemuck",
  "cpal",
  "ironrdp-rdpsnd",
+ "opus",
  "tracing",
  "tracing-subscriber",
 ]

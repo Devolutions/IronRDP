@@ -14,10 +14,16 @@ categories.workspace = true
 doctest = false
 test = false
 
+[features]
+default = ["opus"]
+opus = ["dep:opus", "dep:bytemuck"]
+
 [dependencies]
 anyhow = "1"
+bytemuck = { version = "1.21.0", optional = true }
 cpal = "0.15.3"
 ironrdp-rdpsnd.workspace = true
+opus = { version = "0.3.0", optional = true }
 tracing.workspace = true
 
 [dev-dependencies]
