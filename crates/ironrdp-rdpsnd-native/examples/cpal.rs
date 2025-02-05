@@ -1,3 +1,5 @@
+#![allow(unused_crate_dependencies)] // opus, false negative because it's a separate binary :/
+
 use core::time::Duration;
 use std::sync::mpsc;
 use std::thread;
@@ -5,7 +7,7 @@ use std::thread;
 use anyhow::Context;
 use cpal::traits::StreamTrait;
 use ironrdp_rdpsnd::pdu::{AudioFormat, WaveFormat};
-use ironrdp_rdpsnd_native::cpal::make_stream;
+use ironrdp_rdpsnd_native::cpal::DecodeStream;
 use tracing::debug;
 
 fn setup_logging() -> anyhow::Result<()> {
@@ -41,7 +43,7 @@ fn main() -> anyhow::Result<()> {
         data: None,
     };
     let (tx, rx) = mpsc::channel();
-    let stream = make_stream(&rx_format, rx).unwrap();
+    let stream = DecodeStream::new(&rx_format, rx).unwrap();
 
     let producer = thread::spawn(move || {
         let data_chunks = vec![vec![1u8, 2, 3], vec![4, 5, 6], vec![7, 8, 9]];
@@ -52,7 +54,7 @@ fn main() -> anyhow::Result<()> {
         }
     });
 
-    stream.play()?;
+    stream.stream.play()?;
     thread::sleep(Duration::from_secs(3));
     let _ = producer.join();
 
