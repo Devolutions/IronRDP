@@ -364,7 +364,7 @@ export class WasmBridgeService {
                 if (isUnicodeCharacter && sendAsUnicode) {
                     this.doTransactionFromDeviceEvents([unicodeEvent(evt.key)]);
                 } else if (!unknownScanCode) {
-                    // Use scancode insdead of key code for non-unicode character values
+                    // Use scancode instead of key code for non-unicode character values
                     this.doTransactionFromDeviceEvents([keyEvent(keyScanCode)]);
                 }
                 return;

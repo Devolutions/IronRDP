@@ -23,7 +23,7 @@ impl RemoteClipboardFormatRegistry {
 
     /// Registers remote clipboard format on local machine. Registered format ids could differ
     /// from remote format ids, so we need to keep track of them based on their names. Standard
-    /// formats such as `CF_TEXT` have fixed ids, which are same on all machines, the retuned
+    /// formats such as `CF_TEXT` have fixed ids, which are same on all machines, the returned
     /// id value will be same as remote format id.
     ///
     /// E.g.: Format with name `Custom` was registered as `0xC001`, on the remote, but on the local

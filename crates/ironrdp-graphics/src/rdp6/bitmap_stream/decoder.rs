@@ -143,7 +143,7 @@ impl<'a> BitmapStreamDecoderImpl<'a> {
     }
 
     fn write_argb_planes_to_rgb24(&self, planes: &[u8], dst: &mut Vec<u8>) {
-        // For ARGB comversion is simple - just copy data in correct order
+        // For ARGB conversion is simple - just copy data in correct order
         let (r_offset, g_offset, b_offset) = (
             self.color_plane_offsets[0],
             self.color_plane_offsets[1],
