@@ -1,4 +1,5 @@
 #![allow(unused_crate_dependencies)] // opus, false negative because it's a separate binary :/
+
 use core::time::Duration;
 use std::sync::mpsc;
 use std::thread;
