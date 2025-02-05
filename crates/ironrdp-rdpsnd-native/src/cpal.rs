@@ -195,7 +195,7 @@ impl DecodeStream {
             )
             .context("failed to setup output stream")?;
 
-        Ok(Self { dec_thread, stream })
+        Ok(Self { _dec_thread: dec_thread, stream })
     }
 }
 
