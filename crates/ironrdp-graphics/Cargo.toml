@@ -26,6 +26,7 @@ lazy_static.workspace = true # TODO: remove in favor of https://doc.rust-lang.or
 num-derive.workspace = true # TODO: remove
 num-traits.workspace = true # TODO: remove
 thiserror.workspace = true
+yuvutils-rs = { version = "0.8", features = ["rdp"] }
 
 [dev-dependencies]
 bmp = "0.5"
