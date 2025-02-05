@@ -8,6 +8,7 @@
 extern crate chrono as _;
 extern crate getrandom as _;
 extern crate time as _;
+extern crate uuid as _;
 
 #[macro_use]
 extern crate tracing;
