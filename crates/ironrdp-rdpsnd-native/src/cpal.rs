@@ -126,8 +126,7 @@ impl RdpsndClientHandler for RdpsndBackend {
 
 #[doc(hidden)]
 pub struct DecodeStream {
-    #[allow(dead_code)]
-    dec_thread: Option<JoinHandle<()>>,
+    _dec_thread: Option<JoinHandle<()>>,
     pub stream: Stream,
 }
 
