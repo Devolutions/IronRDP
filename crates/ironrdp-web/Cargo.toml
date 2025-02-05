@@ -61,9 +61,10 @@ resize = { version = "0.8", features = ["std"], default-features = false }
 rgb = "0.8"
 
 # Enable WebAssembly support for a few crates
-getrandom = { version = "0.2", features = ["js"] }
-chrono = { version = "0.4", features = ["wasmbind"] }
-time = { version = "0.3", features = ["wasm-bindgen"] }
+getrandom = { version = "0.3", default-features = false, features = ["js"] }
+uuid = { version = "1.13", default-features = false, features = ["js"] }
+chrono = { version = "0.4", default-features = false, features = ["wasmbind"] }
+time = { version = "0.3", default-features = false, features = ["wasm-bindgen"] }
 
 # The `console_error_panic_hook` crate provides better debugging of panics by
 # logging them with `console.error`. This is great for development, but requires

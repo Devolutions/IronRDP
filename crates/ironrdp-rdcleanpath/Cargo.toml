@@ -17,6 +17,6 @@ test = false
 
 [dependencies]
 der = { version = "0.7", features = ["alloc", "derive"] }
+
 [lints]
 workspace = true
-
