@@ -41,7 +41,7 @@ and Developer Productivity][developer-productivity] by Ciera Jaspan and Collin G
 researchers, also elaborates on why it is important to keep build times low.
 
 **Architectural Invariant**: unless the performance, usability or ergonomic gain is really worth
-it, the amount of [monomorphization] incured in downstream user code should be minimal to avoid
+it, the amount of [monomorphization] incurred in downstream user code should be minimal to avoid
 binary bloating and to keep the compilation as parallel as possible. Large generic functions should
 be avoided if possible.
 

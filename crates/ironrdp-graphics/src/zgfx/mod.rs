@@ -468,7 +468,7 @@ mod tests {
     ];
 
     #[test]
-    fn zgfx_decopresses_multiple_single_pdus() {
+    fn zgfx_decompresses_multiple_single_pdus() {
         let pairs = ENCODED_ZGFX_SINGLE
             .iter()
             .copied()
@@ -484,7 +484,7 @@ mod tests {
     }
 
     #[test]
-    fn zgfx_decopresses_only_one_literal() {
+    fn zgfx_decompresses_only_one_literal() {
         let buffer = [0b1100_1000, 0x03];
         let expected = vec![0x01];
 
@@ -495,7 +495,7 @@ mod tests {
     }
 
     #[test]
-    fn zgfx_decopresses_one_literal_with_null_prefix() {
+    fn zgfx_decompresses_one_literal_with_null_prefix() {
         let buffer = [0b0011_0010, 0b1000_0000, 0x07];
         let expected = vec![0x65];
 
@@ -506,7 +506,7 @@ mod tests {
     }
 
     #[test]
-    fn zgfx_decopresses_only_multiple_literals() {
+    fn zgfx_decompresses_only_multiple_literals() {
         let buffer = [0b1100_1110, 0b1001_1011, 0b0001_1001, 0b0100_0000, 0x06];
         let expected = vec![0x01, 0x02, 0xff, 0x65];
 
@@ -517,7 +517,7 @@ mod tests {
     }
 
     #[test]
-    fn zgfx_decopresses_one_literal_with_one_match_distance_1() {
+    fn zgfx_decompresses_one_literal_with_one_match_distance_1() {
         let buffer = [0b0011_0010, 0b1100_0100, 0b0011_0000, 0x1];
         let expected = vec![0x65; 1 + 4]; // literal (1) + match repeated 4 (length) + 0 times
 
@@ -528,7 +528,7 @@ mod tests {
     }
 
     #[test]
-    fn zgfx_decopresses_three_literals_with_one_match_distance_3_length_57() {
+    fn zgfx_decompresses_three_literals_with_one_match_distance_3_length_57() {
         let buffer = [
             0b0010_0000,
             0b1001_0000,
@@ -548,7 +548,7 @@ mod tests {
     }
 
     #[test]
-    fn zgfx_decopresses_one_match_with_match_unencoded_bytes() {
+    fn zgfx_decompresses_one_match_with_match_unencoded_bytes() {
         let expected = "The quick brown fox jumps over the lazy dog".as_bytes();
         let mut buffer = vec![0b1000_1000, 0b0000_0000, 0b00010101, 0b1000_0000];
         buffer.extend_from_slice(expected);
@@ -561,7 +561,7 @@ mod tests {
     }
 
     #[test]
-    fn zgfx_decopresses_multiple_literals_with_match_in_center_with_not_compressed() {
+    fn zgfx_decompresses_multiple_literals_with_match_in_center_with_not_compressed() {
         let buffer = [
             0xE1, // DEBLOCK_MULTIPART
             0x03, 0x00, // 3 segments
@@ -602,7 +602,7 @@ mod tests {
     }
 
     #[test]
-    fn zgfx_decopresses_single_match_unencoded_block() {
+    fn zgfx_decompresses_single_match_unencoded_block() {
         let buffer = [
             0xe0, 0x04, 0x13, 0x00, 0x00, 0x00, 0x14, 0x00, 0x00, 0x00, 0x01, 0x06, 0x0a, 0x00, 0x04, 0x00, 0x00, 0x00,
             0x20, 0x00, 0x00, 0x00,
@@ -620,7 +620,7 @@ mod tests {
     }
 
     #[test]
-    fn zgfx_decopresses_unencoded_block_without_padding() {
+    fn zgfx_decompresses_unencoded_block_without_padding() {
         let buffer = [0b1110_0101, 0b0001_0000, 0b0000_0000, 0b00000001, 0b1111_0000, 0x0];
         let expected = vec![0x08, 0xf0];
 

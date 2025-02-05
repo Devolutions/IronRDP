@@ -133,7 +133,7 @@ pub struct Config {
     ///
     /// The PROTOCOL_HYBRID and PROTOCOL_HYBRID_EX flags will be set.
     ///
-    /// NLA is allowing authentication to be performed before session establishement.
+    /// NLA is allowing authentication to be performed before session establishment.
     ///
     /// This option includes the extended CredSSP early user authorization result PDU.
     /// This PDU is used by the server to deny access before any credentials (except for the username)
