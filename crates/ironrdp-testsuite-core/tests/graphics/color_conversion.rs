@@ -38,7 +38,7 @@ fn ycbcr_to_rgb_converts_one_element_buffer() {
     let expected = [128, 127, 128, 255];
 
     let mut actual = vec![0; 4];
-    ycbcr_to_bgra(ycbcr, actual.as_mut()).unwrap();
+    ycbcr_to_rgba(ycbcr, actual.as_mut()).unwrap();
     assert_eq!(expected.as_ref(), actual.as_slice());
 }
 

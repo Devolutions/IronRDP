@@ -2,7 +2,7 @@ use std::io;
 
 use yuvutils_rs::{
     rdp_abgr_to_yuv444, rdp_argb_to_yuv444, rdp_bgra_to_yuv444, rdp_rgba_to_yuv444, rdp_yuv444_to_argb,
-    rdp_yuv444_to_bgra, BufferStoreMut, YuvPlanarImage, YuvPlanarImageMut,
+    rdp_yuv444_to_rgba, BufferStoreMut, YuvPlanarImage, YuvPlanarImageMut,
 };
 
 use crate::image_processing::PixelFormat;
@@ -24,7 +24,7 @@ pub fn ycbcr_to_argb(input: YCbCrBuffer<'_>, output: &mut [u8]) -> io::Result<()
     rdp_yuv444_to_argb(&planar, output, len).map_err(io::Error::other)
 }
 
-pub fn ycbcr_to_bgra(input: YCbCrBuffer<'_>, output: &mut [u8]) -> io::Result<()> {
+pub fn ycbcr_to_rgba(input: YCbCrBuffer<'_>, output: &mut [u8]) -> io::Result<()> {
     let len = u32::try_from(output.len()).map_err(io::Error::other)?;
     let width = len / 4;
     let planar = YuvPlanarImage {
@@ -37,7 +37,7 @@ pub fn ycbcr_to_bgra(input: YCbCrBuffer<'_>, output: &mut [u8]) -> io::Result<()
         width,
         height: 1,
     };
-    rdp_yuv444_to_bgra(&planar, output, len).map_err(io::Error::other)
+    rdp_yuv444_to_rgba(&planar, output, len).map_err(io::Error::other)
 }
 
 #[allow(clippy::too_many_arguments)]

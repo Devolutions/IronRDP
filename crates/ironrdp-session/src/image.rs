@@ -9,8 +9,6 @@ use ironrdp_pdu::geometry::{InclusiveRectangle, Rectangle as _};
 use crate::SessionResult;
 
 const TILE_SIZE: u16 = 64;
-const SOURCE_PIXEL_FORMAT: PixelFormat = PixelFormat::BgrX32;
-const SOURCE_STRIDE: u16 = TILE_SIZE * SOURCE_PIXEL_FORMAT.bytes_per_pixel() as u16;
 
 pub struct DecodedImage {
     pixel_format: PixelFormat,
@@ -470,6 +468,7 @@ impl DecodedImage {
     pub(crate) fn apply_tile(
         &mut self,
         tile_output: &[u8],
+        pixel_format: PixelFormat,
         clipping_rectangles: &Region,
         update_rectangle: &InclusiveRectangle,
     ) -> SessionResult<InclusiveRectangle> {
@@ -481,6 +480,7 @@ impl DecodedImage {
         for region_rectangle in &update_region.rectangles {
             let source_x = region_rectangle.left - update_rectangle.left;
             let source_y = region_rectangle.top - update_rectangle.top;
+            let stride = u16::from(pixel_format.bytes_per_pixel()) * TILE_SIZE;
             let source_image_region = ImageRegion {
                 region: InclusiveRectangle {
                     left: source_x,
@@ -488,9 +488,9 @@ impl DecodedImage {
                     right: source_x + region_rectangle.width() - 1,
                     bottom: source_y + region_rectangle.height() - 1,
                 },
-                step: SOURCE_STRIDE,
-                pixel_format: SOURCE_PIXEL_FORMAT,
                 data: tile_output,
+                step: stride,
+                pixel_format,
             };
 
             let mut destination_image_region = ImageRegionMut {

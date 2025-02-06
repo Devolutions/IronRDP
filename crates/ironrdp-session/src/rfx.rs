@@ -1,6 +1,7 @@
 use core::cmp::min;
 
 use ironrdp_graphics::color_conversion::{self, YCbCrBuffer};
+use ironrdp_graphics::image_processing::PixelFormat;
 use ironrdp_graphics::rectangle_processing::Region;
 use ironrdp_graphics::{dwt, quantization, rlgr, subband_reconstruction};
 use ironrdp_pdu::codecs::rfx::{self, EntropyAlgorithm, Headers, Quant, RfxRectangle, Tile};
@@ -150,6 +151,7 @@ impl DecodingContext {
 
             let current_update_rectangle = image.apply_tile(
                 &self.decoding_tiles.tile_output,
+                PixelFormat::RgbA32,
                 &clipping_rectangles,
                 &update_rectangle,
             )?;
@@ -195,7 +197,7 @@ fn decode_tile(
         cr: ycbcr_temp[2].as_slice(),
     };
 
-    color_conversion::ycbcr_to_bgra(ycbcr_buffer, output).map_err(|e| custom_err!("decode_tile", e))?;
+    color_conversion::ycbcr_to_rgba(ycbcr_buffer, output).map_err(|e| custom_err!("decode_tile", e))?;
 
     Ok(())
 }
