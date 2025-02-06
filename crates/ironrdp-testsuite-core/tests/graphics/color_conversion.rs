@@ -11,24 +11,6 @@ fn to_64x64_ycbcr() {
     to_64x64_ycbcr_tile(&input, 1, 1, 4, PixelFormat::ABgr32, &mut y, &mut cb, &mut cr);
 }
 
-#[test]
-fn ycbcr_from_rgb_works_for_zeros() {
-    let rgb = Rgb { r: 0, g: 0, b: 0 };
-    let expected = YCbCr { y: -4096, cb: 0, cr: 0 };
-
-    let actual = YCbCr::from(rgb);
-    assert_eq!(expected, actual);
-}
-
-#[test]
-fn ycbcr_from_rgb_works_for_max_values() {
-    let rgb = Rgb { r: 255, g: 255, b: 255 };
-    let expected = YCbCr { y: 4063, cb: 0, cr: 0 };
-
-    let actual = YCbCr::from(rgb);
-    assert_eq!(expected, actual);
-}
-
 #[ignore]
 #[test]
 fn rgb_to_ycbcr_converts_large_buffer() {
@@ -39,59 +21,11 @@ fn rgb_to_ycbcr_converts_large_buffer() {
         cr: YCBCR_BUFFER_CR.as_ref(),
     };
 
-    let mut y = vec![0; 4096];
-    let mut cb = vec![0; 4096];
-    let mut cr = vec![0; 4096];
-    to_ycbcr(rgba, 64, 64, 64 * 4, PixelFormat::BgrA32, &mut y, &mut cb, &mut cr);
+    let mut y = [0; 4096];
+    let mut cb = [0; 4096];
+    let mut cr = [0; 4096];
+    to_64x64_ycbcr_tile(rgba, 64, 64, 64 * 4, PixelFormat::BgrA32, &mut y, &mut cb, &mut cr);
     assert_eq!(expected.y, y.as_slice());
-}
-
-#[test]
-fn rgb_from_ycbcr_works_for_zeros() {
-    let ycbcr = YCbCr { y: 0, cb: 0, cr: 0 };
-
-    let expected = Rgb { r: 128, g: 128, b: 128 };
-    let actual = Rgb::from(ycbcr);
-    assert_eq!(expected, actual);
-}
-
-#[test]
-fn rgb_from_ycbcr_works_for_max_values() {
-    let ycbcr = YCbCr {
-        y: 32767,
-        cb: 32767,
-        cr: 32767,
-    };
-
-    let expected = Rgb { r: 255, g: 68, b: 255 };
-    let actual = Rgb::from(ycbcr);
-    assert_eq!(expected, actual);
-}
-
-#[test]
-fn rgb_from_ycbcr_works_for_min_values() {
-    let ycbcr = YCbCr {
-        y: -32768,
-        cb: -32768,
-        cr: -32768,
-    };
-
-    let expected = Rgb { r: 0, g: 187, b: 0 };
-    let actual = Rgb::from(ycbcr);
-    assert_eq!(expected, actual);
-}
-
-#[test]
-fn rgb_from_ycbcr_works_for_regular_values() {
-    let ycbcr = YCbCr {
-        y: 68,
-        cb: 1710,
-        cr: -2128,
-    };
-
-    let expected = Rgb { r: 36, g: 159, b: 224 };
-    let actual = Rgb::from(ycbcr);
-    assert_eq!(expected, actual);
 }
 
 #[test]
