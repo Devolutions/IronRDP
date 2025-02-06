@@ -71,8 +71,12 @@ jobs:
           path: ./.cargo/local_root/bin
           key: ${{ runner.os }}-bin-${{ github.job }}-${{ hashFiles('xtask/src/bin_version.rs') }}
 
+      # Update GLIBC and install other required dependencies for fuzzing.
       - name: Prepare runner
-        run: cargo xtask fuzz install -v
+        run: |
+          sudo apt update
+          sudo apt install libc6
+          cargo xtask fuzz install -v
 
       - name: Fuzz
         run: cargo xtask fuzz run --duration 1000 --target ${{ matrix.target }} -v
