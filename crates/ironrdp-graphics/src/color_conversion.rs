@@ -1,18 +1,26 @@
-use core::cmp::min;
-use std::io::{self, Write};
+use std::io;
+
+use yuvutils_rs::{
+    rdp_abgr_to_yuv444, rdp_argb_to_yuv444, rdp_bgra_to_yuv444, rdp_rgba_to_yuv444, rdp_yuv444_to_bgra, BufferStoreMut,
+    YuvPlanarImage, YuvPlanarImageMut,
+};
 
 use crate::image_processing::PixelFormat;
 
-const ALPHA: u8 = 255;
-
-pub fn ycbcr_to_bgra(input: YCbCrBuffer<'_>, mut output: &mut [u8]) -> io::Result<()> {
-    for ycbcr in input {
-        let pixel = Rgb::from(ycbcr);
-
-        output.write_all(&[pixel.b, pixel.g, pixel.r, ALPHA])?;
-    }
-
-    Ok(())
+pub fn ycbcr_to_bgra(input: YCbCrBuffer<'_>, output: &mut [u8]) -> io::Result<()> {
+    let len = u32::try_from(output.len()).map_err(io::Error::other)?;
+    let width = len / 4;
+    let planar = YuvPlanarImage {
+        y_plane: input.y,
+        y_stride: width,
+        u_plane: input.cb,
+        u_stride: width,
+        v_plane: input.cr,
+        v_stride: width,
+        width,
+        height: 1,
+    };
+    rdp_yuv444_to_bgra(&planar, output, len).map_err(io::Error::other)
 }
 
 fn iter_to_ycbcr<'a, I, C>(input: I, y: &mut [i16], cb: &mut [i16], cr: &mut [i16], conv: C)
@@ -93,63 +101,6 @@ pub fn to_ycbcr(
     }
 }
 
-struct TileIterator<'a> {
-    slice: &'a [u8],
-    x: usize,
-    y: usize,
-    width: usize,
-    height: usize,
-    stride: usize,
-    bpp: usize,
-}
-
-impl<'a> TileIterator<'a> {
-    fn new(slice: &'a [u8], width: usize, height: usize, stride: usize, bpp: usize) -> Self {
-        assert!(width >= 1);
-        assert!(height >= 1);
-
-        Self {
-            slice,
-            x: 0,
-            y: 0,
-            width,
-            height,
-            stride,
-            bpp,
-        }
-    }
-}
-
-impl<'a> Iterator for TileIterator<'a> {
-    type Item = &'a [u8];
-
-    fn next(&mut self) -> Option<Self::Item> {
-        // create 64x64 tiles
-        if self.y >= 64 {
-            return None;
-        }
-
-        // repeat the last column & line if necessary
-        let y = min(self.y, self.height - 1);
-        let x = min(self.x, self.width - 1);
-        let pos = y * self.stride + x * self.bpp;
-
-        self.x += 1;
-        if self.x >= 64 {
-            self.x = 0;
-            self.y += 1;
-        }
-
-        Some(&self.slice[pos..pos + self.bpp])
-    }
-}
-
-impl ExactSizeIterator for TileIterator<'_> {
-    fn len(&self) -> usize {
-        64 * 64
-    }
-}
-
 #[allow(clippy::too_many_arguments)]
 pub fn to_64x64_ycbcr_tile(
     input: &[u8],
@@ -164,15 +115,27 @@ pub fn to_64x64_ycbcr_tile(
     assert!(width <= 64);
     assert!(height <= 64);
 
-    let bpp = format.bytes_per_pixel() as usize;
-
-    let input = TileIterator::new(input, width, height, stride, bpp);
-    match format {
-        PixelFormat::ARgb32 | PixelFormat::XRgb32 => iter_to_ycbcr(input, y, cb, cr, xrgb_to_rgb),
-        PixelFormat::ABgr32 | PixelFormat::XBgr32 => iter_to_ycbcr(input, y, cb, cr, xbgr_to_rgb),
-        PixelFormat::BgrA32 | PixelFormat::BgrX32 => iter_to_ycbcr(input, y, cb, cr, bgrx_to_rgb),
-        PixelFormat::RgbA32 | PixelFormat::RgbX32 => iter_to_ycbcr(input, y, cb, cr, rgbx_to_rgb),
+    let y_plane = BufferStoreMut::Borrowed(y);
+    let u_plane = BufferStoreMut::Borrowed(cb);
+    let v_plane = BufferStoreMut::Borrowed(cr);
+    let mut plane = YuvPlanarImageMut {
+        y_plane,
+        y_stride: 64,
+        u_plane,
+        u_stride: 64,
+        v_plane,
+        v_stride: 64,
+        width: width.try_into().unwrap(),
+        height: height.try_into().unwrap(),
     };
+
+    let res = match format {
+        PixelFormat::RgbA32 | PixelFormat::RgbX32 => rdp_rgba_to_yuv444(&mut plane, input, stride.try_into().unwrap()),
+        PixelFormat::ARgb32 | PixelFormat::XRgb32 => rdp_argb_to_yuv444(&mut plane, input, stride.try_into().unwrap()),
+        PixelFormat::BgrA32 | PixelFormat::BgrX32 => rdp_bgra_to_yuv444(&mut plane, input, stride.try_into().unwrap()),
+        PixelFormat::ABgr32 | PixelFormat::XBgr32 => rdp_abgr_to_yuv444(&mut plane, input, stride.try_into().unwrap()),
+    };
+    res.unwrap();
 }
 
 /// Convert a 16-bit RDP color to RGB representation. Input value should be represented in
