@@ -6,8 +6,7 @@ use ironrdp_pdu::geometry::{InclusiveRectangle, Rectangle as _};
 use num_derive::ToPrimitive;
 use num_traits::ToPrimitive as _;
 
-const MIN_ALPHA: u8 = 0x00;
-const MAX_ALPHA: u8 = 0xff;
+const ALPHA_OPAQUE: u8 = 0xff;
 
 pub struct ImageRegionMut<'a> {
     pub region: InclusiveRectangle,
@@ -176,7 +175,7 @@ impl PixelFormat {
                             b: color[3],
                         }),
                         Self::XRgb32 => Ok(Rgba {
-                            a: MAX_ALPHA,
+                            a: ALPHA_OPAQUE,
                             r: color[1],
                             g: color[2],
                             b: color[3],
@@ -188,7 +187,7 @@ impl PixelFormat {
                             r: color[3],
                         }),
                         Self::XBgr32 => Ok(Rgba {
-                            a: MAX_ALPHA,
+                            a: ALPHA_OPAQUE,
                             b: color[1],
                             g: color[2],
                             r: color[3],
@@ -203,7 +202,7 @@ impl PixelFormat {
                             b: color[0],
                             g: color[1],
                             r: color[2],
-                            a: MAX_ALPHA,
+                            a: ALPHA_OPAQUE,
                         }),
                         Self::RgbA32 => Ok(Rgba {
                             r: color[0],
@@ -215,7 +214,7 @@ impl PixelFormat {
                             r: color[0],
                             g: color[1],
                             b: color[2],
-                            a: MAX_ALPHA,
+                            a: ALPHA_OPAQUE,
                         }),
                     }
                 }
@@ -232,7 +231,7 @@ impl PixelFormat {
                 buffer.write_u8(color.b)?;
             }
             Self::XRgb32 => {
-                buffer.write_u8(MIN_ALPHA)?;
+                buffer.write_u8(ALPHA_OPAQUE)?;
                 buffer.write_u8(color.r)?;
                 buffer.write_u8(color.g)?;
                 buffer.write_u8(color.b)?;
@@ -244,7 +243,7 @@ impl PixelFormat {
                 buffer.write_u8(color.r)?;
             }
             Self::XBgr32 => {
-                buffer.write_u8(MIN_ALPHA)?;
+                buffer.write_u8(ALPHA_OPAQUE)?;
                 buffer.write_u8(color.b)?;
                 buffer.write_u8(color.g)?;
                 buffer.write_u8(color.r)?;
@@ -259,7 +258,7 @@ impl PixelFormat {
                 buffer.write_u8(color.b)?;
                 buffer.write_u8(color.g)?;
                 buffer.write_u8(color.r)?;
-                buffer.write_u8(MIN_ALPHA)?;
+                buffer.write_u8(ALPHA_OPAQUE)?;
             }
             Self::RgbA32 => {
                 buffer.write_u8(color.r)?;
@@ -271,7 +270,7 @@ impl PixelFormat {
                 buffer.write_u8(color.r)?;
                 buffer.write_u8(color.g)?;
                 buffer.write_u8(color.b)?;
-                buffer.write_u8(MIN_ALPHA)?;
+                buffer.write_u8(ALPHA_OPAQUE)?;
             }
         }
 
