@@ -32,6 +32,7 @@ ironrdp-cliprdr.workspace = true
 ironrdp-connector.workspace = true
 ironrdp-displaycontrol.workspace = true
 ironrdp-dvc.workspace = true
+ironrdp-egfx.workspace = true
 ironrdp-fuzzing.workspace = true
 ironrdp-graphics.workspace = true
 ironrdp-input.workspace = true

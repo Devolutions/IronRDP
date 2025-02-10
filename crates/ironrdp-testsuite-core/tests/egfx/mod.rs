@@ -1,8 +1,23 @@
+use ironrdp_core::{decode, decode_cursor, encode_vec, Encode, ReadCursor};
+use ironrdp_egfx::pdu::*;
 use ironrdp_pdu::gcc::{Monitor, MonitorFlags};
 use ironrdp_pdu::geometry::InclusiveRectangle;
-use ironrdp_pdu::rdp::vc::dvc::gfx::*;
 
-pub const WIRE_TO_SURFACE_1_BUFFER: [u8; 218] = [
+use lazy_static::lazy_static;
+
+const WIRE_TO_SURFACE_1_HEADER_BUFFER: [u8; 8] = [0x01, 0x00, 0x00, 0x00, 0xe2, 0x00, 0x00, 0x00];
+const FRAME_ACKNOWLEDGE_HEADER_BUFFER: [u8; 8] = [0x0d, 0x00, 0x00, 0x00, 0x14, 0x00, 0x00, 0x00];
+
+lazy_static! {
+    static ref HEADER_WITH_WIRE_TO_SURFACE_1_BUFFER: Vec<u8> =
+        [&WIRE_TO_SURFACE_1_HEADER_BUFFER[..], &WIRE_TO_SURFACE_1_BUFFER[..],].concat();
+    static ref HEADER_WITH_FRAME_ACKNOWLEDGE_BUFFER: Vec<u8> =
+        [&FRAME_ACKNOWLEDGE_HEADER_BUFFER[..], &FRAME_ACKNOWLEDGE_BUFFER[..],].concat();
+    static ref HEADER_WITH_WIRE_TO_SURFACE_1: GfxPdu = GfxPdu::WireToSurface1(WIRE_TO_SURFACE_1.clone());
+    static ref HEADER_WITH_FRAME_ACKNOWLEDGE: GfxPdu = GfxPdu::FrameAcknowledge(FRAME_ACKNOWLEDGE.clone());
+}
+
+const WIRE_TO_SURFACE_1_BUFFER: [u8; 218] = [
     0x00, 0x00, 0x08, 0x00, 0x20, 0xa5, 0x03, 0xde, 0x02, 0xab, 0x03, 0xe7, 0x02, 0xc9, 0x00, 0x00, 0x00, 0x01, 0x0e,
     0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0xb9, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x05, 0x00, 0x00,
     0x00, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x09, 0x3f, 0x27, 0x19, 0x82, 0x72, 0x69, 0x40, 0x28, 0x1a, 0x3f, 0x27,
@@ -17,7 +32,7 @@ pub const WIRE_TO_SURFACE_1_BUFFER: [u8; 218] = [
     0x40, 0x28, 0x1a, 0x3f, 0x27, 0x19, 0xc0, 0xb8, 0xb3,
 ];
 
-pub const WIRE_TO_SURFACE_2_BUFFER: [u8; 629] = [
+const WIRE_TO_SURFACE_2_BUFFER: [u8; 629] = [
     0x00, 0x00, 0x09, 0x00, 0x04, 0x00, 0x00, 0x00, 0x20, 0x68, 0x02, 0x00, 0x00, 0xc1, 0xcc, 0x0c, 0x00, 0x00, 0x00,
     0x06, 0x00, 0x00, 0x00, 0x01, 0x00, 0xc4, 0xcc, 0x56, 0x02, 0x00, 0x00, 0x40, 0x01, 0x00, 0x01, 0x00, 0x01, 0x02,
     0x00, 0x37, 0x02, 0x00, 0x00, 0x63, 0x02, 0x51, 0x01, 0x45, 0x00, 0x29, 0x00, 0x66, 0x76, 0x88, 0x99, 0xa9, 0xc6,
@@ -54,28 +69,28 @@ pub const WIRE_TO_SURFACE_2_BUFFER: [u8; 629] = [
     0x00, 0x00,
 ];
 
-pub const DELETE_ENCODING_CONTEXT_BUFFER: [u8; 6] = [0x00, 0x00, 0x01, 0x00, 0x00, 0x00];
+const DELETE_ENCODING_CONTEXT_BUFFER: [u8; 6] = [0x00, 0x00, 0x01, 0x00, 0x00, 0x00];
 
-pub const SOLID_FILL_BUFFER: [u8; 16] = [
+const SOLID_FILL_BUFFER: [u8; 16] = [
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x40, 0x00, 0x40, 0x00,
 ];
 
-pub const SURFACE_TO_SURFACE_BUFFER: [u8; 18] = [
+const SURFACE_TO_SURFACE_BUFFER: [u8; 18] = [
     0x00, 0x00, 0x00, 0x00, 0xc8, 0x00, 0x3c, 0x00, 0xa4, 0x02, 0x94, 0x00, 0x01, 0x00, 0x80, 0x00, 0x3c, 0x00,
 ];
 
-pub const SURFACE_TO_CACHE_BUFFER: [u8; 20] = [
+const SURFACE_TO_CACHE_BUFFER: [u8; 20] = [
     0x00, 0x00, 0xb7, 0x7f, 0xa3, 0xa6, 0xda, 0x86, 0x3d, 0x11, 0x0e, 0x00, 0x80, 0x02, 0x00, 0x00, 0xc0, 0x02, 0x40,
     0x00,
 ];
 
-pub const CACHE_TO_SURFACE_BUFFER: [u8; 10] = [0x02, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x03, 0x40, 0x01];
+const CACHE_TO_SURFACE_BUFFER: [u8; 10] = [0x02, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x03, 0x40, 0x01];
 
-pub const CREATE_SURFACE_BUFFER: [u8; 7] = [0x00, 0x00, 0x00, 0x04, 0x00, 0x03, 0x21];
+const CREATE_SURFACE_BUFFER: [u8; 7] = [0x00, 0x00, 0x00, 0x04, 0x00, 0x03, 0x21];
 
-pub const DELETE_SURFACE_BUFFER: [u8; 2] = [0x00, 0x00];
+const DELETE_SURFACE_BUFFER: [u8; 2] = [0x00, 0x00];
 
-pub const RESET_GRAPHICS_BUFFER: [u8; 332] = [
+const RESET_GRAPHICS_BUFFER: [u8; 332] = [
     0x00, 0x04, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     0x00, 0xff, 0x03, 0x00, 0x00, 0xff, 0x02, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
@@ -96,19 +111,17 @@ pub const RESET_GRAPHICS_BUFFER: [u8; 332] = [
     0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
 ];
 
-pub const MAP_SURFACE_TO_OUTPUT_BUFFER: [u8; 12] =
-    [0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x2, 0x00, 0x00, 0x00];
+const MAP_SURFACE_TO_OUTPUT_BUFFER: [u8; 12] = [0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x2, 0x00, 0x00, 0x00];
 
-pub const EVICT_CACHE_ENTRY_BUFFER: [u8; 2] = [0x00, 0x00];
+const EVICT_CACHE_ENTRY_BUFFER: [u8; 2] = [0x00, 0x00];
 
-pub const START_FRAME_BUFFER: [u8; 8] = [0xf7, 0xe8, 0x9b, 0x5, 0x05, 0x00, 0x00, 0x00];
+const START_FRAME_BUFFER: [u8; 8] = [0xf7, 0xe8, 0x9b, 0x5, 0x05, 0x00, 0x00, 0x00];
 
-pub const END_FRAME_BUFFER: [u8; 4] = [0x01, 0x00, 0x00, 0x00];
+const END_FRAME_BUFFER: [u8; 4] = [0x01, 0x00, 0x00, 0x00];
 
-pub const CAPABILITIES_CONFIRM_BUFFER: [u8; 12] =
-    [0x02, 0x05, 0x0a, 0x00, 0x04, 0x00, 0x00, 0x00, 0x20, 0x00, 0x00, 0x00];
+const CAPABILITIES_CONFIRM_BUFFER: [u8; 12] = [0x02, 0x05, 0x0a, 0x00, 0x04, 0x00, 0x00, 0x00, 0x20, 0x00, 0x00, 0x00];
 
-pub const CAPABILITIES_ADVERTISE_BUFFER: [u8; 122] = [
+const CAPABILITIES_ADVERTISE_BUFFER: [u8; 122] = [
     0x9, 0x0, 0x4, 0x0, 0x8, 0x0, 0x4, 0x0, 0x0, 0x0, 0x1, 0x0, 0x0, 0x0, 0x5, 0x1, 0x8, 0x0, 0x4, 0x0, 0x0, 0x0, 0x1,
     0x0, 0x0, 0x0, 0x2, 0x0, 0xa, 0x0, 0x4, 0x0, 0x0, 0x0, 0x20, 0x0, 0x0, 0x0, 0x0, 0x1, 0xa, 0x0, 0x10, 0x0, 0x0,
     0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x2, 0xa, 0x0, 0x4, 0x0,
@@ -117,9 +130,9 @@ pub const CAPABILITIES_ADVERTISE_BUFFER: [u8; 122] = [
     0xa, 0x0, 0x4, 0x0, 0x0, 0x0, 0x20, 0x0, 0x0, 0x0,
 ];
 
-pub const FRAME_ACKNOWLEDGE_BUFFER: [u8; 12] = [0x0, 0x0, 0x0, 0x0, 0x1, 0x0, 0x0, 0x0, 0x1, 0x0, 0x0, 0x0];
+const FRAME_ACKNOWLEDGE_BUFFER: [u8; 12] = [0x0, 0x0, 0x0, 0x0, 0x1, 0x0, 0x0, 0x0, 0x1, 0x0, 0x0, 0x0];
 
-pub const CACHE_IMPORT_REPLY_BUFFER: [u8; 1840] = [
+const CACHE_IMPORT_REPLY_BUFFER: [u8; 1840] = [
     0x97, 0x3, 0x2, 0x0, 0x3, 0x0, 0x4, 0x0, 0x5, 0x0, 0x6, 0x0, 0x7, 0x0, 0x8, 0x0, 0x9, 0x0, 0xa, 0x0, 0xb, 0x0, 0xc,
     0x0, 0xd, 0x0, 0xe, 0x0, 0xf, 0x0, 0x10, 0x0, 0x11, 0x0, 0x12, 0x0, 0x13, 0x0, 0x14, 0x0, 0x15, 0x0, 0x16, 0x0,
     0x17, 0x0, 0x18, 0x0, 0x19, 0x0, 0x1a, 0x0, 0x1b, 0x0, 0x1c, 0x0, 0x1d, 0x0, 0x1e, 0x0, 0x1f, 0x0, 0x20, 0x0, 0x21,
@@ -210,7 +223,7 @@ pub const CACHE_IMPORT_REPLY_BUFFER: [u8; 1840] = [
     0x3, 0x97, 0x3, 0x98, 0x3,
 ];
 
-pub const AVC_444_MESSAGE_INCORRECT_LEN: [u8; 88] = [
+const AVC_444_MESSAGE_INCORRECT_LEN: [u8; 88] = [
     0x0, 0x0, 0x0, 0x80, 0x1, 0x0, 0x0, 0x0, 0x0, 0x7, 0x20, 0x4, 0x10, 0x7, 0x30, 0x4, 0x16, 0x64, 0x0, 0x0, 0x0, 0x1,
     0x61, 0x9a, 0x11, 0xda, 0x24, 0xea, 0x25, 0x0, 0x1f, 0xe6, 0x0, 0x0, 0x0, 0x1, 0x61, 0x0, 0x3f, 0xc9, 0xa1, 0x1d,
     0xa2, 0x4e, 0xa2, 0x50, 0x1, 0xfe, 0x60, 0x0, 0x0, 0x0, 0x1, 0x61, 0x0, 0x1f, 0xe2, 0x68, 0x47, 0x68, 0x93, 0xa8,
@@ -218,7 +231,7 @@ pub const AVC_444_MESSAGE_INCORRECT_LEN: [u8; 88] = [
     0xe7, 0x97, 0xab, 0x80, 0x80, 0x80,
 ];
 
-pub const AVC_444_MESSAGE_CORRECT_LEN: [u8; 88] = [
+const AVC_444_MESSAGE_CORRECT_LEN: [u8; 88] = [
     0x54, 0x0, 0x0, 0x80, 0x1, 0x0, 0x0, 0x0, 0x0, 0x7, 0x20, 0x4, 0x10, 0x7, 0x30, 0x4, 0x16, 0x64, 0x0, 0x0, 0x0,
     0x1, 0x61, 0x9a, 0x11, 0xda, 0x24, 0xea, 0x25, 0x0, 0x1f, 0xe6, 0x0, 0x0, 0x0, 0x1, 0x61, 0x0, 0x3f, 0xc9, 0xa1,
     0x1d, 0xa2, 0x4e, 0xa2, 0x50, 0x1, 0xfe, 0x60, 0x0, 0x0, 0x0, 0x1, 0x61, 0x0, 0x1f, 0xe2, 0x68, 0x47, 0x68, 0x93,
@@ -227,7 +240,7 @@ pub const AVC_444_MESSAGE_CORRECT_LEN: [u8; 88] = [
 ];
 
 lazy_static! {
-    pub static ref WIRE_TO_SURFACE_1: WireToSurface1Pdu = WireToSurface1Pdu {
+    static ref WIRE_TO_SURFACE_1: WireToSurface1Pdu = WireToSurface1Pdu {
         surface_id: 0,
         codec_id: Codec1Type::ClearCodec,
         pixel_format: PixelFormat::XRgb,
@@ -239,20 +252,20 @@ lazy_static! {
         },
         bitmap_data: WIRE_TO_SURFACE_1_BUFFER[17..].to_vec(),
     };
-    pub static ref WIRE_TO_SURFACE_1_BITMAP_DATA: Vec<u8> = WIRE_TO_SURFACE_1_BUFFER[17..].to_vec();
-    pub static ref WIRE_TO_SURFACE_2: WireToSurface2Pdu = WireToSurface2Pdu {
+    static ref WIRE_TO_SURFACE_1_BITMAP_DATA: Vec<u8> = WIRE_TO_SURFACE_1_BUFFER[17..].to_vec();
+    static ref WIRE_TO_SURFACE_2: WireToSurface2Pdu = WireToSurface2Pdu {
         surface_id: 0,
         codec_id: Codec2Type::RemoteFxProgressive,
         codec_context_id: 4,
         pixel_format: PixelFormat::XRgb,
         bitmap_data: WIRE_TO_SURFACE_2_BUFFER[13..].to_vec(),
     };
-    pub static ref WIRE_TO_SURFACE_2_BITMAP_DATA: Vec<u8> = WIRE_TO_SURFACE_2_BUFFER[13..].to_vec();
-    pub static ref DELETE_ENCODING_CONTEXT: DeleteEncodingContextPdu = DeleteEncodingContextPdu {
+    static ref WIRE_TO_SURFACE_2_BITMAP_DATA: Vec<u8> = WIRE_TO_SURFACE_2_BUFFER[13..].to_vec();
+    static ref DELETE_ENCODING_CONTEXT: DeleteEncodingContextPdu = DeleteEncodingContextPdu {
         surface_id: 0,
         codec_context_id: 1,
     };
-    pub static ref SOLID_FILL: SolidFillPdu = SolidFillPdu {
+    static ref SOLID_FILL: SolidFillPdu = SolidFillPdu {
         surface_id: 0,
         fill_pixel: Color {
             b: 0,
@@ -267,7 +280,7 @@ lazy_static! {
             bottom: 64
         }],
     };
-    pub static ref SURFACE_TO_SURFACE: SurfaceToSurfacePdu = SurfaceToSurfacePdu {
+    static ref SURFACE_TO_SURFACE: SurfaceToSurfacePdu = SurfaceToSurfacePdu {
         source_surface_id: 0,
         destination_surface_id: 0,
         source_rectangle: InclusiveRectangle {
@@ -278,7 +291,7 @@ lazy_static! {
         },
         destination_points: vec![Point { x: 128, y: 60 }],
     };
-    pub static ref SURFACE_TO_CACHE: SurfaceToCachePdu = SurfaceToCachePdu {
+    static ref SURFACE_TO_CACHE: SurfaceToCachePdu = SurfaceToCachePdu {
         surface_id: 0,
         cache_key: 0x113D_86DA_A6A3_7FB7,
         cache_slot: 14,
@@ -289,19 +302,19 @@ lazy_static! {
             bottom: 64
         },
     };
-    pub static ref CACHE_TO_SURFACE: CacheToSurfacePdu = CacheToSurfacePdu {
+    static ref CACHE_TO_SURFACE: CacheToSurfacePdu = CacheToSurfacePdu {
         cache_slot: 2,
         surface_id: 0,
         destination_points: vec![Point { x: 768, y: 320 }],
     };
-    pub static ref CREATE_SURFACE: CreateSurfacePdu = CreateSurfacePdu {
+    static ref CREATE_SURFACE: CreateSurfacePdu = CreateSurfacePdu {
         surface_id: 0,
         width: 1024,
         height: 768,
         pixel_format: PixelFormat::ARgb,
     };
-    pub static ref DELETE_SURFACE: DeleteSurfacePdu = DeleteSurfacePdu { surface_id: 0 };
-    pub static ref RESET_GRAPHICS: ResetGraphicsPdu = ResetGraphicsPdu {
+    static ref DELETE_SURFACE: DeleteSurfacePdu = DeleteSurfacePdu { surface_id: 0 };
+    static ref RESET_GRAPHICS: ResetGraphicsPdu = ResetGraphicsPdu {
         width: 1024,
         height: 768,
         monitors: vec![Monitor {
@@ -312,13 +325,13 @@ lazy_static! {
             flags: MonitorFlags::PRIMARY,
         }],
     };
-    pub static ref MAP_SURFACE_TO_OUTPUT: MapSurfaceToOutputPdu = MapSurfaceToOutputPdu {
+    static ref MAP_SURFACE_TO_OUTPUT: MapSurfaceToOutputPdu = MapSurfaceToOutputPdu {
         surface_id: 0,
         output_origin_x: 1,
         output_origin_y: 2,
     };
-    pub static ref EVICT_CACHE_ENTRY: EvictCacheEntryPdu = EvictCacheEntryPdu { cache_slot: 0 };
-    pub static ref START_FRAME: StartFramePdu = StartFramePdu {
+    static ref EVICT_CACHE_ENTRY: EvictCacheEntryPdu = EvictCacheEntryPdu { cache_slot: 0 };
+    static ref START_FRAME: StartFramePdu = StartFramePdu {
         timestamp: Timestamp {
             milliseconds: 247,
             seconds: 58,
@@ -327,11 +340,11 @@ lazy_static! {
         },
         frame_id: 5
     };
-    pub static ref END_FRAME: EndFramePdu = EndFramePdu { frame_id: 1 };
-    pub static ref CAPABILITIES_CONFIRM: CapabilitiesConfirmPdu = CapabilitiesConfirmPdu(CapabilitySet::V10_5 {
+    static ref END_FRAME: EndFramePdu = EndFramePdu { frame_id: 1 };
+    static ref CAPABILITIES_CONFIRM: CapabilitiesConfirmPdu = CapabilitiesConfirmPdu(CapabilitySet::V10_5 {
         flags: CapabilitiesV104Flags::AVC_DISABLED,
     });
-    pub static ref CAPABILITIES_ADVERTISE: CapabilitiesAdvertisePdu = CapabilitiesAdvertisePdu(vec![
+    static ref CAPABILITIES_ADVERTISE: CapabilitiesAdvertisePdu = CapabilitiesAdvertisePdu(vec![
         CapabilitySet::V8 {
             flags: CapabilitiesV8Flags::THIN_CLIENT
         },
@@ -358,12 +371,12 @@ lazy_static! {
             flags: CapabilitiesV104Flags::AVC_DISABLED
         }
     ]);
-    pub static ref FRAME_ACKNOWLEDGE: FrameAcknowledgePdu = FrameAcknowledgePdu {
+    static ref FRAME_ACKNOWLEDGE: FrameAcknowledgePdu = FrameAcknowledgePdu {
         queue_depth: QueueDepth::Unavailable,
         frame_id: 1,
         total_frames_decoded: 1
     };
-    pub static ref CACHE_IMPORT_REPLY: CacheImportReplyPdu = CacheImportReplyPdu {
+    static ref CACHE_IMPORT_REPLY: CacheImportReplyPdu = CacheImportReplyPdu {
         cache_slots: vec![
             0x2, 0x3, 0x4, 0x5, 0x6, 0x7, 0x8, 0x9, 0xa, 0xb, 0xc, 0xd, 0xe, 0xf, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15,
             0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f, 0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27,
@@ -426,7 +439,7 @@ lazy_static! {
             0x394, 0x395, 0x396, 0x397, 0x398
         ]
     };
-    pub static ref AVC_444_BITMAP: Avc444BitmapStream<'static> = Avc444BitmapStream {
+    static ref AVC_444_BITMAP: Avc444BitmapStream<'static> = Avc444BitmapStream {
         encoding: Encoding::CHROMA,
         stream1: Avc420BitmapStream {
             rectangles: vec![InclusiveRectangle {
@@ -444,4 +457,447 @@ lazy_static! {
         },
         stream2: None
     };
+}
+
+#[test]
+fn from_buffer_correctly_parses_server_pdu() {
+    let buffer = HEADER_WITH_WIRE_TO_SURFACE_1_BUFFER.as_ref();
+
+    assert_eq!(*HEADER_WITH_WIRE_TO_SURFACE_1, decode(buffer).unwrap());
+}
+
+#[test]
+fn to_buffer_correctly_serializes_server_pdu() {
+    let buffer = encode_vec(&*HEADER_WITH_WIRE_TO_SURFACE_1).unwrap();
+
+    assert_eq!(buffer, HEADER_WITH_WIRE_TO_SURFACE_1_BUFFER.as_slice());
+}
+
+#[test]
+fn buffer_length_is_correct_for_server_pdu() {
+    assert_eq!(
+        HEADER_WITH_WIRE_TO_SURFACE_1_BUFFER.len(),
+        HEADER_WITH_WIRE_TO_SURFACE_1.size()
+    );
+}
+
+#[test]
+fn from_buffer_correctly_parses_client_pdu() {
+    let buffer = HEADER_WITH_FRAME_ACKNOWLEDGE_BUFFER.as_ref();
+
+    assert_eq!(*HEADER_WITH_FRAME_ACKNOWLEDGE, decode(buffer).unwrap());
+}
+
+#[test]
+fn to_buffer_correctly_serializes_client_pdu() {
+    let buffer = encode_vec(&*HEADER_WITH_FRAME_ACKNOWLEDGE).unwrap();
+
+    assert_eq!(buffer, HEADER_WITH_FRAME_ACKNOWLEDGE_BUFFER.as_slice());
+}
+
+#[test]
+fn buffer_length_is_correct_for_client_pdu() {
+    assert_eq!(
+        HEADER_WITH_FRAME_ACKNOWLEDGE_BUFFER.len(),
+        HEADER_WITH_FRAME_ACKNOWLEDGE.size()
+    );
+}
+
+#[test]
+fn from_buffer_correctly_parses_wire_to_surface_1_pdu() {
+    let buffer = WIRE_TO_SURFACE_1_BUFFER.as_ref();
+
+    assert_eq!(*WIRE_TO_SURFACE_1, decode(buffer).unwrap());
+}
+
+#[test]
+fn to_buffer_correctly_serializes_wire_to_surface_1_pdu() {
+    let buffer = encode_vec(&*WIRE_TO_SURFACE_1).unwrap();
+
+    assert_eq!(buffer, WIRE_TO_SURFACE_1_BUFFER.as_ref());
+}
+
+#[test]
+fn buffer_length_is_correct_for_wire_to_surface_1_pdu() {
+    assert_eq!(WIRE_TO_SURFACE_1_BUFFER.len(), WIRE_TO_SURFACE_1.size());
+}
+
+#[test]
+fn from_buffer_correctly_parses_wire_to_surface_2_pdu() {
+    let buffer = WIRE_TO_SURFACE_2_BUFFER.as_ref();
+
+    assert_eq!(*WIRE_TO_SURFACE_2, decode(buffer).unwrap());
+}
+
+#[test]
+fn to_buffer_correctly_serializes_wire_to_surface_2_pdu() {
+    let buffer = encode_vec(&*WIRE_TO_SURFACE_2).unwrap();
+
+    assert_eq!(buffer, WIRE_TO_SURFACE_2_BUFFER.as_ref());
+}
+
+#[test]
+fn buffer_length_is_correct_for_wire_to_surface_2_pdu() {
+    assert_eq!(WIRE_TO_SURFACE_2_BUFFER.len(), WIRE_TO_SURFACE_2.size());
+}
+
+#[test]
+fn from_buffer_correctly_parses_delete_encoding_context_pdu() {
+    let buffer = DELETE_ENCODING_CONTEXT_BUFFER.as_ref();
+
+    let mut cursor = ReadCursor::new(buffer);
+    assert_eq!(*DELETE_ENCODING_CONTEXT, decode_cursor(&mut cursor).unwrap());
+    assert!(cursor.is_empty());
+}
+
+#[test]
+fn to_buffer_correctly_serializes_delete_encoding_context_pdu() {
+    let buffer = encode_vec(&*DELETE_ENCODING_CONTEXT).unwrap();
+
+    assert_eq!(buffer, DELETE_ENCODING_CONTEXT_BUFFER.as_ref());
+}
+
+#[test]
+fn buffer_length_is_correct_for_delete_encoding_context_pdu() {
+    assert_eq!(DELETE_ENCODING_CONTEXT_BUFFER.len(), DELETE_ENCODING_CONTEXT.size());
+}
+
+#[test]
+fn from_buffer_correctly_parses_solid_fill_pdu() {
+    let buffer = SOLID_FILL_BUFFER.as_ref();
+
+    let mut cursor = ReadCursor::new(buffer);
+    assert_eq!(*SOLID_FILL, decode_cursor(&mut cursor).unwrap());
+    assert!(cursor.is_empty());
+}
+
+#[test]
+fn to_buffer_correctly_serializes_solid_fill_pdu() {
+    let buffer = encode_vec(&*SOLID_FILL).unwrap();
+    assert_eq!(buffer, SOLID_FILL_BUFFER.as_ref());
+}
+
+#[test]
+fn buffer_length_is_correct_for_solid_fill_pdu() {
+    assert_eq!(SOLID_FILL_BUFFER.len(), SOLID_FILL.size());
+}
+
+#[test]
+fn from_buffer_correctly_parses_surface_to_surface_pdu() {
+    let buffer = SURFACE_TO_SURFACE_BUFFER.as_ref();
+
+    let mut cursor = ReadCursor::new(buffer);
+    assert_eq!(*SURFACE_TO_SURFACE, decode_cursor(&mut cursor).unwrap());
+    assert!(cursor.is_empty());
+}
+
+#[test]
+fn to_buffer_correctly_serializes_surface_to_surface_pdu() {
+    let buffer = encode_vec(&*SURFACE_TO_SURFACE).unwrap();
+
+    assert_eq!(buffer, SURFACE_TO_SURFACE_BUFFER.as_ref());
+}
+
+#[test]
+fn buffer_length_is_correct_for_surface_to_surface_pdu() {
+    assert_eq!(SURFACE_TO_SURFACE_BUFFER.len(), SURFACE_TO_SURFACE.size());
+}
+
+#[test]
+fn from_buffer_correctly_parses_surface_to_cache_pdu() {
+    let buffer = SURFACE_TO_CACHE_BUFFER.as_ref();
+
+    let mut cursor = ReadCursor::new(buffer);
+    assert_eq!(*SURFACE_TO_CACHE, decode_cursor(&mut cursor).unwrap());
+    assert!(cursor.is_empty());
+}
+
+#[test]
+fn to_buffer_correctly_serializes_surface_to_cache_pdu() {
+    let buffer = encode_vec(&*SURFACE_TO_CACHE).unwrap();
+
+    assert_eq!(buffer, SURFACE_TO_CACHE_BUFFER.as_ref());
+}
+
+#[test]
+fn buffer_length_is_correct_for_surface_to_cache_pdu() {
+    assert_eq!(SURFACE_TO_CACHE_BUFFER.len(), SURFACE_TO_CACHE.size());
+}
+
+#[test]
+fn from_buffer_correctly_parses_cache_to_surface_pdu() {
+    let buffer = CACHE_TO_SURFACE_BUFFER.as_ref();
+
+    let mut cursor = ReadCursor::new(buffer);
+    assert_eq!(*CACHE_TO_SURFACE, decode_cursor(&mut cursor).unwrap());
+    assert!(cursor.is_empty());
+}
+
+#[test]
+fn to_buffer_correctly_serializes_cache_to_surface_pdu() {
+    let buffer = encode_vec(&*CACHE_TO_SURFACE).unwrap();
+
+    assert_eq!(buffer, CACHE_TO_SURFACE_BUFFER.as_ref());
+}
+
+#[test]
+fn buffer_length_is_correct_for_cache_to_surface_pdu() {
+    assert_eq!(CACHE_TO_SURFACE_BUFFER.len(), CACHE_TO_SURFACE.size());
+}
+
+#[test]
+fn from_buffer_correctly_parses_create_surface_pdu() {
+    let buffer = CREATE_SURFACE_BUFFER.as_ref();
+
+    let mut cursor = ReadCursor::new(buffer);
+    assert_eq!(*CREATE_SURFACE, decode_cursor(&mut cursor).unwrap());
+    assert!(cursor.is_empty());
+}
+
+#[test]
+fn to_buffer_correctly_serializes_create_surface_pdu() {
+    let buffer = encode_vec(&*CREATE_SURFACE).unwrap();
+
+    assert_eq!(buffer, CREATE_SURFACE_BUFFER.as_ref());
+}
+
+#[test]
+fn buffer_length_is_correct_for_create_surface_pdu() {
+    assert_eq!(CREATE_SURFACE_BUFFER.len(), CREATE_SURFACE.size());
+}
+
+#[test]
+fn from_buffer_correctly_parses_delete_surface_pdu() {
+    let buffer = DELETE_SURFACE_BUFFER.as_ref();
+
+    let mut cursor = ReadCursor::new(buffer);
+    assert_eq!(*DELETE_SURFACE, decode_cursor(&mut cursor).unwrap());
+    assert!(cursor.is_empty());
+}
+
+#[test]
+fn to_buffer_correctly_serializes_delete_surface_pdu() {
+    let buffer = encode_vec(&*DELETE_SURFACE).unwrap();
+
+    assert_eq!(buffer, DELETE_SURFACE_BUFFER.as_ref());
+}
+
+#[test]
+fn buffer_length_is_correct_for_delete_surface_pdu() {
+    assert_eq!(DELETE_SURFACE_BUFFER.len(), DELETE_SURFACE.size());
+}
+
+#[test]
+fn from_buffer_correctly_parses_reset_graphics() {
+    let buffer = RESET_GRAPHICS_BUFFER.as_ref();
+
+    let mut cursor = ReadCursor::new(buffer);
+    assert_eq!(*RESET_GRAPHICS, decode_cursor(&mut cursor).unwrap());
+    assert!(cursor.is_empty());
+}
+
+#[test]
+fn to_buffer_correctly_serializes_reset_graphics() {
+    let buffer = encode_vec(&*RESET_GRAPHICS).unwrap();
+
+    assert_eq!(buffer, RESET_GRAPHICS_BUFFER.as_ref());
+}
+
+#[test]
+fn buffer_length_is_correct_for_reset_graphics() {
+    assert_eq!(RESET_GRAPHICS_BUFFER.len(), RESET_GRAPHICS.size());
+}
+
+#[test]
+fn from_buffer_correctly_parses_map_surface_to_output_pdu() {
+    let buffer = MAP_SURFACE_TO_OUTPUT_BUFFER.as_ref();
+
+    let mut cursor = ReadCursor::new(buffer);
+    assert_eq!(*MAP_SURFACE_TO_OUTPUT, decode_cursor(&mut cursor).unwrap());
+    assert!(cursor.is_empty());
+}
+
+#[test]
+fn to_buffer_correctly_serializes_map_surface_to_output_pdu() {
+    let buffer = encode_vec(&*MAP_SURFACE_TO_OUTPUT).unwrap();
+
+    assert_eq!(buffer, MAP_SURFACE_TO_OUTPUT_BUFFER.as_ref());
+}
+
+#[test]
+fn buffer_length_is_correct_for_map_surface_to_output_pdu() {
+    assert_eq!(MAP_SURFACE_TO_OUTPUT_BUFFER.len(), MAP_SURFACE_TO_OUTPUT.size());
+}
+
+#[test]
+fn from_buffer_correctly_parses_evict_cache_entry_pdu() {
+    let buffer = EVICT_CACHE_ENTRY_BUFFER.as_ref();
+
+    let mut cursor = ReadCursor::new(buffer);
+    assert_eq!(*EVICT_CACHE_ENTRY, decode_cursor(&mut cursor).unwrap());
+    assert!(cursor.is_empty());
+}
+
+#[test]
+fn to_buffer_correctly_serializes_evict_cache_entry_pdu() {
+    let buffer = encode_vec(&*EVICT_CACHE_ENTRY).unwrap();
+
+    assert_eq!(buffer, EVICT_CACHE_ENTRY_BUFFER.as_ref());
+}
+
+#[test]
+fn buffer_length_is_correct_for_evict_cache_entry_pdu() {
+    assert_eq!(EVICT_CACHE_ENTRY_BUFFER.len(), EVICT_CACHE_ENTRY.size());
+}
+
+#[test]
+fn from_buffer_correctly_parses_start_frame_pdu() {
+    let buffer = START_FRAME_BUFFER.as_ref();
+
+    let mut cursor = ReadCursor::new(buffer);
+    assert_eq!(*START_FRAME, decode_cursor(&mut cursor).unwrap());
+    assert!(cursor.is_empty());
+}
+
+#[test]
+fn to_buffer_correctly_serializes_start_frame_pdu() {
+    let buffer = encode_vec(&*START_FRAME).unwrap();
+
+    assert_eq!(buffer, START_FRAME_BUFFER.as_ref());
+}
+
+#[test]
+fn buffer_length_is_correct_for_start_frame_pdu() {
+    assert_eq!(START_FRAME_BUFFER.len(), START_FRAME.size());
+}
+
+#[test]
+fn from_buffer_correctly_parses_end_frame_pdu() {
+    let buffer = END_FRAME_BUFFER.as_ref();
+
+    let mut cursor = ReadCursor::new(buffer);
+    assert_eq!(*END_FRAME, decode_cursor(&mut cursor).unwrap());
+    assert!(cursor.is_empty());
+}
+
+#[test]
+fn to_buffer_correctly_serializes_end_frame_pdu() {
+    let buffer = encode_vec(&*END_FRAME).unwrap();
+
+    assert_eq!(buffer, END_FRAME_BUFFER.as_ref());
+}
+
+#[test]
+fn buffer_length_is_correct_for_end_frame_pdu() {
+    assert_eq!(END_FRAME_BUFFER.len(), END_FRAME.size());
+}
+
+#[test]
+fn from_buffer_correctly_parses_capabilities_confirm_pdu() {
+    let buffer = CAPABILITIES_CONFIRM_BUFFER.as_ref();
+
+    let mut cursor = ReadCursor::new(buffer);
+    assert_eq!(*CAPABILITIES_CONFIRM, decode_cursor(&mut cursor).unwrap());
+    assert!(cursor.is_empty());
+}
+
+#[test]
+fn to_buffer_correctly_serializes_capabilities_confirm_pdu() {
+    let buffer = encode_vec(&*CAPABILITIES_CONFIRM).unwrap();
+
+    assert_eq!(buffer, CAPABILITIES_CONFIRM_BUFFER.as_ref());
+}
+
+#[test]
+fn buffer_length_is_correct_for_capabilities_confirm_pdu() {
+    assert_eq!(CAPABILITIES_CONFIRM_BUFFER.len(), CAPABILITIES_CONFIRM.size());
+}
+
+#[test]
+fn from_buffer_correctly_parses_capabilities_advertise_pdu() {
+    let buffer = CAPABILITIES_ADVERTISE_BUFFER.as_ref();
+
+    let mut cursor = ReadCursor::new(buffer);
+    assert_eq!(*CAPABILITIES_ADVERTISE, decode_cursor(&mut cursor).unwrap());
+    assert!(cursor.is_empty());
+}
+
+#[test]
+fn to_buffer_correctly_serializes_capabilities_advertise_pdu() {
+    let buffer = encode_vec(&*CAPABILITIES_ADVERTISE).unwrap();
+
+    assert_eq!(buffer, CAPABILITIES_ADVERTISE_BUFFER.as_ref());
+}
+
+#[test]
+fn buffer_length_is_correct_for_capabilities_advertise_pdu() {
+    assert_eq!(CAPABILITIES_ADVERTISE_BUFFER.len(), CAPABILITIES_ADVERTISE.size());
+}
+
+#[test]
+fn from_buffer_correctly_parses_frame_acknowledge_pdu() {
+    let buffer = FRAME_ACKNOWLEDGE_BUFFER.as_ref();
+
+    let mut cursor = ReadCursor::new(buffer);
+    assert_eq!(*FRAME_ACKNOWLEDGE, decode_cursor(&mut cursor).unwrap());
+    assert!(cursor.is_empty());
+}
+
+#[test]
+fn to_buffer_correctly_serializes_frame_acknowledge_pdu() {
+    let buffer = encode_vec(&*FRAME_ACKNOWLEDGE).unwrap();
+
+    assert_eq!(buffer, FRAME_ACKNOWLEDGE_BUFFER.as_ref());
+}
+
+#[test]
+fn buffer_length_is_correct_for_frame_acknowledge_pdu() {
+    assert_eq!(FRAME_ACKNOWLEDGE_BUFFER.len(), FRAME_ACKNOWLEDGE.size());
+}
+
+#[test]
+fn from_buffer_correctly_parses_cache_import_reply() {
+    let buffer = CACHE_IMPORT_REPLY_BUFFER.as_ref();
+
+    let mut cursor = ReadCursor::new(buffer);
+    assert_eq!(*CACHE_IMPORT_REPLY, decode_cursor(&mut cursor).unwrap());
+    assert!(cursor.is_empty());
+}
+
+#[test]
+fn to_buffer_correctly_serializes_cache_import_reply() {
+    let buffer = encode_vec(&*CACHE_IMPORT_REPLY).unwrap();
+
+    assert_eq!(buffer, CACHE_IMPORT_REPLY_BUFFER.as_ref());
+}
+
+#[test]
+fn buffer_length_is_correct_for_cache_import_reply() {
+    assert_eq!(CACHE_IMPORT_REPLY_BUFFER.len(), CACHE_IMPORT_REPLY.size());
+}
+
+#[test]
+fn from_buffer_consume_correctly_parses_incorrect_len_avc_444_message() {
+    let buffer = AVC_444_MESSAGE_INCORRECT_LEN.as_ref();
+
+    let mut cursor = ReadCursor::new(buffer);
+    assert_eq!(*AVC_444_BITMAP, decode_cursor(&mut cursor).unwrap());
+    assert!(!cursor.is_empty());
+}
+
+#[test]
+fn from_buffer_consume_correctly_parses_avc_444_message() {
+    let buffer = AVC_444_MESSAGE_CORRECT_LEN.as_ref();
+
+    let mut cursor = ReadCursor::new(buffer);
+    assert_eq!(*AVC_444_BITMAP, decode_cursor(&mut cursor).unwrap());
+    assert!(cursor.is_empty());
+}
+
+#[test]
+fn to_buffer_consume_correctly_serializes_avc_444_message() {
+    let buffer = encode_vec(&*AVC_444_BITMAP).unwrap();
+    let expected = AVC_444_MESSAGE_CORRECT_LEN.as_ref();
+
+    assert_eq!(expected, buffer.as_slice());
 }

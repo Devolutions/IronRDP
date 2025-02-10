@@ -1,5 +1,4 @@
 mod gcc;
-mod gfx;
 mod input;
 mod mcs;
 mod pointer;

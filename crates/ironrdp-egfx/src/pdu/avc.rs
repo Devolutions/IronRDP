@@ -1,13 +1,12 @@
-use core::fmt::Debug;
+use core::fmt;
+
+use ironrdp_pdu::{
+    cast_length, ensure_fixed_part_size, ensure_size, geometry::InclusiveRectangle, invalid_field_err, Decode,
+    DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor,
+};
 
 use bit_field::BitField;
 use bitflags::bitflags;
-use ironrdp_core::{
-    cast_length, ensure_fixed_part_size, ensure_size, invalid_field_err, Decode, DecodeResult, Encode, EncodeResult,
-    ReadCursor, WriteCursor,
-};
-
-use crate::geometry::InclusiveRectangle;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QuantQuality {
@@ -66,8 +65,8 @@ pub struct Avc420BitmapStream<'a> {
     pub data: &'a [u8],
 }
 
-impl Debug for Avc420BitmapStream<'_> {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+impl fmt::Debug for Avc420BitmapStream<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Avc420BitmapStream")
             .field("rectangles", &self.rectangles)
             .field("quant_qual_vals", &self.quant_qual_vals)
@@ -158,7 +157,7 @@ impl Encode for Avc444BitmapStream<'_> {
 
         let mut stream_info = 0u32;
         stream_info.set_bits(0..30, cast_length!("stream1size", self.stream1.size())?);
-        stream_info.set_bits(30..32, self.encoding.bits() as u32);
+        stream_info.set_bits(30..32, self.encoding.bits().into());
         dst.write_u32(stream_info);
         self.stream1.encode(dst)?;
         if let Some(stream) = self.stream2.as_ref() {
@@ -188,7 +187,7 @@ impl<'de> Decode<'de> for Avc444BitmapStream<'de> {
 
         let stream_info = src.read_u32();
         let stream_len = stream_info.get_bits(0..30);
-        let encoding = Encoding::from_bits_truncate(stream_info.get_bits(30..32) as u8);
+        let encoding = Encoding::from_bits_truncate(stream_info.get_bits(30..32).try_into().unwrap());
 
         if stream_len == 0 {
             if encoding == Encoding::LUMA_AND_CHROMA {

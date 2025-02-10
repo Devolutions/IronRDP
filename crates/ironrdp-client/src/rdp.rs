@@ -3,11 +3,13 @@ use ironrdp::connector::connection_activation::ConnectionActivationState;
 use ironrdp::connector::{ConnectionResult, ConnectorResult};
 use ironrdp::displaycontrol::client::DisplayControlClient;
 use ironrdp::displaycontrol::pdu::MonitorLayoutEntry;
+use ironrdp::egfx::client::{GraphicsPipelineClient, GraphicsPipelineHandler};
+use ironrdp::egfx::pdu::{GfxPdu, StartFramePdu};
 use ironrdp::graphics::image_processing::PixelFormat;
 use ironrdp::pdu::input::fast_path::FastPathInputEvent;
 use ironrdp::session::image::DecodedImage;
 use ironrdp::session::{fast_path, ActiveStage, ActiveStageOutput, GracefulDisconnectReason, SessionResult};
-use ironrdp::{cliprdr, connector, rdpdr, rdpsnd, session};
+use ironrdp::{cliprdr, connector, egfx, rdpdr, rdpsnd, session};
 use ironrdp_core::WriteBuf;
 use ironrdp_rdpsnd_native::cpal;
 use ironrdp_tokio::{single_sequence_step_read, split_tokio_framed, FramedWrite};
@@ -92,6 +94,49 @@ impl RdpClient {
     }
 }
 
+struct GraphicsPipeline {
+    caps: Option<egfx::pdu::CapabilitySet>,
+    start_frame: Option<StartFramePdu>,
+}
+
+impl GraphicsPipeline {
+    fn new() -> Self {
+        Self {
+            caps: None,
+            start_frame: None,
+        }
+    }
+}
+
+impl GraphicsPipelineHandler for GraphicsPipeline {
+    fn capabilities(&self) -> Vec<egfx::pdu::CapabilitySet> {
+        vec![egfx::pdu::CapabilitySet::V8 {
+            flags: egfx::pdu::CapabilitiesV8Flags::empty(),
+        }]
+    }
+
+    fn handle_pdu(&mut self, pdu: GfxPdu) {
+        trace!(?pdu);
+        match pdu {
+            GfxPdu::CapabilitiesConfirm(pdu) => {
+                trace!(?pdu);
+                self.caps = Some(pdu.0);
+            }
+            GfxPdu::StartFrame(pdu) => {
+                trace!(?pdu);
+                self.start_frame = Some(pdu);
+            }
+            GfxPdu::EndFrame(pdu) => {
+                trace!(?pdu);
+                self.start_frame = None;
+            }
+            pdu => {
+                debug!(?pdu);
+            }
+        }
+    }
+}
+
 enum RdpControlFlow {
     ReconnectWithNewSize { width: u16, height: u16 },
     TerminatedGracefully(GracefulDisconnectReason),
@@ -118,7 +163,9 @@ async fn connect(
     let mut connector = connector::ClientConnector::new(config.connector.clone())
         .with_server_addr(server_addr)
         .with_static_channel(
-            ironrdp::dvc::DrdynvcClient::new().with_dynamic_channel(DisplayControlClient::new(|_| Ok(Vec::new()))),
+            ironrdp::dvc::DrdynvcClient::new()
+                .with_dynamic_channel(DisplayControlClient::new(|_| Ok(Vec::new())))
+                .with_dynamic_channel(GraphicsPipelineClient::new(Box::new(GraphicsPipeline::new()))),
         )
         .with_static_channel(rdpsnd::client::Rdpsnd::new(Box::new(cpal::RdpsndBackend::new())))
         .with_static_channel(rdpdr::Rdpdr::new(Box::new(NoopRdpdrBackend {}), "IronRDP".to_owned()).with_smartcard(0));
