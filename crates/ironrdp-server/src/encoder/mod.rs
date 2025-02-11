@@ -27,6 +27,7 @@ const MAX_FASTPATH_UPDATE_SIZE: usize = 16_374;
 
 const FASTPATH_HEADER_SIZE: usize = 6;
 
+#[cfg_attr(feature = "__bench", visibility::make(pub))]
 pub(crate) struct UpdateEncoder {
     pdu_encoder: PduEncoder,
     bitmap_updater: BitmapUpdater,
@@ -41,6 +42,7 @@ impl fmt::Debug for UpdateEncoder {
 }
 
 impl UpdateEncoder {
+    #[cfg_attr(feature = "__bench", visibility::make(pub))]
     pub(crate) fn new(
         surface_flags: CmdFlags,
         remotefx: Option<(EntropyBits, u8)>,
@@ -125,6 +127,7 @@ impl UpdateEncoder {
         Ok(UpdateFragmenter::new(UpdateCode::PositionPointer, buf))
     }
 
+    #[cfg_attr(feature = "__bench", visibility::make(pub))]
     pub(crate) fn bitmap(&mut self, bitmap: BitmapUpdate) -> Result<UpdateFragmenter<'_>> {
         self.bitmap_updater.handle(bitmap, &mut self.pdu_encoder)
     }
@@ -365,10 +368,11 @@ pub(crate) struct UpdateFragmenterOwned {
     len: usize,
 }
 
+#[cfg_attr(feature = "__bench", visibility::make(pub))]
 pub(crate) struct UpdateFragmenter<'a> {
     code: UpdateCode,
     index: usize,
-    data: &'a [u8],
+    pub data: &'a [u8],
 }
 
 impl fmt::Debug for UpdateFragmenter<'_> {
