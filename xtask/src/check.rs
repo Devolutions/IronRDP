@@ -20,7 +20,7 @@ pub fn lints(sh: &Shell) -> anyhow::Result<()> {
     // TODO: when 1.74 is released use `--keep-going`: https://doc.rust-lang.org/nightly/cargo/reference/unstable.html#keep-going
     cmd!(
         sh,
-        "{CARGO} clippy --workspace --all-targets --features helper --locked -- -D warnings"
+        "{CARGO} clippy --workspace --all-targets --features helper,__bench --locked -- -D warnings"
     )
     .run()?;
 

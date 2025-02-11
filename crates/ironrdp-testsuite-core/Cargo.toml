@@ -10,6 +10,12 @@ autotests = false
 doctest = false
 test = false
 
+[features]
+# Internal (PRIVATE!) features used to aid testing.
+# Don't rely on these whatsoever. They may disappear at any time.
+# Added here because it includes/link to some files from other crates
+__bench = ["dep:visibility"]
+
 [[test]]
 name = "integration_tests_core"
 path = "tests/main.rs"
@@ -22,6 +28,7 @@ ironrdp-core.path = "../ironrdp-core"
 ironrdp-pdu.path = "../ironrdp-pdu"
 lazy_static.workspace = true # TODO: remove in favor of https://doc.rust-lang.org/std/sync/struct.OnceLock.html
 paste = "1"
+visibility = { version = "0.1", optional = true }
 
 [dev-dependencies]
 anyhow = "1"

@@ -35,5 +35,7 @@ pub mod bench {
         pub mod rfx {
             pub use crate::encoder::rfx::bench::{rfx_enc, rfx_enc_tile};
         }
+
+        pub use crate::encoder::{UpdateEncoder, UpdateEncoderCodecs};
     }
 }
