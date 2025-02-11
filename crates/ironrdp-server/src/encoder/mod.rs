@@ -26,16 +26,19 @@ enum CodecId {
     None = 0x0,
 }
 
+#[cfg_attr(feature = "__bench", visibility::make(pub))]
 #[derive(Debug)]
 pub(crate) struct UpdateEncoderCodecs {
     remotefx: Option<(EntropyBits, u8)>,
 }
 
 impl UpdateEncoderCodecs {
+    #[cfg_attr(feature = "__bench", visibility::make(pub))]
     pub(crate) fn new() -> Self {
         Self { remotefx: None }
     }
 
+    #[cfg_attr(feature = "__bench", visibility::make(pub))]
     pub(crate) fn set_remotefx(&mut self, remotefx: Option<(EntropyBits, u8)>) {
         self.remotefx = remotefx
     }
@@ -47,6 +50,7 @@ impl Default for UpdateEncoderCodecs {
     }
 }
 
+#[cfg_attr(feature = "__bench", visibility::make(pub))]
 pub(crate) struct UpdateEncoder {
     desktop_size: DesktopSize,
     // FIXME: draw updates on the framebuffer
@@ -63,6 +67,7 @@ impl fmt::Debug for UpdateEncoder {
 }
 
 impl UpdateEncoder {
+    #[cfg_attr(feature = "__bench", visibility::make(pub))]
     pub(crate) fn new(desktop_size: DesktopSize, surface_flags: CmdFlags, codecs: UpdateEncoderCodecs) -> Self {
         let bitmap_updater = if surface_flags.contains(CmdFlags::SET_SURFACE_BITS) {
             let mut bitmap = BitmapUpdater::None(NoneHandler);
@@ -83,6 +88,7 @@ impl UpdateEncoder {
         }
     }
 
+    #[cfg_attr(feature = "__bench", visibility::make(pub))]
     pub(crate) fn update(&mut self, update: DisplayUpdate) -> EncoderIter<'_> {
         EncoderIter {
             encoder: self,
@@ -172,12 +178,14 @@ impl UpdateEncoder {
     }
 }
 
+#[cfg_attr(feature = "__bench", visibility::make(pub))]
 pub(crate) struct EncoderIter<'a> {
     encoder: &'a mut UpdateEncoder,
     update: Option<DisplayUpdate>,
 }
 
 impl EncoderIter<'_> {
+    #[cfg_attr(feature = "__bench", visibility::make(pub))]
     pub(crate) async fn next(&mut self) -> Option<Result<UpdateFragmenter>> {
         let update = self.update.take()?;
         let encoder = &mut self.encoder;
