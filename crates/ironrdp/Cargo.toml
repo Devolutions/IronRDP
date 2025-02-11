@@ -31,6 +31,9 @@ dvc = ["dep:ironrdp-dvc"]
 rdpdr = ["dep:ironrdp-rdpdr"]
 rdpsnd = ["dep:ironrdp-rdpsnd"]
 displaycontrol = ["dep:ironrdp-displaycontrol"]
+# Internal (PRIVATE!) features used to aid testing.
+# Don't rely on these whatsoever. They may disappear at any time.
+__bench = ["ironrdp-server/__bench"]
 
 [dependencies]
 ironrdp-core = { path = "../ironrdp-core", version = "0.1", optional = true } # public

@@ -22,7 +22,7 @@ rayon = ["dep:rayon"]
 
 # Internal (PRIVATE!) features used to aid testing.
 # Don't rely on these whatsoever. They may disappear at any time.
-__bench = []
+__bench = ["dep:visibility"]
 
 [dependencies]
 anyhow = "1.0"
@@ -46,6 +46,7 @@ x509-cert = { version = "0.2.5", optional = true }
 rustls-pemfile = { version = "2.2.0", optional = true }
 rayon = { version = "1.10.0", optional = true }
 bytes = "1"
+visibility = { version = "0.1", optional = true }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["sync"] }
