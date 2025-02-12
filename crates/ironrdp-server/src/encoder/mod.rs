@@ -1,7 +1,7 @@
 mod bitmap;
 pub(crate) mod rfx;
 
-use core::cmp;
+use core::{cmp, fmt};
 
 use anyhow::{Context, Result};
 use ironrdp_core::{Encode, WriteCursor};
@@ -30,6 +30,14 @@ const FASTPATH_HEADER_SIZE: usize = 6;
 pub(crate) struct UpdateEncoder {
     pdu_encoder: PduEncoder,
     bitmap_updater: BitmapUpdater,
+}
+
+impl fmt::Debug for UpdateEncoder {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("UpdateEncoder")
+            .field("bitmap_update", &self.bitmap_updater)
+            .finish()
+    }
 }
 
 impl UpdateEncoder {
@@ -118,6 +126,7 @@ impl UpdateEncoder {
     }
 }
 
+#[derive(Debug)]
 enum BitmapUpdater {
     None(NoneHandler),
     Bitmap(BitmapHandler),
@@ -138,6 +147,7 @@ trait BitmapUpdateHandler {
     fn handle<'a>(&mut self, bitmap: BitmapUpdate, encoder: &'a mut PduEncoder) -> Result<UpdateFragmenter<'a>>;
 }
 
+#[derive(Debug)]
 struct NoneHandler;
 
 impl BitmapUpdateHandler for NoneHandler {
@@ -154,6 +164,12 @@ impl BitmapUpdateHandler for NoneHandler {
 
 struct BitmapHandler {
     bitmap: BitmapEncoder,
+}
+
+impl fmt::Debug for BitmapHandler {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("BitmapHandler").finish()
+    }
 }
 
 impl BitmapHandler {
@@ -184,6 +200,7 @@ impl BitmapUpdateHandler for BitmapHandler {
     }
 }
 
+#[derive(Debug)]
 struct RemoteFxHandler {
     remotefx: RfxEncoder,
     codec_id: u8,
@@ -282,6 +299,14 @@ pub(crate) struct UpdateFragmenter<'a> {
     code: UpdateCode,
     index: usize,
     data: &'a [u8],
+}
+
+impl fmt::Debug for UpdateFragmenter<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("UpdateFragmenter")
+            .field("len", &self.data.len())
+            .finish()
+    }
 }
 
 impl<'a> UpdateFragmenter<'a> {
