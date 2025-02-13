@@ -273,38 +273,28 @@ impl QoiHandler {
 
 #[cfg(feature = "qoi")]
 impl BitmapUpdateHandler for QoiHandler {
-    fn handle<'a>(&mut self, mut bitmap: BitmapUpdate, encoder: &'a mut PduEncoder) -> Result<UpdateFragmenter<'a>> {
+    fn handle<'a>(&mut self, bitmap: BitmapUpdate, encoder: &'a mut PduEncoder) -> Result<UpdateFragmenter<'a>> {
         use ironrdp_graphics::image_processing::PixelFormat::*;
 
-        if usize::from(bitmap.width.get() * 4) != bitmap.stride {
-            anyhow::bail!("unsupported bitmap with stride");
-        }
-        let mut pixels = bitmap.data.as_mut_slice();
-        let n = pixels.len() / 4;
-        match bitmap.format {
-            ARgb32 => (),
-            XRgb32 => {
-                (0..n).for_each(|i| pixels.copy_within(4 * i + 1..4 * i + 4, 3 * i));
-                pixels = &mut pixels[..n * 3];
-            }
-            ABgr32 => todo!(),
-            XBgr32 => todo!(),
-            BgrA32 => pixels.chunks_exact_mut(4).for_each(|chunk| chunk.reverse()),
-            BgrX32 => {
-                dbg!();
-                (0..n).for_each(|i| {
-                    pixels[4 * i..4 * i + 3].reverse();
-                    pixels.copy_within(4 * i..4 * i + 3, 3 * i);
-                });
-                pixels = &mut pixels[..n * 3];
-            }
-            RgbA32 => todo!(),
-            RgbX32 => {
-                (0..n).for_each(|i| pixels.copy_within(4 * i..4 * i + 3, 3 * i));
-                pixels = &mut pixels[..n * 3];
-            }
-        }
-        let data = qoi::encode_to_vec(pixels, bitmap.width.get().into(), bitmap.height.get().into()).unwrap();
+        let channels = match bitmap.format {
+            ARgb32 => qoi::RawChannels::Argb,
+            XRgb32 => qoi::RawChannels::Xrgb,
+            ABgr32 => qoi::RawChannels::Abgr,
+            XBgr32 => qoi::RawChannels::Xbgr,
+            BgrA32 => qoi::RawChannels::Bgra,
+            BgrX32 => qoi::RawChannels::Bgrx,
+            RgbA32 => qoi::RawChannels::Rgba,
+            RgbX32 => qoi::RawChannels::Rgbx,
+        };
+
+        let enc = qoi::Encoder::new_raw(
+            &bitmap.data,
+            bitmap.width.get().into(),
+            bitmap.height.get().into(),
+            bitmap.stride,
+            channels,
+        )?;
+        let data = enc.encode_to_vec()?;
         encoder.set_surface(bitmap, self.codec_id, data)
     }
 }

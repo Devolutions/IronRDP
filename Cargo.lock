@@ -4110,8 +4110,7 @@ dependencies = [
 [[package]]
 name = "qoi"
 version = "0.4.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7f6d64c71eb498fe9eae14ce4ec935c555749aef511cca85b5568910d6e48001"
+source = "git+https://github.com/elmarco/qoi-rust.git?branch=raw#08963cefde87310d5e5f0b9c0aa96936dd6e20d9"
 dependencies = [
  "bytemuck",
 ]

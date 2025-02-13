@@ -20,7 +20,7 @@ name = "perfenc"
 required-features = ["__bench"]
 
 [features]
-default = ["rayon"]
+default = ["rayon", "qoi"]
 helper = ["dep:x509-cert", "dep:rustls-pemfile"]
 rayon = ["dep:rayon"]
 qoi = ["dep:qoi", "ironrdp-pdu/qoi"]
