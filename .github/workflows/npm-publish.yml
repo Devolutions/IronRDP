@@ -14,7 +14,7 @@ on:
 jobs:
   preflight:
     name: Preflight
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-latest
     outputs:
       dry-run: ${{ steps.get-dry-run.outputs.dry-run }}
 
@@ -33,7 +33,7 @@ jobs:
 
   build:
     name: Build package
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-latest
     needs:
       - preflight
 
@@ -78,7 +78,7 @@ jobs:
 
   publish:
     name: Publish package
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-latest
     if: github.event_name == 'workflow_dispatch'
     environment: publish
     needs:

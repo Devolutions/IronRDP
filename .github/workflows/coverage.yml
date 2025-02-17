@@ -14,7 +14,7 @@ env:
 jobs:
   coverage:
     name: Coverage Report
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-latest
 
     # Running the coverage job is only supported on the official repo itself, not on forks
     # (because $GITHUB_TOKEN only have read permissions when run on a fork)
