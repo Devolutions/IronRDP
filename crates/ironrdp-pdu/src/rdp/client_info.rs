@@ -612,6 +612,7 @@ impl Default for PerformanceFlags {
 #[repr(transparent)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive, ToPrimitive)]
 pub struct AddressFamily(u16);
+
 impl AddressFamily {
     pub const INET: Self = Self(0x0002);
     pub const INET_6: Self = Self(0x0017);
