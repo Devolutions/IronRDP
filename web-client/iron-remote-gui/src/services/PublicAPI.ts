@@ -75,6 +75,10 @@ export class PublicAPI {
         this.wasmService.resizeDynamic(width, height, scale);
     }
 
+    private setEnableClipboard(enable: boolean) {
+        this.wasmService.setEnableClipboard(enable);
+    }
+
     getExposedFunctions(): UserInteraction {
         return {
             setVisibility: this.setVisibility.bind(this),
@@ -89,6 +93,7 @@ export class PublicAPI {
             setKeyboardUnicodeMode: this.setKeyboardUnicodeMode.bind(this),
             setCursorStyleOverride: this.setCursorStyleOverride.bind(this),
             resize: this.resize.bind(this),
+            setEnableClipboard: this.setEnableClipboard.bind(this),
         };
     }
 }
