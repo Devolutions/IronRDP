@@ -75,7 +75,6 @@ export class WasmBridgeService {
         ironrdp_init(LogType[debug]);
     }
 
-
     // If set to false, the clipboard will not be enabled and the callbacks will not be registered to the Rust side
     setEnableClipboard(enable: boolean) {
         this.enableClipboard = enable;
@@ -167,7 +166,7 @@ export class WasmBridgeService {
         if (this.onRemoteReceivedFormatList != null && this.enableClipboard) {
             sessionBuilder.remote_received_format_list_callback(this.onRemoteReceivedFormatList);
         }
-        if (this.onForceClipboardUpdate != null && this.enableClipboard)     {
+        if (this.onForceClipboardUpdate != null && this.enableClipboard) {
             sessionBuilder.force_clipboard_update_callback(this.onForceClipboardUpdate);
         }
 

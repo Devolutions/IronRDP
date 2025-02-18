@@ -2,3 +2,31 @@
     display: flex;
     justify-content: center;
 }
+
+.login-container {
+    height: 100vh;
+    overflow-y: auto;
+    padding: 1rem;
+}
+
+.login-content {
+    min-height: min-content;
+    padding-bottom: 2rem;
+}
+
+.field.label.border {
+    margin-bottom: 1rem;
+}
+
+.checkbox-container {
+    display: flex;
+    justify-content: start;
+    gap: 30rem;
+    padding: 0.5rem;
+}
+
+.checkbox-wrapper {
+    display: flex;
+    align-items: center;
+    font-size: 1.5em;
+}
