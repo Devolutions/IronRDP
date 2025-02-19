@@ -21,6 +21,7 @@
     };
     let pcb: string;
     let pop_up = false;
+    let enable_clipboard = true;
 
     let userInteraction: UserInteraction;
 
@@ -66,6 +67,7 @@
                 desktopSize,
                 pcb,
                 kdc_proxy_url,
+                enable_clipboard,
             });
             const base64Data = btoa(data);
             window.open(
@@ -76,6 +78,7 @@
             return;
         }
 
+        userInteraction.setEnableClipboard(enable_clipboard);
         from(
             userInteraction.connect(
                 username,
@@ -124,73 +127,83 @@
     };
 </script>
 
-<main class="responsive">
-    <div class="large-space" />
-    <div class="grid">
-        <div class="s2" />
-        <div class="s8">
-            <article class="primary-container">
-                <h5>Login</h5>
-                <div class="medium-space" />
-                <div>
-                    <div class="field label border">
-                        <input id="hostname" type="text" bind:value={hostname} />
-                        <label for="hostname">Hostname</label>
-                    </div>
-                    <div class="field label border">
-                        <input id="domain" type="text" bind:value={domain} />
-                        <label for="domain">Domain</label>
-                    </div>
-                    <div class="field label border">
-                        <input id="username" type="text" bind:value={username} />
-                        <label for="username">Username</label>
-                    </div>
-                    <div class="field label border">
-                        <input id="password" type="password" bind:value={password} />
-                        <label for="password">Password</label>
-                    </div>
-                    <div class="field label border">
-                        <input id="gatewayAddress" type="text" bind:value={gatewayAddress} />
-                        <label for="gatewayAddress">Gateway Address</label>
-                    </div>
-                    <div class="field label border">
-                        <input id="authtoken" type="text" bind:value={authtoken} />
-                        <label for="authtoken">AuthToken</label>
-                    </div>
-                    <div class="field label border">
-                        <input id="pcb" type="text" bind:value={pcb} />
-                        <label for="pcb">Pre Connection Blob</label>
-                    </div>
-                    <div class="field label border">
-                        <input id="desktopSizeW" type="text" bind:value={desktopSize.width} />
-                        <label for="desktopSizeW">Desktop Width</label>
-                    </div>
-                    <div class="field label border">
-                        <input id="desktopSizeH" type="text" bind:value={desktopSize.height} />
-                        <label for="desktopSizeH">Desktop Height</label>
-                    </div>
-                    <div class="field label border">
-                        <input id="kdc_proxy_url" type="text" bind:value={kdc_proxy_url} />
-                        <label for="kdc_proxy_url">KDC Proxy URL</label>
-                    </div>
-                    <div class="field label border">
-                        <div style="display: flex; height: 100%; align-items: center; font-size: 1.5em;">
-                            <input
-                                id="use_pop_up"
-                                type="checkbox"
-                                bind:value={pop_up}
-                                style="width: 1.5em; height: 1.5em; margin-right: 0.5em;"
-                            />
-                            <label for="use_pop_up">Use Pop Up</label>
+<main class="responsive login-container">
+    <div class="login-content">
+        <div class="grid">
+            <div class="s2" />
+            <div class="s8">
+                <article class="primary-container">
+                    <h5>Login</h5>
+                    <div class="medium-space" />
+                    <div>
+                        <div class="field label border">
+                            <input id="hostname" type="text" bind:value={hostname} />
+                            <label for="hostname">Hostname</label>
+                        </div>
+                        <div class="field label border">
+                            <input id="domain" type="text" bind:value={domain} />
+                            <label for="domain">Domain</label>
+                        </div>
+                        <div class="field label border">
+                            <input id="username" type="text" bind:value={username} />
+                            <label for="username">Username</label>
+                        </div>
+                        <div class="field label border">
+                            <input id="password" type="password" bind:value={password} />
+                            <label for="password">Password</label>
+                        </div>
+                        <div class="field label border">
+                            <input id="gatewayAddress" type="text" bind:value={gatewayAddress} />
+                            <label for="gatewayAddress">Gateway Address</label>
+                        </div>
+                        <div class="field label border">
+                            <input id="authtoken" type="text" bind:value={authtoken} />
+                            <label for="authtoken">AuthToken</label>
+                        </div>
+                        <div class="field label border">
+                            <input id="pcb" type="text" bind:value={pcb} />
+                            <label for="pcb">Pre Connection Blob</label>
+                        </div>
+                        <div class="field label border">
+                            <input id="desktopSizeW" type="text" bind:value={desktopSize.width} />
+                            <label for="desktopSizeW">Desktop Width</label>
+                        </div>
+                        <div class="field label border">
+                            <input id="desktopSizeH" type="text" bind:value={desktopSize.height} />
+                            <label for="desktopSizeH">Desktop Height</label>
+                        </div>
+                        <div class="field label border">
+                            <input id="kdc_proxy_url" type="text" bind:value={kdc_proxy_url} />
+                            <label for="kdc_proxy_url">KDC Proxy URL</label>
+                        </div>
+                        <div class="field label border checkbox-container">
+                            <div class="checkbox-wrapper">
+                                <input
+                                    id="use_pop_up"
+                                    type="checkbox"
+                                    bind:checked={pop_up}
+                                    style="width: 1.5em; height: 1.5em; margin-right: 0.5em;"
+                                />
+                                <label for="use_pop_up">Use Pop Up</label>
+                            </div>
+                            <div class="checkbox-wrapper">
+                                <input
+                                    id="enable_clipboard"
+                                    type="checkbox"
+                                    bind:checked={enable_clipboard}
+                                    style="width: 1.5em; height: 1.5em; margin-right: 0.5em;"
+                                />
+                                <label for="enable_clipboard">Enable Clipboard</label>
+                            </div>
                         </div>
                     </div>
-                </div>
-                <nav class="center-align">
-                    <button on:click={StartSession}>Login</button>
-                </nav>
-            </article>
+                    <nav class="center-align">
+                        <button on:click={StartSession}>Login</button>
+                    </nav>
+                </article>
+            </div>
+            <div class="s2" />
         </div>
-        <div class="s2" />
     </div>
 </main>
 

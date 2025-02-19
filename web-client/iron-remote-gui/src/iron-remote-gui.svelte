@@ -67,24 +67,25 @@
     /* Firefox-specific END */
 
     /* Clipboard initialization BEGIN */
-
-    // Detect if browser supports async Clipboard API
-    if (!isFirefox && navigator.clipboard != undefined) {
-        if (navigator.clipboard.read != undefined && navigator.clipboard.write != undefined) {
-            isClipboardApiSupported = true;
+    function initClipboard() {
+        // Detect if browser supports async Clipboard API
+        if (!isFirefox && navigator.clipboard != undefined) {
+            if (navigator.clipboard.read != undefined && navigator.clipboard.write != undefined) {
+                isClipboardApiSupported = true;
+            }
         }
-    }
 
-    if (isFirefox) {
-        wasmService.setOnRemoteClipboardChanged(ffOnRemoteClipboardChanged);
-        wasmService.setOnRemoteReceivedFormatList(ffOnRemoteReceivedFormatList);
-        wasmService.setOnForceClipboardUpdate(onForceClipboardUpdate);
-    } else if (isClipboardApiSupported) {
-        wasmService.setOnRemoteClipboardChanged(onRemoteClipboardChanged);
-        wasmService.setOnForceClipboardUpdate(onForceClipboardUpdate);
+        if (isFirefox) {
+            wasmService.setOnRemoteClipboardChanged(ffOnRemoteClipboardChanged);
+            wasmService.setOnRemoteReceivedFormatList(ffOnRemoteReceivedFormatList);
+            wasmService.setOnForceClipboardUpdate(onForceClipboardUpdate);
+        } else if (isClipboardApiSupported) {
+            wasmService.setOnRemoteClipboardChanged(onRemoteClipboardChanged);
+            wasmService.setOnForceClipboardUpdate(onForceClipboardUpdate);
 
-        // Start the clipboard monitoring loop
-        setTimeout(onMonitorClipboard, CLIPBOARD_MONITORING_INTERVAL);
+            // Start the clipboard monitoring loop
+            setTimeout(onMonitorClipboard, CLIPBOARD_MONITORING_INTERVAL);
+        }
     }
 
     /* Clipboard initialization END */
@@ -659,6 +660,7 @@
         loggingService.verbose = verbose === 'true';
         loggingService.info('Dom ready');
         await initcanvas();
+        initClipboard();
     });
 </script>
 

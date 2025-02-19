@@ -48,6 +48,7 @@ export class WasmBridgeService {
     private onForceClipboardUpdate?: OnForceClipboardUpdate;
     private cursorHasOverride: boolean = false;
     private lastCursorStyle: string = 'default';
+    private enableClipboard: boolean = true;
 
     resize: Observable<ResizeEvent>;
     session?: Session;
@@ -72,6 +73,11 @@ export class WasmBridgeService {
         await init();
         loggingService.info('Initializing IronRDP.');
         ironrdp_init(LogType[debug]);
+    }
+
+    // If set to false, the clipboard will not be enabled and the callbacks will not be registered to the Rust side
+    setEnableClipboard(enable: boolean) {
+        this.enableClipboard = enable;
     }
 
     /// Callback to set the local clipboard content to data received from the remote.
@@ -154,13 +160,13 @@ export class WasmBridgeService {
         if (preConnectionBlob != null) {
             sessionBuilder.pcb(preConnectionBlob);
         }
-        if (this.onRemoteClipboardChanged != null) {
+        if (this.onRemoteClipboardChanged != null && this.enableClipboard) {
             sessionBuilder.remote_clipboard_changed_callback(this.onRemoteClipboardChanged);
         }
-        if (this.onRemoteReceivedFormatList != null) {
+        if (this.onRemoteReceivedFormatList != null && this.enableClipboard) {
             sessionBuilder.remote_received_format_list_callback(this.onRemoteReceivedFormatList);
         }
-        if (this.onForceClipboardUpdate != null) {
+        if (this.onForceClipboardUpdate != null && this.enableClipboard) {
             sessionBuilder.force_clipboard_update_callback(this.onForceClipboardUpdate);
         }
 

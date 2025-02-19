@@ -34,4 +34,6 @@ export interface UserInteraction {
     onSessionEvent(callback: (event: SessionEvent) => void): void;
 
     resize(width: number, height: number, scale?: number): void;
+
+    setEnableClipboard(enable: boolean): void;
 }
