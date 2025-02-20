@@ -436,6 +436,7 @@ impl RdpServer {
             DisplayUpdate::PointerPosition(pos) => encoder.pointer_position(pos),
             DisplayUpdate::Resize(desktop_size) => {
                 debug!(?desktop_size, "Display resize");
+                encoder.set_desktop_size(desktop_size);
                 deactivate_all(io_channel_id, user_channel_id, writer).await?;
                 return Ok((RunState::DeactivationReactivation { desktop_size }, encoder));
             }
@@ -741,7 +742,8 @@ impl RdpServer {
             }
         }
 
-        let encoder = UpdateEncoder::new(surface_flags, rfxcodec);
+        let desktop_size = self.display.lock().await.size().await;
+        let encoder = UpdateEncoder::new(desktop_size, surface_flags, rfxcodec);
 
         let state = self
             .client_loop(reader, writer, result.io_channel_id, result.user_channel_id, encoder)
