@@ -61,11 +61,11 @@ jobs:
           - os: osx
             runner: macos-14
           - os: linux
-            runner: ubuntu-20.04
+            runner: ubuntu-22.04
           - os: ios
             runner: macos-14
           - os: android
-            runner: ubuntu-20.04
+            runner: ubuntu-22.04
         exclude:
           - arch: arm
             os: win
@@ -89,62 +89,10 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Configure Android NDK
+        uses: Devolutions/actions-public/cargo-android-ndk@v1
         if: matrix.os == 'android'
-        shell: pwsh
-        run: |    
-          $CargoConfigFile = "~/.cargo/config.toml"
-
-          # CMake issue with NDK 27.x: https://github.com/android/ndk/issues/2049
-          # Delete the code below once this issue is resolved and NDK updated. 
-          $Env:ANDROID_NDK_ROOT = "/usr/local/lib/android/sdk/ndk/26.3.11579264"
-          echo "ANDROID_NDK=${Env:ANDROID_NDK_ROOT}" >> $Env:GITHUB_ENV
-          echo "ANDROID_NDK_HOME=${Env:ANDROID_NDK_ROOT}" >> $Env:GITHUB_ENV
-          echo "ANDROID_NDK_LATEST_HOME=${Env:ANDROID_NDK_ROOT}" >> $Env:GITHUB_ENV
-          echo "ANDROID_NDK_ROOT=${Env:ANDROID_NDK_ROOT}" >> $Env:GITHUB_ENV
-
-          $AndroidToolchain="${Env:ANDROID_NDK_ROOT}/toolchains/llvm/prebuilt/linux-x86_64"
-          Write-Host "AndroidToolchain=$AndroidToolchain"
-
-          Get-ChildItem -Path $AndroidToolchain "libunwind.a" -Recurse | ForEach-Object {
-            $libunwind = $_.FullName
-            $libgcc = Join-Path $_.DirectoryName "libgcc.a"
-            if (-Not (Test-Path $libgcc)) {
-                Write-Host $libgcc
-                Copy-Item $libunwind $libgcc
-            }
-          }
-
-          Get-ChildItem -Path "$AndroidToolchain/bin/"
-
-          echo "[target.i686-linux-android]" >> $CargoConfigFile
-          echo "linker=`"$AndroidToolchain/bin/i686-linux-android21-clang`"" >> $CargoConfigFile
-          echo "rustflags = [`"-C`", `"link-args=-z max-page-size=16384`"]" >> $CargoConfigFile
-          echo "CC_i686-linux-android=$AndroidToolchain/bin/i686-linux-android21-clang" >> $Env:GITHUB_ENV
-          echo "CXX_i686-linux-android=$AndroidToolchain/bin/i686-linux-android21-clang++" >> $Env:GITHUB_ENV
-          echo "AR_i686-linux-android=$AndroidToolchain/bin/llvm-ar" >> $Env:GITHUB_ENV
-
-          echo "[target.x86_64-linux-android]" >> $CargoConfigFile
-          echo "linker=`"$AndroidToolchain/bin/x86_64-linux-android21-clang`"" >> $CargoConfigFile
-          echo "rustflags = [`"-C`", `"link-args=-z max-page-size=16384`"]" >> $CargoConfigFile
-          echo "CC_x86_64-linux-android=$AndroidToolchain/bin/x86_64-linux-android21-clang" >> $Env:GITHUB_ENV
-          echo "CXX_x86_64-linux-android=$AndroidToolchain/bin/x86_64-linux-android21-clang++" >> $Env:GITHUB_ENV
-          echo "AR_x86_64-linux-android=$AndroidToolchain/bin/llvm-ar" >> $Env:GITHUB_ENV
-
-          echo "[target.armv7-linux-androideabi]" >> $CargoConfigFile
-          echo "linker=`"$AndroidToolchain/bin/armv7a-linux-androideabi21-clang`"" >> $CargoConfigFile
-          echo "rustflags = [`"-C`", `"link-args=-z max-page-size=16384`"]" >> $CargoConfigFile
-          echo "CC_armv7-linux-androideabi=$AndroidToolchain/bin/armv7a-linux-androideabi21-clang" >> $Env:GITHUB_ENV
-          echo "CXX_armv7-linux-androideabi=$AndroidToolchain/bin/armv7a-linux-androideabi21-clang++" >> $Env:GITHUB_ENV
-          echo "AR_armv7-linux-androideabi=$AndroidToolchain/bin/llvm-ar" >> $Env:GITHUB_ENV
-
-          echo "[target.aarch64-linux-android]" >> $CargoConfigFile
-          echo "linker=`"$AndroidToolchain/bin/aarch64-linux-android21-clang`"" >> $CargoConfigFile
-          echo "rustflags = [`"-C`", `"link-args=-z max-page-size=16384`"]" >> $CargoConfigFile
-          echo "CC_aarch64-linux-android=$AndroidToolchain/bin/aarch64-linux-android21-clang" >> $Env:GITHUB_ENV
-          echo "CXX_aarch64-linux-android=$AndroidToolchain/bin/aarch64-linux-android21-clang++" >> $Env:GITHUB_ENV
-          echo "AR_aarch64-linux-android=$AndroidToolchain/bin/llvm-ar" >> $Env:GITHUB_ENV
-
-          Get-Content -Path "$CargoConfigFile"
+        with:
+          android_api_level: "21"
 
       - name: Configure macOS deployement target
         if: ${{ matrix.os == 'osx' }}
@@ -159,15 +107,6 @@ jobs:
       - name: Update runner
         if: ${{ matrix.os == 'linux' }}
         run: sudo apt update
-
-      # We need a newer version of GCC because aws-lc-rs rejects versions affected
-      # by this bug: https://gcc.gnu.org/bugzilla/show_bug.cgi?id=95189
-      # These lines can be safely removed once we switch to ubuntu-22.04 runner.
-      - name: Install GCC 10.x
-        if: ${{ matrix.os == 'linux' }}
-        run: |
-          sudo apt install gcc-10
-          sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-10 60
 
       - name: Install dependencies for rustls
         if: ${{ runner.os == 'Windows' }}
@@ -199,6 +138,18 @@ jobs:
         if: ${{ matrix.os == 'android' }}
         run: sudo apt install gcc-multilib
 
+      - name: Setup LLVM
+        uses: Devolutions/actions-public/setup-llvm@v1
+        if: matrix.os == 'linux'
+        with:
+          version: "18.1.8"
+
+      - name: Setup CBake
+        uses: Devolutions/actions-public/setup-cbake@v1
+        if: matrix.os == 'linux'
+        with:
+          cargo_env_scripts: true
+
       - name: Build native lib (${{matrix.os}}-${{matrix.arch}})
         shell: pwsh
         run: |
@@ -226,12 +177,6 @@ jobs:
             $Env:RUSTFLAGS="-C target-feature=+crt-static"
           }
 
-          if ($RustTarget -eq 'aarch64-unknown-linux-gnu') {
-            sudo apt update
-            sudo apt install gcc-aarch64-linux-gnu
-            $Env:RUSTFLAGS="-C linker=aarch64-linux-gnu-gcc"
-          }
-
           $ProjectVersion = '${{ needs.preflight.outputs.project-version }}'
           $PackageVersion = '${{ needs.preflight.outputs.package-version }}'
 
@@ -240,6 +185,13 @@ jobs:
             if ($_.StartsWith("version =")) { "version = `"$PackageVersion`"" } else { $_ }
           }
           Set-Content -Path .\ffi\Cargo.toml -Value $CargoToml
+
+          if ($DotNetOs -eq 'linux') {
+            $LinuxArch = @{'x64'='amd64';'arm64'='arm64'}[$DotNetArch]
+            $Env:SYSROOT_NAME = "ubuntu-20.04-$LinuxArch"
+            . "$HOME/.cargo/cbake/${RustTarget}-enter.ps1"
+            $Env:AWS_LC_SYS_CMAKE_BUILDER="true"
+          }
 
           $CargoParams = @(
               "build",
@@ -276,13 +228,8 @@ jobs:
       - name: Checkout ${{ github.repository }}
         uses: actions/checkout@v4
 
-      - name: Configure runner
-        shell: pwsh
-        run: |
-          wget -q https://github.com/awakecoding/llvm-prebuilt/releases/download/v2023.3.0/cctools-x86_64-ubuntu-22.04.tar.xz
-          tar -xf cctools-x86_64-ubuntu-22.04.tar.xz -C /tmp
-          sudo mv /tmp/cctools-x86_64-ubuntu-22.04/bin/lipo /usr/local/bin
-          sudo mv /tmp/cctools-x86_64-ubuntu-22.04/bin/install_name_tool /usr/local/bin
+      - name: Setup CCTools
+        uses: Devolutions/actions-public/setup-cctools@v1
 
       - name: Download native components
         uses: actions/download-artifact@v4
