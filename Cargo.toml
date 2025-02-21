@@ -1,16 +1,12 @@
 [workspace]
-members = [
-  "crates/*",
-  "xtask",
-  "ffi",
-]
+members = ["crates/*", "xtask", "ffi"]
 resolver = "2"
 
 # FIXME: fix compilation
 exclude = [
-  "crates/ironrdp-client-glutin",
-  "crates/ironrdp-glutin-renderer",
-  "crates/ironrdp-replay-client",
+    "crates/ironrdp-client-glutin",
+    "crates/ironrdp-glutin-renderer",
+    "crates/ironrdp-replay-client",
 ]
 
 [workspace.package]
@@ -18,7 +14,10 @@ edition = "2021"
 license = "MIT OR Apache-2.0"
 homepage = "https://github.com/Devolutions/IronRDP"
 repository = "https://github.com/Devolutions/IronRDP"
-authors = ["Devolutions Inc. <infos@devolutions.net>", "Teleport <goteleport.com>"]
+authors = [
+    "Devolutions Inc. <infos@devolutions.net>",
+    "Teleport <goteleport.com>",
+]
 keywords = ["rdp", "remote-desktop", "network", "client", "protocol"]
 categories = ["network-programming"]
 
@@ -61,6 +60,7 @@ bitflags = "2.4"
 expect-test = "1"
 png = "0.17"
 proptest = "1.4"
+qoi = "0.4"
 rstest = "0.18"
 sspi = "0.15"
 tracing = { version = "0.1", features = ["log"] }
@@ -82,7 +82,7 @@ unsafe_op_in_unsafe_fn = "warn"
 invalid_reference_casting = "warn"
 
 # == Style, readability == #
-elided_lifetimes_in_paths = "warn" # https://quinedot.github.io/rust-learning/dont-hide.html
+elided_lifetimes_in_paths = "warn"              # https://quinedot.github.io/rust-learning/dont-hide.html
 absolute_paths_not_starting_with_crate = "warn"
 single_use_lifetimes = "warn"
 unreachable_pub = "warn"
@@ -118,14 +118,14 @@ as_underscore = "warn"
 large_stack_frames = "warn"
 
 # == Style, readability == #
-semicolon_outside_block = "warn" # With semicolon-outside-block-ignore-multiline = true
+semicolon_outside_block = "warn"     # With semicolon-outside-block-ignore-multiline = true
 clone_on_ref_ptr = "warn"
 cloned_instead_of_copied = "warn"
 trait_duplication_in_bounds = "warn"
 type_repetition_in_bounds = "warn"
 checked_conversions = "warn"
 get_unwrap = "warn"
-similar_names = "warn" # Reduce risk of confusing similar names together, and protects against typos when variable shadowing was intended.
+similar_names = "warn"               # Reduce risk of confusing similar names together, and protects against typos when variable shadowing was intended.
 str_to_string = "warn"
 string_to_string = "warn"
 std_instead_of_core = "warn"

@@ -585,6 +585,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f61dac84819c6588b558454b194026eb1f09c293b9036ae9b159e74e73ab6cf9"
 
 [[package]]
+name = "bytesize"
+version = "1.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2d2c12f985c78475a6b8d629afd0c360260ef34cfef52efccdcfd31972f81c2e"
+
+[[package]]
 name = "calloop"
 version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2671,6 +2677,7 @@ version = "0.4.1"
 dependencies = [
  "anyhow",
  "async-trait",
+ "bytesize",
  "ironrdp-acceptor",
  "ironrdp-ainput",
  "ironrdp-async",
@@ -2683,11 +2690,15 @@ dependencies = [
  "ironrdp-rdpsnd",
  "ironrdp-svc",
  "ironrdp-tokio",
+ "pico-args",
+ "qoi",
  "rayon",
  "rustls-pemfile",
  "tokio",
  "tokio-rustls",
  "tracing",
+ "tracing-subscriber",
+ "visibility",
  "x509-cert",
 ]
 
@@ -2703,6 +2714,7 @@ dependencies = [
  "ironrdp-graphics",
  "ironrdp-pdu",
  "ironrdp-svc",
+ "qoi",
  "tracing",
 ]
 
@@ -4093,6 +4105,14 @@ dependencies = [
  "rusty-fork",
  "tempfile",
  "unarray",
+]
+
+[[package]]
+name = "qoi"
+version = "0.4.1"
+source = "git+https://github.com/elmarco/qoi-rust.git?branch=raw#08963cefde87310d5e5f0b9c0aa96936dd6e20d9"
+dependencies = [
+ "bytemuck",
 ]
 
 [[package]]
@@ -5535,6 +5555,17 @@ name = "version_check"
 version = "0.9.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
+
+[[package]]
+name = "visibility"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d674d135b4a8c1d7e813e2f8d1c9a58308aee4a680323066025e53132218bd91"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
 
 [[package]]
 name = "vswhom"

@@ -15,8 +15,11 @@ categories.workspace = true
 doctest = false
 test = false
 
+[features]
+qoi = ["dep:qoi"]
+
 [dependencies]
-ironrdp-connector.workspace = true # TODO: at some point, this dependency could be removed (good for compilation speed)
+ironrdp-connector.workspace = true                     # TODO: at some point, this dependency could be removed (good for compilation speed)
 ironrdp-svc.workspace = true
 ironrdp-dvc.workspace = true
 ironrdp-error.workspace = true
@@ -25,7 +28,7 @@ ironrdp-pdu = { workspace = true, features = ["std"] }
 ironrdp-displaycontrol.workspace = true
 tracing.workspace = true
 ironrdp-core.workspace = true
+qoi = { workspace = true, optional = true }
 
 [lints]
 workspace = true
-
