@@ -609,12 +609,13 @@ impl Default for PerformanceFlags {
     }
 }
 
-#[repr(u16)]
+#[repr(transparent)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive, ToPrimitive)]
-pub enum AddressFamily {
-    Invalid = 0x0000, // value given by MS Remote Desktop for Android 10.0.18.1251
-    INet = 0x0002,
-    INet6 = 0x0017,
+pub struct AddressFamily(u16);
+
+impl AddressFamily {
+    pub const INET: Self = Self(0x0002);
+    pub const INET_6: Self = Self(0x0017);
 }
 
 bitflags! {
