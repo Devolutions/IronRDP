@@ -183,7 +183,7 @@ impl RdpServerDisplayUpdates for DisplayUpdates {
             width,
             height,
             format: PixelFormat::BgrA32,
-            data,
+            data: data.into(),
             stride: usize::from(width.get()).checked_mul(4).unwrap(),
         };
         Some(DisplayUpdate::Bitmap(bitmap))
