@@ -60,7 +60,7 @@ sspi = { workspace = true, features = ["network_client"] }
 tracing.workspace = true
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tokio-rustls = "0.26"
-rand = "0.8"
+rand = "0.9"
 opus = "0.3"
 
 [package.metadata.docs.rs]
