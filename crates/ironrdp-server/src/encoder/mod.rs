@@ -1,12 +1,9 @@
-mod bitmap;
-pub(crate) mod rfx;
-
-use core::{cmp, fmt};
+use core::fmt;
 
 use anyhow::{Context, Result};
 use ironrdp_acceptor::DesktopSize;
 use ironrdp_core::{Encode, WriteCursor};
-use ironrdp_pdu::fast_path::{EncryptionFlags, FastPathHeader, FastPathUpdatePdu, Fragmentation, UpdateCode};
+use ironrdp_pdu::fast_path::UpdateCode;
 use ironrdp_pdu::geometry::ExclusiveRectangle;
 use ironrdp_pdu::pointer::{ColorPointerAttribute, Point16, PointerAttribute, PointerPositionAttribute};
 use ironrdp_pdu::rdp::capability_sets::{CmdFlags, EntropyBits};
@@ -17,16 +14,17 @@ use self::rfx::RfxEncoder;
 use super::BitmapUpdate;
 use crate::{ColorPointer, Framebuffer, RGBAPointer};
 
+mod bitmap;
+mod fast_path;
+pub(crate) mod rfx;
+
+pub(crate) use fast_path::*;
+
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 #[repr(u8)]
 enum CodecId {
     None = 0x0,
 }
-
-// this is the maximum amount of data (not including headers) we can send in a single TS_FP_UPDATE_PDU
-const MAX_FASTPATH_UPDATE_SIZE: usize = 16_374;
-
-const FASTPATH_HEADER_SIZE: usize = 6;
 
 pub(crate) struct UpdateEncoder {
     desktop_size: DesktopSize,
@@ -139,11 +137,7 @@ impl UpdateEncoder {
     }
 
     pub(crate) fn fragmenter_from_owned(&self, res: UpdateFragmenterOwned) -> UpdateFragmenter<'_> {
-        UpdateFragmenter {
-            code: res.code,
-            index: res.index,
-            data: &self.pdu_encoder.buffer[0..res.len],
-        }
+        UpdateFragmenter::from_owned(res, &self.pdu_encoder.buffer)
     }
 }
 
@@ -306,97 +300,5 @@ impl PduEncoder {
         let cmd = SurfaceCommand::SetSurfaceBits(pdu);
         let buf = self.encode(cmd)?;
         Ok(UpdateFragmenter::new(UpdateCode::SurfaceCommands, buf))
-    }
-}
-
-pub(crate) struct UpdateFragmenterOwned {
-    code: UpdateCode,
-    index: usize,
-    len: usize,
-}
-
-pub(crate) struct UpdateFragmenter<'a> {
-    code: UpdateCode,
-    index: usize,
-    data: &'a [u8],
-}
-
-impl fmt::Debug for UpdateFragmenter<'_> {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("UpdateFragmenter")
-            .field("len", &self.data.len())
-            .finish()
-    }
-}
-
-impl<'a> UpdateFragmenter<'a> {
-    pub(crate) fn new(code: UpdateCode, data: &'a [u8]) -> Self {
-        Self { code, index: 0, data }
-    }
-
-    pub(crate) fn into_owned(self) -> UpdateFragmenterOwned {
-        UpdateFragmenterOwned {
-            code: self.code,
-            index: self.index,
-            len: self.data.len(),
-        }
-    }
-
-    pub(crate) fn size_hint(&self) -> usize {
-        FASTPATH_HEADER_SIZE + cmp::min(self.data.len(), MAX_FASTPATH_UPDATE_SIZE)
-    }
-
-    pub(crate) fn next(&mut self, dst: &mut [u8]) -> Option<usize> {
-        let (consumed, written) = self.encode_next(dst)?;
-        self.data = &self.data[consumed..];
-        self.index = self.index.checked_add(1)?;
-        Some(written)
-    }
-
-    fn encode_next(&mut self, dst: &mut [u8]) -> Option<(usize, usize)> {
-        match self.data.len() {
-            0 => None,
-
-            1..=MAX_FASTPATH_UPDATE_SIZE => {
-                let frag = if self.index > 0 {
-                    Fragmentation::Last
-                } else {
-                    Fragmentation::Single
-                };
-
-                self.encode_fastpath(frag, self.data, dst)
-                    .map(|written| (self.data.len(), written))
-            }
-
-            _ => {
-                let frag = if self.index > 0 {
-                    Fragmentation::Next
-                } else {
-                    Fragmentation::First
-                };
-
-                self.encode_fastpath(frag, &self.data[..MAX_FASTPATH_UPDATE_SIZE], dst)
-                    .map(|written| (MAX_FASTPATH_UPDATE_SIZE, written))
-            }
-        }
-    }
-
-    fn encode_fastpath(&self, frag: Fragmentation, data: &[u8], dst: &mut [u8]) -> Option<usize> {
-        let mut cursor = WriteCursor::new(dst);
-
-        let update = FastPathUpdatePdu {
-            fragmentation: frag,
-            update_code: self.code,
-            compression_flags: None,
-            compression_type: None,
-            data,
-        };
-
-        let header = FastPathHeader::new(EncryptionFlags::empty(), update.size());
-
-        header.encode(&mut cursor).ok()?;
-        update.encode(&mut cursor).ok()?;
-
-        Some(cursor.pos())
     }
 }
