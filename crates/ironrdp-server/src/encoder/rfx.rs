@@ -11,7 +11,7 @@ use ironrdp_pdu::WriteCursor;
 
 use crate::BitmapUpdate;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct RfxEncoder {
     entropy_algorithm: rfx::EntropyAlgorithm,
 }
