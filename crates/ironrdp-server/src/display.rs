@@ -68,8 +68,8 @@ impl TryInto<Framebuffer> for BitmapUpdate {
     type Error = &'static str;
 
     fn try_into(self) -> Result<Framebuffer, Self::Error> {
-        assert_eq!(self.top, 0);
-        assert_eq!(self.left, 0);
+        assert_eq!(self.x, 0);
+        assert_eq!(self.y, 0);
         Ok(Framebuffer {
             width: self.width,
             height: self.height,
@@ -87,8 +87,8 @@ impl TryInto<Framebuffer> for BitmapUpdate {
 ///
 #[derive(Clone)]
 pub struct BitmapUpdate {
-    pub top: u16,
-    pub left: u16,
+    pub x: u16,
+    pub y: u16,
     pub width: NonZeroU16,
     pub height: NonZeroU16,
     pub format: PixelFormat,
@@ -99,8 +99,8 @@ pub struct BitmapUpdate {
 impl core::fmt::Debug for BitmapUpdate {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("BitmapUpdate")
-            .field("top", &self.top)
-            .field("left", &self.left)
+            .field("x", &self.x)
+            .field("y", &self.y)
             .field("width", &self.width)
             .field("height", &self.height)
             .field("format", &self.format)
