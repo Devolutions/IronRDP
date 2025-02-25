@@ -426,12 +426,12 @@ impl RdpServer {
         let mut fragmenter = match update {
             DisplayUpdate::Bitmap(bitmap) => {
                 let (enc, res) = task::spawn_blocking(move || {
-                    let res = time_warn!("Encoding bitmap", 10, encoder.bitmap(bitmap).map(|r| r.into_owned()));
+                    let res = time_warn!("Encoding bitmap", 10, encoder.bitmap(bitmap));
                     (encoder, res)
                 })
                 .await?;
                 encoder = enc;
-                res.map(|r| encoder.fragmenter_from_owned(r))
+                res
             }
             DisplayUpdate::PointerPosition(pos) => encoder.pointer_position(pos),
             DisplayUpdate::Resize(desktop_size) => {

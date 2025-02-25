@@ -10,19 +10,14 @@ const MAX_FASTPATH_UPDATE_SIZE: usize = 16_374;
 
 const FASTPATH_HEADER_SIZE: usize = 6;
 
-pub(crate) struct UpdateFragmenterOwned {
+pub(crate) struct UpdateFragmenter {
     code: UpdateCode,
     index: usize,
-    len: usize,
+    data: Vec<u8>,
+    position: usize,
 }
 
-pub(crate) struct UpdateFragmenter<'a> {
-    code: UpdateCode,
-    index: usize,
-    data: &'a [u8],
-}
-
-impl fmt::Debug for UpdateFragmenter<'_> {
+impl fmt::Debug for UpdateFragmenter {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("UpdateFragmenter")
             .field("len", &self.data.len())
@@ -30,24 +25,13 @@ impl fmt::Debug for UpdateFragmenter<'_> {
     }
 }
 
-impl<'a> UpdateFragmenter<'a> {
-    pub(crate) fn new(code: UpdateCode, data: &'a [u8]) -> Self {
-        Self { code, index: 0, data }
-    }
-
-    pub(crate) fn into_owned(self) -> UpdateFragmenterOwned {
-        UpdateFragmenterOwned {
-            code: self.code,
-            index: self.index,
-            len: self.data.len(),
-        }
-    }
-
-    pub(crate) fn from_owned(res: UpdateFragmenterOwned, buffer: &'a [u8]) -> UpdateFragmenter<'a> {
+impl UpdateFragmenter {
+    pub(crate) fn new(code: UpdateCode, data: Vec<u8>) -> Self {
         Self {
-            code: res.code,
-            index: res.index,
-            data: &buffer[0..res.len],
+            code,
+            index: 0,
+            data,
+            position: 0,
         }
     }
 
@@ -57,13 +41,13 @@ impl<'a> UpdateFragmenter<'a> {
 
     pub(crate) fn next(&mut self, dst: &mut [u8]) -> Option<usize> {
         let (consumed, written) = self.encode_next(dst)?;
-        self.data = &self.data[consumed..];
+        self.position += consumed;
         self.index = self.index.checked_add(1)?;
         Some(written)
     }
 
     fn encode_next(&mut self, dst: &mut [u8]) -> Option<(usize, usize)> {
-        match self.data.len() {
+        match self.data.len() - self.position {
             0 => None,
 
             1..=MAX_FASTPATH_UPDATE_SIZE => {
@@ -73,8 +57,8 @@ impl<'a> UpdateFragmenter<'a> {
                     Fragmentation::Single
                 };
 
-                self.encode_fastpath(frag, self.data, dst)
-                    .map(|written| (self.data.len(), written))
+                self.encode_fastpath(frag, &self.data[self.position..], dst)
+                    .map(|written| (self.data.len() - self.position, written))
             }
 
             _ => {
@@ -84,8 +68,12 @@ impl<'a> UpdateFragmenter<'a> {
                     Fragmentation::First
                 };
 
-                self.encode_fastpath(frag, &self.data[..MAX_FASTPATH_UPDATE_SIZE], dst)
-                    .map(|written| (MAX_FASTPATH_UPDATE_SIZE, written))
+                self.encode_fastpath(
+                    frag,
+                    &self.data[self.position..MAX_FASTPATH_UPDATE_SIZE + self.position],
+                    dst,
+                )
+                .map(|written| (MAX_FASTPATH_UPDATE_SIZE, written))
             }
         }
     }
@@ -118,7 +106,7 @@ mod tests {
     #[test]
     fn test_single_fragment() {
         let data = vec![1, 2, 3, 4];
-        let mut fragmenter = UpdateFragmenter::new(UpdateCode::Bitmap, &data);
+        let mut fragmenter = UpdateFragmenter::new(UpdateCode::Bitmap, data);
         let mut buffer = vec![0; 100];
         let written = fragmenter.next(&mut buffer).unwrap();
         assert!(written > 0);
@@ -142,7 +130,7 @@ mod tests {
     #[test]
     fn test_multi_fragment() {
         let data = vec![0u8; MAX_FASTPATH_UPDATE_SIZE * 2 + 10];
-        let mut fragmenter = UpdateFragmenter::new(UpdateCode::Bitmap, &data);
+        let mut fragmenter = UpdateFragmenter::new(UpdateCode::Bitmap, data);
         let mut buffer = vec![0u8; fragmenter.size_hint()];
         let written = fragmenter.next(&mut buffer).unwrap();
         assert!(written > 0);
