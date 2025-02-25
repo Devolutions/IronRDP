@@ -2566,6 +2566,7 @@ dependencies = [
  "bitflags 2.9.0",
  "bitvec",
  "bmp",
+ "bytemuck",
  "byteorder",
  "expect-test",
  "ironrdp-core",
