@@ -863,6 +863,7 @@ fn build_config(
         request_data: None,
         pointer_software_rendering: false,
         performance_flags: PerformanceFlags::default(),
+        support_gfx: false,
         desktop_scale_factor: 0,
         hardware_id: None,
         license_cache: None,

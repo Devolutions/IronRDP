@@ -662,8 +662,11 @@ fn create_gcc_blocks<'a>(
                         | ClientEarlyCapabilityFlags::SUPPORT_ERR_INFO_PDU
                         | ClientEarlyCapabilityFlags::STRONG_ASYMMETRIC_KEYS
                         | ClientEarlyCapabilityFlags::SUPPORT_SKIP_CHANNELJOIN;
-
                     // TODO(#136): support for ClientEarlyCapabilityFlags::SUPPORT_STATUS_INFO_PDU
+
+                    if config.support_gfx {
+                        early_capability_flags |= ClientEarlyCapabilityFlags::SUPPORT_DYN_VC_GFX_PROTOCOL;
+                    }
 
                     if max_color_depth == 32 {
                         early_capability_flags |= ClientEarlyCapabilityFlags::WANT_32_BPP_SESSION;

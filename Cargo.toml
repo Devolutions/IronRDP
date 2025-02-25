@@ -35,6 +35,7 @@ ironrdp-core = { version = "0.1", path = "crates/ironrdp-core" }
 ironrdp-connector = { version = "0.3", path = "crates/ironrdp-connector" }
 ironrdp-dvc = { version = "0.1", path = "crates/ironrdp-dvc" }
 ironrdp-displaycontrol = { version = "0.1", path = "crates/ironrdp-displaycontrol" }
+ironrdp-egfx = { version = "0.1", path = "crates/ironrdp-egfx" }
 ironrdp-error = { version = "0.1", path = "crates/ironrdp-error" }
 ironrdp-futures = { version = "0.1", path = "crates/ironrdp-futures" }
 ironrdp-fuzzing = { path = "crates/ironrdp-fuzzing" }

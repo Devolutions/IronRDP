@@ -1,5 +1,3 @@
-pub mod dvc;
-
 #[cfg(test)]
 mod tests;
 
