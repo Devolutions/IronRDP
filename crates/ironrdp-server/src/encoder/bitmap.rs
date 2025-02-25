@@ -7,6 +7,7 @@ use ironrdp_pdu::geometry::InclusiveRectangle;
 use crate::BitmapUpdate;
 
 // PERF: we could also remove the need for this buffer
+#[derive(Clone)]
 pub(crate) struct BitmapEncoder {
     buffer: Vec<u8>,
 }
