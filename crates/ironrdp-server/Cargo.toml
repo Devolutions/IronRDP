@@ -13,7 +13,6 @@ categories.workspace = true
 
 [lib]
 doctest = true
-test = false
 
 [features]
 default = ["rayon"]

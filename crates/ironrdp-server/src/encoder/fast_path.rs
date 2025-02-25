@@ -109,3 +109,87 @@ impl<'a> UpdateFragmenter<'a> {
         Some(cursor.pos())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ironrdp_core::{decode_cursor, ReadCursor};
+
+    #[test]
+    fn test_single_fragment() {
+        let data = vec![1, 2, 3, 4];
+        let mut fragmenter = UpdateFragmenter::new(UpdateCode::Bitmap, &data);
+        let mut buffer = vec![0; 100];
+        let written = fragmenter.next(&mut buffer).unwrap();
+        assert!(written > 0);
+        assert_eq!(fragmenter.index, 1);
+
+        let mut cursor = ReadCursor::new(&buffer);
+        let header: FastPathHeader = decode_cursor(&mut cursor).unwrap();
+        let update: FastPathUpdatePdu<'_> = decode_cursor(&mut cursor).unwrap();
+        assert!(matches!(header, FastPathHeader { data_length: 7, .. }));
+        assert!(matches!(
+            update,
+            FastPathUpdatePdu {
+                fragmentation: Fragmentation::Single,
+                ..
+            }
+        ));
+
+        assert!(fragmenter.next(&mut buffer).is_none());
+    }
+
+    #[test]
+    fn test_multi_fragment() {
+        let data = vec![0u8; MAX_FASTPATH_UPDATE_SIZE * 2 + 10];
+        let mut fragmenter = UpdateFragmenter::new(UpdateCode::Bitmap, &data);
+        let mut buffer = vec![0u8; fragmenter.size_hint()];
+        let written = fragmenter.next(&mut buffer).unwrap();
+        assert!(written > 0);
+        assert_eq!(fragmenter.index, 1);
+
+        let mut cursor = ReadCursor::new(&buffer);
+        let _header: FastPathHeader = decode_cursor(&mut cursor).unwrap();
+        let update: FastPathUpdatePdu<'_> = decode_cursor(&mut cursor).unwrap();
+        assert!(matches!(
+            update,
+            FastPathUpdatePdu {
+                fragmentation: Fragmentation::First,
+                ..
+            }
+        ));
+        assert_eq!(update.data.len(), MAX_FASTPATH_UPDATE_SIZE);
+
+        let written = fragmenter.next(&mut buffer).unwrap();
+        assert!(written > 0);
+        assert_eq!(fragmenter.index, 2);
+        let mut cursor = ReadCursor::new(&buffer);
+        let _header: FastPathHeader = decode_cursor(&mut cursor).unwrap();
+        let update: FastPathUpdatePdu<'_> = decode_cursor(&mut cursor).unwrap();
+        assert!(matches!(
+            update,
+            FastPathUpdatePdu {
+                fragmentation: Fragmentation::Next,
+                ..
+            }
+        ));
+        assert_eq!(update.data.len(), MAX_FASTPATH_UPDATE_SIZE);
+
+        let written = fragmenter.next(&mut buffer).unwrap();
+        assert!(written > 0);
+        assert_eq!(fragmenter.index, 3);
+        let mut cursor = ReadCursor::new(&buffer);
+        let _header: FastPathHeader = decode_cursor(&mut cursor).unwrap();
+        let update: FastPathUpdatePdu<'_> = decode_cursor(&mut cursor).unwrap();
+        assert!(matches!(
+            update,
+            FastPathUpdatePdu {
+                fragmentation: Fragmentation::Last,
+                ..
+            }
+        ));
+        assert_eq!(update.data.len(), 10);
+
+        assert!(fragmenter.next(&mut buffer).is_none());
+    }
+}
