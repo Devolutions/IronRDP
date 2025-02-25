@@ -20,8 +20,8 @@ use ironrdp::server::tokio::sync::mpsc::UnboundedSender;
 use ironrdp::server::tokio::time::{self, sleep, Duration};
 use ironrdp::server::{
     tokio, BitmapUpdate, CliprdrServerFactory, Credentials, DisplayUpdate, KeyboardEvent, MouseEvent, PixelFormat,
-    PixelOrder, RdpServer, RdpServerDisplay, RdpServerDisplayUpdates, RdpServerInputHandler, ServerEvent,
-    ServerEventSender, SoundServerFactory, TlsIdentityCtx,
+    RdpServer, RdpServerDisplay, RdpServerDisplayUpdates, RdpServerInputHandler, ServerEvent, ServerEventSender,
+    SoundServerFactory, TlsIdentityCtx,
 };
 use ironrdp_cliprdr_native::StubCliprdrBackend;
 use rand::prelude::*;
@@ -183,7 +183,6 @@ impl RdpServerDisplayUpdates for DisplayUpdates {
             width,
             height,
             format: PixelFormat::BgrA32,
-            order: PixelOrder::TopToBottom,
             data,
             stride: usize::from(width.get()).checked_mul(4).unwrap(),
         };
