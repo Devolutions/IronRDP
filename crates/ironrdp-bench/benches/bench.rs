@@ -10,8 +10,8 @@ pub fn rfx_enc_tile_bench(c: &mut Criterion) {
     let quant = rfx::Quant::default();
     let algo = rfx::EntropyAlgorithm::Rlgr3;
     let bitmap = BitmapUpdate {
-        top: 0,
-        left: 0,
+        x: 0,
+        y: 0,
         width: NonZero::new(64).unwrap(),
         height: NonZero::new(64).unwrap(),
         format: ironrdp_server::PixelFormat::ARgb32,
@@ -25,8 +25,8 @@ pub fn rfx_enc_bench(c: &mut Criterion) {
     let quant = rfx::Quant::default();
     let algo = rfx::EntropyAlgorithm::Rlgr3;
     let bitmap = BitmapUpdate {
-        top: 0,
-        left: 0,
+        x: 0,
+        y: 0,
         width: NonZero::new(2048).unwrap(),
         height: NonZero::new(2048).unwrap(),
         format: ironrdp_server::PixelFormat::ARgb32,

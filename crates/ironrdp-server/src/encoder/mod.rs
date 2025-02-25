@@ -158,10 +158,10 @@ impl UpdateEncoder {
 
     fn set_surface(&mut self, bitmap: BitmapUpdate, codec_id: u8, data: &[u8]) -> Result<UpdateFragmenter<'_>> {
         let destination = ExclusiveRectangle {
-            left: bitmap.left,
-            top: bitmap.top,
-            right: bitmap.left + bitmap.width.get(),
-            bottom: bitmap.top + bitmap.height.get(),
+            left: bitmap.x,
+            top: bitmap.y,
+            right: bitmap.x + bitmap.width.get(),
+            bottom: bitmap.y + bitmap.height.get(),
         };
         let extended_bitmap_data = ExtendedBitmapDataPdu {
             bpp: bitmap.format.bytes_per_pixel() * 8,
