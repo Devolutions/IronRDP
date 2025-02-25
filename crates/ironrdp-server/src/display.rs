@@ -24,12 +24,6 @@ pub enum DisplayUpdate {
     DefaultPointer,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum PixelOrder {
-    TopToBottom,
-    BottomToTop,
-}
-
 #[derive(Clone)]
 pub struct RGBAPointer {
     pub width: u16,
@@ -73,7 +67,6 @@ pub struct BitmapUpdate {
     pub width: NonZeroU16,
     pub height: NonZeroU16,
     pub format: PixelFormat,
-    pub order: PixelOrder,
     pub data: Vec<u8>,
     pub stride: usize,
 }
@@ -86,7 +79,6 @@ impl core::fmt::Debug for BitmapUpdate {
             .field("width", &self.width)
             .field("height", &self.height)
             .field("format", &self.format)
-            .field("order", &self.order)
             .finish()
     }
 }
