@@ -7,6 +7,7 @@
 #![allow(clippy::cast_sign_loss)] // FIXME: remove
 
 pub mod color_conversion;
+pub mod diff;
 pub mod dwt;
 pub mod image_processing;
 pub mod pointer;
