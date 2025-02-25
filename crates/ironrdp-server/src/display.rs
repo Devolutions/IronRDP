@@ -1,6 +1,7 @@
 use core::num::NonZeroU16;
 
 use anyhow::Result;
+use bytes::Bytes;
 use ironrdp_displaycontrol::pdu::DisplayControlMonitorLayout;
 use ironrdp_pdu::pointer::PointerPositionAttribute;
 
@@ -67,8 +68,33 @@ pub struct BitmapUpdate {
     pub width: NonZeroU16,
     pub height: NonZeroU16,
     pub format: PixelFormat,
-    pub data: Vec<u8>,
+    pub data: Bytes,
     pub stride: usize,
+}
+
+impl BitmapUpdate {
+    pub fn new<D>(
+        top: u16,
+        left: u16,
+        width: NonZeroU16,
+        height: NonZeroU16,
+        format: PixelFormat,
+        data: D,
+        stride: usize,
+    ) -> Self
+    where
+        D: Into<Bytes>,
+    {
+        Self {
+            top,
+            left,
+            width,
+            height,
+            format,
+            data: data.into(),
+            stride,
+        }
+    }
 }
 
 impl core::fmt::Debug for BitmapUpdate {
