@@ -1,7 +1,7 @@
 mod bitmap;
 pub(crate) mod rfx;
 
-use core::{cmp, mem};
+use core::cmp;
 
 use anyhow::{Context, Result};
 use ironrdp_core::{Encode, WriteCursor};
@@ -14,7 +14,7 @@ use ironrdp_pdu::surface_commands::{ExtendedBitmapDataPdu, SurfaceBitsPdu, Surfa
 use self::bitmap::BitmapEncoder;
 use self::rfx::RfxEncoder;
 use super::BitmapUpdate;
-use crate::{ColorPointer, PixelOrder, RGBAPointer};
+use crate::{ColorPointer, RGBAPointer};
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 #[repr(u8)]
@@ -201,28 +201,12 @@ impl UpdateEncoder {
         self.set_surface(bitmap, codec_id, &buffer[..len])
     }
 
-    fn none_update(&mut self, mut bitmap: BitmapUpdate) -> Result<UpdateFragmenter<'_>> {
+    fn none_update(&mut self, bitmap: BitmapUpdate) -> Result<UpdateFragmenter<'_>> {
         let stride = usize::from(bitmap.format.bytes_per_pixel()) * usize::from(bitmap.width.get());
-        let data = match bitmap.order {
-            PixelOrder::BottomToTop => {
-                if stride == bitmap.stride {
-                    mem::take(&mut bitmap.data)
-                } else {
-                    let mut data = Vec::with_capacity(stride * usize::from(bitmap.height.get()));
-                    for row in bitmap.data.chunks(bitmap.stride) {
-                        data.extend_from_slice(&row[..stride]);
-                    }
-                    data
-                }
-            }
-            PixelOrder::TopToBottom => {
-                let mut data = Vec::with_capacity(stride * usize::from(bitmap.height.get()));
-                for row in bitmap.data.chunks(bitmap.stride).rev() {
-                    data.extend_from_slice(&row[..stride]);
-                }
-                data
-            }
-        };
+        let mut data = Vec::with_capacity(stride * usize::from(bitmap.height.get()));
+        for row in bitmap.data.chunks(bitmap.stride).rev() {
+            data.extend_from_slice(&row[..stride]);
+        }
 
         self.set_surface(bitmap, CodecId::None as u8, &data)
     }
