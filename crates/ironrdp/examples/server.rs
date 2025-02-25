@@ -159,10 +159,10 @@ impl RdpServerDisplayUpdates for DisplayUpdates {
         sleep(Duration::from_millis(100)).await;
         let mut rng = thread_rng();
 
-        let top: u16 = rng.gen_range(0..HEIGHT);
-        let height = NonZeroU16::new(rng.gen_range(1..=HEIGHT.checked_sub(top).unwrap())).unwrap();
-        let left: u16 = rng.gen_range(0..WIDTH);
-        let width = NonZeroU16::new(rng.gen_range(1..=WIDTH.checked_sub(left).unwrap())).unwrap();
+        let y: u16 = rng.gen_range(0..HEIGHT);
+        let height = NonZeroU16::new(rng.gen_range(1..=HEIGHT.checked_sub(y).unwrap())).unwrap();
+        let x: u16 = rng.gen_range(0..WIDTH);
+        let width = NonZeroU16::new(rng.gen_range(1..=WIDTH.checked_sub(x).unwrap())).unwrap();
         let capacity = usize::from(width.get())
             .checked_mul(usize::from(height.get()))
             .unwrap()
@@ -176,10 +176,10 @@ impl RdpServerDisplayUpdates for DisplayUpdates {
             data.push(255);
         }
 
-        info!("get_update +{left}+{top} {width}x{height}");
+        info!("get_update +{x}+{y} {width}x{height}");
         let bitmap = BitmapUpdate {
-            top,
-            left,
+            x,
+            y,
             width,
             height,
             format: PixelFormat::BgrA32,

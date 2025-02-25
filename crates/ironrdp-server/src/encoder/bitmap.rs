@@ -39,7 +39,7 @@ impl BitmapEncoder {
 
         for (i, chunk) in chunks.enumerate() {
             let height = chunk.len() / bitmap.stride;
-            let top = usize::from(bitmap.top) + i * chunk_height;
+            let top = usize::from(bitmap.y) + i * chunk_height;
 
             let encoder = BitmapStreamEncoder::new(usize::from(bitmap.width.get()), height);
 
@@ -55,9 +55,9 @@ impl BitmapEncoder {
 
             let data = BitmapData {
                 rectangle: InclusiveRectangle {
-                    left: bitmap.left,
+                    left: bitmap.x,
                     top: u16::try_from(top).unwrap(),
-                    right: bitmap.left + bitmap.width.get() - 1,
+                    right: bitmap.x + bitmap.width.get() - 1,
                     bottom: u16::try_from(top + height - 1).unwrap(),
                 },
                 width: u16::from(bitmap.width),
