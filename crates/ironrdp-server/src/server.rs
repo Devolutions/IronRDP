@@ -32,7 +32,7 @@ use crate::clipboard::CliprdrServerFactory;
 use crate::display::{DisplayUpdate, RdpServerDisplay};
 use crate::encoder::UpdateEncoder;
 use crate::handler::RdpServerInputHandler;
-use crate::{builder, capabilities, time_warn, SoundServerFactory};
+use crate::{builder, capabilities, SoundServerFactory};
 
 #[derive(Clone)]
 pub struct RdpServerOptions {
@@ -423,39 +423,30 @@ impl RdpServer {
         buffer: &mut Vec<u8>,
         mut encoder: UpdateEncoder,
     ) -> Result<(RunState, UpdateEncoder)> {
-        let mut fragmenter = match update {
-            DisplayUpdate::Bitmap(bitmap) => {
-                let (enc, res) = task::spawn_blocking(move || {
-                    let res = time_warn!("Encoding bitmap", 10, encoder.bitmap(bitmap));
-                    (encoder, res)
-                })
-                .await?;
-                encoder = enc;
-                res
-            }
-            DisplayUpdate::PointerPosition(pos) => encoder.pointer_position(pos),
-            DisplayUpdate::Resize(desktop_size) => {
-                debug!(?desktop_size, "Display resize");
-                encoder.set_desktop_size(desktop_size);
-                deactivate_all(io_channel_id, user_channel_id, writer).await?;
-                return Ok((RunState::DeactivationReactivation { desktop_size }, encoder));
-            }
-            DisplayUpdate::RGBAPointer(ptr) => encoder.rgba_pointer(ptr),
-            DisplayUpdate::ColorPointer(ptr) => encoder.color_pointer(ptr),
-            DisplayUpdate::HidePointer => encoder.hide_pointer(),
-            DisplayUpdate::DefaultPointer => encoder.default_pointer(),
-        }
-        .context("error during update encoding")?;
-
-        if fragmenter.size_hint() > buffer.len() {
-            buffer.resize(fragmenter.size_hint(), 0);
+        if let DisplayUpdate::Resize(desktop_size) = update {
+            debug!(?desktop_size, "Display resize");
+            encoder.set_desktop_size(desktop_size);
+            deactivate_all(io_channel_id, user_channel_id, writer).await?;
+            return Ok((RunState::DeactivationReactivation { desktop_size }, encoder));
         }
 
-        while let Some(len) = fragmenter.next(buffer) {
-            writer
-                .write_all(&buffer[..len])
-                .await
-                .context("failed to write display update")?;
+        let mut encoder_iter = encoder.update(update);
+        loop {
+            let Some(fragmenter) = encoder_iter.next().await else {
+                break;
+            };
+
+            let mut fragmenter = fragmenter.context("error while encoding")?;
+            if fragmenter.size_hint() > buffer.len() {
+                buffer.resize(fragmenter.size_hint(), 0);
+            }
+
+            while let Some(len) = fragmenter.next(buffer) {
+                writer
+                    .write_all(&buffer[..len])
+                    .await
+                    .context("failed to write display update")?;
+            }
         }
 
         Ok((RunState::Continue, encoder))
