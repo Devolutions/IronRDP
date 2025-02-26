@@ -200,6 +200,7 @@ impl<'a> UpdateEncoder<'a> {
         let y = &mut [0i16; 4096];
         let cb = &mut [0i16; 4096];
         let cr = &mut [0i16; 4096];
+        // TOCHECK: pre-process in a single-thread instead?
         to_64x64_ycbcr_tile(
             input,
             tile_width,

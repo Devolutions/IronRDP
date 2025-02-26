@@ -17,6 +17,7 @@ test = false
 
 [features]
 arbitrary = ["dep:arbitrary"]
+qoi = ["ironrdp-pdu/qoi"]
 
 [dependencies]
 arbitrary = { version = "1", features = ["derive"], optional = true }
