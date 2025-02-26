@@ -79,6 +79,7 @@ impl core::fmt::Debug for BitmapUpdate {
             .field("width", &self.width)
             .field("height", &self.height)
             .field("format", &self.format)
+            .field("stride", &self.stride)
             .finish()
     }
 }
