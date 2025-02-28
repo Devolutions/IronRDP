@@ -40,7 +40,6 @@ export class WasmBridgeService {
     private sessionEvent: Subject<SessionEvent> = new Subject();
     private scale: BehaviorSubject<ScreenScale> = new BehaviorSubject(ScreenScale.Fit as ScreenScale);
     private canvas?: HTMLCanvasElement;
-    private keyboardActive: boolean = false;
     private keyboardUnicodeMode: boolean = false;
     private backendSupportsUnicodeKeyboardShortcuts: boolean | undefined = undefined;
     private onRemoteClipboardChanged?: OnRemoteClipboardChanged;
@@ -98,18 +97,14 @@ export class WasmBridgeService {
 
     mouseIn(event: MouseEvent) {
         this.syncModifier(event);
-        this.keyboardActive = true;
     }
 
     mouseOut(_event: MouseEvent) {
-        this.keyboardActive = false;
         this.releaseAllInputs();
     }
 
     sendKeyboardEvent(evt: KeyboardEvent) {
-        if (this.keyboardActive) {
-            this.sendKeyboard(evt);
-        }
+        this.sendKeyboard(evt);
     }
 
     shutdown() {
@@ -125,9 +120,6 @@ export class WasmBridgeService {
     }
 
     updateMousePosition(position: MousePosition) {
-        if (!this.keyboardActive) {
-            this.keyboardActive = true;
-        }
         this.doTransactionFromDeviceEvents([DeviceEvent.new_mouse_move(position.x, position.y)]);
         this.mousePosition.next(position);
     }
