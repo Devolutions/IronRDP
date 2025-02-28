@@ -1,8 +1,7 @@
-<svelte:options tag="iron-remote-gui" />
+<svelte:options customElement={{ tag: 'iron-remote-gui', shadow: 'none' }} />
 
 <script lang="ts">
     import { onMount } from 'svelte';
-    import { get_current_component } from 'svelte/internal';
     import { loggingService } from './services/logging.service';
     import { WasmBridgeService } from './services/wasm-bridge.service';
     import { LogType } from './enums/LogType';
@@ -11,20 +10,28 @@
     import { ScreenScale } from './enums/ScreenScale';
     import { ClipboardContent, ClipboardTransaction } from '../../../crates/ironrdp-web/pkg/ironrdp_web';
 
-    export let scale = 'real';
-    export let verbose = 'false';
-    export let debugwasm: 'OFF' | 'ERROR' | 'WARN' | 'INFO' | 'DEBUG' | 'TRACE' = 'INFO';
-    export let flexcenter = 'true';
+    let {
+        scale,
+        verbose,
+        debugwasm,
+        flexcenter,
+    }: {
+        scale: string;
+        verbose: 'true' | 'false';
+        debugwasm: 'OFF' | 'ERROR' | 'WARN' | 'INFO' | 'DEBUG' | 'TRACE';
+        flexcenter: string;
+    } = $props();
 
-    let isVisible: boolean = false;
-    let capturingInputs = false;
-    let currentComponent = get_current_component();
+    let isVisible = $state(false);
+    let capturingInputs = $state(false);
+
+    let inner: HTMLDivElement;
+    let wrapper: HTMLDivElement;
+    let screenViewer: HTMLDivElement;
     let canvas: HTMLCanvasElement;
 
-    let wrapper: HTMLDivElement;
-
-    let viewerStyle: string;
-    let wrapperStyle: string;
+    let viewerStyle = $state('');
+    let wrapperStyle = $state('');
 
     let wasmService = new WasmBridgeService();
     let publicAPI = new PublicAPI(wasmService);
@@ -393,22 +400,22 @@
 
     function resetHostStyle() {
         if (flexcenter === 'true') {
-            currentComponent.style.flexGrow = null;
-            currentComponent.style.display = null;
-            currentComponent.style.justifyContent = null;
-            currentComponent.style.alignItems = null;
+            inner.style.flexGrow = '';
+            inner.style.display = '';
+            inner.style.justifyContent = '';
+            inner.style.alignItems = '';
         }
     }
 
     function setHostStyle(full: boolean) {
         if (flexcenter === 'true') {
             if (!full) {
-                currentComponent.style.flexGrow = 1;
-                currentComponent.style.display = 'flex';
-                currentComponent.style.justifyContent = 'center';
-                currentComponent.style.alignItems = 'center';
+                inner.style.flexGrow = '1';
+                inner.style.display = 'flex';
+                inner.style.justifyContent = 'center';
+                inner.style.alignItems = 'center';
             } else {
-                currentComponent.style.flexGrow = 1;
+                inner.style.flexGrow = '1';
             }
         }
     }
@@ -569,22 +576,18 @@
 
     function setMouseButtonState(state: MouseEvent, isDown: boolean) {
         if (isFirefox) {
-            let get_canvas_parent = () => {
-                return currentComponent.shadowRoot.getElementById('renderer').parentElement;
-            };
-
             if (isDown && state.button == 0 && !ffCnavasFocused) {
                 // Do not capture first mouse down event on Firefox, as we need to transfer focus to the
                 // canvas first in order to receive paste events.
                 // wasmService.mouseButtonState(state, isDown, false);
                 // Focus `contenteditable` element to receive `on_paste` events
-                get_canvas_parent().focus();
+                screenViewer.focus();
                 // Finish the focus sequence on Firefox
                 ffCnavasFocused = true;
             } else {
                 // This is needed to prevent visible "double click" selection on
                 // `texteditable` element
-                get_canvas_parent().blur();
+                screenViewer.blur();
             }
         }
 
@@ -625,18 +628,17 @@
     }
 
     function getWindowSize() {
-        const win = window,
-            doc = document,
-            docElem = doc.documentElement,
-            body = doc.getElementsByTagName('body')[0],
-            x = win.innerWidth ?? docElem.clientWidth ?? body.clientWidth,
-            y = win.innerHeight ?? docElem.clientHeight ?? body.clientHeight;
+        const win = window;
+        const doc = document;
+        const docElem = doc.documentElement;
+        const body = doc.getElementsByTagName('body')[0];
+        const x = win.innerWidth ?? docElem.clientWidth ?? body.clientWidth;
+        const y = win.innerHeight ?? docElem.clientHeight ?? body.clientHeight;
         return { x, y };
     }
 
     async function initcanvas() {
         loggingService.info('Start canvas initialization.');
-        canvas = currentComponent.shadowRoot.getElementById('renderer');
 
         // Set a default canvas size. Need more test to know if i can remove it.
         canvas.width = 800;
@@ -648,12 +650,16 @@
 
         initListeners();
 
-        let result = {
-            irgUserInteraction: publicAPI.getExposedFunctions(),
-        };
+        let result = { irgUserInteraction: publicAPI.getExposedFunctions() };
 
         loggingService.info('Component ready');
-        currentComponent.dispatchEvent(new CustomEvent('ready', { detail: result }));
+        loggingService.info('Dispatching ready event');
+        console.debug(result);
+        // bubbles:true is significant here, all our consumer code expect this specific event
+        // but they only listen to the event on the custom element itself, not on the inner div
+        // in Svelte 3, we had direct access to the customelement, but now in Svelte5, we have to
+        // dispatch the event on the inner div, and bubble it up to the custom element.
+        inner.dispatchEvent(new CustomEvent('ready', { detail: result, bubbles: true, composed: true }));
     }
 
     onMount(async () => {
@@ -664,29 +670,38 @@
     });
 </script>
 
-<div
-    bind:this={wrapper}
-    class="screen-wrapper scale-{scale}"
-    class:hidden={!isVisible}
-    class:capturing-inputs={capturingInputs}
-    style={wrapperStyle}
->
-    <div class="screen-viewer" style={viewerStyle} contenteditable={isFirefox} on:paste={ffOnPasteHandler}>
-        <canvas
-            on:mousemove={getMousePos}
-            on:mousedown={(event) => setMouseButtonState(event, true)}
-            on:mouseup={(event) => setMouseButtonState(event, false)}
-            on:mouseleave={(event) => {
-                setMouseButtonState(event, false);
-                setMouseOut(event);
-            }}
-            on:mouseenter={(event) => {
-                setMouseIn(event);
-            }}
-            on:contextmenu={(event) => event.preventDefault()}
-            on:wheel={mouseWheel}
-            id="renderer"
-        />
+<div bind:this={inner}>
+    <div
+        bind:this={wrapper}
+        class="screen-wrapper scale-{scale}"
+        class:hidden={!isVisible}
+        class:capturing-inputs={capturingInputs}
+        style={wrapperStyle}
+    >
+        <div
+            bind:this={screenViewer}
+            class="screen-viewer"
+            style={viewerStyle}
+            contenteditable={isFirefox}
+            onpaste={ffOnPasteHandler}
+        >
+            <canvas
+                bind:this={canvas}
+                onmousemove={getMousePos}
+                onmousedown={(event) => setMouseButtonState(event, true)}
+                onmouseup={(event) => setMouseButtonState(event, false)}
+                onmouseleave={(event) => {
+                    setMouseButtonState(event, false);
+                    setMouseOut(event);
+                }}
+                onmouseenter={(event) => {
+                    setMouseIn(event);
+                }}
+                oncontextmenu={(event) => event.preventDefault()}
+                onwheel={mouseWheel}
+                id="renderer"
+            ></canvas>
+        </div>
     </div>
 </div>
 
