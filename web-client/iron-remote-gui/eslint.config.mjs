@@ -32,11 +32,7 @@ export default [
             '**/yarn.lock',
         ],
     },
-    ...compat.extends(
-        'eslint:recommended',
-        'plugin:@typescript-eslint/recommended',
-        'plugin:prettier/recommended',
-    ),
+    ...compat.extends('eslint:recommended', 'plugin:@typescript-eslint/recommended', 'plugin:prettier/recommended'),
     {
         plugins: {
             '@typescript-eslint': typescriptEslint,
