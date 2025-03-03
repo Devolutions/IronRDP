@@ -27,6 +27,8 @@
     "format": "prettier --write ."
   },
   "devDependencies": {
+    "@eslint/eslintrc": "^3.3.0",
+    "@eslint/js": "^9.21.0",
     "@sveltejs/vite-plugin-svelte": "^5.0.3",
     "@tsconfig/svelte": "^5.0.4",
     "@types/ua-parser-js": "^0.7.36",
@@ -34,6 +36,8 @@
     "eslint": "^9.21.0",
     "eslint-config-prettier": "^9.0.0",
     "eslint-plugin-prettier": "^5.0.1",
+    "eslint-plugin-svelte": "^3.0.2",
+    "globals": "^16.0.0",
     "prettier": "^3.1.0",
     "prettier-plugin-svelte": "^3.1.0",
     "svelte": "~5.20.2",
@@ -47,6 +51,7 @@
   },
   "dependencies": {
     "rxjs": "^6.6.7",
+    "svelte-eslint-parser": "^1.0.0",
     "ua-parser-js": "^1.0.33"
   }
 }
