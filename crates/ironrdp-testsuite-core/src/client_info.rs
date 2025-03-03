@@ -96,7 +96,7 @@ lazy_static::lazy_static! {
         alternate_shell: String::from(""),
         work_dir: String::from(""),
         extra_info: ExtendedClientInfo {
-            address_family: AddressFamily::INet,
+            address_family: AddressFamily::INET,
             address: String::from("157.59.242.156"),
             dir: String::from("C:\\depots\\w2k3_1\\termsrv\\newclient\\lib\\win32\\obj\\i386\\mstscax.dll"),
             optional_data: ExtendedClientOptionalInfo::builder()
