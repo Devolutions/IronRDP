@@ -3753,9 +3753,9 @@ checksum = "e3148f5046208a5d56bcfc03053e3ca6334e51da8dfb19b6cdc8b306fae3283e"
 
 [[package]]
 name = "picky"
-version = "7.0.0-rc.12"
+version = "7.0.0-rc.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0b11f32016338b5bdb81179ec286a7d466041c27c5d45810da090c08ae451925"
+checksum = "68ff00229e235526557077232ea50a8f619bbba9f3d37c7f63d1d41502546bec"
 dependencies = [
  "aes",
  "aes-gcm",
