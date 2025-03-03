@@ -155,7 +155,9 @@ export class WasmBridgeService {
         sessionBuilder.set_cursor_style_callback_context(this);
         sessionBuilder.set_cursor_style_callback(this.setCursorStyleCallback);
         sessionBuilder.kdc_proxy_url(kdc_proxy_url);
-        use_display_control && sessionBuilder.use_display_control();
+        if (use_display_control) {
+            sessionBuilder.use_display_control();
+        }
 
         if (preConnectionBlob != null) {
             sessionBuilder.pcb(preConnectionBlob);
