@@ -218,23 +218,6 @@ impl PduHint for FastPathHint {
     }
 }
 
-pub use legacy::*;
-
-// TODO: Delete these traits at some point
-mod legacy {
-
-    pub trait PduBufferParsing<'a>: Sized {
-        type Error;
-
-        fn from_buffer(mut buffer: &'a [u8]) -> Result<Self, Self::Error> {
-            Self::from_buffer_consume(&mut buffer)
-        }
-        fn from_buffer_consume(buffer: &mut &'a [u8]) -> Result<Self, Self::Error>;
-        fn to_buffer_consume(&self, buffer: &mut &mut [u8]) -> Result<(), Self::Error>;
-        fn buffer_length(&self) -> usize;
-    }
-}
-
 // Private! Used by the macros.
 #[doc(hidden)]
 pub use ironrdp_core;
