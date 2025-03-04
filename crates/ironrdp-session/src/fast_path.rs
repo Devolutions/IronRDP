@@ -355,6 +355,20 @@ impl Processor {
                                 update_rectangle = update_rectangle.union(&rectangle);
                             }
                         }
+                        #[cfg(feature = "qoi")]
+                        CodecId::QOI => {
+                            let (header, decoded) = qoi::decode_to_vec(&bits.extended_bitmap_data.data)
+                                .map_err(|e| reason_err!("QOI decode", "{}", e))?;
+                            match header.channels {
+                                qoi::Channels::Rgb => {
+                                    image.apply_rgb24(&decoded, &destination, false)?;
+                                }
+                                qoi::Channels::Rgba => {
+                                    // TODO: no rev
+                                    image.apply_rgb32_bitmap(&decoded, PixelFormat::RgbA32, &destination)?;
+                                }
+                            }
+                        }
                     }
                 }
                 SurfaceCommand::FrameMarker(marker) => {

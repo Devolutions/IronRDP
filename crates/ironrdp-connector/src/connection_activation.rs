@@ -279,6 +279,24 @@ fn create_client_confirm_active(
         BitmapDrawingFlags::ALLOW_SKIP_ALPHA
     };
 
+    #[allow(unused_mut)]
+    let mut bitmap_codecs = vec![Codec {
+        id: 0x03, // RemoteFX
+        property: CodecProperty::RemoteFx(RemoteFxContainer::ClientContainer(RfxClientCapsContainer {
+            capture_flags: CaptureFlags::empty(),
+            caps_data: RfxCaps(RfxCapset(vec![RfxICap {
+                flags: RfxICapFlags::empty(),
+                entropy_bits: EntropyBits::Rlgr3,
+            }])),
+        })),
+    }];
+
+    #[cfg(feature = "qoi")]
+    bitmap_codecs.push(Codec {
+        id: 0x0A, // QOI
+        property: CodecProperty::QOI,
+    });
+
     server_capability_sets.extend_from_slice(&[
         CapabilitySet::General(General {
             major_platform_type: config.platform,
@@ -355,16 +373,7 @@ fn create_client_confirm_active(
         CapabilitySet::SurfaceCommands(SurfaceCommands {
             flags: CmdFlags::SET_SURFACE_BITS | CmdFlags::STREAM_SURFACE_BITS | CmdFlags::FRAME_MARKER,
         }),
-        CapabilitySet::BitmapCodecs(BitmapCodecs(vec![Codec {
-            id: 0x03, // RemoteFX
-            property: CodecProperty::RemoteFx(RemoteFxContainer::ClientContainer(RfxClientCapsContainer {
-                capture_flags: CaptureFlags::empty(),
-                caps_data: RfxCaps(RfxCapset(vec![RfxICap {
-                    flags: RfxICapFlags::empty(),
-                    entropy_bits: EntropyBits::Rlgr3,
-                }])),
-            })),
-        }])),
+        CapabilitySet::BitmapCodecs(BitmapCodecs(bitmap_codecs)),
         CapabilitySet::FrameAcknowledge(FrameAcknowledge {
             // FIXME(#447): Revert this to 2 per FreeRDP.
             // This is a temporary hack to fix a resize bug, see:
