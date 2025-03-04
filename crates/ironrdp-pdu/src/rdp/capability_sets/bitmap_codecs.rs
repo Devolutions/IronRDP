@@ -499,6 +499,8 @@ impl Encode for RfxCapset {
 
 impl<'de> Decode<'de> for RfxCapset {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
+        ensure_fixed_part_size!(in: src);
+
         let block_type = src.read_u16();
         if block_type != RFX_CAPSET_BLOCK_TYPE {
             return Err(invalid_field_err!("blockType", "invalid rfx capset block type"));

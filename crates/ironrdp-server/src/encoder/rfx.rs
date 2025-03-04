@@ -1,10 +1,13 @@
-use ironrdp_core::{cast_length, other_err, EncodeResult};
+use ironrdp_core::{cast_length, other_err, Encode, EncodeResult};
 use ironrdp_graphics::color_conversion::to_64x64_ycbcr_tile;
 use ironrdp_graphics::rfx_encode_component;
 use ironrdp_graphics::rlgr::RlgrError;
-use ironrdp_pdu::codecs::rfx::{self, OperatingMode, RfxChannel, RfxChannelHeight, RfxChannelWidth};
+use ironrdp_pdu::codecs::rfx::{
+    self, Block, ChannelsPdu, CodecChannel, CodecVersionsPdu, FrameBeginPdu, FrameEndPdu, OperatingMode, Quant,
+    RegionPdu, RfxChannel, RfxChannelHeight, RfxChannelWidth, SyncPdu, TileSetPdu,
+};
 use ironrdp_pdu::rdp::capability_sets::EntropyBits;
-use ironrdp_pdu::PduBufferParsing;
+use ironrdp_pdu::WriteCursor;
 
 use crate::BitmapUpdate;
 
@@ -22,33 +25,37 @@ impl RfxEncoder {
         Self { entropy_algorithm }
     }
 
-    // FIXME: rewrite to use WriteCursor
-    pub(crate) fn encode(&mut self, bitmap: &BitmapUpdate) -> EncodeResult<Vec<u8>> {
+    pub(crate) fn encode(&mut self, bitmap: &BitmapUpdate, output: &mut [u8]) -> EncodeResult<usize> {
+        let mut cursor = WriteCursor::new(output);
+
         let width = bitmap.width.get();
         let height = bitmap.height.get();
         let entropy_algorithm = self.entropy_algorithm;
 
         // header messages
         // FIXME: skip if unnecessary?
-        let sync = rfx::SyncPdu;
+        Block::Sync(SyncPdu).encode(&mut cursor)?;
         let context = rfx::ContextPdu {
             flags: OperatingMode::IMAGE_MODE,
             entropy_algorithm,
         };
-        let context = rfx::Headers::Context(context);
-        let channels = rfx::ChannelsPdu(vec![RfxChannel {
+        Block::CodecChannel(CodecChannel::Context(context)).encode(&mut cursor)?;
+
+        let channels = ChannelsPdu(vec![RfxChannel {
             width: RfxChannelWidth::new(cast_length!("width", width)?),
             height: RfxChannelHeight::new(cast_length!("height", height)?),
         }]);
-        let channels = rfx::Headers::Channels(channels);
-        let version = rfx::CodecVersionsPdu;
-        let version = rfx::Headers::CodecVersions(version);
+        Block::Channels(channels).encode(&mut cursor)?;
+
+        Block::CodecVersions(CodecVersionsPdu).encode(&mut cursor)?;
 
         // data messages
-        let frame_begin = rfx::FrameBeginPdu {
+        let frame_begin = FrameBeginPdu {
             index: 0,
             number_of_regions: 1,
         };
+        Block::CodecChannel(CodecChannel::FrameBegin(frame_begin)).encode(&mut cursor)?;
+
         let width = bitmap.width.get();
         let height = bitmap.height.get();
         let rectangles = vec![rfx::RfxRectangle {
@@ -57,52 +64,32 @@ impl RfxEncoder {
             width,
             height,
         }];
-        let region = rfx::RegionPdu { rectangles };
-        let quant = rfx::Quant::default();
+        let region = RegionPdu { rectangles };
+        Block::CodecChannel(CodecChannel::Region(region)).encode(&mut cursor)?;
+
+        let quant = Quant::default();
 
         let (encoder, mut data) = UpdateEncoder::new(bitmap, quant.clone(), entropy_algorithm);
         let tiles = encoder.encode(&mut data)?;
 
         let quants = vec![quant];
-        let tile_set = rfx::TileSetPdu {
+        let tile_set = TileSetPdu {
             entropy_algorithm,
             quants,
             tiles,
         };
-        let frame_end = rfx::FrameEndPdu;
+        Block::CodecChannel(CodecChannel::TileSet(tile_set)).encode(&mut cursor)?;
 
-        macro_rules! encode {
-            ($($element:expr),+) => {
-                {
-                    let len: usize = 0 $( + $element.buffer_length() )+;
-                    let mut output = vec![0; len];
-                    let mut buffer = output.as_mut_slice();
+        let frame_end = FrameEndPdu;
+        Block::CodecChannel(CodecChannel::FrameEnd(frame_end)).encode(&mut cursor)?;
 
-                    $(
-                        $element.to_buffer_consume(&mut buffer).map_err(|e| other_err!("rfxenc", source: e))?;
-                    )+
-
-                    Ok(output)
-                }
-            };
-        }
-
-        encode!(
-            sync,
-            context,
-            channels,
-            version,
-            frame_begin,
-            region,
-            tile_set,
-            frame_end
-        )
+        Ok(cursor.pos())
     }
 }
 
 pub(crate) struct UpdateEncoder<'a> {
     bitmap: &'a BitmapUpdate,
-    quant: rfx::Quant,
+    quant: Quant,
     entropy_algorithm: rfx::EntropyAlgorithm,
 }
 
@@ -117,7 +104,7 @@ struct EncodedTile<'a> {
 impl<'a> UpdateEncoder<'a> {
     fn new(
         bitmap: &'a BitmapUpdate,
-        quant: rfx::Quant,
+        quant: Quant,
         entropy_algorithm: rfx::EntropyAlgorithm,
     ) -> (Self, UpdateEncoderData) {
         let this = Self {
@@ -235,7 +222,7 @@ pub(crate) mod bench {
 
     pub fn rfx_enc_tile(
         bitmap: &BitmapUpdate,
-        quant: &rfx::Quant,
+        quant: &Quant,
         algo: rfx::EntropyAlgorithm,
         tile_x: usize,
         tile_y: usize,
@@ -245,7 +232,7 @@ pub(crate) mod bench {
         enc.encode_tile(tile_x, tile_y, &mut data.0).unwrap();
     }
 
-    pub fn rfx_enc(bitmap: &BitmapUpdate, quant: &rfx::Quant, algo: rfx::EntropyAlgorithm) {
+    pub fn rfx_enc(bitmap: &BitmapUpdate, quant: &Quant, algo: rfx::EntropyAlgorithm) {
         let (enc, mut data) = UpdateEncoder::new(bitmap, quant.clone(), algo);
 
         enc.encode(&mut data).unwrap();

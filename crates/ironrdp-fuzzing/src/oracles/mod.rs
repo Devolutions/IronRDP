@@ -62,20 +62,7 @@ pub fn pdu_decode(data: &[u8]) {
     let _ = decode::<surface_commands::ExtendedBitmapDataPdu<'_>>(data);
     let _ = decode::<surface_commands::BitmapDataHeader>(data);
 
-    let _ = codecs::rfx::Headers::from_buffer(data);
-    let _ = decode::<codecs::rfx::FrameAcknowledgePdu>(data);
-    let _ = codecs::rfx::ContextPdu::from_buffer(data);
-    let _ = codecs::rfx::FrameBeginPdu::from_buffer(data);
-    let _ = codecs::rfx::FrameEndPdu::from_buffer(data);
-    let _ = codecs::rfx::RegionPdu::from_buffer(data);
-    let _ = codecs::rfx::TileSetPdu::from_buffer(data);
-    let _ = codecs::rfx::RfxRectangle::from_buffer(data);
-    let _ = codecs::rfx::Quant::from_buffer(data);
-    let _ = codecs::rfx::Tile::from_buffer(data);
-    let _ = codecs::rfx::SyncPdu::from_buffer(data);
-    let _ = codecs::rfx::CodecVersionsPdu::from_buffer(data);
-    let _ = codecs::rfx::ChannelsPdu::from_buffer(data);
-    let _ = codecs::rfx::RfxChannel::from_buffer(data);
+    let _ = decode::<codecs::rfx::Block<'_>>(data);
 
     let _ = decode::<input::InputEventPdu>(data);
     let _ = decode::<input::InputEvent>(data);

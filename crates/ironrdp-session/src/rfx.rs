@@ -4,9 +4,9 @@ use ironrdp_graphics::color_conversion::{self, YCbCrBuffer};
 use ironrdp_graphics::image_processing::PixelFormat;
 use ironrdp_graphics::rectangle_processing::Region;
 use ironrdp_graphics::{dwt, quantization, rlgr, subband_reconstruction};
-use ironrdp_pdu::codecs::rfx::{self, EntropyAlgorithm, Headers, Quant, RfxRectangle, Tile};
+use ironrdp_pdu::codecs::rfx::{self, EntropyAlgorithm, Quant, RfxRectangle, Tile};
 use ironrdp_pdu::geometry::{InclusiveRectangle, Rectangle};
-use ironrdp_pdu::PduBufferParsing;
+use ironrdp_pdu::{decode_cursor, Decode, ReadCursor};
 
 use crate::image::DecodedImage;
 use crate::SessionResult;
@@ -43,47 +43,49 @@ impl DecodingContext {
         &mut self,
         image: &mut DecodedImage,
         destination: &InclusiveRectangle,
-        input: &mut &[u8],
+        input: &mut ReadCursor<'_>,
     ) -> SessionResult<(FrameId, InclusiveRectangle)> {
         loop {
-            let block_header =
-                rfx::BlockHeader::from_buffer_consume(input).map_err(|e| custom_err!("decode header", e))?;
-            match block_header.ty {
-                rfx::BlockType::Sync => {
-                    self.process_sync(input, block_header)?;
+            let block = rfx::Block::decode(input).map_err(|e| custom_err!("decode block", e))?;
+
+            match block {
+                rfx::Block::Sync(_) => {
+                    self.process_sync(input)?;
                 }
-                rfx::BlockType::FrameBegin => {
-                    return self.process_frame(input, block_header, image, destination);
+                rfx::Block::CodecChannel(rfx::CodecChannel::FrameBegin(f)) => {
+                    return self.process_frame(f, input, image, destination);
                 }
                 _ => {
                     return Err(reason_err!(
                         "rfx::DecodingContext",
                         "unexpected RFX block type: {:?}",
-                        block_header.ty
+                        block.block_type()
                     ));
                 }
             }
         }
     }
 
-    fn process_sync(&mut self, input: &mut &[u8], header: rfx::BlockHeader) -> SessionResult<()> {
-        let _sync =
-            rfx::SyncPdu::from_buffer_consume_with_header(input, header).map_err(|e| custom_err!("decode sync", e))?;
+    fn process_sync(&mut self, input: &mut ReadCursor<'_>) -> SessionResult<()> {
         self.process_headers(input)
     }
 
-    fn process_headers(&mut self, input: &mut &[u8]) -> SessionResult<()> {
+    fn process_headers(&mut self, input: &mut ReadCursor<'_>) -> SessionResult<()> {
         let mut context = None;
         let mut channels = None;
 
         // headers can appear in any order: CodecVersions, Channels, Context
         for _ in 0..3 {
-            match Headers::from_buffer_consume(input).map_err(|e| custom_err!("decode headers", e))? {
-                Headers::Context(c) => context = Some(c),
-                Headers::Channels(c) => channels = Some(c),
-                Headers::CodecVersions(_) => (),
+            match decode_cursor(input).map_err(|e| custom_err!("decode headers", e))? {
+                rfx::Block::CodecChannel(rfx::CodecChannel::Context(c)) => context = Some(c),
+                rfx::Block::Channels(c) => channels = Some(c),
+                rfx::Block::CodecVersions(_) => (),
+                _ => {
+                    return Err(general_err!("unexpected RFX block type"));
+                }
             }
         }
+
         let context = context.ok_or_else(|| general_err!("context header is missing"))?;
         let channels = channels.ok_or_else(|| general_err!("channels header is missing"))?;
 
@@ -100,8 +102,8 @@ impl DecodingContext {
     #[instrument(skip_all)]
     fn process_frame(
         &mut self,
-        input: &mut &[u8],
-        header: rfx::BlockHeader,
+        frame_begin: rfx::FrameBeginPdu,
+        input: &mut ReadCursor<'_>,
         image: &mut DecodedImage,
         destination: &InclusiveRectangle,
     ) -> SessionResult<(FrameId, InclusiveRectangle)> {
@@ -110,12 +112,20 @@ impl DecodingContext {
         let height = channel.height.as_u16();
         let entropy_algorithm = self.context.entropy_algorithm;
 
-        let frame_begin = rfx::FrameBeginPdu::from_buffer_consume_with_header(input, header)
-            .map_err(|e| custom_err!("decode frame_begin", e))?;
-        let mut region = rfx::RegionPdu::from_buffer_consume(input).map_err(|e| custom_err!("decode region", e))?;
-        let tile_set = rfx::TileSetPdu::from_buffer_consume(input).map_err(|e| custom_err!("decode tile_set", e))?;
-        let _frame_end =
-            rfx::FrameEndPdu::from_buffer_consume(input).map_err(|e| custom_err!("decode frame_end", e))?;
+        let region: rfx::Block<'_> = decode_cursor(input).map_err(|e| custom_err!("decode region", e))?;
+        let mut region = match region {
+            rfx::Block::CodecChannel(rfx::CodecChannel::Region(region)) => region,
+            _ => return Err(general_err!("unexpected block type")),
+        };
+        let tile_set: rfx::Block<'_> = decode_cursor(input).map_err(|e| custom_err!("decode tile_set", e))?;
+        let tile_set = match tile_set {
+            rfx::Block::CodecChannel(rfx::CodecChannel::TileSet(t)) => t,
+            _ => return Err(general_err!("unexpected block type")),
+        };
+        let frame_end: rfx::Block<'_> = decode_cursor(input).map_err(|e| custom_err!("decode frame_end", e))?;
+        if !matches!(frame_end, rfx::Block::CodecChannel(rfx::CodecChannel::FrameEnd(_))) {
+            return Err(general_err!("unexpected block type"));
+        }
 
         if region.rectangles.is_empty() {
             region.rectangles = vec![RfxRectangle {
