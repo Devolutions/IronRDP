@@ -1,14 +1,13 @@
-use std::io::Write;
-
 use bit_field::BitField;
 use bitflags::bitflags;
-use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
+use ironrdp_core::{
+    cast_length, ensure_fixed_part_size, ensure_size, invalid_field_err, Decode, DecodeResult, Encode, EncodeResult,
+    ReadCursor, WriteCursor,
+};
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::{FromPrimitive, ToPrimitive};
 
-use super::{BlockHeader, BlockType, CodecChannelHeader, RfxError, BLOCK_HEADER_SIZE, CODEC_CHANNEL_HEADER_SIZE};
-use crate::utils::SplitTo;
-use crate::PduBufferParsing;
+use crate::codecs::rfx::Block;
 
 const CONTEXT_ID: u8 = 0;
 const TILE_SIZE: u16 = 0x0040;
@@ -21,9 +20,11 @@ const NUMBER_OF_TILESETS: u16 = 1;
 const CBT_TILESET: u16 = 0xcac2;
 const IDX: u16 = 0;
 const IS_LAST_TILESET_FLAG: bool = true;
-const QUANT_SIZE: usize = 5;
 const RECTANGLE_SIZE: usize = 8;
 
+/// [2.2.2.2.4] TS_RFX_CONTEXT
+///
+/// [2.2.2.2.4]: https://learn.microsoft.com/pt-br/openspecs/windows_protocols/ms-rdprfx/bde1ce78-5d9e-44c1-8a15-5843fa12270a
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ContextPdu {
     pub flags: OperatingMode,
@@ -31,39 +32,72 @@ pub struct ContextPdu {
 }
 
 impl ContextPdu {
-    pub fn from_buffer_consume_with_header(buffer: &mut &[u8], header: BlockHeader) -> Result<Self, RfxError> {
-        CodecChannelHeader::from_buffer_consume_with_type(buffer, BlockType::Context)?;
-        let mut buffer = buffer.split_to(header.data_length);
+    const NAME: &'static str = "RfxContext";
 
-        let id = buffer.read_u8()?;
+    const FIXED_PART_SIZE: usize = 1 /* ctxId */ + 2 /* tileSize */ + 2 /* properties */;
+}
+
+impl Encode for ContextPdu {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
+        ensure_fixed_part_size!(in: dst);
+
+        dst.write_u8(CONTEXT_ID);
+        dst.write_u16(TILE_SIZE);
+
+        let mut properties: u16 = 0;
+        properties.set_bits(0..3, self.flags.bits());
+        properties.set_bits(3..5, COLOR_CONVERSION_ICT);
+        properties.set_bits(5..9, CLW_XFORM_DWT_53_A);
+        properties.set_bits(9..13, self.entropy_algorithm.to_u16().unwrap());
+        properties.set_bits(13..15, SCALAR_QUANTIZATION);
+        properties.set_bit(15, false); // reserved
+        dst.write_u16(properties);
+
+        Ok(())
+    }
+
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    fn size(&self) -> usize {
+        Self::FIXED_PART_SIZE
+    }
+}
+
+impl<'de> Decode<'de> for ContextPdu {
+    fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
+        ensure_fixed_part_size!(in: src);
+
+        let id = src.read_u8();
         if id != CONTEXT_ID {
-            return Err(RfxError::InvalidContextId(id));
+            return Err(invalid_field_err!("ctxId", "Invalid context ID"));
         }
 
-        let tile_size = buffer.read_u16::<LittleEndian>()?;
+        let tile_size = src.read_u16();
         if tile_size != TILE_SIZE {
-            return Err(RfxError::InvalidTileSize(tile_size));
+            return Err(invalid_field_err!("tileSize", "Invalid tile size"));
         }
 
-        let properties = buffer.read_u16::<LittleEndian>()?;
+        let properties = src.read_u16();
         let flags = OperatingMode::from_bits_truncate(properties.get_bits(0..3));
         let color_conversion_transform = properties.get_bits(3..5);
         if color_conversion_transform != COLOR_CONVERSION_ICT {
-            return Err(RfxError::InvalidColorConversionTransform(color_conversion_transform));
+            return Err(invalid_field_err!("cct", "Invalid color conversion transform"));
         }
 
         let dwt = properties.get_bits(5..9);
         if dwt != CLW_XFORM_DWT_53_A {
-            return Err(RfxError::InvalidDwt(dwt));
+            return Err(invalid_field_err!("dwt", "Invalid DWT"));
         }
 
         let entropy_algorithm_bits = properties.get_bits(9..13);
         let entropy_algorithm = EntropyAlgorithm::from_u16(entropy_algorithm_bits)
-            .ok_or(RfxError::InvalidEntropyAlgorithm(entropy_algorithm_bits))?;
+            .ok_or_else(|| invalid_field_err!("entropy_algorithm", "Invalid entropy algorithm"))?;
 
         let quantization_type = properties.get_bits(13..15);
         if quantization_type != SCALAR_QUANTIZATION {
-            return Err(RfxError::InvalidQuantizationType(quantization_type));
+            return Err(invalid_field_err!("qt", "Invalid quantization type"));
         }
 
         let _reserved = properties.get_bit(15);
@@ -75,45 +109,9 @@ impl ContextPdu {
     }
 }
 
-impl PduBufferParsing<'_> for ContextPdu {
-    type Error = RfxError;
-
-    fn from_buffer_consume(buffer: &mut &[u8]) -> Result<Self, Self::Error> {
-        let header = BlockHeader::from_buffer_consume_with_expected_type(buffer, BlockType::Context)?;
-
-        Self::from_buffer_consume_with_header(buffer, header)
-    }
-
-    fn to_buffer_consume(&self, buffer: &mut &mut [u8]) -> Result<(), Self::Error> {
-        let header = BlockHeader {
-            ty: BlockType::Context,
-            data_length: self.buffer_length() - BLOCK_HEADER_SIZE - CODEC_CHANNEL_HEADER_SIZE,
-        };
-        let codec_header = CodecChannelHeader;
-
-        header.to_buffer_consume(buffer)?;
-        codec_header.to_buffer_consume_with_type(buffer, BlockType::Context)?;
-
-        buffer.write_u8(CONTEXT_ID)?;
-        buffer.write_u16::<LittleEndian>(TILE_SIZE)?;
-
-        let mut properties: u16 = 0;
-        properties.set_bits(0..3, self.flags.bits());
-        properties.set_bits(3..5, COLOR_CONVERSION_ICT);
-        properties.set_bits(5..9, CLW_XFORM_DWT_53_A);
-        properties.set_bits(9..13, self.entropy_algorithm.to_u16().unwrap());
-        properties.set_bits(13..15, SCALAR_QUANTIZATION);
-        properties.set_bit(15, false); // reserved
-        buffer.write_u16::<LittleEndian>(properties)?;
-
-        Ok(())
-    }
-
-    fn buffer_length(&self) -> usize {
-        BLOCK_HEADER_SIZE + CODEC_CHANNEL_HEADER_SIZE + 5
-    }
-}
-
+/// [2.2.2.3.1] TS_RFX_FRAME_BEGIN
+///
+/// [2.2.2.3.1]: https://learn.microsoft.com/pt-br/openspecs/windows_protocols/ms-rdprfx/7a938a26-3fc2-436b-bc84-09dfff59b5e7
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FrameBeginPdu {
     pub index: u32,
@@ -121,12 +119,36 @@ pub struct FrameBeginPdu {
 }
 
 impl FrameBeginPdu {
-    pub fn from_buffer_consume_with_header(buffer: &mut &[u8], header: BlockHeader) -> Result<Self, RfxError> {
-        CodecChannelHeader::from_buffer_consume_with_type(buffer, BlockType::FrameBegin)?;
-        let mut buffer = buffer.split_to(header.data_length);
+    const NAME: &'static str = "RfxFrameBegin";
 
-        let index = buffer.read_u32::<LittleEndian>()?;
-        let number_of_regions = buffer.read_i16::<LittleEndian>()?;
+    const FIXED_PART_SIZE: usize = 4 /* frameIdx */ + 2 /* numRegions */;
+}
+
+impl Encode for FrameBeginPdu {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
+        ensure_fixed_part_size!(in: dst);
+
+        dst.write_u32(self.index);
+        dst.write_i16(self.number_of_regions);
+
+        Ok(())
+    }
+
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    fn size(&self) -> usize {
+        Self::FIXED_PART_SIZE
+    }
+}
+
+impl<'de> Decode<'de> for FrameBeginPdu {
+    fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
+        ensure_fixed_part_size!(in: src);
+
+        let index = src.read_u32();
+        let number_of_regions = src.read_i16();
 
         Ok(Self {
             index,
@@ -135,147 +157,118 @@ impl FrameBeginPdu {
     }
 }
 
-impl PduBufferParsing<'_> for FrameBeginPdu {
-    type Error = RfxError;
-
-    fn from_buffer_consume(buffer: &mut &[u8]) -> Result<Self, Self::Error> {
-        let header = BlockHeader::from_buffer_consume_with_expected_type(buffer, BlockType::FrameBegin)?;
-        Self::from_buffer_consume_with_header(buffer, header)
-    }
-
-    fn to_buffer_consume(&self, buffer: &mut &mut [u8]) -> Result<(), Self::Error> {
-        let header = BlockHeader {
-            ty: BlockType::FrameBegin,
-            data_length: self.buffer_length() - BLOCK_HEADER_SIZE - CODEC_CHANNEL_HEADER_SIZE,
-        };
-        let codec_header = CodecChannelHeader;
-
-        header.to_buffer_consume(buffer)?;
-        codec_header.to_buffer_consume_with_type(buffer, BlockType::FrameBegin)?;
-
-        buffer.write_u32::<LittleEndian>(self.index)?;
-        buffer.write_i16::<LittleEndian>(self.number_of_regions)?;
-
-        Ok(())
-    }
-
-    fn buffer_length(&self) -> usize {
-        BLOCK_HEADER_SIZE + CODEC_CHANNEL_HEADER_SIZE + 6
-    }
-}
-
+/// [2.2.2.3.2] TS_RFX_FRAME_END
+///
+/// [2.2.2.3.1]: https://learn.microsoft.com/pt-br/openspecs/windows_protocols/ms-rdprfx/b4cb2676-0268-450b-ad32-72f66d0598e8
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FrameEndPdu;
 
-impl PduBufferParsing<'_> for FrameEndPdu {
-    type Error = RfxError;
+impl FrameEndPdu {
+    const NAME: &'static str = "RfxFrameEnd";
 
-    fn from_buffer_consume(buffer: &mut &[u8]) -> Result<Self, Self::Error> {
-        let _header = BlockHeader::from_buffer_consume_with_expected_type(buffer, BlockType::FrameEnd)?;
-        CodecChannelHeader::from_buffer_consume_with_type(buffer, BlockType::FrameEnd)?;
+    const FIXED_PART_SIZE: usize = 0;
+}
 
-        Ok(Self)
-    }
-
-    fn to_buffer_consume(&self, buffer: &mut &mut [u8]) -> Result<(), Self::Error> {
-        let header = BlockHeader {
-            ty: BlockType::FrameEnd,
-            data_length: self.buffer_length() - BLOCK_HEADER_SIZE - CODEC_CHANNEL_HEADER_SIZE,
-        };
-        let codec_header = CodecChannelHeader;
-
-        header.to_buffer_consume(buffer)?;
-        codec_header.to_buffer_consume_with_type(buffer, BlockType::FrameEnd)?;
+impl Encode for FrameEndPdu {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
+        ensure_fixed_part_size!(in: dst);
 
         Ok(())
     }
 
-    fn buffer_length(&self) -> usize {
-        BLOCK_HEADER_SIZE + CODEC_CHANNEL_HEADER_SIZE
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    fn size(&self) -> usize {
+        Self::FIXED_PART_SIZE
     }
 }
 
+impl<'de> Decode<'de> for FrameEndPdu {
+    fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
+        ensure_fixed_part_size!(in: src);
+
+        Ok(Self)
+    }
+}
+
+/// [2.2.2.3.3] TS_RFX_REGION
+///
+/// [2.2.2.3.3]: https://learn.microsoft.com/pt-br/openspecs/windows_protocols/ms-rdprfx/23d2a1d6-1be0-4357-83eb-998b66ddd4d9
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RegionPdu {
     pub rectangles: Vec<RfxRectangle>,
 }
 
-impl PduBufferParsing<'_> for RegionPdu {
-    type Error = RfxError;
+impl RegionPdu {
+    const NAME: &'static str = "RfxRegion";
 
-    fn from_buffer_consume(buffer: &mut &[u8]) -> Result<Self, Self::Error> {
-        let header = BlockHeader::from_buffer_consume_with_expected_type(buffer, BlockType::Region)?;
-        CodecChannelHeader::from_buffer_consume_with_type(buffer, BlockType::Region)?;
-        let mut buffer = buffer.split_to(header.data_length);
+    const FIXED_PART_SIZE: usize = 1 /* regionFlags */ + 2 /* numRects */ + 2 /* regionType */ + 2 /* numTilesets */;
+}
 
-        let region_flags = buffer.read_u8()?;
-        let lrf = region_flags.get_bit(0);
-        if lrf != LRF {
-            return Err(RfxError::InvalidLrf(lrf));
-        }
-
-        let number_of_rectangles = usize::from(buffer.read_u16::<LittleEndian>()?);
-        if buffer.len() < number_of_rectangles * RECTANGLE_SIZE {
-            return Err(RfxError::InvalidDataLength {
-                expected: number_of_rectangles * RECTANGLE_SIZE,
-                actual: buffer.len(),
-            });
-        }
-
-        let rectangles = (0..number_of_rectangles)
-            .map(|_| RfxRectangle::from_buffer_consume(&mut buffer))
-            .collect::<Result<Vec<_>, _>>()?;
-
-        let region_type = buffer.read_u16::<LittleEndian>()?;
-        if region_type != CBT_REGION {
-            return Err(RfxError::InvalidRegionType(region_type));
-        }
-
-        let number_of_tilesets = buffer.read_u16::<LittleEndian>()?;
-        if number_of_tilesets != NUMBER_OF_TILESETS {
-            return Err(RfxError::InvalidNumberOfTilesets(number_of_tilesets));
-        }
-
-        Ok(Self { rectangles })
-    }
-
-    fn to_buffer_consume(&self, buffer: &mut &mut [u8]) -> Result<(), Self::Error> {
-        let header = BlockHeader {
-            ty: BlockType::Region,
-            data_length: self.buffer_length() - BLOCK_HEADER_SIZE - CODEC_CHANNEL_HEADER_SIZE,
-        };
-        let codec_header = CodecChannelHeader;
-
-        header.to_buffer_consume(buffer)?;
-        codec_header.to_buffer_consume_with_type(buffer, BlockType::Region)?;
+impl Encode for RegionPdu {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
+        ensure_fixed_part_size!(in: dst);
 
         let mut region_flags = 0;
         region_flags.set_bit(0, LRF);
-        buffer.write_u8(region_flags)?;
+        dst.write_u8(region_flags);
 
-        buffer.write_u16::<LittleEndian>(self.rectangles.len() as u16)?;
+        dst.write_u16(cast_length!("numRectangles", self.rectangles.len())?);
         for rectangle in self.rectangles.iter() {
-            rectangle.to_buffer_consume(buffer)?;
+            rectangle.encode(dst)?;
         }
 
-        buffer.write_u16::<LittleEndian>(CBT_REGION)?;
-        buffer.write_u16::<LittleEndian>(NUMBER_OF_TILESETS)?;
+        dst.write_u16(CBT_REGION);
+        dst.write_u16(NUMBER_OF_TILESETS);
 
         Ok(())
     }
 
-    fn buffer_length(&self) -> usize {
-        BLOCK_HEADER_SIZE
-            + CODEC_CHANNEL_HEADER_SIZE
-            + 7
-            + self
-                .rectangles
-                .iter()
-                .map(PduBufferParsing::buffer_length)
-                .sum::<usize>()
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    fn size(&self) -> usize {
+        Self::FIXED_PART_SIZE + self.rectangles.len() * RECTANGLE_SIZE
     }
 }
 
+impl<'de> Decode<'de> for RegionPdu {
+    fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
+        ensure_fixed_part_size!(in: src);
+
+        let region_flags = src.read_u8();
+        let lrf = region_flags.get_bit(0);
+        if lrf != LRF {
+            return Err(invalid_field_err!("lrf", "Invalid lrf"));
+        }
+
+        let number_of_rectangles = usize::from(src.read_u16());
+        ensure_size!(in: src, size: number_of_rectangles * RECTANGLE_SIZE);
+
+        let rectangles = (0..number_of_rectangles)
+            .map(|_| RfxRectangle::decode(src))
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let region_type = src.read_u16();
+        if region_type != CBT_REGION {
+            return Err(invalid_field_err!("regionType", "Invalid region type"));
+        }
+
+        let number_of_tilesets = src.read_u16();
+        if number_of_tilesets != NUMBER_OF_TILESETS {
+            return Err(invalid_field_err!("numTilesets", "Invalid number of tilesets"));
+        }
+
+        Ok(Self { rectangles })
+    }
+}
+
+/// [2.2.2.3.4] TS_RFX_TILESET
+///
+/// [2.2.2.3.4] https://learn.microsoft.com/pt-br/openspecs/windows_protocols/ms-rdprfx/7c926114-4bea-4c69-a9a1-caa6e88847a6
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TileSetPdu<'a> {
     pub entropy_algorithm: EntropyAlgorithm,
@@ -283,28 +276,75 @@ pub struct TileSetPdu<'a> {
     pub tiles: Vec<Tile<'a>>,
 }
 
-impl<'a> PduBufferParsing<'a> for TileSetPdu<'a> {
-    type Error = RfxError;
+impl TileSetPdu<'_> {
+    const NAME: &'static str = "RfxTileSet";
 
-    fn from_buffer_consume(buffer: &mut &'a [u8]) -> Result<Self, Self::Error> {
-        let header = BlockHeader::from_buffer_consume_with_expected_type(buffer, BlockType::Extension)?;
-        CodecChannelHeader::from_buffer_consume_with_type(buffer, BlockType::Extension)?;
-        let mut buffer = buffer.split_to(header.data_length);
+    const FIXED_PART_SIZE: usize = 2 /* subtype */ + 2 /* idx */ + 2 /* properties */ + 1 /* numQuant */ + 1 /* tileSize */+ 2 /* numTiles */ + 4 /* tilesDataSize */;
+}
 
-        let subtype = buffer.read_u16::<LittleEndian>()?;
+impl Encode for TileSetPdu<'_> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
+        ensure_fixed_part_size!(in: dst);
+
+        dst.write_u16(CBT_TILESET);
+        dst.write_u16(IDX);
+
+        let mut properties: u16 = 0;
+        properties.set_bit(0, IS_LAST_TILESET_FLAG);
+        properties.set_bits(1..4, OperatingMode::empty().bits()); // The decoder MUST ignore this flag
+        properties.set_bits(4..6, COLOR_CONVERSION_ICT);
+        properties.set_bits(6..10, CLW_XFORM_DWT_53_A);
+        properties.set_bits(10..14, self.entropy_algorithm.to_u16().unwrap());
+        properties.set_bits(14..16, SCALAR_QUANTIZATION);
+        dst.write_u16(properties);
+
+        dst.write_u8(cast_length!("numQuant", self.quants.len())?);
+        dst.write_u8(TILE_SIZE as u8);
+        dst.write_u16(cast_length!("numTiles", self.tiles.len())?);
+
+        let tiles_data_size = self.tiles.iter().map(|t| Block::Tile(t.clone()).size()).sum::<usize>();
+        dst.write_u32(cast_length!("tilesDataSize", tiles_data_size)?);
+
+        for quant in &self.quants {
+            quant.encode(dst)?;
+        }
+
+        for tile in &self.tiles {
+            Block::Tile(tile.clone()).encode(dst)?;
+        }
+
+        Ok(())
+    }
+
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    fn size(&self) -> usize {
+        Self::FIXED_PART_SIZE
+            + self.quants.iter().map(Encode::size).sum::<usize>()
+            + self.tiles.iter().map(|t| Block::Tile(t.clone()).size()).sum::<usize>()
+    }
+}
+
+impl<'de> Decode<'de> for TileSetPdu<'de> {
+    fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
+        ensure_fixed_part_size!(in: src);
+
+        let subtype = src.read_u16();
         if subtype != CBT_TILESET {
-            return Err(RfxError::InvalidSubtype(subtype));
+            return Err(invalid_field_err!("subtype", "Invalid message type"));
         }
 
-        let id_of_context = buffer.read_u16::<LittleEndian>()?;
+        let id_of_context = src.read_u16();
         if id_of_context != IDX {
-            return Err(RfxError::InvalidIdOfContext(id_of_context));
+            return Err(invalid_field_err!("id_of_context", "Invalid RFX context"));
         }
 
-        let properties = buffer.read_u16::<LittleEndian>()?;
+        let properties = src.read_u16();
         let is_last = properties.get_bit(0);
         if is_last != IS_LAST_TILESET_FLAG {
-            return Err(RfxError::InvalidItFlag(is_last));
+            return Err(invalid_field_err!("last", "Invalid last flag"));
         }
 
         // The encoder MUST set `flags` value to the value of flags
@@ -314,47 +354,47 @@ impl<'a> PduBufferParsing<'a> for TileSetPdu<'a> {
 
         let color_conversion_transform = properties.get_bits(4..6);
         if color_conversion_transform != COLOR_CONVERSION_ICT {
-            return Err(RfxError::InvalidColorConversionTransform(color_conversion_transform));
+            return Err(invalid_field_err!("cct", "Invalid color conversion"));
         }
 
         let dwt = properties.get_bits(6..10);
         if dwt != CLW_XFORM_DWT_53_A {
-            return Err(RfxError::InvalidDwt(dwt));
+            return Err(invalid_field_err!("xft", "Invalid DWT"));
         }
 
         let entropy_algorithm_bits = properties.get_bits(10..14);
         let entropy_algorithm = EntropyAlgorithm::from_u16(entropy_algorithm_bits)
-            .ok_or(RfxError::InvalidEntropyAlgorithm(entropy_algorithm_bits))?;
+            .ok_or_else(|| invalid_field_err!("entropy", "Invalid entropy algorithm"))?;
 
         let quantization_type = properties.get_bits(14..16);
         if quantization_type != SCALAR_QUANTIZATION {
-            return Err(RfxError::InvalidQuantizationType(quantization_type));
+            return Err(invalid_field_err!("scalar", "Invalid quantization type"));
         }
 
-        let number_of_quants = usize::from(buffer.read_u8()?);
+        let number_of_quants = usize::from(src.read_u8());
 
-        let tile_size = u16::from(buffer.read_u8()?);
+        let tile_size = u16::from(src.read_u8());
         if tile_size != TILE_SIZE {
-            return Err(RfxError::InvalidTileSize(tile_size));
+            return Err(invalid_field_err!("tile_size", "Invalid tile size"));
         }
 
-        let number_of_tiles = buffer.read_u16::<LittleEndian>()?;
-        let tiles_data_size = buffer.read_u32::<LittleEndian>()? as usize;
-
-        let expected_length = tiles_data_size + number_of_quants * QUANT_SIZE;
-        if buffer.len() < expected_length {
-            return Err(RfxError::InvalidDataLength {
-                expected: expected_length,
-                actual: buffer.len(),
-            });
-        }
+        let number_of_tiles = src.read_u16();
+        let _tiles_data_size = src.read_u32() as usize;
 
         let quants = (0..number_of_quants)
-            .map(|_| Quant::from_buffer_consume(&mut buffer))
+            .map(|_| Quant::decode(src))
             .collect::<Result<Vec<_>, _>>()?;
 
         let tiles = (0..number_of_tiles)
-            .map(|_| Tile::from_buffer_consume(&mut buffer))
+            .map(|_| Block::decode(src))
+            .collect::<Result<Vec<_>, _>>()?;
+
+        let tiles = tiles
+            .into_iter()
+            .map(|b| match b {
+                Block::Tile(tile) => Ok(tile),
+                _ => Err(invalid_field_err!("tile", "Invalid block type, expected Tile")),
+            })
             .collect::<Result<Vec<_>, _>>()?;
 
         Ok(Self {
@@ -363,56 +403,10 @@ impl<'a> PduBufferParsing<'a> for TileSetPdu<'a> {
             tiles,
         })
     }
-
-    fn to_buffer_consume(&self, buffer: &mut &mut [u8]) -> Result<(), RfxError> {
-        let header = BlockHeader {
-            ty: BlockType::Extension,
-            data_length: self.buffer_length() - BLOCK_HEADER_SIZE - CODEC_CHANNEL_HEADER_SIZE,
-        };
-        let codec_header = CodecChannelHeader;
-
-        header.to_buffer_consume(buffer)?;
-        codec_header.to_buffer_consume_with_type(buffer, BlockType::Extension)?;
-
-        buffer.write_u16::<LittleEndian>(CBT_TILESET)?;
-        buffer.write_u16::<LittleEndian>(IDX)?;
-
-        let mut properties: u16 = 0;
-        properties.set_bit(0, IS_LAST_TILESET_FLAG);
-        properties.set_bits(1..4, OperatingMode::empty().bits()); // The decoder MUST ignore this flag
-        properties.set_bits(4..6, COLOR_CONVERSION_ICT);
-        properties.set_bits(6..10, CLW_XFORM_DWT_53_A);
-        properties.set_bits(10..14, self.entropy_algorithm.to_u16().unwrap());
-        properties.set_bits(14..16, SCALAR_QUANTIZATION);
-        buffer.write_u16::<LittleEndian>(properties)?;
-
-        buffer.write_u8(self.quants.len() as u8)?;
-        buffer.write_u8(TILE_SIZE as u8)?;
-        buffer.write_u16::<LittleEndian>(self.tiles.len() as u16)?;
-
-        let tiles_data_size = self.tiles.iter().map(|t| t.buffer_length()).sum::<usize>() as u32;
-        buffer.write_u32::<LittleEndian>(tiles_data_size)?;
-
-        for quant in self.quants.iter() {
-            quant.to_buffer_consume(buffer)?;
-        }
-
-        for tile in self.tiles.iter() {
-            tile.to_buffer_consume(buffer)?;
-        }
-
-        Ok(())
-    }
-
-    fn buffer_length(&self) -> usize {
-        BLOCK_HEADER_SIZE
-            + CODEC_CHANNEL_HEADER_SIZE
-            + 14
-            + self.quants.iter().map(PduBufferParsing::buffer_length).sum::<usize>()
-            + self.tiles.iter().map(|t| t.buffer_length()).sum::<usize>()
-    }
 }
-
+/// [2.2.2.1.6] TS_RFX_RECT
+///
+/// [2.2.2.1.6]: https://learn.microsoft.com/pt-br/openspecs/windows_protocols/ms-rdprfx/26eb819a-955b-4b08-b3a0-997231170059
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RfxRectangle {
     pub x: u16,
@@ -421,32 +415,49 @@ pub struct RfxRectangle {
     pub height: u16,
 }
 
-impl PduBufferParsing<'_> for RfxRectangle {
-    type Error = RfxError;
+impl RfxRectangle {
+    const NAME: &'static str = "RfxRectangle";
 
-    fn from_buffer_consume(buffer: &mut &[u8]) -> Result<Self, Self::Error> {
-        let x = buffer.read_u16::<LittleEndian>()?;
-        let y = buffer.read_u16::<LittleEndian>()?;
-        let width = buffer.read_u16::<LittleEndian>()?;
-        let height = buffer.read_u16::<LittleEndian>()?;
+    const FIXED_PART_SIZE: usize = 4 * 2 /* x, y, width, height */;
+}
 
-        Ok(Self { x, y, width, height })
-    }
+impl Encode for RfxRectangle {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
+        ensure_fixed_part_size!(in: dst);
 
-    fn to_buffer_consume(&self, buffer: &mut &mut [u8]) -> Result<(), Self::Error> {
-        buffer.write_u16::<LittleEndian>(self.x)?;
-        buffer.write_u16::<LittleEndian>(self.y)?;
-        buffer.write_u16::<LittleEndian>(self.width)?;
-        buffer.write_u16::<LittleEndian>(self.height)?;
+        dst.write_u16(self.x);
+        dst.write_u16(self.y);
+        dst.write_u16(self.width);
+        dst.write_u16(self.height);
 
         Ok(())
     }
 
-    fn buffer_length(&self) -> usize {
-        RECTANGLE_SIZE
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    fn size(&self) -> usize {
+        Self::FIXED_PART_SIZE
     }
 }
 
+impl<'de> Decode<'de> for RfxRectangle {
+    fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
+        ensure_fixed_part_size!(in: src);
+
+        let x = src.read_u16();
+        let y = src.read_u16();
+        let width = src.read_u16();
+        let height = src.read_u16();
+
+        Ok(Self { x, y, width, height })
+    }
+}
+
+/// 2.2.2.1.5 TS_RFX_CODEC_QUANT
+///
+/// [2.2.2.1.5]: https://learn.microsoft.com/pt-br/openspecs/windows_protocols/ms-rdprfx/3e9c8af4-7539-4c9d-95de-14b1558b902c
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Quant {
     pub ll3: u8,
@@ -484,43 +495,16 @@ impl Default for Quant {
     }
 }
 
-impl PduBufferParsing<'_> for Quant {
-    type Error = RfxError;
+impl Quant {
+    const NAME: &'static str = "RfxFrameEnd";
 
-    fn from_buffer_consume(buffer: &mut &[u8]) -> Result<Self, Self::Error> {
-        #![allow(clippy::similar_names)] // It’s hard to do better than ll3, lh3, etc without going overly verbose.
+    const FIXED_PART_SIZE: usize = 5 /* 10 * 4 bits */;
+}
 
-        let level3 = buffer.read_u16::<LittleEndian>()?;
-        let ll3 = level3.get_bits(0..4) as u8;
-        let lh3 = level3.get_bits(4..8) as u8;
-        let hl3 = level3.get_bits(8..12) as u8;
-        let hh3 = level3.get_bits(12..16) as u8;
+impl Encode for Quant {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
+        ensure_fixed_part_size!(in: dst);
 
-        let level2_with_lh1 = buffer.read_u16::<LittleEndian>()?;
-        let lh2 = level2_with_lh1.get_bits(0..4) as u8;
-        let hl2 = level2_with_lh1.get_bits(4..8) as u8;
-        let hh2 = level2_with_lh1.get_bits(8..12) as u8;
-        let lh1 = level2_with_lh1.get_bits(12..16) as u8;
-
-        let level1 = buffer.read_u8()?;
-        let hl1 = level1.get_bits(0..4);
-        let hh1 = level1.get_bits(4..8);
-
-        Ok(Self {
-            ll3,
-            lh3,
-            hl3,
-            hh3,
-            lh2,
-            hl2,
-            hh2,
-            lh1,
-            hl1,
-            hh1,
-        })
-    }
-
-    fn to_buffer_consume(&self, buffer: &mut &mut [u8]) -> Result<(), Self::Error> {
         let mut level3 = 0;
         level3.set_bits(0..4, u16::from(self.ll3));
         level3.set_bits(4..8, u16::from(self.lh3));
@@ -537,18 +521,60 @@ impl PduBufferParsing<'_> for Quant {
         level1.set_bits(0..4, self.hl1);
         level1.set_bits(4..8, self.hh1);
 
-        buffer.write_u16::<LittleEndian>(level3)?;
-        buffer.write_u16::<LittleEndian>(level2_with_lh1)?;
-        buffer.write_u8(level1)?;
+        dst.write_u16(level3);
+        dst.write_u16(level2_with_lh1);
+        dst.write_u8(level1);
 
         Ok(())
     }
 
-    fn buffer_length(&self) -> usize {
-        QUANT_SIZE
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    fn size(&self) -> usize {
+        Self::FIXED_PART_SIZE
     }
 }
 
+impl<'de> Decode<'de> for Quant {
+    fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
+        #![allow(clippy::similar_names)] // It’s hard to do better than ll3, lh3, etc without going overly verbose.
+        ensure_fixed_part_size!(in: src);
+
+        let level3 = src.read_u16();
+        let ll3 = level3.get_bits(0..4) as u8;
+        let lh3 = level3.get_bits(4..8) as u8;
+        let hl3 = level3.get_bits(8..12) as u8;
+        let hh3 = level3.get_bits(12..16) as u8;
+
+        let level2_with_lh1 = src.read_u16();
+        let lh2 = level2_with_lh1.get_bits(0..4) as u8;
+        let hl2 = level2_with_lh1.get_bits(4..8) as u8;
+        let hh2 = level2_with_lh1.get_bits(8..12) as u8;
+        let lh1 = level2_with_lh1.get_bits(12..16) as u8;
+
+        let level1 = src.read_u8();
+        let hl1 = level1.get_bits(0..4);
+        let hh1 = level1.get_bits(4..8);
+
+        Ok(Self {
+            ll3,
+            lh3,
+            hl3,
+            hh3,
+            lh2,
+            hl2,
+            hh2,
+            lh1,
+            hl1,
+            hh1,
+        })
+    }
+}
+/// [2.2.2.3.4.1] TS_RFX_TILE
+///
+/// [2.2.2.3.4.1]: https://learn.microsoft.com/pt-br/openspecs/windows_protocols/ms-rdprfx/89e669ed-b6dd-4591-a267-73a72bc6d84e
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Tile<'a> {
     pub y_quant_index: u8,
@@ -563,41 +589,64 @@ pub struct Tile<'a> {
     pub cr_data: &'a [u8],
 }
 
-impl<'a> PduBufferParsing<'a> for Tile<'a> {
-    type Error = RfxError;
+impl Tile<'_> {
+    const NAME: &'static str = "RfxTile";
 
-    fn from_buffer_consume(buffer: &mut &'a [u8]) -> Result<Self, Self::Error> {
+    const FIXED_PART_SIZE: usize = 1 /* quantIdxY */ + 1 /* quantIdxCb */ + 1 /* quantIdxCr */ + 2 /* xIdx */ + 2 /* yIdx */ + 2 /* YLen */ + 2 /* CbLen */ + 2 /* CrLen */;
+}
+
+impl Encode for Tile<'_> {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
+        ensure_size!(in: dst, size: self.size());
+
+        dst.write_u8(self.y_quant_index);
+        dst.write_u8(self.cb_quant_index);
+        dst.write_u8(self.cr_quant_index);
+
+        dst.write_u16(self.x);
+        dst.write_u16(self.y);
+
+        dst.write_u16(cast_length!("YLen", self.y_data.len())?);
+        dst.write_u16(cast_length!("CbLen", self.cb_data.len())?);
+        dst.write_u16(cast_length!("CrLen", self.cr_data.len())?);
+
+        dst.write_slice(self.y_data);
+        dst.write_slice(self.cb_data);
+        dst.write_slice(self.cr_data);
+
+        Ok(())
+    }
+
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    fn size(&self) -> usize {
+        Self::FIXED_PART_SIZE + self.y_data.len() + self.cb_data.len() + self.cr_data.len()
+    }
+}
+
+impl<'de> Decode<'de> for Tile<'de> {
+    fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
         #![allow(clippy::similar_names)] // It’s hard to find better names for cr, cb, etc.
+        ensure_fixed_part_size!(in: src);
 
-        let header = BlockHeader::from_buffer_consume_with_expected_type(buffer, BlockType::Tile)?;
-        let mut buffer = buffer.split_to(header.data_length);
+        let y_quant_index = src.read_u8();
+        let cb_quant_index = src.read_u8();
+        let cr_quant_index = src.read_u8();
 
-        let y_quant_index = buffer.read_u8()?;
-        let cb_quant_index = buffer.read_u8()?;
-        let cr_quant_index = buffer.read_u8()?;
+        let x = src.read_u16();
+        let y = src.read_u16();
 
-        let x = buffer.read_u16::<LittleEndian>()?;
-        let y = buffer.read_u16::<LittleEndian>()?;
+        let y_component_length = usize::from(src.read_u16());
+        let cb_component_length = usize::from(src.read_u16());
+        let cr_component_length = usize::from(src.read_u16());
 
-        let y_component_length = usize::from(buffer.read_u16::<LittleEndian>()?);
-        let cb_component_length = usize::from(buffer.read_u16::<LittleEndian>()?);
-        let cr_component_length = usize::from(buffer.read_u16::<LittleEndian>()?);
+        ensure_size!(in: src, size: y_component_length + cb_component_length + cr_component_length);
 
-        if buffer.len() < y_component_length + cb_component_length + cr_component_length {
-            return Err(RfxError::InvalidDataLength {
-                expected: y_component_length + cb_component_length + cr_component_length,
-                actual: buffer.len(),
-            });
-        }
-
-        let y_start = 0;
-        let cb_start = y_start + y_component_length;
-        let cr_start = cb_start + cb_component_length;
-        let cr_end = cr_start + cr_component_length;
-
-        let y_data = &buffer[y_start..cb_start];
-        let cb_data = &buffer[cb_start..cr_start];
-        let cr_data = &buffer[cr_start..cr_end];
+        let y_data = src.read_slice(y_component_length);
+        let cb_data = src.read_slice(cb_component_length);
+        let cr_data = src.read_slice(cr_component_length);
 
         Ok(Self {
             y_quant_index,
@@ -611,35 +660,6 @@ impl<'a> PduBufferParsing<'a> for Tile<'a> {
             cb_data,
             cr_data,
         })
-    }
-
-    fn to_buffer_consume(&self, buffer: &mut &mut [u8]) -> Result<(), RfxError> {
-        let header = BlockHeader {
-            ty: BlockType::Tile,
-            data_length: self.buffer_length() - BLOCK_HEADER_SIZE,
-        };
-
-        header.to_buffer_consume(buffer)?;
-        buffer.write_u8(self.y_quant_index)?;
-        buffer.write_u8(self.cb_quant_index)?;
-        buffer.write_u8(self.cr_quant_index)?;
-
-        buffer.write_u16::<LittleEndian>(self.x)?;
-        buffer.write_u16::<LittleEndian>(self.y)?;
-
-        buffer.write_u16::<LittleEndian>(self.y_data.len() as u16)?;
-        buffer.write_u16::<LittleEndian>(self.cb_data.len() as u16)?;
-        buffer.write_u16::<LittleEndian>(self.cr_data.len() as u16)?;
-
-        buffer.write_all(self.y_data)?;
-        buffer.write_all(self.cb_data)?;
-        buffer.write_all(self.cr_data)?;
-
-        Ok(())
-    }
-
-    fn buffer_length(&self) -> usize {
-        BLOCK_HEADER_SIZE + 13 + self.y_data.len() + self.cb_data.len() + self.cr_data.len()
     }
 }
 

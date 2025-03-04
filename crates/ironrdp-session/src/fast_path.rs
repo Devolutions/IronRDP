@@ -349,7 +349,7 @@ impl Processor {
                             }
                         }
                         CodecId::RemoteFx => {
-                            let mut data = bits.extended_bitmap_data.data;
+                            let mut data = ReadCursor::new(bits.extended_bitmap_data.data);
                             while !data.is_empty() {
                                 let (_frame_id, rectangle) = self.rfx_handler.decode(image, &destination, &mut data)?;
                                 update_rectangle = update_rectangle.union(&rectangle);

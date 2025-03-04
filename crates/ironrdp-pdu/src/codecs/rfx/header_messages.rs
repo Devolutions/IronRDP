@@ -1,8 +1,7 @@
-use byteorder::{LittleEndian, ReadBytesExt, WriteBytesExt};
-
-use super::{BlockHeader, BlockType, RfxError, BLOCK_HEADER_SIZE};
-use crate::utils::SplitTo;
-use crate::PduBufferParsing;
+use ironrdp_core::{
+    cast_length, ensure_fixed_part_size, invalid_field_err, Decode, DecodeResult, Encode, EncodeResult, ReadCursor,
+    WriteCursor,
+};
 
 const SYNC_MAGIC: u32 = 0xCACC_ACCA;
 const SYNC_VERSION: u16 = 0x0100;
@@ -11,153 +10,149 @@ const CODEC_ID: u8 = 1;
 const CODEC_VERSION: u16 = 0x0100;
 const CHANNEL_ID: u8 = 0;
 
-const CHANNEL_SIZE: usize = 5;
-
+// [2.2.2.2.1] TS_RFX_SYNC
+//
+// [2.2.2.2.1]: https://learn.microsoft.com/pt-br/openspecs/windows_protocols/ms-rdprfx/f01b81b6-1a8f-49fd-9543-081fbc8e1831
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SyncPdu;
 
 impl SyncPdu {
-    pub fn from_buffer_consume_with_header(buffer: &mut &[u8], header: BlockHeader) -> Result<Self, RfxError> {
-        let mut buffer = buffer.split_to(header.data_length);
+    const NAME: &'static str = "RfxSync";
 
-        let magic = buffer.read_u32::<LittleEndian>()?;
-        if magic != SYNC_MAGIC {
-            return Err(RfxError::InvalidMagicNumber(magic));
-        }
-        let version = buffer.read_u16::<LittleEndian>()?;
-        if version != SYNC_VERSION {
-            Err(RfxError::InvalidSyncVersion(version))
-        } else {
-            Ok(Self)
-        }
-    }
+    const FIXED_PART_SIZE: usize = 4 /* magic */ + 2 /* version */;
 }
 
-impl PduBufferParsing<'_> for SyncPdu {
-    type Error = RfxError;
+impl Encode for SyncPdu {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
+        ensure_fixed_part_size!(in: dst);
 
-    fn from_buffer_consume(buffer: &mut &[u8]) -> Result<Self, Self::Error> {
-        let header = BlockHeader::from_buffer_consume_with_expected_type(buffer, BlockType::Sync)?;
-        Self::from_buffer_consume_with_header(buffer, header)
-    }
-
-    fn to_buffer_consume(&self, buffer: &mut &mut [u8]) -> Result<(), Self::Error> {
-        let header = BlockHeader {
-            ty: BlockType::Sync,
-            data_length: self.buffer_length() - BLOCK_HEADER_SIZE,
-        };
-
-        header.to_buffer_consume(buffer)?;
-        buffer.write_u32::<LittleEndian>(SYNC_MAGIC)?;
-        buffer.write_u16::<LittleEndian>(SYNC_VERSION)?;
+        dst.write_u32(SYNC_MAGIC);
+        dst.write_u16(SYNC_VERSION);
 
         Ok(())
     }
 
-    fn buffer_length(&self) -> usize {
-        BLOCK_HEADER_SIZE + 6
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    fn size(&self) -> usize {
+        Self::FIXED_PART_SIZE
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CodecVersionsPdu;
+impl<'de> Decode<'de> for SyncPdu {
+    fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
+        ensure_fixed_part_size!(in: src);
 
-impl CodecVersionsPdu {
-    pub fn from_buffer_consume_with_header(buffer: &mut &[u8], header: BlockHeader) -> Result<Self, RfxError> {
-        let mut buffer = buffer.split_to(header.data_length);
-
-        let codecs_number = buffer.read_u8()?;
-        if codecs_number != CODECS_NUMBER {
-            return Err(RfxError::InvalidCodecsNumber(codecs_number));
+        let magic = src.read_u32();
+        if magic != SYNC_MAGIC {
+            return Err(invalid_field_err!("magic", "Invalid sync magic"));
         }
-
-        let _codec_version = CodecVersion::from_buffer(buffer)?;
+        let version = src.read_u16();
+        if version != SYNC_VERSION {
+            return Err(invalid_field_err!("version", "Invalid sync version"));
+        }
 
         Ok(Self)
     }
 }
 
-impl PduBufferParsing<'_> for CodecVersionsPdu {
-    type Error = RfxError;
+/// [2.2.2.2.2] TS_RFX_CODEC_VERSIONS
+///
+/// [2.2.2.2.2]: https://learn.microsoft.com/pt-br/openspecs/windows_protocols/ms-rdprfx/2650e6c2-faf7-4858-b169-828db842b663
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CodecVersionsPdu;
 
-    fn from_buffer_consume(buffer: &mut &[u8]) -> Result<Self, Self::Error> {
-        let header = BlockHeader::from_buffer_consume_with_expected_type(buffer, BlockType::CodecVersions)?;
+impl CodecVersionsPdu {
+    const NAME: &'static str = "RfxCodecVersions";
 
-        Self::from_buffer_consume_with_header(buffer, header)
+    const FIXED_PART_SIZE: usize = 1 /* numCodecs */ + CodecVersion::FIXED_PART_SIZE /* codecs */;
+}
+
+impl Encode for CodecVersionsPdu {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
+        ensure_fixed_part_size!(in: dst);
+
+        dst.write_u8(CODECS_NUMBER);
+        CodecVersion.encode(dst)?;
+
+        Ok(())
     }
 
-    fn to_buffer_consume(&self, buffer: &mut &mut [u8]) -> Result<(), Self::Error> {
-        let header = BlockHeader {
-            ty: BlockType::CodecVersions,
-            data_length: self.buffer_length() - BLOCK_HEADER_SIZE,
-        };
-
-        header.to_buffer_consume(buffer)?;
-        buffer.write_u8(CODECS_NUMBER)?;
-
-        CodecVersion.to_buffer_consume(buffer)
+    fn name(&self) -> &'static str {
+        Self::NAME
     }
 
-    fn buffer_length(&self) -> usize {
-        BLOCK_HEADER_SIZE + 1 + CodecVersion.buffer_length()
+    fn size(&self) -> usize {
+        Self::FIXED_PART_SIZE
     }
 }
 
+impl<'de> Decode<'de> for CodecVersionsPdu {
+    fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
+        ensure_fixed_part_size!(in: src);
+
+        let codec_number = src.read_u8();
+        if codec_number != CODECS_NUMBER {
+            return Err(invalid_field_err!("codec_number", "Invalid codec number"));
+        }
+
+        let _codec_version = CodecVersion::decode(src)?;
+
+        Ok(Self)
+    }
+}
+
+/// [2.2.2.2.3] TS_RFX_CHANNELS
+///
+/// [2.2.2.2.3]: https://learn.microsoft.com/pt-br/openspecs/windows_protocols/ms-rdprfx/c6efba0b-f59e-4d8e-8d76-840c41edce5b
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChannelsPdu(pub Vec<RfxChannel>);
 
 impl ChannelsPdu {
-    pub fn from_buffer_consume_with_header(buffer: &mut &[u8], header: BlockHeader) -> Result<Self, RfxError> {
-        let mut buffer = buffer.split_to(header.data_length);
+    const NAME: &'static str = "RfxChannels";
 
-        let channels_number = usize::from(buffer.read_u8()?);
-
-        if buffer.len() < channels_number * CHANNEL_SIZE {
-            return Err(RfxError::InvalidDataLength {
-                expected: channels_number * CHANNEL_SIZE,
-                actual: buffer.len(),
-            });
-        }
-
-        let channels = (0..channels_number)
-            .map(|_| RfxChannel::from_buffer_consume(&mut buffer))
-            .collect::<Result<Vec<_>, _>>()?;
-
-        Ok(Self(channels))
-    }
+    const FIXED_PART_SIZE: usize = 1 /* numChannels */;
 }
 
-impl PduBufferParsing<'_> for ChannelsPdu {
-    type Error = RfxError;
+impl Encode for ChannelsPdu {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
+        ensure_fixed_part_size!(in: dst);
 
-    fn from_buffer_consume(buffer: &mut &[u8]) -> Result<Self, Self::Error> {
-        let header = BlockHeader::from_buffer_consume_with_expected_type(buffer, BlockType::Channels)?;
-
-        Self::from_buffer_consume_with_header(buffer, header)
-    }
-
-    fn to_buffer_consume(&self, buffer: &mut &mut [u8]) -> Result<(), Self::Error> {
-        let header = BlockHeader {
-            ty: BlockType::Channels,
-            data_length: self.buffer_length() - BLOCK_HEADER_SIZE,
-        };
-
-        header.to_buffer_consume(buffer)?;
-        buffer.write_u8(self.0.len() as u8)?;
-
-        for channel in self.0.iter() {
-            channel.to_buffer_consume(buffer)?;
+        dst.write_u8(cast_length!("num_channels", self.0.len())?);
+        for channel in &self.0 {
+            channel.encode(dst)?;
         }
 
         Ok(())
     }
 
-    fn buffer_length(&self) -> usize {
-        BLOCK_HEADER_SIZE + 1 + self.0.iter().map(PduBufferParsing::buffer_length).sum::<usize>()
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    fn size(&self) -> usize {
+        Self::FIXED_PART_SIZE + self.0.iter().map(|channel| channel.size()).sum::<usize>()
     }
 }
 
-/// TS_RFX_CHANNELT
+impl<'de> Decode<'de> for ChannelsPdu {
+    fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
+        ensure_fixed_part_size!(in: src);
+
+        let num_channels = src.read_u8();
+        let channels = (0..num_channels)
+            .map(|_| RfxChannel::decode(src))
+            .collect::<DecodeResult<Vec<_>>>()?;
+
+        Ok(Self(channels))
+    }
+}
+
+/// [2.2.2.1.3] TS_RFX_CHANNELT
+///
+/// [2.2.2.1.3]: https://learn.microsoft.com/pt-br/openspecs/windows_protocols/ms-rdprfx/4060f07e-9d73-454d-841e-131a93aca675
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub struct RfxChannel {
     pub width: RfxChannelWidth,
@@ -202,65 +197,101 @@ impl RfxChannelHeight {
     }
 }
 
-impl PduBufferParsing<'_> for RfxChannel {
-    type Error = RfxError;
+impl RfxChannel {
+    const NAME: &'static str = "RfxChannel";
 
-    fn from_buffer_consume(buffer: &mut &[u8]) -> Result<Self, Self::Error> {
-        let id = buffer.read_u8()?;
-        if id != CHANNEL_ID {
-            return Err(RfxError::InvalidChannelId(id));
+    const FIXED_PART_SIZE: usize = 1 /* channelId */ + 2 /* width */ + 2 /* height */;
+}
+
+impl Encode for RfxChannel {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
+        ensure_fixed_part_size!(in: dst);
+
+        dst.write_u8(CHANNEL_ID);
+        dst.write_i16(self.width.get());
+        dst.write_i16(self.height.get());
+
+        Ok(())
+    }
+
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    fn size(&self) -> usize {
+        Self::FIXED_PART_SIZE
+    }
+}
+
+impl<'de> Decode<'de> for RfxChannel {
+    fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
+        ensure_fixed_part_size!(in: src);
+
+        let channel_id = src.read_u8();
+        if channel_id != CHANNEL_ID {
+            return Err(invalid_field_err!("channelId", "Invalid channel ID"));
         }
 
-        let width = buffer.read_i16::<LittleEndian>()?;
+        let width = src.read_i16();
+        if !(1..=4096).contains(&width) {
+            return Err(invalid_field_err!("width", "Invalid channel width"));
+        }
         let width = RfxChannelWidth::new(width);
 
-        let height = buffer.read_i16::<LittleEndian>()?;
+        let height = src.read_i16();
+        if !(1..=2048).contains(&height) {
+            return Err(invalid_field_err!("height", "Invalid channel height"));
+        }
         let height = RfxChannelHeight::new(height);
 
         Ok(Self { width, height })
     }
-
-    fn to_buffer_consume(&self, buffer: &mut &mut [u8]) -> Result<(), Self::Error> {
-        buffer.write_u8(CHANNEL_ID)?;
-        buffer.write_i16::<LittleEndian>(self.width.get())?;
-        buffer.write_i16::<LittleEndian>(self.height.get())?;
-
-        Ok(())
-    }
-
-    fn buffer_length(&self) -> usize {
-        CHANNEL_SIZE
-    }
 }
 
+/// [2.2.2.1.4] TS_RFX_CODEC_VERSIONT
+///
+/// [2.2.2.1.4] https://learn.microsoft.com/pt-br/openspecs/windows_protocols/ms-rdprfx/024fee4a-197d-479e-a68f-861933a34b06
 #[derive(Debug, Clone, PartialEq)]
 struct CodecVersion;
 
-impl PduBufferParsing<'_> for CodecVersion {
-    type Error = RfxError;
+impl CodecVersion {
+    const NAME: &'static str = "RfxCodecVersion";
 
-    fn from_buffer_consume(buffer: &mut &[u8]) -> Result<Self, Self::Error> {
-        let id = buffer.read_u8()?;
-        if id != CODEC_ID {
-            return Err(RfxError::InvalidCodecId(id));
-        }
+    const FIXED_PART_SIZE: usize = 1 /* codecId */ + 2 /* codecVersion */;
+}
 
-        let version = buffer.read_u16::<LittleEndian>()?;
-        if version != CODEC_VERSION {
-            Err(RfxError::InvalidCodecVersion(version))
-        } else {
-            Ok(Self)
-        }
-    }
+impl Encode for CodecVersion {
+    fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
+        ensure_fixed_part_size!(in: dst);
 
-    fn to_buffer_consume(&self, buffer: &mut &mut [u8]) -> Result<(), Self::Error> {
-        buffer.write_u8(CODEC_ID)?;
-        buffer.write_u16::<LittleEndian>(CODEC_VERSION)?;
+        dst.write_u8(CODEC_ID);
+        dst.write_u16(CODEC_VERSION);
 
         Ok(())
     }
 
-    fn buffer_length(&self) -> usize {
-        3
+    fn name(&self) -> &'static str {
+        Self::NAME
+    }
+
+    fn size(&self) -> usize {
+        Self::FIXED_PART_SIZE
+    }
+}
+
+impl<'de> Decode<'de> for CodecVersion {
+    fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
+        ensure_fixed_part_size!(in: src);
+
+        let codec_id = src.read_u8();
+        if codec_id != CODEC_ID {
+            return Err(invalid_field_err!("codec_id", "Invalid codec ID"));
+        }
+        let codec_version = src.read_u16();
+        if codec_version != CODEC_VERSION {
+            return Err(invalid_field_err!("codec_version", "Invalid codec version"));
+        }
+
+        Ok(Self)
     }
 }

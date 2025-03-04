@@ -1,5 +1,5 @@
-use ironrdp_pdu::codecs::rfx::*;
-use ironrdp_pdu::PduBufferParsing;
+use ironrdp_pdu::{codecs::rfx::*, decode};
+use ironrdp_testsuite_core::encode_decode_test;
 
 const SYNC_PDU_BUFFER: [u8; 12] = [
     0xc0, 0xcc, // TS_RFX_SYNC::BlockT::blockType = WBT_SYNC
@@ -235,28 +235,28 @@ const TILESET_PDU_BUFFER_WITH_INVALID_TILES_DATA_SIZE: [u8; 27] = [
     0x66, 0x66, 0x77, 0x88, 0x98, // TS_RFX_TILESET::quantVals
 ];
 
-const SYNC_PDU: SyncPdu = SyncPdu;
+const SYNC_PDU: Block<'_> = Block::Sync(SyncPdu);
 
-const CODEC_VERSIONS_PDU: CodecVersionsPdu = CodecVersionsPdu;
+const CODEC_VERSIONS_PDU: Block<'_> = Block::CodecVersions(CodecVersionsPdu);
 
-const CONTEXT_PDU: ContextPdu = ContextPdu {
+const CONTEXT_PDU: Block<'_> = Block::CodecChannel(CodecChannel::Context(ContextPdu {
     flags: OperatingMode::empty(),
     entropy_algorithm: EntropyAlgorithm::Rlgr3,
-};
+}));
 
-const FRAME_BEGIN_PDU: FrameBeginPdu = FrameBeginPdu {
+const FRAME_BEGIN_PDU: Block<'_> = Block::CodecChannel(CodecChannel::FrameBegin(FrameBeginPdu {
     index: 0,
     number_of_regions: 1,
-};
+}));
 
-const FRAME_END_PDU: FrameEndPdu = FrameEndPdu;
+const FRAME_END_PDU: Block<'_> = Block::CodecChannel(CodecChannel::FrameEnd(FrameEndPdu));
 
 lazy_static::lazy_static! {
-    static ref CHANNELS_PDU: ChannelsPdu = ChannelsPdu(vec![
+    static ref CHANNELS_PDU: Block<'static> = Block::Channels(ChannelsPdu(vec![
         RfxChannel { width: RfxChannelWidth::new(64), height: RfxChannelHeight::new(64) },
         RfxChannel { width: RfxChannelWidth::new(32), height: RfxChannelHeight::new(32) }
-    ]);
-    static ref REGION_PDU: RegionPdu = RegionPdu {
+    ]));
+    static ref REGION_PDU: Block<'static> = Block::CodecChannel(CodecChannel::Region(RegionPdu {
         rectangles: vec![
             RfxRectangle {
                 x: 0,
@@ -271,8 +271,8 @@ lazy_static::lazy_static! {
                 height: 0xff,
             },
         ]
-    };
-    static ref TILESET_PDU: TileSetPdu<'static> = TileSetPdu {
+    }));
+    static ref TILESET_PDU: Block<'static> = Block::CodecChannel(CodecChannel::TileSet(TileSetPdu {
         entropy_algorithm: EntropyAlgorithm::Rlgr3,
         quants: vec![
             Quant {
@@ -315,217 +315,56 @@ lazy_static::lazy_static! {
                 cr_data: &TILE2_CR_DATA,
             },
         ],
-    };
+    }));
 }
 
 #[test]
 fn from_buffer_for_block_header_returns_error_on_zero_data_length() {
-    assert!(SyncPdu::from_buffer(SYNC_PDU_BUFFER_WITH_ZERO_DATA_LENGTH.as_ref()).is_err(),);
+    decode::<Block<'_>>(SYNC_PDU_BUFFER_WITH_ZERO_DATA_LENGTH.as_ref()).unwrap_err();
 }
 
 #[test]
 fn from_buffer_for_block_header_returns_error_on_data_length_greater_then_available_data() {
-    assert!(SyncPdu::from_buffer(SYNC_PDU_BUFFER_WITH_BIG_DATA_LENGTH.as_ref()).is_err(),);
+    decode::<Block<'_>>(SYNC_PDU_BUFFER_WITH_BIG_DATA_LENGTH.as_ref()).unwrap_err();
 }
 
 #[test]
 fn from_buffer_for_pdu_with_codec_channel_header_returns_error_on_small_buffer() {
-    assert!(RegionPdu::from_buffer(SYNC_PDU_BUFFER_WITH_SMALL_BUFFER.as_ref()).is_err());
-}
-
-#[test]
-fn from_buffer_correctly_parses_sync_pdu() {
-    assert_eq!(SYNC_PDU, SyncPdu::from_buffer(SYNC_PDU_BUFFER.as_ref()).unwrap());
-}
-
-#[test]
-fn to_buffer_correctly_serializes_sync_pdu() {
-    let expected = SYNC_PDU_BUFFER.as_ref();
-    let mut buffer = vec![0; expected.len()];
-
-    SYNC_PDU.to_buffer_consume(&mut buffer.as_mut_slice()).unwrap();
-    assert_eq!(expected, buffer.as_slice());
-}
-
-#[test]
-fn buffer_length_is_correct_for_sync_pdu() {
-    assert_eq!(SYNC_PDU_BUFFER.len(), SYNC_PDU.buffer_length());
-}
-
-#[test]
-fn from_buffer_correctly_parses_codec_versions_pdu() {
-    assert_eq!(
-        CODEC_VERSIONS_PDU,
-        CodecVersionsPdu::from_buffer(CODEC_VERSIONS_PDU_BUFFER.as_ref()).unwrap()
-    );
-}
-
-#[test]
-fn to_buffer_correctly_serializes_codec_versions_pdu() {
-    let expected = CODEC_VERSIONS_PDU_BUFFER.as_ref();
-    let mut buffer = vec![0; expected.len()];
-
-    CODEC_VERSIONS_PDU
-        .to_buffer_consume(&mut buffer.as_mut_slice())
-        .unwrap();
-    assert_eq!(expected, buffer.as_slice());
-}
-
-#[test]
-fn buffer_length_is_correct_for_codec_versions_pdu() {
-    assert_eq!(CODEC_VERSIONS_PDU_BUFFER.len(), CODEC_VERSIONS_PDU.buffer_length());
-}
-
-#[test]
-fn from_buffer_correctly_parses_channels_pdu() {
-    assert_eq!(
-        *CHANNELS_PDU,
-        ChannelsPdu::from_buffer(CHANNELS_PDU_BUFFER.as_ref()).unwrap()
-    );
-}
-
-#[test]
-fn to_buffer_correctly_serializes_channels_pdu() {
-    let expected = CHANNELS_PDU_BUFFER.as_ref();
-    let mut buffer = vec![0; expected.len()];
-
-    CHANNELS_PDU.to_buffer_consume(&mut buffer.as_mut_slice()).unwrap();
-    assert_eq!(expected, buffer.as_slice());
+    decode::<Block<'_>>(SYNC_PDU_BUFFER_WITH_SMALL_BUFFER.as_ref()).unwrap_err();
 }
 
 #[test]
 fn from_buffer_returns_error_on_invalid_data_length_for_channels_pdu() {
-    assert!(ChannelsPdu::from_buffer(CHANNELS_PDU_BUFFER_WITH_INVALID_DATA_LENGTH.as_ref()).is_err());
+    decode::<Block<'_>>(CHANNELS_PDU_BUFFER_WITH_INVALID_DATA_LENGTH.as_ref()).unwrap_err();
 }
 
-#[test]
-fn buffer_length_is_correct_for_channels_pdu() {
-    assert_eq!(CHANNELS_PDU_BUFFER.len(), CHANNELS_PDU.buffer_length());
+encode_decode_test! {
+    sync: SYNC_PDU, SYNC_PDU_BUFFER;
+    codec_version: CODEC_VERSIONS_PDU, CODEC_VERSIONS_PDU_BUFFER;
+    channels: CHANNELS_PDU.clone(), CHANNELS_PDU_BUFFER;
+    context: CONTEXT_PDU.clone(), CONTEXT_PDU_BUFFER;
+    region: REGION_PDU.clone(), REGION_PDU_BUFFER;
+    frame_begin: FRAME_BEGIN_PDU, FRAME_BEGIN_PDU_BUFFER;
+    frame_end: FRAME_END_PDU, FRAME_END_PDU_BUFFER;
+    tile_set: TILESET_PDU.clone(), TILESET_PDU_BUFFER;
 }
 
 #[test]
 fn from_buffer_for_codec_channel_header_returns_error_on_zero_data_length() {
-    assert!(ContextPdu::from_buffer(CONTEXT_PDU_BUFFER_WITH_ZERO_DATA_LENGTH.as_ref()).is_err());
+    decode::<Block<'_>>(CONTEXT_PDU_BUFFER_WITH_ZERO_DATA_LENGTH.as_ref()).unwrap_err();
 }
 
 #[test]
 fn from_buffer_for_codec_channel_header_returns_error_on_data_length_greater_then_available_data() {
-    assert!(ContextPdu::from_buffer(CONTEXT_PDU_BUFFER_WITH_BIG_DATA_LENGTH.as_ref()).is_err());
-}
-
-#[test]
-fn from_buffer_correctly_parses_context_pdu() {
-    assert_eq!(
-        CONTEXT_PDU,
-        ContextPdu::from_buffer(CONTEXT_PDU_BUFFER.as_ref()).unwrap()
-    );
-}
-
-#[test]
-fn to_buffer_correctly_serializes_context_pdu() {
-    let expected = CONTEXT_PDU_BUFFER.as_ref();
-    let mut buffer = vec![0; expected.len()];
-
-    CONTEXT_PDU.to_buffer_consume(&mut buffer.as_mut_slice()).unwrap();
-    assert_eq!(expected, buffer.as_slice());
-}
-
-#[test]
-fn buffer_length_is_correct_for_context_pdu() {
-    assert_eq!(CONTEXT_PDU_BUFFER.len(), CONTEXT_PDU.buffer_length());
-}
-
-#[test]
-fn from_buffer_correctly_parses_frame_begin_pdu() {
-    assert_eq!(
-        FRAME_BEGIN_PDU,
-        FrameBeginPdu::from_buffer(FRAME_BEGIN_PDU_BUFFER.as_ref()).unwrap()
-    );
-}
-
-#[test]
-fn to_buffer_correctly_serializes_frame_begin_pdu() {
-    let expected = FRAME_BEGIN_PDU_BUFFER.as_ref();
-    let mut buffer = vec![0; expected.len()];
-
-    FRAME_BEGIN_PDU.to_buffer_consume(&mut buffer.as_mut_slice()).unwrap();
-    assert_eq!(expected, buffer.as_slice());
-}
-
-#[test]
-fn buffer_length_is_correct_for_frame_begin_pdu() {
-    assert_eq!(FRAME_BEGIN_PDU_BUFFER.len(), FRAME_BEGIN_PDU.buffer_length());
-}
-
-#[test]
-fn from_buffer_correctly_parses_frame_end_pdu() {
-    assert_eq!(
-        FRAME_END_PDU,
-        FrameEndPdu::from_buffer(FRAME_END_PDU_BUFFER.as_ref()).unwrap()
-    );
-}
-
-#[test]
-fn to_buffer_correctly_serializes_frame_end_pdu() {
-    let expected = FRAME_END_PDU_BUFFER.as_ref();
-    let mut buffer = vec![0; expected.len()];
-
-    FRAME_END_PDU.to_buffer_consume(&mut buffer.as_mut_slice()).unwrap();
-    assert_eq!(expected, buffer.as_slice());
-}
-
-#[test]
-fn buffer_length_is_correct_for_frame_end_pdu() {
-    assert_eq!(FRAME_END_PDU_BUFFER.len(), FRAME_END_PDU.buffer_length());
-}
-
-#[test]
-fn from_buffer_correctly_parses_region_pdu() {
-    assert_eq!(*REGION_PDU, RegionPdu::from_buffer(REGION_PDU_BUFFER.as_ref()).unwrap());
-}
-
-#[test]
-fn to_buffer_correctly_serializes_region_pdu() {
-    let expected = REGION_PDU_BUFFER.as_ref();
-    let mut buffer = vec![0; expected.len()];
-
-    REGION_PDU.to_buffer_consume(&mut buffer.as_mut_slice()).unwrap();
-    assert_eq!(expected, buffer.as_slice());
-}
-
-#[test]
-fn buffer_length_is_correct_for_region_pdu() {
-    assert_eq!(REGION_PDU_BUFFER.len(), REGION_PDU.buffer_length());
+    decode::<Block<'_>>(CONTEXT_PDU_BUFFER_WITH_BIG_DATA_LENGTH.as_ref()).unwrap_err();
 }
 
 #[test]
 fn from_buffer_returns_error_on_invalid_number_of_quants_for_tile_set_pdu() {
-    assert!(TileSetPdu::from_buffer_consume(&mut TILESET_PDU_BUFFER_WITH_INVALID_NUMBER_OF_QUANTS.as_ref()).is_err());
+    decode::<Block<'_>>(TILESET_PDU_BUFFER_WITH_INVALID_NUMBER_OF_QUANTS.as_ref()).unwrap_err();
 }
 
 #[test]
 fn from_buffer_returns_error_on_invalid_tiles_data_size_for_tile_set_pdu() {
-    assert!(TileSetPdu::from_buffer_consume(&mut TILESET_PDU_BUFFER_WITH_INVALID_TILES_DATA_SIZE.as_ref()).is_err());
-}
-
-#[test]
-fn from_buffer_correctly_parses_tile_set_pdu() {
-    assert_eq!(
-        *TILESET_PDU,
-        TileSetPdu::from_buffer_consume(&mut TILESET_PDU_BUFFER.as_ref()).unwrap()
-    );
-}
-
-#[test]
-fn to_buffer_correctly_serializes_tile_set_pdu() {
-    let expected = TILESET_PDU_BUFFER.as_ref();
-    let mut buffer = vec![0; expected.len()];
-
-    TILESET_PDU.to_buffer_consume(&mut buffer.as_mut_slice()).unwrap();
-    assert_eq!(expected, buffer.as_slice());
-}
-
-#[test]
-fn buffer_length_is_correct_for_tile_set_pdu() {
-    assert_eq!(TILESET_PDU_BUFFER.len(), TILESET_PDU.buffer_length());
+    decode::<Block<'_>>(TILESET_PDU_BUFFER_WITH_INVALID_TILES_DATA_SIZE.as_ref()).unwrap_err();
 }

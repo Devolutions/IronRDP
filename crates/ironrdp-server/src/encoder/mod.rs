@@ -156,7 +156,7 @@ impl UpdateEncoder {
         Ok(UpdateFragmenter::new(UpdateCode::Bitmap, &self.buffer[..len]))
     }
 
-    fn set_surface(&mut self, bitmap: BitmapUpdate, codec_id: u8, data: Vec<u8>) -> Result<UpdateFragmenter<'_>> {
+    fn set_surface(&mut self, bitmap: BitmapUpdate, codec_id: u8, data: &[u8]) -> Result<UpdateFragmenter<'_>> {
         let destination = ExclusiveRectangle {
             left: bitmap.left,
             top: bitmap.top,
@@ -169,7 +169,7 @@ impl UpdateEncoder {
             height: bitmap.height.get(),
             codec_id,
             header: None,
-            data: &data,
+            data,
         };
         let pdu = SurfaceBitsPdu {
             destination,
@@ -183,9 +183,22 @@ impl UpdateEncoder {
     fn remotefx_update(&mut self, bitmap: BitmapUpdate) -> Result<UpdateFragmenter<'_>> {
         let (remotefx, codec_id) = self.remotefx.as_mut().unwrap();
         let codec_id = *codec_id;
-        let data = remotefx.encode(&bitmap).context("RemoteFX encoding")?;
+        let mut buffer = vec![0; bitmap.data.len()];
+        let len = loop {
+            match remotefx.encode(&bitmap, buffer.as_mut_slice()) {
+                Err(e) => match e.kind() {
+                    ironrdp_core::EncodeErrorKind::NotEnoughBytes { .. } => {
+                        buffer.resize(buffer.len() * 2, 0);
+                        debug!("encoder buffer resized to: {}", self.buffer.len() * 2);
+                    }
 
-        self.set_surface(bitmap, codec_id, data)
+                    _ => Err(e).context("RemoteFX encode error")?,
+                },
+                Ok(len) => break len,
+            }
+        };
+
+        self.set_surface(bitmap, codec_id, &buffer[..len])
     }
 
     fn none_update(&mut self, mut bitmap: BitmapUpdate) -> Result<UpdateFragmenter<'_>> {
@@ -211,7 +224,7 @@ impl UpdateEncoder {
             }
         };
 
-        self.set_surface(bitmap, CodecId::None as u8, data)
+        self.set_surface(bitmap, CodecId::None as u8, &data)
     }
 }
 

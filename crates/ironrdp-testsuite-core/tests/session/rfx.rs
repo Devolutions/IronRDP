@@ -1,5 +1,6 @@
 use ironrdp_graphics::image_processing::PixelFormat;
 use ironrdp_pdu::geometry::InclusiveRectangle;
+use ironrdp_pdu::ReadCursor;
 use ironrdp_session::image::DecodedImage;
 use ironrdp_session::rfx::DecodingContext;
 
@@ -15,7 +16,7 @@ fn decode_decodes_valid_sequence_of_messages() {
         right: u16::try_from(IMAGE_WIDTH).unwrap() - 1,
         bottom: u16::try_from(IMAGE_HEIGHT).unwrap() - 1,
     };
-    let mut data = ENCODED_MESSAGES.as_ref();
+    let data = &mut ReadCursor::new(ENCODED_MESSAGES.as_ref());
     let expected = DECODED_IMAGE.as_ref();
 
     let mut image = DecodedImage::new(
@@ -26,7 +27,7 @@ fn decode_decodes_valid_sequence_of_messages() {
 
     let mut handler = DecodingContext::default();
 
-    handler.decode(&mut image, &destination, &mut data).unwrap();
+    handler.decode(&mut image, &destination, data).unwrap();
 
     assert_eq!(expected, image.data());
 }
