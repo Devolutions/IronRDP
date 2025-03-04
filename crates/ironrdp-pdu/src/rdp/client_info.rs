@@ -208,8 +208,7 @@ impl ExtendedClientInfo {
     fn decode(src: &mut ReadCursor<'_>, character_set: CharacterSet) -> DecodeResult<Self> {
         ensure_size!(in: src, size: CLIENT_ADDRESS_FAMILY_SIZE + CLIENT_ADDRESS_LENGTH_SIZE);
 
-        let address_family = AddressFamily::from_u16(src.read_u16())
-            .ok_or_else(|| invalid_field_err!("clientAddressFamily", "invalid address family"))?;
+        let address_family = AddressFamily::from_u16(src.read_u16());
 
         // This size includes the length of the mandatory null terminator.
         let address_size = src.read_u16() as usize;
@@ -235,7 +234,7 @@ impl ExtendedClientInfo {
     fn encode(&self, dst: &mut WriteCursor<'_>, character_set: CharacterSet) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size(character_set));
 
-        dst.write_u16(self.address_family.to_u16().unwrap());
+        dst.write_u16(self.address_family.to_u16());
         // // + size of null terminator, which will write in the write_string function
         dst.write_u16(string_len(self.address.as_str(), character_set) + character_set.to_u16().unwrap());
         utils::write_string_to_cursor(dst, self.address.as_str(), character_set, true)?;
@@ -610,12 +609,22 @@ impl Default for PerformanceFlags {
 }
 
 #[repr(transparent)]
-#[derive(Debug, Copy, Clone, PartialEq, Eq, FromPrimitive, ToPrimitive)]
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub struct AddressFamily(u16);
 
 impl AddressFamily {
     pub const INET: Self = Self(0x0002);
     pub const INET_6: Self = Self(0x0017);
+}
+
+impl AddressFamily {
+    pub fn from_u16(val: u16) -> Self {
+        Self(val)
+    }
+
+    pub fn to_u16(self) -> u16 {
+        self.0
+    }
 }
 
 bitflags! {
