@@ -38,10 +38,10 @@ ironrdp-displaycontrol = { version = "0.1", path = "crates/ironrdp-displaycontro
 ironrdp-error = { version = "0.1", path = "crates/ironrdp-error" }
 ironrdp-futures = { version = "0.1", path = "crates/ironrdp-futures" }
 ironrdp-fuzzing = { path = "crates/ironrdp-fuzzing" }
-ironrdp-graphics = { version = "0.1", path = "crates/ironrdp-graphics" }
+ironrdp-graphics = { version = "0.2", path = "crates/ironrdp-graphics" }
 ironrdp-input = { version = "0.1", path = "crates/ironrdp-input" }
 ironrdp-pdu-generators = { path = "crates/ironrdp-pdu-generators" }
-ironrdp-pdu = { version = "0.2", path = "crates/ironrdp-pdu" }
+ironrdp-pdu = { version = "0.3", path = "crates/ironrdp-pdu" }
 ironrdp-rdcleanpath = { version = "0.1", path = "crates/ironrdp-rdcleanpath" }
 ironrdp-rdpdr = { version = "0.1", path = "crates/ironrdp-rdpdr" }
 ironrdp-rdpdr-native = { version = "0.1", path = "crates/ironrdp-rdpdr-native" }
