@@ -234,7 +234,7 @@ impl ExtendedClientInfo {
     fn encode(&self, dst: &mut WriteCursor<'_>, character_set: CharacterSet) -> EncodeResult<()> {
         ensure_size!(in: dst, size: self.size(character_set));
 
-        dst.write_u16(self.address_family.to_u16());
+        dst.write_u16(self.address_family.as_u16());
         // // + size of null terminator, which will write in the write_string function
         dst.write_u16(string_len(self.address.as_str(), character_set) + character_set.to_u16().unwrap());
         utils::write_string_to_cursor(dst, self.address.as_str(), character_set, true)?;
@@ -622,7 +622,7 @@ impl AddressFamily {
         Self(val)
     }
 
-    pub fn to_u16(self) -> u16 {
+    pub fn as_u16(self) -> u16 {
         self.0
     }
 }
