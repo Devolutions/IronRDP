@@ -754,8 +754,8 @@ fn create_client_info_pdu(config: &Config, routing_addr: &SocketAddr) -> rdp::Cl
         work_dir: String::new(),
         extra_info: ExtendedClientInfo {
             address_family: match routing_addr {
-                SocketAddr::V4(_) => AddressFamily::INet,
-                SocketAddr::V6(_) => AddressFamily::INet6,
+                SocketAddr::V4(_) => AddressFamily::INET,
+                SocketAddr::V6(_) => AddressFamily::INET_6,
             },
             address: routing_addr.ip().to_string(),
             dir: config.client_dir.clone(),
