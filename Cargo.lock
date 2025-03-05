@@ -2722,6 +2722,7 @@ dependencies = [
  "ironrdp-rdpsnd",
  "ironrdp-svc",
  "ironrdp-tokio",
+ "qoi",
  "rayon",
  "rustls-pemfile",
  "tokio",
@@ -2743,6 +2744,7 @@ dependencies = [
  "ironrdp-graphics",
  "ironrdp-pdu",
  "ironrdp-svc",
+ "qoi",
  "tracing",
 ]
 
@@ -4141,6 +4143,14 @@ dependencies = [
  "rusty-fork",
  "tempfile",
  "unarray",
+]
+
+[[package]]
+name = "qoi"
+version = "0.4.1"
+source = "git+https://github.com/elmarco/qoi-rust.git?branch=raw#9fc76e899f9421eb203930dd6a54600f1e6e4b1c"
+dependencies = [
+ "bytemuck",
 ]
 
 [[package]]
