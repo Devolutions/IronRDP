@@ -27,6 +27,7 @@ test = false
 default = ["rustls"]
 rustls = ["ironrdp-tls/rustls", "tokio-tungstenite/rustls-tls-native-roots"]
 native-tls = ["ironrdp-tls/native-tls", "tokio-tungstenite/native-tls"]
+qoi = ["ironrdp/qoi"]
 
 [dependencies]
 # Protocols
