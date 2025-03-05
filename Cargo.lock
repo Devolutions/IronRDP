@@ -2715,6 +2715,7 @@ dependencies = [
  "ironrdp-rdpsnd",
  "ironrdp-svc",
  "ironrdp-tokio",
+ "qoicoubeh",
  "rayon",
  "rustls-pemfile",
  "tokio",
@@ -2736,6 +2737,7 @@ dependencies = [
  "ironrdp-graphics",
  "ironrdp-pdu",
  "ironrdp-svc",
+ "qoicoubeh",
  "tracing",
 ]
 
@@ -4159,6 +4161,15 @@ dependencies = [
  "rusty-fork",
  "tempfile",
  "unarray",
+]
+
+[[package]]
+name = "qoicoubeh"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b9b82aa3fef8a980075775b8c46f874823b5b4a15de327d2dbb3b6fd818480ba"
+dependencies = [
+ "bytemuck",
 ]
 
 [[package]]

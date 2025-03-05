@@ -20,6 +20,7 @@ crate-type = ["cdylib", "rlib"]
 [features]
 default = ["panic_hook"]
 panic_hook = ["iron-remote-desktop/panic_hook"]
+qoi = ["ironrdp/qoi"]
 
 [dependencies]
 # Protocols
@@ -31,7 +32,7 @@ ironrdp = { path = "../ironrdp", features = [
     "dvc",
     "cliprdr",
     "svc",
-    "displaycontrol"
+    "displaycontrol",
 ] }
 ironrdp-core.path = "../ironrdp-core"
 ironrdp-cliprdr-format.path = "../ironrdp-cliprdr-format"
