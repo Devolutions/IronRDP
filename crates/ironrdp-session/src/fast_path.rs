@@ -37,6 +37,8 @@ pub struct Processor {
     mouse_pos_update: Option<(u16, u16)>,
     no_server_pointer: bool,
     pointer_software_rendering: bool,
+    #[cfg(feature = "qoiz")]
+    zdctx: zstd_safe::DCtx<'static>,
 }
 
 impl Processor {
@@ -363,20 +365,34 @@ impl Processor {
                         }
                         #[cfg(feature = "qoi")]
                         ironrdp_pdu::rdp::capability_sets::CODEC_ID_QOI => {
-                            let (header, decoded) = qoi::decode_to_vec(bits.extended_bitmap_data.data)
-                                .map_err(|e| reason_err!("QOI decode", "{}", e))?;
-                            match header.channels {
-                                qoi::Channels::Rgb => {
-                                    let rectangle = image.apply_rgb24(&decoded, &destination, false)?;
-
-                                    update_rectangle = update_rectangle
-                                        .map(|rect: InclusiveRectangle| rect.union(&rectangle))
-                                        .or(Some(rectangle));
-                                }
-                                qoi::Channels::Rgba => {
-                                    warn!("Unsupported RGBA QOI data");
+                            qoi_apply(
+                                image,
+                                destination,
+                                bits.extended_bitmap_data.data,
+                                &mut update_rectangle,
+                            )?;
+                        }
+                        #[cfg(feature = "qoiz")]
+                        ironrdp_pdu::rdp::capability_sets::CODEC_ID_QOIZ => {
+                            let compressed = &bits.extended_bitmap_data.data;
+                            let mut input = zstd_safe::InBuffer::around(compressed);
+                            let mut data = vec![0; compressed.len() * 4];
+                            let mut pos = 0;
+                            loop {
+                                let mut output = zstd_safe::OutBuffer::around_pos(data.as_mut_slice(), pos);
+                                self.zdctx
+                                    .decompress_stream(&mut output, &mut input)
+                                    .map_err(zstd_safe::get_error_name)
+                                    .map_err(|e| reason_err!("zstd", "{}", e))?;
+                                pos = output.pos();
+                                if pos == output.capacity() {
+                                    data.resize(data.capacity() * 2, 0);
+                                } else {
+                                    break;
                                 }
                             }
+
+                            qoi_apply(image, destination, &data, &mut update_rectangle)?;
                         }
                         _ => {
                             warn!("Unsupported codec ID: {}", bits.extended_bitmap_data.codec_id);
@@ -396,6 +412,30 @@ impl Processor {
 
         Ok(update_rectangle.unwrap_or_else(InclusiveRectangle::empty))
     }
+}
+
+#[cfg(feature = "qoi")]
+fn qoi_apply(
+    image: &mut DecodedImage,
+    destination: InclusiveRectangle,
+    data: &[u8],
+    update_rectangle: &mut Option<InclusiveRectangle>,
+) -> SessionResult<()> {
+    let (header, decoded) = qoi::decode_to_vec(data).map_err(|e| reason_err!("QOI decode", "{}", e))?;
+    match header.channels {
+        qoi::Channels::Rgb => {
+            let rectangle = image.apply_rgb24(&decoded, &destination, false)?;
+
+            *update_rectangle = update_rectangle
+                .as_ref()
+                .map(|rect: &InclusiveRectangle| rect.union(&rectangle))
+                .or(Some(rectangle));
+        }
+        qoi::Channels::Rgba => {
+            warn!("Unsupported RGBA QOI data");
+        }
+    }
+    Ok(())
 }
 
 pub struct ProcessorBuilder {
@@ -421,6 +461,8 @@ impl ProcessorBuilder {
             mouse_pos_update: None,
             no_server_pointer: self.no_server_pointer,
             pointer_software_rendering: self.pointer_software_rendering,
+            #[cfg(feature = "qoiz")]
+            zdctx: zstd_safe::DCtx::default(),
         }
     }
 }
