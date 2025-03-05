@@ -23,7 +23,14 @@
     } = $props();
 
     let isVisible = $state(false);
-    let capturingInputs = $state(false);
+    let capturingInputs = () => {
+        loggingService.info(`
+            capturingInputs: ${document.activeElement === canvas}
+            current active element: ${document.activeElement}
+        `);
+
+        return document.activeElement === canvas;
+    };
 
     let inner: HTMLDivElement;
     let wrapper: HTMLDivElement;
@@ -367,7 +374,7 @@
         userInteractionListeners();
 
         function captureKeys(evt: KeyboardEvent) {
-            if (capturingInputs) {
+            if (capturingInputs()) {
                 if (ffPostponeKeyboardEvents) {
                     evt.preventDefault();
                     ffDelayedKeyboardEvents.push(evt);
@@ -599,12 +606,11 @@
     }
 
     function setMouseIn(evt: MouseEvent) {
-        capturingInputs = true;
+        canvas.focus();
         wasmService.mouseIn(evt);
     }
 
     function setMouseOut(evt: MouseEvent) {
-        capturingInputs = false;
         wasmService.mouseOut(evt);
     }
 
@@ -699,6 +705,7 @@
                 oncontextmenu={(event) => event.preventDefault()}
                 onwheel={mouseWheel}
                 id="renderer"
+                tabindex="0"
             ></canvas>
         </div>
     </div>
