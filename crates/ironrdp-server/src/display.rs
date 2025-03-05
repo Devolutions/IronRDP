@@ -3,6 +3,7 @@ use core::num::NonZeroU16;
 use anyhow::Result;
 use bytes::{Bytes, BytesMut};
 use ironrdp_displaycontrol::pdu::DisplayControlMonitorLayout;
+use ironrdp_graphics::diff;
 use ironrdp_pdu::pointer::PointerPositionAttribute;
 
 #[rustfmt::skip]
@@ -60,7 +61,7 @@ pub struct Framebuffer {
     pub width: NonZeroU16,
     pub height: NonZeroU16,
     pub format: PixelFormat,
-    pub data: BytesMut,
+    pub data: Option<Bytes>,
     pub stride: usize,
 }
 
@@ -74,9 +75,80 @@ impl TryInto<Framebuffer> for BitmapUpdate {
             width: self.width,
             height: self.height,
             format: self.format,
-            data: self.data.try_into_mut().map_err(|_| "BitmapUpdate is shared")?,
+            data: Some(self.data),
             stride: self.stride,
         })
+    }
+}
+
+impl Framebuffer {
+    pub fn new(width: NonZeroU16, height: NonZeroU16, format: PixelFormat) -> Self {
+        let stride = format.bytes_per_pixel() as usize * width.get() as usize;
+        let data = vec![0; stride * width.get() as usize];
+
+        Self {
+            width,
+            height,
+            format,
+            data: Some(data.into()),
+            stride,
+        }
+    }
+
+    pub fn update(&mut self, bitmap: &BitmapUpdate) {
+        if self.format != bitmap.format {
+            warn!("Bitmap format mismatch, unsupported");
+            return;
+        }
+        let bpp = usize::from(self.format.bytes_per_pixel());
+        let x = usize::from(bitmap.x);
+        let y = usize::from(bitmap.y);
+        let width = usize::from(bitmap.width.get());
+        let height = usize::from(bitmap.height.get());
+
+        let mut data: BytesMut = self.data.take().unwrap().into();
+        let start = y * self.stride + x * bpp;
+        let end = start + (height - 1) * self.stride + width * bpp;
+        let dst = &mut data[start..end];
+
+        for y in 0..height {
+            let start = y * bitmap.stride;
+            let end = start + width * bpp;
+            let src = bitmap.data.slice(start..end);
+
+            let start = y * self.stride;
+            let end = start + width * bpp;
+            let dst = &mut dst[start..end];
+
+            dst.copy_from_slice(&src);
+        }
+
+        self.data = Some(data.into());
+    }
+
+    pub(crate) fn update_diffs(&mut self, bitmap: &BitmapUpdate, diffs: &[diff::Rect]) {
+        for diff in diffs {
+            let Some(x) = u16::try_from(diff.x).ok() else {
+                continue;
+            };
+            let Some(y) = u16::try_from(diff.y).ok() else {
+                continue;
+            };
+            let Some(width) = u16::try_from(diff.width).ok() else {
+                continue;
+            };
+            let Some(width) = NonZeroU16::try_from(width).ok() else {
+                continue;
+            };
+            let Some(height) = u16::try_from(diff.height).ok() else {
+                continue;
+            };
+            let Some(height) = NonZeroU16::try_from(height).ok() else {
+                continue;
+            };
+            let sub = bitmap.sub(x, y, width, height).unwrap();
+            self.update(&sub)
+        }
     }
 }
 
@@ -229,5 +301,45 @@ pub trait RdpServerDisplay: Send {
     /// Request a new size for the display
     fn request_layout(&mut self, layout: DisplayControlMonitorLayout) {
         debug!(?layout, "Requesting layout")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{BitmapUpdate, Framebuffer};
+    use core::num::NonZeroU16;
+    use ironrdp_graphics::{diff::Rect, image_processing::PixelFormat};
+
+    #[test]
+    fn framebuffer_update() {
+        let width = NonZeroU16::new(800).unwrap();
+        let height = NonZeroU16::new(600).unwrap();
+        let fmt = PixelFormat::ABgr32;
+        let bpp = usize::from(fmt.bytes_per_pixel());
+        let mut fb = Framebuffer::new(width, height, fmt);
+
+        let width = 15;
+        let stride = width * bpp;
+        let height = 20;
+        let data = vec![1u8; height * stride];
+        let update = BitmapUpdate {
+            x: 1,
+            y: 2,
+            width: NonZeroU16::new(15).unwrap(),
+            height: NonZeroU16::new(20).unwrap(),
+            format: fmt,
+            data: data.into(),
+            stride,
+        };
+        let diffs = vec![Rect::new(2, 3, 4, 5)];
+        fb.update_diffs(&update, &diffs);
+        let data = fb.data.unwrap();
+        for y in 5..10 {
+            for x in 3..7 {
+                for b in 0..bpp {
+                    assert_eq!(data[y * fb.stride + x * bpp + b], 1);
+                }
+            }
+        }
     }
 }
