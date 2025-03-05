@@ -27,6 +27,7 @@ test = false
 default = ["rustls"]
 rustls = ["ironrdp-tls/rustls"]
 native-tls = ["ironrdp-tls/native-tls"]
+qoi = ["ironrdp/qoi"]
 
 [dependencies]
 # Protocols

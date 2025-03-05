@@ -37,17 +37,29 @@ enum CodecId {
 #[derive(Debug)]
 pub(crate) struct UpdateEncoderCodecs {
     remotefx: Option<(EntropyBits, u8)>,
+    #[cfg(feature = "qoi")]
+    qoi: Option<u8>,
 }
 
 impl UpdateEncoderCodecs {
     #[cfg_attr(feature = "__bench", visibility::make(pub))]
     pub(crate) fn new() -> Self {
-        Self { remotefx: None }
+        Self {
+            remotefx: None,
+            #[cfg(feature = "qoi")]
+            qoi: None,
+        }
     }
 
     #[cfg_attr(feature = "__bench", visibility::make(pub))]
     pub(crate) fn set_remotefx(&mut self, remotefx: Option<(EntropyBits, u8)>) {
         self.remotefx = remotefx
+    }
+
+    #[cfg(feature = "qoi")]
+    #[cfg_attr(feature = "__bench", visibility::make(pub))]
+    pub(crate) fn set_qoi(&mut self, qoi: Option<u8>) {
+        self.qoi = qoi
     }
 }
 
@@ -85,6 +97,11 @@ impl UpdateEncoder {
             if let Some((algo, id)) = codecs.remotefx {
                 bitmap = BitmapUpdater::RemoteFx(RemoteFxHandler::new(algo, id, desktop_size));
                 video = Some(bitmap.clone());
+            }
+
+            #[cfg(feature = "qoi")]
+            if let Some(id) = codecs.qoi {
+                bitmap = BitmapUpdater::Qoi(QoiHandler::new(id));
             }
 
             (bitmap, video)
@@ -361,6 +378,8 @@ enum BitmapUpdater {
     None(NoneHandler),
     Bitmap(BitmapHandler),
     RemoteFx(RemoteFxHandler),
+    #[cfg(feature = "qoi")]
+    Qoi(QoiHandler),
 }
 
 impl BitmapUpdater {
@@ -369,6 +388,8 @@ impl BitmapUpdater {
             Self::None(up) => up.handle(bitmap),
             Self::Bitmap(up) => up.handle(bitmap),
             Self::RemoteFx(up) => up.handle(bitmap),
+            #[cfg(feature = "qoi")]
+            Self::Qoi(up) => up.handle(bitmap),
         }
     }
 
@@ -479,6 +500,47 @@ impl BitmapUpdateHandler for RemoteFxHandler {
         };
 
         set_surface(bitmap, self.codec_id, &buffer[..len])
+    }
+}
+
+#[cfg(feature = "qoi")]
+#[derive(Clone, Debug)]
+struct QoiHandler {
+    codec_id: u8,
+}
+
+#[cfg(feature = "qoi")]
+impl QoiHandler {
+    fn new(codec_id: u8) -> Self {
+        Self { codec_id }
+    }
+}
+
+#[cfg(feature = "qoi")]
+impl BitmapUpdateHandler for QoiHandler {
+    fn handle(&mut self, bitmap: &BitmapUpdate) -> Result<UpdateFragmenter> {
+        use ironrdp_graphics::image_processing::PixelFormat::*;
+
+        let channels = match bitmap.format {
+            ARgb32 => qoi::RawChannels::Argb,
+            XRgb32 => qoi::RawChannels::Xrgb,
+            ABgr32 => qoi::RawChannels::Abgr,
+            XBgr32 => qoi::RawChannels::Xbgr,
+            BgrA32 => qoi::RawChannels::Bgra,
+            BgrX32 => qoi::RawChannels::Bgrx,
+            RgbA32 => qoi::RawChannels::Rgba,
+            RgbX32 => qoi::RawChannels::Rgbx,
+        };
+
+        let enc = qoi::Encoder::new_raw(
+            &bitmap.data,
+            bitmap.width.get().into(),
+            bitmap.height.get().into(),
+            bitmap.stride,
+            channels,
+        )?;
+        let data = enc.encode_to_vec()?;
+        set_surface(bitmap, self.codec_id, &data)
     }
 }
 

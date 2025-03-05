@@ -9,6 +9,8 @@ use ironrdp_pdu::codecs::rfx::FrameAcknowledgePdu;
 use ironrdp_pdu::fast_path::{FastPathHeader, FastPathUpdate, FastPathUpdatePdu, Fragmentation};
 use ironrdp_pdu::geometry::{InclusiveRectangle, Rectangle as _};
 use ironrdp_pdu::pointer::PointerUpdateData;
+#[cfg(feature = "qoi")]
+use ironrdp_pdu::rdp::capability_sets::CODEC_ID_QOI;
 use ironrdp_pdu::rdp::capability_sets::{CodecId, CODEC_ID_NONE, CODEC_ID_REMOTEFX};
 use ironrdp_pdu::rdp::headers::ShareDataPdu;
 use ironrdp_pdu::surface_commands::{FrameAction, FrameMarkerPdu, SurfaceCommand};
@@ -355,6 +357,22 @@ impl Processor {
                             while !data.is_empty() {
                                 let (_frame_id, rectangle) = self.rfx_handler.decode(image, &destination, &mut data)?;
                                 update_rectangle = update_rectangle.union(&rectangle);
+                            }
+                        }
+                        #[cfg(feature = "qoi")]
+                        CODEC_ID_QOI => {
+                            let (header, decoded) = qoi::decode_to_vec(bits.extended_bitmap_data.data)
+                                .map_err(|e| reason_err!("QOI decode", "{}", e))?;
+                            match header.channels {
+                                qoi::Channels::Rgb => {
+                                    let rectangle = image.apply_rgb24::<false>(&decoded, &destination)?;
+                                    update_rectangle = update_rectangle.union(&rectangle);
+                                }
+                                qoi::Channels::Rgba => {
+                                    warn!("Unsupported RGBA QOI data");
+                                    // TODO: bitmap is rev...
+                                    // image.apply_rgb32_bitmap(&decoded, PixelFormat::RgbA32, &destination)?;
+                                }
                             }
                         }
                         _ => {
