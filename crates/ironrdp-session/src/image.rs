@@ -554,7 +554,7 @@ impl DecodedImage {
     }
 
     // FIXME: this assumes PixelFormat::RgbA32
-    pub(crate) fn apply_rgb24_bitmap(
+    pub(crate) fn apply_rgb24<const REV: bool>(
         &mut self,
         rgb24: &[u8],
         update_rectangle: &InclusiveRectangle,
@@ -569,26 +569,33 @@ impl DecodedImage {
 
         let pointer_rendering_state = self.pointer_rendering_begin(update_rectangle)?;
 
-        rgb24
-            .chunks_exact(rectangle_width * SRC_COLOR_DEPTH)
-            .rev()
-            .enumerate()
-            .for_each(|(row_idx, row)| {
-                row.chunks_exact(SRC_COLOR_DEPTH)
-                    .enumerate()
-                    .for_each(|(col_idx, src_pixel)| {
-                        let dst_idx = ((top + row_idx) * image_width + left + col_idx) * DST_COLOR_DEPTH;
+        let it = rgb24.chunks_exact(rectangle_width * SRC_COLOR_DEPTH);
+        // can it monomorphize this?
+        let it: Box<dyn Iterator<Item = _>> = if REV { Box::new(it.rev()) } else { Box::new(it) };
+        it.enumerate().for_each(|(row_idx, row)| {
+            row.chunks_exact(SRC_COLOR_DEPTH)
+                .enumerate()
+                .for_each(|(col_idx, src_pixel)| {
+                    let dst_idx = ((top + row_idx) * image_width + left + col_idx) * DST_COLOR_DEPTH;
 
-                        // Copy RGB channels as is
-                        self.data[dst_idx..dst_idx + SRC_COLOR_DEPTH].copy_from_slice(src_pixel);
-                        // Set alpha channel to opaque(0xFF)
-                        self.data[dst_idx + 3] = 0xFF;
-                    })
-            });
+                    // Copy RGB channels as is
+                    self.data[dst_idx..dst_idx + SRC_COLOR_DEPTH].copy_from_slice(src_pixel);
+                    // Set alpha channel to opaque(0xFF)
+                    self.data[dst_idx + 3] = 0xFF;
+                })
+        });
 
         let update_rectangle = self.pointer_rendering_end(pointer_rendering_state)?;
 
         Ok(update_rectangle)
+    }
+
+    pub(crate) fn apply_rgb24_bitmap(
+        &mut self,
+        rgb24: &[u8],
+        update_rectangle: &InclusiveRectangle,
+    ) -> SessionResult<InclusiveRectangle> {
+        self.apply_rgb24::<true>(rgb24, update_rectangle)
     }
 
     // FIXME: this assumes PixelFormat::RgbA32
