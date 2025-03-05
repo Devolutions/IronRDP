@@ -18,9 +18,11 @@ test = false
 crate-type = ["cdylib", "rlib"]
 
 [features]
+# qoiz is not enabled by default, because MacOS github runner is lacking clang wasm target
 default = ["panic_hook", "qoi"]
 panic_hook = ["iron-remote-desktop/panic_hook"]
 qoi = ["ironrdp/qoi"]
+qoiz = ["ironrdp/qoiz"]
 
 [dependencies]
 # Protocols

@@ -10,8 +10,9 @@ name = "perfenc"
 path = "src/perfenc.rs"
 
 [features]
-default = ["qoi"]
+default = ["qoi", "qoiz"]
 qoi = ["ironrdp/qoi"]
+qoiz = ["ironrdp/qoiz"]
 
 [dependencies]
 anyhow = "1.0.98"

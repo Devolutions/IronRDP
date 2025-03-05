@@ -32,6 +32,7 @@ rdpdr = ["dep:ironrdp-rdpdr"]
 rdpsnd = ["dep:ironrdp-rdpsnd"]
 displaycontrol = ["dep:ironrdp-displaycontrol"]
 qoi = ["ironrdp-server?/qoi", "ironrdp-pdu?/qoi", "ironrdp-connector?/qoi", "ironrdp-session?/qoi"]
+qoiz = ["ironrdp-server?/qoiz", "ironrdp-pdu?/qoiz", "ironrdp-connector?/qoiz", "ironrdp-session?/qoiz"]
 # Internal (PRIVATE!) features used to aid testing.
 # Don't rely on these whatsoever. They may disappear at any time.
 __bench = ["ironrdp-server/__bench"]
