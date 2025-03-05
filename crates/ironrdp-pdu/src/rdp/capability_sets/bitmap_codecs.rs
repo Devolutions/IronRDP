@@ -43,6 +43,9 @@ const GUID_IGNORE: Guid = Guid(0x9c43_51a6, 0x3535, 0x42ae, 0x91, 0x0c, 0xcd, 0x
 #[rustfmt::skip]
 #[cfg(feature="qoi")]
 const GUID_QOI: Guid = Guid(0x4dae_9af8, 0xb399, 0x4df6, 0xb4, 0x3a, 0x66, 0x2f, 0xd9, 0xc0, 0xf5, 0xd6);
+#[rustfmt::skip]
+#[cfg(feature="qoiz")]
+const GUID_QOIZ: Guid = Guid(0x229c_c6dc, 0xa860, 0x4b52, 0xb4, 0xd8, 0x05, 0x3a, 0x22, 0xb3, 0x89, 0x2b);
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct Guid(u32, u16, u16, u8, u8, u8, u8, u8, u8, u8, u8);
@@ -172,6 +175,8 @@ impl Encode for Codec {
             CodecProperty::Ignore => GUID_IGNORE,
             #[cfg(feature = "qoi")]
             CodecProperty::Qoi => GUID_QOI,
+            #[cfg(feature = "qoiz")]
+            CodecProperty::QoiZ => GUID_QOIZ,
             _ => return Err(other_err!("invalid codec")),
         };
         guid.encode(dst)?;
@@ -211,6 +216,8 @@ impl Encode for Codec {
             }
             #[cfg(feature = "qoi")]
             CodecProperty::Qoi => dst.write_u16(0),
+            #[cfg(feature = "qoiz")]
+            CodecProperty::QoiZ => dst.write_u16(0),
             CodecProperty::Ignore => dst.write_u16(0),
             CodecProperty::None => dst.write_u16(0),
         };
@@ -236,6 +243,8 @@ impl Encode for Codec {
                 },
                 #[cfg(feature = "qoi")]
                 CodecProperty::Qoi => 0,
+                #[cfg(feature = "qoiz")]
+                CodecProperty::QoiZ => 0,
                 CodecProperty::Ignore => 0,
                 CodecProperty::None => 0,
             }
@@ -280,6 +289,13 @@ impl<'de> Decode<'de> for Codec {
                 }
                 CodecProperty::Qoi
             }
+            #[cfg(feature = "qoiz")]
+            GUID_QOIZ => {
+                if !property_buffer.is_empty() {
+                    return Err(invalid_field_err!("qoi property", "must be empty"));
+                }
+                CodecProperty::QoiZ
+            }
             _ => CodecProperty::None,
         };
 
@@ -301,6 +317,8 @@ pub enum CodecProperty {
     Ignore,
     #[cfg(feature = "qoi")]
     Qoi,
+    #[cfg(feature = "qoiz")]
+    QoiZ,
     None,
 }
 
@@ -639,6 +657,7 @@ pub struct CodecId(u8);
 pub const CODEC_ID_NONE: CodecId = CodecId(0);
 pub const CODEC_ID_REMOTEFX: CodecId = CodecId(3);
 pub const CODEC_ID_QOI: CodecId = CodecId(0x0A);
+pub const CODEC_ID_QOIZ: CodecId = CodecId(0x0B);
 
 impl Debug for CodecId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -646,6 +665,7 @@ impl Debug for CodecId {
             0 => "None",
             3 => "RemoteFx",
             0x0A => "QOI",
+            0x0B => "QOIZ",
             _ => "unknown",
         };
         write!(f, "CodecId({name})")
@@ -658,6 +678,7 @@ impl CodecId {
             0 => Some(CODEC_ID_NONE),
             3 => Some(CODEC_ID_REMOTEFX),
             0x0A => Some(CODEC_ID_QOI),
+            0x0B => Some(CODEC_ID_QOIZ),
             _ => None,
         }
     }
@@ -700,6 +721,7 @@ fn parse_codecs_config<'a>(codecs: &'a [&'a str]) -> Result<HashMap<&'a str, boo
 ///
 /// * `remotefx` (on by default)
 /// * `qoi` (on by default, when feature "qoi")
+/// * `qoiz` (on by default, when feature "qoiz")
 ///
 /// # Returns
 ///
@@ -711,6 +733,7 @@ pub fn client_codecs_capabilities(config: &[&str]) -> Result<BitmapCodecs, Strin
 List of codecs:
 - `remotefx` (on by default)
 - `qoi` (on by default, when feature "qoi")
+- `qoiz` (on by default, when feature "qoiz")
 "#
         .to_owned());
     }
@@ -739,6 +762,14 @@ List of codecs:
         });
     }
 
+    #[cfg(feature = "qoiz")]
+    if config.remove("qoiz").unwrap_or(true) {
+        codecs.push(Codec {
+            id: CODEC_ID_QOIZ.0,
+            property: CodecProperty::QoiZ,
+        });
+    }
+
     let codec_names = config.keys().copied().collect::<Vec<_>>().join(", ");
     if !codec_names.is_empty() {
         return Err(format!("Unknown codecs: {codec_names}"));
@@ -760,6 +791,7 @@ List of codecs:
 ///
 /// * `remotefx` (on by default)
 /// * `qoi` (on by default, when feature "qoi")
+/// * `qoiz` (on by default, when feature "qoiz")
 ///
 /// # Returns
 ///
@@ -771,6 +803,7 @@ pub fn server_codecs_capabilities(config: &[&str]) -> Result<BitmapCodecs, Strin
 List of codecs:
 - `remotefx` (on by default)
 - `qoi` (on by default, when feature "qoi")
+- `qoiz` (on by default, when feature "qoiz")
 "#
         .to_owned());
     }
@@ -794,6 +827,14 @@ List of codecs:
         codecs.push(Codec {
             id: 0,
             property: CodecProperty::Qoi,
+        });
+    }
+
+    #[cfg(feature = "qoiz")]
+    if config.remove("qoiz").unwrap_or(true) {
+        codecs.push(Codec {
+            id: 0,
+            property: CodecProperty::QoiZ,
         });
     }
 

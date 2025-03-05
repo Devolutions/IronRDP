@@ -21,6 +21,7 @@ crate-type = ["cdylib", "rlib"]
 default = ["panic_hook"]
 panic_hook = ["iron-remote-desktop/panic_hook"]
 qoi = ["ironrdp/qoi"]
+qoiz = ["ironrdp/qoiz"]
 
 [dependencies]
 # Protocols

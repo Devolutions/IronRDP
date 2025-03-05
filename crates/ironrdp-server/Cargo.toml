@@ -16,10 +16,11 @@ doctest = true
 test = false
 
 [features]
-default = ["rayon", "qoi"]
+default = ["rayon", "qoi", "qoiz"]
 helper = ["dep:x509-cert", "dep:rustls-pemfile"]
 rayon = ["dep:rayon"]
 qoi = ["dep:qoicoubeh", "ironrdp-pdu/qoi"]
+qoiz = ["dep:zstd-safe", "qoi", "ironrdp-pdu/qoiz"]
 
 # Internal (PRIVATE!) features used to aid testing.
 # Don't rely on these whatsoever. They may disappear at any time.
@@ -49,6 +50,7 @@ rayon = { version = "1.10.0", optional = true }
 bytes = "1"
 visibility = { version = "0.1", optional = true }
 qoicoubeh = { version = "0.5", optional = true }
+zstd-safe = { version = "7.2", optional = true }
 
 [dev-dependencies]
 tokio = { version = "1", features = ["sync"] }

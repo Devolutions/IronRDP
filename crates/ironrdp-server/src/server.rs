@@ -63,6 +63,14 @@ impl RdpServerOptions {
             .iter()
             .any(|codec| matches!(codec.property, CodecProperty::Qoi))
     }
+
+    #[cfg(feature = "qoiz")]
+    fn has_qoiz(&self) -> bool {
+        self.codecs
+            .0
+            .iter()
+            .any(|codec| matches!(codec.property, CodecProperty::QoiZ))
+    }
 }
 
 #[derive(Clone)]
@@ -753,6 +761,10 @@ impl RdpServer {
                             #[cfg(feature = "qoi")]
                             CodecProperty::Qoi if self.opts.has_qoi() => {
                                 update_codecs.set_qoi(Some(codec.id));
+                            }
+                            #[cfg(feature = "qoiz")]
+                            CodecProperty::QoiZ if self.opts.has_qoiz() => {
+                                update_codecs.set_qoiz(Some(codec.id));
                             }
                             _ => (),
                         }

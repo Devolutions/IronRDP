@@ -20,6 +20,7 @@ default = []
 std = ["alloc", "ironrdp-error/std", "ironrdp-core/std"]
 alloc = ["ironrdp-core/alloc", "ironrdp-error/alloc"]
 qoi = []
+qoiz = ["qoi"]
 
 [dependencies]
 bitflags = "2.9"
