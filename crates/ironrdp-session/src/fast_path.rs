@@ -361,6 +361,23 @@ impl Processor {
                                     .or(Some(rectangle));
                             }
                         }
+                        #[cfg(feature = "qoi")]
+                        ironrdp_pdu::rdp::capability_sets::CODEC_ID_QOI => {
+                            let (header, decoded) = qoi::decode_to_vec(bits.extended_bitmap_data.data)
+                                .map_err(|e| reason_err!("QOI decode", "{}", e))?;
+                            match header.channels {
+                                qoi::Channels::Rgb => {
+                                    let rectangle = image.apply_rgb24(&decoded, &destination, false)?;
+
+                                    update_rectangle = update_rectangle
+                                        .map(|rect: InclusiveRectangle| rect.union(&rectangle))
+                                        .or(Some(rectangle));
+                                }
+                                qoi::Channels::Rgba => {
+                                    warn!("Unsupported RGBA QOI data");
+                                }
+                            }
+                        }
                         _ => {
                             warn!("Unsupported codec ID: {}", bits.extended_bitmap_data.codec_id);
                         }

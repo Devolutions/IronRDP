@@ -55,6 +55,14 @@ impl RdpServerOptions {
             .iter()
             .any(|codec| matches!(codec.property, CodecProperty::RemoteFx(_)))
     }
+
+    #[cfg(feature = "qoi")]
+    fn has_qoi(&self) -> bool {
+        self.codecs
+            .0
+            .iter()
+            .any(|codec| matches!(codec.property, CodecProperty::Qoi))
+    }
 }
 
 #[derive(Clone)]
@@ -742,6 +750,10 @@ impl RdpServer {
                                 }
                             }
                             CodecProperty::NsCodec(_) => (),
+                            #[cfg(feature = "qoi")]
+                            CodecProperty::Qoi if self.opts.has_qoi() => {
+                                update_codecs.set_qoi(Some(codec.id));
+                            }
                             _ => (),
                         }
                     }

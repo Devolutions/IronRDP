@@ -28,7 +28,7 @@ async fn main() -> Result<(), anyhow::Error> {
         println!("  --width <WIDTH>      Width of the display (default: 3840)");
         println!("  --height <HEIGHT>    Height of the display (default: 2400)");
         println!("  --codec <CODEC>      Codec to use (default: remotefx)");
-        println!("                        Valid values: remotefx, bitmap, none");
+        println!("                        Valid values: qoi, remotefx, bitmap, none");
         println!("  --fps <FPS>          Frames per second (default: none)");
         std::process::exit(0);
     }
@@ -52,6 +52,8 @@ async fn main() -> Result<(), anyhow::Error> {
             flags -= CmdFlags::SET_SURFACE_BITS;
         }
         OptCodec::None => {}
+        #[cfg(feature = "qoi")]
+        OptCodec::Qoi => update_codecs.set_qoi(Some(0)),
     };
 
     let mut encoder = UpdateEncoder::new(DesktopSize { width, height }, flags, update_codecs);
@@ -172,6 +174,8 @@ enum OptCodec {
     RemoteFX,
     Bitmap,
     None,
+    #[cfg(feature = "qoi")]
+    Qoi,
 }
 
 impl Default for OptCodec {
@@ -188,6 +192,8 @@ impl core::str::FromStr for OptCodec {
             "remotefx" => Ok(Self::RemoteFX),
             "bitmap" => Ok(Self::Bitmap),
             "none" => Ok(Self::None),
+            #[cfg(feature = "qoi")]
+            "qoi" => Ok(Self::Qoi),
             _ => Err(anyhow::anyhow!("unknown codec: {}", s)),
         }
     }

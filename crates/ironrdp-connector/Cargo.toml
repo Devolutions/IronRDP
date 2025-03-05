@@ -16,7 +16,9 @@ doctest = false
 test = false
 
 [features]
+default = []
 arbitrary = ["dep:arbitrary"]
+qoi = ["ironrdp-pdu/qoi"]
 
 [dependencies]
 ironrdp-svc = { path = "../ironrdp-svc", version = "0.4" } # public
