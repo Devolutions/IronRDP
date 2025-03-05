@@ -39,6 +39,9 @@ const GUID_REMOTEFX: Guid = Guid(0x7677_2f12, 0xbd72, 0x4463, 0xaf, 0xb3, 0xb7, 
 const GUID_IMAGE_REMOTEFX: Guid = Guid(0x2744_ccd4, 0x9d8a, 0x4e74, 0x80, 0x3c, 0x0e, 0xcb, 0xee, 0xa1, 0x9c, 0x54);
 #[rustfmt::skip]
 const GUID_IGNORE: Guid = Guid(0x9c43_51a6, 0x3535, 0x42ae, 0x91, 0x0c, 0xcd, 0xfc, 0xe5, 0x76, 0x0b, 0x58);
+#[rustfmt::skip]
+#[cfg(feature="qoi")]
+const GUID_QOI: Guid = Guid(0x4dae_9af8, 0xb399, 0x4df6, 0xb4, 0x3a, 0x66, 0x2f, 0xd9, 0xc0, 0xf5, 0xd6);
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct Guid(u32, u16, u16, u8, u8, u8, u8, u8, u8, u8, u8);
@@ -166,6 +169,8 @@ impl Encode for Codec {
             CodecProperty::RemoteFx(_) => GUID_REMOTEFX,
             CodecProperty::ImageRemoteFx(_) => GUID_IMAGE_REMOTEFX,
             CodecProperty::Ignore => GUID_IGNORE,
+            #[cfg(feature = "qoi")]
+            CodecProperty::Qoi => GUID_QOI,
             _ => return Err(other_err!("invalid codec")),
         };
         guid.encode(dst)?;
@@ -203,6 +208,8 @@ impl Encode for Codec {
                     }
                 };
             }
+            #[cfg(feature = "qoi")]
+            CodecProperty::Qoi => dst.write_u16(0),
             CodecProperty::Ignore => dst.write_u16(0),
             CodecProperty::None => dst.write_u16(0),
         };
@@ -226,6 +233,8 @@ impl Encode for Codec {
                     RemoteFxContainer::ClientContainer(container) => container.size(),
                     RemoteFxContainer::ServerContainer(size) => *size,
                 },
+                #[cfg(feature = "qoi")]
+                CodecProperty::Qoi => 0,
                 CodecProperty::Ignore => 0,
                 CodecProperty::None => 0,
             }
@@ -260,6 +269,8 @@ impl<'de> Decode<'de> for Codec {
                         _ => unreachable!(),
                     }
                 }
+                #[cfg(feature = "qoi")]
+                GUID_QOI => CodecProperty::Qoi,
                 GUID_IGNORE => CodecProperty::Ignore,
                 _ => CodecProperty::None,
             }
@@ -271,6 +282,8 @@ impl<'de> Decode<'de> for Codec {
                         "invalid codec property length"
                     ));
                 }
+                #[cfg(feature = "qoi")]
+                GUID_QOI => CodecProperty::Qoi,
                 GUID_IGNORE => CodecProperty::Ignore,
                 _ => CodecProperty::None,
             }
@@ -292,6 +305,8 @@ pub enum CodecProperty {
     RemoteFx(RemoteFxContainer),
     ImageRemoteFx(RemoteFxContainer),
     Ignore,
+    #[cfg(feature = "qoi")]
+    Qoi,
     None,
 }
 
@@ -625,15 +640,19 @@ bitflags! {
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 #[repr(u8)]
 pub enum CodecId {
-    None = 0x0,
-    RemoteFx = 0x3,
+    None = 0x00,
+    RemoteFx = 0x03,
+    #[cfg(feature = "qoi")]
+    Qoi = 0x0A,
 }
 
 impl CodecId {
     pub const fn from_u8(value: u8) -> Option<Self> {
         match value {
-            0 => Some(Self::None),
-            3 => Some(Self::RemoteFx),
+            0x00 => Some(Self::None),
+            0x03 => Some(Self::RemoteFx),
+            #[cfg(feature = "qoi")]
+            0x0A => Some(Self::Qoi),
             _ => None,
         }
     }
@@ -696,6 +715,14 @@ pub fn client_codecs_capabilities(config: &[&str]) -> Result<BitmapCodecs, Strin
         });
     }
 
+    #[cfg(feature = "qoi")]
+    if config.remove("qoi").unwrap_or(true) {
+        codecs.push(Codec {
+            id: CodecId::Qoi as u8,
+            property: CodecProperty::Qoi,
+        });
+    }
+
     let codec_names = config.keys().copied().collect::<Vec<_>>().join(", ");
     if !codec_names.is_empty() {
         return Err(format!("Unknown codecs: {}", codec_names));
@@ -717,6 +744,7 @@ pub fn client_codecs_capabilities(config: &[&str]) -> Result<BitmapCodecs, Strin
 /// # List of codecs
 ///
 /// * `remotefx` (on by default)
+/// * `qoi` (on by default, when feature "qoi")
 ///
 /// # Returns
 ///
@@ -733,6 +761,14 @@ pub fn server_codecs_capabilities(config: &[&str]) -> Result<BitmapCodecs, Strin
         codecs.push(Codec {
             id: 0,
             property: CodecProperty::ImageRemoteFx(RemoteFxContainer::ServerContainer(1)),
+        });
+    }
+
+    #[cfg(feature = "qoi")]
+    if config.remove("qoi").unwrap_or(true) {
+        codecs.push(Codec {
+            id: 0,
+            property: CodecProperty::Qoi,
         });
     }
 

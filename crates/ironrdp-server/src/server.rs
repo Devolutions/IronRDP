@@ -54,6 +54,14 @@ impl RdpServerOptions {
             .iter()
             .any(|codec| matches!(codec.property, CodecProperty::RemoteFx(_)))
     }
+
+    #[cfg(feature = "qoi")]
+    fn has_qoi(&self) -> bool {
+        self.codecs
+            .0
+            .iter()
+            .any(|codec| matches!(codec.property, CodecProperty::Qoi))
+    }
 }
 
 #[derive(Clone)]
@@ -678,6 +686,8 @@ impl RdpServer {
         }
 
         let mut rfxcodec = None;
+        #[cfg(feature = "qoi")]
+        let mut qoicodec = None;
         let mut surface_flags = CmdFlags::empty();
         for c in result.capabilities {
             match c {
@@ -739,6 +749,10 @@ impl RdpServer {
                                 }
                             }
                             CodecProperty::NsCodec(_) => (),
+                            #[cfg(feature = "qoi")]
+                            CodecProperty::Qoi if self.opts.has_qoi() => {
+                                qoicodec = Some(codec.id);
+                            }
                             _ => (),
                         }
                     }
@@ -748,7 +762,13 @@ impl RdpServer {
         }
 
         let desktop_size = self.display.lock().await.size().await;
-        let encoder = UpdateEncoder::new(desktop_size, surface_flags, rfxcodec);
+        let encoder = UpdateEncoder::new(
+            desktop_size,
+            surface_flags,
+            rfxcodec,
+            #[cfg(feature = "qoi")]
+            qoicodec,
+        );
 
         let state = self
             .client_loop(reader, writer, result.io_channel_id, result.user_channel_id, encoder)

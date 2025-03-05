@@ -357,6 +357,22 @@ impl Processor {
                                 update_rectangle = update_rectangle.union(&rectangle);
                             }
                         }
+                        #[cfg(feature = "qoi")]
+                        CodecId::Qoi => {
+                            let (header, decoded) = qoi::decode_to_vec(bits.extended_bitmap_data.data)
+                                .map_err(|e| reason_err!("QOI decode", "{}", e))?;
+                            match header.channels {
+                                qoi::Channels::Rgb => {
+                                    let rectangle = image.apply_rgb24::<false>(&decoded, &destination)?;
+                                    update_rectangle = update_rectangle.union(&rectangle);
+                                }
+                                qoi::Channels::Rgba => {
+                                    warn!("Unsupported RGBA QOI data");
+                                    // TODO: bitmap is rev...
+                                    // image.apply_rgb32_bitmap(&decoded, PixelFormat::RgbA32, &destination)?;
+                                }
+                            }
+                        }
                     }
                 }
                 SurfaceCommand::FrameMarker(marker) => {

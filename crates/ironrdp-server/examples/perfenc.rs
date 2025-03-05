@@ -48,8 +48,16 @@ async fn main() -> Result<(), anyhow::Error> {
             (None, None)
         }
         OptCodec::None => (None, None),
+        #[cfg(feature = "qoi")]
+        OptCodec::Qoi => (None, Some(0)),
     };
-    let mut encoder = UpdateEncoder::new(DesktopSize { width, height }, flags, remotefx);
+    let mut encoder = UpdateEncoder::new(
+        DesktopSize { width, height },
+        flags,
+        remotefx,
+        #[cfg(feature = "qoi")]
+        qoicodec,
+    );
 
     let mut total_raw = 0u64;
     let mut total_enc = 0u64;
@@ -148,6 +156,8 @@ enum OptCodec {
     RemoteFX,
     Bitmap,
     None,
+    #[cfg(feature = "qoi")]
+    Qoi,
 }
 
 impl Default for OptCodec {
@@ -164,6 +174,8 @@ impl core::str::FromStr for OptCodec {
             "remotefx" => Ok(Self::RemoteFX),
             "bitmap" => Ok(Self::Bitmap),
             "none" => Ok(Self::None),
+            #[cfg(feature = "qoi")]
+            "qoi" => Ok(Self::Qoi),
             _ => Err(anyhow::anyhow!("unknown codec: {}", s)),
         }
     }
