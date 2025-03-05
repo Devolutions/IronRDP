@@ -28,6 +28,7 @@ default = ["rustls"]
 rustls = ["ironrdp-tls/rustls"]
 native-tls = ["ironrdp-tls/native-tls"]
 qoi = ["ironrdp/qoi"]
+qoiz = ["ironrdp/qoiz"]
 
 [dependencies]
 # Protocols

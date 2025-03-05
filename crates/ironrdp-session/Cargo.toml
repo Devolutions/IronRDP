@@ -18,6 +18,7 @@ test = false
 [features]
 default = []
 qoi = ["dep:qoi", "ironrdp-pdu/qoi"]
+qoiz = ["dep:zstd-safe", "qoi"]
 
 [dependencies]
 ironrdp-core = { path = "../ironrdp-core", version = "0.1" } # public
@@ -30,6 +31,7 @@ ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.4", features = ["std"] } #
 ironrdp-displaycontrol = { path = "../ironrdp-displaycontrol", version = "0.2" }
 tracing = { version = "0.1", features = ["log"] }
 qoi = { version = "0.4", optional = true }
+zstd-safe = { version = "7.2", optional = true, features = ["std"] }
 
 [lints]
 workspace = true
