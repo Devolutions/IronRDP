@@ -1,7 +1,9 @@
 use core::fmt;
+use core::num::NonZeroU16;
 
 use anyhow::{Context, Result};
 use ironrdp_acceptor::DesktopSize;
+use ironrdp_graphics::diff::{find_different_rects_sub, Rect};
 use ironrdp_pdu::encode_vec;
 use ironrdp_pdu::fast_path::UpdateCode;
 use ironrdp_pdu::geometry::ExclusiveRectangle;
@@ -28,7 +30,6 @@ enum CodecId {
 
 pub(crate) struct UpdateEncoder {
     desktop_size: DesktopSize,
-    // FIXME: draw updates on the framebuffer
     framebuffer: Option<Framebuffer>,
     bitmap_updater: BitmapUpdater,
 }
@@ -62,7 +63,7 @@ impl UpdateEncoder {
     pub(crate) fn update(&mut self, update: DisplayUpdate) -> EncoderIter<'_> {
         EncoderIter {
             encoder: self,
-            update: Some(update),
+            state: State::Start(update),
         }
     }
 
@@ -121,14 +122,41 @@ impl UpdateEncoder {
         Ok(UpdateFragmenter::new(UpdateCode::PositionPointer, encode_vec(&pos)?))
     }
 
-    async fn bitmap(&mut self, bitmap: BitmapUpdate) -> Result<UpdateFragmenter> {
-        // Clone to satisfy spawn_blocking 'static requirement
-        // this should be cheap, even if using bitmap, since vec![] will be empty
-        let mut updater = self.bitmap_updater.clone();
-        let (res, bitmap) =
-            tokio::task::spawn_blocking(move || time_warn!("Encoding bitmap", 10, (updater.handle(&bitmap), bitmap)))
-                .await
-                .unwrap();
+    fn bitmap_diffs(&mut self, bitmap: &BitmapUpdate) -> Vec<Rect> {
+        // TODO: we may want to make it optional for servers that already provide damaged regions
+        const USE_DIFFS: bool = true;
+
+        if let Some(Framebuffer {
+            data,
+            stride,
+            width,
+            height,
+            ..
+        }) = USE_DIFFS.then_some(self.framebuffer.as_ref()).flatten()
+        {
+            find_different_rects_sub::<4>(
+                data,
+                *stride,
+                width.get().into(),
+                height.get().into(),
+                &bitmap.data,
+                bitmap.stride,
+                bitmap.width.get().into(),
+                bitmap.height.get().into(),
+                bitmap.x.into(),
+                bitmap.y.into(),
+            )
+        } else {
+            vec![Rect {
+                x: 0,
+                y: 0,
+                width: bitmap.width.get().into(),
+                height: bitmap.height.get().into(),
+            }]
+        }
+    }
+
+    fn bitmap_update_framebuffer(&mut self, bitmap: BitmapUpdate, diffs: &[Rect]) {
         if bitmap.x == 0
             && bitmap.y == 0
             && bitmap.width.get() == self.desktop_size.width
@@ -138,32 +166,86 @@ impl UpdateEncoder {
                 Ok(framebuffer) => self.framebuffer = Some(framebuffer),
                 Err(err) => warn!("Failed to convert bitmap to framebuffer: {}", err),
             }
+        } else if let Some(fb) = self.framebuffer.as_mut() {
+            fb.update_diffs(&bitmap, diffs);
         }
-        res
     }
+
+    async fn bitmap(&mut self, bitmap: BitmapUpdate) -> Result<UpdateFragmenter> {
+        // Clone to satisfy spawn_blocking 'static requirement
+        // this should be cheap, even if using bitmap, since vec![] will be empty
+        let mut updater = self.bitmap_updater.clone();
+        tokio::task::spawn_blocking(move || time_warn!("Encoding bitmap", 10, updater.handle(&bitmap)))
+            .await
+            .unwrap()
+    }
+}
+
+#[derive(Debug, Default)]
+enum State {
+    Start(DisplayUpdate),
+    BitmapDiffs {
+        diffs: Vec<Rect>,
+        bitmap: BitmapUpdate,
+        pos: usize,
+    },
+    #[default]
+    Ended,
 }
 
 pub(crate) struct EncoderIter<'a> {
     encoder: &'a mut UpdateEncoder,
-    update: Option<DisplayUpdate>,
+    state: State,
 }
 
 impl EncoderIter<'_> {
     pub(crate) async fn next(&mut self) -> Option<Result<UpdateFragmenter>> {
-        let update = self.update.take()?;
-        let encoder = &mut self.encoder;
+        loop {
+            let state = core::mem::take(&mut self.state);
+            let encoder = &mut self.encoder;
 
-        let res = match update {
-            DisplayUpdate::Bitmap(bitmap) => encoder.bitmap(bitmap).await,
-            DisplayUpdate::PointerPosition(pos) => UpdateEncoder::pointer_position(pos),
-            DisplayUpdate::RGBAPointer(ptr) => UpdateEncoder::rgba_pointer(ptr),
-            DisplayUpdate::ColorPointer(ptr) => UpdateEncoder::color_pointer(ptr),
-            DisplayUpdate::HidePointer => UpdateEncoder::hide_pointer(),
-            DisplayUpdate::DefaultPointer => UpdateEncoder::default_pointer(),
-            DisplayUpdate::Resize(_) => return None,
-        };
+            let res = match state {
+                State::Start(update) => match update {
+                    DisplayUpdate::Bitmap(bitmap) => {
+                        let diffs = encoder.bitmap_diffs(&bitmap);
+                        self.state = State::BitmapDiffs { diffs, bitmap, pos: 0 };
+                        continue;
+                    }
+                    DisplayUpdate::PointerPosition(pos) => UpdateEncoder::pointer_position(pos),
+                    DisplayUpdate::RGBAPointer(ptr) => UpdateEncoder::rgba_pointer(ptr),
+                    DisplayUpdate::ColorPointer(ptr) => UpdateEncoder::color_pointer(ptr),
+                    DisplayUpdate::HidePointer => UpdateEncoder::hide_pointer(),
+                    DisplayUpdate::DefaultPointer => UpdateEncoder::default_pointer(),
+                    DisplayUpdate::Resize(_) => return None,
+                },
+                State::BitmapDiffs { diffs, bitmap, pos } => {
+                    let Some(rect) = diffs.get(pos) else {
+                        encoder.bitmap_update_framebuffer(bitmap, &diffs);
+                        self.state = State::Ended;
+                        return None;
+                    };
+                    let Rect { x, y, width, height } = *rect;
+                    let Some(sub) = bitmap.sub(
+                        u16::try_from(x).unwrap(),
+                        u16::try_from(y).unwrap(),
+                        NonZeroU16::new(u16::try_from(width).unwrap()).unwrap(),
+                        NonZeroU16::new(u16::try_from(height).unwrap()).unwrap(),
+                    ) else {
+                        warn!("Failed to extract bitmap subregion");
+                        return None;
+                    };
+                    self.state = State::BitmapDiffs {
+                        diffs,
+                        bitmap,
+                        pos: pos + 1,
+                    };
+                    encoder.bitmap(sub).await
+                }
+                State::Ended => return None,
+            };
 
-        Some(res)
+            return Some(res);
+        }
     }
 }
 
