@@ -114,7 +114,7 @@ impl Processor {
                                 usize::from(update.width),
                                 usize::from(update.height),
                             ) {
-                                Ok(()) => image.apply_rgb24_bitmap(&buf, &update.rectangle)?,
+                                Ok(()) => image.apply_rgb24(&buf, &update.rectangle, true)?,
                                 Err(err) => {
                                     warn!("Invalid RDP6_BITMAP_STREAM: {err}");
                                     update.rectangle.clone()
