@@ -37,6 +37,8 @@ pub struct Processor {
     mouse_pos_update: Option<(u16, u16)>,
     no_server_pointer: bool,
     pointer_software_rendering: bool,
+    #[cfg(feature = "qoiz")]
+    zdctx: zstd_safe::DCtx<'static>,
 }
 
 impl Processor {
@@ -373,6 +375,40 @@ impl Processor {
                                 }
                             }
                         }
+                        #[cfg(feature = "qoiz")]
+                        CodecId::QoiZ => {
+                            let compressed = &bits.extended_bitmap_data.data;
+                            let mut input = zstd_safe::InBuffer::around(compressed);
+                            let mut data = vec![0; compressed.len() * 4];
+                            let mut pos = 0;
+                            loop {
+                                let mut output = zstd_safe::OutBuffer::around_pos(data.as_mut_slice(), pos);
+                                self.zdctx
+                                    .decompress_stream(&mut output, &mut input)
+                                    .map_err(zstd_safe::get_error_name)
+                                    .map_err(|e| reason_err!("zstd", "{}", e))?;
+                                pos = output.pos();
+                                if pos == output.capacity() {
+                                    data.resize(data.capacity() * 2, 0);
+                                } else {
+                                    break;
+                                }
+                            }
+
+                            let (header, decoded) =
+                                qoi::decode_to_vec(&data).map_err(|e| custom_err!("QOIz decode", e))?;
+                            match header.channels {
+                                qoi::Channels::Rgb => {
+                                    let rectangle = image.apply_rgb24::<false>(&decoded, &destination)?;
+                                    update_rectangle = update_rectangle.union(&rectangle);
+                                }
+                                qoi::Channels::Rgba => {
+                                    warn!("Unsupported RGBA QOI data");
+                                    // TODO: bitmap is rev...
+                                    // image.apply_rgb32_bitmap(&decoded, PixelFormat::RgbA32, &destination)?;
+                                }
+                            }
+                        }
                     }
                 }
                 SurfaceCommand::FrameMarker(marker) => {
@@ -413,6 +449,8 @@ impl ProcessorBuilder {
             mouse_pos_update: None,
             no_server_pointer: self.no_server_pointer,
             pointer_software_rendering: self.pointer_software_rendering,
+            #[cfg(feature = "qoiz")]
+            zdctx: zstd_safe::DCtx::default(),
         }
     }
 }

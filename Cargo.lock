@@ -2706,6 +2706,7 @@ dependencies = [
  "tracing-subscriber",
  "visibility",
  "x509-cert",
+ "zstd-safe",
 ]
 
 [[package]]
@@ -2722,6 +2723,7 @@ dependencies = [
  "ironrdp-svc",
  "qoi",
  "tracing",
+ "zstd-safe",
 ]
 
 [[package]]
@@ -6781,4 +6783,23 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
+]
+
+[[package]]
+name = "zstd-safe"
+version = "7.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f3051792fbdc2e1e143244dc28c60f73d8470e93f3f9cbd0ead44da5ed802722"
+dependencies = [
+ "zstd-sys",
+]
+
+[[package]]
+name = "zstd-sys"
+version = "2.0.14+zstd.1.5.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8fb060d4926e4ac3a3ad15d864e99ceb5f343c6b34f5bd6d81ae6ed417311be5"
+dependencies = [
+ "cc",
+ "pkg-config",
 ]

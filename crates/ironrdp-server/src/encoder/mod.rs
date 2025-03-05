@@ -1,7 +1,8 @@
 use core::fmt;
 use core::num::NonZeroU16;
+use std::sync::{Arc, Mutex};
 
-use anyhow::{Context, Result};
+use anyhow::{anyhow, Context, Result};
 use ironrdp_acceptor::DesktopSize;
 use ironrdp_graphics::diff::{find_different_rects_sub, Rect};
 use ironrdp_pdu::encode_vec;
@@ -45,12 +46,14 @@ impl fmt::Debug for UpdateEncoder {
 }
 
 impl UpdateEncoder {
+    #[allow(clippy::similar_names)]
     #[cfg_attr(feature = "__bench", visibility::make(pub))]
     pub(crate) fn new(
         desktop_size: DesktopSize,
         surface_flags: CmdFlags,
         remotefx: Option<(EntropyBits, u8)>,
         #[cfg(feature = "qoi")] qoi_codec_id: Option<u8>,
+        #[cfg(feature = "qoiz")] qoiz_codec_id: Option<u8>,
     ) -> Self {
         let bitmap_updater = if surface_flags.contains(CmdFlags::SET_SURFACE_BITS) {
             let mut up = BitmapUpdater::None(NoneHandler);
@@ -62,6 +65,10 @@ impl UpdateEncoder {
             #[cfg(feature = "qoi")]
             if let Some(id) = qoi_codec_id {
                 up = BitmapUpdater::Qoi(QoiHandler::new(id));
+            }
+            #[cfg(feature = "qoiz")]
+            if let Some(id) = qoiz_codec_id {
+                up = BitmapUpdater::Qoiz(QoizHandler::new(id));
             }
 
             up
@@ -279,6 +286,8 @@ enum BitmapUpdater {
     RemoteFx(RemoteFxHandler),
     #[cfg(feature = "qoi")]
     Qoi(QoiHandler),
+    #[cfg(feature = "qoiz")]
+    Qoiz(QoizHandler),
 }
 
 impl BitmapUpdater {
@@ -289,6 +298,8 @@ impl BitmapUpdater {
             Self::RemoteFx(up) => up.handle(bitmap),
             #[cfg(feature = "qoi")]
             Self::Qoi(up) => up.handle(bitmap),
+            #[cfg(feature = "qoiz")]
+            Self::Qoiz(up) => up.handle(bitmap),
         }
     }
 
@@ -418,29 +429,85 @@ impl QoiHandler {
 #[cfg(feature = "qoi")]
 impl BitmapUpdateHandler for QoiHandler {
     fn handle(&mut self, bitmap: &BitmapUpdate) -> Result<UpdateFragmenter> {
-        use ironrdp_graphics::image_processing::PixelFormat::*;
-
-        let channels = match bitmap.format {
-            ARgb32 => qoi::RawChannels::Argb,
-            XRgb32 => qoi::RawChannels::Xrgb,
-            ABgr32 => qoi::RawChannels::Abgr,
-            XBgr32 => qoi::RawChannels::Xbgr,
-            BgrA32 => qoi::RawChannels::Bgra,
-            BgrX32 => qoi::RawChannels::Bgrx,
-            RgbA32 => qoi::RawChannels::Rgba,
-            RgbX32 => qoi::RawChannels::Rgbx,
-        };
-
-        let enc = qoi::Encoder::new_raw(
-            &bitmap.data,
-            bitmap.width.get().into(),
-            bitmap.height.get().into(),
-            bitmap.stride,
-            channels,
-        )?;
-        let data = enc.encode_to_vec()?;
+        let data = qoi_encode(bitmap)?;
         set_surface(bitmap, self.codec_id, &data)
     }
+}
+
+#[cfg(feature = "qoiz")]
+#[derive(Clone)]
+struct QoizHandler {
+    codec_id: u8,
+    zctxt: Arc<Mutex<zstd_safe::CCtx<'static>>>,
+}
+
+impl fmt::Debug for QoizHandler {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("QoizHandler").field("codec_id", &self.codec_id).finish()
+    }
+}
+
+#[cfg(feature = "qoiz")]
+impl QoizHandler {
+    fn new(codec_id: u8) -> Self {
+        let mut zctxt = zstd_safe::CCtx::default();
+
+        zctxt.set_parameter(zstd_safe::CParameter::CompressionLevel(3)).unwrap();
+        zctxt
+            .set_parameter(zstd_safe::CParameter::EnableLongDistanceMatching(true))
+            .unwrap();
+        let zctxt = Arc::new(Mutex::new(zctxt));
+
+        Self { codec_id, zctxt }
+    }
+}
+
+#[cfg(feature = "qoiz")]
+impl BitmapUpdateHandler for QoizHandler {
+    fn handle(&mut self, bitmap: &BitmapUpdate) -> Result<UpdateFragmenter> {
+        let qoi = qoi_encode(bitmap)?;
+        let mut inb = zstd_safe::InBuffer::around(&qoi);
+        let mut data = vec![0; qoi.len()];
+        let mut outb = zstd_safe::OutBuffer::around(data.as_mut_slice());
+
+        let mut zctxt = self.zctxt.lock().unwrap();
+        let res = zctxt
+            .compress_stream2(
+                &mut outb,
+                &mut inb,
+                zstd_safe::zstd_sys::ZSTD_EndDirective::ZSTD_e_flush,
+            )
+            .map_err(zstd_safe::get_error_name)
+            .unwrap();
+        if res != 0 {
+            return Err(anyhow!("Failed to zstd compress"));
+        }
+
+        set_surface(bitmap, self.codec_id, outb.as_slice())
+    }
+}
+
+#[cfg(feature = "qoi")]
+fn qoi_encode(bitmap: &BitmapUpdate) -> Result<Vec<u8>> {
+    use ironrdp_graphics::image_processing::PixelFormat::*;
+    let channels = match bitmap.format {
+        ARgb32 => qoi::RawChannels::Argb,
+        XRgb32 => qoi::RawChannels::Xrgb,
+        ABgr32 => qoi::RawChannels::Abgr,
+        XBgr32 => qoi::RawChannels::Xbgr,
+        BgrA32 => qoi::RawChannels::Bgra,
+        BgrX32 => qoi::RawChannels::Bgrx,
+        RgbA32 => qoi::RawChannels::Rgba,
+        RgbX32 => qoi::RawChannels::Rgbx,
+    };
+    let enc = qoi::Encoder::new_raw(
+        &bitmap.data,
+        bitmap.width.get().into(),
+        bitmap.height.get().into(),
+        bitmap.stride,
+        channels,
+    )?;
+    Ok(enc.encode_to_vec()?)
 }
 
 fn set_surface(bitmap: &BitmapUpdate, codec_id: u8, data: &[u8]) -> Result<UpdateFragmenter> {

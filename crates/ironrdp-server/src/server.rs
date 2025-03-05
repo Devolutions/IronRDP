@@ -62,6 +62,14 @@ impl RdpServerOptions {
             .iter()
             .any(|codec| matches!(codec.property, CodecProperty::Qoi))
     }
+
+    #[cfg(feature = "qoiz")]
+    fn has_qoiz(&self) -> bool {
+        self.codecs
+            .0
+            .iter()
+            .any(|codec| matches!(codec.property, CodecProperty::QoiZ))
+    }
 }
 
 #[derive(Clone)]
@@ -649,6 +657,7 @@ impl RdpServer {
         state
     }
 
+    #[allow(clippy::similar_names)]
     async fn client_accepted<R, W>(
         &mut self,
         reader: &mut Framed<R>,
@@ -688,6 +697,8 @@ impl RdpServer {
         let mut rfxcodec = None;
         #[cfg(feature = "qoi")]
         let mut qoicodec = None;
+        #[cfg(feature = "qoiz")]
+        let mut qoizcodec = None;
         let mut surface_flags = CmdFlags::empty();
         for c in result.capabilities {
             match c {
@@ -753,6 +764,10 @@ impl RdpServer {
                             CodecProperty::Qoi if self.opts.has_qoi() => {
                                 qoicodec = Some(codec.id);
                             }
+                            #[cfg(feature = "qoiz")]
+                            CodecProperty::QoiZ if self.opts.has_qoiz() => {
+                                qoizcodec = Some(codec.id);
+                            }
                             _ => (),
                         }
                     }
@@ -768,6 +783,8 @@ impl RdpServer {
             rfxcodec,
             #[cfg(feature = "qoi")]
             qoicodec,
+            #[cfg(feature = "qoiz")]
+            qoizcodec,
         );
 
         let state = self

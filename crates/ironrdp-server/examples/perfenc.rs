@@ -11,6 +11,7 @@ use ironrdp_server::{
 };
 use tokio::{fs::File, io::AsyncReadExt};
 
+#[allow(clippy::similar_names)]
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), anyhow::Error> {
     setup_logging()?;
@@ -41,15 +42,17 @@ async fn main() -> Result<(), anyhow::Error> {
     let mut flags = CmdFlags::all();
 
     #[allow(unused)]
-    let (remotefx, qoicodec) = match codec {
-        OptCodec::RemoteFX => (Some((EntropyBits::Rlgr3, 0)), None::<u8>),
+    let (remotefx, qoicodec, qoizcodec) = match codec {
+        OptCodec::RemoteFX => (Some((EntropyBits::Rlgr3, 0)), None, None),
         OptCodec::Bitmap => {
             flags -= CmdFlags::SET_SURFACE_BITS;
-            (None, None)
+            (None, None, None)
         }
-        OptCodec::None => (None, None),
+        OptCodec::None => (None, None, None),
         #[cfg(feature = "qoi")]
-        OptCodec::Qoi => (None, Some(0)),
+        OptCodec::Qoi => (None, Some(0), None),
+        #[cfg(feature = "qoiz")]
+        OptCodec::QoiZ => (None, None, Some(0)),
     };
     let mut encoder = UpdateEncoder::new(
         DesktopSize { width, height },
@@ -57,6 +60,8 @@ async fn main() -> Result<(), anyhow::Error> {
         remotefx,
         #[cfg(feature = "qoi")]
         qoicodec,
+        #[cfg(feature = "qoiz")]
+        qoizcodec,
     );
 
     let mut total_raw = 0u64;
@@ -158,6 +163,8 @@ enum OptCodec {
     None,
     #[cfg(feature = "qoi")]
     Qoi,
+    #[cfg(feature = "qoiz")]
+    QoiZ,
 }
 
 impl Default for OptCodec {
@@ -176,6 +183,8 @@ impl core::str::FromStr for OptCodec {
             "none" => Ok(Self::None),
             #[cfg(feature = "qoi")]
             "qoi" => Ok(Self::Qoi),
+            #[cfg(feature = "qoiz")]
+            "qoiz" => Ok(Self::QoiZ),
             _ => Err(anyhow::anyhow!("unknown codec: {}", s)),
         }
     }
