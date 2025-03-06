@@ -140,3 +140,19 @@ fn to_buffer_correctly_serializes_fast_path_update() {
 fn buffer_length_is_correct_for_fast_path_update() {
     assert_eq!(FAST_PATH_UPDATE_PDU_BUFFER.len(), FAST_PATH_UPDATE_PDU.size());
 }
+
+#[test]
+fn buffer_size_boundary_fast_path_update() {
+    let fph = FastPathHeader {
+        flags: EncryptionFlags::ENCRYPTED,
+        data_length: 125,
+        forced_long_length: false,
+    };
+    assert_eq!(fph.size(), 2);
+    let fph = FastPathHeader {
+        flags: EncryptionFlags::ENCRYPTED,
+        data_length: 126,
+        forced_long_length: false,
+    };
+    assert_eq!(fph.size(), 3);
+}
