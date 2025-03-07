@@ -39,7 +39,10 @@ impl FastPathHeader {
     }
 
     fn minimal_size(&self) -> usize {
-        Self::FIXED_PART_SIZE + per::sizeof_length(self.data_length as u16)
+        // it may then be +2 if > 0x7f
+        let len = self.data_length + Self::FIXED_PART_SIZE + 1;
+
+        Self::FIXED_PART_SIZE + per::sizeof_length(len as u16)
     }
 }
 
