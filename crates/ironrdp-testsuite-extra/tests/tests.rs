@@ -300,5 +300,6 @@ fn default_client_config() -> connector::Config {
         no_server_pointer: true,
         pointer_software_rendering: true,
         performance_flags: Default::default(),
+        support_gfx: false,
     }
 }

@@ -2348,6 +2348,7 @@ dependencies = [
  "ironrdp-core",
  "ironrdp-displaycontrol",
  "ironrdp-dvc",
+ "ironrdp-egfx",
  "ironrdp-graphics",
  "ironrdp-input",
  "ironrdp-pdu",
@@ -2532,6 +2533,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "ironrdp-egfx"
+version = "0.1.1"
+dependencies = [
+ "bit_field",
+ "bitflags 2.6.0",
+ "ironrdp-core",
+ "ironrdp-dvc",
+ "ironrdp-graphics",
+ "ironrdp-pdu",
+ "tracing",
+]
+
+[[package]]
 name = "ironrdp-error"
 version = "0.1.2"
 
@@ -2553,6 +2567,7 @@ dependencies = [
  "ironrdp-cliprdr-format",
  "ironrdp-core",
  "ironrdp-displaycontrol",
+ "ironrdp-egfx",
  "ironrdp-graphics",
  "ironrdp-pdu",
  "ironrdp-rdpdr",
@@ -2739,6 +2754,7 @@ dependencies = [
  "ironrdp-core",
  "ironrdp-displaycontrol",
  "ironrdp-dvc",
+ "ironrdp-egfx",
  "ironrdp-fuzzing",
  "ironrdp-graphics",
  "ironrdp-input",

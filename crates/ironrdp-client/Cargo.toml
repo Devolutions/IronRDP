@@ -41,6 +41,7 @@ ironrdp = { workspace = true, features = [
     "rdpsnd",
     "cliprdr",
     "displaycontrol",
+    "egfx",
     "connector"
 ] }
 ironrdp-cliprdr-native.workspace = true
