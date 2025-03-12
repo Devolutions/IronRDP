@@ -30,7 +30,7 @@ native-tls = ["ironrdp-tls/native-tls"]
 
 [dependencies]
 # Protocols
-ironrdp = { path = "../ironrdp", version = "0.7", features = [
+ironrdp = { path = "../ironrdp", version = "0.8", features = [
     "session",
     "input",
     "graphics",

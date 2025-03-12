@@ -2333,7 +2333,7 @@ checksum = "469fb0b9cefa57e3ef31275ee7cacb78f2fdca44e4765491884a2b119d4eb130"
 
 [[package]]
 name = "ironrdp"
-version = "0.7.5"
+version = "0.8.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2716,7 +2716,7 @@ version = "0.0.0"
 
 [[package]]
 name = "ironrdp-svc"
-version = "0.1.4"
+version = "0.2.0"
 dependencies = [
  "bitflags 2.9.0",
  "ironrdp-core",

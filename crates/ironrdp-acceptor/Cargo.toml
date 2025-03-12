@@ -18,7 +18,7 @@ test = false
 [dependencies]
 ironrdp-core = { path = "../ironrdp-core", version = "0.1", features = ["alloc"] }
 ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.3" }
-ironrdp-svc = { path = "../ironrdp-svc", version = "0.1" }
+ironrdp-svc = { path = "../ironrdp-svc", version = "0.2" }
 ironrdp-connector = { path = "../ironrdp-connector", version = "0.3" }
 ironrdp-async = { path = "../ironrdp-async", version = "0.3" }
 tracing = { version = "0.1", features = ["log"] }

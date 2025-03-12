@@ -22,7 +22,7 @@ std = []
 [dependencies]
 bitflags = "2.4"
 tracing = { version = "0.1", features = ["log"] }
-ironrdp-svc = { path = "../ironrdp-svc", version = "0.1" }
+ironrdp-svc = { path = "../ironrdp-svc", version = "0.2" }
 ironrdp-core = { path = "../ironrdp-core", version = "0.1", features = ["alloc"] }
 ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.3", features = ["alloc"] }
 
