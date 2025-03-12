@@ -4,7 +4,7 @@ use ironrdp_graphics::rfx_encode_component;
 use ironrdp_graphics::rlgr::RlgrError;
 use ironrdp_pdu::codecs::rfx::{
     self, Block, ChannelsPdu, CodecChannel, CodecVersionsPdu, FrameBeginPdu, FrameEndPdu, OperatingMode, Quant,
-    RegionPdu, RfxChannel, RfxChannelHeight, RfxChannelWidth, SyncPdu, TileSetPdu,
+    RegionPdu, RfxChannel, SyncPdu, TileSetPdu,
 };
 use ironrdp_pdu::rdp::capability_sets::EntropyBits;
 use ironrdp_pdu::WriteCursor;
@@ -42,8 +42,8 @@ impl RfxEncoder {
         Block::CodecChannel(CodecChannel::Context(context)).encode(&mut cursor)?;
 
         let channels = ChannelsPdu(vec![RfxChannel {
-            width: RfxChannelWidth::new(cast_length!("width", width)?),
-            height: RfxChannelHeight::new(cast_length!("height", height)?),
+            width: cast_length!("width", width)?,
+            height: cast_length!("height", height)?,
         }]);
         Block::Channels(channels).encode(&mut cursor)?;
 

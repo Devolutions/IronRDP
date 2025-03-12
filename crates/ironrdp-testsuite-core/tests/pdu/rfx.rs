@@ -253,8 +253,8 @@ const FRAME_END_PDU: Block<'_> = Block::CodecChannel(CodecChannel::FrameEnd(Fram
 
 lazy_static::lazy_static! {
     static ref CHANNELS_PDU: Block<'static> = Block::Channels(ChannelsPdu(vec![
-        RfxChannel { width: RfxChannelWidth::new(64), height: RfxChannelHeight::new(64) },
-        RfxChannel { width: RfxChannelWidth::new(32), height: RfxChannelHeight::new(32) }
+        RfxChannel { width: 64, height: 64 },
+        RfxChannel { width: 32, height: 32 }
     ]));
     static ref REGION_PDU: Block<'static> = Block::CodecChannel(CodecChannel::Region(RegionPdu {
         rectangles: vec![

@@ -15,9 +15,7 @@ pub use self::data_messages::{
     ContextPdu, EntropyAlgorithm, FrameBeginPdu, FrameEndPdu, OperatingMode, Quant, RegionPdu, RfxRectangle, Tile,
     TileSetPdu,
 };
-pub use self::header_messages::{
-    ChannelsPdu, CodecVersionsPdu, RfxChannel, RfxChannelHeight, RfxChannelWidth, SyncPdu,
-};
+pub use self::header_messages::{ChannelsPdu, CodecVersionsPdu, RfxChannel, SyncPdu};
 
 const CODEC_ID: u8 = 1;
 const CHANNEL_ID_FOR_CONTEXT: u8 = 0xFF;
