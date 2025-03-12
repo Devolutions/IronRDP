@@ -12,15 +12,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Update dependencies (#695) ([c21fa44fd6](https://github.com/Devolutions/IronRDP/commit/c21fa44fd6f3c6a6b74788ff68e83133c1314caa)) 
 
-
-# Changelog
-
-All notable changes to this project will be documented in this file.
-
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
-and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
-
-
 ## [[0.1.3](https://github.com/Devolutions/IronRDP/compare/ironrdp-cliprdr-native-v0.1.2...ironrdp-cliprdr-native-v0.1.3)] - 2025-02-03
 
 ### <!-- 4 -->Bug Fixes
