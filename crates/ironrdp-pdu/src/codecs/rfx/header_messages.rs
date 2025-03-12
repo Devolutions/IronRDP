@@ -155,46 +155,8 @@ impl<'de> Decode<'de> for ChannelsPdu {
 /// [2.2.2.1.3]: https://learn.microsoft.com/pt-br/openspecs/windows_protocols/ms-rdprfx/4060f07e-9d73-454d-841e-131a93aca675
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub struct RfxChannel {
-    pub width: RfxChannelWidth,
-    pub height: RfxChannelHeight,
-}
-
-/// A 16-bit, signed integer within the range of 1 to 4096
-#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-#[repr(transparent)]
-pub struct RfxChannelWidth(i16);
-
-impl RfxChannelWidth {
-    pub fn new(value: i16) -> Self {
-        Self(value)
-    }
-
-    pub fn as_u16(self) -> u16 {
-        u16::try_from(self.0).expect("integer within the range of 1 to 4096")
-    }
-
-    pub fn get(self) -> i16 {
-        self.0
-    }
-}
-
-/// A 16-bit, signed integer within the range of 1 to 2048
-#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-#[repr(transparent)]
-pub struct RfxChannelHeight(i16);
-
-impl RfxChannelHeight {
-    pub fn new(value: i16) -> Self {
-        Self(value)
-    }
-
-    pub fn as_u16(self) -> u16 {
-        u16::try_from(self.0).expect("integer within the range of 1 to 2048")
-    }
-
-    pub fn get(self) -> i16 {
-        self.0
-    }
+    pub width: i16,
+    pub height: i16,
 }
 
 impl RfxChannel {
@@ -208,8 +170,8 @@ impl Encode for RfxChannel {
         ensure_fixed_part_size!(in: dst);
 
         dst.write_u8(CHANNEL_ID);
-        dst.write_i16(self.width.get());
-        dst.write_i16(self.height.get());
+        dst.write_i16(self.width);
+        dst.write_i16(self.height);
 
         Ok(())
     }
@@ -232,8 +194,8 @@ impl<'de> Decode<'de> for RfxChannel {
             return Err(invalid_field_err!("channelId", "Invalid channel ID"));
         }
 
-        let width = RfxChannelWidth::new(src.read_i16());
-        let height = RfxChannelHeight::new(src.read_i16());
+        let width = src.read_i16();
+        let height = src.read_i16();
 
         Ok(Self { width, height })
     }

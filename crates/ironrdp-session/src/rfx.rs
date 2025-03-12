@@ -108,8 +108,8 @@ impl DecodingContext {
         destination: &InclusiveRectangle,
     ) -> SessionResult<(FrameId, InclusiveRectangle)> {
         let channel = self.channels.0.first().unwrap();
-        let width = channel.width.as_u16();
-        let height = channel.height.as_u16();
+        let width = channel.width.try_into().map_err(|_| general_err!("invalid width"))?;
+        let height = channel.height.try_into().map_err(|_| general_err!("invalid height"))?;
         let entropy_algorithm = self.context.entropy_algorithm;
 
         let region: rfx::Block<'_> = decode_cursor(input).map_err(|e| custom_err!("decode region", e))?;
