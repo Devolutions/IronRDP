@@ -34,7 +34,7 @@ displaycontrol = ["dep:ironrdp-displaycontrol"]
 
 [dependencies]
 ironrdp-core = { path = "../ironrdp-core", version = "0.1", optional = true }
-ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.3", optional = true }
+ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.4", optional = true }
 ironrdp-cliprdr = { path = "../ironrdp-cliprdr", version = "0.1", optional = true }
 ironrdp-connector = { path = "../ironrdp-connector", version = "0.3", optional = true }
 ironrdp-acceptor = { path = "../ironrdp-acceptor", version = "0.3", optional = true }

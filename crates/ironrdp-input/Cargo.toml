@@ -16,7 +16,7 @@ doctest = false
 test = false
 
 [dependencies]
-ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.3" }
+ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.4" }
 bitvec = "1.0"
 smallvec = "1.13"
 

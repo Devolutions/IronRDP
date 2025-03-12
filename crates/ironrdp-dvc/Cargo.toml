@@ -22,7 +22,7 @@ std = []
 [dependencies]
 ironrdp-core = { path = "../ironrdp-core", version = "0.1", features = ["alloc"] }
 ironrdp-svc = { path = "../ironrdp-svc", version = "0.2" }
-ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.3", features = ["alloc"] }
+ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.4", features = ["alloc"] }
 tracing = { version = "0.1", features = ["log"] }
 slab = "0.4"
 
