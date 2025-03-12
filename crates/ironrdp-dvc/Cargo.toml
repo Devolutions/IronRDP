@@ -1,6 +1,6 @@
 [package]
 name = "ironrdp-dvc"
-version = "0.1.2"
+version = "0.1.3"
 readme = "README.md"
 description = "DRDYNVC static channel implementation and traits to implement dynamic virtual channels"
 edition.workspace = true
@@ -21,7 +21,7 @@ std = []
 
 [dependencies]
 ironrdp-core = { path = "../ironrdp-core", version = "0.1", features = ["alloc"] }
-ironrdp-svc = { path = "../ironrdp-svc", version = "0.1" }
+ironrdp-svc = { path = "../ironrdp-svc", version = "0.2" }
 ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.3", features = ["alloc"] }
 tracing = { version = "0.1", features = ["log"] }
 slab = "0.4"

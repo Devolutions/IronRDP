@@ -1,6 +1,6 @@
 [package]
 name = "ironrdp-cliprdr"
-version = "0.1.2"
+version = "0.1.3"
 readme = "README.md"
 description = "CLIPRDR static channel for clipboard implemented as described in MS-RDPECLIP"
 edition.workspace = true
@@ -18,7 +18,7 @@ test = false
 [dependencies]
 ironrdp-core = { path = "../ironrdp-core", version = "0.1" }
 ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.3" }
-ironrdp-svc = { path = "../ironrdp-svc", version = "0.1" }
+ironrdp-svc = { path = "../ironrdp-svc", version = "0.2" }
 thiserror = "1.0"
 tracing = { version = "0.1", features = ["log"] }
 bitflags = "2.4"
