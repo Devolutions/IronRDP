@@ -98,6 +98,7 @@ impl ApplicationHandler<RdpOutputEvent> for App {
             } else {
                 self.send_resize_event();
                 self.resize_timeout = None;
+                event_loop.set_control_flow(ControlFlow::Wait);
             }
         }
     }
