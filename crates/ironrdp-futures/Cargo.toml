@@ -18,7 +18,7 @@ test = false
 [dependencies]
 bytes = "1"
 futures-util = { version = "0.3", features = ["io"] }
-ironrdp-async.workspace = true
+ironrdp-async = { path = "../ironrdp-async", version = "0.3" }
 
 [lints]
 workspace = true

@@ -16,15 +16,15 @@ doctest = false
 test = false
 
 [dependencies]
-ironrdp-connector.workspace = true # TODO: at some point, this dependency could be removed (good for compilation speed)
-ironrdp-svc.workspace = true
-ironrdp-dvc.workspace = true
-ironrdp-error.workspace = true
-ironrdp-graphics.workspace = true
-ironrdp-pdu = { workspace = true, features = ["std"] }
-ironrdp-displaycontrol.workspace = true
-tracing.workspace = true
-ironrdp-core.workspace = true
+ironrdp-core = { path = "../ironrdp-core", version = "0.1" }
+ironrdp-connector = { path = "../ironrdp-connector", version = "0.3" } # TODO: at some point, this dependency could be removed (good for compilation speed)
+ironrdp-svc = { path = "../ironrdp-svc", version = "0.1" }
+ironrdp-dvc = { path = "../ironrdp-dvc", version = "0.1" }
+ironrdp-error = { path = "../ironrdp-error", version = "0.1" }
+ironrdp-graphics = { path = "../ironrdp-graphics", version = "0.2" }
+ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.3", features = ["std"] }
+ironrdp-displaycontrol = { path = "../ironrdp-displaycontrol", version = "0.1" }
+tracing = { version = "0.1", features = ["log"] }
 
 [lints]
 workspace = true

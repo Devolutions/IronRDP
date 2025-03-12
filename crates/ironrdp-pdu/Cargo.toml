@@ -21,21 +21,21 @@ std = ["alloc", "ironrdp-error/std", "ironrdp-core/std"]
 alloc = ["ironrdp-core/alloc", "ironrdp-error/alloc"]
 
 [dependencies]
-bitflags.workspace = true
-ironrdp-core = { workspace = true, features = ["std"] }
-ironrdp-error.workspace = true
+bitflags = "2.4"
+ironrdp-core = { path = "../ironrdp-core", version = "0.1", features = ["std"] }
+ironrdp-error = { path = "../ironrdp-error", version = "0.1" }
 tap = "1"
 
 # TODO: get rid of these dependencies (related code should probably go into another crate)
 bit_field = "0.10"
-byteorder.workspace = true                                                    # TODO: remove
+byteorder = "1.5" # TODO: remove
 der-parser = "9.0"
-thiserror.workspace = true
+thiserror = "1.0"
 md5 = { package = "md-5", version = "0.10" }
 num-bigint = "0.4"
-num-derive.workspace = true                                                   # TODO: remove
+num-derive.workspace = true # TODO: remove
 num-integer = "0.1"
-num-traits.workspace = true                                                   # TODO: remove
+num-traits.workspace = true # TODO: remove
 sha1 = "0.10"
 x509-cert = { version = "0.2", default-features = false, features = ["std"] }
 pkcs1 = "0.7"

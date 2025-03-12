@@ -20,10 +20,10 @@ default = []
 std = []
 
 [dependencies]
-ironrdp-core = { workspace = true, features = ["alloc"] }
-ironrdp-svc.workspace = true
-ironrdp-pdu = { workspace = true, features = ["alloc"] }
-tracing.workspace = true
+ironrdp-core = { path = "../ironrdp-core", version = "0.1", features = ["alloc"] }
+ironrdp-svc = { path = "../ironrdp-svc", version = "0.1" }
+ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.3", features = ["alloc"] }
+tracing = { version = "0.1", features = ["log"] }
 slab = "0.4"
 
 [lints]

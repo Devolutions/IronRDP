@@ -20,9 +20,9 @@ default = []
 std = []
 
 [dependencies]
-ironrdp-pdu = { workspace = true, features = ["alloc", "std"] }
-bitflags.workspace = true
-ironrdp-core.workspace = true
+ironrdp-core = { path = "../ironrdp-core", version = "0.1" }
+ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.3", features = ["alloc", "std"] }
+bitflags = "2.4"
 
 [lints]
 workspace = true

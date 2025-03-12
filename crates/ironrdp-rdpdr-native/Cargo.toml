@@ -16,9 +16,9 @@ doctest = false
 test = false
 
 [target.'cfg(any(target_os = "macos", target_os = "linux"))'.dependencies]
-ironrdp-core.workspace = true
-ironrdp-pdu.workspace = true
-ironrdp-svc.workspace = true
-ironrdp-rdpdr.workspace = true
+ironrdp-core = { path = "../ironrdp-core", version = "0.1" }
+ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.3" }
+ironrdp-svc = { path = "../ironrdp-svc", version = "0.1" }
+ironrdp-rdpdr = { path = "../ironrdp-rdpdr", version = "0.1" }
 nix = { version = "0.29", features = ["fs", "dir"] }
-tracing.workspace = true
+tracing = { version = "0.1", features = ["log"] }

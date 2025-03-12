@@ -1,6 +1,6 @@
 [package]
 name = "ironrdp-web"
-version = "0.1.0"
+version = "0.0.0"
 readme = "README.md"
 description = "WebAssembly high-level bindings targeting web browsers"
 publish = false
@@ -22,9 +22,8 @@ default = ["panic_hook"]
 panic_hook = ["dep:console_error_panic_hook"]
 
 [dependencies]
-
 # Protocols
-ironrdp = { workspace = true, features = [
+ironrdp = { path = "../ironrdp", features = [
     "connector",
     "session",
     "input",
@@ -34,24 +33,18 @@ ironrdp = { workspace = true, features = [
     "svc",
     "displaycontrol"
 ] }
-ironrdp-core.workspace = true
-ironrdp-cliprdr-format = { workspace = true }
-ironrdp-futures.workspace = true
-ironrdp-rdcleanpath.workspace = true
+ironrdp-core.path = "../ironrdp-core"
+ironrdp-cliprdr-format.path = "../ironrdp-cliprdr-format"
+ironrdp-futures.path = "../ironrdp-futures"
+ironrdp-rdcleanpath.path = "../ironrdp-rdcleanpath"
 
 # WASM
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
 web-sys = { version = "0.3", features = ["HtmlCanvasElement"] }
 js-sys = "0.3"
-gloo-net = { version = "0.6", default-features = false, features = [
-    "websocket",
-    "http",
-    "io-util",
-] }
-gloo-timers = { version = "0.3", default-features = false, features = [
-    "futures",
-] }
+gloo-net = { version = "0.6", default-features = false, features = ["websocket", "http", "io-util"] }
+gloo-timers = { version = "0.3", default-features = false, features = ["futures"] }
 tracing-web = "0.1"
 
 # Rendering
@@ -76,7 +69,7 @@ futures-util = { version = "0.3", features = ["sink", "io"] }
 futures-channel = "0.3"
 
 # Logging
-tracing.workspace = true
+tracing = { version = "0.1", features = ["log"] }
 tracing-subscriber = { version = "0.3", features = ["time"] }
 
 # Utils
