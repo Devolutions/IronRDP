@@ -22,7 +22,7 @@ ironrdp-svc = { path = "../ironrdp-svc", version = "0.2" }
 ironrdp-dvc = { path = "../ironrdp-dvc", version = "0.1" }
 ironrdp-error = { path = "../ironrdp-error", version = "0.1" }
 ironrdp-graphics = { path = "../ironrdp-graphics", version = "0.2" }
-ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.3", features = ["std"] }
+ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.4", features = ["std"] }
 ironrdp-displaycontrol = { path = "../ironrdp-displaycontrol", version = "0.1" }
 tracing = { version = "0.1", features = ["log"] }
 

@@ -2588,7 +2588,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-pdu"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "bit_field",
  "bitflags 2.9.0",
@@ -4379,9 +4379,9 @@ dependencies = [
 
 [[package]]
 name = "rsa"
-version = "0.9.7"
+version = "0.9.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "47c75d7c5c6b673e58bf54d8544a9f432e3a925b0e80f7cd3602ab5c50c55519"
+checksum = "78928ac1ed176a5ca1d17e578a1825f3d81ca54cf41053a592584b020cfd691b"
 dependencies = [
  "const-oid",
  "digest",
@@ -4924,9 +4924,9 @@ dependencies = [
 
 [[package]]
 name = "sspi"
-version = "0.15.2"
+version = "0.15.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d1aff64c6ee9aac256167ad86ed0cbfd83c9d622664253fb85199fc5b8dc2e35"
+checksum = "1cbcc51fdf01a0dced9834c0c0d549c0d6ffda3065112c52a67f71c69fb106f1"
 dependencies = [
  "async-dnssd",
  "async-recursion",
@@ -6435,9 +6435,9 @@ dependencies = [
 
 [[package]]
 name = "winnow"
-version = "0.7.3"
+version = "0.7.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0e7f4ea97f6f78012141bcdb6a216b2609f0979ada50b20ca5b52dde2eac2bb1"
+checksum = "0e97b544156e9bebe1a0ffbc03484fc1ffe3100cbce3ffb17eac35f7cdd7ab36"
 dependencies = [
  "memchr",
 ]

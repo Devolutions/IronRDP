@@ -18,7 +18,7 @@ test = false
 [dependencies]
 ironrdp-core = { path = "../ironrdp-core", version = "0.1" }
 ironrdp-error = { path = "../ironrdp-error", version = "0.1" }
-ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.3" }
+ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.4" }
 ironrdp-svc = { path = "../ironrdp-svc", version = "0.2" }
 tracing = { version = "0.1", features = ["log"] }
 bitflags = "2.4"

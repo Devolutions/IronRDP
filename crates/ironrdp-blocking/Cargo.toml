@@ -19,7 +19,7 @@ test = false
 bytes = "1"
 ironrdp-connector = { path = "../ironrdp-connector", version = "0.3" }
 ironrdp-core = { path = "../ironrdp-core", version = "0.1", features = ["alloc"] }
-ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.3" }
+ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.4" }
 # ironrdp-session = { path = "../ironrdp-session", version = "0.2" }
 tracing = { version = "0.1", features = ["log"] }
 
