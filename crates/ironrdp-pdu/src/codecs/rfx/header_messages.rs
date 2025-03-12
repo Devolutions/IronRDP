@@ -232,17 +232,8 @@ impl<'de> Decode<'de> for RfxChannel {
             return Err(invalid_field_err!("channelId", "Invalid channel ID"));
         }
 
-        let width = src.read_i16();
-        if !(1..=4096).contains(&width) {
-            return Err(invalid_field_err!("width", "Invalid channel width"));
-        }
-        let width = RfxChannelWidth::new(width);
-
-        let height = src.read_i16();
-        if !(1..=2048).contains(&height) {
-            return Err(invalid_field_err!("height", "Invalid channel height"));
-        }
-        let height = RfxChannelHeight::new(height);
+        let width = RfxChannelWidth::new(src.read_i16());
+        let height = RfxChannelHeight::new(src.read_i16());
 
         Ok(Self { width, height })
     }
