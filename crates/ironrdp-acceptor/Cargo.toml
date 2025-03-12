@@ -16,12 +16,12 @@ doctest = false
 test = false
 
 [dependencies]
-ironrdp-pdu.workspace = true
-ironrdp-svc.workspace = true
-ironrdp-connector.workspace = true
-ironrdp-async.workspace = true
-tracing.workspace = true
-ironrdp-core = { workspace = true, features = ["alloc"] }
+ironrdp-core = { path = "../ironrdp-core", version = "0.1", features = ["alloc"] }
+ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.3" }
+ironrdp-svc = { path = "../ironrdp-svc", version = "0.1" }
+ironrdp-connector = { path = "../ironrdp-connector", version = "0.3" }
+ironrdp-async = { path = "../ironrdp-async", version = "0.3" }
+tracing = { version = "0.1", features = ["log"] }
 
 [lints]
 workspace = true

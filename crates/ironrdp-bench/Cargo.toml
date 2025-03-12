@@ -13,9 +13,9 @@ publish = false
 
 [dev-dependencies]
 criterion = "0.5"
-ironrdp-graphics.workspace = true
-ironrdp-pdu.workspace = true
-ironrdp-server = { workspace = true, features = ["__bench"] }
+ironrdp-graphics.path = "../ironrdp-graphics"
+ironrdp-pdu.path = "../ironrdp-pdu"
+ironrdp-server = { path = "../ironrdp-server", features = ["__bench"] }
 
 [[bench]]
 name = "bench"

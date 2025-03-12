@@ -17,15 +17,15 @@ doctest = false
 
 [dependencies]
 bit_field = "0.10"
-bitflags.workspace = true
+bitflags = "2.4"
 bitvec = "1.0"
-byteorder.workspace = true # TODO: remove
-ironrdp-core.workspace = true
-ironrdp-pdu = { workspace = true, features = ["std"] }
-lazy_static.workspace = true # TODO: remove in favor of https://doc.rust-lang.org/std/sync/struct.OnceLock.html
+ironrdp-core = { path = "../ironrdp-core", version = "0.1" }
+ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.3", features = ["std"] }
+byteorder = "1.5" # TODO: remove
+lazy_static.workspace = true # Legacy crate; prefer std::sync::LazyLock or LazyCell
 num-derive.workspace = true # TODO: remove
 num-traits.workspace = true # TODO: remove
-thiserror.workspace = true
+thiserror = "1"
 yuvutils-rs = { version = "0.8", features = ["rdp"] }
 
 [dev-dependencies]

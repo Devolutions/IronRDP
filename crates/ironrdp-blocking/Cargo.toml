@@ -17,11 +17,11 @@ test = false
 
 [dependencies]
 bytes = "1"
-ironrdp-connector.workspace = true
-ironrdp-core = { workspace = true, features = ["alloc"] }
-ironrdp-pdu.workspace = true
-# ironrdp-session.workspace = true
-tracing.workspace = true
+ironrdp-connector = { path = "../ironrdp-connector", version = "0.3" }
+ironrdp-core = { path = "../ironrdp-core", version = "0.1", features = ["alloc"] }
+ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.3" }
+# ironrdp-session = { path = "../ironrdp-session", version = "0.2" }
+tracing = { version = "0.1", features = ["log"] }
 
 [lints]
 workspace = true

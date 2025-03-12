@@ -21,13 +21,13 @@ opus = ["dep:opus", "dep:bytemuck"]
 [dependencies]
 anyhow = "1"
 bytemuck = { version = "1.21", optional = true }
-cpal = "0.15.3"
-ironrdp-rdpsnd.workspace = true
+cpal = "0.15"
+ironrdp-rdpsnd = { path = "../ironrdp-rdpsnd", version = "0.3" }
 opus = { version = "0.3", optional = true }
-tracing.workspace = true
+tracing = { version = "0.1", features = ["log"] }
 
 [dev-dependencies]
-tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 [lints]
 workspace = true

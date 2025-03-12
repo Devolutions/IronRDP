@@ -5,7 +5,6 @@ readme = "README.md"
 description = "Native CLIPRDR static channel backend implementations for IronRDP"
 edition.workspace = true
 license.workspace = true
-
 homepage.workspace = true
 repository.workspace = true
 authors.workspace = true
@@ -17,13 +16,13 @@ doctest = false
 test = false
 
 [dependencies]
-ironrdp-cliprdr.workspace = true
-ironrdp-core.workspace = true
-tracing.workspace = true
+ironrdp-cliprdr = { path = "../ironrdp-cliprdr", version = "0.1" }
+ironrdp-core = { path = "../ironrdp-core", version = "0.1" }
+tracing = { version = "0.1", features = ["log"] }
 
 [target.'cfg(windows)'.dependencies]
-thiserror.workspace = true
-windows = { workspace = true, features = [
+thiserror = "1"
+windows = { version = "0.58", features = [
     "Win32_Foundation",
     "Win32_Graphics_Gdi",
     "Win32_System_DataExchange",

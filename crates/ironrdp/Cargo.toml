@@ -33,31 +33,31 @@ rdpsnd = ["dep:ironrdp-rdpsnd"]
 displaycontrol = ["dep:ironrdp-displaycontrol"]
 
 [dependencies]
-ironrdp-core = { workspace = true, optional = true }
-ironrdp-pdu = { workspace = true, optional = true }
-ironrdp-cliprdr = { workspace = true, optional = true }
-ironrdp-connector = { workspace = true, optional = true }
-ironrdp-acceptor = { workspace = true, optional = true }
-ironrdp-session = { workspace = true, optional = true }
-ironrdp-graphics = { workspace = true, optional = true }
-ironrdp-input = { workspace = true, optional = true }
-ironrdp-server = { workspace = true, optional = true, features = ["helper"] }
-ironrdp-svc = { workspace = true, optional = true }
-ironrdp-dvc = { workspace = true, optional = true }
-ironrdp-rdpdr = { workspace = true, optional = true }
-ironrdp-rdpsnd = { workspace = true, optional = true }
-ironrdp-displaycontrol = { workspace = true, optional = true }
+ironrdp-core = { path = "../ironrdp-core", version = "0.1", optional = true }
+ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.3", optional = true }
+ironrdp-cliprdr = { path = "../ironrdp-cliprdr", version = "0.1", optional = true }
+ironrdp-connector = { path = "../ironrdp-connector", version = "0.3", optional = true }
+ironrdp-acceptor = { path = "../ironrdp-acceptor", version = "0.3", optional = true }
+ironrdp-session = { path = "../ironrdp-session", version = "0.2", optional = true }
+ironrdp-graphics = { path = "../ironrdp-graphics", version = "0.2", optional = true }
+ironrdp-input = { path = "../ironrdp-input", version = "0.1", optional = true }
+ironrdp-server = { path = "../ironrdp-server", version = "0.4", optional = true, features = ["helper"] }
+ironrdp-svc = { path = "../ironrdp-svc", version = "0.1", optional = true }
+ironrdp-dvc = { path = "../ironrdp-dvc", version = "0.1", optional = true }
+ironrdp-rdpdr = { path = "../ironrdp-rdpdr", version = "0.1", optional = true }
+ironrdp-rdpsnd = { path = "../ironrdp-rdpsnd", version = "0.3", optional = true }
+ironrdp-displaycontrol = { path = "../ironrdp-displaycontrol", version = "0.1", optional = true }
 
 [dev-dependencies]
-ironrdp-blocking.workspace = true
-ironrdp-cliprdr-native.workspace = true
+ironrdp-blocking.path = "../ironrdp-blocking"
+ironrdp-cliprdr-native.path = "../ironrdp-cliprdr-native"
 anyhow = "1"
 async-trait = "0.1"
 image = { version = "0.25.5", default-features = false, features = ["png"] }
 pico-args = "0.5"
 x509-cert = { version = "0.2", default-features = false, features = ["std"] }
-sspi = { workspace = true, features = ["network_client"] }
-tracing.workspace = true
+sspi = { version = "0.15", features = ["network_client"] }
+tracing = { version = "0.1", features = ["log"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tokio-rustls = "0.26"
 rand = "0.8"

@@ -19,16 +19,14 @@ test = false
 arbitrary = ["dep:arbitrary"]
 
 [dependencies]
+ironrdp-svc = { path = "../ironrdp-svc", version = "0.1" }
+ironrdp-core = { path = "../ironrdp-core", version = "0.1" }
+ironrdp-error = { path = "../ironrdp-error", version = "0.1" }
+ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.3", features = ["std"] }
 arbitrary = { version = "1", features = ["derive"], optional = true }
-ironrdp-svc.workspace = true
-ironrdp-core.workspace = true
-ironrdp-error.workspace = true
-ironrdp-pdu = { workspace = true, features = ["std"] }
-rand_core = { version = "0.6", features = [
-    "std",
-] } # TODO: dependency injection?
-sspi.workspace = true
-tracing.workspace = true
+rand_core = { version = "0.6", features = ["std"] } # TODO: dependency injection?
+sspi = "0.15"
+tracing = { version = "0.1", features = ["log"] }
 url = "2.5"
 picky-asn1-der = "0.5"
 picky-asn1-x509 = "0.14"

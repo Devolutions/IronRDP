@@ -21,4 +21,4 @@ std = ["alloc", "ironrdp-error/std"]
 alloc = ["ironrdp-error/alloc"]
 
 [dependencies]
-ironrdp-error.workspace = true
+ironrdp-error = { path = "../ironrdp-error", version = "0.1" }

@@ -5,7 +5,6 @@ readme = "README.md"
 description = "CLIPRDR format conversion library"
 edition.workspace = true
 license.workspace = true
-
 homepage.workspace = true
 repository.workspace = true
 authors.workspace = true
@@ -17,8 +16,8 @@ doctest = false
 test = false
 
 [dependencies]
-ironrdp-core.workspace = true
-thiserror.workspace = true # FIXME: handwrite the Error trait implementations.
+ironrdp-core = { path = "../ironrdp-core", version = "0.1" }
+thiserror = "1" # FIXME: handwrite the Error trait implementations.
 png = "0.17"
 
 [lints]
