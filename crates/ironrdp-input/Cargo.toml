@@ -1,6 +1,6 @@
 [package]
 name = "ironrdp-input"
-version = "0.1.3"
+version = "0.1.4"
 readme = "README.md"
 description = "Utilities to manage and build RDP input packets"
 edition.workspace = true

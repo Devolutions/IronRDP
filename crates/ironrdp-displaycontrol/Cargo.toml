@@ -1,6 +1,6 @@
 [package]
 name = "ironrdp-displaycontrol"
-version = "0.1.3"
+version = "0.1.4"
 readme = "README.md"
 description = "Display control dynamic channel extension implementation"
 edition.workspace = true

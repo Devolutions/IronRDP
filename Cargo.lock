@@ -2333,7 +2333,7 @@ checksum = "469fb0b9cefa57e3ef31275ee7cacb78f2fdca44e4765491884a2b119d4eb130"
 
 [[package]]
 name = "ironrdp"
-version = "0.8.0"
+version = "0.8.1"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2366,7 +2366,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-acceptor"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "ironrdp-async",
  "ironrdp-connector",
@@ -2389,7 +2389,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-async"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "bytes",
  "ironrdp-connector",
@@ -2410,7 +2410,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-blocking"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "bytes",
  "ironrdp-connector",
@@ -2452,7 +2452,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-cliprdr"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "bitflags 2.9.0",
  "ironrdp-core",
@@ -2484,7 +2484,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-connector"
-version = "0.3.2"
+version = "0.3.3"
 dependencies = [
  "arbitrary",
  "ironrdp-core",
@@ -2509,7 +2509,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-displaycontrol"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "ironrdp-core",
  "ironrdp-dvc",
@@ -2520,7 +2520,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-dvc"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "ironrdp-core",
  "ironrdp-pdu",
@@ -2560,7 +2560,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-graphics"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "bit_field",
  "bitflags 2.9.0",
@@ -2579,7 +2579,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-input"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "bitvec",
  "ironrdp-pdu",
@@ -2623,7 +2623,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-rdpdr"
-version = "0.1.3"
+version = "0.1.4"
 dependencies = [
  "bitflags 2.9.0",
  "ironrdp-core",
@@ -2635,7 +2635,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-rdpdr-native"
-version = "0.1.2"
+version = "0.1.3"
 dependencies = [
  "ironrdp-core",
  "ironrdp-pdu",
@@ -2647,7 +2647,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-rdpsnd"
-version = "0.3.1"
+version = "0.3.2"
 dependencies = [
  "bitflags 2.9.0",
  "ironrdp-core",
@@ -2671,7 +2671,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-server"
-version = "0.4.2"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2697,7 +2697,7 @@ dependencies = [
 
 [[package]]
 name = "ironrdp-session"
-version = "0.2.3"
+version = "0.3.0"
 dependencies = [
  "ironrdp-connector",
  "ironrdp-core",
@@ -2716,7 +2716,7 @@ version = "0.0.0"
 
 [[package]]
 name = "ironrdp-svc"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "bitflags 2.9.0",
  "ironrdp-core",
