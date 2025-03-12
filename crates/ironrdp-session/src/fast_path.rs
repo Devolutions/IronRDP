@@ -341,7 +341,9 @@ impl Processor {
                             let ext_data = bits.extended_bitmap_data;
                             match ext_data.bpp {
                                 32 => {
-                                    image.apply_rgb32_bitmap(ext_data.data, PixelFormat::BgrX32, &destination)?;
+                                    let rectangle =
+                                        image.apply_rgb32_bitmap(ext_data.data, PixelFormat::BgrX32, &destination)?;
+                                    update_rectangle = update_rectangle.union(&rectangle);
                                 }
                                 bpp => {
                                     warn!("Unsupported bpp: {bpp}")
