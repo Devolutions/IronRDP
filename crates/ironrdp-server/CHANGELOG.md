@@ -12,11 +12,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Bump ironrdp-pdu (#698) ([f2c8482ba6](https://github.com/Devolutions/IronRDP/commit/f2c8482ba611266c412bf30604ddbf43ab86e754)) 
 
-### Refactor
-
-- [**breaking**] Remove RfxChannelWidth and RfxChannelHeight structs ([7cb1ac99d1](https://github.com/Devolutions/IronRDP/commit/7cb1ac99d189cdcaa17fa17e51f95be630e9982e)) 
-
-
 
 ## [[0.4.2](https://github.com/Devolutions/IronRDP/compare/ironrdp-server-v0.4.1...ironrdp-server-v0.4.2)] - 2025-03-12
 

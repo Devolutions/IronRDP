@@ -1,6 +1,6 @@
 [package]
 name = "ironrdp-futures"
-version = "0.1.3"
+version = "0.2.0"
 readme = "README.md"
 description = "`Framed*` traits implementation above futures’s traits"
 edition.workspace = true
