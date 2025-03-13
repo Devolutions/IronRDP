@@ -1,6 +1,6 @@
 [package]
 name = "ironrdp-rdpdr-native"
-version = "0.1.3"
+version = "0.2.0"
 readme = "README.md"
 description = "Native RDPDR static channel backend implementations for IronRDP"
 edition.workspace = true
@@ -17,8 +17,8 @@ test = false
 
 [target.'cfg(any(target_os = "macos", target_os = "linux"))'.dependencies]
 ironrdp-core = { path = "../ironrdp-core", version = "0.1" }
-ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.4" }
-ironrdp-svc = { path = "../ironrdp-svc", version = "0.2" }
-ironrdp-rdpdr = { path = "../ironrdp-rdpdr", version = "0.1" }
+ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.4" } # public
+ironrdp-svc = { path = "../ironrdp-svc", version = "0.3" } # public
+ironrdp-rdpdr = { path = "../ironrdp-rdpdr", version = "0.2" } # public
 nix = { version = "0.29", features = ["fs", "dir"] }
 tracing = { version = "0.1", features = ["log"] }

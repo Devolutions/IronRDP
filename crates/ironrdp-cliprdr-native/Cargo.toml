@@ -16,7 +16,7 @@ doctest = false
 test = false
 
 [dependencies]
-ironrdp-cliprdr = { path = "../ironrdp-cliprdr", version = "0.1" }
+ironrdp-cliprdr = { path = "../ironrdp-cliprdr", version = "0.2" } # public
 ironrdp-core = { path = "../ironrdp-core", version = "0.1" }
 tracing = { version = "0.1", features = ["log"] }
 

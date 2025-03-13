@@ -16,7 +16,7 @@ doctest = false
 test = false
 
 [dependencies]
-ironrdp-core = { path = "../ironrdp-core", version = "0.1" }
+ironrdp-core = { path = "../ironrdp-core", version = "0.1" } # public
 thiserror = "1" # FIXME: handwrite the Error trait implementations.
 png = "0.17"
 

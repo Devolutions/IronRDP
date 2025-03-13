@@ -16,14 +16,14 @@ doctest = false
 test = false
 
 [dependencies]
-ironrdp-core = { path = "../ironrdp-core", version = "0.1" }
-ironrdp-connector = { path = "../ironrdp-connector", version = "0.3" } # TODO: at some point, this dependency could be removed (good for compilation speed)
-ironrdp-svc = { path = "../ironrdp-svc", version = "0.2" }
-ironrdp-dvc = { path = "../ironrdp-dvc", version = "0.1" }
-ironrdp-error = { path = "../ironrdp-error", version = "0.1" }
-ironrdp-graphics = { path = "../ironrdp-graphics", version = "0.2" }
-ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.4", features = ["std"] }
-ironrdp-displaycontrol = { path = "../ironrdp-displaycontrol", version = "0.1" }
+ironrdp-core = { path = "../ironrdp-core", version = "0.1" } # public
+ironrdp-connector = { path = "../ironrdp-connector", version = "0.4" } # public # TODO: at some point, this dependency could be removed (good for compilation speed)
+ironrdp-svc = { path = "../ironrdp-svc", version = "0.3" } # public
+ironrdp-dvc = { path = "../ironrdp-dvc", version = "0.2" } # public
+ironrdp-error = { path = "../ironrdp-error", version = "0.1" } # public
+ironrdp-graphics = { path = "../ironrdp-graphics", version = "0.3" } # public
+ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.4", features = ["std"] } # public
+ironrdp-displaycontrol = { path = "../ironrdp-displaycontrol", version = "0.2" }
 tracing = { version = "0.1", features = ["log"] }
 
 [lints]
