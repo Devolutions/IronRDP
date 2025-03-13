@@ -2,7 +2,12 @@ import { spawn } from 'child_process';
 
 let run = async function (command, cwd) {
     return new Promise((resolve) => {
-        const buildCommand = spawn(command, { stdio: 'pipe', shell: true, cwd: cwd });
+        const buildCommand = spawn(command, {
+            stdio: 'pipe',
+            shell: true,
+            cwd: cwd,
+            env: { ...process.env, RUSTFLAGS: '-Ctarget-feature=+simd128' },
+        });
 
         buildCommand.stdout.on('data', (data) => {
             console.log(`${data}`);
