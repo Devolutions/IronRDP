@@ -21,7 +21,7 @@ impl TlsIdentityCtx {
     ///
     /// The file format can be either PEM (if the file extension ends with .pem) or DER.
     pub fn init_from_paths(cert_path: &Path, key_path: &Path) -> anyhow::Result<Self> {
-        let certs = if cert_path.extension().map_or(false, |ext| ext == "pem") {
+        let certs = if cert_path.extension().is_some_and(|ext| ext == "pem") {
             CertificateDer::pem_file_iter(cert_path)
                 .with_context(|| format!("reading server cert `{cert_path:?}`"))?
                 .collect::<Result<Vec<_>, _>>()
@@ -34,7 +34,7 @@ impl TlsIdentityCtx {
             .with_context(|| format!("collecting server cert `{cert_path:?}`"))?
         };
 
-        let priv_key = if key_path.extension().map_or(false, |ext| ext == "pem") {
+        let priv_key = if key_path.extension().is_some_and(|ext| ext == "pem") {
             PrivateKeyDer::from_pem_file(key_path).with_context(|| format!("reading server key `{key_path:?}`"))?
         } else {
             pkcs8_private_keys(&mut BufReader::new(File::open(key_path)?))
