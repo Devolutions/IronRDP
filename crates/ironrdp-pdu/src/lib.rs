@@ -228,8 +228,7 @@ pub use ironrdp_core;
 #[doc(hidden)]
 #[deprecated(since = "0.1.0", note = "use ironrdp_core::{ReadCursor, WriteCursor}")]
 pub mod cursor {
-    pub use ironrdp_core::ReadCursor;
-    pub use ironrdp_core::WriteCursor;
+    pub use ironrdp_core::{ReadCursor, WriteCursor};
 }
 
 #[doc(hidden)]

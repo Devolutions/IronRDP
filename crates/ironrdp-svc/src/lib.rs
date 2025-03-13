@@ -17,8 +17,7 @@ use ironrdp_core::{
     assert_obj_safe, decode_cursor, encode_buf, AsAny, DecodeResult, Encode, EncodeResult, ReadCursor, WriteBuf,
     WriteCursor,
 };
-use ironrdp_pdu::gcc::ChannelDef;
-use ironrdp_pdu::gcc::{ChannelName, ChannelOptions};
+use ironrdp_pdu::gcc::{ChannelDef, ChannelName, ChannelOptions};
 use ironrdp_pdu::rdp::vc::ChannelControlFlags;
 use ironrdp_pdu::x224::X224;
 use ironrdp_pdu::{decode_err, mcs, PduResult};

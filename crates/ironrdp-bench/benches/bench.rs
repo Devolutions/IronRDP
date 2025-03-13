@@ -3,10 +3,8 @@ use std::num::NonZero;
 use criterion::{criterion_group, criterion_main, Criterion};
 use ironrdp_graphics::color_conversion::to_64x64_ycbcr_tile;
 use ironrdp_pdu::codecs::rfx;
-use ironrdp_server::{
-    bench::encoder::rfx::{rfx_enc, rfx_enc_tile},
-    BitmapUpdate,
-};
+use ironrdp_server::bench::encoder::rfx::{rfx_enc, rfx_enc_tile};
+use ironrdp_server::BitmapUpdate;
 
 pub fn rfx_enc_tile_bench(c: &mut Criterion) {
     let quant = rfx::Quant::default();
