@@ -1,6 +1,6 @@
 [package]
 name = "ironrdp-graphics"
-version = "0.2.0"
+version = "0.3.0"
 readme = "README.md"
 description = "RDP image processing primitives"
 edition.workspace = true
@@ -19,13 +19,13 @@ doctest = false
 bit_field = "0.10"
 bitflags = "2.4"
 bitvec = "1.0"
-ironrdp-core = { path = "../ironrdp-core", version = "0.1" }
-ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.4", features = ["std"] }
+ironrdp-core = { path = "../ironrdp-core", version = "0.1" } # public
+ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.4", features = ["std"] } # public
 byteorder = "1.5" # TODO: remove
 lazy_static.workspace = true # Legacy crate; prefer std::sync::LazyLock or LazyCell
 num-derive.workspace = true # TODO: remove
 num-traits.workspace = true # TODO: remove
-thiserror = "1"
+thiserror = "1" # FIXME: handwrite the Error trait implementations.
 yuvutils-rs = { version = "0.8", features = ["rdp"] }
 
 [dev-dependencies]

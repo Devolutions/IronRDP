@@ -24,8 +24,8 @@ stub = []
 [dependencies]
 tokio = { version = "1.43" }
 x509-cert = { version = "0.2", default-features = false, features = ["std"], optional = true }
-tokio-native-tls = { version = "0.3", optional = true }
-tokio-rustls =  { version = "0.26", optional = true }
+tokio-native-tls = { version = "0.3", optional = true } # public
+tokio-rustls =  { version = "0.26", optional = true } # public
 
 [lints]
 workspace = true

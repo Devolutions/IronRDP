@@ -1,6 +1,6 @@
 [package]
 name = "ironrdp-ainput"
-version = "0.1.3"
+version = "0.2.0"
 readme = "README.md"
 description = "AInput dynamic channel implementation"
 edition.workspace = true
@@ -16,9 +16,9 @@ doctest = false
 test = false
 
 [dependencies]
+ironrdp-core = { path = "../ironrdp-core", version = "0.1" } # public
+ironrdp-dvc = { path = "../ironrdp-dvc", version = "0.2" } # public
 bitflags = "2.4"
-ironrdp-core = { path = "../ironrdp-core", version = "0.1" }
-ironrdp-dvc = { path = "../ironrdp-dvc", version = "0.1" }
 num-derive.workspace = true # TODO: remove
 num-traits.workspace = true # TODO: remove
 
