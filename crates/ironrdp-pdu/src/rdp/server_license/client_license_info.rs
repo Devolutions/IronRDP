@@ -1,3 +1,11 @@
+use std::io;
+
+use byteorder::{LittleEndian, WriteBytesExt};
+use ironrdp_core::{
+    ensure_size, invalid_field_err, Decode, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor,
+};
+use md5::Digest;
+
 use crate::crypto::rc4::Rc4;
 use crate::crypto::rsa::encrypt_with_public_key;
 use crate::rdp::headers::{BasicSecurityHeader, BasicSecurityHeaderFlags};
@@ -8,12 +16,6 @@ use crate::rdp::server_license::{
     PreambleVersion, ServerLicenseError, ServerLicenseRequest, KEY_EXCHANGE_ALGORITHM_RSA, MAC_SIZE, PLATFORM_ID,
     PREAMBLE_SIZE, RANDOM_NUMBER_SIZE,
 };
-use byteorder::{LittleEndian, WriteBytesExt};
-use ironrdp_core::{
-    ensure_size, invalid_field_err, Decode, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor,
-};
-use md5::Digest;
-use std::io;
 
 const LICENSE_INFO_STATIC_FIELDS_SIZE: usize = 20;
 

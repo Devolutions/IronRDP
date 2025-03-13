@@ -20,9 +20,13 @@
 #[macro_use]
 extern crate tracing;
 
+use core::time::Duration;
+use std::io::Write as _;
+use std::net::TcpStream;
+use std::path::PathBuf;
+
 use anyhow::Context as _;
 use connector::Credentials;
-use core::time::Duration;
 use ironrdp::connector;
 use ironrdp::connector::ConnectionResult;
 use ironrdp::pdu::gcc::KeyboardType;
@@ -31,9 +35,6 @@ use ironrdp::session::image::DecodedImage;
 use ironrdp::session::{ActiveStage, ActiveStageOutput};
 use ironrdp_pdu::rdp::client_info::PerformanceFlags;
 use sspi::network_client::reqwest_network_client::ReqwestNetworkClient;
-use std::io::Write as _;
-use std::net::TcpStream;
-use std::path::PathBuf;
 use tokio_rustls::rustls;
 
 const HELP: &str = "\

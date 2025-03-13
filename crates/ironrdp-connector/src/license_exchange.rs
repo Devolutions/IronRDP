@@ -1,14 +1,16 @@
-use super::{legacy, ConnectorError, ConnectorErrorExt};
-use crate::{encode_send_data_request, ConnectorResult, ConnectorResultExt as _, Sequence, State, Written};
 use core::fmt::Debug;
 use core::panic::RefUnwindSafe;
 use core::{fmt, mem};
+use std::str;
+use std::sync::Arc;
+
 use ironrdp_core::WriteBuf;
 use ironrdp_pdu::rdp::server_license::{self, LicenseInformation, LicensePdu, ServerLicenseError};
 use ironrdp_pdu::PduHint;
 use rand_core::{OsRng, RngCore as _};
-use std::str;
-use std::sync::Arc;
+
+use super::{legacy, ConnectorError, ConnectorErrorExt};
+use crate::{encode_send_data_request, ConnectorResult, ConnectorResultExt as _, Sequence, State, Written};
 
 #[derive(Default, Debug)]
 #[non_exhaustive]

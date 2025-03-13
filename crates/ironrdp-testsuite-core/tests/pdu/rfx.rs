@@ -1,4 +1,5 @@
-use ironrdp_pdu::{codecs::rfx::*, decode};
+use ironrdp_pdu::codecs::rfx::*;
+use ironrdp_pdu::decode;
 use ironrdp_testsuite_core::encode_decode_test;
 
 const SYNC_PDU_BUFFER: [u8; 12] = [
