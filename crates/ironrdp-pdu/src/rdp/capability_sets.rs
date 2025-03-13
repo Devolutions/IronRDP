@@ -181,7 +181,7 @@ impl Encode for DemandActive {
 
         dst.write_u16(cast_length!(
             "sourceDescLen",
-            self.source_descriptor.len() + NULL_TERMINATOR.as_bytes().len()
+            self.source_descriptor.len() + NULL_TERMINATOR.len()
         )?);
         dst.write_u16(cast_length!("combinedLen", combined_length)?);
         dst.write_slice(self.source_descriptor.as_ref());

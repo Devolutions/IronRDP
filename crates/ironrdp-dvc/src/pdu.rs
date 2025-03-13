@@ -200,7 +200,7 @@ impl Header {
 
     fn encode(&self, dst: &mut WriteCursor<'_>) -> EncodeResult<()> {
         ensure_fixed_part_size!(in: dst);
-        dst.write_u8((self.cmd as u8) << 4 | Into::<u8>::into(self.sp) << 2 | Into::<u8>::into(self.cb_id));
+        dst.write_u8(((self.cmd as u8) << 4) | (Into::<u8>::into(self.sp) << 2) | Into::<u8>::into(self.cb_id));
         Ok(())
     }
 

@@ -779,7 +779,7 @@ impl<'de> McsPdu<'de> for DisconnectProviderUltimatum {
         let domain_mcspdu = DomainMcsPdu::DisconnectProviderUltimatum.as_u8();
         let reason = self.reason.as_u8();
 
-        let b1 = domain_mcspdu << 2 | (reason >> 1 & 0x03);
+        let b1 = (domain_mcspdu << 2) | ((reason >> 1) & 0x03);
         let b2 = reason << 7;
 
         dst.write_array([b1, b2]);
@@ -818,7 +818,7 @@ impl<'de> McsPdu<'de> for DisconnectProviderUltimatum {
         let [b1, b2] = src.read_array();
 
         let domain_mcspdu_choice = b1 >> 2;
-        let reason = (b1 & 0x03) << 1 | (b2 >> 7);
+        let reason = ((b1 & 0x03) << 1) | (b2 >> 7);
 
         DomainMcsPdu::from_u8(domain_mcspdu_choice)
             .ok_or_else(|| invalid_field_err(Self::MCS_NAME, "domain-mcspdu", "unexpected application tag for CHOICE"))?

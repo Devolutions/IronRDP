@@ -531,7 +531,7 @@ impl Sequence for Acceptor {
                 if !protocol.intersects(SecurityProtocol::HYBRID | SecurityProtocol::HYBRID_EX) {
                     let creds = client_info.client_info.credentials;
 
-                    if self.creds.as_ref().map_or(true, |srv_creds| srv_creds != &creds) {
+                    if self.creds.as_ref() != Some(&creds) {
                         // FIXME: How authorization should be denied with standard RDP security?
                         // Since standard RDP security is not a priority, we just send a ServerDeniedConnection ServerSetErrorInfo PDU.
                         let info = ServerSetErrorInfoPdu(ErrorInfo::ProtocolIndependentCode(
@@ -545,6 +545,7 @@ impl Sequence for Acceptor {
                         return Err(ConnectorError::general("invalid credentials"));
                     }
                 }
+
                 (
                     Written::Nothing,
                     AcceptorState::LicensingExchange {
