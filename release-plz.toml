@@ -7,10 +7,7 @@ pr_name = "chore(release): prepare for publishing"
 changelog_config = "cliff.toml"
 release_commits = "^(feat|docs|fix|build|perf)"
 
-# Flagship crates for which we push a GitHub release.
-[[package]]
-name = "ironrdp"
-git_release_enable = true
+# Flagship crate for which we push a GitHub release.
 [[package]]
 name = "ironrdp-client"
 git_release_enable = true
@@ -24,7 +21,7 @@ publish_features = ["rustls"]
 # *-native crates may have all kinds of system requirements depending on the platform.
 # We can only check for the current platform when cargo publish is invoked, all the others are effectively unverified.
 # For this reason, it's not worth complexifying the release-crates.yml workflow.
-# We already verify all targets properly in the CI.
+# We already verify all targets properly in the regular CI workflow.
 [[package]]
 name = "ironrdp-rdpdr-native"
 publish_no_verify = true
