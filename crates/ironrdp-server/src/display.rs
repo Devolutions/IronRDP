@@ -1,7 +1,7 @@
 use core::num::NonZeroU16;
 
 use anyhow::Result;
-use bytes::Bytes;
+use bytes::{Bytes, BytesMut};
 use ironrdp_displaycontrol::pdu::DisplayControlMonitorLayout;
 use ironrdp_pdu::pointer::PointerPositionAttribute;
 
@@ -54,6 +54,30 @@ pub struct ColorPointer {
     pub hot_y: u16,
     pub and_mask: Vec<u8>,
     pub xor_mask: Vec<u8>,
+}
+
+pub struct Framebuffer {
+    pub width: NonZeroU16,
+    pub height: NonZeroU16,
+    pub format: PixelFormat,
+    pub data: BytesMut,
+    pub stride: usize,
+}
+
+impl TryInto<Framebuffer> for BitmapUpdate {
+    type Error = &'static str;
+
+    fn try_into(self) -> Result<Framebuffer, Self::Error> {
+        assert_eq!(self.top, 0);
+        assert_eq!(self.left, 0);
+        Ok(Framebuffer {
+            width: self.width,
+            height: self.height,
+            format: self.format,
+            data: self.data.try_into_mut().map_err(|_| "BitmapUpdate is shared")?,
+            stride: self.stride,
+        })
+    }
 }
 
 /// Bitmap Display Update
