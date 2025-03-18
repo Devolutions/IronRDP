@@ -360,7 +360,7 @@ fn create_client_confirm_active(
                 .bitmap
                 .as_ref()
                 .map(|b| b.codecs.clone())
-                .unwrap_or_else(client_codecs_capabilities),
+                .unwrap_or_else(|| client_codecs_capabilities(&[]).unwrap()),
         ),
         CapabilitySet::FrameAcknowledge(FrameAcknowledge {
             // FIXME(#447): Revert this to 2 per FreeRDP.

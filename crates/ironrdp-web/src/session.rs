@@ -839,7 +839,7 @@ fn build_config(
         bitmap: Some(connector::BitmapConfig {
             color_depth: 16,
             lossy_compression: true,
-            codecs: client_codecs_capabilities(),
+            codecs: client_codecs_capabilities(&[]).unwrap(),
         }),
         #[allow(clippy::arithmetic_side_effects)] // fine unless we end up with an insanely big version
         client_build: semver::Version::parse(env!("CARGO_PKG_VERSION"))
