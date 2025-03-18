@@ -9,12 +9,12 @@ use ironrdp_pdu::codecs::rfx::FrameAcknowledgePdu;
 use ironrdp_pdu::fast_path::{FastPathHeader, FastPathUpdate, FastPathUpdatePdu, Fragmentation};
 use ironrdp_pdu::geometry::{InclusiveRectangle, Rectangle as _};
 use ironrdp_pdu::pointer::PointerUpdateData;
+use ironrdp_pdu::rdp::capability_sets::{CodecId, CODEC_ID_NONE, CODEC_ID_REMOTEFX};
 use ironrdp_pdu::rdp::headers::ShareDataPdu;
 use ironrdp_pdu::surface_commands::{FrameAction, FrameMarkerPdu, SurfaceCommand};
 
 use crate::image::DecodedImage;
 use crate::pointer::PointerCache;
-use crate::utils::CodecId;
 use crate::{rfx, SessionError, SessionErrorExt, SessionResult};
 
 #[derive(Debug)]
@@ -337,7 +337,7 @@ impl Processor {
                         bottom: destination.bottom - 1,
                     };
                     match codec_id {
-                        CodecId::None => {
+                        CODEC_ID_NONE => {
                             let ext_data = bits.extended_bitmap_data;
                             match ext_data.bpp {
                                 32 => {
@@ -352,7 +352,7 @@ impl Processor {
                                 }
                             }
                         }
-                        CodecId::RemoteFx => {
+                        CODEC_ID_REMOTEFX => {
                             let mut data = ReadCursor::new(bits.extended_bitmap_data.data);
                             while !data.is_empty() {
                                 let (_frame_id, rectangle) = self.rfx_handler.decode(image, &destination, &mut data)?;
@@ -360,6 +360,9 @@ impl Processor {
                                     .map(|rect: InclusiveRectangle| rect.union(&rectangle))
                                     .or(Some(rectangle));
                             }
+                        }
+                        _ => {
+                            warn!("Unsupported codec ID: {}", bits.extended_bitmap_data.codec_id);
                         }
                     }
                 }
