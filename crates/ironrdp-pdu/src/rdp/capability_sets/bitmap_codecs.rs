@@ -97,7 +97,7 @@ impl<'de> Decode<'de> for Guid {
     }
 }
 
-#[derive(Debug, PartialEq, Eq, Clone)]
+#[derive(Debug, PartialEq, Eq, Clone, Default)]
 pub struct BitmapCodecs(pub Vec<Codec>);
 
 impl BitmapCodecs {
@@ -616,4 +616,38 @@ bitflags! {
     pub struct RfxICapFlags: u8 {
         const CODEC_MODE = 2;
     }
+}
+
+// Those IDs are hard-coded for practical reasons, they are implementation
+// details of the IronRDP client. The server should respect the client IDs.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[repr(u8)]
+pub enum CodecId {
+    None = 0x0,
+    RemoteFx = 0x3,
+}
+
+impl CodecId {
+    pub const fn from_u8(value: u8) -> Option<Self> {
+        match value {
+            0 => Some(Self::None),
+            3 => Some(Self::RemoteFx),
+            _ => None,
+        }
+    }
+}
+
+pub fn client_codecs_capabilities() -> BitmapCodecs {
+    let codecs = vec![Codec {
+        id: CodecId::RemoteFx as u8,
+        property: CodecProperty::RemoteFx(RemoteFxContainer::ClientContainer(RfxClientCapsContainer {
+            capture_flags: CaptureFlags::empty(),
+            caps_data: RfxCaps(RfxCapset(vec![RfxICap {
+                flags: RfxICapFlags::empty(),
+                entropy_bits: EntropyBits::Rlgr3,
+            }])),
+        })),
+    }];
+
+    BitmapCodecs(codecs)
 }

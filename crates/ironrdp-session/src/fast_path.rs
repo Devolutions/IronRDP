@@ -9,12 +9,12 @@ use ironrdp_pdu::codecs::rfx::FrameAcknowledgePdu;
 use ironrdp_pdu::fast_path::{FastPathHeader, FastPathUpdate, FastPathUpdatePdu, Fragmentation};
 use ironrdp_pdu::geometry::{InclusiveRectangle, Rectangle as _};
 use ironrdp_pdu::pointer::PointerUpdateData;
+use ironrdp_pdu::rdp::capability_sets::CodecId;
 use ironrdp_pdu::rdp::headers::ShareDataPdu;
 use ironrdp_pdu::surface_commands::{FrameAction, FrameMarkerPdu, SurfaceCommand};
 
 use crate::image::DecodedImage;
 use crate::pointer::PointerCache;
-use crate::utils::CodecId;
 use crate::{rfx, SessionError, SessionErrorExt, SessionResult};
 
 #[derive(Debug)]
