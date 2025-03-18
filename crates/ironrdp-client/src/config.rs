@@ -264,7 +264,7 @@ impl Config {
             Some(connector::BitmapConfig {
                 color_depth,
                 lossy_compression: true,
-                codecs: client_codecs_capabilities(),
+                codecs: client_codecs_capabilities(&[]).unwrap(),
             })
         } else {
             None
