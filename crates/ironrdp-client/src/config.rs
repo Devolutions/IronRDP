@@ -6,7 +6,7 @@ use anyhow::Context as _;
 use clap::clap_derive::ValueEnum;
 use clap::Parser;
 use ironrdp::connector::{self, Credentials};
-use ironrdp::pdu::rdp::capability_sets::MajorPlatformType;
+use ironrdp::pdu::rdp::capability_sets::{client_codecs_capabilities, MajorPlatformType};
 use ironrdp::pdu::rdp::client_info::PerformanceFlags;
 use tap::prelude::*;
 
@@ -264,6 +264,7 @@ impl Config {
             Some(connector::BitmapConfig {
                 color_depth,
                 lossy_compression: true,
+                codecs: client_codecs_capabilities(&[]).unwrap(),
             })
         } else {
             None

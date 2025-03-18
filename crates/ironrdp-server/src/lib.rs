@@ -32,6 +32,8 @@ pub mod bench {
         pub mod rfx {
             pub use crate::encoder::rfx::bench::{rfx_enc, rfx_enc_tile};
         }
+
+        pub use crate::encoder::UpdateEncoder;
     }
 }
 
@@ -40,7 +42,7 @@ macro_rules! time_warn {
     ($context:expr, $threshold_ms:expr, $op:expr) => {{
         #[cold]
         fn warn_log(context: &str, duration: u128) {
-            use ::core::sync::atomic::AtomicUsize;
+            use core::sync::atomic::AtomicUsize;
 
             static COUNT: AtomicUsize = AtomicUsize::new(0);
             let current_count = COUNT.fetch_add(1, ::core::sync::atomic::Ordering::Relaxed);
@@ -57,4 +59,11 @@ macro_rules! time_warn {
         }
         result
     }};
+}
+
+#[cfg(test)]
+mod tests {
+    use bytesize as _;
+    use pico_args as _;
+    use tracing_subscriber as _;
 }
