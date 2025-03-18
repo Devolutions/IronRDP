@@ -1,7 +1,7 @@
 /// Creates a `SessionError` with `General` kind
 ///
 /// Shorthand for
-/// ```rust
+/// ```ignore
 /// <ironrdp_session::SessionError as ironrdp_session::SessionErrorExt>::general(context)
 /// ```
 #[macro_export]
@@ -14,7 +14,7 @@ macro_rules! general_err {
 /// Creates a `SessionError` with `Reason` kind
 ///
 /// Shorthand for
-/// ```rust
+/// ```ignore
 /// <ironrdp_session::SessionError as ironrdp_session::SessionErrorExt>::reason(context, reason)
 /// ```
 #[macro_export]
@@ -27,7 +27,7 @@ macro_rules! reason_err {
 /// Creates a `SessionError` with `Custom` kind and a source error attached to it
 ///
 /// Shorthand for
-/// ```rust
+/// ```ignore
 /// <ironrdp_session::SessionError as ironrdp_session::SessionErrorExt>::custom(context, source)
 /// ```
 #[macro_export]
