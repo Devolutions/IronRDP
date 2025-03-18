@@ -2,6 +2,7 @@
 mod tests;
 
 use core::fmt::{self, Debug};
+use std::collections::HashMap;
 
 use bitflags::bitflags;
 use ironrdp_core::{
@@ -641,6 +642,30 @@ impl CodecId {
     }
 }
 
+fn parse_codecs_config<'a>(codecs: &'a [&'a str]) -> Result<HashMap<&'a str, bool>, String> {
+    let mut result = HashMap::new();
+
+    for &codec_str in codecs {
+        if let Some(colon_index) = codec_str.find(':') {
+            let codec_name = &codec_str[0..colon_index];
+            let state_str = &codec_str[colon_index + 1..];
+
+            let state = match state_str {
+                "on" => true,
+                "off" => false,
+                _ => return Err(format!("Unhandled configuration: {state_str}")),
+            };
+
+            result.insert(codec_name, state);
+        } else {
+            // No colon found, assume it's "on"
+            result.insert(codec_str, true);
+        }
+    }
+
+    Ok(result)
+}
+
 /// This function generates a list of client codec capabilities based on the
 /// provided configuration.
 ///
@@ -659,32 +684,6 @@ impl CodecId {
 /// A vector of `Codec` structs representing the codec capabilities, or an error
 /// suitable for CLI.
 pub fn client_codecs_capabilities(config: &[&str]) -> Result<BitmapCodecs, String> {
-    use std::collections::HashMap;
-
-    fn parse_codecs_config<'a>(codecs: &'a [&'a str]) -> Result<HashMap<&'a str, bool>, String> {
-        let mut result = HashMap::new();
-
-        for &codec_str in codecs {
-            if let Some(colon_index) = codec_str.find(':') {
-                let codec_name = &codec_str[0..colon_index];
-                let state_str = &codec_str[colon_index + 1..];
-
-                let state = match state_str {
-                    "on" => true,
-                    "off" => false,
-                    _ => return Err(format!("Unhandled configuration: {state_str}")),
-                };
-
-                result.insert(codec_name, state);
-            } else {
-                // No colon found, assume it's "on"
-                result.insert(codec_str, true);
-            }
-        }
-
-        Ok(result)
-    }
-
     if config.contains(&"help") {
         return Err(r#"
 List of codecs:
@@ -692,6 +691,7 @@ List of codecs:
 "#
         .to_owned());
     }
+
     let mut config = parse_codecs_config(config)?;
     let mut codecs = vec![];
 
@@ -705,6 +705,54 @@ List of codecs:
                     entropy_bits: EntropyBits::Rlgr3,
                 }])),
             })),
+        });
+    }
+
+    let codec_names = config.keys().copied().collect::<Vec<_>>().join(", ");
+    if !codec_names.is_empty() {
+        return Err(format!("Unknown codecs: {codec_names}"));
+    }
+
+    Ok(BitmapCodecs(codecs))
+}
+
+/// This function generates a list of server codec capabilities based on the
+/// provided configuration.
+///
+/// # Arguments
+///
+/// * `config` - A slice of string slices that specifies which codecs to include
+///   in the capabilities. Codecs can be explicitly turned on ("codec:on") or
+///   off ("codec:off").
+///
+/// # List of codecs
+///
+/// * `remotefx` (on by default)
+///
+/// # Returns
+///
+/// A vector of `Codec` structs representing the codec capabilities, or an help message suitable
+/// for CLI errors.
+pub fn server_codecs_capabilities(config: &[&str]) -> Result<BitmapCodecs, String> {
+    if config.contains(&"help") {
+        return Err(r#"
+List of codecs:
+- `remotefx` (on by default)
+"#
+        .to_owned());
+    }
+
+    let mut config = parse_codecs_config(config)?;
+    let mut codecs = vec![];
+
+    if config.remove("remotefx").unwrap_or(true) {
+        codecs.push(Codec {
+            id: 0,
+            property: CodecProperty::RemoteFx(RemoteFxContainer::ServerContainer(1)),
+        });
+        codecs.push(Codec {
+            id: 0,
+            property: CodecProperty::ImageRemoteFx(RemoteFxContainer::ServerContainer(1)),
         });
     }
 
