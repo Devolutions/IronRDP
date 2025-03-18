@@ -13,7 +13,7 @@ use ironrdp_displaycontrol::server::{DisplayControlHandler, DisplayControlServer
 use ironrdp_pdu::input::fast_path::{FastPathInput, FastPathInputEvent};
 use ironrdp_pdu::input::InputEventPdu;
 use ironrdp_pdu::mcs::{SendDataIndication, SendDataRequest};
-use ironrdp_pdu::rdp::capability_sets::{BitmapCodecs, CapabilitySet, CmdFlags, GeneralExtraFlags};
+use ironrdp_pdu::rdp::capability_sets::{BitmapCodecs, CapabilitySet, CmdFlags, CodecProperty, GeneralExtraFlags};
 pub use ironrdp_pdu::rdp::client_info::Credentials;
 use ironrdp_pdu::rdp::headers::{ServerDeactivateAll, ShareControlPdu};
 use ironrdp_pdu::x224::X224;
@@ -38,7 +38,23 @@ use crate::{builder, capabilities, SoundServerFactory};
 pub struct RdpServerOptions {
     pub addr: SocketAddr,
     pub security: RdpServerSecurity,
-    pub with_remote_fx: bool,
+    pub codecs: BitmapCodecs,
+}
+
+impl RdpServerOptions {
+    fn has_image_remote_fx(&self) -> bool {
+        self.codecs
+            .0
+            .iter()
+            .any(|codec| matches!(codec.property, CodecProperty::ImageRemoteFx(_)))
+    }
+
+    fn has_remote_fx(&self) -> bool {
+        self.codecs
+            .0
+            .iter()
+            .any(|codec| matches!(codec.property, CodecProperty::RemoteFx(_)))
+    }
 }
 
 #[derive(Clone)]
@@ -711,21 +727,21 @@ impl RdpServer {
                             // We should distinguish parameters for both modes,
                             // and somehow choose the "best", instead of picking
                             // the last parsed here.
-                            rdp::capability_sets::CodecProperty::RemoteFx(
-                                rdp::capability_sets::RemoteFxContainer::ClientContainer(c),
-                            ) if self.opts.with_remote_fx => {
+                            CodecProperty::RemoteFx(rdp::capability_sets::RemoteFxContainer::ClientContainer(c))
+                                if self.opts.has_remote_fx() =>
+                            {
                                 for caps in c.caps_data.0 .0 {
                                     update_codecs.set_remotefx(Some((caps.entropy_bits, codec.id)));
                                 }
                             }
-                            rdp::capability_sets::CodecProperty::ImageRemoteFx(
-                                rdp::capability_sets::RemoteFxContainer::ClientContainer(c),
-                            ) if self.opts.with_remote_fx => {
+                            CodecProperty::ImageRemoteFx(rdp::capability_sets::RemoteFxContainer::ClientContainer(
+                                c,
+                            )) if self.opts.has_image_remote_fx() => {
                                 for caps in c.caps_data.0 .0 {
                                     update_codecs.set_remotefx(Some((caps.entropy_bits, codec.id)));
                                 }
                             }
-                            rdp::capability_sets::CodecProperty::NsCodec(_) => (),
+                            CodecProperty::NsCodec(_) => (),
                             _ => (),
                         }
                     }

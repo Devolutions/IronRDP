@@ -1,6 +1,7 @@
 use core::net::SocketAddr;
 
 use anyhow::Result;
+use ironrdp_pdu::rdp::capability_sets::{server_codecs_capabilities, BitmapCodecs};
 use tokio_rustls::TlsAcceptor;
 
 use super::clipboard::CliprdrServerFactory;
@@ -25,7 +26,7 @@ pub struct WantsDisplay {
 pub struct BuilderDone {
     addr: SocketAddr,
     security: RdpServerSecurity,
-    with_remote_fx: bool,
+    codecs: BitmapCodecs,
     handler: Box<dyn RdpServerInputHandler>,
     display: Box<dyn RdpServerDisplay>,
     cliprdr_factory: Option<Box<dyn CliprdrServerFactory>>,
@@ -124,7 +125,7 @@ impl RdpServerBuilder<WantsDisplay> {
                 display: Box::new(display),
                 sound_factory: None,
                 cliprdr_factory: None,
-                with_remote_fx: true,
+                codecs: server_codecs_capabilities(&[]).unwrap(),
             },
         }
     }
@@ -138,7 +139,7 @@ impl RdpServerBuilder<WantsDisplay> {
                 display: Box::new(NoopDisplay),
                 sound_factory: None,
                 cliprdr_factory: None,
-                with_remote_fx: true,
+                codecs: server_codecs_capabilities(&[]).unwrap(),
             },
         }
     }
@@ -155,8 +156,8 @@ impl RdpServerBuilder<BuilderDone> {
         self
     }
 
-    pub fn with_remote_fx(mut self, enabled: bool) -> Self {
-        self.state.with_remote_fx = enabled;
+    pub fn with_bitmap_codecs(mut self, codecs: BitmapCodecs) -> Self {
+        self.state.codecs = codecs;
         self
     }
 
@@ -165,7 +166,7 @@ impl RdpServerBuilder<BuilderDone> {
             RdpServerOptions {
                 addr: self.state.addr,
                 security: self.state.security,
-                with_remote_fx: self.state.with_remote_fx,
+                codecs: self.state.codecs,
             },
             self.state.handler,
             self.state.display,
