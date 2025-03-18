@@ -1,6 +1,8 @@
 #[cfg(test)]
 mod tests;
 
+use core::fmt::{self, Debug};
+
 use bitflags::bitflags;
 use ironrdp_core::{
     cast_length, decode, ensure_fixed_part_size, ensure_size, invalid_field_err, other_err, Decode, DecodeResult,
@@ -97,7 +99,7 @@ impl<'de> Decode<'de> for Guid {
     }
 }
 
-#[derive(Debug, PartialEq, Eq, Clone)]
+#[derive(Debug, PartialEq, Eq, Clone, Default)]
 pub struct BitmapCodecs(pub Vec<Codec>);
 
 impl BitmapCodecs {
@@ -616,4 +618,48 @@ bitflags! {
     pub struct RfxICapFlags: u8 {
         const CODEC_MODE = 2;
     }
+}
+
+// Those IDs are hard-coded for practical reasons, they are implementation
+// details of the IronRDP client. The server should respect the client IDs.
+#[derive(Copy, Clone, PartialEq, Eq)]
+pub struct CodecId(u8);
+
+pub const CODEC_ID_NONE: CodecId = CodecId(0);
+pub const CODEC_ID_REMOTEFX: CodecId = CodecId(3);
+
+impl Debug for CodecId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let name = match self.0 {
+            0 => "None",
+            3 => "RemoteFx",
+            _ => "unknown",
+        };
+        write!(f, "CodecId({})", name)
+    }
+}
+
+impl CodecId {
+    pub const fn from_u8(value: u8) -> Option<Self> {
+        match value {
+            0 => Some(CODEC_ID_NONE),
+            3 => Some(CODEC_ID_REMOTEFX),
+            _ => None,
+        }
+    }
+}
+
+pub fn client_codecs_capabilities() -> BitmapCodecs {
+    let codecs = vec![Codec {
+        id: CODEC_ID_REMOTEFX.0,
+        property: CodecProperty::RemoteFx(RemoteFxContainer::ClientContainer(RfxClientCapsContainer {
+            capture_flags: CaptureFlags::empty(),
+            caps_data: RfxCaps(RfxCapset(vec![RfxICap {
+                flags: RfxICapFlags::empty(),
+                entropy_bits: EntropyBits::Rlgr3,
+            }])),
+        })),
+    }];
+
+    BitmapCodecs(codecs)
 }
