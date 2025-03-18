@@ -125,7 +125,7 @@ pub mod ffi {
         }
 
         pub fn set_bitmap_config(&mut self, bitmap: &BitmapConfig) {
-            self.bitmap = Some(bitmap.0);
+            self.bitmap = Some(bitmap.0.clone());
         }
 
         pub fn set_client_build(&mut self, client_build: u32) {

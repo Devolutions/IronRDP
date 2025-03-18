@@ -23,7 +23,7 @@ use std::sync::Arc;
 
 use ironrdp_core::{encode_buf, encode_vec, Encode, WriteBuf};
 use ironrdp_pdu::nego::NegoRequestData;
-use ironrdp_pdu::rdp::capability_sets;
+use ironrdp_pdu::rdp::capability_sets::{self, BitmapCodecs};
 use ironrdp_pdu::rdp::client_info::PerformanceFlags;
 use ironrdp_pdu::x224::X224;
 use ironrdp_pdu::{gcc, x224, PduHint};
@@ -43,11 +43,12 @@ pub struct DesktopSize {
     pub height: u16,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 #[cfg_attr(feature = "arbitrary", derive(arbitrary::Arbitrary))]
 pub struct BitmapConfig {
     pub lossy_compression: bool,
     pub color_depth: u32,
+    pub codecs: BitmapCodecs,
 }
 
 #[derive(Debug, Clone)]
