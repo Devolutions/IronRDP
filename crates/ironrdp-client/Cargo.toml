@@ -74,7 +74,7 @@ semver = "1"
 reqwest = "0.12"
 url = "2.5"
 raw-window-handle = "0.6"
-uuid = { version = "1.12" }
+uuid = { version = "1.16" }
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.58", features = ["Win32_Foundation"] }
