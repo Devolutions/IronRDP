@@ -690,14 +690,14 @@
 <div bind:this={inner}>
     <div
         bind:this={wrapper}
-        class="screen-wrapper scale-{scale}"
+        class="iron-rdp-screen-wrapper scale-{scale}"
         class:hidden={!isVisible}
         class:capturing-inputs={capturingInputs}
         style={wrapperStyle}
     >
         <div
             bind:this={screenViewer}
-            class="screen-viewer"
+            class="iron-rdp-screen-viewer"
             style={viewerStyle}
             contenteditable={isFirefox}
             onpaste={ffOnPasteHandler}
@@ -716,7 +716,11 @@
                 }}
                 oncontextmenu={(event) => event.preventDefault()}
                 onwheel={mouseWheel}
+                onselectstart={(event) => {
+                    event.preventDefault();
+                }}
                 id="renderer"
+                class="iron-rdp-canvas"
                 tabindex="0"
             ></canvas>
         </div>
@@ -724,21 +728,25 @@
 </div>
 
 <style>
-    .screen-wrapper {
+    .iron-rdp-screen-wrapper {
         position: relative;
     }
 
-    .capturing-inputs {
+    .iron-rdp-capturing-inputs {
         outline: 1px solid rgba(0, 97, 166, 0.7);
         outline-offset: -1px;
     }
 
-    canvas {
+    .iron-rdp-canvas {
         width: 100%;
         height: 100%;
     }
 
-    .screen-wrapper.hidden {
+    ::selection {
+        background-color: transparent;
+    }
+
+    .iron-rdp-screen-wrapper.hidden {
         pointer-events: none !important;
         position: absolute !important;
         visibility: hidden;

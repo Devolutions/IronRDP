@@ -140,7 +140,7 @@
                     });
                     return of(null);
                 }),
-                filter((result) => !!result),
+                filter((result) => result !== null && result !== undefined), // Explicitly checking for null/undefined
             )
             .subscribe((start_info: NewSessionInfo | null) => {
                 if (start_info != null && start_info.initial_desktop_size !== null) {
