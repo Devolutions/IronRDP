@@ -12,8 +12,7 @@
     let gatewayAddress = 'ws://localhost:7171/jet/rdp';
     let hostname = '10.10.0.3:3389';
     let domain = '';
-    let authtoken =
-        'eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCIsImN0eSI6IkFTU09DSUFUSU9OIn0.eyJkc3RfaHN0IjoiMTkyLjE2OC41Ni4xMDE6MzM4OSIsImV4cCI6MTY5MzQyMzY1NSwiamV0X2FpZCI6IjMwNzZjZGIwLWYxNTctNDJlNy1iOWMzLThhMTdlNDFkYjYwNyIsImpldF9hcCI6InJkcCIsImpldF9jbSI6ImZ3ZCIsImp0aSI6IjAwYjY4OTY2LWJiYjAtNDU0NS05ZDZiLWRjNmFmMjAzNjY5MiIsIm5iZiI6MTY5MzQyMjc1NX0.SYQv4HtWQbdHMHgoCLYejCfO3TtsMAyjjILB6-Nir3mBznKiSad3POeLf02n05JFc5QhCeSGxspAaoNU7-znQFhHr0Tt0MnZJ1YMQt4UoR3PR2fTuUqv8M5TKdm4lKwCIjh73tTD001glTkXHaxuCQBTFCUSzfZhXDIqq5-CQueKtCrgJfYepJLmlvgH-ujGcxfXoGJGmeUy3Fmaijiy0uaC98j9GNCfnAd6JENmSAOkxfroMFhq601PSEizRbPzq2exDakfJ0EkaANz15udBX1a7NP-RyANHWQb8hp0rj6hyuyg1-vfUKYusw5qNUjAGXaWOjHC5bLgnqfE2V8Xnw';
+    let authtoken = '';
     let kdc_proxy_url = '';
     let desktopSize: DesktopSize = {
         width: 1280,
@@ -50,7 +49,45 @@
         });
     };
 
-    const StartSession = () => {
+    const StartSession = async () => {
+        if (authtoken === '') {
+            const token_server_url = import.meta.env.VITE_IRON_TOKEN_SERVER_URL;
+            if (!token_server_url) {
+                toast.set({
+                    type: 'error',
+                    message: 'Token server is not set and no token provided',
+                });
+                throw new Error('Token server is not set and no token provided');
+            }
+            try {
+                const response = await fetch(`${token_server_url}/forward`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        dst_hst: hostname,
+                        jet_ap: 'rdp',
+                        jet_ttl: 3600,
+                        jet_rec: false,
+                    }),
+                });
+
+                const data = await response.json();
+                if (response.ok) {
+                    authtoken = data.token;
+                } else {
+                    throw new Error(data.error || 'Failed to fetch token');
+                }
+            } catch (error) {
+                console.error('Error fetching token:', error);
+                toast.set({
+                    type: 'error',
+                    message: 'Error fetching token',
+                });
+            }
+        }
+
         toast.set({
             type: 'info',
             message: 'Connection in progress...',
@@ -158,7 +195,7 @@
                         </div>
                         <div class="field label border">
                             <input id="authtoken" type="text" bind:value={authtoken} />
-                            <label for="authtoken">AuthToken</label>
+                            <label for="authtoken">Optional AuthToken</label>
                         </div>
                         <div class="field label border">
                             <input id="pcb" type="text" bind:value={pcb} />
