@@ -63,7 +63,7 @@
 <div style="display: flex; height: 100%; flex-direction: column; background-color: #2e2e2e;" class:hideall={$showLogin}>
     <div>
         <div style="text-align: center; padding: 10px; background: black;">
-            <button on:click={() => (showDebugPanel = !showDebugPanel)}>Toogle debug panel</button>
+            <button on:click={() => (showDebugPanel = !showDebugPanel)}>Toggle debug panel</button>
             <button on:click={() => uiService.setScale(1)}>Fit</button>
             <button on:click={() => uiService.setScale(2)}>Full</button>
             <button on:click={() => uiService.setScale(3)}>Real</button>
