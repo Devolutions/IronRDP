@@ -56,7 +56,7 @@ That way, you can later reuse the same token multiple times (convenient at devel
 
 Make sure to start or restart the service before proceeding further.
 
-### Token generation 
+### Token generation
 
 ### Automatic Token Generation
 
@@ -72,14 +72,14 @@ Ensure the Rust toolchain is installed and available on your system.
    Define the environment variable `DGATEWAY_CONFIG_PATH` to the directory containing your `gateway.json` file.
 
 3. **Run the Token Generator:**  
-   In the root of the `tokengen` project, execute the following command:  
+   In the root of the `tokengen` project, execute the following command:
 
    ```sh
    cargo run --manifest-path ./Cargo.toml -- server
    ```
 
 4. **Configure the Environment Variable for Vite:**  
-   Either update the `.env` file or manually set the following environment variable:  
+   Either update the `.env` file or manually set the following environment variable:
 
    ```sh
    VITE_IRON_TOKEN_SERVER_URL="http://localhost:8080"
@@ -88,8 +88,6 @@ Ensure the Rust toolchain is installed and available on your system.
    Ensure that Vite correctly detects this variable.
 
 Once these steps are completed, token generation will be fully automated—manual token creation is no longer required.
-
-
 
 #### Manual token generation
 
