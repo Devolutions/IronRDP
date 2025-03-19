@@ -43,7 +43,7 @@
             } else {
                 toast.set({
                     type: 'info',
-                    message: typeof event.data !== 'string' ? event.data.backtrace() : event.data ?? 'No info',
+                    message: typeof event.data === 'string' ? event.data : event.data?.backtrace() ?? 'No info',
                 });
             }
         });
@@ -51,8 +51,8 @@
 
     const StartSession = async () => {
         if (authtoken === '') {
-            const token_server_url = import.meta.env.VITE_IRON_TOKEN_SERVER_URL;
-            if (!token_server_url) {
+            const token_server_url = import.meta.env.VITE_IRON_TOKEN_SERVER_URL as string | undefined;
+            if (token_server_url === undefined || token_server_url.trim() === '') {
                 toast.set({
                     type: 'error',
                     message: 'Token server is not set and no token provided',
@@ -76,8 +76,10 @@
                 const data = await response.json();
                 if (response.ok) {
                     authtoken = data.token;
+                } else if (data.error !== undefined) {
+                    throw new Error(data.error);
                 } else {
-                    throw new Error(data.error || 'Failed to fetch token');
+                    throw new Error('Unknown error occurred');
                 }
             } catch (error) {
                 console.error('Error fetching token:', error);
