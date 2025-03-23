@@ -1,0 +1,40 @@
+[package]
+name = "ironrdp-mstsgu"
+version = "0.0.1"
+readme = "README.md"
+description = "Terminal Services Gateway Server Protocol"
+edition.workspace = true
+license.workspace = true
+homepage.workspace = true
+repository.workspace = true
+authors.workspace = true
+keywords.workspace = true
+categories.workspace = true
+
+#[lib]
+#doctest = false
+#test = false
+
+[features]
+default = []
+
+[dependencies]
+ironrdp-core = { version = "0.1", features = ["std"] }
+tokio = { version = "1.43", features = ["full"] } # TODO full not?
+tokio-tungstenite = { version = "0.26" } # TODO ironrdp tls?
+tokio-native-tls = "0.3"
+hyper = { version = "1.6", features = ["client", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+http-body-util = { version = "0.1" }
+env_logger = { version="*" }
+futures-util = "0.3"
+log = "*"
+base64 = "0.22"
+winauth = "0.0.5"
+uuid = { version = "1.16.0", features = ["v4"] }
+
+[lints]
+workspace = true
+
+[[bin]]
+name = "ironrdp-mstsgu"
