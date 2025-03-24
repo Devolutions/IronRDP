@@ -71,7 +71,7 @@ Ensure the Rust toolchain is installed and available on your system.
 2. **Set the Configuration Path:**  
    Define the environment variable `DGATEWAY_CONFIG_PATH` to the directory containing your `gateway.json` file.
 
-3. **Run the Token Generator:**  
+3. **Run the tokengen server:**  
    In the root of the `tokengen` project, execute the following command:
 
    ```sh
