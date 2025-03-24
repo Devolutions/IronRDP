@@ -9,7 +9,7 @@ export default defineConfig({
     build: {
         lib: {
             entry: './src/main.ts',
-            name: 'IronRemoteGui',
+            name: 'IronRemoteDesktop',
             formats: ['es'],
         },
     },

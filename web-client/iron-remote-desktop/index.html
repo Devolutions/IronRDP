@@ -1,17 +1,18 @@
-﻿<!doctype html>
+<!doctype html>
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Test</title>
+    <title>Vite + Svelte + TS</title>
   </head>
   <body>
-    <script type="module" src="./iron-remote-gui.js"></script>
-    <iron-remote-gui isvisible="false" desktopwidth="600" desktopheight="400" />
+    <script type="module" src="/src/main.ts"></script>
+    <iron-remote-desktop isvisible="false" desktopwidth="600" desktopheight="400" />
 
     <script>
-      var el = document.querySelector('iron-remote-gui');
+      var el = document.querySelector('iron-remote-desktop');
       el.addEventListener('ready', (e) => {
+        console.log('WebComponent Loaded');
         e.detail.irgUserInteraction.setVisibility(true);
       });
     </script>

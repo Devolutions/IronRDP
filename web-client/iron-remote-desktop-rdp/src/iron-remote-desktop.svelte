@@ -1,6 +1,6 @@
 <svelte:options
     customElement={{
-        tag: 'iron-remote-gui',
+        tag: 'iron-remote-desktop',
         shadow: 'none',
         extend: (elementConstructor) => {
             return class extends elementConstructor {
@@ -17,11 +17,11 @@
     import { onMount } from 'svelte';
     import { loggingService } from './services/logging.service';
     import { WasmBridgeService } from './services/wasm-bridge.service';
-    import { LogType } from './enums/LogType';
-    import type { ResizeEvent } from './interfaces/ResizeEvent';
+    import { LogType } from '../../iron-remote-desktop/src/enums/LogType';
+    import type { ResizeEvent } from '../../iron-remote-desktop/src/interfaces/ResizeEvent';
     import { PublicAPI } from './services/PublicAPI';
-    import { ScreenScale } from './enums/ScreenScale';
-    import { ClipboardContent, ClipboardTransaction } from '../../../crates/ironrdp-web/pkg/ironrdp_web';
+    import { ScreenScale } from '../../iron-remote-desktop/src/enums/ScreenScale';
+    import { ClipboardContent, ClipboardTransaction } from '../../../crates/ironrdp-web/pkg';
 
     let {
         scale,

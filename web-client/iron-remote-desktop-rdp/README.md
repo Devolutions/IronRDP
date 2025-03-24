@@ -1,4 +1,4 @@
-# Iron Remote GUI
+# Iron Remote Desktop RDP
 
 This is the core of the web client written on top of Svelte and built as a reusable Web Component.
 
@@ -15,16 +15,16 @@ Run `npm run build`
 As member of the Devolutions organization, you can import the Web Component from JFrog Artifactory by running the following npm command:
 
 ```shell
-$ npm install @devolutions/iron-remote-gui
+$ npm install @devolutions/iron-remote-desktop-rdp
 ```
 
 Otherwise, you can run `npm install` targeting the `dist/` folder directly.
 
-Import the `iron-remote-gui.umd.cjs` from `node_modules/` folder.
+Import the `iron-remote-desktop-rdp.umd.cjs` from `node_modules/` folder.
 
-Then use the HTML tag `<iron-remote-gui/>` in your page.
+Then use the HTML tag `<iron-remote-desktop/>` in your page.
 
-In your code add a listener for the `ready` event on the `iron-remote-gui` HTML element.
+In your code add a listener for the `ready` event on the `iron-remote-desktop-rdp` HTML element.
 Get `evt.detail.irgUserInteraction` from the `Promise`, a property whose type is `UserInteractionService`.
 Call the `connect` method on this object.
 
@@ -41,14 +41,14 @@ Other advanced functionalities (sharing / copy past...) are not implemented yet.
 
 ## Component parameters
 
-You can add some parameters for default initialization on the component `<iron-remote-gui />`.
+You can add some parameters for default initialization on the component `<iron-remote-desktop-rdp />`.
 
 > Note that due to a limitation of the framework all parameters need to be lower-cased.
 
 - `scale`: The scaling behavior of the distant screen. Can be `fit`, `real` or `full`. Default is `real`;
-- `verbose`: Show logs from `iron-remote-gui`. `true` or `false`. Default is `false`.
+- `verbose`: Show logs from `iron-remote-desktop-rdp`. `true` or `false`. Default is `false`.
 - `debugwasm`: Show debug info from web assembly. Can be `"OFF"`, `"ERROR"`, `"WARN"`, `"INFO"`, `"DEBUG"`, `"TRACE"`. Default is `"OFF"`.
-- `flexcentre`: Helper to force `iron-remote-gui` a flex and centering the content automatically. Otherwise, you need to manage manually. Default is `true`.
+- `flexcentre`: Helper to force `iron-remote-desktop-rdp` a flex and centering the content automatically. Otherwise, you need to manage manually. Default is `true`.
 
 ## `UserInteractionService` methods
 

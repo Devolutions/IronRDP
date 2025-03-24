@@ -1,6 +1,6 @@
 ﻿import type { SessionEventType } from '../enums/SessionEventType';
 
-export enum UserIronRdpErrorKind {
+export enum RemoteDesktopErrorKind {
     General = 0,
     WrongPassword = 1,
     LogonFailure = 2,
@@ -8,12 +8,12 @@ export enum UserIronRdpErrorKind {
     RDCleanPath = 4,
     ProxyConnect = 5,
 }
-export interface UserIronRdpError {
+export interface RemoteDesktopError {
     backtrace: () => string;
-    kind: () => UserIronRdpErrorKind;
+    kind: () => RemoteDesktopErrorKind;
 }
 
 export interface SessionEvent {
     type: SessionEventType;
-    data: UserIronRdpError | string;
+    data: RemoteDesktopError | string;
 }

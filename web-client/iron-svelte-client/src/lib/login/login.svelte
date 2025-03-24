@@ -1,7 +1,7 @@
 <script lang="ts">
     import { currentSession, userInteractionService } from '../../services/session.service';
     import { catchError, filter } from 'rxjs/operators';
-    import type { UserInteraction, NewSessionInfo } from '../../../static/iron-remote-gui';
+    import type { UserInteraction, NewSessionInfo } from '../../../static/iron-remote-desktop-rdp';
     import { from, of } from 'rxjs';
     import { toast } from '$lib/messages/message-store';
     import { showLogin } from '$lib/login/login-store';

@@ -2,7 +2,7 @@
     import { onMount } from 'svelte';
     import { setCurrentSessionActive, userInteractionService } from '../../services/session.service';
     import { showLogin } from '$lib/login/login-store';
-    import type { UserInteraction } from '../../../static/iron-remote-gui';
+    import type { UserInteraction } from '../../../static/iron-remote-desktop-rdp';
 
     let uiService: UserInteraction;
     let cursorOverrideActive = false;
@@ -47,10 +47,10 @@
     }
 
     onMount(async () => {
-        let el = document.querySelector('iron-remote-gui');
+        let el = document.querySelector('iron-remote-desktop');
 
         if (el == null) {
-            throw '`iron-remote-gui` element not found';
+            throw '`iron-remote-desktop` element not found';
         }
 
         el.addEventListener('ready', (e) => {
@@ -100,7 +100,7 @@
             </div>
         {/if}
     </div>
-    <iron-remote-gui debugwasm="INFO" verbose="true" scale="fit" flexcenter="true" />
+    <iron-remote-desktop debugwasm="INFO" verbose="true" scale="fit" flexcenter="true" />
 </div>
 
 <style>

@@ -1,7 +1,7 @@
-﻿import type { ScreenScale } from '../enums/ScreenScale';
-import type { NewSessionInfo } from './NewSessionInfo';
-import type { SessionEvent } from './session-event';
-import type { DesktopSize } from './DesktopSize';
+﻿import type { ScreenScale } from '../../../iron-remote-desktop/src/enums/ScreenScale';
+import type { NewSessionInfo } from '../../../iron-remote-desktop/src/interfaces/NewSessionInfo';
+import type { SessionEvent } from '../../../iron-remote-desktop/src/interfaces/session-event';
+import type { DesktopSize } from '../../../iron-remote-desktop/src/interfaces/DesktopSize';
 
 export interface UserInteraction {
     setVisibility(state: boolean): void;

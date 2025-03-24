@@ -3,28 +3,29 @@ import init, {
     DesktopSize,
     DeviceEvent,
     InputTransaction,
-    ironrdp_init,
-    IronRdpError,
+    remote_desktop_init,
+    RemoteDesktopError,
     Session,
     SessionBuilder,
-    ClipboardTransaction,
     SessionTerminationInfo,
-} from '../../../../crates/ironrdp-web/pkg/ironrdp_web';
+    ClipboardTransaction,
+} from '../../../../crates/ironrdp-web/pkg';
 import { loggingService } from './logging.service';
 import { catchError, filter, map } from 'rxjs/operators';
-import { scanCode } from '../lib/scancodes';
-import { LogType } from '../enums/LogType';
-import { OS } from '../enums/OS';
-import { ModifierKey } from '../enums/ModifierKey';
-import { LockKey } from '../enums/LockKey';
-import { SessionEventType } from '../enums/SessionEventType';
-import type { NewSessionInfo } from '../interfaces/NewSessionInfo';
-import { SpecialCombination } from '../enums/SpecialCombination';
-import type { ResizeEvent } from '../interfaces/ResizeEvent';
-import { ScreenScale } from '../enums/ScreenScale';
-import type { MousePosition } from '../interfaces/MousePosition';
-import type { SessionEvent, UserIronRdpErrorKind } from '../interfaces/session-event';
-import type { DesktopSize as IDesktopSize } from '../interfaces/DesktopSize';
+import { scanCode } from '../../../iron-remote-desktop/src/lib/scancodes';
+import { LogType } from '../../../iron-remote-desktop/src/enums/LogType';
+import { OS } from '../../../iron-remote-desktop/src/enums/OS';
+import { ModifierKey } from '../../../iron-remote-desktop/src/enums/ModifierKey';
+import { LockKey } from '../../../iron-remote-desktop/src/enums/LockKey';
+import { SessionEventType } from '../../../iron-remote-desktop/src/enums/SessionEventType';
+import type { NewSessionInfo } from '../../../iron-remote-desktop/src/interfaces/NewSessionInfo';
+import { SpecialCombination } from '../../../iron-remote-desktop/src/enums/SpecialCombination';
+import type { ResizeEvent } from '../../../iron-remote-desktop/src/interfaces/ResizeEvent';
+import { ScreenScale } from '../../../iron-remote-desktop/src/enums/ScreenScale';
+import type { MousePosition } from '../../../iron-remote-desktop/src/interfaces/MousePosition';
+import type { SessionEvent, RemoteDesktopErrorKind } from '../../../iron-remote-desktop/src/interfaces/session-event';
+import type { DesktopSize as IDesktopSize } from '../../../iron-remote-desktop/src/interfaces/DesktopSize';
+import type { Extension } from '../interfaces/Extension';
 
 type OnRemoteClipboardChanged = (transaction: ClipboardTransaction) => void;
 type OnRemoteReceivedFormatsList = () => void;
@@ -71,7 +72,7 @@ export class WasmBridgeService {
         loggingService.info('Loading wasm file.');
         await init();
         loggingService.info('Initializing IronRDP.');
-        ironrdp_init(LogType[debug]);
+        remote_desktop_init(LogType[debug]);
     }
 
     // If set to false, the clipboard will not be enabled and the callbacks will not be registered to the Rust side
@@ -137,6 +138,8 @@ export class WasmBridgeService {
         use_display_control = true,
     ): Observable<NewSessionInfo> {
         const sessionBuilder = SessionBuilder.new();
+        const displayControlExt: Extension = { DisplayControl: use_display_control };
+
         sessionBuilder.proxy_address(proxyAddress);
         sessionBuilder.destination(destination);
         sessionBuilder.server_domain(serverDomain);
@@ -146,13 +149,15 @@ export class WasmBridgeService {
         sessionBuilder.render_canvas(this.canvas!);
         sessionBuilder.set_cursor_style_callback_context(this);
         sessionBuilder.set_cursor_style_callback(this.setCursorStyleCallback);
-        sessionBuilder.kdc_proxy_url(kdc_proxy_url);
-        if (use_display_control) {
-            sessionBuilder.use_display_control();
-        }
+        sessionBuilder.extension(displayControlExt);
 
         if (preConnectionBlob != null) {
-            sessionBuilder.pcb(preConnectionBlob);
+            const pcbExt: Extension = { Pcb: preConnectionBlob };
+            sessionBuilder.extension(pcbExt);
+        }
+        if (kdc_proxy_url != null) {
+            const kdcProxyUrlExt: Extension = { KdcProxyUrl: kdc_proxy_url };
+            sessionBuilder.extension(kdcProxyUrlExt);
         }
         if (this.onRemoteClipboardChanged != null && this.enableClipboard) {
             sessionBuilder.remote_clipboard_changed_callback(this.onRemoteClipboardChanged);
@@ -169,17 +174,17 @@ export class WasmBridgeService {
         }
 
         // Type guard to filter out errors
-        function isSession(result: IronRdpError | Session): result is Session {
+        function isSession(result: RemoteDesktopError | Session): result is Session {
             return result instanceof Session;
         }
 
         return from(sessionBuilder.connect()).pipe(
-            catchError((err: IronRdpError) => {
+            catchError((err: RemoteDesktopError) => {
                 this.raiseSessionEvent({
                     type: SessionEventType.ERROR,
                     data: {
                         backtrace: () => err.backtrace(),
-                        kind: () => err.kind() as number as UserIronRdpErrorKind,
+                        kind: () => err.kind() as number as RemoteDesktopErrorKind,
                     },
                 });
                 return of(err);
