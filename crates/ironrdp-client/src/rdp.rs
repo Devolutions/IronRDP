@@ -112,6 +112,7 @@ async fn connect(
         .await
         .map_err(|e| connector::custom_err!("TCP connect", e))?;*/
     let stream = gw.unwrap();
+    let server_addr = std::net::SocketAddr::V4(std::net::SocketAddrV4::new(std::net::Ipv4Addr::new(127, 0, 0, 1), 1234));
 
     /*let server_addr = stream
         .peer_addr()
@@ -120,7 +121,7 @@ async fn connect(
     let mut framed = ironrdp_tokio::TokioFramed::new(stream);
 
     let mut connector = connector::ClientConnector::new(config.connector.clone())
-        //.with_server_addr(server_addr)
+        .with_server_addr(server_addr)
         .with_static_channel(
             ironrdp::dvc::DrdynvcClient::new().with_dynamic_channel(DisplayControlClient::new(|_| Ok(Vec::new()))),
         )
