@@ -4,10 +4,10 @@
 //! and message recipients should not assume padding has any particular
 //! value.
 
-use ironrdp_core::{ReadCursor, WriteCursor};
+use crate::{ReadCursor, WriteCursor};
 
 /// Writes zeroes using as few `write_u*` calls as possible.
-pub fn write(dst: &mut WriteCursor<'_>, mut n: usize) {
+pub fn write_padding(dst: &mut WriteCursor<'_>, mut n: usize) {
     loop {
         match n {
             0 => break,
@@ -33,6 +33,6 @@ pub fn write(dst: &mut WriteCursor<'_>, mut n: usize) {
 
 /// Moves read cursor, ignoring padding bytes.
 #[inline]
-pub fn read(src: &mut ReadCursor<'_>, n: usize) {
+pub fn read_padding(src: &mut ReadCursor<'_>, n: usize) {
     src.advance(n);
 }
