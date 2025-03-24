@@ -197,7 +197,7 @@
                         </div>
                         <div class="field label border">
                             <input id="authtoken" type="text" bind:value={authtoken} />
-                            <label for="authtoken">Optional AuthToken</label>
+                            <label for="authtoken">AuthToken (Optional)</label>
                         </div>
                         <div class="field label border">
                             <input id="pcb" type="text" bind:value={pcb} />
