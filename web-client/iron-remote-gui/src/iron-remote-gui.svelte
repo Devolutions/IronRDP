@@ -1,4 +1,17 @@
-<svelte:options customElement={{ tag: 'iron-remote-gui', shadow: 'none' }} />
+<svelte:options
+    customElement={{
+        tag: 'iron-remote-gui',
+        shadow: 'none',
+        extend: (elementConstructor) => {
+            return class extends elementConstructor {
+                constructor() {
+                    super();
+                    this.attachShadow({ mode: 'open', delegatesFocus: true });
+                }
+            };
+        },
+    }}
+/>
 
 <script lang="ts">
     import { onMount } from 'svelte';
@@ -24,12 +37,11 @@
 
     let isVisible = $state(false);
     let capturingInputs = () => {
-        loggingService.info(`
+         loggingService.info(`
             capturingInputs: ${document.activeElement === canvas}
             current active element: ${document.activeElement}
         `);
-
-        return document.activeElement === canvas;
+        return document.activeElement?.shadowRoot?.firstElementChild === inner;
     };
 
     let inner: HTMLDivElement;
