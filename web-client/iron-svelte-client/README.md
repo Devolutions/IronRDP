@@ -87,7 +87,7 @@ Ensure the Rust toolchain is installed and available on your system.
 
    Ensure that Vite correctly detects this variable.
 
-Once these steps are completed, token generation will be fully automated, and manual token creation is no longer required.
+Once these steps are completed, token generation will be fully automated, and the next section can be ignored.
 
 #### Manual token generation
 
