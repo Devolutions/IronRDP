@@ -1,8 +1,8 @@
 use std::borrow::Cow;
 
 use ironrdp_core::{
-    cast_length, ensure_fixed_part_size, ensure_size, invalid_field_err, other_err, unexpected_message_type_err,
-    IntoOwned, ReadCursor, WriteCursor,
+    cast_length, ensure_fixed_part_size, ensure_size, invalid_field_err, other_err, read_padding,
+    unexpected_message_type_err, IntoOwned, ReadCursor, WriteCursor,
 };
 
 use crate::gcc::{ChannelDef, ClientGccBlocks, ConferenceCreateRequest, ConferenceCreateResponse};

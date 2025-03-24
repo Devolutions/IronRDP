@@ -1,8 +1,8 @@
 //! This module contains the RDP_PRECONNECTION_PDU_V1 and RDP_PRECONNECTION_PDU_V2 structures.
 
 use ironrdp_core::{
-    cast_length, ensure_fixed_part_size, ensure_size, invalid_field_err, invalid_field_err_with_source, Decode,
-    DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor,
+    cast_length, ensure_fixed_part_size, ensure_size, invalid_field_err, invalid_field_err_with_source, read_padding,
+    write_padding, Decode, DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor,
 };
 
 use crate::Pdu;

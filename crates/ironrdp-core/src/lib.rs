@@ -17,6 +17,7 @@ mod decode;
 mod encode;
 mod error;
 mod into_owned;
+mod padding;
 #[cfg(feature = "alloc")]
 mod write_buf;
 
@@ -28,5 +29,6 @@ pub use self::decode::*;
 pub use self::encode::*;
 pub use self::error::*;
 pub use self::into_owned::*;
+pub use self::padding::*;
 #[cfg(feature = "alloc")]
 pub use self::write_buf::*;

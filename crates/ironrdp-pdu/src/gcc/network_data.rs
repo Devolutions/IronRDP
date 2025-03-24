@@ -3,8 +3,8 @@ use std::{io, str};
 
 use bitflags::bitflags;
 use ironrdp_core::{
-    cast_length, ensure_fixed_part_size, ensure_size, invalid_field_err, Decode, DecodeResult, Encode, EncodeResult,
-    ReadCursor, WriteCursor,
+    cast_length, ensure_fixed_part_size, ensure_size, invalid_field_err, read_padding, write_padding, Decode,
+    DecodeResult, Encode, EncodeResult, ReadCursor, WriteCursor,
 };
 use num_integer::Integer;
 use thiserror::Error;
@@ -157,7 +157,7 @@ impl ServerNetworkData {
 
     const FIXED_PART_SIZE: usize = SERVER_IO_CHANNEL_SIZE + SERVER_CHANNEL_COUNT_SIZE;
 
-    fn write_padding(&self) -> bool {
+    fn padding_needed(&self) -> bool {
         self.channel_ids.len().is_odd()
     }
 }
@@ -178,8 +178,8 @@ impl Encode for ServerNetworkData {
         // (and by implication the entire Server Network Data structure) will not be a multiple of 4.
         // In this scenario, the Pad field MUST be present and it is used to add an additional
         // 2 bytes to the size of the Server Network Data structure.
-        if self.write_padding() {
-            dst.write_u16(0); // pad
+        if self.padding_needed() {
+            write_padding!(dst, 2);
         }
 
         Ok(())
@@ -190,7 +190,7 @@ impl Encode for ServerNetworkData {
     }
 
     fn size(&self) -> usize {
-        let padding_size = if self.write_padding() { 2 } else { 0 };
+        let padding_size = if self.padding_needed() { 2 } else { 0 };
 
         Self::FIXED_PART_SIZE + self.channel_ids.len() * SERVER_CHANNEL_SIZE + padding_size
     }
