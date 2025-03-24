@@ -3,6 +3,8 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Context as _;
 
+use crate::prelude::*;
+
 #[cfg(target_os = "windows")]
 const OUTPUT_LIB_NAME: &str = "ironrdp.dll";
 #[cfg(target_os = "linux")]
@@ -24,7 +26,17 @@ const DOTNET_NATIVE_LIB_PATH: &str = "dependencies/runtimes/linux-x64/native/";
 #[cfg(target_os = "macos")]
 const DOTNET_NATIVE_LIB_PATH: &str = "dependencies/runtimes/osx-x64/native/";
 
-pub(crate) fn build_dynamic_lib(sh: &xshell::Shell, release: bool) -> anyhow::Result<()> {
+pub(crate) fn install(sh: &Shell) -> anyhow::Result<()> {
+    let _s = Section::new("FFI-INSTALL");
+
+    cargo_install(sh, &DIPLOMAT_TOOL)?;
+
+    Ok(())
+}
+
+pub(crate) fn build_dynamic_lib(sh: &Shell, release: bool) -> anyhow::Result<()> {
+    let _s = Section::new("BUILD-DYNAMIC-LIBRARY");
+
     println!("Build IronRDP DLL");
 
     let mut args = vec!["build", "--package", "ffi"];
@@ -64,7 +76,13 @@ pub(crate) fn build_dynamic_lib(sh: &xshell::Shell, release: bool) -> anyhow::Re
     Ok(())
 }
 
-pub(crate) fn build_bindings(sh: &xshell::Shell, skip_dotnet_build: bool) -> anyhow::Result<()> {
+pub(crate) fn build_bindings(sh: &Shell, skip_dotnet_build: bool) -> anyhow::Result<()> {
+    let _s = Section::new("BUILD-BINDINGS");
+
+    if !is_installed(sh, "diplomat-tool") {
+        anyhow::bail!("`diplomat-tool` binary is missing. Please run `cargo xtask ffi install`.");
+    }
+
     let dotnet_generated_path = "./dotnet/Devolutions.IronRdp/Generated/";
     let diplomat_config = "./dotnet-interop-conf.toml";
 
@@ -90,7 +108,7 @@ pub(crate) fn build_bindings(sh: &xshell::Shell, skip_dotnet_build: bool) -> any
 
     sh.change_dir("./dotnet/Devolutions.IronRdp/");
 
-    sh.cmd("dotnet").arg("build").run()?;
+    cmd!(sh, "dotnet build").run()?;
 
     Ok(())
 }
