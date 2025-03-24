@@ -690,7 +690,7 @@
 <div bind:this={inner}>
     <div
         bind:this={wrapper}
-        class="iron-rdp-screen-wrapper scale-{scale}"
+        class="screen-wrapper scale-{scale}"
         class:hidden={!isVisible}
         class:capturing-inputs={capturingInputs}
         style={wrapperStyle}
@@ -720,7 +720,7 @@
                     event.preventDefault();
                 }}
                 id="renderer"
-                class="iron-rdp-canvas"
+                class="canvas"
                 tabindex="0"
             ></canvas>
         </div>
@@ -728,16 +728,16 @@
 </div>
 
 <style>
-    .iron-rdp-screen-wrapper {
+    .screen-wrapper {
         position: relative;
     }
 
-    .iron-rdp-capturing-inputs {
+    .capturing-inputs {
         outline: 1px solid rgba(0, 97, 166, 0.7);
         outline-offset: -1px;
     }
 
-    .iron-rdp-canvas {
+    .canvas {
         width: 100%;
         height: 100%;
     }
@@ -746,7 +746,7 @@
         background-color: transparent;
     }
 
-    .iron-rdp-screen-wrapper.hidden {
+    .screen-wrapper.hidden {
         pointer-events: none !important;
         position: absolute !important;
         visibility: hidden;
