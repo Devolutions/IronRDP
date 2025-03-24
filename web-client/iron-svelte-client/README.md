@@ -58,6 +58,40 @@ Make sure to start or restart the service before proceeding further.
 
 ### Token generation
 
+### Automatic Token Generation
+
+**Prerequisites:**  
+Ensure the Rust toolchain is installed and available on your system.
+
+#### Steps:
+
+1. **Locate the `tokengen` Project:**  
+   Navigate to the root directory of the `tokengen` project under the [Devolutions Gateway repository](https://github.com/Devolutions/devolutions-gateway/tree/master/tools/tokengen).
+
+2. **Set the Configuration Path:**  
+   Define the environment variable `DGATEWAY_CONFIG_PATH` to the directory containing your `gateway.json` file.
+   Also ensure the `ProvisionerPrivateKeyFile` config key is properly set in the `gateway.json` file.
+
+3. **Run the tokengen server:**  
+   In the root of the `tokengen` project, execute the following command:
+
+   ```sh
+   cargo run -- server
+   ```
+
+4. **Configure the Environment Variable for Vite:**  
+   Either update the `.env` file or manually set the following environment variable:
+
+   ```sh
+   VITE_IRON_TOKEN_SERVER_URL="http://localhost:8080"
+   ```
+
+   Ensure that Vite correctly detects this variable.
+
+Once these steps are completed, token generation will be fully automated, and the next section can be ignored.
+
+#### Manual token generation
+
 The most straightforward way of generating a token if you don’t have a Rust toolchain installed is
 the PowerShell package.
 
