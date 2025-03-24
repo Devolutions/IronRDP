@@ -75,7 +75,7 @@ Ensure the Rust toolchain is installed and available on your system.
    In the root of the `tokengen` project, execute the following command:
 
    ```sh
-   cargo run --manifest-path ./Cargo.toml -- server
+   cargo run -- server
    ```
 
 4. **Configure the Environment Variable for Vite:**  
