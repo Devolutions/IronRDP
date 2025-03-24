@@ -21,6 +21,7 @@ default = []
 [dependencies]
 ironrdp-core = { version = "0.1", features = ["std"] }
 tokio = { version = "1.43", features = ["full"] } # TODO full not?
+tokio-util = { version = "0.7" }
 tokio-tungstenite = { version = "0.26" } # TODO ironrdp tls?
 tokio-native-tls = "0.3"
 hyper = { version = "1.6", features = ["client", "http1"] }
@@ -35,6 +36,3 @@ uuid = { version = "1.16.0", features = ["v4"] }
 
 [lints]
 workspace = true
-
-[[bin]]
-name = "ironrdp-mstsgu"

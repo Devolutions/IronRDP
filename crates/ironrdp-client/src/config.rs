@@ -16,6 +16,7 @@ const DEFAULT_HEIGHT: u16 = 1080;
 #[derive(Clone, Debug)]
 pub struct Config {
     pub log_file: Option<String>,
+    pub gw: ironrdp_mstsgu::GwConnectTarget,
     pub destination: Destination,
     pub connector: connector::Config,
     pub clipboard_type: ClipboardType,
@@ -146,6 +147,11 @@ struct Args {
     #[clap(short, long, value_parser)]
     log_file: Option<String>,
 
+    // TODO: clap args, flags, ...
+    gw_endpoint: Option<String>,
+    gw_user: Option<String>,
+    gw_pass: Option<String>,
+
     /// An address on which the client will connect.
     destination: Option<Destination>,
 
@@ -232,6 +238,19 @@ impl Config {
     pub fn parse_args() -> anyhow::Result<Self> {
         let args = Args::parse();
 
+        let gw_addr = inquire::Text::new("Gateway address:")
+            .prompt()
+            .context("Address prompt")?;
+
+        let gw_user = inquire::Text::new("Gatewaay Username:")
+            .prompt().context("Username prompt")?;
+
+        let gw_pass = inquire::Password::new("Gateway Password:")
+            .without_confirmation()
+            .prompt()
+            .context("Password prompt")?;
+    
+
         let destination = if let Some(destination) = args.destination {
             destination
         } else {
@@ -282,6 +301,12 @@ impl Config {
             args.clipboard_type
         };
 
+        let gw = ironrdp_mstsgu::GwConnectTarget {
+            gw_endpoint: gw_addr,
+            gw_user: gw_user,
+            gw_pass: gw_pass,
+            server: destination.name.to_string(), // TODO non-standard port? also dont use here?
+        };
         let connector = connector::Config {
             credentials: Credentials::UsernamePassword { username, password },
             domain: args.domain,
@@ -327,6 +352,7 @@ impl Config {
 
         Ok(Self {
             log_file: args.log_file,
+            gw,
             destination,
             connector,
             clipboard_type,

@@ -14,6 +14,7 @@ pub enum PktTy {
     TunnelAuthResponse = 0x07,
     ChannelCreate = 0x08,
     ChannelResp = 0x09,
+    ChannelClose = 0x10,
     Data = 0x0A,
 }
 
@@ -38,6 +39,7 @@ impl TryFrom<u16> for PktTy {
             0x08 => PktTy::ChannelCreate,
             0x09 => PktTy::ChannelResp,
             0x0a => PktTy::Data,
+            0x10 => PktTy::ChannelClose,
             _ => return Err(()),
         };
         return Ok(mapped)

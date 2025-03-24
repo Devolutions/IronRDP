@@ -97,7 +97,7 @@ enum RdpControlFlow {
     TerminatedGracefully(GracefulDisconnectReason),
 }
 
-type UpgradedFramed = ironrdp_tokio::TokioFramed<ironrdp_tls::TlsStream<TcpStream>>;
+type UpgradedFramed = ironrdp_tokio::TokioFramed<ironrdp_tls::TlsStream<ironrdp_mstsgu::GwClient>>;
 
 async fn connect(
     config: &Config,
@@ -105,18 +105,22 @@ async fn connect(
 ) -> ConnectorResult<(ConnectionResult, UpgradedFramed)> {
     let dest = format!("{}:{}", config.destination.name(), config.destination.port());
 
-    let stream = TcpStream::connect(dest)
-        .await
-        .map_err(|e| connector::custom_err!("TCP connect", e))?;
+    let gw_stream = ironrdp_mstsgu::GwClient::connect(&config.gw).await.unwrap();
+    let gw = ironrdp_mstsgu::GwClient::connect_ws(config.gw.clone(), gw_stream).await;
 
-    let server_addr = stream
+    /*let stream = TcpStream::connect(dest)
+        .await
+        .map_err(|e| connector::custom_err!("TCP connect", e))?;*/
+    let stream = gw.unwrap();
+
+    /*let server_addr = stream
         .peer_addr()
-        .map_err(|e| connector::custom_err!("Peer address", e))?;
+        .map_err(|e| connector::custom_err!("Peer address", e))?;*/
 
     let mut framed = ironrdp_tokio::TokioFramed::new(stream);
 
     let mut connector = connector::ClientConnector::new(config.connector.clone())
-        .with_server_addr(server_addr)
+        //.with_server_addr(server_addr)
         .with_static_channel(
             ironrdp::dvc::DrdynvcClient::new().with_dynamic_channel(DisplayControlClient::new(|_| Ok(Vec::new()))),
         )
