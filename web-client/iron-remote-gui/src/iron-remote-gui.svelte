@@ -37,7 +37,7 @@
 
     let isVisible = $state(false);
     let capturingInputs = () => {
-         loggingService.info(`
+        loggingService.info(`
             capturingInputs: ${document.activeElement === canvas}
             current active element: ${document.activeElement}
         `);
