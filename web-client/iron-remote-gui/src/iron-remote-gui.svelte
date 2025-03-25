@@ -720,7 +720,6 @@
                     event.preventDefault();
                 }}
                 id="renderer"
-                class="canvas"
                 tabindex="0"
             ></canvas>
         </div>
@@ -737,7 +736,7 @@
         outline-offset: -1px;
     }
 
-    .canvas {
+    canvas {
         width: 100%;
         height: 100%;
     }
