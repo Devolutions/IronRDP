@@ -740,7 +740,7 @@ impl Session {
         Ok(())
     }
 
-    // QUESTION: in VNC we cannot synchronize this, so do we need to move it to the extension callbacks?
+    // QUESTION: in VNC we cannot synchronize lock keys, so do we need to remove this from the Session API?
     pub fn synchronize_lock_keys(
         &self,
         scroll_lock: bool,
