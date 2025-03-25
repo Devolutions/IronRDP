@@ -1,5 +1,8 @@
 use core::fmt;
 use core::num::NonZeroU16;
+use core::time::Duration;
+use std::collections::HashMap;
+use std::time::Instant;
 
 use anyhow::{Context, Result};
 use ironrdp_acceptor::DesktopSize;
@@ -21,6 +24,8 @@ mod fast_path;
 pub(crate) mod rfx;
 
 pub(crate) use fast_path::*;
+
+const VIDEO_HINT_FPS: usize = 5;
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 #[repr(u8)]
@@ -57,12 +62,15 @@ pub(crate) struct UpdateEncoder {
     desktop_size: DesktopSize,
     framebuffer: Option<Framebuffer>,
     bitmap_updater: BitmapUpdater,
+    video_updater: Option<BitmapUpdater>,
+    region_update_times: HashMap<Rect, Vec<Instant>>,
 }
 
 impl fmt::Debug for UpdateEncoder {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("UpdateEncoder")
             .field("bitmap_update", &self.bitmap_updater)
+            .field("video_updater", &self.video_updater)
             .finish()
     }
 }
@@ -70,22 +78,26 @@ impl fmt::Debug for UpdateEncoder {
 impl UpdateEncoder {
     #[cfg_attr(feature = "__bench", visibility::make(pub))]
     pub(crate) fn new(desktop_size: DesktopSize, surface_flags: CmdFlags, codecs: UpdateEncoderCodecs) -> Self {
-        let bitmap_updater = if surface_flags.contains(CmdFlags::SET_SURFACE_BITS) {
+        let (bitmap_updater, video_updater) = if surface_flags.contains(CmdFlags::SET_SURFACE_BITS) {
             let mut bitmap = BitmapUpdater::None(NoneHandler);
+            let mut video = None;
 
             if let Some((algo, id)) = codecs.remotefx {
                 bitmap = BitmapUpdater::RemoteFx(RemoteFxHandler::new(algo, id, desktop_size));
+                video = Some(bitmap.clone());
             }
 
-            bitmap
+            (bitmap, video)
         } else {
-            BitmapUpdater::Bitmap(BitmapHandler::new())
+            (BitmapUpdater::Bitmap(BitmapHandler::new()), None)
         };
 
         Self {
             desktop_size,
             framebuffer: None,
             bitmap_updater,
+            video_updater,
+            region_update_times: HashMap::new(),
         }
     }
 
@@ -152,6 +164,35 @@ impl UpdateEncoder {
         Ok(UpdateFragmenter::new(UpdateCode::PositionPointer, encode_vec(&pos)?))
     }
 
+    // This is a very naive heuristic for detecting video regions
+    // based on the number of updates in the last second.
+    // Feel free to improve it! :)
+    fn diff_hints(&mut self, now: Instant, off_x: usize, off_y: usize, regions: Vec<Rect>) -> Vec<HintRect> {
+        // keep the updates from the last second
+        for (_region, ts) in self.region_update_times.iter_mut() {
+            ts.retain(|ts| now - *ts < Duration::from_millis(1000));
+        }
+        self.region_update_times.retain(|_, times| !times.is_empty());
+
+        let mut diffs = Vec::new();
+        for rect in regions {
+            let rect_root = rect.clone().add_xy(off_x, off_y);
+            let entry = self.region_update_times.entry(rect_root).or_default();
+            entry.push(now);
+
+            let hint = if entry.len() >= VIDEO_HINT_FPS {
+                HintType::Video
+            } else {
+                HintType::Image
+            };
+
+            let diff = HintRect::new(rect, hint);
+            diffs.push(diff);
+        }
+
+        diffs
+    }
+
     fn bitmap_diffs(&mut self, bitmap: &BitmapUpdate) -> Vec<Rect> {
         const USE_DIFFS: bool = true;
 
@@ -200,13 +241,38 @@ impl UpdateEncoder {
         }
     }
 
-    async fn bitmap(&mut self, bitmap: BitmapUpdate) -> Result<UpdateFragmenter> {
+    async fn bitmap(&mut self, bitmap: BitmapUpdate, hint: HintType) -> Result<UpdateFragmenter> {
+        let updater = match hint {
+            HintType::Image => &self.bitmap_updater,
+            HintType::Video => {
+                trace!(?bitmap, "Encoding with video hint");
+                self.video_updater.as_ref().unwrap_or(&self.bitmap_updater)
+            }
+        };
         // Clone to satisfy spawn_blocking 'static requirement
         // this should be cheap, even if using bitmap, since vec![] will be empty
-        let mut updater = self.bitmap_updater.clone();
+        let mut updater = updater.clone();
         tokio::task::spawn_blocking(move || time_warn!("Encoding bitmap", 10, updater.handle(&bitmap)))
             .await
             .unwrap()
+    }
+}
+
+#[derive(Copy, Clone, Debug)]
+enum HintType {
+    Image,
+    Video,
+}
+
+#[derive(Debug)]
+struct HintRect {
+    rect: Rect,
+    hint: HintType,
+}
+
+impl HintRect {
+    fn new(rect: Rect, hint: HintType) -> Self {
+        Self { rect, hint }
     }
 }
 
@@ -214,7 +280,7 @@ impl UpdateEncoder {
 enum State {
     Start(DisplayUpdate),
     BitmapDiffs {
-        diffs: Vec<Rect>,
+        diffs: Vec<HintRect>,
         bitmap: BitmapUpdate,
         pos: usize,
     },
@@ -239,6 +305,8 @@ impl EncoderIter<'_> {
                 State::Start(update) => match update {
                     DisplayUpdate::Bitmap(bitmap) => {
                         let diffs = encoder.bitmap_diffs(&bitmap);
+                        let diffs =
+                            encoder.diff_hints(Instant::now(), usize::from(bitmap.x), usize::from(bitmap.y), diffs);
                         self.state = State::BitmapDiffs { diffs, bitmap, pos: 0 };
                         continue;
                     }
@@ -250,12 +318,14 @@ impl EncoderIter<'_> {
                     DisplayUpdate::Resize(_) => return None,
                 },
                 State::BitmapDiffs { diffs, bitmap, pos } => {
-                    let Some(rect) = diffs.get(pos) else {
+                    let Some(diff) = diffs.get(pos) else {
+                        let diffs = diffs.into_iter().map(|diff| diff.rect).collect::<Vec<_>>();
                         encoder.bitmap_update_framebuffer(bitmap, &diffs);
                         self.state = State::Ended;
                         return None;
                     };
-                    let Rect { x, y, width, height } = *rect;
+
+                    let Rect { x, y, width, height } = diff.rect;
                     let Some(sub) = bitmap.sub(
                         u16::try_from(x).unwrap(),
                         u16::try_from(y).unwrap(),
@@ -265,12 +335,13 @@ impl EncoderIter<'_> {
                         warn!("Failed to extract bitmap subregion");
                         return None;
                     };
+                    let hint = diff.hint;
                     self.state = State::BitmapDiffs {
                         diffs,
                         bitmap,
                         pos: pos + 1,
                     };
-                    encoder.bitmap(sub).await
+                    encoder.bitmap(sub, hint).await
                 }
                 State::Ended => return None,
             };
