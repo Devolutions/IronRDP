@@ -29,6 +29,27 @@ enum CodecId {
     None = 0x0,
 }
 
+#[derive(Debug)]
+pub(crate) struct UpdateEncoderCodecs {
+    remotefx: Option<(EntropyBits, u8)>,
+}
+
+impl UpdateEncoderCodecs {
+    pub(crate) fn new() -> Self {
+        Self { remotefx: None }
+    }
+
+    pub(crate) fn set_remotefx(&mut self, remotefx: Option<(EntropyBits, u8)>) {
+        self.remotefx = remotefx
+    }
+}
+
+impl Default for UpdateEncoderCodecs {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 pub(crate) struct UpdateEncoder {
     desktop_size: DesktopSize,
     framebuffer: Option<Framebuffer>,
@@ -44,14 +65,17 @@ impl fmt::Debug for UpdateEncoder {
 }
 
 impl UpdateEncoder {
-    pub(crate) fn new(desktop_size: DesktopSize, surface_flags: CmdFlags, remotefx: Option<(EntropyBits, u8)>) -> Self {
-        let bitmap_updater = if !surface_flags.contains(CmdFlags::SET_SURFACE_BITS) {
-            BitmapUpdater::Bitmap(BitmapHandler::new())
-        } else if remotefx.is_some() {
-            let (algo, id) = remotefx.unwrap();
-            BitmapUpdater::RemoteFx(RemoteFxHandler::new(algo, id, desktop_size))
+    pub(crate) fn new(desktop_size: DesktopSize, surface_flags: CmdFlags, codecs: UpdateEncoderCodecs) -> Self {
+        let bitmap_updater = if surface_flags.contains(CmdFlags::SET_SURFACE_BITS) {
+            let mut bitmap = BitmapUpdater::None(NoneHandler);
+
+            if let Some((algo, id)) = codecs.remotefx {
+                bitmap = BitmapUpdater::RemoteFx(RemoteFxHandler::new(algo, id, desktop_size));
+            }
+
+            bitmap
         } else {
-            BitmapUpdater::None(NoneHandler)
+            BitmapUpdater::Bitmap(BitmapHandler::new())
         };
 
         Self {
