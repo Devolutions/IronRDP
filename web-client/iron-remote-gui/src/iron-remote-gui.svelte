@@ -716,6 +716,9 @@
                 }}
                 oncontextmenu={(event) => event.preventDefault()}
                 onwheel={mouseWheel}
+                onselectstart={(event) => {
+                    event.preventDefault();
+                }}
                 id="renderer"
                 tabindex="0"
             ></canvas>
@@ -736,6 +739,10 @@
     canvas {
         width: 100%;
         height: 100%;
+    }
+
+    ::selection {
+        background-color: transparent;
     }
 
     .screen-wrapper.hidden {
