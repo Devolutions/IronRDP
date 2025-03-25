@@ -20,6 +20,7 @@ default = []
 
 [dependencies]
 ironrdp-core = { version = "0.1", features = ["std"] }
+ironrdp-error = { version = "0.1" }
 tokio = { version = "1.43", features = ["full"] } # TODO full not?
 tokio-util = { version = "0.7" }
 tokio-tungstenite = { version = "0.26" } # TODO ironrdp tls?

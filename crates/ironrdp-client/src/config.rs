@@ -242,7 +242,7 @@ impl Config {
             .prompt()
             .context("Address prompt")?;
 
-        let gw_user = inquire::Text::new("Gatewaay Username:")
+        let gw_user = inquire::Text::new("Gateway Username:")
             .prompt().context("Username prompt")?;
 
         let gw_pass = inquire::Password::new("Gateway Password:")

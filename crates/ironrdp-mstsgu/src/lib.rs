@@ -3,7 +3,7 @@
 //! * This only supports the HTTPS protocol with Websocket (and not the legacy HTTP, HTTP-RPC or UDP protocols).
 //! * This does implement reconnection/reauthentication.
 //! * This only supports basic auth.
-use std::task::Poll;
+use std::{fmt::Display, task::Poll};
 
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use hyper::body::Bytes;
@@ -26,7 +26,47 @@ pub struct GwConnectTarget {
     pub server: String,
 }
 
-type Error = Box<dyn std::error::Error + Sync + Send>;
+type Error = ironrdp_error::Error<GwErrorKind>;
+
+#[derive(Debug)]
+#[non_exhaustive]
+pub enum GwErrorKind {
+    Connect,
+    PacketEOF,
+    Custom
+}
+
+trait GwErrorExt {
+    fn custom<E>(context: &'static str, e: E) -> Self
+    where
+        E: std::error::Error + Sync + Send + 'static;
+}
+
+impl GwErrorExt for ironrdp_error::Error<GwErrorKind> {
+    fn custom<E>(context: &'static str, e: E) -> Self
+    where
+        E: std::error::Error + Sync + Send + 'static,
+    {
+        Self::new(context, GwErrorKind::Custom).with_source(e)
+    }
+}
+
+impl Display for GwErrorKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        todo!()
+    }
+}
+
+impl std::error::Error for GwErrorKind {}
+
+/// Creates a `ConnectorError` with `Custom` kind and a source error attached to it
+#[macro_export]
+macro_rules! custom_err {
+    ( $context:expr, $source:expr $(,)? ) => {{
+        <$crate::Error as $crate::GwErrorExt>::custom($context, $source)
+    }};
+}
+
 
 struct GwConn {   
     target: GwConnectTarget,
@@ -44,9 +84,13 @@ impl GwClient {
     pub async fn connect(target: &GwConnectTarget) -> Result<TlsStream<TcpStream>, Error> {
         let gw_host = target.gw_endpoint.split(":").nth(0).unwrap();
 
-        let stream = TcpStream::connect(&target.gw_endpoint).await?;
+        let stream = TcpStream::connect(&target.gw_endpoint)
+            .await
+            .map_err(|e| custom_err!("TCP connect", e))?;
         let stream = tokio_native_tls::TlsConnector::from(tokio_native_tls::native_tls::TlsConnector::new().unwrap())
-            .connect(gw_host, stream).await?;
+            .connect(gw_host, stream)
+            .await
+            .map_err(|e| custom_err!("TLS connect", e))?;
 
         let ba = STANDARD.encode(format!("{}:{}", target.gw_user, target.gw_pass));
         let req = http::Request::builder()
@@ -75,13 +119,18 @@ impl GwClient {
             }
             return conn.into_parts()
         });
-        let resp = sender.send_request(req).await?;
+        let resp = sender.send_request(req)
+            .await
+            .map_err(|e| custom_err!("WS Upgrade Send error", e))?;;
         println!("RESP: {:?}", resp.status());
-        assert_eq!(resp.status(), http::StatusCode::SWITCHING_PROTOCOLS);
+        
+        // assert_eq!(resp.status(), http::StatusCode::SWITCHING_PROTOCOLS);
+        if resp.status() != http::StatusCode::SWITCHING_PROTOCOLS {
+            return Err(Error::new("WS Upgrade", GwErrorKind::Connect));
+        }
     
         let _ = tx.send(()); // TODO: Not needed since it doesnt keep alive conn?
-    
-        let stream = res.await?.io.into_inner();
+        let stream = res.await.map_err(|e| custom_err!("WS join unwrap", e))?.io.into_inner();
         Ok(stream)
     }
 
@@ -108,9 +157,9 @@ impl GwClient {
                         println!("recv through websocket {}", msg.len());
                         let mut cur = ReadCursor::new(&msg);
                         let hdr = PktHdr::decode(&mut cur).unwrap();
-                        assert!(cur.len() >= hdr.length as usize - hdr.size());
+                        assert!(cur.len() >= hdr.length as usize - hdr.size()); // TODO
                         println!("{:?}", msg);
-                        assert_eq!(hdr.ty, PktTy::Data);
+                        assert_eq!(hdr.ty, PktTy::Data); // TODO
                         let p = DataPkt::decode(&mut cur).unwrap();
                         in_tx.send(Bytes::from(p.data.to_vec())).await.unwrap();
                     },
@@ -142,7 +191,9 @@ impl GwConn {
             payload.encode(&mut cur).unwrap();
             cur.pos() as usize
         };
-        self.ws_sink.send(Message::Binary(Bytes::copy_from_slice(&buf[..pos]))).await?;
+        self.ws_sink.send(Message::Binary(Bytes::copy_from_slice(&buf[..pos])))
+            .await
+            .map_err(|e| custom_err!("WS Send error", e))?;
         Ok(())
     }
 
@@ -150,7 +201,11 @@ impl GwConn {
         let mut msg = self.ws_stream.next().await.unwrap().unwrap().into_data();
         let mut cur = ReadCursor::new(&msg);
         let hdr = PktHdr::decode(&mut cur).unwrap();
-        assert!(cur.len() >= hdr.length as usize - hdr.size());
+        
+        // assert!(cur.len() >= hdr.length as usize - hdr.size());
+        if cur.len() != hdr.length as usize - hdr.size() {
+            return Err(Error::new("read_packet", GwErrorKind::PacketEOF));
+        }
 
         Ok((hdr, msg.split_off(cur.pos())))
     }
@@ -167,7 +222,9 @@ impl GwConn {
         let mut cur = ReadCursor::new(&bytes);
         let resp = HandshakeRespPkt::decode(&mut cur).unwrap();
         println!("HANDSHAKE RESP: {:?}", resp);
-        assert_eq!(resp.error_code, 0);
+        if resp.error_code != 0 {
+            return Err(Error::new("Handshake", GwErrorKind::Connect));
+        }
 
         assert_eq!(resp.extended_auth, 7); //TODO....
         Ok(())
@@ -187,7 +244,9 @@ impl GwConn {
         let resp = TunnelRespPkt::decode(&mut cur).unwrap();
 
         println!("TUNNEL RESP: {:?}", resp);
-        assert_eq!(resp.status_code, 0);
+        if resp.status_code != 0 {
+            return Err(Error::new("Tunnel", GwErrorKind::Connect));
+        }
         assert!(cur.eof());
         Ok(())
     }
@@ -201,7 +260,9 @@ impl GwConn {
         let resp = TunnelAuthRespPkt::decode(&mut cur).unwrap();
 
         println!("TUNNEL AUTH RESP: {:?}", resp);
-        assert_eq!(resp.error_code, 0);
+        if resp.error_code != 0 {
+            return Err(Error::new("TunnelAuth", GwErrorKind::Connect));
+        }
         Ok(())
     }
 
@@ -219,7 +280,9 @@ impl GwConn {
         let resp = ChannelResp::decode(&mut cur).unwrap();
         println!("CHANNEL RESP: {:?}", resp);
         // status 0x800759DD E_PROXY_TS_CONNECTFAILED
-        assert_eq!(resp.error_code, 0);
+        if resp.error_code != 0 {
+            return Err(Error::new("ChannelCreate", GwErrorKind::Connect));
+        }
         assert!(cur.eof());
         Ok(())
     }
