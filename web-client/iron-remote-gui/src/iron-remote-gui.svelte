@@ -697,7 +697,7 @@
     >
         <div
             bind:this={screenViewer}
-            class="iron-rdp-screen-viewer"
+            class="screen-viewer"
             style={viewerStyle}
             contenteditable={isFirefox}
             onpaste={ffOnPasteHandler}
