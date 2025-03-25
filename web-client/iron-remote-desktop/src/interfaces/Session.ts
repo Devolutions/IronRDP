@@ -4,7 +4,6 @@ import type { SessionTerminationInfo } from './SessionTerminationInfo';
 import type { ClipboardTransaction } from './ClipboardTransaction';
 
 export interface Session {
-    free(): void;
     run(): Promise<SessionTerminationInfo>;
     desktop_size(): DesktopSize;
     apply_inputs(transaction: InputTransaction): void;
@@ -20,4 +19,5 @@ export interface Session {
         physical_height?: number | null,
     ): void;
     supports_unicode_keyboard_shortcuts(): boolean;
+    free(): void;
 }
