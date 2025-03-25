@@ -30,7 +30,7 @@ use {ironrdp_dvc as dvc, ironrdp_rdpsnd as rdpsnd};
 
 use crate::clipboard::CliprdrServerFactory;
 use crate::display::{DisplayUpdate, RdpServerDisplay};
-use crate::encoder::UpdateEncoder;
+use crate::encoder::{UpdateEncoder, UpdateEncoderCodecs};
 use crate::handler::RdpServerInputHandler;
 use crate::{builder, capabilities, SoundServerFactory};
 
@@ -663,7 +663,7 @@ impl RdpServer {
             }
         }
 
-        let mut rfxcodec = None;
+        let mut update_codecs = UpdateEncoderCodecs::new();
         let mut surface_flags = CmdFlags::empty();
         for c in result.capabilities {
             match c {
@@ -714,14 +714,14 @@ impl RdpServer {
                                 rdp::capability_sets::RemoteFxContainer::ClientContainer(c),
                             ) if self.opts.with_remote_fx => {
                                 for caps in c.caps_data.0 .0 {
-                                    rfxcodec = Some((caps.entropy_bits, codec.id));
+                                    update_codecs.set_remotefx(Some((caps.entropy_bits, codec.id)));
                                 }
                             }
                             rdp::capability_sets::CodecProperty::ImageRemoteFx(
                                 rdp::capability_sets::RemoteFxContainer::ClientContainer(c),
                             ) if self.opts.with_remote_fx => {
                                 for caps in c.caps_data.0 .0 {
-                                    rfxcodec = Some((caps.entropy_bits, codec.id));
+                                    update_codecs.set_remotefx(Some((caps.entropy_bits, codec.id)));
                                 }
                             }
                             rdp::capability_sets::CodecProperty::NsCodec(_) => (),
@@ -734,7 +734,7 @@ impl RdpServer {
         }
 
         let desktop_size = self.display.lock().await.size().await;
-        let encoder = UpdateEncoder::new(desktop_size, surface_flags, rfxcodec);
+        let encoder = UpdateEncoder::new(desktop_size, surface_flags, update_codecs);
 
         let state = self
             .client_loop(reader, writer, result.io_channel_id, result.user_channel_id, encoder)
