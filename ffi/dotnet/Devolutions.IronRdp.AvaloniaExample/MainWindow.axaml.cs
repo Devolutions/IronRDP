@@ -48,8 +48,6 @@ public partial class MainWindow : Window
         AvaloniaXamlLoader.Load(this);
     }
 
-    bool _resizeTaskStarted = false;
-
     protected override void OnSizeChanged(SizeChangedEventArgs e)
     {
         base.OnSizeChanged(e);
@@ -94,10 +92,11 @@ public partial class MainWindow : Window
         var config = BuildConfig(username, password, domain, _renderModel.Width, _renderModel.Height);
 
         CliprdrBackendFactory? factory = null;
-        var handle = GetWindowHandle();
-        if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows) && handle != null)
+
+        if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
         {
-            _cliprdr = WinCliprdr.New(handle.Value);
+            _cliprdr = WinCliprdr.New();
+
             if (_cliprdr != null)
             {
                 factory = _cliprdr.BackendFactory();
