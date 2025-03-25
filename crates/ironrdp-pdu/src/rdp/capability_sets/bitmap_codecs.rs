@@ -241,39 +241,29 @@ impl<'de> Decode<'de> for Codec {
         let id = src.read_u8();
         let codec_properties_len = usize::from(src.read_u16());
 
-        let property = if codec_properties_len != 0 {
-            ensure_size!(in: src, size: codec_properties_len);
-            let property_buffer = src.read_slice(codec_properties_len);
+        ensure_size!(in: src, size: codec_properties_len);
+        let property_buffer = src.read_slice(codec_properties_len);
 
-            match guid {
-                GUID_NSCODEC => CodecProperty::NsCodec(decode(property_buffer)?),
-                GUID_REMOTEFX | GUID_IMAGE_REMOTEFX => {
-                    let property = if property_buffer[0] == 0 {
-                        RemoteFxContainer::ServerContainer(codec_properties_len)
-                    } else {
-                        RemoteFxContainer::ClientContainer(decode(property_buffer)?)
-                    };
+        let property = match guid {
+            GUID_NSCODEC => CodecProperty::NsCodec(decode(property_buffer)?),
+            GUID_REMOTEFX | GUID_IMAGE_REMOTEFX => {
+                let byte = property_buffer
+                    .first()
+                    .ok_or_else(|| invalid_field_err!("remotefx property", "must not be empty"))?;
+                let property = if *byte == 0 {
+                    RemoteFxContainer::ServerContainer(codec_properties_len)
+                } else {
+                    RemoteFxContainer::ClientContainer(decode(property_buffer)?)
+                };
 
-                    match guid {
-                        GUID_REMOTEFX => CodecProperty::RemoteFx(property),
-                        GUID_IMAGE_REMOTEFX => CodecProperty::ImageRemoteFx(property),
-                        _ => unreachable!(),
-                    }
+                match guid {
+                    GUID_REMOTEFX => CodecProperty::RemoteFx(property),
+                    GUID_IMAGE_REMOTEFX => CodecProperty::ImageRemoteFx(property),
+                    _ => unreachable!(),
                 }
-                GUID_IGNORE => CodecProperty::Ignore,
-                _ => CodecProperty::None,
             }
-        } else {
-            match guid {
-                GUID_NSCODEC | GUID_REMOTEFX | GUID_IMAGE_REMOTEFX => {
-                    return Err(invalid_field_err!(
-                        "codecPropertiesLen",
-                        "invalid codec property length"
-                    ));
-                }
-                GUID_IGNORE => CodecProperty::Ignore,
-                _ => CodecProperty::None,
-            }
+            GUID_IGNORE => CodecProperty::Ignore,
+            _ => CodecProperty::None,
         };
 
         Ok(Self { id, property })
@@ -393,6 +383,8 @@ impl Encode for RfxClientCapsContainer {
 
 impl<'de> Decode<'de> for RfxClientCapsContainer {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
+        ensure_fixed_part_size!(in: src);
+
         let _length = src.read_u32();
         let capture_flags = CaptureFlags::from_bits_truncate(src.read_u32());
         let _caps_length = src.read_u32();
