@@ -5,6 +5,6 @@ export interface ClipboardTransaction {
     new (): ClipboardTransaction;
     add_content(content: ClipboardContent): void;
     is_empty(): boolean;
-    content(): Array<any>;
+    content(): Array<unknown>;
     free(): void;
 }
