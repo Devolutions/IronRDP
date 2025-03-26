@@ -1229,8 +1229,7 @@ dependencies = [
 [[package]]
 name = "diplomat"
 version = "0.7.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a31672b3ebc3c7866c3c98726f7a9a5ac8f13962e77d3c8225f6be49a7b8c5f2"
+source = "git+https://github.com/CBenoit/diplomat?rev=6dc806e80162b6b39509a04a2835744236cd2396#6dc806e80162b6b39509a04a2835744236cd2396"
 dependencies = [
  "diplomat_core",
  "proc-macro2",
@@ -1247,8 +1246,7 @@ checksum = "f7b0f23d549a46540e26e5490cd44c64ced0d762959f1ffdec6ab0399634cf3c"
 [[package]]
 name = "diplomat_core"
 version = "0.7.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bfaa5e13e8b8735d2338f2836c06cd8643902ab87dda1dd07dbb351998ddc127"
+source = "git+https://github.com/CBenoit/diplomat?rev=6dc806e80162b6b39509a04a2835744236cd2396#6dc806e80162b6b39509a04a2835744236cd2396"
 dependencies = [
  "lazy_static",
  "proc-macro2",
