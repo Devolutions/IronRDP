@@ -471,6 +471,7 @@ impl RdpServer {
         // 4 frames should roughly corresponds to hundreds of ms in regular setups.
         let mut wave_limit = 4;
         for event in events.drain(..) {
+            trace!(?event, "Dispatching");
             match event {
                 ServerEvent::Quit(reason) => {
                     debug!("Got quit event: {reason}");
