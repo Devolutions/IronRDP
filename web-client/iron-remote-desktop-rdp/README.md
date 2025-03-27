@@ -91,4 +91,4 @@ connect(
 > `setScale(scale: ScreenScale)`
 >
 > Sets the scale behavior of the canvas.
-> See the [ScreenScale](./src/services/user-interaction-service.ts) enum for possible values.
+> See the [ScreenScale](../iron-remote-desktop/src/services/user-interaction-service.ts) enum for possible values.

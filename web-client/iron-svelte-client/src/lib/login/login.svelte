@@ -1,11 +1,11 @@
 <script lang="ts">
     import { currentSession, userInteractionService } from '../../services/session.service';
     import { catchError, filter } from 'rxjs/operators';
-    import type { UserInteraction, NewSessionInfo } from '../../../static/iron-remote-desktop-rdp';
+    import type { UserInteraction, NewSessionInfo } from '../../../static/iron-remote-desktop';
     import { from, of } from 'rxjs';
     import { toast } from '$lib/messages/message-store';
     import { showLogin } from '$lib/login/login-store';
-    import type { DesktopSize } from '../../models/desktop-size';
+    import { DesktopSize } from '../../models/desktop-size';
 
     let username = 'Administrator';
     let password = 'DevoLabs123!';
@@ -14,10 +14,7 @@
     let domain = '';
     let authtoken = '';
     let kdc_proxy_url = '';
-    let desktopSize: DesktopSize = {
-        width: 1280,
-        height: 768,
-    };
+    let desktopSize = new DesktopSize(1280, 768);
     let pcb: string;
     let pop_up = false;
     let enable_clipboard = true;
@@ -43,7 +40,7 @@
             } else {
                 toast.set({
                     type: 'info',
-                    message: typeof event.data === 'string' ? event.data : event.data?.backtrace() ?? 'No info',
+                    message: typeof event.data === 'string' ? event.data : (event.data?.backtrace() ?? 'No info'),
                 });
             }
         });

@@ -1,10 +1,10 @@
 import { loggingService } from './logging.service';
-import type { NewSessionInfo } from '../../../iron-remote-desktop/src/interfaces/NewSessionInfo';
-import { SpecialCombination } from '../../../iron-remote-desktop/src/enums/SpecialCombination';
+import type { NewSessionInfo } from '../interfaces/NewSessionInfo';
+import { SpecialCombination } from '../enums/SpecialCombination';
 import type { WasmBridgeService } from './wasm-bridge.service';
 import type { UserInteraction } from '../interfaces/UserInteraction';
-import type { ScreenScale } from '../../../iron-remote-desktop/src/enums/ScreenScale';
-import type { DesktopSize } from '../../../iron-remote-desktop/src/interfaces/DesktopSize';
+import type { ScreenScale } from '../enums/ScreenScale';
+import type { DesktopSize } from '../interfaces/DesktopSize';
 
 export class PublicAPI {
     private wasmService: WasmBridgeService;

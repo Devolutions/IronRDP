@@ -2,7 +2,7 @@
     import { onMount } from 'svelte';
     import { setCurrentSessionActive, userInteractionService } from '../../services/session.service';
     import { showLogin } from '$lib/login/login-store';
-    import type { UserInteraction } from '../../../static/iron-remote-desktop-rdp';
+    import type { UserInteraction } from '../../../static/iron-remote-desktop';
 
     let uiService: UserInteraction;
     let cursorOverrideActive = false;

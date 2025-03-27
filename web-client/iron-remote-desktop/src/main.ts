@@ -1,3 +1,4 @@
+export * as default from './iron-remote-desktop.svelte';
 export type { ResizeEvent } from './interfaces/ResizeEvent';
 export type { NewSessionInfo } from './interfaces/NewSessionInfo';
 export type { ServerRect } from './interfaces/ServerRect';
@@ -11,3 +12,4 @@ export type { DeviceEvent } from './interfaces/DeviceEvent';
 export type { InputTransaction } from './interfaces/InputTransaction';
 export type { Session } from './interfaces/Session';
 export type { SessionBuilder } from './interfaces/SessionBuilder';
+export type { UserInteraction } from './interfaces/UserInteraction';

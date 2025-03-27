@@ -9,7 +9,7 @@ const __dirname = path.dirname(__filename);
 
 let noWasm = false;
 
-let assetIronRemoteDesktopFolder = './static/iron-remote-desktop-rdp';
+let assetIronRemoteDesktopFolder = './static/iron-remote-desktop';
 
 argv.forEach((val, index) => {
     if (index === 2 && val === 'no-wasm') {
@@ -40,7 +40,7 @@ let copyCoreFiles = async function () {
     console.log('Copying core files…');
     await fs.remove(assetIronRemoteDesktopFolder);
     return new Promise((resolve) => {
-        let source = '../iron-remote-desktop-rdp/dist';
+        let source = '../iron-remote-desktop/dist';
         let destination = assetIronRemoteDesktopFolder;
 
         fs.copy(source, destination, function (err) {
@@ -59,5 +59,5 @@ if (noWasm) {
     buildCommand = 'npm run build-alone';
 }
 
-await run(buildCommand, '../iron-remote-desktop-rdp');
+await run(buildCommand, '../iron-remote-desktop');
 await copyCoreFiles();

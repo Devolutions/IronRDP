@@ -2,8 +2,7 @@ import type { Session } from './Session';
 import type { DesktopSize } from './DesktopSize';
 import type { ClipboardTransaction } from './ClipboardTransaction';
 export interface SessionBuilder {
-    // eslint-disable-next-line @typescript-eslint/no-misused-new
-    new (): SessionBuilder;
+    construct(): SessionBuilder;
     /**
      * Required
      */

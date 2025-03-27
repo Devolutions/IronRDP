@@ -1,7 +1,7 @@
 <script lang="ts">
     import { onMount } from 'svelte';
     import { setCurrentSessionActive, userInteractionService } from '../../services/session.service';
-    import type { UserInteraction } from '../../../static/iron-remote-desktop-rdp';
+    import type { UserInteraction } from '../../../static/iron-remote-desktop';
 
     let uiService: UserInteraction;
     let cursorOverrideActive = false;

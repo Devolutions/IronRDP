@@ -16,12 +16,16 @@
 <script lang="ts">
     import { onMount } from 'svelte';
     import { loggingService } from './services/logging.service';
-    import { WasmBridgeService } from './services/wasm-bridge.service';
-    import { LogType } from '../../iron-remote-desktop/src/enums/LogType';
-    import type { ResizeEvent } from '../../iron-remote-desktop/src/interfaces/ResizeEvent';
+    import { type RemoteDesktopModule, WasmBridgeService } from './services/wasm-bridge.service';
+    import { LogType } from './enums/LogType';
+    import type { ResizeEvent } from './interfaces/ResizeEvent';
     import { PublicAPI } from './services/PublicAPI';
-    import { ScreenScale } from '../../iron-remote-desktop/src/enums/ScreenScale';
-    import { ClipboardContent, ClipboardTransaction } from '../../../crates/ironrdp-web/pkg';
+    import { ScreenScale } from './enums/ScreenScale';
+    import type { ClipboardTransaction as IClipboardTransaction } from './interfaces/ClipboardTransaction';
+    import { ClipboardContent, ClipboardTransaction } from './../../iron-remote-desktop-rdp/src/main';
+    import * as remote_desktop from './../../iron-remote-desktop-rdp/src/main';
+    // import { ClipboardContent, ClipboardTransaction } from './../../../../ironvnc/web-client/iron-remote-desktop-vnc/src/main';
+    // import * as remote_desktop from './../../../../ironvnc/web-client/iron-remote-desktop-vnc/src/main';
 
     let {
         scale,
@@ -52,7 +56,7 @@
     let viewerStyle = $state('');
     let wrapperStyle = $state('');
 
-    let wasmService = new WasmBridgeService();
+    let wasmService = new WasmBridgeService(remote_desktop as unknown as RemoteDesktopModule);
     let publicAPI = new PublicAPI(wasmService);
 
     // Firefox's clipboard API is very limited, and doesn't support reading from the clipboard
@@ -151,9 +155,9 @@
     function onForceClipboardUpdate() {
         try {
             if (lastClientClipboardTransaction) {
-                wasmService.onClipboardChanged(lastClientClipboardTransaction);
+                wasmService.onClipboardChanged(lastClientClipboardTransaction as IClipboardTransaction);
             } else {
-                wasmService.onClipboardChanged(ClipboardTransaction.new());
+                wasmService.onClipboardChanged(ClipboardTransaction.construct() as IClipboardTransaction);
             }
         } catch (err) {
             console.error('Failed to send initial clipboard state: ' + err);
@@ -237,7 +241,7 @@
             if (!sameValue) {
                 lastClientClipboardItems = values;
 
-                let transaction = ClipboardTransaction.new();
+                let transaction = ClipboardTransaction.construct();
 
                 // Iterate over `Record` type
                 values.forEach((value: string | Uint8Array, key: string) => {
@@ -255,7 +259,7 @@
 
                 if (!transaction.is_empty()) {
                     lastClientClipboardTransaction = transaction;
-                    wasmService.onClipboardChanged(transaction);
+                    wasmService.onClipboardChanged(transaction as IClipboardTransaction);
                 }
             }
         } catch (err) {
@@ -335,7 +339,7 @@
         }
 
         try {
-            let transaction = ClipboardTransaction.new();
+            let transaction = ClipboardTransaction.construct();
 
             if (evt.clipboardData == null) {
                 return;
@@ -350,7 +354,7 @@
                         transaction.add_content(content);
 
                         if (!transaction.is_empty()) {
-                            wasmService.onClipboardChanged(transaction);
+                            wasmService.onClipboardChanged(transaction as IClipboardTransaction);
                         }
                     });
                     break;
@@ -368,7 +372,7 @@
                         transaction.add_content(content);
 
                         if (!transaction.is_empty()) {
-                            wasmService.onClipboardChanged(transaction);
+                            wasmService.onClipboardChanged(transaction as IClipboardTransaction);
                         }
                     });
                     break;

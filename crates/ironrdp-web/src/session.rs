@@ -103,7 +103,7 @@ impl Default for SessionBuilderInner {
 
 #[wasm_bindgen]
 impl SessionBuilder {
-    pub fn new() -> SessionBuilder {
+    pub fn construct() -> SessionBuilder {
         Self(Rc::new(RefCell::new(SessionBuilderInner::default())))
     }
 

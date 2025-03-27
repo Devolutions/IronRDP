@@ -2,7 +2,7 @@ import type { Guid } from 'guid-typescript';
 import type { Writable } from 'svelte/store';
 import { writable } from 'svelte/store';
 import { Session } from '../models/session';
-import type { UserInteraction } from '../../static/iron-remote-desktop-rdp';
+import type { UserInteraction } from '../../static/iron-remote-desktop';
 
 export const userInteractionService: Writable<UserInteraction> = writable();
 export const currentSession: Writable<Session> = writable();
