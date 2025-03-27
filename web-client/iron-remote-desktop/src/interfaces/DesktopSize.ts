@@ -3,5 +3,4 @@
     height: number;
 
     construct(width: number, height: number): DesktopSize;
-    free(): void;
 }

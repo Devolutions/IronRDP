@@ -15,13 +15,11 @@ import type { MousePosition } from '../interfaces/MousePosition';
 import type { SessionEvent, RemoteDesktopErrorKind, RemoteDesktopError } from '../interfaces/session-event';
 import type { DesktopSize } from '../interfaces/DesktopSize';
 import type { ClipboardTransaction } from '../interfaces/ClipboardTransaction';
-// import type { ClipboardContent } from '../interfaces/ClipboardContent';
 import type { Session } from '../interfaces/Session';
 import type { DeviceEvent } from '../interfaces/DeviceEvent';
 import type { InputTransaction } from '../interfaces/InputTransaction';
 import type { SessionBuilder } from '../interfaces/SessionBuilder';
 import type { SessionTerminationInfo } from '../interfaces/SessionTerminationInfo';
-import type { Extension } from '../interfaces/Extension';
 
 type OnRemoteClipboardChanged = (transaction: ClipboardTransaction) => void;
 type OnRemoteReceivedFormatsList = () => void;
@@ -38,7 +36,6 @@ export interface RemoteDesktopModule {
     SessionBuilder: SessionBuilder;
     SessionTerminationInfo: SessionTerminationInfo;
     ClipboardTransaction: ClipboardTransaction;
-    Extension: Extension;
 }
 
 export class WasmBridgeService {
@@ -152,7 +149,6 @@ export class WasmBridgeService {
         use_display_control = true,
     ): Observable<NewSessionInfo> {
         const sessionBuilder = this.importedModule.SessionBuilder.construct();
-        const displayControlExt = this.importedModule.Extension.construct('display_control', use_display_control);
 
         sessionBuilder.proxy_address(proxyAddress);
         sessionBuilder.destination(destination);
@@ -163,15 +159,13 @@ export class WasmBridgeService {
         sessionBuilder.render_canvas(this.canvas!);
         sessionBuilder.set_cursor_style_callback_context(this);
         sessionBuilder.set_cursor_style_callback(this.setCursorStyleCallback);
-        sessionBuilder.extension(displayControlExt);
+        sessionBuilder.extension('display_control', use_display_control);
 
         if (preConnectionBlob != null) {
-            const pcbExt = this.importedModule.Extension.construct('pcb', preConnectionBlob);
-            sessionBuilder.extension(pcbExt);
+            sessionBuilder.extension('pcb', preConnectionBlob);
         }
         if (kdc_proxy_url != null) {
-            const kdcProxyUrlExt = this.importedModule.Extension.construct('kdc_proxy_url', kdc_proxy_url);
-            sessionBuilder.extension(kdcProxyUrlExt);
+            sessionBuilder.extension('kdc_proxy_url', kdc_proxy_url);
         }
         if (this.onRemoteClipboardChanged != null && this.enableClipboard) {
             sessionBuilder.remote_clipboard_changed_callback(this.onRemoteClipboardChanged);

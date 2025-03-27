@@ -11,4 +11,3 @@ export {
     ClipboardTransaction,
     ClipboardContent,
 } from './../../../crates/ironrdp-web/pkg';
-export { Extension } from './interfaces/Extension';

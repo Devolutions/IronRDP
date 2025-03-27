@@ -4,8 +4,6 @@ export class DesktopSize implements IDesktopSize {
         this.width = width;
         this.height = height;
     }
-    // eslint-disable-next-line @typescript-eslint/no-empty-function
-    free(): void {}
 
     construct(width: number, height: number): DesktopSize {
         return new DesktopSize(width, height);
