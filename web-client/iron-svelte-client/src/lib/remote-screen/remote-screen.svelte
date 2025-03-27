@@ -47,10 +47,10 @@
     }
 
     onMount(async () => {
-        let el = document.querySelector('iron-remote-gui');
+        let el = document.querySelector('iron-remote-gui-vnc');
 
         if (el == null) {
-            throw '`iron-remote-gui` element not found';
+            throw '`iron-remote-gui-vnc` element not found';
         }
 
         el.addEventListener('ready', (e) => {
@@ -100,7 +100,7 @@
             </div>
         {/if}
     </div>
-    <iron-remote-gui debugwasm="INFO" verbose="true" scale="fit" flexcenter="true" />
+    <iron-remote-gui-vnc debugwasm="TRACE" verbose="true" scale="fit" flexcenter="true" />
 </div>
 
 <style>

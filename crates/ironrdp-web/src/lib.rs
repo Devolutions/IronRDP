@@ -22,6 +22,8 @@ mod session;
 
 use wasm_bindgen::prelude::*;
 
+compile_error!("do not compile ironrdp-web in this branch");
+
 #[wasm_bindgen]
 pub fn ironrdp_init(log_level: &str) {
     // When the `console_error_panic_hook` feature is enabled, we can call the

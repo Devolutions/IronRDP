@@ -1,6 +1,6 @@
 <svelte:options
     customElement={{
-        tag: 'iron-remote-gui',
+        tag: 'iron-remote-gui-vnc',
         shadow: 'none',
         extend: (elementConstructor) => {
             return class extends elementConstructor {
