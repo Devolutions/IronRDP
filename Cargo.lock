@@ -583,6 +583,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d71b6127be86fdcfddb610f7182ac57211d4b18a3e9c82eb2d17662f2227ad6a"
 
 [[package]]
+name = "bytesize"
+version = "1.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2d2c12f985c78475a6b8d629afd0c360260ef34cfef52efccdcfd31972f81c2e"
+
+[[package]]
 name = "calloop"
 version = "0.13.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2564,6 +2570,7 @@ dependencies = [
  "bitflags 2.9.0",
  "bitvec",
  "bmp",
+ "bytemuck",
  "byteorder",
  "expect-test",
  "ironrdp-core",
@@ -2673,6 +2680,8 @@ version = "0.5.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "bytes",
+ "bytesize",
  "ironrdp-acceptor",
  "ironrdp-ainput",
  "ironrdp-async",
@@ -2685,12 +2694,17 @@ dependencies = [
  "ironrdp-rdpsnd",
  "ironrdp-svc",
  "ironrdp-tokio",
+ "pico-args",
+ "qoi",
  "rayon",
  "rustls-pemfile",
  "tokio",
  "tokio-rustls",
  "tracing",
+ "tracing-subscriber",
+ "visibility",
  "x509-cert",
+ "zstd-safe",
 ]
 
 [[package]]
@@ -2705,7 +2719,9 @@ dependencies = [
  "ironrdp-graphics",
  "ironrdp-pdu",
  "ironrdp-svc",
+ "qoi",
  "tracing",
+ "zstd-safe",
 ]
 
 [[package]]
@@ -4101,6 +4117,14 @@ dependencies = [
  "rusty-fork",
  "tempfile",
  "unarray",
+]
+
+[[package]]
+name = "qoi"
+version = "0.4.1"
+source = "git+https://github.com/elmarco/qoi-rust.git?branch=raw#9fc76e899f9421eb203930dd6a54600f1e6e4b1c"
+dependencies = [
+ "bytemuck",
 ]
 
 [[package]]
@@ -5559,6 +5583,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
+name = "visibility"
+version = "0.1.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d674d135b4a8c1d7e813e2f8d1c9a58308aee4a680323066025e53132218bd91"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn",
+]
+
+[[package]]
 name = "vswhom"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6755,4 +6790,23 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
+]
+
+[[package]]
+name = "zstd-safe"
+version = "7.2.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8f49c4d5f0abb602a93fb8736af2a4f4dd9512e36f7f570d66e65ff867ed3b9d"
+dependencies = [
+ "zstd-sys",
+]
+
+[[package]]
+name = "zstd-sys"
+version = "2.0.15+zstd.1.5.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "eb81183ddd97d0c74cedf1d50d85c8d08c1b8b68ee863bdee9e706eedba1a237"
+dependencies = [
+ "cc",
+ "pkg-config",
 ]

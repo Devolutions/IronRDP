@@ -60,6 +60,9 @@ pub trait CliprdrBackend: AsAny + core::fmt::Debug + Send {
     /// [crate::Cliprdr] capabilities.
     fn client_capabilities(&self) -> ClipboardGeneralCapabilityFlags;
 
+    /// Called by [crate::Cliprdr] when it is ready to process clipboard data (channel initialized)
+    fn on_ready(&mut self);
+
     /// Processes signal to start clipboard copy sequence.
     ///
     /// Trait implementer is responsible for gathering its list of available [`ClipboardFormat`]
