@@ -246,11 +246,14 @@ impl<'de> Decode<'de> for RegionPdu {
         }
 
         let number_of_rectangles = usize::from(src.read_u16());
+
         ensure_size!(in: src, size: number_of_rectangles * RECTANGLE_SIZE);
 
         let rectangles = (0..number_of_rectangles)
             .map(|_| RfxRectangle::decode(src))
             .collect::<Result<Vec<_>, _>>()?;
+
+        ensure_size!(in: src, size: 4);
 
         let region_type = src.read_u16();
         if region_type != CBT_REGION {
