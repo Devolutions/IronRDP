@@ -9,6 +9,7 @@ export interface Session {
     apply_inputs(transaction: InputTransaction): void;
     release_all_inputs(): void;
     synchronize_lock_keys(scroll_lock: boolean, num_lock: boolean, caps_lock: boolean, kana_lock: boolean): void;
+    extension_call(ident: string, params: unknown): unknown;
     shutdown(): void;
     on_clipboard_paste(content: ClipboardTransaction): Promise<void>;
     resize(

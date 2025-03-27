@@ -442,12 +442,12 @@ export class WasmBridgeService {
         const syncScrollLockActive = evt.getModifierState(LockKey.SCROLL_LOCK);
         const syncKanaModeActive = evt.getModifierState(LockKey.KANA_MODE);
 
-        this.session?.synchronize_lock_keys(
-            syncScrollLockActive,
-            syncNumsLockActive,
-            syncCapsLockActive,
-            syncKanaModeActive,
-        );
+        this.session?.extension_call('synchronize_lock_keys', {
+            scroll_lock: syncScrollLockActive,
+            num_lock: syncNumsLockActive,
+            caps_lock: syncCapsLockActive,
+            kana_lock: syncKanaModeActive,
+        });
     }
 
     private raiseSessionEvent(event: SessionEvent) {

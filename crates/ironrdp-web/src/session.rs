@@ -737,8 +737,7 @@ impl Session {
         Ok(())
     }
 
-    // QUESTION: in VNC we cannot synchronize lock keys, so do we need to remove this from the Session API?
-    pub fn synchronize_lock_keys(
+    fn synchronize_lock_keys(
         &self,
         scroll_lock: bool,
         num_lock: bool,
@@ -826,6 +825,37 @@ impl Session {
         // RDP does not support Unicode keyboard shortcuts (When key combinations are executed, only
         // plain scancode events are allowed to function correctly).
         false
+    }
+
+    pub fn extension_call(&self, ident: String, params: JsValue) -> Result<JsValue, RemoteDesktopError> {
+        match ident.as_str() {
+            "synchronize_lock_keys" => {
+                let scroll_lock = js_sys::Reflect::get(&params, &JsValue::from_str("scroll_lock"))
+                    .map(|val| val.as_bool())
+                    .map_err(|_| anyhow::anyhow!("failed to get a scroll_lock"))?
+                    .context("scroll_lock is not present in object")?;
+
+                let num_lock = js_sys::Reflect::get(&params, &JsValue::from_str("num_lock"))
+                    .map(|val| val.as_bool())
+                    .map_err(|_| anyhow::anyhow!("failed to get a num_lock"))?
+                    .context("num_lock is not present in object")?;
+
+                let caps_lock = js_sys::Reflect::get(&params, &JsValue::from_str("caps_lock"))
+                    .map(|val| val.as_bool())
+                    .map_err(|_| anyhow::anyhow!("failed to get a caps_lock"))?
+                    .context("caps_lock is not present in object")?;
+
+                let kana_lock = js_sys::Reflect::get(&params, &JsValue::from_str("kana_lock"))
+                    .map(|val| val.as_bool())
+                    .map_err(|_| anyhow::anyhow!("failed to get a kana_lock"))?
+                    .context("kana_lock is not present in object")?;
+
+                self.synchronize_lock_keys(scroll_lock, num_lock, caps_lock, kana_lock)?;
+            }
+            ident => error!("Provided identification ({ident}) is not a valid for IronRDP"),
+        }
+
+        Ok(JsValue::null())
     }
 }
 
