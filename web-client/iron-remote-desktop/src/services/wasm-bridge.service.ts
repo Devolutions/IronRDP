@@ -159,13 +159,13 @@ export class WasmBridgeService {
         sessionBuilder.render_canvas(this.canvas!);
         sessionBuilder.set_cursor_style_callback_context(this);
         sessionBuilder.set_cursor_style_callback(this.setCursorStyleCallback);
-        sessionBuilder.extension('display_control', use_display_control);
+        sessionBuilder.extension({ DisplayControl: use_display_control });
 
         if (preConnectionBlob != null) {
-            sessionBuilder.extension('pcb', preConnectionBlob);
+            sessionBuilder.extension({ Pcb: preConnectionBlob });
         }
         if (kdc_proxy_url != null) {
-            sessionBuilder.extension('kdc_proxy_url', kdc_proxy_url);
+            sessionBuilder.extension({ KdcProxyUrl: kdc_proxy_url });
         }
         if (this.onRemoteClipboardChanged != null && this.enableClipboard) {
             sessionBuilder.remote_clipboard_changed_callback(this.onRemoteClipboardChanged);
@@ -442,11 +442,13 @@ export class WasmBridgeService {
         const syncScrollLockActive = evt.getModifierState(LockKey.SCROLL_LOCK);
         const syncKanaModeActive = evt.getModifierState(LockKey.KANA_MODE);
 
-        this.session?.extension_call('synchronize_lock_keys', {
-            scroll_lock: syncScrollLockActive,
-            num_lock: syncNumsLockActive,
-            caps_lock: syncCapsLockActive,
-            kana_lock: syncKanaModeActive,
+        this.session?.extension_call({
+            SynchronizeLockKeys: {
+                scroll_lock: syncScrollLockActive,
+                num_lock: syncNumsLockActive,
+                caps_lock: syncCapsLockActive,
+                kana_lock: syncKanaModeActive,
+            },
         });
     }
 

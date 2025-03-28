@@ -29,6 +29,7 @@ use ironrdp::session::{fast_path, ActiveStage, ActiveStageOutput, GracefulDiscon
 use ironrdp_core::WriteBuf;
 use ironrdp_futures::{single_sequence_step_read, FramedWrite};
 use rgb::AsPixels as _;
+use serde::{Deserialize, Serialize};
 use tap::prelude::*;
 use wasm_bindgen::prelude::*;
 use wasm_bindgen_futures::spawn_local;
@@ -204,21 +205,17 @@ impl SessionBuilder {
         self.clone()
     }
 
-    pub fn extension(&self, ident: String, value: JsValue) -> SessionBuilder {
-        match ident.as_str() {
-            "kdc_proxy_url" => {
-                self.0.borrow_mut().kdc_proxy_url = value
-                    .as_string()
-                    .inspect(|value| info!("kdc_proxy_url set with value ({value})"))
-            }
-            "pcb" => self.0.borrow_mut().pcb = value.as_string().inspect(|value| info!("pcb set with value ({value})")),
-            "display_control" => {
-                self.0.borrow_mut().use_display_control = value
-                    .as_bool()
-                    .inspect(|value| info!("use_display_control set with value ({value})"))
-                    .unwrap_or_default()
-            }
-            ident => error!("Provided identification ({ident}) is not a valid for IronRDP"),
+    pub fn extension(&self, value: JsValue) -> SessionBuilder {
+        match serde_wasm_bindgen::from_value::<Extension>(value) {
+            Ok(value) => match value {
+                Extension::KdcProxyUrl(kdc_proxy_url) => self.0.borrow_mut().kdc_proxy_url = Some(kdc_proxy_url),
+
+                Extension::Pcb(pcb) => self.0.borrow_mut().pcb = Some(pcb),
+                Extension::DisplayControl(use_display_control) => {
+                    self.0.borrow_mut().use_display_control = use_display_control
+                }
+            },
+            Err(err) => error!("Provided JsValue is not a valid extension value: {err:?}"),
         }
 
         self.clone()
@@ -360,6 +357,13 @@ impl SessionBuilder {
             clipboard: RefCell::new(Some(clipboard)),
         })
     }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+enum Extension {
+    KdcProxyUrl(String),
+    Pcb(String),
+    DisplayControl(bool),
 }
 
 pub(crate) type FastPathInputEvents = smallvec::SmallVec<[FastPathInputEvent; 2]>;
@@ -827,36 +831,32 @@ impl Session {
         false
     }
 
-    pub fn extension_call(&self, ident: String, params: JsValue) -> Result<JsValue, RemoteDesktopError> {
-        match ident.as_str() {
-            "synchronize_lock_keys" => {
-                let scroll_lock = js_sys::Reflect::get(&params, &JsValue::from_str("scroll_lock"))
-                    .map(|val| val.as_bool())
-                    .map_err(|_| anyhow::anyhow!("failed to get a scroll_lock"))?
-                    .context("scroll_lock is not present in object")?;
-
-                let num_lock = js_sys::Reflect::get(&params, &JsValue::from_str("num_lock"))
-                    .map(|val| val.as_bool())
-                    .map_err(|_| anyhow::anyhow!("failed to get a num_lock"))?
-                    .context("num_lock is not present in object")?;
-
-                let caps_lock = js_sys::Reflect::get(&params, &JsValue::from_str("caps_lock"))
-                    .map(|val| val.as_bool())
-                    .map_err(|_| anyhow::anyhow!("failed to get a caps_lock"))?
-                    .context("caps_lock is not present in object")?;
-
-                let kana_lock = js_sys::Reflect::get(&params, &JsValue::from_str("kana_lock"))
-                    .map(|val| val.as_bool())
-                    .map_err(|_| anyhow::anyhow!("failed to get a kana_lock"))?
-                    .context("kana_lock is not present in object")?;
-
+    pub fn extension_call(&self, value: JsValue) -> Result<JsValue, RemoteDesktopError> {
+        match serde_wasm_bindgen::from_value::<SessionExtensionCall>(value)
+            .map_err(|err| anyhow::anyhow!("provided JsValue is not a valid extension call: {err:?}"))?
+        {
+            SessionExtensionCall::SynchronizeLockKeys {
+                scroll_lock,
+                num_lock,
+                caps_lock,
+                kana_lock,
+            } => {
                 self.synchronize_lock_keys(scroll_lock, num_lock, caps_lock, kana_lock)?;
             }
-            ident => error!("Provided identification ({ident}) is not a valid for IronRDP"),
         }
 
         Ok(JsValue::null())
     }
+}
+
+#[derive(Serialize, Deserialize)]
+enum SessionExtensionCall {
+    SynchronizeLockKeys {
+        scroll_lock: bool,
+        num_lock: bool,
+        caps_lock: bool,
+        kana_lock: bool,
+    },
 }
 
 fn build_config(
