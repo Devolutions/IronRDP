@@ -1,15 +1,4 @@
 import { BehaviorSubject, from, Observable, of, Subject } from 'rxjs';
-import init, {
-    DesktopSize,
-    DeviceEvent,
-    InputTransaction,
-    ironrdp_init,
-    IronRdpError,
-    Session,
-    SessionBuilder,
-    ClipboardTransaction,
-    SessionTerminationInfo,
-} from '../../../../crates/ironrdp-web/pkg/ironrdp_web';
 import { loggingService } from './logging.service';
 import { catchError, filter, map } from 'rxjs/operators';
 import { scanCode } from '../lib/scancodes';
@@ -23,14 +12,34 @@ import { SpecialCombination } from '../enums/SpecialCombination';
 import type { ResizeEvent } from '../interfaces/ResizeEvent';
 import { ScreenScale } from '../enums/ScreenScale';
 import type { MousePosition } from '../interfaces/MousePosition';
-import type { SessionEvent, UserIronRdpErrorKind } from '../interfaces/session-event';
-import type { DesktopSize as IDesktopSize } from '../interfaces/DesktopSize';
+import type { SessionEvent, RemoteDesktopErrorKind, RemoteDesktopError } from '../interfaces/session-event';
+import type { DesktopSize } from '../interfaces/DesktopSize';
+import type { ClipboardTransaction } from '../interfaces/ClipboardTransaction';
+import type { Session } from '../interfaces/Session';
+import type { DeviceEvent } from '../interfaces/DeviceEvent';
+import type { InputTransaction } from '../interfaces/InputTransaction';
+import type { SessionBuilder } from '../interfaces/SessionBuilder';
+import type { SessionTerminationInfo } from '../interfaces/SessionTerminationInfo';
 
 type OnRemoteClipboardChanged = (transaction: ClipboardTransaction) => void;
 type OnRemoteReceivedFormatsList = () => void;
 type OnForceClipboardUpdate = () => void;
 
+export interface RemoteDesktopModule {
+    init: () => Promise<unknown>;
+    DesktopSize: DesktopSize;
+    DeviceEvent: DeviceEvent;
+    InputTransaction: InputTransaction;
+    remote_desktop_init: (logLevel: string) => void;
+    RemoteDesktopError: RemoteDesktopError;
+    Session: Session;
+    SessionBuilder: SessionBuilder;
+    SessionTerminationInfo: SessionTerminationInfo;
+    ClipboardTransaction: ClipboardTransaction;
+}
+
 export class WasmBridgeService {
+    private importedModule: RemoteDesktopModule;
     private _resize: Subject<ResizeEvent> = new Subject<ResizeEvent>();
     private mousePosition: BehaviorSubject<MousePosition> = new BehaviorSubject<MousePosition>({
         x: 0,
@@ -62,16 +71,17 @@ export class WasmBridgeService {
         height: number;
     }>();
 
-    constructor() {
+    constructor(importedModule: RemoteDesktopModule) {
         this.resize = this._resize.asObservable();
+        this.importedModule = importedModule;
         loggingService.info('Web bridge initialized.');
     }
 
     async init(debug: LogType) {
         loggingService.info('Loading wasm file.');
-        await init();
+        await this.importedModule.init();
         loggingService.info('Initializing IronRDP.');
-        ironrdp_init(LogType[debug]);
+        this.importedModule.remote_desktop_init(LogType[debug]);
     }
 
     // If set to false, the clipboard will not be enabled and the callbacks will not be registered to the Rust side
@@ -115,12 +125,14 @@ export class WasmBridgeService {
         if (preventDefault) {
             event.preventDefault(); // prevent default behavior (context menu, etc)
         }
-        const mouseFnc = isDown ? DeviceEvent.new_mouse_button_pressed : DeviceEvent.new_mouse_button_released;
+        const mouseFnc = isDown
+            ? this.importedModule.DeviceEvent.new_mouse_button_pressed
+            : this.importedModule.DeviceEvent.new_mouse_button_released;
         this.doTransactionFromDeviceEvents([mouseFnc(event.button)]);
     }
 
     updateMousePosition(position: MousePosition) {
-        this.doTransactionFromDeviceEvents([DeviceEvent.new_mouse_move(position.x, position.y)]);
+        this.doTransactionFromDeviceEvents([this.importedModule.DeviceEvent.new_mouse_move(position.x, position.y)]);
         this.mousePosition.next(position);
     }
 
@@ -131,12 +143,13 @@ export class WasmBridgeService {
         proxyAddress: string,
         serverDomain: string,
         authToken: string,
-        desktopSize?: IDesktopSize,
+        desktopSize?: DesktopSize,
         preConnectionBlob?: string,
         kdc_proxy_url?: string,
         use_display_control = true,
     ): Observable<NewSessionInfo> {
-        const sessionBuilder = SessionBuilder.new();
+        const sessionBuilder = this.importedModule.SessionBuilder.construct();
+
         sessionBuilder.proxy_address(proxyAddress);
         sessionBuilder.destination(destination);
         sessionBuilder.server_domain(serverDomain);
@@ -146,13 +159,13 @@ export class WasmBridgeService {
         sessionBuilder.render_canvas(this.canvas!);
         sessionBuilder.set_cursor_style_callback_context(this);
         sessionBuilder.set_cursor_style_callback(this.setCursorStyleCallback);
-        sessionBuilder.kdc_proxy_url(kdc_proxy_url);
-        if (use_display_control) {
-            sessionBuilder.use_display_control();
-        }
+        sessionBuilder.extension({ DisplayControl: use_display_control });
 
         if (preConnectionBlob != null) {
-            sessionBuilder.pcb(preConnectionBlob);
+            sessionBuilder.extension({ Pcb: preConnectionBlob });
+        }
+        if (kdc_proxy_url != null) {
+            sessionBuilder.extension({ KdcProxyUrl: kdc_proxy_url });
         }
         if (this.onRemoteClipboardChanged != null && this.enableClipboard) {
             sessionBuilder.remote_clipboard_changed_callback(this.onRemoteClipboardChanged);
@@ -165,21 +178,24 @@ export class WasmBridgeService {
         }
 
         if (desktopSize != null) {
-            sessionBuilder.desktop_size(DesktopSize.new(desktopSize.width, desktopSize.height));
+            sessionBuilder.desktop_size(
+                this.importedModule.DesktopSize.construct(desktopSize.width, desktopSize.height),
+            );
         }
 
         // Type guard to filter out errors
-        function isSession(result: IronRdpError | Session): result is Session {
-            return result instanceof Session;
+        function isSession(result: RemoteDesktopError | Session): result is Session {
+            // Check whether function exists. To make it more robust we can check every method.
+            return (<Session>result).run() !== undefined;
         }
 
         return from(sessionBuilder.connect()).pipe(
-            catchError((err: IronRdpError) => {
+            catchError((err: RemoteDesktopError) => {
                 this.raiseSessionEvent({
                     type: SessionEventType.ERROR,
                     data: {
                         backtrace: () => err.backtrace(),
-                        kind: () => err.kind() as number as UserIronRdpErrorKind,
+                        kind: () => err.kind() as number as RemoteDesktopErrorKind,
                     },
                 });
                 return of(err);
@@ -245,7 +261,7 @@ export class WasmBridgeService {
     mouseWheel(event: WheelEvent) {
         const vertical = event.deltaY !== 0;
         const rotation = vertical ? event.deltaY : event.deltaX;
-        this.doTransactionFromDeviceEvents([DeviceEvent.new_wheel_rotations(vertical, -rotation)]);
+        this.doTransactionFromDeviceEvents([this.importedModule.DeviceEvent.new_wheel_rotations(vertical, -rotation)]);
     }
 
     setVisibility(state: boolean) {
@@ -314,11 +330,11 @@ export class WasmBridgeService {
         let unicodeEvent;
 
         if (evt.type === 'keydown') {
-            keyEvent = DeviceEvent.new_key_pressed;
-            unicodeEvent = DeviceEvent.new_unicode_pressed;
+            keyEvent = this.importedModule.DeviceEvent.new_key_pressed;
+            unicodeEvent = this.importedModule.DeviceEvent.new_unicode_pressed;
         } else if (evt.type === 'keyup') {
-            keyEvent = DeviceEvent.new_key_released;
-            unicodeEvent = DeviceEvent.new_unicode_released;
+            keyEvent = this.importedModule.DeviceEvent.new_key_released;
+            unicodeEvent = this.importedModule.DeviceEvent.new_unicode_released;
         }
 
         let sendAsUnicode = true;
@@ -426,12 +442,14 @@ export class WasmBridgeService {
         const syncScrollLockActive = evt.getModifierState(LockKey.SCROLL_LOCK);
         const syncKanaModeActive = evt.getModifierState(LockKey.KANA_MODE);
 
-        this.session?.synchronize_lock_keys(
-            syncScrollLockActive,
-            syncNumsLockActive,
-            syncCapsLockActive,
-            syncKanaModeActive,
-        );
+        this.session?.extension_call({
+            SynchronizeLockKeys: {
+                scroll_lock: syncScrollLockActive,
+                num_lock: syncNumsLockActive,
+                caps_lock: syncCapsLockActive,
+                kana_lock: syncKanaModeActive,
+            },
+        });
     }
 
     private raiseSessionEvent(event: SessionEvent) {
@@ -449,7 +467,7 @@ export class WasmBridgeService {
     }
 
     private doTransactionFromDeviceEvents(deviceEvents: DeviceEvent[]) {
-        const transaction = InputTransaction.new();
+        const transaction = this.importedModule.InputTransaction.construct();
         deviceEvents.forEach((event) => transaction.add_event(event));
         this.session?.apply_inputs(transaction);
     }
@@ -460,18 +478,21 @@ export class WasmBridgeService {
         const suppr = parseInt('0xE053', 16);
 
         this.doTransactionFromDeviceEvents([
-            DeviceEvent.new_key_pressed(ctrl),
-            DeviceEvent.new_key_pressed(alt),
-            DeviceEvent.new_key_pressed(suppr),
-            DeviceEvent.new_key_released(ctrl),
-            DeviceEvent.new_key_released(alt),
-            DeviceEvent.new_key_released(suppr),
+            this.importedModule.DeviceEvent.new_key_pressed(ctrl),
+            this.importedModule.DeviceEvent.new_key_pressed(alt),
+            this.importedModule.DeviceEvent.new_key_pressed(suppr),
+            this.importedModule.DeviceEvent.new_key_released(ctrl),
+            this.importedModule.DeviceEvent.new_key_released(alt),
+            this.importedModule.DeviceEvent.new_key_released(suppr),
         ]);
     }
 
     private sendMeta() {
         const meta = parseInt('0xE05B', 16);
 
-        this.doTransactionFromDeviceEvents([DeviceEvent.new_key_pressed(meta), DeviceEvent.new_key_released(meta)]);
+        this.doTransactionFromDeviceEvents([
+            this.importedModule.DeviceEvent.new_key_pressed(meta),
+            this.importedModule.DeviceEvent.new_key_released(meta),
+        ]);
     }
 }

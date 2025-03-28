@@ -6,7 +6,7 @@ let run = async function (command, cwd) {
             stdio: 'pipe',
             shell: true,
             cwd: cwd,
-            env: { ...process.env, RUSTFLAGS: '-Ctarget-feature=+simd128' },
+            env: { ...process.env, RUSTFLAGS: '-Ctarget-feature=+simd128,+bulk-memory' },
         });
 
         buildCommand.stdout.on('data', (data) => {

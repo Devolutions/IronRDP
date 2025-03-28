@@ -1,5 +1,5 @@
 {
-  "name": "@devolutions/iron-remote-gui",
+  "name": "@devolutions/iron-remote-desktop",
   "author": "Nicolas Girot",
   "email": "ngirot@devolutions.net",
   "contributors": [
@@ -10,10 +10,10 @@
   ],
   "description": "Web Component providing agnostic implementation for Iron Wasm base client.",
   "version": "0.13.1",
-  "main": "iron-remote-gui.js",
+  "main": "iron-remote-desktop.js",
   "types": "index.d.ts",
   "files": [
-    "iron-remote-gui.js",
+    "iron-remote-desktop.js",
     "index.d.ts"
   ],
   "dependencies": {

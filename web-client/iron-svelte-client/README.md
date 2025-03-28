@@ -1,7 +1,7 @@
 # SvelteKit UI for IronRDP
 
 Web-based frontend using [`SvelteKit`](https://kit.svelte.dev/) and [`Material`](https://material.io) frameworks.
-This is a simple wrapper around the `iron-remote-gui` Web Component demonstrating how to use the API.
+This is a simple wrapper around the `iron-remote-desktop-rdp` Web Component demonstrating how to use the API.
 
 Note that this demonstration client is not intended to be used in production as-is.
 Devolutions is shipping well-integrated, production-ready IronRDP web clients as part of:
@@ -111,13 +111,13 @@ If you have a Rust toolchain available, you can use the [`tokengen`][tokengen] t
 
 ## Run in development mode
 
-First, run `npm install` in the [iron-remote-gui](../iron-remote-gui/) folder, and then `npm install` in [iron-svelte-client](./) folder.
+First, run `npm install` in the [iron-remote-desktop-rdp](../iron-remote-desktop-rdp/) folder, and then `npm install` in [iron-svelte-client](./) folder.
 
 You can then start the dev server with either:
 
 - `npm run dev` - Runs only the final application.
-- `npm run dev-all` - Builds WASM module and `iron-remote-gui` prior to starting the dev server.
-- `npm run dev-no-wasm` - Only builds `iron-remote-gui` prior to starting the dev server.
+- `npm run dev-all` - Builds WASM module and `iron-remote-desktop` prior to starting the dev server.
+- `npm run dev-no-wasm` - Only builds `iron-remote-desktop` prior to starting the dev server.
 
 You can build distribution files with `npm run build`.
 Files are to be found in `./iron-svelte-client/build/browser`.
