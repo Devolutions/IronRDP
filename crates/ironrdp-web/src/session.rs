@@ -209,7 +209,6 @@ impl SessionBuilder {
         match serde_wasm_bindgen::from_value::<Extension>(value) {
             Ok(value) => match value {
                 Extension::KdcProxyUrl(kdc_proxy_url) => self.0.borrow_mut().kdc_proxy_url = Some(kdc_proxy_url),
-
                 Extension::Pcb(pcb) => self.0.borrow_mut().pcb = Some(pcb),
                 Extension::DisplayControl(use_display_control) => {
                     self.0.borrow_mut().use_display_control = use_display_control
