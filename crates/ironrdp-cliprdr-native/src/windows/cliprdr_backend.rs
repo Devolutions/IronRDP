@@ -54,6 +54,8 @@ impl CliprdrBackend for WinCliprdrBackend {
         ClipboardGeneralCapabilityFlags::empty()
     }
 
+    fn on_ready(&mut self) {}
+
     fn on_process_negotiated_capabilities(&mut self, capabilities: ClipboardGeneralCapabilityFlags) {
         self.send_event(BackendEvent::DowngradedCapabilities(capabilities))
     }
