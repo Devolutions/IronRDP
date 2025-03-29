@@ -1,6 +1,7 @@
 use core::num::NonZeroU16;
 
 use anyhow::Result;
+use bytes::{Bytes, BytesMut};
 use ironrdp_displaycontrol::pdu::DisplayControlMonitorLayout;
 use ironrdp_pdu::pointer::PointerPositionAttribute;
 
@@ -22,12 +23,6 @@ pub enum DisplayUpdate {
     RGBAPointer(RGBAPointer),
     HidePointer,
     DefaultPointer,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum PixelOrder {
-    TopToBottom,
-    BottomToTop,
 }
 
 #[derive(Clone)]
@@ -61,6 +56,44 @@ pub struct ColorPointer {
     pub xor_mask: Vec<u8>,
 }
 
+pub struct Framebuffer {
+    pub width: NonZeroU16,
+    pub height: NonZeroU16,
+    pub format: PixelFormat,
+    pub data: BytesMut,
+    pub stride: usize,
+}
+
+impl Framebuffer {
+    pub fn new(width: NonZeroU16, height: NonZeroU16, format: PixelFormat) -> Self {
+        let stride = usize::from(width.get()) * usize::from(format.bytes_per_pixel());
+        let data = BytesMut::zeroed(stride * usize::from(height.get()));
+        Framebuffer {
+            width,
+            height,
+            format,
+            data,
+            stride,
+        }
+    }
+}
+
+impl TryInto<Framebuffer> for BitmapUpdate {
+    type Error = &'static str;
+
+    fn try_into(self) -> Result<Framebuffer, Self::Error> {
+        assert_eq!(self.x, 0);
+        assert_eq!(self.y, 0);
+        Ok(Framebuffer {
+            width: self.width,
+            height: self.height,
+            format: self.format,
+            data: self.data.try_into_mut().map_err(|_| "BitmapUpdate is shared")?,
+            stride: self.stride,
+        })
+    }
+}
+
 /// Bitmap Display Update
 ///
 /// Bitmap updates are encoded using RDP 6.0 compression, fragmented and sent using
@@ -68,25 +101,103 @@ pub struct ColorPointer {
 ///
 #[derive(Clone)]
 pub struct BitmapUpdate {
-    pub top: u16,
-    pub left: u16,
+    pub x: u16,
+    pub y: u16,
     pub width: NonZeroU16,
     pub height: NonZeroU16,
     pub format: PixelFormat,
-    pub order: PixelOrder,
-    pub data: Vec<u8>,
+    pub data: Bytes,
     pub stride: usize,
+}
+
+impl BitmapUpdate {
+    pub fn new<D>(
+        x: u16,
+        y: u16,
+        width: NonZeroU16,
+        height: NonZeroU16,
+        format: PixelFormat,
+        data: D,
+        stride: usize,
+    ) -> Self
+    where
+        D: Into<Bytes>,
+    {
+        Self {
+            x,
+            y,
+            width,
+            height,
+            format,
+            data: data.into(),
+            stride,
+        }
+    }
+
+    /// Extracts a sub-region of the bitmap update.
+    ///
+    /// # Parameters
+    ///
+    /// - `x`: The x-coordinate of the top-left corner of the sub-region.
+    /// - `y`: The y-coordinate of the top-left corner of the sub-region.
+    /// - `width`: The width of the sub-region.
+    /// - `height`: The height of the sub-region.
+    ///
+    /// # Returns
+    ///
+    /// An `Option` containing a new `BitmapUpdate` representing the sub-region if the specified
+    /// dimensions are within the bounds of the original bitmap update, otherwise `None`.
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// # use core::num::NonZeroU16;
+    /// # use bytes::Bytes;
+    /// # use ironrdp_graphics::image_processing::PixelFormat;
+    /// # use ironrdp_server::BitmapUpdate;
+    /// let original = BitmapUpdate::new(
+    ///     0,
+    ///     0,
+    ///     NonZeroU16::new(100).unwrap(),
+    ///     NonZeroU16::new(100).unwrap(),
+    ///     PixelFormat::ARgb32,
+    ///     Bytes::from(vec![0; 40000]),
+    ///     400,
+    /// );
+    ///
+    /// let sub_region = original.sub(10, 10, NonZeroU16::new(50).unwrap(), NonZeroU16::new(50).unwrap());
+    /// assert!(sub_region.is_some());
+    /// ```
+    #[must_use]
+    pub fn sub(&self, x: u16, y: u16, width: NonZeroU16, height: NonZeroU16) -> Option<Self> {
+        if x + width.get() > self.width.get() || y + height.get() > self.height.get() {
+            None
+        } else {
+            let bpp = usize::from(self.format.bytes_per_pixel());
+            let start = usize::from(y) * self.stride + usize::from(x) * bpp;
+            let end = start + usize::from(height.get() - 1) * self.stride + usize::from(width.get()) * bpp;
+            Some(Self {
+                x: self.x + x,
+                y: self.y + y,
+                width,
+                height,
+                format: self.format,
+                data: self.data.slice(start..end),
+                stride: self.stride,
+            })
+        }
+    }
 }
 
 impl core::fmt::Debug for BitmapUpdate {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("BitmapUpdate")
-            .field("top", &self.top)
-            .field("left", &self.left)
+            .field("x", &self.x)
+            .field("y", &self.y)
             .field("width", &self.width)
             .field("height", &self.height)
             .field("format", &self.format)
-            .field("order", &self.order)
+            .field("stride", &self.stride)
             .finish()
     }
 }
