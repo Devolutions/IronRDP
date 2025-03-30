@@ -9,12 +9,16 @@ use ironrdp_pdu::codecs::rfx::FrameAcknowledgePdu;
 use ironrdp_pdu::fast_path::{FastPathHeader, FastPathUpdate, FastPathUpdatePdu, Fragmentation};
 use ironrdp_pdu::geometry::{InclusiveRectangle, Rectangle as _};
 use ironrdp_pdu::pointer::PointerUpdateData;
+#[cfg(feature = "qoi")]
+use ironrdp_pdu::rdp::capability_sets::CODEC_ID_QOI;
+#[cfg(feature = "qoiz")]
+use ironrdp_pdu::rdp::capability_sets::CODEC_ID_QOIZ;
+use ironrdp_pdu::rdp::capability_sets::{CodecId, CODEC_ID_NONE, CODEC_ID_REMOTEFX};
 use ironrdp_pdu::rdp::headers::ShareDataPdu;
 use ironrdp_pdu::surface_commands::{FrameAction, FrameMarkerPdu, SurfaceCommand};
 
 use crate::image::DecodedImage;
 use crate::pointer::PointerCache;
-use crate::utils::CodecId;
 use crate::{rfx, SessionError, SessionErrorExt, SessionResult};
 
 #[derive(Debug)]
@@ -37,6 +41,8 @@ pub struct Processor {
     mouse_pos_update: Option<(u16, u16)>,
     no_server_pointer: bool,
     pointer_software_rendering: bool,
+    #[cfg(feature = "qoiz")]
+    zdctx: zstd_safe::DCtx<'static>,
 }
 
 impl Processor {
@@ -337,7 +343,7 @@ impl Processor {
                         bottom: destination.bottom - 1,
                     };
                     match codec_id {
-                        CodecId::None => {
+                        CODEC_ID_NONE => {
                             let ext_data = bits.extended_bitmap_data;
                             match ext_data.bpp {
                                 32 => {
@@ -350,12 +356,65 @@ impl Processor {
                                 }
                             }
                         }
-                        CodecId::RemoteFx => {
+                        CODEC_ID_REMOTEFX => {
                             let mut data = ReadCursor::new(bits.extended_bitmap_data.data);
                             while !data.is_empty() {
                                 let (_frame_id, rectangle) = self.rfx_handler.decode(image, &destination, &mut data)?;
                                 update_rectangle = update_rectangle.union(&rectangle);
                             }
+                        }
+                        #[cfg(feature = "qoi")]
+                        CODEC_ID_QOI => {
+                            let (header, decoded) = qoi::decode_to_vec(bits.extended_bitmap_data.data)
+                                .map_err(|e| reason_err!("QOI decode", "{}", e))?;
+                            match header.channels {
+                                qoi::Channels::Rgb => {
+                                    let rectangle = image.apply_rgb24::<false>(&decoded, &destination)?;
+                                    update_rectangle = update_rectangle.union(&rectangle);
+                                }
+                                qoi::Channels::Rgba => {
+                                    warn!("Unsupported RGBA QOI data");
+                                    // TODO: bitmap is rev...
+                                    // image.apply_rgb32_bitmap(&decoded, PixelFormat::RgbA32, &destination)?;
+                                }
+                            }
+                        }
+                        #[cfg(feature = "qoiz")]
+                        CODEC_ID_QOIZ => {
+                            let compressed = &bits.extended_bitmap_data.data;
+                            let mut input = zstd_safe::InBuffer::around(compressed);
+                            let mut data = vec![0; compressed.len() * 4];
+                            let mut pos = 0;
+                            loop {
+                                let mut output = zstd_safe::OutBuffer::around_pos(data.as_mut_slice(), pos);
+                                self.zdctx
+                                    .decompress_stream(&mut output, &mut input)
+                                    .map_err(zstd_safe::get_error_name)
+                                    .map_err(|e| reason_err!("zstd", "{}", e))?;
+                                pos = output.pos();
+                                if pos == output.capacity() {
+                                    data.resize(data.capacity() * 2, 0);
+                                } else {
+                                    break;
+                                }
+                            }
+
+                            let (header, decoded) =
+                                qoi::decode_to_vec(&data).map_err(|e| custom_err!("QOIz decode", e))?;
+                            match header.channels {
+                                qoi::Channels::Rgb => {
+                                    let rectangle = image.apply_rgb24::<false>(&decoded, &destination)?;
+                                    update_rectangle = update_rectangle.union(&rectangle);
+                                }
+                                qoi::Channels::Rgba => {
+                                    warn!("Unsupported RGBA QOI data");
+                                    // TODO: bitmap is rev...
+                                    // image.apply_rgb32_bitmap(&decoded, PixelFormat::RgbA32, &destination)?;
+                                }
+                            }
+                        }
+                        _ => {
+                            warn!("Unsupported codec ID: {}", bits.extended_bitmap_data.codec_id);
                         }
                     }
                 }
@@ -397,6 +456,8 @@ impl ProcessorBuilder {
             mouse_pos_update: None,
             no_server_pointer: self.no_server_pointer,
             pointer_software_rendering: self.pointer_software_rendering,
+            #[cfg(feature = "qoiz")]
+            zdctx: zstd_safe::DCtx::default(),
         }
     }
 }

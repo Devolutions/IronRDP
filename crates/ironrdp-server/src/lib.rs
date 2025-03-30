@@ -32,6 +32,8 @@ pub mod bench {
         pub mod rfx {
             pub use crate::encoder::rfx::bench::{rfx_enc, rfx_enc_tile};
         }
+
+        pub use crate::encoder::{UpdateEncoder, UpdateEncoderCodecs};
     }
 }
 
@@ -57,4 +59,11 @@ macro_rules! time_warn {
         }
         result
     }};
+}
+
+#[cfg(test)]
+mod tests {
+    use bytesize as _;
+    use pico_args as _;
+    use tracing_subscriber as _;
 }
