@@ -154,6 +154,7 @@ impl<R: Role> Cliprdr<R> {
                     if self.state == CliprdrState::Initialization {
                         info!("CLIPRDR(clipboard) virtual channel has been initialized");
                         self.state = CliprdrState::Ready;
+                        self.backend.on_ready();
                     } else {
                         info!("CLIPRDR(clipboard) Remote has received format list successfully");
                     }
@@ -173,6 +174,7 @@ impl<R: Role> Cliprdr<R> {
         if R::is_server() && self.state == CliprdrState::Initialization {
             info!("CLIPRDR(clipboard) virtual channel has been initialized");
             self.state = CliprdrState::Ready;
+            self.backend.on_ready();
         }
 
         let formats = format_list.get_formats(self.are_long_format_names_enabled())?;

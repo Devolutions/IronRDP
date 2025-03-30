@@ -540,6 +540,8 @@ impl CliprdrBackend for WasmClipboardBackend {
         ClipboardGeneralCapabilityFlags::empty()
     }
 
+    fn on_ready(&mut self) {}
+
     fn on_request_format_list(&mut self) {
         // Initial clipboard is assumed to be empty on WASM (TODO: This is only relevant for Firefox?)
         self.send_event(WasmClipboardBackendMessage::ForceClipboardUpdate);
