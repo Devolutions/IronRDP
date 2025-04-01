@@ -13,6 +13,7 @@ mod session;
 use core::future::Future;
 use core::pin::Pin;
 
+pub use ironrdp_connector;
 use ironrdp_connector::sspi::generator::NetworkRequest;
 use ironrdp_connector::ConnectorResult;
 

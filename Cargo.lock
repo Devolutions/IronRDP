@@ -2432,16 +2432,13 @@ dependencies = [
  "ironrdp-tokio",
  "proc-exit",
  "raw-window-handle",
- "reqwest",
  "semver",
  "smallvec",
  "softbuffer",
- "sspi",
  "tap",
  "tokio",
  "tracing",
  "tracing-subscriber",
- "url",
  "uuid",
  "whoami",
  "windows 0.58.0",
@@ -2783,7 +2780,10 @@ version = "0.3.0"
 dependencies = [
  "bytes",
  "ironrdp-async",
+ "reqwest",
+ "sspi",
  "tokio",
+ "url",
 ]
 
 [[package]]
