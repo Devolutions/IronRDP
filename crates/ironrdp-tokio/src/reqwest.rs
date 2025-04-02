@@ -2,15 +2,16 @@ use core::future::Future;
 use core::pin::Pin;
 use std::net::{IpAddr, Ipv4Addr};
 
-use ironrdp::connector::{custom_err, ConnectorResult};
-use ironrdp_tokio::AsyncNetworkClient;
+use ironrdp_async::ironrdp_connector::{custom_err, ConnectorResult};
 use reqwest::Client;
 use sspi::{Error, ErrorKind};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpStream, UdpSocket};
 use url::Url;
 
-pub(crate) struct ReqwestNetworkClient {
+use crate::AsyncNetworkClient;
+
+pub struct ReqwestNetworkClient {
     client: Option<Client>,
 }
 
@@ -32,8 +33,14 @@ impl AsyncNetworkClient for ReqwestNetworkClient {
 }
 
 impl ReqwestNetworkClient {
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         Self { client: None }
+    }
+}
+
+impl Default for ReqwestNetworkClient {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -89,10 +96,12 @@ impl ReqwestNetworkClient {
             .recv(&mut buf)
             .await
             .map_err(|e| custom_err!("failed to receive UDP request", e))?;
+        let buf = &buf[0..n];
 
         let mut reply_buf = Vec::with_capacity(n + 4);
-        reply_buf.extend_from_slice(&(n as u32).to_be_bytes());
-        reply_buf.extend_from_slice(&buf[0..n]);
+        let n = u32::try_from(n).map_err(|e| custom_err!("invalid length", e))?;
+        reply_buf.extend_from_slice(&n.to_be_bytes());
+        reply_buf.extend_from_slice(buf);
 
         Ok(reply_buf)
     }

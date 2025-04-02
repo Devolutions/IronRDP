@@ -4,6 +4,9 @@
 #[rustfmt::skip] // do not re-order this pub use
 pub use ironrdp_async::*;
 
+#[cfg(feature = "reqwest")]
+pub mod reqwest;
+
 use core::pin::Pin;
 use std::io;
 
