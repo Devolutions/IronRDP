@@ -310,7 +310,7 @@ impl Processor {
         output: &mut WriteBuf,
         surface_commands: Vec<SurfaceCommand<'_>>,
     ) -> SessionResult<InclusiveRectangle> {
-        let mut update_rectangle = InclusiveRectangle::empty();
+        let mut update_rectangle = None;
 
         for command in surface_commands {
             match command {
@@ -343,7 +343,9 @@ impl Processor {
                                 32 => {
                                     let rectangle =
                                         image.apply_rgb32_bitmap(ext_data.data, PixelFormat::BgrX32, &destination)?;
-                                    update_rectangle = update_rectangle.union(&rectangle);
+                                    update_rectangle = update_rectangle
+                                        .map(|rect: InclusiveRectangle| rect.union(&rectangle))
+                                        .or(Some(rectangle));
                                 }
                                 bpp => {
                                     warn!("Unsupported bpp: {bpp}")
@@ -354,7 +356,9 @@ impl Processor {
                             let mut data = ReadCursor::new(bits.extended_bitmap_data.data);
                             while !data.is_empty() {
                                 let (_frame_id, rectangle) = self.rfx_handler.decode(image, &destination, &mut data)?;
-                                update_rectangle = update_rectangle.union(&rectangle);
+                                update_rectangle = update_rectangle
+                                    .map(|rect: InclusiveRectangle| rect.union(&rectangle))
+                                    .or(Some(rectangle));
                             }
                         }
                     }
@@ -370,7 +374,7 @@ impl Processor {
             }
         }
 
-        Ok(update_rectangle)
+        Ok(update_rectangle.unwrap_or_else(InclusiveRectangle::empty))
     }
 }
 
