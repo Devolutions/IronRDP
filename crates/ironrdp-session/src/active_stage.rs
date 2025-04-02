@@ -1,4 +1,4 @@
-use std::rc::Rc;
+use std::sync::Arc;
 
 use ironrdp_connector::connection_activation::ConnectionActivationSequence;
 use ironrdp_connector::ConnectionResult;
@@ -254,7 +254,7 @@ pub enum ActiveStageOutput {
     PointerDefault,
     PointerHidden,
     PointerPosition { x: u16, y: u16 },
-    PointerBitmap(Rc<DecodedPointer>),
+    PointerBitmap(Arc<DecodedPointer>),
     Terminate(GracefulDisconnectReason),
     DeactivateAll(Box<ConnectionActivationSequence>),
 }
