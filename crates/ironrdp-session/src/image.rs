@@ -175,6 +175,21 @@ impl DecodedImage {
         self.width
     }
 
+    pub fn bytes_per_pixel(&self) -> usize {
+        usize::from(self.pixel_format.bytes_per_pixel())
+    }
+
+    pub fn stride(&self) -> usize {
+        usize::from(self.width) * self.bytes_per_pixel()
+    }
+
+    pub fn data_for_rect(&self, rect: &InclusiveRectangle) -> &[u8] {
+        let start = usize::from(rect.left) * self.bytes_per_pixel() + usize::from(rect.top) * self.stride();
+        let end =
+            start + usize::from(rect.height() - 1) * self.stride() + usize::from(rect.width()) * self.bytes_per_pixel();
+        &self.data[start..end]
+    }
+
     pub fn height(&self) -> u16 {
         self.height
     }
