@@ -1,4 +1,4 @@
-use std::rc::Rc;
+use std::sync::Arc;
 
 use ironrdp_core::{decode_cursor, DecodeErrorKind, ReadCursor, WriteBuf};
 use ironrdp_graphics::image_processing::PixelFormat;
@@ -24,7 +24,7 @@ pub enum UpdateKind {
     PointerDefault,
     PointerHidden,
     PointerPosition { x: u16, y: u16 },
-    PointerBitmap(Rc<DecodedPointer>),
+    PointerBitmap(Arc<DecodedPointer>),
 }
 
 pub struct Processor {
@@ -216,17 +216,17 @@ impl Processor {
                     PointerUpdateData::Color(pointer) => {
                         let cache_index = pointer.cache_index;
 
-                        let decoded_pointer = Rc::new(
+                        let decoded_pointer = Arc::new(
                             DecodedPointer::decode_color_pointer_attribute(&pointer, bitmap_target)
                                 .expect("Failed to decode color pointer attribute"),
                         );
 
                         let _ = self
                             .pointer_cache
-                            .insert(usize::from(cache_index), Rc::clone(&decoded_pointer));
+                            .insert(usize::from(cache_index), Arc::clone(&decoded_pointer));
 
                         if !self.pointer_software_rendering {
-                            processor_updates.push(UpdateKind::PointerBitmap(Rc::clone(&decoded_pointer)));
+                            processor_updates.push(UpdateKind::PointerBitmap(Arc::clone(&decoded_pointer)));
                         } else if let Some(rect) = image.update_pointer(decoded_pointer)? {
                             processor_updates.push(UpdateKind::Region(rect));
                         }
@@ -240,7 +240,7 @@ impl Processor {
                             self.use_system_pointer = false;
                             // Send graphics update
                             if !self.pointer_software_rendering {
-                                processor_updates.push(UpdateKind::PointerBitmap(Rc::clone(&cached_pointer)));
+                                processor_updates.push(UpdateKind::PointerBitmap(Arc::clone(&cached_pointer)));
                             } else if let Some(rect) = image.update_pointer(cached_pointer)? {
                                 processor_updates.push(UpdateKind::Region(rect));
                             } else {
@@ -256,17 +256,17 @@ impl Processor {
                     PointerUpdateData::New(pointer) => {
                         let cache_index = pointer.color_pointer.cache_index;
 
-                        let decoded_pointer = Rc::new(
+                        let decoded_pointer = Arc::new(
                             DecodedPointer::decode_pointer_attribute(&pointer, bitmap_target)
                                 .expect("Failed to decode pointer attribute"),
                         );
 
                         let _ = self
                             .pointer_cache
-                            .insert(usize::from(cache_index), Rc::clone(&decoded_pointer));
+                            .insert(usize::from(cache_index), Arc::clone(&decoded_pointer));
 
                         if !self.pointer_software_rendering {
-                            processor_updates.push(UpdateKind::PointerBitmap(Rc::clone(&decoded_pointer)));
+                            processor_updates.push(UpdateKind::PointerBitmap(Arc::clone(&decoded_pointer)));
                         } else if let Some(rect) = image.update_pointer(decoded_pointer)? {
                             processor_updates.push(UpdateKind::Region(rect));
                         }
@@ -274,17 +274,17 @@ impl Processor {
                     PointerUpdateData::Large(pointer) => {
                         let cache_index = pointer.cache_index;
 
-                        let decoded_pointer: Rc<DecodedPointer> = Rc::new(
+                        let decoded_pointer: Arc<DecodedPointer> = Arc::new(
                             DecodedPointer::decode_large_pointer_attribute(&pointer, bitmap_target)
                                 .expect("Failed to decode large pointer attribute"),
                         );
 
                         let _ = self
                             .pointer_cache
-                            .insert(usize::from(cache_index), Rc::clone(&decoded_pointer));
+                            .insert(usize::from(cache_index), Arc::clone(&decoded_pointer));
 
                         if !self.pointer_software_rendering {
-                            processor_updates.push(UpdateKind::PointerBitmap(Rc::clone(&decoded_pointer)));
+                            processor_updates.push(UpdateKind::PointerBitmap(Arc::clone(&decoded_pointer)));
                         } else if let Some(rect) = image.update_pointer(decoded_pointer)? {
                             processor_updates.push(UpdateKind::Region(rect));
                         }
@@ -310,7 +310,7 @@ impl Processor {
         output: &mut WriteBuf,
         surface_commands: Vec<SurfaceCommand<'_>>,
     ) -> SessionResult<InclusiveRectangle> {
-        let mut update_rectangle = InclusiveRectangle::empty();
+        let mut update_rectangle = None;
 
         for command in surface_commands {
             match command {
@@ -343,7 +343,9 @@ impl Processor {
                                 32 => {
                                     let rectangle =
                                         image.apply_rgb32_bitmap(ext_data.data, PixelFormat::BgrX32, &destination)?;
-                                    update_rectangle = update_rectangle.union(&rectangle);
+                                    update_rectangle = update_rectangle
+                                        .map(|rect: InclusiveRectangle| rect.union(&rectangle))
+                                        .or(Some(rectangle));
                                 }
                                 bpp => {
                                     warn!("Unsupported bpp: {bpp}")
@@ -354,7 +356,9 @@ impl Processor {
                             let mut data = ReadCursor::new(bits.extended_bitmap_data.data);
                             while !data.is_empty() {
                                 let (_frame_id, rectangle) = self.rfx_handler.decode(image, &destination, &mut data)?;
-                                update_rectangle = update_rectangle.union(&rectangle);
+                                update_rectangle = update_rectangle
+                                    .map(|rect: InclusiveRectangle| rect.union(&rectangle))
+                                    .or(Some(rectangle));
                             }
                         }
                     }
@@ -370,7 +374,7 @@ impl Processor {
             }
         }
 
-        Ok(update_rectangle)
+        Ok(update_rectangle.unwrap_or_else(InclusiveRectangle::empty))
     }
 }
 

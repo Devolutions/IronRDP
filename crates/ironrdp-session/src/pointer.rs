@@ -1,20 +1,20 @@
 use std::collections::HashMap;
-use std::rc::Rc;
+use std::sync::Arc;
 
 use ironrdp_graphics::pointer::DecodedPointer;
 
 #[derive(Debug, Clone, Default)]
 pub struct PointerCache {
     // TODO(@pacancoder) maybe use Vec<Optional<...>> instead?
-    cache: HashMap<usize, Rc<DecodedPointer>>,
+    cache: HashMap<usize, Arc<DecodedPointer>>,
 }
 
 impl PointerCache {
-    pub fn insert(&mut self, id: usize, pointer: Rc<DecodedPointer>) -> Option<Rc<DecodedPointer>> {
+    pub fn insert(&mut self, id: usize, pointer: Arc<DecodedPointer>) -> Option<Arc<DecodedPointer>> {
         self.cache.insert(id, pointer)
     }
 
-    pub fn get(&self, id: usize) -> Option<Rc<DecodedPointer>> {
+    pub fn get(&self, id: usize) -> Option<Arc<DecodedPointer>> {
         self.cache.get(&id).cloned()
     }
 

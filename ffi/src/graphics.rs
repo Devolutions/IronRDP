@@ -1,11 +1,11 @@
 #[diplomat::bridge]
 pub mod ffi {
-    use std::rc::Rc;
+    use std::sync::Arc;
 
     use crate::utils::ffi::BytesSlice;
 
     #[diplomat::opaque]
-    pub struct DecodedPointer(pub Rc<ironrdp::graphics::pointer::DecodedPointer>);
+    pub struct DecodedPointer(pub Arc<ironrdp::graphics::pointer::DecodedPointer>);
 
     impl DecodedPointer {
         pub fn get_width(&self) -> u16 {
