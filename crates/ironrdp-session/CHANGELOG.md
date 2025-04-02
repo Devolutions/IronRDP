@@ -6,6 +6,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [[0.3.1](https://github.com/Devolutions/IronRDP/compare/ironrdp-session-v0.3.0...ironrdp-session-v0.3.1)] - 2025-04-02
+
+### <!-- 4 -->Bug Fixes
+
+- Update rectangle when applying None codecs updates (#728) ([a50cd643dc](https://github.com/Devolutions/IronRDP/commit/a50cd643dce9621f314231b7598d2fd31e4718c6)) 
+
+### <!-- 6 -->Documentation
+
+- Misc doc annotation fix ([b957c085b3](https://github.com/Devolutions/IronRDP/commit/b957c085b317f0823a41fdfde3ec694601b5d132)) 
+
+### <!-- 99 -->Please Sort
+
+- Trace the surface codec ([ff26400822](https://github.com/Devolutions/IronRDP/commit/ff264008223cd808b0c2e86e961a4c20265d614e)) 
+
+
+
 ## [[0.3.0](https://github.com/Devolutions/IronRDP/compare/ironrdp-session-v0.2.3...ironrdp-session-v0.3.0)] - 2025-03-12
 
 ### <!-- 7 -->Build
