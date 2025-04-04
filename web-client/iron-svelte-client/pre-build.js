@@ -57,7 +57,6 @@ let copyCoreFiles = async function () {
             });
             resolve();
         });
-
     });
 };
 

@@ -1,7 +1,6 @@
 import typescriptEslint from '@typescript-eslint/eslint-plugin';
 import globals from 'globals';
 import tsParser from '@typescript-eslint/parser';
-import svelteParser from 'svelte-eslint-parser';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import js from '@eslint/js';
@@ -22,7 +21,6 @@ export default [
             '**/.DS_Store',
             '**/node_modules',
             'build',
-            '.svelte-kit',
             'package',
             '**/.env',
             '**/.env.*',
@@ -50,7 +48,6 @@ export default [
 
             parserOptions: {
                 project: './tsconfig.json',
-                extraFileExtensions: ['.svelte'],
             },
         },
 
@@ -78,19 +75,6 @@ export default [
                     endOfLine: 'auto',
                 },
             ],
-        },
-    },
-    {
-        files: ['**/*.svelte'],
-
-        languageOptions: {
-            parser: svelteParser,
-            ecmaVersion: 5,
-            sourceType: 'script',
-
-            parserOptions: {
-                parser: tsParser,
-            },
         },
     },
 ];

@@ -14,7 +14,6 @@ let copyWasmFile = async function () {
             console.log('Wasm file was copied successfully');
             resolve();
         });
-
     });
 };
 
@@ -27,7 +26,10 @@ let renameWasmFile = async function (path, new_path) {
         });
         resolve();
     });
-}
+};
 
-await renameWasmFile('../../crates/ironrdp-web/pkg/ironrdp_web_bg1.wasm', '../../crates/ironrdp-web/pkg/ironrdp_web_bg.wasm');
+await renameWasmFile(
+    '../../crates/ironrdp-web/pkg/ironrdp_web_bg1.wasm',
+    '../../crates/ironrdp-web/pkg/ironrdp_web_bg.wasm',
+);
 await copyWasmFile();

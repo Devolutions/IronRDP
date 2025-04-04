@@ -1,7 +1,6 @@
 import { loggingService } from './logging.service';
 import type { NewSessionInfo } from '../interfaces/NewSessionInfo';
 import { SpecialCombination } from '../enums/SpecialCombination';
-import type { RemoteDesktopModule } from '../interfaces/RemoteDesktopModule';
 import { WasmBridgeService } from './wasm-bridge.service';
 import type { UserInteraction } from '../interfaces/UserInteraction';
 import type { ScreenScale } from '../enums/ScreenScale';

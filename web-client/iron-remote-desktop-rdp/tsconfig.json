@@ -1,9 +1,10 @@
 {
-  "extends": "@tsconfig/svelte/tsconfig.json",
   "compilerOptions": {
     "target": "ESNext",
     "useDefineForClassFields": true,
     "module": "ESNext",
+    "moduleResolution": "Node",
+    "esModuleInterop": true,
     "resolveJsonModule": true,
     /**
      * Typecheck JS in `.svelte` and `.js` files by default.
@@ -16,9 +17,11 @@
     "isolatedModules": true,
     "strict": true,
     "strictNullChecks": true,
-    "noImplicitAny": true
+    "noImplicitAny": true,
+    "outDir": "dist",
+    "rootDir": "src"
   },
-  "include": ["src/**/*.svelte", "src/**/*.ts", "src/**/*.js", "vite.config.ts"],
+  "include": ["src/**/*.ts", "src/**/*.js"],
   "references": [
     {
       "path": "./tsconfig.node.json"
