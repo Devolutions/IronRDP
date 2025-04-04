@@ -65,7 +65,6 @@ export interface SessionBuilder {
     // eslint-disable-next-line @typescript-eslint/no-unsafe-function-type
     extension_call(_ident: string, _call: Function): SessionBuilder;
     connect(): Promise<Session>;
-    free(): void;
 }
 
 interface SetCursorStyleCallback {

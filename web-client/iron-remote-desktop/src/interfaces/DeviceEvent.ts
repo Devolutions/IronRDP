@@ -7,5 +7,4 @@ export interface DeviceEvent {
     new_key_released(scancode: number): DeviceEvent;
     new_unicode_pressed(unicode: string): DeviceEvent;
     new_unicode_released(unicode: string): DeviceEvent;
-    free(): void;
 }

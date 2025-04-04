@@ -2,6 +2,7 @@
     import { onMount } from 'svelte';
     import { setCurrentSessionActive, userInteractionService } from '../../services/session.service';
     import type { UserInteraction } from '../../../static/iron-remote-desktop';
+    import RemoteDesktop from '../../../static/iron-remote-desktop-rdp';
 
     let uiService: UserInteraction;
     let cursorOverrideActive = false;
@@ -110,11 +111,7 @@
     id="popup-screen"
     style="display: flex; height: 100%; flex-direction: column; background-color: #2e2e2e; position: relative"
     on:mousemove={(event) => {
-        if (event.clientY < 100) {
-            showUtilityBar = true;
-        } else {
-            showUtilityBar = false;
-        }
+        showUtilityBar = event.clientY < 100;
     }}
 >
     <div class="tool-bar" class:hidden={!showUtilityBar}>
@@ -139,7 +136,7 @@
             </label>
         </div>
     </div>
-    <iron-remote-desktop debugwasm="INFO" verbose="true" scale="fit" flexcenter="true" />
+    <iron-remote-desktop debugwasm="INFO" verbose="true" scale="fit" flexcenter="true" module={RemoteDesktop} />
 </div>
 
 <style>

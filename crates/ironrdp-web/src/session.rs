@@ -214,7 +214,7 @@ impl SessionBuilder {
                     self.0.borrow_mut().use_display_control = use_display_control
                 }
             },
-            Err(err) => error!("Provided JsValue is not a valid extension value: {err:?}"),
+            Err(error) => error!(%error, "Provided JsValue is not a valid extension value"),
         }
 
         self.clone()
@@ -302,7 +302,7 @@ impl SessionBuilder {
             match ws.state() {
                 websocket::State::Closing | websocket::State::Closed => {
                     return Err(RemoteDesktopError::from(anyhow::anyhow!(
-                        "Failed to connect to {proxy_address} (WebSocket is `{:?}`)",
+                        "failed to connect to {proxy_address} (WebSocket is `{:?}`)",
                         ws.state()
                     ))
                     .with_kind(RemoteDesktopErrorKind::ProxyConnect));
@@ -740,7 +740,7 @@ impl Session {
         Ok(())
     }
 
-    fn synchronize_lock_keys(
+    pub fn synchronize_lock_keys(
         &self,
         scroll_lock: bool,
         num_lock: bool,
@@ -830,32 +830,9 @@ impl Session {
         false
     }
 
-    pub fn extension_call(&self, value: JsValue) -> Result<JsValue, RemoteDesktopError> {
-        match serde_wasm_bindgen::from_value::<SessionExtensionCall>(value)
-            .map_err(|err| anyhow::anyhow!("provided JsValue is not a valid extension call: {err:?}"))?
-        {
-            SessionExtensionCall::SynchronizeLockKeys {
-                scroll_lock,
-                num_lock,
-                caps_lock,
-                kana_lock,
-            } => {
-                self.synchronize_lock_keys(scroll_lock, num_lock, caps_lock, kana_lock)?;
-            }
-        }
-
+    pub fn extension_call(_value: JsValue) -> Result<JsValue, RemoteDesktopError> {
         Ok(JsValue::null())
     }
-}
-
-#[derive(Serialize, Deserialize)]
-enum SessionExtensionCall {
-    SynchronizeLockKeys {
-        scroll_lock: bool,
-        num_lock: bool,
-        caps_lock: bool,
-        kana_lock: bool,
-    },
 }
 
 fn build_config(
@@ -1076,10 +1053,10 @@ where
                     server_addr,
                 } => (x224_connection_response, server_cert_chain, server_addr),
                 ironrdp_rdcleanpath::RDCleanPath::Err(error) => {
-                    return Err(
-                        RemoteDesktopError::from(anyhow::anyhow!("received an RDCleanPath error: {error}"))
-                            .with_kind(RemoteDesktopErrorKind::RDCleanPath),
-                    );
+                    return Err(RemoteDesktopError::from(
+                        anyhow::Error::new(error).context("received an RDCleanPath error"),
+                    )
+                    .with_kind(RemoteDesktopErrorKind::RDCleanPath));
                 }
             };
 

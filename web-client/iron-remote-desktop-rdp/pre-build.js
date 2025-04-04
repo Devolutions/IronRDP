@@ -1,27 +1,17 @@
-import { spawn } from 'child_process';
+import fs from 'fs-extra';
 
-let run = async function (command, cwd) {
+let renameWasmFile = async function (path, new_path) {
     return new Promise((resolve) => {
-        const buildCommand = spawn(command, {
-            stdio: 'pipe',
-            shell: true,
-            cwd: cwd,
-            env: { ...process.env, RUSTFLAGS: '-Ctarget-feature=+simd128,+bulk-memory' },
+        fs.rename(path, new_path, function (err) {
+            if (err) {
+                console.error(`${err}`);
+            }
         });
-
-        buildCommand.stdout.on('data', (data) => {
-            console.log(`${data}`);
-        });
-
-        buildCommand.stderr.on('data', (data) => {
-            console.error(`${data}`);
-        });
-
-        buildCommand.on('close', (code) => {
-            console.log(`child process exited with code ${code}`);
-            resolve();
-        });
+        resolve();
     });
-};
+}
 
-await run('wasm-pack build --target web', '../../crates/ironrdp-web');
+// Renaming the file is temporary solution to prevent vite from inlining the wasm asset.
+// In post-build.js file is renamed back.
+// Issue reference: https://github.com/vitejs/vite/issues/4454
+await renameWasmFile('../../crates/ironrdp-web/pkg/ironrdp_web_bg.wasm', '../../crates/ironrdp-web/pkg/ironrdp_web_bg1.wasm');

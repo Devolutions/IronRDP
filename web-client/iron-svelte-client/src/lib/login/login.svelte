@@ -6,6 +6,7 @@
     import { toast } from '$lib/messages/message-store';
     import { showLogin } from '$lib/login/login-store';
     import { DesktopSize } from '../../models/desktop-size';
+    import * as remote_desktop from '../../../../iron-remote-desktop-rdp/src/main';
 
     let username = 'Administrator';
     let password = 'DevoLabs123!';
@@ -40,7 +41,7 @@
             } else {
                 toast.set({
                     type: 'info',
-                    message: typeof event.data === 'string' ? event.data : (event.data?.backtrace() ?? 'No info'),
+                    message: typeof event.data === 'string' ? event.data : event.data?.backtrace() ?? 'No info',
                 });
             }
         });

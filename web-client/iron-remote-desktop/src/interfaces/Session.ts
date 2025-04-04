@@ -20,5 +20,4 @@ export interface Session {
         physical_height?: number | null,
     ): void;
     supports_unicode_keyboard_shortcuts(): boolean;
-    free(): void;
 }

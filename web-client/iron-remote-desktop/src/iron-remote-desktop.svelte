@@ -16,27 +16,27 @@
 <script lang="ts">
     import { onMount } from 'svelte';
     import { loggingService } from './services/logging.service';
-    import { type RemoteDesktopModule, WasmBridgeService } from './services/wasm-bridge.service';
+    import { WasmBridgeService } from './services/wasm-bridge.service';
     import { LogType } from './enums/LogType';
     import type { ResizeEvent } from './interfaces/ResizeEvent';
     import { PublicAPI } from './services/PublicAPI';
     import { ScreenScale } from './enums/ScreenScale';
-    import type { ClipboardTransaction as IClipboardTransaction } from './interfaces/ClipboardTransaction';
-    import { ClipboardContent, ClipboardTransaction } from './../../iron-remote-desktop-rdp/src/main';
-    import * as remote_desktop from './../../iron-remote-desktop-rdp/src/main';
-    // import { ClipboardContent, ClipboardTransaction } from './../../../../ironvnc/web-client/iron-remote-desktop-vnc/src/main';
-    // import * as remote_desktop from './../../../../ironvnc/web-client/iron-remote-desktop-vnc/src/main';
+    import type { ClipboardTransaction } from './interfaces/ClipboardTransaction';
+    import type { ClipboardContent } from './interfaces/ClipboardContent';
+    import type { RemoteDesktopModule } from './interfaces/RemoteDesktopModule';
 
     let {
         scale,
         verbose,
         debugwasm,
         flexcenter,
+        module,
     }: {
         scale: string;
         verbose: 'true' | 'false';
         debugwasm: 'OFF' | 'ERROR' | 'WARN' | 'INFO' | 'DEBUG' | 'TRACE';
         flexcenter: string;
+        module: RemoteDesktopModule;
     } = $props();
 
     let isVisible = $state(false);
@@ -55,8 +55,7 @@
 
     let viewerStyle = $state('');
     let wrapperStyle = $state('');
-
-    let wasmService = new WasmBridgeService(remote_desktop as unknown as RemoteDesktopModule);
+    let wasmService = new WasmBridgeService(module);
     let publicAPI = new PublicAPI(wasmService);
 
     // Firefox's clipboard API is very limited, and doesn't support reading from the clipboard
@@ -133,18 +132,24 @@
         return (evt.ctrlKey && evt.code === 'KeyV') || evt.code == 'Paste';
     }
 
+    function isContent(content: ClipboardContent) {
+        // Check whether function exists. To make it more robust we can check every method.
+        return content.mime_type() !== undefined || content.value() !== undefined;
+    }
+
     // This function is required to covert `ClipboardTransaction` to a object that can be used
     // with `ClipboardItem` API.
     function clipboardTransactionToRecord(transaction: ClipboardTransaction): Record<string, Blob> {
         let result = {} as Record<string, Blob>;
 
         for (const item of transaction.content()) {
-            if (!(item instanceof ClipboardContent)) {
+            if (!isContent(item)) {
                 continue;
             }
 
             let mime = item.mime_type();
             let value = new Blob([item.value()], { type: mime });
+
             result[mime] = value;
         }
 
@@ -155,9 +160,9 @@
     function onForceClipboardUpdate() {
         try {
             if (lastClientClipboardTransaction) {
-                wasmService.onClipboardChanged(lastClientClipboardTransaction as IClipboardTransaction);
+                wasmService.onClipboardChanged(lastClientClipboardTransaction as ClipboardTransaction);
             } else {
-                wasmService.onClipboardChanged(ClipboardTransaction.construct() as IClipboardTransaction);
+                wasmService.onClipboardChangedEmpty();
             }
         } catch (err) {
             console.error('Failed to send initial clipboard state: ' + err);
@@ -241,7 +246,7 @@
             if (!sameValue) {
                 lastClientClipboardItems = values;
 
-                let transaction = ClipboardTransaction.construct();
+                let transaction = wasmService.constructClipboardTransaction();
 
                 // Iterate over `Record` type
                 values.forEach((value: string | Uint8Array, key: string) => {
@@ -251,15 +256,15 @@
                     }
 
                     if (key.startsWith('text/') && typeof value === 'string') {
-                        transaction.add_content(ClipboardContent.new_text(key, value));
+                        transaction.add_content(wasmService.constructClipboardContentFromText(key, value));
                     } else if (key.startsWith('image/') && value instanceof Uint8Array) {
-                        transaction.add_content(ClipboardContent.new_binary(key, value));
+                        transaction.add_content(wasmService.constructClipboardContentFromBinary(key, value));
                     }
                 });
 
                 if (!transaction.is_empty()) {
                     lastClientClipboardTransaction = transaction;
-                    wasmService.onClipboardChanged(transaction as IClipboardTransaction);
+                    wasmService.onClipboardChanged(transaction as ClipboardTransaction);
                 }
             }
         } catch (err) {
@@ -339,7 +344,7 @@
         }
 
         try {
-            let transaction = ClipboardTransaction.construct();
+            let transaction = wasmService.constructClipboardTransaction();
 
             if (evt.clipboardData == null) {
                 return;
@@ -350,11 +355,11 @@
 
                 if (mime.startsWith('text/')) {
                     clipItem.getAsString((str: string) => {
-                        let content = ClipboardContent.new_text(mime, str);
+                        let content = wasmService.constructClipboardContentFromText(mime, str);
                         transaction.add_content(content);
 
                         if (!transaction.is_empty()) {
-                            wasmService.onClipboardChanged(transaction as IClipboardTransaction);
+                            wasmService.onClipboardChanged(transaction as ClipboardTransaction);
                         }
                     });
                     break;
@@ -368,11 +373,11 @@
 
                     file.arrayBuffer().then((buffer: ArrayBuffer) => {
                         const strict_buffer = new Uint8Array(buffer);
-                        let content = ClipboardContent.new_binary(mime, strict_buffer);
+                        let content = wasmService.constructClipboardContentFromBinary(mime, strict_buffer);
                         transaction.add_content(content);
 
                         if (!transaction.is_empty()) {
-                            wasmService.onClipboardChanged(transaction as IClipboardTransaction);
+                            wasmService.onClipboardChanged(transaction as ClipboardTransaction);
                         }
                     });
                     break;

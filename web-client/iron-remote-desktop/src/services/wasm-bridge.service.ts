@@ -15,28 +15,15 @@ import type { MousePosition } from '../interfaces/MousePosition';
 import type { SessionEvent, RemoteDesktopErrorKind, RemoteDesktopError } from '../interfaces/session-event';
 import type { DesktopSize } from '../interfaces/DesktopSize';
 import type { ClipboardTransaction } from '../interfaces/ClipboardTransaction';
+import type { ClipboardContent } from '../interfaces/ClipboardContent';
 import type { Session } from '../interfaces/Session';
 import type { DeviceEvent } from '../interfaces/DeviceEvent';
-import type { InputTransaction } from '../interfaces/InputTransaction';
-import type { SessionBuilder } from '../interfaces/SessionBuilder';
 import type { SessionTerminationInfo } from '../interfaces/SessionTerminationInfo';
+import type { RemoteDesktopModule } from '../interfaces/RemoteDesktopModule';
 
 type OnRemoteClipboardChanged = (transaction: ClipboardTransaction) => void;
 type OnRemoteReceivedFormatsList = () => void;
 type OnForceClipboardUpdate = () => void;
-
-export interface RemoteDesktopModule {
-    init: () => Promise<unknown>;
-    DesktopSize: DesktopSize;
-    DeviceEvent: DeviceEvent;
-    InputTransaction: InputTransaction;
-    remote_desktop_init: (logLevel: string) => void;
-    RemoteDesktopError: RemoteDesktopError;
-    Session: Session;
-    SessionBuilder: SessionBuilder;
-    SessionTerminationInfo: SessionTerminationInfo;
-    ClipboardTransaction: ClipboardTransaction;
-}
 
 export class WasmBridgeService {
     private importedModule: RemoteDesktopModule;
@@ -71,10 +58,22 @@ export class WasmBridgeService {
         height: number;
     }>();
 
-    constructor(importedModule: RemoteDesktopModule) {
+    constructor(module: RemoteDesktopModule) {
         this.resize = this._resize.asObservable();
-        this.importedModule = importedModule;
+        this.importedModule = module;
         loggingService.info('Web bridge initialized.');
+    }
+
+    constructClipboardTransaction(): ClipboardTransaction {
+        return this.importedModule.ClipboardTransaction.construct();
+    }
+
+    constructClipboardContentFromText(mime_type: string, text: string): ClipboardContent {
+        return this.importedModule.ClipboardContent.new_text(mime_type, text);
+    }
+
+    constructClipboardContentFromBinary(mime_type: string, binary: Uint8Array): ClipboardContent {
+        return this.importedModule.ClipboardContent.new_binary(mime_type, binary);
     }
 
     async init(debug: LogType) {
@@ -204,7 +203,7 @@ export class WasmBridgeService {
             map((session: Session) => {
                 from(session.run())
                     .pipe(
-                        catchError((err) => {
+                        catchError((err: RemoteDesktopError) => {
                             this.setVisibility(false);
                             this.raiseSessionEvent({
                                 type: SessionEventType.ERROR,
@@ -286,6 +285,13 @@ export class WasmBridgeService {
     onClipboardChanged(transaction: ClipboardTransaction): Promise<void> {
         const onClipboardChangedPromise = async () => {
             await this.session?.on_clipboard_paste(transaction);
+        };
+        return onClipboardChangedPromise();
+    }
+
+    onClipboardChangedEmpty(): Promise<void> {
+        const onClipboardChangedPromise = async () => {
+            await this.session?.on_clipboard_paste(this.importedModule.ClipboardTransaction.construct());
         };
         return onClipboardChangedPromise();
     }
@@ -442,14 +448,12 @@ export class WasmBridgeService {
         const syncScrollLockActive = evt.getModifierState(LockKey.SCROLL_LOCK);
         const syncKanaModeActive = evt.getModifierState(LockKey.KANA_MODE);
 
-        this.session?.extension_call({
-            SynchronizeLockKeys: {
-                scroll_lock: syncScrollLockActive,
-                num_lock: syncNumsLockActive,
-                caps_lock: syncCapsLockActive,
-                kana_lock: syncKanaModeActive,
-            },
-        });
+        this.session?.synchronize_lock_keys(
+            syncScrollLockActive,
+            syncNumsLockActive,
+            syncCapsLockActive,
+            syncKanaModeActive,
+        );
     }
 
     private raiseSessionEvent(event: SessionEvent) {

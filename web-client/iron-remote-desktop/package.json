@@ -13,10 +13,9 @@
   "type": "module",
   "private": true,
   "scripts": {
-    "dev": "npm run pre-build && vite",
-    "build": "npm run pre-build && vite build",
+    "dev": "npm run vite",
+    "build": "npm run vite build",
     "build-alone": "vite build",
-    "pre-build": "node ./pre-build.js",
     "preview": "vite preview",
     "check": "svelte-check --tsconfig ./tsconfig.json",
     "check:dist": "tsc ./dist/index.d.ts --noEmit",
