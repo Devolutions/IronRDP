@@ -80,7 +80,7 @@ export class WasmBridgeService {
         loggingService.info('Loading wasm file.');
         await this.importedModule.init();
         loggingService.info('Initializing IronRDP.');
-        this.importedModule.remote_desktop_init(LogType[debug]);
+        this.importedModule.iron_init(LogType[debug]);
     }
 
     // If set to false, the clipboard will not be enabled and the callbacks will not be registered to the Rust side

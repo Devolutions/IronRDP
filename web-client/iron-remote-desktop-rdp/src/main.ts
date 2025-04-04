@@ -1,5 +1,5 @@
 import init, {
-    remote_desktop_init,
+    iron_init,
     DesktopSize,
     DeviceEvent,
     InputTransaction,
@@ -13,7 +13,7 @@ import init, {
 
 export default {
     init,
-    remote_desktop_init,
+    iron_init,
     DesktopSize,
     DeviceEvent,
     InputTransaction,
@@ -23,4 +23,4 @@ export default {
     ClipboardContent,
     Session,
     SessionTerminationInfo,
-}
+};

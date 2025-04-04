@@ -13,7 +13,7 @@ export interface RemoteDesktopModule {
     DesktopSize: DesktopSize;
     DeviceEvent: DeviceEvent;
     InputTransaction: InputTransaction;
-    remote_desktop_init: (logLevel: string) => void;
+    iron_init: (logLevel: string) => void;
     RemoteDesktopError: RemoteDesktopError;
     Session: Session;
     SessionBuilder: SessionBuilder;
