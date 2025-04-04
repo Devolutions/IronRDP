@@ -3,4 +3,5 @@
 .env
 .env.*
 !.env.example
-/static/iron-remote-gui/
+/static/iron-remote-desktop-rdp/
+/static/iron-remote-desktop/

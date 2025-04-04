@@ -1,0 +1,22 @@
+{
+  "name": "@devolutions/iron-remote-desktop-rdp",
+  "author": "Nicolas Girot",
+  "email": "ngirot@devolutions.net",
+  "contributors": [
+    "Benoit Cortier",
+    "Irving Ou",
+    "Vladislav Nikonov",
+    "Zacharia Ellaham"
+  ],
+  "description": "Web Component providing agnostic implementation for Iron Wasm base client.",
+  "version": "0.13.1",
+  "main": "iron-remote-desktop-rdp.js",
+  "types": "index.d.ts",
+  "files": [
+    "iron-remote-desktop-rdp.js",
+    "index.d.ts"
+  ],
+  "dependencies": {
+    "rxjs": "^6.6.7"
+  }
+}

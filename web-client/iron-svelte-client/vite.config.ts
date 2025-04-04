@@ -6,6 +6,11 @@ import topLevelAwait from 'vite-plugin-top-level-await';
 const config: UserConfig = {
     mode: 'process.env.MODE' || 'development',
     plugins: [sveltekit(), wasm(), topLevelAwait()],
+    server: {
+        fs: {
+            allow: ['./static'],
+        },
+    },
 };
 
 export default config;

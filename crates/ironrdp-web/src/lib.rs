@@ -23,7 +23,7 @@ mod session;
 use wasm_bindgen::prelude::*;
 
 #[wasm_bindgen]
-pub fn ironrdp_init(log_level: &str) {
+pub fn iron_init(log_level: &str) {
     // When the `console_error_panic_hook` feature is enabled, we can call the
     // `set_panic_hook` function at least once during initialization, and then
     // we will get better error messages if our code ever panics.
@@ -69,7 +69,7 @@ pub struct DesktopSize {
 
 #[wasm_bindgen]
 impl DesktopSize {
-    pub fn new(width: u16, height: u16) -> Self {
+    pub fn construct(width: u16, height: u16) -> Self {
         DesktopSize { width, height }
     }
 }

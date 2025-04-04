@@ -8,8 +8,10 @@ pub fn workspace(sh: &Shell) -> anyhow::Result<()> {
     println!("Done.");
 
     println!("Remove npm folders…");
-    sh.remove_path("./web-client/iron-remote-gui/node_modules")?;
-    sh.remove_path("./web-client/iron-remote-gui/dist")?;
+    sh.remove_path("./web-client/iron-remote-desktop/node_modules")?;
+    sh.remove_path("./web-client/iron-remote-desktop/dist")?;
+    sh.remove_path("./web-client/iron-remote-desktop-rdp/node_modules")?;
+    sh.remove_path("./web-client/iron-remote-desktop-rdp/dist")?;
     sh.remove_path("./web-client/iron-svelte-client/node_modules")?;
     println!("Done.");
 

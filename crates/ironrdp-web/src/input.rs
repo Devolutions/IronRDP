@@ -61,7 +61,7 @@ pub struct InputTransaction(pub(crate) SmallVec<[Operation; 3]>);
 
 #[wasm_bindgen]
 impl InputTransaction {
-    pub fn new() -> Self {
+    pub fn construct() -> Self {
         Self(SmallVec::new())
     }
 

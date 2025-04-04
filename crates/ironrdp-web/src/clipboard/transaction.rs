@@ -19,7 +19,7 @@ impl ClipboardTransaction {
 
 #[wasm_bindgen]
 impl ClipboardTransaction {
-    pub fn new() -> Self {
+    pub fn construct() -> Self {
         Self { contents: Vec::new() }
     }
 
