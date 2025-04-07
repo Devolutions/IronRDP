@@ -185,7 +185,7 @@ export class WasmBridgeService {
         // Type guard to filter out errors
         function isSession(result: RemoteDesktopError | Session): result is Session {
             // Check whether function exists. To make it more robust we can check every method.
-            return (<Session>result).run() !== undefined;
+            return (<Session>result).run !== undefined;
         }
 
         return from(sessionBuilder.connect()).pipe(
