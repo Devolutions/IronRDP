@@ -183,7 +183,13 @@ impl SvcProcessor for Rdpsnd {
                 match pdu {
                     // TODO: handle WaveInfo for < v8
                     pdu::ServerAudioOutputPdu::Wave2(pdu) => {
-                        let fmt = self.get_format(pdu.format_no)?.clone();
+                        // TODO: maybe change wave(fmt_no,..) API to avoid the need for clone()
+                        let fmt = self
+                            .handler
+                            .get_formats()
+                            .get(pdu.format_no as usize)
+                            .ok_or_else(|| pdu_other_err!("invalid format no"))?
+                            .clone();
                         let ts = pdu.audio_timestamp;
                         self.handler.wave(&fmt, ts, pdu.data);
                         return Ok(self.wave_confirm(pdu.timestamp, pdu.block_no)?.into());
