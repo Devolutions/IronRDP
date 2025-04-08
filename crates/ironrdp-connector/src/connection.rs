@@ -729,7 +729,6 @@ fn create_client_info_pdu(config: &Config, routing_addr: &SocketAddr) -> rdp::Cl
         | ClientInfoFlags::DISABLE_CTRL_ALT_DEL
         | ClientInfoFlags::LOGON_NOTIFY
         | ClientInfoFlags::LOGON_ERRORS
-        | ClientInfoFlags::NO_AUDIO_PLAYBACK
         | ClientInfoFlags::VIDEO_DISABLE
         | ClientInfoFlags::ENABLE_WINDOWS_KEY
         | ClientInfoFlags::MAXIMIZE_SHELL;
@@ -740,6 +739,10 @@ fn create_client_info_pdu(config: &Config, routing_addr: &SocketAddr) -> rdp::Cl
 
     if let crate::Credentials::SmartCard { .. } = &config.credentials {
         flags |= ClientInfoFlags::PASSWORD_IS_SC_PIN;
+    }
+
+    if config.no_audio_playback {
+        flags |= ClientInfoFlags::NO_AUDIO_PLAYBACK;
     }
 
     let client_info = ClientInfo {

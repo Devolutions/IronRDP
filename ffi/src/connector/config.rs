@@ -39,6 +39,7 @@ pub mod ffi {
         pub platform: Option<MajorPlatformType>,
         pub no_server_pointer: Option<bool>,
         pub autologon: Option<bool>,
+        pub no_audio_playback: Option<bool>,
         pub pointer_software_rendering: Option<bool>,
         pub performance_flags: Option<ironrdp::pdu::rdp::client_info::PerformanceFlags>,
     }
@@ -192,6 +193,7 @@ pub mod ffi {
 
                 no_server_pointer: self.no_server_pointer.unwrap_or(false),
                 autologon: self.autologon.unwrap_or(false),
+                no_audio_playback: self.no_audio_playback.unwrap_or(false),
                 request_data: None,
                 pointer_software_rendering: self.pointer_software_rendering.unwrap_or(false),
                 performance_flags: self.performance_flags.ok_or("performance flag is missing")?,

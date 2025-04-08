@@ -320,6 +320,7 @@ impl Config {
             license_cache: None,
             no_server_pointer: args.no_server_pointer,
             autologon: args.autologon,
+            no_audio_playback: false,
             request_data: None,
             pointer_software_rendering: true,
             performance_flags: PerformanceFlags::default(),
