@@ -137,7 +137,7 @@ impl DecodingContext {
         }
         let region = region;
 
-        debug!(frame_index = frame_begin.index);
+        trace!(frame_index = frame_begin.index);
         trace!(destination_rectangle = ?destination);
         trace!(context = ?self.context);
         trace!(channels = ?self.channels);
