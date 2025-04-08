@@ -193,6 +193,7 @@ impl SvcProcessor for Rdpsnd {
                     pdu::ServerAudioOutputPdu::Close => {
                         self.handler.close();
                     }
+                    pdu::ServerAudioOutputPdu::Training(pdu) => return Ok(self.training_confirm(&pdu)?.into()),
                     _ => {
                         error!("Invalid PDU");
                         self.state = RdpsndState::Stop;
