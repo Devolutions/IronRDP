@@ -1,7 +1,7 @@
 import { spawn } from 'child_process';
 
-let run = async function (command, cwd) {
-    return new Promise((resolve) => {
+const run = async (command, cwd) => {
+    try {
         const buildCommand = spawn(command, {
             stdio: 'pipe',
             shell: true,
@@ -17,11 +17,19 @@ let run = async function (command, cwd) {
             console.error(`${data}`);
         });
 
-        buildCommand.on('close', (code) => {
-            console.log(`child process exited with code ${code}`);
-            resolve();
+        const exitCode = await new Promise((resolve, reject) => {
+            buildCommand.on('close', (code) => {
+                if (code !== 0) {
+                    reject(new Error(`Process exited with non-zero code: ${code}`));
+                }
+                resolve(code);
+            });
         });
-    });
+
+        console.log(`Child process exited with code: ${exitCode}`);
+    } catch (err) {
+        console.error(`Process run failed: ${err}`);
+    }
 };
 
 await run('wasm-pack build --target web', '../../crates/ironrdp-web');

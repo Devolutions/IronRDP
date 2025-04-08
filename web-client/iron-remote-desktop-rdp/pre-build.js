@@ -1,14 +1,11 @@
 import fs from 'fs-extra';
 
-let renameWasmFile = async function (path, new_path) {
-    return new Promise((resolve) => {
-        fs.rename(path, new_path, function (err) {
-            if (err) {
-                console.error(`${err}`);
-            }
-        });
-        resolve();
-    });
+const renameWasmFile = async (path, new_path) => {
+    try {
+        await fs.rename(path, new_path);
+    } catch (err) {
+        console.error(`Rename failed: ${err}`);
+    }
 };
 
 // Renaming the file is temporary solution to prevent vite from inlining the wasm asset.

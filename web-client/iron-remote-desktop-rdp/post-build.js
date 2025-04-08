@@ -1,31 +1,24 @@
 import fs from 'fs-extra';
 
-let sourceWasmFile = '../../crates/ironrdp-web/pkg/ironrdp_web_bg.wasm';
-let assetWasmFile = './dist/ironrdp_web_bg.wasm';
+const sourceWasmFile = '../../crates/ironrdp-web/pkg/ironrdp_web_bg.wasm';
+const assetWasmFile = './dist/ironrdp_web_bg.wasm';
 
-let copyWasmFile = async function () {
-    await fs.remove(assetWasmFile);
-    return new Promise((resolve) => {
-        fs.copy(sourceWasmFile, assetWasmFile, function (err) {
-            if (err) {
-                console.log('An error occurred while copying wasm file');
-                return console.error(err);
-            }
-            console.log('Wasm file was copied successfully');
-            resolve();
-        });
-    });
+const copyWasmFile = async () => {
+    try {
+        await fs.remove(assetWasmFile);
+        await fs.copy(sourceWasmFile, assetWasmFile);
+        console.log('Wasm file was copied successfully');
+    } catch (err) {
+        console.error(`An error occurred while copying wasm file: ${err}`);
+    }
 };
 
-let renameWasmFile = async function (path, new_path) {
-    return new Promise((resolve) => {
-        fs.rename(path, new_path, function (err) {
-            if (err) {
-                console.error(`${err}`);
-            }
-        });
-        resolve();
-    });
+const renameWasmFile = async (path, new_path) => {
+    try {
+        await fs.rename(path, new_path);
+    } catch (err) {
+        console.error(`Rename failed: ${err}`);
+    }
 };
 
 await renameWasmFile(
