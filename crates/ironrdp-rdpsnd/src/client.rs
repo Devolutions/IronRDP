@@ -10,6 +10,10 @@ use crate::pdu::{self, AudioFormat, PitchPdu, ServerAudioFormatPdu, TrainingPdu,
 use crate::server::RdpsndSvcMessages;
 
 pub trait RdpsndClientHandler: Send + core::fmt::Debug {
+    fn get_flags(&self) -> pdu::AudioFormatFlags {
+        pdu::AudioFormatFlags::empty()
+    }
+
     fn get_formats(&self) -> &[AudioFormat];
 
     fn wave(&mut self, format: &AudioFormat, ts: u32, data: Cow<'_, [u8]>);
@@ -91,7 +95,7 @@ impl Rdpsnd {
     pub fn client_formats(&mut self) -> PduResult<RdpsndSvcMessages> {
         let pdu = pdu::ClientAudioFormatPdu {
             version: self.version()?,
-            flags: pdu::AudioFormatFlags::empty(),
+            flags: self.handler.get_flags() | pdu::AudioFormatFlags::ALIVE,
             formats: self.handler.get_formats().to_vec(),
             volume_left: 0xFFFF,
             volume_right: 0xFFFF,
