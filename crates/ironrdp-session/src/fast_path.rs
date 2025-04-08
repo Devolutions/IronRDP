@@ -62,7 +62,7 @@ impl Processor {
         let mut input = ReadCursor::new(input);
 
         let header = decode_cursor::<FastPathHeader>(&mut input).map_err(SessionError::decode)?;
-        debug!(fast_path_header = ?header, "Received Fast-Path packet");
+        trace!(fast_path_header = ?header, "Received Fast-Path packet");
 
         let update_pdu = decode_cursor::<FastPathUpdatePdu<'_>>(&mut input).map_err(SessionError::decode)?;
         trace!(fast_path_update_fragmentation = ?update_pdu.fragmentation);
