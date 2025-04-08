@@ -22,7 +22,7 @@ native-tls = ["dep:tokio-native-tls", "dep:x509-cert", "tokio/io-util"]
 stub = []
 
 [dependencies]
-tokio = { version = "1.43" }
+tokio = { version = "1.44" }
 x509-cert = { version = "0.2", default-features = false, features = ["std"], optional = true }
 tokio-native-tls = { version = "0.3", optional = true } # public
 tokio-rustls =  { version = "0.26", optional = true } # public
