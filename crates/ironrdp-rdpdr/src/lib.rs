@@ -207,6 +207,7 @@ impl SvcProcessor for Rdpdr {
             }
             RdpdrPdu::ServerDeviceAnnounceResponse(pdu) => self.handle_server_device_announce_response(pdu),
             RdpdrPdu::DeviceIoRequest(pdu) => self.handle_device_io_request(pdu, &mut src),
+            RdpdrPdu::UserLoggedon => Ok(vec![]),
             // TODO: This can eventually become a `_ => {}` block, but being explicit for now
             // to make sure we don't miss handling new RdpdrPdu variants here during active development.
             RdpdrPdu::ClientNameRequest(_)
