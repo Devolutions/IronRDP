@@ -16,7 +16,7 @@ pub trait RdpsndClientHandler: Send + core::fmt::Debug {
 
     fn get_formats(&self) -> &[AudioFormat];
 
-    fn wave(&mut self, format: &AudioFormat, ts: u32, data: Cow<'_, [u8]>);
+    fn wave(&mut self, format_no: usize, ts: u32, data: Cow<'_, [u8]>);
 
     fn set_volume(&mut self, volume: VolumePdu);
 
@@ -33,7 +33,7 @@ impl RdpsndClientHandler for NoopRdpsndBackend {
         &[]
     }
 
-    fn wave(&mut self, _format: &AudioFormat, _ts: u32, _data: Cow<'_, [u8]>) {}
+    fn wave(&mut self, _format_no: usize, _ts: u32, _data: Cow<'_, [u8]>) {}
 
     fn set_volume(&mut self, _volume: VolumePdu) {}
 
@@ -183,15 +183,9 @@ impl SvcProcessor for Rdpsnd {
                 match pdu {
                     // TODO: handle WaveInfo for < v8
                     pdu::ServerAudioOutputPdu::Wave2(pdu) => {
-                        // TODO: maybe change wave(fmt_no,..) API to avoid the need for clone()
-                        let fmt = self
-                            .handler
-                            .get_formats()
-                            .get(pdu.format_no as usize)
-                            .ok_or_else(|| pdu_other_err!("invalid format no"))?
-                            .clone();
+                        let format_no = pdu.format_no as usize;
                         let ts = pdu.audio_timestamp;
-                        self.handler.wave(&fmt, ts, pdu.data);
+                        self.handler.wave(format_no, ts, pdu.data);
                         return Ok(self.wave_confirm(pdu.timestamp, pdu.block_no)?.into());
                     }
                     pdu::ServerAudioOutputPdu::Volume(pdu) => {
