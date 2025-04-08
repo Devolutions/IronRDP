@@ -599,7 +599,12 @@ impl Encode for TrainingPdu {
         ensure_size!(in: dst, size: self.size());
 
         dst.write_u16(self.timestamp);
-        dst.write_u16(cast_length!("TrainingPdu::wPackSize", self.data.len())?);
+        let len = if self.data.is_empty() {
+            0
+        } else {
+            self.size() + ServerAudioOutputPdu::FIXED_PART_SIZE
+        };
+        dst.write_u16(cast_length!("TrainingPdu::wPackSize", len)?);
         dst.write_slice(&self.data);
 
         Ok(())
@@ -622,8 +627,16 @@ impl<'de> Decode<'de> for TrainingPdu {
 
         let timestamp = src.read_u16();
         let len = src.read_u16() as usize;
-        ensure_size!(in: src, size: len);
-        let data = src.read_slice(len).into();
+        let data = if len != 0 {
+            if len < Self::FIXED_PART_SIZE + ServerAudioOutputPdu::FIXED_PART_SIZE {
+                return Err(invalid_field_err!("TrainingPdu::wPackSize", "too small"));
+            }
+            let len = len - Self::FIXED_PART_SIZE - ServerAudioOutputPdu::FIXED_PART_SIZE;
+            ensure_size!(in: src, size: len);
+            src.read_slice(len).into()
+        } else {
+            Vec::new()
+        };
 
         Ok(Self { timestamp, data })
     }
