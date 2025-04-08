@@ -177,6 +177,9 @@ pub struct Config {
     pub request_data: Option<NegoRequestData>,
     /// If true, the INFO_AUTOLOGON flag is set in the [`ClientInfoPdu`](ironrdp_pdu::rdp::ClientInfoPdu)
     pub autologon: bool,
+    /// If true, the INFO_NOAUDIOPLAYBACK flag is set in the [`ClientInfoPdu`](ironrdp_pdu::rdp::ClientInfoPdu)
+    pub no_audio_playback: bool,
+
     pub license_cache: Option<Arc<dyn LicenseCache>>,
 
     // FIXME(@CBenoit): these are client-only options, not part of the connector.

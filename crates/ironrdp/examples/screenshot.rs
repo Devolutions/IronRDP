@@ -209,6 +209,7 @@ fn build_config(username: String, password: String, domain: Option<String>) -> c
         no_server_pointer: true,
         request_data: None,
         autologon: false,
+        no_audio_playback: true,
         pointer_software_rendering: true,
         performance_flags: PerformanceFlags::default(),
         desktop_scale_factor: 0,

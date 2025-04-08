@@ -860,6 +860,7 @@ fn build_config(
         platform: ironrdp::pdu::rdp::capability_sets::MajorPlatformType::UNSPECIFIED,
         no_server_pointer: false,
         autologon: false,
+        no_audio_playback: true,
         request_data: None,
         pointer_software_rendering: false,
         performance_flags: PerformanceFlags::default(),
