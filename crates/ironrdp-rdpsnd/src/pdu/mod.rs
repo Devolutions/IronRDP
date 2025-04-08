@@ -208,7 +208,7 @@ impl fmt::Display for WaveFormat {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct AudioFormat {
     pub format: WaveFormat,
     pub n_channels: u16,
