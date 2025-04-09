@@ -38,7 +38,7 @@ impl WinCliprdrBackend {
         // Wake up subproc event loop; Dont wait for result
         //
         // SAFETY: it is safe to call PostMessageW from any thread with a valid window handle
-        if let Err(err) = unsafe { PostMessageW(self.window, WM_CLIPRDR_BACKEND_EVENT, WPARAM(0), LPARAM(0)) } {
+        if let Err(err) = unsafe { PostMessageW(Some(self.window), WM_CLIPRDR_BACKEND_EVENT, WPARAM(0), LPARAM(0)) } {
             tracing::error!("Failed to post message to wake up subproc event loop: {}", err);
         }
     }

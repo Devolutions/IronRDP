@@ -44,7 +44,7 @@ impl GlobalMemoryBuffer {
 impl Drop for GlobalMemoryBuffer {
     fn drop(&mut self) {
         // SAFETY: It is safe to call GlobalFree on a valid handle
-        if let Err(err) = unsafe { GlobalFree(self.0) } {
+        if let Err(err) = unsafe { GlobalFree(Some(self.0)) } {
             error!("Failed to free global clipboard data handle: {}", err);
         }
     }
@@ -63,7 +63,7 @@ pub(crate) unsafe fn render_format(format: ClipboardFormatId, data: &[u8]) -> Wi
 
     // SAFETY: If described above safety requirements of `render_format` call are met, then
     // `SetClipboardData` is safe to call.
-    let _ = unsafe { SetClipboardData(format.value(), handle) };
+    let _ = unsafe { SetClipboardData(format.value(), Some(handle)) };
 
     // We successfully transferred ownership of the data to the clipboard, we don't need to
     // call drop on handle
