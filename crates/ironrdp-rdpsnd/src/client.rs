@@ -94,6 +94,8 @@ impl Rdpsnd {
     }
 
     pub fn client_formats(&mut self) -> PduResult<RdpsndSvcMessages> {
+        // Windows seems to be confused if the client replies with more formats, or unknown formats (e.g.: opus).
+        // We ensure to only send supported formats in common with the server.
         let server_format: HashSet<_> = self
             .server_format
             .as_ref()
