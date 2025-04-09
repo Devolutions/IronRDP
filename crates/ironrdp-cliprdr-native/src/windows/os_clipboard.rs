@@ -1,6 +1,6 @@
 use ironrdp_cliprdr::pdu::{ClipboardFormat, ClipboardFormatId, ClipboardFormatName};
 use tracing::error;
-use windows::Win32::Foundation::{HANDLE, HWND};
+use windows::Win32::Foundation::HWND;
 use windows::Win32::System::DataExchange::{
     CloseClipboard, EmptyClipboard, EnumClipboardFormats, GetClipboardFormatNameW, OpenClipboard, SetClipboardData,
 };
@@ -14,7 +14,7 @@ pub(crate) struct OwnedOsClipboard;
 impl OwnedOsClipboard {
     pub(crate) fn new(window: HWND) -> Result<Self, WinCliprdrError> {
         // SAFETY: `window` is valid handle, therefore it is safe to call `OpenClipboard`.
-        unsafe { OpenClipboard(window)? };
+        unsafe { OpenClipboard(Some(window))? };
         Ok(Self)
     }
 
@@ -87,7 +87,7 @@ impl OwnedOsClipboard {
     pub(crate) fn delay_render(&mut self, format: ClipboardFormatId) -> Result<(), WinCliprdrError> {
         // SAFETY: We own the clipboard at moment of method invocation, therefore it is safe to
         // call `SetClipboardData`.
-        let result = unsafe { SetClipboardData(format.value(), HANDLE(core::ptr::null_mut())) };
+        let result = unsafe { SetClipboardData(format.value(), None) };
 
         if let Err(err) = result {
             // `windows` crate will return `Err(..)` on err zero handle, but for `SetClipboardData`
