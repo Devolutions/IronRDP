@@ -1,4 +1,5 @@
 use std::borrow::Cow;
+use std::collections::HashSet;
 
 use ironrdp_core::{cast_length, impl_as_any, Decode, EncodeResult, ReadCursor};
 use ironrdp_pdu::gcc::ChannelName;
@@ -93,10 +94,22 @@ impl Rdpsnd {
     }
 
     pub fn client_formats(&mut self) -> PduResult<RdpsndSvcMessages> {
+        // Windows seems to be confused if the client replies with more formats, or unknown formats (e.g.: opus).
+        // We ensure to only send supported formats in common with the server.
+        let server_format: HashSet<_> = self
+            .server_format
+            .as_ref()
+            .ok_or_else(|| pdu_other_err!("invalid state - no server format"))?
+            .formats
+            .iter()
+            .collect();
+        let formats: HashSet<_> = self.handler.get_formats().iter().collect();
+        let formats = formats.intersection(&server_format).map(|&x| x.clone()).collect();
+
         let pdu = pdu::ClientAudioFormatPdu {
             version: self.version()?,
             flags: self.handler.get_flags() | pdu::AudioFormatFlags::ALIVE,
-            formats: self.handler.get_formats().to_vec(),
+            formats,
             volume_left: 0xFFFF,
             volume_right: 0xFFFF,
             pitch: 0x00010000,
