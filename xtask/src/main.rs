@@ -110,6 +110,7 @@ fn main() -> anyhow::Result<()> {
         Action::WasmCheck => wasm::check(&sh)?,
         Action::WasmInstall => wasm::install(&sh)?,
         Action::WebCheck => web::check(&sh)?,
+        Action::WebBuild => web::build(&sh, false)?,
         Action::WebInstall => web::install(&sh)?,
         Action::WebRun => web::run(&sh)?,
         Action::FfiInstall => ffi::install(&sh)?,
