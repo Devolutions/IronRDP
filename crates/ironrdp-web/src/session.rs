@@ -214,7 +214,7 @@ impl SessionBuilder {
                     self.0.borrow_mut().use_display_control = use_display_control
                 }
             },
-            Err(error) => error!(%error, "Provided JsValue is not a valid extension value"),
+            Err(error) => error!(%error, "Unsupported extension value"),
         }
 
         self.clone()

@@ -10,10 +10,10 @@ import type { ClipboardContent } from './ClipboardContent';
 
 export interface RemoteDesktopModule {
     init: () => Promise<unknown>;
+    iron_init: (logLevel: string) => void;
     DesktopSize: DesktopSize;
     DeviceEvent: DeviceEvent;
     InputTransaction: InputTransaction;
-    iron_init: (logLevel: string) => void;
     RemoteDesktopError: RemoteDesktopError;
     Session: Session;
     SessionBuilder: SessionBuilder;

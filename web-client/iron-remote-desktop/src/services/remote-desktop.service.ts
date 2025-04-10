@@ -25,8 +25,8 @@ type OnRemoteClipboardChanged = (transaction: ClipboardTransaction) => void;
 type OnRemoteReceivedFormatsList = () => void;
 type OnForceClipboardUpdate = () => void;
 
-export class WasmBridgeService {
-    private importedModule: RemoteDesktopModule;
+export class RemoteDesktopService {
+    private module: RemoteDesktopModule;
     private _resize: Subject<ResizeEvent> = new Subject<ResizeEvent>();
     private mousePosition: BehaviorSubject<MousePosition> = new BehaviorSubject<MousePosition>({
         x: 0,
@@ -60,27 +60,27 @@ export class WasmBridgeService {
 
     constructor(module: RemoteDesktopModule) {
         this.resize = this._resize.asObservable();
-        this.importedModule = module;
+        this.module = module;
         loggingService.info('Web bridge initialized.');
     }
 
     constructClipboardTransaction(): ClipboardTransaction {
-        return this.importedModule.ClipboardTransaction.construct();
+        return this.module.ClipboardTransaction.construct();
     }
 
     constructClipboardContentFromText(mime_type: string, text: string): ClipboardContent {
-        return this.importedModule.ClipboardContent.new_text(mime_type, text);
+        return this.module.ClipboardContent.new_text(mime_type, text);
     }
 
     constructClipboardContentFromBinary(mime_type: string, binary: Uint8Array): ClipboardContent {
-        return this.importedModule.ClipboardContent.new_binary(mime_type, binary);
+        return this.module.ClipboardContent.new_binary(mime_type, binary);
     }
 
     async init(debug: LogType) {
         loggingService.info('Loading wasm file.');
-        await this.importedModule.init();
+        await this.module.init();
         loggingService.info('Initializing IronRDP.');
-        this.importedModule.iron_init(LogType[debug]);
+        this.module.iron_init(LogType[debug]);
     }
 
     // If set to false, the clipboard will not be enabled and the callbacks will not be registered to the Rust side
@@ -125,13 +125,13 @@ export class WasmBridgeService {
             event.preventDefault(); // prevent default behavior (context menu, etc)
         }
         const mouseFnc = isDown
-            ? this.importedModule.DeviceEvent.new_mouse_button_pressed
-            : this.importedModule.DeviceEvent.new_mouse_button_released;
+            ? this.module.DeviceEvent.new_mouse_button_pressed
+            : this.module.DeviceEvent.new_mouse_button_released;
         this.doTransactionFromDeviceEvents([mouseFnc(event.button)]);
     }
 
     updateMousePosition(position: MousePosition) {
-        this.doTransactionFromDeviceEvents([this.importedModule.DeviceEvent.new_mouse_move(position.x, position.y)]);
+        this.doTransactionFromDeviceEvents([this.module.DeviceEvent.new_mouse_move(position.x, position.y)]);
         this.mousePosition.next(position);
     }
 
@@ -147,7 +147,7 @@ export class WasmBridgeService {
         kdc_proxy_url?: string,
         use_display_control = true,
     ): Observable<NewSessionInfo> {
-        const sessionBuilder = this.importedModule.SessionBuilder.construct();
+        const sessionBuilder = this.module.SessionBuilder.construct();
 
         sessionBuilder.proxy_address(proxyAddress);
         sessionBuilder.destination(destination);
@@ -177,9 +177,7 @@ export class WasmBridgeService {
         }
 
         if (desktopSize != null) {
-            sessionBuilder.desktop_size(
-                this.importedModule.DesktopSize.construct(desktopSize.width, desktopSize.height),
-            );
+            sessionBuilder.desktop_size(this.module.DesktopSize.construct(desktopSize.width, desktopSize.height));
         }
 
         // Type guard to filter out errors
@@ -260,7 +258,7 @@ export class WasmBridgeService {
     mouseWheel(event: WheelEvent) {
         const vertical = event.deltaY !== 0;
         const rotation = vertical ? event.deltaY : event.deltaX;
-        this.doTransactionFromDeviceEvents([this.importedModule.DeviceEvent.new_wheel_rotations(vertical, -rotation)]);
+        this.doTransactionFromDeviceEvents([this.module.DeviceEvent.new_wheel_rotations(vertical, -rotation)]);
     }
 
     setVisibility(state: boolean) {
@@ -291,7 +289,7 @@ export class WasmBridgeService {
 
     onClipboardChangedEmpty(): Promise<void> {
         const onClipboardChangedPromise = async () => {
-            await this.session?.on_clipboard_paste(this.importedModule.ClipboardTransaction.construct());
+            await this.session?.on_clipboard_paste(this.module.ClipboardTransaction.construct());
         };
         return onClipboardChangedPromise();
     }
@@ -336,11 +334,11 @@ export class WasmBridgeService {
         let unicodeEvent;
 
         if (evt.type === 'keydown') {
-            keyEvent = this.importedModule.DeviceEvent.new_key_pressed;
-            unicodeEvent = this.importedModule.DeviceEvent.new_unicode_pressed;
+            keyEvent = this.module.DeviceEvent.new_key_pressed;
+            unicodeEvent = this.module.DeviceEvent.new_unicode_pressed;
         } else if (evt.type === 'keyup') {
-            keyEvent = this.importedModule.DeviceEvent.new_key_released;
-            unicodeEvent = this.importedModule.DeviceEvent.new_unicode_released;
+            keyEvent = this.module.DeviceEvent.new_key_released;
+            unicodeEvent = this.module.DeviceEvent.new_unicode_released;
         }
 
         let sendAsUnicode = true;
@@ -471,7 +469,7 @@ export class WasmBridgeService {
     }
 
     private doTransactionFromDeviceEvents(deviceEvents: DeviceEvent[]) {
-        const transaction = this.importedModule.InputTransaction.construct();
+        const transaction = this.module.InputTransaction.construct();
         deviceEvents.forEach((event) => transaction.add_event(event));
         this.session?.apply_inputs(transaction);
     }
@@ -482,12 +480,12 @@ export class WasmBridgeService {
         const suppr = parseInt('0xE053', 16);
 
         this.doTransactionFromDeviceEvents([
-            this.importedModule.DeviceEvent.new_key_pressed(ctrl),
-            this.importedModule.DeviceEvent.new_key_pressed(alt),
-            this.importedModule.DeviceEvent.new_key_pressed(suppr),
-            this.importedModule.DeviceEvent.new_key_released(ctrl),
-            this.importedModule.DeviceEvent.new_key_released(alt),
-            this.importedModule.DeviceEvent.new_key_released(suppr),
+            this.module.DeviceEvent.new_key_pressed(ctrl),
+            this.module.DeviceEvent.new_key_pressed(alt),
+            this.module.DeviceEvent.new_key_pressed(suppr),
+            this.module.DeviceEvent.new_key_released(ctrl),
+            this.module.DeviceEvent.new_key_released(alt),
+            this.module.DeviceEvent.new_key_released(suppr),
         ]);
     }
 
@@ -495,8 +493,8 @@ export class WasmBridgeService {
         const meta = parseInt('0xE05B', 16);
 
         this.doTransactionFromDeviceEvents([
-            this.importedModule.DeviceEvent.new_key_pressed(meta),
-            this.importedModule.DeviceEvent.new_key_released(meta),
+            this.module.DeviceEvent.new_key_pressed(meta),
+            this.module.DeviceEvent.new_key_released(meta),
         ]);
     }
 }

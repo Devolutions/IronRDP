@@ -16,13 +16,12 @@
 <script lang="ts">
     import { onMount } from 'svelte';
     import { loggingService } from './services/logging.service';
-    import { WasmBridgeService } from './services/wasm-bridge.service';
+    import { RemoteDesktopService } from './services/remote-desktop.service';
     import { LogType } from './enums/LogType';
     import type { ResizeEvent } from './interfaces/ResizeEvent';
     import { PublicAPI } from './services/PublicAPI';
     import { ScreenScale } from './enums/ScreenScale';
     import type { ClipboardTransaction } from './interfaces/ClipboardTransaction';
-    import type { ClipboardContent } from './interfaces/ClipboardContent';
     import type { RemoteDesktopModule } from './interfaces/RemoteDesktopModule';
 
     let {
@@ -55,7 +54,7 @@
 
     let viewerStyle = $state('');
     let wrapperStyle = $state('');
-    let wasmService = new WasmBridgeService(module);
+    let wasmService = new RemoteDesktopService(module);
     let publicAPI = new PublicAPI(wasmService);
 
     // Firefox's clipboard API is very limited, and doesn't support reading from the clipboard
@@ -132,21 +131,12 @@
         return (evt.ctrlKey && evt.code === 'KeyV') || evt.code == 'Paste';
     }
 
-    function isContent(content: ClipboardContent) {
-        // Check whether function exists. To make it more robust we can check every method.
-        return content.mime_type() !== undefined || content.value() !== undefined;
-    }
-
     // This function is required to covert `ClipboardTransaction` to a object that can be used
     // with `ClipboardItem` API.
     function clipboardTransactionToRecord(transaction: ClipboardTransaction): Record<string, Blob> {
         let result = {} as Record<string, Blob>;
 
         for (const item of transaction.content()) {
-            if (!isContent(item)) {
-                continue;
-            }
-
             let mime = item.mime_type();
             let value = new Blob([item.value()], { type: mime });
 
@@ -160,7 +150,7 @@
     function onForceClipboardUpdate() {
         try {
             if (lastClientClipboardTransaction) {
-                wasmService.onClipboardChanged(lastClientClipboardTransaction as ClipboardTransaction);
+                wasmService.onClipboardChanged(lastClientClipboardTransaction);
             } else {
                 wasmService.onClipboardChangedEmpty();
             }
@@ -264,7 +254,7 @@
 
                 if (!transaction.is_empty()) {
                     lastClientClipboardTransaction = transaction;
-                    wasmService.onClipboardChanged(transaction as ClipboardTransaction);
+                    wasmService.onClipboardChanged(transaction);
                 }
             }
         } catch (err) {
@@ -377,7 +367,7 @@
                         transaction.add_content(content);
 
                         if (!transaction.is_empty()) {
-                            wasmService.onClipboardChanged(transaction as ClipboardTransaction);
+                            wasmService.onClipboardChanged(transaction);
                         }
                     });
                     break;

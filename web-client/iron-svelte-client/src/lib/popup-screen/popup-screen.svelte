@@ -2,7 +2,7 @@
     import { onMount } from 'svelte';
     import { setCurrentSessionActive, userInteractionService } from '../../services/session.service';
     import type { UserInteraction } from '../../../static/iron-remote-desktop';
-    import RemoteDesktop from '../../../static/iron-remote-desktop-rdp';
+    import IronRdp from '../../../static/iron-remote-desktop-rdp';
 
     let uiService: UserInteraction;
     let cursorOverrideActive = false;
@@ -136,7 +136,7 @@
             </label>
         </div>
     </div>
-    <iron-remote-desktop debugwasm="INFO" verbose="true" scale="fit" flexcenter="true" module={RemoteDesktop} />
+    <iron-remote-desktop debugwasm="INFO" verbose="true" scale="fit" flexcenter="true" module={IronRdp} />
 </div>
 
 <style>

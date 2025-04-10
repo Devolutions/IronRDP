@@ -4,7 +4,7 @@ This is implementation of `RemoteDesktopModule` interface from [iron-remote-desk
 
 ## Development
 
-Make you modification in the source code then use [iron-svelte-client](../iron-svelte-client) to test.
+Make your modification in the source code then use [iron-svelte-client](../iron-svelte-client) to test.
 
 ## Build
 

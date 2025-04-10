@@ -1,16 +1,16 @@
 import { loggingService } from './logging.service';
 import type { NewSessionInfo } from '../interfaces/NewSessionInfo';
 import { SpecialCombination } from '../enums/SpecialCombination';
-import { WasmBridgeService } from './wasm-bridge.service';
+import { RemoteDesktopService } from './remote-desktop.service';
 import type { UserInteraction } from '../interfaces/UserInteraction';
 import type { ScreenScale } from '../enums/ScreenScale';
 import type { DesktopSize } from '../interfaces/DesktopSize';
 
 export class PublicAPI {
-    private wasmService: WasmBridgeService;
+    private remoteDesktopService: RemoteDesktopService;
 
-    constructor(wasmService: WasmBridgeService) {
-        this.wasmService = wasmService;
+    constructor(remoteDesktopService: RemoteDesktopService) {
+        this.remoteDesktopService = remoteDesktopService;
     }
 
     private connect(
@@ -26,7 +26,7 @@ export class PublicAPI {
         use_display_control = false,
     ): Promise<NewSessionInfo> {
         loggingService.info('Initializing connection.');
-        const resultObservable = this.wasmService.connect(
+        const resultObservable = this.remoteDesktopService.connect(
             username,
             password,
             destination,
@@ -43,40 +43,40 @@ export class PublicAPI {
     }
 
     private ctrlAltDel() {
-        this.wasmService.sendSpecialCombination(SpecialCombination.CTRL_ALT_DEL);
+        this.remoteDesktopService.sendSpecialCombination(SpecialCombination.CTRL_ALT_DEL);
     }
 
     private metaKey() {
-        this.wasmService.sendSpecialCombination(SpecialCombination.META);
+        this.remoteDesktopService.sendSpecialCombination(SpecialCombination.META);
     }
 
     private setVisibility(state: boolean) {
         loggingService.info(`Change component visibility to: ${state}`);
-        this.wasmService.setVisibility(state);
+        this.remoteDesktopService.setVisibility(state);
     }
 
     private setScale(scale: ScreenScale) {
-        this.wasmService.setScale(scale);
+        this.remoteDesktopService.setScale(scale);
     }
 
     private shutdown() {
-        this.wasmService.shutdown();
+        this.remoteDesktopService.shutdown();
     }
 
     private setKeyboardUnicodeMode(use_unicode: boolean) {
-        this.wasmService.setKeyboardUnicodeMode(use_unicode);
+        this.remoteDesktopService.setKeyboardUnicodeMode(use_unicode);
     }
 
     private setCursorStyleOverride(style: string | null) {
-        this.wasmService.setCursorStyleOverride(style);
+        this.remoteDesktopService.setCursorStyleOverride(style);
     }
 
     private resize(width: number, height: number, scale?: number) {
-        this.wasmService.resizeDynamic(width, height, scale);
+        this.remoteDesktopService.resizeDynamic(width, height, scale);
     }
 
     private setEnableClipboard(enable: boolean) {
-        this.wasmService.setEnableClipboard(enable);
+        this.remoteDesktopService.setEnableClipboard(enable);
     }
 
     getExposedFunctions(): UserInteraction {
@@ -85,7 +85,7 @@ export class PublicAPI {
             connect: this.connect.bind(this),
             setScale: this.setScale.bind(this),
             onSessionEvent: (callback) => {
-                this.wasmService.sessionObserver.subscribe(callback);
+                this.remoteDesktopService.sessionObserver.subscribe(callback);
             },
             ctrlAltDel: this.ctrlAltDel.bind(this),
             metaKey: this.metaKey.bind(this),

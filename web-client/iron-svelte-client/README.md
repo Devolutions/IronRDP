@@ -1,7 +1,7 @@
 # SvelteKit UI for IronRDP
 
 Web-based frontend using [`SvelteKit`](https://kit.svelte.dev/) and [`Material`](https://material.io) frameworks.
-This is a simple wrapper around the `iron-remote-desktop-rdp` Web Component demonstrating how to use the API.
+This is a simple wrapper around the `iron-remote-desktop` Web Component demonstrating how to use the API.
 
 Note that this demonstration client is not intended to be used in production as-is.
 Devolutions is shipping well-integrated, production-ready IronRDP web clients as part of:
@@ -111,7 +111,7 @@ If you have a Rust toolchain available, you can use the [`tokengen`][tokengen] t
 
 ## Run in development mode
 
-First, run `npm install` in the [iron-remote-desktop-rdp](../iron-remote-desktop-rdp/) folder, and then `npm install` in [iron-svelte-client](./) folder.
+First, run `npm install` in [iron-remote-desktop](../iron-remote-desktop) and [iron-remote-desktop-rdp](../iron-remote-desktop-rdp) folders, and then `npm install` in [iron-svelte-client](./) folder.
 
 You can then start the dev server with either:
 
