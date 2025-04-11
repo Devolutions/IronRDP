@@ -168,9 +168,15 @@ WebAssembly high-level bindings targeting web browsers.
 
 This crate is an **API Boundary** (WASM module).
 
-#### [`web-client/iron-remote-gui`](./web-client/iron-remote-gui)
+#### [`web-client/iron-remote-desktop`](./web-client/iron-remote-desktop)
 
 Core frontend UI used by `iron-svelte-client` as a Web Component.
+
+This crate is an **API Boundary**.
+
+#### [`web-client/iron-remote-desktop-rdp`](./web-client/iron-remote-desktop-rdp)
+
+Implementation of the TypeScript interfaces exposed by WebAssembly bindings from `ironrdp-web` and used by `iron-svelte-client`.
 
 This crate is an **API Boundary**.
 

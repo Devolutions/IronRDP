@@ -1,0 +1,56 @@
+{
+  "name": "@devolutions/iron-remote-desktop",
+  "author": "Nicolas Girot",
+  "email": "ngirot@devolutions.net",
+  "contributors": [
+    "Benoit Cortier",
+    "Irving Ou",
+    "Vladislav Nikonov",
+    "Zacharia Ellaham"
+  ],
+  "description": "Web Component providing agnostic implementation for Iron Wasm base client",
+  "version": "0.0.0",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "dev": "npm run vite",
+    "build": "npm run vite build",
+    "build-alone": "vite build",
+    "preview": "vite preview",
+    "check": "svelte-check --tsconfig ./tsconfig.json",
+    "check:dist": "tsc ./dist/index.d.ts --noEmit",
+    "check:watch": "svelte-check --tsconfig ./tsconfig.json --watch",
+    "lint": "npm run lint:prettier && npm run lint:eslint",
+    "lint:prettier": "prettier --check .",
+    "lint:eslint": "eslint src/**",
+    "format": "prettier --write ."
+  },
+  "devDependencies": {
+    "@eslint/eslintrc": "^3.3.0",
+    "@eslint/js": "^9.21.0",
+    "@sveltejs/vite-plugin-svelte": "^5.0.3",
+    "@tsconfig/svelte": "^5.0.4",
+    "@types/ua-parser-js": "^0.7.36",
+    "@typescript-eslint/eslint-plugin": "^8.25.0",
+    "eslint": "^9.21.0",
+    "eslint-config-prettier": "^9.0.0",
+    "eslint-plugin-prettier": "^5.0.1",
+    "eslint-plugin-svelte": "^3.0.2",
+    "globals": "^16.0.0",
+    "prettier": "^3.1.0",
+    "prettier-plugin-svelte": "^3.1.0",
+    "svelte": "~5.20.2",
+    "svelte-check": "^4.1.4",
+    "tslib": "^2.4.1",
+    "typescript": "~5.7.2",
+    "vite": "^6.2.0",
+    "vite-plugin-dts": "^4.5.0",
+    "vite-plugin-top-level-await": "^1.2.2",
+    "vite-plugin-wasm": "^3.1.0"
+  },
+  "dependencies": {
+    "rxjs": "^6.6.7",
+    "svelte-eslint-parser": "^1.0.0",
+    "ua-parser-js": "^1.0.33"
+  }
+}
