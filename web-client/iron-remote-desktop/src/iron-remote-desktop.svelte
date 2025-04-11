@@ -54,8 +54,8 @@
 
     let viewerStyle = $state('');
     let wrapperStyle = $state('');
-    let wasmService = new RemoteDesktopService(module);
-    let publicAPI = new PublicAPI(wasmService);
+    let remoteDesktopService = new RemoteDesktopService(module);
+    let publicAPI = new PublicAPI(remoteDesktopService);
 
     // Firefox's clipboard API is very limited, and doesn't support reading from the clipboard
     // without changing browser settings via `about:config`.
@@ -104,12 +104,12 @@
         }
 
         if (isFirefox) {
-            wasmService.setOnRemoteClipboardChanged(ffOnRemoteClipboardChanged);
-            wasmService.setOnRemoteReceivedFormatList(ffOnRemoteReceivedFormatList);
-            wasmService.setOnForceClipboardUpdate(onForceClipboardUpdate);
+            remoteDesktopService.setOnRemoteClipboardChanged(ffOnRemoteClipboardChanged);
+            remoteDesktopService.setOnRemoteReceivedFormatList(ffOnRemoteReceivedFormatList);
+            remoteDesktopService.setOnForceClipboardUpdate(onForceClipboardUpdate);
         } else if (isClipboardApiSupported) {
-            wasmService.setOnRemoteClipboardChanged(onRemoteClipboardChanged);
-            wasmService.setOnForceClipboardUpdate(onForceClipboardUpdate);
+            remoteDesktopService.setOnRemoteClipboardChanged(onRemoteClipboardChanged);
+            remoteDesktopService.setOnForceClipboardUpdate(onForceClipboardUpdate);
 
             // Start the clipboard monitoring loop
             setTimeout(onMonitorClipboard, CLIPBOARD_MONITORING_INTERVAL);
@@ -150,9 +150,9 @@
     function onForceClipboardUpdate() {
         try {
             if (lastClientClipboardTransaction) {
-                wasmService.onClipboardChanged(lastClientClipboardTransaction);
+                remoteDesktopService.onClipboardChanged(lastClientClipboardTransaction);
             } else {
-                wasmService.onClipboardChangedEmpty();
+                remoteDesktopService.onClipboardChangedEmpty();
             }
         } catch (err) {
             console.error('Failed to send initial clipboard state: ' + err);
@@ -236,7 +236,7 @@
             if (!sameValue) {
                 lastClientClipboardItems = values;
 
-                let transaction = wasmService.constructClipboardTransaction();
+                let transaction = remoteDesktopService.constructClipboardTransaction();
 
                 // Iterate over `Record` type
                 values.forEach((value: string | Uint8Array, key: string) => {
@@ -246,15 +246,15 @@
                     }
 
                     if (key.startsWith('text/') && typeof value === 'string') {
-                        transaction.add_content(wasmService.constructClipboardContentFromText(key, value));
+                        transaction.add_content(remoteDesktopService.constructClipboardContentFromText(key, value));
                     } else if (key.startsWith('image/') && value instanceof Uint8Array) {
-                        transaction.add_content(wasmService.constructClipboardContentFromBinary(key, value));
+                        transaction.add_content(remoteDesktopService.constructClipboardContentFromBinary(key, value));
                     }
                 });
 
                 if (!transaction.is_empty()) {
                     lastClientClipboardTransaction = transaction;
-                    wasmService.onClipboardChanged(transaction);
+                    remoteDesktopService.onClipboardChanged(transaction);
                 }
             }
         } catch (err) {
@@ -334,7 +334,7 @@
         }
 
         try {
-            let transaction = wasmService.constructClipboardTransaction();
+            let transaction = remoteDesktopService.constructClipboardTransaction();
 
             if (evt.clipboardData == null) {
                 return;
@@ -345,11 +345,11 @@
 
                 if (mime.startsWith('text/')) {
                     clipItem.getAsString((str: string) => {
-                        let content = wasmService.constructClipboardContentFromText(mime, str);
+                        let content = remoteDesktopService.constructClipboardContentFromText(mime, str);
                         transaction.add_content(content);
 
                         if (!transaction.is_empty()) {
-                            wasmService.onClipboardChanged(transaction as ClipboardTransaction);
+                            remoteDesktopService.onClipboardChanged(transaction as ClipboardTransaction);
                         }
                     });
                     break;
@@ -363,11 +363,11 @@
 
                     file.arrayBuffer().then((buffer: ArrayBuffer) => {
                         const strict_buffer = new Uint8Array(buffer);
-                        let content = wasmService.constructClipboardContentFromBinary(mime, strict_buffer);
+                        let content = remoteDesktopService.constructClipboardContentFromBinary(mime, strict_buffer);
                         transaction.add_content(content);
 
                         if (!transaction.is_empty()) {
-                            wasmService.onClipboardChanged(transaction);
+                            remoteDesktopService.onClipboardChanged(transaction);
                         }
                     });
                     break;
@@ -453,7 +453,7 @@
     }
 
     function serverBridgeListeners() {
-        wasmService.resize.subscribe((evt: ResizeEvent) => {
+        remoteDesktopService.resize.subscribe((evt: ResizeEvent) => {
             loggingService.info(`Resize canvas to: ${evt.desktop_size.width}x${evt.desktop_size.height}`);
             canvas.width = evt.desktop_size.width;
             canvas.height = evt.desktop_size.height;
@@ -466,17 +466,17 @@
             scaleSession(scale);
         });
 
-        wasmService.scaleObserver.subscribe((s) => {
+        remoteDesktopService.scaleObserver.subscribe((s) => {
             loggingService.info('Change scale!');
             scaleSession(s);
         });
 
-        wasmService.dynamicResize.subscribe((evt) => {
+        remoteDesktopService.dynamicResize.subscribe((evt) => {
             loggingService.info(`Dynamic resize!, width: ${evt.width}, height: ${evt.height}`);
             setViewerStyle(evt.width.toString(), evt.height.toString(), true);
         });
 
-        wasmService.changeVisibilityObservable.subscribe((val) => {
+        remoteDesktopService.changeVisibilityObservable.subscribe((val) => {
             isVisible = val;
             if (val) {
                 //Enforce first scaling and delay the call to scaleSession to ensure Dom is ready.
@@ -589,7 +589,7 @@
             y: Math.round((evt.clientY - rect.top) * scaleY),
         };
 
-        wasmService.updateMousePosition(coord);
+        remoteDesktopService.updateMousePosition(coord);
     }
 
     function setMouseButtonState(state: MouseEvent, isDown: boolean) {
@@ -609,20 +609,20 @@
             }
         }
 
-        wasmService.mouseButtonState(state, isDown, true);
+        remoteDesktopService.mouseButtonState(state, isDown, true);
     }
 
     function mouseWheel(evt: WheelEvent) {
-        wasmService.mouseWheel(evt);
+        remoteDesktopService.mouseWheel(evt);
     }
 
     function setMouseIn(evt: MouseEvent) {
         canvas.focus();
-        wasmService.mouseIn(evt);
+        remoteDesktopService.mouseIn(evt);
     }
 
     function setMouseOut(evt: MouseEvent) {
-        wasmService.mouseOut(evt);
+        remoteDesktopService.mouseOut(evt);
     }
 
     function keyboardEvent(evt: KeyboardEvent) {
@@ -638,7 +638,7 @@
             ffWaitForRemoteClipboardTransactionSet();
         }
 
-        wasmService.sendKeyboardEvent(evt);
+        remoteDesktopService.sendKeyboardEvent(evt);
 
         // Propagate further
         return true;
@@ -662,8 +662,8 @@
         canvas.height = 600;
 
         const logLevel = LogType[debugwasm] ?? LogType.INFO;
-        await wasmService.init(logLevel);
-        wasmService.setCanvas(canvas);
+        await remoteDesktopService.init(logLevel);
+        remoteDesktopService.setCanvas(canvas);
 
         initListeners();
 

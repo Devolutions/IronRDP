@@ -220,12 +220,6 @@ impl SessionBuilder {
         self.clone()
     }
 
-    pub fn extension_call(&self, _ident: String, _call: js_sys::Function) -> SessionBuilder {
-        warn!("Extension calls are not supported yet");
-
-        self.clone()
-    }
-
     pub async fn connect(&self) -> Result<Session, RemoteDesktopError> {
         let (
             username,

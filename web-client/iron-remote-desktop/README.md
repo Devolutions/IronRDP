@@ -105,21 +105,21 @@ connect(
 > See the [ScreenScale](./src/enums/ScreenScale.ts) enum for possible values.
 
 > `shutdown()`
-> 
+>
 > Shutdowns the active session.
 
 > `setKeyboardUnicodeMode(use_unicode: boolean)`
-> 
+>
 > Sets the keyboard Unicode mode.
 
 > `setCursorStyleOverride(style?: string)`
-> 
+>
 > Overrides the default cursor style. If `style` is `null`, the default cursor style will be used.
 
 > `resize(width: number, height: number, scale?: number)`
-> 
+>
 > Resizes the screen.
 
 > `setEnableClipboard(enable: boolean)`
-> 
+>
 > Enables or disable the clipboard based on the `enable` value.

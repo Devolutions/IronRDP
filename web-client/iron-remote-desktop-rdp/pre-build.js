@@ -31,4 +31,4 @@ const run = async (command, cwd) => {
     }
 };
 
-await run('cargo xtask wasm build', '../../');
+await run('cargo xtask web build', '../../');

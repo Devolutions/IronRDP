@@ -125,13 +125,13 @@ export class RemoteDesktopService {
             event.preventDefault(); // prevent default behavior (context menu, etc)
         }
         const mouseFnc = isDown
-            ? this.module.DeviceEvent.new_mouse_button_pressed
-            : this.module.DeviceEvent.new_mouse_button_released;
+            ? this.module.DeviceEvent.mouse_button_pressed
+            : this.module.DeviceEvent.mouse_button_released;
         this.doTransactionFromDeviceEvents([mouseFnc(event.button)]);
     }
 
     updateMousePosition(position: MousePosition) {
-        this.doTransactionFromDeviceEvents([this.module.DeviceEvent.new_mouse_move(position.x, position.y)]);
+        this.doTransactionFromDeviceEvents([this.module.DeviceEvent.mouse_move(position.x, position.y)]);
         this.mousePosition.next(position);
     }
 
@@ -258,7 +258,7 @@ export class RemoteDesktopService {
     mouseWheel(event: WheelEvent) {
         const vertical = event.deltaY !== 0;
         const rotation = vertical ? event.deltaY : event.deltaX;
-        this.doTransactionFromDeviceEvents([this.module.DeviceEvent.new_wheel_rotations(vertical, -rotation)]);
+        this.doTransactionFromDeviceEvents([this.module.DeviceEvent.wheel_rotations(vertical, -rotation)]);
     }
 
     setVisibility(state: boolean) {
@@ -334,11 +334,11 @@ export class RemoteDesktopService {
         let unicodeEvent;
 
         if (evt.type === 'keydown') {
-            keyEvent = this.module.DeviceEvent.new_key_pressed;
-            unicodeEvent = this.module.DeviceEvent.new_unicode_pressed;
+            keyEvent = this.module.DeviceEvent.key_pressed;
+            unicodeEvent = this.module.DeviceEvent.unicode_pressed;
         } else if (evt.type === 'keyup') {
-            keyEvent = this.module.DeviceEvent.new_key_released;
-            unicodeEvent = this.module.DeviceEvent.new_unicode_released;
+            keyEvent = this.module.DeviceEvent.key_released;
+            unicodeEvent = this.module.DeviceEvent.unicode_released;
         }
 
         let sendAsUnicode = true;
@@ -480,12 +480,12 @@ export class RemoteDesktopService {
         const suppr = parseInt('0xE053', 16);
 
         this.doTransactionFromDeviceEvents([
-            this.module.DeviceEvent.new_key_pressed(ctrl),
-            this.module.DeviceEvent.new_key_pressed(alt),
-            this.module.DeviceEvent.new_key_pressed(suppr),
-            this.module.DeviceEvent.new_key_released(ctrl),
-            this.module.DeviceEvent.new_key_released(alt),
-            this.module.DeviceEvent.new_key_released(suppr),
+            this.module.DeviceEvent.key_pressed(ctrl),
+            this.module.DeviceEvent.key_pressed(alt),
+            this.module.DeviceEvent.key_pressed(suppr),
+            this.module.DeviceEvent.key_released(ctrl),
+            this.module.DeviceEvent.key_released(alt),
+            this.module.DeviceEvent.key_released(suppr),
         ]);
     }
 
@@ -493,8 +493,8 @@ export class RemoteDesktopService {
         const meta = parseInt('0xE05B', 16);
 
         this.doTransactionFromDeviceEvents([
-            this.module.DeviceEvent.new_key_pressed(meta),
-            this.module.DeviceEvent.new_key_released(meta),
+            this.module.DeviceEvent.key_pressed(meta),
+            this.module.DeviceEvent.key_released(meta),
         ]);
     }
 }

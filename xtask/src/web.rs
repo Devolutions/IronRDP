@@ -57,20 +57,19 @@ pub fn build(sh: &Shell, wasm_pack_dev: bool) -> anyhow::Result<()> {
 
     let ironrdp_web_js_file_path = sh.current_dir().join(IRONRDP_WEB_PACKAGE_JS_PATH);
 
-    let mut ironrdp_web_js_content = fs::read_to_string(&ironrdp_web_js_file_path)?;
+    let ironrdp_web_js_content = fs::read_to_string(&ironrdp_web_js_file_path)?;
 
     // Modify the js file to get rid of the `URL` object.
     // Vite doesn't work properly with inlined urls in `new URL(url, import.meta.url)`.
-    ironrdp_web_js_content = format!(
+    let ironrdp_web_js_content = format!(
         "import wasmUrl from './ironrdp_web_bg.wasm?url';\n\n{}",
         ironrdp_web_js_content
     );
-    ironrdp_web_js_content =
+    let ironrdp_web_js_content =
         ironrdp_web_js_content.replace("new URL('ironrdp_web_bg.wasm', import.meta.url)", "wasmUrl");
 
     fs::write(&ironrdp_web_js_file_path, ironrdp_web_js_content)?;
 
-    run_cmd_in!(sh, IRON_REMOTE_DESKTOP_PATH, "{NPM} run build-alone")?;
     run_cmd_in!(sh, IRON_SVELTE_CLIENT_PATH, "{NPM} run build-no-wasm")?;
 
     Ok(())
