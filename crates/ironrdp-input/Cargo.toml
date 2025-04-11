@@ -1,6 +1,6 @@
 [package]
 name = "ironrdp-input"
-version = "0.2.0"
+version = "0.2.1"
 readme = "README.md"
 description = "Utilities to manage and build RDP input packets"
 edition.workspace = true
@@ -16,7 +16,7 @@ doctest = false
 test = false
 
 [dependencies]
-ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.4" } # public
+ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.5" } # public
 bitvec = "1.0"
 smallvec = "1.15"
 
