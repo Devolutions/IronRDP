@@ -25,8 +25,8 @@ test = false
 
 [features]
 default = ["rustls"]
-rustls = ["ironrdp-tls/rustls"]
-native-tls = ["ironrdp-tls/native-tls"]
+rustls = ["ironrdp-tls/rustls", "tokio-tungstenite/rustls-tls-native-roots"]
+native-tls = ["ironrdp-tls/native-tls", "tokio-tungstenite/native-tls"]
 
 [dependencies]
 # Protocols
@@ -42,15 +42,12 @@ ironrdp = { path = "../ironrdp", version = "0.9", features = [
     "displaycontrol",
     "connector",
 ] }
-ironrdp-core = { path = "../ironrdp-core", version = "0.1", features = [
-    "alloc",
-] }
+ironrdp-core = { path = "../ironrdp-core", version = "0.1", features = ["alloc"] }
 ironrdp-cliprdr-native = { path = "../ironrdp-cliprdr-native", version = "0.2" }
 ironrdp-rdpsnd-native = { path = "../ironrdp-rdpsnd-native", version = "0.2" }
 ironrdp-tls = { path = "../ironrdp-tls", version = "0.1" }
-ironrdp-tokio = { path = "../ironrdp-tokio", version = "0.3", features = [
-    "reqwest",
-] }
+ironrdp-tokio = { path = "../ironrdp-tokio", version = "0.3", features = ["reqwest"] }
+ironrdp-rdcleanpath.path = "../ironrdp-rdcleanpath"
 
 # Windowing and rendering
 winit = { version = "0.30", features = ["rwh_06"] }
@@ -67,6 +64,9 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # Async, futures
 tokio = { version = "1", features = ["full"] }
+tokio-tungstenite = "0.26"
+transport = { git = "https://github.com/Devolutions/devolutions-gateway", rev = "06e91dfe82751a6502eaf74b6a99663f06f0236d" }
+futures-util = { version = "0.3", features = ["sink"] }
 
 # Utils
 whoami = "1.6"
@@ -76,6 +76,7 @@ tap = "1"
 semver = "1"
 raw-window-handle = "0.6"
 uuid = { version = "1.16" }
+x509-cert = { version = "0.2", default-features = false, features = ["std"] }
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.61", features = ["Win32_Foundation"] }
