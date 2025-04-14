@@ -1090,7 +1090,7 @@ where
 
         let should_upgrade = ironrdp_futures::skip_connect_begin(connector);
 
-        // At this point, proxy established the TLS session
+        // At this point, proxy established the TLS session.
 
         let upgraded = ironrdp_futures::mark_as_upgraded(should_upgrade, connector);
 

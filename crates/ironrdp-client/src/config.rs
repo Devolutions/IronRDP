@@ -1,6 +1,5 @@
 use core::num::ParseIntError;
 use core::str::FromStr;
-use std::io;
 
 use anyhow::Context as _;
 use clap::clap_derive::ValueEnum;
@@ -19,6 +18,7 @@ pub struct Config {
     pub destination: Destination,
     pub connector: connector::Config,
     pub clipboard_type: ClipboardType,
+    pub rdcleanpath: Option<RDCleanPathConfig>,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
@@ -107,14 +107,6 @@ impl Destination {
     pub fn port(&self) -> u16 {
         self.port
     }
-
-    pub fn lookup_addr(&self) -> io::Result<std::net::SocketAddr> {
-        use std::net::ToSocketAddrs as _;
-
-        let sockaddr = (self.name.as_str(), self.port).to_socket_addrs()?.next().unwrap();
-
-        Ok(sockaddr)
-    }
 }
 
 impl FromStr for Destination {
@@ -135,6 +127,12 @@ impl From<&Destination> for connector::ServerName {
     fn from(value: &Destination) -> Self {
         Self::new(&value.name)
     }
+}
+
+#[derive(Clone, Debug)]
+pub struct RDCleanPathConfig {
+    pub url: String,
+    pub auth_token: String,
 }
 
 /// Devolutions IronRDP client
@@ -160,6 +158,14 @@ struct Args {
     /// A target RDP server user password
     #[clap(short, long, value_parser)]
     password: Option<String>,
+
+    /// Proxy URL to connect to for the RDCleanPath
+    #[clap(long, requires("rdcleanpath_token"))]
+    rdcleanpath_url: Option<String>,
+
+    /// Authentication token to insert in the RDCleanPath packet
+    #[clap(long, requires("rdcleanpath_url"))]
+    rdcleanpath_token: Option<String>,
 
     /// The keyboard type
     #[clap(long, value_enum, value_parser, default_value_t = KeyboardType::IbmEnhanced)]
@@ -326,11 +332,17 @@ impl Config {
             performance_flags: PerformanceFlags::default(),
         };
 
+        let rdcleanpath = args
+            .rdcleanpath_url
+            .zip(args.rdcleanpath_token)
+            .map(|(url, auth_token)| RDCleanPathConfig { url, auth_token });
+
         Ok(Self {
             log_file: args.log_file,
             destination,
             connector,
             clipboard_type,
+            rdcleanpath,
         })
     }
 }
