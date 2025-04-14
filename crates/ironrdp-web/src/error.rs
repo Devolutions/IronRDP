@@ -3,7 +3,7 @@ use wasm_bindgen::prelude::*;
 
 #[wasm_bindgen]
 #[derive(Clone, Copy)]
-pub enum IronRdpErrorKind {
+pub enum IronErrorKind {
     /// Catch-all error kind
     General,
     /// Incorrect password used
@@ -20,12 +20,12 @@ pub enum IronRdpErrorKind {
 
 #[wasm_bindgen]
 pub struct IronError {
-    kind: IronRdpErrorKind,
+    kind: IronErrorKind,
     source: anyhow::Error,
 }
 
 impl IronError {
-    pub fn with_kind(mut self, kind: IronRdpErrorKind) -> Self {
+    pub fn with_kind(mut self, kind: IronErrorKind) -> Self {
         self.kind = kind;
         self
     }
@@ -37,7 +37,7 @@ impl IronError {
         format!("{:?}", self.source)
     }
 
-    pub fn kind(&self) -> IronRdpErrorKind {
+    pub fn kind(&self) -> IronErrorKind {
         self.kind
     }
 }
@@ -50,13 +50,13 @@ impl From<connector::ConnectorError> for IronError {
             ConnectorErrorKind::Credssp(sspi::Error {
                 nstatus: Some(NStatusCode::WRONG_PASSWORD),
                 ..
-            }) => IronRdpErrorKind::WrongPassword,
+            }) => IronErrorKind::WrongPassword,
             ConnectorErrorKind::Credssp(sspi::Error {
                 nstatus: Some(NStatusCode::LOGON_FAILURE),
                 ..
-            }) => IronRdpErrorKind::LogonFailure,
-            ConnectorErrorKind::AccessDenied => IronRdpErrorKind::AccessDenied,
-            _ => IronRdpErrorKind::General,
+            }) => IronErrorKind::LogonFailure,
+            ConnectorErrorKind::AccessDenied => IronErrorKind::AccessDenied,
+            _ => IronErrorKind::General,
         };
 
         Self {
@@ -69,7 +69,7 @@ impl From<connector::ConnectorError> for IronError {
 impl From<ironrdp::session::SessionError> for IronError {
     fn from(e: ironrdp::session::SessionError) -> Self {
         Self {
-            kind: IronRdpErrorKind::General,
+            kind: IronErrorKind::General,
             source: anyhow::Error::new(e),
         }
     }
@@ -78,7 +78,7 @@ impl From<ironrdp::session::SessionError> for IronError {
 impl From<anyhow::Error> for IronError {
     fn from(e: anyhow::Error) -> Self {
         Self {
-            kind: IronRdpErrorKind::General,
+            kind: IronErrorKind::General,
             source: e,
         }
     }

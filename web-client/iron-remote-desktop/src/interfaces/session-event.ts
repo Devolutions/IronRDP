@@ -8,6 +8,7 @@ export enum IronErrorKind {
     RDCleanPath = 4,
     ProxyConnect = 5,
 }
+
 export interface IronError {
     backtrace: () => string;
     kind: () => IronErrorKind;

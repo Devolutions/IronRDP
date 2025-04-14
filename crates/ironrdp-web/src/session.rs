@@ -37,7 +37,7 @@ use web_sys::HtmlCanvasElement;
 
 use crate::canvas::Canvas;
 use crate::clipboard::{ClipboardTransaction, WasmClipboard, WasmClipboardBackend, WasmClipboardBackendMessage};
-use crate::error::{IronError, IronRdpErrorKind};
+use crate::error::{IronError, IronErrorKind};
 use crate::image::extract_partial_image;
 use crate::input::InputTransaction;
 use crate::network_client::WasmNetworkClient;
@@ -299,7 +299,7 @@ impl SessionBuilder {
                         "failed to connect to {proxy_address} (WebSocket is `{:?}`)",
                         ws.state()
                     ))
-                    .with_kind(IronRdpErrorKind::ProxyConnect));
+                    .with_kind(IronErrorKind::ProxyConnect));
                 }
                 websocket::State::Connecting => {
                     trace!("WebSocket is connecting to proxy at {proxy_address}...");
@@ -1050,7 +1050,7 @@ where
                 ironrdp_rdcleanpath::RDCleanPath::Err(error) => {
                     return Err(
                         IronError::from(anyhow::Error::new(error).context("received an RDCleanPath error"))
-                            .with_kind(IronRdpErrorKind::RDCleanPath),
+                            .with_kind(IronErrorKind::RDCleanPath),
                     );
                 }
             };
