@@ -40,7 +40,7 @@
             } else {
                 toast.set({
                     type: 'info',
-                    message: typeof event.data === 'string' ? event.data : (event.data?.backtrace() ?? 'No info'),
+                    message: typeof event.data === 'string' ? event.data : event.data?.backtrace() ?? 'No info',
                 });
             }
         });
