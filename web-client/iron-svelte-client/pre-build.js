@@ -57,11 +57,12 @@ const copyCoreFiles = async () => {
     }
 };
 
+await run('npm run build', '../iron-remote-desktop');
+
 let buildCommand = 'npm run build';
 if (noWasm) {
     buildCommand = 'npm run build-alone';
 }
-
-await run(buildCommand, '../iron-remote-desktop');
 await run(buildCommand, '../iron-remote-desktop-rdp');
+
 await copyCoreFiles();
