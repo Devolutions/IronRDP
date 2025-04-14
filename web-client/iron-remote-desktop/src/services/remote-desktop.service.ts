@@ -169,7 +169,7 @@ export class RemoteDesktopService {
 
         if (config.desktopSize != null) {
             sessionBuilder.desktop_size(
-                this.module.DesktopSize.init(config.desktopSize.width, config.desktopSize.height)
+                this.module.DesktopSize.init(config.desktopSize.width, config.desktopSize.height),
             );
         }
 
