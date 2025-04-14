@@ -19,7 +19,7 @@ test = false
 ironrdp-core = { path = "../ironrdp-core", version = "0.1" } # public
 ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.4" } # public
 ironrdp-svc = { path = "../ironrdp-svc", version = "0.3" } # public
-thiserror = "1.0" # FIXME: handwrite the Error trait implementations.
+thiserror = "2.0" # FIXME: handwrite the Error trait implementations.
 tracing = { version = "0.1", features = ["log"] }
 bitflags = "2.4"
 
