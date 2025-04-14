@@ -19,7 +19,7 @@ use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 use winit::event_loop::EventLoopProxy;
 
-use crate::config::{Config, ProxyConfig};
+use crate::config::{Config, RDCleanPathConfig};
 
 #[derive(Debug)]
 pub enum RdpOutputEvent {
@@ -61,8 +61,8 @@ pub struct RdpClient {
 impl RdpClient {
     pub async fn run(mut self) {
         loop {
-            let (connection_result, framed) = if let Some(proxy_config) = self.config.proxy.as_ref() {
-                match connect_ws(&self.config, proxy_config, self.cliprdr_factory.as_deref()).await {
+            let (connection_result, framed) = if let Some(rdcleanpath) = self.config.rdcleanpath.as_ref() {
+                match connect_ws(&self.config, rdcleanpath, self.cliprdr_factory.as_deref()).await {
                     Ok(result) => result,
                     Err(e) => {
                         let _ = self.event_loop_proxy.send_event(RdpOutputEvent::ConnectionFailure(e));
@@ -181,10 +181,10 @@ async fn connect(
 
 async fn connect_ws(
     config: &Config,
-    proxy_config: &ProxyConfig,
+    rdcleanpath: &RDCleanPathConfig,
     cliprdr_factory: Option<&(dyn CliprdrBackendFactory + Send)>,
 ) -> ConnectorResult<(ConnectionResult, UpgradedFramed)> {
-    let (ws, _) = tokio_tungstenite::connect_async(&proxy_config.addr)
+    let (ws, _) = tokio_tungstenite::connect_async(&rdcleanpath.url)
         .await
         .map_err(|e| connector::custom_err!("WS connect", e))?;
 
@@ -213,7 +213,7 @@ async fn connect_ws(
         &mut framed,
         &mut connector,
         destination,
-        proxy_config.auth_token.clone(),
+        rdcleanpath.auth_token.clone(),
         None,
     )
     .await?;

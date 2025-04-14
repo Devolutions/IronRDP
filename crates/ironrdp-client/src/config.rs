@@ -18,7 +18,7 @@ pub struct Config {
     pub destination: Destination,
     pub connector: connector::Config,
     pub clipboard_type: ClipboardType,
-    pub proxy: Option<ProxyConfig>,
+    pub rdcleanpath: Option<RDCleanPathConfig>,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
@@ -130,8 +130,8 @@ impl From<&Destination> for connector::ServerName {
 }
 
 #[derive(Clone, Debug)]
-pub struct ProxyConfig {
-    pub addr: String,
+pub struct RDCleanPathConfig {
+    pub url: String,
     pub auth_token: String,
 }
 
@@ -159,13 +159,13 @@ struct Args {
     #[clap(short, long, value_parser)]
     password: Option<String>,
 
-    /// Connect to a proxy using the RDCleanPath
-    #[clap(long)]
-    proxy: Option<String>,
+    /// Proxy URL to connect to for the RDCleanPath
+    #[clap(long, requires("rdcleanpath_token"))]
+    rdcleanpath_url: Option<String>,
 
     /// Authentication token to insert in the RDCleanPath packet
-    #[clap(long)]
-    proxy_token: Option<String>,
+    #[clap(long, requires("rdcleanpath_url"))]
+    rdcleanpath_token: Option<String>,
 
     /// The keyboard type
     #[clap(long, value_enum, value_parser, default_value_t = KeyboardType::IbmEnhanced)]
@@ -332,17 +332,17 @@ impl Config {
             performance_flags: PerformanceFlags::default(),
         };
 
-        let proxy = args
-            .proxy
-            .zip(args.proxy_token)
-            .map(|(addr, auth_token)| ProxyConfig { addr, auth_token });
+        let rdcleanpath = args
+            .rdcleanpath_url
+            .zip(args.rdcleanpath_token)
+            .map(|(url, auth_token)| RDCleanPathConfig { url, auth_token });
 
         Ok(Self {
             log_file: args.log_file,
             destination,
             connector,
             clipboard_type,
-            proxy,
+            rdcleanpath,
         })
     }
 }
