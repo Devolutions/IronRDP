@@ -3,7 +3,7 @@ use wasm_bindgen::prelude::*;
 
 #[wasm_bindgen]
 #[derive(Clone, Copy)]
-pub enum RemoteDesktopErrorKind {
+pub enum IronRdpErrorKind {
     /// Catch-all error kind
     General,
     /// Incorrect password used
@@ -19,30 +19,30 @@ pub enum RemoteDesktopErrorKind {
 }
 
 #[wasm_bindgen]
-pub struct RemoteDesktopError {
-    kind: RemoteDesktopErrorKind,
+pub struct IronError {
+    kind: IronRdpErrorKind,
     source: anyhow::Error,
 }
 
-impl RemoteDesktopError {
-    pub fn with_kind(mut self, kind: RemoteDesktopErrorKind) -> Self {
+impl IronError {
+    pub fn with_kind(mut self, kind: IronRdpErrorKind) -> Self {
         self.kind = kind;
         self
     }
 }
 
 #[wasm_bindgen]
-impl RemoteDesktopError {
+impl IronError {
     pub fn backtrace(&self) -> String {
         format!("{:?}", self.source)
     }
 
-    pub fn kind(&self) -> RemoteDesktopErrorKind {
+    pub fn kind(&self) -> IronRdpErrorKind {
         self.kind
     }
 }
 
-impl From<connector::ConnectorError> for RemoteDesktopError {
+impl From<connector::ConnectorError> for IronError {
     fn from(e: connector::ConnectorError) -> Self {
         use sspi::credssp::NStatusCode;
 
@@ -50,13 +50,13 @@ impl From<connector::ConnectorError> for RemoteDesktopError {
             ConnectorErrorKind::Credssp(sspi::Error {
                 nstatus: Some(NStatusCode::WRONG_PASSWORD),
                 ..
-            }) => RemoteDesktopErrorKind::WrongPassword,
+            }) => IronRdpErrorKind::WrongPassword,
             ConnectorErrorKind::Credssp(sspi::Error {
                 nstatus: Some(NStatusCode::LOGON_FAILURE),
                 ..
-            }) => RemoteDesktopErrorKind::LogonFailure,
-            ConnectorErrorKind::AccessDenied => RemoteDesktopErrorKind::AccessDenied,
-            _ => RemoteDesktopErrorKind::General,
+            }) => IronRdpErrorKind::LogonFailure,
+            ConnectorErrorKind::AccessDenied => IronRdpErrorKind::AccessDenied,
+            _ => IronRdpErrorKind::General,
         };
 
         Self {
@@ -66,19 +66,19 @@ impl From<connector::ConnectorError> for RemoteDesktopError {
     }
 }
 
-impl From<ironrdp::session::SessionError> for RemoteDesktopError {
+impl From<ironrdp::session::SessionError> for IronError {
     fn from(e: ironrdp::session::SessionError) -> Self {
         Self {
-            kind: RemoteDesktopErrorKind::General,
+            kind: IronRdpErrorKind::General,
             source: anyhow::Error::new(e),
         }
     }
 }
 
-impl From<anyhow::Error> for RemoteDesktopError {
+impl From<anyhow::Error> for IronError {
     fn from(e: anyhow::Error) -> Self {
         Self {
-            kind: RemoteDesktopErrorKind::General,
+            kind: IronRdpErrorKind::General,
             source: e,
         }
     }

@@ -1,7 +1,7 @@
 import type { DesktopSize } from './DesktopSize';
 import type { DeviceEvent } from './DeviceEvent';
 import type { InputTransaction } from './InputTransaction';
-import type { RemoteDesktopError } from './session-event';
+import type { IronError } from './session-event';
 import type { Session } from './Session';
 import type { SessionBuilder } from './SessionBuilder';
 import type { SessionTerminationInfo } from './SessionTerminationInfo';
@@ -14,7 +14,7 @@ export interface RemoteDesktopModule {
     DesktopSize: DesktopSize;
     DeviceEvent: DeviceEvent;
     InputTransaction: InputTransaction;
-    RemoteDesktopError: RemoteDesktopError;
+    RemoteDesktopError: IronError;
     Session: Session;
     SessionBuilder: SessionBuilder;
     SessionTerminationInfo: SessionTerminationInfo;

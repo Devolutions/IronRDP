@@ -12,7 +12,7 @@ import { SpecialCombination } from '../enums/SpecialCombination';
 import type { ResizeEvent } from '../interfaces/ResizeEvent';
 import { ScreenScale } from '../enums/ScreenScale';
 import type { MousePosition } from '../interfaces/MousePosition';
-import type { SessionEvent, RemoteDesktopErrorKind, RemoteDesktopError } from '../interfaces/session-event';
+import type { SessionEvent, IronErrorKind, IronError } from '../interfaces/session-event';
 import type { DesktopSize } from '../interfaces/DesktopSize';
 import type { ClipboardTransaction } from '../interfaces/ClipboardTransaction';
 import type { ClipboardContent } from '../interfaces/ClipboardContent';
@@ -65,7 +65,7 @@ export class RemoteDesktopService {
     }
 
     constructClipboardTransaction(): ClipboardTransaction {
-        return this.module.ClipboardTransaction.construct();
+        return this.module.ClipboardTransaction.init();
     }
 
     constructClipboardContentFromText(mime_type: string, text: string): ClipboardContent {
@@ -147,7 +147,7 @@ export class RemoteDesktopService {
         kdc_proxy_url?: string,
         use_display_control = true,
     ): Observable<NewSessionInfo> {
-        const sessionBuilder = this.module.SessionBuilder.construct();
+        const sessionBuilder = this.module.SessionBuilder.init();
 
         sessionBuilder.proxy_address(proxyAddress);
         sessionBuilder.destination(destination);
@@ -177,22 +177,22 @@ export class RemoteDesktopService {
         }
 
         if (desktopSize != null) {
-            sessionBuilder.desktop_size(this.module.DesktopSize.construct(desktopSize.width, desktopSize.height));
+            sessionBuilder.desktop_size(this.module.DesktopSize.init(desktopSize.width, desktopSize.height));
         }
 
         // Type guard to filter out errors
-        function isSession(result: RemoteDesktopError | Session): result is Session {
+        function isSession(result: IronError | Session): result is Session {
             // Check whether function exists. To make it more robust we can check every method.
             return (<Session>result).run !== undefined;
         }
 
         return from(sessionBuilder.connect()).pipe(
-            catchError((err: RemoteDesktopError) => {
+            catchError((err: IronError) => {
                 this.raiseSessionEvent({
                     type: SessionEventType.ERROR,
                     data: {
                         backtrace: () => err.backtrace(),
-                        kind: () => err.kind() as number as RemoteDesktopErrorKind,
+                        kind: () => err.kind() as number as IronErrorKind,
                     },
                 });
                 return of(err);
@@ -201,7 +201,7 @@ export class RemoteDesktopService {
             map((session: Session) => {
                 from(session.run())
                     .pipe(
-                        catchError((err: RemoteDesktopError) => {
+                        catchError((err: IronError) => {
                             this.setVisibility(false);
                             this.raiseSessionEvent({
                                 type: SessionEventType.ERROR,
@@ -289,7 +289,7 @@ export class RemoteDesktopService {
 
     onClipboardChangedEmpty(): Promise<void> {
         const onClipboardChangedPromise = async () => {
-            await this.session?.on_clipboard_paste(this.module.ClipboardTransaction.construct());
+            await this.session?.on_clipboard_paste(this.module.ClipboardTransaction.init());
         };
         return onClipboardChangedPromise();
     }
@@ -469,7 +469,7 @@ export class RemoteDesktopService {
     }
 
     private doTransactionFromDeviceEvents(deviceEvents: DeviceEvent[]) {
-        const transaction = this.module.InputTransaction.construct();
+        const transaction = this.module.InputTransaction.init();
         deviceEvents.forEach((event) => transaction.add_event(event));
         this.session?.apply_inputs(transaction);
     }

@@ -1,9 +1,7 @@
 use core::{cmp, fmt};
 
-use ironrdp_pdu::{
-    fast_path::{EncryptionFlags, FastPathHeader, FastPathUpdatePdu, Fragmentation, UpdateCode},
-    Encode, WriteCursor,
-};
+use ironrdp_pdu::fast_path::{EncryptionFlags, FastPathHeader, FastPathUpdatePdu, Fragmentation, UpdateCode};
+use ironrdp_pdu::{Encode, WriteCursor};
 
 // this is the maximum amount of data (not including headers) we can send in a single TS_FP_UPDATE_PDU
 const MAX_FASTPATH_UPDATE_SIZE: usize = 16_374;
@@ -100,8 +98,9 @@ impl UpdateFragmenter {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use ironrdp_core::{decode_cursor, ReadCursor};
+
+    use super::*;
 
     #[test]
     fn test_single_fragment() {
