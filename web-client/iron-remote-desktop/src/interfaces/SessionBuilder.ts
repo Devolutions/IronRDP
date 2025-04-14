@@ -3,7 +3,7 @@ import type { DesktopSize } from './DesktopSize';
 import type { ClipboardTransaction } from './ClipboardTransaction';
 
 export interface SessionBuilder {
-    construct(): SessionBuilder;
+    init(): SessionBuilder;
     /**
      * Required
      */
@@ -63,8 +63,6 @@ export interface SessionBuilder {
      */
     force_clipboard_update_callback(callback: ForceClipboardUpdateCallback): SessionBuilder;
     extension(value: unknown): SessionBuilder;
-    // eslint-disable-next-line @typescript-eslint/no-unsafe-function-type
-    extension_call(_ident: string, _call: Function): SessionBuilder;
     connect(): Promise<Session>;
 }
 

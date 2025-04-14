@@ -2,5 +2,5 @@
     width: number;
     height: number;
 
-    construct(width: number, height: number): DesktopSize;
+    init(width: number, height: number): DesktopSize;
 }

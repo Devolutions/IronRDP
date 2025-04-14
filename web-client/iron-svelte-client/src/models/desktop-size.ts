@@ -5,7 +5,7 @@ export class DesktopSize implements IDesktopSize {
         this.height = height;
     }
 
-    construct(width: number, height: number): DesktopSize {
+    init(width: number, height: number): DesktopSize {
         return new DesktopSize(width, height);
     }
 

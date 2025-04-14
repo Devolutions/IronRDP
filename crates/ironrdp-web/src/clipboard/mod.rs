@@ -137,7 +137,7 @@ impl WasmClipboard {
     pub(crate) fn new(message_proxy: WasmClipboardMessageProxy, js_callbacks: JsClipboardCallbacks) -> Self {
         Self {
             local_clipboard: None,
-            remote_clipboard: ClipboardTransaction::construct(),
+            remote_clipboard: ClipboardTransaction::init(),
             proxy: message_proxy,
             js_callbacks,
 
@@ -505,7 +505,7 @@ impl WasmClipboard {
                 } else {
                     // If no initial clipboard callback was set, send empty format list instead
                     return self.process_event(WasmClipboardBackendMessage::LocalClipboardChanged(
-                        ClipboardTransaction::construct(),
+                        ClipboardTransaction::init(),
                     ));
                 }
             }

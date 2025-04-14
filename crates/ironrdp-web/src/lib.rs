@@ -69,7 +69,7 @@ pub struct DesktopSize {
 
 #[wasm_bindgen]
 impl DesktopSize {
-    pub fn construct(width: u16, height: u16) -> Self {
+    pub fn init(width: u16, height: u16) -> Self {
         DesktopSize { width, height }
     }
 }
