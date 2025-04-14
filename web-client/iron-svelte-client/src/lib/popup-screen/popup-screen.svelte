@@ -35,23 +35,31 @@
             const parsedData = JSON.parse(atob(data));
             const { hostname, gatewayAddress, domain, username, password, authtoken, kdc_proxy_url, pcb, desktopSize } =
                 parsedData;
-            uiService
-                .connect(
-                    username,
-                    password,
-                    hostname,
-                    gatewayAddress,
-                    domain,
-                    authtoken,
-                    desktopSize,
-                    pcb,
-                    kdc_proxy_url,
-                    true,
-                )
-                .then(() => {
-                    uiService.setVisibility(true);
-                    window.onresize = onWindowResize;
-                });
+
+            const configBuilder = uiService
+                .configBuilder()
+                .withUsername(username)
+                .withPassword(password)
+                .withDestination(hostname)
+                .withProxyAddress(gatewayAddress)
+                .withServerDomain(domain)
+                .withAuthToken(authtoken)
+                .withDesktopSize(desktopSize)
+                .withExtension('DisplayControl', true);
+
+            if (pcb !== '') {
+                configBuilder.withExtension('Pcb', pcb);
+            }
+
+            if (kdc_proxy_url !== '') {
+                configBuilder.withExtension('KdcProxyUrl', kdc_proxy_url);
+            }
+            const config = configBuilder.build();
+
+            uiService.connect(config).then(() => {
+                uiService.setVisibility(true);
+                window.onresize = onWindowResize;
+            });
         }
     });
 

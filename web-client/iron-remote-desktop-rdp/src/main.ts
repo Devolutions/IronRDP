@@ -10,6 +10,7 @@ import init, {
     ClipboardTransaction,
     ClipboardContent,
 } from '../../../crates/ironrdp-web/pkg/ironrdp_web';
+import { Extension } from './interfaces/Extension';
 
 export default {
     init,
@@ -23,4 +24,5 @@ export default {
     ClipboardContent,
     Session,
     SessionTerminationInfo,
+    Extension,
 };

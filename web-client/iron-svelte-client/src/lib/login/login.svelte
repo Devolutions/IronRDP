@@ -15,7 +15,7 @@
     let authtoken = '';
     let kdc_proxy_url = '';
     let desktopSize = new DesktopSize(1280, 768);
-    let pcb: string;
+    let pcb = '';
     let pop_up = false;
     let enable_clipboard = true;
 
@@ -40,7 +40,7 @@
             } else {
                 toast.set({
                     type: 'info',
-                    message: typeof event.data === 'string' ? event.data : event.data?.backtrace() ?? 'No info',
+                    message: typeof event.data === 'string' ? event.data : (event.data?.backtrace() ?? 'No info'),
                 });
             }
         });
@@ -115,20 +115,28 @@
         }
 
         userInteraction.setEnableClipboard(enable_clipboard);
-        from(
-            userInteraction.connect(
-                username,
-                password,
-                hostname,
-                gatewayAddress,
-                domain,
-                authtoken,
-                desktopSize,
-                pcb,
-                kdc_proxy_url,
-                true,
-            ),
-        )
+
+        const configBuilder = userInteraction
+            .configBuilder()
+            .withUsername(username)
+            .withPassword(password)
+            .withDestination(hostname)
+            .withProxyAddress(gatewayAddress)
+            .withServerDomain(domain)
+            .withAuthToken(authtoken)
+            .withDesktopSize(desktopSize)
+            .withExtension('DisplayControl', true);
+
+        if (pcb !== '') {
+            configBuilder.withExtension('Pcb', pcb);
+        }
+
+        if (kdc_proxy_url !== '') {
+            configBuilder.withExtension('KdcProxyUrl', kdc_proxy_url);
+        }
+        const config = configBuilder.build();
+
+        from(userInteraction.connect(config))
             .pipe(
                 catchError((err) => {
                     toast.set({
