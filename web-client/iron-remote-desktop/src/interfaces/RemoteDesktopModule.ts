@@ -7,6 +7,7 @@ import type { SessionBuilder } from './SessionBuilder';
 import type { SessionTerminationInfo } from './SessionTerminationInfo';
 import type { ClipboardTransaction } from './ClipboardTransaction';
 import type { ClipboardContent } from './ClipboardContent';
+import type { Extension } from './Extension';
 
 export interface RemoteDesktopModule {
     init: () => Promise<unknown>;
@@ -20,4 +21,5 @@ export interface RemoteDesktopModule {
     SessionTerminationInfo: SessionTerminationInfo;
     ClipboardTransaction: ClipboardTransaction;
     ClipboardContent: ClipboardContent;
+    Extension: Extension;
 }

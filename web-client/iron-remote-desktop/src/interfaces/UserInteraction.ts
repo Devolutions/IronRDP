@@ -1,25 +1,17 @@
 ﻿import type { ScreenScale } from '../enums/ScreenScale';
 import type { NewSessionInfo } from './NewSessionInfo';
 import type { SessionEvent } from './session-event';
-import type { DesktopSize } from './DesktopSize';
+import { ConfigBuilder } from '../services/ConfigBuilder';
+import type { Config } from '../services/Config';
 
 export interface UserInteraction {
     setVisibility(state: boolean): void;
 
     setScale(scale: ScreenScale): void;
 
-    connect(
-        username: string,
-        password: string,
-        destination: string,
-        proxyAddress: string,
-        serverDomain: string,
-        authToken: string,
-        desktopSize?: DesktopSize,
-        preConnectionBlob?: string,
-        kdc_proxy_url?: string,
-        use_display_control?: boolean,
-    ): Promise<NewSessionInfo>;
+    configBuilder(): ConfigBuilder;
+
+    connect(config: Config): Promise<NewSessionInfo>;
 
     setKeyboardUnicodeMode(use_unicode: boolean): void;
 

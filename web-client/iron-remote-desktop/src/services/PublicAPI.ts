@@ -4,7 +4,8 @@ import { SpecialCombination } from '../enums/SpecialCombination';
 import { RemoteDesktopService } from './remote-desktop.service';
 import type { UserInteraction } from '../interfaces/UserInteraction';
 import type { ScreenScale } from '../enums/ScreenScale';
-import type { DesktopSize } from '../interfaces/DesktopSize';
+import { ConfigBuilder } from './ConfigBuilder';
+import { Config } from './Config';
 
 export class PublicAPI {
     private remoteDesktopService: RemoteDesktopService;
@@ -13,31 +14,13 @@ export class PublicAPI {
         this.remoteDesktopService = remoteDesktopService;
     }
 
-    private connect(
-        username: string,
-        password: string,
-        destination: string,
-        proxyAddress: string,
-        serverDomain: string,
-        authToken: string,
-        desktopSize?: DesktopSize,
-        preConnectionBlob?: string,
-        kdc_proxy_url?: string,
-        use_display_control = false,
-    ): Promise<NewSessionInfo> {
+    private configBuilder(): ConfigBuilder {
+        return this.remoteDesktopService.configBuilder();
+    }
+
+    private connect(config: Config): Promise<NewSessionInfo> {
         loggingService.info('Initializing connection.');
-        const resultObservable = this.remoteDesktopService.connect(
-            username,
-            password,
-            destination,
-            proxyAddress,
-            serverDomain,
-            authToken,
-            desktopSize,
-            preConnectionBlob,
-            kdc_proxy_url,
-            use_display_control,
-        );
+        const resultObservable = this.remoteDesktopService.connect(config);
 
         return resultObservable.toPromise();
     }
@@ -82,6 +65,7 @@ export class PublicAPI {
     getExposedFunctions(): UserInteraction {
         return {
             setVisibility: this.setVisibility.bind(this),
+            configBuilder: this.configBuilder.bind(this),
             connect: this.connect.bind(this),
             setScale: this.setScale.bind(this),
             onSessionEvent: (callback) => {

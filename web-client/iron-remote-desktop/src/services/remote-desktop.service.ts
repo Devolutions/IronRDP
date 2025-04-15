@@ -13,13 +13,14 @@ import type { ResizeEvent } from '../interfaces/ResizeEvent';
 import { ScreenScale } from '../enums/ScreenScale';
 import type { MousePosition } from '../interfaces/MousePosition';
 import type { SessionEvent, IronErrorKind, IronError } from '../interfaces/session-event';
-import type { DesktopSize } from '../interfaces/DesktopSize';
 import type { ClipboardTransaction } from '../interfaces/ClipboardTransaction';
 import type { ClipboardContent } from '../interfaces/ClipboardContent';
 import type { Session } from '../interfaces/Session';
 import type { DeviceEvent } from '../interfaces/DeviceEvent';
 import type { SessionTerminationInfo } from '../interfaces/SessionTerminationInfo';
 import type { RemoteDesktopModule } from '../interfaces/RemoteDesktopModule';
+import { ConfigBuilder } from './ConfigBuilder';
+import type { Config } from './Config';
 
 type OnRemoteClipboardChanged = (transaction: ClipboardTransaction) => void;
 type OnRemoteReceivedFormatsList = () => void;
@@ -135,37 +136,27 @@ export class RemoteDesktopService {
         this.mousePosition.next(position);
     }
 
-    connect(
-        username: string,
-        password: string,
-        destination: string,
-        proxyAddress: string,
-        serverDomain: string,
-        authToken: string,
-        desktopSize?: DesktopSize,
-        preConnectionBlob?: string,
-        kdc_proxy_url?: string,
-        use_display_control = true,
-    ): Observable<NewSessionInfo> {
+    configBuilder(): ConfigBuilder {
+        return new ConfigBuilder(this.module.Extension.init);
+    }
+
+    connect(config: Config): Observable<NewSessionInfo> {
         const sessionBuilder = this.module.SessionBuilder.init();
 
-        sessionBuilder.proxy_address(proxyAddress);
-        sessionBuilder.destination(destination);
-        sessionBuilder.server_domain(serverDomain);
-        sessionBuilder.password(password);
-        sessionBuilder.auth_token(authToken);
-        sessionBuilder.username(username);
+        sessionBuilder.proxy_address(config.proxyAddress);
+        sessionBuilder.destination(config.destination);
+        sessionBuilder.server_domain(config.serverDomain);
+        sessionBuilder.password(config.password);
+        sessionBuilder.auth_token(config.authToken);
+        sessionBuilder.username(config.username);
         sessionBuilder.render_canvas(this.canvas!);
         sessionBuilder.set_cursor_style_callback_context(this);
         sessionBuilder.set_cursor_style_callback(this.setCursorStyleCallback);
-        sessionBuilder.extension({ DisplayControl: use_display_control });
 
-        if (preConnectionBlob != null) {
-            sessionBuilder.extension({ Pcb: preConnectionBlob });
-        }
-        if (kdc_proxy_url != null) {
-            sessionBuilder.extension({ KdcProxyUrl: kdc_proxy_url });
-        }
+        config.extensions.forEach((extension) => {
+            sessionBuilder.extension(extension);
+        });
+
         if (this.onRemoteClipboardChanged != null && this.enableClipboard) {
             sessionBuilder.remote_clipboard_changed_callback(this.onRemoteClipboardChanged);
         }
@@ -176,8 +167,10 @@ export class RemoteDesktopService {
             sessionBuilder.force_clipboard_update_callback(this.onForceClipboardUpdate);
         }
 
-        if (desktopSize != null) {
-            sessionBuilder.desktop_size(this.module.DesktopSize.init(desktopSize.width, desktopSize.height));
+        if (config.desktopSize != null) {
+            sessionBuilder.desktop_size(
+                this.module.DesktopSize.init(config.desktopSize.width, config.desktopSize.height),
+            );
         }
 
         // Type guard to filter out errors
