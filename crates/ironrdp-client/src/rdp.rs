@@ -152,7 +152,7 @@ async fn connect(
     debug!("TLS upgrade");
 
     // Ensure there is no leftover
-    let initial_stream = framed.into_inner_no_leftover();
+    let (initial_stream, leftover_bytes) = framed.into_inner();
 
     let (upgraded_stream, server_public_key) = ironrdp_tls::upgrade(initial_stream, config.destination.name())
         .await
@@ -161,7 +161,7 @@ async fn connect(
     let upgraded = ironrdp_tokio::mark_as_upgraded(should_upgrade, &mut connector);
 
     let erased_stream = Box::new(upgraded_stream) as Box<dyn AsyncReadWrite + Unpin + Send + Sync>;
-    let mut upgraded_framed = ironrdp_tokio::TokioFramed::new(erased_stream);
+    let mut upgraded_framed = ironrdp_tokio::TokioFramed::new_with_leftover(erased_stream, leftover_bytes);
 
     let connection_result = ironrdp_tokio::connect_finalize(
         upgraded,
@@ -229,9 +229,9 @@ async fn connect_ws(
     )
     .await?;
 
-    let ws = framed.into_inner_no_leftover();
+    let (ws, leftover_bytes) = framed.into_inner();
     let erased_stream = Box::new(ws) as Box<dyn AsyncReadWrite + Unpin + Send + Sync>;
-    let upgraded_framed = ironrdp_tokio::TokioFramed::new(erased_stream);
+    let upgraded_framed = ironrdp_tokio::TokioFramed::new_with_leftover(erased_stream, leftover_bytes);
 
     Ok((connection_result, upgraded_framed))
 }
