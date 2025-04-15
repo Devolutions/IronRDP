@@ -22,8 +22,8 @@ public partial struct ClientConnector
     /// <summary>
     /// Must use
     /// </summary>
-    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ClientConnector_with_server_addr", ExactSpelling = true)]
-    public static unsafe extern ConnectorFfiResultVoidBoxIronRdpError WithServerAddr(ClientConnector* self, byte* serverAddr, nuint serverAddrSz);
+    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ClientConnector_with_client_addr", ExactSpelling = true)]
+    public static unsafe extern ConnectorFfiResultVoidBoxIronRdpError WithClientAddr(ClientConnector* self, byte* clientAddr, nuint clientAddrSz);
 
     /// <summary>
     /// Must use

@@ -1059,7 +1059,7 @@ where
             .parse()
             .context("failed to parse server address sent by proxy")?;
 
-        connector.attach_server_addr(server_addr);
+        connector.attach_client_addr(server_addr);
 
         let connector::ClientConnectorState::ConnectionInitiationWaitConfirm { .. } = connector.state else {
             return Err(anyhow::Error::msg("invalid connector state (wait confirm)").into());

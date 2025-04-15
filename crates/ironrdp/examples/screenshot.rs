@@ -239,7 +239,7 @@ fn connect(
 
     let mut framed = ironrdp_blocking::Framed::new(tcp_stream);
 
-    let mut connector = connector::ClientConnector::new(config).with_server_addr(server_addr);
+    let mut connector = connector::ClientConnector::new(config).with_client_addr(server_addr);
 
     let should_upgrade = ironrdp_blocking::connect_begin(&mut framed, &mut connector).context("begin connection")?;
 

@@ -21,8 +21,8 @@ public static class Connection
                 "Cannot resolve DNS to " + serverName);
         }
 
-        var serverAddr = ip[0] + ":" + port;
-        connector.WithServerAddr(serverAddr);
+        var clientAddr = ip[0] + ":" + port;
+        connector.WithClientAddr(clientAddr);
         connector.WithDynamicChannelDisplayControl();
         if (factory != null)
         {
