@@ -2330,6 +2330,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "469fb0b9cefa57e3ef31275ee7cacb78f2fdca44e4765491884a2b119d4eb130"
 
 [[package]]
+name = "iron-remote-desktop"
+version = "0.1.0"
+dependencies = [
+ "console_error_panic_hook",
+ "tracing",
+ "tracing-subscriber",
+ "tracing-web",
+ "wasm-bindgen",
+ "web-sys",
+]
+
+[[package]]
 name = "ironrdp"
 version = "0.9.1"
 dependencies = [
@@ -2798,12 +2810,12 @@ dependencies = [
  "anyhow",
  "base64",
  "chrono",
- "console_error_panic_hook",
  "futures-channel",
  "futures-util",
  "getrandom 0.2.15",
  "gloo-net",
  "gloo-timers",
+ "iron-remote-desktop",
  "ironrdp",
  "ironrdp-cliprdr-format",
  "ironrdp-core",
@@ -2821,8 +2833,6 @@ dependencies = [
  "tap",
  "time",
  "tracing",
- "tracing-subscriber",
- "tracing-web",
  "url",
  "wasm-bindgen",
  "wasm-bindgen-futures",

@@ -1,48 +1,29 @@
+use iron_remote_desktop::{IronError, IronErrorKind};
 use ironrdp::connector::{self, sspi, ConnectorErrorKind};
-use wasm_bindgen::prelude::*;
 
-#[wasm_bindgen]
-#[derive(Clone, Copy)]
-pub enum IronErrorKind {
-    /// Catch-all error kind
-    General,
-    /// Incorrect password used
-    WrongPassword,
-    /// Unable to login to machine
-    LogonFailure,
-    /// Insufficient permission, server denied access
-    AccessDenied,
-    /// Something wrong happened when sending or receiving the RDCleanPath message
-    RDCleanPath,
-    /// Couldn’t connect to proxy
-    ProxyConnect,
-}
-
-#[wasm_bindgen]
-pub struct IronError {
+pub(crate) struct RdpIronError {
     kind: IronErrorKind,
     source: anyhow::Error,
 }
 
-impl IronError {
-    pub fn with_kind(mut self, kind: IronErrorKind) -> Self {
+impl RdpIronError {
+    pub(crate) fn with_kind(mut self, kind: IronErrorKind) -> Self {
         self.kind = kind;
         self
     }
 }
 
-#[wasm_bindgen]
-impl IronError {
-    pub fn backtrace(&self) -> String {
+impl IronError for RdpIronError {
+    fn backtrace(&self) -> String {
         format!("{:?}", self.source)
     }
 
-    pub fn kind(&self) -> IronErrorKind {
+    fn kind(&self) -> IronErrorKind {
         self.kind
     }
 }
 
-impl From<connector::ConnectorError> for IronError {
+impl From<connector::ConnectorError> for RdpIronError {
     fn from(e: connector::ConnectorError) -> Self {
         use sspi::credssp::NStatusCode;
 
@@ -66,7 +47,7 @@ impl From<connector::ConnectorError> for IronError {
     }
 }
 
-impl From<ironrdp::session::SessionError> for IronError {
+impl From<ironrdp::session::SessionError> for RdpIronError {
     fn from(e: ironrdp::session::SessionError) -> Self {
         Self {
             kind: IronErrorKind::General,
@@ -75,7 +56,7 @@ impl From<ironrdp::session::SessionError> for IronError {
     }
 }
 
-impl From<anyhow::Error> for IronError {
+impl From<anyhow::Error> for RdpIronError {
     fn from(e: anyhow::Error) -> Self {
         Self {
             kind: IronErrorKind::General,

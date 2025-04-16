@@ -1,62 +1,61 @@
-use wasm_bindgen::prelude::*;
+use iron_remote_desktop::{ClipboardContent, ClipboardTransaction};
+use serde::Serialize;
+use wasm_bindgen::JsValue;
 
 /// Object which represents complete clipboard transaction with multiple MIME types.
-#[wasm_bindgen]
-#[derive(Debug, Default, Clone)]
-pub struct ClipboardTransaction {
-    contents: Vec<ClipboardContent>,
+#[derive(Debug, Default, Clone, Serialize)]
+pub(crate) struct RdpClipboardTransaction {
+    contents: Vec<RdpClipboardContent>,
 }
 
-impl ClipboardTransaction {
-    pub fn contents(&self) -> &[ClipboardContent] {
+impl RdpClipboardTransaction {
+    pub(crate) fn contents(&self) -> &[RdpClipboardContent] {
         &self.contents
     }
 
-    pub fn clear(&mut self) {
+    pub(crate) fn clear(&mut self) {
         self.contents.clear();
     }
 }
 
-#[wasm_bindgen]
-impl ClipboardTransaction {
-    pub fn init() -> Self {
+impl ClipboardTransaction for RdpClipboardTransaction {
+    type ClipboardContent = RdpClipboardContent;
+
+    fn init() -> Self {
         Self { contents: Vec::new() }
     }
 
-    pub fn add_content(&mut self, content: ClipboardContent) {
+    fn add_content(&mut self, content: Self::ClipboardContent) {
         self.contents.push(content);
     }
 
-    pub fn is_empty(&self) -> bool {
+    fn is_empty(&self) -> bool {
         self.contents.is_empty()
     }
 
-    #[wasm_bindgen(js_name = content)]
-    pub fn js_contents(&self) -> js_sys::Array {
-        js_sys::Array::from_iter(
-            self.contents
-                .iter()
-                .map(|content: &ClipboardContent| JsValue::from(content.clone())),
-        )
+    fn js_contents(&self) -> js_sys::Array {
+        js_sys::Array::from_iter(self.contents.iter().map(|content: &RdpClipboardContent| {
+            serde_wasm_bindgen::to_value(&content).expect("Failed to convert clipboard transaction value into JsValue")
+        }))
     }
 }
 
-impl FromIterator<ClipboardContent> for ClipboardTransaction {
-    fn from_iter<T: IntoIterator<Item = ClipboardContent>>(iter: T) -> Self {
+impl FromIterator<RdpClipboardContent> for RdpClipboardTransaction {
+    fn from_iter<T: IntoIterator<Item = RdpClipboardContent>>(iter: T) -> Self {
         Self {
             contents: iter.into_iter().collect(),
         }
     }
 }
 
-#[derive(Debug, Clone)]
-pub enum ClipboardContentValue {
+#[derive(Debug, Clone, Serialize)]
+pub(crate) enum ClipboardContentValue {
     Text(String),
     Binary(Vec<u8>),
 }
 
 impl ClipboardContentValue {
-    pub fn js_value(&self) -> JsValue {
+    pub(crate) fn js_value(&self) -> JsValue {
         match self {
             ClipboardContentValue::Text(text) => JsValue::from_str(text),
             ClipboardContentValue::Binary(binary) => js_sys::Uint8Array::from(binary.as_slice()).into(),
@@ -65,46 +64,42 @@ impl ClipboardContentValue {
 }
 
 /// Object which represents single clipboard format represented standard MIME type.
-#[wasm_bindgen]
-#[derive(Debug, Clone)]
-pub struct ClipboardContent {
+#[derive(Debug, Clone, Serialize)]
+pub(crate) struct RdpClipboardContent {
     mime_type: String,
     value: ClipboardContentValue,
 }
 
-#[wasm_bindgen]
-impl ClipboardContent {
-    pub fn new_text(mime_type: &str, text: &str) -> Self {
+impl RdpClipboardContent {
+    pub(crate) fn mime_type(&self) -> &str {
+        &self.mime_type
+    }
+
+    pub(crate) fn value(&self) -> &ClipboardContentValue {
+        &self.value
+    }
+}
+
+impl ClipboardContent for RdpClipboardContent {
+    fn new_text(mime_type: &str, text: &str) -> Self {
         Self {
             mime_type: mime_type.into(),
             value: ClipboardContentValue::Text(text.to_owned()),
         }
     }
 
-    pub fn new_binary(mime_type: &str, binary: &[u8]) -> Self {
+    fn new_binary(mime_type: &str, binary: &[u8]) -> Self {
         Self {
             mime_type: mime_type.into(),
             value: ClipboardContentValue::Binary(binary.to_vec()),
         }
     }
 
-    #[wasm_bindgen(js_name = mime_type)]
-    pub fn js_mime_type(&self) -> String {
+    fn js_mime_type(&self) -> String {
         self.mime_type.clone()
     }
 
-    #[wasm_bindgen(js_name = value)]
-    pub fn js_value(&self) -> JsValue {
+    fn js_value(&self) -> JsValue {
         self.value.js_value()
-    }
-}
-
-impl ClipboardContent {
-    pub fn mime_type(&self) -> &str {
-        &self.mime_type
-    }
-
-    pub fn value(&self) -> &ClipboardContentValue {
-        &self.value
     }
 }
