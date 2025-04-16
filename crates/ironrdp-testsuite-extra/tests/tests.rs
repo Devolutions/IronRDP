@@ -198,7 +198,7 @@ where
                 let addr = rx.await.unwrap().unwrap();
                 let tcp_stream = TcpStream::connect(addr).await.expect("TCP connect");
                 let mut framed = ironrdp_tokio::TokioFramed::new(tcp_stream);
-                let mut connector = connector::ClientConnector::new(client_config).with_server_addr(addr);
+                let mut connector = connector::ClientConnector::new(client_config).with_client_addr(addr);
                 let should_upgrade = ironrdp_async::connect_begin(&mut framed, &mut connector)
                     .await
                     .expect("begin connection");

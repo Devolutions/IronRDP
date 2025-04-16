@@ -132,7 +132,7 @@ async fn connect(
     let mut framed = ironrdp_tokio::TokioFramed::new(stream);
 
     let mut connector = connector::ClientConnector::new(config.connector.clone())
-        .with_server_addr(server_addr)
+        .with_client_addr(server_addr)
         .with_static_channel(
             ironrdp::dvc::DrdynvcClient::new().with_dynamic_channel(DisplayControlClient::new(|_| Ok(Vec::new()))),
         )
@@ -335,7 +335,7 @@ where
             .parse()
             .map_err(|e| connector::custom_err!("failed to parse server address sent by proxy", e))?;
 
-        connector.attach_server_addr(server_addr);
+        connector.attach_client_addr(server_addr);
 
         let connector::ClientConnectorState::ConnectionInitiationWaitConfirm { .. } = connector.state else {
             return Err(connector::general_err!("invalid connector state (wait confirm)"));
