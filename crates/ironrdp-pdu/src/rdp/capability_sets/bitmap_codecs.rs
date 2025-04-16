@@ -1,6 +1,9 @@
 #[cfg(test)]
 mod tests;
 
+use core::fmt::{self, Debug};
+use std::collections::HashMap;
+
 use bitflags::bitflags;
 use ironrdp_core::{
     cast_length, decode, ensure_fixed_part_size, ensure_size, invalid_field_err, other_err, Decode, DecodeResult,
@@ -37,6 +40,12 @@ const GUID_REMOTEFX: Guid = Guid(0x7677_2f12, 0xbd72, 0x4463, 0xaf, 0xb3, 0xb7, 
 const GUID_IMAGE_REMOTEFX: Guid = Guid(0x2744_ccd4, 0x9d8a, 0x4e74, 0x80, 0x3c, 0x0e, 0xcb, 0xee, 0xa1, 0x9c, 0x54);
 #[rustfmt::skip]
 const GUID_IGNORE: Guid = Guid(0x9c43_51a6, 0x3535, 0x42ae, 0x91, 0x0c, 0xcd, 0xfc, 0xe5, 0x76, 0x0b, 0x58);
+#[rustfmt::skip]
+#[cfg(feature="qoi")]
+const GUID_QOI: Guid = Guid(0x4dae_9af8, 0xb399, 0x4df6, 0xb4, 0x3a, 0x66, 0x2f, 0xd9, 0xc0, 0xf5, 0xd6);
+#[rustfmt::skip]
+#[cfg(feature="qoiz")]
+const GUID_QOIZ: Guid = Guid(0x229c_c6dc, 0xa860, 0x4b52, 0xb4, 0xd8, 0x05, 0x3a, 0x22, 0xb3, 0x89, 0x2b);
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct Guid(u32, u16, u16, u8, u8, u8, u8, u8, u8, u8, u8);
@@ -97,7 +106,7 @@ impl<'de> Decode<'de> for Guid {
     }
 }
 
-#[derive(Debug, PartialEq, Eq, Clone)]
+#[derive(Debug, PartialEq, Eq, Clone, Default)]
 pub struct BitmapCodecs(pub Vec<Codec>);
 
 impl BitmapCodecs {
@@ -164,6 +173,10 @@ impl Encode for Codec {
             CodecProperty::RemoteFx(_) => GUID_REMOTEFX,
             CodecProperty::ImageRemoteFx(_) => GUID_IMAGE_REMOTEFX,
             CodecProperty::Ignore => GUID_IGNORE,
+            #[cfg(feature = "qoi")]
+            CodecProperty::Qoi => GUID_QOI,
+            #[cfg(feature = "qoiz")]
+            CodecProperty::QoiZ => GUID_QOIZ,
             _ => return Err(other_err!("invalid codec")),
         };
         guid.encode(dst)?;
@@ -201,6 +214,10 @@ impl Encode for Codec {
                     }
                 };
             }
+            #[cfg(feature = "qoi")]
+            CodecProperty::Qoi => dst.write_u16(0),
+            #[cfg(feature = "qoiz")]
+            CodecProperty::QoiZ => dst.write_u16(0),
             CodecProperty::Ignore => dst.write_u16(0),
             CodecProperty::None => dst.write_u16(0),
         };
@@ -224,6 +241,10 @@ impl Encode for Codec {
                     RemoteFxContainer::ClientContainer(container) => container.size(),
                     RemoteFxContainer::ServerContainer(size) => *size,
                 },
+                #[cfg(feature = "qoi")]
+                CodecProperty::Qoi => 0,
+                #[cfg(feature = "qoiz")]
+                CodecProperty::QoiZ => 0,
                 CodecProperty::Ignore => 0,
                 CodecProperty::None => 0,
             }
@@ -239,39 +260,43 @@ impl<'de> Decode<'de> for Codec {
         let id = src.read_u8();
         let codec_properties_len = usize::from(src.read_u16());
 
-        let property = if codec_properties_len != 0 {
-            ensure_size!(in: src, size: codec_properties_len);
-            let property_buffer = src.read_slice(codec_properties_len);
+        ensure_size!(in: src, size: codec_properties_len);
+        let property_buffer = src.read_slice(codec_properties_len);
 
-            match guid {
-                GUID_NSCODEC => CodecProperty::NsCodec(decode(property_buffer)?),
-                GUID_REMOTEFX | GUID_IMAGE_REMOTEFX => {
-                    let property = if property_buffer[0] == 0 {
-                        RemoteFxContainer::ServerContainer(codec_properties_len)
-                    } else {
-                        RemoteFxContainer::ClientContainer(decode(property_buffer)?)
-                    };
+        let property = match guid {
+            GUID_NSCODEC => CodecProperty::NsCodec(decode(property_buffer)?),
+            GUID_REMOTEFX | GUID_IMAGE_REMOTEFX => {
+                let byte = property_buffer
+                    .first()
+                    .ok_or_else(|| invalid_field_err!("remotefx property", "must not be empty"))?;
+                let property = if *byte == 0 {
+                    RemoteFxContainer::ServerContainer(codec_properties_len)
+                } else {
+                    RemoteFxContainer::ClientContainer(decode(property_buffer)?)
+                };
 
-                    match guid {
-                        GUID_REMOTEFX => CodecProperty::RemoteFx(property),
-                        GUID_IMAGE_REMOTEFX => CodecProperty::ImageRemoteFx(property),
-                        _ => unreachable!(),
-                    }
+                match guid {
+                    GUID_REMOTEFX => CodecProperty::RemoteFx(property),
+                    GUID_IMAGE_REMOTEFX => CodecProperty::ImageRemoteFx(property),
+                    _ => unreachable!(),
                 }
-                GUID_IGNORE => CodecProperty::Ignore,
-                _ => CodecProperty::None,
             }
-        } else {
-            match guid {
-                GUID_NSCODEC | GUID_REMOTEFX | GUID_IMAGE_REMOTEFX => {
-                    return Err(invalid_field_err!(
-                        "codecPropertiesLen",
-                        "invalid codec property length"
-                    ));
+            GUID_IGNORE => CodecProperty::Ignore,
+            #[cfg(feature = "qoi")]
+            GUID_QOI => {
+                if !property_buffer.is_empty() {
+                    return Err(invalid_field_err!("qoi property", "must be empty"));
                 }
-                GUID_IGNORE => CodecProperty::Ignore,
-                _ => CodecProperty::None,
+                CodecProperty::Qoi
             }
+            #[cfg(feature = "qoiz")]
+            GUID_QOIZ => {
+                if !property_buffer.is_empty() {
+                    return Err(invalid_field_err!("qoi property", "must be empty"));
+                }
+                CodecProperty::QoiZ
+            }
+            _ => CodecProperty::None,
         };
 
         Ok(Self { id, property })
@@ -290,6 +315,10 @@ pub enum CodecProperty {
     RemoteFx(RemoteFxContainer),
     ImageRemoteFx(RemoteFxContainer),
     Ignore,
+    #[cfg(feature = "qoi")]
+    Qoi,
+    #[cfg(feature = "qoiz")]
+    QoiZ,
     None,
 }
 
@@ -391,6 +420,8 @@ impl Encode for RfxClientCapsContainer {
 
 impl<'de> Decode<'de> for RfxClientCapsContainer {
     fn decode(src: &mut ReadCursor<'de>) -> DecodeResult<Self> {
+        ensure_fixed_part_size!(in: src);
+
         let _length = src.read_u32();
         let capture_flags = CaptureFlags::from_bits_truncate(src.read_u32());
         let _caps_length = src.read_u32();
@@ -616,4 +647,201 @@ bitflags! {
     pub struct RfxICapFlags: u8 {
         const CODEC_MODE = 2;
     }
+}
+
+// Those IDs are hard-coded for practical reasons, they are implementation
+// details of the IronRDP client. The server should respect the client IDs.
+#[derive(Copy, Clone, PartialEq, Eq)]
+pub struct CodecId(u8);
+
+pub const CODEC_ID_NONE: CodecId = CodecId(0);
+pub const CODEC_ID_REMOTEFX: CodecId = CodecId(3);
+pub const CODEC_ID_QOI: CodecId = CodecId(0x0A);
+pub const CODEC_ID_QOIZ: CodecId = CodecId(0x0B);
+
+impl Debug for CodecId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let name = match self.0 {
+            0 => "None",
+            3 => "RemoteFx",
+            0x0A => "QOI",
+            0x0B => "QOIZ",
+            _ => "unknown",
+        };
+        write!(f, "CodecId({})", name)
+    }
+}
+
+impl CodecId {
+    pub const fn from_u8(value: u8) -> Option<Self> {
+        match value {
+            0 => Some(CODEC_ID_NONE),
+            3 => Some(CODEC_ID_REMOTEFX),
+            0x0A => Some(CODEC_ID_QOI),
+            0x0B => Some(CODEC_ID_QOIZ),
+            _ => None,
+        }
+    }
+}
+
+fn parse_codecs_config<'a>(codecs: &'a [&'a str]) -> Result<HashMap<&'a str, bool>, String> {
+    let mut result = HashMap::new();
+
+    for &codec_str in codecs {
+        if let Some(colon_index) = codec_str.find(':') {
+            let codec_name = &codec_str[0..colon_index];
+            let state_str = &codec_str[colon_index + 1..];
+
+            let state = match state_str {
+                "on" => true,
+                "off" => false,
+                _ => return Err(format!("Unhandled configuration: {}", state_str)),
+            };
+
+            result.insert(codec_name, state);
+        } else {
+            // No colon found, assume it's "on"
+            result.insert(codec_str, true);
+        }
+    }
+
+    Ok(result)
+}
+
+/// This function generates a list of client codec capabilities based on the
+/// provided configuration.
+///
+/// # Arguments
+///
+/// * `config` - A slice of string slices that specifies which codecs to include
+///   in the capabilities. Codecs can be explicitly turned on ("codec:on") or
+///   off ("codec:off").
+///
+/// # List of codecs
+///
+/// * `remotefx` (on by default)
+/// * `qoi` (on by default, when feature "qoi")
+/// * `qoiz` (on by default, when feature "qoiz")
+///
+/// # Returns
+///
+/// A vector of `Codec` structs representing the codec capabilities, or an error
+/// suitable for CLI.
+pub fn client_codecs_capabilities(config: &[&str]) -> Result<BitmapCodecs, String> {
+    if config.contains(&"help") {
+        return Err(r#"
+List of codecs:
+- `remotefx` (on by default)
+- `qoi` (on by default, when feature "qoi")
+- `qoiz` (on by default, when feature "qoiz")
+"#
+        .to_owned());
+    }
+
+    let mut config = parse_codecs_config(config)?;
+    let mut codecs = vec![];
+
+    if config.remove("remotefx").unwrap_or(true) {
+        codecs.push(Codec {
+            id: CODEC_ID_REMOTEFX.0,
+            property: CodecProperty::RemoteFx(RemoteFxContainer::ClientContainer(RfxClientCapsContainer {
+                capture_flags: CaptureFlags::empty(),
+                caps_data: RfxCaps(RfxCapset(vec![RfxICap {
+                    flags: RfxICapFlags::empty(),
+                    entropy_bits: EntropyBits::Rlgr3,
+                }])),
+            })),
+        });
+    }
+
+    #[cfg(feature = "qoi")]
+    if config.remove("qoi").unwrap_or(true) {
+        codecs.push(Codec {
+            id: CODEC_ID_QOI.0,
+            property: CodecProperty::Qoi,
+        });
+    }
+
+    #[cfg(feature = "qoiz")]
+    if config.remove("qoiz").unwrap_or(true) {
+        codecs.push(Codec {
+            id: CODEC_ID_QOIZ.0,
+            property: CodecProperty::QoiZ,
+        });
+    }
+
+    let codec_names = config.keys().copied().collect::<Vec<_>>().join(", ");
+    if !codec_names.is_empty() {
+        return Err(format!("Unknown codecs: {}", codec_names));
+    }
+
+    Ok(BitmapCodecs(codecs))
+}
+
+///
+/// This function generates a list of server codec capabilities based on the
+/// provided configuration.
+///
+/// # Arguments
+///
+/// * `config` - A slice of string slices that specifies which codecs to include
+///   in the capabilities. Codecs can be explicitly turned on ("codec:on") or
+///   off ("codec:off").
+///
+/// # List of codecs
+///
+/// * `remotefx` (on by default)
+/// * `qoi` (on by default, when feature "qoi")
+/// * `qoiz` (on by default, when feature "qoiz")
+///
+/// # Returns
+///
+/// A vector of `Codec` structs representing the codec capabilities.
+pub fn server_codecs_capabilities(config: &[&str]) -> Result<BitmapCodecs, String> {
+    if config.contains(&"help") {
+        return Err(r#"
+List of codecs:
+- `remotefx` (on by default)
+- `qoi` (on by default, when feature "qoi")
+- `qoiz` (on by default, when feature "qoiz")
+"#
+        .to_owned());
+    }
+
+    let mut config = parse_codecs_config(config)?;
+    let mut codecs = vec![];
+
+    if config.remove("remotefx").unwrap_or(true) {
+        codecs.push(Codec {
+            id: 0,
+            property: CodecProperty::RemoteFx(RemoteFxContainer::ServerContainer(1)),
+        });
+        codecs.push(Codec {
+            id: 0,
+            property: CodecProperty::ImageRemoteFx(RemoteFxContainer::ServerContainer(1)),
+        });
+    }
+
+    #[cfg(feature = "qoi")]
+    if config.remove("qoi").unwrap_or(true) {
+        codecs.push(Codec {
+            id: 0,
+            property: CodecProperty::Qoi,
+        });
+    }
+
+    #[cfg(feature = "qoiz")]
+    if config.remove("qoiz").unwrap_or(true) {
+        codecs.push(Codec {
+            id: 0,
+            property: CodecProperty::QoiZ,
+        });
+    }
+
+    let codec_names = config.keys().copied().collect::<Vec<_>>().join(", ");
+    if !codec_names.is_empty() {
+        return Err(format!("Unknown codecs: {}", codec_names));
+    }
+
+    Ok(BitmapCodecs(codecs))
 }

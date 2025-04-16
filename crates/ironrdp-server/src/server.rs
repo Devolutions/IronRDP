@@ -13,7 +13,7 @@ use ironrdp_displaycontrol::server::{DisplayControlHandler, DisplayControlServer
 use ironrdp_pdu::input::fast_path::{FastPathInput, FastPathInputEvent};
 use ironrdp_pdu::input::InputEventPdu;
 use ironrdp_pdu::mcs::{SendDataIndication, SendDataRequest};
-use ironrdp_pdu::rdp::capability_sets::{BitmapCodecs, CapabilitySet, CmdFlags, GeneralExtraFlags};
+use ironrdp_pdu::rdp::capability_sets::{BitmapCodecs, CapabilitySet, CmdFlags, CodecProperty, GeneralExtraFlags};
 pub use ironrdp_pdu::rdp::client_info::Credentials;
 use ironrdp_pdu::rdp::headers::{ServerDeactivateAll, ShareControlPdu};
 use ironrdp_pdu::x224::X224;
@@ -30,7 +30,7 @@ use {ironrdp_dvc as dvc, ironrdp_rdpsnd as rdpsnd};
 
 use crate::clipboard::CliprdrServerFactory;
 use crate::display::{DisplayUpdate, RdpServerDisplay};
-use crate::encoder::UpdateEncoder;
+use crate::encoder::{UpdateEncoder, UpdateEncoderCodecs};
 use crate::handler::RdpServerInputHandler;
 use crate::{builder, capabilities, SoundServerFactory};
 
@@ -38,7 +38,38 @@ use crate::{builder, capabilities, SoundServerFactory};
 pub struct RdpServerOptions {
     pub addr: SocketAddr,
     pub security: RdpServerSecurity,
-    pub with_remote_fx: bool,
+    pub codecs: BitmapCodecs,
+}
+impl RdpServerOptions {
+    fn has_image_remote_fx(&self) -> bool {
+        self.codecs
+            .0
+            .iter()
+            .any(|codec| matches!(codec.property, CodecProperty::ImageRemoteFx(_)))
+    }
+
+    fn has_remote_fx(&self) -> bool {
+        self.codecs
+            .0
+            .iter()
+            .any(|codec| matches!(codec.property, CodecProperty::RemoteFx(_)))
+    }
+
+    #[cfg(feature = "qoi")]
+    fn has_qoi(&self) -> bool {
+        self.codecs
+            .0
+            .iter()
+            .any(|codec| matches!(codec.property, CodecProperty::Qoi))
+    }
+
+    #[cfg(feature = "qoiz")]
+    fn has_qoiz(&self) -> bool {
+        self.codecs
+            .0
+            .iter()
+            .any(|codec| matches!(codec.property, CodecProperty::QoiZ))
+    }
 }
 
 #[derive(Clone)]
@@ -627,6 +658,7 @@ impl RdpServer {
         state
     }
 
+    #[allow(clippy::similar_names)]
     async fn client_accepted<R, W>(
         &mut self,
         reader: &mut Framed<R>,
@@ -663,7 +695,7 @@ impl RdpServer {
             }
         }
 
-        let mut rfxcodec = None;
+        let mut update_codecs = UpdateEncoderCodecs::new();
         let mut surface_flags = CmdFlags::empty();
         for c in result.capabilities {
             match c {
@@ -710,21 +742,29 @@ impl RdpServer {
                             // We should distinguish parameters for both modes,
                             // and somehow choose the "best", instead of picking
                             // the last parsed here.
-                            rdp::capability_sets::CodecProperty::RemoteFx(
-                                rdp::capability_sets::RemoteFxContainer::ClientContainer(c),
-                            ) if self.opts.with_remote_fx => {
+                            CodecProperty::RemoteFx(rdp::capability_sets::RemoteFxContainer::ClientContainer(c))
+                                if self.opts.has_remote_fx() =>
+                            {
                                 for caps in c.caps_data.0 .0 {
-                                    rfxcodec = Some((caps.entropy_bits, codec.id));
+                                    update_codecs.set_remotefx(Some((caps.entropy_bits, codec.id)));
                                 }
                             }
-                            rdp::capability_sets::CodecProperty::ImageRemoteFx(
-                                rdp::capability_sets::RemoteFxContainer::ClientContainer(c),
-                            ) if self.opts.with_remote_fx => {
+                            CodecProperty::ImageRemoteFx(rdp::capability_sets::RemoteFxContainer::ClientContainer(
+                                c,
+                            )) if self.opts.has_image_remote_fx() => {
                                 for caps in c.caps_data.0 .0 {
-                                    rfxcodec = Some((caps.entropy_bits, codec.id));
+                                    update_codecs.set_remotefx(Some((caps.entropy_bits, codec.id)));
                                 }
                             }
-                            rdp::capability_sets::CodecProperty::NsCodec(_) => (),
+                            CodecProperty::NsCodec(_) => (),
+                            #[cfg(feature = "qoi")]
+                            CodecProperty::Qoi if self.opts.has_qoi() => {
+                                update_codecs.set_qoi(Some(codec.id));
+                            }
+                            #[cfg(feature = "qoiz")]
+                            CodecProperty::QoiZ if self.opts.has_qoiz() => {
+                                update_codecs.set_qoiz(Some(codec.id));
+                            }
                             _ => (),
                         }
                     }
@@ -734,7 +774,7 @@ impl RdpServer {
         }
 
         let desktop_size = self.display.lock().await.size().await;
-        let encoder = UpdateEncoder::new(desktop_size, surface_flags, rfxcodec);
+        let encoder = UpdateEncoder::new(desktop_size, surface_flags, update_codecs);
 
         let state = self
             .client_loop(reader, writer, result.io_channel_id, result.user_channel_id, encoder)

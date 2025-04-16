@@ -355,16 +355,13 @@ fn create_client_confirm_active(
         CapabilitySet::SurfaceCommands(SurfaceCommands {
             flags: CmdFlags::SET_SURFACE_BITS | CmdFlags::STREAM_SURFACE_BITS | CmdFlags::FRAME_MARKER,
         }),
-        CapabilitySet::BitmapCodecs(BitmapCodecs(vec![Codec {
-            id: 0x03, // RemoteFX
-            property: CodecProperty::RemoteFx(RemoteFxContainer::ClientContainer(RfxClientCapsContainer {
-                capture_flags: CaptureFlags::empty(),
-                caps_data: RfxCaps(RfxCapset(vec![RfxICap {
-                    flags: RfxICapFlags::empty(),
-                    entropy_bits: EntropyBits::Rlgr3,
-                }])),
-            })),
-        }])),
+        CapabilitySet::BitmapCodecs(
+            config
+                .bitmap
+                .as_ref()
+                .map(|b| b.codecs.clone())
+                .unwrap_or_else(|| client_codecs_capabilities(&[]).unwrap()),
+        ),
         CapabilitySet::FrameAcknowledge(FrameAcknowledge {
             // FIXME(#447): Revert this to 2 per FreeRDP.
             // This is a temporary hack to fix a resize bug, see:

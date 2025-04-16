@@ -10,6 +10,11 @@ autotests = false
 doctest = false
 test = false
 
+[features]
+# Internal (PRIVATE!) features used to aid testing.
+# Don't rely on these whatsoever. They may disappear at any time.
+__bench = []
+
 [[test]]
 name = "integration_tests_core"
 path = "tests/main.rs"
@@ -37,7 +42,7 @@ ironrdp-graphics.path = "../ironrdp-graphics"
 ironrdp-input.path = "../ironrdp-input"
 ironrdp-rdcleanpath.path = "../ironrdp-rdcleanpath"
 ironrdp-rdpsnd.path = "../ironrdp-rdpsnd"
-ironrdp-session.path = "../ironrdp-session"
+ironrdp-session = { path = "../ironrdp-session", features = ["qoi"] }
 png = "0.17"
 pretty_assertions = "1.4"
 proptest.workspace = true

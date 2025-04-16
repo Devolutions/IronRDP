@@ -1,3 +1,4 @@
+#![allow(clippy::print_stdout)]
 use core::num::ParseIntError;
 use core::str::FromStr;
 
@@ -5,7 +6,7 @@ use anyhow::Context as _;
 use clap::clap_derive::ValueEnum;
 use clap::Parser;
 use ironrdp::connector::{self, Credentials};
-use ironrdp::pdu::rdp::capability_sets::MajorPlatformType;
+use ironrdp::pdu::rdp::capability_sets::{client_codecs_capabilities, MajorPlatformType};
 use ironrdp::pdu::rdp::client_info::PerformanceFlags;
 use tap::prelude::*;
 
@@ -232,6 +233,10 @@ struct Args {
     /// The clipboard type
     #[clap(long, value_enum, value_parser, default_value_t = ClipboardType::Default)]
     clipboard_type: ClipboardType,
+
+    /// The bitmap codecs to use (remotefx:on, ...)
+    #[clap(long, value_parser, num_args = 1.., value_delimiter = ',')]
+    codecs: Vec<String>,
 }
 
 impl Config {
@@ -262,17 +267,25 @@ impl Config {
                 .context("Password prompt")?
         };
 
-        let bitmap = if let Some(color_depth) = args.color_depth {
+        let codecs: Vec<_> = args.codecs.iter().map(|s| s.as_str()).collect();
+        let codecs = match client_codecs_capabilities(&codecs) {
+            Ok(codecs) => codecs,
+            Err(help) => {
+                print!("{}", help);
+                std::process::exit(0);
+            }
+        };
+        let mut bitmap = connector::BitmapConfig {
+            color_depth: 32,
+            lossy_compression: true,
+            codecs,
+        };
+
+        if let Some(color_depth) = args.color_depth {
             if color_depth != 16 && color_depth != 32 {
                 anyhow::bail!("Invalid color depth. Only 16 and 32 bit color depths are supported.");
             }
-
-            Some(connector::BitmapConfig {
-                color_depth,
-                lossy_compression: true,
-            })
-        } else {
-            None
+            bitmap.color_depth = color_depth;
         };
 
         let clipboard_type = if args.clipboard_type == ClipboardType::Default {
@@ -304,7 +317,7 @@ impl Config {
                 height: DEFAULT_HEIGHT,
             },
             desktop_scale_factor: 0, // Default to 0 per FreeRDP
-            bitmap,
+            bitmap: Some(bitmap),
             client_build: semver::Version::parse(env!("CARGO_PKG_VERSION"))
                 .map(|version| version.major * 100 + version.minor * 10 + version.patch)
                 .unwrap_or(0)
