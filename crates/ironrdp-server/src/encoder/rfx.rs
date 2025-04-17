@@ -1,3 +1,4 @@
+use ironrdp_acceptor::DesktopSize;
 use ironrdp_core::{cast_length, other_err, Encode, EncodeResult};
 use ironrdp_graphics::color_conversion::to_64x64_ycbcr_tile;
 use ironrdp_graphics::rfx_encode_component;
@@ -25,29 +26,34 @@ impl RfxEncoder {
         Self { entropy_algorithm }
     }
 
-    pub(crate) fn encode(&mut self, bitmap: &BitmapUpdate, output: &mut [u8]) -> EncodeResult<usize> {
+    pub(crate) fn encode(
+        &mut self,
+        bitmap: &BitmapUpdate,
+        output: &mut [u8],
+        desktop_size: Option<DesktopSize>,
+    ) -> EncodeResult<usize> {
         let mut cursor = WriteCursor::new(output);
-
-        let width = bitmap.width.get();
-        let height = bitmap.height.get();
         let entropy_algorithm = self.entropy_algorithm;
 
         // header messages
-        // FIXME: skip if unnecessary?
-        Block::Sync(SyncPdu).encode(&mut cursor)?;
-        let context = rfx::ContextPdu {
-            flags: OperatingMode::IMAGE_MODE,
-            entropy_algorithm,
-        };
-        Block::CodecChannel(CodecChannel::Context(context)).encode(&mut cursor)?;
+        if let Some(desktop_size) = desktop_size {
+            let width = desktop_size.width;
+            let height = desktop_size.height;
+            Block::Sync(SyncPdu).encode(&mut cursor)?;
+            let context = rfx::ContextPdu {
+                flags: OperatingMode::IMAGE_MODE,
+                entropy_algorithm,
+            };
+            Block::CodecChannel(CodecChannel::Context(context)).encode(&mut cursor)?;
 
-        let channels = ChannelsPdu(vec![RfxChannel {
-            width: cast_length!("width", width)?,
-            height: cast_length!("height", height)?,
-        }]);
-        Block::Channels(channels).encode(&mut cursor)?;
+            let channels = ChannelsPdu(vec![RfxChannel {
+                width: cast_length!("width", width)?,
+                height: cast_length!("height", height)?,
+            }]);
+            Block::Channels(channels).encode(&mut cursor)?;
 
-        Block::CodecVersions(CodecVersionsPdu).encode(&mut cursor)?;
+            Block::CodecVersions(CodecVersionsPdu).encode(&mut cursor)?;
+        }
 
         // data messages
         let frame_begin = FrameBeginPdu {
