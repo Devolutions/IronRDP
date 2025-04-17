@@ -16,7 +16,7 @@ mod transaction;
 use std::collections::HashMap;
 
 use futures_channel::mpsc;
-use iron_remote_desktop::{ClipboardContent, ClipboardTransaction};
+use iron_remote_desktop::{ClipboardContent as _, ClipboardTransaction as _};
 use ironrdp::cliprdr::backend::{ClipboardMessage, CliprdrBackend};
 use ironrdp::cliprdr::pdu::{
     ClipboardFormat, ClipboardFormatId, ClipboardFormatName, ClipboardGeneralCapabilityFlags, FileContentsRequest,
@@ -438,12 +438,8 @@ impl WasmClipboard {
             // Set clipboard when all formats were read
             self.js_callbacks
                 .on_remote_clipboard_changed
-                .call1(
-                    &JsValue::NULL,
-                    &serde_wasm_bindgen::to_value(&transaction)
-                        .expect("Failed to convert clipboard transaction value into JsValue"),
-                )
-                .expect("Failed to call JS callback");
+                .call1(&JsValue::NULL, &JsValue::from(transaction))
+                .expect("failed to call JS callback");
         }
 
         Ok(())

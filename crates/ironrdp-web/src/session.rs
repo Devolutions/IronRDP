@@ -14,7 +14,7 @@ use futures_util::io::{ReadHalf, WriteHalf};
 use futures_util::{select, AsyncWriteExt as _, FutureExt as _, StreamExt as _};
 use gloo_net::websocket;
 use gloo_net::websocket::futures::WebSocket;
-use iron_remote_desktop::{CursorStyle, DesktopSize, IronErrorKind, Session, SessionBuilder, SessionTerminationInfo};
+use iron_remote_desktop::{CursorStyle, DesktopSize, IronErrorKind};
 use ironrdp::cliprdr::backend::ClipboardMessage;
 use ironrdp::cliprdr::CliprdrClient;
 use ironrdp::connector::connection_activation::ConnectionActivationState;
@@ -39,16 +39,16 @@ use web_sys::HtmlCanvasElement;
 use crate::canvas::Canvas;
 use crate::clipboard;
 use crate::clipboard::{RdpClipboardTransaction, WasmClipboard, WasmClipboardBackend, WasmClipboardBackendMessage};
-use crate::error::RdpIronError;
+use crate::error::IronError;
 use crate::image::extract_partial_image;
-use crate::input::RdpInputTransaction;
+use crate::input::InputTransaction;
 use crate::network_client::WasmNetworkClient;
 
 const DEFAULT_WIDTH: u16 = 1280;
 const DEFAULT_HEIGHT: u16 = 720;
 
 #[derive(Clone, Default)]
-pub(crate) struct RdpSessionBuilder(Rc<RefCell<SessionBuilderInner>>);
+pub(crate) struct SessionBuilder(Rc<RefCell<SessionBuilderInner>>);
 
 struct SessionBuilderInner {
     username: Option<String>,
@@ -101,9 +101,9 @@ impl Default for SessionBuilderInner {
     }
 }
 
-impl SessionBuilder for RdpSessionBuilder {
-    type Session = RdpSession;
-    type IronError = RdpIronError;
+impl iron_remote_desktop::SessionBuilder for SessionBuilder {
+    type Session = Session;
+    type Error = IronError;
 
     fn init() -> Self {
         Self(Rc::new(RefCell::new(SessionBuilderInner::default())))
@@ -222,7 +222,7 @@ impl SessionBuilder for RdpSessionBuilder {
         self.clone()
     }
 
-    async fn connect(&self) -> Result<Self::Session, Self::IronError> {
+    async fn connect(&self) -> Result<Self::Session, Self::Error> {
         let (
             username,
             destination,
@@ -297,7 +297,7 @@ impl SessionBuilder for RdpSessionBuilder {
         loop {
             match ws.state() {
                 websocket::State::Closing | websocket::State::Closed => {
-                    return Err(RdpIronError::from(anyhow::anyhow!(
+                    return Err(IronError::from(anyhow::anyhow!(
                         "failed to connect to {proxy_address} (WebSocket is `{:?}`)",
                         ws.state()
                     ))
@@ -336,7 +336,7 @@ impl SessionBuilder for RdpSessionBuilder {
 
         spawn_local(writer_task(writer_rx, rdp_writer));
 
-        Ok(RdpSession {
+        Ok(Session {
             desktop_size: connection_result.desktop_size,
             input_database: RefCell::new(ironrdp::input::Database::new()),
             writer_tx,
@@ -377,17 +377,17 @@ pub(crate) enum RdpInputEvent {
     TerminateSession,
 }
 
-pub(crate) struct RdpSessionTerminationInfo {
+pub(crate) struct SessionTerminationInfo {
     reason: GracefulDisconnectReason,
 }
 
-impl SessionTerminationInfo for RdpSessionTerminationInfo {
+impl iron_remote_desktop::SessionTerminationInfo for SessionTerminationInfo {
     fn reason(&self) -> String {
         self.reason.to_string()
     }
 }
 
-pub(crate) struct RdpSession {
+pub(crate) struct Session {
     desktop_size: connector::DesktopSize,
     input_database: RefCell<ironrdp::input::Database>,
     writer_tx: mpsc::UnboundedSender<Vec<u8>>,
@@ -404,8 +404,8 @@ pub(crate) struct RdpSession {
     clipboard: RefCell<Option<Option<WasmClipboard>>>,
 }
 
-impl RdpSession {
-    fn h_send_inputs(&self, inputs: smallvec::SmallVec<[FastPathInputEvent; 2]>) -> Result<(), RdpIronError> {
+impl Session {
+    fn h_send_inputs(&self, inputs: smallvec::SmallVec<[FastPathInputEvent; 2]>) -> Result<(), IronError> {
         if !inputs.is_empty() {
             trace!("Inputs: {inputs:?}");
 
@@ -417,7 +417,7 @@ impl RdpSession {
         Ok(())
     }
 
-    fn set_cursor_style(&self, style: CursorStyle) -> Result<(), RdpIronError> {
+    fn set_cursor_style(&self, style: CursorStyle) -> Result<(), IronError> {
         let (kind, data, hotspot_x, hotspot_y) = match style {
             CursorStyle::Default => ("default", None, None, None),
             CursorStyle::Hidden => ("hidden", None, None, None),
@@ -444,13 +444,13 @@ impl RdpSession {
     }
 }
 
-impl Session for RdpSession {
-    type SessionTerminationInfo = RdpSessionTerminationInfo;
-    type InputTransaction = RdpInputTransaction;
+impl iron_remote_desktop::Session for Session {
+    type SessionTerminationInfo = SessionTerminationInfo;
+    type InputTransaction = InputTransaction;
     type ClipboardTransaction = RdpClipboardTransaction;
-    type IronError = RdpIronError;
+    type Error = IronError;
 
-    async fn run(&self) -> Result<Self::SessionTerminationInfo, Self::IronError> {
+    async fn run(&self) -> Result<Self::SessionTerminationInfo, Self::Error> {
         let rdp_reader = self
             .rdp_reader
             .borrow_mut()
@@ -733,7 +733,7 @@ impl Session for RdpSession {
 
         info!(%disconnect_reason, "RPD session terminated");
 
-        Ok(RdpSessionTerminationInfo {
+        Ok(SessionTerminationInfo {
             reason: disconnect_reason,
         })
     }
@@ -745,12 +745,12 @@ impl Session for RdpSession {
         }
     }
 
-    fn apply_inputs(&self, transaction: Self::InputTransaction) -> Result<(), Self::IronError> {
+    fn apply_inputs(&self, transaction: Self::InputTransaction) -> Result<(), Self::Error> {
         let inputs = self.input_database.borrow_mut().apply(transaction);
         self.h_send_inputs(inputs)
     }
 
-    fn release_all_inputs(&self) -> Result<(), Self::IronError> {
+    fn release_all_inputs(&self) -> Result<(), Self::Error> {
         let inputs = self.input_database.borrow_mut().release_all();
         self.h_send_inputs(inputs)
     }
@@ -761,7 +761,7 @@ impl Session for RdpSession {
         num_lock: bool,
         caps_lock: bool,
         kana_lock: bool,
-    ) -> Result<(), Self::IronError> {
+    ) -> Result<(), Self::Error> {
         use ironrdp::pdu::input::fast_path::FastPathInput;
 
         let event = ironrdp::input::synchronize_event(scroll_lock, num_lock, caps_lock, kana_lock);
@@ -776,7 +776,7 @@ impl Session for RdpSession {
         Ok(())
     }
 
-    fn shutdown(&self) -> Result<(), Self::IronError> {
+    fn shutdown(&self) -> Result<(), Self::Error> {
         self.input_events_tx
             .unbounded_send(RdpInputEvent::TerminateSession)
             .context("failed to send terminate session event to writer task")?;
@@ -784,7 +784,7 @@ impl Session for RdpSession {
         Ok(())
     }
 
-    async fn on_clipboard_paste(&self, content: Self::ClipboardTransaction) -> Result<(), Self::IronError> {
+    async fn on_clipboard_paste(&self, content: Self::ClipboardTransaction) -> Result<(), Self::Error> {
         self.input_events_tx
             .unbounded_send(RdpInputEvent::ClipboardBackend(
                 WasmClipboardBackendMessage::LocalClipboardChanged(content),
@@ -812,14 +812,13 @@ impl Session for RdpSession {
             .expect("send resize event to writer task");
     }
 
-    #[allow(clippy::unused_self)]
     fn supports_unicode_keyboard_shortcuts(&self) -> bool {
         // RDP does not support Unicode keyboard shortcuts (When key combinations are executed, only
         // plain scancode events are allowed to function correctly).
         false
     }
 
-    fn extension_call(_value: JsValue) -> Result<JsValue, Self::IronError> {
+    fn extension_call(_value: JsValue) -> Result<JsValue, Self::Error> {
         Ok(JsValue::null())
     }
 }
@@ -917,7 +916,7 @@ async fn connect(
         clipboard_backend,
         use_display_control,
     }: ConnectParams,
-) -> Result<(connector::ConnectionResult, WebSocket), RdpIronError> {
+) -> Result<(connector::ConnectionResult, WebSocket), IronError> {
     let mut framed = ironrdp_futures::LocalFuturesFramed::new(ws);
 
     let mut connector = ClientConnector::new(config);
@@ -964,7 +963,7 @@ async fn connect_rdcleanpath<S>(
     destination: String,
     proxy_auth_token: String,
     pcb: Option<String>,
-) -> Result<(ironrdp_futures::Upgraded, Vec<u8>), RdpIronError>
+) -> Result<(ironrdp_futures::Upgraded, Vec<u8>), IronError>
 where
     S: ironrdp_futures::FramedRead + FramedWrite,
 {
@@ -1044,7 +1043,7 @@ where
                 } => (x224_connection_response, server_cert_chain, server_addr),
                 ironrdp_rdcleanpath::RDCleanPath::Err(error) => {
                     return Err(
-                        RdpIronError::from(anyhow::Error::new(error).context("received an RDCleanPath error"))
+                        IronError::from(anyhow::Error::new(error).context("received an RDCleanPath error"))
                             .with_kind(IronErrorKind::RDCleanPath),
                     );
                 }

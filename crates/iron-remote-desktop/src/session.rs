@@ -8,7 +8,7 @@ use crate::DesktopSize;
 
 pub trait SessionBuilder {
     type Session: Session;
-    type IronError: IronError;
+    type Error: IronError;
 
     fn init() -> Self;
     #[must_use]
@@ -39,31 +39,32 @@ pub trait SessionBuilder {
     fn force_clipboard_update_callback(&self, callback: js_sys::Function) -> Self;
     #[must_use]
     fn extension(&self, value: JsValue) -> Self;
-    fn connect(&self) -> impl core::future::Future<Output = Result<Self::Session, Self::IronError>>;
+    #[expect(async_fn_in_trait)]
+    async fn connect(&self) -> Result<Self::Session, Self::Error>;
 }
 
 pub trait Session {
     type SessionTerminationInfo: SessionTerminationInfo;
     type InputTransaction: InputTransaction;
     type ClipboardTransaction: ClipboardTransaction;
-    type IronError: IronError;
+    type Error: IronError;
 
-    fn run(&self) -> impl core::future::Future<Output = Result<Self::SessionTerminationInfo, Self::IronError>>;
+    fn run(&self) -> impl core::future::Future<Output = Result<Self::SessionTerminationInfo, Self::Error>>;
     fn desktop_size(&self) -> DesktopSize;
-    fn apply_inputs(&self, transaction: Self::InputTransaction) -> Result<(), Self::IronError>;
-    fn release_all_inputs(&self) -> Result<(), Self::IronError>;
+    fn apply_inputs(&self, transaction: Self::InputTransaction) -> Result<(), Self::Error>;
+    fn release_all_inputs(&self) -> Result<(), Self::Error>;
     fn synchronize_lock_keys(
         &self,
         scroll_lock: bool,
         num_lock: bool,
         caps_lock: bool,
         kana_lock: bool,
-    ) -> Result<(), Self::IronError>;
-    fn shutdown(&self) -> Result<(), Self::IronError>;
+    ) -> Result<(), Self::Error>;
+    fn shutdown(&self) -> Result<(), Self::Error>;
     fn on_clipboard_paste(
         &self,
         content: Self::ClipboardTransaction,
-    ) -> impl core::future::Future<Output = Result<(), Self::IronError>>;
+    ) -> impl core::future::Future<Output = Result<(), Self::Error>>;
     fn resize(
         &self,
         width: u32,
@@ -73,7 +74,7 @@ pub trait Session {
         physical_height: Option<u32>,
     );
     fn supports_unicode_keyboard_shortcuts(&self) -> bool;
-    fn extension_call(value: JsValue) -> Result<JsValue, Self::IronError>;
+    fn extension_call(value: JsValue) -> Result<JsValue, Self::Error>;
 }
 
 pub trait SessionTerminationInfo {

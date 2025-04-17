@@ -12,7 +12,7 @@ extern crate time as _;
 #[macro_use]
 extern crate tracing;
 
-use iron_remote_desktop::export_wasm;
+use iron_remote_desktop::RemoteDesktopApi;
 
 mod canvas;
 mod clipboard;
@@ -22,20 +22,27 @@ mod input;
 mod network_client;
 mod session;
 
-fn iron_init(log_level: &str) {
-    iron_remote_desktop::iron_init(log_level);
+struct Api;
 
-    debug!("IronRDP is ready");
+impl RemoteDesktopApi for Api {
+    type Session = session::Session;
+    type SessionBuilder = session::SessionBuilder;
+    type SessionTerminationInfo = session::SessionTerminationInfo;
+    type DeviceEvent = input::DeviceEvent;
+    type InputTransaction = input::InputTransaction;
+    type ClipboardTransaction = clipboard::RdpClipboardTransaction;
+    type ClipboardContent = clipboard::RdpClipboardContent;
+    type Error = error::IronError;
 }
 
-export_wasm!(
-    crate::iron_init,
-    crate::session::RdpSession,
-    crate::session::RdpSessionBuilder,
-    crate::session::RdpSessionTerminationInfo,
-    crate::input::RdpDeviceEvent,
-    crate::input::RdpInputTransaction,
-    crate::clipboard::RdpClipboardTransaction,
-    crate::clipboard::RdpClipboardContent,
-    crate::error::RdpIronError
-);
+#[doc(hidden)]
+pub mod internal {
+    #[allow(dead_code)]
+    fn iron_init(log_level: &str) {
+        iron_remote_desktop::iron_init(log_level);
+
+        debug!("IronRDP is ready");
+    }
+}
+
+iron_remote_desktop::export!(crate::Api);

@@ -60,67 +60,97 @@ fn set_logger_once(level: tracing::Level) {
     })
 }
 
+pub trait RemoteDesktopApi {
+    type Session: Session;
+    type SessionBuilder: SessionBuilder;
+    type SessionTerminationInfo: SessionTerminationInfo;
+    type DeviceEvent: DeviceEvent;
+    type InputTransaction: InputTransaction;
+    type ClipboardTransaction: ClipboardTransaction;
+    type ClipboardContent: ClipboardContent;
+    type Error: IronError;
+
+    /// Called before the logger is set.
+    fn pre_init() {}
+
+    /// Called after the logger is set.
+    fn post_init() {}
+}
+
 #[macro_export]
-macro_rules! export_wasm {
-    ($iron_init_fn:path, $ty_session:ty, $ty_session_builder:ty, $ty_session_termination_info:ty, $ty_device_event:ty, $ty_input_transaction:ty, $ty_clipboard_transaction:ty, $ty_clipboard_content:ty, $ty_error:ty) => {
+macro_rules! export {
+    ($api:ty) => {
         mod __wasm_ffi {
             use wasm_bindgen::prelude::*;
             use web_sys::{js_sys, HtmlCanvasElement};
             use $crate::{
                 ClipboardContent as _, ClipboardTransaction as _, DeviceEvent as _, InputTransaction as _,
-                IronError as _, Session as _, SessionBuilder as _, SessionTerminationInfo as _,
+                IronError as _, RemoteDesktopApi, Session as _, SessionBuilder as _, SessionTerminationInfo as _,
             };
 
             #[wasm_bindgen]
             pub fn iron_init(log_level: &str) {
-                $iron_init_fn(log_level);
+                <$api as RemoteDesktopApi>::pre_init();
+                $crate::iron_init(log_level);
+                <$api as RemoteDesktopApi>::post_init();
             }
 
             #[wasm_bindgen]
-            pub struct DeviceEvent($ty_device_event);
+            pub struct DeviceEvent(<$api as RemoteDesktopApi>::DeviceEvent);
 
             #[wasm_bindgen]
             impl DeviceEvent {
                 pub fn mouse_button_pressed(button: u8) -> Self {
-                    Self(<$ty_device_event>::mouse_button_pressed(button))
+                    Self(<<$api as RemoteDesktopApi>::DeviceEvent>::mouse_button_pressed(
+                        button,
+                    ))
                 }
 
                 pub fn mouse_button_released(button: u8) -> Self {
-                    Self(<$ty_device_event>::mouse_button_released(button))
+                    Self(<<$api as RemoteDesktopApi>::DeviceEvent>::mouse_button_released(
+                        button,
+                    ))
                 }
 
                 pub fn mouse_move(x: u16, y: u16) -> Self {
-                    Self(<$ty_device_event>::mouse_move(x, y))
+                    Self(<<$api as RemoteDesktopApi>::DeviceEvent>::mouse_move(x, y))
                 }
 
                 pub fn wheel_rotations(vertical: bool, rotation_units: i16) -> Self {
-                    Self(<$ty_device_event>::wheel_rotations(vertical, rotation_units))
+                    Self(<<$api as RemoteDesktopApi>::DeviceEvent>::wheel_rotations(
+                        vertical,
+                        rotation_units,
+                    ))
                 }
 
                 pub fn key_pressed(scancode: u16) -> Self {
-                    Self(<$ty_device_event>::key_pressed(scancode))
+                    Self(<<$api as RemoteDesktopApi>::DeviceEvent>::key_pressed(scancode))
                 }
 
                 pub fn key_released(scancode: u16) -> Self {
-                    Self(<$ty_device_event>::key_released(scancode))
+                    Self(<<$api as RemoteDesktopApi>::DeviceEvent>::key_released(scancode))
                 }
 
                 pub fn unicode_pressed(unicode: char) -> Self {
-                    Self(<$ty_device_event>::unicode_pressed(unicode))
+                    Self(<<$api as RemoteDesktopApi>::DeviceEvent>::unicode_pressed(
+                        unicode,
+                    ))
                 }
 
                 pub fn unicode_released(unicode: char) -> Self {
-                    Self(<$ty_device_event>::unicode_released(unicode))
+                    Self(<<$api as RemoteDesktopApi>::DeviceEvent>::unicode_released(
+                        unicode,
+                    ))
                 }
             }
 
             #[wasm_bindgen]
-            pub struct InputTransaction($ty_input_transaction);
+            pub struct InputTransaction(<$api as RemoteDesktopApi>::InputTransaction);
 
             #[wasm_bindgen]
             impl InputTransaction {
                 pub fn init() -> Self {
-                    Self(<$ty_input_transaction>::init())
+                    Self(<<$api as RemoteDesktopApi>::InputTransaction>::init())
                 }
 
                 pub fn add_event(&mut self, event: DeviceEvent) {
@@ -129,7 +159,7 @@ macro_rules! export_wasm {
             }
 
             #[wasm_bindgen]
-            pub struct IronError($ty_error);
+            pub struct IronError(<$api as RemoteDesktopApi>::Error);
 
             #[wasm_bindgen]
             impl IronError {
@@ -143,7 +173,7 @@ macro_rules! export_wasm {
             }
 
             #[wasm_bindgen]
-            pub struct Session($ty_session);
+            pub struct Session(<$api as RemoteDesktopApi>::Session);
 
             #[wasm_bindgen]
             impl Session {
@@ -200,17 +230,17 @@ macro_rules! export_wasm {
                 }
 
                 pub fn extension_call(value: JsValue) -> Result<JsValue, IronError> {
-                    <$ty_session>::extension_call(value).map_err(IronError)
+                    <<$api as RemoteDesktopApi>::Session>::extension_call(value).map_err(IronError)
                 }
             }
 
             #[wasm_bindgen]
-            pub struct SessionBuilder($ty_session_builder);
+            pub struct SessionBuilder(<$api as RemoteDesktopApi>::SessionBuilder);
 
             #[wasm_bindgen]
             impl SessionBuilder {
                 pub fn init() -> Self {
-                    Self(<$ty_session_builder>::init())
+                    Self(<<$api as RemoteDesktopApi>::SessionBuilder>::init())
                 }
 
                 pub fn username(&self, username: String) -> Self {
@@ -275,7 +305,7 @@ macro_rules! export_wasm {
             }
 
             #[wasm_bindgen]
-            pub struct SessionTerminationInfo($ty_session_termination_info);
+            pub struct SessionTerminationInfo(<$api as RemoteDesktopApi>::SessionTerminationInfo);
 
             #[wasm_bindgen]
             impl SessionTerminationInfo {
@@ -285,12 +315,12 @@ macro_rules! export_wasm {
             }
 
             #[wasm_bindgen]
-            pub struct ClipboardTransaction($ty_clipboard_transaction);
+            pub struct ClipboardTransaction(<$api as RemoteDesktopApi>::ClipboardTransaction);
 
             #[wasm_bindgen]
             impl ClipboardTransaction {
                 pub fn init() -> Self {
-                    Self(<$ty_clipboard_transaction>::init())
+                    Self(<<$api as RemoteDesktopApi>::ClipboardTransaction>::init())
                 }
 
                 pub fn add_content(&mut self, content: ClipboardContent) {
@@ -302,29 +332,33 @@ macro_rules! export_wasm {
                 }
 
                 pub fn content(&self) -> js_sys::Array {
-                    self.0.js_contents()
+                    iron_remote_desktop::ClipboardTransaction::contents(&self.0)
                 }
             }
 
             #[wasm_bindgen]
-            pub struct ClipboardContent($ty_clipboard_content);
+            pub struct ClipboardContent(<$api as RemoteDesktopApi>::ClipboardContent);
 
             #[wasm_bindgen]
             impl ClipboardContent {
                 pub fn new_text(mime_type: &str, text: &str) -> Self {
-                    Self(<$ty_clipboard_content>::new_text(mime_type, text))
+                    Self(<<$api as RemoteDesktopApi>::ClipboardContent>::new_text(
+                        mime_type, text,
+                    ))
                 }
 
                 pub fn new_binary(mime_type: &str, binary: &[u8]) -> Self {
-                    Self(<$ty_clipboard_content>::new_binary(mime_type, binary))
+                    Self(<<$api as RemoteDesktopApi>::ClipboardContent>::new_binary(
+                        mime_type, binary,
+                    ))
                 }
 
                 pub fn mime_type(&self) -> String {
-                    self.0.js_mime_type()
+                    self.0.mime_type().to_owned()
                 }
 
                 pub fn value(&self) -> JsValue {
-                    self.0.js_value()
+                    iron_remote_desktop::ClipboardContent::value(&self.0)
                 }
             }
         }

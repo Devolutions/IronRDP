@@ -1,9 +1,9 @@
-use iron_remote_desktop::{ClipboardContent, ClipboardTransaction};
-use serde::Serialize;
+use wasm_bindgen::prelude::wasm_bindgen;
 use wasm_bindgen::JsValue;
 
 /// Object which represents complete clipboard transaction with multiple MIME types.
-#[derive(Debug, Default, Clone, Serialize)]
+#[wasm_bindgen]
+#[derive(Debug, Default, Clone)]
 pub(crate) struct RdpClipboardTransaction {
     contents: Vec<RdpClipboardContent>,
 }
@@ -18,7 +18,7 @@ impl RdpClipboardTransaction {
     }
 }
 
-impl ClipboardTransaction for RdpClipboardTransaction {
+impl iron_remote_desktop::ClipboardTransaction for RdpClipboardTransaction {
     type ClipboardContent = RdpClipboardContent;
 
     fn init() -> Self {
@@ -33,10 +33,12 @@ impl ClipboardTransaction for RdpClipboardTransaction {
         self.contents.is_empty()
     }
 
-    fn js_contents(&self) -> js_sys::Array {
-        js_sys::Array::from_iter(self.contents.iter().map(|content: &RdpClipboardContent| {
-            serde_wasm_bindgen::to_value(&content).expect("Failed to convert clipboard transaction value into JsValue")
-        }))
+    fn contents(&self) -> js_sys::Array {
+        js_sys::Array::from_iter(
+            self.contents
+                .iter()
+                .map(|content: &RdpClipboardContent| JsValue::from(content.clone())),
+        )
     }
 }
 
@@ -48,14 +50,14 @@ impl FromIterator<RdpClipboardContent> for RdpClipboardTransaction {
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone)]
 pub(crate) enum ClipboardContentValue {
     Text(String),
     Binary(Vec<u8>),
 }
 
 impl ClipboardContentValue {
-    pub(crate) fn js_value(&self) -> JsValue {
+    pub(crate) fn value(&self) -> JsValue {
         match self {
             ClipboardContentValue::Text(text) => JsValue::from_str(text),
             ClipboardContentValue::Binary(binary) => js_sys::Uint8Array::from(binary.as_slice()).into(),
@@ -64,7 +66,8 @@ impl ClipboardContentValue {
 }
 
 /// Object which represents single clipboard format represented standard MIME type.
-#[derive(Debug, Clone, Serialize)]
+#[wasm_bindgen]
+#[derive(Debug, Clone)]
 pub(crate) struct RdpClipboardContent {
     mime_type: String,
     value: ClipboardContentValue,
@@ -80,7 +83,7 @@ impl RdpClipboardContent {
     }
 }
 
-impl ClipboardContent for RdpClipboardContent {
+impl iron_remote_desktop::ClipboardContent for RdpClipboardContent {
     fn new_text(mime_type: &str, text: &str) -> Self {
         Self {
             mime_type: mime_type.into(),
@@ -95,11 +98,11 @@ impl ClipboardContent for RdpClipboardContent {
         }
     }
 
-    fn js_mime_type(&self) -> String {
-        self.mime_type.clone()
+    fn mime_type(&self) -> &str {
+        self.mime_type.as_str()
     }
 
-    fn js_value(&self) -> JsValue {
-        self.value.js_value()
+    fn value(&self) -> JsValue {
+        self.value.value()
     }
 }

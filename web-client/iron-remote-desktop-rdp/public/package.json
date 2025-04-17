@@ -8,7 +8,7 @@
     "Vladislav Nikonov",
     "Zacharia Ellaham"
   ],
-  "description": "Module providing agnostic implementation for iron-remote-desktop.",
+  "description": "RDP backend for iron-remote-desktop.",
   "version": "0.13.1",
   "main": "iron-remote-desktop-rdp.js",
   "types": "index.d.ts",

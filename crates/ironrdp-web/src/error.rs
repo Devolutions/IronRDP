@@ -1,19 +1,19 @@
-use iron_remote_desktop::{IronError, IronErrorKind};
+use iron_remote_desktop::IronErrorKind;
 use ironrdp::connector::{self, sspi, ConnectorErrorKind};
 
-pub(crate) struct RdpIronError {
+pub(crate) struct IronError {
     kind: IronErrorKind,
     source: anyhow::Error,
 }
 
-impl RdpIronError {
+impl IronError {
     pub(crate) fn with_kind(mut self, kind: IronErrorKind) -> Self {
         self.kind = kind;
         self
     }
 }
 
-impl IronError for RdpIronError {
+impl iron_remote_desktop::IronError for IronError {
     fn backtrace(&self) -> String {
         format!("{:?}", self.source)
     }
@@ -23,7 +23,7 @@ impl IronError for RdpIronError {
     }
 }
 
-impl From<connector::ConnectorError> for RdpIronError {
+impl From<connector::ConnectorError> for IronError {
     fn from(e: connector::ConnectorError) -> Self {
         use sspi::credssp::NStatusCode;
 
@@ -47,7 +47,7 @@ impl From<connector::ConnectorError> for RdpIronError {
     }
 }
 
-impl From<ironrdp::session::SessionError> for RdpIronError {
+impl From<ironrdp::session::SessionError> for IronError {
     fn from(e: ironrdp::session::SessionError) -> Self {
         Self {
             kind: IronErrorKind::General,
@@ -56,7 +56,7 @@ impl From<ironrdp::session::SessionError> for RdpIronError {
     }
 }
 
-impl From<anyhow::Error> for RdpIronError {
+impl From<anyhow::Error> for IronError {
     fn from(e: anyhow::Error) -> Self {
         Self {
             kind: IronErrorKind::General,

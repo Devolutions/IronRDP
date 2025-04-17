@@ -1,11 +1,10 @@
-use iron_remote_desktop::{DeviceEvent, InputTransaction};
 use ironrdp::input::{MouseButton, MousePosition, Operation, Scancode, WheelRotations};
 use smallvec::SmallVec;
 
 #[derive(Clone)]
-pub(crate) struct RdpDeviceEvent(pub(crate) Operation);
+pub(crate) struct DeviceEvent(pub(crate) Operation);
 
-impl DeviceEvent for RdpDeviceEvent {
+impl iron_remote_desktop::DeviceEvent for DeviceEvent {
     fn mouse_button_pressed(button: u8) -> Self {
         match MouseButton::from_web_button(button) {
             Some(button) => Self(Operation::MouseButtonPressed(button)),
@@ -54,10 +53,10 @@ impl DeviceEvent for RdpDeviceEvent {
     }
 }
 
-pub(crate) struct RdpInputTransaction(pub(crate) SmallVec<[Operation; 3]>);
+pub(crate) struct InputTransaction(pub(crate) SmallVec<[Operation; 3]>);
 
-impl InputTransaction for RdpInputTransaction {
-    type DeviceEvent = RdpDeviceEvent;
+impl iron_remote_desktop::InputTransaction for InputTransaction {
+    type DeviceEvent = DeviceEvent;
 
     fn init() -> Self {
         Self(SmallVec::new())
@@ -68,7 +67,7 @@ impl InputTransaction for RdpInputTransaction {
     }
 }
 
-impl IntoIterator for RdpInputTransaction {
+impl IntoIterator for InputTransaction {
     type IntoIter = smallvec::IntoIter<[Operation; 3]>;
     type Item = Operation;
 
