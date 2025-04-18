@@ -1,25 +1,42 @@
-use wasm_bindgen::prelude::wasm_bindgen;
+use crate::error::IronError;
+use anyhow::anyhow;
+use js_sys::{Object, Reflect};
 use wasm_bindgen::JsValue;
 
 /// Object which represents complete clipboard transaction with multiple MIME types.
-#[wasm_bindgen]
 #[derive(Debug, Default, Clone)]
-pub(crate) struct RdpClipboardTransaction {
-    contents: Vec<RdpClipboardContent>,
+pub(crate) struct ClipboardTransaction {
+    contents: Vec<ClipboardContent>,
 }
 
-impl RdpClipboardTransaction {
-    pub(crate) fn contents(&self) -> &[RdpClipboardContent] {
+impl ClipboardTransaction {
+    pub(crate) fn contents(&self) -> &[ClipboardContent] {
         &self.contents
     }
 
     pub(crate) fn clear(&mut self) {
         self.contents.clear();
     }
+
+    pub(crate) fn to_js_value(&self) -> Result<JsValue, IronError> {
+        let js_object = Object::new();
+
+        Reflect::set(
+            &js_object,
+            &JsValue::from("contents"),
+            &iron_remote_desktop::ClipboardTransaction::contents(self)
+                .map_err(|e| anyhow!("{:?}", e))?
+                .into(),
+        )
+        .map_err(|e| anyhow!("JS error: {:?}", e))?;
+
+        Ok(js_object.into())
+    }
 }
 
-impl iron_remote_desktop::ClipboardTransaction for RdpClipboardTransaction {
-    type ClipboardContent = RdpClipboardContent;
+impl iron_remote_desktop::ClipboardTransaction for ClipboardTransaction {
+    type ClipboardContent = ClipboardContent;
+    type Error = IronError;
 
     fn init() -> Self {
         Self { contents: Vec::new() }
@@ -33,17 +50,18 @@ impl iron_remote_desktop::ClipboardTransaction for RdpClipboardTransaction {
         self.contents.is_empty()
     }
 
-    fn contents(&self) -> js_sys::Array {
-        js_sys::Array::from_iter(
+    fn contents(&self) -> Result<js_sys::Array, Self::Error> {
+        Ok(js_sys::Array::from_iter(
             self.contents
                 .iter()
-                .map(|content: &RdpClipboardContent| JsValue::from(content.clone())),
-        )
+                .map(|content| content.to_js_value())
+                .collect::<Result<Vec<_>, Self::Error>>()?,
+        ))
     }
 }
 
-impl FromIterator<RdpClipboardContent> for RdpClipboardTransaction {
-    fn from_iter<T: IntoIterator<Item = RdpClipboardContent>>(iter: T) -> Self {
+impl FromIterator<ClipboardContent> for ClipboardTransaction {
+    fn from_iter<T: IntoIterator<Item = ClipboardContent>>(iter: T) -> Self {
         Self {
             contents: iter.into_iter().collect(),
         }
@@ -66,14 +84,13 @@ impl ClipboardContentValue {
 }
 
 /// Object which represents single clipboard format represented standard MIME type.
-#[wasm_bindgen]
 #[derive(Debug, Clone)]
-pub(crate) struct RdpClipboardContent {
+pub(crate) struct ClipboardContent {
     mime_type: String,
     value: ClipboardContentValue,
 }
 
-impl RdpClipboardContent {
+impl ClipboardContent {
     pub(crate) fn mime_type(&self) -> &str {
         &self.mime_type
     }
@@ -81,9 +98,20 @@ impl RdpClipboardContent {
     pub(crate) fn value(&self) -> &ClipboardContentValue {
         &self.value
     }
+
+    fn to_js_value(&self) -> Result<JsValue, IronError> {
+        let js_object = Object::new();
+
+        Reflect::set(&js_object, &JsValue::from("mime_type"), &JsValue::from(&self.mime_type))
+            .map_err(|e| anyhow!("JS error: {:?}", e))?;
+        Reflect::set(&js_object, &JsValue::from("value"), &self.value.value())
+            .map_err(|e| anyhow!("JS error: {:?}", e))?;
+
+        Ok(js_object.into())
+    }
 }
 
-impl iron_remote_desktop::ClipboardContent for RdpClipboardContent {
+impl iron_remote_desktop::ClipboardContent for ClipboardContent {
     fn new_text(mime_type: &str, text: &str) -> Self {
         Self {
             mime_type: mime_type.into(),

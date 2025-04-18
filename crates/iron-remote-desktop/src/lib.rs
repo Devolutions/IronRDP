@@ -331,8 +331,8 @@ macro_rules! export {
                     self.0.is_empty()
                 }
 
-                pub fn content(&self) -> js_sys::Array {
-                    iron_remote_desktop::ClipboardTransaction::contents(&self.0)
+                pub fn content(&self) -> Result<js_sys::Array, IronError> {
+                    iron_remote_desktop::ClipboardTransaction::contents(&self.0).map_err(IronError)
                 }
             }
 

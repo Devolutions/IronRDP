@@ -30,8 +30,8 @@ impl RemoteDesktopApi for Api {
     type SessionTerminationInfo = session::SessionTerminationInfo;
     type DeviceEvent = input::DeviceEvent;
     type InputTransaction = input::InputTransaction;
-    type ClipboardTransaction = clipboard::RdpClipboardTransaction;
-    type ClipboardContent = clipboard::RdpClipboardContent;
+    type ClipboardTransaction = clipboard::ClipboardTransaction;
+    type ClipboardContent = clipboard::ClipboardContent;
     type Error = error::IronError;
 }
 

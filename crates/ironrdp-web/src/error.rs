@@ -1,6 +1,7 @@
 use iron_remote_desktop::IronErrorKind;
 use ironrdp::connector::{self, sspi, ConnectorErrorKind};
 
+#[derive(Debug)]
 pub(crate) struct IronError {
     kind: IronErrorKind,
     source: anyhow::Error,
