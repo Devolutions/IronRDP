@@ -10,7 +10,7 @@ import init, {
     ClipboardTransaction,
     ClipboardContent,
 } from '../../../crates/ironrdp-web/pkg/ironrdp_web';
-import { Extension } from './interfaces/Extension';
+import { preConnectionBlob, kdcProxyUrl, displayControl } from './services/ExtensionBuilders';
 
 export default {
     init,
@@ -24,5 +24,6 @@ export default {
     ClipboardContent,
     Session,
     SessionTerminationInfo,
-    Extension,
 };
+
+export { preConnectionBlob, kdcProxyUrl, displayControl };
