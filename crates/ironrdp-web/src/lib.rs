@@ -12,6 +12,8 @@ extern crate time as _;
 #[macro_use]
 extern crate tracing;
 
+use iron_remote_desktop::RemoteDesktopApi;
+
 mod canvas;
 mod clipboard;
 mod error;
@@ -20,56 +22,27 @@ mod input;
 mod network_client;
 mod session;
 
-use wasm_bindgen::prelude::*;
+struct Api;
 
-#[wasm_bindgen]
-pub fn iron_init(log_level: &str) {
-    // When the `console_error_panic_hook` feature is enabled, we can call the
-    // `set_panic_hook` function at least once during initialization, and then
-    // we will get better error messages if our code ever panics.
-    //
-    // For more details see
-    // https://github.com/rustwasm/console_error_panic_hook#readme
-    #[cfg(feature = "panic_hook")]
-    console_error_panic_hook::set_once();
-
-    if let Ok(level) = log_level.parse::<tracing::Level>() {
-        set_logger_once(level);
-    }
+impl RemoteDesktopApi for Api {
+    type Session = session::Session;
+    type SessionBuilder = session::SessionBuilder;
+    type SessionTerminationInfo = session::SessionTerminationInfo;
+    type DeviceEvent = input::DeviceEvent;
+    type InputTransaction = input::InputTransaction;
+    type ClipboardTransaction = clipboard::RdpClipboardTransaction;
+    type ClipboardContent = clipboard::RdpClipboardContent;
+    type Error = error::IronError;
 }
 
-fn set_logger_once(level: tracing::Level) {
-    use tracing_subscriber::filter::LevelFilter;
-    use tracing_subscriber::fmt::time::UtcTime;
-    use tracing_subscriber::prelude::*;
-    use tracing_web::MakeConsoleWriter;
-
-    static INIT: std::sync::Once = std::sync::Once::new();
-
-    INIT.call_once(|| {
-        let fmt_layer = tracing_subscriber::fmt::layer()
-            .with_ansi(false)
-            .with_timer(UtcTime::rfc_3339()) // std::time is not available in browsers
-            .with_writer(MakeConsoleWriter);
-
-        let level_filter = LevelFilter::from_level(level);
-
-        tracing_subscriber::registry().with(fmt_layer).with(level_filter).init();
+#[doc(hidden)]
+pub mod internal {
+    #[allow(dead_code)]
+    fn iron_init(log_level: &str) {
+        iron_remote_desktop::iron_init(log_level);
 
         debug!("IronRDP is ready");
-    })
-}
-
-#[wasm_bindgen]
-#[derive(Clone)]
-pub struct DesktopSize {
-    pub width: u16,
-    pub height: u16,
-}
-
-#[wasm_bindgen]
-impl DesktopSize {
-    pub fn init(width: u16, height: u16) -> Self {
-        DesktopSize { width, height }
     }
 }
+
+iron_remote_desktop::export!(crate::Api);

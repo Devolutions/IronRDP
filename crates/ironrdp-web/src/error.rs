@@ -1,43 +1,24 @@
+use iron_remote_desktop::IronErrorKind;
 use ironrdp::connector::{self, sspi, ConnectorErrorKind};
-use wasm_bindgen::prelude::*;
 
-#[wasm_bindgen]
-#[derive(Clone, Copy)]
-pub enum IronErrorKind {
-    /// Catch-all error kind
-    General,
-    /// Incorrect password used
-    WrongPassword,
-    /// Unable to login to machine
-    LogonFailure,
-    /// Insufficient permission, server denied access
-    AccessDenied,
-    /// Something wrong happened when sending or receiving the RDCleanPath message
-    RDCleanPath,
-    /// Couldn’t connect to proxy
-    ProxyConnect,
-}
-
-#[wasm_bindgen]
-pub struct IronError {
+pub(crate) struct IronError {
     kind: IronErrorKind,
     source: anyhow::Error,
 }
 
 impl IronError {
-    pub fn with_kind(mut self, kind: IronErrorKind) -> Self {
+    pub(crate) fn with_kind(mut self, kind: IronErrorKind) -> Self {
         self.kind = kind;
         self
     }
 }
 
-#[wasm_bindgen]
-impl IronError {
-    pub fn backtrace(&self) -> String {
+impl iron_remote_desktop::IronError for IronError {
+    fn backtrace(&self) -> String {
         format!("{:?}", self.source)
     }
 
-    pub fn kind(&self) -> IronErrorKind {
+    fn kind(&self) -> IronErrorKind {
         self.kind
     }
 }

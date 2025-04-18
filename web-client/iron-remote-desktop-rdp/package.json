@@ -9,7 +9,7 @@
     "Zacharia Ellaham",
     "Alexandr Yusuk"
   ],
-  "description": "Web Component providing agnostic implementation for Iron Wasm base client",
+  "description": "RDP backend for iron-remote-desktop.",
   "version": "0.0.0",
   "type": "module",
   "private": true,

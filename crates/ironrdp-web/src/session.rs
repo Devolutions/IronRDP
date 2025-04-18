@@ -14,6 +14,7 @@ use futures_util::io::{ReadHalf, WriteHalf};
 use futures_util::{select, AsyncWriteExt as _, FutureExt as _, StreamExt as _};
 use gloo_net::websocket;
 use gloo_net::websocket::futures::WebSocket;
+use iron_remote_desktop::{CursorStyle, DesktopSize, IronErrorKind};
 use ironrdp::cliprdr::backend::ClipboardMessage;
 use ironrdp::cliprdr::CliprdrClient;
 use ironrdp::connector::connection_activation::ConnectionActivationState;
@@ -31,24 +32,23 @@ use ironrdp_futures::{single_sequence_step_read, FramedWrite};
 use rgb::AsPixels as _;
 use serde::{Deserialize, Serialize};
 use tap::prelude::*;
-use wasm_bindgen::prelude::*;
+use wasm_bindgen::JsValue;
 use wasm_bindgen_futures::spawn_local;
 use web_sys::HtmlCanvasElement;
 
 use crate::canvas::Canvas;
-use crate::clipboard::{ClipboardTransaction, WasmClipboard, WasmClipboardBackend, WasmClipboardBackendMessage};
-use crate::error::{IronError, IronErrorKind};
+use crate::clipboard;
+use crate::clipboard::{RdpClipboardTransaction, WasmClipboard, WasmClipboardBackend, WasmClipboardBackendMessage};
+use crate::error::IronError;
 use crate::image::extract_partial_image;
 use crate::input::InputTransaction;
 use crate::network_client::WasmNetworkClient;
-use crate::{clipboard, DesktopSize};
 
 const DEFAULT_WIDTH: u16 = 1280;
 const DEFAULT_HEIGHT: u16 = 720;
 
-#[wasm_bindgen]
 #[derive(Clone, Default)]
-pub struct SessionBuilder(Rc<RefCell<SessionBuilderInner>>);
+pub(crate) struct SessionBuilder(Rc<RefCell<SessionBuilderInner>>);
 
 struct SessionBuilderInner {
     username: Option<String>,
@@ -101,26 +101,28 @@ impl Default for SessionBuilderInner {
     }
 }
 
-#[wasm_bindgen]
-impl SessionBuilder {
-    pub fn init() -> SessionBuilder {
+impl iron_remote_desktop::SessionBuilder for SessionBuilder {
+    type Session = Session;
+    type Error = IronError;
+
+    fn init() -> Self {
         Self(Rc::new(RefCell::new(SessionBuilderInner::default())))
     }
 
     /// Required
-    pub fn username(&self, username: String) -> SessionBuilder {
+    fn username(&self, username: String) -> Self {
         self.0.borrow_mut().username = Some(username);
         self.clone()
     }
 
     /// Required
-    pub fn destination(&self, destination: String) -> SessionBuilder {
+    fn destination(&self, destination: String) -> Self {
         self.0.borrow_mut().destination = Some(destination);
         self.clone()
     }
 
     /// Optional
-    pub fn server_domain(&self, server_domain: String) -> SessionBuilder {
+    fn server_domain(&self, server_domain: String) -> Self {
         self.0.borrow_mut().server_domain = if server_domain.is_empty() {
             None
         } else {
@@ -130,31 +132,31 @@ impl SessionBuilder {
     }
 
     /// Required
-    pub fn password(&self, password: String) -> SessionBuilder {
+    fn password(&self, password: String) -> Self {
         self.0.borrow_mut().password = Some(password);
         self.clone()
     }
 
     /// Required
-    pub fn proxy_address(&self, address: String) -> SessionBuilder {
+    fn proxy_address(&self, address: String) -> Self {
         self.0.borrow_mut().proxy_address = Some(address);
         self.clone()
     }
 
     /// Required
-    pub fn auth_token(&self, token: String) -> SessionBuilder {
+    fn auth_token(&self, token: String) -> Self {
         self.0.borrow_mut().auth_token = Some(token);
         self.clone()
     }
 
     /// Optional
-    pub fn desktop_size(&self, desktop_size: DesktopSize) -> SessionBuilder {
+    fn desktop_size(&self, desktop_size: DesktopSize) -> Self {
         self.0.borrow_mut().desktop_size = desktop_size;
         self.clone()
     }
 
     /// Optional
-    pub fn render_canvas(&self, canvas: HtmlCanvasElement) -> SessionBuilder {
+    fn render_canvas(&self, canvas: HtmlCanvasElement) -> Self {
         self.0.borrow_mut().render_canvas = Some(canvas);
         self.clone()
     }
@@ -176,36 +178,36 @@ impl SessionBuilder {
     /// - `none` (hide cursor); other arguments are `UNDEFINED`
     /// - `url` (custom cursor data URL); `cursor_data` contains the data URL with Base64-encoded
     ///   cursor bitmap; `hotspot_x` and `hotspot_y` are set to the cursor hotspot coordinates.
-    pub fn set_cursor_style_callback(&self, callback: js_sys::Function) -> SessionBuilder {
+    fn set_cursor_style_callback(&self, callback: js_sys::Function) -> Self {
         self.0.borrow_mut().set_cursor_style_callback = Some(callback);
         self.clone()
     }
 
     /// Required.
-    pub fn set_cursor_style_callback_context(&self, context: JsValue) -> SessionBuilder {
+    fn set_cursor_style_callback_context(&self, context: JsValue) -> Self {
         self.0.borrow_mut().set_cursor_style_callback_context = Some(context);
         self.clone()
     }
 
     /// Optional
-    pub fn remote_clipboard_changed_callback(&self, callback: js_sys::Function) -> SessionBuilder {
+    fn remote_clipboard_changed_callback(&self, callback: js_sys::Function) -> Self {
         self.0.borrow_mut().remote_clipboard_changed_callback = Some(callback);
         self.clone()
     }
 
     /// Optional
-    pub fn remote_received_format_list_callback(&self, callback: js_sys::Function) -> SessionBuilder {
+    fn remote_received_format_list_callback(&self, callback: js_sys::Function) -> Self {
         self.0.borrow_mut().remote_received_format_list_callback = Some(callback);
         self.clone()
     }
 
     /// Optional
-    pub fn force_clipboard_update_callback(&self, callback: js_sys::Function) -> SessionBuilder {
+    fn force_clipboard_update_callback(&self, callback: js_sys::Function) -> Self {
         self.0.borrow_mut().force_clipboard_update_callback = Some(callback);
         self.clone()
     }
 
-    pub fn extension(&self, value: JsValue) -> SessionBuilder {
+    fn extension(&self, value: JsValue) -> Self {
         match serde_wasm_bindgen::from_value::<Extension>(value) {
             Ok(value) => match value {
                 Extension::KdcProxyUrl(kdc_proxy_url) => self.0.borrow_mut().kdc_proxy_url = Some(kdc_proxy_url),
@@ -220,7 +222,7 @@ impl SessionBuilder {
         self.clone()
     }
 
-    pub async fn connect(&self) -> Result<Session, IronError> {
+    async fn connect(&self) -> Result<Self::Session, Self::Error> {
         let (
             username,
             destination,
@@ -252,7 +254,7 @@ impl SessionBuilder {
             pcb = inner.pcb.clone();
             kdc_proxy_url = inner.kdc_proxy_url.clone();
             client_name = inner.client_name.clone();
-            desktop_size = inner.desktop_size.clone();
+            desktop_size = inner.desktop_size;
 
             render_canvas = inner.render_canvas.clone().context("render_canvas missing")?;
 
@@ -375,30 +377,17 @@ pub(crate) enum RdpInputEvent {
     TerminateSession,
 }
 
-enum CursorStyle {
-    Default,
-    Hidden,
-    Url {
-        data: String,
-        hotspot_x: u16,
-        hotspot_y: u16,
-    },
-}
-
-#[wasm_bindgen]
-pub struct SessionTerminationInfo {
+pub(crate) struct SessionTerminationInfo {
     reason: GracefulDisconnectReason,
 }
 
-#[wasm_bindgen]
-impl SessionTerminationInfo {
-    pub fn reason(&self) -> String {
+impl iron_remote_desktop::SessionTerminationInfo for SessionTerminationInfo {
+    fn reason(&self) -> String {
         self.reason.to_string()
     }
 }
 
-#[wasm_bindgen]
-pub struct Session {
+pub(crate) struct Session {
     desktop_size: connector::DesktopSize,
     input_database: RefCell<ironrdp::input::Database>,
     writer_tx: mpsc::UnboundedSender<Vec<u8>>,
@@ -415,9 +404,53 @@ pub struct Session {
     clipboard: RefCell<Option<Option<WasmClipboard>>>,
 }
 
-#[wasm_bindgen]
 impl Session {
-    pub async fn run(&self) -> Result<SessionTerminationInfo, IronError> {
+    fn h_send_inputs(&self, inputs: smallvec::SmallVec<[FastPathInputEvent; 2]>) -> Result<(), IronError> {
+        if !inputs.is_empty() {
+            trace!("Inputs: {inputs:?}");
+
+            self.input_events_tx
+                .unbounded_send(RdpInputEvent::FastPath(inputs))
+                .context("Send input events to writer task")?;
+        }
+
+        Ok(())
+    }
+
+    fn set_cursor_style(&self, style: CursorStyle) -> Result<(), IronError> {
+        let (kind, data, hotspot_x, hotspot_y) = match style {
+            CursorStyle::Default => ("default", None, None, None),
+            CursorStyle::Hidden => ("hidden", None, None, None),
+            CursorStyle::Url {
+                data,
+                hotspot_x,
+                hotspot_y,
+            } => ("url", Some(data), Some(hotspot_x), Some(hotspot_y)),
+        };
+
+        let args = js_sys::Array::from_iter([
+            JsValue::from_str(kind),
+            JsValue::from(data),
+            JsValue::from_f64(hotspot_x.unwrap_or_default().into()),
+            JsValue::from_f64(hotspot_y.unwrap_or_default().into()),
+        ]);
+
+        let _ret = self
+            .set_cursor_style_callback
+            .apply(&self.set_cursor_style_callback_context, &args)
+            .map_err(|e| anyhow::Error::msg(format!("set cursor style callback failed: {e:?}")))?;
+
+        Ok(())
+    }
+}
+
+impl iron_remote_desktop::Session for Session {
+    type SessionTerminationInfo = SessionTerminationInfo;
+    type InputTransaction = InputTransaction;
+    type ClipboardTransaction = RdpClipboardTransaction;
+    type Error = IronError;
+
+    async fn run(&self) -> Result<Self::SessionTerminationInfo, Self::Error> {
         let rdp_reader = self
             .rdp_reader
             .borrow_mut()
@@ -705,42 +738,30 @@ impl Session {
         })
     }
 
-    pub fn desktop_size(&self) -> DesktopSize {
+    fn desktop_size(&self) -> DesktopSize {
         DesktopSize {
             width: self.desktop_size.width,
             height: self.desktop_size.height,
         }
     }
 
-    pub fn apply_inputs(&self, transaction: InputTransaction) -> Result<(), IronError> {
+    fn apply_inputs(&self, transaction: Self::InputTransaction) -> Result<(), Self::Error> {
         let inputs = self.input_database.borrow_mut().apply(transaction);
         self.h_send_inputs(inputs)
     }
 
-    pub fn release_all_inputs(&self) -> Result<(), IronError> {
+    fn release_all_inputs(&self) -> Result<(), Self::Error> {
         let inputs = self.input_database.borrow_mut().release_all();
         self.h_send_inputs(inputs)
     }
 
-    fn h_send_inputs(&self, inputs: smallvec::SmallVec<[FastPathInputEvent; 2]>) -> Result<(), IronError> {
-        if !inputs.is_empty() {
-            trace!("Inputs: {inputs:?}");
-
-            self.input_events_tx
-                .unbounded_send(RdpInputEvent::FastPath(inputs))
-                .context("Send input events to writer task")?;
-        }
-
-        Ok(())
-    }
-
-    pub fn synchronize_lock_keys(
+    fn synchronize_lock_keys(
         &self,
         scroll_lock: bool,
         num_lock: bool,
         caps_lock: bool,
         kana_lock: bool,
-    ) -> Result<(), IronError> {
+    ) -> Result<(), Self::Error> {
         use ironrdp::pdu::input::fast_path::FastPathInput;
 
         let event = ironrdp::input::synchronize_event(scroll_lock, num_lock, caps_lock, kana_lock);
@@ -755,7 +776,7 @@ impl Session {
         Ok(())
     }
 
-    pub fn shutdown(&self) -> Result<(), IronError> {
+    fn shutdown(&self) -> Result<(), Self::Error> {
         self.input_events_tx
             .unbounded_send(RdpInputEvent::TerminateSession)
             .context("failed to send terminate session event to writer task")?;
@@ -763,7 +784,7 @@ impl Session {
         Ok(())
     }
 
-    pub async fn on_clipboard_paste(&self, content: ClipboardTransaction) -> Result<(), IronError> {
+    async fn on_clipboard_paste(&self, content: Self::ClipboardTransaction) -> Result<(), Self::Error> {
         self.input_events_tx
             .unbounded_send(RdpInputEvent::ClipboardBackend(
                 WasmClipboardBackendMessage::LocalClipboardChanged(content),
@@ -773,33 +794,7 @@ impl Session {
         Ok(())
     }
 
-    fn set_cursor_style(&self, style: CursorStyle) -> Result<(), IronError> {
-        let (kind, data, hotspot_x, hotspot_y) = match style {
-            CursorStyle::Default => ("default", None, None, None),
-            CursorStyle::Hidden => ("hidden", None, None, None),
-            CursorStyle::Url {
-                data,
-                hotspot_x,
-                hotspot_y,
-            } => ("url", Some(data), Some(hotspot_x), Some(hotspot_y)),
-        };
-
-        let args = js_sys::Array::from_iter([
-            JsValue::from_str(kind),
-            JsValue::from(data),
-            JsValue::from_f64(hotspot_x.unwrap_or_default().into()),
-            JsValue::from_f64(hotspot_y.unwrap_or_default().into()),
-        ]);
-
-        let _ret = self
-            .set_cursor_style_callback
-            .apply(&self.set_cursor_style_callback_context, &args)
-            .map_err(|e| anyhow::Error::msg(format!("set cursor style callback failed: {e:?}")))?;
-
-        Ok(())
-    }
-
-    pub fn resize(
+    fn resize(
         &self,
         width: u32,
         height: u32,
@@ -817,14 +812,13 @@ impl Session {
             .expect("send resize event to writer task");
     }
 
-    #[allow(clippy::unused_self)]
-    pub fn supports_unicode_keyboard_shortcuts(&self) -> bool {
+    fn supports_unicode_keyboard_shortcuts(&self) -> bool {
         // RDP does not support Unicode keyboard shortcuts (When key combinations are executed, only
         // plain scancode events are allowed to function correctly).
         false
     }
 
-    pub fn extension_call(_value: JsValue) -> Result<JsValue, IronError> {
+    fn extension_call(_value: JsValue) -> Result<JsValue, Self::Error> {
         Ok(JsValue::null())
     }
 }

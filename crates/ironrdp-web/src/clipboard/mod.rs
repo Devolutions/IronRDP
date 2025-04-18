@@ -16,6 +16,7 @@ mod transaction;
 use std::collections::HashMap;
 
 use futures_channel::mpsc;
+use iron_remote_desktop::{ClipboardContent as _, ClipboardTransaction as _};
 use ironrdp::cliprdr::backend::{ClipboardMessage, CliprdrBackend};
 use ironrdp::cliprdr::pdu::{
     ClipboardFormat, ClipboardFormatId, ClipboardFormatName, ClipboardGeneralCapabilityFlags, FileContentsRequest,
@@ -24,13 +25,13 @@ use ironrdp::cliprdr::pdu::{
 use ironrdp_cliprdr_format::bitmap::{dib_to_png, dibv5_to_png, png_to_cf_dibv5};
 use ironrdp_cliprdr_format::html::{cf_html_to_plain_html, plain_html_to_cf_html};
 use ironrdp_core::{impl_as_any, IntoOwned};
-use transaction::{ClipboardContent, ClipboardContentValue};
+use transaction::ClipboardContentValue;
 use wasm_bindgen::prelude::*;
 
 use crate::session::RdpInputEvent;
 
 #[rustfmt::skip]
-pub(crate) use transaction::ClipboardTransaction;
+pub(crate) use transaction::{RdpClipboardTransaction, RdpClipboardContent};
 
 const MIME_TEXT: &str = "text/plain";
 const MIME_HTML: &str = "text/html";
@@ -103,7 +104,7 @@ impl WasmClipboardMessageProxy {
 /// Messages sent by the JS code or CLIPRDR to the backend implementation.
 #[derive(Debug)]
 pub(crate) enum WasmClipboardBackendMessage {
-    LocalClipboardChanged(ClipboardTransaction),
+    LocalClipboardChanged(RdpClipboardTransaction),
     RemoteDataRequest(ClipboardFormatId),
 
     RemoteClipboardChanged(Vec<ClipboardFormat>),
@@ -116,8 +117,8 @@ pub(crate) enum WasmClipboardBackendMessage {
 /// Clipboard backend implementation for web. This object should be created once per session and
 /// kept alive until session is terminated.
 pub(crate) struct WasmClipboard {
-    local_clipboard: Option<ClipboardTransaction>,
-    remote_clipboard: ClipboardTransaction,
+    local_clipboard: Option<RdpClipboardTransaction>,
+    remote_clipboard: RdpClipboardTransaction,
 
     remote_mapping: HashMap<ClipboardFormatId, String>,
     remote_formats_to_read: Vec<ClipboardFormatId>,
@@ -137,7 +138,7 @@ impl WasmClipboard {
     pub(crate) fn new(message_proxy: WasmClipboardMessageProxy, js_callbacks: JsClipboardCallbacks) -> Self {
         Self {
             local_clipboard: None,
-            remote_clipboard: ClipboardTransaction::init(),
+            remote_clipboard: RdpClipboardTransaction::init(),
             proxy: message_proxy,
             js_callbacks,
 
@@ -155,7 +156,7 @@ impl WasmClipboard {
 
     fn handle_local_clipboard_changed(
         &mut self,
-        transaction: ClipboardTransaction,
+        transaction: RdpClipboardTransaction,
     ) -> anyhow::Result<Vec<ClipboardFormat>> {
         let mut formats = Vec::new();
         transaction.contents().iter().for_each(|content| {
@@ -371,21 +372,21 @@ impl WasmClipboard {
 
         let content = match pending_format {
             ClipboardFormatId::CF_UNICODETEXT => match response.to_unicode_string() {
-                Ok(text) => Some(ClipboardContent::new_text(MIME_TEXT, &text)),
+                Ok(text) => Some(RdpClipboardContent::new_text(MIME_TEXT, &text)),
                 Err(err) => {
                     error!("CF_UNICODETEXT decode error: {}", err);
                     None
                 }
             },
             ClipboardFormatId::CF_DIB => match dib_to_png(response.data()) {
-                Ok(png) => Some(ClipboardContent::new_binary(MIME_PNG, &png)),
+                Ok(png) => Some(RdpClipboardContent::new_binary(MIME_PNG, &png)),
                 Err(err) => {
                     warn!("DIB decode error: {}", err);
                     None
                 }
             },
             ClipboardFormatId::CF_DIBV5 => match dibv5_to_png(response.data()) {
-                Ok(png) => Some(ClipboardContent::new_binary(MIME_PNG, &png)),
+                Ok(png) => Some(RdpClipboardContent::new_binary(MIME_PNG, &png)),
                 Err(err) => {
                     warn!("DIBv5 decode error: {}", err);
                     None
@@ -395,21 +396,21 @@ impl WasmClipboard {
                 let format_name = self.remote_mapping.get(&registered).map(|s| s.as_str());
                 match format_name {
                     Some(FORMAT_WIN_HTML_NAME) => match cf_html_to_plain_html(response.data()) {
-                        Ok(text) => Some(ClipboardContent::new_text(MIME_HTML, text)),
+                        Ok(text) => Some(RdpClipboardContent::new_text(MIME_HTML, text)),
                         Err(err) => {
                             warn!("CF_HTML decode error: {}", err);
                             None
                         }
                     },
                     Some(FORMAT_MIME_HTML_NAME) => match response.to_string() {
-                        Ok(text) => Some(ClipboardContent::new_text(MIME_HTML, &text)),
+                        Ok(text) => Some(RdpClipboardContent::new_text(MIME_HTML, &text)),
                         Err(err) => {
                             warn!("text/html decode error: {}", err);
                             None
                         }
                     },
                     Some(FORMAT_MIME_PNG_NAME) | Some(FORMAT_PNG_NAME) => {
-                        Some(ClipboardContent::new_binary(MIME_PNG, response.data()))
+                        Some(RdpClipboardContent::new_binary(MIME_PNG, response.data()))
                     }
                     _ => {
                         // Not supported format
@@ -433,11 +434,12 @@ impl WasmClipboard {
             if transaction.is_empty() {
                 return Ok(());
             }
+
             // Set clipboard when all formats were read
             self.js_callbacks
                 .on_remote_clipboard_changed
                 .call1(&JsValue::NULL, &JsValue::from(transaction))
-                .expect("Failed to call JS callback");
+                .expect("failed to call JS callback");
         }
 
         Ok(())
@@ -505,7 +507,7 @@ impl WasmClipboard {
                 } else {
                     // If no initial clipboard callback was set, send empty format list instead
                     return self.process_event(WasmClipboardBackendMessage::LocalClipboardChanged(
-                        ClipboardTransaction::init(),
+                        RdpClipboardTransaction::init(),
                     ));
                 }
             }
