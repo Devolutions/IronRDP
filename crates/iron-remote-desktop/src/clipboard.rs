@@ -1,13 +1,15 @@
+use crate::IronError;
 use wasm_bindgen::JsValue;
 use web_sys::js_sys;
 
 pub trait ClipboardTransaction {
     type ClipboardContent: ClipboardContent;
+    type Error: IronError;
 
     fn init() -> Self;
     fn add_content(&mut self, content: Self::ClipboardContent);
     fn is_empty(&self) -> bool;
-    fn contents(&self) -> js_sys::Array;
+    fn contents(&self) -> Result<js_sys::Array, Self::Error>;
 }
 
 pub trait ClipboardContent {
