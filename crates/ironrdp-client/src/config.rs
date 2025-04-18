@@ -8,6 +8,7 @@ use ironrdp::connector::{self, Credentials};
 use ironrdp::pdu::rdp::capability_sets::MajorPlatformType;
 use ironrdp::pdu::rdp::client_info::PerformanceFlags;
 use tap::prelude::*;
+use url::Url;
 
 const DEFAULT_WIDTH: u16 = 1920;
 const DEFAULT_HEIGHT: u16 = 1080;
@@ -131,7 +132,7 @@ impl From<&Destination> for connector::ServerName {
 
 #[derive(Clone, Debug)]
 pub struct RDCleanPathConfig {
-    pub url: String,
+    pub url: Url,
     pub auth_token: String,
 }
 
@@ -161,7 +162,7 @@ struct Args {
 
     /// Proxy URL to connect to for the RDCleanPath
     #[clap(long, requires("rdcleanpath_token"))]
-    rdcleanpath_url: Option<String>,
+    rdcleanpath_url: Option<Url>,
 
     /// Authentication token to insert in the RDCleanPath packet
     #[clap(long, requires("rdcleanpath_url"))]

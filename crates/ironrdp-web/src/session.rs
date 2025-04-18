@@ -5,6 +5,7 @@ use core::cell::RefCell;
 use core::num::NonZeroU32;
 use core::time::Duration;
 use std::borrow::Cow;
+use std::net::{Ipv4Addr, SocketAddrV4};
 use std::rc::Rc;
 
 use anyhow::Context as _;
@@ -919,7 +920,10 @@ async fn connect(
 ) -> Result<(connector::ConnectionResult, WebSocket), IronError> {
     let mut framed = ironrdp_futures::LocalFuturesFramed::new(ws);
 
-    let mut connector = ClientConnector::new(config);
+    // In web browser environments, we do not have an easy access to the local address of the socket.
+    let dummy_client_addr = std::net::SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 33899));
+
+    let mut connector = ClientConnector::new(config, dummy_client_addr);
 
     if let Some(clipboard_backend) = clipboard_backend {
         connector.attach_static_channel(CliprdrClient::new(Box::new(clipboard_backend)));
@@ -1031,7 +1035,7 @@ where
 
         debug!(message = ?rdcleanpath_res, "Received RDCleanPath PDU");
 
-        let (x224_connection_response, server_cert_chain, server_addr) =
+        let (x224_connection_response, server_cert_chain) =
             match rdcleanpath_res.into_enum().context("invalid RDCleanPath PDU")? {
                 ironrdp_rdcleanpath::RDCleanPath::Request { .. } => {
                     return Err(anyhow::Error::msg("received an unexpected RDCleanPath type (request)").into());
@@ -1039,8 +1043,8 @@ where
                 ironrdp_rdcleanpath::RDCleanPath::Response {
                     x224_connection_response,
                     server_cert_chain,
-                    server_addr,
-                } => (x224_connection_response, server_cert_chain, server_addr),
+                    server_addr: _,
+                } => (x224_connection_response, server_cert_chain),
                 ironrdp_rdcleanpath::RDCleanPath::Err(error) => {
                     return Err(
                         IronError::from(anyhow::Error::new(error).context("received an RDCleanPath error"))
@@ -1048,12 +1052,6 @@ where
                     );
                 }
             };
-
-        let server_addr = server_addr
-            .parse()
-            .context("failed to parse server address sent by proxy")?;
-
-        connector.attach_client_addr(server_addr);
 
         let connector::ClientConnectorState::ConnectionInitiationWaitConfirm { .. } = connector.state else {
             return Err(anyhow::Error::msg("invalid connector state (wait confirm)").into());

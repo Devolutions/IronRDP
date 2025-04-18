@@ -121,18 +121,17 @@ async fn connect(
 ) -> ConnectorResult<(ConnectionResult, UpgradedFramed)> {
     let dest = format!("{}:{}", config.destination.name(), config.destination.port());
 
-    let stream = TcpStream::connect(dest)
+    let socket = TcpStream::connect(dest)
         .await
         .map_err(|e| connector::custom_err!("TCP connect", e))?;
 
-    let server_addr = stream
-        .peer_addr()
-        .map_err(|e| connector::custom_err!("Peer address", e))?;
+    let client_addr = socket
+        .local_addr()
+        .map_err(|e| connector::custom_err!("get socket local address", e))?;
 
-    let mut framed = ironrdp_tokio::TokioFramed::new(stream);
+    let mut framed = ironrdp_tokio::TokioFramed::new(socket);
 
-    let mut connector = connector::ClientConnector::new(config.connector.clone())
-        .with_client_addr(server_addr)
+    let mut connector = connector::ClientConnector::new(config.connector.clone(), client_addr)
         .with_static_channel(
             ironrdp::dvc::DrdynvcClient::new().with_dynamic_channel(DisplayControlClient::new(|_| Ok(Vec::new()))),
         )
@@ -184,7 +183,26 @@ async fn connect_ws(
     rdcleanpath: &RDCleanPathConfig,
     cliprdr_factory: Option<&(dyn CliprdrBackendFactory + Send)>,
 ) -> ConnectorResult<(ConnectionResult, UpgradedFramed)> {
-    let (ws, _) = tokio_tungstenite::connect_async(&rdcleanpath.url)
+    let hostname = rdcleanpath
+        .url
+        .host_str()
+        .ok_or_else(|| connector::general_err!("host missing from the URL"))?;
+
+    let port = rdcleanpath.url.port_or_known_default().unwrap_or(443);
+
+    let socket = TcpStream::connect((hostname, port))
+        .await
+        .map_err(|e| connector::custom_err!("TCP connect", e))?;
+
+    socket
+        .set_nodelay(true)
+        .map_err(|e| connector::custom_err!("set TCP_NODELAY", e))?;
+
+    let client_addr = socket
+        .local_addr()
+        .map_err(|e| connector::custom_err!("get socket local address", e))?;
+
+    let (ws, _) = tokio_tungstenite::client_async_tls(rdcleanpath.url.as_str(), socket)
         .await
         .map_err(|e| connector::custom_err!("WS connect", e))?;
 
@@ -192,7 +210,7 @@ async fn connect_ws(
 
     let mut framed = ironrdp_tokio::TokioFramed::new(ws);
 
-    let mut connector = connector::ClientConnector::new(config.connector.clone())
+    let mut connector = connector::ClientConnector::new(config.connector.clone(), client_addr)
         .with_static_channel(
             ironrdp::dvc::DrdynvcClient::new().with_dynamic_channel(DisplayControlClient::new(|_| Ok(Vec::new()))),
         )
@@ -312,7 +330,7 @@ where
 
         debug!(message = ?rdcleanpath_res, "Received RDCleanPath PDU");
 
-        let (x224_connection_response, server_cert_chain, server_addr) = match rdcleanpath_res
+        let (x224_connection_response, server_cert_chain) = match rdcleanpath_res
             .into_enum()
             .map_err(|e| connector::custom_err!("invalid RDCleanPath PDU", e))?
         {
@@ -324,18 +342,12 @@ where
             ironrdp_rdcleanpath::RDCleanPath::Response {
                 x224_connection_response,
                 server_cert_chain,
-                server_addr,
-            } => (x224_connection_response, server_cert_chain, server_addr),
+                server_addr: _,
+            } => (x224_connection_response, server_cert_chain),
             ironrdp_rdcleanpath::RDCleanPath::Err(error) => {
                 return Err(connector::custom_err!("received an RDCleanPath error", error));
             }
         };
-
-        let server_addr = server_addr
-            .parse()
-            .map_err(|e| connector::custom_err!("failed to parse server address sent by proxy", e))?;
-
-        connector.attach_client_addr(server_addr);
 
         let connector::ClientConnectorState::ConnectionInitiationWaitConfirm { .. } = connector.state else {
             return Err(connector::general_err!("invalid connector state (wait confirm)"));

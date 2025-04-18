@@ -123,30 +123,19 @@ impl State for ClientConnectorState {
 pub struct ClientConnector {
     pub config: Config,
     pub state: ClientConnectorState,
-    pub client_addr: Option<SocketAddr>,
+    /// The client address to be used in the Client Info PDU.
+    pub client_addr: SocketAddr,
     pub static_channels: StaticChannelSet,
 }
 
 impl ClientConnector {
-    pub fn new(config: Config) -> Self {
+    pub fn new(config: Config, client_addr: SocketAddr) -> Self {
         Self {
             config,
             state: ClientConnectorState::ConnectionInitiationSendRequest,
-            client_addr: None,
+            client_addr,
             static_channels: StaticChannelSet::new(),
         }
-    }
-
-    /// Sets the client address to be used in the Client Info PDU.
-    #[must_use]
-    pub fn with_client_addr(mut self, addr: SocketAddr) -> Self {
-        self.client_addr = Some(addr);
-        self
-    }
-
-    /// Sets the client address to be used in the Client Info PDU.
-    pub fn attach_client_addr(&mut self, addr: SocketAddr) {
-        self.client_addr = Some(addr);
     }
 
     #[must_use]
@@ -448,12 +437,7 @@ impl Sequence for ClientConnector {
             } => {
                 debug!("Secure Settings Exchange");
 
-                let client_addr = self
-                    .client_addr
-                    .as_ref()
-                    .ok_or_else(|| general_err!("client address is missing"))?;
-
-                let client_info = create_client_info_pdu(&self.config, client_addr);
+                let client_info = create_client_info_pdu(&self.config, &self.client_addr);
 
                 debug!(message = ?client_info, "Send");
 
