@@ -4,12 +4,12 @@ use futures_util::Future;
 use ironrdp::connector::sspi::generator::NetworkRequest;
 use ironrdp::connector::sspi::network_client::NetworkProtocol;
 use ironrdp::connector::{custom_err, reason_err, ConnectorResult};
-use ironrdp_futures::AsyncNetworkClient;
+use ironrdp_futures::WasmAsyncNetworkClient;
 
 #[derive(Debug)]
 pub(crate) struct WasmNetworkClient;
 
-impl AsyncNetworkClient for WasmNetworkClient {
+impl WasmAsyncNetworkClient for WasmNetworkClient {
     fn send<'a>(
         &'a mut self,
         network_request: &'a NetworkRequest,
