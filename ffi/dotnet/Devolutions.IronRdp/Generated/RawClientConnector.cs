@@ -17,13 +17,7 @@ public partial struct ClientConnector
     private const string NativeLib = "DevolutionsIronRdp";
 
     [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ClientConnector_new", ExactSpelling = true)]
-    public static unsafe extern ClientConnector* New(Config* config);
-
-    /// <summary>
-    /// Must use
-    /// </summary>
-    [DllImport(NativeLib, CallingConvention = CallingConvention.Cdecl, EntryPoint = "ClientConnector_with_client_addr", ExactSpelling = true)]
-    public static unsafe extern ConnectorFfiResultVoidBoxIronRdpError WithClientAddr(ClientConnector* self, byte* clientAddr, nuint clientAddrSz);
+    public static unsafe extern ConnectorFfiResultBoxClientConnectorBoxIronRdpError New(Config* config, byte* clientAddr, nuint clientAddrSz);
 
     /// <summary>
     /// Must use

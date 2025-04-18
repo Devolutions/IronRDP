@@ -37,45 +37,31 @@ public partial class ClientConnector: IDisposable
         _inner = handle;
     }
 
+    /// <exception cref="IronRdpException"></exception>
     /// <returns>
     /// A <c>ClientConnector</c> allocated on Rust side.
     /// </returns>
-    public static ClientConnector New(Config config)
+    public static ClientConnector New(Config config, string clientAddr)
     {
         unsafe
         {
+            byte[] clientAddrBuf = DiplomatUtils.StringToUtf8(clientAddr);
+            nuint clientAddrBufLength = (nuint)clientAddrBuf.Length;
             Raw.Config* configRaw;
             configRaw = config.AsFFI();
             if (configRaw == null)
             {
                 throw new ObjectDisposedException("Config");
             }
-            Raw.ClientConnector* retVal = Raw.ClientConnector.New(configRaw);
-            return new ClientConnector(retVal);
-        }
-    }
-
-    /// <summary>
-    /// Must use
-    /// </summary>
-    /// <exception cref="IronRdpException"></exception>
-    public void WithClientAddr(string clientAddr)
-    {
-        unsafe
-        {
-            if (_inner == null)
-            {
-                throw new ObjectDisposedException("ClientConnector");
-            }
-            byte[] clientAddrBuf = DiplomatUtils.StringToUtf8(clientAddr);
-            nuint clientAddrBufLength = (nuint)clientAddrBuf.Length;
             fixed (byte* clientAddrBufPtr = clientAddrBuf)
             {
-                Raw.ConnectorFfiResultVoidBoxIronRdpError result = Raw.ClientConnector.WithClientAddr(_inner, clientAddrBufPtr, clientAddrBufLength);
+                Raw.ConnectorFfiResultBoxClientConnectorBoxIronRdpError result = Raw.ClientConnector.New(configRaw, clientAddrBufPtr, clientAddrBufLength);
                 if (!result.isOk)
                 {
                     throw new IronRdpException(new IronRdpError(result.Err));
                 }
+                Raw.ClientConnector* retVal = result.Ok;
+                return new ClientConnector(retVal);
             }
         }
     }
