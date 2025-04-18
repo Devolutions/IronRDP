@@ -137,7 +137,7 @@ export class RemoteDesktopService {
     }
 
     configBuilder(): ConfigBuilder {
-        return new ConfigBuilder(this.module.Extension.init);
+        return new ConfigBuilder();
     }
 
     connect(config: Config): Observable<NewSessionInfo> {

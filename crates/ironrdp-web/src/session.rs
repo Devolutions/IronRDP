@@ -30,7 +30,6 @@ use ironrdp::session::{fast_path, ActiveStage, ActiveStageOutput, GracefulDiscon
 use ironrdp_core::WriteBuf;
 use ironrdp_futures::{single_sequence_step_read, FramedWrite};
 use rgb::AsPixels as _;
-use serde::{Deserialize, Serialize};
 use tap::prelude::*;
 use wasm_bindgen::JsValue;
 use wasm_bindgen_futures::spawn_local;
@@ -40,6 +39,7 @@ use crate::canvas::Canvas;
 use crate::clipboard;
 use crate::clipboard::{RdpClipboardTransaction, WasmClipboard, WasmClipboardBackend, WasmClipboardBackendMessage};
 use crate::error::IronError;
+use crate::extension::Extension;
 use crate::image::extract_partial_image;
 use crate::input::InputTransaction;
 use crate::network_client::WasmNetworkClient;
@@ -208,15 +208,13 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
     }
 
     fn extension(&self, value: JsValue) -> Self {
-        match serde_wasm_bindgen::from_value::<Extension>(value) {
-            Ok(value) => match value {
-                Extension::KdcProxyUrl(kdc_proxy_url) => self.0.borrow_mut().kdc_proxy_url = Some(kdc_proxy_url),
+        match Extension::try_from_js_value(value) {
+            Ok(ext) => match ext {
+                Extension::KdcProxyUrl(kdc) => self.0.borrow_mut().kdc_proxy_url = Some(kdc),
                 Extension::Pcb(pcb) => self.0.borrow_mut().pcb = Some(pcb),
-                Extension::DisplayControl(use_display_control) => {
-                    self.0.borrow_mut().use_display_control = use_display_control
-                }
+                Extension::DisplayControl(dc) => self.0.borrow_mut().use_display_control = dc,
             },
-            Err(error) => error!(%error, "Unsupported extension value"),
+            Err(error) => error!(?error),
         }
 
         self.clone()
@@ -352,13 +350,6 @@ impl iron_remote_desktop::SessionBuilder for SessionBuilder {
             clipboard: RefCell::new(Some(clipboard)),
         })
     }
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-enum Extension {
-    KdcProxyUrl(String),
-    Pcb(String),
-    DisplayControl(bool),
 }
 
 pub(crate) type FastPathInputEvents = smallvec::SmallVec<[FastPathInputEvent; 2]>;

@@ -9,6 +9,9 @@ extern crate chrono as _;
 extern crate getrandom as _;
 extern crate time as _;
 
+// Required by wasm-bindgen-derive crate
+extern crate alloc;
+
 #[macro_use]
 extern crate tracing;
 
@@ -17,6 +20,7 @@ use iron_remote_desktop::RemoteDesktopApi;
 mod canvas;
 mod clipboard;
 mod error;
+mod extension;
 mod image;
 mod input;
 mod network_client;
