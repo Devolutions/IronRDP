@@ -26,7 +26,7 @@ ironrdp-pdu = { path = "../ironrdp-pdu", version = "0.4", features = ["std"] } #
 arbitrary = { version = "1", features = ["derive"], optional = true } # public
 sspi = "0.15" # public
 url = "2.5" # public
-rand_core = { version = "0.6", features = ["std"] } # TODO: dependency injection?
+rand_core = { version = "0.9", features = ["std"] } # TODO: dependency injection?
 tracing = { version = "0.1", features = ["log"] }
 picky-asn1-der = "0.5"
 picky-asn1-x509 = "0.14"
