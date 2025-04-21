@@ -1,5 +1,5 @@
 import init, {
-    iron_init,
+    setup,
     DesktopSize,
     DeviceEvent,
     InputTransaction,
@@ -14,7 +14,7 @@ import { Extension } from './interfaces/Extension';
 
 export default {
     init,
-    iron_init,
+    setup,
     DesktopSize,
     DeviceEvent,
     InputTransaction,

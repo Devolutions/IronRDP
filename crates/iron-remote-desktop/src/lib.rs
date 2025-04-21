@@ -25,41 +25,6 @@ impl DesktopSize {
     }
 }
 
-pub fn iron_init(log_level: &str) {
-    // When the `console_error_panic_hook` feature is enabled, we can call the
-    // `set_panic_hook` function at least once during initialization, and then
-    // we will get better error messages if our code ever panics.
-    //
-    // For more details see
-    // https://github.com/rustwasm/console_error_panic_hook#readme
-    #[cfg(feature = "panic_hook")]
-    console_error_panic_hook::set_once();
-
-    if let Ok(level) = log_level.parse::<tracing::Level>() {
-        set_logger_once(level);
-    }
-}
-
-fn set_logger_once(level: tracing::Level) {
-    use tracing_subscriber::filter::LevelFilter;
-    use tracing_subscriber::fmt::time::UtcTime;
-    use tracing_subscriber::prelude::*;
-    use tracing_web::MakeConsoleWriter;
-
-    static INIT: std::sync::Once = std::sync::Once::new();
-
-    INIT.call_once(|| {
-        let fmt_layer = tracing_subscriber::fmt::layer()
-            .with_ansi(false)
-            .with_timer(UtcTime::rfc_3339()) // std::time is not available in browsers
-            .with_writer(MakeConsoleWriter);
-
-        let level_filter = LevelFilter::from_level(level);
-
-        tracing_subscriber::registry().with(fmt_layer).with(level_filter).init();
-    })
-}
-
 pub trait RemoteDesktopApi {
     type Session: Session;
     type SessionBuilder: SessionBuilder;
@@ -71,10 +36,10 @@ pub trait RemoteDesktopApi {
     type Error: IronError;
 
     /// Called before the logger is set.
-    fn pre_init() {}
+    fn pre_setup() {}
 
     /// Called after the logger is set.
-    fn post_init() {}
+    fn post_setup() {}
 }
 
 #[macro_export]
@@ -89,10 +54,10 @@ macro_rules! export {
             };
 
             #[wasm_bindgen]
-            pub fn iron_init(log_level: &str) {
-                <$api as RemoteDesktopApi>::pre_init();
-                $crate::iron_init(log_level);
-                <$api as RemoteDesktopApi>::post_init();
+            pub fn setup(log_level: &str) {
+                <$api as RemoteDesktopApi>::pre_setup();
+                $crate::internal::setup(log_level);
+                <$api as RemoteDesktopApi>::post_setup();
             }
 
             #[wasm_bindgen]
@@ -363,4 +328,43 @@ macro_rules! export {
             }
         }
     };
+}
+
+#[doc(hidden)]
+pub mod internal {
+    #[doc(hidden)]
+    pub fn setup(log_level: &str) {
+        // When the `console_error_panic_hook` feature is enabled, we can call the
+        // `set_panic_hook` function at least once during initialization, and then
+        // we will get better error messages if our code ever panics.
+        //
+        // For more details see
+        // https://github.com/rustwasm/console_error_panic_hook#readme
+        #[cfg(feature = "panic_hook")]
+        console_error_panic_hook::set_once();
+
+        if let Ok(level) = log_level.parse::<tracing::Level>() {
+            set_logger_once(level);
+        }
+    }
+
+    fn set_logger_once(level: tracing::Level) {
+        use tracing_subscriber::filter::LevelFilter;
+        use tracing_subscriber::fmt::time::UtcTime;
+        use tracing_subscriber::prelude::*;
+        use tracing_web::MakeConsoleWriter;
+
+        static INIT: std::sync::Once = std::sync::Once::new();
+
+        INIT.call_once(|| {
+            let fmt_layer = tracing_subscriber::fmt::layer()
+                .with_ansi(false)
+                .with_timer(UtcTime::rfc_3339()) // std::time is not available in browsers
+                .with_writer(MakeConsoleWriter);
+
+            let level_filter = LevelFilter::from_level(level);
+
+            tracing_subscriber::registry().with(fmt_layer).with(level_filter).init();
+        })
+    }
 }

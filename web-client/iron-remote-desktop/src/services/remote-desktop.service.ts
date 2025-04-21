@@ -78,10 +78,10 @@ export class RemoteDesktopService {
     }
 
     async init(debug: LogType) {
-        loggingService.info('Loading wasm file.');
+        loggingService.info('Load wasm file...');
         await this.module.init();
-        loggingService.info('Initializing IronRDP.');
-        this.module.iron_init(LogType[debug]);
+        loggingService.info('Initialize the remote desktop module...');
+        this.module.setup(LogType[debug]);
     }
 
     // If set to false, the clipboard will not be enabled and the callbacks will not be registered to the Rust side

@@ -33,14 +33,8 @@ impl RemoteDesktopApi for Api {
     type ClipboardTransaction = clipboard::RdpClipboardTransaction;
     type ClipboardContent = clipboard::RdpClipboardContent;
     type Error = error::IronError;
-}
 
-#[doc(hidden)]
-pub mod internal {
-    #[allow(dead_code)]
-    fn iron_init(log_level: &str) {
-        iron_remote_desktop::iron_init(log_level);
-
+    fn post_setup() {
         debug!("IronRDP is ready");
     }
 }

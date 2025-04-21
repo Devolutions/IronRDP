@@ -11,7 +11,7 @@ import type { Extension } from './Extension';
 
 export interface RemoteDesktopModule {
     init: () => Promise<unknown>;
-    iron_init: (logLevel: string) => void;
+    setup: (logLevel: string) => void;
     DesktopSize: DesktopSize;
     DeviceEvent: DeviceEvent;
     InputTransaction: InputTransaction;
